@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Automated verification & interaction test suite for devices/Bitwig Shaper.amxd
+ * Automated verification & interaction test suite for devices/Better Shaper.amxd
  * Run with: node tests/test_shaper.js
  */
 
@@ -9,7 +9,7 @@ const path = require("path");
 const assert = require("assert");
 
 const ROOT_DIR = path.dirname(__dirname);
-const AMXD_PATH = path.join(ROOT_DIR, "devices", "Bitwig Shaper.amxd");
+const AMXD_PATH = path.join(ROOT_DIR, "devices", "Better Shaper.amxd");
 
 function validatePatcherBoxesAndLines(patcher, label = "root") {
     const map = new Map();
@@ -41,13 +41,13 @@ assert.strictEqual(32 + ptchLen, raw.length, "ptch chunk length mismatch");
 
 const doc = JSON.parse(raw.slice(32).toString("utf8"));
 const p = doc.patcher;
-assert.strictEqual(p.devicewidth, 492.0, "Expected devicewidth 492.0");
+assert.strictEqual(p.devicewidth, 436.0, "Expected devicewidth 436.0");
 
 const boxMap = validatePatcherBoxesAndLines(p, "root");
 
 // Verify Multimap Show/Hide button is at top-right of Left Panel and hides MSEG + Grid/Snap when opened
 assert(boxMap.has("obj-expand-map"), "Missing obj-expand-map button");
-assert.deepStrictEqual(boxMap.get("obj-expand-map").presentation_rect, [311.0, 8.0, 15.0, 15.0], "Expected obj-expand-map at top-right of Left Panel");
+assert.deepStrictEqual(boxMap.get("obj-expand-map").presentation_rect, [255.0, 8.0, 15.0, 15.0], "Expected obj-expand-map at top-right of Left Panel");
 assert(boxMap.has("obj-play-mode"), "Missing obj-play-mode [Loop / 1-Shot / Manual] tab");
 assert(boxMap.has("obj-hide-mseg-msg"), "Missing obj-hide-mseg-msg");
 assert(boxMap.has("obj-rate-line"), "Missing connecting tick line between Rate and Hz/Beat mode");
@@ -89,16 +89,10 @@ for (let slot = 1; slot <= 8; slot++) {
     assert(subMap.has("obj-mode-gate"), `Missing gate 2 1 in p Map_${slot}`);
 }
 
-// Verify no visible MSEG-view widget overlaps the v8ui plot area (outside the reserved bottom-right Grid/Snap cutout)
+// Verify no visible presentation widget overlaps the v8ui canvas
 const msegRect = boxMap.get("obj-mseg").presentation_rect;
 for (const [id, box] of boxMap.entries()) {
     if (id === "obj-mseg" || box.maxclass === "panel" || !box.presentation || !box.presentation_rect || box.hidden === 1) continue;
-    if (id === "obj-grid-lbl" || id === "obj-grid" || id === "obj-snap-btn") {
-        // Must sit inside the reserved bottom-right cutout (x >= 224, y >= 138)
-        const r = box.presentation_rect;
-        assert(r[0] >= 224 && r[1] >= 138, `${id} is outside the reserved bottom-right Grid/Snap cutout: ${JSON.stringify(r)}`);
-        continue;
-    }
     const r = box.presentation_rect;
     const overlapsX = r[0] < (msegRect[0] + msegRect[2]) && (r[0] + r[2]) > msegRect[0];
     const overlapsY = r[1] < (msegRect[1] + msegRect[3]) && (r[1] + r[3]) > msegRect[1];
@@ -113,7 +107,7 @@ let outletsOut = [[], []];
 let outletHistory0 = [];
 
 global.mgraphics = {
-    size: [320, 134],
+    size: [262, 134],
     init() {},
     redraw() {},
     set_source_rgba() {},
@@ -165,16 +159,82 @@ assert.strictEqual(getvalueof()[5], 2, "Expected 2 points after Undo");
 redo();
 assert.strictEqual(getvalueof()[5], 3, "Expected 3 points after Redo");
 
-// Test 2: S-Curve segment tension
+// Test 1b: Toolbar items verification (Delete Selected, Double Saw, S-Curve, Exp Decay, Exp Ramp, Invert Vertically removed; Randomize Ramps & Randomize Steps added)
+const toolbarIds = TOOLBAR_ITEMS.map(item => item.id);
+assert(!toolbarIds.includes("clear"), "Expected 'clear' (Delete Selected) button removed from bottom toolbar");
+assert(!toolbarIds.includes("saw2"), "Expected 'saw2' (Double Saw) button removed from bottom toolbar");
+assert(!toolbarIds.includes("scurve"), "Expected 'scurve' button removed from bottom toolbar");
+assert(!toolbarIds.includes("decay"), "Expected 'decay' (Exp Decay) button removed from bottom toolbar");
+assert(!toolbarIds.includes("ramp"), "Expected 'ramp' (Exp Ramp) button removed from bottom toolbar");
+assert(!toolbarIds.includes("flipy"), "Expected 'flipy' (Invert Vertically) button removed from bottom toolbar");
+assert(toolbarIds.includes("rnd_ramps"), "Expected 'rnd_ramps' (Randomize Ramps) button in bottom toolbar");
+assert(toolbarIds.includes("rnd_steps"), "Expected 'rnd_steps' (Randomize Steps) button in bottom toolbar");
+
+// Test 2: S-Curve segment tension via Double Alt-Click (ondblclick with opt=1) & Single vs Multi-Selected Node Alt+Drag Curve Slope
 applyToolbarAction("clear");
-onclick(140, 60, 1, 0, 0, 0, 0, 1); // Ctrl+click on segment 0
+onclick(130, 50, 1, 0, 0, 0, 0, 0);
+ondrag(130, 50, 0, 0, 0, 0, 0, 0);
+assert.strictEqual(getvalueof()[5], 3, "Expected 3 points (2 segments)");
+// Double Alt-click on Segment 0 (left half, x=60) to toggle S-Curve on Segment 0 only
+onclick(60, 60, 1, 0, 0, 0, 1, 0);
+ondrag(60, 60, 0, 0, 0, 0, 1, 0);
+ondblclick(60, 60, 1, 0, 0, 0, 1, 0);
 let stS = getvalueof();
-assert.strictEqual(stS[9], 1, "Expected sCurve flag = 1 on first segment after Ctrl+click");
-const yMid = evalCurveAt(0.5);
-const yQ1 = evalCurveAt(0.25);
-const yQ3 = evalCurveAt(0.75);
-assert(Math.abs(yMid - 0.5) < 1e-6, `Expected S-curve midpoint 0.5, got ${yMid}`);
-assert(yQ1 > 0.30 && yQ3 < 0.70, "Expected symmetric S-curve inflection");
+assert.strictEqual(stS[9], 1, "Expected sCurve flag = 1 on Segment 0 after Double Alt-click");
+assert.strictEqual(stS[13], 0, "Expected Segment 1 sCurve flag to remain 0 (each curve uniquely configurable)");
+
+// Double Alt-click again on Segment 0 switches back to Exponential (sCurve=0)
+ondblclick(60, 60, 1, 0, 0, 0, 1, 0);
+assert.strictEqual(getvalueof()[9], 0, "Expected sCurve flag = 0 on Segment 0 after second Double Alt-click");
+
+// Double Alt-click on Segment 1 (right half, x=200) toggles S-Curve on Segment 1 only
+ondblclick(200, 60, 1, 0, 0, 0, 1, 0);
+let stS2 = getvalueof();
+assert.strictEqual(stS2[9], 0, "Expected Segment 0 sCurve flag to remain 0");
+assert.strictEqual(stS2[13], 1, "Expected Segment 1 sCurve flag = 1 after Double Alt-click on Segment 1");
+
+// Verify when only 1 node is selected, Alt-dragging Segment 0 curve leaves Segment 1 curve untouched
+const seg1CurveSingleBefore = getvalueof()[12];
+onclick(60, 60, 1, 0, 0, 0, 1, 0);
+ondrag(60, 35, 1, 0, 0, 0, 1, 0);
+ondrag(60, 35, 0, 0, 0, 0, 1, 0);
+assert.strictEqual(getvalueof()[12], seg1CurveSingleBefore, "Expected Alt+drag on Segment 0 with 1 node selected to leave Segment 1 curve untouched");
+
+// Verify when multiple nodes are selected (e.g., Cmd+A), Alt+drag adjusts the slope of EACH of their curves!
+onfocus();
+onkeydown(97, 97, 1, 1, 0, 0, 0, 0); // Cmd+A selects all 3 points
+const seg0CurveMultiBefore = getvalueof()[8];
+const seg1CurveMultiBefore = getvalueof()[12];
+onclick(60, 60, 1, 0, 0, 0, 1, 0);
+ondrag(60, 30, 1, 0, 0, 0, 1, 0);
+ondrag(60, 30, 0, 0, 0, 0, 1, 0);
+assert(Math.abs(getvalueof()[8] - seg0CurveMultiBefore) > 0.1, "Expected Segment 0 curve to adjust when multiple nodes are selected and Alt+drag is used");
+assert(Math.abs(getvalueof()[12] - seg1CurveMultiBefore) > 0.1, "Expected Segment 1 curve to also adjust when multiple nodes are selected and Alt+drag is used");
+
+// Test 2b: Randomize Ramps & Randomize Steps buttons and built-in Grid / Snap toolbar controls
+grid(8);
+applyToolbarAction("rnd_ramps");
+let stRamps = getvalueof();
+assert(stRamps[5] >= 4 && stRamps[5] <= 16, `Expected Randomize Ramps to create 2..8 ramps (4..16 points), got ${stRamps[5]}`);
+assert(stRamps[8] > 0.3, `Expected positive exponential decay curve on first ramp segment, got ${stRamps[8]}`);
+
+applyToolbarAction("rnd_steps");
+let stSteps = getvalueof();
+assert(stSteps[5] >= 4 && stSteps[5] <= 16, `Expected Randomize Steps to create 2..8 steps (4..16 points), got ${stSteps[5]}`);
+assert.strictEqual(stSteps[7], stSteps[11], "Expected flat horizontal step (y0 === y1) on first step segment");
+
+// Click built-in Snap button & Grid control in bottom-right of v8ui toolbar
+outletHistory0 = [];
+onclick(lay.w - 20, lay.toolbarY + 10, 1, 0, 0, 0, 0, 0);
+assert(outletHistory0.some(m => m[0] === "snap_sync"), "Expected clicking Snap button in v8ui toolbar to emit snap_sync");
+onclick(lay.w - 20, lay.toolbarY + 10, 1, 0, 0, 0, 0, 0); // restore snapEnabled = 1
+
+outletHistory0 = [];
+onclick(lay.toolbarW + 35, lay.toolbarY + 10, 1, 0, 0, 0, 0, 0);
+ondrag(lay.toolbarW + 35, lay.toolbarY + 10, 0, 0, 0, 0, 0, 0);
+assert(outletHistory0.some(m => m[0] === "grid_sync" && m[1] === 9), "Expected clicking Grid control in v8ui toolbar to increment grid to 9 and emit grid_sync");
+ondblclick(lay.toolbarW + 35, lay.toolbarY + 10, 1, 0, 0, 0, 0, 0);
+assert(outletHistory0.some(m => m[0] === "grid_sync" && m[1] === 8), "Expected double-clicking Grid control to reset grid to 8");
 
 // Test 3 (Regression Bug #1): Ramp Brush left-to-right drag across cells 0, 1, 2, 3 must NOT flatten earlier cells!
 applyToolbarAction("clear");
@@ -204,11 +264,11 @@ applyToolbarAction("clear");
 drawMode = 1;
 brushType = 4; // Freehand brush
 onclick(30, 50, 1, 0, 0, 0, 0, 0);
-for (let sx = 33; sx <= 270; sx += 3) {
+for (let sx = 33; sx <= 245; sx += 3) {
     let sy = 55 + Math.sin(sx * 0.05) * 25;
     ondrag(sx, sy, 1, 0, 0, 0, 0, 0);
 }
-ondrag(270, 55, 0, 0, 0, 0, 0, 0);
+ondrag(245, 55, 0, 0, 0, 0, 0, 0);
 let stFree = getvalueof();
 assert(stFree[5] >= 12, `Freehand brush only created ${stFree[5]} points across full drag; expected >= 12!`);
 drawMode = 0;

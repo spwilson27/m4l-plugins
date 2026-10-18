@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Renders a 2x Retina pixel-accurate visual preview of devices/Bitwig Shaper.amxd
+Renders a 2x Retina pixel-accurate visual preview of devices/Better Shaper.amxd
 by executing the embedded v8ui mgraphics paint() stream in Node.js and rendering
 all Max presentation_rect UI widgets and mgraphics vector paths/text to tests/preview.png.
 Also checks for any text overflow or widget overlap issues automatically.
@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PREVIEWS_DIR = os.path.join(ROOT_DIR, "previews")
-DEFAULT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Bitwig Shaper.amxd")
+DEFAULT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Better Shaper.amxd")
 
 SCALE = 2  # 2x Retina rendering
 
@@ -475,5 +475,5 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
 if __name__ == "__main__":
     target_amxd = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_AMXD_PATH
     render_device(target_amxd, multimap_open=False, out_suffix="")
-    if slugify_device_name(target_amxd) == "bitwig_shaper":
+    if slugify_device_name(target_amxd) == "better_shaper":
         render_device(target_amxd, multimap_open=True, out_suffix="_multimap")

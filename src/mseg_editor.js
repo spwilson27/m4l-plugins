@@ -195,27 +195,22 @@ let dragState = {
     strokePointIds: []
 };
 
-const TOOLBAR_ITEMS = [
-    { id: "undo",  label: "<",     title: "Undo (Cmd+Z)" },
-    { id: "redo",  label: ">",     title: "Redo (Cmd+Shift+Z)" },
-    { id: "draw",  label: "Draw",  title: "Paint / Step Brush Mode" },
-    { id: "brush", label: "Shape", title: "Brush Shape (Step/Ramp/Decay/Tri/Free)" },
-    { id: "scurve",label: "S-Crv", title: "Toggle S-Curve on Segment(s)" },
-    { id: "clear", label: "X",     title: "Delete Selected (Del) / Reset" },
-    { id: "decay", label: "Dec",   title: "Exp Decay" },
-    { id: "ramp",  label: "Rmp",   title: "Exp Ramp" },
-    { id: "sine",  label: "Sin",   title: "Sine" },
-    { id: "saw2",  label: "Saw",   title: "Double Saw" },
-    { id: "steps", label: "Stp",   title: "Steps" },
-    { id: "rnd",   label: "Rnd",   title: "Randomize" },
-    { id: "flipy", label: "FlipY", title: "Invert Vertically" },
-    { id: "flipx", label: "FlipX", title: "Reverse Horizontally" }
+var TOOLBAR_ITEMS = [
+    { id: "undo",      label: "<",     title: "Undo (Cmd+Z)" },
+    { id: "redo",      label: ">",     title: "Redo (Cmd+Shift+Z)" },
+    { id: "draw",      label: "Draw",  title: "Paint / Step Brush Mode" },
+    { id: "brush",     label: "Shape", title: "Brush Shape (Step/Ramp/Decay/Tri/Free)" },
+    { id: "sine",      label: "Sin",   title: "Sine" },
+    { id: "rnd_ramps", label: "RndR",  title: "Randomize Ramps (Grid Exp Decay Ramps)" },
+    { id: "rnd_steps", label: "RndS",  title: "Randomize Steps (Grid Stepped Values)" },
+    { id: "rnd",       label: "Rnd",   title: "Randomize Smooth Curve" },
+    { id: "flipx",     label: "FlipX", title: "Reverse Horizontally" }
 ];
 
 // Layout metrics
 function getLayout() {
     let sz = mgraphics.size;
-    let w = sz[0] || 318;
+    let w = sz[0] || 262;
     let h = sz[1] || 134;
     let loopBarH = 11;
     let toolbarH = 22;
@@ -225,7 +220,7 @@ function getLayout() {
     let plotY = loopBarH + padTop;
     let plotW = Math.max(20, w - padX * 2);
     let plotH = Math.max(20, h - toolbarH - plotY - padBot);
-    let toolbarW = Math.max(120, w - 104); // Reserve right 104px of bottom bar for Grid & Snap
+    let toolbarW = Math.max(108, w - 100); // Reserve right 100px of bottom bar for Grid & Snap
     return {
         w: w,
         h: h,
@@ -950,15 +945,90 @@ function applyToolbarAction(id) {
             { id: nextId++, x: 1.0,    y: 1.0, curve: 0.0,   sCurve: 0 }
         ];
         loopLink = 0;
-    } else if (id === "steps") {
+    } else if (id === "rnd_ramps") {
+        // Generate random exponential decay ramps quantized to grid (optionally spanning 1..3 grid steps)
         let n = Math.max(2, Math.min(16, gridX));
         let newPts = [];
-        for (let i = 0; i < n; i++) {
-            let x0 = i / n;
-            let x1 = (i + 1) / n;
-            let y = (i % 2 === 0) ? 1.0 : ((i % 4 === 1) ? 0.25 : 0.65);
-            newPts.push({ id: nextId++, x: (i === 0) ? 0.0 : (x0 + 0.001), y: y, curve: 0.0, sCurve: 0 });
-            newPts.push({ id: nextId++, x: (i === n - 1) ? 1.0 : (x1 - 0.001), y: y, curve: 0.0, sCurve: 0 });
+        let step = 0;
+        while (step < n) {
+            let remaining = n - step;
+            let rSpan = Math.random();
+            let spanSteps = (rSpan < 0.60) ? 1 : (rSpan < 0.85) ? 2 : 3;
+            if (spanSteps > remaining) spanSteps = remaining;
+            // Ensure at least 2 ramps when n >= 2
+            if (step === 0 && spanSteps === n && n >= 2) {
+                spanSteps = Math.max(1, n - 1);
+            }
+            let x0 = step / n;
+            let x1 = (step + spanSteps) / n;
+            let yPeak = 0.35 + Math.random() * 0.65;
+            if (snapEnabled) {
+                yPeak = Math.max(0.25, Math.round(yPeak * 8) / 8);
+            }
+            let yFloor = (Math.random() < 0.80) ? 0.0 : (Math.round(Math.random() * 2) / 8);
+            if (yFloor >= yPeak) yFloor = 0.0;
+            // Positive curve on a falling slope (yPeak -> yFloor) produces an exponential decay bow
+            let decayCurve = 0.38 + Math.random() * 0.42;
+
+            newPts.push({
+                id: nextId++,
+                x: (step === 0) ? 0.0 : (x0 + 0.001),
+                y: yPeak,
+                curve: decayCurve,
+                sCurve: 0
+            });
+            newPts.push({
+                id: nextId++,
+                x: (step + spanSteps === n) ? 1.0 : (x1 - 0.001),
+                y: yFloor,
+                curve: 0.0,
+                sCurve: 0
+            });
+            step += spanSteps;
+        }
+        points = newPts;
+        loopLink = 0;
+    } else if (id === "rnd_steps" || id === "steps") {
+        // Generate random stepped values quantized to grid (optionally continuing at same value across multiple grid steps)
+        let n = Math.max(2, Math.min(16, gridX));
+        let newPts = [];
+        let step = 0;
+        let lastY = -1.0;
+        while (step < n) {
+            let remaining = n - step;
+            let rSpan = Math.random();
+            let spanSteps = (rSpan < 0.55) ? 1 : (rSpan < 0.85) ? 2 : 3;
+            if (spanSteps > remaining) spanSteps = remaining;
+            if (step === 0 && spanSteps === n && n >= 2) {
+                spanSteps = Math.max(1, n - 1);
+            }
+            let x0 = step / n;
+            let x1 = (step + spanSteps) / n;
+            let yVal = Math.random();
+            if (snapEnabled) {
+                yVal = Math.round(yVal * 8) / 8;
+            }
+            if (Math.abs(yVal - lastY) < 0.08) {
+                yVal = (yVal + 0.375) % 1.0;
+                if (snapEnabled) yVal = Math.round(yVal * 8) / 8;
+            }
+            lastY = yVal;
+
+            newPts.push({
+                id: nextId++,
+                x: (step === 0) ? 0.0 : (x0 + 0.001),
+                y: yVal,
+                curve: 0.0,
+                sCurve: 0
+            });
+            newPts.push({
+                id: nextId++,
+                x: (step + spanSteps === n) ? 1.0 : (x1 - 0.001),
+                y: yVal,
+                curve: 0.0,
+                sCurve: 0
+            });
+            step += spanSteps;
         }
         points = newPts;
         loopLink = 0;
@@ -1038,10 +1108,13 @@ function getSelectionBounds(lay) {
 function hitTest(sx, sy, lay) {
     if (!lay) lay = getLayout();
 
-    // 1. Check bottom toolbar (left toolbarW portion; right 104px is reserved for Grid & Snap)
+    // 1. Check bottom toolbar (left toolbarW portion = icon buttons; right 104px = Grid & Snap controls)
     if (sy >= lay.toolbarY) {
         if (sx >= lay.toolbarW) {
-            return { type: "none", toolbarIndex: -1, pointId: null, segIndex: -1 };
+            if (sx >= lay.w - 48) {
+                return { type: "snap_btn", toolbarIndex: -1, pointId: null, segIndex: -1 };
+            }
+            return { type: "grid_ctl", toolbarIndex: -1, pointId: null, segIndex: -1 };
         }
         let itemW = lay.toolbarW / TOOLBAR_ITEMS.length;
         let idx = Math.floor(sx / itemW);
@@ -1235,9 +1308,18 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
     dragState.freeDir = 0;
     dragState.strokePointIds = [];
 
-    // 0. Ignore clicks in bottom-right Grid/Snap cutout
-    if (y >= lay.toolbarY && x >= lay.toolbarW) {
+    // 0. Bottom-right Grid & Snap controls rendered directly inside v8ui
+    if (hit.type === "snap_btn") {
         dragState.mode = "none";
+        snapEnabled = snapEnabled ? 0 : 1;
+        outlet(0, "snap_sync", snapEnabled);
+        mgraphics.redraw();
+        return;
+    }
+    if (hit.type === "grid_ctl") {
+        dragState.mode = "grid_drag";
+        dragState.startGridX = gridX;
+        dragState.gridDragged = false;
         return;
     }
 
@@ -1288,24 +1370,12 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         return;
     }
 
-    // 4. Right-click / Ctrl-click on segment or midpoint handle -> Toggle S-Curve!
-    if (ctrl && !opt && hit.segIndex >= 0 && hit.segIndex < points.length - 1) {
-        pushUndoState();
-        points[hit.segIndex].sCurve = points[hit.segIndex].sCurve ? 0 : 1;
-        if (points[hit.segIndex].sCurve && Math.abs(points[hit.segIndex].curve || 0.0) < 0.05) {
-            points[hit.segIndex].curve = 0.45;
-        }
-        dragState.mode = "none";
-        updateBufferAndNotify(true);
-        return;
-    }
-
-    // 5. Alt + Click / Drag or Midpoint Handle -> Tension curve adjustment
+    // 4. Alt + Click / Drag or Midpoint Handle -> Tension curve adjustment (single segment, or all selected segments when multiple nodes are selected)
     if (opt || hit.type === "midhandle") {
         let segIdx = hit.segIndex;
         if (segIdx >= 0 && segIdx < points.length - 1) {
-            pushUndoState();
             if (cmd) {
+                pushUndoState();
                 points[segIdx].curve = 0.0;
                 dragState.mode = "none";
                 updateBufferAndNotify(true);
@@ -1316,12 +1386,35 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
             dragState.startCurve = points[segIdx].curve || 0.0;
             let dySeg = points[segIdx + 1].y - points[segIdx].y;
             dragState.slopeSign = (dySeg >= 0.0) ? 1.0 : -1.0;
+            dragState.curveUndoPushed = false;
             dragState.multiCurves = {};
-            for (let i = 0; i < points.length - 1; i++) {
-                if (selectedIds.indexOf(points[i].id) !== -1 && selectedIds.indexOf(points[i + 1].id) !== -1) {
-                    dragState.multiCurves[points[i].id] = {
-                        curve: points[i].curve || 0.0,
-                        sign: (points[i + 1].y >= points[i].y) ? 1.0 : -1.0
+
+            if (selectedIds.length >= 2) {
+                let bothSelectedIndices = [];
+                for (let i = 0; i < points.length - 1; i++) {
+                    if ((points[i + 1].x - points[i].x) > 0.002 &&
+                        selectedIds.indexOf(points[i].id) !== -1 &&
+                        selectedIds.indexOf(points[i + 1].id) !== -1) {
+                        bothSelectedIndices.push(i);
+                    }
+                }
+                let targetIndices = (bothSelectedIndices.length >= 2) ? bothSelectedIndices : [];
+                if (targetIndices.length === 0) {
+                    for (let i = 0; i < points.length - 1; i++) {
+                        if ((points[i + 1].x - points[i].x) > 0.002 &&
+                            selectedIds.indexOf(points[i].id) !== -1) {
+                            targetIndices.push(i);
+                        }
+                    }
+                }
+                if (targetIndices.indexOf(segIdx) === -1) {
+                    targetIndices.push(segIdx);
+                }
+                for (let k = 0; k < targetIndices.length; k++) {
+                    let idx = targetIndices[k];
+                    dragState.multiCurves[points[idx].id] = {
+                        curve: points[idx].curve || 0.0,
+                        sign: (points[idx + 1].y >= points[idx].y) ? 1.0 : -1.0
                     };
                 }
             }
@@ -1393,6 +1486,16 @@ function ondrag(x, y, but, cmd, shift, caps, opt, ctrl) {
 
     // Handle mouse release
     if (but === 0) {
+        if (dragState.mode === "grid_drag") {
+            if (!dragState.gridDragged) {
+                let step = shift ? -1 : 1;
+                gridX = ((gridX - 1 + step + 16) % 16) + 1;
+                outlet(0, "grid_sync", gridX);
+            }
+            dragState.mode = "none";
+            mgraphics.redraw();
+            return;
+        }
         if (dragState.mode === "marquee_pending") {
             pushUndoState();
             let nx = snapValue(dragState.startNormX, gridX, shift);
@@ -1419,6 +1522,22 @@ function ondrag(x, y, but, cmd, shift, caps, opt, ctrl) {
         dragState.mode = "none";
         dragState.marqueeRect = null;
         mgraphics.redraw();
+        return;
+    }
+
+    // 0. Grid Value Vertical Dragging
+    if (dragState.mode === "grid_drag") {
+        let dy = dragState.startMouseY - y;
+        if (Math.abs(dy) >= 4) {
+            dragState.gridDragged = true;
+            let delta = Math.round(dy / 6.0);
+            let newGrid = Math.max(1, Math.min(16, (dragState.startGridX || 8) + delta));
+            if (newGrid !== gridX) {
+                gridX = newGrid;
+                outlet(0, "grid_sync", gridX);
+                mgraphics.redraw();
+            }
+        }
         return;
     }
 
@@ -1458,9 +1577,16 @@ function ondrag(x, y, but, cmd, shift, caps, opt, ctrl) {
         return;
     }
 
-    // 3. Curve Tension Dragging
+    // 3. Curve Tension Dragging (single segment, or all selected segments when multiple nodes are selected)
     if (dragState.mode === "curve") {
         let dy = dragState.startMouseY - y;
+        if (Math.abs(dy) < 0.5 && !dragState.curveUndoPushed) {
+            return;
+        }
+        if (!dragState.curveUndoPushed) {
+            pushUndoState();
+            dragState.curveUndoPushed = true;
+        }
         let sensitivity = shift ? 0.004 : 0.014;
         let deltaC = dy * sensitivity;
 
@@ -1472,13 +1598,8 @@ function ondrag(x, y, but, cmd, shift, caps, opt, ctrl) {
                     points[i].curve = Math.max(-0.98, Math.min(0.98, info.curve + deltaC * info.sign));
                 }
             }
-        } else {
-            for (let i = 0; i < points.length - 1; i++) {
-                if (i === dragState.segIndex) {
-                    points[i].curve = Math.max(-0.98, Math.min(0.98, dragState.startCurve + deltaC * dragState.slopeSign));
-                    break;
-                }
-            }
+        } else if (dragState.segIndex >= 0 && dragState.segIndex < points.length - 1) {
+            points[dragState.segIndex].curve = Math.max(-0.98, Math.min(0.98, dragState.startCurve + deltaC * dragState.slopeSign));
         }
         updateBufferAndNotify(false);
         return;
@@ -1649,8 +1770,28 @@ function ondblclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         return;
     }
 
-    // 1. Double-clicking a midpoint tension handle or Alt+double-clicking resets segment curve
-    if (hit.type === "midhandle" || (opt && hit.segIndex >= 0)) {
+    // 0b. Double-clicking Grid control resets gridX to 8
+    if (hit.type === "grid_ctl") {
+        gridX = 8;
+        outlet(0, "grid_sync", gridX);
+        mgraphics.redraw();
+        return;
+    }
+
+    // 1. Double Alt-clicking a curve segment toggles between Exponential (sCurve=0) and S-Curve (sCurve=1)
+    if (opt && hit.segIndex >= 0 && hit.segIndex < points.length - 1) {
+        pushUndoState();
+        let seg = points[hit.segIndex];
+        seg.sCurve = seg.sCurve ? 0 : 1;
+        if (Math.abs(seg.curve || 0.0) < 0.05) {
+            seg.curve = 0.45;
+        }
+        updateBufferAndNotify(true);
+        return;
+    }
+
+    // 1b. Double-clicking a midpoint tension handle (without Alt) resets segment curve to linear
+    if (!opt && hit.type === "midhandle") {
         if (hit.segIndex >= 0 && hit.segIndex < points.length - 1) {
             pushUndoState();
             points[hit.segIndex].curve = 0.0;
@@ -1816,13 +1957,22 @@ function drawMiniPresetIcon(id, x, y, w, h) {
         mgraphics.line_to(px + pw * 0.5, py + ph);
         mgraphics.line_to(px + pw, py + 1);
         mgraphics.stroke();
-    } else if (id === "steps") {
-        mgraphics.move_to(px, py + 2);
-        mgraphics.line_to(px + pw * 0.33, py + 2);
-        mgraphics.line_to(px + pw * 0.33, py + ph - 1);
-        mgraphics.line_to(px + pw * 0.66, py + ph - 1);
-        mgraphics.line_to(px + pw * 0.66, py + ph * 0.45);
-        mgraphics.line_to(px + pw, py + ph * 0.45);
+    } else if (id === "rnd_ramps") {
+        // Multi-decay-ramp icon (Curve_Shaper_4 style)
+        mgraphics.move_to(px, py + ph);
+        mgraphics.line_to(px, py + 1);
+        mgraphics.curve_to(px + pw * 0.12, py + ph * 0.85, px + pw * 0.32, py + ph, px + pw * 0.48, py + ph);
+        mgraphics.line_to(px + pw * 0.48, py + 2);
+        mgraphics.curve_to(px + pw * 0.62, py + ph * 0.85, px + pw * 0.82, py + ph, px + pw, py + ph);
+        mgraphics.stroke();
+    } else if (id === "rnd_steps" || id === "steps") {
+        // Random stepped bars icon
+        mgraphics.move_to(px, py + ph * 0.65);
+        mgraphics.line_to(px + pw * 0.30, py + ph * 0.65);
+        mgraphics.line_to(px + pw * 0.30, py + 1.5);
+        mgraphics.line_to(px + pw * 0.68, py + 1.5);
+        mgraphics.line_to(px + pw * 0.68, py + ph - 1);
+        mgraphics.line_to(px + pw, py + ph - 1);
         mgraphics.stroke();
     } else if (id === "rnd") {
         let r = 1.35;
@@ -1925,20 +2075,38 @@ function paint() {
         mgraphics.stroke();
     }
 
-    // 3. Grid Lines (X and Y)
+    // 3. Grid Split Lines (X and Y) - Crisp & clearly visible
     mgraphics.set_line_width(1.0);
     for (let i = 0; i <= gridX; i++) {
         let gx = lay.plotX + (i / gridX) * lay.plotW;
-        let isMajor = (i === 0 || i === gridX || (gridX >= 4 && i % 4 === 0));
-        mgraphics.set_source_rgba(1.0, 1.0, 1.0, isMajor ? 0.13 : 0.06);
+        let isOuter = (i === 0 || i === gridX);
+        let isMajor = isOuter || (gridX >= 4 && i % 4 === 0);
+        if (isOuter) {
+            mgraphics.set_source_rgba(0.55, 0.62, 0.70, 0.38);
+        } else if (isMajor) {
+            mgraphics.set_source_rgba(0.52, 0.60, 0.68, 0.32);
+        } else {
+            mgraphics.set_source_rgba(0.45, 0.53, 0.62, 0.22);
+        }
         mgraphics.move_to(gx, lay.plotY);
         mgraphics.line_to(gx, lay.plotY + lay.plotH);
         mgraphics.stroke();
+
+        // Subtle snap tick marks at top and bottom of grid lines when Snap is enabled
+        if (snapEnabled && !isOuter) {
+            mgraphics.set_source_rgba(1.0, 0.68, 0.22, 0.38);
+            mgraphics.move_to(gx, lay.plotY);
+            mgraphics.line_to(gx, lay.plotY + 3.5);
+            mgraphics.move_to(gx, lay.plotY + lay.plotH - 3.5);
+            mgraphics.line_to(gx, lay.plotY + lay.plotH);
+            mgraphics.stroke();
+        }
     }
     for (let j = 0; j <= gridY; j++) {
         let gy = lay.plotY + (j / gridY) * lay.plotH;
         let isCenter = (j * 2 === gridY);
-        mgraphics.set_source_rgba(1.0, 1.0, 1.0, isCenter ? 0.16 : 0.06);
+        let isOuter = (j === 0 || j === gridY);
+        mgraphics.set_source_rgba(0.52, 0.60, 0.68, isCenter ? 0.34 : (isOuter ? 0.36 : 0.18));
         mgraphics.move_to(lay.plotX, gy);
         mgraphics.line_to(lay.plotX + lay.plotW, gy);
         mgraphics.stroke();
@@ -2117,6 +2285,10 @@ function paint() {
             } else {
                 hudText = item.title;
             }
+        } else if (hoverInfo.type === "grid_ctl" || dragState.mode === "grid_drag") {
+            hudText = "Grid: " + gridX + " (Drag / Click)";
+        } else if (hoverInfo.type === "snap_btn") {
+            hudText = "Snap to Grid: " + (snapEnabled ? "On" : "Off");
         } else if (dragState.mode === "loop_start" || dragState.mode === "loop_end" || dragState.mode === "loop_move") {
             hudText = "Loop: " + Math.round(loopStart * 100) + "-" + Math.round(loopEnd * 100) + "%";
         } else if (dragState.mode === "curve") {
@@ -2200,10 +2372,65 @@ function paint() {
         drawMiniPresetIcon(item.id, ix, lay.toolbarY, itemW, lay.toolbarH);
     }
     // Divider before Grid & Snap area
-    mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.1);
+    mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.12);
     mgraphics.move_to(lay.toolbarW, lay.toolbarY + 2);
     mgraphics.line_to(lay.toolbarW, lay.toolbarY + lay.toolbarH - 2);
     mgraphics.stroke();
+
+    // Render Grid & Snap controls directly on the v8ui toolbar so they are always visible in Live
+    let gxLbl = lay.toolbarW + 5;
+    let gyBtn = lay.toolbarY + 3;
+    let ghBtn = lay.toolbarH - 6;
+
+    // "Grid" label + value box
+    mgraphics.select_font_face("Ableton Sans Medium");
+    mgraphics.set_font_size(9.0);
+    mgraphics.set_source_rgba(0.62, 0.67, 0.72, 0.95);
+    mgraphics.move_to(gxLbl, lay.toolbarY + 14.5);
+    mgraphics.show_text("Grid");
+
+    let gBoxX = gxLbl + 24;
+    let gBoxW = 24;
+    let isGridHov = (hoverInfo.type === "grid_ctl" || dragState.mode === "grid_drag");
+    mgraphics.set_source_rgba(0.05, 0.065, 0.085, 1.0);
+    mgraphics.rectangle_rounded(gBoxX, gyBtn, gBoxW, ghBtn, 2, 2);
+    mgraphics.fill_preserve();
+    mgraphics.set_line_width(1.0);
+    mgraphics.set_source_rgba(isGridHov ? 1.0 : 0.35, isGridHov ? 0.68 : 0.40, isGridHov ? 0.22 : 0.46, 0.85);
+    mgraphics.stroke();
+
+    mgraphics.select_font_face("Ableton Sans Bold");
+    mgraphics.set_font_size(9.5);
+    mgraphics.set_source_rgba(1.0, 0.68, 0.22, 1.0);
+    let gStr = String(gridX);
+    let gOffset = (gStr.length > 1) ? 5.5 : 8.5;
+    mgraphics.move_to(gBoxX + gOffset, lay.toolbarY + 14.5);
+    mgraphics.show_text(gStr);
+
+    // "Snap" button
+    let sBoxX = gBoxX + gBoxW + 5;
+    let sBoxW = Math.max(36, lay.w - sBoxX - 4);
+    let isSnapHov = (hoverInfo.type === "snap_btn");
+    if (snapEnabled) {
+        mgraphics.set_source_rgba(1.0, 0.68, 0.22, isSnapHov ? 1.0 : 0.94);
+    } else {
+        mgraphics.set_source_rgba(0.067, 0.086, 0.11, 1.0);
+    }
+    mgraphics.rectangle_rounded(sBoxX, gyBtn, sBoxW, ghBtn, 2, 2);
+    mgraphics.fill_preserve();
+    mgraphics.set_line_width(1.0);
+    mgraphics.set_source_rgba(1.0, 0.68, 0.22, snapEnabled ? 1.0 : 0.55);
+    mgraphics.stroke();
+
+    mgraphics.select_font_face("Ableton Sans Bold");
+    mgraphics.set_font_size(9.0);
+    if (snapEnabled) {
+        mgraphics.set_source_rgba(0.05, 0.065, 0.085, 1.0);
+    } else {
+        mgraphics.set_source_rgba(0.78, 0.82, 0.86, 0.95);
+    }
+    mgraphics.move_to(sBoxX + 12, lay.toolbarY + 14.5);
+    mgraphics.show_text("Snap");
 
     // 14. Subtle Keyboard Focus Border
     if (hasFocus) {

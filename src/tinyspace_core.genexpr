@@ -1,0 +1,471 @@
+// Tiny Space — 20-line feedback delay network.
+// Config buffer (buffer~ #0-tsconfig), indices match src/tinyspace_config.js:
+//   0 activeCount, 1 character,
+//   2..5 allpass lengths (ms), 6..9 allpass gains,
+//   10..29 nominal delay (ms), 30..49 damp offset, 50..69 mod Hz.
+// Meter buffer (buffer~ #0-tsmeters) is one envelope per line.
+// GenExpr rejects the old delay operator. Each line is declared with Delay, then written
+// and read as a tap. Tank lines are 16384 samples (~170 ms at 96 kHz); pre-delay
+// lines are 65536 samples. Read times are clamped inside those lengths.
+// Full feedback holds a line to about -60 dB in 18 seconds (see ringGain).
+// The coefficient depends on that line's delay so short combs do not die
+// in a fraction of a second. It is clipped just under 1, so the tail ends.
+// GenExpr requires every function to appear before Buffer, Param, and assignments.
+
+slew(target, coef) {
+	History s(0);
+	History init(0);
+	s = (init == 0) ? target : mix(target, s, coef);
+	init = 1;
+	return s;
+}
+
+lfo(hz) {
+	History ph(0);
+	ph = wrap(ph + hz / samplerate, 0, 1);
+	return sin(ph * 6.283185307179586);
+}
+
+lp(x, coef) {
+	History s(0);
+	s = mix(x, s, coef);
+	return s;
+}
+
+hp(x, coef) {
+	History s(0);
+	s = mix(x, s, coef);
+	return x - s;
+}
+
+// Schroeder allpass. Delay holds the samples; History holds the previous tap
+// so the feedback coefficient is applied to a delayed sample.
+// g near 0 (comb seeds) is a short delay of about t samples.
+allpass(x, t, g) {
+	Delay line(4096);
+	History mem(0);
+	y = -g * x + mem;
+	line.write(x + g * y);
+	mem = line.read(clip(t, 1, 4000), interp="linear");
+	return y;
+}
+
+lineTime(lenMs, lfoVal, sizeNow, modNow) {
+	sc = 0.22 + clip(sizeNow, 0, 1) * 1.93;
+	base = clip(lenMs * sc * samplerate / 1000, 1, 16000);
+	depth = min(base * 0.28, samplerate * 0.0012) * clip(modNow, 0, 1);
+	return clip(base + lfoVal * depth, 1, 16000);
+}
+
+follow(x) {
+	History s(0);
+	ax = abs(x);
+	s = mix(ax, s, (ax > s) ? 0.45 : 0.992);
+	return s;
+}
+
+// fbk 1 reaches about -60 dB after 18 seconds. fbk 0 does not recirculate.
+ringGain(delaySamps, fbkNow) {
+	rt = clip(fbkNow, 0, 1) * 18;
+	if (rt < 0.05) return 0;
+	secs = max(delaySamps, 1) / samplerate;
+	g = exp(-6.90775527898 * secs / rt);
+	return clip(g, 0, 0.99999);
+}
+
+// Parallel combs (character 0) blended into a per-side Householder mix (character 1).
+house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, character) {
+	sum = o0 + o1 + o2 + o3 + o4 + o5 + o6 + o7 + o8 + o9;
+	k = 2 / max(n, 1);
+	m0 = (0 < n) ? mix(o0, o0 - sum * k, character) : 0;
+	m1 = (1 < n) ? mix(o1, o1 - sum * k, character) : 0;
+	m2 = (2 < n) ? mix(o2, o2 - sum * k, character) : 0;
+	m3 = (3 < n) ? mix(o3, o3 - sum * k, character) : 0;
+	m4 = (4 < n) ? mix(o4, o4 - sum * k, character) : 0;
+	m5 = (5 < n) ? mix(o5, o5 - sum * k, character) : 0;
+	m6 = (6 < n) ? mix(o6, o6 - sum * k, character) : 0;
+	m7 = (7 < n) ? mix(o7, o7 - sum * k, character) : 0;
+	m8 = (8 < n) ? mix(o8, o8 - sum * k, character) : 0;
+	m9 = (9 < n) ? mix(o9, o9 - sum * k, character) : 0;
+	return m0, m1, m2, m3, m4, m5, m6, m7, m8, m9;
+}
+
+Buffer cfg("tsconfig");
+Buffer meters("tsmeters");
+
+Param size(0.45);
+Param damp(0.2);
+Param width(0.7);
+Param wet(0.35);
+Param fbk(0.4);
+Param predly(0);
+Param modamt(0.15);
+Param xfeed(0.25);
+Param hp(40);
+Param lp(14000);
+Param duck(1);
+History tick(0);
+History o0(0);
+History o1(0);
+History o2(0);
+History o3(0);
+History o4(0);
+History o5(0);
+History o6(0);
+History o7(0);
+History o8(0);
+History o9(0);
+History o10(0);
+History o11(0);
+History o12(0);
+History o13(0);
+History o14(0);
+History o15(0);
+History o16(0);
+History o17(0);
+History o18(0);
+History o19(0);
+Delay preDL(65536);
+Delay preDR(65536);
+Delay del0(16384);
+Delay del1(16384);
+Delay del2(16384);
+Delay del3(16384);
+Delay del4(16384);
+Delay del5(16384);
+Delay del6(16384);
+Delay del7(16384);
+Delay del8(16384);
+Delay del9(16384);
+Delay del10(16384);
+Delay del11(16384);
+Delay del12(16384);
+Delay del13(16384);
+Delay del14(16384);
+Delay del15(16384);
+Delay del16(16384);
+Delay del17(16384);
+Delay del18(16384);
+Delay del19(16384);
+
+sizeS = slew(size, 0.9992);
+dampS = slew(damp, 0.9992);
+widthS = slew(width, 0.9992);
+wetS = slew(wet, 0.9992);
+fbkS = slew(fbk, 0.9992);
+predlyS = slew(predly, 0.9992);
+modS = slew(modamt, 0.9992);
+xfeedS = slew(xfeed, 0.9992);
+hpS = slew(hp, 0.9992);
+lpS = slew(lp, 0.9992);
+
+activeCount = peek(cfg, 0);
+character = clip(peek(cfg, 1), 0, 1);
+nL = activeCount * 0.5;
+nR = nL;
+sr = max(samplerate, 1);
+duckG = clip(duck, 0, 1);
+
+preSamps = clip(predlyS, 0, 250) * sr / 1000;
+preSamps = clip(preSamps, 0, 48000);
+preDL.write(in1);
+preDR.write(in2);
+preL = preDL.read(preSamps, interp="linear");
+preR = preDR.read(preSamps, interp="linear");
+
+lpCoef = exp(-6.28318530718 * clip(lpS, 400, 18000) / sr);
+hpCoef = exp(-6.28318530718 * clip(hpS, 20, 4000) / sr);
+toneL = hp(lp(preL, lpCoef), hpCoef);
+toneR = hp(lp(preR, lpCoef), hpCoef);
+
+apT0 = clip(peek(cfg, 2) * sr / 1000, 1, sr * 0.02);
+apT1 = clip(peek(cfg, 3) * sr / 1000, 1, sr * 0.02);
+apT2 = clip(peek(cfg, 4) * sr / 1000, 1, sr * 0.02);
+apT3 = clip(peek(cfg, 5) * sr / 1000, 1, sr * 0.02);
+apG0 = clip(peek(cfg, 6), 0, 0.7);
+apG1 = clip(peek(cfg, 7), 0, 0.7);
+apG2 = clip(peek(cfg, 8), 0, 0.7);
+apG3 = clip(peek(cfg, 9), 0, 0.7);
+aL = allpass(toneL, apT0, apG0);
+aL = allpass(aL, apT1, apG1);
+aL = allpass(aL, apT2, apG2);
+aL = allpass(aL, apT3, apG3);
+aR = allpass(toneR, apT0, apG0);
+aR = allpass(aR, apT1, apG1);
+aR = allpass(aR, apT2, apG2);
+aR = allpass(aR, apT3, apG3);
+
+invL = 1 / sqrt(max(nL, 1));
+invR = 1 / sqrt(max(nR, 1));
+injL = aL * invL;
+injR = aR * invR;
+
+lfo0 = lfo(peek(cfg, 50));
+lfo1 = lfo(peek(cfg, 51));
+lfo2 = lfo(peek(cfg, 52));
+lfo3 = lfo(peek(cfg, 53));
+lfo4 = lfo(peek(cfg, 54));
+lfo5 = lfo(peek(cfg, 55));
+lfo6 = lfo(peek(cfg, 56));
+lfo7 = lfo(peek(cfg, 57));
+lfo8 = lfo(peek(cfg, 58));
+lfo9 = lfo(peek(cfg, 59));
+lfo10 = lfo(peek(cfg, 60));
+lfo11 = lfo(peek(cfg, 61));
+lfo12 = lfo(peek(cfg, 62));
+lfo13 = lfo(peek(cfg, 63));
+lfo14 = lfo(peek(cfg, 64));
+lfo15 = lfo(peek(cfg, 65));
+lfo16 = lfo(peek(cfg, 66));
+lfo17 = lfo(peek(cfg, 67));
+lfo18 = lfo(peek(cfg, 68));
+lfo19 = lfo(peek(cfg, 69));
+
+t0 = lineTime(peek(cfg, 10), lfo0, sizeS, modS);
+t1 = lineTime(peek(cfg, 11), lfo1, sizeS, modS);
+t2 = lineTime(peek(cfg, 12), lfo2, sizeS, modS);
+t3 = lineTime(peek(cfg, 13), lfo3, sizeS, modS);
+t4 = lineTime(peek(cfg, 14), lfo4, sizeS, modS);
+t5 = lineTime(peek(cfg, 15), lfo5, sizeS, modS);
+t6 = lineTime(peek(cfg, 16), lfo6, sizeS, modS);
+t7 = lineTime(peek(cfg, 17), lfo7, sizeS, modS);
+t8 = lineTime(peek(cfg, 18), lfo8, sizeS, modS);
+t9 = lineTime(peek(cfg, 19), lfo9, sizeS, modS);
+t10 = lineTime(peek(cfg, 20), lfo10, sizeS, modS);
+t11 = lineTime(peek(cfg, 21), lfo11, sizeS, modS);
+t12 = lineTime(peek(cfg, 22), lfo12, sizeS, modS);
+t13 = lineTime(peek(cfg, 23), lfo13, sizeS, modS);
+t14 = lineTime(peek(cfg, 24), lfo14, sizeS, modS);
+t15 = lineTime(peek(cfg, 25), lfo15, sizeS, modS);
+t16 = lineTime(peek(cfg, 26), lfo16, sizeS, modS);
+t17 = lineTime(peek(cfg, 27), lfo17, sizeS, modS);
+t18 = lineTime(peek(cfg, 28), lfo18, sizeS, modS);
+t19 = lineTime(peek(cfg, 29), lfo19, sizeS, modS);
+
+m0, m1, m2, m3, m4, m5, m6, m7, m8, m9 = house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, nL, character);
+m10, m11, m12, m13, m14, m15, m16, m17, m18, m19 = house(o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, nR, character);
+
+xf = clip(xfeedS, 0, 1);
+x0 = m0 * (1 - xf) + m10 * xf;
+x1 = m1 * (1 - xf) + m11 * xf;
+x2 = m2 * (1 - xf) + m12 * xf;
+x3 = m3 * (1 - xf) + m13 * xf;
+x4 = m4 * (1 - xf) + m14 * xf;
+x5 = m5 * (1 - xf) + m15 * xf;
+x6 = m6 * (1 - xf) + m16 * xf;
+x7 = m7 * (1 - xf) + m17 * xf;
+x8 = m8 * (1 - xf) + m18 * xf;
+x9 = m9 * (1 - xf) + m19 * xf;
+x10 = m10 * (1 - xf) + m0 * xf;
+x11 = m11 * (1 - xf) + m1 * xf;
+x12 = m12 * (1 - xf) + m2 * xf;
+x13 = m13 * (1 - xf) + m3 * xf;
+x14 = m14 * (1 - xf) + m4 * xf;
+x15 = m15 * (1 - xf) + m5 * xf;
+x16 = m16 * (1 - xf) + m6 * xf;
+x17 = m17 * (1 - xf) + m7 * xf;
+x18 = m18 * (1 - xf) + m8 * xf;
+x19 = m19 * (1 - xf) + m9 * xf;
+
+c0 = clip(dampS * 0.92 + peek(cfg, 30) * 0.35, 0, 0.995);
+c1 = clip(dampS * 0.92 + peek(cfg, 31) * 0.35, 0, 0.995);
+c2 = clip(dampS * 0.92 + peek(cfg, 32) * 0.35, 0, 0.995);
+c3 = clip(dampS * 0.92 + peek(cfg, 33) * 0.35, 0, 0.995);
+c4 = clip(dampS * 0.92 + peek(cfg, 34) * 0.35, 0, 0.995);
+c5 = clip(dampS * 0.92 + peek(cfg, 35) * 0.35, 0, 0.995);
+c6 = clip(dampS * 0.92 + peek(cfg, 36) * 0.35, 0, 0.995);
+c7 = clip(dampS * 0.92 + peek(cfg, 37) * 0.35, 0, 0.995);
+c8 = clip(dampS * 0.92 + peek(cfg, 38) * 0.35, 0, 0.995);
+c9 = clip(dampS * 0.92 + peek(cfg, 39) * 0.35, 0, 0.995);
+c10 = clip(dampS * 0.92 + peek(cfg, 40) * 0.35, 0, 0.995);
+c11 = clip(dampS * 0.92 + peek(cfg, 41) * 0.35, 0, 0.995);
+c12 = clip(dampS * 0.92 + peek(cfg, 42) * 0.35, 0, 0.995);
+c13 = clip(dampS * 0.92 + peek(cfg, 43) * 0.35, 0, 0.995);
+c14 = clip(dampS * 0.92 + peek(cfg, 44) * 0.35, 0, 0.995);
+c15 = clip(dampS * 0.92 + peek(cfg, 45) * 0.35, 0, 0.995);
+c16 = clip(dampS * 0.92 + peek(cfg, 46) * 0.35, 0, 0.995);
+c17 = clip(dampS * 0.92 + peek(cfg, 47) * 0.35, 0, 0.995);
+c18 = clip(dampS * 0.92 + peek(cfg, 48) * 0.35, 0, 0.995);
+c19 = clip(dampS * 0.92 + peek(cfg, 49) * 0.35, 0, 0.995);
+
+d0 = lp(x0, c0);
+d1 = lp(x1, c1);
+d2 = lp(x2, c2);
+d3 = lp(x3, c3);
+d4 = lp(x4, c4);
+d5 = lp(x5, c5);
+d6 = lp(x6, c6);
+d7 = lp(x7, c7);
+d8 = lp(x8, c8);
+d9 = lp(x9, c9);
+d10 = lp(x10, c10);
+d11 = lp(x11, c11);
+d12 = lp(x12, c12);
+d13 = lp(x13, c13);
+d14 = lp(x14, c14);
+d15 = lp(x15, c15);
+d16 = lp(x16, c16);
+d17 = lp(x17, c17);
+d18 = lp(x18, c18);
+d19 = lp(x19, c19);
+
+a0 = (0 < nL) ? 1 : 0;
+a1 = (1 < nL) ? 1 : 0;
+a2 = (2 < nL) ? 1 : 0;
+a3 = (3 < nL) ? 1 : 0;
+a4 = (4 < nL) ? 1 : 0;
+a5 = (5 < nL) ? 1 : 0;
+a6 = (6 < nL) ? 1 : 0;
+a7 = (7 < nL) ? 1 : 0;
+a8 = (8 < nL) ? 1 : 0;
+a9 = (9 < nL) ? 1 : 0;
+a10 = (0 < nR) ? 1 : 0;
+a11 = (1 < nR) ? 1 : 0;
+a12 = (2 < nR) ? 1 : 0;
+a13 = (3 < nR) ? 1 : 0;
+a14 = (4 < nR) ? 1 : 0;
+a15 = (5 < nR) ? 1 : 0;
+a16 = (6 < nR) ? 1 : 0;
+a17 = (7 < nR) ? 1 : 0;
+a18 = (8 < nR) ? 1 : 0;
+a19 = (9 < nR) ? 1 : 0;
+
+// Per-line loop gain. Short lines need a higher coefficient to ring as long.
+g0 = ringGain(t0, fbkS);
+z0 = a0 * (tanh(d0) * g0 * duckG + injL);
+g1 = ringGain(t1, fbkS);
+z1 = a1 * (tanh(d1) * g1 * duckG + injL);
+g2 = ringGain(t2, fbkS);
+z2 = a2 * (tanh(d2) * g2 * duckG + injL);
+g3 = ringGain(t3, fbkS);
+z3 = a3 * (tanh(d3) * g3 * duckG + injL);
+g4 = ringGain(t4, fbkS);
+z4 = a4 * (tanh(d4) * g4 * duckG + injL);
+g5 = ringGain(t5, fbkS);
+z5 = a5 * (tanh(d5) * g5 * duckG + injL);
+g6 = ringGain(t6, fbkS);
+z6 = a6 * (tanh(d6) * g6 * duckG + injL);
+g7 = ringGain(t7, fbkS);
+z7 = a7 * (tanh(d7) * g7 * duckG + injL);
+g8 = ringGain(t8, fbkS);
+z8 = a8 * (tanh(d8) * g8 * duckG + injL);
+g9 = ringGain(t9, fbkS);
+z9 = a9 * (tanh(d9) * g9 * duckG + injL);
+g10 = ringGain(t10, fbkS);
+z10 = a10 * (tanh(d10) * g10 * duckG + injR);
+g11 = ringGain(t11, fbkS);
+z11 = a11 * (tanh(d11) * g11 * duckG + injR);
+g12 = ringGain(t12, fbkS);
+z12 = a12 * (tanh(d12) * g12 * duckG + injR);
+g13 = ringGain(t13, fbkS);
+z13 = a13 * (tanh(d13) * g13 * duckG + injR);
+g14 = ringGain(t14, fbkS);
+z14 = a14 * (tanh(d14) * g14 * duckG + injR);
+g15 = ringGain(t15, fbkS);
+z15 = a15 * (tanh(d15) * g15 * duckG + injR);
+g16 = ringGain(t16, fbkS);
+z16 = a16 * (tanh(d16) * g16 * duckG + injR);
+g17 = ringGain(t17, fbkS);
+z17 = a17 * (tanh(d17) * g17 * duckG + injR);
+g18 = ringGain(t18, fbkS);
+z18 = a18 * (tanh(d18) * g18 * duckG + injR);
+g19 = ringGain(t19, fbkS);
+z19 = a19 * (tanh(d19) * g19 * duckG + injR);
+
+del0.write(z0);
+del1.write(z1);
+del2.write(z2);
+del3.write(z3);
+del4.write(z4);
+del5.write(z5);
+del6.write(z6);
+del7.write(z7);
+del8.write(z8);
+del9.write(z9);
+del10.write(z10);
+del11.write(z11);
+del12.write(z12);
+del13.write(z13);
+del14.write(z14);
+del15.write(z15);
+del16.write(z16);
+del17.write(z17);
+del18.write(z18);
+del19.write(z19);
+o0 = del0.read(t0, interp="linear") * a0;
+o1 = del1.read(t1, interp="linear") * a1;
+o2 = del2.read(t2, interp="linear") * a2;
+o3 = del3.read(t3, interp="linear") * a3;
+o4 = del4.read(t4, interp="linear") * a4;
+o5 = del5.read(t5, interp="linear") * a5;
+o6 = del6.read(t6, interp="linear") * a6;
+o7 = del7.read(t7, interp="linear") * a7;
+o8 = del8.read(t8, interp="linear") * a8;
+o9 = del9.read(t9, interp="linear") * a9;
+o10 = del10.read(t10, interp="linear") * a10;
+o11 = del11.read(t11, interp="linear") * a11;
+o12 = del12.read(t12, interp="linear") * a12;
+o13 = del13.read(t13, interp="linear") * a13;
+o14 = del14.read(t14, interp="linear") * a14;
+o15 = del15.read(t15, interp="linear") * a15;
+o16 = del16.read(t16, interp="linear") * a16;
+o17 = del17.read(t17, interp="linear") * a17;
+o18 = del18.read(t18, interp="linear") * a18;
+o19 = del19.read(t19, interp="linear") * a19;
+
+env0 = follow(o0);
+env1 = follow(o1);
+env2 = follow(o2);
+env3 = follow(o3);
+env4 = follow(o4);
+env5 = follow(o5);
+env6 = follow(o6);
+env7 = follow(o7);
+env8 = follow(o8);
+env9 = follow(o9);
+env10 = follow(o10);
+env11 = follow(o11);
+env12 = follow(o12);
+env13 = follow(o13);
+env14 = follow(o14);
+env15 = follow(o15);
+env16 = follow(o16);
+env17 = follow(o17);
+env18 = follow(o18);
+env19 = follow(o19);
+
+tick = wrap(tick + 1, 0, 32);
+if (tick == 0) {
+	poke(meters, env0, 0, 0);
+	poke(meters, env1, 1, 0);
+	poke(meters, env2, 2, 0);
+	poke(meters, env3, 3, 0);
+	poke(meters, env4, 4, 0);
+	poke(meters, env5, 5, 0);
+	poke(meters, env6, 6, 0);
+	poke(meters, env7, 7, 0);
+	poke(meters, env8, 8, 0);
+	poke(meters, env9, 9, 0);
+	poke(meters, env10, 10, 0);
+	poke(meters, env11, 11, 0);
+	poke(meters, env12, 12, 0);
+	poke(meters, env13, 13, 0);
+	poke(meters, env14, 14, 0);
+	poke(meters, env15, 15, 0);
+	poke(meters, env16, 16, 0);
+	poke(meters, env17, 17, 0);
+	poke(meters, env18, 18, 0);
+	poke(meters, env19, 19, 0);
+}
+
+sumL = (o0 + o1 + o2 + o3 + o4 + o5 + o6 + o7 + o8 + o9) * invL;
+sumR = (o10 + o11 + o12 + o13 + o14 + o15 + o16 + o17 + o18 + o19) * invR;
+mid = (sumL + sumR) * 0.5;
+side = (sumL - sumR) * 0.5 * clip(widthS, 0, 1);
+wetL = (mid + side) * duckG;
+wetR = (mid - side) * duckG;
+ang = clip(wetS, 0, 1) * 1.57079632679;
+dryG = cos(ang);
+wetG = sin(ang);
+out1 = fixnan(in1 * dryG + wetL * wetG);
+out2 = fixnan(in2 * dryG + wetR * wetG);

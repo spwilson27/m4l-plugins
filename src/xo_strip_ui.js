@@ -55,7 +55,8 @@ const TOOLBAR_ITEMS = [
   { id: "cat_fx",     title: "Filter: FX / Other" },
   { id: "sim_prev",   title: "Prev Similar Sample" },
   { id: "sim_next",   title: "Next Similar Sample" },
-  { id: "random",     title: "Random Sample" }
+  { id: "random",     title: "Random Sample" },
+  { id: "reseed",     title: "Re-Seed Map Subset (1500 max)" }
 ];
 
 let points = [];
@@ -63,8 +64,9 @@ let selectedIndex = 0;
 let anchorIndex = 0;
 let hoveredIndex = -1;
 let hoveredToolbarIndex = -1;
-let hoveredZoneTitle = "";
 let lastArmedZoneKey = "";
+let lastHotkeySaveMs = 0;
+let lastHotkeyDelMs = 0;
 
 // Active Audition Filters (maxLenMs >= 4990 or Infinity = Infinite)
 let activeCategory = "ALL";
@@ -107,6 +109,9 @@ let scrollbarDrag = false;
 let undoStack = [];
 let redoStack = [];
 const MAX_UNDO = 64;
+let localSeed = 1;
+let simTourCache = [];
+let simTourKey = "";
 
 function initDefaultConstellation() {
   points = [];
@@ -471,6 +476,7 @@ function getSavedScrollOffset() {
 // ============================================================================
 
 function save_selected() {
+  lastHotkeySaveMs = Date.now();
   pushUndoState();
   const pt = points[selectedIndex] || { name: selectedMeta.name, catIdx: selectedMeta.catIdx, category: selectedMeta.category, durationMs: selectedMeta.durationMs };
   const entry = {
@@ -489,7 +495,7 @@ function save_selected() {
     savedScrollOffset = selectedSavedIndex - lay.savedMaxRows + 1;
   }
   clampSavedScroll();
-  outlet(0, "save_selected");
+  outlet(0, "save_selected", selectedIndex, entry.name, entry.catIdx, pitchSt, decayMs, gainDb);
   notifyclients();
   mgraphics.redraw();
   return entry;
@@ -553,6 +559,22 @@ function removeSavedEntry(savedIdx) {
   mgraphics.redraw();
 }
 
+function hotkey_save() {
+  const now = Date.now();
+  if (now - lastHotkeySaveMs < 200) return null;
+  lastHotkeySaveMs = now;
+  return save_selected();
+}
+
+function delete_selected_saved() {
+  const now = Date.now();
+  if (now - lastHotkeyDelMs < 200) return;
+  lastHotkeyDelMs = now;
+  if (selectedSavedIndex >= 0 && selectedSavedIndex < savedList.length) {
+    removeSavedEntry(selectedSavedIndex);
+  }
+}
+
 function clearSavedList() {
   pushUndoState();
   savedList = [];
@@ -581,16 +603,23 @@ function startDragOut(mode, savedIdx, x, y) {
 }
 
 function key(k) {
-  // 's' (115) or 'S' (83) hotkey saves the currently selected sample with its playback settings
   if (k === 115 || k === 83 || k === "s" || k === "S") {
-    save_selected();
+    hotkey_save();
     return;
   }
-  // Delete (127, -5, "Delete") or Backspace (8, -3, "Backspace") removes selected saved item
   if (k === 127 || k === 8 || k === -5 || k === -3 || k === "Delete" || k === "Backspace") {
-    if (selectedSavedIndex >= 0 && selectedSavedIndex < savedList.length) {
-      removeSavedEntry(selectedSavedIndex);
-    }
+    delete_selected_saved();
+  }
+}
+
+function onkeydown(k) {
+  key(k);
+}
+
+function onwheel(x, y, dx, dy) {
+  const lay = getLayout();
+  if (x >= lay.savedX && savedList.length > lay.savedMaxRows) {
+    scrollSavedList(dy < 0 ? 1 : -1);
   }
 }
 
@@ -624,38 +653,84 @@ function applyToolbarAction(actionId) {
     if (vis.length > 0) {
       selectedIndex = vis[Math.floor(Math.random() * vis.length)];
       anchorIndex = selectedIndex;
+      simTourKey = "";
       playheadPos = 0.0;
       outlet(0, "select_index", selectedIndex, 1);
     }
+  } else if (actionId === "reseed") {
+    localSeed = (localSeed + 1) >>> 0;
+    simTourKey = "";
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      const h = Math.sin((i + 1) * 12.9898 + localSeed * 78.233) * 43758.5453;
+      const frac = h - Math.floor(h);
+      const ang = (p.catIdx / CAT_ID_LIST.length) * Math.PI * 2 - Math.PI * 0.72 + (frac - 0.5) * 0.55;
+      const rad = 0.16 + ((frac * 17) % 1.0) * 0.28;
+      p.x = Math.max(0.04, Math.min(0.96, 0.5 + Math.cos(ang) * rad));
+      p.y = Math.max(0.06, Math.min(0.94, 0.5 + Math.sin(ang) * rad));
+    }
+    outlet(0, "reseed_map");
   }
   notifyclients();
   mgraphics.redraw();
 }
 
-function stepLocalNeighbor(dir) {
-  const rawNbrs = (selectedMeta && selectedMeta.neighbors && selectedMeta.neighbors.length > 0)
-    ? selectedMeta.neighbors
-    : [];
-  const validNbrs = rawNbrs.filter((idx) => idx >= 0 && idx < points.length && isPointVisible(points[idx]));
-  const pool = [];
-  if (selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
-    pool.push(selectedIndex);
+function buildLocalSimilarityTour(startIdx) {
+  const vis = [];
+  for (let i = 0; i < points.length; i++) {
+    if (isPointVisible(points[i])) vis.push(i);
   }
-  for (const n of validNbrs) {
-    if (!pool.includes(n)) pool.push(n);
+  if (vis.length === 0) return [];
+  const key = `${startIdx}|${vis.length}|${activeCategory}|${maxLenMs}|${toneFilter}|${searchQuery}|${localSeed}`;
+  if (simTourKey === key && simTourCache.length === vis.length) {
+    return simTourCache;
   }
-  if (pool.length <= 1) {
-    for (let i = 0; i < points.length; i++) {
-      if (isPointVisible(points[i]) && !pool.includes(i)) pool.push(i);
+
+  const remaining = new Set(vis);
+  const start = remaining.has(startIdx) ? startIdx : vis[0];
+  const tour = [start];
+  remaining.delete(start);
+
+  const nbrBoost = new Set((selectedMeta && selectedMeta.neighbors) || []);
+  let cur = start;
+  while (remaining.size > 0) {
+    const cp = points[cur] || { x: 0.5, y: 0.5, catIdx: 0, brightness: 50, durationMs: 300 };
+    let bestIdx = -1;
+    let bestScore = Infinity;
+    for (const cand of remaining) {
+      const qp = points[cand];
+      const dx = qp.x - cp.x;
+      const dy = qp.y - cp.y;
+      const dBright = ((qp.brightness || 50) - (cp.brightness || 50)) / 100.0;
+      const dDur = ((qp.durationMs || 300) - (cp.durationMs || 300)) / 2000.0;
+      let score = dx * dx * 2.5 + dy * dy * 2.5 + dBright * dBright * 0.4 + dDur * dDur * 0.3;
+      if (qp.catIdx !== cp.catIdx) score += 0.25;
+      if (cur === start && nbrBoost.has(cand)) score *= 0.25;
+      if (score < bestScore) {
+        bestScore = score;
+        bestIdx = cand;
+      }
     }
+    if (bestIdx < 0) break;
+    tour.push(bestIdx);
+    remaining.delete(bestIdx);
+    cur = bestIdx;
   }
-  if (pool.length === 0) return;
-  let pos = pool.indexOf(selectedIndex);
+
+  simTourKey = key;
+  simTourCache = tour;
+  return tour;
+}
+
+function stepLocalNeighbor(dir) {
+  const tour = buildLocalSimilarityTour(anchorIndex >= 0 ? anchorIndex : selectedIndex);
+  if (tour.length === 0) return;
+  let pos = tour.indexOf(selectedIndex);
   if (pos < 0) pos = 0;
-  const nextPos = (pos + dir + pool.length) % pool.length;
-  selectedIndex = pool[nextPos];
+  const step = Number(dir) >= 0 ? 1 : -1;
+  const nextPos = (pos + step + tour.length) % tour.length;
+  selectedIndex = tour[nextPos];
   playheadPos = 0.0;
-  outlet(0, "select_index", selectedIndex, 1);
 }
 
 function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
@@ -730,6 +805,7 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
   if (y <= lay.topBarH) {
     playheadPos = 0.0;
     outlet(0, "replay");
+    startDragOut("selected_raw", selectedIndex, x, y);
     mgraphics.redraw();
     return;
   }
@@ -834,20 +910,19 @@ function updateArmedDragZone(mode, savedIdx) {
 
 function onidle(x, y, but, cmd, shift, capslock, option, ctrl) {
   const lay = getLayout();
-  hoveredZoneTitle = "";
 
   if (x >= lay.savedX) {
-    hoveredIndex = -1;
-    hoveredToolbarIndex = -1;
+    if (hoveredIndex !== -1 || hoveredToolbarIndex !== -1) {
+      hoveredIndex = -1;
+      hoveredToolbarIndex = -1;
+      mgraphics.redraw();
+    }
     if (y <= lay.topBarH) {
       updateArmedDragZone("none", -1);
-      hoveredZoneTitle = x >= lay.savedX + 108 ? "Clear Saved List" : "Save Sample + Settings (S)";
     } else if (y >= lay.savedBottomY) {
       if (x < lay.savedX + lay.savedW * 0.5) {
-        hoveredZoneTitle = "Drag All Saved (Raw)";
         updateArmedDragZone("all_raw", -1);
       } else {
-        hoveredZoneTitle = "Drag All Saved (Edited)";
         updateArmedDragZone("all_edited", -1);
       }
     } else {
@@ -858,23 +933,28 @@ function onidle(x, y, but, cmd, shift, capslock, option, ctrl) {
         const editZoneX0 = lay.savedX + lay.savedW - 35;
         const delZoneX0 = lay.savedX + lay.savedW - 18;
         if (x >= delZoneX0 && x < lay.scrollbarX) {
-          hoveredZoneTitle = "Delete from Saved List";
           updateArmedDragZone("none", -1);
         } else if (x >= editZoneX0 && x < delZoneX0) {
-          hoveredZoneTitle = "Drag Edited (Pitch/Trim WAV)";
           updateArmedDragZone("edited", actualIdx);
         } else if (x >= rawZoneX0 && x < editZoneX0) {
-          hoveredZoneTitle = "Drag Raw Audio File";
           updateArmedDragZone("raw", actualIdx);
         } else {
-          hoveredZoneTitle = `Select / Drag to Reorder: ${savedList[actualIdx].name}`;
           updateArmedDragZone("none", -1);
         }
       } else {
         updateArmedDragZone("none", -1);
       }
     }
-    mgraphics.redraw();
+    return;
+  }
+
+  if (y <= lay.topBarH) {
+    updateArmedDragZone("selected_raw", selectedIndex);
+    if (hoveredIndex !== -1 || hoveredToolbarIndex !== -1) {
+      hoveredIndex = -1;
+      hoveredToolbarIndex = -1;
+      mgraphics.redraw();
+    }
     return;
   }
 
@@ -903,11 +983,9 @@ function onidle(x, y, but, cmd, shift, capslock, option, ctrl) {
 }
 
 function onidleout() {
-  updateArmedDragZone("none", -1);
-  if (hoveredIndex !== -1 || hoveredToolbarIndex !== -1 || hoveredZoneTitle !== "") {
+  if (hoveredIndex !== -1 || hoveredToolbarIndex !== -1) {
     hoveredIndex = -1;
     hoveredToolbarIndex = -1;
-    hoveredZoneTitle = "";
     mgraphics.redraw();
   }
 }
@@ -1067,6 +1145,23 @@ function drawToolbarIcon(id, x, y, w, h, col, isActive) {
     mgraphics.arc(cx,       cy,       r, 0, Math.PI * 2); mgraphics.fill();
     mgraphics.arc(cx - 2.5, cy + 2.4, r, 0, Math.PI * 2); mgraphics.fill();
     mgraphics.arc(cx + 2.5, cy + 2.4, r, 0, Math.PI * 2); mgraphics.fill();
+  } else if (id === "reseed") {
+    // Open circular refresh arrow + center seed dot using bezier curves
+    const r = 3.8;
+    mgraphics.move_to(cx - r, cy);
+    mgraphics.curve_to(cx - r, cy - r * 1.1, cx + r * 0.8, cy - r * 1.1, cx + r * 0.85, cy - 1.2);
+    mgraphics.stroke();
+    mgraphics.move_to(cx + r * 0.85, cy + 1.4);
+    mgraphics.curve_to(cx + r * 0.6, cy + r * 1.1, cx - r, cy + r * 1.1, cx - r, cy);
+    mgraphics.stroke();
+    // Arrowhead at top-right
+    mgraphics.move_to(cx + 1.2, cy - 3.6);
+    mgraphics.line_to(cx + 3.6, cy - 1.0);
+    mgraphics.line_to(cx + 0.8, cy - 0.8);
+    mgraphics.stroke();
+    // Center seed dot
+    mgraphics.arc(cx, cy, 1.0, 0, Math.PI * 2);
+    mgraphics.fill();
   }
 }
 
@@ -1218,11 +1313,11 @@ function paint() {
     mgraphics.stroke();
   }
 
-  // 8. Hover HUD Overlay Tooltip
-  let hudText = hoveredZoneTitle;
-  if (!hudText && hoveredToolbarIndex >= 0 && hoveredToolbarIndex < TOOLBAR_ITEMS.length) {
+  // 8. Hover HUD Overlay Tooltip (only for 2D map points and map toolbar icons)
+  let hudText = "";
+  if (hoveredToolbarIndex >= 0 && hoveredToolbarIndex < TOOLBAR_ITEMS.length) {
     hudText = TOOLBAR_ITEMS[hoveredToolbarIndex].title;
-  } else if (!hudText && hoveredIndex >= 0 && hoveredIndex < points.length) {
+  } else if (hoveredIndex >= 0 && hoveredIndex < points.length) {
     const hp = points[hoveredIndex];
     hudText = `${hp.name || hp.category} (${Math.round(hp.durationMs)}ms)`;
   }
@@ -1458,21 +1553,4 @@ function paint() {
   mgraphics.set_source_rgba(1.0, 0.73, 0.22, 1.0);
   mgraphics.move_to(savedX + 16 + halfW, lay.savedBottomY + 14);
   mgraphics.show_text("Drag Edit");
-
-  if (dragOutState) {
-    const bw = 110;
-    const bh = 16;
-    const bx = Math.max(4, Math.min(w - bw - 4, dragOutState.x - bw * 0.5));
-    const by = Math.max(4, Math.min(h - bh - 4, dragOutState.y - bh * 0.5));
-    mgraphics.set_source_rgba(0.08, 0.11, 0.15, 0.94);
-    mgraphics.rectangle_rounded(bx, by, bw, bh, 3, 3);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(0.22, 0.74, 0.97, 1.0);
-    mgraphics.set_line_width(1.2);
-    mgraphics.rectangle_rounded(bx, by, bw, bh, 3, 3);
-    mgraphics.stroke();
-    mgraphics.set_source_rgba(0.95, 0.98, 1.0, 1.0);
-    mgraphics.move_to(bx + 6, by + 11);
-    mgraphics.show_text(dragOutState.label);
-  }
 }

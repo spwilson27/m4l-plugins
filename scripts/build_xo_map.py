@@ -20,6 +20,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NODE_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_node_engine.js")
 HTML_UI_PATH = os.path.join(ROOT_DIR, "src", "xo_map_ui.html")
 STRIP_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_strip_ui.js")
+FOLDER_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_folder_ui.js")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "XO Sample Map.amxd")
 
 
@@ -157,11 +158,38 @@ def build():
     with open(STRIP_JS_PATH, "r", encoding="utf-8") as f:
         strip_js_code = f.read()
 
+    with open(FOLDER_JS_PATH, "r", encoding="utf-8") as f:
+        folder_js_code = f.read()
+
     embedded_node_code = (
         f"const EMBEDDED_XO_HTML = {json.dumps(html_ui_str)};\n\n" + node_js_raw
     )
 
     boxes = [
+        # --- 0. Embedded Node for Max Engine (placed first in z-order behind panel-left so it boots in Presentation Mode) ---
+        {
+            "box": {
+                "code": embedded_node_code,
+                "fontface": 0,
+                "fontname": "<Monospaced>",
+                "fontsize": 10.0,
+                "id": "obj-node",
+                "ignoreclick": 1,
+                "maxclass": "node.codebox",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "patching_rect": [420.0, 240.0, 360.0, 180.0],
+                "presentation": 1,
+                "presentation_rect": [12.0, 29.0, 20.0, 20.0],
+                "saved_object_attributes": {
+                    "autostart": 1,
+                    "defer": 1,
+                    "watch": 0
+                }
+            }
+        },
+
         # --- 1. Audio Pass-Through + Mono-Safe Stereo Preview Mixer + Playhead Scanner ---
         {
             "box": {
@@ -414,42 +442,37 @@ def build():
             }
         },
 
-        # --- 2. Embedded Node for Max Engine (node.codebox) ---
-        {
-            "box": {
-                "code": embedded_node_code,
-                "fontface": 0,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-node",
-                "maxclass": "node.codebox",
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "patching_rect": [420.0, 240.0, 360.0, 180.0],
-                "saved_object_attributes": {
-                    "autostart": 1,
-                    "defer": 1,
-                    "watch": 0
-                }
-            }
-        },
+        # --- 2. Node for Max Outlet Router ---
         {
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
                 "id": "obj-route-node",
                 "maxclass": "newobj",
-                "numinlets": 18,
-                "numoutlets": 18,
-                "outlettype": [""] * 18,
-                "patching_rect": [420.0, 435.0, 620.0, 20.0],
+                "numinlets": 19,
+                "numoutlets": 19,
+                "outlettype": [""] * 19,
+                "patching_rect": [420.0, 435.0, 660.0, 20.0],
                 "text": (
                     "route server_url minimap_clear minimap_batch minimap_done "
                     "selected_info play_file play_speed play_env play_scan_dur "
                     "play_mono play_gain saved_list_sync sync_playback_dials "
-                    "prompt_folder strip_filter_cat strip_filter_maxlen strip_filter_tone"
+                    "prompt_folder strip_filter_cat strip_filter_maxlen strip_filter_tone "
+                    "folder_list_sync"
                 )
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-folder-sync",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [300.0, 398.0, 138.0, 20.0],
+                "text": "prepend folder_list_sync"
             }
         },
         {
@@ -672,13 +695,26 @@ def build():
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-prep-key",
+                "id": "obj-sel-key",
                 "maxclass": "newobj",
-                "numinlets": 1,
+                "numinlets": 7,
+                "numoutlets": 7,
+                "outlettype": ["bang", "bang", "bang", "bang", "bang", "bang", ""],
+                "patching_rect": [640.0, 522.0, 145.0, 20.0],
+                "text": "sel 115 83 127 8 -5 -3"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-hotkey-save",
+                "maxclass": "message",
+                "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [640.0, 522.0, 72.0, 20.0],
-                "text": "prepend key"
+                "patching_rect": [640.0, 550.0, 75.0, 20.0],
+                "text": "hotkey_save"
             }
         },
         {
@@ -690,8 +726,21 @@ def build():
                 "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [725.0, 522.0, 82.0, 20.0],
+                "patching_rect": [640.0, 575.0, 82.0, 20.0],
                 "text": "save_selected"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-del-saved",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [735.0, 550.0, 125.0, 20.0],
+                "text": "delete_selected_saved"
             }
         },
         {
@@ -967,7 +1016,7 @@ def build():
             }
         },
 
-        # --- 6. Center Panel: FILTERS (Visibly Separate from Playback Controls, No Drop Box) ---
+        # --- 6. Center Panel: FILTERS (Search, MaxLen, Tone & Remembered Folder Filter List) ---
         {
             "box": {
                 "fontface": 1,
@@ -976,26 +1025,11 @@ def build():
                 "maxclass": "live.comment",
                 "numinlets": 1,
                 "numoutlets": 0,
-                "patching_rect": [420.0, 90.0, 126.0, 16.0],
+                "patching_rect": [420.0, 90.0, 92.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [398.0, 7.0, 126.0, 16.0],
+                "presentation_rect": [398.0, 6.0, 92.0, 15.0],
                 "text": "FILTERS",
                 "textcolor": [0.22, 0.74, 0.97, 1.0],
-                "textjustification": 0
-            }
-        },
-        {
-            "box": {
-                "fontsize": 8.5,
-                "id": "obj-search-lbl",
-                "maxclass": "live.comment",
-                "numinlets": 1,
-                "numoutlets": 0,
-                "patching_rect": [420.0, 110.0, 48.0, 15.0],
-                "presentation": 1,
-                "presentation_rect": [398.0, 25.0, 48.0, 15.0],
-                "text": "Search:",
-                "textcolor": [0.72, 0.76, 0.82, 1.0],
                 "textjustification": 0
             }
         },
@@ -1015,9 +1049,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [475.0, 110.0, 28.0, 15.0],
+                "patching_rect": [475.0, 110.0, 28.0, 14.0],
                 "presentation": 1,
-                "presentation_rect": [496.0, 25.0, 28.0, 15.0],
+                "presentation_rect": [496.0, 6.0, 28.0, 14.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Clear Search",
@@ -1043,7 +1077,7 @@ def build():
                 "border": 1.0,
                 "bordercolor": [0.22, 0.74, 0.97, 0.65],
                 "fontname": "Arial",
-                "fontsize": 9.5,
+                "fontsize": 9.0,
                 "id": "obj-search-box",
                 "keymode": 1,
                 "lines": 1,
@@ -1052,9 +1086,9 @@ def build():
                 "numoutlets": 4,
                 "outlettype": ["", "int", "", ""],
                 "parameter_enable": 0,
-                "patching_rect": [510.0, 110.0, 126.0, 18.0],
+                "patching_rect": [510.0, 110.0, 126.0, 17.0],
                 "presentation": 1,
-                "presentation_rect": [398.0, 43.0, 126.0, 18.0],
+                "presentation_rect": [398.0, 22.0, 126.0, 17.0],
                 "tabmode": 0,
                 "textcolor": [0.92, 0.95, 0.98, 1.0],
                 "wordwrap": 0
@@ -1123,9 +1157,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
-                "patching_rect": [420.0, 165.0, 52.0, 48.0],
+                "patching_rect": [420.0, 165.0, 52.0, 46.0],
                 "presentation": 1,
-                "presentation_rect": [404.0, 68.0, 52.0, 48.0],
+                "presentation_rect": [402.0, 41.0, 52.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Max Length (50ms - Inf)",
@@ -1168,9 +1202,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
-                "patching_rect": [485.0, 165.0, 52.0, 48.0],
+                "patching_rect": [485.0, 165.0, 52.0, 46.0],
                 "presentation": 1,
-                "presentation_rect": [466.0, 68.0, 52.0, 48.0],
+                "presentation_rect": [468.0, 41.0, 52.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Tone Filter",
@@ -1203,150 +1237,28 @@ def build():
         },
         {
             "box": {
-                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
-                "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
-                "activetextcolor": [0.85, 0.89, 0.94, 1.0],
-                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Steps to the previous nearest-neighbor similar sample matching active filters.",
-                "annotation_name": "Prev Similar",
-                "bordercolor": [0.32, 0.38, 0.46, 1.0],
-                "id": "obj-prev-sim-btn",
-                "maxclass": "live.text",
-                "mode": 0,
+                "border": 0,
+                "filename": "none",
+                "id": "obj-folder-list",
+                "maxclass": "v8ui",
                 "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "parameter_enable": 1,
-                "patching_rect": [750.0, 90.0, 40.0, 18.0],
-                "presentation": 1,
-                "presentation_rect": [398.0, 128.0, 40.0, 18.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Prev Similar",
-                        "parameter_enum": ["val1", "val2"],
-                        "parameter_invisible": 2,
-                        "parameter_longname": "PrevSimilar",
-                        "parameter_mmax": 1,
-                        "parameter_shortname": "< Sim",
-                        "parameter_type": 2
-                    }
-                },
-                "text": "< Sim",
-                "texton": "< Sim",
-                "varname": "PrevSimilar"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-msg-prev-sim",
-                "maxclass": "message",
-                "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [750.0, 115.0, 86.0, 20.0],
-                "text": "step_similar -1"
-            }
-        },
-        {
-            "box": {
-                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
-                "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
-                "activetextcolor": [0.85, 0.89, 0.94, 1.0],
-                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Steps to the next nearest-neighbor similar sample matching active filters.",
-                "annotation_name": "Next Similar",
-                "bordercolor": [0.32, 0.38, 0.46, 1.0],
-                "id": "obj-next-sim-btn",
-                "maxclass": "live.text",
-                "mode": 0,
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "parameter_enable": 1,
-                "patching_rect": [800.0, 90.0, 40.0, 18.0],
+                "parameter_enable": 0,
+                "patching_rect": [750.0, 90.0, 126.0, 69.0],
                 "presentation": 1,
-                "presentation_rect": [441.0, 128.0, 40.0, 18.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Next Similar",
-                        "parameter_enum": ["val1", "val2"],
-                        "parameter_invisible": 2,
-                        "parameter_longname": "NextSimilar",
-                        "parameter_mmax": 1,
-                        "parameter_shortname": "Sim >",
-                        "parameter_type": 2
-                    }
-                },
-                "text": "Sim >",
-                "texton": "Sim >",
-                "varname": "NextSimilar"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-msg-next-sim",
-                "maxclass": "message",
-                "numinlets": 2,
-                "numoutlets": 1,
-                "outlettype": [""],
-                "patching_rect": [840.0, 115.0, 82.0, 20.0],
-                "text": "step_similar 1"
-            }
-        },
-        {
-            "box": {
-                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
-                "activebgoncolor": [1.0, 0.694, 0.18, 1.0],
-                "activetextcolor": [0.85, 0.89, 0.94, 1.0],
-                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Selects and auditions a random visible sample matching active filters.",
-                "annotation_name": "Random Sample",
-                "bordercolor": [0.32, 0.38, 0.46, 1.0],
-                "id": "obj-rand-btn",
-                "maxclass": "live.text",
-                "mode": 0,
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "parameter_enable": 1,
-                "patching_rect": [850.0, 90.0, 40.0, 18.0],
-                "presentation": 1,
-                "presentation_rect": [484.0, 128.0, 40.0, 18.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Random Sample",
-                        "parameter_enum": ["val1", "val2"],
-                        "parameter_invisible": 2,
-                        "parameter_longname": "RandomSample",
-                        "parameter_mmax": 1,
-                        "parameter_shortname": "Rand",
-                        "parameter_type": 2
-                    }
-                },
-                "text": "Rand",
-                "texton": "Rand",
-                "varname": "RandomSample"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-msg-rand",
-                "maxclass": "message",
-                "numinlets": 2,
-                "numoutlets": 1,
-                "outlettype": [""],
-                "patching_rect": [930.0, 115.0, 86.0, 20.0],
-                "text": "random_sample"
+                "presentation_rect": [398.0, 90.0, 126.0, 69.0],
+                "textfile": {
+                    "text": folder_js_code,
+                    "filename": "none",
+                    "flags": 0,
+                    "embed": 1,
+                    "autowatch": 1
+                }
             }
         },
 
-        # --- 7. Right Panel: PLAYBACK CONTROLS (Visibly Separate from Filters) ---
+        # --- 7. Right Panel: PLAYBACK CONTROLS (Pitch, Trim/Decay, Gain) ---
         {
             "box": {
                 "fontface": 1,
@@ -1365,54 +1277,6 @@ def build():
         },
         {
             "box": {
-                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
-                "activebgoncolor": [0.29, 0.87, 0.50, 1.0],
-                "activetextcolor": [0.85, 0.89, 0.94, 1.0],
-                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Auditions / replays the currently selected sample.",
-                "annotation_name": "Audition Sample",
-                "bordercolor": [0.29, 0.87, 0.50, 1.0],
-                "id": "obj-play-btn",
-                "maxclass": "live.text",
-                "mode": 0,
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "parameter_enable": 1,
-                "patching_rect": [780.0, 52.0, 126.0, 18.0],
-                "presentation": 1,
-                "presentation_rect": [542.0, 25.0, 126.0, 18.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Audition Sample",
-                        "parameter_enum": ["val1", "val2"],
-                        "parameter_invisible": 2,
-                        "parameter_longname": "AuditionSample",
-                        "parameter_mmax": 1,
-                        "parameter_shortname": "Audition",
-                        "parameter_type": 2
-                    }
-                },
-                "text": "Audition / Replay",
-                "texton": "Audition / Replay",
-                "varname": "AuditionSample"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-msg-replay",
-                "maxclass": "message",
-                "numinlets": 2,
-                "numoutlets": 1,
-                "outlettype": [""],
-                "patching_rect": [915.0, 52.0, 46.0, 20.0],
-                "text": "replay"
-            }
-        },
-        {
-            "box": {
                 "activedialcolor": [1.0, 0.694, 0.18, 1.0],
                 "annotation": "Transposes sample playback in semitones (-24 st to +24 st). Saved with sample.",
                 "annotation_name": "Pitch Transpose",
@@ -1424,7 +1288,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [550.0, 165.0, 52.0, 48.0],
                 "presentation": 1,
-                "presentation_rect": [548.0, 48.0, 52.0, 48.0],
+                "presentation_rect": [548.0, 32.0, 52.0, 48.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Pitch Transpose",
@@ -1468,7 +1332,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [615.0, 165.0, 52.0, 48.0],
                 "presentation": 1,
-                "presentation_rect": [610.0, 48.0, 52.0, 48.0],
+                "presentation_rect": [610.0, 32.0, 52.0, 48.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Trim / Decay",
@@ -1513,7 +1377,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [680.0, 165.0, 52.0, 48.0],
                 "presentation": 1,
-                "presentation_rect": [579.0, 102.0, 52.0, 48.0],
+                "presentation_rect": [579.0, 96.0, 52.0, 48.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Preview Gain",
@@ -1696,13 +1560,23 @@ def build():
         {"patchline": {"source": ["obj-prep-sf-maxlen", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-route-node", 16], "destination": ["obj-prep-sf-tone", 0]}},
         {"patchline": {"source": ["obj-prep-sf-tone", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-route-node", 17], "destination": ["obj-prep-folder-sync", 0]}},
+        {"patchline": {"source": ["obj-prep-folder-sync", 0], "destination": ["obj-folder-list", 0]}},
 
-        # 3. v8ui & Hotkeys ('S', Delete/Backspace) -> node.codebox / v8ui
+        # 3. v8ui & Hotkeys ('S' -> hotkey_save, Delete/Backspace -> delete_selected_saved) -> node.codebox / v8ui
         {"patchline": {"source": ["obj-minimap", 0], "destination": ["obj-node", 0]}},
-        {"patchline": {"source": ["obj-key", 0], "destination": ["obj-prep-key", 0]}},
-        {"patchline": {"source": ["obj-prep-key", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-folder-list", 0], "destination": ["obj-node", 0]}},
+        {"patchline": {"source": ["obj-key", 0], "destination": ["obj-sel-key", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 0], "destination": ["obj-msg-hotkey-save", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 1], "destination": ["obj-msg-hotkey-save", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 2], "destination": ["obj-msg-del-saved", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 3], "destination": ["obj-msg-del-saved", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 4], "destination": ["obj-msg-del-saved", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 5], "destination": ["obj-msg-del-saved", 0]}},
         {"patchline": {"source": ["obj-save-sample-btn", 0], "destination": ["obj-msg-save-sel", 0]}},
+        {"patchline": {"source": ["obj-msg-hotkey-save", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-save-sel", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-msg-del-saved", 0], "destination": ["obj-minimap", 0]}},
 
         # 4. Pop-out Map Window & Folder Dialog Controls
         {"patchline": {"source": ["obj-open-map-btn", 0], "destination": ["obj-sel-map-win", 0]}},
@@ -1735,16 +1609,8 @@ def build():
         {"patchline": {"source": ["obj-tone-dial", 0], "destination": ["obj-prep-tone", 0], "order": 1}},
         {"patchline": {"source": ["obj-tone-dial", 0], "destination": ["obj-prep-sf-tone", 0], "order": 0}},
         {"patchline": {"source": ["obj-prep-tone", 0], "destination": ["obj-node", 0]}},
-        {"patchline": {"source": ["obj-prev-sim-btn", 0], "destination": ["obj-msg-prev-sim", 0]}},
-        {"patchline": {"source": ["obj-msg-prev-sim", 0], "destination": ["obj-node", 0]}},
-        {"patchline": {"source": ["obj-next-sim-btn", 0], "destination": ["obj-msg-next-sim", 0]}},
-        {"patchline": {"source": ["obj-msg-next-sim", 0], "destination": ["obj-node", 0]}},
-        {"patchline": {"source": ["obj-rand-btn", 0], "destination": ["obj-msg-rand", 0]}},
-        {"patchline": {"source": ["obj-msg-rand", 0], "destination": ["obj-node", 0]}},
 
         # 6. PLAYBACK Panel Controls -> node.codebox & v8ui
-        {"patchline": {"source": ["obj-play-btn", 0], "destination": ["obj-msg-replay", 0]}},
-        {"patchline": {"source": ["obj-msg-replay", 0], "destination": ["obj-node", 0]}},
         {"patchline": {"source": ["obj-pitch-dial", 0], "destination": ["obj-prep-pitch", 0]}},
         {"patchline": {"source": ["obj-prep-pitch", 0], "destination": ["obj-node", 0], "order": 1}},
         {"patchline": {"source": ["obj-prep-pitch", 0], "destination": ["obj-minimap", 0], "order": 0}},
@@ -1764,10 +1630,6 @@ def build():
         "obj-add-folder-btn": ["AddFolder", "Add Folder", 0],
         "obj-save-sample-btn": ["SaveSampleBtn", "+ Save (S)", 0],
         "obj-search-clear-btn": ["ClearSearch", "Clr", 0],
-        "obj-prev-sim-btn": ["PrevSimilar", "< Sim", 0],
-        "obj-next-sim-btn": ["NextSimilar", "Sim >", 0],
-        "obj-rand-btn": ["RandomSample", "Rand", 0],
-        "obj-play-btn": ["AuditionSample", "Audition", 0],
         "obj-maxlen-dial": ["MaxLength", "MaxLen", 0],
         "obj-tone-dial": ["ToneFilter", "Tone", 0],
         "obj-pitch-dial": ["PitchTranspose", "Pitch", 0],

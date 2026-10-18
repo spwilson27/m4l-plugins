@@ -32,6 +32,10 @@ try {
 }
 
 const CACHE_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v2.json");
+const CACHE_BIN_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v3.bin");
+const CACHE_IDX_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v3.idx.json");
+const RECORD_BYTE_SIZE = 104; // 12*4B vector (48B) + 8*4B scalars (32B) + 24*1B uint8 peaks (24B) = 104 bytes/sample
+const MAX_DISPLAY_SAMPLES = 1500;
 const EXPORT_BASE_DIR = path.join(os.tmpdir(), "xo_sample_map_exports");
 const SUPPORTED_EXTS = new Set([".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a", ".caf"]);
 
@@ -68,9 +72,6 @@ const OBJC_DRAG_HELPER_SOURCE = `
 
 @interface XODragView : NSView <NSDraggingSource>
 @property (nonatomic, strong) NSArray<NSString *> *filePaths;
-@property (nonatomic, copy) NSString *labelText;
-@property (nonatomic, assign) BOOL isEdited;
-@property (nonatomic, assign) BOOL draggingActive;
 @end
 
 @implementation XODragView
@@ -84,17 +85,10 @@ const OBJC_DRAG_HELPER_SOURCE = `
 }
 
 - (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {
-    self.draggingActive = NO;
     [[self window] orderOut:nil];
 }
 
 - (void)mouseDown:(NSEvent *)event {
-    self.draggingActive = NO;
-}
-
-- (void)mouseDragged:(NSEvent *)event {
-    if (self.draggingActive) return;
-    self.draggingActive = YES;
     [self initiateOSFileDrag:event];
 }
 
@@ -125,60 +119,45 @@ const OBJC_DRAG_HELPER_SOURCE = `
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
-    // Always draw with alpha >= 0.94 so macOS WindowServer never treats the view as click-through
-    [[NSColor colorWithCalibratedRed:0.08 green:0.10 blue:0.14 alpha:0.96] setFill];
-    NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:3 yRadius:3];
-    [bg fill];
-
-    if (self.isEdited) {
-        [[NSColor colorWithCalibratedRed:1.0 green:0.70 blue:0.20 alpha:0.98] setStroke];
-    } else {
-        [[NSColor colorWithCalibratedRed:0.22 green:0.74 blue:0.97 alpha:0.98] setStroke];
-    }
-    [bg setLineWidth:1.4];
-    [bg stroke];
-
-    NSString *txt = self.labelText ?: @"R";
-    NSDictionary *attrs = @{
-        NSFontAttributeName: [NSFont boldSystemFontOfSize:9.0],
-        NSForegroundColorAttributeName: [NSColor whiteColor]
-    };
-    NSSize sz = [txt sizeWithAttributes:attrs];
-    [txt drawAtPoint:NSMakePoint((self.bounds.size.width - sz.width) * 0.5, (self.bounds.size.height - sz.height) * 0.5) withAttributes:attrs];
+    // 100% visually imperceptible dark fill (alpha 0.051 > 0.05 so macOS WindowServer routes mouseDown without any visible gray box)
+    [[NSColor colorWithCalibratedRed:0.06 green:0.07 blue:0.09 alpha:0.051] setFill];
+    NSRectFill(self.bounds);
 }
 @end
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
-@property (nonatomic, strong) NSWindow *dragWindow;
+@property (nonatomic, strong) NSPanel *dragWindow;
 @property (nonatomic, strong) XODragView *dragView;
 @property (nonatomic, assign) NSPoint armedPoint;
+@property (nonatomic, assign) CGFloat armedRadiusSq;
 @end
 
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     NSRect frame = NSMakeRect(0, 0, 44, 20);
-    self.dragWindow = [[NSWindow alloc] initWithContentRect:frame
-                                                  styleMask:NSWindowStyleMaskBorderless
-                                                    backing:NSBackingStoreBuffered
-                                                      defer:NO];
+    self.dragWindow = [[NSPanel alloc] initWithContentRect:frame
+                                                 styleMask:(NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel)
+                                                   backing:NSBackingStoreBuffered
+                                                     defer:NO];
     [self.dragWindow setOpaque:NO];
     [self.dragWindow setBackgroundColor:[NSColor clearColor]];
+    [self.dragWindow setFloatingPanel:YES];
+    [self.dragWindow setBecomesKeyOnlyIfNeeded:YES];
     [self.dragWindow setLevel:NSStatusWindowLevel];
-    [self.dragWindow setHasShadow:YES];
+    [self.dragWindow setHasShadow:NO];
     [self.dragWindow setIgnoresMouseEvents:NO];
     [self.dragWindow setAcceptsMouseMovedEvents:YES];
 
     self.dragView = [[XODragView alloc] initWithFrame:frame];
     [self.dragWindow setContentView:self.dragView];
+    self.armedRadiusSq = 900.0;
 
-    [NSTimer scheduledTimerWithTimeInterval:0.06 repeats:YES block:^(NSTimer * _Nonnull timer) {
+    [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer * _Nonnull timer) {
         if (![self.dragWindow isVisible]) return;
         if ([NSEvent pressedMouseButtons] != 0) return;
         NSPoint cur = [NSEvent mouseLocation];
-        CGFloat dx = cur.x - self.armedPoint.x;
-        CGFloat dy = cur.y - self.armedPoint.y;
-        if ((dx * dx + dy * dy) > 1600.0) {
+        if (!NSPointInRect(cur, NSInsetRect([self.dragWindow frame], -6.0, -6.0))) {
             [self.dragWindow orderOut:nil];
         }
     }];
@@ -224,12 +203,9 @@ const OBJC_DRAG_HELPER_SOURCE = `
 
     NSPoint mouse = [NSEvent mouseLocation];
     self.armedPoint = mouse;
-    CGFloat w = [cmd[@"w"] doubleValue] ?: 44.0;
-    CGFloat h = [cmd[@"h"] doubleValue] ?: 20.0;
+    CGFloat w = [cmd[@"w"] doubleValue] ?: 24.0;
+    CGFloat h = [cmd[@"h"] doubleValue] ?: 18.0;
     self.dragView.filePaths = paths;
-    self.dragView.labelText = cmd[@"label"] ?: @"Drag";
-    self.dragView.isEdited = [cmd[@"isEdited"] boolValue];
-    self.dragView.draggingActive = NO;
 
     NSRect winRect = NSMakeRect(mouse.x - w * 0.5, mouse.y - h * 0.5, w, h);
     [self.dragWindow setFrame:winRect display:YES];
@@ -237,30 +213,15 @@ const OBJC_DRAG_HELPER_SOURCE = `
     [self.dragView setNeedsDisplay:YES];
     [self.dragWindow orderFrontRegardless];
 
-    // Write diagnostic status file for automated M4L runtime tests
     NSString *stateFile = cmd[@"stateFile"];
     if (stateFile) {
         NSDictionary *st = @{
             @"visible": @([self.dragWindow isVisible]),
             @"count": @(urls.count),
-            @"paths": paths,
-            @"label": self.dragView.labelText
+            @"paths": paths
         };
         NSData *stData = [NSJSONSerialization dataWithJSONObject:st options:0 error:nil];
         [stData writeToFile:stateFile atomically:YES];
-    }
-
-    // If mouse button was already pressed inside Max v8ui when clicked, hand off click to XODragView
-    if ([cmd[@"handoff"] boolValue] && (([NSEvent pressedMouseButtons] & 1) != 0)) {
-        NSScreen *primary = [NSScreen screens][0];
-        CGFloat screenH = primary.frame.size.height;
-        CGPoint cgPt = CGPointMake(mouse.x, screenH - mouse.y);
-        CGEventRef upEv = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, cgPt, kCGMouseButtonLeft);
-        CGEventRef downEv = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, cgPt, kCGMouseButtonLeft);
-        if (upEv) { CGEventPost(kCGHIDEventTap, upEv); CFRelease(upEv); }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-            if (downEv) { CGEventPost(kCGHIDEventTap, downEv); CFRelease(downEv); }
-        });
     }
 }
 @end
@@ -283,9 +244,12 @@ function ensureDragHelperProcess() {
   if (!hasRealMaxApi || process.platform !== "darwin") return null;
   if (dragHelperProc && !dragHelperProc.killed) return dragHelperProc;
   try {
+    try {
+      execFileSync("/usr/bin/pkill", ["-f", "xo_drag_helper"]);
+    } catch (_) {}
     fs.mkdirSync(EXPORT_BASE_DIR, { recursive: true });
-    const srcPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v2.m");
-    const binPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v2_bin");
+    const srcPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v4.m");
+    const binPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v4_bin");
     if (!fs.existsSync(binPath)) {
       fs.writeFileSync(srcPath, OBJC_DRAG_HELPER_SOURCE, "utf8");
       execFileSync("/usr/bin/clang", [
@@ -294,6 +258,11 @@ function ensureDragHelperProcess() {
     }
     dragHelperProc = spawn(binPath, [], { stdio: ["pipe", "ignore", "ignore"] });
     dragHelperProc.on("exit", () => { dragHelperProc = null; });
+    process.on("exit", () => {
+      if (dragHelperProc && !dragHelperProc.killed) {
+        try { dragHelperProc.kill("SIGTERM"); } catch (_) {}
+      }
+    });
     return dragHelperProc;
   } catch (_) {
     return null;
@@ -578,16 +547,17 @@ function createRawFileLink(rawFilePath, customOutDir = null) {
     const rawDir = customOutDir || path.join(EXPORT_BASE_DIR, "Raw");
     fs.mkdirSync(rawDir, { recursive: true });
     const linkPath = path.join(rawDir, path.basename(rawFilePath));
-    if (fs.existsSync(linkPath)) {
-      try { fs.unlinkSync(linkPath); } catch (_) {}
+    if (path.resolve(rawFilePath) === path.resolve(linkPath)) {
+      return linkPath;
     }
     try {
-      fs.symlinkSync(rawFilePath, linkPath);
-      return linkPath;
-    } catch (_) {
-      fs.copyFileSync(rawFilePath, linkPath);
-      return linkPath;
-    }
+      const st = fs.lstatSync(linkPath);
+      if (st.isSymbolicLink() || st.isFile()) {
+        fs.unlinkSync(linkPath);
+      }
+    } catch (_) {}
+    fs.copyFileSync(rawFilePath, linkPath);
+    return linkPath;
   } catch (_) {
     return rawFilePath;
   }
@@ -889,16 +859,18 @@ function computeKNN(samples, k = 8) {
   }
 }
 
-function compute2DMap(samples) {
+function compute2DMap(samples, seed = 1) {
   const N = samples.length;
   if (N === 0) return;
 
+  const seedJitter = ((Number(seed) || 1) - 1) * 0.61803398875;
   const pts = new Array(N);
   for (let i = 0; i < N; i++) {
     const s = samples[i];
     const baseAngle = CATEGORY_ANGLES[s.category] !== undefined ? CATEGORY_ANGLES[s.category] : 0;
     const v = s.vector || [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.5, 0.5];
-    const angleOffset = ((v[0] - 0.45) * 0.55) + ((v[5] - 0.3) * 0.35) + ((v[10] - 0.5) * 0.25);
+    const jitter = seed > 1 ? Math.sin((i + 1) * 12.9898 + seedJitter * 78.233) * 0.14 : 0;
+    const angleOffset = ((v[0] - 0.45) * 0.55) + ((v[5] - 0.3) * 0.35) + ((v[10] - 0.5) * 0.25) + jitter;
     const angle = baseAngle + angleOffset;
     const radialBase = 0.20 + 0.58 * (0.45 * v[2] + 0.30 * v[0] + 0.25 * (1.0 - v[6]));
     const r = Math.max(0.08, Math.min(0.88, radialBase));
@@ -966,25 +938,134 @@ function compute2DMap(samples) {
 }
 
 // ============================================================================
-// 6. Directory Scanner & Cache Manager
+// 6. Binary Cache Manager (104-byte fixed binary records) & Background Scanner
 // ============================================================================
 
+function mulberry32(seed) {
+  let a = (Number(seed) || 1) >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function packSampleBinaryRecord(item) {
+  const buf = Buffer.alloc(RECORD_BYTE_SIZE);
+  const vec = item.vector || [];
+  for (let i = 0; i < 12; i++) {
+    buf.writeFloatLE(Number(vec[i]) || 0, i * 4);
+  }
+  const catIdx = Math.max(0, CATEGORY_LIST.indexOf(item.category || "kick"));
+  buf.writeFloatLE(Number(item.durationMs) || 0, 48);
+  buf.writeFloatLE(Number(item.attackMs) || 0, 52);
+  buf.writeFloatLE(Number(item.pitchHz) || 0, 56);
+  buf.writeFloatLE(Number(item.pitchMidi) || 48, 60);
+  buf.writeFloatLE(Number(item.channels) || 1, 64);
+  buf.writeFloatLE(catIdx, 68);
+  buf.writeFloatLE(item.favorite ? 1 : 0, 72);
+  buf.writeFloatLE(0, 76);
+
+  const peaks = item.peaks || [];
+  for (let i = 0; i < 24; i++) {
+    const p = Math.max(0, Math.min(1, Number(peaks[i]) || 0));
+    buf.writeUInt8(Math.round(p * 255), 80 + i);
+  }
+  return buf;
+}
+
+function unpackSampleBinaryRecord(buf, offset, filePath, rootFolder = "") {
+  if (!buf || offset + RECORD_BYTE_SIZE > buf.length) return null;
+  const vector = new Array(12);
+  for (let i = 0; i < 12; i++) {
+    vector[i] = buf.readFloatLE(offset + i * 4);
+  }
+  const durationMs = Math.round(buf.readFloatLE(offset + 48));
+  const attackMs = Math.round(buf.readFloatLE(offset + 52) * 10) / 10;
+  const pitchHz = Math.round(buf.readFloatLE(offset + 56) * 10) / 10;
+  const pitchMidi = Math.round(buf.readFloatLE(offset + 60));
+  const channels = Math.max(1, Math.round(buf.readFloatLE(offset + 64)));
+  const catIdx = Math.max(0, Math.min(CATEGORY_LIST.length - 1, Math.round(buf.readFloatLE(offset + 68))));
+  const favorite = buf.readFloatLE(offset + 72) > 0.5;
+
+  const peaks = new Array(24);
+  for (let i = 0; i < 24; i++) {
+    peaks[i] = Math.round((buf.readUInt8(offset + 80 + i) / 255.0) * 1000) / 1000;
+  }
+
+  return {
+    name: path.basename(filePath, path.extname(filePath)),
+    path: filePath,
+    folder: path.basename(path.dirname(filePath)),
+    rootFolder: rootFolder || path.dirname(filePath),
+    category: CATEGORY_LIST[catIdx] || "kick",
+    channels,
+    durationMs,
+    attackMs,
+    centroid: Math.round(vector[0] * 1000) / 1000,
+    flatness: Math.round(vector[1] * 1000) / 1000,
+    zcr: vector[5],
+    subRatio: vector[6],
+    lowRatio: vector[7],
+    midRatio: vector[8],
+    highRatio: vector[9],
+    pitchHz,
+    pitchMidi,
+    peaks,
+    vector,
+    favorite,
+    x: 0.5,
+    y: 0.5,
+    neighbors: []
+  };
+}
+
 function loadDiskCache() {
+  const cache = {
+    version: 3,
+    entries: {},
+    favorites: {},
+    knownFolders: [],
+    records: {},
+    binChunks: [],
+    nextRecordIndex: 0
+  };
   try {
-    if (fs.existsSync(CACHE_FILE)) {
-      return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    if (fs.existsSync(CACHE_IDX_FILE) && fs.existsSync(CACHE_BIN_FILE)) {
+      const idxData = JSON.parse(fs.readFileSync(CACHE_IDX_FILE, "utf8"));
+      const binBuf = fs.readFileSync(CACHE_BIN_FILE);
+      cache.favorites = idxData.favorites || {};
+      cache.knownFolders = Array.isArray(idxData.knownFolders) ? idxData.knownFolders : [];
+      cache.records = idxData.records || {};
+      cache.binChunks = [binBuf];
+      cache.nextRecordIndex = Math.floor(binBuf.length / RECORD_BYTE_SIZE);
+      return cache;
     }
   } catch (_) {}
-  return { entries: {}, favorites: {} };
+  return cache;
 }
 
 function saveDiskCache(cache) {
+  if (!cache) return;
   try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(cache), "utf8");
+    const fullBin = cache.binChunks && cache.binChunks.length > 0
+      ? Buffer.concat(cache.binChunks)
+      : Buffer.alloc(0);
+    cache.binChunks = [fullBin];
+    fs.writeFileSync(CACHE_BIN_FILE, fullBin);
+    const idxPayload = {
+      version: 3,
+      favorites: cache.favorites || {},
+      knownFolders: cache.knownFolders || [],
+      records: cache.records || {}
+    };
+    fs.writeFileSync(CACHE_IDX_FILE, JSON.stringify(idxPayload), "utf8");
   } catch (_) {}
 }
 
-function collectAudioFilesRecursive(dirPath, maxFiles = 750, out = []) {
+function collectAudioFilesRecursive(dirPath, maxFiles = 20000, out = []) {
   if (out.length >= maxFiles) return out;
   let entries = [];
   try {
@@ -1016,7 +1097,7 @@ function collectAudioFilesRecursive(dirPath, maxFiles = 750, out = []) {
   return out;
 }
 
-function analyzeAudioFile(filePath, cache) {
+function analyzeAudioFile(filePath, cache, rootFolder = "") {
   let st;
   try {
     st = fs.statSync(filePath);
@@ -1024,10 +1105,26 @@ function analyzeAudioFile(filePath, cache) {
     return null;
   }
   const cacheKey = `${filePath}|${st.size}|${Math.floor(st.mtimeMs)}`;
-  if (cache && cache.entries && cache.entries[cacheKey] && cache.entries[cacheKey].channels) {
-    const cached = { ...cache.entries[cacheKey] };
-    cached.favorite = !!(cache.favorites && cache.favorites[filePath]);
-    return cached;
+
+  if (cache) {
+    if (cache.entries && cache.entries[cacheKey] && cache.entries[cacheKey].channels) {
+      const cached = { ...cache.entries[cacheKey], rootFolder: rootFolder || cache.entries[cacheKey].rootFolder || path.dirname(filePath) };
+      cached.favorite = !!(cache.favorites && cache.favorites[filePath]);
+      return cached;
+    }
+    if (cache.records && cache.records[cacheKey] !== undefined && cache.binChunks && cache.binChunks.length > 0) {
+      const recIdx = cache.records[cacheKey];
+      const mainBuf = cache.binChunks[0];
+      const byteOff = recIdx * RECORD_BYTE_SIZE;
+      if (byteOff + RECORD_BYTE_SIZE <= mainBuf.length) {
+        const unpacked = unpackSampleBinaryRecord(mainBuf, byteOff, filePath, rootFolder);
+        if (unpacked) {
+          unpacked.favorite = !!(cache.favorites && cache.favorites[filePath]);
+          if (cache.entries) cache.entries[cacheKey] = unpacked;
+          return unpacked;
+        }
+      }
+    }
   }
 
   const readLen = Math.min(st.size, 262144);
@@ -1060,6 +1157,7 @@ function analyzeAudioFile(filePath, cache) {
     name,
     path: filePath,
     folder,
+    rootFolder: rootFolder || path.dirname(filePath),
     category,
     channels: decoded.channels || 1,
     durationMs: feats.durationMs,
@@ -1081,15 +1179,64 @@ function analyzeAudioFile(filePath, cache) {
     neighbors: []
   };
 
-  if (cache && cache.entries) {
-    cache.entries[cacheKey] = item;
+  if (cache) {
+    if (cache.entries) cache.entries[cacheKey] = item;
+    if (cache.records && cache.binChunks) {
+      const recBuf = packSampleBinaryRecord(item);
+      const recIdx = cache.nextRecordIndex || 0;
+      cache.records[cacheKey] = recIdx;
+      cache.binChunks.push(recBuf);
+      cache.nextRecordIndex = recIdx + 1;
+    }
   }
   return item;
 }
 
-function scanDirectories(dirs, maxFiles = 750) {
+function selectSeededMapSubset(corpusSamples, maxDisplay = MAX_DISPLAY_SAMPLES, seed = 1) {
+  if (!Array.isArray(corpusSamples) || corpusSamples.length === 0) return [];
+  if (corpusSamples.length <= maxDisplay) {
+    return corpusSamples.map((s) => ({ ...s }));
+  }
+  const rng = mulberry32(seed);
+  // Stratified reservoir/shuffle across categories so all drum types stay balanced
+  const byCat = new Map();
+  for (let i = 0; i < corpusSamples.length; i++) {
+    const s = corpusSamples[i];
+    const cat = s.category || "perc";
+    if (!byCat.has(cat)) byCat.set(cat, []);
+    byCat.get(cat).push(s);
+  }
+  // Fisher-Yates shuffle each category bucket using seeded PRNG
+  for (const arr of byCat.values()) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
+    }
+  }
+  // Round-robin pick across categories up to maxDisplay
+  const selected = [];
+  const cats = Array.from(byCat.keys());
+  let depth = 0;
+  while (selected.length < maxDisplay) {
+    let addedInPass = false;
+    for (let c = 0; c < cats.length && selected.length < maxDisplay; c++) {
+      const arr = byCat.get(cats[c]);
+      if (depth < arr.length) {
+        selected.push({ ...arr[depth] });
+        addedInPass = true;
+      }
+    }
+    if (!addedInPass) break;
+    depth++;
+  }
+  return selected;
+}
+
+function scanDirectories(dirs, maxFiles = 5000, seed = 1, maxDisplay = MAX_DISPLAY_SAMPLES) {
   const cache = loadDiskCache();
-  const allFiles = [];
+  const fileEntries = [];
   for (const d of dirs) {
     if (!fs.existsSync(d)) continue;
     let entries = [];
@@ -1097,32 +1244,38 @@ function scanDirectories(dirs, maxFiles = 750) {
       entries = fs.readdirSync(d, { withFileTypes: true });
     } catch (_) {}
     const subdirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith("."));
+    const dirFiles = [];
     if (subdirs.length >= 4) {
-      const perSub = Math.max(20, Math.floor(maxFiles / subdirs.length));
+      const perSub = Math.max(25, Math.floor(maxFiles / subdirs.length));
       for (const sd of subdirs) {
-        collectAudioFilesRecursive(path.join(d, sd.name), allFiles.length + perSub, allFiles);
+        collectAudioFilesRecursive(path.join(d, sd.name), dirFiles.length + perSub, dirFiles);
       }
     } else {
-      collectAudioFilesRecursive(d, maxFiles, allFiles);
+      collectAudioFilesRecursive(d, maxFiles, dirFiles);
+    }
+    for (const f of dirFiles) {
+      fileEntries.push({ filePath: f, rootFolder: d });
     }
   }
 
-  const samples = [];
+  const corpusSamples = [];
   const folderSet = new Set();
-  for (const f of allFiles) {
-    const item = analyzeAudioFile(f, cache);
+  for (const fe of fileEntries) {
+    const item = analyzeAudioFile(fe.filePath, cache, fe.rootFolder);
     if (item) {
-      samples.push(item);
+      corpusSamples.push(item);
       folderSet.add(item.folder);
     }
   }
 
+  const samples = selectSeededMapSubset(corpusSamples, maxDisplay, seed);
   computeKNN(samples, 8);
-  compute2DMap(samples);
+  compute2DMap(samples, seed);
   saveDiskCache(cache);
 
   return {
     samples,
+    corpusSamples,
     folders: Array.from(folderSet).sort()
   };
 }
@@ -1133,9 +1286,14 @@ function scanDirectories(dirs, maxFiles = 750) {
 
 const engineState = {
   scannedDirs: [],
+  knownFolders: [], // [{ path, name, enabled, count }] — automatically includes Ableton Core Drums & remembers added folders
+  corpusSamples: [],
   samples: [],
   folders: [],
+  sampleSeed: 1,
+  maxDisplaySamples: MAX_DISPLAY_SAMPLES,
   selectedIndex: -1,
+  anchorIndex: -1,
   activeCategory: "ALL",
   maxLenMs: 5000, // >= 4990 or Infinity = Infinite (no max length cutoff)
   toneFilter: 0,
@@ -1149,6 +1307,9 @@ const engineState = {
 };
 
 let nextSavedId = 1;
+let activeScanJobId = 0;
+let acousticSimTourCache = [];
+let acousticSimTourKey = "";
 const sseClients = new Set();
 
 function broadcastSSE(partial) {
@@ -1168,8 +1329,24 @@ function isInfiniteMaxLen(val) {
   return !Number.isFinite(n) || n >= 4990;
 }
 
+function isSampleFolderEnabled(s, st = engineState) {
+  if (!s) return false;
+  if (!Array.isArray(st.knownFolders) || st.knownFolders.length === 0) return true;
+  const rf = s.rootFolder || "";
+  const sp = s.path || "";
+  for (let i = 0; i < st.knownFolders.length; i++) {
+    const kf = st.knownFolders[i];
+    if (!kf || !kf.path) continue;
+    if (rf === kf.path || sp.startsWith(kf.path + path.sep) || sp === kf.path) {
+      return !!kf.enabled;
+    }
+  }
+  return true;
+}
+
 function isSamplePassingFilters(s, st = engineState) {
   if (!s) return false;
+  if (!isSampleFolderEnabled(s, st)) return false;
   if (st.activeCategory && st.activeCategory !== "ALL" && s.category !== st.activeCategory) {
     return false;
   }
@@ -1192,6 +1369,261 @@ function isSamplePassingFilters(s, st = engineState) {
     if (!matchName && !matchCat && !matchFolder) return false;
   }
   return true;
+}
+
+function syncFolderListToMax() {
+  if (!Max || typeof Max.outlet !== "function") return;
+  const flat = [];
+  for (let i = 0; i < engineState.knownFolders.length; i++) {
+    const kf = engineState.knownFolders[i];
+    flat.push(
+      kf.enabled ? 1 : 0,
+      Number(kf.count) || 0,
+      String(kf.name || "Folder"),
+      String(kf.path || "")
+    );
+  }
+  Max.outlet("folder_list_sync", engineState.knownFolders.length, ...flat);
+}
+
+function ensureKnownFoldersInitialized() {
+  if (Array.isArray(engineState.knownFolders) && engineState.knownFolders.length > 0) {
+    return engineState.knownFolders;
+  }
+  const cache = loadDiskCache();
+  const mapByPath = new Map();
+  const coreDir = findDefaultCoreDrumsDir() || CORE_DRUM_PATHS[0];
+
+  // Always include Ableton Core Drums first
+  mapByPath.set(coreDir, {
+    path: coreDir,
+    name: "Ableton Core Drums",
+    enabled: true,
+    count: 0
+  });
+
+  // Restore previously added folders from persistent cache
+  if (Array.isArray(cache.knownFolders)) {
+    for (const f of cache.knownFolders) {
+      if (f && f.path) {
+        const existing = mapByPath.get(f.path);
+        mapByPath.set(f.path, {
+          path: f.path,
+          name: f.name || (f.path === coreDir ? "Ableton Core Drums" : path.basename(f.path)),
+          enabled: f.enabled !== undefined ? !!f.enabled : true,
+          count: Number(f.count) || (existing ? existing.count : 0)
+        });
+      }
+    }
+  }
+
+  engineState.knownFolders = Array.from(mapByPath.values());
+  return engineState.knownFolders;
+}
+
+function persistKnownFoldersToCache() {
+  const cache = loadDiskCache();
+  cache.knownFolders = engineState.knownFolders.map((f) => ({
+    path: f.path,
+    name: f.name,
+    enabled: !!f.enabled,
+    count: Number(f.count) || 0
+  }));
+  saveDiskCache(cache);
+}
+
+function rebuildActiveMapSubset(seed = engineState.sampleSeed) {
+  engineState.sampleSeed = Number(seed) || 1;
+  acousticSimTourKey = "";
+  const enabledCorpus = engineState.corpusSamples.filter((s) => isSampleFolderEnabled(s, engineState));
+  const maxDisp = Math.max(1, Number(engineState.maxDisplaySamples) || MAX_DISPLAY_SAMPLES);
+  const subset = selectSeededMapSubset(enabledCorpus, maxDisp, engineState.sampleSeed);
+  computeKNN(subset, 8);
+  compute2DMap(subset, engineState.sampleSeed);
+  engineState.samples = subset;
+  if (engineState.selectedIndex < 0 || engineState.selectedIndex >= subset.length) {
+    engineState.selectedIndex = subset.length > 0 ? 0 : -1;
+  }
+  engineState.statusText = `${subset.length} / ${enabledCorpus.length} samples mapped (Seed #${engineState.sampleSeed})`;
+  syncFolderListToMax();
+  syncMiniMapToMax();
+  broadcastSSE({
+    samples: engineState.samples,
+    knownFolders: engineState.knownFolders,
+    sampleSeed: engineState.sampleSeed,
+    corpusCount: enabledCorpus.length,
+    selectedIndex: engineState.selectedIndex,
+    statusText: engineState.statusText
+  });
+  return subset;
+}
+
+function reseedMapSubset() {
+  engineState.sampleSeed = ((engineState.sampleSeed || 1) + 1) >>> 0;
+  return rebuildActiveMapSubset(engineState.sampleSeed);
+}
+
+function addRememberedFolder(folderPath, runAsync = false, onDone = null) {
+  if (!folderPath || typeof folderPath !== "string") return null;
+  let clean = folderPath.replace(/^[^/]+:/, "/");
+  if (!fs.existsSync(clean) && fs.existsSync(folderPath)) clean = folderPath;
+  if (!fs.existsSync(clean)) return null;
+  const stat = fs.statSync(clean);
+  const dir = stat.isDirectory() ? clean : path.dirname(clean);
+
+  ensureKnownFoldersInitialized();
+  const coreDir = findDefaultCoreDrumsDir() || CORE_DRUM_PATHS[0];
+  let entry = engineState.knownFolders.find((f) => f.path === dir);
+  if (!entry) {
+    entry = {
+      path: dir,
+      name: dir === coreDir ? "Ableton Core Drums" : path.basename(dir),
+      enabled: true,
+      count: 0
+    };
+    engineState.knownFolders.push(entry);
+  } else {
+    entry.enabled = true;
+  }
+  persistKnownFoldersToCache();
+  syncFolderListToMax();
+
+  const allDirs = engineState.knownFolders.map((f) => f.path).filter((p) => fs.existsSync(p));
+  if (runAsync) {
+    startBackgroundScan(allDirs, onDone);
+  } else {
+    performScan(allDirs);
+    if (onDone) onDone(engineState.samples);
+  }
+  return entry;
+}
+
+function toggleFolderFilter(folderPath, enabledOpt = undefined) {
+  ensureKnownFoldersInitialized();
+  let target = engineState.knownFolders.find((f) => f.path === folderPath || f.name === folderPath);
+  if (!target && Number.isFinite(Number(folderPath))) {
+    target = engineState.knownFolders[Number(folderPath)];
+  }
+  if (!target) return engineState.knownFolders;
+  target.enabled = enabledOpt !== undefined ? !!Number(enabledOpt) : !target.enabled;
+  persistKnownFoldersToCache();
+  rebuildActiveMapSubset(engineState.sampleSeed);
+  return engineState.knownFolders;
+}
+
+function enableAllFolderFilters() {
+  ensureKnownFoldersInitialized();
+  for (let i = 0; i < engineState.knownFolders.length; i++) {
+    engineState.knownFolders[i].enabled = true;
+  }
+  persistKnownFoldersToCache();
+  rebuildActiveMapSubset(engineState.sampleSeed);
+  return engineState.knownFolders;
+}
+
+function removeRememberedFolder(folderPath) {
+  let targetIdx = engineState.knownFolders.findIndex((f) => f.path === folderPath || f.name === folderPath);
+  if (targetIdx < 0 && Number.isFinite(Number(folderPath))) {
+    const n = Number(folderPath);
+    if (n >= 0 && n < engineState.knownFolders.length) targetIdx = n;
+  }
+  if (targetIdx < 0) return engineState.knownFolders;
+
+  const removed = engineState.knownFolders.splice(targetIdx, 1)[0];
+  const rmPath = removed ? removed.path : "";
+  if (rmPath) {
+    engineState.scannedDirs = engineState.scannedDirs.filter((d) => d !== rmPath);
+    engineState.corpusSamples = engineState.corpusSamples.filter((s) => {
+      const rf = s.rootFolder || "";
+      const sp = s.path || "";
+      return !(rf === rmPath || sp.startsWith(rmPath + path.sep) || sp === rmPath);
+    });
+    // Remove folder and its indexed sample records from persistent disk cache
+    const cache = loadDiskCache();
+    cache.knownFolders = engineState.knownFolders.map((f) => ({
+      path: f.path,
+      name: f.name,
+      enabled: !!f.enabled,
+      count: Number(f.count) || 0
+    }));
+    if (cache.records) {
+      for (const k of Object.keys(cache.records)) {
+        if (k.startsWith(rmPath + path.sep) || k.startsWith(rmPath + "|")) {
+          delete cache.records[k];
+        }
+      }
+    }
+    saveDiskCache(cache);
+  }
+
+  rebuildActiveMapSubset(engineState.sampleSeed);
+  return engineState.knownFolders;
+}
+
+function buildAcousticSimilarityTour(startIdx) {
+  const vis = [];
+  for (let i = 0; i < engineState.samples.length; i++) {
+    if (isSamplePassingFilters(engineState.samples[i])) vis.push(i);
+  }
+  if (vis.length === 0) return [];
+  const enabledFolderKey = engineState.knownFolders.map((f) => `${f.path}:${f.enabled ? 1 : 0}`).join(",");
+  const key = `${vis.length}|${engineState.activeCategory}|${engineState.maxLenMs}|${engineState.toneFilter}|${engineState.searchQuery}|${engineState.sampleSeed}|${enabledFolderKey}`;
+  if (acousticSimTourKey === key && acousticSimTourCache.length === vis.length && acousticSimTourCache.includes(startIdx)) {
+    return acousticSimTourCache;
+  }
+
+  const weights = [2.2, 1.4, 1.8, 1.2, 1.2, 1.6, 2.0, 1.6, 1.5, 1.8, 1.0, 0.8];
+  const remaining = new Set(vis);
+  const start = remaining.has(startIdx) ? startIdx : vis[0];
+  const tour = [start];
+  remaining.delete(start);
+
+  let cur = start;
+  while (remaining.size > 0) {
+    const cs = engineState.samples[cur];
+    const vi = (cs && cs.vector) || [];
+    let bestIdx = -1;
+    let bestD2 = Infinity;
+    for (const cand of remaining) {
+      const qs = engineState.samples[cand];
+      const vj = (qs && qs.vector) || [];
+      let d2 = 0;
+      for (let d = 0; d < weights.length; d++) {
+        const diff = (vi[d] || 0) - (vj[d] || 0);
+        d2 += weights[d] * diff * diff;
+      }
+      if (qs.category !== cs.category) d2 += 0.35;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        bestIdx = cand;
+      }
+    }
+    if (bestIdx < 0) break;
+    tour.push(bestIdx);
+    remaining.delete(bestIdx);
+    cur = bestIdx;
+  }
+
+  acousticSimTourKey = key;
+  acousticSimTourCache = tour;
+  return tour;
+}
+
+function stepSimilarSample(dir = 1) {
+  if (engineState.samples.length === 0) return -1;
+  const curIdx = engineState.selectedIndex >= 0 ? engineState.selectedIndex : 0;
+  const anchor = (engineState.anchorIndex >= 0 && engineState.anchorIndex < engineState.samples.length)
+    ? engineState.anchorIndex
+    : curIdx;
+  const tour = buildAcousticSimilarityTour(anchor);
+  if (tour.length === 0) return -1;
+  let pos = tour.indexOf(curIdx);
+  if (pos < 0) pos = 0;
+  const step = Number(dir) < 0 ? -1 : 1;
+  const nextPos = (pos + step + tour.length) % tour.length;
+  const nextIdx = tour[nextPos];
+  emitSelectedToMax(nextIdx, true);
+  return nextIdx;
 }
 
 function syncMiniMapToMax() {
@@ -1294,8 +1726,13 @@ function emitSelectedToMax(idx, audition = true) {
 }
 
 function saveSampleToList(sampleIdx = engineState.selectedIndex, customSettings = null) {
-  if (sampleIdx < 0 || sampleIdx >= engineState.samples.length) return null;
-  const s = engineState.samples[sampleIdx];
+  const effIdx = (sampleIdx !== undefined && sampleIdx >= 0) ? Number(sampleIdx) : Math.max(0, engineState.selectedIndex);
+  const s = engineState.samples[effIdx] || {
+    name: (customSettings && customSettings.name) ? String(customSettings.name) : `Sample_${effIdx}`,
+    category: CATEGORY_LIST[(customSettings && customSettings.catIdx) || 0] || "kick",
+    durationMs: 320,
+    path: ensureFallbackWavFile((customSettings && customSettings.name) || `Sample_${effIdx}`)
+  };
   const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
   const pitchSt = customSettings && customSettings.pitchSt !== undefined ? Number(customSettings.pitchSt) : engineState.pitchSt;
   const decayMs = customSettings && customSettings.decayMs !== undefined ? Number(customSettings.decayMs) : engineState.decayMs;
@@ -1310,7 +1747,7 @@ function saveSampleToList(sampleIdx = engineState.selectedIndex, customSettings 
 
   const entry = {
     id: nextSavedId++,
-    sampleIndex: sampleIdx,
+    sampleIndex: effIdx,
     name: s.name,
     category: s.category,
     catIdx,
@@ -1382,7 +1819,14 @@ function ensureFallbackWavFile(labelName = "Sample", freqHz = 60, durationSec = 
   fs.mkdirSync(rawDir, { recursive: true });
   const safe = String(labelName || "Sample").replace(/[^a-zA-Z0-9_-]/g, "_");
   const outPath = path.join(rawDir, `${safe}.wav`);
-  if (fs.existsSync(outPath)) return outPath;
+  try {
+    const st = fs.lstatSync(outPath);
+    if (st.isSymbolicLink()) {
+      fs.unlinkSync(outPath);
+    } else if (st.isFile() && st.size > 44) {
+      return outPath;
+    }
+  } catch (_) {}
 
   const sr = 44100;
   const frames = Math.floor(durationSec * sr);
@@ -1400,9 +1844,10 @@ function ensureFallbackWavFile(labelName = "Sample", freqHz = 60, durationSec = 
 function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, handoff = false) {
   const isEdited = mode === "edited" || mode === "all_edited";
   const isAll = mode === "all_raw" || mode === "all_edited";
+  const isSelectedPreviewRaw = mode === "selected_raw";
 
   // Ensure savedList has items if user drags initial default rows before saving
-  if (engineState.savedList.length === 0) {
+  if (!isSelectedPreviewRaw && engineState.savedList.length === 0) {
     if (engineState.samples.length >= 2) {
       saveSampleToList(0, { pitchSt: 0, decayMs: 320, gainDb: 0 });
       saveSampleToList(1, { pitchSt: 3, decayMs: 450, gainDb: -1.5 });
@@ -1441,7 +1886,25 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
   }
 
   let items = [];
-  if (isAll) {
+  if (isSelectedPreviewRaw) {
+    const sampleIdx = (savedIdx >= 0 && savedIdx < engineState.samples.length)
+      ? savedIdx
+      : (engineState.selectedIndex >= 0 ? engineState.selectedIndex : 0);
+    const cur = engineState.samples[sampleIdx];
+    const srcPath = (cur && cur.path && fs.existsSync(cur.path))
+      ? cur.path
+      : ensureFallbackWavFile((cur && cur.name) || "Selected_Sample", 62, 0.35);
+    const rawLink = createRawFileLink(srcPath);
+    items = [{
+      name: (cur && cur.name) || "Selected Sample",
+      rawPath: rawLink,
+      sourcePath: srcPath,
+      editedPath: rawLink,
+      pitchSt: 0,
+      decayMs: (cur && cur.durationMs) || 350,
+      gainDb: 0
+    }];
+  } else if (isAll) {
     items = engineState.savedList;
   } else if (savedIdx >= 0 && savedIdx < engineState.savedList.length) {
     items = [engineState.savedList[savedIdx]];
@@ -1510,7 +1973,7 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
       visible: true,
       handoff: !!handoff,
       stateFile: path.join(EXPORT_BASE_DIR, "last_drag_helper_state.json"),
-      w: isAll ? 64 : 26,
+      w: isSelectedPreviewRaw ? 40 : (isAll ? 64 : 26),
       h: 18
     });
   }
@@ -1534,6 +1997,7 @@ function armHoverDragZone(mode, savedIdx = -1) {
   if (res.paths.length > 0) {
     const isEdited = mode === "edited" || mode === "all_edited";
     const isAll = mode === "all_raw" || mode === "all_edited";
+    const isSelectedPreviewRaw = mode === "selected_raw";
     sendDragHelperCommand({
       cmd: "arm",
       paths: res.paths,
@@ -1542,7 +2006,7 @@ function armHoverDragZone(mode, savedIdx = -1) {
       visible: true,
       handoff: false,
       stateFile: path.join(EXPORT_BASE_DIR, "last_drag_helper_state.json"),
-      w: isAll ? 60 : 18,
+      w: isSelectedPreviewRaw ? 36 : (isAll ? 60 : 18),
       h: 16
     });
   }
@@ -1555,30 +2019,140 @@ function findDefaultCoreDrumsDir() {
   return null;
 }
 
-function performScan(dirs) {
-  const validDirs = dirs.filter((d) => d && fs.existsSync(d));
+function updateKnownFolderCounts() {
+  ensureKnownFoldersInitialized();
+  for (const kf of engineState.knownFolders) {
+    kf.count = 0;
+  }
+  for (const s of engineState.corpusSamples) {
+    const rf = s.rootFolder || "";
+    const sp = s.path || "";
+    for (const kf of engineState.knownFolders) {
+      if (rf === kf.path || sp.startsWith(kf.path + path.sep) || sp === kf.path) {
+        kf.count++;
+        break;
+      }
+    }
+  }
+  persistKnownFoldersToCache();
+}
+
+function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = 10000) {
+  ensureKnownFoldersInitialized();
+  const validDirs = Array.from(new Set(dirs.filter((d) => d && fs.existsSync(d))));
   if (validDirs.length === 0) {
     engineState.statusText = "No sample folder found — click + Folder";
-    broadcastSSE({ statusText: engineState.statusText });
+    syncFolderListToMax();
+    broadcastSSE({ statusText: engineState.statusText, knownFolders: engineState.knownFolders });
+    if (onComplete) onComplete([]);
     return;
   }
+
+  const coreDir = findDefaultCoreDrumsDir() || CORE_DRUM_PATHS[0];
+  for (const d of validDirs) {
+    if (!engineState.knownFolders.some((f) => f.path === d)) {
+      engineState.knownFolders.push({
+        path: d,
+        name: d === coreDir ? "Ableton Core Drums" : path.basename(d),
+        enabled: true,
+        count: 0
+      });
+    }
+  }
+
+  const jobId = ++activeScanJobId;
+  engineState.scannedDirs = validDirs;
+  engineState.statusText = "Scanning folders in background...";
+  syncFolderListToMax();
+  broadcastSSE({ statusText: engineState.statusText, knownFolders: engineState.knownFolders });
+
+  const cache = loadDiskCache();
+  const fileEntries = [];
+  for (const d of validDirs) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch (_) {}
+    const subdirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith("."));
+    const dirFiles = [];
+    if (subdirs.length >= 4) {
+      const perSub = Math.max(40, Math.floor(maxFilesPerFolder / subdirs.length));
+      for (const sd of subdirs) {
+        collectAudioFilesRecursive(path.join(d, sd.name), dirFiles.length + perSub, dirFiles);
+      }
+    } else {
+      collectAudioFilesRecursive(d, maxFilesPerFolder, dirFiles);
+    }
+    for (const f of dirFiles) {
+      fileEntries.push({ filePath: f, rootFolder: d });
+    }
+  }
+
+  const corpusSamples = [];
+  const folderSet = new Set();
+  let cursor = 0;
+  const CHUNK_SIZE = 48;
+
+  function processNextChunk() {
+    if (jobId !== activeScanJobId) return;
+    const end = Math.min(fileEntries.length, cursor + CHUNK_SIZE);
+    for (; cursor < end; cursor++) {
+      const fe = fileEntries[cursor];
+      const item = analyzeAudioFile(fe.filePath, cache, fe.rootFolder);
+      if (item) {
+        corpusSamples.push(item);
+        folderSet.add(item.folder);
+      }
+    }
+
+    if (cursor < fileEntries.length) {
+      engineState.statusText = `Scanning in background... ${corpusSamples.length} / ${fileEntries.length}`;
+      broadcastSSE({ statusText: engineState.statusText });
+      setImmediate(processNextChunk);
+      return;
+    }
+
+    engineState.corpusSamples = corpusSamples;
+    engineState.folders = Array.from(folderSet).sort();
+    updateKnownFolderCounts();
+    saveDiskCache(cache);
+    rebuildActiveMapSubset(engineState.sampleSeed);
+    if (onComplete) onComplete(engineState.samples);
+  }
+
+  setImmediate(processNextChunk);
+}
+
+function performScan(dirs, maxFiles = 5000) {
+  ensureKnownFoldersInitialized();
+  const validDirs = Array.from(new Set(dirs.filter((d) => d && fs.existsSync(d))));
+  if (validDirs.length === 0) {
+    engineState.statusText = "No sample folder found — click + Folder";
+    syncFolderListToMax();
+    broadcastSSE({ statusText: engineState.statusText, knownFolders: engineState.knownFolders });
+    return;
+  }
+  const coreDir = findDefaultCoreDrumsDir() || CORE_DRUM_PATHS[0];
+  for (const d of validDirs) {
+    if (!engineState.knownFolders.some((f) => f.path === d)) {
+      engineState.knownFolders.push({
+        path: d,
+        name: d === coreDir ? "Ableton Core Drums" : path.basename(d),
+        enabled: true,
+        count: 0
+      });
+    }
+  }
+
   engineState.scannedDirs = validDirs;
   engineState.statusText = "Scanning audio files...";
   broadcastSSE({ statusText: engineState.statusText });
 
-  const result = scanDirectories(validDirs, 600);
-  engineState.samples = result.samples;
+  const result = scanDirectories(validDirs, maxFiles, engineState.sampleSeed, engineState.maxDisplaySamples);
+  engineState.corpusSamples = result.corpusSamples;
   engineState.folders = result.folders;
-  engineState.selectedIndex = result.samples.length > 0 ? 0 : -1;
-  engineState.statusText = `${result.samples.length} samples mapped`;
-
-  syncMiniMapToMax();
-  broadcastSSE({
-    samples: engineState.samples,
-    folders: engineState.folders,
-    selectedIndex: engineState.selectedIndex,
-    statusText: engineState.statusText
-  });
+  updateKnownFolderCounts();
+  rebuildActiveMapSubset(engineState.sampleSeed);
 }
 
 function getUIHtml() {
@@ -1669,7 +2243,10 @@ function startHttpServer(callback) {
 function handleAction(msg) {
   const { action } = msg;
   if (action === "select") {
-    emitSelectedToMax(Number(msg.index), msg.audition !== false);
+    const idx = Number(msg.index);
+    engineState.anchorIndex = idx;
+    acousticSimTourKey = "";
+    emitSelectedToMax(idx, msg.audition !== false);
   } else if (action === "save_sample") {
     const idx = msg.index !== undefined ? Number(msg.index) : engineState.selectedIndex;
     return saveSampleToList(idx, msg.settings || null);
@@ -1704,9 +2281,19 @@ function handleAction(msg) {
     }
   } else if (action === "scan_core") {
     const core = findDefaultCoreDrumsDir();
-    if (core) performScan([core]);
+    if (core) startBackgroundScan([core]);
   } else if (action === "prompt_folder") {
     if (Max) Max.outlet("prompt_folder");
+  } else if (action === "reseed_map") {
+    return reseedMapSubset();
+  } else if (action === "toggle_folder") {
+    return toggleFolderFilter(msg.path, msg.enabled);
+  } else if (action === "remove_folder") {
+    return removeRememberedFolder(msg.path);
+  } else if (action === "enable_all_folders") {
+    return enableAllFolderFilters();
+  } else if (action === "step_similar") {
+    return stepSimilarSample(Number(msg.dir) < 0 ? -1 : 1);
   } else if (action === "set_filter") {
     if (msg.category !== undefined) {
       engineState.activeCategory = String(msg.category);
@@ -1747,36 +2334,56 @@ function handleAction(msg) {
 if (Max && typeof Max.addHandler === "function") {
   Max.addHandler("init", () => {
     ensureDragHelperProcess();
+    ensureKnownFoldersInitialized();
+    syncFolderListToMax();
     startHttpServer((port) => {
       Max.outlet("server_url", `http://127.0.0.1:${port}`);
     });
     if (engineState.samples.length === 0) {
-      const core = findDefaultCoreDrumsDir();
-      if (core) performScan([core]);
+      const dirs = engineState.knownFolders.map((f) => f.path).filter((p) => fs.existsSync(p));
+      if (dirs.length > 0) startBackgroundScan(dirs);
     } else {
       syncMiniMapToMax();
     }
   });
 
   Max.addHandler("scan_core", () => {
-    const core = findDefaultCoreDrumsDir();
-    if (core) performScan([core]);
+    ensureKnownFoldersInitialized();
+    const dirs = engineState.knownFolders.map((f) => f.path).filter((p) => fs.existsSync(p));
+    if (dirs.length > 0) startBackgroundScan(dirs);
   });
 
   Max.addHandler("add_folder", (folderPath) => {
-    if (!folderPath || typeof folderPath !== "string") return;
-    let clean = folderPath.replace(/^[^/]+:/, "/");
-    if (!fs.existsSync(clean) && fs.existsSync(folderPath)) clean = folderPath;
-    if (fs.existsSync(clean)) {
-      const stat = fs.statSync(clean);
-      const dir = stat.isDirectory() ? clean : path.dirname(clean);
-      const nextDirs = Array.from(new Set([...engineState.scannedDirs, dir]));
-      performScan(nextDirs);
+    addRememberedFolder(folderPath, true);
+  });
+
+  Max.addHandler("toggle_folder", (folderPath, enabled) => {
+    toggleFolderFilter(folderPath, enabled);
+  });
+
+  Max.addHandler("remove_folder", (folderPath) => {
+    removeRememberedFolder(folderPath);
+  });
+
+  Max.addHandler("enable_all_folders", () => {
+    enableAllFolderFilters();
+  });
+
+  Max.addHandler("prompt_folder", () => {
+    if (Max && typeof Max.outlet === "function") {
+      Max.outlet("prompt_folder");
     }
   });
 
+  Max.addHandler("reseed_map", () => {
+    reseedMapSubset();
+  });
+
   Max.addHandler("select_index", (idx, audition = 1) => {
-    emitSelectedToMax(Number(idx), Number(audition) !== 0);
+    const nIdx = Number(idx);
+    engineState.anchorIndex = nIdx;
+    acousticSimTourKey = "";
+    emitSelectedToMax(nIdx, Number(audition) !== 0);
   });
 
   Max.addHandler("replay", () => {
@@ -1786,25 +2393,7 @@ if (Max && typeof Max.addHandler === "function") {
   });
 
   Max.addHandler("step_similar", (dir) => {
-    if (engineState.samples.length === 0) return;
-    const curIdx = engineState.selectedIndex >= 0 ? engineState.selectedIndex : 0;
-    const cur = engineState.samples[curIdx];
-    const rawNbrs = (cur && cur.neighbors) ? cur.neighbors : [];
-    const validNbrs = rawNbrs.filter((nIdx) => isSamplePassingFilters(engineState.samples[nIdx]));
-    if (validNbrs.length > 0) {
-      const nextIdx = Number(dir) >= 0 ? validNbrs[0] : validNbrs[validNbrs.length - 1];
-      emitSelectedToMax(nextIdx, true);
-      return;
-    }
-    const vis = [];
-    engineState.samples.forEach((s, i) => {
-      if (isSamplePassingFilters(s)) vis.push(i);
-    });
-    if (vis.length > 0) {
-      const pos = Math.max(0, vis.indexOf(curIdx));
-      const nextPos = (pos + (Number(dir) >= 0 ? 1 : -1) + vis.length) % vis.length;
-      emitSelectedToMax(vis[nextPos], true);
-    }
+    stepSimilarSample(Number(dir) < 0 ? -1 : 1);
   });
 
   Max.addHandler("random_sample", () => {
@@ -1819,8 +2408,14 @@ if (Max && typeof Max.addHandler === "function") {
     }
   });
 
-  Max.addHandler("save_selected", () => {
-    saveSampleToList(engineState.selectedIndex);
+  Max.addHandler("save_selected", (idx, name, catIdx, pitch, decay, gain) => {
+    const settings = {};
+    if (name !== undefined) settings.name = name;
+    if (catIdx !== undefined) settings.catIdx = Number(catIdx);
+    if (pitch !== undefined) settings.pitchSt = Number(pitch);
+    if (decay !== undefined) settings.decayMs = Number(decay);
+    if (gain !== undefined) settings.gainDb = Number(gain);
+    saveSampleToList(idx !== undefined ? Number(idx) : engineState.selectedIndex, settings);
   });
 
   Max.addHandler("recall_saved", (savedIdx) => {
@@ -1840,7 +2435,7 @@ if (Max && typeof Max.addHandler === "function") {
   });
 
   Max.addHandler("drag_out", (mode, savedIdx = -1) => {
-    resolveDragOutPaths(String(mode || "raw"), Number(savedIdx), true);
+    resolveDragOutPaths(String(mode || "raw"), Number(savedIdx), true, true);
   });
 
   Max.addHandler("arm_drag", (mode, savedIdx = -1) => {
@@ -1893,14 +2488,15 @@ if (Max && typeof Max.addHandler === "function") {
 
 if (hasRealMaxApi) {
   ensureDragHelperProcess();
+  ensureKnownFoldersInitialized();
   startHttpServer((port) => {
     if (Max && typeof Max.outlet === "function") {
       Max.outlet("server_url", `http://127.0.0.1:${port}`);
     }
   });
-  const core = findDefaultCoreDrumsDir();
-  if (core) {
-    setTimeout(() => performScan([core]), 150);
+  const dirs = engineState.knownFolders.map((f) => f.path).filter((p) => fs.existsSync(p));
+  if (dirs.length > 0) {
+    setTimeout(() => startBackgroundScan(dirs), 150);
   }
 }
 
@@ -1909,6 +2505,7 @@ module.exports = {
   parseAiffBuffer,
   parseAudioBuffer,
   encodeStereoWav16,
+  ensureFallbackWavFile,
   renderEditedAudioSamples,
   renderEditedSampleWav,
   createRawFileLink,
@@ -1916,6 +2513,18 @@ module.exports = {
   classifySample,
   computeKNN,
   compute2DMap,
+  packSampleBinaryRecord,
+  unpackSampleBinaryRecord,
+  selectSeededMapSubset,
+  rebuildActiveMapSubset,
+  reseedMapSubset,
+  ensureKnownFoldersInitialized,
+  addRememberedFolder,
+  removeRememberedFolder,
+  toggleFolderFilter,
+  enableAllFolderFilters,
+  startBackgroundScan,
+  stepSimilarSample,
   analyzeAudioFile,
   scanDirectories,
   isInfiniteMaxLen,
@@ -1930,5 +2539,7 @@ module.exports = {
   handleAction,
   startHttpServer,
   engineState,
-  CATEGORY_LIST
+  CATEGORY_LIST,
+  MAX_DISPLAY_SAMPLES,
+  RECORD_BYTE_SIZE
 };

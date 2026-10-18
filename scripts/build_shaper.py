@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build script for devices/Bitwig Shaper.amxd
+Build script for devices/Better Shaper.amxd
 Generates a self-contained Max for Live Audio Effect modulator (.amxd)
 combining:
   - src/mseg_editor.js (embedded in a Max 9 v8ui object)
@@ -21,7 +21,7 @@ import struct
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_PATH = os.path.join(ROOT_DIR, "src", "mseg_editor.js")
-OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Bitwig Shaper.amxd")
+OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Better Shaper.amxd")
 
 CLIPPING_PATH = (
     "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
@@ -527,9 +527,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [30.0, 230.0, 318.0, 134.0],
+                "patching_rect": [30.0, 230.0, 262.0, 134.0],
                 "presentation": 1,
-                "presentation_rect": [10.0, 26.0, 318.0, 134.0],
+                "presentation_rect": [10.0, 26.0, 262.0, 134.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_invisible": 1,
@@ -549,7 +549,7 @@ def build():
             }
         },
 
-        # --- 5. Bottom-Right of Left Panel: Grid & Snap (Hidden when Multimap View is open) ---
+        # --- 5. Grid & Snap Live Parameters (Rendered & controlled directly on v8ui toolbar, synced bidirectionally) ---
         {
             "box": {
                 "id": "obj-grid-lbl",
@@ -557,7 +557,7 @@ def build():
                 "numinlets": 1,
                 "numoutlets": 0,
                 "patching_rect": [45.0, 425.0, 30.0, 18.0],
-                "presentation": 1,
+                "presentation": 0,
                 "presentation_rect": [225.0, 141.0, 28.0, 16.0],
                 "text": "Grid",
                 "textcolor": [0.576, 0.631, 0.678, 1.0],
@@ -578,7 +578,7 @@ def build():
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
                 "patching_rect": [80.0, 425.0, 32.0, 15.0],
-                "presentation": 1,
+                "presentation": 0,
                 "presentation_rect": [254.0, 142.0, 24.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
@@ -613,6 +613,19 @@ def build():
         },
         {
             "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-grid-set",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [80.0, 400.0, 65.0, 20.0],
+                "text": "prepend set"
+            }
+        },
+        {
+            "box": {
                 "activebgcolor": [0.067, 0.086, 0.11, 1.0],
                 "activebgoncolor": [1.0, 0.678, 0.22, 1.0],
                 "activetextcolor": [0.75, 0.78, 0.82, 1.0],
@@ -626,7 +639,7 @@ def build():
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
                 "patching_rect": [160.0, 425.0, 44.0, 15.0],
-                "presentation": 1,
+                "presentation": 0,
                 "presentation_rect": [282.0, 142.0, 42.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
@@ -659,6 +672,19 @@ def build():
                 "text": "prepend snap"
             }
         },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-snap-set",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [160.0, 400.0, 65.0, 20.0],
+                "text": "prepend set"
+            }
+        },
 
         # --- 6. Top-Right of Left Panel: Multimap Show/Hide Button (≡ / —) ---
         {
@@ -681,7 +707,7 @@ def build():
                 "patching_rect": [650.0, 260.0, 15.0, 15.0],
                 "pictures": ["multimap-closed-off.svg", "multimap-open-off.svg"],
                 "presentation": 1,
-                "presentation_rect": [311.0, 8.0, 15.0, 15.0],
+                "presentation_rect": [255.0, 8.0, 15.0, 15.0],
                 "remapsvgcolors": 1,
                 "saved_attribute_attributes": {
                     "valueof": {
@@ -793,7 +819,7 @@ def build():
             }
         },
 
-        # --- 7. Right Panel Controls (Matching Live 12 Native Shaper Layout) ---
+        # --- 7. Right Panel Controls (Matching Live 12 Native Shaper Layout, x = 282..432) ---
         {
             "box": {
                 "bgcolor": [0.047, 0.067, 0.086, 0.0],
@@ -806,7 +832,7 @@ def build():
                 "outlettype": ["bang"],
                 "patching_rect": [420.0, 450.0, 146.0, 39.0],
                 "presentation": 1,
-                "presentation_rect": [340.0, 7.0, 146.0, 39.0],
+                "presentation_rect": [284.0, 7.0, 146.0, 39.0],
                 "range": [-1.05, 1.05],
                 "samples": 44100.0
             }
@@ -820,7 +846,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [360.0, 320.0, 38.0, 18.0],
                 "presentation": 1,
-                "presentation_rect": [345.0, 47.0, 35.0, 16.0],
+                "presentation_rect": [289.0, 47.0, 35.0, 16.0],
                 "text": "Jitter",
                 "textcolor": [0.576, 0.631, 0.678, 1.0],
                 "textjustification": 0
@@ -841,7 +867,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [400.0, 320.0, 38.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [377.0, 48.0, 34.0, 15.0],
+                "presentation_rect": [321.0, 48.0, 34.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Jitter",
@@ -868,7 +894,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [450.0, 320.0, 48.0, 18.0],
                 "presentation": 1,
-                "presentation_rect": [414.0, 47.0, 45.0, 16.0],
+                "presentation_rect": [358.0, 47.0, 45.0, 16.0],
                 "text": "Smooth",
                 "textcolor": [0.576, 0.631, 0.678, 1.0],
                 "textjustification": 0
@@ -889,7 +915,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [500.0, 320.0, 38.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [455.0, 48.0, 32.0, 15.0],
+                "presentation_rect": [399.0, 48.0, 32.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Smooth",
@@ -928,7 +954,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [300.0, 170.0, 14.0, 14.0],
                 "presentation": 1,
-                "presentation_rect": [342.0, 64.0, 14.0, 14.0],
+                "presentation_rect": [286.0, 64.0, 14.0, 14.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Retrigger",
@@ -953,7 +979,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [350.0, 150.0, 18.0, 18.0],
                 "presentation": 1,
-                "presentation_rect": [360.0, 63.0, 18.0, 16.0],
+                "presentation_rect": [304.0, 63.0, 18.0, 16.0],
                 "text": "Ø",
                 "textcolor": [0.576, 0.631, 0.678, 1.0],
                 "textjustification": 1
@@ -974,7 +1000,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [350.0, 170.0, 40.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [377.0, 64.0, 38.0, 15.0],
+                "presentation_rect": [321.0, 64.0, 38.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Phase",
@@ -1001,7 +1027,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [600.0, 240.0, 42.0, 18.0],
                 "presentation": 1,
-                "presentation_rect": [414.0, 63.0, 40.0, 16.0],
+                "presentation_rect": [358.0, 63.0, 40.0, 16.0],
                 "text": "Offset",
                 "textcolor": [0.576, 0.631, 0.678, 1.0],
                 "textjustification": 0
@@ -1022,7 +1048,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [600.0, 260.0, 38.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [455.0, 64.0, 32.0, 15.0],
+                "presentation_rect": [399.0, 64.0, 32.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Offset",
@@ -1061,7 +1087,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [550.0, 150.0, 144.0, 16.0],
                 "presentation": 1,
-                "presentation_rect": [343.0, 88.0, 142.0, 15.0],
+                "presentation_rect": [287.0, 88.0, 142.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Playback Mode",
@@ -1161,7 +1187,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [500.0, 30.0, 44.0, 48.0],
                 "presentation": 1,
-                "presentation_rect": [345.0, 110.0, 44.0, 48.0],
+                "presentation_rect": [289.0, 110.0, 44.0, 48.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Rate",
@@ -1194,7 +1220,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [550.0, 30.0, 44.0, 48.0],
                 "presentation": 1,
-                "presentation_rect": [345.0, 110.0, 44.0, 48.0],
+                "presentation_rect": [289.0, 110.0, 44.0, 48.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Synced Rate",
@@ -1226,7 +1252,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [595.0, 50.0, 8.0, 4.0],
                 "presentation": 1,
-                "presentation_rect": [390.0, 136.0, 6.0, 4.0]
+                "presentation_rect": [334.0, 136.0, 6.0, 4.0]
             }
         },
         {
@@ -1246,7 +1272,7 @@ def build():
                 "patching_rect": [600.0, 30.0, 20.0, 30.0],
                 "pictures": ["lfo-free-icon.svg", "lfo-beat-icon.svg"],
                 "presentation": 1,
-                "presentation_rect": [398.0, 120.0, 20.0, 29.0],
+                "presentation_rect": [342.0, 120.0, 20.0, 29.0],
                 "remapsvgcolors": 1,
                 "saved_attribute_attributes": {
                     "valueof": {
@@ -1359,7 +1385,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [640.0, 30.0, 44.0, 48.0],
                 "presentation": 1,
-                "presentation_rect": [434.0, 110.0, 44.0, 48.0],
+                "presentation_rect": [378.0, 110.0, 44.0, 48.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Depth",
@@ -1450,11 +1476,11 @@ def build():
                 "fontsize": 10.0,
                 "id": "obj-route-loop",
                 "maxclass": "newobj",
-                "numinlets": 4,
-                "numoutlets": 4,
-                "outlettype": ["", "", "", ""],
-                "patching_rect": [180.0, 380.0, 165.0, 20.0],
-                "text": "route loop syncphase oneshotms"
+                "numinlets": 6,
+                "numoutlets": 6,
+                "outlettype": ["", "", "", "", "", ""],
+                "patching_rect": [180.0, 380.0, 240.0, 20.0],
+                "text": "route loop syncphase oneshotms grid_sync snap_sync"
             }
         },
         {
@@ -1879,11 +1905,15 @@ def build():
         {"patchline": {"source": ["obj-sel-oneshot", 0], "destination": ["obj-play-sel", 0]}},
         {"patchline": {"source": ["obj-sel-manual", 0], "destination": ["obj-play-sel", 0]}},
 
-        # v8ui outlet 0 (loop start/span, timeline syncphase, oneshotms) -> phase windowing & phasor~/line~
+        # v8ui outlet 0 (loop start/span, timeline syncphase, oneshotms, grid_sync, snap_sync)
         {"patchline": {"source": ["obj-mseg", 0], "destination": ["obj-route-loop", 0]}},
         {"patchline": {"source": ["obj-route-loop", 0], "destination": ["obj-unpack-loop", 0]}},
         {"patchline": {"source": ["obj-route-loop", 1], "destination": ["obj-phasor", 1]}},
         {"patchline": {"source": ["obj-route-loop", 2], "destination": ["obj-oneshot-pack", 1]}},
+        {"patchline": {"source": ["obj-route-loop", 3], "destination": ["obj-grid-set", 0]}},
+        {"patchline": {"source": ["obj-grid-set", 0], "destination": ["obj-grid", 0]}},
+        {"patchline": {"source": ["obj-route-loop", 4], "destination": ["obj-snap-set", 0]}},
+        {"patchline": {"source": ["obj-snap-set", 0], "destination": ["obj-snap-btn", 0]}},
         {"patchline": {"source": ["obj-unpack-loop", 0], "destination": ["obj-loop-add", 1]}},
         {"patchline": {"source": ["obj-unpack-loop", 1], "destination": ["obj-loop-mul", 1]}},
 
@@ -2344,7 +2374,7 @@ def build():
         parameters_dict[min_id] = [f"TargetMin[{slot_num}]", f"Min {slot_num}", 0]
         parameters_dict[max_id] = [f"TargetMax[{slot_num}]", f"Max {slot_num}", 0]
 
-    # --- 10. Presentation Background Panels (2-Panel Native Shaper Footprint: 492 x 169 px) ---
+    # --- 10. Presentation Background Panels (2-Panel Native Shaper Footprint: 436 x 169 px) ---
     boxes.extend([
         {
             "box": {
@@ -2360,7 +2390,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [30.0, 500.0, 120.0, 40.0],
                 "presentation": 1,
-                "presentation_rect": [6.0, 5.0, 328.0, 159.0],
+                "presentation_rect": [6.0, 5.0, 272.0, 159.0],
                 "proportion": 0.5,
                 "rounded": 4
             }
@@ -2379,7 +2409,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [160.0, 500.0, 120.0, 40.0],
                 "presentation": 1,
-                "presentation_rect": [338.0, 5.0, 150.0, 77.0],
+                "presentation_rect": [282.0, 5.0, 150.0, 77.0],
                 "proportion": 0.5,
                 "rounded": 4
             }
@@ -2410,7 +2440,7 @@ def build():
             },
             "classnamespace": "box",
             "rect": [60.0, 80.0, 1260.0, 680.0],
-            "openrect": [0.0, 0.0, 492.0, 169.0],
+            "openrect": [0.0, 0.0, 436.0, 169.0],
             "bglocked": 0,
             "openinpresentation": 1,
             "default_fontsize": 10.0,
@@ -2431,13 +2461,13 @@ def build():
             "boxanimatetime": 500,
             "enablehscroll": 1,
             "enablevscroll": 1,
-            "devicewidth": 492.0,
+            "devicewidth": 436.0,
             "description": "Shaper modulator with Bitwig-style MSEG editor and 8-slot modulation matrix",
             "digest": "Bitwig-style MSEG Shaper for Max for Live",
             "tags": "max for live modulator mseg shaper bitwig",
             "style": "",
             "subpatcher_template": "",
-            "title": "Bitwig Shaper",
+            "title": "Better Shaper",
             "boxes": boxes,
             "lines": lines,
             "parameters": parameters_dict,

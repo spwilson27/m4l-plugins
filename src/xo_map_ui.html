@@ -556,6 +556,7 @@
 
     <button id="scan-core-btn" class="btn">Scan Core Drums</button>
     <button id="add-folder-btn" class="btn">+ Add Folder</button>
+    <button id="reseed-btn" class="btn" title="Re-Seed the 1,500 sample subset from full corpus">↻ Re-Seed</button>
     <button id="fit-view-btn" class="btn">Reset View</button>
 
     <div id="status-pill" class="status-pill">Connecting...</div>
@@ -666,7 +667,7 @@
 
   <!-- Bottom Waveform & Spectral Bar -->
   <div class="bottom-dock">
-    <canvas id="wave-canvas" width="360" height="50" title="Click to replay sample"></canvas>
+    <canvas id="wave-canvas" width="360" height="50" draggable="true" title="Click to replay sample • Drag to export single Raw sample"></canvas>
     <div class="bands-box">
       <div class="band-col">
         <div class="band-bar-bg"><div id="band-sub" class="band-bar-fill" style="height:20%;background:#ff4d5e;"></div></div>
@@ -1363,6 +1364,7 @@
   });
   document.getElementById("scan-core-btn").addEventListener("click", () => sendAction("scan_core"));
   document.getElementById("add-folder-btn").addEventListener("click", () => sendAction("prompt_folder"));
+  document.getElementById("reseed-btn").addEventListener("click", () => sendAction("reseed_map"));
   document.getElementById("fit-view-btn").addEventListener("click", () => {
     view = { zoom: 1.0, panX: 0, panY: 0 };
     drawMap();
@@ -1433,8 +1435,22 @@
       selectSample(pick, true, true);
     }
   });
-  waveCanvas.addEventListener("click", () => {
-    if (state.selectedIndex >= 0) selectSample(state.selectedIndex, true, false);
+  waveCanvas.addEventListener("mouseenter", () => {
+    if (state.selectedIndex >= 0) sendAction("arm_drag", { mode: "selected_raw", savedIdx: state.selectedIndex });
+  });
+  waveCanvas.addEventListener("mousedown", () => {
+    if (state.selectedIndex >= 0) {
+      selectSample(state.selectedIndex, true, false);
+      sendAction("drag_out", { mode: "selected_raw", savedIdx: state.selectedIndex });
+    }
+  });
+  waveCanvas.addEventListener("dragstart", (ev) => {
+    const s = state.samples[state.selectedIndex];
+    if (s && s.path) {
+      ev.dataTransfer.setData("text/uri-list", `file://${s.path}`);
+      ev.dataTransfer.setData("text/plain", s.path);
+    }
+    sendAction("drag_out", { mode: "selected_raw", savedIdx: state.selectedIndex });
   });
 
   // Keyboard shortcuts (including 'S' to save sample + playback settings)

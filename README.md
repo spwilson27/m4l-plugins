@@ -3,8 +3,8 @@
 A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1+)**:
 
 1. **`devices/XO Sample Map.amxd`** — An XLN Audio XO–inspired 2D Drum Sample Space Browser, Auto-Categorizer, Similarity Explorer, and Simpler / Drum Rack Pad Loader (`Node for Max` + `jweb` pop-out window + in-device `v8ui` mini-map + `LiveAPI`).
-2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (FDN, 20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, plus Pre-delay, Modulation, Crossfeed, I/O gain, HP/LP, Freeze, and a Seed (0–9999) that deterministically selects a random internal delay-line configuration. 20-bar v8ui visualization.
-3. **`devices/Bitwig Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
+2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, Pre-delay, Modulation, Crossfeed, and HP/LP. A Seed (0–9999) picks density, delay times, and diffusion character. Vibrating delay-line display.
+3. **`devices/Better Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
 
 ---
 
@@ -32,16 +32,17 @@ An XLN Audio XO–style 2D sample constellation browser and sample exporter that
 A Max for Live **Audio Effect** reverb — a "tiny space" ranging from tight comb-spaces to a small room. Built around a **gen.codebox~** feedback-delay network (20 delay lines) with a seed-driven configuration.
 
 ### Features
-- **Controls**: Size, Damp, Width, Dry/Wet (Mix), Feedback, plus Pre-delay, Modulation, Crossfeed, Input/Output gain, HP/LP filters, Freeze, and a **Seed** (0–9999) that deterministically selects a random internal delay-line configuration.
-- **Visualization**: 20 per-delay-line energy bars (v8ui) that pulse with the actual delay-line energy.
-- **gen.codebox~ core**: FDN reverb with input allpass diffusion, per-line damping/feedback, crossfeed, modulation, freeze, width (M/S), predelay.
+- **Controls**: Size, Damp, Width, Dry/Wet (Mix), Feedback, Pre-delay, Modulation, Crossfeed, HP/LP, and a **Seed** (0–9999). Knobs stay put when the seed changes.
+- **Seed**: Deterministic mulberry32 config. Even density from 4 to 20 lines, inharmonic delay times, allpass diffusion, per-line damping color, and a blend from parallel combs (metallic) to a Householder mix (a small room).
+- **Visualization**: 20 vibrating strings (v8ui). The left ten are cyan, the right ten are amber. Amplitude follows each line's envelope; idle lines are dim stubs.
+- **gen.codebox~ core**: Predelay, HP/LP, seeded allpasses, 20 fractional delays, crossfeed, damping, soft clip, width, equal-power dry/wet. A seed change ducks the tank for 160 ms.
 
 ### Files
-- `src/tinyspace_ui.js` — v8ui visualization + seed PRNG + config buffer poke + `getvalueof`/`setvalueof`
+- `src/tinyspace_config.js` — seeded config and the float layout shared with gen
+- `src/tinyspace_ui.js` — v8ui strings, config poke, meter peek
 - `src/tinyspace_core.genexpr` — Gen core
 - `scripts/build_tinyspace.py` — builds `devices/Tiny Space.amxd`
-- `tests/test_tinyspace.js` — structure + JS unit tests
-- `tests/tinyspace_harness.maxpat` — audio test harness with extra in/out sinks
+- `tests/test_tinyspace.js` — config invariants and device structure
 - `previews/tiny_space.png` — rendered preview
 
 ### Rebuild & Test
@@ -49,15 +50,9 @@ A Max for Live **Audio Effect** reverb — a "tiny space" ranging from tight com
 python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
 ```
 
-### Audio validation
-```bash
-python3 scripts/build_tinyspace_harness.py
-python3 scripts/run_tinyspace_audio_tests.py
-```
-
 ---
 
-## 3. Bitwig Shaper (`devices/Bitwig Shaper.amxd`)
+## 3. Better Shaper (`devices/Better Shaper.amxd`)
 
 A Max for Live Audio Effect modulator device that replaces Ableton's stock **Shaper** MSEG editor with a fast, fluid **Bitwig Studio–inspired MSEG curve editor**, audio-rate wavetable modulation, and an 8-slot modulation matrix.
 
@@ -90,22 +85,22 @@ A Max for Live Audio Effect modulator device that replaces Ableton's stock **Sha
 .
 ├── devices/
 │   ├── XO Sample Map.amxd   # Built XO Sample Space Browser & Simpler Loader (.amxd)
-│   └── Bitwig Shaper.amxd   # Built Bitwig-style MSEG Shaper Modulator (.amxd)
+│   └── Better Shaper.amxd   # Built Bitwig-style MSEG Shaper Modulator (.amxd)
 ├── previews/
 │   ├── xo_sample_map.png    # Rendered 2x Retina visual screenshot for XO Sample Map
-│   └── bitwig_shaper.png    # Rendered 2x Retina visual screenshot for Bitwig Shaper
+│   └── better_shaper.png    # Rendered 2x Retina visual screenshot for Better Shaper
 ├── src/
 │   ├── xo_node_engine.js    # Node for Max audio analyzer, 2D map, edited WAV renderer & HTTP/SSE server
 │   ├── xo_map_ui.html       # Pop-out jweb HTML5 Canvas 2D Sample Space UI
 │   ├── xo_strip_ui.js       # In-device v8ui mini-map, waveform scanner, vector toolbar & saved list
-│   └── mseg_editor.js       # Max 9 v8ui JavaScript source for Bitwig Shaper MSEG editor
+│   └── mseg_editor.js       # Max 9 v8ui JavaScript source for Better Shaper MSEG editor
 ├── scripts/
 │   ├── build_xo_map.py      # Assembles src/xo_* + patcher DSP/UI into devices/XO Sample Map.amxd
-│   ├── build_shaper.py      # Assembles src/mseg_editor.js + patcher DSP/UI into devices/Bitwig Shaper.amxd
+│   ├── build_shaper.py      # Assembles src/mseg_editor.js + patcher DSP/UI into devices/Better Shaper.amxd
 │   └── render_preview.py    # Renders a 2x Retina visual screenshot of a device to previews/<plugin_slug>.png
 ├── tests/
 │   ├── test_xo_map.js       # Automated verification & interaction test suite for XO Sample Map
-│   └── test_shaper.js       # Automated verification & interaction test suite for Bitwig Shaper
+│   └── test_shaper.js       # Automated verification & interaction test suite for Better Shaper
 ├── README.md
 └── AGENTS.md                # Architecture, rules & technical reference for AI coding agents
 ```
@@ -118,6 +113,6 @@ Run the build, verification test suite, and 2x Retina preview generator for eith
 # XO Sample Map
 python3 scripts/build_xo_map.py && node tests/test_xo_map.js && python3 scripts/render_preview.py "devices/XO Sample Map.amxd"
 
-# Bitwig Shaper
-python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/render_preview.py "devices/Bitwig Shaper.amxd"
+# Better Shaper
+python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/render_preview.py "devices/Better Shaper.amxd"
 ```

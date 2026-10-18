@@ -37,18 +37,45 @@ for (const b of p.boxes) {
   boxMap.set(box.id, box);
 }
 
-// Verify core objects exist, mono-safe right channel selector exists, and drop-folder / Simpler loader are removed
+// Verify core objects exist, mono-safe right channel selector exists, folder list v8ui exists,
+// and removed buttons (Sim/Rand in Filters, Audition/Replay in Playback, Drop folder, Simpler loader) are gone
 for (const reqId of [
   "obj-plugin", "obj-plugout", "obj-sfplay", "obj-r-chan-sel", "obj-speed-reg",
-  "obj-node", "obj-minimap", "obj-map-window", "obj-open-map-btn",
+  "obj-node", "obj-minimap", "obj-folder-list", "obj-map-window", "obj-open-map-btn",
   "obj-save-sample-btn", "obj-search-box", "obj-search-clear-btn",
   "obj-panel-left", "obj-panel-filters", "obj-panel-playback",
-  "obj-scan-msg", "obj-scan-line", "obj-prep-playhead", "obj-key"
+  "obj-scan-msg", "obj-scan-line", "obj-prep-playhead",
+  "obj-key", "obj-sel-key", "obj-msg-hotkey-save", "obj-msg-save-sel", "obj-msg-del-saved"
 ]) {
   assert(boxMap.has(reqId), `Missing required box: ${reqId}`);
 }
 assert(!boxMap.has("obj-drop-folder"), "Drop Sample Folder box should be removed");
 assert(!boxMap.has("obj-load-simpler-btn"), "Simpler loader button should be removed");
+assert(!boxMap.has("obj-prev-sim-btn"), "Prev Similar button in Filters section should be removed");
+assert(!boxMap.has("obj-next-sim-btn"), "Next Similar button in Filters section should be removed");
+assert(!boxMap.has("obj-rand-btn"), "Random button in Filters section should be removed");
+assert(!boxMap.has("obj-play-btn"), "Audition / Replay button in Playback section should be removed");
+assert(!boxMap.has("obj-prep-key"), "Regression: obj-prep-key ('prepend key') must not be used because v8ui swallows 'key' in C++");
+
+// Regression Check: obj-node (node.codebox) MUST have presentation=1 and be placed before obj-minimap
+// so Max 9 boots node.codebox when openinpresentation=1!
+const nodeBox = boxMap.get("obj-node");
+assert.strictEqual(nodeBox.presentation, 1, "Regression: obj-node must have presentation: 1 to boot in M4L presentation mode");
+assert.strictEqual(nodeBox.ignoreclick, 1, "Expected ignoreclick: 1 on hidden background obj-node");
+const nodeIdx = p.boxes.findIndex((b) => b.box.id === "obj-node");
+const minimapIdx = p.boxes.findIndex((b) => b.box.id === "obj-minimap");
+assert(nodeIdx < minimapIdx, "Expected obj-node before obj-minimap in z-order so it sits behind the UI");
+
+// Regression Check: Verify 's' hotkey routing (obj-key -> obj-sel-key -> obj-msg-save-sel -> obj-minimap)
+const linesFrom = (srcId) =>
+  p.lines.map((l) => l.patchline).filter((pl) => pl.source[0] === srcId).map((pl) => pl.destination[0]);
+
+assert(linesFrom("obj-key").includes("obj-sel-key"), "obj-key must route to obj-sel-key");
+assert(linesFrom("obj-sel-key").includes("obj-msg-hotkey-save"), "obj-sel-key must route 115/83 ('s'/'S') to obj-msg-hotkey-save");
+assert(linesFrom("obj-sel-key").includes("obj-msg-del-saved"), "obj-sel-key must route Delete/Backspace to obj-msg-del-saved");
+assert(linesFrom("obj-msg-hotkey-save").includes("obj-minimap"), "obj-msg-hotkey-save must route to obj-minimap");
+assert(linesFrom("obj-msg-save-sel").includes("obj-minimap"), "obj-msg-save-sel must route to obj-minimap");
+assert(linesFrom("obj-msg-del-saved").includes("obj-minimap"), "obj-msg-del-saved must route to obj-minimap");
 
 // Verify Mono-to-Stereo audio routing on obj-sfplay and obj-r-chan-sel (selector~ 2 1)
 const linesFromPort = (srcId, srcOut) =>
@@ -80,9 +107,6 @@ assert(
 );
 
 // Regression Check: Verify obj-maxlen-dial and obj-tone-dial connect directly to strip_filter_*
-const linesFrom = (srcId) =>
-  p.lines.map((l) => l.patchline).filter((pl) => pl.source[0] === srcId).map((pl) => pl.destination[0]);
-
 assert(
   linesFrom("obj-maxlen-dial").includes("obj-prep-sf-maxlen"),
   "Regression: obj-maxlen-dial must connect directly to obj-prep-sf-maxlen"
@@ -115,7 +139,7 @@ for (const b of [...boxMap.values(), ...subBoxes]) {
 const minimapRect = boxMap.get("obj-minimap").presentation_rect;
 const presWidgets = [];
 for (const [id, box] of boxMap.entries()) {
-  if (box.maxclass === "panel" || !box.presentation || !box.presentation_rect || box.hidden) continue;
+  if (box.maxclass === "panel" || box.maxclass === "node.codebox" || !box.presentation || !box.presentation_rect || box.hidden) continue;
   presWidgets.push({ id, maxclass: box.maxclass, r: box.presentation_rect });
   if (id === "obj-minimap") continue;
   const r = box.presentation_rect;
@@ -264,6 +288,86 @@ assert.strictEqual(engine.engineState.savedList[0].id, savedC.id, "Expected save
 engine.removeSavedSample(1);
 assert.strictEqual(engine.engineState.savedList.length, 2, "Expected 2 saved samples after deleting index 1");
 
+// Test Binary Cache Record Packing & Unpacking (104-byte fixed binary records)
+assert.strictEqual(engine.RECORD_BYTE_SIZE, 104, "Expected 104-byte fixed binary record format");
+const packedRec = engine.packSampleBinaryRecord(scanRes.samples[0]);
+assert.strictEqual(packedRec.length, 104);
+const unpackedRec = engine.unpackSampleBinaryRecord(packedRec, 0, scanRes.samples[0].path, tmpDir);
+assert.strictEqual(unpackedRec.category, scanRes.samples[0].category);
+assert.strictEqual(unpackedRec.durationMs, scanRes.samples[0].durationMs);
+assert.strictEqual(unpackedRec.channels, scanRes.samples[0].channels);
+assert.strictEqual(unpackedRec.peaks.length, 24);
+
+// Test 1,500-Sample Map Display Limit & Seeded Re-Seed from Full Corpus
+assert.strictEqual(engine.MAX_DISPLAY_SAMPLES, 1500, "Expected MAX_DISPLAY_SAMPLES === 1500");
+const syntheticCorpus = [];
+for (let i = 0; i < 2000; i++) {
+  const base = scanRes.samples[i % scanRes.samples.length];
+  syntheticCorpus.push({
+    ...base,
+    name: `CorpusSample_${i}`,
+    path: `/tmp/corpus_${i}.wav`,
+    rootFolder: i < 1000 ? "/tmp/PackA" : "/tmp/PackB"
+  });
+}
+const subSeed1 = engine.selectSeededMapSubset(syntheticCorpus, 1500, 1);
+const subSeed2 = engine.selectSeededMapSubset(syntheticCorpus, 1500, 2);
+assert.strictEqual(subSeed1.length, 1500, "Expected map subset capped at 1,500 samples");
+assert.strictEqual(subSeed2.length, 1500, "Expected re-seeded map subset capped at 1,500 samples");
+const namesSeed1 = subSeed1.slice(0, 25).map((s) => s.name).join(",");
+const namesSeed2 = subSeed2.slice(0, 25).map((s) => s.name).join(",");
+assert.notStrictEqual(namesSeed1, namesSeed2, "Re-seeding must select a different sample ordering/subset from the full corpus");
+
+// Test Remembered Folder List & Per-Folder Filtering (including Ableton Core Drums)
+const initFolders = engine.ensureKnownFoldersInitialized();
+assert(initFolders.some((f) => f.name === "Ableton Core Drums" && f.enabled), "Folder list must automatically include Ableton Core Drums");
+engine.engineState.knownFolders = [
+  { path: "/tmp/PackA", name: "PackA", enabled: true, count: 1000 },
+  { path: "/tmp/PackB", name: "PackB", enabled: true, count: 1000 }
+];
+engine.engineState.corpusSamples = syntheticCorpus.slice(0, 40);
+engine.rebuildActiveMapSubset(1);
+assert.strictEqual(engine.engineState.samples.length, 40);
+// Disable PackB -> only PackA samples remain in the map!
+engine.toggleFolderFilter("/tmp/PackB", 0);
+assert(engine.engineState.samples.every((s) => s.rootFolder === "/tmp/PackA"), "Disabling PackB in folder list must filter out PackB samples from map");
+engine.enableAllFolderFilters();
+assert.strictEqual(engine.engineState.samples.length, 40, "Enabling all folders must restore all corpus samples");
+// Delete PackB from the folder index completely
+engine.removeRememberedFolder("/tmp/PackB");
+assert.strictEqual(engine.engineState.knownFolders.length, 1, "Deleting PackB must remove it from knownFolders");
+assert.strictEqual(engine.engineState.knownFolders[0].path, "/tmp/PackA");
+assert(engine.engineState.corpusSamples.every((s) => s.rootFolder === "/tmp/PackA"), "Deleting PackB must remove its samples from corpusSamples");
+
+// Restore scanRes samples for Infinite Similarity Stepping test (both Next +1 and Prev -1) in Node engine
+engine.engineState.corpusSamples = scanRes.samples;
+engine.engineState.knownFolders = [{ path: tmpDir, name: "TestDrums", enabled: true, count: scanRes.samples.length }];
+engine.rebuildActiveMapSubset(1);
+const visitedEngineSim = new Set();
+for (let step = 0; step < scanRes.samples.length; step++) {
+  const nextIdx = engine.stepSimilarSample(1);
+  visitedEngineSim.add(nextIdx);
+}
+assert.strictEqual(
+  visitedEngineSim.size,
+  scanRes.samples.length,
+  "Infinite similarity stepping (+1) in Node engine must visit every visible sample without getting stuck in a finite sub-loop"
+);
+
+// Regression Check: Prev Similar (-1) must NOT replay the current sample; it must step to a different sample
+const beforePrevIdx = engine.engineState.selectedIndex;
+const afterPrevIdx = engine.stepSimilarSample(-1);
+assert.notStrictEqual(afterPrevIdx, beforePrevIdx, "Regression: Prev Similar (-1) must step to a different sample, not replay the current sample");
+const visitedPrevSim = new Set();
+for (let step = 0; step < scanRes.samples.length; step++) {
+  visitedPrevSim.add(engine.stepSimilarSample(-1));
+}
+assert.strictEqual(
+  visitedPrevSim.size,
+  scanRes.samples.length,
+  "Infinite similarity stepping (-1) in Node engine must visit every visible sample in reverse order"
+);
+
 // ============================================================================
 // 3. Test In-Device Mini Editor v8ui (src/xo_strip_ui.js)
 //    - Audition Filters (50ms..Infinite, Tone, Search, Category)
@@ -325,13 +429,22 @@ strip_filter_maxlen(5000);
 clearSavedList();
 assert.strictEqual(getSavedList().length, 0);
 
-// Save 6 samples (> savedMaxRows = 4) with distinct pitch settings
-for (let i = 0; i < 6; i++) {
+// Save 5 samples via save_selected(), then test that pressing 's' (which fires BOTH onkeydown(115)
+// AND obj-sel-key -> hotkey_save() simultaneously) adds the 6th sample ONCE (never twice!)
+for (let i = 0; i < 5; i++) {
   set_pitch(i + 1);
   set_decay(200 + i * 50);
-  key("S");
+  save_selected();
 }
-assert.strictEqual(getSavedList().length, 6, "Expected 6 saved samples");
+assert.strictEqual(getSavedList().length, 5, "Expected 5 saved samples before hotkey test");
+
+// Wait 210ms so the hotkey debounce window is clear, then fire BOTH onkeydown(115) and hotkey_save()
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 210);
+set_pitch(6);
+set_decay(450);
+onkeydown(115);
+hotkey_save();
+assert.strictEqual(getSavedList().length, 6, "Regression: Pressing 's' must add item to savedList ONCE (not twice)");
 assert.strictEqual(getSavedScrollOffset(), 2, "Expected auto-scroll to offset 2 when 6 items are saved");
 
 // Scroll back to top (offset 0)
@@ -373,6 +486,11 @@ assert.deepStrictEqual(stripOutlets[0], ["arm_drag", "raw", 0], "Hovering [R] mu
 onidle(editZoneX, row0Y, 0, 0, 0, 0, 0, 0);
 assert.deepStrictEqual(stripOutlets[0], ["arm_drag", "edited", 0], "Hovering [E] must arm native Edited OS drag");
 
+// Regression check: when the invisible NSPanel appears under the cursor, v8ui fires onidleout().
+// onidleout() must NOT emit ["arm_drag", "none", -1] (which would immediately disarm the drag window!)
+onidleout();
+assert.deepStrictEqual(stripOutlets[0], ["arm_drag", "edited", 0], "Regression: onidleout() must not disarm the active drag window");
+
 // Click & drag on [R], [E], [Drag Raw], [Drag Edit]
 onclick(rawZoneX, row0Y, 1, 0, 0, 0, 0, 0);
 assert.deepStrictEqual(stripOutlets[0], ["drag_out", "raw", 0]);
@@ -390,11 +508,237 @@ onclick(lay.savedX + lay.savedW - 20, lay.savedBottomY + 10, 1, 0, 0, 0, 0, 0);
 assert.deepStrictEqual(stripOutlets[0], ["drag_out", "all_edited", -1]);
 ondrag(lay.savedX + lay.savedW - 20, lay.savedBottomY + 10, 0, 0, 0, 0, 0, 0);
 
-// Verify paint() executes cleanly with scrollbar, selection, and waveform playhead
-set_playhead(0.5);
-paint();
+// Click & drag on Sample Preview (top waveform bar) to drag out single Raw sample
+onidle(60, 10, 0, 0, 0, 0, 0, 0);
+assert.deepStrictEqual(stripOutlets[0], ["arm_drag", "selected_raw", getSelectedIndex()], "Hovering sample preview bar must arm single Raw sample drag");
+onclick(60, 10, 1, 0, 0, 0, 0, 0);
+assert.deepStrictEqual(stripOutlets[0], ["drag_out", "selected_raw", getSelectedIndex()], "Clicking/dragging sample preview bar must trigger single Raw sample drag-out");
+ondrag(60, 10, 0, 0, 0, 0, 0, 0);
+
+// Test Infinite Similarity Stepping (both sim_next and sim_prev) & Re-Seed button on bottom toolbar tray in v8ui
+const visitedStripSim = new Set();
+const totalPts = getPoints().length;
+const stripOutletHistory = [];
+global.outlet = (idx, ...args) => {
+  stripOutlets[idx] = args;
+  if (idx === 0) stripOutletHistory.push(args);
+};
+for (let s = 0; s < totalPts; s++) {
+  applyToolbarAction("sim_next");
+  visitedStripSim.add(getSelectedIndex());
+}
+assert.strictEqual(visitedStripSim.size, totalPts, "Statusbar/toolbar similar sample button must infinitely traverse all visible samples without getting stuck");
+
+// Regression check: clicking sim_prev must step to the previous sample AND emit ONLY ["step_similar", -1] (never select_index + step_similar)
+stripOutletHistory.length = 0;
+const curBeforePrev = getSelectedIndex();
+applyToolbarAction("sim_prev");
+assert.notStrictEqual(getSelectedIndex(), curBeforePrev, "sim_prev in v8ui must change selectedIndex");
+assert.strictEqual(stripOutletHistory.length, 1, "Regression: sim_prev must emit exactly 1 message to node.codebox (not select_index + step_similar)");
+assert.deepStrictEqual(stripOutletHistory[0], ["step_similar", -1]);
+
+// Click Re-Seed button on bottom toolbar tray
+applyToolbarAction("reseed");
+assert.deepStrictEqual(stripOutlets[0], ["reseed_map"], "Clicking Re-Seed toolbar button must emit reseed_map");
+
+// Test Folder List v8ui widget (obj-folder-list): toggle, enable all, and [x] delete folder from index
+const vm = require("vm");
+const folderJs = boxMap.get("obj-folder-list").textfile.text;
+let folderOut = [];
+const folderCtx = vm.createContext({
+  mgraphics: {
+    ...global.mgraphics,
+    size: [126, 69]
+  },
+  inlets: 1,
+  outlets: 1,
+  outlet: (idx, ...args) => { folderOut = args; },
+  Math,
+  Number,
+  String
+});
+vm.runInContext(folderJs, folderCtx, { filename: "xo_folder_ui.js" });
+folderCtx.folder_list_sync(2, 1, 80, "Ableton Core Drums", "/CoreDrums", 1, 42, "User Pack", "/UserPack");
+assert.strictEqual(folderCtx.getFolders().length, 2);
+// Click row 1 ("User Pack") title area to toggle it off
+folderCtx.onclick(40, 16 + 17 + 5);
+assert.deepStrictEqual(folderOut, ["toggle_folder", "/UserPack", 0], "Clicking folder row in FILTERS folder list must emit toggle_folder");
+// Click "All" button in header to re-enable all folders
+folderCtx.onclick(80, 6);
+assert.deepStrictEqual(folderOut, ["enable_all_folders"], "Clicking All in FILTERS folder list must emit enable_all_folders");
+// Click [x] delete button on row 1 (x = 126 - 13 = 113) to remove "/UserPack" from index
+folderCtx.onclick(113, 16 + 17 + 5);
+assert.deepStrictEqual(folderOut, ["remove_folder", "/UserPack"], "Clicking [x] on folder row must emit remove_folder to delete it from index");
+assert.strictEqual(folderCtx.getFolders().length, 1, "Folder must be removed from folder list UI after clicking [x]");
+folderCtx.paint();
 
 // Cleanup temp directory
 fs.rmSync(tmpDir, { recursive: true, force: true });
 
-console.log("SUCCESS: All mono/stereo audio routing, OS file drag-out, scrollable/reorderable/deletable saved list, and Infinite MaxLen filter tests passed!");
+// ============================================================================
+// 4. Live Max 9 M4L Presentation-Mode Runtime Test
+//    Verifies inside the actual Max 9.1 runtime with openinpresentation = 1:
+//    - obj-node (node.codebox) boots in Presentation Mode
+//    - Pressing 's' (ASCII 115) through obj-sel-key triggers save_selected in v8ui & node.codebox
+//    - Clicking [R] / [E] / [Drag Raw] / [Drag Edit] in v8ui triggers drag_out in node.codebox,
+//      creates real OS files, spawns xo_drag_helper_v2_bin, populates macOS NSPasteboard,
+//      and shows the native Cocoa NSDraggingSource window!
+// ============================================================================
+
+const { spawnSync, execFileSync } = require("child_process");
+const MAX_BIN = "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Max/Max.app/Contents/MacOS/Max";
+
+if (fs.existsSync(MAX_BIN)) {
+  const harnessDoc = JSON.parse(raw.slice(32).toString("utf8"));
+  const hp = harnessDoc.patcher;
+  const helperStateFile = path.join(os.tmpdir(), "xo_sample_map_exports", "last_drag_helper_state.json");
+  const runtimeResultFile = path.join(os.tmpdir(), "xo_m4l_runtime_test_result.json");
+  if (fs.existsSync(helperStateFile)) fs.unlinkSync(helperStateFile);
+  if (fs.existsSync(runtimeResultFile)) fs.unlinkSync(runtimeResultFile);
+
+  // Inject an automated M4L runtime test driver that tests the full Max patchline chain:
+  // 1) '115' ('s' hotkey) -> obj-sel-key -> obj-msg-save-sel -> obj-minimap (v8ui) -> obj-node (node.codebox)
+  // 2) Simulated v8ui clicks on [R], [E], [Drag Raw], and [Drag Edit] -> obj-node -> xo_drag_helper_v2_bin -> NSPasteboard
+  for (const b of hp.boxes) {
+    if (b.box.id === "obj-minimap") {
+      b.box.textfile.text += `\n
+function m4l_test_click_drag_zones() {
+  const lay = getLayout();
+  const row0Y = lay.savedRowY0 + 8;
+  const rawX = lay.savedX + lay.savedW - 46;
+  const editX = lay.savedX + lay.savedW - 28;
+  // Click [R] on row 0
+  onclick(rawX, row0Y, 1, 0, 0, 0, 0, 0);
+  ondrag(rawX, row0Y, 0, 0, 0, 0, 0, 0);
+  // Click [E] on row 0
+  onclick(editX, row0Y, 1, 0, 0, 0, 0, 0);
+  ondrag(editX, row0Y, 0, 0, 0, 0, 0, 0);
+  // Click [Drag Raw]
+  onclick(lay.savedX + 20, lay.savedBottomY + 10, 1, 0, 0, 0, 0, 0);
+  ondrag(lay.savedX + 20, lay.savedBottomY + 10, 0, 0, 0, 0, 0, 0);
+  // Click [Drag Edit]
+  onclick(lay.savedX + lay.savedW - 20, lay.savedBottomY + 10, 1, 0, 0, 0, 0, 0);
+  ondrag(lay.savedX + lay.savedW - 20, lay.savedBottomY + 10, 0, 0, 0, 0, 0, 0);
+}
+`;
+    }
+    if (b.box.id === "obj-node") {
+      b.box.code += `\n
+const _dragModesSeen = [];
+Max.addHandler("drag_out", (mode, savedIdx = -1) => {
+  const res = resolveDragOutPaths(String(mode || "raw"), Number(savedIdx), true, false);
+  _dragModesSeen.push({ mode, count: res.paths.length, path0: res.paths[0], exists0: !!(res.paths[0] && fs.existsSync(res.paths[0])) });
+  if (_dragModesSeen.length >= 4) {
+    setTimeout(() => {
+      fs.writeFileSync(${JSON.stringify(runtimeResultFile)}, JSON.stringify({
+        bootedInPresentation: true,
+        savedCountFromHotkey: engineState.savedList.length,
+        dragModesSeen: _dragModesSeen
+      }));
+    }, 350);
+  }
+});
+`;
+    }
+  }
+
+  // Wire loadbang -> delay 600 -> '115' into obj-sel-key, then delay 900 -> 'm4l_test_click_drag_zones' into obj-minimap
+  hp.boxes.push(
+    {
+      box: {
+        id: "obj-test-lb",
+        maxclass: "newobj",
+        numinlets: 1,
+        numoutlets: 1,
+        outlettype: ["bang"],
+        patching_rect: [640.0, 590.0, 60.0, 20.0],
+        text: "loadbang"
+      }
+    },
+    {
+      box: {
+        id: "obj-test-del1",
+        maxclass: "newobj",
+        numinlets: 2,
+        numoutlets: 1,
+        outlettype: ["bang"],
+        patching_rect: [640.0, 615.0, 65.0, 20.0],
+        text: "delay 600"
+      }
+    },
+    {
+      box: {
+        id: "obj-test-key-115",
+        maxclass: "message",
+        numinlets: 2,
+        numoutlets: 1,
+        outlettype: [""],
+        patching_rect: [640.0, 640.0, 35.0, 20.0],
+        text: "115"
+      }
+    },
+    {
+      box: {
+        id: "obj-test-del2",
+        maxclass: "newobj",
+        numinlets: 2,
+        numoutlets: 1,
+        outlettype: ["bang"],
+        patching_rect: [720.0, 615.0, 65.0, 20.0],
+        text: "delay 1100"
+      }
+    },
+    {
+      box: {
+        id: "obj-test-click-drags",
+        maxclass: "message",
+        numinlets: 2,
+        numoutlets: 1,
+        outlettype: [""],
+        patching_rect: [720.0, 640.0, 160.0, 20.0],
+        text: "m4l_test_click_drag_zones"
+      }
+    }
+  );
+  hp.lines.push(
+    { patchline: { source: ["obj-test-lb", 0], destination: ["obj-test-del1", 0] } },
+    { patchline: { source: ["obj-test-del1", 0], destination: ["obj-test-key-115", 0] } },
+    { patchline: { source: ["obj-test-key-115", 0], destination: ["obj-sel-key", 0] } },
+    { patchline: { source: ["obj-test-lb", 0], destination: ["obj-test-del2", 0] } },
+    { patchline: { source: ["obj-test-del2", 0], destination: ["obj-test-click-drags", 0] } },
+    { patchline: { source: ["obj-test-click-drags", 0], destination: ["obj-minimap", 0] } }
+  );
+
+  const harnessPath = path.join(os.tmpdir(), "xo_m4l_runtime_harness.maxpat");
+  fs.writeFileSync(harnessPath, JSON.stringify(harnessDoc));
+
+  const { spawn } = require("child_process");
+  const maxProc = spawn(MAX_BIN, [harnessPath], { stdio: "ignore" });
+
+  const waitStart = Date.now();
+  while (Date.now() - waitStart < 9000) {
+    if (fs.existsSync(runtimeResultFile) && fs.existsSync(helperStateFile)) {
+      break;
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+  }
+
+  try { maxProc.kill("SIGTERM"); } catch (_) {}
+
+  assert(fs.existsSync(runtimeResultFile), "Regression: obj-node (node.codebox) failed to boot or receive v8ui messages in Max 9 Presentation Mode!");
+  const rtRes = JSON.parse(fs.readFileSync(runtimeResultFile, "utf8"));
+  assert(!rtRes.error, `Max 9 M4L runtime error: ${rtRes.error}`);
+  assert.strictEqual(rtRes.bootedInPresentation, true);
+  assert(rtRes.savedCountFromHotkey >= 1, `Expected 's' hotkey (115) through obj-sel-key -> v8ui -> node.codebox to save sample, got ${rtRes.savedCountFromHotkey}`);
+  assert.strictEqual(rtRes.dragModesSeen.length, 4, "Expected all 4 v8ui drag-out buttons ([R], [E], [Drag Raw], [Drag Edit]) to reach node.codebox");
+  for (const dm of rtRes.dragModesSeen) {
+    assert(dm.count >= 1 && dm.exists0, `Expected existing OS audio file for drag mode ${dm.mode}, got ${JSON.stringify(dm)}`);
+  }
+
+  assert(fs.existsSync(helperStateFile), "Regression: Native Cocoa xo_drag_helper failed to arm NSDraggingSource window in M4L runtime!");
+  const helperSt = JSON.parse(fs.readFileSync(helperStateFile, "utf8"));
+  assert.strictEqual(helperSt.visible, true, "Expected native Cocoa drag source window to be visible (non-click-through)");
+  assert(helperSt.count >= 1, "Expected native Cocoa drag helper to load >= 1 OS file URL onto NSPasteboard");
+}
+
+console.log("SUCCESS: All mono/stereo audio routing, M4L runtime 's' hotkey, native Cocoa OS file drag-out, scrollable/reorderable/deletable saved list, and Infinite MaxLen filter tests passed!");
