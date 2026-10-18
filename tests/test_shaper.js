@@ -327,6 +327,45 @@ const lastLoopMsg = loopMsgs[loopMsgs.length - 1];
 assert(Math.abs(lastLoopMsg[1] - 0.25) < 0.01, `Expected loopStart 0.25, got ${lastLoopMsg[1]}`);
 assert(Math.abs(lastLoopMsg[2] - 0.50) < 0.01, `Expected loopSpan 0.50, got ${lastLoopMsg[2]}`);
 assert(Math.abs(outletsOut[1][0] - 4.0) < 0.05, `Expected loop-scaled rate 4.0 Hz, got ${outletsOut[1][0]}`);
+const oneShotMsgs = outletHistory0.filter(m => m[0] === "oneshotms");
+assert(oneShotMsgs.length > 0 && Math.abs(oneShotMsgs[oneShotMsgs.length - 1][1] - 250.0) < 5.0, "Expected oneshotms duration ~250ms at 4 Hz");
+
+// Test 8: State Serialization Round-Trip (getvalueof / setvalueof v2 & v1 backward compatibility)
+const savedSnapshotV2 = getvalueof();
+applyToolbarAction("clear");
+assert.strictEqual(getvalueof()[5], 2, "Expected 2 points after clear before restore");
+setvalueof(savedSnapshotV2);
+assert.deepStrictEqual(getvalueof(), savedSnapshotV2, "Expected v2 getvalueof/setvalueof round-trip to preserve all points, curves, sCurve flags, and loop region");
+
+// Verify v1 legacy state format [1, loopLink, numPts, x0, y0, c0, ...] also restores cleanly
+setvalueof([1, 1, 3, 0.0, 0.2, 0.4, 0.5, 0.9, -0.5, 1.0, 0.2, 0.0]);
+const restoredV1 = getvalueof();
+assert.strictEqual(restoredV1[5], 3, "Expected 3 points restored from v1 legacy state");
+assert(Math.abs(restoredV1[8] - 0.4) < 1e-6 && Math.abs(restoredV1[12] + 0.5) < 1e-6, "Expected v1 segment curves preserved");
+
+// Test 9: Point Overwriting ("Eat Points" on Drag) & Double-Click Point Deletion
+applyToolbarAction("clear");
+onclick(69, 40, 1, 0, 0, 0, 0, 0);  ondrag(69, 40, 0, 0, 0, 0, 0, 0);
+onclick(131, 73, 1, 0, 0, 0, 0, 0); ondrag(131, 73, 0, 0, 0, 0, 0, 0);
+onclick(193, 84, 1, 0, 0, 0, 0, 0); ondrag(193, 84, 0, 0, 0, 0, 0, 0);
+assert.strictEqual(getvalueof()[5], 5, "Expected 5 points before eat-points drag test");
+// Drag point at (69, 40) across x=131 to x=160 -> should overwrite ("eat") the middle point at x=131
+onclick(69, 40, 1, 0, 0, 0, 0, 0);
+ondrag(160, 40, 1, 0, 1, 0, 0, 0);
+ondrag(160, 40, 0, 0, 1, 0, 0, 0);
+assert.strictEqual(getvalueof()[5], 4, "Expected dragging point over middle point to overwrite ('eat') it, leaving 4 points");
+
+// Double-click the interior point at (160, 40) to delete it
+ondblclick(160, 40, 1, 0, 0, 0, 0, 0);
+assert.strictEqual(getvalueof()[5], 3, "Expected double-clicking interior point to delete it, leaving 3 points");
+
+// Test 10: Vertical Dragging on Built-In Grid Control
+grid(8);
+outletHistory0 = [];
+onclick(lay.toolbarW + 35, lay.toolbarY + 10, 1, 0, 0, 0, 0, 0);
+ondrag(lay.toolbarW + 35, lay.toolbarY - 14, 1, 0, 0, 0, 0, 0); // drag upward by 24px (+4 steps -> 12)
+ondrag(lay.toolbarW + 35, lay.toolbarY - 14, 0, 0, 0, 0, 0, 0);
+assert(outletHistory0.some(m => m[0] === "grid_sync" && m[1] === 12), "Expected vertical drag on Grid control to set grid to 12");
 
 // Verify paint() runs cleanly across all features
 paint();

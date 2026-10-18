@@ -85,6 +85,8 @@ let savedList = [];
 let selectedSavedIndex = 0;
 let savedScrollOffset = 0;
 let nextLocalSavedId = 1;
+let showSavedList = 1;
+let lastArmSentMs = 0;
 
 let selectedMeta = {
   name: "Kick Atmos",
@@ -105,6 +107,7 @@ let isScrubbing = false;
 let scrubTrail = [];
 let dragOutState = null;     // { mode, savedIdx, label, x, y }
 let reorderDragState = null; // { active: true, fromIdx, currentIdx, y }
+let previewPressState = null; // { x, y, dragged }
 let scrollbarDrag = false;
 let undoStack = [];
 let redoStack = [];
@@ -141,13 +144,10 @@ function initDefaultConstellation() {
   selectedIndex = 0;
   anchorIndex = 0;
   selectedMeta.neighbors = [10, 20, 30, 40, 50, 1, 11];
-  savedList = [
-    { id: 1, sampleIndex: 0, name: "Kick Atmos", catIdx: 0, pitchSt: 0, decayMs: 320, gainDb: 0 },
-    { id: 2, sampleIndex: 1, name: "Snare Crisp", catIdx: 1, pitchSt: 3, decayMs: 450, gainDb: -1.5 }
-  ];
-  selectedSavedIndex = 0;
+  savedList = [];
+  selectedSavedIndex = -1;
   savedScrollOffset = 0;
-  nextLocalSavedId = 3;
+  nextLocalSavedId = 1;
 }
 
 initDefaultConstellation();
@@ -156,7 +156,7 @@ function getLayout() {
   const sz = mgraphics.size || [372, 134];
   const w = sz[0];
   const h = sz[1];
-  const savedW = 136;
+  const savedW = showSavedList ? 136 : 0;
   const mapW = w - savedW;
   return {
     w,
@@ -439,6 +439,19 @@ function set_gain(...args) {
   mgraphics.redraw();
 }
 
+function set_show_saved(...args) {
+  const v = parseTrailingNumber(args, 1);
+  showSavedList = v ? 1 : 0;
+  if (!showSavedList) {
+    updateArmedDragZone("none", -1);
+  }
+  mgraphics.redraw();
+}
+
+function getShowSavedList() {
+  return showSavedList;
+}
+
 function set_playhead(p) {
   const val = Number(p);
   if (Number.isFinite(val)) {
@@ -449,6 +462,16 @@ function set_playhead(p) {
 
 function setphase(p) {
   set_playhead(p);
+}
+
+// Helper used only by scripts/render_preview.py so the static preview screenshot shows example saved rows
+function preview() {
+  playheadPos = 0.32;
+  savedList = [
+    { id: 1, sampleIndex: 0, name: "Kick Atmos", catIdx: 0, pitchSt: 0, decayMs: 320, gainDb: 0 },
+    { id: 2, sampleIndex: 1, name: "Snare Crisp", catIdx: 1, pitchSt: 3, decayMs: 450, gainDb: -1.5 }
+  ];
+  selectedSavedIndex = 0;
 }
 
 function getPoints() {
@@ -513,6 +536,14 @@ function saved_list_sync(count, ...flat) {
       decayMs: Number(flat[i + 5]) || 2500,
       gainDb: Number(flat[i + 6]) || 0
     });
+  }
+  if (next.length === 0 && savedList.length > 0) {
+    // Re-push local saved items (e.g. from Live Set recall or early hotkey before node booted) to node.codebox
+    for (let i = 0; i < savedList.length; i++) {
+      const s = savedList[i];
+      outlet(0, "save_selected", s.sampleIndex, s.name, s.catIdx, s.pitchSt, s.decayMs, s.gainDb);
+    }
+    return;
   }
   savedList = next;
   clampSavedScroll();
@@ -803,10 +834,7 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
 
   // --- LEFT PANE: Waveform Viewer, 2D Map & Toolbar (x < lay.savedX) ---
   if (y <= lay.topBarH) {
-    playheadPos = 0.0;
-    outlet(0, "replay");
-    startDragOut("selected_raw", selectedIndex, x, y);
-    mgraphics.redraw();
+    previewPressState = { x, y, dragged: false };
     return;
   }
 
@@ -824,6 +852,7 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
   if (hit >= 0) {
     selectedIndex = hit;
     anchorIndex = hit;
+    simTourKey = "";
     playheadPos = 0.0;
     outlet(0, "select_index", hit, 1);
   }
@@ -832,6 +861,25 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
 
 function ondrag(x, y, but, cmd, shift, capslock, option, ctrl) {
   const lay = getLayout();
+
+  if (previewPressState) {
+    if (!but) {
+      const wasDragged = previewPressState.dragged;
+      previewPressState = null;
+      dragOutState = null;
+      if (!wasDragged) {
+        playheadPos = 0.0;
+        outlet(0, "replay");
+      }
+      mgraphics.redraw();
+      return;
+    }
+    if (!previewPressState.dragged && (Math.abs(x - previewPressState.x) >= 1 || Math.abs(y - previewPressState.y) >= 1)) {
+      previewPressState.dragged = true;
+      startDragOut("selected_raw", selectedIndex, x, y);
+    }
+    return;
+  }
 
   if (!but) {
     if (isScrubbing || dragOutState || reorderDragState || scrollbarDrag) {
@@ -895,15 +943,28 @@ function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
     if (hit >= 0) {
       selectedIndex = hit;
       anchorIndex = hit;
-      save_selected();
+      simTourKey = "";
+      playheadPos = 0.0;
+      outlet(0, "select_index", hit, 1);
+      mgraphics.redraw();
     }
   }
 }
 
 function updateArmedDragZone(mode, savedIdx) {
   const key = `${mode}:${savedIdx}`;
-  if (key !== lastArmedZoneKey) {
+  const now = Date.now();
+  if (mode === "none") {
+    if (lastArmedZoneKey !== "none:-1") {
+      lastArmedZoneKey = "none:-1";
+      lastArmSentMs = now;
+      outlet(0, "arm_drag", "none", -1);
+    }
+    return;
+  }
+  if (key !== lastArmedZoneKey || (now - lastArmSentMs) >= 35) {
     lastArmedZoneKey = key;
+    lastArmSentMs = now;
     outlet(0, "arm_drag", mode, savedIdx);
   }
 }
@@ -1384,6 +1445,8 @@ function paint() {
   // ==========================================================================
   // 10. RIGHT PANE: Scrollable, Selectable, Reorderable & Deletable Saved List
   // ==========================================================================
+  if (!showSavedList || savedW <= 0) return;
+
   mgraphics.set_source_rgba(0.075, 0.09, 0.115, 1.0);
   mgraphics.rectangle(savedX, 0, savedW, h);
   mgraphics.fill();

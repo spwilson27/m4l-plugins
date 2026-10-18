@@ -31,9 +31,10 @@ try {
   };
 }
 
-const CACHE_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v2.json");
-const CACHE_BIN_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v3.bin");
-const CACHE_IDX_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v3.idx.json");
+const CACHE_DIR = process.env.XO_CACHE_DIR || os.homedir();
+const CACHE_FILE = path.join(CACHE_DIR, ".xo_sample_map_cache_v2.json");
+const CACHE_BIN_FILE = path.join(CACHE_DIR, ".xo_sample_map_cache_v3.bin");
+const CACHE_IDX_FILE = path.join(CACHE_DIR, ".xo_sample_map_cache_v3.idx.json");
 const RECORD_BYTE_SIZE = 104; // 12*4B vector (48B) + 8*4B scalars (32B) + 24*1B uint8 peaks (24B) = 104 bytes/sample
 const MAX_DISPLAY_SAMPLES = 1500;
 const EXPORT_BASE_DIR = path.join(os.tmpdir(), "xo_sample_map_exports");
@@ -72,6 +73,9 @@ const OBJC_DRAG_HELPER_SOURCE = `
 
 @interface XODragView : NSView <NSDraggingSource>
 @property (nonatomic, strong) NSArray<NSString *> *filePaths;
+@property (nonatomic, copy) NSString *dragMode;
+@property (nonatomic, strong) NSEvent *mouseDownEvent;
+@property (nonatomic, assign) BOOL didDrag;
 @end
 
 @implementation XODragView
@@ -89,7 +93,38 @@ const OBJC_DRAG_HELPER_SOURCE = `
 }
 
 - (void)mouseDown:(NSEvent *)event {
-    [self initiateOSFileDrag:event];
+    self.mouseDownEvent = event;
+    self.didDrag = NO;
+    // For dedicated drag buttons ([R], [E], [Drag Raw], [Drag Edit]), initiate drag immediately on mouseDown.
+    if (![self.dragMode isEqualToString:@"selected_raw"]) {
+        self.didDrag = YES;
+        [self initiateOSFileDrag:event];
+        return;
+    }
+
+    // For Sample Preview bar ("selected_raw"), synchronously track mouseDragged vs mouseUp in WindowServer
+    // so dragging starts an OS file drag (without playback) and clicking without dragging triggers playback!
+    [[self window] trackEventsMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)
+                                   timeout:4.0
+                                      mode:NSEventTrackingRunLoopMode
+                                   handler:^(NSEvent * _Nullable ev, BOOL * _Nonnull stop) {
+        if (!ev) {
+            *stop = YES;
+            return;
+        }
+        if (ev.type == NSEventTypeLeftMouseDragged) {
+            self.didDrag = YES;
+            *stop = YES;
+            [self initiateOSFileDrag:event];
+        } else if (ev.type == NSEventTypeLeftMouseUp) {
+            *stop = YES;
+            [[self window] orderOut:nil];
+            if (!self.didDrag) {
+                fprintf(stdout, "{\\"event\\":\\"replay_click\\"}\\n");
+                fflush(stdout);
+            }
+        }
+    }];
 }
 
 - (void)initiateOSFileDrag:(NSEvent *)event {
@@ -153,11 +188,11 @@ const OBJC_DRAG_HELPER_SOURCE = `
     [self.dragWindow setContentView:self.dragView];
     self.armedRadiusSq = 900.0;
 
-    [NSTimer scheduledTimerWithTimeInterval:0.05 repeats:YES block:^(NSTimer * _Nonnull timer) {
+    [NSTimer scheduledTimerWithTimeInterval:0.025 repeats:YES block:^(NSTimer * _Nonnull timer) {
         if (![self.dragWindow isVisible]) return;
         if ([NSEvent pressedMouseButtons] != 0) return;
         NSPoint cur = [NSEvent mouseLocation];
-        if (!NSPointInRect(cur, NSInsetRect([self.dragWindow frame], -6.0, -6.0))) {
+        if (!NSPointInRect(cur, [self.dragWindow frame])) {
             [self.dragWindow orderOut:nil];
         }
     }];
@@ -206,6 +241,7 @@ const OBJC_DRAG_HELPER_SOURCE = `
     CGFloat w = [cmd[@"w"] doubleValue] ?: 24.0;
     CGFloat h = [cmd[@"h"] doubleValue] ?: 18.0;
     self.dragView.filePaths = paths;
+    self.dragView.dragMode = cmd[@"mode"] ?: @"raw";
 
     NSRect winRect = NSMakeRect(mouse.x - w * 0.5, mouse.y - h * 0.5, w, h);
     [self.dragWindow setFrame:winRect display:YES];
@@ -245,18 +281,33 @@ function ensureDragHelperProcess() {
   if (dragHelperProc && !dragHelperProc.killed) return dragHelperProc;
   try {
     try {
-      execFileSync("/usr/bin/pkill", ["-f", "xo_drag_helper"]);
+      execFileSync("/usr/bin/pkill", ["-f", "[x]o_drag_helper"]);
     } catch (_) {}
     fs.mkdirSync(EXPORT_BASE_DIR, { recursive: true });
-    const srcPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v4.m");
-    const binPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v4_bin");
+    const srcPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v6.m");
+    const binPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v6_bin");
     if (!fs.existsSync(binPath)) {
       fs.writeFileSync(srcPath, OBJC_DRAG_HELPER_SOURCE, "utf8");
       execFileSync("/usr/bin/clang", [
         "-O2", "-framework", "Cocoa", "-framework", "ApplicationServices", srcPath, "-o", binPath
       ]);
     }
-    dragHelperProc = spawn(binPath, [], { stdio: ["pipe", "ignore", "ignore"] });
+    dragHelperProc = spawn(binPath, [], { stdio: ["pipe", "pipe", "ignore"] });
+    if (dragHelperProc.stdout) {
+      let stdoutBuf = "";
+      dragHelperProc.stdout.on("data", (chunk) => {
+        stdoutBuf += chunk.toString("utf8");
+        const lines = stdoutBuf.split("\n");
+        stdoutBuf = lines.pop() || "";
+        for (const line of lines) {
+          if (line.includes("replay_click")) {
+            if (engineState.selectedIndex >= 0) {
+              emitSelectedToMax(engineState.selectedIndex, true);
+            }
+          }
+        }
+      });
+    }
     dragHelperProc.on("exit", () => { dragHelperProc = null; });
     process.on("exit", () => {
       if (dragHelperProc && !dragHelperProc.killed) {
@@ -1386,8 +1437,8 @@ function syncFolderListToMax() {
   Max.outlet("folder_list_sync", engineState.knownFolders.length, ...flat);
 }
 
-function ensureKnownFoldersInitialized() {
-  if (Array.isArray(engineState.knownFolders) && engineState.knownFolders.length > 0) {
+function ensureKnownFoldersInitialized(forceReload = false) {
+  if (!forceReload && Array.isArray(engineState.knownFolders) && engineState.knownFolders.length > 0) {
     return engineState.knownFolders;
   }
   const cache = loadDiskCache();
@@ -1406,13 +1457,16 @@ function ensureKnownFoldersInitialized() {
   if (Array.isArray(cache.knownFolders)) {
     for (const f of cache.knownFolders) {
       if (f && f.path) {
-        const existing = mapByPath.get(f.path);
-        mapByPath.set(f.path, {
-          path: f.path,
-          name: f.name || (f.path === coreDir ? "Ableton Core Drums" : path.basename(f.path)),
-          enabled: f.enabled !== undefined ? !!f.enabled : true,
-          count: Number(f.count) || (existing ? existing.count : 0)
-        });
+        const normPath = path.resolve(String(f.path).replace(/^\/+/, "/"));
+        if (normPath === coreDir || fs.existsSync(normPath)) {
+          const existing = mapByPath.get(normPath);
+          mapByPath.set(normPath, {
+            path: normPath,
+            name: normPath === coreDir ? "Ableton Core Drums" : (f.name || path.basename(normPath)),
+            enabled: f.enabled !== undefined ? !!f.enabled : true,
+            count: Number(f.count) || (existing ? existing.count : 0)
+          });
+        }
       }
     }
   }
@@ -1465,8 +1519,8 @@ function reseedMapSubset() {
 
 function addRememberedFolder(folderPath, runAsync = false, onDone = null) {
   if (!folderPath || typeof folderPath !== "string") return null;
-  let clean = folderPath.replace(/^[^/]+:/, "/");
-  if (!fs.existsSync(clean) && fs.existsSync(folderPath)) clean = folderPath;
+  let clean = path.resolve(folderPath.replace(/^[^/]+:\/*/, "/"));
+  if (!fs.existsSync(clean) && fs.existsSync(folderPath)) clean = path.resolve(folderPath);
   if (!fs.existsSync(clean)) return null;
   const stat = fs.statSync(clean);
   const dir = stat.isDirectory() ? clean : path.dirname(clean);
@@ -1846,45 +1900,6 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
   const isAll = mode === "all_raw" || mode === "all_edited";
   const isSelectedPreviewRaw = mode === "selected_raw";
 
-  // Ensure savedList has items if user drags initial default rows before saving
-  if (!isSelectedPreviewRaw && engineState.savedList.length === 0) {
-    if (engineState.samples.length >= 2) {
-      saveSampleToList(0, { pitchSt: 0, decayMs: 320, gainDb: 0 });
-      saveSampleToList(1, { pitchSt: 3, decayMs: 450, gainDb: -1.5 });
-    } else {
-      const fbKick = ensureFallbackWavFile("Kick_Atmos", 58, 0.32);
-      const fbSnare = ensureFallbackWavFile("Snare_Crisp", 210, 0.45);
-      engineState.savedList.push({
-        id: nextSavedId++,
-        sampleIndex: 0,
-        name: "Kick Atmos",
-        category: "kick",
-        catIdx: 0,
-        durationMs: 320,
-        pitchSt: 0,
-        decayMs: 320,
-        gainDb: 0,
-        rawPath: fbKick,
-        sourcePath: fbKick,
-        editedPath: renderEditedSampleWav(fbKick, { pitchSt: 0, decayMs: 320, gainDb: 0 }) || fbKick
-      });
-      engineState.savedList.push({
-        id: nextSavedId++,
-        sampleIndex: 1,
-        name: "Snare Crisp",
-        category: "snare",
-        catIdx: 1,
-        durationMs: 450,
-        pitchSt: 3,
-        decayMs: 450,
-        gainDb: -1.5,
-        rawPath: fbSnare,
-        sourcePath: fbSnare,
-        editedPath: renderEditedSampleWav(fbSnare, { pitchSt: 3, decayMs: 450, gainDb: -1.5 }) || fbSnare
-      });
-    }
-  }
-
   let items = [];
   if (isSelectedPreviewRaw) {
     const sampleIdx = (savedIdx >= 0 && savedIdx < engineState.samples.length)
@@ -1930,6 +1945,20 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
     items = [engineState.savedList[0]];
   }
 
+  // Fallback for batch/row drag when savedList is empty (never mutates engineState.savedList)
+  if (items.length === 0) {
+    const fbKick = ensureFallbackWavFile("Kick_Atmos", 58, 0.32);
+    items = [{
+      name: "Kick Atmos",
+      rawPath: fbKick,
+      sourcePath: fbKick,
+      editedPath: isEdited ? (renderEditedSampleWav(fbKick, { pitchSt: 0, decayMs: 320, gainDb: 0 }) || fbKick) : fbKick,
+      pitchSt: 0,
+      decayMs: 320,
+      gainDb: 0
+    }];
+  }
+
   const paths = [];
   for (const item of items) {
     const srcFile = (item.sourcePath && fs.existsSync(item.sourcePath))
@@ -1967,14 +1996,15 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
       : `⤓ ${isEdited ? "E" : "R"}`;
     sendDragHelperCommand({
       cmd: "arm",
+      mode,
       paths,
       label,
       isEdited,
       visible: true,
       handoff: !!handoff,
       stateFile: path.join(EXPORT_BASE_DIR, "last_drag_helper_state.json"),
-      w: isSelectedPreviewRaw ? 40 : (isAll ? 64 : 26),
-      h: 18
+      w: 16,
+      h: 16
     });
   }
 
@@ -1997,16 +2027,16 @@ function armHoverDragZone(mode, savedIdx = -1) {
   if (res.paths.length > 0) {
     const isEdited = mode === "edited" || mode === "all_edited";
     const isAll = mode === "all_raw" || mode === "all_edited";
-    const isSelectedPreviewRaw = mode === "selected_raw";
     sendDragHelperCommand({
       cmd: "arm",
+      mode,
       paths: res.paths,
       label: isAll ? (isEdited ? "Drag Edit" : "Drag Raw") : (isEdited ? "E" : "R"),
       isEdited,
       visible: true,
       handoff: false,
       stateFile: path.join(EXPORT_BASE_DIR, "last_drag_helper_state.json"),
-      w: isSelectedPreviewRaw ? 36 : (isAll ? 60 : 18),
+      w: 16,
       h: 16
     });
   }

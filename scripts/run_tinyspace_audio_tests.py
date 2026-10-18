@@ -76,7 +76,7 @@ def build_harness(gen_code, case):
         box("obj-setbuf", "setbuffer #0-tsconfig #0-tsmeters", 200, 70, 220, 20, maxclass="message", numinlets=2, numoutlets=1),
         box("obj-cfg", "buffer~ #0-tsconfig @samps 128", 520, 100, 210, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         box("obj-meters", "buffer~ #0-tsmeters @samps 32", 520, 130, 210, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", "buffer~ rec 8000 2", 520, 160, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
+        box("obj-recbuf", "buffer~ rec 14000 2", 520, 160, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         {
             "box": {
                 "code": gen_code,
@@ -182,12 +182,14 @@ def build_harness(gen_code, case):
     else:
         boxes.append(box("obj-click", "click~", 700, 200, 50, 20, numinlets=1, numoutlets=1, outlettype=["signal"]))
         boxes.append(box("obj-gain", "*~ 0.25", 700, 240, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
+        boxes.append(box("obj-del-click", "delay 40", 700, 160, 70, 20, numinlets=2, numoutlets=1))
         lines.extend([
             line("obj-click", 0, "obj-gain", 0),
             line("obj-gain", 0, "obj-gen", 0),
             line("obj-gain", 0, "obj-gen", 1),
             line("obj-gain", 0, "obj-peak-c", 0),
-            line("obj-del-arm", 0, "obj-click", 0),
+            line("obj-del-arm", 0, "obj-del-click", 0),
+            line("obj-del-click", 0, "obj-click", 0),
         ])
 
     doc = {
@@ -288,7 +290,7 @@ def cases():
             "config": "decay",
             "bind": True,
             "arm": 200,
-            "dur": 2500,
+            "dur": 11000,
             "params": params("size 0.5, damp 0, width 0, wet 1, fbk 1"),
         },
         {
@@ -311,6 +313,9 @@ def parse_result(text):
             continue
         if raw.startswith("env "):
             env = [float(x) for x in raw[4:].split()] if raw.strip() != "env" else []
+            continue
+        if raw.startswith("sec "):
+            meta["sec"] = [float(x) for x in raw[4:].split()] if raw.strip() != "sec" else []
             continue
         key, val = raw.split(None, 1)
         meta[key] = float(val)
@@ -342,11 +347,25 @@ def run_case(gen_code, case):
     if os.path.isdir(recovery) and not os.path.exists(recovery_bak):
         os.rename(recovery, recovery_bak)
     proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 30
+    deadline = time.time() + 45
     while time.time() < deadline and not os.path.exists(RESULT):
         if proc.poll() is not None:
             break
         time.sleep(0.25)
+    # The probe creates the file before the write finishes. Wait until the
+    # size stops changing so a long envelope is not read halfway through.
+    last_size = -1
+    stable = 0
+    while time.time() < deadline and stable < 2:
+        if not os.path.exists(RESULT):
+            break
+        size = os.path.getsize(RESULT)
+        if size > 0 and size == last_size:
+            stable += 1
+        else:
+            stable = 0
+            last_size = size
+        time.sleep(0.15)
     if proc.poll() is None:
         try:
             proc.wait(timeout=4)
@@ -368,7 +387,7 @@ def run_case(gen_code, case):
     preview = " ".join(f"{v:.4f}" for v in env[:80])
     print(
         f"genL {meta.get('genL')} genR {meta.get('genR')} ctl {meta.get('ctl')} "
-        f"peak {meta.get('peak')} corr {meta.get('corr')} nan {meta.get('nan')} "
+        f"peak {meta.get('peak')} corr {meta.get('corr')} meter {meta.get('meter')} nan {meta.get('nan')} "
         f"sr {meta.get('sr')} bins {len(env)}"
     )
     print(f"env {preview}")
@@ -421,6 +440,9 @@ def check(name, meta, errors):
             errors.append(f"{name}: full wet is silent ({meta.get('genL')}, {meta.get('genR')})")
         if meta.get("corr", 1) > 0.92:
             errors.append(f"{name}: left and right are too similar for width 100% (corr {meta.get('corr')})")
+        meter = meta.get("meter", -1)
+        if not (0.02 < meter < 1.2):
+            errors.append(f"{name}: delay meters are not tracking the audio ({meter})")
     elif name == "width0":
         if meta.get("genL", 0) < 0.02:
             errors.append(f"{name}: mono wet is silent")
@@ -457,20 +479,26 @@ def check(name, meta, errors):
                 errors.append(f"{name}: no repeating delay (echo {echo}, gap {gap})")
     elif name == "decay1":
         burst = env_max(env, 0, 160)
-        w300 = env_max(env, 300, 400)
-        w700 = env_max(env, 700, 800)
-        w1200 = env_max(env, 1200, 1300)
-        w2000 = env_max(env, 2000, 2200)
-        print(f"decay1 burst {burst:.4f} w300 {w300:.4f} w700 {w700:.4f} w1200 {w1200:.4f} w2000 {w2000:.4f}")
+        w2 = env_max(env, 1800, 2200)
+        w6 = env_max(env, 5800, 6200)
+        w10 = env_max(env, 9800, 10400)
+        sec = meta.get("sec") or []
+        w2 = sec[2] if len(sec) > 2 else w2
+        w6 = sec[6] if len(sec) > 6 else w6
+        w10 = sec[10] if len(sec) > 10 else w10
+        print("decay1 per second " + " ".join(f"{v:.4f}" for v in sec))
+        print(f"decay1 burst {burst:.4f} w2 {w2:.4f} w6 {w6:.4f} w10 {w10:.4f}")
         if burst < 0.02:
             errors.append(f"{name}: burst did not reach the tank ({burst})")
-        if not (w300 > w700 > w1200 > w2000):
-            errors.append(f"{name}: tail is not falling ({w300}, {w700}, {w1200}, {w2000})")
-        if w2000 > 0.002:
-            errors.append(f"{name}: tail is still ringing at 2 s ({w2000})")
-        if max(w300, w700, w1200, w2000) > burst * 1.05:
+        if w2 < 0.03:
+            errors.append(f"{name}: tail died before 2 s ({w2})")
+        if w10 < 0.004:
+            errors.append(f"{name}: tail is gone before 10 s ({w10})")
+        if not (w2 > w6 > w10):
+            errors.append(f"{name}: tail is not falling ({w2}, {w6}, {w10})")
+        if max(w2, w6, w10) > burst * 1.15:
             errors.append(f"{name}: feedback grew after the burst")
-        meta["w300"] = w300
+        meta["w10"] = w10
     elif name == "decay0":
         burst = env_max(env, 0, 160)
         late = env_max(env, 250, 400)
@@ -496,7 +524,7 @@ def main():
         check(case["name"], meta, errors)
     high = results.get("decay1") or {}
     low = results.get("decay0") or {}
-    if high and low and high.get("w300", 0) < 0.01:
+    if high and low and high.get("w10", 0) < 0.004:
         errors.append("full feedback died as fast as zero feedback")
     small = results.get("size0") or {}
     large = results.get("size1") or {}

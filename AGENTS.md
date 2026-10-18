@@ -129,7 +129,7 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 - `src/tinyspace_core.genexpr` — FDN: predelay → HP/LP → seeded allpasses → 20 delay lines (10 L / 10 R) with linear interpolation, per-line damping, soft clip, Householder-or-comb mix, crossfeed → width (M/S) → equal-power dry/wet.
 - Audio is `in1`/`in2`. Knobs are Gen `Param`s (`size`, `damp`, `width`, `wet`, `fbk`, `predly`, `modamt`, `xfeed`, `hp`, `lp`, `duck`), sent with `prepend`.
 - `Buffer cfg("tsconfig")` reads the 70-float seed config. `Buffer meters("tsmeters")` gets one envelope per line every 32 samples. Loadbang binds them with `cfg #0-tsconfig, meters #0-tsmeters` (the GenExpr variable, with no `set` prefix). An unbound buffer peeks as zeros, every delay line stays off, and Mix at 100% is silent.
-- Percent knobs are scaled by `/ 100.` before they hit gen. Loop gain is `feedback * 0.97`.
+- Percent knobs are scaled by `/ 100.` before they hit gen. At full feedback each line is about 60 dB down after 40 seconds, so it is still audible past 10 seconds. The per-loop coefficient is higher on short lines so they ring for about the same time, and it stays under 1. Feedback at 0 writes no recirculation.
 
 ### Seed → config
 - `src/tinyspace_config.js` (mulberry32) is prepended into the v8ui script and required by `tests/test_tinyspace.js`.

@@ -45,11 +45,28 @@ function analyze(durMs) {
     var rec = new Buffer("rec");
     var frames = rec.framecount();
     var lengthMs = rec.length();
+    post("PROBE_REC frames " + frames + " ms " + lengthMs + " ch " + rec.channelcount() + "\n");
     var sr = lengthMs > 0 ? frames / (lengthMs / 1000) : 44100;
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var left = readChannel(rec, 1, n);
     var right = readChannel(rec, 2, n);
     var env = envelope(left, right, sr);
+    var sec = [];
+    var si;
+    for (si = 0; si < 12; si++) {
+        var a = Math.floor(sr * si);
+        var b = Math.min(left.length, Math.floor(sr * (si + 1)));
+        var sp = 0;
+        var sj;
+        for (sj = a; sj < b; sj++) {
+            var av = Math.abs(left[sj]);
+            var bv = Math.abs(right[sj]);
+            if (av > sp) sp = av;
+            if (bv > sp) sp = bv;
+        }
+        sec.push(Math.round(sp * 1e4) / 1e4);
+    }
+    post("PROBE_SEC " + sec.join(" ") + "\n");
     var stats = scan(left, right);
     var corr = correlation(left, right, Math.floor(sr * 0.02));
     var meterPeak = meterMax();
@@ -64,6 +81,7 @@ function analyze(durMs) {
         "peak " + stats.peak + "\n" +
         "corr " + corr + "\n" +
         "meter " + meterPeak + "\n" +
+        "sec " + sec.join(" ") + "\n" +
         "env " + env.join(" ") + "\n"
     );
     report.close();

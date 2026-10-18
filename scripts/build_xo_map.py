@@ -181,7 +181,7 @@ def build():
                 "outlettype": ["", ""],
                 "patching_rect": [420.0, 240.0, 360.0, 180.0],
                 "presentation": 1,
-                "presentation_rect": [12.0, 29.0, 20.0, 20.0],
+                "presentation_rect": [0.0, 220.0, 10.0, 10.0],
                 "saved_object_attributes": {
                     "autostart": 1,
                     "defer": 1,
@@ -721,19 +721,6 @@ def build():
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-msg-save-sel",
-                "maxclass": "message",
-                "numinlets": 2,
-                "numoutlets": 1,
-                "outlettype": [""],
-                "patching_rect": [640.0, 575.0, 82.0, 20.0],
-                "text": "save_selected"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
                 "id": "obj-msg-del-saved",
                 "maxclass": "message",
                 "numinlets": 2,
@@ -844,7 +831,7 @@ def build():
             }
         },
 
-        # --- 5. Left Panel Header Widgets (Above Mini Editor v8ui) ---
+        # --- 5. Left Panel Header Widgets (Above Mini Editor v8ui: Title + Open Map + Saved / Filters / Playback Toggles) ---
         {
             "box": {
                 "fontface": 1,
@@ -900,119 +887,174 @@ def build():
         {
             "box": {
                 "activebgcolor": [0.14, 0.17, 0.21, 1.0],
-                "activebgoncolor": [1.0, 0.694, 0.18, 1.0],
-                "activetextcolor": [0.82, 0.86, 0.90, 1.0],
+                "activebgoncolor": [0.29, 0.87, 0.50, 1.0],
+                "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Scans Ableton Live 12's built-in Core Library One-Shot Drums.",
-                "annotation_name": "Scan Core Library",
+                "annotation": "Shows or collapses the Saved Samples List pane inside the mini editor.",
+                "annotation_name": "Show Saved List",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
-                "id": "obj-scan-core-btn",
+                "id": "obj-toggle-saved-btn",
                 "maxclass": "live.text",
-                "mode": 0,
                 "numinlets": 1,
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [590.0, 30.0, 60.0, 15.0],
+                "patching_rect": [590.0, 30.0, 48.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [170.0, 9.0, 60.0, 15.0],
+                "presentation_rect": [172.0, 9.0, 48.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
-                        "parameter_annotation_name": "Scan Core Library",
-                        "parameter_enum": ["val1", "val2"],
+                        "parameter_annotation_name": "Show Saved List",
+                        "parameter_enum": ["Hidden", "Shown"],
+                        "parameter_initial": [1],
+                        "parameter_initial_enable": 1,
                         "parameter_invisible": 2,
-                        "parameter_longname": "ScanCore",
+                        "parameter_longname": "ShowSavedList",
                         "parameter_mmax": 1,
-                        "parameter_shortname": "Scan Core",
+                        "parameter_shortname": "Saved",
                         "parameter_type": 2
                     }
                 },
-                "text": "Scan Core",
-                "texton": "Scan Core",
-                "varname": "ScanCore"
+                "text": "Saved",
+                "texton": "Saved",
+                "varname": "ShowSavedList"
             }
         },
         {
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-msg-scan-core",
-                "maxclass": "message",
-                "numinlets": 2,
+                "id": "obj-prep-show-saved",
+                "maxclass": "newobj",
+                "numinlets": 1,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [590.0, 55.0, 62.0, 20.0],
-                "text": "scan_core"
+                "patching_rect": [590.0, 52.0, 126.0, 20.0],
+                "text": "prepend set_show_saved"
+            }
+        },
+        {
+            "box": {
+                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
+                "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
+                "activetextcolor": [0.75, 0.80, 0.86, 1.0],
+                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
+                "annotation": "Shows or collapses the Filters section.",
+                "annotation_name": "Show Filters Section",
+                "bordercolor": [0.32, 0.38, 0.46, 1.0],
+                "id": "obj-toggle-filters-btn",
+                "maxclass": "live.text",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "parameter_enable": 1,
+                "patching_rect": [645.0, 30.0, 48.0, 15.0],
+                "presentation": 1,
+                "presentation_rect": [224.0, 9.0, 48.0, 15.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Show Filters Section",
+                        "parameter_enum": ["Hidden", "Shown"],
+                        "parameter_initial": [1],
+                        "parameter_initial_enable": 1,
+                        "parameter_invisible": 2,
+                        "parameter_longname": "ShowFiltersSection",
+                        "parameter_mmax": 1,
+                        "parameter_shortname": "Filters",
+                        "parameter_type": 2
+                    }
+                },
+                "text": "Filters",
+                "texton": "Filters",
+                "varname": "ShowFiltersSection"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-inv-filters",
+                "maxclass": "newobj",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": ["int"],
+                "patching_rect": [720.0, 52.0, 35.0, 20.0],
+                "text": "== 0"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-hide-filters",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [760.0, 52.0, 88.0, 20.0],
+                "text": "prepend hidden"
             }
         },
         {
             "box": {
                 "activebgcolor": [0.14, 0.17, 0.21, 1.0],
                 "activebgoncolor": [1.0, 0.694, 0.18, 1.0],
-                "activetextcolor": [0.82, 0.86, 0.90, 1.0],
+                "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Choose a custom sample folder to analyze and add to the 2D sample map.",
-                "annotation_name": "Add Folder",
+                "annotation": "Shows or collapses the Playback section.",
+                "annotation_name": "Show Playback Section",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
-                "id": "obj-add-folder-btn",
+                "id": "obj-toggle-playback-btn",
                 "maxclass": "live.text",
-                "mode": 0,
                 "numinlets": 1,
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [660.0, 30.0, 68.0, 15.0],
+                "patching_rect": [700.0, 30.0, 56.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [234.0, 9.0, 68.0, 15.0],
+                "presentation_rect": [276.0, 9.0, 56.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
-                        "parameter_annotation_name": "Add Folder",
-                        "parameter_enum": ["val1", "val2"],
+                        "parameter_annotation_name": "Show Playback Section",
+                        "parameter_enum": ["Hidden", "Shown"],
+                        "parameter_initial": [1],
+                        "parameter_initial_enable": 1,
                         "parameter_invisible": 2,
-                        "parameter_longname": "AddFolder",
+                        "parameter_longname": "ShowPlaybackSection",
                         "parameter_mmax": 1,
-                        "parameter_shortname": "Add Folder",
+                        "parameter_shortname": "Playback",
                         "parameter_type": 2
                     }
                 },
-                "text": "+ Folder",
-                "texton": "+ Folder",
-                "varname": "AddFolder"
+                "text": "Playback",
+                "texton": "Playback",
+                "varname": "ShowPlaybackSection"
             }
         },
         {
             "box": {
-                "activebgcolor": [0.12, 0.22, 0.16, 1.0],
-                "activebgoncolor": [0.29, 0.87, 0.50, 1.0],
-                "activetextcolor": [0.35, 0.92, 0.55, 1.0],
-                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Saves the currently selected sample and its playback settings (Pitch, Trim/Decay, Gain) to the Saved List (Hotkey: S).",
-                "annotation_name": "Save Sample to List",
-                "bordercolor": [0.29, 0.87, 0.50, 1.0],
-                "id": "obj-save-sample-btn",
-                "maxclass": "live.text",
-                "mode": 0,
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-inv-playback",
+                "maxclass": "newobj",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": ["int"],
+                "patching_rect": [855.0, 52.0, 35.0, 20.0],
+                "text": "== 0"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-hide-playback",
+                "maxclass": "newobj",
                 "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "parameter_enable": 1,
-                "patching_rect": [735.0, 30.0, 76.0, 15.0],
-                "presentation": 1,
-                "presentation_rect": [306.0, 9.0, 76.0, 15.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Save Sample to List",
-                        "parameter_enum": ["val1", "val2"],
-                        "parameter_invisible": 2,
-                        "parameter_longname": "SaveSampleBtn",
-                        "parameter_mmax": 1,
-                        "parameter_shortname": "+ Save (S)",
-                        "parameter_type": 2
-                    }
-                },
-                "text": "+ Save (S)",
-                "texton": "+ Save (S)",
-                "varname": "SaveSampleBtn"
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [895.0, 52.0, 88.0, 20.0],
+                "text": "prepend hidden"
             }
         },
 
@@ -1573,12 +1615,10 @@ def build():
         {"patchline": {"source": ["obj-sel-key", 3], "destination": ["obj-msg-del-saved", 0]}},
         {"patchline": {"source": ["obj-sel-key", 4], "destination": ["obj-msg-del-saved", 0]}},
         {"patchline": {"source": ["obj-sel-key", 5], "destination": ["obj-msg-del-saved", 0]}},
-        {"patchline": {"source": ["obj-save-sample-btn", 0], "destination": ["obj-msg-save-sel", 0]}},
         {"patchline": {"source": ["obj-msg-hotkey-save", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-msg-save-sel", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-del-saved", 0], "destination": ["obj-minimap", 0]}},
 
-        # 4. Pop-out Map Window & Folder Dialog Controls
+        # 4. Pop-out Map Window, Section Collapse/Show Toggles & Folder Dialog Controls
         {"patchline": {"source": ["obj-open-map-btn", 0], "destination": ["obj-sel-map-win", 0]}},
         {"patchline": {"source": ["obj-sel-map-win", 0], "destination": ["obj-msg-open-win", 0], "order": 1}},
         {"patchline": {"source": ["obj-sel-map-win", 0], "destination": ["obj-msg-init", 0], "order": 0}},
@@ -1586,11 +1626,29 @@ def build():
         {"patchline": {"source": ["obj-msg-open-win", 0], "destination": ["obj-pcontrol", 0]}},
         {"patchline": {"source": ["obj-msg-close-win", 0], "destination": ["obj-pcontrol", 0]}},
         {"patchline": {"source": ["obj-pcontrol", 0], "destination": ["obj-map-window", 0]}},
-        {"patchline": {"source": ["obj-scan-core-btn", 0], "destination": ["obj-msg-scan-core", 0]}},
-        {"patchline": {"source": ["obj-msg-scan-core", 0], "destination": ["obj-node", 0]}},
-        {"patchline": {"source": ["obj-add-folder-btn", 0], "destination": ["obj-opendialog", 0]}},
         {"patchline": {"source": ["obj-opendialog", 0], "destination": ["obj-prep-add-folder", 0]}},
         {"patchline": {"source": ["obj-prep-add-folder", 0], "destination": ["obj-node", 0]}},
+        # Saved List Collapse/Show Toggle
+        {"patchline": {"source": ["obj-toggle-saved-btn", 0], "destination": ["obj-prep-show-saved", 0]}},
+        {"patchline": {"source": ["obj-prep-show-saved", 0], "destination": ["obj-minimap", 0]}},
+        # Filters Section Collapse/Show Toggle
+        {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-inv-filters", 0]}},
+        {"patchline": {"source": ["obj-inv-filters", 0], "destination": ["obj-prep-hide-filters", 0]}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-panel-filters", 0], "order": 6}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-hdr-filters", 0], "order": 5}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-search-clear-btn", 0], "order": 4}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-search-box", 0], "order": 3}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-maxlen-dial", 0], "order": 2}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-tone-dial", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-folder-list", 0], "order": 0}},
+        # Playback Section Collapse/Show Toggle
+        {"patchline": {"source": ["obj-toggle-playback-btn", 0], "destination": ["obj-inv-playback", 0]}},
+        {"patchline": {"source": ["obj-inv-playback", 0], "destination": ["obj-prep-hide-playback", 0]}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-panel-playback", 0], "order": 4}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-hdr-playback", 0], "order": 3}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-pitch-dial", 0], "order": 2}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-decay-dial", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-gain-dial", 0], "order": 0}},
 
         # 5. FILTERS Panel Controls -> DIRECTLY to both node.codebox and v8ui
         {"patchline": {"source": ["obj-search-box", 0], "destination": ["obj-route-text", 0]}},
@@ -1626,9 +1684,9 @@ def build():
     parameters_dict = {
         "obj-minimap": ["XOStateData", "XOStateData", 0],
         "obj-open-map-btn": ["OpenMapWindow", "Open Map", 0],
-        "obj-scan-core-btn": ["ScanCore", "Scan Core", 0],
-        "obj-add-folder-btn": ["AddFolder", "Add Folder", 0],
-        "obj-save-sample-btn": ["SaveSampleBtn", "+ Save (S)", 0],
+        "obj-toggle-saved-btn": ["ShowSavedList", "Saved", 0],
+        "obj-toggle-filters-btn": ["ShowFiltersSection", "Filters", 0],
+        "obj-toggle-playback-btn": ["ShowPlaybackSection", "Playback", 0],
         "obj-search-clear-btn": ["ClearSearch", "Clr", 0],
         "obj-maxlen-dial": ["MaxLength", "MaxLen", 0],
         "obj-tone-dial": ["ToneFilter", "Tone", 0],

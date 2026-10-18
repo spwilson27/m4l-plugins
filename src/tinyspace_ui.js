@@ -46,13 +46,21 @@ function set_seed(v) {
     mgraphics.redraw();
 }
 
+function meterSample(chunk, index) {
+    if (typeof chunk === "number") return index === 0 ? chunk : 0;
+    if (!chunk || !chunk.length || index >= chunk.length) return 0;
+    var v = chunk[index];
+    return v > 0 ? v : 0;
+}
+
 function pullMeters() {
     if (!meterBuf) return;
+    var chunk = meterBuf.peek(1, 0, LINE_COUNT);
     for (var i = 0; i < LINE_COUNT; i++) {
-        var chunk = meterBuf.peek(1, i, 1);
-        var v = chunk && chunk.length ? chunk[0] : 0;
-        if (!(v > 0)) v = 0;
-        meters[i] = v;
+        var v = meterSample(chunk, i);
+        // Rise quickly when a line is hit, fall a little slower than the audio tail.
+        var coef = v > meters[i] ? 0.55 : 0.18;
+        meters[i] = meters[i] + (v - meters[i]) * coef;
     }
 }
 
@@ -114,15 +122,18 @@ function paint() {
         var env = displayEnv(i);
         if (env > 1) env = 1;
         var len = config.lens[i];
-        phases[i] += 0.22 * (0.55 + 5.5 / Math.max(1, len));
+        // Quiet lines sit almost straight. A hit swings and speeds the wiggle.
+        var vis = 0;
+        if (active) {
+            vis = Math.sqrt(env) * 2.4;
+            if (vis > 1) vis = 1;
+        }
+        phases[i] += (0.05 + vis * 0.42) * (0.55 + 5.5 / Math.max(1, len));
         var y0 = active ? top : midY - 16;
         var y1 = active ? bot : midY + 16;
-        // Resting waves stay visible when a line is quiet. Audio stretches them.
-        var vis = active ? Math.sqrt(env) : 0;
-        if (vis > 1) vis = 1;
-        var amp = active ? (1.8 + vis * 9.5) : 0.35;
+        var amp = active ? (0.25 + vis * 13.5) : 0.28;
         var col = (i < 10) ? [0.28, 0.82, 0.96] : [0.96, 0.64, 0.28];
-        var alpha = active ? (0.42 + env * 0.58) : 0.22;
+        var alpha = active ? (0.3 + vis * 0.7) : 0.2;
         mgraphics.set_source_rgba(col[0], col[1], col[2], alpha);
         mgraphics.set_line_width(active ? 1.35 : 0.8);
         var steps = 16;

@@ -38,17 +38,21 @@ for (const b of p.boxes) {
 }
 
 // Verify core objects exist, mono-safe right channel selector exists, folder list v8ui exists,
-// and removed buttons (Sim/Rand in Filters, Audition/Replay in Playback, Drop folder, Simpler loader) are gone
+// and removed buttons (Scan Core, + Folder, + Save (S) in top bar; Sim/Rand in Filters; Audition/Replay in Playback) are gone
 for (const reqId of [
   "obj-plugin", "obj-plugout", "obj-sfplay", "obj-r-chan-sel", "obj-speed-reg",
   "obj-node", "obj-minimap", "obj-folder-list", "obj-map-window", "obj-open-map-btn",
-  "obj-save-sample-btn", "obj-search-box", "obj-search-clear-btn",
+  "obj-toggle-saved-btn", "obj-toggle-filters-btn", "obj-toggle-playback-btn",
+  "obj-search-box", "obj-search-clear-btn",
   "obj-panel-left", "obj-panel-filters", "obj-panel-playback",
   "obj-scan-msg", "obj-scan-line", "obj-prep-playhead",
-  "obj-key", "obj-sel-key", "obj-msg-hotkey-save", "obj-msg-save-sel", "obj-msg-del-saved"
+  "obj-key", "obj-sel-key", "obj-msg-hotkey-save", "obj-msg-del-saved"
 ]) {
   assert(boxMap.has(reqId), `Missing required box: ${reqId}`);
 }
+assert(!boxMap.has("obj-scan-core-btn"), "Scan Core button should be removed from top menu bar");
+assert(!boxMap.has("obj-add-folder-btn"), "+ Folder button should be removed from top menu bar");
+assert(!boxMap.has("obj-save-sample-btn"), "+ Save (S) button should be removed from top menu bar");
 assert(!boxMap.has("obj-drop-folder"), "Drop Sample Folder box should be removed");
 assert(!boxMap.has("obj-load-simpler-btn"), "Simpler loader button should be removed");
 assert(!boxMap.has("obj-prev-sim-btn"), "Prev Similar button in Filters section should be removed");
@@ -57,16 +61,17 @@ assert(!boxMap.has("obj-rand-btn"), "Random button in Filters section should be 
 assert(!boxMap.has("obj-play-btn"), "Audition / Replay button in Playback section should be removed");
 assert(!boxMap.has("obj-prep-key"), "Regression: obj-prep-key ('prepend key') must not be used because v8ui swallows 'key' in C++");
 
-// Regression Check: obj-node (node.codebox) MUST have presentation=1 and be placed before obj-minimap
-// so Max 9 boots node.codebox when openinpresentation=1!
+// Regression Check: obj-node (node.codebox) MUST have presentation=1 to boot in M4L presentation mode,
+// AND its presentation_rect must be off-screen (y >= 169) so its native Qt/JUCE subview never paints "ox🔨" over the sample name!
 const nodeBox = boxMap.get("obj-node");
 assert.strictEqual(nodeBox.presentation, 1, "Regression: obj-node must have presentation: 1 to boot in M4L presentation mode");
 assert.strictEqual(nodeBox.ignoreclick, 1, "Expected ignoreclick: 1 on hidden background obj-node");
-const nodeIdx = p.boxes.findIndex((b) => b.box.id === "obj-node");
-const minimapIdx = p.boxes.findIndex((b) => b.box.id === "obj-minimap");
-assert(nodeIdx < minimapIdx, "Expected obj-node before obj-minimap in z-order so it sits behind the UI");
+assert(
+  nodeBox.presentation_rect[1] >= 169.0,
+  `Regression: obj-node presentation_rect y (${nodeBox.presentation_rect[1]}) must be >= 169.0 (off-screen) so it never covers the sample name`
+);
 
-// Regression Check: Verify 's' hotkey routing (obj-key -> obj-sel-key -> obj-msg-save-sel -> obj-minimap)
+// Regression Check: Verify 's' hotkey routing (obj-key -> obj-sel-key -> obj-msg-hotkey-save -> obj-minimap)
 const linesFrom = (srcId) =>
   p.lines.map((l) => l.patchline).filter((pl) => pl.source[0] === srcId).map((pl) => pl.destination[0]);
 
@@ -74,8 +79,17 @@ assert(linesFrom("obj-key").includes("obj-sel-key"), "obj-key must route to obj-
 assert(linesFrom("obj-sel-key").includes("obj-msg-hotkey-save"), "obj-sel-key must route 115/83 ('s'/'S') to obj-msg-hotkey-save");
 assert(linesFrom("obj-sel-key").includes("obj-msg-del-saved"), "obj-sel-key must route Delete/Backspace to obj-msg-del-saved");
 assert(linesFrom("obj-msg-hotkey-save").includes("obj-minimap"), "obj-msg-hotkey-save must route to obj-minimap");
-assert(linesFrom("obj-msg-save-sel").includes("obj-minimap"), "obj-msg-save-sel must route to obj-minimap");
 assert(linesFrom("obj-msg-del-saved").includes("obj-minimap"), "obj-msg-del-saved must route to obj-minimap");
+
+// Verify Section Collapse/Show Toggles in the top toolbar next to Open Map
+assert(linesFrom("obj-toggle-saved-btn").includes("obj-prep-show-saved"), "obj-toggle-saved-btn must route to obj-prep-show-saved");
+assert(linesFrom("obj-prep-show-saved").includes("obj-minimap"), "obj-prep-show-saved must route to obj-minimap");
+assert(linesFrom("obj-toggle-filters-btn").includes("obj-inv-filters"), "obj-toggle-filters-btn must route to obj-inv-filters");
+assert(linesFrom("obj-prep-hide-filters").includes("obj-panel-filters"), "obj-prep-hide-filters must hide/show obj-panel-filters");
+assert(linesFrom("obj-prep-hide-filters").includes("obj-folder-list"), "obj-prep-hide-filters must hide/show obj-folder-list");
+assert(linesFrom("obj-toggle-playback-btn").includes("obj-inv-playback"), "obj-toggle-playback-btn must route to obj-inv-playback");
+assert(linesFrom("obj-prep-hide-playback").includes("obj-panel-playback"), "obj-prep-hide-playback must hide/show obj-panel-playback");
+assert(linesFrom("obj-prep-hide-playback").includes("obj-pitch-dial"), "obj-prep-hide-playback must hide/show obj-pitch-dial");
 
 // Verify Mono-to-Stereo audio routing on obj-sfplay and obj-r-chan-sel (selector~ 2 1)
 const linesFromPort = (srcId, srcOut) =>
@@ -173,6 +187,9 @@ for (const l of p.lines) {
 // 2. Test Node Engine: Mono vs Stereo Playback, OS File Links, Edited Stereo WAV & Reorder/Delete
 // ============================================================================
 
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xo_test_"));
+process.env.XO_CACHE_DIR = tmpDir;
+
 const nodeOutletLog = [];
 global.__MAX_API_MOCK__ = {
   post: () => {},
@@ -215,7 +232,6 @@ function makeSynthWav(freqHz, noiseAmt, durationSec, channels = 1, sampleRate = 
   return buf;
 }
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xo_test_"));
 const kickMonoPath = path.join(tmpDir, "Kick_Mono_808.wav");
 const hatStereoPath = path.join(tmpDir, "Hihat_Stereo_Closed.wav");
 const snareLongPath = path.join(tmpDir, "Snare_Long_Tail.wav");
@@ -319,7 +335,8 @@ const namesSeed2 = subSeed2.slice(0, 25).map((s) => s.name).join(",");
 assert.notStrictEqual(namesSeed1, namesSeed2, "Re-seeding must select a different sample ordering/subset from the full corpus");
 
 // Test Remembered Folder List & Per-Folder Filtering (including Ableton Core Drums)
-const initFolders = engine.ensureKnownFoldersInitialized();
+engine.engineState.knownFolders = [];
+const initFolders = engine.ensureKnownFoldersInitialized(true);
 assert(initFolders.some((f) => f.name === "Ableton Core Drums" && f.enabled), "Folder list must automatically include Ableton Core Drums");
 engine.engineState.knownFolders = [
   { path: "/tmp/PackA", name: "PackA", enabled: true, count: 1000 },
@@ -425,7 +442,21 @@ for (let i = 0; i < pts.length; i++) {
 }
 strip_filter_maxlen(5000);
 
-// --- Test B: Scrollable, Selectable, Reorderable & Deletable Saved List ---
+// --- Test B: Scrollable, Selectable, Reorderable & Deletable Saved List (Starts Empty!) ---
+assert.strictEqual(getSavedList().length, 0, "Regression: Saved list must always start empty on a new instance");
+// Regression check: Double-clicking a sample on the map must NOT add it to savedList!
+ondblclick(80, 60, 1, 0, 0, 0, 0, 0);
+assert.strictEqual(getSavedList().length, 0, "Regression: Double-clicking on the map must NOT add samples to savedList");
+
+// Test Saved List collapse/show toggle (set_show_saved)
+set_show_saved(0);
+assert.strictEqual(getShowSavedList(), 0);
+assert.strictEqual(getLayout().savedW, 0, "When Saved List is collapsed, savedW must be 0");
+assert.strictEqual(getLayout().mapW, 372, "When Saved List is collapsed, 2D map must expand to full 372px width");
+paint();
+set_show_saved(1);
+assert.strictEqual(getShowSavedList(), 1);
+assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW must be 136");
 clearSavedList();
 assert.strictEqual(getSavedList().length, 0);
 
@@ -508,12 +539,33 @@ onclick(lay.savedX + lay.savedW - 20, lay.savedBottomY + 10, 1, 0, 0, 0, 0, 0);
 assert.deepStrictEqual(stripOutlets[0], ["drag_out", "all_edited", -1]);
 ondrag(lay.savedX + lay.savedW - 20, lay.savedBottomY + 10, 0, 0, 0, 0, 0, 0);
 
-// Click & drag on Sample Preview (top waveform bar) to drag out single Raw sample
+// Test Sample Preview (top waveform bar):
+// 1) Clicking without dragging must playback the sample ("replay") and NOT drag out
+// 2) Dragging from the sample preview must drag out the single Raw sample ("drag_out", "selected_raw") and NOT playback!
+const previewOutletLog = [];
+global.outlet = (idx, ...args) => {
+  stripOutlets[idx] = args;
+  if (idx === 0) previewOutletLog.push(args);
+};
 onidle(60, 10, 0, 0, 0, 0, 0, 0);
 assert.deepStrictEqual(stripOutlets[0], ["arm_drag", "selected_raw", getSelectedIndex()], "Hovering sample preview bar must arm single Raw sample drag");
+
+// 1) Click and release without moving -> replay only
+previewOutletLog.length = 0;
 onclick(60, 10, 1, 0, 0, 0, 0, 0);
-assert.deepStrictEqual(stripOutlets[0], ["drag_out", "selected_raw", getSelectedIndex()], "Clicking/dragging sample preview bar must trigger single Raw sample drag-out");
 ondrag(60, 10, 0, 0, 0, 0, 0, 0);
+assert.deepStrictEqual(previewOutletLog, [["replay"]], "Clicking sample preview bar without dragging must playback the sample (and not drag out)");
+
+// 2) Click and drag -> drag_out selected_raw only (NO replay!)
+previewOutletLog.length = 0;
+onclick(60, 10, 1, 0, 0, 0, 0, 0);
+ondrag(72, 12, 1, 0, 0, 0, 0, 0);
+ondrag(72, 12, 0, 0, 0, 0, 0, 0);
+assert.deepStrictEqual(
+  previewOutletLog,
+  [["drag_out", "selected_raw", getSelectedIndex()]],
+  "Regression: Dragging from sample preview bar must drag out single Raw sample and NOT playback the sample"
+);
 
 // Test Infinite Similarity Stepping (both sim_next and sim_prev) & Re-Seed button on bottom toolbar tray in v8ui
 const visitedStripSim = new Set();
@@ -663,7 +715,7 @@ Max.addHandler("drag_out", (mode, savedIdx = -1) => {
         numoutlets: 1,
         outlettype: ["bang"],
         patching_rect: [640.0, 615.0, 65.0, 20.0],
-        text: "delay 600"
+        text: "delay 1100"
       }
     },
     {
@@ -685,7 +737,7 @@ Max.addHandler("drag_out", (mode, savedIdx = -1) => {
         numoutlets: 1,
         outlettype: ["bang"],
         patching_rect: [720.0, 615.0, 65.0, 20.0],
-        text: "delay 1100"
+        text: "delay 1350"
       }
     },
     {
@@ -713,7 +765,10 @@ Max.addHandler("drag_out", (mode, savedIdx = -1) => {
   fs.writeFileSync(harnessPath, JSON.stringify(harnessDoc));
 
   const { spawn } = require("child_process");
-  const maxProc = spawn(MAX_BIN, [harnessPath], { stdio: "ignore" });
+  const maxProc = spawn(MAX_BIN, [harnessPath], {
+    stdio: "ignore",
+    env: { ...process.env, XO_CACHE_DIR: os.tmpdir() }
+  });
 
   const waitStart = Date.now();
   while (Date.now() - waitStart < 9000) {

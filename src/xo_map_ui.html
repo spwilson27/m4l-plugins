@@ -609,7 +609,7 @@
       <canvas id="map-canvas"></canvas>
       <div class="map-overlay-hud">
         <div id="hud-counts" class="hud-badge">0 / 0 visible</div>
-        <div class="hud-badge">Drag: Scrub Audition • DblClick or 'S': Save Sample + Playback Settings • Wheel: Zoom</div>
+        <div class="hud-badge">Drag: Scrub Audition • 'S' or +Save: Save Sample + Playback Settings • Wheel: Zoom</div>
       </div>
       <div id="hover-tooltip" class="map-hover-tooltip"></div>
     </div>
@@ -1319,7 +1319,6 @@
     const hit = findNearestVisibleSample(e.clientX - rect.left, e.clientY - rect.top, 28);
     if (hit >= 0) {
       selectSample(hit, true, true);
-      sendAction("save_sample", { index: hit });
     }
   });
 

@@ -57,12 +57,17 @@ python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 sc
 A Max for Live Audio Effect modulator device that replaces Ableton's stock **Shaper** MSEG editor with a fast, fluid **Bitwig Studio–inspired MSEG curve editor**, audio-rate wavetable modulation, and an 8-slot modulation matrix.
 
 ### Features
-- **Bitwig-Style MSEG Editor (`v8ui` + `mgraphics`)**:
+- **Bitwig-Style MSEG Editor (`v8ui` + `mgraphics`, `436 × 169` px 2-Panel Footprint)**:
   - **Single-Click Point Creation & Double-Click Deletion**.
-  - **Tension Curves & Symmetric S-Curves** (`Alt/Option + drag` to bend tension; `Ctrl + click` or S-Curve toolbar icon to toggle S-Curve mode).
+  - **Tension Curves & Per-Segment S-Curves**:
+    - **`Alt/Option + drag`** (or midpoint handle drag) bends the tension curve of a segment. When **multiple nodes are selected**, `Alt/Option + drag` adjusts the slope of **each selected segment's curve** simultaneously.
+    - **`Double Alt/Option + click`** on any curve segment switches that segment between **Exponential (`sCurve = 0`, diamond midpoint handle)** and **Symmetric S-Curve (`sCurve = 1`, cyan circular midpoint handle)**.
   - **Point Overwriting ("Eat Points" on Drag)** & **Marquee Box Selection** with vertical bounding-box scaling.
   - **Keyboard Shortcuts When Focused**: `Cmd+A` (Select All points), `Delete` / `Backspace` (Delete selected interior points), `Cmd+Z` / `Cmd+Shift+Z` (Undo / Redo), `Escape` (Clear selection).
   - **Paint / Draw Step Brush Mode** (`Step`, `Ramp`, `Decay`, `Tri`, and continuous multi-point `Free` brushes).
+  - **9-Icon Bottom Toolbar + Built-In `Grid` & `Snap` Controls**:
+    - `Undo (<)`, `Redo (>)`, `Draw`, `Brush Shape`, `Sine`, **`Randomize Ramps`** (generates random grid-quantized exponential decay ramps spanning `1–3` grid steps), **`Randomize Steps`** (generates random grid-quantized flat steps spanning `1–3` grid steps), `Randomize Smooth Curve`, and `Reverse Horizontally (Flip X)`.
+    - Built-in **`Grid [ 1–16 ]`** (drag vertically, click to step, double-click to reset to `8`) and **`[ Snap ]`** controls rendered directly inside `v8ui` and synced bidirectionally with Ableton Live parameters.
   - **Draggable Loop Start / Loop End Region Markers** & **64-Step Undo / Redo History**.
 - **Audio-Rate Wavetable Engine, Timeline Sync & 8-Slot Modulation Matrix**:
   - 4096-sample `buffer~` (`#0-mseg`) read via `index~`, with `Rate` (`Hz` or **Timeline-Aligned `Sync`** locked to Ableton Live's 1-PPQ arrangement position via `plugsync~`), `Jitter`, `Smooth`, `Depth`, `Phase`, `Retrigger (R)`, and `Offset`.

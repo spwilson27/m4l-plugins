@@ -7,7 +7,7 @@
 // GenExpr rejects the old delay operator. Each line is declared with Delay, then written
 // and read as a tap. Tank lines are 16384 samples (~170 ms at 96 kHz); pre-delay
 // lines are 65536 samples. Read times are clamped inside those lengths.
-// Full feedback holds a line to about -60 dB in 18 seconds (see ringGain).
+// Full feedback holds a line to about -60 dB in 40 seconds (see ringGain).
 // The coefficient depends on that line's delay so short combs do not die
 // in a fraction of a second. It is clipped just under 1, so the tail ends.
 // GenExpr requires every function to appear before Buffer, Param, and assignments.
@@ -64,13 +64,16 @@ follow(x) {
 	return s;
 }
 
-// fbk 1 reaches about -60 dB after 18 seconds. fbk 0 does not recirculate.
+// fbk 1 reaches about -60 dB after 40 seconds, so 10 seconds is still obvious.
+// fbk 0 does not recirculate. The denominator is never zero, so a feedback
+// of 0 cannot fall through into a gain of 1.
 ringGain(delaySamps, fbkNow) {
-	rt = clip(fbkNow, 0, 1) * 18;
-	if (rt < 0.05) return 0;
+	k = clip(fbkNow, 0, 1);
 	secs = max(delaySamps, 1) / samplerate;
+	rt = max(k * 40, 0.05);
 	g = exp(-6.90775527898 * secs / rt);
-	return clip(g, 0, 0.99999);
+	quiet = (k < 0.001) ? 0 : g;
+	return clip(quiet, 0, 0.99999);
 }
 
 // Parallel combs (character 0) blended into a per-side Householder mix (character 1).
@@ -332,45 +335,45 @@ a19 = (9 < nR) ? 1 : 0;
 
 // Per-line loop gain. Short lines need a higher coefficient to ring as long.
 g0 = ringGain(t0, fbkS);
-z0 = a0 * (tanh(d0) * g0 * duckG + injL);
+z0 = a0 * (clip(d0, -2, 2) * g0 * duckG + injL);
 g1 = ringGain(t1, fbkS);
-z1 = a1 * (tanh(d1) * g1 * duckG + injL);
+z1 = a1 * (clip(d1, -2, 2) * g1 * duckG + injL);
 g2 = ringGain(t2, fbkS);
-z2 = a2 * (tanh(d2) * g2 * duckG + injL);
+z2 = a2 * (clip(d2, -2, 2) * g2 * duckG + injL);
 g3 = ringGain(t3, fbkS);
-z3 = a3 * (tanh(d3) * g3 * duckG + injL);
+z3 = a3 * (clip(d3, -2, 2) * g3 * duckG + injL);
 g4 = ringGain(t4, fbkS);
-z4 = a4 * (tanh(d4) * g4 * duckG + injL);
+z4 = a4 * (clip(d4, -2, 2) * g4 * duckG + injL);
 g5 = ringGain(t5, fbkS);
-z5 = a5 * (tanh(d5) * g5 * duckG + injL);
+z5 = a5 * (clip(d5, -2, 2) * g5 * duckG + injL);
 g6 = ringGain(t6, fbkS);
-z6 = a6 * (tanh(d6) * g6 * duckG + injL);
+z6 = a6 * (clip(d6, -2, 2) * g6 * duckG + injL);
 g7 = ringGain(t7, fbkS);
-z7 = a7 * (tanh(d7) * g7 * duckG + injL);
+z7 = a7 * (clip(d7, -2, 2) * g7 * duckG + injL);
 g8 = ringGain(t8, fbkS);
-z8 = a8 * (tanh(d8) * g8 * duckG + injL);
+z8 = a8 * (clip(d8, -2, 2) * g8 * duckG + injL);
 g9 = ringGain(t9, fbkS);
-z9 = a9 * (tanh(d9) * g9 * duckG + injL);
+z9 = a9 * (clip(d9, -2, 2) * g9 * duckG + injL);
 g10 = ringGain(t10, fbkS);
-z10 = a10 * (tanh(d10) * g10 * duckG + injR);
+z10 = a10 * (clip(d10, -2, 2) * g10 * duckG + injR);
 g11 = ringGain(t11, fbkS);
-z11 = a11 * (tanh(d11) * g11 * duckG + injR);
+z11 = a11 * (clip(d11, -2, 2) * g11 * duckG + injR);
 g12 = ringGain(t12, fbkS);
-z12 = a12 * (tanh(d12) * g12 * duckG + injR);
+z12 = a12 * (clip(d12, -2, 2) * g12 * duckG + injR);
 g13 = ringGain(t13, fbkS);
-z13 = a13 * (tanh(d13) * g13 * duckG + injR);
+z13 = a13 * (clip(d13, -2, 2) * g13 * duckG + injR);
 g14 = ringGain(t14, fbkS);
-z14 = a14 * (tanh(d14) * g14 * duckG + injR);
+z14 = a14 * (clip(d14, -2, 2) * g14 * duckG + injR);
 g15 = ringGain(t15, fbkS);
-z15 = a15 * (tanh(d15) * g15 * duckG + injR);
+z15 = a15 * (clip(d15, -2, 2) * g15 * duckG + injR);
 g16 = ringGain(t16, fbkS);
-z16 = a16 * (tanh(d16) * g16 * duckG + injR);
+z16 = a16 * (clip(d16, -2, 2) * g16 * duckG + injR);
 g17 = ringGain(t17, fbkS);
-z17 = a17 * (tanh(d17) * g17 * duckG + injR);
+z17 = a17 * (clip(d17, -2, 2) * g17 * duckG + injR);
 g18 = ringGain(t18, fbkS);
-z18 = a18 * (tanh(d18) * g18 * duckG + injR);
+z18 = a18 * (clip(d18, -2, 2) * g18 * duckG + injR);
 g19 = ringGain(t19, fbkS);
-z19 = a19 * (tanh(d19) * g19 * duckG + injR);
+z19 = a19 * (clip(d19, -2, 2) * g19 * duckG + injR);
 
 del0.write(z0);
 del1.write(z1);

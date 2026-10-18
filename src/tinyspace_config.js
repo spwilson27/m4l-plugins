@@ -84,11 +84,12 @@ function delayMs(nominalMs, size01) {
     return nominalMs * sizeScale(size01);
 }
 
-// Full feedback falls about 60 dB in 18 seconds. The per-loop coefficient is
+// Full feedback falls about 60 dB in 40 seconds, so the tail is still obvious
+// at 10 seconds. The per-loop coefficient is
 // higher for short lines so a 5 ms comb rings about as long as a 40 ms one.
 // Matches ringGain() in tinyspace_core.genexpr.
 function feedbackGain(knob01, delayMs) {
-    const rt = clamp(knob01, 0, 1) * 18;
+    const rt = clamp(knob01, 0, 1) * 40;
     if (!(rt >= 0.05)) return 0;
     const secs = Math.max(delayMs, 1000 / 48000) / 1000;
     const g = Math.exp(-6.90775527898 * secs / rt);
