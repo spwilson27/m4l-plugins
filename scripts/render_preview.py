@@ -314,8 +314,16 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 lname = vof.get("parameter_longname", "")
                 if lname == "Phase":
                     val_str = f"{init_val:.2f} %"
+                elif ustyle == 5:
+                    val_str = f"{int(round(init_val))} %"
+                elif ustyle == 4:
+                    val_str = f"{init_val:.1f} dB"
+                elif ustyle == 3:
+                    val_str = f"{int(round(init_val))} Hz" if init_val >= 100 else f"{init_val:.1f} Hz"
+                elif ustyle == 2:
+                    val_str = f"{init_val:.1f} ms" if init_val < 10 else f"{int(round(init_val))} ms"
                 else:
-                    val_str = f"{int(init_val)} %" if ustyle == 5 else f"{int(init_val)}"
+                    val_str = f"{int(round(init_val))}"
                 fnt = get_font(9.0 * SCALE, bold=True)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
@@ -437,9 +445,13 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             cx = rx + rw * 0.5
             cy = ry + rh * 0.52
             r = min(rw, rh) * 0.30
-            end_ang = 240 if (ustyle == 9 and enums) else 405
+            arc_color = rgba_tuple(w.get("activedialcolor", [0.0, 0.82, 0.91, 1.0]))
+            lo_val = float(vof.get("parameter_mmin", 0.0))
+            hi_val = float(vof.get("parameter_mmax", 100.0))
+            norm = max(0.0, min(1.0, (float(init_val) - lo_val) / max(1e-6, hi_val - lo_val)))
+            end_ang = 240 if (ustyle == 9 and enums) else int(135 + norm * 270)
             draw.arc([cx - r, cy - r, cx + r, cy + r], start=135, end=405, fill=(12, 17, 22, 255), width=int(2.6 * SCALE))
-            draw.arc([cx - r, cy - r, cx + r, cy + r], start=135, end=end_ang, fill=(0, 210, 232, 255), width=int(2.6 * SCALE))
+            draw.arc([cx - r, cy - r, cx + r, cy + r], start=135, end=max(136, end_ang), fill=arc_color, width=int(2.6 * SCALE))
             ang = math.radians(end_ang)
             draw.line([(cx, cy), (cx + r * math.cos(ang), cy + r * math.sin(ang))], fill=(12, 17, 22, 255), width=int(2.6 * SCALE))
             # Value at bottom

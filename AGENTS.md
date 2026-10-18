@@ -25,6 +25,9 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Tiny Space
      python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
+
+     # Reciprocator
+     python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -41,6 +44,16 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
    - Always version the array returned by `getvalueof()` (first element = version integer) and keep fallback parsing for earlier versions inside `setvalueof()` so existing Live Sets never lose user curves.
 7. **Undo Stack Discipline**:
    - Any user interaction that mutates MSEG points, segment curves, S-curve flags, or loop markers must call `pushUndoState()` once at the start of the gesture (`onclick` or `ondblclick`)—never on every `ondrag` frame—and call `notifyclients()` on gesture completion.
+8. **`gen.codebox~`, `v8ui` Pixel Coordinates, Background Panels & Real Max Audio Verification**:
+   - **`v8ui` Pixel Coordinates**: Always call `mgraphics.init(); mgraphics.relative_coords = 0; mgraphics.autofill = 0;` at the top of every `v8ui` script. Without `relative_coords = 0`, Max 9 clips pixel drawing to `0..1` and renders a blank panel in Live.
+   - **Background Panel Z-Order**: All decorative `panel` boxes must appear **at the end** of the `boxes` list and include `"background": 1`, or they will cover interactive controls in Ableton Live.
+   - **GenExpr Ordering & Lexer Rules**:
+     - Every helper function must appear **before** all `Buffer`, `Param`, `History`, and `Delay` declarations, which in turn must appear **before** all expression statements.
+     - **Never name identifiers `e0`–`e9`** (or `e` followed by digits): GenExpr's lexer parses `e0` as Euler's constant `e` (`2.71828...`) rather than an identifier.
+     - Use `Delay d(size); d.write(x); y = d.read(samps, interp="linear");` instead of `delay()`.
+     - Bind `Buffer varName("extName");` on `loadbang` using the **GenExpr variable name with no `set` prefix** (e.g., `scope #0-recipscope`).
+   - **Real Max Audio Test Harness**: Every DSP device must have an automated Max audio test runner (`scripts/run_<device>_audio_tests.py`) that clears `~/Library/Application Support/Cycling '74/Max 9/Crash Recovery`, records into a 2-channel `buffer~ rec <durationMs> 2`, waits until the probe output file size stabilizes before reading, and verifies audio behavior and live UI telemetry buffer updates.
+
 
 ---
 
@@ -141,3 +154,28 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 ```bash
 python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
 ```
+
+---
+
+## 7. Architecture of `devices/Reciprocator.amxd`
+
+### Presentation Layout (`448 x 169` px — 3-Stage Signal-Flow Modules)
+- **Left Panel (`x = 6..176`)**:
+  - Top bar (`y = 7..23`): Title (`Reciprocator`).
+  - Interactive Scrolling Waveform + Envelope & Gate HUD (`obj-viz`, `v8ui`, `x = 10, y = 28, w = 162, h = 132`): Draws the input waveform silhouette, detected envelope (`ENV` cyan), flattened reciprocal output (`OUT` amber), draggable `Gate` and `Ceiling` threshold lines, and a right-hand `1/E` gain + `OPEN`/`MUTE` meter bar.
+- **Stage 1 — `1. DETECT` (`x = 180..272`, Cyan-bordered panel)**:
+  - `Attack` and `Release` dials on top, with stacked `HP` (`SC HP`), `LP` (`SC LP`), `RMS` (`Detect`), and `Look` (`Lookahead`) numboxes below.
+- **Stage 2 — `2. 1 / ENV` (`x = 276..356`, Coral-bordered panel)**:
+  - Stacked `Amount` (`0..150%`) and `Gate` (`-72..-6 dB`) dials.
+- **Stage 3 — `3. OUTPUT` (`x = 360..442`, Amber-bordered panel)**:
+  - `Ceiling` dial (`-18..0 dB`), `Soft Clip` toggle (`live.text`), and `Mix` dial (`0..100%`).
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/reciprocator_core.genexpr` — Lookahead delay (`0..10 ms`, shared by wet VCA and dry path for phase alignment), detector HP/LP conditioning, blendable Peak/RMS envelope follower (`0.05..250 ms` attack, `0.5..1500 ms` release), smooth cubic noise gate around `Gate` (`-72..-6 dB`), reciprocal gain (`pow(env, -amount)` up to `150%` inverted dynamics), and `Ceiling` (`-18..0 dB`) with selectable `tanh` soft-clipping.
+- `Buffer scope("recipscope")` writes peak-held input, envelope, gate open state, normalized dB gain, and output peaks every 64 samples. Bound on `loadbang` via `scope #0-recipscope`.
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_reciprocator_audio_tests.py`

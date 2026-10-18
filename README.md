@@ -5,6 +5,7 @@ A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1
 1. **`devices/XO Sample Map.amxd`** — An XLN Audio XO–inspired 2D Drum Sample Space Browser, Auto-Categorizer, Similarity Explorer, and Simpler / Drum Rack Pad Loader (`Node for Max` + `jweb` pop-out window + in-device `v8ui` mini-map + `LiveAPI`).
 2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, Pre-delay, Modulation, Crossfeed, and HP/LP. A Seed (0–9999) picks density, delay times, and diffusion character. Vibrating delay-line display.
 3. **`devices/Better Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
+4. **`devices/Reciprocator.amxd`** — An upgraded reciprocal envelope dynamics & audio-rate waveshaping processor (`x / env^amount`) with a smooth noise gate floor, lookahead delay, Peak/RMS detector blend, sidechain HP/LP filters, soft-clip ceiling, and a live scrolling envelope/gate/output HUD.
 
 ---
 
@@ -48,6 +49,35 @@ A Max for Live **Audio Effect** reverb — a "tiny space" ranging from tight com
 ### Rebuild & Test
 ```bash
 python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
+```
+
+---
+
+## 5. Reciprocator (`devices/Reciprocator.amxd`)
+
+A Max for Live **Audio Effect** dynamics and waveshaping processor inspired by the classic "cuntpressor" / Woulg *Reciprocator* (`x / env`), upgraded with continuous reciprocal exponent (`Amount`), a smooth noise gate floor (`Gate`), lookahead delay (`Lookahead`), Peak/RMS detector blend (`Detect`), sidechain HP/LP filtering, and a `tanh` soft-clipping ceiling.
+
+### Features
+- **Compact 3-Stage Signal-Flow Layout (`448 × 169` px)**:
+  - **Left Interactive Scope (`162 × 132` px `v8ui`)**: Displays the input silhouette, cyan `ENV` follower, amber `OUT` waveform, live `1/E` dB gain + `OPEN`/`MUTE` bar meter, and **directly draggable `Gate` and `Ceiling` threshold bars** synced bidirectionally with the dials.
+  - **`1. DETECT` Stage (Cyan Card)**: `Attack` (`0.05..250 ms`) and `Release` (`0.5..1500 ms`) dials on top, with stacked `HP` (`SC HP` `20..2000 Hz`), `LP` (`SC LP` `400..18000 Hz`), `RMS` (`Detect` `0..100%` Peak-to-RMS + stereo link), and `Look` (`Lookahead` `0..10 ms`) numboxes below.
+  - **`2. 1 / ENV` Stage (Coral Card)**: Stacked `Amount` (`0%..150%` reciprocal exponent, morphing from unity `0%`, to flat `1/env` sustain `100%`, to inverted dynamics `150%`) and `Gate` (`-72..-6 dB` smooth cubic noise floor) dials.
+  - **`3. OUTPUT` Stage (Amber Card)**: `Ceiling` (`-18..0 dB`) dial, `Soft Clip` (`tanh` vs hard ceiling) toggle, and `Mix` (`0..100%` lookahead-aligned equal-power dry/wet) dial.
+
+### Files
+- `src/reciprocator_config.js` — shared reciprocal math & gate helpers
+- `src/reciprocator_core.genexpr` — `gen.codebox~` DSP core & scope telemetry writer
+- `src/reciprocator_ui.js` — interactive scrolling envelope/gate/output HUD (`v8ui`)
+- `scripts/build_reciprocator.py` — builds `devices/Reciprocator.amxd`
+- `scripts/run_reciprocator_audio_tests.py` — automated Max audio test harness (`bypass`, `flatten`, `gate_mute`, `audiorate`, `ceiling`, `invert`)
+- `tests/reciprocator_probe.js` — Max audio recording & scope buffer probe
+- `tests/test_reciprocator.js` — unit, layout, patchline & UI interaction verification suite
+- `previews/reciprocator.png` — rendered 2x Retina preview
+
+### Rebuild & Test
+```bash
+python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
+python3 scripts/run_reciprocator_audio_tests.py
 ```
 
 ---
@@ -120,4 +150,7 @@ python3 scripts/build_xo_map.py && node tests/test_xo_map.js && python3 scripts/
 
 # Better Shaper
 python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/render_preview.py "devices/Better Shaper.amxd"
+
+# Reciprocator
+python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
 ```
