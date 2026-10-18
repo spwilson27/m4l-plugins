@@ -10,8 +10,10 @@
  *  - Dragging point(s) over other points overwrites ("eats") them like Bitwig
  *  - Drag in empty space (or Shift+drag) to draw marquee selection box for multiple points
  *  - Multi-selection move, vertical bounding-box scale, and multi-segment curve adjust
+ *  - Keyboard shortcuts when focused: Cmd+A (Select All), Delete/Backspace (Delete Selected), Cmd+Z (Undo), Cmd+Shift+Z (Redo), Esc (Deselect)
  *  - Paint / Draw Step Brush mode (Step, Ramp, Decay, Triangle, Freehand) synced to Grid
  *  - Draggable Loop Start / Loop End region markers with audio-rate phase windowing
+ *  - Timeline-aligned Sync mode (locks phase to Ableton Live arrangement 1-PPQ ticks)
  *  - Undo / Redo history stack (up to 64 states)
  *  - Preset shapes, Flip X / Flip Y, Loop endpoint link, Grid & Snap
  */
@@ -27,13 +29,17 @@ let bufName = "";
 let bufObj = null;
 const TABLE_SIZE = 4096;
 
-// LFO Rate state
-// Outlet 0: ["loop", loopStart, loopSpan] for MSP phase windowing
+// LFO Rate & Timeline Sync state
+// Outlet 0: ["loop", loopStart, loopSpan] or ["syncphase", phase]
 // Outlet 1: frequency in Hz (float) for phasor~
-let rateMode = 0; // 0 = Hz, 1 = Sync
+let rateMode = 1; // 0 = Hz, 1 = Sync (default Sync 1/4 like Live 12 Shaper)
 let rateHz = 1.0;
 let rateSync = 9; // default 1/4 note
+let playMode = 0; // 0 = Loop, 1 = 1-Shot, 2 = Manual
 let hostBpm = 120.0;
+let hostPlaying = 0;
+let lastHostTicks = -1.0;
+
 const SYNC_BEATS = [
     0.0625,      // 0: 1/64
     0.125,       // 1: 1/32
@@ -54,30 +60,31 @@ const SYNC_BEATS = [
 ];
 
 // Editor settings
-let gridX = 8;
-let gridY = 4;
-let snapEnabled = 1;
-let loopLink = 0;      // Link start (x=0) and end (x=1) Y values
-let loopEnabled = 0;   // Sub-region loop active
-let loopStart = 0.0;   // Loop start marker in [0, 1]
-let loopEnd = 1.0;     // Loop end marker in [0, 1]
-let currentPhase = 0.0;
+var gridX = 8;
+var gridY = 4;
+var snapEnabled = 1;
+var loopLink = 0;      // Link start (x=0) and end (x=1) Y values
+var loopEnabled = 0;   // Sub-region loop active
+var loopStart = 0.0;   // Loop start marker in [0, 1]
+var loopEnd = 1.0;     // Loop end marker in [0, 1]
+var currentPhase = 0.0;
+var hasFocus = 0;
 
 // Paint / Draw Step Brush state
-let drawMode = 0;      // 0 = Edit mode, 1 = Paint/Draw Brush mode
-let brushType = 0;     // 0 = Step, 1 = Ramp Up, 2 = Decay Down, 3 = Triangle, 4 = Freehand
+var drawMode = 0;      // 0 = Edit mode, 1 = Paint/Draw Brush mode
+var brushType = 0;     // 0 = Step, 1 = Ramp Up, 2 = Decay Down, 3 = Triangle, 4 = Freehand
 const BRUSH_NAMES = ["Step", "Ramp", "Decay", "Tri", "Free"];
 
 // MSEG Points: sorted by x in [0, 1], y in [0, 1], curve in [-1, 1], sCurve in {0, 1}
-let nextId = 10;
-let points = [
+var nextId = 10;
+var points = [
     { id: 1, x: 0.0, y: 0.0, curve: 0.45, sCurve: 0 },
     { id: 2, x: 0.5, y: 1.0, curve: 0.0, sCurve: 0 },
     { id: 3, x: 0.5001, y: 0.0, curve: -0.45, sCurve: 0 },
     { id: 4, x: 1.0, y: 1.0, curve: 0.0, sCurve: 0 }
 ];
 
-let selectedIds = [];
+var selectedIds = [];
 
 // Undo / Redo History Stack
 const MAX_HISTORY = 64;
@@ -181,33 +188,34 @@ let dragState = {
     scaleMaxY: 1,
     startLoopStart: 0.0,
     startLoopEnd: 1.0,
-    lastFreeX: -1
+    lastFreeX: -1,
+    lastAnchorX: -1,
+    lastAnchorY: -1,
+    freeDir: 0,
+    strokePointIds: []
 };
 
 const TOOLBAR_ITEMS = [
-    { id: "undo",  label: "<",     title: "Undo" },
-    { id: "redo",  label: ">",     title: "Redo" },
+    { id: "undo",  label: "<",     title: "Undo (Cmd+Z)" },
+    { id: "redo",  label: ">",     title: "Redo (Cmd+Shift+Z)" },
     { id: "draw",  label: "Draw",  title: "Paint / Step Brush Mode" },
     { id: "brush", label: "Shape", title: "Brush Shape (Step/Ramp/Decay/Tri/Free)" },
     { id: "scurve",label: "S-Crv", title: "Toggle S-Curve on Segment(s)" },
-    { id: "loopr", label: "Loop",  title: "Toggle Loop Region" },
-    { id: "clear", label: "X",     title: "Delete Selected / Reset" },
+    { id: "clear", label: "X",     title: "Delete Selected (Del) / Reset" },
     { id: "decay", label: "Dec",   title: "Exp Decay" },
     { id: "ramp",  label: "Rmp",   title: "Exp Ramp" },
     { id: "sine",  label: "Sin",   title: "Sine" },
-    { id: "tri",   label: "Tri",   title: "Triangle" },
     { id: "saw2",  label: "Saw",   title: "Double Saw" },
     { id: "steps", label: "Stp",   title: "Steps" },
     { id: "rnd",   label: "Rnd",   title: "Randomize" },
     { id: "flipy", label: "FlipY", title: "Invert Vertically" },
-    { id: "flipx", label: "FlipX", title: "Reverse Horizontally" },
-    { id: "link",  label: "Link",  title: "Link Start/End Y" }
+    { id: "flipx", label: "FlipX", title: "Reverse Horizontally" }
 ];
 
 // Layout metrics
 function getLayout() {
     let sz = mgraphics.size;
-    let w = sz[0] || 320;
+    let w = sz[0] || 318;
     let h = sz[1] || 134;
     let loopBarH = 11;
     let toolbarH = 22;
@@ -217,6 +225,7 @@ function getLayout() {
     let plotY = loopBarH + padTop;
     let plotW = Math.max(20, w - padX * 2);
     let plotH = Math.max(20, h - toolbarH - plotY - padBot);
+    let toolbarW = Math.max(120, w - 104); // Reserve right 104px of bottom bar for Grid & Snap
     return {
         w: w,
         h: h,
@@ -228,7 +237,8 @@ function getLayout() {
         plotW: plotW,
         plotH: plotH,
         toolbarY: h - toolbarH,
-        toolbarH: toolbarH
+        toolbarH: toolbarH,
+        toolbarW: toolbarW
     };
 }
 
@@ -277,7 +287,6 @@ function evalSegmentT(t, curve, sCurve) {
 
     let p = Math.pow(2.0, Math.abs(curve) * 3.6);
     if (sCurve) {
-        // Symmetric S-Curve inflection at t = 0.5
         if (t < 0.5) {
             let u = t * 2.0;
             let shaped = (curve > 0.0) ? (1.0 - Math.pow(1.0 - u, p)) : Math.pow(u, p);
@@ -367,6 +376,23 @@ function updateBufferAndNotify(notify) {
     mgraphics.redraw();
 }
 
+function getEffectiveCycleBeats() {
+    let idx = Math.max(0, Math.min(SYNC_BEATS.length - 1, Math.round(rateSync)));
+    let beats = SYNC_BEATS[idx] || 1.0;
+    if (loopEnabled) {
+        let span = Math.max(0.05, loopEnd - loopStart);
+        beats = beats * span;
+    }
+    return beats;
+}
+
+function alignPhaseToTimeline(ppq) {
+    if (rateMode !== 1 || ppq < 0.0) return;
+    let cycleBeats = getEffectiveCycleBeats();
+    let phase = ((ppq / cycleBeats) % 1.0 + 1.0) % 1.0;
+    outlet(0, "syncphase", phase);
+}
+
 function updateLoopOutput() {
     if (loopEnabled) {
         let span = Math.max(0.05, loopEnd - loopStart);
@@ -387,7 +413,14 @@ function updateRateOutput() {
         let span = Math.max(0.05, loopEnd - loopStart);
         freq = freq / span;
     }
-    outlet(1, freq);
+    let periodMs = 1000.0 / Math.max(0.001, freq);
+    outlet(0, "oneshotms", periodMs);
+    if (playMode === 2) {
+        // Manual mode: freeze LFO oscillator so Phase (Ø) scrubs position directly
+        outlet(1, 0.0);
+    } else {
+        outlet(1, freq);
+    }
 }
 
 // Paint / Step Brush Engine
@@ -395,71 +428,175 @@ function applyPaintBrushAt(nx, ny, shiftHeld, isDragContinuation) {
     let yVal = snapYMagnetic(ny, shiftHeld);
 
     if (brushType === 4) {
-        // Freehand brush: overwrite points in small swept window and drop point
+        // Freehand brush: continuous trail of points along drag path without self-erasing
         let freeX = Math.max(0.002, Math.min(0.998, nx));
-        if (isDragContinuation && dragState.lastFreeX >= 0) {
-            let minX = Math.min(dragState.lastFreeX, freeX) - 0.005;
-            let maxX = Math.max(dragState.lastFreeX, freeX) + 0.005;
-            let firstId = points[0].id;
-            let lastId = points[points.length - 1].id;
+        let firstId = points[0].id;
+        let lastId = points[points.length - 1].id;
+
+        if (!isDragContinuation || dragState.lastFreeX < 0) {
+            // Start of freehand stroke
+            dragState.strokePointIds = [];
+            dragState.freeDir = 0;
+            // Remove any pre-existing interior point right at the click spot
             points = points.filter(function(pt) {
                 if (pt.id === firstId || pt.id === lastId) return true;
-                return (pt.x < minX || pt.x > maxX);
+                return Math.abs(pt.x - freeX) > 0.004;
             });
+            let pt = { id: nextId++, x: freeX, y: yVal, curve: 0.0, sCurve: 0 };
+            points.push(pt);
+            dragState.strokePointIds.push(pt.id);
+            dragState.lastFreeX = freeX;
+            dragState.lastAnchorX = freeX;
+            dragState.lastAnchorY = yVal;
+            updateBufferAndNotify(false);
+            return;
         }
-        points.push({ id: nextId++, x: freeX, y: yVal, curve: 0.0, sCurve: 0 });
+
+        let dx = freeX - dragState.lastFreeX;
+        let stepDir = (dx > 0.0005) ? 1 : (dx < -0.0005) ? -1 : 0;
+        let minSweep = Math.min(dragState.lastFreeX, freeX);
+        let maxSweep = Math.max(dragState.lastFreeX, freeX);
+
+        // Always overwrite pre-existing (non-stroke) interior points crossed by the cursor
+        // If the user reverses direction mid-stroke, also overwrite earlier stroke points in the backtracked span
+        let reversed = (stepDir !== 0 && dragState.freeDir !== 0 && stepDir !== dragState.freeDir);
+        if (stepDir !== 0) dragState.freeDir = stepDir;
+
+        points = points.filter(function(pt) {
+            if (pt.id === firstId || pt.id === lastId) return true;
+            let inStroke = (dragState.strokePointIds.indexOf(pt.id) !== -1);
+            if (!inStroke) {
+                return (pt.x < minSweep - 0.002 || pt.x > maxSweep + 0.002);
+            }
+            if (reversed && pt.id !== dragState.strokePointIds[dragState.strokePointIds.length - 1]) {
+                if (pt.x >= minSweep && pt.x <= maxSweep) {
+                    return false;
+                }
+            }
+            return true;
+        });
+
+        let distFromAnchorX = Math.abs(freeX - dragState.lastAnchorX);
+        let distFromAnchorY = Math.abs(yVal - dragState.lastAnchorY);
+
+        if (distFromAnchorX >= 0.014 || (distFromAnchorX >= 0.005 && distFromAnchorY >= 0.04)) {
+            let newPt = { id: nextId++, x: freeX, y: yVal, curve: 0.0, sCurve: 0 };
+            points.push(newPt);
+            dragState.strokePointIds.push(newPt.id);
+            dragState.lastAnchorX = freeX;
+            dragState.lastAnchorY = yVal;
+        } else if (dragState.strokePointIds.length > 0) {
+            // Update the active tip point until it crosses the spacing threshold
+            let tipId = dragState.strokePointIds[dragState.strokePointIds.length - 1];
+            for (let i = 0; i < points.length; i++) {
+                if (points[i].id === tipId) {
+                    points[i].x = freeX;
+                    points[i].y = yVal;
+                    break;
+                }
+            }
+        }
+
         dragState.lastFreeX = freeX;
         updateBufferAndNotify(false);
         return;
     }
 
     // Grid-quantized brushes: Step (0), Ramp Up (1), Decay Down (2), Triangle (3)
+    // Each cell owns [x0 + inset, x1 - inset] where inset = 0.001, and filter only removes
+    // points inside [x0 - 0.0002, x1 + 0.0002] so neighboring cells' points are never erased!
     let n = Math.max(1, gridX);
-    let cell = Math.min(n - 1, Math.max(0, Math.floor(nx * n)));
-    let x0 = cell / n;
-    let x1 = (cell + 1) / n;
-    let eps = 0.0004;
+    let targetCell = Math.min(n - 1, Math.max(0, Math.floor(nx * n)));
+    let startCell = (isDragContinuation && dragState.lastFreeX >= 0)
+        ? Math.min(n - 1, Math.max(0, Math.floor(dragState.lastFreeX * n)))
+        : targetCell;
+    let startY = (isDragContinuation && dragState.lastAnchorY >= 0) ? dragState.lastAnchorY : yVal;
 
-    // Remove existing interior points inside [x0 - eps, x1 + eps]
-    let firstId = points[0].id;
-    let lastId = points[points.length - 1].id;
-    points = points.filter(function(pt) {
-        if (pt.id === firstId || pt.id === lastId) return true;
-        return (pt.x < (x0 - eps) || pt.x > (x1 + eps));
-    });
+    let step = (targetCell >= startCell) ? 1 : -1;
+    let totalCells = Math.abs(targetCell - startCell);
 
-    let startX = (cell === 0) ? 0.0005 : (x0 + 0.0002);
-    let endX = (cell === n - 1) ? 0.9995 : (x1 - 0.0002);
+    for (let idx = 0; idx <= totalCells; idx++) {
+        let cell = startCell + idx * step;
+        let tCell = (totalCells === 0) ? 1.0 : (idx / totalCells);
+        let cellY = snapYMagnetic(startY + (yVal - startY) * tCell, shiftHeld);
 
-    if (brushType === 0) {
-        // Flat Step bar
-        if (cell === 0) points[0].y = yVal;
-        if (cell === n - 1) points[points.length - 1].y = yVal;
-        points.push({ id: nextId++, x: startX, y: yVal, curve: 0.0, sCurve: 0 });
-        points.push({ id: nextId++, x: endX,   y: yVal, curve: 0.0, sCurve: 0 });
-    } else if (brushType === 1) {
-        // Ramp Up (0 -> yVal)
-        if (cell === 0) points[0].y = 0.0;
-        if (cell === n - 1) points[points.length - 1].y = yVal;
-        points.push({ id: nextId++, x: startX, y: 0.0,  curve: 0.0, sCurve: 0 });
-        points.push({ id: nextId++, x: endX,   y: yVal, curve: 0.0, sCurve: 0 });
-    } else if (brushType === 2) {
-        // Decay Down (yVal -> 0)
-        if (cell === 0) points[0].y = yVal;
-        if (cell === n - 1) points[points.length - 1].y = 0.0;
-        points.push({ id: nextId++, x: startX, y: yVal, curve: 0.35, sCurve: 0 });
-        points.push({ id: nextId++, x: endX,   y: 0.0,  curve: 0.0,  sCurve: 0 });
-    } else if (brushType === 3) {
-        // Triangle Peak (0 -> yVal -> 0)
-        let midX = 0.5 * (startX + endX);
-        if (cell === 0) points[0].y = 0.0;
-        if (cell === n - 1) points[points.length - 1].y = 0.0;
-        points.push({ id: nextId++, x: startX, y: 0.0,  curve: 0.0, sCurve: 0 });
-        points.push({ id: nextId++, x: midX,   y: yVal, curve: 0.0, sCurve: 0 });
-        points.push({ id: nextId++, x: endX,   y: 0.0,  curve: 0.0, sCurve: 0 });
+        let x0 = cell / n;
+        let x1 = (cell + 1) / n;
+        let filterEps = 0.0002;
+        let inset = 0.001;
+
+        let firstId = points[0].id;
+        let lastId = points[points.length - 1].id;
+        points = points.filter(function(pt) {
+            if (pt.id === firstId || pt.id === lastId) return true;
+            return (pt.x < (x0 - filterEps) || pt.x > (x1 + filterEps));
+        });
+
+        let startX = x0 + inset;
+        let endX = x1 - inset;
+
+        if (brushType === 0) {
+            // Flat Step bar
+            if (cell === 0) points[0].y = cellY;
+            if (cell === n - 1) points[points.length - 1].y = cellY;
+            points.push({ id: nextId++, x: startX, y: cellY, curve: 0.0, sCurve: 0 });
+            points.push({ id: nextId++, x: endX,   y: cellY, curve: 0.0, sCurve: 0 });
+        } else if (brushType === 1) {
+            // Ramp Up (0 -> cellY)
+            if (cell === 0) points[0].y = 0.0;
+            if (cell === n - 1) points[points.length - 1].y = cellY;
+            points.push({ id: nextId++, x: startX, y: 0.0,   curve: 0.0, sCurve: 0 });
+            points.push({ id: nextId++, x: endX,   y: cellY, curve: 0.0, sCurve: 0 });
+        } else if (brushType === 2) {
+            // Decay Down (cellY -> 0)
+            if (cell === 0) points[0].y = cellY;
+            if (cell === n - 1) points[points.length - 1].y = 0.0;
+            points.push({ id: nextId++, x: startX, y: cellY, curve: 0.35, sCurve: 0 });
+            points.push({ id: nextId++, x: endX,   y: 0.0,   curve: 0.0,  sCurve: 0 });
+        } else if (brushType === 3) {
+            // Triangle Peak (0 -> cellY -> 0)
+            let midX = 0.5 * (startX + endX);
+            if (cell === 0) points[0].y = 0.0;
+            if (cell === n - 1) points[points.length - 1].y = 0.0;
+            points.push({ id: nextId++, x: startX, y: 0.0,   curve: 0.0, sCurve: 0 });
+            points.push({ id: nextId++, x: midX,   y: cellY, curve: 0.0, sCurve: 0 });
+            points.push({ id: nextId++, x: endX,   y: 0.0,   curve: 0.0, sCurve: 0 });
+        }
     }
 
+    dragState.lastFreeX = nx;
+    dragState.lastAnchorY = yVal;
     updateBufferAndNotify(false);
+}
+
+// Delete currently selected interior points (returns true if any deleted)
+function deleteSelectedPoints() {
+    if (selectedIds.length === 0 || points.length <= 2) return false;
+    let firstId = points[0].id;
+    let lastId = points[points.length - 1].id;
+    let hasInterior = false;
+    for (let i = 0; i < points.length; i++) {
+        let pt = points[i];
+        if (pt.id !== firstId && pt.id !== lastId && selectedIds.indexOf(pt.id) !== -1) {
+            hasInterior = true;
+            break;
+        }
+    }
+    if (!hasInterior) return false;
+
+    pushUndoState();
+    points = points.filter(function(pt) {
+        if (pt.id === firstId || pt.id === lastId) return true;
+        return (selectedIds.indexOf(pt.id) === -1);
+    });
+    selectedIds = [];
+    updateBufferAndNotify(true);
+    return true;
+}
+
+function selectAllPoints() {
+    selectedIds = points.map(function(pt) { return pt.id; });
+    mgraphics.redraw();
 }
 
 // Max Message Handlers
@@ -495,7 +632,17 @@ function snap(s) {
 }
 
 function ratemode(m) {
-    rateMode = Number(m) ? 1 : 0;
+    let newMode = Number(m) ? 1 : 0;
+    let changed = (newMode !== rateMode);
+    rateMode = newMode;
+    updateRateOutput();
+    if (changed && rateMode === 1 && playMode === 0 && lastHostTicks >= 0.0) {
+        alignPhaseToTimeline(lastHostTicks);
+    }
+}
+
+function playmode(pm) {
+    playMode = Math.max(0, Math.min(2, Math.round(Number(pm) || 0)));
     updateRateOutput();
 }
 
@@ -505,13 +652,102 @@ function ratehz(f) {
 }
 
 function ratesync(s) {
-    rateSync = Math.max(0, Math.min(SYNC_BEATS.length - 1, Math.round(Number(s) || 9)));
+    let newSync = Math.max(0, Math.min(SYNC_BEATS.length - 1, Math.round(Number(s) || 9)));
+    let changed = (newSync !== rateSync);
+    rateSync = newSync;
     updateRateOutput();
+    if (changed && rateMode === 1 && lastHostTicks >= 0.0) {
+        alignPhaseToTimeline(lastHostTicks);
+    }
 }
 
 function bpm(b) {
     hostBpm = Math.max(20.0, Number(b) || 120.0);
     updateRateOutput();
+}
+
+function transport(state) {
+    let newState = Number(state) ? 1 : 0;
+    let started = (newState === 1 && hostPlaying === 0);
+    hostPlaying = newState;
+    if (started && rateMode === 1 && lastHostTicks >= 0.0) {
+        alignPhaseToTimeline(lastHostTicks);
+    }
+}
+
+function ticks(ppq) {
+    let val = Number(ppq);
+    if (isNaN(val) || val < 0.0) return;
+    let prev = lastHostTicks;
+    lastHostTicks = val;
+    if (rateMode === 1) {
+        // Align on first tick received, or whenever timeline position jumps/loops (> 0.025 beats discontinuity)
+        if (prev < 0.0 || Math.abs(val - prev) > 0.025 || val < prev) {
+            alignPhaseToTimeline(val);
+        }
+    }
+}
+
+// Focus & Keyboard Handlers (v8ui native onkeydown + patcher [key] support)
+function onfocus() {
+    hasFocus = 1;
+    mgraphics.redraw();
+}
+
+function onblur() {
+    hasFocus = 0;
+    mgraphics.redraw();
+}
+
+function handleKeyCommand(keycode, textchar, cmd, shift, ctrl) {
+    let k = Number(keycode) || 0;
+    let ch = Number(textchar) || k;
+    let isMod = (cmd || ctrl);
+
+    // Cmd+A (or 'a'/'A' when focused) -> Select All points
+    if ((isMod && (k === 97 || k === 65 || ch === 97 || ch === 65 || k === 1)) ||
+        (!isMod && (ch === 97 || ch === 65))) {
+        selectAllPoints();
+        return 1;
+    }
+
+    // Delete / Backspace (ASCII 8, 127, Max JKEY_BACKSPACE -3, JKEY_DELETE -4, macOS 51, 117)
+    if (k === 8 || k === 127 || k === -3 || k === -4 || k === 51 || k === 117 ||
+        ch === 8 || ch === 127 || ch === -3 || ch === -4) {
+        deleteSelectedPoints();
+        return 1;
+    }
+
+    // Cmd+Z / Cmd+Shift+Z -> Undo / Redo
+    if (isMod && (k === 122 || k === 90 || ch === 122 || ch === 90 || k === 26)) {
+        if (shift) redo();
+        else undo();
+        return 1;
+    }
+
+    // Escape (27) -> Clear selection
+    if (k === 27 || ch === 27) {
+        selectedIds = [];
+        mgraphics.redraw();
+        return 1;
+    }
+
+    return 0;
+}
+
+function onkeydown(keycode, textcharacter, down, cmd, shift, capslock, option, ctrl) {
+    if (!down) return 0;
+    return handleKeyCommand(keycode, textcharacter, cmd, shift, ctrl);
+}
+
+// Patcher [key] fallback message: "key <ascii> <modifiers>"
+function key(ascii, mod) {
+    if (!hasFocus) return;
+    let m = Number(mod) || 0;
+    let cmd = (m & 1) || (m & 256) ? 1 : 0;
+    let shift = (m & 2) || (m & 512) ? 1 : 0;
+    let ctrl = (m & 4) || (m & 4096) ? 1 : 0;
+    handleKeyCommand(ascii, ascii, cmd, shift, ctrl);
 }
 
 // Parameter persistence (Live Set & Preset save/restore - v2 format with v1 fallback)
@@ -563,7 +799,6 @@ function setvalueof() {
             updateBufferAndNotify(false);
         }
     } else if (arr.length >= 9 && arr[0] === 1) {
-        // Backward compatibility with v1 state
         loopLink = arr[1] ? 1 : 0;
         let count = Math.round(arr[2]);
         let newPts = [];
@@ -655,38 +890,29 @@ function applyToolbarAction(id) {
         }
         updateLoopOutput();
         updateRateOutput();
+        if (rateMode === 1 && lastHostTicks >= 0.0) {
+            alignPhaseToTimeline(lastHostTicks);
+        }
+        updateBufferAndNotify(true);
+        return;
+    }
+
+    if (id === "clear") {
+        if (deleteSelectedPoints()) {
+            return;
+        }
+        pushUndoState();
+        selectedIds = [];
+        points = [
+            { id: nextId++, x: 0.0, y: 0.0, curve: 0.0, sCurve: 0 },
+            { id: nextId++, x: 1.0, y: 1.0, curve: 0.0, sCurve: 0 }
+        ];
+        loopLink = 0;
         updateBufferAndNotify(true);
         return;
     }
 
     pushUndoState();
-
-    if (id === "clear") {
-        let hasSelectedInterior = false;
-        if (selectedIds.length > 0 && points.length > 2) {
-            let firstId = points[0].id;
-            let lastId = points[points.length - 1].id;
-            points = points.filter(function(pt) {
-                if (pt.id === firstId || pt.id === lastId) return true;
-                if (selectedIds.indexOf(pt.id) !== -1) {
-                    hasSelectedInterior = true;
-                    return false;
-                }
-                return true;
-            });
-        }
-        selectedIds = [];
-        if (!hasSelectedInterior) {
-            points = [
-                { id: nextId++, x: 0.0, y: 0.0, curve: 0.0, sCurve: 0 },
-                { id: nextId++, x: 1.0, y: 1.0, curve: 0.0, sCurve: 0 }
-            ];
-            loopLink = 0;
-        }
-        updateBufferAndNotify(true);
-        return;
-    }
-
     selectedIds = [];
     if (id === "decay") {
         points = [
@@ -731,8 +957,8 @@ function applyToolbarAction(id) {
             let x0 = i / n;
             let x1 = (i + 1) / n;
             let y = (i % 2 === 0) ? 1.0 : ((i % 4 === 1) ? 0.25 : 0.65);
-            newPts.push({ id: nextId++, x: x0, y: y, curve: 0.0, sCurve: 0 });
-            newPts.push({ id: nextId++, x: (i === n - 1) ? 1.0 : (x1 - 0.0002), y: y, curve: 0.0, sCurve: 0 });
+            newPts.push({ id: nextId++, x: (i === 0) ? 0.0 : (x0 + 0.001), y: y, curve: 0.0, sCurve: 0 });
+            newPts.push({ id: nextId++, x: (i === n - 1) ? 1.0 : (x1 - 0.001), y: y, curve: 0.0, sCurve: 0 });
         }
         points = newPts;
         loopLink = 0;
@@ -812,9 +1038,12 @@ function getSelectionBounds(lay) {
 function hitTest(sx, sy, lay) {
     if (!lay) lay = getLayout();
 
-    // 1. Check bottom toolbar
+    // 1. Check bottom toolbar (left toolbarW portion; right 104px is reserved for Grid & Snap)
     if (sy >= lay.toolbarY) {
-        let itemW = lay.w / TOOLBAR_ITEMS.length;
+        if (sx >= lay.toolbarW) {
+            return { type: "none", toolbarIndex: -1, pointId: null, segIndex: -1 };
+        }
+        let itemW = lay.toolbarW / TOOLBAR_ITEMS.length;
         let idx = Math.floor(sx / itemW);
         if (idx >= 0 && idx < TOOLBAR_ITEMS.length) {
             return { type: "toolbar", toolbarIndex: idx, pointId: null, segIndex: -1 };
@@ -988,6 +1217,7 @@ function onidleout() {
 }
 
 function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
+    hasFocus = 1;
     let lay = getLayout();
     let hit = hitTest(x, y, lay);
     let norm = screenToNorm(x, y, lay);
@@ -1000,6 +1230,16 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
     dragState.startNormY = norm[1];
     dragState.existingClickedId = null;
     dragState.lastFreeX = -1;
+    dragState.lastAnchorX = -1;
+    dragState.lastAnchorY = -1;
+    dragState.freeDir = 0;
+    dragState.strokePointIds = [];
+
+    // 0. Ignore clicks in bottom-right Grid/Snap cutout
+    if (y >= lay.toolbarY && x >= lay.toolbarW) {
+        dragState.mode = "none";
+        return;
+    }
 
     // 1. Toolbar click
     if (hit.type === "toolbar" && hit.toolbarIndex >= 0) {
@@ -1032,6 +1272,9 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         }
         updateLoopOutput();
         updateRateOutput();
+        if (rateMode === 1 && lastHostTicks >= 0.0) {
+            alignPhaseToTimeline(lastHostTicks);
+        }
         updateBufferAndNotify(true);
         return;
     }
@@ -1167,6 +1410,10 @@ function ondrag(x, y, but, cmd, shift, caps, opt, ctrl) {
             dragState.mode === "loop_end" ||
             dragState.mode === "loop_move"
         ) {
+            if ((dragState.mode === "loop_start" || dragState.mode === "loop_end" || dragState.mode === "loop_move") &&
+                rateMode === 1 && lastHostTicks >= 0.0) {
+                alignPhaseToTimeline(lastHostTicks);
+            }
             updateBufferAndNotify(true);
         }
         dragState.mode = "none";
@@ -1395,6 +1642,9 @@ function ondblclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         loopEnabled = loopEnabled ? 0 : 1;
         updateLoopOutput();
         updateRateOutput();
+        if (rateMode === 1 && lastHostTicks >= 0.0) {
+            alignPhaseToTimeline(lastHostTicks);
+        }
         updateBufferAndNotify(true);
         return;
     }
@@ -1482,7 +1732,6 @@ function drawMiniPresetIcon(id, x, y, w, h) {
         mgraphics.line_to(cx - 2.5, cy + 4.5);
         mgraphics.stroke();
     } else if (id === "draw") {
-        // Diagonal pencil / stylus vector icon
         mgraphics.move_to(cx - 4.0, cy + 4.5);
         mgraphics.line_to(cx - 1.5, cy + 4.5);
         mgraphics.line_to(cx + 4.2, cy - 1.2);
@@ -1491,9 +1740,7 @@ function drawMiniPresetIcon(id, x, y, w, h) {
         mgraphics.close_path();
         mgraphics.stroke();
     } else if (id === "brush") {
-        // Active brush shape icon (0=Step, 1=Ramp, 2=Decay, 3=Tri, 4=Free)
         if (brushType === 0) {
-            // Step bars icon
             mgraphics.move_to(px, py + ph);
             mgraphics.line_to(px, py + 1);
             mgraphics.line_to(px + pw * 0.5, py + 1);
@@ -1502,38 +1749,32 @@ function drawMiniPresetIcon(id, x, y, w, h) {
             mgraphics.line_to(px + pw, py + ph);
             mgraphics.stroke();
         } else if (brushType === 1) {
-            // Ramp up icon
             mgraphics.move_to(px, py + ph);
             mgraphics.line_to(px + pw, py + 1);
             mgraphics.line_to(px + pw, py + ph);
             mgraphics.stroke();
         } else if (brushType === 2) {
-            // Decay down icon
             mgraphics.move_to(px, py + ph);
             mgraphics.line_to(px, py + 1);
             mgraphics.curve_to(px + pw * 0.3, py + ph * 0.8, px + pw * 0.65, py + ph, px + pw, py + ph);
             mgraphics.stroke();
         } else if (brushType === 3) {
-            // Triangle peak icon
             mgraphics.move_to(px, py + ph);
             mgraphics.line_to(cx, py + 1);
             mgraphics.line_to(px + pw, py + ph);
             mgraphics.stroke();
         } else {
-            // Freehand wave icon
             mgraphics.move_to(px, cy + 2);
             mgraphics.curve_to(px + pw * 0.3, py - 2, px + pw * 0.6, py + ph + 2, px + pw, cy - 2);
             mgraphics.stroke();
         }
     } else if (id === "scurve") {
-        // Symmetric S-curve with midpoint inflection dot
         mgraphics.move_to(px, py + ph);
         mgraphics.curve_to(px + pw * 0.45, py + ph, px + pw * 0.55, py, px + pw, py);
         mgraphics.stroke();
         mgraphics.arc(cx, cy, 1.6, 0, Math.PI * 2);
         mgraphics.fill();
     } else if (id === "loopr") {
-        // Loop region brackets [ ] with inner bar
         mgraphics.move_to(px + 2.5, py + 1);
         mgraphics.line_to(px, py + 1);
         mgraphics.line_to(px, py + ph - 1);
@@ -1584,7 +1825,6 @@ function drawMiniPresetIcon(id, x, y, w, h) {
         mgraphics.line_to(px + pw, py + ph * 0.45);
         mgraphics.stroke();
     } else if (id === "rnd") {
-        // Random scatter / dice dots icon
         let r = 1.35;
         mgraphics.arc(cx - 3.2, cy - 3.0, r, 0, Math.PI * 2); mgraphics.fill();
         mgraphics.arc(cx + 3.2, cy - 2.2, r, 0, Math.PI * 2); mgraphics.fill();
@@ -1592,7 +1832,6 @@ function drawMiniPresetIcon(id, x, y, w, h) {
         mgraphics.arc(cx - 2.8, cy + 3.4, r, 0, Math.PI * 2); mgraphics.fill();
         mgraphics.arc(cx + 3.0, cy + 3.2, r, 0, Math.PI * 2); mgraphics.fill();
     } else if (id === "flipy") {
-        // Vertical flip double-arrow icon
         mgraphics.move_to(cx, py + 0.5);
         mgraphics.line_to(cx, py + ph - 0.5);
         mgraphics.move_to(cx - 3.0, py + 3.2);
@@ -1603,7 +1842,6 @@ function drawMiniPresetIcon(id, x, y, w, h) {
         mgraphics.line_to(cx + 3.0, py + ph - 3.2);
         mgraphics.stroke();
     } else if (id === "flipx") {
-        // Horizontal reverse double-arrow icon
         mgraphics.move_to(px + 0.5, cy);
         mgraphics.line_to(px + pw - 0.5, cy);
         mgraphics.move_to(px + 3.2, cy - 3.0);
@@ -1614,7 +1852,6 @@ function drawMiniPresetIcon(id, x, y, w, h) {
         mgraphics.line_to(px + pw - 3.2, cy + 3.0);
         mgraphics.stroke();
     } else if (id === "link") {
-        // Coupled circles (link start/end Y) icon
         mgraphics.arc(cx - 2.3, cy, 2.7, 0, Math.PI * 2);
         mgraphics.stroke();
         mgraphics.arc(cx + 2.3, cy, 2.7, 0, Math.PI * 2);
@@ -1639,7 +1876,6 @@ function paint() {
     let lx1 = lay.plotX + loopEnd * lay.plotW;
     let lw = Math.max(4, lx1 - lx0);
 
-    // Loop bar body
     if (loopEnabled) {
         mgraphics.set_source_rgba(0.25, 0.78, 0.95, 0.28);
     } else {
@@ -1648,20 +1884,17 @@ function paint() {
     mgraphics.rectangle(lx0, 2, lw, lay.loopBarH - 2);
     mgraphics.fill();
 
-    // Loop Start & End Markers
     mgraphics.set_line_width(1.6);
     if (loopEnabled) {
         mgraphics.set_source_rgba(0.32, 0.82, 0.98, 0.95);
     } else {
         mgraphics.set_source_rgba(0.55, 0.6, 0.65, 0.55);
     }
-    // Left bracket flag
     mgraphics.move_to(lx0 + 4, 2);
     mgraphics.line_to(lx0, 2);
     mgraphics.line_to(lx0, lay.loopBarH);
     mgraphics.line_to(lx0 + 4, lay.loopBarH);
     mgraphics.stroke();
-    // Right bracket flag
     mgraphics.move_to(lx1 - 4, 2);
     mgraphics.line_to(lx1, 2);
     mgraphics.line_to(lx1, lay.loopBarH);
@@ -1673,7 +1906,6 @@ function paint() {
     mgraphics.rectangle(lay.plotX, lay.plotY, lay.plotW, lay.plotH);
     mgraphics.fill();
 
-    // Dim outside loop region when Loop is active
     if (loopEnabled) {
         mgraphics.set_source_rgba(0.0, 0.0, 0.0, 0.35);
         if (lx0 > lay.plotX) {
@@ -1774,14 +2006,12 @@ function paint() {
                 let sz = isHovered ? 3.8 : 2.8;
                 mgraphics.set_source_rgba(0.08, 0.1, 0.12, 1.0);
                 if (p0.sCurve) {
-                    // S-Curve indicator: Cyan-highlighted circle handle
                     mgraphics.arc(scm[0], scm[1], sz, 0, Math.PI * 2);
                     mgraphics.fill_preserve();
                     mgraphics.set_line_width(1.4);
                     mgraphics.set_source_rgba(0.32, 0.85, 0.98, isHovered ? 1.0 : 0.85);
                     mgraphics.stroke();
                 } else {
-                    // Standard bow indicator: Diamond handle
                     mgraphics.move_to(scm[0], scm[1] - sz);
                     mgraphics.line_to(scm[0] + sz, scm[1]);
                     mgraphics.line_to(scm[0], scm[1] + sz);
@@ -1930,7 +2160,7 @@ function paint() {
     mgraphics.line_to(lay.w, lay.toolbarY);
     mgraphics.stroke();
 
-    let itemW = lay.w / TOOLBAR_ITEMS.length;
+    let itemW = lay.toolbarW / TOOLBAR_ITEMS.length;
     for (let i = 0; i < TOOLBAR_ITEMS.length; i++) {
         let item = TOOLBAR_ITEMS[i];
         let ix = i * itemW;
@@ -1968,5 +2198,18 @@ function paint() {
             mgraphics.set_source_rgba(0.65, 0.68, 0.72, 0.9);
         }
         drawMiniPresetIcon(item.id, ix, lay.toolbarY, itemW, lay.toolbarH);
+    }
+    // Divider before Grid & Snap area
+    mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.1);
+    mgraphics.move_to(lay.toolbarW, lay.toolbarY + 2);
+    mgraphics.line_to(lay.toolbarW, lay.toolbarY + lay.toolbarH - 2);
+    mgraphics.stroke();
+
+    // 14. Subtle Keyboard Focus Border
+    if (hasFocus) {
+        mgraphics.set_line_width(1.0);
+        mgraphics.set_source_rgba(1.0, 0.694, 0.18, 0.35);
+        mgraphics.rectangle_rounded(0.5, 0.5, lay.w - 1, lay.h - 1, 4, 4);
+        mgraphics.stroke();
     }
 }

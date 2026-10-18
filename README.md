@@ -1,44 +1,86 @@
-# Bitwig Shaper (`devices/Bitwig Shaper.amxd`)
+# Ableton Max for Live Devices (`devices/*.amxd`)
 
-A Max for Live Audio Effect modulator device for **Ableton Live 12 (Max 9)** that replaces Ableton's stock **Shaper** MSEG editor with a fast, fluid **Bitwig Studio–inspired MSEG curve editor**, audio-rate wavetable modulation, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
+A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1+)**:
+
+1. **`devices/XO Sample Map.amxd`** — An XLN Audio XO–inspired 2D Drum Sample Space Browser, Auto-Categorizer, Similarity Explorer, and Simpler / Drum Rack Pad Loader (`Node for Max` + `jweb` pop-out window + in-device `v8ui` mini-map + `LiveAPI`).
+2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (FDN, 20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, plus Pre-delay, Modulation, Crossfeed, I/O gain, HP/LP, Freeze, and a Seed (0–9999) that deterministically selects a random internal delay-line configuration. 20-bar v8ui visualization.
+3. **`devices/Bitwig Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
 
 ---
 
-## Features
+## 1. XO Sample Map (`devices/XO Sample Map.amxd`)
 
-### 1. Bitwig-Style MSEG Editor (`v8ui` + `mgraphics`)
-- **Single-Click Point Creation**:
-  - Click directly on or near the curve (indicated by a ghost hover dot) to insert a point on the curve and drag it immediately.
-  - Single-click anywhere in empty space to create a point at that `(X, Y)` coordinate (or `Cmd + drag` in empty space to create and drag immediately).
-- **Double-Click Point Deletion**:
-  - Double-click any interior point to delete it (if multiple points are selected, double-clicking any selected point deletes all selected interior points).
-  - Double-click the start (`0%`) or end (`100%`) boundary point to reset its `Y` value to `50%`.
-- **Tension Curves & S-Curves**:
-  - **`Alt/Option + drag`** vertically on any segment—or drag the **midpoint handle** directly—to bend the segment's tension curve. Dragging up always bows the curve upward; dragging down always bows it downward.
-  - **S-Curve Mode**: Toggle symmetric sigmoid S-Curves per segment via **`Ctrl + click` (or Right-click)** on a segment, or click the **S-Curve icon** in the bottom toolbar. Standard segments show an **amber diamond** midpoint handle; S-Curve segments show a **cyan circle** midpoint handle.
-  - **Reset Curve**: Double-click any midpoint handle (or `Alt + double-click` / `Cmd + Alt + click` a segment) to reset it to linear (`0%`).
-- **Point Overwriting ("Eat Points" on Drag)**:
-  - Dragging a point (or a multi-selection of points) horizontally across unselected points overwrites/deletes them instead of blocking movement at neighboring points.
-- **Marquee Box Selection & Multi-Point Scaling**:
-  - Click and drag in empty space (or `Shift + drag` anywhere) to draw a selection rectangle around multiple points (`Shift + click` toggles individual points).
-  - Drag any selected point to move all selected points together.
-  - Drag the **top or bottom highlight bar** of the multi-selection bounding box to vertically scale/compress the selected points.
-  - `Alt + drag` with multiple points selected bends all selected segments simultaneously.
-- **Paint / Draw Step Brush Mode**:
-  - Click the **Pencil (`Draw`)** icon in the bottom toolbar (or hold **`Ctrl + Alt + drag`** at any time) to paint shapes across grid columns.
-  - Click the adjacent **Brush Shape** icon to cycle between **`Step`** (flat bars), **`Ramp`** (upward saw steps), **`Decay`** (exponential decay steps), **`Tri`** (triangle peaks), and **`Free`** (freehand curve drawing).
-- **Draggable Loop Start / Loop End Region Markers**:
-  - Drag the left (`[`) or right (`]`) cyan bracket markers in the **top 11px Loop Banner** (or click the **`[–]` Loop** icon in the bottom toolbar / double-click the loop bar) to loop any sub-region of the MSEG.
-  - Drag the body of the loop bar to slide the entire loop window across the MSEG.
-  - When Loop is active, the MSP phase window and rate automatically scale so tempo-synced subdivisions stay locked to host tempo.
-- **Undo / Redo History**:
-  - 64-step undo/redo history stack accessible via the **`<`** and **`>`** chevron buttons on the far left of the bottom toolbar.
+An XLN Audio XO–style 2D sample constellation browser and sample exporter that analyzes drum & one-shot folders, clusters samples by acoustic similarity, and lets you scrub-audition, shape (`Pitch`, `Trim/Decay`, `Gain`), save a curated list of samples with their associated playback settings, and drag them out of the device as either **Raw** or **Edited** (re-rendered with Pitch/Trim/Gain applied) audio files.
 
-### 2. LFO, Shaping & 8-Slot Modulation Matrix
-- **Audio-Rate Engine**: The MSEG is rendered into a 4096-sample `buffer~` (`#0-mseg`) and read at audio rate via `index~` for ultra-smooth modulation.
-- **Rate (`Hz` & Tempo `Sync`)**: Switch between Free (`0.01 Hz – 40 Hz`) and Tempo-Synced (`1/64` up to `8 Bars`) locked to Ableton Live's transport BPM via `plugsync~`.
-- **Jitter, Smooth, Depth, Phase, Retrigger (`R`), Offset**: Live waveform output previewed in real time on the center `live.scope~` display.
-- **8-Slot Modulation Matrix**: 8 independent target slots (`Map 1–8`), each with its own `Map` toggle, `Unmap (X)` button, and `Min` / `Max` (`0%–100%`) range controls driving `live.map` and `live.remote~ @normalized 1`.
+### Features
+- **Dual UI (Compact In-Device Mini Editor + Large Pop-Out `jweb` Sample Space Window)**:
+  - **In-Device Mini Editor (`v8ui`, `372 x 134` px)**:
+    - **Left Pane (`x = 0..244`)**: 24-bar waveform viewer with a **live scanning playhead line**, interactive 2D sample constellation map with k-NN similarity lines, drag-to-scrub auditioning, and a 12-item geometric vector icon toolbar (`All`, `Kick`, `Snare`, `Hihat`, `Clap`, `Tom`, `Cymbal`, `Perc`, `FX`, `Prev Similar`, `Next Similar`, `Random`).
+    - **Right Pane (`x = 237..372`) — Scrollable Saved Samples List & OS File Drag-Out Dock**: Displays saved samples alongside their captured playback settings (`Pitch`, `Trim/Decay`, `Gain`). Supports scrolling (scrollbar track/thumb & wheel), clicking to select/recall, vertical drag-to-reorder, deleting items (`[×]` button or `Delete`/`Backspace` key), a `+Save` button (`S` hotkey), per-item **`[R]` (Raw)** and **`[E]` (Edited)** OS file drag handles, and bottom **`[Drag Raw]`** / **`[Drag Edit]`** batch OS file drag zones.
+  - **Pop-Out Floating Window (`p XOMapWindow`, `1040 x 680` px `jweb` Canvas)**: High-DPI 60fps HTML5 Canvas with smooth wheel/pinch zoom, pan, hover tooltips, color mode switcher (`Category`, `Brightness`, `Pitch`, `Duration`), 4-band spectral analyzer (`SUB`, `LOW`, `MID`, `HIGH`), animated waveform scanning playhead, and full Saved Samples Raw/Edited drag-out sidebar.
+- **Visibly Separate Filters vs. Playback Controls**:
+  - **`FILTERS` Panel (`x = 392..530`)**: Dedicated cyan-bordered panel housing the **Search Textbox** (`textedit` + `Clr` button for filtering by sample name), **`MaxLen`** dial (`50 ms` up to **Infinite / `Inf`** at max), **`Tone`** dial (`-100% Dark` to `+100% Bright`), and filter-aware **`< Sim`**, **`Sim >`**, and **`Rand`** buttons.
+  - **`PLAYBACK` Panel (`x = 536..674`)**: Dedicated amber-bordered panel housing **`Audition / Replay`**, **`Pitch`** (`-24 st` to `+24 st`), **`Trim/Dec`** (`20 ms` to `5000 ms`), and **`Gain`** (`-36 dB` to `+12 dB`).
+- **True Dual-Channel Audio Playback & Native macOS OS File Drag-Out (`src/xo_node_engine.js`)**:
+  - **Mono-Safe Stereo Playback (`selector~ 2 1`)**: Automatically routes 1-channel (mono) samples to both Left and Right outputs while preserving true L/R stereo on 2-channel files, with ordered `open -> speed -> start` triggering and unattenuated unity gain unless `Trim/Dec` is shorter than the sample.
+  - **Native macOS `NSDraggingSource` Helper & OS File Links**: Creates OS file links in `/tmp/xo_sample_map_exports/Raw/` and stereo 16-bit PCM re-rendered WAV files in `/tmp/xo_sample_map_exports/Edited/`, and uses a compiled Cocoa `NSDraggingSource` helper so dragging from `[R]`, `[E]`, `[Drag Raw]`, or `[Drag Edit]` initiates a native macOS Finder file drag directly into Ableton Live tracks, Drum Racks, or Simplers.
+
+---
+
+## 2. Tiny Space (`devices/Tiny Space.amxd`)
+
+A Max for Live **Audio Effect** reverb — a "tiny space" ranging from tight comb-spaces to a small room. Built around a **gen.codebox~** feedback-delay network (20 delay lines) with a seed-driven configuration.
+
+### Features
+- **Controls**: Size, Damp, Width, Dry/Wet (Mix), Feedback, plus Pre-delay, Modulation, Crossfeed, Input/Output gain, HP/LP filters, Freeze, and a **Seed** (0–9999) that deterministically selects a random internal delay-line configuration.
+- **Visualization**: 20 per-delay-line energy bars (v8ui) that pulse with the actual delay-line energy.
+- **gen.codebox~ core**: FDN reverb with input allpass diffusion, per-line damping/feedback, crossfeed, modulation, freeze, width (M/S), predelay.
+
+### Files
+- `src/tinyspace_ui.js` — v8ui visualization + seed PRNG + config buffer poke + `getvalueof`/`setvalueof`
+- `src/tinyspace_core.genexpr` — Gen core
+- `scripts/build_tinyspace.py` — builds `devices/Tiny Space.amxd`
+- `tests/test_tinyspace.js` — structure + JS unit tests
+- `tests/tinyspace_harness.maxpat` — audio test harness with extra in/out sinks
+- `previews/tiny_space.png` — rendered preview
+
+### Rebuild & Test
+```bash
+python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
+```
+
+### Audio validation
+```bash
+python3 scripts/build_tinyspace_harness.py
+python3 scripts/run_tinyspace_audio_tests.py
+```
+
+---
+
+## 3. Bitwig Shaper (`devices/Bitwig Shaper.amxd`)
+
+A Max for Live Audio Effect modulator device that replaces Ableton's stock **Shaper** MSEG editor with a fast, fluid **Bitwig Studio–inspired MSEG curve editor**, audio-rate wavetable modulation, and an 8-slot modulation matrix.
+
+### Features
+- **Bitwig-Style MSEG Editor (`v8ui` + `mgraphics`)**:
+  - **Single-Click Point Creation & Double-Click Deletion**.
+  - **Tension Curves & Symmetric S-Curves** (`Alt/Option + drag` to bend tension; `Ctrl + click` or S-Curve toolbar icon to toggle S-Curve mode).
+  - **Point Overwriting ("Eat Points" on Drag)** & **Marquee Box Selection** with vertical bounding-box scaling.
+  - **Keyboard Shortcuts When Focused**: `Cmd+A` (Select All points), `Delete` / `Backspace` (Delete selected interior points), `Cmd+Z` / `Cmd+Shift+Z` (Undo / Redo), `Escape` (Clear selection).
+  - **Paint / Draw Step Brush Mode** (`Step`, `Ramp`, `Decay`, `Tri`, and continuous multi-point `Free` brushes).
+  - **Draggable Loop Start / Loop End Region Markers** & **64-Step Undo / Redo History**.
+- **Audio-Rate Wavetable Engine, Timeline Sync & 8-Slot Modulation Matrix**:
+  - 4096-sample `buffer~` (`#0-mseg`) read via `index~`, with `Rate` (`Hz` or **Timeline-Aligned `Sync`** locked to Ableton Live's 1-PPQ arrangement position via `plugsync~`), `Jitter`, `Smooth`, `Depth`, `Phase`, `Retrigger (R)`, and `Offset`.
+  - **Native In-Panel Multimap Toggle (`≡` / `—`)**:
+    - Slot 1 (`Map`, `Mod`/`Remote`, `±`/`+`, `50 %`) and the top-right **`≡` / `—` Multimap button** are always visible at the top of the Left Panel.
+    - Clicking **`≡`** switches the Left Panel from the **MSEG Editor + Grid/Snap view** to the **8-Slot Modulation Matrix view** (hiding the MSEG canvas and the `Grid` / `Snap` controls, and showing Slots 1–8 plus the bottom `Parameter   Mode   — Range —` labels).
+  - **Live 12 Native Shaper Right Panel Layout**:
+    - **Top Dark LCD Box**: Full-width oscilloscope, Row 1 (`Jitter 0 %`, `Smooth 0 %`), and Row 2 (circular `(R)` Retrigger button, `Ø` Phase `0.00 %`, and `Offset 0 %`).
+    - **Middle Playback Mode Row**: **`[ Loop ] [ 1-Shot ] [ Manual ]`** mode selector (continuous LFO, single-shot cycle triggered by `(R)`, or direct manual `Ø` phase scrubbing).
+    - **Bottom Row**: **`Rate`** dial (`1/4` / `Hz`) connected by a tick mark `-` to stacked **`Hz` / Metronome** buttons, and **`Depth`** dial (`100 %`).
+  - **Per-Slot Modern Modulation (`Mod`) vs. Legacy Takeover (`Remote`)**:
+    - In **`Mod`** mode (`live.modulate~`), each slot displays a **Bipolar (`±` / `+`) button** and a **single Modulation Amount (`-100%` to `+100%`, default `50%`)** percentage numbox.
+    - In **`Remote`** mode (`live.remote~ @normalized 1`), each slot switches to **`Min` (`0%–100%`)** and **`Max` (`0%–100%`)** range numboxes.
 
 ---
 
@@ -47,23 +89,35 @@ A Max for Live Audio Effect modulator device for **Ableton Live 12 (Max 9)** tha
 ```text
 .
 ├── devices/
-│   └── Bitwig Shaper.amxd   # Built Max for Live Audio Effect device (ready to drop into Ableton Live)
+│   ├── XO Sample Map.amxd   # Built XO Sample Space Browser & Simpler Loader (.amxd)
+│   └── Bitwig Shaper.amxd   # Built Bitwig-style MSEG Shaper Modulator (.amxd)
+├── previews/
+│   ├── xo_sample_map.png    # Rendered 2x Retina visual screenshot for XO Sample Map
+│   └── bitwig_shaper.png    # Rendered 2x Retina visual screenshot for Bitwig Shaper
 ├── src/
-│   └── mseg_editor.js       # Max 9 v8ui JavaScript source for the MSEG editor & wavetable generator
+│   ├── xo_node_engine.js    # Node for Max audio analyzer, 2D map, edited WAV renderer & HTTP/SSE server
+│   ├── xo_map_ui.html       # Pop-out jweb HTML5 Canvas 2D Sample Space UI
+│   ├── xo_strip_ui.js       # In-device v8ui mini-map, waveform scanner, vector toolbar & saved list
+│   └── mseg_editor.js       # Max 9 v8ui JavaScript source for Bitwig Shaper MSEG editor
 ├── scripts/
+│   ├── build_xo_map.py      # Assembles src/xo_* + patcher DSP/UI into devices/XO Sample Map.amxd
 │   ├── build_shaper.py      # Assembles src/mseg_editor.js + patcher DSP/UI into devices/Bitwig Shaper.amxd
-│   └── render_preview.py    # Renders a 2x Retina visual screenshot of the device + v8ui to tests/preview.png
+│   └── render_preview.py    # Renders a 2x Retina visual screenshot of a device to previews/<plugin_slug>.png
 ├── tests/
-│   ├── test_shaper.js       # Node.js verification & interaction test suite
-│   └── preview.png          # Rendered visual screenshot for UI inspection
+│   ├── test_xo_map.js       # Automated verification & interaction test suite for XO Sample Map
+│   └── test_shaper.js       # Automated verification & interaction test suite for Bitwig Shaper
 ├── README.md
 └── AGENTS.md                # Architecture, rules & technical reference for AI coding agents
 ```
 
 ### Rebuilding, Testing & Visual Screenshot Inspection
 
-After editing `src/mseg_editor.js` or `scripts/build_shaper.py`, rebuild, test, and render the visual preview with:
+Run the build, verification test suite, and 2x Retina preview generator for either device:
 
 ```bash
-python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/render_preview.py
+# XO Sample Map
+python3 scripts/build_xo_map.py && node tests/test_xo_map.js && python3 scripts/render_preview.py "devices/XO Sample Map.amxd"
+
+# Bitwig Shaper
+python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/render_preview.py "devices/Bitwig Shaper.amxd"
 ```

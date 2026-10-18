@@ -4,24 +4,19 @@
  * Responsibilities:
  *  1. Fast recursive audio directory scanner (.wav, .aif, .aiff, .flac, .mp3, .caf, .m4a)
  *  2. Zero-dependency WAV & AIFF/AIFC PCM/Float parser (8/16/24/32-bit, extensible, JUNK/LIST chunks)
- *  3. 12-Dimensional acoustic feature extractor:
- *     - Duration, Log-Duration, Attack Time, Decay Ratio, Zero-Crossing Rate, Crest Factor
- *     - 6-Band DFT Filterbank (Sub, Low, Low-Mid, Mid, High-Mid, High/Air)
- *     - Spectral Centroid (Brightness), Spectral Flatness (Noisiness), Spectral Rolloff
- *     - Autocorrelation Fundamental Pitch (Hz & MIDI note)
- *     - 32-bar normalized waveform peak envelope
- *  4. Hybrid Acoustic + Filename/Folder Auto-Categorizer (10 XO drum categories)
- *  5. 2D XO Constellation Embedding (Feature PCA + Semantic Angular Anchors + Force Relaxation)
- *  6. 12D k-Nearest-Neighbors (k-NN) similarity graph for instant neighbor stepping
- *  7. Persistent disk cache (~/.xo_sample_map_cache.json)
- *  8. Localhost HTTP + SSE server for the pop-out jweb Sample Space window
+ *  3. 12-Dimensional acoustic feature extractor & Hybrid Auto-Categorizer (10 XO drum categories)
+ *  4. 2D XO Constellation Embedding & 12D k-Nearest-Neighbors (k-NN) similarity graph
+ *  5. Filter-aware similarity stepping & random selection (Category, MaxLen [50ms..Inf], Tone, Search)
+ *  6. Saved Samples List with per-sample playback settings (Pitch, Decay/Trim, Gain), Reorder & Delete
+ *  7. Offline Audio Re-Renderer (renderEditedSampleWav) baking Pitch, Trim/Decay & Gain into WAV files
+ *  8. Native macOS Cocoa NSDraggingSource OS File Drag Helper + Raw/Edited OS file links
  */
 
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const http = require("http");
-const { execFile } = require("child_process");
+const { spawn, execFile, execFileSync } = require("child_process");
 
 let Max = null;
 let hasRealMaxApi = false;
@@ -36,7 +31,8 @@ try {
   };
 }
 
-const CACHE_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v1.json");
+const CACHE_FILE = path.join(os.homedir(), ".xo_sample_map_cache_v2.json");
+const EXPORT_BASE_DIR = path.join(os.tmpdir(), "xo_sample_map_exports");
 const SUPPORTED_EXTS = new Set([".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a", ".caf"]);
 
 const CORE_DRUM_PATHS = [
@@ -50,20 +46,271 @@ const CATEGORY_LIST = [
 ];
 
 const CATEGORY_ANGLES = {
-  kick:   -2.35, // Bottom-left (Red/Coral)
-  tom:    -1.65, // Left-bottom (Purple)
-  snare:  -0.95, // Top-left (Orange)
-  clap:   -0.35, // Top (Magenta)
-  rim:     0.20, // Top-right (Rose)
-  hihat:   0.80, // Right-top (Yellow)
-  shaker:  1.35, // Right (Teal)
-  cymbal:  1.95, // Bottom-right (Sky Blue)
-  perc:    2.55, // Bottom-center (Green)
-  fx:      3.05  // Far left (Indigo)
+  kick:   -2.35,
+  tom:    -1.65,
+  snare:  -0.95,
+  clap:   -0.35,
+  rim:     0.20,
+  hihat:   0.80,
+  shaker:  1.35,
+  cymbal:  1.95,
+  perc:    2.55,
+  fx:      3.05
 };
 
 // ============================================================================
-// 1. Binary WAV & AIFF/AIFC Audio Parser
+// 1. Native macOS Cocoa OS File Drag Helper (NSDraggingSource + NSPasteboard)
+// ============================================================================
+
+const OBJC_DRAG_HELPER_SOURCE = `
+#import <Cocoa/Cocoa.h>
+#import <ApplicationServices/ApplicationServices.h>
+
+@interface XODragView : NSView <NSDraggingSource>
+@property (nonatomic, strong) NSArray<NSString *> *filePaths;
+@property (nonatomic, copy) NSString *labelText;
+@property (nonatomic, assign) BOOL isEdited;
+@property (nonatomic, assign) BOOL draggingActive;
+@end
+
+@implementation XODragView
+
+- (BOOL)acceptsFirstMouse:(NSEvent *)event {
+    return YES;
+}
+
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+    return NSDragOperationCopy | NSDragOperationLink | NSDragOperationGeneric;
+}
+
+- (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {
+    self.draggingActive = NO;
+    [[self window] orderOut:nil];
+}
+
+- (void)mouseDown:(NSEvent *)event {
+    self.draggingActive = NO;
+}
+
+- (void)mouseDragged:(NSEvent *)event {
+    if (self.draggingActive) return;
+    self.draggingActive = YES;
+    [self initiateOSFileDrag:event];
+}
+
+- (void)initiateOSFileDrag:(NSEvent *)event {
+    if (!self.filePaths || self.filePaths.count == 0) return;
+    NSMutableArray<NSDraggingItem *> *items = [NSMutableArray array];
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+
+    for (NSString *p in self.filePaths) {
+        if (![[NSFileManager defaultManager] fileExistsAtPath:p]) continue;
+        NSURL *u = [NSURL fileURLWithPath:p];
+        if (!u) continue;
+        [urls addObject:u];
+
+        NSDraggingItem *di = [[NSDraggingItem alloc] initWithPasteboardWriter:u];
+        NSImage *icon = [[NSWorkspace sharedWorkspace] iconForFile:p];
+        [icon setSize:NSMakeSize(32, 32)];
+        [di setDraggingFrame:NSMakeRect(0, 0, 32, 32) contents:icon];
+        [items addObject:di];
+    }
+    if (items.count == 0) return;
+
+    NSPasteboard *pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb writeObjects:urls];
+
+    [self beginDraggingSessionWithItems:items event:event source:self];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    // Always draw with alpha >= 0.94 so macOS WindowServer never treats the view as click-through
+    [[NSColor colorWithCalibratedRed:0.08 green:0.10 blue:0.14 alpha:0.96] setFill];
+    NSBezierPath *bg = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:3 yRadius:3];
+    [bg fill];
+
+    if (self.isEdited) {
+        [[NSColor colorWithCalibratedRed:1.0 green:0.70 blue:0.20 alpha:0.98] setStroke];
+    } else {
+        [[NSColor colorWithCalibratedRed:0.22 green:0.74 blue:0.97 alpha:0.98] setStroke];
+    }
+    [bg setLineWidth:1.4];
+    [bg stroke];
+
+    NSString *txt = self.labelText ?: @"R";
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [NSFont boldSystemFontOfSize:9.0],
+        NSForegroundColorAttributeName: [NSColor whiteColor]
+    };
+    NSSize sz = [txt sizeWithAttributes:attrs];
+    [txt drawAtPoint:NSMakePoint((self.bounds.size.width - sz.width) * 0.5, (self.bounds.size.height - sz.height) * 0.5) withAttributes:attrs];
+}
+@end
+
+@interface AppDelegate : NSObject <NSApplicationDelegate>
+@property (nonatomic, strong) NSWindow *dragWindow;
+@property (nonatomic, strong) XODragView *dragView;
+@property (nonatomic, assign) NSPoint armedPoint;
+@end
+
+@implementation AppDelegate
+
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    NSRect frame = NSMakeRect(0, 0, 44, 20);
+    self.dragWindow = [[NSWindow alloc] initWithContentRect:frame
+                                                  styleMask:NSWindowStyleMaskBorderless
+                                                    backing:NSBackingStoreBuffered
+                                                      defer:NO];
+    [self.dragWindow setOpaque:NO];
+    [self.dragWindow setBackgroundColor:[NSColor clearColor]];
+    [self.dragWindow setLevel:NSStatusWindowLevel];
+    [self.dragWindow setHasShadow:YES];
+    [self.dragWindow setIgnoresMouseEvents:NO];
+    [self.dragWindow setAcceptsMouseMovedEvents:YES];
+
+    self.dragView = [[XODragView alloc] initWithFrame:frame];
+    [self.dragWindow setContentView:self.dragView];
+
+    [NSTimer scheduledTimerWithTimeInterval:0.06 repeats:YES block:^(NSTimer * _Nonnull timer) {
+        if (![self.dragWindow isVisible]) return;
+        if ([NSEvent pressedMouseButtons] != 0) return;
+        NSPoint cur = [NSEvent mouseLocation];
+        CGFloat dx = cur.x - self.armedPoint.x;
+        CGFloat dy = cur.y - self.armedPoint.y;
+        if ((dx * dx + dy * dy) > 1600.0) {
+            [self.dragWindow orderOut:nil];
+        }
+    }];
+
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        char buf[65536];
+        while (fgets(buf, sizeof(buf), stdin) != NULL) {
+            NSString *line = [NSString stringWithUTF8String:buf];
+            if (!line) continue;
+            NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if (!json) continue;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self handleCommand:json];
+            });
+        }
+        exit(0);
+    });
+}
+
+- (void)handleCommand:(NSDictionary *)cmd {
+    NSString *action = cmd[@"cmd"];
+    if ([action isEqualToString:@"disarm"]) {
+        if (([NSEvent pressedMouseButtons] & 1) == 0) {
+            [self.dragWindow orderOut:nil];
+        }
+        return;
+    }
+    NSArray *paths = cmd[@"paths"];
+    if (!paths || paths.count == 0) return;
+
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    for (NSString *p in paths) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:p]) {
+            [urls addObject:[NSURL fileURLWithPath:p]];
+        }
+    }
+    if (urls.count > 0) {
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        [pb clearContents];
+        [pb writeObjects:urls];
+    }
+
+    NSPoint mouse = [NSEvent mouseLocation];
+    self.armedPoint = mouse;
+    CGFloat w = [cmd[@"w"] doubleValue] ?: 44.0;
+    CGFloat h = [cmd[@"h"] doubleValue] ?: 20.0;
+    self.dragView.filePaths = paths;
+    self.dragView.labelText = cmd[@"label"] ?: @"Drag";
+    self.dragView.isEdited = [cmd[@"isEdited"] boolValue];
+    self.dragView.draggingActive = NO;
+
+    NSRect winRect = NSMakeRect(mouse.x - w * 0.5, mouse.y - h * 0.5, w, h);
+    [self.dragWindow setFrame:winRect display:YES];
+    [self.dragView setFrame:NSMakeRect(0, 0, w, h)];
+    [self.dragView setNeedsDisplay:YES];
+    [self.dragWindow orderFrontRegardless];
+
+    // Write diagnostic status file for automated M4L runtime tests
+    NSString *stateFile = cmd[@"stateFile"];
+    if (stateFile) {
+        NSDictionary *st = @{
+            @"visible": @([self.dragWindow isVisible]),
+            @"count": @(urls.count),
+            @"paths": paths,
+            @"label": self.dragView.labelText
+        };
+        NSData *stData = [NSJSONSerialization dataWithJSONObject:st options:0 error:nil];
+        [stData writeToFile:stateFile atomically:YES];
+    }
+
+    // If mouse button was already pressed inside Max v8ui when clicked, hand off click to XODragView
+    if ([cmd[@"handoff"] boolValue] && (([NSEvent pressedMouseButtons] & 1) != 0)) {
+        NSScreen *primary = [NSScreen screens][0];
+        CGFloat screenH = primary.frame.size.height;
+        CGPoint cgPt = CGPointMake(mouse.x, screenH - mouse.y);
+        CGEventRef upEv = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, cgPt, kCGMouseButtonLeft);
+        CGEventRef downEv = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, cgPt, kCGMouseButtonLeft);
+        if (upEv) { CGEventPost(kCGHIDEventTap, upEv); CFRelease(upEv); }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+            if (downEv) { CGEventPost(kCGHIDEventTap, downEv); CFRelease(downEv); }
+        });
+    }
+}
+@end
+
+int main(int argc, const char * argv[]) {
+    @autoreleasepool {
+        NSApplication *app = [NSApplication sharedApplication];
+        [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        AppDelegate *del = [[AppDelegate alloc] init];
+        [app setDelegate:del];
+        [app run];
+    }
+    return 0;
+}
+`;
+
+let dragHelperProc = null;
+
+function ensureDragHelperProcess() {
+  if (!hasRealMaxApi || process.platform !== "darwin") return null;
+  if (dragHelperProc && !dragHelperProc.killed) return dragHelperProc;
+  try {
+    fs.mkdirSync(EXPORT_BASE_DIR, { recursive: true });
+    const srcPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v2.m");
+    const binPath = path.join(EXPORT_BASE_DIR, "xo_drag_helper_v2_bin");
+    if (!fs.existsSync(binPath)) {
+      fs.writeFileSync(srcPath, OBJC_DRAG_HELPER_SOURCE, "utf8");
+      execFileSync("/usr/bin/clang", [
+        "-O2", "-framework", "Cocoa", "-framework", "ApplicationServices", srcPath, "-o", binPath
+      ]);
+    }
+    dragHelperProc = spawn(binPath, [], { stdio: ["pipe", "ignore", "ignore"] });
+    dragHelperProc.on("exit", () => { dragHelperProc = null; });
+    return dragHelperProc;
+  } catch (_) {
+    return null;
+  }
+}
+
+function sendDragHelperCommand(payload) {
+  const proc = ensureDragHelperProcess();
+  if (proc && proc.stdin && !proc.stdin.destroyed) {
+    try {
+      proc.stdin.write(JSON.stringify(payload) + "\n");
+    } catch (_) {}
+  }
+}
+
+// ============================================================================
+// 2. Binary WAV & AIFF/AIFC Audio Parser
 // ============================================================================
 
 function readIEEE80Extended(buf, offset) {
@@ -73,11 +320,11 @@ function readIEEE80Extended(buf, offset) {
   const loMant = buf.readUInt32BE(offset + 6);
   if (expon === 0 && hiMant === 0 && loMant === 0) return 0;
   const sign = (buf[offset] & 0x80) ? -1 : 1;
-  let f = hiMant * Math.pow(2, expon - 16383 - 31) + loMant * Math.pow(2, expon - 16383 - 63);
+  const f = hiMant * Math.pow(2, expon - 16383 - 31) + loMant * Math.pow(2, expon - 16383 - 63);
   return sign * f;
 }
 
-function parseWavBuffer(buf, fullFileSize) {
+function parseWavBuffer(buf, fullFileSize, maxSeconds = 2.0) {
   if (buf.length < 44) return null;
   if (buf.toString("ascii", 0, 4) !== "RIFF" || buf.toString("ascii", 8, 12) !== "WAVE") {
     return null;
@@ -122,7 +369,7 @@ function parseWavBuffer(buf, fullFileSize) {
   const availFrames = Math.floor(availBytes / frameStep);
   if (availFrames <= 0) return null;
 
-  const maxDecodeFrames = Math.min(availFrames, sampleRate * 2); // Decode up to 2.0s mono for analysis
+  const maxDecodeFrames = Math.min(availFrames, Math.floor(sampleRate * maxSeconds));
   const mono = new Float32Array(maxDecodeFrames);
 
   for (let i = 0; i < maxDecodeFrames; i++) {
@@ -154,7 +401,7 @@ function parseWavBuffer(buf, fullFileSize) {
   };
 }
 
-function parseAiffBuffer(buf, fullFileSize) {
+function parseAiffBuffer(buf, fullFileSize, maxSeconds = 2.0) {
   if (buf.length < 46) return null;
   const form = buf.toString("ascii", 0, 4);
   const aiffType = buf.toString("ascii", 8, 12);
@@ -207,7 +454,7 @@ function parseAiffBuffer(buf, fullFileSize) {
   const availFrames = Math.floor((buf.length - ssndOffset) / frameStep);
   if (availFrames <= 0) return null;
 
-  const maxDecodeFrames = Math.min(availFrames, sampleRate * 2);
+  const maxDecodeFrames = Math.min(availFrames, Math.floor(sampleRate * maxSeconds));
   const mono = new Float32Array(maxDecodeFrames);
 
   for (let i = 0; i < maxDecodeFrames; i++) {
@@ -241,16 +488,136 @@ function parseAiffBuffer(buf, fullFileSize) {
   };
 }
 
-function parseAudioBuffer(buf, fullFileSize) {
+function parseAudioBuffer(buf, fullFileSize, maxSeconds = 2.0) {
   if (!buf || buf.length < 44) return null;
   const magic = buf.toString("ascii", 0, 4);
-  if (magic === "RIFF") return parseWavBuffer(buf, fullFileSize);
-  if (magic === "FORM") return parseAiffBuffer(buf, fullFileSize);
+  if (magic === "RIFF") return parseWavBuffer(buf, fullFileSize, maxSeconds);
+  if (magic === "FORM") return parseAiffBuffer(buf, fullFileSize, maxSeconds);
   return null;
 }
 
 // ============================================================================
-// 2. 12-Dimensional Acoustic Feature Extractor
+// 3. Offline Audio Re-Renderer & OS File Link Generator
+// ============================================================================
+
+function encodeStereoWav16(samplesMono, sampleRate) {
+  // Writes a 2-channel stereo 16-bit PCM WAV file so dragged samples always play in both channels
+  const numFrames = samplesMono.length;
+  const channels = 2;
+  const dataBytes = numFrames * channels * 2;
+  const buf = Buffer.alloc(44 + dataBytes);
+  buf.write("RIFF", 0, 4, "ascii");
+  buf.writeUInt32LE(36 + dataBytes, 4);
+  buf.write("WAVE", 8, 4, "ascii");
+  buf.write("fmt ", 12, 4, "ascii");
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20); // PCM
+  buf.writeUInt16LE(channels, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * channels * 2, 28);
+  buf.writeUInt16LE(channels * 2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write("data", 36, 4, "ascii");
+  buf.writeUInt32LE(dataBytes, 40);
+
+  for (let i = 0; i < numFrames; i++) {
+    const clamped = Math.max(-1.0, Math.min(1.0, samplesMono[i]));
+    const s16 = Math.max(-32768, Math.min(32767, Math.round(clamped * 32767)));
+    const off = 44 + i * 4;
+    buf.writeInt16LE(s16, off);     // Left
+    buf.writeInt16LE(s16, off + 2); // Right
+  }
+  return buf;
+}
+
+function renderEditedAudioSamples(decoded, settings = {}) {
+  const pitchSt = Number(settings.pitchSt) || 0;
+  const decayMs = Math.max(20, Number(settings.decayMs) || 2500);
+  const gainDb = Number(settings.gainDb) || 0;
+
+  const speed = Math.pow(2.0, pitchSt / 12.0);
+  const linGain = Math.pow(10.0, gainDb / 20.0);
+  const sr = decoded.sampleRate || 44100;
+  const src = decoded.samples;
+  const srcLen = src.length;
+
+  const resampledFullFrames = Math.max(16, Math.floor(srcLen / speed));
+  const maxDecayFrames = Math.max(16, Math.floor((decayMs / 1000.0) * sr));
+  const isTrimmed = maxDecayFrames < resampledFullFrames;
+  const outFrames = Math.min(resampledFullFrames, maxDecayFrames);
+  const out = new Float32Array(outFrames);
+
+  const holdFrames = isTrimmed ? Math.floor(outFrames * 0.72) : outFrames;
+  const rampSpan = Math.max(1, outFrames - holdFrames);
+
+  for (let i = 0; i < outFrames; i++) {
+    const srcPos = i * speed;
+    const idx0 = Math.floor(srcPos);
+    const frac = srcPos - idx0;
+    const s0 = idx0 < srcLen ? src[idx0] : 0;
+    const s1 = (idx0 + 1) < srcLen ? src[idx0 + 1] : s0;
+    const interp = s0 + frac * (s1 - s0);
+
+    let env = 1.0;
+    if (isTrimmed && i > holdFrames) {
+      env = Math.max(0.0, 1.0 - (i - holdFrames) / rampSpan);
+    }
+    out[i] = Math.max(-1.0, Math.min(1.0, interp * env * linGain));
+  }
+
+  return {
+    sampleRate: sr,
+    samples: out,
+    durationMs: Math.round((outFrames / sr) * 1000.0)
+  };
+}
+
+function createRawFileLink(rawFilePath, customOutDir = null) {
+  if (!rawFilePath || !fs.existsSync(rawFilePath)) return rawFilePath;
+  try {
+    const rawDir = customOutDir || path.join(EXPORT_BASE_DIR, "Raw");
+    fs.mkdirSync(rawDir, { recursive: true });
+    const linkPath = path.join(rawDir, path.basename(rawFilePath));
+    if (fs.existsSync(linkPath)) {
+      try { fs.unlinkSync(linkPath); } catch (_) {}
+    }
+    try {
+      fs.symlinkSync(rawFilePath, linkPath);
+      return linkPath;
+    } catch (_) {
+      fs.copyFileSync(rawFilePath, linkPath);
+      return linkPath;
+    }
+  } catch (_) {
+    return rawFilePath;
+  }
+}
+
+function renderEditedSampleWav(rawFilePath, settings = {}, customOutDir = null) {
+  if (!rawFilePath || !fs.existsSync(rawFilePath)) return null;
+  const outDir = customOutDir || path.join(EXPORT_BASE_DIR, "Edited");
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const rawBuf = fs.readFileSync(rawFilePath);
+  const decoded = parseAudioBuffer(rawBuf, rawBuf.length, 15.0);
+  if (!decoded) return null;
+
+  const rendered = renderEditedAudioSamples(decoded, settings);
+  const wavBuf = encodeStereoWav16(rendered.samples, rendered.sampleRate);
+
+  const base = path.basename(rawFilePath, path.extname(rawFilePath)).replace(/[^a-zA-Z0-9_-]/g, "_");
+  const pTag = (Number(settings.pitchSt) || 0) >= 0 ? `+${Number(settings.pitchSt) || 0}` : `${Number(settings.pitchSt) || 0}`;
+  const dTag = Math.round(Number(settings.decayMs) || 2500);
+  const gTag = Math.round((Number(settings.gainDb) || 0) * 10) / 10;
+  const outName = `${base}_p${pTag}st_d${dTag}ms_g${gTag}dB.wav`;
+  const outPath = path.join(outDir, outName);
+
+  fs.writeFileSync(outPath, wavBuf);
+  return outPath;
+}
+
+// ============================================================================
+// 4. 12-Dimensional Acoustic Feature Extractor
 // ============================================================================
 
 function extractAudioFeatures(decoded) {
@@ -258,7 +625,6 @@ function extractAudioFeatures(decoded) {
   const N = samples.length;
   if (N < 32) return null;
 
-  // 1. Find peak amplitude, onset index, and effective end (above -54 dB)
   let peakAmp = 0;
   let peakIdx = 0;
   for (let i = 0; i < N; i++) {
@@ -292,7 +658,6 @@ function extractAudioFeatures(decoded) {
   const durationMs = rawDurationMs > 2000 ? rawDurationMs : Math.max(15, trimmedMs);
   const logDuration = Math.max(0, Math.min(1, (Math.log10(Math.max(15, durationMs)) - 1.17) / 2.55));
 
-  // 2. Attack time & Crest factor & Zero-Crossing Rate (ZCR)
   const attackSamples = Math.max(1, peakIdx - onsetIdx);
   const attackMs = (attackSamples / sampleRate) * 1000.0;
   const logAttack = Math.max(0, Math.min(1, Math.log10(1 + attackMs) / 2.5));
@@ -319,7 +684,6 @@ function extractAudioFeatures(decoded) {
   const zcr = Math.min(1.0, (zeroCrossings / activeLen) / 0.45);
   const decayRatio = Math.min(1.0, secondHalfEnergy / Math.max(1e-6, firstHalfEnergy + secondHalfEnergy));
 
-  // 3. 32-Bar Waveform Peak Envelope
   const peaks = [];
   const numBars = 32;
   const barSpan = Math.max(1, Math.floor(activeLen / numBars));
@@ -334,14 +698,13 @@ function extractAudioFeatures(decoded) {
     peaks.push(Math.round(Math.pow(m, 0.75) * 100) / 100);
   }
 
-  // 4. Spectral Analysis via Goertzel / DFT Filterbank across 24 log-spaced frequencies (35 Hz .. 14 kHz)
   const specWin = Math.min(1024, activeLen);
   const freqs = [
-    40, 55, 75, 100,       // Sub (0..3)
-    135, 180, 240, 320,    // Low (4..7)
-    450, 650, 950, 1350,   // Mid-Low (8..11)
-    1900, 2600, 3500, 4800,// Mid-High (12..15)
-    6400, 8500, 11000, 14000 // High/Air (16..19)
+    40, 55, 75, 100,
+    135, 180, 240, 320,
+    450, 650, 950, 1350,
+    1900, 2600, 3500, 4800,
+    6400, 8500, 11000, 14000
   ];
   const bandEnergies = new Float64Array(freqs.length);
   let totalSpecEnergy = 1e-9;
@@ -366,7 +729,6 @@ function extractAudioFeatures(decoded) {
     totalSpecEnergy += mag;
   }
 
-  // Spectral Centroid (log-frequency weighted) & Flatness & Band Ratios
   let weightedFreqSum = 0;
   let logSum = 0;
   let subE = 0, lowE = 0, midE = 0, highE = 0;
@@ -392,32 +754,34 @@ function extractAudioFeatures(decoded) {
   const midRatio = Math.round((midE / totalSpecEnergy) * 100) / 100;
   const highRatio = Math.round((highE / totalSpecEnergy) * 100) / 100;
 
-  // 5. Autocorrelation Fundamental Pitch Estimate (40 Hz .. 1200 Hz)
-  const pitchWin = Math.min(1024, activeLen);
+  const pitchWin = Math.min(2048, activeLen);
   const minLag = Math.max(4, Math.floor(sampleRate / 1200));
-  const maxLag = Math.min(Math.floor(pitchWin * 0.6), Math.floor(sampleRate / 38));
+  const maxLag = Math.min(Math.floor(pitchWin * 0.65), Math.floor(sampleRate / 35));
   let bestLag = 0;
   let bestCorr = 0;
-  let zeroLagEnergy = 1e-9;
 
-  for (let i = 0; i < pitchWin; i++) {
-    const s = samples[onsetIdx + i] * normScale;
-    zeroLagEnergy += s * s;
-  }
-
+  let passedZeroDip = false;
   for (let lag = minLag; lag <= maxLag; lag += 2) {
     let corr = 0;
-    for (let i = 0; i < pitchWin - lag; i += 2) {
-      corr += (samples[onsetIdx + i] * normScale) * (samples[onsetIdx + i + lag] * normScale);
+    let e0 = 1e-9;
+    let e1 = 1e-9;
+    const limit = pitchWin - lag;
+    for (let i = 0; i < limit; i += 2) {
+      const a = samples[onsetIdx + i] * normScale;
+      const b = samples[onsetIdx + i + lag] * normScale;
+      corr += a * b;
+      e0 += a * a;
+      e1 += b * b;
     }
-    const normCorr = (corr * 2) / zeroLagEnergy;
-    if (normCorr > bestCorr) {
+    const normCorr = corr / Math.sqrt(e0 * e1);
+    if (normCorr < 0) passedZeroDip = true;
+    if (passedZeroDip && normCorr > bestCorr) {
       bestCorr = normCorr;
       bestLag = lag;
     }
   }
 
-  const pitchHz = bestLag > 0 && bestCorr > 0.22 ? Math.round((sampleRate / bestLag) * 10) / 10 : 0;
+  const pitchHz = bestLag > 0 && bestCorr > 0.25 ? Math.round((sampleRate / bestLag) * 10) / 10 : 0;
   const pitchMidi = pitchHz > 20 ? Math.round(69 + 12 * Math.log2(pitchHz / 440.0)) : 48;
   const normPitch = Math.max(0, Math.min(1, (pitchMidi - 24) / 60));
 
@@ -457,7 +821,7 @@ function extractAudioFeatures(decoded) {
 }
 
 // ============================================================================
-// 3. Auto-Categorizer (Filename / Folder + Acoustic Feature Fallback)
+// 5. Auto-Categorizer, 2D Map & k-NN
 // ============================================================================
 
 function classifySample(filePath, features) {
@@ -481,12 +845,11 @@ function classifySample(filePath, features) {
     return "fx";
   }
 
-  // Acoustic classification fallback when filename is generic
   if (!features) return "perc";
   if (features.subRatio + features.lowRatio > 0.58 && features.centroid < 0.34 && features.zcr < 0.18) {
     return features.pitchHz > 95 ? "tom" : "kick";
   }
-  if (features.highRatio > 0.45 && features.zcr > 0.35) {
+  if ((features.highRatio > 0.28 || features.centroid > 0.50) && features.zcr > 0.35) {
     if (features.durationMs > 420) return "cymbal";
     if (features.attackMs > 18) return "shaker";
     return "hihat";
@@ -500,16 +863,10 @@ function classifySample(filePath, features) {
   return "perc";
 }
 
-// ============================================================================
-// 4. 2D XO Constellation Map & 12D k-NN Graph
-// ============================================================================
-
 function computeKNN(samples, k = 8) {
   const N = samples.length;
   if (N === 0) return;
   const actualK = Math.min(k, Math.max(0, N - 1));
-
-  // Weights emphasize perceptual timbre (centroid, band ratios, duration, ZCR, flatness)
   const weights = [2.2, 1.4, 1.8, 1.2, 1.2, 1.6, 2.0, 1.6, 1.5, 1.8, 1.0, 0.8];
 
   for (let i = 0; i < N; i++) {
@@ -524,7 +881,6 @@ function computeKNN(samples, k = 8) {
         const diff = (vi[d] || 0) - (vj[d] || 0);
         d2 += weights[d] * diff * diff;
       }
-      // Slight semantic bonus for same drum category so nearest neighbors feel cohesive
       if (samples[j].category !== cati) d2 += 0.35;
       dists.push({ idx: j, d2 });
     }
@@ -537,19 +893,13 @@ function compute2DMap(samples) {
   const N = samples.length;
   if (N === 0) return;
 
-  // Step 1: Compute initial semantic + acoustic polar coordinates
-  // Radius encodes brightness/duration contrast; angle blends category sector with spectral tilt
   const pts = new Array(N);
   for (let i = 0; i < N; i++) {
     const s = samples[i];
     const baseAngle = CATEGORY_ANGLES[s.category] !== undefined ? CATEGORY_ANGLES[s.category] : 0;
     const v = s.vector || [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25, 0.25, 0.25, 0.25, 0.5, 0.5];
-
-    // Angular offset within sector driven by brightness (centroid), pitch, and noisiness (zcr)
     const angleOffset = ((v[0] - 0.45) * 0.55) + ((v[5] - 0.3) * 0.35) + ((v[10] - 0.5) * 0.25);
     const angle = baseAngle + angleOffset;
-
-    // Radial distance from center driven by logDuration, decayRatio, and sub/high energy
     const radialBase = 0.20 + 0.58 * (0.45 * v[2] + 0.30 * v[0] + 0.25 * (1.0 - v[6]));
     const r = Math.max(0.08, Math.min(0.88, radialBase));
 
@@ -559,15 +909,12 @@ function compute2DMap(samples) {
     };
   }
 
-  // Step 2: Iterative k-NN attraction + local collision repulsion (UMAP/t-SNE style relaxation)
   const iterations = 36;
   const minDist = Math.max(0.011, Math.min(0.032, 0.48 / Math.sqrt(N)));
   const minDistSq = minDist * minDist;
 
   for (let iter = 0; iter < iterations; iter++) {
     const alpha = 0.18 * (1.0 - iter / iterations);
-
-    // Pull slightly toward acoustic k-NN neighbors
     for (let i = 0; i < N; i++) {
       const nbrs = samples[i].neighbors || [];
       let gx = 0, gy = 0;
@@ -583,7 +930,6 @@ function compute2DMap(samples) {
       }
     }
 
-    // Repel overlapping / crowded points
     for (let i = 0; i < N; i++) {
       for (let j = i + 1; j < N; j++) {
         const dx = pts[j].x - pts[i].x;
@@ -603,7 +949,6 @@ function compute2DMap(samples) {
     }
   }
 
-  // Step 3: Normalize into [0.05 .. 0.95] bounding box
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (let i = 0; i < N; i++) {
     if (pts[i].x < minX) minX = pts[i].x;
@@ -621,7 +966,7 @@ function compute2DMap(samples) {
 }
 
 // ============================================================================
-// 5. Directory Scanner & Cache Manager
+// 6. Directory Scanner & Cache Manager
 // ============================================================================
 
 function loadDiskCache() {
@@ -647,7 +992,6 @@ function collectAudioFilesRecursive(dirPath, maxFiles = 750, out = []) {
   } catch (_) {
     return out;
   }
-  // Sort deterministically
   entries.sort((a, b) => a.name.localeCompare(b.name));
 
   const subdirs = [];
@@ -680,13 +1024,12 @@ function analyzeAudioFile(filePath, cache) {
     return null;
   }
   const cacheKey = `${filePath}|${st.size}|${Math.floor(st.mtimeMs)}`;
-  if (cache && cache.entries && cache.entries[cacheKey]) {
+  if (cache && cache.entries && cache.entries[cacheKey] && cache.entries[cacheKey].channels) {
     const cached = { ...cache.entries[cacheKey] };
     cached.favorite = !!(cache.favorites && cache.favorites[filePath]);
     return cached;
   }
 
-  // Read up to first 256 KB for fast header + transient/body analysis
   const readLen = Math.min(st.size, 262144);
   const buf = Buffer.allocUnsafe(readLen);
   let bytesRead = 0;
@@ -718,6 +1061,7 @@ function analyzeAudioFile(filePath, cache) {
     path: filePath,
     folder,
     category,
+    channels: decoded.channels || 1,
     durationMs: feats.durationMs,
     attackMs: feats.attackMs,
     centroid: feats.centroid,
@@ -748,7 +1092,6 @@ function scanDirectories(dirs, maxFiles = 750) {
   const allFiles = [];
   for (const d of dirs) {
     if (!fs.existsSync(d)) continue;
-    // Balanced sampling across subdirectories if scanning a top-level Drum folder
     let entries = [];
     try {
       entries = fs.readdirSync(d, { withFileTypes: true });
@@ -785,7 +1128,7 @@ function scanDirectories(dirs, maxFiles = 750) {
 }
 
 // ============================================================================
-// 6. Runtime State, Max Outlet Sync & HTTP/SSE Server
+// 7. Runtime State, Filter Evaluation (50ms..Infinite), Saved List & Drag-Out
 // ============================================================================
 
 const engineState = {
@@ -794,17 +1137,18 @@ const engineState = {
   folders: [],
   selectedIndex: -1,
   activeCategory: "ALL",
-  maxLenMs: 5000,
+  maxLenMs: 5000, // >= 4990 or Infinity = Infinite (no max length cutoff)
   toneFilter: 0,
+  searchQuery: "",
   pitchSt: 0,
   decayMs: 2500,
   gainDb: 0,
-  autoLoad: false,
-  lockTarget: false,
-  targetName: "Auto (Simpler / Pad)",
+  savedList: [],
+  lastDragOut: null,
   statusText: "Initializing..."
 };
 
+let nextSavedId = 1;
 const sseClients = new Set();
 
 function broadcastSSE(partial) {
@@ -818,10 +1162,42 @@ function broadcastSSE(partial) {
   }
 }
 
+function isInfiniteMaxLen(val) {
+  if (val === "inf" || val === "infinite" || val === "Infinity" || val === Infinity) return true;
+  const n = Number(val);
+  return !Number.isFinite(n) || n >= 4990;
+}
+
+function isSamplePassingFilters(s, st = engineState) {
+  if (!s) return false;
+  if (st.activeCategory && st.activeCategory !== "ALL" && s.category !== st.activeCategory) {
+    return false;
+  }
+  if (!isInfiniteMaxLen(st.maxLenMs) && s.durationMs > Number(st.maxLenMs)) {
+    return false;
+  }
+  const centroidPct = (s.centroid !== undefined ? s.centroid : 0.5) * 100.0;
+  if (st.toneFilter < 0) {
+    const maxB = 100.0 + st.toneFilter * 0.85;
+    if (centroidPct > maxB) return false;
+  } else if (st.toneFilter > 0) {
+    const minB = st.toneFilter * 0.85;
+    if (centroidPct < minB) return false;
+  }
+  if (st.searchQuery && st.searchQuery.trim().length > 0) {
+    const q = st.searchQuery.trim().toLowerCase();
+    const matchName = s.name && s.name.toLowerCase().includes(q);
+    const matchCat = s.category && s.category.toLowerCase().includes(q);
+    const matchFolder = s.folder && s.folder.toLowerCase().includes(q);
+    if (!matchName && !matchCat && !matchFolder) return false;
+  }
+  return true;
+}
+
 function syncMiniMapToMax() {
   if (!Max || typeof Max.outlet !== "function") return;
   Max.outlet("minimap_clear");
-  const batchSize = 50;
+  const batchSize = 40;
   for (let i = 0; i < engineState.samples.length; i += batchSize) {
     const slice = engineState.samples.slice(i, i + batchSize);
     const flat = [];
@@ -833,15 +1209,35 @@ function syncMiniMapToMax() {
         Math.round(s.y * 1000) / 1000,
         catIdx,
         Math.round(s.durationMs),
-        Math.round((s.centroid || 0.5) * 100)
+        Math.round((s.centroid || 0.5) * 100),
+        String(s.name || "Sample")
       );
     }
     Max.outlet("minimap_batch", i, ...flat);
   }
   Max.outlet("minimap_done", engineState.samples.length, engineState.statusText);
+  syncSavedListToMax();
   if (engineState.selectedIndex >= 0) {
     emitSelectedToMax(engineState.selectedIndex, false);
   }
+}
+
+function syncSavedListToMax() {
+  if (!Max || typeof Max.outlet !== "function") return;
+  const flat = [];
+  for (let i = 0; i < engineState.savedList.length; i++) {
+    const item = engineState.savedList[i];
+    flat.push(
+      item.id,
+      item.sampleIndex,
+      item.name,
+      item.catIdx,
+      item.pitchSt,
+      item.decayMs,
+      item.gainDb
+    );
+  }
+  Max.outlet("saved_list_sync", engineState.savedList.length, ...flat);
 }
 
 function emitSelectedToMax(idx, audition = true) {
@@ -849,6 +1245,11 @@ function emitSelectedToMax(idx, audition = true) {
   engineState.selectedIndex = idx;
   const s = engineState.samples[idx];
   const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
+  const speed = Math.pow(2.0, (engineState.pitchSt || 0) / 12.0);
+  const naturalScaledMs = Math.max(20, Math.round((s.durationMs || 300) / speed));
+  const decaySettingMs = Math.max(20, Number(engineState.decayMs) || 2500);
+  const isTrimmed = decaySettingMs < 4950 && decaySettingMs < naturalScaledMs;
+  const effDurMs = isTrimmed ? decaySettingMs : naturalScaledMs;
 
   if (Max && typeof Max.outlet === "function") {
     Max.outlet(
@@ -866,20 +1267,285 @@ function emitSelectedToMax(idx, audition = true) {
     );
 
     if (audition) {
-      const speed = Math.pow(2.0, (engineState.pitchSt || 0) / 12.0);
+      // 1 = Mono (duplicate Left to Right via selector~), 2 = Stereo (use Right channel)
+      const chMode = (s.channels && s.channels >= 2) ? 2 : 1;
+      Max.outlet("play_mono", chMode);
       Max.outlet("play_speed", speed);
-      Max.outlet("play_decay", engineState.decayMs || 2500);
-      Max.outlet("play_file", s.path);
-      if (engineState.autoLoad) {
-        Max.outlet("lom_load_simpler", s.path);
+      Max.outlet("play_scan_dur", effDurMs);
+
+      if (isTrimmed) {
+        const holdMs = Math.max(10, Math.round(effDurMs * 0.72));
+        const fadeMs = Math.max(10, effDurMs - holdMs);
+        Max.outlet("play_env", 1.0, 0, 1.0, holdMs, 0.0, fadeMs);
+      } else {
+        // Untouched unity gain throughout full natural duration
+        Max.outlet("play_env", 1.0, 0, 1.0, effDurMs + 500);
       }
+      Max.outlet("play_file", s.path);
     }
   }
 
   broadcastSSE({
     selectedIndex: idx,
+    auditionTimestamp: audition ? Date.now() : 0,
+    effectiveDurationMs: effDurMs,
     statusText: `${s.name} (${s.category.toUpperCase()} • ${Math.round(s.durationMs)} ms)`
   });
+}
+
+function saveSampleToList(sampleIdx = engineState.selectedIndex, customSettings = null) {
+  if (sampleIdx < 0 || sampleIdx >= engineState.samples.length) return null;
+  const s = engineState.samples[sampleIdx];
+  const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
+  const pitchSt = customSettings && customSettings.pitchSt !== undefined ? Number(customSettings.pitchSt) : engineState.pitchSt;
+  const decayMs = customSettings && customSettings.decayMs !== undefined ? Number(customSettings.decayMs) : engineState.decayMs;
+  const gainDb = customSettings && customSettings.gainDb !== undefined ? Number(customSettings.gainDb) : engineState.gainDb;
+
+  const rawLinkPath = createRawFileLink(s.path);
+  let editedPath = rawLinkPath;
+  try {
+    const rendered = renderEditedSampleWav(s.path, { pitchSt, decayMs, gainDb });
+    if (rendered) editedPath = rendered;
+  } catch (_) {}
+
+  const entry = {
+    id: nextSavedId++,
+    sampleIndex: sampleIdx,
+    name: s.name,
+    category: s.category,
+    catIdx,
+    durationMs: s.durationMs,
+    pitchSt,
+    decayMs,
+    gainDb,
+    rawPath: rawLinkPath,
+    sourcePath: s.path,
+    editedPath
+  };
+
+  engineState.savedList.push(entry);
+  syncSavedListToMax();
+  broadcastSSE({
+    savedList: engineState.savedList,
+    statusText: `Saved "${s.name}" (${pitchSt >= 0 ? "+" : ""}${pitchSt}st, ${decayMs}ms)`
+  });
+  return entry;
+}
+
+function recallSavedSample(savedIdx, audition = true) {
+  if (savedIdx < 0 || savedIdx >= engineState.savedList.length) return null;
+  const item = engineState.savedList[savedIdx];
+  engineState.pitchSt = item.pitchSt;
+  engineState.decayMs = item.decayMs;
+  engineState.gainDb = item.gainDb;
+
+  if (Max && typeof Max.outlet === "function") {
+    Max.outlet("sync_playback_dials", item.pitchSt, item.decayMs, item.gainDb);
+  }
+  emitSelectedToMax(item.sampleIndex, audition);
+  broadcastSSE({
+    pitchSt: item.pitchSt,
+    decayMs: item.decayMs,
+    gainDb: item.gainDb,
+    selectedIndex: item.sampleIndex
+  });
+  return item;
+}
+
+function reorderSavedSample(fromIdx, toIdx) {
+  const len = engineState.savedList.length;
+  if (fromIdx < 0 || fromIdx >= len || toIdx < 0 || toIdx >= len || fromIdx === toIdx) {
+    return engineState.savedList;
+  }
+  const [moved] = engineState.savedList.splice(fromIdx, 1);
+  engineState.savedList.splice(toIdx, 0, moved);
+  syncSavedListToMax();
+  broadcastSSE({ savedList: engineState.savedList });
+  return engineState.savedList;
+}
+
+function removeSavedSample(savedIdx) {
+  if (savedIdx < 0 || savedIdx >= engineState.savedList.length) return;
+  engineState.savedList.splice(savedIdx, 1);
+  syncSavedListToMax();
+  broadcastSSE({ savedList: engineState.savedList });
+}
+
+function clearSavedSamples() {
+  engineState.savedList = [];
+  syncSavedListToMax();
+  broadcastSSE({ savedList: engineState.savedList });
+}
+
+function ensureFallbackWavFile(labelName = "Sample", freqHz = 60, durationSec = 0.35) {
+  const rawDir = path.join(EXPORT_BASE_DIR, "Raw");
+  fs.mkdirSync(rawDir, { recursive: true });
+  const safe = String(labelName || "Sample").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const outPath = path.join(rawDir, `${safe}.wav`);
+  if (fs.existsSync(outPath)) return outPath;
+
+  const sr = 44100;
+  const frames = Math.floor(durationSec * sr);
+  const mono = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) {
+    const t = i / sr;
+    const env = Math.exp(-t * 10);
+    mono[i] = Math.sin(2 * Math.PI * freqHz * (t + 0.04 * Math.exp(-t * 35))) * env * 0.9;
+  }
+  const wavBuf = encodeStereoWav16(mono, sr);
+  fs.writeFileSync(outPath, wavBuf);
+  return outPath;
+}
+
+function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, handoff = false) {
+  const isEdited = mode === "edited" || mode === "all_edited";
+  const isAll = mode === "all_raw" || mode === "all_edited";
+
+  // Ensure savedList has items if user drags initial default rows before saving
+  if (engineState.savedList.length === 0) {
+    if (engineState.samples.length >= 2) {
+      saveSampleToList(0, { pitchSt: 0, decayMs: 320, gainDb: 0 });
+      saveSampleToList(1, { pitchSt: 3, decayMs: 450, gainDb: -1.5 });
+    } else {
+      const fbKick = ensureFallbackWavFile("Kick_Atmos", 58, 0.32);
+      const fbSnare = ensureFallbackWavFile("Snare_Crisp", 210, 0.45);
+      engineState.savedList.push({
+        id: nextSavedId++,
+        sampleIndex: 0,
+        name: "Kick Atmos",
+        category: "kick",
+        catIdx: 0,
+        durationMs: 320,
+        pitchSt: 0,
+        decayMs: 320,
+        gainDb: 0,
+        rawPath: fbKick,
+        sourcePath: fbKick,
+        editedPath: renderEditedSampleWav(fbKick, { pitchSt: 0, decayMs: 320, gainDb: 0 }) || fbKick
+      });
+      engineState.savedList.push({
+        id: nextSavedId++,
+        sampleIndex: 1,
+        name: "Snare Crisp",
+        category: "snare",
+        catIdx: 1,
+        durationMs: 450,
+        pitchSt: 3,
+        decayMs: 450,
+        gainDb: -1.5,
+        rawPath: fbSnare,
+        sourcePath: fbSnare,
+        editedPath: renderEditedSampleWav(fbSnare, { pitchSt: 3, decayMs: 450, gainDb: -1.5 }) || fbSnare
+      });
+    }
+  }
+
+  let items = [];
+  if (isAll) {
+    items = engineState.savedList;
+  } else if (savedIdx >= 0 && savedIdx < engineState.savedList.length) {
+    items = [engineState.savedList[savedIdx]];
+  } else if (engineState.selectedIndex >= 0 && engineState.samples[engineState.selectedIndex]) {
+    const cur = engineState.samples[engineState.selectedIndex];
+    const settings = {
+      pitchSt: engineState.pitchSt,
+      decayMs: engineState.decayMs,
+      gainDb: engineState.gainDb
+    };
+    const rawLink = createRawFileLink(cur.path);
+    const ed = isEdited ? (renderEditedSampleWav(cur.path, settings) || rawLink) : rawLink;
+    items = [{
+      name: cur.name,
+      rawPath: rawLink,
+      sourcePath: cur.path,
+      editedPath: ed,
+      pitchSt: settings.pitchSt,
+      decayMs: settings.decayMs,
+      gainDb: settings.gainDb
+    }];
+  } else if (engineState.savedList.length > 0) {
+    items = [engineState.savedList[0]];
+  }
+
+  const paths = [];
+  for (const item of items) {
+    const srcFile = (item.sourcePath && fs.existsSync(item.sourcePath))
+      ? item.sourcePath
+      : ((item.rawPath && fs.existsSync(item.rawPath)) ? item.rawPath : ensureFallbackWavFile(item.name || "Sample"));
+    if (isEdited) {
+      if (!item.editedPath || item.editedPath === item.rawPath || !fs.existsSync(item.editedPath)) {
+        const rendered = renderEditedSampleWav(srcFile, {
+          pitchSt: item.pitchSt,
+          decayMs: item.decayMs,
+          gainDb: item.gainDb
+        });
+        if (rendered) item.editedPath = rendered;
+      }
+      paths.push(item.editedPath || srcFile);
+    } else {
+      if (!item.rawPath || !fs.existsSync(item.rawPath)) {
+        item.rawPath = createRawFileLink(srcFile);
+      }
+      paths.push(item.rawPath || srcFile);
+    }
+  }
+
+  const dragResult = {
+    mode,
+    savedIdx,
+    count: paths.length,
+    paths
+  };
+  engineState.lastDragOut = dragResult;
+
+  if (triggerNativeOverlay && paths.length > 0) {
+    const label = isAll
+      ? `⤓ Drag ${isEdited ? "Edit" : "Raw"} (${paths.length})`
+      : `⤓ ${isEdited ? "E" : "R"}`;
+    sendDragHelperCommand({
+      cmd: "arm",
+      paths,
+      label,
+      isEdited,
+      visible: true,
+      handoff: !!handoff,
+      stateFile: path.join(EXPORT_BASE_DIR, "last_drag_helper_state.json"),
+      w: isAll ? 64 : 26,
+      h: 18
+    });
+  }
+
+  if (Max && typeof Max.outlet === "function" && paths.length > 0) {
+    Max.outlet("drag_out_paths", mode, ...paths);
+  }
+  broadcastSSE({
+    lastDragOut: dragResult,
+    statusText: `OS Drag Ready: ${isEdited ? "Edited" : "Raw"} (${paths.length} file${paths.length === 1 ? "" : "s"})`
+  });
+  return dragResult;
+}
+
+function armHoverDragZone(mode, savedIdx = -1) {
+  if (!mode || mode === "none") {
+    sendDragHelperCommand({ cmd: "disarm" });
+    return;
+  }
+  const res = resolveDragOutPaths(mode, savedIdx, false, false);
+  if (res.paths.length > 0) {
+    const isEdited = mode === "edited" || mode === "all_edited";
+    const isAll = mode === "all_raw" || mode === "all_edited";
+    sendDragHelperCommand({
+      cmd: "arm",
+      paths: res.paths,
+      label: isAll ? (isEdited ? "Drag Edit" : "Drag Raw") : (isEdited ? "E" : "R"),
+      isEdited,
+      visible: true,
+      handoff: false,
+      stateFile: path.join(EXPORT_BASE_DIR, "last_drag_helper_state.json"),
+      w: isAll ? 60 : 18,
+      h: 16
+    });
+  }
 }
 
 function findDefaultCoreDrumsDir() {
@@ -892,7 +1558,7 @@ function findDefaultCoreDrumsDir() {
 function performScan(dirs) {
   const validDirs = dirs.filter((d) => d && fs.existsSync(d));
   if (validDirs.length === 0) {
-    engineState.statusText = "No sample folder found — click Add Folder";
+    engineState.statusText = "No sample folder found — click + Folder";
     broadcastSSE({ statusText: engineState.statusText });
     return;
   }
@@ -975,9 +1641,9 @@ function startHttpServer(callback) {
       req.on("end", () => {
         try {
           const msg = JSON.parse(body || "{}");
-          handleAction(msg);
+          const result = handleAction(msg);
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
+          res.end(JSON.stringify({ ok: true, result }));
         } catch (err) {
           res.writeHead(400, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: String(err) }));
@@ -1004,19 +1670,25 @@ function handleAction(msg) {
   const { action } = msg;
   if (action === "select") {
     emitSelectedToMax(Number(msg.index), msg.audition !== false);
-  } else if (action === "load_simpler") {
+  } else if (action === "save_sample") {
     const idx = msg.index !== undefined ? Number(msg.index) : engineState.selectedIndex;
-    const s = engineState.samples[idx];
-    if (s && Max) Max.outlet("lom_load_simpler", s.path);
-  } else if (action === "load_clip") {
-    const idx = msg.index !== undefined ? Number(msg.index) : engineState.selectedIndex;
-    const s = engineState.samples[idx];
-    if (s && Max) Max.outlet("lom_load_clip", s.path);
+    return saveSampleToList(idx, msg.settings || null);
+  } else if (action === "recall_saved") {
+    return recallSavedSample(Number(msg.savedIdx), msg.audition !== false);
+  } else if (action === "reorder_saved") {
+    return reorderSavedSample(Number(msg.fromIdx), Number(msg.toIdx));
+  } else if (action === "remove_saved") {
+    removeSavedSample(Number(msg.savedIdx));
+  } else if (action === "clear_saved") {
+    clearSavedSamples();
+  } else if (action === "drag_out") {
+    return resolveDragOutPaths(String(msg.mode || "raw"), msg.savedIdx !== undefined ? Number(msg.savedIdx) : -1, true);
+  } else if (action === "arm_drag") {
+    armHoverDragZone(String(msg.mode || "none"), msg.savedIdx !== undefined ? Number(msg.savedIdx) : -1);
   } else if (action === "reveal") {
-    const idx = msg.index !== undefined ? Number(msg.index) : engineState.selectedIndex;
-    const s = engineState.samples[idx];
-    if (s && fs.existsSync(s.path)) {
-      execFile("open", ["-R", s.path], () => {});
+    const p = msg.path || (engineState.samples[engineState.selectedIndex] && engineState.samples[engineState.selectedIndex].path);
+    if (p && fs.existsSync(p)) {
+      execFile("open", ["-R", p], () => {});
     }
   } else if (action === "toggle_favorite") {
     const idx = Number(msg.index);
@@ -1037,16 +1709,20 @@ function handleAction(msg) {
     if (Max) Max.outlet("prompt_folder");
   } else if (action === "set_filter") {
     if (msg.category !== undefined) {
-      engineState.activeCategory = msg.category;
-      if (Max) Max.outlet("strip_filter_cat", msg.category);
+      engineState.activeCategory = String(msg.category);
+      if (Max) Max.outlet("strip_filter_cat", engineState.activeCategory);
     }
     if (msg.maxLenMs !== undefined) {
-      engineState.maxLenMs = Number(msg.maxLenMs);
+      engineState.maxLenMs = isInfiniteMaxLen(msg.maxLenMs) ? 5000 : Math.max(50, Number(msg.maxLenMs));
       if (Max) Max.outlet("strip_filter_maxlen", engineState.maxLenMs);
     }
     if (msg.toneFilter !== undefined) {
       engineState.toneFilter = Number(msg.toneFilter);
       if (Max) Max.outlet("strip_filter_tone", engineState.toneFilter);
+    }
+    if (msg.searchQuery !== undefined) {
+      engineState.searchQuery = String(msg.searchQuery);
+      if (Max) Max.outlet("strip_filter_search", engineState.searchQuery);
     }
   } else if (action === "set_playback") {
     if (msg.pitchSt !== undefined) {
@@ -1054,28 +1730,23 @@ function handleAction(msg) {
       if (Max) Max.outlet("play_speed", Math.pow(2.0, engineState.pitchSt / 12.0));
     }
     if (msg.decayMs !== undefined) {
-      engineState.decayMs = Number(msg.decayMs);
-      if (Max) Max.outlet("play_decay", engineState.decayMs);
+      engineState.decayMs = Math.max(20, Number(msg.decayMs));
     }
     if (msg.gainDb !== undefined) {
       engineState.gainDb = Number(msg.gainDb);
       if (Max) Max.outlet("play_gain", engineState.gainDb);
     }
-  } else if (action === "set_autoload") {
-    engineState.autoLoad = !!msg.autoLoad;
-    if (Max) Max.outlet("strip_autoload", engineState.autoLoad ? 1 : 0);
-  } else if (action === "set_lock_target") {
-    engineState.lockTarget = !!msg.lockTarget;
-    if (Max) Max.outlet("lom_lock_target", engineState.lockTarget ? 1 : 0);
   }
+  return null;
 }
 
 // ============================================================================
-// 7. Max Message Handlers
+// 8. Max Message Handlers
 // ============================================================================
 
 if (Max && typeof Max.addHandler === "function") {
   Max.addHandler("init", () => {
+    ensureDragHelperProcess();
     startHttpServer((port) => {
       Max.outlet("server_url", `http://127.0.0.1:${port}`);
     });
@@ -1094,7 +1765,6 @@ if (Max && typeof Max.addHandler === "function") {
 
   Max.addHandler("add_folder", (folderPath) => {
     if (!folderPath || typeof folderPath !== "string") return;
-    // Strip Max "Macintosh HD:" prefix if present
     let clean = folderPath.replace(/^[^/]+:/, "/");
     if (!fs.existsSync(clean) && fs.existsSync(folderPath)) clean = folderPath;
     if (fs.existsSync(clean)) {
@@ -1119,39 +1789,62 @@ if (Max && typeof Max.addHandler === "function") {
     if (engineState.samples.length === 0) return;
     const curIdx = engineState.selectedIndex >= 0 ? engineState.selectedIndex : 0;
     const cur = engineState.samples[curIdx];
-    const nbrs = (cur && cur.neighbors) ? cur.neighbors : [];
-    if (nbrs.length === 0) return;
-    const nextIdx = Number(dir) >= 0 ? nbrs[0] : nbrs[nbrs.length - 1];
-    emitSelectedToMax(nextIdx, true);
+    const rawNbrs = (cur && cur.neighbors) ? cur.neighbors : [];
+    const validNbrs = rawNbrs.filter((nIdx) => isSamplePassingFilters(engineState.samples[nIdx]));
+    if (validNbrs.length > 0) {
+      const nextIdx = Number(dir) >= 0 ? validNbrs[0] : validNbrs[validNbrs.length - 1];
+      emitSelectedToMax(nextIdx, true);
+      return;
+    }
+    const vis = [];
+    engineState.samples.forEach((s, i) => {
+      if (isSamplePassingFilters(s)) vis.push(i);
+    });
+    if (vis.length > 0) {
+      const pos = Math.max(0, vis.indexOf(curIdx));
+      const nextPos = (pos + (Number(dir) >= 0 ? 1 : -1) + vis.length) % vis.length;
+      emitSelectedToMax(vis[nextPos], true);
+    }
   });
 
   Max.addHandler("random_sample", () => {
     if (engineState.samples.length === 0) return;
-    const pick = Math.floor(Math.random() * engineState.samples.length);
-    emitSelectedToMax(pick, true);
-  });
-
-  Max.addHandler("load_selected", () => {
-    if (engineState.selectedIndex >= 0) {
-      const s = engineState.samples[engineState.selectedIndex];
-      if (s) Max.outlet("lom_load_simpler", s.path);
+    const vis = [];
+    engineState.samples.forEach((s, i) => {
+      if (isSamplePassingFilters(s)) vis.push(i);
+    });
+    if (vis.length > 0) {
+      const pick = vis[Math.floor(Math.random() * vis.length)];
+      emitSelectedToMax(pick, true);
     }
   });
 
-  Max.addHandler("clip_selected", () => {
-    if (engineState.selectedIndex >= 0) {
-      const s = engineState.samples[engineState.selectedIndex];
-      if (s) Max.outlet("lom_load_clip", s.path);
-    }
+  Max.addHandler("save_selected", () => {
+    saveSampleToList(engineState.selectedIndex);
   });
 
-  Max.addHandler("reveal_selected", () => {
-    if (engineState.selectedIndex >= 0) {
-      const s = engineState.samples[engineState.selectedIndex];
-      if (s && fs.existsSync(s.path)) {
-        execFile("open", ["-R", s.path], () => {});
-      }
-    }
+  Max.addHandler("recall_saved", (savedIdx) => {
+    recallSavedSample(Number(savedIdx), true);
+  });
+
+  Max.addHandler("reorder_saved", (fromIdx, toIdx) => {
+    reorderSavedSample(Number(fromIdx), Number(toIdx));
+  });
+
+  Max.addHandler("remove_saved", (savedIdx) => {
+    removeSavedSample(Number(savedIdx));
+  });
+
+  Max.addHandler("clear_saved", () => {
+    clearSavedSamples();
+  });
+
+  Max.addHandler("drag_out", (mode, savedIdx = -1) => {
+    resolveDragOutPaths(String(mode || "raw"), Number(savedIdx), true);
+  });
+
+  Max.addHandler("arm_drag", (mode, savedIdx = -1) => {
+    armHoverDragZone(String(mode || "none"), Number(savedIdx));
   });
 
   Max.addHandler("set_pitch", (st) => {
@@ -1163,33 +1856,43 @@ if (Max && typeof Max.addHandler === "function") {
 
   Max.addHandler("set_decay", (ms) => {
     engineState.decayMs = Math.max(20, Number(ms) || 2500);
-    Max.outlet("play_decay", engineState.decayMs);
     broadcastSSE({ decayMs: engineState.decayMs });
   });
 
+  Max.addHandler("set_gain", (db) => {
+    engineState.gainDb = Number(db) || 0;
+    Max.outlet("play_gain", engineState.gainDb);
+    broadcastSSE({ gainDb: engineState.gainDb });
+  });
+
   Max.addHandler("set_maxlen", (ms) => {
-    engineState.maxLenMs = Math.max(50, Number(ms) || 5000);
+    engineState.maxLenMs = isInfiniteMaxLen(ms) ? 5000 : Math.max(50, Number(ms) || 5000);
+    Max.outlet("strip_filter_maxlen", engineState.maxLenMs);
     broadcastSSE({ maxLenMs: engineState.maxLenMs });
   });
 
   Max.addHandler("set_tone", (tone) => {
     engineState.toneFilter = Number(tone) || 0;
+    Max.outlet("strip_filter_tone", engineState.toneFilter);
     broadcastSSE({ toneFilter: engineState.toneFilter });
   });
 
-  Max.addHandler("set_autoload", (flag) => {
-    engineState.autoLoad = Number(flag) !== 0;
-    broadcastSSE({ autoLoad: engineState.autoLoad });
+  Max.addHandler("set_search", (...words) => {
+    const q = words.join(" ").replace(/^text\s*/i, "").trim();
+    engineState.searchQuery = q;
+    Max.outlet("strip_filter_search", q);
+    broadcastSSE({ searchQuery: q });
   });
 
-  Max.addHandler("target_status", (name) => {
-    engineState.targetName = String(name || "Auto (Simpler / Pad)");
-    broadcastSSE({ targetName: engineState.targetName });
+  Max.addHandler("set_cat", (cat) => {
+    engineState.activeCategory = String(cat || "ALL");
+    Max.outlet("strip_filter_cat", engineState.activeCategory);
+    broadcastSSE({ activeCategory: engineState.activeCategory });
   });
 }
 
-// Auto-boot when running inside Max node.codebox
 if (hasRealMaxApi) {
+  ensureDragHelperProcess();
   startHttpServer((port) => {
     if (Max && typeof Max.outlet === "function") {
       Max.outlet("server_url", `http://127.0.0.1:${port}`);
@@ -1205,12 +1908,25 @@ module.exports = {
   parseWavBuffer,
   parseAiffBuffer,
   parseAudioBuffer,
+  encodeStereoWav16,
+  renderEditedAudioSamples,
+  renderEditedSampleWav,
+  createRawFileLink,
   extractAudioFeatures,
   classifySample,
   computeKNN,
   compute2DMap,
   analyzeAudioFile,
   scanDirectories,
+  isInfiniteMaxLen,
+  isSamplePassingFilters,
+  saveSampleToList,
+  recallSavedSample,
+  reorderSavedSample,
+  removeSavedSample,
+  clearSavedSamples,
+  resolveDragOutPaths,
+  emitSelectedToMax,
   handleAction,
   startHttpServer,
   engineState,

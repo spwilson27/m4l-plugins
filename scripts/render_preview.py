@@ -9,15 +9,23 @@ Also checks for any text overflow or widget overlap issues automatically.
 import json
 import math
 import os
+import re
 import subprocess
+import sys
 import tempfile
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Bitwig Shaper.amxd")
-OUT_PNG_PATH = os.path.join(ROOT_DIR, "tests", "preview.png")
+PREVIEWS_DIR = os.path.join(ROOT_DIR, "previews")
+DEFAULT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Bitwig Shaper.amxd")
 
 SCALE = 2  # 2x Retina rendering
+
+
+def slugify_device_name(amxd_path):
+    base = os.path.splitext(os.path.basename(amxd_path))[0]
+    slug = re.sub(r"[^a-z0-9]+", "_", base.lower()).strip("_")
+    return slug or "device"
 
 
 def get_font(size_px, bold=False):
@@ -66,8 +74,9 @@ global.Buffer = function() {{ this.poke = () => {{}}; }};
 
 {js_code}
 
-setphase(0.32);
-paint();
+if (typeof preview === "function") {{ preview(); }}
+else if (typeof setphase === "function") {{ setphase(0.32); }}
+if (typeof paint === "function") {{ paint(); }}
 console.log(JSON.stringify(cmds));
 """
     with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as tf:
@@ -192,15 +201,32 @@ def render_v8ui(cmds, w, h):
     return canvas
 
 
-def render_device():
-    with open(AMXD_PATH, "rb") as f:
+def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix=""):
+    os.makedirs(PREVIEWS_DIR, exist_ok=True)
+    slug = slugify_device_name(amxd_path) + out_suffix
+    out_png_path = os.path.join(PREVIEWS_DIR, f"{slug}.png")
+
+    with open(amxd_path, "rb") as f:
         raw = f.read()
     doc = json.loads(raw[32:].decode("utf-8"))
     p = doc["patcher"]
 
-    dev_w = int(p.get("devicewidth", 648))
+    if multimap_open:
+        for b in p["boxes"]:
+            box = b["box"]
+            bid = box.get("id", "")
+            if bid in ("obj-mseg", "obj-grid-lbl", "obj-grid", "obj-snap-btn"):
+                box["hidden"] = 1
+            elif bid in ("obj-hdr-targets", "obj-hdr-mode", "obj-hdr-range"):
+                box["hidden"] = 0
+            elif bid == "obj-expand-map":
+                box.setdefault("saved_attribute_attributes", {}).setdefault("valueof", {})["parameter_initial"] = [1]
+            elif any(bid.startswith(p) for p in ("obj-map-btn-", "obj-mod-mode-", "obj-bipolar-", "obj-mod-amt-")):
+                box["hidden"] = 0
+
+    dev_w = int(p.get("devicewidth", 648) or 385)
     dev_h = 169
-    img = Image.new("RGBA", (dev_w * SCALE, dev_h * SCALE), (54, 58, 64, 255))
+    img = Image.new("RGBA", (dev_w * SCALE, dev_h * SCALE), (36, 45, 53, 255))
     draw = ImageDraw.Draw(img)
 
     boxes = [b["box"] for b in p["boxes"] if b["box"].get("presentation") == 1 and not b["box"].get("hidden")]
@@ -226,18 +252,19 @@ def render_device():
             img.alpha_composite(v8_img, (int(rx), int(ry)))
 
         elif mc == "live.scope~":
-            bg = rgba_tuple(w.get("bgcolor", [0.067, 0.078, 0.094, 1.0]))
-            draw.rectangle([rx, ry, rx + rw, ry + rh], fill=bg, outline=(30, 35, 42, 255), width=1)
-            # Center zero line & simulated scope trace
-            cy = ry + rh * 0.5
-            draw.line([(rx, cy), (rx + rw, cy)], fill=(255, 255, 255, 35), width=1)
+            bg = rgba_tuple(w.get("bgcolor", [0.047, 0.067, 0.086, 1.0]))
+            if bg[3] > 0:
+                draw.rectangle([rx, ry, rx + rw, ry + rh], fill=bg)
+            # Center zero line & simulated decay sawtooth scope trace (matching Live 12 Shaper screenshot)
+            cy = ry + rh * 0.48
+            draw.line([(rx, cy), (rx + rw, cy)], fill=(62, 86, 108, 160), width=max(1, SCALE // 2))
             pts = []
             for i in range(int(rw)):
-                t = (i / rw) * 6.0
+                t = (i / rw) * 6.2
                 frac = t - math.floor(t)
-                y_val = (1.0 - (1.0 - frac) ** 2.2) if frac < 0.5 else ((frac - 0.5) * 2.0) ** 2.2
-                pts.append((rx + i, ry + rh * 0.82 - y_val * rh * 0.64))
-            draw.line(pts, fill=(255, 181, 50, 255), width=int(1.6 * SCALE))
+                y_val = (1.0 - frac) ** 1.85
+                pts.append((rx + i, ry + rh * 0.90 - y_val * rh * 0.82))
+            draw.line(pts, fill=(232, 158, 52, 255), width=int(1.5 * SCALE))
 
         elif mc == "live.comment":
             tc = rgba_tuple(w.get("textcolor", [0.85, 0.87, 0.9, 1.0]))
@@ -255,73 +282,198 @@ def render_device():
                 tx = rx + rw - tw - 2 * SCALE
             draw.text((tx, ry + 2 * SCALE), txt, font=fnt, fill=tc)
 
+        elif mc == "live.line":
+            lc = rgba_tuple(w.get("linecolor", [0.12, 0.14, 0.16, 1.0]))
+            cy = ry + rh * 0.5
+            draw.line([(rx, cy), (rx + rw, cy)], fill=lc, width=max(1, int(1.5 * SCALE)))
+
         elif mc == "live.numbox":
+            app = w.get("appearance", 0)
             bg = rgba_tuple(w.get("activebgcolor", [0.086, 0.102, 0.122, 1.0]))
             tc = rgba_tuple(w.get("textcolor", [1.0, 0.71, 0.2, 1.0]))
-            if bg[3] > 0:
-                draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=(50, 56, 66, 255), width=1)
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
             init_val = vof.get("parameter_initial", [0])[0]
             ustyle = vof.get("parameter_unitstyle", 0)
-            val_str = f"{int(init_val)} %" if ustyle == 5 else f"{int(init_val)}"
-            fnt = get_font(9.0 * SCALE, bold=True)
-            bbox = draw.textbbox((0, 0), val_str, font=fnt)
-            tw = bbox[2] - bbox[0]
-            draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
+            if app == 1:
+                # Native Ableton slider numbox (Phase / Offset style with cyan triangle on right)
+                draw.rectangle([rx, ry, rx + rw, ry + rh], fill=bg, outline=(45, 50, 56, 255), width=max(1, SCALE // 2))
+                tri_c = rgba_tuple(w.get("activetricolor2", [0.42, 0.78, 0.92, 1.0]))
+                draw.polygon([
+                    (rx + rw - 1 * SCALE, ry + 1.5 * SCALE),
+                    (rx + rw - 1 * SCALE, ry + rh - 1.5 * SCALE),
+                    (rx + rw - 8 * SCALE, ry + rh * 0.5)
+                ], fill=tri_c)
+                val_str = f"{init_val:.1f} %" if ustyle == 5 else f"{int(init_val)}"
+                fnt = get_font(8.5 * SCALE, bold=True)
+                bbox = draw.textbbox((0, 0), val_str, font=fnt)
+                tw = bbox[2] - bbox[0]
+                draw.text((rx + (rw - 7 * SCALE - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
+            else:
+                if bg[3] > 0:
+                    draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=(50, 56, 66, 255), width=1)
+                lname = vof.get("parameter_longname", "")
+                if lname == "Phase":
+                    val_str = f"{init_val:.2f} %"
+                else:
+                    val_str = f"{int(init_val)} %" if ustyle == 5 else f"{int(init_val)}"
+                fnt = get_font(9.0 * SCALE, bold=True)
+                bbox = draw.textbbox((0, 0), val_str, font=fnt)
+                tw = bbox[2] - bbox[0]
+                tx = (rx + 2 * SCALE) if bg[3] == 0 else (rx + (rw - tw) * 0.5)
+                draw.text((tx, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
 
         elif mc == "live.text":
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
             init_on = vof.get("parameter_initial", [0])[0] == 1
-            bg = rgba_tuple(w.get("activebgoncolor", [1.0, 0.694, 0.18, 1.0]) if init_on else w.get("activebgcolor", [0.12, 0.14, 0.17, 1.0]))
-            bd = rgba_tuple(w.get("bordercolor", [1.0, 0.71, 0.2, 1.0]))
-            tc = rgba_tuple(w.get("activetextoncolor", [0.08, 0.1, 0.12, 1.0]) if init_on else w.get("textcolor", [0.75, 0.78, 0.82, 1.0]))
-            draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
-            txt = w.get("texton" if init_on else "text", "Map")
-            fnt = get_font(9.0 * SCALE, bold=True)
-            bbox = draw.textbbox((0, 0), txt, font=fnt)
-            tw = bbox[2] - bbox[0]
-            draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), txt, font=fnt, fill=tc)
+            pics = w.get("pictures", [])
+            if w.get("usepicture") == 1 and pics and "multimap" in pics[0]:
+                # Multimap 4-bar (closed) or 1-bar (open) gold icon button
+                bg = rgba_tuple(w.get("activebgcolor", [0.086, 0.102, 0.122, 1.0]))
+                bd = rgba_tuple(w.get("bordercolor", [1.0, 0.71, 0.2, 1.0]))
+                draw.rectangle([rx, ry, rx + rw, ry + rh], fill=bg, outline=bd, width=max(1, SCALE // 2))
+                if init_on:
+                    by = ry + rh * 0.5
+                    draw.line([(rx + 3 * SCALE, by), (rx + rw - 3 * SCALE, by)], fill=bd, width=max(1, int(1.4 * SCALE)))
+                else:
+                    for bar_i in range(4):
+                        by = ry + (3.0 + bar_i * 2.6) * SCALE
+                        draw.line([(rx + 3 * SCALE, by), (rx + rw - 3 * SCALE, by)], fill=bd, width=max(1, int(1.2 * SCALE)))
+            elif w.get("appearance") == 1 and abs(rw - rh) <= 2 * SCALE:
+                # Circular (R) Retrigger button inside dark LCD box
+                bg = rgba_tuple(w.get("activebgcolor", [0.047, 0.067, 0.086, 1.0]))
+                bd = rgba_tuple(w.get("bordercolor", [0.576, 0.631, 0.678, 1.0]))
+                tc = rgba_tuple(w.get("activetextcolor", [0.576, 0.631, 0.678, 1.0]))
+                draw.ellipse([rx, ry, rx + rw, ry + rh], fill=bg, outline=bd, width=max(1, int(1.1 * SCALE)))
+                txt = w.get("text", "R")
+                fnt = get_font(8.0 * SCALE, bold=True)
+                bbox = draw.textbbox((0, 0), txt, font=fnt)
+                tw = bbox[2] - bbox[0]
+                draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), txt, font=fnt, fill=tc)
+            else:
+                bg = rgba_tuple(w.get("activebgoncolor", [1.0, 0.694, 0.18, 1.0]) if init_on else w.get("activebgcolor", [0.12, 0.14, 0.17, 1.0]))
+                bd = rgba_tuple(w.get("bordercolor", [1.0, 0.71, 0.2, 1.0]))
+                tc = rgba_tuple(w.get("activetextoncolor", [0.08, 0.1, 0.12, 1.0]) if init_on else w.get("textcolor", [0.75, 0.78, 0.82, 1.0]))
+                draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
+                txt = w.get("texton" if init_on else "text", "Map")
+                fnt = get_font(9.0 * SCALE, bold=True)
+                bbox = draw.textbbox((0, 0), txt, font=fnt)
+                tw = bbox[2] - bbox[0]
+                draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), txt, font=fnt, fill=tc)
 
         elif mc == "live.tab":
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
             enums = vof.get("parameter_enum", ["Hz", "Sync"])
-            cell_h = rh / max(1, len(enums))
-            fnt = get_font(8.5 * SCALE, bold=True)
-            for idx, label in enumerate(enums):
-                cy0 = ry + idx * cell_h
-                is_on = (idx == 0)
-                bg = (255, 177, 46, 255) if is_on else (32, 37, 44, 255)
-                tc = (20, 24, 30, 255) if is_on else (180, 186, 195, 255)
-                draw.rectangle([rx, cy0, rx + rw, cy0 + cell_h - 1], fill=bg, outline=(70, 76, 86, 255), width=1)
-                bbox = draw.textbbox((0, 0), label, font=fnt)
-                tw = bbox[2] - bbox[0]
-                draw.text((rx + (rw - tw) * 0.5, cy0 + 2 * SCALE), label, font=fnt, fill=tc)
+            init_idx = int(vof.get("parameter_initial", [0])[0])
+            num_rows = w.get("num_lines_presentation", 2)
+            pics = w.get("pictures", [])
+            use_svg = w.get("usepicture") == 1 and len(pics) >= 2
+            if num_rows == 1:
+                # Horizontal tab row (e.g. [ Loop ] [ 1-Shot ] [ Manual ])
+                gap_x = w.get("spacing_x", 3.0) * SCALE
+                cell_w = (rw - gap_x * (len(enums) - 1)) / max(1, len(enums))
+                fnt = get_font(8.5 * SCALE, bold=True)
+                for idx, label in enumerate(enums):
+                    cx0 = rx + idx * (cell_w + gap_x)
+                    is_on = (idx == init_idx)
+                    bg = (255, 173, 56, 255) if is_on else (17, 22, 28, 255)
+                    tc = (12, 17, 22, 255) if is_on else (218, 224, 232, 255)
+                    draw.rectangle([cx0, ry, cx0 + cell_w, ry + rh], fill=bg, outline=(10, 14, 18, 255), width=max(1, SCALE // 2))
+                    bbox = draw.textbbox((0, 0), label, font=fnt)
+                    tw = bbox[2] - bbox[0]
+                    draw.text((cx0 + (cell_w - tw) * 0.5, ry + 1.5 * SCALE), label, font=fnt, fill=tc)
+            else:
+                gap = w.get("spacing_y", 2.5) * SCALE if use_svg else 0
+                cell_h = (rh - gap * (len(enums) - 1)) / max(1, len(enums))
+                fnt = get_font(8.0 * SCALE if use_svg else 8.5 * SCALE, bold=True)
+                for idx, label in enumerate(enums):
+                    cy0 = ry + idx * (cell_h + gap)
+                    is_on = (idx == init_idx)
+                    bg = (255, 173, 56, 255) if is_on else (17, 22, 28, 255)
+                    tc = (12, 17, 22, 255) if is_on else (218, 224, 232, 255)
+                    draw.rectangle([rx, cy0, rx + rw, cy0 + cell_h], fill=bg, outline=(10, 14, 18, 255), width=max(1, SCALE // 2))
+                    if use_svg and idx == 1:
+                        # Draw open-top Metronome trapezoid + angled pendulum needle (matching Live 12 Shaper screenshot)
+                        mx = rx + rw * 0.5
+                        top_y = cy0 + 2.8 * SCALE
+                        bot_y = cy0 + cell_h - 2.2 * SCALE
+                        draw.line([
+                            (mx - 2.0 * SCALE, top_y + 1.2 * SCALE),
+                            (mx - 4.2 * SCALE, bot_y),
+                            (mx + 4.2 * SCALE, bot_y),
+                            (mx + 2.0 * SCALE, top_y + 1.2 * SCALE)
+                        ], fill=tc, width=max(1, int(1.3 * SCALE)), joint="curve")
+                        draw.line([(mx - 0.5 * SCALE, bot_y - 1.5 * SCALE), (mx + 1.8 * SCALE, top_y)], fill=tc, width=max(1, int(1.3 * SCALE)))
+                    else:
+                        bbox = draw.textbbox((0, 0), label, font=fnt)
+                        tw = bbox[2] - bbox[0]
+                        draw.text((rx + (rw - tw) * 0.5, cy0 + 1.2 * SCALE), label, font=fnt, fill=tc)
 
         elif mc == "live.dial":
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
             sname = vof.get("parameter_shortname", "Rate")
             init_val = vof.get("parameter_initial", [1.0])[0]
             ustyle = vof.get("parameter_unitstyle", 0)
-            val_str = f"{init_val:.1f} Hz" if ustyle == 3 else f"{int(init_val)} %"
-            fnt = get_font(9.0 * SCALE, bold=True)
+            enums = vof.get("parameter_enum", [])
+            if ustyle == 9 and enums:
+                idx = max(0, min(len(enums) - 1, int(round(init_val))))
+                val_str = str(enums[idx])
+            elif ustyle == 3:
+                val_str = f"{init_val:.1f} Hz"
+            elif ustyle == 2:
+                val_str = "Inf" if (sname == "MaxLen" and init_val >= 4990) else f"{int(init_val)} ms"
+            elif ustyle == 4:
+                val_str = f"{init_val:.1f} dB"
+            elif ustyle == 7:
+                val_str = f"{int(init_val)} st"
+            elif ustyle == 5:
+                val_str = f"{int(init_val)} %"
+            else:
+                val_str = f"{int(init_val)}"
+            fnt = get_font(9.5 * SCALE, bold=True)
             # Label at top
             bbox = draw.textbbox((0, 0), sname, font=fnt)
-            draw.text((rx + (rw - (bbox[2] - bbox[0])) * 0.5, ry), sname, font=fnt, fill=(210, 215, 222, 255))
+            draw.text((rx + (rw - (bbox[2] - bbox[0])) * 0.5, ry - 1 * SCALE), sname, font=fnt, fill=(224, 230, 236, 255))
             # Dial arc
             cx = rx + rw * 0.5
             cy = ry + rh * 0.52
-            r = min(rw, rh) * 0.28
-            draw.arc([cx - r, cy - r, cx + r, cy + r], start=135, end=405, fill=(45, 52, 62, 255), width=int(2.5 * SCALE))
-            draw.arc([cx - r, cy - r, cx + r, cy + r], start=135, end=310, fill=(81, 196, 235, 255), width=int(2.5 * SCALE))
-            ang = math.radians(310)
-            draw.line([(cx, cy), (cx + r * math.cos(ang), cy + r * math.sin(ang))], fill=(220, 225, 230, 255), width=int(2 * SCALE))
+            r = min(rw, rh) * 0.30
+            end_ang = 240 if (ustyle == 9 and enums) else 405
+            draw.arc([cx - r, cy - r, cx + r, cy + r], start=135, end=405, fill=(12, 17, 22, 255), width=int(2.6 * SCALE))
+            draw.arc([cx - r, cy - r, cx + r, cy + r], start=135, end=end_ang, fill=(0, 210, 232, 255), width=int(2.6 * SCALE))
+            ang = math.radians(end_ang)
+            draw.line([(cx, cy), (cx + r * math.cos(ang), cy + r * math.sin(ang))], fill=(12, 17, 22, 255), width=int(2.6 * SCALE))
             # Value at bottom
             bbox2 = draw.textbbox((0, 0), val_str, font=fnt)
-            draw.text((rx + (rw - (bbox2[2] - bbox2[0])) * 0.5, ry + rh - 11 * SCALE), val_str, font=fnt, fill=(210, 215, 222, 255))
+            draw.text((rx + (rw - (bbox2[2] - bbox2[0])) * 0.5, ry + rh - 10.5 * SCALE), val_str, font=fnt, fill=(224, 230, 236, 255))
 
-    img.save(OUT_PNG_PATH)
-    print(f"Saved preview to {OUT_PNG_PATH} ({img.width}x{img.height})")
+        elif mc == "live.drop":
+            bg = (22, 26, 33, 255)
+            bd = rgba_tuple(w.get("bordercolor", [0.32, 0.38, 0.46, 1.0]))
+            tc = rgba_tuple(w.get("textcolor", [0.68, 0.73, 0.80, 1.0]))
+            draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=3 * SCALE, fill=bg, outline=bd, width=1)
+            txt = w.get("legend", "Drop Sample Folder")
+            fnt = get_font(8.5 * SCALE, bold=True)
+            bbox = draw.textbbox((0, 0), txt, font=fnt)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            draw.text((rx + (rw - tw) * 0.5, ry + (rh - th) * 0.5 - 1 * SCALE), txt, font=fnt, fill=tc)
+
+        elif mc == "textedit":
+            bg = rgba_tuple(w.get("bgcolor", [0.07, 0.085, 0.11, 1.0]))
+            bd = rgba_tuple(w.get("bordercolor", [0.22, 0.74, 0.97, 0.7]))
+            tc = rgba_tuple(w.get("textcolor", [0.85, 0.89, 0.94, 1.0]))
+            draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2.5 * SCALE, fill=bg, outline=bd, width=1)
+            txt = w.get("text", "") or w.get("annotation_name", "Filter by name...")
+            fnt = get_font(8.5 * SCALE, bold=False)
+            draw.text((rx + 4 * SCALE, ry + 2.5 * SCALE), txt, font=fnt, fill=(140, 152, 168, 255) if not w.get("text") else tc)
+
+    img.save(out_png_path)
+    print(f"Saved preview to {out_png_path} ({img.width}x{img.height})")
+    return out_png_path
 
 
 if __name__ == "__main__":
-    render_device()
+    target_amxd = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_AMXD_PATH
+    render_device(target_amxd, multimap_open=False, out_suffix="")
+    if slugify_device_name(target_amxd) == "bitwig_shaper":
+        render_device(target_amxd, multimap_open=True, out_suffix="_multimap")

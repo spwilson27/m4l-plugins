@@ -36,7 +36,6 @@
     display: flex;
     flex-direction: column;
   }
-  /* Top Header */
   .top-bar {
     height: 40px;
     background: var(--bg-1);
@@ -132,19 +131,11 @@
     color: #090b0f;
     border-color: var(--accent);
   }
-  .btn.cyan.active {
-    background: var(--accent-cyan);
-    color: #090b0f;
-    border-color: var(--accent-cyan);
-  }
   .btn.primary {
-    background: linear-gradient(180deg, #f59e0b, #d97706);
+    background: linear-gradient(180deg, #4ade80, #22c55e);
     color: #090b0f;
-    border-color: #fbbf24;
+    border-color: #86efac;
     font-weight: 700;
-  }
-  .btn.primary:hover {
-    filter: brightness(1.08);
   }
   .status-pill {
     margin-left: auto;
@@ -183,11 +174,6 @@
     align-items: center;
     gap: 5px;
     white-space: nowrap;
-    transition: all 0.12s;
-  }
-  .cat-pill:hover {
-    color: var(--text-0);
-    border-color: #475569;
   }
   .cat-pill.active {
     color: #090b0f;
@@ -203,16 +189,41 @@
     opacity: 0.75;
   }
 
-  /* Audio Filter Strip */
-  .filter-bar {
-    height: 34px;
+  /* Split Controls Row: Left = FILTERS, Right = PLAYBACK */
+  .split-controls-bar {
+    height: 38px;
     background: var(--bg-0);
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     padding: 0 12px;
-    gap: 14px;
+    gap: 16px;
     flex-shrink: 0;
+  }
+  .ctrl-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 3px 10px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .ctrl-badge {
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.7px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    text-transform: uppercase;
+  }
+  .ctrl-badge.filters {
+    background: rgba(56, 189, 248, 0.16);
+    color: var(--accent-cyan);
+  }
+  .ctrl-badge.playback {
+    background: rgba(245, 158, 11, 0.18);
+    color: var(--accent);
   }
   .filter-group {
     display: flex;
@@ -268,7 +279,6 @@
     padding: 4px 8px;
     font-size: 10.5px;
     color: var(--text-1);
-    backdrop-filter: blur(4px);
   }
   .map-hover-tooltip {
     position: absolute;
@@ -279,15 +289,14 @@
     padding: 6px 9px;
     font-size: 11px;
     color: var(--text-0);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
     display: none;
     z-index: 20;
     white-space: nowrap;
   }
 
-  /* Right Sidebar: Similarity & Loader */
+  /* Right Sidebar: Selected Sample, Neighbors & Saved Samples Drag-Out */
   .sidebar {
-    width: 285px;
+    width: 310px;
     background: var(--bg-1);
     border-left: 1px solid var(--border);
     display: flex;
@@ -351,55 +360,61 @@
     flex: 1;
     justify-content: center;
   }
-  .neighbor-list {
+
+  /* Saved Samples List & Drag-Out Section */
+  .saved-list {
     flex: 1;
     overflow-y: auto;
     padding: 6px 10px;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 5px;
   }
-  .neighbor-item {
+  .saved-item {
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 5px 8px;
-    border-radius: 5px;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 6px;
     background: var(--bg-0);
-    border: 1px solid transparent;
-    cursor: pointer;
+    border: 1px solid var(--border);
     font-size: 11px;
-    transition: all 0.1s;
   }
-  .neighbor-item:hover {
-    background: var(--bg-2);
-    border-color: var(--border);
-  }
-  .neighbor-item.active {
-    background: rgba(56, 189, 248, 0.14);
-    border-color: var(--accent-cyan);
-  }
-  .neighbor-name {
+  .saved-info {
     flex: 1;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .saved-title {
+    font-weight: 600;
+    color: var(--text-0);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .saved-settings {
+    font-size: 9.5px;
+    color: var(--text-1);
+  }
+  .drag-chip {
+    padding: 3px 7px;
+    border-radius: 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    cursor: grab;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .drag-chip.raw {
+    background: var(--bg-2);
     color: var(--text-0);
   }
-  .neighbor-sim {
-    font-size: 10px;
-    font-weight: 700;
+  .drag-chip.edited {
+    background: rgba(56, 189, 248, 0.16);
     color: var(--accent-cyan);
-    font-variant-numeric: tabular-nums;
+    border-color: rgba(56, 189, 248, 0.45);
   }
-  .neighbor-len {
-    font-size: 10px;
-    color: var(--text-2);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Loader Section */
-  .loader-card {
+  .batch-drag-dock {
     padding: 10px 12px;
     background: var(--bg-1);
     border-top: 1px solid var(--border);
@@ -407,32 +422,31 @@
     flex-direction: column;
     gap: 7px;
   }
-  .target-box {
-    font-size: 10.5px;
-    color: var(--text-1);
-    background: var(--bg-0);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 5px 8px;
+  .batch-drag-row {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    gap: 8px;
   }
-  .target-name {
-    color: var(--accent-green);
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 175px;
-  }
-  .loader-btn-row {
-    display: flex;
-    gap: 6px;
-  }
-  .loader-btn-row .btn {
+  .batch-drag-box {
     flex: 1;
+    height: 32px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
     justify-content: center;
+    font-weight: 700;
+    font-size: 11px;
+    cursor: grab;
+    border: 1px dashed var(--border);
+  }
+  .batch-drag-box.raw {
+    background: var(--bg-0);
+    color: var(--text-0);
+    border-color: #475569;
+  }
+  .batch-drag-box.edited {
+    background: rgba(245, 158, 11, 0.14);
+    color: var(--accent);
+    border-color: var(--accent);
   }
 
   /* Bottom Waveform & Spectral Bar */
@@ -487,7 +501,6 @@
     width: 100%;
     background: var(--accent-cyan);
     border-radius: 3px;
-    transition: height 0.12s;
   }
   .band-lbl {
     font-size: 8.5px;
@@ -524,7 +537,7 @@
     </div>
 
     <div class="search-wrap">
-      <input id="search-input" class="search-input" type="text" placeholder="Search samples, folders, type..." />
+      <input id="search-input" class="search-input" type="text" placeholder="Filter samples by name..." />
       <button id="search-clear" class="search-clear" title="Clear search">✕</button>
     </div>
 
@@ -541,9 +554,9 @@
       <option value="duration">Color: Duration</option>
     </select>
 
-    <button id="scan-core-btn" class="btn" title="Scan Ableton Live 12 Core Library Drums">Scan Core Drums</button>
-    <button id="add-folder-btn" class="btn" title="Add custom sample folder">+ Add Folder</button>
-    <button id="fit-view-btn" class="btn" title="Reset zoom & pan">Reset View</button>
+    <button id="scan-core-btn" class="btn">Scan Core Drums</button>
+    <button id="add-folder-btn" class="btn">+ Add Folder</button>
+    <button id="fit-view-btn" class="btn">Reset View</button>
 
     <div id="status-pill" class="status-pill">Connecting...</div>
   </div>
@@ -551,32 +564,41 @@
   <!-- Category Filter Row -->
   <div id="cat-bar" class="cat-bar"></div>
 
-  <!-- Audio Filter & Playback Strip -->
-  <div class="filter-bar">
-    <div class="filter-group">
-      <span>Max Len</span>
-      <input id="maxlen-slider" type="range" min="50" max="5000" step="10" value="5000" />
-      <span id="maxlen-val" class="filter-val">All</span>
+  <!-- Visibly Separate FILTERS vs PLAYBACK Controls Strip -->
+  <div class="split-controls-bar">
+    <!-- Section 1: FILTERS -->
+    <div class="ctrl-section">
+      <span class="ctrl-badge filters">Filters</span>
+      <div class="filter-group">
+        <span>Max Len</span>
+        <input id="maxlen-slider" type="range" min="50" max="5000" step="10" value="5000" />
+        <span id="maxlen-val" class="filter-val">∞ (Inf)</span>
+      </div>
+      <div class="filter-group">
+        <span>Tone</span>
+        <input id="tone-slider" type="range" min="-100" max="100" step="1" value="0" />
+        <span id="tone-val" class="filter-val">0%</span>
+      </div>
     </div>
-    <div class="filter-group">
-      <span>Tone</span>
-      <input id="tone-slider" type="range" min="-100" max="100" step="1" value="0" />
-      <span id="tone-val" class="filter-val">0%</span>
-    </div>
-    <div class="filter-group">
-      <span>Pitch</span>
-      <input id="pitch-slider" type="range" min="-24" max="24" step="1" value="0" />
-      <span id="pitch-val" class="filter-val">0 st</span>
-    </div>
-    <div class="filter-group">
-      <span>Decay</span>
-      <input id="decay-slider" type="range" min="20" max="5000" step="10" value="2500" />
-      <span id="decay-val" class="filter-val">2500 ms</span>
-    </div>
-    <div class="filter-group">
-      <span>Gain</span>
-      <input id="gain-slider" type="range" min="-36" max="12" step="0.5" value="0" />
-      <span id="gain-val" class="filter-val">0.0 dB</span>
+
+    <!-- Section 2: PLAYBACK CONTROLS -->
+    <div class="ctrl-section">
+      <span class="ctrl-badge playback">Playback</span>
+      <div class="filter-group">
+        <span>Pitch</span>
+        <input id="pitch-slider" type="range" min="-24" max="24" step="1" value="0" />
+        <span id="pitch-val" class="filter-val">0 st</span>
+      </div>
+      <div class="filter-group">
+        <span>Trim/Decay</span>
+        <input id="decay-slider" type="range" min="20" max="5000" step="10" value="2500" />
+        <span id="decay-val" class="filter-val">2500 ms</span>
+      </div>
+      <div class="filter-group">
+        <span>Gain</span>
+        <input id="gain-slider" type="range" min="-36" max="12" step="0.5" value="0" />
+        <span id="gain-val" class="filter-val">0.0 dB</span>
+      </div>
     </div>
   </div>
 
@@ -586,17 +608,17 @@
       <canvas id="map-canvas"></canvas>
       <div class="map-overlay-hud">
         <div id="hud-counts" class="hud-badge">0 / 0 visible</div>
-        <div class="hud-badge">Drag: Scrub Audition • DblClick: Load to Simpler • Wheel: Zoom • Space+Drag: Pan</div>
+        <div class="hud-badge">Drag: Scrub Audition • DblClick or 'S': Save Sample + Playback Settings • Wheel: Zoom</div>
       </div>
       <div id="hover-tooltip" class="map-hover-tooltip"></div>
     </div>
 
-    <!-- Right Sidebar -->
+    <!-- Right Sidebar: Selected Sample & Saved List with Raw / Edited Drag-Out -->
     <div class="sidebar">
       <div class="sidebar-section">
         <div class="section-title">
           <span>Selected Sample</span>
-          <button id="fav-toggle-btn" class="btn" style="height:20px;padding:0 7px;font-size:10px;">☆ Favorite</button>
+          <button id="save-sample-btn" class="btn primary" style="height:22px;padding:0 9px;font-size:10.5px;" title="Save sample + current Pitch/Trim/Gain settings (Hotkey: S)">+ Save to List (S)</button>
         </div>
         <div class="selected-card">
           <div class="selected-name-row">
@@ -610,36 +632,33 @@
             <span id="sel-bright" class="meta-tag">Tone: —</span>
           </div>
           <div class="sim-nav-row">
-            <button id="prev-sim-btn" class="btn" title="Step to previous similar sample (Left/Up Arrow)">◀ Prev Similar</button>
-            <button id="next-sim-btn" class="btn" title="Step to next similar sample (Right/Down Arrow)">Next Similar ▶</button>
-            <button id="rand-btn" class="btn" title="Pick random matching sample">🎲</button>
+            <button id="prev-sim-btn" class="btn">◀ Prev Sim</button>
+            <button id="next-sim-btn" class="btn">Next Sim ▶</button>
+            <button id="rand-btn" class="btn">🎲 Rand</button>
           </div>
         </div>
       </div>
 
       <div class="sidebar-section" style="padding-bottom:6px;border-bottom:none;">
         <div class="section-title">
-          <span>Nearest Neighbors (k-NN)</span>
-          <span id="anchor-label" style="color:var(--accent-cyan);font-size:9.5px;">12D Audio Space</span>
+          <span id="saved-count-title">Saved Samples (0)</span>
+          <button id="clear-saved-btn" class="btn" style="height:20px;padding:0 7px;font-size:10px;">Clear All</button>
         </div>
       </div>
-      <div id="neighbor-list" class="neighbor-list"></div>
+      <div id="saved-list" class="saved-list"></div>
 
-      <div class="loader-card">
-        <div class="target-box">
-          <span>Live Target:</span>
-          <span id="target-name" class="target-name">Auto (Simpler / Pad)</span>
+      <!-- Separate Drag-Out Locations for All Raw vs All Edited -->
+      <div class="batch-drag-dock">
+        <div class="section-title" style="margin-bottom:2px;">
+          <span>Batch Drag-Out (All Saved)</span>
         </div>
-        <div class="loader-btn-row">
-          <button id="load-simpler-btn" class="btn primary" title="Hot-swap sample into Simpler or selected Drum Rack pad (Enter)">Load to Simpler / Pad</button>
-        </div>
-        <div class="loader-btn-row">
-          <button id="autoload-btn" class="btn cyan" title="Automatically load into Simpler/Pad while scrubbing">Auto-Load</button>
-          <button id="lock-target-btn" class="btn" title="Lock current Simpler or Drum Pad target">Lock Target</button>
-        </div>
-        <div class="loader-btn-row">
-          <button id="to-clip-btn" class="btn" title="Create audio clip in highlighted Session slot">To Clip Slot</button>
-          <button id="reveal-btn" class="btn" title="Reveal audio file in macOS Finder">Reveal File</button>
+        <div class="batch-drag-row">
+          <div id="drag-all-raw" class="batch-drag-box raw" draggable="true" title="Drag out all saved samples (unedited Raw audio)">
+            ⤓ Drag All: RAW
+          </div>
+          <div id="drag-all-edited" class="batch-drag-box edited" draggable="true" title="Drag out all saved samples (re-rendered with Pitch/Trim/Gain)">
+            ⤓ Drag All: EDITED
+          </div>
         </div>
       </div>
     </div>
@@ -648,7 +667,7 @@
   <!-- Bottom Waveform & Spectral Bar -->
   <div class="bottom-dock">
     <canvas id="wave-canvas" width="360" height="50" title="Click to replay sample"></canvas>
-    <div class="bands-box" title="Spectral energy distribution (Sub / Low / Mid / High)">
+    <div class="bands-box">
       <div class="band-col">
         <div class="band-bar-bg"><div id="band-sub" class="band-bar-fill" style="height:20%;background:#ff4d5e;"></div></div>
         <span class="band-lbl">SUB</span>
@@ -668,7 +687,7 @@
     </div>
     <div class="path-box">
       <div id="sel-path" class="path-text">Select or scrub any point on the 2D map to audition samples.</div>
-      <div class="shortcut-hint">Shortcuts: <b>Space</b> Replay • <b>◀/▶</b> Step Similar • <b>Enter</b> Load to Simpler • <b>F</b> Favorite • <b>R</b> Random</div>
+      <div class="shortcut-hint">Shortcuts: <b>S</b> Save Sample+Settings • <b>Space</b> Replay • <b>◀/▶</b> Step Similar • <b>R</b> Random</div>
     </div>
   </div>
 
@@ -693,9 +712,9 @@
   let state = {
     samples: [],
     folders: [],
+    savedList: [],
     selectedIndex: -1,
     anchorIndex: -1,
-    neighborStepPos: -1,
     activeCategories: new Set(["ALL"]),
     searchQuery: "",
     selectedFolder: "ALL",
@@ -706,13 +725,9 @@
     pitchSt: 0,
     decayMs: 2500,
     gainDb: 0,
-    autoLoad: false,
-    lockTarget: false,
-    targetName: "Auto (Simpler / Pad)",
     statusText: "Ready"
   };
 
-  // Viewport transform
   let view = { zoom: 1.0, panX: 0, panY: 0 };
   let isScrubbing = false;
   let isPanning = false;
@@ -720,6 +735,12 @@
   let panStart = { x: 0, y: 0, vx: 0, vy: 0 };
   let hoveredIndex = -1;
   let scrubTrail = [];
+
+  // Waveform scanning playhead animation state
+  let waveScanPos = 0.0;
+  let waveScanAnimId = null;
+  let waveScanStartMs = 0;
+  let waveScanDurMs = 300;
 
   const mapCanvas = document.getElementById("map-canvas");
   const ctx = mapCanvas.getContext("2d");
@@ -732,13 +753,27 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, ...payload })
     }).catch(() => {});
-    if (window.max && typeof window.max.outlet === "function") {
-      if (action === "select" && payload.index !== undefined) {
-        window.max.outlet("ui_select", payload.index, payload.audition ? 1 : 0);
-      } else if (action === "load_simpler") {
-        window.max.outlet("ui_load_simpler", payload.index !== undefined ? payload.index : state.selectedIndex);
+  }
+
+  function startWaveformScan(s) {
+    if (!s) return;
+    if (waveScanAnimId) cancelAnimationFrame(waveScanAnimId);
+    const speed = Math.pow(2.0, (state.pitchSt || 0) / 12.0);
+    waveScanDurMs = Math.max(30, Math.min((s.durationMs || 300) / speed, state.decayMs || 2500));
+    waveScanStartMs = performance.now();
+    waveScanPos = 0.0;
+
+    function tick(now) {
+      const elapsed = now - waveScanStartMs;
+      waveScanPos = Math.min(1.0, elapsed / waveScanDurMs);
+      drawWaveform(state.samples[state.selectedIndex]);
+      if (waveScanPos < 1.0) {
+        waveScanAnimId = requestAnimationFrame(tick);
+      } else {
+        waveScanAnimId = null;
       }
     }
+    waveScanAnimId = requestAnimationFrame(tick);
   }
 
   function isSampleVisible(s) {
@@ -747,13 +782,14 @@
     }
     if (state.favoritesOnly && !s.favorite) return false;
     if (state.selectedFolder !== "ALL" && s.folder !== state.selectedFolder) return false;
-    if (state.maxLenMs < 4950 && s.durationMs > state.maxLenMs) return false;
+    if (state.maxLenMs < 4990 && s.durationMs > state.maxLenMs) return false;
+    const centroidPct = (s.centroid !== undefined ? s.centroid : 0.5) * 100.0;
     if (state.toneFilter < 0) {
-      const maxCentroid = 1.0 + (state.toneFilter / 100.0) * 0.85;
-      if (s.centroid > maxCentroid) return false;
+      const maxB = 100.0 + state.toneFilter * 0.85;
+      if (centroidPct > maxB) return false;
     } else if (state.toneFilter > 0) {
-      const minCentroid = (state.toneFilter / 100.0) * 0.85;
-      if (s.centroid < minCentroid) return false;
+      const minB = state.toneFilter * 0.85;
+      if (centroidPct < minB) return false;
     }
     if (state.searchQuery) {
       const q = state.searchQuery.toLowerCase();
@@ -884,7 +920,6 @@
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
-    // Subtle cosmic grid rings
     const cx = w * 0.5 + view.panX;
     const cy = h * 0.5 + view.panY;
     ctx.strokeStyle = "rgba(148, 163, 184, 0.06)";
@@ -898,7 +933,6 @@
     let visibleCount = 0;
     const baseRadius = Math.max(2.6, Math.min(6.5, 3.6 * Math.sqrt(view.zoom)));
 
-    // 1. Draw dimmed filtered-out points first
     ctx.fillStyle = "rgba(51, 65, 85, 0.22)";
     for (let i = 0; i < state.samples.length; i++) {
       const s = state.samples[i];
@@ -914,7 +948,6 @@
       ctx.fill();
     }
 
-    // 2. Draw scrub trail if scrubbing
     if (scrubTrail.length > 1) {
       ctx.strokeStyle = "rgba(56, 189, 248, 0.35)";
       ctx.lineWidth = 2.5;
@@ -927,17 +960,16 @@
       ctx.stroke();
     }
 
-    // 3. Draw k-NN constellation lines from anchor/selected sample
     const refIdx = state.anchorIndex >= 0 ? state.anchorIndex : state.selectedIndex;
     const neighborSet = new Set();
-    if (refIdx >= 0 && state.samples[refIdx]) {
+    if (refIdx >= 0 && state.samples[refIdx] && state.samples[refIdx]._vis) {
       const refSample = state.samples[refIdx];
       const [rx, ry] = normToScreen(refSample.x, refSample.y, w, h);
       const nbrs = refSample.neighbors || [];
       ctx.strokeStyle = "rgba(56, 189, 248, 0.28)";
       ctx.lineWidth = 1.25;
       for (const nIdx of nbrs) {
-        if (nIdx >= 0 && nIdx < state.samples.length) {
+        if (nIdx >= 0 && nIdx < state.samples.length && state.samples[nIdx]._vis) {
           neighborSet.add(nIdx);
           const ns = state.samples[nIdx];
           const [nx, ny] = normToScreen(ns.x, ns.y, w, h);
@@ -949,7 +981,6 @@
       }
     }
 
-    // 4. Draw visible points
     for (let i = 0; i < state.samples.length; i++) {
       const s = state.samples[i];
       if (!s._vis) continue;
@@ -964,20 +995,9 @@
       ctx.beginPath();
       ctx.arc(px, py, r, 0, Math.PI * 2);
       ctx.fill();
-
-      if (s.favorite) {
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 1.2;
-        ctx.stroke();
-      } else if (isNeighbor) {
-        ctx.strokeStyle = "rgba(56, 189, 248, 0.85)";
-        ctx.lineWidth = 1.2;
-        ctx.stroke();
-      }
     }
 
-    // 5. Highlight hovered & selected sample
-    if (hoveredIndex >= 0 && state.samples[hoveredIndex]) {
+    if (hoveredIndex >= 0 && state.samples[hoveredIndex] && state.samples[hoveredIndex]._vis) {
       const hs = state.samples[hoveredIndex];
       const [hx, hy] = normToScreen(hs.x, hs.y, w, h);
       ctx.strokeStyle = "#ffffff";
@@ -987,12 +1007,11 @@
       ctx.stroke();
     }
 
-    if (state.selectedIndex >= 0 && state.samples[state.selectedIndex]) {
+    if (state.selectedIndex >= 0 && state.samples[state.selectedIndex] && state.samples[state.selectedIndex]._vis) {
       const sel = state.samples[state.selectedIndex];
       const [sx, sy] = normToScreen(sel.x, sel.y, w, h);
       const col = getDotColor(sel);
 
-      // Outer glow halo
       ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
       ctx.beginPath();
       ctx.arc(sx, sy, baseRadius + 10, 0, Math.PI * 2);
@@ -1045,6 +1064,128 @@
       wctx.fillStyle = col;
       wctx.fillRect(6 + i * barW, midY - bh * 0.5, Math.max(2, barW - 2), bh);
     }
+
+    // Visible Scanning Playhead Line
+    const scanX = 6 + waveScanPos * (w - 12);
+    wctx.strokeStyle = "#38bdf8";
+    wctx.lineWidth = 2;
+    wctx.beginPath();
+    wctx.moveTo(scanX, 2);
+    wctx.lineTo(scanX, h - 2);
+    wctx.stroke();
+
+    wctx.fillStyle = "#ffffff";
+    wctx.beginPath();
+    wctx.moveTo(scanX - 4, 2);
+    wctx.lineTo(scanX + 4, 2);
+    wctx.lineTo(scanX, 7);
+    wctx.closePath();
+    wctx.fill();
+  }
+
+  let selectedSavedIdx = -1;
+  let dragReorderFromIdx = -1;
+
+  function renderSavedList() {
+    const listEl = document.getElementById("saved-list");
+    const titleEl = document.getElementById("saved-count-title");
+    titleEl.textContent = `Saved Samples (${state.savedList.length})`;
+    listEl.innerHTML = "";
+
+    state.savedList.forEach((item, idx) => {
+      const row = document.createElement("div");
+      row.className = "saved-item";
+      row.draggable = true;
+      if (idx === selectedSavedIdx) {
+        row.style.borderColor = "#38bdf8";
+        row.style.background = "rgba(56, 189, 248, 0.12)";
+      }
+      const col = CAT_COLORS[item.category] || "#38bdf8";
+      const pTag = item.pitchSt >= 0 ? `+${item.pitchSt}st` : `${item.pitchSt}st`;
+
+      row.addEventListener("dragstart", (ev) => {
+        if (ev.target.classList.contains("drag-chip")) return;
+        dragReorderFromIdx = idx;
+        ev.dataTransfer.effectAllowed = "move";
+      });
+      row.addEventListener("dragover", (ev) => {
+        if (dragReorderFromIdx >= 0 && dragReorderFromIdx !== idx) {
+          ev.preventDefault();
+          row.style.borderTop = "2px solid #38bdf8";
+        }
+      });
+      row.addEventListener("dragleave", () => {
+        row.style.borderTop = "";
+      });
+      row.addEventListener("drop", (ev) => {
+        row.style.borderTop = "";
+        if (dragReorderFromIdx >= 0 && dragReorderFromIdx !== idx) {
+          ev.preventDefault();
+          selectedSavedIdx = idx;
+          sendAction("reorder_saved", { fromIdx: dragReorderFromIdx, toIdx: idx });
+          dragReorderFromIdx = -1;
+        }
+      });
+
+      const info = document.createElement("div");
+      info.className = "saved-info";
+      info.innerHTML =
+        `<div class="saved-title"><span class="cat-dot" style="display:inline-block;background:${col};margin-right:5px;"></span>${item.name}</div>` +
+        `<div class="saved-settings">${pTag} • Trim ${Math.round(item.decayMs)}ms • ${item.gainDb.toFixed(1)}dB</div>`;
+      info.addEventListener("click", () => {
+        selectedSavedIdx = idx;
+        renderSavedList();
+        sendAction("recall_saved", { savedIdx: idx, audition: true });
+      });
+
+      const rawChip = document.createElement("div");
+      rawChip.className = "drag-chip raw";
+      rawChip.draggable = true;
+      rawChip.textContent = "Drag Raw";
+      rawChip.title = "Drag out raw original file";
+      rawChip.addEventListener("mouseenter", () => sendAction("arm_drag", { mode: "raw", savedIdx: idx }));
+      rawChip.addEventListener("mousedown", () => sendAction("drag_out", { mode: "raw", savedIdx: idx }));
+      rawChip.addEventListener("dragstart", (ev) => {
+        ev.stopPropagation();
+        if (item.rawPath) {
+          ev.dataTransfer.setData("text/uri-list", `file://${item.rawPath}`);
+          ev.dataTransfer.setData("text/plain", item.rawPath);
+        }
+        sendAction("drag_out", { mode: "raw", savedIdx: idx });
+      });
+
+      const editChip = document.createElement("div");
+      editChip.className = "drag-chip edited";
+      editChip.draggable = true;
+      editChip.textContent = "Drag Edit";
+      editChip.title = "Drag out re-rendered WAV with Pitch/Trim/Gain applied";
+      editChip.addEventListener("mouseenter", () => sendAction("arm_drag", { mode: "edited", savedIdx: idx }));
+      editChip.addEventListener("mousedown", () => sendAction("drag_out", { mode: "edited", savedIdx: idx }));
+      editChip.addEventListener("dragstart", (ev) => {
+        ev.stopPropagation();
+        const p = item.editedPath || item.rawPath;
+        if (p) {
+          ev.dataTransfer.setData("text/uri-list", `file://${p}`);
+          ev.dataTransfer.setData("text/plain", p);
+        }
+        sendAction("drag_out", { mode: "edited", savedIdx: idx });
+      });
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "btn";
+      delBtn.style.padding = "0 5px";
+      delBtn.style.height = "20px";
+      delBtn.textContent = "✕";
+      delBtn.addEventListener("click", () => {
+        sendAction("remove_saved", { savedIdx: idx });
+      });
+
+      row.appendChild(info);
+      row.appendChild(rawChip);
+      row.appendChild(editChip);
+      row.appendChild(delBtn);
+      listEl.appendChild(row);
+    });
   }
 
   function updateSelectedInspector() {
@@ -1056,7 +1197,6 @@
     const pitchEl = document.getElementById("sel-pitch");
     const brightEl = document.getElementById("sel-bright");
     const pathEl = document.getElementById("sel-path");
-    const favBtn = document.getElementById("fav-toggle-btn");
 
     if (!s) {
       nameEl.textContent = "No sample selected";
@@ -1078,85 +1218,29 @@
     pitchEl.textContent = s.pitchHz ? `${Math.round(s.pitchHz)} Hz (${midiToNoteName(s.pitchMidi)})` : "Unpitched";
     brightEl.textContent = `Bright: ${Math.round((s.centroid || 0) * 100)}%`;
     pathEl.textContent = s.path;
-    favBtn.textContent = s.favorite ? "★ Favorited" : "☆ Favorite";
-    favBtn.classList.toggle("active", !!s.favorite);
 
-    // Spectral bands
     document.getElementById("band-sub").style.height = `${Math.round((s.subRatio || 0.1) * 100)}%`;
     document.getElementById("band-low").style.height = `${Math.round((s.lowRatio || 0.1) * 100)}%`;
     document.getElementById("band-mid").style.height = `${Math.round((s.midRatio || 0.1) * 100)}%`;
     document.getElementById("band-high").style.height = `${Math.round((s.highRatio || 0.1) * 100)}%`;
 
     drawWaveform(s);
-    renderNeighborList();
-  }
-
-  function renderNeighborList() {
-    const listEl = document.getElementById("neighbor-list");
-    listEl.innerHTML = "";
-    const refIdx = state.anchorIndex >= 0 ? state.anchorIndex : state.selectedIndex;
-    const ref = state.samples[refIdx];
-    if (!ref || !ref.neighbors) return;
-
-    const anchorItem = document.createElement("div");
-    anchorItem.className = "neighbor-item" + (state.selectedIndex === refIdx ? " active" : "");
-    anchorItem.innerHTML =
-      `<span class="cat-dot" style="background:${CAT_COLORS[ref.category] || '#38bdf8'}"></span>` +
-      `<span class="neighbor-name">🎯 ${ref.name}</span>` +
-      `<span class="neighbor-sim">ANCHOR</span>`;
-    anchorItem.addEventListener("click", () => selectSample(refIdx, true, false));
-    listEl.appendChild(anchorItem);
-
-    ref.neighbors.forEach((nIdx, rank) => {
-      const ns = state.samples[nIdx];
-      if (!ns) return;
-      const simPct = Math.max(72, Math.round(99 - rank * 3.2));
-      const row = document.createElement("div");
-      row.className = "neighbor-item" + (state.selectedIndex === nIdx ? " active" : "");
-      row.innerHTML =
-        `<span class="cat-dot" style="background:${CAT_COLORS[ns.category] || '#38bdf8'}"></span>` +
-        `<span class="neighbor-name">${ns.name}</span>` +
-        `<span class="neighbor-len">${Math.round(ns.durationMs)}ms</span>` +
-        `<span class="neighbor-sim">${simPct}%</span>`;
-      row.addEventListener("click", () => {
-        state.neighborStepPos = rank;
-        selectSample(nIdx, true, false);
-      });
-      row.addEventListener("dblclick", () => {
-        selectSample(nIdx, true, true);
-        sendAction("load_simpler", { index: nIdx });
-      });
-      listEl.appendChild(row);
-    });
   }
 
   function selectSample(idx, audition = true, updateAnchor = true) {
     if (idx < 0 || idx >= state.samples.length) return;
-    const prevIdx = state.selectedIndex;
     state.selectedIndex = idx;
-    if (updateAnchor) {
-      state.anchorIndex = idx;
-      state.neighborStepPos = -1;
-    }
+    if (updateAnchor) state.anchorIndex = idx;
     updateSelectedInspector();
     drawMap();
-    if (audition && idx !== prevIdx) {
-      sendAction("select", { index: idx, audition: true });
-    } else if (audition) {
+    if (audition) {
+      startWaveformScan(state.samples[idx]);
       sendAction("select", { index: idx, audition: true });
     }
   }
 
   function stepNeighbor(dir) {
-    if (state.samples.length === 0) return;
-    const refIdx = state.anchorIndex >= 0 ? state.anchorIndex : (state.selectedIndex >= 0 ? state.selectedIndex : 0);
-    const ref = state.samples[refIdx];
-    if (!ref || !ref.neighbors || ref.neighbors.length === 0) return;
-    const pool = [refIdx, ...ref.neighbors];
-    let curPos = pool.indexOf(state.selectedIndex);
-    if (curPos < 0) curPos = 0;
-    const nextPos = (curPos + dir + pool.length) % pool.length;
-    selectSample(pool[nextPos], true, false);
+    sendAction("step_similar", { dir });
   }
 
   // Canvas Mouse & Scrub Interactions
@@ -1203,7 +1287,6 @@
       return;
     }
 
-    // Hover detection
     if (x >= 0 && x <= rect.width && y >= 0 && y <= rect.height) {
       const hit = findNearestVisibleSample(x, y, 18);
       if (hit !== hoveredIndex) {
@@ -1235,7 +1318,7 @@
     const hit = findNearestVisibleSample(e.clientX - rect.left, e.clientY - rect.top, 28);
     if (hit >= 0) {
       selectSample(hit, true, true);
-      sendAction("load_simpler", { index: hit });
+      sendAction("save_sample", { index: hit });
     }
   });
 
@@ -1256,11 +1339,13 @@
   // UI Controls Wiring
   document.getElementById("search-input").addEventListener("input", (e) => {
     state.searchQuery = e.target.value.trim();
+    sendAction("set_filter", { searchQuery: state.searchQuery });
     drawMap();
   });
   document.getElementById("search-clear").addEventListener("click", () => {
     document.getElementById("search-input").value = "";
     state.searchQuery = "";
+    sendAction("set_filter", { searchQuery: "" });
     drawMap();
   });
   document.getElementById("folder-select").addEventListener("change", (e) => {
@@ -1276,22 +1361,18 @@
     state.colorMode = e.target.value;
     drawMap();
   });
-  document.getElementById("scan-core-btn").addEventListener("click", () => {
-    sendAction("scan_core");
-  });
-  document.getElementById("add-folder-btn").addEventListener("click", () => {
-    sendAction("prompt_folder");
-  });
+  document.getElementById("scan-core-btn").addEventListener("click", () => sendAction("scan_core"));
+  document.getElementById("add-folder-btn").addEventListener("click", () => sendAction("prompt_folder"));
   document.getElementById("fit-view-btn").addEventListener("click", () => {
     view = { zoom: 1.0, panX: 0, panY: 0 };
     drawMap();
   });
 
-  // Sliders
+  // Sliders (Split Filters vs Playback)
   document.getElementById("maxlen-slider").addEventListener("input", (e) => {
     state.maxLenMs = Number(e.target.value);
     document.getElementById("maxlen-val").textContent =
-      state.maxLenMs >= 4950 ? "All" : `${state.maxLenMs} ms`;
+      state.maxLenMs >= 4990 ? "∞ (Inf)" : `${state.maxLenMs} ms`;
     sendAction("set_filter", { maxLenMs: state.maxLenMs });
     drawMap();
   });
@@ -1320,15 +1401,28 @@
     sendAction("set_playback", { gainDb: state.gainDb });
   });
 
-  // Sidebar Buttons
-  document.getElementById("fav-toggle-btn").addEventListener("click", () => {
-    if (state.selectedIndex < 0) return;
-    const s = state.samples[state.selectedIndex];
-    s.favorite = !s.favorite;
-    sendAction("toggle_favorite", { index: state.selectedIndex });
-    updateSelectedInspector();
-    drawMap();
+  // Save & Batch Drag-Out Controls
+  document.getElementById("save-sample-btn").addEventListener("click", () => {
+    if (state.selectedIndex >= 0) sendAction("save_sample", { index: state.selectedIndex });
   });
+  document.getElementById("clear-saved-btn").addEventListener("click", () => {
+    sendAction("clear_saved");
+  });
+  document.getElementById("drag-all-raw").addEventListener("mouseenter", () => sendAction("arm_drag", { mode: "all_raw", savedIdx: -1 }));
+  document.getElementById("drag-all-raw").addEventListener("mousedown", () => sendAction("drag_out", { mode: "all_raw", savedIdx: -1 }));
+  document.getElementById("drag-all-raw").addEventListener("dragstart", (ev) => {
+    const rawList = state.savedList.map((x) => `file://${x.rawPath}`).join("\r\n");
+    if (rawList) ev.dataTransfer.setData("text/uri-list", rawList);
+    sendAction("drag_out", { mode: "all_raw", savedIdx: -1 });
+  });
+  document.getElementById("drag-all-edited").addEventListener("mouseenter", () => sendAction("arm_drag", { mode: "all_edited", savedIdx: -1 }));
+  document.getElementById("drag-all-edited").addEventListener("mousedown", () => sendAction("drag_out", { mode: "all_edited", savedIdx: -1 }));
+  document.getElementById("drag-all-edited").addEventListener("dragstart", (ev) => {
+    const edList = state.savedList.map((x) => `file://${x.editedPath || x.rawPath}`).join("\r\n");
+    if (edList) ev.dataTransfer.setData("text/uri-list", edList);
+    sendAction("drag_out", { mode: "all_edited", savedIdx: -1 });
+  });
+
   document.getElementById("prev-sim-btn").addEventListener("click", () => stepNeighbor(-1));
   document.getElementById("next-sim-btn").addEventListener("click", () => stepNeighbor(1));
   document.getElementById("rand-btn").addEventListener("click", () => {
@@ -1339,52 +1433,34 @@
       selectSample(pick, true, true);
     }
   });
-  document.getElementById("load-simpler-btn").addEventListener("click", () => {
-    if (state.selectedIndex >= 0) sendAction("load_simpler", { index: state.selectedIndex });
-  });
-  document.getElementById("autoload-btn").addEventListener("click", (e) => {
-    state.autoLoad = !state.autoLoad;
-    e.currentTarget.classList.toggle("active", state.autoLoad);
-    sendAction("set_autoload", { autoLoad: state.autoLoad });
-  });
-  document.getElementById("lock-target-btn").addEventListener("click", (e) => {
-    state.lockTarget = !state.lockTarget;
-    e.currentTarget.classList.toggle("active", state.lockTarget);
-    sendAction("set_lock_target", { lockTarget: state.lockTarget });
-  });
-  document.getElementById("to-clip-btn").addEventListener("click", () => {
-    if (state.selectedIndex >= 0) sendAction("load_clip", { index: state.selectedIndex });
-  });
-  document.getElementById("reveal-btn").addEventListener("click", () => {
-    if (state.selectedIndex >= 0) sendAction("reveal", { index: state.selectedIndex });
-  });
   waveCanvas.addEventListener("click", () => {
     if (state.selectedIndex >= 0) selectSample(state.selectedIndex, true, false);
   });
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts (including 'S' to save sample + playback settings)
   window.addEventListener("keydown", (e) => {
     if (document.activeElement === document.getElementById("search-input")) {
-      if (e.key === "Escape") {
-        document.getElementById("search-input").blur();
-      }
+      if (e.key === "Escape") document.getElementById("search-input").blur();
       return;
     }
     if (e.code === "Space") {
       spaceDown = true;
       e.preventDefault();
       if (state.selectedIndex >= 0) selectSample(state.selectedIndex, true, false);
+    } else if (e.key === "s" || e.key === "S") {
+      e.preventDefault();
+      if (state.selectedIndex >= 0) sendAction("save_sample", { index: state.selectedIndex });
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      if (selectedSavedIdx >= 0 && selectedSavedIdx < state.savedList.length) {
+        e.preventDefault();
+        sendAction("remove_saved", { savedIdx: selectedSavedIdx });
+      }
     } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
       e.preventDefault();
       stepNeighbor(1);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
       e.preventDefault();
       stepNeighbor(-1);
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (state.selectedIndex >= 0) sendAction("load_simpler", { index: state.selectedIndex });
-    } else if (e.key === "f" || e.key === "F") {
-      document.getElementById("fav-toggle-btn").click();
     } else if (e.key === "r" || e.key === "R") {
       document.getElementById("rand-btn").click();
     }
@@ -1401,29 +1477,55 @@
       updateFolderDropdown();
       renderCategoryBar();
     }
+    if (Array.isArray(data.savedList)) {
+      state.savedList = data.savedList;
+      renderSavedList();
+    }
     if (typeof data.selectedIndex === "number" && data.selectedIndex >= 0) {
       state.selectedIndex = data.selectedIndex;
       if (state.anchorIndex < 0) state.anchorIndex = data.selectedIndex;
+      if (data.auditionTimestamp) {
+        startWaveformScan(state.samples[state.selectedIndex]);
+      }
+    }
+    if (typeof data.searchQuery === "string" && document.activeElement !== document.getElementById("search-input")) {
+      state.searchQuery = data.searchQuery;
+      document.getElementById("search-input").value = data.searchQuery;
+    }
+    if (typeof data.maxLenMs === "number") {
+      state.maxLenMs = data.maxLenMs;
+      document.getElementById("maxlen-slider").value = data.maxLenMs;
+      document.getElementById("maxlen-val").textContent = data.maxLenMs >= 4990 ? "∞ (Inf)" : `${data.maxLenMs} ms`;
+    }
+    if (typeof data.toneFilter === "number") {
+      state.toneFilter = data.toneFilter;
+      document.getElementById("tone-slider").value = data.toneFilter;
+      document.getElementById("tone-val").textContent =
+        data.toneFilter === 0 ? "0%" : (data.toneFilter > 0 ? `+${data.toneFilter}%` : `${data.toneFilter}%`);
+    }
+    if (typeof data.pitchSt === "number") {
+      state.pitchSt = data.pitchSt;
+      document.getElementById("pitch-slider").value = data.pitchSt;
+      document.getElementById("pitch-val").textContent =
+        data.pitchSt > 0 ? `+${data.pitchSt} st` : `${data.pitchSt} st`;
+    }
+    if (typeof data.decayMs === "number") {
+      state.decayMs = data.decayMs;
+      document.getElementById("decay-slider").value = data.decayMs;
+      document.getElementById("decay-val").textContent = `${data.decayMs} ms`;
+    }
+    if (typeof data.gainDb === "number") {
+      state.gainDb = data.gainDb;
+      document.getElementById("gain-slider").value = data.gainDb;
+      document.getElementById("gain-val").textContent = `${data.gainDb.toFixed(1)} dB`;
     }
     if (typeof data.statusText === "string") {
       document.getElementById("status-pill").textContent = data.statusText;
-    }
-    if (typeof data.targetName === "string") {
-      document.getElementById("target-name").textContent = data.targetName;
-    }
-    if (typeof data.autoLoad === "boolean") {
-      state.autoLoad = data.autoLoad;
-      document.getElementById("autoload-btn").classList.toggle("active", state.autoLoad);
-    }
-    if (typeof data.lockTarget === "boolean") {
-      state.lockTarget = data.lockTarget;
-      document.getElementById("lock-target-btn").classList.toggle("active", state.lockTarget);
     }
     updateSelectedInspector();
     drawMap();
   }
 
-  // Initial fetch & SSE connection
   fetch("/api/state")
     .then((r) => r.json())
     .then((data) => applyServerState(data))
