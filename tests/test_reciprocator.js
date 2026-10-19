@@ -78,6 +78,7 @@ assert.ok(bufAt < paramAt && paramAt < histAt && histAt < delayAt, "Declarations
 assert.ok(delayAt < exprAt, "All Delay declarations must precede expressions");
 assert.strictEqual((gen.match(/^Delay /gm) || []).length, 2, "Expected 2 lookahead Delay lines (lookL, lookR)");
 assert.ok(gen.includes("Param outmode(0.0);") && gen.includes("Param revgate(0.0);"), "GenExpr must declare outmode and revgate Params");
+assert.ok(gen.includes("isSilent") && gen.includes("recip_pow"), "GenExpr must include silence fast-path and recip_pow optimization");
 assert.ok(gen.includes("fixnan(outL)") && gen.includes("fixnan(outR)"), "Outputs must be protected with fixnan()");
 
 function rectsOverlap(a, b) {
@@ -274,6 +275,15 @@ function verifyAmxd(amxdFile, expectedWidth) {
     ui.onclick(40, 22);
     ui.ondrag(40, 28);
     assert.ok(emitted.some((m) => m[0] === "ceiling" && m[1] <= 0 && m[1] >= -18), "Dragging upper scope must emit ceiling dB");
+
+    // Verify idle-redraw suppression when audio is silent
+    scopeSamples = [0, 0, 0, 0.25, 0, 0.008, 0.89, 55];
+    for (let k = 0; k < 130; k++) {
+        ui.pullScope();
+    }
+    assert.strictEqual(ui.pullScope(), false, "pullScope() must return false and skip redraw once silent history settles");
+    scopeSamples = [0.3, 0.25, 1.0, 0.6, 0.8, 0.008, 0.89, 56];
+    assert.strictEqual(ui.pullScope(), true, "pullScope() must immediately resume redrawing when audio arrives");
 }
 
 verifyAmxd("Reciprocator.amxd", 448.0);

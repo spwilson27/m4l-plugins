@@ -4,6 +4,14 @@
 // (or, when Reverse Gate `revgate` is enabled, only quiet signals below Gate
 // pass through while loud hits are muted).
 //
+// CPU Optimizations:
+//   - Subnormal/denormal flush (`abs(s) < 1e-15 ? 0 : s`) inside filter & detector
+//     History loops so decaying tails never hit subnormal IEEE-754 float penalties.
+//   - Fast-path silence bypass: when the input and envelope are silent (or the gate
+//     is completely closed), skips `pow(env, -amount)` and `tanh()` waveshaping.
+//   - Fast reciprocal path at the default `Amount = 100%` (`1.0 / safeEnv` instead
+//     of transcendental `pow()`).
+//
 // Scope telemetry buffer (buffer~ #0-recipscope, bound via `scope #0-recipscope`):
 //   0: input peak (0..1)
 //   1: post-detector envelope (0..1)
@@ -27,33 +35,36 @@ slew(target, coef) {
 
 onepole_lp(x, coef) {
 	History s(0);
-	s = mix(x, s, coef);
+	nxt = mix(x, s, coef);
+	s = (abs(nxt) < 1e-15) ? 0 : nxt;
 	return s;
 }
 
 onepole_hp(x, coef) {
 	History s(0);
-	s = mix(x, s, coef);
+	nxt = mix(x, s, coef);
+	s = (abs(nxt) < 1e-15) ? 0 : nxt;
 	return x - s;
 }
 
-// Combined Peak + RMS detector with independent attack and release coefficients.
+// Combined Peak + RMS detector with independent attack and release coefficients
+// and denormal protection when audio stops.
 env_detect(x, atkCoef, relCoef, detectBlend) {
 	History pk(0);
 	History ms(0);
 	ax = abs(x);
 	cPk = (ax > pk) ? atkCoef : relCoef;
-	pk = mix(ax, pk, cPk);
+	nxtPk = mix(ax, pk, cPk);
+	pk = (nxtPk < 1e-15) ? 0 : nxtPk;
 	x2 = x * x;
 	cMs = (x2 > ms) ? atkCoef : relCoef;
-	ms = mix(x2, ms, cMs);
-	rms = sqrt(max(ms, 0));
+	nxtMs = mix(x2, ms, cMs);
+	ms = (nxtMs < 1e-24) ? 0 : nxtMs;
+	rms = (detectBlend > 0.001) ? sqrt(max(ms, 0)) : pk;
 	return mix(pk, rms, clip(detectBlend, 0, 1));
 }
 
 // Smooth normal or reverse gate with a 6 dB cubic knee around gateLin.
-// When revMode > 0.5, signals BELOW gateLin open the gate and signals ABOVE
-// gateLin close it (while sub-floor silence < 0.00005 is muted so an idle track stays silent).
 gate_smooth(envVal, gateLin, relCoef, revMode) {
 	History gState(0);
 	g = max(gateLin, 0.00001);
@@ -72,7 +83,8 @@ gate_smooth(envVal, gateLin, relCoef, revMode) {
 	raw = (revMode > 0.5) ? revRaw : normalRaw;
 
 	c = (raw > gState) ? 0.25 : clip(relCoef, 0.5, 0.9995);
-	gState = mix(raw, gState, c);
+	nxtG = mix(raw, gState, c);
+	gState = (nxtG < 1e-9) ? 0 : nxtG;
 	return gState;
 }
 
@@ -80,17 +92,36 @@ gate_smooth(envVal, gateLin, relCoef, revMode) {
 //   0 = Soft (`tanh` soft saturation to ceilLin)
 //   1 = Hard (`clip` to [-ceilLin, +ceilLin])
 //   2 = Lim  (Instant-attack, smooth-release peak limiter to ceilLin, preserving waveform shape)
+// Skips `tanh()` when the signal is silent or when Hard/Limiter mode is selected.
 limit_out(x, ceilLin, outMode) {
 	History limEnv(0);
 	c = max(ceilLin, 0.05);
 	ax = abs(x);
-	// Always update limiter envelope history so switching modes never clicks.
-	limEnv = (ax > limEnv) ? ax : mix(ax, limEnv, 0.9985);
+	nxtLim = (ax > limEnv) ? ax : mix(ax, limEnv, 0.9985);
+	limEnv = (nxtLim < 1e-12) ? 0 : nxtLim;
+	if (ax < 1e-9) {
+		return 0;
+	}
+	if (outMode < 0.5) {
+		return c * tanh(x / c);
+	}
+	if (outMode < 1.5) {
+		return clip(x, -c, c);
+	}
 	limGain = c / max(limEnv, c);
-	limited = clip(x * limGain, -c, c);
-	soft = c * tanh(x / c);
-	hard = clip(x, -c, c);
-	return (outMode < 0.5) ? soft : ((outMode < 1.5) ? hard : limited);
+	return clip(x * limGain, -c, c);
+}
+
+// Fast reciprocal helper: uses direct 1/x division when amount is at 100% (1.0)
+// or 1.0 when amount is 0%, avoiding costly pow() calls in the two most common cases.
+recip_pow(safeEnv, amt) {
+	if (amt < 0.0005) {
+		return 1.0;
+	}
+	if (abs(amt - 1.0) < 0.0005) {
+		return 1.0 / safeEnv;
+	}
+	return pow(safeEnv, -amt);
 }
 
 Buffer scope("recipscope");
@@ -113,6 +144,7 @@ History rollCounter(0);
 History peakInHold(0);
 History peakEnvHold(0);
 History peakOutHold(0);
+History idleTicks(0);
 
 Delay lookL(1024);
 Delay lookR(1024);
@@ -146,43 +178,44 @@ scL = onepole_lp(onepole_hp(in1, hpCoef), lpCoef);
 scR = onepole_lp(onepole_hp(in2, hpCoef), lpCoef);
 
 // 3. Envelope detection with sub-millisecond to 1.5 s ballistics.
-atkCoef = exp(-1000 / ( max(atkMsS, 0.05) * sr ));
-relCoef = exp(-1000 / ( max(relMsS, 0.5) * sr ));
+atkCoef = exp(-1000 / (max(atkMsS, 0.05) * sr));
+relCoef = exp(-1000 / (max(relMsS, 0.5) * sr));
 detL = env_detect(scL, atkCoef, relCoef, detectS);
 detR = env_detect(scR, atkCoef, relCoef, detectS);
 
-// Stereo link: detect knob also blends from tight dual-mono peak (0%) toward linked RMS (100%).
 linkedEnv = max(detL, detR);
 linkAmt = 0.35 + 0.65 * detectS;
 envL = mix(detL, linkedEnv, linkAmt);
 envR = mix(detR, linkedEnv, linkAmt);
 envMax = max(envL, envR);
 
-// 4. Gate & Reciprocal gain calculation.
+// 4. Gate & Reciprocal gain calculation (with fast-path skip when gate is closed or input is silent).
 gateLin = pow(10, gateDbS / 20);
 ceilLin = pow(10, ceilDbS / 20);
 
 gateL = gate_smooth(envL, gateLin, relCoef, revMode);
 gateR = gate_smooth(envR, gateLin, relCoef, revMode);
 
-floorEnv = (revMode > 0.5) ? 0.00005 : max(gateLin * 0.5, 0.00001);
-safeL = max(envL, floorEnv);
-safeR = max(envR, floorEnv);
-
-// Scale target so that at amount = 1.0, x / env lands at ceilLin, and at
-// amount > 1.0 loud peaks are ducked down while quiet details rise to ceilLin.
-overAmt = max(amountS - 1.0, 0.0);
-targetScale = pow(ceilLin, min(amountS, 1.0)) * pow(0.05, overAmt);
-rawGainL = min(pow(safeL, -amountS) * targetScale, 1000.0);
-rawGainR = min(pow(safeR, -amountS) * targetScale, 1000.0);
-
-// Blend between unity (1.0) at amount = 0 (unless revMode > 0.5, which always gates) and reciprocal gain.
 gateMix = (revMode > 0.5) ? 1.0 : clip(amountS * 4.0, 0, 1);
 effGateL = mix(1.0, gateL, gateMix);
 effGateR = mix(1.0, gateR, gateMix);
 
-gainL = rawGainL * effGateL;
-gainR = rawGainR * effGateR;
+inAbs = max(abs(delInL), abs(delInR));
+isSilent = (inAbs < 1e-8 && envMax < 1e-8) || (effGateL < 1e-7 && effGateR < 1e-7);
+
+gainL = 0;
+gainR = 0;
+if (isSilent == 0) {
+	floorEnv = (revMode > 0.5) ? 0.00005 : max(gateLin * 0.5, 0.00001);
+	safeL = max(envL, floorEnv);
+	safeR = max(envR, floorEnv);
+	overAmt = max(amountS - 1.0, 0.0);
+	targetScale = pow(ceilLin, min(amountS, 1.0)) * ((overAmt > 0.0005) ? pow(0.05, overAmt) : 1.0);
+	rawGainL = min(recip_pow(safeL, amountS) * targetScale, 1000.0);
+	rawGainR = min(recip_pow(safeR, amountS) * targetScale, 1000.0);
+	gainL = rawGainL * effGateL;
+	gainR = rawGainR * effGateR;
+}
 
 // 5. Multiply lookahead-delayed signal by reciprocal gain and apply Soft / Hard / Limiter ceiling.
 vcaL = delInL * gainL;
@@ -197,8 +230,7 @@ wetG = sin(ang);
 outL = delInL * dryG + wetL * wetG;
 outR = delInR * dryG + wetR * wetG;
 
-// 7. Update scope telemetry buffer every 64 samples with peak-held values over the window.
-inAbs = max(abs(delInL), abs(delInR));
+// 7. Update scope telemetry buffer every 64 samples, skipping buffer pokes once the device has settled in silence.
 outAbs = max(abs(wetL), abs(wetR));
 peakInHold = max(peakInHold, inAbs);
 peakEnvHold = max(peakEnvHold, envMax);
@@ -206,17 +238,21 @@ peakOutHold = max(peakOutHold, outAbs);
 
 tick = wrap(tick + 1, 0, 64);
 if (tick == 0) {
-	gainAvg = 0.5 * (gainL + gainR);
-	gainDbNorm = clip((20 * log10(max(gainAvg, 0.001)) + 20) / 80, 0, 1);
-	rollCounter = wrap(rollCounter + 1, 0, 100000);
-	poke(scope, clip(peakInHold, 0, 1.5), 0, 0);
-	poke(scope, clip(peakEnvHold, 0, 1.5), 1, 0);
-	poke(scope, clip(max(gateL, gateR), 0, 1), 2, 0);
-	poke(scope, gainDbNorm, 3, 0);
-	poke(scope, clip(peakOutHold, 0, 1.5), 4, 0);
-	poke(scope, clip(gateLin, 0, 1), 5, 0);
-	poke(scope, clip(ceilLin, 0, 1), 6, 0);
-	poke(scope, rollCounter, 7, 0);
+	windowSilent = (peakInHold < 1e-6 && peakEnvHold < 1e-6 && peakOutHold < 1e-6);
+	idleTicks = windowSilent ? min(idleTicks + 1, 1000) : 0;
+	if (idleTicks <= 4) {
+		gainAvg = 0.5 * (gainL + gainR);
+		gainDbNorm = clip((20 * log10(max(gainAvg, 0.001)) + 20) / 80, 0, 1);
+		rollCounter = wrap(rollCounter + 1, 0, 100000);
+		poke(scope, clip(peakInHold, 0, 1.5), 0, 0);
+		poke(scope, clip(peakEnvHold, 0, 1.5), 1, 0);
+		poke(scope, clip(max(gateL, gateR), 0, 1), 2, 0);
+		poke(scope, gainDbNorm, 3, 0);
+		poke(scope, clip(peakOutHold, 0, 1.5), 4, 0);
+		poke(scope, clip(gateLin, 0, 1), 5, 0);
+		poke(scope, clip(ceilLin, 0, 1), 6, 0);
+		poke(scope, rollCounter, 7, 0);
+	}
 	peakInHold = 0;
 	peakEnvHold = 0;
 	peakOutHold = 0;

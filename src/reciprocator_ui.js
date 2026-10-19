@@ -27,6 +27,8 @@ var liveGainNorm = 0.58;
 var liveGateOpen = 1.0;
 var liveOutPeak = 0.0;
 var liveEnvPeak = 0.0;
+var idleFrames = 0;
+var lastRollCounter = -1;
 
 var dragTarget = ""; // "gate" | "ceiling" | ""
 
@@ -117,13 +119,27 @@ function sampleAt(chunk, idx) {
 }
 
 function pullScope() {
-    if (!scopeBuf) return;
+    if (!scopeBuf) return false;
     var chunk = scopeBuf.peek(1, 0, 8);
     var inPk = clamp(sampleAt(chunk, 0), 0, 1);
     var envPk = clamp(sampleAt(chunk, 1), 0, 1);
     var gateOpen = clamp(sampleAt(chunk, 2), 0, 1);
     var gainNorm = clamp(sampleAt(chunk, 3), 0, 1);
     var outPk = clamp(sampleAt(chunk, 4), 0, 1);
+    var roll = sampleAt(chunk, 7);
+
+    var isQuiet = (inPk < 0.0001 && envPk < 0.0001 && outPk < 0.0001 && gateOpen < 0.001 && roll === lastRollCounter);
+    lastRollCounter = roll;
+
+    if (isQuiet) {
+        idleFrames++;
+        // Once the entire 120-column history has scrolled to flat zero, stop redrawing at 30 fps
+        if (idleFrames > SCOPE_COLS + 4) {
+            return false;
+        }
+    } else {
+        idleFrames = 0;
+    }
 
     liveEnvPeak = liveEnvPeak + (envPk - liveEnvPeak) * (envPk > liveEnvPeak ? 0.6 : 0.25);
     liveOutPeak = liveOutPeak + (outPk - liveOutPeak) * (outPk > liveOutPeak ? 0.65 : 0.25);
@@ -138,13 +154,15 @@ function pullScope() {
     histOut.push(outPk);
     histGate.shift();
     histGate.push(gateOpen);
+    return true;
 }
 
 function loadbang() {
     if (typeof Task === "function") {
         scopeTask = new Task(function () {
-            pullScope();
-            mgraphics.redraw();
+            if (pullScope()) {
+                mgraphics.redraw();
+            }
         }, this);
         scopeTask.interval = 33;
         scopeTask.repeat();
