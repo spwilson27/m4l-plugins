@@ -17,23 +17,23 @@ var stageOrder = [0, 1, 2, 3, 4];
 var vizMode = 0; // 0 = Technical (Waveform Staircase + Spectral Holes), 1 = Abstract (Phase-Space CRT Glitch)
 var selectedStage = 0; // 0..4 (controls active inspector tab in Compact layout)
 
-// Live parameter mirrors for visualization
-var stageEnabled = [1, 1, 0, 0, 0];
-var curBits = 8.0;
-var curWrap = 0.25;
-var curDither = 0.20;
-var curSrate = 12000.0;
-var curJitter = 0.15;
+// Live parameter mirrors for visualization (default: transparent with Mix = 50%)
+var stageEnabled = [0, 0, 0, 0, 0];
+var curBits = 16.0;
+var curWrap = 0.0;
+var curDither = 0.0;
+var curSrate = 44100.0;
+var curJitter = 0.0;
 var curSrMode = 0;
-var curCodecLoss = 0.55;
-var curPreecho = 0.35;
-var curBirdies = 0.40;
+var curCodecLoss = 0.0;
+var curPreecho = 0.0;
+var curBirdies = 0.0;
 var curTeleMode = 0;
-var curTeleLine = 0.60;
+var curTeleLine = 0.0;
 var curFftMode = 0;
-var curFftGlitch = 0.50;
+var curFftGlitch = 0.0;
 var curFftFrame = 45.0;
-var curWet = 1.0;
+var curWet = 0.5;
 
 // Telemetry state polled from #0-degscope
 var liveInPeak = 0.35;
@@ -206,12 +206,6 @@ function initWaveHistory(demo) {
 initWaveHistory(true);
 
 function preview() {
-    stageEnabled = [1, 1, 1, 0, 1];
-    curBits = 5.5;
-    curWrap = 0.35;
-    curSrate = 7500;
-    curCodecLoss = 0.65;
-    curFftGlitch = 0.55;
     initWaveHistory(true);
 }
 

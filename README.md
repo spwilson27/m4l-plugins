@@ -8,6 +8,7 @@ A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1
 4. **`devices/Sand.amxd`** — A differential compander. It expands quiet parts of the signal’s derivative (orders −1 through 15) and soft-limits the peaks, with a movable filter, split dry/wet, and a final clip/limit stage.
 5. **`devices/Reciprocator.amxd`** — An upgraded reciprocal envelope dynamics & audio-rate waveshaping processor (`x / env^amount`) with a smooth noise gate floor, lookahead delay, Peak/RMS detector blend, sidechain HP/LP filters, soft-clip ceiling, and a live scrolling envelope/gate/output HUD.
 7. **`devices/Percipitator.amxd`** (`408 x 169` px) — A 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator*, featuring a 4-frame `Sine -> Triangle -> Saw -> Square` wavetable bank, scrollable phase warp (`Bend`, `Asym`, `Sync`, `Fold`) & Partial Sieve (`All`, `Odd`, `Even`, `Sprs`, `Rise`) selectors, Spectral Tilt, `±2000 Hz` Frequency Shift, horizontal value-bar sliders for `Vol` and `Mix`, Sidechain MIDI pitch locking, and an audio-reactive Partials Viewer + 12-Note Scale Strip UI.
+8. **`devices/Degrade.amxd`** (`480 x 169` px) — A modular 5-section reorderable digital & codec degradation processor (`1. BIT` bitcrush/integer-wrap/dither, `2. SR` sample-rate/jitter, `3. COD` SpecOps `MP3ify`/`MAIM`-style 12-band sinusoidal MDCT spectral holes, block-smear pre-echo & birdies, `4. TEL` `uLaw`/`ALaw`/`ADPC`/`GSM` voice companding, and `5. FFT` `Den`/`Scr`/`Spl`/`Cmb` spectral glitch) with zero-CPU section bypass gates and a switchable Technical/Abstract audio-reactive visualizer.
 
 ---
 
@@ -213,4 +214,7 @@ python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && pyth
 
 # Percipitator
 python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"
+
+# Degrade
+python3 scripts/build_degrade.py && node tests/test_degrade.js && python3 scripts/render_preview.py "devices/Degrade.amxd"
 ```

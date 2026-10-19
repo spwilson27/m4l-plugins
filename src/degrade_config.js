@@ -23,7 +23,7 @@ const STAGE_META = [
 ];
 
 const TELE_MODES = ["u-Law", "A-Law", "ADPCM", "GSM"];
-const FFT_MODES = ["Freeze", "Scrmbl", "Comb", "Splat"];
+const FFT_MODES = ["Denois", "Scrmbl", "Splat", "Comb"];
 const SR_MODES = ["S&H", "Filter"];
 
 function clamp(v, lo, hi) {
@@ -200,7 +200,7 @@ function processTelecomSample(x, mode, lineAmt, prevPred) {
     return clamp(pulsed, -1.0, 1.0);
 }
 
-// Section 5: FFT Spectral Glitch helper for UI & test simulation
+// Section 5: FFT Spectral Glitch helper for UI & test simulation (4 modes: 0=Den, 1=Scr, 2=Spl, 3=Cmb)
 function computeFftGlitchBands(bands, mode, glitchAmt, phaseVal) {
     const m = clamp(Math.round(mode || 0), 0, 3);
     const g = clamp(glitchAmt, 0.0, 1.0);
@@ -210,22 +210,22 @@ function computeFftGlitchBands(bands, mode, glitchAmt, phaseVal) {
         const raw = bands[i] || 0;
         let mod = raw;
         if (m === 0) {
-            // Freeze: lock bands to frozen harmonic lattice
-            const frozen = 0.25 + 0.55 * Math.pow(Math.sin((i + 1) * 1.3 + phaseVal), 2);
-            mod = raw * (1.0 - g) + frozen * g;
+            // Denoise: musical-noise spectral gate
+            const bubble = raw > 0.35 ? raw * 1.35 : raw * (1.0 - g * 0.95);
+            mod = clamp(bubble, 0.0, 1.2);
         } else if (m === 1) {
             // Bin Scramble: permute spectral bins
             const srcIdx = (i * 3 + Math.floor(phaseVal * 5)) % n;
             mod = raw * (1.0 - g) + (bands[srcIdx] || 0) * g;
         } else if (m === 2) {
-            // Spectral Contrast / Comb: winner-take-all bin gating
-            const comb = (i % 2 === 0) ? raw * 1.45 : raw * (1.0 - g * 0.95);
-            mod = clamp(comb, 0.0, 1.2);
-        } else {
             // Phase Splat: dispersive allpass smear across adjacent bins
             const prev = bands[(i + n - 1) % n] || 0;
             const next = bands[(i + 1) % n] || 0;
             mod = raw * (1.0 - g * 0.65) + (prev + next) * 0.5 * (g * 0.85);
+        } else {
+            // Spectral Contrast / Comb: winner-take-all bin gating
+            const comb = (i % 2 === 0) ? raw * 1.45 : raw * (1.0 - g * 0.95);
+            mod = clamp(comb, 0.0, 1.2);
         }
         out[i] = clamp(mod, 0.0, 1.2);
     }

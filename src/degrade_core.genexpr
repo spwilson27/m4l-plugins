@@ -108,9 +108,11 @@ mp3ify_band_mask(bandEnv, nbrEnv, avgEnv, lossAmt, birdieAmt, randBip, bandIdxNo
 	packetMask = packetAlive * packetAlive * (3.0 - 2.0 * packetAlive);
 
 	// Occasional random glitch burst allows an isolated partial to pierce through high thresholds
-	glitchBurst = (randBip > (0.91 - birdieAmt * 0.14)) ? (1.8 + starveCurve * 5.5) : 1.0;
-	birdMod = (1.0 + randBip * birdieAmt * 0.75) * glitchBurst;
-	posMod = max(birdMod, 0.05);
+	// At high Birdies (birdieAmt -> 1.0), birdie spikes happen more frequently and ring out stronger!
+	glitchThresh = 0.92 - birdieAmt * 0.32;
+	glitchBurst = (randBip > glitchThresh) ? (2.2 + starveCurve * 6.5 + birdieAmt * 3.5) : 1.0;
+	birdMod = (1.0 + randBip * birdieAmt * 1.35) * glitchBurst;
+	posMod = max(birdMod, 0.02);
 	effEnv = bandEnv * posMod;
 
 	// Cubic soft-knee spectral hole gate (drops masked bands to 0.0 with zero click)
@@ -142,13 +144,14 @@ mp3ify_band_mask(bandEnv, nbrEnv, avgEnv, lossAmt, birdieAmt, randBip, bandIdxNo
 }
 
 // Quantizes a tracked band frequency `estHz` toward discrete FFT bin multiples (`binStepHz`)
-// with optional Birdie bin-hopping (`birdHopHz`) so resynthesized partials warble like real FFT bins.
+// with wide Birdie bin-hopping (`birdHopHz`) so resynthesized partials warble and arpeggiate
+// across FFT bins like extreme low-bitrate MP3/Opus birdies.
 snap_fft_bin_hz(estHz, centerHz, binStepHz, snapAmt, birdHopHz) {
-	clampedHz = clip(estHz, centerHz * 0.72, centerHz * 1.38);
+	clampedHz = clip(estHz, centerHz * 0.55, centerHz * 1.75);
 	shiftedHz = clampedHz + birdHopHz;
 	safeStep = max(binStepHz, 10.0);
 	qBinHz = round(shiftedHz / safeStep) * safeStep;
-	safeQHz = clip(qBinHz, centerHz * 0.65, centerHz * 1.48);
+	safeQHz = clip(qBinHz, centerHz * 0.42, centerHz * 2.35);
 	sAmt = clip(snapAmt, 0.0, 1.0);
 	return mix(clampedHz, safeQHz, sAmt);
 }
@@ -162,36 +165,36 @@ Buffer scope("degscope");
 
 // Global & Order parameters
 Param order_code(1234);
-Param wet(1.0);
+Param wet(0.5);
 Param out_gain(0.0);
 
 // Stage 0: BIT (Bit Reduction, Integer Wrap & Dither)
-Param bit_on(1.0);
-Param bits(8.0);
-Param wrap_amt(0.25);
-Param dither(0.20);
+Param bit_on(0.0);
+Param bits(16.0);
+Param wrap_amt(0.0);
+Param dither(0.0);
 
 // Stage 1: SR (Sample-Rate Reduction & Clock Jitter)
-Param sr_on(1.0);
-Param srate(12000.0);
-Param jitter(0.15);
+Param sr_on(0.0);
+Param srate(44100.0);
+Param jitter(0.0);
 Param sr_mode(0.0);
 
 // Stage 2: CODEC (Lossy MP3/AAC/Opus Spectral Holes, Pre-Echo & Birdies)
 Param codec_on(0.0);
-Param codec_loss(0.55);
-Param preecho(0.35);
-Param birdies(0.40);
+Param codec_loss(0.0);
+Param preecho(0.0);
+Param birdies(0.0);
 
 // Stage 3: TELE (Telecom Companding: u-Law, A-Law, ADPCM, GSM)
 Param tele_on(0.0);
 Param tele_mode(0.0);
-Param tele_line(0.60);
+Param tele_line(0.0);
 
 // Stage 4: FFT (Spectral Frame Glitch: Freeze, Scramble, Comb, Splat)
 Param fft_on(0.0);
 Param fft_mode(0.0);
-Param fft_glitch(0.50);
+Param fft_glitch(0.0);
 Param fft_frame(45.0);
 
 // PRNG & Order latch histories
@@ -283,13 +286,28 @@ History tRes1L(0); History tRes2L(0);
 History tRes1R(0); History tRes2R(0);
 History teleActHold(0);
 
-// Stage 4 (FFT) state
+// Stage 4 (FFT) state — 6-band SVF spectral bank + slewed routing & envelope gates
 History fPh(0);
-History fScram0(0.25); History fScram1(0.5); History fScram2(0.75);
-History fLp1L(0); History fLp1R(0);
-History fLp2L(0); History fLp2R(0);
-History fLp3L(0); History fLp3R(0);
-History fEnv0(0); History fEnv1(0); History fEnv2(0); History fEnv3(0);
+History fBp0L(0); History fLp0L(0); History fBp0R(0); History fLp0R(0);
+History fBp1L(0); History fLp1L(0); History fBp1R(0); History fLp1R(0);
+History fBp2L(0); History fLp2L(0); History fBp2R(0); History fLp2R(0);
+History fBp3L(0); History fLp3L(0); History fBp3R(0); History fLp3R(0);
+History fBp4L(0); History fLp4L(0); History fBp4R(0); History fLp4R(0);
+History fBp5L(0); History fLp5L(0); History fBp5R(0); History fLp5R(0);
+History fEnv0(0); History fEnv1(0); History fEnv2(0);
+History fEnv3(0); History fEnv4(0); History fEnv5(0);
+History fDenT0(1); History fDenT1(1); History fDenT2(1);
+History fDenT3(1); History fDenT4(1); History fDenT5(1);
+History fDenG0(1); History fDenG1(1); History fDenG2(1);
+History fDenG3(1); History fDenG4(1); History fDenG5(1);
+History fScrT0(1); History fScrT1(1); History fScrT2(1);
+History fScrT3(1); History fScrT4(1); History fScrT5(1);
+History fScrG0(1); History fScrG1(1); History fScrG2(1);
+History fScrG3(1); History fScrG4(1); History fScrG5(1);
+History fScrModPh(0); History fScrModHz(90);
+History fW0(1); History fW1(1); History fW2(1);
+History fW3(1); History fW4(1); History fW5(1);
+History fCombSamps(512);
 History fAp1L(0); History fAp2L(0); History fAp3L(0); History fAp4L(0);
 History fAp1R(0); History fAp2R(0); History fAp3R(0); History fAp4R(0);
 History fftActHold(0);
@@ -302,8 +320,8 @@ History peakInHold(0);
 History peakOutHold(0);
 
 // Delay lines for Stage 2 (Codec Lookahead Pre-Echo) and Stage 4 (FFT Spectral Frame Buffer)
-Delay codecDL(4096);
-Delay codecDR(4096);
+Delay codecDL(8192);
+Delay codecDR(8192);
 Delay fftDL(8192);
 Delay fftDR(8192);
 
@@ -463,24 +481,32 @@ for (slot = 0; slot < 5; slot += 1) {
 		codecDL.write(inCodL);
 		codecDR.write(inCodR);
 
-		// 1. True Lookahead Pre-Echo Envelope Swell (0..32 ms ahead of main delayed signal)
+		// 1. True Lookahead Pre-Echo & Multi-Tap MDCT Block Smear (up to 72 ms lookahead at 100% Echo)
 		inCodAbsL = abs(inCodL);
 		inCodAbsR = abs(inCodR);
 		inPeak = max(inCodAbsL, inCodAbsR);
-		cFastCoef = (inPeak > cFastEnv) ? 0.04 : 0.97;
+		cFastCoef = (inPeak > cFastEnv) ? 0.03 : (0.97 + preechoVal * 0.026);
 		cFastEnv = mix(inPeak, cFastEnv, cFastCoef);
-		cSlowEnv = mix(inPeak, cSlowEnv, 0.996);
-		transBurst = clip((cFastEnv - cSlowEnv * 1.18) * 4.5, 0.0, 1.0);
-		cPreSwell = mix(transBurst, cPreSwell, (transBurst > cPreSwell) ? 0.08 : 0.994);
+		cSlowEnv = mix(inPeak, cSlowEnv, 0.9965);
+		transBurst = clip((cFastEnv - cSlowEnv * 1.12) * 5.5, 0.0, 1.0);
+		cPreSwell = mix(transBurst, cPreSwell, (transBurst > cPreSwell) ? 0.05 : (0.992 + preechoVal * 0.007));
 
-		preDelaySamps = preechoVal * sr * 0.032;
+		preDelaySamps = preechoVal * sr * 0.072;
 		delL = codecDL.read(preDelaySamps, interp="linear");
 		delR = codecDR.read(preDelaySamps, interp="linear");
 
-		// Blend undelayed transient into the analyzer input so spectral partials bloom early!
-		preExcite = preechoVal * (0.25 + 0.75 * cPreSwell);
-		anaL = mix(delL, inCodL, preExcite * 0.75);
-		anaR = mix(delR, inCodR, preExcite * 0.75);
+		// 4-tap overlapping MDCT block smear across the 72 ms lookahead window (0%, 25%, 55%, 80%)
+		tapE1 = preDelaySamps * 0.22;
+		tapE2 = preDelaySamps * 0.48;
+		tapE3 = preDelaySamps * 0.76;
+		tapPost = preDelaySamps * 1.35;
+		earlySmearL = 0.38 * inCodL + 0.30 * codecDL.read(tapE1, interp="linear") + 0.24 * codecDL.read(tapE2, interp="linear") + 0.20 * codecDL.read(tapE3, interp="linear") + 0.18 * codecDL.read(tapPost, interp="linear");
+		earlySmearR = 0.38 * inCodR + 0.30 * codecDR.read(tapE2, interp="linear") + 0.24 * codecDR.read(tapE1, interp="linear") + 0.20 * codecDR.read(tapPost, interp="linear") + 0.18 * codecDR.read(tapE3, interp="linear");
+
+		// Blend smeared lookahead cloud into the analyzer input so spectral partials bloom early and smear in time!
+		preExcite = clip(preechoVal * (0.55 + 0.75 * cPreSwell), 0.0, 1.0);
+		anaL = mix(delL, earlySmearL, preExcite * 0.92);
+		anaR = mix(delR, earlySmearR, preExcite * 0.92);
 
 		// 2. 12-Band Overlapping SVF Analysis (Q ~ 5.5 so zero frequencies fall between bands)
 		svfDamp = 0.18;
@@ -563,24 +589,28 @@ for (slot = 0; slot < 5; slot += 1) {
 		cCnt10 = cCnt10 + 1; sg10 = (cBp10L >= 0) ? 1 : -1; cr10 = (sg10 > 0) * (cSign10 < 0); val10 = cr10 * (cCnt10 > 2) * (cCnt10 < 30); cPer10 = val10 ? mix(cCnt10, cPer10, 0.70) : cPer10; cCnt10 = cr10 ? 0 : cCnt10; cSign10 = sg10;
 		cCnt11 = cCnt11 + 1; sg11 = (cBp11L >= 0) ? 1 : -1; cr11 = (sg11 > 0) * (cSign11 < 0); val11 = cr11 * (cCnt11 > 2) * (cCnt11 < 22); cPer11 = val11 ? mix(cCnt11, cPer11, 0.70) : cPer11; cCnt11 = cr11 ? 0 : cCnt11; cSign11 = sg11;
 
-		// Track per-band envelopes (fast attack, liquid release)
-		pk0  = max(abs(cBp0L),  abs(cBp0R));  cEnv0  = mix(pk0,  cEnv0,  (pk0  > cEnv0)  ? 0.92 : 0.994);
-		pk1  = max(abs(cBp1L),  abs(cBp1R));  cEnv1  = mix(pk1,  cEnv1,  (pk1  > cEnv1)  ? 0.92 : 0.994);
-		pk2  = max(abs(cBp2L),  abs(cBp2R));  cEnv2  = mix(pk2,  cEnv2,  (pk2  > cEnv2)  ? 0.92 : 0.994);
-		pk3  = max(abs(cBp3L),  abs(cBp3R));  cEnv3  = mix(pk3,  cEnv3,  (pk3  > cEnv3)  ? 0.92 : 0.994);
-		pk4  = max(abs(cBp4L),  abs(cBp4R));  cEnv4  = mix(pk4,  cEnv4,  (pk4  > cEnv4)  ? 0.92 : 0.994);
-		pk5  = max(abs(cBp5L),  abs(cBp5R));  cEnv5  = mix(pk5,  cEnv5,  (pk5  > cEnv5)  ? 0.92 : 0.994);
-		pk6  = max(abs(cBp6L),  abs(cBp6R));  cEnv6  = mix(pk6,  cEnv6,  (pk6  > cEnv6)  ? 0.92 : 0.994);
-		pk7  = max(abs(cBp7L),  abs(cBp7R));  cEnv7  = mix(pk7,  cEnv7,  (pk7  > cEnv7)  ? 0.92 : 0.994);
-		pk8  = max(abs(cBp8L),  abs(cBp8R));  cEnv8  = mix(pk8,  cEnv8,  (pk8  > cEnv8)  ? 0.92 : 0.994);
-		pk9  = max(abs(cBp9L),  abs(cBp9R));  cEnv9  = mix(pk9,  cEnv9,  (pk9  > cEnv9)  ? 0.92 : 0.994);
-		pk10 = max(abs(cBp10L), abs(cBp10R)); cEnv10 = mix(pk10, cEnv10, (pk10 > cEnv10) ? 0.92 : 0.994);
-		pk11 = max(abs(cBp11L), abs(cBp11R)); cEnv11 = mix(pk11, cEnv11, (pk11 > cEnv11) ? 0.92 : 0.994);
+		// Track per-band envelopes:
+		// As `preechoVal` approaches 100%, attack softens into a pre-echo swell and release stretches
+		// up to 0.99965 (~160 ms MDCT block blur) so transients smear into liquid spectral clouds!
+		envAtk = 0.90 + preechoVal * 0.092;
+		envRel = 0.993 + preechoVal * 0.0066;
+		pk0  = max(abs(cBp0L),  abs(cBp0R));  cEnv0  = mix(pk0,  cEnv0,  (pk0  > cEnv0)  ? envAtk : envRel);
+		pk1  = max(abs(cBp1L),  abs(cBp1R));  cEnv1  = mix(pk1,  cEnv1,  (pk1  > cEnv1)  ? envAtk : envRel);
+		pk2  = max(abs(cBp2L),  abs(cBp2R));  cEnv2  = mix(pk2,  cEnv2,  (pk2  > cEnv2)  ? envAtk : envRel);
+		pk3  = max(abs(cBp3L),  abs(cBp3R));  cEnv3  = mix(pk3,  cEnv3,  (pk3  > cEnv3)  ? envAtk : envRel);
+		pk4  = max(abs(cBp4L),  abs(cBp4R));  cEnv4  = mix(pk4,  cEnv4,  (pk4  > cEnv4)  ? envAtk : envRel);
+		pk5  = max(abs(cBp5L),  abs(cBp5R));  cEnv5  = mix(pk5,  cEnv5,  (pk5  > cEnv5)  ? envAtk : envRel);
+		pk6  = max(abs(cBp6L),  abs(cBp6R));  cEnv6  = mix(pk6,  cEnv6,  (pk6  > cEnv6)  ? envAtk : envRel);
+		pk7  = max(abs(cBp7L),  abs(cBp7R));  cEnv7  = mix(pk7,  cEnv7,  (pk7  > cEnv7)  ? envAtk : envRel);
+		pk8  = max(abs(cBp8L),  abs(cBp8R));  cEnv8  = mix(pk8,  cEnv8,  (pk8  > cEnv8)  ? envAtk : envRel);
+		pk9  = max(abs(cBp9L),  abs(cBp9R));  cEnv9  = mix(pk9,  cEnv9,  (pk9  > cEnv9)  ? envAtk : envRel);
+		pk10 = max(abs(cBp10L), abs(cBp10R)); cEnv10 = mix(pk10, cEnv10, (pk10 > cEnv10) ? envAtk : envRel);
+		pk11 = max(abs(cBp11L), abs(cBp11R)); cEnv11 = mix(pk11, cEnv11, (pk11 > cEnv11) ? envAtk : envRel);
 
 		cAvg = (cEnv0 + cEnv1 + cEnv2 + cEnv3 + cEnv4 + cEnv5 + cEnv6 + cEnv7 + cEnv8 + cEnv9 + cEnv10 + cEnv11) * 0.08333333;
 
-		// 4. MDCT Frame Hop (~14..28 Hz) updates lateral psychoacoustic hole masks & FFT bin hop offsets
-		frameRate = 14.0 + birdiesVal * 16.0;
+		// 4. MDCT Frame Hop (~12..38 Hz) updates lateral psychoacoustic hole masks & wide FFT bin hop offsets
+		frameRate = 12.0 + birdiesVal * 26.0;
 		cFramePh = cFramePh + frameRate / sr;
 		if (cFramePh >= 1.0) {
 			cFramePh = fract(cFramePh);
@@ -623,25 +653,25 @@ for (slot = 0; slot < 5; slot += 1) {
 			cTgt10 = mp3ify_band_mask(cEnv10, nbr10, cAvg, codecLossVal, birdiesVal, r10, 0.90);
 			cTgt11 = mp3ify_band_mask(cEnv11, nbr11, cAvg, codecLossVal, birdiesVal, r11, 1.00);
 
-			// Birdie FFT bin-hop offsets (multiples of 43.066 Hz = 44100/1024 FFT bin spacing)
+			// Wide Birdie FFT bin-hop offsets (at 100% Birdies, hops +/- 4..8 FFT bins per frame for dramatic arpeggiated warble!)
 			binStep = 43.0664;
-			hopScale = birdiesVal * 1.6 * binStep;
-			cBirdHop0  = round(r0  * hopScale / binStep) * binStep * 0.5;
-			cBirdHop1  = round(r1  * hopScale / binStep) * binStep * 0.5;
-			cBirdHop2  = round(r2  * hopScale / binStep) * binStep;
-			cBirdHop3  = round(r3  * hopScale / binStep) * binStep;
-			cBirdHop4  = round(r4  * hopScale / binStep) * binStep;
-			cBirdHop5  = round(r5  * hopScale / binStep) * binStep;
-			cBirdHop6  = round(r6  * hopScale / binStep) * binStep * 1.5;
-			cBirdHop7  = round(r7  * hopScale / binStep) * binStep * 1.5;
-			cBirdHop8  = round(r8  * hopScale / binStep) * binStep * 2.0;
-			cBirdHop9  = round(r9  * hopScale / binStep) * binStep * 2.0;
-			cBirdHop10 = round(r10 * hopScale / binStep) * binStep * 2.5;
-			cBirdHop11 = round(r11 * hopScale / binStep) * binStep * 2.5;
+			hopScale = (birdiesVal + birdiesVal * birdiesVal * 2.2) * binStep;
+			cBirdHop0  = round(r0  * hopScale / binStep) * binStep * 0.65;
+			cBirdHop1  = round(r1  * hopScale / binStep) * binStep * 0.85;
+			cBirdHop2  = round(r2  * hopScale / binStep) * binStep * 1.15;
+			cBirdHop3  = round(r3  * hopScale / binStep) * binStep * 1.45;
+			cBirdHop4  = round(r4  * hopScale / binStep) * binStep * 1.80;
+			cBirdHop5  = round(r5  * hopScale / binStep) * binStep * 2.10;
+			cBirdHop6  = round(r6  * hopScale / binStep) * binStep * 2.40;
+			cBirdHop7  = round(r7  * hopScale / binStep) * binStep * 2.60;
+			cBirdHop8  = round(r8  * hopScale / binStep) * binStep * 2.50;
+			cBirdHop9  = round(r9  * hopScale / binStep) * binStep * 2.20;
+			cBirdHop10 = round(r10 * hopScale / binStep) * binStep * 1.80;
+			cBirdHop11 = round(r11 * hopScale / binStep) * binStep * 1.50;
 		}
 
-		// Smoothly interpolate sub-band gains (~30 ms MDCT window slew -> liquid, zero zipper noise)
-		gSlew = 0.9982;
+		// Smoothly interpolate sub-band gains (~35 ms MDCT window slew -> liquid, zero zipper noise)
+		gSlew = 0.9986;
 		cGain0  = mix(cTgt0,  cGain0,  gSlew);
 		cGain1  = mix(cTgt1,  cGain1,  gSlew);
 		cGain2  = mix(cTgt2,  cGain2,  gSlew);
@@ -670,7 +700,7 @@ for (slot = 0; slot < 5; slot += 1) {
 		p10 = max(cPer10, 2.0);  tHz10 = snap_fft_bin_hz(sr / p10, 7300.0, 172.26, snapStrength, cBirdHop10);
 		p11 = max(cPer11, 2.0);  tHz11 = snap_fft_bin_hz(sr / p11, 9800.0, 172.26, snapStrength, cBirdHop11);
 
-		hzSlew = 0.996;
+		hzSlew = 0.9975;
 		cHz0  = mix(tHz0,  cHz0,  hzSlew);
 		cHz1  = mix(tHz1,  cHz1,  hzSlew);
 		cHz2  = mix(tHz2,  cHz2,  hzSlew);
@@ -698,19 +728,52 @@ for (slot = 0; slot < 5; slot += 1) {
 		cOscPh10 = fract(cOscPh10 + cHz10 / sr);
 		cOscPh11 = fract(cOscPh11 + cHz11 / sr);
 
-		// Pure sinusoidal partials (zero FM distortion, 100% glassy spectral resynthesis!)
-		s0  = sin(cOscPh0  * 6.28318530718) * cEnv0  * cGain0;
-		s1  = sin(cOscPh1  * 6.28318530718) * cEnv1  * cGain1;
-		s2  = sin(cOscPh2  * 6.28318530718) * cEnv2  * cGain2;
-		s3  = sin(cOscPh3  * 6.28318530718) * cEnv3  * cGain3;
-		s4  = sin(cOscPh4  * 6.28318530718) * cEnv4  * cGain4;
-		s5  = sin(cOscPh5  * 6.28318530718) * cEnv5  * cGain5;
-		s6  = sin(cOscPh6  * 6.28318530718) * cEnv6  * cGain6;
-		s7  = sin(cOscPh7  * 6.28318530718) * cEnv7  * cGain7;
-		s8  = sin(cOscPh8  * 6.28318530718) * cEnv8  * cGain8;
-		s9  = sin(cOscPh9  * 6.28318530718) * cEnv9  * cGain9;
-		s10 = sin(cOscPh10 * 6.28318530718) * cEnv10 * cGain10;
-		s11 = sin(cOscPh11 * 6.28318530718) * cEnv11 * cGain11;
+		// Pure sinusoidal partials with Staggered MDCT Birdie Chirp Windows:
+		// As `birdiesVal` approaches 100%, each band pulses with a staggered sine-squared MDCT
+		// droplet envelope (`bw0..11`) and receives phantom birdie excitation from `cAvg`,
+		// creating unmistakable watery, chirping MP3/Opus birdie artifacts!
+		bDepth = birdiesVal * birdiesVal;
+		phRad = cFramePh * 6.28318530718;
+		bw0  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 0.0), 2.0), bDepth);
+		bw1  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 1.1), 2.0), bDepth);
+		bw2  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 2.2), 2.0), bDepth);
+		bw3  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 3.3), 2.0), bDepth);
+		bw4  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 4.4), 2.0), bDepth);
+		bw5  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 5.5), 2.0), bDepth);
+		bw6  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 0.5), 2.0), bDepth);
+		bw7  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 1.6), 2.0), bDepth);
+		bw8  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 2.7), 2.0), bDepth);
+		bw9  = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 3.8), 2.0), bDepth);
+		bw10 = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 4.9), 2.0), bDepth);
+		bw11 = mix(1.0, 0.25 + 1.15 * pow(0.5 + 0.5 * sin(phRad + 6.0), 2.0), bDepth);
+
+		// Phantom birdie cross-band excitation Focused on vocal/birdie bands (300..3800 Hz)
+		phantomEnv = cAvg * bDepth * 0.45;
+		bAmp0  = (cEnv0  + phantomEnv * 0.2) * cGain0  * bw0;
+		bAmp1  = (cEnv1  + phantomEnv * 0.4) * cGain1  * bw1;
+		bAmp2  = (cEnv2  + phantomEnv * 0.7) * cGain2  * bw2;
+		bAmp3  = (cEnv3  + phantomEnv * 0.9) * cGain3  * bw3;
+		bAmp4  = (cEnv4  + phantomEnv * 1.0) * cGain4  * bw4;
+		bAmp5  = (cEnv5  + phantomEnv * 1.0) * cGain5  * bw5;
+		bAmp6  = (cEnv6  + phantomEnv * 0.9) * cGain6  * bw6;
+		bAmp7  = (cEnv7  + phantomEnv * 0.7) * cGain7  * bw7;
+		bAmp8  = (cEnv8  + phantomEnv * 0.4) * cGain8  * bw8;
+		bAmp9  = (cEnv9  + phantomEnv * 0.2) * cGain9  * bw9;
+		bAmp10 = (cEnv10 + phantomEnv * 0.1) * cGain10 * bw10;
+		bAmp11 = (cEnv11 + phantomEnv * 0.1) * cGain11 * bw11;
+
+		s0  = sin(cOscPh0  * 6.28318530718) * bAmp0;
+		s1  = sin(cOscPh1  * 6.28318530718) * bAmp1;
+		s2  = sin(cOscPh2  * 6.28318530718) * bAmp2;
+		s3  = sin(cOscPh3  * 6.28318530718) * bAmp3;
+		s4  = sin(cOscPh4  * 6.28318530718) * bAmp4;
+		s5  = sin(cOscPh5  * 6.28318530718) * bAmp5;
+		s6  = sin(cOscPh6  * 6.28318530718) * bAmp6;
+		s7  = sin(cOscPh7  * 6.28318530718) * bAmp7;
+		s8  = sin(cOscPh8  * 6.28318530718) * bAmp8;
+		s9  = sin(cOscPh9  * 6.28318530718) * bAmp9;
+		s10 = sin(cOscPh10 * 6.28318530718) * bAmp10;
+		s11 = sin(cOscPh11 * 6.28318530718) * bAmp11;
 
 		evenSin = s0 + s2 + s4 + s6 + s8 + s10;
 		oddSin  = s1 + s3 + s5 + s7 + s9 + s11;
@@ -719,17 +782,15 @@ for (slot = 0; slot < 5; slot += 1) {
 		//   - Below 70% Damage: boosts surviving sparse partials to unity loudness (`cFastEnv`).
 		//   - Above 75%..100% Damage: rolls off makeup and gates whole frames so 100% Damage is
 		//     nearly silent except when an isolated sinusoidal birdie glitch pokes through!
-		outBandSum = cEnv0 * cGain0 + cEnv1 * cGain1 + cEnv2 * cGain2 + cEnv3 * cGain3
-		           + cEnv4 * cGain4 + cEnv5 * cGain5 + cEnv6 * cGain6 + cEnv7 * cGain7
-		           + cEnv8 * cGain8 + cEnv9 * cGain9 + cEnv10 * cGain10 + cEnv11 * cGain11;
+		outBandSum = bAmp0 + bAmp1 + bAmp2 + bAmp3 + bAmp4 + bAmp5 + bAmp6 + bAmp7 + bAmp8 + bAmp9 + bAmp10 + bAmp11;
 		safeOutBand = max(outBandSum, 0.002);
 		starveFade = 1.0 - clip((codecLossVal - 0.72) / 0.28, 0.0, 1.0) * 0.92;
-		maxMakeup = 1.0 + 8.5 * starveFade;
-		targetMakeup = clip((cFastEnv * 1.45 * starveFade) / safeOutBand, 0.15, maxMakeup);
+		maxMakeup = 1.0 + 5.5 * starveFade;
+		targetMakeup = clip((cFastEnv * 1.15 * starveFade) / safeOutBand, 0.15, maxMakeup);
 		codMakeup = mix(targetMakeup, codMakeup, 0.9985);
 
-		sineResL = (evenSin * 0.85 + oddSin * 0.45) * codMakeup * 1.35;
-		sineResR = (oddSin * 0.85 + evenSin * 0.45) * codMakeup * 1.35;
+		sineResL = (evenSin * 0.75 + oddSin * 0.40) * codMakeup;
+		sineResR = (oddSin * 0.75 + evenSin * 0.40) * codMakeup;
 
 		// Gated narrowband SVF sum (also scaled by codMakeup)
 		svfSumL = (cBp0L  * cGain0  + cBp1L  * cGain1  + cBp2L  * cGain2  + cBp3L  * cGain3
@@ -740,12 +801,12 @@ for (slot = 0; slot < 5; slot += 1) {
 		        +  cBp8R  * cGain8  + cBp9R  * cGain9  + cBp10R * cGain10 + cBp11R * cGain11) * codMakeup;
 
 		// Blend from narrowband gated SVF bank into 100% pure pitch-tracked sinusoidal resynthesis
-		resynthBlend = clip(0.45 + codecLossVal * 0.45 + birdiesVal * 0.55, 0.0, 1.0);
+		resynthBlend = clip(0.45 + codecLossVal * 0.45 + birdiesVal * 0.65 + preechoVal * 0.45, 0.0, 1.0);
 		codecWetL = mix(svfSumL, sineResL, resynthBlend);
 		codecWetR = mix(svfSumR, sineResR, resynthBlend);
 
 		// Pure linear crossfade (zero tanh distortion!)
-		activeAmt = clip(codecLossVal * 1.4 + birdiesVal * 0.85 + preechoVal * 0.7, 0.0, 1.0);
+		activeAmt = clip(codecLossVal * 1.4 + birdiesVal * 1.1 + preechoVal * 1.0, 0.0, 1.0);
 		sigL = clip(mix(delL, codecWetL, activeAmt), -1.2, 1.2);
 		sigR = clip(mix(delR, codecWetR, activeAmt), -1.2, 1.2);
 
@@ -828,8 +889,9 @@ for (slot = 0; slot < 5; slot += 1) {
 		modeOutL = (teleModeVal == 0) ? uL : ((teleModeVal == 1) ? aL : ((teleModeVal == 2) ? adpcmL : gsmL));
 		modeOutR = (teleModeVal == 0) ? uR : ((teleModeVal == 1) ? aR : ((teleModeVal == 2) ? adpcmR : gsmR));
 
-		sigL = clip(modeOutL, -1.0, 1.0);
-		sigR = clip(modeOutR, -1.0, 1.0);
+		teleWet = clip(teleLineVal * 2.5, 0.0, 1.0);
+		sigL = clip(mix(inTelL, modeOutL, teleWet), -1.0, 1.0);
+		sigR = clip(mix(inTelR, modeOutR, teleWet), -1.0, 1.0);
 		diffTelL = abs(sigL - inTelL);
 		diffTelR = abs(sigR - inTelR);
 		diffTel = max(diffTelL, diffTelR) + 0.12;
@@ -837,73 +899,132 @@ for (slot = 0; slot < 5; slot += 1) {
 	}
 
 	// ========================================================================
-	// STAGE 4: FFT SPECTRAL GLITCH (FREEZE, SCRAMBLE, COMB, PHASE SPLAT)
+	// STAGE 4: 4-MODE FFT SPECTRAL GLITCH
+	//   0: Den (Bad Spectral Denoiser / Underwater Musical Noise)
+	//   1: Scr (Click-Free 6-Band Spectral Matrix Scramble — smooth even at 5 ms!)
+	//   2: Spl (Dual Hann-Windowed Dispersive Phase Splat)
+	//   3: Cmb (Spectral Contrast Sieve + Resonant Pitch Comb)
 	// ========================================================================
 	if ((stId == 4) * (fft_on > 0.5)) {
 		inFftL = sigL;
 		inFftR = sigR;
 
-		frameSamps = clip(fftFrameMs * sr / 1000.0, 128.0, 7500.0);
-		loopTapL = fftDL.read(frameSamps, interp="linear");
-		loopTapR = fftDR.read(frameSamps, interp="linear");
-		freezeLock = (fftModeVal == 0) * (fftGlitchVal > 0.45);
-		writeL = freezeLock ? loopTapL : inFftL;
-		writeR = freezeLock ? loopTapR : inFftR;
-		fftDL.write(writeL);
-		fftDR.write(writeR);
+		frameSamps = clip(fftFrameMs * sr / 1000.0, 220.0, 7500.0);
+		stepInc = 1.0 / frameSamps;
 
-		fPh = fPh + 1.0 / frameSamps;
-		if (fPh >= 1.0) {
-			fPh = fract(fPh);
-			fScram0 = abs(noiseA) * 0.85 + 0.1;
-			fScram1 = abs(noiseB) * 0.85 + 0.1;
-			fScram2 = fract(abs(noiseA + noiseB) * 1.37) * 0.85 + 0.1;
-		}
+		oldPhA = fPh;
+		fPh = fract(oldPhA + stepInc);
 		phA = fPh;
 		phB = fract(fPh + 0.5);
+		wrapFrame = (phA < oldPhA);
+
 		wA = hann_win(phA);
 		wB = hann_win(phB);
 
-		tapA = phA * frameSamps;
-		tapB = phB * frameSamps;
-		frzL = fftDL.read(tapA, interp="linear") * wA + fftDL.read(tapB, interp="linear") * wB;
-		frzR = fftDR.read(tapA, interp="linear") * wA + fftDR.read(tapB, interp="linear") * wB;
+		fftDL.write(inFftL);
+		fftDR.write(inFftR);
 
-		fk1 = exp(-6.28318530718 * 350.0 / sr);
-		fk2 = exp(-6.28318530718 * 1400.0 / sr);
-		fk3 = exp(-6.28318530718 * 4500.0 / sr);
-		fLp1L = mix(inFftL, fLp1L, fk1); fLp1R = mix(inFftR, fLp1R, fk1);
-		fLp2L = mix(inFftL, fLp2L, fk2); fLp2R = mix(inFftR, fLp2R, fk2);
-		fLp3L = mix(inFftL, fLp3L, fk3); fLp3R = mix(inFftR, fLp3R, fk3);
+		// 6-Band Resonant Chamberlin SVF Spectral Bank (220, 520, 1150, 2400, 4600, 8200 Hz)
+		fDamp = 0.22;
+		fInL = inFftL * fDamp;
+		fInR = inFftR * fDamp;
 
-		fb0L = fLp1L;            fb0R = fLp1R;
-		fb1L = fLp2L - fLp1L;    fb1R = fLp2R - fLp1R;
-		fb2L = fLp3L - fLp2L;    fb2R = fLp3R - fLp2R;
-		fb3L = inFftL - fLp3L;   fb3R = inFftR - fLp3R;
+		ff0 = 2.0 * sin(3.14159265359 * 220.0 / sr);
+		fhp0L = fInL - fLp0L - fDamp * fBp0L; fBp0L = clip(fBp0L + ff0 * fhp0L, -2.0, 2.0); fLp0L = clip(fLp0L + ff0 * fBp0L, -2.0, 2.0);
+		fhp0R = fInR - fLp0R - fDamp * fBp0R; fBp0R = clip(fBp0R + ff0 * fhp0R, -2.0, 2.0); fLp0R = clip(fLp0R + ff0 * fBp0R, -2.0, 2.0);
 
-		dScram0 = fScram0 * frameSamps;
-		dScram1 = fScram1 * frameSamps;
-		dScram2 = fScram2 * frameSamps;
-		ringCarrier = sin(fPh * 6.28318530718 * 7.0);
-		scrL = fftDL.read(dScram0, interp="linear") * 0.45 + (fb1L * ringCarrier + fb2L * (-ringCarrier)) * 0.85 + fftDL.read(dScram2, interp="linear") * 0.45;
-		scrR = fftDR.read(dScram1, interp="linear") * 0.45 + (fb1R * ringCarrier + fb2R * (-ringCarrier)) * 0.85 + fftDR.read(dScram0, interp="linear") * 0.45;
+		ff1 = 2.0 * sin(3.14159265359 * 520.0 / sr);
+		fhp1L = fInL - fLp1L - fDamp * fBp1L; fBp1L = clip(fBp1L + ff1 * fhp1L, -2.0, 2.0); fLp1L = clip(fLp1L + ff1 * fBp1L, -2.0, 2.0);
+		fhp1R = fInR - fLp1R - fDamp * fBp1R; fBp1R = clip(fBp1R + ff1 * fhp1R, -2.0, 2.0); fLp1R = clip(fLp1R + ff1 * fBp1R, -2.0, 2.0);
 
-		fEnv0 = mix(abs(fb0L), fEnv0, 0.985);
-		fEnv1 = mix(abs(fb1L), fEnv1, 0.985);
-		fEnv2 = mix(abs(fb2L), fEnv2, 0.985);
-		fEnv3 = mix(abs(fb3L), fEnv3, 0.985);
-		fMax01 = max(fEnv0, fEnv1);
-		fMax23 = max(fEnv2, fEnv3);
-		fMax = max(fMax01, fMax23);
-		w0 = (fEnv0 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
-		w1 = (fEnv1 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
-		w2 = (fEnv2 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
-		w3 = (fEnv3 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
-		combTap = clip(frameSamps * 0.25, 32.0, 2048.0);
-		combL = fb0L * w0 + fb1L * w1 + fb2L * w2 + fb3L * w3 + fftDL.read(combTap, interp="linear") * 0.55;
-		combR = fb0R * w0 + fb1R * w1 + fb2R * w2 + fb3R * w3 + fftDR.read(combTap, interp="linear") * 0.55;
+		ff2 = 2.0 * sin(3.14159265359 * 1150.0 / sr);
+		fhp2L = fInL - fLp2L - fDamp * fBp2L; fBp2L = clip(fBp2L + ff2 * fhp2L, -2.0, 2.0); fLp2L = clip(fLp2L + ff2 * fBp2L, -2.0, 2.0);
+		fhp2R = fInR - fLp2R - fDamp * fBp2R; fBp2R = clip(fBp2R + ff2 * fhp2R, -2.0, 2.0); fLp2R = clip(fLp2R + ff2 * fBp2R, -2.0, 2.0);
 
-		apK = 0.65 - 0.55 * sin(fPh * 3.14159265359);
+		ff3 = 2.0 * sin(3.14159265359 * 2400.0 / sr);
+		fhp3L = fInL - fLp3L - fDamp * fBp3L; fBp3L = clip(fBp3L + ff3 * fhp3L, -2.0, 2.0); fLp3L = clip(fLp3L + ff3 * fBp3L, -2.0, 2.0);
+		fhp3R = fInR - fLp3R - fDamp * fBp3R; fBp3R = clip(fBp3R + ff3 * fhp3R, -2.0, 2.0); fLp3R = clip(fLp3R + ff3 * fBp3R, -2.0, 2.0);
+
+		ff4 = 2.0 * sin(3.14159265359 * 4600.0 / sr);
+		fhp4L = fInL - fLp4L - fDamp * fBp4L; fBp4L = clip(fBp4L + ff4 * fhp4L, -2.0, 2.0); fLp4L = clip(fLp4L + ff4 * fBp4L, -2.0, 2.0);
+		fhp4R = fInR - fLp4R - fDamp * fBp4R; fBp4R = clip(fBp4R + ff4 * fhp4R, -2.0, 2.0); fLp4R = clip(fLp4R + ff4 * fBp4R, -2.0, 2.0);
+
+		fHz5 = min(8200.0, sr * 0.42);
+		ff5 = 2.0 * sin(3.14159265359 * fHz5 / sr);
+		fhp5L = fInL - fLp5L - fDamp * fBp5L; fBp5L = clip(fBp5L + ff5 * fhp5L, -2.0, 2.0); fLp5L = clip(fLp5L + ff5 * fBp5L, -2.0, 2.0);
+		fhp5R = fInR - fLp5R - fDamp * fBp5R; fBp5R = clip(fBp5R + ff5 * fhp5R, -2.0, 2.0); fLp5R = clip(fLp5R + ff5 * fBp5R, -2.0, 2.0);
+
+		// Track 6 spectral band envelopes
+		fpk0 = max(abs(fBp0L), abs(fBp0R)); fEnv0 = mix(fpk0, fEnv0, 0.992);
+		fpk1 = max(abs(fBp1L), abs(fBp1R)); fEnv1 = mix(fpk1, fEnv1, 0.992);
+		fpk2 = max(abs(fBp2L), abs(fBp2R)); fEnv2 = mix(fpk2, fEnv2, 0.992);
+		fpk3 = max(abs(fBp3L), abs(fBp3R)); fEnv3 = mix(fpk3, fEnv3, 0.992);
+		fpk4 = max(abs(fBp4L), abs(fBp4R)); fEnv4 = mix(fpk4, fEnv4, 0.992);
+		fpk5 = max(abs(fBp5L), abs(fBp5R)); fEnv5 = mix(fpk5, fEnv5, 0.992);
+		fAvgEnv = (fEnv0 + fEnv1 + fEnv2 + fEnv3 + fEnv4 + fEnv5) * 0.1666667;
+
+		// Frame-clocked random target updates for Denoise (Mode 0) and Scramble (Mode 1)
+		if (wrapFrame) {
+			dTh = fAvgEnv * (0.45 + fftGlitchVal * 1.35);
+			fDenT0 = (fEnv0 * (1.0 + noiseA * 0.7) > dTh) ? 1.8 : 0.0;
+			fDenT1 = (fEnv1 * (1.0 + noiseB * 0.7) > dTh) ? 1.8 : 0.0;
+			fDenT2 = (fEnv2 * (1.0 - noiseA * 0.7) > dTh) ? 1.8 : 0.0;
+			fDenT3 = (fEnv3 * (1.0 - noiseB * 0.7) > dTh) ? 1.8 : 0.0;
+			fDenT4 = (fEnv4 * (1.0 + (noiseA + noiseB) * 0.5) > dTh) ? 1.8 : 0.0;
+			fDenT5 = (fEnv5 * (1.0 - (noiseA - noiseB) * 0.5) > dTh) ? 1.8 : 0.0;
+
+			fScrT0 = 0.2 + 1.5 * abs(sin(rollCounter * 1.3 + noiseA * 3.1));
+			fScrT1 = 0.2 + 1.5 * abs(cos(rollCounter * 2.1 + noiseB * 2.7));
+			fScrT2 = 0.2 + 1.5 * abs(sin(rollCounter * 2.9 - noiseA * 2.3));
+			fScrT3 = 0.2 + 1.5 * abs(cos(rollCounter * 3.7 + noiseB * 3.5));
+			fScrT4 = 0.2 + 1.5 * abs(sin(rollCounter * 4.3 - noiseB * 2.9));
+			fScrT5 = 0.2 + 1.5 * abs(cos(rollCounter * 5.1 + noiseA * 3.7));
+			srcStep = max(fftFrameMs, 5.0);
+			targetModHz = 35.0 + (abs(noiseA) * 320.0) * (45.0 / srcStep);
+			fScrModHz = clip(targetModHz, 25.0, 950.0);
+		}
+
+		// --------------------------------------------------------------------
+		// MODE 0: Den — Bad Spectral Denoiser / Underwater Musical Noise
+		// --------------------------------------------------------------------
+		fDenG0 = mix(fDenT0, fDenG0, 0.9965);
+		fDenG1 = mix(fDenT1, fDenG1, 0.9965);
+		fDenG2 = mix(fDenT2, fDenG2, 0.9965);
+		fDenG3 = mix(fDenT3, fDenG3, 0.9965);
+		fDenG4 = mix(fDenT4, fDenG4, 0.9965);
+		fDenG5 = mix(fDenT5, fDenG5, 0.9965);
+		denL = (fBp0L * fDenG0 + fBp1L * fDenG1 + fBp2L * fDenG2 + fBp3L * fDenG3 + fBp4L * fDenG4 + fBp5L * fDenG5) * 1.15;
+		denR = (fBp0R * fDenG0 + fBp1R * fDenG1 + fBp2R * fDenG2 + fBp3R * fDenG3 + fBp4R * fDenG4 + fBp5R * fDenG5) * 1.15;
+
+		// --------------------------------------------------------------------
+		// MODE 1: Scr — Click-Free 6-Band Spectral Matrix Scramble
+		// --------------------------------------------------------------------
+		fScrG0 = mix(fScrT0, fScrG0, 0.9985);
+		fScrG1 = mix(fScrT1, fScrG1, 0.9985);
+		fScrG2 = mix(fScrT2, fScrG2, 0.9985);
+		fScrG3 = mix(fScrT3, fScrG3, 0.9985);
+		fScrG4 = mix(fScrT4, fScrG4, 0.9985);
+		fScrG5 = mix(fScrT5, fScrG5, 0.9985);
+
+		fScrModPh = fract(fScrModPh + fScrModHz / sr);
+		cSc = cos(fScrModPh * 6.28318530718);
+		sSc = sin(fScrModPh * 6.28318530718);
+
+		scrB01L = (fBp0L * cSc - fLp0L * sSc) * fScrG0 + (fBp1L * cSc + fLp1L * sSc) * fScrG1;
+		scrB23L = (fBp2L * cSc - fLp2L * sSc) * fScrG2 + (fBp3L * cSc + fLp3L * sSc) * fScrG3;
+		scrB45L = (fBp4L * cSc - fLp4L * sSc) * fScrG4 + (fBp5L * cSc + fLp5L * sSc) * fScrG5;
+
+		scrB01R = (fBp0R * cSc + fLp0R * sSc) * fScrG1 + (fBp1R * cSc - fLp1R * sSc) * fScrG0;
+		scrB23R = (fBp2R * cSc + fLp2R * sSc) * fScrG3 + (fBp3R * cSc - fLp3R * sSc) * fScrG2;
+		scrB45R = (fBp4R * cSc + fLp4R * sSc) * fScrG5 + (fBp5R * cSc - fLp5R * sSc) * fScrG4;
+
+		scrL = (scrB01L + scrB23L + scrB45L) * 0.95;
+		scrR = (scrB01R + scrB23R + scrB45R) * 0.95;
+
+		// --------------------------------------------------------------------
+		// MODE 2: Spl — Dual Hann-Windowed Dispersive Phase Splat
+		// --------------------------------------------------------------------
+		apK = 0.38 - 0.28 * sin(fPh * 6.28318530718);
 		u1L = inFftL - apK * fAp1L; y1L = fAp1L + apK * u1L; fAp1L = clip(fixnan(u1L), -2.0, 2.0);
 		u2L = y1L    - apK * fAp2L; y2L = fAp2L + apK * u2L; fAp2L = clip(fixnan(u2L), -2.0, 2.0);
 		u3L = y2L    - apK * fAp3L; y3L = fAp3L + apK * u3L; fAp3L = clip(fixnan(u3L), -2.0, 2.0);
@@ -914,12 +1035,49 @@ for (slot = 0; slot < 5; slot += 1) {
 		u3R = y2R    - apK * fAp3R; y3R = fAp3R + apK * u3R; fAp3R = clip(fixnan(u3R), -2.0, 2.0);
 		u4R = y3R    - apK * fAp4R; y4R = fAp4R + apK * u4R; fAp4R = clip(fixnan(u4R), -2.0, 2.0);
 
-		chirpTap = (1.0 - phA * phA) * frameSamps * 0.5;
-		splatL = y4L * 0.65 + fftDL.read(chirpTap, interp="linear") * 0.55;
-		splatR = y4R * 0.65 + fftDR.read(chirpTap, interp="linear") * 0.55;
+		chirpTapA = (0.5 - 0.45 * cos(phA * 6.28318530718)) * frameSamps * 0.28;
+		chirpTapB = (0.5 - 0.45 * cos(phB * 6.28318530718)) * frameSamps * 0.28;
+		chirpL = fftDL.read(chirpTapA, interp="linear") * wA + fftDL.read(chirpTapB, interp="linear") * wB;
+		chirpR = fftDR.read(chirpTapA, interp="linear") * wA + fftDR.read(chirpTapB, interp="linear") * wB;
 
-		fftWetL = (fftModeVal == 0) ? frzL : ((fftModeVal == 1) ? scrL : ((fftModeVal == 2) ? combL : splatL));
-		fftWetR = (fftModeVal == 0) ? frzR : ((fftModeVal == 1) ? scrR : ((fftModeVal == 2) ? combR : splatR));
+		splatL = y4L * 0.55 + chirpL * 0.65;
+		splatR = y4R * 0.55 + chirpR * 0.65;
+
+		// --------------------------------------------------------------------
+		// MODE 3: Cmb — Smooth Spectral Contrast Sieve + Resonant Pitch Comb
+		// --------------------------------------------------------------------
+		fMax01 = max(fEnv0, fEnv1);
+		fMax23 = max(fEnv2, fEnv3);
+		fMax45 = max(fEnv4, fEnv5);
+		fMax0123 = max(fMax01, fMax23);
+		fMaxAll = max(fMax0123, fMax45);
+		fMax = max(fMaxAll, 0.0005);
+
+		contrastExp = 1.0 + fftGlitchVal * 4.5;
+		rE0 = clip(fEnv0 / fMax, 0.0, 1.0); tw0 = pow(rE0, contrastExp) * 1.45;
+		rE1 = clip(fEnv1 / fMax, 0.0, 1.0); tw1 = pow(rE1, contrastExp) * 1.45;
+		rE2 = clip(fEnv2 / fMax, 0.0, 1.0); tw2 = pow(rE2, contrastExp) * 1.45;
+		rE3 = clip(fEnv3 / fMax, 0.0, 1.0); tw3 = pow(rE3, contrastExp) * 1.45;
+		rE4 = clip(fEnv4 / fMax, 0.0, 1.0); tw4 = pow(rE4, contrastExp) * 1.45;
+		rE5 = clip(fEnv5 / fMax, 0.0, 1.0); tw5 = pow(rE5, contrastExp) * 1.45;
+
+		fW0 = mix(tw0, fW0, 0.996);
+		fW1 = mix(tw1, fW1, 0.996);
+		fW2 = mix(tw2, fW2, 0.996);
+		fW3 = mix(tw3, fW3, 0.996);
+		fW4 = mix(tw4, fW4, 0.996);
+		fW5 = mix(tw5, fW5, 0.996);
+
+		targetCombSamps = clip(frameSamps * 0.18, 32.0, 2048.0);
+		fCombSamps = mix(targetCombSamps, fCombSamps, 0.9985);
+		combTapL = fftDL.read(fCombSamps, interp="linear");
+		combTapR = fftDR.read(fCombSamps, interp="linear");
+		combL = (fBp0L * fW0 + fBp1L * fW1 + fBp2L * fW2 + fBp3L * fW3 + fBp4L * fW4 + fBp5L * fW5) * 0.85 + combTapL * 0.65;
+		combR = (fBp0R * fW0 + fBp1R * fW1 + fBp2R * fW2 + fBp3R * fW3 + fBp4R * fW4 + fBp5R * fW5) * 0.85 + combTapR * 0.65;
+
+		// Select active FFT mode 0..3 (0=Den, 1=Scr, 2=Spl, 3=Cmb)
+		fftWetL = (fftModeVal == 0) ? denL : ((fftModeVal == 1) ? scrL : ((fftModeVal == 2) ? splatL : combL));
+		fftWetR = (fftModeVal == 0) ? denR : ((fftModeVal == 1) ? scrR : ((fftModeVal == 2) ? splatR : combR));
 
 		mixFftL = mix(inFftL, fftWetL, fftGlitchVal);
 		mixFftR = mix(inFftR, fftWetR, fftGlitchVal);

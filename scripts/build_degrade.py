@@ -26,7 +26,6 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "degrade_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "degrade_ui.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "degrade_core.genexpr")
-SPEC_GEN_PATH = os.path.join(ROOT_DIR, "src", "degrade_spectral.genexpr")
 
 DEVICE_H = 169.0
 
@@ -44,48 +43,48 @@ COL_MST   = (0.92, 0.78, 0.34)
 PARAM_SPECS = {
     # Section 1: BIT
     "bits": (
-        "Bits", "Bits", 1.0, 16.0, 8.0, 1, 1.0, "bits", 1.0, "set_bits",
+        "Bits", "Bits", 1.0, 16.0, 16.0, 1, 1.0, "bits", 1.0, "set_bits",
         "Quantization bit depth (1.0 to 16.0 bits) with signal-following grit floor.",
     ),
     "wrap": (
-        "Wrap", "Wrap", 0.0, 100.0, 25.0, 5, 1.0, "wrap_amt", 0.01, "set_wrap",
+        "Wrap", "Wrap", 0.0, 100.0, 0.0, 5, 1.0, "wrap_amt", 0.01, "set_wrap",
         "Integer overflow wraparound (folds peaks around full scale like 8/16-bit game chips).",
     ),
     "dither": (
-        "Dither", "Dith", 0.0, 100.0, 20.0, 5, 1.0, "dither", 0.01, "set_dither",
+        "Dither", "Dith", 0.0, 100.0, 0.0, 5, 1.0, "dither", 0.01, "set_dither",
         "High-pass TPDF dither & noise floor texture injected before quantization.",
     ),
     # Section 2: SR
     "srate": (
-        "Sample Rate", "Rate", 100.0, 44100.0, 12000.0, 3, 2.2, "srate", 1.0, "set_srate",
+        "Sample Rate", "Rate", 100.0, 44100.0, 44100.0, 3, 2.2, "srate", 1.0, "set_srate",
         "Downsampling clock rate (100 Hz to 44.1 kHz).",
     ),
     "jitter": (
-        "Jitter", "Jit", 0.0, 100.0, 15.0, 5, 1.0, "jitter", 0.01, "set_jitter",
+        "Jitter", "Jit", 0.0, 100.0, 0.0, 5, 1.0, "jitter", 0.01, "set_jitter",
         "Stochastic sample-clock timing jitter and sideband fuzz.",
     ),
     # Section 3: CODEC
     "codec_loss": (
-        "Codec Damage", "Damage", 0.0, 100.0, 55.0, 5, 1.0, "codec_loss", 0.01, "set_codec_loss",
+        "Codec Damage", "Damage", 0.0, 100.0, 0.0, 5, 1.0, "codec_loss", 0.01, "set_codec_loss",
         "MP3/AAC/Opus perceptual masking damage (punches spectral holes in quieter sub-bands).",
     ),
     "preecho": (
-        "Pre-Echo", "Echo", 0.0, 100.0, 35.0, 5, 1.0, "preecho", 0.01, "set_preecho",
+        "Pre-Echo", "Echo", 0.0, 100.0, 0.0, 5, 1.0, "preecho", 0.01, "set_preecho",
         "Transient block-smear pre-echo before sharp drum/pluck attacks.",
     ),
     "birdies": (
-        "Birdies", "Bird", 0.0, 100.0, 40.0, 5, 1.0, "birdies", 0.01, "set_birdies",
+        "Birdies", "Bird", 0.0, 100.0, 0.0, 5, 1.0, "birdies", 0.01, "set_birdies",
         "MDCT frame-rate spectral scale-factor quantization chatter and warble.",
     ),
     # Section 4: TELECOM
     "tele_line": (
-        "Telecom Line", "Line", 0.0, 100.0, 60.0, 5, 1.0, "tele_line", 0.01, "set_tele_line",
+        "Telecom Line", "Line", 0.0, 100.0, 0.0, 5, 1.0, "tele_line", 0.01, "set_tele_line",
         "Telephone line bandwidth constriction, companding coarseness, and GSM frame dropouts.",
     ),
     # Section 5: FFT GLITCH
     "fft_glitch": (
-        "FFT Glitch", "Glitch", 0.0, 100.0, 50.0, 5, 1.0, "fft_glitch", 0.01, "set_fft_glitch",
-        "Spectral glitch intensity (Freeze, Scramble, Spectral Comb, Phase Splat).",
+        "FFT Glitch", "Glitch", 0.0, 100.0, 0.0, 5, 1.0, "fft_glitch", 0.01, "set_fft_glitch",
+        "Spectral glitch intensity (Denoise, Scramble, Phase Splat, Spectral Comb).",
     ),
     "fft_frame": (
         "FFT Frame", "Frame", 5.0, 150.0, 45.0, 2, 1.5, "fft_frame", 1.0, "set_fft_frame",
@@ -97,7 +96,7 @@ PARAM_SPECS = {
         "Master output drive/trim in dB before final soft ceiling.",
     ),
     "mix": (
-        "Mix", "Mix", 0.0, 100.0, 100.0, 5, 1.0, "wet", 0.01, "set_mix",
+        "Mix", "Mix", 0.0, 100.0, 50.0, 5, 1.0, "wet", 0.01, "set_mix",
         "Equal-power dry/wet mix.",
     ),
 }
@@ -106,11 +105,11 @@ PARAM_SPECS = {
 # key: (long_name, short_name, enums, initial, gen_param, ui_setter, help_text)
 ENUM_SPECS = {
     "bit_on": (
-        "Bit Enable", "BitOn", ["Off", "On"], 1, "bit_on", "set_bit_on",
+        "Bit Enable", "BitOn", ["Off", "On"], 0, "bit_on", "set_bit_on",
         "Enables Section 1 (Bit Reduction, Integer Wrap & Dither). Zero CPU when Off.",
     ),
     "sr_on": (
-        "SR Enable", "SROn", ["Off", "On"], 1, "sr_on", "set_sr_on",
+        "SR Enable", "SROn", ["Off", "On"], 0, "sr_on", "set_sr_on",
         "Enables Section 2 (Sample-Rate Reduction & Clock Jitter). Zero CPU when Off.",
     ),
     "codec_on": (
@@ -134,8 +133,8 @@ ENUM_SPECS = {
         "Selects u-Law, A-Law, IMA ADPCM slope-overload, or GSM 06.10 mobile voice codec.",
     ),
     "fft_mode": (
-        "FFT Mode", "FFTMod", ["Frz", "Scr", "Cmb", "Spl"], 0, "fft_mode", "set_fft_mode",
-        "Selects Spectral Freeze, Bin Scramble, Spectral Comb, or Dispersive Phase Splat.",
+        "FFT Mode", "FFTMod", ["Den", "Scr", "Spl", "Cmb"], 0, "fft_mode", "set_fft_mode",
+        "Selects Musical-Noise Denoiser (Den), Bin Scramble (Scr), Dispersive Phase Splat (Spl), or Spectral Comb (Cmb).",
     ),
 }
 
@@ -247,6 +246,37 @@ def make_toggle(key, x, y, w=26.0, h=14.0, color_rgb=COL_SR, text_off="Off", tex
             "saved_attribute_attributes": {"valueof": enum_valueof_dict(key)},
             "text": text_off,
             "texton": text_on,
+            "varname": long_name,
+        }
+    }
+
+
+def make_enum_slider(key, x, y, w=46.0, h=15.0, color_rgb=COL_FFT):
+    long_name, short, enums, initial, _gen, _ui, help_text = ENUM_SPECS[key]
+    vof = enum_valueof_dict(key)
+    vof["parameter_unitstyle"] = 9
+    return {
+        "box": {
+            "activebgcolor": [0.06, 0.075, 0.095, 1.0],
+            "activeslidercolor": [color_rgb[0] * 0.72, color_rgb[1] * 0.72, color_rgb[2] * 0.72, 1.0],
+            "activetricolor2": [color_rgb[0], color_rgb[1], color_rgb[2], 1.0],
+            "annotation": help_text,
+            "annotation_name": long_name,
+            "appearance": 2,
+            "bordercolor": [color_rgb[0] * 0.65, color_rgb[1] * 0.65, color_rgb[2] * 0.65, 1.0],
+            "fontface": 1,
+            "fontsize": 9.0,
+            "id": f"obj-ctrl-{key}",
+            "maxclass": "live.numbox",
+            "numinlets": 1,
+            "numoutlets": 2,
+            "outlettype": ["", "float"],
+            "parameter_enable": 1,
+            "patching_rect": [float(x), 195.0, float(w), float(h)],
+            "presentation": 1,
+            "presentation_rect": [float(x), float(y), float(w), float(h)],
+            "saved_attribute_attributes": {"valueof": vof},
+            "textcolor": [0.95, 0.97, 1.0, 1.0],
             "varname": long_name,
         }
     }
@@ -377,16 +407,18 @@ def layout_strip():
         make_label("obj-hdr-tele", "4. TELE", 530, 8, 54, 14, size=9.0, color=COL_TELE),
         make_toggle("tele_on", 586, 8, 28, 14, color_rgb=COL_TELE),
         make_dial("tele_line", 550, 34, 44, 46, color_rgb=COL_TELE),
-        make_tab("tele_mode", 530, 96, 84, 34, color_rgb=COL_TELE, num_rows=2),
-        make_label("obj-note-tel", " Voice Compand", 530, 136, 84, 13, size=8.0, color=(0.55, 0.60, 0.68), bold=False),
+        make_label("obj-lbl-telm", "Codec Type", 530, 94, 84, 12, size=8.0, color=COL_TELE),
+        make_enum_slider("tele_mode", 530, 108, 84, 16, color_rgb=COL_TELE),
+        make_label("obj-note-tel", " Voice Compand", 530, 134, 84, 13, size=8.0, color=(0.55, 0.60, 0.68), bold=False),
 
         # Section 5: 5. FFT (x=622..714)
         make_label("obj-hdr-fft", "5. FFT", 626, 8, 54, 14, size=9.0, color=COL_FFT),
         make_toggle("fft_on", 682, 8, 28, 14, color_rgb=COL_FFT),
         make_dial("fft_glitch", 625, 34, 42, 46, color_rgb=COL_FFT),
         make_dial("fft_frame", 669, 34, 42, 46, color_rgb=COL_FFT),
-        make_tab("fft_mode", 626, 96, 84, 34, color_rgb=COL_FFT, num_rows=2),
-        make_label("obj-note-fft", " Spectral Glitch", 626, 136, 84, 13, size=8.0, color=(0.55, 0.60, 0.68), bold=False),
+        make_label("obj-lbl-fftm", "Glitch Mode", 626, 94, 84, 12, size=8.0, color=COL_FFT),
+        make_enum_slider("fft_mode", 626, 108, 84, 16, color_rgb=COL_FFT),
+        make_label("obj-note-fft", " Spectral Glitch", 626, 134, 84, 13, size=8.0, color=(0.55, 0.60, 0.68), bold=False),
 
         # Master Strip: OUT (x=718..774)
         make_label("obj-hdr-mst", "OUT", 724, 8, 44, 14, size=9.0, color=COL_MST, align=1),
@@ -448,12 +480,14 @@ def layout_compact():
         # Column 4: TELE (x=368..416)
         make_toggle("tele_on", 370, 10, 44, 14, color_rgb=COL_TELE, text_off="4.TEL", text_on="4.TEL"),
         make_label("obj-lbl-telm", "Codec", 370, 28, 44, 12, size=7.5, color=COL_TELE),
-        make_tab("tele_mode", 369, 42, 46, 46, color_rgb=COL_TELE, num_rows=2),
+        make_enum_slider("tele_mode", 370, 41, 44, 15, color_rgb=COL_TELE),
 
         # Column 5: FFT (x=420..470)
         make_toggle("fft_on", 422, 10, 46, 14, color_rgb=COL_FFT, text_off="5.FFT", text_on="5.FFT"),
-        make_numbox("fft_frame", 422, 27, 46, 15, color_rgb=COL_FFT),
-        make_tab("fft_mode", 422, 45, 46, 43, color_rgb=COL_FFT, num_rows=2),
+        make_label("obj-lbl-fftf", "Frame", 422, 28, 46, 12, size=7.5, color=COL_FFT),
+        make_numbox("fft_frame", 422, 41, 46, 15, color_rgb=COL_FFT),
+        make_label("obj-lbl-fftm", "Mode", 422, 60, 46, 12, size=7.5, color=COL_FFT),
+        make_enum_slider("fft_mode", 422, 73, 46, 15, color_rgb=COL_FFT),
 
         # Bottom Row: 6 Hero Dials (y=104..150)
         make_dial("bits",       212, 104, 42, 46, color_rgb=COL_BIT),
@@ -511,11 +545,10 @@ def layout_hero():
         make_numbox("preecho",   414, 82,  42, 15, color_rgb=COL_CODEC),
         make_numbox("birdies",   414, 100, 42, 15, color_rgb=COL_CODEC),
 
-        make_tab("tele_mode",    322, 122, 92, 32, color_rgb=COL_TELE, num_rows=2),
-        make_tab("fft_mode",     418, 122, 84, 32, color_rgb=COL_FFT,  num_rows=2),
-
-        make_numbox("fft_frame", 460, 82,  42, 15, color_rgb=COL_FFT),
-        make_dial("mix",         506, 96,  42, 46, color_rgb=COL_MST),
+        make_enum_slider("tele_mode", 460, 82,  42, 15, color_rgb=COL_TELE),
+        make_numbox("fft_frame",      460, 100, 42, 15, color_rgb=COL_FFT),
+        make_enum_slider("fft_mode",  460, 118, 42, 15, color_rgb=COL_FFT),
+        make_dial("mix",              506, 96,  42, 46, color_rgb=COL_MST),
     ]
 
     panels = [
@@ -526,24 +559,16 @@ def layout_hero():
     return dev_w, viz_rect, ui_boxes, panels
 
 
-def build_patcher(variant="compact"):
+def build_patcher():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
-    with open(SPEC_GEN_PATH, "r", encoding="utf-8") as f:
-        spec_gen_code = f.read()
 
     combined_ui_js = config_js + "\n\n" + ui_js
-
-    if variant == "compact":
-        dev_w, viz_rect, ui_boxes, panels = layout_compact()
-    elif variant == "hero":
-        dev_w, viz_rect, ui_boxes, panels = layout_hero()
-    else:
-        dev_w, viz_rect, ui_boxes, panels = layout_strip()
+    dev_w, viz_rect, ui_boxes, panels = layout_compact()
 
     dsp_boxes = [
         # Audio I/O
@@ -863,22 +888,8 @@ def write_amxd(patcher_dict, out_path):
 
 
 def main():
-    chosen = sys.argv[1].lower() if len(sys.argv) > 1 else "compact"
-    if chosen not in ("strip", "compact", "hero"):
-        chosen = "compact"
-
-    variants = {
-        "strip":   os.path.join(ROOT_DIR, "devices", "Degrade Strip.amxd"),
-        "compact": os.path.join(ROOT_DIR, "devices", "Degrade Compact.amxd"),
-        "hero":    os.path.join(ROOT_DIR, "devices", "Degrade Hero.amxd"),
-    }
-
-    for key, path in variants.items():
-        p = build_patcher(key)
-        write_amxd(p, path)
-
     main_path = os.path.join(ROOT_DIR, "devices", "Degrade.amxd")
-    write_amxd(build_patcher(chosen), main_path)
+    write_amxd(build_patcher(), main_path)
 
 
 if __name__ == "__main__":

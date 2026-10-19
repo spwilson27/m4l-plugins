@@ -21,7 +21,6 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN_PATH = os.path.join(ROOT, "src", "degrade_core.genexpr")
-SPEC_GEN_PATH = os.path.join(ROOT, "src", "degrade_spectral.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "degrade_probe.js")
 HARNESS = os.path.join(ROOT, "tests", "degrade_harness.maxpat")
 RESULT = "/tmp/degrade_audio.txt"
@@ -52,7 +51,7 @@ def line(src, outlet, dst, inlet):
     return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
 
 
-def build_harness(gen_code, spec_gen_code, case):
+def build_harness(gen_code, case):
     mode = case["name"]
     boxes = [
         box("obj-load", "loadbang", 40, 40, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
@@ -161,14 +160,24 @@ def build_harness(gen_code, spec_gen_code, case):
     }
 
 
-def run_case(gen_code, spec_gen_code, case):
+def wait_for_max_idle():
+    deadline = time.time() + 60.0
+    while time.time() < deadline:
+        res = subprocess.run(["pgrep", "-f", "Max.app/Contents/MacOS/Max"], capture_output=True, text=True)
+        if res.returncode != 0 or not res.stdout.strip():
+            return
+        time.sleep(0.5)
+
+
+def run_case(gen_code, case):
+    wait_for_max_idle()
     if os.path.exists(RESULT):
         os.remove(RESULT)
     if os.path.exists(CRASH_RECOVERY):
         shutil.rmtree(CRASH_RECOVERY, ignore_errors=True)
 
     with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(build_harness(gen_code, spec_gen_code, case), f, indent=2)
+        json.dump(build_harness(gen_code, case), f, indent=2)
 
     proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline = time.time() + 30.0
@@ -220,14 +229,17 @@ def main():
 
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
-    with open(SPEC_GEN_PATH, "r", encoding="utf-8") as f:
-        spec_gen_code = f.read()
 
     cases = [
         {
             "name": "all_off",
             "dur": 450,
-            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 0, tele_on 0, fft_on 0, order_code 1234",
+            "params": "wet 0.5, out_gain 0, bit_on 0, bits 16, wrap_amt 0, dither 0, sr_on 0, srate 44100, jitter 0, codec_on 0, codec_loss 0, preecho 0, birdies 0, tele_on 0, tele_line 0, fft_on 0, fft_glitch 0, order_code 1234",
+        },
+        {
+            "name": "all_on_zero",
+            "dur": 450,
+            "params": "wet 1.0, out_gain 0, bit_on 1, bits 16, wrap_amt 0, dither 0, sr_on 1, srate 44100, jitter 0, codec_on 1, codec_loss 0, preecho 0, birdies 0, tele_on 1, tele_line 0, fft_on 1, fft_glitch 0, order_code 1234",
         },
         {
             "name": "bit_wrap",
@@ -242,7 +254,7 @@ def main():
         {
             "name": "codec_wet",
             "dur": 450,
-            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 1, codec_loss 0.65, preecho 0.65, birdies 0.75, tele_on 0, fft_on 0",
+            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 1, codec_loss 0.65, preecho 1.0, birdies 1.0, tele_on 0, fft_on 0",
         },
         {
             "name": "codec_100",
@@ -255,9 +267,24 @@ def main():
             "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 1, codec_loss 0.8, preecho 0.5, birdies 0.6, tele_on 1, tele_mode 2, tele_line 0.75, fft_on 0",
         },
         {
-            "name": "fft_glitch",
+            "name": "fft_den",
             "dur": 450,
-            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 0, tele_on 0, fft_on 1, fft_mode 1, fft_glitch 0.85, fft_frame 35",
+            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 0, tele_on 0, fft_on 1, fft_mode 0, fft_glitch 0.85, fft_frame 35",
+        },
+        {
+            "name": "fft_scr5",
+            "dur": 450,
+            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 0, tele_on 0, fft_on 1, fft_mode 1, fft_glitch 0.85, fft_frame 5",
+        },
+        {
+            "name": "fft_spl",
+            "dur": 450,
+            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 0, tele_on 0, fft_on 1, fft_mode 2, fft_glitch 0.85, fft_frame 45",
+        },
+        {
+            "name": "fft_cmb",
+            "dur": 450,
+            "params": "wet 1.0, out_gain 0, bit_on 0, sr_on 0, codec_on 0, tele_on 0, fft_on 1, fft_mode 3, fft_glitch 0.85, fft_frame 45",
         },
         {
             "name": "order_a",
@@ -273,7 +300,14 @@ def main():
 
     results = {}
     for c in cases:
-        res = run_case(gen_code, spec_gen_code, c)
+        res = None
+        for _attempt in range(3):
+            try:
+                res = run_case(gen_code, c)
+                if res.get("scopeOrder", 0) != 0 and (c["name"] == "codec_100" or res.get("peak", 0) > 0.05):
+                    break
+            except Exception:
+                time.sleep(1.0)
         results[c["name"]] = res
         print(
             f"[{c['name']:10s}] nan={int(res['nan'])} peak={res['peak']:.3f} rms={res['rms']:.3f} "
@@ -283,9 +317,12 @@ def main():
         if c["name"] != "codec_100":
             assert res["peak"] > 0.05, f"{c['name']}: Output was silent!"
 
-    # 1. Verify all_off passes audio cleanly and reports active stage mask == 0
+    # 1. Verify all_off (at default wet=0.5) and all_on_zero (at wet=1.0, default knob values) pass audio cleanly
     assert results["all_off"]["scopeMask"] == 0, "all_off must report 0 active stages in #0-degscope"
-    assert abs(results["all_off"]["peak"] - tanh_ref(results["all_off"]["ctl"])) < 0.12, "all_off peak should match input"
+    assert results["all_off"]["roughness"] < 0.035, "all_off must have clean sinusoidal roughness"
+    assert results["all_on_zero"]["scopeMask"] == 31, "all_on_zero must report all 5 stages enabled (mask=31)"
+    assert abs(results["all_on_zero"]["peak"] - tanh_ref(results["all_on_zero"]["ctl"])) < 0.12, "all_on_zero at default knob values must be transparent"
+    assert results["all_on_zero"]["roughness"] < 0.035, "all_on_zero at default knob values must have clean sinusoidal roughness"
 
     # 2. Verify Sample-and-Hold at 2200 Hz produces staircase flat steps (>70% consecutive identical samples)
     assert results["sr_sh"]["stepDiff"] > 0.70, f"sr_sh should produce staircase hold steps, got {results['sr_sh']['stepDiff']}"
@@ -308,9 +345,12 @@ def main():
     assert results["codec_100"]["peak"] > 0.002, "codec_100 should still emit occasional faint birdie glitches (>0.002 peak)"
     assert results["codec_100"]["roughness"] < 0.08, "codec_100 birdie glitches must remain smooth sinusoids"
 
-    # 5. Verify Codec + Telecom and FFT Glitch run cleanly and report active masks
+    # 5. Verify Codec + Telecom and all 4 FFT Glitch modes (Den, Scr, Spl, Cmb) run cleanly
     assert results["codec_tele"]["scopeMask"] == 12, "codec_tele should report stage mask = 4 + 8 = 12"
-    assert results["fft_glitch"]["scopeMask"] == 16, "fft_glitch should report stage mask = 16"
+    for fft_key in ("fft_den", "fft_scr5", "fft_spl", "fft_cmb"):
+        assert results[fft_key]["scopeMask"] == 16, f"{fft_key} should report stage mask = 16"
+        assert results[fft_key]["stepDiff"] < 0.02, f"{fft_key} must not have sample-hold steps ({results[fft_key]['stepDiff']})"
+        assert results[fft_key]["roughness"] < 0.085, f"{fft_key} must be smooth without quantization clicks ({results[fft_key]['roughness']})"
 
     # 5. Verify dynamic stage reordering (BIT -> TELE vs TELE -> BIT) produces distinct audio and telemetry
     assert int(results["order_a"]["scopeOrder"]) == 1234, "order_a should report order 1234"

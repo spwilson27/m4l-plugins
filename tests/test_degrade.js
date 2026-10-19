@@ -27,7 +27,6 @@ const vm = require("vm");
 
 const ROOT = path.resolve(__dirname, "..");
 const GEN_PATH = path.join(ROOT, "src", "degrade_core.genexpr");
-const SPEC_GEN_PATH = path.join(ROOT, "src", "degrade_spectral.genexpr");
 const cfg = require(path.join(ROOT, "src", "degrade_config.js"));
 
 // ============================================================================
@@ -74,7 +73,7 @@ assert.ok(Math.abs(aLawVal) > 0.1 && Math.abs(aLawVal) <= 1.0, "A-Law output mus
 assert.ok(adpcmVal < 0.3, "ADPCM at high Line degradation must slew-limit fast transient jumps (slope overload)");
 assert.ok(Math.abs(gsmVal) > 0.1 && Math.abs(gsmVal) <= 1.0, "GSM output must be bounded");
 
-// FFT Glitch modes
+// FFT Glitch modes (all 4 modes: 0=Den, 1=Scr, 2=Spl, 3=Cmb)
 const origBands = [0.1, 0.8, 0.2, 0.9, 0.15, 0.7, 0.05, 0.6];
 for (let m = 0; m < 4; m++) {
     const glitched = cfg.computeFftGlitchBands(origBands, m, 0.85, 1.2);
@@ -86,11 +85,8 @@ for (let m = 0; m < 4; m++) {
 // 2. GenExpr Ordering, Lexer Rules & Zero-CPU Bypass Gate Verification
 // ============================================================================
 const gen = fs.readFileSync(GEN_PATH, "utf8");
-const specGen = fs.readFileSync(SPEC_GEN_PATH, "utf8");
 assert.ok(!gen.match(/\be\d/), "Never use e0..e9 identifiers in GenExpr (parsed as Euler's constant)");
-assert.ok(!specGen.match(/\be\d/), "Never use e0..e9 identifiers in spectral GenExpr");
 assert.ok(!gen.includes("delay("), "GenExpr must use Delay.read / Delay.write instead of delay()");
-assert.ok(!specGen.includes("delay("), "Spectral GenExpr must use Delay.read / Delay.write instead of delay()");
 
 const fnAt = gen.indexOf("slew(target, coef)");
 const bufAt = gen.indexOf("\nBuffer ");
@@ -172,14 +168,45 @@ function verifyAmxd(amxdFile, expectedWidth) {
         }
     }
 
-    // Verify all 21 parameters exist and route into obj-gen
+    // Verify all 21 parameters exist, route into obj-gen, and default to transparent values (Mix = 50%)
+    const expectedDefaults = {
+        bits: 16.0,
+        wrap: 0.0,
+        dither: 0.0,
+        srate: 44100.0,
+        jitter: 0.0,
+        codec_loss: 0.0,
+        preecho: 0.0,
+        birdies: 0.0,
+        tele_line: 0.0,
+        fft_glitch: 0.0,
+        fft_frame: 45.0,
+        out_gain: 0.0,
+        mix: 50.0,
+        bit_on: 0,
+        sr_on: 0,
+        codec_on: 0,
+        tele_on: 0,
+        fft_on: 0,
+        sr_mode: 0,
+        tele_mode: 0,
+        fft_mode: 0,
+    };
     for (const key of ALL_PARAM_KEYS) {
         const ctrlId = `obj-ctrl-${key}`;
         const prepId = `obj-prep-${key}`;
         assert.ok(byId[ctrlId], `${amxdFile}: Missing control ${ctrlId}`);
         assert.ok(byId[prepId], `${amxdFile}: Missing prepend ${prepId}`);
         assert.ok(hasLine(prepId, "obj-gen"), `${amxdFile}: ${prepId} must connect to obj-gen`);
+        const initVal = byId[ctrlId].saved_attribute_attributes.valueof.parameter_initial[0];
+        assert.strictEqual(initVal, expectedDefaults[key], `${amxdFile}: Expected default ${expectedDefaults[key]} for ${key}, got ${initVal}`);
     }
+    assert.strictEqual(byId["obj-ctrl-fft_mode"].maxclass, "live.numbox", `${amxdFile}: fft_mode must be a live.numbox text slider`);
+    assert.deepStrictEqual(
+        byId["obj-ctrl-fft_mode"].saved_attribute_attributes.valueof.parameter_enum,
+        ["Den", "Scr", "Spl", "Cmb"],
+        `${amxdFile}: fft_mode must have ["Den", "Scr", "Spl", "Cmb"]`
+    );
 
     // Verify background panels are at the end of `boxes` with background: 1
     let seenPanel = false;
@@ -223,9 +250,9 @@ function verifyAmxd(amxdFile, expectedWidth) {
 }
 
 const uiCode = verifyAmxd("Degrade.amxd", 480.0);
-verifyAmxd("Degrade Strip.amxd", 780.0);
-verifyAmxd("Degrade Compact.amxd", 480.0);
-verifyAmxd("Degrade Hero.amxd", 560.0);
+assert.ok(!fs.existsSync(path.join(ROOT, "devices", "Degrade Strip.amxd")), "Extra variant Degrade Strip.amxd should be removed");
+assert.ok(!fs.existsSync(path.join(ROOT, "devices", "Degrade Compact.amxd")), "Extra variant Degrade Compact.amxd should be removed");
+assert.ok(!fs.existsSync(path.join(ROOT, "devices", "Degrade Hero.amxd")), "Extra variant Degrade Hero.amxd should be removed");
 
 // ============================================================================
 // 4. Verify v8ui Runtime: Pixel Coords, Serialization, Undo, Reorder & Paint

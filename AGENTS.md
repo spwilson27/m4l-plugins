@@ -34,6 +34,9 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Percipitator
      python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"
+
+     # Degrade
+     python3 scripts/build_degrade.py && node tests/test_degrade.js && python3 scripts/render_preview.py "devices/Degrade.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -242,6 +245,36 @@ Audio checks (real Max render): `python3 scripts/run_reciprocator_audio_tests.py
 python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"
 ```
 Audio checks (real Max render): `python3 scripts/run_percipitator_audio_tests.py`
+
+---
+
+## 10. Architecture of `devices/Degrade.amxd`
+
+### Presentation Layout (`480 x 169` px — Compact Matrix Rack)
+- **Left Panel (`x = 6..204`)**:
+  - Top bar (`y = 7..22`): Title (`Degrade`) and `Output` gain numbox (`0.0 dB`).
+  - Interactive Chain & Dual-Mode Visualizer (`obj-viz`, `v8ui`, `x = 10, y = 26, w = 190, h = 136`):
+    - **Top Reorderable 5-Stage Pill Bar (`y = 3..23`)**: Displays `[BIT] > [SR] > [COD] > [TELE] > [FFT]`. Drag any pill horizontally to reorder the DSP signal chain (`order_code`), or click its left power LED dot to toggle section enable (`0` CPU when disabled).
+    - **Viewport (`y = 26..114`)**: Switches between **Technical Mode** (input silhouette vs. quantized staircase waveform + 12-band `SPEC` spectral hole analyzer) and **Abstract Mode** (fractured phase-space CRT glitch field).
+    - **Bottom Bar (`y = 117..133`)**: Single geometric vector icon button to toggle Technical / Abstract mode alongside the live chain order readout (`TECH BIT>SR>COD>TEL>FFT`).
+- **Right Panel (`x = 208..474`)**:
+  - **Top 5-Column Dark LCD Micro-Matrix (`y = 6..94`)**:
+    - `1.BIT` (`Wrap` `%`, `Dith` `%`), `2.SR` (`Jitter` `%`, `Mode` `S&H`/`Filt`), `3.COD` (`Echo` `%`, `Bird` `%`), `4.TEL` (`Codec` text slider: `uLaw`, `ALaw`, `ADPC`, `GSM`), and `5.FFT` (`Frame` `ms`, `Mode` text slider: `Den`, `Scr`, `Spl`, `Cmb`).
+  - **Bottom 6 Hero Dials (`y = 104..150`)**: `Bits` (`1..16`, default `16`), `Rate` (`100..44100 Hz`, default `44100 Hz`), `Damage` (`0..100%`), `Line` (`0..100%`), `Glitch` (`0..100%`), and `Mix` (`0..100%`, default `50%`). All parameters default to transparent settings.
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/degrade_core.genexpr` — Dynamic 5-slot router (`order_code`) executing only enabled sections (`if ((stId == k) * (<stage>_on > 0.5))`):
+  - **Stage 0 (`BIT`)**: Mid-tread bit quantizer (`1..16` bits), signal-following envelope grit floor, integer overflow wrap (`wrap_amt`), and high-passed TPDF dither (`dither`).
+  - **Stage 1 (`SR`)**: Sample-rate decimation (`100..44100 Hz`), chaotic clock jitter (`jitter`), and `S&H` vs reconstructed `Filt` mode.
+  - **Stage 2 (`COD`)**: SpecOps `MP3ify` / `MAIM` style 12-band zero-crossing pitch-tracked sinusoidal MDCT resynthesizer with lateral psychoacoustic spectral holes, $x^{3/4}$ quantization, `72 ms` multi-tap lookahead block smear (`preecho`), staggered MDCT chirp windows + wide FFT-bin-hopping birdies (`birdies`), and extreme packet starvation at `70..100%` `Damage` (nearly silent at `100%` except for isolated sinusoidal birdie glitches).
+  - **Stage 3 (`TEL`)**: Telephone bandpass constriction + voice sample clock + `uLaw`, `ALaw`, `ADPC` (IMA ADPCM slope overload), and `GSM` (RPE-LTP formant buzz + frame dropouts).
+  - **Stage 4 (`FFT`)**: 6-band resonant SVF spectral glitch engine with 4 modes: `Den` (musical-noise spectral denoiser), `Scr` (click-free 6-band SSB quadrature matrix scramble, smooth even at `5 ms`), `Spl` (dual Hann-windowed dispersive phase splat), and `Cmb` (power-law spectral contrast sieve + pitch comb).
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_degrade.py && node tests/test_degrade.js && python3 scripts/render_preview.py "devices/Degrade.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_degrade_audio_tests.py`
 
 
 
