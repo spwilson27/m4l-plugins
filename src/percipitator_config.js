@@ -111,12 +111,12 @@ function computeSieveGain(bandIndex, sieveMode) {
 }
 
 // Per-band Spectral Tilt gain multiplier (tiltBipolar in [-1..+1]):
-//   -1.0 (-100%): darkens upper partials, boosts low partials
-//   +1.0 (+100%): brightens upper partials, attenuates low partials
+//   -1.0 (-100%): strongly darkens upper partials (+36 dB low / -36 dB high)
+//   +1.0 (+100%): strongly brightens upper partials (-36 dB low / +36 dB high)
 function computeTiltGain(bandIndex, tiltBipolar) {
     const t = clamp(tiltBipolar, -1, 1);
     const pos = ((bandIndex / Math.max(1, NUM_BANDS - 1)) - 0.5) * 2.0; // -1..+1
-    return Math.pow(2.0, t * pos * 1.5);
+    return Math.pow(2.0, t * pos * 6.0);
 }
 
 // Phase warp modifiers matching warp_phase() in src/percipitator_core.genexpr:

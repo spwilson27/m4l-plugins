@@ -109,7 +109,7 @@ band_weight(bandIdx, sieveMode, tiltBipolar) {
 	sieveG = (m == 0) ? sAll : ((m == 1) ? sOdd : ((m == 2) ? sEven : ((m == 3) ? sSprs : sRise)));
 
 	pos = ((bandIdx / 15.0) - 0.5) * 2.0;
-	tiltG = pow(2.0, clip(tiltBipolar, -1, 1) * pos * 1.5);
+	tiltG = pow(2.0, clip(tiltBipolar, -1, 1) * pos * 6.0);
 	return sieveG * tiltG;
 }
 

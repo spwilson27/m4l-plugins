@@ -45,7 +45,8 @@ assert.ok(Math.abs(cfg.warpPhase(0.25, 0, 0.85) - 0.25) > 0.05, "Bend mode must 
 assert.ok(Math.abs(cfg.warpPhase(0.25, 1, 0.85) - 0.25) > 0.05, "Asym mode must skew phase");
 assert.strictEqual(cfg.computeSieveGain(0, 1), 1.0, "Odd sieve keeps band 0");
 assert.ok(cfg.computeSieveGain(1, 1) < 0.1, "Odd sieve attenuates band 1");
-assert.ok(cfg.computeTiltGain(15, 1.0) > cfg.computeTiltGain(0, 1.0) * 2.0, "Positive tilt boosts high bands over low bands");
+// Verify max tilt is doubled again (2^6 = 64x at +100% vs 2^-6 = 1/64x at -100%)
+assert.ok(Math.abs(cfg.computeTiltGain(15, 1.0) - 64.0) < 1e-6, "Doubled max tilt must reach 64x (+36 dB) at highest band");
 
 // Scale quantizer & Sidechain MIDI chord tracker
 const cMajMask = cfg.DEFAULT_SCALE_MASK;
@@ -80,7 +81,7 @@ assert.strictEqual(jsonLen, raw.length - 32, "Payload length mismatch");
 
 const patcher = JSON.parse(raw.slice(32).toString("utf8")).patcher;
 assert.strictEqual(patcher.openinpresentation, 1, "Must open in presentation mode");
-assert.strictEqual(patcher.openrect[2], 380.0, "Expected width 380");
+assert.strictEqual(patcher.openrect[2], 408.0, "Expected width 408");
 assert.strictEqual(patcher.openrect[3], 169.0, "Expected height 169");
 
 const boxes = patcher.boxes.map((b) => b.box);
@@ -92,6 +93,11 @@ assert.ok(byId["obj-midiin"] && byId["obj-midiin"].text === "midiin", "Missing m
 assert.ok(byId["obj-midiparse"] && byId["obj-midiparse"].text === "midiparse", "Missing midiparse for sidechain MIDI");
 assert.ok(byId["obj-gen"] && byId["obj-gen"].maxclass === "gen.codebox~", "Missing gen.codebox~");
 assert.strictEqual(byId["obj-gen"].code, gen, "Embedded GenExpr mismatch");
+assert.ok(gen.includes("* pos * 6.0"), "GenExpr tilt exponent must be doubled to 6.0");
+assert.strictEqual(byId["obj-ctrl-pitch"].appearance, 3, "Pitch must use appearance 3 (Bipolar center fill)");
+assert.strictEqual(byId["obj-ctrl-fshift"].appearance, 3, "Shift must use appearance 3 (Bipolar center fill)");
+assert.strictEqual(byId["obj-ctrl-warp"].appearance, 3, "Warp must use appearance 3 (Bipolar center fill)");
+assert.strictEqual(byId["obj-ctrl-tilt"].appearance, 3, "Tilt must use appearance 3 (Bipolar center fill)");
 assert.strictEqual(byId["obj-msg-gen-buf"].text, "wt #0-percipwt, scope #0-percipscope", "Gen buffer bind message mismatch");
 
 // Verify requested removals & placements:
@@ -108,11 +114,11 @@ assert.strictEqual(byId["obj-ctrl-wtpos"].saved_attribute_attributes.valueof.par
 assert.strictEqual(byId["obj-ctrl-warp"].saved_attribute_attributes.valueof.parameter_initial[0], 50.0, "Default Warp must be 50%");
 
 // Verify Blur is in Column 1 Row 5 (y=103, where Gate used to be) and Vol is right above Mix in Column 2 (y=123 above y=143)
-assert.strictEqual(byId["obj-ctrl-blur"].presentation_rect[0], 254.0, "Blur must be in Column 1 (x=254)");
+assert.strictEqual(byId["obj-ctrl-blur"].presentation_rect[0], 260.0, "Blur must be in Column 1 (x=260)");
 assert.strictEqual(byId["obj-ctrl-blur"].presentation_rect[1], 103.0, "Blur must sit at y=103 where Gate used to be");
-assert.strictEqual(byId["obj-ctrl-resynthgain"].presentation_rect[0], 330.0, "Vol must be in Column 2 (x=330)");
+assert.strictEqual(byId["obj-ctrl-resynthgain"].presentation_rect[0], 344.0, "Vol must be in Column 2 (x=344)");
 assert.strictEqual(byId["obj-ctrl-resynthgain"].presentation_rect[1], 123.0, "Vol must sit at y=123 right above Mix");
-assert.strictEqual(byId["obj-ctrl-mix"].presentation_rect[0], 330.0, "Mix must be in Column 2 (x=330)");
+assert.strictEqual(byId["obj-ctrl-mix"].presentation_rect[0], 344.0, "Mix must be in Column 2 (x=344)");
 assert.strictEqual(byId["obj-ctrl-mix"].presentation_rect[1], 143.0, "Mix must sit at y=143 right below Vol");
 
 for (const b of boxes) {
@@ -147,7 +153,7 @@ for (let i = 0; i < visibleInteractive.length; i++) {
 for (const b of boxes) {
     if (b.presentation === 1 && !b.hidden && b.presentation_rect) {
         const r = b.presentation_rect;
-        assert.ok(r[0] >= 0 && r[1] >= 0 && r[0] + r[2] <= 380 && r[1] + r[3] <= 169, `${b.id} outside 380x169`);
+        assert.ok(r[0] >= 0 && r[1] >= 0 && r[0] + r[2] <= 408 && r[1] + r[3] <= 169, `${b.id} outside 408x169`);
     }
 }
 

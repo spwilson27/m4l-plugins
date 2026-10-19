@@ -27,7 +27,7 @@ UI_PATH = os.path.join(ROOT_DIR, "src", "percipitator_ui.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "percipitator_core.genexpr")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Percipitator.amxd")
 
-DEVICE_W = 380.0
+DEVICE_W = 408.0
 DEVICE_H = 169.0
 
 # Continuous parameter specs:
@@ -104,12 +104,21 @@ def valueof_dict(key):
     return v
 
 
-def make_numbox(key, x, y, w=44.0, h=15.0, color_rgb=(0.45, 0.86, 0.96), appearance=2):
+def make_numbox(key, x, y, w=48.0, h=15.0, color_rgb=(0.45, 0.86, 0.96), appearance=2):
     long_name, _short, _lo, _hi, _init, _unit, _exp, _gen, _sc, help_text = PARAM_SPECS[key]
+    bg = [0.06, 0.075, 0.095, 1.0]
+    # Blend slider fill color with the dark background (38% color + 62% dark bg) so the value text
+    # in Ableton Live is always crisp and legible over the fill bar (matching the semi-transparent preview).
+    bar_rgb = [
+        round(bg[0] * 0.62 + color_rgb[0] * 0.38, 4),
+        round(bg[1] * 0.62 + color_rgb[1] * 0.38, 4),
+        round(bg[2] * 0.62 + color_rgb[2] * 0.38, 4),
+        0.42,
+    ]
     return {
         "box": {
-            "activebgcolor": [0.06, 0.075, 0.095, 1.0],
-            "activeslidercolor": [color_rgb[0], color_rgb[1], color_rgb[2], 1.0],
+            "activebgcolor": bg,
+            "activeslidercolor": bar_rgb,
             "annotation": help_text,
             "annotation_name": long_name,
             "appearance": int(appearance),
@@ -233,54 +242,56 @@ def build():
     ui_boxes = [
         make_label("obj-title", "Percipitator", 10, 7, 110, 15, size=11.0, color=(0.92, 0.96, 1.0)),
 
-        # Column 1 (x=226..296): PITCH / ENV horizontal value bars
-        make_label("obj-hdr-c1", "PITCH / ENV", 226, 8, 70, 12, size=7.5, color=cyan),
-        make_label("obj-lbl-pitch", "Pitch", 226, 24, 28, 13, color=cyan),
-        make_numbox("pitch", 254, 23, 44, 15, color_rgb=cyan, appearance=2),
-        make_label("obj-lbl-shift", "Shift", 226, 44, 28, 13, color=cyan),
-        make_numbox("fshift", 254, 43, 44, 15, color_rgb=cyan, appearance=2),
-        make_label("obj-lbl-str", "Strch", 226, 64, 28, 13, color=cyan),
-        make_numbox("stretch", 254, 63, 44, 15, color_rgb=cyan, appearance=2),
-        make_label("obj-lbl-snap", "Snap", 226, 84, 28, 13, color=cyan),
-        make_numbox("snap", 254, 83, 44, 15, color_rgb=cyan, appearance=2),
-        make_label("obj-lbl-blur", "Blur", 226, 104, 28, 13, color=cyan),
-        make_numbox("blur", 254, 103, 44, 15, color_rgb=cyan, appearance=2),
-        make_label("obj-lbl-dec", "Decay", 226, 124, 28, 13, color=cyan),
-        make_numbox("decay", 254, 123, 44, 15, color_rgb=cyan, appearance=2),
-        make_label("obj-lbl-atk", "Atk", 226, 144, 28, 13, color=cyan),
-        make_numbox("attack", 254, 143, 44, 15, color_rgb=cyan, appearance=2),
+        # Column 1 (x=230..308): PITCH / ENV horizontal value bars
+        # Pitch & Shift use appearance=3 (Bipolar center-out fill)
+        make_label("obj-hdr-c1", "PITCH / ENV", 230, 8, 76, 12, size=7.5, color=cyan),
+        make_label("obj-lbl-pitch", "Pitch", 230, 24, 30, 13, color=cyan),
+        make_numbox("pitch", 260, 23, 48, 15, color_rgb=cyan, appearance=3),
+        make_label("obj-lbl-shift", "Shift", 230, 44, 30, 13, color=cyan),
+        make_numbox("fshift", 260, 43, 48, 15, color_rgb=cyan, appearance=3),
+        make_label("obj-lbl-str", "Strch", 230, 64, 30, 13, color=cyan),
+        make_numbox("stretch", 260, 63, 48, 15, color_rgb=cyan, appearance=2),
+        make_label("obj-lbl-snap", "Snap", 230, 84, 30, 13, color=cyan),
+        make_numbox("snap", 260, 83, 48, 15, color_rgb=cyan, appearance=2),
+        make_label("obj-lbl-blur", "Blur", 230, 104, 30, 13, color=cyan),
+        make_numbox("blur", 260, 103, 48, 15, color_rgb=cyan, appearance=2),
+        make_label("obj-lbl-dec", "Decay", 230, 124, 30, 13, color=cyan),
+        make_numbox("decay", 260, 123, 48, 15, color_rgb=cyan, appearance=2),
+        make_label("obj-lbl-atk", "Atk", 230, 144, 30, 13, color=cyan),
+        make_numbox("attack", 260, 143, 48, 15, color_rgb=cyan, appearance=2),
 
-        # Column 2 (x=302..372): WAVE / TONE horizontal value bars (with Vol right above Mix)
-        make_label("obj-hdr-c2", "WAVE / TONE", 302, 8, 70, 12, size=7.5, color=amber),
-        make_label("obj-lbl-wtpos", "Wave", 302, 24, 28, 13, color=amber),
-        make_numbox("wtpos", 330, 23, 44, 15, color_rgb=amber, appearance=2),
-        make_label("obj-lbl-wtmode", "Mode", 302, 44, 28, 13, color=amber),
+        # Column 2 (x=314..392): WAVE / TONE horizontal value bars
+        # Warp & Tilt use appearance=3 (Bipolar center-out fill)
+        make_label("obj-hdr-c2", "WAVE / TONE", 314, 8, 76, 12, size=7.5, color=amber),
+        make_label("obj-lbl-wtpos", "Wave", 314, 24, 30, 13, color=amber),
+        make_numbox("wtpos", 344, 23, 48, 15, color_rgb=amber, appearance=2),
+        make_label("obj-lbl-wtmode", "Mode", 314, 44, 30, 13, color=amber),
         make_enum_numbox(
             "obj-wt-mode", "WT Mode", "WTMode",
             ["Bend", "Asym", "Sync", "Fold"], 0,
-            330, 43, 44, 15, amber,
+            344, 43, 48, 15, amber,
             "Scroll to select the wavetable phase warp mode: Bend, Asym, Sync, or Fold.",
         ),
-        make_label("obj-lbl-warp", "Warp", 302, 64, 28, 13, color=amber),
-        make_numbox("warp", 330, 63, 44, 15, color_rgb=amber, appearance=2),
-        make_label("obj-lbl-sieve", "Sieve", 302, 84, 28, 13, color=emerald),
+        make_label("obj-lbl-warp", "Warp", 314, 64, 30, 13, color=amber),
+        make_numbox("warp", 344, 63, 48, 15, color_rgb=amber, appearance=3),
+        make_label("obj-lbl-sieve", "Sieve", 314, 84, 30, 13, color=emerald),
         make_enum_numbox(
             "obj-sieve", "Partial Sieve", "Sieve",
             ["All", "Odd", "Even", "Sprs", "Rise"], 0,
-            330, 83, 44, 15, emerald,
+            344, 83, 48, 15, emerald,
             "Scroll to filter active partial bands: All, Odd, Even, Sparse, or Rising.",
         ),
-        make_label("obj-lbl-tilt", "Tilt", 302, 104, 28, 13, color=emerald),
-        make_numbox("tilt", 330, 103, 44, 15, color_rgb=emerald, appearance=2),
-        make_label("obj-lbl-vol", "Vol", 302, 124, 28, 13, color=amber),
-        make_numbox("resynthgain", 330, 123, 44, 15, color_rgb=amber, appearance=2),
-        make_label("obj-lbl-mix", "Mix", 302, 144, 28, 13, color=amber),
-        make_numbox("mix", 330, 143, 44, 15, color_rgb=amber, appearance=2),
+        make_label("obj-lbl-tilt", "Tilt", 314, 104, 30, 13, color=emerald),
+        make_numbox("tilt", 344, 103, 48, 15, color_rgb=emerald, appearance=3),
+        make_label("obj-lbl-vol", "Vol", 314, 124, 30, 13, color=amber),
+        make_numbox("resynthgain", 344, 123, 48, 15, color_rgb=amber, appearance=2),
+        make_label("obj-lbl-mix", "Mix", 314, 144, 30, 13, color=amber),
+        make_numbox("mix", 344, 143, 48, 15, color_rgb=amber, appearance=2),
     ]
 
     panels = [
         make_panel("obj-panel-left", 6, 5, 212, 159),
-        make_panel("obj-panel-right", 222, 5, 152, 159),
+        make_panel("obj-panel-right", 222, 5, 180, 159),
     ]
 
     boxes = list(ui_boxes)
