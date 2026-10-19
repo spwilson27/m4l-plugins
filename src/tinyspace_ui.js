@@ -23,6 +23,7 @@ var phases = [];
 var seededOnce = false;
 var charInitOnce = false;
 var meterTask = null;
+var meterRest = false;
 
 for (var i = 0; i < LINE_COUNT; i++) {
     meters.push(0);
@@ -47,6 +48,7 @@ function set_seed(v) {
     pokeConfig();
     if (seededOnce) outlet(0, "bang");
     seededOnce = true;
+    meterRest = false;
     mgraphics.redraw();
 }
 
@@ -56,11 +58,13 @@ function set_character(v) {
     pokeConfig();
     if (charInitOnce) outlet(0, "bang");
     charInitOnce = true;
+    meterRest = false;
     mgraphics.redraw();
 }
 
 function set_viz_mode(v) {
     vizOverlay = (v | 0) ? 1 : 0;
+    meterRest = false;
     mgraphics.redraw();
 }
 
@@ -85,7 +89,18 @@ function pullMeters() {
 function loadbang() {
     if (typeof Task === "function") {
         meterTask = new Task(function () {
+            if (!meterBuf) {
+                mgraphics.redraw();
+                return;
+            }
             pullMeters();
+            var maxMeter = 0;
+            for (var i = 0; i < LINE_COUNT; i++) {
+                if (meters[i] > maxMeter) maxMeter = meters[i];
+            }
+            // One resting frame, then leave the canvas alone until audio or a seed change.
+            if (maxMeter < 1e-4 && meterRest) return;
+            meterRest = maxMeter < 1e-4;
             mgraphics.redraw();
         }, this);
         meterTask.interval = 33;
