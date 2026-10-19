@@ -100,38 +100,46 @@ function scan(left, right, sr) {
     var zc = 0;
     var zeroSteps = 0;
     var hashAcc = 0;
-    var start = Math.floor(left.length * 0.35);
-    var end = Math.floor(left.length * 0.95);
+    var firstActive = -1;
+    var lastActive = -1;
+
+    for (var k = 0; k < left.length; k++) {
+        var lv = left[k];
+        var rv = right[k];
+        if (lv !== lv || lv === Infinity || lv === -Infinity) nan++;
+        else if (Math.abs(lv) > peak) peak = Math.abs(lv);
+        if (rv !== rv || rv === Infinity || rv === -Infinity) nan++;
+        else if (Math.abs(rv) > peak) peak = Math.abs(rv);
+        if (Math.abs(lv) > 1e-4 || Math.abs(rv) > 1e-4) {
+            if (firstActive < 0) firstActive = k;
+            lastActive = k;
+        }
+    }
+
+    var start = firstActive >= 0 ? Math.min(lastActive, firstActive + 128) : 0;
+    var end = lastActive >= 0 ? Math.max(start, lastActive - 128) : 0;
     var winPeak = 0;
     var count = 0;
     var activeSteps = 0;
     var d2Sq = 0;
 
-    for (var i = 0; i < left.length; i++) {
+    for (var i = start; i < end; i++) {
         var v = left[i];
-        var vr = right[i];
-        if (v !== v || v === Infinity || v === -Infinity) nan++;
-        else if (Math.abs(v) > peak) peak = Math.abs(v);
-        if (vr !== vr || vr === Infinity || vr === -Infinity) nan++;
-        else if (Math.abs(vr) > peak) peak = Math.abs(vr);
-
-        if (i >= start && i < end) {
-            if (Math.abs(v) > winPeak) winPeak = Math.abs(v);
-            sq += v * v;
-            if (i > start + 1) {
-                var d2 = v - 2.0 * left[i - 1] + left[i - 2];
-                d2Sq += d2 * d2;
-            }
-            if (i > start && (Math.abs(v) > 1e-4 || Math.abs(left[i - 1]) > 1e-4)) {
-                if ((left[i - 1] >= 0 && v < 0) || (left[i - 1] < 0 && v >= 0)) zc++;
-                if (Math.abs(v - left[i - 1]) < 1e-6) zeroSteps++;
-                activeSteps++;
-            }
-            if ((count % 16) === 0) {
-                hashAcc += Math.round(v * 1000) * ((count % 97) + 1);
-            }
-            count++;
+        if (Math.abs(v) > winPeak) winPeak = Math.abs(v);
+        sq += v * v;
+        if (i > start + 1) {
+            var d2 = v - 2.0 * left[i - 1] + left[i - 2];
+            d2Sq += d2 * d2;
         }
+        if (i > start && (Math.abs(v) > 1e-4 || Math.abs(left[i - 1]) > 1e-4)) {
+            if ((left[i - 1] >= 0 && v < 0) || (left[i - 1] < 0 && v >= 0)) zc++;
+            if (Math.abs(v - left[i - 1]) < 1e-6) zeroSteps++;
+            activeSteps++;
+        }
+        if ((count % 16) === 0) {
+            hashAcc += Math.round(v * 1000) * ((count % 97) + 1);
+        }
+        count++;
     }
     var rms = count > 0 ? Math.sqrt(sq / count) : 0;
     var d2Rms = count > 2 ? Math.sqrt(d2Sq / (count - 2)) : 0;

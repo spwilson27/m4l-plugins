@@ -70,11 +70,11 @@ def build_harness(gen_code, case):
         box("obj-bind", "scope #0-degscope", 200, 100, 180, 20, maxclass="message", numinlets=2, numoutlets=1),
         box("obj-scope", "buffer~ #0-degscope @samps 32", 520, 100, 210, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         box("obj-recbuf", "buffer~ rec 2000 2", 520, 160, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        # Rich two-tone test source (220 Hz + 1760 Hz)
+        # Rich two-tone test source (220 Hz + 1760 Hz, or 0.0 when case["silent"] is True)
         box("obj-osc1", "cycle~ 220", 200, 130, 70, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
         box("obj-osc2", "cycle~ 1760", 280, 130, 75, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-g1", "*~ 0.45", 200, 160, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-g2", "*~ 0.20", 280, 160, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+        box("obj-g1", "*~ 0.0" if case.get("silent") else "*~ 0.45", 200, 160, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+        box("obj-g2", "*~ 0.0" if case.get("silent") else "*~ 0.20", 280, 160, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
         box("obj-sum", "+~", 200, 185, 40, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
         {
             "box": {
@@ -232,6 +232,12 @@ def main():
 
     cases = [
         {
+            "name": "idle_silent",
+            "dur": 450,
+            "silent": True,
+            "params": "wet 1.0, out_gain 0, bit_on 1, bits 4, wrap_amt 0.8, dither 1.0, sr_on 1, srate 4000, jitter 0.8, codec_on 1, codec_loss 0.8, preecho 0.8, birdies 0.8, tele_on 1, tele_line 0.8, fft_on 1, fft_glitch 0.8, order_code 1234",
+        },
+        {
             "name": "all_off",
             "dur": 450,
             "params": "wet 0.5, out_gain 0, bit_on 0, bits 16, wrap_amt 0, dither 0, sr_on 0, srate 44100, jitter 0, codec_on 0, codec_loss 0, preecho 0, birdies 0, tele_on 0, tele_line 0, fft_on 0, fft_glitch 0, order_code 1234",
@@ -304,7 +310,7 @@ def main():
         for _attempt in range(3):
             try:
                 res = run_case(gen_code, c)
-                if res.get("scopeOrder", 0) != 0 and (c["name"] == "codec_100" or res.get("peak", 0) > 0.05):
+                if res.get("scopeOrder", 0) != 0 and (c["name"] in ("codec_100", "idle_silent") or res.get("peak", 0) > 0.05):
                     break
             except Exception:
                 time.sleep(1.0)
@@ -314,14 +320,18 @@ def main():
             f"stepDiff={res['stepDiff']:.3f} rough={res['roughness']:.4f} mask={int(res['scopeMask'])} order={int(res['scopeOrder'])}"
         )
         assert res["nan"] == 0, f"{c['name']}: Produced NaN samples!"
-        if c["name"] != "codec_100":
+        if c["name"] not in ("codec_100", "idle_silent"):
             assert res["peak"] > 0.05, f"{c['name']}: Output was silent!"
+
+    # 0. Verify idle_silent skips DSP & PRNG/dither when no audio is coming in (peak == 0.0)
+    assert results["idle_silent"]["peak"] < 1e-6, f"idle_silent must be 0.0 when no audio is coming in, got {results['idle_silent']['peak']}"
+    assert results["idle_silent"]["scopeMask"] == 31, "idle_silent should still report active stage mask = 31"
 
     # 1. Verify all_off (at default wet=0.5) and all_on_zero (at wet=1.0, default knob values) pass audio cleanly
     assert results["all_off"]["scopeMask"] == 0, "all_off must report 0 active stages in #0-degscope"
     assert results["all_off"]["roughness"] < 0.035, "all_off must have clean sinusoidal roughness"
     assert results["all_on_zero"]["scopeMask"] == 31, "all_on_zero must report all 5 stages enabled (mask=31)"
-    assert abs(results["all_on_zero"]["peak"] - tanh_ref(results["all_on_zero"]["ctl"])) < 0.12, "all_on_zero at default knob values must be transparent"
+    assert abs(results["all_on_zero"]["peak"] - results["all_off"]["peak"]) < 0.02, "all_on_zero at default knob values must match all_off unity peak"
     assert results["all_on_zero"]["roughness"] < 0.035, "all_on_zero at default knob values must have clean sinusoidal roughness"
 
     # 2. Verify Sample-and-Hold at 2200 Hz produces staircase flat steps (>70% consecutive identical samples)

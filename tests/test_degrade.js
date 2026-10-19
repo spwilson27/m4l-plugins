@@ -102,11 +102,13 @@ assert.strictEqual((gen.match(/^Delay /gm) || []).length, 4, "Expected 4 Delay l
 assert.ok(gen.includes("fixnan(outL)") && gen.includes("fixnan(outR)"), "Outputs must be protected with fixnan()");
 
 // Verify each of the 5 sections is gated by its own `if ((stId == k) * (<stage>_on > 0.5))` block
-assert.ok(gen.includes("if ((stId == 0) * (bit_on > 0.5))"), "Stage 0 (BIT) must be gated by bit_on > 0.5");
-assert.ok(gen.includes("if ((stId == 1) * (sr_on > 0.5))"), "Stage 1 (SR) must be gated by sr_on > 0.5");
-assert.ok(gen.includes("if ((stId == 2) * (codec_on > 0.5))"), "Stage 2 (CODEC) must be gated by codec_on > 0.5");
-assert.ok(gen.includes("if ((stId == 3) * (tele_on > 0.5))"), "Stage 3 (TELE) must be gated by tele_on > 0.5");
-assert.ok(gen.includes("if ((stId == 4) * (fft_on > 0.5))"), "Stage 4 (FFT) must be gated by fft_on > 0.5");
+// and the entire DSP loop is gated by `if (runDsp > 0)` when no audio is coming in
+assert.ok(gen.includes("if (runDsp > 0)"), "DSP loop and PRNG must be gated by runDsp > 0 when audio is idle/silent");
+assert.ok(gen.includes("(stId == 0) * (bit_on > 0.5)"), "Stage 0 (BIT) must be gated by bit_on > 0.5");
+assert.ok(gen.includes("(stId == 1) * (sr_on > 0.5)"), "Stage 1 (SR) must be gated by sr_on > 0.5");
+assert.ok(gen.includes("(stId == 2) * (codec_on > 0.5)"), "Stage 2 (CODEC) must be gated by codec_on > 0.5");
+assert.ok(gen.includes("(stId == 3) * (tele_on > 0.5)"), "Stage 3 (TELE) must be gated by tele_on > 0.5");
+assert.ok(gen.includes("(stId == 4) * (fft_on > 0.5)"), "Stage 4 (FFT) must be gated by fft_on > 0.5");
 
 // ============================================================================
 // 3. Verify All 4 Generated .amxd Files & Presentation Layouts

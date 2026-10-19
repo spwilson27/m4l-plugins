@@ -221,11 +221,19 @@ function sampleAt(chunk, idx) {
     return (v === v) ? v : 0;
 }
 
+var uiSettled = false;
+
 function pullScope() {
     if (!scopeBuf) return;
     var chunk = scopeBuf.peek(1, 0, SCOPE_FLOATS);
     var inPk = clamp(sampleAt(chunk, 0), 0, 1.5);
     var outPk = clamp(sampleAt(chunk, 1), 0, 1.5);
+
+    // If audio is completely silent and UI meters have already settled, skip redrawing to save main-thread CPU
+    var isSilent = (inPk < 0.0005 && outPk < 0.0005 && liveInPeak < 0.001 && liveOutPeak < 0.001);
+    if (isSilent && uiSettled) {
+        return;
+    }
 
     liveInPeak = liveInPeak + (inPk - liveInPeak) * 0.4;
     liveOutPeak = liveOutPeak + (outPk - liveOutPeak) * 0.4;
@@ -245,6 +253,7 @@ function pullScope() {
     }
 
     if (inPk > 0.001 || outPk > 0.001) {
+        uiSettled = false;
         animPhase = (animPhase + 0.18) % (Math.PI * 20);
         if (histOut.length >= SCOPE_COLS) {
             histIn.shift();
@@ -252,6 +261,10 @@ function pullScope() {
         }
         histIn.push(clamp(inPk * Math.sin(animPhase * 2.1), -1, 1));
         histOut.push(clamp(waveRing[0] || (outPk * Math.sin(animPhase * 2.1)), -1, 1));
+    } else if (liveInPeak < 0.001 && liveOutPeak < 0.001) {
+        liveInPeak = 0;
+        liveOutPeak = 0;
+        uiSettled = true;
     }
     mgraphics.redraw();
 }
