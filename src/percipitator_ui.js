@@ -602,30 +602,30 @@ function paint() {
         }
     }
 
-    // 5. BRIGHT VOLUME-INDEPENDENT DROPLETS & DECAY COMET TRAILS (drawn on top of bars so they always pop)
-    var tailLen = 5.0 + dec01 * 20.0;
+    // 5. BALANCED VOLUME-INDEPENDENT DROPLETS & DECAY COMET TRAILS (drawn on top of bars)
+    var tailLen = 4.0 + dec01 * 18.0;
     for (var d = 0; d < droplets.length; d++) {
         var dr = droplets[d];
         var dx = displacedBandCenterX(dr.band, r.specX, r.specW);
         var dy = r.specY + dr.y * (r.specH - 6) + 3;
-        var lifeFade = clamp(1.15 - dr.y * 0.45, 0.65, 1.0);
-        var rad = 2.2 + dr.amp * 0.9;
+        var lifeFade = clamp(1.0 - dr.y * 0.42, 0.45, 0.90);
+        var rad = 1.85 + dr.amp * 0.65;
 
-        // Glowing comet trail
-        mgraphics.set_line_width(1.8);
-        mgraphics.set_source_rgba(0.48, 0.94, 1.0, 0.72 * lifeFade);
+        // Subtle comet trail
+        mgraphics.set_line_width(1.3);
+        mgraphics.set_source_rgba(0.38, 0.86, 0.98, 0.42 * lifeFade);
         mgraphics.move_to(dx, Math.max(r.specY + 2, dy - tailLen));
         mgraphics.line_to(dx, dy);
         mgraphics.stroke();
 
-        // Outer cyan halo
-        mgraphics.set_source_rgba(0.35, 0.92, 1.0, 0.88 * lifeFade);
+        // Outer cyan droplet body
+        mgraphics.set_source_rgba(0.32, 0.86, 0.98, 0.66 * lifeFade);
         mgraphics.arc(dx, dy, rad, 0, Math.PI * 2);
         mgraphics.fill();
 
-        // Crisp white-hot core so small droplets are immediately visible at any volume
-        mgraphics.set_source_rgba(0.94, 0.99, 1.0, 0.98 * lifeFade);
-        mgraphics.arc(dx, dy, rad * 0.58, 0, Math.PI * 2);
+        // Soft ice-cyan inner highlight (visible at any volume without glaring)
+        mgraphics.set_source_rgba(0.78, 0.95, 1.0, 0.74 * lifeFade);
+        mgraphics.arc(dx, dy, rad * 0.48, 0, Math.PI * 2);
         mgraphics.fill();
     }
 
