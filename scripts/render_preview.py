@@ -294,8 +294,9 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
             init_val = vof.get("parameter_initial", [0])[0]
             ustyle = vof.get("parameter_unitstyle", 0)
+            enums = vof.get("parameter_enum", [])
             if app == 1:
-                # Native Ableton slider numbox (Phase / Offset style with cyan triangle on right)
+                # Native Ableton slider numbox (Phase / Offset style with triangle on right)
                 draw.rectangle([rx, ry, rx + rw, ry + rh], fill=bg, outline=(45, 50, 56, 255), width=max(1, SCALE // 2))
                 tri_c = rgba_tuple(w.get("activetricolor2", [0.42, 0.78, 0.92, 1.0]))
                 draw.polygon([
@@ -303,23 +304,60 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     (rx + rw - 1 * SCALE, ry + rh - 1.5 * SCALE),
                     (rx + rw - 8 * SCALE, ry + rh * 0.5)
                 ], fill=tri_c)
-                val_str = f"{init_val:.1f} %" if ustyle == 5 else f"{int(init_val)}"
+                enums = vof.get("parameter_enum", [])
+                if ustyle == 9 and enums:
+                    idx = max(0, min(len(enums) - 1, int(round(init_val))))
+                    val_str = str(enums[idx])
+                elif ustyle == 5:
+                    val_str = f"{init_val:.1f} %"
+                else:
+                    val_str = f"{int(init_val)}"
                 fnt = get_font(8.5 * SCALE, bold=True)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
                 draw.text((rx + (rw - 7 * SCALE - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
+            elif app == 2:
+                # Native Ableton horizontal value bar numbox (appearance 2 = Slider)
+                draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=(52, 60, 72, 255), width=max(1, SCALE // 2))
+                lo_val = float(vof.get("parameter_mmin", 0.0))
+                hi_val = float(vof.get("parameter_mmax", 100.0))
+                norm = max(0.0, min(1.0, (float(init_val) - lo_val) / max(1e-6, hi_val - lo_val)))
+                sl_c = rgba_tuple(w.get("activeslidercolor", [0.98, 0.70, 0.26, 1.0]))
+                fill_c = (sl_c[0], sl_c[1], sl_c[2], 115)
+                bar_w = max(2.5 * SCALE, (rw - 2 * SCALE) * norm)
+                draw.rounded_rectangle(
+                    [rx + 1 * SCALE, ry + 1 * SCALE, rx + 1 * SCALE + bar_w, ry + rh - 1 * SCALE],
+                    radius=1.5 * SCALE,
+                    fill=fill_c,
+                )
+                draw.line(
+                    [(rx + 1 * SCALE + bar_w, ry + 1.5 * SCALE), (rx + 1 * SCALE + bar_w, ry + rh - 1.5 * SCALE)],
+                    fill=sl_c,
+                    width=max(1, int(1.3 * SCALE)),
+                )
+                val_str = f"{int(round(init_val))} %" if ustyle == 5 else f"{init_val:.1f}"
+                fnt = get_font(8.5 * SCALE, bold=True)
+                bbox = draw.textbbox((0, 0), val_str, font=fnt)
+                tw = bbox[2] - bbox[0]
+                draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
             else:
                 if bg[3] > 0:
                     draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=(50, 56, 66, 255), width=1)
+                enums = vof.get("parameter_enum", [])
                 lname = vof.get("parameter_longname", "")
-                if lname == "Phase":
+                if ustyle == 9 and enums:
+                    idx = max(0, min(len(enums) - 1, int(round(init_val))))
+                    val_str = str(enums[idx])
+                elif lname == "Phase":
                     val_str = f"{init_val:.2f} %"
+                elif ustyle == 7:
+                    val_str = f"{int(round(init_val))} st"
                 elif ustyle == 5:
                     val_str = f"{int(round(init_val))} %"
                 elif ustyle == 4:
-                    val_str = f"{init_val:.1f} dB"
+                    val_str = f"+{init_val:.1f} dB" if init_val > 0 and lname == "Amount" else f"{init_val:.1f} dB"
                 elif ustyle == 3:
-                    val_str = f"{int(round(init_val))} Hz" if init_val >= 100 else f"{init_val:.1f} Hz"
+                    val_str = f"{init_val / 1000.0:.1f} kHz" if init_val >= 10000 else (f"{int(round(init_val))} Hz" if init_val >= 100 else f"{init_val:.1f} Hz")
                 elif ustyle == 2:
                     val_str = f"{init_val:.1f} ms" if init_val < 10 else f"{int(round(init_val))} ms"
                 else:
@@ -386,22 +424,69 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     bg = (255, 173, 56, 255) if is_on else (17, 22, 28, 255)
                     tc = (12, 17, 22, 255) if is_on else (218, 224, 232, 255)
                     draw.rectangle([cx0, ry, cx0 + cell_w, ry + rh], fill=bg, outline=(10, 14, 18, 255), width=max(1, SCALE // 2))
-                    bbox = draw.textbbox((0, 0), label, font=fnt)
-                    tw = bbox[2] - bbox[0]
-                    draw.text((cx0 + (cell_w - tw) * 0.5, ry + 1.5 * SCALE), label, font=fnt, fill=tc)
+                    pic_name = pics[idx] if (use_svg and idx < len(pics)) else ""
+                    if pic_name in ("highcut.svg", "bandpass.svg", "lowcut.svg"):
+                        # Render built-in M4L filter response curves (LP / BP / HP)
+                        x_l = cx0 + 4.0 * SCALE
+                        x_r = cx0 + cell_w - 4.0 * SCALE
+                        y_top = ry + 3.5 * SCALE
+                        y_bot = ry + rh - 3.2 * SCALE
+                        lw = max(1, int(1.4 * SCALE))
+                        if pic_name == "highcut.svg":
+                            # Low-pass: flat passband on left, smooth roll-off down on right
+                            x_k = x_l + (x_r - x_l) * 0.62
+                            pts = [
+                                (x_l, y_top),
+                                (x_k, y_top),
+                                (x_k + (x_r - x_k) * 0.55, y_top + (y_bot - y_top) * 0.35),
+                                (x_r, y_bot),
+                            ]
+                            draw.line(pts, fill=tc, width=lw, joint="curve")
+                        elif pic_name == "bandpass.svg":
+                            # Band-pass: rises from left, flat/rounded top in middle, drops on right
+                            x_k1 = x_l + (x_r - x_l) * 0.28
+                            x_k2 = x_l + (x_r - x_l) * 0.72
+                            pts = [
+                                (x_l, y_bot),
+                                (x_l + (x_k1 - x_l) * 0.45, y_top + (y_bot - y_top) * 0.35),
+                                (x_k1, y_top),
+                                (x_k2, y_top),
+                                (x_k2 + (x_r - x_k2) * 0.55, y_top + (y_bot - y_top) * 0.35),
+                                (x_r, y_bot),
+                            ]
+                            draw.line(pts, fill=tc, width=lw, joint="curve")
+                        else:
+                            # High-pass (lowcut.svg): rises from bottom-left, flat passband on right
+                            x_k = x_l + (x_r - x_l) * 0.38
+                            pts = [
+                                (x_l, y_bot),
+                                (x_l + (x_k - x_l) * 0.45, y_top + (y_bot - y_top) * 0.35),
+                                (x_k, y_top),
+                                (x_r, y_top),
+                            ]
+                            draw.line(pts, fill=tc, width=lw, joint="curve")
+                    else:
+                        bbox = draw.textbbox((0, 0), label, font=fnt)
+                        tw = bbox[2] - bbox[0]
+                        draw.text((cx0 + (cell_w - tw) * 0.5, ry + 1.5 * SCALE), label, font=fnt, fill=tc)
             else:
-                gap = w.get("spacing_y", 2.5) * SCALE if use_svg else 0
-                cell_h = (rh - gap * (len(enums) - 1)) / max(1, len(enums))
-                fnt = get_font(8.0 * SCALE if use_svg else 8.5 * SCALE, bold=True)
+                num_cols = max(1, math.ceil(len(enums) / max(1, num_rows)))
+                gap_x = w.get("spacing_x", 2.0) * SCALE if num_cols > 1 else 0
+                gap_y = w.get("spacing_y", 2.5) * SCALE if (use_svg or num_cols > 1) else 0
+                cell_w = (rw - gap_x * (num_cols - 1)) / max(1, num_cols)
+                cell_h = (rh - gap_y * (num_rows - 1)) / max(1, num_rows)
+                fnt = get_font((8.0 if use_svg else 8.5) * SCALE, bold=True)
                 for idx, label in enumerate(enums):
-                    cy0 = ry + idx * (cell_h + gap)
+                    r_idx = idx // num_cols if num_cols > 1 else idx
+                    c_idx = idx % num_cols if num_cols > 1 else 0
+                    cx0 = rx + c_idx * (cell_w + gap_x)
+                    cy0 = ry + r_idx * (cell_h + gap_y)
                     is_on = (idx == init_idx)
                     bg = (255, 173, 56, 255) if is_on else (17, 22, 28, 255)
                     tc = (12, 17, 22, 255) if is_on else (218, 224, 232, 255)
-                    draw.rectangle([rx, cy0, rx + rw, cy0 + cell_h], fill=bg, outline=(10, 14, 18, 255), width=max(1, SCALE // 2))
+                    draw.rectangle([cx0, cy0, cx0 + cell_w, cy0 + cell_h], fill=bg, outline=(10, 14, 18, 255), width=max(1, SCALE // 2))
                     if use_svg and idx == 1:
-                        # Draw open-top Metronome trapezoid + angled pendulum needle (matching Live 12 Shaper screenshot)
-                        mx = rx + rw * 0.5
+                        mx = cx0 + cell_w * 0.5
                         top_y = cy0 + 2.8 * SCALE
                         bot_y = cy0 + cell_h - 2.2 * SCALE
                         draw.line([
@@ -414,7 +499,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     else:
                         bbox = draw.textbbox((0, 0), label, font=fnt)
                         tw = bbox[2] - bbox[0]
-                        draw.text((rx + (rw - tw) * 0.5, cy0 + 1.2 * SCALE), label, font=fnt, fill=tc)
+                        draw.text((cx0 + (cell_w - tw) * 0.5, cy0 + 1.2 * SCALE), label, font=fnt, fill=tc)
 
         elif mc == "live.dial":
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
@@ -458,6 +543,28 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             bbox2 = draw.textbbox((0, 0), val_str, font=fnt)
             draw.text((rx + (rw - (bbox2[2] - bbox2[0])) * 0.5, ry + rh - 10.5 * SCALE), val_str, font=fnt, fill=(224, 230, 236, 255))
 
+        elif mc == "live.slider":
+            vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
+            sname = vof.get("parameter_shortname", "Vol")
+            init_val = float(vof.get("parameter_initial", [0.0])[0])
+            lo_val = float(vof.get("parameter_mmin", -36.0))
+            hi_val = float(vof.get("parameter_mmax", 18.0))
+            norm = max(0.0, min(1.0, (init_val - lo_val) / max(1e-6, hi_val - lo_val)))
+            scol = rgba_tuple(w.get("slidercolor", [0.28, 0.84, 0.96, 1.0]))
+            fnt = get_font(8.5 * SCALE, bold=True)
+            bbox = draw.textbbox((0, 0), sname, font=fnt)
+            draw.text((rx + (rw - (bbox[2] - bbox[0])) * 0.5, ry), sname, font=fnt, fill=(224, 230, 236, 255))
+            tx = rx + rw * 0.5
+            top_y = ry + 13 * SCALE
+            bot_y = ry + rh - 12 * SCALE
+            fill_y = bot_y - norm * (bot_y - top_y)
+            draw.rounded_rectangle([tx - 3 * SCALE, top_y, tx + 3 * SCALE, bot_y], radius=2 * SCALE, fill=(14, 19, 25, 255), outline=(42, 52, 64, 255), width=1)
+            draw.rounded_rectangle([tx - 2.5 * SCALE, fill_y, tx + 2.5 * SCALE, bot_y], radius=2 * SCALE, fill=scol)
+            draw.rectangle([tx - 5.5 * SCALE, fill_y - 1.5 * SCALE, tx + 5.5 * SCALE, fill_y + 1.5 * SCALE], fill=(240, 246, 252, 255))
+            val_str = f"{init_val:+.1f}dB" if abs(init_val) >= 0.05 else "0.0dB"
+            bbox2 = draw.textbbox((0, 0), val_str, font=fnt)
+            draw.text((rx + (rw - (bbox2[2] - bbox2[0])) * 0.5, ry + rh - 10 * SCALE), val_str, font=fnt, fill=(224, 230, 236, 255))
+
         elif mc == "live.drop":
             bg = (22, 26, 33, 255)
             bd = rgba_tuple(w.get("bordercolor", [0.32, 0.38, 0.46, 1.0]))
@@ -486,6 +593,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
 
 if __name__ == "__main__":
     target_amxd = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_AMXD_PATH
-    render_device(target_amxd, multimap_open=False, out_suffix="")
-    if slugify_device_name(target_amxd) == "better_shaper":
+    suffix = sys.argv[2] if len(sys.argv) > 2 else ""
+    render_device(target_amxd, multimap_open=False, out_suffix=suffix)
+    if slugify_device_name(target_amxd) == "better_shaper" and not suffix:
         render_device(target_amxd, multimap_open=True, out_suffix="_multimap")

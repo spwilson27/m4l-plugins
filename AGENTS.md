@@ -26,6 +26,9 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Tiny Space
      python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
 
+     # Sand
+     python3 scripts/build_sand.py && node tests/test_sand.js && python3 scripts/render_preview.py "devices/Sand.amxd"
+
      # Reciprocator
      python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
      ```
@@ -154,6 +157,31 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 ```bash
 python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
 ```
+
+---
+
+## 6. Architecture of `devices/Sand.amxd`
+
+### Presentation Layout (`296 x 169` px — Compact Single-Column Edition)
+- **Left Panel (`x = 6..206`)**:
+  - Top header (`y = 7..22`): Title (`SAND`) + `Order` (−1..15) and `Stages` (1..4) numboxes.
+  - Graphic HUD Control Strip (`y = 26..42`): Automatable `Amount` value box (`0..140 dB`), `Freq` value box (`20 Hz..18 kHz`), and `Out` selection slider/box (`Off` / `Hard` / `Limit`, `appearance: 1`).
+  - Audio-Reactive XY Scope (`obj-viz`, `v8ui`, `x = 10, y = 46, w = 192, h = 114`): Draws stereo wet grit trace, dry input ghost silhouette, audio-reactive sand grain particles, compander transfer curve inset, and dual `G` (pre-mix wet grit) / `O` (post-mix output) meters. Dragging vertically adjusts `Amount`; dragging horizontally adjusts `Freq` (synced bidirectionally with `obj-amount` and `obj-freq`).
+- **Right Panel (`x = 210..290` — Single Visual Column)**:
+  - `Filt` (`highcut.svg` / `bandpass.svg` / `lowcut.svg` filter curve icons, `usepicture: 1`) and `Place` (`Pre` / `Diff` / `Post`) selector rows at the top.
+  - `Soft` (`%`) and `Debrick` (`%`) horizontal value bars (`live.numbox`, `appearance: 2`) in the middle, with the `Mix` (`%`) radial dial at the bottom.
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/sand_core.genexpr` — per channel: optional pre-filter, derivative order or a leaky integrator, optional mid filter, 1–4 compander stages, optional post filter, equal-power dry/wet mix, then the output stage.
+- Each differentiator peaks at unity at Nyquist and is clipped, so order 15 cannot amplify rounding error into a square wave. Amount 0 is unity gain on order 0. Amount 140 dB is about 10^7 of extra gain on quiet samples, then a soft or hard knee.
+- `Out` is bypass (`Off`), hard clip at ±1 (`Hard`), or a fast limiter with a ceiling near −1 dB (`Limit`). The limiter history always runs.
+- `Buffer wave("sandwave")` gets stereo output, dry input, wet grit, and peak envelopes every 32 samples. Loadbang binds it with `wave #0-sandwave`. Audio does not depend on the buffer.
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_sand.py && node tests/test_sand.js && python3 scripts/render_preview.py "devices/Sand.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_sand_audio_tests.py`
 
 ---
 

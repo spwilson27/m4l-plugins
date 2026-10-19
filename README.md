@@ -5,7 +5,8 @@ A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1
 1. **`devices/XO Sample Map.amxd`** — An XLN Audio XO–inspired 2D Drum Sample Space Browser, Auto-Categorizer, Similarity Explorer, and Simpler / Drum Rack Pad Loader (`Node for Max` + `jweb` pop-out window + in-device `v8ui` mini-map + `LiveAPI`).
 2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, Pre-delay, Modulation, Crossfeed, and HP/LP. A Seed (0–9999) picks density, delay times, and diffusion character. Vibrating delay-line display.
 3. **`devices/Better Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
-4. **`devices/Reciprocator.amxd`** — An upgraded reciprocal envelope dynamics & audio-rate waveshaping processor (`x / env^amount`) with a smooth noise gate floor, lookahead delay, Peak/RMS detector blend, sidechain HP/LP filters, soft-clip ceiling, and a live scrolling envelope/gate/output HUD.
+4. **`devices/Sand.amxd`** — A differential compander. It expands quiet parts of the signal’s derivative (orders −1 through 15) and soft-limits the peaks, with a movable filter, horizontal Soft/Debrick value bars, and a final clip/limit stage.
+5. **`devices/Reciprocator.amxd`** — An upgraded reciprocal envelope dynamics & audio-rate waveshaping processor (`x / env^amount`) with a smooth noise gate floor, lookahead delay, Peak/RMS detector blend, sidechain HP/LP filters, soft-clip ceiling, and a live scrolling envelope/gate/output HUD.
 
 ---
 
@@ -49,6 +50,32 @@ A Max for Live **Audio Effect** reverb — a "tiny space" ranging from tight com
 ### Rebuild & Test
 ```bash
 python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
+```
+
+---
+
+## 4. Sand (`devices/Sand.amxd`)
+
+A Max for Live audio effect that compands the derivative of the input. Quiet motion gets louder, peaks get soft-limited, and the result sits somewhere between grit, a strange high-pass, and extracted detail.
+
+### Features
+- **Order** −1..15. −1 integrates, 0 is the raw signal, 1..15 stack differentiators. Each stage peaks at unity at Nyquist, so higher orders keep only the top of the spectrum.
+- **Amount** (`0..140 dB` quiet-lift) and **Freq** (`20 Hz..18 kHz` filter cutoff) as automatable HUD value boxes above the scope (also draggable directly inside the XY scope).
+- **Out** selection slider/box in the graphic header to switch between `Off`, `Hard` (`±1` clip), and `Limit` (fast limiter).
+- **Single-Column Right Panel**: **Filter** (native LP/BP/HP curve icons and `Pre`/`Diff`/`Post` placement) on top, **Soft** (`%`) and **Debrick** (`%`) horizontal value bars in the middle, and **Mix** (`%`) dial at the bottom.
+- **Audio-Reactive Scope** with sand grain particle cloud, compander transfer curve inset, and dual `G`/`O` meters.
+
+### Files
+- `src/sand_core.genexpr` — Gen core
+- `src/sand_ui.js` — scope
+- `scripts/build_sand.py` — builds `devices/Sand.amxd`
+- `scripts/run_sand_audio_tests.py` — renders audio in Max
+- `tests/test_sand.js` — device structure
+- `previews/sand.png` — rendered preview
+
+### Rebuild & Test
+```bash
+python3 scripts/build_sand.py && node tests/test_sand.js && python3 scripts/render_preview.py "devices/Sand.amxd"
 ```
 
 ---
@@ -150,6 +177,9 @@ python3 scripts/build_xo_map.py && node tests/test_xo_map.js && python3 scripts/
 
 # Better Shaper
 python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/render_preview.py "devices/Better Shaper.amxd"
+
+# Sand
+python3 scripts/build_sand.py && node tests/test_sand.js && python3 scripts/render_preview.py "devices/Sand.amxd"
 
 # Reciprocator
 python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"

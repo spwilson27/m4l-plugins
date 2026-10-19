@@ -1,0 +1,205 @@
+// Sand — differential compander.
+// The wet path differentiates (or integrates) the input, then expands quiet
+// parts of that signal and soft-limits the peaks. Order 0 is the raw signal.
+// Order -1 integrates. Orders 1..15 cascade a differentiator whose gain is
+// at most 1, at Nyquist (nrm = 0.5). Higher orders keep only the top of the
+// spectrum without amplifying float rounding error into a full-scale oscillation.
+// Amount is 0..140 dB of extra quiet-lift.
+//
+// Maintenance invariants for future contributors:
+// 1. GenExpr requires every function before Buffer, Param, and assignments.
+// 2. Do not name a variable "e" followed by digits: the lexer reads that as Euler's constant.
+// 3. Keep p1..p15 and q1..q15 unrolled inside channel() so each derivative stage
+//    gets its own independent History state per channel() call site (L/R), and
+//    q1..q15 suppress the sample-0 startup impulse.
+// 4. Buffer wave("sandwave") memory map (2 channels, bound via `wave #0-sandwave`):
+//    - frames 0..127:   ch 0 = out1 (L), ch 1 = out2 (R) circular ring buffer
+//    - frames 128..255: ch 0 = mono dry input, ch 1 = mono wet grit
+//    - frames 256..259: ch 0 = [pkIn, pkWet, pkOut, wpos] telemetry for v8ui scope
+
+slew(target, coef) {
+	History sw(0);
+	History swinit(0);
+	sw = (swinit == 0) ? target : mix(target, sw, coef);
+	swinit = 1;
+	return sw;
+}
+
+integ(x) {
+	History ig(0);
+	coef = exp(-6.28318530718 * 8 / samplerate);
+	ig = coef * ig + (1 - coef) * x * 125;
+	return clip(ig, -8, 8);
+}
+
+compand(x, amt01, soft01, brick01) {
+	History en(0);
+	ax = abs(x);
+	soft = clip(soft01, 0, 1);
+	atk = mix(0.15, 0.7, soft);
+	rel = mix(0.98, 0.9997, soft);
+	en = mix(ax, en, (ax > en) ? atk : rel);
+	maxG = exp(clip(amt01, 0, 1) * 16.11809565095832);
+	knee = mix(0.03, 0.45, soft);
+	quiet = knee / max(knee + en, 1e-8);
+	g = 1 + (maxG - 1) * quiet;
+	y = x * g;
+	hard = clip(y, -1.2, 1.2);
+	shaped = mix(hard, tanh(y), soft);
+	mild = tanh(x * mix(8, 1.5, soft));
+	return mix(shaped, mild, clip(brick01, 0, 1));
+}
+
+filt(x, freq, mode) {
+	History fs(0);
+	History fb(0);
+	c = exp(-6.28318530718 * clip(freq, 20, 18000) / samplerate);
+	fs = mix(x, fs, c);
+	high = x - fs;
+	fb = mix(high, fb, c);
+	low = fs;
+	band = fb;
+	return (mode < 0.5) ? low : ((mode < 1.5) ? band : high);
+}
+
+limit(x) {
+	History le(0);
+	ax = abs(x);
+	le = (ax > le) ? ax : mix(ax, le, 0.9995);
+	g = 0.89 / max(le, 0.89);
+	return x * g;
+}
+
+// fpos 0 filters the input, 1 filters the derivative, 2 filters the companded wet.
+channel(x, ord, stg, amt01, soft01, brick01, freq, ftype, fpos) {
+	History p1(0); History q1(0);
+	History p2(0); History q2(0);
+	History p3(0); History q3(0);
+	History p4(0); History q4(0);
+	History p5(0); History q5(0);
+	History p6(0); History q6(0);
+	History p7(0); History q7(0);
+	History p8(0); History q8(0);
+	History p9(0); History q9(0);
+	History p10(0); History q10(0);
+	History p11(0); History q11(0);
+	History p12(0); History q12(0);
+	History p13(0); History q13(0);
+	History p14(0); History q14(0);
+	History p15(0); History q15(0);
+	preOn = (fpos < 0.5) ? 1 : 0;
+	src = (preOn > 0.5) ? filt(x, freq, ftype) : x;
+	d0 = src;
+	nrm = 0.5;
+	d1 = (q1 == 0) ? 0 : clip((d0 - p1) * nrm, -8, 8); p1 = d0; q1 = 1;
+	d2 = (q2 == 0) ? 0 : clip((d1 - p2) * nrm, -8, 8); p2 = d1; q2 = 1;
+	d3 = (q3 == 0) ? 0 : clip((d2 - p3) * nrm, -8, 8); p3 = d2; q3 = 1;
+	d4 = (q4 == 0) ? 0 : clip((d3 - p4) * nrm, -8, 8); p4 = d3; q4 = 1;
+	d5 = (q5 == 0) ? 0 : clip((d4 - p5) * nrm, -8, 8); p5 = d4; q5 = 1;
+	d6 = (q6 == 0) ? 0 : clip((d5 - p6) * nrm, -8, 8); p6 = d5; q6 = 1;
+	d7 = (q7 == 0) ? 0 : clip((d6 - p7) * nrm, -8, 8); p7 = d6; q7 = 1;
+	d8 = (q8 == 0) ? 0 : clip((d7 - p8) * nrm, -8, 8); p8 = d7; q8 = 1;
+	d9 = (q9 == 0) ? 0 : clip((d8 - p9) * nrm, -8, 8); p9 = d8; q9 = 1;
+	d10 = (q10 == 0) ? 0 : clip((d9 - p10) * nrm, -8, 8); p10 = d9; q10 = 1;
+	d11 = (q11 == 0) ? 0 : clip((d10 - p11) * nrm, -8, 8); p11 = d10; q11 = 1;
+	d12 = (q12 == 0) ? 0 : clip((d11 - p12) * nrm, -8, 8); p12 = d11; q12 = 1;
+	d13 = (q13 == 0) ? 0 : clip((d12 - p13) * nrm, -8, 8); p13 = d12; q13 = 1;
+	d14 = (q14 == 0) ? 0 : clip((d13 - p14) * nrm, -8, 8); p14 = d13; q14 = 1;
+	d15 = (q15 == 0) ? 0 : clip((d14 - p15) * nrm, -8, 8); p15 = d14; q15 = 1;
+	body = (ord < -0.5) ? integ(src) : d0;
+	body = (ord > 0.5) ? d1 : body;
+	body = (ord > 1.5) ? d2 : body;
+	body = (ord > 2.5) ? d3 : body;
+	body = (ord > 3.5) ? d4 : body;
+	body = (ord > 4.5) ? d5 : body;
+	body = (ord > 5.5) ? d6 : body;
+	body = (ord > 6.5) ? d7 : body;
+	body = (ord > 7.5) ? d8 : body;
+	body = (ord > 8.5) ? d9 : body;
+	body = (ord > 9.5) ? d10 : body;
+	body = (ord > 10.5) ? d11 : body;
+	body = (ord > 11.5) ? d12 : body;
+	body = (ord > 12.5) ? d13 : body;
+	body = (ord > 13.5) ? d14 : body;
+	body = (ord > 14.5) ? d15 : body;
+	midOn = (fpos > 0.5) ? ((fpos < 1.5) ? 1 : 0) : 0;
+	mid = (midOn > 0.5) ? filt(body, freq, ftype) : body;
+	c1 = compand(mid, amt01, soft01, brick01);
+	c2 = compand(c1, amt01, soft01, brick01);
+	c3 = compand(c2, amt01, soft01, brick01);
+	c4 = compand(c3, amt01, soft01, brick01);
+	wet = (stg < 1.5) ? c1 : ((stg < 2.5) ? c2 : ((stg < 3.5) ? c3 : c4));
+	postOn = (fpos > 1.5) ? 1 : 0;
+	return (postOn > 0.5) ? filt(wet, freq, ftype) : wet;
+}
+
+Buffer wave("sandwave");
+
+Param amount(18);
+Param stages(1);
+Param dorder(1);
+Param soft(35);
+Param debrick(0);
+Param ftype(0);
+Param ffreq(14000);
+Param fpos(2);
+Param mix(50);
+Param outmode(0);
+
+History hop(0);
+History wpos(0);
+History pkIn(0);
+History pkWet(0);
+History pkOut(0);
+
+amountS = slew(amount, 0.999);
+softS = slew(soft, 0.999);
+brickS = slew(debrick, 0.999);
+freqS = slew(ffreq, 0.9992);
+mixS = slew(mix, 0.999);
+
+amt01 = clip(amountS, 0, 140) / 140;
+soft01 = clip(softS, 0, 100) / 100;
+brick01 = clip(brickS, 0, 100) / 100;
+ordN = clip(dorder, -1, 15);
+stgN = clip(stages, 1, 4);
+freqN = clip(freqS, 20, 18000);
+typeN = clip(ftype, 0, 2);
+posN = clip(fpos, 0, 2);
+
+wetL = channel(in1, ordN, stgN, amt01, soft01, brick01, freqN, typeN, posN);
+wetR = channel(in2, ordN, stgN, amt01, soft01, brick01, freqN, typeN, posN);
+
+ang = clip(mixS, 0, 100) / 100 * 1.57079632679;
+dryG = cos(ang);
+wetG = sin(ang);
+mixL = in1 * dryG + wetL * wetG;
+mixR = in2 * dryG + wetR * wetG;
+
+limL = limit(mixL);
+limR = limit(mixR);
+mode = clip(outmode, 0, 2);
+out1 = (mode < 0.5) ? mixL : ((mode < 1.5) ? clip(mixL, -1, 1) : limL);
+out2 = (mode < 0.5) ? mixR : ((mode < 1.5) ? clip(mixR, -1, 1) : limR);
+out1 = fixnan(out1);
+out2 = fixnan(out2);
+
+inAbs = max(abs(in1), abs(in2));
+wetAbs = max(abs(wetL), abs(wetR));
+outAbs = max(abs(out1), abs(out2));
+pkIn = max(inAbs, pkIn * 0.996);
+pkWet = max(wetAbs, pkWet * 0.996);
+pkOut = max(outAbs, pkOut * 0.996);
+
+hop = wrap(hop + 1, 0, 32);
+if (hop == 0) {
+	poke(wave, out1, wpos, 0);
+	poke(wave, out2, wpos, 1);
+	poke(wave, 0.5 * (in1 + in2), 128 + wpos, 0);
+	poke(wave, 0.5 * (wetL + wetR), 128 + wpos, 1);
+	poke(wave, pkIn, 256, 0);
+	poke(wave, pkWet, 257, 0);
+	poke(wave, pkOut, 258, 0);
+	poke(wave, wpos, 259, 0);
+	wpos = wrap(wpos + 1, 0, 128);
+}
