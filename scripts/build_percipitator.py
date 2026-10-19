@@ -8,7 +8,7 @@ Build devices/Percipitator.amxd (408 x 169 px — Concept 3 Horizontal Value-Bar
     - Full-width Partials Viewer + 12-Note Scale/MIDI Selector (`v8ui`, 204 x 134):
       - Adjustable `G -42dB` Gate pill & draggable Gate threshold line directly inside the Partials Viewer
       - Top-right single-cycle Wave Pill showing the live morphed/warped `Sine -> Triangle -> Saw -> Square` wave
-      - 10px Snap tether lane + bottom 12-note scale selector strip (highlights incoming Sidechain MIDI notes in emerald)
+      - Bottom 12-note scale selector strip (highlights incoming Sidechain MIDI notes in emerald)
   - Right Panel (x=222..402, w=180, with 10px right margin) — Two Clean Columns of Horizontal Value Bars (Zero Rotary Knobs):
     - Column 1 (`PITCH / ENV`, x=230..308): `Pitch` (-24..+24 st, bipolar), `Shift` (-2000..+2000 Hz, bipolar),
       `Strch` (50..200%), `Snap` (0..100%), `Blur` (0..100%), `Decay` (1..1500 ms), `Atk` (0.2..100 ms)

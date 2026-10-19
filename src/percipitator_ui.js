@@ -4,13 +4,11 @@
 // Visual feedback for every synthesis parameter inside the Partials Viewer:
 //   - Pitch, Shift & Stretch: Faint grey "input" ghost bars stay at the unshifted band positions,
 //     while the active resynthesized bars slide left/right (Pitch + Shift) and fan outward/inward (Stretch).
-//   - Scale Snap: Curved tether lines connect the base of each active partial bar to the exact
-//     note cell (C..B) it is quantized to (bending from straight at Snap 0% to locked at Snap 100%).
-//   - Sieve: Muted band slots (Odd, Even, Sprs, Rise) are visibly dimmed/hatched in the background grid.
+//   - Sieve: Muted band slots (Odd, Even, Sprs, Rise) are visibly dimmed in the background grid.
 //   - Decay, Blur & Attack: Decay controls peak-hold fall rate and falling droplet comet-tail length;
 //     Blur blooms a soft horizontal aura around active bars; Attack morphs bar crests from sharp to rounded.
 //   - Vol & Droplets: Vol scales the rendered height of the resynthesized bars, while falling precipitation
-//     droplets render on top of the bars at high, volume-independent brightness (cyan halo + white-hot core).
+//     droplets render on top of the bars at balanced, volume-independent brightness.
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -369,9 +367,7 @@ function layoutRegions() {
     var specX = 6;
     var specY = 20;
     var specW = w - 12;
-    var specH = kbY - specY - 10; // 10px tether lane between Partials graph and Note Selector
-    var tetherY = specY + specH;
-    var tetherH = kbY - tetherY;
+    var specH = kbY - specY - 4;
     var pillW = 68;
     var pillH = 16;
     var pillX = w - pillW - 6;
@@ -383,8 +379,6 @@ function layoutRegions() {
         specY: specY,
         specW: specW,
         specH: specH,
-        tetherY: tetherY,
-        tetherH: tetherH,
         pillX: pillX,
         pillY: pillY,
         pillW: pillW,
@@ -586,19 +580,6 @@ function paint() {
             mgraphics.set_source_rgba(0.92, 0.96, 1.0, 0.88);
             mgraphics.rectangle(bx, Math.max(r.specY + 1, py - 1.5), bw, 1.5);
             mgraphics.fill();
-        }
-
-        // 4. SNAP VISUAL FEEDBACK: Glowing tether line in the lane between the Partials graph
-        // and the 12-Note Keyboard Strip showing which note key (C..B) each active partial snaps to.
-        if (amp01 > 0.10 && snap01 > 0.02) {
-            var pc = ((Math.round(bandMidis[b]) % 12) + 12) % 12;
-            var noteCenterX = r.kbX + (pc + 0.5) * cellW;
-            var targetX = cx + (noteCenterX - cx) * snap01;
-            mgraphics.set_line_width(1.0);
-            mgraphics.set_source_rgba(cr, cg, cb, (0.18 + snap01 * 0.48) * amp01);
-            mgraphics.move_to(cx, baseY);
-            mgraphics.line_to(targetX, r.kbY);
-            mgraphics.stroke();
         }
     }
 

@@ -53,6 +53,7 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 8. **`gen.codebox~`, `v8ui` Pixel Coordinates, Background Panels & Real Max Audio Verification**:
    - **`v8ui` Pixel Coordinates**: Always call `mgraphics.init(); mgraphics.relative_coords = 0; mgraphics.autofill = 0;` at the top of every `v8ui` script. Without `relative_coords = 0`, Max 9 clips pixel drawing to `0..1` and renders a blank panel in Live.
    - **Background Panel Z-Order**: All decorative `panel` boxes must appear **at the end** of the `boxes` list and include `"background": 1`, or they will cover interactive controls in Ableton Live.
+  - **Integer Parameter Ranges `> 255` in Live**: Ableton Live's native `Int` parameter type (`"parameter_type": 1`) is an 8-bit integer limited to `0..255`. Any `live.numbox` or `live.dial` whose integer range exceeds `255` (such as `Seed` `0..1000`) **must** set `"parameter_type": 0` (`Float`) and `"parameter_unitstyle": 0` (`Int`).
    - **`live.numbox` Slider Fill Opacity & Bipolar Appearance (`appearance: 2` vs `3`)**:
      - `appearance: 2` (`Slider`) fills from the left edge; `appearance: 3` (`Bipolar`) fills outward from the center midpoint (`0` or `50%`).
      - Ableton Live ignores alpha in `activeslidercolor` and paints the slider fill opaque. Always pre-blend `activeslidercolor` (`38%` accent color + `62%` dark `activebgcolor`) so value text in `textcolor` remains high-contrast and legible over the fill bar inside Ableton Live.
@@ -139,17 +140,10 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 
 ## 5. Architecture of `devices/Tiny Space.amxd`
 
-### Presentation Layouts (`292 x 169` px Framed, `300 x 169` px Pocket, `284 x 169` px Split)
-- **Proposal 1 — Undulae Tinyspace 1.1 Framed Layout (`292 x 169` px — `devices/Tiny Space.amxd` & `devices/Tiny Space Modules.amxd`)**:
-  - **Left Column (`x = 6..62`)**: `PreDly` numbox + `HP` & `LP` dials.
-  - **Center Column (`x = 66..226`)**: Top header (`tinyspace`, `Seed` 0–1000 numbox, and `Character` 8-model dropdown `live.menu`: `COMB`, `HYBRID`, `ROOM`, `PLATE`, `TANK`, `BOX`, `SPRING`, `BOUNCE`), center `152 x 74` `v8ui` overlaid L+R string screen (`obj-viz`), and bottom 3 dials (`Size`, `Fbk`, `XFeed`).
-  - **Right Column (`x = 230..286`)**: `Damp` & `Mod` numboxes + `Width` & `Mix` dials.
-- **Proposal 2 — Pocket Screen + 5 Hero Dials (`300 x 169` px — `devices/Tiny Space Compact.amxd`)**:
-  - **Left Panel (`x = 6..126`)**: Title, `Seed`, `112 x 74` `v8ui` screen, and bottom `PreDly` & `XFeed` numboxes.
-  - **Right Panel (`x = 130..294`)**: Top conditioning strip (`HP Cut`, `LP Cut`, `Mod` numboxes) + 5 Hero Dials (`Size`, `Fbk`, `Damp`, `Width`, `Mix`).
-- **Proposal 3 — Mini-Screen & 3×2 Dial Grid (`284 x 169` px — `devices/Tiny Space Split.amxd`)**:
-  - **Left Panel (`x = 6..118`)**: `104 x 66` `v8ui` mini screen + 2×2 conditioning matrix (`PreDly`, `Mod`, `HP Cut`, `LP Cut`).
-  - **Right Panel (`x = 122..278`)**: 3×2 dial grid (`Size`, `Fbk`, `Damp` on top; `XFeed`, `Width`, `Mix` below).
+### Presentation Layout (`292 x 169` px — `devices/Tiny Space.amxd`)
+- **Left Column (`x = 6..62`)**: `PreDly` numbox + `HP` & `LP` dials.
+- **Center Column (`x = 66..226`)**: Top header (`tinyspace`, `Seed` 0–1000 numbox using `parameter_type: 0, parameter_unitstyle: 0`, and `Character` 8-model dropdown `live.menu`: `COMB`, `HYBRID`, `ROOM`, `PLATE`, `TANK`, `BOX`, `SPRING`, `BOUNCE`), center `152 x 74` `v8ui` overlaid L+R string screen (`obj-viz`), and bottom 3 dials (`Size`, `Fbk`, `XFeed`).
+- **Right Column (`x = 230..286`)**: `Damp` & `Mod` numboxes + `Width` & `Mix` dials.
 
 ### Gen core (`gen.codebox~`, hidden)
 - `src/tinyspace_core.genexpr` — FDN: predelay → HP/LP → seeded allpasses → 20 delay lines (10 L / 10 R) with linear interpolation, per-line damping, soft clip, an orthogonal per-model mix (identity, sum-preserving rotation, Householder, Householder-cycle, sign-flipping ring, Householder wall-swap, spring lattice, or reversal), a unitary crossfeed rotation → width (M/S) → equal-power dry/wet.
@@ -226,12 +220,11 @@ Audio checks (real Max render): `python3 scripts/run_reciprocator_audio_tests.py
 - **Left Panel (`x = 6..218`, `w = 212`)**:
   - Top bar (`y = 7..22`): Title (`Percipitator`).
   - Visualization Canvas (`obj-viz`, `v8ui`, `x = 10, y = 26, w = 204, h = 134`):
-    - **Full-Width Partials Viewer (`y = 20..98`)**: 16-band Spectral Precipitation Waterfall with peak-hold caps, high-contrast volume-independent falling droplets (cyan halo + white-hot core rendered on top of the bars), an adjustable `G -42dB` Gate readout pill, and a vertically draggable `Gate` threshold line.
+    - **Full-Width Partials Viewer (`y = 20..104`)**: 16-band Spectral Precipitation Waterfall with peak-hold caps, balanced volume-independent falling droplets rendered on top of the bars, an adjustable `G -42dB` Gate readout pill, and a vertically draggable `Gate` threshold line.
     - **Real-Time Parameter Visual Feedback**:
       - `Pitch`, `Shift`, `Strch`: Displace the active colored partial bars horizontally while leaving faint slate ghost bars at the unshifted input band positions.
-      - `Snap`: Draws glowing tether lines across the `10 px` tether lane (`y = 98..108`) connecting each active partial bar to its quantized note cell (`C..B`).
       - `Sieve`: Shades muted band lanes dark in the background grid with a bottom coral tick.
-      - `Decay`, `Blur`, `Atk`, `Vol`: `Decay` controls falling droplet comet-tail length and peak-cap fall speed; `Blur` renders a soft horizontal bloom halo around active bars; `Atk` rounds bar top corners; `Vol` scales bar height (while keeping droplets bright and visible even at `-36 dB`).
+      - `Decay`, `Blur`, `Atk`, `Vol`: `Decay` controls falling droplet comet-tail length and peak-cap fall speed; `Blur` renders a soft horizontal bloom halo around active bars; `Atk` rounds bar top corners; `Vol` scales bar height (while keeping droplets visible even at `-36 dB`).
     - **Top-Right Wave Pill (`x = 130..198, y = 2..18`)**: Live single-cycle preview of the morphed/warped `Sine -> Triangle -> Saw -> Square` wave (drag vertically for `Wave`, horizontally for `Warp`).
     - **Bottom Strip (`y = 108..130`)**: Interactive 12-Note Scale Quantizer & Sidechain MIDI keyboard (`C..B`). Saved in Live Sets via `ScaleMaskData` (`getvalueof` v2: `[2, curScaleMask, curGateDb]`, backward-compatible with v1 `[1, curScaleMask]`).
 - **Right Panel (`x = 222..402`, `w = 180`) — Two Columns of Horizontal Value Bars (Zero Rotary Dials)**:

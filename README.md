@@ -149,7 +149,7 @@ A Max for Live **Audio Effect** 16-band scale-quantized wavetable resynthesizer 
 ### Features
 - **16-Band Resonant Spectral Analysis, Graphical Gate & Full Parameter Visual Feedback**:
   - Tracks amplitude and instantaneous pitch across 16 log-spaced bands (`92.5 Hz..7040 Hz`), spawning high-contrast falling harmonic droplets (cyan halo + white-hot core that stay bright regardless of `Vol`) above the adjustable `G -42dB` Gate line inside the Partials Viewer.
-  - **Live Visual Feedback for Every Parameter**: `Pitch`, `Shift`, and `Strch` displace the colored partial bars horizontally while leaving faint slate ghost bars at the unshifted input positions; `Snap` draws glowing tether lines from each active partial bar to its quantized note cell (`C..B`); `Sieve` dims muted band lanes; `Decay` stretches droplet comet tails; `Blur` adds a horizontal bloom aura; `Atk` rounds bar crests; and `Vol` scales bar heights.
+  - **Live Visual Feedback for Every Parameter**: `Pitch`, `Shift`, and `Strch` displace the colored partial bars horizontally while leaving faint slate ghost bars at the unshifted input positions; `Sieve` dims muted band lanes; `Decay` stretches droplet comet tails; `Blur` adds a horizontal bloom aura; `Atk` rounds bar crests; and `Vol` scales bar heights.
 - **Interactive 12-Note Scale Strip & Sidechain MIDI Pitch Control (`Snap`, `Pitch`, `Strch`, `Shift`)**:
   - Click notes directly in the bottom 12-note keyboard strip (`C..B`) or route any MIDI track to **Percipitator** in Ableton Live: incoming MIDI notes (`midiin` $\to$ `midiparse` $\to$ `midi_in`) automatically define and latch the active pitch-class mask and light up held notes in emerald green.
   - Includes bipolar semitone `Pitch` (`-24..+24 st`), inharmonic `Strch` (`50..200%`), and bipolar linear `Shift` (`-2000..+2000 Hz`).
@@ -160,7 +160,7 @@ A Max for Live **Audio Effect** 16-band scale-quantized wavetable resynthesizer 
 ### Files
 - `src/percipitator_config.js` — 4-frame `Sine->Tri->Saw->Square` wavetable generator, phase warp, partial sieve, spectral tilt & scale/MIDI quantizer math
 - `src/percipitator_core.genexpr` — 16-band `gen.codebox~` spectral tracker & wavetable resynthesizer
-- `src/percipitator_ui.js` — audio-reactive Partials Viewer, Wave Pill preview, tether lane, and 12-note scale/MIDI strip (`v8ui`)
+- `src/percipitator_ui.js` — audio-reactive Partials Viewer, Wave Pill preview, and 12-note scale/MIDI strip (`v8ui`)
 - `scripts/build_percipitator.py` — builds `devices/Percipitator.amxd` (`408 x 169` px)
 - `scripts/run_percipitator_audio_tests.py` — automated Max 9 audio render & verification suite (`dry`, `resynth_sine`, `resynth_wt`, `gate_silence`, `pitch_octave`, `freq_shift`, `midi_sidechain`, `partials_vol`, `tilt_cut`, `tilt_boost`)
 - `tests/percipitator_probe.js` — Max audio recording & `#0-percipscope` telemetry probe
