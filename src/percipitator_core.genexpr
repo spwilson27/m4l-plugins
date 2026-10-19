@@ -23,21 +23,39 @@ slew(target, coef) {
 }
 
 // 2-pole zero-delay Chamberlin SVF bandpass + instantaneous frequency tracker + Spectral Freeze latch.
-// When freezeOn > 0.5, the tracked amplitude and MIDI pitch hold their frozen state indefinitely.
-band_track(x, centerHz, qVal, atkCoef, relCoef, gateLin, freezeOn, srVal) {
+// Optimized:
+//   - Polynomial SVF frequency coefficient (eliminates 16 sin() calls per sample).
+//   - Zero-crossing log2() pitch update runs ONLY on valid zero crossings (validCross).
+//   - Sleeps when input and filter/envelope states are silent.
+band_track(x, centerHz, dampVal, atkCoef, relCoef, gateLin, freezeOn, srVal) {
 	History lpState(0);
 	History bpState(0);
 	History envState(0);
 	History prevSign(1);
 	History periodSamps(100);
 	History sampCount(0);
+	History targetMidi(60);
 	History midiHold(60);
 	History frozenAmp(0);
 	History frozenMidi(60);
 
-	f = 2 * sin(3.14159265359 * clip(centerHz, 40, srVal * 0.42) / srVal);
-	damp = 1 / clip(qVal, 1.5, 18.0);
-	hp = x * damp - lpState - damp * bpState;
+	isFrz = (freezeOn > 0.5);
+	if (isFrz) {
+		return frozenAmp, frozenMidi;
+	}
+
+	activity = abs(x) + abs(bpState) + abs(lpState) + envState;
+	if (activity < 0.0000005) {
+		bpState = 0;
+		lpState = 0;
+		envState = 0;
+		frozenAmp = 0;
+		return 0, midiHold;
+	}
+
+	w = 3.14159265359 * clip(centerHz, 40, srVal * 0.42) / srVal;
+	f = w * (2.0 - 0.33333333 * w * w);
+	hp = x * dampVal - lpState - dampVal * bpState;
 	bpNew = bpState + f * hp;
 	lpNew = lpState + f * bpNew;
 	bpState = clip(bpNew, -2, 2);
@@ -48,13 +66,14 @@ band_track(x, centerHz, qVal, atkCoef, relCoef, gateLin, freezeOn, srVal) {
 	curSign = (bpState >= 0) ? 1 : -1;
 	crossed = (curSign > 0) && (prevSign < 0);
 	validCross = crossed && (sampCount > 4) && (sampCount < srVal * 0.03);
-	periodSamps = validCross ? mix(sampCount, periodSamps, 0.65) : periodSamps;
+	if (validCross) {
+		periodSamps = mix(sampCount, periodSamps, 0.65);
+		estHz = clip(srVal / max(periodSamps, 4), centerHz * 0.72, centerHz * 1.38);
+		targetMidi = 69 + 12 * log2(max(estHz, 20) / 440);
+	}
 	sampCount = crossed ? 0 : sampCount;
 	prevSign = curSign;
-
-	estHz = clip(srVal / max(periodSamps, 4), centerHz * 0.72, centerHz * 1.38);
-	rawMidi = 69 + 12 * log2(max(estHz, 20) / 440);
-	midiHold = mix(rawMidi, midiHold, 0.992);
+	midiHold = mix(targetMidi, midiHold, 0.992);
 
 	// Envelope follower with soft-knee precipitation gate
 	ax = abs(bpState) * 1.45;
@@ -67,11 +86,10 @@ band_track(x, centerHz, qVal, atkCoef, relCoef, gateLin, freezeOn, srVal) {
 	gateFactor = gt * gt * (3 - 2 * gt);
 	liveAmp = envState * gateFactor;
 
-	isFrz = (freezeOn > 0.5);
-	frozenAmp = isFrz ? frozenAmp : liveAmp;
-	frozenMidi = isFrz ? frozenMidi : midiHold;
+	frozenAmp = liveAmp;
+	frozenMidi = midiHold;
 
-	return frozenAmp, frozenMidi;
+	return liveAmp, midiHold;
 }
 
 // Quantize a MIDI note number to the active 12-bit scaleMask (bits 0..11 = C..B).
@@ -114,39 +132,61 @@ band_weight(bandIdx, sieveMode, tiltBipolar) {
 }
 
 // Phase warp modifier for wavetable oscillators:
-//   mode 0 (Bend): exponential phase pinch/stretch
+//   mode 0 (Bend): exponential phase pinch/stretch (uses precomputed bendExp)
 //   mode 1 (Asym): asymmetric duty breakpoint skew
 //   mode 2 (Sync): 1x..5x hard sync phase multiplier
 //   mode 3 (Fold): 1x..4x triangle wavefold
-warp_phase(ph, mode, warpAmt) {
+warp_phase(ph, mode, warpAmt, bendExp) {
 	p = wrap(ph, 0, 1);
 	w = clip(warpAmt, 0, 1);
 	m = round(clip(mode, 0, 3));
-
-	bendExp = pow(3.2, (w - 0.5) * 2.0);
-	pBend = pow(max(p, 0.00001), bendExp);
-
-	bp = 0.5 - w * 0.38;
-	pAsym = (p < bp) ? (0.5 * p / max(bp, 0.02)) : (0.5 + 0.5 * (p - bp) / max(1 - bp, 0.02));
-
-	pSync = wrap(p * (1 + w * 4.0), 0, 1);
-
-	fp = wrap(p * (1 + w * 3.0), 0, 2);
-	pFold = (fp <= 1) ? fp : (2 - fp);
-
-	outP = (m == 0) ? pBend : ((m == 1) ? pAsym : ((m == 2) ? pSync : pFold));
+	outP = p;
+	if (m == 0) {
+		outP = (abs(w - 0.5) < 0.003) ? p : pow(max(p, 0.00001), bendExp);
+	} else if (m == 1) {
+		bp = 0.5 - w * 0.38;
+		outP = (p < bp) ? (0.5 * p / max(bp, 0.02)) : (0.5 + 0.5 * (p - bp) / max(1 - bp, 0.02));
+	} else if (m == 2) {
+		outP = wrap(p * (1 + w * 4.0), 0, 1);
+	} else {
+		fp = wrap(p * (1 + w * 3.0), 0, 2);
+		outP = (fp <= 1) ? fp : (2 - fp);
+	}
 	return clip(outP, 0, 0.9999);
 }
 
-// 4-Frame Wavetable Resynthesis Oscillator (Frame 0: Sine, 1: Triangle, 2: Saw, 3: Square).
-// Reads from Buffer wt (4 frames x 2048 samples = 8192 samples), with procedural Sine->Tri->Saw->Square
-// fallback if the buffer is unbound.
-voice_osc(wtBuf, freqHz, amp, wtPos01, warpMode, warpAmt, srVal) {
+// 4-Frame Wavetable Resynthesis Oscillator + Control-Rate Pitch/Weight Decimator per band.
+// Skips all wavetable lookups, phase warp, and pitch quantization when rawAmp <= 0.00001.
+// When active, updates quantized MIDI pitch, frequency pow(), and sieve/tilt weight every 16 samples.
+voice_osc(wtBuf, bandIdx, rawAmp, rawMidi, pitchSt, stretchVal, fshiftHz, maskInt, snapAmt, sieveMode, tiltVal, wtPos01, warpMode, warpAmt, bendExp, srVal) {
 	History ph(0);
-	inc = clip(freqHz / srVal, 0, 0.45);
+	History cTick(0);
+	History cInit(0);
+	History heldWeight(1.0);
+	History heldQm(60.0);
+	History heldFreq(440.0);
+
+	if ((rawAmp <= 0.00001) && (cInit > 0)) {
+		return 0, 0, heldQm;
+	}
+
+	if ((cTick == 0) || (cInit == 0)) {
+		heldWeight = band_weight(bandIdx, sieveMode, tiltVal);
+		heldQm = quant_midi(69 + (rawMidi - 69) * stretchVal + pitchSt, maskInt, snapAmt);
+		heldFreq = clip(440 * pow(2, (heldQm - 69) / 12) + fshiftHz, 20, 18000);
+		cInit = 1;
+	}
+	cTick = wrap(cTick + 1, 0, 16);
+
+	amp = rawAmp * heldWeight;
+	if (amp <= 0.00001) {
+		return 0, 0, heldQm;
+	}
+
+	inc = clip(heldFreq / srVal, 0, 0.45);
 	ph = wrap(ph + inc, 0, 1);
 
-	wPh = warp_phase(ph, warpMode, warpAmt);
+	wPh = warp_phase(ph, warpMode, warpAmt, bendExp);
 	fScaled = clip(wtPos01, 0, 1) * 3.0;
 	f0 = floor(fScaled);
 	f1 = min(3, f0 + 1);
@@ -163,18 +203,18 @@ voice_osc(wtBuf, freqHz, amp, wtPos01, warpMode, warpAmt, srVal) {
 	s11 = peek(wtBuf, f1 * 2048 + i1, 0);
 	wt0 = mix(s00, s01, iFrac);
 	wt1 = mix(s10, s11, iFrac);
-	wtSample = mix(wt0, wt1, fFrac);
+	sig = mix(wt0, wt1, fFrac);
 
-	// Procedural Sine -> Triangle -> Saw -> Square fallback when buffer is unbound
-	pSin = sin(wPh * 6.28318530718);
-	pTri = 1.0 - 4.0 * abs(wrap(wPh - 0.25, 0, 1) - 0.5);
-	pSaw = 1.0 - 2.0 * wPh;
-	pSqr = (wPh < 0.5) ? 0.9 : -0.9;
-	proc01 = (fScaled <= 1.0) ? mix(pSin, pTri, fScaled) : ((fScaled <= 2.0) ? mix(pTri, pSaw, fScaled - 1.0) : mix(pSaw, pSqr, fScaled - 2.0));
-
+	// Procedural Sine -> Triangle -> Saw -> Square fallback only when buffer is unbound
 	hasWt = (abs(s00) + abs(s01) + abs(s10) > 0.000001) ? 1 : 0;
-	sig = hasWt ? wtSample : proc01;
-	return sig * amp;
+	if (hasWt == 0) {
+		pSin = sin(wPh * 6.28318530718);
+		pTri = 1.0 - 4.0 * abs(wrap(wPh - 0.25, 0, 1) - 0.5);
+		pSaw = 1.0 - 2.0 * wPh;
+		pSqr = (wPh < 0.5) ? 0.9 : -0.9;
+		sig = (fScaled <= 1.0) ? mix(pSin, pTri, fScaled) : ((fScaled <= 2.0) ? mix(pTri, pSaw, fScaled - 1.0) : mix(pSaw, pSqr, fScaled - 2.0));
+	}
+	return sig * amp, amp, heldQm;
 }
 
 Buffer wt("percipwt");
@@ -200,6 +240,14 @@ Param wet(1.0);
 
 History tick(0);
 History rollCount(0);
+History ctrlInit(0);
+History gateLin(0.007943);
+History resGainLin(1.0);
+History atkCoef(0.99);
+History relCoef(0.999);
+History bendExp(1.0);
+History dryG(0.0);
+History wetG(1.0);
 
 sr = max(samplerate, 1);
 
@@ -221,115 +269,68 @@ sieveNow = round(clip(sieve, 0, 4));
 freezeNow = (freeze > 0.5) ? 1 : 0;
 maskNow = round(clip(scalemask, 0, 4095));
 
-gateLin = pow(10, gateDbS / 20);
-resGainLin = pow(10, resGainDbS / 20);
-effAtkMs = atkMsS + blurS * 45.0;
-effRelMs = decayMsS + blurS * 350.0;
-atkCoef = exp(-1000 / (max(effAtkMs, 0.2) * sr));
-relCoef = exp(-1000 / (max(effRelMs, 1.0) * sr));
+// Update shared control-rate transcendentals every 16 samples
+if ((tick % 16 == 0) || (ctrlInit == 0)) {
+	gateLin = pow(10, gateDbS / 20);
+	resGainLin = pow(10, resGainDbS / 20);
+	effAtkMs = atkMsS + blurS * 45.0;
+	effRelMs = decayMsS + blurS * 350.0;
+	atkCoef = exp(-1000 / (max(effAtkMs, 0.2) * sr));
+	relCoef = exp(-1000 / (max(effRelMs, 1.0) * sr));
+	bendExp = (modeNow == 0) ? pow(3.2, (warpS - 0.5) * 2.0) : 1.0;
+	ang = wetS * 1.57079632679;
+	dryG = cos(ang);
+	wetG = sin(ang);
+	ctrlInit = 1;
+}
 
 monoIn = (in1 + in2) * 0.70710678;
-qBand = 7.5;
+dampBand = 1.0 / 7.5;
 
-// 1. Track 16 spectral bands (with Spectral Freeze latch)
-raw0, m0 = band_track(monoIn, 92.5,   qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw1, m1 = band_track(monoIn, 123.5,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw2, m2 = band_track(monoIn, 164.8,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw3, m3 = band_track(monoIn, 220.0,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw4, m4 = band_track(monoIn, 293.7,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw5, m5 = band_track(monoIn, 392.0,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw6, m6 = band_track(monoIn, 523.3,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw7, m7 = band_track(monoIn, 698.5,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw8, m8 = band_track(monoIn, 932.3,  qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw9, m9 = band_track(monoIn, 1244.5, qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw10, m10 = band_track(monoIn, 1661.2, qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw11, m11 = band_track(monoIn, 2217.5, qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw12, m12 = band_track(monoIn, 2960.0, qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw13, m13 = band_track(monoIn, 3951.1, qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw14, m14 = band_track(monoIn, 5274.0, qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-raw15, m15 = band_track(monoIn, 7040.0, qBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+// 1. Track 16 spectral bands (with idle sleep & Spectral Freeze latch)
+raw0, m0 = band_track(monoIn, 92.5,   dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw1, m1 = band_track(monoIn, 123.5,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw2, m2 = band_track(monoIn, 164.8,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw3, m3 = band_track(monoIn, 220.0,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw4, m4 = band_track(monoIn, 293.7,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw5, m5 = band_track(monoIn, 392.0,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw6, m6 = band_track(monoIn, 523.3,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw7, m7 = band_track(monoIn, 698.5,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw8, m8 = band_track(monoIn, 932.3,  dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw9, m9 = band_track(monoIn, 1244.5, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw10, m10 = band_track(monoIn, 1661.2, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw11, m11 = band_track(monoIn, 2217.5, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw12, m12 = band_track(monoIn, 2960.0, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw13, m13 = band_track(monoIn, 3951.1, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw14, m14 = band_track(monoIn, 5274.0, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+raw15, m15 = band_track(monoIn, 7040.0, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
 
-// Apply Partial Sieve & Spectral Tilt per band
-amp0 = raw0 * band_weight(0, sieveNow, tiltS);
-amp1 = raw1 * band_weight(1, sieveNow, tiltS);
-amp2 = raw2 * band_weight(2, sieveNow, tiltS);
-amp3 = raw3 * band_weight(3, sieveNow, tiltS);
-amp4 = raw4 * band_weight(4, sieveNow, tiltS);
-amp5 = raw5 * band_weight(5, sieveNow, tiltS);
-amp6 = raw6 * band_weight(6, sieveNow, tiltS);
-amp7 = raw7 * band_weight(7, sieveNow, tiltS);
-amp8 = raw8 * band_weight(8, sieveNow, tiltS);
-amp9 = raw9 * band_weight(9, sieveNow, tiltS);
-amp10 = raw10 * band_weight(10, sieveNow, tiltS);
-amp11 = raw11 * band_weight(11, sieveNow, tiltS);
-amp12 = raw12 * band_weight(12, sieveNow, tiltS);
-amp13 = raw13 * band_weight(13, sieveNow, tiltS);
-amp14 = raw14 * band_weight(14, sieveNow, tiltS);
-amp15 = raw15 * band_weight(15, sieveNow, tiltS);
-
-// 2. Apply Pitch Shift, Inharmonic Stretch around MIDI 69, Scale Quantization, and Hz Frequency Shift
-qm0 = quant_midi(69 + (m0 - 69) * stretchS + pitchS, maskNow, snapS);
-qm1 = quant_midi(69 + (m1 - 69) * stretchS + pitchS, maskNow, snapS);
-qm2 = quant_midi(69 + (m2 - 69) * stretchS + pitchS, maskNow, snapS);
-qm3 = quant_midi(69 + (m3 - 69) * stretchS + pitchS, maskNow, snapS);
-qm4 = quant_midi(69 + (m4 - 69) * stretchS + pitchS, maskNow, snapS);
-qm5 = quant_midi(69 + (m5 - 69) * stretchS + pitchS, maskNow, snapS);
-qm6 = quant_midi(69 + (m6 - 69) * stretchS + pitchS, maskNow, snapS);
-qm7 = quant_midi(69 + (m7 - 69) * stretchS + pitchS, maskNow, snapS);
-qm8 = quant_midi(69 + (m8 - 69) * stretchS + pitchS, maskNow, snapS);
-qm9 = quant_midi(69 + (m9 - 69) * stretchS + pitchS, maskNow, snapS);
-qm10 = quant_midi(69 + (m10 - 69) * stretchS + pitchS, maskNow, snapS);
-qm11 = quant_midi(69 + (m11 - 69) * stretchS + pitchS, maskNow, snapS);
-qm12 = quant_midi(69 + (m12 - 69) * stretchS + pitchS, maskNow, snapS);
-qm13 = quant_midi(69 + (m13 - 69) * stretchS + pitchS, maskNow, snapS);
-qm14 = quant_midi(69 + (m14 - 69) * stretchS + pitchS, maskNow, snapS);
-qm15 = quant_midi(69 + (m15 - 69) * stretchS + pitchS, maskNow, snapS);
-
-f0 = clip(440 * pow(2, (qm0 - 69) / 12) + fshiftS, 20, 18000);
-f1 = clip(440 * pow(2, (qm1 - 69) / 12) + fshiftS, 20, 18000);
-f2 = clip(440 * pow(2, (qm2 - 69) / 12) + fshiftS, 20, 18000);
-f3 = clip(440 * pow(2, (qm3 - 69) / 12) + fshiftS, 20, 18000);
-f4 = clip(440 * pow(2, (qm4 - 69) / 12) + fshiftS, 20, 18000);
-f5 = clip(440 * pow(2, (qm5 - 69) / 12) + fshiftS, 20, 18000);
-f6 = clip(440 * pow(2, (qm6 - 69) / 12) + fshiftS, 20, 18000);
-f7 = clip(440 * pow(2, (qm7 - 69) / 12) + fshiftS, 20, 18000);
-f8 = clip(440 * pow(2, (qm8 - 69) / 12) + fshiftS, 20, 18000);
-f9 = clip(440 * pow(2, (qm9 - 69) / 12) + fshiftS, 20, 18000);
-f10 = clip(440 * pow(2, (qm10 - 69) / 12) + fshiftS, 20, 18000);
-f11 = clip(440 * pow(2, (qm11 - 69) / 12) + fshiftS, 20, 18000);
-f12 = clip(440 * pow(2, (qm12 - 69) / 12) + fshiftS, 20, 18000);
-f13 = clip(440 * pow(2, (qm13 - 69) / 12) + fshiftS, 20, 18000);
-f14 = clip(440 * pow(2, (qm14 - 69) / 12) + fshiftS, 20, 18000);
-f15 = clip(440 * pow(2, (qm15 - 69) / 12) + fshiftS, 20, 18000);
-
-// 3. Synthesize 16 wavetable partials (Sine -> Triangle -> Saw -> Square + phase warp)
-v0 = voice_osc(wt, f0, amp0, wtPosS, modeNow, warpS, sr);
-v1 = voice_osc(wt, f1, amp1, wtPosS, modeNow, warpS, sr);
-v2 = voice_osc(wt, f2, amp2, wtPosS, modeNow, warpS, sr);
-v3 = voice_osc(wt, f3, amp3, wtPosS, modeNow, warpS, sr);
-v4 = voice_osc(wt, f4, amp4, wtPosS, modeNow, warpS, sr);
-v5 = voice_osc(wt, f5, amp5, wtPosS, modeNow, warpS, sr);
-v6 = voice_osc(wt, f6, amp6, wtPosS, modeNow, warpS, sr);
-v7 = voice_osc(wt, f7, amp7, wtPosS, modeNow, warpS, sr);
-v8 = voice_osc(wt, f8, amp8, wtPosS, modeNow, warpS, sr);
-v9 = voice_osc(wt, f9, amp9, wtPosS, modeNow, warpS, sr);
-v10 = voice_osc(wt, f10, amp10, wtPosS, modeNow, warpS, sr);
-v11 = voice_osc(wt, f11, amp11, wtPosS, modeNow, warpS, sr);
-v12 = voice_osc(wt, f12, amp12, wtPosS, modeNow, warpS, sr);
-v13 = voice_osc(wt, f13, amp13, wtPosS, modeNow, warpS, sr);
-v14 = voice_osc(wt, f14, amp14, wtPosS, modeNow, warpS, sr);
-v15 = voice_osc(wt, f15, amp15, wtPosS, modeNow, warpS, sr);
+// 2. Synthesize 16 wavetable partials (skips inactive bands when gated/silent)
+v0, amp0, qm0 = voice_osc(wt, 0,  raw0,  m0,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v1, amp1, qm1 = voice_osc(wt, 1,  raw1,  m1,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v2, amp2, qm2 = voice_osc(wt, 2,  raw2,  m2,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v3, amp3, qm3 = voice_osc(wt, 3,  raw3,  m3,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v4, amp4, qm4 = voice_osc(wt, 4,  raw4,  m4,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v5, amp5, qm5 = voice_osc(wt, 5,  raw5,  m5,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v6, amp6, qm6 = voice_osc(wt, 6,  raw6,  m6,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v7, amp7, qm7 = voice_osc(wt, 7,  raw7,  m7,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v8, amp8, qm8 = voice_osc(wt, 8,  raw8,  m8,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v9, amp9, qm9 = voice_osc(wt, 9,  raw9,  m9,  pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v10, amp10, qm10 = voice_osc(wt, 10, raw10, m10, pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v11, amp11, qm11 = voice_osc(wt, 11, raw11, m11, pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v12, amp12, qm12 = voice_osc(wt, 12, raw12, m12, pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v13, amp13, qm13 = voice_osc(wt, 13, raw13, m13, pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v14, amp14, qm14 = voice_osc(wt, 14, raw14, m14, pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
+v15, amp15, qm15 = voice_osc(wt, 15, raw15, m15, pitchS, stretchS, fshiftS, maskNow, snapS, sieveNow, tiltS, wtPosS, modeNow, warpS, bendExp, sr);
 
 // Alternate stereo spread across even/odd bands and scale by the Resynthesized Partials Volume slider
 evenSum = v0 + v2 + v4 + v6 + v8 + v10 + v12 + v14;
 oddSum = v1 + v3 + v5 + v7 + v9 + v11 + v13 + v15;
-wetL = tanh((evenSum * 0.78 + oddSum * 0.42) * 1.35 * resGainLin) * 0.88;
-wetR = tanh((oddSum * 0.78 + evenSum * 0.42) * 1.35 * resGainLin) * 0.88;
+hasWet = (abs(evenSum) + abs(oddSum) > 0.0000001);
+wetL = hasWet ? (tanh((evenSum * 0.78 + oddSum * 0.42) * 1.35 * resGainLin) * 0.88) : 0;
+wetR = hasWet ? (tanh((oddSum * 0.78 + evenSum * 0.42) * 1.35 * resGainLin) * 0.88) : 0;
 
-// 4. Equal-power dry/wet mix
-ang = wetS * 1.57079632679;
-dryG = cos(ang);
-wetG = sin(ang);
+// 3. Equal-power dry/wet mix
 outL = in1 * dryG + wetL * wetG;
 outR = in2 * dryG + wetR * wetG;
 

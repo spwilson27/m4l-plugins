@@ -254,6 +254,8 @@ ui.set_sieve(1);
 ui.set_snap(100);
 ui.set_blur(60);
 ui.set_decay(800);
+ui.set_blur(25);
+ui.set_decay(120);
 ui.set_attack(35);
 ui.set_attack(2.5);
 
@@ -317,5 +319,13 @@ const savedState = ui.getvalueof();
 assert.deepStrictEqual(savedState, [2, 2741, -28.5], "getvalueof/setvalueof v2 round-trip mismatch");
 ui.setvalueof([1, 1365]);
 assert.strictEqual(ui.getvalueof()[1], 1365, "setvalueof v1 backward compatibility failed");
+
+// Verify idle UI sleep: when scope is silent, pullScope() returns false after settling so mgraphics.redraw() stops
+const savedAmp3 = scopeMock[3];
+scopeMock[3] = 0;
+for (let step = 0; step < 80; step++) ui.pullScope();
+assert.strictEqual(ui.pullScope(), false, "pullScope() must return false when silent so v8ui skips redraws while idle");
+scopeMock[3] = savedAmp3;
+assert.strictEqual(ui.pullScope(), true, "pullScope() must wake up immediately when audio returns");
 
 console.log("test_percipitator: ok (408x169 Concept 3 verified)");

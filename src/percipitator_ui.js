@@ -29,6 +29,7 @@ var bandMidis = [];
 var activePitchClasses = [];
 var droplets = [];
 var dropTick = 0;
+var uiIdleFrames = 0;
 
 for (var bi = 0; bi < NUM_BANDS; bi++) {
     bandAmps.push(0);
@@ -262,55 +263,74 @@ function numAt(chunk, idx) {
 }
 
 function pullScope() {
-    if (!scopeBuf) return;
+    if (!scopeBuf) return false;
     dropTick = (dropTick + 1) & 0x7FFF;
     var chunk = scopeBuf.peek(1, 0, SCOPE_SAMPS);
     var blur01 = clamp(curBlurPct / 100.0, 0, 1);
     var dec01 = clamp(Math.log(Math.max(1, curDecayMs)) / Math.log(1500), 0, 1);
-    var fallStep = 0.032 - dec01 * 0.026; // Longer Decay = slower peak-cap fall
+    var fallStep = 0.038 - dec01 * 0.026; // Longer Decay = slower peak-cap fall
+    var hasActivity = false;
 
     for (var p = 0; p < 12; p++) {
         activePitchClasses[p] *= (0.72 + blur01 * 0.20);
+        if (activePitchClasses[p] > 0.005) hasActivity = true;
+        else activePitchClasses[p] = 0;
     }
     for (var i = 0; i < NUM_BANDS; i++) {
         var rawAmp = clamp(numAt(chunk, i), 0, 1.4);
         var qMidi = numAt(chunk, 16 + i);
-        var riseC = 0.72 - clamp(curAttackMs / 100.0, 0, 0.55);
-        var fallC = 0.30 - blur01 * 0.20;
-        var coef = rawAmp > bandAmps[i] ? riseC : fallC;
-        bandAmps[i] = bandAmps[i] + (rawAmp - bandAmps[i]) * coef;
-        if (bandAmps[i] > bandPeakHold[i]) {
-            bandPeakHold[i] = bandAmps[i];
+        if (rawAmp > 0.001 || bandAmps[i] > 0.001 || bandPeakHold[i] > 0.001) {
+            hasActivity = true;
+            var riseC = 0.72 - clamp(curAttackMs / 100.0, 0, 0.55);
+            var fallC = 0.30 - blur01 * 0.20;
+            var coef = rawAmp > bandAmps[i] ? riseC : fallC;
+            bandAmps[i] = bandAmps[i] + (rawAmp - bandAmps[i]) * coef;
+            if (bandAmps[i] < 0.0005) bandAmps[i] = 0;
+            if (bandAmps[i] > bandPeakHold[i]) {
+                bandPeakHold[i] = bandAmps[i];
+            } else {
+                bandPeakHold[i] = Math.max(0, bandPeakHold[i] - fallStep);
+            }
+            if (qMidi > 12) bandMidis[i] = qMidi;
+            if (bandAmps[i] > 0.01) {
+                var pc = ((Math.round(bandMidis[i]) % 12) + 12) % 12;
+                if (bandAmps[i] > activePitchClasses[pc]) {
+                    activePitchClasses[pc] = Math.min(1, bandAmps[i] * 1.4);
+                }
+                if (rawAmp > 0.015 && droplets.length < 56 && ((i + dropTick) % 2 === 0)) {
+                    droplets.push({
+                        band: i,
+                        y: 0.04,
+                        amp: clamp(0.75 + rawAmp * 0.6, 0.75, 1.0),
+                        speed: (0.060 - dec01 * 0.042)
+                    });
+                }
+            }
         } else {
-            bandPeakHold[i] = Math.max(0, bandPeakHold[i] - fallStep);
-        }
-        if (qMidi > 12) bandMidis[i] = qMidi;
-        if (bandAmps[i] > 0.01) {
-            var pc = ((Math.round(bandMidis[i]) % 12) + 12) % 12;
-            if (bandAmps[i] > activePitchClasses[pc]) {
-                activePitchClasses[pc] = Math.min(1, bandAmps[i] * 1.4);
-            }
-            if (rawAmp > 0.015 && droplets.length < 56 && ((i + dropTick) % 2 === 0)) {
-                droplets.push({
-                    band: i,
-                    y: 0.04,
-                    amp: clamp(0.75 + rawAmp * 0.6, 0.75, 1.0),
-                    speed: (0.060 - dec01 * 0.042)
-                });
-            }
+            bandAmps[i] = 0;
+            bandPeakHold[i] = 0;
         }
     }
-    var persistence = 0.93 + dec01 * 0.06;
-    var nextDrops = [];
-    for (var d = 0; d < droplets.length; d++) {
-        var dr = droplets[d];
-        dr.y += dr.speed;
-        dr.amp *= persistence;
-        if (dr.y < 1.0 && dr.amp > 0.12) {
-            nextDrops.push(dr);
+    if (droplets.length > 0) {
+        hasActivity = true;
+        var persistence = 0.93 + dec01 * 0.06;
+        var nextDrops = [];
+        for (var d = 0; d < droplets.length; d++) {
+            var dr = droplets[d];
+            dr.y += dr.speed;
+            dr.amp *= persistence;
+            if (dr.y < 1.0 && dr.amp > 0.12) {
+                nextDrops.push(dr);
+            }
         }
+        droplets = nextDrops;
     }
-    droplets = nextDrops;
+    if (hasActivity) {
+        uiIdleFrames = 0;
+        return true;
+    }
+    uiIdleFrames = Math.min(uiIdleFrames + 1, 100);
+    return uiIdleFrames <= 2;
 }
 
 function loadbang() {
@@ -319,8 +339,9 @@ function loadbang() {
     outlet(0, ["gate", curGateDb]);
     if (typeof Task === "function") {
         uiTask = new Task(function () {
-            pullScope();
-            mgraphics.redraw();
+            if (pullScope()) {
+                mgraphics.redraw();
+            }
         }, this);
         uiTask.interval = 33;
         uiTask.repeat();
