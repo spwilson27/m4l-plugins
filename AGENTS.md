@@ -32,9 +32,6 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Reciprocator
      python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
 
-     # Better GrainSpec
-     python3 scripts/build_grainspec.py && node tests/test_grainspec.js && python3 scripts/render_preview.py "devices/Better GrainSpec.amxd"
-
      # Percipitator
      python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"
      ```
@@ -56,6 +53,9 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 8. **`gen.codebox~`, `v8ui` Pixel Coordinates, Background Panels & Real Max Audio Verification**:
    - **`v8ui` Pixel Coordinates**: Always call `mgraphics.init(); mgraphics.relative_coords = 0; mgraphics.autofill = 0;` at the top of every `v8ui` script. Without `relative_coords = 0`, Max 9 clips pixel drawing to `0..1` and renders a blank panel in Live.
    - **Background Panel Z-Order**: All decorative `panel` boxes must appear **at the end** of the `boxes` list and include `"background": 1`, or they will cover interactive controls in Ableton Live.
+   - **`live.numbox` Slider Fill Opacity & Bipolar Appearance (`appearance: 2` vs `3`)**:
+     - `appearance: 2` (`Slider`) fills from the left edge; `appearance: 3` (`Bipolar`) fills outward from the center midpoint (`0` or `50%`).
+     - Ableton Live ignores alpha in `activeslidercolor` and paints the slider fill opaque. Always pre-blend `activeslidercolor` (`38%` accent color + `62%` dark `activebgcolor`) so value text in `textcolor` remains high-contrast and legible over the fill bar inside Ableton Live.
    - **GenExpr Ordering & Lexer Rules**:
      - Every helper function must appear **before** all `Buffer`, `Param`, `History`, and `Delay` declarations, which in turn must appear **before** all expression statements.
      - **Never name identifiers `e0`–`e9`** (or `e` followed by digits): GenExpr's lexer parses `e0` as Euler's constant `e` (`2.71828...`) rather than an identifier.
@@ -152,10 +152,10 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
   - **Right Panel (`x = 122..278`)**: 3×2 dial grid (`Size`, `Fbk`, `Damp` on top; `XFeed`, `Width`, `Mix` below).
 
 ### Gen core (`gen.codebox~`, hidden)
-- `src/tinyspace_core.genexpr` — FDN: predelay → HP/LP → seeded allpasses → 20 delay lines (10 L / 10 R) with linear interpolation, per-line damping, soft clip, Householder-or-comb mix, crossfeed → width (M/S) → equal-power dry/wet.
+- `src/tinyspace_core.genexpr` — FDN: predelay → HP/LP → seeded allpasses → 20 delay lines (10 L / 10 R) with linear interpolation, per-line damping, soft clip, an orthogonal per-model mix (identity, sum-preserving rotation, Householder, Householder-cycle, sign-flipping ring, Householder wall-swap, spring lattice, or reversal), a unitary crossfeed rotation → width (M/S) → equal-power dry/wet.
 - Audio is `in1`/`in2`. Knobs are Gen `Param`s (`size`, `damp`, `width`, `wet`, `fbk`, `predly`, `modamt`, `xfeed`, `hp`, `lp`, `duck`), sent with `prepend`.
 - `Buffer cfg("tsconfig")` reads the 70-float seed config. `Buffer meters("tsmeters")` gets one envelope per line every 32 samples. Loadbang binds them with `cfg #0-tsconfig, meters #0-tsmeters` (the GenExpr variable, with no `set` prefix). An unbound buffer peeks as zeros, every delay line stays off, and Mix at 100% is silent.
-- Percent knobs are scaled by `/ 100.` before they hit gen. At full feedback each line is about 60 dB down after 80 seconds. The per-loop coefficient is higher on short lines so a small Size rings about as long as a long one, and it stays under 1. Feedback at 0 writes no recirculation. Delay taps are whole samples, and Damp at 0 does not lowpass the loop, so short combs stay metallic. Damp darkens the bright partials over a time set by the knob.
+- Percent knobs are scaled by `/ 100.` before they hit gen. Feedback uses a delay-style RT60 curve (`feedbackRt60`): about 0.7 s at 50%, about 2.7 s at 75%, and about 27.5 s at 100% (60 dB down). Every room model shares that tail because the mix is orthogonal and the all-ones mode has eigenvalue magnitude 1. The per-loop coefficient is higher on short lines so a small Size rings about as long as a long one, and it stays under 1. Feedback at 0 writes no recirculation. Delay taps are whole samples, and Damp at 0 does not lowpass the loop, so short combs stay metallic. Damp darkens the bright partials over a time set by the knob. Crossfeed is a rotation (`xfeed * pi/2`), so a partial XFeed does not burn energy.
 
 ### Seed → config
 - `src/tinyspace_config.js` (mulberry32, `Seed` 0–1000) is prepended into the v8ui script and required by `tests/test_tinyspace.js`. Lower seeds use fewer active delay lines (`4` at Seed `0`), scaling monotonically up to the `20`-line cap (`10 L + 10 R`) as Seed approaches `1000`.
@@ -220,46 +220,27 @@ Audio checks (real Max render): `python3 scripts/run_reciprocator_audio_tests.py
 
 ---
 
-## 8. Architecture of `devices/Better GrainSpec.amxd`
-
-### Presentation Layout (`740 x 169` px — Max Instrument `iiii`)
-- **Left Panel (`x = 6..384`)**:
-  - Top bar (`y = 7..23`): Title (`Better GrainSpec`), `Load` (`live.text` -> `opendialog sound`), `Cap` (`live.text` toggle for live track audio capture), `Key Mode` (`128` / `Key` `live.tab` switching between 128-note slice mapping and chromatic playback), and `Sens` (`live.numbox` 0–100% onset sensitivity).
-  - Interactive Waveform, Slice Editor & Grain/Spectral Visualizer (`obj-ui`, `v8ui`, `x = 10, y = 28, w = 368, h = 132`):
-    - Pre-populates `buffer~ #0-gssample` with a synthesized 2-second breakbeat/glitch loop on startup so the instrument plays out of the box.
-    - Displays stereo waveform, detected slice boundaries, amber transient-preservation zone at the start of the active slice, real-time 4-voice grain cloud halos, and scanning slice playhead from `buffer~ #0-gsstate`.
-    - Supports click to select/audition slice, drag marker to adjust slice boundary, double-click to insert/delete slice markers, undo/redo history, and an 8-item geometric vector icon toolbar (`Undo`, `Redo`, `Re-Detect Onsets`, `Add Slice`, `Delete Slice`, `Random Slice`, `Reverse`, `Key Mode`).
-- **Right Panel (`x = 390..734`)**:
-  - 10 dials in a 5×2 grid (`Speed`, `Grain`, `Morph`, `Trans`, `Jitter` on top; `Pitch`, `CombMix`, `CombFbk`, `Crush`, `Mix` below), each `live.dial` 60×48.
-
-### Gen core (`gen.codebox~`, hidden)
-- `src/grainspec_core.genexpr` — Direct 1:1 transient-preservation stage (`trans` 0–100% with raised-cosine crossfade into the stretched body) → 4-voice overlapping Hann granular stretcher (`morph = 0`) crossfaded with a phase-locked fundamental-quantized harmonic resonator stretcher (`morph = 1`) → pitch-matching stereo feedback comb filter (`combDL`/`combDR` tuned to each slice's autocorrelation-detected fundamental pitch or played MIDI note) → hyperglitch sample-rate/bit crush → equal-power output mix.
-- Loadbang binds the three instance-isolated buffers with `samp #0-gssample, slices #0-gsslices, state #0-gsstate`.
-
-### Build / Test / Preview
-```bash
-python3 scripts/build_grainspec.py && node tests/test_grainspec.js && python3 scripts/render_preview.py "devices/Better GrainSpec.amxd"
-```
-Audio checks (real Max render): `python3 scripts/run_grainspec_audio_tests.py`
-
----
-
 ## 9. Architecture of `devices/Percipitator.amxd`
 
-### Presentation Layout (`380 x 169` px — Horizontal Value-Bar Stack)
+### Presentation Layout (`408 x 169` px — Horizontal Value-Bar Stack)
 - **Left Panel (`x = 6..218`, `w = 212`)**:
   - Top bar (`y = 7..22`): Title (`Percipitator`).
   - Visualization Canvas (`obj-viz`, `v8ui`, `x = 10, y = 26, w = 204, h = 134`):
-    - **Full-Width Partials Viewer**: 16-band Spectral Precipitation Waterfall with peak-hold caps, falling droplets, an adjustable `G -42dB` Gate readout pill, and a vertically draggable `Gate` threshold line.
-    - **Top-Right Wave Pill**: Live single-cycle preview of the morphed/warped `Sine -> Triangle -> Saw -> Square` wave (drag vertically for `Wave`, horizontally for `Warp`).
-    - **Bottom Strip**: Interactive 12-Note Scale Quantizer & Sidechain MIDI keyboard (`C..B`).
-- **Right Panel (`x = 222..374`, `w = 152`) — Two Columns of Horizontal Value Bars**:
-  - **Column 1 (`PITCH / ENV`, `x = 226..298`)**: `Pitch` (`-24..+24 st`), `Shift` (`-2000..+2000 Hz`), `Strch` (`50..200%`), `Snap` (`0..100%`), `Blur` (`0..100%`), `Decay` (`1..1500 ms`), and `Atk` (`0.2..100 ms`).
-  - **Column 2 (`WAVE / TONE`, `x = 302..374`)**: `Wave` (`WT Pos` `0..100%`, default `0%` Sine), scrollable `Mode` (`Bend`, `Asym`, `Sync`, `Fold`), `Warp` (`0..100%`, default `50%`), scrollable `Sieve` (`All`, `Odd`, `Even`, `Sprs`, `Rise`), `Tilt` (`-100..+100%`), `Vol` (`Partials Vol` `-36..+18 dB`), and `Mix` (`0..100%`).
+    - **Full-Width Partials Viewer (`y = 20..98`)**: 16-band Spectral Precipitation Waterfall with peak-hold caps, high-contrast volume-independent falling droplets (cyan halo + white-hot core rendered on top of the bars), an adjustable `G -42dB` Gate readout pill, and a vertically draggable `Gate` threshold line.
+    - **Real-Time Parameter Visual Feedback**:
+      - `Pitch`, `Shift`, `Strch`: Displace the active colored partial bars horizontally while leaving faint slate ghost bars at the unshifted input band positions.
+      - `Snap`: Draws glowing tether lines across the `10 px` tether lane (`y = 98..108`) connecting each active partial bar to its quantized note cell (`C..B`).
+      - `Sieve`: Shades muted band lanes dark in the background grid with a bottom coral tick.
+      - `Decay`, `Blur`, `Atk`, `Vol`: `Decay` controls falling droplet comet-tail length and peak-cap fall speed; `Blur` renders a soft horizontal bloom halo around active bars; `Atk` rounds bar top corners; `Vol` scales bar height (while keeping droplets bright and visible even at `-36 dB`).
+    - **Top-Right Wave Pill (`x = 130..198, y = 2..18`)**: Live single-cycle preview of the morphed/warped `Sine -> Triangle -> Saw -> Square` wave (drag vertically for `Wave`, horizontally for `Warp`).
+    - **Bottom Strip (`y = 108..130`)**: Interactive 12-Note Scale Quantizer & Sidechain MIDI keyboard (`C..B`). Saved in Live Sets via `ScaleMaskData` (`getvalueof` v2: `[2, curScaleMask, curGateDb]`, backward-compatible with v1 `[1, curScaleMask]`).
+- **Right Panel (`x = 222..402`, `w = 180`) — Two Columns of Horizontal Value Bars (Zero Rotary Dials)**:
+  - **Column 1 (`PITCH / ENV`, `x = 230..308`)**: `Pitch` (`-24..+24 st`, bipolar `appearance: 3`), `Shift` (`-2000..+2000 Hz`, bipolar `appearance: 3`), `Strch` (`50..200%`), `Snap` (`0..100%`), `Blur` (`0..100%`), `Decay` (`1..1500 ms`), and `Atk` (`0.2..100 ms`).
+  - **Column 2 (`WAVE / TONE`, `x = 314..392`, with `10 px` right margin to panel edge at `402`)**: `Wave` (`WT Pos` `0..100%`, default `0%` Sine), scrollable `Mode` (`Bend`, `Asym`, `Sync`, `Fold`, `unitstyle: 9`), `Warp` (`0..100%`, default `50%`, bipolar `appearance: 3`), scrollable `Sieve` (`All`, `Odd`, `Even`, `Sprs`, `Rise`, `unitstyle: 9`), `Tilt` (`-100..+100%`, $\pm 36\text{ dB}$, bipolar `appearance: 3`), `Vol` (`Partials Vol` `-36..+18 dB`), and `Mix` (`0..100%`).
 - **Sidechain MIDI Input (`midiin` -> `midiparse` -> `prepend midi_in` -> `obj-viz`)**: Incoming MIDI note-on/note-off messages dynamically build a 12-bit pitch-class mask (`computeMidiChordState`) from held notes, latching the last played chord and highlighting held notes in emerald on the bottom 12-note strip.
 
 ### Gen core (`gen.codebox~`, hidden)
-- `src/percipitator_core.genexpr` — 16-band log-spaced Chamberlin SVF bandpass + zero-crossing pitch tracker + soft-knee precipitation gate (`gate`, `decay`, `attack`, `blur`, and `freeze` spectral hold) + Partial Sieve (`sieve`) + Spectral Tilt (`tilt`) → 12-note scale quantizer (`scalemask`, `snap`, `pitch`, `stretch`, `fshift` Hz offset) → 16 4-frame `Sine -> Triangle -> Saw -> Square` wavetable oscillators (`buffer~ #0-percipwt`, `8192` samples) with `Bend`, `Asym`, `Sync`, and `Fold` phase warp modifiers → resynthesized partials volume (`resynthgain`) & equal-power dry/wet mix.
+- `src/percipitator_core.genexpr` — 16-band log-spaced Chamberlin SVF bandpass + zero-crossing pitch tracker + soft-knee precipitation gate (`gate`, `decay`, `attack`, `blur`, and `freeze` spectral hold) + Partial Sieve (`sieve`) + Spectral Tilt (`tilt`, `pow(2.0, t * pos * 6.0)` = $\pm 36\text{ dB}$) → 12-note scale quantizer (`scalemask`, `snap`, `pitch`, `stretch`, `fshift` Hz offset) → 16 4-frame `Sine -> Triangle -> Saw -> Square` wavetable oscillators (`buffer~ #0-percipwt`, `8192` samples) with `Bend`, `Asym`, `Sync`, and `Fold` phase warp modifiers → resynthesized partials volume (`resynthgain`) & equal-power dry/wet mix.
 - Loadbang binds `wt #0-percipwt, scope #0-percipscope` and pokes the 4-frame `Sine -> Triangle -> Saw -> Square` wavetable into `buffer~ #0-percipwt`.
 
 ### Build / Test / Preview

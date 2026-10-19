@@ -1,10 +1,16 @@
 // Percipitator audio-reactive Partials Viewer + 12-Note Scale & Sidechain MIDI Selector.
 // src/percipitator_config.js is prepended at build time.
 //
-// Redesigned around a single full-width Partials + Note Selector stage (no cramped side-by-side
-// wavetable sub-window). Supports direct manipulation of Gate threshold + Spectral Tilt line
-// on the Partials graph, plus an integrated top-right single-cycle Wave Pill that previews and
-// scrubs the active Sine->Triangle->Saw->Square wavetable & phase warp.
+// Visual feedback for every synthesis parameter inside the Partials Viewer:
+//   - Pitch, Shift & Stretch: Faint grey "input" ghost bars stay at the unshifted band positions,
+//     while the active resynthesized bars slide left/right (Pitch + Shift) and fan outward/inward (Stretch).
+//   - Scale Snap: Curved tether lines connect the base of each active partial bar to the exact
+//     note cell (C..B) it is quantized to (bending from straight at Snap 0% to locked at Snap 100%).
+//   - Sieve: Muted band slots (Odd, Even, Sprs, Rise) are visibly dimmed/hatched in the background grid.
+//   - Decay, Blur & Attack: Decay controls peak-hold fall rate and falling droplet comet-tail length;
+//     Blur blooms a soft horizontal aura around active bars; Attack morphs bar crests from sharp to rounded.
+//   - Vol & Droplets: Vol scales the rendered height of the resynthesized bars, while falling precipitation
+//     droplets render on top of the bars at high, volume-independent brightness (cyan halo + white-hot core).
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -24,6 +30,7 @@ var bandPeakHold = [];
 var bandMidis = [];
 var activePitchClasses = [];
 var droplets = [];
+var dropTick = 0;
 
 for (var bi = 0; bi < NUM_BANDS; bi++) {
     bandAmps.push(0);
@@ -36,18 +43,26 @@ for (var pi = 0; pi < 12; pi++) {
 
 var curGateDb = -42.0;
 var curScaleMask = DEFAULT_SCALE_MASK; // C Major default (2741)
+var curPitchSt = 0.0;
+var curShiftHz = 0.0;
+var curStretchPct = 100.0;
+var curSnapPct = 100.0;
+var curBlurPct = 25.0;
+var curDecayMs = 120.0;
+var curAttackMs = 2.5;
 var curWtPosPct = 0.0;
 var curWtMode = 0;
 var curWarpPct = 50.0;
 var curSieve = 0;
 var curTiltPct = 0.0;
+var curVolDb = 0.0;
 
 // Sidechain MIDI state
 var heldMidiNotes = {};
 var activeMidiMask = 0;
 var activeMidiCount = 0;
 
-var dragState = ""; // "gate" | "tilt" | "wave" | ""
+var dragState = ""; // "gate" | "wave" | ""
 
 function effectiveScaleMask() {
     if (activeMidiCount > 0 && activeMidiMask > 0) {
@@ -56,28 +71,39 @@ function effectiveScaleMask() {
     return curScaleMask;
 }
 
+function volVisualScale() {
+    // Maps Vol (-36..+18 dB) into a smooth visual height multiplier (0 at -36 dB, 1.0 at 0 dB, 1.45 at +18 dB)
+    if (curVolDb <= -35.5) return 0.0;
+    return clamp(Math.pow(10, curVolDb / 40), 0.08, 1.45);
+}
+
 function initDemoState() {
     var demoAmps = [
-        0.06, 0.22, 0.56, 0.16, 0.80, 0.36, 0.68, 0.26,
-        0.86, 0.50, 0.20, 0.62, 0.34, 0.46, 0.22, 0.10
+        0.08, 0.24, 0.56, 0.18, 0.78, 0.36, 0.68, 0.28,
+        0.84, 0.50, 0.22, 0.62, 0.34, 0.48, 0.24, 0.12
     ];
     droplets = [];
     var maskNow = effectiveScaleMask();
+    var stretchNow = clamp(curStretchPct / 100.0, 0.5, 2.0);
+    var snapNow = clamp(curSnapPct / 100.0, 0, 1);
     for (var i = 0; i < NUM_BANDS; i++) {
         var weighted = demoAmps[i] * computeSieveGain(i, curSieve) * computeTiltGain(i, curTiltPct / 100.0);
-        bandAmps[i] = clamp(weighted, 0, 1.2);
-        bandPeakHold[i] = Math.min(1.0, bandAmps[i] * 1.18);
-        bandMidis[i] = quantizeMidiToScale(freqToMidi(BAND_FREQS[i]), maskNow, 1.0);
+        bandAmps[i] = clamp(weighted, 0, 1.4);
+        bandPeakHold[i] = Math.min(1.2, bandAmps[i] * 1.15);
+        var rawM = 69 + (freqToMidi(BAND_FREQS[i]) - 69) * stretchNow + curPitchSt;
+        bandMidis[i] = quantizeMidiToScale(rawM, maskNow, snapNow);
         if (bandAmps[i] > 0.24) {
-            droplets.push({ band: i, y: 0.20 + (i % 4) * 0.16, amp: bandAmps[i], speed: 0.04 });
+            droplets.push({ band: i, y: 0.22 + (i % 4) * 0.16, amp: bandAmps[i], speed: 0.04 });
             droplets.push({ band: i, y: 0.58 + (i % 3) * 0.12, amp: bandAmps[i] * 0.75, speed: 0.04 });
         }
     }
     for (var p = 0; p < 12; p++) activePitchClasses[p] = 0;
-    activePitchClasses[0] = 0.9;
-    activePitchClasses[4] = 0.75;
-    activePitchClasses[7] = 0.85;
-    activePitchClasses[11] = 0.6;
+    for (var b = 0; b < NUM_BANDS; b++) {
+        if (bandAmps[b] > 0.18) {
+            var pc = ((Math.round(bandMidis[b]) % 12) + 12) % 12;
+            activePitchClasses[pc] = Math.max(activePitchClasses[pc], Math.min(1, bandAmps[b]));
+        }
+    }
 }
 
 function preview() {
@@ -135,6 +161,45 @@ function set_gate(db) {
     mgraphics.redraw();
 }
 
+function set_pitch(st) {
+    curPitchSt = clamp(Number(st) || 0.0, -24.0, 24.0);
+    if (!scopeBuf) initDemoState();
+    mgraphics.redraw();
+}
+
+function set_fshift(hz) {
+    curShiftHz = clamp(Number(hz) || 0.0, -2000.0, 2000.0);
+    if (!scopeBuf) initDemoState();
+    mgraphics.redraw();
+}
+
+function set_stretch(pct) {
+    curStretchPct = clamp(Number(pct) || 100.0, 50.0, 200.0);
+    if (!scopeBuf) initDemoState();
+    mgraphics.redraw();
+}
+
+function set_snap(pct) {
+    curSnapPct = clamp(Number(pct) || 0.0, 0.0, 100.0);
+    if (!scopeBuf) initDemoState();
+    mgraphics.redraw();
+}
+
+function set_blur(pct) {
+    curBlurPct = clamp(Number(pct) || 0.0, 0.0, 100.0);
+    mgraphics.redraw();
+}
+
+function set_decay(ms) {
+    curDecayMs = clamp(Number(ms) || 120.0, 1.0, 1500.0);
+    mgraphics.redraw();
+}
+
+function set_attack(ms) {
+    curAttackMs = clamp(Number(ms) || 2.5, 0.2, 100.0);
+    mgraphics.redraw();
+}
+
 function set_wtpos(pct) {
     curWtPosPct = clamp(Number(pct) || 0.0, 0.0, 100.0);
     mgraphics.redraw();
@@ -159,6 +224,11 @@ function set_sieve(s) {
 function set_tilt(pct) {
     curTiltPct = clamp(Number(pct) || 0.0, -100.0, 100.0);
     if (!scopeBuf) initDemoState();
+    mgraphics.redraw();
+}
+
+function set_vol(db) {
+    curVolDb = clamp(Number(db) || 0.0, -36.0, 18.0);
     mgraphics.redraw();
 }
 
@@ -195,42 +265,50 @@ function numAt(chunk, idx) {
 
 function pullScope() {
     if (!scopeBuf) return;
+    dropTick = (dropTick + 1) & 0x7FFF;
     var chunk = scopeBuf.peek(1, 0, SCOPE_SAMPS);
+    var blur01 = clamp(curBlurPct / 100.0, 0, 1);
+    var dec01 = clamp(Math.log(Math.max(1, curDecayMs)) / Math.log(1500), 0, 1);
+    var fallStep = 0.032 - dec01 * 0.026; // Longer Decay = slower peak-cap fall
+
     for (var p = 0; p < 12; p++) {
-        activePitchClasses[p] *= 0.78;
+        activePitchClasses[p] *= (0.72 + blur01 * 0.20);
     }
     for (var i = 0; i < NUM_BANDS; i++) {
-        var rawAmp = clamp(numAt(chunk, i), 0, 1.2);
+        var rawAmp = clamp(numAt(chunk, i), 0, 1.4);
         var qMidi = numAt(chunk, 16 + i);
-        var coef = rawAmp > bandAmps[i] ? 0.65 : 0.24;
+        var riseC = 0.72 - clamp(curAttackMs / 100.0, 0, 0.55);
+        var fallC = 0.30 - blur01 * 0.20;
+        var coef = rawAmp > bandAmps[i] ? riseC : fallC;
         bandAmps[i] = bandAmps[i] + (rawAmp - bandAmps[i]) * coef;
         if (bandAmps[i] > bandPeakHold[i]) {
             bandPeakHold[i] = bandAmps[i];
         } else {
-            bandPeakHold[i] = Math.max(0, bandPeakHold[i] - 0.018);
+            bandPeakHold[i] = Math.max(0, bandPeakHold[i] - fallStep);
         }
         if (qMidi > 12) bandMidis[i] = qMidi;
-        if (bandAmps[i] > 0.03) {
+        if (bandAmps[i] > 0.01) {
             var pc = ((Math.round(bandMidis[i]) % 12) + 12) % 12;
             if (bandAmps[i] > activePitchClasses[pc]) {
                 activePitchClasses[pc] = Math.min(1, bandAmps[i] * 1.4);
             }
-            if (rawAmp > 0.08 && droplets.length < 48 && ((i + Math.round(rawAmp * 100)) % 3 === 0)) {
+            if (rawAmp > 0.015 && droplets.length < 56 && ((i + dropTick) % 2 === 0)) {
                 droplets.push({
                     band: i,
                     y: 0.04,
-                    amp: Math.min(1.0, rawAmp),
-                    speed: 0.045 + Math.min(0.05, rawAmp * 0.04)
+                    amp: clamp(0.75 + rawAmp * 0.6, 0.75, 1.0),
+                    speed: (0.060 - dec01 * 0.042)
                 });
             }
         }
     }
+    var persistence = 0.93 + dec01 * 0.06;
     var nextDrops = [];
     for (var d = 0; d < droplets.length; d++) {
         var dr = droplets[d];
         dr.y += dr.speed;
-        dr.amp *= 0.96;
-        if (dr.y < 1.0 && dr.amp > 0.03) {
+        dr.amp *= persistence;
+        if (dr.y < 1.0 && dr.amp > 0.12) {
             nextDrops.push(dr);
         }
     }
@@ -254,19 +332,32 @@ function loadbang() {
 
 function canvasSize() {
     var s = mgraphics.size;
-    if (!s || s.length < 2) return [216, 134];
+    if (!s || s.length < 2) return [204, 134];
     return [s[0], s[1]];
 }
 
 function ampToVis01(lin) {
     if (lin <= 0.0001) return 0;
-    var db = 20 * Math.log10(Math.min(lin, 1.2));
+    var db = 20 * Math.log10(Math.min(lin, 1.5));
     var db01 = clamp((db + 60.0) / 60.0, 0, 1);
     return 0.65 * db01 + 0.35 * clamp(Math.sqrt(lin), 0, 1);
 }
 
 function vis01ToDb(v01) {
     return -60.0 + clamp(v01, 0, 1) * 54.0;
+}
+
+// Compute the displaced horizontal X center of band b inside [specX .. specX + specW]
+// reflecting Pitch (-24..+24 st), Stretch (50..200%), and Shift (-2000..+2000 Hz).
+function displacedBandCenterX(bandIdx, specX, specW) {
+    var colW = specW / NUM_BANDS;
+    var normCenter = (bandIdx + 0.5) / NUM_BANDS; // 0..1
+    var stretchFactor = clamp(curStretchPct / 100.0, 0.5, 2.0);
+    var stretched = 0.5 + (normCenter - 0.5) * stretchFactor;
+    var pitchOffset = (curPitchSt / 48.0) * 0.42;
+    var shiftOffset = (curShiftHz / 2000.0) * 0.25;
+    var finalNorm = clamp(stretched + pitchOffset + shiftOffset, 0.5 / NUM_BANDS, 1.0 - 0.5 / NUM_BANDS);
+    return specX + finalNorm * specW;
 }
 
 function layoutRegions() {
@@ -278,12 +369,13 @@ function layoutRegions() {
     var specX = 6;
     var specY = 20;
     var specW = w - 12;
-    var specH = kbY - specY - 4;
-    // Floating single-cycle wave pill in top-right of header/spectrum
+    var specH = kbY - specY - 10; // 10px tether lane between Partials graph and Note Selector
+    var tetherY = specY + specH;
+    var tetherH = kbY - tetherY;
     var pillW = 68;
-    var pillH = 22;
-    var pillX = w - pillW - 8;
-    var pillY = 3;
+    var pillH = 16;
+    var pillX = w - pillW - 6;
+    var pillY = 2;
     return {
         w: w,
         h: h,
@@ -291,6 +383,8 @@ function layoutRegions() {
         specY: specY,
         specW: specW,
         specH: specH,
+        tetherY: tetherY,
+        tetherH: tetherH,
         pillX: pillX,
         pillY: pillY,
         pillW: pillW,
@@ -319,7 +413,7 @@ function onclick(x, y) {
         return;
     }
     // 2. Top-right single-cycle Wave Pill -> scrub WT Pos (vertical) & Warp (horizontal)
-    if (x >= r.pillX && x <= r.pillX + r.pillW && y >= r.pillY && y <= r.pillY + r.pillH + 10) {
+    if (x >= r.pillX && x <= r.pillX + r.pillW && y >= r.pillY && y <= r.pillY + r.pillH + 6) {
         dragState = "wave";
         ondrag(x, y);
         return;
@@ -340,7 +434,7 @@ function ondrag(x, y) {
         notifyclients();
         mgraphics.redraw();
     } else if (dragState === "wave") {
-        var pos01 = clamp(1.0 - (y - r.pillY) / Math.max(1, r.pillH + 10), 0, 1);
+        var pos01 = clamp(1.0 - (y - r.pillY) / Math.max(1, r.pillH + 8), 0, 1);
         var warp01 = clamp((x - r.pillX) / Math.max(1, r.pillW), 0, 1);
         curWtPosPct = Math.round(pos01 * 100);
         curWarpPct = Math.round(warp01 * 100);
@@ -378,13 +472,13 @@ function paint() {
         mgraphics.show_text("PARTIALS");
     }
 
-    // Adjustable Gate pill in header + draggable Gate line in Partials graph
+    // Adjustable Gate pill in header
     mgraphics.set_source_rgba(0.16, 0.08, 0.10, 0.92);
-    mgraphics.rectangle_rounded(55, 3, 52, 14, 2.5, 2.5);
+    mgraphics.rectangle_rounded(55, 2, 52, 15, 2.5, 2.5);
     mgraphics.fill();
     mgraphics.set_line_width(1);
     mgraphics.set_source_rgba(0.96, 0.42, 0.42, 0.65);
-    mgraphics.rectangle_rounded(55, 3, 52, 14, 2.5, 2.5);
+    mgraphics.rectangle_rounded(55, 2, 52, 15, 2.5, 2.5);
     mgraphics.stroke();
 
     mgraphics.set_source_rgba(0.98, 0.52, 0.52, 0.96);
@@ -408,50 +502,141 @@ function paint() {
 
     var colW = r.specW / NUM_BANDS;
     var baseY = r.specY + r.specH;
+    var volScale = volVisualScale();
+    var blur01 = clamp(curBlurPct / 100.0, 0, 1);
+    var dec01 = clamp(Math.log(Math.max(1, curDecayMs)) / Math.log(1500), 0, 1);
+    var atk01 = clamp(curAttackMs / 50.0, 0, 1);
+    var snap01 = clamp(curSnapPct / 100.0, 0, 1);
+    var hasPitchDisplacement = (Math.abs(curPitchSt) > 0.2) || (Math.abs(curShiftHz) > 8.0) || (Math.abs(curStretchPct - 100.0) > 1.5);
 
-    // Falling precipitation droplets
-    for (var d = 0; d < droplets.length; d++) {
-        var dr = droplets[d];
-        var dx = r.specX + (dr.band + 0.5) * colW;
-        var dy = r.specY + dr.y * (r.specH - 6) + 3;
-        var rad = 1.7 + dr.amp * 1.7;
-        mgraphics.set_source_rgba(0.38, 0.88, 0.98, clamp(dr.amp * 0.85, 0.15, 0.9));
-        mgraphics.arc(dx, dy, rad, 0, Math.PI * 2);
-        mgraphics.fill();
+    // 1. SIEVE VISUAL FEEDBACK + GHOST INPUT BARS:
+    // Muted Sieve band slots are shaded dark with an X-tick at the top;
+    // when Pitch/Shift/Stretch are active, faint slate ghost bars show the original unshifted band positions.
+    for (var sb = 0; sb < NUM_BANDS; sb++) {
+        var slotX = r.specX + sb * colW;
+        var sWeight = computeSieveGain(sb, curSieve);
+        if (sWeight < 0.25) {
+            // Dimmed/masked band lane for Sieve (Odd / Even / Sprs)
+            mgraphics.set_source_rgba(0.03, 0.035, 0.045, 0.72);
+            mgraphics.rectangle(slotX + 0.5, r.specY + 1, colW - 1.0, r.specH - 2);
+            mgraphics.fill();
+            // Subtle muted tick at bottom of slot
+            mgraphics.set_line_width(1);
+            mgraphics.set_source_rgba(0.45, 0.24, 0.28, 0.55);
+            mgraphics.move_to(slotX + 2.5, baseY - 3);
+            mgraphics.line_to(slotX + colW - 2.5, baseY - 3);
+            mgraphics.stroke();
+        } else if (hasPitchDisplacement) {
+            // Faint unshifted ghost bar showing where the input band was before Pitch/Stretch/Shift
+            var ghostH = clamp(ampToVis01(bandAmps[sb]), 0, 1) * (r.specH - 4);
+            if (ghostH > 1.5) {
+                mgraphics.set_source_rgba(0.38, 0.46, 0.56, 0.22);
+                mgraphics.rectangle(slotX + 2.0, baseY - ghostH, Math.max(2.0, colW - 4.0), ghostH);
+                mgraphics.fill();
+            }
+        }
     }
 
-    // 16 Resynthesis partial bars + peak-hold caps
+    // 2. DECAY COMET TRAILS & DROPLETS:
+    // Longer Decay stretches a glowing vertical comet tail above each falling precipitation droplet.
+    // Droplets are rendered after the bars (below) at high, volume-independent brightness so they
+    // always pop clearly against the spectrum even on quiet signals.
+
+    // 3. 16 RESYNTHESIZED PARTIAL BARS (with Pitch/Stretch/Shift displacement, Blur aura, Attack rounding, Vol height)
     var wtMorph = clamp(curWtPosPct / 100.0, 0, 1);
+    var cellW = r.kbW / 12.0;
+
     for (var b = 0; b < NUM_BANDS; b++) {
-        var amp01 = ampToVis01(bandAmps[b]);
+        var amp01 = clamp(ampToVis01(bandAmps[b]) * volScale, 0, 1.0);
         var barH = amp01 * (r.specH - 4);
-        var bx = r.specX + b * colW + 1.2;
-        var bw = Math.max(2.5, colW - 2.4);
+        var cx = displacedBandCenterX(b, r.specX, r.specW);
+        var bw = Math.max(2.6, colW - 2.4);
+        var bx = cx - bw * 0.5;
         var by = baseY - barH;
 
         var cr = 0.24 + wtMorph * 0.70;
         var cg = 0.82 - wtMorph * 0.16;
         var cb = 0.96 - wtMorph * 0.68;
 
-        mgraphics.set_source_rgba(cr, cg, cb, 0.36 + amp01 * 0.56);
-        mgraphics.rectangle(bx, by, bw, barH);
+        // BLUR VISUAL FEEDBACK: Soft horizontal bloom halo around active bars proportional to Blur %
+        if (blur01 > 0.05 && barH > 2.0) {
+            var haloPad = blur01 * 5.5;
+            mgraphics.set_source_rgba(cr, cg, cb, blur01 * 0.24 * amp01);
+            mgraphics.rectangle_rounded(bx - haloPad, by, bw + haloPad * 2.0, barH, 3.0, 3.0);
+            mgraphics.fill();
+        }
+
+        // ATTACK VISUAL FEEDBACK: Fast Attack (0.2 ms) = razor-sharp rectangular bar crest;
+        // Slow Attack (100 ms) = soft rounded dome bar crest.
+        if (barH > 1.0) {
+            mgraphics.set_source_rgba(cr, cg, cb, 0.38 + amp01 * 0.56);
+            var cornerR = atk01 * Math.min(bw * 0.5, 4.5);
+            if (cornerR > 0.8 && barH > cornerR * 2) {
+                mgraphics.rectangle_rounded(bx, by, bw, barH, cornerR, cornerR);
+            } else {
+                mgraphics.rectangle(bx, by, bw, barH);
+            }
+            mgraphics.fill();
+        }
+
+        // Peak-hold cap (fades slower when Decay is high)
+        var pk01 = clamp(ampToVis01(bandPeakHold[b]) * volScale, 0, 1.0);
+        if (pk01 > 0.02) {
+            var py = baseY - pk01 * (r.specH - 4);
+            mgraphics.set_source_rgba(0.92, 0.96, 1.0, 0.88);
+            mgraphics.rectangle(bx, Math.max(r.specY + 1, py - 1.5), bw, 1.5);
+            mgraphics.fill();
+        }
+
+        // 4. SNAP VISUAL FEEDBACK: Glowing tether line in the lane between the Partials graph
+        // and the 12-Note Keyboard Strip showing which note key (C..B) each active partial snaps to.
+        if (amp01 > 0.10 && snap01 > 0.02) {
+            var pc = ((Math.round(bandMidis[b]) % 12) + 12) % 12;
+            var noteCenterX = r.kbX + (pc + 0.5) * cellW;
+            var targetX = cx + (noteCenterX - cx) * snap01;
+            mgraphics.set_line_width(1.0);
+            mgraphics.set_source_rgba(cr, cg, cb, (0.18 + snap01 * 0.48) * amp01);
+            mgraphics.move_to(cx, baseY);
+            mgraphics.line_to(targetX, r.kbY);
+            mgraphics.stroke();
+        }
+    }
+
+    // 5. BRIGHT VOLUME-INDEPENDENT DROPLETS & DECAY COMET TRAILS (drawn on top of bars so they always pop)
+    var tailLen = 5.0 + dec01 * 20.0;
+    for (var d = 0; d < droplets.length; d++) {
+        var dr = droplets[d];
+        var dx = displacedBandCenterX(dr.band, r.specX, r.specW);
+        var dy = r.specY + dr.y * (r.specH - 6) + 3;
+        var lifeFade = clamp(1.15 - dr.y * 0.45, 0.65, 1.0);
+        var rad = 2.2 + dr.amp * 0.9;
+
+        // Glowing comet trail
+        mgraphics.set_line_width(1.8);
+        mgraphics.set_source_rgba(0.48, 0.94, 1.0, 0.72 * lifeFade);
+        mgraphics.move_to(dx, Math.max(r.specY + 2, dy - tailLen));
+        mgraphics.line_to(dx, dy);
+        mgraphics.stroke();
+
+        // Outer cyan halo
+        mgraphics.set_source_rgba(0.35, 0.92, 1.0, 0.88 * lifeFade);
+        mgraphics.arc(dx, dy, rad, 0, Math.PI * 2);
         mgraphics.fill();
 
-        var pk01 = ampToVis01(bandPeakHold[b]);
-        var py = baseY - pk01 * (r.specH - 4);
-        mgraphics.set_source_rgba(0.92, 0.96, 1.0, 0.88);
-        mgraphics.rectangle(bx, Math.max(r.specY + 1, py - 1.5), bw, 1.5);
+        // Crisp white-hot core so small droplets are immediately visible at any volume
+        mgraphics.set_source_rgba(0.94, 0.99, 1.0, 0.98 * lifeFade);
+        mgraphics.arc(dx, dy, rad * 0.58, 0, Math.PI * 2);
         mgraphics.fill();
     }
 
-    // Spectral Tilt vector line across the partial viewer (emerald)
+    // Spectral Tilt vector line across the partial viewer (emerald) — steeper slope reflects doubled range
     var tilt01 = clamp(curTiltPct / 100.0, -1, 1);
-    var tiltMidY = r.specY + r.specH * 0.36;
-    var tiltSpan = r.specH * 0.22;
-    mgraphics.set_line_width(1.2);
-    mgraphics.set_source_rgba(0.30, 0.90, 0.68, 0.65);
-    mgraphics.move_to(r.specX + 2, tiltMidY + tilt01 * tiltSpan);
-    mgraphics.line_to(r.specX + r.specW - 2, tiltMidY - tilt01 * tiltSpan);
+    var tiltMidY = r.specY + r.specH * 0.42;
+    var tiltSpan = r.specH * 0.36;
+    mgraphics.set_line_width(1.3);
+    mgraphics.set_source_rgba(0.30, 0.90, 0.68, 0.72);
+    mgraphics.move_to(r.specX + 2, clamp(tiltMidY + tilt01 * tiltSpan, r.specY + 2, baseY - 2));
+    mgraphics.line_to(r.specX + r.specW - 2, clamp(tiltMidY - tilt01 * tiltSpan, r.specY + 2, baseY - 2));
     mgraphics.stroke();
 
     // Gate threshold dashed line (coral red)
@@ -491,7 +676,6 @@ function paint() {
     mgraphics.stroke();
 
     // --- BOTTOM STRIP: Interactive 12-Note Scale / Sidechain MIDI Selector ---
-    var cellW = r.kbW / 12.0;
     mgraphics.set_font_size(7.5);
     for (var n = 0; n < 12; n++) {
         var nx = r.kbX + n * cellW;

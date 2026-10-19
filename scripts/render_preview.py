@@ -338,25 +338,32 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
                 draw.text((rx + (rw - 7 * SCALE - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
-            elif app == 2:
-                # Native Ableton horizontal value bar numbox (appearance 2 = Slider)
+            elif app in (2, 3):
+                # Native Ableton horizontal value bar numbox (appearance 2 = Slider from left, appearance 3 = Bipolar from center)
                 draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=(52, 60, 72, 255), width=max(1, SCALE // 2))
                 lo_val = float(vof.get("parameter_mmin", 0.0))
                 hi_val = float(vof.get("parameter_mmax", 100.0))
                 norm = max(0.0, min(1.0, (float(init_val) - lo_val) / max(1e-6, hi_val - lo_val)))
                 sl_c = rgba_tuple(w.get("activeslidercolor", [0.98, 0.70, 0.26, 1.0]))
-                fill_c = (sl_c[0], sl_c[1], sl_c[2], 115)
-                bar_w = max(2.5 * SCALE, (rw - 2 * SCALE) * norm)
-                draw.rounded_rectangle(
-                    [rx + 1 * SCALE, ry + 1 * SCALE, rx + 1 * SCALE + bar_w, ry + rh - 1 * SCALE],
-                    radius=1.5 * SCALE,
-                    fill=fill_c,
-                )
-                draw.line(
-                    [(rx + 1 * SCALE + bar_w, ry + 1.5 * SCALE), (rx + 1 * SCALE + bar_w, ry + rh - 1.5 * SCALE)],
-                    fill=sl_c,
-                    width=max(1, int(1.3 * SCALE)),
-                )
+                fill_c = (sl_c[0], sl_c[1], sl_c[2], 255)
+                inner_w = rw - 2 * SCALE
+                if app == 3:
+                    mid_x = rx + 1 * SCALE + inner_w * 0.5
+                    cur_x = rx + 1 * SCALE + inner_w * norm
+                    x0 = min(mid_x, cur_x)
+                    x1 = max(mid_x, cur_x)
+                    if x1 - x0 < 1.5 * SCALE:
+                        x0 = mid_x - 0.8 * SCALE
+                        x1 = mid_x + 0.8 * SCALE
+                    draw.rectangle([x0, ry + 1 * SCALE, x1, ry + rh - 1 * SCALE], fill=fill_c)
+                    draw.line([(mid_x, ry + 1 * SCALE), (mid_x, ry + rh - 1 * SCALE)], fill=(tc[0], tc[1], tc[2], 180), width=max(1, SCALE))
+                else:
+                    bar_w = max(2.0 * SCALE, inner_w * norm)
+                    draw.rounded_rectangle(
+                        [rx + 1 * SCALE, ry + 1 * SCALE, rx + 1 * SCALE + bar_w, ry + rh - 1 * SCALE],
+                        radius=1.5 * SCALE,
+                        fill=fill_c,
+                    )
                 val_str = f"{int(round(init_val))} %" if ustyle == 5 else (f"{int(round(init_val))} st" if ustyle == 7 else (f"{init_val:.1f} dB" if ustyle == 4 else (f"{int(round(init_val))} Hz" if (ustyle == 3 and abs(init_val) >= 10) else (f"{init_val:.1f} Hz" if ustyle == 3 else (f"{init_val:.1f} ms" if (ustyle == 2 and init_val < 10) else (f"{int(round(init_val))} ms" if ustyle == 2 else f"{init_val:.1f}"))))))
                 fnt = get_font(8.5 * SCALE, bold=True)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)

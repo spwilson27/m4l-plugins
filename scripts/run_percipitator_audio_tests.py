@@ -3,13 +3,16 @@
 
 Cases:
   dry            — wet=0 passes the 293.7 Hz 0.25 sine cleanly at ~0.25
-  resynth_sine   — wet=1, wtpos=0 (Frame 0 = Sine), warp=0 resynthesizes into clean sine partials
+  resynth_sine   — wet=1, wtpos=0 (Frame 0 = Sine), warp=0.5 resynthesizes into clean sine partials
   resynth_wt     — wet=1, wtpos=1 (Frame 3 = Square), wtmode=2 (Sync), warp=0.75 engages the
                    Square wavetable + Sync warp, producing much brighter harmonics (higher slopeRms)
   gate_silence   — input below Gate (-30 dB) produces silent precipitation output
   pitch_octave   — pitch=+12 st doubles the resynthesized frequency compared to pitch=0
+  freq_shift     — fshift=+600 Hz shifts all resynthesized partials upward in frequency (higher zcr & slopeRms)
   midi_sidechain — scalemask=64 (F# only) snaps band 3 (220 Hz) onto F# (pitch class 6)
   partials_vol   — resynthgain=-18 dB reduces resynthesized output level significantly compared to 0 dB
+  tilt_cut       — tilt=-1.0 (-100%, -36 dB high cut) strongly attenuates upper-band (1760 Hz) resynthesis
+                   compared to tilt=+0.5 (+18 dB high boost)
 """
 
 import json
@@ -51,6 +54,7 @@ def line(src, outlet, dst, inlet):
 
 def build_harness(gen_code, case):
     amp = case.get("amp", 0.25)
+    freq = case.get("freq", 293.7)
     boxes = [
         box("obj-load", "loadbang", 40, 40, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
         box("obj-del-dsp", "delay 1200", 40, 80, 80, 20, numinlets=2, numoutlets=1),
@@ -98,7 +102,7 @@ def build_harness(gen_code, case):
             numoutlets=3,
             outlettype=["bang", "bang", ""],
         ),
-        box("obj-tone", "cycle~ 293.7", 700, 200, 85, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+        box("obj-tone", f"cycle~ {freq}", 700, 200, 85, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
         box("obj-gain", f"*~ {amp}", 700, 240, 65, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
     ]
 
@@ -176,7 +180,7 @@ def cases():
             "amp": 0.25,
             "arm": 250,
             "dur": 400,
-            "params": params("wet 1, pitch 0, gate -42, wtpos 0, wtmode 0, warp 0"),
+            "params": params("wet 1, pitch 0, gate -42, wtpos 0, wtmode 0, warp 0.5"),
         },
         {
             "name": "resynth_wt",
@@ -197,21 +201,44 @@ def cases():
             "amp": 0.25,
             "arm": 250,
             "dur": 400,
-            "params": params("wet 1, pitch 12, gate -42, wtpos 0, wtmode 0, warp 0"),
+            "params": params("wet 1, pitch 12, gate -42, wtpos 0, wtmode 0, warp 0.5"),
+        },
+        {
+            "name": "freq_shift",
+            "amp": 0.25,
+            "arm": 250,
+            "dur": 400,
+            "params": "wet 1, pitch 0, stretch 1, fshift 600, snap 1, scalemask 4095, gate -42, decay 80, attack 1.5, blur 0.1, tilt 0, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0.5, resynthgain 0",
         },
         {
             "name": "midi_sidechain",
             "amp": 0.25,
             "arm": 250,
             "dur": 400,
-            "params": "wet 1, pitch 0, stretch 1, fshift 0, snap 1, scalemask 64, gate -42, decay 80, attack 1.5, blur 0.1, tilt 0, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0, resynthgain 0",
+            "params": "wet 1, pitch 0, stretch 1, fshift 0, snap 1, scalemask 64, gate -42, decay 80, attack 1.5, blur 0.1, tilt 0, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0.5, resynthgain 0",
         },
         {
             "name": "partials_vol",
             "amp": 0.25,
             "arm": 250,
             "dur": 400,
-            "params": "wet 1, pitch 0, stretch 1, fshift 0, snap 1, scalemask 4095, gate -42, decay 80, attack 1.5, blur 0.1, tilt 0, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0, resynthgain -18",
+            "params": "wet 1, pitch 0, stretch 1, fshift 0, snap 1, scalemask 4095, gate -42, decay 80, attack 1.5, blur 0.1, tilt 0, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0.5, resynthgain -18",
+        },
+        {
+            "name": "tilt_cut",
+            "freq": 1760.0,
+            "amp": 0.25,
+            "arm": 250,
+            "dur": 400,
+            "params": "wet 1, pitch 0, stretch 1, fshift 0, snap 1, scalemask 4095, gate -42, decay 80, attack 1.5, blur 0.1, tilt -1.0, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0.5, resynthgain 0",
+        },
+        {
+            "name": "tilt_boost",
+            "freq": 1760.0,
+            "amp": 0.25,
+            "arm": 250,
+            "dur": 400,
+            "params": "wet 1, pitch 0, stretch 1, fshift 0, snap 1, scalemask 4095, gate -42, decay 80, attack 1.5, blur 0.1, tilt 0.5, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0.5, resynthgain 0",
         },
     )
 
@@ -327,7 +354,10 @@ def main():
     sine_m = results.get("resynth_sine")
     wt_m = results.get("resynth_wt")
     oct_m = results.get("pitch_octave")
+    fsh_m = results.get("freq_shift")
     vol_m = results.get("partials_vol")
+    tcut_m = results.get("tilt_cut")
+    tbst_m = results.get("tilt_boost")
     if sine_m and wt_m:
         print(f"harmonic brightness: sine={sine_m.get('slopeRms'):.4f} -> square+sync={wt_m.get('slopeRms'):.4f}")
         if wt_m.get("slopeRms", 0) <= sine_m.get("slopeRms", 0) * 1.35:
@@ -345,12 +375,36 @@ def main():
                 f"Pitch +12 st did not double frequency/slopeRms "
                 f"({sine_m.get('slopeRms')} -> {oct_m.get('slopeRms')})"
             )
+    if sine_m and fsh_m:
+        print(
+            f"freq shift +600 Hz: zcr={sine_m.get('zcr'):.0f}->{fsh_m.get('zcr'):.0f}, "
+            f"slopeRms={sine_m.get('slopeRms'):.4f}->{fsh_m.get('slopeRms'):.4f}"
+        )
+        if fsh_m.get("slopeRms", 0) < sine_m.get("slopeRms", 0) * 2.2:
+            errors.append(
+                f"Shift +600 Hz did not shift resynthesized frequency upward "
+                f"({sine_m.get('slopeRms')} -> {fsh_m.get('slopeRms')})"
+            )
     if sine_m and vol_m:
         print(f"partials volume slider: 0dB={sine_m.get('peak'):.4f} -> -18dB={vol_m.get('peak'):.4f}")
         if vol_m.get("peak", 1) > sine_m.get("peak", 0) * 0.35:
             errors.append(
                 f"Partials Vol slider at -18 dB did not attenuate resynthesized partials "
                 f"({vol_m.get('peak')} vs {sine_m.get('peak')})"
+            )
+    if tcut_m and tbst_m:
+        print(
+            f"spectral tilt @1760Hz: peak {tcut_m.get('peak'):.4f}->{tbst_m.get('peak'):.4f}, "
+            f"bandMax {tcut_m.get('scopeBandMax'):.4f}->{tbst_m.get('scopeBandMax'):.4f}"
+        )
+        if (
+            tbst_m.get("peak", 0) <= tcut_m.get("peak", 1) * 2.2
+            or tbst_m.get("scopeBandMax", 0) <= tcut_m.get("scopeBandMax", 1) * 6.0
+        ):
+            errors.append(
+                f"Spectral Tilt did not strongly differentiate upper-band gain "
+                f"(peak {tcut_m.get('peak')}->{tbst_m.get('peak')}, "
+                f"bandMax {tcut_m.get('scopeBandMax')}->{tbst_m.get('scopeBandMax')})"
             )
 
     if errors:

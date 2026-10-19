@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 /**
- * Verification suite for devices/Percipitator.amxd (380 x 169 px — Concept 3 Value-Bar Stack).
+ * Verification suite for devices/Percipitator.amxd (408 x 169 px — Concept 3 Value-Bar Stack).
  *
  * Verifies:
- *  1. 4-frame Sine->Triangle->Saw->Square wavetable generator, phase warp modifiers (Bend/Asym/Sync/Fold),
- *     12-note scale quantizer, Sidechain MIDI chord tracker, Spectral Tilt, and Partial Sieve in src/percipitator_config.js
+ *  1. 4-frame Sine->Triangle->Saw->Square wavetable generator, all 4 phase warp modifiers (Bend/Asym/Sync/Fold),
+ *     all 5 Partial Sieve modes (All/Odd/Even/Sprs/Rise), 12-note scale quantizer, Sidechain MIDI chord tracker,
+ *     and doubled Spectral Tilt (±36 dB / 64x) in src/percipitator_config.js
  *  2. GenExpr ordering (functions before Buffer/Param/History, no e<digit> Euler bug), Shift range [-2000..+2000 Hz],
  *     default WT Pos = 0% (Sine) and default Warp = 50% (0.5)
- *  3. .amxd binary header ("aaaa" Audio Effect) and presentation bounds (380 x 169 px)
+ *  3. .amxd binary header ("aaaa" Audio Effect) and presentation bounds (408 x 169 px)
  *  4. Absence of Freeze button, Gate right-hand slider, Engine B blend, and Drop WT;
  *     presence of Blur where Gate used to be (Column 1 Row 5), horizontal Vol slider right above Mix (Column 2 Rows 6 & 7),
+ *     bipolar center-fill sliders (`appearance: 3`) for Pitch/Shift/Warp/Tilt, pre-blended `activeslidercolor`,
  *     and adjustable Gate in the left graphic (`v8ui` outlet `["gate", db]` -> `prepend gate` -> `obj-gen`)
  *  5. Zero presentation_rect overlap between v8ui and live.* controls, panel z-order (`background: 1` last)
- *  6. v8ui evaluation, mgraphics.relative_coords === 0, wavetable poke, Gate drag in left graphic, and Sidechain MIDI input
+ *  6. v8ui evaluation, mgraphics.relative_coords === 0, wavetable poke, Gate drag, Wave Pill drag,
+ *     12-Note Scale Strip click, Sidechain MIDI input, getvalueof/setvalueof round-trip, and
+ *     volume-independent high-brightness droplet spawning/rendering even when Vol is at -36 dB
  */
 
 const assert = require("assert");
@@ -40,13 +44,26 @@ function frameRms(frameIdx) {
 }
 assert.ok(frameRms(3) > frameRms(0) * 1.15, "Frame 3 (Square) must have higher RMS energy than Frame 0 (Sine)");
 
-// Phase warp modes, Partial Sieve & Spectral Tilt
+// Phase warp modes (Bend=0, Asym=1, Sync=2, Fold=3), Partial Sieve (All/Odd/Even/Sprs/Rise) & Spectral Tilt
 assert.ok(Math.abs(cfg.warpPhase(0.25, 0, 0.85) - 0.25) > 0.05, "Bend mode must deform phase");
 assert.ok(Math.abs(cfg.warpPhase(0.25, 1, 0.85) - 0.25) > 0.05, "Asym mode must skew phase");
+assert.ok(Math.abs(cfg.warpPhase(0.35, 2, 0.85) - 0.35) > 0.05, "Sync mode must multiply/wrap phase");
+assert.ok(Math.abs(cfg.warpPhase(0.35, 3, 0.85) - 0.35) > 0.05, "Fold mode must mirror/fold phase");
+assert.ok(Math.abs(cfg.warpPhase(0.33, 0, 0.5) - 0.33) < 1e-6, "Bend mode (0) must be neutral at 50% (0.5)");
+for (let m = 1; m < 4; m++) {
+    assert.ok(Math.abs(cfg.warpPhase(0.33, m, 0.0) - 0.33) < 1e-6, `Warp mode ${m} must be neutral at 0% (0.0)`);
+}
+assert.strictEqual(cfg.computeSieveGain(1, 0), 1.0, "All sieve keeps every band at unity");
 assert.strictEqual(cfg.computeSieveGain(0, 1), 1.0, "Odd sieve keeps band 0");
 assert.ok(cfg.computeSieveGain(1, 1) < 0.1, "Odd sieve attenuates band 1");
+assert.ok(cfg.computeSieveGain(0, 2) < 0.1, "Even sieve attenuates band 0");
+assert.strictEqual(cfg.computeSieveGain(1, 2), 1.0, "Even sieve keeps band 1");
+assert.strictEqual(cfg.computeSieveGain(0, 3), 1.15, "Sparse sieve boosts every 3rd band (0) to 1.15");
+assert.ok(cfg.computeSieveGain(1, 3) < 0.1, "Sparse sieve attenuates non-3rd band (1)");
+assert.ok(cfg.computeSieveGain(15, 4) > cfg.computeSieveGain(0, 4) * 3.0, "Rising sieve emphasizes upper bands over lower bands");
 // Verify max tilt is doubled again (2^6 = 64x at +100% vs 2^-6 = 1/64x at -100%)
 assert.ok(Math.abs(cfg.computeTiltGain(15, 1.0) - 64.0) < 1e-6, "Doubled max tilt must reach 64x (+36 dB) at highest band");
+assert.ok(Math.abs(cfg.computeTiltGain(15, -1.0) - 1.0 / 64.0) < 1e-6, "Doubled min tilt must reach 1/64x (-36 dB) at highest band");
 
 // Scale quantizer & Sidechain MIDI chord tracker
 const cMajMask = cfg.DEFAULT_SCALE_MASK;
@@ -171,12 +188,13 @@ const scopeMock = new Array(36).fill(0);
 scopeMock[3] = 0.62;
 scopeMock[19] = 69;
 const emitted = [];
+const rgbaCalls = [];
 const sandbox = {
     mgraphics: {
         size: [vr[2], vr[3]],
         init() {},
         redraw() {},
-        set_source_rgba() {},
+        set_source_rgba(r, g, b, a) { rgbaCalls.push([r, g, b, a]); },
         set_line_width() {},
         rectangle() {},
         rectangle_rounded() {},
@@ -206,13 +224,37 @@ const sandbox = {
 
 const fn = new Function(
     "mgraphics", "Buffer", "Task", "outlet", "notifyclients",
-    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, onclick, ondrag, pullScope, paint, bandAmps, curWtPosPct, curWarpPct };"
+    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, set_pitch, set_fshift, set_stretch, set_snap, set_blur, set_decay, set_attack, set_sieve, set_vol, getvalueof, setvalueof, onclick, ondrag, pullScope, paint, bandAmps, droplets: () => droplets, curWtPosPct, curWarpPct, displacedBandCenterX, volVisualScale };"
 );
 const ui = fn(sandbox.mgraphics, sandbox.Buffer, sandbox.Task, sandbox.outlet, sandbox.notifyclients);
 assert.strictEqual(sandbox.mgraphics.relative_coords, 0, "v8ui must disable relative_coords");
 assert.strictEqual(sandbox.mgraphics.autofill, 0, "v8ui must disable autofill");
 assert.strictEqual(ui.curWtPosPct, 0.0, "UI default Wave must be 0% (Sine)");
 assert.strictEqual(ui.curWarpPct, 50.0, "UI default Warp must be 50%");
+
+// Verify Pitch, Shift, Stretch, Sieve, Snap, Decay, Blur, Attack, and Vol visual feedback hooks
+const baseX8 = ui.displacedBandCenterX(8, 6, 192);
+ui.set_pitch(12);
+assert.ok(ui.displacedBandCenterX(8, 6, 192) > baseX8, "Pitch > 0 must displace partial bars to the right");
+ui.set_pitch(0);
+ui.set_fshift(-800);
+assert.ok(ui.displacedBandCenterX(8, 6, 192) < baseX8, "Negative Shift Hz must displace partial bars to the left");
+ui.set_fshift(0);
+const baseX14 = ui.displacedBandCenterX(14, 6, 192);
+ui.set_stretch(160);
+assert.ok(ui.displacedBandCenterX(14, 6, 192) > baseX14, "Stretch > 100% must fan upper bands outward");
+ui.set_stretch(100);
+ui.set_vol(12);
+assert.ok(ui.volVisualScale() > 1.2, "Positive Vol dB must increase visual bar scale");
+ui.set_vol(-36);
+assert.strictEqual(ui.volVisualScale(), 0.0, "Vol at -36 dB must scale bars to 0");
+ui.set_vol(0);
+ui.set_sieve(1);
+ui.set_snap(100);
+ui.set_blur(60);
+ui.set_decay(800);
+ui.set_attack(35);
+ui.set_attack(2.5);
 
 ui.setbuffer("1001-percipwt", "1001-percipscope");
 assert.ok(pokedWt && pokedWt.length === cfg.WT_TOTAL_SAMPS, "setbuffer must poke 8192-sample Sin->Tri->Saw->Square wavetable");
@@ -221,10 +263,51 @@ ui.pullScope();
 ui.paint();
 assert.ok(ui.bandAmps[3] > 0.3, "pullScope must update bandAmps from #0-percipscope");
 
+// Verify volume-independent bright droplets even when Vol is at -36 dB (bars muted, droplets still bright)
+ui.set_vol(-36);
+assert.strictEqual(ui.volVisualScale(), 0.0);
+for (let step = 0; step < 4; step++) ui.pullScope();
+const activeDrops = ui.droplets();
+assert.ok(activeDrops.some((d) => d.band === 3 && d.amp >= 0.7), "Droplets must spawn with high brightness even when Vol is -36 dB");
+rgbaCalls.length = 0;
+ui.paint();
+assert.ok(
+    rgbaCalls.some((c) => c[0] >= 0.9 && c[1] >= 0.95 && c[2] >= 0.98 && c[3] >= 0.6),
+    "paint() must draw bright white-hot droplet cores regardless of Vol setting"
+);
+ui.set_vol(0);
+
 // Dragging in the Partials Viewer adjusts the Gate threshold and emits ["gate", db]
 emitted.length = 0;
 ui.onclick(60, 60);
 ui.ondrag(60, 50);
 assert.ok(emitted.some((m) => m[0] === "gate" && m[1] <= -6 && m[1] >= -60), "Dragging Partials Viewer must adjust Gate threshold");
 
-console.log("test_percipitator: ok (380x169 Concept 3 verified)");
+// Dragging the top-right Wave Pill adjusts Wave (wtpos) & Warp
+emitted.length = 0;
+ui.onclick(160, 8);
+ui.ondrag(185, 6);
+assert.ok(emitted.some((m) => m[0] === "wtpos"), "Dragging Wave Pill must emit wtpos");
+assert.ok(emitted.some((m) => m[0] === "warp"), "Dragging Wave Pill must emit warp");
+
+// Clicking the bottom 12-note scale strip toggles a scale bit and emits ["scalemask", mask]
+emitted.length = 0;
+ui.onclick(20, 120);
+assert.ok(emitted.some((m) => m[0] === "scalemask" && m[1] !== cfg.DEFAULT_SCALE_MASK), "Clicking scale strip must toggle note in scalemask");
+
+// Sidechain MIDI note-on / note-off / chord latch
+emitted.length = 0;
+ui.midi_in(61, 100); // C#
+assert.ok(emitted.some((m) => m[0] === "scalemask" && m[1] === (1 << 1)), "MIDI note-on must lock scalemask to held note");
+ui.midi_in(61, 0); // note-off latches last chord
+assert.strictEqual(ui.getvalueof()[1], 1 << 1, "MIDI note-off must latch last played chord mask");
+ui.midi_clear();
+
+// State serialization round-trip (v2 [2, mask, gate] and v1 backward compatibility [1, mask])
+ui.setvalueof([2, 2741, -28.5]);
+const savedState = ui.getvalueof();
+assert.deepStrictEqual(savedState, [2, 2741, -28.5], "getvalueof/setvalueof v2 round-trip mismatch");
+ui.setvalueof([1, 1365]);
+assert.strictEqual(ui.getvalueof()[1], 1365, "setvalueof v1 backward compatibility failed");
+
+console.log("test_percipitator: ok (408x169 Concept 3 verified)");

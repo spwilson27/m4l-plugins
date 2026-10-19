@@ -7,8 +7,7 @@ A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1
 3. **`devices/Better Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
 4. **`devices/Sand.amxd`** — A differential compander. It expands quiet parts of the signal’s derivative (orders −1 through 15) and soft-limits the peaks, with a movable filter, split dry/wet, and a final clip/limit stage.
 5. **`devices/Reciprocator.amxd`** — An upgraded reciprocal envelope dynamics & audio-rate waveshaping processor (`x / env^amount`) with a smooth noise gate floor, lookahead delay, Peak/RMS detector blend, sidechain HP/LP filters, soft-clip ceiling, and a live scrolling envelope/gate/output HUD.
-6. **`devices/Better GrainSpec.amxd`** — A Max for Live Instrument (`iiii`) inspired by Woulg's *WR-GrainSpec*, combining adjustable onset slicing across 128 MIDI notes (or chromatic keyboard playback), punch-preserving transient pass-through, a 4-voice Granular to Phase-Locked Spectral stretch engine, a pitch-matching stereo feedback comb filter, live audio capture, and an interactive waveform/slice editor.
-7. **`devices/Percipitator.amxd`** (`380 x 169` px) — A 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator*, featuring a 4-frame `Sine -> Triangle -> Saw -> Square` wavetable bank, scrollable phase warp (`Bend`, `Asym`, `Sync`, `Fold`) & Partial Sieve (`All`, `Odd`, `Even`, `Sprs`, `Rise`) selectors, Spectral Tilt, `±2000 Hz` Frequency Shift, horizontal value-bar sliders for `Vol` and `Mix`, Sidechain MIDI pitch locking, and an audio-reactive Partials Viewer + 12-Note Scale Strip UI.
+7. **`devices/Percipitator.amxd`** (`408 x 169` px) — A 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator*, featuring a 4-frame `Sine -> Triangle -> Saw -> Square` wavetable bank, scrollable phase warp (`Bend`, `Asym`, `Sync`, `Fold`) & Partial Sieve (`All`, `Odd`, `Even`, `Sprs`, `Rise`) selectors, Spectral Tilt, `±2000 Hz` Frequency Shift, horizontal value-bar sliders for `Vol` and `Mix`, Sidechain MIDI pitch locking, and an audio-reactive Partials Viewer + 12-Note Scale Strip UI.
 
 ---
 
@@ -143,50 +142,29 @@ A Max for Live Audio Effect modulator device that replaces Ableton's stock **Sha
 
 ---
 
-## 6. Better GrainSpec (`devices/Better GrainSpec.amxd`)
+## 6. Percipitator (`devices/Percipitator.amxd`)
 
-A Max for Live **Instrument** (`iiii`) inspired by Woulg's *WR-GrainSpec*, combining onset-based 128-note sample slicing with transient preservation, a 4-voice Granular to Phase-Locked Spectral/Monophonic stretch engine, a pitch-matching stereo feedback comb filter, live track audio capture, and an interactive waveform/slice editor.
-
-### Features
-- **Interactive Waveform & Slice Editor (`v8ui`)**:
-  - Pre-populates `buffer~ #0-gssample` with a synthesized 2-second breakbeat/glitch loop on load so it plays out of the box.
-  - Adjustable onset detection (`Sens` `0%..100%`) plus manual slice editing (click to select/audition, drag marker to move boundary, double-click to insert or delete slice markers, full Undo/Redo history).
-  - Switchable **`128` (128 Slice Map)** and **`Key` (Chromatic Pitch)** keyboard modes.
-- **Transient Preservation (`Trans` `0%..100%`)**: Plays the initial transient of each triggered slice at 1:1 unstretched rate with a raised-cosine crossfade into the stretched body so beats stay punchy even at `0%` (frozen) speed.
-- **Granular <-> Spectral Stretch (`Speed`, `Grain`, `Morph`, `Jitter`)**: Crossfades between 4 overlapping Hann-windowed granular streams (`Morph = 0%`) and a phase-locked fundamental-quantized harmonic resonator stretch (`Morph = 100%`).
-- **Pitch-Matching Stereo Comb Filter & Crush (`Pitch`, `CombMix`, `CombFbk`, `Crush`, `Mix`)**: Automatically tunes the comb filter to each slice's detected fundamental pitch (or played MIDI note in Chromatic mode).
-
-### Files
-- `src/grainspec_slicer.js` — default breakbeat loop synthesizer, high-frequency flux onset detector, autocorrelation pitch estimator, and MIDI mapper
-- `src/grainspec_core.genexpr` — `gen.codebox~` DSP engine and telemetry writer
-- `src/grainspec_ui.js` — interactive waveform, slice editor, vector toolbar, and grain/playhead visualizer
-- `scripts/build_grainspec.py` — builds `devices/Better GrainSpec.amxd`
-- `scripts/run_grainspec_audio_tests.py` — automated Max 9 audio & telemetry test suite
-- `tests/test_grainspec.js` — unit, layout, and UI interaction test suite
-- `previews/better_grainspec.png` — rendered 2x Retina preview
-
----
-
-## 7. Percipitator (`devices/Percipitator.amxd`)
-
-A Max for Live **Audio Effect** 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator* in a **`380 x 169` px** horizontal value-bar layout.
+A Max for Live **Audio Effect** 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator* in a **`408 x 169` px** two-column horizontal value-bar layout.
 
 ### Features
-- **16-Band Resonant Spectral Analysis & Graphical Gate (`Gate`, `Decay`, `Atk`, `Blur`)**: Tracks amplitude and instantaneous pitch across 16 log-spaced bands (`92.5 Hz..7040 Hz`), spawning resonant harmonic droplets above the adjustable `G -42dB` Gate line inside the Partials Viewer.
+- **16-Band Resonant Spectral Analysis, Graphical Gate & Full Parameter Visual Feedback**:
+  - Tracks amplitude and instantaneous pitch across 16 log-spaced bands (`92.5 Hz..7040 Hz`), spawning high-contrast falling harmonic droplets (cyan halo + white-hot core that stay bright regardless of `Vol`) above the adjustable `G -42dB` Gate line inside the Partials Viewer.
+  - **Live Visual Feedback for Every Parameter**: `Pitch`, `Shift`, and `Strch` displace the colored partial bars horizontally while leaving faint slate ghost bars at the unshifted input positions; `Snap` draws glowing tether lines from each active partial bar to its quantized note cell (`C..B`); `Sieve` dims muted band lanes; `Decay` stretches droplet comet tails; `Blur` adds a horizontal bloom aura; `Atk` rounds bar crests; and `Vol` scales bar heights.
 - **Interactive 12-Note Scale Strip & Sidechain MIDI Pitch Control (`Snap`, `Pitch`, `Strch`, `Shift`)**:
   - Click notes directly in the bottom 12-note keyboard strip (`C..B`) or route any MIDI track to **Percipitator** in Ableton Live: incoming MIDI notes (`midiin` $\to$ `midiparse` $\to$ `midi_in`) automatically define and latch the active pitch-class mask and light up held notes in emerald green.
-  - Includes semitone `Pitch` (`-24..+24 st`), inharmonic `Strch` (`50..200%`), and wide-range linear `Shift` (`-2000..+2000 Hz`).
+  - Includes bipolar semitone `Pitch` (`-24..+24 st`), inharmonic `Strch` (`50..200%`), and bipolar linear `Shift` (`-2000..+2000 Hz`).
 - **4-Frame `Sine -> Triangle -> Saw -> Square` Wavetable Bank, Scrollable Phase Warp & Partial Sieve (`Wave`, `Mode`, `Warp`, `Sieve`, `Tilt`, `Vol`, `Mix`)**:
-  - Morphs continuously across `Sine (0% default) -> Triangle -> Saw -> Square` (`Wave` `0..100%`) with `Warp` defaulting to `50%`.
-  - Scrollable **`Mode`** value selector (`Bend`, `Asym`, `Sync`, `Fold`) and **`Sieve`** value selector (`All`, `Odd`, `Even`, `Sprs`, `Rise`), plus **`Tilt`** (`-100%..+100%` spectral brightness balance) and horizontal value-bar sliders for **`Vol`** (`-36..+18 dB`) right above **`Mix`** (`0..100%`).
+  - Morphs continuously across `Sine (0% default) -> Triangle -> Saw -> Square` (`Wave` `0..100%`) with bipolar `Warp` defaulting to `50%` (also directly scrubbable via the top-right Wave Pill).
+  - Scrollable **`Mode`** value selector (`Bend`, `Asym`, `Sync`, `Fold`) and **`Sieve`** value selector (`All`, `Odd`, `Even`, `Sprs`, `Rise`), plus bipolar **`Tilt`** (`-100%..+100%`, $\pm 36\text{ dB}$ spectral brightness balance) and horizontal value-bar sliders for **`Vol`** (`-36..+18 dB`) right above **`Mix`** (`0..100%`).
 
 ### Files
 - `src/percipitator_config.js` — 4-frame `Sine->Tri->Saw->Square` wavetable generator, phase warp, partial sieve, spectral tilt & scale/MIDI quantizer math
 - `src/percipitator_core.genexpr` — 16-band `gen.codebox~` spectral tracker & wavetable resynthesizer
-- `src/percipitator_ui.js` — audio-reactive Spectral Waterfall, 3D Warped Wavetable preview, and 12-note scale strip
-- `scripts/build_percipitator.py` — builds `devices/Percipitator.amxd` (`380 x 169` px)
-- `scripts/run_percipitator_audio_tests.py` — automated Max 9 audio render & verification suite
-- `tests/test_percipitator.js` — unit, layout, and UI interaction test suite
+- `src/percipitator_ui.js` — audio-reactive Partials Viewer, Wave Pill preview, tether lane, and 12-note scale/MIDI strip (`v8ui`)
+- `scripts/build_percipitator.py` — builds `devices/Percipitator.amxd` (`408 x 169` px)
+- `scripts/run_percipitator_audio_tests.py` — automated Max 9 audio render & verification suite (`dry`, `resynth_sine`, `resynth_wt`, `gate_silence`, `pitch_octave`, `freq_shift`, `midi_sidechain`, `partials_vol`, `tilt_cut`, `tilt_boost`)
+- `tests/percipitator_probe.js` — Max audio recording & `#0-percipscope` telemetry probe
+- `tests/test_percipitator.js` — unit, layout, state serialization, and UI interaction test suite
 - `previews/percipitator.png` — rendered 2x Retina preview
 
 ---
@@ -230,9 +208,6 @@ python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/
 
 # Reciprocator
 python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
-
-# Better GrainSpec
-python3 scripts/build_grainspec.py && node tests/test_grainspec.js && python3 scripts/render_preview.py "devices/Better GrainSpec.amxd"
 
 # Percipitator
 python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"

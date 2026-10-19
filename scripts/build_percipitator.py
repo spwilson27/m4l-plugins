@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build devices/Percipitator.amxd (380 x 169 px — Concept 3 Horizontal Value-Bar Stack).
+Build devices/Percipitator.amxd (408 x 169 px — Concept 3 Horizontal Value-Bar Stack).
 
 16-band scale-quantized wavetable resynthesizer inspired by Woulg's WR-Percipitator:
   - Left Panel (x=6..218, w=212):
@@ -8,12 +8,12 @@ Build devices/Percipitator.amxd (380 x 169 px — Concept 3 Horizontal Value-Bar
     - Full-width Partials Viewer + 12-Note Scale/MIDI Selector (`v8ui`, 204 x 134):
       - Adjustable `G -42dB` Gate pill & draggable Gate threshold line directly inside the Partials Viewer
       - Top-right single-cycle Wave Pill showing the live morphed/warped `Sine -> Triangle -> Saw -> Square` wave
-      - Bottom 12-note scale selector strip (also highlights incoming Sidechain MIDI notes in emerald)
-  - Right Panel (x=222..374, w=152) — Two Clean Columns of Horizontal Value Bars (Zero Rotary Knobs):
-    - Column 1 (`PITCH / ENV`): `Pitch` (-24..+24 st), `Shift` (-2000..+2000 Hz), `Strch` (50..200%),
-      `Snap` (0..100%), `Blur` (0..100%), `Decay` (1..1500 ms), `Atk` (0.2..100 ms)
-    - Column 2 (`WAVE / TONE`): `Wave` (0..100%, default 0% Sine), `Mode` (Bend/Asym/Sync/Fold scroll),
-      `Warp` (0..100%, default 50%), `Sieve` (All/Odd/Even/Sprs/Rise scroll), `Tilt` (-100..+100%),
+      - 10px Snap tether lane + bottom 12-note scale selector strip (highlights incoming Sidechain MIDI notes in emerald)
+  - Right Panel (x=222..402, w=180, with 10px right margin) — Two Clean Columns of Horizontal Value Bars (Zero Rotary Knobs):
+    - Column 1 (`PITCH / ENV`, x=230..308): `Pitch` (-24..+24 st, bipolar), `Shift` (-2000..+2000 Hz, bipolar),
+      `Strch` (50..200%), `Snap` (0..100%), `Blur` (0..100%), `Decay` (1..1500 ms), `Atk` (0.2..100 ms)
+    - Column 2 (`WAVE / TONE`, x=314..392): `Wave` (0..100%, default 0% Sine), `Mode` (Bend/Asym/Sync/Fold scroll),
+      `Warp` (0..100%, default 50%, bipolar), `Sieve` (All/Odd/Even/Sprs/Rise scroll), `Tilt` (-100..+100%, ±36 dB, bipolar),
       `Vol` (-36..+18 dB horizontal slider), `Mix` (0..100% horizontal slider)
 """
 
@@ -528,6 +528,110 @@ def build():
                 "box": {
                     "fontname": "Arial Bold",
                     "fontsize": 10.0,
+                    "id": "obj-ui-pitch",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 470.0, 110.0, 20.0],
+                    "text": "prepend set_pitch",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-ui-fshift",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 495.0, 110.0, 20.0],
+                    "text": "prepend set_fshift",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-ui-stretch",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 520.0, 115.0, 20.0],
+                    "text": "prepend set_stretch",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-ui-snap",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 545.0, 110.0, 20.0],
+                    "text": "prepend set_snap",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-ui-blur",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 570.0, 110.0, 20.0],
+                    "text": "prepend set_blur",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-ui-decay",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 595.0, 110.0, 20.0],
+                    "text": "prepend set_decay",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-ui-attack",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 620.0, 115.0, 20.0],
+                    "text": "prepend set_attack",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-ui-vol",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 645.0, 105.0, 20.0],
+                    "text": "prepend set_vol",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
                     "id": "obj-route-viz",
                     "maxclass": "newobj",
                     "numinlets": 5,
@@ -657,6 +761,22 @@ def build():
         {"patchline": {"source": ["obj-ui-warp", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-ctrl-tilt", 0], "destination": ["obj-ui-tilt", 0]}},
         {"patchline": {"source": ["obj-ui-tilt", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-pitch", 0], "destination": ["obj-ui-pitch", 0]}},
+        {"patchline": {"source": ["obj-ui-pitch", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-fshift", 0], "destination": ["obj-ui-fshift", 0]}},
+        {"patchline": {"source": ["obj-ui-fshift", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-stretch", 0], "destination": ["obj-ui-stretch", 0]}},
+        {"patchline": {"source": ["obj-ui-stretch", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-snap", 0], "destination": ["obj-ui-snap", 0]}},
+        {"patchline": {"source": ["obj-ui-snap", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-blur", 0], "destination": ["obj-ui-blur", 0]}},
+        {"patchline": {"source": ["obj-ui-blur", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-decay", 0], "destination": ["obj-ui-decay", 0]}},
+        {"patchline": {"source": ["obj-ui-decay", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-attack", 0], "destination": ["obj-ui-attack", 0]}},
+        {"patchline": {"source": ["obj-ui-attack", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-resynthgain", 0], "destination": ["obj-ui-vol", 0]}},
+        {"patchline": {"source": ["obj-ui-vol", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-viz", 0], "destination": ["obj-route-viz", 0]}},
         {"patchline": {"source": ["obj-route-viz", 0], "destination": ["obj-prep-scalemask", 0]}},
         {"patchline": {"source": ["obj-prep-scalemask", 0], "destination": ["obj-gen", 0]}},
