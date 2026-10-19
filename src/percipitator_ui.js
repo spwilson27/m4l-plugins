@@ -500,7 +500,6 @@ function paint() {
     var blur01 = clamp(curBlurPct / 100.0, 0, 1);
     var dec01 = clamp(Math.log(Math.max(1, curDecayMs)) / Math.log(1500), 0, 1);
     var atk01 = clamp(curAttackMs / 50.0, 0, 1);
-    var snap01 = clamp(curSnapPct / 100.0, 0, 1);
     var hasPitchDisplacement = (Math.abs(curPitchSt) > 0.2) || (Math.abs(curShiftHz) > 8.0) || (Math.abs(curStretchPct - 100.0) > 1.5);
 
     // 1. SIEVE VISUAL FEEDBACK + GHOST INPUT BARS:

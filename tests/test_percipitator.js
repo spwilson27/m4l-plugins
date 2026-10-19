@@ -88,7 +88,7 @@ const exprAt = gen.indexOf("\nsr = max(samplerate, 1);");
 assert.ok(fnAt >= 0 && fnAt < bufAt, "Functions must precede Buffer in GenExpr");
 assert.ok(bufAt < paramAt && paramAt < histAt && histAt < exprAt, "Declarations must follow Buffer -> Param -> History -> expressions");
 
-// 3. .amxd binary header & 380x169 Concept 3 Value-Bar structure
+// 3. .amxd binary header & 408x169 Concept 3 Value-Bar structure
 const raw = fs.readFileSync(AMXD_PATH);
 assert.strictEqual(raw.slice(0, 4).toString("ascii"), "ampf", "Expected ampf header");
 assert.strictEqual(raw.slice(8, 12).toString("ascii"), "aaaa", "Expected aaaa audio-effect type");
@@ -189,6 +189,7 @@ scopeMock[3] = 0.62;
 scopeMock[19] = 69;
 const emitted = [];
 const rgbaCalls = [];
+const lineToCalls = [];
 const sandbox = {
     mgraphics: {
         size: [vr[2], vr[3]],
@@ -200,7 +201,7 @@ const sandbox = {
         rectangle_rounded() {},
         arc() {},
         move_to() {},
-        line_to() {},
+        line_to(x, y) { lineToCalls.push([x, y]); },
         close_path() {},
         fill() {},
         stroke() {},
@@ -224,7 +225,7 @@ const sandbox = {
 
 const fn = new Function(
     "mgraphics", "Buffer", "Task", "outlet", "notifyclients",
-    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, set_pitch, set_fshift, set_stretch, set_snap, set_blur, set_decay, set_attack, set_sieve, set_vol, getvalueof, setvalueof, onclick, ondrag, pullScope, paint, bandAmps, droplets: () => droplets, curWtPosPct, curWarpPct, displacedBandCenterX, volVisualScale };"
+    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, set_pitch, set_fshift, set_stretch, set_snap, set_blur, set_decay, set_attack, set_sieve, set_vol, getvalueof, setvalueof, onclick, ondrag, pullScope, paint, layoutRegions, bandAmps, droplets: () => droplets, curWtPosPct, curWarpPct, displacedBandCenterX, volVisualScale };"
 );
 const ui = fn(sandbox.mgraphics, sandbox.Buffer, sandbox.Task, sandbox.outlet, sandbox.notifyclients);
 assert.strictEqual(sandbox.mgraphics.relative_coords, 0, "v8ui must disable relative_coords");
@@ -263,17 +264,24 @@ ui.pullScope();
 ui.paint();
 assert.ok(ui.bandAmps[3] > 0.3, "pullScope must update bandAmps from #0-percipscope");
 
-// Verify volume-independent bright droplets even when Vol is at -36 dB (bars muted, droplets still bright)
+// Verify balanced volume-independent droplets even when Vol is at -36 dB, and no tether lines to keyboard
 ui.set_vol(-36);
 assert.strictEqual(ui.volVisualScale(), 0.0);
 for (let step = 0; step < 4; step++) ui.pullScope();
 const activeDrops = ui.droplets();
 assert.ok(activeDrops.some((d) => d.band === 3 && d.amp >= 0.7), "Droplets must spawn with high brightness even when Vol is -36 dB");
 rgbaCalls.length = 0;
+lineToCalls.length = 0;
 ui.paint();
+const dropCores = rgbaCalls.filter((c) => c[0] >= 0.75 && c[0] <= 0.85 && c[1] >= 0.92 && c[2] >= 0.98);
 assert.ok(
-    rgbaCalls.some((c) => c[0] >= 0.75 && c[1] >= 0.92 && c[2] >= 0.98 && c[3] >= 0.30),
-    "paint() must draw visible droplet cores regardless of Vol setting"
+    dropCores.length > 0 && dropCores.every((c) => c[3] >= 0.30 && c[3] <= 0.70),
+    "paint() must draw balanced middle-brightness droplet cores (alpha 0.30..0.70) regardless of Vol setting"
+);
+const kbTopY = ui.layoutRegions().kbY;
+assert.ok(
+    !lineToCalls.some((pt) => Math.abs(pt[1] - kbTopY) < 0.5),
+    "No snap tether lines should be drawn to the top edge of the 12-note keyboard strip"
 );
 ui.set_vol(0);
 
