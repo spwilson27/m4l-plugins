@@ -3,10 +3,12 @@
 A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1+)**:
 
 1. **`devices/XO Sample Map.amxd`** — An XLN Audio XO–inspired 2D Drum Sample Space Browser, Auto-Categorizer, Similarity Explorer, and Simpler / Drum Rack Pad Loader (`Node for Max` + `jweb` pop-out window + in-device `v8ui` mini-map + `LiveAPI`).
-2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, Pre-delay, Modulation, Crossfeed, and HP/LP. A Seed (0–9999) picks density, delay times, and diffusion character. Vibrating delay-line display.
+2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, Pre-delay, Modulation, Crossfeed, and HP/LP. A Seed (0–1000) scales active delay-line density from 4 up to 20 lines and picks delay times and diffusion character. Vibrating delay-line display.
 3. **`devices/Better Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
-4. **`devices/Sand.amxd`** — A differential compander. It expands quiet parts of the signal’s derivative (orders −1 through 15) and soft-limits the peaks, with a movable filter, horizontal Soft/Debrick value bars, and a final clip/limit stage.
+4. **`devices/Sand.amxd`** — A differential compander. It expands quiet parts of the signal’s derivative (orders −1 through 15) and soft-limits the peaks, with a movable filter, split dry/wet, and a final clip/limit stage.
 5. **`devices/Reciprocator.amxd`** — An upgraded reciprocal envelope dynamics & audio-rate waveshaping processor (`x / env^amount`) with a smooth noise gate floor, lookahead delay, Peak/RMS detector blend, sidechain HP/LP filters, soft-clip ceiling, and a live scrolling envelope/gate/output HUD.
+6. **`devices/Better GrainSpec.amxd`** — A Max for Live Instrument (`iiii`) inspired by Woulg's *WR-GrainSpec*, combining adjustable onset slicing across 128 MIDI notes (or chromatic keyboard playback), punch-preserving transient pass-through, a 4-voice Granular to Phase-Locked Spectral stretch engine, a pitch-matching stereo feedback comb filter, live audio capture, and an interactive waveform/slice editor.
+7. **`devices/Percipitator.amxd`** (`380 x 169` px) — A 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator*, featuring a 4-frame `Sine -> Triangle -> Saw -> Square` wavetable bank, scrollable phase warp (`Bend`, `Asym`, `Sync`, `Fold`) & Partial Sieve (`All`, `Odd`, `Even`, `Sprs`, `Rise`) selectors, Spectral Tilt, `±2000 Hz` Frequency Shift, horizontal value-bar sliders for `Vol` and `Mix`, Sidechain MIDI pitch locking, and an audio-reactive Partials Viewer + 12-Note Scale Strip UI.
 
 ---
 
@@ -34,9 +36,9 @@ An XLN Audio XO–style 2D sample constellation browser and sample exporter that
 A Max for Live **Audio Effect** reverb — a "tiny space" ranging from tight comb-spaces to a small room. Built around a **gen.codebox~** feedback-delay network (20 delay lines) with a seed-driven configuration.
 
 ### Features
-- **Controls**: Size, Damp, Width, Dry/Wet (Mix), Feedback, Pre-delay, Modulation, Crossfeed, HP/LP, and a **Seed** (0–9999). Knobs stay put when the seed changes.
-- **Seed**: Deterministic mulberry32 config. Even density from 4 to 20 lines, inharmonic delay times, allpass diffusion, per-line damping color, and a blend from parallel combs (metallic) to a Householder mix (a small room).
-- **Visualization**: 20 vibrating strings (v8ui). The left ten are cyan, the right ten are amber. Amplitude follows each line's envelope; idle lines are dim stubs.
+- **Controls**: Size, Damp, Width, Dry/Wet (Mix), Feedback, Pre-delay, Modulation, Crossfeed, HP/LP, **Seed** (0–1000), and **Character** (`COMB`, `HYBRID`, `ROOM`, `PLATE`, `TANK`, `BOX`, `SPRING`, `BOUNCE` dropdown selection box). Knobs stay put when the seed or character changes.
+- **Seed & 8 Room Models**: Deterministic mulberry32 config (`0..1000`). Lower seed values use fewer delay lines (starting at 4 lines: 2 L + 2 R) and higher seeds increase monotonically up to the 20-line cap (10 L + 10 R). The `Character` selector switches across 8 acoustic/algorithmic room models (`COMB` parallel metallic lines, `HYBRID` comb-to-Householder blend, `ROOM` diffused Householder small room, `PLATE` Hadamard/velvet plate, `TANK` Dattorro figure-8 daisy-chained ring loop, `BOX` 3D shoebox standing-wave eigenmodes, `SPRING` dispersive allpass chirp tube, and `BOUNCE` geometric reflection cluster).
+- **Visualization**: 20 vibrating strings (`v8ui`) with the 10 Left (cyan) and 10 Right (amber) delay lines overlaid in a single unified field. Amplitude follows each line's envelope; inactive lines are dim stubs.
 - **gen.codebox~ core**: Predelay, HP/LP, seeded allpasses, 20 fractional delays, crossfeed, damping, soft clip, width, equal-power dry/wet. A seed change ducks the tank for 160 ms.
 
 ### Files
@@ -141,6 +143,54 @@ A Max for Live Audio Effect modulator device that replaces Ableton's stock **Sha
 
 ---
 
+## 6. Better GrainSpec (`devices/Better GrainSpec.amxd`)
+
+A Max for Live **Instrument** (`iiii`) inspired by Woulg's *WR-GrainSpec*, combining onset-based 128-note sample slicing with transient preservation, a 4-voice Granular to Phase-Locked Spectral/Monophonic stretch engine, a pitch-matching stereo feedback comb filter, live track audio capture, and an interactive waveform/slice editor.
+
+### Features
+- **Interactive Waveform & Slice Editor (`v8ui`)**:
+  - Pre-populates `buffer~ #0-gssample` with a synthesized 2-second breakbeat/glitch loop on load so it plays out of the box.
+  - Adjustable onset detection (`Sens` `0%..100%`) plus manual slice editing (click to select/audition, drag marker to move boundary, double-click to insert or delete slice markers, full Undo/Redo history).
+  - Switchable **`128` (128 Slice Map)** and **`Key` (Chromatic Pitch)** keyboard modes.
+- **Transient Preservation (`Trans` `0%..100%`)**: Plays the initial transient of each triggered slice at 1:1 unstretched rate with a raised-cosine crossfade into the stretched body so beats stay punchy even at `0%` (frozen) speed.
+- **Granular <-> Spectral Stretch (`Speed`, `Grain`, `Morph`, `Jitter`)**: Crossfades between 4 overlapping Hann-windowed granular streams (`Morph = 0%`) and a phase-locked fundamental-quantized harmonic resonator stretch (`Morph = 100%`).
+- **Pitch-Matching Stereo Comb Filter & Crush (`Pitch`, `CombMix`, `CombFbk`, `Crush`, `Mix`)**: Automatically tunes the comb filter to each slice's detected fundamental pitch (or played MIDI note in Chromatic mode).
+
+### Files
+- `src/grainspec_slicer.js` — default breakbeat loop synthesizer, high-frequency flux onset detector, autocorrelation pitch estimator, and MIDI mapper
+- `src/grainspec_core.genexpr` — `gen.codebox~` DSP engine and telemetry writer
+- `src/grainspec_ui.js` — interactive waveform, slice editor, vector toolbar, and grain/playhead visualizer
+- `scripts/build_grainspec.py` — builds `devices/Better GrainSpec.amxd`
+- `scripts/run_grainspec_audio_tests.py` — automated Max 9 audio & telemetry test suite
+- `tests/test_grainspec.js` — unit, layout, and UI interaction test suite
+- `previews/better_grainspec.png` — rendered 2x Retina preview
+
+---
+
+## 7. Percipitator (`devices/Percipitator.amxd`)
+
+A Max for Live **Audio Effect** 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator* in a **`380 x 169` px** horizontal value-bar layout.
+
+### Features
+- **16-Band Resonant Spectral Analysis & Graphical Gate (`Gate`, `Decay`, `Atk`, `Blur`)**: Tracks amplitude and instantaneous pitch across 16 log-spaced bands (`92.5 Hz..7040 Hz`), spawning resonant harmonic droplets above the adjustable `G -42dB` Gate line inside the Partials Viewer.
+- **Interactive 12-Note Scale Strip & Sidechain MIDI Pitch Control (`Snap`, `Pitch`, `Strch`, `Shift`)**:
+  - Click notes directly in the bottom 12-note keyboard strip (`C..B`) or route any MIDI track to **Percipitator** in Ableton Live: incoming MIDI notes (`midiin` $\to$ `midiparse` $\to$ `midi_in`) automatically define and latch the active pitch-class mask and light up held notes in emerald green.
+  - Includes semitone `Pitch` (`-24..+24 st`), inharmonic `Strch` (`50..200%`), and wide-range linear `Shift` (`-2000..+2000 Hz`).
+- **4-Frame `Sine -> Triangle -> Saw -> Square` Wavetable Bank, Scrollable Phase Warp & Partial Sieve (`Wave`, `Mode`, `Warp`, `Sieve`, `Tilt`, `Vol`, `Mix`)**:
+  - Morphs continuously across `Sine (0% default) -> Triangle -> Saw -> Square` (`Wave` `0..100%`) with `Warp` defaulting to `50%`.
+  - Scrollable **`Mode`** value selector (`Bend`, `Asym`, `Sync`, `Fold`) and **`Sieve`** value selector (`All`, `Odd`, `Even`, `Sprs`, `Rise`), plus **`Tilt`** (`-100%..+100%` spectral brightness balance) and horizontal value-bar sliders for **`Vol`** (`-36..+18 dB`) right above **`Mix`** (`0..100%`).
+
+### Files
+- `src/percipitator_config.js` — 4-frame `Sine->Tri->Saw->Square` wavetable generator, phase warp, partial sieve, spectral tilt & scale/MIDI quantizer math
+- `src/percipitator_core.genexpr` — 16-band `gen.codebox~` spectral tracker & wavetable resynthesizer
+- `src/percipitator_ui.js` — audio-reactive Spectral Waterfall, 3D Warped Wavetable preview, and 12-note scale strip
+- `scripts/build_percipitator.py` — builds `devices/Percipitator.amxd` (`380 x 169` px)
+- `scripts/run_percipitator_audio_tests.py` — automated Max 9 audio render & verification suite
+- `tests/test_percipitator.js` — unit, layout, and UI interaction test suite
+- `previews/percipitator.png` — rendered 2x Retina preview
+
+---
+
 ## Project Structure & Development
 
 ```text
@@ -178,9 +228,12 @@ python3 scripts/build_xo_map.py && node tests/test_xo_map.js && python3 scripts/
 # Better Shaper
 python3 scripts/build_shaper.py && node tests/test_shaper.js && python3 scripts/render_preview.py "devices/Better Shaper.amxd"
 
-# Sand
-python3 scripts/build_sand.py && node tests/test_sand.js && python3 scripts/render_preview.py "devices/Sand.amxd"
-
 # Reciprocator
 python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
+
+# Better GrainSpec
+python3 scripts/build_grainspec.py && node tests/test_grainspec.js && python3 scripts/render_preview.py "devices/Better GrainSpec.amxd"
+
+# Percipitator
+python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"
 ```

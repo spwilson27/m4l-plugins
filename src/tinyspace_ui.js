@@ -1,6 +1,7 @@
 // Tiny Space visualization. tinyspace_config.js is prepended at build time.
 // Twenty strings. Left ten are cyan, right ten are amber. Displacement follows
 // each delay line's envelope, and the wiggle rate follows that line's length.
+// Supports both overlaid (single-field L+R) and split-pane visualization modes.
 
 inlets = 1;
 outlets = 1;
@@ -13,11 +14,14 @@ mgraphics.autofill = 0;
 
 var cfgBuf = null;
 var meterBuf = null;
-var currentSeed = 1;
-var config = buildConfig(currentSeed);
+var currentSeed = 350;
+var currentCharMode = 0; // 0 = COMB, 1 = HYBRID, 2 = ROOM
+var vizOverlay = 1;      // 1 = Overlaid L+R strings, 0 = Separate L/R panes
+var config = buildConfig(currentSeed, currentCharMode);
 var meters = [];
 var phases = [];
 var seededOnce = false;
+var charInitOnce = false;
 var meterTask = null;
 
 for (var i = 0; i < LINE_COUNT; i++) {
@@ -38,11 +42,25 @@ function pokeConfig() {
 }
 
 function set_seed(v) {
-    currentSeed = Math.max(0, Math.min(9999, v | 0));
-    config = buildConfig(currentSeed);
+    currentSeed = Math.max(0, Math.min(SEED_MAX, v | 0));
+    config = buildConfig(currentSeed, currentCharMode);
     pokeConfig();
     if (seededOnce) outlet(0, "bang");
     seededOnce = true;
+    mgraphics.redraw();
+}
+
+function set_character(v) {
+    currentCharMode = Math.max(0, Math.min(CHAR_MODES.length - 1, v | 0));
+    config = buildConfig(currentSeed, currentCharMode);
+    pokeConfig();
+    if (charInitOnce) outlet(0, "bang");
+    charInitOnce = true;
+    mgraphics.redraw();
+}
+
+function set_viz_mode(v) {
+    vizOverlay = (v | 0) ? 1 : 0;
     mgraphics.redraw();
 }
 
@@ -78,7 +96,7 @@ function loadbang() {
 
 function canvasSize() {
     var s = mgraphics.size;
-    if (!s || s.length < 2) return [344, 132];
+    if (!s || s.length < 2) return [152, 62];
     return [s[0], s[1]];
 }
 
@@ -88,63 +106,102 @@ function displayEnv(index) {
     return 0.28 + 0.72 * Math.abs(Math.sin(index * 1.37 + 0.6));
 }
 
+function drawString(x, top, bot, midY, stubHalf, active, env, len, phaseIdx, col, maxSwing, harmonic) {
+    var vis = 0;
+    if (active) {
+        vis = Math.sqrt(env) * 2.4;
+        if (vis > 1) vis = 1;
+    }
+    phases[phaseIdx] += (0.05 + vis * 0.42) * (0.55 + 5.5 / Math.max(1, len));
+    var y0 = active ? top : midY - stubHalf;
+    var y1 = active ? bot : midY + stubHalf;
+    var amp = active ? (0.22 + vis * maxSwing) : 0.22;
+    var alpha = active ? (0.34 + vis * 0.66) : 0.18;
+    mgraphics.set_source_rgba(col[0], col[1], col[2], alpha);
+    mgraphics.set_line_width(active ? 1.3 : 0.8);
+    var steps = 16;
+    for (var s = 0; s <= steps; s++) {
+        var t = s / steps;
+        var y = y0 + (y1 - y0) * t;
+        var pin = Math.sin(t * Math.PI);
+        var xOff = Math.sin(phases[phaseIdx] + t * Math.PI * harmonic) * amp * pin;
+        if (s === 0) mgraphics.move_to(x + xOff, y);
+        else mgraphics.line_to(x + xOff, y);
+    }
+    mgraphics.stroke();
+}
+
 function paint() {
     var wh = canvasSize();
     var w = wh[0];
     var h = wh[1];
 
-    mgraphics.set_source_rgba(0.055, 0.065, 0.078, 1);
+    // Deep pitch-black screen like Undulae Tinyspace
+    mgraphics.set_source_rgba(0.035, 0.042, 0.052, 1);
     mgraphics.rectangle(0, 0, w, h);
     mgraphics.fill();
 
-    mgraphics.set_source_rgba(0.16, 0.2, 0.24, 1);
+    var top = 5;
+    var bot = h - 5;
+    var midY = (top + bot) * 0.5;
+    var spanH = bot - top;
+    var stubHalf = Math.min(13, spanH * 0.22);
+
+    // Subtle horizontal center line
+    mgraphics.set_source_rgba(0.09, 0.115, 0.14, 1);
     mgraphics.set_line_width(1);
-    mgraphics.move_to(w * 0.5, 20);
-    mgraphics.line_to(w * 0.5, h - 6);
+    mgraphics.move_to(4, midY);
+    mgraphics.line_to(w - 4, midY);
     mgraphics.stroke();
 
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(9);
-    mgraphics.set_source_rgba(0.78, 0.84, 0.9, 1);
-    mgraphics.move_to(8, 13);
-    mgraphics.show_text(config.activeCount + " lines");
+    if (vizOverlay) {
+        // Overlaid stereo field: 10 positions across the full width, with Left (cyan)
+        // and Right (amber) delay lines braided/overlaid at each slot.
+        var padX = Math.max(10, w * 0.08);
+        var step = (w - padX * 2) / 9;
+        var maxSwing = Math.min(11.5, Math.max(4.5, step * 0.88));
 
-    var top = 22;
-    var bot = h - 7;
-    var half = w * 0.5;
-    var step = (half - 28) / 9;
-    var midY = (top + bot) * 0.5;
+        for (var slot = 0; slot < 10; slot++) {
+            var baseX = padX + slot * step;
+            var idxL = slot;
+            var idxR = slot + 10;
 
-    for (var i = 0; i < LINE_COUNT; i++) {
-        var side = i % 10;
-        var x = (i < 10) ? (12 + side * step) : (half + 12 + side * step);
-        var active = isLineActive(i, config.activeCount);
-        var env = displayEnv(i);
-        if (env > 1) env = 1;
-        var len = config.lens[i];
-        // Quiet lines sit almost straight. A hit swings and speeds the wiggle.
-        var vis = 0;
-        if (active) {
-            vis = Math.sqrt(env) * 2.4;
-            if (vis > 1) vis = 1;
+            var actL = isLineActive(idxL, config.activeCount);
+            var envL = Math.min(1, displayEnv(idxL));
+            drawString(
+                baseX, top, bot, midY, stubHalf,
+                actL, envL, config.lens[idxL], idxL,
+                [0.28, 0.82, 0.96], maxSwing, 3.0
+            );
+
+            var actR = isLineActive(idxR, config.activeCount);
+            var envR = Math.min(1, displayEnv(idxR));
+            drawString(
+                baseX, top, bot, midY, stubHalf,
+                actR, envR, config.lens[idxR], idxR,
+                [0.96, 0.64, 0.28], maxSwing, 3.2
+            );
         }
-        phases[i] += (0.05 + vis * 0.42) * (0.55 + 5.5 / Math.max(1, len));
-        var y0 = active ? top : midY - 16;
-        var y1 = active ? bot : midY + 16;
-        var amp = active ? (0.25 + vis * 13.5) : 0.28;
-        var col = (i < 10) ? [0.28, 0.82, 0.96] : [0.96, 0.64, 0.28];
-        var alpha = active ? (0.3 + vis * 0.7) : 0.2;
-        mgraphics.set_source_rgba(col[0], col[1], col[2], alpha);
-        mgraphics.set_line_width(active ? 1.35 : 0.8);
-        var steps = 16;
-        for (var s = 0; s <= steps; s++) {
-            var t = s / steps;
-            var y = y0 + (y1 - y0) * t;
-            var pin = Math.sin(t * Math.PI);
-            var xOff = Math.sin(phases[i] + t * Math.PI * 3) * amp * pin;
-            if (s === 0) mgraphics.move_to(x + xOff, y);
-            else mgraphics.line_to(x + xOff, y);
-        }
+    } else {
+        // Split-pane L / R view (no text counters or L/R labels)
+        mgraphics.set_source_rgba(0.14, 0.18, 0.22, 1);
+        mgraphics.set_line_width(1);
+        mgraphics.move_to(w * 0.5, 3);
+        mgraphics.line_to(w * 0.5, h - 3);
         mgraphics.stroke();
+
+        var half = w * 0.5;
+        var padS = Math.max(5, Math.min(10, half * 0.08));
+        var stepS = (half - padS * 2) / 9;
+        var maxSwingS = Math.min(10.0, Math.max(3.5, stepS * 1.45));
+
+        for (var i = 0; i < LINE_COUNT; i++) {
+            var side = i % 10;
+            var x = (i < 10) ? (padS + side * stepS) : (half + padS + side * stepS);
+            var active = isLineActive(i, config.activeCount);
+            var env = Math.min(1, displayEnv(i));
+            var col = (i < 10) ? [0.28, 0.82, 0.96] : [0.96, 0.64, 0.28];
+            drawString(x, top, bot, midY, stubHalf, active, env, config.lens[i], i, col, maxSwingS, 3.0);
+        }
     }
 }

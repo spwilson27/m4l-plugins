@@ -1,0 +1,241 @@
+// Degrade — Real 1024-Bin FFT Spectral Engine (`fft~ 1024 1024` -> `gen.codebox~` -> `ifft~ 1024 1024`)
+//
+// Processes all 1024 complex FFT bins (`in1 = real`, `in2 = imag`, `in3 = bin index 0..1023`)
+// for Stage 2 (`3. CODEC` — SpecOps MP3ify / MAIM style sparse spectral bin masking,
+// MP3 x^(3/4) magnitude quantization, watery multi-frame birdie smoothing, and sfb21 HF cutoff)
+// and Stage 4 (`5. FFT` — True 1024-Bin Freeze, Bin Scramble, Spectral Comb, and Phase Splat).
+//
+// Conjugate-Symmetric Real-Signal FFT Architecture:
+//   - Input is Sine-windowed before `fft~` and Sine-windowed after `ifft~` (Princen-Bradley MDCT/COLA
+//     condition: sin^2(pi*n/N) + cos^2(pi*n/N) == 1.0 at every sample).
+//   - All 1024 bins (0..1023) are processed symmetrically using `kSym = (k <= 512) ? k : (1024 - k)`
+//     so positive and negative frequencies receive symmetric real gains with zero Hilbert edge ringing.
+//   - Every Delay line is read and written UNCONDITIONALLY on every sample (0..1023) so
+//     `read(1024)` is always aligned to the exact same frequency bin `k` from 1 FFT frame ago.
+
+slew(target, coef) {
+	History s(0);
+	History init(0);
+	s = (init == 0) ? target : mix(target, s, coef);
+	init = 1;
+	return s;
+}
+
+Param codec_on(0.0);
+Param codec_loss(0.55);
+Param preecho(0.35);
+Param birdies(0.40);
+
+Param fft_on(0.0);
+Param fft_mode(0.0);
+Param fft_glitch(0.50);
+Param fft_frame(45.0);
+
+History frameCount(0);
+History prevBin(0);
+History runInSum(0);
+History runOutSum(0);
+History frameAvg(0.005);
+History autoMakeup(1.5);
+History localMask(0.0);
+History barkPeak(0.0);
+History prevBinGain(1.0);
+
+// 2D Spectrogram Delay lines (1024 samples = 1 full FFT frame).
+// Read & written unconditionally on every sample tick so tap 1024 is always exact bin `k`!
+Delay smoothGainD(2048);
+Delay prevGain2D(2048);
+Delay freezeReD(2048);
+Delay freezeImD(2048);
+Delay scramReD(2048);
+Delay scramImD(2048);
+
+codOn = slew(clip(codec_on, 0.0, 1.0), 0.5);
+fftOn = slew(clip(fft_on, 0.0, 1.0), 0.5);
+lossVal = slew(clip(codec_loss, 0.0, 1.0), 0.995);
+preVal = slew(clip(preecho, 0.0, 1.0), 0.995);
+birdVal = slew(clip(birdies, 0.0, 1.0), 0.995);
+fModeVal = round(slew(clip(fft_mode, 0.0, 3.0), 0.2));
+fGlitchVal = slew(clip(fft_glitch, 0.0, 1.0), 0.995);
+fFrameVal = slew(clip(fft_frame, 5.0, 150.0), 0.995);
+
+// 1 / 1024 FFT normalization
+curRe = in1 * 0.0009765625;
+curIm = in2 * 0.0009765625;
+k = clip(round(in3), 0, 1023);
+kSym = (k <= 512) ? k : (1024 - k);
+
+// Read per-bin state from previous FFT frames (1024 samples ago = exact same bin k!)
+prevG1 = smoothGainD.read(1024);
+prevG2 = prevGain2D.read(1024);
+frzOldRe = freezeReD.read(1024);
+frzOldIm = freezeImD.read(1024);
+
+// Detect start of new 1024-bin FFT frame (k wraps from 1023 -> 0)
+if (k < prevBin) {
+	frameCount = wrap(frameCount + 1, 0, 100000);
+	newAvg = runInSum * 0.0009765625; // average over all 1024 bins
+	mixedAvg = mix(newAvg, frameAvg, 0.65);
+	frameAvg = max(mixedAvg, 0.00005);
+
+	// Automatic SpecOps MP3ify sparse-bin energy compensation
+	safeOutSum = max(runOutSum, 0.0005);
+	rawMakeup = clip(runInSum / safeOutSum, 1.0, 6.5);
+	autoMakeup = mix(rawMakeup, autoMakeup, 0.75);
+
+	runInSum = 0.0;
+	runOutSum = 0.0;
+	localMask = 0.0;
+	barkPeak = 0.0;
+	prevBinGain = 1.0;
+}
+prevBin = k;
+
+// Reset running Bark mask at Nyquist (k == 512) so negative frequencies (513..1023)
+// mirror the positive frequencies cleanly
+if (k == 512) {
+	localMask = 0.0;
+	barkPeak = 0.0;
+}
+
+magSq = curRe * curRe + curIm * curIm;
+mag = sqrt(magSq);
+runInSum = runInSum + mag;
+
+// ============================================================================
+// STAGE 2: SPECOPS MP3IFY / MAIM 1024-BIN PERCEPTUAL CODEC DAMAGE
+// ============================================================================
+nextG1 = 1.0;
+
+if (codOn > 0.5) {
+	// 1. Simultaneous psychoacoustic masking across adjacent FFT bins & Bark groups
+	maskDecay = 0.84 + lossVal * 0.13;
+	decayedMask = localMask * maskDecay;
+	localMask = max(mag, decayedMask);
+
+	barkReset = (kSym % 8) == 0;
+	maxBark = max(mag, barkPeak);
+	barkPeak = barkReset ? mag : maxBark;
+
+	// 2. Multi-frame Scale-Factor Hold & Birdie Swirl (latches every 3..6 FFT frames = ~70..140 ms)
+	rawHold = round(6.0 - birdVal * 3.0);
+	holdDiv = max(2.0, rawHold);
+	heldFrame = floor(frameCount / holdDiv);
+	barkGroup = floor(kSym / 4.0);
+	birdHash = sin(barkGroup * 12.9898 + heldFrame * 78.233 + kSym * 0.31);
+
+	// Threshold combines local simultaneous masking shadow + Bark peak + frame spectral average
+	simThresh = localMask * (0.48 + lossVal * 0.48);
+	barkThresh = barkPeak * (0.42 + lossVal * 0.52);
+	avgThresh = frameAvg * (0.40 + lossVal * 3.60);
+	t01 = max(simThresh, barkThresh);
+	baseThresh = max(t01, avgThresh);
+
+	// Birdies smoothly modulate bin survival threshold across Bark groups
+	jitRaw = 1.0 + birdHash * birdVal * 0.78;
+	jitFactor = max(jitRaw, 0.10);
+	effThresh = baseThresh * jitFactor;
+
+	// 3. Low-Bitrate MP3 SFB21 Brickwall High-Frequency Cutoff
+	normLoss = pow(1.0 - lossVal * 0.84, 1.70);
+	rawMaxBin = round(512.0 * normLoss);
+	maxBin = max(20.0, rawMaxBin);
+	hfOpen = (kSym <= maxBin) ? 1.0 : 0.0;
+
+	// 4. Soft-Knee Spectral Hole Gate
+	threshLo = effThresh * 0.82;
+	threshHi = max(effThresh * 1.18, threshLo + 0.00002);
+	holeT = clip((mag - threshLo) / (threshHi - threshLo), 0.0, 1.0);
+	holeGate = holeT * holeT * (3.0 - 2.0 * holeT) * hfOpen;
+
+	// 5. MAIM / MP3 IEEE x^(3/4) Power-Law Gain Quantization
+	refLevel = max(frameAvg * 3.0, 0.0002);
+	normM = clip(mag / refLevel, 0.0, 2.0);
+	qSteps = max(2.0, 14.0 - lossVal * 11.5);
+	safeNormM = max(normM, 0.00001);
+	mPow34 = pow(safeNormM, 0.75);
+	qRounded = floor(mPow34 * qSteps + 0.5) / qSteps;
+	qMagRatio = pow(max(qRounded, 0.0), 1.3333333) / max(normM, 0.05);
+	quantGain = mix(1.0, clip(qMagRatio, 0.0, 1.5), lossVal * 0.65);
+
+	targetG = holeGate * quantGain;
+	runOutSum = runOutSum + mag * targetG;
+
+	// 6. 2D Time-Frequency Smoothing (across previous FFT frames AND adjacent bin k-1)
+	//    Guarantees liquid, ringing sinusoidal "birdies" with zero time-domain clicks!
+	frameSmooth = clip(0.55 + birdVal * 0.32 + preVal * 0.28, 0.45, 0.92);
+	prevBlend = 0.70 * prevG1 + 0.30 * prevG2;
+	timeSmoothedG = mix(targetG * autoMakeup, prevBlend, frameSmooth);
+	freqSmoothedG = 0.70 * timeSmoothedG + 0.30 * prevBinGain;
+	prevBinGain = freqSmoothedG;
+	nextG1 = clip(freqSmoothedG, 0.0, 5.0);
+
+	wetCod = clip(lossVal * 1.35 + birdVal * 0.85 + preVal * 0.75, 0.0, 1.0);
+	finalGain = mix(1.0, nextG1, wetCod);
+
+	curRe = curRe * finalGain;
+	curIm = curIm * finalGain;
+} else {
+	runOutSum = runOutSum + mag;
+}
+
+// Unconditionally update per-bin gain history delays (keeps 1024-sample frame alignment exact!)
+smoothGainD.write(nextG1);
+prevGain2D.write(prevG1);
+
+// ============================================================================
+// STAGE 4: TRUE 1024-BIN FFT SPECTRAL GLITCH
+// ============================================================================
+fFrameScale = clip(fFrameVal / 45.0, 0.2, 3.0);
+isFrozen = (fftOn > 0.5) * (fModeVal == 0) * (fGlitchVal > 0.35);
+
+// Conjugate-symmetric phase rotation for Freeze
+sgnSym = (k <= 512) ? 1.0 : -1.0;
+frzAng = 0.6180339 * 6.28318530718 * sgnSym;
+cFrz = cos(frzAng);
+sFrz = sin(frzAng);
+rotFrzRe = frzOldRe * cFrz - frzOldIm * sFrz;
+rotFrzIm = frzOldRe * sFrz + frzOldIm * cFrz;
+
+writeFrzRe = isFrozen ? rotFrzRe : curRe;
+writeFrzIm = isFrozen ? rotFrzIm : curIm;
+freezeReD.write(writeFrzRe);
+freezeImD.write(writeFrzIm);
+
+scramReD.write(curRe);
+scramImD.write(curIm);
+
+if (fftOn > 0.5) {
+	mode0Re = writeFrzRe;
+	mode0Im = writeFrzIm;
+
+	rawScrStep = round(fFrameScale * 3.0);
+	scrStep = max(1.0, rawScrStep);
+	scrFrame = floor(frameCount / scrStep);
+	scrHash = sin(kSym * 0.6180339 + scrFrame * 17.3);
+	scrShift = clip(round(scrHash * fGlitchVal * 24.0) * sgnSym, -48, 48);
+	scrTap = clip(1024 + scrShift, 1, 2000);
+	mode1Re = scramReD.read(scrTap);
+	mode1Im = scramImD.read(scrTap);
+
+	combRate = 0.15 + fFrameScale * 0.45;
+	combBase = 0.5 + 0.5 * cos(kSym * combRate + frameCount * 0.20);
+	combMask = pow(max(combBase, 0.0), 1.0 + fGlitchVal * 6.0);
+	mode2Re = curRe * combMask * 1.45;
+	mode2Im = curIm * combMask * 1.45;
+
+	splatPhi = fGlitchVal * 6.0 * fFrameScale * sin(kSym * 0.12 + frameCount * 0.15) * sgnSym;
+	cS = cos(splatPhi);
+	sS = sin(splatPhi);
+	mode3Re = curRe * cS - curIm * sS;
+	mode3Im = curRe * sS + curIm * cS;
+
+	fWetRe = (fModeVal == 0) ? mode0Re : ((fModeVal == 1) ? mode1Re : ((fModeVal == 2) ? mode2Re : mode3Re));
+	fWetIm = (fModeVal == 0) ? mode0Im : ((fModeVal == 1) ? mode1Im : ((fModeVal == 2) ? mode2Im : mode3Im));
+
+	curRe = mix(curRe, fWetRe, fGlitchVal);
+	curIm = mix(curIm, fWetIm, fGlitchVal);
+}
+
+out1 = fixnan(curRe);
+out2 = fixnan(curIm);

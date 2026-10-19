@@ -5,11 +5,15 @@
 //   10..29 nominal delay (ms), 30..49 damp offset, 50..69 mod Hz.
 // Meter buffer (buffer~ #0-tsmeters) is one envelope per line.
 // GenExpr rejects the old delay operator. Each line is declared with Delay, then written
-// and read as a tap. Tank lines are 16384 samples (~170 ms at 96 kHz); pre-delay
-// lines are 65536 samples. Read times are clamped inside those lengths.
-// Full feedback holds a line to about -60 dB in 40 seconds (see ringGain).
+// and read as a tap. Tank and pre-delay lines are 65536 samples, longer than
+// the longest tap plus a signal vector, so a short comb keeps recirculating.
+// Full feedback holds a line to about -60 dB in 80 seconds (see ringGain).
+// Short combs stay bright: delay taps are whole samples, and Damp 0 does not
+// lowpass the loop, so a small Size rings as a metallic tone instead of a thud.
 // The coefficient depends on that line's delay so short combs do not die
 // in a fraction of a second. It is clipped just under 1, so the tail ends.
+// Every room mix is orthogonal and keeps the all-ones mode at magnitude 1,
+// and crossfeed is a rotation, so neither one shortens that tail.
 // GenExpr requires every function to appear before Buffer, Param, and assignments.
 
 slew(target, coef) {
@@ -54,7 +58,9 @@ lineTime(lenMs, lfoVal, sizeNow, modNow) {
 	sc = 0.22 + clip(sizeNow, 0, 1) * 1.93;
 	base = clip(lenMs * sc * samplerate / 1000, 1, 16000);
 	depth = min(base * 0.28, samplerate * 0.0012) * clip(modNow, 0, 1);
-	return clip(base + lfoVal * depth, 1, 16000);
+	// Whole-sample taps. Linear interpolation would shave a little high end
+	// off every pass, and a 1 ms comb passes often enough that the tone dies.
+	return round(clip(base + lfoVal * depth, 1, 16000));
 }
 
 follow(x) {
@@ -64,32 +70,102 @@ follow(x) {
 	return s;
 }
 
-// fbk 1 reaches about -60 dB after 40 seconds, so 10 seconds is still obvious.
+// fbk 1 reaches about -60 dB after 80 seconds. A 1-sample comb needs a gain
+// extremely close to 1 to last that long, so the ceiling sits just under 1.
 // fbk 0 does not recirculate. The denominator is never zero, so a feedback
 // of 0 cannot fall through into a gain of 1.
 ringGain(delaySamps, fbkNow) {
 	k = clip(fbkNow, 0, 1);
 	secs = max(delaySamps, 1) / samplerate;
-	rt = max(k * 40, 0.05);
+	rt = max(k * 80, 0.05);
 	g = exp(-6.90775527898 * secs / rt);
 	quiet = (k < 0.001) ? 0 : g;
-	return clip(quiet, 0, 0.99999);
+	return clip(quiet, 0, 0.9999995);
 }
 
-// Parallel combs (character 0) blended into a per-side Householder mix (character 1).
-house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, character) {
+// One-pole pole for a loop of delaySamps. Damp 0 leaves the comb bright.
+// The bright partials then fade over a time set by the knob, not by how
+// many times a short line happens to recirculate.
+dampCoef(delaySamps, dampNow, offset) {
+	amt = clip(dampNow, 0, 1) * (1 + clip(offset, 0, 0.35));
+	amt = clip(amt, 0, 1);
+	tau = 0.15 / max(amt * amt, 0.00001);
+	T = max(delaySamps, 1) / samplerate;
+	bright = exp(-T / tau);
+	pole = (1 - bright) / max(1 + bright, 0.001);
+	return clip(pole, 0, 0.995);
+}
+
+// Parallel combs (character 0) blended into a per-side Householder mix (character 1),
+// plus selectable room topologies (3 = PLATE, 4 = TANK, 5 = BOX, 6 = SPRING, 7 = BOUNCE).
+house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, character, model) {
 	sum = o0 + o1 + o2 + o3 + o4 + o5 + o6 + o7 + o8 + o9;
 	k = 2 / max(n, 1);
-	m0 = (0 < n) ? mix(o0, o0 - sum * k, character) : 0;
-	m1 = (1 < n) ? mix(o1, o1 - sum * k, character) : 0;
-	m2 = (2 < n) ? mix(o2, o2 - sum * k, character) : 0;
-	m3 = (3 < n) ? mix(o3, o3 - sum * k, character) : 0;
-	m4 = (4 < n) ? mix(o4, o4 - sum * k, character) : 0;
-	m5 = (5 < n) ? mix(o5, o5 - sum * k, character) : 0;
-	m6 = (6 < n) ? mix(o6, o6 - sum * k, character) : 0;
-	m7 = (7 < n) ? mix(o7, o7 - sum * k, character) : 0;
-	m8 = (8 < n) ? mix(o8, o8 - sum * k, character) : 0;
-	m9 = (9 < n) ? mix(o9, o9 - sum * k, character) : 0;
+
+	// Standard Comb <-> Householder blend (models 0..2, 6, 7)
+	h0 = (0 < n) ? mix(o0, o0 - sum * k, character) : 0;
+	h1 = (1 < n) ? mix(o1, o1 - sum * k, character) : 0;
+	h2 = (2 < n) ? mix(o2, o2 - sum * k, character) : 0;
+	h3 = (3 < n) ? mix(o3, o3 - sum * k, character) : 0;
+	h4 = (4 < n) ? mix(o4, o4 - sum * k, character) : 0;
+	h5 = (5 < n) ? mix(o5, o5 - sum * k, character) : 0;
+	h6 = (6 < n) ? mix(o6, o6 - sum * k, character) : 0;
+	h7 = (7 < n) ? mix(o7, o7 - sum * k, character) : 0;
+	h8 = (8 < n) ? mix(o8, o8 - sum * k, character) : 0;
+	h9 = (9 < n) ? mix(o9, o9 - sum * k, character) : 0;
+
+	// PLATE (model 3): Hadamard-style parity + Householder reflection
+	alt = o0 - o1 + o2 - o3 + o4 - o5 + o6 - o7 + o8 - o9;
+	p0 = (0 < n) ? ((o0 - sum * k) * 0.72 + (o1 - alt * k * 0.5) * 0.28) : 0;
+	p1 = (1 < n) ? ((o1 - sum * k) * 0.72 - (o0 - alt * k * 0.5) * 0.28) : 0;
+	p2 = (2 < n) ? ((o2 - sum * k) * 0.72 + (o3 - alt * k * 0.5) * 0.28) : 0;
+	p3 = (3 < n) ? ((o3 - sum * k) * 0.72 - (o2 - alt * k * 0.5) * 0.28) : 0;
+	p4 = (4 < n) ? ((o4 - sum * k) * 0.72 + (o5 - alt * k * 0.5) * 0.28) : 0;
+	p5 = (5 < n) ? ((o5 - sum * k) * 0.72 - (o4 - alt * k * 0.5) * 0.28) : 0;
+	p6 = (6 < n) ? ((o6 - sum * k) * 0.72 + (o7 - alt * k * 0.5) * 0.28) : 0;
+	p7 = (7 < n) ? ((o7 - sum * k) * 0.72 - (o6 - alt * k * 0.5) * 0.28) : 0;
+	p8 = (8 < n) ? ((o8 - sum * k) * 0.72 + (o9 - alt * k * 0.5) * 0.28) : 0;
+	p9 = (9 < n) ? ((o9 - sum * k) * 0.72 - (o8 - alt * k * 0.5) * 0.28) : 0;
+
+	// TANK (model 4): Dattorro-style daisy-chained ring loop across active lines
+	last = (n <= 2) ? o1 : ((n <= 3) ? o2 : ((n <= 4) ? o3 : ((n <= 5) ? o4 : ((n <= 6) ? o5 : ((n <= 7) ? o6 : ((n <= 8) ? o7 : ((n <= 9) ? o8 : o9)))))));
+	r0 = (0 < n) ? (last * 0.84 + h0 * 0.16) : 0;
+	r1 = (1 < n) ? (-o0  * 0.84 + h1 * 0.16) : 0;
+	r2 = (2 < n) ? (o1   * 0.84 + h2 * 0.16) : 0;
+	r3 = (3 < n) ? (-o2  * 0.84 + h3 * 0.16) : 0;
+	r4 = (4 < n) ? (o3   * 0.84 + h4 * 0.16) : 0;
+	r5 = (5 < n) ? (-o4  * 0.84 + h5 * 0.16) : 0;
+	r6 = (6 < n) ? (o5   * 0.84 + h6 * 0.16) : 0;
+	r7 = (7 < n) ? (-o6  * 0.84 + h7 * 0.16) : 0;
+	r8 = (8 < n) ? (o7   * 0.84 + h8 * 0.16) : 0;
+	r9 = (9 < n) ? (-o8  * 0.84 + h9 * 0.16) : 0;
+
+	// BOX (model 5): 3D Shoebox phase-inverted wall boundary reflections
+	b0 = -h0;
+	b1 =  h1;
+	b2 = -h2;
+	b3 =  h3;
+	b4 = -h4;
+	b5 =  h5;
+	b6 = -h6;
+	b7 =  h7;
+	b8 = -h8;
+	b9 =  h9;
+
+	isPlate = (model == 3);
+	isTank  = (model == 4);
+	isBox   = (model == 5);
+
+	m0 = isPlate ? p0 : (isTank ? r0 : (isBox ? b0 : h0));
+	m1 = isPlate ? p1 : (isTank ? r1 : (isBox ? b1 : h1));
+	m2 = isPlate ? p2 : (isTank ? r2 : (isBox ? b2 : h2));
+	m3 = isPlate ? p3 : (isTank ? r3 : (isBox ? b3 : h3));
+	m4 = isPlate ? p4 : (isTank ? r4 : (isBox ? b4 : h4));
+	m5 = isPlate ? p5 : (isTank ? r5 : (isBox ? b5 : h5));
+	m6 = isPlate ? p6 : (isTank ? r6 : (isBox ? b6 : h6));
+	m7 = isPlate ? p7 : (isTank ? r7 : (isBox ? b7 : h7));
+	m8 = isPlate ? p8 : (isTank ? r8 : (isBox ? b8 : h8));
+	m9 = isPlate ? p9 : (isTank ? r9 : (isBox ? b9 : h9));
 	return m0, m1, m2, m3, m4, m5, m6, m7, m8, m9;
 }
 
@@ -130,26 +206,26 @@ History o18(0);
 History o19(0);
 Delay preDL(65536);
 Delay preDR(65536);
-Delay del0(16384);
-Delay del1(16384);
-Delay del2(16384);
-Delay del3(16384);
-Delay del4(16384);
-Delay del5(16384);
-Delay del6(16384);
-Delay del7(16384);
-Delay del8(16384);
-Delay del9(16384);
-Delay del10(16384);
-Delay del11(16384);
-Delay del12(16384);
-Delay del13(16384);
-Delay del14(16384);
-Delay del15(16384);
-Delay del16(16384);
-Delay del17(16384);
-Delay del18(16384);
-Delay del19(16384);
+Delay del0(65536);
+Delay del1(65536);
+Delay del2(65536);
+Delay del3(65536);
+Delay del4(65536);
+Delay del5(65536);
+Delay del6(65536);
+Delay del7(65536);
+Delay del8(65536);
+Delay del9(65536);
+Delay del10(65536);
+Delay del11(65536);
+Delay del12(65536);
+Delay del13(65536);
+Delay del14(65536);
+Delay del15(65536);
+Delay del16(65536);
+Delay del17(65536);
+Delay del18(65536);
+Delay del19(65536);
 
 sizeS = slew(size, 0.9992);
 dampS = slew(damp, 0.9992);
@@ -164,6 +240,7 @@ lpS = slew(lp, 0.9992);
 
 activeCount = peek(cfg, 0);
 character = clip(peek(cfg, 1), 0, 1);
+model = round(clip(peek(cfg, 70), 0, 7));
 nL = activeCount * 0.5;
 nR = nL;
 sr = max(samplerate, 1);
@@ -245,8 +322,8 @@ t17 = lineTime(peek(cfg, 27), lfo17, sizeS, modS);
 t18 = lineTime(peek(cfg, 28), lfo18, sizeS, modS);
 t19 = lineTime(peek(cfg, 29), lfo19, sizeS, modS);
 
-m0, m1, m2, m3, m4, m5, m6, m7, m8, m9 = house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, nL, character);
-m10, m11, m12, m13, m14, m15, m16, m17, m18, m19 = house(o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, nR, character);
+m0, m1, m2, m3, m4, m5, m6, m7, m8, m9 = house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, nL, character, model);
+m10, m11, m12, m13, m14, m15, m16, m17, m18, m19 = house(o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, nR, character, model);
 
 xf = clip(xfeedS, 0, 1);
 x0 = m0 * (1 - xf) + m10 * xf;
@@ -270,26 +347,26 @@ x17 = m17 * (1 - xf) + m7 * xf;
 x18 = m18 * (1 - xf) + m8 * xf;
 x19 = m19 * (1 - xf) + m9 * xf;
 
-c0 = clip(dampS * 0.92 + peek(cfg, 30) * 0.35, 0, 0.995);
-c1 = clip(dampS * 0.92 + peek(cfg, 31) * 0.35, 0, 0.995);
-c2 = clip(dampS * 0.92 + peek(cfg, 32) * 0.35, 0, 0.995);
-c3 = clip(dampS * 0.92 + peek(cfg, 33) * 0.35, 0, 0.995);
-c4 = clip(dampS * 0.92 + peek(cfg, 34) * 0.35, 0, 0.995);
-c5 = clip(dampS * 0.92 + peek(cfg, 35) * 0.35, 0, 0.995);
-c6 = clip(dampS * 0.92 + peek(cfg, 36) * 0.35, 0, 0.995);
-c7 = clip(dampS * 0.92 + peek(cfg, 37) * 0.35, 0, 0.995);
-c8 = clip(dampS * 0.92 + peek(cfg, 38) * 0.35, 0, 0.995);
-c9 = clip(dampS * 0.92 + peek(cfg, 39) * 0.35, 0, 0.995);
-c10 = clip(dampS * 0.92 + peek(cfg, 40) * 0.35, 0, 0.995);
-c11 = clip(dampS * 0.92 + peek(cfg, 41) * 0.35, 0, 0.995);
-c12 = clip(dampS * 0.92 + peek(cfg, 42) * 0.35, 0, 0.995);
-c13 = clip(dampS * 0.92 + peek(cfg, 43) * 0.35, 0, 0.995);
-c14 = clip(dampS * 0.92 + peek(cfg, 44) * 0.35, 0, 0.995);
-c15 = clip(dampS * 0.92 + peek(cfg, 45) * 0.35, 0, 0.995);
-c16 = clip(dampS * 0.92 + peek(cfg, 46) * 0.35, 0, 0.995);
-c17 = clip(dampS * 0.92 + peek(cfg, 47) * 0.35, 0, 0.995);
-c18 = clip(dampS * 0.92 + peek(cfg, 48) * 0.35, 0, 0.995);
-c19 = clip(dampS * 0.92 + peek(cfg, 49) * 0.35, 0, 0.995);
+c0 = dampCoef(t0, dampS, peek(cfg, 30));
+c1 = dampCoef(t1, dampS, peek(cfg, 31));
+c2 = dampCoef(t2, dampS, peek(cfg, 32));
+c3 = dampCoef(t3, dampS, peek(cfg, 33));
+c4 = dampCoef(t4, dampS, peek(cfg, 34));
+c5 = dampCoef(t5, dampS, peek(cfg, 35));
+c6 = dampCoef(t6, dampS, peek(cfg, 36));
+c7 = dampCoef(t7, dampS, peek(cfg, 37));
+c8 = dampCoef(t8, dampS, peek(cfg, 38));
+c9 = dampCoef(t9, dampS, peek(cfg, 39));
+c10 = dampCoef(t10, dampS, peek(cfg, 40));
+c11 = dampCoef(t11, dampS, peek(cfg, 41));
+c12 = dampCoef(t12, dampS, peek(cfg, 42));
+c13 = dampCoef(t13, dampS, peek(cfg, 43));
+c14 = dampCoef(t14, dampS, peek(cfg, 44));
+c15 = dampCoef(t15, dampS, peek(cfg, 45));
+c16 = dampCoef(t16, dampS, peek(cfg, 46));
+c17 = dampCoef(t17, dampS, peek(cfg, 47));
+c18 = dampCoef(t18, dampS, peek(cfg, 48));
+c19 = dampCoef(t19, dampS, peek(cfg, 49));
 
 d0 = lp(x0, c0);
 d1 = lp(x1, c1);

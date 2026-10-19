@@ -1,0 +1,448 @@
+// Better GrainSpec — Real-time Transient-Preserving Granular + Spectral Stretch & Comb Engine.
+// Buffers bound via loadbang message: `samp #0-gssample, slices #0-gsslices, state #0-gsstate`
+//   samp   (#0-gssample): 2-channel stereo audio buffer (up to 8s)
+//   slices (#0-gsslices): 512 floats = 128 slices * 4 [startFrame, endFrame, transientFrames, pitchHz]
+//   state  (#0-gsstate):  16 floats telemetry for v8ui visualization:
+//     0: normalized slice playhead (0..1)
+//     1: active slice index
+//     2..5: grain 0..3 normalized positions within slice (0..1)
+//     6..9: grain 0..3 envelope levels (0..1)
+//     10: output envelope (0..1)
+//     11: transient punch envelope (0..1)
+//     12: capture write head (0..1)
+//     13: voice active gate (0..1)
+//     14: current comb frequency Hz
+//     15: current playback pitch ratio
+//
+// GenExpr ordering rules:
+// 1. All functions must precede Buffer, Param, History, and Delay declarations.
+// 2. All Delay and History declarations must precede expression statements.
+// 3. Never use identifiers matching Euler's constant followed by digits.
+
+slew(target, coef) {
+	History s(0);
+	History init(0);
+	s = (init == 0) ? target : mix(target, s, coef);
+	init = 1;
+	return s;
+}
+
+lp1(x, coef) {
+	History s(0);
+	s = mix(x, s, coef);
+	return s;
+}
+
+hp1(x, coef) {
+	History s(0);
+	s = mix(x, s, coef);
+	return x - s;
+}
+
+follow(x) {
+	History s(0);
+	ax = abs(x);
+	s = mix(ax, s, (ax > s) ? 0.45 : 0.992);
+	return s;
+}
+
+noiseHash(seedVal) {
+	History st(0.173);
+	st = fract(sin(st * 127.1 + seedVal * 311.7 + 19.19) * 43758.5453);
+	return st * 2 - 1;
+}
+
+hannWin(ph) {
+	p = clip(ph, 0, 1);
+	return 0.5 - 0.5 * cos(p * 6.283185307179586);
+}
+
+// Resonant bandpass / formant filter for spectral stretch bank
+resonBand(x, freqHz, rPole) {
+	History y1(0);
+	History y2(0);
+	w = clip(freqHz, 35, samplerate * 0.42) * 6.283185307179586 / max(samplerate, 1);
+	r = clip(rPole, 0.5, 0.996);
+	b0 = (1 - r * r) * 0.5;
+	y = b0 * (x - y2) + 2 * r * cos(w) * y1 - (r * r) * y2;
+	y2 = y1;
+	y1 = clip(fixnan(y), -4, 4);
+	return y1;
+}
+
+// Per-loop feedback gain for pitch-matching comb filter.
+// combfbk 0 -> 0 recirculation; combfbk 1 -> ~6 seconds RT60, always < 1.
+combLoopGain(delaySamps, fbk01) {
+	k = clip(fbk01, 0, 1);
+	secs = max(delaySamps, 1) / max(samplerate, 1);
+	rt = max(k * 6.5, 0.015);
+	g = exp(-6.90775527898 * secs / rt);
+	quiet = (k < 0.001) ? 0 : g;
+	return clip(quiet, 0, 0.9985);
+}
+
+Buffer samp("gssample");
+Buffer slices("gsslices");
+Buffer state("gsstate");
+
+Param speed(0.25);
+Param grainsize(38);
+Param morph(0.35);
+Param trans(0.75);
+Param jitter(0.15);
+Param pitch(0);
+Param combmix(0.30);
+Param combfbk(0.55);
+Param crush(0);
+Param wet(1.0);
+Param slice(0);
+Param trigcount(0);
+Param keymode(0);
+Param midi_note(60);
+Param gate(1);
+Param rev(0);
+Param capture(0);
+
+History prevTrig(0);
+History prevCap(0);
+History ageSamps(99999999);
+History bodyPos(0);
+History capWrite(0);
+History gPh(0);
+History gJit0(0);
+History gJit1(0);
+History gJit2(0);
+History gJit3(0);
+History gBase0(0);
+History gBase1(0);
+History gBase2(0);
+History gBase3(0);
+History specPh0(0);
+History specPh1(0);
+History specBase0(0);
+History specBase1(0);
+History crushHoldL(0);
+History crushHoldR(0);
+History crushCnt(0);
+History tick(0);
+History activeVoice(0);
+History cOutL(0);
+History cOutR(0);
+
+Delay combDL(4096);
+Delay combDR(4096);
+
+sr = max(samplerate, 1);
+sampFrames = dim(samp);
+sliceTableFrames = dim(slices);
+
+// Smooth user controls
+speedS = slew(clip(speed, -2, 2), 0.998);
+grainMsS = slew(clip(grainsize, 4, 250), 0.998);
+morphS = slew(clip(morph, 0, 1), 0.998);
+transS = slew(clip(trans, 0, 1), 0.998);
+jitterS = slew(clip(jitter, 0, 1), 0.998);
+pitchSemiS = slew(clip(pitch, -24, 24), 0.998);
+combMixS = slew(clip(combmix, 0, 1), 0.998);
+combFbkS = slew(clip(combfbk, 0, 1), 0.998);
+crushS = slew(clip(crush, 0, 1), 0.998);
+wetS = slew(clip(wet, 0, 1), 0.998);
+
+// Live Audio Capture into Buffer samp when capture > 0.5
+capOn = (capture > 0.5) && (sampFrames > 64);
+if (capOn) {
+	if (prevCap <= 0.5) {
+		capWrite = 0;
+	}
+	poke(samp, in1, capWrite, 0, 0);
+	poke(samp, in2, capWrite, 1, 0);
+	capWrite = wrap(capWrite + 1, 0, max(sampFrames, 1));
+}
+prevCap = capture;
+
+// Read slice metadata from #0-gsslices
+sliceIdx = clip(floor(slice), 0, 127);
+baseIdx = sliceIdx * 4;
+hasSlices = (sliceTableFrames >= 4) && (sampFrames > 64);
+
+rawStart = hasSlices ? peek(slices, baseIdx + 0, 0) : 0;
+rawEnd = hasSlices ? peek(slices, baseIdx + 1, 0) : 0;
+rawTrans = hasSlices ? peek(slices, baseIdx + 2, 0) : 1024;
+rawHz = hasSlices ? peek(slices, baseIdx + 3, 0) : 110;
+
+sStart = clip(rawStart, 0, max(sampFrames - 2, 0));
+sEnd = clip(rawEnd, sStart + 1, max(sampFrames - 1, 1));
+sSpan = max(sEnd - sStart, 1);
+sliceValid = hasSlices && (rawEnd > rawStart);
+
+// Pitch & Comb Frequency resolution
+noteSemi = (keymode > 0.5) ? (midi_note - 60) : 0;
+totalSemi = pitchSemiS + noteSemi;
+pitchRatio = pow(2, totalSemi / 12);
+pitchRatio = clip(pitchRatio, 0.125, 8.0);
+baseSliceHz = clip(rawHz > 20 ? rawHz : 110, 35, 2000);
+targetCombHz = clip(baseSliceHz * pitchRatio, 32, 3800);
+
+// Trigger detection (fires whenever trigcount changes)
+isTrig = (trigcount != prevTrig) && (trigcount > 0);
+prevTrig = trigcount;
+
+if (isTrig && sliceValid) {
+	ageSamps = 0;
+	activeVoice = 1;
+	bodyPos = (rev > 0.5) ? max(sSpan - 1, 0) : 0;
+	gPh = 0;
+	gBase0 = bodyPos;
+	gBase1 = bodyPos;
+	gBase2 = bodyPos;
+	gBase3 = bodyPos;
+	gJit0 = 0;
+	gJit1 = 0;
+	gJit2 = 0;
+	gJit3 = 0;
+	specPh0 = 0;
+	specPh1 = 0.5;
+	specBase0 = bodyPos;
+	specBase1 = bodyPos;
+}
+
+// Transient preservation window length in frames (0..75 ms scaled by Trans dial)
+transMaxSamps = min(max(rawTrans, sr * 0.012), sSpan * 0.65);
+transLenSamps = clip(transMaxSamps * transS * 1.35, 0, sSpan * 0.8);
+xfadeSamps = max(sr * 0.005, 64);
+
+// Direct 1:1 unstretched transient reader (preserves full drum punch at slice start)
+transReadOffset = (rev > 0.5) ? max(sSpan - 1 - ageSamps, 0) : min(ageSamps, sSpan - 1);
+transFrame = clip(sStart + transReadOffset, sStart, sEnd);
+transL = sliceValid ? peek(samp, transFrame, 0, interp="linear") : 0;
+transR = sliceValid ? peek(samp, transFrame, 1, interp="linear") : transL;
+
+// Raised-cosine crossfade from transient (1.0) to stretched body (0.0)
+transEnv = (transLenSamps < 16) ? 0 : clip(1 - (ageSamps - transLenSamps) / xfadeSamps, 0, 1);
+transGain = sin(transEnv * 1.57079632679);
+bodyGain = cos(transEnv * 1.57079632679);
+
+// Advance master body playhead within the slice
+bodyRegionStart = min(transLenSamps * 0.5, max(sSpan - 32, 0));
+bodyRegionSpan = max(sSpan - bodyRegionStart, 1);
+dirSign = (rev > 0.5) ? -1 : 1;
+walkJit = noiseHash(ageSamps * 0.013) * jitterS * 1.75;
+stepRate = speedS * dirSign + walkJit;
+bodyPos = wrap(bodyPos + stepRate, 0, bodyRegionSpan);
+masterOffset = bodyRegionStart + bodyPos;
+
+// ============================================================================
+// 1. 4-Voice Overlapping Hann Granular Engine
+// ============================================================================
+grainSamps = max(grainMsS * sr / 1000, 64);
+grainFreq = 1 / grainSamps;
+oldPh = gPh;
+gPh = wrap(gPh + grainFreq, 0, 1);
+
+ph0 = gPh;
+ph1 = fract(gPh + 0.25);
+ph2 = fract(gPh + 0.50);
+ph3 = fract(gPh + 0.75);
+
+// Latch a fresh grain start position + random jitter when each grain wraps phase
+wrap0 = (ph0 < grainFreq * 1.5);
+wrap1 = (ph1 < grainFreq * 1.5);
+wrap2 = (ph2 < grainFreq * 1.5);
+wrap3 = (ph3 < grainFreq * 1.5);
+
+jitRange = jitterS * sSpan * 0.38;
+if (wrap0) {
+	gBase0 = masterOffset;
+	gJit0 = noiseHash(ageSamps + 1.1) * jitRange;
+}
+if (wrap1) {
+	gBase1 = masterOffset;
+	gJit1 = noiseHash(ageSamps + 2.3) * jitRange;
+}
+if (wrap2) {
+	gBase2 = masterOffset;
+	gJit2 = noiseHash(ageSamps + 3.7) * jitRange;
+}
+if (wrap3) {
+	gBase3 = masterOffset;
+	gJit3 = noiseHash(ageSamps + 5.1) * jitRange;
+}
+
+w0 = hannWin(ph0);
+w1 = hannWin(ph1);
+w2 = hannWin(ph2);
+w3 = hannWin(ph3);
+
+pos0 = sStart + wrap(gBase0 + gJit0 + ph0 * grainSamps * pitchRatio * dirSign, 0, sSpan);
+pos1 = sStart + wrap(gBase1 + gJit1 + ph1 * grainSamps * pitchRatio * dirSign, 0, sSpan);
+pos2 = sStart + wrap(gBase2 + gJit2 + ph2 * grainSamps * pitchRatio * dirSign, 0, sSpan);
+pos3 = sStart + wrap(gBase3 + gJit3 + ph3 * grainSamps * pitchRatio * dirSign, 0, sSpan);
+
+g0L = sliceValid ? peek(samp, pos0, 0, interp="linear") * w0 : 0;
+g0R = sliceValid ? peek(samp, pos0, 1, interp="linear") * w0 : 0;
+g1L = sliceValid ? peek(samp, pos1, 0, interp="linear") * w1 : 0;
+g1R = sliceValid ? peek(samp, pos1, 1, interp="linear") * w1 : 0;
+g2L = sliceValid ? peek(samp, pos2, 0, interp="linear") * w2 : 0;
+g2R = sliceValid ? peek(samp, pos2, 1, interp="linear") * w2 : 0;
+g3L = sliceValid ? peek(samp, pos3, 0, interp="linear") * w3 : 0;
+g3R = sliceValid ? peek(samp, pos3, 1, interp="linear") * w3 : 0;
+
+// Hann overlap-add of 4 streams at 0.25 spacing sums to constant amplitude 2.0 -> scale by 0.5
+granL = (g0L + g1L + g2L + g3L) * 0.55;
+granR = (g0R + g1R + g2R + g3R) * 0.55;
+
+// ============================================================================
+// 2. Spectral / Phase-Locked Monophonic-Harmonic Stretch Engine
+// ============================================================================
+// Locks window period to an integer multiple of the slice's fundamental wavelength
+// so adjacent windows stay phase-coherent ("Gantz Graf" metallic / robotic sustain),
+// then passes through a harmonic resonant filter bank tuned to 1x, 2x, 3x, 5x f0.
+fundPeriod = clip(sr / max(targetCombHz, 35), 12, 2048);
+cyclesInWin = max(round(grainSamps / fundPeriod), 2);
+specWinSamps = clip(cyclesInWin * fundPeriod, 64, 16384);
+specStep = 1 / specWinSamps;
+
+specPh0 = wrap(specPh0 + specStep, 0, 1);
+specPh1 = fract(specPh0 + 0.5);
+
+if (specPh0 < specStep * 1.5) {
+	// Quantize window anchor to integer multiples of fundamental period for phase coherence
+	qOff0 = round((masterOffset + noiseHash(ageSamps + 7.7) * jitRange * 0.25) / fundPeriod) * fundPeriod;
+	specBase0 = wrap(qOff0, 0, sSpan);
+}
+if (specPh1 < specStep * 1.5) {
+	qOff1 = round((masterOffset + noiseHash(ageSamps + 9.3) * jitRange * 0.25) / fundPeriod) * fundPeriod;
+	specBase1 = wrap(qOff1, 0, sSpan);
+}
+
+sw0 = hannWin(specPh0);
+sw1 = hannWin(specPh1);
+
+sPos0 = sStart + wrap(specBase0 + wrap(specPh0 * specWinSamps * pitchRatio * dirSign, 0, fundPeriod * 2), 0, sSpan);
+sPos1 = sStart + wrap(specBase1 + wrap(specPh1 * specWinSamps * pitchRatio * dirSign, 0, fundPeriod * 2), 0, sSpan);
+
+sp0L = sliceValid ? peek(samp, sPos0, 0, interp="linear") * sw0 : 0;
+sp0R = sliceValid ? peek(samp, sPos0, 1, interp="linear") * sw0 : 0;
+sp1L = sliceValid ? peek(samp, sPos1, 0, interp="linear") * sw1 : 0;
+sp1R = sliceValid ? peek(samp, sPos1, 1, interp="linear") * sw1 : 0;
+
+rawSpecL = sp0L + sp1L;
+rawSpecR = sp0R + sp1R;
+
+// Harmonic spectral bank (1x, 2x, 3x, 5x fundamental) + phase-locked core
+band1L = resonBand(rawSpecL, targetCombHz, 0.965);
+band2L = resonBand(rawSpecL, targetCombHz * 2, 0.96);
+band3L = resonBand(rawSpecL, targetCombHz * 3, 0.955);
+band5L = resonBand(rawSpecL, targetCombHz * 5, 0.95);
+
+band1R = resonBand(rawSpecR, targetCombHz, 0.965);
+band2R = resonBand(rawSpecR, targetCombHz * 2.01, 0.96);
+band3R = resonBand(rawSpecR, targetCombHz * 2.99, 0.955);
+band5R = resonBand(rawSpecR, targetCombHz * 5.02, 0.95);
+
+specL = tanh(rawSpecL * 0.55 + (band1L * 0.45 + band2L * 0.35 + band3L * 0.25 + band5L * 0.18) * 1.6);
+specR = tanh(rawSpecR * 0.55 + (band1R * 0.45 + band2R * 0.35 + band3R * 0.25 + band5R * 0.18) * 1.6);
+
+// Equal-power crossfade between Granular (morph=0) and Spectral (morph=1)
+mAng = morphS * 1.57079632679;
+granG = cos(mAng);
+specG = sin(mAng);
+stretchedL = granL * granG + specL * specG;
+stretchedR = granR * granG + specR * specG;
+
+// Combine preserved transient punch with stretched granular/spectral body
+// If speed == 1 and morph == 0 and jitter == 0, keep continuous body after transient
+voiceActive = sliceValid && (activeVoice > 0.5) && (gate > 0.01);
+voiceGain = voiceActive ? clip(gate, 0, 1.5) : 0;
+
+combinedL = (transL * transGain + stretchedL * bodyGain) * voiceGain;
+combinedR = (transR * transGain + stretchedR * bodyGain) * voiceGain;
+
+// ============================================================================
+// 3. Pitch-Matching Stereo Comb Filter
+// ============================================================================
+combDelaySamps = clip(sr / targetCombHz, 8, 4000);
+cGain = combLoopGain(combDelaySamps, combFbkS);
+dampCoef = 0.18;
+
+cTapL = combDL.read(combDelaySamps, interp="linear");
+cTapR = combDR.read(combDelaySamps * 1.003, interp="linear");
+
+cFiltL = lp1(cTapL, dampCoef);
+cFiltR = lp1(cTapR, dampCoef);
+
+cInL = tanh(combinedL + cFiltL * cGain);
+cInR = tanh(combinedR + cFiltR * cGain);
+combDL.write(cInL);
+combDR.write(cInR);
+
+cOutL = cInL;
+cOutR = cInR;
+
+postCombL = mix(combinedL, cOutL, combMixS);
+postCombR = mix(combinedR, cOutR, combMixS);
+
+// ============================================================================
+// 4. Hyperglitch Sample-Rate & Bit Crush Stage
+// ============================================================================
+crushStep = 1 + floor(pow(crushS, 1.8) * 42);
+crushCnt = crushCnt + 1;
+if (crushCnt >= crushStep) {
+	crushCnt = 0;
+	levels = max(8, pow(2, 12 - crushS * 8.5));
+	crushHoldL = (crushS > 0.01) ? (round(postCombL * levels) / levels) : postCombL;
+	crushHoldR = (crushS > 0.01) ? (round(postCombR * levels) / levels) : postCombR;
+}
+wetOutL = (crushS > 0.01) ? crushHoldL : postCombL;
+wetOutR = (crushS > 0.01) ? crushHoldR : postCombR;
+
+// Advance slice age counter
+if (voiceActive) {
+	ageSamps = min(ageSamps + 1, 99999999);
+	// When playing normal unstretched 1x with high speed and no sustain hold,
+	// keep looping within the slice while gate is held.
+}
+
+// ============================================================================
+// 5. Audio-Reactive Visual Telemetry (Buffer state / #0-gsstate)
+// ============================================================================
+envG0 = follow((g0L + g0R) * 0.5);
+envG1 = follow((g1L + g1R) * 0.5);
+envG2 = follow((g2L + g2R) * 0.5);
+envG3 = follow((g3L + g3R) * 0.5);
+envOut = follow(wetOutL * 0.5 + wetOutR * 0.5);
+envTr = follow(transL * transGain);
+
+normPlayhead = sliceValid ? clip(masterOffset / sSpan, 0, 1) : 0;
+normG0 = sliceValid ? clip((pos0 - sStart) / sSpan, 0, 1) : 0;
+normG1 = sliceValid ? clip((pos1 - sStart) / sSpan, 0, 1) : 0;
+normG2 = sliceValid ? clip((pos2 - sStart) / sSpan, 0, 1) : 0;
+normG3 = sliceValid ? clip((pos3 - sStart) / sSpan, 0, 1) : 0;
+normCap = (sampFrames > 0) ? (capWrite / sampFrames) : 0;
+
+tick = wrap(tick + 1, 0, 32);
+if (tick == 0) {
+	poke(state, normPlayhead, 0, 0);
+	poke(state, sliceIdx, 1, 0);
+	poke(state, normG0, 2, 0);
+	poke(state, normG1, 3, 0);
+	poke(state, normG2, 4, 0);
+	poke(state, normG3, 5, 0);
+	poke(state, envG0, 6, 0);
+	poke(state, envG1, 7, 0);
+	poke(state, envG2, 8, 0);
+	poke(state, envG3, 9, 0);
+	poke(state, envOut, 10, 0);
+	poke(state, envTr, 11, 0);
+	poke(state, normCap, 12, 0);
+	poke(state, voiceActive ? 1 : 0, 13, 0);
+	poke(state, targetCombHz, 14, 0);
+	poke(state, pitchRatio, 15, 0);
+}
+
+wAng = wetS * 1.57079632679;
+dryGain = cos(wAng);
+wetGain = sin(wAng);
+
+out1 = fixnan(clip(in1 * dryGain + wetOutL * wetGain, -1.5, 1.5));
+out2 = fixnan(clip(in2 * dryGain + wetOutR * wetGain, -1.5, 1.5));

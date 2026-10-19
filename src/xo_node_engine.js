@@ -554,12 +554,20 @@ function renderEditedAudioSamples(decoded, settings = {}) {
   const pitchSt = Number(settings.pitchSt) || 0;
   const decayMs = Math.max(20, Number(settings.decayMs) || 2500);
   const gainDb = Number(settings.gainDb) || 0;
+  const isReversed = !!(settings.reverse && Number(settings.reverse) !== 0);
 
   const speed = Math.pow(2.0, pitchSt / 12.0);
   const linGain = Math.pow(10.0, gainDb / 20.0);
   const sr = decoded.sampleRate || 44100;
-  const src = decoded.samples;
-  const srcLen = src.length;
+  const rawSrc = decoded.samples;
+  const srcLen = rawSrc.length;
+  let src = rawSrc;
+  if (isReversed) {
+    src = new Float32Array(srcLen);
+    for (let i = 0; i < srcLen; i++) {
+      src[i] = rawSrc[srcLen - 1 - i];
+    }
+  }
 
   const resampledFullFrames = Math.max(16, Math.floor(srcLen / speed));
   const maxDecayFrames = Math.max(16, Math.floor((decayMs / 1000.0) * sr));
@@ -630,11 +638,35 @@ function renderEditedSampleWav(rawFilePath, settings = {}, customOutDir = null) 
   const pTag = (Number(settings.pitchSt) || 0) >= 0 ? `+${Number(settings.pitchSt) || 0}` : `${Number(settings.pitchSt) || 0}`;
   const dTag = Math.round(Number(settings.decayMs) || 2500);
   const gTag = Math.round((Number(settings.gainDb) || 0) * 10) / 10;
-  const outName = `${base}_p${pTag}st_d${dTag}ms_g${gTag}dB.wav`;
+  const rTag = (settings.reverse && Number(settings.reverse) !== 0) ? "_rev" : "";
+  const outName = `${base}_p${pTag}st_d${dTag}ms_g${gTag}dB${rTag}.wav`;
   const outPath = path.join(outDir, outName);
 
   fs.writeFileSync(outPath, wavBuf);
   return outPath;
+}
+
+function renderReversedPreviewWav(rawFilePath) {
+  if (!rawFilePath || !fs.existsSync(rawFilePath)) return rawFilePath;
+  try {
+    const revDir = path.join(EXPORT_BASE_DIR, "PreviewRev");
+    fs.mkdirSync(revDir, { recursive: true });
+    const base = path.basename(rawFilePath, path.extname(rawFilePath)).replace(/[^a-zA-Z0-9_-]/g, "_");
+    const outPath = path.join(revDir, `${base}_rev_preview.wav`);
+    const rawBuf = fs.readFileSync(rawFilePath);
+    const decoded = parseAudioBuffer(rawBuf, rawBuf.length, 15.0);
+    if (!decoded) return rawFilePath;
+    const N = decoded.samples.length;
+    const revMono = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      revMono[i] = decoded.samples[N - 1 - i];
+    }
+    const wavBuf = encodeStereoWav16(revMono, decoded.sampleRate || 44100);
+    fs.writeFileSync(outPath, wavBuf);
+    return outPath;
+  } catch (_) {
+    return rawFilePath;
+  }
 }
 
 // ============================================================================
@@ -1348,10 +1380,17 @@ const engineState = {
   activeCategory: "ALL",
   maxLenMs: 5000, // >= 4990 or Infinity = Infinite (no max length cutoff)
   toneFilter: 0,
+  pitchFilter: 0,
+  tonalFilter: 0,
   searchQuery: "",
   pitchSt: 0,
   decayMs: 2500,
   gainDb: 0,
+  reverse: 0,
+  showSaved: 1,
+  showFilters: 1,
+  showPlayback: 1,
+  deviceWidth: 740,
   savedList: [],
   lastDragOut: null,
   statusText: "Initializing..."
@@ -1411,6 +1450,22 @@ function isSamplePassingFilters(s, st = engineState) {
   } else if (st.toneFilter > 0) {
     const minB = st.toneFilter * 0.85;
     if (centroidPct < minB) return false;
+  }
+  const pitchPct = Math.max(0.0, Math.min(100.0, (((s.pitchMidi !== undefined ? s.pitchMidi : 48) - 24.0) / 60.0) * 100.0));
+  if (st.pitchFilter < 0) {
+    const maxP = 100.0 + st.pitchFilter * 0.85;
+    if (pitchPct > maxP) return false;
+  } else if (st.pitchFilter > 0) {
+    const minP = st.pitchFilter * 0.85;
+    if (pitchPct < minP) return false;
+  }
+  const tonalPct = Math.max(0.0, Math.min(100.0, (1.0 - (s.flatness !== undefined ? s.flatness : 0.5)) * 100.0));
+  if (st.tonalFilter < 0) {
+    const maxT = 100.0 + st.tonalFilter * 0.85;
+    if (tonalPct > maxT) return false;
+  } else if (st.tonalFilter > 0) {
+    const minT = st.tonalFilter * 0.85;
+    if (tonalPct < minT) return false;
   }
   if (st.searchQuery && st.searchQuery.trim().length > 0) {
     const q = st.searchQuery.trim().toLowerCase();

@@ -1,0 +1,1020 @@
+// Degrade — Modular 5-Section Reorderable Digital & Codec Degradation Engine.
+//
+// Sections (dynamically ordered via `order_code` permutation of [0, 1, 2, 3, 4],
+// each wrapped in an `if ((stId == k) * (<stage>_on > 0.5))` zero-CPU bypass gate):
+//   0: BIT     — Bit reduction (1..16 bits), signal-following noise floor, integer wrap & TPDF dither
+//   1: SR      — Sample-rate decimation (S&H vs Filtered reconstruction) & chaotic clock jitter
+//   2: CODEC   — SpecOps MP3ify / MAIM style 16-Band Pitch-Tracked Sinusoidal MDCT Resynthesizer:
+//                zero-crossing instantaneous frequency tracking snapped to FFT bin multiples,
+//                lateral psychoacoustic spectral holes, smooth multi-frame birdie chirp envelopes,
+//                sfb21 HF cutoff, and true 32-ms lookahead spectral envelope pre-echo swell
+//   3: TELE    — Telephone companding (u-Law, A-Law, IMA ADPCM slope-overload, GSM 06.10 buzz)
+//   4: FFT     — Spectral frame glitch (Freeze/Hold, Bin Scramble, Spectral Comb, Phase Splat)
+//
+// Telemetry buffer (`buffer~ #0-degscope`, bound on loadbang via `scope #0-degscope`):
+//   0      : Input peak (0..1)
+//   1      : Wet output peak (0..1)
+//   2..6   : Per-stage activity meter for BIT, SR, CODEC, TELE, FFT (0 when disabled)
+//   7      : Rolling frame counter
+//   8..15  : 8-sample decimated wet waveform ring for real-time staircase/glitch trace
+//   16..27 : 12-band spectral energy / hole profile (0..1)
+//   28     : Effective bit depth (1..16)
+//   29     : Effective sample-rate ratio (0..1)
+//   30     : Active stage bitmask (0..31)
+//   31     : Current order_code echo
+//
+// GenExpr rules strictly enforced:
+//   - All helper functions appear BEFORE Buffer, Param, History, and Delay declarations.
+//   - No identifier is named e<digit> (Euler's constant lexer rule).
+//   - Delay lines use Delay.write / Delay.read methods.
+
+slew(target, coef) {
+	History s(0);
+	History init(0);
+	s = (init == 0) ? target : mix(target, s, coef);
+	init = 1;
+	return s;
+}
+
+quant_steps(x, steps) {
+	s = max(steps, 2.0);
+	half = s * 0.5;
+	return round(x * half) / half;
+}
+
+int_wrap(x, drive, wrapMix) {
+	d = x * max(drive, 1.0);
+	clipped = clip(d, -1.0, 1.0);
+	folded = wrap(d + 1.0, 0.0, 2.0) - 1.0;
+	w = clip(wrapMix, 0.0, 1.0);
+	return mix(clipped, folded, w);
+}
+
+ulaw_compand(x, qSteps) {
+	sgn = (x >= 0) ? 1.0 : -1.0;
+	ax = clip(abs(x), 0.0, 1.0);
+	mu = 255.0;
+	comp = sgn * (log(1.0 + mu * ax) / 5.54517744448);
+	qComp = quant_steps(comp, qSteps);
+	sgnQ = (qComp >= 0) ? 1.0 : -1.0;
+	expVal = sgnQ * ((pow(256.0, abs(qComp)) - 1.0) / mu);
+	return clip(expVal, -1.0, 1.0);
+}
+
+alaw_compand(x, qSteps) {
+	sgn = (x >= 0) ? 1.0 : -1.0;
+	ax = clip(abs(x), 0.0, 1.0);
+	aVal = 87.6;
+	lnA = 5.47278106592;
+	compLo = sgn * (aVal * ax) / lnA;
+	axScaled = max(aVal * ax, 0.0001);
+	compHi = sgn * (1.0 + log(axScaled)) / lnA;
+	comp = (ax < 0.01141552511) ? compLo : compHi;
+	qComp = quant_steps(comp, qSteps);
+	sgnQ = (qComp >= 0) ? 1.0 : -1.0;
+	aq = abs(qComp);
+	expLo = (aq * lnA) / aVal;
+	expHi = exp(aq * lnA - 1.0) / aVal;
+	expVal = sgnQ * ((aq < 0.18272246982) ? expLo : expHi);
+	return clip(expVal, -1.0, 1.0);
+}
+
+// SpecOps MP3ify + MAIM style psychoacoustic spectral hole, packet starvation & birdie gain computer.
+//   - 0..70% Damage: progressive psychoacoustic spectral holes, sfb21 HF rolloff & birdie warble.
+//   - 70..100% Damage: extreme buffer-underrun / packet-loss starvation where almost all spectral
+//     bands are zeroed into deep silence (`0.0`) except for rare, isolated sinusoidal birdie glitches!
+mp3ify_band_mask(bandEnv, nbrEnv, avgEnv, lossAmt, birdieAmt, randBip, bandIdxNorm) {
+	// 1. Low-bitrate MP3 sfb21 high-frequency rolloff
+	hfLimit = 1.15 - lossAmt * 0.78;
+	hfWidth = 0.14;
+	hfGate = clip((hfLimit - bandIdxNorm) / hfWidth, 0.0, 1.0);
+	hfPass = hfGate * hfGate * (3.0 - 2.0 * hfGate);
+
+	// 2. Psychoacoustic lateral + global simultaneous masking threshold
+	//    Above 65% Damage, `starveCurve` ramps up steeply so thresholds exceed normal signal levels
+	starveZone = clip((lossAmt - 0.62) / 0.38, 0.0, 1.0);
+	starveCurve = starveZone * starveZone * (3.0 - 2.0 * starveZone);
+
+	latMask = nbrEnv * (0.46 + lossAmt * 0.85 + starveCurve * 3.5);
+	globMask = avgEnv * (0.35 + lossAmt * 1.85 + starveCurve * 6.5);
+	maskHi = max(latMask, globMask);
+	thresh = max(maskHi, 0.0003);
+
+	// 3. Stochastic Packet-Drop & Isolated Birdie Glitch Survival
+	//    As lossAmt -> 1.0, `surviveProb` drops to ~5% so almost every band is gated to 0.0,
+	//    and only rare random birdie spikes (`abs(randBip) > dropCeil`) poke through the silence!
+	dropCeil = clip(lossAmt * lossAmt * 0.94, 0.0, 0.94);
+	packetAlive = clip((abs(randBip) - dropCeil) / max(1.0 - dropCeil, 0.04), 0.0, 1.0);
+	packetMask = packetAlive * packetAlive * (3.0 - 2.0 * packetAlive);
+
+	// Occasional random glitch burst allows an isolated partial to pierce through high thresholds
+	glitchBurst = (randBip > (0.91 - birdieAmt * 0.14)) ? (1.8 + starveCurve * 5.5) : 1.0;
+	birdMod = (1.0 + randBip * birdieAmt * 0.75) * glitchBurst;
+	posMod = max(birdMod, 0.05);
+	effEnv = bandEnv * posMod;
+
+	// Cubic soft-knee spectral hole gate (drops masked bands to 0.0 with zero click)
+	threshLo = thresh * 0.82;
+	threshHi = max(thresh * 1.18, threshLo + 0.00005);
+	holeT = clip((effEnv - threshLo) / (threshHi - threshLo), 0.0, 1.0);
+	holeCurve = holeT * holeT * (3.0 - 2.0 * holeT);
+
+	// 4. MAIM / MP3 x^(3/4) non-linear scale-factor quantization on surviving bands
+	denomAvg = max(avgEnv * 2.0, 0.001);
+	normMag = clip(effEnv / denomAvg, 0.0, 1.8);
+	qSteps = max(1.5, 14.0 - lossAmt * 12.2);
+	safeNorm = max(normMag, 0.0001);
+	pow34 = pow(safeNorm, 0.75);
+	qInt = floor(pow34 * qSteps + 0.5);
+	qRatio = max(qInt / qSteps, 0.0);
+	qMag = pow(qRatio, 1.3333333);
+	qScale = qMag / max(normMag, 0.08);
+	quantFactor = mix(1.0, clip(qScale, 0.0, 1.6), lossAmt * 0.75);
+
+	// Combine spectral hole gate with stochastic packet-starvation mask
+	starveBlend = clip((lossAmt - 0.45) / 0.55, 0.0, 1.0);
+	finalHole = holeCurve * mix(1.0, packetMask, starveBlend);
+
+	// Keep mid- frequencies alive during extreme 100% glitch bursts even if sfb21 is low
+	effHf = mix(hfPass, 1.0, starveCurve * packetMask * 0.85);
+	outG = finalHole * quantFactor * effHf;
+	return clip(outG, 0.0, 2.2);
+}
+
+// Quantizes a tracked band frequency `estHz` toward discrete FFT bin multiples (`binStepHz`)
+// with optional Birdie bin-hopping (`birdHopHz`) so resynthesized partials warble like real FFT bins.
+snap_fft_bin_hz(estHz, centerHz, binStepHz, snapAmt, birdHopHz) {
+	clampedHz = clip(estHz, centerHz * 0.72, centerHz * 1.38);
+	shiftedHz = clampedHz + birdHopHz;
+	safeStep = max(binStepHz, 10.0);
+	qBinHz = round(shiftedHz / safeStep) * safeStep;
+	safeQHz = clip(qBinHz, centerHz * 0.65, centerHz * 1.48);
+	sAmt = clip(snapAmt, 0.0, 1.0);
+	return mix(clampedHz, safeQHz, sAmt);
+}
+
+hann_win(ph) {
+	p = clip(ph, 0.0, 1.0);
+	return 0.5 - 0.5 * cos(p * 6.28318530718);
+}
+
+Buffer scope("degscope");
+
+// Global & Order parameters
+Param order_code(1234);
+Param wet(1.0);
+Param out_gain(0.0);
+
+// Stage 0: BIT (Bit Reduction, Integer Wrap & Dither)
+Param bit_on(1.0);
+Param bits(8.0);
+Param wrap_amt(0.25);
+Param dither(0.20);
+
+// Stage 1: SR (Sample-Rate Reduction & Clock Jitter)
+Param sr_on(1.0);
+Param srate(12000.0);
+Param jitter(0.15);
+Param sr_mode(0.0);
+
+// Stage 2: CODEC (Lossy MP3/AAC/Opus Spectral Holes, Pre-Echo & Birdies)
+Param codec_on(0.0);
+Param codec_loss(0.55);
+Param preecho(0.35);
+Param birdies(0.40);
+
+// Stage 3: TELE (Telecom Companding: u-Law, A-Law, ADPCM, GSM)
+Param tele_on(0.0);
+Param tele_mode(0.0);
+Param tele_line(0.60);
+
+// Stage 4: FFT (Spectral Frame Glitch: Freeze, Scramble, Comb, Splat)
+Param fft_on(0.0);
+Param fft_mode(0.0);
+Param fft_glitch(0.50);
+Param fft_frame(45.0);
+
+// PRNG & Order latch histories
+History prngState(0.318309886);
+History prevNoiseL(0);
+History prevNoiseR(0);
+History orderLatch(1234);
+
+// Stage 0 (BIT) state
+History bitEnvL(0);
+History bitEnvR(0);
+History bitActHold(0);
+
+// Stage 1 (SR) state
+History srPh(0);
+History srJitHold(0);
+History srHoldL(0);
+History srHoldR(0);
+History srPrevL(0);
+History srPrevR(0);
+History srFiltL(0);
+History srFiltR(0);
+History srActHold(0);
+
+// Stage 2 (CODEC) state — 12-band zero-crossing pitch-tracked sinusoidal MDCT resynthesizer
+History cBp0L(0);  History cLp0L(0);  History cBp0R(0);  History cLp0R(0);
+History cBp1L(0);  History cLp1L(0);  History cBp1R(0);  History cLp1R(0);
+History cBp2L(0);  History cLp2L(0);  History cBp2R(0);  History cLp2R(0);
+History cBp3L(0);  History cLp3L(0);  History cBp3R(0);  History cLp3R(0);
+History cBp4L(0);  History cLp4L(0);  History cBp4R(0);  History cLp4R(0);
+History cBp5L(0);  History cLp5L(0);  History cBp5R(0);  History cLp5R(0);
+History cBp6L(0);  History cLp6L(0);  History cBp6R(0);  History cLp6R(0);
+History cBp7L(0);  History cLp7L(0);  History cBp7R(0);  History cLp7R(0);
+History cBp8L(0);  History cLp8L(0);  History cBp8R(0);  History cLp8R(0);
+History cBp9L(0);  History cLp9L(0);  History cBp9R(0);  History cLp9R(0);
+History cBp10L(0); History cLp10L(0); History cBp10R(0); History cLp10R(0);
+History cBp11L(0); History cLp11L(0); History cBp11R(0); History cLp11R(0);
+
+// Zero-crossing period trackers per band (tracks actual input harmonics in real time!)
+History cSign0(1);  History cCnt0(0);  History cPer0(256);  History cHz0(172);
+History cSign1(1);  History cCnt1(0);  History cPer1(166);  History cHz1(265);
+History cSign2(1);  History cCnt2(0);  History cPer2(107);  History cHz2(410);
+History cSign3(1);  History cCnt3(0);  History cPer3(71);   History cHz3(620);
+History cSign4(1);  History cCnt4(0);  History cPer4(48);   History cHz4(910);
+History cSign5(1);  History cCnt5(0);  History cPer5(33);   History cHz5(1320);
+History cSign6(1);  History cCnt6(0);  History cPer6(23);   History cHz6(1900);
+History cSign7(1);  History cCnt7(0);  History cPer7(16);   History cHz7(2700);
+History cSign8(1);  History cCnt8(0);  History cPer8(11.6); History cHz8(3800);
+History cSign9(1);  History cCnt9(0);  History cPer9(8.3);  History cHz9(5300);
+History cSign10(1); History cCnt10(0); History cPer10(6.0); History cHz10(7300);
+History cSign11(1); History cCnt11(0); History cPer11(4.5); History cHz11(9800);
+
+// Per-band tracked envelopes, MDCT frame target masks, and smoothly slewed gains
+History cEnv0(0);  History cEnv1(0);  History cEnv2(0);  History cEnv3(0);
+History cEnv4(0);  History cEnv5(0);  History cEnv6(0);  History cEnv7(0);
+History cEnv8(0);  History cEnv9(0);  History cEnv10(0); History cEnv11(0);
+
+History cTgt0(1);  History cTgt1(1);  History cTgt2(1);  History cTgt3(1);
+History cTgt4(1);  History cTgt5(1);  History cTgt6(1);  History cTgt7(1);
+History cTgt8(1);  History cTgt9(1);  History cTgt10(1); History cTgt11(1);
+
+History cGain0(1);  History cGain1(1);  History cGain2(1);  History cGain3(1);
+History cGain4(1);  History cGain5(1);  History cGain6(1);  History cGain7(1);
+History cGain8(1);  History cGain9(1);  History cGain10(1); History cGain11(1);
+
+// 12 Phase-continuous sinusoidal resynthesis oscillators + smoothly slewed target frequencies
+History cOscPh0(0);  History cOscPh1(0);  History cOscPh2(0);  History cOscPh3(0);
+History cOscPh4(0);  History cOscPh5(0);  History cOscPh6(0);  History cOscPh7(0);
+History cOscPh8(0);  History cOscPh9(0);  History cOscPh10(0); History cOscPh11(0);
+
+History cBirdHop0(0);  History cBirdHop1(0);  History cBirdHop2(0);  History cBirdHop3(0);
+History cBirdHop4(0);  History cBirdHop5(0);  History cBirdHop6(0);  History cBirdHop7(0);
+History cBirdHop8(0);  History cBirdHop9(0);  History cBirdHop10(0); History cBirdHop11(0);
+
+History cFastEnv(0); History cSlowEnv(0); History cPreSwell(0);
+History cFramePh(0);
+History codMakeup(1.5);
+History codecActHold(0);
+
+// Stage 3 (TELE) state
+History tHpL(0); History tHpR(0);
+History tLpL(0); History tLpR(0);
+History tDecimPh(0);
+History tHoldL(0); History tHoldR(0);
+History tPredL(0); History tPredR(0);
+History tGsmPh(0);
+History tGsmGain(1.0);
+History tRes1L(0); History tRes2L(0);
+History tRes1R(0); History tRes2R(0);
+History teleActHold(0);
+
+// Stage 4 (FFT) state
+History fPh(0);
+History fScram0(0.25); History fScram1(0.5); History fScram2(0.75);
+History fLp1L(0); History fLp1R(0);
+History fLp2L(0); History fLp2R(0);
+History fLp3L(0); History fLp3R(0);
+History fEnv0(0); History fEnv1(0); History fEnv2(0); History fEnv3(0);
+History fAp1L(0); History fAp2L(0); History fAp3L(0); History fAp4L(0);
+History fAp1R(0); History fAp2R(0); History fAp3R(0); History fAp4R(0);
+History fftActHold(0);
+
+// Telemetry histories
+History tick(0);
+History waveIdx(0);
+History rollCounter(0);
+History peakInHold(0);
+History peakOutHold(0);
+
+// Delay lines for Stage 2 (Codec Lookahead Pre-Echo) and Stage 4 (FFT Spectral Frame Buffer)
+Delay codecDL(4096);
+Delay codecDR(4096);
+Delay fftDL(8192);
+Delay fftDR(8192);
+
+sr = max(samplerate, 1);
+
+// Fast PRNG (updates once per sample)
+prngState = fract(sin(prngState * 127.1 + 311.7) * 43758.5453123);
+noiseA = prngState * 2.0 - 1.0;
+prngState = fract(sin(prngState * 269.5 + 183.3) * 43758.5453123);
+noiseB = prngState * 2.0 - 1.0;
+
+// Smooth parameters via slew()
+wetSlew = slew(clip(wet, 0.0, 1.0), 0.998);
+outGainDbS = slew(clip(out_gain, -24.0, 12.0), 0.998);
+outGainSlew = pow(10.0, outGainDbS / 20.0);
+
+bitsVal = slew(clip(bits, 1.0, 16.0), 0.995);
+wrapVal = slew(clip(wrap_amt, 0.0, 1.0), 0.995);
+ditherVal = slew(clip(dither, 0.0, 1.0), 0.995);
+
+srateVal = slew(clip(srate, 100.0, 44100.0), 0.995);
+jitterVal = slew(clip(jitter, 0.0, 1.0), 0.995);
+srModeVal = slew(clip(sr_mode, 0.0, 1.0), 0.5);
+
+codecLossVal = slew(clip(codec_loss, 0.0, 1.0), 0.995);
+preechoVal = slew(clip(preecho, 0.0, 1.0), 0.995);
+birdiesVal = slew(clip(birdies, 0.0, 1.0), 0.995);
+
+teleModeVal = round(slew(clip(tele_mode, 0.0, 3.0), 0.2));
+teleLineVal = slew(clip(tele_line, 0.0, 1.0), 0.995);
+
+fftModeVal = round(slew(clip(fft_mode, 0.0, 3.0), 0.2));
+fftGlitchVal = slew(clip(fft_glitch, 0.0, 1.0), 0.995);
+fftFrameMs = slew(clip(fft_frame, 5.0, 150.0), 0.995);
+
+// Latch order_code through History orderLatch so decoding runs inside sample loop
+orderLatch = round(order_code);
+rawCode = max(orderLatch, 0);
+dig4 = floor(rawCode % 10);
+r3 = floor(rawCode / 10);
+dig3 = floor(r3 % 10);
+r2 = floor(r3 / 10);
+dig2 = floor(r2 % 10);
+r1 = floor(r2 / 10);
+dig1 = floor(r1 % 10);
+dig0 = floor(floor(r1 / 10) % 10);
+
+dSum = dig0 + dig1 + dig2 + dig3 + dig4;
+dProd = (dig0 + 1) * (dig1 + 1) * (dig2 + 1) * (dig3 + 1) * (dig4 + 1);
+isPerm = (dSum == 10) * (dProd == 120);
+ord0 = isPerm ? dig0 : 0;
+ord1 = isPerm ? dig1 : 1;
+ord2 = isPerm ? dig2 : 2;
+ord3 = isPerm ? dig3 : 3;
+ord4 = isPerm ? dig4 : 4;
+
+sigL = in1;
+sigR = in2;
+
+// Execute the 5 stages in dynamic user order; disabled stages are completely skipped (0 CPU branch)
+for (slot = 0; slot < 5; slot += 1) {
+	stId = (slot == 0) ? ord0 : ((slot == 1) ? ord1 : ((slot == 2) ? ord2 : ((slot == 3) ? ord3 : ord4)));
+
+	// ========================================================================
+	// STAGE 0: BIT REDUCTION, SIGNAL-FOLLOWING NOISE FLOOR, INTEGER WRAP & DITHER
+	// ========================================================================
+	if ((stId == 0) * (bit_on > 0.5)) {
+		inBitL = sigL;
+		inBitR = sigR;
+
+		axL = abs(inBitL);
+		axR = abs(inBitR);
+		cBitL = (axL > bitEnvL) ? 0.25 : 0.995;
+		cBitR = (axR > bitEnvR) ? 0.25 : 0.995;
+		bitEnvL = mix(axL, bitEnvL, cBitL);
+		bitEnvR = mix(axR, bitEnvR, cBitR);
+
+		drive = 1.0 + wrapVal * 3.5;
+		preL = int_wrap(inBitL, drive, wrapVal);
+		preR = int_wrap(inBitR, drive, wrapVal);
+
+		steps = pow(2.0, bitsVal);
+		safeSteps = max(steps, 2.0);
+		stepSize = 2.0 / safeSteps;
+		hpDithL = noiseA - prevNoiseL;
+		hpDithR = noiseB - prevNoiseR;
+		prevNoiseL = noiseA;
+		prevNoiseR = noiseB;
+
+		sigGritScale = (16.0 - bitsVal) * 0.0075;
+		dithStep = max(stepSize * 0.85, 0.018);
+		dithAmp = ditherVal * dithStep;
+		noisyL = preL + noiseA * bitEnvL * sigGritScale + hpDithL * dithAmp;
+		noisyR = preR + noiseB * bitEnvR * sigGritScale + hpDithR * dithAmp;
+
+		qBitL = quant_steps(noisyL, steps);
+		qBitR = quant_steps(noisyR, steps);
+		sigL = clip(qBitL, -1.0, 1.0);
+		sigR = clip(qBitR, -1.0, 1.0);
+		diffBitL = abs(sigL - inBitL);
+		diffBitR = abs(sigR - inBitR);
+		diffBit = max(diffBitL, diffBitR) + 0.12;
+		bitActHold = max(bitActHold, diffBit);
+	}
+
+	// ========================================================================
+	// STAGE 1: SAMPLE-RATE REDUCTION (S&H vs FILTERED) & CLOCK JITTER
+	// ========================================================================
+	if ((stId == 1) * (sr_on > 0.5)) {
+		inSrL = sigL;
+		inSrR = sigR;
+
+		baseInc = clip(srateVal / sr, 100.0 / sr, 1.0);
+		jitFactor = pow(2.0, srJitHold * jitterVal * 0.85);
+		effInc = clip(baseInc * jitFactor, 0.0005, 1.0);
+		srPh = srPh + effInc;
+
+		if (srPh >= 1.0) {
+			srPh = fract(srPh);
+			srPrevL = srHoldL;
+			srPrevR = srHoldR;
+			srHoldL = inSrL;
+			srHoldR = inSrR;
+			srJitHold = noiseA;
+		}
+
+		interpL = mix(srPrevL, srHoldL, srPh);
+		interpR = mix(srPrevR, srHoldR, srPh);
+		cutHz = min(srateVal * 0.45, sr * 0.45);
+		lpCoef = exp(-6.28318530718 * cutHz / sr);
+		srFiltL = mix(interpL, srFiltL, lpCoef);
+		srFiltR = mix(interpR, srFiltR, lpCoef);
+
+		sigL = (srModeVal < 0.5) ? srHoldL : srFiltL;
+		sigR = (srModeVal < 0.5) ? srHoldR : srFiltR;
+		diffSrL = abs(sigL - inSrL);
+		diffSrR = abs(sigR - inSrR);
+		diffSr = max(diffSrL, diffSrR) + 0.12;
+		srActHold = max(srActHold, diffSr);
+	}
+
+	// ========================================================================
+	// STAGE 2: SPECOPS MP3IFY / MAIM STYLE PITCH-TRACKED SINUSOIDAL RESYNTHESIZER
+	//   1. True Lookahead Pre-Echo: Delays main body by up to 32 ms (`codecDL`),
+	//      while undelayed transients immediately excite the 12 spectral band
+	//      envelopes 32 ms early so pure sinusoidal partials bloom BEFORE attacks!
+	//   2. 12-Band High-Q SVF + Zero-Crossing Instantaneous Frequency Estimators:
+	//      Tracks the exact pitches/harmonics present in the input audio and snaps
+	//      them to discrete FFT bin multiples (43.066 Hz steps) with Birdie warble.
+	//   3. Lateral Psychoacoustic Hole Masking + Automatic Sparse-Band Energy Makeup
+	//      + 100% Phase-Continuous Pure Sine Resynthesis (zero quantization crunch!).
+	// ========================================================================
+	if ((stId == 2) * (codec_on > 0.5)) {
+		inCodL = sigL;
+		inCodR = sigR;
+
+		codecDL.write(inCodL);
+		codecDR.write(inCodR);
+
+		// 1. True Lookahead Pre-Echo Envelope Swell (0..32 ms ahead of main delayed signal)
+		inCodAbsL = abs(inCodL);
+		inCodAbsR = abs(inCodR);
+		inPeak = max(inCodAbsL, inCodAbsR);
+		cFastCoef = (inPeak > cFastEnv) ? 0.04 : 0.97;
+		cFastEnv = mix(inPeak, cFastEnv, cFastCoef);
+		cSlowEnv = mix(inPeak, cSlowEnv, 0.996);
+		transBurst = clip((cFastEnv - cSlowEnv * 1.18) * 4.5, 0.0, 1.0);
+		cPreSwell = mix(transBurst, cPreSwell, (transBurst > cPreSwell) ? 0.08 : 0.994);
+
+		preDelaySamps = preechoVal * sr * 0.032;
+		delL = codecDL.read(preDelaySamps, interp="linear");
+		delR = codecDR.read(preDelaySamps, interp="linear");
+
+		// Blend undelayed transient into the analyzer input so spectral partials bloom early!
+		preExcite = preechoVal * (0.25 + 0.75 * cPreSwell);
+		anaL = mix(delL, inCodL, preExcite * 0.75);
+		anaR = mix(delR, inCodR, preExcite * 0.75);
+
+		// 2. 12-Band Overlapping SVF Analysis (Q ~ 5.5 so zero frequencies fall between bands)
+		svfDamp = 0.18;
+		inNormL = anaL * svfDamp;
+		inNormR = anaR * svfDamp;
+
+		// Band 0: 172 Hz
+		cf0 = 2.0 * sin(3.14159265359 * 172.0 / sr);
+		hp0L = inNormL - cLp0L - svfDamp * cBp0L; cBp0L = clip(cBp0L + cf0 * hp0L, -2.0, 2.0); cLp0L = clip(cLp0L + cf0 * cBp0L, -2.0, 2.0);
+		hp0R = inNormR - cLp0R - svfDamp * cBp0R; cBp0R = clip(cBp0R + cf0 * hp0R, -2.0, 2.0); cLp0R = clip(cLp0R + cf0 * cBp0R, -2.0, 2.0);
+
+		// Band 1: 265 Hz
+		cf1 = 2.0 * sin(3.14159265359 * 265.0 / sr);
+		hp1L = inNormL - cLp1L - svfDamp * cBp1L; cBp1L = clip(cBp1L + cf1 * hp1L, -2.0, 2.0); cLp1L = clip(cLp1L + cf1 * cBp1L, -2.0, 2.0);
+		hp1R = inNormR - cLp1R - svfDamp * cBp1R; cBp1R = clip(cBp1R + cf1 * hp1R, -2.0, 2.0); cLp1R = clip(cLp1R + cf1 * cBp1R, -2.0, 2.0);
+
+		// Band 2: 410 Hz
+		cf2 = 2.0 * sin(3.14159265359 * 410.0 / sr);
+		hp2L = inNormL - cLp2L - svfDamp * cBp2L; cBp2L = clip(cBp2L + cf2 * hp2L, -2.0, 2.0); cLp2L = clip(cLp2L + cf2 * cBp2L, -2.0, 2.0);
+		hp2R = inNormR - cLp2R - svfDamp * cBp2R; cBp2R = clip(cBp2R + cf2 * hp2R, -2.0, 2.0); cLp2R = clip(cLp2R + cf2 * cBp2R, -2.0, 2.0);
+
+		// Band 3: 620 Hz
+		cf3 = 2.0 * sin(3.14159265359 * 620.0 / sr);
+		hp3L = inNormL - cLp3L - svfDamp * cBp3L; cBp3L = clip(cBp3L + cf3 * hp3L, -2.0, 2.0); cLp3L = clip(cLp3L + cf3 * cBp3L, -2.0, 2.0);
+		hp3R = inNormR - cLp3R - svfDamp * cBp3R; cBp3R = clip(cBp3R + cf3 * hp3R, -2.0, 2.0); cLp3R = clip(cLp3R + cf3 * cBp3R, -2.0, 2.0);
+
+		// Band 4: 910 Hz
+		cf4 = 2.0 * sin(3.14159265359 * 910.0 / sr);
+		hp4L = inNormL - cLp4L - svfDamp * cBp4L; cBp4L = clip(cBp4L + cf4 * hp4L, -2.0, 2.0); cLp4L = clip(cLp4L + cf4 * cBp4L, -2.0, 2.0);
+		hp4R = inNormR - cLp4R - svfDamp * cBp4R; cBp4R = clip(cBp4R + cf4 * hp4R, -2.0, 2.0); cLp4R = clip(cLp4R + cf4 * cBp4R, -2.0, 2.0);
+
+		// Band 5: 1320 Hz
+		cf5 = 2.0 * sin(3.14159265359 * 1320.0 / sr);
+		hp5L = inNormL - cLp5L - svfDamp * cBp5L; cBp5L = clip(cBp5L + cf5 * hp5L, -2.0, 2.0); cLp5L = clip(cLp5L + cf5 * cBp5L, -2.0, 2.0);
+		hp5R = inNormR - cLp5R - svfDamp * cBp5R; cBp5R = clip(cBp5R + cf5 * hp5R, -2.0, 2.0); cLp5R = clip(cLp5R + cf5 * cBp5R, -2.0, 2.0);
+
+		// Band 6: 1900 Hz
+		cf6 = 2.0 * sin(3.14159265359 * 1900.0 / sr);
+		hp6L = inNormL - cLp6L - svfDamp * cBp6L; cBp6L = clip(cBp6L + cf6 * hp6L, -2.0, 2.0); cLp6L = clip(cLp6L + cf6 * cBp6L, -2.0, 2.0);
+		hp6R = inNormR - cLp6R - svfDamp * cBp6R; cBp6R = clip(cBp6R + cf6 * hp6R, -2.0, 2.0); cLp6R = clip(cLp6R + cf6 * cBp6R, -2.0, 2.0);
+
+		// Band 7: 2700 Hz
+		cf7 = 2.0 * sin(3.14159265359 * 2700.0 / sr);
+		hp7L = inNormL - cLp7L - svfDamp * cBp7L; cBp7L = clip(cBp7L + cf7 * hp7L, -2.0, 2.0); cLp7L = clip(cLp7L + cf7 * cBp7L, -2.0, 2.0);
+		hp7R = inNormR - cLp7R - svfDamp * cBp7R; cBp7R = clip(cBp7R + cf7 * hp7R, -2.0, 2.0); cLp7R = clip(cLp7R + cf7 * cBp7R, -2.0, 2.0);
+
+		// Band 8: 3800 Hz
+		cf8 = 2.0 * sin(3.14159265359 * 3800.0 / sr);
+		hp8L = inNormL - cLp8L - svfDamp * cBp8L; cBp8L = clip(cBp8L + cf8 * hp8L, -2.0, 2.0); cLp8L = clip(cLp8L + cf8 * cBp8L, -2.0, 2.0);
+		hp8R = inNormR - cLp8R - svfDamp * cBp8R; cBp8R = clip(cBp8R + cf8 * hp8R, -2.0, 2.0); cLp8R = clip(cLp8R + cf8 * cBp8R, -2.0, 2.0);
+
+		// Band 9: 5300 Hz
+		cf9 = 2.0 * sin(3.14159265359 * 5300.0 / sr);
+		hp9L = inNormL - cLp9L - svfDamp * cBp9L; cBp9L = clip(cBp9L + cf9 * hp9L, -2.0, 2.0); cLp9L = clip(cLp9L + cf9 * cBp9L, -2.0, 2.0);
+		hp9R = inNormR - cLp9R - svfDamp * cBp9R; cBp9R = clip(cBp9R + cf9 * hp9R, -2.0, 2.0); cLp9R = clip(cLp9R + cf9 * cBp9R, -2.0, 2.0);
+
+		// Band 10: 7300 Hz
+		hz10 = min(7300.0, sr * 0.42);
+		cf10 = 2.0 * sin(3.14159265359 * hz10 / sr);
+		hp10L = inNormL - cLp10L - svfDamp * cBp10L; cBp10L = clip(cBp10L + cf10 * hp10L, -2.0, 2.0); cLp10L = clip(cLp10L + cf10 * cBp10L, -2.0, 2.0);
+		hp10R = inNormR - cLp10R - svfDamp * cBp10R; cBp10R = clip(cBp10R + cf10 * hp10R, -2.0, 2.0); cLp10R = clip(cLp10R + cf10 * cBp10R, -2.0, 2.0);
+
+		// Band 11: 9800 Hz
+		hz11 = min(9800.0, sr * 0.44);
+		cf11 = 2.0 * sin(3.14159265359 * hz11 / sr);
+		hp11L = inNormL - cLp11L - svfDamp * cBp11L; cBp11L = clip(cBp11L + cf11 * hp11L, -2.0, 2.0); cLp11L = clip(cLp11L + cf11 * cBp11L, -2.0, 2.0);
+		hp11R = inNormR - cLp11R - svfDamp * cBp11R; cBp11R = clip(cBp11R + cf11 * hp11R, -2.0, 2.0); cLp11R = clip(cLp11R + cf11 * cBp11R, -2.0, 2.0);
+
+		// 3. Zero-Crossing Instantaneous Pitch Tracker on each band (tracks input harmonics!)
+		cCnt0 = cCnt0 + 1; sg0 = (cBp0L >= 0) ? 1 : -1; cr0 = (sg0 > 0) * (cSign0 < 0); val0 = cr0 * (cCnt0 > 32) * (cCnt0 < 1200); cPer0 = val0 ? mix(cCnt0, cPer0, 0.70) : cPer0; cCnt0 = cr0 ? 0 : cCnt0; cSign0 = sg0;
+		cCnt1 = cCnt1 + 1; sg1 = (cBp1L >= 0) ? 1 : -1; cr1 = (sg1 > 0) * (cSign1 < 0); val1 = cr1 * (cCnt1 > 20) * (cCnt1 < 800);  cPer1 = val1 ? mix(cCnt1, cPer1, 0.70) : cPer1; cCnt1 = cr1 ? 0 : cCnt1; cSign1 = sg1;
+		cCnt2 = cCnt2 + 1; sg2 = (cBp2L >= 0) ? 1 : -1; cr2 = (sg2 > 0) * (cSign2 < 0); val2 = cr2 * (cCnt2 > 14) * (cCnt2 < 500);  cPer2 = val2 ? mix(cCnt2, cPer2, 0.70) : cPer2; cCnt2 = cr2 ? 0 : cCnt2; cSign2 = sg2;
+		cCnt3 = cCnt3 + 1; sg3 = (cBp3L >= 0) ? 1 : -1; cr3 = (sg3 > 0) * (cSign3 < 0); val3 = cr3 * (cCnt3 > 10) * (cCnt3 < 350);  cPer3 = val3 ? mix(cCnt3, cPer3, 0.70) : cPer3; cCnt3 = cr3 ? 0 : cCnt3; cSign3 = sg3;
+		cCnt4 = cCnt4 + 1; sg4 = (cBp4L >= 0) ? 1 : -1; cr4 = (sg4 > 0) * (cSign4 < 0); val4 = cr4 * (cCnt4 > 7)  * (cCnt4 < 240);  cPer4 = val4 ? mix(cCnt4, cPer4, 0.70) : cPer4; cCnt4 = cr4 ? 0 : cCnt4; cSign4 = sg4;
+		cCnt5 = cCnt5 + 1; sg5 = (cBp5L >= 0) ? 1 : -1; cr5 = (sg5 > 0) * (cSign5 < 0); val5 = cr5 * (cCnt5 > 5)  * (cCnt5 < 160);  cPer5 = val5 ? mix(cCnt5, cPer5, 0.70) : cPer5; cCnt5 = cr5 ? 0 : cCnt5; cSign5 = sg5;
+		cCnt6 = cCnt6 + 1; sg6 = (cBp6L >= 0) ? 1 : -1; cr6 = (sg6 > 0) * (cSign6 < 0); val6 = cr6 * (cCnt6 > 4)  * (cCnt6 < 110);  cPer6 = val6 ? mix(cCnt6, cPer6, 0.70) : cPer6; cCnt6 = cr6 ? 0 : cCnt6; cSign6 = sg6;
+		cCnt7 = cCnt7 + 1; sg7 = (cBp7L >= 0) ? 1 : -1; cr7 = (sg7 > 0) * (cSign7 < 0); val7 = cr7 * (cCnt7 > 3)  * (cCnt7 < 80);   cPer7 = val7 ? mix(cCnt7, cPer7, 0.70) : cPer7; cCnt7 = cr7 ? 0 : cCnt7; cSign7 = sg7;
+		cCnt8 = cCnt8 + 1; sg8 = (cBp8L >= 0) ? 1 : -1; cr8 = (sg8 > 0) * (cSign8 < 0); val8 = cr8 * (cCnt8 > 2)  * (cCnt8 < 55);   cPer8 = val8 ? mix(cCnt8, cPer8, 0.70) : cPer8; cCnt8 = cr8 ? 0 : cCnt8; cSign8 = sg8;
+		cCnt9 = cCnt9 + 1; sg9 = (cBp9L >= 0) ? 1 : -1; cr9 = (sg9 > 0) * (cSign9 < 0); val9 = cr9 * (cCnt9 > 2)  * (cCnt9 < 40);   cPer9 = val9 ? mix(cCnt9, cPer9, 0.70) : cPer9; cCnt9 = cr9 ? 0 : cCnt9; cSign9 = sg9;
+		cCnt10 = cCnt10 + 1; sg10 = (cBp10L >= 0) ? 1 : -1; cr10 = (sg10 > 0) * (cSign10 < 0); val10 = cr10 * (cCnt10 > 2) * (cCnt10 < 30); cPer10 = val10 ? mix(cCnt10, cPer10, 0.70) : cPer10; cCnt10 = cr10 ? 0 : cCnt10; cSign10 = sg10;
+		cCnt11 = cCnt11 + 1; sg11 = (cBp11L >= 0) ? 1 : -1; cr11 = (sg11 > 0) * (cSign11 < 0); val11 = cr11 * (cCnt11 > 2) * (cCnt11 < 22); cPer11 = val11 ? mix(cCnt11, cPer11, 0.70) : cPer11; cCnt11 = cr11 ? 0 : cCnt11; cSign11 = sg11;
+
+		// Track per-band envelopes (fast attack, liquid release)
+		pk0  = max(abs(cBp0L),  abs(cBp0R));  cEnv0  = mix(pk0,  cEnv0,  (pk0  > cEnv0)  ? 0.92 : 0.994);
+		pk1  = max(abs(cBp1L),  abs(cBp1R));  cEnv1  = mix(pk1,  cEnv1,  (pk1  > cEnv1)  ? 0.92 : 0.994);
+		pk2  = max(abs(cBp2L),  abs(cBp2R));  cEnv2  = mix(pk2,  cEnv2,  (pk2  > cEnv2)  ? 0.92 : 0.994);
+		pk3  = max(abs(cBp3L),  abs(cBp3R));  cEnv3  = mix(pk3,  cEnv3,  (pk3  > cEnv3)  ? 0.92 : 0.994);
+		pk4  = max(abs(cBp4L),  abs(cBp4R));  cEnv4  = mix(pk4,  cEnv4,  (pk4  > cEnv4)  ? 0.92 : 0.994);
+		pk5  = max(abs(cBp5L),  abs(cBp5R));  cEnv5  = mix(pk5,  cEnv5,  (pk5  > cEnv5)  ? 0.92 : 0.994);
+		pk6  = max(abs(cBp6L),  abs(cBp6R));  cEnv6  = mix(pk6,  cEnv6,  (pk6  > cEnv6)  ? 0.92 : 0.994);
+		pk7  = max(abs(cBp7L),  abs(cBp7R));  cEnv7  = mix(pk7,  cEnv7,  (pk7  > cEnv7)  ? 0.92 : 0.994);
+		pk8  = max(abs(cBp8L),  abs(cBp8R));  cEnv8  = mix(pk8,  cEnv8,  (pk8  > cEnv8)  ? 0.92 : 0.994);
+		pk9  = max(abs(cBp9L),  abs(cBp9R));  cEnv9  = mix(pk9,  cEnv9,  (pk9  > cEnv9)  ? 0.92 : 0.994);
+		pk10 = max(abs(cBp10L), abs(cBp10R)); cEnv10 = mix(pk10, cEnv10, (pk10 > cEnv10) ? 0.92 : 0.994);
+		pk11 = max(abs(cBp11L), abs(cBp11R)); cEnv11 = mix(pk11, cEnv11, (pk11 > cEnv11) ? 0.92 : 0.994);
+
+		cAvg = (cEnv0 + cEnv1 + cEnv2 + cEnv3 + cEnv4 + cEnv5 + cEnv6 + cEnv7 + cEnv8 + cEnv9 + cEnv10 + cEnv11) * 0.08333333;
+
+		// 4. MDCT Frame Hop (~14..28 Hz) updates lateral psychoacoustic hole masks & FFT bin hop offsets
+		frameRate = 14.0 + birdiesVal * 16.0;
+		cFramePh = cFramePh + frameRate / sr;
+		if (cFramePh >= 1.0) {
+			cFramePh = fract(cFramePh);
+			r0  = sin(rollCounter * 1.13 + noiseA * 2.1);
+			r1  = cos(rollCounter * 1.79 + noiseB * 2.3);
+			r2  = sin(rollCounter * 2.41 - noiseA * 1.9);
+			r3  = cos(rollCounter * 3.07 + (noiseA + noiseB) * 1.5);
+			r4  = sin(rollCounter * 3.73 - noiseB * 2.5);
+			r5  = cos(rollCounter * 4.39 + noiseA * 2.7);
+			r6  = sin(rollCounter * 5.03 + noiseB * 2.9);
+			r7  = cos(rollCounter * 5.89 - noiseA * 3.1);
+			r8  = sin(rollCounter * 6.41 + noiseA * 2.2);
+			r9  = cos(rollCounter * 7.13 - noiseB * 2.4);
+			r10 = sin(rollCounter * 7.87 + noiseB * 2.8);
+			r11 = cos(rollCounter * 8.53 - noiseA * 2.6);
+
+			nbr0  = cEnv1;
+			nbr1  = max(cEnv0, cEnv2);
+			nbr2  = max(cEnv1, cEnv3);
+			nbr3  = max(cEnv2, cEnv4);
+			nbr4  = max(cEnv3, cEnv5);
+			nbr5  = max(cEnv4, cEnv6);
+			nbr6  = max(cEnv5, cEnv7);
+			nbr7  = max(cEnv6, cEnv8);
+			nbr8  = max(cEnv7, cEnv9);
+			nbr9  = max(cEnv8, cEnv10);
+			nbr10 = max(cEnv9, cEnv11);
+			nbr11 = cEnv10;
+
+			cTgt0  = mp3ify_band_mask(cEnv0,  nbr0,  cAvg, codecLossVal, birdiesVal, r0,  0.00);
+			cTgt1  = mp3ify_band_mask(cEnv1,  nbr1,  cAvg, codecLossVal, birdiesVal, r1,  0.09);
+			cTgt2  = mp3ify_band_mask(cEnv2,  nbr2,  cAvg, codecLossVal, birdiesVal, r2,  0.18);
+			cTgt3  = mp3ify_band_mask(cEnv3,  nbr3,  cAvg, codecLossVal, birdiesVal, r3,  0.27);
+			cTgt4  = mp3ify_band_mask(cEnv4,  nbr4,  cAvg, codecLossVal, birdiesVal, r4,  0.36);
+			cTgt5  = mp3ify_band_mask(cEnv5,  nbr5,  cAvg, codecLossVal, birdiesVal, r5,  0.45);
+			cTgt6  = mp3ify_band_mask(cEnv6,  nbr6,  cAvg, codecLossVal, birdiesVal, r6,  0.54);
+			cTgt7  = mp3ify_band_mask(cEnv7,  nbr7,  cAvg, codecLossVal, birdiesVal, r7,  0.63);
+			cTgt8  = mp3ify_band_mask(cEnv8,  nbr8,  cAvg, codecLossVal, birdiesVal, r8,  0.72);
+			cTgt9  = mp3ify_band_mask(cEnv9,  nbr9,  cAvg, codecLossVal, birdiesVal, r9,  0.81);
+			cTgt10 = mp3ify_band_mask(cEnv10, nbr10, cAvg, codecLossVal, birdiesVal, r10, 0.90);
+			cTgt11 = mp3ify_band_mask(cEnv11, nbr11, cAvg, codecLossVal, birdiesVal, r11, 1.00);
+
+			// Birdie FFT bin-hop offsets (multiples of 43.066 Hz = 44100/1024 FFT bin spacing)
+			binStep = 43.0664;
+			hopScale = birdiesVal * 1.6 * binStep;
+			cBirdHop0  = round(r0  * hopScale / binStep) * binStep * 0.5;
+			cBirdHop1  = round(r1  * hopScale / binStep) * binStep * 0.5;
+			cBirdHop2  = round(r2  * hopScale / binStep) * binStep;
+			cBirdHop3  = round(r3  * hopScale / binStep) * binStep;
+			cBirdHop4  = round(r4  * hopScale / binStep) * binStep;
+			cBirdHop5  = round(r5  * hopScale / binStep) * binStep;
+			cBirdHop6  = round(r6  * hopScale / binStep) * binStep * 1.5;
+			cBirdHop7  = round(r7  * hopScale / binStep) * binStep * 1.5;
+			cBirdHop8  = round(r8  * hopScale / binStep) * binStep * 2.0;
+			cBirdHop9  = round(r9  * hopScale / binStep) * binStep * 2.0;
+			cBirdHop10 = round(r10 * hopScale / binStep) * binStep * 2.5;
+			cBirdHop11 = round(r11 * hopScale / binStep) * binStep * 2.5;
+		}
+
+		// Smoothly interpolate sub-band gains (~30 ms MDCT window slew -> liquid, zero zipper noise)
+		gSlew = 0.9982;
+		cGain0  = mix(cTgt0,  cGain0,  gSlew);
+		cGain1  = mix(cTgt1,  cGain1,  gSlew);
+		cGain2  = mix(cTgt2,  cGain2,  gSlew);
+		cGain3  = mix(cTgt3,  cGain3,  gSlew);
+		cGain4  = mix(cTgt4,  cGain4,  gSlew);
+		cGain5  = mix(cTgt5,  cGain5,  gSlew);
+		cGain6  = mix(cTgt6,  cGain6,  gSlew);
+		cGain7  = mix(cTgt7,  cGain7,  gSlew);
+		cGain8  = mix(cTgt8,  cGain8,  gSlew);
+		cGain9  = mix(cTgt9,  cGain9,  gSlew);
+		cGain10 = mix(cTgt10, cGain10, gSlew);
+		cGain11 = mix(cTgt11, cGain11, gSlew);
+
+		// Smoothly slew each band's FFT-bin-snapped instantaneous frequency (zero FM click!)
+		snapStrength = clip(codecLossVal * 0.75 + birdiesVal * 0.85, 0.0, 1.0);
+		p0  = max(cPer0,  32.0); tHz0  = snap_fft_bin_hz(sr / p0,  172.0,  21.533, snapStrength, cBirdHop0);
+		p1  = max(cPer1,  20.0); tHz1  = snap_fft_bin_hz(sr / p1,  265.0,  21.533, snapStrength, cBirdHop1);
+		p2  = max(cPer2,  14.0); tHz2  = snap_fft_bin_hz(sr / p2,  410.0,  43.066, snapStrength, cBirdHop2);
+		p3  = max(cPer3,  10.0); tHz3  = snap_fft_bin_hz(sr / p3,  620.0,  43.066, snapStrength, cBirdHop3);
+		p4  = max(cPer4,  7.0);  tHz4  = snap_fft_bin_hz(sr / p4,  910.0,  43.066, snapStrength, cBirdHop4);
+		p5  = max(cPer5,  5.0);  tHz5  = snap_fft_bin_hz(sr / p5,  1320.0, 43.066, snapStrength, cBirdHop5);
+		p6  = max(cPer6,  4.0);  tHz6  = snap_fft_bin_hz(sr / p6,  1900.0, 86.133, snapStrength, cBirdHop6);
+		p7  = max(cPer7,  3.0);  tHz7  = snap_fft_bin_hz(sr / p7,  2700.0, 86.133, snapStrength, cBirdHop7);
+		p8  = max(cPer8,  2.5);  tHz8  = snap_fft_bin_hz(sr / p8,  3800.0, 86.133, snapStrength, cBirdHop8);
+		p9  = max(cPer9,  2.2);  tHz9  = snap_fft_bin_hz(sr / p9,  5300.0, 86.133, snapStrength, cBirdHop9);
+		p10 = max(cPer10, 2.0);  tHz10 = snap_fft_bin_hz(sr / p10, 7300.0, 172.26, snapStrength, cBirdHop10);
+		p11 = max(cPer11, 2.0);  tHz11 = snap_fft_bin_hz(sr / p11, 9800.0, 172.26, snapStrength, cBirdHop11);
+
+		hzSlew = 0.996;
+		cHz0  = mix(tHz0,  cHz0,  hzSlew);
+		cHz1  = mix(tHz1,  cHz1,  hzSlew);
+		cHz2  = mix(tHz2,  cHz2,  hzSlew);
+		cHz3  = mix(tHz3,  cHz3,  hzSlew);
+		cHz4  = mix(tHz4,  cHz4,  hzSlew);
+		cHz5  = mix(tHz5,  cHz5,  hzSlew);
+		cHz6  = mix(tHz6,  cHz6,  hzSlew);
+		cHz7  = mix(tHz7,  cHz7,  hzSlew);
+		cHz8  = mix(tHz8,  cHz8,  hzSlew);
+		cHz9  = mix(tHz9,  cHz9,  hzSlew);
+		cHz10 = mix(tHz10, cHz10, hzSlew);
+		cHz11 = mix(tHz11, cHz11, hzSlew);
+
+		// 5. Advance the 12 Phase-Continuous Pure Sine Resynthesis Oscillators
+		cOscPh0  = fract(cOscPh0  + cHz0  / sr);
+		cOscPh1  = fract(cOscPh1  + cHz1  / sr);
+		cOscPh2  = fract(cOscPh2  + cHz2  / sr);
+		cOscPh3  = fract(cOscPh3  + cHz3  / sr);
+		cOscPh4  = fract(cOscPh4  + cHz4  / sr);
+		cOscPh5  = fract(cOscPh5  + cHz5  / sr);
+		cOscPh6  = fract(cOscPh6  + cHz6  / sr);
+		cOscPh7  = fract(cOscPh7  + cHz7  / sr);
+		cOscPh8  = fract(cOscPh8  + cHz8  / sr);
+		cOscPh9  = fract(cOscPh9  + cHz9  / sr);
+		cOscPh10 = fract(cOscPh10 + cHz10 / sr);
+		cOscPh11 = fract(cOscPh11 + cHz11 / sr);
+
+		// Pure sinusoidal partials (zero FM distortion, 100% glassy spectral resynthesis!)
+		s0  = sin(cOscPh0  * 6.28318530718) * cEnv0  * cGain0;
+		s1  = sin(cOscPh1  * 6.28318530718) * cEnv1  * cGain1;
+		s2  = sin(cOscPh2  * 6.28318530718) * cEnv2  * cGain2;
+		s3  = sin(cOscPh3  * 6.28318530718) * cEnv3  * cGain3;
+		s4  = sin(cOscPh4  * 6.28318530718) * cEnv4  * cGain4;
+		s5  = sin(cOscPh5  * 6.28318530718) * cEnv5  * cGain5;
+		s6  = sin(cOscPh6  * 6.28318530718) * cEnv6  * cGain6;
+		s7  = sin(cOscPh7  * 6.28318530718) * cEnv7  * cGain7;
+		s8  = sin(cOscPh8  * 6.28318530718) * cEnv8  * cGain8;
+		s9  = sin(cOscPh9  * 6.28318530718) * cEnv9  * cGain9;
+		s10 = sin(cOscPh10 * 6.28318530718) * cEnv10 * cGain10;
+		s11 = sin(cOscPh11 * 6.28318530718) * cEnv11 * cGain11;
+
+		evenSin = s0 + s2 + s4 + s6 + s8 + s10;
+		oddSin  = s1 + s3 + s5 + s7 + s9 + s11;
+
+		// Smooth automatic sparse-band energy makeup:
+		//   - Below 70% Damage: boosts surviving sparse partials to unity loudness (`cFastEnv`).
+		//   - Above 75%..100% Damage: rolls off makeup and gates whole frames so 100% Damage is
+		//     nearly silent except when an isolated sinusoidal birdie glitch pokes through!
+		outBandSum = cEnv0 * cGain0 + cEnv1 * cGain1 + cEnv2 * cGain2 + cEnv3 * cGain3
+		           + cEnv4 * cGain4 + cEnv5 * cGain5 + cEnv6 * cGain6 + cEnv7 * cGain7
+		           + cEnv8 * cGain8 + cEnv9 * cGain9 + cEnv10 * cGain10 + cEnv11 * cGain11;
+		safeOutBand = max(outBandSum, 0.002);
+		starveFade = 1.0 - clip((codecLossVal - 0.72) / 0.28, 0.0, 1.0) * 0.92;
+		maxMakeup = 1.0 + 8.5 * starveFade;
+		targetMakeup = clip((cFastEnv * 1.45 * starveFade) / safeOutBand, 0.15, maxMakeup);
+		codMakeup = mix(targetMakeup, codMakeup, 0.9985);
+
+		sineResL = (evenSin * 0.85 + oddSin * 0.45) * codMakeup * 1.35;
+		sineResR = (oddSin * 0.85 + evenSin * 0.45) * codMakeup * 1.35;
+
+		// Gated narrowband SVF sum (also scaled by codMakeup)
+		svfSumL = (cBp0L  * cGain0  + cBp1L  * cGain1  + cBp2L  * cGain2  + cBp3L  * cGain3
+		        +  cBp4L  * cGain4  + cBp5L  * cGain5  + cBp6L  * cGain6  + cBp7L  * cGain7
+		        +  cBp8L  * cGain8  + cBp9L  * cGain9  + cBp10L * cGain10 + cBp11L * cGain11) * codMakeup;
+		svfSumR = (cBp0R  * cGain0  + cBp1R  * cGain1  + cBp2R  * cGain2  + cBp3R  * cGain3
+		        +  cBp4R  * cGain4  + cBp5R  * cGain5  + cBp6R  * cGain6  + cBp7R  * cGain7
+		        +  cBp8R  * cGain8  + cBp9R  * cGain9  + cBp10R * cGain10 + cBp11R * cGain11) * codMakeup;
+
+		// Blend from narrowband gated SVF bank into 100% pure pitch-tracked sinusoidal resynthesis
+		resynthBlend = clip(0.45 + codecLossVal * 0.45 + birdiesVal * 0.55, 0.0, 1.0);
+		codecWetL = mix(svfSumL, sineResL, resynthBlend);
+		codecWetR = mix(svfSumR, sineResR, resynthBlend);
+
+		// Pure linear crossfade (zero tanh distortion!)
+		activeAmt = clip(codecLossVal * 1.4 + birdiesVal * 0.85 + preechoVal * 0.7, 0.0, 1.0);
+		sigL = clip(mix(delL, codecWetL, activeAmt), -1.2, 1.2);
+		sigR = clip(mix(delR, codecWetR, activeAmt), -1.2, 1.2);
+
+		diffCodL = abs(sigL - inCodL);
+		diffCodR = abs(sigR - inCodR);
+		diffCod = max(diffCodL, diffCodR) + 0.12;
+		codecActHold = max(codecActHold, diffCod);
+	}
+
+	// ========================================================================
+	// STAGE 3: TELECOM COMPANDING (u-Law / A-Law / ADPCM / GSM)
+	// ========================================================================
+	if ((stId == 3) * (tele_on > 0.5)) {
+		inTelL = sigL;
+		inTelR = sigR;
+
+		hpFreq = 120.0 + teleLineVal * 260.0;
+		lpFreq = 7000.0 - teleLineVal * 4200.0;
+		cHp = exp(-6.28318530718 * hpFreq / sr);
+		cLp = exp(-6.28318530718 * lpFreq / sr);
+
+		tHpL = mix(inTelL, tHpL, cHp);
+		tHpR = mix(inTelR, tHpR, cHp);
+		hpOutL = inTelL - tHpL;
+		hpOutR = inTelR - tHpR;
+		tLpL = mix(hpOutL, tLpL, cLp);
+		tLpR = mix(hpOutR, tLpR, cLp);
+
+		voiceSr = 16000.0 - teleLineVal * 10000.0;
+		tDecimPh = tDecimPh + voiceSr / sr;
+		if (tDecimPh >= 1.0) {
+			tDecimPh = fract(tDecimPh);
+			tHoldL = tLpL;
+			tHoldR = tLpR;
+
+			maxSlew = max(0.025, 0.42 - teleLineVal * 0.37);
+			diffL = clip(tHoldL - tPredL, -maxSlew, maxSlew);
+			diffR = clip(tHoldR - tPredR, -maxSlew, maxSlew);
+			stepQ = max(maxSlew / 3.5, 0.002);
+			qDiffL = round(diffL / stepQ) * stepQ;
+			qDiffR = round(diffR / stepQ) * stepQ;
+			tPredL = clip(tPredL * 0.94 + qDiffL, -1.0, 1.0);
+			tPredR = clip(tPredR * 0.94 + qDiffR, -1.0, 1.0);
+		}
+		vL = mix(tLpL, tHoldL, 0.35 + teleLineVal * 0.65);
+		vR = mix(tLpR, tHoldR, 0.35 + teleLineVal * 0.65);
+
+		qStepsRaw = floor(64.0 - teleLineVal * 56.0 + 0.5);
+		qSteps = max(qStepsRaw, 4.0);
+		uL = ulaw_compand(vL, qSteps);
+		uR = ulaw_compand(vR, qSteps);
+		aL = alaw_compand(vL, qSteps);
+		aR = alaw_compand(vR, qSteps);
+		adpcmL = tPredL;
+		adpcmR = tPredR;
+
+		tGsmPh = tGsmPh + 50.0 / sr;
+		if (tGsmPh >= 1.0) {
+			tGsmPh = fract(tGsmPh);
+			dropThresh = teleLineVal * 0.38;
+			noiseAbs = abs(noiseA);
+			tGsmGain = (noiseAbs < dropThresh) ? 0.12 : (0.85 + 0.15 * noiseB);
+		}
+		wForm = 6.28318530718 * 1050.0 / sr;
+		rForm = 0.72 + teleLineVal * 0.20;
+		b0Form = (1.0 - rForm * rForm) * 0.5;
+		resL = b0Form * vL + 2.0 * rForm * cos(wForm) * tRes1L - (rForm * rForm) * tRes2L;
+		resR = b0Form * vR + 2.0 * rForm * cos(wForm) * tRes1R - (rForm * rForm) * tRes2R;
+		tRes2L = tRes1L;
+		tRes1L = clip(fixnan(resL), -2.0, 2.0);
+		tRes2R = tRes1R;
+		tRes1R = clip(fixnan(resR), -2.0, 2.0);
+
+		gsmGrid = max(3.0, 22.0 - teleLineVal * 18.0);
+		gsmRawL = mix(vL, tRes1L * 1.6, 0.55) * tGsmGain;
+		gsmRawR = mix(vR, tRes1R * 1.6, 0.55) * tGsmGain;
+		gsmL = quant_steps(tanh(gsmRawL * (1.5 + teleLineVal * 2.0)), gsmGrid);
+		gsmR = quant_steps(tanh(gsmRawR * (1.5 + teleLineVal * 2.0)), gsmGrid);
+
+		modeOutL = (teleModeVal == 0) ? uL : ((teleModeVal == 1) ? aL : ((teleModeVal == 2) ? adpcmL : gsmL));
+		modeOutR = (teleModeVal == 0) ? uR : ((teleModeVal == 1) ? aR : ((teleModeVal == 2) ? adpcmR : gsmR));
+
+		sigL = clip(modeOutL, -1.0, 1.0);
+		sigR = clip(modeOutR, -1.0, 1.0);
+		diffTelL = abs(sigL - inTelL);
+		diffTelR = abs(sigR - inTelR);
+		diffTel = max(diffTelL, diffTelR) + 0.12;
+		teleActHold = max(teleActHold, diffTel);
+	}
+
+	// ========================================================================
+	// STAGE 4: FFT SPECTRAL GLITCH (FREEZE, SCRAMBLE, COMB, PHASE SPLAT)
+	// ========================================================================
+	if ((stId == 4) * (fft_on > 0.5)) {
+		inFftL = sigL;
+		inFftR = sigR;
+
+		frameSamps = clip(fftFrameMs * sr / 1000.0, 128.0, 7500.0);
+		loopTapL = fftDL.read(frameSamps, interp="linear");
+		loopTapR = fftDR.read(frameSamps, interp="linear");
+		freezeLock = (fftModeVal == 0) * (fftGlitchVal > 0.45);
+		writeL = freezeLock ? loopTapL : inFftL;
+		writeR = freezeLock ? loopTapR : inFftR;
+		fftDL.write(writeL);
+		fftDR.write(writeR);
+
+		fPh = fPh + 1.0 / frameSamps;
+		if (fPh >= 1.0) {
+			fPh = fract(fPh);
+			fScram0 = abs(noiseA) * 0.85 + 0.1;
+			fScram1 = abs(noiseB) * 0.85 + 0.1;
+			fScram2 = fract(abs(noiseA + noiseB) * 1.37) * 0.85 + 0.1;
+		}
+		phA = fPh;
+		phB = fract(fPh + 0.5);
+		wA = hann_win(phA);
+		wB = hann_win(phB);
+
+		tapA = phA * frameSamps;
+		tapB = phB * frameSamps;
+		frzL = fftDL.read(tapA, interp="linear") * wA + fftDL.read(tapB, interp="linear") * wB;
+		frzR = fftDR.read(tapA, interp="linear") * wA + fftDR.read(tapB, interp="linear") * wB;
+
+		fk1 = exp(-6.28318530718 * 350.0 / sr);
+		fk2 = exp(-6.28318530718 * 1400.0 / sr);
+		fk3 = exp(-6.28318530718 * 4500.0 / sr);
+		fLp1L = mix(inFftL, fLp1L, fk1); fLp1R = mix(inFftR, fLp1R, fk1);
+		fLp2L = mix(inFftL, fLp2L, fk2); fLp2R = mix(inFftR, fLp2R, fk2);
+		fLp3L = mix(inFftL, fLp3L, fk3); fLp3R = mix(inFftR, fLp3R, fk3);
+
+		fb0L = fLp1L;            fb0R = fLp1R;
+		fb1L = fLp2L - fLp1L;    fb1R = fLp2R - fLp1R;
+		fb2L = fLp3L - fLp2L;    fb2R = fLp3R - fLp2R;
+		fb3L = inFftL - fLp3L;   fb3R = inFftR - fLp3R;
+
+		dScram0 = fScram0 * frameSamps;
+		dScram1 = fScram1 * frameSamps;
+		dScram2 = fScram2 * frameSamps;
+		ringCarrier = sin(fPh * 6.28318530718 * 7.0);
+		scrL = fftDL.read(dScram0, interp="linear") * 0.45 + (fb1L * ringCarrier + fb2L * (-ringCarrier)) * 0.85 + fftDL.read(dScram2, interp="linear") * 0.45;
+		scrR = fftDR.read(dScram1, interp="linear") * 0.45 + (fb1R * ringCarrier + fb2R * (-ringCarrier)) * 0.85 + fftDR.read(dScram0, interp="linear") * 0.45;
+
+		fEnv0 = mix(abs(fb0L), fEnv0, 0.985);
+		fEnv1 = mix(abs(fb1L), fEnv1, 0.985);
+		fEnv2 = mix(abs(fb2L), fEnv2, 0.985);
+		fEnv3 = mix(abs(fb3L), fEnv3, 0.985);
+		fMax01 = max(fEnv0, fEnv1);
+		fMax23 = max(fEnv2, fEnv3);
+		fMax = max(fMax01, fMax23);
+		w0 = (fEnv0 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
+		w1 = (fEnv1 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
+		w2 = (fEnv2 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
+		w3 = (fEnv3 >= fMax * 0.65) ? 1.45 : (1.0 - fftGlitchVal * 0.95);
+		combTap = clip(frameSamps * 0.25, 32.0, 2048.0);
+		combL = fb0L * w0 + fb1L * w1 + fb2L * w2 + fb3L * w3 + fftDL.read(combTap, interp="linear") * 0.55;
+		combR = fb0R * w0 + fb1R * w1 + fb2R * w2 + fb3R * w3 + fftDR.read(combTap, interp="linear") * 0.55;
+
+		apK = 0.65 - 0.55 * sin(fPh * 3.14159265359);
+		u1L = inFftL - apK * fAp1L; y1L = fAp1L + apK * u1L; fAp1L = clip(fixnan(u1L), -2.0, 2.0);
+		u2L = y1L    - apK * fAp2L; y2L = fAp2L + apK * u2L; fAp2L = clip(fixnan(u2L), -2.0, 2.0);
+		u3L = y2L    - apK * fAp3L; y3L = fAp3L + apK * u3L; fAp3L = clip(fixnan(u3L), -2.0, 2.0);
+		u4L = y3L    - apK * fAp4L; y4L = fAp4L + apK * u4L; fAp4L = clip(fixnan(u4L), -2.0, 2.0);
+
+		u1R = inFftR - apK * fAp1R; y1R = fAp1R + apK * u1R; fAp1R = clip(fixnan(u1R), -2.0, 2.0);
+		u2R = y1R    - apK * fAp2R; y2R = fAp2R + apK * u2R; fAp2R = clip(fixnan(u2R), -2.0, 2.0);
+		u3R = y2R    - apK * fAp3R; y3R = fAp3R + apK * u3R; fAp3R = clip(fixnan(u3R), -2.0, 2.0);
+		u4R = y3R    - apK * fAp4R; y4R = fAp4R + apK * u4R; fAp4R = clip(fixnan(u4R), -2.0, 2.0);
+
+		chirpTap = (1.0 - phA * phA) * frameSamps * 0.5;
+		splatL = y4L * 0.65 + fftDL.read(chirpTap, interp="linear") * 0.55;
+		splatR = y4R * 0.65 + fftDR.read(chirpTap, interp="linear") * 0.55;
+
+		fftWetL = (fftModeVal == 0) ? frzL : ((fftModeVal == 1) ? scrL : ((fftModeVal == 2) ? combL : splatL));
+		fftWetR = (fftModeVal == 0) ? frzR : ((fftModeVal == 1) ? scrR : ((fftModeVal == 2) ? combR : splatR));
+
+		mixFftL = mix(inFftL, fftWetL, fftGlitchVal);
+		mixFftR = mix(inFftR, fftWetR, fftGlitchVal);
+		sigL = clip(mixFftL, -1.0, 1.0);
+		sigR = clip(mixFftR, -1.0, 1.0);
+		diffFftL = abs(sigL - inFftL);
+		diffFftR = abs(sigR - inFftR);
+		diffFft = max(diffFftL, diffFftR) + 0.12;
+		fftActHold = max(fftActHold, diffFft);
+	}
+}
+
+// Equal-power Dry/Wet Mix & Output Trim
+wetAng = wetSlew * 1.57079632679;
+dryG = cos(wetAng);
+wetG = sin(wetAng);
+
+wetOutL = tanh(sigL * outGainSlew);
+wetOutR = tanh(sigR * outGainSlew);
+
+outL = in1 * dryG + wetOutL * wetG;
+outR = in2 * dryG + wetOutR * wetG;
+
+// Update `#0-degscope` telemetry buffer every 64 samples
+inAbs1 = abs(in1);
+inAbs2 = abs(in2);
+inAbs = max(inAbs1, inAbs2);
+outAbs1 = abs(outL);
+outAbs2 = abs(outR);
+outAbs = max(outAbs1, outAbs2);
+peakInHold = max(peakInHold, inAbs);
+peakOutHold = max(peakOutHold, outAbs);
+
+tick = wrap(tick + 1, 0, 64);
+if (tick == 0) {
+	rollCounter = wrap(rollCounter + 1, 0, 100000);
+	m0 = (bit_on > 0.5) ? 1 : 0;
+	m1 = (sr_on > 0.5) ? 2 : 0;
+	m2 = (codec_on > 0.5) ? 4 : 0;
+	m3 = (tele_on > 0.5) ? 8 : 0;
+	m4 = (fft_on > 0.5) ? 16 : 0;
+	actMask = m0 + m1 + m2 + m3 + m4;
+
+	pkInC = clip(peakInHold, 0.0, 1.5);
+	pkOutC = clip(peakOutHold, 0.0, 1.5);
+	actBitC = clip(bitActHold, 0.0, 1.0);
+	actSrC = clip(srActHold, 0.0, 1.0);
+	actCodC = clip(codecActHold, 0.0, 1.0);
+	actTelC = clip(teleActHold, 0.0, 1.0);
+	actFftC = clip(fftActHold, 0.0, 1.0);
+
+	poke(scope, pkInC, 0, 0);
+	poke(scope, pkOutC, 1, 0);
+	poke(scope, (bit_on > 0.5) ? actBitC : 0.0, 2, 0);
+	poke(scope, (sr_on > 0.5) ? actSrC : 0.0, 3, 0);
+	poke(scope, (codec_on > 0.5) ? actCodC : 0.0, 4, 0);
+	poke(scope, (tele_on > 0.5) ? actTelC : 0.0, 5, 0);
+	poke(scope, (fft_on > 0.5) ? actFftC : 0.0, 6, 0);
+	poke(scope, rollCounter, 7, 0);
+
+	waveIdx = wrap(waveIdx + 1, 0, 8);
+	waveSample = clip(0.5 * (outL + outR), -1.0, 1.0);
+	poke(scope, waveSample, 8 + waveIdx, 0);
+
+	baseSpec = clip(peakOutHold, 0.02, 1.0);
+	for (bIdx = 0; bIdx < 12; bIdx += 1) {
+		bandNorm = bIdx / 11.0;
+		cBandGain = (bIdx == 0) ? cGain0 : ((bIdx == 1) ? cGain1 : ((bIdx == 2) ? cGain2 : ((bIdx == 3) ? cGain3 : ((bIdx == 4) ? cGain4 : ((bIdx == 5) ? cGain5 : ((bIdx == 6) ? cGain6 : ((bIdx == 7) ? cGain7 : ((bIdx == 8) ? cGain8 : ((bIdx == 9) ? cGain9 : ((bIdx == 10) ? cGain10 : cGain11))))))))));
+		holeRaw = clip(cBandGain * 0.65, 0.0, 1.0);
+		holeAtten = (codec_on > 0.5) ? holeRaw : 1.0;
+		teleRaw = 1.0 - teleLineVal * 0.85;
+		isTeleEdge = (bIdx < 2) + (bIdx > 8);
+		teleCond = (tele_on > 0.5) * (isTeleEdge > 0);
+		teleAtten = teleCond ? teleRaw : 1.0;
+		srRaw = 0.35 + 0.55 * (1.0 - srModeVal);
+		srCond = (sr_on > 0.5) * (bandNorm > (srateVal / 22050.0));
+		srAlias = srCond ? srRaw : 1.0;
+		valB = clip(baseSpec * holeAtten * teleAtten * srAlias * (0.55 + 0.45 * abs(cos(bIdx * 0.9 + rollCounter * 0.15))), 0.0, 1.0);
+		poke(scope, valB, 16 + bIdx, 0);
+	}
+
+	srRatioC = clip(srateVal / sr, 0.0, 1.0);
+	poke(scope, bitsVal, 28, 0);
+	poke(scope, srRatioC, 29, 0);
+	poke(scope, actMask, 30, 0);
+	poke(scope, ord0 * 10000 + ord1 * 1000 + ord2 * 100 + ord3 * 10 + ord4, 31, 0);
+
+	peakInHold = 0;
+	peakOutHold = 0;
+	bitActHold = bitActHold * 0.5;
+	srActHold = srActHold * 0.5;
+	codecActHold = codecActHold * 0.5;
+	teleActHold = teleActHold * 0.5;
+	fftActHold = fftActHold * 0.5;
+}
+
+out1 = fixnan(outL);
+out2 = fixnan(outR);

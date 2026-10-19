@@ -15,6 +15,7 @@ Cases:
   comb     — impulse repeats near the delay period
   decay1   — full feedback rings, then falls, and never grows
   decay0   — zero feedback is gone well before the full-feedback tail
+  metal    — size 0 comb still has a bright repeating tone after a second
 """
 
 import json
@@ -272,7 +273,7 @@ def cases():
             "config": "room",
             "bind": True,
             "arm": 200,
-            "dur": 400,
+            "dur": 600,
             "params": params("size 0.55, damp 0.15, width 0.7, wet 1, fbk 0.72, xfeed 0.25"),
         },
         {
@@ -302,6 +303,15 @@ def cases():
             "dur": 800,
             "params": params("size 0.5, damp 0, width 0, wet 1, fbk 0"),
         },
+        {
+            "name": "metal",
+            "mode": "impulse",
+            "config": "comb",
+            "bind": True,
+            "arm": 200,
+            "dur": 1600,
+            "params": params("size 0, damp 0, width 0, wet 1, fbk 1"),
+        },
     )
 
 
@@ -317,8 +327,14 @@ def parse_result(text):
         if raw.startswith("sec "):
             meta["sec"] = [float(x) for x in raw[4:].split()] if raw.strip() != "sec" else []
             continue
-        key, val = raw.split(None, 1)
-        meta[key] = float(val)
+        parts = raw.split(None, 1)
+        if len(parts) != 2:
+            continue
+        key, val = parts
+        try:
+            meta[key] = float(val)
+        except ValueError:
+            continue
     meta["env"] = env
     return meta
 
@@ -507,6 +523,14 @@ def check(name, meta, errors):
             errors.append(f"{name}: burst did not reach the tank ({burst})")
         if late > 0.001:
             errors.append(f"{name}: zero feedback is still ringing ({late})")
+    elif name == "metal":
+        first = first_peak(env, 0, 40, 0.04)
+        late = env_max(env, 1000, 1400)
+        print(f"metal first {first} ms late {late:.4f}")
+        if first < 0:
+            errors.append(f"{name}: no comb impulse")
+        elif late < env[first] * 0.45:
+            errors.append(f"{name}: short comb died before 1 s ({late} vs {env[first]})")
 
 
 def main():

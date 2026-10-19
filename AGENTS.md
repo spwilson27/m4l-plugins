@@ -31,6 +31,12 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Reciprocator
      python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
+
+     # Better GrainSpec
+     python3 scripts/build_grainspec.py && node tests/test_grainspec.js && python3 scripts/render_preview.py "devices/Better GrainSpec.amxd"
+
+     # Percipitator
+     python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -56,7 +62,6 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      - Use `Delay d(size); d.write(x); y = d.read(samps, interp="linear");` instead of `delay()`.
      - Bind `Buffer varName("extName");` on `loadbang` using the **GenExpr variable name with no `set` prefix** (e.g., `scope #0-recipscope`).
    - **Real Max Audio Test Harness**: Every DSP device must have an automated Max audio test runner (`scripts/run_<device>_audio_tests.py`) that clears `~/Library/Application Support/Cycling '74/Max 9/Crash Recovery`, records into a 2-channel `buffer~ rec <durationMs> 2`, waits until the probe output file size stabilizes before reading, and verifies audio behavior and live UI telemetry buffer updates.
-
 
 ---
 
@@ -134,21 +139,26 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 
 ## 5. Architecture of `devices/Tiny Space.amxd`
 
-### Presentation Layout (`700 x 169` px)
-- **Left Panel (`x = 6..356`)**:
-  - Top bar (`y = 6..22`): Title (`Tiny Space`) and `Seed` (`live.numbox`, integer 0–9999).
-  - Visualization canvas (`obj-viz`, `v8ui`, `x = 10, y = 28, w = 344, h = 132`): 20 vibrating delay lines (left 10 cyan, right 10 amber). Amplitude follows each line's envelope. Inactive lines are dim stubs. Readout is the active line count.
-- **Right Panel (`x = 362..694`)**:
-  - 10 dials in a 5×2 grid (`Size`, `Damp`, `Width`, `Mix`, `Feedback` on top; `PreDly`, `Mod`, `XFeed`, `HP`, `LP` below), each `live.dial` 60×48.
+### Presentation Layouts (`292 x 169` px Framed, `300 x 169` px Pocket, `284 x 169` px Split)
+- **Proposal 1 — Undulae Tinyspace 1.1 Framed Layout (`292 x 169` px — `devices/Tiny Space.amxd` & `devices/Tiny Space Modules.amxd`)**:
+  - **Left Column (`x = 6..62`)**: `PreDly` numbox + `HP` & `LP` dials.
+  - **Center Column (`x = 66..226`)**: Top header (`tinyspace`, `Seed` 0–1000 numbox, and `Character` 8-model dropdown `live.menu`: `COMB`, `HYBRID`, `ROOM`, `PLATE`, `TANK`, `BOX`, `SPRING`, `BOUNCE`), center `152 x 74` `v8ui` overlaid L+R string screen (`obj-viz`), and bottom 3 dials (`Size`, `Fbk`, `XFeed`).
+  - **Right Column (`x = 230..286`)**: `Damp` & `Mod` numboxes + `Width` & `Mix` dials.
+- **Proposal 2 — Pocket Screen + 5 Hero Dials (`300 x 169` px — `devices/Tiny Space Compact.amxd`)**:
+  - **Left Panel (`x = 6..126`)**: Title, `Seed`, `112 x 74` `v8ui` screen, and bottom `PreDly` & `XFeed` numboxes.
+  - **Right Panel (`x = 130..294`)**: Top conditioning strip (`HP Cut`, `LP Cut`, `Mod` numboxes) + 5 Hero Dials (`Size`, `Fbk`, `Damp`, `Width`, `Mix`).
+- **Proposal 3 — Mini-Screen & 3×2 Dial Grid (`284 x 169` px — `devices/Tiny Space Split.amxd`)**:
+  - **Left Panel (`x = 6..118`)**: `104 x 66` `v8ui` mini screen + 2×2 conditioning matrix (`PreDly`, `Mod`, `HP Cut`, `LP Cut`).
+  - **Right Panel (`x = 122..278`)**: 3×2 dial grid (`Size`, `Fbk`, `Damp` on top; `XFeed`, `Width`, `Mix` below).
 
 ### Gen core (`gen.codebox~`, hidden)
 - `src/tinyspace_core.genexpr` — FDN: predelay → HP/LP → seeded allpasses → 20 delay lines (10 L / 10 R) with linear interpolation, per-line damping, soft clip, Householder-or-comb mix, crossfeed → width (M/S) → equal-power dry/wet.
 - Audio is `in1`/`in2`. Knobs are Gen `Param`s (`size`, `damp`, `width`, `wet`, `fbk`, `predly`, `modamt`, `xfeed`, `hp`, `lp`, `duck`), sent with `prepend`.
 - `Buffer cfg("tsconfig")` reads the 70-float seed config. `Buffer meters("tsmeters")` gets one envelope per line every 32 samples. Loadbang binds them with `cfg #0-tsconfig, meters #0-tsmeters` (the GenExpr variable, with no `set` prefix). An unbound buffer peeks as zeros, every delay line stays off, and Mix at 100% is silent.
-- Percent knobs are scaled by `/ 100.` before they hit gen. At full feedback each line is about 60 dB down after 40 seconds, so it is still audible past 10 seconds. The per-loop coefficient is higher on short lines so they ring for about the same time, and it stays under 1. Feedback at 0 writes no recirculation.
+- Percent knobs are scaled by `/ 100.` before they hit gen. At full feedback each line is about 60 dB down after 80 seconds. The per-loop coefficient is higher on short lines so a small Size rings about as long as a long one, and it stays under 1. Feedback at 0 writes no recirculation. Delay taps are whole samples, and Damp at 0 does not lowpass the loop, so short combs stay metallic. Damp darkens the bright partials over a time set by the knob.
 
 ### Seed → config
-- `src/tinyspace_config.js` (mulberry32) is prepended into the v8ui script and required by `tests/test_tinyspace.js`.
+- `src/tinyspace_config.js` (mulberry32, `Seed` 0–1000) is prepended into the v8ui script and required by `tests/test_tinyspace.js`. Lower seeds use fewer active delay lines (`4` at Seed `0`), scaling monotonically up to the `20`-line cap (`10 L + 10 R`) as Seed approaches `1000`.
 - The `Seed` numbox calls `set_seed`. The UI pokes `buffer~ #0-tsconfig`. User knobs are not rewritten.
 - A later seed change bangs a `line` that ramps Gen `duck` from 0 to 1 over 160 ms so the old tail does not thump.
 - The seed is a Live parameter, so sets and presets recall it without a separate blob.
@@ -207,3 +217,57 @@ Audio checks (real Max render): `python3 scripts/run_sand_audio_tests.py`
 python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && python3 scripts/render_preview.py "devices/Reciprocator.amxd"
 ```
 Audio checks (real Max render): `python3 scripts/run_reciprocator_audio_tests.py`
+
+---
+
+## 8. Architecture of `devices/Better GrainSpec.amxd`
+
+### Presentation Layout (`740 x 169` px — Max Instrument `iiii`)
+- **Left Panel (`x = 6..384`)**:
+  - Top bar (`y = 7..23`): Title (`Better GrainSpec`), `Load` (`live.text` -> `opendialog sound`), `Cap` (`live.text` toggle for live track audio capture), `Key Mode` (`128` / `Key` `live.tab` switching between 128-note slice mapping and chromatic playback), and `Sens` (`live.numbox` 0–100% onset sensitivity).
+  - Interactive Waveform, Slice Editor & Grain/Spectral Visualizer (`obj-ui`, `v8ui`, `x = 10, y = 28, w = 368, h = 132`):
+    - Pre-populates `buffer~ #0-gssample` with a synthesized 2-second breakbeat/glitch loop on startup so the instrument plays out of the box.
+    - Displays stereo waveform, detected slice boundaries, amber transient-preservation zone at the start of the active slice, real-time 4-voice grain cloud halos, and scanning slice playhead from `buffer~ #0-gsstate`.
+    - Supports click to select/audition slice, drag marker to adjust slice boundary, double-click to insert/delete slice markers, undo/redo history, and an 8-item geometric vector icon toolbar (`Undo`, `Redo`, `Re-Detect Onsets`, `Add Slice`, `Delete Slice`, `Random Slice`, `Reverse`, `Key Mode`).
+- **Right Panel (`x = 390..734`)**:
+  - 10 dials in a 5×2 grid (`Speed`, `Grain`, `Morph`, `Trans`, `Jitter` on top; `Pitch`, `CombMix`, `CombFbk`, `Crush`, `Mix` below), each `live.dial` 60×48.
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/grainspec_core.genexpr` — Direct 1:1 transient-preservation stage (`trans` 0–100% with raised-cosine crossfade into the stretched body) → 4-voice overlapping Hann granular stretcher (`morph = 0`) crossfaded with a phase-locked fundamental-quantized harmonic resonator stretcher (`morph = 1`) → pitch-matching stereo feedback comb filter (`combDL`/`combDR` tuned to each slice's autocorrelation-detected fundamental pitch or played MIDI note) → hyperglitch sample-rate/bit crush → equal-power output mix.
+- Loadbang binds the three instance-isolated buffers with `samp #0-gssample, slices #0-gsslices, state #0-gsstate`.
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_grainspec.py && node tests/test_grainspec.js && python3 scripts/render_preview.py "devices/Better GrainSpec.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_grainspec_audio_tests.py`
+
+---
+
+## 9. Architecture of `devices/Percipitator.amxd`
+
+### Presentation Layout (`380 x 169` px — Horizontal Value-Bar Stack)
+- **Left Panel (`x = 6..218`, `w = 212`)**:
+  - Top bar (`y = 7..22`): Title (`Percipitator`).
+  - Visualization Canvas (`obj-viz`, `v8ui`, `x = 10, y = 26, w = 204, h = 134`):
+    - **Full-Width Partials Viewer**: 16-band Spectral Precipitation Waterfall with peak-hold caps, falling droplets, an adjustable `G -42dB` Gate readout pill, and a vertically draggable `Gate` threshold line.
+    - **Top-Right Wave Pill**: Live single-cycle preview of the morphed/warped `Sine -> Triangle -> Saw -> Square` wave (drag vertically for `Wave`, horizontally for `Warp`).
+    - **Bottom Strip**: Interactive 12-Note Scale Quantizer & Sidechain MIDI keyboard (`C..B`).
+- **Right Panel (`x = 222..374`, `w = 152`) — Two Columns of Horizontal Value Bars**:
+  - **Column 1 (`PITCH / ENV`, `x = 226..298`)**: `Pitch` (`-24..+24 st`), `Shift` (`-2000..+2000 Hz`), `Strch` (`50..200%`), `Snap` (`0..100%`), `Blur` (`0..100%`), `Decay` (`1..1500 ms`), and `Atk` (`0.2..100 ms`).
+  - **Column 2 (`WAVE / TONE`, `x = 302..374`)**: `Wave` (`WT Pos` `0..100%`, default `0%` Sine), scrollable `Mode` (`Bend`, `Asym`, `Sync`, `Fold`), `Warp` (`0..100%`, default `50%`), scrollable `Sieve` (`All`, `Odd`, `Even`, `Sprs`, `Rise`), `Tilt` (`-100..+100%`), `Vol` (`Partials Vol` `-36..+18 dB`), and `Mix` (`0..100%`).
+- **Sidechain MIDI Input (`midiin` -> `midiparse` -> `prepend midi_in` -> `obj-viz`)**: Incoming MIDI note-on/note-off messages dynamically build a 12-bit pitch-class mask (`computeMidiChordState`) from held notes, latching the last played chord and highlighting held notes in emerald on the bottom 12-note strip.
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/percipitator_core.genexpr` — 16-band log-spaced Chamberlin SVF bandpass + zero-crossing pitch tracker + soft-knee precipitation gate (`gate`, `decay`, `attack`, `blur`, and `freeze` spectral hold) + Partial Sieve (`sieve`) + Spectral Tilt (`tilt`) → 12-note scale quantizer (`scalemask`, `snap`, `pitch`, `stretch`, `fshift` Hz offset) → 16 4-frame `Sine -> Triangle -> Saw -> Square` wavetable oscillators (`buffer~ #0-percipwt`, `8192` samples) with `Bend`, `Asym`, `Sync`, and `Fold` phase warp modifiers → resynthesized partials volume (`resynthgain`) & equal-power dry/wet mix.
+- Loadbang binds `wt #0-percipwt, scope #0-percipscope` and pokes the 4-frame `Sine -> Triangle -> Saw -> Square` wavetable into `buffer~ #0-percipwt`.
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_percipitator.py && node tests/test_percipitator.js && python3 scripts/render_preview.py "devices/Percipitator.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_percipitator_audio_tests.py`
+
+
+
+

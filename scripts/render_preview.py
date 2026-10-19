@@ -287,6 +287,28 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             cy = ry + rh * 0.5
             draw.line([(rx, cy), (rx + rw, cy)], fill=lc, width=max(1, int(1.5 * SCALE)))
 
+        elif mc == "live.menu":
+            bg = rgba_tuple(w.get("activebgcolor", [0.06, 0.075, 0.095, 1.0]))
+            bd = rgba_tuple(w.get("bordercolor", [0.22, 0.28, 0.36, 1.0]))
+            tc = rgba_tuple(w.get("textcolor", [0.95, 0.62, 0.22, 1.0]))
+            vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
+            enums = vof.get("parameter_enum", ["COMB", "HYBRID", "ROOM"])
+            init_idx = max(0, min(len(enums) - 1, int(round(vof.get("parameter_initial", [0])[0]))))
+            val_str = str(enums[init_idx])
+            draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
+            # Dropdown caret triangle on the right
+            cx = rx + rw - 6.5 * SCALE
+            cy = ry + rh * 0.52
+            draw.polygon([
+                (cx - 2.6 * SCALE, cy - 1.4 * SCALE),
+                (cx + 2.6 * SCALE, cy - 1.4 * SCALE),
+                (cx, cy + 2.0 * SCALE),
+            ], fill=tc)
+            fnt = get_font(8.5 * SCALE, bold=True)
+            bbox = draw.textbbox((0, 0), val_str, font=fnt)
+            tw = bbox[2] - bbox[0]
+            draw.text((rx + (rw - 10 * SCALE - tw) * 0.5 + 1 * SCALE, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
+
         elif mc == "live.numbox":
             app = w.get("appearance", 0)
             bg = rgba_tuple(w.get("activebgcolor", [0.086, 0.102, 0.122, 1.0]))
@@ -335,7 +357,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     fill=sl_c,
                     width=max(1, int(1.3 * SCALE)),
                 )
-                val_str = f"{int(round(init_val))} %" if ustyle == 5 else f"{init_val:.1f}"
+                val_str = f"{int(round(init_val))} %" if ustyle == 5 else (f"{int(round(init_val))} st" if ustyle == 7 else (f"{init_val:.1f} dB" if ustyle == 4 else (f"{int(round(init_val))} Hz" if (ustyle == 3 and abs(init_val) >= 10) else (f"{init_val:.1f} Hz" if ustyle == 3 else (f"{init_val:.1f} ms" if (ustyle == 2 and init_val < 10) else (f"{int(round(init_val))} ms" if ustyle == 2 else f"{init_val:.1f}"))))))
                 fnt = get_font(8.5 * SCALE, bold=True)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
