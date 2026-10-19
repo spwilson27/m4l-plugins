@@ -1,7 +1,7 @@
 // Reciprocator scrolling waveform + envelope + gate + output HUD.
 // src/reciprocator_config.js is prepended at build time.
 // Supports interactive dragging of the Gate & Ceiling horizontal bars inside the scope,
-// and adapts cleanly to any canvas width (e.g. 166px..240px across layouts).
+// visualizes normal vs reverse gate shading, and adapts cleanly to the 448x169 layout.
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -21,7 +21,8 @@ var histGate = [];
 var curGateDb = -42.0;
 var curCeilingDb = -1.0;
 var curAmountPct = 100.0;
-var curSoftClip = 1;
+var curOutMode = 0; // 0 = Soft, 1 = Hard, 2 = Lim
+var curRevGate = 0; // 0 = Normal, 1 = Reverse (Duck)
 var liveGainNorm = 0.58;
 var liveGateOpen = 1.0;
 var liveOutPeak = 0.0;
@@ -50,9 +51,9 @@ function initHistory(demo) {
             var ripple = 0.82 + 0.18 * Math.sin(i * 0.55);
             var inVal = localT > 0.78 ? 0.008 * Math.abs(Math.sin(i * 0.9)) : burst * ripple;
             var envVal = Math.max(inVal * 0.92, 0.002);
-            var gain = computeRecipGain(envVal, curAmountPct / 100.0, curGateDb, curCeilingDb);
-            var outVal = applyCeiling(inVal * gain, ceilLin, curSoftClip);
-            var gFactor = computeGateFactor(envVal, gateLin);
+            var gain = computeRecipGain(envVal, curAmountPct / 100.0, curGateDb, curCeilingDb, curRevGate);
+            var outVal = applyCeiling(inVal * gain, ceilLin, curOutMode);
+            var gFactor = computeGateFactor(envVal, gateLin, curRevGate);
             histIn.push(clamp(inVal, 0, 1));
             histEnv.push(clamp(envVal, 0, 1));
             histOut.push(clamp(outVal, 0, 1));
@@ -80,21 +81,31 @@ function setbuffer(name) {
 
 function set_gate(db) {
     curGateDb = clamp(Number(db) || -42.0, -72.0, -6.0);
+    if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
 
 function set_ceiling(db) {
     curCeilingDb = clamp(Number(db) || -1.0, -18.0, 0.0);
+    if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
 
 function set_amount(pct) {
     curAmountPct = clamp(Number(pct) || 0.0, 0.0, 150.0);
+    if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
 
-function set_softclip(v) {
-    curSoftClip = Number(v) ? 1 : 0;
+function set_outmode(v) {
+    curOutMode = clamp(Math.round(Number(v) || 0), 0, 2);
+    if (!scopeBuf) initHistory(true);
+    mgraphics.redraw();
+}
+
+function set_revgate(v) {
+    curRevGate = Number(v) > 0.5 ? 1 : 0;
+    if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
 
@@ -143,7 +154,7 @@ function loadbang() {
 
 function canvasSize() {
     var s = mgraphics.size;
-    if (!s || s.length < 2) return [192, 134];
+    if (!s || s.length < 2) return [162, 132];
     return [s[0], s[1]];
 }
 
@@ -233,6 +244,16 @@ function paint() {
         mgraphics.stroke();
     }
 
+    // Gate pass-region tint (shows whether gate passes above or below threshold)
+    var gateY = baseY - ampToVisual01(dbToLin(curGateDb)) * plotH;
+    mgraphics.set_source_rgba(0.96, 0.42, 0.42, 0.06);
+    if (curRevGate > 0.5) {
+        mgraphics.rectangle(plotX, gateY, plotW, baseY - gateY);
+    } else {
+        mgraphics.rectangle(plotX, plotY, plotW, gateY - plotY);
+    }
+    mgraphics.fill();
+
     // 1. Input waveform silhouette (slate fill)
     mgraphics.set_source_rgba(0.28, 0.36, 0.46, 0.30);
     mgraphics.move_to(plotX, baseY);
@@ -278,7 +299,7 @@ function paint() {
     }
     mgraphics.stroke();
 
-    // 4. Draggable Ceiling line + handle pill
+    // 4. Draggable Ceiling line
     var ceilY = baseY - ampToVisual01(dbToLin(curCeilingDb)) * plotH;
     mgraphics.set_line_width(1.1);
     mgraphics.set_source_rgba(0.76, 0.90, 0.98, 0.65);
@@ -287,7 +308,6 @@ function paint() {
     mgraphics.stroke();
 
     // 5. Draggable Gate threshold dashed line (coral red)
-    var gateY = baseY - ampToVisual01(dbToLin(curGateDb)) * plotH;
     mgraphics.set_line_width(1.2);
     mgraphics.set_source_rgba(0.96, 0.42, 0.42, 0.88);
     var seg = 5;
@@ -297,7 +317,7 @@ function paint() {
     }
     mgraphics.stroke();
 
-    // Compact top HUD legend that fits even on 164px-wide scopes
+    // Compact top HUD legend
     mgraphics.select_font_face("Arial Bold");
     mgraphics.set_font_size(8.5);
     mgraphics.set_source_rgba(0.28, 0.84, 0.96, 0.92);
@@ -309,16 +329,10 @@ function paint() {
     mgraphics.show_text("OUT");
 
     var gainDb = Math.round((liveGainNorm * 80.0) - 20.0);
-    var gainTxt = "1/E " + (gainDb >= 0 ? "+" : "") + gainDb + "dB";
+    var gainTxt = (curRevGate > 0.5 ? "REV " : "1/E ") + (gainDb >= 0 ? "+" : "") + gainDb + "dB";
     mgraphics.set_source_rgba(0.78, 0.85, 0.92, 0.92);
     mgraphics.move_to(plotX + 52, 12);
     mgraphics.show_text(gainTxt);
-
-    if (w >= 185) {
-        mgraphics.set_source_rgba(0.96, 0.46, 0.46, 0.88);
-        mgraphics.move_to(plotX + 106, 12);
-        mgraphics.show_text("G " + Math.round(curGateDb));
-    }
 
     // 6. Right-hand Reciprocal Gain & Gate status meter column
     var mx = plotX + plotW + 5;

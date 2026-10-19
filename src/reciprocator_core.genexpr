@@ -1,6 +1,8 @@
 // Reciprocator — Reciprocal envelope follower & audio-rate dynamics/waveshaper.
 // Multiplies the lookahead-delayed input by env^(-amount) * gate so quiet tails
-// and textures jump to full ceiling while silence below Gate is cleanly muted.
+// and textures jump to full ceiling while silence below Gate is cleanly muted
+// (or, when Reverse Gate `revgate` is enabled, only quiet signals below Gate
+// pass through while loud hits are muted).
 //
 // Scope telemetry buffer (buffer~ #0-recipscope, bound via `scope #0-recipscope`):
 //   0: input peak (0..1)
@@ -36,8 +38,6 @@ onepole_hp(x, coef) {
 }
 
 // Combined Peak + RMS detector with independent attack and release coefficients.
-// detectBlend = 0 is pure peak |x|; detectBlend = 1 blends in RMS energy and
-// slightly smooths ripple for clean sustain leveling.
 env_detect(x, atkCoef, relCoef, detectBlend) {
 	History pk(0);
 	History ms(0);
@@ -51,27 +51,46 @@ env_detect(x, atkCoef, relCoef, detectBlend) {
 	return mix(pk, rms, clip(detectBlend, 0, 1));
 }
 
-// Smooth gate with hysteresis-like release smoothing and a 6 dB cubic knee.
-gate_smooth(envVal, gateLin, relCoef) {
+// Smooth normal or reverse gate with a 6 dB cubic knee around gateLin.
+// When revMode > 0.5, signals BELOW gateLin open the gate and signals ABOVE
+// gateLin close it (while sub-floor silence < 0.00005 is muted so an idle track stays silent).
+gate_smooth(envVal, gateLin, relCoef, revMode) {
 	History gState(0);
 	g = max(gateLin, 0.00001);
 	lo = g * 0.5;
 	hi = g * 1.41421356;
 	t = clip((envVal - lo) / max(hi - lo, 0.00001), 0, 1);
-	raw = t * t * (3 - 2 * t);
-	// Open quickly when signal crosses threshold; close with release smoothing.
+	normalRaw = t * t * (3 - 2 * t);
+
+	// Floor guard for Reverse Gate so pure digital silence does not get boosted to 0 dBFS.
+	sLo = 0.00002;
+	sHi = max(min(lo * 0.5, 0.00025), 0.00005);
+	tf = clip((envVal - sLo) / max(sHi - sLo, 0.00001), 0, 1);
+	floorGuard = tf * tf * (3 - 2 * tf);
+
+	revRaw = (1.0 - normalRaw) * floorGuard;
+	raw = (revMode > 0.5) ? revRaw : normalRaw;
+
 	c = (raw > gState) ? 0.25 : clip(relCoef, 0.5, 0.9995);
 	gState = mix(raw, gState, c);
 	return gState;
 }
 
-// Output ceiling limiter: softclip > 0.5 uses smooth tanh saturation to ceilLin;
-// otherwise hard-clips at ceilLin.
-limit_out(x, ceilLin, softMode) {
+// Output stage (`outmode`):
+//   0 = Soft (`tanh` soft saturation to ceilLin)
+//   1 = Hard (`clip` to [-ceilLin, +ceilLin])
+//   2 = Lim  (Instant-attack, smooth-release peak limiter to ceilLin, preserving waveform shape)
+limit_out(x, ceilLin, outMode) {
+	History limEnv(0);
 	c = max(ceilLin, 0.05);
+	ax = abs(x);
+	// Always update limiter envelope history so switching modes never clicks.
+	limEnv = (ax > limEnv) ? ax : mix(ax, limEnv, 0.9985);
+	limGain = c / max(limEnv, c);
+	limited = clip(x * limGain, -c, c);
 	soft = c * tanh(x / c);
 	hard = clip(x, -c, c);
-	return (softMode > 0.5) ? soft : hard;
+	return (outMode < 0.5) ? soft : ((outMode < 1.5) ? hard : limited);
 }
 
 Buffer scope("recipscope");
@@ -86,7 +105,8 @@ Param lookahead(1.5);
 Param detect(0.25);
 Param schp(60.0);
 Param sclp(12000.0);
-Param softclip(1.0);
+Param outmode(0.0);
+Param revgate(0.0);
 
 History tick(0);
 History rollCounter(0);
@@ -109,7 +129,8 @@ lookMsS = slew(clip(lookahead, 0, 10), 0.999);
 detectS = slew(clip(detect, 0, 1), 0.999);
 hpHzS = slew(clip(schp, 20, 2000), 0.999);
 lpHzS = slew(clip(sclp, 400, 18000), 0.999);
-softMode = clip(softclip, 0, 1);
+outMode = clip(outmode, 0, 2);
+revMode = clip(revgate, 0, 1);
 
 // 1. Write raw stereo input into lookahead delay lines (used for both wet VCA and phase-aligned dry).
 lookSamps = clip(lookMsS * sr / 1000, 0, 960);
@@ -141,10 +162,10 @@ envMax = max(envL, envR);
 gateLin = pow(10, gateDbS / 20);
 ceilLin = pow(10, ceilDbS / 20);
 
-gateL = gate_smooth(envL, gateLin, relCoef);
-gateR = gate_smooth(envR, gateLin, relCoef);
+gateL = gate_smooth(envL, gateLin, relCoef, revMode);
+gateR = gate_smooth(envR, gateLin, relCoef, revMode);
 
-floorEnv = max(gateLin * 0.5, 0.00001);
+floorEnv = (revMode > 0.5) ? 0.00005 : max(gateLin * 0.5, 0.00001);
 safeL = max(envL, floorEnv);
 safeR = max(envR, floorEnv);
 
@@ -155,20 +176,19 @@ targetScale = pow(ceilLin, min(amountS, 1.0)) * pow(0.05, overAmt);
 rawGainL = min(pow(safeL, -amountS) * targetScale, 1000.0);
 rawGainR = min(pow(safeR, -amountS) * targetScale, 1000.0);
 
-// Blend between unity (1.0) at amount = 0 and gated reciprocal gain as amount increases.
-// At amount > 0, gateL/gateR mutes background noise below Gate threshold.
-gateMix = clip(amountS * 4.0, 0, 1);
+// Blend between unity (1.0) at amount = 0 (unless revMode > 0.5, which always gates) and reciprocal gain.
+gateMix = (revMode > 0.5) ? 1.0 : clip(amountS * 4.0, 0, 1);
 effGateL = mix(1.0, gateL, gateMix);
 effGateR = mix(1.0, gateR, gateMix);
 
 gainL = rawGainL * effGateL;
 gainR = rawGainR * effGateR;
 
-// 5. Multiply lookahead-delayed signal by reciprocal gain and apply ceiling/soft-clip.
+// 5. Multiply lookahead-delayed signal by reciprocal gain and apply Soft / Hard / Limiter ceiling.
 vcaL = delInL * gainL;
 vcaR = delInR * gainR;
-wetL = limit_out(vcaL, ceilLin, softMode);
-wetR = limit_out(vcaR, ceilLin, softMode);
+wetL = limit_out(vcaL, ceilLin, outMode);
+wetR = limit_out(vcaR, ceilLin, outMode);
 
 // 6. Equal-power dry/wet mix (using lookahead-aligned dry signal so parallel blend never comb-filters).
 ang = wetS * 1.57079632679;

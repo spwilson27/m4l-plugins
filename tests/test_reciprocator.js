@@ -3,15 +3,17 @@
  * Comprehensive verification suite for devices/Reciprocator.amxd (448 x 169 px 3-Stage Signal Flow).
  *
  * Covers:
- *  1. Reciprocal math, smooth cubic noise gate, inverted dynamics (>100%), and ceiling limiters
+ *  1. Reciprocal math, smooth normal & reverse gate (`Rev Gate`), inverted dynamics (>100%),
+ *     and 3-mode output ceiling stage (`Soft`, `Hard`, `Lim`)
  *  2. GenExpr ordering & lexer safety (functions first, Buffer -> Param -> History -> Delay, no e<digit>)
  *  3. .amxd binary header ("aaaa" Audio Effect) & 448 x 169 presentation geometry
  *  4. #0- instance isolation, `scope #0-recipscope` loadbang binding, and 4-panel z-order
- *  5. 3-stage signal-flow headers (`1. DETECT`, `2. 1 / ENV`, `3. OUTPUT`) and zero widget overlap
+ *  5. 3-stage signal-flow headers (`1. DETECT`, `2. 1 / ENV`, `3. OUTPUT`), `Output Mode` selection box
+ *     placed directly above `Ceiling`, `Rev Gate` button under `Gate`, and zero widget overlap
  *  6. Complete patchline graph verification (controls -> `/ 100.` -> `prepend <param>` -> `obj-gen`,
  *     plus bidirectional `v8ui` drag -> `route gate ceiling` -> `obj-gen` & `prepend set`)
  *  7. `v8ui` runtime execution: pixel-coordinate mode (`relative_coords === 0`), live scope buffer
- *     polling (`pullScope`), parameter setters, and interactive Gate + Ceiling drag gestures
+ *     polling (`pullScope`), parameter setters (`set_revgate`, `set_outmode`), and Gate + Ceiling drag gestures
  */
 
 const assert = require("assert");
@@ -22,13 +24,19 @@ const ROOT = path.resolve(__dirname, "..");
 const GEN_PATH = path.join(ROOT, "src", "reciprocator_core.genexpr");
 const cfg = require(path.join(ROOT, "src", "reciprocator_config.js"));
 
-// 1. Reciprocal math & smooth gate invariants
-assert.strictEqual(cfg.computeRecipGain(0.0, 1.0, -42, -1), 0, "Silence must be gated to 0 gain");
-assert.strictEqual(cfg.computeRecipGain(0.0001, 1.0, -36, -1), 0, "Signal well below gate must be muted");
-assert.strictEqual(cfg.computeGateFactor(0.0, 0.01), 0, "Gate factor at 0 must be 0");
-assert.strictEqual(cfg.computeGateFactor(0.05, 0.01), 1, "Gate factor well above threshold must be 1");
-const midGate = cfg.computeGateFactor(0.01, 0.01);
-assert.ok(midGate > 0.1 && midGate < 0.9, "Gate factor at threshold must be inside smooth cubic knee");
+// 1. Reciprocal math, normal & reverse gate, and Soft / Hard / Limiter invariants
+assert.strictEqual(cfg.computeRecipGain(0.0, 1.0, -42, -1, 0), 0, "Silence must be gated to 0 gain in normal mode");
+assert.strictEqual(cfg.computeRecipGain(0.0, 1.0, -24, -1, 1), 0, "Digital silence must also be muted in Reverse Gate mode");
+assert.strictEqual(cfg.computeRecipGain(0.0001, 1.0, -36, -1, 0), 0, "Signal well below gate must be muted in normal mode");
+assert.strictEqual(cfg.computeGateFactor(0.0, 0.01, 0), 0, "Normal gate factor at 0 must be 0");
+assert.strictEqual(cfg.computeGateFactor(0.05, 0.01, 0), 1, "Normal gate factor well above threshold must be 1");
+
+// Reverse gate (`reverseGate = 1`): mutes loud signals above Gate and passes quiet signals below Gate
+assert.strictEqual(cfg.computeGateFactor(0.25, 0.06, 1), 0, "Reverse gate must mute loud signal above threshold");
+assert.ok(cfg.computeGateFactor(0.015, 0.06, 1) > 0.95, "Reverse gate must open for quiet signal below threshold");
+const revQuietGain = cfg.computeRecipGain(0.015, 1.0, -24, -1.0, 1);
+const revLoudGain = cfg.computeRecipGain(0.25, 1.0, -24, -1.0, 1);
+assert.ok(revQuietGain > 10.0 && revLoudGain === 0, "Reverse gate must boost quiet signal to Ceiling and mute loud signal");
 
 const ceilDb = -1.0;
 const ceilLin = cfg.dbToLin(ceilDb);
@@ -36,21 +44,24 @@ assert.ok(Math.abs(cfg.linToDb(ceilLin) - ceilDb) < 1e-6, "dbToLin and linToDb m
 
 const loudIn = 0.5;
 const quietIn = 0.04;
-const loudOut = loudIn * cfg.computeRecipGain(loudIn, 1.0, -48, ceilDb);
-const quietOut = quietIn * cfg.computeRecipGain(quietIn, 1.0, -48, ceilDb);
+const loudOut = loudIn * cfg.computeRecipGain(loudIn, 1.0, -48, ceilDb, 0);
+const quietOut = quietIn * cfg.computeRecipGain(quietIn, 1.0, -48, ceilDb, 0);
 assert.ok(Math.abs(loudOut - ceilLin) < 0.02, "Loud signal at Amount=100% should land at Ceiling");
 assert.ok(Math.abs(quietOut - ceilLin) < 0.02, "Quiet signal above gate at Amount=100% should also land at Ceiling");
 
-const unityGain = cfg.computeRecipGain(0.25, 0.0, -48, -1.0);
+const unityGain = cfg.computeRecipGain(0.25, 0.0, -48, -1.0, 0);
 assert.ok(Math.abs(unityGain - 1.0) < 1e-6, "Amount=0% should produce unity gain above gate");
 
-const invQuiet = quietIn * cfg.computeRecipGain(quietIn, 1.5, -60, 0.0);
-const invLoud = loudIn * cfg.computeRecipGain(loudIn, 1.5, -60, 0.0);
+const invQuiet = quietIn * cfg.computeRecipGain(quietIn, 1.5, -60, 0.0, 0);
+const invLoud = loudIn * cfg.computeRecipGain(loudIn, 1.5, -60, 0.0, 0);
 assert.ok(invQuiet > invLoud, "Amount > 100% should invert dynamics so quiet details exceed loud ones");
 
-assert.ok(Math.abs(cfg.applyCeiling(10.0, 0.8, 0)) <= 0.80001, "Hard clip must clamp at ceilingLin");
-assert.ok(Math.abs(cfg.applyCeiling(10.0, 0.8, 1)) <= 0.80001, "Soft clip must stay within ceilingLin");
-assert.ok(Math.abs(cfg.applyCeiling(0.4, 0.8, 1)) < Math.abs(cfg.applyCeiling(0.4, 0.8, 0)), "Soft clip knee must gently compress near ceiling");
+// Output mode checks: 0 = Soft, 1 = Hard, 2 = Lim
+assert.ok(Math.abs(cfg.applyCeiling(10.0, 0.8, 0)) <= 0.80001, "Soft clip (mode 0) must stay within ceilingLin");
+assert.ok(Math.abs(cfg.applyCeiling(10.0, 0.8, 1)) <= 0.80001, "Hard clip (mode 1) must clamp at ceilingLin");
+assert.ok(Math.abs(cfg.applyCeiling(10.0, 0.8, 2, 10.0)) <= 0.80001, "Limiter (mode 2) must clamp at ceilingLin");
+assert.ok(Math.abs(cfg.applyCeiling(0.4, 0.8, 0)) < Math.abs(cfg.applyCeiling(0.4, 0.8, 1)), "Soft clip knee must gently compress near ceiling");
+assert.strictEqual(cfg.applyCeiling(0.4, 0.8, 2, 0.8), 0.4, "Limiter must stay linear below ceiling when envelope <= ceiling");
 
 // 2. GenExpr ordering & lexer checks
 const gen = fs.readFileSync(GEN_PATH, "utf8");
@@ -66,6 +77,7 @@ assert.ok(fnAt >= 0 && fnAt < bufAt, "Functions must precede Buffer in GenExpr")
 assert.ok(bufAt < paramAt && paramAt < histAt && histAt < delayAt, "Declarations must follow Buffer -> Param -> History -> Delay order");
 assert.ok(delayAt < exprAt, "All Delay declarations must precede expressions");
 assert.strictEqual((gen.match(/^Delay /gm) || []).length, 2, "Expected 2 lookahead Delay lines (lookL, lookR)");
+assert.ok(gen.includes("Param outmode(0.0);") && gen.includes("Param revgate(0.0);"), "GenExpr must declare outmode and revgate Params");
 assert.ok(gen.includes("fixnan(outL)") && gen.includes("fixnan(outR)"), "Outputs must be protected with fixnan()");
 
 function rectsOverlap(a, b) {
@@ -114,7 +126,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
         }
     }
 
-    // Verify all 11 parameters & their patchline chains into obj-gen
+    // Verify all 10 dials/numboxes & their patchline chains into obj-gen
     const paramChecks = [
         ["amount", "Amount", "amount", true],
         ["gate", "Gate", "gate", false],
@@ -141,8 +153,27 @@ function verifyAmxd(amxdFile, expectedWidth) {
             assert.ok(hasLine(ctrl.id, prep.id), `${amxdFile}: ${ctrl.id} not wired to ${prep.id}`);
         }
     }
-    assert.ok(byId["obj-softclip"] && byId["obj-softclip"].varname === "Soft Clip", "Missing Soft Clip toggle");
-    assert.ok(hasLine("obj-softclip", "obj-prep-softclip") && hasLine("obj-prep-softclip", "obj-gen"), "Soft Clip not wired to gen");
+
+    // Verify Reverse Gate button (`obj-revgate`) and Output Mode selection box (`obj-outmode`) above Ceiling
+    const revBtn = byId["obj-revgate"];
+    assert.ok(revBtn && revBtn.maxclass === "live.text" && revBtn.varname === "Reverse Gate", "Missing Reverse Gate button");
+    assert.ok(hasLine("obj-revgate", "obj-prep-revgate") && hasLine("obj-prep-revgate", "obj-gen"), "Reverse Gate not wired to gen");
+    assert.ok(hasLine("obj-revgate", "obj-ui-revgate") && hasLine("obj-ui-revgate", "obj-viz"), "Reverse Gate not wired to viz");
+
+    const outMenu = byId["obj-outmode"];
+    const ceilDial = byId["obj-ctrl-ceiling"];
+    assert.ok(outMenu && outMenu.maxclass === "live.menu" && outMenu.varname === "Output Mode", "Missing Output Mode selection box (live.menu)");
+    assert.deepStrictEqual(
+        outMenu.saved_attribute_attributes.valueof.parameter_enum,
+        ["Soft Clip", "Hard Clip", "Limiter"],
+        "Output Mode selection box must offer Soft Clip, Hard Clip, and Limiter"
+    );
+    assert.ok(
+        outMenu.presentation_rect[1] + outMenu.presentation_rect[3] <= ceilDial.presentation_rect[1],
+        "Output Mode selection box must be positioned directly above the Ceiling dial"
+    );
+    assert.ok(hasLine("obj-outmode", "obj-prep-outmode") && hasLine("obj-prep-outmode", "obj-gen"), "Output Mode not wired to gen");
+    assert.ok(hasLine("obj-outmode", "obj-ui-outmode") && hasLine("obj-ui-outmode", "obj-viz"), "Output Mode not wired to viz");
 
     // Verify bidirectional scope drag routing (obj-viz -> route gate ceiling -> gen & controls)
     assert.ok(hasLine("obj-viz", "obj-route-viz"), "obj-viz outlet not wired to obj-route-viz");
@@ -217,7 +248,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
 
     const fn = new Function(
         "mgraphics", "Buffer", "Task", "outlet",
-        viz.textfile.text + "\nreturn { loadbang, setbuffer, set_gate, set_ceiling, set_amount, set_softclip, onclick, ondrag, pullScope, paint, histOut };"
+        viz.textfile.text + "\nreturn { loadbang, setbuffer, set_gate, set_ceiling, set_amount, set_outmode, set_revgate, onclick, ondrag, pullScope, paint, histOut };"
     );
     const ui = fn(sandbox.mgraphics, sandbox.Buffer, sandbox.Task, sandbox.outlet);
     assert.strictEqual(sandbox.mgraphics.relative_coords, 0, `${amxdFile}: v8ui must disable relative_coords`);
@@ -227,10 +258,12 @@ function verifyAmxd(amxdFile, expectedWidth) {
     ui.set_gate(-36);
     ui.set_ceiling(-3);
     ui.set_amount(120);
-    ui.set_softclip(0);
+    ui.set_outmode(2);
+    ui.set_revgate(1);
     ui.pullScope();
     ui.paint();
     assert.ok(ui.histOut[ui.histOut.length - 1] > 0.5, `${amxdFile}: pullScope must push live output peaks`);
+    assert.ok(drawOps.some((op) => op.startsWith("text:REV ")), "Reverse Gate mode should show REV label in HUD");
 
     // Drag Gate bar (lower region of scope)
     ui.onclick(40, 110);

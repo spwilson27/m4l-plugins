@@ -99,7 +99,7 @@ A Max for Live **Audio Effect** dynamics and waveshaping processor inspired by t
 - `src/reciprocator_core.genexpr` — `gen.codebox~` DSP core & scope telemetry writer
 - `src/reciprocator_ui.js` — interactive scrolling envelope/gate/output HUD (`v8ui`)
 - `scripts/build_reciprocator.py` — builds `devices/Reciprocator.amxd`
-- `scripts/run_reciprocator_audio_tests.py` — automated Max audio test harness (`bypass`, `flatten`, `gate_mute`, `rev_gate`, `audiorate`, `ceiling`, `limiter`, `invert`)
+- `scripts/run_reciprocator_audio_tests.py` — automated Max audio test harness (`bypass`, `flatten`, `gate_mute`, `rev_gate`, `audiorate`, `ceiling`, `limiter`, `invert`, `sc_filter`, `lookahead_align`)
 - `tests/reciprocator_probe.js` — Max audio recording & scope buffer probe
 - `tests/test_reciprocator.js` — unit, layout, patchline & UI interaction verification suite
 - `previews/reciprocator.png` — rendered 2x Retina preview

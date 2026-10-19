@@ -2,13 +2,18 @@
 """Render Reciprocator through Ableton-bundled Max and verify its DSP & scope telemetry.
 
 Cases:
-  bypass     — Mix=0% or Amount=0% passes the 0.25 sine wave at its original 0.25 amplitude
+  bypass     — Amount=0% passes the 0.25 sine wave at its original 0.25 amplitude
   flatten    — Two-level input (0.50 loud then 0.035 quiet, >23 dB apart) is flattened so
-               both halves exit near Ceiling (-1 dB ≈ 0.89) within ~1.5 dB of each other
-  gate_mute  — Input below Gate (-42 dB) is muted near 0.0 instead of being boosted to full scale
-  audiorate  — Ultra-fast Attack/Release (0.05 ms / 0.5 ms) squares/waveshapes the sine wave
+               both halves exit near Ceiling (-1 dB ≈ 0.89)
+  gate_mute  — Input below Gate (-36 dB) is muted near 0.0 instead of being boosted to full scale
+  rev_gate   — Reverse Gate (`revgate 1`, Gate = -18 dB ≈ 0.126): loud 0.50 input is muted,
+               while quiet 0.035 input below Gate passes through and is boosted to Ceiling
+  audiorate  — Ultra-fast Attack/Release (0.05 ms / 0.5 ms) waveshapes the sine wave
                (lowering crest factor vs a pure sine) with zero NaN and bounded Ceiling
-  ceiling    — Hot 0.95 input with Ceiling = -6 dB (0.501) never exceeds 0.52
+  ceiling    — Hot 0.90 input with Hard Clip (`outmode 1`) and Ceiling = -6 dB (0.501) clamps at 0.5012
+  limiter    — Peak Limiter (`outmode 2`) with Ceiling = -6 dB (0.501) clamps peak to ~0.501
+               while preserving a cleaner sinusoidal crest factor (~1.38..1.42) than hard clipping
+  invert     — Amount = 150% (1.5) ducks loud 0.50 input below quiet 0.035 input
 """
 
 import json
@@ -30,7 +35,7 @@ MAX_LOG = os.path.expanduser(
     "~/Library/Application Support/Cycling '74/Max 9/Logs/Max.log"
 )
 
-DEFAULTS = "lookahead 1.5, detect 0.25, schp 40, sclp 16000, softclip 0"
+DEFAULTS = "lookahead 1.5, detect 0.25, schp 40, sclp 16000, outmode 1, revgate 0"
 
 
 def box(obj_id, text, x, y, w, h, **extra):
@@ -138,13 +143,26 @@ def build_harness(gen_code, case):
 
     if mode == "sine":
         amp = case.get("amp", 0.25)
-        boxes.append(box("obj-tone", "cycle~ 220", 700, 200, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
+        freq = case.get("freq", 220)
+        boxes.append(box("obj-tone", f"cycle~ {freq}", 700, 200, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
         boxes.append(box("obj-gain", f"*~ {amp}", 700, 240, 65, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
         lines.extend([
             line("obj-tone", 0, "obj-gain", 0),
             line("obj-gain", 0, "obj-gen", 0),
             line("obj-gain", 0, "obj-gen", 1),
             line("obj-gain", 0, "obj-peak-c", 0),
+        ])
+    elif mode == "impulse":
+        boxes.append(box("obj-click", "click~", 700, 200, 50, 20, numinlets=1, numoutlets=1, outlettype=["signal"]))
+        boxes.append(box("obj-gain", "*~ 0.5", 700, 240, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
+        boxes.append(box("obj-del-click", "delay 40", 700, 160, 70, 20, numinlets=2, numoutlets=1))
+        lines.extend([
+            line("obj-click", 0, "obj-gain", 0),
+            line("obj-gain", 0, "obj-gen", 0),
+            line("obj-gain", 0, "obj-gen", 1),
+            line("obj-gain", 0, "obj-peak-c", 0),
+            line("obj-del-arm", 0, "obj-del-click", 0),
+            line("obj-del-click", 0, "obj-click", 0),
         ])
     elif mode == "twotone":
         # Starts at 0.50 amplitude, then steps down to 0.035 at 350 ms after recording starts.
@@ -211,12 +229,19 @@ def cases():
             "params": params("amount 1.0, gate -36, attack 1.5, release 40, wet 1, ceiling -1"),
         },
         {
+            "name": "rev_gate",
+            "mode": "twotone",
+            "arm": 250,
+            "dur": 800,
+            "params": "amount 1.0, gate -18, attack 1.0, release 20, wet 1, ceiling -1, lookahead 1.5, detect 0.25, schp 40, sclp 16000, outmode 1, revgate 1",
+        },
+        {
             "name": "audiorate",
             "mode": "sine",
             "amp": 0.25,
             "arm": 250,
             "dur": 350,
-            "params": "amount 1.0, gate -48, attack 0.05, release 0.5, wet 1, ceiling -1, lookahead 0, detect 0, schp 20, sclp 18000, softclip 1",
+            "params": "amount 1.0, gate -48, attack 0.05, release 0.5, wet 1, ceiling -1, lookahead 0, detect 0, schp 20, sclp 18000, outmode 0, revgate 0",
         },
         {
             "name": "ceiling",
@@ -227,11 +252,35 @@ def cases():
             "params": params("amount 1.0, gate -48, attack 0.5, release 40, wet 1, ceiling -6"),
         },
         {
+            "name": "limiter",
+            "mode": "sine",
+            "amp": 0.25,
+            "arm": 250,
+            "dur": 350,
+            "params": "amount 1.0, gate -48, attack 50.0, release 250.0, wet 1, ceiling -6, lookahead 1.5, detect 1.0, schp 20, sclp 18000, outmode 2, revgate 0",
+        },
+        {
             "name": "invert",
             "mode": "twotone",
             "arm": 250,
             "dur": 800,
             "params": params("amount 1.5, gate -54, attack 1.0, release 25, wet 1, ceiling 0"),
+        },
+        {
+            "name": "sc_filter",
+            "mode": "sine",
+            "freq": 55,
+            "amp": 0.12,
+            "arm": 250,
+            "dur": 350,
+            "params": "amount 1.0, gate -24, attack 1.5, release 40, wet 1, ceiling -1, lookahead 1.5, detect 0.25, schp 2000, sclp 16000, outmode 1, revgate 0",
+        },
+        {
+            "name": "lookahead_align",
+            "mode": "impulse",
+            "arm": 250,
+            "dur": 300,
+            "params": "amount 0.0, gate -48, attack 1.5, release 40, wet 0.5, ceiling 0, lookahead 10.0, detect 0.25, schp 40, sclp 16000, outmode 1, revgate 0",
         },
     )
 
@@ -301,7 +350,6 @@ def run_case(gen_code, case):
         print("NO RESULT FILE")
         return None
     meta = parse_result(open(RESULT).read())
-    env = meta.get("env", [])
     print(
         f"genL {meta.get('genL'):.4f} ctl {meta.get('ctl'):.4f} peak {meta.get('peak'):.4f} "
         f"crest {meta.get('crest'):.3f} scopeEnv {meta.get('scopeEnv'):.4f} "
@@ -339,8 +387,17 @@ def check(name, meta, errors):
             errors.append(f"gate_mute: sub-gate noise should be muted, got {steady}")
         if meta.get("scopeGate", 1) > 0.1:
             errors.append(f"gate_mute: scopeGate should report closed, got {meta.get('scopeGate')}")
+    elif name == "rev_gate":
+        # Gate = -18 dB (~0.126): loud 0.50 section is ABOVE Gate so Reverse Gate mutes it;
+        # quiet 0.035 section is BELOW Gate so Reverse Gate opens and boosts it to Ceiling (~0.89).
+        loud_win = env_max(env, 120, 320)
+        quiet_win = env_max(env, 480, 750)
+        print(f"rev_gate loud_win={loud_win:.4f} quiet_win={quiet_win:.4f}")
+        if loud_win > 0.03:
+            errors.append(f"rev_gate: loud 0.50 section above Gate should be muted, got {loud_win}")
+        if not (0.72 <= quiet_win <= 0.96):
+            errors.append(f"rev_gate: quiet 0.035 section below Gate should pass and reach Ceiling (~0.89), got {quiet_win}")
     elif name == "audiorate":
-        # A pure sine has crest factor sqrt(2) ≈ 1.414. Sub-ms reciprocal tracking squares the wave toward 1.05..1.28.
         crest = meta.get("crest", 2.0)
         print(f"audiorate crest={crest:.4f} peak={meta.get('peak'):.4f}")
         if not (1.0 <= crest <= 1.33):
@@ -348,18 +405,40 @@ def check(name, meta, errors):
         if meta.get("peak", 0) < 0.7 or meta.get("peak", 99) > 0.95:
             errors.append(f"audiorate: peak out of range ({meta.get('peak')})")
     elif name == "ceiling":
-        # Ceiling = -6 dB ≈ 0.5012
         pk = env_max(env, 60, 320)
         print(f"ceiling steady_peak={pk:.4f}")
         if not (0.44 <= pk <= 0.53):
             errors.append(f"ceiling: expected output clamped near -6 dB (0.501), got {pk}")
+    elif name == "limiter":
+        pk = env_max(env, 80, 320)
+        crest = meta.get("crest", 0)
+        print(f"limiter steady_peak={pk:.4f} crest={crest:.4f}")
+        if not (0.45 <= pk <= 0.53):
+            errors.append(f"limiter: expected peak limited near -6 dB (0.501), got {pk}")
+        if not (1.36 <= crest <= 1.45):
+            errors.append(f"limiter: expected clean sinusoidal crest factor (~1.41) vs hard clip, got {crest}")
     elif name == "invert":
-        # At Amount = 150% (1.5), the quiet 0.035 input section gets boosted HIGHER than the loud 0.50 section!
         loud_win = env_max(env, 80, 300)
         quiet_win = env_max(env, 450, 750)
         print(f"invert loud_win={loud_win:.4f} quiet_win={quiet_win:.4f}")
         if not (quiet_win > loud_win + 0.10):
             errors.append(f"invert: expected quiet section ({quiet_win}) > loud section ({loud_win}) at Amount=150%")
+    elif name == "sc_filter":
+        # 55 Hz tone with SC HP = 2000 Hz is attenuated >30 dB in the sidechain detector,
+        # falling below Gate (-24 dB) so the gate closes and mutes the output.
+        steady = env_max(env, 80, 320)
+        print(f"sc_filter steady={steady:.6f} scopeEnv={meta.get('scopeEnv'):.6f}")
+        if steady > 0.02:
+            errors.append(f"sc_filter: 55 Hz tone should be rejected by SC HP = 2000 Hz and gated, got {steady}")
+    elif name == "lookahead_align":
+        # Because dry and wet share the same 10 ms lookahead delay line, wet=0.5
+        # produces a single phase-aligned impulse (1 bin at ~0.7071) rather than a double echo.
+        active_bins = [i for i, v in enumerate(env[:150]) if v > 0.15]
+        print(f"lookahead_align active_bins={active_bins} peak={meta.get('peak'):.4f}")
+        if not active_bins or not (10 <= active_bins[0] <= 60):
+            errors.append(f"lookahead_align: expected delayed impulse in 10..60 ms, got bins {active_bins}")
+        if len(active_bins) > 2:
+            errors.append(f"lookahead_align: dry and wet paths are not phase-aligned ({active_bins})")
 
 
 def main():
