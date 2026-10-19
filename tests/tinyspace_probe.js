@@ -169,7 +169,7 @@ function correlation(left, right, skip) {
 function blank() {
     var d = [];
     var i;
-    for (i = 0; i < 70; i++) d.push(0);
+    for (i = 0; i < 72; i++) d.push(0);
     d[2] = 0.05;
     d[3] = 0.05;
     d[4] = 0.05;
@@ -177,9 +177,39 @@ function blank() {
     return d;
 }
 
+// size 0, fbk 1 ring check. Equal delays keep every unitary model on the
+// same common-mode comb so the audible peaks can be compared directly.
+// ringxf spreads L/R and asks for crossfeed, which used to erase that tail.
+function buildRing(model, spread) {
+    var d = blank();
+    var i;
+    var nSide = spread ? 4 : 6;
+    var chars = [0.12, 0.50, 0.90, 0.92, 0.80, 0.70, 0.45, 0.25];
+    var baseL = spread ? [1.3, 1.9, 2.7, 3.8] : [8, 8, 8, 8, 8, 8];
+    var baseR = spread ? [1.6, 2.2, 3.1, 4.4] : [8, 8, 8, 8, 8, 8];
+    d[0] = nSide * 2;
+    d[1] = chars[model];
+    d[2] = 0.05;
+    d[3] = 0.05;
+    d[4] = 0.05;
+    d[5] = 0.05;
+    for (i = 0; i < nSide; i++) {
+        d[10 + i] = baseL[i];
+        d[20 + i] = baseR[i];
+    }
+    d[70] = model;
+    return d;
+}
+
 function buildData(kind) {
     var d = blank();
     var i;
+    if (kind.indexOf("ring") === 0) {
+        if (kind === "ringxf") return buildRing(2, true);
+        var model = parseInt(kind.substring(4), 10);
+        if (!(model >= 0 && model <= 7)) model = 0;
+        return buildRing(model, false);
+    }
     if (kind === "room") {
         d[0] = 10;
         d[1] = 1;

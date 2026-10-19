@@ -149,7 +149,7 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 - `src/tinyspace_core.genexpr` — FDN: predelay → HP/LP → seeded allpasses → 20 delay lines (10 L / 10 R) with linear interpolation, per-line damping, soft clip, an orthogonal per-model mix (identity, sum-preserving rotation, Householder, Householder-cycle, sign-flipping ring, Householder wall-swap, spring lattice, or reversal), a unitary crossfeed rotation → width (M/S) → equal-power dry/wet.
 - Audio is `in1`/`in2`. Knobs are Gen `Param`s (`size`, `damp`, `width`, `wet`, `fbk`, `predly`, `modamt`, `xfeed`, `hp`, `lp`, `duck`), sent with `prepend`.
 - `Buffer cfg("tsconfig")` reads the 70-float seed config. `Buffer meters("tsmeters")` gets one envelope per line every 32 samples. Loadbang binds them with `cfg #0-tsconfig, meters #0-tsmeters` (the GenExpr variable, with no `set` prefix). An unbound buffer peeks as zeros, every delay line stays off, and Mix at 100% is silent.
-- Percent knobs are scaled by `/ 100.` before they hit gen. Feedback uses a delay-style RT60 curve (`feedbackRt60`): about 0.7 s at 50%, about 2.7 s at 75%, and about 27.5 s at 100% (60 dB down). Every room model shares that tail because the mix is orthogonal and the all-ones mode has eigenvalue magnitude 1. The per-loop coefficient is higher on short lines so a small Size rings about as long as a long one, and it stays under 1. Feedback at 0 writes no recirculation. Delay taps are whole samples, and Damp at 0 does not lowpass the loop, so short combs stay metallic. Damp darkens the bright partials over a time set by the knob. Crossfeed is a rotation (`xfeed * pi/2`), so a partial XFeed does not burn energy.
+- Percent knobs are scaled by `/ 100.` before they hit gen. Feedback uses a delay-style RT60 curve (`feedbackRt60`): about 0.7 s at 50%, about 2.7 s at 75%, and about 27.5 s at 100% (60 dB down). Every room model shares that tail because the mix is orthogonal and the all-ones mode has eigenvalue magnitude 1. The per-loop coefficient is higher on short lines so a small Size rings about as long as a long one, and it stays under 1. Feedback at 0 writes no recirculation. Delay taps are whole samples, and Damp at 0 is a bypass (`pole = 0`), so short combs stay metallic. Above 0, Damp is a per-pass one-pole on every delay tap, including the first reflection: about 5 kHz at 20%, about 1.8 kHz at 50%, and a few hundred hertz at 100% on an 8 ms line. Short lines use a higher cutoff so a 1 ms comb is not filtered much harder than a long room line. Every room model shares that filter. Crossfeed is a rotation (`xfeed * pi/2`), so a partial XFeed does not burn energy.
 
 ### Seed → config
 - `src/tinyspace_config.js` (mulberry32, `Seed` 0–1000) is prepended into the v8ui script and required by `tests/test_tinyspace.js`. Lower seeds use fewer active delay lines (`4` at Seed `0`), scaling monotonically up to the `20`-line cap (`10 L + 10 R`) as Seed approaches `1000`.
@@ -161,6 +161,7 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 ```bash
 python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
 ```
+Audio checks (real Max render): `python3 scripts/run_tinyspace_audio_tests.py`
 
 ---
 
@@ -198,12 +199,12 @@ Audio checks (real Max render): `python3 scripts/run_sand_audio_tests.py`
 - **Stage 1 — `1. DETECT` (`x = 180..272`, Cyan-bordered panel)**:
   - `Attack` and `Release` dials on top, with stacked `HP` (`SC HP`), `LP` (`SC LP`), `RMS` (`Detect`), and `Look` (`Lookahead`) numboxes below.
 - **Stage 2 — `2. 1 / ENV` (`x = 276..356`, Coral-bordered panel)**:
-  - Stacked `Amount` (`0..150%`) and `Gate` (`-72..-6 dB`) dials.
+  - Stacked `Amount` (`0..150%`) and `Gate` (`-72..-6 dB`) dials, plus the **`Rev Gate`** (`Reverse Gate`, `live.text`) toggle at the bottom (inverts the gate so loud hits above `Gate` are muted and only quiet signals below `Gate` pass through).
 - **Stage 3 — `3. OUTPUT` (`x = 360..442`, Amber-bordered panel)**:
-  - `Ceiling` dial (`-18..0 dB`), `Soft Clip` toggle (`live.text`), and `Mix` dial (`0..100%`).
+  - `Output Mode` selection box (`live.menu`: `Soft Clip`, `Hard Clip`, `Limiter`) placed directly above the `Ceiling` dial (`-18..0 dB`), followed by the `Mix` dial (`0..100%`).
 
 ### Gen core (`gen.codebox~`, hidden)
-- `src/reciprocator_core.genexpr` — Lookahead delay (`0..10 ms`, shared by wet VCA and dry path for phase alignment), detector HP/LP conditioning, blendable Peak/RMS envelope follower (`0.05..250 ms` attack, `0.5..1500 ms` release), smooth cubic noise gate around `Gate` (`-72..-6 dB`), reciprocal gain (`pow(env, -amount)` up to `150%` inverted dynamics), and `Ceiling` (`-18..0 dB`) with selectable `tanh` soft-clipping.
+- `src/reciprocator_core.genexpr` — Lookahead delay (`0..10 ms`, shared by wet VCA and dry path for phase alignment), detector HP/LP conditioning, blendable Peak/RMS envelope follower (`0.05..250 ms` attack, `0.5..1500 ms` release), normal & reverse smooth cubic noise gate around `Gate` (`-72..-6 dB`, `revgate`), reciprocal gain (`pow(env, -amount)` up to `150%` inverted dynamics), and `Ceiling` (`-18..0 dB`) with selectable `Soft Clip` (`tanh`), `Hard Clip`, or fast peak `Limiter` (`outmode` `0`, `1`, `2`).
 - `Buffer scope("recipscope")` writes peak-held input, envelope, gate open state, normalized dB gain, and output peaks every 64 samples. Bound on `loadbang` via `scope #0-recipscope`.
 
 ### Build / Test / Preview

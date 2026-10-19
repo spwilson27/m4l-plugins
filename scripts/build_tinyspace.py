@@ -1,28 +1,25 @@
 #!/usr/bin/env python3
 """
-Build devices/Tiny Space.amxd and three condensed GUI layout proposals:
-  1. "modules" (516 x 169, default -> devices/Tiny Space.amxd & devices/Tiny Space Modules.amxd)
-               Signal-flow 3-stage module cards: Visualizer + 1. INPUT + 2. FDN TANK + 3. OUT.
-  2. "compact" (448 x 169 -> devices/Tiny Space Compact.amxd)
-               Ultra-compact 2-panel rack: Visualizer + Top Dark LCD Matrix + 5 Hero Dials.
-  3. "split"   (500 x 169 -> devices/Tiny Space Split.amxd)
-               Wide hero visualizer + 3x2 primary dial grid + bottom 4-cell tone strip.
+Build devices/Tiny Space.amxd (292 x 169 px)
 
 Audio-effect reverb: a gen.codebox~ 20-line feedback delay network whose
-seed (0-9999) picks density, delay times, and diffusion character.
+seed (0-1000) scales active delay-line density from 4 to 20 lines and picks
+delay times and diffusion, paired with 8 orthogonal room models (COMB, HYBRID,
+ROOM, PLATE, TANK, BOX, SPRING, BOUNCE).
 Presentation height is fixed at 169 px. The v8ui string field never overlaps a live.* control.
 """
 
 import json
 import os
 import struct
-import sys
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "tinyspace_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "tinyspace_ui.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "tinyspace_core.genexpr")
+OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Tiny Space.amxd")
 
+DEVICE_W = 292.0
 DEVICE_H = 169.0
 
 COL_CYAN  = (0.28, 0.80, 0.95)
@@ -184,50 +181,12 @@ def make_panel(obj_id, x, y, w, h, bg=(0.09, 0.105, 0.125), border=(0.18, 0.22, 
     }
 
 
-def make_seed_widgets(lbl_x, box_x, box_w=54.0):
-    return [
-        make_label("obj-seed-lbl", "Seed", lbl_x, 8, 32, 14, size=8.5, color=(0.62, 0.70, 0.78), align=2),
-        {
-            "box": {
-                "activebgcolor": [0.06, 0.075, 0.095, 1.0],
-                "annotation": "Picks a deterministic delay-line configuration. The same seed always rebuilds the same space.",
-                "annotation_name": "Seed",
-                "id": "obj-seed",
-                "maxclass": "live.numbox",
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", "int"],
-                "parameter_enable": 1,
-                "patching_rect": [200.0, 18.0, float(box_w), 16.0],
-                "presentation": 1,
-                "presentation_rect": [float(box_x), 7.0, float(box_w), 15.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Seed",
-                        "parameter_initial": [350],
-                        "parameter_initial_enable": 1,
-                        "parameter_linknames": 1,
-                        "parameter_longname": "Seed",
-                        "parameter_mmax": 1000,
-                        "parameter_mmin": 0,
-                        "parameter_shortname": "Seed",
-                        "parameter_type": 1,
-                        "parameter_unitstyle": 0,
-                    }
-                },
-                "textcolor": [0.45, 0.86, 0.95, 1.0],
-                "varname": "Seed",
-            }
-        },
-    ]
-
-
 def make_character_selector(x, y, w=50.0, h=15.0):
-    """Single dropdown selection box (`live.menu`) for COMB / HYBRID / ROOM."""
+    """Single dropdown selection box (`live.menu`) for the 8 room models."""
     return {
         "box": {
             "activebgcolor": [0.06, 0.075, 0.095, 1.0],
-            "annotation": "Selects FDN character: Comb (metallic parallel lines), Hybrid, or Room (diffused Householder small room).",
+            "annotation": "Selects FDN room model: Comb, Hybrid, Room, Plate, Tank, Box, Spring, or Bounce.",
             "annotation_name": "Character",
             "bordercolor": [0.22, 0.28, 0.36, 1.0],
             "fontface": 1,
@@ -265,19 +224,20 @@ def make_character_selector(x, y, w=50.0, h=15.0):
     }
 
 
-def layout_modules():
-    """
-    Proposal 1: Undulae Tinyspace 1.1 Framed Layout (292 x 169 px)
-      - Left Column (x=6..62): PreDly numbox + HP & LP dials
-      - Center Column (x=66..226):
-          - Top header: Title + Seed numbox + Character selection box (COMB / HYBRID / ROOM)
-          - Center screen: 152 x 74 v8ui overlaid L+R string canvas
-          - Bottom 3 dials: Size, Feedback, XFeed
-      - Right Column (x=230..286): Damp & Mod numboxes + Width & Mix dials
-    """
-    dev_w = 292.0
+def build_patcher():
+    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        config_js = f.read()
+    with open(UI_PATH, "r", encoding="utf-8") as f:
+        ui_js = f.read()
+    with open(GEN_PATH, "r", encoding="utf-8") as f:
+        gen_code = f.read()
+    v8_code = config_js.rstrip() + "\n\n" + ui_js
+
     viz_rect = [70.0, 26.0, 152.0, 74.0]
 
+    # Note: In Max for Live, `parameter_type: 1` (Int) is limited to 256 values (0..255).
+    # For integer ranges > 255 (like Seed 0..1000), M4L requires `parameter_type: 0` (Float)
+    # with `parameter_unitstyle: 0` (Int display) and `parameter_steps: 1001`.
     ui_boxes = [
         # Left Column: Input Conditioning (x=6..62)
         make_label("obj-lbl-pre", "PreDly", 10, 8, 48, 12, size=8.0, color=COL_TEAL, align=1),
@@ -292,11 +252,15 @@ def layout_modules():
                 "activebgcolor": [0.06, 0.075, 0.095, 1.0],
                 "annotation": "Picks a deterministic delay-line configuration (0-1000). Lower seeds have fewer delay lines; higher seeds have more.",
                 "annotation_name": "Seed",
+                "appearance": 0,
+                "bordercolor": [0.20, 0.25, 0.31, 1.0],
+                "fontface": 1,
+                "fontsize": 9.0,
                 "id": "obj-seed",
                 "maxclass": "live.numbox",
                 "numinlets": 1,
                 "numoutlets": 2,
-                "outlettype": ["", "int"],
+                "outlettype": ["", "float"],
                 "parameter_enable": 1,
                 "patching_rect": [200.0, 18.0, 42.0, 16.0],
                 "presentation": 1,
@@ -304,14 +268,15 @@ def layout_modules():
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Seed",
-                        "parameter_initial": [350],
+                        "parameter_initial": [350.0],
                         "parameter_initial_enable": 1,
                         "parameter_linknames": 1,
                         "parameter_longname": "Seed",
-                        "parameter_mmax": 1000,
-                        "parameter_mmin": 0,
+                        "parameter_mmax": 1000.0,
+                        "parameter_mmin": 0.0,
                         "parameter_shortname": "Seed",
-                        "parameter_type": 1,
+                        "parameter_steps": 1001,
+                        "parameter_type": 0,
                         "parameter_unitstyle": 0,
                     }
                 },
@@ -340,180 +305,6 @@ def layout_modules():
         make_panel("obj-panel-dials", 66,  106, 160, 57,  bg=(0.10, 0.115, 0.135), border=(0.16, 0.20, 0.24)),
         make_panel("obj-panel-out",   230, 5,   56,  158, bg=(0.10, 0.115, 0.135), border=(0.16, 0.20, 0.24)),
     ]
-    return dev_w, viz_rect, ui_boxes, panels
-
-
-def layout_compact():
-    """
-    Proposal 2: Pocket Screen + 5 Hero Dials (300 x 169 px)
-      - Left Pocket Panel (x=6..126): Title + Seed & Character selectors + 112 x 58 v8ui screen + PreDly & XFeed
-      - Right Control Deck (x=130..294):
-          - Top Conditioning Strip (y=8..44): HP, LP, Mod numboxes
-          - 5 Dials (3 top + 2 bottom): Size, Feedback, Damp + Width, Mix
-    """
-    dev_w = 300.0
-    viz_rect = [10.0, 42.0, 112.0, 58.0]
-
-    ui_boxes = [
-        make_label("obj-title", "tinyspace", 10, 7, 112, 14, size=10.0, color=(0.90, 0.94, 0.98)),
-        {
-            "box": {
-                "activebgcolor": [0.06, 0.075, 0.095, 1.0],
-                "annotation": "Picks a deterministic delay-line configuration. The same seed always rebuilds the same space.",
-                "annotation_name": "Seed",
-                "id": "obj-seed",
-                "maxclass": "live.numbox",
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", "int"],
-                "parameter_enable": 1,
-                "patching_rect": [200.0, 18.0, 52.0, 16.0],
-                "presentation": 1,
-                "presentation_rect": [10.0, 24.0, 52.0, 15.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Seed",
-                        "parameter_initial": [350],
-                        "parameter_initial_enable": 1,
-                        "parameter_linknames": 1,
-                        "parameter_longname": "Seed",
-                        "parameter_mmax": 1000,
-                        "parameter_mmin": 0,
-                        "parameter_shortname": "Seed",
-                        "parameter_type": 1,
-                        "parameter_unitstyle": 0,
-                    }
-                },
-                "textcolor": [0.45, 0.86, 0.95, 1.0],
-                "varname": "Seed",
-            }
-        },
-        make_character_selector(66, 24, 56, 15),
-        # Bottom of Left Panel: PreDly + XFeed numboxes
-        make_label("obj-lbl-pre", "PreDly", 10, 108, 52, 12, size=7.5, color=COL_TEAL, align=1),
-        make_numbox("predly", 10, 121, 52, 15, color=COL_TEAL),
-        make_label("obj-lbl-xf", "XFeed", 68, 108, 54, 12, size=7.5, color=COL_CYAN, align=1),
-        make_numbox("xfeed", 68, 121, 54, 15, color=COL_CYAN),
-        make_label("obj-note-seed", "Seed 0-1000", 10, 142, 112, 12, size=7.5, color=(0.50, 0.58, 0.66), bold=False, align=1),
-
-        # Right Panel Top LCD Strip: HP, LP, Mod
-        make_label("obj-lbl-hp", "HP Cut", 136, 9, 50, 11, size=7.5, color=COL_AMBER, align=1),
-        make_numbox("hp", 136, 22, 50, 15, color=COL_AMBER),
-        make_label("obj-lbl-lp", "LP Cut", 190, 9, 50, 11, size=7.5, color=COL_AMBER, align=1),
-        make_numbox("lp", 190, 22, 50, 15, color=COL_AMBER),
-        make_label("obj-lbl-mod", "Mod", 244, 9, 44, 11, size=7.5, color=COL_CYAN, align=1),
-        make_numbox("mod", 244, 22, 44, 15, color=COL_CYAN),
-
-        # Right Panel Middle: 3 Tank Dials (Size, Fbk, Damp)
-        make_dial("size",     136, 48, 48, 48, color=COL_CYAN),
-        make_dial("feedback", 190, 48, 48, 48, color=COL_CYAN),
-        make_dial("damp",     242, 48, 48, 48, color=COL_CYAN),
-
-        # Right Panel Bottom: Width + Mix Dials
-        make_dial("width",    158, 108, 52, 48, color=COL_AMBER),
-        make_dial("mix",      222, 108, 52, 48, color=COL_AMBER),
-    ]
-
-    panels = [
-        make_panel("obj-panel-viz",   6,   5, 120, 158, bg=(0.07, 0.08, 0.095), border=(0.16, 0.20, 0.25)),
-        make_panel("obj-panel-dials", 130, 5, 164, 158, bg=(0.10, 0.115, 0.135), border=(0.16, 0.19, 0.23)),
-        make_panel("obj-panel-lcd",   134, 8, 156, 34,  bg=(0.055, 0.065, 0.08), border=(0.16, 0.22, 0.28)),
-    ]
-    return dev_w, viz_rect, ui_boxes, panels
-
-
-def layout_split():
-    """
-    Proposal 3: Top-Screen Pedal (284 x 169 px)
-      - Left Strip (x=6..118):
-          - Top: Title + Seed & Character selectors + 104 x 50 v8ui mini screen
-          - Bottom 2x2 LCD Grid: PreDly, Mod, HP, LP
-      - Right 3x2 Dial Grid (x=122..278):
-          - Row 1: Size, Feedback, Damp
-          - Row 2: XFeed, Width, Mix
-    """
-    dev_w = 284.0
-    viz_rect = [10.0, 42.0, 104.0, 50.0]
-
-    ui_boxes = [
-        make_label("obj-title", "tinyspace", 10, 7, 104, 14, size=9.5, color=(0.90, 0.94, 0.98)),
-        {
-            "box": {
-                "activebgcolor": [0.06, 0.075, 0.095, 1.0],
-                "annotation": "Picks a deterministic delay-line configuration. The same seed always rebuilds the same space.",
-                "annotation_name": "Seed",
-                "id": "obj-seed",
-                "maxclass": "live.numbox",
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", "int"],
-                "parameter_enable": 1,
-                "patching_rect": [200.0, 18.0, 48.0, 16.0],
-                "presentation": 1,
-                "presentation_rect": [10.0, 24.0, 48.0, 15.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Seed",
-                        "parameter_initial": [350],
-                        "parameter_initial_enable": 1,
-                        "parameter_linknames": 1,
-                        "parameter_longname": "Seed",
-                        "parameter_mmax": 1000,
-                        "parameter_mmin": 0,
-                        "parameter_shortname": "Seed",
-                        "parameter_type": 1,
-                        "parameter_unitstyle": 0,
-                    }
-                },
-                "textcolor": [0.45, 0.86, 0.95, 1.0],
-                "varname": "Seed",
-            }
-        },
-        make_character_selector(62, 24, 52, 15),
-
-        # Bottom-Left 2x2 Conditioning Grid (y=96..156)
-        make_label("obj-lbl-pre", "PreDly", 10, 96, 50, 11, size=7.5, color=COL_TEAL, align=1),
-        make_numbox("predly", 10, 108, 50, 14, color=COL_TEAL),
-        make_label("obj-lbl-mod", "Mod", 64, 96, 50, 11, size=7.5, color=COL_CYAN, align=1),
-        make_numbox("mod", 64, 108, 50, 14, color=COL_CYAN),
-
-        make_label("obj-lbl-hp", "HP Cut", 10, 126, 50, 11, size=7.5, color=COL_AMBER, align=1),
-        make_numbox("hp", 10, 138, 50, 14, color=COL_AMBER),
-        make_label("obj-lbl-lp", "LP Cut", 64, 126, 50, 11, size=7.5, color=COL_AMBER, align=1),
-        make_numbox("lp", 64, 138, 50, 14, color=COL_AMBER),
-
-        # Right 3x2 Dial Grid (x=122..278)
-        make_dial("size",     126, 18, 46, 52, color=COL_CYAN),
-        make_dial("feedback", 177, 18, 46, 52, color=COL_CYAN),
-        make_dial("damp",     228, 18, 46, 52, color=COL_CYAN),
-
-        make_dial("xfeed",    126, 96, 46, 52, color=COL_AMBER),
-        make_dial("width",    177, 96, 46, 52, color=COL_AMBER),
-        make_dial("mix",      228, 96, 46, 52, color=COL_AMBER),
-    ]
-
-    panels = [
-        make_panel("obj-panel-viz",   6,   5, 112, 158, bg=(0.07, 0.08, 0.095), border=(0.16, 0.20, 0.25)),
-        make_panel("obj-panel-dials", 122, 5, 156, 158, bg=(0.10, 0.115, 0.135), border=(0.16, 0.19, 0.23)),
-    ]
-    return dev_w, viz_rect, ui_boxes, panels
-
-
-def build_patcher(variant="modules"):
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        config_js = f.read()
-    with open(UI_PATH, "r", encoding="utf-8") as f:
-        ui_js = f.read()
-    with open(GEN_PATH, "r", encoding="utf-8") as f:
-        gen_code = f.read()
-    v8_code = config_js.rstrip() + "\n\n" + ui_js
-
-    if variant == "compact":
-        dev_w, viz_rect, ui_boxes, panels = layout_compact()
-    elif variant == "split":
-        dev_w, viz_rect, ui_boxes, panels = layout_split()
-    else:
-        dev_w, viz_rect, ui_boxes, panels = layout_modules()
 
     boxes = [
         *ui_boxes,
@@ -804,7 +595,7 @@ def build_patcher(variant="modules"):
             },
             "classnamespace": "box",
             "rect": [40.0, 60.0, 1100.0, 640.0],
-            "openrect": [0.0, 0.0, float(dev_w), DEVICE_H],
+            "openrect": [0.0, 0.0, float(DEVICE_W), DEVICE_H],
             "bglocked": 0,
             "openinpresentation": 1,
             "default_fontsize": 10.0,
@@ -825,7 +616,7 @@ def build_patcher(variant="modules"):
             "boxanimatetime": 500,
             "enablehscroll": 1,
             "enablevscroll": 1,
-            "devicewidth": float(dev_w),
+            "devicewidth": float(DEVICE_W),
             "description": "Tiny Space reverb: seed-selected combs through a small room",
             "digest": "Seeded tiny-space reverb for Max for Live",
             "tags": "max for live reverb delay tiny space",
@@ -879,20 +670,7 @@ def write_amxd(patcher_doc, out_path):
 
 
 def build():
-    chosen = sys.argv[1].lower() if len(sys.argv) > 1 else "modules"
-    if chosen not in ("modules", "compact", "split"):
-        chosen = "modules"
-
-    variants = {
-        "modules": os.path.join(ROOT_DIR, "devices", "Tiny Space Modules.amxd"),
-        "compact": os.path.join(ROOT_DIR, "devices", "Tiny Space Compact.amxd"),
-        "split":   os.path.join(ROOT_DIR, "devices", "Tiny Space Split.amxd"),
-    }
-    for key, path in variants.items():
-        write_amxd(build_patcher(key), path)
-
-    out_main = os.path.join(ROOT_DIR, "devices", "Tiny Space.amxd")
-    write_amxd(build_patcher(chosen), out_main)
+    write_amxd(build_patcher(), OUT_AMXD_PATH)
 
 
 if __name__ == "__main__":

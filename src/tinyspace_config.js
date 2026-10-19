@@ -206,24 +206,65 @@ function delayMs(nominalMs, size01) {
     return nominalMs * sizeScale(size01);
 }
 
-// Full feedback falls about 60 dB in 80 seconds. The per-loop coefficient is
-// higher for short lines so a 1 ms comb rings about as long as a 40 ms one.
-// Matches ringGain() in tinyspace_core.genexpr. The room matrix is orthogonal
-// and crossfeed is a rotation, so this gain is the whole decay law.
+// Delay-style RT60 in seconds. The knob is not linear: 50% is a short slap,
+// and only the top of the knob opens into a long resonator.
+//   0%    0 s
+//   25%   ~0.18 s
+//   50%   ~0.70 s
+//   75%   ~2.7 s
+//   90%   ~8.4 s
+//   100%  ~27.5 s
+// rt = 2.90663 k^2 - 0.81561 k^4 + 7.05921 k^6 - 1.60268 k^10 + 19.9526 k^16
+// Matches ringGain() in tinyspace_core.genexpr.
+const RT60_C2 = 2.90663;
+const RT60_C4 = -0.81561;
+const RT60_C6 = 7.05921;
+const RT60_C10 = -1.60268;
+const RT60_C16 = 19.9526;
+
+function feedbackRt60(knob01) {
+    const k = clamp(knob01, 0, 1);
+    if (!(k >= 0.001)) return 0;
+    const k2 = k * k;
+    const k4 = k2 * k2;
+    const k6 = k4 * k2;
+    const k10 = k6 * k4;
+    const k16 = k10 * k6;
+    return RT60_C2 * k2 + RT60_C4 * k4 + RT60_C6 * k6 + RT60_C10 * k10 + RT60_C16 * k16;
+}
+
+// Per-loop coefficient. Higher for short lines so a 1 ms comb rings about as
+// long as a 40 ms one. The room matrix is orthogonal and crossfeed is a
+// rotation, so this gain is the whole decay law.
 function feedbackGain(knob01, delayMs) {
-    const rt = clamp(knob01, 0, 1) * 80;
-    if (!(rt >= 0.05)) return 0;
+    const rt = feedbackRt60(knob01);
+    if (!(rt > 0)) return 0;
     const secs = Math.max(delayMs, 1000 / 48000) / 1000;
     const g = Math.exp(-6.90775527898 * secs / rt);
     return Math.min(g, 0.9999995);
 }
 
 // Amplitude left after `seconds` when feedback is `knob01` and the mix is unitary.
-// fbk 1 keeps about half the amplitude at 8 seconds (RT60 = 80 s).
 function tailAmplitude(knob01, seconds) {
-    const rt = clamp(knob01, 0, 1) * 80;
-    if (!(rt >= 0.05)) return 0;
+    const rt = feedbackRt60(knob01);
+    if (!(rt > 0)) return 0;
     return Math.exp(-6.90775527898 * seconds / rt);
+}
+
+// One-pole lowpass pole for a feedback loop. Damp 0 is a bypass.
+// Matches dampCoef() in tinyspace_core.genexpr. On an 8 ms line the cutoff
+// is about 5 kHz at 20%, about 1.8 kHz at 50%, and a few hundred hertz at 100%.
+function dampPole(delayMs, damp01, offset, sr) {
+    const rate = sr > 0 ? sr : 44100;
+    const amtIn = clamp(damp01, 0, 1);
+    if (!(amtIn >= 0.001)) return 0;
+    const off = clamp(offset, 0, 0.35);
+    const amt = Math.min(1, amtIn * (0.85 + 0.30 * off));
+    const fcBase = 16000 * Math.pow(0.015, Math.pow(Math.max(amt, 0.00001), 0.75));
+    const span = Math.max(delayMs * rate / 1000, 1);
+    const scale = clamp(Math.pow(0.008 * rate / span, 0.45), 0.6, 3.2);
+    const fc = fcBase * scale;
+    return Math.min(Math.exp(-6.28318530718 * fc / rate), 0.995);
 }
 
 // Plane orthogonal to (1, 1, 1). A rotation here is orthogonal for every angle
@@ -369,8 +410,10 @@ if (typeof module !== "undefined" && module.exports) {
         isLineActive,
         sizeScale,
         delayMs,
+        feedbackRt60,
         feedbackGain,
         tailAmplitude,
+        dampPole,
         fdnMix,
         SPRING_THETA,
         configToFloats

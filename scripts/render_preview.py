@@ -364,11 +364,30 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                         radius=1.5 * SCALE,
                         fill=fill_c,
                     )
-                val_str = f"{int(round(init_val))} %" if ustyle == 5 else (f"{int(round(init_val))} st" if ustyle == 7 else (f"{init_val:.1f} dB" if ustyle == 4 else (f"{int(round(init_val))} Hz" if (ustyle == 3 and abs(init_val) >= 10) else (f"{init_val:.1f} Hz" if ustyle == 3 else (f"{init_val:.1f} ms" if (ustyle == 2 and init_val < 10) else (f"{int(round(init_val))} ms" if ustyle == 2 else f"{init_val:.1f}"))))))
+                if ustyle == 9 and enums:
+                    idx = max(0, min(len(enums) - 1, int(round(init_val))))
+                    val_str = str(enums[idx])
+                elif ustyle == 5:
+                    val_str = f"{int(round(init_val))} %"
+                elif ustyle == 7:
+                    val_str = f"{int(round(init_val))} st"
+                elif ustyle == 4:
+                    val_str = f"{init_val:.1f} dB"
+                elif ustyle == 3 and abs(init_val) >= 10:
+                    val_str = f"{int(round(init_val))} Hz"
+                elif ustyle == 3:
+                    val_str = f"{init_val:.1f} Hz"
+                elif ustyle == 2 and init_val < 10:
+                    val_str = f"{init_val:.1f} ms"
+                elif ustyle == 2:
+                    val_str = f"{int(round(init_val))} ms"
+                else:
+                    val_str = f"{init_val:.1f}"
                 fnt = get_font(8.5 * SCALE, bold=True)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
-                draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
+                text_c = (242, 246, 252, 255) if (ustyle == 9 and enums) else tc
+                draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=text_c)
             else:
                 if bg[3] > 0:
                     draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=(50, 56, 66, 255), width=1)
@@ -593,6 +612,26 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             val_str = f"{init_val:+.1f}dB" if abs(init_val) >= 0.05 else "0.0dB"
             bbox2 = draw.textbbox((0, 0), val_str, font=fnt)
             draw.text((rx + (rw - (bbox2[2] - bbox2[0])) * 0.5, ry + rh - 10 * SCALE), val_str, font=fnt, fill=(224, 230, 236, 255))
+
+        elif mc == "live.menu":
+            vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
+            enums = vof.get("parameter_enum", ["Soft Clip", "Hard Clip", "Limiter"])
+            init_idx = int(vof.get("parameter_initial", [0])[0])
+            label = str(enums[max(0, min(len(enums) - 1, init_idx))])
+            bg = rgba_tuple(w.get("activebgcolor", [0.07, 0.085, 0.11, 1.0]))
+            bd = rgba_tuple(w.get("bordercolor", [0.42, 0.48, 0.56, 1.0]))
+            tc = rgba_tuple(w.get("textcolor", [0.96, 0.66, 0.25, 1.0]))
+            draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
+            fnt = get_font(8.5 * SCALE, bold=True)
+            draw.text((rx + 4 * SCALE, ry + 1.5 * SCALE), label, font=fnt, fill=tc)
+            # Dropdown caret triangle on the right
+            cx_t = rx + rw - 6.5 * SCALE
+            cy_t = ry + rh * 0.52
+            draw.polygon([
+                (cx_t - 3 * SCALE, cy_t - 1.8 * SCALE),
+                (cx_t + 3 * SCALE, cy_t - 1.8 * SCALE),
+                (cx_t, cy_t + 2.2 * SCALE),
+            ], fill=tc)
 
         elif mc == "live.drop":
             bg = (22, 26, 33, 255)

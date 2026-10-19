@@ -16,10 +16,18 @@ Cases:
   decay1   — full feedback rings, then falls, and never grows
   decay0   — zero feedback is gone well before the full-feedback tail
   metal    — size 0 comb still has a bright repeating tone after a second
+  ring0..7 — every room model at size 0, damp 0, fbk 1 is audible at 8 s
+             and 10 s, strictly decaying, and matched to the other models
+  ringxf   — the same tail survives unequal delays with crossfeed at 25%
+  decay50  — 50% feedback is a short delay: audible around 250 ms, silent by 1 s
+  half0..7 — the same 50% tail on every room model
+  fbk25/75/90 — the delay-style curve at the other knob positions
+  damp0/damp1 — full feedback stays bright at damp 0 and goes dark at damp 1
 """
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -69,8 +77,10 @@ def build_harness(gen_code, case):
         box("obj-rec-on", "1", 40, 200, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
         box("obj-del-stop", f"delay {case['dur']}", 40, 240, 80, 20, numinlets=2, numoutlets=1),
         box("obj-rec-off", "0", 40, 280, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-peak", "delay 40", 40, 320, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-del-analyze", "delay 80", 40, 360, 70, 20, numinlets=2, numoutlets=1),
+        # Leave time for record~ to flush into the buffer before the probe peeks it.
+        # A heavy gen patch can still be rendering the start of a short take otherwise.
+        box("obj-del-peak", "delay 300", 40, 320, 70, 20, numinlets=2, numoutlets=1),
+        box("obj-del-analyze", "delay 400", 40, 360, 80, 20, numinlets=2, numoutlets=1),
         box("obj-analyze", f"analyze {case['dur']}", 120, 360, 90, 20, maxclass="message", numinlets=2, numoutlets=1),
         box("obj-quit", "; max quit", 40, 420, 70, 20, maxclass="message", numinlets=2, numoutlets=1),
         box("obj-params", case["params"], 200, 40, 680, 20, maxclass="message", numinlets=2, numoutlets=1),
@@ -255,7 +265,7 @@ def cases():
             "config": "single",
             "bind": True,
             "arm": 200,
-            "dur": 400,
+            "dur": 1200,
             "params": params("size 0, damp 0, width 0, wet 1, fbk 0"),
         },
         {
@@ -264,7 +274,7 @@ def cases():
             "config": "single",
             "bind": True,
             "arm": 250,
-            "dur": 400,
+            "dur": 1200,
             "params": params("size 1, damp 0, width 0, wet 1, fbk 0"),
         },
         {
@@ -282,7 +292,7 @@ def cases():
             "config": "comb",
             "bind": True,
             "arm": 200,
-            "dur": 400,
+            "dur": 1200,
             "params": params("size 0.8, damp 0, width 0, wet 1, fbk 0.7"),
         },
         {
@@ -312,6 +322,93 @@ def cases():
             "dur": 1600,
             "params": params("size 0, damp 0, width 0, wet 1, fbk 1"),
         },
+        {
+            "name": "damp0",
+            "mode": "impulse",
+            "config": "ring0",
+            "bind": True,
+            "arm": 200,
+            "dur": 1200,
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 1"),
+        },
+        {
+            "name": "damp1",
+            "mode": "impulse",
+            "config": "ring0",
+            "bind": True,
+            "arm": 200,
+            "dur": 1200,
+            "params": params("size 0, damp 1, width 1, wet 1, fbk 1"),
+        },
+    ) + tuple(
+        {
+            "name": f"ring{model}",
+            "mode": "impulse",
+            "config": f"ring{model}",
+            "bind": True,
+            "arm": 200,
+            "dur": 11000,
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 1"),
+        }
+        for model in range(8)
+    ) + (
+        {
+            "name": "ringxf",
+            "mode": "impulse",
+            "config": "ringxf",
+            "bind": True,
+            "arm": 200,
+            "dur": 11000,
+            # xfeed is last so it overrides QUIET's xfeed 0.
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 1") + ", xfeed 0.25",
+        },
+        {
+            "name": "decay50",
+            "mode": "impulse",
+            "config": "ring0",
+            "bind": True,
+            "arm": 200,
+            "dur": 1600,
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 0.5"),
+        },
+        {
+            "name": "fbk25",
+            "mode": "impulse",
+            "config": "ring0",
+            "bind": True,
+            "arm": 200,
+            "dur": 1200,
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 0.25"),
+        },
+        {
+            "name": "fbk75",
+            "mode": "impulse",
+            "config": "ring0",
+            "bind": True,
+            "arm": 200,
+            "dur": 4500,
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 0.75"),
+        },
+        {
+            "name": "fbk90",
+            "mode": "impulse",
+            "config": "ring0",
+            "bind": True,
+            "arm": 200,
+            "dur": 8000,
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 0.9"),
+        },
+    ) + tuple(
+        {
+            "name": f"half{model}",
+            "mode": "impulse",
+            "config": f"ring{model}",
+            "bind": True,
+            "arm": 200,
+            "dur": 1600,
+            "params": params("size 0, damp 0, width 1, wet 1, fbk 0.5"),
+        }
+        for model in range(8)
     )
 
 
@@ -351,19 +448,37 @@ def first_peak(env, start, end, floor):
     return -1
 
 
-def run_case(gen_code, case):
+def clear_recovery():
+    recovery = os.path.expanduser(
+        "~/Library/Application Support/Cycling '74/Max 9/Crash Recovery"
+    )
+    shutil.rmtree(recovery, ignore_errors=True)
+
+
+def run_case(gen_code, case, retried=False):
+    # A previous Max can reopen Crash Recovery on top of the harness and
+    # measure silence. Kill a leftover harness, then delete that folder.
+    subprocess.run(
+        ["pkill", "-f", "tinyspace_harness.maxpat"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    for _ in range(20):
+        still = subprocess.run(
+            ["pgrep", "-f", "tinyspace_harness.maxpat"],
+            stdout=subprocess.DEVNULL,
+        )
+        if still.returncode != 0:
+            break
+        time.sleep(0.25)
+    time.sleep(0.3)
+    clear_recovery()
     build_harness(gen_code, case)
     if os.path.exists(RESULT):
         os.remove(RESULT)
     log_size = os.path.getsize(MAX_LOG) if os.path.exists(MAX_LOG) else 0
-    recovery = os.path.expanduser(
-        "~/Library/Application Support/Cycling '74/Max 9/Crash Recovery"
-    )
-    recovery_bak = recovery + ".tinyspace-bak"
-    if os.path.isdir(recovery) and not os.path.exists(recovery_bak):
-        os.rename(recovery, recovery_bak)
     proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 45
+    deadline = time.time() + max(45, case["dur"] / 1000.0 + 35)
     while time.time() < deadline and not os.path.exists(RESULT):
         if proc.poll() is not None:
             break
@@ -408,6 +523,15 @@ def run_case(gen_code, case):
     )
     print(f"env {preview}")
     dump_log(log_size)
+    # Max sometimes opens before the driver is up, so the click never lands
+    # and the take is silent. One fresh launch is enough. A full-wet test
+    # with an unbound buffer is supposed to be silent, so that case is not retried.
+    ctl = meta.get("ctl", 0)
+    heard = max(env) if env else 0.0
+    expects_audio = case["mode"] in ("impulse", "burst")
+    if not retried and (ctl < 0.05 or (expects_audio and heard < 1e-4)):
+        print(f"{case['name']}: silent take, retrying once")
+        return run_case(gen_code, case, retried=True)
     return meta
 
 
@@ -531,6 +655,98 @@ def check(name, meta, errors):
             errors.append(f"{name}: no comb impulse")
         elif late < env[first] * 0.45:
             errors.append(f"{name}: short comb died before 1 s ({late} vs {env[first]})")
+    elif name == "damp0" or name == "damp1":
+        early = env_max(env, 0, 40)
+        late = env_max(env, 200, 700)
+        meta["early"] = early
+        meta["late"] = late
+        print(f"{name} early {early:.4f} late {late:.4f}")
+        if early < 0.004:
+            errors.append(f"{name}: impulse did not reach the tank ({early})")
+        if name == "damp0" and late < 0.04:
+            errors.append(f"{name}: undamped tail died early ({late})")
+        if name == "damp1" and late > 0.01:
+            errors.append(f"{name}: full damp is still bright at 200 ms ({late})")
+        if max(early, late) > 1.5:
+            errors.append(f"{name}: damping went unstable ({max(early, late)})")
+    elif name.startswith("ring"):
+        burst = env_max(env, 0, 160)
+        sec = meta.get("sec") or []
+        w2 = sec[2] if len(sec) > 2 else 0.0
+        w5 = sec[5] if len(sec) > 5 else 0.0
+        w8 = sec[8] if len(sec) > 8 else 0.0
+        w10 = sec[10] if len(sec) > 10 else 0.0
+        meta["burst"] = burst
+        meta["w2"] = w2
+        meta["w5"] = w5
+        meta["w8"] = w8
+        meta["w10"] = w10
+        print(" ".join(f"{v:.4f}" for v in sec))
+        print(f"{name} burst {burst:.4f} w2 {w2:.4f} w5 {w5:.4f} w8 {w8:.4f} w10 {w10:.4f}")
+        # ~27.5 s RT60 keeps about 13% at 8 s. The click peak is ~0.10,
+        # so the absolute floors sit under that and above silence.
+        if burst < 0.02:
+            errors.append(f"{name}: impulse did not reach the tank ({burst})")
+        if w8 <= 0.006:
+            errors.append(f"{name}: tail is weak at 8 s ({w8})")
+        if w10 <= 0.003:
+            errors.append(f"{name}: tail is weak at 10 s ({w10})")
+        if not (burst > w2 > w5 > w8):
+            errors.append(f"{name}: tail is not strictly falling ({burst}, {w2}, {w5}, {w8})")
+        if max(w2, w5, w8) > burst:
+            errors.append(f"{name}: feedback grew after the impulse")
+        if name != "ringxf" and not (w8 > w10):
+            errors.append(f"{name}: tail rose between 8 s and 10 s ({w8}, {w10})")
+    elif name == "decay50" or name.startswith("half"):
+        burst = env_max(env, 0, 80)
+        early = env_max(env, 180, 320)
+        late = env_max(env, 1000, 1250)
+        meta["burst"] = burst
+        meta["early"] = early
+        meta["late"] = late
+        print(f"{name} burst {burst:.4f} early {early:.4f} late {late:.4f}")
+        if burst < 0.02:
+            errors.append(f"{name}: impulse did not reach the tank ({burst})")
+        if early < 0.004:
+            errors.append(f"{name}: 50% feedback has no tail at 250 ms ({early})")
+        if late >= 0.002:
+            errors.append(f"{name}: 50% feedback is still ringing at 1 s ({late})")
+        if not (burst > early > late):
+            errors.append(f"{name}: 50% tail is not falling ({burst}, {early}, {late})")
+    elif name == "fbk25":
+        burst = env_max(env, 0, 40)
+        early = env_max(env, 40, 120)
+        late = env_max(env, 400, 700)
+        print(f"fbk25 burst {burst:.4f} early {early:.4f} late {late:.4f}")
+        if early < 0.002:
+            errors.append(f"{name}: 25% feedback died before 100 ms ({early})")
+        if late >= 0.002:
+            errors.append(f"{name}: 25% feedback is still ringing at 0.5 s ({late})")
+    elif name == "fbk75":
+        burst = env_max(env, 0, 80)
+        mid = env_max(env, 800, 1200)
+        late = env_max(env, 3500, 4200)
+        print(f"fbk75 burst {burst:.4f} mid {mid:.4f} late {late:.4f}")
+        if mid < 0.003:
+            errors.append(f"{name}: 75% feedback is already gone at 1 s ({mid})")
+        if late >= 0.002:
+            errors.append(f"{name}: 75% feedback is still ringing at 3.5 s ({late})")
+        if not (burst > mid > late):
+            errors.append(f"{name}: 75% tail is not falling ({burst}, {mid}, {late})")
+    elif name == "fbk90":
+        sec = meta.get("sec") or []
+        burst = env_max(env, 0, 80)
+        w2 = sec[2] if len(sec) > 2 else 0.0
+        w4 = sec[4] if len(sec) > 4 else 0.0
+        w7 = sec[7] if len(sec) > 7 else 0.0
+        print("fbk90 per second " + " ".join(f"{v:.4f}" for v in sec))
+        print(f"fbk90 burst {burst:.4f} w2 {w2:.4f} w4 {w4:.4f} w7 {w7:.4f}")
+        if w2 < 0.008:
+            errors.append(f"{name}: 90% feedback is quiet at 2 s ({w2})")
+        if w7 >= 0.002:
+            errors.append(f"{name}: 90% feedback is still loud at 7 s ({w7})")
+        if not (burst > w2 > w4 > w7):
+            errors.append(f"{name}: 90% tail is not falling ({burst}, {w2}, {w4}, {w7})")
 
 
 def main():
@@ -552,6 +768,46 @@ def main():
         errors.append("full feedback died as fast as zero feedback")
     small = results.get("size0") or {}
     large = results.get("size1") or {}
+    ring_levels = []
+    for model in range(8):
+        meta = results.get(f"ring{model}") or {}
+        if "w8" in meta:
+            ring_levels.append((model, meta["w8"]))
+    if len(ring_levels) == 8:
+        vals = [level for _model, level in ring_levels]
+        lo = min(vals)
+        hi = max(vals)
+        print(
+            "ring8s "
+            + " ".join(f"m{model}:{level:.4f}" for model, level in ring_levels)
+            + f"  range {lo:.4f}..{hi:.4f}"
+        )
+        if lo <= 0 or hi / lo > 1.25:
+            errors.append(f"room models do not share an 8 s level ({lo} .. {hi})")
+    half_levels = []
+    for model in range(8):
+        meta = results.get(f"half{model}") or {}
+        if "early" in meta:
+            half_levels.append((model, meta["early"]))
+    if len(half_levels) == 8:
+        vals = [level for _model, level in half_levels]
+        lo = min(vals)
+        hi = max(vals)
+        print(
+            "half250ms "
+            + " ".join(f"m{model}:{level:.4f}" for model, level in half_levels)
+            + f"  range {lo:.4f}..{hi:.4f}"
+        )
+        if lo <= 0 or hi / lo > 1.35:
+            errors.append(f"room models do not share a 50% tail ({lo} .. {hi})")
+    bright = results.get("damp0") or {}
+    dark = results.get("damp1") or {}
+    if "late" in bright and "late" in dark:
+        print(f"damp late bright {bright['late']:.4f} dark {dark['late']:.4f}")
+        if not (dark["late"] < bright["late"] * 0.25):
+            errors.append(
+                f"damp did not darken the tail ({dark['late']} vs {bright['late']})"
+            )
     if small.get("first", -1) >= 0 and large.get("first", -1) >= 0:
         extra = large["first"] - small["first"]
         print(f"size delay {small['first']} ms -> {large['first']} ms")

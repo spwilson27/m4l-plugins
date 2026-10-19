@@ -38,19 +38,21 @@ A Max for Live **Audio Effect** reverb — a "tiny space" ranging from tight com
 - **Controls**: Size, Damp, Width, Dry/Wet (Mix), Feedback, Pre-delay, Modulation, Crossfeed, HP/LP, **Seed** (0–1000), and **Character** (`COMB`, `HYBRID`, `ROOM`, `PLATE`, `TANK`, `BOX`, `SPRING`, `BOUNCE` dropdown selection box). Knobs stay put when the seed or character changes.
 - **Seed & 8 Room Models**: Deterministic mulberry32 config (`0..1000`). Lower seed values use fewer delay lines (starting at 4 lines: 2 L + 2 R) and higher seeds increase monotonically up to the 20-line cap (10 L + 10 R). The `Character` selector switches across 8 acoustic/algorithmic room models (`COMB` parallel metallic lines, `HYBRID` comb-to-Householder blend, `ROOM` diffused Householder small room, `PLATE` Hadamard/velvet plate, `TANK` Dattorro figure-8 daisy-chained ring loop, `BOX` 3D shoebox standing-wave eigenmodes, `SPRING` dispersive allpass chirp tube, and `BOUNCE` geometric reflection cluster).
 - **Visualization**: 20 vibrating strings (`v8ui`) with the 10 Left (cyan) and 10 Right (amber) delay lines overlaid in a single unified field. Amplitude follows each line's envelope; inactive lines are dim stubs.
-- **gen.codebox~ core**: Predelay, HP/LP, seeded allpasses, 20 fractional delays, crossfeed, damping, soft clip, width, equal-power dry/wet. A seed change ducks the tank for 160 ms.
+- **`gen.codebox~` core**: Predelay, HP/LP, seeded allpasses, 20 whole-sample delay lines, 8 strictly orthogonal room mixing matrices ($M^T M = I$), unitary crossfeed rotation, delay-compensated per-tap lowpass damping (`0%` = bypass, `20%` ≈ `5.3 kHz`, `50%` ≈ `1.8 kHz`, `100%` ≈ `390 Hz`), delay-style feedback taper (`feedbackRt60`: ~`0.79 s` at `50%`, ~`2.74 s` at `75%`, ~`27.5 s` at `100%`), M/S width, and equal-power dry/wet. A seed or character change ducks the tank for `160 ms`.
 
 ### Files
-- `src/tinyspace_config.js` — seeded config and the float layout shared with gen
-- `src/tinyspace_ui.js` — v8ui strings, config poke, meter peek
+- `src/tinyspace_config.js` — seeded config, 8 room models, and `feedbackRt60` / `dampPole` laws shared with gen
+- `src/tinyspace_ui.js` — `v8ui` overlaid strings, config poke, meter peek
 - `src/tinyspace_core.genexpr` — Gen core
-- `scripts/build_tinyspace.py` — builds `devices/Tiny Space.amxd`
-- `tests/test_tinyspace.js` — config invariants and device structure
+- `scripts/build_tinyspace.py` — builds `devices/Tiny Space.amxd` (`292 x 169` px)
+- `scripts/run_tinyspace_audio_tests.py` — real Max audio verification suite (`tests/tinyspace_probe.js`)
+- `tests/test_tinyspace.js` — config, orthogonality, RT60, damping, and device structure unit tests
 - `previews/tiny_space.png` — rendered preview
 
 ### Rebuild & Test
 ```bash
 python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && python3 scripts/render_preview.py "devices/Tiny Space.amxd"
+python3 scripts/run_tinyspace_audio_tests.py
 ```
 
 ---
@@ -89,15 +91,15 @@ A Max for Live **Audio Effect** dynamics and waveshaping processor inspired by t
 - **Compact 3-Stage Signal-Flow Layout (`448 × 169` px)**:
   - **Left Interactive Scope (`162 × 132` px `v8ui`)**: Displays the input silhouette, cyan `ENV` follower, amber `OUT` waveform, live `1/E` dB gain + `OPEN`/`MUTE` bar meter, and **directly draggable `Gate` and `Ceiling` threshold bars** synced bidirectionally with the dials.
   - **`1. DETECT` Stage (Cyan Card)**: `Attack` (`0.05..250 ms`) and `Release` (`0.5..1500 ms`) dials on top, with stacked `HP` (`SC HP` `20..2000 Hz`), `LP` (`SC LP` `400..18000 Hz`), `RMS` (`Detect` `0..100%` Peak-to-RMS + stereo link), and `Look` (`Lookahead` `0..10 ms`) numboxes below.
-  - **`2. 1 / ENV` Stage (Coral Card)**: Stacked `Amount` (`0%..150%` reciprocal exponent, morphing from unity `0%`, to flat `1/env` sustain `100%`, to inverted dynamics `150%`) and `Gate` (`-72..-6 dB` smooth cubic noise floor) dials.
-  - **`3. OUTPUT` Stage (Amber Card)**: `Ceiling` (`-18..0 dB`) dial, `Soft Clip` (`tanh` vs hard ceiling) toggle, and `Mix` (`0..100%` lookahead-aligned equal-power dry/wet) dial.
+  - **`2. 1 / ENV` Stage (Coral Card)**: Stacked `Amount` (`0%..150%` reciprocal exponent, morphing from unity `0%`, to flat `1/env` sustain `100%`, to inverted dynamics `150%`) and `Gate` (`-72..-6 dB` smooth cubic noise floor) dials, plus a **`Rev Gate`** (`Reverse Gate`) toggle that inverts the gate so loud hits above `Gate` are muted and only quiet signals below `Gate` pass through.
+  - **`3. OUTPUT` Stage (Amber Card)**: **`Output Mode`** selection dropdown (`Soft Clip`, `Hard Clip`, `Limiter`) placed directly above the `Ceiling` (`-18..0 dB`) dial, followed by the `Mix` (`0..100%` lookahead-aligned equal-power dry/wet) dial.
 
 ### Files
-- `src/reciprocator_config.js` — shared reciprocal math & gate helpers
+- `src/reciprocator_config.js` — shared reciprocal math, normal/reverse gate & Soft/Hard/Limiter helpers
 - `src/reciprocator_core.genexpr` — `gen.codebox~` DSP core & scope telemetry writer
 - `src/reciprocator_ui.js` — interactive scrolling envelope/gate/output HUD (`v8ui`)
 - `scripts/build_reciprocator.py` — builds `devices/Reciprocator.amxd`
-- `scripts/run_reciprocator_audio_tests.py` — automated Max audio test harness (`bypass`, `flatten`, `gate_mute`, `audiorate`, `ceiling`, `invert`)
+- `scripts/run_reciprocator_audio_tests.py` — automated Max audio test harness (`bypass`, `flatten`, `gate_mute`, `rev_gate`, `audiorate`, `ceiling`, `limiter`, `invert`)
 - `tests/reciprocator_probe.js` — Max audio recording & scope buffer probe
 - `tests/test_reciprocator.js` — unit, layout, patchline & UI interaction verification suite
 - `previews/reciprocator.png` — rendered 2x Retina preview
