@@ -575,7 +575,7 @@ Audio checks (real Max render): `python3 scripts/run_envtrig_audio_tests.py`
 - **The whole face is drawn by two `v8ui` canvases**, both running `src/sampler_face.js`:
   - `obj-viz` (`FACE_REGION "main"`, `x = 0, y = 0, w = 528`) draws the engine list, the sample panel and the bottom panels.
   - `obj-viz-side` (`"side"`, `x = 531, y = 3, w = 66, h = 163`) draws the right-hand column.
-- **Loading a sample**: drop onto the waveform (`obj-drop-wave`), or click the file name or the side `LOAD` button to open the file dialog (`browse` → `opendialog sound`).
+- **Loading a sample**: drop onto the waveform (`obj-drop-wave`), or click the file name to open the file dialog (`browse` → `opendialog sound`).
   - Both reach the main face: the drop as `prepend dropfile`, the dialog pick as `prepend browsed`. The face emits `load_sample` → `prepend replace` → `buffer~ #0-bsamp`, and the buffer's done bang → `prepend sample_loaded` → face.
   - A path split into several atoms by spaces is rejoined.
   - An empty `live.drop` sends `none` when the device loads; `dropfile` ignores it.
@@ -590,6 +590,15 @@ Audio checks (real Max render): `python3 scripts/run_envtrig_audio_tests.py`
 - `buffer~` also reports a finished load as `sample_loaded bang`, which must not rename the sample.
 - `replace` resizes `#0-bsamp` to the file's channel count, so a mono file leaves 1 channel. The face reads `channelcount()` and draws L for both sides. A failed waveform refresh sets `lastLoadError` and is `post()`ed, never silently swallowed.
 - With no sample loaded, MIDI still runs the voices, but the face draws no scan lines, grain clouds or `Pos` marker.
+- **Sliced mode (`mode 3`) keymap**: the slices mapped to keys are `activeSliceStarts(sliceMarkers, start, end)` in `src/sampler_config.js`.
+  - The first slice always begins at the sample start point.
+  - Markers at or before the start (or at or after the end) drop out, so moving the start past C1's marker makes the next slice C1.
+  - Slice `k` plays on MIDI note `36 + k`, and the last slice stops at the sample end.
+  - In Sliced mode the face draws Bitwig-style yellow slice flags with note names, faint unmapped markers, blue start / end handles at the bottom (still draggable), and a `KEYS from C1 · N slices C1 – x` footer.
+  - Clicks between start and end audition the slice under the mouse.
+  - **Live bounds**: when the start / end point moves (face drag or Live automation), `refreshHeldSlices()` re-resolves every held note (`voiceAlloc.updateSliceBounds`) and re-pokes its slice start / end into `#0-bsvoices` without touching the trigger counter. The gen reads them live.
+  - **Playback** dropdown in the Sliced footer (`slice_play`, enum param): `to Slice end` / `to Sample end` / `One-way looping` / `Ping-pong looping`, with Bitwig's glyphs. The menu is drawn in the face over the waveform; a click outside closes it.
+- **Pos (`play_pos`) only applies while Freeze is on.** The knob is dimmed otherwise, and clicking an empty waveform spot scrubs Pos only when frozen. No Pos marker is drawn on the waveform.
 - Every parameter is a real, automatable `live.*` object (`obj-ctrl-<key>`) kept off the face (`presentation 0`), as in Cepstra.
 - **Look**: flat panels (`0.165`) on a grey ground (`0.255`), and a near-black sample panel. Values are blue; the start / end flags and times are yellow, the loop is green, and knob arcs are orange. Knobs are grey discs with a white pointer, and the `Speed` knob is a white disc. All colours are in `COL` in `src/sampler_face.js`.
 - **Left column (`x = 3..56`)**:
@@ -611,7 +620,7 @@ Audio checks (real Max render): `python3 scripts/run_envtrig_audio_tests.py`
     - `MOD`: A D S R, plus env → `Pit` / `Pos`.
     - `LFO`: Rate / Shape / → Pit / Flt / Pos.
     - `UNI`: Uni / Detune / Poly.
-- **Side column**: `LOAD` (file dialog), `Poly` / `Mono` buttons (`mono_legato`), `Width` (L R), `Glide`, `Vel` and `Out`.
+- **Side column**: `Poly` / `Mono` buttons (`mono_legato`), `Width` (L R), `Glide`, `Vel` and `Out`.
 - **Interaction**:
   - Dragging a knob vertically covers its full range in 120 px, shift-drag is 8x finer, and double-click resets it.
   - A knob click captures the mouse until release: the cursor is hidden, hover is frozen on that knob, and the drag keeps working outside the canvas.

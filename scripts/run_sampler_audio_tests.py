@@ -14,6 +14,14 @@ Cases:
   freeze_hold      — Mode 0 playhead frozen at a non-zero sample position
   unison8_wide     — Mode 0 single note with 8 detuned stereo unison voices
   mono_sample      — 1-channel buffer, unison 1: both outputs carry equal audio
+  slice_end / slice_sample_end / slice_loop / slice_pingpong
+                   — slice_play 0..3 in Sliced mode (once to slice end, to sample end, loops)
+  slice_reverse_end / slice_reverse_sample
+                   — Reverse with "to slice end" and "to sample end"
+  live_loop / live_pingpong / live_continue
+                   — slice bounds re-poked into a held voice (no new trigger)
+  pos_off{0,50}_m{0,1,2} / pos_on{10,50}_m0
+                   — Pos (play_pos) only matters while Freeze is on
 """
 
 import os
@@ -70,12 +78,19 @@ def run_case(gen_code, case):
     GEN_CODE = gen_code
     boxes, lines = device_patch(case)
     # Voices are gated on at the start of the measured window (sample time, stepped mode).
+    events = [(SETTLE_MS, "obj-js", 3, "trigger")]
+    if "rebound_ms" in case:
+        events.append((SETTLE_MS + case["rebound_ms"], "obj-js", 3, "rebound"))
     return mh.run_case(
         case["name"], boxes, lines,
-        probe_js=PROBE_JS, probe_args=case["name"],
+        probe_js=PROBE_JS, probe_args=f"{case['name']} {case.get('cut_ms', 0)}",
         settle_ms=SETTLE_MS, dur_ms=case["dur"], channels=2,
-        mode="stepped", events=[(SETTLE_MS, "obj-js", 3, "trigger")],
+        mode="stepped", events=events,
     )
+
+
+SLICE_BASE = "mode 3, filt_on 0, unison_voices 1, unison_width 0, unison_detune 0, sus_lvl 1, atk_ms 0.5, dec_ms 10000, out_gain 0"
+POS_BASE = "freeze {fz}, play_pos {pos}, loop_mode 0, unison_voices 1, unison_width 0, unison_detune 0, grain_spray 0, lfo_pos 0, menv_pos 0, filt_on 0, sus_lvl 1, dec_ms 10000, atk_ms 0.5, out_gain 0"
 
 
 CASES = [
@@ -102,7 +117,7 @@ CASES = [
     {
         "name": "slice_trig",
         "dur": 600,
-        "params": "mode 3, filt_on 1, filt_type 0, filt_cutoff 2800, filt_res 0.45, filt_drive 0.5, out_gain 0",
+        "params": "mode 3, slice_play 2, filt_on 1, filt_type 0, filt_cutoff 2800, filt_res 0.45, filt_drive 0.5, out_gain 0",
     },
     {
         "name": "forward_oneshot",
@@ -124,12 +139,38 @@ CASES = [
         "dur": 500,
         "params": "mode 0, loop_mode 1, unison_voices 8, unison_detune 0.85, unison_width 1, freeze 0, reverse 0, filt_on 0, sus_lvl 1, out_gain 0",
     },
+    # Slice (slice 0.10..0.20 of 12000 frames = 1200 samples = 25 ms at ratio 1; cut at 60 ms).
+    {"name": "slice_end", "dur": 400, "cut_ms": 60, "params": SLICE_BASE + ", slice_play 0"},
+    {"name": "slice_sample_end", "dur": 400, "cut_ms": 60, "params": SLICE_BASE + ", slice_play 1"},
+    {"name": "slice_loop", "dur": 400, "cut_ms": 60, "params": SLICE_BASE + ", slice_play 2"},
+    {"name": "slice_pingpong", "dur": 400, "cut_ms": 60, "params": SLICE_BASE + ", slice_play 3"},
+    {"name": "slice_reverse_end", "dur": 400, "cut_ms": 60, "params": SLICE_BASE + ", slice_play 0, reverse 1"},
+    # Reverse "to sample end" runs from the slice end back to the sample start (0.40..0.50 slice).
+    {"name": "slice_reverse_sample", "dur": 400, "cut_ms": 80, "params": SLICE_BASE + ", slice_play 1, reverse 1"},
+    # Live bounds: re-poked at +100 ms without a new trigger.
+    {"name": "live_loop", "dur": 400, "cut_ms": 150, "rebound_ms": 100, "params": SLICE_BASE + ", slice_play 2"},
+    {"name": "live_pingpong", "dur": 400, "cut_ms": 150, "rebound_ms": 100, "params": SLICE_BASE + ", slice_play 3"},
+    # To sample end, start moved from 0.00 to 0.20 behind the playhead: playback must carry on.
+    {"name": "live_continue", "dur": 150, "cut_ms": 100, "rebound_ms": 100, "params": SLICE_BASE + ", slice_play 1"},
     {
         "name": "mono_sample",
         "dur": 500,
         "params": "mode 0, loop_mode 1, unison_voices 1, unison_width 0, unison_detune 0, freeze 0, reverse 0, filt_on 0, sus_lvl 1, out_gain 0",
     },
 ]
+
+
+for _mode in (0, 1, 2):
+    for _pos, _tag in ((0.0, "0"), (0.5, "50")):
+        CASES.append({
+            "name": f"pos_off{_tag}_m{_mode}", "dur": 400,
+            "params": f"mode {_mode}, " + POS_BASE.format(fz=0, pos=_pos),
+        })
+for _pos, _tag in ((0.1, "10"), (0.5, "50")):
+    CASES.append({
+        "name": f"pos_on{_tag}_m0", "dur": 400,
+        "params": "mode 0, " + POS_BASE.format(fz=1, pos=_pos),
+    })
 
 
 def main():
@@ -210,7 +251,46 @@ def main():
     assert mono["stereoDiff"] < 0.001, f"mono_sample: L/R must match (stereoDiff={mono['stereoDiff']})"
     assert mono["scopePeakL"] > 0.02, "mono_sample: scope must report live output"
 
-    print("All 10 real Max 9 Better Sampler audio tests passed!")
+    # ---- Sliced mode: slice_play ----
+    se, ss, sl, sp = (results[n] for n in ("slice_end", "slice_sample_end", "slice_loop", "slice_pingpong"))
+    assert se["headRms"] > 0.05, f"slice_end: slice must sound first (headRms={se['headRms']})"
+    assert se["afterRms"] < 1e-3 and se["afterPeak"] < 5e-3, (
+        f"slice_end: must be silent after the slice length (afterRms={se['afterRms']}, afterPeak={se['afterPeak']})")
+    assert ss["afterRms"] > 0.03, f"slice_sample_end: must keep sounding past the slice end (afterRms={ss['afterRms']})"
+    for loop_case, r in (("slice_loop", sl), ("slice_pingpong", sp)):
+        assert r["headRms"] > 0.05 and r["afterRms"] > 0.03, (
+            f"{loop_case}: needs sustained energy past the slice length (head={r['headRms']}, after={r['afterRms']})")
+        assert 0.1 <= r["scopePos0"] <= 0.2 + 1e-3, f"{loop_case}: playhead must stay in the slice (pos={r['scopePos0']})"
+    sre, srs = results["slice_reverse_end"], results["slice_reverse_sample"]
+    assert sre["headRms"] > 0.05 and sre["afterRms"] < 1e-3, (
+        f"slice_reverse_end: reverse plays slice end -> start once, then stops (head={sre['headRms']}, after={sre['afterRms']})")
+    assert srs["headRms"] > 0.05 and srs["afterRms"] > 0.01, (
+        f"slice_reverse_sample: reverse must run from the slice end toward the sample start (after={srs['afterRms']})")
+
+    # ---- Live slice bounds ----
+    ll, lp, lc = results["live_loop"], results["live_pingpong"], results["live_continue"]
+    assert 0.1 - 1e-3 <= ll["scopePos0"] <= 0.2 + 1e-3, f"live_loop: playhead must be inside the new 0.10..0.20 slice (pos={ll['scopePos0']})"
+    assert 0.1 - 1e-3 <= lp["scopePos0"] <= 0.2 + 1e-3, f"live_pingpong: playhead must be inside the new 0.10..0.20 slice (pos={lp['scopePos0']})"
+    for live_case, r in (("live_loop", ll), ("live_pingpong", lp)):
+        assert r["afterRms"] > 0.03, f"{live_case}: must keep sounding after the bounds change (afterRms={r['afterRms']})"
+    # Playhead was at ~4800 frames when the start moved to 2400. Playback continues: ~7200 frames (0.60).
+    # A restart at the new start would land at ~4800 frames (0.40).
+    assert 0.55 <= lc["scopePos0"] <= 0.66, f"live_continue: held note must not restart on a bounds change (pos={lc['scopePos0']})"
+
+    # ---- Pos only with Freeze ----
+    def rel_diff(a, b):
+        return abs(a - b) / max(a, b, 1e-9)
+    for m in (0, 1, 2):
+        off0, off50 = results[f"pos_off0_m{m}"], results[f"pos_off50_m{m}"]
+        assert off0["rms"] > 0.005, f"pos_off0_m{m}: expected audible output"
+        assert rel_diff(off0["rms"], off50["rms"]) < 1e-4 and abs(off0["peak"] - off50["peak"]) < 1e-4, (
+            f"mode {m}: Pos must be ignored with Freeze off (rms {off0['rms']} vs {off50['rms']})")
+    on0, on50 = results["pos_on10_m0"], results["pos_on50_m0"]
+    assert on0["rms"] > 0.005 and on50["rms"] > 0.005, "pos_on (Pos 0.1 vs 0.5): expected audible output"
+    assert rel_diff(on0["rms"], on50["rms"]) > 0.1, (
+        f"Pos must move the frozen playhead (rms {on0['rms']} vs {on50['rms']})")
+
+    print(f"All {len(CASES)} real Max 9 Better Sampler audio tests passed!")
 
 
 if __name__ == "__main__":

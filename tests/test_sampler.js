@@ -557,7 +557,7 @@ assert.deepStrictEqual(
     ["glide_ms", "out_gain", "unison_width", "vel_sens"],
     "side face knobs"
 );
-assert.deepStrictEqual(Array.from(sd.hitZones.filter((z) => z.kind === "button").map((z) => z.action)), ["browse", "voicing", "voicing"], "side face: LOAD then Poly / Mono");
+assert.deepStrictEqual(Array.from(sd.hitZones.filter((z) => z.kind === "button").map((z) => z.action)), ["voicing", "voicing"], "side face: Poly / Mono only (no LOAD button)");
 assert.ok(!sd.hitZones.some((z) => z.kind === "wave"), "side face has no waveform");
 sb.preview();
 sb.paint();
@@ -960,7 +960,14 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     assert.strictEqual(sb.curLoopEnd, 0.85);
     assert.ok(mainCtx.notified > notesAtDbl);
 
-    // an empty spot of the waveform sets the play position
+    // Pos only exists while frozen: an empty waveform spot does nothing unfrozen, scrubs Pos frozen
+    sb.set_freeze(0);
+    sb.paint();
+    emitted.length = 0;
+    sb.onclick(wz.x + 0.5 * wz.w, wy, 1, 0, 0);
+    assert.strictEqual(sb.drag, null, "no Pos drag without Freeze");
+    assert.strictEqual(paramMsgs(mainCtx, "play_pos").length, 0, "no Pos change without Freeze");
+    sb.set_freeze(1);
     sb.paint();
     emitted.length = 0;
     sb.onclick(wz.x + 0.5 * wz.w, wy, 1, 0, 0);
@@ -1282,14 +1289,145 @@ console.log("Load, knob capture and empty-sampler scan-line regressions ok");
     r.setvalueof(2, 0, 0, 10000, 1, 1500, 8500, 500, 0, 0, 1, 0, "/Users/test/Kick.wav");
     r.dropfile("/Users/test/Kick.wav");
     assert.strictEqual(rc.emitted.filter((a) => a[1] === "load_sample").length, 1, "restore + replay of the same path loads once");
-    // the LOAD button in the side face opens the dialog
+    // no LOAD button any more: the file name in the header is the browse control
     const sc = makeSandbox(sideViz);
     sc.sb.paint();
-    const load = sc.sb.hitZones.find((z) => z.kind === "button" && z.action === "browse");
-    assert.ok(load && load.y === 0 && load.h === 24, "LOAD button at the top of the side column");
-    sc.sb.onclick(load.x + 5, load.y + 5, 1, 0, 0);
-    assert.ok(sc.emitted.some((a) => a[1] === "browse"), "LOAD opens the file dialog");
+    assert.ok(!sc.sb.hitZones.some((z) => z.action === "browse"), "side column has no LOAD button");
 }
 
 console.log("Drop / browse load path ok");
+
+// --- Sliced mode: the start point is the first slice and the keymap re-indexes from it ---
+{
+    const M = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875];
+    assert.deepStrictEqual(cfg.activeSliceStarts(M, 0, 1), M, "start at 0 keeps every slice");
+    assert.deepStrictEqual(cfg.activeSliceStarts(M, 0.2, 1), [0.2, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875], "start inside slice 2 becomes the first slice");
+    assert.deepStrictEqual(cfg.activeSliceStarts(M, 0.25, 1), [0.25, 0.375, 0.5, 0.625, 0.75, 0.875], "start on a marker: no zero-length slice");
+    assert.deepStrictEqual(cfg.activeSliceStarts(M, 0.2, 0.6), [0.2, 0.25, 0.375, 0.5], "markers past the end drop out");
+    assert.deepStrictEqual(cfg.activeSliceStarts(M.slice().reverse(), 0.3, 1)[0], 0.3, "unsorted markers handled");
+    assert.strictEqual(cfg.sliceIndexAt([0.2, 0.25, 0.375], 0.6, 0.1), -1, "before the start is unmapped");
+    assert.strictEqual(cfg.sliceIndexAt([0.2, 0.25, 0.375], 0.6, 0.3), 1);
+    assert.strictEqual(cfg.sliceIndexAt([0.2, 0.25, 0.375], 0.6, 0.7), -1, "after the end is unmapped");
+
+    // the allocator stops the last slice at the sample end
+    const va = cfg.createVoiceAllocator(16);
+    const last = va.noteOn(36 + 3, 100, 0, [0.2, 0.25, 0.375, 0.5], 0.6);
+    assert.strictEqual(last.sliceStart, 0.5);
+    assert.strictEqual(last.sliceEnd, 0.6, "last slice ends at the sample end, not 1.0");
+
+    // through the face: drag the start handle past C1's marker, C1 now starts at the start point
+    const xc = makeSandbox(mainViz);
+    const x = xc.sb;
+    x.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    x.set_mode(3);
+    x.sliceMarkers = M.slice();
+    x.paint();
+    const wave = x.hitZones.find((z) => z.kind === "wave");
+    const px = (n) => wave.x + n * wave.w;
+    x.onclick(px(0) + 1, wave.y + wave.h - 3, 1, 0, 0);
+    assert.strictEqual(x.drag && x.drag.wave, "samp_start", "start handle is draggable in Sliced mode");
+    x.ondrag(px(0.2), wave.y + wave.h - 3, 1, 0, 0);
+    x.ondrag(px(0.2), wave.y + wave.h - 3, 0, 0, 0);
+    assert.ok(Math.abs(x.curStart - 0.2) < 0.003, `start moved to 0.2 (got ${x.curStart})`);
+    assert.ok(xc.emitted.some((a) => a[1] === "param" && a[2] === "samp_start"), "start change reaches Live");
+
+    xc.pokes.length = 0;
+    x.midi_note(36, 100);
+    const c1 = xc.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.ok(Math.abs(c1.data[4] - x.curStart) < 1e-9, `C1 slice starts at the start point (got ${c1.data[4]})`);
+    assert.strictEqual(c1.data[5], 0.25, "C1 ends at the next marker");
+    x.midi_note(37, 100);
+    const cs1 = xc.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.strictEqual(cs1.data[4], 0.25, "C#1 is the next slice after the start point");
+    x.midi_note(36, 0); x.midi_note(37, 0);
+
+    // moving the start past C1's slice point re-indexes the keys: the old C#1 marker region is now C1
+    x.curStart = 0.3;
+    x.midi_note(36, 100);
+    const re = xc.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.strictEqual(re.data[4], 0.3);
+    assert.strictEqual(re.data[5], 0.375);
+    x.midi_note(36, 0);
+
+    // clicks before the start do not audition; inside they audition the re-indexed slice
+    xc.emitted.length = 0; xc.pokes.length = 0;
+    x.paint();
+    x.onclick(px(0.1), wave.y + 30, 1, 0, 0);
+    assert.strictEqual(xc.pokes.length, 0, "no audition left of the start point");
+    x.onclick(px(0.4), wave.y + 30, 1, 0, 0);
+    assert.strictEqual(x.selectedSliceIdx, 1, "slice 0.375..0.5 is the second key after the start");
+    x.ondrag(px(0.4), wave.y + 30, 0, 0, 0);
+}
+
+console.log("Sliced-mode start point and keymap ok");
+
+// --- live slice bounds, Playback dropdown, Pos tied to Freeze ---
+{
+    // allocator: held notes re-resolve against new slice starts without retriggering
+    const va = cfg.createVoiceAllocator(16);
+    const v = va.noteOn(37, 100, 0, [0, 0.25, 0.5], 1);
+    const trig = v.trigCount;
+    assert.strictEqual(v.sliceStart, 0.25);
+    const touched = va.updateSliceBounds([0.3, 0.5], 0.9);
+    assert.strictEqual(touched.length, 1);
+    assert.strictEqual(v.sliceStart, 0.5, "C#1 is now the second slice after the moved start");
+    assert.strictEqual(v.sliceEnd, 0.9, "last slice ends at the new end");
+    assert.strictEqual(v.trigCount, trig, "no retrigger");
+    va.noteOff(37, 0);
+    assert.strictEqual(va.updateSliceBounds([0, 0.5], 1).length, 0, "released voices are left alone");
+
+    // face: dragging the start while a slice note is held re-pokes that voice live
+    const lc = makeSandbox(mainViz);
+    const l = lc.sb;
+    l.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    l.set_mode(3);
+    l.sliceMarkers = [0, 0.125, 0.25, 0.375, 0.5];
+    l.midi_note(36, 100);
+    const before = lc.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.strictEqual(before.data[4], 0);
+    l.paint();
+    const wave = l.hitZones.find((z) => z.kind === "wave");
+    lc.pokes.length = 0;
+    l.onclick(wave.x + 1, wave.y + wave.h - 3, 1, 0, 0);
+    l.ondrag(wave.x + 0.2 * wave.w, wave.y + wave.h - 3, 1, 0, 0);
+    const live = lc.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.ok(live, "held voice re-poked during the drag");
+    assert.ok(Math.abs(live.data[4] - l.curStart) < 1e-9, "held C1 now starts at the dragged start point");
+    assert.strictEqual(live.data[5], 0.25, "and ends at the next marker after it");
+    assert.strictEqual(live.data[3], before.data[3], "trigger counter unchanged (no retrigger)");
+    l.ondrag(wave.x + 0.2 * wave.w, wave.y + wave.h - 3, 0, 0, 0);
+    // Live automation of the start point does the same
+    lc.pokes.length = 0;
+    l.set_samp_start(30);
+    const auto = lc.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.ok(auto && Math.abs(auto.data[4] - 0.3) < 1e-9, "automated start point moves the held slice");
+    l.midi_note(36, 0);
+
+    // Playback dropdown (Sliced footer): open, pick, close
+    l.paint();
+    const pb = l.hitZones.find((z) => z.action === "slice_play_menu");
+    assert.ok(pb, "Playback control in the Sliced footer");
+    lc.emitted.length = 0;
+    l.onclick(pb.x + 3, pb.y + 3, 1, 0, 0);
+    l.paint();
+    const picks = l.hitZones.filter((z) => z.action === "slice_play_pick");
+    assert.deepStrictEqual(Array.from(picks.map((z) => z.value)), [0, 1, 2, 3], "four slice playback modes listed");
+    const loopPick = picks[2];
+    l.onclick(loopPick.x + 5, loopPick.y + 3, 1, 0, 0);
+    assert.deepStrictEqual(Array.from(paramMsgs(lc, "slice_play").pop().slice(1)), ["param", "slice_play", 2], "One-way looping picked");
+    l.paint();
+    assert.ok(!l.hitZones.some((z) => z.action === "slice_play_pick"), "menu closes after a pick");
+    l.onclick(pb.x + 3, pb.y + 3, 1, 0, 0);
+    l.paint();
+    lc.emitted.length = 0;
+    l.onclick(wave.x + 0.6 * wave.w, wave.y + 20, 1, 0, 0);
+    l.paint();
+    assert.ok(!l.hitZones.some((z) => z.action === "slice_play_pick"), "a click elsewhere closes the menu");
+    assert.strictEqual(paramMsgs(lc, "slice_play").length, 0, "closing click picks nothing");
+    l.set_mode(0);
+    l.paint();
+    assert.ok(!l.hitZones.some((z) => z.action === "slice_play_menu"), "Playback dropdown only in Sliced mode");
+}
+
+console.log("Live slice bounds, Playback dropdown and Pos/Freeze ok");
 

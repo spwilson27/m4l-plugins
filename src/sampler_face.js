@@ -283,6 +283,46 @@ function iconLoopMode(x, y, mode, c) {
     if (mode === 2) polygon([[x, y + 4], [x + 4, y + 1], [x + 4, y + 7]], c);
 }
 
+var SLICE_PLAY_NAMES = ["to Slice end", "to Sample end", "One-way looping", "Ping-pong looping"];
+
+// Bitwig slice playback glyphs: arrow to a bar, plain arrow, double arrow, back-and-forth arrows
+function iconSlicePlay(x, y, mode, c) {
+    if (mode === 0) {
+        line(x, y + 4, x + 9, y + 4, c, 1.0, 1.3);
+        polygon([[x + 10, y + 4], [x + 7, y + 1.5], [x + 7, y + 6.5]], c);
+        line(x + 12, y, x + 12, y + 8, c, 1.0, 1.3);
+    } else if (mode === 1) {
+        line(x, y + 4, x + 10, y + 4, c, 1.0, 1.3);
+        polygon([[x + 12, y + 4], [x + 8.5, y + 1.5], [x + 8.5, y + 6.5]], c);
+    } else if (mode === 2) {
+        line(x, y + 2.5, x + 9, y + 2.5, c, 1.0, 1.2);
+        line(x, y + 5.5, x + 9, y + 5.5, c, 1.0, 1.2);
+        polygon([[x + 12, y + 4], [x + 8.5, y], [x + 8.5, y + 8]], c);
+    } else {
+        line(x + 1, y + 2, x + 11, y + 2, c, 1.0, 1.2);
+        polygon([[x + 12, y + 2], [x + 9, y], [x + 9, y + 4]], c);
+        line(x + 1, y + 6, x + 11, y + 6, c, 1.0, 1.2);
+        polygon([[x, y + 6], [x + 3, y + 4], [x + 3, y + 8]], c);
+    }
+}
+
+var slicePlayMenu = null;   // {x, y, w, rowH} while the Playback dropdown is open
+
+function paintSlicePlayMenu() {
+    if (!slicePlayMenu) return;
+    var m = slicePlayMenu;
+    var cur = Math.round(paramValue("slice_play"));
+    fillRR(m.x - 1, m.y - 1, m.w + 2, m.rowH * 4 + 8, 3, [0.36, 0.36, 0.36]);
+    fillRR(m.x, m.y, m.w, m.rowH * 4 + 6, 3, [0.20, 0.20, 0.20]);
+    for (var i = 0; i < 4; i++) {
+        var ry = m.y + 3 + i * m.rowH;
+        if (i === cur) fillRect(m.x + 3, ry, m.w - 6, m.rowH, [0.36, 0.36, 0.36]);
+        iconSlicePlay(m.x + 8, ry + m.rowH * 0.5 - 4, i, COL.text);
+        text(SLICE_PLAY_NAMES[i], m.x + 28, ry + m.rowH * 0.5 + 3.5, 9.0, i === cur ? COL.label : COL.text, false, 0);
+        zone("button", m.x, ry, m.w, m.rowH, { action: "slice_play_pick", value: i });
+    }
+}
+
 function iconReverse(x, y, on) {
     var c = on ? COL.blue : COL.label;
     text("R", x + 3, y + 7, 8.0, c, true, 0);
@@ -399,7 +439,7 @@ function paintSamplePanel() {
         text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 6, 10.0, COL.label, false, 1);
     }
 
-    if (loopOn) {
+    if (loopOn && curMode !== 3) {
         var lsX = wx + curLoopStart * ww, leX = wx + curLoopEnd * ww;
         fillRect(lsX, wy, leX - lsX, wh, COL.green, 0.10);
         var xfW = curXfade * (leX - lsX);
@@ -411,12 +451,20 @@ function paintSamplePanel() {
     }
 
     if (curMode === 3) {
-        for (var si = 0; si < sliceMarkers.length; si++) {
-            var mxs = wx + sliceMarkers[si] * ww;
-            var nxt = (si + 1 < sliceMarkers.length) ? wx + sliceMarkers[si + 1] * ww : wx + ww;
-            if (si === selectedSliceIdx) fillRect(mxs, wy, nxt - mxs, wh, COL.blue, 0.14);
-            line(mxs, wy, mxs, wy + wh, [1, 1, 1], 0.32, 1.0);
-            text(String(si + 1), mxs + 2, wy + 9, 7.0, COL.label, false, 0);
+        // Bitwig-style slices: yellow flag + line per slice from the start point; markers outside
+        // start..end are faint and unmapped. Slice k plays on MIDI note 36 + k (C1 upward).
+        var starts = currentSliceStarts();
+        for (var mi = 0; mi < sliceMarkers.length; mi++) {
+            var m = sliceMarkers[mi];
+            if (m < curStart - 1e-6 || m > curEnd + 1e-6) line(wx + m * ww, wy + 8, wx + m * ww, wy + wh, [1, 1, 1], 0.14, 1.0);
+        }
+        for (var si = 0; si < starts.length; si++) {
+            var mxs = wx + starts[si] * ww;
+            var nxt = wx + ((si + 1 < starts.length) ? starts[si + 1] : curEnd) * ww;
+            if (si === selectedSliceIdx) fillRect(mxs, wy, nxt - mxs, wh, COL.blue, 0.16);
+            line(mxs, wy, mxs, wy + wh, COL.yellow, 0.85, 1.0);
+            polygon([[mxs, wy], [mxs + 7, wy], [mxs, wy + 7]], COL.yellow);
+            if (nxt - mxs > 22) text(midiToNoteName(36 + si), mxs + 3, wy + 16, 7.0, COL.yellow, false, 0, 0.8);
         }
     }
 
@@ -434,17 +482,19 @@ function paintSamplePanel() {
         }
         line(phx, wy, phx, wy + wh, COL.blue, Math.min(1, 0.35 + voiceAmps[v]), 1.0);
     }
-    if (hasLoadedSample && (curFreeze || curMode === 1 || curMode === 2)) {
-        var ppx = wx + curPlayPos * ww;
-        polygon([[ppx - 3.5, wy + wh], [ppx + 3.5, wy + wh], [ppx, wy + wh - 5]], COL.blue, 0.9);
-    }
 
-    // Start / end flags
+    // Start / end: yellow flags at the top, or blue handles at the bottom in Sliced mode (Bitwig)
     var stX = wx + curStart * ww, enX = wx + curEnd * ww;
-    line(stX, wy, stX, wy + wh, COL.yellow, 0.95, 1.0);
-    line(enX, wy, enX, wy + wh, COL.yellow, 0.95, 1.0);
-    fillRect(stX, wy, 6, 6, COL.yellow);
-    fillRect(enX - 6, wy, 6, 6, COL.yellow);
+    if (curMode === 3) {
+        line(enX, wy, enX, wy + wh, COL.blue, 0.95, 1.0);
+        fillRect(stX, wy + wh - 7, 7, 7, COL.blue);
+        fillRect(enX - 7, wy + wh - 7, 7, 7, COL.blue);
+    } else {
+        line(stX, wy, stX, wy + wh, COL.yellow, 0.95, 1.0);
+        line(enX, wy, enX, wy + wh, COL.yellow, 0.95, 1.0);
+        fillRect(stX, wy, 6, 6, COL.yellow);
+        fillRect(enX - 6, wy, 6, 6, COL.yellow);
+    }
     zone("wave", wx, wy, ww, wh, {});
 
     // Footer: PLAY reverse/start/end, LOOP mode/start/end/xfade
@@ -452,14 +502,33 @@ function paintSamplePanel() {
     text("PLAY", sx + 6, fy, 8.5, COL.label, true, 0);
     iconReverse(sx + 36, fy - 9, curReverse);
     zone("button", sx + 33, fy - 11, 16, 14, { action: "reverse" });
-    iconFlag(sx + 58, fy - 9, COL.yellow, false);
-    var stW = text(fmtPos(curStart), sx + 66, fy, 9.0, COL.yellow, false, 0);
+    var pc = curMode === 3 ? COL.blue : COL.yellow;
+    iconFlag(sx + 58, fy - 9, pc, false);
+    var stW = text(fmtPos(curStart), sx + 66, fy, 9.0, pc, false, 0);
     zone("value", sx + 64, fy - 11, stW + 4, 14, { region: "samp_start" });
-    iconFlag(sx + 132, fy - 9, COL.yellow, true);
-    var enW = text(fmtPos(curEnd), sx + 136, fy, 9.0, COL.yellow, false, 0);
+    iconFlag(sx + 132, fy - 9, pc, true);
+    var enW = text(fmtPos(curEnd), sx + 136, fy, 9.0, pc, false, 0);
     zone("value", sx + 134, fy - 11, enW + 4, 14, { region: "samp_end" });
 
     var lx = sx + 248;
+    if (curMode === 3) {
+        // Key range the slices occupy, starting at C1
+        var n = currentSliceStarts().length;
+        var kx = sx + 200;
+        text("KEYS", kx, fy, 8.5, COL.label, true, 0);
+        for (var kk = 0; kk < 4; kk++) fillRect(kx + 33 + kk * 3.2, fy - 9, 2.4, 9, COL.blue);
+        text("C1 – " + midiToNoteName(36 + n - 1), kx + 50, fy, 9.0, COL.blue, false, 0);
+        text(n + (n === 1 ? " slice" : " slices"), kx + 104, fy, 9.0, COL.label, false, 0);
+
+        // Playback: slice end / sample end / one-way loop / ping-pong (Bitwig's dropdown)
+        var sp = Math.round(paramValue("slice_play"));
+        var px2 = sx + sw - 8;
+        polygon([[px2 - 7, fy - 6], [px2, fy - 6], [px2 - 3.5, fy - 2]], COL.label);
+        iconSlicePlay(px2 - 26, fy - 8, sp, COL.blue);
+        var plW = text("Playback", px2 - 30, fy, 8.5, COL.label, true, 2);
+        zone("button", px2 - 34 - plW, fy - 11, plW + 36, 14, { action: "slice_play_menu" });
+        return;
+    }
     var lc = loopOn ? COL.green : COL.dim;
     text("LOOP", lx, fy, 8.5, COL.label, true, 0);
     iconLoopMode(lx + 32, fy - 8, curLoopMode, loopOn ? COL.text : COL.label);
@@ -510,7 +579,7 @@ function paintPlayPanel() {
     var scanOn = (curMode === 1 || curMode === 2);
     drawKnob("pitch_st", x + 19, y + 35, 9, "Pitch");
     drawKnob("grain_motion", x + w * 0.5, y + 33, 13, "Speed", { white: true, dim: !scanOn, labelY: y + 56 });
-    drawKnob("play_pos", x + w - 19, y + 35, 9, "Pos");
+    drawKnob("play_pos", x + w - 19, y + 35, 9, "Pos", { dim: !curFreeze });
 }
 
 function paintFilterPanel() {
@@ -572,14 +641,7 @@ function paintEnvPanel() {
 // ---------------------------------------------------------------------------
 
 function paintSide(W, H) {
-    // LOAD (file dialog), Bitwig FX-button style
-    fillRR(0, 0, W, 24, 2, COL.button);
-    fillRect(2, 1, W - 4, 2, COL.track);
-    iconFolder(W * 0.5 - 23, 8, COL.label, 1.0);
-    text("LOAD", W * 0.5 + 6, 17, 9.0, COL.text, true, 1);
-    zone("button", 0, 0, W, 24, { action: "browse" });
-
-    var top = 27;
+    var top = 0;
     var bw = (W - 3) * 0.5;
     var btns = [["Poly", curMonoLegato === 0, COL.blue], ["Mono", curMonoLegato === 1, COL.red]];
     for (var i = 0; i < 2; i++) {
@@ -593,19 +655,19 @@ function paintSide(W, H) {
     var py = top + 27;
     fillRR(0, py, W, H - py, 3, COL.panel);
     var cx = W * 0.5;
-    text("L", 9, py + 21, 8.5, COL.label, true, 1);
-    text("R", W - 9, py + 21, 8.5, COL.label, true, 1);
-    drawKnob("unison_width", cx, py + 17, 9, null);
-    drawKnob("glide_ms", W * 0.27, py + 42, 8, null);
-    drawKnob("vel_sens", W * 0.73, py + 42, 8, null);
+    text("L", 9, py + 26, 8.5, COL.label, true, 1);
+    text("R", W - 9, py + 26, 8.5, COL.label, true, 1);
+    drawKnob("unison_width", cx, py + 22, 9, null);
+    drawKnob("glide_ms", W * 0.27, py + 54, 8, null);
+    drawKnob("vel_sens", W * 0.73, py + 54, 8, null);
     // glide (pin) and velocity (speaker) glyphs under the small knobs
     var gx = W * 0.27, vx = W * 0.73;
-    if (hoverKey === "glide_ms" || (drag && drag.key === "glide_ms")) text(fmtParam("glide_ms", paramValue("glide_ms")), gx, py + 63, 8.0, COL.text, true, 1);
-    else { circle(gx, py + 56, 2, COL.label); line(gx, py + 58, gx, py + 63, COL.label, 1.0, 1.2); }
-    if (hoverKey === "vel_sens" || (drag && drag.key === "vel_sens")) text(fmtParam("vel_sens", paramValue("vel_sens")), vx, py + 63, 8.0, COL.text, true, 1);
-    else polygon([[vx - 4, py + 57], [vx - 2, py + 57], [vx + 2, py + 54], [vx + 2, py + 64], [vx - 2, py + 61], [vx - 4, py + 61]], COL.label);
-    if (hoverKey === "unison_width" || (drag && drag.key === "unison_width")) text(fmtParam("unison_width", paramValue("unison_width")), cx, py + 6, 7.5, COL.text, true, 1);
-    drawKnob("out_gain", cx, py + 82, 12, "Out", { labelY: py + 104 });
+    if (hoverKey === "glide_ms" || (drag && drag.key === "glide_ms")) text(fmtParam("glide_ms", paramValue("glide_ms")), gx, py + 75, 8.0, COL.text, true, 1);
+    else { circle(gx, py + 68, 2, COL.label); line(gx, py + 70, gx, py + 75, COL.label, 1.0, 1.2); }
+    if (hoverKey === "vel_sens" || (drag && drag.key === "vel_sens")) text(fmtParam("vel_sens", paramValue("vel_sens")), vx, py + 75, 8.0, COL.text, true, 1);
+    else polygon([[vx - 4, py + 69], [vx - 2, py + 69], [vx + 2, py + 66], [vx + 2, py + 76], [vx - 2, py + 73], [vx - 4, py + 73]], COL.label);
+    if (hoverKey === "unison_width" || (drag && drag.key === "unison_width")) text(fmtParam("unison_width", paramValue("unison_width")), cx, py + 9, 7.5, COL.text, true, 1);
+    drawKnob("out_gain", cx, py + 100, 12, "Out", { labelY: py + 123 });
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +689,8 @@ function paint() {
     paintPlayPanel();
     paintFilterPanel();
     paintEnvPanel();
+    if (curMode !== 3) slicePlayMenu = null;
+    paintSlicePlayMenu();
 }
 
 function zoneAt(x, y) {
@@ -666,6 +730,10 @@ function doAction(z) {
         case "voicing": setParamFromFace("mono_legato", z.value); break;
         case "env_page": envPage = z.page; notifyclients(); break;
         case "browse": outlet(0, "browse", "bang"); break;
+        case "slice_play_menu":
+            slicePlayMenu = slicePlayMenu ? null : { x: MAIN.sample[0] + MAIN.sample[2] - 128, y: MAIN.sample[1] + MAIN.sample[3] - 82, w: 124, rowH: 16 };
+            break;
+        case "slice_play_pick": setParamFromFace("slice_play", z.value); slicePlayMenu = null; break;
     }
     mgraphics.redraw();
 }
@@ -697,6 +765,11 @@ function waveNorm(x) {
 
 function onclick(x, y, but, cmd, shift) {
     var z = zoneAt(x, y);
+    if (slicePlayMenu && !(z && (z.action === "slice_play_pick" || z.action === "slice_play_menu"))) {
+        slicePlayMenu = null;
+        mgraphics.redraw();
+        return;
+    }
     if (drag && drag.captured) setCursorHidden(false);  // a release we never saw
     drag = null;
     if (!z) return;
@@ -722,9 +795,12 @@ function onclick(x, y, but, cmd, shift) {
         var nx = waveNorm(x);
         var ww = z.w;
         pushUndoState();
-        if (curMode === 3 && sliceMarkers.length > 0) {
-            var sIdx = 0;
-            for (var si = 0; si < sliceMarkers.length; si++) if (nx >= sliceMarkers[si]) sIdx = si;
+        if (curMode === 3) {
+            // Start / end handles stay draggable; elsewhere a click auditions the slice under it
+            if (Math.abs(nx - curStart) * ww < 6.0) { drag = { wave: "samp_start" }; mgraphics.redraw(); return; }
+            if (Math.abs(nx - curEnd) * ww < 6.0) { drag = { wave: "samp_end" }; mgraphics.redraw(); return; }
+            var sIdx = sliceIndexAt(currentSliceStarts(), curEnd, nx);
+            if (sIdx < 0) return;
             selectedSliceIdx = sIdx;
             midi_note(36 + sIdx, 110);
             drag = { wave: "slice_audition" };
@@ -740,7 +816,8 @@ function onclick(x, y, but, cmd, shift) {
         }
         if (best) {
             drag = { wave: best };
-        } else {
+        } else if (curFreeze) {
+            // Pos only exists while frozen: clicking the waveform scrubs the frozen playhead
             drag = { wave: "play_pos" };
             curPlayPos = nx;
             emitRegionParams();

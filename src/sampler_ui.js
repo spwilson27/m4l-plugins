@@ -350,16 +350,29 @@ function browsed() {
     outlet(0, "drop_set", p);
 }
 
+// Slices mapped from C1: the first starts at the sample start point
+function currentSliceStarts() {
+    return activeSliceStarts(sliceMarkers, curStart, curEnd);
+}
+
+// Held Sliced-mode notes follow the start / end point live
+function refreshHeldSlices() {
+    if (curMode !== 3) return;
+    var touched = voiceAlloc.updateSliceBounds(currentSliceStarts(), curEnd);
+    for (var i = 0; i < touched.length; i++) writeVoiceToBuffer(touched[i]);
+}
+
 // MIDI note handling from midiparse or test messages
 function midi_note(note, vel) {
     var n = Math.round(Number(note) || 60);
     var v = Math.round(Number(vel) || 0);
     voiceAlloc.setMaxVoices(curPolyVoices);
     if (v > 0) {
-        var allocated = voiceAlloc.noteOn(n, v, curMonoLegato, sliceMarkers);
+        var starts = currentSliceStarts();
+        var allocated = voiceAlloc.noteOn(n, v, curMonoLegato, starts, curEnd);
         writeVoiceToBuffer(allocated);
-        if (curMode === 3 && sliceMarkers.length > 0) {
-            selectedSliceIdx = Math.max(0, n - 36) % sliceMarkers.length;
+        if (curMode === 3) {
+            selectedSliceIdx = Math.max(0, n - 36) % starts.length;
         }
     } else {
         var released = voiceAlloc.noteOff(n, curMonoLegato);
@@ -377,6 +390,7 @@ function all_notes_off() {
 }
 
 function emitRegionParams() {
+    refreshHeldSlices();
     outlet(0, "param", "samp_start", Math.round(curStart * 1000) / 10);
     outlet(0, "param", "samp_end", Math.round(curEnd * 1000) / 10);
     outlet(0, "param", "loop_start", Math.round(curLoopStart * 1000) / 10);
@@ -404,8 +418,8 @@ function storeParam(key, v) {
         case "freeze": curFreeze = n > 0.5 ? 1 : 0; break;
         case "reverse": curReverse = n > 0.5 ? 1 : 0; break;
         case "loop_mode": curLoopMode = clampInt(n, 0, 2); break;
-        case "samp_start": curStart = clampF(n * 0.01, 0.0, 0.98); break;
-        case "samp_end": curEnd = clampF(n * 0.01, curStart + 0.01, 1.0); break;
+        case "samp_start": curStart = clampF(n * 0.01, 0.0, 0.98); refreshHeldSlices(); break;
+        case "samp_end": curEnd = clampF(n * 0.01, curStart + 0.01, 1.0); refreshHeldSlices(); break;
         case "loop_start": curLoopStart = clampF(n * 0.01, 0.0, 0.98); break;
         case "loop_end": curLoopEnd = clampF(n * 0.01, curLoopStart + 0.01, 1.0); break;
         case "loop_xfade": curXfade = clampF(n * 0.0045, 0.0, 0.45); break;
@@ -424,6 +438,7 @@ function set_mode(v) { storeParam("mode", v); }
 function set_freeze(v) { storeParam("freeze", v); }
 function set_reverse(v) { storeParam("reverse", v); }
 function set_loop_mode(v) { storeParam("loop_mode", v); }
+function set_slice_play(v) { storeParam("slice_play", v); }
 function set_samp_start(v) { storeParam("samp_start", v); }
 function set_samp_end(v) { storeParam("samp_end", v); }
 function set_loop_start(v) { storeParam("loop_start", v); }

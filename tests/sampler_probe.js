@@ -7,6 +7,24 @@ inlets = 4;
 outlets = 3;
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "repitch_chord";
+// Optional 2nd argument: split point in ms. headRms covers [0, cut), afterRms / afterPeak [cut, end).
+var cutMs = jsarguments.length > 2 ? Number(jsarguments[2]) : 0;
+
+// Per-case voice setup: MIDI notes, slice bounds (normalized), and the bounds a mid-run
+// `rebound` message pokes into the held voice (slots 4/5 only, trigger counter untouched).
+var SLICE_CFG = {
+    slice_trig:       { start: 0.25, end: 0.50 },
+    slice_end:        { start: 0.10, end: 0.20 },
+    slice_sample_end: { start: 0.10, end: 0.20 },
+    slice_loop:       { start: 0.10, end: 0.20 },
+    slice_pingpong:   { start: 0.10, end: 0.20 },
+    slice_reverse_end: { start: 0.10, end: 0.20 },
+    slice_reverse_sample: { start: 0.40, end: 0.50 },
+    live_loop:        { start: 0.60, end: 0.70, newStart: 0.10, newEnd: 0.20 },
+    live_pingpong:    { start: 0.10, end: 0.50, newStart: 0.10, newEnd: 0.20 },
+    live_continue:    { start: 0.00, end: 0.10, newStart: 0.20, newEnd: 0.30 }
+};
+var SINGLE_NOTE = /^(forward_oneshot|reverse_oneshot|freeze_hold|unison8_wide|mono_sample|pos_)/;
 var peaks = { genL: -1, ctl: -1, genR: -1 };
 var armed = false;
 var sampName = "";
@@ -28,6 +46,13 @@ function setbuffers(sName, vName, scName) {
 function trigger() {
     trigSeq += 1;
     seedVoices();
+}
+
+// Harness `events` entry: move the held slice live (slots 4/5 of voice 0 only).
+function rebound() {
+    var cfg = SLICE_CFG[mode];
+    if (!voicesName || !cfg || cfg.newStart === undefined) return;
+    new Buffer(voicesName).poke(1, 4, [cfg.newStart, cfg.newEnd]);
 }
 
 function seedSample() {
@@ -72,17 +97,17 @@ function seedVoices() {
     // Trigger a 3-note polyphonic triad, a slice note, or one centered voice.
     // Centered single notes let Reverse / Freeze / 8-voice unison show up in the
     // recording instead of the triad's hardcoded pan seeds.
-    var single = (mode === "forward_oneshot" || mode === "reverse_oneshot"
-        || mode === "freeze_hold" || mode === "unison8_wide" || mode === "mono_sample");
-    var notes = (mode === "slice_trig") ? [38] : (single ? [60] : [60, 64, 67]);
+    var cfg = SLICE_CFG[mode];
+    var single = SINGLE_NOTE.test(mode) || !!cfg;
+    var notes = cfg ? [38] : (single ? [60] : [60, 64, 67]);
     for (var v = 0; v < notes.length; v++) {
         var base = v * 8;
         vFlat[base + 0] = 1.0;        // gate
         vFlat[base + 1] = notes[v];   // MIDI note
         vFlat[base + 2] = 0.90;       // velocity
         vFlat[base + 3] = trigSeq;    // trigCount
-        vFlat[base + 4] = (mode === "slice_trig") ? 0.25 : 0.0; // sliceStart
-        vFlat[base + 5] = (mode === "slice_trig") ? 0.50 : 1.0; // sliceEnd
+        vFlat[base + 4] = cfg ? cfg.start : 0.0; // sliceStart
+        vFlat[base + 5] = cfg ? cfg.end : 1.0; // sliceEnd
         vFlat[base + 6] = single ? 0.0 : ((v === 0) ? -0.4 : ((v === 1) ? 0.4 : 0.0)); // panSeed
         vFlat[base + 7] = 0.17 * (v + 1); // rndSeed
     }
@@ -117,6 +142,13 @@ function analyze(durMs) {
     var earlyRms = bandRms(left, right, Math.floor(left.length * 0.12), Math.floor(left.length * 0.38));
     var lateRms = bandRms(left, right, Math.floor(left.length * 0.65), Math.floor(left.length * 0.92));
     var scopeStats = readScope();
+    var cutIdx = Math.max(0, Math.min(left.length, Math.floor(sr * cutMs / 1000)));
+    var headRms = bandRms(left, right, 0, cutIdx);
+    var afterRms = bandRms(left, right, cutIdx, left.length);
+    var afterPeak = 0;
+    for (var q = cutIdx; q < left.length; q++) {
+        afterPeak = Math.max(afterPeak, Math.abs(left[q]), Math.abs(right[q]));
+    }
 
     var report = new File(resultPath, "write", "TEXT");
     report.writestring(
@@ -131,6 +163,10 @@ function analyze(durMs) {
         "stereoDiff " + stats.stereoDiff + "\n" +
         "earlyRms " + earlyRms + "\n" +
         "lateRms " + lateRms + "\n" +
+        "headRms " + headRms + "\n" +
+        "afterRms " + afterRms + "\n" +
+        "afterPeak " + afterPeak + "\n" +
+        "scopePos0 " + scopeStats.pos0 + "\n" +
         "scopeActive " + scopeStats.activeVoices + "\n" +
         "scopePeakL " + scopeStats.peakL + "\n" +
         "scopeCutHz " + scopeStats.cutHz + "\n" +
@@ -158,6 +194,7 @@ function readScope() {
         return { activeVoices: 0, peakL: 0, cutHz: 0, sampFrames: 0, scopeLen: 0, jsFrames: jsFrames };
     }
     return {
+        pos0: (chunk[0] === undefined) ? -1 : chunk[0],
         peakL: chunk[32] || 0,
         activeVoices: chunk[34] || 0,
         cutHz: chunk[37] || 0,

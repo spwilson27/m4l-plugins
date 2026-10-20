@@ -137,6 +137,29 @@ function estimateRootMidiNote(samples, sampleRate) {
     return Math.max(24, Math.min(96, midi));
 }
 
+// Slices actually mapped to keys: the first one starts at the sample start point, markers at or
+// before it (and at or after the end) drop out, so the slice under C1 always begins at `start`.
+var SLICE_MIN_GAP = 0.002;
+function activeSliceStarts(markers, start, end) {
+    var s = Math.max(0.0, Math.min(1.0, Number(start) || 0.0));
+    var e = Math.max(s + SLICE_MIN_GAP, Math.min(1.0, end === undefined ? 1.0 : Number(end)));
+    var out = [s];
+    var sorted = (markers || []).slice().sort(function (a, b) { return a - b; });
+    for (var i = 0; i < sorted.length; i++) {
+        var m = Number(sorted[i]);
+        if (m > out[out.length - 1] + SLICE_MIN_GAP && m < e - SLICE_MIN_GAP) out.push(m);
+    }
+    return out;
+}
+
+// Index of the active slice containing pos, or -1 outside start..end
+function sliceIndexAt(starts, end, pos) {
+    if (!starts || starts.length === 0 || pos < starts[0] || pos > end) return -1;
+    var idx = 0;
+    for (var i = 0; i < starts.length; i++) if (pos >= starts[i]) idx = i;
+    return idx;
+}
+
 // 16-Voice Polyphonic + Mono/Legato Voice Allocator state machine
 function createVoiceAllocator(maxVoices) {
     var cap = Math.max(1, Math.min(16, maxVoices || 16));
@@ -159,13 +182,14 @@ function createVoiceAllocator(maxVoices) {
     var heldStack = [];
     var stepCounter = 1;
 
-    function resolveSliceBounds(note, slices) {
+    // slices: sorted slice starts (C1 = slices[0]); slicesEnd: where the last slice stops
+    function resolveSliceBounds(note, slices, slicesEnd) {
         if (!slices || slices.length === 0) {
             return { start: 0.0, end: 1.0, sliceIdx: 0 };
         }
         var idx = Math.max(0, note - 36) % slices.length;
         var s0 = slices[idx];
-        var s1 = (idx + 1 < slices.length) ? slices[idx + 1] : 1.0;
+        var s1 = (idx + 1 < slices.length) ? slices[idx + 1] : (slicesEnd === undefined ? 1.0 : slicesEnd);
         return { start: s0, end: Math.max(s0 + 0.005, s1), sliceIdx: idx };
     }
 
@@ -178,12 +202,12 @@ function createVoiceAllocator(maxVoices) {
         getMaxVoices: function() {
             return cap;
         },
-        noteOn: function(note, vel127, monoLegato, slices) {
+        noteOn: function(note, vel127, monoLegato, slices, slicesEnd) {
             var n = Math.max(0, Math.min(127, Math.round(Number(note) || 60)));
             var vNorm = Math.max(0.01, Math.min(1.0, (Number(vel127) || 100) / 127.0));
             stepCounter++;
 
-            var sl = resolveSliceBounds(n, slices);
+            var sl = resolveSliceBounds(n, slices, slicesEnd);
 
             // Track held note stack for mono/legato fallback
             for (var h = heldStack.length - 1; h >= 0; h--) {
@@ -282,6 +306,26 @@ function createVoiceAllocator(maxVoices) {
             }
             return touched;
         },
+        // Re-resolve the slice of every held note against new slice starts / end (start point or
+        // end dragged during playback). Trigger counters are untouched, so the gen keeps playing.
+        updateSliceBounds: function(slices, slicesEnd) {
+            var touched = [];
+            for (var h = 0; h < heldStack.length; h++) {
+                var hb = resolveSliceBounds(heldStack[h].note, slices, slicesEnd);
+                heldStack[h].sliceStart = hb.start;
+                heldStack[h].sliceEnd = hb.end;
+            }
+            for (var i = 0; i < 16; i++) {
+                if (voices[i].gate <= 0) continue;
+                var b = resolveSliceBounds(voices[i].note, slices, slicesEnd);
+                if (b.start !== voices[i].sliceStart || b.end !== voices[i].sliceEnd) {
+                    voices[i].sliceStart = b.start;
+                    voices[i].sliceEnd = b.end;
+                    touched.push(voices[i]);
+                }
+            }
+            return touched;
+        },
         allNotesOff: function() {
             heldStack.length = 0;
             for (var i = 0; i < 16; i++) {
@@ -298,6 +342,8 @@ if (typeof module !== "undefined" && module.exports) {
         NOTE_NAMES: NOTE_NAMES,
         midiToNoteName: midiToNoteName,
         detectTransientSlices: detectTransientSlices,
+        activeSliceStarts: activeSliceStarts,
+        sliceIndexAt: sliceIndexAt,
         estimateRootMidiNote: estimateRootMidiNote,
         createVoiceAllocator: createVoiceAllocator
     };

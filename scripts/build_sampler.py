@@ -57,7 +57,7 @@ PARAM_SPECS = {
     ),
     "play_pos": (
         "Play Position", "Pos", 0.0, 100.0, 0.0, 5, 1.0, "play_pos", 0.01, "set_play_pos",
-        "Playhead start or frozen scrub position (0 to 100%).",
+        "Frozen playhead position (0 to 100%); only applies while Freeze is on.",
     ),
     "samp_start": (
         "Sample Start", "Start", 0.0, 99.0, 0.0, 5, 1.0, "samp_start", 0.01, "set_samp_start",
@@ -221,6 +221,10 @@ ENUM_SPECS = {
     "loop_mode": (
         "Loop Mode", "Loop", ["Off", "Fwd", "Ping"], 1, "loop_mode", "set_loop_mode",
         "Selects One-Shot (Off), Forward Loop (Fwd), or Ping-Pong Loop (Ping).",
+    ),
+    "slice_play": (
+        "Slice Playback", "SlcPlay", ["Slice End", "Sample End", "Loop", "Ping-Pong"], 0, "slice_play", "set_slice_play",
+        "Sliced mode: play each slice to its end, on to the sample end, looping one-way, or ping-pong looping.",
     ),
     "filt_on": (
         "Filter Enable", "FiltOn", ["Off", "On"], 1, "filt_on", "set_filt_on",
