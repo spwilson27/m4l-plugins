@@ -229,7 +229,7 @@
 						680.0,
 						20.0
 					],
-					"text": "thr -24, sens 0.5, holdms 60, velmin 40, velmax 127"
+					"text": "thr -24, sens 0.5, holdms 60, velmin 40, velmax 127, holdms 200"
 				}
 			},
 			{
@@ -491,7 +491,7 @@
 						420.0,
 						20.0
 					],
-					"text": "js /Users/mrwilson/software/ableton/tests/envtrig_probe.js hits"
+					"text": "js /Users/mrwilson/software/ableton/tests/envtrig_probe.js hold"
 				}
 			},
 			{
@@ -529,7 +529,7 @@
 						380.0,
 						20.0
 					],
-					"text": "kind 0, amp 0.8, freq 1000, first 40, every 200, atk 0, decay 80"
+					"text": "kind 0, amp 0.8, freq 1000, first 40, every 40, atk 0, decay 30"
 				}
 			},
 			{

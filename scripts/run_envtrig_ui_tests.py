@@ -62,10 +62,11 @@ def build_harness():
 
 
 def wait_for_idle_max(timeout=300):
-    """Only one standalone Max runs at a time; other devices' harnesses would cut this run short."""
+    """Only one standalone Max runs at a time: a second launch hands its patch to the running
+    instance, and whichever harness quits first takes the other down."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        busy = subprocess.run(["pgrep", "-f", "Max.app/Contents/MacOS/Max .*harness"], capture_output=True).returncode == 0
+        busy = subprocess.run(["pgrep", "-f", "Max.app/Contents/MacOS/Max .*[.]maxpat"], capture_output=True).returncode == 0
         if not busy:
             return
         time.sleep(2)
