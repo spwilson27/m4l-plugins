@@ -2,7 +2,11 @@
 // Prepended into src/envtrig_ui.js at build time and exported for Node tests.
 
 const SCOPE_COLS = 110;
-const SCOPE_FLOATS = 32; // #0-trigscope buffer size (indices 0..5 hold live telemetry)
+// buffer~ #0-trigscope layout (written by src/envtrig_core.genexpr): header 0..6, then the
+// oscilloscope ring of SCOPE_BLOCKS x (min, max, onset flag) from SCOPE_RING_OFFSET.
+const SCOPE_BLOCKS = 256;
+const SCOPE_RING_OFFSET = 32;
+const SCOPE_BUFFER_SAMPS = 800;
 const THR_MIN_DB = -60.0;
 const THR_MAX_DB = 0.0;
 // Device width with the MIDI To panel collapsed / expanded (live.thisdevice setwidth).
@@ -57,10 +61,6 @@ function plot01ToDb(v01) {
     return THR_MIN_DB + clamp(v01, 0, 1) * (THR_MAX_DB - THR_MIN_DB);
 }
 
-function deviceWidth(open) {
-    return open ? WIDTH_EXPANDED : WIDTH_COLLAPSED;
-}
-
 // LiveAPI hands back dictionary properties in three shapes; normalise them all:
 //   get()             -> ["{json}"]
 //   observer callback -> [property, <Max Dict>] in v8 (a handle like {name: "u0950..."}, read via stringify())
@@ -96,7 +96,9 @@ function routingChannelState(channels) {
 if (typeof module !== "undefined" && module.exports) {
     module.exports = {
         SCOPE_COLS,
-        SCOPE_FLOATS,
+        SCOPE_BLOCKS,
+        SCOPE_RING_OFFSET,
+        SCOPE_BUFFER_SAMPS,
         THR_MIN_DB,
         THR_MAX_DB,
         WIDTH_COLLAPSED,
@@ -111,7 +113,6 @@ if (typeof module !== "undefined" && module.exports) {
         dbToPlot01,
         linToPlot01,
         plot01ToDb,
-        deviceWidth,
         lomValue,
         routingTypeRange,
         routingChannelState,

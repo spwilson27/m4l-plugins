@@ -34,7 +34,6 @@ var lastVel = 0;
 var lastRoll = -1;
 var idleFrames = 0;
 
-var SCOPE_BLOCKS = 256;
 var scopeMin = [];
 var scopeMax = [];
 var scopeFire = [];
@@ -105,6 +104,7 @@ function set_thr(db) {
 
 function set_view(v) {
     view = Number(v) > 0.5 ? 1 : 0;
+    lastHead = -1; // re-read the ring on the next frame
     if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
@@ -221,12 +221,13 @@ function pullScope() {
     return true;
 }
 
-// Reads the oscilloscope ring (oldest block first, starting at the write head).
+// Reads the oscilloscope ring (oldest block first, starting at the write head). Only the head is
+// read in the envelope view; the 768-sample ring is copied only while the scope is showing.
 function pullRing() {
     var hdr = scopeBuf.peek(1, 6, 1);
     var head = Math.round(typeof hdr === "number" ? hdr : sampleAt(hdr, 0)) % SCOPE_BLOCKS;
-    if (head === lastHead) return head;
-    var ring = scopeBuf.peek(1, 32, SCOPE_BLOCKS * 3);
+    if (head === lastHead || view !== 1) return head;
+    var ring = scopeBuf.peek(1, SCOPE_RING_OFFSET, SCOPE_BLOCKS * 3);
     if (!ring || !ring.length) return head;
     for (var i = 0; i < SCOPE_BLOCKS; i++) {
         var b = ((head + i) % SCOPE_BLOCKS) * 3;
@@ -275,6 +276,7 @@ function onclick(x, y) {
     var vb = viewButton();
     if (x >= vb.x && x <= vb.x + vb.w && y >= vb.y && y <= vb.y + vb.h + 1) {
         view = x < vb.x + vb.w / 2 ? 0 : 1;
+        lastHead = -1;
         outlet(0, ["view", view]);
         dragging = false;
         if (!scopeBuf) initHistory(true);

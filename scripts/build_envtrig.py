@@ -30,6 +30,7 @@ STRIP_PATH = os.path.join(ROOT_DIR, "src", "envtrig_strip.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "envtrig_core.genexpr")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Envelope Trigger.amxd")
 
+SCOPE_BUFFER_SAMPS = 800  # header + 256-block oscilloscope ring; matches src/envtrig_config.js
 WIDTH_COLLAPSED = 228.0
 WIDTH_EXPANDED = 342.0
 DEVICE_H = 169.0
@@ -366,7 +367,7 @@ def build():
                 "varname": "envtrig",
             }
         },
-        newobj("obj-scope", "buffer~ #0-trigscope @samps 800", 560, 240, 210, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-scope", f"buffer~ #0-trigscope @samps {SCOPE_BUFFER_SAMPS}", 560, 240, 210, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 560, 300, 60, outlettype=["bang"]),
         message("obj-msg-ui-buf", "setbuffer #0-trigscope", 560, 330, 180),
         message("obj-msg-gen-buf", "scope #0-trigscope", 560, 360, 180),

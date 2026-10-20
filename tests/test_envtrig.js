@@ -38,8 +38,9 @@ assert.strictEqual(cfg.velocityFromPeak(1.0, -24, 100, 20), 100, "Vel Hi below V
 assert.strictEqual(cfg.noteName(36), "C1", "Note 36 is C1 in Live naming");
 assert.strictEqual(cfg.noteName(60), "C3", "Note 60 is C3");
 assert.ok(Math.abs(cfg.plot01ToDb(cfg.dbToPlot01(-30)) + 30) < 1e-9, "Plot mapping must round-trip");
-assert.strictEqual(cfg.deviceWidth(0), 228, "Collapsed width");
-assert.strictEqual(cfg.deviceWidth(1), 342, "Expanded width");
+assert.strictEqual(cfg.WIDTH_COLLAPSED, 228, "Collapsed width");
+assert.strictEqual(cfg.WIDTH_EXPANDED, 342, "Expanded width");
+assert.ok(cfg.SCOPE_RING_OFFSET + cfg.SCOPE_BLOCKS * 3 <= cfg.SCOPE_BUFFER_SAMPS, "Oscilloscope ring must fit in the scope buffer");
 
 const types = [{ display_name: "1-Drums", identifier: 1 }, { display_name: "2-Bass", identifier: 2 }, { display_name: "No Output", identifier: 0 }];
 assert.deepStrictEqual(cfg.lomValue(["available_routing_types", JSON.stringify({ available_routing_types: types })], "available_routing_types"), types, "lomValue must parse JSON string callbacks");
@@ -133,7 +134,9 @@ for (const b of boxes) {
     if (b.text && b.text.startsWith("buffer~")) assert.ok(b.text.includes("#0-"), `buffer~ must use #0- prefix: ${b.text}`);
 }
 assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-trigscope");
-assert.strictEqual(byId["obj-scope"].text, "buffer~ #0-trigscope @samps 800", "Scope buffer holds the header plus the 256-block oscilloscope ring");
+assert.strictEqual(byId["obj-scope"].text, `buffer~ #0-trigscope @samps ${cfg.SCOPE_BUFFER_SAMPS}`, "Scope buffer holds the header plus the 256-block oscilloscope ring");
+assert.ok(gen.includes(`base = ${cfg.SCOPE_RING_OFFSET} + head * 3;`) && gen.includes(`head = wrap(head + 1, 0, ${cfg.SCOPE_BLOCKS});`), "GenExpr ring layout must match envtrig_config.js");
+assert.ok(/if \(thr != cacheThr\)/.test(gen) && /if \(sens != cacheSens\)/.test(gen) && /if \(sr != cacheSr\)/.test(gen), "pow/exp coefficients must be cached, not recomputed every sample");
 assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen"), "Missing scope bind wiring");
 assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"), "Missing setbuffer wiring");
 assert.ok(hasLine("obj-plugin", "obj-gen", 0, 0) && hasLine("obj-plugin", "obj-gen", 1, 1), "plugin~ must feed gen");
@@ -345,10 +348,14 @@ scopeBufData[32 + 15 * 3] = -0.6;
 scopeBufData[32 + 15 * 3 + 1] = 0.7;
 scopeBufData[32 + 15 * 3 + 2] = 1;
 ui.pullScope();
+assert.strictEqual(ui.scopeMax()[5], 0, "The envelope view must not copy the oscilloscope ring");
+ui.set_view(1);
+ui.pullScope();
 assert.ok(Math.abs(ui.scopeMax()[5] - 0.7) < 1e-9, "Ring must be read oldest-first from the write head (block 15 -> column 5)");
 assert.strictEqual(ui.scopeFire()[5], 1, "Ring onset flags must be read");
 
 // View toggle: the left/right HUD segments pick envelope/scope and report it for the saved parameter
+ui.set_view(0);
 ui.onclick(25, 6);
 assert.strictEqual(ui.view(), 1, "Right toggle segment selects the scope view");
 assert.deepStrictEqual(emitted[0][emitted[0].length - 1], ["view", 1], "View changes are sent out for the Graph View parameter");

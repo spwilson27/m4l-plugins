@@ -542,6 +542,15 @@ python3 scripts/build_ableton_mcp.py && node tests/test_ableton_mcp.js && python
     - `32 + 3 × block` holds mono min, max, and an onset flag
     - The onset flag is set at the onset, not at the end of the velocity capture, so ticks line up with attacks.
   - Pokes stop once the device has been silent for a few windows.
+  - The layout constants (`SCOPE_BLOCKS`, `SCOPE_RING_OFFSET`, `SCOPE_BUFFER_SAMPS`) live in `src/envtrig_config.js`. `tests/test_envtrig.js` checks that the build and the gen core match them.
+
+### Performance
+- **Gen:**
+  - The `pow`/`exp` coefficients (threshold, onset ratio, envelope coefficients) are cached in `History`. They're recomputed only when `thr`, `sens` or the sample rate changes, not every sample.
+  - The `log10` velocity math runs only when a note fires.
+- **UI:**
+  - The graph polls at 30 fps and stops redrawing once its history has scrolled flat in silence. A moving ring head, a new fire or a decaying LED wakes it again.
+  - The envelope view reads only the 7-sample header. The 768-sample oscilloscope ring is copied only while the scope view is showing, and only when its head has moved.
 
 ### Build / Test / Preview
 ```bash

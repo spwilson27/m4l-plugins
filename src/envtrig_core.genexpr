@@ -50,18 +50,36 @@ History blkMin(0);
 History blkMax(0);
 History blkFire(0);
 History head(0);
+History cacheSr(0);
+History cacheThr(1);
+History cacheSens(-1);
+History thrLin(0);
+History ratio(1);
+History relC(0);
+History slowC(0);
 
 sr = max(samplerate, 1);
 
-ratio = pow(10, (1 - clip(sens, 0, 1)) * 12 / 20);
 holdSamps = floor(clip(holdms, 20, 1000) * sr / 1000);
 capSamps = max(floor(2.5 * sr / 1000), 1);
 velLo = clip(velmin, 1, 127);
 velHi = clip(max(velmax, velLo), 1, 127);
 thrDb = clip(thr, -60, 0);
-thrLin = pow(10, thrDb / 20);
-relC = exp(-1000 / (15 * sr));
-slowC = exp(-1000 / (60 * sr));
+
+// pow/exp coefficients are recomputed only when their inputs change, not every sample.
+if (thr != cacheThr) {
+	cacheThr = thr;
+	thrLin = pow(10, thrDb / 20);
+}
+if (sens != cacheSens) {
+	cacheSens = sens;
+	ratio = pow(10, (1 - clip(sens, 0, 1)) * 12 / 20);
+}
+if (sr != cacheSr) {
+	cacheSr = sr;
+	relC = exp(-1000 / (15 * sr));
+	slowC = exp(-1000 / (60 * sr));
+}
 
 // 1. Envelopes on the mono sum.
 mono = 0.5 * (in1 + in2);
