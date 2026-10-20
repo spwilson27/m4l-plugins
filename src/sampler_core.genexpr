@@ -1030,6 +1030,8 @@ voice_proc(
 	History altFlip(1);
 	History rndCtr(0);
 	History survG(0);
+	History allocIdx(0);
+	History survTimer(0);
 
 	gB = vIdx * 344;
 	latB = gB + 320;
@@ -1381,7 +1383,9 @@ voice_proc(
 				pBprev = fract(pCur + 0.5);
 				wA = 0.5 - 0.5 * cos(6.28318530718 * pNext);
 				wB = 0.5 - 0.5 * cos(6.28318530718 * pB);
-				// Crossfade two voices: each window latches the anchor at its own cycle start.
+				// Both grains read the SAME phase (pNext); only the window (offset 0.5) and the latched anchor differ.
+					// Reading B at pNext + 0.5 made a periodic source sum to -sin(2x) (an octave up).
+					// Crossfade two voices: each window latches the anchor at its own cycle start.
 				ancA = anchorF;
 				ancB = anchorF;
 				if (cyXf > 0.5) {
@@ -1402,7 +1406,7 @@ voice_proc(
 					pmV = cyMod * 0.5 * (sin(6.28318530718 * mph) + 0.28 * sin(6.28318530718 * 3.0 * mph + 0.9) + 0.12 * sin(6.28318530718 * 5.0 * mph));
 				}
 				aL, aR = cyc_wave(sampBuf, ancA, cycleLenF, formSm, pNext, cyChar, cyDuty, cySplit, pmV, maxIdxC);
-				bL, bR = cyc_wave(sampBuf, ancB, cycleLenF, formSm, pB, cyChar, cyDuty, cySplit, pmV, maxIdxC);
+				bL, bR = cyc_wave(sampBuf, ancB, cycleLenF, formSm, pNext, cyChar, cyDuty, cySplit, pmV, maxIdxC);
 				cL = aL * wA + bL * wB;
 				cR = aR * wA + bR * wB;
 				if ((cyChar > 0.5) && (cyChar < 1.5)) {
@@ -1501,8 +1505,8 @@ voice_proc(
 			frLenS = max(beatMs * pow(2.0, round(log2(max(grainSizeMs, 1.0) / beatMs))) * 0.001 * srVal, 16.0);
 		}
 		frDens = (peek(prm, 23) > 0.5) ? clip(peek(prm, 22), 0.1, 100) : 1.0;
-		frRep = int(clip(round(peek(prm, 21)), 1, 16));
-		frMaxGr = int(clip(round(peek(prm, 25)), 1, 32));
+		frRep = floor(clip(peek(prm, 21), 1, 16) + 0.5);
+		frMaxGr = floor(clip(peek(prm, 25), 1, 32) + 0.5);
 		frMot = clip(peek(prm, 24), 0, 8);
 		frPk = clip(peek(prm, 20), 0, 1);
 		frDirMode = round(clip(peek(prm, 27), 0, 3));
@@ -1536,13 +1540,10 @@ voice_proc(
 			baseP = playheadNorm * numFrames + ((freezeOn > 0.5) ? 0.0 : posMod * numFrames);
 			gScale = 1.0 / sqrt(max(1.0, 0.5 * min(frDens * frRep, frMaxGr)));
 			for (rp = 0; rp < 16; rp += 1) {
-				if (rp < frRep) {
-					slot = -1;
-					for (gi = 0; gi < 32; gi += 1) {
-						if ((gi < frMaxGr) && (slot < 0) && (peek(vst, gB + gi * 10) < 0.5)) {
-							slot = gi;
-						}
-					}
+				if (rp < frRep - 0.5) {
+					// Round-robin pool: when it is full the oldest grain is replaced.
+					slot = floor(allocIdx - frMaxGr * floor(allocIdx / frMaxGr));
+					allocIdx = allocIdx + 1;
 					rndCtr = rndCtr + 3;
 					rA = rnd01(rndCtr + vSeed * 91.7);
 					rB = rnd01(rndCtr + 1.0 + vSeed * 17.3);
@@ -1572,7 +1573,10 @@ voice_proc(
 					}
 				}
 			}
+			survTimer = max(survTimer, frRep * frLenS);
 		}
+
+		survTimer = max(survTimer - 1, 0);
 
 		// Render the pool
 		for (gi = 0; gi < 32; gi += 1) {
@@ -1580,7 +1584,6 @@ voice_proc(
 			if (peek(vst, gB + b) > 0.5) {
 				ageG = peek(vst, gB + b + 1);
 				lenG = peek(vst, gB + b + 2);
-				aliveCnt = aliveCnt + 1;
 				if (ageG >= 0) {
 					if (ageG >= lenG) {
 						poke(vst, 0, gB + b);
@@ -1622,7 +1625,7 @@ voice_proc(
 	// Fragments "survive": the grains in flight keep the level the voice had at release.
 	if ((vGate > 0.5) || (modeId < 3.5) || (peek(prm, 30) < 0.5)) {
 		survG = ampEnv;
-	} else if (aliveCnt == 0) {
+	} else if (survTimer <= 0) {
 		survG = 0;
 	}
 	envOut = ((modeId > 3.5) && (peek(prm, 30) > 0.5)) ? max(ampEnv, survG) : ampEnv;

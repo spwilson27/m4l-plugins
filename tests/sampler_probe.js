@@ -220,7 +220,6 @@ function analyze(durMs) {
         "scopeLen " + scopeStats.scopeLen + "\n" +
         "jsFrames " + scopeStats.jsFrames + "\n" +
         "spawns " + scopeStats.spawns + "\n" +
-        "dbg0 " + scopeStats.dbg[0] + "\ndbg1 " + scopeStats.dbg[1] + "\ndbg2 " + scopeStats.dbg[2] + "\ndbg3 " + scopeStats.dbg[3] + "\n" +
         dumpMetrics(metrics)
     );
     report.close();
@@ -242,11 +241,11 @@ function readScope() {
             jsFrames = -2;
         }
     }
-    if (!scopeName) return { dbg: [0,0,0,0], spawns: -1, activeVoices: -1, peakL: -1, cutHz: -1, sampFrames: -1, scopeLen: 0, jsFrames: jsFrames };
+    if (!scopeName) return { spawns: -1, activeVoices: -1, peakL: -1, cutHz: -1, sampFrames: -1, scopeLen: 0, jsFrames: jsFrames };
     var buf = new Buffer(scopeName);
-    var chunk = buf.peek(1, 0, 56);
+    var chunk = buf.peek(1, 0, 49);
     if (!chunk || !chunk.length) {
-        return { dbg: [0,0,0,0], spawns: -1, activeVoices: 0, peakL: 0, cutHz: 0, sampFrames: 0, scopeLen: 0, jsFrames: jsFrames };
+        return { spawns: -1, activeVoices: 0, peakL: 0, cutHz: 0, sampFrames: 0, scopeLen: 0, jsFrames: jsFrames };
     }
     return {
         pos0: (chunk[0] === undefined) ? -1 : chunk[0],
@@ -254,7 +253,6 @@ function readScope() {
         activeVoices: chunk[34] || 0,
         cutHz: chunk[37] || 0,
         spawns: (chunk.length > 48 && chunk[48] !== undefined) ? chunk[48] : -1,
-        dbg: chunk.slice(50, 54),
         sampFrames: (chunk.length > 38 && chunk[38] !== undefined) ? chunk[38] : -3,
         scopeLen: chunk.length,
         jsFrames: jsFrames,

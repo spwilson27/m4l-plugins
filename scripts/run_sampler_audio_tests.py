@@ -85,7 +85,7 @@ def device_patch(case, gen_code):
 def run_case(gen_code, case):
     boxes, lines = device_patch(case, gen_code)
     # Voices are gated on at the start of the measured window (sample time, stepped mode).
-    events = [(SETTLE_MS, "obj-js", 3, "trigger")]
+    events = [] if case.get("no_trigger") else [(SETTLE_MS, "obj-js", 3, "trigger")]
     if "rebound_ms" in case:
         events.append((SETTLE_MS + case["rebound_ms"], "obj-js", 3, "rebound"))
     if "release_ms" in case:
@@ -261,6 +261,17 @@ add("cy_ph_mod", P(CYB + ", cy_char 2, cy_mod 0.8"), 500, opts=S48)
 add("cy_ph_harm", P(CYB + ", cy_char 2, cy_mod 0.8, cy_harm 0.43"), 500, opts=S48)
 for _c in (0, 1, 2):
     add(f"cy_form{_c}", P(CYB + f", cy_char {_c}, formant 7, cy_mod 0.5, cy_split -0.5"), 500, opts=S48)
+# Pitch: the fundamental must be the note pitch (220 Hz at the root, 440 Hz an octave up) in every character
+add("cy_oct_up", P(CYB), 500, opts="src=sus48 notes=69 ")
+add("cy_pulse_oct", P(CYB + ", cy_char 0, cy_width 0.5"), 500, opts="src=sus48 notes=69 ")
+add("cy_part_oct", P(CYB + ", cy_char 1"), 500, opts="src=sus48 notes=69 ")
+add("cy_fund_oct", P(CYB + ", cy_char 1, cy_fund 1"), 500, opts="src=sus48 notes=69 ")
+# Harmonic-rich source (sus48 only has h1..h3) for the odd / even split checks
+add("cy_r_base", P(CYB), 500, opts=R48)
+add("cy_r_odd", P(CYB + ", cy_char 1, cy_split -1"), 500, opts=R48)
+add("cy_r_even", P(CYB + ", cy_char 1, cy_split 1"), 500, opts=R48)
+add("cy_ph_oct", P(CYB + ", cy_char 2, cy_mod 0.3"), 500, opts="src=sus48 notes=69 ")
+add("cy_xf1_root", P(CYB + ", cy_xfade 1"), 500, opts=S48)
 add("cy_xf0", P("mode 1, grain_motion 2.0, cy_xfade 0"), 500, opts=T48)
 add("cy_xf1", P("mode 1, grain_motion 2.0, cy_xfade 1"), 500, opts=T48)
 
@@ -305,8 +316,8 @@ add("fr_mot0", P(FRB + ", fr_density 4, fr_motion 0, unison_voices 1"), 600, opt
 add("fr_mot4", P(FRB + ", fr_density 4, fr_motion 4"), 600, opts=S48)
 add("fr_dir0", P(FRB + ", fr_density 4, fr_direction 0"), 600, opts=S48)
 add("fr_dir2", P(FRB + ", fr_density 4, fr_direction 2"), 600, opts=S48)
-add("fr_surv0", P(FRB + ", grain_size 400, rel_ms 10, fr_survive 0"), 700, cut_ms=250, release_ms=100, opts=S48)
-add("fr_surv1", P(FRB + ", grain_size 400, rel_ms 10, fr_survive 1"), 700, cut_ms=250, release_ms=100, opts=S48)
+add("fr_surv0", P(FRB + ", play_pos 0.1, grain_size 200, rel_ms 10, fr_survive 0"), 500, cut_ms=120, release_ms=60, opts=S48)
+add("fr_surv1", P(FRB + ", play_pos 0.1, grain_size 200, rel_ms 10, fr_survive 1"), 500, cut_ms=120, release_ms=60, opts=S48)
 add("fr_latch1", P(FRB + ", fr_density 4, lfo_pitch 0.3, lfo_rate 6, fr_latch 1"), 600, opts=S48)
 add("fr_latch0", P(FRB + ", fr_density 4, lfo_pitch 0.3, lfo_rate 6, fr_latch 0"), 600, opts=S48)
 add("fr_rinit1", P(FRB + ", fr_density 2, fr_repeats 4, fr_repeat_init 1"), 600, opts=S48)
@@ -340,7 +351,10 @@ def main():
 
     results = {}
     only = os.environ.get("SAMPLER_CASE", "").strip()
-    cases = [c for c in CASES if not only or re.search(only, c["name"])]
+    cases = [c for c in CASES if (not only or re.search(only, c["name"]))]
+    if os.environ.get("SAMPLER_CPU_ONLY"):
+        measure_cpu(gen_code)
+        return
     import json
     cache_path = os.environ.get("SAMPLER_CACHE")
     for c in cases:
@@ -372,6 +386,8 @@ def main():
         print("Partial sampler audio run; cross-case checks skipped.")
         return
     run_checks(results)
+    if os.environ.get("SAMPLER_CPU", "1") != "0":
+        measure_cpu(gen_code)
     if FAILS:
         print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
         raise SystemExit(1)
@@ -461,8 +477,177 @@ def run_checks(results):
     run_new_checks(results)
 
 
+# CPU per engine. Each configuration renders a short and a long NonRealTime run of the same patch (voices start
+# at load, no events); the wall-time difference removes Max launch and gen compile time, so
+# xRT = audio seconds rendered per wall second of one core.
+CPU_ENGINES = (
+    ("repitch", "mode 0, loop_mode 1, loop_start 0.05, loop_end 0.95"),
+    ("repitch+analog", "mode 0, loop_mode 1, loop_start 0.05, loop_end 0.95, rp_char 1, rp_dist 0.5, rp_color 0.5"),
+    ("repitch+digital", "mode 0, loop_mode 1, loop_start 0.05, loop_end 0.95, rp_char 2, rp_dist 0.3, rp_color 0.3"),
+    ("cycles", "mode 1"),
+    ("textures", "mode 2, grain_size 60"),
+    ("spectral(1024)", "mode 3, sp_quality 0, loop_mode 1, loop_start 0.05, loop_end 0.95"),
+    ("spectral(2048)", "mode 3, sp_quality 1, loop_mode 1, loop_start 0.05, loop_end 0.95"),
+    ("spectral(4096)", "mode 3, sp_quality 2, loop_mode 1, loop_start 0.05, loop_end 0.95"),
+    ("fragments", "mode 4, grain_size 60, fr_density 8, fr_repeats 2, loop_mode 1, loop_start 0.05, loop_end 0.95"),
+)
+
+
+def measure_cpu(gen_code, short_ms=10000, long_ms=70000):
+    """Wall-time slope of a short and a long NonRealTime render = single-core load at real time.
+    The slope includes the harness floor (record~, scheduler); every engine runs its voice code for all 16 voices
+    whether or not they are playing, so 'idle' and 'playing' differ only by the grains / frames in flight."""
+    print("CPU per engine: single-core load at real time (% of one core), from 10 s vs 70 s NonRealTime renders.")
+    print("  The harness floor (record~, scheduler) is included; resolution is about +-2%.")
+    for label, params in CPU_ENGINES:
+        out = []
+        for nv, notes in ((0, ""), (4, "57,60,64,67")):
+            walls = []
+            for dur in (short_ms, long_ms):
+                opts = "src=sus48 notes=57" if nv == 0 else f"src=sus48 notes={notes} start=live"
+                case = {"name": "cpu", "dur": dur, "params": P(params), "no_trigger": True,
+                        "harness_mode": "nrt", "opts": opts}
+                walls.append(run_case(gen_code, case)["harness_wall_s"])
+            out.append((walls[1] - walls[0]) / ((long_ms - short_ms) / 1000.0) * 100.0)
+        print(f"  {label:18s} 0 voices: {out[0]:5.1f}%   4 voices: {out[1]:5.1f}%   (xRT {100.0 / max(out[1], 0.1):5.1f})")
+
+
 def run_new_checks(results):
-    pass
+    R = results
+
+    def ratio(a, b):
+        return a / max(b, 1e-30)
+
+    def differs(a, b, rel=1e-3):
+        return abs(R[a]["chk"] - R[b]["chk"]) > rel * max(abs(R[a]["chk"]), abs(R[b]["chk"]), 1e-9)
+
+    # ---- every engine sounds, finite, and keeps the pitch where it should ----
+    for n in ("eng_repitch", "eng_cycles", "eng_textures", "eng_spectral", "eng_spectral_q0", "eng_spectral_q2",
+              "eng_spectral_nolive", "eng_fragments"):
+        r = R[n]
+        check(r["peak"] > 0.05 and r["rms"] > 0.02, f"{n}: must be audible (peak={r['peak']}, rms={r['rms']})")
+        check(r["scopeActive"] >= 1, f"{n}: scope must report an active voice")
+    for n in ("eng_repitch", "eng_spectral", "eng_spectral_q0", "eng_spectral_q2", "eng_spectral_nolive"):
+        check(abs(R[n]["specPeakHz"] - 220.0) < 4.0, f"{n}: note at the root key must sound at 220 Hz (got {R[n]['specPeakHz']:.1f})")
+    check(abs(R["eng_fragments"]["specPeakHz"] - 220.0) < 25.0, f"eng_fragments: pitch must follow the sample ({R['eng_fragments']['specPeakHz']:.1f} Hz)")
+    check(R["eng_spectral"]["startMs"] < 8.0, f"Spectral Live mode must start without latency (startMs={R['eng_spectral']['startMs']:.1f})")
+    check(R["eng_spectral_nolive"]["startMs"] > 15.0,
+          f"Spectral with Live off ramps in (startMs={R['eng_spectral_nolive']['startMs']:.1f})")
+
+    # ---- Sliced works in every engine ----
+    for en in ("repitch", "cycles", "textures", "spectral", "fragments"):
+        e, lp, pp, lv = (R[f"sl_{en}_{k}"] for k in ("end", "loop", "pp", "live"))
+        check(e["headRms"] > 0.02, f"sl_{en}_end: the slice must sound (headRms={e['headRms']})")
+        check(e["afterRms"] < 0.002, f"sl_{en}_end: must be silent once the slice has played (afterRms={e['afterRms']})")
+        for k, r in (("loop", lp), ("pp", pp)):
+            check(r["afterRms"] > 0.03 and r["afterRms"] > 0.4 * r["headRms"],
+                  f"sl_{en}_{k}: looping slice must sustain (head={r['headRms']}, after={r['afterRms']})")
+        check(lv["afterRms"] > 0.03, f"sl_{en}_live: must keep sounding after the slice bounds move (afterRms={lv['afterRms']})")
+        check(0.095 <= lv["scopePos0"] <= 0.21, f"sl_{en}_live: playhead must be inside the new 0.10..0.20 slice (pos={lv['scopePos0']})")
+
+    # ---- Repitch characters ----
+    check(abs(R["rp_an_d0"]["rms"] - R["rp_clean_sus"]["rms"]) < 1e-3 * R["rp_clean_sus"]["rms"]
+          and abs(R["rp_an_d0"]["centroid"] - R["rp_clean_sus"]["centroid"]) < 2.0,
+          "Analog at Dist 0 / Color 0 must be transparent (apart from a 2-sample delay)")
+    check(R["rp_an_d8"]["hfFrac"] > 1e4 * R["rp_an_d0"]["hfFrac"], "Analog Dist must generate harmonics "
+          f"(hf {R['rp_an_d8']['hfFrac']:.2e} vs {R['rp_an_d0']['hfFrac']:.2e})")
+    check(R["rp_an_cp"]["centroid"] > 1.08 * R["rp_clean_rich"]["centroid"], "Analog Color + must be brighter "
+          f"({R['rp_an_cp']['centroid']:.0f} vs {R['rp_clean_rich']['centroid']:.0f} Hz)")
+    check(R["rp_an_cp"]["stereoDiff"] > 0.05 and R["rp_clean_rich"]["stereoDiff"] < 1e-3,
+          f"Analog Color + must separate the stereo image (stereoDiff={R['rp_an_cp']['stereoDiff']})")
+    check(R["rp_an_cn"]["centroid"] < 0.7 * R["rp_clean_rich"]["centroid"], "Analog Color - must be warmer "
+          f"({R['rp_an_cn']['centroid']:.0f} vs {R['rp_clean_rich']['centroid']:.0f} Hz)")
+    check(R["rp_dg_d0"]["hfFrac"] < 1e-5 and abs(R["rp_dg_d0"]["rms"] - R["rp_clean_sus"]["rms"]) < 1e-3 * R["rp_clean_sus"]["rms"],
+          "Digital at Dist 0 (about 13 bits) must stay clean")
+    check(R["rp_dg_d1"]["hfFrac"] > 1e4 * R["rp_dg_d0"]["hfFrac"], "Digital Dist must reduce the bit depth "
+          f"(hf {R['rp_dg_d1']['hfFrac']:.2e} vs {R['rp_dg_d0']['hfFrac']:.2e})")
+    check(R["rp_dg_cpos"]["hfFrac"] > 2.0 * R["rp_dg_cneg"]["hfFrac"], "Digital Color + must alias, - must be band-limited "
+          f"(hf {R['rp_dg_cpos']['hfFrac']:.3f} vs {R['rp_dg_cneg']['hfFrac']:.3f})")
+    check(R["rp_dg_img0"]["hfFrac"] > 5.0 * R["rp_dg_img1"]["hfFrac"], "Imaging filter must remove the images "
+          f"(hf off {R['rp_dg_img0']['hfFrac']:.3f} vs on {R['rp_dg_img1']['hfFrac']:.4f})")
+    check(R["rp_dg_vsr1"]["centroid"] < 0.9 * R["rp_dg_vsr0"]["centroid"], "VSR must lower the sample rate (and the imaging cutoff) "
+          f"for a low note ({R['rp_dg_vsr1']['centroid']:.0f} vs {R['rp_dg_vsr0']['centroid']:.0f} Hz)")
+
+    # ---- Cycles pitch: fundamental == note pitch (was an octave high: grain B read at +0.5 phase) ----
+    for n, hz in (("cy_base", 220.0), ("cy_pulse_p", 220.0), ("cy_pulse_n", 220.0),
+                  ("cy_part0", 220.0), ("cy_fund1", 220.0), ("cy_ph0", 220.0), ("cy_fund_oct", 440.0),
+                  ("cy_xf1_root", 220.0), ("cy_oct_up", 440.0), ("cy_pulse_oct", 440.0),
+                  ("cy_part_oct", 440.0), ("cy_ph_oct", 440.0)):
+        check(abs(R[n]["specPeakHz"] - hz) < 0.03 * hz, f"{n}: Cycles fundamental must be {hz:.0f} Hz (got {R[n]['specPeakHz']:.1f})")
+
+    # ---- Cycles characters ----
+    base = R["cy_base"]
+    for n in ("cy_pulse_p", "cy_pulse_n"):
+        check(R[n]["hfFrac"] > 100.0 * base["hfFrac"] and abs(R[n]["specPeakHz"] - base["specPeakHz"]) < 4.0,
+              f"{n}: Pulse width must reshape the spectrum without moving the pitch (hf {R[n]['hfFrac']:.2e} vs {base['hfFrac']:.2e})")
+    check(differs("cy_pulse_p", "cy_pulse_n") and differs("cy_pulse_p", "cy_base"), "Pulse width + and - must differ from each other and from neutral")
+    check(not differs("cy_part0", "cy_base", 1e-9), "Partials at Split 0 / Fund 0 must equal the plain cycle")
+    rb, ro, re_ = R["cy_r_base"], R["cy_r_odd"], R["cy_r_even"]
+    check(re_["h4"] > 0.5 * rb["h4"] and ro["h4"] < 0.05 * rb["h4"] and ro["h3"] > 0.5 * rb["h3"] and re_["h3"] < 0.05 * rb["h3"],
+          f"Split + keeps even harmonics only, - odd only (h3 odd={ro['h3']:.3f} even={re_['h3']:.2e}; h4 odd={ro['h4']:.2e} even={re_['h4']:.3f}; base h3={rb['h3']:.3f} h4={rb['h4']:.3f})")
+    check(abs(ro["specPeakHz"] - 220.0) < 4.0, f"Split - (odd only) keeps the fundamental ({ro['specPeakHz']:.1f} Hz)")
+    check(abs(R["cy_fund1"]["specPeakHz"] - 220.0) < 4.0 and R["cy_fund1"]["h1"] > 20.0 * max(R["cy_fund1"]["h2"], R["cy_fund1"]["h3"]),
+          f"Fund 100% must give a sine at the played pitch (h1={R['cy_fund1']['h1']:.3f}, h3={R['cy_fund1']['h3']:.4f})")
+    check(not differs("cy_ph0", "cy_base", 1e-9), "Phase at Mod 0 must equal the plain cycle")
+    check(R["cy_ph_mod"]["hfFrac"] > 1e3 * R["cy_ph0"]["hfFrac"], "Phase Mod must add sidebands "
+          f"(hf {R['cy_ph_mod']['hfFrac']:.2e} vs {R['cy_ph0']['hfFrac']:.2e})")
+    check(R["cy_ph_harm"]["centroid"] > 2.0 * R["cy_ph_mod"]["centroid"], "Phase Harm must step to a higher modulator tuning "
+          f"({R['cy_ph_harm']['centroid']:.0f} vs {R['cy_ph_mod']['centroid']:.0f} Hz)")
+    for c in (0, 1, 2):
+        r = R[f"cy_form{c}"]
+        check(r["peak"] > 0.05 and r["rms"] > 0.02, f"cy_form{c}: every Cycles character must work with Formant")
+    check(differs("cy_xf0", "cy_xf1"), "Cycles Crossfade must change the output")
+
+    # ---- Spectral ----
+    n_, half, dbl, p7 = R["sp_n"], R["sp_half"], R["sp_dbl"], R["sp_p7"]
+    check(abs(half["specPeakHz"] - 220.0) < 5.0, f"Spectral Speed 50% must keep the pitch ({half['specPeakHz']:.1f} Hz)")
+    check(half["lateEarly"] > 1.15 * n_["lateEarly"], "Spectral Speed 50% must stretch the decay "
+          f"(late/early {half['lateEarly']:.3f} vs {n_['lateEarly']:.3f})")
+    check(dbl["lateEarly"] < n_["lateEarly"], "Spectral Speed 200% must shorten the decay")
+    check(abs(p7["specPeakHz"] - 329.6) < 3.0 and 0.8 < p7["lateEarly"] / n_["lateEarly"] < 1.25,
+          f"Spectral +7 st must shift the pitch (got {p7['specPeakHz']:.1f} Hz) and keep the speed")
+    check(R["sp_f_on"]["centroid"] < 0.85 * R["sp_f_off"]["centroid"], "Formant on must keep the timbre when the pitch rises "
+          f"({R['sp_f_on']['centroid']:.0f} vs {R['sp_f_off']['centroid']:.0f} Hz)")
+    check(R["sp_f_rel"]["centroid"] > 1.2 * R["sp_f_on"]["centroid"], "Relative formant shifts must move the formants with the pitch")
+    check(R["sp_fshift"]["centroid"] > 1.15 * R["sp_rich"]["centroid"], "Formant +12 st must raise the spectral envelope")
+    check(abs(R["sp_rh_bend"]["specPeakHz"] - 220.0) < 5.0 and R["sp_rh_bend"]["h1"] > 0.8 * R["sp_rh0"]["h1"]
+          and R["sp_rh_bend"]["h2"] < 0.1 * R["sp_rh0"]["h2"],
+          "Reharm Bend must move the harmonics but leave the fundamental")
+    check(R["sp_q_oct"]["h3"] < 0.1 * R["sp_rh0"]["h3"] and R["sp_q_oct"]["h1"] > 0.8 * R["sp_rh0"]["h1"],
+          "Quantize to Octaves must move the 3rd harmonic onto an octave")
+    check(R["sp_q_key"]["h5"] < 0.1 * R["sp_rh0"]["h5"] and R["sp_q_key"]["h1"] > 0.8 * R["sp_rh0"]["h1"],
+          "Quantize to C major must move the out-of-key 5th harmonic (C#)")
+    check(R["sp_ons_on"]["peak"] > 1.3 * R["sp_ons_off"]["peak"], "Preserve Onsets must keep the clicks sharp at slow Speed "
+          f"(peak {R['sp_ons_on']['peak']:.3f} vs {R['sp_ons_off']['peak']:.3f})")
+    check(R["sp_disp1"]["peak"] < 0.85 * R["sp_disp0"]["peak"], "Dispersion must smear phases at extreme stretch "
+          f"(peak {R['sp_disp1']['peak']:.3f} vs {R['sp_disp0']['peak']:.3f})")
+    check(0.8 < R["sp_freeze"]["lateEarly"] < 1.25, f"Spectral freeze must hold a steady level ({R['sp_freeze']['lateEarly']:.3f})")
+    check(R["sp_rev"]["lateEarly"] > 3.0, f"Spectral reverse must walk back into the attack ({R['sp_rev']['lateEarly']:.2f})")
+    check(R["sp_loop"]["afterRms"] > 0.05, "Spectral loop must sustain past the sample end")
+    check(R["sp_poly4"]["scopeActive"] == 4 and R["sp_poly4"]["peak"] < 1.05, "4 Spectral voices must play together")
+    for q in ("eng_spectral_q0", "eng_spectral_q2"):
+        check(0.6 < R[q]["rms"] / R["eng_spectral"]["rms"] < 1.4, f"{q}: all Spectral qualities must give a similar level")
+
+    # ---- Fragments ----
+    sp = {k: max(R[k]["spawns"], 1e-9) for k in ("fr_d1", "fr_d2", "fr_d8", "fr_off8", "fr_r1", "fr_r4", "fr_nosync", "fr_sync", "fr_max4", "fr_max32")}
+    check(1.7 < sp["fr_d2"] / sp["fr_d1"] < 2.3, f"Fragments density 2 vs 1 must double the grains ({sp['fr_d2']:.0f} vs {sp['fr_d1']:.0f})")
+    check(3.3 < sp["fr_d8"] / sp["fr_d2"] < 4.5, f"Fragments density 8 vs 2 must quadruple the grains ({sp['fr_d8']:.0f} vs {sp['fr_d2']:.0f})")
+    check(abs(sp["fr_off8"] - sp["fr_d1"]) <= 1, "With Use Density off the density value must be ignored")
+    check(sp["fr_r1"] == sp["fr_d2"], "Repeats 1 must not add grains")
+    check(3.5 < sp["fr_r4"] / sp["fr_r1"] < 4.5, f"Repeats 4 must quadruple the grains ({sp['fr_r4']:.0f} vs {sp['fr_r1']:.0f})")
+    check(0.7 < sp["fr_sync"] / sp["fr_nosync"] < 0.9, f"Sync must snap the grain size to the beat grid ({sp['fr_sync']:.0f} vs {sp['fr_nosync']:.0f})")
+    check(abs(R["fr_max4"]["rms"] - R["fr_max32"]["rms"]) > 0.3 * R["fr_max32"]["rms"], "Max Grains must cap the grain pool "
+          f"(rms {R['fr_max4']['rms']:.4f} vs {R['fr_max32']['rms']:.4f})")
+    check(R["fr_env0"]["hfFrac"] > 50.0 * R["fr_env5"]["hfFrac"], "Envelope shape 0% must click on purpose "
+          f"(hf {R['fr_env0']['hfFrac']:.2e} vs {R['fr_env5']['hfFrac']:.2e})")
+    check(R["fr_mot4"]["stereoDiff"] > 0.05 and R["fr_mot0"]["stereoDiff"] < 0.01, "Motion must randomise the pan")
+    check(differs("fr_dir0", "fr_dir2"), "Grain direction Random must differ from Sample")
+    check(differs("fr_latch1", "fr_latch0") and abs(R["fr_latch1"]["specPeakHz"] - R["fr_latch0"]["specPeakHz"]) > 5.0,
+          "Latch off must let a pitch LFO bend grains in flight")
+    check(differs("fr_rinit1", "fr_rinit0"), "Repeat at initial position must change where repeats read")
+    check(R["fr_surv1"]["afterRms"] > 0.03 and R["fr_surv1"]["afterRms"] > 10.0 * R["fr_surv0"]["afterRms"],
+          f"Grains must survive the voice end only when asked (after {R['fr_surv1']['afterRms']:.4f} vs {R['fr_surv0']['afterRms']:.4f})")
+    check(R["fr_uni"]["stereoDiff"] > 0.1, "Fragments unison must spread the grains")
 
 
 if __name__ == "__main__":
