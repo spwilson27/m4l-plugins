@@ -932,6 +932,8 @@ def build_patcher():
                  "patching_rect": [780.0, 604.0, 82.0, 20.0], "text": "live.thisdevice"}},
         {"box": {"id": "obj-msg-ready", "maxclass": "message", "numinlets": 2, "numoutlets": 1, "outlettype": [""],
                  "patching_rect": [780.0, 632.0, 82.0, 20.0], "text": "device_ready"}},
+        {"box": {"id": "obj-prep-tempo", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1, "outlettype": [""],
+                 "patching_rect": [900.0, 576.0, 92.0, 20.0], "text": "prepend tempo"}},
         # Loadbang buffer binding (rule #8: bind GenExpr Buffer varName with no `set` prefix)
         {
             "box": {
@@ -971,11 +973,11 @@ def build_patcher():
             "box": {
                 "id": "obj-route-viz",
                 "maxclass": "newobj",
-                "numinlets": 6,
-                "numoutlets": 6,
-                "outlettype": ["", "", "", "", "", ""],
+                "numinlets": 7,
+                "numoutlets": 7,
+                "outlettype": ["", "", "", "", "", "", ""],
                 "patching_rect": [160.0, 555.0, 310.0, 20.0],
-                "text": "route param load_sample browse drop_set setwidth_cmd",
+                "text": "route param load_sample browse drop_set setwidth_cmd tempo",
             }
         },
         {
@@ -1019,6 +1021,8 @@ def build_patcher():
         {"patchline": {"source": ["obj-viz-side", 0], "destination": ["obj-route-viz", 0]}},
         {"patchline": {"source": ["obj-viz-insp", 0], "destination": ["obj-route-viz", 0]}},
         {"patchline": {"source": ["obj-route-viz", 4], "destination": ["obj-prep-setwidth", 0]}},
+        {"patchline": {"source": ["obj-route-viz", 5], "destination": ["obj-prep-tempo", 0]}},
+        {"patchline": {"source": ["obj-prep-tempo", 0], "destination": ["obj-gen", 0]}},
         {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
         {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ready", 0]}},
         {"patchline": {"source": ["obj-msg-ready", 0], "destination": ["obj-viz", 0]}},

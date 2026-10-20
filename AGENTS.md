@@ -711,27 +711,51 @@ Max and Live run only in the tart VM (section 1a), through `scripts/vm_envtrig.s
 - With no sample loaded, MIDI still runs the voices, but no scan lines are drawn.
 
 ### Gen core (`gen.codebox~`, hidden)
-- `src/sampler_core.genexpr`: 16 voices, each with up to 8 stereo unison sub-voices. There are 4 engines (`mode`):
-  - `0` Repitch: varispeed. Forward loops use an equal-power crossfade, and ping-pong is sample-continuous.
-  - `1` Cycles: pitch-locked dual Hann grains with `formant`.
-  - `2` Textures: a granular cloud.
-  - `3` Slice: per-note slices from C1.
-- Every engine also has `freeze` and `reverse`, a TPT SVF LP / BP / HP filter with drive, an Amp ADSR, a Mod ADSR and an LFO.
-- Buffers are bound on `loadbang` with `samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope`:
-  - `#0-bsamp`: the stereo sample.
-  - `#0-bsvoices`: `16 x 8` voice slots.
-  - `#0-bsscope`: 64-sample telemetry (voice playheads and envelopes, peaks, active voices, LFO, Mod Env, cutoff).
-- `src/sampler_config.js` holds the voice allocator (Poly, plus a Mono / Legato stack), `detectTransientSlices` and `estimateRootMidiNote`.
+- `src/sampler_core.genexpr`: 16 voices, each with up to 8 stereo unison sub-voices.
+- **Engines** (`mode`):
+  - `0` Repitch, with characters (`rp_char`):
+    - Clean.
+    - Analog: saturator with pre/post EQ (`rp_dist`), and a tape stage (`rp_color`: + brighter, hiss, wow/flutter, azimuth; − low-mid, softer).
+    - Digital: 13 bits at Dist 0 down to 2, sample-rate reduction for Color, plus `rp_vsr` and `rp_imaging`.
+  - `1` Cycles, with `formant` and characters (`cy_char`):
+    - Pulse: phase-distortion width.
+    - Partials: odd/even `cy_split` plus a `cy_fund` sine.
+    - Phase: dirty-sine PM, `cy_mod` / stepped `cy_harm`.
+    - `cy_xfade` crossfades two windows.
+  - `2` Textures: granular cloud.
+  - `3` Spectral: phase vocoder at 75 % overlap, FFT 1024 / 2048 / 4096 by `sp_quality`, time-sliced like Cepstra.
+    - Pitch is bin remapping. A smoothed-envelope formant stage gives Pure `formant` / `sp_shift`.
+    - Reharm `sp_bend` and `sp_quant` (Octaves / Key with `sp_key` / `sp_scale`, `sp_quant_amt`) act on harmonics above 1.5 times the root fundamental, so they need a correct `root_note`.
+    - Also `sp_onsets`, `sp_dispersion`, `sp_live`, `sp_rel_formant`.
+    - **Only voices 0..3 run Spectral**: the face caps polyphony at 4 in this mode (`voiceCap()`).
+  - `4` Fragments: grain pool capped at **32 per voice** (`fr_max_grains` is clamped), round-robin.
+    - Each spawn starts `fr_repeats` grains one grain length apart.
+    - Controls: `fr_density` / `fr_use_density`, `fr_env` shape, `fr_motion` (pan and playhead randomisation), `fr_direction`, `fr_latch`, `fr_repeat_init`, `fr_survive` (timer).
+    - `fr_sync` snaps the grain size to beat multiples of `tempo`. The face observes `live_set tempo` and sends `tempo <bpm>` → `prepend tempo` → gen.
+- **`sliced`** is orthogonal to the engine. Every engine reads the slice bounds from `#0-bsvoices` live (slots 4/5) and honours `slice_play` (0 slice end, 1 sample end, 2 one-way loop, 3 ping-pong) and reverse. Pitch ignores the note when sliced.
+- Every engine also has `freeze`, the TPT SVF filter with drive, Amp / Mod ADSRs and the LFO.
+- `play_pos` only applies while `freeze` is on.
+- A mono buffer plays on both outputs (`channelmode="clamp"`).
+- **Buffers**:
+  - `#0-bsamp`: the sample.
+  - `#0-bsvoices`: 16 x 8 voice slots.
+  - `#0-bsscope`: telemetry 0..39, plus 48 for the cumulative Fragments grain count.
+- **Gen gotchas found here**:
+  - A `Data` declared inside a function is shared by all its call sites, so per-voice state lives in global `Data` with offsets.
+  - `int(clip(round(peek(...))))` misbehaved; use `floor(x + 0.5)`.
+  - **Cycles pitch**: both overlap-add grains must read the source at the *same* phase (`pNext`); only the Hann window (offset 0.5) and the latched anchor differ. Reading grain B at `pNext + 0.5` made a periodic source sum to `-sin(2x)` and sounded an octave high (440 Hz instead of 220 Hz at the root). `run_sampler_audio_tests.py` now asserts 220 Hz at the root and 440 Hz an octave up for Pulse / Partials / Phase and `cy_xfade`.
+- **CPU** (VM, one core, including about 9 % harness floor): Repitch about 15 % (Analog 22 %), Cycles 17 %, Textures 12 %, Spectral 9–10 % idle / 16–17 % with 4 voices, Fragments 12–15 %. All 16 voices run their engine code even when idle.
+- `src/sampler_config.js`: voice allocator (`setSliceBaseNote`, `updateSliceBounds`), `activeSliceStarts`, the slicers (`sliceDivisions`, `sliceBeats`, `bpmFromName`, `sliceOnsets`, `slicePitches`, `addSliceMarker`, `removeSliceMarker`) and `estimateRootMidiNote`.
 
 ### State
 - `SamplerStateData` (blob, `parameter_type: 3`, on `obj-viz`) is saved by `getvalueof()`.
-- Version 2 holds `[2, mode, start, end, loopMode, loopStart, loopEnd, xfade, playPos, envPage, sliceCount, ...slices]`, with positions stored as `x 10000`, followed by the dropped sample path. `setvalueof()` still parses v1, which has no path.
+- Version 3 holds `[3, mode, start, end, loopMode, loopStart, loopEnd, xfade, playPos, envPage, sliceCount, ...slices, path]`, with positions stored as `x 10000`. In v1 and v2, `mode 3` was the Slice engine and restores as `sliced 1, mode 0`. v1 has no path.
 - On a v2 restore it emits `load_sample <path>`, which goes `prepend replace` → `buffer~ #0-bsamp`. It sends it again from `setbuffers()` if the buffer is still silent, and keeps the saved slices instead of re-detecting them.
 - The `live.drop` stays `parameter_enable 0`; the path lives only in the blob.
 
 ### Build / Test / Preview
 ```bash
-npm run -s typecheck && python3 scripts/build_sampler.py && node tests/test_sampler.js && python3 scripts/render_preview.py "devices/Better Sampler.amxd"
+python3 scripts/build_sampler.py && node tests/test_sampler.js && node tests/test_sampler_slicing.js && python3 scripts/render_preview.py "devices/Better Sampler.amxd"
 ```
 Audio checks (real Max render): `python3 scripts/run_sampler_audio_tests.py` (probe: `tests/sampler_probe.js`). Run it only while no other Max harness is running.
 

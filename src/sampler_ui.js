@@ -426,8 +426,31 @@ function applyDeviceWidth() {
     outlet(0, "setwidth_cmd", DEVICE_W + (showInspector ? INSPECTOR_W : 0));
 }
 
+// The Spectral engine renders voices 0..3 only (phase-vocoder CPU budget), so cap polyphony there
+var SPECTRAL_MAX_VOICES = 4;
+function voiceCap() {
+    return curMode === 3 ? Math.min(curPolyVoices, SPECTRAL_MAX_VOICES) : curPolyVoices;
+}
+
+// Live's tempo for Fragments beat-synced grains (gen `tempo`) and Beats slicing
+var tempoObserver = null;
+function sendTempo(t) {
+    var v = Number(t);
+    if (v > 20) outlet(0, "tempo", v);
+}
+
 function device_ready() {
     applyDeviceWidth();
+    if (faceRegion !== "main" || tempoObserver || typeof LiveAPI === "undefined") return;
+    try {
+        tempoObserver = new LiveAPI(function (args) {
+            if (args && args[0] === "tempo") sendTempo(args[1]);
+        }, "live_set");
+        tempoObserver.property = "tempo";
+        sendTempo(tempoObserver.get("tempo"));
+    } catch (_) {
+        tempoObserver = null;
+    }
 }
 
 // Held Sliced-mode notes follow the start / end point live
@@ -441,7 +464,7 @@ function refreshHeldSlices() {
 function midi_note(note, vel) {
     var n = Math.round(Number(note) || 60);
     var v = Math.round(Number(vel) || 0);
-    voiceAlloc.setMaxVoices(curPolyVoices);
+    voiceAlloc.setMaxVoices(voiceCap());
     if (v > 0) {
         var starts = currentSliceStarts();
         var allocated = voiceAlloc.noteOn(n, v, curMonoLegato, starts, curEnd);
@@ -519,7 +542,7 @@ function storeParam(key, v, fromFace) {
     if (!fromFace && isStaleEcho(key, n)) return;
     paramVals[key] = n;
     switch (key) {
-        case "mode": curMode = clampInt(n, 0, 4); break;
+        case "mode": curMode = clampInt(n, 0, 4); voiceAlloc.setMaxVoices(voiceCap()); break;
         case "sliced": curSliced = n > 0.5 ? 1 : 0; refreshHeldSlices(); break;
         case "slice_from":
             curSliceFrom = clampInt(n, 0, 127);
@@ -538,7 +561,7 @@ function storeParam(key, v, fromFace) {
         case "loop_xfade": curXfade = clampF(n * 0.0045, 0.0, 0.45); break;
         case "play_pos": curPlayPos = clampF(n * 0.01, 0.0, 1.0); break;
         case "root_note": curRootNote = clampInt(n, 0, 127); break;
-        case "poly_voices": curPolyVoices = clampInt(n, 1, 16); voiceAlloc.setMaxVoices(curPolyVoices); break;
+        case "poly_voices": curPolyVoices = clampInt(n, 1, 16); voiceAlloc.setMaxVoices(voiceCap()); break;
         case "mono_legato": curMonoLegato = n > 0.5 ? 1 : 0; break;
         case "filt_on": curFiltOn = n > 0.5 ? 1 : 0; break;
         case "filt_cutoff": curFiltCutoff = n; break;

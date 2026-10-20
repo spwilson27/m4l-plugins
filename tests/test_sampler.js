@@ -173,7 +173,9 @@ assert.ok(fnAt >= 0 && fnAt < bufAt, "Helper functions must precede Buffer");
 assert.ok(bufAt < paramAt && paramAt < histAt, "Declarations follow Buffer -> Param -> History");
 assert.ok(histAt < exprAt, "History declarations precede top-level expressions");
 assert.ok(gen.includes("fixnan("), "Outputs must be protected with fixnan()");
-assert.ok(gen.includes("v15L, v15R, v15P, v15A, v15M = voice_proc(samp, vdata, 15,"), "All 16 voices (0..15) run");
+for (let vi = 0; vi < 16; vi++) {
+    assert.ok(new RegExp(`v${vi}L, v${vi}R, v${vi}P, v${vi}A, v${vi}M(, v${vi}S)? = voice_proc\\(samp, vdata, ${vi},`).test(gen), `voice ${vi} runs (all 16 voices)`);
+}
 assert.ok(/Param mode\(0, min=0, max=4\);/.test(gen), "gen has Param mode covering 5 engines (Repitch, Cycles, Textures, Spectral, Fragments)");
 assert.ok(/Param sliced\(0, min=0, max=1\);/.test(gen), "gen has Param sliced (Single / Sliced is separate from the engine)");
 assert.ok(gen.includes("Param freeze(0, min=0, max=1);"), "freeze param");
@@ -369,7 +371,7 @@ assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, "midi");
 assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, "midi -> main face");
 
 // --- face -> route -> hidden control wiring ---
-assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd");
+assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo");
 assertLink(lines, "obj-route-viz", 2, "obj-opendialog", 0, "browse -> file dialog");
 assertLink(lines, "obj-viz", 0, "obj-route-viz", 0, "main face outlet");
 assertLink(lines, "obj-viz-side", 0, "obj-route-viz", 0, "side face outlet");
@@ -382,7 +384,7 @@ assertLink(lines, "obj-route-viz", 4, "obj-prep-setwidth", 0, "setwidth_cmd -> p
 assertLink(lines, "obj-prep-setwidth", 0, "obj-thisdevice", 0, "prepend setwidth -> live.thisdevice");
 assertLink(lines, "obj-thisdevice", 0, "obj-msg-ready", 0, "thisdevice ready -> device_ready");
 assertLink(lines, "obj-msg-ready", 0, "obj-viz", 0, "device_ready -> main face");
-assert.strictEqual(byId.get("obj-route-viz").numoutlets, 6, "route-viz: 5 selectors + reject");
+assert.strictEqual(byId.get("obj-route-viz").numoutlets, 7, "route-viz: 6 selectors + reject");
 assertLink(lines, "obj-route-viz", 0, "obj-route-param", 0, "param route");
 assertLink(lines, "obj-route-viz", 1, "obj-prep-replace", 0, "load_sample route");
 const routeKeys = byId.get("obj-route-param").text.split(/\s+/).slice(1);
@@ -2522,3 +2524,34 @@ console.log("Inspector: glide, legato, per-mode rows ok");
 
 console.log("Late echoes for the new parameters ok");
 console.log("All Better Sampler tests passed!");
+
+// --- Spectral caps polyphony at 4 (gen renders voices 0..3); Live tempo reaches gen ---
+{
+    assertLink(lines, "obj-route-viz", 5, "obj-prep-tempo", 0, "tempo route");
+    assert.strictEqual(byId.get("obj-prep-tempo").text, "prepend tempo");
+    assertLink(lines, "obj-prep-tempo", 0, "obj-gen", 0, "tempo -> gen");
+    const pc = makeSandbox(mainViz);
+    const v = pc.sb;
+    v.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    v.set_poly_voices(8);
+    v.set_mode(3);
+    for (let n = 60; n < 66; n++) v.midi_note(n, 100);
+    assert.ok(v.voiceAlloc.voices.slice(4).every((x) => x.gate === 0), "Spectral never allocates voices 4..15");
+    assert.strictEqual(v.voiceAlloc.voices.slice(0, 4).filter((x) => x.gate > 0).length, 4, "4 Spectral voices sound");
+    for (let n = 60; n < 66; n++) v.midi_note(n, 0);
+    v.set_mode(0);
+    for (let n = 60; n < 66; n++) v.midi_note(n, 100);
+    assert.strictEqual(v.voiceAlloc.voices.filter((x) => x.gate > 0).length, 6, "other engines use the full Poly count");
+    // tempo observer: device_ready reads Live's tempo and forwards changes
+    let cb = null;
+    v.LiveAPI = function (f) { cb = f; this.get = () => [133]; };
+    v.tempoObserver = null;
+    pc.emitted.length = 0;
+    v.device_ready();
+    assert.ok(pc.emitted.some((a) => a[1] === "tempo" && Number(a[2]) === 133), "tempo sent on device ready");
+    cb(["tempo", 99]);
+    assert.ok(pc.emitted.some((a) => a[1] === "tempo" && a[2] === 99), "tempo changes forwarded");
+}
+
+console.log("Spectral poly cap and tempo feed ok");
+
