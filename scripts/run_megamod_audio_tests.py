@@ -149,8 +149,8 @@ MSEG_POINTS = [
     {"x": 1, "y": 0.8, "curve": 0, "sCurve": 0},
 ]
 
-MAPPING = {"mode": "mod", "amount": 0.8, "polarity": 0, "range": 1, "curve": 3, "curveAmt": 0.6, "curveSteps": 4}
-MAPPING_B = {"mode": "remote", "min": 0.85, "max": 0.15, "polarity": -1, "range": 0.9, "amount": 0.8, "curve": 1, "curveAmt": 0.5, "curveSteps": 4}
+MAPPING = {"mode": "mod", "polarity": 0, "range": 0.8, "curve": 3, "curveAmt": 0.6, "curveSteps": 4}
+MAPPING_B = {"mode": "remote", "min": 0.85, "max": 0.15, "polarity": -1, "range": 0.9, "curve": 1, "curveAmt": 0.5, "curveSteps": 4}
 ROUTER_CASE = {"base": ROUTER * mc.ROUTER_SLOTS, "slots": [
     {"slot": ROUTER * mc.ROUTER_SLOTS + 0, "src": 0, "map": MAPPING},
     {"slot": ROUTER * mc.ROUTER_SLOTS + 1, "src": 1, "map": MAPPING_B},

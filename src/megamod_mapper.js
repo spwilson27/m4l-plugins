@@ -498,7 +498,7 @@ var MM = (function () {
         if (!m || !patch) return;
         const merged = sanitizeMapping(Object.assign({}, m, patch, { id: m.id, target: m.target }));
         const oldMod = m.mod;
-        for (const k of ["mod", "enabled", "mode", "polarity", "range", "amount", "min", "max", "shape"]) m[k] = merged[k];
+        for (const k of ["mod", "enabled", "mode", "polarity", "range", "min", "max", "shape"]) m[k] = merged[k];
         if (!api.state.mods[m.mod]) m.mod = oldMod;
         syncMapping(m);
         fire("mapping", m.mod, m.id);

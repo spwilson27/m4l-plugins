@@ -340,8 +340,8 @@ function ubPbSelMapping() {
 function ubValueText(m) {
     // Remote: the absolute window "20\u201380%" (min \u2013 max of the target parameter)
     if (m.mode === "remote") return Math.round(m.min * 100) + "\u2013" + Math.round(m.max * 100) + "%";
-    // polarity glyph + amount: "+50%", "±50%", "\u221250%" (a negative amount keeps its own sign: "+-30%")
-    return (m.polarity > 0 ? "+" : m.polarity < 0 ? "\u2212" : "\u00b1") + Math.round(m.amount * 100) + "%";
+    // Mod: polarity glyph + range: "+50%", "\u00b150%", "\u221250%"
+    return (m.polarity > 0 ? "+" : m.polarity < 0 ? "\u2212" : "\u00b1") + Math.round(m.range * 100) + "%";
 }
 function ubTargetPath(m) {
     const t = m.target;
@@ -350,33 +350,35 @@ function ubTargetPath(m) {
 
 // detail panel controls: [{id, rect}]
 const UB_OUTMETER_W = 13; // output bar + range markers to the right of the remap MSEG (Phase Plant style, but a bar)
+const UB_POL_TIPS = {
+    1: "Positive: output 0 to +range",
+    0: "Bipolar: output -range to +range",
+    "-1": "Negative: output 0 to -range"
+};
+const UB_TAB_W = 40; // MOD / REM tabs: same size in both modes, so a mode switch never moves the tab under the cursor
+const UB_POL_W = 15; // one cell of the polarity control (Mod only, right end of the tab row)
 function ubDetailRects(gm, m) {
     const x = gm.dx;
     const w = gm.dw;
     const out = [];
     const rem = m.mode === "remote";
     const my = 49;
-    const mh = 62;
-    const msegR = [x, my, w - UB_OUTMETER_W - 3, mh];
-    // tab row: MOD / REM tabs on the left, delete at the right end
-    out.push({ id: "tabmod", rect: [x + 1, 35, 54, 12], mode: "mod", tip: "Mod: modulates around the parameter's value" });
-    out.push({ id: "tabrem", rect: [x + 57, 35, 54, 12], mode: "remote", tip: "Remote: takes over the parameter (absolute min / max)" });
-    out.push({ id: "del", rect: [x + w - 23, 35, 21, 12], tip: "Delete mapping" });
+    const py = 146; // presets row at the bottom (h 13 -> 159)
+    const mh = py - 3 - my; // MSEG + output bar, same height in both modes
+    const msegW = w - UB_OUTMETER_W - 3;
+    const msegR = [x, my, msegW, mh];
+    const meterX = x + msegW + 3;
+    // tab row: MOD / REM tabs on the left; in Mod the polarity control sits at the right end (empty in Remote)
+    out.push({ id: "tabmod", rect: [x + 1, 35, UB_TAB_W, 12], mode: "mod", tip: "Mod: modulates around the parameter's value" });
+    out.push({ id: "tabrem", rect: [x + 1 + UB_TAB_W + 2, 35, UB_TAB_W, 12], mode: "remote", tip: "Remote: takes over the parameter (absolute min / max)" });
     out.push({ id: "mseg", rect: msegR });
-    out.push({ id: "meter", rect: [x + w - UB_OUTMETER_W, my, UB_OUTMETER_W, mh],
+    out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, mh],
         tip: !rem ? "Drag the triangle to set the range (+ and \u2212 keep zero fixed, \u00b1 moves both); double-click = full"
             : "Drag the nearest triangle: filled = max, outline = min (double-click resets it)" });
-    const py = my + mh + 3;
     for (let k = 0; k < 5; k++) out.push({ id: "preset" + k, rect: [x + k * 28.25, py, 25, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
     if (!rem) {
-        out.push({ id: "amt", rect: [x, 131, w, 11] });
-        const pw = w / 3; // the polarity control spans the full editor width
-        out.push({ id: "pol1", rect: [x, 144, pw, 15], pol: 1, tip: "Positive: output 0 to +amount" });
-        out.push({ id: "pol0", rect: [x + pw, 144, pw, 15], pol: 0, tip: "Bipolar: output -amount to +amount" });
-        out.push({ id: "pol-1", rect: [x + 2 * pw, 144, pw, 15], pol: -1, tip: "Negative: output 0 to -amount" });
-    } else {
-        out.push({ id: "vmin", rect: [x, 133, 67, 25], which: "min", tip: "Minimum (drag vertically, double-click = 0%)" });
-        out.push({ id: "vmax", rect: [x + 71, 133, 67, 25], which: "max", tip: "Maximum (drag vertically, double-click = 100%)" });
+        const px = x + w - 3 * UB_POL_W;
+        [1, 0, -1].forEach((p, k) => out.push({ id: "pol" + p, rect: [px + k * UB_POL_W, 35, UB_POL_W, 12], pol: p, tip: UB_POL_TIPS[p] }));
     }
     return out;
 }
@@ -450,7 +452,7 @@ function ubHitList(x, y) {
         const P = ubRowParts(r.y);
         const base = { slot: it.i, m: it.m, tip: ubTargetPath(it.m) };
         for (const k of ["tog", "del", "curve", "val", "mode"]) {
-            if (ubIn(P[k], x, y)) return Object.assign({ kind: "ls_" + k, rect: P[k] }, base, { tip: { tog: "Mapping on / off", del: "Delete mapping", curve: "Transfer curve (click = edit)", val: "Drag = amount / range", mode: "Mod / Remote" }[k] });
+            if (ubIn(P[k], x, y)) return Object.assign({ kind: "ls_" + k, rect: P[k] }, base, { tip: { tog: "Mapping on / off", del: "Delete mapping", curve: "Transfer curve (click = edit)", val: "Drag = range / window", mode: "Mod / Remote" }[k] });
         }
         return Object.assign({ kind: "ls_row" }, base);
     }
@@ -614,20 +616,14 @@ function ondrag(x, y, but, cmd, shift) {
         if (m) {
             const dv = ((x - d.x) - (y - d.y)) / (shift ? 400 : 90);
             if (m.mode === "remote") {
-                // Remote has no amount: the row value drags the whole window (min and max together, width kept)
+                // Remote: the row value drags the whole window (min and max together, width kept)
                 const sh = clamp(dv, -Math.min(d.min0, d.max0), 1 - Math.max(d.min0, d.max0));
                 MM.updateMapping(d.id, { min: d.min0 + sh, max: d.max0 + sh });
-            } else MM.updateMapping(d.id, { amount: clamp(d.v0 + dv, -1, 1) });
+            } else MM.updateMapping(d.id, { range: clamp(d.v0 + dv, 0, 1) });
             d.dirty = true;
         }
     } else if (d.kind === "limit") {
         ubApplyLimit(d, x, y);
-        d.dirty = true;
-    } else if (d.kind === "vbox") {
-        MM.updateMapping(d.mapId, ubLimitPatch(d.which, clamp(d.v0 + (d.y0 - y) / (shift ? 400 : 100), 0, 1)));
-        d.dirty = true;
-    } else if (d.kind === "dbar") {
-        ubApplyBar(d.id, d.rect, x, d.mapId);
         d.dirty = true;
     } else if (d.kind === "range") {
         ubApplyRange(d, y);
@@ -664,14 +660,11 @@ function ondblclick(x, y, but, cmd, shift) {
             if (h.m && MM.getMapping(h.m.id)) MM.updateMapping(h.m.id, { enabled: MM.getMapping(h.m.id).enabled ? 0 : 1 });
             break;
         case "detail":
-            if (h.id === "amt") ubResetBar(h.id);
-            else if (h.id === "mseg" && ubPbSelMapping()) ubMsegDbl(ubMapTgt(ubPbSelMapping().id), h.rect, x, y);
+            if (h.id === "mseg" && ubPbSelMapping()) ubMsegDbl(ubMapTgt(ubPbSelMapping().id), h.rect, x, y);
             else if (h.id === "meter" && ubPbSelMapping()) {
                 const mm = ubPbSelMapping();
                 if (mm.mode !== "remote") MM.updateMapping(mm.id, { range: 1 });
                 else { const wh = ubNearestLimit(mm, ubLimitFromY(h.rect, y)); MM.updateMapping(mm.id, ubLimitPatch(wh, wh === "min" ? 0 : 1)); }
-            } else if (ubPbSelMapping() && (h.id === "vmin" || h.id === "vmax")) {
-                MM.updateMapping(ubPbSelMapping().id, ubLimitPatch(h.which, h.which === "min" ? 0 : 1));
             }
             break;
         default: break;
@@ -870,7 +863,7 @@ function ubListRowClick(h, x, y) {
     MM.setUI({ pbSel: m.id });
     if (h.kind === "ls_mode") MM.updateMapping(m.id, { mode: m.mode === "remote" ? "mod" : "remote" });
     else if (h.kind === "ls_val") {
-        ubDrag = { kind: "lval", id: m.id, v0: m.amount, min0: m.min, max0: m.max, x, y, dirty: false };
+        ubDrag = { kind: "lval", id: m.id, v0: m.range, min0: m.min, max0: m.max, x, y, dirty: false };
     }
 }
 function ubListReveal(mapId, slot) {
@@ -904,22 +897,6 @@ function ubStartLimit(m, which, rect, x, y) {
     ubDrag = { kind: "limit", which, rect, mapId: m.id, dirty: true };
     ubApplyLimit(ubDrag, x, y);
 }
-function ubBarValue(id, rect, x) {
-    const t = clamp((x - rect[0]) / rect[2], 0, 1);
-    return t * 2 - 1;
-}
-function ubApplyBar(id, rect, x, mapId) {
-    const m = MM.getMapping(mapId);
-    if (!m) return;
-    const v = ubBarValue(id, rect, x);
-    if (id === "amt") MM.updateMapping(m.id, { amount: v });
-}
-function ubResetBar(id) {
-    const m = ubPbSelMapping();
-    if (!m) return;
-    const d = defaultMapping(1, 0, {});
-    if (id === "amt") MM.updateMapping(m.id, { amount: d.amount });
-}
 function ubDetailClick(h, x, y) {
     const m = ubPbSelMapping();
     if (!m) return;
@@ -927,7 +904,6 @@ function ubDetailClick(h, x, y) {
     if (id.indexOf("preset") === 0) MM.updateMapping(m.id, { shape: curveToShape(Number(id.slice(6)), 0.5, 4) });
     else if (id === "mseg") ubMsegClick(ubMapTgt(m.id), h.rect, x, y);
     else if (id === "meter" && m.mode === "remote") ubStartLimit(m, ubNearestLimit(m, ubLimitFromY(h.rect, y)), h.rect, x, y);
-    else if (id === "vmin" || id === "vmax") ubDrag = { kind: "vbox", which: h.which, v0: m[h.which], y0: y, mapId: m.id, dirty: false };
     else if (id === "tabmod" || id === "tabrem") MM.updateMapping(m.id, { mode: h.mode });
     else if (id === "meter") {
         // the visible marker(s) follow the polarity: a press on the hidden zero side (+ below / \u2212 above the centre) is ignored
@@ -935,11 +911,6 @@ function ubDetailClick(h, x, y) {
         ubDrag = { kind: "range", rect: h.rect, mapId: m.id, dirty: true };
         ubApplyRange(ubDrag, y);
     } else if (id.indexOf("pol") === 0) MM.updateMapping(m.id, { polarity: h.pol });
-    else if (id === "del") { MM.deleteMapping(m.id); MM.setUI({ pbSel: 0 }); }
-    else if (id === "amt") {
-        ubDrag = { kind: "dbar", id, rect: h.rect, mapId: m.id, dirty: true };
-        ubApplyBar(id, h.rect, x, m.id);
-    }
 }
 
 // ------------------------------------------------------------------ painting: icons
@@ -1278,7 +1249,7 @@ const UB_OFF_GREY = [0.42, 0.44, 0.48];
 // Output bar of the remap editor (Phase Plant style, centred): zero is the vertical centre, positive output fills up, negative
 // fills down. `range` is the limit marker's distance from the centre (0..1 of the half height). "+" shows only the upper
 // triangle, "\u2212" only the lower one (the zero side is hidden and fixed at the centre); "\u00b1" shows both, linked
-// symmetrically. The fill is the live signed modulation o = amount * range * (...), so it reflects the real output.
+// symmetrically. The fill is the live signed modulation o = range * (...), so it reflects the real output.
 // A bypassed modulator (or disabled mapping) shows the markers and band but no live value.
 function ubMeterGeom(r) {
     const iy = r[1] + 3;
@@ -1408,16 +1379,6 @@ function ubLimitMarker(x, y, c, filled) {
     mgraphics.close_path();
     if (filled) { ubCol(c, 1); mgraphics.fill(); } else { ubCol(c, 1); mgraphics.set_line_width(1.1); mgraphics.stroke(); }
 }
-// MIN / MAX value box (Remote; drag vertically, double-click resets)
-function ubPaintValueBox(r, label, v, m, mod) {
-    const live = mod.enabled && m.enabled;
-    const c = live ? UB_REM_COL : UB_OFF_GREY;
-    const hot = ubDrag && ubDrag.kind === "vbox" && ubDrag.mapId === m.id && ubDrag.which === label.toLowerCase();
-    ubRR(r[0], r[1], r[2], r[3], 3, UB_REM_BG, 1);
-    ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, c, hot ? 1 : 0.55, 1);
-    ubTextC(label, r[0] + r[2] / 2, r[1] + 9.5, 6.5, [0.62, 0.7, 0.75], 1);
-    ubTextC(Math.round(v * 100) + "%", r[0] + r[2] / 2, r[1] + 20.5, 10, c, 1);
-}
 // MOD / REM tab (rounded top, lit tab in its mode colour)
 function ubPaintModeTab(r, label, on, accent) {
     ubRR(r[0], r[1], r[2], r[3] + 1, 4, on ? accent : [0.17, 0.18, 0.21], on ? 0.28 : 1);
@@ -1433,19 +1394,6 @@ function ubShapeIsPreset(m, k) {
         if (Math.abs(a[i].x - b[i].x) > 0.002 || Math.abs(a[i].y - b[i].y) > 0.002 || Math.abs(a[i].curve - b[i].curve) > 0.002 || !!a[i].sCurve !== !!b[i].sCurve) return false;
     }
     return true;
-}
-function ubPaintBar(r, label, text, n01, c, bipolar, dim) {
-    ubRR(r[0], r[1], r[2], r[3], 2, [0.075, 0.085, 0.1], 1);
-    if (bipolar) {
-        const mid = r[0] + r[2] / 2;
-        const x1 = r[0] + n01 * r[2];
-        ubRect(Math.min(mid, x1), r[1] + 1, Math.max(1, Math.abs(x1 - mid)), r[3] - 2, c, dim ? 0.25 : 0.7);
-        ubLine(mid, r[1], mid, r[1] + r[3], [0.5, 0.52, 0.56], 1, 1);
-    } else {
-        ubRect(r[0], r[1] + 1, Math.max(1, n01 * r[2]), r[3] - 2, c, dim ? 0.25 : 0.7);
-    }
-    ubText(label, r[0] + 3, r[1] + 8.5, 7, [0.9, 0.92, 0.95], dim ? 0.5 : 1);
-    ubText(text, r[0] + r[2] - ubTextW(text, 7) - 3, r[1] + 8.5, 7, c === UB_OFF_GREY ? [0.62, 0.64, 0.68] : UB_MOD_COL, dim ? 0.5 : 1);
 }
 function ubPaintDetail(gm) {
     const m = ubPbSelMapping();
@@ -1471,13 +1419,11 @@ function ubPaintDetail(gm) {
     ubCircle(x + 3, 28.5, 2.8, c, 1, true);
     ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), w - 10, 7), x + 9, 31, 7, st === "missing" ? UB_RED : c, 1);
     // Remote: a cyan frame around the tab row and the editor
-    if (rem) ubRRStroke(x - 1.5, 33.5, w + 1, 79, 4, off ? UB_OFF_GREY : UB_REM_COL, 0.85, 1);
+    if (rem) ubRRStroke(x - 1.5, 33.5, w + 1, 111, 4, off ? UB_OFF_GREY : UB_REM_COL, 0.85, 1);
     for (const d of ubDetailRects(gm, m)) {
         const r = d.rect;
         if (d.id === "mseg") ubPaintShapeEditor(r, m, mod);
         else if (d.id === "meter") { if (rem) ubPaintAbsMeter(r, m, mod); else ubPaintOutMeter(r, m, mod); }
-        else if (d.id === "vmin") ubPaintValueBox(r, "MIN", m.min, m, mod);
-        else if (d.id === "vmax") ubPaintValueBox(r, "MAX", m.max, m, mod);
         else if (d.id === "tabmod") ubPaintModeTab(r, "MOD", !rem, off ? UB_OFF_GREY : UB_MOD_COL);
         else if (d.id === "tabrem") ubPaintModeTab(r, "REM", rem, off ? UB_OFF_GREY : UB_REM_COL);
         else if (d.id.indexOf("preset") === 0) {
@@ -1485,40 +1431,31 @@ function ubPaintDetail(gm) {
             ubRR(r[0], r[1], r[2], r[3], 3, on ? hl : [0.17, 0.18, 0.21], on ? 0.25 : 1);
             ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, on ? hl : [0.30, 0.32, 0.37], 1, 1);
             ubCurveGlyph(d.curve, r[0] + 5, r[1] + 3, r[2] - 10, r[3] - 6, on ? hl : [0.62, 0.64, 0.7], 1);
-        } else if (d.id === "amt") ubPaintBar(r, "Amount", (m.amount > 0 ? "+" : "") + Math.round(m.amount * 100) + "%", (m.amount + 1) / 2, c, true, false);
-        else if (d.id.indexOf("pol") === 0) ubPaintPolarity(r, d.pol, m.polarity === d.pol, hl);
-        else if (d.id === "del") {
-            ubRR(r[0], r[1], r[2], r[3], 3, [0.3, 0.14, 0.16], 1);
-            ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, [0.6, 0.28, 0.3], 1, 1);
-            const cx = r[0] + r[2] / 2;
-            const cy = r[1] + r[3] / 2;
-            ubLine(cx - 3.5, cy - 3.5, cx + 3.5, cy + 3.5, [1, 0.6, 0.6], 1, 1.4);
-            ubLine(cx + 3.5, cy - 3.5, cx - 3.5, cy + 3.5, [1, 0.6, 0.6], 1, 1.4);
-        }
+        } else if (d.id.indexOf("pol") === 0) ubPaintPolarity(r, d.pol, m.polarity === d.pol, hl);
     }
 }
-// segmented polarity control: the first cell paints the 3-cell container, every cell its lit state and vector glyph
-// (+, plus over minus, minus)
+// polarity control, vector glyphs only (+, plus over minus, minus): a segmented 3-cell control, the first cell paints the container
 function ubPaintPolarity(r, pol, on, hl) {
-    if (pol === 1) {
-        ubRR(r[0], r[1], r[2] * 3, r[3], 3, [0.17, 0.18, 0.21], 1);
-    }
+    const edge = [0.30, 0.32, 0.37];
+    if (pol === 1) ubRR(r[0], r[1], r[2] * 3, r[3], 3, [0.17, 0.18, 0.21], 1);
     if (on) ubRR(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2, 2, hl, 0.3);
-    if (pol === 1) ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] * 3 - 1, r[3] - 1, 3, [0.30, 0.32, 0.37], 1, 1);
-    else ubLine(r[0] + 0.5, r[1] + 1, r[0] + 0.5, r[1] + r[3] - 1, [0.30, 0.32, 0.37], 1, 1);
+    if (pol === 1) ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] * 3 - 1, r[3] - 1, 3, edge, 1, 1);
+    else ubLine(r[0] + 0.5, r[1] + 1, r[0] + 0.5, r[1] + r[3] - 1, edge, 1, 1);
     const c = on ? [1, 1, 1] : [0.6, 0.62, 0.68];
     const cx = r[0] + r[2] / 2;
     const cy = r[1] + r[3] / 2;
     const lw = on ? 1.6 : 1.3;
+    const s = Math.min(3.5, r[3] / 3.6); // glyph half-size, fits the row height
     if (pol === 1) {
-        ubLine(cx - 3.5, cy, cx + 3.5, cy, c, 1, lw);
-        ubLine(cx, cy - 3.5, cx, cy + 3.5, c, 1, lw);
+        ubLine(cx - s, cy, cx + s, cy, c, 1, lw);
+        ubLine(cx, cy - s, cx, cy + s, c, 1, lw);
     } else if (pol === 0) {
-        ubLine(cx - 2.5, cy - 3, cx + 2.5, cy - 3, c, 1, lw);
-        ubLine(cx, cy - 5.5, cx, cy - 0.5, c, 1, lw);
-        ubLine(cx - 2.5, cy + 3, cx + 2.5, cy + 3, c, 1, lw);
+        const d = s * 0.85;
+        ubLine(cx - s * 0.7, cy - d, cx + s * 0.7, cy - d, c, 1, lw);
+        ubLine(cx, cy - d - s * 0.7, cx, cy - d + s * 0.7, c, 1, lw);
+        ubLine(cx - s * 0.7, cy + d, cx + s * 0.7, cy + d, c, 1, lw);
     } else {
-        ubLine(cx - 3.5, cy, cx + 3.5, cy, c, 1, lw);
+        ubLine(cx - s, cy, cx + s, cy, c, 1, lw);
     }
 }
 function ubCurveRowGlyph(m, x, y, w, h, c, a) {
@@ -1668,7 +1605,7 @@ function uiChanged(ev) {
     if (ev.kind === "mods" || ev.kind === "load" || ev.kind === "ui") ubSyncWidth();
 }
 
-const UB_PREVIEW_REMOTE = true; // preview: the selected mapping in Remote mode (false = Mod mode)
+const UB_PREVIEW_REMOTE = false; // preview: the selected mapping in Remote mode (false = Mod mode)
 const UB_PREVIEW_LIST = true; // preview: mapping list + remap editor (false = rack strips with MSEG expanded)
 function preview() {
     MM.demo();
@@ -1706,21 +1643,21 @@ function preview() {
         if (m && extra) MM.updateMapping(m.id, extra);
         if (m && par === "Frequency") selId = m.id;
     };
-    add(0, "Bass", "Auto Filter", "Resonance", { amount: -0.4, polarity: 1 });
+    add(0, "Bass", "Auto Filter", "Resonance", { range: 0.4, polarity: -1 });
     add(2, "Bass", "Auto Filter", "Frequency", {
-        polarity: 0, range: 0.7, amount: 0.5,
+        polarity: 0, range: 0.7,
         mode: UB_PREVIEW_REMOTE ? "remote" : "mod", min: 0.2, max: 0.8, // preview: the selected mapping is in Remote mode, 20-80%
         shape: [
             { x: 0, y: 0.05, curve: -0.5, sCurve: 0 }, { x: 0.32, y: 0.7, curve: 0.45, sCurve: 0 },
             { x: 0.62, y: 0.42, curve: 0, sCurve: 0 }, { x: 1, y: 0.95, curve: -0.3, sCurve: 0 },
         ],
     });
-    add(2, "Bass", "Auto Filter", "Q", { mode: "remote", polarity: 1, amount: 0.8, shape: curveToShape(CURVE_EXP, 0.5, 4) });
-    add(2, "Pads", "Reverb", "Size", { mode: "remote", polarity: 0, amount: 0.55, shape: curveToShape(CURVE_S, 0.5, 4) });
-    add(2, "Pads", "Reverb", "Dry/Wet", { amount: 0.3, polarity: -1 });
-    add(3, "Pads", "Reverb", "Decay", { polarity: 0, amount: 0.8, shape: curveToShape(CURVE_STEPPED, 0.5, 4) });
-    add(4, "Pads", "Chorus", "Rate", { mode: "remote", polarity: -1, amount: 0.6 });
-    add(1, "Drums", "Drum Buss", "Drive", { amount: 0.6 });
+    add(2, "Bass", "Auto Filter", "Q", { mode: "remote", min: 0, max: 0.8, shape: curveToShape(CURVE_EXP, 0.5, 4) });
+    add(2, "Pads", "Reverb", "Size", { mode: "remote", min: 0.225, max: 0.775, shape: curveToShape(CURVE_S, 0.5, 4) });
+    add(2, "Pads", "Reverb", "Dry/Wet", { range: 0.3, polarity: -1 });
+    add(3, "Pads", "Reverb", "Decay", { polarity: 0, range: 0.8, shape: curveToShape(CURVE_STEPPED, 0.5, 4) });
+    add(4, "Pads", "Chorus", "Rate", { mode: "remote", min: 1, max: 0.4 });
+    add(1, "Drums", "Drum Buss", "Drive", { range: 0.6 });
     const all = MM.allMappings();
     const gone = all.filter((m) => m.target.paramName === "Drive")[0];
     if (gone) {

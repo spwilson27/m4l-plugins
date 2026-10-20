@@ -43,7 +43,7 @@
 //   MM.mappingCapacity()            -> {used, max: MAX_MAPPINGS (256), free}
 //   MM.MAX_MAPPINGS                 256
 //   MM.mappingSlot(id)              the pool slot 0..255 of a mapping (-1 if none)
-//   MM.updateMapping(id, patch)     keys: min / max (0..1, Remote), mode ("mod"|"remote"), polarity (1 "+", 0 "±", -1 "−"), range (0..1), amount(-1..1),
+//   MM.updateMapping(id, patch)     keys: min / max (0..1, Remote), mode ("mod"|"remote"), polarity (1 "+", 0 "±", -1 "−"), range (0..1; the Mod depth),
 //                                   shape (MSEG points [{x,y,curve,sCurve}], the transfer curve), enabled,
 //                                   mod (retarget slot)
 //   MM.deleteMapping(id)
@@ -69,7 +69,7 @@
 // STATE MODEL (persisted in blob param "MegaModState")
 // =====================================================================================
 // state = {
-//   schema: 5,                  // 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5) (see MIGRATION)
+//   schema: 6,                  // 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
@@ -78,8 +78,8 @@
 // ModSlot = {type, name, color(0..15), enabled(0/1), p:{rate,sync,syncDiv,shape,phase,retrig,bipolar,depth,
 //            attack,release,gain,smooth,steps,glide,oneshot,seed,loopOn,loopStart,loopEnd},
 //            points:[{x,y,curve,sCurve}], stepVals:[32 x 0..1]}
-// Mapping = {id, mod, enabled, mode:"mod"|"remote", polarity(1 "+" | 0 "±" | -1 "−"), range(0..1), amount(-1..1),
-//            min(0..1), max(0..1) (Remote only: independent absolute limits of the target parameter, min > max inverts; defaults 0 / 1; polarity / range / amount are ignored in Remote but kept),
+// Mapping = {id, mod, enabled, mode:"mod"|"remote", polarity(1 "+" | 0 "±" | -1 "−"), range(0..1, default 0.5; the Mod depth, there is no separate amount),
+//            min(0..1), max(0..1) (Remote only: independent absolute limits of the target parameter, min > max inverts; defaults 0 / 1; polarity / range are ignored in Remote but kept),
 //            shape:[{x,y,curve,sCurve}] (editable MSEG transfer curve, x = modulator 0..1, y = output 0..1), target:{path,name,trackName,deviceName,paramName}}   (runtime-only: slot, pid, missing)
 //
 // MAPPING POOL (no runtime scripting: live.modulate~ / live.remote~ created by scripting never attach in Live):
@@ -93,18 +93,21 @@
 //   every generator yields u in 0..1; bipolar: out = depth*(2u-1); unipolar: out = 2*depth*u - 1
 //   (a unipolar modulator rests at -1 and spans the full table range up to 2*depth-1).
 //   Mapping lookup input x in -1..1 -> mod value m = (x+1)/2 in 0..1 ->
-//   y = evalMseg(shape, u);  signed modulation  o = amount * range * (polarity === 0 ? 2y - 1 : polarity * y)  (-1..1).
+//   y = evalMseg(shape, u);  signed modulation  o = range * (polarity === 0 ? 2y - 1 : polarity * y)  (-1..1).
 //   Mod:    mappingOutput = o  (the offset live.modulate~ gets).
 //   Remote (schema 5): live.remote~ @normalized gets an ABSOLUTE 0..1 value  clamp(min + (max - min) * y, 0, 1)  (min / max independent, min > max inverts).
 //           Schema 4 remote mappings migrate exactly (a = amount, r = range): "+": min 0, max a*r;  "−": min 1, max 1 - a*r;
 //           "±": min 0.5 - a*r/2, max 0.5 + a*r/2  (each clamped to 0..1; a clamp changes the response, e.g. a*r > 1 or a < 0 on "+").
+//   MIGRATION (schema < 6, Mod and Remote alike): amount is folded into range, range' = clamp(|amount| * range, 0, 1); amount < 0 swaps "+" <-> "−"
+//   or, for "±", flips the shape vertically (y -> 1 - y; the segment easing is a fraction of the y span, so curve / sCurve stay as they are).
+//   Exact (tables within 1e-9). Schema 4 Remote limits are derived from the OLD amount * range first.
 //   MIGRATION (schema < 4): the old affine parts are baked into the shape's point y values (an affine map of the
 //   y values affinely maps evalMseg for every curve / sCurve, since the segment easing is independent of y):
 //   Mod: y' = lo + (hi-lo)*(invert ? 1-y : y) (lo/hi = min/max for schema 3, 0/1 before), polarity = bipolar ? 0 : 1, range 1;
 //   Remote: y' = min + (max-min)*(invert ? 1-y : y), polarity 1, range 1, amount 1 (so v = y').
 // =====================================================================================
 
-const MEGAMOD_VERSION = 5; // schema version of the JSON state
+const MEGAMOD_VERSION = 6; // schema version of the JSON state
 const MAX_MODS = 16;
 
 // ---- engine buffer layouts (contract with src/megamod_engine.genexpr; tests parse the genexpr) ----
@@ -420,7 +423,7 @@ function mappingShape(m) {
 
 function defaultMapping(id, mod, target) {
     return {
-        id, mod, enabled: 1, mode: "mod", polarity: 0, range: 1, amount: 0.5, min: 0, max: 1,
+        id, mod, enabled: 1, mode: "mod", polarity: 0, range: 0.5, min: 0, max: 1,
         shape: linearShape(), target: sanitizeTarget(target),
     };
 }
@@ -456,8 +459,10 @@ function remoteLimitsFromV4(polarity, range, amount) {
 
 function sanitizeMapping(m, schema) {
     let derive = false; // remote mapping whose min / max must be derived from polarity / range / amount
+    let legacy = false;
     if (m && m.polarity === undefined && (schema === undefined || schema < 4)) {
         m = migrateLegacyMapping(m, schema);
+        legacy = true;
         derive = m.mode === "remote"; // legacy remote: polarity 1, range 1, amount 1 -> min 0, max 1 (the old limits are in the shape)
         m = Object.assign({}, m, { min: undefined, max: undefined });
     } else if (m && schema === 4) {
@@ -467,16 +472,25 @@ function sanitizeMapping(m, schema) {
     d.enabled = m && (m.enabled === 0 || m.enabled === false) ? 0 : 1;
     d.mode = m && m.mode === "remote" ? "remote" : "mod";
     d.polarity = clamp(Math.round(num(m && m.polarity, 0)), -1, 1);
-    d.range = clamp(num(m && m.range, 1), 0, 1);
-    d.amount = clamp(num(m && m.amount, 0.5), -1, 1);
+    d.range = clamp(num(m && m.range, 0.5), 0, 1);
+    d.shape = mappingShape(m);
+    // schema < 6 carried a separate amount (-1..1, default 0.5): fold it into range (see MIGRATION)
+    const fold = legacy || (schema !== undefined && schema < 6);
+    const amount = fold ? clamp(num(m && m.amount, 0.5), -1, 1) : 1;
     if (derive) {
-        const lim = remoteLimitsFromV4(d.polarity, d.range, d.amount);
+        const lim = remoteLimitsFromV4(d.polarity, d.range, amount);
         d.min = lim.min; d.max = lim.max;
     } else {
         d.min = clamp(num(m && m.min, 0), 0, 1);
         d.max = clamp(num(m && m.max, 1), 0, 1);
     }
-    d.shape = mappingShape(m);
+    if (fold) {
+        d.range = clamp(Math.abs(amount) * d.range, 0, 1);
+        if (amount < 0) {
+            if (d.polarity !== 0) d.polarity = -d.polarity;
+            else d.shape = d.shape.map((p) => ({ x: p.x, y: 1 - p.y, curve: p.curve, sCurve: p.sCurve }));
+        }
+    }
     return d;
 }
 
@@ -768,7 +782,7 @@ function shapeCurve(u, type, amt, steps) {
     }
 }
 
-// Mapping output for engine value x in -1..1 (Mod: signed offset o; Remote: absolute 0..1 anchored on the polarity's zero).
+// Mapping output for engine value x in -1..1 (Mod: signed offset o = range * (...); Remote: absolute 0..1 from min / max).
 // Raw objects without `polarity` (hand-written / pre-schema-4) use the legacy invert / bipolar / min / max formula.
 function mappingOutput(m, x) {
     const u = clamp((x + 1) / 2, 0, 1);
@@ -785,7 +799,7 @@ function mappingOutput(m, x) {
         return clamp(lo + (hi - lo) * c, 0, 1);
     }
     const pol = m.polarity === 0 ? 0 : m.polarity < 0 ? -1 : 1;
-    return num(m.amount, 0.5) * num(m.range, 1) * (pol === 0 ? 2 * c - 1 : pol * c);
+    return num(m.range, 0.5) * (pol === 0 ? 2 * c - 1 : pol * c);
 }
 
 function mappingTable(m) {

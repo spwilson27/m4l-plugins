@@ -404,7 +404,7 @@ eq(run("ubSel()"), 0, "selecting a row selects its modulator");
 log.texts.length = 0;
 run("paint()");
 ok(log.texts.includes("P1") && !log.texts.includes("INV") && !log.texts.includes("BIP"), "editor shows the selected mapping, without INV / BIP");
-ok(log.texts.includes("Amount"), "mod-mode editor has an Amount bar");
+ok(!log.texts.includes("Amount"), "mod-mode editor has no Amount bar");
 ok(!log.texts.includes("Curve") && !log.texts.includes("Steps"), "no curve-amount / steps bar any more");
 // ---- row on/off toggle
 {
@@ -425,7 +425,7 @@ const dets = () => run(`ubDetailRects(ubListGeom(), MM.getMapping(${m1.id}))`);
 const det = (id) => dets().filter((d) => d.id === id)[0];
 ok(!dets().some((d) => d.id.indexOf("curve") === 0 || d.id === "camt" || d.id === "preview"), "old curve buttons / curve amount / fixed preview are gone");
 eq(dets().filter((d) => d.id.indexOf("preset") === 0).length, 5, "five preset buttons");
-ok(det("mseg").rect[2] >= 120 && det("mseg").rect[3] >= 60, "MSEG editor is big enough to edit");
+ok(det("mseg").rect[2] >= 100 && det("mseg").rect[3] >= 60, "MSEG editor is big enough to edit");
 const shapeOf = () => run(`MM.getMapping(${m1.id}).shape`);
 eq(shapeOf().length, 2, "starts as the linear two-point shape");
 for (const [k, name] of [[1, "Exp"], [2, "Log"], [3, "S"], [4, "Stepped"], [0, "Linear"]]) {
@@ -436,7 +436,7 @@ for (const [k, name] of [[1, "Exp"], [2, "Log"], [3, "S"], [4, "Stepped"], [0, "
 click(...center(det("preset4").rect));
 eq(shapeOf().length, 8, "Stepped preset = 4 hard steps (8 points)");
 {
-    const t = run(`mappingTable(Object.assign({}, MM.getMapping(${m1.id}), { amount: 1, polarity: 1, mode: 'mod' }))`);
+    const t = run(`mappingTable(Object.assign({}, MM.getMapping(${m1.id}), { range: 1, polarity: 1, mode: 'mod' }))`);
     eq(new Set(t.map((v) => Math.round(v * 1e6))).size, 4, "stepped table has 4 levels");
 }
 click(...center(det("preset0").rect));
@@ -509,34 +509,34 @@ release();
 }
 click(...center(det("preset0").rect));
 ok(!det("inv") && !det("bip") && !det("min") && !det("max"), "old INV / BIP / Min / Max ids are gone");
-ok(!!det("amt") && !!det("pol1") && !!det("pol0") && !!det("pol-1"), "Amount bar and three polarity buttons exist");
+ok(!!det("pol1") && !!det("pol0") && !!det("pol-1"), "three polarity buttons exist in Mod");
+ok(!dets().some((d) => d.id === "amt" || d.id === "vmin" || d.id === "vmax" || d.id === "del" || d.id === "dbar"), "no amount, min / max box or delete ids remain in the editor");
 for (const [id, pol] of [["pol1", 1], ["pol-1", -1], ["pol0", 0]]) {
     click(...center(det(id).rect));
     eq(run(`MM.getMapping(${m1.id}).polarity`), pol, `polarity button ${id} sets polarity ${pol}`);
 }
 {
     const rs = ["pol1", "pol0", "pol-1"].map((id) => det(id).rect);
-    ok(rs[0][0] + rs[0][2] <= rs[1][0] && rs[1][0] + rs[1][2] <= rs[2][0] && rs[0][1] === rs[1][1] && rs[1][1] === rs[2][1], "polarity buttons form one segmented row");
-    const tm = det("tabmod").rect; const tr = det("tabrem").rect; const de = det("del").rect;
-    ok(tm[0] + tm[2] <= tr[0] && tr[0] + tr[2] <= de[0] && de[0] + de[2] <= det("mseg").rect[0] + 138 && de[1] + de[3] <= 161 && tm[1] === tr[1] && tr[1] === de[1], "MOD / REM tabs and delete share one row inside the 138 px panel");
-    ok(de[1] + de[3] <= det("mseg").rect[1] && de[0] > tr[0], "delete sits at the right end of the tab row, above the MSEG");
+    const tm = det("tabmod").rect; const tr = det("tabrem").rect; const ms = det("mseg").rect;
+    ok(rs[0][1] === tm[1] && rs[1][1] === tm[1] && rs[2][1] === tm[1], "polarity control sits in the tab row");
+    ok(rs[0][0] + rs[0][2] === rs[1][0] && rs[1][0] + rs[1][2] === rs[2][0], "polarity cells are one segmented control");
+    ok(tm[0] + tm[2] <= tr[0] && tr[0] + tr[2] <= rs[0][0] && rs[2][0] + rs[2][2] <= ms[0] + 138 && rs[2][1] + rs[2][3] <= ms[1], "MOD / REM tabs and polarity share the tab row without overlap, above the MSEG");
     ok(!det("mode"), "the old bottom MOD|REM toggle is gone");
+    ok(ms[3] >= 90 && det("preset0").rect[1] >= ms[1] + ms[3] && det("preset0").rect[1] + det("preset0").rect[3] <= 160, "MSEG is tall, presets row sits right under it inside the device");
+    const tabModMod = tm.slice();
+    click(...center(det("tabrem").rect));
+    eq(run(`MM.getMapping(${m1.id}).mode`), "remote", "tabs: REM -> Remote");
+    ok(!det("pol1") && !det("pol0") && !det("pol-1") && !det("amt") && !det("vmin") && !det("vmax") && !det("del"), "remote editor: no polarity control, amount, MIN / MAX boxes or delete");
+    eq(JSON.stringify([det("tabmod").rect, det("tabrem").rect]), JSON.stringify([tabModMod, tr]), "tabs keep their size and position in Remote");
+    eq(JSON.stringify(det("mseg").rect), JSON.stringify(ms), "MSEG keeps its size in Remote");
 }
-click(...center(det("tabrem").rect));
-eq(run(`MM.getMapping(${m1.id}).mode`), "remote", "tabs: REM -> Remote");
-ok(!det("amt") && !det("pol1") && !det("pol0") && !det("pol-1") && !!det("vmin") && !!det("vmax") && !det("rng"), "remote editor: no Amount bar / polarity buttons, MIN / MAX boxes instead");
-ok(det("mseg").rect[1] + det("mseg").rect[3] < det("preset0").rect[1] && det("preset0").rect[1] + det("preset0").rect[3] < det("vmin").rect[1], "tabs, MSEG, presets and MIN / MAX boxes stack without overlap");
 click(...center(det("tabmod").rect));
 eq(run(`MM.getMapping(${m1.id}).mode`), "mod", "tabs: MOD -> Mod");
-click(det("amt").rect[0] + det("amt").rect[2] - 1, det("amt").rect[1] + 5);
-near(run(`MM.getMapping(${m1.id}).amount`), 1, 0.15, "editor amount bar");
-dbl(...center(det("amt").rect));
-near(run(`MM.getMapping(${m1.id}).amount`), run("defaultMapping(1, 0, {}).amount"), 1e-9, "double-click resets the amount bar");
 run("paint()");
 // the editor shows the mapping's shape, every drawn control paints
 {
     log.texts.length = 0; run("paint()");
-    ok(log.texts.includes("MOD") && log.texts.includes("REM") && log.texts.includes("Amount"), "editor paints MOD / REM / Amount");
+    ok(log.texts.includes("MOD") && log.texts.includes("REM") && !log.texts.includes("Amount"), "editor paints MOD / REM, no Amount");
 }
 // inline row gestures: the curve icon only selects
 {
@@ -554,11 +554,12 @@ run("paint()");
     run("paint()");
     run(`MM.updateMapping(${m1.id}, { shape: curveToShape(0, 0.5, 4) })`);
 }
-const a0 = run(`MM.getMapping(${m1.id}).amount`);
+run(`MM.updateMapping(${m1.id}, { range: 0.3 })`);
+const a0 = run(`MM.getMapping(${m1.id}).range`);
 click(...at(P1.val));
 drag(at(P1.val)[0] + 30, at(P1.val)[1]);
 release();
-ok(run(`MM.getMapping(${m1.id}).amount`) > a0 || a0 >= 1, "dragging the value changes the amount");
+ok(run(`MM.getMapping(${m1.id}).range`) > a0, "dragging the value changes the range");
 click(...at(P1.mode));
 eq(run(`MM.getMapping(${m1.id}).mode`), "remote", "list M/R toggle -> remote");
 click(...at(P1.mode));
@@ -568,12 +569,8 @@ eq(run(`MM.getMapping(${m1.id}).enabled`), 0, "double-click a row disables the m
 run("paint()");
 dbl(...at(P1.name));
 eq(run(`MM.getMapping(${m1.id}).enabled`), 1, "double-click again enables it");
-// editor delete
+// row x delete (the editor has no delete button any more)
 click(...at(P1.name));
-click(...center(det("del").rect));
-eq(run(`MM.getMapping(${m1.id})`), null, "editor delete removes the mapping");
-eq(run("ubUIs().pbSel"), 0, "selection cleared after delete");
-// row x delete
 const m2 = run("MM.mappingsFor(0)[1]");
 const r2 = rowAt(m2.id);
 click(...at(run(`ubRowParts(${r2.y})`).del));
@@ -749,7 +746,7 @@ ok(E3.run("MM.mappingsFor(ubSel()).length >= 3"), "preview: the selected modulat
 ok(E3.run("ubPbSelMapping().shape.length >= 3 && ubPbSelMapping().shape.some((p) => Math.abs(p.curve) > 0.1)"), "preview: selected mapping has an MSEG with a bent segment");
 ok(E3.run("ubListVisible().rows.some((r) => r.item.kind === 'head' && r.item.i === ubSel())"), "preview: the selected modulator header is visible");
 ok(E3.run("MM.learn.armed"), "preview shows the rail learn armed");
-eq(E3.run("(function () { const m = ubPbSelMapping(); return [m.mode, m.min, m.max]; })()"), ["remote", 0.2, 0.8], "preview: the selected mapping is Remote, 20-80%");
+eq(E3.run("(function () { const m = ubPbSelMapping(); return [m.mode, m.min, m.max]; })()"), ["mod", 0.2, 0.8], "preview: the selected mapping is Mod by default (min / max kept at 20-80%)");
 E3.run("MM.setUI({pb: 0})");
 E3.log.texts.length = 0;
 E3.run("paint()");
@@ -778,6 +775,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     const mm = E3.run("ubPbSelMapping()");
     const rangeOf = () => E3.run(`MM.getMapping(${mm.id}).range`);
     const setPol = (p) => E3.run(`MM.updateMapping(${mm.id}, { mode: 'mod', polarity: ${p}, range: 1 })`);
+    setPol(1);
     const mr = E3.run(`ubDetailRects(ubListGeom(), ubPbSelMapping()).filter((d) => d.id === "meter")[0].rect`);
     const ms = E3.run(`ubDetailRects(ubListGeom(), ubPbSelMapping()).filter((d) => d.id === "mseg")[0].rect`);
     ok(mr && mr[0] >= ms[0] + ms[2] && mr[1] === ms[1] && mr[3] === ms[3], "meter sits right of the MSEG, same height");
@@ -821,13 +819,13 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     E3.run(`MM.updateMapping(${mm.id}, { range: 0.4 })`);
     E3.ctx.ondblclick(cx, yUp(0.3), 1, 0, 0, 0, 0, 0);
     eq(rangeOf(), 1, "double-click resets the range to 1");
-    // list-row value text carries the polarity glyph
-    E3.run(`MM.updateMapping(${mm.id}, { amount: 0.5 })`);
+    // list-row value text carries the polarity glyph and the range
     for (const [p, t] of [[1, "+50%"], [0, "\u00b150%"], [-1, "\u221250%"]]) {
         setPol(p);
+        E3.run(`MM.updateMapping(${mm.id}, { range: 0.5 })`);
         eq(E3.run("ubValueText(ubPbSelMapping())"), t, `value text for polarity ${p}`);
     }
-    // value drag on the list row: Mod edits the amount, Remote shifts the whole min..max window (width kept)
+    // value drag on the list row: Mod edits the range, Remote shifts the whole min..max window (width kept)
     {
         const dragRow = () => {
             E3.run(`ubListReveal(${mm.id}, 0)`); E3.run("paint()");
@@ -837,13 +835,13 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             E3.ctx.ondrag(vx + 30, vy, 1, 0, 0, 0, 0, 0);
             E3.ctx.ondrag(vx + 30, vy, 0, 0, 0, 0, 0, 0);
         };
-        E3.run(`MM.updateMapping(${mm.id}, { mode: 'mod', amount: 0.2 })`);
+        E3.run(`MM.updateMapping(${mm.id}, { mode: 'mod', range: 0.2 })`);
         dragRow();
-        ok(E3.run(`MM.getMapping(${mm.id}).amount`) > 0.3, "mod: dragging the row value edits the amount");
-        E3.run(`MM.updateMapping(${mm.id}, { mode: 'remote', min: 0.2, max: 0.5, amount: 0.2 })`);
+        ok(E3.run(`MM.getMapping(${mm.id}).range`) > 0.3, "mod: dragging the row value edits the range");
+        E3.run(`MM.updateMapping(${mm.id}, { mode: 'remote', min: 0.2, max: 0.5, range: 0.2 })`);
         dragRow();
         const rm = E3.run(`MM.getMapping(${mm.id})`);
-        ok(rm.min > 0.3 && Math.abs((rm.max - rm.min) - 0.3) < 1e-9 && rm.amount === 0.2, "remote: dragging the row value shifts the window, width and amount untouched");
+        ok(rm.min > 0.3 && Math.abs((rm.max - rm.min) - 0.3) < 1e-9 && rm.range === 0.2, "remote: dragging the row value shifts the window, width and range untouched");
         eq(E3.run("ubValueText(ubPbSelMapping())"), Math.round(rm.min * 100) + "\u2013" + Math.round(rm.max * 100) + "%", "remote value text is min\u2013max%");
         E3.run(`MM.updateMapping(${mm.id}, { min: 0.2, max: 0.8 })`);
         eq(E3.run("ubValueText(ubPbSelMapping())"), "20\u201380%", "remote value text 20\u201380%");
@@ -851,8 +849,8 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     E3.run("paint()");
 }
 
-// ---------------------------------------------------------------- Remap editor: MOD / REM tabs, Remote bar + MIN / MAX boxes
-// Remote has independent min / max (absolute 0..1), no polarity / amount; Mod keeps polarity / range / amount.
+// ---------------------------------------------------------------- Remap editor: MOD / REM tabs, Remote bar
+// Remote has independent min / max (absolute 0..1) set on the bar's triangles, no polarity; Mod has polarity (tab row) and range (bar triangles).
 {
     const T = makeEnv();
     T.run("preview()");
@@ -874,27 +872,25 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     T.run(`ubSelect(2); MM.setUI({ pb: 1, pbSel: ${mid} })`);
 
     // the preview mapping is Remote 20..80%
-    eq([M().mode, M().min, M().max], ["remote", 0.2, 0.8], "preview(): the selected mapping is Remote, 20-80%");
-    set({ mode: "remote", min: 0.2, max: 0.8, polarity: -1, range: 0.6, amount: -0.4 });
+    eq([M().mode, M().min, M().max], ["mod", 0.2, 0.8], "preview(): the selected mapping is Mod by default, min / max 20-80%");
+    set({ mode: "remote", min: 0.2, max: 0.8, polarity: -1, range: 0.6 });
 
     // ---- Remote: texts, hit areas, layout
     {
         const tx = texts();
-        ok(tx.includes("MOD") && tx.includes("REM") && tx.includes("MIN") && tx.includes("MAX") && tx.includes("20%") && tx.includes("80%"), "remote: MOD / REM tabs and MIN / MAX boxes with their %");
+        ok(tx.includes("MOD") && tx.includes("REM") && !tx.includes("MIN") && !tx.includes("MAX"), "remote: MOD / REM tabs, no MIN / MAX boxes");
         ok(!tx.includes("Amount") && !tx.some((t) => t.indexOf("REMOTE") === 0) && !tx.includes("Range") && !tx.some((t) => t.indexOf("Lines =") === 0), "remote: no Amount, header strip, Range slider or explanatory text");
         ok(tx.includes("20–80%"), "remote: list row shows 20–80%");
-        ok(!rects().some((d) => d.id === "amt" || d.id.indexOf("pol") === 0 || d.id === "rng" || d.id === "bmin" || d.id === "bmax" || d.id === "wintabs" || d.id === "mode"), "remote: no polarity / amount / old-design rects");
+        ok(!rects().some((d) => d.id === "amt" || d.id.indexOf("pol") === 0 || d.id === "rng" || d.id === "bmin" || d.id === "bmax" || d.id === "wintabs" || d.id === "mode" || d.id === "vmin" || d.id === "vmax" || d.id === "del"), "remote: no polarity / amount / MIN / MAX / delete rects");
         const ids = hitIds();
         ok(![...ids].some((id) => id === "amt" || id.indexOf("pol") === 0), "remote: no pixel of the editor hits a polarity / amount control");
-        ok(["mseg", "meter", "preset0", "tabmod", "tabrem", "del", "vmin", "vmax"].every((id) => ids.has(id)), "remote: MSEG, bar, presets, tabs, delete and MIN / MAX boxes are hittable");
+        ok(["mseg", "meter", "preset0", "tabmod", "tabrem"].every((id) => ids.has(id)) && !ids.has("del") && !ids.has("vmin") && !ids.has("vmax"), "remote: MSEG, bar, presets and tabs are hittable, nothing hits a delete / MIN / MAX control");
         const g = gm(); const rs = rects();
         for (const d of rs) ok(d.rect[0] >= g.dx - 0.01 && d.rect[0] + d.rect[2] <= g.dx + g.dw + 0.01 && d.rect[1] >= 0 && d.rect[1] + d.rect[3] <= 161, `remote: ${d.id} inside the panel`);
         for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
             const a = rs[i].rect; const b = rs[j].rect;
             ok(a[0] + a[2] <= b[0] + 1e-6 || b[0] + b[2] <= a[0] + 1e-6 || a[1] + a[3] <= b[1] + 1e-6 || b[1] + b[3] <= a[1] + 1e-6, `remote: ${rs[i].id} and ${rs[j].id} do not overlap`);
         }
-        const vi = rect("vmin"); const va = rect("vmax");
-        ok(vi[0] + vi[2] <= va[0] && vi[1] === va[1], "remote: MIN and MAX boxes sit side by side at the bottom");
         ok(rect("mseg")[0] + rect("mseg")[2] <= rect("meter")[0], "remote: the bar sits right of the MSEG");
     }
     // ---- a limit control sets only its own field
@@ -906,7 +902,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const other = which === "min" ? "max" : "min";
         eq(now[other], b[other], `${label} moves only ${which} (${other} untouched)`);
         ok(Math.abs(now[which] - b[which]) > 0.05, `${label} changed ${which}`);
-        same(["polarity", "range", "amount", "mode"], b, label);
+        same(["polarity", "range", "mode"], b, label);
     };
     {
         const r = rect("meter");
@@ -916,11 +912,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         // the nearest wins even when the press is between the triangles
         set({ min: 0.2, max: 0.8 }); gesture(r[0] + 8, yOfV(r, 0.7), r[0] + 8, yOfV(r, 0.55));
         eq(M().min, 0.2, "bar: nearest triangle wins (min stays)"); near(M().max, 0.55, 0.03, "bar: nearest triangle wins (max moves)");
-        const bx = rect("vmin"); const bx2 = rect("vmax");
-        own("min", () => gesture(bx[0] + 5, bx[1] + 7, bx[0] + 5, bx[1] - 13), "MIN box (vertical drag)");
-        own("max", () => gesture(bx2[0] + 5, bx2[1] + 7, bx2[0] + 5, bx2[1] + 27), "MAX box (vertical drag)");
-        ok(M().max < 0.8, "dragging the MAX box down lowers max");
-        set({ min: 0.2, max: 0.8 }); gesture(bx[0] + 5, bx[1] + 7, bx[0] + 5, bx[1] - 200); eq(M().min, 1, "MIN box clamps to 100%");
+        set({ min: 0.2, max: 0.8 }); gesture(r[0] + 2, yOfV(r, 0.2), r[0] + 2, yOfV(r, 0.2) - 300); eq(M().min, 1, "bar: min clamps to 100%");
     }
     // ---- min > max is allowed (inverted response)
     {
@@ -935,9 +927,8 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         set({ min: 0.3, max: 0.7 });
         const r = rect("meter"); dbl2(r[0] + 2, yOfV(r, 0.3)); near(M().min, 0, 0.001, "double-click on the min triangle -> 0");
         dbl2(r[0] + 2, yOfV(r, 0.7)); near(M().max, 1, 0.001, "double-click on the max triangle -> 1");
-        set({ min: 0.3, max: 0.7 }); dbl2(...center(rect("vmin"))); near(M().min, 0, 0.001, "double-click on the MIN box -> 0"); eq(M().max, 0.7, "MIN reset leaves max");
-        dbl2(...center(rect("vmax"))); near(M().max, 1, 0.001, "double-click on the MAX box -> 1");
-        same(["polarity", "range", "amount"], { polarity: -1, range: 0.6, amount: -0.4 }, "resets keep the Mod fields");
+        eq(M().max, 1, "max reset leaves min where it was set (0)");
+        same(["polarity", "range"], { polarity: -1, range: 0.6 }, "resets keep the Mod fields");
     }
     // ---- the MSEG transfer curve stays editable in remote
     {
@@ -952,21 +943,20 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const p0 = T.run(`ubMsegXY(${JSON.stringify(mr)}, ubPbSelMapping().shape[0])`);
         gesture(p0[0], p0[1], p0[0], yOfV(mr, 0.5)); near(M().shape[0].y, 0.5, 0.02, "a point drag stores y");
     }
-    // ---- Mod mode: polarity, amount and the centred output bar; no Remote controls
+    // ---- Mod mode: polarity in the tab row and the centred output bar; no Remote controls, no amount
     {
-        set({ mode: "mod", polarity: 0, range: 0.7, amount: 0.5, min: 0.2, max: 0.8 });
-        ok(!!rect("amt") && !!rect("pol1") && !!rect("pol0") && !!rect("pol-1") && !!rect("meter") && !rect("vmin") && !rect("vmax") && !rect("rng"), "mod: Amount, polarity and the output bar exist, no MIN / MAX boxes");
+        set({ mode: "mod", polarity: 0, range: 0.7, min: 0.2, max: 0.8 });
+        ok(!rect("amt") && !!rect("pol1") && !!rect("pol0") && !!rect("pol-1") && !!rect("meter") && !rect("vmin") && !rect("vmax") && !rect("rng") && !rect("del"), "mod: polarity and the output bar exist, no Amount, MIN / MAX or delete");
         const ids = hitIds();
-        ok(![...ids].some((id) => id === "vmin" || id === "vmax" || id === "rng"), "mod: no pixel hits a min / max control");
-        ok(!!rect("tabmod") && !!rect("tabrem") && !!rect("del") && !rect("mode"), "mod: the same tabs and delete in the top row");
+        ok(![...ids].some((id) => id === "vmin" || id === "vmax" || id === "rng" || id === "amt" || id === "del"), "mod: no pixel hits an amount / min / max / delete control");
+        ok(!!rect("tabmod") && !!rect("tabrem") && !rect("mode") && rect("pol1")[1] === rect("tabmod")[1], "mod: tabs and polarity share the top row");
         const tx = texts();
-        ok(tx.includes("Amount") && tx.includes("MOD") && tx.includes("REM") && !tx.includes("MIN") && !tx.includes("MAX"), "mod: paints Amount and tabs, no MIN / MAX");
+        ok(!tx.includes("Amount") && tx.includes("MOD") && tx.includes("REM") && !tx.includes("MIN") && !tx.includes("MAX"), "mod: paints tabs, no Amount / MIN / MAX");
         ok(tx.some((t) => /^[+±−]-?\d+%$/.test(t)), "mod: list value keeps its polarity glyph");
         const hh = M();
         eq([hh.min, hh.max], [0.2, 0.8], "switching to Mod keeps min / max");
         // polarity buttons, amount bar, linked markers
         for (const [id, pol] of [["pol1", 1], ["pol-1", -1], ["pol0", 0]]) { clk(...center(rect(id))); up(0, 0); eq(M().polarity, pol, `mod: ${id} sets polarity ${pol}`); }
-        const ar = rect("amt"); clk(ar[0] + ar[2] - 1, ar[1] + 5); up(0, 0); near(M().amount, 1, 0.15, "mod: amount bar"); dbl2(...center(ar)); near(M().amount, T.run("defaultMapping(1, 0, {}).amount"), 1e-9, "mod: double-click resets amount");
         set({ polarity: 0, range: 0.7 });
         const mt = rect("meter"); const cy = mt[1] + mt[3] / 2; const hh2 = (mt[3] - 6) / 2;
         gesture(mt[0] + 2, cy - hh2 * 0.7, mt[0] + 2, cy - hh2 * 0.3); near(M().range, 0.3, 0.05, "mod: ± bar triangle sets the range (linked markers)");
@@ -974,14 +964,16 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         set({ polarity: 0, range: 0.7 }); dbl2(mt[0] + 2, cy - hh2 * 0.7); eq(M().range, 1, "mod: double-click on the bar -> range 1");
         same(["min", "max"], { min: 0.2, max: 0.8 }, "mod gestures leave min / max");
     }
-    // ---- tabs switch the mode both ways; the X in the tab row deletes
+    // ---- tabs switch the mode both ways; the list row x deletes (there is no delete button in the editor)
     {
         set({ mode: "mod" }); clk(...center(rect("tabrem"))); up(0, 0); eq(M().mode, "remote", "the REM tab switches to Remote");
         clk(...center(rect("tabmod"))); up(0, 0); eq(M().mode, "mod", "the MOD tab switches to Mod");
-        ok(rect("del")[1] < rect("mseg")[1] && rect("del")[0] > rect("tabrem")[0], "delete sits at the right end of the tab row");
+        T.run("paint()");
         const n = T.run("MM.allMappings().length");
-        clk(...center(rect("del"))); up(0, 0);
-        eq(T.run("MM.allMappings().length"), n - 1, "the X in the tab row deletes the mapping");
+        const rowY = T.run(`ubListVisible().rows.filter((r) => r.item.m && r.item.m.id === ${mid})[0].y`);
+        const dl = T.run(`ubRowParts(${rowY})`).del;
+        clk(dl[0] + dl[2] / 2, dl[1] + dl[3] / 2); up(0, 0);
+        eq(T.run("MM.allMappings().length"), n - 1, "the list row x deletes the mapping");
     }
     // ---- painting never throws, in both modes, bypassed and not, enabled and disabled mapping
     {
@@ -996,5 +988,58 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             ok(T2.log.texts.length > 0, `paints: ${mode}, modulator ${on ? "on" : "bypassed"}, mapping ${en ? "enabled" : "disabled"}`);
         }
     }
+}
+// ---- tab row: MOD / REM tabs + the polarity segmented control (Mod only); no X, no bottom controls
+{
+    const P = makeEnv();
+    P.run("preview()");
+    const pid = P.run("ubPbSelMapping().id");
+    P.run(`ubSelect(2); MM.setUI({ pb: 1, pbSel: ${pid} })`);
+    const rects = () => P.run(`ubDetailRects(ubListGeom(), MM.getMapping(${pid}))`);
+    const pm = () => P.run(`MM.getMapping(${pid})`);
+    const inter = (a, b) => !(a[0] + a[2] <= b[0] + 1e-6 || b[0] + b[2] <= a[0] + 1e-6 || a[1] + a[3] <= b[1] + 1e-6 || b[1] + b[3] <= a[1] + 1e-6);
+    const px = (x, y) => P.ctx.onclick(x, y, 1, 0, 0, 0, 0, 0);
+    const sigs = {};
+    for (const mode of ["mod", "remote"]) {
+        const tag = `tab row ${mode}`;
+        P.run(`MM.updateMapping(${pid}, { mode: "${mode}", polarity: 0 })`);
+        P.run("paint()");
+        const g = P.run("ubListGeom()");
+        const rs = rects();
+        const byId = (id) => rs.filter((d) => d.id === id)[0];
+        for (const d of rs) ok(d.rect[0] >= g.dx - 1e-6 && d.rect[0] + d.rect[2] <= g.dx + g.dw + 1e-6 && d.rect[1] >= 0 && d.rect[1] + d.rect[3] <= 160, `${tag}: ${d.id} inside the detail panel and the 169 px device`);
+        for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) ok(!inter(rs[i].rect, rs[j].rect), `${tag}: ${rs[i].id} and ${rs[j].id} do not overlap`);
+        ok(rs.every((d) => ["amt", "vmin", "vmax", "del", "dbar"].indexOf(d.id) < 0), `${tag}: no amount, MIN / MAX or delete ids`);
+        ok(byId("mseg").rect[3] >= 90 && byId("mseg").rect[2] >= 100, `${tag}: MSEG is tall and wide (${byId("mseg").rect[2]} x ${byId("mseg").rect[3]})`);
+        sigs[mode] = JSON.stringify(rs.filter((d) => d.id !== "pol1" && d.id !== "pol0" && d.id !== "pol-1").map((d) => [d.id, d.rect]));
+        P.log.texts.length = 0; P.run("paint()");
+        ok(P.log.texts.length > 0 && !P.log.texts.includes("Amount"), `${tag}: paints without an Amount bar`);
+        if (mode === "remote") {
+            ok(rs.every((d) => d.id.indexOf("pol") !== 0), `${tag}: no polarity control`);
+            continue;
+        }
+        const pols = ["pol1", "pol0", "pol-1"].map(byId);
+        ok(pols.every((d) => !!d), `${tag}: three polarity cells exist`);
+        for (const [id, pol] of [["pol1", 1], ["pol-1", -1], ["pol0", 0]]) {
+            P.run(`MM.updateMapping(${pid}, { polarity: ${pol === 1 ? -1 : 1} })`);
+            const r = byId(id).rect;
+            px(r[0] + r[2] / 2, r[1] + r[3] / 2);
+            P.ctx.onidle(0, 0, 0, 0, 0, 0, 0, 0);
+            eq(pm().polarity, pol, `${tag}: clicking ${id} sets polarity ${pol}`);
+        }
+        // the lit cell uses the Mod accent, bypassed greys it
+        for (const off of [0, 1]) {
+            P.run(`MM.state.mods[MM.getMapping(${pid}).mod].enabled = ${off ? 0 : 1}`);
+            P.run(`MM.updateMapping(${pid}, { polarity: 0 })`);
+            P.log.fills = []; P.log.texts.length = 0; P.run("paint()");
+            const r = byId("pol0").rect;
+            const lit = P.log.fills.filter((f) => f.rect && Math.abs(f.rect[0] - (r[0] + 1)) < 1e-6 && Math.abs(f.rect[1] - (r[1] + 1)) < 1e-6 && Math.abs(f.col[3] - 0.3) < 1e-9);
+            ok(lit.length === 1, `${tag}: selected polarity is lit (${off ? "bypassed" : "on"})`);
+            if (!off) near(lit[0].col[0], P.run("UB_MOD_COL")[0], 1e-9, `${tag}: lit with UB_MOD_COL`);
+            P.log.fills = null;
+        }
+        P.run(`MM.state.mods[MM.getMapping(${pid}).mod].enabled = 1`);
+    }
+    eq(sigs.remote, sigs.mod, "tabs, MSEG, bar and presets keep the same rects in Mod and Remote");
 }
 console.log(`megamod UI tests passed (${passed} checks)`);
