@@ -37,6 +37,15 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Degrade
      python3 scripts/build_degrade.py && node tests/test_degrade.js && python3 scripts/render_preview.py "devices/Degrade.amxd"
+
+     # Multiband Split
+     python3 scripts/build_mbsplit.py && node tests/test_mbsplit.js && python3 scripts/render_preview.py "devices/Multiband Split.amxd"
+
+     # Cepstra
+     python3 scripts/build_cepstra.py && node tests/test_cepstra.js && python3 scripts/render_preview.py "devices/Cepstra.amxd"
+
+     # Ableton MCP Bridge
+     python3 scripts/build_ableton_mcp.py && node tests/test_ableton_mcp.js && python3 scripts/render_preview.py "devices/Ableton MCP Bridge.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -46,6 +55,7 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 4. **Presentation Mode Layout & Z-Order Rules**:
    - Max for Live devices must maintain a fixed presentation height of **`169.0` px** (`openrect: [0.0, 0.0, <devicewidth>, 169.0]`, `openinpresentation: 1`).
    - **Never overlap `live.*` interactive widgets (`live.numbox`, `live.text`, `live.dial`, `live.tab`) with a `v8ui` / `jsui` canvas in Presentation Mode.** Max's `v8ui` captures all mouse clicks over its `presentation_rect`. Keep `live.*` widgets in non-overlapping header/side regions (verified automatically by `tests/test_shaper.js`).
+   - **Exception (ignoreclick face)**: a `live.*` widget MAY overlap a `v8ui` only when that `v8ui` has `"ignoreclick": 1` (it only draws) **and** the `live.*` widget sits in front of it in z-order (later in `boxes`). This is how a custom-drawn control stays automatable / mappable (right-click > Show Automation, Map to Macro, MIDI/Key map): the real `live.*` parameter object sits over the drawing as a fully transparent widget (every colour attribute alpha `0`, `showname 0`, `shownumber 0`, no text), and the `v8ui` redraws from the parameter via `prepend set_<x>`. Any interactive `v8ui` (no `ignoreclick`) must still have zero `live.*` overlap. Enforced by `tests/test_cepstra.js`.
 5. **Instance Isolation (`#0-` Naming)**:
    - Any `buffer~`, `send`, or `receive` that belongs to a single device instance **must** be prefixed with `#0-` (e.g., `buffer~ #0-mseg`, `index~ #0-mseg`) so multiple instances of the device across an Ableton Live Set never collide.
 6. **Backward-Compatible State Serialization (`getvalueof` / `setvalueof`)**:
@@ -117,27 +127,27 @@ An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header fol
 
 ## 4. Architecture of `devices/XO Sample Map.amxd`
 
-### Presentation Layout (`680 x 169` px)
-- **Left Panel (`x = 6..386`)**:
-  - Top bar (`y = 8..24`): Device Title (`XO Sample Map`), `Open Map` toggle (`live.text`), `Scan Core` (`live.text`), `+ Folder` (`live.text` -> `opendialog fold`), and `+ Save (S)` (`live.text`, saves current sample + playback settings to the Saved List).
+### Presentation Layout (`776 x 169` px — Dynamically Shrinks down to `276 x 169` px via `live.thisdevice` `setwidth`)
+- **Left Panel (`x = 6..386`, or `6..270` when `Saved` is collapsed)**:
+  - Top bar (`y = 8..24`): Device Title (`XO Sample Map`), `Open Map` toggle (`live.text`), and 3 section Collapse/Show toggles (`Saved`, `Filters`, `Playback` — wired to `live.thisdevice` `setwidth` and `thispatcher` so hiding any section shrinks the M4L device width in Ableton Live).
   - Mini Editor (`obj-minimap`, `v8ui`, `x = 10, y = 27, w = 372, h = 134`):
-    - **Left Pane (`x = 0..244`)**:
-      - `y = 0..20`: Selected sample badge, name, and 24-bar decay-scaled waveform viewer with a **live scanning playhead line (`set_playhead`)** driven by `line 0. 20`.
-      - `y = 22..112`: Interactive 2D sample constellation map with k-NN neighbor lines and filter-aware drag-to-scrub auditioning.
-      - `y = 112..134`: 12-item geometric vector icon toolbar (`All`, `Kick`, `Snare`, `Hihat`, `Clap`, `Tom`, `Cymbal`, `Perc`, `FX`, `Prev Similar`, `Next Similar`, `Random`).
+    - **Left Pane (`x = 0..236`)**:
+      - `y = 0..20`: Selected sample badge, name, and 24-bar decay-scaled waveform viewer with a **live scanning playhead line (`set_playhead`)** (click to audition/replay; drag to export the single Raw sample directly from its original disk path).
+      - `y = 22..112`: Interactive 2D sample constellation map (up to `1,500` samples displayed at once from the full background-indexed corpus) with k-NN neighbor lines and filter-aware drag-to-scrub auditioning.
+      - `y = 112..134`: 13-item geometric vector icon toolbar (`All`, `Kick`, `Snare`, `Hihat`, `Clap`, `Tom`, `Cymbal`, `Perc`, `FX`, `Prev Similar`, `Next Similar`, `Random`, `Re-Seed`).
     - **Right Pane (`x = 236..372`) — Scrollable Saved Samples List & OS File Drag-Out Dock**:
-      - `y = 0..20`: `SAVED (N)` header, `+Save` button (`S` hotkey), and `×` clear-all button.
+      - `y = 0..20`: `SAVED (N)` header (starts empty on new instances), `+Save` button (`S` hotkey), and `×` clear-all button.
       - `y = 21..109`: Scrollable window of saved sample rows (with right-edge scrollbar thumb) supporting click-to-select/recall, vertical drag-to-reorder (`reorder_saved`), per-row `[×]` delete button (`Delete`/`Backspace` key), and separate per-item **`[R]` (Raw)** and **`[E]` (Edited)** OS file drag handles.
       - `y = 112..134`: Bottom batch OS file drag-out zones **`[Drag Raw]`** (`all_raw`) and **`[Drag Edit]`** (`all_edited`).
-- **Center Panel — `FILTERS` (`x = 392..530`)**:
-  - Visibly separate cyan-bordered panel containing `Search:` label, `Clr` button, `obj-search-box` (`textedit` for filtering by name), `MaxLen` (`50 ms` up to **Infinite / `Inf`** at max) and `Tone` (`%`) dials, and `< Sim`, `Sim >`, `Rand` buttons.
-- **Right Panel — `PLAYBACK` (`x = 536..674`)**:
-  - Visibly separate amber-bordered panel containing `Audition / Replay`, `Pitch` (`st`), `Trim/Dec` (`ms`), and `Gain` (`dB`).
+- **Center Panel — `FILTERS` (`x = 392..600`)**:
+  - Visibly separate cyan-bordered panel containing `FILTERS` header, `Re-Seed` button (to the left of `Clr`, re-seeds and fills the map exclusively with corpus samples matching active filters), `Clr` button, `obj-search-box` (`textedit` for filtering by name), 4 filter dials (`MaxLen` `50 ms..Inf`, `Tone` `%`, `Tonal` `%`, and `Drums` / Druminess `%` selecting between Pads/Clusters vs. Drums), and the scrollable `FOLDERS` list (`obj-folder-list`, `v8ui` in `src/xo_folder_ui.js`, automatically including Ableton Core Drums, remembering added folders, and supporting click-to-toggle and `[×]` delete from index).
+- **Right Panel — `PLAYBACK` (`x = 606..770`)**:
+  - Visibly separate amber-bordered panel containing `PLAYBACK` header, `Reverse` toggle button (`obj-reverse-btn`, where `Trim/Dec` trims and sweeps the start of the reversed sample), and 6 dials in a 3×2 grid: `Pitch` (`st`), `Speed` (`10..400%` granular time-stretch), `Grain` (`5..250 ms` Hann grain size), `Trim/Dec` (`20..20000 ms` / `20 s`), `Spectral` (`0..100%` Radix-2 STFT phase-vocoder spectral stretch), and `Gain` (`dB`).
 
-### Multi-Engine Integration (`node.codebox` + `jweb` + `v8ui` + Native Cocoa Drag Helper)
-- `obj-node` (`node.codebox`) embeds both `src/xo_map_ui.html` (`EMBEDDED_XO_HTML`) and `src/xo_node_engine.js` so `devices/XO Sample Map.amxd` is a single self-contained `.amxd` file.
+### Multi-Engine Integration (`node.codebox` + `jweb` + `v8ui` + 104-Byte Binary Cache + Native Cocoa Drag Helper)
+- `obj-node` (`node.codebox`, placed at the end of `boxes` with `background: 1` and a `1×1` `presentation_rect` inside `0..169`) embeds both `src/xo_map_ui.html` (`EMBEDDED_XO_HTML`) and `src/xo_node_engine.js`, indexing large directories asynchronously in the background into a compact 104-byte per-sample binary cache (`~/.xo_sample_map_cache_v3.bin` + `.idx.json`).
 - `obj-sfplay` (`sfplay~ 2`) routes outlet 0 (Left/Mono) to both the Left multiplier and `obj-r-chan-sel` (`selector~ 2 1`) inlet 1, while outlet 1 (Stereo R) feeds `selector~ 2 1` inlet 2. `node.codebox` emits `play_mono 1` for 1-channel files and `play_mono 2` for stereo files, ensuring mono samples play on both channels.
-- When samples are saved (`save_selected` / hotkey `S`), `xo_node_engine.js` creates an OS file link in `/tmp/xo_sample_map_exports/Raw/` and a 2-channel stereo 16-bit PCM re-rendered WAV file in `/tmp/xo_sample_map_exports/Edited/`, and arms a compiled macOS Cocoa `NSDraggingSource` helper (`xo_drag_helper`) so dragging out of `[R]`, `[E]`, `[Drag Raw]`, or `[Drag Edit]` performs a true OS file drag into Ableton Live.
+- Raw exports (`[R]`, `[Drag Raw]`, and Sample Preview drag) point directly to the original sample file path on disk without copying, while Edited exports (`[E]`, `[Drag Edit]`) render a 2-channel stereo 16-bit PCM WAV file in `/tmp/xo_sample_map_exports/Edited/` with `Pitch`, `Speed`, `Grain`, `Spectral`, `Trim/Dec`, `Reverse`, and `Gain` baked in, arming a compiled macOS Cocoa `NSDraggingSource` helper (`xo_drag_helper_v6_bin`).
 
 ---
 
@@ -276,6 +286,224 @@ python3 scripts/build_degrade.py && node tests/test_degrade.js && python3 script
 ```
 Audio checks (real Max render): `python3 scripts/run_degrade_audio_tests.py`
 
+---
 
+## 11. Architecture of `devices/Multiband Split.amxd`
 
+### Presentation Layout (`268 x 169` px — UI 2 Edge-to-Edge 8192-Block Spectrogram Splitter)
+- **Zero Duplicate Title**: No internal title label is rendered inside the patcher (relying on Ableton Live's native title bar).
+- **Top Edge-to-Edge Spectrogram & Crossover Canvas (`obj-viz`, `v8ui`, `x = 6, y = 6, w = 256, h = 136`)**:
+  - **Top Strip (`y = 2..17`)**:
+    - Left (`x = 3..35`): `[AUTO]` chain-index tracking pill.
+    - Center (`x = 38..185`): `1` to `4` Band Solo/Multi-Band pills (`1:FULL` for 1 instance; `1:LOW, 2:HIGH` for 2 instances; `1:LOW, 2:MID, 3:HIGH` for 3 instances; `LOW, LO-M, HI-M, HIGH` for 4 instances), created automatically for each detected linked instance (`computeDetectedBandCount()`). Regular click solos a band; Shift-click (or clicking the right edge of a pill) toggles bands into a multi-band pass mask (`BandMode = 5`, `CustomMask`).
+    - Right (`x = 188..253`): Interactive **Volume Slider (`-inf` to `+18.0 dB`)** with a `0 dB` unity tick mark, horizontal drag, and double-click reset to `0.0 dB` (synced bidirectionally with `obj-ctrl-gain`).
+  - **Main Viewport (`y = 20..133`)**:
+    - **Block-Size 8192 Hann-Windowed Radix-2 FFT Spectrogram (`MBSPLIT_FFT_SIZE = 8192`, `4096` bins, $\Delta f \approx 5.86\text{ Hz}$)**: Reads the continuous 8192-sample circular audio buffer from `buffer~ #0-splitscope @samps 8224` (`indices 32..8223`) and renders both a 2D scrolling waterfall spectrogram and a 248-column (`1 px`) high-resolution harmonic spectrum trace (using fractional-bin Catmull-Rom interpolation at low/mid frequencies and max-peak bin pooling at high frequencies so individual sawtooth harmonics are sharply resolved).
+    - **Linkwitz-Riley Bode Curves & Crossover Handles**: Active/inactive LR2/LR4/LR8 transfer curves, composite sum curve when multiple bands are active, and draggable `F1` / `F2` / `F3` crossover handles with collision-free frequency pills and double-click reset.
+    - **Bottom-Right Clickable Link Status Badge (`getLinkBadgeRect()`)**: Displays the live link info string (`LINK: RACK #1 CH2 (4x)`) in the bottom-right corner of the spectrogram; clicking the badge toggles `showLinkStatus` between expanded (`LINK: ...`) and compact (`LNK`) states.
+- **Bottom Control Strip (`y = 146..161`)**:
+  - `Slope` (`12 dB` / `24 dB` / `48 dB` `live.tab`) on the left (`x = 6..90`), followed by `F1 Low`, `F2 Mid`, and `F3 High` horizontal value sliders (`x = 94..262`).
 
+### Nested Rack ("Chain within a Chain") Scoping, Same-Chain (`Cmd+D`) Isolation & Cross-Instance Sync
+- `parseRackContextFromPath(lomPath)` in `src/mbsplit_config.js` inspects `LiveAPI("this_device").unquotedpath` and extracts the **immediate enclosing `RackDevice` LOM path** (`parentRackPath`), **immediate enclosing `chains <N>` index** (`chainIndex`), and **device index within that chain** (`devices <D>` -> `deviceIndex`).
+- **Nested Rack Scoping**: In `Auto` link mode, instances inside an outer Audio Effect Rack link exclusively with siblings in that outer rack and auto-create `1..4` bands matching the detected instances (`Chain 1..N -> Band 1..N`), while instances inside a nested sub-rack ("a chain within a chain") link exclusively with siblings inside that nested sub-rack.
+- **Same-Chain (`Cmd+D`) Left-Most vs. Right-Hand Isolation**:
+  - Within any chain `(parentRackPath, chainIndex)`, `isLeftMostInOwnChain()` and `getActiveGroupKey()` in `src/mbsplit_ui.js` compare alive splitters by `(deviceIndex, order, id)`.
+  - Only the **left-most** splitter in each chain (`isLeftMostInOwnChain() === true`, e.g. `chains 0 devices 0`) joins `"rack_group::" + parentRackPath`.
+  - Any splitter to the **right** in the same chain (`isLeftMostInOwnChain() === false`, such as a `Cmd+D` duplicate at `chains 0 devices 1` before it is grouped into a sub-rack) receives `"rack_group::isolated::" + INSTANCE_ID`, keeping it in its own empty `1`-band chain (`1:FULL`) with independent crossovers.
+  - Reordering a right-hand splitter to `devices 0` or deleting the left-most splitter automatically promotes the new left-most splitter into `"rack_group::" + parentRackPath` and syncs the rack's `F1` / `F2` / `F3` / `Slope`.
+- **Cross-Instance `LiveAPI("this_device")` Thread Safety & Allocation Reuse**:
+  - In Max for Live (`v8ui`), calling `new LiveAPI(..., "this_device")` inside a cross-instance `Global` callback resolves `"this_device"` to the *caller's* patcher rather than the callee's patcher. Each instance therefore caches a single `selfLiveApi` bound on its own thread (`isOwnThread !== false`) and reuses `selfLiveApi.unquotedpath` during liveness and topology checks, preventing cross-instance path clobbering and main-thread `LiveAPI` allocation floods.
+- Cross-instance synchronization uses `Global("mbsplit_shared_bus")` to link `F1` / `F2` / `F3`, `Slope`, and auto-detected `NumBands` while keeping `BandMode`, `CustomMask`, and `Gain` (`-inf..+18 dB`) independent per chain.
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/mbsplit_core.genexpr` — Phase-compensated stereo Linkwitz-Riley crossover tree (`12 dB/oct` LR2, `24 dB/oct` LR4, `48 dB/oct` LR8) supporting `1..4` bands with matching allpass phase-compensation stages (`ap2_b1`, `ap3_b1`, `ap3_b2`) so parallel chains sum to a flat `0.000 dB` allpass unity response across all crossover frequencies, plus `-70..+18 dB` (`-inf..+18 dB`) output volume.
+- `Buffer scope("splitscope")` (`8224` samples) writes telemetry (`0..25`) every 64 samples and streams continuous mono input audio into an 8192-sample circular ring buffer (`32..8223`) for the 8192-block FFT spectrogram. Bound on `loadbang` via `scope #0-splitscope`.
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_mbsplit.py && node tests/test_mbsplit.js && python3 scripts/render_preview.py "devices/Multiband Split.amxd"
+```
+- `node tests/test_mbsplit.js` runs both the offline VM unit tests and `runLiveMcpRegressionSuite()` (which automatically drives `scripts/ableton_mcp_server.js` against an active Ableton Live MCP session when online to verify `Cmd+D` same-chain right-hand isolation, same-chain reordering, nested sub-rack isolation, cross-chain rank compaction, and device deletion + `Undo` restoration).
+- Audio checks (real Max render): `python3 scripts/run_mbsplit_audio_tests.py`
+
+---
+
+## 12. Architecture of `devices/Cepstra.amxd`
+
+### Presentation Layout (`520 x 169` px — Flat Black Face: ignoreclick v8ui + transparent `live.*` controls + interactive display)
+- **Two `v8ui` tile the device**: `obj-viz` (face, `x = 0, w = 290`, **`ignoreclick: 1`**, `src/cepstra_ui.js`) only draws; `obj-viz-disp` (cepstrum display, `x = 290, w = 230`, interactive, `src/cepstra_display.js`) handles the cutoff-bar mouse. The rounded outer frame is drawn by both halves so it continues across the seam, over a single black background `panel` (`background: 1`, last box).
+- **Every face control is a real `live.*` object in presentation, fully transparent, placed in FRONT of the face `v8ui`** (later in `boxes`), so Live's native right-click menu (Show Automation, Map to Macro, MIDI/Key map), drag, shift-fine, double-click reset and automation all work. Every colour attribute of each maxclass is alpha `0` (`live.dial`: `activedialcolor activeneedlecolor dialcolor needlecolor textcolor tricolor tribordercolor panelcolor bordercolor bgcolor focusbordercolor`; `live.slider`: `activeslidercolor slidercolor bgcolor activebgcolor bordercolor textcolor tricolor tribordercolor focusbordercolor activetricolor`; `live.tab` / `live.text`: `activebgcolor activebgoncolor bgcolor bgoncolor bordercolor textcolor textoncolor activetextcolor activetextoncolor focusbordercolor`), `showname 0`, `shownumber 0`, empty `text` / `texton`. The face redraws from `parameter -> prepend set_<x> -> v8ui`. `scripts/render_preview.py` skips `live.*` widgets whose colours are all alpha `0`.
+  - `live.dial` x5 (`40 x 40`, centred on each glyph at `y = 30`): `Res`, `Mid Shift`, `Mix`, `Side Shift`, `Gate`.
+  - `live.slider` x2 (`x = 62, w = 160, h = 12`, over the dot bars): `Formant` (`y = 114`), `Harmonic` (`y = 130`).
+  - `live.tab` `Quality` (`x = 62, y = 146, w = 108, h = 14`, over the 1k / 2k / 4k segments).
+  - `live.text` toggles: `Lock Mid-Side` (`20 x 20` over the padlock), `Cutoff Auto` (over the AUTO pill) and `Cutoff MIDI` (over the MIDI pill).
+  - The `Cutoff Mode` `live.tab` (`Man` / `Auto` / `MIDI`, default `Man`) stays as a parameter **off the face**, so existing sets and any automation of it still load; the AUTO and MIDI toggles map onto it and onto gen `resmode` (exclusive: turning one on `set`s the other off, both off = Manual).
+  - Parameter names, ranges, defaults and `parameter_type` are unchanged (`Res 0..100 = 57`, `Mid Shift` / `Side Shift` `-36..+36 = 0`, `Mix 0..100 = 100`, `Gate 0..100 = 0`, `Formant` / `Harmonic` `0..200 = 100`, `Quality 1k/2k/4k = 2k`, `Lock Mid-Side Free/Lock`); `Auto` / `Cutoff MIDI` toggles are new.
+- **Look**: pure black, flat, thin dark-grey rounded outer frame, white geometric glyphs, monospace labels with corner brackets, orange / blue / green accents.
+- **Face (`x = 0..290`)**:
+  - Header (`y = 0..24`): dark rounded `AUTO` and `MIDI` pills with embossed grey text (lit orange when active) and the bold orange `CEPSTRA` tab (rounded bottom corners, black heavy letter-spaced text) between them.
+  - Five flat white glyph knobs on a faint dot-grid (`y = 28..90`, `54 px` cells), order **Res, Mid, Mix, Side, Gate**, each glyph changing with its value, with a monospace `Label` and corner brackets under it: Res (checkerboard whose grid density grows with Res, centre circle with a half-filled disc), Mid (line through a centre circle holding a bow-tie; arms tilt and the bow-tie moves up / down with the shift), Mix (concentric rings; count and thickness follow Mix), Side (vertical stripes, centre circle, vertical bow-tie sliding sideways), Gate (comb of nine bars gated / shortened as Gate rises, centre circle, orange baseline bar).
+  - **Value readout**: whenever a parameter value changes (drag, automation or macro) the label turns orange and shows a monospace readout (`Mid +7.0 st`, `Res 57.0%`) for about 1 s (a `Task` timer clears it). Mouse hover is not available because the face ignores the mouse.
+  - Green bracket from the Mid label to the Side label with a circular padlock under Mix: bright green when locked, dim when unlocked.
+  - Bottom rows (`y = 114..160`): `Formant` / `Harmonic` dot bars (`0..200%`) and the monospace segmented `Quality` selector.
+- **Display (`x = 296..512`)**:
+  - Split bar (`y = 8..26`): orange `FORMANTS` label with an orange bracket from the left edge to the cutoff, blue `HARMONICS` label with a blue bracket from the cutoff to the right edge.
+  - Dot-matrix plot (`y = 30..155`, `5 px` pitch): the **Mid cepstrum `|c[n]|` against log quefrency (`0.2 ms .. 20 ms`)** as dots (bright top dot, dim stem), **orange left of the cutoff bar and blue right of it**; `cepstrumToHeight01()` (`-64 dB .. +14 dB`) soft compression and per-frame smoothing keep both the formant region and the pitch peak visible. Axis labels `0.5 1 2 5 10 ms`.
+  - **Vertical cutoff bar** through the plot and the split bar marks the lifter cutoff `L`. Manual: solid white bar with a grip, follows `Res`; Auto / MIDI: dashed light-blue bar with a diamond that follows the tracked `L`. Clicking or dragging anywhere in the display sets `Res` (`axis01ToRes()`; in Auto / MIDI it sets the `k = L / period` scale); double-click resets it. A green dotted line with a diamond and `120Hz` / note label marks the pitch-period peak in Auto / MIDI. Idle redraws are skipped when silent.
+- **Sync (no feedback loops)**: the live objects are the source of truth. Live object -> `prepend set_<x>` -> face (and display for `res`, mode, quality). `v8ui`-originated changes (display bar -> `res`; Lock follower -> `mid` / `side`; AUTO / MIDI exclusivity -> `auto`, `midi`, `resmode`) go `route res mid side resmode auto midi` -> (a) `prepend set` into the live object (silent: `set` never re-outputs) and (b) the gen path. `Mix` drives the gen `wet` Param (a Param named `mix` would shadow the GenExpr `mix()` builtin).
+- **Mid / Side Lock** lives in the face `v8ui` (`set_mid` / `set_side` + `applyLock()`): it works for the dial itself, automation and macros because every change arrives as `set_mid` / `set_side`; the follower is moved by the same delta with a silent `set` and never re-enters the script.
+- **Risk (needs in-Live verification)**: Live must honour alpha `0` on all the colour attributes above (`live.dial`, `live.slider`, `live.tab`, `live.text`) and must not draw any theme-coloured parts (dial arc / needle, slider bar, tab outline, focus border) when they are all transparent. Live may also draw its own mapped / automated overlay tint on top, which is intended.
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/cepstra_core.genexpr` — true cepstral formant shifter: STFT overlap-add with Hann analysis and Hann synthesis windows at 75% overlap (hop `N/4`, normalized by `1 / (N * 1.5)`), FFT size `N = 1024 * 2^quality` (`1024` / `2048` / `4096`), own radix-2 FFT written as GenExpr helper functions over `Data` arrays sized for `4096`, `float64` precision.
+  - **Mid/Side packing**: `M = (L + R) / 2`, `S = (L - R) / 2`. `M + jS` share one complex FFT. Because both log-spectra and both cepstra are real and symmetric, the same packing carries them through all four FFTs per hop (forward FFT, cepstrum IFFT, envelope FFT, synthesis IFFT).
+  - **Per-frame pipeline** (`job_*` functions): `logmag = log(|X| + 1e-9)` -> cepstrum `c = IFFT(logmag)` -> lifter (`|n| < L`, half-Hann taper over `clip(L / 4, 2, 6)` bins) -> envelope `E = FFT(formant cepstrum)` -> fine structure `H = logmag - E` -> shifted envelope `E'[k] = E[k / 2^(st/12)]` (linear interpolation, `midshift` for Mid, `sideshift` for Side) -> harmonic gate (`gate_h`: soft-knee threshold from `0` (off) to `+30 dB` above the envelope, removing the noise between partials while partials keep the envelope) -> output magnitude `exp(clip(fmtlevel * E' + harmlevel * H_gated, -21, 12))` with the original phase -> IFFT -> synthesis window -> overlap-add. Neutral settings (`shift 0`, levels `100%`, gate `0`) are an exact magnitude identity.
+  - **Cutoff modes** (`resmode`): `0` Manual (`res` -> `0.3 ms .. 15 ms`, logarithmic, clamped `< N/2`); `1` Auto (largest local maximum of the Mid cepstrum in `1/1000 s .. 1/60 s` with parabolic refinement and a `0.06` voicing threshold; `L = k * period`, `k = 0.3 + 0.7 * res`, held when unvoiced); `2` MIDI (`midinote` Param, `period = sr / mtof(note)`, same `k`, last value kept with no note). `L` is smoothed between frames (`0.4` per frame).
+  - **Time-sliced work**: each frame is `4 * log2(N) + 10` jobs (one FFT pass or one slice of an O(N) loop each), spread across the first `N/8` samples of the hop, so no single sample runs more than one FFT pass. Latency is therefore `N + N/8` samples (`2304` at `2k`); the dry path is delayed by the same amount (`Data` ring) and Mix is equal-power.
+  - **Quality switch**: changing `quality` aborts the in-flight frame, clears the overlap-add rings and mutes the output for `N + N/8 + 3 * hop + 256` samples with a 256-sample fade-in (brief mute, no crash).
+  - **Silence sleep**: input below `-100 dB` (`0.00001`) for a whole frame (`quietCount >= N`) skips all FFT work (lossless: such a frame's output is zero); outputs go through `fixdenorm` / `fixnan`.
+- `Buffer scope("cepscope")` (`272` samples), bound on `loadbang` via `scope #0-cepscope`: `0..191` Mid `|c[n]|` on 192 log-spaced quefrency points (`0.2 ms .. 20 ms`, max-pooled, `-1` beyond `N/2`), `256` current `L` in samples, `257` f0 estimate (Hz), `258` input level, `259` frame counter, `260` `N`, `261` voiced flag, `262` `resmode`. Written once per frame.
+- MIDI: `midiin` -> `midiparse` -> `unpack 0 0` -> `> 0` (velocity) opens a `gate` so only note-ons pass -> `prepend midinote` -> gen (and `prepend midi_note` -> `v8ui`). Note-offs close the gate, so the last note is kept.
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_cepstra.py && node tests/test_cepstra.js && python3 scripts/render_preview.py "devices/Cepstra.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_cepstra_audio_tests.py` — stimulus is a `120 Hz` impulse train through `700 / 1220 / 2600 Hz` resonators. The probe also checks that the telemetry cepstrum peaks at the `1/f0` quefrency (`8.33 ms`). Cases: neutral null (`1k` / `2k` / `4k`), `Mix 0` equals delayed dry, `Mid +12 st` raises the spectral centroid while f0 stays, Gate lowers the between-partials level, Auto / MIDI cutoff telemetry, Quality switch mid-run, silence sleep, `4k` real-time factor. The runner forces the audio sample rate with `adstatus sr` and retries a case when the device was still settling (an AirPods default output can switch to `24 kHz`).
+
+---
+
+## 13. Architecture of `devices/Ableton MCP Bridge.amxd` & Live Debugging (`ableton_mcp_bridge.als`)
+
+### Overview & Pre-Configured Live Project (`/Users/mrwilson/software/ableton/ableton_mcp_bridge.als`)
+- **`/Users/mrwilson/software/ableton/ableton_mcp_bridge.als`** is a ready-to-launch Ableton Live Set containing `devices/Ableton MCP Bridge.amxd` loaded on the Master track (`live_set master_track devices 0`).
+- Because `ableton_mcp_bridge.als` references `devices/Ableton MCP Bridge.amxd` directly on disk (`../devices/Ableton MCP Bridge.amxd`), rebuilding `devices/Ableton MCP Bridge.amxd` via `python3 scripts/build_ableton_mcp.py` automatically takes effect the next time `ableton_mcp_bridge.als` is opened in Ableton Live.
+- **Quick Launch & Verification**:
+  ```bash
+  # Launch Ableton Live with the MCP Bridge project
+  open -a "Ableton Live 12 Suite" "/Users/mrwilson/software/ableton/ableton_mcp_bridge.als"
+
+  # Wait until the bridge HTTP listener is online (default port 9877) and verify LOM access
+  node scripts/ableton_mcp_server.js --list-sessions
+  node scripts/ableton_mcp_server.js --call ableton_get_session_info '{}'
+  node scripts/ableton_mcp_server.js --call ableton_get_tracks_tree '{"includeParams":true}'
+  ```
+
+### Presentation Layout (`260 x 169` px — `devices/Ableton MCP Bridge.amxd`)
+- **Pass-Through Audio (`plugin~` -> `plugout~`)**: Zero-latency stereo pass-through so the device can sit transparently on the Master track or any track/chain without altering audio.
+- **Live Telemetry & RPC Monitor (`obj-ui`, `v8ui`, `x = 6, y = 6, w = 248, h = 157`)**:
+  - **Top Header (`y = 0..22`)**: Status LED, `MCP BRIDGE` title, active port badge (`PORT 9877`, or `PORT 9878+` in multi-session mode), and `[PING]` self-test button.
+  - **Info Strip (`y = 26..44`)**: Live endpoint readout (`127.0.0.1:<port> | RPCs: <count>`) and `[CLEAR]` log button.
+  - **RPC Activity Log (`y = 48..153`)**: Real-time scrolling log of the most recent LOM RPC commands, latency (`ms`), and status (`OK` / `ERR`).
+
+### Two-Tier Architecture (`node.codebox` + `v8ui` LOM Executor + Stdio MCP Server)
+1. **`src/ableton_mcp_node.js` (`node.codebox` `@autostart 1`)**:
+   - Hosts a zero-dependency local HTTP JSON-RPC bridge on `127.0.0.1:<port>` (`GET /health`, `POST /rpc`, `POST /shutdown`).
+   - Forwards incoming `/rpc` requests (`{"action": "...", "params": {...}}`) into Max via `maxApi.outlet("lom_req", JSON.stringify(payload))` and awaits `lom_res` from `v8ui`.
+2. **`src/ableton_mcp_lom.js` (`v8ui` on Max's Main/LOM Thread)**:
+   - Executes `LiveAPI` (Live Object Model) operations safely on Max's main thread and inspects shared `Global(...)` buses inside the Max JS runtime.
+   - Supported actions / MCP tools (registered in `~/.cursor/mcp.json` under `"ableton-m4l"` via `scripts/ableton_mcp_server.js`):
+     - `ableton_list_sessions`: Lists all active Ableton + MCP Bridge instances running on this machine (`ports 9877..9884` + `/tmp/ableton_mcp_sessions.json`).
+     - `ableton_ping`: Health check + basic `live_set` tempo/playing state.
+     - `ableton_get_session_info`: Tempo, time signature, transport state, track count, return count.
+     - `ableton_get_tracks_tree`: Full hierarchical dump of all tracks, return tracks, master track, nested `RackDevice` chains, devices, and parameters.
+     - `ableton_lom_get` / `ableton_lom_set` / `ableton_lom_call`: Generic `LiveAPI` property reader, property writer, and function invoker on any LOM path (e.g., `live_set tracks 0 devices 0 chains 1`).
+     - `ableton_get_device_parameters` / `ableton_set_device_parameter`: Reads or sets device parameters by index or name (`str_for_value` included).
+     - `ableton_delete_device`: Deletes a device at `trackPath` (`delete_device <deviceIndex>`) to test live device deletion and Undo behavior.
+     - `ableton_transport`: Controls `play`, `stop`, `continue`, `undo`, `redo`, and `tempo`.
+     - `ableton_inspect_mbsplit`: Inspects `Global("mbsplit_shared_bus")` (`peers`, `groups`, `selfLomAlive`, `scopeBeat`, `detectedBands`) alongside every live `Multiband Split` device in the Set.
+     - `ableton_eval_lom_js`: Evaluates arbitrary diagnostic JavaScript on Max's `v8ui` LOM thread (`LiveAPI`, `Global`, `Max` available in scope) and returns the result + `post()` logs.
+
+### Starting & Controlling Multiple Unique Ableton + MCP Sessions on This Machine
+Agents can run and control **multiple isolated Ableton Live + MCP Bridge sessions simultaneously** on this machine:
+
+1. **Automatic Port Allocation & PID Isolation (`9877..9892`)**:
+   - When `src/ableton_mcp_node.js` starts, it tries `ABLETON_MCP_PORT` (default `9877`).
+   - If a port returns `EADDRINUSE`, it queries `GET http://127.0.0.1:<port>/health`:
+     - **Same Ableton/Max Instance (`existing.max_ppid === process.ppid`)**: When a device is reloaded inside the *same* Live session, the new `node.codebox` sends `POST /shutdown` to the stale listener and re-binds the same port (`9877`).
+     - **Different Ableton/Max Instance (`existing.max_ppid !== process.ppid`)**: When a *second* Ableton Live process is running concurrently, the bridge leaves port `9877` untouched and automatically binds the next available port (`9878`, `9879`, etc.), updating its UI badge (`PORT 9878`) and registering in `/tmp/ableton_mcp_sessions.json`.
+
+2. **Recommended Dual-Session Launch (Zero Modal Dialogs — Suite + Beta)**:
+   - This machine has both **`/Applications/Ableton Live 12 Suite.app`** (`Live 12.4.6`) and **`/Applications/Ableton Live 12 Beta.app`** (`Live 12.4.15b2`) installed with separate preference directories (`~/Library/Preferences/Ableton/Live 12.4.6/` and `Live 12.4.15b2/`).
+   - Because they are separate app bundles/versions, macOS and Ableton Live allow both to open `.als` projects simultaneously with **zero single-instance modal warnings**:
+     ```bash
+     # Session 1 -> binds 127.0.0.1:9877
+     open -a "Ableton Live 12 Suite" "/Users/mrwilson/software/ableton/ableton_mcp_bridge.als"
+
+     # Session 2 -> automatically detects 9877 is in use by Suite and binds 127.0.0.1:9878
+     open -a "Ableton Live 12 Beta" "/Users/mrwilson/software/ableton/ableton_mcp_bridge.als"
+
+     # Discover all active sessions and their ports/PIDs
+     node scripts/ableton_mcp_server.js --list-sessions
+     ```
+
+3. **Launching Additional Cloned Sessions of the Same App Binary (`open -n`)**:
+   - If you need a 3rd+ session using `open -n -a "Ableton Live 12 Suite" --args "/Users/mrwilson/software/ableton/ableton_mcp_bridge.als"`, note two important details:
+     1. Each Ableton Live instance spawns its own embedded `Max.app` server. If a second instance of the *same* Live build launches, Ableton shows a startup modal (`"Another instance of the same Live version is running. Live will not be able to recover Sets after crashes."`) before loading the `.als` file—dismiss it via Return key (`osascript -e 'tell application "System Events" to key code 36'`) so Live finishes loading the Set and starts the bridge on port `9879+`.
+     2. You can also pre-assign a dedicated port and tag via environment variables when launching:
+        ```bash
+        ABLETON_MCP_PORT=9879 ABLETON_MCP_SESSION_TAG="agent-b" open -a "Ableton Live 12 Beta" "/Users/mrwilson/software/ableton/ableton_mcp_bridge.als"
+        ```
+
+4. **Targeting a Specific Session in MCP Tools or CLI**:
+   - Every MCP tool accepts an optional `"port"` integer parameter (`9877`, `9878`, etc.), and the CLI accepts `--port <port>`:
+     ```bash
+     # Query Session 1 (Port 9877)
+     node scripts/ableton_mcp_server.js --port 9877 --call ableton_get_session_info '{}'
+
+     # Query Session 2 (Port 9878)
+     node scripts/ableton_mcp_server.js --port 9878 --call ableton_get_session_info '{}'
+     ```
+   - **Process Safety Rule**: Never run a broad `pkill -f "Max.app/Contents/MacOS/Max"` while an Ableton Live session is open, because Ableton Live hosts Max for Live inside a child `Max.app` process (`max_ppid` reported by `ableton_list_sessions`).
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_ableton_mcp.py && node tests/test_ableton_mcp.js && python3 scripts/render_preview.py "devices/Ableton MCP Bridge.amxd"
+```
+
+---
+
+## 12. Architecture of `devices/Envelope Trigger.amxd`
+
+### Presentation Layout (`450 x 169` px)
+- **Left Panel (`x = 6..236`)**: Title (`Envelope Trigger`), `Mode` `live.tab` (`Full` / `Bands`), and the scope (`obj-viz`, `v8ui`, `x = 10, y = 26, w = 222, h = 134`):
+  - HUD (`y = 0..14`): mode, `> <MIDI To destination>` (coral when `No Output`), last fired note.
+  - One lane in `Full` mode, or stacked `LOW` / `MID` / `HIGH` lanes in `Bands` mode. Each lane draws its fast envelope, slow baseline, a draggable dashed threshold (emits `thr0..thr2` → `route thr0 thr1 thr2` → gen + `prepend set` on the numbox), yellow fired-note ticks (height = velocity), and a flashing velocity LED column on the right.
+- **`DETECT` (`x = 240..330`, Cyan)**: `Sens` and `Hold` dials; `Thr L` / `Thr M` / `Thr H`, `X Lo`, `X Hi` numboxes.
+- **`MIDI TO` (`x = 334..444`, Amber)**: `MIDI Output Type` and `MIDI Output Channel` menus, `Note L/M/H` (unitstyle 8), `MIDI Ch`, `Length`, `Vel Lo`, `Vel Hi`.
+
+### MIDI out from an audio effect (MidiRouter technique)
+- An Audio Effect can send MIDI to any track: a plain `midiout` goes to the device's own LOM DeviceIO, `this_device midi_outputs 0`. Setting that DeviceIO's `routing_type` / `routing_channel` gives the same "MIDI To" choice as External Instrument, and Live saves it with the set. Requires Live 11.0.5+.
+- `live.thisdevice` → `init_routing` → `obj-viz` builds four `LiveAPI` observers (`available_routing_types`, `available_routing_channels`, `routing_type`, `routing_channel`). Never init from `loadbang`: the LOM isn't ready.
+- The two menus are hidden parameters (`parameter_invisible: 2`, no initial value) that only mirror the LOM. `obj-viz` outlet 1/2 fills them with `_parameter_range` (undocumented) and `setsymbol`; their output goes back as `settype $1` / `setchannel $1`. `lomValue()` in `src/envtrig_config.js` accepts dictionaries as parsed objects or JSON strings.
+- The destination MIDI track must be monitoring (`In`, or `Auto` while armed) for its instrument to play.
+- Note path per lane: gen gate → `edge~` → `t b b` (right: `snapshot~` of the held velocity → `makenote` velocity; left: `i <note>` → `makenote` pitch) → `pack 0 0` → `midiformat` (channel inlet 6) → `midiout`. Notes are scheduler-timed (one audio vector of jitter) plus the 2.5 ms velocity capture.
+
+### Gen core (`gen.codebox~`, hidden, 8 outlets)
+- `src/envtrig_core.genexpr` — audio passes through untouched (`out1`/`out2`). Detection runs on the mono sum: `Full`, or a `Bands` split by cascaded TPT SVFs at `xlo` / `xhi` (two stages per edge, so MID rejects an 8 kHz burst at −24 dB).
+- Per lane `onset()`:
+  - **Envelopes:** a fast envelope (instant attack, 15 ms release) and a slow baseline (60 ms).
+  - **Onset:** fires when fast > `thrN` and fast > slow × `(1 − sens) × 12 dB`, while armed and outside the `holdms` lockout.
+  - **Velocity:** a 2.5 ms capture of the peak, mapped from threshold..0 dBFS to `velmin..velmax`.
+  - **Gate:** high for `holdms / 2`, so `edge~` sees it at any vector size.
+  - **Re-arm:** below 70 % of the threshold, or back near the baseline.
+- Outlets: `out3..out5` lane gates, `out6..out8` held velocities.
+- Never name a Param `hold`: with that name the lockout and gate outputs silently stopped working.
+- `Buffer scope("trigscope")` (`buffer~ #0-trigscope @samps 32`, bound via `scope #0-trigscope`), written every 64 samples:
+  - `0..2` fast env
+  - `3..5` slow env
+  - `6..8` fire counters
+  - `9` roll
+  - `10` input peak
+  - `11` mode
+  - `12..14` last velocity
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_envtrig.py && node tests/test_envtrig.js && python3 scripts/render_preview.py "devices/Envelope Trigger.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_envtrig_audio_tests.py`.
+- Test signals come from an audio-rate gen source, not `metro`, because the standalone Max render runs faster than real time.
+- Times are converted with the real DSP rate from `dspstate~`.
+- The harness uses a single 2-channel `record~ rec 2`, with lane data packed into it (several `record~` objects in one patch left every buffer empty).
