@@ -46,6 +46,12 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Ableton MCP Bridge
      python3 scripts/build_ableton_mcp.py && node tests/test_ableton_mcp.js && python3 scripts/render_preview.py "devices/Ableton MCP Bridge.amxd"
+
+     # Better Sampler (one build writes all 4 .amxd variants)
+     python3 scripts/build_sampler.py && node tests/test_sampler.js && for v in "Better Sampler Compact" "Better Sampler Standard" "Better Sampler Expanded" "Better Sampler"; do python3 scripts/render_preview.py "devices/$v.amxd"; done
+
+     # Envelope Trigger
+     python3 scripts/build_envtrig.py && node tests/test_envtrig.js && python3 scripts/run_envtrig_ui_tests.py && python3 scripts/render_preview.py "devices/Envelope Trigger.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -302,7 +308,7 @@ Audio checks (real Max render): `python3 scripts/run_degrade_audio_tests.py`
     - **Linkwitz-Riley Bode Curves & Crossover Handles**: Active/inactive LR2/LR4/LR8 transfer curves, composite sum curve when multiple bands are active, and draggable `F1` / `F2` / `F3` crossover handles with collision-free frequency pills and double-click reset.
     - **Bottom-Right Clickable Link Status Badge (`getLinkBadgeRect()`)**: Displays the live link info string (`LINK: RACK #1 CH2 (4x)`) in the bottom-right corner of the spectrogram; clicking the badge toggles `showLinkStatus` between expanded (`LINK: ...`) and compact (`LNK`) states.
 - **Bottom Control Strip (`y = 146..161`)**:
-  - `Slope` (`12 dB` / `24 dB` / `48 dB` `live.tab`) on the left (`x = 6..90`), followed by `F1 Low`, `F2 Mid`, and `F3 High` horizontal value sliders (`x = 94..262`).
+  - `Slope` (`12` / `24` / `48` dB/oct `live.tab`, `x = 6..66`), the `Phase Mode` toggle (`live.text` `MIN` / `DYN`, `x = 69..91`), then `F1 Low`, `F2 Mid`, and `F3 High` horizontal value sliders (`x = 94..262`).
 
 ### Nested Rack ("Chain within a Chain") Scoping, Same-Chain (`Cmd+D`) Isolation & Cross-Instance Sync
 - `parseRackContextFromPath(lomPath)` in `src/mbsplit_config.js` inspects `LiveAPI("this_device").unquotedpath` and extracts the **immediate enclosing `RackDevice` LOM path** (`parentRackPath`), **immediate enclosing `chains <N>` index** (`chainIndex`), and **device index within that chain** (`devices <D>` -> `deviceIndex`).
@@ -314,7 +320,15 @@ Audio checks (real Max render): `python3 scripts/run_degrade_audio_tests.py`
   - Reordering a right-hand splitter to `devices 0` or deleting the left-most splitter automatically promotes the new left-most splitter into `"rack_group::" + parentRackPath` and syncs the rack's `F1` / `F2` / `F3` / `Slope`.
 - **Cross-Instance `LiveAPI("this_device")` Thread Safety & Allocation Reuse**:
   - In Max for Live (`v8ui`), calling `new LiveAPI(..., "this_device")` inside a cross-instance `Global` callback resolves `"this_device"` to the *caller's* patcher rather than the callee's patcher. Each instance therefore caches a single `selfLiveApi` bound on its own thread (`isOwnThread !== false`) and reuses `selfLiveApi.unquotedpath` during liveness and topology checks, preventing cross-instance path clobbering and main-thread `LiveAPI` allocation floods.
-- Cross-instance synchronization uses `Global("mbsplit_shared_bus")` to link `F1` / `F2` / `F3`, `Slope`, and auto-detected `NumBands` while keeping `BandMode`, `CustomMask`, and `Gain` (`-inf..+18 dB`) independent per chain.
+- Cross-instance synchronization uses `Global("mbsplit_shared_bus")` to link `F1` / `F2` / `F3`, `Slope`, `Phase Mode`, and auto-detected `NumBands` while keeping `BandMode`, `CustomMask`, and `Gain` (`-inf..+18 dB`) independent per chain.
+- `SplitStateData` blob is version 3: `[3, f1, f2, f3, numBands, slope, bandMode, customMask, linkGroup, gainDb, showLinkStatus, phaseMode]` (v1 / v2 still load; they leave the phase mode alone).
+
+### Dynamic Phase (`Phase Mode` = `DYN`, gen `dynphase 1`)
+- **F1** stays the minimum-phase Linkwitz-Riley split (selected `Slope`). **F2 / F3** become complementary linear-phase FIR splits of the F1 high band: Kaiser (`beta 6`) windowed-sinc lowpass, symmetric half-length `D` taps, DC-normalized; `band2 = LP2 * hi`, `band3 = LP3 * hi - LP2 * hi`, `band4 = delay_D(hi) - LP3 * hi`, `band1 = delay_D(lo)` (`delay_D(x)` with 1 band). The sum is exactly the F1 allpass delayed by `D`, whatever the kernels are, so kernel redesigns (every 32 samples while F2 / F3 move) never break the flat sum.
+- `D = 128 * round(sr / 48000)` clamped `128..512` (`128` at 44.1 / 48 kHz, about 2.7 ms; `256` at 96 kHz). F2 / F3 transition: about `sr / D` (375 Hz at 48 kHz) either side of the crossover, from -0.7 dB to below -60 dB, so slopes get gentle below about 300 Hz. That is why F1 stays IIR.
+- Switching modes fades out for 4 ms, swaps, then fades in for 4 ms. The rings always run, so the new mode starts with valid history.
+- **Latency reporting**: gen publishes `D` at `scope[26]` and the active mode at `scope[27]`. The v8ui calls `this.patcher.setattr("latency", phaseMode ? D : 0)` (`updateDeviceLatency()`). Live re-reads this at runtime: verified through the MCP bridge, where `latency_in_samples` followed the attribute immediately. Every linked instance carries the same phase mode, so all Rack chains report the same latency.
+- JS mirror in `src/mbsplit_config.js`: `firLatencyForSampleRate`, `designFirHalfKernel`, `evalFirHalfKernel`, `computeFirLowpassMag` (raised-cosine display approximation, within 0.1 of the real kernel), and `createReferenceSplitterDsp(sr).processSampleDynamic`.
 
 ### Gen core (`gen.codebox~`, hidden)
 - `src/mbsplit_core.genexpr` — Phase-compensated stereo Linkwitz-Riley crossover tree (`12 dB/oct` LR2, `24 dB/oct` LR4, `48 dB/oct` LR8) supporting `1..4` bands with matching allpass phase-compensation stages (`ap2_b1`, `ap3_b1`, `ap3_b2`) so parallel chains sum to a flat `0.000 dB` allpass unity response across all crossover frequencies, plus `-70..+18 dB` (`-inf..+18 dB`) output volume.
@@ -325,7 +339,7 @@ Audio checks (real Max render): `python3 scripts/run_degrade_audio_tests.py`
 python3 scripts/build_mbsplit.py && node tests/test_mbsplit.js && python3 scripts/render_preview.py "devices/Multiband Split.amxd"
 ```
 - `node tests/test_mbsplit.js` runs both the offline VM unit tests and `runLiveMcpRegressionSuite()` (which automatically drives `scripts/ableton_mcp_server.js` against an active Ableton Live MCP session when online to verify `Cmd+D` same-chain right-hand isolation, same-chain reordering, nested sub-rack isolation, cross-chain rank compaction, and device deletion + `Undo` restoration).
-- Audio checks (real Max render): `python3 scripts/run_mbsplit_audio_tests.py`
+- Audio checks (real Max render): `python3 scripts/max_lock.py python3 scripts/run_mbsplit_audio_tests.py`. Includes `dyn_null_vs_delayed_allpass`: the Dynamic 4-band sum minus the Min-phase 2-band sum through `delay~ 1024 128` must null below -100 dB. Also `dyn_band_isolation`: 2.4 kHz passes band 3 within 0.1 dB, and 300 Hz is rejected by more than 55 dB.
 
 ---
 
@@ -347,10 +361,11 @@ python3 scripts/build_mbsplit.py && node tests/test_mbsplit.js && python3 script
   - **Value readout**: whenever a parameter value changes (drag, automation or macro) the label turns orange and shows a monospace readout (`Mid +7.0 st`, `Res 57.0%`) for about 1 s (a `Task` timer clears it). Mouse hover is not available because the face ignores the mouse.
   - Green bracket from the Mid label to the Side label with a circular padlock under Mix: bright green when locked, dim when unlocked.
   - Bottom rows (`y = 114..160`): `Formant` / `Harmonic` dot bars (`0..200%`) and the monospace segmented `Quality` selector.
-- **Display (`x = 296..512`)**:
-  - Split bar (`y = 8..26`): orange `FORMANTS` label with an orange bracket from the left edge to the cutoff, blue `HARMONICS` label with a blue bracket from the cutoff to the right edge.
-  - Dot-matrix plot (`y = 30..155`, `5 px` pitch): the **Mid cepstrum `|c[n]|` against log quefrency (`0.2 ms .. 20 ms`)** as dots (bright top dot, dim stem), **orange left of the cutoff bar and blue right of it**; `cepstrumToHeight01()` (`-64 dB .. +14 dB`) soft compression and per-frame smoothing keep both the formant region and the pitch peak visible. Axis labels `0.5 1 2 5 10 ms`.
-  - **Vertical cutoff bar** through the plot and the split bar marks the lifter cutoff `L`. Manual: solid white bar with a grip, follows `Res`; Auto / MIDI: dashed light-blue bar with a diamond that follows the tracked `L`. Clicking or dragging anywhere in the display sets `Res` (`axis01ToRes()`; in Auto / MIDI it sets the `k = L / period` scale); double-click resets it. A green dotted line with a diamond and `120Hz` / note label marks the pitch-period peak in Auto / MIDI. Idle redraws are skipped when silent.
+- **Display (`x = 296..512`)** — the **signed real Mid cepstrum `c[n]` against LINEAR quefrency** (`n = 0` at the left edge, `20 ms` at the right; not `|c|`, not log; no axis tick labels):
+  - Split bar (`y = 8..26`): orange `FORMANTS` label with an orange bracket from the left edge to the cutoff, blue `HARMONICS` label with a blue bracket from the cutoff to the right edge. It uses the same linear axis as the cutoff bar.
+  - Dot-matrix plot (`y = 30..155`, `5 px` pitch, `43` columns, `25` rows): the **zero line sits at mid-height** and is always drawn as a dotted line, orange left of the cutoff and blue right of it (with silence or no input the display settles into just that flat dotted line). With signal each column is a vertical **stem of dots from the centre line up (positive) or down (negative) to the column's value**, end dot brightest, snapped to the grid; a column spanning several bins keeps the value with the largest `|c|` and its sign so pitch peaks survive. `c[0]` / `c[1]` are excluded from the normalization and simply clip at the top / bottom edge; columns at or beyond `N / 2` (the `1k` quality) are dim / empty. Columns with `n < L` are orange, `n >= L` blue.
+  - Scaling (`cepstrumDisplayHeight()` in `src/cepstra_config.js`): symmetric `sign * asinh(20 |c| / ref) / asinh(20) * 0.85` (`|c| = ref` lands at 85% of the half-height, small stems stay visible, big values clip) with an auto-gain `ref` = 95th percentile of `|c|` over `n >= 2` (`adaptRef`: fast attack `0.6`, slow release `0.03`) and a light `0.5` one-pole smoothing per frame.
+  - **Vertical cutoff bar** through the plot and the split bar marks the lifter cutoff `L` on the linear axis (`x = L_ms / 20 ms`). Manual: solid white bar with a grip, follows `Res`; Auto / MIDI: dashed light-blue bar with a diamond that follows the tracked `L`. Clicking or dragging anywhere in the display sets `Res` (`axis01ToRes()`: screen x -> linear ms -> lag -> Res through the unchanged `0.3..15 ms` logarithmic Res mapping; in Auto / MIDI it sets the `k = L / period` scale); double-click resets it. A small green diamond with a `120Hz` / note label marks the pitch-period column in Auto / MIDI. A small `ms / Hz` readout shows while dragging and for about 1 s after a change. Idle redraws are skipped when silent.
 - **Sync (no feedback loops)**: the live objects are the source of truth. Live object -> `prepend set_<x>` -> face (and display for `res`, mode, quality). `v8ui`-originated changes (display bar -> `res`; Lock follower -> `mid` / `side`; AUTO / MIDI exclusivity -> `auto`, `midi`, `resmode`) go `route res mid side resmode auto midi` -> (a) `prepend set` into the live object (silent: `set` never re-outputs) and (b) the gen path. `Mix` drives the gen `wet` Param (a Param named `mix` would shadow the GenExpr `mix()` builtin).
 - **Mid / Side Lock** lives in the face `v8ui` (`set_mid` / `set_side` + `applyLock()`): it works for the dial itself, automation and macros because every change arrives as `set_mid` / `set_side`; the follower is moved by the same delta with a silent `set` and never re-enters the script.
 - **Risk (needs in-Live verification)**: Live must honour alpha `0` on all the colour attributes above (`live.dial`, `live.slider`, `live.tab`, `live.text`) and must not draw any theme-coloured parts (dial arc / needle, slider bar, tab outline, focus border) when they are all transparent. Live may also draw its own mapped / automated overlay tint on top, which is intended.
@@ -363,14 +378,14 @@ python3 scripts/build_mbsplit.py && node tests/test_mbsplit.js && python3 script
   - **Time-sliced work**: each frame is `4 * log2(N) + 10` jobs (one FFT pass or one slice of an O(N) loop each), spread across the first `N/8` samples of the hop, so no single sample runs more than one FFT pass. Latency is therefore `N + N/8` samples (`2304` at `2k`); the dry path is delayed by the same amount (`Data` ring) and Mix is equal-power.
   - **Quality switch**: changing `quality` aborts the in-flight frame, clears the overlap-add rings and mutes the output for `N + N/8 + 3 * hop + 256` samples with a 256-sample fade-in (brief mute, no crash).
   - **Silence sleep**: input below `-100 dB` (`0.00001`) for a whole frame (`quietCount >= N`) skips all FFT work (lossless: such a frame's output is zero); outputs go through `fixdenorm` / `fixnan`.
-- `Buffer scope("cepscope")` (`272` samples), bound on `loadbang` via `scope #0-cepscope`: `0..191` Mid `|c[n]|` on 192 log-spaced quefrency points (`0.2 ms .. 20 ms`, max-pooled, `-1` beyond `N/2`), `256` current `L` in samples, `257` f0 estimate (Hz), `258` input level, `259` frame counter, `260` `N`, `261` voiced flag, `262` `resmode`. Written once per frame.
+- `Buffer scope("cepscope")` (`272` samples), bound on `loadbang` via `scope #0-cepscope`: `0..191` the **signed** Mid cepstrum `c[n]` on 192 **linear** quefrency columns (`n = 0 .. 20 ms`, `qmax = 0.02 * samplerate`; each column keeps the bin with the largest `|c|` and its sign; `9999` = column at or beyond `N/2`), `256` current `L` in samples, `257` f0 estimate (Hz), `258` input level, `259` frame counter, `260` `N`, `261` voiced flag, `262` `resmode`. Written once per frame.
 - MIDI: `midiin` -> `midiparse` -> `unpack 0 0` -> `> 0` (velocity) opens a `gate` so only note-ons pass -> `prepend midinote` -> gen (and `prepend midi_note` -> `v8ui`). Note-offs close the gate, so the last note is kept.
 
 ### Build / Test / Preview
 ```bash
 python3 scripts/build_cepstra.py && node tests/test_cepstra.js && python3 scripts/render_preview.py "devices/Cepstra.amxd"
 ```
-Audio checks (real Max render): `python3 scripts/run_cepstra_audio_tests.py` — stimulus is a `120 Hz` impulse train through `700 / 1220 / 2600 Hz` resonators. The probe also checks that the telemetry cepstrum peaks at the `1/f0` quefrency (`8.33 ms`). Cases: neutral null (`1k` / `2k` / `4k`), `Mix 0` equals delayed dry, `Mid +12 st` raises the spectral centroid while f0 stays, Gate lowers the between-partials level, Auto / MIDI cutoff telemetry, Quality switch mid-run, silence sleep, `4k` real-time factor. The runner forces the audio sample rate with `adstatus sr` and retries a case when the device was still settling (an AirPods default output can switch to `24 kHz`).
+Audio checks (real Max render): `python3 scripts/run_cepstra_audio_tests.py` — stimulus is a `120 Hz` impulse train through `700 / 1220 / 2600 Hz` resonators. The probe also checks that the largest `c[n]` over `2..20 ms` in the telemetry lands at the `1/f0` column (`8.33 ms`) with positive sign (at `4k` the 2nd rahmonic, `16.67 ms`, may out-rank it, so either is accepted there). Cases: neutral null (`1k` / `2k` / `4k`), `Mix 0` equals delayed dry, `Mid +12 st` raises the spectral centroid while f0 stays, Gate lowers the between-partials level, Auto / MIDI cutoff telemetry, Quality switch mid-run, silence sleep, `4k` real-time factor. The runner forces the audio sample rate with `adstatus sr` and retries a case when the device was still settling (an AirPods default output can switch to `24 kHz`).
 
 ---
 
@@ -466,44 +481,75 @@ python3 scripts/build_ableton_mcp.py && node tests/test_ableton_mcp.js && python
 
 ## 12. Architecture of `devices/Envelope Trigger.amxd`
 
-### Presentation Layout (`450 x 169` px)
-- **Left Panel (`x = 6..236`)**: Title (`Envelope Trigger`), `Mode` `live.tab` (`Full` / `Bands`), and the scope (`obj-viz`, `v8ui`, `x = 10, y = 26, w = 222, h = 134`):
-  - HUD (`y = 0..14`): mode, `> <MIDI To destination>` (coral when `No Output`), last fired note.
-  - One lane in `Full` mode, or stacked `LOW` / `MID` / `HIGH` lanes in `Bands` mode. Each lane draws its fast envelope, slow baseline, a draggable dashed threshold (emits `thr0..thr2` → `route thr0 thr1 thr2` → gen + `prepend set` on the numbox), yellow fired-note ticks (height = velocity), and a flashing velocity LED column on the right.
-- **`DETECT` (`x = 240..330`, Cyan)**: `Sens` and `Hold` dials; `Thr L` / `Thr M` / `Thr H`, `X Lo`, `X Hi` numboxes.
-- **`MIDI TO` (`x = 334..444`, Amber)**: `MIDI Output Type` and `MIDI Output Channel` menus, `Note L/M/H` (unitstyle 8), `MIDI Ch`, `Length`, `Vel Lo`, `Vel Hi`.
+### Presentation Layout (`228 x 169` px collapsed, `342 x 169` px with MIDI To open)
+- **No title bar**: Live's own device header names it.
+- **Main (`x = 4..204`)**:
+  - Graph (`obj-viz`, `v8ui`, `x = 8, y = 8, w = 192, h = 104`) draws:
+    - the scrolling fast envelope and slow baseline
+    - a dashed threshold you can drag (emits `thr` → `route thr` → gen + `prepend set` on the dial)
+    - yellow fired-note ticks, with height showing velocity
+    - a flashing velocity LED on the right
+    - a HUD with `> <MIDI To destination>` (coral when it is `No Output`) and the note plus last velocity
+  - Detection dials under the graph (`y = 116..162`): `Threshold`, `Sens`, `Hold`.
+- **Collapsible strip (`obj-strip`, `v8ui`, `x = 208..224`)**:
+  - Modelled on Envelope Follower's "Audio Routing" strip: a round arrow button and a vertical `MIDI TO` label drawn with `save` / `translate` / `rotate`.
+  - Clicking it sends 0/1 to the hidden `MIDI To Panel` `live.text` (`parameter_invisible: 1`, stored, not in presentation).
+  - That `live.text` must use `mode: 1` (Toggle). In Button mode (`mode: 0`) it never latches, so the panel won't open.
+  - The toggle feeds `t i`, plus an `i` store that `live.thisdevice` bangs on load to re-apply the saved state. Never bang the toggle itself: a bang flips a Toggle `live.text`.
+  - The `t i` drives:
+    - `set_open` back to the strip
+    - `expr 228 + $i1 * 114` → `prepend setwidth` → `live.thisdevice`
+    - `== 0` → `prepend hidden` → every panel widget, plus the `obj-panel-midi` background
+  - **Test hook:** `receive envtrig-test` → `obj-strip`.
+    - `test_click` behaves like a click.
+    - `test_report` writes `{open, toggle, width, hidden{<scripting name>: 0/1}}` to `Global("envtrig_test")` as `report_<LOM device id>` and `last`.
+    - Every panel widget has a `varname` so the strip can `getnamed()` it.
+    - `PANEL_NAMES` is prepended to the strip script at build time.
+- **MIDI To panel (`x = 228..338`, starts `hidden: 1`)**: `MIDI Output Type` and `MIDI Output Channel` menus, then `Note` (unitstyle 8), `MIDI Ch`, `Length`, `Vel Lo`, `Vel Hi`.
+- `scripts/render_preview.py` renders the collapsed state. Its v8ui mock supports `save` / `restore` / `translate` / `rotate`; paths and text follow the matrix, while rects and arcs follow only its translation.
 
 ### MIDI out from an audio effect (MidiRouter technique)
-- An Audio Effect can send MIDI to any track: a plain `midiout` goes to the device's own LOM DeviceIO, `this_device midi_outputs 0`. Setting that DeviceIO's `routing_type` / `routing_channel` gives the same "MIDI To" choice as External Instrument, and Live saves it with the set. Requires Live 11.0.5+.
-- `live.thisdevice` → `init_routing` → `obj-viz` builds four `LiveAPI` observers (`available_routing_types`, `available_routing_channels`, `routing_type`, `routing_channel`). Never init from `loadbang`: the LOM isn't ready.
-- The two menus are hidden parameters (`parameter_invisible: 2`, no initial value) that only mirror the LOM. `obj-viz` outlet 1/2 fills them with `_parameter_range` (undocumented) and `setsymbol`; their output goes back as `settype $1` / `setchannel $1`. `lomValue()` in `src/envtrig_config.js` accepts dictionaries as parsed objects or JSON strings.
-- The destination MIDI track must be monitoring (`In`, or `Auto` while armed) for its instrument to play.
-- Note path per lane: gen gate → `edge~` → `t b b` (right: `snapshot~` of the held velocity → `makenote` velocity; left: `i <note>` → `makenote` pitch) → `pack 0 0` → `midiformat` (channel inlet 6) → `midiout`. Notes are scheduler-timed (one audio vector of jitter) plus the 2.5 ms velocity capture.
+- **How it routes:** an Audio Effect sends MIDI to any track through a plain `midiout`, which goes to the device's LOM DeviceIO `this_device midi_outputs 0`. Setting that DeviceIO's `routing_type` / `routing_channel` gives the same "MIDI To" choice as External Instrument, and Live saves it with the set. Requires Live 11.0.5+.
+- **Initialisation:** `live.thisdevice` → `init_routing` → `obj-viz` builds four `LiveAPI` observers (`available_routing_types`, `available_routing_channels`, `routing_type`, `routing_channel`). Never init from `loadbang`, because the LOM isn't ready yet.
+- **Reading values in v8:** `get()` returns `["{json}"]`. Observer callbacks pass `[property, <Max Dict>]`, where the Dict is a handle like `{name: "u0950..."}` that must be read with `.stringify()`. `lomValue()` in `src/envtrig_config.js` handles every shape. Treating the Dict as data left the menus empty in Live.
+- **Menus:** both are hidden parameters (`parameter_invisible: 2`, no initial value) that only mirror the LOM. `obj-viz` outlets 1 and 2 fill them with `_parameter_range` (undocumented) and `setsymbol`; their output comes back as `settype $1` / `setchannel $1`.
+- **Destination track:** it must be monitoring (`In`, or `Auto` while armed) for its instrument to play.
+- **Note path:** gen gate → `edge~` → `t b b`. The right outlet samples the held velocity with `snapshot~` into `makenote`'s velocity inlet; the left outlet sends `i <note>` to `makenote`'s pitch inlet. Then `pack 0 0` → `midiformat` (channel inlet 6) → `midiout`.
+- **Timing:** notes are scheduler-timed (one audio vector of jitter), plus the 2.5 ms velocity capture.
 
-### Gen core (`gen.codebox~`, hidden, 8 outlets)
-- `src/envtrig_core.genexpr` — audio passes through untouched (`out1`/`out2`). Detection runs on the mono sum: `Full`, or a `Bands` split by cascaded TPT SVFs at `xlo` / `xhi` (two stages per edge, so MID rejects an 8 kHz burst at −24 dB).
-- Per lane `onset()`:
-  - **Envelopes:** a fast envelope (instant attack, 15 ms release) and a slow baseline (60 ms).
-  - **Onset:** fires when fast > `thrN` and fast > slow × `(1 − sens) × 12 dB`, while armed and outside the `holdms` lockout.
-  - **Velocity:** a 2.5 ms capture of the peak, mapped from threshold..0 dBFS to `velmin..velmax`.
-  - **Gate:** high for `holdms / 2`, so `edge~` sees it at any vector size.
-  - **Re-arm:** below 70 % of the threshold, or back near the baseline.
-- Outlets: `out3..out5` lane gates, `out6..out8` held velocities.
-- Never name a Param `hold`: with that name the lockout and gate outputs silently stopped working.
-- `Buffer scope("trigscope")` (`buffer~ #0-trigscope @samps 32`, bound via `scope #0-trigscope`), written every 64 samples:
-  - `0..2` fast env
-  - `3..5` slow env
-  - `6..8` fire counters
-  - `9` roll
-  - `10` input peak
-  - `11` mode
-  - `12..14` last velocity
+### Gen core (`gen.codebox~`, hidden, 4 outlets)
+- `src/envtrig_core.genexpr` — single band on the mono sum. Audio passes through untouched (`out1`/`out2`).
+- **Envelopes:** a fast envelope (instant attack, 15 ms release) and a slow 60 ms baseline.
+- **Onset:** fires when fast > `thr` and fast > slow × `(1 − sens) × 12 dB`, while armed and outside the `holdms` lockout.
+- **Velocity:** a 2.5 ms capture of the peak, mapped from threshold..0 dBFS to `velmin..velmax`.
+- **Gate:** high for `holdms / 2`, so `edge~` sees it at any vector size.
+- **Re-arm:** below 70 % of the threshold, or back near the baseline.
+- **Outlets:** `out3` gate, `out4` held velocity.
+- **Naming:** never name a Param `hold`; with that name the lockout and gate outputs silently stopped working.
+- **Telemetry:** `Buffer scope("trigscope")` (`buffer~ #0-trigscope @samps 32`, bound via `scope #0-trigscope`) is written every 64 samples:
+  - `0` fast env
+  - `1` slow env
+  - `2` fire counter
+  - `3` roll
+  - `4` input peak
+  - `5` last velocity
 
 ### Build / Test / Preview
 ```bash
-python3 scripts/build_envtrig.py && node tests/test_envtrig.js && python3 scripts/render_preview.py "devices/Envelope Trigger.amxd"
+python3 scripts/build_envtrig.py && node tests/test_envtrig.js && python3 scripts/run_envtrig_ui_tests.py && python3 scripts/render_preview.py "devices/Envelope Trigger.amxd"
 ```
-Audio checks (real Max render): `python3 scripts/run_envtrig_audio_tests.py`.
-- Test signals come from an audio-rate gen source, not `metro`, because the standalone Max render runs faster than real time.
-- Times are converted with the real DSP rate from `dspstate~`.
-- The harness uses a single 2-channel `record~ rec 2`, with lane data packed into it (several `record~` objects in one patch left every buffer empty).
+Collapse/expand checks:
+- **Standalone Max:** `python3 scripts/run_envtrig_ui_tests.py` opens the device patch, clicks the strip through the hook, and checks the toggle, `setwidth` and widget visibility. Its probe runs in a `v8` object, because classic `js` and `v8` `Global`s clash on the same name.
+- **In Live:** `node scripts/test_envtrig_live.js [--port 9878]` does the same on every loaded instance through the Ableton MCP bridge and leaves each panel as it found it. The Live API cannot load `.amxd` files, so reload the device in Live after each build.
+
+Audio checks (real Max render): `python3 scripts/run_envtrig_audio_tests.py`
+- **Test signals:** generated by an audio-rate gen source, not `metro`, because standalone Max renders faster than real time.
+- **Timing:** converted with the real DSP rate from `dspstate~`.
+- **Recording:** a single `record~ rec 2` (ch1 = gate × velocity, ch2 = audio out). Several `record~` objects in one patch left every buffer empty.
+- **Concurrency:** only one harness can run in Max at a time. Results from a run that overlapped another device's harness are invalid; rerun them.
+
+---
+
+## 14. Architecture of `devices/Better Sampler*.amxd` (State)
+
+- **State**: `SamplerStateData` (blob, `parameter_type: 3`) is saved with the Set/preset by `getvalueof()` in `src/sampler_ui.js`. **Version 2** = the v1 fields (mode, start/end, loop, xfade, play pos, bottom tab, slice count + slice markers ×10000) followed by the **dropped sample file path** as the last element. `setvalueof()` still parses v1 (no path, no load). On a v2 restore it sets `sampleFilePath`/`sampleFileName`, emits `load_sample <path>` (→ `prepend replace` → `buffer~ #0-bsamp`), and re-sends it once from `setbuffers()` if the buffer is still silent (Set load can run before the buffers are bound). When the buffer finishes loading, `sample_loaded` refreshes the waveform and keeps the saved slice markers instead of re-running transient detection. The `live.drop` stays `parameter_enable: 0`; the path lives only in the blob. A moved/missing file leaves the device empty.

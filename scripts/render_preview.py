@@ -64,7 +64,11 @@ global.mgraphics = {{
     stroke() {{ cmds.push({{ op: "stroke" }}); }},
     select_font_face(face) {{ cmds.push({{ op: "font_face", face }}); }},
     set_font_size(size) {{ cmds.push({{ op: "font_size", size }}); }},
-    show_text(text) {{ cmds.push({{ op: "show_text", text }}); }}
+    show_text(text) {{ cmds.push({{ op: "show_text", text }}); }},
+    save() {{ cmds.push({{ op: "save" }}); }},
+    restore() {{ cmds.push({{ op: "restore" }}); }},
+    translate(x, y) {{ cmds.push({{ op: "translate", x, y }}); }},
+    rotate(a) {{ cmds.push({{ op: "rotate", a }}); }}
 }};
 global.inlets = 1;
 global.outlets = 2;
@@ -108,9 +112,32 @@ def render_v8ui(cmds, w, h):
     subpaths = []
     cur_path = []
     pending_shape = None  # ("rect", ...), ("rrect", ...), ("arc", ...)
+    # Affine user->device matrix (a, b, c, d, e, f) as in cairo; paths and text follow it,
+    # rects and arcs only follow its translation.
+    mtx = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+    mtx_stack = []
+
+    def tp(x, y):
+        a, b, c, d, e, f = mtx
+        return ((a * x + c * y + e) * SCALE, (b * x + d * y + f) * SCALE)
 
     for cmd in cmds:
         op = cmd["op"]
+        if op == "save":
+            mtx_stack.append(mtx)
+            continue
+        if op == "restore":
+            mtx = mtx_stack.pop() if mtx_stack else (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            continue
+        if op == "translate":
+            a, b, c, d, e, f = mtx
+            mtx = (a, b, c, d, e + a * cmd["x"] + c * cmd["y"], f + b * cmd["x"] + d * cmd["y"])
+            continue
+        if op == "rotate":
+            a, b, c, d, e, f = mtx
+            cs, sn = math.cos(cmd["a"]), math.sin(cmd["a"])
+            mtx = (a * cs + c * sn, b * cs + d * sn, -a * sn + c * cs, -b * sn + d * cs, e, f)
+            continue
         if op == "rgba":
             cur_color = rgba_tuple([cmd["r"], cmd["g"], cmd["b"], cmd["a"]])
         elif op == "line_width":
@@ -118,30 +145,30 @@ def render_v8ui(cmds, w, h):
         elif op == "font_size":
             font_size = cmd["size"]
         elif op == "rect":
-            pending_shape = ("rect", cmd["x"] * SCALE, cmd["y"] * SCALE, cmd["w"] * SCALE, cmd["h"] * SCALE)
+            pending_shape = ("rect", (cmd["x"] + mtx[4]) * SCALE, (cmd["y"] + mtx[5]) * SCALE, cmd["w"] * SCALE, cmd["h"] * SCALE)
             cur_path = []
         elif op == "rrect":
             pending_shape = ("rrect", cmd["x"] * SCALE, cmd["y"] * SCALE, cmd["w"] * SCALE, cmd["h"] * SCALE, cmd["rx"] * SCALE)
             cur_path = []
         elif op == "arc":
-            pending_shape = ("arc", cmd["x"] * SCALE, cmd["y"] * SCALE, cmd["r"] * SCALE, cmd["a1"], cmd["a2"])
+            pending_shape = ("arc", (cmd["x"] + mtx[4]) * SCALE, (cmd["y"] + mtx[5]) * SCALE, cmd["r"] * SCALE, cmd["a1"], cmd["a2"])
             cur_path = []
         elif op == "move_to":
             pending_shape = None
             if len(cur_path) > 1:
                 subpaths.append(cur_path)
-            cur_pt = (cmd["x"] * SCALE, cmd["y"] * SCALE)
+            cur_pt = tp(cmd["x"], cmd["y"])
             cur_path = [cur_pt]
         elif op == "line_to":
             pending_shape = None
-            cur_pt = (cmd["x"] * SCALE, cmd["y"] * SCALE)
+            cur_pt = tp(cmd["x"], cmd["y"])
             cur_path.append(cur_pt)
         elif op == "curve_to":
             pending_shape = None
             x0, y0 = cur_pt
-            x1, y1 = cmd["x1"] * SCALE, cmd["y1"] * SCALE
-            x2, y2 = cmd["x2"] * SCALE, cmd["y2"] * SCALE
-            x3, y3 = cmd["x3"] * SCALE, cmd["y3"] * SCALE
+            x1, y1 = tp(cmd["x1"], cmd["y1"])
+            x2, y2 = tp(cmd["x2"], cmd["y2"])
+            x3, y3 = tp(cmd["x3"], cmd["y3"])
             for step in range(1, 17):
                 t = step / 16.0
                 mt = 1.0 - t
@@ -156,7 +183,20 @@ def render_v8ui(cmds, w, h):
             overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
             d = ImageDraw.Draw(overlay)
             fnt = get_font(font_size * SCALE, bold=True)
-            d.text((cur_pt[0], cur_pt[1] - font_size * SCALE * 0.85), str(cmd["text"]), font=fnt, fill=cur_color)
+            angle = math.degrees(math.atan2(mtx[1], mtx[0]))
+            if abs(angle) < 0.01:
+                d.text((cur_pt[0], cur_pt[1] - font_size * SCALE * 0.85), str(cmd["text"]), font=fnt, fill=cur_color)
+            else:
+                # Draw horizontally on a square canvas with the baseline origin at its centre,
+                # rotate about that centre, then paste (cropping anything off-canvas).
+                half = int(d.textlength(str(cmd["text"]), font=fnt) + font_size * SCALE * 2)
+                tmp = Image.new("RGBA", (half * 2, half * 2), (0, 0, 0, 0))
+                ImageDraw.Draw(tmp).text((half, half - font_size * SCALE * 0.85), str(cmd["text"]), font=fnt, fill=cur_color)
+                rot = tmp.rotate(-angle, center=(half, half), resample=Image.BICUBIC)
+                dx, dy = int(cur_pt[0]) - half, int(cur_pt[1]) - half
+                sx, sy = max(0, -dx), max(0, -dy)
+                if sx < rot.width and sy < rot.height:
+                    overlay.alpha_composite(rot.crop((sx, sy, rot.width, rot.height)), (dx + sx, dy + sy))
             canvas = Image.alpha_composite(canvas, overlay)
         elif op in ("fill", "stroke"):
             overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
@@ -201,6 +241,14 @@ def render_v8ui(cmds, w, h):
     return canvas
 
 
+def is_fully_transparent(box):
+    """A live.* widget whose every colour attribute has alpha 0 draws nothing in Live, so the preview skips it."""
+    if not str(box.get("maxclass", "")).startswith("live.") or box.get("maxclass") == "live.comment":
+        return False
+    colours = [v for k, v in box.items() if "color" in k and isinstance(v, list) and len(v) == 4]
+    return bool(colours) and all(c[3] == 0 for c in colours)
+
+
 def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix=""):
     os.makedirs(PREVIEWS_DIR, exist_ok=True)
     slug = slugify_device_name(amxd_path) + out_suffix
@@ -231,7 +279,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
 
     boxes = [b["box"] for b in p["boxes"] if b["box"].get("presentation") == 1 and not b["box"].get("hidden")]
     panels = [b for b in boxes if b.get("maxclass") == "panel"]
-    widgets = [b for b in boxes if b.get("maxclass") != "panel"]
+    widgets = [b for b in boxes if b.get("maxclass") != "panel" and not is_fully_transparent(b)]
 
     # 1. Draw background panels
     for pan in panels:
@@ -352,11 +400,12 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     cur_x = rx + 1 * SCALE + inner_w * norm
                     x0 = min(mid_x, cur_x)
                     x1 = max(mid_x, cur_x)
-                    if x1 - x0 < 1.5 * SCALE:
-                        x0 = mid_x - 0.8 * SCALE
-                        x1 = mid_x + 0.8 * SCALE
-                    draw.rectangle([x0, ry + 1 * SCALE, x1, ry + rh - 1 * SCALE], fill=fill_c)
-                    draw.line([(mid_x, ry + 1 * SCALE), (mid_x, ry + rh - 1 * SCALE)], fill=(tc[0], tc[1], tc[2], 180), width=max(1, SCALE))
+                    if x1 - x0 >= 1.5 * SCALE:
+                        draw.rectangle([x0, ry + 1 * SCALE, x1, ry + rh - 1 * SCALE], fill=fill_c)
+                    # Center reference as short edge ticks so it never strikes through the value text
+                    tick_c = (tc[0], tc[1], tc[2], 180)
+                    draw.line([(mid_x, ry + 1 * SCALE), (mid_x, ry + 3 * SCALE)], fill=tick_c, width=max(1, SCALE))
+                    draw.line([(mid_x, ry + rh - 3 * SCALE), (mid_x, ry + rh - 1 * SCALE)], fill=tick_c, width=max(1, SCALE))
                 else:
                     bar_w = max(2.0 * SCALE, inner_w * norm)
                     draw.rounded_rectangle(
@@ -383,7 +432,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     val_str = f"{int(round(init_val))} ms"
                 else:
                     val_str = f"{init_val:.1f}"
-                fnt = get_font(8.5 * SCALE, bold=True)
+                fnt = get_font(float(w.get("fontsize", 8.5)) * SCALE, bold=True)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
                 text_c = (242, 246, 252, 255) if (ustyle == 9 and enums) else tc
