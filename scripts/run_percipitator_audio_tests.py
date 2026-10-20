@@ -15,152 +15,50 @@ Cases:
                    compared to tilt=+0.5 (+18 dB high boost)
 """
 
-import json
 import os
-import subprocess
 import sys
-import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import max_harness as mh
+
+ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "percipitator_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "percipitator_probe.js")
-HARNESS = os.path.join(ROOT, "tests", "percipitator_harness.maxpat")
-RESULT = "/tmp/percipitator_audio.txt"
-MAX_BIN = (
-    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
-    "Max/Max.app/Contents/MacOS/Max"
-)
 
 DEFAULTS = "stretch 1, fshift 0, snap 1, scalemask 4095, decay 80, attack 1.5, blur 0.1, tilt 0, sieve 0, freeze 0, resynthgain 0"
 
 
-def box(obj_id, text, x, y, w, h, **extra):
-    b = {
-        "id": obj_id,
-        "maxclass": extra.pop("maxclass", "newobj"),
-        "numinlets": extra.pop("numinlets", 1),
-        "numoutlets": extra.pop("numoutlets", 1),
-        "outlettype": extra.pop("outlettype", [""]),
-        "patching_rect": [float(x), float(y), float(w), float(h)],
-        "text": text,
-    }
-    b.update(extra)
-    return {"box": b}
-
-
-def line(src, outlet, dst, inlet):
-    return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
-
-
-def build_harness(gen_code, case):
+def build_device(gen_code, case):
     amp = case.get("amp", 0.25)
     freq = case.get("freq", 293.7)
     boxes = [
-        box("obj-load", "loadbang", 40, 40, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
-        box("obj-del-dsp", "delay 1200", 40, 80, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-dsp", "; dsp start", 40, 120, 80, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-arm", f"delay {case['arm']}", 40, 160, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-on", "1", 40, 200, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-stop", f"delay {case['dur']}", 40, 240, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-off", "0", 40, 280, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-peak", "delay 40", 40, 320, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-del-analyze", "delay 80", 40, 360, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-analyze", f"analyze {case['dur']}", 120, 360, 90, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-quit", "; max quit", 40, 420, 70, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-params", case["params"], 200, 40, 680, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-setbuf", "setbuffer #0-percipwt #0-percipscope", 200, 70, 250, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-bind", "wt #0-percipwt, scope #0-percipscope", 200, 100, 250, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-wt", "buffer~ #0-percipwt @samps 8192", 520, 100, 220, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-scope", "buffer~ #0-percipscope @samps 64", 520, 130, 220, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", "buffer~ rec 2000 2", 520, 160, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recsize", "size 2000", 520, 185, 75, 20, maxclass="message", numinlets=2, numoutlets=1),
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [200.0, 200.0, 300.0, 80.0],
-            }
-        },
-        box("obj-record", "record~ rec 2", 200, 300, 90, 20, numinlets=4, numoutlets=1, outlettype=[""]),
-        box("obj-peak-l", "peakamp~", 200, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-peak-r", "peakamp~", 290, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-peak-c", "peakamp~", 380, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-mute-l", "*~ 0", 200, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-mute-r", "*~ 0", 260, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-dac", "dac~", 200, 430, 50, 20, numinlets=2, numoutlets=0, outlettype=[]),
-        box(
-            "obj-js",
-            f"js {PROBE_JS} sine",
-            200, 470, 420, 20,
-            numinlets=4,
-            numoutlets=3,
-            outlettype=["bang", "bang", ""],
-        ),
-        box("obj-tone", f"cycle~ {freq}", 700, 200, 85, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-gain", f"*~ {amp}", 700, 240, 65, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+        mh.msg("dev-params", case["params"], 200, 40, 680),
+        mh.msg("dev-setbuf", "setbuffer #0-percipwt #0-percipscope", 200, 70, 250),
+        mh.msg("dev-bind", "wt #0-percipwt, scope #0-percipscope", 200, 100, 250),
+        mh.box("dev-wt", "buffer~ #0-percipwt @samps 8192", 520, 100, 220, numoutlets=2,
+               outlettype=["float", "bang"]),
+        mh.box("dev-scope", "buffer~ #0-percipscope @samps 64", 520, 130, 220, numoutlets=2,
+               outlettype=["float", "bang"]),
+        mh.gen_box("dev-gen", gen_code, 200, 200),
+        mh.box("dev-tone", f"cycle~ {freq}", 700, 200, 85, numinlets=2, outlettype=["signal"]),
+        mh.box("dev-gain", f"*~ {amp}", 700, 240, 65, numinlets=2, outlettype=["signal"]),
     ]
-
     lines = [
-        line("obj-load", 0, "obj-del-dsp", 0),
-        line("obj-load", 0, "obj-recsize", 0),
-        line("obj-recsize", 0, "obj-recbuf", 0),
-        line("obj-load", 0, "obj-params", 0),
-        line("obj-load", 0, "obj-setbuf", 0),
-        line("obj-load", 0, "obj-bind", 0),
-        line("obj-bind", 0, "obj-gen", 0),
-        line("obj-del-dsp", 0, "obj-dsp", 0),
-        line("obj-del-dsp", 0, "obj-del-arm", 0),
-        line("obj-del-arm", 0, "obj-rec-on", 0),
-        line("obj-del-arm", 0, "obj-del-stop", 0),
-        line("obj-del-stop", 0, "obj-rec-off", 0),
-        line("obj-del-stop", 0, "obj-del-peak", 0),
-        line("obj-del-peak", 0, "obj-peak-l", 0),
-        line("obj-del-peak", 0, "obj-peak-r", 0),
-        line("obj-del-peak", 0, "obj-peak-c", 0),
-        line("obj-del-peak", 0, "obj-del-analyze", 0),
-        line("obj-del-analyze", 0, "obj-analyze", 0),
-        line("obj-setbuf", 0, "obj-js", 3),
-        line("obj-params", 0, "obj-gen", 0),
-        line("obj-analyze", 0, "obj-js", 3),
-        line("obj-js", 0, "obj-quit", 0),
-        line("obj-rec-on", 0, "obj-record", 0),
-        line("obj-rec-off", 0, "obj-record", 0),
-        line("obj-gen", 0, "obj-record", 0),
-        line("obj-gen", 1, "obj-record", 1),
-        line("obj-gen", 0, "obj-peak-l", 0),
-        line("obj-gen", 1, "obj-peak-r", 0),
-        line("obj-gen", 0, "obj-mute-l", 0),
-        line("obj-gen", 1, "obj-mute-r", 0),
-        line("obj-mute-l", 0, "obj-dac", 0),
-        line("obj-mute-r", 0, "obj-dac", 1),
-        line("obj-peak-l", 0, "obj-js", 0),
-        line("obj-peak-c", 0, "obj-js", 1),
-        line("obj-peak-r", 0, "obj-js", 2),
-        line("obj-tone", 0, "obj-gain", 0),
-        line("obj-gain", 0, "obj-gen", 0),
-        line("obj-gain", 0, "obj-gen", 1),
-        line("obj-gain", 0, "obj-peak-c", 0),
+        mh.line("obj-load", 0, "dev-params", 0),
+        mh.line("obj-load", 0, "dev-setbuf", 0),
+        mh.line("obj-load", 0, "dev-bind", 0),
+        mh.line("dev-bind", 0, "dev-gen", 0),
+        mh.line("dev-params", 0, "dev-gen", 0),
+        mh.line("dev-setbuf", 0, "obj-js", 0),
+        mh.line("dev-gen", 0, "obj-record", 0),
+        mh.line("dev-gen", 1, "obj-record", 1),
+        mh.line("dev-gen", 0, "obj-mute-l", 0),
+        mh.line("dev-gen", 1, "obj-mute-r", 0),
+        mh.line("dev-tone", 0, "dev-gain", 0),
+        mh.line("dev-gain", 0, "dev-gen", 0),
+        mh.line("dev-gain", 0, "dev-gen", 1),
     ]
-
-    doc = {
-        "patcher": {
-            "fileversion": 1,
-            "appversion": {"major": 9, "minor": 1, "revision": 5, "architecture": "x64", "modernui": 1},
-            "classnamespace": "box",
-            "rect": [40.0, 40.0, 1000.0, 560.0],
-            "boxes": boxes,
-            "lines": lines,
-        }
-    }
-    with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent="\t")
-        f.write("\n")
+    return boxes, lines
 
 
 def cases():
@@ -240,69 +138,40 @@ def cases():
             "dur": 400,
             "params": "wet 1, pitch 0, stretch 1, fshift 0, snap 1, scalemask 4095, gate -42, decay 80, attack 1.5, blur 0.1, tilt 0.5, sieve 0, freeze 0, wtpos 0, wtmode 0, warp 0.5, resynthgain 0",
         },
+        # Freeze / silence sleep. The tone is cut at 250 ms (event on `*~` right inlet), so the band envelopes decay.
+        # `stepped` mode lands the events on time. GenExpr runs code after a nested `return`, so these once failed.
+        {
+            "name": "freeze_hold", "amp": 0.25, "arm": 800, "dur": 300, "mode": "stepped",
+            "events": [(200, "dev-gen", 0, "freeze 1"), (250, "dev-gain", 1, "0")],
+            "params": params("wet 1, pitch 0, gate -42, wtpos 0, wtmode 0, warp 0.5"),
+        },
+        {
+            "name": "freeze_off", "amp": 0.25, "arm": 800, "dur": 300, "mode": "stepped",
+            "events": [(250, "dev-gain", 1, "0")],
+            "params": params("wet 1, pitch 0, gate -42, wtpos 0, wtmode 0, warp 0.5"),
+        },
+        {
+            "name": "sleep_silent", "amp": 0.25, "arm": 500, "dur": 300, "mode": "stepped",
+            "events": [(100, "dev-gain", 1, "0")],
+            "params": params("wet 1, pitch 0, gate -42, wtpos 0, wtmode 0, warp 0.5, decay 1"),
+        },
+        {
+            "name": "sleep_wake", "amp": 0.25, "arm": 500, "dur": 300, "mode": "stepped",
+            "events": [(100, "dev-gain", 1, "0"), (300, "dev-gain", 1, "0.25")],
+            "params": params("wet 1, pitch 0, gate -42, wtpos 0, wtmode 0, warp 0.5, decay 1"),
+        },
     )
-
-
-def parse_result(text):
-    meta = {}
-    env = []
-    for raw in text.splitlines():
-        if not raw.strip():
-            continue
-        if raw.startswith("env "):
-            env = [float(x) for x in raw[4:].split()] if raw.strip() != "env" else []
-            continue
-        key, val = raw.split(None, 1)
-        meta[key] = float(val)
-    meta["env"] = env
-    return meta
 
 
 def run_case(gen_code, case):
-    build_harness(gen_code, case)
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    recovery = os.path.expanduser(
-        "~/Library/Application Support/Cycling '74/Max 9/Crash Recovery"
-    )
-    if os.path.isdir(recovery):
-        subprocess.run(["rm", "-rf", recovery], check=False)
-
-    proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 30
-    while time.time() < deadline and not os.path.exists(RESULT):
-        if proc.poll() is not None:
-            break
-        time.sleep(0.2)
-
-    last_size = -1
-    stable = 0
-    while time.time() < deadline and stable < 2:
-        if not os.path.exists(RESULT):
-            break
-        size = os.path.getsize(RESULT)
-        if size > 0 and size == last_size:
-            stable += 1
-        else:
-            stable = 0
-            last_size = size
-        time.sleep(0.15)
-
-    if proc.poll() is None:
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    time.sleep(0.3)
+    boxes, lines = build_device(gen_code, case)
     print(f"--- {case['name']} ---")
-    if not os.path.exists(RESULT):
-        print("NO RESULT FILE")
-        return None
-    meta = parse_result(open(RESULT).read())
+    meta = mh.run_case(
+        f"percip_{case['name']}", boxes, lines, probe_js=PROBE_JS, probe_args="sine",
+        settle_ms=case["arm"], dur_ms=case["dur"], channels=2, mode=case.get("mode", "nrt"),
+        events=case.get("events"), timeout=300,
+    )
+    meta["env"] = [meta.pop(f"env_{i}") for i in range(int(meta.get("envbins", 0)))]
     print(
         f"genL {meta.get('genL'):.4f} ctl {meta.get('ctl'):.4f} peak {meta.get('peak'):.4f} "
         f"zcr {meta.get('zcr'):.0f} slopeRms {meta.get('slopeRms'):.4f} "
@@ -341,6 +210,18 @@ def main():
         elif name == "gate_silence":
             if meta.get("peak", 1) > 0.005:
                 errors.append(f"gate_silence: expected muted output below Gate, got {meta.get('peak')}")
+        elif name == "freeze_hold":
+            if meta.get("peak", 0) < 0.08:
+                errors.append(f"freeze_hold: Freeze did not hold the partials after the input stopped ({meta.get('peak')})")
+        elif name == "freeze_off":
+            if meta.get("peak", 1) > 0.02:
+                errors.append(f"freeze_off: control without Freeze should have decayed ({meta.get('peak')})")
+        elif name == "sleep_silent":
+            if meta.get("peak", 1) > 0.03:  # slow low-band ring-down only, ~-24 dB under the active ~0.46
+                errors.append(f"sleep_silent: output not silent after the input stopped ({meta.get('peak')})")
+        elif name == "sleep_wake":
+            if meta.get("peak", 0) < 0.08:
+                errors.append(f"sleep_wake: bands did not wake after the silence sleep ({meta.get('peak')})")
         elif name == "pitch_octave":
             if meta.get("peak", 0) < 0.08:
                 errors.append(f"pitch_octave: silent output ({meta.get('peak')})")

@@ -1,10 +1,13 @@
 // Cepstra display: dot-matrix CEPSTRUM — the signed real Mid cepstrum c[n] against LINEAR quefrency (n = 0 at the
 // left edge, 20 ms at the right), zero line at mid-height, one stem of dots per column, with the draggable cutoff bar.
-// This v8ui is interactive (it is the only part of the face that handles the mouse); the controls on the left
-// are drawn by the face v8ui (ignoreclick) under transparent live.* widgets. src/cepstra_config.js is prepended.
+// This is the only v8ui of the device. The controls on the left are normal live.* widgets; this script also holds
+// the Mid/Side Lock follower and the exclusive AUTO / MIDI logic. src/cepstra_config.js is prepended.
 //
-// Messages in:  setbuffer <scopeBufName>, set_res <pct>, set_mode <0|1|2>, set_quality <0|1|2>, midi_note <n>
-// Messages out: ["res", pct]  (patcher mirrors it into the Res dial with `set` and into gen)
+// Messages in:  setbuffer <scopeBufName>, set_res <pct>, set_mode <0|1|2>, set_quality <0|1|2>, set_gate <pct>,
+//               set_gmode <0 Spec | 1 Ceps>, midi_note <n>
+// Messages in (more): set_mid / set_side <st>, set_lock <0|1>, set_auto / set_midi <0|1>
+// Messages out: ["res", pct], ["mid"|"side", st] (Lock follower), ["auto"|"midi", 0|1], ["resmode", 0|1|2];
+//   the patcher mirrors each into its live object with `prepend set` (silent) and into gen
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -13,8 +16,6 @@ mgraphics.autofill = 0;
 inlets = 1;
 outlets = 1;
 
-var ORIGIN_X = 290;   // this v8ui sits at x = 290 of the 520 px device (used to continue the outer frame)
-var DEVICE_W = 520;
 var ORANGE = [1.0, 0.56, 0.10];
 var BLUE = [0.30, 0.58, 1.0];
 var GREEN = [0.22, 0.92, 0.46];
@@ -29,6 +30,12 @@ var dragging = false;
 var curRes = DEFAULT_RES_PCT;
 var curMode = 0;
 var curQuality = 1;
+var curGatePct = 0;
+var curMid = 0;
+var curSide = 0;
+var curLock = 0;
+var curGmode = 0;   // 0 Spec, 1 Ceps
+var gateThr = 0;    // Ceps gate threshold (|c| units, from the scope)
 var curMidiNote = -1;
 
 var cepRaw = [];      // telemetry (signed c[n] per column, QUEF_SENTINEL beyond N/2)
@@ -62,7 +69,59 @@ function set_res(v) {
     curRes = v;
     mgraphics.redraw();
 }
-function set_mode(v) { curMode = clamp(Math.round(Number(v)), 0, 2); mgraphics.redraw(); }
+// AUTO / MIDI: two exclusive toggles that map onto resmode (0 Manual, 1 Auto, 2 MIDI). The hidden resmode tab and
+// the toggles are only ever changed with `set` (silent), so nothing loops.
+function set_mode(v) {
+    var m = clamp(Math.round(Number(v)), 0, 2);
+    if (m !== curMode) {
+        curMode = m;
+        emit("auto", m === 1 ? 1 : 0);
+        emit("midi", m === 2 ? 1 : 0);
+    }
+    mgraphics.redraw();
+}
+
+function set_auto(v) {
+    var on = Number(v) > 0.5;
+    var m = on ? 1 : (curMode === 1 ? 0 : curMode);
+    if (m === curMode) return;
+    curMode = m;
+    emit("resmode", m);
+    if (on) emit("midi", 0);
+    mgraphics.redraw();
+}
+
+function set_midi(v) {
+    var on = Number(v) > 0.5;
+    var m = on ? 2 : (curMode === 2 ? 0 : curMode);
+    if (m === curMode) return;
+    curMode = m;
+    emit("resmode", m);
+    if (on) emit("auto", 0);
+    mgraphics.redraw();
+}
+
+// Mid / Side with Lock: works for the dial itself, automation and macros. Whichever changed, the follower moves by
+// the same delta with a silent `set` (+ gen), so it never echoes back into set_mid / set_side.
+function set_lock(v) { curLock = Number(v) > 0.5 ? 1 : 0; }
+
+function set_mid(v) {
+    var r = applyLock(curLock, "mid", Number(v), curMid, curSide);
+    var followed = r.side !== curSide;
+    curMid = r.mid;
+    curSide = r.side;
+    if (followed) emit("side", curSide);
+}
+
+function set_side(v) {
+    var r = applyLock(curLock, "side", Number(v), curMid, curSide);
+    var followed = r.mid !== curMid;
+    curSide = r.side;
+    curMid = r.mid;
+    if (followed) emit("mid", curMid);
+}
+function set_gate(v) { curGatePct = clamp(Number(v), 0, 100); mgraphics.redraw(); }
+function set_gmode(v) { curGmode = clamp(Math.round(Number(v)), 0, 1); mgraphics.redraw(); }
 function set_quality(v) { curQuality = clamp(Math.round(Number(v)), 0, 2); nFft = fftSizeForQuality(curQuality); mgraphics.redraw(); }
 function midi_note(v) { curMidiNote = Number(v); mgraphics.redraw(); }
 
@@ -86,6 +145,7 @@ function pullScope() {
     lagSamps = numAt(chunk, 256) || lagSamps;
     f0Hz = numAt(chunk, 257);
     voiced = numAt(chunk, 261) > 0.5 ? 1 : 0;
+    gateThr = numAt(chunk, 263);
     var n = numAt(chunk, 260);
     if (n > 0) nFft = n;
     var b;
@@ -123,14 +183,19 @@ function loadbang() {
 
 function canvasSize() {
     var s = mgraphics.size;
-    if (!s || s.length < 2) return [230, 169];
+    if (!s || s.length < 2) return [244, 88];
     return [s[0], s[1]];
 }
 
-// Display geometry in this v8ui's own coordinates (absolute x 296..512 minus ORIGIN_X)
+// Display geometry, derived entirely from the v8ui size: a compact split bar on top, the dot plot below it.
 function layoutRegions() {
     var cs = canvasSize();
-    return { w: cs[0], h: cs[1], disp: { x: 6, y: 6, w: 216, h: 154, plotY: 30, plotH: 125, splitY: 8 } };
+    var w = cs[0], h = cs[1];
+    var pad = 4, step = 5;
+    var splitY = 3;
+    var plotY = splitY + 15;
+    var rows = Math.max(3, Math.floor((h - plotY - 3) / step));
+    return { w: w, h: h, disp: { x: pad, y: pad, w: w - 2 * pad, h: h - 2 * pad, plotY: plotY, plotH: rows * step, splitY: splitY } };
 }
 
 function periodSamplesNow() {
@@ -207,6 +272,9 @@ function preview() {
     refGain = Math.max(percentileAbs(cepRaw, 1, 0.95), 0.02);
     for (var b2 = 0; b2 < NUM_QUEF; b2++) cepDisp[b2] = cepRaw[b2];
     curMode = 1;
+    curGmode = 1;
+    curGatePct = 35;
+    gateThr = 0.14;
     curRes = DEFAULT_RES_PCT;
     f0Hz = 120;
     voiced = 1;
@@ -288,13 +356,13 @@ function drawDisplay(r) {
     var tracked = curMode !== 0;
 
     // Split bar: FORMANTS (orange) | HARMONICS (blue)
-    textAt("FORMANTS", d.x + 1, d.splitY + 8, 7.5, ORANGE, 1.0);
-    textAt("HARMONICS", d.x + d.w - textW("HARMONICS", 7.5) - 5, d.splitY + 8, 7.5, BLUE, 1.0);
-    var by = d.splitY + 15;
+    textAt("FORMANTS", d.x + 1, d.splitY + 7, 7, ORANGE, 1.0);
+    textAt("HARMONICS", d.x + d.w - textW("HARMONICS", 7) - 2, d.splitY + 7, 7, BLUE, 1.0);
+    var by = d.splitY + 10;
     lineSeg(d.x, by, barX, by, ORANGE, 1.0, 1.6);
-    lineSeg(d.x, by - 3, d.x, by + 3, ORANGE, 1.0, 1.4);
+    lineSeg(d.x, by - 2, d.x, by + 2, ORANGE, 1.0, 1.4);
     lineSeg(barX, by, d.x + d.w, by, BLUE, 1.0, 1.6);
-    lineSeg(d.x + d.w, by - 3, d.x + d.w, by + 3, BLUE, 1.0, 1.4);
+    lineSeg(d.x + d.w, by - 2, d.x + d.w, by + 2, BLUE, 1.0, 1.4);
 
     // Dot-matrix grid
     dotGrid(d.x, d.plotY, d.w, rows * step, step, 0.15);
@@ -303,6 +371,7 @@ function drawDisplay(r) {
     var gx = d.x + step * 0.5;
     var gy = d.plotY + step * 0.5;
     var silent = scopeBuf ? levelLin < 0.00001 : false;
+    var gateOn = curGmode === 1 && curGatePct > 0.05 && gateThr > 0 && !silent;
     for (var j = 0; j < cols; j++) {
         var cx = gx + j * step;
         var colMs = ((j + 0.5) / cols) * QUEF_MAX_MS;
@@ -319,8 +388,23 @@ function drawDisplay(r) {
         if (off === 0) continue;
         var dir = off > 0 ? -1 : 1; // positive values go up
         var n = Math.abs(off);
-        for (var k = 1; k < n; k++) fillRect(cx - 0.8, gy + (mid + dir * k) * step - 0.8, 1.6, 1.6, c, 0.34);
-        fillRect(cx - 1.7, gy + (mid + dir * n) * step - 1.7, 3.4, 3.4, c, 1.0);
+        // Ceps gate: harmonic-region stems below the threshold are drawn dimmed (gated out)
+        var gatedOut = gateOn && cx >= barX && Math.abs(pooled.v) < gateThr;
+        for (var k = 1; k < n; k++) fillRect(cx - 0.8, gy + (mid + dir * k) * step - 0.8, 1.6, 1.6, c, gatedOut ? 0.12 : 0.34);
+        fillRect(cx - 1.7, gy + (mid + dir * n) * step - 1.7, 3.4, 3.4, c, gatedOut ? 0.35 : 1.0);
+    }
+
+    // Ceps gate threshold: faint +/- dotted lines across the harmonic (blue) region only
+    if (gateOn) {
+        var th = Math.round(cepstrumDisplayHeight(gateThr, refGain) * half);
+        if (th > 0) {
+            var startJ = Math.max(0, Math.ceil((barX - gx) / step));
+            for (var jj = startJ; jj < cols; jj += 2) {
+                var gxx = gx + jj * step;
+                fillRect(gxx - 0.8, gy + (mid - th) * step - 0.8, 1.6, 1.6, BLUE, 0.5);
+                fillRect(gxx - 0.8, gy + (mid + th) * step - 0.8, 1.6, 1.6, BLUE, 0.5);
+            }
+        }
     }
 
     // Pitch-period peak marker (Auto / MIDI): a small green tick at the pitch column
@@ -336,15 +420,15 @@ function drawDisplay(r) {
     }
 
     // Lifter cutoff bar: spans the plot and the split bar. Solid when manual, dashed + diamond when tracked.
-    var top = d.splitY + 2;
+    var top = d.splitY + 5;
     var bot = d.plotY + d.plotH;
     var ms = lagToMs(displayLagSamples(), srNow);
     var midY = d.plotY + d.plotH / 2;
     if (!tracked) {
         lineSeg(barX, top, barX, bot, WHITE, 1.0, 2);
-        fillRect(barX - 3, midY - 8, 6, 16, WHITE, 1.0);
-        lineSeg(barX - 1, midY - 4, barX - 1, midY + 4, [0, 0, 0], 1.0, 1);
-        lineSeg(barX + 1, midY - 4, barX + 1, midY + 4, [0, 0, 0], 1.0, 1);
+        fillRect(barX - 3, midY - 7, 6, 14, WHITE, 1.0);
+        lineSeg(barX - 1, midY - 3, barX - 1, midY + 3, [0, 0, 0], 1.0, 1);
+        lineSeg(barX + 1, midY - 3, barX + 1, midY + 3, [0, 0, 0], 1.0, 1);
     } else {
         col([0.85, 0.95, 1.0], 0.95);
         mgraphics.set_line_width(1.6);
@@ -368,13 +452,5 @@ function paint() {
     var r = layoutRegions();
     var w = r.w;
     var h = r.h;
-    // Outer frame: the rounded device frame continues across the two v8ui halves
-    mgraphics.set_source_rgba(0, 0, 0, 1);
-    mgraphics.rectangle_rounded(1.5 - ORIGIN_X, 1.5, DEVICE_W - 3, h - 3, 9, 9);
-    mgraphics.fill();
-    mgraphics.set_line_width(1.2);
-    mgraphics.set_source_rgba(0.24, 0.24, 0.24, 1);
-    mgraphics.rectangle_rounded(1.5 - ORIGIN_X, 1.5, DEVICE_W - 3, h - 3, 9, 9);
-    mgraphics.stroke();
     drawDisplay(r);
 }

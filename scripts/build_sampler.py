@@ -27,6 +27,9 @@ DEVICE_H = 169.0
 DEVICE_W = 600.0
 MAIN_VIZ_RECT = [0.0, 0.0, 528.0, 169.0]
 SIDE_VIZ_RECT = [531.0, 3.0, 66.0, 163.0]
+# Inspector panel to the right of the 600 px face; live.thisdevice widens the device by 160 px to show it
+INSPECTOR_W = 160.0
+INSPECTOR_VIZ_RECT = [600.0, 0.0, INSPECTOR_W, 169.0]
 # Waveform area inside obj-viz (sampler_face.js paintSamplePanel: sx + 4, sy + 17, sw - 8, 66)
 WAVE_DROP_RECT = [63.0, 20.0, 458.0, 66.0]
 
@@ -201,15 +204,108 @@ PARAM_SPECS = {
         "Output Gain", "Gain", -36.0, 18.0, 0.0, 4, 1.0, "out_gain", 1.0, "set_out_gain",
         "Master output level in dB (-36 to +18 dB).",
     ),
+    # Repitch characters (Analog: Crunch / Tape, Digital: Bits / Color)
+    "rp_dist": ("Repitch Distortion", "Dist", 0.0, 100.0, 0.0, 5, 1.0, "rp_dist", 0.01, "set_rp_dist",
+                "Analog: tailored saturation with harmonic generation. Digital: bit reduction."),
+    "rp_color": ("Repitch Color", "Color", -100.0, 100.0, 0.0, 5, 1.0, "rp_color", 0.01, "set_rp_color",
+                 "Analog: stereo tape colour (+ brighter, - warmer). Digital: sample-rate reduction (+ aliasing, - band-limited)."),
+    # Spectral (Pure: Formant / Shift %, Reharm: Bend / Quantize / %)
+    "sp_shift": ("Formant Shift Amount", "FmtAmt", 1.0, 122.0, 100.0, 5, 1.0, "sp_shift", 0.01, "set_sp_shift",
+                 "Spectral Pure: amount of formant shift, as a crossfade-type control."),
+    "sp_bend": ("Harmonic Bend", "Bend", -24.0, 24.0, 0.0, 7, 1.0, "sp_bend", 1.0, "set_sp_bend",
+                "Spectral Reharm: pitch shift applied to the harmonics; the fundamental is not shifted."),
+    "sp_quant_amt": ("Quantize Amount", "QAmt", 1.0, 100.0, 100.0, 5, 1.0, "sp_quant_amt", 0.01, "set_sp_quant_amt",
+                     "Spectral Reharm: how strongly harmonic quantization is applied."),
+    "sp_dispersion": ("Phase Dispersion", "Disp", 0.0, 100.0, 66.7, 5, 1.0, "sp_dispersion", 0.01, "set_sp_dispersion",
+                      "Spectral: phase randomization at extreme stretch ratios, smoothing the sound."),
+    # Cycles (Pulse: Width, Partials: Split / Fund., Phase: Mod / Harm.)
+    "cy_width": ("Pulse Width", "PW", -100.0, 100.0, 0.0, 5, 1.0, "cy_width", 0.01, "set_cy_width",
+                 "Cycles Pulse: pulse-width style shaping of the sound."),
+    "cy_split": ("Harmonic Split", "Split", -100.0, 100.0, 0.0, 5, 1.0, "cy_split", 0.01, "set_cy_split",
+                 "Cycles Partials: isolates odd (negative) or even (positive) harmonics."),
+    "cy_fund": ("Fundamental Level", "Fund", 0.0, 100.0, 0.0, 5, 1.0, "cy_fund", 0.01, "set_cy_fund",
+                "Cycles Partials: blends in a sine at the played pitch."),
+    "cy_mod": ("Phase Mod Amount", "PMod", 0.0, 100.0, 0.0, 5, 1.0, "cy_mod", 0.01, "set_cy_mod",
+               "Cycles Phase: modulation index of the carrier by the internal modulator."),
+    "cy_harm": ("Modulator Harmonics", "Harm", -100.0, 100.0, 0.0, 5, 1.0, "cy_harm", 0.01, "set_cy_harm",
+                "Cycles Phase: steps through tunings of the (dirty sine) modulator."),
+    # Fragments granular
+    "fr_env": ("Grain Envelope", "GrEnv", 0.0, 100.0, 50.0, 5, 1.0, "fr_env", 0.01, "set_fr_env",
+               "Fragments: grain amplitude envelope shape (50% symmetric; extremes click on purpose)."),
+    "fr_repeats": ("Grain Repeats", "Repeats", 1.0, 16.0, 1.0, 0, 1.0, "fr_repeats", 1.0, "set_fr_repeats",
+                   "Fragments: number of times each grain is triggered."),
+    "fr_density": ("Grain Density", "Density", 0.1, 100.0, 4.0, 1, 2.0, "fr_density", 1.0, "set_fr_density",
+                   "Fragments: grains triggered within each grain-size time."),
+    "fr_motion": ("Playhead Motion", "FMotion", 0.0, 800.0, 0.0, 5, 1.5, "fr_motion", 0.01, "set_fr_motion",
+                  "Fragments: randomizes stereo pan and playhead position per grain and repeat."),
+    "fr_max_grains": ("Max Grains", "MaxGr", 1.0, 256.0, 256.0, 0, 1.0, "fr_max_grains", 1.0, "set_fr_max_grains",
+                      "Fragments: maximum grains per voice."),
+    # Slicing (analysis runs in the face; gen only sees slice bounds)
+    "slice_div": ("Slice Divisions", "Divs", 1.0, 64.0, 8.0, 0, 1.0, None, 1.0, "set_slice_div",
+                  "Slice at Divisions: number of equal slices between start and end."),
+    "slice_sens": ("Slice Sensitivity", "SlSens", 0.0, 100.0, 70.0, 5, 1.0, None, 1.0, "set_slice_sens",
+                   "Slice at Onsets / Pitches: detection sensitivity."),
+    "slice_from": ("Slice Root Key", "From", 0.0, 127.0, 36.0, 8, 1.0, None, 1.0, "set_slice_from",
+                   "Sliced: MIDI key that plays the first slice."),
 }
 
 # Discrete enum / toggle parameters:
 # key: (long_name, short_name, enums, initial, gen_param, ui_setter, help_text)
 ENUM_SPECS = {
     "mode": (
-        "Playback Mode", "Mode", ["Repitch", "Cycles", "Textures", "Slice"], 0, "mode", "set_mode",
-        "Selects Bitwig-style Repitch, Cycles (formant wavetable), Textures (granular), or Slice engine.",
+        "Playback Mode", "Mode", ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"], 0, "mode", "set_mode",
+        "Play mode: Repitch, Cycles (wavetables), Textures (granular), Spectral (stretching), or Fragments (granular).",
     ),
+    "sliced": (
+        "Sliced", "Sliced", ["Single", "Sliced"], 0, "sliced", "set_sliced",
+        "Single sampler (start and loop points) or Sliced (each key plays a slice).",
+    ),
+    "rp_char": ("Repitch Character", "RpChar", ["Clean", "Analog", "Digital"], 0, "rp_char", "set_rp_char",
+                "Repitch flavour: Clean tape machine, Analog warmth, or Digital polyphonic sample rates."),
+    "rp_vsr": ("Variable Sample Rate", "VSR", ["Off", "On"], 0, "rp_vsr", "set_rp_vsr",
+               "Digital: sample rate follows the voice's playback rate."),
+    "rp_imaging": ("Digital Imaging Filter", "Imaging", ["Off", "On"], 1, "rp_imaging", "set_rp_imaging",
+                   "Digital: DAC output filter follows the voice's sample rate."),
+    "sp_char": ("Spectral Character", "SpChar", ["Pure", "Reharm"], 0, "sp_char", "set_sp_char",
+                "Spectral: Pure clean stretching with formant shifts, or Reharm bending harmonics."),
+    "sp_quant": ("Harmonic Quantize", "Quant", ["Off", "Octaves", "Key"], 0, "sp_quant", "set_sp_quant",
+                 "Spectral Reharm: quantize harmonics to octaves or to the key."),
+    "sp_onsets": ("Preserve Onsets", "Onsets", ["Off", "On"], 0, "sp_onsets", "set_sp_onsets",
+                  "Spectral: passes onsets at original speed whatever the Speed."),
+    "sp_formant_on": ("Formant Processing", "FmtOn", ["Off", "On"], 1, "sp_formant_on", "set_sp_formant_on",
+                      "Spectral: enables formant processing."),
+    "sp_quality": ("Spectral Quality", "Quality", ["Low", "Medium", "High"], 1, "sp_quality", "set_sp_quality",
+                   "Spectral: quality of pitch and formant processing versus CPU and latency."),
+    "sp_live": ("Live Performance Mode", "LiveMode", ["Off", "On"], 1, "sp_live", "set_sp_live",
+                "Spectral: no latency but higher CPU at note on."),
+    "sp_rel_formant": ("Relative Formant Shifts", "RelFmt", ["Off", "On"], 0, "sp_rel_formant", "set_sp_rel_formant",
+                       "Spectral: formant shift follows the pitch."),
+    "sp_key": ("Local Key", "Key", ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"], 0, "sp_key", "set_sp_key",
+               "Spectral Reharm (to Key): root of the scale."),
+    "sp_scale": ("Local Scale", "Scale", ["Major", "Minor"], 0, "sp_scale", "set_sp_scale",
+                 "Spectral Reharm (to Key): scale."),
+    "cy_char": ("Cycles Character", "CyChar", ["Pulse", "Partials", "Phase"], 0, "cy_char", "set_cy_char",
+                "Cycles: Pulse width, Partials (odd/even split), or Phase (PM/FM by a harmonic modulator)."),
+    "cy_xfade": ("Crossfade Two Voices", "CyXf", ["Off", "On"], 0, "cy_xfade", "set_cy_xfade",
+                 "Cycles: duophonic crossfade of two voices for a smoother sound."),
+    "fr_sync": ("Sync Grains", "FrSync", ["Off", "On"], 0, "fr_sync", "set_fr_sync",
+                "Fragments: grain size in beat time."),
+    "fr_use_density": ("Use Grain Density", "UseDens", ["Off", "On"], 1, "fr_use_density", "set_fr_use_density",
+                       "Fragments: grain count as a density relative to the grain size."),
+    "fr_direction": ("Grain Direction", "FrDir", ["Sample", "Playhead", "Random", "Alternating"], 1, "fr_direction", "set_fr_direction",
+                     "Fragments: playback direction of each grain."),
+    "fr_latch": ("Latch Initial Rate", "Latch", ["Off", "On"], 1, "fr_latch", "set_fr_latch",
+                 "Fragments: each grain keeps its speed and direction for its lifetime."),
+    "fr_repeat_init": ("Repeat at Initial Position", "RptInit", ["Off", "On"], 0, "fr_repeat_init", "set_fr_repeat_init",
+                       "Fragments: repeats start where the voice started (else where the last grain stopped)."),
+    "fr_survive": ("Grains Survive Voice End", "Survive", ["Off", "On"], 0, "fr_survive", "set_fr_survive",
+                   "Fragments: grains keep sounding past the voice's end."),
+    "slice_at": ("Slice At", "SliceAt", ["Divisions", "Beats", "Onsets", "Pitches", "Manual"], 0, None, "set_slice_at",
+                 "How slices are made: equal divisions, note intervals, transients, pitch changes, or by hand."),
+    "slice_beat": ("Slice Beat", "SlBeat", ["1 bar", "1/2", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"], 6, None, "set_slice_beat",
+                   "Slice at Beats: note interval."),
+    "show_inspector": ("Show Inspector", "Inspector", ["Hide", "Show"], 0, None, "set_show_inspector",
+                       "Shows the inspector panel (mode settings) to the right of the device."),
     "freeze": (
         "Playhead Freeze", "Freeze", ["Off", "Freeze"], 0, "freeze", "set_freeze",
         "Freezes automatic playhead advancement so Pos and modulation scrub through the sample.",
@@ -573,7 +669,7 @@ def build_face_layout():
         col += 1
 
     panels = [
-        make_panel("obj-pnl-bg", 0, 0, DEVICE_W, DEVICE_H, bg=(0.255, 0.255, 0.255), border=(0.255, 0.255, 0.255), rounded=0),
+        make_panel("obj-pnl-bg", 0, 0, DEVICE_W + INSPECTOR_W, DEVICE_H, bg=(0.255, 0.255, 0.255), border=(0.255, 0.255, 0.255), rounded=0),
     ]
     return ui_boxes, panels
 
@@ -676,7 +772,8 @@ def build_patcher():
         },
         "varname": "Sample File",
     })
-    ui_boxes = ui_boxes + [main_viz, side_viz, wave_drop]
+    insp_viz = make_viz("obj-viz-insp", INSPECTOR_VIZ_RECT, face_script("inspector"), "inspector", 420.0)
+    ui_boxes = ui_boxes + [main_viz, side_viz, insp_viz, wave_drop]
 
     dsp_boxes = [
         # Audio I/O (pass-through + synth output sum so device works in Instrument or Audio track chains)
@@ -827,6 +924,14 @@ def build_patcher():
         # After a dialog pick the drop zone stores that path too, so Live's saved Sample File matches
         {"box": {"id": "obj-prep-dropset", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1, "outlettype": [""],
                  "patching_rect": [700.0, 35.0, 80.0, 20.0], "text": "prepend set"}},
+        # Inspector width: face -> setwidth_cmd -> prepend setwidth -> live.thisdevice; once the device is
+        # ready it bangs device_ready so the face re-sends the saved width
+        {"box": {"id": "obj-prep-setwidth", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1, "outlettype": [""],
+                 "patching_rect": [780.0, 576.0, 102.0, 20.0], "text": "prepend setwidth"}},
+        {"box": {"id": "obj-thisdevice", "maxclass": "newobj", "numinlets": 1, "numoutlets": 3, "outlettype": ["bang", "int", "int"],
+                 "patching_rect": [780.0, 604.0, 82.0, 20.0], "text": "live.thisdevice"}},
+        {"box": {"id": "obj-msg-ready", "maxclass": "message", "numinlets": 2, "numoutlets": 1, "outlettype": [""],
+                 "patching_rect": [780.0, 632.0, 82.0, 20.0], "text": "device_ready"}},
         # Loadbang buffer binding (rule #8: bind GenExpr Buffer varName with no `set` prefix)
         {
             "box": {
@@ -866,11 +971,11 @@ def build_patcher():
             "box": {
                 "id": "obj-route-viz",
                 "maxclass": "newobj",
-                "numinlets": 5,
-                "numoutlets": 5,
-                "outlettype": ["", "", "", "", ""],
+                "numinlets": 6,
+                "numoutlets": 6,
+                "outlettype": ["", "", "", "", "", ""],
                 "patching_rect": [160.0, 555.0, 310.0, 20.0],
-                "text": "route param load_sample browse drop_set",
+                "text": "route param load_sample browse drop_set setwidth_cmd",
             }
         },
         {
@@ -912,6 +1017,11 @@ def build_patcher():
         # v8ui outlet routing (both face regions send ["param", key, value] / ["load_sample", path])
         {"patchline": {"source": ["obj-viz", 0], "destination": ["obj-route-viz", 0]}},
         {"patchline": {"source": ["obj-viz-side", 0], "destination": ["obj-route-viz", 0]}},
+        {"patchline": {"source": ["obj-viz-insp", 0], "destination": ["obj-route-viz", 0]}},
+        {"patchline": {"source": ["obj-route-viz", 4], "destination": ["obj-prep-setwidth", 0]}},
+        {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ready", 0]}},
+        {"patchline": {"source": ["obj-msg-ready", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-route-viz", 0], "destination": ["obj-route-param", 0]}},
         {"patchline": {"source": ["obj-route-viz", 1], "destination": ["obj-prep-replace", 0]}},
         {"patchline": {"source": ["obj-route-viz", 2], "destination": ["obj-opendialog", 0]}},
@@ -985,6 +1095,7 @@ def build_patcher():
             lines.append({"patchline": {"source": [ctrl_id, 0], "destination": [ui_prep_id, 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz", 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-side", 0]}})
+            lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-insp", 0]}})
 
         px += 85.0
 
@@ -1025,6 +1136,7 @@ def build_patcher():
             lines.append({"patchline": {"source": [ctrl_id, 0], "destination": [ui_prep_id, 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz", 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-side", 0]}})
+            lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-insp", 0]}})
 
         px += 85.0
 

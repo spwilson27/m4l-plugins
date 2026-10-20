@@ -24,7 +24,8 @@
 // Telemetry buffer "phasefoldscope" (4 channels, bound with `scope #0-phasefoldscope`):
 //   frames 0..255 : ch0 dry max, ch1 dry min, ch2 wet max, ch3 wet min (mono,
 //                   128-sample peaks of the delayed dry and of the wet output)
-//   frame 256     : ch0 write position, ch1 heartbeat, ch2 FFT size, ch3 wet gate
+//   frame 256     : ch0 write position, ch1 heartbeat (pokes of the FFT size or fade gate at
+//                   frame 256 ch2/ch3 fail to compile in Max: v_39 undeclared, so the UI uses the Size param)
 //   frame 257     : ch0 input centroid, ch1 output centroid (frame position
 //                   0..1), ch2 pivot position 0..1, ch3 Auto Gain in dB
 // GenExpr rules: functions first, no identifier "e" + digit, "phi" and "pi" are
@@ -170,6 +171,7 @@ pf_channel(fx, fc, xo, tab, win, acc, st, ms, n, p, orig, ag, t0, ch) {
 		}
 	}
 	ms.poke(g, 5 + ch * 2);
+	ms.poke(t0 / n, 9);
 	pf_ola(acc, st, fx, win, n, g);
 	return 0;
 }
@@ -197,7 +199,7 @@ Data fx(4096, 2);
 Data fc(4096, 2);
 Data xo(4096, 2);
 Data ep(4096);
-Data ms(8);
+Data ms(12);
 Data ringL(4096);
 Data accL(4096);
 Data stL(4);
@@ -300,7 +302,7 @@ gv = 0.5 * (ms.peek(5) + ms.peek(7));
 gv = max(gv, 0.000001);
 hcin = fr > 0.5 ? 0.5 * (ms.peek(1) + ms.peek(3)) : hcin;
 hcout = fr > 0.5 ? 0.5 * (ms.peek(4) + ms.peek(6)) : hcout;
-hpiv = fr > 0.5 ? t0 / n : hpiv;
+hpiv = fr > 0.5 ? ms.peek(9) : hpiv;
 hgdb = fr > 0.5 ? 8.685889638065035 * log(gv) : hgdb;
 
 dm = 0.5 * (drL + drR);
@@ -313,19 +315,28 @@ wmax = fresh > 0.5 ? wm : max(wmax, wm);
 wmin = fresh > 0.5 ? wm : min(wmin, wm);
 beatN = wrap(beat + 1, 0, 1000000);
 wposN = wrap(wpos + 1, 0, 256);
+tw = wpos;
+tb = beatN;
+tp = wposN;
+ta = dmax;
+tc1 = dmin;
+td = wmax;
+te1 = wmin;
+tf = hcin;
+th = hcout;
+tj = hpiv;
+tk = hgdb;
 if (hop == 0) {
-	poke(scope, dmax, wpos, 0);
-	poke(scope, dmin, wpos, 1);
-	poke(scope, wmax, wpos, 2);
-	poke(scope, wmin, wpos, 3);
-	poke(scope, wposN, 256, 0);
-	poke(scope, beatN, 256, 1);
-	poke(scope, n, 256, 2);
-	poke(scope, wgate, 256, 3);
-	poke(scope, hcin, 257, 0);
-	poke(scope, hcout, 257, 1);
-	poke(scope, hpiv, 257, 2);
-	poke(scope, hgdb, 257, 3);
+	poke(scope, ta, tw, 0);
+	poke(scope, tc1, tw, 1);
+	poke(scope, td, tw, 2);
+	poke(scope, te1, tw, 3);
+	poke(scope, tp, 256, 0);
+	poke(scope, tb, 256, 1);
+	poke(scope, tf, 257, 0);
+	poke(scope, th, 257, 1);
+	poke(scope, tj, 257, 2);
+	poke(scope, tk, 257, 3);
 }
 wpos = hop == 0 ? wposN : wpos;
 beat = hop == 0 ? beatN : beat;

@@ -1,15 +1,20 @@
-// Source generator for scripts/run_timbre_audio_tests.py (legacy [js], ES5).
-// Message `fill <samplerate>` writes the scenario named by jsarguments[1] into buffer~ src
-// (mono) and bangs outlet 0 when done. `dumpscope` writes the 2064 floats of buffer~ timbrescope as text to
-// jsarguments[2] (one value per line) and bangs outlet 1. Segments are [kind, seconds, rms dBFS]; the
+// Source generator and result writer for scripts/run_timbre_audio_tests.py (legacy [js], ES5, run by
+// scripts/max_harness.py). Message `fill <samplerate>` writes the scenario named by jsarguments[1] into
+// buffer~ src (mono). The harness sends `resultpath <file>` at load and `analyze <durMs>` once buffer~ rec
+// (4 channels: out1, dry input, control out3, out2) holds the measured window: `analyze` writes that
+// buffer as a headerless float32 file to jsarguments[2], the first 16 floats of buffer~ timbrescope into the result
+// file as `s0 .. s15` and bangs outlet 0. Segments are [kind, seconds, rms dBFS]; the
 // oscillator phase runs on across segments and the noise is a fixed LCG, so every run
 // produces the same stimulus (the runner re-reads the recorded dry channel anyway).
 
 inlets = 1;
-outlets = 2;
+outlets = 1;
 
 var scenario = jsarguments.length > 1 ? String(jsarguments[1]) : "switches";
-var scopePath = jsarguments.length > 2 ? String(jsarguments[2]) : "/tmp/timbre_scope.txt";
+var rawPath = jsarguments.length > 2 ? String(jsarguments[2]) : "/tmp/timbre_rec.raw";
+var resultPath = "/tmp/timbre_result.txt";
+
+function resultpath(p) { resultPath = String(p); }
 
 var SCEN = {
     // sine -> saw -> noise -> saw (timbre switches at 1, 2, 3 s at equal loudness),
@@ -56,17 +61,21 @@ function fill(sr) {
     buf.send("sizeinsamps", total);
     buf.poke(1, 0, arr);
     post("TIMBRE_FILL " + scenario + " " + total + " " + sr + "\n");
-    outlet(0, "bang");
 }
 
-function dumpscope() {
+function analyze(durMs) {
+    var rec = new Buffer("rec");
+    // interleaved 4-channel float32 with no header (buffer~ writes WAV as 16-bit only)
+    rec.send("samptype", "float32");
+    rec.send("writeraw", rawPath);
     var buf = new Buffer("timbrescope");
-    var d = buf.peek(1, 0, 2064);
-    var f = new File(scopePath, "write", "TEXT");
-    var out = "";
-    for (var i = 0; i < d.length; i++) out += d[i] + "\n";
+    var d = buf.peek(1, 0, 16);
+    var f = new File(resultPath, "write", "TEXT");
+    f.eof = 0;
+    var out = "frames " + rec.framecount() + "\n";
+    for (var i = 0; i < d.length; i++) out += "s" + i + " " + d[i] + "\n";
     f.writestring(out);
     f.close();
-    post("TIMBRE_SCOPE " + d.length + " counter " + d[0] + "\n");
-    outlet(1, "bang");
+    post("TIMBRE_RESULT counter " + d[0] + "\n");
+    outlet(0, "bang");
 }

@@ -39,7 +39,7 @@ GEN_CODE = ""
 SETTLE_MS = 100
 
 
-def device_patch(case):
+def device_patch(case, gen_code):
     """Device-specific boxes for the shared scaffold (scripts/max_harness.py)."""
     name = case["name"]
     chans = 1 if name == "mono_sample" else 2
@@ -54,7 +54,7 @@ def device_patch(case):
         mh.box("obj-scope", "buffer~ #0-bsscope @samps 64", 540, 130, 210,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-order", "t b b b", 200, 10, 60, numoutlets=3, outlettype=["bang", "bang", "bang"]),
-        mh.gen_box("obj-gen", GEN_CODE, 200, 215),
+        mh.gen_box("obj-gen", gen_code, 200, 215),
     ]
     lines = [
         # Fixed order (right to left): bind buffers, then params, then seed the sample.
@@ -74,9 +74,7 @@ def device_patch(case):
 
 
 def run_case(gen_code, case):
-    global GEN_CODE
-    GEN_CODE = gen_code
-    boxes, lines = device_patch(case)
+    boxes, lines = device_patch(case, gen_code)
     # Voices are gated on at the start of the measured window (sample time, stepped mode).
     events = [(SETTLE_MS, "obj-js", 3, "trigger")]
     if "rebound_ms" in case:
@@ -184,10 +182,13 @@ def main():
     results = {}
     only = os.environ.get("SAMPLER_CASE", "").strip()
     cases = [c for c in CASES if not only or c["name"] == only]
-    for c in cases:
+    # Cases run in parallel (max_harness caps concurrent Max instances machine-wide).
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=int(os.environ.get("SAMPLER_JOBS", "4"))) as pool:
+        raw = list(pool.map(lambda c: run_case(gen_code, c), cases))
+    for c, r in zip(cases, raw):
         # One run per case: max_harness isolates each Max instance and rejects mismatched results,
         # so a missing or unbound result is a real failure, not a reason to retry.
-        r = run_case(gen_code, c)
         if not r:
             raise RuntimeError(f"Max audio harness did not produce a result for {c['name']}")
         assert r.get("scopeFrames", 0) >= 8000, f"{c['name']}: sample buffer not bound (scopeFrames={r.get('scopeFrames')})"

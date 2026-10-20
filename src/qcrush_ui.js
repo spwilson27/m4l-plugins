@@ -365,7 +365,7 @@ if (typeof Task !== "undefined") {
 
 // ----- parameter setters -----
 
-function set_layout(v) { layout = clamp(Math.round(Number(v) || 0), 0, 2); mgraphics.redraw(); }
+function set_layout(v) { layout = clamp(Math.round(Number(v) || 0), 0, 3); mgraphics.redraw(); }
 function set_size(v) { curSize = clamp(Math.round(Number(v)), 0, 3); rebuildDemo(); mgraphics.redraw(); }
 function set_coeffs(v) { curCoeffs = clamp(Number(v), 0, 100); rebuildDemo(); mgraphics.redraw(); }
 function set_bits(v) { curBits = clamp(Math.round(Number(v)), 1, 16); rebuildDemo(); mgraphics.redraw(); }
@@ -377,19 +377,12 @@ function set_hold(v) { curHold = clamp(Math.round(Number(v)), 0, 6); rebuildDemo
 function set_mix(v) { curMix = clamp(Number(v), 0, 100); mgraphics.redraw(); }
 function set_out(v) { curOut = clamp(Number(v), -36, 12); mgraphics.redraw(); }
 
-// What the preview renderer shows (no audio there): a crushed vowel with the Hold clock mid-step.
+// What the preview renderer shows (no audio there): the demo telemetry for the *current* control values.
+// Control state (Size, Coeffs, Bits, Scramble, Shift, Hold, Freeze) is never faked, only the audio telemetry.
 function preview() {
     haveTelemetry = false;
-    curSize = 2;
-    curCoeffs = 93;
-    curBits = 5;
-    curSmode = 1;
-    curSamt = 45;
-    curShift = 7;
-    curFreeze = 0;
-    curHold = 3;
     tele.clock = 0.62;
-    tickFlash = 0.6;
+    tickFlash = 0;
     rebuildDemo();
 }
 
@@ -643,19 +636,18 @@ function statusChips(x, y, maxw) {
     var cx = x;
     var cy = y;
     var t;
-    var kText = tele.k >= tele.n * 0.5 - 0.5 ? "K ALL" : "K " + Math.round(tele.k);
-    cx += chip(cx, cy, kText, COL_PINK, tele.k < tele.n * 0.5 - 0.5) + 3;
-    var bText = tele.bits >= 15.5 ? "16 BIT" : Math.round(tele.bits) + " BIT";
-    cx += chip(cx, cy, bText, COL_PINK, tele.bits < 15.5) + 3;
-    if (tele.smode > 0.5 && tele.samt > 0.001) {
-        t = SCR_NAMES[clamp(Math.round(tele.smode), 0, 3)] + " " + Math.round(tele.samt * 100);
-        cx += chip(cx, cy, t, COL_VIOLET, true) + 3;
-    }
-    if (Math.abs(curShift) > 0.05 || Math.abs(tele.rho - 1) > 0.001) {
-        var st = Math.round(12 * Math.log(tele.rho) / Math.LN2);
-        t = (st > 0 ? "+" : "") + st + " ST";
-        if (cx + tw(t, 8) + 8 < x + maxw) cx += chip(cx, cy, t, COL_ENV, true) + 3;
-    }
+    var kAll = curCoeffs >= 99.5;
+    var kText = kAll ? "K ALL" : "K " + Math.round(tele.k);
+    cx += chip(cx, cy, kText, COL_PINK, !kAll) + 3;
+    var bText = Math.round(curBits) + " BIT";
+    cx += chip(cx, cy, bText, COL_PINK, curBits < 15.5) + 3;
+    var scrOn = curSmode > 0 && curSamt > 0.05;
+    t = scrOn ? SCR_NAMES[clamp(Math.round(curSmode), 0, 3)] + " " + Math.round(curSamt) : "SCR OFF";
+    if (cx + tw(t, 8) + 8 < x + maxw) cx += chip(cx, cy, t, COL_VIOLET, scrOn) + 3;
+    var st = Math.round(curShift);
+    var shOn = Math.abs(curShift) > 0.05;
+    t = (st > 0 ? "+" : "") + st + " ST";
+    if (cx + tw(t, 8) + 8 < x + maxw) cx += chip(cx, cy, t, COL_ENV, shOn) + 3;
     if (tele.held > 0.5) {
         t = curFreeze > 0.5 ? "FROZEN" : "HOLD " + HOLD_NAMES[curHold];
         if (cx + tw(t, 8) + 8 < x + maxw) cx += chip(cx, cy, t, COL_ICE, true) + 3;
@@ -740,12 +732,57 @@ function paintC(w, h) {
     label("BITS", 4, 10, 7.5, COL_TEXT, 0.7, 0);
     label("16", 4, 20, 7, COL_DIM, 0.9, 0);
     label("1", 4, h - 14, 7, COL_DIM, 0.9, 0);
-    var kt = tele.k >= tele.n * 0.5 - 0.5 ? "K all" : "K " + Math.round(tele.k);
-    label(kt + "  " + Math.round(tele.bits) + " bit", Math.min(px + 10, w - 60), Math.max(py - 8, 22), 8, COL_PINK, 1, 0);
+    var kt = curCoeffs >= 99.5 ? "K all" : "K " + Math.round(tele.k);
+    var padTxt = kt + "  " + Math.round(curBits) + " bit";
+    if (px > w * 0.55) label(padTxt, px - 10, Math.max(py + 3, 22), 8, COL_PINK, 1, 2);
+    else label(padTxt, px + 10, Math.max(py + 3, 22), 8, COL_PINK, 1, 0);
     // hold clock along the top edge
     drawClock(w - 62, 2, 60, 9);
-    label(pitchText(), w - 4, 24, 8, COL_ENV, 0.95, 2);
+    label(pitchText(), 22, h - 4, 8, COL_ENV, 0.95, 0);
     // envelope mini-curves along the bottom third, behind the label row
+}
+
+function snowflake(cx, cy, r, c, a, lw) {
+    rgba(c, a);
+    mgraphics.set_line_width(lw);
+    for (var i = 0; i < 3; i++) {
+        var an = i * Math.PI / 3;
+        var dx = Math.cos(an) * r;
+        var dy = Math.sin(an) * r;
+        mgraphics.move_to(cx - dx, cy - dy);
+        mgraphics.line_to(cx + dx, cy + dy);
+        for (var sgn = -1; sgn <= 1; sgn += 2) {
+            var bx = cx + dx * 0.62 * sgn;
+            var by = cy + dy * 0.62 * sgn;
+            for (var sd = -1; sd <= 1; sd += 2) {
+                var ba = an + (sgn < 0 ? Math.PI : 0) + sd * 0.75;
+                mgraphics.move_to(bx, by);
+                mgraphics.line_to(bx + Math.cos(ba) * r * 0.3, by + Math.sin(ba) * r * 0.3);
+            }
+        }
+    }
+    mgraphics.stroke();
+}
+
+// Layout 3: the Freeze pad face above the Freeze button. Idle: snowflake + hint. Frozen: ice fill, held envelope bars.
+function paintFreeze(w, h) {
+    var on = curFreeze > 0.5;
+    rrect(0, 0, w, h, 5, on ? [0.10, 0.17, 0.26] : [0.055, 0.07, 0.095], 1);
+    if (on) {
+        // frozen envelope coefficient bars behind the icon
+        var nb = 24;
+        var bw = (w - 8) / nb;
+        for (var i = 0; i < nb; i++) {
+            var qi = Math.min(QC_NC - 1, Math.floor(i * QC_NC / nb * 0.5));
+            var v = Math.abs(cmp(cC.length > qi ? cC[qi] : 0));
+            var bh = Math.max(2, v * (h - 22));
+            frect(4 + i * bw + 0.5, h - 4 - bh, bw - 1.5, bh, COL_ICE, 0.35);
+        }
+    }
+    snowflake(w * 0.5, h * 0.4, on ? 17 : 15, COL_ICE, on ? 1 : 0.55, on ? 2 : 1.5);
+    label(on ? "FROZEN" : "FREEZE", w * 0.5, h - 15, 8.5, on ? COL_TEXT : COL_ICE, on ? 1 : 0.75, 1);
+    label(on ? "click to release" : "click to hold", w * 0.5, h - 5, 6.5, COL_DIM, 0.9, 1);
+    srect(0.5, 0.5, w - 1, h - 1, COL_ICE, on ? 1 : 0.45, on ? 1.6 : 1);
 }
 
 function paint() {
@@ -753,7 +790,8 @@ function paint() {
     var w = sz[0];
     var h = sz[1];
     frect(0, 0, w, h, COL_BG, 1);
-    if (layout === 1) paintB(w, h);
+    if (layout === 3) paintFreeze(w, h);
+    else if (layout === 1) paintB(w, h);
     else if (layout === 2) paintC(w, h);
     else paintA(w, h);
 }
@@ -791,6 +829,10 @@ function applyDragC(px, py) {
 }
 
 function onclick(x, y) {
+    if (layout === 3) {
+        outlet(0, "freeze", curFreeze > 0.5 ? 0 : 1);
+        return;
+    }
     if (layout === 0) {
         var r = barsRect();
         if (y >= r.y && y <= r.y + r.h) { dragging = true; applyDragA(x); }

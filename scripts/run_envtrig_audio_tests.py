@@ -11,21 +11,15 @@ Cases:
   hold      — Bursts every 40 ms with Hold = 200 ms are thinned to a few notes, not one per burst
 """
 
-import json
 import os
-import subprocess
 import sys
-import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import max_harness as mh
+
+ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "envtrig_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "envtrig_probe.js")
-HARNESS = os.path.join(ROOT, "tests", "envtrig_harness.maxpat")
-RESULT = "/tmp/envtrig_audio.txt"
-MAX_BIN = (
-    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
-    "Max/Max.app/Contents/MacOS/Max"
-)
 
 # kind 0 = burst train (first, every), 1 = sustained tone from `first`.
 # Bursts rise over `atk` ms and fall 60 dB over `decay` ms.
@@ -63,150 +57,43 @@ out1 = (go > 0.5) ? sig * amp : 0;
 DEFAULTS = "thr -24, sens 0.5, holdms 60, velmin 40, velmax 127"
 
 
-def box(obj_id, text, x, y, w, h, **extra):
-    b = {
-        "id": obj_id,
-        "maxclass": extra.pop("maxclass", "newobj"),
-        "numinlets": extra.pop("numinlets", 1),
-        "numoutlets": extra.pop("numoutlets", 1),
-        "outlettype": extra.pop("outlettype", [""]),
-        "patching_rect": [float(x), float(y), float(w), float(h)],
-        "text": text,
-    }
-    b.update(extra)
-    return {"box": b}
 
-
-def msg(obj_id, text, x, y, w=80):
-    return box(obj_id, text, x, y, w, 20, maxclass="message", numinlets=2, numoutlets=1)
-
-
-def line(src, outlet, dst, inlet):
-    return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
-
-
-def build_harness(gen_code, case):
-    dur = case["dur"]
-    buf_ms = 4000  # sized in 44.1 kHz frames; DSP may run at a higher rate
+def build_device(gen_code, case):
+    # Device-only boxes. The scaffold records from DSP start, so the source's `go 1` is sent at
+    # load and the source clock (gen sample counter) starts at the same sample as the recording
+    # (settle_ms = 0, same alignment as the old arm/go pair).
     boxes = [
-        box("obj-load", "loadbang", 40, 40, 60, 20, outlettype=["bang"]),
-        box("obj-del-dsp", "delay 1200", 40, 80, 80, 20, numinlets=2),
-        msg("obj-dsp", "; dsp start", 40, 120),
-        box("obj-del-arm", f"delay {case['arm']}", 40, 160, 80, 20, numinlets=2),
-        msg("obj-rec-on", "1", 40, 200, 30),
-        box("obj-del-stop", f"delay {dur}", 40, 240, 80, 20, numinlets=2),
-        msg("obj-rec-off", "0", 40, 280, 30),
-        box("obj-del-peak", "delay 40", 40, 320, 70, 20, numinlets=2),
-        box("obj-del-analyze", "delay 80", 40, 360, 70, 20, numinlets=2),
-        msg("obj-analyze", f"analyze {dur}", 120, 360, 90),
-        msg("obj-quit", "; max quit", 40, 420, 70),
-        msg("obj-params", case["params"], 200, 40, 680),
-        msg("obj-setbuf", "setbuffer #0-trigscope", 200, 70, 190),
-        msg("obj-bind", "scope #0-trigscope", 200, 100, 180),
-        box("obj-scope", "buffer~ #0-trigscope @samps 800", 520, 100, 210, 20, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", f"buffer~ rec {buf_ms} 2", 520, 130, 150, 20, numoutlets=2, outlettype=["float", "bang"]),
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 4,
-                "outlettype": ["signal"] * 4,
-                "patching_rect": [200.0, 220.0, 300.0, 80.0],
-            }
-        },
-        box("obj-record", "record~ rec 2", 200, 360, 90, 20, numinlets=4, outlettype=[""]),
-        # rec ch1 = gate * velocity; ch2 = audio out L
-        box("obj-gv0", "*~", 200, 300, 40, 20, numinlets=2, outlettype=["signal"]),
-        box("obj-peak-l", "peakamp~", 200, 400, 70, 20, outlettype=["float"]),
-        box("obj-peak-c", "peakamp~", 290, 400, 70, 20, outlettype=["float"]),
-        box("obj-dspstate", "dspstate~", 640, 40, 70, 20, numinlets=1, numoutlets=4, outlettype=["int", "float", "int", "int"]),
-        box("obj-prep-sr", "prepend dspsr", 640, 70, 90, 20),
-        box("obj-mute-l", "*~ 0", 200, 400, 45, 20, numinlets=2, outlettype=["signal"]),
-        box("obj-dac", "dac~", 200, 440, 50, 20, numinlets=2, numoutlets=0, outlettype=[]),
-        box("obj-js", f"js {PROBE_JS} {case['name']}", 200, 480, 420, 20, numinlets=4, numoutlets=3, outlettype=["bang", "bang", ""]),
+        mh.msg("dev-params", case["params"], 200, 40, 680),
+        mh.msg("dev-setbuf", "setbuffer #0-trigscope", 200, 70, 190),
+        mh.msg("dev-bind", "scope #0-trigscope", 200, 100, 180),
+        mh.box("dev-scope", "buffer~ #0-trigscope @samps 800", 520, 100, 210, numoutlets=2, outlettype=["float", "bang"]),
+        mh.gen_box("dev-gen", gen_code, 200, 220, numinlets=2, numoutlets=4),
+        # rec ch1 = gate * velocity; ch2 = audio out L; ch3 = test source (pass-through reference)
+        mh.box("dev-gv0", "*~", 200, 300, 40, numinlets=2, outlettype=["signal"]),
+        # Test signals are generated at audio rate in gen (sample-counted), never by metro.
+        mh.gen_box("dev-src", SOURCE_GEN, 700, 220, numinlets=1, numoutlets=1),
+        mh.msg("dev-src-params", case["source"] + ", go 1", 700, 160, 380),
     ]
-
     lines = [
-        line("obj-load", 0, "obj-del-dsp", 0),
-        line("obj-load", 0, "obj-params", 0),
-        line("obj-load", 0, "obj-setbuf", 0),
-        line("obj-load", 0, "obj-bind", 0),
-        line("obj-bind", 0, "obj-gen", 0),
-        line("obj-params", 0, "obj-gen", 0),
-        line("obj-setbuf", 0, "obj-js", 3),
-        line("obj-del-dsp", 0, "obj-dsp", 0),
-        line("obj-del-dsp", 0, "obj-del-arm", 0),
-        line("obj-del-arm", 0, "obj-rec-on", 0),
-        line("obj-del-arm", 0, "obj-del-stop", 0),
-        line("obj-del-stop", 0, "obj-rec-off", 0),
-        line("obj-del-stop", 0, "obj-del-peak", 0),
-        line("obj-del-peak", 0, "obj-peak-l", 0),
-        line("obj-del-peak", 0, "obj-peak-c", 0),
-        line("obj-del-peak", 0, "obj-del-analyze", 0),
-        line("obj-del-analyze", 0, "obj-analyze", 0),
-        line("obj-analyze", 0, "obj-js", 3),
-        line("obj-js", 0, "obj-quit", 0),
-        line("obj-rec-on", 0, "obj-record", 0),
-        line("obj-rec-off", 0, "obj-record", 0),
-        line("obj-gen", 2, "obj-gv0", 0),
-        line("obj-gen", 3, "obj-gv0", 1),
-        line("obj-gv0", 0, "obj-record", 0),
-        line("obj-gen", 0, "obj-record", 1),
-        line("obj-gen", 0, "obj-peak-l", 0),
-        line("obj-gen", 0, "obj-mute-l", 0),
-        line("obj-mute-l", 0, "obj-dac", 0),
-        line("obj-peak-l", 0, "obj-js", 0),
-        line("obj-peak-c", 0, "obj-js", 1),
-        line("obj-dspstate", 1, "obj-prep-sr", 0),
-        line("obj-prep-sr", 0, "obj-js", 3),
+        mh.line("obj-load", 0, "dev-params", 0),
+        mh.line("obj-load", 0, "dev-setbuf", 0),
+        mh.line("obj-load", 0, "dev-bind", 0),
+        mh.line("dev-bind", 0, "dev-gen", 0),
+        mh.line("dev-params", 0, "dev-gen", 0),
+        mh.line("dev-setbuf", 0, "obj-js", 0),
+        mh.line("dev-gen", 2, "dev-gv0", 0),
+        mh.line("dev-gen", 3, "dev-gv0", 1),
+        mh.line("dev-gv0", 0, "obj-record", 0),
+        mh.line("dev-gen", 0, "obj-record", 1),
+        mh.line("dev-gen", 0, "obj-mute-l", 0),
+        mh.line("obj-load", 0, "dev-src-params", 0),
+        mh.line("dev-src-params", 0, "dev-src", 0),
+        mh.line("dev-src", 0, "dev-gen", 0),
+        mh.line("dev-src", 0, "dev-gen", 1),
+        mh.line("dev-src", 0, "obj-record", 2),
+        mh.line("dev-src", 0, "obj-mute-r", 0),
     ]
-
-    # Test signals are generated at audio rate (not by metro): Max may render faster than
-    # real time, so only sample-counted timing lines up with the recording.
-    boxes.extend([
-        {
-            "box": {
-                "code": SOURCE_GEN,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-src",
-                "maxclass": "gen.codebox~",
-                "numinlets": 1,
-                "numoutlets": 1,
-                "outlettype": ["signal"],
-                "patching_rect": [700.0, 220.0, 300.0, 80.0],
-            }
-        },
-        msg("obj-src-params", case["source"], 700, 160, 380),
-        msg("obj-src-go", "go 1", 700, 190, 40),
-    ])
-    lines.extend([
-        line("obj-load", 0, "obj-src-params", 0),
-        line("obj-src-params", 0, "obj-src", 0),
-        line("obj-del-arm", 0, "obj-src-go", 0),
-        line("obj-src-go", 0, "obj-src", 0),
-        line("obj-src", 0, "obj-gen", 0),
-        line("obj-src", 0, "obj-gen", 1),
-        line("obj-src", 0, "obj-peak-c", 0),
-    ])
-
-    doc = {
-        "patcher": {
-            "fileversion": 1,
-            "appversion": {"major": 9, "minor": 1, "revision": 5, "architecture": "x64", "modernui": 1},
-            "classnamespace": "box",
-            "rect": [40.0, 40.0, 1100.0, 600.0],
-            "boxes": boxes,
-            "lines": lines,
-        }
-    }
-    with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent="\t")
-        f.write("\n")
+    return boxes, lines
 
 
 def cases():
@@ -214,17 +101,17 @@ def cases():
         return DEFAULTS + (", " + extra if extra else "")
 
     return (
-        {"name": "hits", "arm": 250, "dur": 1000, "params": params(),
+        {"name": "hits", "dur": 1000, "params": params(),
          "source": "kind 0, amp 0.8, freq 1000, first 40, every 200, atk 0, decay 80"},
-        {"name": "scope", "arm": 250, "dur": 600, "params": params(),
+        {"name": "scope", "dur": 600, "params": params(),
          "source": "kind 0, amp 0.8, freq 1000, first 40, every 100, atk 0, decay 60"},
-        {"name": "quiet", "arm": 250, "dur": 1000, "params": params(),
+        {"name": "quiet", "dur": 1000, "params": params(),
          "source": "kind 0, amp 0.03, freq 1000, first 40, every 200, atk 0, decay 80"},
-        {"name": "velocity", "arm": 250, "dur": 1000, "params": params(),
+        {"name": "velocity", "dur": 1000, "params": params(),
          "source": "kind 0, amp 0.2, freq 1000, first 40, every 200, atk 0, decay 80"},
-        {"name": "sustain", "arm": 250, "dur": 900, "params": params(),
+        {"name": "sustain", "dur": 900, "params": params(),
          "source": "kind 1, amp 0.5, freq 220, first 50"},
-        {"name": "hold", "arm": 250, "dur": 1000, "params": params("holdms 200"),
+        {"name": "hold", "dur": 1000, "params": params("holdms 200"),
          "source": "kind 0, amp 0.8, freq 1000, first 40, every 40, atk 0, decay 30"},
     )
 
@@ -244,52 +131,23 @@ def parse_result(text):
 
 
 def run_case(gen_code, case):
-    build_harness(gen_code, case)
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    recovery = os.path.expanduser("~/Library/Application Support/Cycling '74/Max 9/Crash Recovery")
-    if os.path.isdir(recovery):
-        subprocess.run(["rm", "-rf", recovery], check=False)
-
-    proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 30
-    while time.time() < deadline and not os.path.exists(RESULT):
-        if proc.poll() is not None:
-            break
-        time.sleep(0.2)
-
-    last_size = -1
-    stable = 0
-    while time.time() < deadline and stable < 2:
-        if not os.path.exists(RESULT):
-            break
-        size = os.path.getsize(RESULT)
-        if size > 0 and size == last_size:
-            stable += 1
-        else:
-            stable = 0
-            last_size = size
-        time.sleep(0.15)
-
-    if proc.poll() is None:
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    time.sleep(0.3)
+    b, l = build_device(gen_code, case)
     print(f"--- {case['name']} ---")
-    if not os.path.exists(RESULT):
-        print("NO RESULT FILE")
-        return None
-    meta = parse_result(open(RESULT).read())
-    print(
-        f"notes {meta.get('lane0')} ringMax {meta.get('ringMax', 0):.3f} ringOnsets {meta.get('ringOnsets')} "
-        f"genL {meta.get('genL'):.4f} ctl {meta.get('ctl'):.4f} scopeFires0 {meta.get('scopeFires0')} nan {meta.get('nan')}"
-    )
+    # All envtrig outputs reach the recording as signals (gate * velocity), so no scheduler
+    # objects (makenote/midiout) are involved: plain "nrt" mode is accurate.
+    res = (mh.run_case(f"envtrig_{case['name']}", b, l, probe_js=PROBE_JS, probe_args=case["name"],
+                      settle_ms=0, dur_ms=case["dur"], channels=3))
+    meta = {}
+    for k, v in res.items():
+        if k.startswith("lane"):
+            # probe writes "vel@ms,vel@ms" (one token, the harness parses 2-token lines) or "none"
+            toks = [] if v == "none" else str(v).split(",")
+            meta[k] = [(int(p.split("@")[0]), int(p.split("@")[1])) for p in toks]
+        else:
+            meta[k] = v
+    meta.setdefault("lane0", [])
+    print(f"notes {meta['lane0']} ringMax {meta.get('ringMax', 0):.3f} ringOnsets {meta.get('ringOnsets')} "
+          f"genL {meta.get('genL'):.4f} ctl {meta.get('ctl'):.4f} scopeFires0 {meta.get('scopeFires0')} nan {meta.get('nan')}")
     return meta
 
 

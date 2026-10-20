@@ -1,20 +1,22 @@
 // Audio probe for scripts/run_envtrig_audio_tests.py.
 // jsarguments: mode.
-// The harness records a single 2-channel buffer~ rec:
+// The harness records a single 3-channel buffer~ rec (exactly the measured window):
 //   ch1: gate * velocity
 //   ch2: audio out L
+//   ch3: test source (reference for the pass-through check)
 //
-// The report file /tmp/envtrig_audio.txt is created ONLY inside analyze()
+// The report file (resultPath) is created ONLY inside analyze()
 // so the Python runner never reads a partial or empty file.
 
-inlets = 4;
-outlets = 3;
+inlets = 1;
+outlets = 1;
+
+var resultPath = "/tmp/envtrig_audio.txt";
+function resultpath(p) { resultPath = String(p); }
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "hits";
-var peaks = { genL: -1, ctl: -1, genR: -1 };
 var armed = false;
 var scopeName = "";
-var dspSr = 0;
 
 function loadbang() {
     post("ENVTRIG_PROBE_LOADED " + mode + "\n");
@@ -22,17 +24,6 @@ function loadbang() {
 
 function setbuffer(name) {
     scopeName = name ? ("" + name) : "";
-}
-
-// Actual DSP sample rate (dspstate~); the record buffer's nominal rate may differ.
-function dspsr(v) {
-    dspSr = Number(v) || 0;
-}
-
-function msg_float(v) {
-    if (inlet === 0) peaks.genL = v;
-    else if (inlet === 1) peaks.ctl = v;
-    else if (inlet === 2) peaks.genR = v;
 }
 
 function readChannel(buf, channel, n) {
@@ -71,10 +62,16 @@ function analyze(durMs) {
     var rec = new Buffer("rec");
     var frames = rec.framecount();
     var lengthMs = rec.length();
-    var sr = dspSr > 0 ? dspSr : (lengthMs > 0 ? frames / (lengthMs / 1000) : 44100);
+    var sr = lengthMs > 0 ? frames / (lengthMs / 1000) : 44100;
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var lane0 = readChannel(rec, 1, n);
     var audio = readChannel(rec, 2, n);
+    var src = readChannel(rec, 3, n);
+    var genL = 0, ctl = 0;
+    for (var q = 0; q < n; q++) {
+        genL = Math.max(genL, Math.abs(audio[q]));
+        ctl = Math.max(ctl, Math.abs(src[q]));
+    }
     var nan = 0;
     for (var i = 0; i < n; i++) {
         if (lane0[i] !== lane0[i] || audio[i] !== audio[i]) nan++;
@@ -95,17 +92,18 @@ function analyze(durMs) {
         }
     }
 
-    var report = new File("/tmp/envtrig_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
+    report.eof = 0;
     report.writestring(
-        "genL " + peaks.genL + "\n" +
-        "ctl " + peaks.ctl + "\n" +
+        "genL " + genL + "\n" +
+        "ctl " + ctl + "\n" +
         "sr " + sr + "\n" +
         "nan " + nan + "\n" +
         "scopeFires0 " + scope[2] + "\n" +
         "scopeRoll " + scope[3] + "\n" +
         "ringMax " + ringMax + "\n" +
         "ringOnsets " + ringOnsets + "\n" +
-        "lane0 " + edges(lane0, sr).join(" ") + "\n"
+        "lane0 " + (edges(lane0, sr).join(",") || "none") + "\n"
     );
     report.close();
     post("ENVTRIG_SHUTDOWN\n");

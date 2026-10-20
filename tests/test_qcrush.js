@@ -166,7 +166,11 @@ for (const [v, info] of Object.entries(VARIANTS)) {
     assert.ok(rectOf("B", "obj-viz")[2] < 190, "B: compact view beside the LCD");
     assert.strictEqual(boxesOf.B.map.get("obj-ctrl-coeffs").maxclass, "live.dial", "B: dials");
     assert.strictEqual(boxesOf.A.map.get("obj-ctrl-coeffs").maxclass, "live.numbox", "A: value bars");
-    assert.ok(rectOf("C", "obj-ctrl-freeze")[2] >= 80 && rectOf("C", "obj-ctrl-freeze")[3] >= 80, "C: big Freeze pad");
+    {
+        const f = rectOf("C", "obj-ctrl-freeze");
+        const face = rectOf("C", "obj-freeze-face");
+        assert.ok(face[2] >= 80 && face[3] + f[3] >= 80 && f[1] >= face[1] + face[3], "C: big Freeze pad (face above the button)");
+    }
     assert.ok(boxesOf.C.map.get("obj-route-viz").text === "route coeffs bits", "C: the crush pad drives Coeffs and Bits");
     assert.ok(boxesOf.A.map.get("obj-route-viz").text === "route coeffs", "A: dragging the canvas drives Coeffs");
     assert.strictEqual(boxesOf.B.map.get("obj-route-viz"), undefined);

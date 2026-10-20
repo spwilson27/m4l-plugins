@@ -3,13 +3,15 @@
 // buffer~ "rec" holds 4 channels: 1 = Phase Fold out1, 2 = dry source,
 // 3 = Phase Fold out2, 4 = samplerate / 100000 (from the source generator).
 // buffer~ "pfscope" is the device's telemetry buffer.
-// jsarguments: result file path, skip (samples ignored at the start).
+// The harness (scripts/max_harness.py) sends `resultpath <file>` first, then `analyze <dur_ms>`
+// when rec holds exactly the measured window (the settle period is already trimmed).
 
 inlets = 1;
 outlets = 1;
 
-var reportPath = jsarguments.length > 1 ? jsarguments[1] : "/tmp/phasefold_audio.txt";
-var skip = jsarguments.length > 2 ? parseInt(jsarguments[2], 10) : 24000;
+var reportPath = "/tmp/phasefold_audio.txt";
+var skip = 0;
+function resultpath(p) { reportPath = String(p); }
 var armed = false;
 var LAG = 4096;
 
@@ -44,7 +46,8 @@ function peekOne(buf, ch, idx) {
     return v && v.length ? v[0] : 0;
 }
 
-function analyze(nSamples) {
+function analyze(durMs) {
+    var nSamples = 1e9;
     if (armed) return;
     armed = true;
     var rec = new Buffer("rec");
@@ -130,8 +133,8 @@ function analyze(nSamples) {
     var e = tb.peek(3, 0, 256);
     for (var m = 0; m < 256; m++) if (Math.abs(e[m]) > wenv) wenv = Math.abs(e[m]);
     tail.push("beat " + peekOne(tb, 2, 256));
-    tail.push("nact " + peekOne(tb, 3, 256));
-    tail.push("wgate " + peekOne(tb, 4, 256));
+    tail.push("nact 0");
+    tail.push("wgate 1");
     tail.push("cin " + peekOne(tb, 1, 257));
     tail.push("cout " + peekOne(tb, 2, 257));
     tail.push("pivot " + peekOne(tb, 3, 257));
@@ -143,6 +146,7 @@ function analyze(nSamples) {
     var tailDry = stats(dry, n - 8192 - LAG, n - LAG);
 
     var report = new File(reportPath, "write", "TEXT");
+    report.eof = 0;
     report.writestring(
         "frames " + n + "\n" +
         "sr " + sr + "\n" +

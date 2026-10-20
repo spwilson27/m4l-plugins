@@ -16,188 +16,71 @@ Cases:
   invert     — Amount = 150% (1.5) ducks loud 0.50 input below quiet 0.035 input
 """
 
-import json
 import os
-import subprocess
 import sys
-import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import max_harness as mh
+
+ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "reciprocator_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "reciprocator_probe.js")
-HARNESS = os.path.join(ROOT, "tests", "reciprocator_harness.maxpat")
-RESULT = "/tmp/reciprocator_audio.txt"
-MAX_BIN = (
-    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
-    "Max/Max.app/Contents/MacOS/Max"
-)
-MAX_LOG = os.path.expanduser(
-    "~/Library/Application Support/Cycling '74/Max 9/Logs/Max.log"
-)
 
 DEFAULTS = "lookahead 1.5, detect 0.25, schp 40, sclp 16000, outmode 1, revgate 0"
+SCOPE = "#0-recipscope"
 
 
-def box(obj_id, text, x, y, w, h, **extra):
-    b = {
-        "id": obj_id,
-        "maxclass": extra.pop("maxclass", "newobj"),
-        "numinlets": extra.pop("numinlets", 1),
-        "numoutlets": extra.pop("numoutlets", 1),
-        "outlettype": extra.pop("outlettype", [""]),
-        "patching_rect": [float(x), float(y), float(w), float(h)],
-        "text": text,
-    }
-    b.update(extra)
-    return {"box": b}
-
-
-def line(src, outlet, dst, inlet):
-    return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
-
-
-def build_harness(gen_code, case):
+def build_device(gen_code, case):
+    """Device boxes/lines for one case. Records gen L/R (rec ch1/2) and the gen input (ch3)."""
     mode = case["mode"]
     boxes = [
-        box("obj-load", "loadbang", 40, 40, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
-        box("obj-del-dsp", "delay 1200", 40, 80, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-dsp", "; dsp start", 40, 120, 80, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-arm", f"delay {case['arm']}", 40, 160, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-on", "1", 40, 200, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-stop", f"delay {case['dur']}", 40, 240, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-off", "0", 40, 280, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-peak", "delay 40", 40, 320, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-del-analyze", "delay 80", 40, 360, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-analyze", f"analyze {case['dur']}", 120, 360, 90, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-quit", "; max quit", 40, 420, 70, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-params", case["params"], 200, 40, 680, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-setbuf", "setbuffer #0-recipscope", 200, 70, 190, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-bind", "scope #0-recipscope", 200, 100, 180, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-scope", "buffer~ #0-recipscope @samps 32", 520, 100, 210, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", "buffer~ rec 4000 2", 520, 160, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [200.0, 200.0, 300.0, 80.0],
-            }
-        },
-        box("obj-record", "record~ rec 2", 200, 300, 90, 20, numinlets=4, numoutlets=1, outlettype=[""]),
-        box("obj-peak-l", "peakamp~", 200, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-peak-r", "peakamp~", 290, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-peak-c", "peakamp~", 380, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-mute-l", "*~ 0", 200, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-mute-r", "*~ 0", 260, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-dac", "dac~", 200, 430, 50, 20, numinlets=2, numoutlets=0, outlettype=[]),
-        box(
-            "obj-js",
-            f"js {PROBE_JS} {mode}",
-            200, 470, 420, 20,
-            numinlets=4,
-            numoutlets=3,
-            outlettype=["bang", "bang", ""],
-        ),
+        mh.msg("dev-params", case["params"], 200, 40, 680),
+        mh.msg("dev-setbuf", f"setbuffer {SCOPE}", 200, 70, 190),
+        mh.msg("dev-bind", f"scope {SCOPE}", 200, 100, 180),
+        mh.box("dev-scope", f"buffer~ {SCOPE} @samps 32", 520, 100, 210, numoutlets=2,
+               outlettype=["float", "bang"]),
+        mh.gen_box("dev-gen", gen_code, 200, 200),
     ]
-
     lines = [
-        line("obj-load", 0, "obj-del-dsp", 0),
-        line("obj-load", 0, "obj-params", 0),
-        line("obj-load", 0, "obj-setbuf", 0),
-        line("obj-load", 0, "obj-bind", 0),
-        line("obj-bind", 0, "obj-gen", 0),
-        line("obj-del-dsp", 0, "obj-dsp", 0),
-        line("obj-del-dsp", 0, "obj-del-arm", 0),
-        line("obj-del-arm", 0, "obj-rec-on", 0),
-        line("obj-del-arm", 0, "obj-del-stop", 0),
-        line("obj-del-stop", 0, "obj-rec-off", 0),
-        line("obj-del-stop", 0, "obj-del-peak", 0),
-        line("obj-del-peak", 0, "obj-peak-l", 0),
-        line("obj-del-peak", 0, "obj-peak-r", 0),
-        line("obj-del-peak", 0, "obj-peak-c", 0),
-        line("obj-del-peak", 0, "obj-del-analyze", 0),
-        line("obj-del-analyze", 0, "obj-analyze", 0),
-        line("obj-setbuf", 0, "obj-js", 3),
-        line("obj-params", 0, "obj-gen", 0),
-        line("obj-analyze", 0, "obj-js", 3),
-        line("obj-js", 0, "obj-quit", 0),
-        line("obj-rec-on", 0, "obj-record", 0),
-        line("obj-rec-off", 0, "obj-record", 0),
-        line("obj-gen", 0, "obj-record", 0),
-        line("obj-gen", 1, "obj-record", 1),
-        line("obj-gen", 0, "obj-peak-l", 0),
-        line("obj-gen", 1, "obj-peak-r", 0),
-        line("obj-gen", 0, "obj-mute-l", 0),
-        line("obj-gen", 1, "obj-mute-r", 0),
-        line("obj-mute-l", 0, "obj-dac", 0),
-        line("obj-mute-r", 0, "obj-dac", 1),
-        line("obj-peak-l", 0, "obj-js", 0),
-        line("obj-peak-c", 0, "obj-js", 1),
-        line("obj-peak-r", 0, "obj-js", 2),
+        mh.line("obj-load", 0, "dev-params", 0),
+        mh.line("obj-load", 0, "dev-setbuf", 0),
+        mh.line("obj-load", 0, "dev-bind", 0),
+        mh.line("dev-bind", 0, "dev-gen", 0),
+        mh.line("dev-params", 0, "dev-gen", 0),
+        mh.line("dev-setbuf", 0, "obj-js", 0),
+        mh.line("dev-gen", 0, "obj-record", 0),
+        mh.line("dev-gen", 1, "obj-record", 1),
+        mh.line("dev-gen", 0, "obj-mute-l", 0),
+        mh.line("dev-gen", 1, "obj-mute-r", 0),
     ]
-
+    events = []
+    src = "dev-gain"
     if mode == "sine":
         amp = case.get("amp", 0.25)
         freq = case.get("freq", 220)
-        boxes.append(box("obj-tone", f"cycle~ {freq}", 700, 200, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-gain", f"*~ {amp}", 700, 240, 65, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        lines.extend([
-            line("obj-tone", 0, "obj-gain", 0),
-            line("obj-gain", 0, "obj-gen", 0),
-            line("obj-gain", 0, "obj-gen", 1),
-            line("obj-gain", 0, "obj-peak-c", 0),
-        ])
+        boxes += [mh.box("dev-tone", f"cycle~ {freq}", 700, 200, 80, numinlets=2, outlettype=["signal"]),
+                  mh.box("dev-gain", f"*~ {amp}", 700, 240, 65, numinlets=2, outlettype=["signal"])]
+        lines += [mh.line("dev-tone", 0, "dev-gain", 0)]
     elif mode == "impulse":
-        boxes.append(box("obj-click", "click~", 700, 200, 50, 20, numinlets=1, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-gain", "*~ 0.5", 700, 240, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-del-click", "delay 40", 700, 160, 70, 20, numinlets=2, numoutlets=1))
-        lines.extend([
-            line("obj-click", 0, "obj-gain", 0),
-            line("obj-gain", 0, "obj-gen", 0),
-            line("obj-gain", 0, "obj-gen", 1),
-            line("obj-gain", 0, "obj-peak-c", 0),
-            line("obj-del-arm", 0, "obj-del-click", 0),
-            line("obj-del-click", 0, "obj-click", 0),
-        ])
+        boxes += [mh.box("dev-click", "click~", 700, 200, 50, outlettype=["signal"]),
+                  mh.box("dev-gain", "*~ 0.5", 700, 240, 60, numinlets=2, outlettype=["signal"])]
+        lines += [mh.line("dev-click", 0, "dev-gain", 0)]
+        # Old: click fired 40 ms after record arm -> settle + 40 ms from DSP start.
+        events.append((case["arm"] + 40, "dev-click", 0, "bang"))
     elif mode == "twotone":
         # Starts at 0.50 amplitude, then steps down to 0.035 at 350 ms after recording starts.
-        boxes.append(box("obj-tone", "cycle~ 220", 700, 180, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-env", "*~ 0.5", 700, 240, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-line", "line~ 0.5", 780, 240, 65, 20, numinlets=2, numoutlets=2, outlettype=["signal", "bang"]))
-        boxes.append(box("obj-step-hi", "0.5", 780, 180, 40, 20, maxclass="message", numinlets=2, numoutlets=1))
-        boxes.append(box("obj-del-step", "delay 350", 830, 180, 70, 20, numinlets=2, numoutlets=1))
-        boxes.append(box("obj-step-lo", "0.035 10", 830, 210, 65, 20, maxclass="message", numinlets=2, numoutlets=1))
-        lines.extend([
-            line("obj-tone", 0, "obj-env", 0),
-            line("obj-line", 0, "obj-env", 1),
-            line("obj-env", 0, "obj-gen", 0),
-            line("obj-env", 0, "obj-gen", 1),
-            line("obj-env", 0, "obj-peak-c", 0),
-            line("obj-del-arm", 0, "obj-step-hi", 0),
-            line("obj-step-hi", 0, "obj-line", 0),
-            line("obj-del-arm", 0, "obj-del-step", 0),
-            line("obj-del-step", 0, "obj-step-lo", 0),
-            line("obj-step-lo", 0, "obj-line", 0),
-        ])
-
-    doc = {
-        "patcher": {
-            "fileversion": 1,
-            "appversion": {"major": 9, "minor": 1, "revision": 5, "architecture": "x64", "modernui": 1},
-            "classnamespace": "box",
-            "rect": [40.0, 40.0, 1000.0, 560.0],
-            "boxes": boxes,
-            "lines": lines,
-        }
-    }
-    with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent="\t")
-        f.write("\n")
+        boxes += [mh.box("dev-tone", "cycle~ 220", 700, 180, 80, numinlets=2, outlettype=["signal"]),
+                  mh.box("dev-gain", "*~ 0.5", 700, 240, 55, numinlets=2, outlettype=["signal"]),
+                  mh.box("dev-line", "line~ 0.5", 780, 240, 65, numinlets=2, numoutlets=2,
+                         outlettype=["signal", "bang"])]
+        lines += [mh.line("dev-tone", 0, "dev-gain", 0), mh.line("dev-line", 0, "dev-gain", 1)]
+        events.append((case["arm"] + 350, "dev-line", 0, "0.035 10"))
+    lines += [
+        mh.line(src, 0, "dev-gen", 0),
+        mh.line(src, 0, "dev-gen", 1),
+        mh.line(src, 0, "obj-record", 2),
+    ]
+    return boxes, lines, events
 
 
 def cases():
@@ -285,71 +168,20 @@ def cases():
     )
 
 
-def parse_result(text):
-    meta = {}
-    env = []
-    for raw in text.splitlines():
-        if not raw.strip():
-            continue
-        if raw.startswith("env "):
-            env = [float(x) for x in raw[4:].split()] if raw.strip() != "env" else []
-            continue
-        key, val = raw.split(None, 1)
-        meta[key] = float(val)
-    meta["env"] = env
-    return meta
-
-
 def env_max(env, start, end):
     chunk = env[start:end]
     return max(chunk) if chunk else 0.0
 
 
 def run_case(gen_code, case):
-    build_harness(gen_code, case)
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    recovery = os.path.expanduser(
-        "~/Library/Application Support/Cycling '74/Max 9/Crash Recovery"
-    )
-    if os.path.isdir(recovery):
-        subprocess.run(["rm", "-rf", recovery], check=False)
-
-    proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 30
-    while time.time() < deadline and not os.path.exists(RESULT):
-        if proc.poll() is not None:
-            break
-        time.sleep(0.2)
-
-    last_size = -1
-    stable = 0
-    while time.time() < deadline and stable < 2:
-        if not os.path.exists(RESULT):
-            break
-        size = os.path.getsize(RESULT)
-        if size > 0 and size == last_size:
-            stable += 1
-        else:
-            stable = 0
-            last_size = size
-        time.sleep(0.15)
-
-    if proc.poll() is None:
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    time.sleep(0.3)
+    boxes, lines, events = build_device(gen_code, case)
     print(f"--- {case['name']} ---")
-    if not os.path.exists(RESULT):
-        print("NO RESULT FILE")
-        return None
-    meta = parse_result(open(RESULT).read())
+    meta = mh.run_case(
+        f"recip_{case['name']}", boxes, lines, probe_js=PROBE_JS, probe_args=case["mode"],
+        settle_ms=case["arm"], dur_ms=case["dur"], channels=3,
+        mode="stepped" if events else "nrt", events=events, timeout=300,
+    )
+    meta["env"] = [meta.pop(f"env_{i}") for i in range(int(meta.get("envbins", 0)))]
     print(
         f"genL {meta.get('genL'):.4f} ctl {meta.get('ctl'):.4f} peak {meta.get('peak'):.4f} "
         f"crest {meta.get('crest'):.3f} scopeEnv {meta.get('scopeEnv'):.4f} "
@@ -402,7 +234,8 @@ def check(name, meta, errors):
         print(f"audiorate crest={crest:.4f} peak={meta.get('peak'):.4f}")
         if not (1.0 <= crest <= 1.33):
             errors.append(f"audiorate: expected squared/waveshaped crest factor < 1.33, got {crest}")
-        if meta.get("peak", 0) < 0.7 or meta.get("peak", 99) > 0.95:
+        # outmode 0 is a real tanh soft clip now (it used to fall through to the limiter, which pinned the peak at the ceiling)
+        if meta.get("peak", 0) < 0.6 or meta.get("peak", 99) > 0.95:
             errors.append(f"audiorate: peak out of range ({meta.get('peak')})")
     elif name == "ceiling":
         pk = env_max(env, 60, 320)

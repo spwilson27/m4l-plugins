@@ -1,8 +1,11 @@
-// CPU probe for scripts/run_timbre_audio_tests.py: inlet 0 gets floats from [adstatus cpu] and `finish`,
-// inlet 1 a [snapshot~] of the noise source (non-zero proves the DSP chain runs). jsarguments[1] = report path.
+// CPU probe for scripts/run_timbre_audio_tests.py (run by scripts/max_harness.py in audio_device mode):
+// inlet 0 gets floats from [adstatus cpu] and the harness's `analyze <durMs>` (= finish),
+// inlet 1 a [snapshot~] of the noise source (non-zero proves the DSP chain runs). The report goes to the
+// path the harness sends with `resultpath`.
 inlets = 2;
 outlets = 1;
-var reportPath = jsarguments.length > 1 ? jsarguments[1] : "/tmp/timbre_cpu.txt";
+var reportPath = "/tmp/timbre_cpu.txt";
+function resultpath(p) { reportPath = String(p); }
 var cpuSamples = [];
 var alive = 0;
 var armed = false;
@@ -11,6 +14,8 @@ function msg_float(v) {
     if (inlet === 1) { if (v !== 0) alive++; return; }
     cpuSamples.push(v);
 }
+
+function analyze(durMs) { finish(); }
 
 function finish() {
     if (armed) return;

@@ -122,6 +122,12 @@ def make_dial(key, x, y, w, h, accent):
     return {
         "box": {
             "activedialcolor": [accent[0], accent[1], accent[2], 1.0],
+            "activeneedlecolor": [accent[0], accent[1], accent[2], 1.0],
+            "dialcolor": [0.30, 0.34, 0.46, 1.0],
+            "needlecolor": [0.92, 0.94, 1.0, 1.0],
+            "showname": 1,
+            "shownumber": 1,
+            "textcolor": [0.82, 0.86, 0.90, 1.0],
             "annotation": help_text,
             "annotation_name": long_name,
             "id": f"obj-ctrl-{key}",
@@ -142,7 +148,8 @@ def make_dial(key, x, y, w, h, accent):
 def make_mode_tab(x, y, w, h, rows=1, fontsize=9.0):
     return {
         "box": {
-            "activebgcolor": [0.070, 0.078, 0.120, 1.0],
+            "activebgcolor": [0.100, 0.112, 0.170, 1.0],
+            "bordercolor": [0.42, 0.46, 0.60, 1.0],
             "activebgoncolor": [AMBER[0], AMBER[1], AMBER[2], 1.0],
             "activetextcolor": [0.85, 0.88, 0.94, 1.0],
             "activetextoncolor": [0.05, 0.05, 0.08, 1.0],
@@ -176,7 +183,7 @@ def make_mode_tab(x, y, w, h, rows=1, fontsize=9.0):
                 }
             },
             "spacing_x": 3.0,
-            "spacing_y": 3.0,
+            "spacing_y": 4.0,
             "varname": "Mode",
         }
     }
@@ -490,7 +497,7 @@ def variant_a():
 
 def variant_b():
     w = 264.0
-    ctrl = [make_mode_tab(198, 8, 58, 58, rows=2, fontsize=9.0)]
+    ctrl = [make_mode_tab(198, 8, 58, 56, rows=2, fontsize=10.0)]
     for i, (key, accent) in enumerate((("sens", AMBER), ("attack", CYAN), ("release", CYAN), ("focus", VIOLET))):
         ctrl.append(make_dial(key, 8 + i * 62.0, 70.0, 60.0, 46.0, accent))
     return dict(

@@ -6,6 +6,11 @@ inlets = 1;
 outlets = 1;
 
 var armed = false;
+var resultPath = "/tmp/mbsplit_audio.txt";
+
+function resultpath(p) {
+    resultPath = String(p);
+}
 var scopeName = "";
 
 function setbuffer(name) {
@@ -97,7 +102,18 @@ function analyze(durMs) {
     var stR = computeStats(right, startFrame, endFrame);
     var sc = readScopeStats();
 
-    var report = new File("/tmp/mbsplit_audio.txt", "write", "TEXT");
+    // Raw sample dump (L R per line) for offline reference nulls in scripts/run_mbsplit_audio_tests.py
+    var dump = new File(resultPath + ".dump", "write", "TEXT");
+    dump.eof = 0;
+    var chunk = "";
+    for (var di = 0; di < n; di++) {
+        chunk += left[di] + " " + right[di] + "\n";
+        if (chunk.length > 24000) { dump.writestring(chunk); chunk = ""; }
+    }
+    if (chunk.length) dump.writestring(chunk);
+    dump.close();
+
+    var report = new File(resultPath, "write", "TEXT");
     report.writestring(
         "sr " + sr + "\n" +
         "frames " + n + "\n" +

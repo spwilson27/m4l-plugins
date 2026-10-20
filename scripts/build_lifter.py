@@ -80,7 +80,7 @@ VARIANTS = {
 # ("use of undeclared identifier 'v_40'") when cep_peak and cep_peak_conf (both with a loop
 # local `v`) are defined next to the Lifter core, used or not; each compiles on its own.
 # lft_pitch in src/lifter_core.genexpr does the same job with its own names.
-STRIP_LIB_FUNCS = ("cep_peak", "cep_peak_conf", "cep_peak_refine")
+STRIP_LIB_FUNCS = ()
 
 
 def strip_lib(lib):

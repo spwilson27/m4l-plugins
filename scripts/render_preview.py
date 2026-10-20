@@ -28,6 +28,57 @@ def slugify_device_name(amxd_path):
     return slug or "device"
 
 
+_MAX_SVG_DIRS = [
+    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Max/Max.app/Contents/Resources/C74/media/max/picts/m4l-picts",
+    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Max/Max.app/Contents/Resources/C74/interfaces",
+    "/Applications/Max.app/Contents/Resources/C74/media/max/picts/m4l-picts",
+    "/Applications/Max.app/Contents/Resources/C74/interfaces",
+]
+_SVG_CACHE = {}
+
+
+def builtin_svg_mask(name, size_px):
+    """Rasterize one of Live/Max's built-in SVG icons (e.g. lock.svg, piano_keys.svg) to an 'L' alpha mask
+    of size_px, using macOS Quick Look. Returns None when the icon or qlmanage is unavailable."""
+    key = (name, size_px)
+    if key in _SVG_CACHE:
+        return _SVG_CACHE[key]
+    mask = None
+    src = next((os.path.join(d, name) for d in _MAX_SVG_DIRS if os.path.exists(os.path.join(d, name))), None)
+    if src:
+        try:
+            with open(src, "r", encoding="utf-8") as f:
+                svg = f.read()
+            head = re.search(r"<svg[^>]*>", svg).group(0)
+            if "viewBox" not in head:
+                dims = [re.search(a + r'="([0-9.]+)', head) for a in ("width", "height")]
+                if all(dims):
+                    svg = svg.replace("<svg", f'<svg viewBox="0 0 {dims[0].group(1)} {dims[1].group(1)}"', 1)
+            for attr in ("width", "height"):
+                svg = re.sub(r'(<svg[^>]*?)\s' + attr + r'="[^"]*"', r"\1", svg, count=1)
+            big = max(128, size_px * 4)  # Quick Look renders tiny sizes poorly: rasterize large, then downsample
+            svg = svg.replace("<svg", f'<svg width="{big}" height="{big}"', 1)
+            with tempfile.TemporaryDirectory() as td:
+                sp = os.path.join(td, name)
+                with open(sp, "w", encoding="utf-8") as f:
+                    f.write(svg)
+                subprocess.run(["qlmanage", "-t", "-s", str(big), "-o", td, sp], capture_output=True, timeout=20)
+                png = sp + ".png"
+                if os.path.exists(png):
+                    inv = Image.open(png).convert("L").point(lambda v: 255 - v)  # dark icon on white -> opaque mask
+                    bb = inv.getbbox()
+                    if bb:
+                        inv = inv.crop(bb)
+                        sc = size_px / max(inv.size)
+                        inv = inv.resize((max(1, round(inv.size[0] * sc)), max(1, round(inv.size[1] * sc))), Image.LANCZOS)
+                        mask = Image.new("L", (size_px, size_px), 0)
+                        mask.paste(inv, ((size_px - inv.size[0]) // 2, (size_px - inv.size[1]) // 2))
+        except Exception:
+            mask = None
+    _SVG_CACHE[key] = mask
+    return mask
+
+
 def get_font(size_px, bold=False):
     candidates = [
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -59,11 +110,13 @@ global.mgraphics = {{
     curve_to(x1, y1, x2, y2, x3, y3) {{ cmds.push({{ op: "curve_to", x1, y1, x2, y2, x3, y3 }}); }},
     close_path() {{ cmds.push({{ op: "close_path" }}); }},
     arc(x, y, r, a1, a2) {{ cmds.push({{ op: "arc", x, y, r, a1, a2 }}); }},
+    ellipse(x, y, w, h) {{ cmds.push({{ op: "arc", x: x + w / 2, y: y + h / 2, r: Math.min(w, h) / 2, a1: 0, a2: Math.PI * 2 }}); }},
+    text_measure(t) {{ return [String(t).length * (this._fs || 10) * 0.56, (this._fs || 10)]; }},
     fill() {{ cmds.push({{ op: "fill", preserve: false }}); }},
     fill_preserve() {{ cmds.push({{ op: "fill", preserve: true }}); }},
     stroke() {{ cmds.push({{ op: "stroke" }}); }},
     select_font_face(face) {{ cmds.push({{ op: "font_face", face }}); }},
-    set_font_size(size) {{ cmds.push({{ op: "font_size", size }}); }},
+    set_font_size(size) {{ this._fs = size; cmds.push({{ op: "font_size", size }}); }},
     show_text(text) {{ cmds.push({{ op: "show_text", text }}); }},
     save() {{ cmds.push({{ op: "save" }}); }},
     restore() {{ cmds.push({{ op: "restore" }}); }},
@@ -245,7 +298,8 @@ def is_fully_transparent(box):
     """A live.* widget whose every colour attribute has alpha 0 draws nothing in Live, so the preview skips it."""
     if not str(box.get("maxclass", "")).startswith("live.") or box.get("maxclass") == "live.comment":
         return False
-    colours = [v for k, v in box.items() if "color" in k and isinstance(v, list) and len(v) == 4]
+    # focusbordercolor only shows while a file is dragged over the widget
+    colours = [v for k, v in box.items() if "color" in k and k != "focusbordercolor" and isinstance(v, list) and len(v) == 4]
     return bool(colours) and all(c[3] == 0 for c in colours)
 
 
@@ -430,6 +484,8 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     val_str = f"{init_val:.1f} ms"
                 elif ustyle == 2:
                     val_str = f"{int(round(init_val))} ms"
+                elif ustyle == 0:
+                    val_str = f"{int(round(init_val))}"
                 else:
                     val_str = f"{init_val:.1f}"
                 fnt = get_font(float(w.get("fontsize", 8.5)) * SCALE, bold=True)
@@ -492,6 +548,15 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 bbox = draw.textbbox((0, 0), txt, font=fnt)
                 tw = bbox[2] - bbox[0]
                 draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), txt, font=fnt, fill=tc)
+            elif w.get("usepicture") == 1 and len(pics) >= 1 and builtin_svg_mask(pics[min(len(pics) - 1, 1 if init_on else 0)], int(min(rw, rh) - 4 * SCALE)) is not None:
+                # Built-in Live/Max SVG icon toggle (remapsvgcolors: tinted with the text colour)
+                bg = rgba_tuple(w.get("activebgoncolor", [1.0, 0.694, 0.18, 1.0]) if init_on else w.get("activebgcolor", [0.12, 0.14, 0.17, 1.0]))
+                bd = rgba_tuple(w.get("bordercolor", [1.0, 0.71, 0.2, 1.0]))
+                tc = rgba_tuple(w.get("activetextoncolor", [0.08, 0.1, 0.12, 1.0]) if init_on else w.get("activetextcolor", w.get("textcolor", [0.75, 0.78, 0.82, 1.0])))
+                draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
+                isz = int(min(rw, rh) - 4 * SCALE)
+                mask = builtin_svg_mask(pics[min(len(pics) - 1, 1 if init_on else 0)], isz)
+                img.paste(Image.new("RGBA", (isz, isz), tc), (int(rx + (rw - isz) * 0.5), int(ry + (rh - isz) * 0.5)), mask)
             else:
                 bg = rgba_tuple(w.get("activebgoncolor", [1.0, 0.694, 0.18, 1.0]) if init_on else w.get("activebgcolor", [0.12, 0.14, 0.17, 1.0]))
                 bd = rgba_tuple(w.get("bordercolor", [1.0, 0.71, 0.2, 1.0]))
@@ -562,6 +627,10 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                                 (x_r, y_top),
                             ]
                             draw.line(pts, fill=tc, width=lw, joint="curve")
+                    elif pic_name and builtin_svg_mask(pic_name, int(min(cell_w, rh) - 4 * SCALE)) is not None:
+                        # Any other built-in Live/Max SVG icon, tinted with the cell's text colour
+                        isz = int(min(cell_w, rh) - 4 * SCALE)
+                        img.paste(Image.new("RGBA", (isz, isz), tc), (int(cx0 + (cell_w - isz) * 0.5), int(ry + (rh - isz) * 0.5)), builtin_svg_mask(pic_name, isz))
                     else:
                         bbox = draw.textbbox((0, 0), label, font=fnt)
                         tw = bbox[2] - bbox[0]

@@ -57,7 +57,7 @@ function makeLifter(n, sr, table, opts) {
     const cs = new Float64Array(n / 2 + 1);
     const a = o.smooth < 0.001 ? 0 : Math.exp(-((n * 0.25) / sr) / (0.4 * o.smooth));
     const gt = gainTable(table, n, sr, o.scl, o.depth);
-    const state = { pitch: [], conf: [] };
+    const state = { pitch: [], conf: [], nf: [] };
     const stft = new ref.Stft(n, (re, im) => {
         const c = ref.realCepstrum(re, im, EPS);
         const lo = Math.floor(sr * 0.002);
@@ -75,8 +75,22 @@ function makeLifter(n, sr, table, opts) {
             if (q < n / 2) d[n - q] = sd;
         }
         const ls = ref.cepToLogSpec(d);
+        // soft-limited change per bin, then one factor restoring the frame energy
+        const gd = new Float64Array(n);
+        let ein = 0;
+        let eout = 0;
         for (let i = 0; i < n; i++) {
-            const g = Math.exp(LIM * Math.tanh(ls.re[i] / LIM));
+            gd[i] = LIM * Math.tanh(ls.re[i] / LIM);
+            const m2 = re[i] * re[i] + im[i] * im[i];
+            ein += m2;
+            eout += m2 * Math.exp(2 * gd[i]);
+        }
+        let nf = 1;
+        if (ein > 1e-18 && eout > 1e-30) nf = Math.min(1000, Math.max(0.001, Math.sqrt(ein / eout)));
+        state.nf.push(nf);
+        const nfd = Math.log(nf);
+        for (let i = 0; i < n; i++) {
+            const g = Math.exp(gd[i] + nfd);
             re[i] *= g;
             im[i] *= g;
         }

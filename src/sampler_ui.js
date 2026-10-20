@@ -56,7 +56,13 @@ var curFiltCutoff = 18000.0;
 
 // Every parameter value in display units, keyed like FACE_PARAMS (filled by the set_<key> echoes)
 var paramVals = {};
-var lastEngine = 0;       // engine restored when leaving Sliced
+var curSliced = 0;        // 0 = Single (start / loop points), 1 = Sliced (each key plays a slice)
+var curSliceFrom = 36;    // key that plays the first slice (C1)
+var sliceMono = null;     // mono copy of the sample for the onset / pitch slicers
+var sampleRateHz = 44100;
+var showInspector = 0;
+var DEVICE_W = 600;
+var INSPECTOR_W = 160;
 
 // Slice markers (normalized 0..1)
 var sliceMarkers = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875];
@@ -116,7 +122,6 @@ function applyStateSnapshot(snap) {
         sliceMarkers = snap.sliceMarkers.slice();
     }
     paramVals.mode = curMode;
-    if (curMode < 3) lastEngine = curMode;
     outlet(0, "param", "mode", curMode);
     emitRegionParams();
     notifyclients();
@@ -249,11 +254,12 @@ function refreshWaveformFromBuffer() {
                     detectedRootMidi = estimateRootMidiNote(monoWin, 44100);
                 }
             }
+            captureSliceMono(b, frames, chans);
             if (restoredSlices) {
                 sliceMarkers = restoredSlices;
                 restoredSlices = null;
             } else {
-                sliceMarkers = detectTransientSlices(wavePeaksL, sliceSensitivity, 16);
+                recomputeSlices();
             }
         }
     } catch (err) {
@@ -261,6 +267,54 @@ function refreshWaveformFromBuffer() {
         trace("refresh-error", lastLoadError);
         if (typeof post === "function") post("Better Sampler: waveform refresh failed: " + lastLoadError + "\n");
     }
+}
+
+// Mono downmix for the onset / pitch slicers (capped at 10 minutes)
+function captureSliceMono(b, frames, chans) {
+    try {
+        var n = Math.min(frames, 48000 * 600);
+        var l = b.peek(1, 0, n);
+        var r = chans > 1 ? b.peek(2, 0, n) : null;
+        var mono = new Float32Array(n);
+        for (var i = 0; i < n; i++) mono[i] = r ? 0.5 * (l[i] + r[i]) : l[i];
+        sliceMono = mono;
+    } catch (_) {
+        sliceMono = null;
+    }
+}
+
+function liveTempo() {
+    try {
+        if (typeof LiveAPI !== "undefined") {
+            var t = Number(new LiveAPI("live_set").get("tempo"));
+            if (t > 20) return t;
+        }
+    } catch (_) {}
+    return 120;
+}
+
+// Slice markers from the "Slice at" mode; Manual keeps the user's markers
+function recomputeSlices() {
+    var at = Math.round(paramValue("slice_at"));
+    var next = null;
+    if (at === 0 && typeof sliceDivisions === "function") {
+        next = sliceDivisions(curStart, curEnd, Math.round(paramValue("slice_div")));
+    } else if (at === 1 && typeof sliceBeats === "function") {
+        var bpm = (typeof bpmFromName === "function" ? bpmFromName(sampleFileName) : 0) || liveTempo();
+        next = sliceBeats(curStart, curEnd, sampleFrames, sampleRateHz, bpm, Math.round(paramValue("slice_beat")));
+    } else if (at === 2 && sliceMono && typeof sliceOnsets === "function") {
+        next = sliceOnsets(sliceMono, sampleRateHz, paramValue("slice_sens") * 0.01, 0, 1);
+    } else if (at === 3 && sliceMono && typeof slicePitches === "function") {
+        next = slicePitches(sliceMono, sampleRateHz, paramValue("slice_sens") * 0.01, 0, 1);
+    } else if (at === 2 || at === 3) {
+        next = detectTransientSlices(wavePeaksL, paramValue("slice_sens") * 0.01, 32);
+    }
+    if (next) {
+        sliceMarkers = next;
+        refreshHeldSlices();
+        notifyclients();
+    }
+    mgraphics.redraw();
 }
 
 function pollTelemetryScope() {
@@ -355,9 +409,30 @@ function currentSliceStarts() {
     return activeSliceStarts(sliceMarkers, curStart, curEnd);
 }
 
+// Divisions and Beats are laid out from the start point, so they move with it
+function regionMovedSlices() {
+    var at = Math.round(paramValue("slice_at"));
+    if (curSliced && (at === 0 || at === 1)) {
+        var keep = sliceMarkers;
+        recomputeSlices();
+        if (!sliceMarkers) sliceMarkers = keep;
+    } else {
+        refreshHeldSlices();
+    }
+}
+
+// Device width: 600 px, plus the inspector panel when it is shown
+function applyDeviceWidth() {
+    outlet(0, "setwidth_cmd", DEVICE_W + (showInspector ? INSPECTOR_W : 0));
+}
+
+function device_ready() {
+    applyDeviceWidth();
+}
+
 // Held Sliced-mode notes follow the start / end point live
 function refreshHeldSlices() {
-    if (curMode !== 3) return;
+    if (!curSliced) return;
     var touched = voiceAlloc.updateSliceBounds(currentSliceStarts(), curEnd);
     for (var i = 0; i < touched.length; i++) writeVoiceToBuffer(touched[i]);
 }
@@ -371,8 +446,8 @@ function midi_note(note, vel) {
         var starts = currentSliceStarts();
         var allocated = voiceAlloc.noteOn(n, v, curMonoLegato, starts, curEnd);
         writeVoiceToBuffer(allocated);
-        if (curMode === 3) {
-            selectedSliceIdx = Math.max(0, n - 36) % starts.length;
+        if (curSliced) {
+            selectedSliceIdx = Math.max(0, n - curSliceFrom) % starts.length;
         }
     } else {
         var released = voiceAlloc.noteOff(n, curMonoLegato);
@@ -390,13 +465,19 @@ function all_notes_off() {
 }
 
 function emitRegionParams() {
-    refreshHeldSlices();
-    outlet(0, "param", "samp_start", Math.round(curStart * 1000) / 10);
-    outlet(0, "param", "samp_end", Math.round(curEnd * 1000) / 10);
-    outlet(0, "param", "loop_start", Math.round(curLoopStart * 1000) / 10);
-    outlet(0, "param", "loop_end", Math.round(curLoopEnd * 1000) / 10);
-    outlet(0, "param", "loop_xfade", Math.round((curXfade / 0.45) * 1000) / 10);
-    outlet(0, "param", "play_pos", Math.round(curPlayPos * 1000) / 10);
+    regionMovedSlices();
+    var vals = [
+        ["samp_start", Math.round(curStart * 1000) / 10],
+        ["samp_end", Math.round(curEnd * 1000) / 10],
+        ["loop_start", Math.round(curLoopStart * 1000) / 10],
+        ["loop_end", Math.round(curLoopEnd * 1000) / 10],
+        ["loop_xfade", Math.round((curXfade / 0.45) * 1000) / 10],
+        ["play_pos", Math.round(curPlayPos * 1000) / 10]
+    ];
+    for (var i = 0; i < vals.length; i++) {
+        expectEcho(vals[i][0], vals[i][1]);
+        outlet(0, "param", vals[i][0], vals[i][1]);
+    }
 }
 
 function clampInt(n, lo, hi) { return Math.max(lo, Math.min(hi, Math.round(n))); }
@@ -408,18 +489,50 @@ function paramValue(key) {
     return p ? p.init : 0;
 }
 
+// Values the face sent to Live that have not echoed back yet, per key (oldest first). Live can echo
+// a gesture's values late; an echo older than the newest value we sent must not drag state back.
+var echoPending = {};
+
+function expectEcho(key, v) {
+    var q = echoPending[key] || (echoPending[key] = []);
+    q.push(Number(v));
+    if (q.length > 64) q.shift();
+}
+
+// true when this echo is a stale copy of something we already superseded
+function isStaleEcho(key, n) {
+    var q = echoPending[key];
+    if (!q || q.length === 0) return false;
+    for (var i = 0; i < q.length; i++) {
+        if (Math.abs(q[i] - n) <= 1e-4 * Math.max(1, Math.abs(n))) {
+            q.splice(0, i + 1);
+            return q.length > 0;
+        }
+    }
+    return false;  // not ours: automation or another control, apply it
+}
+
 // Single entry point for live.* echoes and face edits; mirrors the values the voice logic needs
-function storeParam(key, v) {
+function storeParam(key, v, fromFace) {
     var n = Number(v);
     if (!isFinite(n)) return;
+    if (!fromFace && isStaleEcho(key, n)) return;
     paramVals[key] = n;
     switch (key) {
-        case "mode": curMode = clampInt(n, 0, 3); if (curMode < 3) lastEngine = curMode; break;
+        case "mode": curMode = clampInt(n, 0, 4); break;
+        case "sliced": curSliced = n > 0.5 ? 1 : 0; refreshHeldSlices(); break;
+        case "slice_from":
+            curSliceFrom = clampInt(n, 0, 127);
+            if (typeof voiceAlloc.setSliceBaseNote === "function") voiceAlloc.setSliceBaseNote(curSliceFrom);
+            refreshHeldSlices();
+            break;
+        case "slice_at": case "slice_div": case "slice_beat": case "slice_sens": recomputeSlices(); break;
+        case "show_inspector": showInspector = n > 0.5 ? 1 : 0; applyDeviceWidth(); break;
         case "freeze": curFreeze = n > 0.5 ? 1 : 0; break;
         case "reverse": curReverse = n > 0.5 ? 1 : 0; break;
         case "loop_mode": curLoopMode = clampInt(n, 0, 2); break;
-        case "samp_start": curStart = clampF(n * 0.01, 0.0, 0.98); refreshHeldSlices(); break;
-        case "samp_end": curEnd = clampF(n * 0.01, curStart + 0.01, 1.0); refreshHeldSlices(); break;
+        case "samp_start": curStart = clampF(n * 0.01, 0.0, 0.98); regionMovedSlices(); break;
+        case "samp_end": curEnd = clampF(n * 0.01, curStart + 0.01, 1.0); regionMovedSlices(); break;
         case "loop_start": curLoopStart = clampF(n * 0.01, 0.0, 0.98); break;
         case "loop_end": curLoopEnd = clampF(n * 0.01, curLoopStart + 0.01, 1.0); break;
         case "loop_xfade": curXfade = clampF(n * 0.0045, 0.0, 0.45); break;
@@ -439,6 +552,49 @@ function set_freeze(v) { storeParam("freeze", v); }
 function set_reverse(v) { storeParam("reverse", v); }
 function set_loop_mode(v) { storeParam("loop_mode", v); }
 function set_slice_play(v) { storeParam("slice_play", v); }
+function set_rp_dist(v) { storeParam("rp_dist", v); }
+function set_rp_color(v) { storeParam("rp_color", v); }
+function set_sp_shift(v) { storeParam("sp_shift", v); }
+function set_sp_bend(v) { storeParam("sp_bend", v); }
+function set_sp_quant_amt(v) { storeParam("sp_quant_amt", v); }
+function set_sp_dispersion(v) { storeParam("sp_dispersion", v); }
+function set_cy_width(v) { storeParam("cy_width", v); }
+function set_cy_split(v) { storeParam("cy_split", v); }
+function set_cy_fund(v) { storeParam("cy_fund", v); }
+function set_cy_mod(v) { storeParam("cy_mod", v); }
+function set_cy_harm(v) { storeParam("cy_harm", v); }
+function set_fr_env(v) { storeParam("fr_env", v); }
+function set_fr_repeats(v) { storeParam("fr_repeats", v); }
+function set_fr_density(v) { storeParam("fr_density", v); }
+function set_fr_motion(v) { storeParam("fr_motion", v); }
+function set_fr_max_grains(v) { storeParam("fr_max_grains", v); }
+function set_slice_div(v) { storeParam("slice_div", v); }
+function set_slice_sens(v) { storeParam("slice_sens", v); }
+function set_slice_from(v) { storeParam("slice_from", v); }
+function set_sliced(v) { storeParam("sliced", v); }
+function set_rp_char(v) { storeParam("rp_char", v); }
+function set_rp_vsr(v) { storeParam("rp_vsr", v); }
+function set_rp_imaging(v) { storeParam("rp_imaging", v); }
+function set_sp_char(v) { storeParam("sp_char", v); }
+function set_sp_quant(v) { storeParam("sp_quant", v); }
+function set_sp_onsets(v) { storeParam("sp_onsets", v); }
+function set_sp_formant_on(v) { storeParam("sp_formant_on", v); }
+function set_sp_quality(v) { storeParam("sp_quality", v); }
+function set_sp_live(v) { storeParam("sp_live", v); }
+function set_sp_rel_formant(v) { storeParam("sp_rel_formant", v); }
+function set_sp_key(v) { storeParam("sp_key", v); }
+function set_sp_scale(v) { storeParam("sp_scale", v); }
+function set_cy_char(v) { storeParam("cy_char", v); }
+function set_cy_xfade(v) { storeParam("cy_xfade", v); }
+function set_fr_sync(v) { storeParam("fr_sync", v); }
+function set_fr_use_density(v) { storeParam("fr_use_density", v); }
+function set_fr_direction(v) { storeParam("fr_direction", v); }
+function set_fr_latch(v) { storeParam("fr_latch", v); }
+function set_fr_repeat_init(v) { storeParam("fr_repeat_init", v); }
+function set_fr_survive(v) { storeParam("fr_survive", v); }
+function set_slice_at(v) { storeParam("slice_at", v); }
+function set_slice_beat(v) { storeParam("slice_beat", v); }
+function set_show_inspector(v) { storeParam("show_inspector", v); }
 function set_samp_start(v) { storeParam("samp_start", v); }
 function set_samp_end(v) { storeParam("samp_end", v); }
 function set_loop_start(v) { storeParam("loop_start", v); }
@@ -489,7 +645,7 @@ function preview() {
     sampleFrames = 53800;
     sampleDurationMs = 1220;
     curMode = 0;
-    lastEngine = 0;
+    curSliced = 0;
     curLoopMode = 1;
     curStart = 0.0;
     curEnd = 1.0;
@@ -517,8 +673,9 @@ function preview() {
 
 // Backward-compatible state serialization (rule #6)
 function getvalueof() {
+    /** @type {Array<number | string>} */
     var out = [
-        2, // version 2 (v1 + trailing sample path)
+        3, // version 3: mode is the engine 0..4 (v1/v2: mode 3 was the Slice engine); v2+ add the sample path
         curMode,
         Math.round(curStart * 10000),
         Math.round(curEnd * 10000),
@@ -542,8 +699,16 @@ function setvalueof() {
     if (!a || a.length < 2) return;
     var ver = Math.round(a[0]);
     if (ver >= 1 && a.length >= 11) {
-        curMode = Math.max(0, Math.min(3, Math.round(a[1])));
-        if (curMode < 3) lastEngine = curMode;
+        var savedMode = Math.round(a[1]);
+        if (ver < 3 && savedMode === 3) {
+            // v1 / v2 blobs: mode 3 was the Slice engine (Sliced Repitch)
+            curMode = 0;
+            curSliced = 1;
+            outlet(0, "param", "mode", 0);
+            outlet(0, "param", "sliced", 1);
+        } else {
+            curMode = Math.max(0, Math.min(4, savedMode));
+        }
         curStart = Math.max(0, Math.min(0.99, a[2] / 10000.0));
         curEnd = Math.max(curStart + 0.01, Math.min(1.0, a[3] / 10000.0));
         curLoopMode = Math.max(0, Math.min(2, Math.round(a[4])));

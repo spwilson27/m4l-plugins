@@ -6,11 +6,14 @@
 //   silence   — microscopic 0.0004 noise/tone well below Gate (-42 dB = 0.0079)
 //   transient — sharp full-scale 0.95 burst to test Lookahead + Ceiling clamp
 //
-// The report file /tmp/reciprocator_audio.txt is created ONLY inside analyze()
+// Under scripts/max_harness.py the report path arrives via resultpath. The report file /tmp/reciprocator_audio.txt is created ONLY inside analyze()
 // so the Python runner never reads a partial or empty file.
 
-inlets = 4;
-outlets = 3;
+var resultPath = "/tmp/reciprocator_audio.txt";
+function resultpath(p) { resultPath = String(p); }
+
+inlets = 1;
+outlets = 1;
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "sine";
 var peaks = { genL: -1, ctl: -1, genR: -1 };
@@ -29,11 +32,6 @@ function setbuffer(name) {
     }
 }
 
-function msg_float(v) {
-    if (inlet === 0) peaks.genL = v;
-    else if (inlet === 1) peaks.ctl = v;
-    else if (inlet === 2) peaks.genR = v;
-}
 
 function analyze(durMs) {
     if (armed) return;
@@ -45,11 +43,14 @@ function analyze(durMs) {
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var left = readChannel(rec, 1, n);
     var right = readChannel(rec, 2, n);
+    peaks.genL = chanPeak(left);
+    peaks.genR = chanPeak(right);
+    if (rec.channelcount() >= 3) peaks.ctl = chanPeak(readChannel(rec, 3, n));
     var env = envelope(left, right, sr);
     var stats = scan(left, right, sr);
     var scopeStats = readScope();
 
-    var report = new File("/tmp/reciprocator_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
     report.writestring(
         "genL " + peaks.genL + "\n" +
         "genR " + peaks.genR + "\n" +
@@ -64,8 +65,10 @@ function analyze(durMs) {
         "scopeEnv " + scopeStats.env + "\n" +
         "scopeOut " + scopeStats.out + "\n" +
         "scopeGate " + scopeStats.gate + "\n" +
-        "env " + env.join(" ") + "\n"
+        "envbins " + env.length + "\n"
     );
+    // max_harness parses only 2-token lines, so the envelope is written one bin per line.
+    for (var ei = 0; ei < env.length; ei++) report.writestring("env_" + ei + " " + env[ei] + "\n");
     report.close();
     post("RECIP_SHUTDOWN peak " + stats.peak + " scopeOut " + scopeStats.out + "\n");
     outlet(0, "bang");
@@ -153,4 +156,10 @@ function scan(left, right, sr) {
     var dc = count > 0 ? Math.abs(sum / count) : 0;
     var crest = rms > 1e-6 ? winPeak / rms : 0;
     return { nan: nan, peak: peak, dc: dc, zcr: zc, crest: crest };
+}
+
+function chanPeak(a) {
+    var p = 0, i;
+    for (i = 0; i < a.length; i++) if (Math.abs(a[i]) > p) p = Math.abs(a[i]);
+    return p;
 }

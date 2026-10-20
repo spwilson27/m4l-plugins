@@ -9,8 +9,9 @@
 //   260      : FFT size N
 //   261      : voiced flag
 //   262      : resmode in use
+//   263      : Ceps-gate threshold for Mid in |c| units (0 when the cepstral gate is inactive)
 //
-// Frame work (about 58 jobs per frame) is time-sliced across the first half of each hop, so no single
+// Frame work (about 71 jobs per frame at 4k) is time-sliced across the first half of each hop, so no single
 // sample runs more than one FFT pass. Packed-FFT trick: Mid + j*Side share one complex FFT, and because
 // both log-spectra / cepstra are real and symmetric, the same packing carries them through every stage.
 // Latency = N + N/8 samples (dry path is delayed by the same amount).
@@ -206,21 +207,93 @@ interp_env(arr, kf, nh) {
 }
 
 // Harmonic gate on the fine structure h (nepers above the envelope). gate01 = 0 is a bypass.
-gate_h(h, gate01) {
-	if (gate01 <= 0.0005) {
-		return h;
-	}
-	thr = gate01 * 3.4539;
+gate_h(h, p, gate01) {
+	// Spec gate: cut fine-structure bins more than `range` below the local partial peak p (peak envelope of H).
+	// range = 8 + 40 * (1 - g)^3 dB: 48 dB (barely acts) at 0+, ~17 dB at 40%, 8 dB at 100%.
+	// No early return: GenExpr falls through a `return` inside an `if` block. Gate 0 gives depth 0 = bypass.
+	om = 1 - gate01;
+	rng = (8 + 40 * om * om * om) / 8.685889638;
 	kn = 0.6;
-	t = clip((h - (thr - kn)) / (2 * kn), 0, 1);
+	t = clip((h - p + rng + kn) / (2 * kn), 0, 1);
 	g = t * t * (3 - 2 * t);
-	depth = 6.9 * clip(gate01 * 10, 0, 1);
+	depth = (gate01 > 0.0005) ? 6.9 * clip(gate01 * 10, 0, 1) : 0;
 	return h - (1 - g) * depth;
 }
 
-// Job: formant shift + harmonic gate + levels, original phase, written bit-reversed for the synthesis IFFT.
-job_spec(xre, xim, lre, lim, ere, eim, ore, oim, brv, n, stride, part, nparts, ratM, ratS, fmt, harm, gate01) {
+// Job (Gate Mode = Ceps, Gate > 0): gate the HARMONIC cepstrum coefficients (|n| >= L, kept symmetric). The threshold is
+// Gate * (frame peak |c| in the harmonic region, smoothed across frames). The gated harmonic cepstrum
+// c_h = c * (1 - lifter) is written bit-reversed into hre/him for the FFT that rebuilds the harmonic log-spectrum.
+// Ceps gate = voicing-keyed gate. Pitchedness v = (largest Mid cepstral peak in max(L, 1 ms)..1/60 s) / (RMS of the
+// same region): about 3-4.5 for noise at any level, 5-11 for noisy voicing, about 25 for a clean vowel. Frames with
+// v below Tv = 3.5 * 7^Gate (3.5 .. 24.5, soft knee +/-1) are attenuated by up to 60 dB on both channels
+// (stereo-linked), smoothed across frames (open 0.7, close 0.25), so unpitched content (breaths, hiss, noise) is gated
+// while pitched content passes.
+// stat[5] = 0 (the harmonic-FFT slots stay idle), stat[6] = openness 0..1, stat[8] = Tv * RMS (display threshold
+// in |c| units), stat[9] = log gain applied in job_spec.
+job_cgate(wre, stat, n, gate01, srVal) {
+	// gate01 is already 0 unless Gate Mode = Ceps (decided at the call site).
+	// if / else, not an early return: GenExpr falls through a `return` inside an `if` block.
+	poke(stat, 0, 5);
+	if (gate01 <= 0.0005) {
+		poke(stat, 1, 6);
+		poke(stat, 0, 8);
+		poke(stat, 0, 9);
+	} else {
+		invN = 1.0 / n;
+		nh = n * 0.5;
+		lc = peek(stat, 3);
+		qlo = max(ceil(lc), floor(srVal / 1000));
+		qhi = min(nh - 2, floor(srVal / 60));
+		pk = 0;
+		ss = 0;
+		cnt = 0;
+		for (i = qlo; i <= qhi; i += 1) {
+			cv = peek(wre, i) * invN;
+			pk = max(pk, cv);
+			ss = ss + cv * cv;
+			cnt = cnt + 1;
+		}
+		rms = sqrt(ss / max(cnt, 1) + 0.00000000000000000001);
+		vv = pk / rms;
+		tv = 3.5 * pow(7, gate01);
+		t = clip((vv - tv + 1) / 2, 0, 1);
+		tgt = t * t * (3 - 2 * t);
+		op = peek(stat, 6);
+		op = op + (tgt - op) * ((tgt > op) ? 0.7 : 0.25);
+		poke(stat, op, 6);
+		poke(stat, tv * rms, 8);
+		poke(stat, -(1 - op) * 6.9 * clip(gate01 * 10, 0, 1), 9);
+	}
+	return 0;
+}
+
+// Job: formant shift + harmonic gate, original phase, written bit-reversed for the synthesis IFFT.
+job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, n, stride, part, nparts, ratM, ratS, gate01) {
+	cg = peek(stat, 5);
 	nh = n * 0.5;
+	// Part 0, Spec gate: peak envelope P[k] = max_j (H[j] - d |k - j|) of the fine structure (two O(N) passes),
+	// d = 1 neper per half harmonic spacing implied by the lifter (W = N / 2L). Stored in hre (Mid) / him (Side),
+	// which only the Ceps gate uses otherwise.
+	if ((part == 0) && (cg < 0.5) && (gate01 > 0.0005)) {
+		dd = 1 / max(1, 0.5 * n / max(peek(stat, 3), 2));
+		runM = -1000;
+		runS = -1000;
+		for (k = 0; k <= nh; k += 1) {
+			runM = max(peek(lre, k) - peek(ere, k), runM - dd);
+			runS = max(peek(lim, k) - peek(eim, k), runS - dd);
+			poke(hre, runM, k);
+			poke(him, runS, k);
+		}
+		runM = -1000;
+		runS = -1000;
+		for (k = nh; k >= 0; k -= 1) {
+			runM = max(peek(lre, k) - peek(ere, k), runM - dd);
+			runS = max(peek(lim, k) - peek(eim, k), runS - dd);
+			poke(hre, max(peek(hre, k), runM), k);
+			poke(him, max(peek(him, k), runS), k);
+		}
+	}
+	vg = peek(stat, 9);
 	k0 = floor((nh + 1) * part / nparts);
 	k1 = floor((nh + 1) * (part + 1) / nparts);
 	for (k = k0; k < k1; k += 1) {
@@ -246,10 +319,10 @@ job_spec(xre, xim, lre, lim, ere, eim, ore, oim, brv, n, stride, part, nparts, r
 		esv = peek(eim, k);
 		epm = interp_env(ere, k / ratM, nh);
 		eps = interp_env(eim, k / ratS, nh);
-		hm = gate_h(lm - emv, gate01);
-		hs = gate_h(ls - esv, gate01);
-		omv = clip(fmt * epm + harm * hm, -21, 12);
-		osv = clip(fmt * eps + harm * hs, -21, 12);
+		hm = (cg > 0.5) ? peek(hre, k) : gate_h(lm - emv, peek(hre, k), gate01);
+		hs = (cg > 0.5) ? peek(him, k) : gate_h(ls - esv, peek(him, k), gate01);
+		omv = clip(epm + hm + vg, -21, 12);
+		osv = clip(eps + hs + vg, -21, 12);
 		magM = exp(omv);
 		magS = exp(osv);
 		ymr = magM * pmr;
@@ -303,6 +376,7 @@ job_tele(wre, scope, stat, n, srVal, levelIn, frameNo, modeNow) {
 	poke(scope, n, 260, 0);
 	poke(scope, peek(stat, 2), 261, 0);
 	poke(scope, modeNow, 262, 0);
+	poke(scope, peek(stat, 8), 263, 0);
 	return 0;
 }
 
@@ -336,6 +410,8 @@ Data wre(4096);
 Data wim(4096);
 Data ere(4096);
 Data eim(4096);
+Data hre(4096);
+Data him(4096);
 Data ore(4096);
 Data oim(4096);
 Data twr(2049);
@@ -347,12 +423,11 @@ Param res(0.57);
 Param midshift(0.0);
 Param sideshift(0.0);
 Param gate(0.0);
-Param fmtlevel(1.0);
-Param harmlevel(1.0);
 Param resmode(0);
 Param quality(1);
 Param wet(1.0);
 Param midinote(-1);
+Param gatemode(0);
 
 History initDone(0);
 History nCur(0);
@@ -398,8 +473,9 @@ if (nWant != nCur) {
 	hopN = nWant * 0.25;
 	wLat = nWant * 0.125;
 	ltot = nWant + wLat;
-	jobCount = 4 * llog + 10;
-	spacing = max(1, floor((wLat - 2) / jobCount));
+	jobCount = 5 * llog + 11;
+	// one job runs every (spacing + 1) samples, so all jobs finish inside the N/8 latency window
+	spacing = max(0, floor((wLat - 2) / jobCount) - 1);
 	hopCtr = 0;
 	jobId = jobCount;
 	jobWait = 0;
@@ -472,12 +548,18 @@ if (jobId < jobCount) {
 			job_lift(wre, wim, ere, eim, brv, stat, nCur, stride, sr, resmode, res, midinote);
 		} else if (j <= 3 * llog + 3) {
 			fft_pass(ere, eim, twr, twi, nCur, j - 2 * llog - 3, 1);
-		} else if (j <= 3 * llog + 7) {
-			job_spec(xre, xim, lre, lim, ere, eim, ore, oim, brv, nCur, stride, j - 3 * llog - 4, 4, pow(2, midshift / 12), pow(2, sideshift / 12), clip(fmtlevel, 0, 2), clip(harmlevel, 0, 2), clip(gate, 0, 1));
-		} else if (j == 3 * llog + 8) {
-			job_tele(wre, scope, stat, nCur, sr, levelPk, frameNo, resmode);
+		} else if (j == 3 * llog + 4) {
+			job_cgate(wre, stat, nCur, (gatemode > 0.5) ? clip(gate, 0, 1) : 0, sr);
+		} else if (j <= 4 * llog + 4) {
+			if (peek(stat, 5) > 0.5) {
+				fft_pass(hre, him, twr, twi, nCur, j - 3 * llog - 4, 1);
+			}
 		} else if (j <= 4 * llog + 8) {
-			fft_pass(ore, oim, twr, twi, nCur, j - 3 * llog - 8, -1);
+			job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, nCur, stride, j - 4 * llog - 5, 4, pow(2, midshift / 12), pow(2, sideshift / 12), (gatemode > 0.5) ? 0 : clip(gate, 0, 1));
+		} else if (j == 4 * llog + 9) {
+			job_tele(wre, scope, stat, nCur, sr, levelPk, frameNo, resmode);
+		} else if (j <= 5 * llog + 9) {
+			fft_pass(ore, oim, twr, twi, nCur, j - 4 * llog - 9, -1);
 		} else {
 			job_ola(ore, oim, oM, oS, twr, nCur, stride, outStart);
 		}

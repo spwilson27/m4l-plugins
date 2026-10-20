@@ -40,56 +40,63 @@ band_track(x, centerHz, dampVal, atkCoef, relCoef, gateLin, freezeOn, srVal) {
 	History frozenMidi(60);
 
 	isFrz = (freezeOn > 0.5);
-	if (isFrz) {
-		return frozenAmp, frozenMidi;
-	}
-
+	outAmp = frozenAmp;
+	outMidi = frozenMidi;
 	activity = abs(x) + abs(bpState) + abs(lpState) + envState;
-	if (activity < 0.0000005) {
-		bpState = 0;
-		lpState = 0;
-		envState = 0;
-		frozenAmp = 0;
-		return 0, midiHold;
+	asleep = (activity < 0.0000005);
+
+	// GenExpr runs code after a `return` nested in a block, so there is exactly one return, at the end.
+	if (isFrz) {
+		outAmp = frozenAmp;
+	} else {
+		if (asleep) {
+			bpState = 0;
+			lpState = 0;
+			envState = 0;
+			frozenAmp = 0;
+			outAmp = 0;
+			outMidi = midiHold;
+		} else {
+			w = 3.14159265359 * clip(centerHz, 40, srVal * 0.42) / srVal;
+			f = w * (2.0 - 0.33333333 * w * w);
+			hp = x * dampVal - lpState - dampVal * bpState;
+			bpNew = bpState + f * hp;
+			lpNew = lpState + f * bpNew;
+			bpState = clip(bpNew, -2, 2);
+			lpState = clip(lpNew, -2, 2);
+
+			// Zero-crossing period estimator on the narrowband signal
+			sampCount = sampCount + 1;
+			curSign = (bpState >= 0) ? 1 : -1;
+			crossed = (curSign > 0) && (prevSign < 0);
+			validCross = crossed && (sampCount > 4) && (sampCount < srVal * 0.03);
+			if (validCross) {
+				periodSamps = mix(sampCount, periodSamps, 0.65);
+				estHz = clip(srVal / max(periodSamps, 4), centerHz * 0.72, centerHz * 1.38);
+				targetMidi = 69 + 12 * log2(max(estHz, 20) / 440);
+			}
+			sampCount = crossed ? 0 : sampCount;
+			prevSign = curSign;
+			midiHold = mix(targetMidi, midiHold, 0.992);
+
+			// Envelope follower with soft-knee precipitation gate
+			ax = abs(bpState) * 1.45;
+			c = (ax > envState) ? atkCoef : relCoef;
+			envState = mix(ax, envState, c);
+
+			gLo = max(gateLin * 0.6, 0.00001);
+			gHi = max(gateLin * 1.6, gLo + 0.0001);
+			gt = clip((envState - gLo) / (gHi - gLo), 0, 1);
+			gateFactor = gt * gt * (3 - 2 * gt);
+			liveAmp = envState * gateFactor;
+
+			frozenAmp = liveAmp;
+			frozenMidi = midiHold;
+			outAmp = liveAmp;
+			outMidi = midiHold;
+		}
 	}
-
-	w = 3.14159265359 * clip(centerHz, 40, srVal * 0.42) / srVal;
-	f = w * (2.0 - 0.33333333 * w * w);
-	hp = x * dampVal - lpState - dampVal * bpState;
-	bpNew = bpState + f * hp;
-	lpNew = lpState + f * bpNew;
-	bpState = clip(bpNew, -2, 2);
-	lpState = clip(lpNew, -2, 2);
-
-	// Zero-crossing period estimator on the narrowband signal
-	sampCount = sampCount + 1;
-	curSign = (bpState >= 0) ? 1 : -1;
-	crossed = (curSign > 0) && (prevSign < 0);
-	validCross = crossed && (sampCount > 4) && (sampCount < srVal * 0.03);
-	if (validCross) {
-		periodSamps = mix(sampCount, periodSamps, 0.65);
-		estHz = clip(srVal / max(periodSamps, 4), centerHz * 0.72, centerHz * 1.38);
-		targetMidi = 69 + 12 * log2(max(estHz, 20) / 440);
-	}
-	sampCount = crossed ? 0 : sampCount;
-	prevSign = curSign;
-	midiHold = mix(targetMidi, midiHold, 0.992);
-
-	// Envelope follower with soft-knee precipitation gate
-	ax = abs(bpState) * 1.45;
-	c = (ax > envState) ? atkCoef : relCoef;
-	envState = mix(ax, envState, c);
-
-	gLo = max(gateLin * 0.6, 0.00001);
-	gHi = max(gateLin * 1.6, gLo + 0.0001);
-	gt = clip((envState - gLo) / (gHi - gLo), 0, 1);
-	gateFactor = gt * gt * (3 - 2 * gt);
-	liveAmp = envState * gateFactor;
-
-	frozenAmp = liveAmp;
-	frozenMidi = midiHold;
-
-	return liveAmp, midiHold;
+	return outAmp, outMidi;
 }
 
 // Quantize a MIDI note number to the active 12-bit scaleMask (bits 0..11 = C..B).
@@ -166,55 +173,56 @@ voice_osc(wtBuf, bandIdx, rawAmp, rawMidi, pitchSt, stretchVal, fshiftHz, maskIn
 	History heldQm(60.0);
 	History heldFreq(440.0);
 
-	if ((rawAmp <= 0.00001) && (cInit > 0)) {
-		return 0, 0, heldQm;
+	// Single return at the end: GenExpr runs the code after a `return` nested in a block.
+	outSig = 0;
+	outAmp = 0;
+	if (!((rawAmp <= 0.00001) && (cInit > 0))) {
+		if ((cTick == 0) || (cInit == 0)) {
+			heldWeight = band_weight(bandIdx, sieveMode, tiltVal);
+			heldQm = quant_midi(69 + (rawMidi - 69) * stretchVal + pitchSt, maskInt, snapAmt);
+			heldFreq = clip(440 * pow(2, (heldQm - 69) / 12) + fshiftHz, 20, 18000);
+			cInit = 1;
+		}
+		cTick = wrap(cTick + 1, 0, 16);
+
+		amp = rawAmp * heldWeight;
+		if (amp > 0.00001) {
+			inc = clip(heldFreq / srVal, 0, 0.45);
+			ph = wrap(ph + inc, 0, 1);
+
+			wPh = warp_phase(ph, warpMode, warpAmt, bendExp);
+			fScaled = clip(wtPos01, 0, 1) * 3.0;
+			f0 = floor(fScaled);
+			f1 = min(3, f0 + 1);
+			fFrac = fScaled - f0;
+
+			idx = wPh * 2048.0;
+			i0 = floor(idx);
+			i1 = wrap(i0 + 1, 0, 2048);
+			iFrac = idx - i0;
+
+			s00 = peek(wtBuf, f0 * 2048 + i0, 0);
+			s01 = peek(wtBuf, f0 * 2048 + i1, 0);
+			s10 = peek(wtBuf, f1 * 2048 + i0, 0);
+			s11 = peek(wtBuf, f1 * 2048 + i1, 0);
+			wt0 = mix(s00, s01, iFrac);
+			wt1 = mix(s10, s11, iFrac);
+			sig = mix(wt0, wt1, fFrac);
+
+			// Procedural Sine -> Triangle -> Saw -> Square fallback only when buffer is unbound
+			hasWt = (abs(s00) + abs(s01) + abs(s10) > 0.000001) ? 1 : 0;
+			if (hasWt == 0) {
+				pSin = sin(wPh * 6.28318530718);
+				pTri = 1.0 - 4.0 * abs(wrap(wPh - 0.25, 0, 1) - 0.5);
+				pSaw = 1.0 - 2.0 * wPh;
+				pSqr = (wPh < 0.5) ? 0.9 : -0.9;
+				sig = (fScaled <= 1.0) ? mix(pSin, pTri, fScaled) : ((fScaled <= 2.0) ? mix(pTri, pSaw, fScaled - 1.0) : mix(pSaw, pSqr, fScaled - 2.0));
+			}
+			outSig = sig * amp;
+			outAmp = amp;
+		}
 	}
-
-	if ((cTick == 0) || (cInit == 0)) {
-		heldWeight = band_weight(bandIdx, sieveMode, tiltVal);
-		heldQm = quant_midi(69 + (rawMidi - 69) * stretchVal + pitchSt, maskInt, snapAmt);
-		heldFreq = clip(440 * pow(2, (heldQm - 69) / 12) + fshiftHz, 20, 18000);
-		cInit = 1;
-	}
-	cTick = wrap(cTick + 1, 0, 16);
-
-	amp = rawAmp * heldWeight;
-	if (amp <= 0.00001) {
-		return 0, 0, heldQm;
-	}
-
-	inc = clip(heldFreq / srVal, 0, 0.45);
-	ph = wrap(ph + inc, 0, 1);
-
-	wPh = warp_phase(ph, warpMode, warpAmt, bendExp);
-	fScaled = clip(wtPos01, 0, 1) * 3.0;
-	f0 = floor(fScaled);
-	f1 = min(3, f0 + 1);
-	fFrac = fScaled - f0;
-
-	idx = wPh * 2048.0;
-	i0 = floor(idx);
-	i1 = wrap(i0 + 1, 0, 2048);
-	iFrac = idx - i0;
-
-	s00 = peek(wtBuf, f0 * 2048 + i0, 0);
-	s01 = peek(wtBuf, f0 * 2048 + i1, 0);
-	s10 = peek(wtBuf, f1 * 2048 + i0, 0);
-	s11 = peek(wtBuf, f1 * 2048 + i1, 0);
-	wt0 = mix(s00, s01, iFrac);
-	wt1 = mix(s10, s11, iFrac);
-	sig = mix(wt0, wt1, fFrac);
-
-	// Procedural Sine -> Triangle -> Saw -> Square fallback only when buffer is unbound
-	hasWt = (abs(s00) + abs(s01) + abs(s10) > 0.000001) ? 1 : 0;
-	if (hasWt == 0) {
-		pSin = sin(wPh * 6.28318530718);
-		pTri = 1.0 - 4.0 * abs(wrap(wPh - 0.25, 0, 1) - 0.5);
-		pSaw = 1.0 - 2.0 * wPh;
-		pSqr = (wPh < 0.5) ? 0.9 : -0.9;
-		sig = (fScaled <= 1.0) ? mix(pSin, pTri, fScaled) : ((fScaled <= 2.0) ? mix(pTri, pSaw, fScaled - 1.0) : mix(pSaw, pSqr, fScaled - 2.0));
-	}
-	return sig * amp, amp, heldQm;
+	return outSig, outAmp, heldQm;
 }
 
 Buffer wt("percipwt");

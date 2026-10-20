@@ -1,22 +1,26 @@
-// Probe for scripts/run_lifter_audio_tests.py.
-// Patch messages: `setbuffer <scope> <curve>` and `curve <256 dB values>` (any order) from loadbang,
-// `snap` (remember the telemetry hop counter), `analyze <samples> <maxLag> <f0>`, floats for the CPU case.
-// The recording buffer "rec" holds 3 channels: 1 = out L, 2 = dry input, 3 = out R.
-// jsarguments: result file path, skip (samples to ignore at the start).
+// Probe for scripts/run_lifter_audio_tests.py (scripts/max_harness.py contract).
+// Patch messages: `resultpath <file>`, `setbuffer <scope> <curve>` and `curve <256 dB values>` (any order),
+// `analyze <dur_ms>` once buffer "rec" holds the measured window.
+// "rec" channels: 1 = out L, 2 = dry input, 3 = out R.
+// jsarguments: maxLag (0 = skip the alignment), f0 (0 = skip the harmonicity measure).
 
-inlets = 2;
+inlets = 1;
 outlets = 1;
 
-var reportPath = jsarguments.length > 1 ? jsarguments[1] : "/tmp/lifter_audio.txt";
-var skip = jsarguments.length > 2 ? parseInt(jsarguments[2], 10) : 16384;
+var reportPath = "/tmp/lifter_audio.txt";
+var maxLagArg = jsarguments.length > 1 ? parseInt(jsarguments[1], 10) : 0;
+var f0Arg = jsarguments.length > 2 ? parseFloat(jsarguments[2]) : 0;
+var skip = 0;
 var scopeName = "";
 var curveName = "";
 var curveVals = null;
 var curveApplied = false;
 var snapHop = -1;
 var armed = false;
-var cpuSamples = [];
-var alive = 0;
+
+function resultpath(p) {
+    reportPath = "" + p;
+}
 
 function loadbang() {
     post("PROBE_LOADED\n");
@@ -45,16 +49,6 @@ function readScope() {
     if (!scopeName) return null;
     var b = new Buffer(scopeName);
     return b.peek(1, 0, 400);
-}
-
-function snap() {
-    var d = readScope();
-    snapHop = d && d.length > 386 ? d[386] : -1;
-}
-
-function msg_float(v) {
-    if (inlet === 1) { if (v !== 0) alive++; return; }
-    cpuSamples.push(v);
 }
 
 function readChannel(rec, ch, n) {
@@ -174,13 +168,15 @@ function peakToValley(sig, start, len, f0, sr) {
     return cnt ? sum / cnt : 0;
 }
 
-function analyze(nSamples, maxLag, f0) {
+function analyze(durMs) {
     if (armed) return;
     armed = true;
+    var maxLag = maxLagArg;
+    var f0 = f0Arg;
     var rec = new Buffer("rec");
     var frames = rec.framecount();
     var sr = frames / (rec.length() / 1000);
-    var n = Math.max(0, Math.min(frames, nSamples));
+    var n = frames;
     var outL = readChannel(rec, 1, n);
     var dry = readChannel(rec, 2, n);
     var outR = readChannel(rec, 3, n);
@@ -232,6 +228,7 @@ function analyze(nSamples, maxLag, f0) {
         for (var q = 0; q < 128; q++) if (d[q] > tele.cepmax) tele.cepmax = d[q];
     }
     var report = new File(reportPath, "write", "TEXT");
+    report.eof = 0;
     report.writestring(
         "frames " + n + "\n" +
         "sr " + sr + "\n" +
@@ -261,26 +258,10 @@ function analyze(nSamples, maxLag, f0) {
         "tsilent " + tele.silent + "\n" +
         "tspecn " + tele.specn + "\n" +
         "tspecin " + tele.specin + "\n" +
-        "tcepmax " + tele.cepmax + "\n"
+        "tcepmax " + tele.cepmax + "\n" +
+        "tdbg0 " + (d && d.length > 396 ? d[394] : 0) + "\ntdbg1 " + (d && d.length > 396 ? d[395] : 0) + "\ntdbg2 " + (d && d.length > 396 ? d[396] : 0) + "\n"
     );
     report.close();
     post("PROBE_DONE lag " + lag + " gain " + gainDb + " p2v " + p2vOut + "/" + p2vDry + "\n");
-    outlet(0, "bang");
-}
-
-function finish() {
-    if (armed) return;
-    armed = true;
-    var from = Math.floor(cpuSamples.length * 0.4);
-    var s = 0, peak = 0, cnt = 0;
-    for (var i = from; i < cpuSamples.length; i++) {
-        s += cpuSamples[i];
-        if (cpuSamples[i] > peak) peak = cpuSamples[i];
-        cnt++;
-    }
-    var report = new File(reportPath, "write", "TEXT");
-    report.writestring("cpu " + (cnt ? s / cnt : -1) + "\ncpupeak " + peak + "\nsamples " + cnt + "\nalive " + alive + "\n");
-    report.close();
-    post("PROBE_CPU " + (cnt ? s / cnt : -1) + "\n");
     outlet(0, "bang");
 }

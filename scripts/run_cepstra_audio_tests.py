@@ -1,167 +1,90 @@
 #!/usr/bin/env python3
-"""Render Cepstra through Ableton-bundled Max and verify its DSP & telemetry.
+"""Render Cepstra through Ableton-bundled Max (shared scripts/max_harness.py) and verify its DSP & telemetry.
+
+Runs on the NonRealTime driver at 48 kHz (parallel-safe, no machine-wide lock) except `perf`, which uses
+`audio_device` (real CoreAudio, serialized) because CPU load cannot be measured offline. qswitch uses
+`stepped` so the mid-run `quality 2` lands on time.
 
 Stimulus: 120 Hz impulse train through three formant resonators (700 / 1220 / 2600 Hz), optionally with noise.
 
 Cases:
-  neutral        — defaults (shift 0, levels 100%, gate 0, mix 100%): null test vs input delayed by N + N/8
+  neutral        — defaults (shift 0, gate 0, mix 100%): null test vs input delayed by N + N/8
   neutral_q0     — same at Quality 1k
   neutral_q2     — same at Quality 4k
   mix0           — wet 0 equals the delayed dry signal
   shift12        — Mid +12 st moves the spectral centroid upward while f0 stays at 120 Hz
-  gate_off/gate  — Gate 40% removes noise between partials compared to Gate 0%
+  neutral_ceps   — Gate Mode = Ceps at Gate 0 is also a null
+  ceps_off/gate_ceps — Ceps (voicing) gate 20% on vowel bursts + constant noise: noise-only stretches drop >= 40 dB, vowel stretches stay within 1.5 dB
+  gate_off/gate  — Spec gate 60% removes noise between partials (>= 6 dB) while the partials keep their level (f0 within 1.5 dB)
   auto           — Auto cutoff: scope reports a voiced f0 near 120 Hz and L = k * period
   midi           — MIDI cutoff: midinote 47 (B2) sets L = k * (sr / 123.47 Hz)
   qswitch        — Quality 2k -> 4k mid-run: no NaN/inf, output recovers
   silence        — silent input sleeps: output is exactly silent, scope level 0
-  perf           — Quality 4k with shifted formants: audio CPU stays well below real-time limits
+  perf           — Quality 4k with shifted formants: audio CPU (adstatus cpu, real-time driver) stays below 70%
 """
 
-import json
 import os
-import subprocess
 import sys
-import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import max_harness as mh
+
+ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "cepstra_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "cepstra_probe.js")
-HARNESS = os.path.join(ROOT, "tests", "cepstra_harness.maxpat")
-RESULT = "/tmp/cepstra_audio.txt"
-MAX_BIN = (
-    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
-    "Max/Max.app/Contents/MacOS/Max"
-)
+SCOPE = "#0-cepscope"
+SR = 48000
 
-DEFAULTS = "res 0.57, midshift 0, sideshift 0, gate 0, fmtlevel 1, harmlevel 1, resmode 0, quality 1, wet 1, midinote -1"
+DEFAULTS = "res 0.57, midshift 0, sideshift 0, gate 0, resmode 0, quality 1, wet 1, midinote -1, gatemode 0"
 LTOT = {0: 1152, 1: 2304, 2: 4608}
 
 
-def box(obj_id, text, x, y, w, h, **extra):
-    b = {
-        "id": obj_id,
-        "maxclass": extra.pop("maxclass", "newobj"),
-        "numinlets": extra.pop("numinlets", 1),
-        "numoutlets": extra.pop("numoutlets", 1),
-        "outlettype": extra.pop("outlettype", [""]),
-        "patching_rect": [float(x), float(y), float(w), float(h)],
-        "text": text,
-    }
-    b.update(extra)
-    return {"box": b}
-
-
-def line(src, outlet, dst, inlet):
-    return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
-
-
-def build_harness(gen_code, case):
-    q = case.get("q", 1)
+def build_device(gen_code, case):
+    """Device boxes/lines: stimulus (one 2 s pass of buffer~ cepstra_src, poked by the probe at load; the longest
+    run is settle + dur = 1.5 s, so the loop seam, whose click would land in the analysis window and differ between
+    the input and the delayed output, is never reached) -> gen L+R.
+    rec ch1 = gen out L, ch2 = raw input (after the case gain)."""
     boxes = [
-        box("obj-load", "loadbang", 40, 40, 60, 20, numoutlets=1, outlettype=["bang"]),
-        box("obj-del-dsp", "delay 1200", 40, 80, 80, 20, numinlets=2),
-        box("obj-dsp", "; dsp start", 40, 120, 80, 20, maxclass="message", numinlets=2),
-        box("obj-del-arm", f"delay {case['arm']}", 40, 160, 80, 20, numinlets=2),
-        box("obj-mark", "mark", 120, 200, 40, 20, maxclass="message", numinlets=2),
-        box("obj-rec-on", "1", 40, 200, 30, 20, maxclass="message", numinlets=2),
-        box("obj-del-stop", f"delay {case['dur']}", 40, 240, 80, 20, numinlets=2),
-        box("obj-rec-off", "0", 40, 280, 30, 20, maxclass="message", numinlets=2),
-        box("obj-del-analyze", "delay 120", 40, 360, 70, 20, numinlets=2),
-        box("obj-analyze", f"analyze {case['dur']}", 120, 360, 90, 20, maxclass="message", numinlets=2),
-        box("obj-quit", "; max quit", 40, 420, 70, 20, maxclass="message", numinlets=2),
-        box("obj-params", case["params"], 200, 40, 680, 20, maxclass="message", numinlets=2),
-        box("obj-setbuf", "setbuffer #0-cepscope", 200, 70, 250, 20, maxclass="message", numinlets=2),
-        box("obj-bind", "scope #0-cepscope", 200, 100, 250, 20, maxclass="message", numinlets=2),
-        box("obj-scope", "buffer~ #0-cepscope @samps 272", 520, 100, 220, 20, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-src", "buffer~ src 1000 1", 520, 130, 150, 20, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", "buffer~ rec 2000 2", 520, 160, 150, 20, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recsize", "size 2000", 520, 185, 75, 20, maxclass="message", numinlets=2),
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [200.0, 200.0, 300.0, 80.0],
-            }
-        },
-        box("obj-record", "record~ rec 2", 200, 300, 90, 20, numinlets=3, numoutlets=1),
-        box("obj-mute-l", "*~ 0", 200, 390, 45, 20, numinlets=2, outlettype=["signal"]),
-        box("obj-dac", "dac~", 200, 430, 50, 20, numinlets=2, numoutlets=0, outlettype=[]),
-        box("obj-js", f"js {PROBE_JS} {case.get('stim', 'vowel')} {LTOT[q]}", 200, 470, 420, 20,
-            numinlets=5, numoutlets=3, outlettype=["bang", "bang", ""]),
-        box("obj-sig1", "phasor~ 1", 700, 200, 65, 20, numinlets=2, outlettype=["signal"]),
-        box("obj-groove", "wave~ src", 700, 240, 90, 20, numinlets=3, numoutlets=2, outlettype=["signal", "signal"]),
-        box("obj-gain", f"*~ {case.get('gain', 1.0)}", 700, 280, 65, 20, numinlets=2, outlettype=["signal"]),
-        box("obj-sr-msg", "44100", 40, 560, 50, 20, maxclass="message", numinlets=2),
-        box("obj-sr-set", "adstatus sr", 100, 560, 90, 20, numinlets=2, outlettype=["float"]),
-        box("obj-del-setbuf", "delay 500", 200, 20, 70, 20, numinlets=2),
-        box("obj-metro", "metro 100", 40, 480, 70, 20, numinlets=2),
-        box("obj-adstatus", "adstatus cpu", 40, 510, 90, 20, numinlets=2, outlettype=["float"]),
+        mh.msg("dev-params", case["params"], 200, 40, 680),
+        mh.msg("dev-setbuf", f"setbuffer {SCOPE}", 200, 70, 190),
+        mh.msg("dev-bind", f"scope {SCOPE}", 200, 100, 180),
+        mh.box("dev-scope", f"buffer~ {SCOPE} @samps 272", 520, 100, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-src", f"buffer~ cepstra_src @samps {SR * 2}", 520, 130, 150, numoutlets=2, outlettype=["float", "bang"]),
+        mh.gen_box("dev-gen", gen_code, 200, 200),
+        mh.box("dev-phasor", "phasor~ 0.5", 700, 200, 65, numinlets=2, outlettype=["signal"]),
+        mh.box("dev-groove", "wave~ cepstra_src", 700, 240, 90, numinlets=3, numoutlets=2, outlettype=["signal", "signal"]),
+        mh.box("dev-gain", f"*~ {case.get('gain', 1.0)}", 700, 280, 65, numinlets=2, outlettype=["signal"]),
     ]
     lines = [
-        line("obj-load", 0, "obj-del-dsp", 0),
-        line("obj-load", 0, "obj-recsize", 0),
-        line("obj-recsize", 0, "obj-recbuf", 0),
-        line("obj-load", 0, "obj-params", 0),
-        line("obj-load", 0, "obj-sr-msg", 0),
-        line("obj-sr-msg", 0, "obj-sr-set", 0),
-        line("obj-load", 0, "obj-del-setbuf", 0),
-        line("obj-del-setbuf", 0, "obj-setbuf", 0),
-        line("obj-load", 0, "obj-bind", 0),
-        line("obj-bind", 0, "obj-gen", 0),
-        line("obj-del-dsp", 0, "obj-dsp", 0),
-        line("obj-del-dsp", 0, "obj-del-arm", 0),
-        line("obj-del-dsp", 0, "obj-metro", 0),
-        line("obj-metro", 0, "obj-adstatus", 0),
-        line("obj-adstatus", 0, "obj-js", 4),
-        line("obj-del-arm", 0, "obj-rec-on", 0),
-        line("obj-del-arm", 0, "obj-mark", 0),
-        line("obj-mark", 0, "obj-js", 3),
-        line("obj-del-arm", 0, "obj-del-stop", 0),
-        line("obj-del-stop", 0, "obj-rec-off", 0),
-        line("obj-del-stop", 0, "obj-del-analyze", 0),
-        line("obj-del-analyze", 0, "obj-analyze", 0),
-        line("obj-setbuf", 0, "obj-js", 3),
-        line("obj-params", 0, "obj-gen", 0),
-        line("obj-analyze", 0, "obj-js", 3),
-        line("obj-js", 0, "obj-quit", 0),
-        line("obj-rec-on", 0, "obj-record", 0),
-        line("obj-rec-off", 0, "obj-record", 0),
-        line("obj-gen", 0, "obj-record", 0),
-        line("obj-gain", 0, "obj-record", 1),
-        line("obj-gen", 0, "obj-mute-l", 0),
-        line("obj-mute-l", 0, "obj-dac", 0),
-        line("obj-sig1", 0, "obj-groove", 0),
-        line("obj-groove", 0, "obj-gain", 0),
-        line("obj-gain", 0, "obj-gen", 0),
-        line("obj-gain", 0, "obj-gen", 1),
+        mh.line("obj-load", 0, "dev-params", 0),
+        mh.line("obj-load", 0, "dev-setbuf", 0),
+        mh.line("obj-load", 0, "dev-bind", 0),
+        mh.line("dev-bind", 0, "dev-gen", 0),
+        mh.line("dev-params", 0, "dev-gen", 0),
+        mh.line("dev-setbuf", 0, "obj-js", 0),
+        mh.line("dev-phasor", 0, "dev-groove", 0),
+        mh.line("dev-groove", 0, "dev-gain", 0),
+        mh.line("dev-gain", 0, "dev-gen", 0),
+        mh.line("dev-gain", 0, "dev-gen", 1),
+        mh.line("dev-gen", 0, "obj-record", 0),
+        mh.line("dev-gain", 0, "obj-record", 1),
+        mh.line("dev-gen", 0, "obj-mute-l", 0),
+        mh.line("dev-gain", 0, "obj-mute-r", 0),
     ]
-    if case.get("late"):
-        late_ms, late_msg = case["late"]
-        boxes.append(box("obj-del-late", f"delay {late_ms}", 40, 320, 80, 20, numinlets=2))
-        boxes.append(box("obj-late", late_msg, 120, 320, 120, 20, maxclass="message", numinlets=2))
-        lines.append(line("obj-del-dsp", 0, "obj-del-late", 0))
-        lines.append(line("obj-del-late", 0, "obj-late", 0))
-        lines.append(line("obj-late", 0, "obj-gen", 0))
-
-    doc = {
-        "patcher": {
-            "fileversion": 1,
-            "appversion": {"major": 9, "minor": 1, "revision": 5, "architecture": "x64", "modernui": 1},
-            "classnamespace": "box",
-            "rect": [40.0, 40.0, 1000.0, 560.0],
-            "boxes": boxes,
-            "lines": lines,
-        }
-    }
-    with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent="\t")
-        f.write("\n")
+    if case.get("mode") == "audio_device":
+        # Real-time CPU poll, forwarded to the probe as `cpu <percent>`.
+        boxes += [
+            mh.box("dev-metro", "metro 100", 40, 480, 70, numinlets=2),
+            mh.box("dev-adstatus", "adstatus cpu", 40, 510, 90, outlettype=["float"]),
+            mh.box("dev-cpu-prep", "prepend cpu", 40, 540, 90),
+        ]
+        lines += [
+            mh.line("obj-load", 0, "dev-metro", 0),
+            mh.line("dev-metro", 0, "dev-adstatus", 0),
+            mh.line("dev-adstatus", 0, "dev-cpu-prep", 0),
+            mh.line("dev-cpu-prep", 0, "obj-js", 0),
+        ]
+    return boxes, lines
 
 
 def cases():
@@ -173,93 +96,58 @@ def cases():
         dict(base, name="neutral", params=p()),
         dict(base, name="neutral_q0", q=0, params=p("quality 0")),
         dict(base, name="neutral_q2", q=2, params=p("quality 2"), arm=900),
+        dict(base, name="neutral_res_lo", params=p("res 0")),
+        dict(base, name="neutral_res_hi", params=p("res 1")),
+        dict(base, name="neutral_auto", params=p("resmode 1")),
         dict(base, name="mix0", params=p("wet 0")),
         dict(base, name="shift12", params=p("midshift 12")),
         dict(base, name="gate_off", stim="vowelnoise", params=p()),
-        dict(base, name="gate", stim="vowelnoise", params=p("gate 0.4")),
+        dict(base, name="gate", stim="vowelnoise", params=p("gate 0.6")),
+        dict(base, name="neutral_ceps", params=p("gatemode 1")),
+        dict(base, name="ceps_off", stim="vowelgaps", params=p("gatemode 1")),
+        dict(base, name="gate_ceps", stim="vowelgaps", params=p("gatemode 1, gate 0.2")),
         dict(base, name="auto", params=p("resmode 1")),
         dict(base, name="midi", params=p("resmode 2, midinote 47")),
-        dict(base, name="qswitch", q=2, params=p(), late=(300, "quality 2"), arm=900),
+        # Quality 2k -> 4k at 300 ms into the run; recording starts at 900 ms. `stepped` so the event lands on time.
+        dict(base, name="qswitch", q=2, params=p(), arm=900, mode="stepped",
+             events=[(300, "dev-gen", 0, "quality 2")]),
         dict(base, name="silence", stim="silent", params=p()),
-        dict(base, name="perf", q=2, params=p("quality 2, midshift 7, sideshift -5, gate 0.2"), arm=900),
+        # CPU load can only be measured on the real-time driver: NonRealTime renders ~150x faster than real time and
+        # has no audio-thread load. This case holds the machine-wide audio-device lock.
+        dict(base, name="perf", q=2, params=p("quality 2, midshift 7, sideshift -5, gate 0.2"), arm=900,
+             mode="audio_device"),
     )
 
 
-def parse_result(text):
-    meta = {}
-    for raw in text.splitlines():
-        if not raw.strip():
-            continue
-        key, val = raw.split(None, 1)
-        meta[key] = float(val)
-    return meta
-
-
 def sane(meta, case):
-    """The stimulus must have been recorded at the nominal pitch and a normal sample rate."""
-    if meta.get("sr", 0) not in (44100.0, 48000.0, 88200.0, 96000.0):
+    """The stimulus must have been recorded at the nominal pitch and the forced 48 kHz rate."""
+    if meta.get("sr", 0) != float(SR) or meta.get("probeError"):
         return False
     if case.get("stim") == "silent":
         return True
+    if case.get("stim") == "vowelgaps":
+        # f0 of the final window may fall in a noise-only stretch; require both window classes to have been found
+        return meta.get("refRms", 0) > 0.01 and abs(meta.get("gapDb", 999)) < 200 and abs(meta.get("voxDb", 999)) < 200
     return abs(meta.get("f0In", 0) - 120.0) < 4.0 and meta.get("refRms", 0) > 0.01
 
 
 def run_case(gen_code, case):
-    build_harness(gen_code, case)
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    recovery = os.path.expanduser("~/Library/Application Support/Cycling '74/Max 9/Crash Recovery")
-    if os.path.isdir(recovery):
-        subprocess.run(["rm", "-rf", recovery], check=False)
-
-    # Max is single-instance: make sure the previous case's process is fully gone before launching.
-    for _ in range(40):
-        alive = subprocess.run(["pgrep", "-f", MAX_BIN], capture_output=True, text=True).stdout.strip()
-        if not alive:
-            break
-        subprocess.run(["pkill", "-f", MAX_BIN], check=False)
-        time.sleep(0.5)
-    proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 45
-    while time.time() < deadline and not os.path.exists(RESULT):
-        if proc.poll() is not None:
-            break
-        time.sleep(0.2)
-
-    last_size = -1
-    stable = 0
-    while time.time() < deadline and stable < 2:
-        if not os.path.exists(RESULT):
-            break
-        size = os.path.getsize(RESULT)
-        if size > 0 and size == last_size:
-            stable += 1
-        else:
-            stable = 0
-            last_size = size
-        time.sleep(0.15)
-
-    if proc.poll() is None:
-        try:
-            proc.wait(timeout=6)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    time.sleep(1.0)
-    print(f"--- {case['name']} ---")
-    if not os.path.exists(RESULT):
-        print("NO RESULT FILE")
+    boxes, lines = build_device(gen_code, case)
+    meta = mh.run_case(
+        f"cepstra_{case['name']}", boxes, lines, probe_js=PROBE_JS,
+        probe_args=f"{case.get('stim', 'vowel')} {LTOT[case.get('q', 1)]}",
+        settle_ms=case["arm"], dur_ms=case["dur"], channels=2, sr=SR,
+        mode=case.get("mode", "nrt"), events=case.get("events"))
+    print(f"--- {case['name']} ({meta['harness_mode']}, {meta['harness_wall_s']:.1f} s) ---")
+    if meta.get("probeError"):
+        print("PROBE ERROR (see probe .err file in the kept work dir)")
         return None
-    meta = parse_result(open(RESULT).read())
     print(
         f"peak {meta.get('peak'):.4f} nullDb {meta.get('nullDb'):.1f} cent {meta.get('centIn'):.0f}->{meta.get('centOut'):.0f} "
         f"f0 {meta.get('f0In'):.1f}->{meta.get('f0Out'):.1f} valley {meta.get('valleyIn'):.1f}->{meta.get('valleyOut'):.1f} "
         f"scope[nz {meta.get('scopeNonZero'):.0f} L {meta.get('scopeL'):.1f} f0 {meta.get('scopeF0'):.1f} "
         f"lvl {meta.get('scopeLevel'):.3f} frame {meta.get('scopeFrame'):.0f} N {meta.get('scopeN'):.0f}] "
-        f"rt x{meta.get('rtFactor'):.1f} cpu avg {meta.get('cpuAvg'):.1f} max {meta.get('cpuMax'):.1f} nan {meta.get('nan'):.0f}"
+        f"cpu avg {meta.get('cpuAvg'):.1f} max {meta.get('cpuMax'):.1f} nan {meta.get('nan'):.0f}"
     )
     return meta
 
@@ -273,13 +161,20 @@ def main():
     for case in cases():
         if only and case["name"] not in only:
             continue
+        # A loaded machine (several agents launching Max) occasionally yields no result or a stimulus that was not
+        # recorded; retry the case. Assertions below are never loosened.
         meta = None
-        for attempt in range(4):
-            meta = run_case(gen_code, case)
+        for attempt in range(3):
+            try:
+                meta = run_case(gen_code, case)
+            except RuntimeError as exc:
+                print(f"  ({exc}; retry {attempt + 1})")
+                meta = None
+                continue
             if meta is not None and sane(meta, case):
                 break
-            print(f"  (measurement not sane, e.g. the audio device was still settling - retry {attempt + 1})")
-            time.sleep(2.0)
+            print(f"  (measurement not sane: sr {meta and meta.get('sr')}; retry {attempt + 1})")
+            meta = None
         results[case["name"]] = meta
         name = case["name"]
         if meta is None:
@@ -287,7 +182,7 @@ def main():
             continue
         if meta.get("nan", 1) != 0:
             errors.append(f"{name}: {meta.get('nan')} non-finite samples")
-        if name in ("neutral", "neutral_q0", "neutral_q2"):
+        if name in ("neutral", "neutral_q0", "neutral_q2", "neutral_ceps", "neutral_res_lo", "neutral_res_hi", "neutral_auto"):
             if meta["nullDb"] > -60:
                 errors.append(f"{name}: null test residual {meta['nullDb']:.1f} dB (need < -60 dB)")
             if meta["refRms"] < 0.01:
@@ -315,12 +210,9 @@ def main():
             if meta["scopeLevel"] > 1e-6:
                 errors.append(f"silence: scope level should read 0, got {meta['scopeLevel']}")
         elif name == "perf":
-            if meta["rtFactor"] > 1.5:
-                print(f"perf: 4k pipeline ran at {meta['rtFactor']:.1f}x real time (about {100.0 / max(meta['rtFactor'], 0.01):.1f}% of one core; offline driver)")
-            else:
-                print(f"perf: 4k pipeline kept real time with Max audio CPU avg {meta['cpuAvg']:.1f}% / max {meta['cpuMax']:.1f}%")
-            if meta["rtFactor"] < 0.95:
-                errors.append(f"perf: 4k pipeline is slower than real time (x{meta['rtFactor']:.2f})")
+            print(f"perf: 4k pipeline Max audio CPU avg {meta['cpuAvg']:.1f}% / max {meta['cpuMax']:.1f}% ({meta['cpuMax'] > 0 and 'real-time driver' or 'no CPU samples'})")
+            if meta["cpuMax"] <= 0:
+                errors.append("perf: no CPU samples received from adstatus cpu")
             if meta["cpuMax"] > 70:
                 errors.append(f"perf: audio CPU peaked at {meta['cpuMax']:.1f}%")
 
@@ -347,10 +239,24 @@ def main():
             errors.append(f"shift12: f0 changed ({neutral['f0Out']:.1f} -> {sh['f0Out']:.1f})")
     g0, g1 = results.get("gate_off"), results.get("gate")
     if g0 and g1:
-        print(f"Gate 40%: between-partials vs partials {g0['valleyOut']:.1f} dB -> {g1['valleyOut']:.1f} dB")
+        # Spec gate is relative to the local partial peak, so partials must keep their level while the noise floor drops.
+        # (The old 40% / 6 dB target only passed on the looped stimulus because the gate removed its seam click.)
+        sf0 = g1["f0Level"] - g0["f0Level"]
+        print(f"Spec gate 60%: between-partials vs partials {g0['valleyOut']:.1f} dB -> {g1['valleyOut']:.1f} dB, f0 component {sf0:+.1f} dB")
         if g1["valleyOut"] > g0["valleyOut"] - 6.0:
             errors.append(f"gate: noise between partials not reduced by 6 dB ({g0['valleyOut']:.1f} -> {g1['valleyOut']:.1f})")
+        if abs(sf0) > 1.5:
+            errors.append(f"gate: f0 component changed by {sf0:+.1f} dB (limit 1.5 dB)")
 
+    c0, gc = results.get("ceps_off"), results.get("gate_ceps")
+    if c0 and gc:
+        gapDrop = c0["gapDb"] - gc["gapDb"]
+        voxD = gc["voxDb"] - c0["voxDb"]
+        print(f"Ceps (voicing) gate 20%: noise-only stretches {gapDrop:+.1f} dB down, vowel stretches {voxD:+.1f} dB")
+        if gapDrop < 40.0:
+            errors.append(f"gate_ceps: unpitched stretches only dropped {gapDrop:.1f} dB (need >= 40 dB)")
+        if abs(voxD) > 1.5:
+            errors.append(f"gate_ceps: pitched stretches changed by {voxD:+.1f} dB (limit 1.5 dB)")
     if errors:
         print("FAILED")
         for e in errors:

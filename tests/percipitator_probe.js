@@ -3,8 +3,11 @@
 // then analyzes the recorded stereo output in buffer~ rec and the 16-band telemetry in #0-percipscope.
 // Writes /tmp/percipitator_audio.txt ONLY inside analyze().
 
-inlets = 4;
-outlets = 3;
+var resultPath = "/tmp/percipitator_audio.txt";
+function resultpath(p) { resultPath = String(p); }
+
+inlets = 1;
+outlets = 1;
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "sine";
 var peaks = { genL: -1, ctl: -1, genR: -1 };
@@ -64,11 +67,6 @@ function setbuffer(wName, sName) {
     }
 }
 
-function msg_float(v) {
-    if (inlet === 0) peaks.genL = v;
-    else if (inlet === 1) peaks.ctl = v;
-    else if (inlet === 2) peaks.genR = v;
-}
 
 function analyze(durMs) {
     if (armed) return;
@@ -80,11 +78,14 @@ function analyze(durMs) {
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var left = readChannel(rec, 1, n);
     var right = readChannel(rec, 2, n);
+    peaks.genL = chanPeak(left);
+    peaks.genR = chanPeak(right);
+    if (rec.channelcount() >= 3) peaks.ctl = chanPeak(readChannel(rec, 3, n));
     var env = envelope(left, right, sr);
     var stats = scan(left, right, sr);
     var sc = readScope();
 
-    var report = new File("/tmp/percipitator_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
     report.writestring(
         "genL " + peaks.genL + "\n" +
         "genR " + peaks.genR + "\n" +
@@ -99,8 +100,10 @@ function analyze(durMs) {
         "scopeBandMax " + sc.bandMax + "\n" +
         "scopeActive " + sc.active + "\n" +
         "scopeMidi3 " + sc.midi3 + "\n" +
-        "env " + env.join(" ") + "\n"
+        "envbins " + env.length + "\n"
     );
+    // max_harness parses only 2-token lines, so the envelope is written one bin per line.
+    for (var ei = 0; ei < env.length; ei++) report.writestring("env_" + ei + " " + env[ei] + "\n");
     report.close();
     post("PERCIP_SHUTDOWN peak " + stats.peak + " bandMax " + sc.bandMax + " zcr " + stats.zcr + "\n");
     outlet(0, "bang");
@@ -199,4 +202,10 @@ function scan(left, right, sr) {
     var slopeRms = rms > 1e-5 ? dRms / rms : 0;
     var corr = (sl > 1e-12 && sr2 > 1e-12) ? (sp / Math.sqrt(sl * sr2)) : 0;
     return { nan: nan, peak: peak, zcr: zc, slopeRms: slopeRms, corr: corr };
+}
+
+function chanPeak(a) {
+    var p = 0, i;
+    for (i = 0; i < a.length; i++) if (Math.abs(a[i]) > p) p = Math.abs(a[i]);
+    return p;
 }

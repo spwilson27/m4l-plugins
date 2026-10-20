@@ -557,8 +557,8 @@ for (const letter of Object.keys(VARIANTS)) {
     };
     vm.runInContext("preview()", ctx);
     let texts = checkPaint("demo");
-    assert.ok(texts.some((t) => /Filter Freq/.test(t)) && texts.some((t) => /Delay Fbk/.test(t)), `${letter}: demo shows mapped target names per slot`);
-    assert.ok(texts.some((t) => /^THR \d+%$/.test(t)) || letter === "b", `${letter}: threshold readout`);
+    assert.ok(!texts.some((t) => /Filter Freq|Delay Fbk/.test(t)) && texts.some((t) => /not mapped/.test(t)), `${letter}: demo never fakes mapping state`);
+    assert.ok(texts.some((t) => /^Sens \d+% \u00b7 thr \d+%$/.test(t)) || letter === "b", `${letter}: threshold readout`);
     vm.runInContext("curMode = 1; flashT0 = Date.now() - 80;", ctx);
     checkPaint("trig mode flash");
     vm.runInContext("curMode = 0; viewMode = 1;", ctx);
@@ -569,7 +569,7 @@ for (const letter of Object.keys(VARIANTS)) {
     vm.runInContext('loadbang(); slot_name(1, "Filter", "Freq"); slot_mapped(1, 1); slot_name(2, "Map");', ctx);
     texts = checkPaint("live slots");
     assert.ok(texts.some((t) => /Filter Freq/.test(t)), `${letter}: slot 1 target name shown`);
-    assert.ok(texts.some((t) => /2 +unmapped/.test(t)), `${letter}: slot 2 shows unmapped`);
+    assert.ok(texts.some((t) => /2 +\u2014 not mapped/.test(t)), `${letter}: slot 2 shows unmapped`);
     assert.ok(!texts.some((t) => /Delay Fbk/.test(t)), `${letter}: demo names are gone once slots are live`);
 
     // threshold drag <-> Sens

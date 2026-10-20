@@ -1,0 +1,11 @@
+{
+  "name": "m4l-devices",
+  "private": true,
+  "description": "Dev tooling only: type-checks the plain JS in src/ (no build output).",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.sampler.json"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

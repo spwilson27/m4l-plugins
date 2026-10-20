@@ -1,15 +1,22 @@
 // Probe for scripts/run_cepstrum_lib_audio_tests.py.
-// Patch inlet 0: `analyze <samples> <maxLag>` (audio cases) or floats from [adstatus cpu] (cpu case).
+// Run through scripts/max_harness.py. Patch inlet 0: `analyze <durMs>` (sent by the harness once buffer~ rec
+// holds the measured window; in the cpu case it finishes the CPU report) or floats from [adstatus cpu].
 // Inlet 1 (cpu case): [snapshot~] of the noise source, to prove the DSP chain is running.
 // The recording buffer "rec" holds 4 channels: 1 = gen out1, 2 = dry input,
 // 3 = gen out2 (pitch quefrency), 4 = gen out3 (pitch confidence).
-// jsarguments: result file path, skip (samples to ignore at the start).
+// jsarguments: skip (samples to ignore at the start), maxLag, mode ("audio" or "cpu").
+// The harness sends `resultpath <file>`; the report is written there.
 
 inlets = 2;
 outlets = 1;
 
-var reportPath = jsarguments.length > 1 ? jsarguments[1] : "/tmp/cepstrum_lib_audio.txt";
-var skip = jsarguments.length > 2 ? parseInt(jsarguments[2], 10) : 16384;
+var reportPath = "/tmp/cepstrum_lib_audio.txt";
+var skip = jsarguments.length > 1 ? parseInt(jsarguments[1], 10) : 16384;
+var maxLagArg = jsarguments.length > 2 ? parseInt(jsarguments[2], 10) : 4200;
+var probeMode = jsarguments.length > 3 ? String(jsarguments[3]) : "audio";
+var NSAMP = 30000;
+
+function resultpath(p) { reportPath = String(p); }
 var cpuSamples = [];
 var armed = false;
 var alive = 0;
@@ -70,11 +77,13 @@ function median(arr) {
     return a.length ? a[Math.floor(a.length / 2)] : 0;
 }
 
-function analyze(nSamples, maxLag) {
+function analyze(durMs) {
+    if (probeMode === "cpu") { finish(); return; }
     if (armed) return;
     armed = true;
+    var maxLag = maxLagArg;
     var rec = new Buffer("rec");
-    var n = Math.max(0, Math.min(rec.framecount(), nSamples));
+    var n = Math.max(0, Math.min(rec.framecount(), NSAMP));
     var out = read(rec, 1, n);
     var dry = read(rec, 2, n);
     var qs = read(rec, 3, n);

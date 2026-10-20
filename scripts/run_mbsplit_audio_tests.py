@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Render Multiband Split (`src/mbsplit_core.genexpr`) through Ableton-bundled Max 9
-and verify its DSP & telemetry buffer (`#0-splitscope`).
+Render Multiband Split (`src/mbsplit_core.genexpr`) through Ableton-bundled Max 9 on the shared
+NonRealTime harness (`scripts/max_harness.py`, parallel-safe) and verify its DSP & telemetry
+buffer (`#0-splitscope`).
 
 Cases:
   1. flat_sum_4way           — 4 parallel Rack-chain instances (`bandmask` 1, 2, 4, 8)
@@ -13,116 +14,38 @@ Cases:
   3. phase_gain_and_scope    — Chain 1 with `gain 6.0206` (+6 dB) boosts amplitude 2.0x on L;
                                Chain 2 with `phase 1` (180° invert) summed with dry cancels
                                to < 0.002 on R; verifies `#0-splitscope` telemetry updates.
+  4. dyn_null_vs_delayed_allpass — Dynamic Phase 4-band sum vs the JS-reference F1 allpass of the
+                               dry input delayed by 128 samples (null < -120 dB).
+  5. dyn_band_isolation      — Dynamic Phase band 3 passes 2.4 kHz at 0 dB, rejects 300 Hz > 55 dB.
 """
 
-import json
 import math
 import os
 import shutil
 import subprocess
 import sys
-import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import max_harness as mh
+from max_harness import box, gen_box, line
+
+ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "mbsplit_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "mbsplit_probe.js")
-HARNESS = os.path.join(ROOT, "tests", "mbsplit_harness.maxpat")
-RESULT = "/tmp/mbsplit_audio.txt"
-MAX_BIN = (
-    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
-    "Max/Max.app/Contents/MacOS/Max"
-)
-CRASH_RECOVERY_DIR = os.path.expanduser(
-    "~/Library/Application Support/Cycling '74/Max 9/Crash Recovery"
-)
+SETTLE_MS = 300
+DUR_MS = 500
 
 
-def box(obj_id, text, x, y, w, h, **extra):
-    b = {
-        "id": obj_id,
-        "maxclass": extra.pop("maxclass", "newobj"),
-        "numinlets": extra.pop("numinlets", 1),
-        "numoutlets": extra.pop("numoutlets", 1),
-        "outlettype": extra.pop("outlettype", [""]),
-        "patching_rect": [float(x), float(y), float(w), float(h)],
-        "text": text,
-    }
-    b.update(extra)
-    return {"box": b}
-
-
-def gen_box(obj_id, gen_code, x, y):
-    return {
-        "box": {
-            "code": gen_code,
-            "fontname": "<Monospaced>",
-            "fontsize": 10.0,
-            "id": obj_id,
-            "maxclass": "gen.codebox~",
-            "numinlets": 2,
-            "numoutlets": 2,
-            "outlettype": ["signal", "signal"],
-            "patching_rect": [float(x), float(y), 220.0, 60.0],
-        }
-    }
-
-
-def line(src, outlet, dst, inlet):
-    return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
-
-
-def clear_crash_recovery():
-    if os.path.isdir(CRASH_RECOVERY_DIR):
-        for entry in os.listdir(CRASH_RECOVERY_DIR):
-            full = os.path.join(CRASH_RECOVERY_DIR, entry)
-            try:
-                if os.path.isdir(full):
-                    shutil.rmtree(full)
-                else:
-                    os.remove(full)
-            except Exception:
-                pass
-
-
-def build_harness(gen_code, mode, dur_ms=500):
+def case_patch(gen_code, mode):
+    """Device boxes / lines for one case. The shared scaffold (scripts/max_harness.py) provides
+    obj-load, obj-record (2 ch), obj-mute-l / obj-mute-r and the probe obj-js."""
     boxes = [
-        box("obj-load", "loadbang", 40, 30, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
-        box("obj-del-dsp", "delay 1000", 40, 65, 75, 20, numinlets=2, numoutlets=1),
-        box("obj-dsp", "; dsp start", 40, 100, 80, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-arm", "delay 1300", 40, 135, 75, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-on", "1", 40, 170, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-stop", f"delay {dur_ms}", 40, 205, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-off", "0", 40, 240, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-analyze", "delay 80", 40, 275, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-analyze", f"analyze {dur_ms}", 120, 275, 95, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-quit", "; max quit", 40, 340, 70, 20, maxclass="message", numinlets=2, numoutlets=1),
         box("obj-setbuf", "setbuffer #0-splitscope", 220, 30, 160, 20, maxclass="message", numinlets=2, numoutlets=1),
         box("obj-scope", "buffer~ #0-splitscope @samps 8224", 400, 30, 220, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", "buffer~ rec 3000 2", 630, 30, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-record", "record~ rec 2", 260, 420, 100, 20, numinlets=4, numoutlets=1, outlettype=[""]),
-        box("obj-mute-l", "*~ 0", 260, 460, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-mute-r", "*~ 0", 320, 460, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-dac", "dac~", 260, 500, 50, 20, numinlets=2, numoutlets=0, outlettype=[]),
-        box("obj-js", f"js {PROBE_JS}", 420, 420, 220, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
     ]
-
     lines = [
-        line("obj-load", 0, "obj-del-dsp", 0),
         line("obj-load", 0, "obj-setbuf", 0),
         line("obj-setbuf", 0, "obj-js", 0),
-        line("obj-del-dsp", 0, "obj-dsp", 0),
-        line("obj-del-dsp", 0, "obj-del-arm", 0),
-        line("obj-del-arm", 0, "obj-rec-on", 0),
-        line("obj-del-arm", 0, "obj-del-stop", 0),
-        line("obj-del-stop", 0, "obj-rec-off", 0),
-        line("obj-del-stop", 0, "obj-del-analyze", 0),
-        line("obj-rec-on", 0, "obj-record", 0),
-        line("obj-rec-off", 0, "obj-record", 0),
-        line("obj-del-analyze", 0, "obj-analyze", 0),
-        line("obj-analyze", 0, "obj-js", 0),
-        line("obj-js", 0, "obj-quit", 0),
-        line("obj-mute-l", 0, "obj-dac", 0),
-        line("obj-mute-r", 0, "obj-dac", 1),
     ]
 
     if mode == "flat_sum_4way":
@@ -205,9 +128,9 @@ def build_harness(gen_code, mode, dur_ms=500):
         ])
 
     elif mode == "dyn_null_vs_delayed_allpass":
-        # Dynamic Phase 4-band sum (gen1) must equal the Min-phase 2-band sum (= F1 Linkwitz-Riley allpass, gen2)
-        # delayed by the FIR latency (128 samples at 44.1 / 48 kHz).
-        # Left: Dynamic 4-band sum. Right: Dynamic sum minus delayed reference (should null).
+        # Dynamic Phase 4-band sum must equal the F1 Linkwitz-Riley allpass of the input delayed by the FIR
+        # latency (128 samples at 44.1 / 48 kHz). Left: Dynamic 4-band sum. Right: dry input. The probe dumps
+        # both channels and main() rebuilds the delayed allpass reference offline with the JS reference DSP.
         boxes.extend([
             box("obj-osc1", "cycle~ 80", 200, 80, 70, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
             box("obj-osc2", "cycle~ 380", 280, 80, 75, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
@@ -217,11 +140,7 @@ def build_harness(gen_code, mode, dur_ms=500):
             box("obj-noise-amt", "*~ 0.1", 545, 105, 50, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
             box("obj-sum-in", "*~ 0.15", 260, 120, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
             gen_box("obj-gen1", gen_code, 220, 200),
-            gen_box("obj-gen2", gen_code, 560, 200),
             box("obj-p1", "scope #0-splitscope, numbands 4, slope 1, f1 150, f2 900, f3 4200, bandmask 15, gain 0, phase 0, dynphase 1", 220, 160, 560, 20, maxclass="message", numinlets=2, numoutlets=1),
-            box("obj-p2", "numbands 2, slope 1, f1 150, f2 900, f3 4200, bandmask 3, gain 0, phase 0, dynphase 0", 560, 160, 520, 20, maxclass="message", numinlets=2, numoutlets=1),
-            box("obj-dly", "delay~ 1024 128", 560, 300, 100, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-            box("obj-diff", "-~", 400, 340, 40, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
         ])
         lines.extend([
             line("obj-osc1", 0, "obj-sum-in", 0),
@@ -231,20 +150,13 @@ def build_harness(gen_code, mode, dur_ms=500):
             line("obj-noise", 0, "obj-noise-amt", 0),
             line("obj-noise-amt", 0, "obj-sum-in", 0),
             line("obj-load", 0, "obj-p1", 0),
-            line("obj-load", 0, "obj-p2", 0),
             line("obj-p1", 0, "obj-gen1", 0),
-            line("obj-p2", 0, "obj-gen2", 0),
             line("obj-sum-in", 0, "obj-gen1", 0),
             line("obj-sum-in", 0, "obj-gen1", 1),
-            line("obj-sum-in", 0, "obj-gen2", 0),
-            line("obj-sum-in", 0, "obj-gen2", 1),
-            line("obj-gen2", 0, "obj-dly", 0),
-            line("obj-gen1", 0, "obj-diff", 0),
-            line("obj-dly", 0, "obj-diff", 1),
             line("obj-gen1", 0, "obj-record", 0),
-            line("obj-diff", 0, "obj-record", 1),
+            line("obj-sum-in", 0, "obj-record", 1),
             line("obj-gen1", 0, "obj-mute-l", 0),
-            line("obj-diff", 0, "obj-mute-r", 0),
+            line("obj-sum-in", 0, "obj-mute-r", 0),
         ])
 
     elif mode == "dyn_band_isolation":
@@ -271,131 +183,99 @@ def build_harness(gen_code, mode, dur_ms=500):
             line("obj-gen1", 1, "obj-mute-r", 0),
         ])
 
-    return {
-        "patcher": {
-            "fileversion": 1,
-            "appversion": {"major": 9, "minor": 1, "revision": 5, "architecture": "x64", "modernui": 1},
-            "classnamespace": "box",
-            "rect": [100.0, 100.0, 1080.0, 580.0],
-            "boxes": boxes,
-            "lines": lines,
-        }
-    }
+    return boxes, lines
 
 
-def run_case(gen_code, mode):
-    clear_crash_recovery()
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
+def run_case(gen_code, mode, keep_dir=False):
+    boxes, lines = case_patch(gen_code, mode)
+    return mh.run_case(f"mbsplit_{mode}", boxes, lines, probe_js=PROBE_JS, settle_ms=SETTLE_MS,
+                       dur_ms=DUR_MS, channels=2, mode="nrt", keep_dir=keep_dir)
 
-    patch = build_harness(gen_code, mode)
-    with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(patch, f, indent=2)
 
-    proc = subprocess.Popen(
-        [MAX_BIN, HARNESS],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+def offline_dynamic_null(dump_path, sr, f1, slope):
+    """Null the recorded Dynamic Phase sum (L) against the JS reference F1 allpass of the recorded dry input (R),
+    delayed by the FIR latency. Skips the first 4096 samples while the reference filter state settles and the
+    last 64. On the NonRealTime harness the null is about -149 dB (float precision); an FIR split error
+    would leave about -6 dB around F2 / F3."""
+    script = r"""
+const fs = require("fs");
+const cfg = require(process.argv[1]);
+const sr = Number(process.argv[2]), f1 = Number(process.argv[3]), slope = Number(process.argv[4]);
+const rows = fs.readFileSync(process.argv[5], "utf8").trim().split("\n").map((l) => l.split(" ").map(Number));
+const D = cfg.firLatencyForSampleRate(sr);
+const ref = cfg.createReferenceSplitterDsp(sr);
+const ap = rows.map((r) => { const b = ref.processSample(r[1], f1, 900, 4200, 2, slope); return b[0] + b[1]; });
+let e = 0, p = 0, n = 0;
+for (let i = 4096; i < rows.length - 64; i++) { const d = rows[i][0] - ap[i - D]; e += d * d; p += rows[i][0] * rows[i][0]; n++; }
+console.log(Math.sqrt(e / n), Math.sqrt(p / n));
+"""
+    out = subprocess.check_output(
+        ["node", "-e", script, os.path.join(ROOT, "src", "mbsplit_config.js"), str(sr), str(f1), str(slope), dump_path],
+        text=True,
     )
-
-    deadline = time.time() + 25.0
-    stable_hits = 0
-    last_size = -1
-    while time.time() < deadline:
-        if os.path.exists(RESULT):
-            sz = os.path.getsize(RESULT)
-            if sz > 20 and sz == last_size:
-                stable_hits += 1
-                if stable_hits >= 2:
-                    break
-            else:
-                stable_hits = 0
-                last_size = sz
-        time.sleep(0.12)
-
-    if proc.poll() is None:
-        try:
-            proc.wait(timeout=3.0)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    time.sleep(0.35)
-
-    if not os.path.exists(RESULT):
-        raise RuntimeError(f"Case {mode}: /tmp/mbsplit_audio.txt was not produced by Max")
-
-    data = {}
-    with open(RESULT, "r", encoding="utf-8") as f:
-        for raw_line in f:
-            parts = raw_line.strip().split()
-            if len(parts) == 2:
-                data[parts[0]] = float(parts[1])
-    return data
+    a, b = out.split()
+    return float(a), float(b)
 
 
 def main():
-    if not os.path.exists(MAX_BIN):
-        print(f"SKIP: Max binary not found at {MAX_BIN}")
+    if not os.path.exists(mh.MAX_BIN):
+        print(f"SKIP: Max binary not found at {mh.MAX_BIN}")
         sys.exit(0)
 
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
 
+    # Case 1: 4-way parallel chain flat unity sum
+    r1 = run_case(gen_code, "flat_sum_4way")
+    assert r1["nan"] == 0, f"flat_sum_4way produced NaNs: {r1}"
+    err_db = abs(20.0 * math.log10(max(r1["rmsL"], 1e-9) / max(r1["rmsR"], 1e-9)))
+    print(f"[PASS] flat_sum_4way         rmsSum={r1['rmsL']:.5f} rmsDry={r1['rmsR']:.5f} err={err_db:.4f} dB")
+    assert err_db < 0.05, f"Expected 4-chain parallel sum within 0.05 dB of dry input (got {err_db:.4f} dB)"
+
+    # Case 2: LR8 48 dB/oct band isolation
+    r2 = run_case(gen_code, "band_isolation_lr8")
+    assert r2["nan"] == 0, f"band_isolation_lr8 produced NaNs: {r2}"
+    rej_db = 20.0 * math.log10(max(r2["rmsL"], 1e-9) / max(r2["rmsR"], 1e-9))
+    print(f"[PASS] band_isolation_lr8    rmsLow={r2['rmsL']:.5f} rmsHigh={r2['rmsR']:.6f} rejection={rej_db:.1f} dB")
+    assert r2["rmsL"] > 0.33, f"Expected Low band to pass 65 Hz at ~0.353 RMS (got {r2['rmsL']})"
+    assert rej_db > 40.0, f"Expected >40 dB stopband rejection on High band for 65 Hz (got {rej_db:.1f} dB)"
+
+    # Case 3: +6 dB Gain, 180-deg Phase Invert cancellation, and live #0-splitscope telemetry
+    r3 = run_case(gen_code, "phase_gain_and_scope")
+    assert r3["nan"] == 0, f"phase_gain_and_scope produced NaNs: {r3}"
+    print(
+        f"[PASS] phase_gain_and_scope  peakBoostL={r3['peakL']:.4f} phaseCancelR={r3['peakR']:.6f} "
+        f"specMax={r3['scopeSpecMax']:.3f} scopeOut={r3['scopeOut']:.3f}"
+    )
+    assert 0.48 <= r3["peakL"] <= 0.52, f"Expected +6 dB boosted 0.25 sine to peak near 0.50 (got {r3['peakL']})"
+    assert r3["peakR"] < 0.002, f"Expected 180-deg phase invert to null against normal phase (got {r3['peakR']})"
+    assert r3["scopeSpecMax"] > 0.05 and r3["scopeOut"] > 0.20 and r3["scopeBeat"] > 0, (
+        f"Expected active #0-splitscope telemetry (got {r3})"
+    )
+
+    # Case 4: Dynamic Phase 4-band sum nulls against the delayed F1 allpass (exact FIR latency)
+    r4 = run_case(gen_code, "dyn_null_vs_delayed_allpass", keep_dir=True)
+    assert r4["nan"] == 0, f"dyn_null_vs_delayed_allpass produced NaNs: {r4}"
     try:
-        # Case 1: 4-way parallel chain flat unity sum
-        r1 = run_case(gen_code, "flat_sum_4way")
-        assert r1["nan"] == 0, f"flat_sum_4way produced NaNs: {r1}"
-        err_db = abs(20.0 * math.log10(max(r1["rmsL"], 1e-9) / max(r1["rmsR"], 1e-9)))
-        print(f"[PASS] flat_sum_4way         rmsSum={r1['rmsL']:.5f} rmsDry={r1['rmsR']:.5f} err={err_db:.4f} dB")
-        assert err_db < 0.05, f"Expected 4-chain parallel sum within 0.05 dB of dry input (got {err_db:.4f} dB)"
-
-        # Case 2: LR8 48 dB/oct band isolation
-        r2 = run_case(gen_code, "band_isolation_lr8")
-        assert r2["nan"] == 0, f"band_isolation_lr8 produced NaNs: {r2}"
-        rej_db = 20.0 * math.log10(max(r2["rmsL"], 1e-9) / max(r2["rmsR"], 1e-9))
-        print(f"[PASS] band_isolation_lr8    rmsLow={r2['rmsL']:.5f} rmsHigh={r2['rmsR']:.6f} rejection={rej_db:.1f} dB")
-        assert r2["rmsL"] > 0.33, f"Expected Low band to pass 65 Hz at ~0.353 RMS (got {r2['rmsL']})"
-        assert rej_db > 40.0, f"Expected >40 dB stopband rejection on High band for 65 Hz (got {rej_db:.1f} dB)"
-
-        # Case 3: +6 dB Gain, 180-deg Phase Invert cancellation, and live #0-splitscope telemetry
-        r3 = run_case(gen_code, "phase_gain_and_scope")
-        assert r3["nan"] == 0, f"phase_gain_and_scope produced NaNs: {r3}"
-        print(
-            f"[PASS] phase_gain_and_scope  peakBoostL={r3['peakL']:.4f} phaseCancelR={r3['peakR']:.6f} "
-            f"specMax={r3['scopeSpecMax']:.3f} scopeOut={r3['scopeOut']:.3f}"
-        )
-        assert 0.48 <= r3["peakL"] <= 0.52, f"Expected +6 dB boosted 0.25 sine to peak near 0.50 (got {r3['peakL']})"
-        assert r3["peakR"] < 0.002, f"Expected 180-deg phase invert to null against normal phase (got {r3['peakR']})"
-        assert r3["scopeSpecMax"] > 0.05 and r3["scopeOut"] > 0.20 and r3["scopeBeat"] > 0, (
-            f"Expected active #0-splitscope telemetry (got {r3})"
-        )
-
-        # Case 4: Dynamic Phase 4-band sum nulls against the delayed F1 allpass (exact FIR latency)
-        r4 = run_case(gen_code, "dyn_null_vs_delayed_allpass")
-        assert r4["nan"] == 0, f"dyn_null_vs_delayed_allpass produced NaNs: {r4}"
-        null_db = 20.0 * math.log10(max(r4["rmsR"], 1e-12) / max(r4["rmsL"], 1e-12))
-        print(f"[PASS] dyn_null_delayed_ap   rmsSum={r4['rmsL']:.5f} residual={r4['rmsR']:.2e} null={null_db:.1f} dB firD={r4['scopeFirD']:.0f}")
-        assert r4["rmsL"] > 0.05, f"Expected Dynamic Phase output signal (got {r4})"
-        assert null_db < -100.0, f"Expected Dynamic Phase sum to null against the 128-sample delayed F1 allpass (got {null_db:.1f} dB)"
-        assert r4["scopeFirD"] == 128 and r4["scopeDyn"] == 1, f"Expected scope telemetry firD=128, dyn=1 (got {r4})"
-
-        # Case 5: Dynamic Phase linear-phase FIR band isolation
-        r5 = run_case(gen_code, "dyn_band_isolation")
-        assert r5["nan"] == 0, f"dyn_band_isolation produced NaNs: {r5}"
-        pass_db = 20.0 * math.log10(max(r5["rmsL"], 1e-12) / (0.5 / math.sqrt(2.0)))
-        rej_db5 = 20.0 * math.log10(max(r5["rmsR"], 1e-12) / (0.5 / math.sqrt(2.0)))
-        print(f"[PASS] dyn_band_isolation    pass2400={pass_db:.3f} dB reject300={rej_db5:.1f} dB")
-        assert abs(pass_db) < 0.1, f"Expected 2.4 kHz to pass Band 3 at 0 dB (got {pass_db:.3f} dB)"
-        assert rej_db5 < -55.0, f"Expected 300 Hz rejected > 55 dB by Band 3 (got {rej_db5:.1f} dB)"
-
-        print("All Real Max 9 Multiband Split audio & telemetry tests passed!")
+        null_rms, sig_rms = offline_dynamic_null(os.path.join(r4["harness_dir"], "result.txt.dump"), r4["sr"], 150.0, 1)
     finally:
-        if os.path.exists(HARNESS):
-            os.remove(HARNESS)
-        clear_crash_recovery()
+        shutil.rmtree(r4["harness_dir"], ignore_errors=True)
+    null_db = 20.0 * math.log10(max(null_rms, 1e-15) / max(sig_rms, 1e-15))
+    print(f"[PASS] dyn_null_delayed_ap   rmsSum={r4['rmsL']:.5f} residual={null_rms:.2e} null={null_db:.1f} dB firD={r4['scopeFirD']:.0f}")
+    assert r4["rmsL"] > 0.05, f"Expected Dynamic Phase output signal (got {r4})"
+    assert null_db < -120.0, f"Expected Dynamic Phase sum to null against the 128-sample delayed F1 allpass (got {null_db:.1f} dB)"
+    assert r4["scopeFirD"] == 128 and r4["scopeDyn"] == 1, f"Expected scope telemetry firD=128, dyn=1 (got {r4})"
+
+    # Case 5: Dynamic Phase linear-phase FIR band isolation
+    r5 = run_case(gen_code, "dyn_band_isolation")
+    assert r5["nan"] == 0, f"dyn_band_isolation produced NaNs: {r5}"
+    pass_db = 20.0 * math.log10(max(r5["rmsL"], 1e-12) / (0.5 / math.sqrt(2.0)))
+    rej_db5 = 20.0 * math.log10(max(r5["rmsR"], 1e-12) / (0.5 / math.sqrt(2.0)))
+    print(f"[PASS] dyn_band_isolation    pass2400={pass_db:.3f} dB reject300={rej_db5:.1f} dB")
+    assert abs(pass_db) < 0.1, f"Expected 2.4 kHz to pass Band 3 at 0 dB (got {pass_db:.3f} dB)"
+    assert rej_db5 < -55.0, f"Expected 300 Hz rejected > 55 dB by Band 3 (got {rej_db5:.1f} dB)"
+
+    print("All Real Max 9 Multiband Split audio & telemetry tests passed!")
 
 
 if __name__ == "__main__":

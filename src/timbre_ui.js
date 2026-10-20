@@ -542,10 +542,6 @@ function drawChip(g, idx) {
     var col = C_SLOT[idx];
     var mapped = idx === 0 ? (slotNames[0] !== "" || slotMapped[0]) : (slotNames[1] !== "" || slotMapped[1]);
     var nm = slotNames[idx];
-    if (demoActive && !slotsLive) {
-        nm = idx === 0 ? "Filter Freq" : "Delay Fbk";
-        mapped = true;
-    }
     var sz = g.nameSz;
     var x = pos[0];
     var y = pos[1];
@@ -553,7 +549,7 @@ function drawChip(g, idx) {
     mgraphics.set_source_rgba(col[0], col[1], col[2], a);
     mgraphics.arc(x + 3, y + sz * 0.15 + 1.5, mapped ? 2.4 : 1.8, 0, Math.PI * 2);
     mgraphics.fill();
-    var label = (idx + 1) + "  " + (mapped ? (nm !== "" ? nm : "mapped") : "unmapped");
+    var label = (idx + 1) + "  " + (mapped ? (nm !== "" ? nm : "mapped") : "\u2014 not mapped");
     label = fitText(label, sz, g.chipW - 9);
     text(label, x + 8, y + sz * 0.62 + 1, sz, mapped ? C_TXT : C_DIM, mapped ? 1 : 0.8);
 }
@@ -665,7 +661,7 @@ function drawStrip(g) {
         text("NOVELTY", s[0] + 5, s[1] + fs + 1, fs - 0.6, C_NOV, 0.9);
         text("OUT", s[0] + 5 + textW("NOVELTY ", fs - 0.6) + 2, s[1] + fs + 1, fs - 0.6, C_ENV, 0.95);
     }
-    var ro = "THR " + Math.round(thr * 100) + "%";
+    var ro = "Sens " + Math.round(curSens) + "% \u00b7 thr " + Math.round(thr * 100) + "%";
     if (g.readout) {
         var rs = LAYOUT === "c" ? 8 : fs;
         var rw = textW(ro, rs);

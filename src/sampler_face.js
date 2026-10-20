@@ -27,7 +27,9 @@ var COL = {
     track:  [0.34, 0.34, 0.34]
 };
 
-var ENGINE_NAMES = ["Repitch", "Cycles", "Textures"];
+// Engines by `mode` index, and Bitwig's list order (Repitch, Spectral, Cycles, Textures, Fragments)
+var MODE_NAMES = ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"];
+var ENGINE_ORDER = [0, 3, 1, 2, 4];
 var ENV_PAGES = ["AMP", "MOD", "LFO", "UNI"];
 var ENV_PAGE_KNOBS = [
     [["atk_ms", "A"], ["dec_ms", "D"], ["sus_lvl", "S"], ["rel_ms", "R"]],
@@ -37,7 +39,8 @@ var ENV_PAGE_KNOBS = [
 ];
 var BIPOLAR_KEYS = {
     pitch_st: 1, formant: 1, filt_env_amt: 1, menv_pitch: 1, menv_pos: 1,
-    lfo_pitch: 1, lfo_filt: 1, lfo_pos: 1, fine_cents: 1
+    lfo_pitch: 1, lfo_filt: 1, lfo_pos: 1, fine_cents: 1,
+    rp_color: 1, sp_bend: 1, cy_width: 1, cy_split: 1, cy_harm: 1
 };
 var KNOB_DRAG_PX = 120.0;
 
@@ -93,7 +96,8 @@ function fmtParam(key, v) {
 }
 
 function setParamFromFace(key, v) {
-    storeParam(key, v);
+    storeParam(key, v, true);
+    expectEcho(key, v);
     outlet(0, "param", key, v);
 }
 
@@ -219,7 +223,7 @@ function drawKnob(key, cx, cy, r, label, opts) {
         if (showVal) {
             text(fmtParam(key, v), cx, ly, 8.0, COL.text, true, 1);
         } else if (label !== "") {
-            text(label, cx, ly, 8.5, opts.labelColor || COL.label, false, 1, alpha);
+            text(label, cx, ly, opts.labelSize || 8.5, opts.labelColor || COL.label, false, 1, alpha);
         }
     }
     zone("knob", cx - ringR - 2, cy - ringR - 2, ringR * 2 + 4, ringR * 2 + 14, { key: key });
@@ -306,22 +310,76 @@ function iconSlicePlay(x, y, mode, c) {
     }
 }
 
-var slicePlayMenu = null;   // {x, y, w, rowH} while the Playback dropdown is open
+var LOOP_MODE_NAMES = ["Off", "One-way looping", "Ping-pong looping"];
+var SLICE_AT_NAMES = ["Divisions", "Beats", "Onsets", "Pitches", "Manual"];
+var SLICE_AT_DESCS = ["Slice into equal pieces", "Slice at note intervals", "Slice at transients", "Slice on pitch changes", "Slice it yourself"];
+var SLICE_BEAT_LABELS = ["1 bar", "Half note", "Quarter note", "Triplet quarter note", "8th note", "Triplet 8th note",
+    "16th note", "Triplet 16th note", "32nd note", "Triplet 32nd note"];
+var SLICE_BEAT_SHORT = ["1", "1/2", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"];
 
-function paintSlicePlayMenu() {
-    if (!slicePlayMenu) return;
-    var m = slicePlayMenu;
-    var cur = Math.round(paramValue("slice_play"));
-    fillRR(m.x - 1, m.y - 1, m.w + 2, m.rowH * 4 + 8, 3, [0.36, 0.36, 0.36]);
-    fillRR(m.x, m.y, m.w, m.rowH * 4 + 6, 3, [0.20, 0.20, 0.20]);
-    for (var i = 0; i < 4; i++) {
+// One Bitwig-style dropdown open at a time: {key, x, y, w, rowH}
+var openMenu = null;
+
+function menuItems(key) {
+    var names, descs = null, icon = null;
+    if (key === "slice_play") { names = SLICE_PLAY_NAMES; icon = iconSlicePlay; }
+    else if (key === "loop_mode") { names = LOOP_MODE_NAMES; icon = function (x, y, i, c) { iconLoopMode(x, y, i, c); }; }
+    else if (key === "slice_at") { names = SLICE_AT_NAMES; descs = SLICE_AT_DESCS; }
+    else if (key === "slice_beat") { names = SLICE_BEAT_LABELS; }
+    else { names = paramSpec(key).enums || []; }
+    return { names: names, descs: descs, icon: icon };
+}
+
+// Opens `key`'s menu next to (ax, ay); it stays inside the canvas and opens upward from the footer
+function toggleMenu(key, ax, ay, w) {
+    if (openMenu && openMenu.key === key) { openMenu = null; return; }
+    var items = menuItems(key);
+    var sz = mgraphics.size;
+    // Long lists (e.g. 12 keys) shrink their rows to fit the canvas
+    var rowH = Math.min(15, Math.floor((sz[1] - 10) / Math.max(1, items.names.length)));
+    var h = items.names.length * rowH + 6;
+    var x = Math.max(2, Math.min(sz[0] - w - 2, ax));
+    var y = Math.max(2, Math.min(sz[1] - h - 2, ay - h - 2));
+    openMenu = { key: key, x: x, y: y, w: w, rowH: rowH };
+}
+
+function paintMenu() {
+    if (!openMenu) return;
+    var m = openMenu;
+    var items = menuItems(m.key);
+    var cur = Math.round(paramValue(m.key));
+    var h = items.names.length * m.rowH + 6;
+    fillRR(m.x - 1, m.y - 1, m.w + 2, h + 2, 3, [0.36, 0.36, 0.36]);
+    fillRR(m.x, m.y, m.w, h, 3, [0.20, 0.20, 0.20]);
+    for (var i = 0; i < items.names.length; i++) {
         var ry = m.y + 3 + i * m.rowH;
         if (i === cur) fillRect(m.x + 3, ry, m.w - 6, m.rowH, [0.36, 0.36, 0.36]);
-        iconSlicePlay(m.x + 8, ry + m.rowH * 0.5 - 4, i, COL.text);
-        text(SLICE_PLAY_NAMES[i], m.x + 28, ry + m.rowH * 0.5 + 3.5, 9.0, i === cur ? COL.label : COL.text, false, 0);
-        zone("button", m.x, ry, m.w, m.rowH, { action: "slice_play_pick", value: i });
+        var tx = m.x + 8;
+        if (items.icon) { items.icon(m.x + 8, ry + m.rowH * 0.5 - 4, i, COL.text); tx = m.x + 28; }
+        var nw = text(items.names[i], tx, ry + m.rowH * 0.5 + 3.5, 9.0, i === cur ? COL.label : COL.text, false, 0);
+        if (items.descs) text(items.descs[i], tx + nw + 6, ry + m.rowH * 0.5 + 3.5, 8.5, COL.label, false, 0);
+        zone("button", m.x, ry, m.w, m.rowH, { action: "menu_pick", key: m.key, value: i });
     }
 }
+
+function caret(x, y, c) {
+    polygon([[x, y], [x + 6, y], [x + 3, y + 3.5]], c || COL.label);
+}
+
+// Small square toggle with a glyph (Bitwig's mode-panel icon buttons)
+function iconToggle(x, y, key, glyph) {
+    var on = Math.round(paramValue(key)) > 0;
+    fillRR(x, y, 14, 12, 2, on ? [0.42, 0.42, 0.42] : COL.button);
+    glyph(x + 7, y + 6, on ? COL.text : COL.label);
+    zone("button", x, y, 14, 12, { action: "toggle", key: key });
+}
+
+function glyphFork(cx, cy, c) { line(cx, cy + 4, cx, cy, c, 1.0, 1.2); line(cx, cy, cx - 3, cy - 4, c, 1.0, 1.2); line(cx, cy, cx + 3, cy - 4, c, 1.0, 1.2); }
+function glyphBar(cx, cy, c) { line(cx, cy - 4, cx, cy + 4, c, 1.0, 1.6); line(cx - 2, cy - 4, cx + 2, cy - 4, c, 1.0, 1.0); line(cx - 2, cy + 4, cx + 2, cy + 4, c, 1.0, 1.0); }
+function glyphGrid(cx, cy, c) { for (var i = -1; i <= 1; i++) { line(cx - 4, cy + i * 2.5, cx + 4, cy + i * 2.5, c, 1.0, 1.0); line(cx + i * 2.5, cy - 4, cx + i * 2.5, cy + 4, c, 1.0, 1.0); } }
+function glyphCross(cx, cy, c) { line(cx - 4, cy - 3, cx + 4, cy + 3, c, 1.0, 1.2); line(cx - 4, cy + 3, cx + 4, cy - 3, c, 1.0, 1.2); line(cx - 4, cy, cx + 4, cy, c, 1.0, 1.0); }
+function glyphNote(cx, cy, c) { circle(cx - 1.5, cy + 3, 2, c); line(cx + 0.5, cy + 3, cx + 0.5, cy - 4, c, 1.0, 1.2); line(cx + 0.5, cy - 4, cx + 3, cy - 2, c, 1.0, 1.2); }
+function glyphLink(cx, cy, c) { strokeArc(cx - 2.5, cy, 2.5, Math.PI * 0.5, Math.PI * 1.5, c, 1.0, 1.2); strokeArc(cx + 2.5, cy, 2.5, -Math.PI * 0.5, Math.PI * 0.5, c, 1.0, 1.2); line(cx - 2.5, cy - 2.5, cx + 2.5, cy - 2.5, c, 1.0, 1.2); line(cx - 2.5, cy + 2.5, cx + 2.5, cy + 2.5, c, 1.0, 1.2); }
 
 function iconReverse(x, y, on) {
     var c = on ? COL.blue : COL.label;
@@ -344,32 +402,22 @@ var MAIN = {
 
 function paintModeColumn() {
     var x = MAIN.left[0], w = MAIN.left[2];
-    var sliced = (curMode === 3);
-
     fillRR(x, 3, w, 44, 3, COL.panel);
-    var rows = [["Single", !sliced], ["Sliced", sliced]];
+    var rows = [["Single", !curSliced], ["Sliced", !!curSliced]];
     for (var i = 0; i < 2; i++) {
         var ry = 3 + i * 22;
         var c = rows[i][1] ? COL.blue : COL.label;
         if (i === 0) iconWave(x + w * 0.5 - 6, ry + 3, c, 1.0); else iconKnife(x + w * 0.5 - 5.5, ry + 3, c, 1.0);
         text(rows[i][0], x + w * 0.5, ry + 20, 9.0, c, false, 1);
-        zone("button", x, ry, w, 22, { action: i === 0 ? "single" : "sliced" });
+        zone("button", x, ry, w, 22, { action: "sliced_set", value: i });
     }
 
     fillRR(x, 50, w, 116, 3, COL.panel);
-    for (var e = 0; e < 3; e++) {
-        var ey = 50 + 22 + e * 28;
-        var active = !sliced && curMode === e;
-        text(ENGINE_NAMES[e], x + w * 0.5, ey, 9.5, active ? COL.blue : (sliced ? COL.dim : COL.label), false, 1);
-        zone("button", x, ey - 16, w, 26, { action: "engine", engine: e });
-    }
-
-    // 16-voice activity LEDs
-    for (var vi = 0; vi < 16; vi++) {
-        var lx = x + 8 + (vi % 8) * 5.2;
-        var ly = 148 + Math.floor(vi / 8) * 6;
-        var lvl = voiceAmps[vi] || 0;
-        fillRect(lx, ly, 3.4, 3.4, lvl > 0.02 ? COL.blue : COL.track, lvl > 0.02 ? Math.min(1, 0.4 + lvl * 0.6) : 1.0);
+    for (var e = 0; e < ENGINE_ORDER.length; e++) {
+        var m = ENGINE_ORDER[e];
+        var ey = 50 + 116 * (e + 0.5) / ENGINE_ORDER.length + 3.5;
+        text(MODE_NAMES[m], x + w * 0.5, ey, 9.0, curMode === m ? COL.blue : COL.label, false, 1);
+        zone("button", x, ey - 14, w, 22, { action: "engine", engine: m });
     }
 }
 
@@ -431,6 +479,7 @@ function paintSamplePanel() {
     // Waveform
     var wx = sx + 4, wy = sy + 17, ww = sw - 8, wh = 66;
     var loopOn = curLoopMode > 0;
+    var loopZones = null;
     if (hasLoadedSample) {
         wavePolygon(wx, wy, ww, wh, 0, 1, [0.42, 0.42, 0.42], 1.0);
         wavePolygon(wx, wy, ww, wh, curStart, curEnd, [0.94, 0.94, 0.94], 1.0);
@@ -439,20 +488,31 @@ function paintSamplePanel() {
         text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 6, 10.0, COL.label, false, 1);
     }
 
-    if (loopOn && curMode !== 3) {
+    if (loopOn && !curSliced) {
+        // Bitwig loop: green body, a fade-in gradient before the loop start for the crossfade,
+        // loop handles at the bottom and a move handle in the middle
         var lsX = wx + curLoopStart * ww, leX = wx + curLoopEnd * ww;
-        fillRect(lsX, wy, leX - lsX, wh, COL.green, 0.10);
         var xfW = curXfade * (leX - lsX);
-        if (xfW > 1) polygon([[lsX - xfW, wy + wh], [lsX, wy + wh], [lsX, wy + wh - 10]], COL.green, 0.45);
-        line(lsX, wy, lsX, wy + wh, COL.green, 0.85, 1.0);
-        line(leX, wy, leX, wy + wh, COL.green, 0.85, 1.0);
-        fillRect(lsX, wy + wh - 6, 6, 6, COL.green);
-        fillRect(leX - 6, wy + wh - 6, 6, 6, COL.green);
+        var LOOPC = [0.30, 0.85, 0.68];
+        var strips = 14;
+        for (var gi = 0; gi < strips && xfW > 1; gi++) {
+            var gx0 = lsX - xfW + xfW * gi / strips;
+            fillRect(gx0, wy, xfW / strips + 0.5, wh, LOOPC, 0.42 * (gi + 1) / strips);
+        }
+        fillRect(lsX, wy, leX - lsX, wh, LOOPC, 0.42);
+        line(lsX, wy, lsX, wy + wh, [0.85, 1, 0.95], 0.9, 1.0);
+        line(leX, wy, leX, wy + wh, [0.85, 1, 0.95], 0.9, 1.0);
+        var midX = (lsX + leX) * 0.5;
+        line(midX, wy, midX, wy + wh, [0.85, 1, 0.95], 0.5, 1.0);
+        fillRect(lsX, wy + wh - 7, 7, 7, LOOPC);
+        fillRect(leX - 7, wy + wh - 7, 7, 7, LOOPC);
+        fillRect(midX - 3.5, wy + wh * 0.5 - 3.5, 7, 7, LOOPC);
+        loopZones = { xf: xfW > 4 ? [lsX - xfW, wy, xfW - 3, wh] : null, mv: [midX - 6, wy + wh * 0.5 - 6, 12, 12] };
     }
 
-    if (curMode === 3) {
+    if (curSliced) {
         // Bitwig-style slices: yellow flag + line per slice from the start point; markers outside
-        // start..end are faint and unmapped. Slice k plays on MIDI note 36 + k (C1 upward).
+        // start..end are faint and unmapped. Slice k plays on key slice_from + k (C1 upward).
         var starts = currentSliceStarts();
         for (var mi = 0; mi < sliceMarkers.length; mi++) {
             var m = sliceMarkers[mi];
@@ -464,16 +524,16 @@ function paintSamplePanel() {
             if (si === selectedSliceIdx) fillRect(mxs, wy, nxt - mxs, wh, COL.blue, 0.16);
             line(mxs, wy, mxs, wy + wh, COL.yellow, 0.85, 1.0);
             polygon([[mxs, wy], [mxs + 7, wy], [mxs, wy + 7]], COL.yellow);
-            if (nxt - mxs > 22) text(midiToNoteName(36 + si), mxs + 3, wy + 16, 7.0, COL.yellow, false, 0, 0.8);
+            if (nxt - mxs > 22) text(midiToNoteName(curSliceFrom + si), mxs + 3, wy + 16, 7.0, COL.yellow, false, 0, 0.8);
         }
     }
 
-    // Grain cloud (Textures) / cycle window (Cycles) around each sounding voice
+    // Grain cloud (Textures, Fragments) / cycle window (Cycles) around each sounding voice
     // Scan lines only for a loaded sample: with an empty buffer the voices still run but play nothing
     for (var v = 0; v < 16 && hasLoadedSample; v++) {
         if ((voiceAmps[v] || 0) <= 0.02) continue;
         var phx = wx + clamp01(voicePlayheads[v]) * ww;
-        if (curMode === 2) {
+        if (curMode === 2 || curMode === 4) {
             var spread = Math.max(3, paramValue("grain_spray") * 0.01 * ww * 0.25);
             fillRect(phx - spread, wy, spread * 2, wh, COL.blue, 0.10 * voiceAmps[v] + 0.05);
         } else if (curMode === 1) {
@@ -485,7 +545,7 @@ function paintSamplePanel() {
 
     // Start / end: yellow flags at the top, or blue handles at the bottom in Sliced mode (Bitwig)
     var stX = wx + curStart * ww, enX = wx + curEnd * ww;
-    if (curMode === 3) {
+    if (curSliced) {
         line(enX, wy, enX, wy + wh, COL.blue, 0.95, 1.0);
         fillRect(stX, wy + wh - 7, 7, 7, COL.blue);
         fillRect(enX - 7, wy + wh - 7, 7, 7, COL.blue);
@@ -496,55 +556,90 @@ function paintSamplePanel() {
         fillRect(enX - 6, wy, 6, 6, COL.yellow);
     }
     zone("wave", wx, wy, ww, wh, {});
+    if (loopOn && !curSliced && loopZones) {
+        if (loopZones.xf) zone("xfade", loopZones.xf[0], loopZones.xf[1], loopZones.xf[2], loopZones.xf[3], {});
+        zone("loop_move", loopZones.mv[0], loopZones.mv[1], loopZones.mv[2], loopZones.mv[3], {});
+    }
+    // Flags of slice markers (not the start point) can be dragged; zones after "wave" win the hit test
+    if (curSliced) {
+        for (var fi = 0; fi < sliceMarkers.length; fi++) {
+            var fm = sliceMarkers[fi];
+            if (fm > curStart + 0.002 && fm < curEnd - 0.002) zone("flag", wx + fm * ww - 2, wy, 10, 9, { index: fi });
+        }
+    }
 
-    // Footer: PLAY reverse/start/end, LOOP mode/start/end/xfade
     var fy = sy + sh - 4;
+    if (curSliced) {
+        paintSlicedFooter(sx, sw, fy);
+        return;
+    }
+    // Footer: PLAY reverse/start/end, LOOP mode (dropdown)/start/end/xfade
     text("PLAY", sx + 6, fy, 8.5, COL.label, true, 0);
     iconReverse(sx + 36, fy - 9, curReverse);
     zone("button", sx + 33, fy - 11, 16, 14, { action: "reverse" });
-    var pc = curMode === 3 ? COL.blue : COL.yellow;
-    iconFlag(sx + 58, fy - 9, pc, false);
-    var stW = text(fmtPos(curStart), sx + 66, fy, 9.0, pc, false, 0);
+    iconFlag(sx + 58, fy - 9, COL.yellow, false);
+    var stW = text(fmtPos(curStart), sx + 66, fy, 9.0, COL.yellow, false, 0);
     zone("value", sx + 64, fy - 11, stW + 4, 14, { region: "samp_start" });
-    iconFlag(sx + 132, fy - 9, pc, true);
-    var enW = text(fmtPos(curEnd), sx + 136, fy, 9.0, pc, false, 0);
+    iconFlag(sx + 132, fy - 9, COL.yellow, true);
+    var enW = text(fmtPos(curEnd), sx + 136, fy, 9.0, COL.yellow, false, 0);
     zone("value", sx + 134, fy - 11, enW + 4, 14, { region: "samp_end" });
 
-    var lx = sx + 248;
-    if (curMode === 3) {
-        // Key range the slices occupy, starting at C1
-        var n = currentSliceStarts().length;
-        var kx = sx + 200;
-        text("KEYS", kx, fy, 8.5, COL.label, true, 0);
-        for (var kk = 0; kk < 4; kk++) fillRect(kx + 33 + kk * 3.2, fy - 9, 2.4, 9, COL.blue);
-        text("C1 – " + midiToNoteName(36 + n - 1), kx + 50, fy, 9.0, COL.blue, false, 0);
-        text(n + (n === 1 ? " slice" : " slices"), kx + 104, fy, 9.0, COL.label, false, 0);
-
-        // Playback: slice end / sample end / one-way loop / ping-pong (Bitwig's dropdown)
-        var sp = Math.round(paramValue("slice_play"));
-        var px2 = sx + sw - 8;
-        polygon([[px2 - 7, fy - 6], [px2, fy - 6], [px2 - 3.5, fy - 2]], COL.label);
-        iconSlicePlay(px2 - 26, fy - 8, sp, COL.blue);
-        var plW = text("Playback", px2 - 30, fy, 8.5, COL.label, true, 2);
-        zone("button", px2 - 34 - plW, fy - 11, plW + 36, 14, { action: "slice_play_menu" });
-        return;
-    }
+    var lx = sx + 240;
     var lc = loopOn ? COL.green : COL.dim;
     text("LOOP", lx, fy, 8.5, COL.label, true, 0);
     iconLoopMode(lx + 32, fy - 8, curLoopMode, loopOn ? COL.text : COL.label);
-    zone("button", lx + 30, fy - 11, 16, 14, { action: "loop_mode" });
-    iconFlag(lx + 54, fy - 9, lc, false);
-    var lsW = text(fmtPos(curLoopStart), lx + 62, fy, 9.0, lc, false, 0);
-    zone("value", lx + 60, fy - 11, lsW + 4, 14, { region: "loop_start" });
-    iconFlag(lx + 118, fy - 9, lc, true);
-    var leW = text(fmtPos(curLoopEnd), lx + 122, fy, 9.0, lc, false, 0);
-    zone("value", lx + 120, fy - 11, leW + 4, 14, { region: "loop_end" });
-    polygon([[lx + 166, fy - 9], [lx + 172, fy - 4], [lx + 166, fy + 1]], lc);
-    polygon([[lx + 178, fy - 9], [lx + 172, fy - 4], [lx + 178, fy + 1]], lc);
-    var xfW2 = text((curXfade / 0.45 * 100).toFixed(1) + " %", lx + 182, fy, 9.0, lc, false, 0);
-    zone("value", lx + 164, fy - 11, xfW2 + 22, 14, { region: "loop_xfade" });
+    caret(lx + 47, fy - 6);
+    zone("button", lx + 30, fy - 11, 26, 14, { action: "menu", key: "loop_mode", mw: 128 });
+    iconFlag(lx + 62, fy - 9, lc, false);
+    var lsW = text(fmtPos(curLoopStart), lx + 70, fy, 9.0, lc, false, 0);
+    zone("value", lx + 68, fy - 11, lsW + 4, 14, { region: "loop_start" });
+    iconFlag(lx + 124, fy - 9, lc, true);
+    var leW = text(fmtPos(curLoopEnd), lx + 128, fy, 9.0, lc, false, 0);
+    zone("value", lx + 126, fy - 11, leW + 4, 14, { region: "loop_end" });
+    polygon([[lx + 170, fy - 9], [lx + 176, fy - 4], [lx + 170, fy + 1]], lc);
+    polygon([[lx + 182, fy - 9], [lx + 176, fy - 4], [lx + 182, fy + 1]], lc);
+    var xfW2 = text((curXfade / 0.45 * 100).toFixed(1) + " %", lx + 186, fy, 9.0, lc, false, 0);
+    zone("value", lx + 168, fy - 11, xfW2 + 22, 14, { region: "loop_xfade" });
 }
 
+// Sliced footer: Use keys from <key> | Slice at: <mode> <amount> | Playback <mode>
+function paintSlicedFooter(sx, sw, fy) {
+    text("Use:", sx + 6, fy, 8.5, COL.label, true, 0);
+    for (var kk = 0; kk < 4; kk++) fillRect(sx + 30 + kk * 3.2, fy - 9, 2.4, 9, COL.blue);
+    text("from", sx + 47, fy, 8.5, COL.label, false, 0);
+    var kw = text(midiToNoteName(curSliceFrom), sx + 72, fy, 9.0, COL.blue, false, 0);
+    zone("value", sx + 70, fy - 11, kw + 4, 14, { key: "slice_from", pxPerUnit: 4 });
+
+    var at = Math.round(paramValue("slice_at"));
+    var ax = sx + 150;
+    var lw = text("Slice at:", ax, fy, 8.5, COL.label, true, 0);
+    var nw = text(SLICE_AT_NAMES[at], ax + lw + 5, fy, 9.0, COL.blue, false, 0);
+    caret(ax + lw + nw + 8, fy - 6);
+    zone("button", ax + lw + 3, fy - 11, nw + 14, 14, { action: "menu", key: "slice_at", mw: 224 });
+    var vx = ax + lw + nw + 22;
+    if (at === 0) {
+        var dw = text(String(Math.round(paramValue("slice_div"))), vx, fy, 9.0, COL.blue, false, 0);
+        zone("value", vx - 2, fy - 11, dw + 4, 14, { key: "slice_div", pxPerUnit: 3 });
+    } else if (at === 1) {
+        glyphNote(vx + 4, fy - 4, COL.blue);
+        var bw = text(SLICE_BEAT_SHORT[Math.round(paramValue("slice_beat"))], vx + 11, fy, 9.0, COL.blue, false, 0);
+        caret(vx + 14 + bw, fy - 6);
+        zone("button", vx - 2, fy - 11, bw + 24, 14, { action: "menu", key: "slice_beat", mw: 150 });
+    } else if (at === 2 || at === 3) {
+        var sw2 = text(Math.round(paramValue("slice_sens")) + " %", vx, fy, 9.0, COL.blue, false, 0);
+        zone("value", vx - 2, fy - 11, sw2 + 4, 14, { key: "slice_sens", norm: true });
+    } else {
+        text("dbl-click: add / remove", vx, fy, 8.0, COL.label, false, 0);
+    }
+
+    // Playback: slice end / sample end / one-way loop / ping-pong
+    var sp = Math.round(paramValue("slice_play"));
+    var px2 = sx + sw - 8;
+    caret(px2 - 7, fy - 6);
+    iconSlicePlay(px2 - 26, fy - 8, sp, COL.blue);
+    var plW = text("Playback", px2 - 30, fy, 8.5, COL.label, true, 2);
+    zone("button", px2 - 34 - plW, fy - 11, plW + 36, 14, { action: "menu", key: "slice_play", mw: 128 });
+}
 function fmtPos(norm) {
     return sampleDurationMs > 0 ? fmtTime(norm * sampleDurationMs) : (norm * 100).toFixed(1) + " %";
 }
@@ -553,22 +648,91 @@ function bottomPanel(p) {
     fillRR(p[0], MAIN.bottomY, p[1], MAIN.bottomH, 3, COL.panel);
 }
 
+// Character header "◀ name ▶" stepping `key`
+function charHeader(x, w, y, key) {
+    // "◀ name ▶" in the left 64 px; toggle icons sit at the right edge
+    var names = paramSpec(key).enums;
+    polygon([[x + 6, y + 8], [x + 10, y + 5], [x + 10, y + 11]], COL.label);
+    polygon([[x + 62, y + 8], [x + 58, y + 5], [x + 58, y + 11]], COL.label);
+    text(names[Math.round(paramValue(key))], x + 34, y + 12, 9.0, COL.text, true, 1);
+    zone("button", x, y, 16, 16, { action: "step", key: key, delta: -1 });
+    zone("button", x + 52, y, 16, 16, { action: "step", key: key, delta: 1 });
+}
+
 function paintEnginePanel() {
     var p = MAIN.p1, x = p[0], w = p[1], y = MAIN.bottomY;
     bottomPanel(p);
-    var name = curMode === 3 ? "Sliced" : ENGINE_NAMES[curMode];
-    polygon([[x + 8, y + 8], [x + 12, y + 5], [x + 12, y + 11]], COL.label);
-    polygon([[x + w - 8, y + 8], [x + w - 12, y + 5], [x + w - 12, y + 11]], COL.label);
-    text(name, x + w * 0.5, y + 12, 9.5, COL.text, true, 1);
-    zone("button", x, y, 22, 16, { action: "engine_prev" });
-    zone("button", x + w - 22, y, 22, 16, { action: "engine_next" });
-
-    var grainOn = (curMode === 2);
-    var cyclesOn = (curMode === 1);
-    var ky = y + 33;
-    drawKnob("grain_size", x + w * 0.18, ky, 9, "Size", { dim: !(grainOn || cyclesOn) });
-    drawKnob("grain_spray", x + w * 0.50, ky, 9, "Spray", { dim: !grainOn });
-    drawKnob("formant", x + w * 0.82, ky, 9, "Fmt", { dim: !cyclesOn });
+    var k3 = [x + w * 0.18, x + w * 0.5, x + w * 0.82];
+    var k2 = [x + w * 0.3, x + w * 0.7];
+    var ky = y + 34;
+    if (curMode === 0) {
+        charHeader(x, w, y, "rp_char");
+        var ch = Math.round(paramValue("rp_char"));
+        if (ch === 2) {
+            iconToggle(x + w - 34, y + 3, "rp_imaging", glyphFork);
+            iconToggle(x + w - 18, y + 3, "rp_vsr", glyphBar);
+        }
+        var labs = ch === 1 ? ["Crunch", "Tape"] : (ch === 2 ? ["Bits", "Color"] : ["—", "—"]);
+        drawKnob("rp_dist", k2[0], ky, 10, labs[0], { dim: ch === 0 });
+        drawKnob("rp_color", k2[1], ky, 10, labs[1], { dim: ch === 0 });
+    } else if (curMode === 3) {
+        charHeader(x, w, y, "sp_char");
+        iconToggle(x + w - 34, y + 3, "sp_onsets", glyphBar);
+        iconToggle(x + w - 18, y + 3, "sp_formant_on", glyphGrid);
+        if (Math.round(paramValue("sp_char")) === 0) {
+            drawKnob("formant", k2[0], ky, 10, "Formant", { white: true });
+            drawKnob("sp_shift", k2[1], ky, 10, "Shift %");
+        } else {
+            drawKnob("sp_bend", k3[0], ky, 10, "Bend", { white: true, labelSize: 8 });
+            var q = Math.round(paramValue("sp_quant"));
+            fillRR(k3[1] - 13, ky - 7, 26, 14, 2, COL.button);
+            text(["—", "Oct", "Key"][q], k3[1] - 3, ky + 3.5, 8.5, COL.text, false, 1);
+            caret(k3[1] + 5, ky - 1.5);
+            zone("button", k3[1] - 13, ky - 7, 26, 14, { action: "menu", key: "sp_quant", mw: 80 });
+            text("Quant.", k3[1], y + 57, 8, COL.label, false, 1);
+            drawKnob("sp_quant_amt", k3[2], ky, 9, "%", { dim: q === 0 });
+        }
+    } else if (curMode === 1) {
+        charHeader(x, w, y, "cy_char");
+        iconToggle(x + w - 18, y + 3, "cy_xfade", glyphCross);
+        var cc = Math.round(paramValue("cy_char"));
+        if (cc === 0) {
+            drawKnob("formant", k2[0], ky, 10, "Formant", { white: true });
+            drawKnob("cy_width", k2[1], ky, 10, "Width");
+        } else if (cc === 1) {
+            drawKnob("formant", k3[0], ky, 10, "Formant", { white: true });
+            drawKnob("cy_split", k3[1], ky, 10, "Split");
+            drawKnob("cy_fund", k3[2], ky, 9, "Fund.");
+        } else {
+            drawKnob("formant", k3[0], ky, 10, "Formant", { white: true });
+            drawKnob("cy_mod", k3[1], ky, 10, "Mod");
+            drawKnob("cy_harm", k3[2], ky, 9, "Harm.");
+        }
+    } else if (curMode === 2) {
+        text("Textures", x + 39, y + 12, 9.5, COL.text, true, 1);
+        drawKnob("grain_size", k3[0], ky, 10, "Size", { white: true });
+        drawKnob("grain_spray", k3[1], ky, 10, "Spray");
+        drawKnob("formant", k3[2], ky, 9, "Fmt");
+    } else {
+        // Fragments: grain envelope glyph + Repeats in the header, Gr. Size / Density / Motion
+        var env = paramValue("fr_env") * 0.01;
+        var ex = x + 8, ey0 = y + 13;
+        setc(COL.orange);
+        mgraphics.set_line_width(1.3);
+        mgraphics.move_to(ex, ey0);
+        mgraphics.line_to(ex + 3 + env * 8, ey0 - 9);
+        mgraphics.line_to(ex + 14, ey0);
+        mgraphics.stroke();
+        zone("value", x + 4, y + 2, 18, 14, { key: "fr_env", norm: true });
+        text("Rpt", x + 26, y + 12, 9.0, COL.label, false, 0);
+        var rw = text(String(Math.round(paramValue("fr_repeats"))), x + 46, y + 12, 9.0, COL.orange, false, 0);
+        zone("value", x + 24, y + 2, rw + 26, 14, { key: "fr_repeats", pxPerUnit: 6 });
+        drawKnob("grain_size", k3[0], ky, 10, "Size", { white: true });
+        drawKnob("fr_density", k3[1], ky, 10, "Density", { dim: Math.round(paramValue("fr_use_density")) === 0 });
+        drawKnob("fr_motion", k3[2], ky, 9, "Motion");
+        iconToggle(x + w - 34, y + 3, "fr_sync", glyphNote);
+        iconToggle(x + w - 18, y + 3, "fr_use_density", glyphLink);
+    }
 }
 
 function paintPlayPanel() {
@@ -576,7 +740,7 @@ function paintPlayPanel() {
     bottomPanel(p);
     iconSnow(x + w * 0.5, y + 9, curFreeze ? COL.blue : COL.label, 1.0);
     zone("button", x + w * 0.5 - 9, y + 1, 18, 16, { action: "freeze" });
-    var scanOn = (curMode === 1 || curMode === 2);
+    var scanOn = (curMode !== 0);
     drawKnob("pitch_st", x + 19, y + 35, 9, "Pitch");
     drawKnob("grain_motion", x + w * 0.5, y + 33, 13, "Speed", { white: true, dim: !scanOn, labelY: y + 56 });
     drawKnob("play_pos", x + w - 19, y + 35, 9, "Pos", { dim: !curFreeze });
@@ -641,7 +805,15 @@ function paintEnvPanel() {
 // ---------------------------------------------------------------------------
 
 function paintSide(W, H) {
-    var top = 0;
+    // Inspector show / hide (Bitwig's FX-row style button)
+    fillRR(0, 0, W, 24, 2, COL.button);
+    fillRect(2, 1, W - 4, 2, showInspector ? COL.blue : COL.track);
+    fillRR(W * 0.5 - 30, 7, 11, 10, 1.5, showInspector ? COL.text : COL.label);
+    fillRect(W * 0.5 - 24, 8, 4, 8, COL.button);
+    text("Inspector", W * 0.5 + 7, 16, 8.5, showInspector ? COL.text : COL.label, true, 1);
+    zone("button", 0, 0, W, 24, { action: "inspector" });
+
+    var top = 27;
     var bw = (W - 3) * 0.5;
     var btns = [["Poly", curMonoLegato === 0, COL.blue], ["Mono", curMonoLegato === 1, COL.red]];
     for (var i = 0; i < 2; i++) {
@@ -655,19 +827,79 @@ function paintSide(W, H) {
     var py = top + 27;
     fillRR(0, py, W, H - py, 3, COL.panel);
     var cx = W * 0.5;
-    text("L", 9, py + 26, 8.5, COL.label, true, 1);
-    text("R", W - 9, py + 26, 8.5, COL.label, true, 1);
-    drawKnob("unison_width", cx, py + 22, 9, null);
-    drawKnob("glide_ms", W * 0.27, py + 54, 8, null);
-    drawKnob("vel_sens", W * 0.73, py + 54, 8, null);
+    text("L", 9, py + 21, 8.5, COL.label, true, 1);
+    text("R", W - 9, py + 21, 8.5, COL.label, true, 1);
+    drawKnob("unison_width", cx, py + 17, 9, null);
+    drawKnob("glide_ms", W * 0.27, py + 42, 8, null);
+    drawKnob("vel_sens", W * 0.73, py + 42, 8, null);
     // glide (pin) and velocity (speaker) glyphs under the small knobs
     var gx = W * 0.27, vx = W * 0.73;
-    if (hoverKey === "glide_ms" || (drag && drag.key === "glide_ms")) text(fmtParam("glide_ms", paramValue("glide_ms")), gx, py + 75, 8.0, COL.text, true, 1);
-    else { circle(gx, py + 68, 2, COL.label); line(gx, py + 70, gx, py + 75, COL.label, 1.0, 1.2); }
-    if (hoverKey === "vel_sens" || (drag && drag.key === "vel_sens")) text(fmtParam("vel_sens", paramValue("vel_sens")), vx, py + 75, 8.0, COL.text, true, 1);
-    else polygon([[vx - 4, py + 69], [vx - 2, py + 69], [vx + 2, py + 66], [vx + 2, py + 76], [vx - 2, py + 73], [vx - 4, py + 73]], COL.label);
-    if (hoverKey === "unison_width" || (drag && drag.key === "unison_width")) text(fmtParam("unison_width", paramValue("unison_width")), cx, py + 9, 7.5, COL.text, true, 1);
-    drawKnob("out_gain", cx, py + 100, 12, "Out", { labelY: py + 123 });
+    if (hoverKey === "glide_ms" || (drag && drag.key === "glide_ms")) text(fmtParam("glide_ms", paramValue("glide_ms")), gx, py + 63, 8.0, COL.text, true, 1);
+    else { circle(gx, py + 56, 2, COL.label); line(gx, py + 70, gx, py + 63, COL.label, 1.0, 1.2); }
+    if (hoverKey === "vel_sens" || (drag && drag.key === "vel_sens")) text(fmtParam("vel_sens", paramValue("vel_sens")), vx, py + 63, 8.0, COL.text, true, 1);
+    else polygon([[vx - 4, py + 57], [vx - 2, py + 57], [vx + 2, py + 54], [vx + 2, py + 64], [vx - 2, py + 61], [vx - 4, py + 61]], COL.label);
+    if (hoverKey === "unison_width" || (drag && drag.key === "unison_width")) text(fmtParam("unison_width", paramValue("unison_width")), cx, py + 6, 7.5, COL.text, true, 1);
+    drawKnob("out_gain", cx, py + 82, 12, "Out", { labelY: py + 104 });
+}
+
+// ---------------------------------------------------------------------------
+// Inspector region: Note Glide + Legato, then the current mode's extra settings
+// ---------------------------------------------------------------------------
+
+function inspRow(label, y, W) {
+    text(label, 8, y + 11, 9.0, COL.text, false, 0);
+}
+
+function inspCheck(key, y, W) {
+    var on = Math.round(paramValue(key)) > 0;
+    circle(W - 16, y + 7, 6, on ? COL.orange : [0.30, 0.30, 0.30]);
+    if (on) { line(W - 19, y + 7, W - 17, y + 9.5, [0.12, 0.12, 0.12], 1.0, 1.6); line(W - 17, y + 9.5, W - 12.5, y + 4, [0.12, 0.12, 0.12], 1.0, 1.6); }
+    zone("button", 0, y, W, 15, { action: "toggle", key: key });
+}
+
+function inspValue(key, y, W, opts) {
+    var vw = text(fmtParam(key, paramValue(key)), W - 8, y + 11, 9.0, COL.orange, false, 2);
+    zone("value", W - 12 - vw, y, vw + 8, 15, opts || { key: key, norm: true });
+}
+
+function inspMenu(key, y, W, w) {
+    var names = menuItems(key).names;
+    fillRR(W - 66, y + 1, 58, 13, 2, COL.button);
+    text(names[Math.round(paramValue(key))], W - 62, y + 11, 8.5, COL.text, false, 0);
+    caret(W - 17, y + 6);
+    zone("button", W - 66, y + 1, 58, 13, { action: "menu", key: key, w2: w || 90, below: true });
+}
+
+function paintInspector(W, H) {
+    fillRR(0, 3, W - 3, H - 6, 3, COL.panel);
+    var y = 7;
+    text("Note Glide", 8, y + 11, 9.0, COL.text, false, 0);
+    var leg = curMonoLegato === 1;
+    fillRR(W - 76, y + 1, 13, 13, 2, leg ? COL.text : [0.30, 0.30, 0.30]);
+    text("L", W - 69.5, y + 11, 8.5, leg ? COL.panel : COL.label, true, 1);
+    zone("button", W - 76, y + 1, 13, 13, { action: "voicing", value: leg ? 0 : 1 });
+    inspValue("glide_ms", y, W);
+    y += 20;
+    line(6, y, W - 9, y, COL.track, 1.0, 1.0);
+    y += 4;
+    text(MODE_NAMES[curMode] + " mode", (W - 3) * 0.5, y + 11, 9.5, COL.text, true, 1);
+    y += 17;
+    if (curMode === 3) {
+        inspRow("Phase Dispersion", y, W); inspValue("sp_dispersion", y, W); y += 16;
+        inspRow("Quality / Cost", y, W); inspMenu("sp_quality", y, W); y += 16;
+        inspRow("Live Performance", y, W); inspCheck("sp_live", y, W); y += 16;
+        inspRow("Relative Formants", y, W); inspCheck("sp_rel_formant", y, W); y += 16;
+        inspRow("Local Key", y, W); inspMenu("sp_key", y, W, 60); y += 16;
+        inspRow("Local Scale", y, W); inspMenu("sp_scale", y, W); y += 16;
+    } else if (curMode === 4) {
+        inspRow("Direction", y, W); inspMenu("fr_direction", y, W); y += 16;
+        inspRow("Latch Initial Rate", y, W); inspCheck("fr_latch", y, W); y += 16;
+        inspRow("Repeat at Initial Pos", y, W); inspCheck("fr_repeat_init", y, W); y += 16;
+        inspRow("Grains Survive End", y, W); inspCheck("fr_survive", y, W); y += 16;
+        inspRow("Max Grains / Voice", y, W); inspValue("fr_max_grains", y, W, { key: "fr_max_grains", pxPerUnit: 1 }); y += 16;
+    } else {
+        text("No extra settings", (W - 3) * 0.5, y + 14, 9.0, COL.label, false, 1);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -681,16 +913,17 @@ function paint() {
     fillRect(0, 0, W, H, COL.gap);
     if (faceRegion === "side") {
         paintSide(W, H);
-        return;
+    } else if (faceRegion === "inspector") {
+        paintInspector(W, H);
+    } else {
+        paintModeColumn();
+        paintSamplePanel();
+        paintEnginePanel();
+        paintPlayPanel();
+        paintFilterPanel();
+        paintEnvPanel();
     }
-    paintModeColumn();
-    paintSamplePanel();
-    paintEnginePanel();
-    paintPlayPanel();
-    paintFilterPanel();
-    paintEnvPanel();
-    if (curMode !== 3) slicePlayMenu = null;
-    paintSlicePlayMenu();
+    paintMenu();
 }
 
 function zoneAt(x, y) {
@@ -715,25 +948,36 @@ function stepParam(key, delta) {
     setParamFromFace(key, v);
 }
 
+function stepEngine(delta) {
+    var i = ENGINE_ORDER.indexOf(curMode);
+    setMode(ENGINE_ORDER[((i < 0 ? 0 : i) + delta + ENGINE_ORDER.length) % ENGINE_ORDER.length]);
+}
+
 function doAction(z) {
     switch (z.action) {
-        case "single": setMode(lastEngine); break;
-        case "sliced": setMode(3); break;
+        case "sliced_set": pushUndoState(); setParamFromFace("sliced", z.value); notifyclients(); break;
         case "engine": setMode(z.engine); break;
-        case "engine_prev": setMode(((curMode === 3 ? lastEngine : curMode) + 2) % 3); break;
-        case "engine_next": setMode(((curMode === 3 ? lastEngine : curMode) + 1) % 3); break;
+        case "engine_prev": stepEngine(-1); break;
+        case "engine_next": stepEngine(1); break;
+        case "step": stepParam(z.key, z.delta); break;
+        case "toggle": setParamFromFace(z.key, Math.round(paramValue(z.key)) > 0 ? 0 : 1); break;
         case "reverse": setParamFromFace("reverse", curReverse ? 0 : 1); break;
         case "freeze": setParamFromFace("freeze", curFreeze ? 0 : 1); break;
-        case "loop_mode": stepParam("loop_mode", 1); break;
         case "filt_on": setParamFromFace("filt_on", curFiltOn ? 0 : 1); break;
         case "filt_type": stepParam("filt_type", 1); break;
         case "voicing": setParamFromFace("mono_legato", z.value); break;
         case "env_page": envPage = z.page; notifyclients(); break;
         case "browse": outlet(0, "browse", "bang"); break;
-        case "slice_play_menu":
-            slicePlayMenu = slicePlayMenu ? null : { x: MAIN.sample[0] + MAIN.sample[2] - 128, y: MAIN.sample[1] + MAIN.sample[3] - 82, w: 124, rowH: 16 };
+        case "inspector": setParamFromFace("show_inspector", showInspector ? 0 : 1); break;
+        case "menu":
+            if (z.below) {
+                var items = menuItems(z.key).names.length * Math.min(15, Math.floor((mgraphics.size[1] - 10) / menuItems(z.key).names.length)) + 6;
+                toggleMenu(z.key, z.x + z.w - (z.w2 || z.w || 90), z.y + z.h + items + 2, z.w2 || 90);
+            } else {
+                toggleMenu(z.key, z.x + z.w - (z.w2 || 0) - (z.mw || 0), z.y, z.mw || 128);
+            }
             break;
-        case "slice_play_pick": setParamFromFace("slice_play", z.value); slicePlayMenu = null; break;
+        case "menu_pick": setParamFromFace(z.key, z.value); openMenu = null; break;
     }
     mgraphics.redraw();
 }
@@ -765,8 +1009,9 @@ function waveNorm(x) {
 
 function onclick(x, y, but, cmd, shift) {
     var z = zoneAt(x, y);
-    if (slicePlayMenu && !(z && (z.action === "slice_play_pick" || z.action === "slice_play_menu"))) {
-        slicePlayMenu = null;
+    // An open dropdown takes the next click: pick an item, re-click its button, or click away to close
+    if (openMenu && !(z && (z.action === "menu_pick" || (z.action === "menu" && z.key === openMenu.key)))) {
+        openMenu = null;
         mgraphics.redraw();
         return;
     }
@@ -791,22 +1036,40 @@ function onclick(x, y, but, cmd, shift) {
         }
         return;
     }
+    if (z.kind === "flag") {
+        // Moving a slice point makes the slicing Manual (as in Bitwig)
+        pushUndoState();
+        if (Math.round(paramValue("slice_at")) !== 4) setParamFromFace("slice_at", 4);
+        drag = { flag: z.index };
+        return;
+    }
+    if (z.kind === "loop_move") {
+        pushUndoState();
+        drag = { wave: "loop_move", n0: waveNorm(x), ls0: curLoopStart, le0: curLoopEnd };
+        return;
+    }
+    if (z.kind === "xfade") {
+        pushUndoState();
+        drag = { wave: "xfade" };
+        return;
+    }
     if (z.kind === "wave") {
         var nx = waveNorm(x);
         var ww = z.w;
         pushUndoState();
-        if (curMode === 3) {
+        if (curSliced) {
             // Start / end handles stay draggable; elsewhere a click auditions the slice under it
             if (Math.abs(nx - curStart) * ww < 6.0) { drag = { wave: "samp_start" }; mgraphics.redraw(); return; }
             if (Math.abs(nx - curEnd) * ww < 6.0) { drag = { wave: "samp_end" }; mgraphics.redraw(); return; }
             var sIdx = sliceIndexAt(currentSliceStarts(), curEnd, nx);
             if (sIdx < 0) return;
             selectedSliceIdx = sIdx;
-            midi_note(36 + sIdx, 110);
-            drag = { wave: "slice_audition" };
+            midi_note(curSliceFrom + sIdx, 110);
+            drag = { wave: "slice_audition", note: curSliceFrom + sIdx };
             mgraphics.redraw();
             return;
         }
+        /** @type {Array<[string, number]>} */
         var cands = [["samp_start", curStart], ["samp_end", curEnd]];
         if (curLoopMode > 0) cands.push(["loop_start", curLoopStart], ["loop_end", curLoopEnd]);
         var best = "", bestD = 6.0;
@@ -829,8 +1092,8 @@ function onclick(x, y, but, cmd, shift) {
 function ondrag(x, y, but, cmd, shift) {
     if (!drag) return;
     if (but === 0) {
-        if (drag.wave === "slice_audition") midi_note(36 + selectedSliceIdx, 0);
-        if (drag.region || drag.wave) notifyclients();
+        if (drag.wave === "slice_audition") midi_note(drag.note, 0);
+        if (drag.region || drag.wave || drag.flag !== undefined) notifyclients();
         if (drag.captured) {
             setCursorHidden(false);
             var zr = zoneAt(x, y);
@@ -841,7 +1104,24 @@ function ondrag(x, y, but, cmd, shift) {
         return;
     }
     var dy = drag.y0 - y;
-    if (drag.wave) {
+    if (drag.flag !== undefined) {
+        var i = drag.flag;
+        var lo = (i > 0 ? sliceMarkers[i - 1] : 0) + 0.002;
+        var hi = (i + 1 < sliceMarkers.length ? sliceMarkers[i + 1] : 1) - 0.002;
+        sliceMarkers[i] = Math.max(lo, Math.min(hi, waveNorm(x)));
+        refreshHeldSlices();
+    } else if (drag.wave === "loop_move") {
+        var len = drag.le0 - drag.ls0;
+        var ns = Math.max(curStart, Math.min(curEnd - len, drag.ls0 + waveNorm(x) - drag.n0));
+        curLoopStart = ns;
+        curLoopEnd = ns + len;
+        emitRegionParams();
+    } else if (drag.wave === "xfade") {
+        // Drag the fade's left edge: the crossfade spans up to 45 % of the loop before its start
+        var loopLen = Math.max(1e-6, curLoopEnd - curLoopStart);
+        curXfade = Math.max(0, Math.min(0.45, (curLoopStart - waveNorm(x)) / loopLen));
+        emitRegionParams();
+    } else if (drag.wave) {
         if (drag.wave === "play_pos") { curPlayPos = waveNorm(x); emitRegionParams(); }
         else if (drag.wave !== "slice_audition") setRegion(drag.wave, waveNorm(x));
     } else if (drag.region) {
@@ -868,6 +1148,20 @@ function ondblclick(x, y) {
         pushUndoState();
         var defs = { samp_start: 0, samp_end: 1, loop_start: 0.15, loop_end: 0.85, loop_xfade: 0.05 / 0.45 };
         setRegion(z.region, defs[z.region]);
+        notifyclients();
+    } else if (curSliced && (z.kind === "flag" || z.kind === "wave")) {
+        // Manual slicing: double-click a flag removes it, anywhere else adds a slice point
+        pushUndoState();
+        if (Math.round(paramValue("slice_at")) !== 4) setParamFromFace("slice_at", 4);
+        if (z.kind === "flag") {
+            sliceMarkers = (typeof removeSliceMarker === "function") ? removeSliceMarker(sliceMarkers, z.index)
+                : sliceMarkers.filter(function (_, i) { return i !== z.index; });
+        } else {
+            var pos = waveNorm(x);
+            sliceMarkers = (typeof addSliceMarker === "function") ? addSliceMarker(sliceMarkers, pos)
+                : sliceMarkers.concat([pos]).sort(function (a, b) { return a - b; });
+        }
+        refreshHeldSlices();
         notifyclients();
     } else if (z.kind === "wave") {
         pushUndoState();

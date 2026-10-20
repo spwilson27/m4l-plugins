@@ -2,11 +2,13 @@
 // Records stereo output of src/degrade_core.genexpr into `buffer~ rec` and inspects
 // `#0-degscope` telemetry buffer.
 
-inlets = 4;
-outlets = 3;
+inlets = 1;
+outlets = 1;
+
+var resultPath = "/tmp/degrade_audio.txt";
+function resultpath(p) { resultPath = String(p); }
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "bypass";
-var peaks = { genL: -1, ctl: -1, genR: -1 };
 var armed = false;
 var scopeName = "";
 
@@ -16,12 +18,6 @@ function loadbang() {
 
 function setbuffer(name) {
     scopeName = name ? ("" + name) : "";
-}
-
-function msg_float(v) {
-    if (inlet === 0) peaks.genL = v;
-    else if (inlet === 1) peaks.ctl = v;
-    else if (inlet === 2) peaks.genR = v;
 }
 
 function analyze(durMs) {
@@ -37,11 +33,9 @@ function analyze(durMs) {
     var stats = scan(left, right, sr);
     var scopeStats = readScope();
 
-    var report = new File("/tmp/degrade_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
+    report.eof = 0;
     report.writestring(
-        "genL " + peaks.genL + "\n" +
-        "genR " + peaks.genR + "\n" +
-        "ctl " + peaks.ctl + "\n" +
         "sr " + sr + "\n" +
         "frames " + n + "\n" +
         "nan " + stats.nan + "\n" +

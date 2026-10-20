@@ -1,0 +1,476 @@
+// Delay+ (Start) — the tank. Sits first in a rack chain: [Delay+] [user FX ...] [Delay+ End].
+//
+// Start outputs ONLY the delay tap into the chain. End receives the processed tap, mixes it with
+// the dry signal (passed internally through the shared `xfer` ring) and writes the processed tap
+// back into `xfer` as the feedback return, which Start adds into its tank.
+//
+// Cross-device timing (measured in Live: devices in one chain run in lockstep slices, in order):
+//   Both devices run a free counter mod M. Start pokes its counter to hdr[0], End to hdr[1].
+//   They run in vectors (32 samples in Live 12) but NOT in a fixed order per vector.
+//   End:   K = held min of (cS_latest - cE): End's sample cE carries Start's sample cE + K
+//          (causal bound, verified in Live with the debug ping), hdr[2].
+//   Start: Smax = held max of (cS - cE_latest); reads the return at End index s - Smax (always
+//          written) and publishes the read lag B = Smax - K, hdr[3].
+//   L = chain latency (sum of the FX devices' latency_in_samples, sent by the JS as `lat`).
+//
+// Latency compensation: a tap emitted at Start sample s comes back from End at Start sample
+// s + L + B. Instead of writing that return at the tank head (which would make every repeat
+// L + B late), it is added at tank index (s_now - B - L): the sample's original emit position.
+// The tap then re-reads it exactly T later, so the first echo and every repeat land on T.
+// Requires T > L + B (+ modulation + interpolation margin) -> clamped, flagged in telemetry.
+//
+// hdr (shared, 64 samples): 0 cS, 1 cE, 2 K, 3 B, 4 L, 5 wet, 6 duck, 7 width, 8 debug,
+//   9 ping emit index (S frame), 10 ping-measured latency (End), 11 ping count (End),
+//   12 End wet peak, 13 freeze, 14 Start sees End, 15 End sees Start, 16 End duck gain,
+//   17 loop error (debug): where the returning ping would be written minus where it was emitted
+//   (0 = every repeat lands exactly on T).
+//   diagnostics per 16384-sample window: 20/21 min/max of (cS - cE_latest) seen by Start,
+//   22/23 min/max of (cS_latest - cE) seen by End, 24 Start window count.
+// xfer (shared, 5 ch x RING): ch0/1 dry L/R at Start index, ch2/3 return L/R at End index,
+//   ch4 first difference of the mono tap at Start index (End's K calibration).
+// hdr 30 = L, 31 = time in ms, both poked by the UI script.
+// scope (UI telemetry, Start only), every 64 samples:
+//   0 TL eff (samples) 1 TR eff 2 clamped 3 Tmin 4 B 5 K 6 L 7 ping L 8 paired 9 in peak
+//   10/11 tap peak L/R 12/13 return peak L/R 14 frame counter 15 sr 16 freeze 17 duck gain
+//   18 wet out peak 19 history head 20 TL target 21 TR target 22 tank fill L 23 debug
+//   history ring, one block per 256 samples: 32 + 3 * blk + (in, tapL, tapR) peaks, 512 blocks.
+//
+// GenExpr: functions first, then declarations, then statements. No identifier e<digit>.
+
+wd(x, m) {
+	y = x;
+	if (y >= m * 0.5) y = y - m;
+	if (y < -m * 0.5) y = y + m;
+	return y;
+}
+
+herm(dat, chn, pos, size) {
+	i = floor(pos);
+	f = pos - i;
+	xm1 = peek(dat, wrap(i - 1, 0, size), chn);
+	x0 = peek(dat, wrap(i, 0, size), chn);
+	x1 = peek(dat, wrap(i + 1, 0, size), chn);
+	x2 = peek(dat, wrap(i + 2, 0, size), chn);
+	c1 = 0.5 * (x1 - xm1);
+	c2 = xm1 - 2.5 * x0 + 2 * x1 - 0.5 * x2;
+	c3 = 0.5 * (x2 - xm1) + 1.5 * (x0 - x1);
+	return ((c3 * f + c2) * f + c1) * f + x0;
+}
+
+softsat(x, lim) {
+	return lim * tanh(x / lim);
+}
+
+Buffer xfer("dpxfer");
+Buffer hdr("dphdr");
+Buffer scope("dpscope");
+
+Data tank(524288, 2);
+
+Param tms(375);
+Param off(0);
+Param fb(0.4);
+Param pp(0);
+Param hp(20);
+Param lp(20000);
+Param drive(0);
+Param mrate(0.5);
+Param mdepth(0);
+Param tmode(0);
+Param freeze(0);
+Param lat(0);
+Param debug(0);
+Param wet(0.35);
+Param duck(0);
+Param width(1);
+
+History cnt(0);
+History lastCe(-1);
+History deadCnt(1e9);
+History sw1(-1e9);
+History sw2(-1e9);
+History sw3(-1e9);
+History bCur(0);
+History bWin(0);
+History sLo(1e9);
+History sHi(-1e9);
+History lastL(-1);
+History lastB(-1);
+History lastK(-1e9);
+History mute(0);
+History gLink(0);
+History ig(1);
+History fbs(0.4);
+History offs(0);
+History tsL(16537);
+History tsR(16537);
+History tAL(16537);
+History tBL(16537);
+History tAR(16537);
+History tBR(16537);
+History xfL(0);
+History xfR(0);
+History xtL(0);
+History xtR(0);
+History lfo(0);
+History hpL1(0);
+History hpL2(0);
+History hpR1(0);
+History hpR2(0);
+History lpL1(0);
+History lpL2(0);
+History lpR1(0);
+History lpR2(0);
+History cHp(-1);
+History cLp(-1);
+History cSr(0);
+History hpG(0);
+History hpK(1.4142);
+History lpG(0);
+History lpK(1.4142);
+History pingT(0);
+History pingArm(0);
+History tick(0);
+History frames(0);
+History pkIn(0);
+History pkTL(0);
+History pkTR(0);
+History pkRL(0);
+History pkRR(0);
+History hBlk(0);
+History hIn(0);
+History hTL(0);
+History hTR(0);
+History hHead(0);
+History ptap(0);
+
+tmp = 0;
+actL = 0;
+actR = 0;
+hb = 0;
+dg = 1;
+nrm = 1;
+M = 4194304;
+RING = 65536;
+TANK = 524288;
+sr = max(samplerate, 1);
+
+// ---- counters / link -------------------------------------------------------------------------
+cn = wrap(cnt + 1, 0, M);
+cnt = cn;
+poke(hdr, cn, 0);
+ce = peek(hdr, 1);
+
+if (ce != lastCe) {
+	deadCnt = 0;
+} else {
+	deadCnt = deadCnt + 1;
+}
+lastCe = ce;
+paired = deadCnt < 8192;
+
+// Live/Max does not run Start and End in a fixed order per vector: Start may be up to two vectors
+// ahead. Smax = max(cS - cE_latest), held over 4 windows (~1.5 s), bounds what End has written:
+// the return is read at End index s - Smax, and with End's K the read lag is B = Smax - K.
+rS = wd(cn - ce, M);
+bCur = max(bCur, rS);
+sLo = min(sLo, rS);
+sHi = max(sHi, rS);
+bWin = bWin + 1;
+if (bWin >= 16384) {
+	poke(hdr, sLo, 20);
+	poke(hdr, sHi, 21);
+	poke(hdr, peek(hdr, 24) + 1, 24);
+	sLo = 1e9;
+	sHi = -1e9;
+	sw3 = sw2;
+	sw2 = sw1;
+	sw1 = bCur;
+	bCur = -1e9;
+	bWin = 0;
+}
+// Until End's counter is moving its value is stale (0 or a dead instance's): forget everything.
+if (!paired) {
+	bCur = -1e9;
+	sw1 = -1e9;
+	sw2 = -1e9;
+	sw3 = -1e9;
+}
+smax = max(max(bCur, sw1), max(sw2, sw3));
+kk = peek(hdr, 2);
+bb = clip(smax - kk, 1, 8192);
+if (!paired) {
+	bb = 32;
+	smax = 32;
+}
+poke(hdr, bb, 3);
+// L and the time come from the UI script through hdr[30] / hdr[31] (poked from its own thread);
+// the `lat` / `tms` Params are the fallback for the standalone Max harness.
+ll = clip(floor(max(lat, peek(hdr, 30))), 0, RING - 16384);
+poke(hdr, ll, 4);
+poke(hdr, paired, 14);
+
+// Any change of L, B or K moves the return write position: duck the loop for a moment.
+if (ll != lastL || bb != lastB || kk != lastK) {
+	mute = 2048;
+}
+lastL = ll;
+lastB = bb;
+lastK = kk;
+mute = max(mute - 1, 0);
+gLink = gLink + ((mute > 0 || !paired) ? -1 : 1) * (1 / 256);
+gLink = clip(gLink, 0, 1);
+
+// Parameters for End (mix stage lives there).
+poke(hdr, clip(wet, 0, 1), 5);
+poke(hdr, clip(duck, 0, 1), 6);
+poke(hdr, clip(width, 0, 2), 7);
+poke(hdr, debug > 0.5, 8);
+poke(hdr, freeze > 0.5, 13);
+
+// ---- dry into the ring ---------------------------------------------------------------------
+ri = wrap(cn, 0, RING);
+poke(xfer, in1, ri, 0);
+poke(xfer, in2, ri, 1);
+
+// ---- feedback return ------------------------------------------------------------------------
+frz = freeze > 0.5;
+dbg = debug > 0.5;
+fbs = fbs + (clip(fb, 0, 1.1) - fbs) * 0.001;
+fbg = frz ? 1 : fbs;
+fbg = dbg ? 0 : fbg;
+eIdx = wrap(cn - smax, 0, RING);
+retL = peek(xfer, eIdx, 2) * gLink;
+retR = peek(xfer, eIdx, 3) * gLink;
+if (debug > 0.5 && pingArm > 0.5 && max(abs(retL), abs(retR)) > 0.1) {
+	poke(hdr, wd(cn - bb - ll - peek(hdr, 9), M), 17);
+	pingArm = 0;
+}
+fL = softsat(retL * fbg, 1.5);
+fR = softsat(retR * fbg, 1.5);
+if (pp > 0.5) {
+	tmp = fL;
+	fL = fR;
+	fR = tmp;
+}
+
+// ---- tank write: input at the head, return at its original emit position ---------------------
+ig = ig + ((frz || dbg) ? 0 - ig : 1 - ig) * (1 / (0.01 * sr));
+inL = in1 * ig;
+inR = in2 * ig;
+if (pp > 0.5) {
+	inL = (in1 + in2) * 0.5 * ig;
+	inR = 0;
+}
+wi = wrap(cn, 0, TANK);
+poke(tank, inL, wi, 0);
+poke(tank, inR, wi, 1);
+fi = wrap(cn - bb - ll, 0, TANK);
+poke(tank, peek(tank, fi, 0) + fL, fi, 0);
+poke(tank, peek(tank, fi, 1) + fR, fi, 1);
+
+// ---- delay times ------------------------------------------------------------------------------
+offs = offs + (clip(off, -1, 1) - offs) * 0.001;
+tmsH = peek(hdr, 31);
+base = clip(tmsH > 0 ? tmsH : tms, 1, 8000) * sr / 1000;
+tgL = base * (1 + max(-offs, 0));
+tgR = base * (1 + max(offs, 0));
+modS = clip(mdepth, 0, 1) * 0.008 * sr;
+tmin = bb + ll + modS + 4;
+tmax = TANK - 8;
+clamped = (tgL < tmin) || (tgR < tmin);
+tgL = clip(tgL, tmin, tmax);
+tgR = clip(tgR, tmin, tmax);
+
+lfo = wrap(lfo + clip(mrate, 0.01, 20) / sr, 0, 1);
+mL = modS * (0.5 + 0.5 * sin(lfo * twopi));
+mR = modS * (0.5 + 0.5 * sin((lfo + 0.25) * twopi));
+
+slew = 1 - exp(-1 / (0.12 * sr));
+xfRate = 1 / (0.05 * sr);
+if (tmode < 0.5) {
+	// Tape: the read head glides to the new time (pitch bends while it moves).
+	tsL = tsL + (tgL - tsL) * slew;
+	tsR = tsR + (tgR - tsR) * slew;
+	tAL = tsL;
+	tAR = tsR;
+	xtL = 0;
+	xtR = 0;
+} else {
+	// Fade: when the time changes, crossfade from the old tap to a tap at the new time.
+	tsL = tgL;
+	tsR = tgR;
+	if (xfL == xtL) {
+		actL = xtL > 0.5 ? tBL : tAL;
+		if (abs(tgL - actL) > 0.5) {
+			if (xtL > 0.5) {
+				tAL = tgL;
+				xtL = 0;
+			} else {
+				tBL = tgL;
+				xtL = 1;
+			}
+		}
+	}
+	if (xfR == xtR) {
+		actR = xtR > 0.5 ? tBR : tAR;
+		if (abs(tgR - actR) > 0.5) {
+			if (xtR > 0.5) {
+				tAR = tgR;
+				xtR = 0;
+			} else {
+				tBR = tgR;
+				xtR = 1;
+			}
+		}
+	}
+}
+xfL = xtL > xfL ? min(xfL + xfRate, xtL) : max(xfL - xfRate, xtL);
+xfR = xtR > xfR ? min(xfR + xfRate, xtR) : max(xfR - xfRate, xtR);
+
+// Taps never read closer than tmin, even mid-glide.
+dAL = max(tAL, tmin) + mL;
+dBL = max(tBL, tmin) + mL;
+dAR = max(tAR, tmin) + mR;
+dBR = max(tBR, tmin) + mR;
+tapL = herm(tank, 0, cn - dAL, TANK) * (1 - xfL);
+if (xfL > 0) tapL = tapL + herm(tank, 0, cn - dBL, TANK) * xfL;
+tapR = herm(tank, 1, cn - dAR, TANK) * (1 - xfR);
+if (xfR > 0) tapR = tapR + herm(tank, 1, cn - dBR, TANK) * xfR;
+
+// ---- tone: 12 dB/oct TPT SVF high-pass and low-pass, then drive -------------------------------
+if (hp != cHp || sr != cSr) {
+	cHp = hp;
+	hpG = tan(pi * clip(hp, 10, sr * 0.45) / sr);
+}
+if (lp != cLp || sr != cSr) {
+	cLp = lp;
+	lpG = tan(pi * clip(lp, 20, sr * 0.45) / sr);
+}
+cSr = sr;
+hpA1 = 1 / (1 + hpG * (hpG + hpK));
+lpA1 = 1 / (1 + lpG * (lpG + lpK));
+
+// high-pass L
+v1 = (hpG * (tapL - hpL2) + hpL1) * hpA1;
+v2 = hpL2 + hpG * v1;
+hpL1 = 2 * v1 - hpL1;
+hpL2 = 2 * v2 - hpL2;
+yL = tapL - hpK * v1 - v2;
+// high-pass R
+w1 = (hpG * (tapR - hpR2) + hpR1) * hpA1;
+w2 = hpR2 + hpG * w1;
+hpR1 = 2 * w1 - hpR1;
+hpR2 = 2 * w2 - hpR2;
+yR = tapR - hpK * w1 - w2;
+// low-pass L
+u1 = (lpG * (yL - lpL2) + lpL1) * lpA1;
+u2 = lpL2 + lpG * u1;
+lpL1 = 2 * u1 - lpL1;
+lpL2 = 2 * u2 - lpL2;
+zL = u2;
+// low-pass R
+q1 = (lpG * (yR - lpR2) + lpR1) * lpA1;
+q2 = lpR2 + lpG * q1;
+lpR1 = 2 * q1 - lpR1;
+lpR2 = 2 * q2 - lpR2;
+zR = q2;
+
+dr = clip(drive, 0, 1);
+if (dr > 0) {
+	dg = 1 + 6 * dr;
+	nrm = 1 / pow(dg, 0.6);
+	zL = tanh(zL * dg) * nrm;
+	zR = tanh(zR * dg) * nrm;
+}
+hpL1 = fixdenorm(hpL1);
+hpL2 = fixdenorm(hpL2);
+hpR1 = fixdenorm(hpR1);
+hpR2 = fixdenorm(hpR2);
+lpL1 = fixdenorm(lpL1);
+lpL2 = fixdenorm(lpL2);
+lpR1 = fixdenorm(lpR1);
+lpR2 = fixdenorm(lpR2);
+
+// ---- debug ping: replaces the tap with an impulse every 0.5 s; End times its arrival ----------
+outL = zL * gLink;
+outR = zR * gLink;
+if (dbg) {
+	pingT = pingT + 1;
+	outL = 0;
+	outR = 0;
+	if (pingT >= floor(0.5 * sr)) {
+		pingT = 0;
+		outL = 0.5;
+		outR = 0.5;
+		poke(hdr, cn, 9);
+		pingArm = 1;
+	}
+} else {
+	pingT = 0;
+}
+
+// Whitened (first-difference) mono copy of what goes into the chain: End cross-correlates it with
+// what comes out of the chain to find the exact counter offset K.
+tapM = (outL + outR) * 0.5;
+poke(xfer, tapM - ptap, ri, 4);
+ptap = tapM;
+
+// Unpaired (no End to mix): pass the dry signal so the track never goes silent.
+out1 = paired ? fixnan(outL) : in1;
+out2 = paired ? fixnan(outR) : in2;
+
+// ---- telemetry ------------------------------------------------------------------------------
+pkIn = max(pkIn, max(abs(in1), abs(in2)));
+pkTL = max(pkTL, abs(outL));
+pkTR = max(pkTR, abs(outR));
+pkRL = max(pkRL, abs(retL));
+pkRR = max(pkRR, abs(retR));
+hIn = max(hIn, max(abs(in1), abs(in2)));
+hTL = max(hTL, abs(outL));
+hTR = max(hTR, abs(outR));
+hBlk = hBlk + 1;
+if (hBlk >= 256) {
+	hb = 32 + 3 * hHead;
+	poke(scope, hIn, hb);
+	poke(scope, hTL, hb + 1);
+	poke(scope, hTR, hb + 2);
+	hHead = wrap(hHead + 1, 0, 512);
+	poke(scope, hHead, 19);
+	hBlk = 0;
+	hIn = 0;
+	hTL = 0;
+	hTR = 0;
+}
+tick = tick + 1;
+if (tick >= 64) {
+	tick = 0;
+	frames = wrap(frames + 1, 0, 1000000);
+	poke(scope, max(tAL, tmin) * (1 - xfL) + max(tBL, tmin) * xfL, 0);
+	poke(scope, max(tAR, tmin) * (1 - xfR) + max(tBR, tmin) * xfR, 1);
+	poke(scope, clamped, 2);
+	poke(scope, tmin, 3);
+	poke(scope, bb, 4);
+	poke(scope, kk, 5);
+	poke(scope, ll, 6);
+	poke(scope, peek(hdr, 10), 7);
+	poke(scope, paired, 8);
+	poke(scope, pkIn, 9);
+	poke(scope, pkTL, 10);
+	poke(scope, pkTR, 11);
+	poke(scope, pkRL, 12);
+	poke(scope, pkRR, 13);
+	poke(scope, frames, 14);
+	poke(scope, sr, 15);
+	poke(scope, frz, 16);
+	poke(scope, peek(hdr, 16), 17);
+	poke(scope, peek(hdr, 12), 18);
+	poke(scope, base * (1 + max(-offs, 0)), 20);
+	poke(scope, base * (1 + max(offs, 0)), 21);
+	poke(scope, dbg, 23);
+	pkIn = 0;
+	pkTL = 0;
+	pkTR = 0;
+	pkRL = 0;
+	pkRR = 0;
+}

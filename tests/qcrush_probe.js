@@ -1,22 +1,24 @@
-// Probe for scripts/run_qcrush_audio_tests.py (js object inside the real-Max harness, ES5).
+// Probe for scripts/run_qcrush_audio_tests.py (js object inside the scripts/max_harness.py scaffold, ES5).
+// The harness sends `resultpath <file>` at load and `analyze <durMs>` once buffer~ rec holds the window.
 // Inlet 0: messages `fill` (synthesize the stimulus into buffer~ stim), `setbuffer <telemetry buffer>`,
 //          `mark` (rec starts), `analyze <durMs>` (write the report).
 // Inlet 1: floats from [adstatus cpu].
 // buffer~ rec holds 4 channels: 1 = device out L, 2 = device in L (the stimulus), 3 = device out R,
 // 4 = the stimulus phasor (0..1 over PERIOD seconds), which tells where in the stimulus the recording is.
-// jsarguments: stimulus ("vowels2", "sine", "mix", "silent"), report path, latency (samples).
+// jsarguments: stimulus ("vowels2", "sine", "mix", "silent"), latency (samples).
 
 inlets = 2;
 outlets = 1;
 
 var stimMode = jsarguments.length > 1 ? jsarguments[1] : "vowels2";
-var reportPath = jsarguments.length > 2 ? jsarguments[2] : "/tmp/qcrush_audio.txt";
-var LAG = jsarguments.length > 3 ? Number(jsarguments[3]) : 4096;
+var reportPath = "/tmp/qcrush_audio.txt";
+var LAG = jsarguments.length > 2 ? Number(jsarguments[2]) : 4096;
+
+function resultpath(p) { reportPath = String(p); }
 var PERIOD = 3.0;
 var F0 = 110;
 var scopeName = "";
 var armed = false;
-var markTime = 0;
 var tickAtMark = 0;
 var cpuMax = 0;
 var cpuSum = 0;
@@ -118,7 +120,6 @@ function scopeVal(idx) {
 }
 
 function mark() {
-    markTime = new Date().getTime();
     tickAtMark = scopeVal(197);
 }
 
@@ -448,7 +449,8 @@ function analyzeImpl(durMs) {
         }
         R.scPeakBinOrig = bo2;
         R.scPeakBinCrush = bc2;
-        var wallSec = Math.max(0.001, (new Date().getTime() - markTime) / 1000);
+        // audio time of the measured window (the harness has no wall clock to trust)
+        var wallSec = durMs / 1000;
         R.tickDelta = ch[197] >= tickAtMark ? ch[197] - tickAtMark : ch[197] + 100000 - tickAtMark;
         R.wallSec = wallSec;
     }

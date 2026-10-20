@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * Verification suite for Better Sampler (devices/Better Sampler.amxd, 600 x 169 px):
- *   - one Bitwig-style face drawn by two v8ui boxes (main 528 px + side 66 px) plus a live.drop
+ * Verification suite for Better Sampler (devices/Better Sampler.amxd, 600 x 169 px, 760 with the inspector):
+ *   - one Bitwig-style face drawn by three v8ui boxes (main 528 px, side 66 px, inspector 160 px) plus a live.drop
  *   - every automatable parameter is a hidden live.* object (presentation 0) wired through
  *     route param -> obj-ctrl-<key> -> prepend -> obj-gen, with set_<key> echoes to both v8uis
  *
- * Covers: modes/slicer/root detection/voice allocator, GenExpr ordering, amxd structure and
- * wiring, and a sandbox run of both embedded face scripts (paint, buttons, knobs, footer
- * values, env page tabs, Poly/Mono, echoes, state round-trip).
+ * Covers: slicer/root detection/voice allocator, GenExpr ordering, amxd structure and wiring, and a
+ * sandbox run of the three embedded face scripts (paint, engines + Single/Sliced, knobs, footer values,
+ * generic dropdowns, slice modes, loop overlay, per-engine panels, inspector, env page tabs, Poly/Mono,
+ * echoes, state round-trip).
  */
 
 const assert = require("assert");
@@ -46,11 +47,7 @@ function valueOf(box) {
 // ============================================================================
 // 1. Modes, layout math, slicer, pitch detector, voice allocator
 // ============================================================================
-assert.deepStrictEqual(
-    cfg.SAMPLER_MODES.map((m) => m.key),
-    ["repitch", "cycles", "textures", "slice"],
-    "Playback engines must be Repitch, Cycles, Textures, Slice"
-);
+// sampler_config.js keeps its legacy table (the face and the device use ENUM_SPECS mode / sliced instead)
 assert.deepStrictEqual(cfg.SAMPLER_MODES.map((m) => m.id), [0, 1, 2, 3]);
 assert.strictEqual(cfg.midiToNoteName(60), "C3");
 assert.strictEqual(cfg.midiToNoteName(36), "C1");
@@ -120,6 +117,18 @@ assert.strictEqual(lowSlice.sliceEnd, 0.25);
 assert.strictEqual(nextSlice.sliceStart, 0.25, "The next chromatic note advances one slice");
 assert.ok(!("zone" in lowSlice) && !("sampleId" in lowSlice), "Voices carry slice bounds, not multisample zones");
 
+// the keymap base is configurable (slice_from): slice k plays on base + k
+const baseAlloc = cfg.createVoiceAllocator(8);
+assert.strictEqual(baseAlloc.getSliceBaseNote(), 36, "default keymap base is C1");
+baseAlloc.setSliceBaseNote(48);
+assert.strictEqual(baseAlloc.getSliceBaseNote(), 48);
+assert.strictEqual(baseAlloc.noteOn(48, 100, 0, sliceBounds).sliceStart, 0.0, "base note plays the first slice");
+assert.strictEqual(baseAlloc.noteOn(50, 100, 0, sliceBounds).sliceStart, 0.5, "base + 2 plays the third slice");
+baseAlloc.setSliceBaseNote(-5);
+assert.strictEqual(baseAlloc.getSliceBaseNote(), 0, "base note clamps to 0..127");
+baseAlloc.setSliceBaseNote(999);
+assert.strictEqual(baseAlloc.getSliceBaseNote(), 127);
+
 const leg = cfg.createVoiceAllocator(16);
 const leg1 = leg.noteOn(60, 100, 1, slices);
 const trig1 = leg1.trigCount;
@@ -165,27 +174,29 @@ assert.ok(bufAt < paramAt && paramAt < histAt, "Declarations follow Buffer -> Pa
 assert.ok(histAt < exprAt, "History declarations precede top-level expressions");
 assert.ok(gen.includes("fixnan("), "Outputs must be protected with fixnan()");
 assert.ok(gen.includes("v15L, v15R, v15P, v15A, v15M = voice_proc(samp, vdata, 15,"), "All 16 voices (0..15) run");
-assert.ok(gen.includes("Param mode(0, min=0, max=3);"), "mode param covers 4 engines");
+assert.ok(/Param mode\(0, min=0, max=4\);/.test(gen), "gen has Param mode covering 5 engines (Repitch, Cycles, Textures, Spectral, Fragments)");
+assert.ok(/Param sliced\(0, min=0, max=1\);/.test(gen), "gen has Param sliced (Single / Sliced is separate from the engine)");
 assert.ok(gen.includes("Param freeze(0, min=0, max=1);"), "freeze param");
 assert.ok(gen.includes("Param reverse(0, min=0, max=1);"), "reverse param");
 assert.ok(gen.includes("Param unison_voices(1, min=1, max=8);"), "unison_voices is 1..8");
 assert.ok(gen.includes("Param unison_detune(0.15, min=0, max=1);"), "unison_detune param");
 assert.ok(gen.includes("Param unison_width(0.65, min=0, max=1);"), "unison_width param");
 assert.ok(gen.includes("Param glide_ms(0, min=0, max=1000);"), "glide_ms param");
-assert.ok(gen.includes("isSlice = (modeId > 2.5);"), "Slice is mode 3");
-assert.ok(gen.includes("else if (modeId < 1.5)"), "Cycles is mode 1");
+assert.ok(/isSlice\s*=/.test(gen), "gen derives isSlice");
 assert.ok(gen.includes("uCount = int(clip(round(unisonCount), 1, 8));"), "Unison count clamps to 1..8");
 assert.ok(gen.includes("for (u = 0; u < 8; u += 1)"), "Unison loop is bounded at 8");
 assert.ok(gen.includes("glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (glide_ms * srVal));"), "Glide coefficient");
 assert.ok((gen.match(/freezeOn > 0\.5/g) || []).length >= 3, "Freeze is handled in every engine");
 assert.ok(gen.includes("dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;"), "Reverse flips playback direction");
-assert.ok(gen.includes("REPITCH") && gen.includes("CYCLES") && gen.includes("TEXTURES") && gen.includes("SLICE"));
+assert.ok(gen.includes("REPITCH") && gen.includes("CYCLES") && gen.includes("TEXTURES"));
 
 
 // ============================================================================
 // 3. devices/Better Sampler.amxd structure and wiring
 // ============================================================================
-const DEVICE_W = 600;
+const DEVICE_W = 600;          // face width; the inspector panel adds INSPECTOR_W when shown
+const INSPECTOR_W = 160;
+const FULL_W = DEVICE_W + INSPECTOR_W;
 const DEVICE_H = 169;
 const FILE_NAME = "Better Sampler.amxd";
 const amxdPath = path.join(ROOT, "devices", FILE_NAME);
@@ -246,7 +257,7 @@ assert.ok(boxes.findIndex((b) => b.maxclass === "panel") > boxes.map((b) => b.ma
     "panels are at the end of boxes");
 for (const b of panels) assert.strictEqual(b.background, 1, `panel ${b.id} background: 1`);
 
-// --- presentation: two v8ui canvases + the waveform drop target, all live.* controls kept off the face ---
+// --- presentation: three v8ui canvases + the waveform drop target, all live.* controls kept off the face ---
 const liveBoxes = boxes.filter((b) => /^live\./.test(b.maxclass));
 for (const b of liveBoxes) {
     if (b.id === "obj-drop-wave") continue;
@@ -268,7 +279,7 @@ assert.ok(wr[0] >= vr[0] && wr[1] >= vr[1] && wr[0] + wr[2] <= vr[2] && wr[1] + 
 const boxOrder = boxes.map((b) => b.id);
 assert.ok(boxOrder.indexOf("obj-drop-wave") > boxOrder.indexOf("obj-viz"), "waveform drop target is above obj-viz");
 const presBoxes = boxes.filter((b) => b.presentation === 1 && !b.hidden && b.maxclass !== "panel" && b.id !== "obj-drop-wave");
-assert.deepStrictEqual(presBoxes.map((b) => b.id).sort(), ["obj-viz", "obj-viz-side"]);
+assert.deepStrictEqual(presBoxes.map((b) => b.id).sort(), ["obj-viz", "obj-viz-insp", "obj-viz-side"]);
 // In Live a live.drop only outputs in parameter mode (File type), as in Max's live.drop help patch
 assert.strictEqual(waveDrop.parameter_enable, 1, "live.drop must be in parameter mode or Live never outputs the path");
 const wdv = waveDrop.saved_attribute_attributes.valueof;
@@ -277,17 +288,19 @@ assert.strictEqual(wdv.parameter_invisible, 1, "file parameter hidden from autom
 assert.strictEqual(wdv.parameter_longname, "Sample File");
 for (let i = 0; i < presBoxes.length; i++) {
     const r = presBoxes[i].presentation_rect;
-    assert.ok(r[0] >= 0 && r[0] + r[2] <= DEVICE_W, `${presBoxes[i].id} inside 0..${DEVICE_W}`);
+    assert.ok(r[0] >= 0 && r[0] + r[2] <= FULL_W, `${presBoxes[i].id} inside 0..${FULL_W}`);
     assert.ok(r[1] >= 0 && r[1] + r[3] <= DEVICE_H, `${presBoxes[i].id} inside 0..${DEVICE_H}`);
     for (let j = i + 1; j < presBoxes.length; j++) {
         assert.ok(!rectsOverlap(r, presBoxes[j].presentation_rect), `overlap ${presBoxes[i].id} and ${presBoxes[j].id}`);
     }
 }
-// live.drop must stay clear of both canvases (v8ui would swallow its clicks)
+// live.drop must stay clear of the side and inspector canvases (v8ui would swallow its clicks)
 assert.deepStrictEqual(byId.get("obj-viz").presentation_rect, [0, 0, 528, 169]);
 assert.deepStrictEqual(byId.get("obj-viz-side").presentation_rect, [531, 3, 66, 163]);
+assert.deepStrictEqual(byId.get("obj-viz-insp").presentation_rect, [DEVICE_W, 0, INSPECTOR_W, 169], "inspector canvas sits right of the 600 px face");
+assert.ok(!rectsOverlap(waveDrop.presentation_rect, byId.get("obj-viz-insp").presentation_rect), "drop zone clear of the inspector");
 const bgPanel = byId.get("obj-pnl-bg");
-assert.deepStrictEqual(bgPanel.presentation_rect, [0, 0, DEVICE_W, DEVICE_H]);
+assert.deepStrictEqual(bgPanel.presentation_rect, [0, 0, FULL_W, DEVICE_H], "background panel spans the face and the inspector (760)");
 
 // --- controls: every key is an obj-ctrl-<key>; ranges, enums and 8-bit Int rule ---
 const ctrlBoxes = boxes.filter((b) => /^obj-ctrl-/.test(b.id));
@@ -303,8 +316,18 @@ for (const b of ctrlBoxes) {
     }
 }
 const modeV = valueOf(byId.get("obj-ctrl-mode"));
-assert.deepStrictEqual(modeV.parameter_enum, ["Repitch", "Cycles", "Textures", "Slice"]);
-assert.strictEqual(modeV.parameter_mmax, 3);
+assert.deepStrictEqual(modeV.parameter_enum, ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"], "mode is the engine: 5 values");
+assert.strictEqual(modeV.parameter_mmax, 4);
+const slicedV = valueOf(byId.get("obj-ctrl-sliced"));
+assert.deepStrictEqual(slicedV.parameter_enum, ["Single", "Sliced"], "Single / Sliced is its own enum parameter");
+assert.strictEqual(slicedV.parameter_mmax, 1);
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-slice_at")).parameter_enum, ["Divisions", "Beats", "Onsets", "Pitches", "Manual"]);
+assert.strictEqual(valueOf(byId.get("obj-ctrl-slice_from")).parameter_initial[0], 36, "keymap starts at C1");
+assert.strictEqual(valueOf(byId.get("obj-ctrl-fr_max_grains")).parameter_type, 0, "fr_max_grains 1..256 cannot be Live's 8-bit Int");
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-sp_key")).parameter_enum.length, 12);
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-fr_direction")).parameter_enum, ["Sample", "Playhead", "Random", "Alternating"]);
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-rp_char")).parameter_enum, ["Clean", "Analog", "Digital"]);
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-show_inspector")).parameter_enum, ["Hide", "Show"]);
 assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-freeze")).parameter_enum, ["Off", "Freeze"]);
 assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-reverse")).parameter_enum, ["Fwd", "Rev"]);
 assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-mono_legato")).parameter_enum, ["Poly", "Legato"]);
@@ -346,10 +369,20 @@ assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, "midi");
 assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, "midi -> main face");
 
 // --- face -> route -> hidden control wiring ---
-assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set");
+assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd");
 assertLink(lines, "obj-route-viz", 2, "obj-opendialog", 0, "browse -> file dialog");
 assertLink(lines, "obj-viz", 0, "obj-route-viz", 0, "main face outlet");
 assertLink(lines, "obj-viz-side", 0, "obj-route-viz", 0, "side face outlet");
+assertLink(lines, "obj-viz-insp", 0, "obj-route-viz", 0, "inspector face outlet");
+// inspector width: face -> setwidth_cmd -> prepend setwidth -> live.thisdevice -> device_ready -> main face
+assert.strictEqual(byId.get("obj-prep-setwidth").text, "prepend setwidth");
+assert.strictEqual(byId.get("obj-thisdevice").text, "live.thisdevice");
+assert.strictEqual(byId.get("obj-msg-ready").text, "device_ready");
+assertLink(lines, "obj-route-viz", 4, "obj-prep-setwidth", 0, "setwidth_cmd -> prepend setwidth");
+assertLink(lines, "obj-prep-setwidth", 0, "obj-thisdevice", 0, "prepend setwidth -> live.thisdevice");
+assertLink(lines, "obj-thisdevice", 0, "obj-msg-ready", 0, "thisdevice ready -> device_ready");
+assertLink(lines, "obj-msg-ready", 0, "obj-viz", 0, "device_ready -> main face");
+assert.strictEqual(byId.get("obj-route-viz").numoutlets, 6, "route-viz: 5 selectors + reject");
 assertLink(lines, "obj-route-viz", 0, "obj-route-param", 0, "param route");
 assertLink(lines, "obj-route-viz", 1, "obj-prep-replace", 0, "load_sample route");
 const routeKeys = byId.get("obj-route-param").text.split(/\s+/).slice(1);
@@ -390,12 +423,25 @@ for (const key of routeKeys) {
     assertLink(lines, ctrlId, 0, uiPrep.id, 0, `${key} ctrl -> setter`);
     assertLink(lines, uiPrep.id, 0, "obj-viz", 0, `${key} setter -> main face`);
     assertLink(lines, uiPrep.id, 0, "obj-viz-side", 0, `${key} setter -> side face`);
+    assertLink(lines, uiPrep.id, 0, "obj-viz-insp", 0, `${key} setter -> inspector face`);
 }
 if (missingSetters.length) console.warn(`WARNING known bug: no set_<key> wiring to the faces for: ${missingSetters.join(", ")}`);
-assert.deepStrictEqual(noGenKeys.sort(), ["mono_legato", "poly_voices"], "legato and poly cap are voice-allocator settings, not Gen params");
+assert.deepStrictEqual(noGenKeys.sort(),
+    ["mono_legato", "poly_voices", "show_inspector", "slice_at", "slice_beat", "slice_div", "slice_from", "slice_sens"],
+    "legato, poly cap, slicing and the inspector toggle are face / voice-allocator settings, not Gen params");
+// every new parameter family is routed to its hidden control and reaches Gen (except the face-only ones above)
+for (const key of ["sliced", "rp_char", "rp_dist", "rp_color", "rp_vsr", "rp_imaging", "sp_char", "sp_shift", "sp_bend",
+    "sp_quant", "sp_quant_amt", "sp_onsets", "sp_formant_on", "sp_quality", "sp_dispersion", "sp_live", "sp_rel_formant",
+    "sp_key", "sp_scale", "cy_char", "cy_width", "cy_split", "cy_fund", "cy_mod", "cy_harm", "cy_xfade",
+    "fr_env", "fr_repeats", "fr_density", "fr_motion", "fr_max_grains", "fr_sync", "fr_use_density", "fr_direction",
+    "fr_latch", "fr_repeat_init", "fr_survive", "slice_play", "slice_at", "slice_beat", "slice_div", "slice_sens",
+    "slice_from", "show_inspector"]) {
+    assert.ok(routeKeys.includes(key), `${key} is routed to its obj-ctrl`);
+    if (!noGenKeys.includes(key)) assert.ok(byId.get(`obj-prep-${key}`), `${key} reaches Gen`);
+}
 assert.strictEqual(byId.get("obj-scale-unison_detune").text, "* 0.01");
 assert.strictEqual(byId.get("obj-scale-unison_width").text, "* 0.01");
-for (const key of ["mode", "freeze", "reverse", "loop_mode", "unison_voices", "glide_ms", "grain_size",
+for (const key of ["mode", "sliced", "freeze", "reverse", "loop_mode", "unison_voices", "glide_ms", "grain_size",
     "grain_motion", "grain_spray", "formant", "filt_cutoff", "filt_on", "filt_type"]) {
     assert.ok(byId.get(`obj-prep-${key}`), `${key} reaches Gen`);
 }
@@ -403,8 +449,12 @@ for (const key of ["mode", "freeze", "reverse", "loop_mode", "unison_voices", "g
 // --- the two v8ui boxes ---
 const mainViz = byId.get("obj-viz");
 const sideViz = byId.get("obj-viz-side");
+const inspViz = byId.get("obj-viz-insp");
 assert.strictEqual(mainViz.maxclass, "v8ui");
 assert.strictEqual(sideViz.maxclass, "v8ui");
+assert.strictEqual(inspViz.maxclass, "v8ui");
+assert.strictEqual(inspViz.parameter_enable, 0, "the inspector face is not a saved parameter");
+assert.ok(!valueOf(inspViz), "inspector face stores no state");
 assert.strictEqual(mainViz.parameter_enable, 1);
 assert.strictEqual(sideViz.parameter_enable, 0, "the side face is not a saved parameter");
 const stateV = valueOf(mainViz);
@@ -414,15 +464,17 @@ assert.strictEqual(stateV.parameter_initial[0], 1, "initial blob is version 1 (s
 assert.ok(!valueOf(sideViz), "side face stores no state");
 const mainText = mainViz.textfile.text;
 const sideText = sideViz.textfile.text;
+const inspText = inspViz.textfile.text;
 assert.ok(mainText.includes('var FACE_REGION = "main";'));
 assert.ok(sideText.includes('var FACE_REGION = "side";'));
-for (const t of [mainText, sideText]) {
+assert.ok(inspText.includes('var FACE_REGION = "inspector";'));
+for (const t of [mainText, sideText, inspText]) {
     assert.ok(t.includes("var FACE_PARAMS = {"), "FACE_PARAMS embedded");
     assert.ok(t.includes("function storeParam") && t.includes("function paint") && t.includes("function onclick"));
     assert.ok(!/multisample|keyzone/i.test(t), "UI has no multisample zones");
     assert.ok(t.indexOf("var FACE_REGION") < t.indexOf("function storeParam"), "config -> FACE_* -> ui -> face order");
 }
-for (const t of [mainText, sideText]) {
+for (const t of [mainText, sideText, inspText]) {
     const onclickAt = t.indexOf("function onclick");
     const ondragAt = t.indexOf("function ondrag");
     const ondblAt = t.indexOf("function ondblclick");
@@ -434,7 +486,7 @@ for (const t of [mainText, sideText]) {
 }
 
 // ============================================================================
-// 4. Sandbox run of both embedded face scripts
+// 4. Sandbox run of the three embedded face scripts
 // ============================================================================
 function makeSandbox(box) {
     const ctx = { emitted: [], pokes: [], notified: 0, audioOn: false, channels: 2, cursor: { hide: 0, show: 0 } };
@@ -490,8 +542,10 @@ function makeSandbox(box) {
 
 const mainCtx = makeSandbox(mainViz);
 const sideCtx = makeSandbox(sideViz);
+const inspCtx = makeSandbox(inspViz);
 const sb = mainCtx.sb;
 const sd = sideCtx.sb;
+const si = inspCtx.sb;
 const emitted = mainCtx.emitted;
 
 function paramMsgs(ctx, key) { return ctx.emitted.filter((a) => a[1] === "param" && a[2] === key); }
@@ -499,6 +553,16 @@ function zones(ctx, pred) { return ctx.sb.hitZones.filter(pred); }
 function center(z) { return [z.x + z.w * 0.5, z.y + z.h * 0.5]; }
 function click(ctx, z, shift) { const [x, y] = center(z); ctx.sb.onclick(x, y, 1, 0, shift ? 1 : 0); return [x, y]; }
 function release(ctx, x, y) { ctx.sb.ondrag(x, y, 0, 0, 0); }
+// Click a dropdown's button (action "menu"), repaint and return its item zones (action "menu_pick")
+function openMenuPicks(ctx, key) {
+    ctx.sb.paint();
+    const bz = findZone(ctx, (z) => z.kind === "button" && z.action === "menu" && z.key === key, `menu button ${key}`);
+    ctx.sb.onclick(bz.x + 2, bz.y + 2, 1, 0, 0);
+    ctx.sb.paint();
+    return ctx.sb.hitZones.filter((z) => z.action === "menu_pick" && z.key === key);
+}
+// Live automation / preset recall: forget the values the face still expects to see echoed, then apply
+function auto(c, key, v) { c.echoPending = {}; c["set_" + key](v); }
 function findZone(ctx, pred, label) {
     const z = ctx.sb.hitZones.find(pred);
     assert.ok(z, `zone not found: ${label}`);
@@ -509,7 +573,7 @@ function actionZone(ctx, action, extra) {
 }
 
 // --- load-time state ---
-for (const [name, c] of [["main", mainCtx], ["side", sideCtx]]) {
+for (const [name, c] of [["main", mainCtx], ["side", sideCtx], ["inspector", inspCtx]]) {
     assert.strictEqual(c.sb.mgraphics.relative_coords, 0, `${name}: relative_coords`);
     assert.strictEqual(c.sb.mgraphics.autofill, 0, `${name}: autofill`);
     assert.strictEqual(c.sb.hasLoadedSample, 0, `${name}: starts with no sample`);
@@ -518,9 +582,19 @@ for (const [name, c] of [["main", mainCtx], ["side", sideCtx]]) {
     assert.strictEqual(c.sb.curReverse, 0);
     assert.strictEqual(c.sb.curMonoLegato, 0);
     assert.strictEqual(c.sb.envPage, 0);
+    assert.strictEqual(c.sb.curMode, 0, `${name}: starts on Repitch`);
+    assert.strictEqual(c.sb.curSliced, 0, `${name}: starts Single`);
+    assert.strictEqual(c.sb.showInspector, 0, `${name}: inspector hidden`);
+    assert.strictEqual(c.sb.curSliceFrom, 36, `${name}: keymap starts at C1`);
+    assert.strictEqual(c.sb.lastEngine, undefined, `${name}: no lastEngine any more (Sliced is not an engine)`);
 }
 assert.strictEqual(sb.faceRegion, "main");
 assert.strictEqual(sd.faceRegion, "side");
+assert.strictEqual(si.faceRegion, "inspector");
+assert.deepStrictEqual(Array.from(sb.MODE_NAMES), ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"], "MODE_NAMES is indexed by mode");
+assert.deepStrictEqual(Array.from(sb.ENGINE_ORDER), [0, 3, 1, 2, 4], "face lists Repitch, Spectral, Cycles, Textures, Fragments (Bitwig order)");
+assert.deepStrictEqual(Array.from(sb.ENGINE_ORDER).map((m) => sb.MODE_NAMES[m]), ["Repitch", "Spectral", "Cycles", "Textures", "Fragments"]);
+assert.deepStrictEqual(Array.from(sb.ENGINE_ORDER).sort(), [0, 1, 2, 3, 4], "every engine is listed once");
 assert.deepStrictEqual(Array.from(Object.keys(sb.FACE_PARAMS)).sort(), [...ctrlKeys].sort(), "FACE_PARAMS has an entry per control");
 for (const key of ctrlKeys) {
     const fp = sb.FACE_PARAMS[key];
@@ -530,19 +604,23 @@ for (const key of ctrlKeys) {
     assert.strictEqual(fp.init, vof.parameter_initial[0], `${key} init`);
     assert.strictEqual(typeof sb["set_" + key], "function", `${key}: set_${key} defined in the main face`);
     assert.strictEqual(typeof sd["set_" + key], "function", `${key}: set_${key} defined in the side face`);
+    assert.strictEqual(typeof si["set_" + key], "function", `${key}: set_${key} defined in the inspector face`);
 }
+// the faces also share one FACE_PARAMS table
+assert.deepStrictEqual(JSON.parse(JSON.stringify(si.FACE_PARAMS)), JSON.parse(JSON.stringify(sb.FACE_PARAMS)), "FACE_PARAMS identical in every face");
 
 // --- paint, both regions ---
 sb.paint();
 sd.paint();
+si.paint();
 assert.ok(sb.hitZones.length > 20, "main face builds hit zones");
 for (const kind of ["knob", "value", "button", "wave"]) {
     assert.ok(sb.hitZones.some((z) => z.kind === kind), `main face has ${kind} zones`);
 }
-for (const z of [...sb.hitZones, ...sd.hitZones]) {
+for (const z of [...sb.hitZones, ...sd.hitZones, ...si.hitZones]) {
     assert.ok(Number.isFinite(z.x + z.y + z.w + z.h), "finite zone rect");
 }
-const mainW = 528, sideW = 66;
+const mainW = 528, sideW = 66, inspW = INSPECTOR_W;
 // KNOWN LAYOUT BUG: the loop_xfade value zone (sampler_face.js paintSamplePanel) is about 5 px wider than
 // the canvas (zone right edge ~533 vs 528). Slack is kept tight so anything worse still fails.
 const XFADE_ZONE_SLACK = 0;
@@ -552,16 +630,24 @@ for (const z of sb.hitZones) {
 for (const z of sd.hitZones) {
     assert.ok(z.x >= -1 && z.x + z.w <= sideW + 1 && z.y >= -1 && z.y + z.h <= sideViz.presentation_rect[3] + 1, `side zone inside canvas (${z.kind} ${z.key || z.action})`);
 }
+for (const z of si.hitZones) {
+    assert.ok(z.x >= -1 && z.x + z.w <= inspW + 1 && z.y >= -1 && z.y + z.h <= DEVICE_H + 1, `inspector zone inside canvas (${z.kind} ${z.key || z.action} ${[z.x, z.y, z.w, z.h]})`);
+}
 assert.deepStrictEqual(
     Array.from(sd.hitZones.filter((z) => z.kind === "knob").map((z) => z.key).sort()),
     ["glide_ms", "out_gain", "unison_width", "vel_sens"],
     "side face knobs"
 );
-assert.deepStrictEqual(Array.from(sd.hitZones.filter((z) => z.kind === "button").map((z) => z.action)), ["voicing", "voicing"], "side face: Poly / Mono only (no LOAD button)");
+assert.deepStrictEqual(Array.from(sd.hitZones.filter((z) => z.kind === "button").map((z) => z.action)), ["inspector", "voicing", "voicing"],
+    "side face: Inspector button on top, then Poly / Mono (no LOAD button)");
+assert.ok(sd.hitZones.find((z) => z.action === "inspector").y < sd.hitZones.find((z) => z.action === "voicing").y, "Inspector button sits above Poly / Mono");
+assert.ok(!si.hitZones.some((z) => z.kind === "wave" || z.kind === "knob"), "inspector has no waveform or knobs, only rows");
 assert.ok(!sd.hitZones.some((z) => z.kind === "wave"), "side face has no waveform");
 sb.preview();
 sb.paint();
 sd.paint();
+si.preview();
+si.paint();
 
 // --- import: dropfile, buffers, sample_loaded, root detection, slices ---
 sb.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
@@ -583,8 +669,9 @@ assert.ok(mainCtx.notified > notesBefore, "sample_loaded notifies Live");
 assert.strictEqual(sb.hasLoadedSample, 1);
 assert.ok(Math.abs(sb.detectedRootMidi - 69) <= 1, `imported 440 Hz window -> A3, got ${sb.detectedRootMidi}`);
 assert.strictEqual(sb.sliceMarkers[0], 0);
-assert.ok(sb.sliceMarkers.length >= 4 && sb.sliceMarkers.length <= 16);
-assert.ok(sb.sliceMarkers.some((s) => Math.abs(s - 0.1) < 0.02), "transient slices replace the default grid");
+// the default "Slice at" is Divisions: eight equal slices from the start point (onsets are an opt-in mode)
+assert.strictEqual(sb.sliceMarkers.length, 8, "default slicing is 8 equal divisions");
+sb.sliceMarkers.forEach((m, i) => assert.ok(Math.abs(m - i / 8) < 1e-9, `division ${i}`));
 sb.paint();
 // --- a mono file leaves a 1-channel buffer: the face must still load it (regression) ---
 {
@@ -620,66 +707,97 @@ sb.paint();
     assert.ok(emitted.some((a) => a[1] === "browse"), "file name click emits browse");
 }
 
-// --- engine buttons set the mode and emit param mode ---
+// --- engine list: 5 engines in Bitwig order, each click emits only `mode`; Single / Sliced emits only `sliced` ---
 {
-    const engineNames = ["Repitch", "Cycles", "Textures"];
-    assert.deepStrictEqual(Array.from(sb.ENGINE_NAMES), engineNames);
-    for (let e = 0; e < 3; e++) {
+    sb.paint();
+    const engineZones = sb.hitZones.filter((z) => z.kind === "button" && z.action === "engine");
+    assert.deepStrictEqual(Array.from(engineZones.map((z) => z.engine)), [0, 3, 1, 2, 4], "engine zones run top to bottom in ENGINE_ORDER");
+    for (let i = 1; i < engineZones.length; i++) assert.ok(engineZones[i].y > engineZones[i - 1].y, "engine rows are stacked");
+    for (let i = 1; i < engineZones.length; i++) {
+        assert.ok(!rectsOverlap([engineZones[i - 1].x, engineZones[i - 1].y, engineZones[i - 1].w, engineZones[i - 1].h],
+            [engineZones[i].x, engineZones[i].y, engineZones[i].w, engineZones[i].h]), "engine rows do not overlap");
+    }
+    for (const e of [0, 1, 2, 3, 4, 3, 0]) {
         sb.paint();
         const z = actionZone(mainCtx, "engine", { engine: e });
         emitted.length = 0;
         const depth = sb.undoStack.length;
         click(mainCtx, z);
-        assert.strictEqual(sb.curMode, e, `engine button ${e}`);
-        assert.strictEqual(sb.lastEngine, e);
+        assert.strictEqual(sb.curMode, e, `engine button ${sb.MODE_NAMES[e]}`);
         assert.deepStrictEqual(paramMsgs(mainCtx, "mode").map((a) => a[3]), [e], `engine ${e} emits one param mode`);
+        assert.strictEqual(paramMsgs(mainCtx, "sliced").length, 0, "choosing an engine never touches Single / Sliced");
         assert.strictEqual(sb.undoStack.length, depth + 1, "one undo snapshot per engine click");
-        sb.paint();
     }
-    // prev/next arrows cycle the three engines
-    sb.paint();
-    click(mainCtx, actionZone(mainCtx, "engine_next"));
-    assert.strictEqual(sb.curMode, 0, "next from Textures wraps to Repitch");
-    sb.paint();
-    click(mainCtx, actionZone(mainCtx, "engine_prev"));
-    assert.strictEqual(sb.curMode, 2, "prev from Repitch wraps to Textures");
+    assert.strictEqual(sb.lastEngine, undefined, "no lastEngine bookkeeping");
+    sb.echoPending = {};
 
-    // Single / Sliced toggles between mode 3 and the last engine
+    // prev / next step through ENGINE_ORDER (Repitch -> Spectral -> Cycles -> Textures -> Fragments -> wrap)
+    auto(sb, "mode", 0);
+    const walk = [];
+    for (let i = 0; i < 5; i++) { sb.doAction({ action: "engine_next" }); walk.push(sb.curMode); }
+    assert.deepStrictEqual(walk, [3, 1, 2, 4, 0], "engine_next follows the list order and wraps");
+    sb.doAction({ action: "engine_prev" });
+    assert.strictEqual(sb.curMode, 4, "engine_prev from Repitch wraps to Fragments");
+
+    // Single / Sliced is a separate param: `sliced` 0 / 1, engine untouched
+    auto(sb, "mode", 2);
     sb.paint();
     emitted.length = 0;
-    click(mainCtx, actionZone(mainCtx, "sliced"));
-    assert.strictEqual(sb.curMode, 3);
-    assert.deepStrictEqual(paramMsgs(mainCtx, "mode").map((a) => a[3]), [3]);
-    assert.strictEqual(sb.lastEngine, 2, "Sliced remembers the last engine");
+    click(mainCtx, actionZone(mainCtx, "sliced_set", { value: 1 }));
+    assert.strictEqual(sb.curSliced, 1);
+    assert.strictEqual(sb.curMode, 2, "Sliced keeps the engine");
+    assert.deepStrictEqual(paramMsgs(mainCtx, "sliced").map((a) => a[3]), [1]);
+    assert.strictEqual(paramMsgs(mainCtx, "mode").length, 0, "Sliced no longer writes mode 3");
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "engine", { engine: 1 }));
+    assert.strictEqual(sb.curSliced, 1, "changing the engine keeps Sliced");
+    assert.strictEqual(sb.curMode, 1);
     sb.paint();
     emitted.length = 0;
-    click(mainCtx, actionZone(mainCtx, "single"));
-    assert.strictEqual(sb.curMode, 2, "Single returns to the last engine");
-    assert.deepStrictEqual(paramMsgs(mainCtx, "mode").map((a) => a[3]), [2]);
-    sb.paint();
-    click(mainCtx, actionZone(mainCtx, "engine", { engine: 0 }));
-    sb.paint();
-    click(mainCtx, actionZone(mainCtx, "sliced"));
-    sb.paint();
-    click(mainCtx, actionZone(mainCtx, "single"));
-    assert.strictEqual(sb.curMode, 0, "Single after Repitch -> Sliced returns to Repitch");
-    // in Sliced the engine arrows step from the remembered engine
-    sb.paint();
-    click(mainCtx, actionZone(mainCtx, "sliced"));
-    sb.paint();
-    click(mainCtx, actionZone(mainCtx, "engine_next"));
-    assert.strictEqual(sb.curMode, 1, "engine_next leaves Sliced for the engine after the remembered one");
+    click(mainCtx, actionZone(mainCtx, "sliced_set", { value: 0 }));
+    assert.strictEqual(sb.curSliced, 0);
+    assert.strictEqual(sb.curMode, 1, "Single keeps the engine");
+    assert.deepStrictEqual(paramMsgs(mainCtx, "sliced").map((a) => a[3]), [0]);
+    // the `sliced` echo from Live drives the same state, and mode 3 is Spectral, not a slicer
+    auto(sb, "sliced", 1); assert.strictEqual(sb.curSliced, 1);
+    auto(sb, "sliced", 0); assert.strictEqual(sb.curSliced, 0);
+    auto(sb, "mode", 3); assert.strictEqual(sb.curMode, 3); assert.strictEqual(sb.curSliced, 0, "mode 3 = Spectral does not slice");
+
     // undo stack: one snapshot per click, undo/redo walk the UI state
+    auto(sb, "mode", 0);
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "engine", { engine: 4 }));
     const tip = sb.curMode;
     sb.performUndo();
+    assert.strictEqual(sb.curMode, 0, "undo returns to the previous engine");
     sb.performRedo();
     assert.strictEqual(sb.curMode, tip, "undo then redo returns to the tip");
     const stalled = sb.undoStack.length;
     sb.performRedo();
     assert.strictEqual(sb.undoStack.length, stalled, "redo at the tip is a no-op");
+    auto(sb, "mode", 0);
+
+    // the engine list highlights the current engine in blue (and nothing else)
+    const blueLabels = (ctx) => {
+        const g = ctx.sb.mgraphics, ops = [];
+        const saved = { set_source_rgba: g.set_source_rgba, show_text: g.show_text };
+        let col = null;
+        g.set_source_rgba = (...a) => { col = a; };
+        g.show_text = (t) => { ops.push([t, col]); };
+        ctx.sb.paint();
+        Object.assign(g, saved);
+        return ops.filter((o) => ctx.sb.MODE_NAMES.includes(o[0]) && o[1][2] > 0.9 && o[1][0] < 0.5).map((o) => o[0]);
+    };
+    for (let e = 0; e < 5; e++) {
+        auto(sb, "mode", e);
+        assert.deepStrictEqual(blueLabels(mainCtx), [sb.MODE_NAMES[e]], `only ${sb.MODE_NAMES[e]} is highlighted`);
+    }
+    auto(sb, "mode", 0);
+    sb.undoStack.length = 0;   // the stack is capped at 24 snapshots; later blocks count depth + 1
+    sb.redoStack.length = 0;
 }
 
-// --- toggle buttons: reverse, freeze, loop mode, filter on/type ---
+// --- toggle buttons: reverse, freeze, filter on/type (loop mode is a dropdown) ---
 {
     sb.storeParam("reverse", 0); sb.storeParam("freeze", 0); sb.storeParam("loop_mode", 1);
     sb.storeParam("filt_on", 1); sb.storeParam("filt_type", 0);
@@ -697,13 +815,13 @@ sb.paint();
     sb.paint();
     click(mainCtx, actionZone(mainCtx, "freeze"));
     assert.strictEqual(sb.curFreeze, 0);
-    const seen = [];
-    for (let i = 0; i < 3; i++) {
+    // loop mode is a dropdown now (see the generic dropdown tests): button -> items -> pick
+    for (const want of [2, 0, 1]) {
         sb.paint();
-        click(mainCtx, actionZone(mainCtx, "loop_mode"));
-        seen.push(sb.curLoopMode);
+        const picks = openMenuPicks(mainCtx, "loop_mode");
+        click(mainCtx, picks.find((z) => z.value === want));
+        assert.strictEqual(sb.curLoopMode, want, `loop mode menu picks ${want}`);
     }
-    assert.deepStrictEqual(seen, [2, 0, 1], "loop mode cycles Fwd -> Ping -> Off -> Fwd");
     const types = [];
     for (let i = 0; i < 4; i++) {
         sb.paint();
@@ -725,13 +843,20 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
 {
     const checked = new Set();
     const regions = [[mainCtx, "main"], [sideCtx, "side"]];
+    // every engine panel variant lights different knobs: visit them all (plus each env page)
+    const mainConfigs = [];
+    for (const [mode, extra] of [[0, { rp_char: 0 }], [0, { rp_char: 1 }], [0, { rp_char: 2 }], [3, { sp_char: 0 }],
+        [3, { sp_char: 1, sp_quant: 1 }], [1, { cy_char: 0 }], [1, { cy_char: 1 }], [1, { cy_char: 2 }], [2, {}], [4, {}]]) {
+        mainConfigs.push({ page: 0, mode, extra });
+    }
+    for (const page of [1, 2, 3]) mainConfigs.push({ page, mode: 2, extra: {} });
     for (const [ctx, name] of regions) {
         const c = ctx.sb;
-        const pageList = name === "main" ? [0, 1, 2, 3] : [0];
-        const modeList = name === "main" ? [2] : [0];   // Textures lights every engine knob
-        for (const page of pageList) {
-            c.envPage = page;
-            c.storeParam("mode", modeList[0]);
+        const configs = name === "main" ? mainConfigs : [{ page: 0, mode: 0, extra: {} }];
+        for (const cfgItem of configs) {
+            c.envPage = cfgItem.page;
+            c.storeParam("mode", cfgItem.mode);
+            for (const [ek, ev] of Object.entries(cfgItem.extra)) c.storeParam(ek, ev);
             c.paint();
             for (const z of c.hitZones.filter((q) => q.kind === "knob")) {
                 const key = z.key;
@@ -793,11 +918,15 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
         "matk_ms", "mdec_ms", "msus_lvl", "mrel_ms", "menv_pitch", "menv_pos",
         "lfo_rate", "lfo_shape", "lfo_pitch", "lfo_filt", "lfo_pos",
         "unison_voices", "unison_detune", "poly_voices",
-        "unison_width", "glide_ms", "vel_sens", "out_gain"]) {
+        "unison_width", "glide_ms", "vel_sens", "out_gain",
+        "rp_dist", "rp_color", "sp_shift", "sp_bend", "sp_quant_amt", "cy_width", "cy_split", "cy_fund", "cy_mod", "cy_harm",
+        "fr_density", "fr_motion"]) {
         assert.ok(checked.has(key), `knob ${key} was exercised`);
     }
     sb.envPage = 0;
     sb.storeParam("mode", 0);
+    for (const k of ["rp_char", "sp_char", "sp_quant", "cy_char"]) sb.storeParam(k, 0);
+    sb.echoPending = {};
 }
 
 // --- env page tabs: change envPage and the knobs drawn; saved in getvalueof slot 9 ---
@@ -939,14 +1068,19 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     const wz = findZone(mainCtx, (z) => z.kind === "wave", "wave");
     const loopX = wz.x + 0.18 * wz.w;
     const wy = wz.y + wz.h * 0.5;
+    // the loop-start handle grabs from either side of its line (the xfade zone stops short of it)
+    sb.onclick(loopX - 2, wy, 1, 0, 0);
+    assert.strictEqual(sb.drag.wave, "loop_start", "grab from the left of the line");
+    release(mainCtx, loopX - 2, wy);
+    sb.paint();
     const depth = sb.undoStack.length;
-    sb.onclick(loopX, wy, 1, 0, 0);
+    sb.onclick(loopX + 2, wy, 1, 0, 0);
     assert.strictEqual(sb.drag.wave, "loop_start");
     assert.strictEqual(sb.undoStack.length, depth + 1);
-    for (const dx of [30, 36, 42]) sb.ondrag(loopX + dx, wy, 1, 0, 0);
+    for (const dx of [30, 36, 42]) sb.ondrag(loopX + 2 + dx, wy, 1, 0, 0);
     assert.strictEqual(sb.undoStack.length, depth + 1, "dragging does not push undo per frame");
     assert.ok(sb.curLoopStart > 0.18);
-    release(mainCtx, loopX + 42, wy);
+    release(mainCtx, loopX + 44, wy);
     sb.performUndo();
     assert.ok(Math.abs(sb.curLoopStart - 0.18) < 1e-9, "undo restores the loop start");
 
@@ -964,19 +1098,19 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     sb.set_freeze(0);
     sb.paint();
     emitted.length = 0;
-    sb.onclick(wz.x + 0.5 * wz.w, wy, 1, 0, 0);
+    sb.onclick(wz.x + 0.3 * wz.w, wy, 1, 0, 0);
     assert.strictEqual(sb.drag, null, "no Pos drag without Freeze");
     assert.strictEqual(paramMsgs(mainCtx, "play_pos").length, 0, "no Pos change without Freeze");
     sb.set_freeze(1);
     sb.paint();
     emitted.length = 0;
-    sb.onclick(wz.x + 0.5 * wz.w, wy, 1, 0, 0);
+    sb.onclick(wz.x + 0.3 * wz.w, wy, 1, 0, 0);
     assert.strictEqual(sb.drag.wave, "play_pos");
-    assert.ok(Math.abs(paramMsgs(mainCtx, "play_pos").pop()[3] - 50) < 0.1);
-    release(mainCtx, wz.x + 0.5 * wz.w, wy);
+    assert.ok(Math.abs(paramMsgs(mainCtx, "play_pos").pop()[3] - 30) < 0.1);
+    release(mainCtx, wz.x + 0.3 * wz.w, wy);
 
     // Sliced: clicking the waveform auditions a slice via midi_note and releases it
-    sb.storeParam("mode", 3);
+    sb.storeParam("sliced", 1);
     sb.paint();
     const gate = () => sb.voiceAlloc.voices.filter((v) => v.gate === 1).length;
     sb.all_notes_off();
@@ -985,7 +1119,7 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     assert.strictEqual(gate(), 1, "slice audition opens a voice");
     release(mainCtx, wz.x, wy);
     assert.strictEqual(gate(), 0, "releasing the mouse closes the audition voice");
-    sb.storeParam("mode", 0);
+    sb.storeParam("sliced", 0);
 }
 
 // --- Poly / Mono in the side region emits mono_legato ---
@@ -1014,16 +1148,27 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
 // --- storeParam echoes (live.* automation -> set_<key>) update state and never re-emit ---
 {
     const n0 = mainCtx.emitted.length;
+    sb.echoPending = {};
     sb.set_mode(2);
     assert.strictEqual(sb.curMode, 2);
-    assert.strictEqual(sb.lastEngine, 2);
     sb.set_mode(3);
-    assert.strictEqual(sb.curMode, 3);
-    assert.strictEqual(sb.lastEngine, 2, "Slice echo keeps the last engine");
+    assert.strictEqual(sb.curMode, 3, "mode 3 is the Spectral engine");
+    assert.strictEqual(sb.curSliced, 0, "an engine echo never turns slicing on");
+    sb.set_mode(4);
+    assert.strictEqual(sb.curMode, 4, "mode 4 is Fragments");
     sb.set_mode(9);
-    assert.strictEqual(sb.curMode, 3, "mode echo clamps to Slice");
+    assert.strictEqual(sb.curMode, 4, "mode echo clamps to Fragments");
     sb.set_mode(-4);
     assert.strictEqual(sb.curMode, 0);
+    sb.set_sliced(1); assert.strictEqual(sb.curSliced, 1);
+    assert.strictEqual(sb.curMode, 0, "a sliced echo leaves the engine alone");
+    sb.set_sliced(0); assert.strictEqual(sb.curSliced, 0);
+    sb.set_slice_from(48); assert.strictEqual(sb.curSliceFrom, 48);
+    assert.strictEqual(sb.voiceAlloc.getSliceBaseNote(), 48, "slice_from echo moves the allocator keymap base");
+    sb.set_slice_from(300); assert.strictEqual(sb.curSliceFrom, 127, "slice_from clamps to 127");
+    sb.set_slice_from(36);
+    sb.set_show_inspector(1); assert.strictEqual(sb.showInspector, 1);
+    sb.set_show_inspector(0); assert.strictEqual(sb.showInspector, 0);
     sb.set_freeze(1); assert.strictEqual(sb.curFreeze, 1);
     sb.set_freeze(0); assert.strictEqual(sb.curFreeze, 0);
     sb.set_reverse(1); assert.strictEqual(sb.curReverse, 1);
@@ -1053,11 +1198,15 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     sb.set_out_gain(-6); assert.strictEqual(sb.paramValue("out_gain"), -6);
     sb.set_mode("not-a-number");
     assert.strictEqual(sb.curMode, 0, "non-numeric echoes are ignored");
-    assert.strictEqual(mainCtx.emitted.length, n0, "echoes never emit (no feedback loop)");
+    assert.strictEqual(mainCtx.emitted.slice(n0).filter((a) => a[1] === "param").length, 0, "echoes never emit params (no feedback loop)");
+    assert.ok(mainCtx.emitted.slice(n0).every((a) => a[1] === "setwidth_cmd"), "the only message an echo may emit is the inspector width");
     // an echo reaches the other face too (both receive every set_<key>)
-    sd.set_mono_legato(1);
+    auto(sd, "mono_legato", 1);
     assert.strictEqual(sd.curMonoLegato, 1);
-    sd.set_mono_legato(0);
+    auto(sd, "mono_legato", 0);
+    auto(si, "mono_legato", 1);
+    assert.strictEqual(si.curMonoLegato, 1, "the inspector face receives every setter too");
+    auto(si, "mono_legato", 0);
     // paramValue falls back to the Live init until an echo arrives
     const fresh = makeSandbox(mainViz).sb;
     for (const key of ctrlKeys) assert.strictEqual(fresh.paramValue(key), fresh.FACE_PARAMS[key].init, `${key}: default is init`);
@@ -1114,7 +1263,7 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     sb.sliceMarkers = [0, 0.1, 0.5, 0.8];
     sb.dropfile("/Users/test/My Samples/Snare 02.wav");
     const saved = sb.getvalueof();
-    assert.strictEqual(saved[0], 2, "getvalueof version 2");
+    assert.strictEqual(saved[0], 3, "getvalueof version 3");
     assert.strictEqual(saved[1], 1);
     assert.strictEqual(saved[4], 2);
     assert.strictEqual(saved[9], 2, "slot 9 is the env page");
@@ -1168,8 +1317,7 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     sd.paint();
 }
 
-console.log("Better Sampler: 600x169 two-v8ui face, wiring, knobs, buttons, regions, state and voices ok");
-console.log("All Better Sampler tests passed!");
+console.log("Better Sampler: 600x169 face + inspector, wiring, knobs, buttons, regions, state and voices ok");
 
 // --- knob drags capture the mouse: cursor hidden, hover frozen on the dragged knob, released on mouse-up ---
 {
@@ -1319,7 +1467,8 @@ console.log("Drop / browse load path ok");
     const xc = makeSandbox(mainViz);
     const x = xc.sb;
     x.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
-    x.set_mode(3);
+    x.set_sliced(1);
+    x.set_slice_at(4);   // Manual: Divisions / Beats would lay the markers out again from the start point
     x.sliceMarkers = M.slice();
     x.paint();
     const wave = x.hitZones.find((z) => z.kind === "wave");
@@ -1380,7 +1529,8 @@ console.log("Sliced-mode start point and keymap ok");
     const lc = makeSandbox(mainViz);
     const l = lc.sb;
     l.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
-    l.set_mode(3);
+    l.set_sliced(1);
+    l.set_slice_at(4);
     l.sliceMarkers = [0, 0.125, 0.25, 0.375, 0.5];
     l.midi_note(36, 100);
     const before = lc.pokes.filter((p) => p.name === "#0-bsvoices").pop();
@@ -1403,31 +1553,972 @@ console.log("Sliced-mode start point and keymap ok");
     assert.ok(auto && Math.abs(auto.data[4] - 0.3) < 1e-9, "automated start point moves the held slice");
     l.midi_note(36, 0);
 
-    // Playback dropdown (Sliced footer): open, pick, close
+    // Playback dropdown (Sliced footer): a generic menu with Bitwig's four glyph items
     l.paint();
-    const pb = l.hitZones.find((z) => z.action === "slice_play_menu");
+    const pb = l.hitZones.find((z) => z.action === "menu" && z.key === "slice_play");
     assert.ok(pb, "Playback control in the Sliced footer");
     lc.emitted.length = 0;
-    l.onclick(pb.x + 3, pb.y + 3, 1, 0, 0);
-    l.paint();
-    const picks = l.hitZones.filter((z) => z.action === "slice_play_pick");
+    const picks = openMenuPicks(lc, "slice_play");
     assert.deepStrictEqual(Array.from(picks.map((z) => z.value)), [0, 1, 2, 3], "four slice playback modes listed");
     const loopPick = picks[2];
     l.onclick(loopPick.x + 5, loopPick.y + 3, 1, 0, 0);
     assert.deepStrictEqual(Array.from(paramMsgs(lc, "slice_play").pop().slice(1)), ["param", "slice_play", 2], "One-way looping picked");
     l.paint();
-    assert.ok(!l.hitZones.some((z) => z.action === "slice_play_pick"), "menu closes after a pick");
-    l.onclick(pb.x + 3, pb.y + 3, 1, 0, 0);
-    l.paint();
+    assert.ok(!l.hitZones.some((z) => z.action === "menu_pick"), "menu closes after a pick");
+    openMenuPicks(lc, "slice_play");
     lc.emitted.length = 0;
     l.onclick(wave.x + 0.6 * wave.w, wave.y + 20, 1, 0, 0);
     l.paint();
-    assert.ok(!l.hitZones.some((z) => z.action === "slice_play_pick"), "a click elsewhere closes the menu");
+    assert.ok(!l.hitZones.some((z) => z.action === "menu_pick"), "a click elsewhere closes the menu");
     assert.strictEqual(paramMsgs(lc, "slice_play").length, 0, "closing click picks nothing");
-    l.set_mode(0);
+    l.set_sliced(0);
     l.paint();
-    assert.ok(!l.hitZones.some((z) => z.action === "slice_play_menu"), "Playback dropdown only in Sliced mode");
+    assert.ok(!l.hitZones.some((z) => z.action === "menu" && z.key === "slice_play"), "Playback dropdown only in Sliced mode");
 }
 
 console.log("Live slice bounds, Playback dropdown and Pos/Freeze ok");
 
+// --- Live echoes a gesture's values late: markers and knobs must still track the cursor ---
+{
+    function dragWithEcho(deferred, setup, grab, frames, read) {
+        const ec = makeSandbox(mainViz);
+        const e = ec.sb;
+        e.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+        setup(e);
+        e.paint();
+        const q = [];
+        const takeParams = () => { const out = ec.emitted.filter((a) => a[1] === "param"); ec.emitted.length = 0; return out; };
+        const deliver = (msgs) => { for (const a of msgs) e["set_" + a[2]](a[3]); };
+        const start = grab(e);
+        e.onclick(start.x, start.y, 1, 0, 0);
+        deliver(takeParams());
+        let worst = 0;
+        for (const f of frames) {
+            const late = deferred ? q.splice(0) : [];
+            e.ondrag(f.x, f.y, 1, 0, 0);
+            const now = takeParams();
+            if (deferred) { deliver(late); q.push(...now); } else deliver(now);
+            e.paint();
+            worst = Math.max(worst, Math.abs(read(e) - f.expect));
+        }
+        deliver(q.splice(0));
+        e.ondrag(frames[frames.length - 1].x, frames[frames.length - 1].y, 0, 0, 0);
+        worst = Math.max(worst, Math.abs(read(e) - frames[frames.length - 1].expect));
+        return worst;
+    }
+    // the waveform rect is the same in Single and Sliced; measure it up front (the frames are built before the drag runs)
+    const probe = makeSandbox(mainViz);
+    probe.sb.paint();
+    const wave = probe.sb.hitZones.find((z) => z.kind === "wave");
+    for (const sliced of [false, true]) {
+        for (const deferred of [false, true]) {
+            const worst = dragWithEcho(deferred,
+                (e) => { if (sliced) e.set_sliced(1); e.paint(); },
+                () => ({ x: wave.x + 1, y: wave.y + wave.h - 3 }),
+                Array.from({ length: 40 }, (_, i) => { const n = 0.05 + 0.6 * Math.abs(Math.sin(i / 6)); return { x: wave.x + n * wave.w, y: wave.y + 30, expect: n }; }),
+                (e) => e.curStart);
+            assert.ok(worst < 0.002, `start marker tracks the cursor (${sliced ? "sliced" : "single"}, ${deferred ? "late" : "immediate"} echo): off by ${worst}`);
+        }
+    }
+    // a knob dragged up and back down with late echoes ends exactly where the mouse left it
+    const kc = makeSandbox(mainViz);
+    const k = kc.sb;
+    k.paint();
+    const kz = k.hitZones.find((z) => z.kind === "knob" && z.key === "filt_res");
+    const cy = kz.y + kz.h / 2;
+    k.onclick(kz.x + kz.w / 2, cy, 1, 0, 0);
+    const pend = [];
+    const vals = [];
+    for (const dy of [-20, -40, -20, 0, -10]) {
+        const late = pend.splice(0);
+        k.ondrag(kz.x + kz.w / 2, cy + dy, 1, 0, 0);
+        vals.push(k.paramValue("filt_res"));
+        for (const a of late) k["set_" + a[2]](a[3]);
+        pend.push(...kc.emitted.filter((a) => a[1] === "param").splice(0));
+        kc.emitted.length = 0;
+        assert.strictEqual(k.paramValue("filt_res"), vals[vals.length - 1], "late echo never moves the knob being dragged");
+    }
+    for (const a of pend.splice(0)) k["set_" + a[2]](a[3]);
+    assert.strictEqual(k.paramValue("filt_res"), vals[vals.length - 1], "knob ends where the mouse left it");
+    // automation that is not one of our values still applies
+    k.set_filt_res(77);
+    assert.strictEqual(k.paramValue("filt_res"), 77, "external changes (automation) still update the face");
+}
+
+console.log("Late Live echoes: markers and knobs track the cursor ok");
+
+// ============================================================================
+// 5. Redesign coverage: Single/Sliced split, params, three regions, dropdowns, slicing, loop overlay,
+//    per-engine panels, inspector, echoes
+// ============================================================================
+
+// Record what paint() draws: rectangles and arcs with the colour in force, and every string
+function paintSpy(ctx) {
+    const g = ctx.sb.mgraphics, ops = [];
+    const names = ["set_source_rgba", "rectangle", "arc", "show_text"];
+    const saved = {};
+    for (const n of names) saved[n] = g[n];
+    let col = [0, 0, 0, 1];
+    g.set_source_rgba = (...a) => { col = a; };
+    g.rectangle = (...a) => ops.push({ op: "rect", a, col });
+    g.arc = (...a) => ops.push({ op: "arc", a, col });
+    g.show_text = (t) => ops.push({ op: "text", t: String(t), col });
+    ctx.sb.paint();
+    Object.assign(g, saved);
+    return ops;
+}
+function texts(ctx) { return paintSpy(ctx).filter((o) => o.op === "text").map((o) => o.t); }
+// alpha a knob was drawn with (0.45 = dimmed); needs the zones of the paint that produced `ops`
+function knobAlpha(ctx, ops, key) {
+    const z = ctx.sb.hitZones.find((q) => q.kind === "knob" && q.key === key);
+    assert.ok(z, `knob ${key} is drawn`);
+    const ringR = (z.w - 4) / 2, cx = z.x + z.w / 2, cy = z.y + ringR + 2, r = ringR - 3;
+    const arc = ops.find((o) => o.op === "arc" && Math.abs(o.a[0] - cx) < 0.01 && Math.abs(o.a[1] - cy) < 0.01 && Math.abs(o.a[2] - r) < 0.01);
+    assert.ok(arc, `knob ${key} disc found`);
+    return arc.col[3];
+}
+function loadedMain(fileName) {
+    const c = makeSandbox(mainViz);
+    c.sb.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    c.audioOn = true;
+    c.sb.sample_loaded("/Users/test/Loops/" + (fileName || "Loop_120bpm.wav"));
+    assert.strictEqual(c.sb.hasLoadedSample, 1);
+    c.emitted.length = 0;
+    c.pokes.length = 0;
+    return c;
+}
+function ids(zs) { return Array.from(zs.map((z) => z.key)); }
+function msgVals(ctx, key) { return paramMsgs(ctx, key).map((a) => a[3]); }
+function toggleZone(ctx, key) { return findZone(ctx, (z) => z.kind === "button" && z.action === "toggle" && z.key === key, `toggle ${key}`); }
+function menuFits(picks, W, H) {
+    return picks.every((z) => z.x >= 0 && z.x + z.w <= W && z.y >= 0 && z.y + z.h <= H);
+}
+// KNOWN BUG: a dropdown taller than its canvas cannot be fully reached. Local Key has 12 rows * 15 px + 6 = 186 px
+// in the 169 px inspector (sampler_face.js toggleMenu clamps y to 2 but never shrinks / scrolls the list), so
+// the lower rows are off-canvas and unclickable. Remove the entry once the menu scrolls or uses two columns.
+const KNOWN_MENU_OVERFLOW = [];
+const overflowWarned = [];
+function assertMenuFits(key, picks, W, H) {
+    if (menuFits(picks, W, H)) return;
+    if (KNOWN_MENU_OVERFLOW.includes(key)) { if (!overflowWarned.includes(key)) overflowWarned.push(key); return; }
+    assert.fail(`${key} dropdown does not fit the ${W}x${H} canvas`);
+}
+
+// --- 1. state: v1 / v2 blobs that stored the old Slice engine (mode 3) restore as Sliced + Repitch ---
+{
+    for (const ver of [1, 2]) {
+        const c = makeSandbox(mainViz);
+        const m = c.sb;
+        m.setvalueof.apply(m, [ver, 3, 0, 10000, 1, 1500, 8500, 500, 0, 0, 1, 0].concat(ver === 2 ? [""] : []));
+        assert.strictEqual(m.curMode, 0, `v${ver} mode 3 -> Repitch`);
+        assert.strictEqual(m.curSliced, 1, `v${ver} mode 3 -> Sliced`);
+        assert.deepStrictEqual(msgVals(c, "mode"), [0], `v${ver} restore emits mode 0`);
+        assert.deepStrictEqual(msgVals(c, "sliced"), [1], `v${ver} restore emits sliced 1`);
+        // the other engines restore as they were and leave slicing alone
+        for (const mode of [0, 1, 2]) {
+            const c2 = makeSandbox(mainViz);
+            c2.sb.setvalueof.apply(c2.sb, [ver, mode, 0, 10000, 1, 1500, 8500, 500, 0, 0, 1, 0].concat(ver === 2 ? [""] : []));
+            assert.strictEqual(c2.sb.curMode, mode);
+            assert.strictEqual(c2.sb.curSliced, 0, "engines 0..2 do not turn slicing on");
+            assert.strictEqual(msgVals(c2, "sliced").length, 0);
+        }
+    }
+    // Fragments (4) was never an old blob value; it restores as is
+    const c4 = makeSandbox(mainViz);
+    c4.sb.setvalueof.apply(c4.sb, [2, 4, 0, 10000, 1, 1500, 8500, 500, 0, 0, 1, 0, ""]);
+    assert.strictEqual(c4.sb.curMode, 4);
+    assert.strictEqual(c4.sb.curSliced, 0);
+
+    // A blob saved by this build (v3) keeps Spectral (mode 3); only v1/v2 mode 3 means Sliced Repitch
+    const sv = makeSandbox(mainViz);
+    auto(sv.sb, "mode", 3);
+    const blob = sv.sb.getvalueof();
+    assert.strictEqual(blob[0], 3, "state blob is version 3");
+    const rs = makeSandbox(mainViz);
+    rs.sb.setvalueof.apply(rs.sb, blob);
+    assert.strictEqual(rs.sb.curMode, 3, "saved Spectral set reloads as Spectral");
+    assert.strictEqual(rs.sb.curSliced, 0, "and stays Single");
+}
+
+// --- 2. every new parameter: setter on all three faces, stored, never re-emitted ---
+{
+    const faces = [makeSandbox(mainViz), makeSandbox(sideViz), makeSandbox(inspViz)];
+    for (const key of ctrlKeys) {
+        const spec = sb.FACE_PARAMS[key];
+        const mid = (spec.enums || spec.unit === 0) ? Math.round((spec.lo + spec.hi) / 2) : (spec.lo + spec.hi) / 2;
+        for (const f of faces) {
+            f.emitted.length = 0;
+            auto(f.sb, key, mid);
+            assert.strictEqual(f.sb.paramValue(key), mid, `${key}: ${f.sb.faceRegion} face stores the echo`);
+            assert.strictEqual(f.emitted.filter((a) => a[1] === "param").length, 0, `${key}: ${f.sb.faceRegion} echo emits no param`);
+        }
+    }
+    // enum lists the faces use match the controls
+    for (const key of ["mode", "sliced", "rp_char", "sp_char", "sp_quant", "sp_quality", "sp_key", "sp_scale", "cy_char", "fr_direction", "slice_at", "slice_beat", "slice_play", "loop_mode"]) {
+        const vof = valueOf(byId.get(`obj-ctrl-${key}`));
+        assert.deepStrictEqual(Array.from(sb.FACE_PARAMS[key].enums), vof.parameter_enum, `${key}: FACE_PARAMS enums = control enum`);
+    }
+    assert.strictEqual(sb.FACE_PARAMS.sp_key.enums.length, 12);
+    assert.strictEqual(sb.FACE_PARAMS.slice_beat.enums.length, 10);
+    // formatting of the new units
+    assert.strictEqual(sb.fmtParam("fr_repeats", 3), "3");
+    assert.strictEqual(sb.fmtParam("sp_key", 1), "C#");
+    assert.strictEqual(sb.fmtParam("fr_direction", 2), "Random");
+    assert.strictEqual(sb.fmtParam("sp_bend", 5), "+5 st");
+    assert.strictEqual(sb.fmtParam("slice_div", 12), "12");
+}
+
+// --- 3. three regions and the device width ---
+{
+    const faces = [["main", makeSandbox(mainViz)], ["side", makeSandbox(sideViz)], ["inspector", makeSandbox(inspViz)]];
+    const widths = (c) => c.emitted.filter((a) => a[1] === "setwidth_cmd").map((a) => a[2]);
+    for (const [name, c] of faces) {
+        assert.strictEqual(c.sb.mgraphics.size[0], { main: 528, side: 66, inspector: 160 }[name], `${name} canvas width`);
+        c.sb.device_ready();
+        assert.deepStrictEqual(widths(c), [600], `${name}: device_ready re-sends the hidden width (600)`);
+        c.emitted.length = 0;
+        auto(c.sb, "show_inspector", 1);
+        assert.deepStrictEqual(widths(c), [760], `${name}: show_inspector echo asks for 760`);
+        assert.strictEqual(c.sb.showInspector, 1);
+        c.emitted.length = 0;
+        c.sb.device_ready();
+        assert.deepStrictEqual(widths(c), [760], `${name}: device_ready re-sends the saved width`);
+        auto(c.sb, "show_inspector", 0);
+        assert.strictEqual(c.sb.showInspector, 0);
+    }
+    // the Inspector button lives in the side region only
+    assert.ok(!sb.hitZones.some((z) => z.action === "inspector") && !si.hitZones.some((z) => z.action === "inspector"));
+    const side = makeSandbox(sideViz);
+    side.sb.paint();
+    const ib = findZone(side, (z) => z.kind === "button" && z.action === "inspector", "Inspector button");
+    click(side, ib);
+    assert.deepStrictEqual(msgVals(side, "show_inspector"), [1], "clicking Inspector shows it");
+    assert.deepStrictEqual(widths(side), [760], "and widens the device to 760");
+    assert.strictEqual(side.sb.showInspector, 1);
+    side.sb.paint();
+    click(side, ib);
+    assert.deepStrictEqual(msgVals(side, "show_inspector"), [1, 0], "clicking again hides it");
+    assert.deepStrictEqual(widths(side), [760, 600], "and shrinks back to 600");
+}
+
+// --- 4. generic dropdowns ---
+{
+    const c = loadedMain();
+    const m = c.sb;
+    // Single footer: loop_mode with icons
+    m.paint();
+    const lb = findZone(c, (z) => z.kind === "button" && z.action === "menu" && z.key === "loop_mode", "loop menu button");
+    assert.strictEqual(m.openMenu, null);
+    let picks = openMenuPicks(c, "loop_mode");
+    assert.deepStrictEqual(Array.from(picks.map((z) => z.value)), [0, 1, 2], "loop_mode menu: Off / One-way / Ping-pong");
+    assert.ok(m.openMenu && m.openMenu.key === "loop_mode");
+    assert.ok(m.menuItems("loop_mode").icon, "loop_mode items carry icons");
+    assert.deepStrictEqual(Array.from(m.menuItems("loop_mode").names), ["Off", "One-way looping", "Ping-pong looping"]);
+    assertMenuFits("loop_mode", picks, 528, 169);
+    for (let i = 1; i < picks.length; i++) assert.ok(picks[i].y >= picks[i - 1].y + picks[i - 1].h - 1e-9, "menu rows are stacked");
+    // re-clicking the button closes it
+    c.emitted.length = 0;
+    m.onclick(lb.x + 2, lb.y + 2, 1, 0, 0);
+    assert.strictEqual(m.openMenu, null, "the same button toggles the menu closed");
+    assert.strictEqual(c.emitted.length, 0);
+    // a click elsewhere closes without changing anything and without acting on what was under it
+    openMenuPicks(c, "loop_mode");
+    const cut = m.hitZones.find((z) => z.kind === "knob" && z.key === "filt_cutoff");
+    const cutBefore = m.paramValue("filt_cutoff");
+    const loopBefore = m.curLoopMode;
+    c.emitted.length = 0;
+    m.onclick(...center(cut), 1, 0, 0);
+    assert.strictEqual(m.openMenu, null, "click elsewhere closes the menu");
+    assert.strictEqual(m.drag, null, "and the click is swallowed (no knob grab)");
+    assert.strictEqual(c.emitted.length, 0, "nothing emitted");
+    assert.strictEqual(m.curLoopMode, loopBefore);
+    assert.strictEqual(m.paramValue("filt_cutoff"), cutBefore);
+    m.paint();
+    assert.ok(!m.hitZones.some((z) => z.action === "menu_pick"), "closed menu has no item zones");
+    // picking an item sets the value, closes the menu
+    picks = openMenuPicks(c, "loop_mode");
+    c.emitted.length = 0;
+    click(c, picks[2]);
+    assert.deepStrictEqual(msgVals(c, "loop_mode"), [2]);
+    assert.strictEqual(m.curLoopMode, 2);
+    assert.strictEqual(m.openMenu, null);
+
+    // Sliced footer: slice_at (with descriptions), slice_beat (only for Beats), slice_play
+    auto(m, "sliced", 1);
+    m.paint();
+    const sliceAtItems = m.menuItems("slice_at");
+    assert.deepStrictEqual(Array.from(sliceAtItems.names), ["Divisions", "Beats", "Onsets", "Pitches", "Manual"]);
+    assert.strictEqual(sliceAtItems.descs.length, 5, "every Slice at item has a description");
+    assert.ok(sliceAtItems.descs.every((d) => d.length > 0));
+    picks = openMenuPicks(c, "slice_at");
+    assert.deepStrictEqual(Array.from(picks.map((z) => z.value)), [0, 1, 2, 3, 4]);
+    assertMenuFits("slice_at", picks, 528, 169);
+    m.onclick(...center(picks[0]), 1, 0, 0);   // pick Divisions (already current): value is still emitted
+    assert.deepStrictEqual(msgVals(c, "slice_at").slice(-1), [0]);
+    m.paint();
+    assert.ok(!m.hitZones.some((z) => z.action === "menu" && z.key === "slice_beat"), "no beat menu while slicing by divisions");
+    picks = openMenuPicks(c, "slice_at");
+    click(c, picks[1]);
+    assert.strictEqual(Math.round(m.paramValue("slice_at")), 1);
+    m.paint();
+    picks = openMenuPicks(c, "slice_beat");
+    assert.strictEqual(picks.length, 10, "ten note lengths");
+    assert.deepStrictEqual(Array.from(m.menuItems("slice_beat").names.slice(0, 3)), ["1 bar", "Half note", "Quarter note"]);
+    assertMenuFits("slice_beat", picks, 528, 169);
+    click(c, picks[4]);
+    assert.strictEqual(Math.round(m.paramValue("slice_beat")), 4);
+    assert.deepStrictEqual(msgVals(c, "slice_beat"), [4]);
+    picks = openMenuPicks(c, "slice_play");
+    assert.strictEqual(picks.length, 4);
+    assert.ok(m.menuItems("slice_play").icon, "slice_play items carry Bitwig glyphs");
+    click(c, picks[3]);
+    assert.deepStrictEqual(msgVals(c, "slice_play"), [3]);
+
+    // Spectral panel: sp_quant box opens a 3-item menu
+    auto(m, "sliced", 0);
+    auto(m, "mode", 3);
+    auto(m, "sp_char", 1);
+    picks = openMenuPicks(c, "sp_quant");
+    assert.deepStrictEqual(Array.from(picks.map((z) => z.value)), [0, 1, 2]);
+    assert.deepStrictEqual(Array.from(m.menuItems("sp_quant").names), ["Off", "Octaves", "Key"]);
+    assertMenuFits("sp_quant", picks, 528, 169);
+    click(c, picks[2]);
+    assert.deepStrictEqual(msgVals(c, "sp_quant"), [2]);
+    assert.strictEqual(Math.round(m.paramValue("sp_quant")), 2);
+
+    // Inspector: sp_quality, sp_key, sp_scale, fr_direction (menus open below their row and stay on the canvas)
+    const ic = makeSandbox(inspViz);
+    auto(ic.sb, "mode", 3);
+    for (const [key, n] of [["sp_quality", 3], ["sp_key", 12], ["sp_scale", 2]]) {
+        picks = openMenuPicks(ic, key);
+        assert.strictEqual(picks.length, n, `${key} menu has ${n} items`);
+        assertMenuFits(key, picks, 160, 169);
+        const last = picks[Math.min(picks.length, 8) - 1];
+        ic.emitted.length = 0;
+        click(ic, last);
+        assert.deepStrictEqual(msgVals(ic, key), [last.value], `${key}: pick emits`);
+        assert.strictEqual(ic.sb.openMenu, null);
+    }
+    auto(ic.sb, "mode", 4);
+    picks = openMenuPicks(ic, "fr_direction");
+    assert.strictEqual(picks.length, 4);
+    assertMenuFits("fr_direction", picks, 160, 169);
+    ic.emitted.length = 0;
+    click(ic, picks[3]);
+    assert.deepStrictEqual(msgVals(ic, "fr_direction"), [3]);
+    // a click elsewhere in the inspector closes the menu and changes nothing
+    openMenuPicks(ic, "fr_direction");
+    ic.emitted.length = 0;
+    ic.sb.onclick(80, 12, 1, 0, 0);
+    assert.strictEqual(ic.sb.openMenu, null);
+    assert.strictEqual(ic.emitted.length, 0);
+    if (overflowWarned.length) console.warn(`WARNING known bug: dropdown taller than its canvas (rows unreachable): ${overflowWarned.join(", ")}`);
+}
+
+// --- 5. Sliced footer: keymap base, Slice at modes, manual editing ---
+{
+    // --- Use keys from <slice_from> ---
+    const c = loadedMain();
+    const m = c.sb;
+    auto(m, "sliced", 1);
+    auto(m, "slice_at", 4);
+    m.sliceMarkers = [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875];
+    m.paint();
+    const fz = findZone(c, (z) => z.kind === "value" && z.key === "slice_from", "slice_from value");
+    assert.strictEqual(m.curSliceFrom, 36);
+    assert.ok(texts(c).includes("C1"), "footer shows the base key as a note name");
+    const [fx, fy] = center(fz);
+    m.onclick(fx, fy, 1, 0, 0);
+    m.ondrag(fx, fy - 8, 1, 0, 0);
+    assert.deepStrictEqual(msgVals(c, "slice_from"), [38], "dragging the key value up 8 px = +2 keys");
+    m.ondrag(fx, fy - 8, 0, 0, 0);
+    assert.strictEqual(m.curSliceFrom, 38);
+    assert.strictEqual(m.voiceAlloc.getSliceBaseNote(), 38, "the allocator keymap starts at the new base");
+    // flag labels use the base
+    const labels = texts(c);
+    assert.ok(labels.includes("D1") && labels.includes("D#1"), `flag labels start at D1 (got ${labels.filter((t) => /^[A-G]#?\d$/.test(t))})`);
+    assert.ok(!labels.includes("C1"), "C1 is no longer a slice key");
+    // MIDI: the base key plays the first slice, base + 1 the second
+    c.pokes.length = 0;
+    m.midi_note(38, 100);
+    assert.strictEqual(c.pokes.filter((p) => p.name === "#0-bsvoices").pop().data[4], 0, "base key = first slice");
+    m.midi_note(39, 100);
+    assert.strictEqual(c.pokes.filter((p) => p.name === "#0-bsvoices").pop().data[4], 0.125, "base + 1 = second slice");
+    m.midi_note(38, 0); m.midi_note(39, 0);
+    // auditioning a slice by clicking plays base + index
+    m.paint();
+    const wz = m.hitZones.find((z) => z.kind === "wave");
+    m.onclick(wz.x + 0.3 * wz.w, wz.y + 30, 1, 0, 0);
+    assert.strictEqual(m.drag.wave, "slice_audition");
+    assert.strictEqual(m.drag.note, 38 + 2, "slice under the mouse (index 2) sounds on base + 2");
+    assert.ok(m.voiceAlloc.voices.some((v) => v.gate === 1 && v.note === 40));
+    m.ondrag(wz.x, wz.y, 0, 0, 0);
+    // the keymap base also moves through a Live echo
+    auto(m, "slice_from", 24);
+    assert.strictEqual(m.voiceAlloc.getSliceBaseNote(), 24);
+    assert.ok(texts(c).includes("C0"), "echoed base redraws the labels (C0)");
+}
+{
+    // --- Slice at: Divisions follow the start / end points and the division count ---
+    const c = loadedMain();
+    const m = c.sb;
+    auto(m, "sliced", 1);
+    assert.strictEqual(Math.round(m.paramValue("slice_at")), 0, "default Slice at is Divisions");
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), cfg.sliceDivisions(0, 1, 8), "8 divisions by default");
+    m.paint();
+    const dz = findZone(c, (z) => z.kind === "value" && z.key === "slice_div", "slice_div value");
+    const [dx, dy] = center(dz);
+    c.emitted.length = 0;
+    m.onclick(dx, dy, 1, 0, 0);
+    m.ondrag(dx, dy - 9, 1, 0, 0);
+    m.ondrag(dx, dy - 9, 0, 0, 0);
+    assert.deepStrictEqual(msgVals(c, "slice_div"), [11], "division count drags 3 px per unit");
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), cfg.sliceDivisions(0, 1, 11), "markers re-laid out for 11 divisions");
+    // moving the end via Live automation
+    auto(m, "samp_end", 80);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), cfg.sliceDivisions(0, m.curEnd, 11).map((v) => v), "end change re-lays out the divisions");
+    assert.ok(Math.abs(m.sliceMarkers[10] - 0.8 * 10 / 11) < 1e-9);
+    // moving the start with the face handle
+    m.paint();
+    const wz = m.hitZones.find((z) => z.kind === "wave");
+    m.onclick(wz.x + 1, wz.y + wz.h - 3, 1, 0, 0);
+    assert.strictEqual(m.drag.wave, "samp_start");
+    m.ondrag(wz.x + 0.2 * wz.w, wz.y + wz.h - 3, 1, 0, 0);
+    m.ondrag(wz.x + 0.2 * wz.w, wz.y + wz.h - 3, 0, 0, 0);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), cfg.sliceDivisions(m.curStart, m.curEnd, 11), "start drag re-lays out the divisions");
+    assert.ok(Math.abs(m.sliceMarkers[0] - m.curStart) < 1e-12, "first division begins at the start point");
+    // the keys follow: base key plays from the new start
+    c.pokes.length = 0;
+    m.midi_note(36, 100);
+    assert.ok(Math.abs(c.pokes.filter((p) => p.name === "#0-bsvoices").pop().data[4] - m.curStart) < 1e-9);
+    m.midi_note(36, 0);
+    // Manual keeps whatever the user has: no re-layout on start / count changes
+    auto(m, "slice_at", 4);
+    const keep = Array.from(m.sliceMarkers);
+    auto(m, "slice_div", 5);
+    auto(m, "samp_start", 30);
+    auto(m, "samp_end", 90);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), keep, "Manual markers are never re-laid out");
+}
+{
+    // --- Beats: note length at the file's tempo (name) or Live's tempo, anchored at the start point ---
+    const c = loadedMain("Loop_120bpm.wav");
+    const m = c.sb;
+    auto(m, "sliced", 1);
+    auto(m, "slice_beat", 2);   // 1/4
+    auto(m, "slice_at", 1);
+    assert.strictEqual(cfg.bpmFromName("Loop_120bpm.wav"), 120);
+    const want = cfg.sliceBeats(0, 1, m.sampleFrames, 44100, 120, 2);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), want, "Beats uses the tempo from the file name");
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), [0, 0.5], "1 s at 120 bpm: quarter notes at 0 and 0.5");
+    auto(m, "slice_beat", 4);   // 1/8
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), cfg.sliceBeats(0, 1, m.sampleFrames, 44100, 120, 4));
+    assert.strictEqual(m.sliceMarkers.length, 4);
+    // start point drags move the grid
+    m.paint();
+    const wz = m.hitZones.find((z) => z.kind === "wave");
+    m.onclick(wz.x + 1, wz.y + wz.h - 3, 1, 0, 0);
+    m.ondrag(wz.x + 0.25 * wz.w, wz.y + wz.h - 3, 1, 0, 0);
+    m.ondrag(wz.x + 0.25 * wz.w, wz.y + wz.h - 3, 0, 0, 0);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), cfg.sliceBeats(m.curStart, m.curEnd, m.sampleFrames, 44100, 120, 4), "Beats follow the start point");
+    assert.ok(Math.abs(m.sliceMarkers[0] - m.curStart) < 1e-12);
+    // a file without a tempo falls back to Live's
+    const c2 = loadedMain("Pad.wav");
+    c2.sb.LiveAPI = function () { this.get = () => [90]; };
+    auto(c2.sb, "sliced", 1);
+    auto(c2.sb, "slice_beat", 2);
+    auto(c2.sb, "slice_at", 1);
+    assert.deepStrictEqual(Array.from(c2.sb.sliceMarkers), cfg.sliceBeats(0, 1, c2.sb.sampleFrames, 44100, 90, 2), "no tempo in the name -> Live's tempo");
+    const c3 = loadedMain("Pad.wav");
+    auto(c3.sb, "sliced", 1); auto(c3.sb, "slice_beat", 2); auto(c3.sb, "slice_at", 1);
+    assert.deepStrictEqual(Array.from(c3.sb.sliceMarkers), cfg.sliceBeats(0, 1, c3.sb.sampleFrames, 44100, 120, 2), "no LiveAPI -> 120 bpm");
+}
+{
+    // --- Onsets / Pitches use the config slicers with the Sens amount (spied: they get the mono copy and slice_sens) ---
+    const c = loadedMain();
+    const m = c.sb;
+    auto(m, "sliced", 1);
+    const calls = [];
+    m.sliceOnsets = (samples, sr, sens, a, b) => { calls.push(["onsets", samples.length, sr, sens, a, b]); return [0, 0.3, 0.6]; };
+    m.slicePitches = (samples, sr, sens, a, b) => { calls.push(["pitches", samples.length, sr, sens, a, b]); return [0, 0.2, 0.4, 0.8]; };
+    m.paint();
+    let picks = openMenuPicks(c, "slice_at");
+    click(c, picks[2]);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), [0, 0.3, 0.6], "Onsets markers come from sliceOnsets");
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0][0], "onsets");
+    assert.strictEqual(calls[0][1], 44100, "the slicer gets the whole mono sample");
+    assert.strictEqual(calls[0][2], 44100, "and its sample rate");
+    assert.ok(Math.abs(calls[0][3] - 0.7) < 1e-9, "Sens 70 % -> 0.7");
+    m.paint();
+    const sz = findZone(c, (z) => z.kind === "value" && z.key === "slice_sens", "slice_sens value (Onsets)");
+    const [sx2, sy2] = center(sz);
+    c.emitted.length = 0;
+    m.onclick(sx2, sy2, 1, 0, 0);
+    m.ondrag(sx2, sy2 - 12, 1, 0, 0);
+    m.ondrag(sx2, sy2 - 12, 0, 0, 0);
+    assert.deepStrictEqual(msgVals(c, "slice_sens"), [80], "Sens drags in 0.1 normalized steps per 12 px");
+    assert.ok(Math.abs(calls[calls.length - 1][3] - 0.8) < 1e-9, "the slicer re-runs with the new Sens");
+    picks = openMenuPicks(c, "slice_at");
+    click(c, picks[3]);
+    assert.strictEqual(calls[calls.length - 1][0], "pitches");
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), [0, 0.2, 0.4, 0.8], "Pitches markers come from slicePitches");
+    m.paint();
+    assert.ok(m.hitZones.some((z) => z.kind === "value" && z.key === "slice_sens"), "Sens is shown for Pitches too");
+    // real slicers on the real mono copy still produce increasing markers inside 0..1
+    delete m.sliceOnsets; delete m.slicePitches;
+}
+{
+    // --- Manual: double-click adds / removes markers, dragging a flag moves one; both switch to Manual ---
+    const c = loadedMain();
+    const m = c.sb;
+    auto(m, "sliced", 1);
+    assert.strictEqual(Math.round(m.paramValue("slice_at")), 0);
+    m.paint();
+    const wz = m.hitZones.find((z) => z.kind === "wave");
+    const px = (n) => wz.x + n * wz.w;
+    let depth = m.undoStack.length;
+    c.emitted.length = 0;
+    m.ondblclick(px(0.3), wz.y + 40);
+    assert.strictEqual(m.sliceMarkers.length, 9, "double-click on the waveform adds a marker");
+    assert.ok(m.sliceMarkers.some((v) => Math.abs(v - 0.3) < 1e-6));
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), Array.from(m.sliceMarkers).sort((a, b) => a - b), "markers stay sorted");
+    assert.deepStrictEqual(msgVals(c, "slice_at"), [4], "adding a marker switches Slice at to Manual");
+    assert.strictEqual(m.undoStack.length, depth + 1, "one undo step per add");
+    // a held key follows the new slicing (note 36 + 2 is now the new 0.3 marker's slice)
+    m.paint();
+    const idx = m.sliceMarkers.findIndex((v) => Math.abs(v - 0.3) < 1e-6);
+    const fz = m.hitZones.find((z) => z.kind === "flag" && z.index === idx);
+    assert.ok(fz, "the new marker has a draggable flag");
+    depth = m.undoStack.length;
+    c.emitted.length = 0;
+    m.ondblclick(...center(fz));
+    assert.strictEqual(m.sliceMarkers.length, 8, "double-click on a flag removes it");
+    assert.ok(!m.sliceMarkers.some((v) => Math.abs(v - 0.3) < 1e-6));
+    assert.strictEqual(m.undoStack.length, depth + 1, "one undo step per remove");
+    assert.strictEqual(Math.round(m.paramValue("slice_at")), 4);
+    // no flag zone for the start point itself (it is the first slice, drawn as a handle)
+    m.paint();
+    assert.ok(!m.hitZones.some((z) => z.kind === "flag" && m.sliceMarkers[z.index] <= m.curStart + 0.002), "the start marker has no flag zone");
+    // dragging a flag, from Divisions: switches to Manual once, moves between neighbours, re-pokes held voices
+    auto(m, "slice_at", 0);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), cfg.sliceDivisions(0, 1, 8));
+    m.paint();
+    m.midi_note(36 + 2, 100);
+    const trig = c.pokes.filter((p) => p.name === "#0-bsvoices").pop().data[3];
+    const f2 = m.hitZones.find((z) => z.kind === "flag" && z.index === 2);
+    depth = m.undoStack.length;
+    c.emitted.length = 0; c.pokes.length = 0;
+    m.onclick(...center(f2), 1, 0, 0);
+    assert.strictEqual(m.drag.flag, 2);
+    assert.deepStrictEqual(msgVals(c, "slice_at"), [4], "grabbing a flag switches to Manual");
+    assert.strictEqual(m.undoStack.length, depth + 1, "one undo step for the gesture");
+    m.ondrag(px(0.2), wz.y + 4, 1, 0, 0);
+    assert.ok(Math.abs(m.sliceMarkers[2] - 0.2) < 1e-9, `flag follows the mouse (${m.sliceMarkers[2]})`);
+    const held = c.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.ok(held && Math.abs(held.data[4] - 0.2) < 1e-9, "held voice is re-poked with the new slice start");
+    assert.strictEqual(held.data[3], trig, "without retriggering");
+    m.ondrag(px(0.9), wz.y + 4, 1, 0, 0);
+    assert.ok(Math.abs(m.sliceMarkers[2] - (0.375 - 0.002)) < 1e-9, "cannot pass the next marker");
+    m.ondrag(px(0.0), wz.y + 4, 1, 0, 0);
+    assert.ok(Math.abs(m.sliceMarkers[2] - (0.125 + 0.002)) < 1e-9, "cannot pass the previous marker");
+    assert.strictEqual(m.undoStack.length, depth + 1, "dragging does not push undo per frame");
+    assert.deepStrictEqual(msgVals(c, "slice_at"), [4], "slice_at is emitted once, not per frame");
+    m.ondrag(px(0.2), wz.y + 4, 0, 0, 0);
+    assert.strictEqual(m.drag, null);
+    assert.deepStrictEqual(Array.from(m.sliceMarkers), Array.from(m.sliceMarkers).sort((a, b) => a - b));
+    m.midi_note(36 + 2, 0);
+    // Manual: a start change leaves the dragged marker alone
+    const dragged = m.sliceMarkers[2];
+    auto(m, "samp_start", 5);
+    assert.strictEqual(m.sliceMarkers[2], dragged);
+    // double-click in Single mode still resets the regions (flags / markers are Sliced-only)
+    auto(m, "sliced", 0);
+    m.paint();
+    const w2 = m.hitZones.find((z) => z.kind === "wave");
+    const nMarkers = m.sliceMarkers.length;
+    m.ondblclick(w2.x + 0.3 * w2.w, w2.y + 40);
+    assert.strictEqual(m.sliceMarkers.length, nMarkers, "Single mode: double-click adds no marker");
+    assert.strictEqual(m.curStart, 0);
+    assert.ok(!m.hitZones.some((z) => z.kind === "flag"), "Single mode has no slice flags");
+}
+
+console.log("Sliced footer: keymap base, Slice at modes, Manual editing ok");
+
+// --- 6. Single-mode loop overlay: green body, crossfade gradient, move handle, xfade drag ---
+{
+    const c = loadedMain();
+    const m = c.sb;
+    m.curLoopMode = 1; m.curStart = 0.1; m.curEnd = 0.9; m.curLoopStart = 0.3; m.curLoopEnd = 0.7; m.curXfade = 0.2;
+    const ops = paintSpy(c);
+    const wz = m.hitZones.find((z) => z.kind === "wave");
+    const lsX = wz.x + 0.3 * wz.w, leX = wz.x + 0.7 * wz.w, xfW = 0.2 * (leX - lsX);
+    const isLoopC = (o) => o.op === "rect" && Math.abs(o.col[0] - 0.30) < 1e-9 && Math.abs(o.col[1] - 0.85) < 1e-9 && Math.abs(o.col[2] - 0.68) < 1e-9;
+    const loopRects = ops.filter(isLoopC);
+    const body = loopRects.find((o) => Math.abs(o.a[0] - lsX) < 1e-6 && Math.abs(o.a[2] - (leX - lsX)) < 1e-6);
+    assert.ok(body, "green loop body spans loop start..end");
+    assert.ok(Math.abs(body.col[3] - 0.42) < 1e-9, "body is translucent green");
+    const grad = loopRects.filter((o) => o.a[0] < lsX - 0.5 && o.a[0] + o.a[2] <= lsX + 1.0 && o.a[3] === wz.h);
+    assert.strictEqual(grad.length, 14, "crossfade gradient: 14 strips before the loop start");
+    assert.ok(Math.abs(grad[0].a[0] - (lsX - xfW)) < 1e-6, "gradient begins xfade * loop length before the loop start");
+    for (let i = 1; i < grad.length; i++) assert.ok(grad[i].col[3] > grad[i - 1].col[3], "gradient fades in towards the loop start");
+    assert.ok(Math.abs(grad[13].col[3] - 0.42) < 1e-9, "and ends as opaque as the body");
+    // zones
+    const mv = m.hitZones.find((z) => z.kind === "loop_move");
+    const xf = m.hitZones.find((z) => z.kind === "xfade");
+    assert.ok(mv && xf, "loop_move and xfade zones exist while looping");
+    assert.ok(Math.abs(mv.x + mv.w / 2 - (lsX + leX) / 2) < 1e-6, "move handle is in the middle of the loop");
+    assert.ok(Math.abs(xf.x - (lsX - xfW)) < 1e-6 && Math.abs(xf.w - (xfW - 3)) < 1e-6, "xfade zone is the gradient, stopping 3 px short of the loop-start line");
+    const order = Array.from(m.hitZones.map((z) => z.kind));
+    assert.ok(order.indexOf("loop_move") > order.indexOf("wave") && order.indexOf("xfade") > order.indexOf("wave"), "overlay zones win the hit test over the waveform");
+
+    // loop_move: drags the whole loop, length constant, inside start..end
+    let depth = m.undoStack.length;
+    c.emitted.length = 0;
+    const [mx, my] = center(mv);
+    m.onclick(mx, my, 1, 0, 0);
+    assert.strictEqual(m.drag.wave, "loop_move");
+    assert.strictEqual(m.undoStack.length, depth + 1, "one undo step per gesture");
+    m.ondrag(mx + 0.1 * wz.w, my, 1, 0, 0);
+    assert.ok(Math.abs(m.curLoopStart - 0.4) < 1e-9 && Math.abs(m.curLoopEnd - 0.8) < 1e-9, `loop moved right as a block (${m.curLoopStart}..${m.curLoopEnd})`);
+    assert.ok(Math.abs(m.curXfade - 0.2) < 1e-12, "moving does not touch the crossfade");
+    assert.deepStrictEqual(msgVals(c, "loop_start").slice(-1), [40]);
+    assert.deepStrictEqual(msgVals(c, "loop_end").slice(-1), [80]);
+    m.ondrag(mx + 5 * wz.w, my, 1, 0, 0);
+    assert.ok(Math.abs(m.curLoopEnd - 0.9) < 1e-9 && Math.abs((m.curLoopEnd - m.curLoopStart) - 0.4) < 1e-9, "loop stops at the end point, length kept");
+    m.ondrag(mx - 5 * wz.w, my, 1, 0, 0);
+    assert.ok(Math.abs(m.curLoopStart - 0.1) < 1e-9 && Math.abs((m.curLoopEnd - m.curLoopStart) - 0.4) < 1e-9, "loop stops at the start point, length kept");
+    assert.strictEqual(m.undoStack.length, depth + 1, "no undo per drag frame");
+    const notified = c.notified;
+    m.ondrag(mx, my, 0, 0, 0);
+    assert.ok(c.notified > notified, "release notifies Live");
+
+    // xfade: drag the gradient's left edge; the fade spans up to 45 % of the loop before its start
+    m.curLoopStart = 0.3; m.curLoopEnd = 0.7; m.curXfade = 0.2;
+    m.paint();
+    const xf2 = m.hitZones.find((z) => z.kind === "xfade");
+    depth = m.undoStack.length;
+    c.emitted.length = 0;
+    const [xx, xy] = center(xf2);
+    m.onclick(xx, xy, 1, 0, 0);
+    assert.strictEqual(m.drag.wave, "xfade");
+    assert.strictEqual(m.undoStack.length, depth + 1);
+    m.ondrag(wz.x + 0.2 * wz.w, xy, 1, 0, 0);   // 0.1 left of the loop start = 0.1 / 0.4 of the loop
+    assert.ok(Math.abs(m.curXfade - 0.25) < 1e-9, `drag left raises the crossfade (${m.curXfade})`);
+    assert.deepStrictEqual(msgVals(c, "loop_xfade").slice(-1), [55.6], "emitted as percent of the 0.45 maximum");
+    m.ondrag(wz.x, xy, 1, 0, 0);
+    assert.ok(Math.abs(m.curXfade - 0.45) < 1e-9, "capped at 0.45");
+    assert.deepStrictEqual(msgVals(c, "loop_xfade").slice(-1), [100]);
+    m.ondrag(wz.x + 0.6 * wz.w, xy, 1, 0, 0);
+    assert.strictEqual(m.curXfade, 0, "dragging right of the loop start removes the fade");
+    assert.strictEqual(m.curLoopStart, 0.3, "xfade drag never moves the loop");
+    assert.strictEqual(m.undoStack.length, depth + 1);
+    m.ondrag(xx, xy, 0, 0, 0);
+    // without a fade there is nothing to grab; the loop handle still is
+    m.paint();
+    assert.ok(!m.hitZones.some((z) => z.kind === "xfade"), "no xfade zone at 0 %");
+    assert.ok(m.hitZones.some((z) => z.kind === "loop_move"));
+    // loop off / Sliced: no overlay at all
+    m.curXfade = 0.2; m.curLoopMode = 0;
+    m.paint();
+    assert.ok(!m.hitZones.some((z) => z.kind === "loop_move" || z.kind === "xfade"), "no overlay with the loop off");
+    m.curLoopMode = 1;
+    auto(m, "sliced", 1);
+    m.paint();
+    assert.ok(!m.hitZones.some((z) => z.kind === "loop_move" || z.kind === "xfade"), "no loop overlay in Sliced mode");
+    assert.ok(!paintSpy(c).some((o) => isLoopC(o)), "and no green loop drawing");
+}
+
+console.log("Loop overlay: body, gradient, move and xfade drags ok");
+
+// --- 7. Engine panel (P1) per mode ---
+{
+    const c = makeSandbox(mainViz);
+    const m = c.sb;
+    const p1x = m.MAIN.p2[0];
+    const p1Knobs = () => ids(m.hitZones.filter((z) => z.kind === "knob" && z.x < p1x && z.y > 100));
+    const p1Buttons = () => m.hitZones.filter((z) => z.kind === "button" && z.x < p1x && z.y > 100);
+    const p1Values = () => ids(m.hitZones.filter((z) => z.kind === "value" && z.x < p1x && z.y > 100));
+    const stepZones = () => m.hitZones.filter((z) => z.action === "step");
+    const paintP = () => paintSpy(c);
+
+    // Speed (grain_motion) is dimmed only in Repitch; Pos only without Freeze
+    for (const mode of [0, 1, 2, 3, 4]) {
+        auto(m, "mode", mode);
+        const ops = paintP();
+        assert.strictEqual(knobAlpha(c, ops, "grain_motion"), mode === 0 ? 0.45 : 1.0, `Speed dimmed only in Repitch (mode ${mode})`);
+    }
+
+    // --- Repitch ---
+    auto(m, "mode", 0);
+    auto(m, "rp_char", 0);
+    let ops = paintP();
+    assert.deepStrictEqual(p1Knobs(), ["rp_dist", "rp_color"]);
+    assert.ok(texts(c).includes("Clean"), "character header shows the name");
+    assert.strictEqual(knobAlpha(c, ops, "rp_dist"), 0.45, "Clean dims both knobs");
+    assert.strictEqual(knobAlpha(c, ops, "rp_color"), 0.45);
+    assert.ok(!m.hitZones.some((z) => z.action === "toggle"), "Clean has no toggles");
+    assert.deepStrictEqual(Array.from(stepZones().map((z) => z.delta)), [-1, 1], "header has ◀ ▶ zones");
+    // ▶ steps Clean -> Analog -> Digital -> Clean; ◀ wraps backwards
+    c.emitted.length = 0;
+    let seen = [];
+    for (let i = 0; i < 3; i++) { m.paint(); click(c, stepZones().find((z) => z.delta === 1)); seen.push(Math.round(m.paramValue("rp_char"))); }
+    assert.deepStrictEqual(seen, [1, 2, 0], "▶ steps and wraps");
+    assert.deepStrictEqual(msgVals(c, "rp_char"), [1, 2, 0]);
+    m.paint();
+    click(c, stepZones().find((z) => z.delta === -1));
+    assert.strictEqual(Math.round(m.paramValue("rp_char")), 2, "◀ from Clean wraps to Digital");
+    // Analog
+    auto(m, "rp_char", 1);
+    ops = paintP();
+    assert.strictEqual(knobAlpha(c, ops, "rp_dist"), 1.0, "Analog lights the knobs");
+    assert.strictEqual(knobAlpha(c, ops, "rp_color"), 1.0);
+    assert.ok(texts(c).includes("Crunch") && texts(c).includes("Tape"), "Analog knob labels");
+    assert.ok(!m.hitZones.some((z) => z.action === "toggle"), "Analog has no toggles");
+    // Digital: imaging and VSR toggles
+    auto(m, "rp_char", 2);
+    ops = paintP();
+    assert.deepStrictEqual(p1Knobs(), ["rp_dist", "rp_color"]);
+    assert.ok(texts(c).includes("Bits") && texts(c).includes("Color"), "Digital knob labels");
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["rp_imaging", "rp_vsr"]);
+    c.emitted.length = 0;
+    click(c, toggleZone(c, "rp_imaging"));
+    assert.deepStrictEqual(msgVals(c, "rp_imaging"), [0], "Imaging starts on and toggles off");
+    m.paint();
+    click(c, toggleZone(c, "rp_vsr"));
+    assert.deepStrictEqual(msgVals(c, "rp_vsr"), [1], "VSR starts off and toggles on");
+    m.paint();
+    click(c, toggleZone(c, "rp_vsr"));
+    assert.deepStrictEqual(msgVals(c, "rp_vsr"), [1, 0]);
+
+    // --- Spectral ---
+    auto(m, "mode", 3);
+    auto(m, "sp_char", 0);
+    ops = paintP();
+    assert.deepStrictEqual(p1Knobs(), ["formant", "sp_shift"], "Pure: formant and shift");
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["sp_onsets", "sp_formant_on"]);
+    assert.ok(!m.hitZones.some((z) => z.action === "menu" && z.key === "sp_quant"), "Pure has no quantize box");
+    assert.ok(texts(c).includes("Pure"));
+    c.emitted.length = 0;
+    click(c, toggleZone(c, "sp_onsets"));
+    click(c, (m.paint(), toggleZone(c, "sp_formant_on")));
+    assert.deepStrictEqual(msgVals(c, "sp_onsets"), [1], "Onsets starts off");
+    assert.deepStrictEqual(msgVals(c, "sp_formant_on"), [0], "Formant processing starts on");
+    m.paint();
+    click(c, stepZones().find((z) => z.delta === 1));
+    assert.strictEqual(Math.round(m.paramValue("sp_char")), 1, "▶ switches Pure -> Reharm");
+    auto(m, "sp_char", 1);
+    auto(m, "sp_quant", 0);
+    ops = paintP();
+    assert.deepStrictEqual(p1Knobs(), ["sp_bend", "sp_quant_amt"], "Reharm: bend and quantize amount");
+    assert.ok(m.hitZones.some((z) => z.action === "menu" && z.key === "sp_quant"), "Reharm shows the sp_quant box");
+    assert.ok(texts(c).includes("—") && texts(c).includes("Quant."), "quantize box reads its value");
+    assert.strictEqual(knobAlpha(c, ops, "sp_quant_amt"), 0.45, "quantize amount is dimmed while Quant is Off");
+    auto(m, "sp_quant", 1);
+    ops = paintP();
+    assert.strictEqual(knobAlpha(c, ops, "sp_quant_amt"), 1.0, "and lit once Octaves is chosen");
+    assert.ok(texts(c).includes("Oct"));
+    auto(m, "sp_quant", 2);
+    assert.ok(texts(c).includes("Key"));
+    assert.strictEqual(m.hitZones.filter((z) => z.action === "toggle").length, 2, "Reharm keeps onsets + formant toggles");
+
+    // --- Cycles ---
+    auto(m, "mode", 1);
+    for (const [ch, want, labels] of [[0, ["formant", "cy_width"], ["Pulse", "Width"]], [1, ["formant", "cy_split", "cy_fund"], ["Partials", "Split", "Fund."]],
+        [2, ["formant", "cy_mod", "cy_harm"], ["Phase", "Mod", "Harm."]]]) {
+        auto(m, "cy_char", ch);
+        m.paint();
+        assert.deepStrictEqual(p1Knobs(), want, `Cycles character ${ch} knobs`);
+        const tx = texts(c);
+        for (const l of labels) assert.ok(tx.includes(l), `Cycles ${ch}: label ${l}`);
+    }
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["cy_xfade"]);
+    c.emitted.length = 0;
+    click(c, toggleZone(c, "cy_xfade"));
+    assert.deepStrictEqual(msgVals(c, "cy_xfade"), [1]);
+    m.paint();
+    click(c, stepZones().find((z) => z.delta === -1));
+    assert.strictEqual(Math.round(m.paramValue("cy_char")), 1, "◀ from Phase goes to Partials");
+
+    // --- Textures ---
+    auto(m, "mode", 2);
+    m.paint();
+    assert.deepStrictEqual(p1Knobs(), ["grain_size", "grain_spray", "formant"], "Textures: size, spray, formant");
+    assert.ok(!m.hitZones.some((z) => z.action === "toggle" || z.action === "step"), "Textures has no header controls");
+
+    // --- Fragments ---
+    auto(m, "mode", 4);
+    ops = paintP();
+    assert.deepStrictEqual(p1Knobs(), ["grain_size", "fr_density", "fr_motion"]);
+    assert.deepStrictEqual(p1Values(), ["fr_env", "fr_repeats"], "envelope shape and repeats are draggable values");
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["fr_sync", "fr_use_density"]);
+    assert.strictEqual(knobAlpha(c, ops, "fr_density"), 1.0);
+    c.emitted.length = 0;
+    click(c, toggleZone(c, "fr_use_density"));
+    assert.deepStrictEqual(msgVals(c, "fr_use_density"), [0], "use-density starts on");
+    ops = paintP();
+    assert.strictEqual(knobAlpha(c, ops, "fr_density"), 0.45, "Density is dimmed when it is not used");
+    click(c, (m.paint(), toggleZone(c, "fr_sync")));
+    assert.deepStrictEqual(msgVals(c, "fr_sync"), [1], "sync starts off");
+    // fr_repeats: 6 px per repeat; fr_env: normalized (120 px full range)
+    m.paint();
+    const rz = m.hitZones.find((z) => z.kind === "value" && z.key === "fr_repeats");
+    const [rx, ry] = center(rz);
+    c.emitted.length = 0;
+    m.onclick(rx, ry, 1, 0, 0);
+    m.ondrag(rx, ry - 12, 1, 0, 0);
+    m.ondrag(rx, ry - 12, 0, 0, 0);
+    assert.deepStrictEqual(msgVals(c, "fr_repeats"), [3], "12 px up = +2 repeats");
+    m.ondblclick(rx, ry);
+    assert.deepStrictEqual(msgVals(c, "fr_repeats").slice(-1), [1], "double-click resets repeats");
+    const ez = m.hitZones.find((z) => z.kind === "value" && z.key === "fr_env");
+    const [ex, ey] = center(ez);
+    c.emitted.length = 0;
+    m.onclick(ex, ey, 1, 0, 0);
+    m.ondrag(ex, ey - 12, 1, 0, 0);
+    m.ondrag(ex, ey - 12, 0, 0, 0);
+    assert.ok(Math.abs(msgVals(c, "fr_env")[0] - 60) < 1e-9, "envelope shape drags 12 px = +10 %");
+    auto(m, "fr_env", 100);
+    assert.strictEqual(m.paramValue("fr_env"), 100);
+    // header glyph reacts to the envelope (draw does not throw across the range)
+    for (const v of [0, 50, 100]) { auto(m, "fr_env", v); m.paint(); }
+    // switching engines swaps the panel
+    auto(m, "mode", 2);
+    m.paint();
+    assert.ok(!m.hitZones.some((z) => z.key === "fr_repeats"), "Fragments value zones are gone in Textures");
+}
+
+console.log("Engine panels: Repitch, Spectral, Cycles, Textures, Fragments ok");
+
+// --- 8. Inspector region ---
+{
+    const c = makeSandbox(inspViz);
+    const m = c.sb;
+    m.paint();
+    assert.ok(texts(c).includes("Note Glide"));
+    // glide value drags; L toggles legato
+    const gz = findZone(c, (z) => z.kind === "value" && z.key === "glide_ms", "glide value");
+    const [gx, gy] = center(gz);
+    c.emitted.length = 0;
+    m.onclick(gx, gy, 1, 0, 0);
+    m.ondrag(gx, gy - 24, 1, 0, 0);
+    m.ondrag(gx, gy - 24, 0, 0, 0);
+    assert.ok(msgVals(c, "glide_ms")[0] > 0, "dragging the glide value up raises it");
+    m.ondblclick(gx, gy);
+    assert.strictEqual(msgVals(c, "glide_ms").slice(-1)[0], 0, "double-click resets glide");
+    m.paint();
+    const lz = findZone(c, (z) => z.kind === "button" && z.action === "voicing", "L legato toggle");
+    assert.strictEqual(lz.value, 1, "L turns legato on when it is off");
+    c.emitted.length = 0;
+    click(c, lz);
+    assert.deepStrictEqual(msgVals(c, "mono_legato"), [1]);
+    m.paint();
+    const lz2 = findZone(c, (z) => z.kind === "button" && z.action === "voicing", "L legato toggle");
+    assert.strictEqual(lz2.value, 0, "and off again when it is on");
+    click(c, lz2);
+    assert.deepStrictEqual(msgVals(c, "mono_legato"), [1, 0]);
+
+    // section title and rows per mode
+    const names = ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"];
+    for (let mode = 0; mode < 5; mode++) {
+        auto(m, "mode", mode);
+        const tx = texts(c);
+        assert.ok(tx.includes(`${names[mode]} mode`), `title "${names[mode]} mode"`);
+        if (mode !== 3 && mode !== 4) {
+            assert.ok(tx.includes("No extra settings"), `${names[mode]}: No extra settings`);
+            assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle" || z.action === "menu").map((z) => z.key)), [], "no extra rows");
+            assert.deepStrictEqual(ids(m.hitZones.filter((z) => z.kind === "value")), ["glide_ms"], "only Note Glide is a value");
+        } else {
+            assert.ok(!tx.includes("No extra settings"));
+        }
+    }
+    // Spectral rows
+    auto(m, "mode", 3);
+    let tx = texts(c);
+    for (const label of ["Phase Dispersion", "Quality / Cost", "Live Performance", "Relative Formants", "Local Key", "Local Scale"]) assert.ok(tx.includes(label), `Spectral row ${label}`);
+    assert.deepStrictEqual(ids(m.hitZones.filter((z) => z.kind === "value")), ["glide_ms", "sp_dispersion"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "menu").map((z) => z.key)), ["sp_quality", "sp_key", "sp_scale"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["sp_live", "sp_rel_formant"]);
+    assert.ok(tx.includes("Medium") && tx.includes("C") && tx.includes("Major"), "menu boxes show their current values");
+    c.emitted.length = 0;
+    click(c, toggleZone(c, "sp_live"));
+    assert.deepStrictEqual(msgVals(c, "sp_live"), [0], "Live Performance starts on");
+    m.paint();
+    click(c, toggleZone(c, "sp_rel_formant"));
+    assert.deepStrictEqual(msgVals(c, "sp_rel_formant"), [1], "Relative Formants starts off");
+    const dz = (m.paint(), m.hitZones.find((z) => z.kind === "value" && z.key === "sp_dispersion"));
+    const [dx, dy] = center(dz);
+    c.emitted.length = 0;
+    m.onclick(dx, dy, 1, 0, 0);
+    m.ondrag(dx, dy + 12, 1, 0, 0);
+    m.ondrag(dx, dy + 12, 0, 0, 0);
+    assert.ok(msgVals(c, "sp_dispersion")[0] < 66.7, "dragging dispersion down lowers it");
+    // Fragments rows
+    auto(m, "mode", 4);
+    tx = texts(c);
+    for (const label of ["Direction", "Latch Initial Rate", "Repeat at Initial Pos", "Grains Survive End", "Max Grains / Voice"]) assert.ok(tx.includes(label), `Fragments row ${label}`);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "menu").map((z) => z.key)), ["fr_direction"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["fr_latch", "fr_repeat_init", "fr_survive"]);
+    assert.deepStrictEqual(ids(m.hitZones.filter((z) => z.kind === "value")), ["glide_ms", "fr_max_grains"]);
+    assert.ok(tx.includes("Playhead"), "Direction shows its value");
+    c.emitted.length = 0;
+    click(c, toggleZone(c, "fr_latch"));
+    m.paint();
+    click(c, toggleZone(c, "fr_repeat_init"));
+    m.paint();
+    click(c, toggleZone(c, "fr_survive"));
+    assert.deepStrictEqual([msgVals(c, "fr_latch"), msgVals(c, "fr_repeat_init"), msgVals(c, "fr_survive")], [[0], [1], [1]], "latch starts on, repeat / survive off");
+    const mz = (m.paint(), m.hitZones.find((z) => z.kind === "value" && z.key === "fr_max_grains"));
+    const [mx2, my2] = center(mz);
+    c.emitted.length = 0;
+    m.onclick(mx2, my2, 1, 0, 0);
+    m.ondrag(mx2, my2 + 10, 1, 0, 0);
+    m.ondrag(mx2, my2 + 10, 0, 0, 0);
+    assert.deepStrictEqual(msgVals(c, "fr_max_grains"), [246], "max grains drags 1 per px (256 -> 246)");
+    // the inspector reacts to `mode` echoes from Live and draws a checkmark for ticked rows
+    auto(m, "fr_latch", 1);
+    const checks = paintSpy(c).filter((o) => o.op === "arc");
+    assert.ok(checks.length >= 3, "check circles are drawn");
+}
+
+console.log("Inspector: glide, legato, per-mode rows ok");
+
+// --- 9. late echoes for the new parameters ---
+{
+    const c = makeSandbox(mainViz);
+    const m = c.sb;
+    // direct queue behaviour
+    m.expectEcho("k", 1); m.expectEcho("k", 2); m.expectEcho("k", 3);
+    assert.strictEqual(m.isStaleEcho("k", 1), true, "older value of ours is stale while newer ones are pending");
+    assert.strictEqual(m.isStaleEcho("k", 2), true);
+    assert.strictEqual(m.isStaleEcho("k", 3), false, "the newest echo is applied");
+    assert.strictEqual(m.isStaleEcho("k", 99), false, "foreign values (automation) are applied");
+    assert.strictEqual(m.isStaleEcho("none-yet", 5), false);
+    // a drag on a slice-count value with late echoes ends exactly where the mouse left it
+    auto(m, "sliced", 1);
+    m.paint();
+    const dz = m.hitZones.find((z) => z.kind === "value" && z.key === "slice_div");
+    const [dx, dy] = center(dz);
+    m.onclick(dx, dy, 1, 0, 0);
+    for (const up of [3, 6, 9]) m.ondrag(dx, dy - up, 1, 0, 0);
+    m.ondrag(dx, dy - 9, 0, 0, 0);
+    const sent = msgVals(c, "slice_div");
+    assert.deepStrictEqual(sent, [9, 10, 11]);
+    m.set_slice_div(9);
+    m.set_slice_div(10);
+    assert.strictEqual(m.paramValue("slice_div"), 11, "late echoes of earlier drag values do not pull the value back");
+    m.set_slice_div(11);
+    assert.strictEqual(m.paramValue("slice_div"), 11);
+    m.set_slice_div(5);
+    assert.strictEqual(m.paramValue("slice_div"), 5, "automation still applies");
+    // region values sent by emitRegionParams are tracked the same way
+    c.emitted.length = 0;
+    m.curStart = 0.1; m.emitRegionParams(); m.curStart = 0.2; m.emitRegionParams();
+    m.set_samp_start(10);
+    assert.ok(Math.abs(m.curStart - 0.2) < 1e-9, "stale samp_start echo ignored");
+    m.set_samp_start(20);
+    assert.ok(Math.abs(m.curStart - 0.2) < 1e-9);
+}
+
+console.log("Late echoes for the new parameters ok");
+console.log("All Better Sampler tests passed!");

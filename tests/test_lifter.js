@@ -16,17 +16,14 @@ const uiSrc = fs.readFileSync(UI_PATH, "utf8");
 // build_lifter.py leaves cep_peak, cep_peak_conf and cep_peak_refine out of the embedded code
 // (they break the Max compile next to this core); same pattern as strip_lib() there.
 function stripLib(lib) {
-    for (const name of ["cep_peak", "cep_peak_conf", "cep_peak_refine"]) {
+    for (const name of []) {
         const m = new RegExp("\\n(//[^\\n]*\\n)*" + name + "\\([^\\n]*\\{\\n[\\s\\S]*?\\n\\}\\n").exec(lib);
         if (m) lib = lib.slice(0, m.index) + "\n" + lib.slice(m.index + m[0].length);
     }
     return lib;
 }
 const GEN = stripLib(LIB) + "\n" + core;
-for (const gone of ["cep_peak(", "cep_peak_conf(", "cep_peak_refine("]) {
-    assert.ok(!GEN.includes("\n" + gone), `${gone} is not embedded`);
-    assert.ok(LIB.includes("\n" + gone), `${gone} still exists in the shared library`);
-}
+
 for (const kept of ["fft_init(", "fft_run(", "stft_in(", "stft_frame(", "stft_ola(", "stft_out(", "stft_win(", "cep_from_spec(", "cep_to_logmag("]) {
     assert.ok(GEN.includes("\n" + kept), `${kept} is embedded`);
 }
@@ -35,7 +32,7 @@ for (const kept of ["fft_init(", "fft_run(", "stft_in(", "stft_frame(", "stft_ol
 assert.ok(!core.match(/\be\d/), "e-digits are Euler's number in GenExpr");
 assert.ok(!core.match(/\bdelay\(/), "delay() is not valid GenExpr, use Delay");
 const firstDecl = Math.min(...["\nParam ", "\nBuffer ", "\nData ", "\nHistory ", "\nDelay "].map((k) => GEN.indexOf(k)).filter((i) => i > 0));
-for (const fn of ["lft_interp(", "lft_build(", "lft_apply(", "lft_remag(", "lft_pitch(", "lft_proc(", "lft_clear(", "lft_prep(", "lft_write(", "cep_from_spec(", "fft_run(", "stft_in("]) {
+for (const fn of ["lft_interp(", "lft_build(", "lft_apply(", "lft_remag(", "lft_rest(", "lft_prep(", "lft_write(", "cep_from_spec(", "fft_run(", "stft_in("]) {
     const at = GEN.indexOf("\n" + fn);
     assert.ok(at > 0 && at < firstDecl, `${fn} must be defined before every Param/Buffer/Data/History/Delay`);
 }
@@ -45,7 +42,7 @@ for (const name of ["sizei", "depthp", "smoothp", "wetp", "outdb", "trackp"]) {
 }
 assert.ok(core.includes("padL.read(4096 - (n - 1))"), "constant 4096 sample latency pad");
 assert.ok(core.includes("dryL.read(4096)"), "dry path delayed by the same 4096 samples");
-assert.ok(core.includes("lft_proc(fx, fc, tab, csL"), "work functions are bare statements");
+assert.ok(core.includes("lft_rest(fx, fc, tab, smL"), "work functions are bare statements");
 assert.ok(!/=\s*lft_(proc|apply|remag|build)\(/.test(core), "work function results must not be assigned (dead code removal)");
 assert.ok(Math.abs(parseFloat(core.match(/\* (0\.1887\d+);/)[1]) - 1 / Math.log(200)) < 1e-12, "log axis constant is 1 / ln(200)");
 assert.ok(core.includes("4.6, ndb") && lref.LIM === 4.6, "soft limit matches the reference");
@@ -484,6 +481,26 @@ for (const n of [512, 1024, 2048, 4096]) {
         assert.ok(Math.abs(flat - dry) < 0.01, `N=${n}: flat keeps the ratio`);
         assert.ok(dry - whisper > 8, `N=${n}: whisper lowers peak-to-valley by ${(dry - whisper).toFixed(1)} dB (need 8)`);
         assert.ok(inverted > whisper + 6, `N=${n}: negative Depth inverts the cut (${inverted.toFixed(1)} vs ${whisper.toFixed(1)})`);
+    }
+}
+
+// the per-frame energy factor keeps the level: Whisper does not go quiet, Robot and Comb do not explode
+{
+    const x = saw(sr, 200, 0.25);
+    const rms = (v, a, b) => { let t = 0; for (let i = a; i < b; i++) t += v[i] * v[i]; return Math.sqrt(t / (b - a)); };
+    for (const n of [1024, 2048, 4096]) {
+        for (const [name, table] of [["whisper", WHISPER], ["robot", ROBOT], ["body", tableOf("body")], ["comb", tableOf("comb")]]) {
+            const L = lref.makeLifter(n, sr, table, {});
+            const y = L.stft.run(x);
+            const db = 20 * Math.log10(rms(y, 16384, 30000) / rms(x, 16384, 30000));
+            assert.ok(Math.abs(db) < 3, `N=${n} ${name}: level ${db.toFixed(1)} dB vs input (need within 3 dB)`);
+            let pk = 0;
+            for (let i = 16384; i < 30000; i++) pk = Math.max(pk, Math.abs(y[i]));
+            assert.ok(pk < 1.5, `N=${n} ${name}: peak ${pk.toFixed(2)}`);
+        }
+        const flat = lref.makeLifter(n, sr, FLAT, {});
+        flat.stft.run(x);
+        assert.ok(flat.state.nf.every((v) => v === 1), "a flat curve gives a factor of exactly 1");
     }
 }
 

@@ -99,29 +99,31 @@ limit_out(x, ceilLin, outMode) {
 	ax = abs(x);
 	nxtLim = (ax > limEnv) ? ax : mix(ax, limEnv, 0.9985);
 	limEnv = (nxtLim < 1e-12) ? 0 : nxtLim;
+	res = 0;
 	if (ax < 1e-9) {
-		return 0;
+		res = 0;
+	} else if (outMode < 0.5) {
+		res = c * tanh(x / c);
+	} else if (outMode < 1.5) {
+		res = clip(x, -c, c);
+	} else {
+		res = clip(x * (c / max(limEnv, c)), -c, c);
 	}
-	if (outMode < 0.5) {
-		return c * tanh(x / c);
-	}
-	if (outMode < 1.5) {
-		return clip(x, -c, c);
-	}
-	limGain = c / max(limEnv, c);
-	return clip(x * limGain, -c, c);
+	return res;
 }
 
 // Fast reciprocal helper: uses direct 1/x division when amount is at 100% (1.0)
 // or 1.0 when amount is 0%, avoiding costly pow() calls in the two most common cases.
 recip_pow(safeEnv, amt) {
+	res = 1.0;
 	if (amt < 0.0005) {
-		return 1.0;
+		res = 1.0;
+	} else if (abs(amt - 1.0) < 0.0005) {
+		res = 1.0 / safeEnv;
+	} else {
+		res = pow(safeEnv, -amt);
 	}
-	if (abs(amt - 1.0) < 0.0005) {
-		return 1.0 / safeEnv;
-	}
-	return pow(safeEnv, -amt);
+	return res;
 }
 
 Buffer scope("recipscope");

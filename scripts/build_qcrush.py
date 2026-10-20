@@ -243,7 +243,7 @@ def make_freeze(x, y, w, h, big=False):
             "annotation_name": "Freeze",
             "bordercolor": [ICE[0], ICE[1], ICE[2], 1.0],
             "fontface": 1,
-            "fontsize": 14.0 if big else 9.0,
+            "fontsize": 10.0 if big else 9.0,
             "id": "obj-ctrl-freeze",
             "maxclass": "live.text",
             "mode": 1,
@@ -426,7 +426,7 @@ def layout_c():
         make_tab("size", 140, 8, 78, 15, CYAN),
         make_numbox("coeffs", 10, 142, 102, 15, CORAL, 2),
         make_numbox("bits", 116, 142, 102, 15, CORAL, 2),
-        make_freeze(232, 9, 84, 84, big=True),
+        make_freeze(232, 73, 84, 21, big=True),
         make_menu("hold", 232, 98, 84, 15, ICE),
         make_label("obj-lbl-smode", "SCRAMBLE", 232, 118, 84, 11, size=7.5, color=VIOLET),
         make_tab("smode", 232, 130, 84, 30, VIOLET, rows=2),
@@ -458,6 +458,7 @@ def build_patcher(variant):
         ui_js = f.read()
     gen_code = lib_code + "\n" + core_code
     v8_code = f"var QC_LAYOUT_DEFAULT = {layout_index};\n" + ui_js
+    face_code = "var QC_LAYOUT_DEFAULT = 3;\n" + ui_js
 
     present_keys = {b["box"]["id"][len("obj-ctrl-"):] for b in ui_boxes if b["box"]["id"].startswith("obj-ctrl-")}
 
@@ -480,6 +481,26 @@ def build_patcher(variant):
             }
         }
     )
+    if variant == "c":
+        # Freeze pad face (idle snowflake / frozen bars). It sits above the Freeze button, not under it.
+        boxes.append(
+            {
+                "box": {
+                    "border": 0,
+                    "filename": "none",
+                    "id": "obj-freeze-face",
+                    "maxclass": "v8ui",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [20.0, 400.0, 84.0, 62.0],
+                    "presentation": 1,
+                    "presentation_rect": [232.0, 9.0, 84.0, 62.0],
+                    "textfile": {"text": face_code, "filename": "none", "flags": 0, "embed": 1, "autowatch": 1},
+                    "varname": "QCrushFreezeFace",
+                }
+            }
+        )
     boxes.extend(
         [
             newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
@@ -579,6 +600,19 @@ def build_patcher(variant):
         line("obj-ctrl-freeze", 0, "obj-ui-freeze"),
         line("obj-ui-freeze", 0, "obj-viz"),
     ]
+
+    if variant == "c":
+        boxes.append(newobj("obj-route-face", "route freeze", 20, 640, 90, numoutlets=2))
+        boxes.append(message("obj-msg-face-layout", "set_layout 3", 560, 405, 100))
+        lines += [
+            line("obj-loadbang", 0, "obj-msg-face-layout"),
+            line("obj-msg-face-layout", 0, "obj-freeze-face"),
+            line("obj-msg-ui-buf", 0, "obj-freeze-face"),
+            line("obj-ui-freeze", 0, "obj-freeze-face"),
+            line("obj-ui-hold", 0, "obj-freeze-face"),
+            line("obj-freeze-face", 0, "obj-route-face"),
+            line("obj-route-face", 0, "obj-ctrl-freeze"),
+        ]
 
     # Messages from the view (dragging the canvas / pad) set the value boxes, which then drive gen as usual.
     if route_keys:

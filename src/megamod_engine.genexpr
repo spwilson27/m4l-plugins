@@ -1,0 +1,262 @@
+// Mega Modulator engine — 16 audio-rate modulators in one gen.codebox~ (hidden; audio is NOT routed through it).
+//
+// Inputs : in1/in2 = device audio (mono sum feeds the envelope followers). Transport arrives as Params
+//          (hbpm, hppq, hplay) sent from plugsync~, and `rtrg` retrigger events.
+// Outputs: out1..out16 = one signal per slot, normalized -1..1.
+//   Output convention: every generator yields u in 0..1.
+//     bipolar  : out = depth * (2u - 1)
+//     unipolar : out = 2 * depth * u - 1        (rests at -1, spans the full table range)
+//   A disabled / empty slot outputs 0.
+//
+// buffer~ layouts (contract with src/megamod_config.js — tests/test_megamod.js parses the constants below):
+//   cfg   (megamodcfg, 16 x CFG_STRIDE floats): per slot
+//     0 type (1 LFO, 2 Env, 3 Random, 4 Steps, 5 MSEG)  1 enabled  2 rate Hz  3 sync  4 syncdiv  5 shape
+//     6 phase  7 retrig  8 bipolar  9 depth  10 attack ms  11 release ms  12 gain dB  13 smooth  14 steps
+//     15 glide  16 oneshot  17 seed  18 loopon  19 loopstart  20 loopend
+//   mseg  (megamodmseg, 16 x 1024): MSEG lookup tables, values 0..1
+//   steps (megamodsteps, 16 x 32): step values 0..1
+//   scope (megamodscope, 128): per slot s at 4*s: [out, phase, u, aux]; header from 64:
+//     64 frame counter, 65 sample rate, 66 beat, 67 bpm, 68 playing
+//
+// Retrigger: Param rtrg = counter * 16 + slot. A changed value restarts that slot.
+// GenExpr ordering: helper functions, then Buffer / Param / History / Data, then expressions.
+// No identifier is named e<digit>.
+
+frac01(x) {
+	return x - floor(x);
+}
+
+hash01(seed, idx) {
+	return frac01(sin(idx * 12.9898 + seed * 78.233 + 1.2345) * 43758.5453);
+}
+
+lfoShape(shape, ph) {
+	tri = (ph < 0.25) ? 0.5 + 2 * ph : ((ph < 0.75) ? 1.5 - 2 * ph : 2 * ph - 1.5);
+	sq = (ph < 0.5) ? 1 : 0;
+	r = 0.5 + 0.5 * sin(twopi * ph);
+	r = (shape == 1) ? tri : r;
+	r = (shape == 2) ? ph : r;
+	r = (shape == 3) ? 1 - ph : r;
+	r = (shape == 4) ? sq : r;
+	return r;
+}
+
+glideVal(prev, cur, fr, g) {
+	t = clip(fr / max(g, 0.0001), 0, 1);
+	sm = t * t * (3 - 2 * t);
+	r = (g <= 0.0001) ? cur : prev + (cur - prev) * sm;
+	return r;
+}
+
+syncBeats(idx) {
+	r = 1.0;
+	r = (idx == 0) ? 0.0625 : r;
+	r = (idx == 1) ? 0.125 : r;
+	r = (idx == 2) ? 0.16666667 : r;
+	r = (idx == 3) ? 0.25 : r;
+	r = (idx == 4) ? 0.375 : r;
+	r = (idx == 5) ? 0.33333333 : r;
+	r = (idx == 6) ? 0.5 : r;
+	r = (idx == 7) ? 0.75 : r;
+	r = (idx == 8) ? 0.66666667 : r;
+	r = (idx == 9) ? 1.0 : r;
+	r = (idx == 10) ? 1.5 : r;
+	r = (idx == 11) ? 2.0 : r;
+	r = (idx == 12) ? 4.0 : r;
+	r = (idx == 13) ? 8.0 : r;
+	r = (idx == 14) ? 16.0 : r;
+	r = (idx == 15) ? 32.0 : r;
+	return r;
+}
+
+Buffer cfg("megamodcfg");
+Buffer mseg("megamodmseg");
+Buffer steps("megamodsteps");
+Buffer scope("megamodscope");
+
+Param hbpm(120);
+Param hppq(0);
+Param hplay(0);
+Param rtrg(0);
+
+Data cf(384);
+Data st(128);
+Data outv(16);
+Data tl(64);
+
+History beat(0);
+History lastPpq(-1);
+History lastPlay(0);
+History lastRtrg(0);
+History tick(0);
+History frameCount(0);
+History sampleCount(0);
+
+sr = max(samplerate, 1);
+mono = 0.5 * (in1 + in2);
+
+// 1. Host transport -> beat position. Playing: re-lock to the host ppq whenever it changes, extrapolate
+//    in between. Stopped: free-run at the tempo so synced modulators keep moving.
+startEv = (hplay > 0.5 && lastPlay < 0.5) ? 1 : 0;
+lastPlay = (hplay > 0.5) ? 1 : 0;
+beatInc = max(hbpm, 1) / (60 * sr);
+if (hplay > 0.5) {
+	if (startEv > 0.5 || hppq != lastPpq) {
+		beat = hppq;
+		lastPpq = hppq;
+	} else {
+		beat = beat + beatInc;
+	}
+} else {
+	beat = beat + beatInc;
+	lastPpq = hppq;
+}
+
+// 2. Retrigger event (counter * 16 + slot).
+rtEv = (rtrg != lastRtrg) ? 1 : 0;
+rtSlot = rtrg - 16 * floor(rtrg / 16);
+lastRtrg = rtrg;
+
+// 3. Refresh one slot of the config cache per sample (full refresh every 16 samples).
+rs = sampleCount - 16 * floor(sampleCount / 16);
+for (k = 0; k < 24; k += 1) {
+	poke(cf, peek(cfg, rs * 24 + k, 0), rs * 24 + k);
+}
+sampleCount = sampleCount + 1;
+
+// 4. Evaluate the slots.
+for (i = 0; i < 16; i += 1) {
+	cb = i * 24;
+	sb = i * 8;
+	typ = peek(cf, cb);
+	active = (typ > 0.5 && peek(cf, cb + 1) > 0.5) ? 1 : 0;
+	outSlot = 0;
+	uSlot = 0;
+	phSlot = 0;
+	auxSlot = 0;
+	if (active > 0.5) {
+		rate = peek(cf, cb + 2);
+		syncOn = peek(cf, cb + 3);
+		divBeats = syncBeats(peek(cf, cb + 4));
+		shape = peek(cf, cb + 5);
+		phaseOff = peek(cf, cb + 6);
+		retrigOn = peek(cf, cb + 7);
+		bipolar = peek(cf, cb + 8);
+		depth = peek(cf, cb + 9);
+		oneshot = peek(cf, cb + 16);
+
+		// cycle accumulator (cycles, or steps for Steps)
+		accFree = peek(st, sb);
+		t0 = peek(st, sb + 1);
+		restart = ((startEv > 0.5 && (retrigOn > 0.5 || oneshot > 0.5)) || (rtEv > 0.5 && rtSlot == i)) ? 1 : 0;
+		if (restart > 0.5) {
+			accFree = 0;
+			t0 = beat;
+			poke(st, 0, sb + 2);
+		}
+		accFree = accFree + rate / sr;
+		anchored = (retrigOn > 0.5 || oneshot > 0.5) ? t0 : 0;
+		accv = (syncOn > 0.5) ? (beat - anchored) / divBeats : accFree;
+		poke(st, accFree, sb);
+		poke(st, t0, sb + 1);
+
+		u = 0;
+		if (typ < 1.5) {
+			ph = frac01(accv + phaseOff);
+			ph = (oneshot > 0.5 && accv >= 1) ? 0.999999999 : ph;
+			u = lfoShape(floor(shape + 0.5), ph);
+			phSlot = ph;
+		} else if (typ < 2.5) {
+			atk = max(peek(cf, cb + 10), 0.05);
+			rel = max(peek(cf, cb + 11), 0.5);
+			gainLin = pow(10, peek(cf, cb + 12) / 20);
+			xin = abs(mono) * gainLin;
+			envPrev = peek(st, sb + 2);
+			coef = (xin > envPrev) ? exp(-1000 / (atk * sr)) : exp(-1000 / (rel * sr));
+			envNow = xin + (envPrev - xin) * coef;
+			envNow = (envNow < 1e-9) ? 0 : envNow;
+			poke(st, envNow, sb + 2);
+			u = clip(envNow, 0, 1);
+			phSlot = u;
+		} else if (typ < 3.5) {
+			sm = peek(cf, cb + 13);
+			seed = peek(cf, cb + 17);
+			xr = accv + phaseOff;
+			idxr = floor(xr);
+			fr = xr - idxr;
+			u = glideVal(hash01(seed, idxr - 1), hash01(seed, idxr), fr, sm);
+			phSlot = fr;
+			auxSlot = idxr;
+		} else if (typ < 4.5) {
+			nSteps = clip(floor(peek(cf, cb + 14) + 0.5), 1, 32);
+			gl = peek(cf, cb + 15);
+			xs = accv + phaseOff * nSteps;
+			xs = (oneshot > 0.5) ? min(xs, nSteps - 0.000000001) : xs;
+			ks = floor(xs);
+			fr = xs - ks;
+			idxs = ks - nSteps * floor(ks / nSteps);
+			prevIdx = (idxs < 0.5) ? nSteps - 1 : idxs - 1;
+			curV = peek(steps, i * 32 + idxs, 0);
+			prevV = peek(steps, i * 32 + prevIdx, 0);
+			u = glideVal(prevV, curV, fr, gl);
+			phSlot = (idxs + fr) / nSteps;
+			auxSlot = idxs;
+		} else {
+			phm = (oneshot > 0.5) ? clip(accv, 0, 1) : frac01(accv + phaseOff);
+			loopOn = peek(cf, cb + 18);
+			ls = (loopOn > 0.5) ? peek(cf, cb + 19) : 0;
+			le = (loopOn > 0.5) ? max(peek(cf, cb + 20), ls + 0.05) : 1;
+			xm = ls + phm * (le - ls);
+			fi = clip(xm, 0, 1) * 1023;
+			i0 = floor(fi);
+			i1 = min(1023, i0 + 1);
+			v0 = peek(mseg, i * 1024 + i0, 0);
+			v1 = peek(mseg, i * 1024 + i1, 0);
+			u = v0 + (v1 - v0) * (fi - i0);
+			phSlot = phm;
+		}
+		uSlot = u;
+		outSlot = (bipolar > 0.5) ? depth * (2 * u - 1) : 2 * depth * u - 1;
+	}
+	poke(outv, fixnan(outSlot), i);
+	poke(tl, outSlot, i * 4);
+	poke(tl, phSlot, i * 4 + 1);
+	poke(tl, uSlot, i * 4 + 2);
+	poke(tl, auxSlot, i * 4 + 3);
+}
+
+// 5. Telemetry: one slot every 4 samples (each slot refreshed every 64), header once per 64 samples.
+tick = tick + 1;
+ts = tick - 64 * floor(tick / 64);
+if (ts - 4 * floor(ts / 4) < 0.5) {
+	sl = floor(ts / 4);
+	poke(scope, peek(tl, sl * 4), sl * 4, 0);
+	poke(scope, peek(tl, sl * 4 + 1), sl * 4 + 1, 0);
+	poke(scope, peek(tl, sl * 4 + 2), sl * 4 + 2, 0);
+	poke(scope, peek(tl, sl * 4 + 3), sl * 4 + 3, 0);
+}
+if (ts < 0.5) {
+	frameCount = frameCount + 1;
+	poke(scope, frameCount, 64, 0);
+	poke(scope, sr, 65, 0);
+	poke(scope, beat, 66, 0);
+	poke(scope, hbpm, 67, 0);
+	poke(scope, (hplay > 0.5) ? 1 : 0, 68, 0);
+}
+
+out1 = peek(outv, 0);
+out2 = peek(outv, 1);
+out3 = peek(outv, 2);
+out4 = peek(outv, 3);
+out5 = peek(outv, 4);
+out6 = peek(outv, 5);
+out7 = peek(outv, 6);
+out8 = peek(outv, 7);
+out9 = peek(outv, 8);
+out10 = peek(outv, 9);
+out11 = peek(outv, 10);
+out12 = peek(outv, 11);
+out13 = peek(outv, 12);
+out14 = peek(outv, 13);
+out15 = peek(outv, 14);
+out16 = peek(outv, 15);

@@ -1,13 +1,16 @@
 // Audio probe for scripts/run_sand_audio_tests.py.
+// Migrated to scripts/max_harness.py: rec holds 3 channels (gen L, gen R, control tone).
 // jsarguments: mode.
 // The patch sends `setbuffer <expanded #0-sandwave name>` before DSP.
 // `analyze <durationMs>` peeks the recording buffer "rec" and writes the report.
 
-inlets = 4;
+inlets = 1;
 outlets = 1;
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "sine";
 var peaks = { gen: -1, ctl: -1, genR: -1 };
+var resultPath = "/tmp/sand_audio.txt";
+function resultpath(p) { resultPath = String(p); }
 var armed = false;
 var waveName = "";
 
@@ -20,12 +23,6 @@ function setbuffer(name) {
     post("PROBE_WAVE " + waveName + "\n");
 }
 
-function msg_float(v) {
-    if (inlet === 0) peaks.gen = v;
-    else if (inlet === 1) peaks.ctl = v;
-    else if (inlet === 2) peaks.genR = v;
-}
-
 function analyze(durMs) {
     if (armed) return;
     armed = true;
@@ -36,9 +33,15 @@ function analyze(durMs) {
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var left = readChannel(rec, 1, n);
     var right = readChannel(rec, 2, n);
+    var ctl = readChannel(rec, 3, n);
+    // Peaks are measured from the recorded window (ch1 = gen L, ch2 = gen R, ch3 = control tone).
+    peaks.gen = maxAbs(left);
+    peaks.genR = maxAbs(right);
+    peaks.ctl = maxAbs(ctl);
     var stats = scan(left, right);
     var corr = correlation(left, right, Math.floor(sr * 0.02));
-    var report = new File("/tmp/sand_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
+    report.eof = 0;
     report.writestring(
         "genL " + peaks.gen + "\n" +
         "genR " + peaks.genR + "\n" +
@@ -68,6 +71,12 @@ function waveMax() {
         if (v > peak) peak = v;
     }
     return peak;
+}
+
+function maxAbs(a) {
+    var m = 0;
+    for (var i = 0; i < a.length; i++) { var v = Math.abs(a[i]); if (v > m) m = v; }
+    return m;
 }
 
 function readChannel(buf, channel, n) {

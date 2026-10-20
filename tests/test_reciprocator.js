@@ -286,6 +286,19 @@ function verifyAmxd(amxdFile, expectedWidth) {
     assert.strictEqual(ui.pullScope(), true, "pullScope() must immediately resume redrawing when audio arrives");
 }
 
+{
+    // GenExpr runs the code after a `return` nested in an `if` / loop block (and the last return wins), so every
+    // return must sit at function level. A nested return once broke Freeze / the silence sleep / Soft and Hard Clip.
+    let depth = 0, fn = "", nested = [];
+    for (const line of gen.split("\n")) {
+        if (/^[a-z_]+\(.*\) \{$/.test(line)) { fn = line; depth = 0; }
+        depth += (line.match(/\{/g) || []).length;
+        depth -= (line.match(/\}/g) || []).length;
+        if (/\breturn\b/.test(line) && !/^\s*\/\//.test(line) && depth > 1) nested.push(fn.split("(")[0] + ": " + line.trim());
+    }
+    assert.strictEqual(nested.length, 0, `No return inside a block in GenExpr functions (${nested.join("; ")})`);
+}
+
 verifyAmxd("Reciprocator.amxd", 448.0);
 
 console.log("test_reciprocator: ok");

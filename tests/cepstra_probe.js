@@ -1,21 +1,23 @@
 // Audio probe for scripts/run_cepstra_audio_tests.py.
 // Synthesizes the vowel-like test stimulus (impulse train -> three formant resonators, optional noise) into
 // buffer~ src on `setbuffer`, then analyzes the recorded buffer~ rec (ch1 = Cepstra out L, ch2 = raw input L)
-// and the telemetry in #0-cepscope. Writes /tmp/cepstra_audio.txt ONLY inside analyze().
+// and the telemetry in #0-cepscope. Run through scripts/max_harness.py: `resultpath <file>` is sent at load,
+// `analyze <dur_ms>` once `rec` holds exactly the measured window (NonRealTime, 48 kHz). Writes the result ONLY
+// inside analyze(). `cpu <percent>` messages (audio_device mode only) feed the CPU statistics.
 
-inlets = 5;
-outlets = 3;
+inlets = 1;
+outlets = 1;
+
+var STIM_SR = 48000; // the harness forces `dsp sr 48000`
+var resultPath = "/tmp/cepstra_audio.txt";
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "vowel";
 var ltot = jsarguments.length > 2 ? Number(jsarguments[2]) : 2304;
 var f0Hz = 120;
-var peaks = { genL: -1, ctl: -1, genR: -1 };
 var cpuMax = 0;
 var cpuSum = 0;
 var cpuCount = 0;
 var armed = false;
-var markTime = 0;
-var markFrame = 0;
 var scopeName = "";
 
 function loadbang() {
@@ -64,44 +66,34 @@ function makeStimulus(n, sr) {
         if (Math.abs(out[i]) > pk) pk = Math.abs(out[i]);
     }
     var rnd = lcg(12345);
-    var noiseAmp = (mode === "vowelnoise") ? 0.012 : 0;
+    var noiseAmp = (mode === "vowelnoise") ? 0.012 : ((mode === "vowelgaps") ? 0.03 : 0);
     for (i = 0; i < n; i++) {
-        out[i] = 0.4 * out[i] / pk + noiseAmp * (rnd() * 2 - 1);
+        // vowelgaps: vowel on for the first 0.25 s of every 0.5 s, noise throughout (voicing-gate test)
+        var on = (mode !== "vowelgaps") || ((i / sr) % 0.5 < 0.25);
+        out[i] = (on ? 0.4 * out[i] / pk : 0) + noiseAmp * (rnd() * 2 - 1);
     }
     return out;
 }
 
 function setbuffer(sName) {
     scopeName = sName ? ("" + sName) : "";
-    var src = new Buffer("src");
+    var src = new Buffer("cepstra_src");
     var n = src.framecount();
     var ms = src.length();
-    var sr = ms > 0 ? n / (ms / 1000) : 44100;
+    var sr = STIM_SR; // buffer~ src is sized in samples (1 s at 48 kHz), so its stamped sr may differ from the DSP rate
     src.poke(1, 0, makeStimulus(n, sr));
     post("CEPSTRA_SRC_POKED frames " + n + " sr " + sr + "\n");
 }
 
-function scopeFrame() {
-    if (!scopeName) return 0;
-    var chunk = new Buffer(scopeName).peek(1, 259, 2);
-    return (chunk && chunk.length) ? chunk[0] : (typeof chunk === "number" ? chunk : 0);
+function resultpath(p) {
+    resultPath = "" + p;
 }
 
-// Called when recording starts: remembers wall-clock time and the DSP frame counter for the real-time factor.
-function mark() {
-    markTime = new Date().getTime();
-    markFrame = scopeFrame();
-}
-
-function msg_float(v) {
-    if (inlet === 0) peaks.genL = v;
-    else if (inlet === 1) peaks.ctl = v;
-    else if (inlet === 2) peaks.genR = v;
-    else if (inlet === 4) {
-        cpuMax = Math.max(cpuMax, v);
-        cpuSum += v;
-        cpuCount++;
-    }
+// CPU % from `adstatus cpu` (audio_device mode); NonRealTime has no meaningful real-time load.
+function cpu(v) {
+    cpuMax = Math.max(cpuMax, v);
+    cpuSum += v;
+    cpuCount++;
 }
 
 function readChannel(buf, channel, n) {
@@ -206,15 +198,37 @@ function valleyToPeakDb(p, sr, size, f0) {
     return 10 * Math.log(valE / Math.max(1, valN) / (peakE / Math.max(1, peakN))) / Math.LN10;
 }
 
+// Power in +/-1.5 bins around a frequency.
+function bandPower(p, sr, size, hz) {
+    var kc = Math.round(hz * size / sr), e = 0;
+    for (var k = kc - 1; k <= kc + 1; k++) e += p[k];
+    return e;
+}
+
+// Total power between partials (300 Hz .. 4 kHz, farther than 0.35 f0 from any harmonic).
+function betweenPower(p, sr, size, f0) {
+    var e = 0;
+    var kLo = Math.floor(300 * size / sr), kHi = Math.floor(4000 * size / sr);
+    for (var k = kLo; k <= kHi; k++) {
+        var h = (k * sr / size) / f0;
+        if (Math.abs(h - Math.round(h)) * f0 * size / sr >= 0.35 * f0 * size / sr) e += p[k];
+    }
+    return e;
+}
+
 function analyze(durMs) {
     if (armed) return;
     armed = true;
     try {
         analyzeImpl(durMs);
     } catch (err) {
-        var ef = new File("/tmp/cepstra_err.txt", "write", "TEXT");
+        var ef = new File(resultPath + ".err", "write", "TEXT");
         ef.writestring("ERR " + err + " line " + err.lineNumber + "\n");
         ef.close();
+        var rf = new File(resultPath, "write", "TEXT");
+        rf.eof = 0;
+        rf.writestring("probeError 1\n");
+        rf.close();
         outlet(0, "bang");
     }
 }
@@ -223,19 +237,10 @@ function analyzeImpl(durMs) {
     var rec = new Buffer("rec");
     var frames = rec.framecount();
     var lengthMs = rec.length();
-    var sr = lengthMs > 0 ? frames / (lengthMs / 1000) : 44100;
+    var sr = lengthMs > 0 ? frames / (lengthMs / 1000) : STIM_SR;
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var outL = readChannel(rec, 1, n);
     var inL = readChannel(rec, 2, n);
-
-    // record~ may stop a little early (wall-clock jitter): ignore the unrecorded zero tail.
-    if (mode !== "silent") {
-        var last = n - 1;
-        while (last > 0 && inL[last] === 0) last--;
-        n = Math.max(0, last + 1 - 64);
-        outL = outL.slice(0, n);
-        inL = inL.slice(0, n);
-    }
 
     var nan = 0, peak = 0, i;
     for (i = 0; i < n; i++) {
@@ -270,21 +275,40 @@ function analyzeImpl(durMs) {
     var pIn = powerSpectrum(inL, segStart, size);
     var cOut = centroid(pOut, sr, size, 100, 8000);
     var cIn = centroid(pIn, sr, size, 100, 8000);
-    var f0Out = estimateF0(outL, segStart, 6000, sr);
+    var f0Est = estimateF0(outL, segStart, 6000, sr);
     var f0In = estimateF0(inL, segStart, 6000, sr);
     var vOut = valleyToPeakDb(pOut, sr, size, f0Hz);
     var vIn = valleyToPeakDb(pIn, sr, size, f0Hz);
+    var f0Level = 10 * Math.log(bandPower(pOut, sr, size, f0Hz) + 1e-30) / Math.LN10;
+    var noiseLevel = 10 * Math.log(betweenPower(pOut, sr, size, f0Hz) + 1e-30) / Math.LN10;
+
+    // Level of the output vs the input in vowel-on and noise-only stretches (classified by the input's own 1024-sample
+    // window RMS, skipping windows next to a transition), for the voicing-gate test. dB, output re input.
+    var wsz = 1024, nw = Math.floor((n - ltot) / wsz), wr = [], wmax = 0, wmin = 1e30;
+    for (var wi = 0; wi < nw; wi++) {
+        var es = 0;
+        for (i = wi * wsz; i < (wi + 1) * wsz; i++) es += inL[i] * inL[i];
+        wr.push(Math.sqrt(es / wsz));
+        wmax = Math.max(wmax, wr[wi]);
+        wmin = Math.min(wmin, wr[wi]);
+    }
+    var gapIn = 1e-30, gapOut = 1e-30, voxIn = 1e-30, voxOut = 1e-30;
+    for (wi = 1; wi < nw - 1; wi++) {
+        var nb = function (r) { return (r < 1.5 * wmin && r < 0.5 * wmax) ? 0 : ((r > 0.5 * wmax) ? 1 : -1); };
+        var cls = nb(wr[wi]);
+        if (cls < 0 || nb(wr[wi - 1]) !== cls || nb(wr[wi + 1]) !== cls) continue;
+        var ei = 0, eo = 0;
+        for (i = wi * wsz; i < (wi + 1) * wsz; i++) { ei += inL[i] * inL[i]; eo += outL[i + ltot] * outL[i + ltot]; }
+        if (cls === 0) { gapIn += ei; gapOut += eo; } else { voxIn += ei; voxOut += eo; }
+    }
+    var gapDb = 10 * Math.log(gapOut / gapIn) / Math.LN10, voxDb = 10 * Math.log(voxOut / voxIn) / Math.LN10;
 
     var sc = readScope();
     var lastQuarter = 0;
     for (i = Math.floor(n * 0.75); i < n; i++) lastQuarter = Math.max(lastQuarter, Math.abs(outL[i]));
 
-    var wallSec = Math.max(0.001, (new Date().getTime() - markTime) / 1000);
-    var endFrame = scopeFrame();
-    var dFrames = endFrame >= markFrame ? endFrame - markFrame : endFrame + 100000 - markFrame;
-    var rtFactor = (dFrames * (sc.n / 4) / sr) / wallSec;
-
-    var report = new File("/tmp/cepstra_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
+    report.eof = 0;
     report.writestring(
         "sr " + sr + "\n" +
         "frames " + n + "\n" +
@@ -298,11 +322,14 @@ function analyzeImpl(durMs) {
         "refRms " + Math.sqrt(refSq / (d1 - d0)) + "\n" +
         "centOut " + cOut + "\n" +
         "centIn " + cIn + "\n" +
-        "f0Out " + f0Out + "\n" +
+        "f0Out " + f0Est + "\n" +
         "f0In " + f0In + "\n" +
+        "f0Level " + f0Level + "\n" +
+        "noiseLevel " + noiseLevel + "\n" +
+        "gapDb " + gapDb + "\n" +
+        "voxDb " + voxDb + "\n" +
         "valleyOut " + vOut + "\n" +
         "valleyIn " + vIn + "\n" +
-        "rtFactor " + rtFactor + "\n" +
         "cpuMax " + cpuMax + "\n" +
         "cpuAvg " + (cpuCount ? cpuSum / cpuCount : 0) + "\n" +
         "scopeNonZero " + sc.nonZero + "\n" +

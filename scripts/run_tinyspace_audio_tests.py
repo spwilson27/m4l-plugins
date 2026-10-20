@@ -25,197 +25,89 @@ Cases:
   damp0/damp1 — full feedback stays bright at damp 0 and goes dark at damp 1
 """
 
-import json
 import os
-import shutil
-import subprocess
 import sys
-import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import max_harness as mh
+
+ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "tinyspace_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "tinyspace_probe.js")
-HARNESS = os.path.join(ROOT, "tests", "tinyspace_harness.maxpat")
-RESULT = "/tmp/tinyspace_audio.txt"
-MAX_BIN = (
-    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
-    "Max/Max.app/Contents/MacOS/Max"
-)
-MAX_LOG = os.path.expanduser(
-    "~/Library/Application Support/Cycling '74/Max 9/Logs/Max.log"
-)
+SR = mh.DEFAULT_SR
 
 # Shared tail of every param list. Knobs that a case cares about come first.
 QUIET = "predly 0, modamt 0, xfeed 0, hp 20, lp 18000, duck 1"
 
 
-def box(obj_id, text, x, y, w, h, **extra):
-    b = {
-        "id": obj_id,
-        "maxclass": extra.pop("maxclass", "newobj"),
-        "numinlets": extra.pop("numinlets", 1),
-        "numoutlets": extra.pop("numoutlets", 1),
-        "outlettype": extra.pop("outlettype", [""]),
-        "patching_rect": [float(x), float(y), float(w), float(h)],
-        "text": text,
-    }
-    b.update(extra)
-    return {"box": b}
-
-
-def line(src, outlet, dst, inlet):
-    return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
-
-
-def build_harness(gen_code, case):
+def stimulus(case):
+    """Sample-counted stimulus (no delay/metro). Returns (boxes, lines); `dev-stim` is the
+    mono signal that feeds gen inlets 0/1 and record~ ch3. Sample n is 1-based from DSP start,
+    the measured window starts right after `arm` ms (the settle period)."""
     mode = case["mode"]
-    boxes = [
-        box("obj-load", "loadbang", 40, 40, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
-        box("obj-del-dsp", "delay 1200", 40, 80, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-dsp", "; dsp start", 40, 120, 80, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-arm", f"delay {case['arm']}", 40, 160, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-on", "1", 40, 200, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-stop", f"delay {case['dur']}", 40, 240, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-off", "0", 40, 280, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        # Leave time for record~ to flush into the buffer before the probe peeks it.
-        # A heavy gen patch can still be rendering the start of a short take otherwise.
-        box("obj-del-peak", "delay 300", 40, 320, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-del-analyze", "delay 400", 40, 360, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-analyze", f"analyze {case['dur']}", 120, 360, 90, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-quit", "; max quit", 40, 420, 70, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-params", case["params"], 200, 40, 680, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-setbuf", "setbuffer #0-tsconfig #0-tsmeters", 200, 70, 220, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-cfg", "buffer~ #0-tsconfig @samps 128", 520, 100, 210, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-meters", "buffer~ #0-tsmeters @samps 32", 520, 130, 210, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", "buffer~ rec 14000 2", 520, 160, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [200.0, 200.0, 300.0, 80.0],
-            }
-        },
-        box("obj-record", "record~ rec 2", 200, 300, 90, 20, numinlets=4, numoutlets=1, outlettype=[""]),
-        box("obj-peak-l", "peakamp~", 200, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-peak-r", "peakamp~", 290, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-peak-c", "peakamp~", 380, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-mute-l", "*~ 0", 200, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-mute-r", "*~ 0", 260, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-dac", "dac~", 200, 430, 50, 20, numinlets=2, numoutlets=0, outlettype=[]),
-        box(
-            "obj-js",
-            f"js {PROBE_JS} {mode} {case['config']}",
-            200, 470, 420, 20,
-            numinlets=4,
-            numoutlets=3,
-            outlettype=["bang", "bang", ""],
-        ),
-    ]
-    if case["bind"]:
-        boxes.append(box(
-            "obj-bind",
-            "cfg #0-tsconfig, meters #0-tsmeters",
-            200, 100, 340, 20,
-            maxclass="message",
-            numinlets=2,
-            numoutlets=1,
-        ))
-
-    lines = [
-        line("obj-load", 0, "obj-del-dsp", 0),
-        line("obj-load", 0, "obj-params", 0),
-        line("obj-load", 0, "obj-setbuf", 0),
-        line("obj-del-dsp", 0, "obj-dsp", 0),
-        line("obj-del-dsp", 0, "obj-del-arm", 0),
-        line("obj-del-arm", 0, "obj-rec-on", 0),
-        line("obj-del-arm", 0, "obj-del-stop", 0),
-        line("obj-del-stop", 0, "obj-rec-off", 0),
-        line("obj-del-stop", 0, "obj-del-peak", 0),
-        line("obj-del-peak", 0, "obj-peak-l", 0),
-        line("obj-del-peak", 0, "obj-peak-r", 0),
-        line("obj-del-peak", 0, "obj-peak-c", 0),
-        line("obj-del-peak", 0, "obj-del-analyze", 0),
-        line("obj-del-analyze", 0, "obj-analyze", 0),
-        line("obj-setbuf", 0, "obj-js", 3),
-        line("obj-params", 0, "obj-gen", 0),
-        line("obj-analyze", 0, "obj-js", 3),
-        line("obj-js", 0, "obj-quit", 0),
-        line("obj-rec-on", 0, "obj-record", 0),
-        line("obj-rec-off", 0, "obj-record", 0),
-        line("obj-gen", 0, "obj-record", 0),
-        line("obj-gen", 1, "obj-record", 1),
-        line("obj-gen", 0, "obj-peak-l", 0),
-        line("obj-gen", 1, "obj-peak-r", 0),
-        line("obj-gen", 0, "obj-mute-l", 0),
-        line("obj-gen", 1, "obj-mute-r", 0),
-        line("obj-mute-l", 0, "obj-dac", 0),
-        line("obj-mute-r", 0, "obj-dac", 1),
-        line("obj-peak-l", 0, "obj-js", 0),
-        line("obj-peak-c", 0, "obj-js", 1),
-        line("obj-peak-r", 0, "obj-js", 2),
-    ]
-    if case["bind"]:
-        lines.append(line("obj-load", 0, "obj-bind", 0))
-        lines.append(line("obj-bind", 0, "obj-gen", 0))
-
-    # Stimulus. Impulse clicks are armed after DSP is already running.
+    settle = mh.samples_for_ms(case["arm"], SR)
+    boxes, lines = [], []
     if mode == "sine":
-        boxes.append(box("obj-tone", "cycle~ 220", 700, 200, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-gain", "*~ 0.25", 700, 240, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        lines.extend([
-            line("obj-tone", 0, "obj-gain", 0),
-            line("obj-gain", 0, "obj-gen", 0),
-            line("obj-gain", 0, "obj-gen", 1),
-            line("obj-gain", 0, "obj-peak-c", 0),
-        ])
+        boxes += [mh.box("dev-tone", "cycle~ 220", 700, 200, 80, numinlets=2, outlettype=["signal"]),
+                  mh.box("dev-stim", "*~ 0.25", 700, 240, 60, numinlets=2, outlettype=["signal"])]
+        lines.append(mh.line("dev-tone", 0, "dev-stim", 0))
     elif mode == "burst":
-        boxes.append(box("obj-tone", "cycle~ 220", 700, 180, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-gain", "*~ 0.25", 700, 220, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-env", "*~", 700, 260, 40, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-line", "line~", 780, 260, 45, 20, numinlets=1, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-burst", "1, 0 150", 780, 220, 70, 20, maxclass="message", numinlets=2, numoutlets=1))
-        lines.extend([
-            line("obj-tone", 0, "obj-gain", 0),
-            line("obj-gain", 0, "obj-env", 0),
-            line("obj-line", 0, "obj-env", 1),
-            line("obj-env", 0, "obj-gen", 0),
-            line("obj-env", 0, "obj-gen", 1),
-            line("obj-env", 0, "obj-peak-c", 0),
-            line("obj-del-arm", 0, "obj-burst", 0),
-            line("obj-burst", 0, "obj-line", 0),
-        ])
+        # 220 Hz tone through a 1 -> 0 ramp over 150 ms that starts at the record start
+        # (was `1, 0 150` into line~).
+        ramp = mh.samples_for_ms(150, SR)
+        env = mh.gen_box("dev-envgen",
+                         "History n(0);\nn = n + 1;\n"
+                         f"out1 = (n > {settle}) * max(0, 1 - (n - {settle} - 1) / {ramp});\n",
+                         780, 200, numinlets=1, numoutlets=1)
+        boxes += [mh.box("dev-tone", "cycle~ 220", 700, 180, 80, numinlets=2, outlettype=["signal"]),
+                  mh.box("dev-gain", "*~ 0.25", 700, 220, 60, numinlets=2, outlettype=["signal"]),
+                  env,
+                  mh.box("dev-stim", "*~", 700, 260, 40, numinlets=2, outlettype=["signal"])]
+        lines += [mh.line("dev-tone", 0, "dev-gain", 0), mh.line("dev-gain", 0, "dev-stim", 0),
+                  mh.line("dev-envgen", 0, "dev-stim", 1)]
     else:
-        boxes.append(box("obj-click", "click~", 700, 200, 50, 20, numinlets=1, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-gain", "*~ 0.25", 700, 240, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
-        boxes.append(box("obj-del-click", "delay 40", 700, 160, 70, 20, numinlets=2, numoutlets=1))
-        lines.extend([
-            line("obj-click", 0, "obj-gain", 0),
-            line("obj-gain", 0, "obj-gen", 0),
-            line("obj-gain", 0, "obj-gen", 1),
-            line("obj-gain", 0, "obj-peak-c", 0),
-            line("obj-del-arm", 0, "obj-del-click", 0),
-            line("obj-del-click", 0, "obj-click", 0),
-        ])
+        # Single-sample click 1 ms into the measured window. The old `delay 40 -> click~` landed
+        # at the very start of the take, and the envelope checks (first peak, early window)
+        # are written for a click at about t = 0.
+        at = settle + mh.samples_for_ms(1, SR) + 1
+        boxes += [mh.gen_box("dev-click", f"History n(0);\nn = n + 1;\nout1 = n == {at};\n",
+                             700, 200, numinlets=1, numoutlets=1),
+                  mh.box("dev-stim", "*~ 0.25", 700, 240, 60, numinlets=2, outlettype=["signal"])]
+        lines.append(mh.line("dev-click", 0, "dev-stim", 0))
+    return boxes, lines
 
-    doc = {
-        "patcher": {
-            "fileversion": 1,
-            "appversion": {"major": 9, "minor": 1, "revision": 5, "architecture": "x64", "modernui": 1},
-            "classnamespace": "box",
-            "rect": [40.0, 40.0, 1000.0, 560.0],
-            "boxes": boxes,
-            "lines": lines,
-        }
-    }
-    with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent="\t")
-        f.write("\n")
+
+def device(gen_code, case):
+    boxes, lines = stimulus(case)
+    boxes += [
+        mh.gen_box("dev-gen", gen_code, 200, 200, numinlets=2, numoutlets=2),
+        mh.msg("dev-params", case["params"], 200, 40, 680),
+        mh.msg("dev-setbuf", "setbuffer #0-tsconfig #0-tsmeters", 200, 70, 220),
+        mh.box("dev-cfg", "buffer~ #0-tsconfig @samps 128", 520, 100, 210, numoutlets=2,
+               outlettype=["float", "bang"]),
+        mh.box("dev-meters", "buffer~ #0-tsmeters @samps 32", 520, 130, 210, numoutlets=2,
+               outlettype=["float", "bang"]),
+    ]
+    lines += [
+        mh.line("obj-load", 0, "dev-params", 0),
+        mh.line("dev-params", 0, "dev-gen", 0),
+        mh.line("obj-load", 0, "dev-setbuf", 0),
+        mh.line("dev-setbuf", 0, "obj-js", 0),
+        mh.line("dev-stim", 0, "dev-gen", 0),
+        mh.line("dev-stim", 0, "dev-gen", 1),
+        # rec channels: 1 = gen L, 2 = gen R, 3 = control tone (probe reports genL/genR/ctl peaks)
+        mh.line("dev-gen", 0, "obj-record", 0),
+        mh.line("dev-gen", 1, "obj-record", 1),
+        mh.line("dev-stim", 0, "obj-record", 2),
+        mh.line("dev-gen", 0, "obj-mute-l", 0),
+        mh.line("dev-gen", 1, "obj-mute-r", 0),
+        mh.line("obj-mute-l", 0, "obj-dac", 0),
+        mh.line("obj-mute-r", 0, "obj-dac", 1),
+    ]
+    if case["bind"]:
+        boxes.append(mh.msg("dev-bind", "cfg #0-tsconfig, meters #0-tsmeters", 200, 100, 340))
+        lines += [mh.line("obj-load", 0, "dev-bind", 0), mh.line("dev-bind", 0, "dev-gen", 0)]
+    return boxes, lines
 
 
 def cases():
@@ -412,28 +304,9 @@ def cases():
     )
 
 
-def parse_result(text):
-    meta = {}
-    env = []
-    for raw in text.splitlines():
-        if not raw.strip():
-            continue
-        if raw.startswith("env "):
-            env = [float(x) for x in raw[4:].split()] if raw.strip() != "env" else []
-            continue
-        if raw.startswith("sec "):
-            meta["sec"] = [float(x) for x in raw[4:].split()] if raw.strip() != "sec" else []
-            continue
-        parts = raw.split(None, 1)
-        if len(parts) != 2:
-            continue
-        key, val = parts
-        try:
-            meta[key] = float(val)
-        except ValueError:
-            continue
-    meta["env"] = env
-    return meta
+def vector(raw, prefix, count):
+    """Rebuild a vector the probe wrote as `<prefix><i> <value>` lines (harness keeps 2-token lines)."""
+    return [raw[f"{prefix}{i}"] for i in range(count) if f"{prefix}{i}" in raw]
 
 
 def env_max(env, start, end):
@@ -448,105 +321,24 @@ def first_peak(env, start, end, floor):
     return -1
 
 
-def clear_recovery():
-    recovery = os.path.expanduser(
-        "~/Library/Application Support/Cycling '74/Max 9/Crash Recovery"
-    )
-    shutil.rmtree(recovery, ignore_errors=True)
-
-
-def run_case(gen_code, case, retried=False):
-    # A previous Max can reopen Crash Recovery on top of the harness and
-    # measure silence. Kill a leftover harness, then delete that folder.
-    subprocess.run(
-        ["pkill", "-f", "tinyspace_harness.maxpat"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    for _ in range(20):
-        still = subprocess.run(
-            ["pgrep", "-f", "tinyspace_harness.maxpat"],
-            stdout=subprocess.DEVNULL,
-        )
-        if still.returncode != 0:
-            break
-        time.sleep(0.25)
-    time.sleep(0.3)
-    clear_recovery()
-    build_harness(gen_code, case)
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    log_size = os.path.getsize(MAX_LOG) if os.path.exists(MAX_LOG) else 0
-    proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + max(45, case["dur"] / 1000.0 + 35)
-    while time.time() < deadline and not os.path.exists(RESULT):
-        if proc.poll() is not None:
-            break
-        time.sleep(0.25)
-    # The probe creates the file before the write finishes. Wait until the
-    # size stops changing so a long envelope is not read halfway through.
-    last_size = -1
-    stable = 0
-    while time.time() < deadline and stable < 2:
-        if not os.path.exists(RESULT):
-            break
-        size = os.path.getsize(RESULT)
-        if size > 0 and size == last_size:
-            stable += 1
-        else:
-            stable = 0
-            last_size = size
-        time.sleep(0.15)
-    if proc.poll() is None:
-        try:
-            proc.wait(timeout=4)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-    time.sleep(0.4)
+def run_case(gen_code, case):
+    boxes, lines = device(gen_code, case)
+    raw = mh.run_case(f"tinyspace_{case['name']}", boxes, lines, probe_js=PROBE_JS,
+                      probe_args=f"{case['mode']} {case['config']}", settle_ms=case["arm"],
+                      dur_ms=case["dur"], channels=3, sr=SR, mode="nrt", timeout=120.0)
+    meta = {k: v for k, v in raw.items() if not (k.startswith("env") or k.startswith("sec"))}
+    meta["env"] = vector(raw, "env", int(raw.get("frames", 0)) + 1)
+    meta["sec"] = vector(raw, "sec", 12)
     print(f"--- {case['name']} ---")
-    if not os.path.exists(RESULT):
-        print("NO RESULT FILE")
-        dump_log(log_size)
-        return None
-    text = open(RESULT).read()
-    meta = parse_result(text)
-    env = meta.get("env", [])
+    env = meta["env"]
     preview = " ".join(f"{v:.4f}" for v in env[:80])
     print(
         f"genL {meta.get('genL')} genR {meta.get('genR')} ctl {meta.get('ctl')} "
         f"peak {meta.get('peak')} corr {meta.get('corr')} meter {meta.get('meter')} nan {meta.get('nan')} "
-        f"sr {meta.get('sr')} bins {len(env)}"
+        f"sr {meta.get('sr')} bins {len(env)} wall {meta.get('harness_wall_s'):.1f}s"
     )
     print(f"env {preview}")
-    dump_log(log_size)
-    # Max sometimes opens before the driver is up, so the click never lands
-    # and the take is silent. One fresh launch is enough. A full-wet test
-    # with an unbound buffer is supposed to be silent, so that case is not retried.
-    ctl = meta.get("ctl", 0)
-    heard = max(env) if env else 0.0
-    expects_audio = case["mode"] in ("impulse", "burst")
-    if not retried and (ctl < 0.05 or (expects_audio and heard < 1e-4)):
-        print(f"{case['name']}: silent take, retrying once")
-        return run_case(gen_code, case, retried=True)
     return meta
-
-
-def dump_log(log_size):
-    if not os.path.exists(MAX_LOG):
-        return
-    log = open(MAX_LOG, errors="replace").read()
-    new = log[log_size:] if log_size < len(log) else log[-8000:]
-    interesting = [
-        line for line in new.splitlines()
-        if any(k in line for k in ("error", "failed", "PROBE_"))
-    ]
-    if interesting:
-        print("--- max log ---")
-        print("\n".join(interesting[-30:]))
 
 
 def require_ctl(name, meta, errors):

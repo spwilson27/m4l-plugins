@@ -181,13 +181,14 @@ function createVoiceAllocator(maxVoices) {
     }
     var heldStack = [];
     var stepCounter = 1;
+    var sliceBase = 36; // MIDI note of slice 0 (the "from C1" control)
 
     // slices: sorted slice starts (C1 = slices[0]); slicesEnd: where the last slice stops
     function resolveSliceBounds(note, slices, slicesEnd) {
         if (!slices || slices.length === 0) {
             return { start: 0.0, end: 1.0, sliceIdx: 0 };
         }
-        var idx = Math.max(0, note - 36) % slices.length;
+        var idx = Math.max(0, note - sliceBase) % slices.length;
         var s0 = slices[idx];
         var s1 = (idx + 1 < slices.length) ? slices[idx + 1] : (slicesEnd === undefined ? 1.0 : slicesEnd);
         return { start: s0, end: Math.max(s0 + 0.005, s1), sliceIdx: idx };
@@ -196,6 +197,11 @@ function createVoiceAllocator(maxVoices) {
     return {
         voices: voices,
         heldStack: heldStack,
+        setSliceBaseNote: function(n) {
+            var v = Math.round(Number(n));
+            sliceBase = isFinite(v) ? Math.max(0, Math.min(127, v)) : 36;
+        },
+        getSliceBaseNote: function() { return sliceBase; },
         setMaxVoices: function(n) {
             cap = Math.max(1, Math.min(16, Math.round(Number(n) || 16)));
         },
@@ -336,8 +342,293 @@ function createVoiceAllocator(maxVoices) {
     };
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+// ---------------------------------------------------------------------------
+// Bitwig-style slicers. Every slicer returns sorted normalized marker positions
+// in [0, 1) for the WHOLE sample. The start point itself is not returned (the
+// keymap always makes the first slice begin at the start point).
+// ---------------------------------------------------------------------------
+
+var SLICE_BEAT_NAMES = ["1 bar", "1/2", "1/4", "1/4T", "1/8", "1/8T", "1/16", "1/16T", "1/32", "1/32T"];
+// Length of each note value in beats (quarter notes) in 4/4; T = 2/3 of straight.
+var SLICE_BEAT_LENGTHS = [4, 2, 1, 2 / 3, 0.5, 1 / 3, 0.25, 1 / 6, 0.125, 1 / 12];
+var SLICE_MAX_BEAT_MARKERS = 256;
+
+function sliceClamp(v, lo, hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+function sliceWindow(start, end, len) {
+    var s = Number(start), e = Number(end);
+    if (!isFinite(s)) s = 0;
+    if (!isFinite(e)) e = 1;
+    s = sliceClamp(s, 0, 1);
+    e = sliceClamp(e, 0, 1);
+    var a = Math.floor(s * len), b = Math.min(len, Math.ceil(e * len));
+    return { s: s, e: e, a: a, b: b };
+}
+
+// n equal slices between start and end (n = 1..64).
+function sliceDivisions(start, end, n) {
+    var s = sliceClamp(Number(start) || 0, 0, 1);
+    var e = sliceClamp(isFinite(Number(end)) ? Number(end) : 1, 0, 1);
+    var cnt = Math.max(1, Math.min(64, Math.round(Number(n) || 1)));
+    var out = [];
+    if (e <= s) return out;
+    for (var k = 0; k < cnt; k++) out.push(s + (e - s) * k / cnt);
+    return out;
+}
+
+// One marker every note interval from the start point (4/4). Runs to the end of
+// the sample (the keymap trims to start..end). Capped at 256 markers.
+// bpm <= 0 or invalid falls back to 120.
+function sliceBeats(start, end, frames, sampleRate, bpm, beatIndex) {
+    var s = sliceClamp(Number(start) || 0, 0, 1);
+    var idx = Math.max(0, Math.min(SLICE_BEAT_LENGTHS.length - 1, Math.round(Number(beatIndex) || 0)));
+    var b = Number(bpm);
+    if (!isFinite(b) || b <= 0) b = 120;
+    var f = Number(frames), sr = Number(sampleRate);
+    var out = [];
+    if (!(f > 0) || !(sr > 0)) return out;
+    var interval = (60 / b) * SLICE_BEAT_LENGTHS[idx] * sr / f; // normalized
+    if (!(interval > 0)) return out;
+    for (var k = 0; k < SLICE_MAX_BEAT_MARKERS; k++) {
+        var pos = s + k * interval;
+        if (pos >= 1 - 1e-12) break;
+        out.push(pos);
+    }
+    return out;
+}
+
+// Tempo from a file name: "172 BPM", "172bpm", "bpm172", "_172_", "DS_PMB_160_vocal".
+// Returns 0 when nothing in 60..220 is found.
+function bpmFromName(fileName) {
+    var name = String(fileName == null ? "" : fileName);
+    name = name.replace(/^.*[\/\\]/, "");
+    var m = /(?:^|[^0-9])(\d{2,3})(?:\.\d+)?\s*[-_ ]?bpm/i.exec(name);
+    if (!m) m = /bpm\s*[-_ ]?(\d{2,3})(?![0-9])/i.exec(name);
+    if (m) {
+        var v = parseInt(m[1], 10);
+        if (v >= 60 && v <= 220) return v;
+    }
+    var tokens = name.replace(/\.[A-Za-z0-9]{1,5}$/, "").split(/[^A-Za-z0-9]+/);
+    for (var i = 0; i < tokens.length; i++) {
+        if (/^\d{2,3}$/.test(tokens[i])) {
+            var n = parseInt(tokens[i], 10);
+            if (n >= 60 && n <= 220) return n;
+        }
+    }
+    return 0;
+}
+
+// Transient detection on raw mono sample data: log RMS envelope on a ~2 ms hop,
+// flux against the quietest of the previous ~8 ms, level-adaptive threshold,
+// >= 30 ms spacing, nothing within 10 ms after the start point.
+function sliceOnsets(samples, sampleRate, sensitivity01, start, end) {
+    var out = [];
+    if (!samples || !(samples.length > 0)) return out;
+    var sr = Number(sampleRate) > 0 ? Number(sampleRate) : 44100;
+    var sensIn = Number(sensitivity01);
+    var sens = isFinite(sensIn) ? sliceClamp(sensIn, 0, 1) : 0.5;
+    var len = samples.length;
+    var w = sliceWindow(start, end, len);
+    var hop = Math.max(8, Math.round(sr * 0.002));
+    var nh = Math.floor((w.b - w.a) / hop);
+    if (nh < 6) return out;
+    var env = new Float64Array(nh);
+    var peak = 0;
+    for (var i = 0; i < nh; i++) {
+        var base = w.a + i * hop, acc = 0;
+        for (var j = 0; j < hop; j++) {
+            var x = samples[base + j];
+            acc += x * x;
+        }
+        var r = Math.sqrt(acc / hop);
+        env[i] = r;
+        if (r > peak) peak = r;
+    }
+    if (peak < 1e-5) return out;
+    var floor = peak * 1e-3;
+    var lg = new Float64Array(nh);
+    for (var k = 0; k < nh; k++) lg[k] = Math.log(Math.max(env[k], floor));
+
+    var thr = 2.4 - 1.8 * sens;                       // nepers rise (~21 dB .. ~5 dB)
+    var minLevel = peak * (0.12 - 0.115 * sens);      // ignore bumps far below the loudest part
+    var spacing = Math.max(1, Math.round(0.030 * sr / hop));
+    var guard = Math.ceil(0.010 * sr / hop);
+    var look = 4;
+    var lastAt = -spacing;
+    var startPos = w.a / len;
+    for (var h = 0; h < nh; h++) {
+        if (h - lastAt < spacing) continue;
+        var ref = h > 0 ? lg[h - 1] : Math.log(floor);
+        for (var q = 2; q <= look && h - q >= 0; q++) if (lg[h - q] < ref) ref = lg[h - q];
+        var flux = lg[h] - ref;
+        if (flux > thr && env[h] > minLevel) {
+            lastAt = h;
+            if (h * hop < Math.round(0.010 * sr) || h < guard) continue;
+            var pos = (w.a + h * hop) / len;
+            if (pos > startPos && pos >= w.s && pos < w.e && pos < 1) out.push(pos);
+        }
+    }
+    return out;
+}
+
+// YIN pitch (Hz, 0 = unvoiced) of decimated signal d at offset o, window W.
+function sliceYin(d, o, W, tauMin, tauMax, diff, cm, fs) {
+    var tau, j, delta, sum;
+    diff[0] = 0;
+    for (tau = 1; tau <= tauMax; tau++) {
+        sum = 0;
+        for (j = 0; j < W; j++) {
+            delta = d[o + j] - d[o + j + tau];
+            sum += delta * delta;
+        }
+        diff[tau] = sum;
+    }
+    var run = 0;
+    cm[0] = 1;
+    for (tau = 1; tau <= tauMax; tau++) {
+        run += diff[tau];
+        cm[tau] = run > 0 ? diff[tau] * tau / run : 1;
+    }
+    var best = -1;
+    for (tau = tauMin; tau < tauMax; tau++) {
+        if (cm[tau] < 0.2) {
+            while (tau + 1 < tauMax && cm[tau + 1] < cm[tau]) tau++;
+            best = tau;
+            break;
+        }
+    }
+    if (best < 0) return 0;
+    var t = best;
+    if (best > 1 && best < tauMax) {
+        var a = cm[best - 1], b = cm[best], c = cm[best + 1];
+        var den = a + c - 2 * b;
+        if (den > 1e-12) t = best + 0.5 * (a - c) / den;
+    }
+    return fs / t;
+}
+
+// A marker where the detected pitch changes. YIN on ~8 kHz decimated audio, 20 ms
+// hop, 3-frame median on MIDI pitch. A deviation of >= thr semitones from the
+// current note held for `hold` frames, or an unvoiced -> voiced transition after
+// a gap of >= 2 frames, makes a marker. Sensitivity 0..1: thr 1.8..0.6 st,
+// hold 3..1 frames.
+function slicePitches(samples, sampleRate, sensitivity01, start, end) {
+    var out = [];
+    if (!samples || !(samples.length > 0)) return out;
+    var sr = Number(sampleRate) > 0 ? Number(sampleRate) : 44100;
+    var sensIn = Number(sensitivity01);
+    var sens = isFinite(sensIn) ? sliceClamp(sensIn, 0, 1) : 0.5;
+    var len = samples.length;
+    var w = sliceWindow(start, end, len);
+    var dec = Math.max(1, Math.round(sr / 8000));
+    var fs = sr / dec;
+    var W = 256, tauMin = Math.max(2, Math.floor(fs / 1000)), tauMax = Math.ceil(fs / 70);
+    var nd = Math.floor((w.b - w.a) / dec);
+    var hopD = Math.max(1, Math.round(0.020 * fs));
+    var span = W + tauMax + 1;
+    if (nd < span + hopD) return out;
+    var d = new Float32Array(nd);
+    var gpeak = 0;
+    for (var i = 0; i < nd; i++) {
+        var acc = 0, base = w.a + i * dec;
+        for (var j = 0; j < dec; j++) acc += samples[base + j];
+        acc /= dec;
+        d[i] = acc;
+        var ab = acc < 0 ? -acc : acc;
+        if (ab > gpeak) gpeak = ab;
+    }
+    if (gpeak < 1e-4) return out;
+    var nf = Math.floor((nd - span) / hopD) + 1;
+    var diff = new Float64Array(tauMax + 2), cm = new Float64Array(tauMax + 2);
+    var gate = gpeak * 0.02;
+    var midi = new Float64Array(nf);
+    for (var f = 0; f < nf; f++) {
+        var o = f * hopD, e2 = 0;
+        for (var k = 0; k < W; k += 2) e2 += d[o + k] * d[o + k];
+        if (Math.sqrt(e2 / (W / 2)) < gate) { midi[f] = NaN; continue; }
+        var hz = sliceYin(d, o, W, tauMin, tauMax, diff, cm, fs);
+        midi[f] = hz > 0 ? 69 + 12 * Math.log(hz / 440) / Math.LN2 : NaN;
+    }
+    // 3-frame median over voiced neighbours; unvoiced stays unvoiced.
+    var sm = new Float64Array(nf);
+    for (var g = 0; g < nf; g++) {
+        if (midi[g] !== midi[g]) { sm[g] = NaN; continue; }
+        var v = [midi[g]];
+        if (g > 0 && midi[g - 1] === midi[g - 1]) v.push(midi[g - 1]);
+        if (g + 1 < nf && midi[g + 1] === midi[g + 1]) v.push(midi[g + 1]);
+        v.sort(function (x, y) { return x - y; });
+        sm[g] = v.length === 3 ? v[1] : (v.length === 2 ? (v[0] + v[1]) * 0.5 : v[0]);
+    }
+    var thr = 1.8 - 1.2 * sens;
+    var hold = Math.max(1, Math.round(3 - 2 * sens));
+    var centre = (W * 0.5) * dec; // frame centre offset in input samples
+    var startPos = w.a / len;
+    function emit(frame) {
+        var pos = (w.a + frame * hopD * dec + centre) / len;
+        if (pos > startPos && pos >= w.s && pos < w.e && pos < 1) out.push(pos);
+    }
+    var ref = NaN, segSum = 0, segN = 0;
+    var gap = 0, seen = false;
+    // leading silence counts as a gap, so the first note after it gets a marker
+    var candStart = -1, candRef = NaN, candN = 0;
+    for (var t = 0; t < nf; t++) {
+        var p = sm[t];
+        if (p !== p) { gap++; candStart = -1; candN = 0; continue; }
+        if (!seen || gap >= 2) {
+            if (gap >= 2) {
+                // unvoiced -> voiced: confirm it stays voiced for `hold` frames
+                var okc = true;
+                for (var c = 1; c < hold; c++) if (t + c >= nf || sm[t + c] !== sm[t + c]) { okc = false; break; }
+                if (okc) emit(t);
+            }
+            seen = true; gap = 0;
+            ref = p; segSum = p; segN = 1; candStart = -1; candN = 0;
+            continue;
+        }
+        gap = 0;
+        if (Math.abs(p - ref) >= thr) {
+            if (candStart >= 0 && Math.abs(p - candRef) < 1) candN++;
+            else { candStart = t; candRef = p; candN = 1; }
+            if (candN >= hold) {
+                emit(candStart);
+                ref = p; segSum = p; segN = 1; candStart = -1; candN = 0;
+            }
+        } else {
+            candStart = -1; candN = 0;
+            segSum += p; segN++;
+            ref = segSum / segN;
+            if (segN > 24) { segSum = ref * 12; segN = 12; }
+        }
+    }
+    return out;
+}
+
+// Manual markers: both return NEW arrays.
+function addSliceMarker(markers, pos) {
+    var arr = Array.isArray(markers) ? markers.slice() : [];
+    var p = Number(pos);
+    if (!isFinite(p) || p < 0 || p >= 1) return arr;
+    for (var i = 0; i < arr.length; i++) if (Math.abs(arr[i] - p) < 0.002) return arr;
+    arr.push(p);
+    arr.sort(function (a, b) { return a - b; });
+    return arr;
+}
+
+function removeSliceMarker(markers, index) {
+    var arr = Array.isArray(markers) ? markers.slice() : [];
+    var i = Math.round(Number(index));
+    if (isFinite(i) && i >= 0 && i < arr.length) arr.splice(i, 1);
+    return arr;
+}
+
+
+// Through a local, so the type checker keeps this file a global script (as Max concatenates it)
+// instead of a CommonJS module whose functions sampler_ui.js / sampler_face.js could not see.
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         SAMPLER_MODES: SAMPLER_MODES,
         NOTE_NAMES: NOTE_NAMES,
         midiToNoteName: midiToNoteName,
@@ -345,6 +636,14 @@ if (typeof module !== "undefined" && module.exports) {
         activeSliceStarts: activeSliceStarts,
         sliceIndexAt: sliceIndexAt,
         estimateRootMidiNote: estimateRootMidiNote,
-        createVoiceAllocator: createVoiceAllocator
+        createVoiceAllocator: createVoiceAllocator,
+        SLICE_BEAT_NAMES: SLICE_BEAT_NAMES,
+        sliceDivisions: sliceDivisions,
+        sliceBeats: sliceBeats,
+        bpmFromName: bpmFromName,
+        sliceOnsets: sliceOnsets,
+        slicePitches: slicePitches,
+        addSliceMarker: addSliceMarker,
+        removeSliceMarker: removeSliceMarker
     };
 }

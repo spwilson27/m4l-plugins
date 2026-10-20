@@ -1,16 +1,19 @@
 // Audio probe for scripts/run_tinyspace_audio_tests.py.
+// Migrated to scripts/max_harness.py: rec holds 3 channels (gen L, gen R, control tone).
 // jsarguments: mode, config kind.
 // The patch sends `setbuffer <expanded #0-tsconfig name>` before DSP.
 // `analyze <durationMs>` peeks the recording buffer "rec" and writes the report.
 // The report file is created only here, so the runner does not treat an empty
 // file as a finished measurement.
 
-inlets = 4;
-outlets = 3;
+inlets = 1;
+outlets = 1;
 
 var mode = jsarguments.length > 1 ? jsarguments[1] : "sine";
 var cfgKind = jsarguments.length > 2 ? jsarguments[2] : "single";
 var peaks = { gen: -1, ctl: -1, genR: -1 };
+var resultPath = "/tmp/tinyspace_audio.txt";
+function resultpath(p) { resultPath = String(p); }
 var armed = false;
 var meterName = "";
 
@@ -33,12 +36,6 @@ function setbuffer(name, meters) {
     post("PROBE_CONFIG " + name + " " + buf.framecount() + "\n");
 }
 
-function msg_float(v) {
-    if (inlet === 0) peaks.gen = v;
-    else if (inlet === 1) peaks.ctl = v;
-    else if (inlet === 2) peaks.genR = v;
-}
-
 function analyze(durMs) {
     if (armed) return;
     armed = true;
@@ -50,6 +47,11 @@ function analyze(durMs) {
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var left = readChannel(rec, 1, n);
     var right = readChannel(rec, 2, n);
+    var ctl = readChannel(rec, 3, n);
+    // Peaks are measured from the recorded window (ch1 = gen L, ch2 = gen R, ch3 = control tone).
+    peaks.gen = maxAbs(left);
+    peaks.genR = maxAbs(right);
+    peaks.ctl = maxAbs(ctl);
     var env = envelope(left, right, sr);
     var sec = [];
     var si;
@@ -70,19 +72,22 @@ function analyze(durMs) {
     var stats = scan(left, right);
     var corr = correlation(left, right, Math.floor(sr * 0.02));
     var meterPeak = meterMax();
-    var report = new File("/tmp/tinyspace_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
+    report.eof = 0;
     report.writestring(
         "genL " + peaks.gen + "\n" +
         "genR " + peaks.genR + "\n" +
         "ctl " + peaks.ctl + "\n" +
         "sr " + sr + "\n" +
         "frames " + n + "\n" +
+        "ch " + rec.channelcount() + "\n" +
         "nan " + stats.nan + "\n" +
         "peak " + stats.peak + "\n" +
         "corr " + corr + "\n" +
         "meter " + meterPeak + "\n" +
-        "sec " + sec.join(" ") + "\n" +
-        "env " + env.join(" ") + "\n"
+        // The shared harness only keeps two-token `key value` lines, so vectors are one line per index.
+        sec.map(function (v, i) { return "sec" + i + " " + v + "\n"; }).join("") +
+        env.map(function (v, i) { return "env" + i + " " + v + "\n"; }).join("")
     );
     report.close();
     post("PROBE_SHUTDOWN " + peaks.gen + " " + peaks.ctl + " " + peaks.genR + " peak " + stats.peak + "\n");
@@ -102,6 +107,12 @@ function meterMax() {
     }
     post("PROBE_METERS name " + meterName + " frames " + buf.framecount() + " n " + n + " s0 " + (n ? chunk[0] : 0) + " s1 " + (n > 1 ? chunk[1] : 0) + " s3 " + (n > 3 ? chunk[3] : 0) + "\n");
     return peak;
+}
+
+function maxAbs(a) {
+    var m = 0;
+    for (var i = 0; i < a.length; i++) { var v = Math.abs(a[i]); if (v > m) m = v; }
+    return m;
 }
 
 function readChannel(buf, channel, n) {

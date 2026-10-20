@@ -1,7 +1,7 @@
 // Phase Fold: audio-reactive v8ui for the three layouts (a, b, c).
 // Reads buffer~ #0-phasefoldscope (4 channels, see src/phasefold_core.genexpr):
 //   frames 0..255 : ch1 dry max, ch2 dry min, ch3 wet max, ch4 wet min (peek channels are 1-based)
-//   frame 256     : write position, heartbeat, FFT size, wet gate
+//   frame 256     : write position, heartbeat
 //   frame 257     : input centroid, output centroid, pivot, Auto Gain dB
 // The layout comes from the build (the line below) and from a "layout a|b|c" message.
 // Dragging the Phase handle sends ["phase", percent] out of outlet 0.
@@ -204,8 +204,7 @@ function pullScope() {
         wMin[k] = d > 0 ? 0 : d;
         peak = Math.max(peak, dMax[k], -dMin[k], wMax[k], -wMin[k]);
     }
-    nAct = at(scopeBuf.peek(3, 256, 1), 0) || nAct;
-    wetGate = at(scopeBuf.peek(4, 256, 1), 0);
+    nAct = sizeFromIdx(curSizeIdx);
     cIn = clamp(at(scopeBuf.peek(1, 257, 1), 0), 0, 1);
     cOut = clamp(at(scopeBuf.peek(2, 257, 1), 0), 0, 1);
     pivotPos = clamp(at(scopeBuf.peek(3, 257, 1), 0), 0, 1);

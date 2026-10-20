@@ -1,6 +1,6 @@
 // Shared Cepstra helpers: parameter mapping, cutoff-quefrency math, telemetry bin layout, Mid/Side lock,
 // and a reference implementation of the cepstral split used by src/cepstra_core.genexpr.
-// Prepended into src/cepstra_ui.js at build time and exported for Node tests.
+// Prepended into src/cepstra_display.js at build time and exported for Node tests.
 
 const SCOPE_SAMPS = 272; // 0..191 signed Mid cepstrum c[n], linear n = 0..20 ms (9999 = beyond N/2), 256 L, 257 f0, 258 level, 259 frame, 260 N, 261 voiced, 262 mode
 const NUM_QUEF = 192;
@@ -17,7 +17,8 @@ const SHIFT_RANGE_ST = 36;
 const LIFTER_MIN_MS = 0.3;
 const LIFTER_MAX_MS = 15.0;
 const DEFAULT_RES_PCT = 57;
-const GATE_MAX_DB = 30;
+const GATE_RANGE_MIN_DB = 8;  // Spec gate range at 100%
+const GATE_RANGE_SPAN_DB = 40; // extra range at 0+ (48 dB total)
 const EPS_MAG = 1e-9;
 
 function clamp(v, lo, hi) {
@@ -88,17 +89,29 @@ function freqToBinPos(hz, sr) {
     return (Math.log(Math.max(hz, BIN_FMIN) / BIN_FMIN) / Math.log(fmax / BIN_FMIN)) * (NUM_BINS - 1);
 }
 
-// Gate: 0..1 -> threshold in nepers above the envelope (0 -> off, 1 -> +30 dB).
-function gateThresholdNepers(gate01) {
-    return clamp(gate01, 0, 1) * (GATE_MAX_DB / 8.685889638);
+// Spec gate: 0..1 -> how far below the local partial peak a fine-structure bin may sit before it is cut
+// (8 + 40 * (1 - g)^3 dB: 48 dB at 0+, ~17 dB at 40%, 8 dB at 100%).
+function gateRangeNepers(gate01) {
+    const om = 1 - clamp(gate01, 0, 1);
+    return (GATE_RANGE_MIN_DB + GATE_RANGE_SPAN_DB * om * om * om) / 8.685889638;
 }
 
-// Soft-knee harmonic gate on the fine structure h (nepers). Mirrors gate_h() in the GenExpr core.
-function gateFineStructure(h, gate01) {
+// Peak envelope of the fine structure: P[k] = max_j (H[j] - d |k - j|), d = 1 neper per half harmonic spacing
+// implied by the lifter (W = N / 2L). Mirrors the part-0 passes in job_spec().
+function specPeakEnvelope(H, lag, n) {
+    const nh = n / 2, d = 1 / Math.max(1, 0.5 * n / Math.max(lag, 2)), P = new Float64Array(nh + 1);
+    let run = -1000;
+    for (let k = 0; k <= nh; k++) { run = Math.max(H[k], run - d); P[k] = run; }
+    run = -1000;
+    for (let k = nh; k >= 0; k--) { run = Math.max(H[k], run - d); P[k] = Math.max(P[k], run); }
+    return P;
+}
+
+// Soft-knee Spec gate on the fine structure h (nepers) relative to its local peak p. Mirrors gate_h() in the GenExpr core.
+function gateFineStructure(h, gate01, p) {
     if (gate01 <= 0.0005) return h;
-    const thr = gateThresholdNepers(gate01);
     const kn = 0.6;
-    const t = clamp((h - (thr - kn)) / (2 * kn), 0, 1);
+    const t = clamp((h - p + gateRangeNepers(gate01) + kn) / (2 * kn), 0, 1);
     const g = t * t * (3 - 2 * t);
     const depth = 6.9 * clamp(gate01 * 10, 0, 1);
     return h - (1 - g) * depth;
@@ -187,57 +200,6 @@ function poolSigned(values, i0, i1) {
     return { v: best, valid };
 }
 
-// Knob table in face order. step = value quantization.
-const KNOBS = [
-    { key: "res", msg: "res", label: "Res", min: 0, max: 100, def: 57, step: 0.1, unit: "%" },
-    { key: "mid", msg: "mid", label: "Mid", min: -36, max: 36, def: 0, step: 0.1, unit: " st" },
-    { key: "mix", msg: "mix", label: "Mix", min: 0, max: 100, def: 100, step: 0.1, unit: "%" },
-    { key: "side", msg: "side", label: "Side", min: -36, max: 36, def: 0, step: 0.1, unit: " st" },
-    { key: "gate", msg: "gate", label: "Gate", min: 0, max: 100, def: 0, step: 0.1, unit: "%" },
-];
-const SLIDERS = [
-    { key: "fmt", msg: "fmt", label: "Formant", min: 0, max: 200, def: 100, step: 1, unit: "%" },
-    { key: "harm", msg: "harm", label: "Harmonic", min: 0, max: 200, def: 100, step: 1, unit: "%" },
-];
-const KNOB_DRAG_PX = 120; // pixels of vertical drag for the full range
-
-function specFor(key) {
-    return KNOBS.concat(SLIDERS).filter((k) => k.key === key)[0];
-}
-
-function quantizeTo(spec, v) {
-    return clamp(Math.round(v / spec.step) * spec.step, spec.min, spec.max);
-}
-
-// Vertical drag (dyPx > 0 = mouse moved down) -> value. Shift = 8x finer.
-function knobDragValue(spec, startVal, dyPx, fine) {
-    const per = (spec.max - spec.min) / KNOB_DRAG_PX / (fine ? 8 : 1);
-    return clamp(startVal - dyPx * per, spec.min, spec.max);
-}
-
-// Horizontal dot slider: absolute position -> value.
-function sliderValueAt(spec, x, x0, w) {
-    return quantizeTo(spec, spec.min + clamp((x - x0) / w, 0, 1) * (spec.max - spec.min));
-}
-
-function valueToNorm(spec, v) {
-    return clamp((v - spec.min) / (spec.max - spec.min), 0, 1);
-}
-
-function formatValue(spec, v) {
-    if (spec.unit === " st") return (v >= 0 ? "+" : "") + v.toFixed(1) + " st";
-    return (spec.max > 100 ? Math.round(v) : v.toFixed(1)) + "%";
-}
-
-// Glyph geometry (all pure, drawn by the v8ui)
-const GATE_BAR_BASE = [0.5, 0.8, 0.35, 1.0, 0.6, 0.9, 0.4, 0.7, 0.3];
-function resGridCount(norm) { return 4 + Math.round(clamp(norm, 0, 1) * 4); }
-function mixRingCount(norm) { return Math.ceil(clamp(norm, 0, 1) * 5 - 1e-9); }
-function gateBarHeights(norm) {
-    const g = clamp(norm, 0, 1);
-    return GATE_BAR_BASE.map((h) => (h < g * 0.9 ? 0.06 : h * (1 - 0.35 * g)));
-}
-function shiftOffsetNorm(st) { return clamp(st / SHIFT_RANGE_ST, -1, 1); }
 
 // ---------------------------------------------------------------------------------------------
 // Reference cepstral split (plain JS, mirrors the GenExpr pipeline for one real channel)
@@ -316,7 +278,7 @@ function cepstralSplit(frame, lag) {
         E[k] = fr[k];
         H[k] = logmag[k] - E[k];
     }
-    return { xr, xi, logmag, cepstrum: cr, E, H, formantCepstrum: Float64Array.from(cr.map((v, i) => v * lifterWeight(i <= n / 2 ? i : n - i, lag))) };
+    return { lag, xr, xi, logmag, cepstrum: cr, E, H, formantCepstrum: Float64Array.from(cr.map((v, i) => v * lifterWeight(i <= n / 2 ? i : n - i, lag))) };
 }
 
 function interpEnv(E, kf, nh) {
@@ -327,21 +289,52 @@ function interpEnv(E, kf, nh) {
     return E[i0] * (1 - fr) + E[i1] * fr;
 }
 
-// Output log-magnitude for bin k (0..N/2): exp(fmt * E'(k) + harm * gate(H)).
-function shiftedLogMag(split, k, ratio, fmt, harm, gate01) {
+// Output log-magnitude for bin k (0..N/2): clip(E'(k) + gate(H), -21, 12).
+function shiftedLogMag(split, k, ratio, gate01) {
     const nh = split.E.length / 2;
     const ep = interpEnv(split.E, k / ratio, nh);
-    const h = gateFineStructure(split.H[k], gate01);
-    return clamp(fmt * ep + harm * h, -21, 12);
+    if (gate01 > 0.0005 && !split.peakEnv) split.peakEnv = specPeakEnvelope(split.H, split.lag, split.E.length);
+    const h = gateFineStructure(split.H[k], gate01, split.peakEnv ? split.peakEnv[k] : split.H[k]);
+    return clamp(ep + h, -21, 12);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// Ceps gate = voicing-keyed gate: reference mirroring job_cgate() in src/cepstra_core.genexpr
+// ---------------------------------------------------------------------------------------------
+const GATE_MODE_NAMES = ["Spec", "Ceps"];
+const VOICING_T0 = 3.5;  // pitchedness threshold at Gate 0+ (noise scores ~3-4.5 at any level)
+const VOICING_T_RATIO = 7; // threshold at Gate 100% = 3.5 * 7 = 24.5 (only clean pitched content passes)
+
+// Pitchedness of a frame: largest cepstral peak in max(L, 1 ms)..1/60 s over the RMS of that region.
+function cepstralVoicing(c, lag, sr, n) {
+    const nh = n / 2, qlo = Math.max(Math.ceil(lag), Math.floor(sr / 1000)), qhi = Math.min(nh - 2, Math.floor(sr / 60));
+    let pk = 0, ss = 0, cnt = 0;
+    for (let i = qlo; i <= qhi; i++) { pk = Math.max(pk, c[i]); ss += c[i] * c[i]; cnt++; }
+    const rms = Math.sqrt(ss / Math.max(cnt, 1) + 1e-20);
+    return { v: pk / rms, rms };
+}
+
+function voicingThreshold(gate01) {
+    return VOICING_T0 * Math.pow(VOICING_T_RATIO, clamp(gate01, 0, 1));
+}
+
+// One frame of the gate: smoothed openness (open 0.7, close 0.25) and the log gain (up to -60 dB) for both channels.
+function voicingGateStep(open, v, gate01) {
+    if (gate01 <= 0.0005) return { open: 1, logGain: 0 };
+    const t = clamp((v - voicingThreshold(gate01) + 1) / 2, 0, 1), tgt = t * t * (3 - 2 * t);
+    const op = open + (tgt - open) * (tgt > open ? 0.7 : 0.25);
+    return { open: op, logGain: -(1 - op) * 6.9 * clamp(gate01 * 10, 0, 1) };
 }
 
 if (typeof module !== "undefined" && module.exports) {
     module.exports = {
-        SCOPE_SAMPS, NUM_QUEF, QUEF_MIN_MS, QUEF_MAX_MS, QUEF_SENTINEL, quefMsAt, msToAxis01, axis01ToMs, resToAxis01, axis01ToRes, DISPLAY_K, cepstrumDisplayHeight, percentileAbs, adaptRef, columnRange, poolSigned, KNOBS, SLIDERS, KNOB_DRAG_PX, specFor, quantizeTo, knobDragValue, sliderValueAt, valueToNorm, formatValue, GATE_BAR_BASE, resGridCount, mixRingCount, gateBarHeights, shiftOffsetNorm, NUM_BINS, BIN_FMIN, BIN_FMAX, FFT_SIZES, MODE_NAMES, QUALITY_NAMES, SHIFT_RANGE_ST,
-        LIFTER_MIN_MS, LIFTER_MAX_MS, DEFAULT_RES_PCT, GATE_MAX_DB, EPS_MAG,
+        GATE_MODE_NAMES, VOICING_T0, VOICING_T_RATIO, cepstralVoicing, voicingThreshold, voicingGateStep,
+        SCOPE_SAMPS, NUM_QUEF, QUEF_MIN_MS, QUEF_MAX_MS, QUEF_SENTINEL, quefMsAt, msToAxis01, axis01ToMs, resToAxis01, axis01ToRes, DISPLAY_K, cepstrumDisplayHeight, percentileAbs, adaptRef, columnRange, poolSigned, NUM_BINS, BIN_FMIN, BIN_FMAX, FFT_SIZES, MODE_NAMES, QUALITY_NAMES, SHIFT_RANGE_ST,
+        LIFTER_MIN_MS, LIFTER_MAX_MS, DEFAULT_RES_PCT, GATE_RANGE_MIN_DB, GATE_RANGE_SPAN_DB, EPS_MAG,
         clamp, fftSizeForQuality, latencySamples, shiftRatio, manualLagSamples, periodScale, midiToHz,
         midiPeriodSamples, lifterLagSamples, resFromLag, lagToMs, binFreq, freqToBinPos,
-        gateThresholdNepers, gateFineStructure, applyLock,
+        gateRangeNepers, specPeakEnvelope, gateFineStructure, applyLock,
         fftInPlace, hannWindow, lifterWeight, cepstralSplit, interpEnv, shiftedLogMag,
     };
 }
