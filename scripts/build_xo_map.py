@@ -161,35 +161,17 @@ def build():
     with open(FOLDER_JS_PATH, "r", encoding="utf-8") as f:
         folder_js_code = f.read()
 
+    # Compact embedded HTML & JS comments/blank lines so node.codebox code buffer stays well under Max's atom limit
+    import re
+    compact_html = re.sub(r"\n\s+", "\n", html_ui_str)
+    compact_node_js = re.sub(r"(?m)^\s*//.*$\n?", "", node_js_raw)
+    compact_node_js = re.sub(r"\n{2,}", "\n", compact_node_js)
+
     embedded_node_code = (
-        f"const EMBEDDED_XO_HTML = {json.dumps(html_ui_str)};\n\n" + node_js_raw
+        f"const EMBEDDED_XO_HTML = {json.dumps(compact_html)};\n" + compact_node_js
     )
 
     boxes = [
-        # --- 0. Embedded Node for Max Engine (placed first in z-order behind panel-left so it boots in Presentation Mode) ---
-        {
-            "box": {
-                "code": embedded_node_code,
-                "fontface": 0,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-node",
-                "ignoreclick": 1,
-                "maxclass": "node.codebox",
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "patching_rect": [420.0, 240.0, 360.0, 180.0],
-                "presentation": 1,
-                "presentation_rect": [0.0, 220.0, 10.0, 10.0],
-                "saved_object_attributes": {
-                    "autostart": 1,
-                    "defer": 1,
-                    "watch": 0
-                }
-            }
-        },
-
         # --- 1. Audio Pass-Through + Mono-Safe Stereo Preview Mixer + Playhead Scanner ---
         {
             "box": {
@@ -449,17 +431,70 @@ def build():
                 "fontsize": 10.0,
                 "id": "obj-route-node",
                 "maxclass": "newobj",
-                "numinlets": 19,
-                "numoutlets": 19,
-                "outlettype": [""] * 19,
-                "patching_rect": [420.0, 435.0, 660.0, 20.0],
+                "numinlets": 23,
+                "numoutlets": 23,
+                "outlettype": [""] * 23,
+                "patching_rect": [420.0, 435.0, 780.0, 20.0],
                 "text": (
                     "route server_url minimap_clear minimap_batch minimap_done "
                     "selected_info play_file play_speed play_env play_scan_dur "
                     "play_mono play_gain saved_list_sync sync_playback_dials "
                     "prompt_folder strip_filter_cat strip_filter_maxlen strip_filter_tone "
-                    "folder_list_sync"
+                    "strip_filter_tonal strip_filter_drum folder_list_sync patcher_cmd setwidth_cmd"
                 )
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-pak-vis",
+                "maxclass": "newobj",
+                "numinlets": 3,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [900.0, 520.0, 62.0, 20.0],
+                "text": "pak 1 1 1"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-expr-width",
+                "maxclass": "newobj",
+                "numinlets": 3,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [900.0, 548.0, 232.0, 20.0],
+                "text": "expr 276 + $i1 * 116 + $i2 * 214 + $i3 * 170"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-setwidth",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [900.0, 575.0, 102.0, 20.0],
+                "text": "prepend setwidth"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-root-thispatcher",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "patching_rect": [900.0, 468.0, 68.0, 20.0],
+                "save": ["#N", "thispatcher", ";", "#Q", "end", ";"],
+                "text": "thispatcher"
             }
         },
         {
@@ -654,6 +689,32 @@ def build():
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
+                "id": "obj-prep-sf-tonal",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [315.0, 450.0, 132.0, 20.0],
+                "text": "prepend strip_filter_tonal"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-sf-drum",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [180.0, 450.0, 132.0, 20.0],
+                "text": "prepend strip_filter_drum"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
                 "id": "obj-prep-sf-search",
                 "maxclass": "newobj",
                 "numinlets": 1,
@@ -670,10 +731,10 @@ def build():
                 "id": "obj-unpack-recalled",
                 "maxclass": "newobj",
                 "numinlets": 1,
-                "numoutlets": 3,
-                "outlettype": ["float", "float", "float"],
-                "patching_rect": [750.0, 468.0, 102.0, 20.0],
-                "text": "unpack 0. 2500. 0."
+                "numoutlets": 7,
+                "outlettype": ["float", "float", "float", "int", "float", "float", "float"],
+                "patching_rect": [750.0, 468.0, 185.0, 20.0],
+                "text": "unpack 0. 2500. 0. 0 100. 45. 0."
             }
         },
 
@@ -835,14 +896,14 @@ def build():
         {
             "box": {
                 "fontface": 1,
-                "fontsize": 10.0,
+                "fontsize": 9.0,
                 "id": "obj-title-lbl",
                 "maxclass": "live.comment",
                 "numinlets": 1,
                 "numoutlets": 0,
-                "patching_rect": [420.0, 30.0, 92.0, 18.0],
+                "patching_rect": [420.0, 30.0, 76.0, 16.0],
                 "presentation": 1,
-                "presentation_rect": [10.0, 8.0, 92.0, 18.0],
+                "presentation_rect": [8.0, 8.0, 76.0, 16.0],
                 "text": "XO Sample Map",
                 "textcolor": [1.0, 0.709804, 0.196078, 1.0],
                 "textjustification": 0
@@ -863,9 +924,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [520.0, 30.0, 62.0, 15.0],
+                "patching_rect": [520.0, 30.0, 54.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [104.0, 9.0, 62.0, 15.0],
+                "presentation_rect": [86.0, 9.0, 54.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Open Map Window",
@@ -890,7 +951,7 @@ def build():
                 "activebgoncolor": [0.29, 0.87, 0.50, 1.0],
                 "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Shows or collapses the Saved Samples List pane inside the mini editor.",
+                "annotation": "Shows or collapses the Saved Samples List pane inside the mini editor (shrinking the M4L device width).",
                 "annotation_name": "Show Saved List",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
                 "id": "obj-toggle-saved-btn",
@@ -899,9 +960,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [590.0, 30.0, 48.0, 15.0],
+                "patching_rect": [590.0, 30.0, 40.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [172.0, 9.0, 48.0, 15.0],
+                "presentation_rect": [143.0, 9.0, 40.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Show Saved List",
@@ -939,7 +1000,7 @@ def build():
                 "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
                 "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Shows or collapses the Filters section.",
+                "annotation": "Shows or collapses the Filters section (shrinking the M4L device width).",
                 "annotation_name": "Show Filters Section",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
                 "id": "obj-toggle-filters-btn",
@@ -948,9 +1009,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [645.0, 30.0, 48.0, 15.0],
+                "patching_rect": [645.0, 30.0, 40.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [224.0, 9.0, 48.0, 15.0],
+                "presentation_rect": [186.0, 9.0, 40.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Show Filters Section",
@@ -967,6 +1028,19 @@ def build():
                 "text": "Filters",
                 "texton": "Filters",
                 "varname": "ShowFiltersSection"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-show-filters",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [645.0, 52.0, 126.0, 20.0],
+                "text": "prepend set_show_filters"
             }
         },
         {
@@ -1001,7 +1075,7 @@ def build():
                 "activebgoncolor": [1.0, 0.694, 0.18, 1.0],
                 "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Shows or collapses the Playback section.",
+                "annotation": "Shows or collapses the Playback section (shrinking the M4L device width).",
                 "annotation_name": "Show Playback Section",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
                 "id": "obj-toggle-playback-btn",
@@ -1010,9 +1084,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
-                "patching_rect": [700.0, 30.0, 56.0, 15.0],
+                "patching_rect": [700.0, 30.0, 48.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [276.0, 9.0, 56.0, 15.0],
+                "presentation_rect": [229.0, 9.0, 48.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Show Playback Section",
@@ -1029,6 +1103,19 @@ def build():
                 "text": "Playback",
                 "texton": "Playback",
                 "varname": "ShowPlaybackSection"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-show-playback",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [780.0, 30.0, 138.0, 20.0],
+                "text": "prepend set_show_playback"
             }
         },
         {
@@ -1058,7 +1145,7 @@ def build():
             }
         },
 
-        # --- 6. Center Panel: FILTERS (Search, MaxLen, Tone & Remembered Folder Filter List) ---
+        # --- 6. Center Panel: FILTERS (Search, Re-Seed, MaxLen, Tone, Tonal, Druminess & Remembered Folder List) ---
         {
             "box": {
                 "fontface": 1,
@@ -1067,12 +1154,60 @@ def build():
                 "maxclass": "live.comment",
                 "numinlets": 1,
                 "numoutlets": 0,
-                "patching_rect": [420.0, 90.0, 92.0, 15.0],
+                "patching_rect": [420.0, 90.0, 68.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [398.0, 6.0, 92.0, 15.0],
+                "presentation_rect": [398.0, 6.0, 68.0, 15.0],
                 "text": "FILTERS",
                 "textcolor": [0.22, 0.74, 0.97, 1.0],
                 "textjustification": 0
+            }
+        },
+        {
+            "box": {
+                "activebgcolor": [0.12, 0.17, 0.23, 1.0],
+                "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
+                "activetextcolor": [0.22, 0.74, 0.97, 1.0],
+                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
+                "annotation": "Re-seeds and fills the 2D map with up to 1,500 samples from the full corpus that match all active filters.",
+                "annotation_name": "Re-Seed Filtered Map",
+                "bordercolor": [0.22, 0.74, 0.97, 0.75],
+                "id": "obj-reseed-filtered-btn",
+                "maxclass": "live.text",
+                "mode": 0,
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "parameter_enable": 1,
+                "patching_rect": [550.0, 110.0, 52.0, 14.0],
+                "presentation": 1,
+                "presentation_rect": [510.0, 6.0, 52.0, 14.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Re-Seed Filtered Map",
+                        "parameter_enum": ["val1", "val2"],
+                        "parameter_invisible": 2,
+                        "parameter_longname": "ReseedFilteredMap",
+                        "parameter_mmax": 1,
+                        "parameter_shortname": "Re-Seed",
+                        "parameter_type": 2
+                    }
+                },
+                "text": "Re-Seed",
+                "texton": "Re-Seed",
+                "varname": "ReseedFilteredMap"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-reseed-filtered",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [550.0, 158.0, 96.0, 20.0],
+                "text": "reseed_filtered"
             }
         },
         {
@@ -1093,7 +1228,7 @@ def build():
                 "parameter_enable": 1,
                 "patching_rect": [475.0, 110.0, 28.0, 14.0],
                 "presentation": 1,
-                "presentation_rect": [496.0, 6.0, 28.0, 14.0],
+                "presentation_rect": [566.0, 6.0, 28.0, 14.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Clear Search",
@@ -1128,9 +1263,9 @@ def build():
                 "numoutlets": 4,
                 "outlettype": ["", "int", "", ""],
                 "parameter_enable": 0,
-                "patching_rect": [510.0, 110.0, 126.0, 17.0],
+                "patching_rect": [510.0, 110.0, 196.0, 17.0],
                 "presentation": 1,
-                "presentation_rect": [398.0, 22.0, 126.0, 17.0],
+                "presentation_rect": [398.0, 22.0, 196.0, 17.0],
                 "tabmode": 0,
                 "textcolor": [0.92, 0.95, 0.98, 1.0],
                 "wordwrap": 0
@@ -1199,9 +1334,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
-                "patching_rect": [420.0, 165.0, 52.0, 46.0],
+                "patching_rect": [420.0, 165.0, 46.0, 46.0],
                 "presentation": 1,
-                "presentation_rect": [402.0, 41.0, 52.0, 46.0],
+                "presentation_rect": [398.0, 41.0, 46.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Max Length (50ms - Inf)",
@@ -1244,9 +1379,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
-                "patching_rect": [485.0, 165.0, 52.0, 46.0],
+                "patching_rect": [485.0, 165.0, 46.0, 46.0],
                 "presentation": 1,
-                "presentation_rect": [468.0, 41.0, 52.0, 46.0],
+                "presentation_rect": [448.0, 41.0, 46.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Tone Filter",
@@ -1279,6 +1414,94 @@ def build():
         },
         {
             "box": {
+                "activedialcolor": [0.22, 0.74, 0.97, 1.0],
+                "annotation": "Filters samples by Tonal vs. Atonal character (-100% Atonal/Noisy to +100% Tonal/Pitched, 0% = All).",
+                "annotation_name": "Tonal vs. Atonal Filter",
+                "id": "obj-filter-tonal-dial",
+                "maxclass": "live.dial",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [605.0, 110.0, 46.0, 46.0],
+                "presentation": 1,
+                "presentation_rect": [498.0, 41.0, 46.0, 46.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Tonal vs. Atonal Filter",
+                        "parameter_initial": [0.0],
+                        "parameter_initial_enable": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "TonalFilter",
+                        "parameter_mmax": 100.0,
+                        "parameter_mmin": -100.0,
+                        "parameter_shortname": "Tonal",
+                        "parameter_type": 0,
+                        "parameter_unitstyle": 5
+                    }
+                },
+                "varname": "TonalFilter"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-filter-tonal",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [680.0, 158.0, 122.0, 20.0],
+                "text": "prepend set_filter_tonal"
+            }
+        },
+        {
+            "box": {
+                "activedialcolor": [0.22, 0.74, 0.97, 1.0],
+                "annotation": "Filters between Pads/Sustained Clusters (-100%) and Punchy Percussive Drums (+100%, 0% = All).",
+                "annotation_name": "Druminess Filter (Pads vs. Drums)",
+                "id": "obj-filter-drum-dial",
+                "maxclass": "live.dial",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [665.0, 110.0, 46.0, 46.0],
+                "presentation": 1,
+                "presentation_rect": [548.0, 41.0, 46.0, 46.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Druminess Filter (Pads vs. Drums)",
+                        "parameter_initial": [0.0],
+                        "parameter_initial_enable": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "DruminessFilter",
+                        "parameter_mmax": 100.0,
+                        "parameter_mmin": -100.0,
+                        "parameter_shortname": "Drums",
+                        "parameter_type": 0,
+                        "parameter_unitstyle": 5
+                    }
+                },
+                "varname": "DruminessFilter"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-filter-drum",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [810.0, 158.0, 122.0, 20.0],
+                "text": "prepend set_filter_drum"
+            }
+        },
+        {
+            "box": {
                 "border": 0,
                 "filename": "none",
                 "id": "obj-folder-list",
@@ -1287,9 +1510,9 @@ def build():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "parameter_enable": 0,
-                "patching_rect": [750.0, 90.0, 126.0, 69.0],
+                "patching_rect": [750.0, 90.0, 196.0, 69.0],
                 "presentation": 1,
-                "presentation_rect": [398.0, 90.0, 126.0, 69.0],
+                "presentation_rect": [398.0, 90.0, 196.0, 69.0],
                 "textfile": {
                     "text": folder_js_code,
                     "filename": "none",
@@ -1300,7 +1523,7 @@ def build():
             }
         },
 
-        # --- 7. Right Panel: PLAYBACK CONTROLS (Pitch, Trim/Decay, Gain) ---
+        # --- 7. Right Panel: PLAYBACK CONTROLS (Pitch, Speed, Grain, Trim/Decay, Spectral, Gain, Reverse) ---
         {
             "box": {
                 "fontface": 1,
@@ -1309,12 +1532,61 @@ def build():
                 "maxclass": "live.comment",
                 "numinlets": 1,
                 "numoutlets": 0,
-                "patching_rect": [780.0, 30.0, 126.0, 16.0],
+                "patching_rect": [780.0, 30.0, 92.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [542.0, 7.0, 126.0, 16.0],
+                "presentation_rect": [612.0, 6.0, 92.0, 15.0],
                 "text": "PLAYBACK",
                 "textcolor": [1.0, 0.709804, 0.196078, 1.0],
                 "textjustification": 0
+            }
+        },
+        {
+            "box": {
+                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
+                "activebgoncolor": [1.0, 0.694, 0.18, 1.0],
+                "activetextcolor": [0.85, 0.89, 0.94, 1.0],
+                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
+                "annotation": "Reverses sample playback and edited WAV exports. Saved with sample.",
+                "annotation_name": "Reverse Playback",
+                "bordercolor": [1.0, 0.694, 0.18, 0.65],
+                "id": "obj-reverse-btn",
+                "maxclass": "live.text",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "parameter_enable": 1,
+                "patching_rect": [750.0, 165.0, 52.0, 14.0],
+                "presentation": 1,
+                "presentation_rect": [712.0, 6.0, 52.0, 14.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Reverse Playback",
+                        "parameter_enum": ["Forward", "Reverse"],
+                        "parameter_initial": [0],
+                        "parameter_initial_enable": 1,
+                        "parameter_invisible": 2,
+                        "parameter_longname": "ReversePlayback",
+                        "parameter_mmax": 1,
+                        "parameter_shortname": "Reverse",
+                        "parameter_type": 2
+                    }
+                },
+                "text": "Reverse",
+                "texton": "Reversed",
+                "varname": "ReversePlayback"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-reverse",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [750.0, 215.0, 102.0, 20.0],
+                "text": "prepend set_reverse"
             }
         },
         {
@@ -1328,9 +1600,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
-                "patching_rect": [550.0, 165.0, 52.0, 48.0],
+                "patching_rect": [550.0, 165.0, 48.0, 46.0],
                 "presentation": 1,
-                "presentation_rect": [548.0, 32.0, 52.0, 48.0],
+                "presentation_rect": [610.0, 30.0, 48.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Pitch Transpose",
@@ -1364,7 +1636,97 @@ def build():
         {
             "box": {
                 "activedialcolor": [1.0, 0.694, 0.18, 1.0],
-                "annotation": "Sets the trim & amplitude decay time for sample playback and edited exports.",
+                "annotation": "Granular & Spectral time-stretch playback speed (10% slow stretch up to 400% fast scan, 100% = 1:1). Saved with sample.",
+                "annotation_name": "Granular Speed",
+                "id": "obj-speed-dial",
+                "maxclass": "live.dial",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [810.0, 165.0, 48.0, 46.0],
+                "presentation": 1,
+                "presentation_rect": [664.0, 30.0, 48.0, 46.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Granular Speed",
+                        "parameter_exponent": 1.6,
+                        "parameter_initial": [100.0],
+                        "parameter_initial_enable": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "StretchSpeed",
+                        "parameter_mmax": 400.0,
+                        "parameter_mmin": 10.0,
+                        "parameter_shortname": "Speed",
+                        "parameter_type": 0,
+                        "parameter_unitstyle": 5
+                    }
+                },
+                "varname": "StretchSpeed"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-speed",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [810.0, 215.0, 92.0, 20.0],
+                "text": "prepend set_speed"
+            }
+        },
+        {
+            "box": {
+                "activedialcolor": [1.0, 0.694, 0.18, 1.0],
+                "annotation": "Sets the Hann grain window size (5 ms micro-grains up to 250 ms smooth clouds) for granular stretching. Saved with sample.",
+                "annotation_name": "Grain Size",
+                "id": "obj-grain-dial",
+                "maxclass": "live.dial",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [865.0, 165.0, 48.0, 46.0],
+                "presentation": 1,
+                "presentation_rect": [718.0, 30.0, 48.0, 46.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Grain Size",
+                        "parameter_exponent": 1.5,
+                        "parameter_initial": [45.0],
+                        "parameter_initial_enable": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "GrainSize",
+                        "parameter_mmax": 250.0,
+                        "parameter_mmin": 5.0,
+                        "parameter_shortname": "Grain",
+                        "parameter_type": 0,
+                        "parameter_unitstyle": 2
+                    }
+                },
+                "varname": "GrainSize"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-grain",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [865.0, 215.0, 90.0, 20.0],
+                "text": "prepend set_grain"
+            }
+        },
+        {
+            "box": {
+                "activedialcolor": [1.0, 0.694, 0.18, 1.0],
+                "annotation": "Sets the trim & amplitude decay time (up to 20s) for sample playback and edited exports.",
                 "annotation_name": "Trim / Decay",
                 "id": "obj-decay-dial",
                 "maxclass": "live.dial",
@@ -1372,18 +1734,18 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
-                "patching_rect": [615.0, 165.0, 52.0, 48.0],
+                "patching_rect": [615.0, 165.0, 48.0, 46.0],
                 "presentation": 1,
-                "presentation_rect": [610.0, 32.0, 52.0, 48.0],
+                "presentation_rect": [610.0, 92.0, 48.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Trim / Decay",
-                        "parameter_exponent": 2.0,
+                        "parameter_exponent": 2.2,
                         "parameter_initial": [2500.0],
                         "parameter_initial_enable": 1,
                         "parameter_linknames": 1,
                         "parameter_longname": "DecayEnvelope",
-                        "parameter_mmax": 5000.0,
+                        "parameter_mmax": 20000.0,
                         "parameter_mmin": 20.0,
                         "parameter_shortname": "Trim/Dec",
                         "parameter_type": 0,
@@ -1408,6 +1770,50 @@ def build():
         },
         {
             "box": {
+                "activedialcolor": [0.66, 0.33, 0.97, 1.0],
+                "annotation": "Blends STFT phase-vocoder spectral stretch & phase dispersion (0% = Granular, 100% = Spectral Stretch). Saved with sample.",
+                "annotation_name": "Spectral Stretch",
+                "id": "obj-spec-dial",
+                "maxclass": "live.dial",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [920.0, 165.0, 48.0, 46.0],
+                "presentation": 1,
+                "presentation_rect": [664.0, 92.0, 48.0, 46.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Spectral Stretch",
+                        "parameter_initial": [0.0],
+                        "parameter_initial_enable": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "SpectralStretch",
+                        "parameter_mmax": 100.0,
+                        "parameter_mmin": 0.0,
+                        "parameter_shortname": "Spectral",
+                        "parameter_type": 0,
+                        "parameter_unitstyle": 5
+                    }
+                },
+                "varname": "SpectralStretch"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-spec",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [920.0, 215.0, 106.0, 20.0],
+                "text": "prepend set_spectral"
+            }
+        },
+        {
+            "box": {
                 "activedialcolor": [0.29, 0.87, 0.50, 1.0],
                 "annotation": "Adjusts the playback & edited export volume in dB.",
                 "annotation_name": "Preview Gain",
@@ -1417,9 +1823,9 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["", "float"],
                 "parameter_enable": 1,
-                "patching_rect": [680.0, 165.0, 52.0, 48.0],
+                "patching_rect": [680.0, 165.0, 48.0, 46.0],
                 "presentation": 1,
-                "presentation_rect": [579.0, 96.0, 52.0, 48.0],
+                "presentation_rect": [718.0, 92.0, 48.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Preview Gain",
@@ -1481,6 +1887,7 @@ def build():
         {
             "box": {
                 "angle": 270.0,
+                "background": 1,
                 "bgcolor": [0.125, 0.145, 0.17, 1.0],
                 "border": 1,
                 "bordercolor": [0.06, 0.07, 0.08, 1.0],
@@ -1499,6 +1906,7 @@ def build():
         {
             "box": {
                 "angle": 270.0,
+                "background": 1,
                 "bgcolor": [0.115, 0.140, 0.172, 1.0],
                 "border": 1,
                 "bordercolor": [0.18, 0.52, 0.72, 0.55],
@@ -1509,7 +1917,7 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [140.0, 660.0, 100.0, 40.0],
                 "presentation": 1,
-                "presentation_rect": [392.0, 5.0, 138.0, 159.0],
+                "presentation_rect": [392.0, 5.0, 208.0, 159.0],
                 "proportion": 0.39,
                 "rounded": 6
             }
@@ -1517,6 +1925,7 @@ def build():
         {
             "box": {
                 "angle": 270.0,
+                "background": 1,
                 "bgcolor": [0.135, 0.142, 0.160, 1.0],
                 "border": 1,
                 "bordercolor": [0.75, 0.52, 0.15, 0.55],
@@ -1527,9 +1936,33 @@ def build():
                 "numoutlets": 0,
                 "patching_rect": [250.0, 660.0, 100.0, 40.0],
                 "presentation": 1,
-                "presentation_rect": [536.0, 5.0, 138.0, 159.0],
+                "presentation_rect": [606.0, 5.0, 164.0, 159.0],
                 "proportion": 0.39,
                 "rounded": 6
+            }
+        },
+        # --- 9. Embedded Node for Max Engine (placed at the very end of boxes in background layer with 1x1 rect inside 0..169 so it boots in Presentation Mode while remaining 100% hidden behind obj-panel-left) ---
+        {
+            "box": {
+                "background": 1,
+                "code": embedded_node_code,
+                "fontface": 0,
+                "fontname": "<Monospaced>",
+                "fontsize": 10.0,
+                "id": "obj-node",
+                "ignoreclick": 1,
+                "maxclass": "node.codebox",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "patching_rect": [420.0, 240.0, 360.0, 180.0],
+                "presentation": 1,
+                "presentation_rect": [7.0, 162.0, 1.0, 1.0],
+                "saved_object_attributes": {
+                    "autostart": 1,
+                    "defer": 1,
+                    "watch": 0
+                }
             }
         }
     ]
@@ -1595,6 +2028,10 @@ def build():
         {"patchline": {"source": ["obj-unpack-recalled", 0], "destination": ["obj-pitch-dial", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 1], "destination": ["obj-decay-dial", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 2], "destination": ["obj-gain-dial", 0]}},
+        {"patchline": {"source": ["obj-unpack-recalled", 3], "destination": ["obj-reverse-btn", 0]}},
+        {"patchline": {"source": ["obj-unpack-recalled", 4], "destination": ["obj-speed-dial", 0]}},
+        {"patchline": {"source": ["obj-unpack-recalled", 5], "destination": ["obj-grain-dial", 0]}},
+        {"patchline": {"source": ["obj-unpack-recalled", 6], "destination": ["obj-spec-dial", 0]}},
         {"patchline": {"source": ["obj-route-node", 13], "destination": ["obj-opendialog", 0]}},
         {"patchline": {"source": ["obj-route-node", 14], "destination": ["obj-prep-sf-cat", 0]}},
         {"patchline": {"source": ["obj-prep-sf-cat", 0], "destination": ["obj-minimap", 0]}},
@@ -1602,8 +2039,14 @@ def build():
         {"patchline": {"source": ["obj-prep-sf-maxlen", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-route-node", 16], "destination": ["obj-prep-sf-tone", 0]}},
         {"patchline": {"source": ["obj-prep-sf-tone", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 17], "destination": ["obj-prep-folder-sync", 0]}},
+        {"patchline": {"source": ["obj-route-node", 17], "destination": ["obj-prep-sf-tonal", 0]}},
+        {"patchline": {"source": ["obj-prep-sf-tonal", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-route-node", 18], "destination": ["obj-prep-sf-drum", 0]}},
+        {"patchline": {"source": ["obj-prep-sf-drum", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-route-node", 19], "destination": ["obj-prep-folder-sync", 0]}},
         {"patchline": {"source": ["obj-prep-folder-sync", 0], "destination": ["obj-folder-list", 0]}},
+        {"patchline": {"source": ["obj-route-node", 20], "destination": ["obj-root-thispatcher", 0]}},
+        {"patchline": {"source": ["obj-route-node", 21], "destination": ["obj-prep-setwidth", 0]}},
 
         # 3. v8ui & Hotkeys ('S' -> hotkey_save, Delete/Backspace -> delete_selected_saved) -> node.codebox / v8ui
         {"patchline": {"source": ["obj-minimap", 0], "destination": ["obj-node", 0]}},
@@ -1618,7 +2061,7 @@ def build():
         {"patchline": {"source": ["obj-msg-hotkey-save", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-del-saved", 0], "destination": ["obj-minimap", 0]}},
 
-        # 4. Pop-out Map Window, Section Collapse/Show Toggles & Folder Dialog Controls
+        # 4. Pop-out Map Window, Section Collapse/Show Toggles (with Dynamic Device Shrinking) & Folder Dialog Controls
         {"patchline": {"source": ["obj-open-map-btn", 0], "destination": ["obj-sel-map-win", 0]}},
         {"patchline": {"source": ["obj-sel-map-win", 0], "destination": ["obj-msg-open-win", 0], "order": 1}},
         {"patchline": {"source": ["obj-sel-map-win", 0], "destination": ["obj-msg-init", 0], "order": 0}},
@@ -1628,27 +2071,45 @@ def build():
         {"patchline": {"source": ["obj-pcontrol", 0], "destination": ["obj-map-window", 0]}},
         {"patchline": {"source": ["obj-opendialog", 0], "destination": ["obj-prep-add-folder", 0]}},
         {"patchline": {"source": ["obj-prep-add-folder", 0], "destination": ["obj-node", 0]}},
-        # Saved List Collapse/Show Toggle
-        {"patchline": {"source": ["obj-toggle-saved-btn", 0], "destination": ["obj-prep-show-saved", 0]}},
-        {"patchline": {"source": ["obj-prep-show-saved", 0], "destination": ["obj-minimap", 0]}},
-        # Filters Section Collapse/Show Toggle
-        {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-inv-filters", 0]}},
+        # Saved List Collapse/Show Toggle -> v8ui, node.codebox, AND live.thisdevice ("setwidth <w>")
+        {"patchline": {"source": ["obj-toggle-saved-btn", 0], "destination": ["obj-prep-show-saved", 0], "order": 1}},
+        {"patchline": {"source": ["obj-toggle-saved-btn", 0], "destination": ["obj-pak-vis", 0], "order": 0}},
+        {"patchline": {"source": ["obj-prep-show-saved", 0], "destination": ["obj-minimap", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-show-saved", 0], "destination": ["obj-node", 0], "order": 0}},
+        # Filters Section Collapse/Show Toggle -> hidden, node.codebox, AND live.thisdevice ("setwidth <w>")
+        {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-inv-filters", 0], "order": 2}},
+        {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-prep-show-filters", 0], "order": 1}},
+        {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-pak-vis", 1], "order": 0}},
+        {"patchline": {"source": ["obj-prep-show-filters", 0], "destination": ["obj-node", 0]}},
         {"patchline": {"source": ["obj-inv-filters", 0], "destination": ["obj-prep-hide-filters", 0]}},
-        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-panel-filters", 0], "order": 6}},
-        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-hdr-filters", 0], "order": 5}},
-        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-search-clear-btn", 0], "order": 4}},
-        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-search-box", 0], "order": 3}},
-        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-maxlen-dial", 0], "order": 2}},
-        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-tone-dial", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-panel-filters", 0], "order": 9}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-hdr-filters", 0], "order": 8}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-reseed-filtered-btn", 0], "order": 7}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-search-clear-btn", 0], "order": 6}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-search-box", 0], "order": 5}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-maxlen-dial", 0], "order": 4}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-tone-dial", 0], "order": 3}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-filter-tonal-dial", 0], "order": 2}},
+        {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-filter-drum-dial", 0], "order": 1}},
         {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-folder-list", 0], "order": 0}},
-        # Playback Section Collapse/Show Toggle
-        {"patchline": {"source": ["obj-toggle-playback-btn", 0], "destination": ["obj-inv-playback", 0]}},
+        # Playback Section Collapse/Show Toggle -> hidden, node.codebox, AND live.thisdevice ("setwidth <w>")
+        {"patchline": {"source": ["obj-toggle-playback-btn", 0], "destination": ["obj-inv-playback", 0], "order": 2}},
+        {"patchline": {"source": ["obj-toggle-playback-btn", 0], "destination": ["obj-prep-show-playback", 0], "order": 1}},
+        {"patchline": {"source": ["obj-toggle-playback-btn", 0], "destination": ["obj-pak-vis", 2], "order": 0}},
+        {"patchline": {"source": ["obj-pak-vis", 0], "destination": ["obj-expr-width", 0]}},
+        {"patchline": {"source": ["obj-expr-width", 0], "destination": ["obj-prep-setwidth", 0]}},
+        {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
+        {"patchline": {"source": ["obj-prep-show-playback", 0], "destination": ["obj-node", 0]}},
         {"patchline": {"source": ["obj-inv-playback", 0], "destination": ["obj-prep-hide-playback", 0]}},
-        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-panel-playback", 0], "order": 4}},
-        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-hdr-playback", 0], "order": 3}},
-        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-pitch-dial", 0], "order": 2}},
-        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-decay-dial", 0], "order": 1}},
-        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-gain-dial", 0], "order": 0}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-panel-playback", 0], "order": 8}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-hdr-playback", 0], "order": 7}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-pitch-dial", 0], "order": 6}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-speed-dial", 0], "order": 5}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-grain-dial", 0], "order": 4}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-decay-dial", 0], "order": 3}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-spec-dial", 0], "order": 2}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-gain-dial", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-reverse-btn", 0], "order": 0}},
 
         # 5. FILTERS Panel Controls -> DIRECTLY to both node.codebox and v8ui
         {"patchline": {"source": ["obj-search-box", 0], "destination": ["obj-route-text", 0]}},
@@ -1667,14 +2128,34 @@ def build():
         {"patchline": {"source": ["obj-tone-dial", 0], "destination": ["obj-prep-tone", 0], "order": 1}},
         {"patchline": {"source": ["obj-tone-dial", 0], "destination": ["obj-prep-sf-tone", 0], "order": 0}},
         {"patchline": {"source": ["obj-prep-tone", 0], "destination": ["obj-node", 0]}},
+        {"patchline": {"source": ["obj-filter-tonal-dial", 0], "destination": ["obj-prep-filter-tonal", 0], "order": 1}},
+        {"patchline": {"source": ["obj-filter-tonal-dial", 0], "destination": ["obj-prep-sf-tonal", 0], "order": 0}},
+        {"patchline": {"source": ["obj-prep-filter-tonal", 0], "destination": ["obj-node", 0]}},
+        {"patchline": {"source": ["obj-filter-drum-dial", 0], "destination": ["obj-prep-filter-drum", 0], "order": 1}},
+        {"patchline": {"source": ["obj-filter-drum-dial", 0], "destination": ["obj-prep-sf-drum", 0], "order": 0}},
+        {"patchline": {"source": ["obj-prep-filter-drum", 0], "destination": ["obj-node", 0]}},
+        {"patchline": {"source": ["obj-reseed-filtered-btn", 0], "destination": ["obj-msg-reseed-filtered", 0]}},
+        {"patchline": {"source": ["obj-msg-reseed-filtered", 0], "destination": ["obj-node", 0]}},
 
         # 6. PLAYBACK Panel Controls -> node.codebox & v8ui
         {"patchline": {"source": ["obj-pitch-dial", 0], "destination": ["obj-prep-pitch", 0]}},
         {"patchline": {"source": ["obj-prep-pitch", 0], "destination": ["obj-node", 0], "order": 1}},
         {"patchline": {"source": ["obj-prep-pitch", 0], "destination": ["obj-minimap", 0], "order": 0}},
+        {"patchline": {"source": ["obj-speed-dial", 0], "destination": ["obj-prep-speed", 0]}},
+        {"patchline": {"source": ["obj-prep-speed", 0], "destination": ["obj-node", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-speed", 0], "destination": ["obj-minimap", 0], "order": 0}},
+        {"patchline": {"source": ["obj-grain-dial", 0], "destination": ["obj-prep-grain", 0]}},
+        {"patchline": {"source": ["obj-prep-grain", 0], "destination": ["obj-node", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-grain", 0], "destination": ["obj-minimap", 0], "order": 0}},
         {"patchline": {"source": ["obj-decay-dial", 0], "destination": ["obj-prep-decay", 0]}},
         {"patchline": {"source": ["obj-prep-decay", 0], "destination": ["obj-node", 0], "order": 1}},
         {"patchline": {"source": ["obj-prep-decay", 0], "destination": ["obj-minimap", 0], "order": 0}},
+        {"patchline": {"source": ["obj-spec-dial", 0], "destination": ["obj-prep-spec", 0]}},
+        {"patchline": {"source": ["obj-prep-spec", 0], "destination": ["obj-node", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-spec", 0], "destination": ["obj-minimap", 0], "order": 0}},
+        {"patchline": {"source": ["obj-reverse-btn", 0], "destination": ["obj-prep-reverse", 0]}},
+        {"patchline": {"source": ["obj-prep-reverse", 0], "destination": ["obj-node", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-reverse", 0], "destination": ["obj-minimap", 0], "order": 0}},
 
         # 7. Device Startup
         {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-init", 0]}},
@@ -1690,9 +2171,16 @@ def build():
         "obj-search-clear-btn": ["ClearSearch", "Clr", 0],
         "obj-maxlen-dial": ["MaxLength", "MaxLen", 0],
         "obj-tone-dial": ["ToneFilter", "Tone", 0],
+        "obj-filter-tonal-dial": ["TonalFilter", "Tonal", 0],
+        "obj-filter-drum-dial": ["DruminessFilter", "Drums", 0],
+        "obj-reseed-filtered-btn": ["ReseedFilteredMap", "Re-Seed", 0],
         "obj-pitch-dial": ["PitchTranspose", "Pitch", 0],
+        "obj-speed-dial": ["StretchSpeed", "Speed", 0],
+        "obj-grain-dial": ["GrainSize", "Grain", 0],
         "obj-decay-dial": ["DecayEnvelope", "Trim/Dec", 0],
-        "obj-gain-dial": ["PreviewGain", "Gain", 0]
+        "obj-spec-dial": ["SpectralStretch", "Spectral", 0],
+        "obj-gain-dial": ["PreviewGain", "Gain", 0],
+        "obj-reverse-btn": ["ReversePlayback", "Reverse", 0]
     }
 
     patcher_doc = {
@@ -1707,7 +2195,7 @@ def build():
             },
             "classnamespace": "box",
             "rect": [100.0, 100.0, 1080.0, 720.0],
-            "openrect": [0.0, 0.0, 680.0, 169.0],
+            "openrect": [0.0, 0.0, 776.0, 169.0],
             "bglocked": 0,
             "openinpresentation": 1,
             "default_fontsize": 10.0,
@@ -1728,7 +2216,7 @@ def build():
             "boxanimatetime": 200,
             "enablehscroll": 1,
             "enablevscroll": 1,
-            "devicewidth": 680.0,
+            "devicewidth": 776.0,
             "description": "XLN Audio XO-inspired 2D Drum Sample Space Browser & OS File Drag-Out Exporter",
             "digest": "",
             "tags": "M4L Sample Browser XO Drum Map Export",

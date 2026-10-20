@@ -26,9 +26,9 @@ assert.strictEqual(32 + ptchLen, raw.length, "ptch chunk length mismatch");
 
 const doc = JSON.parse(raw.slice(32).toString("utf8"));
 const p = doc.patcher;
-assert.strictEqual(p.devicewidth, 680.0, "Expected devicewidth 680.0");
+assert.strictEqual(p.devicewidth, 776.0, "Expected devicewidth 776.0");
 assert.strictEqual(p.openinpresentation, 1, "Expected openinpresentation = 1");
-assert.deepStrictEqual(p.openrect, [0.0, 0.0, 680.0, 169.0], "Expected 680x169 openrect");
+assert.deepStrictEqual(p.openrect, [0.0, 0.0, 776.0, 169.0], "Expected 776x169 openrect");
 
 const boxMap = new Map();
 for (const b of p.boxes) {
@@ -38,18 +38,34 @@ for (const b of p.boxes) {
 }
 
 // Verify core objects exist, mono-safe right channel selector exists, folder list v8ui exists,
-// and removed buttons (Scan Core, + Folder, + Save (S) in top bar; Sim/Rand in Filters; Audition/Replay in Playback) are gone
+// Pitch & Tonal filters exist, Granular Speed/Grain/Spectral & Reverse exist, and removed buttons are gone
 for (const reqId of [
   "obj-plugin", "obj-plugout", "obj-sfplay", "obj-r-chan-sel", "obj-speed-reg",
   "obj-node", "obj-minimap", "obj-folder-list", "obj-map-window", "obj-open-map-btn",
   "obj-toggle-saved-btn", "obj-toggle-filters-btn", "obj-toggle-playback-btn",
   "obj-search-box", "obj-search-clear-btn",
+  "obj-maxlen-dial", "obj-tone-dial", "obj-filter-tonal-dial", "obj-filter-drum-dial", "obj-reseed-filtered-btn",
+  "obj-pitch-dial", "obj-speed-dial", "obj-grain-dial", "obj-decay-dial", "obj-spec-dial", "obj-gain-dial", "obj-reverse-btn",
+  "obj-root-thispatcher", "obj-pak-vis", "obj-expr-width", "obj-prep-setwidth",
   "obj-panel-left", "obj-panel-filters", "obj-panel-playback",
   "obj-scan-msg", "obj-scan-line", "obj-prep-playhead",
   "obj-key", "obj-sel-key", "obj-msg-hotkey-save", "obj-msg-del-saved"
 ]) {
   assert(boxMap.has(reqId), `Missing required box: ${reqId}`);
 }
+assert(!boxMap.has("obj-filter-pitch-dial"), "Pitch filter should be removed from Filters section");
+assert.strictEqual(
+  boxMap.get("obj-decay-dial").saved_attribute_attributes.valueof.parameter_mmax,
+  20000.0,
+  "Expected Trim/Dec (DecayEnvelope) max to be 20000.0 ms (20s)"
+);
+// Verify Filter Re-Seed button is placed to the left of the Clr button in the FILTERS header
+const reseedBtnRect = boxMap.get("obj-reseed-filtered-btn").presentation_rect;
+const clrBtnRect = boxMap.get("obj-search-clear-btn").presentation_rect;
+assert(
+  reseedBtnRect[1] === clrBtnRect[1] && (reseedBtnRect[0] + reseedBtnRect[2]) <= clrBtnRect[0],
+  "Expected Filter Re-Seed button to the left of the Clr button on the same header row"
+);
 assert(!boxMap.has("obj-scan-core-btn"), "Scan Core button should be removed from top menu bar");
 assert(!boxMap.has("obj-add-folder-btn"), "+ Folder button should be removed from top menu bar");
 assert(!boxMap.has("obj-save-sample-btn"), "+ Save (S) button should be removed from top menu bar");
@@ -61,15 +77,19 @@ assert(!boxMap.has("obj-rand-btn"), "Random button in Filters section should be 
 assert(!boxMap.has("obj-play-btn"), "Audition / Replay button in Playback section should be removed");
 assert(!boxMap.has("obj-prep-key"), "Regression: obj-prep-key ('prepend key') must not be used because v8ui swallows 'key' in C++");
 
-// Regression Check: obj-node (node.codebox) MUST have presentation=1 to boot in M4L presentation mode,
-// AND its presentation_rect must be off-screen (y >= 169) so its native Qt/JUCE subview never paints "ox🔨" over the sample name!
+// Regression Check: obj-node (node.codebox) MUST have presentation=1 (inside 0..169 so Max does not cull it),
+// background=1, and a 1x1 presentation_rect at the end of boxes (behind obj-panel-left) so it boots in M4L presentation mode without ever showing "ox🔨"!
 const nodeBox = boxMap.get("obj-node");
 assert.strictEqual(nodeBox.presentation, 1, "Regression: obj-node must have presentation: 1 to boot in M4L presentation mode");
+assert.strictEqual(nodeBox.background, 1, "Regression: obj-node must have background: 1 so it sits in the background layer");
 assert.strictEqual(nodeBox.ignoreclick, 1, "Expected ignoreclick: 1 on hidden background obj-node");
 assert(
-  nodeBox.presentation_rect[1] >= 169.0,
-  `Regression: obj-node presentation_rect y (${nodeBox.presentation_rect[1]}) must be >= 169.0 (off-screen) so it never covers the sample name`
+  nodeBox.presentation_rect[2] <= 2.0 && nodeBox.presentation_rect[3] <= 2.0,
+  "Regression: obj-node presentation_rect must be 1x1px so it never renders any text/icon over the UI"
 );
+const nodeIdx = p.boxes.findIndex((b) => b.box.id === "obj-node");
+const minimapIdx = p.boxes.findIndex((b) => b.box.id === "obj-minimap");
+assert(nodeIdx > minimapIdx, "Expected obj-node at the end of boxes (backmost z-order in Max)");
 
 // Regression Check: Verify 's' hotkey routing (obj-key -> obj-sel-key -> obj-msg-hotkey-save -> obj-minimap)
 const linesFrom = (srcId) =>
@@ -273,13 +293,104 @@ engine.engineState.maxLenMs = 1000;
 assert(!engine.isSamplePassingFilters(scanRes.samples[longSampleIdx]), "6500ms sample must be filtered out when MaxLen = 1000ms");
 engine.engineState.maxLenMs = 5000;
 
-// Test Edited WAV Re-Rendering outputs 2-channel stereo WAV with Pitch & Trim applied
+// Test Edited WAV Re-Rendering outputs 2-channel stereo WAV with Pitch, Trim & Reverse applied
 const editedWavPath = engine.renderEditedSampleWav(kickMonoPath, { pitchSt: 12, decayMs: 120, gainDb: -3.0 }, tmpDir);
 assert(editedWavPath && fs.existsSync(editedWavPath), "Expected rendered edited WAV file to exist on disk");
 const editedBuf = fs.readFileSync(editedWavPath);
 const decEdited = engine.parseAudioBuffer(editedBuf, editedBuf.length);
 assert.strictEqual(decEdited.channels, 2, "Expected rendered edited WAV to be 2-channel stereo");
 assert(Math.abs(decEdited.durationMs - 120) <= 5, `Expected trimmed duration ~120ms, got ${decEdited.durationMs}ms`);
+
+// Test Reverse audio rendering reverses sample frames AND Trim/Dec in Reverse mode trims/sweeps the START (preserving the end climax!)
+const rampSamples = new Float32Array(32);
+for (let i = 0; i < 32; i++) rampSamples[i] = (i + 1) / 32.0;
+const fwdRender = engine.renderEditedAudioSamples({ sampleRate: 44100, samples: rampSamples }, { pitchSt: 0, decayMs: 5000, gainDb: 0, reverse: 0 });
+const revRender = engine.renderEditedAudioSamples({ sampleRate: 44100, samples: rampSamples }, { pitchSt: 0, decayMs: 5000, gainDb: 0, reverse: 1 });
+assert(Math.abs(revRender.samples[0] - fwdRender.samples[fwdRender.samples.length - 1]) < 1e-4, "Reverse playback setting must reverse audio samples");
+
+// In Reverse mode with Trim/Dec < 4950ms, the start is attenuated (rising sweep) while the end climax is preserved at 1.0x
+const revSweepRender = engine.renderEditedAudioSamples(
+  { sampleRate: 1000, samples: new Float32Array(500).fill(0.8) },
+  { pitchSt: 0, decayMs: 200, gainDb: 0, reverse: 1 }
+);
+assert.strictEqual(revSweepRender.samples.length, 200, "Expected 200ms trimmed length in Reverse mode");
+assert(Math.abs(revSweepRender.samples[0]) < 0.01, "In Reverse mode, Trim/Dec must attenuate the start of the sample (rising sweep)");
+assert(Math.abs(revSweepRender.samples[revSweepRender.samples.length - 1] - 0.8) < 0.01, "In Reverse mode, Trim/Dec must preserve the climax at the end of the sample");
+
+// Test Granular Time-Stretch (Speed & Grain Size) and Spectral Stretch
+const kickDecoded = engine.parseAudioBuffer(fs.readFileSync(kickMonoPath), fs.statSync(kickMonoPath).size, 5.0);
+const stretchedGranular = engine.renderEditedAudioSamples(kickDecoded, {
+  pitchSt: 0,
+  speedPct: 50, // 2x slower time-stretch at 0st pitch
+  grainMs: 35,
+  spectralPct: 0,
+  decayMs: 5000,
+  gainDb: 0
+});
+assert(
+  Math.abs(stretchedGranular.durationMs - kickDecoded.durationMs * 2) <= 15,
+  `Expected 50% speed granular stretch to double duration (~${kickDecoded.durationMs * 2}ms), got ${stretchedGranular.durationMs}ms`
+);
+const stretchedSpectral = engine.renderEditedAudioSamples(kickDecoded, {
+  pitchSt: 0,
+  speedPct: 50,
+  grainMs: 45,
+  spectralPct: 85, // 85% STFT spectral stretch blend
+  decayMs: 5000,
+  gainDb: 0
+});
+let specPeak = 0;
+for (let i = 0; i < stretchedSpectral.samples.length; i++) {
+  const a = Math.abs(stretchedSpectral.samples[i]);
+  if (a > specPeak) specPeak = a;
+}
+assert(specPeak > 0.05, "Expected non-silent output from STFT spectral stretcher");
+
+// Test Tonal vs. Atonal Filter & Re-Seed with Active Filters Applied in Node engine
+engine.engineState.tonalFilter = 60; // Require tonal (low flatness)
+assert(engine.isSamplePassingFilters(scanRes.samples[monoSampleIdx]), "Tonal sine kick should pass when tonalFilter = +60% (Tonal)");
+assert(!engine.isSamplePassingFilters(scanRes.samples[stereoSampleIdx]), "Noisy hihat should be filtered out when tonalFilter = +60% (Tonal)");
+engine.engineState.tonalFilter = -60; // Require atonal/noisy (high flatness)
+assert(engine.isSamplePassingFilters(scanRes.samples[stereoSampleIdx]), "Noisy hihat should pass when tonalFilter = -60% (Atonal)");
+
+// Test Re-Seeding with Active Filters Applied (fills the map ONLY with samples matching the active filters!)
+engine.engineState.corpusSamples = scanRes.samples;
+engine.engineState.knownFolders = [{ path: tmpDir, name: "TestDrums", enabled: true, count: scanRes.samples.length }];
+const filteredMapSubset = engine.reseedWithActiveFilters();
+assert(
+  filteredMapSubset.length > 0 && filteredMapSubset.every((s) => engine.isSamplePassingFilters(s)),
+  "Re-seeding with filters applied must fill the map exclusively with samples matching the active filters"
+);
+engine.engineState.tonalFilter = 0;
+
+// Test Druminess Filter (Pads/Clusters vs. Punchy Drums)
+const shortHatDruminess = engine.computeSampleDruminessPct(scanRes.samples[stereoSampleIdx]); // 80ms snappy hihat
+const longPadDruminess = engine.computeSampleDruminessPct(scanRes.samples[longSampleIdx]);   // 6500ms long tail
+assert(shortHatDruminess > longPadDruminess, "Short snappy drum hit must have higher druminess score than 6.5s sustained tail");
+engine.engineState.drumFilter = 70; // Require high druminess (Drums)
+assert(engine.isSamplePassingFilters(scanRes.samples[stereoSampleIdx]), "Short snappy drum hit must pass when drumFilter = +70% (Drums)");
+assert(!engine.isSamplePassingFilters(scanRes.samples[longSampleIdx]), "6.5s sustained sample must be filtered out when drumFilter = +70% (Drums)");
+engine.engineState.drumFilter = 0;
+
+// Test Dynamic M4L Device Shrinking when Saved, Filters, or Playback sections collapse
+// Verify live.thisdevice receives "setwidth <w>" from both pure Max (obj-prep-setwidth) and applyDynamicLayout()
+assert(linesFrom("obj-prep-setwidth").includes("obj-thisdevice"), "obj-prep-setwidth ('prepend setwidth') must connect to obj-thisdevice (live.thisdevice) to shrink M4L device in Ableton");
+nodeOutletLog.length = 0;
+engine.engineState.showSaved = 0;
+engine.applyDynamicLayout();
+assert(nodeOutletLog.some((m) => m[0] === "setwidth_cmd" && m[1] === 660.0), "applyDynamicLayout must emit setwidth_cmd to shrink live.thisdevice in Ableton");
+engine.engineState.showSaved = 1;
+const layAllShown = engine.computeDynamicLayout(1, 1, 1);
+const layNoSaved = engine.computeDynamicLayout(0, 1, 1);
+const layNoFilters = engine.computeDynamicLayout(1, 0, 1);
+const layNoPlayback = engine.computeDynamicLayout(1, 1, 0);
+const layAllCollapsed = engine.computeDynamicLayout(0, 0, 0);
+assert.strictEqual(layAllShown.deviceWidth, 776.0, "Expected 776px width when all sections shown");
+assert(layNoSaved.deviceWidth < layAllShown.deviceWidth, "Device width must shrink when Saved list collapses");
+assert(layNoFilters.deviceWidth < layAllShown.deviceWidth, "Device width must shrink when Filters section collapses");
+assert.strictEqual(layNoFilters.playbackX, 392.0, "Playback panel must slide left into x=392 when Filters section collapses");
+assert(layNoPlayback.deviceWidth < layAllShown.deviceWidth, "Device width must shrink when Playback section collapses");
+assert.strictEqual(layAllCollapsed.deviceWidth, 276.0, "Expected compact 276px width when all 3 sections collapse");
 
 // Test OS File Link for Raw & Edited Drag-Out + Reorder & Delete in Node engine
 engine.clearSavedSamples();
@@ -293,7 +404,12 @@ engine.engineState.pitchSt = 0;
 engine.engineState.decayMs = 400;
 const savedC = engine.saveSampleToList(2);
 
-assert(fs.existsSync(savedA.rawPath), "Expected OS file link for Raw sample to exist on disk");
+assert(fs.existsSync(savedA.rawPath), "Expected Raw sample path to exist on disk");
+assert.strictEqual(
+  path.resolve(savedA.rawPath),
+  path.resolve(engine.engineState.samples[0].path),
+  "Raw sample export must point directly to the original sample file without creating a copy"
+);
 assert(fs.existsSync(savedA.editedPath), "Expected rendered WAV for Edited sample to exist on disk");
 
 // Reorder saved sample 2 to index 0
@@ -314,8 +430,25 @@ assert.strictEqual(unpackedRec.durationMs, scanRes.samples[0].durationMs);
 assert.strictEqual(unpackedRec.channels, scanRes.samples[0].channels);
 assert.strictEqual(unpackedRec.peaks.length, 24);
 
-// Test 1,500-Sample Map Display Limit & Seeded Re-Seed from Full Corpus
+// Test 1,500-Sample Map Display Limit, 50,000-File Per-Folder Limit & Seeded Re-Seed from Full Corpus
 assert.strictEqual(engine.MAX_DISPLAY_SAMPLES, 1500, "Expected MAX_DISPLAY_SAMPLES === 1500");
+assert.strictEqual(engine.MAX_FILES_PER_FOLDER, 50000, "Expected MAX_FILES_PER_FOLDER === 50000");
+
+// Test Multi-Word AND'd Search Clauses (e.g. "female vocal" matches "Vocal_Female_Chop_01" and "Female-Atmos-Vocal", rejects "Female_Synth_01")
+engine.engineState.searchQuery = "female vocal";
+assert(
+  engine.isSamplePassingFilters({ ...scanRes.samples[0], name: "Vocal_Female_Chop_01", category: "fx", folder: "Vox" }),
+  "Multi-word search 'female vocal' must match 'Vocal_Female_Chop_01' (underscore-separated out-of-order words)"
+);
+assert(
+  engine.isSamplePassingFilters({ ...scanRes.samples[0], name: "Female-Atmos-Vocal", category: "fx", folder: "Vox" }),
+  "Multi-word search 'female vocal' must match 'Female-Atmos-Vocal' (hyphen-separated words)"
+);
+assert(
+  !engine.isSamplePassingFilters({ ...scanRes.samples[0], name: "Female_Synth_01", category: "fx", folder: "Synths" }),
+  "Multi-word search 'female vocal' must reject 'Female_Synth_01' (missing 'vocal' clause)"
+);
+engine.engineState.searchQuery = "";
 const syntheticCorpus = [];
 for (let i = 0; i < 2000; i++) {
   const base = scanRes.samples[i % scanRes.samples.length];
@@ -593,14 +726,14 @@ assert.deepStrictEqual(stripOutletHistory[0], ["step_similar", -1]);
 applyToolbarAction("reseed");
 assert.deepStrictEqual(stripOutlets[0], ["reseed_map"], "Clicking Re-Seed toolbar button must emit reseed_map");
 
-// Test Folder List v8ui widget (obj-folder-list): toggle, enable all, and [x] delete folder from index
+// Test Folder List v8ui widget (obj-folder-list): toggle, enable all, scanning indicator, and [x] delete folder from index
 const vm = require("vm");
 const folderJs = boxMap.get("obj-folder-list").textfile.text;
 let folderOut = [];
 const folderCtx = vm.createContext({
   mgraphics: {
     ...global.mgraphics,
-    size: [126, 69]
+    size: [196, 69]
   },
   inlets: 1,
   outlets: 1,
@@ -610,16 +743,28 @@ const folderCtx = vm.createContext({
   String
 });
 vm.runInContext(folderJs, folderCtx, { filename: "xo_folder_ui.js" });
-folderCtx.folder_list_sync(2, 1, 80, "Ableton Core Drums", "/CoreDrums", 1, 42, "User Pack", "/UserPack");
+// Pass flags = 3 (bit 0 = enabled, bit 1 = scanning) on row 1 ("User Pack")
+folderCtx.folder_list_sync(2, 1, 80, "Ableton Core Drums", "/CoreDrums", 3, 42, "User Pack", "/UserPack");
 assert.strictEqual(folderCtx.getFolders().length, 2);
+assert.strictEqual(folderCtx.getFolders()[1].scanning, 1, "Expected scanning flag = 1 on scanning folder row");
+assert.strictEqual(folderCtx.isAnyFolderScanning(), true, "Expected isAnyFolderScanning() === true while scanning");
+paintCommands.length = 0;
+folderCtx.paint();
+assert(
+  paintCommands.some((c) => c.op === "text" && c.t === "SCAN..") &&
+  paintCommands.some((c) => c.op === "text" && c.t === "SCAN 42"),
+  "Expected folder list to render 'SCAN..' header badge and 'SCAN 42' row indicator while scanning"
+);
+folderCtx.set_folder_scanning("/UserPack", 0);
+assert.strictEqual(folderCtx.isAnyFolderScanning(), false, "Expected scanning indicator cleared when scan finishes");
 // Click row 1 ("User Pack") title area to toggle it off
 folderCtx.onclick(40, 16 + 17 + 5);
 assert.deepStrictEqual(folderOut, ["toggle_folder", "/UserPack", 0], "Clicking folder row in FILTERS folder list must emit toggle_folder");
-// Click "All" button in header to re-enable all folders
-folderCtx.onclick(80, 6);
+// Click "All" button in header (x = 196 - 42 = 154) to re-enable all folders
+folderCtx.onclick(154, 6);
 assert.deepStrictEqual(folderOut, ["enable_all_folders"], "Clicking All in FILTERS folder list must emit enable_all_folders");
-// Click [x] delete button on row 1 (x = 126 - 13 = 113) to remove "/UserPack" from index
-folderCtx.onclick(113, 16 + 17 + 5);
+// Click [x] delete button on row 1 (x = 196 - 13 = 183) to remove "/UserPack" from index
+folderCtx.onclick(183, 16 + 17 + 5);
 assert.deepStrictEqual(folderOut, ["remove_folder", "/UserPack"], "Clicking [x] on folder row must emit remove_folder to delete it from index");
 assert.strictEqual(folderCtx.getFolders().length, 1, "Folder must be removed from folder list UI after clicking [x]");
 folderCtx.paint();
@@ -676,6 +821,7 @@ function m4l_test_click_drag_zones() {
     }
     if (b.box.id === "obj-node") {
       b.box.code += `\n
+CORE_DRUM_PATHS.length = 0;
 const _dragModesSeen = [];
 Max.addHandler("drag_out", (mode, savedIdx = -1) => {
   const res = resolveDragOutPaths(String(mode || "raw"), Number(savedIdx), true, false);
@@ -764,21 +910,43 @@ Max.addHandler("drag_out", (mode, savedIdx = -1) => {
   const harnessPath = path.join(os.tmpdir(), "xo_m4l_runtime_harness.maxpat");
   fs.writeFileSync(harnessPath, JSON.stringify(harnessDoc));
 
+  const crashRecDir = path.join(os.homedir(), "Library/Application Support/Cycling '74/Max 9/Crash Recovery");
   const { spawn } = require("child_process");
-  const maxProc = spawn(MAX_BIN, [harnessPath], {
-    stdio: "ignore",
-    env: { ...process.env, XO_CACHE_DIR: os.tmpdir() }
-  });
 
-  const waitStart = Date.now();
-  while (Date.now() - waitStart < 9000) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      if (fs.existsSync(crashRecDir)) {
+        fs.rmSync(crashRecDir, { recursive: true, force: true });
+      }
+    } catch (_) {}
+
+    // Wait if another Max test harness is currently holding the Max.app process lock
+    const lockWait = Date.now();
+    while (Date.now() - lockWait < 12000) {
+      const ps = spawnSync("/bin/ps", ["aux"], { encoding: "utf8" });
+      if (!ps.stdout || !ps.stdout.includes("Max.app/Contents/MacOS/Max ")) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+    }
+
+    const maxProc = spawn(MAX_BIN, [harnessPath], {
+      stdio: "ignore",
+      env: { ...process.env, XO_CACHE_DIR: os.tmpdir() }
+    });
+
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < 9000) {
+      if (fs.existsSync(runtimeResultFile) && fs.existsSync(helperStateFile)) {
+        break;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    }
+
+    try { maxProc.kill("SIGTERM"); } catch (_) {}
     if (fs.existsSync(runtimeResultFile) && fs.existsSync(helperStateFile)) {
       break;
     }
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400);
   }
-
-  try { maxProc.kill("SIGTERM"); } catch (_) {}
 
   assert(fs.existsSync(runtimeResultFile), "Regression: obj-node (node.codebox) failed to boot or receive v8ui messages in Max 9 Presentation Mode!");
   const rtRes = JSON.parse(fs.readFileSync(runtimeResultFile, "utf8"));

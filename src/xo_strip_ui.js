@@ -43,6 +43,24 @@ const CAT_ID_LIST = [
   "kick", "snare", "hihat", "clap", "tom", "rim", "cymbal", "shaker", "perc", "fx"
 ];
 
+const PITCH_NOTE_ENUM = [
+  "Off", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+];
+
+function parsePitchNoteFilter(val) {
+  if (val === undefined || val === null || val === "" || val === "Off" || val === "off" || val === "ALL") {
+    return -1;
+  }
+  if (typeof val === "string") {
+    const upper = val.trim().toUpperCase();
+    const noteIdx = PITCH_NOTE_ENUM.indexOf(upper);
+    if (noteIdx >= 1) return noteIdx - 1;
+  }
+  const n = Math.round(Number(val));
+  if (!Number.isFinite(n) || n <= 0 || n > 12) return -1;
+  return n - 1;
+}
+
 const TOOLBAR_ITEMS = [
   { id: "cat_ALL",    title: "Filter: All Categories" },
   { id: "cat_kick",   title: "Filter: Kick" },
@@ -72,12 +90,18 @@ let lastHotkeyDelMs = 0;
 let activeCategory = "ALL";
 let maxLenMs = 5000;
 let toneFilter = 0;
+let tonalFilter = 0;
+let drumFilter = 0;
 let searchQuery = "";
 
 // Active Playback Settings
 let pitchSt = 0;
+let speedPct = 100;
+let grainMs = 45;
+let spectralPct = 0;
 let decayMs = 2500;
 let gainDb = 0;
+let reversePlayback = 0;
 let playheadPos = 0.32;
 
 // Saved Samples List (scrollable, selectable, drag-reorderable, deletable)
@@ -138,6 +162,8 @@ function initDefaultConstellation() {
       category: CAT_ID_LIST[catIdx],
       durationMs: i === 79 ? 8500 : (60 + ((i * 65) % 1200)),
       brightness: 10 + ((i * 19) % 85),
+      druminess: i === 79 ? 15 : (35 + ((i * 29) % 60)),
+      tonalPct: 10 + ((i * 31) % 85),
       name: `${sampleNames[catIdx]} ${clusterIdx + 1}`
     });
   }
@@ -205,11 +231,32 @@ function isPointVisible(pt) {
     const minB = toneFilter * 0.85;
     if (pt.brightness < minB) return false;
   }
+  const tPct = pt.tonalPct !== undefined ? pt.tonalPct : 50;
+  if (tonalFilter < 0) {
+    const maxT = 100.0 + tonalFilter * 0.85;
+    if (tPct > maxT) return false;
+  } else if (tonalFilter > 0) {
+    const minT = tonalFilter * 0.85;
+    if (tPct < minT) return false;
+  }
+  const dPct = pt.druminess !== undefined ? pt.druminess : 65;
+  if (drumFilter < 0) {
+    const maxD = 100.0 + drumFilter * 0.85;
+    if (dPct > maxD) return false;
+  } else if (drumFilter > 0) {
+    const minD = drumFilter * 0.85;
+    if (dPct < minD) return false;
+  }
   if (searchQuery && searchQuery.trim().length > 0) {
-    const q = searchQuery.trim().toLowerCase();
-    const nm = (pt.name || "").toLowerCase();
-    const ct = (pt.category || "").toLowerCase();
-    if (!nm.includes(q) && !ct.includes(q)) return false;
+    const clauses = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (clauses.length > 0) {
+      const haystack = `${pt.name || ""} ${pt.category || ""}`
+        .toLowerCase()
+        .replace(/[_\-./\\]+/g, " ");
+      for (let i = 0; i < clauses.length; i++) {
+        if (!haystack.includes(clauses[i])) return false;
+      }
+    }
   }
   return true;
 }
@@ -352,14 +399,20 @@ function minimap_clear() {
 }
 
 function minimap_batch(offset, ...flat) {
-  const stride = (flat.length % 6 === 0 && typeof flat[5] === "string") ? 6 : 5;
+  let stride = 5;
+  if (flat.length % 8 === 0 && typeof flat[7] === "string") stride = 8;
+  else if (flat.length % 6 === 0 && typeof flat[5] === "string") stride = 6;
   for (let i = 0; i + (stride - 1) < flat.length; i += stride) {
     const x = Number(flat[i]);
     const y = Number(flat[i + 1]);
     const catIdx = Math.max(0, Math.min(CAT_ID_LIST.length - 1, Number(flat[i + 2]) || 0));
     const durationMs = Number(flat[i + 3]) || 200;
     const brightness = Number(flat[i + 4]) || 50;
-    const name = stride === 6 ? String(flat[i + 5] || `Sample_${offset + i / stride}`) : `Sample_${offset + i / stride}`;
+    const druminess = stride === 8 ? (Number(flat[i + 5]) || 65) : 65;
+    const tonalPct = stride === 8 ? (Number(flat[i + 6]) || 50) : 50;
+    const name = stride === 8
+      ? String(flat[i + 7] || `Sample_${offset + i / stride}`)
+      : (stride === 6 ? String(flat[i + 5] || `Sample_${offset + i / stride}`) : `Sample_${offset + i / stride}`);
     const idx = offset + (i / stride);
     points[idx] = {
       x,
@@ -368,6 +421,8 @@ function minimap_batch(offset, ...flat) {
       category: CAT_ID_LIST[catIdx],
       durationMs,
       brightness,
+      druminess,
+      tonalPct,
       name
     };
   }
@@ -417,6 +472,18 @@ function strip_filter_tone(...args) {
   mgraphics.redraw();
 }
 
+function strip_filter_tonal(...args) {
+  tonalFilter = Math.max(-100, Math.min(100, parseTrailingNumber(args, 0)));
+  ensureValidSelection();
+  mgraphics.redraw();
+}
+
+function strip_filter_drum(...args) {
+  drumFilter = Math.max(-100, Math.min(100, parseTrailingNumber(args, 0)));
+  ensureValidSelection();
+  mgraphics.redraw();
+}
+
 function strip_filter_search(...args) {
   const raw = args.join(" ").replace(/^(strip_filter_search|set_search|text)\s*/i, "").trim();
   searchQuery = raw;
@@ -436,6 +503,30 @@ function set_pitch(...args) {
 
 function set_gain(...args) {
   gainDb = parseTrailingNumber(args, 0);
+  mgraphics.redraw();
+}
+
+function set_reverse(...args) {
+  reversePlayback = parseTrailingNumber(args, 0) ? 1 : 0;
+  mgraphics.redraw();
+}
+
+function getReverse() {
+  return reversePlayback;
+}
+
+function set_speed(...args) {
+  speedPct = Math.max(10, Math.min(400, parseTrailingNumber(args, 100)));
+  mgraphics.redraw();
+}
+
+function set_grain(...args) {
+  grainMs = Math.max(5, Math.min(250, parseTrailingNumber(args, 45)));
+  mgraphics.redraw();
+}
+
+function set_spectral(...args) {
+  spectralPct = Math.max(0, Math.min(100, parseTrailingNumber(args, 0)));
   mgraphics.redraw();
 }
 
@@ -509,7 +600,11 @@ function save_selected() {
     catIdx: pt ? pt.catIdx : (selectedMeta.catIdx || 0),
     pitchSt,
     decayMs,
-    gainDb
+    gainDb,
+    reverse: reversePlayback ? 1 : 0,
+    speedPct,
+    grainMs,
+    spectralPct
   };
   savedList.push(entry);
   selectedSavedIndex = savedList.length - 1;
@@ -518,7 +613,20 @@ function save_selected() {
     savedScrollOffset = selectedSavedIndex - lay.savedMaxRows + 1;
   }
   clampSavedScroll();
-  outlet(0, "save_selected", selectedIndex, entry.name, entry.catIdx, pitchSt, decayMs, gainDb);
+  outlet(
+    0,
+    "save_selected",
+    selectedIndex,
+    entry.name,
+    entry.catIdx,
+    pitchSt,
+    decayMs,
+    gainDb,
+    entry.reverse,
+    speedPct,
+    grainMs,
+    spectralPct
+  );
   notifyclients();
   mgraphics.redraw();
   return entry;
@@ -526,7 +634,10 @@ function save_selected() {
 
 function saved_list_sync(count, ...flat) {
   const next = [];
-  for (let i = 0; i + 6 < flat.length; i += 7) {
+  let stride = 7;
+  if (flat.length % 11 === 0 && Number(count) * 11 === flat.length) stride = 11;
+  else if (flat.length % 8 === 0 && Number(count) * 8 === flat.length) stride = 8;
+  for (let i = 0; i + (stride - 1) < flat.length; i += stride) {
     next.push({
       id: Number(flat[i]) || (i + 1),
       sampleIndex: Number(flat[i + 1]) || 0,
@@ -534,14 +645,31 @@ function saved_list_sync(count, ...flat) {
       catIdx: Number(flat[i + 3]) || 0,
       pitchSt: Number(flat[i + 4]) || 0,
       decayMs: Number(flat[i + 5]) || 2500,
-      gainDb: Number(flat[i + 6]) || 0
+      gainDb: Number(flat[i + 6]) || 0,
+      reverse: stride >= 8 ? (Number(flat[i + 7]) ? 1 : 0) : 0,
+      speedPct: stride >= 11 ? (Number(flat[i + 8]) || 100) : 100,
+      grainMs: stride >= 11 ? (Number(flat[i + 9]) || 45) : 45,
+      spectralPct: stride >= 11 ? (Number(flat[i + 10]) || 0) : 0
     });
   }
   if (next.length === 0 && savedList.length > 0) {
     // Re-push local saved items (e.g. from Live Set recall or early hotkey before node booted) to node.codebox
     for (let i = 0; i < savedList.length; i++) {
       const s = savedList[i];
-      outlet(0, "save_selected", s.sampleIndex, s.name, s.catIdx, s.pitchSt, s.decayMs, s.gainDb);
+      outlet(
+        0,
+        "save_selected",
+        s.sampleIndex,
+        s.name,
+        s.catIdx,
+        s.pitchSt,
+        s.decayMs,
+        s.gainDb,
+        s.reverse ? 1 : 0,
+        s.speedPct || 100,
+        s.grainMs || 45,
+        s.spectralPct || 0
+      );
     }
     return;
   }
@@ -559,9 +687,13 @@ function recallSavedEntry(savedIdx) {
   pitchSt = item.pitchSt;
   decayMs = item.decayMs;
   gainDb = item.gainDb;
+  reversePlayback = item.reverse ? 1 : 0;
+  speedPct = item.speedPct !== undefined ? item.speedPct : 100;
+  grainMs = item.grainMs !== undefined ? item.grainMs : 45;
+  spectralPct = item.spectralPct !== undefined ? item.spectralPct : 0;
   playheadPos = 0.0;
   outlet(0, "recall_saved", savedIdx);
-  outlet(1, "recalled_settings", pitchSt, decayMs, gainDb);
+  outlet(1, "recalled_settings", pitchSt, decayMs, gainDb, reversePlayback, speedPct, grainMs, spectralPct);
   mgraphics.redraw();
 }
 
@@ -1269,10 +1401,21 @@ function paint() {
     const stepW = waveW / nBars;
     mgraphics.set_source_rgba(selCol[0], selCol[1], selCol[2], 0.85);
     for (let i = 0; i < nBars; i++) {
-      const env = decayMs < (selectedMeta.durationMs || 300)
-        ? Math.max(0.05, 1.0 - ((i / nBars) * (selectedMeta.durationMs || 300)) / Math.max(20, decayMs))
-        : 1.0;
-      const bh = Math.max(2, peaks[i] * env * (topBarH - 6));
+      const pIdx = reversePlayback ? (nBars - 1 - i) : i;
+      const totDur = selectedMeta.durationMs || 300;
+      let env = 1.0;
+      if (decayMs < totDur) {
+        if (reversePlayback) {
+          // In Reverse mode, Trim/Dec trims & sweeps the START (left side) leading up to the climax on the right
+          const distFromEndMs = ((nBars - 1 - i) / nBars) * totDur;
+          env = Math.max(0.05, 1.0 - distFromEndMs / Math.max(20, decayMs));
+        } else {
+          // In Forward mode, Trim/Dec trims & fades the END (right side)
+          const distFromStartMs = (i / nBars) * totDur;
+          env = Math.max(0.05, 1.0 - distFromStartMs / Math.max(20, decayMs));
+        }
+      }
+      const bh = Math.max(2, peaks[pIdx] * env * (topBarH - 6));
       mgraphics.rectangle(waveX + i * stepW, 10 - bh * 0.5, Math.max(1.4, stepW - 1), bh);
       mgraphics.fill();
     }
@@ -1539,8 +1682,9 @@ function paint() {
       mgraphics.set_font_size(7.5);
       mgraphics.set_source_rgba(0.58, 0.64, 0.72, 1.0);
       const pStr = item.pitchSt >= 0 ? `+${item.pitchSt}st` : `${item.pitchSt}st`;
+      const revSuffix = item.reverse ? "•Rev" : "";
       mgraphics.move_to(savedX + 13, ry + 18.5);
-      mgraphics.show_text(`${pStr}•${Math.round(item.decayMs)}m`);
+      mgraphics.show_text(`${pStr}•${Math.round(item.decayMs)}m${revSuffix}`);
 
       // Per-Row Action Buttons: [R] (Raw), [E] (Edited), [x] (Delete)
       const rawX = savedX + savedW - 52;

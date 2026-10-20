@@ -1,0 +1,337 @@
+// Timbre Follower — an envelope follower for CHANGES IN TIMBRE rather than loudness.
+// Analysis only: out1/out2 are in1/in2 untouched (zero latency), out3 is the 0..1 control signal.
+// Build scripts PREPEND src/cepstrum_lib.genexpr (fft_init, fft_run, stft_win, stft_in, stft_frame),
+// so every function below sits ahead of all Buffer / Param / History / Data declarations.
+// Reference implementation: src/timbre_ref.js (same constants, same order of operations).
+//
+// Per hop (N = 1024, hop 256 = 5.8 ms at 44.1 kHz, mono = (L + R) / 2):
+//   Hann frame -> FFT -> 24 triangular mel bands (70 Hz .. 14 kHz) -> ln (floor 1e-3 of the mean band
+//   energy) -> orthonormal DCT-II -> c1..c13.  c0 is DROPPED: a gain adds one constant to every ln
+//   band and DCT rows k >= 1 sum to zero, so c1..c13 do not move with level (loudness invariance).
+//   novelty d = sqrt(sum w_k (cur_k - hist_k)^2): cur = 2-hop smoothed frame, hist = EMA (tau 100 ms),
+//   w_k from Focus (sum 1).  nov = 1 - exp(-max(d - 0.6, 0) / 1.3) in 0..1.
+//   Gate: frame RMS > -60 dBFS opens, < -66 closes; closed -> nov 0 and the history is forgotten.
+//   Idle: input peak < -90 dBFS for 200 hops (1.2 s) -> no analysis at all (CPU ~ 0), telemetry stops.
+// Shaping: Sens -> threshold thr = 0.02 + 0.6 * (1 - Sens/100).
+//   Env  (mode 0): target = clip((nov - thr) / (1 - thr)), one-pole Attack / Release (ms to 90 %).
+//   Trig (mode 1): a nov peak above thr (local max, 40 ms refractory, found one hop late) fires a
+//                  fixed AD pulse: linear rise over Attack, exponential fall over Release (to 10 %).
+//
+// Telemetry: Buffer scope("timbrescope"), 1 channel, 16 + 128 * 16 = 2064 samples. Bind in the patch with
+//   `scope #0-timbrescope` on loadbang (the GenExpr variable name, no "set" prefix).
+//   header 0 hop counter (mod 1e6, written LAST)   1 head column (newest)   2 gate   3 threshold
+//          4 control out   5 novelty   6 samplerate   7 mode   8 trigger count   9 idle   10 level dB
+//   column j at 16 + 16 j: 0..12 c1..c13 (0 while gated), 13 novelty, 14 control, 15 trigger flag
+//   (the flag is set on the column of the PEAK hop, one hop after it was written).
+//
+// GenExpr rules: functions first; History is only READ for its old value (a value written this
+// sample is read back through a temp); no identifier is "e" or "e<digit>"; work functions are bare calls.
+
+// Mel filters (integer bins lo / ctr / hi and 1 / sum of weights) and the DCT table. Runs when the rate changes.
+tm_init(melb, dct, sr) {
+	History srs(0);
+	if (sr != srs) {
+		fmax = min(14000., sr * 0.45);
+		m0 = 2595. * log(1. + 70. / 700.) * 0.4342944819032518;
+		m1 = 2595. * log(1. + fmax / 700.) * 0.4342944819032518;
+		bh = sr / 1024.;
+		for (b = 0; b < 24; b += 1) {
+			fl = 700. * (pow(10., (m0 + (m1 - m0) * b / 25.) / 2595.) - 1.) / bh;
+			fc = 700. * (pow(10., (m0 + (m1 - m0) * (b + 1) / 25.) / 2595.) - 1.) / bh;
+			fh = 700. * (pow(10., (m0 + (m1 - m0) * (b + 2) / 25.) / 2595.) - 1.) / bh;
+			ctr = round(fc);
+			lo = max(min(floor(fl), ctr - 1), 0);
+			hi = max(ceil(fh), ctr + 1);
+			sw = 0;
+			for (k = lo; k <= hi; k += 1) {
+				sw += k < ctr ? (k - lo) / (ctr - lo) : (hi - k) / (hi - ctr);
+			}
+			melb.poke(lo, b, 0);
+			melb.poke(ctr, b, 1);
+			melb.poke(hi, b, 2);
+			melb.poke(1. / sw, b, 3);
+		}
+		sc = 0.28867513459481287;
+		for (k = 1; k <= 13; k += 1) {
+			for (b = 0; b < 24; b += 1) {
+				dct.poke(sc * cos(3.141592653589793 * k * (b + 0.5) / 24.), (k - 1) * 24 + b);
+			}
+		}
+		srs = sr;
+	}
+	return srs;
+}
+
+// Windowed frame energy (time domain, fx real part): ft[46] = mean square, ft[47] = dB.
+tm_energy(fx, ft, n) {
+	acc = 0;
+	for (i = 0; i < n; i += 1) {
+		v = fx.peek(i, 0);
+		acc += v * v;
+	}
+	ms = acc / (0.375 * n);
+	ft.poke(ms, 46);
+	ft.poke(10. * log(ms + 1e-20) * 0.4342944819032518, 47);
+	return 0;
+}
+
+// Spectrum in fx -> mel energies -> ln -> c1..c13 into ft[32..44]. ft[0..23] is scratch.
+tm_features(fx, melb, dct, ft) {
+	sume = 0;
+	for (b = 0; b < 24; b += 1) {
+		lo = melb.peek(b, 0);
+		ctr = melb.peek(b, 1);
+		hi = melb.peek(b, 2);
+		acc = 0;
+		for (k = lo; k <= hi; k += 1) {
+			xr = fx.peek(k, 0);
+			xi = fx.peek(k, 1);
+			w = k < ctr ? (k - lo) / (ctr - lo) : (hi - k) / (hi - ctr);
+			acc += (xr * xr + xi * xi) * w;
+		}
+		be = acc * melb.peek(b, 3);
+		ft.poke(be, b);
+		sume += be;
+	}
+	fl = 0.001 * sume / 24. + 1e-12;
+	for (b = 0; b < 24; b += 1) {
+		ft.poke(log(ft.peek(b) + fl), b);
+	}
+	for (k = 0; k < 13; k += 1) {
+		s = 0;
+		for (b = 0; b < 24; b += 1) {
+			s += ft.peek(b) * dct.peek(k * 24 + b);
+		}
+		ft.poke(s, 32 + k);
+	}
+	return 0;
+}
+
+// Focus -100..100 % -> 13 weights summing to 1 (negative leans on c1..c6, positive on c8..c13).
+tm_weights(wt, focus) {
+	f = clip(focus * 0.01, -1., 1.);
+	s = 0;
+	for (k = 0; k < 13; k += 1) {
+		w = pow(2., 2.5 * f * (k - 6) / 6.);
+		wt.poke(w, k);
+		s += w;
+	}
+	for (k = 0; k < 13; k += 1) {
+		wt.poke(wt.peek(k) / s, k);
+	}
+	return 0;
+}
+
+// Smooth the frame (cura), take the weighted distance to the history, advance the history (ha).
+// hv = 0 seeds both from the frame (distance 0). Result in ft[45].
+tm_track(ft, hs, wt, ha, cura, hv) {
+	dsum = 0;
+	if (hv > 0.5) {
+		s = 0;
+		for (k = 0; k < 13; k += 1) {
+			cc = hs.peek(16 + k) + cura * (ft.peek(32 + k) - hs.peek(16 + k));
+			hs.poke(cc, 16 + k);
+			dl = cc - hs.peek(k);
+			s += wt.peek(k) * dl * dl;
+			hs.poke(hs.peek(k) + ha * dl, k);
+		}
+		dsum = sqrt(s);
+	} else {
+		for (k = 0; k < 13; k += 1) {
+			hs.poke(ft.peek(32 + k), 16 + k);
+			hs.poke(ft.peek(32 + k), k);
+		}
+	}
+	ft.poke(dsum, 45);
+	return 0;
+}
+
+// Gated frame: MFCCs read as zero in the telemetry.
+tm_zero(ft) {
+	for (k = 0; k < 13; k += 1) {
+		ft.poke(0, 32 + k);
+	}
+	return 0;
+}
+
+Buffer scope("timbrescope");
+
+Param sens(50);
+Param attack(8);
+Param release(250);
+Param focus(0);
+Param mode(0);
+
+Data tab(4096, 3);
+Data win(1024);
+Data fx(1024, 2);
+Data ring(1024);
+Data st(4);
+Data melb(24, 4);
+Data dct(312);
+Data ft(64);
+Data hs(32);
+Data wt(16);
+
+History gate(0);
+History hv(0);
+History quiet(0);
+History asl(0);
+History hopmax(0);
+History nprev(0);
+History nprev2(0);
+History refr(0);
+History tgt(0);
+History envs(0);
+History pv(0);
+History pst(0);
+History ca(0);
+History cr(0);
+History atkinc(0);
+History decc(0);
+History head(0);
+History cntr(0);
+History trigcnt(0);
+History ctlh(0);
+
+tm_init(melb, dct, samplerate);
+fft_init(tab);
+stft_win(win, 1024);
+
+xm = 0.5 * (in1 + in2);
+rdy = stft_in(ring, st, xm, 1024);
+hm = max(hopmax, abs(xm));
+hopmax = rdy ? 0 : hm;
+
+// Hop-rate state, held between hops through these temps.
+fire = 0;
+tg = tgt;
+cA = ca;
+cR = cr;
+aI = atkinc;
+dC = decc;
+
+if (rdy) {
+	qt = hm < 0.00003 ? quiet + 1 : 0;
+	quiet = qt;
+	sl = qt > 200 ? 1 : 0;
+	asl = sl;
+	lvl = -200;
+	if (sl < 0.5) {
+		stft_frame(fx, ring, st, win, 1024);
+		tm_energy(fx, ft, 1024);
+		lvl = ft.peek(47);
+	}
+	gt = gate < 0.5 ? (lvl > -60 ? 1 : 0) : (lvl < -66 ? 0 : 1);
+	gate = gt;
+	dd = 0;
+	if (gt > 0.5) {
+		fft_run(fx, tab, 1024, 0);
+		tm_features(fx, melb, dct, ft);
+		tm_weights(wt, focus);
+		ha = 1 - exp(-256. / (0.1 * samplerate));
+		tm_track(ft, hs, wt, ha, 0.5, hv);
+		dd = ft.peek(45);
+		hv = 1;
+	} else {
+		hv = 0;
+		tm_zero(ft);
+	}
+	nv = 1 - exp(-max(dd - 0.6, 0) / 1.3);
+	thr = 0.02 + 0.6 * (1 - clip(sens, 0, 100) * 0.01);
+
+	// Peak picking one hop late: the previous hop is a local maximum above thr.
+	rf = refr > 0 ? refr - 1 : 0;
+	fz = (nprev > thr && nprev >= nprev2 && nprev > nv && rf <= 0 && mode > 0.5) ? 1 : 0;
+	refr = fz > 0.5 ? ceil(0.04 * samplerate / 256.) : rf;
+	nprev2 = nprev;
+	nprev = nv;
+	fire = fz;
+	tcn = trigcnt + fz;
+	trigcnt = tcn;
+
+	// Env target and shaping coefficients (time to 90 % = the stated ms).
+	tg = mode > 0.5 ? 0 : clip((nv - thr) / (1 - thr), 0, 1);
+	tgt = tg;
+	am = max(attack, 0.5);
+	rm = max(release, 1);
+	cA = 1 - exp(-2.3 / (am * 0.001 * samplerate));
+	cR = 1 - exp(-2.3 / (rm * 0.001 * samplerate));
+	aI = 1 / max(am * 0.001 * samplerate, 1);
+	dC = exp(-2.3 / max(rm * 0.001 * samplerate, 1));
+	ca = cA;
+	cr = cR;
+	atkinc = aI;
+	decc = dC;
+
+	// Telemetry: one column per hop into the ring, counter last.
+	if (sl < 0.5) {
+		hd0 = head;
+		hd = hd0 + 1;
+		hd = hd >= 128 ? 0 : hd;
+		head = hd;
+		base = 16 + hd * 16;
+		for (k = 0; k < 13; k += 1) {
+			poke(scope, ft.peek(32 + k), base + k, 0);
+		}
+		poke(scope, nv, base + 13, 0);
+		poke(scope, ctlh, base + 14, 0);
+		poke(scope, 0, base + 15, 0);
+		if (fz > 0.5) {
+			poke(scope, 1, 16 + hd0 * 16 + 15, 0);
+		}
+		poke(scope, hd, 1, 0);
+		poke(scope, gt, 2, 0);
+		poke(scope, thr, 3, 0);
+		poke(scope, ctlh, 4, 0);
+		poke(scope, nv, 5, 0);
+		poke(scope, samplerate, 6, 0);
+		poke(scope, mode, 7, 0);
+		poke(scope, tcn, 8, 0);
+		poke(scope, 0, 9, 0);
+		poke(scope, lvl, 10, 0);
+		cn = cntr + 1;
+		cn = cn >= 1000000 ? 0 : cn;
+		cntr = cn;
+		poke(scope, cn, 0, 0);
+	} else {
+		poke(scope, 1, 9, 0);
+	}
+}
+
+// Trig: fixed AD pulse (linear attack, exponential release). Env: one-pole toward the target.
+ps = pst;
+pvv = pv;
+if (fire > 0.5) {
+	ps = 1;
+}
+st1 = (ps > 0.5 && ps < 1.5) ? 1 : 0;
+st2 = ps > 1.5 ? 1 : 0;
+if (st1 > 0.5) {
+	pvv = pvv + aI;
+	if (pvv >= 1) {
+		pvv = 1;
+		ps = 2;
+	}
+}
+if (st2 > 0.5) {
+	pvv = pvv * dC;
+	if (pvv < 0.0001) {
+		pvv = 0;
+		ps = 0;
+	}
+}
+pv = pvv;
+pst = ps;
+
+cf = tg > envs ? cA : cR;
+en = envs + cf * (tg - envs);
+en = abs(en) < 1e-9 ? 0 : en;
+envs = en;
+
+cv = clip(en + pvv, 0, 1);
+ctlh = cv;
+
+out1 = in1;
+out2 = in2;
+out3 = cv;

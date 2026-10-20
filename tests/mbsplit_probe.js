@@ -53,10 +53,11 @@ function computeStats(arr, startIdx, endIdx) {
 }
 
 function readScopeStats() {
-    if (!scopeName) return { specMax: 0, b1: 0, b2: 0, b3: 0, b4: 0, pkIn: 0, pkOut: 0, beat: 0 };
+    var empty = { specMax: 0, b1: 0, b2: 0, b3: 0, b4: 0, pkIn: 0, pkOut: 0, beat: 0, firD: 0, dyn: 0 };
+    if (!scopeName) return empty;
     var buf = new Buffer(scopeName);
-    var vals = buf.peek(1, 0, 24);
-    if (!vals || !vals.length) return { specMax: 0, b1: 0, b2: 0, b3: 0, b4: 0, pkIn: 0, pkOut: 0, beat: 0 };
+    var vals = buf.peek(1, 0, 28);
+    if (!vals || !vals.length) return empty;
     var specMax = 0.0;
     for (var i = 0; i < 16; i++) {
         if ((vals[i] || 0) > specMax) specMax = vals[i];
@@ -69,7 +70,9 @@ function readScopeStats() {
         b4: vals[19] || 0,
         pkIn: vals[20] || 0,
         pkOut: vals[21] || 0,
-        beat: vals[23] || 0
+        beat: vals[23] || 0,
+        firD: vals[26] || 0,
+        dyn: vals[27] || 0
     };
 }
 
@@ -110,7 +113,9 @@ function analyze(durMs) {
         "scopeB4 " + sc.b4 + "\n" +
         "scopeIn " + sc.pkIn + "\n" +
         "scopeOut " + sc.pkOut + "\n" +
-        "scopeBeat " + sc.beat + "\n"
+        "scopeBeat " + sc.beat + "\n" +
+        "scopeFirD " + sc.firD + "\n" +
+        "scopeDyn " + sc.dyn + "\n"
     );
     report.close();
     outlet(0, "bang");

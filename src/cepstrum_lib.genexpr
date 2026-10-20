@@ -1,0 +1,362 @@
+// cepstrum_lib.genexpr — shared STFT + real-cepstrum engine for gen.codebox~.
+// Device build scripts PREPEND this file to their own core, so every function
+// below sits ahead of the core's Param, History, Delay and Data declarations
+// (GenExpr requires functions first). Reference: src/cepstrum_ref.js.
+//
+// ---------------------------------------------------------------------------
+// Verified in Max 9.1 (tests/test_cepstrum_lib.js + scripts/run_cepstrum_lib_audio_tests.py)
+//   * Functions CAN take Data arguments, and they are passed by reference:
+//     d.peek(i[, ch]) and d.poke(value, i[, ch]) inside a function change the
+//     caller's Data. A function body can NOT see a global Data, so the library
+//     has no fixed names: the core declares Data and passes it in.
+//   * A function whose result is assigned to an unused variable is removed as
+//     dead code (`z = fn(d);` does nothing). Call work functions as BARE
+//     statements (`fn(d);`), which stay in statement order, also inside `if`.
+//   * Never name an identifier "e" followed by digits: the lexer reads Euler's constant.
+//
+// Data the core must declare (sizes are the maximum; N is 512..4096):
+//   Data tab(4096, 3);   // twiddles + bit reversal. Shared by every FFT in the core.
+//   Data win(4096);      // Hann table, shared by every channel.
+//   Data fx(4096, 2);    // work spectrum/frame: channel 0 = real, 1 = imag. Shared.
+//   Data fc(4096, 2);    // work cepstrum / log spectrum, same layout. Shared.
+//   Per audio channel:
+//   Data ring(4096);     // input ring buffer.
+//   Data acc(4096);      // overlap-add accumulator.
+//   Data st(4);          // framing state (write position, hop counter, N seen by in/out).
+// fx and fc are scratch: they are only valid inside one hop-boundary block, so
+// L and R can reuse them one after the other. Devices that need to keep a
+// cepstrum or spectrum across frames (freeze, novelty) add their own Data.
+//
+// Per-sample call order for each channel (see the skeleton at the end):
+//   fft_init(tab); stft_win(win, n);
+//   rdy = stft_in(ring, st, x, n);
+//   if (rdy) { stft_frame -> fft_run -> ...process... -> fft_run(inverse) -> stft_ola }
+//   y = stft_out(acc, st, n);
+//
+// Latency: the frame is processed in the same sample that completes it, and
+// output sample s leaves the accumulator once the last frame covering it is
+// added. That is N - 1 samples for hop N/4 (out[t] = in[t - (N - 1)]; measured
+// exactly in real Max at 512/1024/2048/4096). Identity gain is exactly 1: Hann
+// analysis x Hann synthesis sums to 1.5 at hop N/4, and stft_ola scales by 2/3.
+// Live's reported latency (patcher "latency" attribute) is static, so a device
+// with a user-selectable N should pad with a Delay to a constant 4096 samples:
+//   Delay padl(4096);  padl.write(y);  out = padl.read(4096 - (n - 1));
+// Changing n clears the ring and accumulator (stft_in / stft_out), so the output
+// is silent for the first n - 1 samples after the change.
+// Cost (Max 9, 44.1 kHz, per mono instance): identity about 0.75 % of a core,
+// forward + cepstrum + inverse chain about 1.7 %, nearly flat in N. All of it
+// runs in the one sample that completes a hop; stereo can pack L and R into the
+// real and imaginary parts of one FFT if that ever matters.
+// ---------------------------------------------------------------------------
+
+// Snap a requested size to a power of two in 512..4096.
+cep_n(req) {
+	return pow(2, clip(round(log(max(req, 1)) * 1.4426950408889634), 9, 12));
+}
+
+// Twiddle table (forward kernel: cos and -sin of 2*pi*k/4096, k < 2048) in
+// tab channels 0/1, and the 12-bit bit-reversed index in channel 2. Runs once
+// (History guard), so call it every sample for free.
+fft_init(tab) {
+	History done(0);
+	if (done == 0) {
+		for (k = 0; k < 2048; k += 1) {
+			ph = 6.283185307179586 * k / 4096;
+			tab.poke(cos(ph), k, 0);
+			tab.poke(-sin(ph), k, 1);
+		}
+		for (i = 0; i < 4096; i += 1) {
+			r = 0;
+			v = i;
+			for (b = 0; b < 12; b += 1) {
+				hv = floor(v * 0.5);
+				r = r * 2 + (v - hv * 2);
+				v = hv;
+			}
+			tab.poke(r, i, 2);
+		}
+		done = 1;
+	}
+	return done;
+}
+
+// In-place radix-2 FFT of x (channel 0 = real, 1 = imag) over n points, n a
+// power of two <= 4096. inv = 1 runs the inverse and scales by 1 / n.
+// The bit-reversed index for n is the 12-bit one divided by 4096 / n (rdiv).
+fft_run(x, tab, n, inv) {
+	rdiv = 4096 / n;
+	for (i = 0; i < n; i += 1) {
+		j = tab.peek(i, 2) / rdiv;
+		if (j > i) {
+			tr = x.peek(i, 0);
+			ti = x.peek(i, 1);
+			x.poke(x.peek(j, 0), i, 0);
+			x.poke(x.peek(j, 1), i, 1);
+			x.poke(tr, j, 0);
+			x.poke(ti, j, 1);
+		}
+	}
+	sgn = inv > 0.5 ? -1 : 1;
+	for (len = 2; len <= n; len *= 2) {
+		half = len * 0.5;
+		stp = 4096 / len;
+		for (s = 0; s < n; s += len) {
+			for (k = 0; k < half; k += 1) {
+				wr = tab.peek(k * stp, 0);
+				wi = sgn * tab.peek(k * stp, 1);
+				a = s + k;
+				b = a + half;
+				xr = x.peek(b, 0);
+				xi = x.peek(b, 1);
+				tr = xr * wr - xi * wi;
+				ti = xr * wi + xi * wr;
+				ur = x.peek(a, 0);
+				ui = x.peek(a, 1);
+				x.poke(ur + tr, a, 0);
+				x.poke(ui + ti, a, 1);
+				x.poke(ur - tr, b, 0);
+				x.poke(ui - ti, b, 1);
+			}
+		}
+	}
+	if (inv > 0.5) {
+		sc = 1 / n;
+		for (i = 0; i < n; i += 1) {
+			x.poke(x.peek(i, 0) * sc, i, 0);
+			x.poke(x.peek(i, 1) * sc, i, 1);
+		}
+	}
+	return 0;
+}
+
+// Periodic Hann table for n points. Rebuilt only when n changes.
+stft_win(win, n) {
+	History wn(0);
+	if (n != wn) {
+		for (i = 0; i < n; i += 1) {
+			win.poke(0.5 - 0.5 * cos(6.283185307179586 * i / n), i);
+		}
+		wn = n;
+	}
+	return wn;
+}
+
+// Push one sample. Returns 1 when a hop (n / 4 samples) completed and a frame
+// is ready. Changing n clears the ring and restarts the hop counter.
+// st: 0 = write position (= oldest sample), 1 = hop counter, 2 = n seen here.
+stft_in(ring, st, x, n) {
+	if (n != st.peek(2)) {
+		for (i = 0; i < n; i += 1) {
+			ring.poke(0, i);
+		}
+		st.poke(0, 0);
+		st.poke(0, 1);
+		st.poke(n, 2);
+	}
+	wp = st.peek(0);
+	ring.poke(x, wp);
+	wp += 1;
+	if (wp >= n) {
+		wp = 0;
+	}
+	cnt = st.peek(1) + 1;
+	rdy = 0;
+	if (cnt >= n * 0.25) {
+		cnt = 0;
+		rdy = 1;
+	}
+	st.poke(wp, 0);
+	st.poke(cnt, 1);
+	return rdy;
+}
+
+// Copy the last n samples, oldest first, times the Hann window into fx (imag 0).
+stft_frame(fx, ring, st, win, n) {
+	wp = st.peek(0);
+	for (i = 0; i < n; i += 1) {
+		j = wp + i;
+		if (j >= n) {
+			j -= n;
+		}
+		fx.poke(ring.peek(j) * win.peek(i), i, 0);
+		fx.poke(0, i, 1);
+	}
+	return 0;
+}
+
+// Weighted overlap-add: window the real part of fx and add it into acc at the
+// frame's start position. 2 / 3 = 1 / sum(Hann^2) at hop n / 4.
+stft_ola(acc, st, fx, win, n) {
+	wp = st.peek(0);
+	for (i = 0; i < n; i += 1) {
+		j = wp + i;
+		if (j >= n) {
+			j -= n;
+		}
+		acc.poke(acc.peek(j) + fx.peek(i, 0) * win.peek(i) * 0.6666666666666666, j);
+	}
+	return 0;
+}
+
+// One output sample: the oldest accumulator slot is finished, so read and clear
+// it. Call after the frame block, every sample. Clears acc when n changes.
+// st: 3 = n seen here.
+stft_out(acc, st, n) {
+	if (n != st.peek(3)) {
+		for (i = 0; i < n; i += 1) {
+			acc.poke(0, i);
+		}
+		st.poke(n, 3);
+	}
+	wp = st.peek(0);
+	y = acc.peek(wp);
+	acc.poke(0, wp);
+	return y;
+}
+
+// Real cepstrum of the complex spectrum in fx: fc = IFFT(log(|X| + eps)).
+// fc channel 0 holds c[n] (real and even), channel 1 is about 0.
+cep_from_spec(fx, fc, tab, n, eps) {
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		fc.poke(log(sqrt(xr * xr + xi * xi) + eps), i, 0);
+		fc.poke(0, i, 1);
+	}
+	fft_run(fc, tab, n, 1);
+	return 0;
+}
+
+// Cepstrum (any cepstrum, in place) back to the log spectrum: forward FFT.
+// For an even cepstrum fc channel 0 becomes log|X|. For a folded (min or max
+// phase) cepstrum channel 0 is log|X| and channel 1 is the phase in radians.
+cep_to_logmag(fc, tab, n) {
+	fft_run(fc, tab, n, 0);
+	return 0;
+}
+
+// Minimum-phase fold in place: c[0], 2 c[i] for 0 < i < n/2, c[n/2], else 0.
+cep_fold_minphase(fc, n) {
+	half = n * 0.5;
+	for (i = 1; i < half; i += 1) {
+		fc.poke(fc.peek(i, 0) * 2, i, 0);
+	}
+	for (i = half + 1; i < n; i += 1) {
+		fc.poke(0, i, 0);
+	}
+	for (i = 0; i < n; i += 1) {
+		fc.poke(0, i, 1);
+	}
+	return 0;
+}
+
+// Maximum-phase fold: the minimum-phase cepstrum mirrored in quefrency
+// (c_max[i] = c_min[n - i]). Same magnitude, opposite phase.
+cep_fold_maxphase(fc, n) {
+	half = n * 0.5;
+	cep_fold_minphase(fc, n);
+	for (i = 1; i < half; i += 1) {
+		t = fc.peek(i, 0);
+		fc.poke(0, i, 0);
+		fc.poke(t, n - i, 0);
+	}
+	return 0;
+}
+
+// Complex exponential of the log spectrum in fc (re = log magnitude, im =
+// phase) into the spectrum fx, minus the eps added in cep_from_spec. After a
+// minimum-phase fold this is the minimum-phase spectrum with the original magnitude.
+cep_exp_spec(fc, fx, n, eps) {
+	for (i = 0; i < n; i += 1) {
+		m = max(exp(fc.peek(i, 0)) - eps, 0);
+		ph = fc.peek(i, 1);
+		fx.poke(m * cos(ph), i, 0);
+		fx.poke(m * sin(ph), i, 1);
+	}
+	return 0;
+}
+
+// Impose the magnitude exp(fc.re) - eps on the phase already in fx (keep the
+// original phase, change only the magnitude: Lifter EQ, crusher, and so on).
+cep_remag(fx, fc, n, eps) {
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		mag = sqrt(xr * xr + xi * xi);
+		m = max(exp(fc.peek(i, 0)) - eps, 0);
+		if (mag > 1e-20) {
+			g = m / mag;
+			fx.poke(xr * g, i, 0);
+			fx.poke(xi * g, i, 1);
+		} else {
+			fx.poke(m, i, 0);
+			fx.poke(0, i, 1);
+		}
+	}
+	return 0;
+}
+
+// Cepstral pitch peak: the quefrency index in [lo, hi] (samples; 2..20 ms is
+// lo = samplerate * 0.002, hi = samplerate * 0.02) where c[q] is largest.
+// fc channel 0 must hold the real cepstrum from cep_from_spec.
+cep_peak(fc, lo, hi) {
+	best = -1e30;
+	bi = lo;
+	for (q = lo; q <= hi; q += 1) {
+		v = fc.peek(q, 0);
+		if (v > best) {
+			best = v;
+			bi = q;
+		}
+	}
+	return bi;
+}
+
+// Confidence 0..1 for the peak at q: z-score of c[q] against the [lo, hi]
+// range, mapped 3 sigma -> 0 and 10 sigma -> 1. White noise stays near 0.
+cep_peak_conf(fc, q, lo, hi) {
+	cntq = hi - lo + 1;
+	sm = 0;
+	sq = 0;
+	for (i = lo; i <= hi; i += 1) {
+		v = fc.peek(i, 0);
+		sm += v;
+		sq += v * v;
+	}
+	mu = sm / cntq;
+	sd = sqrt(max(sq / cntq - mu * mu, 1e-20));
+	return clip(((fc.peek(q, 0) - mu) / sd - 3) / 7, 0, 1);
+}
+
+// Parabolic refinement of the peak at q: fractional quefrency in samples.
+cep_peak_refine(fc, q) {
+	a = fc.peek(q - 1, 0);
+	b = fc.peek(q, 0);
+	c = fc.peek(q + 1, 0);
+	den = a - 2 * b + c;
+	return q + (abs(den) > 1e-20 ? clip(0.5 * (a - c) / den, -0.5, 0.5) : 0);
+}
+
+// ---------------------------------------------------------------------------
+// Skeleton of a device core (mono; stereo repeats the per-channel part with
+// ringR/accR/stR and reuses fx, fc, tab, win):
+//
+//   Param fftn(1024);
+//   Data tab(4096, 3);  Data win(4096);  Data fx(4096, 2);  Data fc(4096, 2);
+//   Data ring(4096);    Data acc(4096);  Data st(4);
+//   n = cep_n(fftn);
+//   fft_init(tab);
+//   stft_win(win, n);
+//   rdy = stft_in(ring, st, in1, n);
+//   if (rdy) {
+//       stft_frame(fx, ring, st, win, n);
+//       fft_run(fx, tab, n, 0);              // fx = X
+//       cep_from_spec(fx, fc, tab, n, 1e-9); // fc = real cepstrum
+//       cep_fold_minphase(fc, n);            // ...process the cepstrum...
+//       cep_to_logmag(fc, tab, n);           // fc = log|X| + j phase
+//       cep_exp_spec(fc, fx, n, 1e-9);       // fx = new spectrum
+//       fft_run(fx, tab, n, 1);              // back to time
+//       stft_ola(acc, st, fx, win, n);
+//   }
+//   out1 = stft_out(acc, st, n);             // delayed by n - 1 samples
+// ---------------------------------------------------------------------------

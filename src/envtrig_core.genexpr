@@ -1,0 +1,143 @@
+// Envelope Trigger — transient detector that fires MIDI notes from an audio track.
+// Audio passes through untouched (out1/out2). Detection runs on the mono sum:
+//   fast env  — instant attack, 15 ms release peak follower
+//   slow env  — 60 ms one-pole baseline that lags behind the fast env on transients
+//   onset     — fast > threshold AND fast > slow * ratio, where ratio = (1 - sens) * 12 dB,
+//               only while armed and outside the `holdms` lockout
+//   capture   — 2.5 ms window after the onset that records the peak for velocity
+//   fire      — gate high for holdms/2 (>= 10 ms so edge~ sees it at any vector size),
+//               velocity = velmin..velmax from the captured peak (threshold .. 0 dBFS)
+//   re-arm    — once the fast env falls below 70% of threshold or back near the baseline
+//
+// Outlets: out1/out2 audio thru, out3 gate (0/1), out4 velocity (1..127, held).
+//
+// Scope telemetry buffer (buffer~ #0-trigscope @samps 800, bound via `scope #0-trigscope`):
+//   every 64 samples:
+//     0: fast env peak   1: slow env   2: fire counter   3: rolling frame counter
+//     4: input peak      5: last fired velocity (1..127)
+//   oscilloscope ring, one block per 32 samples (256 blocks ≈ 186 ms at 44.1 kHz):
+//     6: next block index (write head, 0..255)
+//     32 + 3 * block + 0/1/2: mono min, mono max, onset-in-block flag
+//
+// GenExpr requires all Buffer/Param/History declarations before expression statements.
+// No variable is named e<digit>. Never name a Param `hold`: the lockout and gate
+// outputs silently stop working.
+
+Buffer scope("trigscope");
+
+Param thr(-24.0);
+Param sens(0.5);
+Param holdms(60.0);
+Param velmin(40.0);
+Param velmax(127.0);
+
+History fast(0);
+History slow(0);
+History armed(1);
+History lock(0);
+History cap(0);
+History capPeak(0);
+History gateLeft(0);
+History vel(0);
+History fires(0);
+History tick(0);
+History rollCounter(0);
+History pkIn(0);
+History pkFast(0);
+History idleTicks(0);
+History blkCount(0);
+History blkMin(0);
+History blkMax(0);
+History blkFire(0);
+History head(0);
+
+sr = max(samplerate, 1);
+
+ratio = pow(10, (1 - clip(sens, 0, 1)) * 12 / 20);
+holdSamps = floor(clip(holdms, 20, 1000) * sr / 1000);
+capSamps = max(floor(2.5 * sr / 1000), 1);
+velLo = clip(velmin, 1, 127);
+velHi = clip(max(velmax, velLo), 1, 127);
+thrDb = clip(thr, -60, 0);
+thrLin = pow(10, thrDb / 20);
+relC = exp(-1000 / (15 * sr));
+slowC = exp(-1000 / (60 * sr));
+
+// 1. Envelopes on the mono sum.
+mono = 0.5 * (in1 + in2);
+ax = abs(mono);
+nf = (ax > fast) ? ax : fast * relC;
+fast = (nf < 1e-12) ? 0 : nf;
+ns = mix(fast, slow, slowC);
+slow = (ns < 1e-12) ? 0 : ns;
+
+lock = max(lock - 1, 0);
+gateLeft = max(gateLeft - 1, 0);
+
+// 2. Onset -> capture -> fire -> re-arm.
+onsetNow = 0;
+if (cap > 0) {
+	capPeak = max(capPeak, fast);
+	cap = cap - 1;
+	if (cap <= 0) {
+		pkDb = 20 * log10(max(capPeak, 0.000001));
+		t = clip((pkDb - thrDb) / max(-thrDb, 1), 0, 1);
+		vel = clip(floor(velLo + t * (velHi - velLo) + 0.5), 1, 127);
+		gateLeft = max(floor(holdSamps * 0.5), 1);
+		lock = holdSamps;
+		fires = wrap(fires + 1, 0, 100000);
+	}
+} else if (armed > 0.5 && lock <= 0 && fast > thrLin && fast > slow * ratio) {
+	cap = capSamps;
+	capPeak = fast;
+	armed = 0;
+	onsetNow = 1;
+} else if (armed < 0.5 && (fast < thrLin * 0.7 || fast < slow * 1.12)) {
+	armed = 1;
+}
+
+gateOut = (gateLeft > 0) ? 1 : 0;
+
+// 3. Oscilloscope ring: min / max / onset flag per 32-sample block (onset, not the end of the
+//    velocity capture, so the tick lines up with the attack; every onset fires a note).
+blkMin = (blkCount == 0) ? mono : min(blkMin, mono);
+blkMax = (blkCount == 0) ? mono : max(blkMax, mono);
+blkFire = (blkCount == 0) ? onsetNow : max(blkFire, onsetNow);
+blkCount = blkCount + 1;
+if (blkCount >= 32) {
+	blkCount = 0;
+	if (idleTicks <= 4) {
+		base = 32 + head * 3;
+		poke(scope, clip(blkMin, -1.5, 1.5), base, 0);
+		poke(scope, clip(blkMax, -1.5, 1.5), base + 1, 0);
+		poke(scope, blkFire, base + 2, 0);
+		head = wrap(head + 1, 0, 256);
+		poke(scope, head, 6, 0);
+	}
+}
+
+// 4. Envelope telemetry every 64 samples, skipping buffer pokes once the device has settled in silence.
+pkIn = max(pkIn, max(abs(in1), abs(in2)));
+pkFast = max(pkFast, fast);
+
+tick = wrap(tick + 1, 0, 64);
+if (tick == 0) {
+	windowSilent = (pkIn < 1e-6 && pkFast < 1e-6);
+	idleTicks = windowSilent ? min(idleTicks + 1, 1000) : 0;
+	if (idleTicks <= 4) {
+		rollCounter = wrap(rollCounter + 1, 0, 100000);
+		poke(scope, clip(pkFast, 0, 1.5), 0, 0);
+		poke(scope, clip(slow, 0, 1.5), 1, 0);
+		poke(scope, fires, 2, 0);
+		poke(scope, rollCounter, 3, 0);
+		poke(scope, clip(pkIn, 0, 1.5), 4, 0);
+		poke(scope, vel, 5, 0);
+	}
+	pkIn = 0;
+	pkFast = 0;
+}
+
+out1 = fixnan(in1);
+out2 = fixnan(in2);
+out3 = gateOut;
+out4 = vel;

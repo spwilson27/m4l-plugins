@@ -1,0 +1,504 @@
+// Cepstra — true cepstral formant shifter (STFT overlap-add, M/S, Hann/Hann, 75% overlap).
+//
+// Buffer (bound on loadbang via `scope #0-cepscope`), 272 samples:
+//   0..191   : signed Mid cepstrum c[n] on 192 LINEAR quefrency columns, n = 0 .. 20 ms (largest |c| per column, 9999 = beyond N/2)
+//   256      : current lifter cutoff L in samples
+//   257      : f0 estimate in Hz (0 = unvoiced / unknown)
+//   258      : input level (linear peak, 0 while asleep)
+//   259      : rolling frame counter
+//   260      : FFT size N
+//   261      : voiced flag
+//   262      : resmode in use
+//
+// Frame work (about 58 jobs per frame) is time-sliced across the first half of each hop, so no single
+// sample runs more than one FFT pass. Packed-FFT trick: Mid + j*Side share one complex FFT, and because
+// both log-spectra / cepstra are real and symmetric, the same packing carries them through every stage.
+// Latency = N + N/8 samples (dry path is delayed by the same amount).
+//
+// GenExpr rules strictly enforced:
+//   - All functions appear before Buffer, Data, Param, History, and expression statements.
+//   - No identifier is named e<digit> (Euler's constant lexer bug).
+
+// In-place radix-2 DIT pass `s` (1..log2 n) over bit-reversed input. sgn = +1 forward, -1 inverse (unscaled).
+fft_pass(re, im, twr, twi, n, s, sgn) {
+	hlf = pow(2, s - 1);
+	blk = hlf * 2;
+	tstep = 4096 / blk;
+	nb = n * 0.5;
+	for (b = 0; b < nb; b += 1) {
+		grp = floor(b / hlf);
+		j = b - grp * hlf;
+		i0 = grp * blk + j;
+		i1 = i0 + hlf;
+		tIdx = j * tstep;
+		wr = peek(twr, tIdx);
+		wi = sgn * peek(twi, tIdx);
+		ar = peek(re, i0);
+		ai = peek(im, i0);
+		br = peek(re, i1);
+		bi = peek(im, i1);
+		tr = br * wr - bi * wi;
+		tm = br * wi + bi * wr;
+		poke(re, ar - tr, i1);
+		poke(im, ai - tm, i1);
+		poke(re, ar + tr, i0);
+		poke(im, ai + tm, i0);
+	}
+	return 0;
+}
+
+// One-time tables: twiddles exp(-2*pi*i*k/4096) for k = 0..2048 and the 12-bit bit-reversal table.
+init_tables(twr, twi, brv) {
+	for (k = 0; k <= 2048; k += 1) {
+		a = 6.28318530718 * k / 4096;
+		poke(twr, cos(a), k);
+		poke(twi, 0 - sin(a), k);
+	}
+	for (i = 0; i < 4096; i += 1) {
+		t = i;
+		r = 0;
+		for (q = 0; q < 12; q += 1) {
+			r = r * 2 + (t % 2);
+			t = floor(t / 2);
+		}
+		poke(brv, r, i);
+	}
+	return 0;
+}
+
+clear_rings(ra, rb) {
+	for (i = 0; i < 8192; i += 1) {
+		poke(ra, 0, i);
+		poke(rb, 0, i);
+	}
+	return 0;
+}
+
+// Job: Hann-window the last n samples of Mid (real) and Side (imag), writing bit-reversed for the forward FFT.
+job_capture(xre, xim, inM, inS, brv, twr, n, stride, capPos) {
+	nh = n * 0.5;
+	for (i = 0; i < n; i += 1) {
+		ci = (i <= nh) ? i : (n - i);
+		w = 0.5 - 0.5 * peek(twr, ci * stride);
+		src = wrap(capPos - n + i, 0, 8192);
+		r = floor(peek(brv, i) / stride);
+		poke(xre, w * peek(inM, src), r);
+		poke(xim, w * peek(inS, src), r);
+	}
+	return 0;
+}
+
+// Job: logmag[k] = log(|X[k]| + 1e-9) for Mid and Side (separated from the packed FFT).
+// Stores them natural-order (lre/lim, kept for the harmonic split) and bit-reversed (wre/wim) for the cepstrum IFFT.
+job_logmag(xre, xim, lre, lim, wre, wim, brv, n, stride, part, nparts) {
+	nh = n * 0.5;
+	k0 = floor((nh + 1) * part / nparts);
+	k1 = floor((nh + 1) * (part + 1) / nparts);
+	for (k = k0; k < k1; k += 1) {
+		kk = (n - k) % n;
+		ar = peek(xre, k);
+		ai = peek(xim, k);
+		br = peek(xre, kk);
+		bi = peek(xim, kk);
+		mr = 0.5 * (ar + br);
+		mi = 0.5 * (ai - bi);
+		sr = 0.5 * (ai + bi);
+		si = 0.5 * (br - ar);
+		lm = log(sqrt(mr * mr + mi * mi) + 0.000000001);
+		ls = log(sqrt(sr * sr + si * si) + 0.000000001);
+		poke(lre, lm, k);
+		poke(lre, lm, kk);
+		poke(lim, ls, k);
+		poke(lim, ls, kk);
+		r1 = floor(peek(brv, k) / stride);
+		r2 = floor(peek(brv, kk) / stride);
+		poke(wre, lm, r1);
+		poke(wre, lm, r2);
+		poke(wim, ls, r1);
+		poke(wim, ls, r2);
+	}
+	return 0;
+}
+
+// Job: cutoff quefrency L (Manual / Auto f0 / MIDI note), then lifter the Mid+Side cepstra into ere/eim (bit-reversed).
+// State lives in stat[]: 0 = L smoothed, 1 = f0 Hz, 2 = voiced, 4 = held target L.
+job_lift(wre, wim, ere, eim, brv, stat, n, stride, srVal, modeNow, res01, midiNote) {
+	invN = 1.0 / n;
+	nh = n * 0.5;
+	r01 = clip(res01, 0, 1);
+	kscale = 0.3 + 0.7 * r01;
+	held = peek(stat, 4);
+	f0v = peek(stat, 1);
+	voiced = 0;
+	if (modeNow < 0.5) {
+		held = 0.0003 * pow(50, r01) * srVal;
+		f0v = 0;
+	} else if (modeNow < 1.5) {
+		qlo = max(floor(srVal * 0.001), 4);
+		qhi = min(floor(srVal / 60), nh - 3);
+		best = 0;
+		bestQ = 0;
+		yL = 0;
+		yR = 0;
+		prv = peek(wre, qlo - 1) * invN;
+		cur = peek(wre, qlo) * invN;
+		for (q = qlo; q <= qhi; q += 1) {
+			nxt = peek(wre, q + 1) * invN;
+			isPk = (cur > prv) && (cur >= nxt);
+			if (isPk && (cur > best)) {
+				best = cur;
+				bestQ = q;
+				yL = prv;
+				yR = nxt;
+			}
+			prv = cur;
+			cur = nxt;
+		}
+		if (best > 0.06) {
+			den = yL - 2 * best + yR;
+			dl = (abs(den) > 0.0000001) ? (0.5 * (yL - yR) / den) : 0;
+			period = bestQ + clip(dl, -0.5, 0.5);
+			held = kscale * period;
+			f0v = srVal / period;
+			voiced = 1;
+		}
+	} else {
+		if (midiNote >= 0) {
+			period = srVal / (440 * pow(2, (midiNote - 69) / 12));
+			held = kscale * period;
+			f0v = srVal / period;
+			voiced = 1;
+		}
+	}
+	poke(stat, held, 4);
+	sm = peek(stat, 0);
+	sm = sm + 0.4 * (held - sm);
+	lc = clip(sm, 2, nh - 4);
+	poke(stat, sm, 0);
+	poke(stat, lc, 3);
+	poke(stat, f0v, 1);
+	poke(stat, voiced, 2);
+
+	tw = clip(lc * 0.25, 2, 6);
+	for (i = 0; i < n; i += 1) {
+		q2 = (i <= nh) ? i : (n - i);
+		wgt = 0;
+		if (q2 < lc) {
+			wgt = 1;
+			if (q2 > lc - tw) {
+				wgt = 0.5 + 0.5 * cos(3.14159265359 * (q2 - (lc - tw)) / tw);
+			}
+		}
+		r = floor(peek(brv, i) / stride);
+		poke(ere, wgt * peek(wre, i) * invN, r);
+		poke(eim, wgt * peek(wim, i) * invN, r);
+	}
+	return 0;
+}
+
+// Linear interpolation of a real, symmetric log-envelope at fractional bin kf (held flat above Nyquist).
+interp_env(arr, kf, nh) {
+	kc = clip(kf, 0, nh);
+	i0 = floor(kc);
+	i1 = min(i0 + 1, nh);
+	fr = kc - i0;
+	return mix(peek(arr, i0), peek(arr, i1), fr);
+}
+
+// Harmonic gate on the fine structure h (nepers above the envelope). gate01 = 0 is a bypass.
+gate_h(h, gate01) {
+	if (gate01 <= 0.0005) {
+		return h;
+	}
+	thr = gate01 * 3.4539;
+	kn = 0.6;
+	t = clip((h - (thr - kn)) / (2 * kn), 0, 1);
+	g = t * t * (3 - 2 * t);
+	depth = 6.9 * clip(gate01 * 10, 0, 1);
+	return h - (1 - g) * depth;
+}
+
+// Job: formant shift + harmonic gate + levels, original phase, written bit-reversed for the synthesis IFFT.
+job_spec(xre, xim, lre, lim, ere, eim, ore, oim, brv, n, stride, part, nparts, ratM, ratS, fmt, harm, gate01) {
+	nh = n * 0.5;
+	k0 = floor((nh + 1) * part / nparts);
+	k1 = floor((nh + 1) * (part + 1) / nparts);
+	for (k = k0; k < k1; k += 1) {
+		kk = (n - k) % n;
+		ar = peek(xre, k);
+		ai = peek(xim, k);
+		br = peek(xre, kk);
+		bi = peek(xim, kk);
+		mr = 0.5 * (ar + br);
+		mi = 0.5 * (ai - bi);
+		sr = 0.5 * (ai + bi);
+		si = 0.5 * (br - ar);
+		am = sqrt(mr * mr + mi * mi);
+		asv = sqrt(sr * sr + si * si);
+		pmr = (am > 0.000000000001) ? (mr / am) : 1;
+		pmi = (am > 0.000000000001) ? (mi / am) : 0;
+		psr = (asv > 0.000000000001) ? (sr / asv) : 1;
+		psi = (asv > 0.000000000001) ? (si / asv) : 0;
+
+		lm = peek(lre, k);
+		ls = peek(lim, k);
+		emv = peek(ere, k);
+		esv = peek(eim, k);
+		epm = interp_env(ere, k / ratM, nh);
+		eps = interp_env(eim, k / ratS, nh);
+		hm = gate_h(lm - emv, gate01);
+		hs = gate_h(ls - esv, gate01);
+		omv = clip(fmt * epm + harm * hm, -21, 12);
+		osv = clip(fmt * eps + harm * hs, -21, 12);
+		magM = exp(omv);
+		magS = exp(osv);
+		ymr = magM * pmr;
+		ymi = magM * pmi;
+		ysr = magS * psr;
+		ysi = magS * psi;
+		if ((k == 0) || (k == nh)) {
+			ymi = 0;
+			ysi = 0;
+		}
+		r1 = floor(peek(brv, k) / stride);
+		r2 = floor(peek(brv, kk) / stride);
+		poke(ore, ymr - ysi, r1);
+		poke(oim, ymi + ysr, r1);
+		poke(ore, ymr + ysi, r2);
+		poke(oim, ysr - ymi, r2);
+	}
+	return 0;
+}
+
+// Job: signed Mid cepstrum c[n] on a LINEAR quefrency axis, 192 columns covering n = 0 .. 20 ms.
+// A column spanning several bins keeps the bin with the largest |c| and its sign (pitch peaks survive).
+// Columns at or beyond N/2 (the 1k setting) write the sentinel 9999.
+job_tele(wre, scope, stat, n, srVal, levelIn, frameNo, modeNow) {
+	nh = n * 0.5;
+	invN = 1.0 / n;
+	qmax = 0.02 * srVal;
+	for (b = 0; b < 192; b += 1) {
+		qlo = b * qmax / 192;
+		qhi = (b + 1) * qmax / 192;
+		k0 = floor(qlo);
+		k1 = max(k0, ceil(qhi) - 1);
+		v = 9999;
+		if (k0 < nh - 1) {
+			best = 0;
+			k1c = min(k1, nh - 2);
+			for (k = k0; k <= k1c; k += 1) {
+				cv = peek(wre, k) * invN;
+				if (abs(cv) > abs(best)) {
+					best = cv;
+				}
+			}
+			v = best;
+		}
+		poke(scope, v, b, 0);
+	}
+	poke(scope, peek(stat, 3), 256, 0);
+	poke(scope, peek(stat, 1), 257, 0);
+	poke(scope, levelIn, 258, 0);
+	poke(scope, frameNo, 259, 0);
+	poke(scope, n, 260, 0);
+	poke(scope, peek(stat, 2), 261, 0);
+	poke(scope, modeNow, 262, 0);
+	return 0;
+}
+
+// Job: synthesis Hann window and overlap-add into the Mid / Side output rings (Hann^2 at 75% overlap = 1.5).
+job_ola(ore, oim, oM, oS, twr, n, stride, outStart) {
+	nh = n * 0.5;
+	scl = 1.0 / (n * 1.5);
+	for (i = 0; i < n; i += 1) {
+		ci = (i <= nh) ? i : (n - i);
+		w = (0.5 - 0.5 * peek(twr, ci * stride)) * scl;
+		pos = wrap(outStart + i, 0, 8192);
+		poke(oM, peek(oM, pos) + w * peek(ore, i), pos);
+		poke(oS, peek(oS, pos) + w * peek(oim, i), pos);
+	}
+	return 0;
+}
+
+Buffer scope("cepscope");
+
+Data inM(8192);
+Data inS(8192);
+Data dryL(8192);
+Data dryR(8192);
+Data oM(8192);
+Data oS(8192);
+Data xre(4096);
+Data xim(4096);
+Data lre(4096);
+Data lim(4096);
+Data wre(4096);
+Data wim(4096);
+Data ere(4096);
+Data eim(4096);
+Data ore(4096);
+Data oim(4096);
+Data twr(2049);
+Data twi(2049);
+Data brv(4096);
+Data stat(16);
+
+Param res(0.57);
+Param midshift(0.0);
+Param sideshift(0.0);
+Param gate(0.0);
+Param fmtlevel(1.0);
+Param harmlevel(1.0);
+Param resmode(0);
+Param quality(1);
+Param wet(1.0);
+Param midinote(-1);
+
+History initDone(0);
+History nCur(0);
+History llog(11);
+History stride(2);
+History hopN(512);
+History wLat(256);
+History ltot(2304);
+History jobCount(54);
+History spacing(4);
+History hopCtr(0);
+History jobId(54);
+History jobWait(0);
+History wp(0);
+History capPos(0);
+History outStart(0);
+History quietCount(0);
+History levelPk(0);
+History frameNo(0);
+History muteCnt(0);
+History sleepNote(0);
+History tick(0);
+History dryG(0.0);
+History wetG(1.0);
+History wetSm(1.0);
+
+sr = max(samplerate, 1);
+
+if (initDone == 0) {
+	init_tables(twr, twi, brv);
+	poke(stat, 100, 0);
+	poke(stat, 100, 4);
+	initDone = 1;
+}
+
+// Quality (FFT size) change: abort jobs, clear the overlap-add rings, brief mute then fade-in.
+qIdx = round(clip(quality, 0, 2));
+nWant = 1024 * pow(2, qIdx);
+if (nWant != nCur) {
+	nCur = nWant;
+	llog = 10 + qIdx;
+	stride = 4096 / nWant;
+	hopN = nWant * 0.25;
+	wLat = nWant * 0.125;
+	ltot = nWant + wLat;
+	jobCount = 4 * llog + 10;
+	spacing = max(1, floor((wLat - 2) / jobCount));
+	hopCtr = 0;
+	jobId = jobCount;
+	jobWait = 0;
+	clear_rings(oM, oS);
+	muteCnt = ltot + 3 * hopN + 256;
+}
+
+// Control-rate mix coefficients
+if (tick % 16 == 0) {
+	wetSm = wetSm + 0.05 * (clip(wet, 0, 1) - wetSm);
+	ang = wetSm * 1.57079632679;
+	dryG = cos(ang);
+	wetG = sin(ang);
+}
+tick = wrap(tick + 1, 0, 16);
+
+// Read the finished output sample, then record the new input.
+yM = peek(oM, wp);
+yS = peek(oS, wp);
+poke(oM, 0, wp);
+poke(oS, 0, wp);
+dL = peek(dryL, wrap(wp - ltot, 0, 8192));
+dR = peek(dryR, wrap(wp - ltot, 0, 8192));
+poke(inM, (in1 + in2) * 0.5, wp);
+poke(inS, (in1 - in2) * 0.5, wp);
+poke(dryL, in1, wp);
+poke(dryR, in2, wp);
+wp = wrap(wp + 1, 0, 8192);
+
+// Silence sleep gate: input below -100 dB for a whole frame skips all FFT work.
+inAbs = max(abs(in1), abs(in2));
+loud = (inAbs > 0.00001) ? 1 : 0;
+quietCount = (loud > 0) ? 0 : min(quietCount + 1, 100000000);
+levelPk = max(inAbs, levelPk * 0.9995);
+
+hopCtr = hopCtr + 1;
+if (hopCtr >= hopN) {
+	hopCtr = 0;
+	if (quietCount < nCur) {
+		if (jobId >= jobCount) {
+			jobId = 0;
+			jobWait = 0;
+			capPos = wp;
+			outStart = wrap(wp + wLat, 0, 8192);
+			frameNo = wrap(frameNo + 1, 0, 100000);
+		}
+		sleepNote = 0;
+	} else {
+		if (sleepNote == 0) {
+			poke(scope, 0, 258, 0);
+			poke(scope, 0, 257, 0);
+			sleepNote = 1;
+		}
+	}
+}
+
+// Time-sliced frame pipeline
+if (jobId < jobCount) {
+	if (jobWait <= 0) {
+		j = jobId;
+		if (j == 0) {
+			job_capture(xre, xim, inM, inS, brv, twr, nCur, stride, capPos);
+		} else if (j <= llog) {
+			fft_pass(xre, xim, twr, twi, nCur, j, 1);
+		} else if (j <= llog + 2) {
+			job_logmag(xre, xim, lre, lim, wre, wim, brv, nCur, stride, j - llog - 1, 2);
+		} else if (j <= 2 * llog + 2) {
+			fft_pass(wre, wim, twr, twi, nCur, j - llog - 2, -1);
+		} else if (j == 2 * llog + 3) {
+			job_lift(wre, wim, ere, eim, brv, stat, nCur, stride, sr, resmode, res, midinote);
+		} else if (j <= 3 * llog + 3) {
+			fft_pass(ere, eim, twr, twi, nCur, j - 2 * llog - 3, 1);
+		} else if (j <= 3 * llog + 7) {
+			job_spec(xre, xim, lre, lim, ere, eim, ore, oim, brv, nCur, stride, j - 3 * llog - 4, 4, pow(2, midshift / 12), pow(2, sideshift / 12), clip(fmtlevel, 0, 2), clip(harmlevel, 0, 2), clip(gate, 0, 1));
+		} else if (j == 3 * llog + 8) {
+			job_tele(wre, scope, stat, nCur, sr, levelPk, frameNo, resmode);
+		} else if (j <= 4 * llog + 8) {
+			fft_pass(ore, oim, twr, twi, nCur, j - 3 * llog - 8, -1);
+		} else {
+			job_ola(ore, oim, oM, oS, twr, nCur, stride, outStart);
+		}
+		jobId = jobId + 1;
+		jobWait = spacing;
+	} else {
+		jobWait = jobWait - 1;
+	}
+}
+
+wetL = yM + yS;
+wetR = yM - yS;
+outL = dL * dryG + wetL * wetG;
+outR = dR * dryG + wetR * wetG;
+
+// Quality-switch mute with a 256-sample fade-in
+outGain = 1;
+if (muteCnt > 0) {
+	outGain = (muteCnt > 256) ? 0 : (1 - muteCnt / 256);
+	muteCnt = muteCnt - 1;
+}
+
+out1 = fixnan(fixdenorm(outL * outGain));
+out2 = fixnan(fixdenorm(outR * outGain));

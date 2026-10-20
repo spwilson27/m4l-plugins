@@ -1,0 +1,89 @@
+// Test core for src/cepstrum_lib.genexpr (prepended by
+// scripts/run_cepstrum_lib_audio_tests.py). Mono STFT with a selectable
+// per-frame process, plus a built-in pulse train for the pitch-peak check.
+//   mode 0 identity, 1 minimum phase, 2 cepstrum round trip keeping the phase,
+//   3 identity + cepstral pitch peak (out2 = quefrency, out3 = confidence),
+//   4 maximum phase.
+// out1 = processed signal, out2 = pitch quefrency (samples, mode 3) or the FFT size in use, out3 = pitch confidence (mode 3) or
+// samplerate / 100000 (other modes; the Max test reads the real rate from it).
+
+Param fftn(1024);
+Param mode(0);
+Param src(0);
+Param per(150);
+Param fftn2(512);
+Param swsec(0);
+Param pad(0);
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data fc(4096, 2);
+Data ring(4096);
+Data acc(4096);
+Data st(4);
+Delay padl(4096);
+History tc(0);
+History pc(0);
+History qh(0);
+History ch(0);
+
+// FFT size, with an optional switch to fftn2 at swsec seconds after DSP
+// start (the N-change test; a message from Max is not sample accurate).
+tc += 1;
+req = (swsec > 0 && tc > swsec * samplerate) ? fftn2 : fftn;
+n = cep_n(req);
+fft_init(tab);
+stft_win(win, n);
+
+// Built-in pulse train (src = 1) or the external input.
+pc += 1;
+pulse = 0;
+if (pc >= per) {
+	pc = 0;
+	pulse = 0.5;
+}
+x = src > 0.5 ? pulse : in1;
+
+rdy = stft_in(ring, st, x, n);
+if (rdy) {
+	stft_frame(fx, ring, st, win, n);
+	fft_run(fx, tab, n, 0);
+	// modes 1 and 4: minimum / maximum phase, same magnitude
+	if (mode > 0.5 && mode < 1.5) {
+		cep_from_spec(fx, fc, tab, n, 1e-9);
+		cep_fold_minphase(fc, n);
+		cep_to_logmag(fc, tab, n);
+		cep_exp_spec(fc, fx, n, 1e-9);
+	}
+	if (mode > 3.5) {
+		cep_from_spec(fx, fc, tab, n, 1e-9);
+		cep_fold_maxphase(fc, n);
+		cep_to_logmag(fc, tab, n);
+		cep_exp_spec(fc, fx, n, 1e-9);
+	}
+	// mode 2: cepstrum -> log magnitude -> original phase back on
+	if (mode > 1.5 && mode < 2.5) {
+		cep_from_spec(fx, fc, tab, n, 1e-9);
+		cep_to_logmag(fc, tab, n);
+		cep_remag(fx, fc, n, 1e-9);
+	}
+	// mode 3: pitch peak, spectrum untouched
+	if (mode > 2.5 && mode < 3.5) {
+		cep_from_spec(fx, fc, tab, n, 1e-9);
+		lo = floor(samplerate * 0.002);
+		hi = floor(samplerate * 0.02);
+		q = cep_peak(fc, lo, hi);
+		ch = cep_peak_conf(fc, q, lo, hi);
+		qh = cep_peak_refine(fc, q);
+	}
+	fft_run(fx, tab, n, 1);
+	stft_ola(acc, st, fx, win, n);
+}
+y = stft_out(acc, st, n);
+// pad = 1: constant total latency of 4096 samples for every N, so a device can
+// report one fixed latency to Live whatever FFT size the user picks.
+padl.write(y);
+out1 = pad > 0.5 ? padl.read(4096 - (n - 1)) : y;
+out2 = (mode > 2.5 && mode < 3.5) ? qh : n;
+out3 = (mode > 2.5 && mode < 3.5) ? ch : samplerate * 0.00001;

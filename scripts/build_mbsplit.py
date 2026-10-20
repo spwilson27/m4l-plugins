@@ -109,7 +109,7 @@ def make_slope_tab(x, y, w=84.0, h=15.0):
     return {
         "box": {
             "activebgoncolor": [0.20, 0.78, 0.62, 1.0],
-            "annotation": "Linkwitz-Riley phase-compensated filter slope (12, 24, or 48 dB/oct). Linked across instances in the same Rack.",
+            "annotation": "Linkwitz-Riley phase-compensated filter slope (12, 24, or 48 dB/oct). In Dynamic Phase mode it sets the F1 slope only. Linked across instances in the same Rack.",
             "annotation_name": "Slope",
             "bgcolor": [0.07, 0.09, 0.12, 1.0],
             "bgoncolor": [0.15, 0.48, 0.40, 1.0],
@@ -129,7 +129,7 @@ def make_slope_tab(x, y, w=84.0, h=15.0):
             "presentation_rect": [float(x), float(y), float(w), float(h)],
             "saved_attribute_attributes": {
                 "valueof": {
-                    "parameter_enum": ["12 dB", "24 dB", "48 dB"],
+                    "parameter_enum": ["12", "24", "48"],
                     "parameter_initial": [1],
                     "parameter_initial_enable": 1,
                     "parameter_longname": "Slope",
@@ -142,6 +142,53 @@ def make_slope_tab(x, y, w=84.0, h=15.0):
             "textcolor": [0.68, 0.76, 0.84, 1.0],
             "textoncolor": [0.98, 1.0, 1.0, 1.0],
             "varname": "Slope",
+        }
+    }
+
+
+def make_phase_button(x, y, w=22.0, h=15.0):
+    return {
+        "box": {
+            "activebgcolor": [0.07, 0.09, 0.12, 1.0],
+            "activebgoncolor": [0.55, 0.42, 0.95, 1.0],
+            "activetextcolor": [0.68, 0.76, 0.84, 1.0],
+            "activetextoncolor": [0.98, 1.0, 1.0, 1.0],
+            "annotation": "Dynamic Phase: F1 stays a zero-latency Linkwitz-Riley split, F2 and F3 become linear-phase FIR splits "
+                          "(phase-coherent mids and highs, no bass pre-ringing). Adds 128 samples of latency at 44.1/48 kHz "
+                          "(about 2.7 ms), reported to Live. Off (MIN) is the all-IIR minimum-phase tree with zero latency. "
+                          "Linked across instances in the same Rack.",
+            "annotation_name": "Phase Mode",
+            "bgcolor": [0.07, 0.09, 0.12, 1.0],
+            "bgoncolor": [0.55, 0.42, 0.95, 1.0],
+            "bordercolor": [0.22, 0.28, 0.35, 1.0],
+            "fontface": 1,
+            "fontsize": 8.0,
+            "id": "obj-ctrl-phasemode",
+            "maxclass": "live.text",
+            "numinlets": 1,
+            "numoutlets": 2,
+            "outlettype": ["", ""],
+            "parameter_enable": 1,
+            "patching_rect": [300.0, 80.0, float(w), float(h)],
+            "presentation": 1,
+            "presentation_rect": [float(x), float(y), float(w), float(h)],
+            "saved_attribute_attributes": {
+                "valueof": {
+                    "parameter_annotation_name": "Phase Mode",
+                    "parameter_enum": ["Min", "Dynamic"],
+                    "parameter_initial": [0],
+                    "parameter_initial_enable": 1,
+                    "parameter_longname": "Phase Mode",
+                    "parameter_mmax": 1,
+                    "parameter_shortname": "Phase",
+                    "parameter_type": 2,
+                }
+            },
+            "text": "MIN",
+            "texton": "DYN",
+            "textcolor": [0.68, 0.76, 0.84, 1.0],
+            "textoncolor": [0.98, 1.0, 1.0, 1.0],
+            "varname": "Phase Mode",
         }
     }
 
@@ -271,7 +318,8 @@ def build_patcher():
     viz_rect = [6.0, 6.0, 256.0, 136.0]
 
     ui_widgets = [
-        make_slope_tab(6.0, 146.0, 84.0, 15.0),
+        make_slope_tab(6.0, 146.0, 60.0, 15.0),
+        make_phase_button(69.0, 146.0, 22.0, 15.0),
         make_slider_numbox("f1", 94.0, 146.0, 54.0, 15.0, accent_rgb=(0.22, 0.74, 0.97), hidden=0),
         make_slider_numbox("f2", 151.0, 146.0, 54.0, 15.0, accent_rgb=(0.20, 0.83, 0.60), hidden=0),
         make_slider_numbox("f3", 208.0, 146.0, 54.0, 15.0, accent_rgb=(0.98, 0.75, 0.15), hidden=0),
@@ -344,7 +392,7 @@ def build_patcher():
                 "patching_rect": [660.0, 120.0, 140.0, 20.0],
                 "saved_attribute_attributes": {
                     "valueof": {
-                        "parameter_initial": [2, 120.0, 800.0, 4500.0, 1, 1, 0, 1, 0, 0.0, 1],
+                        "parameter_initial": [3, 120.0, 800.0, 4500.0, 1, 1, 0, 1, 0, 0.0, 1, 0],
                         "parameter_initial_enable": 1,
                         "parameter_invisible": 1,
                         "parameter_longname": "SplitStateData",
@@ -389,6 +437,7 @@ def build_patcher():
         newobj("obj-prep-f2", "prepend set_f2", 220, 310, 90, 20),
         newobj("obj-prep-f3", "prepend set_f3", 320, 310, 90, 20),
         newobj("obj-prep-slope", "prepend set_slope", 420, 310, 100, 20),
+        newobj("obj-prep-phasemode", "prepend set_phasemode", 900, 310, 130, 20),
         newobj("obj-prep-link", "prepend set_linkgroup", 530, 310, 120, 20),
         newobj("obj-prep-bandmode", "prepend set_bandmode", 660, 310, 120, 20),
         newobj("obj-prep-gain", "prepend set_gain", 790, 310, 95, 20),
@@ -396,10 +445,10 @@ def build_patcher():
         # Route v8ui outlet 0 messages to Gen DSP and UI widgets (using `set` to avoid echo loops)
         newobj(
             "obj-route-ui",
-            "route ui_f1 ui_f2 ui_f3 ui_slope ui_bandmode ui_linkgroup ui_gain",
-            120, 360, 370, 20,
-            numinlets=1, numoutlets=8,
-            outlettype=["", "", "", "", "", "", "", ""],
+            "route ui_f1 ui_f2 ui_f3 ui_slope ui_bandmode ui_linkgroup ui_gain ui_phasemode",
+            120, 360, 440, 20,
+            numinlets=1, numoutlets=9,
+            outlettype=["", "", "", "", "", "", "", "", ""],
         ),
         newobj("obj-set-f1", "prepend set", 120, 390, 75, 20),
         newobj("obj-set-f2", "prepend set", 200, 390, 75, 20),
@@ -408,6 +457,7 @@ def build_patcher():
         newobj("obj-set-bandmode", "prepend set", 440, 390, 75, 20),
         newobj("obj-set-linkgroup", "prepend set", 520, 390, 75, 20),
         newobj("obj-set-gain", "prepend set", 600, 390, 75, 20),
+        newobj("obj-set-phasemode", "prepend set", 680, 390, 75, 20),
     ])
 
     # Background panels MUST be at the end of `boxes` with `"background": 1`
@@ -445,6 +495,8 @@ def build_patcher():
         line("obj-prep-f3", 0, "obj-viz", 0),
         line("obj-ctrl-slope", 0, "obj-prep-slope", 0),
         line("obj-prep-slope", 0, "obj-viz", 0),
+        line("obj-ctrl-phasemode", 0, "obj-prep-phasemode", 0),
+        line("obj-prep-phasemode", 0, "obj-viz", 0),
         line("obj-ctrl-linkgroup", 0, "obj-prep-link", 0),
         line("obj-prep-link", 0, "obj-viz", 0),
         line("obj-ctrl-bandmode", 0, "obj-prep-bandmode", 0),
@@ -468,7 +520,9 @@ def build_patcher():
         line("obj-set-linkgroup", 0, "obj-ctrl-linkgroup", 0),
         line("obj-route-ui", 6, "obj-set-gain", 0),
         line("obj-set-gain", 0, "obj-ctrl-gain", 0),
-        line("obj-route-ui", 7, "obj-gen", 0),
+        line("obj-route-ui", 7, "obj-set-phasemode", 0),
+        line("obj-set-phasemode", 0, "obj-ctrl-phasemode", 0),
+        line("obj-route-ui", 8, "obj-gen", 0),
     ]
 
     patcher = {
@@ -496,6 +550,7 @@ def build_patcher():
                 "obj-ctrl-f2": ["Crossover 2", "F2 Mid", 0],
                 "obj-ctrl-f3": ["Crossover 3", "F3 High", 0],
                 "obj-ctrl-slope": ["Slope", "Slope", 0],
+                "obj-ctrl-phasemode": ["Phase Mode", "Phase", 0],
                 "obj-ctrl-linkgroup": ["Link Group", "Link", 0],
                 "obj-ctrl-bandmode": ["Band Mode", "Band", 0],
                 "obj-ctrl-gain": ["Chain Gain", "Gain", 0],

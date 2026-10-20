@@ -37,6 +37,7 @@ const CACHE_BIN_FILE = path.join(CACHE_DIR, ".xo_sample_map_cache_v3.bin");
 const CACHE_IDX_FILE = path.join(CACHE_DIR, ".xo_sample_map_cache_v3.idx.json");
 const RECORD_BYTE_SIZE = 104; // 12*4B vector (48B) + 8*4B scalars (32B) + 24*1B uint8 peaks (24B) = 104 bytes/sample
 const MAX_DISPLAY_SAMPLES = 1500;
+const MAX_FILES_PER_FOLDER = 50000;
 const EXPORT_BASE_DIR = path.join(os.tmpdir(), "xo_sample_map_exports");
 const SUPPORTED_EXTS = new Set([".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a", ".caf"]);
 
@@ -120,7 +121,7 @@ const OBJC_DRAG_HELPER_SOURCE = `
             *stop = YES;
             [[self window] orderOut:nil];
             if (!self.didDrag) {
-                fprintf(stdout, "{\\"event\\":\\"replay_click\\"}\\n");
+                fprintf(stdout, "REPLAY_CLICK\\n");
                 fflush(stdout);
             }
         }
@@ -300,7 +301,7 @@ function ensureDragHelperProcess() {
         const lines = stdoutBuf.split("\n");
         stdoutBuf = lines.pop() || "";
         for (const line of lines) {
-          if (line.includes("replay_click")) {
+          if (line.includes("REPLAY_CLICK") || line.includes("replay_click")) {
             if (engineState.selectedIndex >= 0) {
               emitSelectedToMax(engineState.selectedIndex, true);
             }
@@ -550,13 +551,60 @@ function encodeStereoWav16(samplesMono, sampleRate) {
   return buf;
 }
 
+function fftRadix2(re, im, inverse) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const tr = re[i]; re[i] = re[j]; re[j] = tr;
+      const ti = im[i]; im[i] = im[j]; im[j] = ti;
+    }
+  }
+  const sign = inverse ? 1 : -1;
+  for (let len = 2; len <= n; len <<= 1) {
+    const half = len >> 1;
+    const ang = (sign * 2 * Math.PI) / len;
+    const wlenR = Math.cos(ang);
+    const wlenI = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let wR = 1.0;
+      let wI = 0.0;
+      for (let j = 0; j < half; j++) {
+        const uR = re[i + j];
+        const uI = im[i + j];
+        const vR = re[i + j + half] * wR - im[i + j + half] * wI;
+        const vI = re[i + j + half] * wI + im[i + j + half] * wR;
+        re[i + j] = uR + vR;
+        im[i + j] = uI + vI;
+        re[i + j + half] = uR - vR;
+        im[i + j + half] = uI - vI;
+        const nextWR = wR * wlenR - wI * wlenI;
+        wI = wR * wlenI + wI * wlenR;
+        wR = nextWR;
+      }
+    }
+  }
+  if (inverse) {
+    for (let i = 0; i < n; i++) {
+      re[i] /= n;
+      im[i] /= n;
+    }
+  }
+}
+
 function renderEditedAudioSamples(decoded, settings = {}) {
   const pitchSt = Number(settings.pitchSt) || 0;
   const decayMs = Math.max(20, Number(settings.decayMs) || 2500);
   const gainDb = Number(settings.gainDb) || 0;
   const isReversed = !!(settings.reverse && Number(settings.reverse) !== 0);
+  const speedPct = settings.speedPct !== undefined ? Math.max(10, Math.min(400, Number(settings.speedPct) || 100)) : 100;
+  const grainMs = settings.grainMs !== undefined ? Math.max(5, Math.min(250, Number(settings.grainMs) || 45)) : 45;
+  const spectralPct = settings.spectralPct !== undefined ? Math.max(0, Math.min(100, Number(settings.spectralPct) || 0)) : 0;
 
-  const speed = Math.pow(2.0, pitchSt / 12.0);
+  const pitchRatio = Math.pow(2.0, pitchSt / 12.0);
+  const speedRatio = speedPct / 100.0;
   const linGain = Math.pow(10.0, gainDb / 20.0);
   const sr = decoded.sampleRate || 44100;
   const rawSrc = decoded.samples;
@@ -569,28 +617,154 @@ function renderEditedAudioSamples(decoded, settings = {}) {
     }
   }
 
-  const resampledFullFrames = Math.max(16, Math.floor(srcLen / speed));
+  const effectiveScanRate = pitchRatio * speedRatio;
+  const stretchedFullFrames = Math.max(16, Math.floor(srcLen / Math.max(0.05, effectiveScanRate)));
   const maxDecayFrames = Math.max(16, Math.floor((decayMs / 1000.0) * sr));
-  const isTrimmed = maxDecayFrames < resampledFullFrames;
-  const outFrames = Math.min(resampledFullFrames, maxDecayFrames);
+  const isTrimmed = maxDecayFrames < stretchedFullFrames;
+  const outFrames = Math.min(stretchedFullFrames, maxDecayFrames, sr * 20);
   const out = new Float32Array(outFrames);
 
-  const holdFrames = isTrimmed ? Math.floor(outFrames * 0.72) : outFrames;
+  // In Forward mode, Trim/Dec keeps the start (0..outFrames) and fades out the tail.
+  // In Reverse mode, Trim/Dec trims from the start (keeping the last outFrames leading up to the reversed peak)
+  // and applies a rising sweep fade-in at the start!
+  const revSkipOutFrames = isReversed ? Math.max(0, stretchedFullFrames - outFrames) : 0;
+  const revSkipSrcFrames = revSkipOutFrames * effectiveScanRate;
+
+  const holdFrames = (!isReversed && isTrimmed) ? Math.floor(outFrames * 0.72) : outFrames;
   const rampSpan = Math.max(1, outFrames - holdFrames);
+  const revSweepFrames = (isReversed && isTrimmed) ? Math.max(1, Math.floor(outFrames * 0.68)) : 0;
 
-  for (let i = 0; i < outFrames; i++) {
-    const srcPos = i * speed;
-    const idx0 = Math.floor(srcPos);
-    const frac = srcPos - idx0;
-    const s0 = idx0 < srcLen ? src[idx0] : 0;
-    const s1 = (idx0 + 1) < srcLen ? src[idx0 + 1] : s0;
-    const interp = s0 + frac * (s1 - s0);
-
-    let env = 1.0;
-    if (isTrimmed && i > holdFrames) {
-      env = Math.max(0.0, 1.0 - (i - holdFrames) / rampSpan);
+  function computeEnvelope(i) {
+    if (isReversed) {
+      if (revSweepFrames > 0 && i < revSweepFrames) {
+        const norm = i / revSweepFrames;
+        return norm * norm; // Quadratic rising sweep into the reversed transient peak
+      }
+      return 1.0;
     }
-    out[i] = Math.max(-1.0, Math.min(1.0, interp * env * linGain));
+    if (isTrimmed && i > holdFrames) {
+      return Math.max(0.0, 1.0 - (i - holdFrames) / rampSpan);
+    }
+    return 1.0;
+  }
+
+  const useGranularOrSpectral = Math.abs(speedPct - 100.0) >= 0.5 || spectralPct >= 0.5;
+
+  if (!useGranularOrSpectral) {
+    for (let i = 0; i < outFrames; i++) {
+      const srcPos = revSkipSrcFrames + i * pitchRatio;
+      const idx0 = Math.floor(srcPos);
+      const frac = srcPos - idx0;
+      const s0 = (idx0 >= 0 && idx0 < srcLen) ? src[idx0] : 0;
+      const s1 = (idx0 + 1 >= 0 && idx0 + 1 < srcLen) ? src[idx0 + 1] : s0;
+      const interp = s0 + frac * (s1 - s0);
+      const env = computeEnvelope(i);
+      out[i] = Math.max(-1.0, Math.min(1.0, interp * env * linGain));
+    }
+  } else {
+    // 1. 4x Overlap-Add Hann Granular Stretcher with Transient Preservation
+    const grainBuf = new Float32Array(outFrames);
+    const grainLen = Math.max(64, Math.round((grainMs / 1000.0) * sr));
+    const hop = Math.max(16, Math.floor(grainLen / 4));
+    const normGain = 0.5; // 4x Hann overlap sums to 2.0 -> * 0.5 = 1.0
+
+    for (let g0 = -grainLen + hop; g0 < outFrames; g0 += hop) {
+      const srcOrigin = Math.max(0, revSkipSrcFrames + g0 * effectiveScanRate);
+      for (let n = 0; n < grainLen; n++) {
+        const outIdx = g0 + n;
+        if (outIdx < 0 || outIdx >= outFrames) continue;
+        const srcPos = srcOrigin + n * pitchRatio;
+        if (srcPos >= srcLen) break;
+        const idx0 = Math.floor(srcPos);
+        const frac = srcPos - idx0;
+        const s0 = src[idx0];
+        const s1 = (idx0 + 1) < srcLen ? src[idx0 + 1] : s0;
+        const samp = s0 + frac * (s1 - s0);
+        const w = 0.5 * (1.0 - Math.cos((2.0 * Math.PI * n) / grainLen));
+        grainBuf[outIdx] += samp * w * normGain;
+      }
+    }
+
+    // Preserve initial attack transient (first 10ms) and crossfade into granular body
+    const transLen = isReversed ? 0 : Math.min(Math.floor(sr * 0.010), Math.floor(outFrames * 0.25));
+    for (let i = 0; i < transLen; i++) {
+      const srcPos = i * pitchRatio;
+      const idx0 = Math.floor(srcPos);
+      const frac = srcPos - idx0;
+      const s0 = idx0 < srcLen ? src[idx0] : 0;
+      const s1 = (idx0 + 1) < srcLen ? src[idx0 + 1] : s0;
+      const direct = s0 + frac * (s1 - s0);
+      const xfade = 0.5 * (1.0 - Math.cos((Math.PI * i) / Math.max(1, transLen)));
+      grainBuf[i] = direct * (1.0 - xfade) + grainBuf[i] * xfade;
+    }
+
+    // 2. Radix-2 STFT Spectral Stretch / Phase-Diffused Blur when spectralPct > 0
+    const specMix = spectralPct / 100.0;
+    let specBuf = null;
+    if (specMix > 0.005) {
+      specBuf = new Float32Array(outFrames);
+      const fftSize = 512;
+      const specHop = 128;
+      const re = new Float32Array(fftSize);
+      const im = new Float32Array(fftSize);
+      const smoothMag = new Float32Array(fftSize >> 1);
+      const phaseAcc = new Float32Array(fftSize >> 1);
+      const blurCoeff = Math.min(0.94, 0.25 + specMix * 0.68);
+      const win = new Float32Array(fftSize);
+      for (let n = 0; n < fftSize; n++) {
+        win[n] = 0.5 * (1.0 - Math.cos((2.0 * Math.PI * n) / fftSize));
+      }
+
+      for (let f0 = 0; f0 < outFrames; f0 += specHop) {
+        const srcCenter = Math.max(0, revSkipSrcFrames + f0 * effectiveScanRate);
+        for (let n = 0; n < fftSize; n++) {
+          const sp = srcCenter + n * pitchRatio;
+          const idx0 = Math.floor(sp);
+          const frac = sp - idx0;
+          const s0 = idx0 < srcLen ? src[idx0] : 0;
+          const s1 = (idx0 + 1) < srcLen ? src[idx0 + 1] : s0;
+          re[n] = (s0 + frac * (s1 - s0)) * win[n];
+          im[n] = 0.0;
+        }
+        fftRadix2(re, im, false);
+
+        const half = fftSize >> 1;
+        for (let k = 1; k < half; k++) {
+          const mag = Math.hypot(re[k], im[k]);
+          smoothMag[k] = smoothMag[k] * blurCoeff + mag * (1.0 - blurCoeff);
+          // Advance bin phase with golden-ratio phase dispersion for lush pad-like spectral smear
+          const prng = Math.sin(k * 12.9898 + f0 * 0.07823) * 43758.5453;
+          const jitter = (prng - Math.floor(prng) - 0.5) * Math.PI * (0.35 + specMix * 1.4);
+          phaseAcc[k] += (2.0 * Math.PI * k * specHop) / fftSize + jitter;
+          const outMag = smoothMag[k] * 1.25;
+          const c = Math.cos(phaseAcc[k]);
+          const s = Math.sin(phaseAcc[k]);
+          re[k] = outMag * c;
+          im[k] = outMag * s;
+          re[fftSize - k] = outMag * c;
+          im[fftSize - k] = -outMag * s;
+        }
+        re[0] = 0; im[0] = 0;
+        re[half] = 0; im[half] = 0;
+
+        fftRadix2(re, im, true);
+        for (let n = 0; n < fftSize; n++) {
+          const outIdx = f0 + n;
+          if (outIdx < outFrames) {
+            specBuf[outIdx] += re[n] * win[n] * 0.5;
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < outFrames; i++) {
+      let sig = grainBuf[i];
+      if (specBuf) {
+        sig = sig * (1.0 - specMix) + specBuf[i] * specMix;
+      }
+      const env = computeEnvelope(i);
+      out[i] = Math.max(-1.0, Math.min(1.0, sig * env * linGain));
+    }
   }
 
   return {
@@ -600,23 +774,10 @@ function renderEditedAudioSamples(decoded, settings = {}) {
   };
 }
 
-function createRawFileLink(rawFilePath, customOutDir = null) {
-  if (!rawFilePath || !fs.existsSync(rawFilePath)) return rawFilePath;
+function createRawFileLink(rawFilePath) {
+  if (!rawFilePath) return rawFilePath;
   try {
-    const rawDir = customOutDir || path.join(EXPORT_BASE_DIR, "Raw");
-    fs.mkdirSync(rawDir, { recursive: true });
-    const linkPath = path.join(rawDir, path.basename(rawFilePath));
-    if (path.resolve(rawFilePath) === path.resolve(linkPath)) {
-      return linkPath;
-    }
-    try {
-      const st = fs.lstatSync(linkPath);
-      if (st.isSymbolicLink() || st.isFile()) {
-        fs.unlinkSync(linkPath);
-      }
-    } catch (_) {}
-    fs.copyFileSync(rawFilePath, linkPath);
-    return linkPath;
+    return path.resolve(rawFilePath);
   } catch (_) {
     return rawFilePath;
   }
@@ -628,7 +789,7 @@ function renderEditedSampleWav(rawFilePath, settings = {}, customOutDir = null) 
   fs.mkdirSync(outDir, { recursive: true });
 
   const rawBuf = fs.readFileSync(rawFilePath);
-  const decoded = parseAudioBuffer(rawBuf, rawBuf.length, 15.0);
+  const decoded = parseAudioBuffer(rawBuf, rawBuf.length, 25.0);
   if (!decoded) return null;
 
   const rendered = renderEditedAudioSamples(decoded, settings);
@@ -639,7 +800,10 @@ function renderEditedSampleWav(rawFilePath, settings = {}, customOutDir = null) 
   const dTag = Math.round(Number(settings.decayMs) || 2500);
   const gTag = Math.round((Number(settings.gainDb) || 0) * 10) / 10;
   const rTag = (settings.reverse && Number(settings.reverse) !== 0) ? "_rev" : "";
-  const outName = `${base}_p${pTag}st_d${dTag}ms_g${gTag}dB${rTag}.wav`;
+  const spTag = settings.speedPct !== undefined && Math.round(Number(settings.speedPct)) !== 100 ? `_sp${Math.round(Number(settings.speedPct))}` : "";
+  const grTag = (spTag || (settings.spectralPct && Number(settings.spectralPct) > 0)) ? `_gr${Math.round(Number(settings.grainMs) || 45)}` : "";
+  const sxTag = settings.spectralPct && Number(settings.spectralPct) > 0 ? `_sx${Math.round(Number(settings.spectralPct))}` : "";
+  const outName = `${base}_p${pTag}st_d${dTag}ms_g${gTag}dB${rTag}${spTag}${grTag}${sxTag}.wav`;
   const outPath = path.join(outDir, outName);
 
   fs.writeFileSync(outPath, wavBuf);
@@ -1148,7 +1312,7 @@ function saveDiskCache(cache) {
   } catch (_) {}
 }
 
-function collectAudioFilesRecursive(dirPath, maxFiles = 20000, out = []) {
+function collectAudioFilesRecursive(dirPath, maxFiles = MAX_FILES_PER_FOLDER, out = []) {
   if (out.length >= maxFiles) return out;
   let entries = [];
   try {
@@ -1317,7 +1481,7 @@ function selectSeededMapSubset(corpusSamples, maxDisplay = MAX_DISPLAY_SAMPLES, 
   return selected;
 }
 
-function scanDirectories(dirs, maxFiles = 5000, seed = 1, maxDisplay = MAX_DISPLAY_SAMPLES) {
+function scanDirectories(dirs, maxFiles = MAX_FILES_PER_FOLDER, seed = 1, maxDisplay = MAX_DISPLAY_SAMPLES) {
   const cache = loadDiskCache();
   const fileEntries = [];
   for (const d of dirs) {
@@ -1380,17 +1544,20 @@ const engineState = {
   activeCategory: "ALL",
   maxLenMs: 5000, // >= 4990 or Infinity = Infinite (no max length cutoff)
   toneFilter: 0,
-  pitchFilter: 0,
   tonalFilter: 0,
+  drumFilter: 0,
   searchQuery: "",
   pitchSt: 0,
+  speedPct: 100,
+  grainMs: 45,
+  spectralPct: 0,
   decayMs: 2500,
   gainDb: 0,
   reverse: 0,
   showSaved: 1,
   showFilters: 1,
   showPlayback: 1,
-  deviceWidth: 740,
+  deviceWidth: 776,
   savedList: [],
   lastDragOut: null,
   statusText: "Initializing..."
@@ -1434,6 +1601,27 @@ function isSampleFolderEnabled(s, st = engineState) {
   return true;
 }
 
+function computeSampleDruminessPct(s) {
+  if (!s) return 50.0;
+  if (s.druminess !== undefined) return Number(s.druminess);
+  const v = s.vector || [];
+  const durMs = Number(s.durationMs) || 300;
+  const logDur = v[2] !== undefined ? Number(v[2]) : Math.max(0, Math.min(1, (Math.log10(Math.max(10, durMs)) - 1.0) / 3.0));
+  const logAtk = v[3] !== undefined ? Number(v[3]) : Math.max(0, Math.min(1, Math.log10(1 + (Number(s.attackMs) || 5)) / 2.4));
+  const decRat = v[4] !== undefined ? Number(v[4]) : 0.35;
+  const crest = v[11] !== undefined ? Number(v[11]) : 0.55;
+
+  const fastAttack = 1.0 - Math.max(0.0, Math.min(1.0, logAtk));
+  const fastDecay = 1.0 - Math.max(0.0, Math.min(1.0, decRat));
+  const shortDur = 1.0 - Math.max(0.0, Math.min(1.0, logDur));
+  const punchCrest = Math.max(0.0, Math.min(1.0, crest));
+
+  // Long samples (> 900ms) scale down toward the Pad / Sustained Cluster side
+  const lengthScale = durMs > 900 ? Math.max(0.20, 1.0 - (durMs - 900) / 3000.0) : 1.0;
+  const score = (0.30 * fastAttack + 0.26 * fastDecay + 0.28 * shortDur + 0.16 * punchCrest) * lengthScale;
+  return Math.max(0.0, Math.min(100.0, score * 100.0));
+}
+
 function isSamplePassingFilters(s, st = engineState) {
   if (!s) return false;
   if (!isSampleFolderEnabled(s, st)) return false;
@@ -1451,14 +1639,6 @@ function isSamplePassingFilters(s, st = engineState) {
     const minB = st.toneFilter * 0.85;
     if (centroidPct < minB) return false;
   }
-  const pitchPct = Math.max(0.0, Math.min(100.0, (((s.pitchMidi !== undefined ? s.pitchMidi : 48) - 24.0) / 60.0) * 100.0));
-  if (st.pitchFilter < 0) {
-    const maxP = 100.0 + st.pitchFilter * 0.85;
-    if (pitchPct > maxP) return false;
-  } else if (st.pitchFilter > 0) {
-    const minP = st.pitchFilter * 0.85;
-    if (pitchPct < minP) return false;
-  }
   const tonalPct = Math.max(0.0, Math.min(100.0, (1.0 - (s.flatness !== undefined ? s.flatness : 0.5)) * 100.0));
   if (st.tonalFilter < 0) {
     const maxT = 100.0 + st.tonalFilter * 0.85;
@@ -1467,12 +1647,25 @@ function isSamplePassingFilters(s, st = engineState) {
     const minT = st.tonalFilter * 0.85;
     if (tonalPct < minT) return false;
   }
+  const drumPct = computeSampleDruminessPct(s);
+  const df = Number(st.drumFilter) || 0;
+  if (df < 0) {
+    const maxD = 100.0 + df * 0.85;
+    if (drumPct > maxD) return false;
+  } else if (df > 0) {
+    const minD = df * 0.85;
+    if (drumPct < minD) return false;
+  }
   if (st.searchQuery && st.searchQuery.trim().length > 0) {
-    const q = st.searchQuery.trim().toLowerCase();
-    const matchName = s.name && s.name.toLowerCase().includes(q);
-    const matchCat = s.category && s.category.toLowerCase().includes(q);
-    const matchFolder = s.folder && s.folder.toLowerCase().includes(q);
-    if (!matchName && !matchCat && !matchFolder) return false;
+    const clauses = st.searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (clauses.length > 0) {
+      const haystack = `${s.name || ""} ${s.category || ""} ${s.folder || ""}`
+        .toLowerCase()
+        .replace(/[_\-./\\]+/g, " ");
+      for (let i = 0; i < clauses.length; i++) {
+        if (!haystack.includes(clauses[i])) return false;
+      }
+    }
   }
   return true;
 }
@@ -1482,8 +1675,9 @@ function syncFolderListToMax() {
   const flat = [];
   for (let i = 0; i < engineState.knownFolders.length; i++) {
     const kf = engineState.knownFolders[i];
+    const flags = (kf.enabled ? 1 : 0) | (kf.scanning ? 2 : 0);
     flat.push(
-      kf.enabled ? 1 : 0,
+      flags,
       Number(kf.count) || 0,
       String(kf.name || "Folder"),
       String(kf.path || "")
@@ -1541,35 +1735,41 @@ function persistKnownFoldersToCache() {
   saveDiskCache(cache);
 }
 
-function rebuildActiveMapSubset(seed = engineState.sampleSeed) {
+function rebuildActiveMapSubset(seed = engineState.sampleSeed, applyActiveFilters = false) {
   engineState.sampleSeed = Number(seed) || 1;
   acousticSimTourKey = "";
-  const enabledCorpus = engineState.corpusSamples.filter((s) => isSampleFolderEnabled(s, engineState));
+  const candidateCorpus = applyActiveFilters
+    ? engineState.corpusSamples.filter((s) => isSamplePassingFilters(s, engineState))
+    : engineState.corpusSamples.filter((s) => isSampleFolderEnabled(s, engineState));
   const maxDisp = Math.max(1, Number(engineState.maxDisplaySamples) || MAX_DISPLAY_SAMPLES);
-  const subset = selectSeededMapSubset(enabledCorpus, maxDisp, engineState.sampleSeed);
+  const subset = selectSeededMapSubset(candidateCorpus, maxDisp, engineState.sampleSeed);
   computeKNN(subset, 8);
   compute2DMap(subset, engineState.sampleSeed);
   engineState.samples = subset;
   if (engineState.selectedIndex < 0 || engineState.selectedIndex >= subset.length) {
     engineState.selectedIndex = subset.length > 0 ? 0 : -1;
   }
-  engineState.statusText = `${subset.length} / ${enabledCorpus.length} samples mapped (Seed #${engineState.sampleSeed})`;
+  engineState.statusText = `${subset.length} / ${candidateCorpus.length} samples mapped (Seed #${engineState.sampleSeed})`;
   syncFolderListToMax();
   syncMiniMapToMax();
   broadcastSSE({
     samples: engineState.samples,
     knownFolders: engineState.knownFolders,
     sampleSeed: engineState.sampleSeed,
-    corpusCount: enabledCorpus.length,
+    corpusCount: candidateCorpus.length,
     selectedIndex: engineState.selectedIndex,
     statusText: engineState.statusText
   });
   return subset;
 }
 
-function reseedMapSubset() {
+function reseedMapSubset(applyActiveFilters = false) {
   engineState.sampleSeed = ((engineState.sampleSeed || 1) + 1) >>> 0;
-  return rebuildActiveMapSubset(engineState.sampleSeed);
+  return rebuildActiveMapSubset(engineState.sampleSeed, applyActiveFilters);
+}
+
+function reseedWithActiveFilters() {
+  return reseedMapSubset(true);
 }
 
 function addRememberedFolder(folderPath, runAsync = false, onDone = null) {
@@ -1676,7 +1876,7 @@ function buildAcousticSimilarityTour(startIdx) {
   }
   if (vis.length === 0) return [];
   const enabledFolderKey = engineState.knownFolders.map((f) => `${f.path}:${f.enabled ? 1 : 0}`).join(",");
-  const key = `${vis.length}|${engineState.activeCategory}|${engineState.maxLenMs}|${engineState.toneFilter}|${engineState.searchQuery}|${engineState.sampleSeed}|${enabledFolderKey}`;
+  const key = `${vis.length}|${engineState.activeCategory}|${engineState.maxLenMs}|${engineState.toneFilter}|${engineState.pitchFilter}|${engineState.tonalFilter}|${engineState.searchQuery}|${engineState.sampleSeed}|${enabledFolderKey}`;
   if (acousticSimTourKey === key && acousticSimTourCache.length === vis.length && acousticSimTourCache.includes(startIdx)) {
     return acousticSimTourCache;
   }
@@ -1735,22 +1935,112 @@ function stepSimilarSample(dir = 1) {
   return nextIdx;
 }
 
+function computeDynamicLayout(
+  showSaved = engineState.showSaved,
+  showFilters = engineState.showFilters,
+  showPlayback = engineState.showPlayback
+) {
+  const sOn = Number(showSaved) ? 1 : 0;
+  const fOn = Number(showFilters) ? 1 : 0;
+  const pOn = Number(showPlayback) ? 1 : 0;
+
+  const leftPanelW = sOn ? 380.0 : 264.0;
+  const minimapW = sOn ? 372.0 : 256.0;
+  let curX = 6.0 + leftPanelW + 6.0;
+
+  const filtersX = curX;
+  const filtersW = 208.0;
+  if (fOn) {
+    curX += filtersW + 6.0;
+  }
+
+  const playbackX = curX;
+  const playbackW = 164.0;
+  if (pOn) {
+    curX += playbackW + 6.0;
+  }
+
+  const deviceWidth = curX;
+  const boxes = {
+    "obj-panel-left": { rect: [6.0, 5.0, leftPanelW, 159.0], hidden: 0 },
+    "obj-minimap": { rect: [10.0, 27.0, minimapW, 134.0], hidden: 0 },
+    "obj-panel-filters": { rect: [filtersX, 5.0, filtersW, 159.0], hidden: fOn ? 0 : 1 },
+    "obj-hdr-filters": { rect: [filtersX + 6.0, 6.0, 68.0, 15.0], hidden: fOn ? 0 : 1 },
+    "obj-reseed-filtered-btn": { rect: [filtersX + 118.0, 6.0, 52.0, 14.0], hidden: fOn ? 0 : 1 },
+    "obj-search-clear-btn": { rect: [filtersX + 174.0, 6.0, 28.0, 14.0], hidden: fOn ? 0 : 1 },
+    "obj-search-box": { rect: [filtersX + 6.0, 22.0, 196.0, 17.0], hidden: fOn ? 0 : 1 },
+    "obj-maxlen-dial": { rect: [filtersX + 6.0, 41.0, 46.0, 46.0], hidden: fOn ? 0 : 1 },
+    "obj-tone-dial": { rect: [filtersX + 56.0, 41.0, 46.0, 46.0], hidden: fOn ? 0 : 1 },
+    "obj-filter-tonal-dial": { rect: [filtersX + 106.0, 41.0, 46.0, 46.0], hidden: fOn ? 0 : 1 },
+    "obj-filter-drum-dial": { rect: [filtersX + 156.0, 41.0, 46.0, 46.0], hidden: fOn ? 0 : 1 },
+    "obj-folder-list": { rect: [filtersX + 6.0, 90.0, 196.0, 69.0], hidden: fOn ? 0 : 1 },
+    "obj-panel-playback": { rect: [playbackX, 5.0, playbackW, 159.0], hidden: pOn ? 0 : 1 },
+    "obj-hdr-playback": { rect: [playbackX + 6.0, 6.0, 92.0, 15.0], hidden: pOn ? 0 : 1 },
+    "obj-reverse-btn": { rect: [playbackX + 106.0, 6.0, 52.0, 14.0], hidden: pOn ? 0 : 1 },
+    "obj-pitch-dial": { rect: [playbackX + 4.0, 30.0, 48.0, 46.0], hidden: pOn ? 0 : 1 },
+    "obj-speed-dial": { rect: [playbackX + 58.0, 30.0, 48.0, 46.0], hidden: pOn ? 0 : 1 },
+    "obj-grain-dial": { rect: [playbackX + 112.0, 30.0, 48.0, 46.0], hidden: pOn ? 0 : 1 },
+    "obj-decay-dial": { rect: [playbackX + 4.0, 92.0, 48.0, 46.0], hidden: pOn ? 0 : 1 },
+    "obj-spec-dial": { rect: [playbackX + 58.0, 92.0, 48.0, 46.0], hidden: pOn ? 0 : 1 },
+    "obj-gain-dial": { rect: [playbackX + 112.0, 92.0, 48.0, 46.0], hidden: pOn ? 0 : 1 }
+  };
+
+  return {
+    showSaved: sOn,
+    showFilters: fOn,
+    showPlayback: pOn,
+    leftPanelW,
+    minimapW,
+    filtersX,
+    playbackX,
+    deviceWidth,
+    boxes
+  };
+}
+
+function applyDynamicLayout() {
+  const layout = computeDynamicLayout(
+    engineState.showSaved,
+    engineState.showFilters,
+    engineState.showPlayback
+  );
+  engineState.deviceWidth = layout.deviceWidth;
+  if (Max && typeof Max.outlet === "function") {
+    for (const [id, spec] of Object.entries(layout.boxes)) {
+      Max.outlet("patcher_cmd", "script", "sendbox", id, "hidden", spec.hidden);
+      if (!spec.hidden) {
+        Max.outlet("patcher_cmd", "script", "sendbox", id, "presentation_rect", ...spec.rect);
+      }
+    }
+    // Resize M4L device width in Ableton Live via live.thisdevice ("setwidth <w>")
+    // and resize standalone Max window via thispatcher ("window size ...")
+    Max.outlet("setwidth_cmd", layout.deviceWidth);
+    Max.outlet("patcher_cmd", "window", "size", 0, 0, layout.deviceWidth, 169);
+    Max.outlet("patcher_cmd", "window", "exec");
+  }
+  return layout;
+}
+
 function syncMiniMapToMax() {
   if (!Max || typeof Max.outlet !== "function") return;
   Max.outlet("minimap_clear");
-  const batchSize = 40;
+  const batchSize = 35;
   for (let i = 0; i < engineState.samples.length; i += batchSize) {
     const slice = engineState.samples.slice(i, i + batchSize);
     const flat = [];
     for (let j = 0; j < slice.length; j++) {
       const s = slice[j];
       const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
+      const drumPct = Math.round(computeSampleDruminessPct(s));
+      const tonalPct = Math.round(Math.max(0, Math.min(100, (1.0 - (s.flatness !== undefined ? s.flatness : 0.5)) * 100)));
       flat.push(
         Math.round(s.x * 1000) / 1000,
         Math.round(s.y * 1000) / 1000,
         catIdx,
         Math.round(s.durationMs),
         Math.round((s.centroid || 0.5) * 100),
+        drumPct,
+        tonalPct,
         String(s.name || "Sample")
       );
     }
@@ -1775,7 +2065,11 @@ function syncSavedListToMax() {
       item.catIdx,
       item.pitchSt,
       item.decayMs,
-      item.gainDb
+      item.gainDb,
+      item.reverse ? 1 : 0,
+      item.speedPct !== undefined ? item.speedPct : 100,
+      item.grainMs !== undefined ? item.grainMs : 45,
+      item.spectralPct !== undefined ? item.spectralPct : 0
     );
   }
   Max.outlet("saved_list_sync", engineState.savedList.length, ...flat);
@@ -1786,10 +2080,12 @@ function emitSelectedToMax(idx, audition = true) {
   engineState.selectedIndex = idx;
   const s = engineState.samples[idx];
   const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
-  const speed = Math.pow(2.0, (engineState.pitchSt || 0) / 12.0);
-  const naturalScaledMs = Math.max(20, Math.round((s.durationMs || 300) / speed));
+  const pitchSpeed = Math.pow(2.0, (engineState.pitchSt || 0) / 12.0);
+  const stretchRatio = Math.max(0.1, (Number(engineState.speedPct) || 100) / 100.0);
+  const useOfflineGranular = Math.abs((Number(engineState.speedPct) || 100) - 100) >= 0.5 || (Number(engineState.spectralPct) || 0) >= 0.5;
+  const naturalScaledMs = Math.max(20, Math.round((s.durationMs || 300) / (pitchSpeed * stretchRatio)));
   const decaySettingMs = Math.max(20, Number(engineState.decayMs) || 2500);
-  const isTrimmed = decaySettingMs < 4950 && decaySettingMs < naturalScaledMs;
+  const isTrimmed = decaySettingMs < 19950 && decaySettingMs < naturalScaledMs;
   const effDurMs = isTrimmed ? decaySettingMs : naturalScaledMs;
 
   if (Max && typeof Max.outlet === "function") {
@@ -1808,21 +2104,42 @@ function emitSelectedToMax(idx, audition = true) {
     );
 
     if (audition) {
-      // 1 = Mono (duplicate Left to Right via selector~), 2 = Stereo (use Right channel)
-      const chMode = (s.channels && s.channels >= 2) ? 2 : 1;
+      const isRev = !!(engineState.reverse && Number(engineState.reverse) !== 0);
+      let playPath = s.path;
+      let sfPlaySpeed = pitchSpeed;
+      let chMode = (s.channels && s.channels >= 2) ? 2 : 1;
+
+      if ((useOfflineGranular || isRev) && s.path && fs.existsSync(s.path)) {
+        const previewDir = path.join(EXPORT_BASE_DIR, "PreviewGranular");
+        const renderedPath = renderEditedSampleWav(s.path, {
+          pitchSt: engineState.pitchSt || 0,
+          speedPct: engineState.speedPct || 100,
+          grainMs: engineState.grainMs || 45,
+          spectralPct: engineState.spectralPct || 0,
+          decayMs: engineState.decayMs || 2500,
+          gainDb: 0,
+          reverse: isRev ? 1 : 0
+        }, previewDir);
+        if (renderedPath) {
+          playPath = renderedPath;
+          sfPlaySpeed = 1.0; // Pitch, stretch & reverse sweep already baked into preview WAV
+          chMode = 2;
+        }
+      }
+
       Max.outlet("play_mono", chMode);
-      Max.outlet("play_speed", speed);
+      Max.outlet("play_speed", sfPlaySpeed);
       Max.outlet("play_scan_dur", effDurMs);
 
-      if (isTrimmed) {
+      if (isTrimmed && !isRev && !useOfflineGranular) {
         const holdMs = Math.max(10, Math.round(effDurMs * 0.72));
         const fadeMs = Math.max(10, effDurMs - holdMs);
         Max.outlet("play_env", 1.0, 0, 1.0, holdMs, 0.0, fadeMs);
       } else {
-        // Untouched unity gain throughout full natural duration
+        // Untouched unity gain throughout effective duration
         Max.outlet("play_env", 1.0, 0, 1.0, effDurMs + 500);
       }
-      Max.outlet("play_file", s.path);
+      Max.outlet("play_file", playPath);
     }
   }
 
@@ -1846,11 +2163,15 @@ function saveSampleToList(sampleIdx = engineState.selectedIndex, customSettings 
   const pitchSt = customSettings && customSettings.pitchSt !== undefined ? Number(customSettings.pitchSt) : engineState.pitchSt;
   const decayMs = customSettings && customSettings.decayMs !== undefined ? Number(customSettings.decayMs) : engineState.decayMs;
   const gainDb = customSettings && customSettings.gainDb !== undefined ? Number(customSettings.gainDb) : engineState.gainDb;
+  const reverse = customSettings && customSettings.reverse !== undefined ? (Number(customSettings.reverse) ? 1 : 0) : (engineState.reverse ? 1 : 0);
+  const speedPct = customSettings && customSettings.speedPct !== undefined ? Number(customSettings.speedPct) : (engineState.speedPct || 100);
+  const grainMs = customSettings && customSettings.grainMs !== undefined ? Number(customSettings.grainMs) : (engineState.grainMs || 45);
+  const spectralPct = customSettings && customSettings.spectralPct !== undefined ? Number(customSettings.spectralPct) : (engineState.spectralPct || 0);
 
   const rawLinkPath = createRawFileLink(s.path);
   let editedPath = rawLinkPath;
   try {
-    const rendered = renderEditedSampleWav(s.path, { pitchSt, decayMs, gainDb });
+    const rendered = renderEditedSampleWav(s.path, { pitchSt, decayMs, gainDb, reverse, speedPct, grainMs, spectralPct });
     if (rendered) editedPath = rendered;
   } catch (_) {}
 
@@ -1864,6 +2185,10 @@ function saveSampleToList(sampleIdx = engineState.selectedIndex, customSettings 
     pitchSt,
     decayMs,
     gainDb,
+    reverse,
+    speedPct,
+    grainMs,
+    spectralPct,
     rawPath: rawLinkPath,
     sourcePath: s.path,
     editedPath
@@ -1873,7 +2198,7 @@ function saveSampleToList(sampleIdx = engineState.selectedIndex, customSettings 
   syncSavedListToMax();
   broadcastSSE({
     savedList: engineState.savedList,
-    statusText: `Saved "${s.name}" (${pitchSt >= 0 ? "+" : ""}${pitchSt}st, ${decayMs}ms)`
+    statusText: `Saved "${s.name}" (${pitchSt >= 0 ? "+" : ""}${pitchSt}st, ${decayMs}ms${reverse ? ", Rev" : ""})`
   });
   return entry;
 }
@@ -1884,15 +2209,32 @@ function recallSavedSample(savedIdx, audition = true) {
   engineState.pitchSt = item.pitchSt;
   engineState.decayMs = item.decayMs;
   engineState.gainDb = item.gainDb;
+  engineState.reverse = item.reverse ? 1 : 0;
+  engineState.speedPct = item.speedPct !== undefined ? item.speedPct : 100;
+  engineState.grainMs = item.grainMs !== undefined ? item.grainMs : 45;
+  engineState.spectralPct = item.spectralPct !== undefined ? item.spectralPct : 0;
 
   if (Max && typeof Max.outlet === "function") {
-    Max.outlet("sync_playback_dials", item.pitchSt, item.decayMs, item.gainDb);
+    Max.outlet(
+      "sync_playback_dials",
+      item.pitchSt,
+      item.decayMs,
+      item.gainDb,
+      engineState.reverse,
+      engineState.speedPct,
+      engineState.grainMs,
+      engineState.spectralPct
+    );
   }
   emitSelectedToMax(item.sampleIndex, audition);
   broadcastSSE({
     pitchSt: item.pitchSt,
     decayMs: item.decayMs,
     gainDb: item.gainDb,
+    reverse: engineState.reverse,
+    speedPct: engineState.speedPct,
+    grainMs: engineState.grainMs,
+    spectralPct: engineState.spectralPct,
     selectedIndex: item.sampleIndex
   });
   return item;
@@ -1983,7 +2325,11 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
     const settings = {
       pitchSt: engineState.pitchSt,
       decayMs: engineState.decayMs,
-      gainDb: engineState.gainDb
+      gainDb: engineState.gainDb,
+      reverse: engineState.reverse ? 1 : 0,
+      speedPct: engineState.speedPct || 100,
+      grainMs: engineState.grainMs || 45,
+      spectralPct: engineState.spectralPct || 0
     };
     const rawLink = createRawFileLink(cur.path);
     const ed = isEdited ? (renderEditedSampleWav(cur.path, settings) || rawLink) : rawLink;
@@ -1994,7 +2340,11 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
       editedPath: ed,
       pitchSt: settings.pitchSt,
       decayMs: settings.decayMs,
-      gainDb: settings.gainDb
+      gainDb: settings.gainDb,
+      reverse: settings.reverse,
+      speedPct: settings.speedPct,
+      grainMs: settings.grainMs,
+      spectralPct: settings.spectralPct
     }];
   } else if (engineState.savedList.length > 0) {
     items = [engineState.savedList[0]];
@@ -2024,7 +2374,11 @@ function resolveDragOutPaths(mode, savedIdx = -1, triggerNativeOverlay = true, h
         const rendered = renderEditedSampleWav(srcFile, {
           pitchSt: item.pitchSt,
           decayMs: item.decayMs,
-          gainDb: item.gainDb
+          gainDb: item.gainDb,
+          reverse: item.reverse ? 1 : 0,
+          speedPct: item.speedPct !== undefined ? item.speedPct : 100,
+          grainMs: item.grainMs !== undefined ? item.grainMs : 45,
+          spectralPct: item.spectralPct !== undefined ? item.spectralPct : 0
         });
         if (rendered) item.editedPath = rendered;
       }
@@ -2108,6 +2462,7 @@ function updateKnownFolderCounts() {
   ensureKnownFoldersInitialized();
   for (const kf of engineState.knownFolders) {
     kf.count = 0;
+    kf.scanning = false;
   }
   for (const s of engineState.corpusSamples) {
     const rf = s.rootFolder || "";
@@ -2122,7 +2477,7 @@ function updateKnownFolderCounts() {
   persistKnownFoldersToCache();
 }
 
-function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = 10000) {
+function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = MAX_FILES_PER_FOLDER) {
   ensureKnownFoldersInitialized();
   const validDirs = Array.from(new Set(dirs.filter((d) => d && fs.existsSync(d))));
   if (validDirs.length === 0) {
@@ -2135,13 +2490,19 @@ function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = 10000)
 
   const coreDir = findDefaultCoreDrumsDir() || CORE_DRUM_PATHS[0];
   for (const d of validDirs) {
-    if (!engineState.knownFolders.some((f) => f.path === d)) {
-      engineState.knownFolders.push({
+    let kf = engineState.knownFolders.find((f) => f.path === d);
+    if (!kf) {
+      kf = {
         path: d,
         name: d === coreDir ? "Ableton Core Drums" : path.basename(d),
         enabled: true,
-        count: 0
-      });
+        count: 0,
+        scanning: true
+      };
+      engineState.knownFolders.push(kf);
+    } else {
+      kf.scanning = true;
+      kf.count = 0;
     }
   }
 
@@ -2176,6 +2537,7 @@ function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = 10000)
   const corpusSamples = [];
   const folderSet = new Set();
   let cursor = 0;
+  let chunkStep = 0;
   const CHUNK_SIZE = 48;
 
   function processNextChunk() {
@@ -2187,12 +2549,18 @@ function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = 10000)
       if (item) {
         corpusSamples.push(item);
         folderSet.add(item.folder);
+        const kf = engineState.knownFolders.find((f) => f.path === fe.rootFolder);
+        if (kf) kf.count = (Number(kf.count) || 0) + 1;
       }
     }
+    chunkStep++;
 
     if (cursor < fileEntries.length) {
       engineState.statusText = `Scanning in background... ${corpusSamples.length} / ${fileEntries.length}`;
-      broadcastSSE({ statusText: engineState.statusText });
+      if (chunkStep % 4 === 0) {
+        syncFolderListToMax();
+      }
+      broadcastSSE({ statusText: engineState.statusText, knownFolders: engineState.knownFolders });
       setImmediate(processNextChunk);
       return;
     }
@@ -2208,7 +2576,7 @@ function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = 10000)
   setImmediate(processNextChunk);
 }
 
-function performScan(dirs, maxFiles = 5000) {
+function performScan(dirs, maxFiles = MAX_FILES_PER_FOLDER) {
   ensureKnownFoldersInitialized();
   const validDirs = Array.from(new Set(dirs.filter((d) => d && fs.existsSync(d))));
   if (validDirs.length === 0) {
@@ -2370,7 +2738,9 @@ function handleAction(msg) {
   } else if (action === "prompt_folder") {
     if (Max) Max.outlet("prompt_folder");
   } else if (action === "reseed_map") {
-    return reseedMapSubset();
+    return reseedMapSubset(false);
+  } else if (action === "reseed_filtered") {
+    return reseedWithActiveFilters();
   } else if (action === "toggle_folder") {
     return toggleFolderFilter(msg.path, msg.enabled);
   } else if (action === "remove_folder") {
@@ -2392,6 +2762,18 @@ function handleAction(msg) {
       engineState.toneFilter = Number(msg.toneFilter);
       if (Max) Max.outlet("strip_filter_tone", engineState.toneFilter);
     }
+    if (msg.pitchFilter !== undefined) {
+      engineState.pitchFilter = Number(msg.pitchFilter);
+      if (Max) Max.outlet("strip_filter_pitch", engineState.pitchFilter);
+    }
+    if (msg.tonalFilter !== undefined) {
+      engineState.tonalFilter = Number(msg.tonalFilter);
+      if (Max) Max.outlet("strip_filter_tonal", engineState.tonalFilter);
+    }
+    if (msg.drumFilter !== undefined) {
+      engineState.drumFilter = Number(msg.drumFilter);
+      if (Max) Max.outlet("strip_filter_drum", engineState.drumFilter);
+    }
     if (msg.searchQuery !== undefined) {
       engineState.searchQuery = String(msg.searchQuery);
       if (Max) Max.outlet("strip_filter_search", engineState.searchQuery);
@@ -2407,6 +2789,18 @@ function handleAction(msg) {
     if (msg.gainDb !== undefined) {
       engineState.gainDb = Number(msg.gainDb);
       if (Max) Max.outlet("play_gain", engineState.gainDb);
+    }
+    if (msg.reverse !== undefined) {
+      engineState.reverse = Number(msg.reverse) ? 1 : 0;
+    }
+    if (msg.speedPct !== undefined) {
+      engineState.speedPct = Math.max(10, Math.min(400, Number(msg.speedPct) || 100));
+    }
+    if (msg.grainMs !== undefined) {
+      engineState.grainMs = Math.max(5, Math.min(250, Number(msg.grainMs) || 45));
+    }
+    if (msg.spectralPct !== undefined) {
+      engineState.spectralPct = Math.max(0, Math.min(100, Number(msg.spectralPct) || 0));
     }
   }
   return null;
@@ -2461,7 +2855,11 @@ if (Max && typeof Max.addHandler === "function") {
   });
 
   Max.addHandler("reseed_map", () => {
-    reseedMapSubset();
+    reseedMapSubset(false);
+  });
+
+  Max.addHandler("reseed_filtered", () => {
+    reseedWithActiveFilters();
   });
 
   Max.addHandler("select_index", (idx, audition = 1) => {
@@ -2493,13 +2891,17 @@ if (Max && typeof Max.addHandler === "function") {
     }
   });
 
-  Max.addHandler("save_selected", (idx, name, catIdx, pitch, decay, gain) => {
+  Max.addHandler("save_selected", (idx, name, catIdx, pitch, decay, gain, rev, speedPct, grainMs, spectralPct) => {
     const settings = {};
     if (name !== undefined) settings.name = name;
     if (catIdx !== undefined) settings.catIdx = Number(catIdx);
     if (pitch !== undefined) settings.pitchSt = Number(pitch);
     if (decay !== undefined) settings.decayMs = Number(decay);
     if (gain !== undefined) settings.gainDb = Number(gain);
+    if (rev !== undefined) settings.reverse = Number(rev) ? 1 : 0;
+    if (speedPct !== undefined) settings.speedPct = Number(speedPct);
+    if (grainMs !== undefined) settings.grainMs = Number(grainMs);
+    if (spectralPct !== undefined) settings.spectralPct = Number(spectralPct);
     saveSampleToList(idx !== undefined ? Number(idx) : engineState.selectedIndex, settings);
   });
 
@@ -2545,6 +2947,26 @@ if (Max && typeof Max.addHandler === "function") {
     broadcastSSE({ gainDb: engineState.gainDb });
   });
 
+  Max.addHandler("set_reverse", (rev) => {
+    engineState.reverse = Number(rev) ? 1 : 0;
+    broadcastSSE({ reverse: engineState.reverse });
+  });
+
+  Max.addHandler("set_speed", (sp) => {
+    engineState.speedPct = Math.max(10, Math.min(400, Number(sp) || 100));
+    broadcastSSE({ speedPct: engineState.speedPct });
+  });
+
+  Max.addHandler("set_grain", (gr) => {
+    engineState.grainMs = Math.max(5, Math.min(250, Number(gr) || 45));
+    broadcastSSE({ grainMs: engineState.grainMs });
+  });
+
+  Max.addHandler("set_spectral", (sx) => {
+    engineState.spectralPct = Math.max(0, Math.min(100, Number(sx) || 0));
+    broadcastSSE({ spectralPct: engineState.spectralPct });
+  });
+
   Max.addHandler("set_maxlen", (ms) => {
     engineState.maxLenMs = isInfiniteMaxLen(ms) ? 5000 : Math.max(50, Number(ms) || 5000);
     Max.outlet("strip_filter_maxlen", engineState.maxLenMs);
@@ -2555,6 +2977,39 @@ if (Max && typeof Max.addHandler === "function") {
     engineState.toneFilter = Number(tone) || 0;
     Max.outlet("strip_filter_tone", engineState.toneFilter);
     broadcastSSE({ toneFilter: engineState.toneFilter });
+  });
+
+  Max.addHandler("set_filter_pitch", (pf) => {
+    engineState.pitchFilter = Number(pf) || 0;
+    Max.outlet("strip_filter_pitch", engineState.pitchFilter);
+    broadcastSSE({ pitchFilter: engineState.pitchFilter });
+  });
+
+  Max.addHandler("set_filter_tonal", (tf) => {
+    engineState.tonalFilter = Number(tf) || 0;
+    Max.outlet("strip_filter_tonal", engineState.tonalFilter);
+    broadcastSSE({ tonalFilter: engineState.tonalFilter });
+  });
+
+  Max.addHandler("set_filter_drum", (df) => {
+    engineState.drumFilter = Number(df) || 0;
+    Max.outlet("strip_filter_drum", engineState.drumFilter);
+    broadcastSSE({ drumFilter: engineState.drumFilter });
+  });
+
+  Max.addHandler("set_show_saved", (v) => {
+    engineState.showSaved = Number(v) ? 1 : 0;
+    applyDynamicLayout();
+  });
+
+  Max.addHandler("set_show_filters", (v) => {
+    engineState.showFilters = Number(v) ? 1 : 0;
+    applyDynamicLayout();
+  });
+
+  Max.addHandler("set_show_playback", (v) => {
+    engineState.showPlayback = Number(v) ? 1 : 0;
+    applyDynamicLayout();
   });
 
   Max.addHandler("set_search", (...words) => {
@@ -2593,16 +3048,20 @@ module.exports = {
   ensureFallbackWavFile,
   renderEditedAudioSamples,
   renderEditedSampleWav,
+  renderReversedPreviewWav,
   createRawFileLink,
   extractAudioFeatures,
   classifySample,
   computeKNN,
   compute2DMap,
+  computeDynamicLayout,
+  applyDynamicLayout,
   packSampleBinaryRecord,
   unpackSampleBinaryRecord,
   selectSeededMapSubset,
   rebuildActiveMapSubset,
   reseedMapSubset,
+  reseedWithActiveFilters,
   ensureKnownFoldersInitialized,
   addRememberedFolder,
   removeRememberedFolder,
@@ -2613,6 +3072,7 @@ module.exports = {
   analyzeAudioFile,
   scanDirectories,
   isInfiniteMaxLen,
+  computeSampleDruminessPct,
   isSamplePassingFilters,
   saveSampleToList,
   recallSavedSample,
@@ -2626,5 +3086,6 @@ module.exports = {
   engineState,
   CATEGORY_LIST,
   MAX_DISPLAY_SAMPLES,
+  MAX_FILES_PER_FOLDER,
   RECORD_BYTE_SIZE
 };

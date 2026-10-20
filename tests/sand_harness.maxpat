@@ -229,7 +229,7 @@
 						760.0,
 						20.0
 					],
-					"text": "amount 0, stages 1, dorder 0, soft 0, debrick 0, ftype 0, ffreq 18000, fpos 2, mix 100, outmode 0, mix 100, dorder 0, amount 0, ftype 0, ffreq 400, fpos 1, outmode 0"
+					"text": "amount 0, stages 1, dorder 0, soft 0, debrick 0, ftype 0, ffreq 18000, fpos 2, mix 100, outmode 0, mix 0, dorder 0, amount 0"
 				}
 			},
 			{
@@ -466,7 +466,7 @@
 						360.0,
 						20.0
 					],
-					"text": "js /Users/mrwilson/software/ableton/tests/sand_probe.js sine2k"
+					"text": "js /Users/mrwilson/software/ableton/tests/sand_probe.js sine"
 				}
 			},
 			{
@@ -484,7 +484,7 @@
 						80.0,
 						20.0
 					],
-					"text": "cycle~ 2000"
+					"text": "cycle~ 220"
 				}
 			},
 			{

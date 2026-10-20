@@ -216,17 +216,93 @@ function computeCrossoverMagResponse(f, fc, slopeMode) {
     return { lp: lpMag, hp: hpMag };
 }
 
+// =========================================================================
+// DYNAMIC PHASE: LINEAR-PHASE FIR F2 / F3 (mirrors src/mbsplit_core.genexpr)
+// =========================================================================
+var MBSPLIT_FIR_BETA = 6.0;
+var MBSPLIT_FIR_RING = 2048;
+
+/** FIR half-length D (= added latency in samples): 128 at 44.1 / 48 kHz, 256 at 88.2 / 96 kHz, 512 at 192 kHz. */
+function firLatencyForSampleRate(sr) {
+    var rate = Number(sr) || 48000.0;
+    return clamp(128 * Math.round(rate / 48000.0), 128, 512);
+}
+
+function besselI0(x) {
+    var s = 1.0, t = 1.0;
+    for (var k = 1; k < 30; k++) {
+        var q = x / (2.0 * k);
+        t *= q * q;
+        s += t;
+    }
+    return s;
+}
+
+/** Symmetric half-kernel kh[0..D] of a Kaiser-windowed sinc lowpass at fc, normalized to unity DC gain. */
+function designFirHalfKernel(fc, sr, D) {
+    var kh = new Float64Array(D + 1);
+    var wc = 2.0 * Math.PI * fc / sr;
+    var i0b = besselI0(MBSPLIT_FIR_BETA);
+    var sum = 0.0;
+    for (var j = 0; j <= D; j++) {
+        var r = j / D;
+        var w = besselI0(MBSPLIT_FIR_BETA * Math.sqrt(Math.max(1.0 - r * r, 0.0))) / i0b;
+        var h = (j === 0) ? wc / Math.PI : Math.sin(wc * j) / (Math.PI * j);
+        kh[j] = h * w;
+        sum += (j === 0) ? kh[j] : 2.0 * kh[j];
+    }
+    for (var i = 0; i <= D; i++) kh[i] /= Math.max(sum, 1e-9);
+    return kh;
+}
+
+/** Exact zero-phase magnitude of a half-kernel at f (can dip slightly negative in the stopband). */
+function evalFirHalfKernel(kh, f, sr) {
+    var w = 2.0 * Math.PI * f / sr;
+    var s = kh[0];
+    for (var j = 1; j < kh.length; j++) s += 2.0 * kh[j] * Math.cos(w * j);
+    return s;
+}
+
+/**
+ * Cheap display approximation of the FIR lowpass: a raised-cosine transition of half-width sr / D
+ * centred on fc (the Kaiser beta 6 kernel falls from -0.7 dB to -60 dB over about that span).
+ * Clamped to unity at DC because the kernel is DC-normalized.
+ */
+function computeFirLowpassMag(f, fc, sr) {
+    var rate = Number(sr) || 48000.0;
+    var hw = rate / firLatencyForSampleRate(rate);
+    var lo = fc - hw;
+    if (f <= Math.max(lo, 0.0) && lo > 0.0) return 1.0;
+    if (f >= fc + hw) return 0.0;
+    var m = 0.5 + 0.5 * Math.cos(Math.PI * (f - lo) / (2.0 * hw));
+    if (lo <= 0.0) {
+        var m0 = 0.5 + 0.5 * Math.cos(Math.PI * (0.0 - lo) / (2.0 * hw));
+        m = m / Math.max(m0, 1e-6);
+    }
+    return clamp(m, 0.0, 1.0);
+}
+
 /**
  * Computes per-band magnitude gains (linear 0..1) at frequency f (Hz)
  * for 1, 2, 3, or 4 bands and the composite active magnitude for bandMask.
  * Because our DSP crossover tree is allpass-compensated, adjacent bands summed
  * together reconstruct unity (1.0) across their shared crossover!
  */
-function computeBandMagnitudesAtFreq(f, f1, f2, f3, numBands, slopeMode, bandMask) {
+function computeBandMagnitudesAtFreq(f, f1, f2, f3, numBands, slopeMode, bandMask, phaseMode, sampleRate) {
     var nb = clamp(Math.round(Number(numBands) || 1), 1, 4);
     var b1 = 0.0, b2 = 0.0, b3 = 0.0, b4 = 0.0;
+    var dyn = Number(phaseMode) > 0.5;
 
-    if (nb === 1) {
+    if (dyn && nb >= 3) {
+        // Dynamic Phase: LR split at F1, complementary linear-phase FIR at F2 / F3 on the F1 high band
+        var s1d = computeCrossoverMagResponse(f, f1, slopeMode);
+        var l2 = computeFirLowpassMag(f, f2, sampleRate);
+        var l3 = (nb === 4) ? computeFirLowpassMag(f, f3, sampleRate) : 1.0;
+        b1 = s1d.lp;
+        b2 = s1d.hp * l2;
+        b3 = s1d.hp * Math.max(l3 - l2, 0.0);
+        b4 = (nb === 4) ? s1d.hp * (1.0 - l3) : 0.0;
+    } else if (nb === 1) {
         b1 = 1.0;
     } else if (nb === 2) {
         var s1_2 = computeCrossoverMagResponse(f, f1, slopeMode);
@@ -407,7 +483,39 @@ function createReferenceSplitterDsp(sampleRate) {
         return [b1_after3, b2_after3, s3.lp, s3.hp];
     }
 
-    return { processSample: processSample };
+    // Dynamic Phase reference: per-sample FIR on the F1 high band with fixed kernels (no smoothing).
+    var D = firLatencyForSampleRate(sr);
+    var ring = { x: new Float64Array(MBSPLIT_FIR_RING), lo: new Float64Array(MBSPLIT_FIR_RING), hi: new Float64Array(MBSPLIT_FIR_RING) };
+    var wp = 0;
+    var kCache = { f2: -1, f3: -1, k2: null, k3: null };
+
+    function processSampleDynamic(x, f1, f2, f3, numBands, slopeMode) {
+        var nb = clamp(Math.round(numBands || 1), 1, 4);
+        var sm = clamp(Math.round(slopeMode === undefined ? 1 : slopeMode), 0, 2);
+        if (kCache.f2 !== f2) { kCache.f2 = f2; kCache.k2 = designFirHalfKernel(f2, sr, D); }
+        if (kCache.f3 !== f3) { kCache.f3 = f3; kCache.k3 = designFirHalfKernel(f3, sr, D); }
+        var s1 = runSplit(split1, x, f1, sm);
+        ring.x[wp] = x;
+        ring.lo[wp] = s1.lp;
+        ring.hi[wp] = s1.hp;
+        var N = MBSPLIT_FIR_RING;
+        var iD = (wp - D + N) % N;
+        var lp2 = kCache.k2[0] * ring.hi[iD];
+        var lp3 = kCache.k3[0] * ring.hi[iD];
+        for (var j = 1; j <= D; j++) {
+            var t = ring.hi[(wp - D + j + N) % N] + ring.hi[(wp - D - j + N) % N];
+            lp2 += kCache.k2[j] * t;
+            lp3 += kCache.k3[j] * t;
+        }
+        var dx = ring.x[iD], dlo = ring.lo[iD], dhi = ring.hi[iD];
+        wp = (wp + 1) % N;
+        if (nb === 1) return [dx, 0.0, 0.0, 0.0];
+        if (nb === 2) return [dlo, dhi, 0.0, 0.0];
+        if (nb === 3) return [dlo, lp2, dhi - lp2, 0.0];
+        return [dlo, lp2, lp3 - lp2, dhi - lp3];
+    }
+
+    return { processSample: processSample, processSampleDynamic: processSampleDynamic, firLatency: D };
 }
 
 // =========================================================================
@@ -612,6 +720,11 @@ if (typeof module !== "undefined" && module.exports) {
         resolveEffectiveBandMask: resolveEffectiveBandMask,
         computeCrossoverMagResponse: computeCrossoverMagResponse,
         computeBandMagnitudesAtFreq: computeBandMagnitudesAtFreq,
+        MBSPLIT_FIR_BETA: MBSPLIT_FIR_BETA,
+        firLatencyForSampleRate: firLatencyForSampleRate,
+        designFirHalfKernel: designFirHalfKernel,
+        evalFirHalfKernel: evalFirHalfKernel,
+        computeFirLowpassMag: computeFirLowpassMag,
         createReferenceSplitterDsp: createReferenceSplitterDsp,
         computeFft8192DbBins: computeFft8192DbBins,
         sampleFft8192DbForPixel: sampleFft8192DbForPixel,

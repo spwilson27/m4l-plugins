@@ -580,6 +580,12 @@
         <input id="tone-slider" type="range" min="-100" max="100" step="1" value="0" />
         <span id="tone-val" class="filter-val">0%</span>
       </div>
+      <div class="filter-group">
+        <span>Tonal</span>
+        <input id="ftonal-slider" type="range" min="-100" max="100" step="1" value="0" />
+        <span id="ftonal-val" class="filter-val">0%</span>
+      </div>
+      <button id="reseed-filtered-btn" class="btn" style="height:22px;padding:0 8px;" title="Re-seed and fill the map with samples matching active filters">↻ Re-Seed Filtered</button>
     </div>
 
     <!-- Section 2: PLAYBACK CONTROLS -->
@@ -592,7 +598,7 @@
       </div>
       <div class="filter-group">
         <span>Trim/Decay</span>
-        <input id="decay-slider" type="range" min="20" max="5000" step="10" value="2500" />
+        <input id="decay-slider" type="range" min="20" max="20000" step="10" value="2500" />
         <span id="decay-val" class="filter-val">2500 ms</span>
       </div>
       <div class="filter-group">
@@ -600,6 +606,7 @@
         <input id="gain-slider" type="range" min="-36" max="12" step="0.5" value="0" />
         <span id="gain-val" class="filter-val">0.0 dB</span>
       </div>
+      <button id="reverse-btn" class="btn" style="height:22px;padding:0 8px;">Reverse</button>
     </div>
   </div>
 
@@ -792,12 +799,13 @@
       const minB = state.toneFilter * 0.85;
       if (centroidPct < minB) return false;
     }
-    if (state.searchQuery) {
-      const q = state.searchQuery.toLowerCase();
-      if (!s.name.toLowerCase().includes(q) &&
-          !s.category.toLowerCase().includes(q) &&
-          !(s.folder && s.folder.toLowerCase().includes(q))) {
-        return false;
+    if (state.searchQuery && state.searchQuery.trim().length > 0) {
+      const clauses = state.searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const haystack = `${s.name || ""} ${s.category || ""} ${s.folder || ""}`
+        .toLowerCase()
+        .replace(/[_\-./\\]+/g, " ");
+      for (let i = 0; i < clauses.length; i++) {
+        if (!haystack.includes(clauses[i])) return false;
       }
     }
     return true;
@@ -1383,6 +1391,21 @@
       state.toneFilter === 0 ? "0%" : (state.toneFilter > 0 ? `+${state.toneFilter}%` : `${state.toneFilter}%`);
     sendAction("set_filter", { toneFilter: state.toneFilter });
     drawMap();
+  });
+  document.getElementById("ftonal-slider").addEventListener("input", (e) => {
+    state.tonalFilter = Number(e.target.value);
+    document.getElementById("ftonal-val").textContent =
+      state.tonalFilter === 0 ? "0%" : (state.tonalFilter > 0 ? `+${state.tonalFilter}%` : `${state.tonalFilter}%`);
+    sendAction("set_filter", { tonalFilter: state.tonalFilter });
+    drawMap();
+  });
+  document.getElementById("reseed-filtered-btn").addEventListener("click", () => {
+    sendAction("reseed_filtered");
+  });
+  document.getElementById("reverse-btn").addEventListener("click", (e) => {
+    state.reverse = state.reverse ? 0 : 1;
+    e.currentTarget.classList.toggle("active", !!state.reverse);
+    sendAction("set_playback", { reverse: state.reverse });
   });
   document.getElementById("pitch-slider").addEventListener("input", (e) => {
     state.pitchSt = Number(e.target.value);

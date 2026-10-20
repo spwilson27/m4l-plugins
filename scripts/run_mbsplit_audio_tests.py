@@ -204,6 +204,73 @@ def build_harness(gen_code, mode, dur_ms=500):
             line("obj-gen1", 1, "obj-mute-r", 0),
         ])
 
+    elif mode == "dyn_null_vs_delayed_allpass":
+        # Dynamic Phase 4-band sum (gen1) must equal the Min-phase 2-band sum (= F1 Linkwitz-Riley allpass, gen2)
+        # delayed by the FIR latency (128 samples at 44.1 / 48 kHz).
+        # Left: Dynamic 4-band sum. Right: Dynamic sum minus delayed reference (should null).
+        boxes.extend([
+            box("obj-osc1", "cycle~ 80", 200, 80, 70, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-osc2", "cycle~ 380", 280, 80, 75, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-osc3", "cycle~ 1900", 365, 80, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-osc4", "cycle~ 7500", 455, 80, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-noise", "noise~", 545, 80, 50, 20, numinlets=1, numoutlets=1, outlettype=["signal"]),
+            box("obj-noise-amt", "*~ 0.1", 545, 105, 50, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-sum-in", "*~ 0.15", 260, 120, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            gen_box("obj-gen1", gen_code, 220, 200),
+            gen_box("obj-gen2", gen_code, 560, 200),
+            box("obj-p1", "scope #0-splitscope, numbands 4, slope 1, f1 150, f2 900, f3 4200, bandmask 15, gain 0, phase 0, dynphase 1", 220, 160, 560, 20, maxclass="message", numinlets=2, numoutlets=1),
+            box("obj-p2", "numbands 2, slope 1, f1 150, f2 900, f3 4200, bandmask 3, gain 0, phase 0, dynphase 0", 560, 160, 520, 20, maxclass="message", numinlets=2, numoutlets=1),
+            box("obj-dly", "delay~ 1024 128", 560, 300, 100, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-diff", "-~", 400, 340, 40, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+        ])
+        lines.extend([
+            line("obj-osc1", 0, "obj-sum-in", 0),
+            line("obj-osc2", 0, "obj-sum-in", 0),
+            line("obj-osc3", 0, "obj-sum-in", 0),
+            line("obj-osc4", 0, "obj-sum-in", 0),
+            line("obj-noise", 0, "obj-noise-amt", 0),
+            line("obj-noise-amt", 0, "obj-sum-in", 0),
+            line("obj-load", 0, "obj-p1", 0),
+            line("obj-load", 0, "obj-p2", 0),
+            line("obj-p1", 0, "obj-gen1", 0),
+            line("obj-p2", 0, "obj-gen2", 0),
+            line("obj-sum-in", 0, "obj-gen1", 0),
+            line("obj-sum-in", 0, "obj-gen1", 1),
+            line("obj-sum-in", 0, "obj-gen2", 0),
+            line("obj-sum-in", 0, "obj-gen2", 1),
+            line("obj-gen2", 0, "obj-dly", 0),
+            line("obj-gen1", 0, "obj-diff", 0),
+            line("obj-dly", 0, "obj-diff", 1),
+            line("obj-gen1", 0, "obj-record", 0),
+            line("obj-diff", 0, "obj-record", 1),
+            line("obj-gen1", 0, "obj-mute-l", 0),
+            line("obj-diff", 0, "obj-mute-r", 0),
+        ])
+
+    elif mode == "dyn_band_isolation":
+        # Dynamic Phase 4-band split (120 / 800 / 4500) with Band 3 (HI-M, bandmask=4) soloed:
+        # Left: 2400 Hz (Band 3 centre) passes at unity. Right: 300 Hz (Band 2) rejected by the F2 FIR (> 55 dB).
+        boxes.extend([
+            box("obj-osc-l", "cycle~ 2400", 200, 80, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-scale-l", "*~ 0.5", 200, 115, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-osc-r", "cycle~ 300", 310, 80, 75, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-scale-r", "*~ 0.5", 310, 115, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            gen_box("obj-gen1", gen_code, 220, 195),
+            box("obj-p1", "scope #0-splitscope, numbands 4, slope 1, f1 120, f2 800, f3 4500, bandmask 4, gain 0, phase 0, dynphase 1", 220, 155, 560, 20, maxclass="message", numinlets=2, numoutlets=1),
+        ])
+        lines.extend([
+            line("obj-osc-l", 0, "obj-scale-l", 0),
+            line("obj-osc-r", 0, "obj-scale-r", 0),
+            line("obj-load", 0, "obj-p1", 0),
+            line("obj-p1", 0, "obj-gen1", 0),
+            line("obj-scale-l", 0, "obj-gen1", 0),
+            line("obj-scale-r", 0, "obj-gen1", 1),
+            line("obj-gen1", 0, "obj-record", 0),
+            line("obj-gen1", 1, "obj-record", 1),
+            line("obj-gen1", 0, "obj-mute-l", 0),
+            line("obj-gen1", 1, "obj-mute-r", 0),
+        ])
+
     return {
         "patcher": {
             "fileversion": 1,
@@ -305,6 +372,24 @@ def main():
         assert r3["scopeSpecMax"] > 0.05 and r3["scopeOut"] > 0.20 and r3["scopeBeat"] > 0, (
             f"Expected active #0-splitscope telemetry (got {r3})"
         )
+
+        # Case 4: Dynamic Phase 4-band sum nulls against the delayed F1 allpass (exact FIR latency)
+        r4 = run_case(gen_code, "dyn_null_vs_delayed_allpass")
+        assert r4["nan"] == 0, f"dyn_null_vs_delayed_allpass produced NaNs: {r4}"
+        null_db = 20.0 * math.log10(max(r4["rmsR"], 1e-12) / max(r4["rmsL"], 1e-12))
+        print(f"[PASS] dyn_null_delayed_ap   rmsSum={r4['rmsL']:.5f} residual={r4['rmsR']:.2e} null={null_db:.1f} dB firD={r4['scopeFirD']:.0f}")
+        assert r4["rmsL"] > 0.05, f"Expected Dynamic Phase output signal (got {r4})"
+        assert null_db < -100.0, f"Expected Dynamic Phase sum to null against the 128-sample delayed F1 allpass (got {null_db:.1f} dB)"
+        assert r4["scopeFirD"] == 128 and r4["scopeDyn"] == 1, f"Expected scope telemetry firD=128, dyn=1 (got {r4})"
+
+        # Case 5: Dynamic Phase linear-phase FIR band isolation
+        r5 = run_case(gen_code, "dyn_band_isolation")
+        assert r5["nan"] == 0, f"dyn_band_isolation produced NaNs: {r5}"
+        pass_db = 20.0 * math.log10(max(r5["rmsL"], 1e-12) / (0.5 / math.sqrt(2.0)))
+        rej_db5 = 20.0 * math.log10(max(r5["rmsR"], 1e-12) / (0.5 / math.sqrt(2.0)))
+        print(f"[PASS] dyn_band_isolation    pass2400={pass_db:.3f} dB reject300={rej_db5:.1f} dB")
+        assert abs(pass_db) < 0.1, f"Expected 2.4 kHz to pass Band 3 at 0 dB (got {pass_db:.3f} dB)"
+        assert rej_db5 < -55.0, f"Expected 300 Hz rejected > 55 dB by Band 3 (got {rej_db5:.1f} dB)"
 
         print("All Real Max 9 Multiband Split audio & telemetry tests passed!")
     finally:

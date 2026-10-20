@@ -18,6 +18,7 @@ var curF3 = MBSPLIT_DEFAULT_F3;
 var curNumBands = 1;            // Auto-detected from linked instances (1..4), or manual override
 var manualBandsOverride = null; // null = auto-detect from linked instances (1..4)
 var curSlope = 1;               // 0 = 12 dB/oct (LR2), 1 = 24 dB/oct (LR4), 2 = 48 dB/oct (LR8)
+var curPhaseMode = 0;           // 0 = Min Phase (zero-latency LR tree), 1 = Dynamic Phase (LR F1 + linear-phase FIR F2/F3)
 var curBandMode = 0;            // 0 = Auto Chain, 1..4 = Band 1..4 Solo, 5 = Custom Multi-Band
 var curCustomMask = 1;          // 4-bit mask (1..15) used when curBandMode === 5
 var curLinkGroup = 0;           // 0 = Auto (Parent Rack), 1..4 = Grp A..D, 5 = Off
@@ -74,6 +75,10 @@ var lastClickY = -999;
 
 // Block-Size 8192 FFT Spectrogram & Telemetry State
 var scopeBufName = "";
+var scopeSampleRate = 48000.0;
+var firLatencySamples = firLatencyForSampleRate(48000.0); // updated from gen telemetry (scope[26])
+var reportedLatency = -1;
+var selfPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 var SPEC_COLS = 248; // 1 column per pixel across the 250px plot interior
 var specColFreqs = new Array(SPEC_COLS + 1);
 var specColDb = new Array(SPEC_COLS);
@@ -577,6 +582,7 @@ function updateAutoBandCountFromPeers(notifySiblings) {
             curF2 = san[1];
             curF3 = san[2];
             curSlope = clamp(Math.round(Number(ex.slope !== undefined ? ex.slope : curSlope)), 0, 2);
+            curPhaseMode = (Number(ex.phaseMode !== undefined ? ex.phaseMode : curPhaseMode) > 0.5) ? 1 : 0;
         }
     }
 
@@ -725,6 +731,7 @@ function syncFromExistingGroupIfAvailable() {
         f3: curF3,
         numBands: curNumBands,
         slope: curSlope,
+        phaseMode: curPhaseMode,
         timestamp: Date.now()
     };
     return false;
@@ -745,6 +752,7 @@ function broadcastLinkedState() {
         f3: curF3,
         numBands: curNumBands,
         slope: curSlope,
+        phaseMode: curPhaseMode,
         timestamp: Date.now()
     };
     bus.groups[key] = payload;
@@ -759,7 +767,7 @@ function broadcastLinkedState() {
         }
     }
 
-    outlet(1, ["sync_bus", key, INSTANCE_ID, curF1, curF2, curF3, curNumBands, curSlope]);
+    outlet(1, ["sync_bus", key, INSTANCE_ID, curF1, curF2, curF3, curNumBands, curSlope, curPhaseMode]);
 }
 
 function applyLinkedStateFromPeer(state, allowSelfSender) {
@@ -779,6 +787,7 @@ function applyLinkedStateFromPeer(state, allowSelfSender) {
             curNumBands = clamp(Math.round(Number(state.numBands) || curNumBands), 1, 4);
         }
         curSlope = clamp(Math.round(Number(state.slope !== undefined ? state.slope : 1)), 0, 2);
+        if (state.phaseMode !== undefined) curPhaseMode = (Number(state.phaseMode) > 0.5) ? 1 : 0;
 
         emitDspState(true);
         notifyclients();
@@ -851,6 +860,7 @@ function snapshotState() {
         f3: curF3,
         numBands: curNumBands,
         slope: curSlope,
+        phaseMode: curPhaseMode,
         bandMode: curBandMode,
         customMask: curCustomMask,
         linkGroup: curLinkGroup,
@@ -872,6 +882,7 @@ function applySnapshot(snap) {
     curF3 = snap.f3;
     curNumBands = clamp(snap.numBands || computeDetectedBandCount(), 1, 4);
     curSlope = snap.slope;
+    if (snap.phaseMode !== undefined) curPhaseMode = snap.phaseMode;
     curBandMode = snap.bandMode;
     curCustomMask = snap.customMask;
     curLinkGroup = snap.linkGroup;
@@ -897,7 +908,7 @@ function redo() {
 
 function getvalueof() {
     return [
-        2,
+        3,
         curF1,
         curF2,
         curF3,
@@ -907,7 +918,8 @@ function getvalueof() {
         curCustomMask,
         curLinkGroup,
         curGainDb,
-        showLinkStatus ? 1 : 0
+        showLinkStatus ? 1 : 0,
+        curPhaseMode
     ];
 }
 
@@ -917,7 +929,7 @@ function setvalueof() {
     if (!args || args.length === 0) return;
 
     var ver = Math.round(Number(args[0]) || 1);
-    if ((ver === 1 || ver === 2) && args.length >= 6) {
+    if (ver >= 1 && ver <= 3 && args.length >= 6) {
         var s = sanitizeCrossovers(args[1], args[2], args[3], -1);
         curF1 = s[0];
         curF2 = s[1];
@@ -933,6 +945,7 @@ function setvalueof() {
         if (args.length >= 9) curLinkGroup = clamp(Math.round(Number(args[8]) || 0), 0, 5);
         if (ver >= 2 && args.length >= 10) curGainDb = clamp(Number(args[9]) || 0.0, -70.0, 18.0);
         if (ver >= 2 && args.length >= 11) showLinkStatus = (Number(args[10]) > 0.5);
+        if (ver >= 3 && args.length >= 12) curPhaseMode = (Number(args[11]) > 0.5) ? 1 : 0;
     } else if (args.length >= 3) {
         var s0 = sanitizeCrossovers(args[0], args[1], args[2], -1);
         curF1 = s0[0];
@@ -963,14 +976,17 @@ function emitDspState(syncUiControls) {
     outlet(0, ["f3", curF3]);
     outlet(0, ["numbands", curNumBands]);
     outlet(0, ["slope", curSlope]);
+    outlet(0, ["dynphase", curPhaseMode]);
     outlet(0, ["gain", curGainDb]);
     emitEffectiveBandMask();
+    updateDeviceLatency();
 
     if (syncUiControls) {
         outlet(0, ["ui_f1", curF1]);
         outlet(0, ["ui_f2", curF2]);
         outlet(0, ["ui_f3", curF3]);
         outlet(0, ["ui_slope", curSlope]);
+        outlet(0, ["ui_phasemode", curPhaseMode]);
         outlet(0, ["ui_bandmode", curBandMode]);
         outlet(0, ["ui_linkgroup", curLinkGroup]);
         outlet(0, ["ui_gain", curGainDb]);
@@ -1034,6 +1050,27 @@ function set_slope(s) {
     mgraphics.redraw();
 }
 
+function set_phasemode(m) {
+    curPhaseMode = (Number(m) > 0.5) ? 1 : 0;
+    emitDspState(false);
+    broadcastLinkedState();
+    mgraphics.redraw();
+}
+
+/**
+ * Dynamic Phase adds firLatencySamples of FIR delay. Live only reads a device's latency from the patcher
+ * `latency` attribute, which Live re-reads at runtime when it is set (verified: LOM latency_in_samples follows).
+ * Every linked instance carries the same phase mode, so all Rack chains report the same latency.
+ */
+function updateDeviceLatency() {
+    var want = curPhaseMode ? firLatencySamples : 0;
+    if (want === reportedLatency || !selfPatcher) return;
+    try {
+        selfPatcher.setattr("latency", want);
+        reportedLatency = want;
+    } catch (err) {}
+}
+
 function set_bandmode(m) {
     var mode = clamp(Math.round(Number(m) || 0), 0, 5);
     curBandMode = mode;
@@ -1067,7 +1104,7 @@ function set_show_link(v) {
     mgraphics.redraw();
 }
 
-function sync_bus(groupKey, senderId, f1, f2, f3, numBands, slope) {
+function sync_bus(groupKey, senderId, f1, f2, f3, numBands, slope, phaseMode) {
     applyLinkedStateFromPeer({
         groupKey: groupKey,
         senderId: senderId,
@@ -1075,7 +1112,8 @@ function sync_bus(groupKey, senderId, f1, f2, f3, numBands, slope) {
         f2: f2,
         f3: f3,
         numBands: numBands,
-        slope: slope
+        slope: slope,
+        phaseMode: phaseMode
     });
 }
 
@@ -1168,7 +1206,7 @@ function pullScope() {
     if (!scopeBufName || typeof Buffer === "undefined") return;
     try {
         var buf = new Buffer(scopeBufName);
-        var hdr = buf.peek(1, 0, 26);
+        var hdr = buf.peek(1, 0, 28);
         if (!hdr || hdr.length < 24) return;
 
         for (var i = 0; i < 16; i++) {
@@ -1189,6 +1227,12 @@ function pullScope() {
 
         var ringPos = clamp(Math.floor(Number(hdr[24]) || 0), 0, MBSPLIT_FFT_SIZE - 1);
         var sr = Math.max(8000.0, Number(hdr[25]) || 48000.0);
+        scopeSampleRate = sr;
+        var firD = Math.round(Number(hdr[26]) || 0);
+        if (firD >= 128 && firD !== firLatencySamples) {
+            firLatencySamples = firD;
+            updateDeviceLatency();
+        }
 
         if (inPeak > 1e-4) {
             var ringData = buf.peek(1, 32, MBSPLIT_FFT_SIZE);
@@ -1712,7 +1756,7 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
                 var sx = PLOT_X + 1 + (i / (SPEC_COLS - 1)) * innerW;
                 var sf = specColFreqs[i];
                 var sDb = specColDb[i];
-                var respBand = computeBandMagnitudesAtFreq(sf, curF1, curF2, curF3, curNumBands, curSlope, activeMask);
+                var respBand = computeBandMagnitudesAtFreq(sf, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
                 var bandGainDb = linToDb(Math.max(respBand.bands[bBand], 1e-4));
                 var effDb = sDb + bandGainDb;
                 var normY = clamp((effDb + 56.0) / 54.0, 0.0, 1.0) * glowScales[gl];
@@ -1736,7 +1780,7 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
             var tx = PLOT_X + 1 + (j / (SPEC_COLS - 1)) * innerW;
             var tf = specColFreqs[j];
             var tDb = specColDb[j];
-            var tResp = computeBandMagnitudesAtFreq(tf, curF1, curF2, curF3, curNumBands, curSlope, activeMask);
+            var tResp = computeBandMagnitudesAtFreq(tf, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
             var tEffDb = tDb + linToDb(Math.max(tResp.bands[bBand], 1e-4));
             var tNorm = clamp((tEffDb + 56.0) / 54.0, 0.0, 1.0);
             var ty = plotBottom - tNorm * (PLOT_H - 10);
@@ -1773,7 +1817,7 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
                 for (var s = 0; s <= numSteps; s++) {
                     var px = PLOT_X + (s / numSteps) * PLOT_W;
                     var pf = xToFreq(px);
-                    var resp = computeBandMagnitudesAtFreq(pf, curF1, curF2, curF3, curNumBands, curSlope, activeMask);
+                    var resp = computeBandMagnitudesAtFreq(pf, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
                     var py = magToY(resp.bands[bIdx]);
                     mgraphics.line_to(px, py);
                 }
@@ -1792,7 +1836,7 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
             for (var s2 = 0; s2 <= numSteps; s2++) {
                 var px2 = PLOT_X + (s2 / numSteps) * PLOT_W;
                 var pf2 = xToFreq(px2);
-                var resp2 = computeBandMagnitudesAtFreq(pf2, curF1, curF2, curF3, curNumBands, curSlope, activeMask);
+                var resp2 = computeBandMagnitudesAtFreq(pf2, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
                 var py2 = magToY(resp2.bands[bIdx]);
                 if (s2 === 0) mgraphics.move_to(px2, py2);
                 else mgraphics.line_to(px2, py2);
@@ -1810,7 +1854,7 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
         for (var sc = 0; sc <= numSteps; sc++) {
             var pxc = PLOT_X + (sc / numSteps) * PLOT_W;
             var pfc = xToFreq(pxc);
-            var respc = computeBandMagnitudesAtFreq(pfc, curF1, curF2, curF3, curNumBands, curSlope, activeMask);
+            var respc = computeBandMagnitudesAtFreq(pfc, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
             var pyc = magToY(respc.activeSum);
             if (sc === 0) mgraphics.move_to(pxc, pyc);
             else mgraphics.line_to(pxc, pyc);

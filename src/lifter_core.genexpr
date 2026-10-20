@@ -1,0 +1,369 @@
+// Lifter — an EQ for the quefrency axis (stereo).
+// scripts/build_lifter.py PREPENDS src/cepstrum_lib.genexpr to this file, so the
+// cep_* / fft_* / stft_* functions are already defined above everything here.
+//
+// Per hop (N / 4 samples), per channel:
+//   frame -> FFT -> real cepstrum c[q] -> pitch peak (cep_peak) ->
+//   delta[q] = (gain[q] - 1) * c[q], smoothed over time ->
+//   FFT(delta) = change of log|X| (soft-limited) -> scale X by exp(change) ->
+//   the original phase stays -> inverse FFT -> overlap-add.
+// Working on the DELTA (not on the whole cepstrum) keeps a flat curve an exact
+// identity at every Smooth setting: delta = 0, exp(0) = 1.
+//
+// gain[q] = 10^(curve_dB(x) * Depth / 20), x = log(q / (sr * 0.2 ms)) / log(200),
+// so the curve spans 0.2 ms .. 40 ms of quefrency whatever the sample rate or Size.
+// With Track on, q is scaled by (5 ms / detected pitch period) first, so the
+// pitch peak always lands on the 5 ms marker (x = 0.6074).
+//
+// Latency: the STFT lags N - 1 samples; a Delay pads every Size to a constant 4096
+// samples (patcher "latency": 4096). The dry path is delayed by the same 4096.
+//
+// Buffer lcurve("liftercurve"), bound with `lcurve #0-liftercurve`:
+//   frames 0..255, ch 1 = curve in dB (-24..+24) on the log-quefrency axis, written by the v8ui.
+// Buffer lscope("lifterscope"), bound with `lscope #0-lifterscope` (1 channel, 512 frames):
+//   0..127   |c| input cepstrum, max per display column (display axis = tracked axis)
+//   128..255 |c| after the lifter
+//   256..319 input spectrum (dB re a full-scale sine), 64 log columns 30 Hz..20 kHz, -999 = no bin
+//   320..383 output spectrum, same layout
+//   384 pitch period (samples, smoothed) 385 confidence 386 hop counter (not advanced when silent)
+//   387 input peak 388 output peak 389 samplerate 390 N 391 Track 392 silent flag 393 quefrency used as marker
+//
+// Maintenance invariants:
+// 1. Every function sits before every Param / Buffer / Data / History / Delay.
+// 2. Never name an identifier e + digits (GenExpr reads Euler's constant).
+// 3. Work functions are called as bare statements (an unused result is removed).
+
+// Linear interpolation of the 256-point dB table cd at x in 0..1.
+lft_interp(cd, x) {
+	p = clip(x, 0, 1) * 255;
+	i0 = floor(p);
+	i1 = min(i0 + 1, 255);
+	fr = p - i0;
+	return cd.peek(i0) * (1 - fr) + cd.peek(i1) * fr;
+}
+
+// Gain factor gt[q] and display column gx[q] (0..127) for q = 0..n/2.
+lft_build(cd, gt, gx, n, sr, scl, depth) {
+	half = n * 0.5;
+	base = sr * 0.0002;
+	for (q = 0; q <= half; q += 1) {
+		x = log(max(q, 0.5) * scl / base) * 0.18873916581775485;
+		db = lft_interp(cd, x) * depth;
+		gt.poke(exp(db * 0.11512925464970229), q);
+		gx.poke(clip(floor(x * 128), 0, 127), q);
+	}
+	return 0;
+}
+
+// Replace fc (the real cepstrum) by the smoothed delta cepstrum and keep the
+// telemetry maxima for the display (left channel only, wtm = 1).
+lft_apply(fc, gt, gx, cs, tm, n, a, wtm) {
+	half = n * 0.5;
+	fc.poke(0, 0, 0);
+	fc.poke(0, 0, 1);
+	for (q = 1; q <= half; q += 1) {
+		c = fc.peek(q, 0);
+		sd = a * cs.peek(q) + (1 - a) * (gt.peek(q) - 1) * c;
+		cs.poke(sd, q);
+		fc.poke(sd, q, 0);
+		fc.poke(0, q, 1);
+		if (q < half) {
+			fc.poke(sd, n - q, 0);
+			fc.poke(0, n - q, 1);
+		}
+		if (wtm > 0.5) {
+			col = gx.peek(q);
+			tm.poke(max(tm.peek(col), abs(c)), col);
+			tm.poke(max(tm.peek(128 + col), abs(c + sd)), 128 + col);
+		}
+	}
+	return 0;
+}
+
+// fc.re now holds the change of log|X| per bin. Scale the spectrum by its
+// soft-limited exponential (phase untouched). Left channel also records the
+// input / output spectrum columns.
+lft_remag(fx, fc, tm, n, lim, ndb, sr, wtm) {
+	half = n * 0.5;
+	dfs = sr / n;
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		gd = lim * tanh(fc.peek(i, 0) / lim);
+		if (wtm > 0.5 && i >= 1 && i <= half) {
+			mg = sqrt(xr * xr + xi * xi);
+			ldb = log(mg + 1e-9) * 8.685889638065035 - ndb;
+			sc = floor(log(i * dfs / 30) * 9.842721836);
+			if (sc >= 0 && sc < 64) {
+				tm.poke(max(tm.peek(256 + sc), ldb), 256 + sc);
+				tm.poke(max(tm.peek(320 + sc), ldb + gd * 8.685889638065035), 320 + sc);
+			}
+		}
+		g = exp(gd);
+		fx.poke(xr * g, i, 0);
+		fx.poke(xi * g, i, 1);
+	}
+	return 0;
+}
+
+// Cepstral pitch peak of the real cepstrum in fc: refined period in samples and a
+// 0..1 confidence (z-score of the peak, like cep_peak_conf), 2..20 ms search range.
+// Same maths as cep_peak / cep_peak_conf / cep_peak_refine plus an octave check, written
+// out here with its own names: the library calls fail to compile (undeclared loop
+// variable) when two inlined copies sit in one function that is itself used twice.
+// ps[pb] = period, ps[pb + 1] = confidence.
+lft_pitch(fc, ps, pb, n, sr) {
+	plo = floor(sr * 0.002);
+	phi = min(floor(sr * 0.02), n * 0.5 - 2);
+	pcf = 0;
+	pqf = 0;
+	if (phi - plo > 8) {
+		pbest = -1e30;
+		pq = plo;
+		psum = 0;
+		psq = 0;
+		for (pj = plo; pj <= phi; pj += 1) {
+			pval = fc.peek(pj, 0);
+			psum += pval;
+			psq += pval * pval;
+			if (pval > pbest) {
+				pbest = pval;
+				pq = pj;
+			}
+		}
+		pcnt = phi - plo + 1;
+		pmu = psum / pcnt;
+		psd = sqrt(max(psq / pcnt - pmu * pmu, 1e-20));
+		pcf = clip(((pbest - pmu) / psd - 3) / 7, 0, 1);
+		// Octave check: a harmonic spectrum often has an equal or larger peak at twice
+		// the period (and a period between two samples splits its peak over two bins).
+		// Compare the 3-bin mass of the peak near half the period with the main one.
+		phalf = floor(pq * 0.5);
+		pbq = phalf;
+		pbm = -1e30;
+		for (pk = phalf - 2; pk <= phalf + 2; pk += 1) {
+			pmass = fc.peek(pk - 1, 0) + fc.peek(pk, 0) + fc.peek(pk + 1, 0);
+			if (pk >= plo && pmass > pbm) {
+				pbm = pmass;
+				pbq = pk;
+			}
+		}
+		pmain = fc.peek(pq - 1, 0) + fc.peek(pq, 0) + fc.peek(pq + 1, 0);
+		if (phalf >= plo && pbm > 0 && pbm > 0.5 * pmain) {
+			pq = pbq;
+		}
+		pya = fc.peek(pq - 1, 0);
+		pyb = fc.peek(pq, 0);
+		pyc = fc.peek(pq + 1, 0);
+		pden = pya - 2 * pyb + pyc;
+		pqf = pq + ((abs(pden) > 1e-20) ? clip(0.5 * (pya - pyc) / pden, -0.5, 0.5) : 0);
+	}
+	ps.poke(pqf, pb);
+	ps.poke(pcf, pb + 1);
+	return 0;
+}
+
+// Everything between the forward and the inverse FFT of one channel's frame.
+lft_proc(fx, fc, tab, cs, gt, gx, tm, ps, n, a, wtm, pb, sr, lim, ndb) {
+	cep_from_spec(fx, fc, tab, n, 1e-9);
+	lft_pitch(fc, ps, pb, n, sr);
+	lft_apply(fc, gt, gx, cs, tm, n, a, wtm);
+	cep_to_logmag(fc, tab, n);
+	lft_remag(fx, fc, tm, n, lim, ndb, sr, wtm);
+	return 0;
+}
+
+// Zero the smoothed-delta memories (q = 0..cnt - 1).
+lft_clear(csa, csb, cnt) {
+	for (zi = 0; zi < cnt; zi += 1) {
+		csa.poke(0, zi);
+		csb.poke(0, zi);
+	}
+	return 0;
+}
+
+// Per hop: copy the curve buffer into cd and reset the telemetry maxima.
+// (No for loop may sit in the main body: it breaks fft_init's compile in Max 9.)
+lft_prep(cbuf, cd, tm) {
+	for (zi = 0; zi < 256; zi += 1) {
+		cd.poke(peek(cbuf, zi, 0), zi);
+		tm.poke(0, zi);
+	}
+	for (zi = 256; zi < 384; zi += 1) {
+		tm.poke(-999, zi);
+	}
+	return 0;
+}
+
+// Write the telemetry traces (frames 0..383) to the scope buffer.
+lft_write(sbuf, tm) {
+	for (zi = 0; zi < 384; zi += 1) {
+		poke(sbuf, tm.peek(zi), zi, 0);
+	}
+	return 0;
+}
+
+Param sizei(1);
+Param depthp(100);
+Param smoothp(20);
+Param wetp(100);
+Param outdb(0);
+Param trackp(0);
+
+Buffer lcurve("liftercurve");
+Buffer lscope("lifterscope");
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data fc(4096, 2);
+Data ringL(4096);
+Data accL(4096);
+Data stL(8);
+Data csL(4096);
+Data ringR(4096);
+Data accR(4096);
+Data stR(8);
+Data csR(4096);
+Data gt(2049);
+Data gx(2049);
+Data cd(256);
+Data tm(512);
+Data ps(8);
+Delay padL(4096);
+Delay padR(4096);
+Delay dryL(4200);
+Delay dryR(4200);
+History qc(0);
+History pki(0);
+History pko(0);
+History hopc(0);
+History nprev(0);
+History swc(0);
+History lwL(0);
+History lwR(0);
+History efL(0);
+History efR(0);
+
+sr = samplerate;
+n = pow(2, 9 + clip(round(sizei), 0, 3));
+fft_init(tab);
+stft_win(win, n);
+
+xin = max(abs(in1), abs(in2));
+qc = (xin < 0.000001) ? min(qc + 1, 100000000) : 0;
+pki = max(pki, xin);
+
+// A new Size invalidates the stored (smoothed) cepstral delta.
+if (n != stL.peek(4)) {
+	lft_clear(csL, csR, 4096);
+	stL.poke(n, 4);
+	stR.poke(n, 4);
+}
+
+rdyL = stft_in(ringL, stL, in1, n);
+rdyR = stft_in(ringR, stR, in2, n);
+
+if (rdyL * rdyR > 0.5) {
+	if (qc >= n) {
+		// The whole frame is silent: skip all FFT work, output stays exactly 0.
+		if (stL.peek(5) < 0.5) {
+			lft_clear(csL, csR, 2049);
+			stL.poke(1, 5);
+		}
+		poke(lscope, 1, 392, 0);
+		poke(lscope, 0, 387, 0);
+		poke(lscope, 0, 388, 0);
+		poke(lscope, sr, 389, 0);
+		poke(lscope, n, 390, 0);
+		poke(lscope, trackp, 391, 0);
+	} else {
+		stL.poke(0, 5);
+		sm01 = clip(smoothp * 0.01, 0, 1);
+		a = (sm01 < 0.001) ? 0 : exp(-(n * 0.25 / sr) / (0.4 * sm01));
+		depth = clip(depthp * 0.01, -1, 1);
+		qref = sr * 0.005;
+		qp = ps.peek(6);
+		if (qp < 1) {
+			qp = qref;
+			ps.poke(qp, 6);
+		}
+		qpuse = (trackp > 0.5) ? qp : qref;
+		scl = qref / qpuse;
+		ndb = 8.685889638065035 * log(n * 0.25);
+
+		lft_prep(lcurve, cd, tm);
+		lft_build(cd, gt, gx, n, sr, scl, depth);
+
+		stft_frame(fx, ringL, stL, win, n);
+		fft_run(fx, tab, n, 0);
+		lft_proc(fx, fc, tab, csL, gt, gx, tm, ps, n, a, 1, 0, sr, 4.6, ndb);
+		fft_run(fx, tab, n, 1);
+		stft_ola(accL, stL, fx, win, n);
+
+		stft_frame(fx, ringR, stR, win, n);
+		fft_run(fx, tab, n, 0);
+		lft_proc(fx, fc, tab, csR, gt, gx, tm, ps, n, a, 0, 3, sr, 4.6, ndb);
+		fft_run(fx, tab, n, 1);
+		stft_ola(accR, stR, fx, win, n);
+
+		// Pitch for Track: the more confident channel, smoothed, held when unsure.
+		cl = ps.peek(1);
+		cr = ps.peek(4);
+		qb = (cr > cl) ? ps.peek(3) : ps.peek(0);
+		cb = max(cl, cr);
+		if (cb > 0.25 && qb > 1) {
+			qp = qp * 0.65 + qb * 0.35;
+			ps.poke(qp, 6);
+		}
+
+		lft_write(lscope, tm);
+		hopc = hopc + 1;
+		poke(lscope, qp, 384, 0);
+		poke(lscope, cb, 385, 0);
+		poke(lscope, hopc, 386, 0);
+		poke(lscope, pki, 387, 0);
+		poke(lscope, pko, 388, 0);
+		poke(lscope, sr, 389, 0);
+		poke(lscope, n, 390, 0);
+		poke(lscope, trackp, 391, 0);
+		poke(lscope, 0, 392, 0);
+		poke(lscope, qpuse, 393, 0);
+	}
+	pki = 0;
+	pko = 0;
+}
+
+yl = stft_out(accL, stL, n);
+yr = stft_out(accR, stR, n);
+padL.write(yl);
+padR.write(yr);
+wl = padL.read(4096 - (n - 1));
+wr = padR.read(4096 - (n - 1));
+dryL.write(in1);
+dryR.write(in2);
+dl = dryL.read(4096);
+dr = dryR.read(4096);
+
+// Size change: the STFT restarts (silent for N - 1 samples) and the pad delay
+// reads from a new offset, so the wet path is garbage for 4096 samples. Hold the
+// last wet sample and fade it to the dry signal over 128 samples, play dry, then
+// fade the new wet in over 512 samples. Every step is continuous.
+swc = (n != nprev) ? 0 : min(swc + 1, 100000);
+nprev = n;
+if (swc == 0) {
+	lwL = efL;
+	lwR = efR;
+}
+ff = clip(1 - swc / 128, 0, 1);
+gg = clip((swc - 4096) / 512, 0, 1);
+effL = dl + (lwL - dl) * ff + (wl - dl) * gg;
+effR = dr + (lwR - dr) * ff + (wr - dr) * gg;
+efL = effL;
+efR = effR;
+
+mxv = clip(wetp * 0.01, 0, 1);
+og = exp(outdb * 0.11512925464970229);
+out1 = (dl + (effL - dl) * mxv) * og;
+out2 = (dr + (effR - dr) * mxv) * og;
+pko = max(pko, max(abs(out1), abs(out2)));

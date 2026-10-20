@@ -86,6 +86,84 @@ const cfg = require(CONFIG_PATH);
 }
 
 // =========================================================================
+// 1b. DYNAMIC PHASE (LR F1 + COMPLEMENTARY LINEAR-PHASE FIR F2 / F3)
+// =========================================================================
+{
+    assert.strictEqual(cfg.firLatencyForSampleRate(44100), 128, "44.1 kHz FIR latency must be 128 samples");
+    assert.strictEqual(cfg.firLatencyForSampleRate(48000), 128, "48 kHz FIR latency must be 128 samples");
+    assert.strictEqual(cfg.firLatencyForSampleRate(96000), 256, "96 kHz FIR latency must be 256 samples");
+    assert.strictEqual(cfg.firLatencyForSampleRate(192000), 512, "192 kHz FIR latency must be 512 samples");
+
+    const sr = 48000;
+    const D = cfg.firLatencyForSampleRate(sr);
+    for (const fc of [800, 4500]) {
+        const kh = cfg.designFirHalfKernel(fc, sr, D);
+        assert.ok(Math.abs(cfg.evalFirHalfKernel(kh, 0, sr) - 1.0) < 1e-12, `FIR LP at ${fc} Hz must have unity DC gain`);
+        const atFc = cfg.linToDb(Math.abs(cfg.evalFirHalfKernel(kh, fc, sr)));
+        assert.ok(Math.abs(atFc + 6.02) < 0.3, `FIR LP must be -6 dB at fc=${fc} (got ${atFc.toFixed(2)})`);
+        const stop = cfg.linToDb(Math.abs(cfg.evalFirHalfKernel(kh, fc + 1.2 * sr / D, sr)) + 1e-12);
+        assert.ok(stop < -55, `FIR LP stopband at fc + 1.2 sr/D must be < -55 dB (fc=${fc}, got ${stop.toFixed(1)})`);
+        for (let f = 0; f < 20000; f += 25) {
+            const err = Math.abs(cfg.evalFirHalfKernel(kh, f, sr) - cfg.computeFirLowpassMag(f, fc, sr));
+            assert.ok(err < 0.1, `Display FIR approximation must stay within 0.1 of the kernel (fc=${fc}, f=${f}, err=${err.toFixed(3)})`);
+        }
+        for (const nb of [3, 4]) {
+            const r = cfg.computeBandMagnitudesAtFreq(fc * 1.3, 120, 800, 4500, nb, 1, (1 << nb) - 1, 1, sr);
+            assert.ok(Math.abs(r.totalSum - 1.0) < 1e-9, `Dynamic analytical band sum must be 1.0 (nb=${nb})`);
+        }
+    }
+
+    // Impulse: every band count and slope must sum to the F1 allpass (Min-phase 2-band sum) delayed by exactly D
+    for (const numBands of [1, 2, 3, 4]) {
+        for (const slope of [0, 1, 2]) {
+            const dyn = cfg.createReferenceSplitterDsp(sr);
+            const ref = cfg.createReferenceSplitterDsp(sr);
+            assert.strictEqual(dyn.firLatency, D);
+            const n = D + 1024;
+            const dynSum = [], refSum = [];
+            for (let i = 0; i < n; i++) {
+                const x = i === 0 ? 1.0 : 0.0;
+                const b = dyn.processSampleDynamic(x, 120.0, 800.0, 4500.0, numBands, slope);
+                dynSum.push(b[0] + b[1] + b[2] + b[3]);
+                const r = ref.processSample(x, 120.0, 800.0, 4500.0, numBands === 1 ? 1 : 2, slope);
+                refSum.push(r[0] + r[1] + r[2] + r[3]);
+            }
+            let err = 0;
+            for (let i = 0; i < n; i++) err = Math.max(err, Math.abs(dynSum[i] - (i >= D ? refSum[i - D] : 0.0)));
+            assert.ok(err < 1e-12, `Dynamic sum must equal the F1 allpass delayed by ${D} samples (bands=${numBands}, slope=${slope}, err=${err})`);
+        }
+    }
+
+    // Band isolation: 2.4 kHz sits in band 3 of 120 / 800 / 4500; FIR neighbours must reject it
+    {
+        const dsp = cfg.createReferenceSplitterDsp(sr);
+        const hz = 2400.0;
+        const sq = [0, 0, 0, 0];
+        let sqIn = 0;
+        for (let i = 0; i < 6000; i++) {
+            const x = Math.sin(2 * Math.PI * hz * i / sr);
+            const b = dsp.processSampleDynamic(x, 120.0, 800.0, 4500.0, 4, 1);
+            if (i >= 2000) {
+                for (let k = 0; k < 4; k++) sq[k] += b[k] * b[k];
+                sqIn += x * x;
+            }
+        }
+        const db = sq.map((v) => cfg.linToDb(Math.sqrt(v / sqIn) + 1e-12));
+        assert.ok(Math.abs(db[2]) < 0.05, `2.4 kHz must pass band 3 at 0 dB (got ${db[2].toFixed(3)})`);
+        assert.ok(db[1] < -55 && db[3] < -55, `2.4 kHz must be < -55 dB in bands 2 / 4 (got ${db[1].toFixed(1)}, ${db[3].toFixed(1)})`);
+    }
+
+    const genSrc = fs.readFileSync(GEN_PATH, "utf8");
+    assert.ok(genSrc.includes("Param dynphase(0.0);"), "GenExpr must expose Param dynphase");
+    assert.ok(genSrc.includes("poke(scope, firD, 26, 0, 0);"), "GenExpr must publish FIR latency at scope[26]");
+    assert.ok(genSrc.includes("firD = clamp(128.0 * round(sr / 48000.0), 128.0, 512.0);"), "GenExpr FIR latency must match firLatencyForSampleRate()");
+    assert.ok(genSrc.includes("xw = 6.0 * sqrt(") && cfg.MBSPLIT_FIR_BETA === 6.0, "GenExpr and JS must share Kaiser beta 6");
+    // Max's gen compiler rejects a for loop inside a GenExpr function (the whole codebox goes silent)
+    const fnBodies = genSrc.slice(0, genSrc.indexOf("\nBuffer scope("));
+    assert.ok(!/\bfor\s*\(/.test(fnBodies), "GenExpr helper functions must not contain for loops");
+}
+
+// =========================================================================
 // 2. BLOCK-SIZE 8192 FFT SAWTOOTH HARMONIC RESOLUTION TEST
 // =========================================================================
 {
@@ -192,6 +270,20 @@ function rectsOverlap(a, b) {
         return lines.some((l) => l.source[0] === srcId && l.destination[0] === dstId);
     }
 
+    // Dynamic Phase toggle: automatable live.text, bidirectionally synced via v8ui
+    const phaseBtn = byId["obj-ctrl-phasemode"];
+    assert.ok(phaseBtn && phaseBtn.maxclass === "live.text", "Missing Phase Mode live.text toggle");
+    assert.strictEqual(phaseBtn.saved_attribute_attributes.valueof.parameter_longname, "Phase Mode");
+    assert.deepStrictEqual(phaseBtn.saved_attribute_attributes.valueof.parameter_enum, ["Min", "Dynamic"]);
+    assert.strictEqual(phaseBtn.text, "MIN");
+    assert.strictEqual(phaseBtn.texton, "DYN");
+    assert.ok(hasLine("obj-ctrl-phasemode", "obj-prep-phasemode") && hasLine("obj-prep-phasemode", "obj-viz"), "Missing Phase Mode -> set_phasemode -> viz");
+    assert.ok(byId["obj-route-ui"].text.split(/\s+/).includes("ui_phasemode"), "route must handle ui_phasemode");
+    assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 8 && l.destination[0] === "obj-gen"), "route-ui unmatched outlet (8) must feed gen");
+    assert.ok(hasLine("obj-set-phasemode", "obj-ctrl-phasemode"), "ui_phasemode must `set` the toggle");
+    assert.strictEqual(byId["obj-ctrl-slope"].presentation_rect[0] + byId["obj-ctrl-slope"].presentation_rect[2] <= phaseBtn.presentation_rect[0], true, "Slope tab must end before Phase toggle");
+    assert.ok(phaseBtn.presentation_rect[0] + phaseBtn.presentation_rect[2] <= byId["obj-ctrl-f1"].presentation_rect[0], "Phase toggle must end before F1");
+
     assert.ok(byId["obj-plugin"] && byId["obj-plugin"].text === "plugin~", "Missing plugin~");
     assert.ok(byId["obj-plugout"] && byId["obj-plugout"].text === "plugout~", "Missing plugout~");
     assert.ok(byId["obj-gen"] && byId["obj-gen"].maxclass === "gen.codebox~", "Missing gen.codebox~");
@@ -290,7 +382,7 @@ function rectsOverlap(a, b) {
                     return [
                         0.2, 0.3, 0.4, 0.5, 0.4, 0.3, 0.25, 0.2,
                         0.15, 0.12, 0.1, 0.08, 0.06, 0.05, 0.04, 0.03,
-                        0.45, 0.52, 0.31, 0.18, 0.65, 0.52, 2, 10, 0, 48000
+                        0.45, 0.52, 0.31, 0.18, 0.65, 0.52, 2, 10, 0, 48000, sandbox.mockFirD, 0
                     ];
                 };
             },
@@ -324,7 +416,12 @@ function rectsOverlap(a, b) {
                 if (idx === 0) emitted0.push(msg);
                 else emitted1.push(msg);
             },
-            notifyclients: function() { sandbox.notified = (sandbox.notified || 0) + 1; }
+            notifyclients: function() { sandbox.notified = (sandbox.notified || 0) + 1; },
+            patcher: {
+                latency: 0,
+                setattr: function(k, v) { if (k === "latency") sandbox.patcher.latency = v; }
+            },
+            mockFirD: 128
         };
         vm.createContext(sandbox);
         vm.runInContext(combinedCode, sandbox);
@@ -538,6 +635,31 @@ function rectsOverlap(a, b) {
     const maxColDb = Math.max(...inst1.specColDb);
     const minColDb = Math.min(...inst1.specColDb);
     assert.ok(maxColDb - minColDb > 30.0, "pullScope() with 8192-sample sawtooth buffer must produce high-contrast harmonic peaks");
+
+    // 10. Dynamic Phase toggle: links across the rack, reports latency to Live, persists in the v3 blob
+    assert.strictEqual(inst1.curPhaseMode, 0, "Phase mode defaults to Min");
+    assert.strictEqual(inst1.patcher.latency, 0, "Min phase must report zero latency");
+    inst1.set_phasemode(1);
+    assert.ok(inst1.emitted0.some((m) => m[0] === "dynphase" && m[1] === 1), "set_phasemode must send dynphase 1 to gen");
+    assert.strictEqual(inst1.patcher.latency, 128, "Dynamic phase must report 128 samples of latency at 48 kHz");
+    assert.strictEqual(inst2.curPhaseMode, 1, "Phase mode must link to the other rack instances");
+    assert.strictEqual(inst2.patcher.latency, 128, "Linked instance must report the same latency");
+    assert.ok(inst2.emitted0.some((m) => m[0] === "ui_phasemode" && m[1] === 1), "Linked instance must `set` its toggle");
+    const v3 = inst1.getvalueof();
+    assert.strictEqual(v3[0], 3, "State blob must be version 3");
+    assert.strictEqual(v3[11], 1, "State blob must store the phase mode");
+    inst1.setvalueof([2, 120.0, 800.0, 4500.0, 2, 1, 0, 1, 0, 0.0, 1]);
+    assert.strictEqual(inst1.curPhaseMode, 1, "v2 blobs (no phase field) must not touch the phase mode");
+    inst1.setvalueof(v3.slice(0, 11).concat([0]));
+    assert.strictEqual(inst1.curPhaseMode, 0, "v3 blob must restore Min phase");
+    assert.strictEqual(inst1.patcher.latency, 0, "Restoring Min phase must report zero latency");
+    inst1.set_phasemode(1);
+    inst1.mockFirD = 256;
+    inst1.pullScope();
+    assert.strictEqual(inst1.patcher.latency, 256, "Latency must follow the gen FIR length (96 kHz)");
+    inst1.set_phasemode(0);
+    assert.strictEqual(inst1.patcher.latency, 0);
+    assert.strictEqual(inst2.patcher.latency, 0);
 }
 
 // =============================================================================

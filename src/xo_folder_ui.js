@@ -20,6 +20,7 @@ outlets = 1; // Outlet 0: commands to node.codebox (toggle_folder, enable_all_fo
 let folders = [
   {
     enabled: 1,
+    scanning: 0,
     count: 80,
     name: "Ableton Core Drums",
     path: "CORE_DRUMS"
@@ -44,8 +45,10 @@ function loadbang() {
 function folder_list_sync(count, ...flat) {
   const next = [];
   for (let i = 0; i + 3 < flat.length; i += 4) {
+    const flags = Number(flat[i]) || 0;
     next.push({
-      enabled: Number(flat[i]) ? 1 : 0,
+      enabled: (flags & 1) ? 1 : 0,
+      scanning: (flags & 2) ? 1 : 0,
       count: Number(flat[i + 1]) || 0,
       name: String(flat[i + 2] || "Folder"),
       path: String(flat[i + 3] || "")
@@ -56,6 +59,19 @@ function folder_list_sync(count, ...flat) {
   }
   clampScroll();
   mgraphics.redraw();
+}
+
+function set_folder_scanning(target, isScanning) {
+  for (let i = 0; i < folders.length; i++) {
+    if (i === Number(target) || folders[i].path === target || folders[i].name === target || target === "all") {
+      folders[i].scanning = Number(isScanning) ? 1 : 0;
+    }
+  }
+  mgraphics.redraw();
+}
+
+function isAnyFolderScanning() {
+  return folders.some((f) => !!f.scanning);
 }
 
 function getFolders() {
@@ -73,13 +89,13 @@ function scrollFolders(delta) {
 }
 
 function onclick(x, y) {
-  const sz = mgraphics.size || [126, 69];
+  const sz = mgraphics.size || [196, 69];
   const w = sz[0];
   const h = sz[1];
 
-  // Header buttons
+  // Header buttons ("All" at [w-53..w-31], "+Add" at [w-29..w-2])
   if (y <= HEADER_H) {
-    if (x >= 72 && x < 97) {
+    if (x >= w - 54 && x < w - 29) {
       for (let i = 0; i < folders.length; i++) {
         folders[i].enabled = 1;
       }
@@ -87,7 +103,7 @@ function onclick(x, y) {
       mgraphics.redraw();
       return;
     }
-    if (x >= 97) {
+    if (x >= w - 29) {
       outlet(0, "prompt_folder");
       return;
     }
@@ -147,7 +163,7 @@ function onwheel(x, y, dx, dy) {
 }
 
 function paint() {
-  const sz = mgraphics.size || [126, 69];
+  const sz = mgraphics.size || [196, 69];
   const w = sz[0];
   const h = sz[1];
 
@@ -167,27 +183,42 @@ function paint() {
   mgraphics.fill();
 
   const activeCount = folders.filter((f) => f.enabled).length;
+  const anyScanning = folders.some((f) => f.scanning);
   mgraphics.select_font_face("Arial", "normal", "bold");
   mgraphics.set_font_size(7.8);
   mgraphics.set_source_rgba(0.22, 0.74, 0.97, 1.0);
   mgraphics.move_to(4, 10.5);
   mgraphics.show_text(`FOLDERS (${activeCount}/${folders.length})`);
 
+  if (anyScanning) {
+    mgraphics.set_source_rgba(1.0, 0.70, 0.18, 0.24);
+    mgraphics.rectangle_rounded(76, 2, 42, 11, 2, 2);
+    mgraphics.fill();
+    mgraphics.set_source_rgba(1.0, 0.75, 0.22, 1.0);
+    mgraphics.arc(82, 7.5, 2.0, 0, Math.PI * 2);
+    mgraphics.fill();
+    mgraphics.set_font_size(6.8);
+    mgraphics.move_to(86, 10);
+    mgraphics.show_text("SCAN..");
+  }
+
   // "All" mini button
+  const allBtnX = w - 53;
+  const addBtnX = w - 30;
   mgraphics.set_source_rgba(0.16, 0.21, 0.28, 1.0);
-  mgraphics.rectangle_rounded(73, 2, 21, 11, 2, 2);
+  mgraphics.rectangle_rounded(allBtnX, 2, 21, 11, 2, 2);
   mgraphics.fill();
   mgraphics.set_source_rgba(0.82, 0.88, 0.95, 1.0);
   mgraphics.set_font_size(7.2);
-  mgraphics.move_to(78, 10);
+  mgraphics.move_to(allBtnX + 5, 10);
   mgraphics.show_text("All");
 
   // "+Add" mini button
   mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.24);
-  mgraphics.rectangle_rounded(96, 2, 27, 11, 2, 2);
+  mgraphics.rectangle_rounded(addBtnX, 2, 27, 11, 2, 2);
   mgraphics.fill();
   mgraphics.set_source_rgba(0.35, 0.82, 1.0, 1.0);
-  mgraphics.move_to(99, 10);
+  mgraphics.move_to(addBtnX + 3, 10);
   mgraphics.show_text("+Add");
 
   // Folder Rows
@@ -231,8 +262,9 @@ function paint() {
     }
 
     // Folder Name
+    const maxChars = w >= 180 ? 22 : 12;
     mgraphics.select_font_face("Arial", "normal", isOn ? "bold" : "normal");
-    mgraphics.set_font_size(7.4);
+    mgraphics.set_font_size(7.6);
     mgraphics.set_source_rgba(
       isOn ? 0.90 : 0.50,
       isOn ? 0.94 : 0.56,
@@ -240,15 +272,29 @@ function paint() {
       1.0
     );
     mgraphics.move_to(17, ry + 11.2);
-    mgraphics.show_text(String(item.name || "Folder").slice(0, 12));
+    mgraphics.show_text(String(item.name || "Folder").slice(0, maxChars));
 
-    // Sample Count
-    mgraphics.select_font_face("Arial", "normal", "normal");
-    mgraphics.set_font_size(6.8);
-    mgraphics.set_source_rgba(0.55, 0.63, 0.72, 0.9);
-    const cntStr = String(item.count || 0);
-    mgraphics.move_to(w - 21 - cntStr.length * 4.0, ry + 11.0);
-    mgraphics.show_text(cntStr);
+    // Sample Count or Active Scanning Indicator
+    if (item.scanning) {
+      mgraphics.set_source_rgba(1.0, 0.72, 0.20, 0.85);
+      mgraphics.set_line_width(1.0);
+      mgraphics.rectangle_rounded(2, ry + 1, w - 8, ROW_H - 2, 2, 2);
+      mgraphics.stroke();
+
+      mgraphics.select_font_face("Arial", "normal", "bold");
+      mgraphics.set_font_size(6.6);
+      mgraphics.set_source_rgba(1.0, 0.75, 0.22, 1.0);
+      const scanStr = `SCAN ${item.count || 0}`;
+      mgraphics.move_to(w - 22 - scanStr.length * 3.8, ry + 11.0);
+      mgraphics.show_text(scanStr);
+    } else {
+      mgraphics.select_font_face("Arial", "normal", "normal");
+      mgraphics.set_font_size(6.8);
+      mgraphics.set_source_rgba(0.55, 0.63, 0.72, 0.9);
+      const cntStr = String(item.count || 0);
+      mgraphics.move_to(w - 21 - cntStr.length * 4.0, ry + 11.0);
+      mgraphics.show_text(cntStr);
+    }
 
     // Per-Row [x] Delete Folder Button
     const delX = w - 18;

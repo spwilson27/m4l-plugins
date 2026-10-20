@@ -1,0 +1,577 @@
+// Quefrency Crush core (appended to src/cepstrum_lib.genexpr at build time, so the library functions
+// sit ahead of everything here). Reference: src/qcrush_ref.js.
+//
+// Stereo STFT (hop N/4, Hann/Hann; the right channel's frames run half a hop after the left's). Per frame and channel:
+//   X = FFT(frame); c = real cepstrum of |X|; c' = crush(c); |X'| = exp(FFT(c')); X' = |X'| * phase(X); IFFT.
+// crush(c), in this order:
+//   (after the crush the frame is scaled to the input frame's energy: loudness does not change)
+//   1. split c at the formant quefrency Qs (2 ms) into the envelope part en (q < Qs) and the excitation ex (q > Qs)
+//   2. Hold/Freeze: en(1..) is sampled and held, c0 (level) and ex stay live (talkbox / vowel stepping)
+//   3. Scramble: reverse / seeded shuffle / rotate of q*en(q) over 1..min(K, Qs), blended by Amt
+//   4. Shift: ex splatted to quefrency q / 2^(st/12) (area preserving), the harmonic comb moves, the envelope stays
+//   5. Coeffs: keep only the first K coefficients (raised-cosine taper over the last 20 %). K: 2..Qs over the first
+//      75 % of the knob (log), Qs..N/2 over the last 25 % (linear: the pitch comb returns over a usable stretch)
+//   6. Bits: mid-tread quantizer, step 1.5 * 2^(-(bits-1) * 0.75) nepers (bits 16 = off)
+// Neutral settings skip all of it (pure STFT identity, exactly unity).
+//
+// Latency is constant 4096 samples for every Size (wet padded with a Delay, dry delayed identically).
+// Size changes crossfade to the dry path, switch N, wait for the pipeline to fill, then fade the wet back in.
+//
+// Telemetry buffer (bound on loadbang via `scope #0-qcrushscope`), 320 floats:
+//   0..95    original cepstrum c[1..96]            96..191  crushed cepstrum c'[1..96]
+//   192 N   193 K (coefficients kept)   194 bits   195 envelope held (1/0)   196 hold clock phase 0..1
+//   197 hold tick counter   198 shuffle roll counter   199 input peak (0 asleep)   200 pitch quefrency (samples)
+//   201 pitch confidence   202 shifted pitch quefrency   203 frame counter   204 samplerate   205 Qs
+//   206 scramble mode   207 scramble amount   208 shift ratio   209 neutral flag
+//   210..257 excitation strip, original (48 log bins 1..25 ms)   258..305 same, crushed
+//
+// GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements.
+// No identifier named e<digit>.
+
+// Smooth 0..1 crossover between envelope (0, q well below qs) and excitation (1, q well above qs).
+qc_hi(q, qs) {
+	w = max(qs * 0.25, 1);
+	t = clip((q - (qs - w)) / (2 * w), 0, 1);
+	return t * t * (3 - 2 * t);
+}
+
+// Seeded Fisher-Yates permutation of 1..r into pm.
+qc_perm(pm, r, seed) {
+	for (i = 1; i <= r; i += 1) {
+		pm.poke(i, i);
+	}
+	for (t = 0; t < r - 1; t += 1) {
+		i = r - t;
+		v = sin(i * 12.9898 + seed * 78.233) * 43758.5453;
+		j = 1 + floor((v - floor(v)) * i);
+		j = min(j, i);
+		a = pm.peek(i);
+		pm.poke(pm.peek(j), i);
+		pm.poke(a, j);
+	}
+	return r;
+}
+
+// Copy src[1..nc] (channel 0) into the telemetry buffer at off.
+qc_tele_c(src, scope, off, nc) {
+	for (q = 1; q <= nc; q += 1) {
+		poke(scope, src.peek(q), off + q - 1, 0);
+	}
+	return nc;
+}
+
+// Max of src (positive peaks only) in nb log-spaced quefrency bins between qlo and qhi, into scope at off.
+qc_tele_strip(src, scope, off, nb, qlo, qhi, half) {
+	ratio = qhi / qlo;
+	for (b = 0; b < nb; b += 1) {
+		a0 = floor(qlo * pow(ratio, b / nb));
+		a1 = floor(qlo * pow(ratio, (b + 1) / nb));
+		a0 = clip(a0, 1, half - 1);
+		a1 = clip(max(a1, a0), a0, half - 1);
+		m = 0;
+		for (q = a0; q <= a1; q += 1) {
+			m = max(m, src.peek(q));
+		}
+		poke(scope, m, off + b, 0);
+	}
+	return nb;
+}
+
+// Magnitude from the log spectrum in fc, original phase kept, gain change limited to [-dn, +up] nepers per
+// bin, then the whole frame is scaled back to the input frame's energy (so no operation changes the loudness).
+qc_remag(fx, fc, n, eps, up, dn) {
+	ein = 0;
+	eout = 0;
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		mag = sqrt(xr * xr + xi * xi);
+		g = 1;
+		if (mag > 1e-20) {
+			d = clip(fc.peek(i, 0) - log(mag + eps), 0 - dn, up);
+			g = max(((mag + eps) * exp(d) - eps) / mag, 0);
+			fx.poke(xr * g, i, 0);
+			fx.poke(xi * g, i, 1);
+		}
+		ein = ein + mag * mag;
+		eout = eout + mag * mag * g * g;
+	}
+	gn = 1;
+	if (eout > 1e-30 && ein > 1e-30) {
+		gn = clip(sqrt(ein / eout), 0.05, 20);
+	}
+	if (abs(gn - 1) > 0.000001) {
+		for (i = 0; i < n; i += 1) {
+			fx.poke(fx.peek(i, 0) * gn, i, 0);
+			fx.poke(fx.peek(i, 1) * gn, i, 1);
+		}
+	}
+	return gn;
+}
+
+// Soft knee: identity below 0.8, rounds off to 1.0.
+qc_soft(x) {
+	a = abs(x);
+	return a <= 0.8 ? x : (x < 0 ? -1 : 1) * (0.8 + 0.2 * tanh((a - 0.8) * 5));
+}
+
+// Start the right channel's hop counter half a hop (n / 8) after the left one's, so the two channels' frames never
+// complete in the same sample and the worst-case CPU spike halves. Overlap-add stays exactly COLA at any phase and the
+// latency stays n - 1. Done once per N, before stft_in sees the new N (it would reset the counter to 0).
+qc_stagger(ring, st, n) {
+	for (i = 0; i < n; i += 1) {
+		ring.poke(0, i);
+	}
+	st.poke(0, 0);
+	st.poke(n * 0.125, 1);
+	st.poke(n, 2);
+	return n;
+}
+
+// Cepstral pitch peak of the original cepstrum (2..20 ms) into the telemetry: 200 quefrency, 201 confidence.
+qc_pitch(fc, scope, srv, n) {
+	lo = floor(srv * 0.002);
+	hi = min(floor(srv * 0.02), n * 0.5 - 3);
+	qp = 0;
+	cp = 0;
+	if (hi > lo + 4) {
+		qk = cep_peak(fc, lo, hi);
+		cp = cep_peak_conf(fc, qk, lo, hi);
+		qp = cep_peak_refine(fc, qk);
+	}
+	poke(scope, qp, 200, 0);
+	poke(scope, cp, 201, 0);
+	return qp;
+}
+
+// The crusher. fc (channel 0) holds the real cepstrum on entry and the crushed, mirrored cepstrum on exit
+// (channel 1 zero), ready for the forward FFT. cn: new cepstrum (q = 0..n/2), us: scramble scratch,
+// hd: held envelope, pm: shuffle permutation of 1..rr.
+// kq coefficients kept (float), smode 0 off / 1 reverse / 2 shuffle / 3 rotate, rho = 2^(shift/12),
+// useh 1 = envelope held, caph 1 = capture the envelope now, tele 1 = write telemetry.
+qc_proc(fc, cn, us, hd, pm, scope, srv, n, qs, kq, bits, smode, samt, rho, useh, caph, tele) {
+	half = n * 0.5;
+	w = max(qs * 0.25, 1);
+	qe = min(floor(qs + w) + 1, half - 1);
+	rr = max(2, min(floor(kq), floor(qs)));
+	cn.poke(fc.peek(0, 0), 0);
+	for (q = 1; q <= qe; q += 1) {
+		ev = fc.peek(q, 0) * (1 - qc_hi(q, qs));
+		if (caph > 0.5) {
+			hd.poke(ev, q);
+		}
+		if (useh > 0.5) {
+			ev = hd.peek(q);
+		}
+		cn.poke(ev, q);
+	}
+	if (smode > 0.5 && samt > 0.001) {
+		for (q = 1; q <= rr; q += 1) {
+			us.poke(cn.peek(q) * q, q);
+		}
+		for (q = 1; q <= rr; q += 1) {
+			u0 = us.peek(q);
+			u1 = u0;
+			if (smode < 1.5) {
+				u1 = us.peek(rr + 1 - q);
+			} else if (smode < 2.5) {
+				u1 = us.peek(pm.peek(q));
+			} else {
+				p0 = q - 1 - samt * rr * 0.5;
+				p0 = p0 - rr * floor(p0 / rr);
+				i0 = floor(p0) + 1;
+				fr = p0 - floor(p0);
+				i1 = i0 + 1;
+				if (i1 > rr) {
+					i1 = 1;
+				}
+				u1 = us.peek(i0) * (1 - fr) + us.peek(i1) * fr;
+			}
+			if (smode < 2.5) {
+				u1 = u0 + (u1 - u0) * samt;
+			}
+			cn.poke(u1 / q, q);
+		}
+	}
+	shifting = abs(rho - 1) > 0.0002;
+	for (q = qe + 1; q <= half; q += 1) {
+		cn.poke(0, q);
+	}
+	if (shifting) {
+		// splat each excitation coefficient to quefrency s / rho (linear, area preserving): narrow pitch peaks survive
+		inr = 1 / rho;
+		for (s = 1; s <= half; s += 1) {
+			ex = fc.peek(s, 0) * qc_hi(s, qs);
+			dq = s * inr;
+			if (dq >= 1) {
+				i0 = floor(dq);
+				fr = dq - i0;
+				if (i0 <= half) {
+					cn.poke(cn.peek(i0) + ex * (1 - fr), i0);
+				}
+				if (i0 + 1 <= half) {
+					cn.poke(cn.peek(i0 + 1) + ex * fr, i0 + 1);
+				}
+			}
+		}
+	} else {
+		for (q = 1; q <= half; q += 1) {
+			cn.poke(cn.peek(q) + fc.peek(q, 0) * qc_hi(q, qs), q);
+		}
+	}
+	if (kq < half - 0.5) {
+		tw = max(2, kq * 0.2);
+		for (q = 1; q <= half; q += 1) {
+			g = 0;
+			if (q <= kq) {
+				g = 1;
+				if (q > kq - tw) {
+					g = 0.5 + 0.5 * cos(3.141592653589793 * (q - (kq - tw)) / tw);
+				}
+			}
+			cn.poke(cn.peek(q) * g, q);
+		}
+	}
+	if (bits < 15.5) {
+		stp = 1.5 * pow(2, 0 - (bits - 1) * 0.75);
+		inv = 1 / stp;
+		for (q = 1; q <= half; q += 1) {
+			cn.poke(round(cn.peek(q) * inv) * stp, q);
+		}
+	}
+	if (tele > 0.5) {
+		qc_tele_c(fc, scope, 0, 96);
+		qc_tele_c(cn, scope, 96, 96);
+		qlo = max(srv * 0.001, 2);
+		qhi = max(srv * 0.025, qlo * 2);
+		qc_tele_strip(fc, scope, 210, 48, qlo, qhi, half);
+		qc_tele_strip(cn, scope, 258, 48, qlo, qhi, half);
+	}
+	fc.poke(cn.peek(0), 0, 0);
+	fc.poke(0, 0, 1);
+	for (q = 1; q < half; q += 1) {
+		v = cn.peek(q);
+		fc.poke(v, q, 0);
+		fc.poke(v, n - q, 0);
+		fc.poke(0, q, 1);
+		fc.poke(0, n - q, 1);
+	}
+	fc.poke(cn.peek(half), half, 0);
+	fc.poke(0, half, 1);
+	return half;
+}
+
+// Telemetry when the crusher is bypassed: crushed = original.
+qc_tele_neutral(fc, scope, srv, n) {
+	half = n * 0.5;
+	qc_tele_c(fc, scope, 0, 96);
+	qc_tele_c(fc, scope, 96, 96);
+	qlo = max(srv * 0.001, 2);
+	qhi = max(srv * 0.025, qlo * 2);
+	qc_tele_strip(fc, scope, 210, 48, qlo, qhi, half);
+	qc_tele_strip(fc, scope, 258, 48, qlo, qhi, half);
+	return half;
+}
+
+Buffer scope("qcrushscope");
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data fc(4096, 2);
+Data ringL(4096);
+Data accL(4096);
+Data stL(4);
+Data ringR(4096);
+Data accR(4096);
+Data stR(4);
+Data cn(4096);
+Data us(256);
+Data hdL(256);
+Data hdR(256);
+Data pm(256);
+Delay padL(4096);
+Delay padR(4096);
+Delay dlyL(4097);
+Delay dlyR(4097);
+
+Param fftn(1024);
+Param coeffs(1);
+Param qbits(16);
+Param smode(0);
+Param samt(0.5);
+Param qshift(0);
+Param freeze(0);
+Param qhold(0);
+Param wet(1);
+Param outdb(0);
+Param bpm(120);
+Param ppq(0);
+
+History nCur(0);
+History nSeenR(0);
+History pdS(0);
+History pwS(0);
+History gAgc(1);
+History gT(1);
+History nCtl(0);
+History ctlCnt(0);
+History swState(0);
+History swWait(0);
+History wf(1);
+History mixS(1);
+History outS(1);
+History outT(1);
+History beat(0);
+History ppqPrev(0);
+History lastIdx(0);
+History roll(1);
+History permRoll(0);
+History permRR(0);
+History tickCnt(0);
+History capL(1);
+History capR(1);
+History vldL(0);
+History vldR(0);
+History fzPrev(0);
+History quietCnt(0);
+History levelPk(0);
+History teleAcc(0);
+History frameNo(0);
+History sleepNote(0);
+History kqH(512);
+History bqH(16);
+History smH(0);
+History saH(0.5);
+History rhoH(1);
+History shH(0);
+History qsH(88);
+History scrH(0);
+History neuH(1);
+History perH(1);
+History hidxH(0);
+
+sr = max(samplerate, 1);
+fft_init(tab);
+
+// --- Size: crossfade to dry, switch, wait for the pipeline to fill, fade the wet back in ---
+nReq = cep_n(fftn);
+if (nCur < 1) {
+	nCur = nReq;
+}
+if (nReq != nCur && swState != 1 && swState != 2) {
+	swState = 1;
+}
+if (swState == 1) {
+	wf = wf - 1 / 256;
+	if (wf <= 0) {
+		wf = 0;
+		nCur = nReq;
+		swState = 2;
+		swWait = 4096 + nCur + 128;
+	}
+} else if (swState == 2) {
+	swWait = swWait - 1;
+	if (swWait <= 0) {
+		swState = 3;
+	}
+} else if (swState == 3) {
+	wf = wf + 1 / 512;
+	if (wf >= 1) {
+		wf = 1;
+		swState = 0;
+	}
+}
+n = nCur;
+stft_win(win, n);
+
+// --- Control values, refreshed every 32 samples (and at once when N changes) ---
+ctlCnt = ctlCnt + 1;
+if (ctlCnt >= 32 || n != nCtl) {
+	ctlCnt = 0;
+	nCtl = n;
+	cf = clip(coeffs, 0, 1);
+	qsH = clip(round(sr * 0.002), 16, 96);
+	kqH = n * 0.5;
+	if (cf < 0.995) {
+		kqH = cf < 0.75 ? 2 * pow(qsH * 0.5, cf / 0.75) : qsH + (n * 0.5 - qsH) * (cf - 0.75) / 0.25;
+	}
+	bqH = clip(round(qbits), 1, 16);
+	smH = round(clip(smode, 0, 3));
+	saH = clip(samt, 0, 1);
+	shH = clip(qshift, -12, 12);
+	rhoH = pow(2, shH / 12);
+	scrH = (smH > 0.5 && saH > 0.001) ? 1 : 0;
+	neuH = (kqH >= n * 0.5 - 0.5 && bqH >= 15.5 && scrH < 0.5 && abs(shH) < 0.005) ? 1 : 0;
+	hidxH = round(clip(qhold, 0, 6));
+	perH = hidxH < 0.5 ? 1 : pow(2, hidxH - 4);
+	outT = pow(10, clip(outdb, -36, 12) / 20);
+}
+
+// --- Hold clock: free-runs on the host tempo, locks to the host position whenever it moves ---
+if (ppq != ppqPrev) {
+	beat = ppq;
+	ppqPrev = ppq;
+} else {
+	beat = beat + max(bpm, 20) / (60 * sr);
+}
+cidx = floor(beat / perH);
+tick = 0;
+if (cidx > lastIdx) {
+	tick = 1;
+	lastIdx = cidx;
+} else if (cidx < lastIdx - 1) {
+	lastIdx = cidx;
+}
+clkPhase = beat / perH - cidx;
+fzOn = freeze > 0.5 ? 1 : 0;
+useHold = (fzOn > 0.5 || hidxH > 0.5) ? 1 : 0;
+if (tick > 0.5) {
+	tickCnt = wrap(tickCnt + 1, 0, 100000);
+	roll = wrap(roll + 1, 1, 100000);
+	if (hidxH > 0.5 && fzOn < 0.5) {
+		capL = 1;
+		capR = 1;
+	}
+	poke(scope, tickCnt, 197, 0);
+}
+if (fzOn > 0.5 && fzPrev < 0.5) {
+	capL = 1;
+	capR = 1;
+}
+fzPrev = fzOn;
+if (useHold < 0.5) {
+	vldL = 0;
+	vldR = 0;
+}
+poke(scope, clkPhase, 196, 0);
+neutral = (neuH > 0.5 && useHold < 0.5) ? 1 : 0;
+
+// --- Input level and silence sleep ---
+inAbs = max(abs(in1), abs(in2));
+quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
+levelPk = max(inAbs, levelPk * 0.9995);
+awake = quietCnt < n ? 1 : 0;
+
+// --- Frame scheduling ---
+rdyL = stft_in(ringL, stL, in1, n);
+if (nSeenR != n) {
+	nSeenR = n;
+	qc_stagger(ringR, stR, n);
+}
+rdyR = stft_in(ringR, stR, in2, n);
+if (rdyL > 0.5) {
+	teleAcc = teleAcc + n * 0.25;
+}
+teleNow = 0;
+if (rdyL > 0.5 && teleAcc >= 2048) {
+	teleNow = awake > 0.5 ? 1 : 0;
+	teleAcc = 0;
+}
+
+// Shuffle permutation (shared by both channels, rebuilt when rolled or when the region changes)
+rrNow = max(2, min(floor(kqH), floor(qsH)));
+if (smH > 1.5 && smH < 2.5 && scrH > 0.5 && (roll != permRoll || rrNow != permRR)) {
+	qc_perm(pm, rrNow, roll);
+	permRoll = roll;
+	permRR = rrNow;
+}
+
+if (rdyL > 0.5 && awake > 0.5) {
+	stft_frame(fx, ringL, stL, win, n);
+	fft_run(fx, tab, n, 0);
+	if (neutral < 0.5 || teleNow > 0.5) {
+		cep_from_spec(fx, fc, tab, n, 1e-9);
+		if (teleNow > 0.5) {
+			qc_pitch(fc, scope, sr, n);
+		}
+	}
+	if (neutral < 0.5) {
+		capNowL = (capL > 0.5 || (useHold > 0.5 && vldL < 0.5)) ? 1 : 0;
+		qc_proc(fc, cn, us, hdL, pm, scope, sr, n, qsH, kqH, bqH, smH, saH, rhoH, useHold, capNowL, teleNow);
+		cep_to_logmag(fc, tab, n);
+		qc_remag(fx, fc, n, 1e-9, 3.45, 8);
+		if (capNowL > 0.5) {
+			vldL = 1;
+			capL = 0;
+		}
+	} else if (teleNow > 0.5) {
+		qc_tele_neutral(fc, scope, sr, n);
+	}
+	fft_run(fx, tab, n, 1);
+	stft_ola(accL, stL, fx, win, n);
+}
+if (rdyR > 0.5 && awake > 0.5) {
+	stft_frame(fx, ringR, stR, win, n);
+	fft_run(fx, tab, n, 0);
+	if (neutral < 0.5) {
+		cep_from_spec(fx, fc, tab, n, 1e-9);
+		capNowR = (capR > 0.5 || (useHold > 0.5 && vldR < 0.5)) ? 1 : 0;
+		qc_proc(fc, cn, us, hdR, pm, scope, sr, n, qsH, kqH, bqH, smH, saH, rhoH, useHold, capNowR, 0);
+		cep_to_logmag(fc, tab, n);
+		qc_remag(fx, fc, n, 1e-9, 3.45, 8);
+		if (capNowR > 0.5) {
+			vldR = 1;
+			capR = 0;
+		}
+	}
+	fft_run(fx, tab, n, 1);
+	stft_ola(accR, stR, fx, win, n);
+}
+yL = stft_out(accL, stL, n);
+yR = stft_out(accR, stR, n);
+
+// --- Telemetry scalars ---
+if (teleNow > 0.5) {
+	frameNo = wrap(frameNo + 1, 0, 100000);
+	poke(scope, n, 192, 0);
+	poke(scope, kqH, 193, 0);
+	poke(scope, bqH, 194, 0);
+	poke(scope, useHold, 195, 0);
+	poke(scope, roll, 198, 0);
+	poke(scope, levelPk, 199, 0);
+	poke(scope, peek(scope, 200, 0) / rhoH, 202, 0);
+	poke(scope, frameNo, 203, 0);
+	poke(scope, sr, 204, 0);
+	poke(scope, qsH, 205, 0);
+	poke(scope, smH * scrH, 206, 0);
+	poke(scope, saH, 207, 0);
+	poke(scope, rhoH, 208, 0);
+	poke(scope, neutral, 209, 0);
+}
+if (awake < 0.5 && sleepNote < 0.5) {
+	poke(scope, 0, 199, 0);
+	sleepNote = 1;
+}
+if (awake > 0.5) {
+	sleepNote = 0;
+}
+
+// --- Constant 4096 latency, dry aligned, mix and output ---
+padL.write(yL);
+padR.write(yR);
+wetL = padL.read(4096 - (n - 1));
+wetR = padR.read(4096 - (n - 1));
+dlyL.write(in1);
+dlyR.write(in2);
+dryL = dlyL.read(4096);
+dryR = dlyR.read(4096);
+mixS = mixS + 0.002 * (clip(wet, 0, 1) - mixS);
+outS = outS + 0.002 * (outT - outS);
+mEff = mixS * wf;
+// Loudness match: heavy spectral edits lose energy in the overlap-add, so the wet path follows the dry one's level
+// (60 ms power average, gain limited to +-12 dB, frozen while Size changes, off at neutral settings).
+if (swState < 0.5) {
+	pdS = pdS + 0.0004 * ((dryL * dryL + dryR * dryR) * 0.5 - pdS);
+	pwS = pwS + 0.0004 * ((wetL * wetL + wetR * wetR) * 0.5 - pwS);
+	gT = neuH > 0.5 ? 1 : clip(sqrt((pdS + 1e-10) / (pwS + 1e-10)), 0.25, 4);
+	gAgc = gAgc + 0.0005 * (gT - gAgc);
+}
+// Scrambled and shifted spectra with the original (pulse-aligned) phase can peak well above the input: crushed audio is
+// kept under 1.0 by a soft knee that starts at 0.8. Neutral settings pass the wet path untouched.
+if (neuH < 0.5) {
+	wetL = qc_soft(wetL * gAgc);
+	wetR = qc_soft(wetR * gAgc);
+}
+out1 = fixnan(fixdenorm((dryL * (1 - mEff) + wetL * mEff) * outS));
+out2 = fixnan(fixdenorm((dryR * (1 - mEff) + wetR * mEff) * outS));
