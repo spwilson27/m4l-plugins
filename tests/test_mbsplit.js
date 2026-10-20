@@ -279,7 +279,14 @@ function rectsOverlap(a, b) {
     assert.strictEqual(phaseBtn.texton, "DYN");
     assert.ok(hasLine("obj-ctrl-phasemode", "obj-prep-phasemode") && hasLine("obj-prep-phasemode", "obj-viz"), "Missing Phase Mode -> set_phasemode -> viz");
     assert.ok(byId["obj-route-ui"].text.split(/\s+/).includes("ui_phasemode"), "route must handle ui_phasemode");
-    assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 8 && l.destination[0] === "obj-gen"), "route-ui unmatched outlet (8) must feed gen");
+    assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 11 && l.destination[0] === "obj-gen"), "route-ui unmatched outlet (11) must feed gen");
+    for (const k of [1, 2, 3]) {
+        assert.ok(byId["obj-route-ui"].text.split(/\s+/).includes(`ui_st_f${k}`), `route must handle ui_st_f${k}`);
+        assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 7 + k && l.destination[0] === `obj-ctrl-f${k}`),
+            `ui_st_f${k} must drive obj-ctrl-f${k} (active / textcolor)`);
+        const vo = byId[`obj-ctrl-f${k}`];
+        assert.ok(vo.slidercolor && vo.bgcolor, `obj-ctrl-f${k} needs inactive slidercolor / bgcolor for the greyed state`);
+    }
     assert.ok(hasLine("obj-set-phasemode", "obj-ctrl-phasemode"), "ui_phasemode must `set` the toggle");
     assert.strictEqual(byId["obj-ctrl-slope"].presentation_rect[0] + byId["obj-ctrl-slope"].presentation_rect[2] <= phaseBtn.presentation_rect[0], true, "Slope tab must end before Phase toggle");
     assert.ok(phaseBtn.presentation_rect[0] + phaseBtn.presentation_rect[2] <= byId["obj-ctrl-f1"].presentation_rect[0], "Phase toggle must end before F1");
@@ -660,6 +667,24 @@ function rectsOverlap(a, b) {
     inst1.set_phasemode(0);
     assert.strictEqual(inst1.patcher.latency, 0);
     assert.strictEqual(inst2.patcher.latency, 0);
+
+    // 11. Crossover sliders for missing splits are greyed out (active 0 + dim text)
+    function lastActive(inst, k) {
+        const msgs = inst.emitted0.filter((m) => m[0] === `ui_st_f${k}` && m[1] === "active");
+        return msgs.length ? msgs[msgs.length - 1][2] : undefined;
+    }
+    for (const nb of [1, 2, 3, 4]) {
+        inst1.set_numbands(nb);
+        for (const k of [1, 2, 3]) {
+            assert.strictEqual(lastActive(inst1, k), nb > k ? 1 : 0, `${nb} band(s): F${k} must be ${nb > k ? "active" : "greyed out"}`);
+            const tc = inst1.emitted0.filter((m) => m[0] === `ui_st_f${k}` && m[1] === "textcolor").pop();
+            assert.ok(tc && (nb > k ? tc[2] > 0.8 : tc[2] < 0.5), `${nb} band(s): F${k} text colour must follow its active state`);
+        }
+    }
+    const before = inst1.emitted0.length;
+    inst1.set_numbands(4);
+    assert.ok(!inst1.emitted0.slice(before).some((m) => String(m[0]).startsWith("ui_st_f")), "Unchanged band count must not resend slider states");
+    inst1.set_numbands(0);
 }
 
 // =============================================================================
@@ -940,6 +965,10 @@ function runLiveMcpRegressionSuite() {
     console.log(`[MCP] All 5 Live Ableton MCP regression test cases passed on port ${port}!`);
 }
 
-runLiveMcpRegressionSuite();
+if (process.env.MBSPLIT_SKIP_LIVE_MCP) {
+    console.log("[MCP] MBSPLIT_SKIP_LIVE_MCP set; skipping live MCP suite.");
+} else {
+    runLiveMcpRegressionSuite();
+}
 
 console.log("All Multiband Split tests passed! (UI 2, 8192-FFT harmonics, auto 1..4 instance bands, -inf..+18dB volume slider, clickable link badge)");

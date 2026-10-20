@@ -970,6 +970,27 @@ function emitEffectiveBandMask() {
     outlet(0, ["bandmask", mask]);
 }
 
+// Bottom-bar crossover sliders: crossover k (F1..F3) only exists with more than k bands, so the
+// sliders for missing splits are greyed out (`active 0` + dim text) and come back when bands appear.
+var crossoverActiveSent = [-1, -1, -1];
+var XOVER_TEXT_ON = [0.92, 0.96, 1.0, 1.0];
+var XOVER_TEXT_OFF = [0.38, 0.42, 0.48, 1.0];
+
+function isCrossoverActive(k) {
+    return curNumBands > k ? 1 : 0;
+}
+
+function emitCrossoverActive(force) {
+    for (var k = 1; k <= 3; k++) {
+        var on = isCrossoverActive(k);
+        if (!force && crossoverActiveSent[k - 1] === on) continue;
+        crossoverActiveSent[k - 1] = on;
+        var col = on ? XOVER_TEXT_ON : XOVER_TEXT_OFF;
+        outlet(0, ["ui_st_f" + k, "active", on]);
+        outlet(0, ["ui_st_f" + k, "textcolor", col[0], col[1], col[2], col[3]]);
+    }
+}
+
 function emitDspState(syncUiControls) {
     outlet(0, ["f1", curF1]);
     outlet(0, ["f2", curF2]);
@@ -980,6 +1001,7 @@ function emitDspState(syncUiControls) {
     outlet(0, ["gain", curGainDb]);
     emitEffectiveBandMask();
     updateDeviceLatency();
+    emitCrossoverActive(false);
 
     if (syncUiControls) {
         outlet(0, ["ui_f1", curF1]);
@@ -1123,6 +1145,7 @@ function setbuffer(name) {
 
 function loadbang() {
     isDeleted = false;
+    crossoverActiveSent = [-1, -1, -1];
     registerPeerInBus();
     discoverRackContext();
     if (!syncFromExistingGroupIfAvailable()) {

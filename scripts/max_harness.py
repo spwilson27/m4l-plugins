@@ -34,6 +34,7 @@ Modes:
   "nrt"           NonRealTime, scheduler outside audio (fastest, about 150x real time). Default.
   "stepped"       NonRealTime with `takeover 1`: scheduler serviced between DSP vectors, so
                   `events` land within one vector of their sample time. Slower than real time.
+                  run_case switches any case with `events` to this mode automatically.
   "audio_device"  Core Audio driver, real time, holds AUDIO_DEVICE_LOCK for the whole run.
 """
 
@@ -390,7 +391,10 @@ def build_scaffold(device_boxes, device_lines, *, probe_js, probe_args="", settl
         driver = '; dsp setdriver "Core Audio"; dsp takeover 0'
     else:
         driver = f"; dsp setdriver NonRealTime; dsp takeover {1 if mode == 'stepped' else 0}"
-    cfg = f"{driver}; dsp sr {sr}; dsp sigvs 64; dsp iovs 64"
+    # Overdrive must be on for `takeover 1` (scheduler in the audio thread) and for sample-counted
+    # events to land on time. It's a per-machine pref (host had it on, the macos-1 VM had it off and
+    # every event was lost), so set it per launch instead of relying on prefs.
+    cfg = f"; max overdrive 1{driver}; dsp sr {sr}; dsp sigvs 64; dsp iovs 64"
 
     boxes = [
         box("obj-load", "loadbang", 40, 20, 60, outlettype=["bang"]),
@@ -501,6 +505,10 @@ def run_case(name, device_boxes, device_lines, *, probe_js, probe_args="", settl
     never collide."""
     if not os.path.exists(MAX_BIN):
         raise FileNotFoundError(MAX_BIN)
+    if events and mode == "nrt":
+        # In nrt the scheduler runs far behind the audio, so event messages miss their sample time
+        # (in the macos-1 VM they never landed inside the take). Events always need stepped.
+        mode = "stepped"
     work = tempfile.mkdtemp(prefix=f"m4l_{name}_")
     result = os.path.join(work, "result.txt")
     harness_info = os.path.join(work, "harness.txt")

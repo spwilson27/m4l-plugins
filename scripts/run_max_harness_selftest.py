@@ -4,7 +4,7 @@
 Records a gen sample counter (ch1) and a `sig~` that an `events` message flips to 1 at 400 ms (ch2):
   * the measured window must be exactly samples settle+1 .. settle+dur, contiguous, at 48 kHz;
   * in "stepped" mode the event must land within one 64-sample vector of its sample time;
-  * in "nrt" mode the event lag is only reported (the scheduler runs behind the audio);
+  * "nrt" renders without events; a case that passes events is promoted to "stepped";
   * three runners started at once with DIFFERENT durations must each get exactly their own window
     (the harness serializes Max; identical patches would hide a shared-process mix-up).
 """
@@ -33,10 +33,11 @@ def device():
     return boxes, lines
 
 
-def run(mode, tag="", dur_ms=DUR_MS):
+def run(mode, tag="", dur_ms=DUR_MS, with_event=True):
     b, l = device()
+    ev = [(EVENT_MS, "dev-sig", 0, "1")] if with_event else None
     return mh.run_case(f"selftest_{mode}{tag}", b, l, probe_js=PROBE, settle_ms=SETTLE_MS, dur_ms=dur_ms,
-                       mode=mode, events=[(EVENT_MS, "dev-sig", 0, "1")])
+                       mode=mode, events=ev)
 
 
 def check_window(r, label, dur_ms=DUR_MS):
@@ -59,13 +60,19 @@ def main():
     print(f"[PASS] stepped  window ok, event lag {lag:.0f} samples, wall {r['harness_wall_s']:.1f} s")
     assert 0 <= lag <= 128, f"stepped: event must land within two 64-sample vectors (lag {lag})"
 
-    r = run("nrt")
+    r = run("nrt", with_event=False)
     check_window(r, "nrt")
-    print(f"[PASS] nrt      window ok, event lag {r['eventAt'] - want:.0f} samples (not guaranteed), wall {r['harness_wall_s']:.1f} s")
+    assert r["harness_mode"] == "nrt" and r["eventAt"] == -1, f"nrt: no event expected ({r})"
+    print(f"[PASS] nrt      window ok, wall {r['harness_wall_s']:.1f} s")
+
+    r = run("nrt", "_ev")
+    assert r["harness_mode"] == "stepped", "nrt + events must be promoted to stepped"
+    print(f"[PASS] nrt+events promoted to stepped, event lag {r['eventAt'] - want:.0f} samples")
+    assert 0 <= r["eventAt"] - want <= 128
 
     durs = [500, 600, 700]
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-        results = list(ex.map(lambda d: run("nrt", f"_par{d}", d), durs))
+        results = list(ex.map(lambda d: run("nrt", f"_par{d}", d, with_event=False), durs))
     for d, rr in zip(durs, results):
         check_window(rr, f"concurrent {d} ms", d)
     print(f"[PASS] 3 concurrent runners (500/600/700 ms) each got their own window")

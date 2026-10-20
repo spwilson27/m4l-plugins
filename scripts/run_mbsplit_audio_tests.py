@@ -22,7 +22,6 @@ Cases:
 import math
 import os
 import shutil
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -192,29 +191,53 @@ def run_case(gen_code, mode, keep_dir=False):
                        dur_ms=DUR_MS, channels=2, mode="nrt", keep_dir=keep_dir)
 
 
+def _lr4_allpass_ref(x, sr, fc):
+    """LR4 low + high sum (= the F1 allpass) with the same TPT SVF cascade as src/mbsplit_config.js
+    (createReferenceSplitterDsp, slope 1). Pure Python, so it also runs in the macos-1 VM (no node)."""
+    f = min(max(fc, 20.0), sr * 0.48)
+    g = math.tan(math.pi * f / sr)
+    k = math.sqrt(2.0)
+    a1 = 1.0 / (1.0 + g * (g + k))
+    a2 = g * a1
+    a3 = g * a2
+    st = [[0.0, 0.0] for _ in range(4)]  # LP stage a, LP stage b, HP stage a, HP stage b
+
+    def svf(s_, v):
+        v3 = v - s_[1]
+        v1 = a1 * s_[0] + a2 * v3
+        v2 = s_[1] + a2 * s_[0] + a3 * v3
+        s_[0] = 2.0 * v1 - s_[0]
+        s_[1] = 2.0 * v2 - s_[1]
+        return v2, v - k * v1 - v2  # lp, hp
+
+    out = []
+    for v in x:
+        lp_a, _ = svf(st[0], v)
+        lp, _ = svf(st[1], lp_a)
+        _, hp_a = svf(st[2], v)
+        _, hp = svf(st[3], hp_a)
+        out.append(lp + hp)
+    return out
+
+
 def offline_dynamic_null(dump_path, sr, f1, slope):
-    """Null the recorded Dynamic Phase sum (L) against the JS reference F1 allpass of the recorded dry input (R),
-    delayed by the FIR latency. Skips the first 4096 samples while the reference filter state settles and the
-    last 64. On the NonRealTime harness the null is about -149 dB (float precision); an FIR split error
-    would leave about -6 dB around F2 / F3."""
-    script = r"""
-const fs = require("fs");
-const cfg = require(process.argv[1]);
-const sr = Number(process.argv[2]), f1 = Number(process.argv[3]), slope = Number(process.argv[4]);
-const rows = fs.readFileSync(process.argv[5], "utf8").trim().split("\n").map((l) => l.split(" ").map(Number));
-const D = cfg.firLatencyForSampleRate(sr);
-const ref = cfg.createReferenceSplitterDsp(sr);
-const ap = rows.map((r) => { const b = ref.processSample(r[1], f1, 900, 4200, 2, slope); return b[0] + b[1]; });
-let e = 0, p = 0, n = 0;
-for (let i = 4096; i < rows.length - 64; i++) { const d = rows[i][0] - ap[i - D]; e += d * d; p += rows[i][0] * rows[i][0]; n++; }
-console.log(Math.sqrt(e / n), Math.sqrt(p / n));
-"""
-    out = subprocess.check_output(
-        ["node", "-e", script, os.path.join(ROOT, "src", "mbsplit_config.js"), str(sr), str(f1), str(slope), dump_path],
-        text=True,
-    )
-    a, b = out.split()
-    return float(a), float(b)
+    """Null the recorded Dynamic Phase sum (L) against the reference F1 allpass of the recorded dry input (R),
+    delayed by the FIR latency (128 samples at 44.1 / 48 kHz). Skips the first 4096 samples while the
+    reference filter state settles, and the last 64. On the NonRealTime harness the null is about -149 dB
+    (float precision); an FIR split error would leave about -6 dB around F2 / F3. Slope 1 (LR4) only."""
+    assert slope == 1
+    rows = [tuple(float(t) for t in ln.split()) for ln in open(dump_path) if ln.strip()]
+    left = [r[0] for r in rows]
+    ap = _lr4_allpass_ref([r[1] for r in rows], sr, f1)
+    d = min(512, max(128, 128 * round(sr / 48000.0)))
+    e = p = 0.0
+    n = 0
+    for i in range(4096, len(rows) - 64):
+        dv = left[i] - ap[i - d]
+        e += dv * dv
+        p += left[i] * left[i]
+        n += 1
+    return math.sqrt(e / n), math.sqrt(p / n)
 
 
 def main():
@@ -249,7 +272,8 @@ def main():
     )
     assert 0.48 <= r3["peakL"] <= 0.52, f"Expected +6 dB boosted 0.25 sine to peak near 0.50 (got {r3['peakL']})"
     assert r3["peakR"] < 0.002, f"Expected 180-deg phase invert to null against normal phase (got {r3['peakR']})"
-    assert r3["scopeSpecMax"] > 0.05 and r3["scopeOut"] > 0.20 and r3["scopeBeat"] > 0, (
+    # scopeBeat wraps mod 1024, so 0 is a legal value at read time; check live meters instead.
+    assert r3["scopeSpecMax"] > 0.05 and r3["scopeOut"] > 0.20 and r3["scopeIn"] > 0.2, (
         f"Expected active #0-splitscope telemetry (got {r3})"
     )
 

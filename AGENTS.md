@@ -110,6 +110,7 @@ All Max runs happen inside the `macos-01` VM (section 1a). Several agents may ru
 **What the harness does, and why** (all measured on this machine, 2026-10-19):
 - **NonRealTime driver.** Each case renders on Max's `NonRealTime` audio driver (`; dsp setdriver NonRealTime`, `dsp sr 48000`). There's no hardware audio device to contend for, and renders run far faster than real time (most cases take 5–10 s, mostly launch time). On the hardware driver, overlapping runs produced partial or silent recordings.
 - **One harness Max at a time, machine-wide.** Every case holds `/tmp/m4l_real_max.lock` (the same file `scripts/max_lock.py` uses) for the whole life of its Max. Max hands a newly launched patch to an already-running Max instance, even with a direct launch, so concurrent harness launches end up in one process: shared `rec` buffers, results read from another run, and one SIGTERM ending both. Separate parallel Max instances are not achievable by launching more processes of the same app. Runners may still call `run_case` from several threads or processes; the lock queues them. Before each launch and after each run, the harness kills any standalone harness Max still alive, so the next patch can't be handed to it.
+- **Overdrive forced on.** Every patch sends `; max overdrive 1`. With Overdrive off, the scheduler-in-audio-thread setting (`takeover 1`) does nothing, and mid-run events never land: the host had Overdrive on in its prefs, the `macos-1` VM had it off, and every event was lost there.
 - **No scheduler timing.** Under NonRealTime, scheduler milliseconds do not follow audio time: a "1000 ms" `delay` window held 144,000–244,000 samples. So no `delay`, `metro`, `pipe` or wall-clock timing anywhere in a harness patch. The scaffold records from DSP start and counts samples in gen. It copies the measured window (settle period dropped) into buffer `rec`, stamps it with the real DSP rate, then sends `analyze <dur_ms>` to the probe.
 - **Direct launch.** Max is launched by exec'ing the binary with the patch in argv, plus `-ApplePersistenceIgnoreState YES`.
   - `open -n` makes the already-running Max quit, so parallel runs killed each other.
@@ -149,7 +150,7 @@ r = mh.run_case(name, device_boxes, device_lines, probe_js=PROBE, probe_args="",
 
 **Modes:**
 - `nrt` (default): fastest.
-- `stepped`: NonRealTime with `takeover 1`, so `events` land within one vector (measured 1 sample late). Use it for mid-run parameter changes.
+- `stepped`: NonRealTime with `takeover 1`, so `events` land within one vector (measured 1 sample late on the host and in the VM). `run_case` switches any case with `events` to `stepped` automatically; under `nrt` the events miss their time.
 - `audio_device`: the real CoreAudio driver, in real time (same machine-wide lock). Only for the few tests that depend on the hardware driver itself, such as real-time CPU load or device sample-rate switching. It must stay rare. Say why in a comment.
 
 `scripts/max_lock.py` remains only for legacy, unmigrated runners; it uses the same lock. New runners never need it.
@@ -398,6 +399,7 @@ Audio checks (real Max render): `python3 scripts/run_degrade_audio_tests.py`
     - **Bottom-Right Clickable Link Status Badge (`getLinkBadgeRect()`)**: Displays the live link info string (`LINK: RACK #1 CH2 (4x)`) in the bottom-right corner of the spectrogram; clicking the badge toggles `showLinkStatus` between expanded (`LINK: ...`) and compact (`LNK`) states.
 - **Bottom Control Strip (`y = 146..161`)**:
   - `Slope` (`12` / `24` / `48` dB/oct `live.tab`, `x = 6..66`), the `Phase Mode` toggle (`live.text` `MIN` / `DYN`, `x = 69..91`), then `F1 Low`, `F2 Mid`, and `F3 High` horizontal value sliders (`x = 94..262`).
+  - **Missing splits are greyed out.** Crossover `Fk` exists only with more than `k` bands (1 band: none; 2: `F1`; 3: `F1`, `F2`; 4: all). The v8ui sends `ui_st_f<k> active 0|1` and `ui_st_f<k> textcolor ...` (dim `0.38 0.42 0.48` vs `0.92 0.96 1.0`) through `route` straight into each slider, only when the state changes (`emitCrossoverActive()`, re-sent after `loadbang`). Inactive sliders draw their `bgcolor` / `slidercolor` (grey), and `scripts/render_preview.py` honours `"active": 0` the same way.
 
 ### Nested Rack ("Chain within a Chain") Scoping, Same-Chain (`Cmd+D`) Isolation & Cross-Instance Sync
 - `parseRackContextFromPath(lomPath)` in `src/mbsplit_config.js` inspects `LiveAPI("this_device").unquotedpath` and extracts the **immediate enclosing `RackDevice` LOM path** (`parentRackPath`), **immediate enclosing `chains <N>` index** (`chainIndex`), and **device index within that chain** (`devices <D>` -> `deviceIndex`).
@@ -427,8 +429,8 @@ Audio checks (real Max render): `python3 scripts/run_degrade_audio_tests.py`
 ```bash
 npm run -s typecheck && python3 scripts/build_mbsplit.py && node tests/test_mbsplit.js && python3 scripts/render_preview.py "devices/Multiband Split.amxd"
 ```
-- `node tests/test_mbsplit.js` runs both the offline VM unit tests and `runLiveMcpRegressionSuite()` (which automatically drives `scripts/ableton_mcp_server.js` against an active Ableton Live MCP session when online to verify `Cmd+D` same-chain right-hand isolation, same-chain reordering, nested sub-rack isolation, cross-chain rank compaction, and device deletion + `Undo` restoration).
-- Audio checks (real Max render, shared NonRealTime harness): `python3 scripts/run_mbsplit_audio_tests.py`. Includes `dyn_null_vs_delayed_allpass`: one gen in Dynamic mode records its 4-band sum (L) and the dry input (R). The probe dumps both channels next to its result file, and the runner rebuilds the F1 allpass of R with the JS reference, delays it by 128 samples, and requires a null below -120 dB (measured -149 dB). Also `dyn_band_isolation`: 2.4 kHz passes band 3 within 0.1 dB, and 300 Hz is rejected by more than 55 dB.
+- `node tests/test_mbsplit.js` runs both the offline VM unit tests and `runLiveMcpRegressionSuite()`. On the host, set `MBSPLIT_SKIP_LIVE_MCP=1` to skip the live suite: Live runs only in the VM (section 1a). The live suite (which automatically drives `scripts/ableton_mcp_server.js` against an active Ableton Live MCP session when online to verify `Cmd+D` same-chain right-hand isolation, same-chain reordering, nested sub-rack isolation, cross-chain rank compaction, and device deletion + `Undo` restoration).
+- Audio checks (real Max render, shared NonRealTime harness, inside the VM per section 1a): `/usr/bin/python3 scripts/run_mbsplit_audio_tests.py`. Pure Python; the offline reference allpass is ported from `src/mbsplit_config.js` because the VM has no `node`. Includes `dyn_null_vs_delayed_allpass`: one gen in Dynamic mode records its 4-band sum (L) and the dry input (R). The probe dumps both channels next to its result file, and the runner rebuilds the F1 allpass of R with the JS reference, delays it by 128 samples, and requires a null below -120 dB (measured -149 dB). Also `dyn_band_isolation`: 2.4 kHz passes band 3 within 0.1 dB, and 300 Hz is rejected by more than 55 dB.
 
 ---
 

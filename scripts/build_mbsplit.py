@@ -84,6 +84,8 @@ def make_slider_numbox(key, x, y, w=54.0, h=15.0, accent_rgb=(0.22, 0.74, 0.97),
         "annotation": help_text,
         "annotation_name": long_name,
         "appearance": 3 if bipolar else 2,
+        "bgcolor": [0.06, 0.07, 0.085, 1.0],  # inactive (greyed: split not present)
+        "slidercolor": [0.20, 0.22, 0.25, 1.0],  # inactive fill
         "bordercolor": [0.22, 0.28, 0.35, 1.0],
         "fontface": 1,
         "fontsize": 8.5,
@@ -445,10 +447,10 @@ def build_patcher():
         # Route v8ui outlet 0 messages to Gen DSP and UI widgets (using `set` to avoid echo loops)
         newobj(
             "obj-route-ui",
-            "route ui_f1 ui_f2 ui_f3 ui_slope ui_bandmode ui_linkgroup ui_gain ui_phasemode",
-            120, 360, 440, 20,
-            numinlets=1, numoutlets=9,
-            outlettype=["", "", "", "", "", "", "", "", ""],
+            "route ui_f1 ui_f2 ui_f3 ui_slope ui_bandmode ui_linkgroup ui_gain ui_phasemode ui_st_f1 ui_st_f2 ui_st_f3",
+            120, 360, 560, 20,
+            numinlets=1, numoutlets=12,
+            outlettype=[""] * 12,
         ),
         newobj("obj-set-f1", "prepend set", 120, 390, 75, 20),
         newobj("obj-set-f2", "prepend set", 200, 390, 75, 20),
@@ -522,7 +524,11 @@ def build_patcher():
         line("obj-set-gain", 0, "obj-ctrl-gain", 0),
         line("obj-route-ui", 7, "obj-set-phasemode", 0),
         line("obj-set-phasemode", 0, "obj-ctrl-phasemode", 0),
-        line("obj-route-ui", 8, "obj-gen", 0),
+        # ui_st_fN -> `active 0/1` and `textcolor ...` straight into the crossover sliders (grey out missing splits)
+        line("obj-route-ui", 8, "obj-ctrl-f1", 0),
+        line("obj-route-ui", 9, "obj-ctrl-f2", 0),
+        line("obj-route-ui", 10, "obj-ctrl-f3", 0),
+        line("obj-route-ui", 11, "obj-gen", 0),
     ]
 
     patcher = {

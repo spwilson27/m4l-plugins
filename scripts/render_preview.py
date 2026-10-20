@@ -413,7 +413,9 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
 
         elif mc == "live.numbox":
             app = w.get("appearance", 0)
-            bg = rgba_tuple(w.get("activebgcolor", [0.086, 0.102, 0.122, 1.0]))
+            # `active 0` (greyed out): Live draws the inactive colours (bgcolor / slidercolor)
+            inactive = w.get("active", 1) == 0
+            bg = rgba_tuple(w.get("bgcolor" if inactive else "activebgcolor", [0.086, 0.102, 0.122, 1.0]))
             tc = rgba_tuple(w.get("textcolor", [1.0, 0.71, 0.2, 1.0]))
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
             init_val = vof.get("parameter_initial", [0])[0]
@@ -446,7 +448,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 lo_val = float(vof.get("parameter_mmin", 0.0))
                 hi_val = float(vof.get("parameter_mmax", 100.0))
                 norm = max(0.0, min(1.0, (float(init_val) - lo_val) / max(1e-6, hi_val - lo_val)))
-                sl_c = rgba_tuple(w.get("activeslidercolor", [0.98, 0.70, 0.26, 1.0]))
+                sl_c = rgba_tuple(w.get("slidercolor" if inactive else "activeslidercolor", [0.98, 0.70, 0.26, 1.0]))
                 fill_c = (sl_c[0], sl_c[1], sl_c[2], 255)
                 inner_w = rw - 2 * SCALE
                 if app == 3:
