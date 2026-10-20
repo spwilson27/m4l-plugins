@@ -2,7 +2,7 @@
 // (classic `js` and `v8` Globals clash on the same name, and the device's strip writes from v8).
 //
 // Harness contract: `resultpath <file>` at load, `analyze <dur_ms>` at the end of the window.
-// Sample-timed harness events send `step test_report` / `step test_click`; each step is forwarded
+// Sample-timed harness events send `hook test_report` / `hook test_click`; each one is forwarded
 // to the device's test hook (`receive envtrig-test`), and each report the strip writes to
 // Global("envtrig_test").last is recorded. analyze writes one `key value` line per field:
 //   reports <n>
@@ -12,21 +12,36 @@
 inlets = 1;
 outlets = 1;
 
+var HOOKS_EXPECTED = 7; // report, click, report, click, report, click, report
 var resultPath = "";
 var reports = [];
+var hooks = 0;
+var analyzeRequested = false;
+var written = false;
 
 function resultpath(p) {
     resultPath = String(p);
 }
 
-function step(kind) {
+function hook(kind) {
     var g = new Global("envtrig_test");
     if (kind === "test_report") g.last = "";
     messnamed("envtrig-test", String(kind));
     if (kind === "test_report") reports.push(g.last ? String(g.last) : "");
+    hooks++;
+    if (analyzeRequested && hooks >= HOOKS_EXPECTED) writeResult();
 }
 
+// The scheduler can lag audio time even in "stepped" mode, so `analyze` may arrive before the
+// last hooks: the result is written once both the analyze request and every hook have arrived.
 function analyze() {
+    analyzeRequested = true;
+    if (hooks >= HOOKS_EXPECTED) writeResult();
+}
+
+function writeResult() {
+    if (written) return;
+    written = true;
     var lines = ["reports " + reports.length];
     for (var i = 0; i < reports.length; i++) {
         var r = null;

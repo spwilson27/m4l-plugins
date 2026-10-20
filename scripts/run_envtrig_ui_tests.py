@@ -69,7 +69,7 @@ def main():
     boxes, lines, panel_names = device_patch()
     if not panel_names:
         sys.exit("Envelope Trigger strip has no PANEL_NAMES prefix; rebuild with scripts/build_envtrig.py")
-    events = [(STEP_MS * (k + 1), "obj-js", 0, f"step {s}") for k, s in enumerate(STEPS)]
+    events = [(STEP_MS * (k + 1), "obj-js", 0, f"hook {s}") for k, s in enumerate(STEPS)]
     # "stepped": the scheduler runs between DSP vectors, so the steps land in order at their sample times.
     res = mh.run_case("envtrig_ui", boxes, lines, probe_js=PROBE_JS, probe_object="v8", settle_ms=0,
                       dur_ms=STEP_MS * (len(STEPS) + 2), channels=1, mode="stepped", events=events)
