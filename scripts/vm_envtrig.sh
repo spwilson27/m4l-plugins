@@ -9,7 +9,9 @@
 #   scripts/vm_envtrig.sh live    sync, rebuild in the VM, write envtrig_test.als there (MCP Bridge on
 #                                 Main, track "Envelope Trigger" with two instances in one rack chain,
 #                                 referenced by VM paths) and (re)start the VM's Live with it, then
-#                                 wait for the bridge. Restarting Live ends any other Live session in
+#                                 wait for the bridge. Killing Live leaves crash-recovery files whose
+#                                 "Live unexpectedly quit" dialog blocks the next launch, so they are
+#                                 removed first. Restarting Live ends any other Live session in
 #                                 the VM: check `pgrep -fl MacOS/Live` there first when sharing it.
 #   scripts/vm_envtrig.sh test    run scripts/test_envtrig_live.js on the host through an ssh tunnel
 #                                 (local 19878 -> VM 127.0.0.1:9877, the bridge port)
@@ -41,6 +43,7 @@ case "${1:-}" in
       /usr/bin/python3 scripts/make_delayplus_sets.py --start "$DEV" --end "$DEV" --name "Envelope Trigger" \
         --track "Envelope Trigger::$DEV" --als "$HOME/ableton/envtrig_test.als" >/dev/null &&
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
+      rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
       open -a "Ableton Live 12 Suite" "$HOME/ableton/envtrig_test.als" &&
       for i in $(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 2; done;
       echo "bridge did not come up" >&2; exit 1' ;;
