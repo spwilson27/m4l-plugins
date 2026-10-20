@@ -3,6 +3,7 @@
   "files": [
     "src/cepstrum_ref.js",
     "src/qcrush_ref.js",
-    "src/timbre_ref.js"
+    "src/timbre_ref.js",
+    "src/tsplit_ref.js"
   ]
 }

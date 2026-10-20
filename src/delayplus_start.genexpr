@@ -28,7 +28,8 @@
 //   22/23 min/max of (cS_latest - cE) seen by End, 24 Start window count.
 // xfer (shared, 5 ch x RING): ch0/1 dry L/R at Start index, ch2/3 return L/R at End index,
 //   ch4 first difference of the mono tap at Start index (End's K calibration).
-// hdr 30 = L, 31 = time in ms, both poked by the UI script.
+// hdr 27 = LFO rate in Hz, 28 = right / side time in ms, 30 = L (chain latency), 31 = left / mid
+// time in ms: all poked by the UI script. 40..42 = End's ducking threshold / release and output gain.
 // scope (UI telemetry, Start only), every 64 samples:
 //   0 TL eff (samples) 1 TR eff 2 clamped 3 Tmin 4 B 5 K 6 L 7 ping L 8 paired 9 in peak
 //   10/11 tap peak L/R 12/13 return peak L/R 14 frame counter 15 sr 16 freeze 17 duck gain
@@ -57,6 +58,16 @@ herm(dat, chn, pos, size) {
 	return ((c3 * f + c2) * f + c1) * f + x0;
 }
 
+lfoshape_val(shp, p, nz) {
+	v = sin(p * twopi);
+	if (shp == 1) v = 1 - 4 * abs(p - 0.5);
+	if (shp == 2) v = 2 * p - 1;
+	if (shp == 3) v = 1 - 2 * p;
+	if (shp == 4) v = p < 0.5 ? 1 : -1;
+	if (shp == 5) v = nz;
+	return v;
+}
+
 softsat(x, lim) {
 	return lim * tanh(x / lim);
 }
@@ -67,22 +78,46 @@ Buffer scope("dpscope");
 
 Data tank(524288, 2);
 
-Param tms(375);
-Param off(0);
-Param fb(0.4);
-Param pp(0);
-Param hp(20);
-Param lp(20000);
-Param drive(0);
-Param mrate(0.5);
-Param mdepth(0);
-Param tmode(0);
+// Times per side in ms (the UI script computes sync / mode / offset / link and pokes hdr[31] /
+// hdr[28]; these Params are the fallback for the standalone harness).
+Param tmsL(375);
+Param tmsR(375);
+Param fb(0.5);
+Param inv(0);
+Param chmode(0);       // 0 Stereo, 1 Ping Pong, 2 Mid/Side (Left time = Mid, Right time = Side)
+Param inputdb(0);
+Param clipdry(0);      // Echo's "D": soft clip on the input into the tank
+Param filton(1);
+Param hp(50);
+Param lp(5000);
+Param hpres(0);
+Param lpres(0);
+Param lforate(0.5);    // Hz (the UI converts a synced rate)
+Param lfoshape(0);     // 0 sine, 1 triangle, 2 saw up, 3 saw down, 4 square, 5 noise
+Param phase(180);      // right-channel LFO phase offset, degrees
+Param x4(0);
+Param moddelay(0);     // 0..1 -> up to 8 ms (32 ms with x4)
+Param modfilt(0);      // 0..1 -> up to +-2 octaves of both cutoffs
+Param envmix(0);       // 0 LFO only .. 1 envelope follower only
+Param gateon(0);
+Param gatethr(0);
+Param gaterel(50);
+Param noiseon(0);
+Param noiseamt(0);
+Param noisemorph(0);
+Param wobon(0);
+Param wobamt(0);
+Param wobmorph(0);
+Param repitch(0);      // 1: the read head glides to a new time (pitch bends); 0: crossfade
 Param freeze(0);
 Param lat(0);
 Param debug(0);
-Param wet(0.35);
-Param duck(0);
+Param wet(0.5);
 Param width(1);
+Param duckon(0);
+Param duckthr(0);
+Param duckrel(100);
+Param outdb(0);
 
 History cnt(0);
 History lastCe(-1);
@@ -101,7 +136,6 @@ History mute(0);
 History gLink(0);
 History ig(1);
 History fbs(0.4);
-History offs(0);
 History tsL(16537);
 History tsR(16537);
 History tAL(16537);
@@ -113,6 +147,22 @@ History xfR(0);
 History xtL(0);
 History xtR(0);
 History lfo(0);
+History lfoNz(0);
+History lfoNzL(0);
+History lfoNzR(0);
+History lfoWrapL(0);
+History lfoWrapR(0);
+History envIn(0);
+History gateEnv(0);
+History gateG(1);
+History wowS(0);
+History wowT(0);
+History wowC(0);
+History flutS(0);
+History flutT(0);
+History flutC(0);
+History rng(22222);
+History crackle(0);
 History hpL1(0);
 History hpL2(0);
 History hpR1(0);
@@ -128,6 +178,8 @@ History hpG(0);
 History hpK(1.4142);
 History lpG(0);
 History lpK(1.4142);
+History cHpR(-1);
+History cLpR(-1);
 History pingT(0);
 History pingArm(0);
 History tick(0);
@@ -145,6 +197,9 @@ History hHead(0);
 History ptap(0);
 
 tmp = 0;
+gOpen = 0;
+nm = 0;
+nz = 0;
 actL = 0;
 actR = 0;
 hb = 0;
@@ -223,8 +278,11 @@ gLink = clip(gLink, 0, 1);
 
 // Parameters for End (mix stage lives there).
 poke(hdr, clip(wet, 0, 1), 5);
-poke(hdr, clip(duck, 0, 1), 6);
+poke(hdr, duckon > 0.5, 6);
 poke(hdr, clip(width, 0, 2), 7);
+poke(hdr, clip(duckthr, -60, 0), 40);
+poke(hdr, clip(duckrel, 1, 2000), 41);
+poke(hdr, dbtoa(clip(outdb, -36, 12)), 42);
 poke(hdr, debug > 0.5, 8);
 poke(hdr, freeze > 0.5, 13);
 
@@ -246,50 +304,118 @@ if (debug > 0.5 && pingArm > 0.5 && max(abs(retL), abs(retR)) > 0.1) {
 	poke(hdr, wd(cn - bb - ll - peek(hdr, 9), M), 17);
 	pingArm = 0;
 }
-fL = softsat(retL * fbg, 1.5);
-fR = softsat(retR * fbg, 1.5);
-if (pp > 0.5) {
+fsign = inv > 0.5 ? -1 : 1;
+fL = softsat(retL * fbg * fsign, 1.5);
+fR = softsat(retR * fbg * fsign, 1.5);
+mode = floor(clip(chmode, 0, 2) + 0.5);
+if (mode == 1) {
 	tmp = fL;
 	fL = fR;
 	fR = tmp;
 }
+if (mode == 2) {
+	// the tank runs in Mid/Side: channel 0 = mid, 1 = side
+	tmp = (fL + fR) * 0.5;
+	fR = (fL - fR) * 0.5;
+	fL = tmp;
+}
 
 // ---- tank write: input at the head, return at its original emit position ---------------------
 ig = ig + ((frz || dbg) ? 0 - ig : 1 - ig) * (1 / (0.01 * sr));
-inL = in1 * ig;
-inR = in2 * ig;
-if (pp > 0.5) {
-	inL = (in1 + in2) * 0.5 * ig;
+// Input gain and Echo's "D" (soft clip), then the gate (opens above its threshold, closes after
+// its release), all on the signal that enters the tank only; the dry path stays untouched.
+ing = dbtoa(clip(inputdb, -36, 12));
+xL = in1 * ing;
+xR = in2 * ing;
+if (clipdry > 0.5) {
+	xL = tanh(xL);
+	xR = tanh(xR);
+}
+lvl = max(abs(in1), abs(in2));
+envIn = lvl > envIn ? lvl : envIn * exp(-1 / (0.15 * sr));
+gateEnv = lvl > gateEnv ? lvl : gateEnv * exp(-1 / (0.01 * sr));
+if (gateon > 0.5) {
+	gOpen = atodb(max(gateEnv, 0.000001)) > clip(gatethr, -60, 0);
+	gateG = gOpen ? gateG + (1 - gateG) * (1 / (0.001 * sr)) : gateG * exp(-1 / (clip(gaterel, 1, 2000) * 0.001 * sr));
+} else {
+	gateG = 1;
+}
+inL = xL * ig * gateG;
+inR = xR * ig * gateG;
+if (mode == 1) {
+	inL = (xL + xR) * 0.5 * ig * gateG;
 	inR = 0;
+}
+if (mode == 2) {
+	inL = (xL + xR) * 0.5 * ig * gateG;
+	inR = (xL - xR) * 0.5 * ig * gateG;
 }
 wi = wrap(cn, 0, TANK);
 poke(tank, inL, wi, 0);
 poke(tank, inR, wi, 1);
 fi = wrap(cn - bb - ll, 0, TANK);
-poke(tank, peek(tank, fi, 0) + fL, fi, 0);
-poke(tank, peek(tank, fi, 1) + fR, fi, 1);
+// soft limit where input and feedback meet, so a hot input at full feedback stays bounded
+// (linear below 1, then a tanh knee up to 1.8)
+sumL = peek(tank, fi, 0) + fL;
+sumR = peek(tank, fi, 1) + fR;
+amL = max(abs(sumL), 1);
+amR = max(abs(sumR), 1);
+poke(tank, sumL * (1 + 0.8 * tanh((amL - 1) / 0.8)) / amL, fi, 0);
+poke(tank, sumR * (1 + 0.8 * tanh((amR - 1) / 0.8)) / amR, fi, 1);
 
 // ---- delay times ------------------------------------------------------------------------------
-offs = offs + (clip(off, -1, 1) - offs) * 0.001;
-tmsH = peek(hdr, 31);
-base = clip(tmsH > 0 ? tmsH : tms, 1, 8000) * sr / 1000;
-tgL = base * (1 + max(-offs, 0));
-tgR = base * (1 + max(offs, 0));
-modS = clip(mdepth, 0, 1) * 0.008 * sr;
-tmin = bb + ll + modS + 4;
+tmsHL = peek(hdr, 31);
+tmsHR = peek(hdr, 28);
+tgL = clip(tmsHL > 0 ? tmsHL : tmsL, 1, 8000) * sr / 1000;
+tgR = clip(tmsHR > 0 ? tmsHR : tmsR, 1, 8000) * sr / 1000;
+modS = clip(moddelay, 0, 1) * 0.008 * (x4 > 0.5 ? 4 : 1) * sr;
+wobS = (wobon > 0.5) * clip(wobamt, 0, 1) * 0.003 * sr;
+tmin = bb + ll + modS + wobS + 4;
 tmax = TANK - 8;
 clamped = (tgL < tmin) || (tgR < tmin);
 tgL = clip(tgL, tmin, tmax);
 tgR = clip(tgR, tmin, tmax);
 
-lfo = wrap(lfo + clip(mrate, 0.01, 20) / sr, 0, 1);
-mL = modS * (0.5 + 0.5 * sin(lfo * twopi));
-mR = modS * (0.5 + 0.5 * sin((lfo + 0.25) * twopi));
+// LFO (shape, right channel offset by `phase`) blended with the input envelope by `envmix`.
+lfoH = peek(hdr, 27);
+lfo = wrap(lfo + clip(lfoH > 0 ? lfoH : lforate, 0.01, 40) / sr, 0, 1);
+pR = wrap(lfo + clip(phase, 0, 360) / 360, 0, 1);
+shp = floor(clip(lfoshape, 0, 5) + 0.5);
+if (pR < lfoWrapR) lfoNzR = noise();
+lfoWrapR = pR;
+if (lfo < lfoWrapL) lfoNzL = noise();
+lfoWrapL = lfo;
+lL = lfoshape_val(shp, lfo, lfoNzL);
+lR = lfoshape_val(shp, pR, lfoNzR);
+envV = clip((atodb(max(envIn, 0.000001)) + 48) / 48, 0, 1) * 2 - 1;
+em = clip(envmix, 0, 1);
+lL = lL * (1 - em) + envV * em;
+lR = lR * (1 - em) + envV * em;
+mL = modS * (0.5 + 0.5 * lL);
+mR = modS * (0.5 + 0.5 * lR);
+// Wobble: slow random wow and fast flutter of the read head, `wobmorph` blends wow -> flutter.
+rng = wrap(rng * 16807, 0, 2147483647);
+wowC = wowC + 1;
+if (wowC >= floor(sr * 0.35)) {
+	wowC = 0;
+	wowT = noise();
+}
+wowS = wowS + (wowT - wowS) * (1 / (0.25 * sr));
+flutC = flutC + 1;
+if (flutC >= floor(sr * 0.045)) {
+	flutC = 0;
+	flutT = noise();
+}
+flutS = flutS + (flutT - flutS) * (1 / (0.012 * sr));
+wm = clip(wobmorph, 0, 1);
+wob = wobS * (0.5 + 0.5 * (wowS * (1 - wm) + flutS * wm));
+mL = mL + wob;
+mR = mR + wob;
 
 slew = 1 - exp(-1 / (0.12 * sr));
 xfRate = 1 / (0.05 * sr);
-if (tmode < 0.5) {
-	// Tape: the read head glides to the new time (pitch bends while it moves).
+if (repitch > 0.5) {
+	// Repitch (tape): the read head glides to the new time (pitch bends while it moves).
 	tsL = tsL + (tgL - tsL) * slew;
 	tsR = tsR + (tgR - tsR) * slew;
 	tAL = tsL;
@@ -338,18 +464,26 @@ if (xfL > 0) tapL = tapL + herm(tank, 0, cn - dBL, TANK) * xfL;
 tapR = herm(tank, 1, cn - dAR, TANK) * (1 - xfR);
 if (xfR > 0) tapR = tapR + herm(tank, 1, cn - dBR, TANK) * xfR;
 
-// ---- tone: 12 dB/oct TPT SVF high-pass and low-pass, then drive -------------------------------
-if (hp != cHp || sr != cSr) {
-	cHp = hp;
-	hpG = tan(pi * clip(hp, 10, sr * 0.45) / sr);
+// ---- tone: 12 dB/oct TPT SVF high-pass and low-pass with resonance, LFO-modulated cutoffs -----
+// (Mid/Side: back to L/R first, so the chain always gets L/R)
+if (mode == 2) {
+	tmp = tapL + tapR;
+	tapR = tapL - tapR;
+	tapL = tmp;
 }
-if (lp != cLp || sr != cSr) {
-	cLp = lp;
-	lpG = tan(pi * clip(lp, 20, sr * 0.45) / sr);
-}
+fmL = clip(modfilt, 0, 1) * 2 * lL;
+fmR = clip(modfilt, 0, 1) * 2 * lR;
+hpK = 1.4142 * (1 - 0.95 * clip(hpres, 0, 1));
+lpK = 1.4142 * (1 - 0.95 * clip(lpres, 0, 1));
+hpG = tan(pi * clip(hp * pow(2, fmL), 10, sr * 0.45) / sr);
+lpG = tan(pi * clip(lp * pow(2, fmL), 20, sr * 0.45) / sr);
+hpGR = tan(pi * clip(hp * pow(2, fmR), 10, sr * 0.45) / sr);
+lpGR = tan(pi * clip(lp * pow(2, fmR), 20, sr * 0.45) / sr);
 cSr = sr;
 hpA1 = 1 / (1 + hpG * (hpG + hpK));
 lpA1 = 1 / (1 + lpG * (lpG + lpK));
+hpA1R = 1 / (1 + hpGR * (hpGR + hpK));
+lpA1R = 1 / (1 + lpGR * (lpGR + lpK));
 
 // high-pass L
 v1 = (hpG * (tapL - hpL2) + hpL1) * hpA1;
@@ -358,8 +492,8 @@ hpL1 = 2 * v1 - hpL1;
 hpL2 = 2 * v2 - hpL2;
 yL = tapL - hpK * v1 - v2;
 // high-pass R
-w1 = (hpG * (tapR - hpR2) + hpR1) * hpA1;
-w2 = hpR2 + hpG * w1;
+w1 = (hpGR * (tapR - hpR2) + hpR1) * hpA1R;
+w2 = hpR2 + hpGR * w1;
 hpR1 = 2 * w1 - hpR1;
 hpR2 = 2 * w2 - hpR2;
 yR = tapR - hpK * w1 - w2;
@@ -370,18 +504,24 @@ lpL1 = 2 * u1 - lpL1;
 lpL2 = 2 * u2 - lpL2;
 zL = u2;
 // low-pass R
-q1 = (lpG * (yR - lpR2) + lpR1) * lpA1;
-q2 = lpR2 + lpG * q1;
+q1 = (lpGR * (yR - lpR2) + lpR1) * lpA1R;
+q2 = lpR2 + lpGR * q1;
 lpR1 = 2 * q1 - lpR1;
 lpR2 = 2 * q2 - lpR2;
 zR = q2;
 
-dr = clip(drive, 0, 1);
-if (dr > 0) {
-	dg = 1 + 6 * dr;
-	nrm = 1 / pow(dg, 0.6);
-	zL = tanh(zL * dg) * nrm;
-	zR = tanh(zR * dg) * nrm;
+if (filton < 0.5) {
+	zL = tapL;
+	zR = tapR;
+}
+// Noise in the loop: hiss (morph 0) .. vinyl-style crackle (morph 1).
+if (noiseon > 0.5 && noiseamt > 0) {
+	nm = clip(noisemorph, 0, 1);
+	crackle = crackle * 0.6;
+	if (abs(noise()) > 1 - 0.0004 * (0.2 + nm)) crackle = noise();
+	nz = (noise() * 0.25 * (1 - nm) + crackle * nm) * clip(noiseamt, 0, 1) * 0.06;
+	zL = zL + nz;
+	zR = zR + (noise() * 0.25 * (1 - nm) + crackle * nm) * clip(noiseamt, 0, 1) * 0.06;
 }
 hpL1 = fixdenorm(hpL1);
 hpL2 = fixdenorm(hpL2);
@@ -465,9 +605,13 @@ if (tick >= 64) {
 	poke(scope, frz, 16);
 	poke(scope, peek(hdr, 16), 17);
 	poke(scope, peek(hdr, 12), 18);
-	poke(scope, base * (1 + max(-offs, 0)), 20);
-	poke(scope, base * (1 + max(offs, 0)), 21);
+	poke(scope, tgL, 20);
+	poke(scope, tgR, 21);
 	poke(scope, dbg, 23);
+	poke(scope, lL, 24);
+	poke(scope, lR, 25);
+	poke(scope, envV, 26);
+	poke(scope, gateG, 27);
 	pkIn = 0;
 	pkTL = 0;
 	pkTR = 0;

@@ -8,7 +8,8 @@
 #   scripts/vm_delayplus.sh live     sync, rebuild in the VM (the test set must point at VM paths),
 #                                    (re)start Live in the VM with delayplus_test.als and wait for its
 #                                    MCP bridge. Live is the only instance there: no dialog, relaunch
-#                                    freely after every build.
+#                                    freely after every build (crash-recovery files are cleared after
+#                                    the quit, or Live stops at a "recover your work?" dialog).
 #   scripts/vm_delayplus.sh test     run scripts/test_delayplus_live.js on the host through an ssh
 #                                    tunnel (local 19877 -> VM 127.0.0.1:9877, the bridge port)
 set -u
@@ -34,6 +35,7 @@ case "${1:-}" in
     sync_repo || exit 1
     "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_delayplus.py >/dev/null &&
       pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
+      rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
       open -a "Ableton Live 12 Suite" "$HOME/ableton/delayplus_test.als" &&
       for i in $(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 2; done;
       echo "bridge did not come up" >&2; exit 1' ;;

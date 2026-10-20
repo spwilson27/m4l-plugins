@@ -27,38 +27,42 @@ function near(a, b, tol, msg) {
 }
 
 // ---- config -------------------------------------------------------------------------------------
-test("sync divisions are ordered and 1/4 at 120 bpm is 500 ms", () => {
-    for (let i = 1; i < C.DP_DIVISIONS.length; i++) assert(C.DP_DIVISIONS[i][1] > C.DP_DIVISIONS[i - 1][1]);
-    const q = C.DP_DIVISIONS.findIndex((d) => d[0] === "1/4");
-    near(C.dpSyncMs(q, 120), 500, 1e-9);
-    near(C.dpSyncMs(C.DP_DIV_DEFAULT, 120), 375, 1e-9); // 1/8D
+test("note values are ordered; 1/8 at 120 bpm is 250 ms, dotted 375, triplet 166.7", () => {
+    for (let i = 1; i < C.DP_NOTE_BEATS.length; i++) assert(C.DP_NOTE_BEATS[i] > C.DP_NOTE_BEATS[i - 1]);
+    near(C.dpSideMs(1, 0, 3, 0, 0, 120), 250, 1e-9);
+    near(C.dpSideMs(1, 0, 3, 2, 0, 120), 375, 1e-9);
+    near(C.dpSideMs(1, 0, 3, 1, 0, 120), 500 / 3, 1e-9);
 });
 
-test("target time: free vs sync, clamped to 1..8000 ms", () => {
-    near(C.dpTargetMs(0, 250, 0, 120), 250, 0);
-    near(C.dpTargetMs(1, 250, 11, 60), 1000, 1e-9);
-    near(C.dpTargetMs(0, 0, 0, 120), 1, 0);
-    near(C.dpTargetMs(1, 0, 19, 20), 8000, 0);
+test("side time: free ms, offset in %, clamped to 1..8000 ms", () => {
+    near(C.dpSideMs(0, 300, 0, 0, 0, 120), 300, 1e-9);
+    near(C.dpSideMs(0, 300, 0, 0, 10, 120), 330, 1e-9);
+    near(C.dpSideMs(0, 300, 0, 0, -50, 120), 300 * 0.67, 1e-9); // offset clamps at -33%
+    near(C.dpSideMs(0, 0, 0, 0, 0, 120), 1, 0);
+    near(C.dpSideMs(1, 0, 8, 2, 33, 20), 8000, 0);
+});
+
+test("LFO rate: Hz, or one cycle per note value", () => {
+    near(C.dpLfoHz(0, 3, 0, 120), 3, 0);
+    near(C.dpLfoHz(1, 0, 3, 120), 2, 1e-9); // 1/4 at 120 bpm
+    near(C.dpLfoHz(1, 0, 5, 120), 0.5, 1e-9); // 1 bar
 });
 
 test("effective times clamp at B + L + mod + 4", () => {
-    const e = C.dpEffectiveTimes(1, 0, 48000, 32, 256, 0);
+    const e = C.dpEffectiveTimes(1, 1, 48000, 32, 256, 0);
     assert(e.clamped);
     near(e.L, 32 + 256 + 4, 1e-9);
-    const f = C.dpEffectiveTimes(100, 0, 48000, 32, 256, 0);
+    const f = C.dpEffectiveTimes(100, 150, 48000, 32, 256, 0);
     assert(!f.clamped);
     near(f.L, 4800, 1e-9);
-    const g = C.dpEffectiveTimes(100, 0, 48000, 32, 256, 1);
-    near(g.tmin, 32 + 256 + 384 + 4, 1e-9);
+    near(f.R, 7200, 1e-9);
+    near(C.dpEffectiveTimes(100, 100, 48000, 32, 256, 1).tmin, 32 + 256 + 384 + 4, 1e-9);
 });
 
-test("stereo offset delays the right side when positive, the left when negative", () => {
-    const a = C.dpChannelTimes(100, 0.5, 1000);
-    near(a.L, 100, 1e-9);
-    near(a.R, 150, 1e-9);
-    const b = C.dpChannelTimes(100, -0.5, 1000);
-    near(b.L, 150, 1e-9);
-    near(b.R, 100, 1e-9);
+test("side labels", () => {
+    assert.strictEqual(C.dpSideLabel(1, 0, 3, 0), "1/8");
+    assert.strictEqual(C.dpSideLabel(1, 0, 3, 2), "1/8 D");
+    assert.strictEqual(C.dpSideLabel(0, 375, 0, 0), "375 ms");
 });
 
 test("path parsing", () => {
@@ -216,8 +220,9 @@ function overlaps(a, b) {
     return a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
 }
 
-const devices = ["Delay+ A", "Delay+ B", "Delay+ C", "Delay+ End"].filter((n) =>
-    fs.existsSync(path.join(ROOT, "devices", n + ".amxd")));
+const devices = fs.readdirSync(path.join(ROOT, "devices"))
+    .filter((f) => /^Delay\+ .*\.amxd$/.test(f))
+    .map((f) => f.slice(0, -5));
 
 for (const name of devices) {
     test(`${name}: 169 px, presentation, panels last, no live.* over v8ui, --- buffers`, () => {
@@ -234,7 +239,12 @@ for (const name of devices) {
         }
         const uis = boxes.filter((b) => b.maxclass === "v8ui" && b.presentation);
         const lives = boxes.filter((b) => /^live\.(dial|numbox|text|tab|menu|slider)$/.test(b.maxclass) && b.presentation);
-        for (const u of uis) for (const l of lives) assert(!overlaps(rect(u), rect(l)), `${l.varname} overlaps v8ui`);
+        // Page widgets may share the display rect when exactly one side starts hidden (the page
+        // switch sends `hidden` to both, so they are never clickable at the same time).
+        for (const u of uis) for (const l of lives) {
+            if (Boolean(u.hidden) !== Boolean(l.hidden)) continue;
+            assert(!overlaps(rect(u), rect(l)), `${l.varname} overlaps v8ui`);
+        }
         for (const b of [...uis, ...lives]) {
             const r = rect(b);
             assert(r[1] >= 0 && r[1] + r[3] <= 169 && r[0] >= 0 && r[0] + r[2] <= p.devicewidth, `${b.id} in bounds`);
@@ -261,7 +271,7 @@ for (const name of devices.filter((n) => n !== "Delay+ End")) {
         for (const b of boxes) {
             if (/^prepend set_/.test(b.text || "")) {
                 const fn = b.text.split(" ")[1];
-                assert(new RegExp("function " + fn + "\\(").test(code), fn + " missing in UI");
+                assert(/function anything\(/.test(code) || new RegExp("function " + fn + "\\(").test(code), fn + " missing in UI");
             } else if (/^prepend /.test(b.text || "") && b.text !== "prepend hidden") {
                 const prm = b.text.split(" ")[1];
                 assert(new RegExp("Param " + prm + "\\(").test(genCode), prm + " missing in gen");

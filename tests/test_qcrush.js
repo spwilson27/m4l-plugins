@@ -20,21 +20,24 @@ const GEN = LIB + "\n" + CORE;
 assert.ok(!CORE.match(/\be\d/), "e-digits are Euler's number in GenExpr");
 assert.strictEqual((CORE.match(/delay\(/g) || []).length, 0, "delay() is not valid GenExpr");
 {
-    const lastFn = Math.max(...["qc_hi(", "qc_perm(", "qc_remag(", "qc_stagger(", "qc_soft(", "qc_pitch(", "qc_proc(", "qc_tele_neutral("].map((f) => CORE.indexOf("\n" + f)));
+    // the last top-level function definition in the core (new functions never need registering)
+    let lastFn = -1;
+    for (const m of CORE.matchAll(/^[a-z_0-9]+\(.*\) \{$/gm)) lastFn = Math.max(lastFn, m.index);
+    assert.ok(lastFn > 0, "core defines helper functions");
     for (const decl of ["\nBuffer ", "\nData ", "\nParam ", "\nHistory ", "\nDelay "]) {
         assert.ok(CORE.indexOf(decl) > lastFn, `functions must precede ${decl.trim()} declarations`);
     }
     assert.ok(GEN.indexOf("\ncep_peak(") < GEN.indexOf("\nqc_pitch("), "library functions come first");
     assert.ok(CORE.includes('Buffer scope("qcrushscope")'));
-    for (const p of ["fftn", "coeffs", "qbits", "smode", "samt", "qshift", "freeze", "qhold", "wet", "outdb", "bpm", "ppq"]) {
+    for (const p of ["fftn", "coeffs", "qbits", "smode", "samt", "qshift", "gmode", "grate", "pmode", "qlag", "wet", "outdb", "bpm", "ppq"]) {
         assert.ok(CORE.includes(`Param ${p}(`), `core has Param ${p}`);
     }
     assert.ok(CORE.includes("padL.read(4096 - (n - 1))") && CORE.includes("dlyL.read(4096)"), "constant 4096 latency, dry aligned");
 }
 
 // ---------------------------------------------------------------- the three devices
-const VARIANTS = { A: { w: 452, layout: 0 }, B: { w: 470, layout: 1 }, C: { w: 434, layout: 2 } };
-const PARAMS = ["Size", "Coeffs", "Bits", "Scramble", "Amount", "Shift", "Freeze", "Hold", "Mix", "Output"];
+const VARIANTS = { A: { w: 520, layout: 0 }, B: { w: 520, layout: 1 }, C: { w: 500, layout: 2 } };
+const PARAMS = ["Size", "Coeffs", "Bits", "Scramble", "Amount", "Shift", "Glitch", "Rate", "Phase", "Lag", "Mix", "Output"];
 const boxesOf = {};
 const vizText = {};
 for (const [v, info] of Object.entries(VARIANTS)) {
@@ -60,7 +63,7 @@ for (const [v, info] of Object.entries(VARIANTS)) {
     assert.strictEqual(map.get("obj-msg-ui-buf").text, "setbuffer #0-qcrushscope");
     assert.strictEqual(map.get("obj-msg-layout").text, `set_layout ${info.layout}`);
 
-    // exactly the ten Live parameters, each once
+    // exactly the twelve Live parameters, each once
     const params = p.boxes
         .map((b) => b.box)
         .filter((b) => b.saved_attribute_attributes && b.saved_attribute_attributes.valueof && b.saved_attribute_attributes.valueof.parameter_longname);
@@ -76,20 +79,39 @@ for (const [v, info] of Object.entries(VARIANTS)) {
     const size = map.get("obj-ctrl-size").saved_attribute_attributes.valueof;
     assert.deepStrictEqual(size.parameter_enum, ["512", "1k", "2k", "4k"]);
     assert.strictEqual(size.parameter_initial[0], 1, "Size defaults to 1024");
-    assert.deepStrictEqual(map.get("obj-ctrl-hold").saved_attribute_attributes.valueof.parameter_enum, ["Off", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"]);
+    const enumOf = (key) => map.get(`obj-ctrl-${key}`).saved_attribute_attributes.valueof;
+    assert.deepStrictEqual(enumOf("gmode").parameter_enum, ["Off", "Drop", "Rpt", "Rev", "Hold", "Frz"]);
+    assert.deepStrictEqual(enumOf("grate").parameter_enum, ["1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"]);
+    assert.deepStrictEqual(enumOf("pmode").parameter_enum, ["Orig", "Robot", "Whisp", "Min"]);
+    for (const [key, init] of [["gmode", 0], ["grate", 1], ["pmode", 0]]) {
+        assert.strictEqual(enumOf(key).parameter_type, 2, `${v}: ${key} is an enum (parameter_type 2)`);
+        assert.strictEqual(enumOf(key).parameter_initial[0], init, `${v}: ${key} initial`);
+    }
+    const lagVo = enumOf("lag");
+    assert.deepStrictEqual([lagVo.parameter_type, lagVo.parameter_mmin, lagVo.parameter_mmax, lagVo.parameter_initial[0], lagVo.parameter_unitstyle], [0, 0, 100, 0, 5], `${v}: Lag is a 0..100 % float`);
+    assert.strictEqual(map.get("obj-ctrl-samt").annotation, "Scramble amount (blend / rotation distance) and, for Glitch Drop/Rpt/Rev, the chance that a Rate slot fires", `${v}: Amount tooltip`);
+    assert.strictEqual(map.get("obj-ctrl-freeze"), undefined, `${v}: Freeze is gone`);
+    assert.strictEqual(map.get("obj-ctrl-hold"), undefined, `${v}: Hold is gone`);
+    assert.strictEqual(map.get("obj-prep-freeze"), undefined);
+    assert.strictEqual(map.get("obj-prep-hold"), undefined);
+    const patchText = p.boxes.map((b) => b.box.text || "").join("\n") + JSON.stringify(p.lines);
+    assert.ok(!/set_freeze|set_hold|qhold|prepend freeze/.test(patchText), `${v}: no freeze/hold messages`);
+    // the 12 controls sit on 12 distinct presentation boxes
+    assert.strictEqual(params.length, 12, `${v}: twelve controls`);
     assert.deepStrictEqual(map.get("obj-ctrl-smode").saved_attribute_attributes.valueof.parameter_enum, ["Off", "Rev", "Shuf", "Rot"]);
     // defaults are neutral
     assert.strictEqual(map.get("obj-ctrl-coeffs").saved_attribute_attributes.valueof.parameter_initial[0], 100);
     assert.strictEqual(map.get("obj-ctrl-shift").saved_attribute_attributes.valueof.parameter_initial[0], 0);
     assert.strictEqual(map.get("obj-ctrl-mix").saved_attribute_attributes.valueof.parameter_initial[0], 100);
-    assert.strictEqual(map.get("obj-ctrl-freeze").saved_attribute_attributes.valueof.parameter_initial[0], 0);
+    assert.strictEqual(map.get("obj-ctrl-samt").saved_attribute_attributes.valueof.parameter_initial[0], 50);
 
     // wiring: every control reaches gen and the view
     const lineSet = new Set(p.lines.map((l) => `${l.patchline.source[0]}:${l.patchline.source[1]}->${l.patchline.destination[0]}:${l.patchline.destination[1]}`));
     const has = (s) => assert.ok(lineSet.has(s), `${v}: missing patchline ${s}`);
     for (const [key, gm, scaled] of [
         ["coeffs", "coeffs", true], ["bits", "qbits", false], ["smode", "smode", false], ["samt", "samt", true], ["shift", "qshift", false],
-        ["freeze", "freeze", false], ["hold", "qhold", false], ["mix", "wet", true], ["out", "outdb", false],
+        ["gmode", "gmode", false], ["grate", "grate", false], ["pmode", "pmode", false], ["lag", "qlag", true],
+        ["mix", "wet", true], ["out", "outdb", false],
     ]) {
         assert.strictEqual(map.get(`obj-prep-${key}`).text, `prepend ${gm}`);
         if (scaled) {
@@ -167,9 +189,18 @@ for (const [v, info] of Object.entries(VARIANTS)) {
     assert.strictEqual(boxesOf.B.map.get("obj-ctrl-coeffs").maxclass, "live.dial", "B: dials");
     assert.strictEqual(boxesOf.A.map.get("obj-ctrl-coeffs").maxclass, "live.numbox", "A: value bars");
     {
-        const f = rectOf("C", "obj-ctrl-freeze");
-        const face = rectOf("C", "obj-freeze-face");
-        assert.ok(face[2] >= 80 && face[3] + f[3] >= 80 && f[1] >= face[1] + face[3], "C: big Freeze pad (face above the button)");
+        const f = rectOf("C", "obj-ctrl-gmode");
+        const face = rectOf("C", "obj-glitch-face");
+        assert.ok(face[2] >= 80 && face[3] + f[3] >= 70 && f[1] >= face[1] + face[3], "C: big Glitch pad (face above the Glitch tab)");
+        assert.strictEqual(boxesOf.C.map.get("obj-route-face").text, "route gmode", "C: the pad drives Glitch");
+        const cl = new Set(boxesOf.C.p.lines.map((l) => `${l.patchline.source[0]}:${l.patchline.source[1]}->${l.patchline.destination[0]}:${l.patchline.destination[1]}`));
+        for (const l of ["obj-glitch-face:0->obj-route-face:0", "obj-route-face:0->obj-ctrl-gmode:0", "obj-ui-gmode:0->obj-glitch-face:0", "obj-ui-grate:0->obj-glitch-face:0"]) assert.ok(cl.has(l), `C: ${l}`);
+    }
+    for (const v of ["A", "B", "C"]) {
+        const m = boxesOf[v].map;
+        const lagBox = m.get("obj-ctrl-lag");
+        assert.ok(lagBox, `${v}: Lag control present`);
+        if (v === "A") for (const k of ["gmode", "grate", "pmode"]) assert.ok(["live.tab", "live.menu"].includes(m.get(`obj-ctrl-${k}`).maxclass));
     }
     assert.ok(boxesOf.C.map.get("obj-route-viz").text === "route coeffs bits", "C: the crush pad drives Coeffs and Bits");
     assert.ok(boxesOf.A.map.get("obj-route-viz").text === "route coeffs", "A: dragging the canvas drives Coeffs");
@@ -198,7 +229,7 @@ function loadView(code, w, h, bufferFloats) {
     }
     const fn = new Function(
         "mgraphics", "inlets", "outlets", "outlet", "notifyclients", "Buffer", "Task",
-        code + "\nreturn { paint, preview, onclick, ondrag, ondblclick, setbuffer, pullScope, set_layout, set_coeffs, set_bits, set_hold, set_freeze, set_smode, set_samt, set_shift, set_size, kOfCf, cfOfK, crushList, demoBase, getState: () => ({ haveTelemetry, layout, curCoeffs, curBits, tele }) };"
+        code + "\nreturn { paint, preview, onclick, ondrag, ondblclick, setbuffer, pullScope, set_layout, set_coeffs, set_bits, set_gmode, set_grate, set_pmode, set_lag, set_smode, set_samt, set_shift, set_size, kOfCf, cfOfK, crushList, demoBase, lagDelay, lagMaxFrames, histCode, histDecode, histEncode, getState: () => ({ haveTelemetry, layout, curCoeffs, curBits, curGmode, curGrate, curPmode, curLag, tele }) };"
     );
     const ui = fn(mg, 1, 1, (...a) => calls.outs.push(a.slice(1)), () => {}, FakeBuffer, undefined);
     return { ui, mg, calls };
@@ -289,6 +320,114 @@ for (const [v, info] of Object.entries(VARIANTS)) {
     ui.pullScope();
     ui.pullScope();
     assert.strictEqual(calls.redraw, settled, "no redraws while silent");
+}
+
+// ---------------------------------------------------------------- Glitch / Phase / Lag in the view
+{
+    // lag formula, independent of the UI implementation: d(q) = floor(12 * lag * s(q) + 0.5), s = 0.5 min(1,(q-1)/127) + 0.5 h(q)
+    const sLag = (q) => {
+        const v = Math.sin(q * 12.9898 + 4.1414) * 43758.5453;
+        return 0.5 * Math.min(1, (q - 1) / 127) + 0.5 * (v - Math.floor(v));
+    };
+    const { ui, calls } = loadView(vizText.A, 284, 134, []);
+    for (const lag of [0, 0.25, 0.5, 1]) {
+        let mx = 0;
+        for (let q = 1; q <= 96; q++) {
+            const want = Math.floor(12 * lag * sLag(q) + 0.5);
+            assert.strictEqual(ui.lagDelay(q, lag), want, `lag ${lag} q ${q}`);
+            assert.ok(want >= 0 && want <= 12);
+            mx = Math.max(mx, want);
+        }
+        assert.strictEqual(ui.lagMaxFrames(lag), mx);
+    }
+    assert.strictEqual(ui.lagDelay(0, 1), 0, "d(0) = 0");
+    assert.strictEqual(ui.lagMaxFrames(0), 0);
+    // history decode: newest frame in bits 0-1 of histA, ages 12..23 in histB
+    const codes = Array.from({ length: 24 }, (_, i) => (i * 7 + (i >> 2)) % 4);
+    const [hA, hB] = ui.histEncode(codes);
+    assert.deepStrictEqual(ui.histDecode(hA, hB), codes, "history round trip");
+    assert.strictEqual(ui.histCode(2, 0, 0), 2, "newest = bits 0-1");
+    assert.strictEqual(ui.histCode(2, 0, 1), 0);
+    assert.strictEqual(ui.histCode(0, 3, 12), 3, "age 12 = bits 0-1 of histB");
+    assert.strictEqual(ui.histCode(4 * 4 * 1, 0, 2), 1);
+    assert.ok(hA < 2 ** 24 && hB < 2 ** 24, "exact float range");
+    // setters exist and clamp
+    ui.set_gmode(9); assert.strictEqual(ui.getState().curGmode, 5);
+    ui.set_gmode(2); assert.strictEqual(ui.getState().curGmode, 2);
+    ui.set_grate(-3); assert.strictEqual(ui.getState().curGrate, 0);
+    ui.set_grate(4); assert.strictEqual(ui.getState().curGrate, 4);
+    ui.set_pmode(7); assert.strictEqual(ui.getState().curPmode, 3);
+    ui.set_lag(250); assert.strictEqual(ui.getState().curLag, 100);
+    ui.set_lag(35); assert.strictEqual(ui.getState().curLag, 35);
+    // the demo shows plausible history for every Glitch mode, and nothing when off
+    for (const [g, code] of [[1, 1], [2, 2], [3, 3]]) {
+        ui.set_gmode(g); ui.set_samt(70); ui.preview();
+        const t = ui.getState().tele;
+        const d = ui.histDecode(t.histA, t.histB);
+        assert.ok(d.includes(code), `demo Glitch ${g} shows code ${code}`);
+        assert.ok(d.every((c) => c === 0 || c === code));
+        ui.paint();
+    }
+    ui.set_gmode(0); ui.preview();
+    assert.ok(ui.histDecode(ui.getState().tele.histA, ui.getState().tele.histB).every((c) => c === 0), "Glitch off: calm history");
+    for (const [g, pm, lag] of [[0, 0, 0], [1, 1, 60], [2, 2, 100], [3, 3, 30], [4, 0, 0], [5, 1, 10]]) {
+        ui.set_gmode(g); ui.set_pmode(pm); ui.set_lag(lag); ui.preview(); ui.paint();
+        for (const lay of [0, 1, 2, 3]) { ui.set_layout(lay); ui.paint(); }
+        ui.set_layout(0);
+    }
+    assert.ok(calls.ops > 500);
+    // the Glitch pad face (layout 3) cycles the mode through the outlet
+    for (const v of ["C"]) {
+        const f = loadView(vizText[v], 102, 50, []);
+        f.ui.set_layout(3);
+        f.ui.preview();
+        f.ui.paint();
+        f.calls.outs.length = 0;
+        f.ui.onclick(10, 10);
+        assert.deepStrictEqual(f.calls.outs[0], ["gmode", 1], "face click: Off -> Drop");
+        f.ui.set_gmode(5);
+        f.ui.onclick(10, 10);
+        assert.deepStrictEqual(f.calls.outs[f.calls.outs.length - 1], ["gmode", 0], "face click wraps Frz -> Off");
+        f.ui.paint();
+    }
+    // telemetry 306..316: history, mode, phase, lag, slot, flash and settling
+    const tel = new Array(320).fill(0);
+    tel[193] = 40; tel[194] = 6; tel[199] = 0.3; tel[203] = 3; tel[204] = 44100; tel[205] = 88; tel[192] = 2048;
+    const codes2 = Array.from({ length: 24 }, (_, i) => (i % 5 === 0 ? 1 : i % 5 === 1 ? 2 : i % 7 === 0 ? 3 : 0));
+    const [tA, tB] = ui.histEncode(codes2);
+    tel[306] = tA; tel[307] = tB; tel[308] = 2; tel[309] = 3; tel[310] = 0.5; tel[311] = 0.4; tel[312] = 1; tel[313] = 4;
+    tel[314] = 10; tel[315] = 0.5; tel[316] = 2;
+    const t = loadView(vizText.A, 284, 134, tel);
+    t.ui.setbuffer("x");
+    t.ui.pullScope();
+    const ts = t.ui.getState().tele;
+    assert.deepStrictEqual([ts.histA, ts.histB, ts.gmode, ts.pmode, ts.lag, ts.slotPhase, ts.slotActive, ts.win, ts.slot, ts.fgain, ts.wpos],
+        [tA, tB, 2, 3, 0.5, 0.4, 1, 4, 10, 0.5, 2], "telemetry 306..316 parsed");
+    assert.deepStrictEqual(t.ui.histDecode(ts.histA, ts.histB), codes2, "telemetry history decodes");
+    t.ui.paint();
+    // a new slot counter flashes, then the view settles with silence even while the clock moves
+    tel[314] = 11;
+    t.ui.pullScope();
+    t.ui.paint();
+    tel[199] = 0;
+    for (let i = 0; i < 40; i++) { tel[196] = (i % 10) / 10; t.ui.pullScope(); }
+    const r0 = t.calls.redraw;
+    tel[196] = 0.77;
+    t.ui.pullScope();
+    t.ui.pullScope();
+    assert.strictEqual(t.calls.redraw, r0, "settled: clock-only movement does not redraw");
+    // missing / zero telemetry slots are neutral
+    const z = new Array(320).fill(0);
+    z[199] = 0.3; z[203] = 2; z[192] = 1024; z[193] = 100;
+    const zt = loadView(vizText.B, 182, 134, z);
+    zt.ui.setbuffer("x");
+    zt.ui.pullScope();
+    zt.ui.paint();
+    assert.ok(zt.ui.histDecode(zt.ui.getState().tele.histA, zt.ui.getState().tele.histB).every((c) => c === 0));
+    const short = loadView(vizText.A, 284, 134, new Array(300).fill(0).map((_, i) => (i === 199 ? 0.3 : i === 203 ? 2 : 0)));
+    short.ui.setbuffer("x");
+    short.ui.pullScope();
+    short.ui.paint();
 }
 
 // ---------------------------------------------------------------- DSP math against cepstrum_ref.js
@@ -605,6 +744,10 @@ function roughness(cn, n) {
     assert.ok(Math.abs(ticks - 8) <= 2, `after a loop jump ${ticks}`);
     // latency is constant 4096: wet is n - 1 deep in the STFT and padded by 4096 - (n - 1)
     for (const n of [512, 1024, 2048, 4096]) assert.strictEqual(n - 1 + (4096 - (n - 1)), 4096);
+}
+
+if (fs.existsSync(path.join(__dirname, "qcrush_dsp_tests.js"))) {
+    require("./qcrush_dsp_tests.js");
 }
 
 console.log("test_qcrush: ok");

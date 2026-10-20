@@ -12,6 +12,12 @@
 //   2 = TEXTURES  : Dual overlap-add Hann granular cloud with spray, unison detune and pan.
 //   3 = SPECTRAL  : Phase-vocoder stretching: Speed (grain_motion) is decoupled from pitch.
 //                   Computed OUTSIDE voice_proc by spec_voice() for voices 0..3 only (see below).
+//
+// Compile time: GenExpr inlines every call, so voice_proc and spec_voice are each called from ONE loop
+// (16 voices / 4 spectral voices). A function cannot hold per-call-site state in a loop, so all their
+// History lives in Data: vhist (256 slots per voice: voice_proc 0..37, analog 64..79, tape 80..84,
+// digital 96..110) and sdat (one block per spectral voice: FFT work arrays, jp and 22 History slots).
+// Released, silent voices skip voice_proc altogether.
 //   4 = FRAGMENTS : Playful granular: a pool of up to 32 grains per voice (fr_max_grains is
 //                   capped at 32), density, repeats, envelope shape, motion randomisation.
 //
@@ -113,15 +119,15 @@ unison_spread(u, uCount, unisonDetune, driftPhs, vSeed) {
 
 // Effective play region (normalised). Sliced: the voice's slice bounds, extended to the sample
 // start / end for "to sample end". Single: start .. end.
-slice_region(vS, vE, startNorm, endNorm, slicedFlag, slicePlay, reverseOn) {
+slice_region(voS, vE, startNorm, endNorm, slicedFlag, slicePlay, reverseOn) {
 	slicePlayId = round(clip(slicePlay, 0, 3));
 	revSlice = (reverseOn > 0.5);
 	toSampleEnd = (slicePlayId > 0.5) && (slicePlayId < 1.5);
 	sampStartN = clip(min(startNorm, endNorm - 0.005), 0, 0.995);
 	sampEndN = clip(max(endNorm, sampStartN + 0.005), 0.005, 1.0);
-	sliceEndN = max(vE, vS + 0.005);
-	sliceLoN = (toSampleEnd && revSlice) ? min(sampStartN, sliceEndN - 0.005) : vS;
-	sliceHiN = (toSampleEnd && (revSlice == 0)) ? max(sampEndN, vS + 0.005) : sliceEndN;
+	sliceEndN = max(vE, voS + 0.005);
+	sliceLoN = (toSampleEnd && revSlice) ? min(sampStartN, sliceEndN - 0.005) : voS;
+	sliceHiN = (toSampleEnd && (revSlice == 0)) ? max(sampEndN, voS + 0.005) : sliceEndN;
 	effS = (slicedFlag > 0.5) ? sliceLoN : sampStartN;
 	effE = (slicedFlag > 0.5) ? sliceHiN : sampEndN;
 	return effS, effE, sampStartN, sampEndN;
@@ -236,15 +242,15 @@ read_repitch(sampBuf, posFrames, startF, endF, loopStartF, loopEndF, loopMode, x
 // Analog, one channel. dist: saturator with pre / post EQ (even + odd harmonics via an asymmetric tanh).
 // colorV > 0: brighter shelf and tape hiss (scales with the playback rate). colorV < 0: low-mid
 // emphasis and softer transients (lowpass + gentle saturation).
-analog_chan(x, dist, colorV, rate, sr) {
-	History lpLo(0);
-	History lpHi(0);
-	History lpSoft(0);
-	History lpNz(0);
-	History lpPre(0);
-	History lpPost(0);
-	History dcX(0);
-	History dcY(0);
+analog_chan(x, dist, colorV, rate, sr, vhist, stBase) {
+	lpLo = peek(vhist, stBase + 0);
+	lpHi = peek(vhist, stBase + 1);
+	lpSoft = peek(vhist, stBase + 2);
+	lpNz = peek(vhist, stBase + 3);
+	lpPre = peek(vhist, stBase + 4);
+	lpPost = peek(vhist, stBase + 5);
+	dcX = peek(vhist, stBase + 6);
+	dcY = peek(vhist, stBase + 7);
 	y = x;
 	posC = max(colorV, 0.0);
 	negC = max(0.0 - colorV, 0.0);
@@ -271,18 +277,26 @@ analog_chan(x, dist, colorV, rate, sr) {
 		lpPost = lpPost + op_coef(9000 - 5000 * dist, sr) * (dcY - lpPost);
 		y = mix(y, lpPost / (1.0 + 0.5 * (drv - 1.0)), clip(dist * 8.0, 0, 1));
 	}
+	poke(vhist, lpLo, stBase + 0);
+	poke(vhist, lpHi, stBase + 1);
+	poke(vhist, lpSoft, stBase + 2);
+	poke(vhist, lpNz, stBase + 3);
+	poke(vhist, lpPre, stBase + 4);
+	poke(vhist, lpPost, stBase + 5);
+	poke(vhist, dcX, stBase + 6);
+	poke(vhist, dcY, stBase + 7);
 	return y;
 }
 
 // Analog tape stereo: decalibrated heads (L and R warble out of phase, plus a head azimuth offset).
 // Wow / flutter rate and depth scale with the playback rate. The delay lines live in the shared tbuf
 // table (gen shares a function-level Data between every call site, so each voice gets its own slice).
-tape_st(xl, xr, colorV, rate, sr, tbuf, tbase) {
-	History wp(0);
-	History p1(0.0);
-	History p2(0.31);
-	History p3(0.17);
-	History p4(0.64);
+tape_st(xl, xr, colorV, rate, sr, tbuf, tbase, vhist, stBase) {
+	wp = peek(vhist, stBase + 0);
+	p1 = peek(vhist, stBase + 1);
+	p2 = peek(vhist, stBase + 2);
+	p3 = peek(vhist, stBase + 3);
+	p4 = peek(vhist, stBase + 4);
 	posC = max(colorV, 0.0);
 	rt = sqrt(clip(rate, 0.25, 4.0));
 	p1 = fract(p1 + 0.9 * rt / sr);
@@ -305,28 +319,33 @@ tape_st(xl, xr, colorV, rate, sr, tbuf, tbase) {
 	yl = mix(peek(tbuf, tbase + il0), peek(tbuf, tbase + il1), rl - il0);
 	yr = mix(peek(tbuf, tbase + 4096 + ir0), peek(tbuf, tbase + 4096 + ir1), rr - ir0);
 	wp = wrap(wp + 1, 0, 4096);
+	poke(vhist, wp, stBase + 0);
+	poke(vhist, p1, stBase + 1);
+	poke(vhist, p2, stBase + 2);
+	poke(vhist, p3, stBase + 3);
+	poke(vhist, p4, stBase + 4);
 	return yl, yr;
 }
 
 // Digital: bit reduction (13 bits at dist 0 down to 2), sample-rate reduction (positive colour = raw
 // sample-and-hold aliasing, negative = band-limited first), VSR (rate follows the playback rate) and an
 // imaging filter that follows the voice's sample rate.
-digital_st(xl, xr, dist, colorV, rate, vsr, imaging, sr) {
-	History acc(0);
-	History hL(0);
-	History hR(0);
-	History a1L(0);
-	History a2L(0);
-	History a3L(0);
-	History a1R(0);
-	History a2R(0);
-	History a3R(0);
-	History b1L(0);
-	History b2L(0);
-	History b3L(0);
-	History b1R(0);
-	History b2R(0);
-	History b3R(0);
+digital_st(xl, xr, dist, colorV, rate, vsr, imaging, sr, vhist, stBase) {
+	acc = peek(vhist, stBase + 0);
+	hL = peek(vhist, stBase + 1);
+	hR = peek(vhist, stBase + 2);
+	a1L = peek(vhist, stBase + 3);
+	a2L = peek(vhist, stBase + 4);
+	a3L = peek(vhist, stBase + 5);
+	a1R = peek(vhist, stBase + 6);
+	a2R = peek(vhist, stBase + 7);
+	a3R = peek(vhist, stBase + 8);
+	b1L = peek(vhist, stBase + 9);
+	b2L = peek(vhist, stBase + 10);
+	b3L = peek(vhist, stBase + 11);
+	b1R = peek(vhist, stBase + 12);
+	b2R = peek(vhist, stBase + 13);
+	b3R = peek(vhist, stBase + 14);
 	bits = 13.0 - 11.0 * clip(dist, 0, 1);
 	q = pow(2.0, bits - 1.0);
 	ql = floor(xl * q + 0.5) / q;
@@ -371,6 +390,21 @@ digital_st(xl, xr, dist, colorV, rate, vsr, imaging, sr) {
 			outR = b3R;
 		}
 	}
+	poke(vhist, acc, stBase + 0);
+	poke(vhist, hL, stBase + 1);
+	poke(vhist, hR, stBase + 2);
+	poke(vhist, a1L, stBase + 3);
+	poke(vhist, a2L, stBase + 4);
+	poke(vhist, a3L, stBase + 5);
+	poke(vhist, a1R, stBase + 6);
+	poke(vhist, a2R, stBase + 7);
+	poke(vhist, a3R, stBase + 8);
+	poke(vhist, b1L, stBase + 9);
+	poke(vhist, b2L, stBase + 10);
+	poke(vhist, b3L, stBase + 11);
+	poke(vhist, b1R, stBase + 12);
+	poke(vhist, b2R, stBase + 13);
+	poke(vhist, b3R, stBase + 14);
 	return outL, outR;
 }
 
@@ -430,7 +464,7 @@ fr_win(t, pk) {
 // ---------------------------------------------------------------------------------------------
 
 // In-place radix-2 DIT pass `s` (1..log2 n) over bit-reversed input. sgn = +1 forward, -1 inverse (unscaled).
-fft_pass(re, im, twr, twi, n, s, sgn) {
+fft_pass(sdat, sb, twr, twi, n, s, sgn) {
 	hlf = pow(2, s - 1);
 	blk = hlf * 2;
 	tstep = 4096 / blk;
@@ -443,16 +477,16 @@ fft_pass(re, im, twr, twi, n, s, sgn) {
 		tIdx = j * tstep;
 		wr = peek(twr, tIdx);
 		wi = sgn * peek(twi, tIdx);
-		ar = peek(re, i0);
-		ai = peek(im, i0);
-		br = peek(re, i1);
-		bi = peek(im, i1);
+		ar = peek(sdat, sb + i0);
+		ai = peek(sdat, sb + 4096 + i0);
+		br = peek(sdat, sb + i1);
+		bi = peek(sdat, sb + 4096 + i1);
 		tr = br * wr - bi * wi;
 		tm = br * wi + bi * wr;
-		poke(re, ar - tr, i1);
-		poke(im, ai - tm, i1);
-		poke(re, ar + tr, i0);
-		poke(im, ai + tm, i0);
+		poke(sdat, ar - tr, sb + i1);
+		poke(sdat, ai - tm, sb + 4096 + i1);
+		poke(sdat, ar + tr, sb + i0);
+		poke(sdat, ai + tm, sb + 4096 + i0);
 	}
 	return 0;
 }
@@ -478,16 +512,16 @@ init_tables(twr, twi, brv) {
 
 // Job: Hann-window N source frames around the capture centre (L real, R imaginary), bit-reversed.
 // Frames outside [lo, hi] are silent, so slices and the start / end points cut the analysis window.
-job_capture(fre, fim, brv, twr, sampBuf, jp) {
-	n = peek(jp, 0);
+job_capture(sdat, sb, brv, twr, sampBuf) {
+	n = peek(sdat, sb + 55328 + 0);
 	nh = n * 0.5;
-	stride = peek(jp, 26);
-	centre = peek(jp, 21);
-	dirc = peek(jp, 22);
-	lo = peek(jp, 23);
-	hi = peek(jp, 24);
-	maxIdx = max(peek(jp, 25) - 1, 1);
-	wmc = peek(jp, 30);
+	stride = peek(sdat, sb + 55328 + 26);
+	centre = peek(sdat, sb + 55328 + 21);
+	dirc = peek(sdat, sb + 55328 + 22);
+	lo = peek(sdat, sb + 55328 + 23);
+	hi = peek(sdat, sb + 55328 + 24);
+	maxIdx = max(peek(sdat, sb + 55328 + 25) - 1, 1);
+	wmc = peek(sdat, sb + 55328 + 30);
 	for (i = 0; i < n; i += 1) {
 		ci = (i <= nh) ? i : (n - i);
 		w = 0.5 - 0.5 * peek(twr, ci * stride);
@@ -503,8 +537,8 @@ job_capture(fre, fim, brv, twr, sampBuf, jp) {
 			xl, xr = peek_lr(sampBuf, idx, maxIdx);
 		}
 		r = floor(peek(brv, i) / stride);
-		poke(fre, w * xl, r);
-		poke(fim, w * xr, r);
+		poke(sdat, w * xl, sb + r);
+		poke(sdat, w * xr, sb + 4096 + r);
 	}
 	return 0;
 }
@@ -512,28 +546,28 @@ job_capture(fre, fim, brv, twr, sampBuf, jp) {
 // Job: magnitude, instantaneous frequency (phase advance over the analysis hop Ha) and the running sum
 // of magnitudes (for the formant envelope) of channel ch from the packed FFT. Channel 0 also measures
 // the spectral flux used to detect onsets.
-job_analyze(fre, fim, amag, wf, cs, pph, pmag, st, jp, ch) {
-	n = peek(jp, 0);
-	nh = peek(jp, 1);
-	ha = peek(jp, 18);
-	first = peek(jp, 17);
+job_analyze(sdat, sb, ch) {
+	n = peek(sdat, sb + 55328 + 0);
+	nh = peek(sdat, sb + 55328 + 1);
+	ha = peek(sdat, sb + 55328 + 18);
+	first = peek(sdat, sb + 55328 + 17);
 	off = ch * 2049;
 	tau = 6.28318530718;
 	csum = 0;
 	flux = 0;
 	tot = 0;
-	poke(cs, 0, 0);
+	poke(sdat, 0, sb + 12290 + 0);
 	for (k = 0; k <= nh; k += 1) {
 		kk = (n - k) % n;
-		ar = peek(fre, k);
-		ai = peek(fim, k);
-		br = peek(fre, kk);
-		bi = peek(fim, kk);
+		ar = peek(sdat, sb + k);
+		ai = peek(sdat, sb + 4096 + k);
+		br = peek(sdat, sb + kk);
+		bi = peek(sdat, sb + 4096 + kk);
 		xr = (ch < 0.5) ? (0.5 * (ar + br)) : (0.5 * (ai + bi));
 		xi = (ch < 0.5) ? (0.5 * (ai - bi)) : (0.5 * (br - ar));
 		am = sqrt(xr * xr + xi * xi);
 		ph = atan2(xi, xr);
-		prv = peek(pph, off + k);
+		prv = peek(sdat, sb + 22536 + (off + k));
 		wk = tau * k / n;
 		dv = ph - prv - wk * ha;
 		dv = dv - tau * round(dv / tau);
@@ -541,66 +575,66 @@ job_analyze(fre, fim, amag, wf, cs, pph, pmag, st, jp, ch) {
 		if ((first < 0.5) && (ha >= 1.0)) {
 			inst = wk + dv / ha;
 		}
-		poke(amag, am, k);
-		poke(wf, inst, k);
-		poke(pph, ph, off + k);
+		poke(sdat, am, sb + 8192 + k);
+		poke(sdat, inst, sb + 10241 + k);
+		poke(sdat, ph, sb + 22536 + (off + k));
 		csum = csum + am;
-		poke(cs, csum, k + 1);
+		poke(sdat, csum, sb + 12290 + (k + 1));
 		if (ch < 0.5) {
-			flux = flux + max(am - peek(pmag, k), 0.0);
+			flux = flux + max(am - peek(sdat, sb + 20487 + k), 0.0);
 			tot = tot + am;
-			poke(pmag, am, k);
+			poke(sdat, am, sb + 20487 + k);
 		}
 	}
 	if (ch < 0.5) {
-		poke(st, flux / (tot + 0.000000001), 0);
+		poke(sdat, flux / (tot + 0.000000001), sb + 55312 + 0);
 	}
 	return 0;
 }
 
 // Spectral envelope (moving average of the magnitudes, wide enough to bridge harmonics) at bin kpos.
-env_at(cs, kpos, nh, n, sr) {
+env_at(sdat, sb, kpos, nh, n, sr) {
 	ki = round(clip(kpos, 0, nh));
 	w = max(4, floor(150.0 * n / sr + 0.08 * ki));
 	lo = max(ki - w, 0);
 	hi = min(ki + w, nh);
-	return (peek(cs, hi + 1) - peek(cs, lo)) / (hi - lo + 1);
+	return (peek(sdat, sb + 12290 + (hi + 1)) - peek(sdat, sb + 12290 + lo)) / (hi - lo + 1);
 }
 
 // Job: remap the analysed bins of channel ch to the output spectrum (pitch ratio, optional harmonic bend and
 // quantise for Reharm), apply the formant envelope, and advance the synthesis phases by the shifted true
 // frequency times the synthesis hop.
-job_map(amag, wf, cs, pph, sph, zre, zim, tA, tW, tP, jp, ch) {
-	n = peek(jp, 0);
-	nh = peek(jp, 1);
-	hs = peek(jp, 2);
-	pr = peek(jp, 3);
-	fEff = peek(jp, 4);
-	formOn = peek(jp, 5);
-	kf = peek(jp, 6);
-	bendR = peek(jp, 7);
-	reharm = peek(jp, 8);
-	qMode = peek(jp, 9);
-	qAmt = peek(jp, 10);
-	keyV = peek(jp, 11);
-	scaleV = peek(jp, 12);
-	srv = peek(jp, 13);
-	fNote = peek(jp, 14);
-	disp = peek(jp, 15);
-	first = peek(jp, 17);
-	onset = peek(jp, 19);
-	seed = peek(jp, 20);
-	stretch = peek(jp, 29);
+job_map(sdat, sb, ch) {
+	n = peek(sdat, sb + 55328 + 0);
+	nh = peek(sdat, sb + 55328 + 1);
+	hs = peek(sdat, sb + 55328 + 2);
+	pr = peek(sdat, sb + 55328 + 3);
+	fEff = peek(sdat, sb + 55328 + 4);
+	formOn = peek(sdat, sb + 55328 + 5);
+	kf = peek(sdat, sb + 55328 + 6);
+	bendR = peek(sdat, sb + 55328 + 7);
+	reharm = peek(sdat, sb + 55328 + 8);
+	qMode = peek(sdat, sb + 55328 + 9);
+	qAmt = peek(sdat, sb + 55328 + 10);
+	keyV = peek(sdat, sb + 55328 + 11);
+	scaleV = peek(sdat, sb + 55328 + 12);
+	srv = peek(sdat, sb + 55328 + 13);
+	fNote = peek(sdat, sb + 55328 + 14);
+	disp = peek(sdat, sb + 55328 + 15);
+	first = peek(sdat, sb + 55328 + 17);
+	onset = peek(sdat, sb + 55328 + 19);
+	seed = peek(sdat, sb + 55328 + 20);
+	stretch = peek(sdat, sb + 55328 + 29);
 	off = ch * 2049;
 	tau = 6.28318530718;
 	scaleMask = (scaleV < 0.5) ? 2741 : 1453;
 	for (j = 0; j <= nh; j += 1) {
-		poke(tA, 0, j);
+		poke(sdat, 0, sb + 14340 + j);
 	}
 	for (k = 0; k <= nh; k += 1) {
-		am = peek(amag, k);
+		am = peek(sdat, sb + 8192 + k);
 		if (am > 0.000000001) {
-			wk = peek(wf, k);
+			wk = peek(sdat, sb + 10241 + k);
 			rk = pr;
 			if ((reharm > 0.5) && (k > 1.5 * kf)) {
 				rk = rk * bendR;
@@ -632,12 +666,12 @@ job_map(amag, wf, cs, pph, sph, zre, zim, tA, tW, tP, jp, ch) {
 			if ((j >= 0) && (j <= nh)) {
 				ex = am;
 				if (formOn > 0.5) {
-					ex = am / (env_at(cs, k, nh, n, srv) + 0.000000001);
+					ex = am / (env_at(sdat, sb, k, nh, n, srv) + 0.000000001);
 				}
-				if (ex > peek(tA, j)) {
-					poke(tA, ex, j);
-					poke(tW, wk * rk, j);
-					poke(tP, peek(pph, off + k), j);
+				if (ex > peek(sdat, sb + 14340 + j)) {
+					poke(sdat, ex, sb + 14340 + j);
+					poke(sdat, wk * rk, sb + 16389 + j);
+					poke(sdat, peek(sdat, sb + 22536 + (off + k)), sb + 18438 + j);
 				}
 			}
 		}
@@ -645,108 +679,109 @@ job_map(amag, wf, cs, pph, sph, zre, zim, tA, tW, tP, jp, ch) {
 	jit = disp * clip((stretch - 1.0) / 6.0, 0, 1) * 3.14159265359;
 	rs = seed;
 	for (j = 0; j <= nh; j += 1) {
-		a = peek(tA, j);
-		wj = (a > 0) ? peek(tW, j) : (tau * j / n);
-		ph = peek(sph, off + j);
+		a = peek(sdat, sb + 14340 + j);
+		wj = (a > 0) ? peek(sdat, sb + 16389 + j) : (tau * j / n);
+		ph = peek(sdat, sb + 26634 + (off + j));
 		if (((first > 0.5) || (onset > 0.5)) && (a > 0)) {
-			ph = peek(tP, j);
+			ph = peek(sdat, sb + 18438 + j);
 		} else {
 			rs = fract(rs * 7.31 + j * 0.6180339 + 0.137);
 			ph = ph + wj * hs + (rs - 0.5) * 2.0 * jit;
 		}
 		ph = ph - tau * round(ph / tau);
-		poke(sph, ph, off + j);
+		poke(sdat, ph, sb + 26634 + (off + j));
 		amp = a;
 		if ((formOn > 0.5) && (a > 0)) {
-			amp = a * env_at(cs, j / fEff, nh, n, srv);
+			amp = a * env_at(sdat, sb, j / fEff, nh, n, srv);
 		}
 		yr = amp * cos(ph);
 		yi = amp * sin(ph);
 		if ((j == 0) || (j == nh)) {
 			yi = 0;
 		}
-		poke(zre, yr, off + j);
-		poke(zim, yi, off + j);
+		poke(sdat, yr, sb + 30732 + (off + j));
+		poke(sdat, yi, sb + 34830 + (off + j));
 	}
 	return 0;
 }
 
 // Job: pack the two hermitian channel spectra into one complex spectrum (L + jR), bit-reversed for the IFFT.
-job_pack(fre, fim, zre, zim, brv, jp) {
-	n = peek(jp, 0);
-	nh = peek(jp, 1);
-	stride = peek(jp, 26);
+job_pack(sdat, sb, brv) {
+	n = peek(sdat, sb + 55328 + 0);
+	nh = peek(sdat, sb + 55328 + 1);
+	stride = peek(sdat, sb + 55328 + 26);
 	for (k = 0; k <= nh; k += 1) {
 		kk = (n - k) % n;
-		lr = peek(zre, k);
-		li = peek(zim, k);
-		rr = peek(zre, 2049 + k);
-		ri = peek(zim, 2049 + k);
+		lr = peek(sdat, sb + 30732 + k);
+		li = peek(sdat, sb + 34830 + k);
+		rr = peek(sdat, sb + 30732 + (2049 + k));
+		ri = peek(sdat, sb + 34830 + (2049 + k));
 		r1 = floor(peek(brv, k) / stride);
 		r2 = floor(peek(brv, kk) / stride);
-		poke(fre, lr - ri, r1);
-		poke(fim, li + rr, r1);
-		poke(fre, lr + ri, r2);
-		poke(fim, rr - li, r2);
+		poke(sdat, lr - ri, sb + r1);
+		poke(sdat, li + rr, sb + 4096 + r1);
+		poke(sdat, lr + ri, sb + r2);
+		poke(sdat, rr - li, sb + 4096 + r2);
 	}
 	return 0;
 }
 
 // Job: synthesis Hann window and overlap-add into the L / R output rings (Hann^2 at 75% overlap = 1.5).
-job_ola(fre, fim, oL, oR, twr, jp) {
-	n = peek(jp, 0);
-	nh = peek(jp, 1);
-	stride = peek(jp, 26);
-	startPos = peek(jp, 27);
-	i0 = peek(jp, 28);
+job_ola(sdat, sb, twr) {
+	n = peek(sdat, sb + 55328 + 0);
+	nh = peek(sdat, sb + 55328 + 1);
+	stride = peek(sdat, sb + 55328 + 26);
+	startPos = peek(sdat, sb + 55328 + 27);
+	i0 = peek(sdat, sb + 55328 + 28);
 	scl = 1.0 / (n * 1.5);
 	for (i = i0; i < n; i += 1) {
 		ci = (i <= nh) ? i : (n - i);
 		w = (0.5 - 0.5 * peek(twr, ci * stride)) * scl;
 		pos = wrap(startPos + i, 0, 8192);
-		poke(oL, peek(oL, pos) + w * peek(fre, i), pos);
-		poke(oR, peek(oR, pos) + w * peek(fim, i), pos);
+		poke(sdat, peek(sdat, sb + 38928 + pos) + w * peek(sdat, sb + i), sb + 38928 + pos);
+		poke(sdat, peek(sdat, sb + 47120 + pos) + w * peek(sdat, sb + 4096 + i), sb + 47120 + pos);
 	}
 	return 0;
 }
 
 // Spectral voice: phase-vocoder stretcher for one of the first 4 voices. Returns the stereo output, the
 // normalised playhead and 0. Runs only while mode == 3 and the voice is held or releasing.
-spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, fre, fim, amag, wf, cs, tA, tW, tP, pmag, pph, sph, zre, zim, oL, oR, st, jp, vIdx, modeVal, freezeOn, playPosNorm, startNorm, endNorm, loopMode, loopStartNorm, loopEndNorm, reverseOn, rootMidi, pitchSt, fineCents, glideCoef, formantSt, speedIn, slicePlay, lfoSig, lfoPitchAmt, lfoPosAmt, menvPitchAmt, menvPosAmt, modEnvPrev, ampEnvPrev, numFrames, srVal) {
-	History prevTrig(-1);
-	History wasOn(0);
-	History nCur(2048);
-	History llog(11);
-	History hopN(512);
-	History jobCount(29);
-	History spacing(0);
-	History jobId(99);
-	History jobWait(0);
-	History hopCtr(0);
-	History rd(0);
-	History headN(0);
-	History dirS(1);
-	History stepPrev(0);
-	History finished(1);
-	History firstFrame(1);
-	History burstLeft(0);
-	History frameBurst(0);
-	History onsetHold(0);
-	History curNote(60);
-	History frameNo(0);
-	History onsetNow(0);
+spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn, playPosNorm, startNorm, endNorm, loopMode, loopStartNorm, loopEndNorm, reverseOn, rootMidi, pitchSt, fineCents, glideCoef, formantSt, speedIn, slicePlay, lfoSig, lfoPitchAmt, lfoPosAmt, menvPitchAmt, menvPosAmt, modEnvPrev, ampEnvPrev, numFrames, srVal) {
+	sb = vIdx * 55392;
+	prevTrig = peek(sdat, sb + 55360 + 0);
+	wasOn = peek(sdat, sb + 55360 + 1);
+	nCur = peek(sdat, sb + 55360 + 2);
+	llog = peek(sdat, sb + 55360 + 3);
+	hopN = peek(sdat, sb + 55360 + 4);
+	jobCount = peek(sdat, sb + 55360 + 5);
+	spacing = peek(sdat, sb + 55360 + 6);
+	jobId = peek(sdat, sb + 55360 + 7);
+	jobWait = peek(sdat, sb + 55360 + 8);
+	hopCtr = peek(sdat, sb + 55360 + 9);
+	rd = peek(sdat, sb + 55360 + 10);
+	headN = peek(sdat, sb + 55360 + 11);
+	dirS = peek(sdat, sb + 55360 + 12);
+	stepPrev = peek(sdat, sb + 55360 + 13);
+	finished = peek(sdat, sb + 55360 + 14);
+	firstFrame = peek(sdat, sb + 55360 + 15);
+	burstLeft = peek(sdat, sb + 55360 + 16);
+	frameBurst = peek(sdat, sb + 55360 + 17);
+	onsetHold = peek(sdat, sb + 55360 + 18);
+	curNote = peek(sdat, sb + 55360 + 19);
+	frameNo = peek(sdat, sb + 55360 + 20);
+	onsetNow = peek(sdat, sb + 55360 + 21);
 
 	nFr = max(numFrames, 1);
 	baseSlot = vIdx * 8;
 	vGate = peek(vdataBuf, baseSlot + 0);
 	vNote = peek(vdataBuf, baseSlot + 1);
 	vTrig = peek(vdataBuf, baseSlot + 3);
-	vS = clip(peek(vdataBuf, baseSlot + 4), 0, 1);
+	voS = clip(peek(vdataBuf, baseSlot + 4), 0, 1);
 	vE = clip(peek(vdataBuf, baseSlot + 5), 0, 1);
 	vSeed = clip(peek(vdataBuf, baseSlot + 7), 0, 1);
 	slicedFlag = peek(prm, 0);
 	isOn = (round(clip(modeVal, 0, 4)) == 3) ? 1 : 0;
-	effS, effE, sampS, sampE = slice_region(vS, vE, startNorm, endNorm, slicedFlag, slicePlay, reverseOn);
+	effS, effE, sampS, sampE = slice_region(voS, vE, startNorm, endNorm, slicedFlag, slicePlay, reverseOn);
 	act = ((isOn > 0.5) && ((vGate > 0.5) || (ampEnvPrev > 0.0004))) ? 1 : 0;
 	isNewTrig = ((vTrig != prevTrig) && (vGate > 0.5)) ? 1 : 0;
 	prevTrig = vTrig;
@@ -786,15 +821,15 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, fre, fim, amag, wf, cs, tA, tW
 		jobCount = 2 * llog + 7;
 		spacing = max(0, floor((hopN - 1) / (jobCount - 1)) - 1);
 		for (ci = 0; ci < 8192; ci += 1) {
-			poke(oL, 0, ci);
-			poke(oR, 0, ci);
+			poke(sdat, 0, sb + 38928 + ci);
+			poke(sdat, 0, sb + 47120 + ci);
 		}
 		for (ci = 0; ci < 2049; ci += 1) {
-			poke(pmag, 0, ci);
+			poke(sdat, 0, sb + 20487 + ci);
 		}
 		for (ci = 0; ci < 4098; ci += 1) {
-			poke(pph, 0, ci);
-			poke(sph, 0, ci);
+			poke(sdat, 0, sb + 22536 + ci);
+			poke(sdat, 0, sb + 26634 + ci);
 		}
 		rd = 0;
 		jobId = jobCount;
@@ -813,31 +848,31 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, fre, fim, amag, wf, cs, tA, tW
 	}
 
 	// Frame parameters for the jobs
-	poke(jp, nCur, 0);
-	poke(jp, nCur * 0.5, 1);
-	poke(jp, hopN, 2);
-	poke(jp, pr, 3);
-	poke(jp, fEff, 4);
-	poke(jp, peek(prm, 48), 5);
-	poke(jp, rootHz * nCur / srVal, 6);
-	poke(jp, bendR, 7);
-	poke(jp, reharm, 8);
-	poke(jp, round(clip(peek(prm, 43), 0, 2)), 9);
-	poke(jp, clip(peek(prm, 46), 0, 1), 10);
-	poke(jp, round(clip(peek(prm, 44), 0, 11)), 11);
-	poke(jp, round(clip(peek(prm, 45), 0, 1)), 12);
-	poke(jp, srVal, 13);
-	poke(jp, fNote, 14);
-	poke(jp, clip(peek(prm, 49), 0, 1), 15);
-	poke(jp, peek(prm, 47), 16);
-	poke(jp, onsetNow, 19);
-	poke(jp, fract(vSeed * 3.1 + frameNo * 0.137), 20);
-	poke(jp, effS * nFr, 23);
-	poke(jp, effE * nFr, 24);
-	poke(jp, nFr, 25);
-	poke(jp, 4096 / nCur, 26);
-	poke(jp, 1.0 / max(speedUse, 0.05), 29);
-	poke(jp, ((slicedFlag > 0.5) && (wmEff > 0.5)) ? wmEff : 0, 30);
+	poke(sdat, nCur, sb + 55328 + 0);
+	poke(sdat, nCur * 0.5, sb + 55328 + 1);
+	poke(sdat, hopN, sb + 55328 + 2);
+	poke(sdat, pr, sb + 55328 + 3);
+	poke(sdat, fEff, sb + 55328 + 4);
+	poke(sdat, peek(prm, 48), sb + 55328 + 5);
+	poke(sdat, rootHz * nCur / srVal, sb + 55328 + 6);
+	poke(sdat, bendR, sb + 55328 + 7);
+	poke(sdat, reharm, sb + 55328 + 8);
+	poke(sdat, round(clip(peek(prm, 43), 0, 2)), sb + 55328 + 9);
+	poke(sdat, clip(peek(prm, 46), 0, 1), sb + 55328 + 10);
+	poke(sdat, round(clip(peek(prm, 44), 0, 11)), sb + 55328 + 11);
+	poke(sdat, round(clip(peek(prm, 45), 0, 1)), sb + 55328 + 12);
+	poke(sdat, srVal, sb + 55328 + 13);
+	poke(sdat, fNote, sb + 55328 + 14);
+	poke(sdat, clip(peek(prm, 49), 0, 1), sb + 55328 + 15);
+	poke(sdat, peek(prm, 47), sb + 55328 + 16);
+	poke(sdat, onsetNow, sb + 55328 + 19);
+	poke(sdat, fract(vSeed * 3.1 + frameNo * 0.137), sb + 55328 + 20);
+	poke(sdat, effS * nFr, sb + 55328 + 23);
+	poke(sdat, effE * nFr, sb + 55328 + 24);
+	poke(sdat, nFr, sb + 55328 + 25);
+	poke(sdat, 4096 / nCur, sb + 55328 + 26);
+	poke(sdat, 1.0 / max(speedUse, 0.05), sb + 55328 + 29);
+	poke(sdat, ((slicedFlag > 0.5) && (wmEff > 0.5)) ? wmEff : 0, sb + 55328 + 30);
 
 	marginN = (nCur * 0.5 + hopN * 4.0 + 64.0) / nFr;
 	if (jobWait > 0) {
@@ -866,12 +901,12 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, fre, fim, amag, wf, cs, tA, tW
 					cN = clip(effS + playPosNorm * (effE - effS) + posMod, effS, effE);
 					haNow = 0;
 				}
-				poke(jp, cN * nFr, 21);
-				poke(jp, dirS, 22);
-				poke(jp, firstFrame, 17);
-				poke(jp, haNow, 18);
-				poke(jp, wrap(rd + startOff, 0, 8192), 27);
-				poke(jp, max(0.0 - startOff, 0.0), 28);
+				poke(sdat, cN * nFr, sb + 55328 + 21);
+				poke(sdat, dirS, sb + 55328 + 22);
+				poke(sdat, firstFrame, sb + 55328 + 17);
+				poke(sdat, haNow, sb + 55328 + 18);
+				poke(sdat, wrap(rd + startOff, 0, 8192), sb + 55328 + 27);
+				poke(sdat, max(0.0 - startOff, 0.0), sb + 55328 + 28);
 				if (freezeOn < 0.5) {
 					hn, dn, dd = head_step(headN, dirS, stepF / nFr, effS - marginN, effE + marginN, rlo, rhi, wmEff);
 					headN = hn;
@@ -895,33 +930,33 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, fre, fim, amag, wf, cs, tA, tW
 				isFwd = ((jj >= 1) && (jj <= llog)) ? 1 : 0;
 				isInv = ((jj >= llog + 6) && (jj <= 2 * llog + 5)) ? 1 : 0;
 				if (jj == 0) {
-					job_capture(fre, fim, brv, twr, sampBuf, jp);
+					job_capture(sdat, sb, brv, twr, sampBuf);
 				}
 				if ((isFwd > 0.5) || (isInv > 0.5)) {
 					sIdx = (isFwd > 0.5) ? jj : (jj - llog - 5);
 					sg = (isFwd > 0.5) ? 1 : -1;
-					fft_pass(fre, fim, twr, twi, nCur, sIdx, sg);
+					fft_pass(sdat, sb, twr, twi, nCur, sIdx, sg);
 				}
 				if ((jj == llog + 1) || (jj == llog + 3)) {
 					chA = (jj == llog + 1) ? 0 : 1;
-					job_analyze(fre, fim, amag, wf, cs, pph, pmag, st, jp, chA);
+					job_analyze(sdat, sb, chA);
 					if (jj == llog + 1) {
-						onsetNow = ((peek(prm, 47) > 0.5) && (peek(jp, 17) < 0.5) && (peek(st, 0) > 0.35)) ? 1 : 0;
+						onsetNow = ((peek(prm, 47) > 0.5) && (peek(sdat, sb + 55328 + 17) < 0.5) && (peek(sdat, sb + 55312 + 0) > 0.35)) ? 1 : 0;
 						if (onsetNow > 0.5) {
 							onsetHold = 3;
 						}
-						poke(jp, onsetNow, 19);
+						poke(sdat, onsetNow, sb + 55328 + 19);
 					}
 				}
 				if ((jj == llog + 2) || (jj == llog + 4)) {
 					chM = (jj == llog + 2) ? 0 : 1;
-					job_map(amag, wf, cs, pph, sph, zre, zim, tA, tW, tP, jp, chM);
+					job_map(sdat, sb, chM);
 				}
 				if (jj == llog + 5) {
-					job_pack(fre, fim, zre, zim, brv, jp);
+					job_pack(sdat, sb, brv);
 				}
 				if (jj == 2 * llog + 6) {
-					job_ola(fre, fim, oL, oR, twr, jp);
+					job_ola(sdat, sb, twr);
 				}
 				jobId = jobId + 1;
 				jobWait = spacing;
@@ -932,13 +967,35 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, fre, fim, amag, wf, cs, tA, tW
 	outL = 0;
 	outR = 0;
 	if (act > 0.5) {
-		outL = peek(oL, rd);
-		outR = peek(oR, rd);
-		poke(oL, 0, rd);
-		poke(oR, 0, rd);
+		outL = peek(sdat, sb + 38928 + rd);
+		outR = peek(sdat, sb + 47120 + rd);
+		poke(sdat, 0, sb + 38928 + rd);
+		poke(sdat, 0, sb + 47120 + rd);
 		rd = wrap(rd + 1, 0, 8192);
 		hopCtr = hopCtr + 1;
 	}
+	poke(sdat, prevTrig, sb + 55360 + 0);
+	poke(sdat, wasOn, sb + 55360 + 1);
+	poke(sdat, nCur, sb + 55360 + 2);
+	poke(sdat, llog, sb + 55360 + 3);
+	poke(sdat, hopN, sb + 55360 + 4);
+	poke(sdat, jobCount, sb + 55360 + 5);
+	poke(sdat, spacing, sb + 55360 + 6);
+	poke(sdat, jobId, sb + 55360 + 7);
+	poke(sdat, jobWait, sb + 55360 + 8);
+	poke(sdat, hopCtr, sb + 55360 + 9);
+	poke(sdat, rd, sb + 55360 + 10);
+	poke(sdat, headN, sb + 55360 + 11);
+	poke(sdat, dirS, sb + 55360 + 12);
+	poke(sdat, stepPrev, sb + 55360 + 13);
+	poke(sdat, finished, sb + 55360 + 14);
+	poke(sdat, firstFrame, sb + 55360 + 15);
+	poke(sdat, burstLeft, sb + 55360 + 16);
+	poke(sdat, frameBurst, sb + 55360 + 17);
+	poke(sdat, onsetHold, sb + 55360 + 18);
+	poke(sdat, curNote, sb + 55360 + 19);
+	poke(sdat, frameNo, sb + 55360 + 20);
+	poke(sdat, onsetNow, sb + 55360 + 21);
 	return fixnan(outL), fixnan(outR), clip(headN, 0, 1), 0;
 }
 
@@ -990,48 +1047,50 @@ voice_proc(
 	prm,
 	vst,
 	tbuf,
+	vhist,
 	extL,
 	extR,
 	extPos
 ) {
-	History prevTrig(-1);
-	History envStage(0);
-	History ampEnv(0);
-	History modStage(0);
-	History modEnv(0);
-	History curNote(60);
-	History playheadNorm(0);
-	History grainPhs(0);
-	History rndA(0.17);
-	History rndB(0.63);
-	History cycPhs0(0);
-	History cycPhs1(0.13);
-	History cycPhs2(0.29);
-	History cycPhs3(0.47);
-	History cycPhs4(0.61);
-	History cycPhs5(0.73);
-	History cycPhs6(0.83);
-	History cycPhs7(0.97);
-	History driftPhs(0.2);
-	History formSm(1);
-	History lastMode(-1);
-	History scanDir(1);
-	History prevBS(-1);
-	History prevBE(-1);
-	History tailL(0);
-	History tailR(0);
-	History xfG(1);
-	History lastSigL(0);
-	History lastSigR(0);
-	History headDone(0);
-	History doneG(1);
-	History spawnTmr(0);
-	History spawnCnt(0);
-	History altFlip(1);
-	History rndCtr(0);
-	History survG(0);
-	History allocIdx(0);
-	History survTimer(0);
+	stB = vIdx * 256;
+	prevTrig = peek(vhist, stB + 0);
+	envStage = peek(vhist, stB + 1);
+	ampEnv = peek(vhist, stB + 2);
+	modStage = peek(vhist, stB + 3);
+	modEnv = peek(vhist, stB + 4);
+	curNote = peek(vhist, stB + 5);
+	playheadNorm = peek(vhist, stB + 6);
+	grainPhs = peek(vhist, stB + 7);
+	rndA = peek(vhist, stB + 8);
+	rndB = peek(vhist, stB + 9);
+	cycPhs0 = peek(vhist, stB + 10);
+	cycPhs1 = peek(vhist, stB + 11);
+	cycPhs2 = peek(vhist, stB + 12);
+	cycPhs3 = peek(vhist, stB + 13);
+	cycPhs4 = peek(vhist, stB + 14);
+	cycPhs5 = peek(vhist, stB + 15);
+	cycPhs6 = peek(vhist, stB + 16);
+	cycPhs7 = peek(vhist, stB + 17);
+	driftPhs = peek(vhist, stB + 18);
+	formSm = peek(vhist, stB + 19);
+	lastMode = peek(vhist, stB + 20);
+	scanDir = peek(vhist, stB + 21);
+	prevBS = peek(vhist, stB + 22);
+	prevBE = peek(vhist, stB + 23);
+	tailL = peek(vhist, stB + 24);
+	tailR = peek(vhist, stB + 25);
+	xfG = peek(vhist, stB + 26);
+	lastSigL = peek(vhist, stB + 27);
+	lastSigR = peek(vhist, stB + 28);
+	headDone = peek(vhist, stB + 29);
+	doneG = peek(vhist, stB + 30);
+	spawnTmr = peek(vhist, stB + 31);
+	spawnCnt = peek(vhist, stB + 32);
+	altFlip = peek(vhist, stB + 33);
+	rndCtr = peek(vhist, stB + 34);
+	survG = peek(vhist, stB + 35);
+	allocIdx = peek(vhist, stB + 36);
+	survTimer = peek(vhist, stB + 37);
 
 	gB = vIdx * 344;
 	latB = gB + 320;
@@ -1313,11 +1372,11 @@ voice_proc(
 			rpDist = clip(peek(prm, 2), 0, 1);
 			rpColor = clip(peek(prm, 3), -1, 1);
 			if (rpChar < 1.5) {
-				aL = analog_chan(sigL, rpDist, rpColor, baseRatio, srVal);
-				aR = analog_chan(sigR, rpDist, rpColor, baseRatio, srVal);
-				sigL, sigR = tape_st(aL, aR, rpColor, baseRatio, srVal, tbuf, vIdx * 8192);
+				aL = analog_chan(sigL, rpDist, rpColor, baseRatio, srVal, vhist, stB + 64);
+				aR = analog_chan(sigR, rpDist, rpColor, baseRatio, srVal, vhist, stB + 72);
+				sigL, sigR = tape_st(aL, aR, rpColor, baseRatio, srVal, tbuf, vIdx * 8192, vhist, stB + 80);
 			} else {
-				sigL, sigR = digital_st(sigL, sigR, rpDist, rpColor, baseRatio, peek(prm, 4), peek(prm, 5), srVal);
+				sigL, sigR = digital_st(sigL, sigR, rpDist, rpColor, baseRatio, peek(prm, 4), peek(prm, 5), srVal, vhist, stB + 96);
 			}
 		}
 	} else if (modeId < 1.5) {
@@ -1633,6 +1692,44 @@ voice_proc(
 	// Ping-pong slices keep an unfolded phase; report the folded position.
 	ppTele = isSlice && (modeId < 0.5) && (effLoopMode > 1.5) && (freezeOn < 0.5);
 	outPosNorm = clip(ppTele ? (pp_pos(playheadNorm * numFrames, startF, endF) / max(numFrames, 1)) : playheadNorm, 0, 1);
+	poke(vhist, prevTrig, stB + 0);
+	poke(vhist, envStage, stB + 1);
+	poke(vhist, ampEnv, stB + 2);
+	poke(vhist, modStage, stB + 3);
+	poke(vhist, modEnv, stB + 4);
+	poke(vhist, curNote, stB + 5);
+	poke(vhist, playheadNorm, stB + 6);
+	poke(vhist, grainPhs, stB + 7);
+	poke(vhist, rndA, stB + 8);
+	poke(vhist, rndB, stB + 9);
+	poke(vhist, cycPhs0, stB + 10);
+	poke(vhist, cycPhs1, stB + 11);
+	poke(vhist, cycPhs2, stB + 12);
+	poke(vhist, cycPhs3, stB + 13);
+	poke(vhist, cycPhs4, stB + 14);
+	poke(vhist, cycPhs5, stB + 15);
+	poke(vhist, cycPhs6, stB + 16);
+	poke(vhist, cycPhs7, stB + 17);
+	poke(vhist, driftPhs, stB + 18);
+	poke(vhist, formSm, stB + 19);
+	poke(vhist, lastMode, stB + 20);
+	poke(vhist, scanDir, stB + 21);
+	poke(vhist, prevBS, stB + 22);
+	poke(vhist, prevBE, stB + 23);
+	poke(vhist, tailL, stB + 24);
+	poke(vhist, tailR, stB + 25);
+	poke(vhist, xfG, stB + 26);
+	poke(vhist, lastSigL, stB + 27);
+	poke(vhist, lastSigR, stB + 28);
+	poke(vhist, headDone, stB + 29);
+	poke(vhist, doneG, stB + 30);
+	poke(vhist, spawnTmr, stB + 31);
+	poke(vhist, spawnCnt, stB + 32);
+	poke(vhist, altFlip, stB + 33);
+	poke(vhist, rndCtr, stB + 34);
+	poke(vhist, survG, stB + 35);
+	poke(vhist, allocIdx, stB + 36);
+	poke(vhist, survTimer, stB + 37);
 	return fixnan(sigL * finalGain), fixnan(sigR * finalGain), outPosNorm, ampEnv, modEnv, spawnCnt;
 }
 
@@ -1647,75 +1744,11 @@ Data twi(2049);
 Data brv(4096);
 Data prm(64);
 Data vst(5504);
+Data vhist(4096);
+Data sext(12);
+Data vres(48);
 Data tbuf(131072);
-Data fre0(4096);
-Data fim0(4096);
-Data amag0(2049);
-Data wf0(2049);
-Data cs0(2050);
-Data tA0(2049);
-Data tW0(2049);
-Data tP0(2049);
-Data pmag0(2049);
-Data pph0(4098);
-Data sph0(4098);
-Data zre0(4098);
-Data zim0(4098);
-Data oL0(8192);
-Data oR0(8192);
-Data st0(16);
-Data jp0(32);
-Data fre1(4096);
-Data fim1(4096);
-Data amag1(2049);
-Data wf1(2049);
-Data cs1(2050);
-Data tA1(2049);
-Data tW1(2049);
-Data tP1(2049);
-Data pmag1(2049);
-Data pph1(4098);
-Data sph1(4098);
-Data zre1(4098);
-Data zim1(4098);
-Data oL1(8192);
-Data oR1(8192);
-Data st1(16);
-Data jp1(32);
-Data fre2(4096);
-Data fim2(4096);
-Data amag2(2049);
-Data wf2(2049);
-Data cs2(2050);
-Data tA2(2049);
-Data tW2(2049);
-Data tP2(2049);
-Data pmag2(2049);
-Data pph2(4098);
-Data sph2(4098);
-Data zre2(4098);
-Data zim2(4098);
-Data oL2(8192);
-Data oR2(8192);
-Data st2(16);
-Data jp2(32);
-Data fre3(4096);
-Data fim3(4096);
-Data amag3(2049);
-Data wf3(2049);
-Data cs3(2050);
-Data tA3(2049);
-Data tW3(2049);
-Data tP3(2049);
-Data pmag3(2049);
-Data pph3(4098);
-Data sph3(4098);
-Data zre3(4098);
-Data zim3(4098);
-Data oL3(8192);
-Data oR3(8192);
-Data st3(16);
-Data jp3(32);
+Data sdat(221568);
 
 // Parameters
 Param mode(0, min=0, max=4);
@@ -1836,17 +1869,48 @@ History scopeCount(0);
 History scopeFrame(0);
 History peakHoldL(0);
 History peakHoldR(0);
-History ap0(0);
-History ap1(0);
-History ap2(0);
-History ap3(0);
-History mp0(0);
-History mp1(0);
-History mp2(0);
-History mp3(0);
 
 if (initDone == 0) {
 	init_tables(twr, twi, brv);
+	// Spectral voice History initial values.
+	for (isv = 0; isv < 4; isv += 1) {
+		poke(sdat, -1, isv * 55392 + 55360 + 0);
+		poke(sdat, 2048, isv * 55392 + 55360 + 2);
+		poke(sdat, 11, isv * 55392 + 55360 + 3);
+		poke(sdat, 512, isv * 55392 + 55360 + 4);
+		poke(sdat, 29, isv * 55392 + 55360 + 5);
+		poke(sdat, 99, isv * 55392 + 55360 + 7);
+		poke(sdat, 1, isv * 55392 + 55360 + 12);
+		poke(sdat, 1, isv * 55392 + 55360 + 14);
+		poke(sdat, 1, isv * 55392 + 55360 + 15);
+		poke(sdat, 60, isv * 55392 + 55360 + 19);
+	}
+	// Per-voice History initial values (the vhist table starts at 0).
+	for (ivx = 0; ivx < 16; ivx += 1) {
+		poke(vhist, -1, ivx * 256 + 0);
+		poke(vhist, 60, ivx * 256 + 5);
+		poke(vhist, 0.17, ivx * 256 + 8);
+		poke(vhist, 0.63, ivx * 256 + 9);
+		poke(vhist, 0.13, ivx * 256 + 11);
+		poke(vhist, 0.29, ivx * 256 + 12);
+		poke(vhist, 0.47, ivx * 256 + 13);
+		poke(vhist, 0.61, ivx * 256 + 14);
+		poke(vhist, 0.73, ivx * 256 + 15);
+		poke(vhist, 0.83, ivx * 256 + 16);
+		poke(vhist, 0.97, ivx * 256 + 17);
+		poke(vhist, 0.2, ivx * 256 + 18);
+		poke(vhist, 1, ivx * 256 + 19);
+		poke(vhist, -1, ivx * 256 + 20);
+		poke(vhist, 1, ivx * 256 + 21);
+		poke(vhist, -1, ivx * 256 + 22);
+		poke(vhist, -1, ivx * 256 + 23);
+		poke(vhist, 1, ivx * 256 + 26);
+		poke(vhist, 1, ivx * 256 + 30);
+		poke(vhist, 1, ivx * 256 + 33);
+		poke(vhist, 0.31, ivx * 256 + 82);
+		poke(vhist, 0.17, ivx * 256 + 83);
+		poke(vhist, 0.64, ivx * 256 + 84);
+	}
 	initDone = 1;
 }
 
@@ -1920,43 +1984,54 @@ mdecCoef = exp(-1000.0 / (max(mdec_ms, 1.0) * srVal));
 mrelCoef = exp(-1000.0 / (max(mrel_ms, 1.0) * srVal));
 glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (glide_ms * srVal));
 
-// Spectral voices (voices 0..3 only)
-s0L, s0R, s0P, s0Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre0, fim0, amag0, wf0, cs0, tA0, tW0, tP0, pmag0, pph0, sph0, zre0, zim0, oL0, oR0, st0, jp0, 0, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp0, ap0, numFrames, srVal);
-s1L, s1R, s1P, s1Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre1, fim1, amag1, wf1, cs1, tA1, tW1, tP1, pmag1, pph1, sph1, zre1, zim1, oL1, oR1, st1, jp1, 1, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp1, ap1, numFrames, srVal);
-s2L, s2R, s2P, s2Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre2, fim2, amag2, wf2, cs2, tA2, tW2, tP2, pmag2, pph2, sph2, zre2, zim2, oL2, oR2, st2, jp2, 2, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp2, ap2, numFrames, srVal);
-s3L, s3R, s3P, s3Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre3, fim3, amag3, wf3, cs3, tA3, tW3, tP3, pmag3, pph3, sph3, zre3, zim3, oL3, oR3, st3, jp3, 3, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp3, ap3, numFrames, srVal);
+// Spectral voices (voices 0..3 only), one loop so the phase vocoder compiles once. The Mod / Amp envelope of
+// the previous sample comes from vres (written by the voice loop below).
+for (svx = 0; svx < 4; svx += 1) {
+	sL, sR, sP, sZ = spec_voice(samp, vdata, twr, twi, brv, prm, sdat, svx, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, peek(vres, svx * 3 + 2), peek(vres, svx * 3 + 1), numFrames, srVal);
+	poke(sext, sL, svx * 3);
+	poke(sext, sR, svx * 3 + 1);
+	poke(sext, sP, svx * 3 + 2);
+}
 
-// Evaluate all 16 polyphonic voices
-v0L, v0R, v0P, v0A, v0M, v0S = voice_proc(samp, vdata, 0, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s0L, s0R, s0P);
-v1L, v1R, v1P, v1A, v1M, v1S = voice_proc(samp, vdata, 1, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s1L, s1R, s1P);
-v2L, v2R, v2P, v2A, v2M, v2S = voice_proc(samp, vdata, 2, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s2L, s2R, s2P);
-v3L, v3R, v3P, v3A, v3M, v3S = voice_proc(samp, vdata, 3, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s3L, s3R, s3P);
-v4L, v4R, v4P, v4A, v4M, v4S = voice_proc(samp, vdata, 4, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v5L, v5R, v5P, v5A, v5M, v5S = voice_proc(samp, vdata, 5, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v6L, v6R, v6P, v6A, v6M, v6S = voice_proc(samp, vdata, 6, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v7L, v7R, v7P, v7A, v7M, v7S = voice_proc(samp, vdata, 7, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v8L, v8R, v8P, v8A, v8M, v8S = voice_proc(samp, vdata, 8, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v9L, v9R, v9P, v9A, v9M, v9S = voice_proc(samp, vdata, 9, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v10L, v10R, v10P, v10A, v10M, v10S = voice_proc(samp, vdata, 10, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v11L, v11R, v11P, v11A, v11M, v11S = voice_proc(samp, vdata, 11, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v12L, v12R, v12P, v12A, v12M, v12S = voice_proc(samp, vdata, 12, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v13L, v13R, v13P, v13A, v13M, v13S = voice_proc(samp, vdata, 13, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v14L, v14R, v14P, v14A, v14M, v14S = voice_proc(samp, vdata, 14, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-v15L, v15R, v15P, v15A, v15M, v15S = voice_proc(samp, vdata, 15, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
-ap0 = v0A;
-ap1 = v1A;
-ap2 = v2A;
-ap3 = v3A;
-mp0 = v0M;
-mp1 = v1M;
-mp2 = v2M;
-mp3 = v3M;
 
-sumL = v0L + v1L + v2L + v3L + v4L + v5L + v6L + v7L + v8L + v9L + v10L + v11L + v12L + v13L + v14L + v15L;
-sumR = v0R + v1R + v2R + v3R + v4R + v5R + v6R + v7R + v8R + v9R + v10R + v11R + v12R + v13R + v14R + v15R;
-spawnSum = v0S + v1S + v2S + v3S + v4S + v5S + v6S + v7S + v8S + v9S + v10S + v11S + v12S + v13S + v14S + v15S;
-
-maxModEnv = max(max(max(v0M, v1M), max(v2M, v3M)), max(max(max(v4M, v5M), max(v6M, v7M)), max(max(max(v8M, v9M), max(v10M, v11M)), max(max(v12M, v13M), max(v14M, v15M)))));
+// Evaluate all 16 polyphonic voices in ONE loop, so the voice engine is compiled once. Per-voice state
+// lives in the vhist table (voice_proc) and per-voice results in vres (P, A, M at 3 * voice).
+sumL = 0;
+sumR = 0;
+spawnSum = 0;
+maxModEnv = 0;
+for (vox = 0; vox < 16; vox += 1) {
+	exL = 0;
+	exR = 0;
+	exP = 0;
+	if (vox < 3.5) {
+		exL = peek(sext, vox * 3);
+		exR = peek(sext, vox * 3 + 1);
+		exP = peek(sext, vox * 3 + 2);
+	}
+	// A voice that is released, silent and has no Fragments tail left produces exact zeros, so skip its engine
+	// (state is frozen until the next note-on, which re-initialises it). vhist slots: 1 envStage, 2 ampEnv,
+	// 4 modEnv, 6 playheadNorm, 32 spawnCnt, 35 survG, 37 survTimer.
+	hsB = vox * 256;
+	idleV = (peek(vdata, vox * 8) < 0.5) && (peek(vhist, hsB + 1) == 0) && (peek(vhist, hsB + 2) == 0) && (peek(vhist, hsB + 4) == 0) && (peek(vhist, hsB + 35) <= 0) && (peek(vhist, hsB + 37) <= 0);
+	if (idleV) {
+		voL = 0;
+		voR = 0;
+		voP = peek(vhist, hsB + 6);
+		voA = 0;
+		voM = 0;
+		voS = peek(vhist, hsB + 32);
+	} else {
+		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP);
+	}
+	sumL = sumL + voL;
+	sumR = sumR + voR;
+	spawnSum = spawnSum + voS;
+	maxModEnv = max(maxModEnv, voM);
+	poke(vres, voP, vox * 3);
+	poke(vres, voA, vox * 3 + 1);
+	poke(vres, voM, vox * 3 + 2);
+}
 
 // Cytomic / Andrew Simper trapezoidal SVF. g = tan(pi * fc / sr).
 // k falls from 2 (no resonance) toward 0 as filt_res rises, and stays positive.
@@ -2024,27 +2099,12 @@ if (scopeCount >= 64) {
 	scopeCount = 0;
 	scopeFrame = scopeFrame + 1;
 
-	poke(scope, v0P, 0);   poke(scope, v0A, 16);
-	poke(scope, v1P, 1);   poke(scope, v1A, 17);
-	poke(scope, v2P, 2);   poke(scope, v2A, 18);
-	poke(scope, v3P, 3);   poke(scope, v3A, 19);
-	poke(scope, v4P, 4);   poke(scope, v4A, 20);
-	poke(scope, v5P, 5);   poke(scope, v5A, 21);
-	poke(scope, v6P, 6);   poke(scope, v6A, 22);
-	poke(scope, v7P, 7);   poke(scope, v7A, 23);
-	poke(scope, v8P, 8);   poke(scope, v8A, 24);
-	poke(scope, v9P, 9);   poke(scope, v9A, 25);
-	poke(scope, v10P, 10); poke(scope, v10A, 26);
-	poke(scope, v11P, 11); poke(scope, v11A, 27);
-	poke(scope, v12P, 12); poke(scope, v12A, 28);
-	poke(scope, v13P, 13); poke(scope, v13A, 29);
-	poke(scope, v14P, 14); poke(scope, v14A, 30);
-	poke(scope, v15P, 15); poke(scope, v15A, 31);
-
-	activeCnt = (v0A > 0.002) + (v1A > 0.002) + (v2A > 0.002) + (v3A > 0.002)
-		+ (v4A > 0.002) + (v5A > 0.002) + (v6A > 0.002) + (v7A > 0.002)
-		+ (v8A > 0.002) + (v9A > 0.002) + (v10A > 0.002) + (v11A > 0.002)
-		+ (v12A > 0.002) + (v13A > 0.002) + (v14A > 0.002) + (v15A > 0.002);
+	activeCnt = 0;
+	for (tix = 0; tix < 16; tix += 1) {
+		poke(scope, peek(vres, tix * 3), tix);
+		poke(scope, peek(vres, tix * 3 + 1), 16 + tix);
+		activeCnt = activeCnt + (peek(vres, tix * 3 + 1) > 0.002);
+	}
 
 	poke(scope, peakHoldL, 32);
 	poke(scope, peakHoldR, 33);

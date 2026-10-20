@@ -14,6 +14,20 @@
 //   6. Bits: mid-tread quantizer, step 1.5 * 2^(-(bits-1) * 0.75) nepers (bits 16 = off)
 // Neutral settings skip all of it (pure STFT identity, exactly unity).
 //
+// Glitch (Off, Drop, Rpt, Rev, Hold, Frz), Phase (Orig, Robot, Whisp, Min) and Lag sit around that chain. With Glitch Off,
+// Phase Orig and Lag 0 every new branch is skipped and the output is bit-identical to the version without them.
+//   Lag      (qc_select, before step 1) coefficient q is read d(q) = floor(12 * Lag * s(q) + 0.5) frames back from a ring of
+//            32 received cepstral frames (s = index ramp + seeded spread). c0 (level) is never delayed. Lag 0 = identity.
+//   Glitch   Rate (1/32 .. 1 bar) slots on the host-locked beat; a slot fires with probability Amount (hash of the absolute
+//            grid index). During a fired slot the live frame is not stored (the ring freezes) and the cepstrum comes from
+//            the ring: Drop holds the last received frame and fades it 0.5^k per lost frame, Rpt loops the last W frames
+//            (W = half a slot in frames, 1..8), Rev reads them backwards. Phase is live, so nothing clicks.
+//            Hold = the envelope S&H at the Rate period, Frz = the old Freeze.
+//   Phase    Robot: zero phase (pulse in the frame centre), Whisp: random phase per bin and frame (seed from the host
+//            position), Min: minimum phase of the crushed log magnitude (see qc_min). Orig keeps the input phase. Robot, Whisp
+//            and Min frames are level matched to the input frame energy (qc_pgain; Robot / Whisp x1.45 / x1.41 because frames
+//            with unrelated phase add as powers, Min x1.1).
+//
 // Latency is constant 4096 samples for every Size (wet padded with a Delay, dry delayed identically).
 // Size changes crossfade to the dry path, switch N, wait for the pipeline to fill, then fade the wet back in.
 //
@@ -24,6 +38,10 @@
 //   201 pitch confidence   202 shifted pitch quefrency   203 frame counter   204 samplerate   205 Qs
 //   206 scramble mode   207 scramble amount   208 shift ratio   209 neutral flag
 //   210..257 excitation strip, original (48 log bins 1..25 ms)   258..305 same, crushed
+//   306 histA  307 histB   event codes of the last 24 left frames, 2 bits each (0 normal, 1 dropped, 2 repeat, 3 reverse),
+//                          12 per float, newest in the low bits of histA (exact in float32)
+//   308 Glitch mode 0..5   309 Phase mode 0..3   310 Lag 0..1   311 glitch slot phase 0..1   312 slot fired
+//   313 loop window W (frames)   314 slot counter   315 frame gain (Drop fade)   316 position in the Rpt / Rev loop
 //
 // GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements.
 // No identifier named e<digit>.
@@ -273,6 +291,400 @@ qc_tele_neutral(fc, scope, srv, n) {
 	return half;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Glitch (Drop / Repeat / Reverse), Lag and Phase modes. Node twin: src/qcrush_ref.js (GlitchState, minPhaseFrame, ...).
+// Per-channel state lives in Data (functions cannot see globals): gs(16) =
+//   0 frames stored   1 valid frames in the ring   2 slot id seen   3 frames since slot start   4 lost frames in a row
+//   5 N seen   6 frame gain (Drop fade)   7 event code (0 normal, 1 drop, 2 repeat, 3 reverse)   8 position in the loop
+//   9 smoothed input frame energy   10 smoothed output frame energy
+// ---------------------------------------------------------------------------------------------------------------
+
+// Seeded hash 0..1 (same formula as perm()).
+qc_hash(x, a) {
+	v = sin(x * 12.9898 + a) * 43758.5453;
+	return v - floor(v);
+}
+
+// Lag: frames of delay of every coefficient into ldel channel 0 (0..half): an index ramp (low coefficients first) mixed
+// with a fixed seeded spread. The spread s(q) is computed once into channel 1 (ldel[0, 1] marks it done), so sweeping Lag
+// costs 2048 multiplies per control tick, not 2048 sines. ldel[0] (the level) is never delayed.
+qc_lagtab(ldel, half, lg) {
+	if (ldel.peek(0, 1) < 0.5) {
+		for (q = 1; q <= 2048; q += 1) {
+			ldel.poke(0.5 * min(1, (q - 1) / 127) + 0.5 * qc_hash(q, 4.1414), q, 1);
+		}
+		ldel.poke(1, 0, 1);
+	}
+	ldel.poke(0, 0, 0);
+	for (q = 1; q <= half; q += 1) {
+		ldel.poke(floor(12 * lg * ldel.peek(q, 1) + 0.5), q, 0);
+	}
+	return half;
+}
+
+// Ring of received cepstral frames + source selection. fc (channel 0, 0..half) holds the live cepstrum on entry and the
+// selected, lagged one on exit. mode 0..3 (Off, Drop, Rpt, Rev), act 1 = the slot fired, slot = absolute grid index,
+// wreq = loop window (frames), lagOn 1 = Lag > 0. While a Drop / Rpt / Rev slot is active the live frame is NOT stored,
+// so the ring is frozen: Drop holds the last good frame (fading 0.5^k per lost frame), Rpt loops the last W frames,
+// Rev reads them backwards. Phase is never stored: the live phase keeps moving, so a repeated spectrum does not click.
+qc_select(fc, rg, gs, ldel, n, mode, act, slot, wreq, lagOn) {
+	half = n * 0.5;
+	if (n != gs.peek(5)) {
+		gs.poke(n, 5);
+		gs.poke(0, 0);
+		gs.poke(0, 1);
+		gs.poke(0, 3);
+		gs.poke(0, 4);
+		gs.poke(-999999, 2);
+	}
+	gs.poke(1, 6);
+	gs.poke(0, 7);
+	gs.poke(0, 8);
+	if (mode > 0.5 || lagOn > 0.5) {
+		if (slot != gs.peek(2)) {
+			gs.poke(slot, 2);
+			gs.poke(0, 3);
+		}
+		ft = gs.peek(0);
+		vc = gs.peek(1);
+		active = (mode > 0.5 && act > 0.5 && vc >= 1) ? 1 : 0;
+		if (active < 0.5) {
+			base = (ft - 32 * floor(ft / 32)) * 2050;
+			for (q = 0; q <= half; q += 1) {
+				rg.poke(fc.peek(q, 0), base + q);
+			}
+			ft = ft + 1;
+			vc = min(vc + 1, 32);
+			gs.poke(0, 4);
+		}
+		nw = ft - 1;
+		jj = gs.peek(3);
+		wc = max(1, min(wreq, vc));
+		jm = jj - wc * floor(jj / wc);
+		tau = nw - (active > 0.5 ? (mode < 1.5 ? 0 : (mode < 2.5 ? (wc - 1) - jm : jm)) : 0);
+		if (active > 0.5) {
+			if (mode < 1.5) {
+				lr = gs.peek(4) + 1;
+				gs.poke(lr, 4);
+				gs.poke(pow(0.5, lr), 6);
+				gs.poke(1, 7);
+			} else {
+				gs.poke(0, 4);
+				gs.poke(mode < 2.5 ? 2 : 3, 7);
+				gs.poke(jm, 8);
+			}
+			gs.poke(jj + 1, 3);
+		}
+		if (lagOn > 0.5 || active > 0.5) {
+			oldest = nw - (vc - 1);
+			for (q = 0; q <= half; q += 1) {
+				dl = lagOn > 0.5 ? ldel.peek(q) : 0;
+				idx = max(tau - dl, oldest);
+				fc.poke(rg.peek((idx - 32 * floor(idx / 32)) * 2050 + q), q, 0);
+			}
+		}
+		gs.poke(ft, 0);
+		gs.poke(vc, 1);
+	} else {
+		gs.poke(0, 1);
+		gs.poke(0, 4);
+	}
+	return half;
+}
+
+// Neutral frame: forget the ring and the level smoothing.
+qc_idle(gs) {
+	gs.poke(0, 1);
+	gs.poke(0, 4);
+	gs.poke(0, 9);
+	gs.poke(0, 10);
+	gs.poke(1, 6);
+	gs.poke(0, 7);
+	return 0;
+}
+
+// Robot: zero phase. The (-1)^k factor is a half-frame delay, so the pulse sits in the middle of the frame.
+qc_robot(fx, n) {
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		mg = sqrt(xr * xr + xi * xi);
+		fx.poke((i - 2 * floor(i * 0.5)) > 0.5 ? 0 - mg : mg, i, 0);
+		fx.poke(0, i, 1);
+	}
+	return n;
+}
+
+// Whisper: random phase per bin and frame (bin n-k is the conjugate of bin k; DC and Nyquist stay real).
+qc_whisper(fx, n, seed) {
+	half = n * 0.5;
+	sa = seed * 78.233;
+	xr = fx.peek(0, 0);
+	xi = fx.peek(0, 1);
+	fx.poke(sqrt(xr * xr + xi * xi), 0, 0);
+	fx.poke(0, 0, 1);
+	xr = fx.peek(half, 0);
+	xi = fx.peek(half, 1);
+	fx.poke(sqrt(xr * xr + xi * xi), half, 0);
+	fx.poke(0, half, 1);
+	for (k = 1; k < half; k += 1) {
+		xr = fx.peek(k, 0);
+		xi = fx.peek(k, 1);
+		mg = sqrt(xr * xr + xi * xi);
+		th = 6.283185307179586 * qc_hash(k, sa);
+		cr = mg * cos(th);
+		ci = mg * sin(th);
+		fx.poke(cr, k, 0);
+		fx.poke(ci, k, 1);
+		fx.poke(cr, n - k, 0);
+		fx.poke(0 - ci, n - k, 1);
+	}
+	return n;
+}
+
+// Copy channel 0 of fx (the windowed input frame) into xw.
+qc_save(fx, xw, n) {
+	for (i = 0; i < n; i += 1) {
+		xw.poke(fx.peek(i, 0), i);
+	}
+	return n;
+}
+
+// Sum of (xw * win)^2: the energy the input frame delivers to the overlap-add.
+qc_qin(xw, win, n) {
+	s = 0;
+	for (i = 0; i < n; i += 1) {
+		a = xw.peek(i) * win.peek(i);
+		s += a * a;
+	}
+	return s;
+}
+
+// Same for the frame in fx channel 0.
+qc_qout(fx, win, n) {
+	s = 0;
+	for (i = 0; i < n; i += 1) {
+		a = fx.peek(i, 0) * win.peek(i);
+		s += a * a;
+	}
+	return s;
+}
+
+// Frame-energy level match: sqrt of the ratio of the one-poled (0.25) input and output frame energies, times kc.
+qc_pgain(gs, qi, qo, kc) {
+	ei = gs.peek(9);
+	eo = gs.peek(10);
+	ei = ei > 1e-20 ? ei + (qi - ei) * 0.25 : qi;
+	eo = eo > 1e-20 ? eo + (qo - eo) * 0.25 : qo;
+	gs.poke(ei, 9);
+	gs.poke(eo, 10);
+	g = 1;
+	if (ei > 1e-20 && eo > 1e-20) {
+		g = clip(sqrt(ei / eo) * kc, 0.25, 4);
+	}
+	return g;
+}
+
+// 8192-point FFT tables (the library FFT stops at 4096; the Min phase path runs at 2N). Same code as Phase Fold.
+qc_fft_init(tab) {
+	History done(0);
+	if (done == 0) {
+		for (k = 0; k < 4096; k += 1) {
+			ph = 6.283185307179586 * k / 8192;
+			tab.poke(cos(ph), k, 0);
+			tab.poke(-sin(ph), k, 1);
+		}
+		for (i = 0; i < 8192; i += 1) {
+			r = 0;
+			v = i;
+			for (b = 0; b < 13; b += 1) {
+				hv = floor(v * 0.5);
+				r = r * 2 + (v - hv * 2);
+				v = hv;
+			}
+			tab.poke(r, i, 2);
+		}
+		done = 1;
+	}
+	return done;
+}
+
+// In-place radix-2 FFT of x over n points, n a power of two <= 8192 (inv = 1 inverse, scaled by 1 / n).
+qc_fft(x, tab, n, inv) {
+	rdiv = 8192 / n;
+	for (i = 0; i < n; i += 1) {
+		j = tab.peek(i, 2) / rdiv;
+		if (j > i) {
+			tr = x.peek(i, 0);
+			ti = x.peek(i, 1);
+			x.poke(x.peek(j, 0), i, 0);
+			x.poke(x.peek(j, 1), i, 1);
+			x.poke(tr, j, 0);
+			x.poke(ti, j, 1);
+		}
+	}
+	sgn = inv > 0.5 ? -1 : 1;
+	for (len = 2; len <= n; len *= 2) {
+		hl = len * 0.5;
+		stp = 8192 / len;
+		for (s = 0; s < n; s += len) {
+			for (k = 0; k < hl; k += 1) {
+				wr = tab.peek(k * stp, 0);
+				wi = sgn * tab.peek(k * stp, 1);
+				a = s + k;
+				b = a + hl;
+				xr = x.peek(b, 0);
+				xi = x.peek(b, 1);
+				tr = xr * wr - xi * wi;
+				ti = xr * wi + xi * wr;
+				ur = x.peek(a, 0);
+				ui = x.peek(a, 1);
+				x.poke(ur + tr, a, 0);
+				x.poke(ui + ti, a, 1);
+				x.poke(ur - tr, b, 0);
+				x.poke(ui - ti, b, 1);
+			}
+		}
+	}
+	if (inv > 0.5) {
+		sc = 1 / n;
+		for (i = 0; i < n; i += 1) {
+			x.poke(x.peek(i, 0) * sc, i, 0);
+			x.poke(x.peek(i, 1) * sc, i, 1);
+		}
+	}
+	return 0;
+}
+
+// Index of the strongest signed n/64-sample stretch of the windowed input frame xw (its centre).
+qc_pivot(xw, n) {
+	wl = max(8, round(n / 64));
+	s = 0;
+	best = -1e30;
+	bi = n * 0.5;
+	for (i = 0; i < n; i += 1) {
+		s += xw.peek(i);
+		if (i >= wl) {
+			s -= xw.peek(i - wl);
+		}
+		if (i >= wl - 1) {
+			if (s > best) {
+				best = s;
+				bi = i - floor(wl * 0.5);
+			}
+		}
+	}
+	return bi;
+}
+
+// Crest factor (peak / rms over n samples) of z = (1 - b) * h * win + b * zo, h in fz channel 0.
+qc_crest(fz, zo, win, n, b) {
+	pk = 0;
+	sq = 0;
+	for (i = 0; i < n; i += 1) {
+		z = (1 - b) * fz.peek(i, 0) * win.peek(i) + b * zo.peek(i);
+		pk = max(pk, abs(z));
+		sq += z * z;
+	}
+	return pk / sqrt(sq / n + 1e-30);
+}
+
+// Min phase. fc (channel 0) = crushed log spectrum on entry. Writes the time frame (before the synthesis window) into
+// fx channel 0. See minPhaseFrame() in src/qcrush_ref.js: relative log floor (50 dB under the peak), causal fold of the
+// cepstrum, 2N zero-padded evaluation (the tail past N is dropped, not wrapped), delay to the input frame's pivot, and a
+// crest limiter that blends toward the input frame until it is at most 8 dB spikier.
+qc_min(fc, fx, fz, tab, tab2, xw, zo, win, n) {
+	half = n * 0.5;
+	m2 = n * 2;
+	pk = 0;
+	for (i = 0; i < n; i += 1) {
+		mg = max(exp(fc.peek(i, 0)) - 1e-9, 0);
+		fx.poke(mg, i, 0);
+		pk = max(pk, mg);
+	}
+	epsr = max(pk * 0.0031622776601683794, 1e-9);
+	for (i = 0; i < n; i += 1) {
+		fc.poke(log(fx.peek(i, 0) + epsr), i, 0);
+		fc.poke(0, i, 1);
+	}
+	fft_run(fc, tab, n, 1);
+	for (i = 0; i < m2; i += 1) {
+		fz.poke(0, i, 0);
+		fz.poke(0, i, 1);
+	}
+	fz.poke(fc.peek(0, 0), 0, 0);
+	for (q = 1; q < half; q += 1) {
+		fz.poke(fc.peek(q, 0) * 2, q, 0);
+	}
+	fz.poke(fc.peek(half, 0), half, 0);
+	qc_fft(fz, tab2, m2, 0);
+	t0 = qc_pivot(xw, n);
+	for (k = 0; k < m2; k += 1) {
+		mg = max(exp(fz.peek(k, 0)) - epsr, 0);
+		aa = fz.peek(k, 1) - 6.283185307179586 * ((k * t0) % m2) / m2;
+		fz.poke(mg * cos(aa), k, 0);
+		fz.poke(mg * sin(aa), k, 1);
+	}
+	qc_fft(fz, tab2, m2, 1);
+	for (i = 0; i < n; i += 1) {
+		zo.poke(xw.peek(i) * win.peek(i), i);
+	}
+	lim = qc_crest(fz, zo, win, n, 1) * 2.5118864315095806;
+	chosen = 1;
+	found = 0;
+	for (ss = 0; ss <= 8; ss += 1) {
+		bb = ss * 0.125;
+		if (found < 0.5) {
+			if (qc_crest(fz, zo, win, n, bb) <= lim) {
+				chosen = bb;
+				found = 1;
+			}
+		}
+	}
+	for (i = 0; i < n; i += 1) {
+		fx.poke((1 - chosen) * fz.peek(i, 0) + chosen * xw.peek(i), i, 0);
+		fx.poke(0, i, 1);
+	}
+	return chosen;
+}
+
+// Everything after the crushed cepstrum has become the log spectrum in fc: the magnitude, the phase mode, the inverse
+// FFT, the Phase level match and the Drop fade. fx holds the input spectrum on entry and the time frame on exit
+// (before the synthesis window). Phase Orig + no Drop is exactly the old remag + inverse FFT.
+// pm 0 Orig, 1 Robot, 2 Whisp, 3 Min; kc = level constant of the mode.
+qc_phase(fx, fc, fz, tab, tab2, xw, zo, win, gs, n, pm, seed, kc) {
+	g = 1;
+	if (pm > 2.5) {
+		qc_min(fc, fx, fz, tab, tab2, xw, zo, win, n);
+		qi = qc_qin(xw, win, n);
+		qo = qc_qout(fx, win, n);
+		g = qc_pgain(gs, qi, qo, kc);
+	} else {
+		qc_remag(fx, fc, n, 1e-9, 3.45, 8);
+		if (pm > 1.5) {
+			qc_whisper(fx, n, seed);
+		} else if (pm > 0.5) {
+			qc_robot(fx, n);
+		}
+		fft_run(fx, tab, n, 1);
+		if (pm > 0.5) {
+			qi = qc_qin(xw, win, n);
+			qo = qc_qout(fx, win, n);
+			g = qc_pgain(gs, qi, qo, kc);
+		} else {
+			gs.poke(0, 9);
+			gs.poke(0, 10);
+		}
+	}
+	gt = g * gs.peek(6);
+	if (gt != 1) {
+		for (i = 0; i < n; i += 1) {
+			fx.poke(fx.peek(i, 0) * gt, i, 0);
+		}
+	}
+	return gt;
+}
+
 Buffer scope("qcrushscope");
 
 Data tab(4096, 3);
@@ -290,6 +702,15 @@ Data us(256);
 Data hdL(256);
 Data hdR(256);
 Data pm(256);
+Data tab2(8192, 3);
+Data fz(8192, 2);
+Data xw(4096);
+Data zo(4096);
+Data rgL(65600);
+Data rgR(65600);
+Data gsL(16);
+Data gsR(16);
+Data ldel(2056, 2);
 Delay padL(4096);
 Delay padR(4096);
 Delay dlyL(4097);
@@ -301,8 +722,10 @@ Param qbits(16);
 Param smode(0);
 Param samt(0.5);
 Param qshift(0);
-Param freeze(0);
-Param qhold(0);
+Param gmode(0);
+Param grate(1);
+Param pmode(0);
+Param qlag(0);
 Param wet(1);
 Param outdb(0);
 Param bpm(120);
@@ -350,9 +773,27 @@ History scrH(0);
 History neuH(1);
 History perH(1);
 History hidxH(0);
+History gmH(0);
+History grH(1);
+History pmH(0);
+History lagH(0);
+History lagOnH(0);
+History glModeH(0);
+History fxAct(0);
+History neuE(1);
+History wH(4);
+History kcH(1);
+History gslotPrev(-999999);
+History gActH(0);
+History slotCnt(0);
+History hA(0);
+History hB(0);
+History lagTabV(-1);
+History lagTabN(0);
 
 sr = max(samplerate, 1);
 fft_init(tab);
+qc_fft_init(tab2);
 
 // --- Size: crossfade to dry, switch, wait for the pipeline to fill, fade the wet back in ---
 nReq = cep_n(fftn);
@@ -403,9 +844,26 @@ if (ctlCnt >= 32 || n != nCtl) {
 	rhoH = pow(2, shH / 12);
 	scrH = (smH > 0.5 && saH > 0.001) ? 1 : 0;
 	neuH = (kqH >= n * 0.5 - 0.5 && bqH >= 15.5 && scrH < 0.5 && abs(shH) < 0.005) ? 1 : 0;
-	hidxH = round(clip(qhold, 0, 6));
+	gmH = round(clip(gmode, 0, 5));
+	grH = round(clip(grate, 0, 5));
+	pmH = round(clip(pmode, 0, 3));
+	lagH = clip(qlag, 0, 1);
+	lagOnH = lagH > 0.001 ? 1 : 0;
+	glModeH = (gmH > 0.5 && gmH < 3.5) ? gmH : 0;
+	hidxH = (gmH > 3.5 && gmH < 4.5) ? grH + 1 : 0;
 	perH = hidxH < 0.5 ? 1 : pow(2, hidxH - 4);
+	fxAct = (glModeH > 0.5 || pmH > 0.5 || lagOnH > 0.5) ? 1 : 0;
+	neuE = (neuH > 0.5 && fxAct < 0.5) ? 1 : 0;
+	kcH = pmH > 2.5 ? 1.1 : (pmH > 1.5 ? 1.41 : (pmH > 0.5 ? 1.45 : 1));
+	wH = clip(round(pow(2, grH - 3) * 60 / max(bpm, 20) * sr / (n * 0.25) * 0.5), 1, 8);
 	outT = pow(10, clip(outdb, -36, 12) / 20);
+}
+if (lagH != lagTabV || n != lagTabN) {
+	lagTabV = lagH;
+	lagTabN = n;
+	if (lagOnH > 0.5) {
+		qc_lagtab(ldel, n * 0.5, lagH);
+	}
 }
 
 // --- Hold clock: free-runs on the host tempo, locks to the host position whenever it moves ---
@@ -424,7 +882,7 @@ if (cidx > lastIdx) {
 	lastIdx = cidx;
 }
 clkPhase = beat / perH - cidx;
-fzOn = freeze > 0.5 ? 1 : 0;
+fzOn = gmH > 4.5 ? 1 : 0;
 useHold = (fzOn > 0.5 || hidxH > 0.5) ? 1 : 0;
 if (tick > 0.5) {
 	tickCnt = wrap(tickCnt + 1, 0, 100000);
@@ -445,7 +903,16 @@ if (useHold < 0.5) {
 	vldR = 0;
 }
 poke(scope, clkPhase, 196, 0);
-neutral = (neuH > 0.5 && useHold < 0.5) ? 1 : 0;
+// Glitch clock: slots of Rate length on the same host-locked beat; a slot fires with probability Amount (seeded by its
+// absolute grid index, so a loop or a re-render repeats the same events).
+gper = pow(2, grH - 3);
+gslot = floor(beat / gper);
+if (gslot != gslotPrev) {
+	gslotPrev = gslot;
+	gActH = (glModeH > 0.5 && qc_hash(gslot, 9.1) < saH) ? 1 : 0;
+	slotCnt = wrap(slotCnt + 1, 0, 100000);
+}
+neutral = (neuE > 0.5 && useHold < 0.5) ? 1 : 0;
 
 // --- Input level and silence sleep ---
 inAbs = max(abs(in1), abs(in2));
@@ -479,6 +946,9 @@ if (smH > 1.5 && smH < 2.5 && scrH > 0.5 && (roll != permRoll || rrNow != permRR
 
 if (rdyL > 0.5 && awake > 0.5) {
 	stft_frame(fx, ringL, stL, win, n);
+	if (pmH > 0.5) {
+		qc_save(fx, xw, n);
+	}
 	fft_run(fx, tab, n, 0);
 	if (neutral < 0.5 || teleNow > 0.5) {
 		cep_from_spec(fx, fc, tab, n, 1e-9);
@@ -487,35 +957,54 @@ if (rdyL > 0.5 && awake > 0.5) {
 		}
 	}
 	if (neutral < 0.5) {
+		qc_select(fc, rgL, gsL, ldel, n, glModeH, gActH, gslot, wH, lagOnH);
 		capNowL = (capL > 0.5 || (useHold > 0.5 && vldL < 0.5)) ? 1 : 0;
 		qc_proc(fc, cn, us, hdL, pm, scope, sr, n, qsH, kqH, bqH, smH, saH, rhoH, useHold, capNowL, teleNow);
 		cep_to_logmag(fc, tab, n);
-		qc_remag(fx, fc, n, 1e-9, 3.45, 8);
+		wsdL = floor(beat * 60 * sr / (max(bpm, 20) * n * 0.25));
+		wsdL = wsdL - 65536 * floor(wsdL / 65536);
+		qc_phase(fx, fc, fz, tab, tab2, xw, zo, win, gsL, n, pmH, wsdL, kcH);
 		if (capNowL > 0.5) {
 			vldL = 1;
 			capL = 0;
 		}
-	} else if (teleNow > 0.5) {
-		qc_tele_neutral(fc, scope, sr, n);
+	} else {
+		qc_idle(gsL);
+		if (teleNow > 0.5) {
+			qc_tele_neutral(fc, scope, sr, n);
+		}
+		fft_run(fx, tab, n, 1);
 	}
-	fft_run(fx, tab, n, 1);
 	stft_ola(accL, stL, fx, win, n);
+	// event history (2 bits per frame, 12 frames per float, newest in the low bits)
+	evc = neutral < 0.5 ? gsL.peek(7) : 0;
+	htop = floor(hA / 4194304);
+	hB = (hB - floor(hB / 4194304) * 4194304) * 4 + htop;
+	hA = (hA - htop * 4194304) * 4 + evc;
 }
 if (rdyR > 0.5 && awake > 0.5) {
 	stft_frame(fx, ringR, stR, win, n);
+	if (pmH > 0.5) {
+		qc_save(fx, xw, n);
+	}
 	fft_run(fx, tab, n, 0);
 	if (neutral < 0.5) {
 		cep_from_spec(fx, fc, tab, n, 1e-9);
+		qc_select(fc, rgR, gsR, ldel, n, glModeH, gActH, gslot, wH, lagOnH);
 		capNowR = (capR > 0.5 || (useHold > 0.5 && vldR < 0.5)) ? 1 : 0;
 		qc_proc(fc, cn, us, hdR, pm, scope, sr, n, qsH, kqH, bqH, smH, saH, rhoH, useHold, capNowR, 0);
 		cep_to_logmag(fc, tab, n);
-		qc_remag(fx, fc, n, 1e-9, 3.45, 8);
+		wsdR = floor(beat * 60 * sr / (max(bpm, 20) * n * 0.25));
+		wsdR = wsdR - 65536 * floor(wsdR / 65536) + 77;
+		qc_phase(fx, fc, fz, tab, tab2, xw, zo, win, gsR, n, pmH, wsdR, kcH);
 		if (capNowR > 0.5) {
 			vldR = 1;
 			capR = 0;
 		}
+	} else {
+		qc_idle(gsR);
+		fft_run(fx, tab, n, 1);
 	}
-	fft_run(fx, tab, n, 1);
 	stft_ola(accR, stR, fx, win, n);
 }
 yL = stft_out(accL, stL, n);
@@ -538,6 +1027,17 @@ if (teleNow > 0.5) {
 	poke(scope, saH, 207, 0);
 	poke(scope, rhoH, 208, 0);
 	poke(scope, neutral, 209, 0);
+	poke(scope, hA, 306, 0);
+	poke(scope, hB, 307, 0);
+	poke(scope, gmH, 308, 0);
+	poke(scope, pmH, 309, 0);
+	poke(scope, lagH, 310, 0);
+	poke(scope, beat / gper - gslot, 311, 0);
+	poke(scope, gActH, 312, 0);
+	poke(scope, wH, 313, 0);
+	poke(scope, slotCnt, 314, 0);
+	poke(scope, gsL.peek(6), 315, 0);
+	poke(scope, gsL.peek(8), 316, 0);
 }
 if (awake < 0.5 && sleepNote < 0.5) {
 	poke(scope, 0, 199, 0);
@@ -564,12 +1064,12 @@ mEff = mixS * wf;
 if (swState < 0.5) {
 	pdS = pdS + 0.0004 * ((dryL * dryL + dryR * dryR) * 0.5 - pdS);
 	pwS = pwS + 0.0004 * ((wetL * wetL + wetR * wetR) * 0.5 - pwS);
-	gT = neuH > 0.5 ? 1 : clip(sqrt((pdS + 1e-10) / (pwS + 1e-10)), 0.25, 4);
+	gT = neuE > 0.5 ? 1 : clip(sqrt((pdS + 1e-10) / (pwS + 1e-10)), 0.25, 4);
 	gAgc = gAgc + 0.0005 * (gT - gAgc);
 }
 // Scrambled and shifted spectra with the original (pulse-aligned) phase can peak well above the input: crushed audio is
 // kept under 1.0 by a soft knee that starts at 0.8. Neutral settings pass the wet path untouched.
-if (neuH < 0.5) {
+if (neuE < 0.5) {
 	wetL = qc_soft(wetL * gAgc);
 	wetR = qc_soft(wetR * gAgc);
 }

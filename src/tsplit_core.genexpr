@@ -1,0 +1,378 @@
+// Timbre Split — splits audio by TIMBRE CLASS instead of by frequency band (one instance per Rack chain).
+// Build scripts PREPEND src/cepstrum_lib.genexpr (fft_init, fft_run, stft_win, stft_in, stft_frame), so every
+// function below sits ahead of all Buffer / Param / History / Delay / Data declarations.
+// Reference implementation: src/tsplit_ref.js (+ src/tsplit_config.js for the pure math), same order of operations.
+//
+// Analysis (same front end as Timbre Follower): N 1024, hop 256, mono = (L + R) / 2, Hann -> FFT -> 24 mel bands
+// (70 Hz .. 14 kHz) -> ln -> orthonormal DCT-II -> c1..c13 (class feature) and c0 (level feature, telemetry only).
+//
+// Classification per hop (gate open): distance d_k from c1..c13 to each of K centroids (Buffer `tsplitcent`, centroid
+// k at k * 16), softmax p_k ~ exp(-beta * (d_k - d_min - bonus_k)) with beta = 0.1 * 40^(Sharp/100) and a hysteresis bonus of 1.0
+// distance unit for the incumbent winner. p sums to 1. A closed gate (silence) or an idle device HOLDS the last p.
+// Temporal smoothing: p of every hop goes into a 16-hop ring; S_{j-3} = sum_{i=-3..3} kern_i * p_{j-3+i}
+// (Gaussian kernel from Smooth, normalised, so S sums to 1).
+//
+// Perfect reconstruction: per sample the class gains are g_k = lerp(S_{j-4}, S_{j-3}, phase / 256), sum_k g_k = 1.
+// A chain passes G = sum_k g_k * m_k, where m_k are the (one-pole smoothed) bits of its class mask. Chains with disjoint
+// masks that cover all classes add up to the delayed input exactly (to rounding). The audio is delayed 2048 samples
+// (patcher "latency": 2048). Timeline: frame m completes at sample e_m and is centred at e_m - 512; S_m is applied
+// from e_m - 1024, i.e. 512 samples (10.7 ms at 48 kHz) BEFORE its frame centre (anticipation), so an onset opens its
+// class before the hit and is not chopped. S_{j-3} needs hop j (the +-3 hop kernel), and the audio leaving now was
+// captured 2048 samples ago = e_j - 2048 at phase 0, exactly where S_{j-4} applies, so every gain used here is
+// already computed (anticipation = latency - 768 - 256 * 3).
+//
+// Telemetry: Buffer scope("tsplitscope"), 1 channel, 32 + 128 * 20 = 2592 samples. Bind with `scope #0-tsplitscope`
+//   header 0 hop counter (mod 1e6, written LAST)  1 head column  2 gate  3 samplerate  4 level dB  5 K
+//          6..9 applied class gains S (after this hop)  10 idle  12 latency  13 winner (1-based)
+//   column j at 32 + 20 j: 0..12 c1..c13 (0 while gated), 13 c0, 14..17 p1..p4 (held while gated),
+//          18 winner (1-based, 0 = gated), 19 gate
+//
+// GenExpr rules: functions first; no identifier is "e" or "e<digit>"; work functions are bare calls; no early return.
+
+// Mel filters (integer bins lo / ctr / hi and 1 / sum of weights) and the DCT table. Runs when the rate changes.
+ts_init(melb, dct, sr) {
+	History srs(0);
+	if (sr != srs) {
+		fmax = min(14000., sr * 0.45);
+		m0 = 2595. * log(1. + 70. / 700.) * 0.4342944819032518;
+		m1 = 2595. * log(1. + fmax / 700.) * 0.4342944819032518;
+		bh = sr / 1024.;
+		for (b = 0; b < 24; b += 1) {
+			fl = 700. * (pow(10., (m0 + (m1 - m0) * b / 25.) / 2595.) - 1.) / bh;
+			fc = 700. * (pow(10., (m0 + (m1 - m0) * (b + 1) / 25.) / 2595.) - 1.) / bh;
+			fh = 700. * (pow(10., (m0 + (m1 - m0) * (b + 2) / 25.) / 2595.) - 1.) / bh;
+			ctr = round(fc);
+			lo = max(min(floor(fl), ctr - 1), 0);
+			hi = max(ceil(fh), ctr + 1);
+			swt = 0;
+			for (k = lo; k <= hi; k += 1) {
+				swt += k < ctr ? (k - lo) / (ctr - lo) : (hi - k) / (hi - ctr);
+			}
+			melb.poke(lo, b, 0);
+			melb.poke(ctr, b, 1);
+			melb.poke(hi, b, 2);
+			melb.poke(1. / swt, b, 3);
+		}
+		sc = 0.28867513459481287;
+		for (k = 1; k <= 13; k += 1) {
+			for (b = 0; b < 24; b += 1) {
+				dct.poke(sc * cos(3.141592653589793 * k * (b + 0.5) / 24.), (k - 1) * 24 + b);
+			}
+		}
+		srs = sr;
+	}
+	return srs;
+}
+
+// Windowed frame energy (time domain, fx real part): ft[46] = mean square, ft[47] = dB.
+ts_energy(fx, ft, n) {
+	acc = 0;
+	for (i = 0; i < n; i += 1) {
+		v = fx.peek(i, 0);
+		acc += v * v;
+	}
+	ms = acc / (0.375 * n);
+	ft.poke(ms, 46);
+	ft.poke(10. * log(ms + 1e-20) * 0.4342944819032518, 47);
+	return 0;
+}
+
+// Spectrum in fx -> mel energies -> ln -> c1..c13 into ft[32..44] and c0 into ft[45]. ft[0..23] is scratch.
+ts_features(fx, melb, dct, ft) {
+	sume = 0;
+	for (b = 0; b < 24; b += 1) {
+		lo = melb.peek(b, 0);
+		ctr = melb.peek(b, 1);
+		hi = melb.peek(b, 2);
+		acc = 0;
+		for (k = lo; k <= hi; k += 1) {
+			xr = fx.peek(k, 0);
+			xi = fx.peek(k, 1);
+			w = k < ctr ? (k - lo) / (ctr - lo) : (hi - k) / (hi - ctr);
+			acc += (xr * xr + xi * xi) * w;
+		}
+		be = acc * melb.peek(b, 3);
+		ft.poke(be, b);
+		sume += be;
+	}
+	fl = 0.001 * sume / 24. + 1e-12;
+	lsum = 0;
+	for (b = 0; b < 24; b += 1) {
+		lb = log(ft.peek(b) + fl);
+		ft.poke(lb, b);
+		lsum += lb;
+	}
+	ft.poke(0.20412414523193154 * lsum, 45);
+	for (k = 0; k < 13; k += 1) {
+		s = 0;
+		for (b = 0; b < 24; b += 1) {
+			s += ft.peek(b) * dct.peek(k * 24 + b);
+		}
+		ft.poke(s, 32 + k);
+	}
+	return 0;
+}
+
+// Soft class memberships of c1..c13 (ft[32..44]) against the centroid copy cn (class k at k * 16).
+// Writes p_k to ft[48..51] (sum 1 over k < nk, 0 above), distances to ft[52..55], winner (0-based) to ft[56].
+// Hysteresis: the incumbent class `cur` is treated as 1.0 distance unit closer.
+ts_classify(ft, cn, nk, bt, cur) {
+	mn = 1000000000.;
+	for (k = 0; k < 4; k += 1) {
+		s = 0;
+		for (d = 0; d < 13; d += 1) {
+			df = ft.peek(32 + d) - cn.peek(k * 16 + d);
+			s += df * df;
+		}
+		dk = sqrt(s);
+		ft.poke(dk, 52 + k);
+		mn = k < nk ? min(mn, dk) : mn;
+	}
+	tot = 0;
+	for (k = 0; k < 4; k += 1) {
+		bonus = k == cur ? 1. : 0.;
+		pk = k < nk ? exp(-bt * (ft.peek(52 + k) - mn - bonus)) : 0.;
+		ft.poke(pk, 48 + k);
+		tot += pk;
+	}
+	best = 0;
+	bv = -1.;
+	for (k = 0; k < 4; k += 1) {
+		pn = ft.peek(48 + k) / tot;
+		ft.poke(pn, 48 + k);
+		best = pn > bv ? k : best;
+		bv = max(bv, pn);
+	}
+	ft.poke(best, 56);
+	return 0;
+}
+
+// Hop j: the memberships (this hop's ft[48..51] when op = 1, else the held ones) are limited to k < nk, renormalised to
+// sum 1, stored as the hold vector hd and as row jm of the 16-hop ring tr (row jm, class k at jm * 4 + k).
+ts_push(ft, hd, tr, jm, op, nk) {
+	s = 0;
+	for (k = 0; k < 4; k += 1) {
+		v = op > 0.5 ? ft.peek(48 + k) : hd.peek(k);
+		v = k < nk ? v : 0.;
+		ft.poke(v, 60 + k);
+		s += v;
+	}
+	for (k = 0; k < 4; k += 1) {
+		v = s > 1e-9 ? ft.peek(60 + k) / s : (k == 0 ? 1. : 0.);
+		hd.poke(v, k);
+		tr.poke(v, jm * 4 + k);
+	}
+	return 0;
+}
+
+// First hop only: every ring row and both smoothed vectors start at the first memberships, so the sum is 1 from the start.
+ts_prime(tr, hd, sw) {
+	for (k = 0; k < 4; k += 1) {
+		v = hd.peek(k);
+		for (r = 0; r < 16; r += 1) {
+			tr.poke(v, r * 4 + k);
+		}
+		sw.poke(v, k);
+		sw.poke(v, 4 + k);
+	}
+	return 0;
+}
+
+// Smooth 0..60 ms -> 7 Gaussian weights (hop -3..+3, sigma in hops), normalised to sum 1; a delta below sigma 0.05.
+ts_kernel(kern, smooth, sr) {
+	sg = max(smooth, 0.) * 0.001 * sr / 256.;
+	ksum = 0;
+	for (i = 0; i < 7; i += 1) {
+		xo = i - 3;
+		v = sg < 0.05 ? (i == 3 ? 1. : 0.) : exp(-(xo * xo) / (2. * sg * sg));
+		kern.poke(v, i);
+		ksum += v;
+	}
+	for (i = 0; i < 7; i += 1) {
+		kern.poke(kern.peek(i) / ksum, i);
+	}
+	return 0;
+}
+
+// sw[0..3] <- sw[4..7] (S_{j-4}), sw[4..7] <- S_{j-3} = sum_i kern_i * p_{j-6+i} from ring rows jm - 6 + i (mod 16).
+ts_smooth(tr, sw, kern, jm) {
+	for (k = 0; k < 4; k += 1) {
+		sw.poke(sw.peek(4 + k), k);
+		acc = 0;
+		for (i = 0; i < 7; i += 1) {
+			r = jm + 10 + i;
+			r = r >= 16 ? r - 16 : r;
+			acc += kern.peek(i) * tr.peek(r * 4 + k);
+		}
+		sw.poke(acc, 4 + k);
+	}
+	return 0;
+}
+
+Buffer scope("tsplitscope");
+Buffer cent("tsplitcent");
+
+Param classes(3);
+Param sharp(60);
+Param smooth(8);
+Param gain(0);
+Param cmask(1);
+
+Data tab(4096, 3);
+Data win(1024);
+Data fx(1024, 2);
+Data ring(1024);
+Data st(4);
+Data melb(24, 4);
+Data dct(312);
+Data ft(64);
+Data cn(64);
+Data tr(64);
+Data sw(8);
+Data kern(7);
+Data hd(4);
+
+Delay dl1(4096);
+Delay dl2(4096);
+
+History gate(0);
+History quiet(0);
+History hopmax(0);
+History hopidx(0);
+History primed(0);
+History curw(0);
+History head(0);
+History cntr(0);
+History m0s(0);
+History m1s(0);
+History m2s(0);
+History m3s(0);
+History gls(1);
+
+ts_init(melb, dct, samplerate);
+fft_init(tab);
+stft_win(win, 1024);
+
+xm = 0.5 * (in1 + in2);
+rdy = stft_in(ring, st, xm, 1024);
+hm = max(hopmax, abs(xm));
+hopmax = rdy ? 0 : hm;
+
+nk = clip(round(classes), 1, 4);
+
+if (rdy) {
+	qt = hm < 0.00003 ? quiet + 1 : 0;
+	quiet = qt;
+	sl = qt > 200 ? 1 : 0;
+	lvl = -200;
+	wn = curw;
+	if (sl < 0.5) {
+		stft_frame(fx, ring, st, win, 1024);
+		ts_energy(fx, ft, 1024);
+		lvl = ft.peek(47);
+	}
+	gt = gate < 0.5 ? (lvl > -60 ? 1 : 0) : (lvl < -66 ? 0 : 1);
+	gate = gt;
+	op = 0;
+	if (gt > 0.5) {
+		fft_run(fx, tab, 1024, 0);
+		ts_features(fx, melb, dct, ft);
+		for (i = 0; i < 64; i += 1) {
+			cn.poke(peek(cent, i, 0), i);
+		}
+		bt = 0.1 * pow(40., clip(sharp, 0, 100) * 0.01);
+		ts_classify(ft, cn, nk, bt, curw);
+		wn = ft.peek(56);
+		curw = wn;
+		op = 1;
+	} else {
+		for (k = 0; k < 13; k += 1) {
+			ft.poke(0, 32 + k);
+		}
+		ft.poke(0, 45);
+	}
+
+	jn = hopidx + 1;
+	jn = jn >= 16 ? 0 : jn;
+	hopidx = jn;
+	ts_push(ft, hd, tr, jn, op, nk);
+	if (primed < 0.5) {
+		ts_prime(tr, hd, sw);
+		primed = 1;
+	}
+	ts_kernel(kern, smooth, samplerate);
+	ts_smooth(tr, sw, kern, jn);
+
+	// Telemetry: one column per hop into the ring, counter last.
+	if (sl < 0.5) {
+		hd0 = head;
+		hdn = hd0 + 1;
+		hdn = hdn >= 128 ? 0 : hdn;
+		head = hdn;
+		base = 32 + hdn * 20;
+		for (k = 0; k < 13; k += 1) {
+			poke(scope, ft.peek(32 + k), base + k, 0);
+		}
+		poke(scope, ft.peek(45), base + 13, 0);
+		for (k = 0; k < 4; k += 1) {
+			poke(scope, hd.peek(k), base + 14 + k, 0);
+		}
+		poke(scope, op > 0.5 ? ft.peek(56) + 1 : 0, base + 18, 0);
+		poke(scope, gt, base + 19, 0);
+		poke(scope, hdn, 1, 0);
+		poke(scope, gt, 2, 0);
+		poke(scope, samplerate, 3, 0);
+		poke(scope, lvl, 4, 0);
+		poke(scope, nk, 5, 0);
+		for (k = 0; k < 4; k += 1) {
+			poke(scope, sw.peek(4 + k), 6 + k, 0);
+		}
+		poke(scope, 0, 10, 0);
+		poke(scope, 2048, 12, 0);
+		poke(scope, wn + 1, 13, 0);
+		cn0 = cntr + 1;
+		cn0 = cn0 >= 1000000 ? 0 : cn0;
+		cntr = cn0;
+		poke(scope, cn0, 0, 0);
+	} else {
+		poke(scope, 1, 10, 0);
+	}
+}
+
+// Per-sample class gains: linear interpolation between S_{j-4} and S_{j-3} at phase / 256 (phase 0 on the hop sample).
+fr = st.peek(1) * 0.00390625;
+g1 = sw.peek(0) + fr * (sw.peek(4) - sw.peek(0));
+g2 = sw.peek(1) + fr * (sw.peek(5) - sw.peek(1));
+g3 = sw.peek(2) + fr * (sw.peek(6) - sw.peek(2));
+g4 = sw.peek(3) + fr * (sw.peek(7) - sw.peek(3));
+
+// Class mask bits (0 / 1), one-pole smoothed (3 ms) so a mask change does not click; static masks sit exactly on 0 / 1.
+cmk = clip(round(cmask), 0, 15);
+tb0 = cmk - 2 * floor(cmk * 0.5);
+tb1 = floor(cmk * 0.5) - 2 * floor(cmk * 0.25);
+tb2 = floor(cmk * 0.25) - 2 * floor(cmk * 0.125);
+tb3 = floor(cmk * 0.125);
+cm = 1 - exp(-1. / (0.003 * samplerate));
+n0 = m0s + cm * (tb0 - m0s);
+n0 = abs(n0 - tb0) < 1e-9 ? tb0 : n0;
+m0s = n0;
+n1 = m1s + cm * (tb1 - m1s);
+n1 = abs(n1 - tb1) < 1e-9 ? tb1 : n1;
+m1s = n1;
+n2 = m2s + cm * (tb2 - m2s);
+n2 = abs(n2 - tb2) < 1e-9 ? tb2 : n2;
+m2s = n2;
+n3 = m3s + cm * (tb3 - m3s);
+n3 = abs(n3 - tb3) < 1e-9 ? tb3 : n3;
+m3s = n3;
+gsum = g1 * n0 + g2 * n1 + g3 * n2 + g4 * n3;
+
+glt = gain <= -69.5 ? 0 : pow(10., gain * 0.05);
+gn = gls + 0.002 * (glt - gls);
+gn = abs(gn - glt) < 1e-9 ? glt : gn;
+gls = gn;
+
+dl1.write(in1);
+dl2.write(in2);
+out1 = dl1.read(2048) * gsum * gn;
+out2 = dl2.read(2048) * gsum * gn;

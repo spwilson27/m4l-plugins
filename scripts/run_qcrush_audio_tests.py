@@ -18,12 +18,18 @@ Cases:
   bits_3 / bits_8      fewer bits change the signal more, monotonically
   scr_rev / scr_shuf / scr_rot   each scramble mode changes the spectral envelope; scr_off is identity
   shift_up / shift_down   Shift +12 removes the odd partials (octave-up comb), the pitch peak moves to q/2 (-12: 2q)
-  freeze         Freeze keeps vowel A's envelope while the input moves to vowel B
-  hold_slow / hold_fast   Hold 1 bar holds it for 2 s, Hold 1/32 follows
-  tickrate / ppqlock      the hold clock runs at the Live tempo and locks to the host position
+  freeze         Glitch Frz keeps vowel A's envelope while the input moves to vowel B
+  hold_slow / hold_fast   Glitch Hold at Rate 1 bar holds it for 2 s, at 1/32 it follows
+  tickrate / ppqlock      the Hold clock runs at the Live tempo and locks to the host position
+  glitch_drop / glitch_repeat / glitch_reverse   Glitch Drop / Rpt / Rev at Amount 100 %, Rate 1/16: the signal changes,
+                 is finite, never louder than the input (Drop) and keeps its level within 4 dB (Rpt, Rev)
+  phase_robot / phase_whisper / phase_min   Phase Robot / Whisp / Min: level within 3 dB of dry, no NaN, peak <= 1.0
+  lag            Lag 100 %: per-coefficient delays change the signal, level within 4 dB
   sizeswitch     Size 1024 -> 4096 -> 512 -> 2048 while playing: finite, no clicks, back at unity
   extreme        every operation at its extreme at N = 512: finite and bounded
-  perf           everything on at N = 4096: audio CPU
+  stress         Drop/Rpt/Rev glitch + Whisp phase + Lag 100 % + scramble + crush at N = 512 with Rate 1/32: finite, bounded
+  perf           Hold + crush at N = 4096: audio CPU
+  perf_all       everything on (Rpt glitch, Whisp phase, Lag, scramble, shift, crush) at N = 4096: audio CPU
 """
 
 import concurrent.futures
@@ -43,7 +49,7 @@ LATENCY = 4096
 PHASE_HZ = 1.0 / 3.0
 WORKERS = 4
 
-BASE = "fftn 2048, coeffs 1, qbits 16, smode 0, samt 0.5, qshift 0, freeze 0, qhold 0, wet 1, outdb 0, bpm 120, ppq 0"
+BASE = "fftn 2048, coeffs 1, qbits 16, smode 0, samt 0.5, qshift 0, gmode 0, grate 1, pmode 0, qlag 0, wet 1, outdb 0, bpm 120, ppq 0"
 
 
 def p(extra):
@@ -152,15 +158,25 @@ def cases():
         c("scr_rot", params=p("smode 3, samt 0.6")),
         c("shift_up", params=p("qshift 12")),
         c("shift_down", params=p("qshift -12")),
-        c("freeze", params=p(""), events=[(800, "freeze 1")]),
-        c("hold_slow", params=p(""), events=[(400, "qhold 6")]),
-        c("hold_fast", params=p(""), events=[(400, "qhold 1")]),
-        c("tickrate", params=p("qhold 2"), dur=2000, tick=True),
-        c("ppqlock", params=p("qhold 3"), dur=2000, ppqfeed=True, tick=True),
+        c("freeze", params=p(""), events=[(800, "gmode 5")]),
+        c("hold_slow", params=p(""), events=[(400, "gmode 4, grate 5")]),
+        c("hold_fast", params=p(""), events=[(400, "gmode 4, grate 0")]),
+        c("tickrate", params=p("gmode 4, grate 1"), dur=2000, tick=True),
+        c("ppqlock", params=p("gmode 4, grate 2"), dur=2000, ppqfeed=True, tick=True),
+        c("glitch_drop", params=p("gmode 1, samt 1.0, grate 1")),
+        c("glitch_repeat", params=p("gmode 2, samt 1.0, grate 1")),
+        c("glitch_reverse", params=p("gmode 3, samt 1.0, grate 1")),
+        c("phase_robot", params=p("pmode 1")),
+        c("phase_whisper", params=p("pmode 2")),
+        c("phase_min", params=p("pmode 3")),
+        c("lag", params=p("qlag 1.0")),
         c("sizeswitch", stim="sine", dur=4800, params=p("fftn 1024, coeffs 0.999, qbits 15"),
           events=[(1000, "fftn 4096"), (2200, "fftn 512"), (3400, "fftn 2048")]),
-        c("extreme", params=p("fftn 512, coeffs 0, qbits 1, smode 2, samt 1, qshift -12, freeze 1"), dur=2000),
-        c("perf", params=p("fftn 4096, coeffs 0.6, qbits 6, smode 1, samt 0.7, qshift 5, qhold 2"), dur=2000, cpu=True),
+        c("extreme", params=p("fftn 512, coeffs 0, qbits 1, smode 2, samt 1, qshift -12, gmode 5, pmode 2, qlag 1.0"), dur=2000),
+        c("stress", params=p("fftn 512, coeffs 0.3, qbits 3, smode 2, samt 1, qshift -7, gmode 2, grate 0, pmode 2, qlag 1.0"), dur=2400,
+          events=[(600, "gmode 3"), (1000, "gmode 1"), (1400, "gmode 2, pmode 3"), (1800, "gmode 4, pmode 1")]),
+        c("perf", params=p("fftn 4096, coeffs 0.6, qbits 6, smode 1, samt 0.7, qshift 5, gmode 4, grate 1"), dur=2000, cpu=True),
+        c("perf_all", params=p("fftn 4096, coeffs 0.6, qbits 6, smode 1, samt 0.7, qshift 5, gmode 2, grate 1, pmode 2, qlag 1.0"), dur=2000, cpu=True),
     ]
     return out
 
@@ -306,10 +322,34 @@ def check(name, m, results, errors):
             err(f"output did not return to the sine's level after the switches (tail peak {m['tailpeak']:.3f})")
         if m["scN"] != 2048:
             err(f"telemetry N {m['scN']:.0f}, expected 2048")
-    elif name == "extreme":
+    elif name in ("glitch_drop", "glitch_repeat", "glitch_reverse"):
+        if m["errdb"] < -40:
+            err(f"{name}: Amount 100 % changed nothing ({m['errdb']:.1f} dB residual)")
+        if name == "glitch_drop":
+            if m["lvl"] > 0.5:
+                err(f"Drop made the output louder than the input ({m['lvl']:.2f} dB)")
+            if m["lvl"] < -15:
+                err(f"Drop swallowed the signal ({m['lvl']:.1f} dB)")
+        elif abs(m["lvl"]) > 4.0:
+            err(f"{name}: level changed by {m['lvl']:.1f} dB (repeated / reversed frames keep their energy)")
         if m["peak"] > 6:
-            err(f"peak {m['peak']:.2f} at extreme settings")
-    elif name == "perf":
+            err(f"{name}: peak {m['peak']:.2f}")
+    elif name in ("phase_robot", "phase_whisper", "phase_min"):
+        if abs(m["lvl"]) > 3.0:
+            err(f"{name}: level {m['lvl']:.1f} dB from dry (limit 3 dB)")
+        if m["peak"] > 1.0:
+            err(f"{name}: peak {m['peak']:.3f} above 1.0")
+        if m["errdb"] < -30:
+            err(f"{name}: the rebuilt phase barely changed the signal ({m['errdb']:.1f} dB)")
+    elif name == "lag":
+        if abs(m["lvl"]) > 4.0:
+            err(f"Lag 100 %: level changed by {m['lvl']:.1f} dB")
+        if m["errdb"] < -40:
+            err(f"Lag 100 % barely changed the signal ({m['errdb']:.1f} dB)")
+    elif name in ("extreme", "stress"):
+        if m["peak"] > 6:
+            err(f"peak {m['peak']:.2f} at {name} settings")
+    elif name in ("perf", "perf_all"):
         if m["cpuMax"] > 70:
             err(f"audio CPU peaked at {m['cpuMax']:.1f} %")
     if name not in ("silence", "mix0", "outgain") and not name.startswith("ident_") and not name.startswith("size"):

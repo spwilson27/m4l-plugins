@@ -149,10 +149,8 @@ MSEG_POINTS = [
     {"x": 1, "y": 0.8, "curve": 0, "sCurve": 0},
 ]
 
-MAPPING = {"mode": "mod", "amount": 0.8, "bipolar": 1, "curve": 3, "curveAmt": 0.6, "curveSteps": 4,
-           "invert": 0, "min": 0, "max": 1}
-MAPPING_B = {"mode": "remote", "amount": 1.0, "bipolar": 0, "curve": 1, "curveAmt": 0.5, "curveSteps": 4,
-             "invert": 1, "min": 0.1, "max": 0.9}
+MAPPING = {"mode": "mod", "amount": 0.8, "polarity": 0, "range": 1, "curve": 3, "curveAmt": 0.6, "curveSteps": 4}
+MAPPING_B = {"mode": "remote", "min": 0.85, "max": 0.15, "polarity": -1, "range": 0.9, "amount": 0.8, "curve": 1, "curveAmt": 0.5, "curveSteps": 4}
 ROUTER_CASE = {"base": ROUTER * mc.ROUTER_SLOTS, "slots": [
     {"slot": ROUTER * mc.ROUTER_SLOTS + 0, "src": 0, "map": MAPPING},
     {"slot": ROUTER * mc.ROUTER_SLOTS + 1, "src": 1, "map": MAPPING_B},
@@ -409,7 +407,7 @@ def check(case, runs, metas, errors, notes):
         if any(abs(outs[i]) > 1e-9 for i in range(16) if i not in (0, 7, 15)):
             err("disabled slots must stay at 0")
     elif case == "lookup_chain":
-        for tag, m in zip(("slot A (src mod 0, mod-mode S curve)", "slot B (src mod 1, remote exp inverted)"), ms[:2]):
+        for tag, m in zip(("slot A (src mod 0, mod-mode S curve)", "slot B (src mod 1, remote exp, min 0.85 > max 0.15 inverted)"), ms[:2]):
             notes.append(f"{tag}: max err vs mappingOutput {m['lookup_err']:.5f}; decoy-region err {m['lookup_err_decoy']:.3f}; "
                          f"in {m['lookup_in_range']} out {m['lookup_out_range']}; samples {m['lookup_samples']}")
             # idx = clip((x + 1) * 128, 0, 256), linear interp, clamped to the last sample, from region slot*256

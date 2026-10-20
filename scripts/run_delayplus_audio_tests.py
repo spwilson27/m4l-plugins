@@ -17,7 +17,12 @@ Cases:
   offset       — Offset 0.5: right echo at 1.5 T, left at T
   freeze       — (stepped mode, Freeze message at a sample time) Freeze holds the loop within 1 dB over repeats and ignores new input
   debug        — Debug ping measures the chain latency (hdr[10] == L) and the loop error hdr[17] is 0
-  blowup       — fb 1.1 + full drive on 5 s of noise stays finite and below 2.0
+  midside      — Mid/Side mode: impulse on L -> mid echo (Left time) in phase on both sides, side echo
+                 (Right time) +L / -R
+  invert       — Feedback Invert: the second echo flips polarity
+  gate         — Gate at -20 dB: a hit below it does not reach the delay
+  filter       — Filter on, LP 400 Hz: the echo is darker than the dry hit
+  blowup       — fb 1.1 + Clip Dry at +12 dB input on 5 s of noise stays finite and below 2.0
 """
 
 import concurrent.futures
@@ -69,7 +74,7 @@ out2 = sig * rch;
 out3 = (d == 0) ? 1 : 0;
 """
 
-BASE = "hp 10, lp 20000, tmode 1, tms 100, fb 0.5, wet 0.5"
+BASE = "filton 0, hp 10, lp 20000, repitch 0, tmsL 100, tmsR 100, fb 0.5, wet 0.5"
 
 
 def device(start_code, end_code, case):
@@ -135,14 +140,18 @@ def cases():
         c("timing_L256", L=256),
         c("timing_L1000", L=1000),
         c("timing_gain", L=256, gain=0.5),
-        c("clamp", "tms 50", L=4000, dur=600),
-        c("pingpong", "pp 1", source="kind 0, amp 0.8, pos 600, rch 0"),
-        c("offset", "off 0.5", dur=700),
+        c("clamp", "tmsL 50, tmsR 50", L=4000, dur=600),
+        c("pingpong", "chmode 1", source="kind 0, amp 0.8, pos 600, rch 0"),
+        c("offset", "tmsR 150", dur=700),
+        c("midside", "chmode 2, tmsL 100, tmsR 150", source="kind 0, amp 0.8, pos 600, rch 0", dur=700),
+        c("invert", "inv 1"),
+        c("gate", "gateon 1, gatethr -20", source="kind 0, amp 0.05, pos 600", dur=500),
+        c("filter", "filton 1, hp 20, lp 400", dur=500),
         # Freeze needs a message at a sample time -> stepped mode (event lands within one vector).
         c("freeze", "wet 1", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80", dur=1700,
           mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
         c("debug", "debug 1", source="kind 0, amp 0, pos 600", L=256, dur=1500, dump=False),
-        c("blowup", "tms 50, fb 1.1, drive 1, wet 1", source="kind 2, amp 1.0, pos 100", dur=5000, dump=False),
+        c("blowup", "tmsL 50, tmsR 50, fb 1.1, clipdry 1, inputdb 12, wet 1", source="kind 2, amp 1.0, pos 100", dur=5000, dump=False),
     )
 
 
@@ -323,6 +332,40 @@ def check(case, meta, data, errors):
             if sep < 30:
                 errors.append(f"pingpong: echo{n} not on the expected channel (separation {sep:.1f} dB)")
             check_echo(f"pingpong echo{n}", strong, c, errors)
+
+    elif name == "midside":
+        # impulse on L only: mid = side = A/2. Mid echo (T) is in phase on both sides, side echo
+        # (1.5T) comes out +A/2 on the left and -A/2 on the right.
+        a, b = dry + T, dry + int(1.5 * T)
+        iL, vL = check_echo("mid echo L", l, a, errors)
+        mL, mR = l[iL], r[iL]
+        jL, _ = check_echo("side echo L", l, b, errors)
+        sL, sR = l[jL], r[jL]
+        print(f"mid echo L {mL:+.3f} R {mR:+.3f}; side echo L {sL:+.3f} R {sR:+.3f}")
+        if mL <= 0 or mR <= 0 or abs(db(abs(mL) / max(abs(mR), 1e-9))) > 0.5:
+            errors.append(f"midside: mid echo should be equal and positive on both sides (L {mL:+.3f}, R {mR:+.3f})")
+        if sL <= 0 or sR >= 0 or abs(db(abs(sL) / max(abs(sR), 1e-9))) > 0.5:
+            errors.append(f"midside: side echo should be +L / -R (L {sL:+.3f}, R {sR:+.3f})")
+
+    elif name == "invert":
+        i1, _ = check_echo("echo1", l, dry + T, errors)
+        i2, _ = check_echo("echo2", l, dry + 2 * T, errors)
+        print(f"echo1 {l[i1]:+.3f}, echo2 {l[i2]:+.3f}")
+        if not (l[i1] > 0 and l[i2] < 0):
+            errors.append(f"invert: expected echo1 > 0 and echo2 < 0 (got {l[i1]:+.3f}, {l[i2]:+.3f})")
+
+    elif name == "gate":
+        e = energy_near(l, dry + T)
+        print(f"echo energy with the gate closed: {e:.2e}")
+        if e > 1e-7:
+            errors.append(f"gate: a hit below the threshold still echoes (energy {e:.2e})")
+
+    elif name == "filter":
+        di, dv = check_echo("dry", l, dry, errors, tol=2)
+        e1 = max(abs(v) for v in l[dry + T - 40:dry + T + 40])
+        print(f"echo1/dry with LP 400 Hz: {db(e1 / dv):+.2f} dB")
+        if db(e1 / dv) > -3:
+            errors.append(f"filter: LP 400 Hz should darken the echo by > 3 dB (got {db(e1 / dv):+.2f} dB)")
 
     elif name == "offset":
         iL, vL = check_echo("left echo", l, dry + T, errors)

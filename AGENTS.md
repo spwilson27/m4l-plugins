@@ -50,8 +50,8 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Better Sampler
      npm run -s typecheck && python3 scripts/build_sampler.py && node tests/test_sampler.js && python3 scripts/render_preview.py "devices/Better Sampler.amxd"
 
-     # Delay+ (one build writes the 3 Start variants, the End, the .adg presets and delayplus_test.als)
-     npm run -s typecheck && python3 scripts/build_delayplus.py && node tests/test_delayplus.js && for v in "Delay+ A" "Delay+ B" "Delay+ C" "Delay+ End"; do python3 scripts/render_preview.py "devices/$v.amxd"; done
+     # Delay+ (one build writes Delay+, Delay+ End, the .adg preset and delayplus_test.als)
+     npm run -s typecheck && python3 scripts/build_delayplus.py && node tests/test_delayplus.js && for v in "Delay+" "Delay+ End"; do python3 scripts/render_preview.py "devices/$v.amxd"; done
 
      # Envelope Trigger
      npm run -s typecheck && python3 scripts/build_envtrig.py && node tests/test_envtrig.js && python3 scripts/render_preview.py "devices/Envelope Trigger.amxd"
@@ -59,6 +59,8 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Mega Modulator
      npm run -s typecheck && python3 scripts/build_megamod.py && node tests/test_megamod.js && node tests/test_megamod_ui.js && python3 scripts/render_preview.py "devices/Mega Modulator.amxd"
+     # Timbre Split (Max audio test runs in the VM only, section 1a)
+     npm run -s typecheck && python3 scripts/build_tsplit.py && node tests/test_tsplit.js && python3 scripts/render_preview.py "devices/Timbre Split.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -706,7 +708,7 @@ Max and Live run only in the tart VM (section 1a), through `scripts/vm_envtrig.s
 - **Sliced keymap**:
   - `activeSliceStarts(sliceMarkers, start, end)`: the first slice starts at the start point. Slice `k` plays on `slice_from + k` (`voiceAlloc.setSliceBaseNote`), and the last slice stops at the end.
   - **Live bounds**: start / end changes re-resolve held notes (`updateSliceBounds`) and re-poke `#0-bsvoices` without retriggering.
-  - **Slice at** (`recomputeSlices()`, slicers in `src/sampler_config.js`): Divisions and Beats (tempo from the file name via `bpmFromName`, else Live's tempo) are laid out from the start point and move with it. Onsets / Pitches run on a mono copy of the sample (`sliceMono`). In Manual, double-click adds or removes a marker, and dragging a flag moves it (that also switches to Manual).
+  - **Slice at** (`recomputeSlices()`, slicers in `src/sampler_config.js`): Divisions and Beats (tempo from the file name via `bpmFromName`, else Live's tempo) are laid out from the start point and move with it. Onsets / Pitches run on a mono copy of the sample (`sliceMono`). The copy is built lazily, only when one of them is selected, and in 256k-frame chunks on a `Task` (`requestSliceMono`), so loading a sample reads only waveform-sized chunks. The footer shows `analyzing…` meanwhile, and a new load cancels it and starts over. In Manual, double-click adds or removes a marker, and dragging a flag moves it (that also switches to Manual).
 - **Pos (`play_pos`) only applies while Freeze is on**.
 - With no sample loaded, MIDI still runs the voices, but no scan lines are drawn.
 
@@ -761,12 +763,33 @@ Audio checks (real Max render): `python3 scripts/run_sampler_audio_tests.py` (pr
 
 ---
 
-## 15. Architecture of `devices/Delay+ *.amxd` (two-device delay, feedback through a Live device chain)
+## 15. Architecture of `devices/Delay+.amxd` + `devices/Delay+ End.amxd` (two-device delay, feedback through a Live device chain)
 
 ### Topology
-- Bitwig Delay+ style: the delay's tank feeds a chain of **real Live devices**. M4L cannot host devices, so it is two devices in one Audio Effect Rack chain: `[Delay+ A|B|C] [user FX ...] [Delay+ End]` (`devices/Delay+ X.adg` ships the rack with an empty middle). The Start outputs **only the delay tap** into the chain; the End mixes dry + processed wet and writes the processed wet back to the Start as the feedback return. So both the first echo and every repeat go through the FX.
-- `Delay+ A` / `B` / `C` are identical DSP + parameters with different visualizations (`src/delayplus_viz_{a,b,c}.js`: Echo Taps, Tape Loop, Signal Flow). `Delay+ End` (124 px) only shows link status, the latency in use, the debug ping result and wet/dry meters.
+- Bitwig Delay+ style: the delay's tank feeds a chain of **real Live devices**. M4L cannot host devices, so it is two devices in one Audio Effect Rack chain: `[Delay+] [user FX ...] [Delay+ End]` (`devices/Delay+.adg` ships the rack with an empty middle). Delay+ (the Start) outputs **only the delay tap** into the chain; the End mixes dry + processed wet and writes the processed wet back to the Start as the feedback return. So both the first echo and every repeat go through the FX.
+- `Delay+ End` (124 px) only shows link status, the latency in use, the debug ping result and wet/dry meters. All controls live on Delay+.
 - Unpaired Start passes dry through; an End without a live Start passes its input through.
+
+### Presentation Layout (`492 x 169` px, a copy of Ableton's Echo face — `scripts/delayplus_layouts/echo.py`)
+- The face copies Echo control for control (Live theme colours: no colour attributes on the `live.*` objects), except that Echo's tunnel is replaced by the tape-loop ring and Echo's reverb is left out (its slot holds `Freeze` and `Debug`). Reference screenshots of Echo: Sound On Sound "Echo in Ableton Live" and PCAudioLabs' Echo series; the manual's Echo section documents every control.
+- **Left column**: `Left` / `Right` delay dials (each side's `Sync` button swaps `Left Time` (ms) and `Left Division` (note value) in the same rect via `hidden`), the Stereo Link icon between them, per side `Sync`, the `Sync Mode` menu (`Notes` / `Triplet` / `Dotted`; Echo's `16th` mode is not implemented) and `Offset` (+-33 %), then `Input` with `D` (Clip Dry) and `Ø` (Feedback Invert), and `Feedback`.
+- **Centre**: `[Echo | Modulation | Character]` tabs (hidden UI-state parameter `Delay+ Page`).
+  - **Echo**: the ring display (`obj-viz`, `src/delayplus_ui.js` + `src/delayplus_viz_b.js`: status pill, tape-loop ring in Echo's orange / white / blue, no text) and Echo's bottom row: the Filter Display triangle, `Filter` on, `HP`, `Res`, `LP`, `Res`. The triangle shows / hides the **Filter Display** (`obj-filtdisp`, `src/delayplus_filter.js`, its own panel; dots draggable: x = cutoff, y = resonance, double-click resets) and the ring shrinks to the top part of the display (`presentation_rect` message to `obj-viz`).
+  - **Modulation**: the LFO display (`obj-lfodisp`, `src/delayplus_lfo.js`: L blue / R orange waveforms, live dots from the scope telemetry, clickable waveform icons -> `Mod Waveform`), then `Sync` / `Rate` (Hz or note value) / `Phase`, `x4` and `Mod Delay`, `Mod Filter`, `Env Mix`.
+  - **Character**: `Gate`, `Ducking`, `Noise`, `Wobble` sections (on toggle + two values each) and `Repitch`.
+- **Right column**: `Freeze`, `Debug`, `Stereo` (width), `Output`, the `Stereo` / `Ping Pong` / `Mid/Side` stack, `Dry/Wet`.
+- **Show / hide** (Echo's mechanisms): one `pak page filterDisplay modSync` feeds an `expr` per widget group -> `prepend hidden` (plus the ring's size). All three inputs are stored parameters, so the state comes back on load. Live's UI font has no triangle / link glyphs, so those two toggles are tiny icon v8uis (`src/delayplus_icon.js`, `DP_ICON` set per instance by the build) driving `live.text` parameters that stay out of the presentation.
+- **Stereo Link** is done in the face script: a change of one side's time, Sync or Sync Mode is sent to the other side's control with `set` (outlet 1 `mirror <key> <v>` -> `route` -> `prepend set`), which does not output, so it cannot loop.
+- **Times / LFO rate** are computed in the face (`dpSideMs`, `dpLfoHz` in `src/delayplus_config.js`) and poked into the gen header (`hdr[31]` left / mid ms, `hdr[28]` right / side ms, `hdr[27]` LFO Hz).
+- `scripts/build_delayplus.py` holds the parameter table `P` (Echo-style long names); a layout module must present every key exactly once and may declare extra displays (`v8uis`: script, rect, the keys whose `set_<key>` they receive, telemetry `names`, `icon`).
+
+- **Theme colours** (follow Live's theme and hue, like Echo): patcher objects bind colour attributes with `"saved_attribute_attributes": {"<attr>": {"expression": "themecolor.live_..."}}` next to a static fallback (`theme()` helper in `scripts/build_delayplus.py`). A `panel` must bind **`bgfillcolor`** (what it paints with; Ableton's own patches do this), binding `bgcolor` changes nothing. v8ui scripts read `max.getcolor("live_...")` via `dpTheme(name, fallback)` on every paint and `dpThemeWatch()` redraws once a second if the theme changed. Names used: `live_lcd_bg` (displays, selected tab), `live_surface_bg` (side sections), `live_lcd_title` / `live_lcd_control_fg` (display labels / values), `live_display_line_one/two`, `live_display_handle_one/two`, `live_display_scale_text`, `live_lcd_frame`, `live_control_bg/fg`, `live_control_selection`, `live_alert`.
+- **Parameter names in Live are the short names** (`parameter_shortname`): the LOM `name` / `original_name` and Live's automation and mapping lists use them (verified in Live 12.4.6), so every short name in `P` must be unique (`L Division`, `Gate Thr`, `Duck Rel`, ...). Widgets whose face label differs (the Left / Right time dials hold two parameters each) set `showname 0` and get a `live.comment` label.
+
+### DSP additions (Echo controls)
+- Start: per-side times, Mid/Side (the tank runs in M/S; taps are converted back to L/R before the chain, the return to M/S before the tank), Ping Pong, Input gain + Clip Dry + Gate on the signal entering the tank only, Feedback Invert, filter on/off with resonance (`k = 1.4142 * (1 - 0.95 * res)`) and LFO filter modulation (+-2 octaves), LFO (6 shapes, right-channel phase, x4, blended with an input envelope by `Env Mix`) on the delay time, Wobble (random wow / flutter, morph), Noise in the loop (hiss -> crackle), Repitch (tape glide vs crossfade).
+- End: Ducking (threshold / release on the dry level, up to -24 dB) and Output gain on the wet, read from `hdr[40..42]`.
+- The tank write soft-limits where input and feedback meet (linear below 1, tanh knee to 1.8), inlined in the main body: the same expression as a GenExpr helper function that declares a local variable made the whole Start gen fail to compile in Max 9.1 (identity helpers compiled).
 
 ### Cross-device transfer (`src/delayplus_start.genexpr`, `src/delayplus_end.genexpr`)
 - **Buffer names use M4L's `---` prefix** (`buffer~ ---dpxfer`, also in the message boxes). In Live, `#0` is NOT expanded in a device's top-level patcher (only in abstractions): with `#0-` names every Delay+ instance shared one header and transfer buffer, which looked like random timing jitter with more than one pair.
@@ -784,16 +807,16 @@ Audio checks (real Max render): `python3 scripts/run_sampler_audio_tests.py` (pr
 
 ### Build / Test / Preview
 ```bash
-npm run -s typecheck && python3 scripts/build_delayplus.py && node tests/test_delayplus.js && for v in "Delay+ A" "Delay+ B" "Delay+ C" "Delay+ End"; do python3 scripts/render_preview.py "devices/$v.amxd"; done
+npm run -s typecheck && python3 scripts/build_delayplus.py && node tests/test_delayplus.js && for v in "Delay+" "Delay+ End"; do python3 scripts/render_preview.py "devices/$v.amxd"; done
 ```
 - `tests/test_delayplus.js`: config math, pairing, a sample-level reference simulation of the slice-based two-device loop (echoes exactly on n * T for several L / slice sizes), and structural checks of the built devices.
 - Audio checks (real Max render, Start gen -> `delay~ L` -> End gen in one patch, shared `scripts/max_harness.py`): `scripts/vm_delayplus.sh audio` (runs `python3 scripts/run_delayplus_audio_tests.py` in the VM).
-- **In Live (tart VM, see 1a)**: `delayplus_test.als` (generated by `scripts/make_delayplus_sets.py`: tracks `Delay+ A/B/C` with rack `[Start, Limiter 6 ms, End]`, MCP Bridge on Main) references the devices by absolute path, so it is rebuilt inside the VM. `scripts/vm_delayplus.sh live` syncs the repo to `~/ableton` in the VM, rebuilds there and (re)starts the VM's Live with that set (a rebuilt `.amxd` only loads when the set is reopened; Live is the only instance in the VM, so there is no "Another instance" dialog). `scripts/vm_delayplus.sh test` then runs `scripts/test_delayplus_live.js` on the host through an ssh tunnel (local 19877 -> VM bridge 9877): link, K/B, `L == LOM sum`, K calibrated from a Core Library drum loop it creates and plays, ping == LOM and loop error 0 for Limiter lookaheads 1.5 / 3 / 6 ms (64 / 128 / 256 samples at 44.1 kHz). `scripts/vm_delayplus.sh audio` runs the audio harness in the VM.
+- **In Live (tart VM, see 1a)**: `delayplus_test.als` (generated by `scripts/make_delayplus_sets.py`: tracks `Delay+ 1/2/3` with rack `[Delay+, Limiter 6 ms, Delay+ End]`, MCP Bridge on Main) references the devices by absolute path, so it is rebuilt inside the VM. `scripts/vm_delayplus.sh live` syncs the repo to `~/ableton` in the VM, rebuilds there and (re)starts the VM's Live with that set (a rebuilt `.amxd` only loads when the set is reopened; Live is the only instance in the VM, so there is no "Another instance" dialog). `scripts/vm_delayplus.sh test` then runs `scripts/test_delayplus_live.js` on the host through an ssh tunnel (local 19877 -> VM bridge 9877): link, K/B, `L == LOM sum`, K calibrated from a Core Library drum loop it creates and plays, ping == LOM and loop error 0 for Limiter lookaheads 1.5 / 3 / 6 ms (64 / 128 / 256 samples at 44.1 kHz). `scripts/vm_delayplus.sh audio` runs the audio harness in the VM.
 
 
 ---
 
-## 16. Shared Cepstrum Engine (`src/cepstrum_lib.genexpr`) — Used by Lifter, Phase Fold, Quefrency Crush, Timbre Follower
+## 16. Shared Cepstrum Engine (`src/cepstrum_lib.genexpr`) — Used by Phase Fold, Quefrency Crush, Timbre Follower
 
 - GenExpr helper functions prepended by each build script to its own `*_core.genexpr`. The header comment holds the full API and a core skeleton; `tests/cepstrum_lib_core.genexpr` is a runnable example and `src/cepstrum_ref.js` is the Node reference mirror used by every device unit test.
 - **Data is passed by reference**: functions take `Data` arguments, but a function body cannot see a global `Data`, so the core declares `tab(4096,3)`, `win(4096)`, `fx(4096,2)`, `fc(4096,2)` plus per-channel `ring(4096)`, `acc(4096)`, `st(4)` and passes them in.
@@ -801,29 +824,11 @@ npm run -s typecheck && python3 scripts/build_delayplus.py && node tests/test_de
 - **Latency**: the STFT path is `N - 1` samples. Live's device latency is the static patcher attribute `"latency"` (no runtime message exists), so every device with a selectable `Size` pads the wet path with a `Delay` to a constant **4096** samples, delays dry identically, and sets `"latency": 4096`.
 - Tests: `node tests/test_cepstrum_lib.js`; real Max: `python3 scripts/run_cepstrum_lib_audio_tests.py`.
 - **GenExpr gotchas learned here** (all cost hours):
-  - Never name identifiers `phi`, `pi` or `e<digits>` — they are built-in constants (a `phi` upper bound silently shrank a peak search to one bin).
+  - Never name identifiers `phi`, `pi` or `e<digits>` — they are built-in constants (a `phi` upper bound once silently shrank a pitch-peak search to one bin).
   - A variable first assigned inside an `if` block is not visible after it; use top-level temps or `x = cond ? a : x`. Values computed at hop time are safest written to a `Data` slot and read with `peek` at top level.
   - `wrap()` with a non-constant upper bound fails codegen with `use of undeclared identifier 'v_NN'`; use explicit arithmetic.
   - `z = fn(d);` with `z` unused is dead-code-eliminated — call work functions as bare statements.
   - A `History` written this sample reads back its old value.
-
-## 17. Architecture of `devices/Lifter A.amxd`, `Lifter B.amxd`, `Lifter C.amxd`
-
-Quefrency-axis EQ: STFT → real cepstrum → user-drawn lifter gain curve over log-quefrency (0.2..40 ms, −24..+24 dB) → log-magnitude change → original phase → OLA. One DSP (`src/lifter_core.genexpr`), one parameter set, one v8ui (`src/lifter_ui.js`, layout via `layout a|b|c` at loadbang).
-
-- **Variants** (all 169 px high, `latency: 4096`):
-  - **A, 448 px "Canvas"**: 316×152 curve canvas over a live |c[n]| trace + cepstrogram, pitch-peak marker (`Hz` + confidence), in/out spectrum strip, 7-icon toolbar (Undo, Redo, Flat, Whisper, Robot, Body, Comb); right column value bars + `Size` tab + `Track`.
-  - **B, 340 px "Dials"**: 320×82 curve/cepstrum strip above `Depth`, `Smooth`, `Mix`, `Output` dials; `Size` 2×2 tab + `Track`.
-  - **C, 340 px "Perform"**: XY bell macro pad (drag = centre quefrency + gain) with Width slider and meters; `Depth`/`Mix` dials, `Smooth`/`Output` bars.
-- Params: `Depth` −100..100 % (bipolar, scales/inverts the curve), `Smooth` 0..100 %, `Mix`, `Output` ±24 dB, `Size` 512/1024/2048/4096 (default 1024), `Track` (re-centres quefrency on the detected pitch period), blob `CurveData` (getvalueof v2 `[2, bellWidth, n, x0, y0, ...]`, v1 still loads). Undo once per gesture, `notifyclients()` on release.
-- Gen: per hop, pitch peak (lib `cep_peak*`, 2..20 ms), delta cepstrum `(gain−1)·c` smoothed over time, soft-limited log-magnitude change, energy factor; a flat curve is exact identity. Size change holds wet, fades to dry, fades new wet in. Silent frames skip FFT work.
-- Buffers: `#0-liftercurve` (256 dB curve values from v8ui, bound `lcurve`), `#0-lifterscope` (telemetry, bound `lscope`).
-
-### Build / Test / Preview
-```bash
-npm run -s typecheck && python3 scripts/build_lifter.py && node tests/test_lifter.js && for v in A B C; do python3 scripts/render_preview.py "devices/Lifter $v.amxd"; done
-```
-Audio checks (real Max): `python3 scripts/run_lifter_audio_tests.py`
 
 ## 18. Architecture of `devices/Phase Fold A.amxd`, `Phase Fold B.amxd`, `Phase Fold C.amxd`
 
@@ -831,7 +836,13 @@ Cepstral phase sculptor: per STFT frame the real cepstrum is re-weighted asymmet
 
 - **Variants** (169 px high, `latency: 4096`): **A, 408 px** — in/out envelope canvas, frame-centroid strip and a draggable Phase handle field (MAX ↔ MIN) + value bars; **B, 300 px** — small scope strip over `Phase`, `Orig`, `Mix`, `Out` dials; **C, 440 px** — "transient lab" before/after waveform lanes with the Phase handle and a bottom control strip.
 - Params: `Phase` −100..+100 % (default −50), `Size` 512..4096 (default 2048), `Orig` 0..100 % (complex-domain blend back toward the original-phase spectrum), `Auto Gain`, `Mix`, `Output`.
-- **Level**: min/max-phase frames concentrate energy at frame edges where the Hann synthesis window is ~0 (−11..−16 dB on noise) and re-phased frames add as powers (−3.1 dB). Each frame is therefore placed at its loudest-sample pivot, and `Auto Gain` matches frame energy (+3.1 dB), fading out toward `Orig 100 %`. Measured level spread across Phase on drums: 0.31 dB.
+- **Crispiness fixes** (measured with `tests/phasefold_metrics.js`, regression-tested against `tests/phasefold_legacy_model.js` in `tests/test_phasefold.js`; A/B WAVs: `node tests/render_phasefold_ab.js` -> `tests/out/phasefold_ab/`):
+  - **Crest limiter** (`pf_limit`): the rebuilt phase of a noisy frame is one click (flat magnitude = minimum phase = impulse), so noise became a hop-rate click train (white noise ripple 2.8..4.3 dB, crest +19 dB). A frame may be at most 8 dB spikier than the input frame, else it is blended (1/8 steps) toward the input frame. Real clicks (crest not increased) are untouched.
+  - **Signed pivot** (`pf_pivot`): the pivot is the strongest *signed* `n/64` stretch of the windowed L+R input, not the loudest energy. The energy criterion flipped between the positive and negative crest of a periodic wave (13..25 dB AM on a sine, +6 dB floor between saw harmonics).
+  - **2N zero-padded cepstral path** (`pf_fft`, own 8192-point FFT because the library one stops at 4096): min/max-phase tails of narrow-band frames are dropped past `n`, not wrapped into the frame. `tab`, `fx`, `fc`, `xo` are `8192`-long.
+  - **Relative log floor**: `eps = max(peak |X| - 50 dB, 1e-9)`, taken out again by exp, so the magnitude stays exact while empty bins stop shaping the phase.
+  - **Level**: `Auto Gain` = `sqrt(eiS / eoS) * 1.1`, one-poles (0.25 per frame) of the input frame energy and of the energy of the frame actually added, clipped `0.25..4`, slewed over 20 ms, faded to 1 toward `Orig 100 %` (exact identity). Frame energies, not sample energies: a sample-wise ratio squashes a pre-ring where the input is still silent. Level spread across Phase < 1.5 dB.
+  - Known limit: tonal material with non-harmonic partials (chord) still shows ~3 dB of hop-rate ripple (input ~2 dB), because the pivot is not locked to every partial's phase.
 - Telemetry: `buffer~ #0-phasefoldscope`. Node mirror of the core: `tests/phasefold_model.js`.
 
 ### Build / Test / Preview
@@ -842,17 +853,23 @@ Audio checks (real Max): `python3 scripts/run_phasefold_audio_tests.py`
 
 ## 19. Architecture of `devices/Quefrency Crush A.amxd`, `Quefrency Crush B.amxd`, `Quefrency Crush C.amxd`
 
-Creative cepstral codec: mangles the real cepstrum, then rebuilds the log-magnitude spectrum on the original phase (energy + loudness matched, wet padded to 4096, Size changes bridged via dry). Processing order: Hold → Scramble → Shift → Coeffs → Bits.
+Creative cepstral codec: mangles the real cepstrum, then rebuilds the log-magnitude spectrum (energy + loudness matched, wet padded to 4096, Size changes bridged via dry). Processing order: Lag -> Glitch source -> Hold -> Scramble -> Shift -> Coeffs -> Bits -> phase rebuild (Phase mode).
 
-- **Variants** (169 px high, `latency: 4096`, one v8ui `src/qcrush_ui.js`): **A, 452 px** — coefficient-bar canvas hero (original ghost vs crushed bars, EXC/ENV strips, hold clock; drag sets Coeffs) + value-bar column; **B, 470 px** — compact canvas beside a Degrade-style `1. SIZE / 2. SCRAMBLE / 3. HOLD` LCD matrix with five dials; **C, 434 px** — Coeffs × Bits XY crush pad over the bars, Freeze pad, four dials.
-- Params: `Size` 512/1k/2k/4k, `Coeffs` (truncation), `Bits` 1..16 (coefficient quantization), `Scramble` Off/Rev/Shuf/Rot + `Amount`, `Shift` ±12 st (moves the pitch/excitation quefrency region, envelope stays), `Freeze` (envelope S&H), `Hold` Off..1 bar (tempo-synced re-freeze, locked to the host position), `Mix`, `Output`.
-- Telemetry: `buffer~ #0-qcrushscope` (320 floats). Node reference: `src/qcrush_ref.js`.
+- **Variants** (169 px high, `latency: 4096`, one v8ui `src/qcrush_ui.js`, 12 Live parameters each): **A, 520 px** — coefficient-bar canvas hero (284 x 134: original ghost vs crushed bars, EXC strip, Glitch clock, frame-history strip, Phase glyph, Lag spread, ENV; drag sets Coeffs) + eleven value-bar rows; **B, 520 px** — compact canvas beside a Degrade-style LCD `1.SIZE / 2.SCRAMBLE (+Amt) / 3.GLITCH (+Rate) / 4.PHASE (+Lag)` over five dials; **C, 500 px** — Coeffs x Bits crush pad over the bars, a Glitch pad face (`obj-glitch-face`, click cycles Off..Frz), Glitch tab, Rate menu, Phase tab, five dials + Scramble tab.
+- Params (12): `Size` 512/1k/2k/4k, `Coeffs` (truncation), `Bits` 1..16, `Scramble` Off/Rev/Shuf/Rot, `Amount` (scramble blend / rotation **and** the chance that a Glitch slot fires), `Shift` ±12 st, `Glitch` Off/Drop/Rpt/Rev/Hold/Frz, `Rate` 1/32..1 bar (Glitch slot length, tempo-synced and host-locked), `Phase` Orig/Robot/Whisp/Min, `Lag` 0..100 %, `Mix`, `Output`. Freeze and Hold are no longer parameters: they are the Glitch modes `Frz` and `Hold` (Hold re-freezes at the Rate period, identical to the old Hold). Neutral = Glitch Off / Phase Orig / Lag 0 and is bit-identical to the version before these features (`tests/qcrush_legacy_model.js` is a frozen copy of the old Node model; `tests/qcrush_dsp_tests.js` compares them bin for bin).
+- **Glitch** (`qc_select`): Rate slots on the host-locked beat (`plugsync~` ppq, same clock as Hold); slot `floor(beat / period)` fires when `hash(slot) < Amount`, so a loop or re-render repeats the same events. A ring holds the last 32 *received* cepstral frames per channel (`Data rgL/rgR`, 2050 floats per frame, only `c[0..N/2]`). While a slot is active the live frame is not stored (the ring freezes): **Drop** holds the last received frame and fades it 0.5^k per lost frame (packet-loss concealment, silent after a few frames), **Rpt** loops the last W received frames oldest to newest, **Rev** reads them backwards (W = half a slot in frames, clamped 1..8, and to what the ring holds). Only magnitude (cepstrum) comes from the ring; the live phase keeps moving, so nothing clicks (tested bin for bin).
+- **Lag** (`qc_lagtab`, `qc_select`): coefficient q >= 1 is read `floor(12 * Lag * s(q) + 0.5)` frames back, `s(q) = 0.5 * min(1, (q-1)/127) + 0.5 * hash(q, 4.1414)` (index ramp + fixed seeded spread, spread computed once). c0 (level) is never delayed; Lag 0 (or below 0.1 %) skips the ring. Lag composes with Glitch (read relative to the glitch-selected frame). Max delay 12 frames, ring depth 32.
+- **Phase** (`qc_phase`): `Orig` = the old remag on the input phase. `Robot` = zero phase moved to the frame centre by `(-1)^k` (monotone buzz at the hop rate N/4, so Size sets its pitch; a pure sine beats against the hop). `Whisp` = random phase per bin and frame, Hermitian, seed = host-locked hop index (+77 on the right channel). `Min` = minimum phase of the crushed log magnitude, reusing the Phase Fold fixes (section 18): relative log floor (peak - 50 dB), causal fold of the cepstrum evaluated on a zero-padded **2N** grid (own 8192 FFT `qc_fft`, tail past N dropped not wrapped), delay to the signed pivot of the input frame (`qc_pivot`), and a crest limiter (at most 8 dB spikier than the input frame, else blended toward it). Level: Robot / Whisp / Min frames are matched to the input frame energy (`qc_pgain`, one-poled 0.25 per frame, x1.45 / x1.41 / x1.1 because unrelated-phase frames add as powers); steady-state level within 1.5 dB of the input on speech-like, noise and saw material at N = 1024. Known limits: Min with Coeffs below ~60 % (envelope only, one pulse per hop) is a punchy hop-rate buzz; heavily low-passed noise shows a few dB of hop-rate ripple.
+- Soft knee and loudness-match AGC apply whenever any new feature is on (`neuE`), as they do for any crush; with all neutral the output stage is untouched.
+- **CPU**: neutral costs nothing extra. Glitch Drop/Rpt/Rev and Lag add a ring store and read of N/2 floats per frame per channel (no FFT); Robot adds one pass; Whisp adds N/2 sin/cos/hash per frame per channel; Min adds an N-point IFFT plus two 2N FFTs per frame per channel (about 2.4x the base per-frame cost, only while Phase = Min). Ring memory 2 x 65600 floats; lag spread table computed once.
+- Telemetry: `buffer~ #0-qcrushscope` (320 floats; 0..305 as before, `306/307` 24-frame event history packed 2 bits per frame (0 normal, 1 dropped, 2 repeat, 3 reverse), `308` Glitch mode, `309` Phase mode, `310` Lag, `311` slot phase, `312` slot fired, `313` loop window W, `314` slot counter, `315` Drop fade gain, `316` loop position). Node reference: `src/qcrush_ref.js` (`DeviceModel` mirrors the whole control block and one channel).
+- **GenExpr checked in Node**: `tests/genexpr_functions.js` transpiles the plain functions of `cepstrum_lib.genexpr` + `qcrush_core.genexpr` to JS (Data arguments bounds-checked) and `tests/qcrush_dsp_tests.js` runs `qc_select`, `qc_proc`, `qc_phase`, `qc_min`, ... against the mirror frame for frame. It cannot see GenExpr-only semantics (variable scope in `if`, DCE), so the real-Max runner still matters; every new function has a single `return` at function level (linted).
 
 ### Build / Test / Preview
 ```bash
 npm run -s typecheck && python3 scripts/build_qcrush.py && node tests/test_qcrush.js && for v in A B C; do python3 scripts/render_preview.py "devices/Quefrency Crush $v.amxd"; done
 ```
-Audio checks (real Max): `python3 scripts/run_qcrush_audio_tests.py`
+Audio checks (real Max, in the VM): `python3 scripts/run_qcrush_audio_tests.py` (new cases `glitch_drop/repeat/reverse`, `phase_robot/whisper/min`, `lag`, `stress`, `perf_all` have not been run yet).
 
 ## 20. Architecture of `devices/Timbre Follower A.amxd`, `Timbre Follower B.amxd`, `Timbre Follower C.amxd`
 
@@ -885,19 +902,22 @@ One Audio Effect that hosts up to **16 modulators** (LFO, Envelope follower, Ran
 
 ### UI (`obj-viz`, `v8ui`, `x = 4, y = 4`, width follows the device)
 - **Rail (left, 20 px)**:
-  - `LRN` latch: while latched, every Live parameter you touch is mapped to the selected strip (multi-learn), and changing the selection retargets it.
+  - `LRN` learn button (the only way to learn): click = single-shot learn for the selected modulator (`MM.armLearn(sel, false)`, disarms after one mapping, pulses while armed); Shift-click = multi-learn (`armLearn(sel, true)`, solid, stays armed); click while armed disarms. Changing the selection retargets multi-learn to the new selection (single-shot stays on the modulator it was armed for).
   - `LST`: toggles the mapping list.
   - A modulator count `n / 16`.
 - **Strips (56 px each)**: one per modulator.
   - The **upper-left corner glyph is the enable button**: type-coloured and lit when on, hollow grey when off. There is no LED.
-  - Below it: name, live mini-visualization, vertical output meter, two key knobs, a mapping-count chip and a round map button. A click on the map button is single-shot learn, shift-click is multi-learn.
+  - Below it: name, live mini-visualization, vertical output meter, two key knobs and a mapping-count chip (the chip opens the list). There is no per-strip map button.
   - Click selects a strip. Double-click expands it **in place** to a 204 px editor with the full controls for its type: the MSEG point editor, the step painter, LFO shape/rate/sync/phase, follower attack/release/gain, random rate/smooth. The type chip in the expanded header changes the type.
   - Dragging a strip header reorders strips. The order is visual only and is kept in `state.ui.order`.
   - A trailing `+` strip opens the type picker.
 - **Mapping list (`LST`, 172 px)**: Bitwig-inspector style.
-  - Each modulator has a header (colour, name, count, map arrow: click = single-shot, shift-click = multi-learn).
-  - Rows under it: × delete, parameter name (hover shows track › device › param), curve icon (click cycles, alt-click inverts), orange value (drag edits amount or min/max), M/R toggle. Missing targets are red and disabled ones dimmed.
-  - Clicking a row opens the **remap editor** beside the list: curve preview, 5 curve buttons (Linear / Exp / Log / S / Stepped), curve amount or steps, amount or min/max bars, INV, BIP, MOD/REM, delete.
+  - Each modulator has a header (colour dot, name, count, and an enable button at the right that toggles the whole modulator, the same state as the strip's corner button and drawn the same: lit and type-coloured when on, hollow grey when off). There is no map arrow.
+  - The **selected modulator** is tinted: its header (`UB_TINT_HEAD`, plus a coloured left bar) and its mapping rows (`UB_TINT_ROW`) get a modulator-coloured background. The selected mapping row (`UB_SELROW_FILL` plus a cyan outline) stays the strongest and is drawn over the tint.
+  - Rows: power-style on/off toggle at the left (`MM.updateMapping(id, {enabled})`; disabled rows dim), parameter name (hover shows track › device › param), a small icon of the mapping's own MSEG curve (click only selects the row), orange value (Mod: polarity glyph + amount, e.g. `+50%`, `±50%`, `−50%`, drag edits the amount; Remote: the window `20–80%` (en dash), drag shifts min and max together), M/R toggle, and × delete at the far right. Missing targets are red.
+  - Clicking a row opens the **remap editor** beside the list: the editable **MSEG transfer curve** (x = modulator 0..1, y = output 0..1; click empty space = add a point and drag it, drag a point, drag a segment's centre square to bend it, double-click a point to delete it; the first and last points stay pinned to x = 0 / 1), 5 preset buttons (Linear / Exp / Log / S / Stepped, each loads an equivalent point set), and a top **tab row**: `MOD` / `REM` tabs (the active one lit, orange for MOD, cyan for REM) with the delete (X) button at the right end. The tabs and delete are the same in both modes; there is no bottom MOD|REM toggle. The MSEG is 62 px high and the editor sits in a cyan frame in Remote. **Mod mode**: the **Amount** bar (−100..+100%) and a segmented **polarity control `[+][±][−]`** (vector glyphs: plus, plus over minus, minus; exactly one lit, sets `polarity`) at the bottom, and to the right of the MSEG a **centred output bar** (Phase Plant style, a bar instead of a dot): zero is the vertical centre, positive output fills up from it, negative down. One limit triangle sets `range` (its distance from the centre): `+` shows only the upper triangle, `−` only the lower one (the zero marker is hidden, fixed at the centre and not a hit target; a press on the hidden side is ignored and a drag past the centre pins range to 0), `±` shows both triangles linked symmetrically (either one sets the range). Double-click = range 1. The band covers centre..limit (both sides in `±`); the fill is the live signed modulation `o` (so it includes amount). With the modulator bypassed the editor and bar draw grey and the scan line / live value are hidden, but everything stays editable. It reuses the modulator MSEG editor's point model and gestures (`ubMsegTgt` / `ubMapTgt`).
+  - **Remote editor** (`mode: "remote"`): no polarity control, no Amount bar, no centred bar. Two **independent** limits `min` / `max` (absolute 0..1 of the target; min > max inverts). Cyan (`UB_CYAN`) is the Remote colour: the lit `REM` tab, the cyan frame and tint around the tab row and MSEG, and the cyan curve. The bar right of the MSEG is an **absolute 0..1 bar** (no centre line) with two independent triangles, max filled and min outlined; the nearest triangle wins when you grab, double-click resets that one to 0 / 1; the min..max band is shaded and the live fill runs from min to the live value. At the bottom-left, where Mod has the polarity control and Amount, two **`MIN` / `MAX` value boxes** (drag vertically to edit, shift = fine, double-click resets to 0% / 100%). Each control sets only its own field. The detail panel has no mode branches left: one layout, built by `ubDetailRects` and painted by `ubPaintDetail`.
+  - The list-row value drag in Remote shifts min and max together (width kept).
 - **Pool full**: a red pill "Mapping pool full (256)" shows when the mapper fires change kind `"full"`.
 - **Width**: the UI computes its layout width and calls `MM.requestWidth(w)`, which goes `width <w>` → `prepend setwidth` → `live.thisdevice`. `resizeFace()` grows the v8ui and every full-width background panel (looked up by varname = box id) with it.
 
@@ -912,7 +932,7 @@ One Audio Effect that hosts up to **16 modulators** (LFO, Envelope follower, Ran
 - **Routers**: the build generates **8 router `gen.codebox~`** boxes, each with 16 inlets (wired from the 16 engine outlets) and 32 outlets. Slot `k` = router `floor(k/32)`, outlet `k%32`.
   - Each slot reads `route[2k]` (source modulator index, or −1 when off) from `megamodroute` (512 samples).
   - It looks up its 256-sample region `k*256` of `mmcurve` (fixed at 256 × 256), with the same convention as `lookup~`: index `(x+1)/2 * 256`, linear interpolation, clamped to the last sample.
-  - The whole mapping transform (mode, amount or min/max, bipolar, invert, curve and curve amount) is baked into that table, so editing a range only rewrites 256 samples.
+  - The whole mapping transform is baked into that table, so editing a range or the curve only rewrites 256 samples: `mappingOutput(m, x)` = evaluate `m.shape` (MSEG points) at `u = (x+1)/2` and apply the Mod polarity / range / amount or the Remote min / max formulas (see State). The router itself did not change.
 - **Per-slot objects**:
   - `live.modulate~ @smoothing 1`, varname `mm_mod_<k>`.
   - `live.remote~ @normalized 1`, varname `mm_rem_<k>`.
@@ -929,6 +949,15 @@ One Audio Effect that hosts up to **16 modulators** (LFO, Envelope follower, Ran
 
 ### State
 - The `MegaModState` blob (`parameter_type: 3`, v8ui `getvalueof` / `setvalueof`) holds the versioned JSON state, which covers the modulators, the mappings and an opaque `ui` object (selection, expanded strip, list open, scroll, selected mapping, strip order). Older versions still parse.
+- **Schema 5** (`MEGAMOD_VERSION`): a mapping is `{id, mod, enabled, mode, polarity, range, amount, min, max, shape, target}`; `invert` and `bipolar` are gone. `min` / `max` (0..1, defaults 0 / 1) are the independent absolute limits used **only in Remote**; `polarity`, `range` and `amount` are used only in Mod and are ignored (but kept, so switching mode restores them) in Remote. Mod fields (schema 4 semantics): `polarity` is `1` (`+`), `0` (`±`) or `−1` (`−`); `range` is 0..1 (the limit marker's distance from the output bar's centre); `amount` is −1..1. Defaults: `±`, range 1, amount 0.5. With `y = evalMseg(shape, (x+1)/2)`:
+  - signed modulation `o = amount * range * (polarity === 0 ? 2y-1 : polarity * y)`, in −1..1.
+  - **Mod**: `mappingOutput = o` (the offset `live.modulate~` gets).
+  - **Remote** (`live.remote~ @normalized`, absolute 0..1): `mappingOutput = clamp(min + (max − min) * y, 0, 1)`; polarity / range / amount are ignored.
+  - **Migration schema 4 → 5** (remote mappings only, `a` = amount, `r` = range, each result clamped to 0..1): `+` min 0, max `a·r`; `−` min 1, max `1 − a·r`; `±` min `0.5 − a·r/2`, max `0.5 + a·r/2`. Exact (tables within 1e-9) unless a clamp bites, which needs a negative amount on `+` / `−` (the old output was clamped per sample, min / max clamp the endpoints, so e.g. `+` with amount < 0 becomes a constant 0, the same response). Mod mappings just gain min 0 / max 1. Schema < 4 goes through the migration below first (it yields `+`, range 1, amount 1, i.e. min 0 / max 1 with the old limits baked into the shape).
+  - **Migration (schema < 4)**: the old affine parts are baked into the shape's point y values (an affine map of the y values affinely maps `evalMseg` for every bend and S-curve, since the segment easing does not depend on y). Mod: `y' = lo + (hi-lo) * (invert ? 1-y : y)` with `lo/hi = min/max` (schema 3) or `0/1` (schema < 3, where Mod ignored them), `polarity = bipolar ? 0 : 1`, range 1, amount unchanged. Remote: `y' = min + (max-min) * (invert ? 1-y : y)`, `polarity 1`, range 1, amount 1, so `v = y'`, the old value. Schema 1 curve fields go through `curveToShape` first. `tests/test_megamod.js` checks schema 1 / 2 / 3 × Mod / Remote × invert × bipolar × min/max (max table error about 2e-16). Raw objects without `polarity` handed straight to `mappingOutput` / `mappingTable` still use the legacy formula.
+- **Schema 4 (superseded)**: Remote used polarity / range / amount (see the migration above).
+- **Schema 3 (superseded)**: `min` / `max` were range markers in both modes (Schema < 3 Mod mappings, whose min/max were ignored, loaded the full range).
+- **Schema 2**: each mapping carries `shape` (MSEG points `{x,y,curve,sCurve}`) instead of `curve` / `curveAmt` / `curveSteps`. **Migration**: a mapping without `shape` is converted by `curveToShape(curve, curveAmt, curveSteps)` in `sanitizeMapping`. Exp / Log / S with power up to `2^3.6` become one segment (exact, same power law), steeper ones 32 fitted segments, Stepped becomes hard steps (two points per step, `0.0001` apart at the edges). `tests/test_megamod.js` checks every old curve type against the legacy `shapeCurve` formula (max table error below 0.02). `shapeCurve` is kept only as that reference.
 
 ### Debugging
 - **Debug trace**: `dlog()` in the mapper is silenced by `MM_DEBUG = false`. Set it to `true` (and optionally `MM_DEBUG_LOG` to an absolute file path) to trace learn, slot binding and target resolution.
@@ -939,3 +968,46 @@ One Audio Effect that hosts up to **16 modulators** (LFO, Envelope follower, Ran
 python3 scripts/build_megamod.py && node tests/test_megamod.js && node tests/test_megamod_ui.js && python3 scripts/render_preview.py "devices/Mega Modulator.amxd"
 ```
 Audio checks (real Max, inside the VM, through `scripts/max_harness.py`): `python3 scripts/run_megamod_audio_tests.py`. They cover LFO period and shapes, unipolar/bipolar ranges, random, steps, MSEG, the envelope follower, tempo sync, retrigger, telemetry, slot isolation, and router slot output against `mappingOutput()`.
+
+---
+
+## 22. Architecture of `devices/Timbre Split.amxd`
+
+A Rack-chain splitter like Multiband Split (section 11), but it splits by **timbre class** instead of frequency band. Put one instance per chain of an Audio Effect Rack. The linked instances share 2..4 learned classes (kick / snare / hat, voiced / unvoiced, ...). Each chain passes only its class, and the chains add up to the input, delayed by a constant **2048 samples** (`"latency": 2048`). Built on the Timbre Follower A look (section 20).
+
+### Files
+- `src/tsplit_core.genexpr`: the gen core (needs `src/cepstrum_lib.genexpr` prepended). `src/tsplit_ref.js` is its Node mirror (`TimbreSplitRef`, `TsplitChain`, `synthDrumLoop`, `renderChains`).
+- `src/tsplit_config.js`: pure helpers, `require`d by the tests and concatenated in front of the UI: `classifyFrame`, `smoothKernel`, `resolveEffectiveClassMask`, `createKMeansLearner`, the state blob (`encodeStateBlob` / `decodeStateBlob`), `parseRackContextFromPath`, leader election.
+- `src/tsplit_ui.js`: the v8ui (drawing, mouse, link engine, learning). `scripts/build_tsplit.py` builds `devices/Timbre Split.amxd`. `tests/test_tsplit.js` is the offline suite.
+- `scripts/run_tsplit_audio_tests.py` + `tests/tsplit_probe.js` + `tests/tsplit_ref_cli.js`: the real-Max audio test (VM only).
+- Typecheck: `tsconfig.tsplit.json`; `src/tsplit_ref.js` is in `tsconfig.refs.json`.
+
+### DSP (`src/tsplit_core.genexpr`)
+- **Analysis** is Timbre Follower's: N 1024, hop 256, mono mix, 24 mel bands, c1..c13 (class feature) and c0 (level feature, telemetry only). Gate -60 / -66 dB, idle sleep after 200 quiet hops.
+- **Memberships.** Per hop: Euclidean distance `d_k` from c1..c13 to each of K centroids (`Buffer cent("tsplitcent")`, centroid k at `k * 16`), `p_k ~ exp(-beta * (d_k - d_min - bonus_k))`, normalised to sum 1. `beta = 0.1 * 40^(Sharp/100)`. `bonus` is **hysteresis**: the incumbent winner counts as 1.0 distance unit closer. A closed gate or idle device holds the last `p`.
+- **Smoothing.** Each hop's `p` goes into a 16-hop ring; `S_{j-3}` is a normalised Gaussian (sigma = Smooth ms in hops) over hops `j-6 .. j`, so `S` always sums to 1.
+- **Perfect reconstruction.** Per sample `g_k = lerp(S_{j-4}, S_{j-3}, phase / 256)`, `sum_k g_k = 1`. A chain outputs `delayed_input * sum_k g_k * m_k * gain`, where `m_k` are the one-pole smoothed (3 ms) bits of its class mask. Chains with disjoint masks covering all classes sum to the delayed input to 1 ulp (JS mirror: below -300 dB, test limit -120 dB).
+- **Lookahead.** The audio is delayed 2048 samples (`Delay dl1/dl2(4096)`, `read(2048)`). `S_m` is applied 512 samples before its frame centre (anticipation = latency - 768 - 256 * 3), so an onset opens its class before the hit: the first 3 ms of every hit land > 95 % in its own chain, peaks lose < 0.75 dB at Sharp 60 and < 0.1 dB at Sharp 100.
+- **Telemetry**: `buffer~ #0-tsplitscope @samps 2592`, bound `scope #0-tsplitscope`: header 0 hop counter (written last), 1 head, 2 gate, 3 sample rate, 4 level dB, 5 K, 6..9 class gains, 10 idle, 12 latency, 13 winner; columns at `32 + 20 j`: c1..c13, c0, p1..p4, winner (1-based, 0 = gated), gate. Centroids: `buffer~ #0-tsplitcent @samps 64`, bound `cent #0-tsplitcent`; an unbound buffer reads zeros, so every class distance ties and each chain gets `1/K` (still sums to 1).
+
+### Controls (presentation `440 x 169`, v8ui `x = 8, y = 8, w = 270, h = 153`, nothing overlaps it)
+- Visible: `Learn` (toggle), `Adapt` (toggle), `Classes` (2..4, Int), `Sharp` (0..100 %, default 60), `Smooth` (0..60 ms, default 8). Right panel `x = 282..434`.
+- In the v8ui, like Multiband Split: `AUTO` pill, `CLASS 1..K` pills (click solos, shift-click or the right edge multi-selects) and the `Gain` slider (-inf..+18 dB, vertical drag, double-click resets). Hidden automatable parameters keep them in sync: `Chain Gain`, `Class Mode` (`Auto Chain`, `Class 1..4`, `Multi`), `Link Group`.
+- v8ui layout: top strip; MFCC heatmap (c1..c13 x 128 columns, each column tinted by its winning class, a 1.6 px class tick on top); class-membership timeline (stacked weights, dim while the gate is closed); `CENTROIDS` fingerprint tiles (one per class, bright border = the classes this chain passes); learn bar (`FACTORY PRIOR - PRESS LEARN` / `LEARNING n%` / `LEARNED n CLASSES`); per-class gain meters; link badge (`LINK: RACK #1 CH2 (3x) LEAD`, click toggles `LNK`).
+
+### Link engine (adapted from section 11)
+- Same rack/chain scoping as Multiband Split: `parseRackContextFromPath`, `Global("tsplit_shared_bus")`, nested racks link only with their own siblings, a `Cmd+D` duplicate to the right in the same chain gets an isolated group, a cached `selfLiveApi`.
+- **Auto class assignment** (`resolveEffectiveClassMask`): chain rank N passes class N. With fewer chains than classes the **last chain also passes every leftover class**; with more chains than classes the extra chains pass nothing. So Auto masks always partition the classes and the sum stays the input. Deleting a chain compacts the ranks.
+- **Shared across the group (every gen must classify identically)**: `Classes`, `Sharp`, `Smooth`, `Adapt`, the centroids and the learn state. Per chain: class mode, custom mask, gain, link group.
+- **Leader** = the first alive chain (lowest chain, device, creation order). Only the leader learns and adapts; any instance's `Learn` button is forwarded to it, and everyone mirrors its progress and `ui_learn`.
+- **Learn**: starts an online k-means over the next 6 bars (tempo read through `LiveAPI("live_set")`, fallback 120 bpm), from the leader's own MFCC telemetry. Farthest-first seeding and MacQueen updates run per hop; the live estimate is refined by Lloyd on the reservoir and poked into every linked instance's `tsplitcent` about 4 times a second. Pressing `Learn` again stops early; at the end (or the stop) k-means++ restarts + Lloyd polish the take, classes are sorted by c1 (darkest = class 1) and the centroids **freeze**. A take with fewer than 40 frames is dropped. Changing `Classes` aborts a take.
+- **Adapt**: the leader lets the centroids drift toward the incoming audio, weighted by each class's membership (rate 0.00015 per hop, a ~35 s time constant), and shares them every 0.5 s.
+- **State**: `TsplitStateData` blob (`parameter_type: 3`), version 1, 63 numbers: `[1, classes, sharp, smooth, adapt, classMode, customMask, linkGroup, gainDb, showLinkStatus, learned, centroid[0][0..12] ... centroid[3][0..12]]`. Shorter arrays load the prefix and keep the rest, a future version parses the v1 prefix, NaN centroids are rejected. The `pattr` initial value is the 11-number prefix.
+- Until the user learns, a factory prior (bass-, sine-, noise-, saw-like MFCCs) is used and the learn bar says so.
+
+### Build / Test / Preview
+```bash
+npm run -s typecheck && python3 scripts/build_tsplit.py && node tests/test_tsplit.js && python3 scripts/render_preview.py "devices/Timbre Split.amxd"
+```
+- `node tests/test_tsplit.js`: device JSON / layout / wiring, GenExpr rules, pure maths, k-means accuracy (kick / snare / hat, per hop, all 100 % on the synthetic signals), reconstruction through the mirror (residual -316 dB, memberships sum to 1 per hop and per sample, constant latency, isolation, onsets, gain, hysteresis chatter) and the v8ui with mocked Max (linked instances, nested racks, Cmd+D, leader learning from fed telemetry, centroid sharing, Adapt, pills, gain, badge, paint bounds, blob).
+- Audio checks (real Max, VM only, shared harness): `python3 scripts/run_tsplit_audio_tests.py [drums] [silence]`. Not yet run against real Max; first VM run still has to confirm the exact latency (2048), the gen-vs-mirror match (`< -40 dB`), the telemetry layout and that the idle path stays silent.

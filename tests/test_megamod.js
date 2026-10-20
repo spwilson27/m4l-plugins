@@ -153,7 +153,7 @@ function checkPool(v, p, boxes, byId, lines) {
     eq(byId["obj-mm-rem-0"].saved_object_attributes.normalized, 1, `${v}: live.remote~ normalized 1`);
     // router convention, evaluated: idx = clip((x+1)*128, 0, 256), linear interpolation, clamped to the last sample
     const m = C.defaultMapping(1, 0, { path: "p" });
-    m.curve = C.CURVE_S; m.curveAmt = 0.6; m.amount = 0.8;
+    m.shape = C.curveToShape(C.CURVE_S, 0.6, 4); m.amount = 0.8;
     const tbl = C.mappingTable(m);
     const routerEval = (x) => { const f = Math.min(Math.max((x + 1) * 128, 0), 256); const a = Math.min(Math.floor(f), 255); const b = Math.min(a + 1, 255); return tbl[a] + (tbl[b] - tbl[a]) * (f - a); };
     for (let x = -1; x <= 1; x += 0.01) near(routerEval(x), C.mappingOutput(m, x), 0.02, `${v}: router convention ~ mappingOutput`);
@@ -199,7 +199,8 @@ function checkPool(v, p, boxes, byId, lines) {
     eq(dirty.mods[0].p.syncDiv, 15, "syncDiv clamped");
     eq(dirty.mappings.length, 1, "duplicate ids / orphan mappings dropped");
     eq(dirty.mappings[0].amount, 1, "amount clamped");
-    eq(dirty.mappings[0].curve, 4, "curve clamped");
+    eq(dirty.mappings[0].curve, undefined, "legacy curve fields are not kept");
+    eq(dirty.mappings[0].shape.length, 8, "legacy curve 12 clamps to Stepped (4 steps = 8 points) and becomes a shape");
     // big state: 16 MSEG mods with 200 points and 300 mappings
     const big = C.defaultState();
     for (let i = 0; i < 16; i++) {
@@ -231,20 +232,244 @@ function checkPool(v, p, boxes, byId, lines) {
         }
     }
     near(C.shapeCurve(0.5, C.CURVE_EXP, 0.5, 4), 0.0625, 1e-9, "exp amt 0.5 -> power 4");
+    // ---- mapping shape (MSEG transfer curve) ----
+    eq(C.MEGAMOD_VERSION, 5, "schema version 5 (Remote min / max model)");
+    eq(C.defaultState().schema, 5, "new states are schema 5");
+    {
+        const d = C.defaultMapping(1, 0, {});
+        eq(JSON.stringify([d.polarity, d.range, d.amount, d.invert, d.bipolar, d.min, d.max]), JSON.stringify([0, 1, 0.5, null, null, 0, 1]), "default mapping: ± , range 1, amount 0.5, min 0, max 1, no legacy invert / bipolar");
+        const s4 = C.sanitizeMapping({ id: 1, mod: 0, polarity: -1, range: 0.4, amount: -0.3, invert: 1, min: 0.5 }, 4);
+        eq(JSON.stringify([s4.polarity, s4.range, s4.amount, s4.invert, s4.min]), JSON.stringify([-1, 0.4, -0.3, null, 0.5]), "schema 4 mod mapping keeps polarity / range, drops the legacy invert key");
+        eq(C.sanitizeMapping({ id: 1, mod: 0, polarity: 7, range: 9 }, 4).polarity + "," + C.sanitizeMapping({ id: 1, mod: 0, polarity: 7, range: 9 }, 4).range, "1,1", "polarity / range clamped");
+        // polarity x mode: o = amount * range * (± ? 2y-1 : pol*y); remote anchors on the polarity's zero
+        const linear = [{ x: 0, y: 0, curve: 0, sCurve: 0 }, { x: 1, y: 1, curve: 0, sCurve: 0 }];
+        for (const pol of [1, 0, -1]) {
+            for (const [amount, range] of [[1, 1], [0.5, 1], [-0.6, 0.8], [0.8, 0.5]]) {
+                for (const x of [-1, -0.5, 0, 0.3, 1]) {
+                    const y = (x + 1) / 2;
+                    const o = amount * range * (pol === 0 ? 2 * y - 1 : pol * y);
+                    const m = { mode: "mod", polarity: pol, range, amount, shape: linear };
+                    near(C.mappingOutput(m, x), o, 1e-12, `mod pol ${pol} amt ${amount} rng ${range} x ${x}`);
+                    // Remote ignores polarity / range / amount: only min / max (defaults 0 / 1) apply
+                    near(C.mappingOutput(Object.assign({}, m, { mode: "remote" }), x), y, 1e-12, `remote ignores pol ${pol} amt ${amount} rng ${range} x ${x}`);
+                }
+            }
+        }
+        // Remote (schema 5): clamp(min + (max - min) * y), independent limits, min > max inverts
+        const rm = (min, max) => ({ mode: "remote", polarity: 1, range: 0.3, amount: -0.7, min, max, shape: linear });
+        for (const x of [-1, -0.5, 0, 0.3, 1]) {
+            const y = (x + 1) / 2;
+            near(C.mappingOutput(rm(0.2, 0.8), x), 0.2 + 0.6 * y, 1e-12, `remote min/max x ${x}`);
+            near(C.mappingOutput(rm(0.8, 0.2), x), 0.8 - 0.6 * y, 1e-12, `remote min > max inverts x ${x}`);
+            near(C.mappingOutput(rm(0.8, 0.2), x), C.mappingOutput(rm(0.2, 0.8), -x), 1e-12, `inverted = mirrored x ${x}`);
+        }
+        ok(C.mappingTable(rm(0.9, 0.1))[0] > C.mappingTable(rm(0.9, 0.1))[255], "min > max: falling table");
+        // switching mode keeps both sets of fields
+        {
+            const st = C.defaultState();
+            st.mods[0] = C.makeModSlot(C.MOD_LFO, 0);
+            const mp = C.defaultMapping(1, 0, { path: "p" });
+            Object.assign(mp, { polarity: -1, range: 0.6, amount: -0.4, min: 0.3, max: 0.7 });
+            st.mappings.push(mp); st.nextMapId = 2;
+            const modOut = C.mappingOutput(mp, 0.4);
+            const remOut = C.mappingOutput(Object.assign({}, mp, { mode: "remote" }), 0.4);
+            const back = C.deserializeState(C.serializeState(st)).mappings[0];
+            const flipped = C.sanitizeMapping(Object.assign({}, back, { mode: "remote" }));
+            const home = C.sanitizeMapping(Object.assign({}, flipped, { mode: "mod" }));
+            eq(JSON.stringify([flipped.polarity, flipped.range, flipped.amount, flipped.min, flipped.max]), JSON.stringify([-1, 0.6, -0.4, 0.3, 0.7]), "Remote keeps polarity / range / amount and min / max");
+            eq(JSON.stringify([home.polarity, home.range, home.amount, home.min, home.max]), JSON.stringify([-1, 0.6, -0.4, 0.3, 0.7]), "back to Mod: everything restored");
+            near(C.mappingOutput(home, 0.4), modOut, 1e-12, "Mod output restored after a Remote round trip");
+            near(C.mappingOutput(flipped, 0.4), remOut, 1e-12, "Remote output uses min / max only");
+        }
+        // schema 4 -> 5: remote polarity / range / amount become min / max, exactly (clamped to 0..1)
+        {
+            // NOTE: when amount * range leaves 0..1 (or amount is negative on + / -), the old output was clamped per sample
+            // while min / max can only clamp the endpoints; those cases (marked clamped) are checked at the limits only.
+            let worst = 0; let n = 0;
+            const shape4 = [{ x: 0, y: 0.1, curve: 0.4, sCurve: 0 }, { x: 0.4, y: 0.9, curve: -0.5, sCurve: 1 }, { x: 1, y: 0.3, curve: 0, sCurve: 0 }];
+            for (const pol of [1, 0, -1]) {
+                for (const [amount, range] of [[1, 1], [0.5, 1], [0.8, 0.5], [0.3, 0.6], [1, 0.25]]) {
+                    const old = { id: 1, mod: 0, mode: "remote", polarity: pol, range, amount, shape: shape4, target: { path: "p" } };
+                    const st = C.normalizeState({ schema: 4, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [old], nextMapId: 2 });
+                    const m = st.mappings[0];
+                    const ar = amount * range;
+                    const want = pol > 0 ? [0, ar] : pol < 0 ? [1, 1 - ar] : [0.5 - ar / 2, 0.5 + ar / 2];
+                    near(m.min, want[0], 1e-12, `schema 4 remote pol ${pol} a ${amount} r ${range}: min`);
+                    near(m.max, want[1], 1e-12, `schema 4 remote pol ${pol} a ${amount} r ${range}: max`);
+                    eq(JSON.stringify([m.polarity, m.range, m.amount]), JSON.stringify([pol, range, amount]), "polarity / range / amount kept for a later switch back to Mod");
+                    const tNew = C.mappingTable(m);
+                    for (let j = 0; j < 256; j++) {
+                        const u = j === 255 ? 1 : j / 256;
+                        const y = C.evalMseg(shape4, u);
+                        const o = amount * range * (pol === 0 ? 2 * y - 1 : pol * y);
+                        const v4 = Math.min(1, Math.max(0, pol > 0 ? o : pol < 0 ? 1 + o : 0.5 + o / 2));
+                        worst = Math.max(worst, Math.abs(tNew[j] - v4)); n++;
+                    }
+                }
+            }
+            ok(worst < 1e-9 && n > 0, `schema 4 remote tables reproduced within 1e-9 for every polarity (${worst.toExponential(1)} over ${n})`);
+            // clamped case: + with amount * range = 1.5 clamps max to 1 (the old output clamped per sample, the new response is a straight 0..1 ramp)
+            const big = C.normalizeState({ schema: 4, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 1, mod: 0, mode: "remote", polarity: 1, range: 1, amount: 1.5 }], nextMapId: 2 });
+            ok(big.mappings[0].max <= 1 && big.mappings[0].min === 0, "schema 4 remote: amount is clamped to 1 first, limits stay in 0..1");
+            const neg = C.normalizeState({ schema: 4, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 1, mod: 0, mode: "remote", polarity: 1, range: 1, amount: -0.5 }], nextMapId: 2 });
+            eq(neg.mappings[0].max, 0, "schema 4 remote + with negative amount: max clamps to 0 (old output was a constant 0, same response)");
+            // schema 4 mod mappings are untouched and get min 0 / max 1
+            const modm = C.normalizeState({ schema: 4, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 1, mod: 0, mode: "mod", polarity: -1, range: 0.5, amount: 0.7 }], nextMapId: 2 }).mappings[0];
+            eq(JSON.stringify([modm.polarity, modm.range, modm.amount, modm.min, modm.max]), JSON.stringify([-1, 0.5, 0.7, 0, 1]), "schema 4 mod mapping keeps its fields, min 0 max 1");
+            // schema 5 states are read as-is (not re-derived)
+            const five = C.normalizeState({ schema: 5, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 1, mod: 0, mode: "remote", polarity: -1, range: 0.5, amount: 0.7, min: 0.25, max: 0.9 }], nextMapId: 2 }).mappings[0];
+            eq(JSON.stringify([five.min, five.max]), JSON.stringify([0.25, 0.9]), "schema 5 remote keeps min / max");
+        }
+        const tb = C.mappingTable({ mode: "mod", polarity: 0, range: 0.7, amount: 1, shape: linear });
+        eq(tb.length, 256, "table keeps its 256-sample layout");
+        near(tb[0], -0.7, 1e-12, "± table start = -range"); near(tb[255], 0.7, 1e-12, "± table end = +range");
+    }
+    // ---- migration schema 1 / 2 / 3 -> 4: the old formulas are reproduced by the baked shape ----
+    {
+        const sShape = [{ x: 0, y: 0.1, curve: 0.4, sCurve: 0 }, { x: 0.35, y: 0.9, curve: -0.6, sCurve: 1 }, { x: 0.7, y: 0.3, curve: 0.2, sCurve: 1 }, { x: 1, y: 0.8, curve: 0, sCurve: 0 }];
+        let worst = 0; let n = 0;
+        const oldOut = (om, schema, y) => {
+            let c = om.invert ? 1 - y : y;
+            const useRange = om.mode === "remote" || schema === 3;
+            const lo = useRange ? om.min : 0; const hi = useRange ? om.max : 1;
+            c = lo + (hi - lo) * c;
+            return om.mode === "remote" ? Math.min(1, Math.max(0, c)) : om.amount * (om.bipolar ? 2 * c - 1 : c);
+        };
+        for (const schema of [1, 2, 3]) {
+            for (const mode of ["mod", "remote"]) {
+                for (const invert of [0, 1]) {
+                    for (const bipolar of [0, 1]) {
+                        for (const [min, max] of [[0, 1], [0.2, 0.7], [0.35, 0.6]]) {
+                            const om = { id: 1, mod: 0, mode, amount: 0.6, bipolar, invert, min, max, target: { path: "p" } };
+                            let yAt;
+                            if (schema === 1) { Object.assign(om, { curve: C.CURVE_S, curveAmt: 0.7, curveSteps: 4 }); yAt = (u) => C.shapeCurve(u, C.CURVE_S, 0.7, 4); }
+                            else { om.shape = sShape; yAt = (u) => C.evalMseg(sShape, u); }
+                            const st = C.normalizeState({ schema, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [om], nextMapId: 2 });
+                            const m = st.mappings[0];
+                            eq(JSON.stringify([m.invert, m.bipolar, m.min, m.max]), JSON.stringify([null, null, 0, 1]), "legacy keys dropped by the migration (the old limits live in the shape; min 0 max 1)");
+                            eq(m.range, 1, "migrated range is 1");
+                            eq(m.polarity, mode === "remote" ? 1 : (bipolar ? 0 : 1), "migrated polarity");
+                            if (mode === "remote") eq(m.amount, 1, "migrated remote amount is 1");
+                            const t = C.mappingTable(m);
+                            for (let j = 0; j < 256; j++) {
+                                const u = j === 255 ? 1 : j / 256;
+                                worst = Math.max(worst, Math.abs(t[j] - oldOut(om, schema, yAt(u)))); n++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ok(worst < 0.02 && n > 0, `schema 1/2/3 states reproduce the old tables (max error ${worst.toExponential(2)} over ${n} samples)`);
+        console.log(`migration: max table error ${worst.toExponential(2)}`);
+        // the affine bake is exact against evalMseg, S-curve flag included
+        const lo = 0.2; const hi = 0.7;
+        const baked = sShape.map((p) => ({ x: p.x, y: lo + (hi - lo) * (1 - p.y), curve: p.curve, sCurve: p.sCurve }));
+        let aff = 0;
+        for (let i = 0; i <= 400; i++) aff = Math.max(aff, Math.abs(C.evalMseg(baked, i / 400) - (lo + (hi - lo) * (1 - C.evalMseg(sShape, i / 400)))));
+        ok(aff < 1e-12, `affine y transform commutes with evalMseg incl. S-curves (${aff.toExponential(1)})`);
+        // schema 2 mod range is ignored (old behaviour), schema 3 keeps it
+        const mk = (schema) => C.normalizeState({ schema, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 1, mod: 0, mode: "mod", amount: 1, bipolar: 0, min: 0.3, max: 0.6 }] }).mappings[0];
+        near(C.mappingOutput(mk(2), 1), 1, 1e-9, "schema 2 mod: range ignored");
+        near(C.mappingOutput(mk(3), 1), 0.6, 1e-9, "schema 3 mod: range baked in");
+        // a raw legacy object (no polarity) handed straight to the helpers uses the old formula (audio-test fixtures)
+        near(C.mappingOutput({ mode: "remote", min: 0.2, max: 0.8, invert: 1, curve: 0 }, -1), 0.8, 1e-12, "raw legacy remote");
+    }
+    eq(JSON.stringify(base.shape.map((p) => [p.x, p.y])), "[[0,0],[1,1]]", "default shape is the linear two-point MSEG");
+    {
+        const m = Object.assign({}, base, { amount: 1, polarity: 0 });
+        m.shape = [{ x: 0, y: 0, curve: 0, sCurve: 0 }, { x: 0.5, y: 1, curve: 0, sCurve: 0 }, { x: 1, y: 0, curve: 0, sCurve: 0 }];
+        near(C.mappingOutput(m, 0), 1, 1e-12, "shape peak at the middle (x=0 -> u 0.5 -> y 1 -> bipolar +1)");
+        near(C.mappingOutput(m, -1), -1, 1e-12, "shape start");
+        near(C.mappingOutput(m, 1), -1, 1e-12, "shape end");
+        near(C.mappingOutput(m, -0.5), 0, 1e-12, "evaluates at u = (x+1)/2");
+        const mi = Object.assign({}, m, { polarity: -1 });
+        near(C.mappingOutput(mi, 0), -1, 1e-12, "minus polarity: -y");
+        const mr = Object.assign({}, m, { mode: "remote", polarity: 1, amount: 0.8, min: 0, max: 0.8 });
+        near(C.mappingOutput(mr, 0), 0.8, 1e-12, "remote: min + (max - min) * y");
+        const mu = Object.assign({}, m, { amount: 0.5, polarity: 1 });
+        near(C.mappingOutput(mu, 0), 0.5, 1e-12, "mod unipolar: amount * y");
+        const tb = C.mappingTable(m);
+        eq(tb.length, 256, "table keeps its 256-sample layout");
+        near(tb[255], -1, 1e-12, "last sample = u 1");
+        near(tb[128], 1, 1e-12, "table follows the shape");
+        // bent segment
+        const mb = Object.assign({}, base, { amount: 1, polarity: 1 });
+        mb.shape = [{ x: 0, y: 0, curve: -0.5, sCurve: 0 }, { x: 1, y: 1, curve: 0, sCurve: 0 }];
+        near(C.mappingOutput(mb, 0), Math.pow(0.5, Math.pow(2, 1.8)), 1e-12, "segment curve uses the MSEG power law");
+        // pinned ends + sanitising
+        const sh = C.sanitizeShape([{ x: 0.2, y: 2 }, { x: 0.8, y: -1 }]);
+        eq(sh[0].x, 0, "first point pinned to x 0"); eq(sh[1].x, 1, "last point pinned to x 1");
+        eq(sh[0].y, 1, "y clamped"); eq(sh[1].y, 0, "y clamped low");
+        eq(C.sanitizeShape([{ x: 0.5, y: 0.5 }]).length, 2, "fewer than 2 points -> linear");
+        eq(C.sanitizeMapping({ id: 1, mod: 0, shape: [] }).shape.length, 2, "empty shape -> linear");
+    }
+    // ---- migration: schema 1 states (curve / curveAmt / curveSteps) give near-identical tables ----
+    {
+        let worst = 0;
+        for (const type of [C.CURVE_LINEAR, C.CURVE_EXP, C.CURVE_LOG, C.CURVE_S, C.CURVE_STEPPED]) {
+            for (const amt of [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1]) {
+                for (const steps of (type === C.CURVE_STEPPED ? [2, 3, 4, 5, 7, 8, 11, 16] : [4])) {
+                    for (const inv of [0, 1]) {
+                        for (const [mode, bip] of [["mod", 1], ["mod", 0], ["remote", 1]]) {
+                            const old = { id: 1, mod: 0, mode, amount: 0.9, bipolar: bip, min: 0.1, max: 0.9, invert: inv, curve: type, curveAmt: amt, curveSteps: steps, target: { path: "p" } };
+                            const v1 = { schema: 1, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [old], nextMapId: 2, ui: {} };
+                            // through the real wire format (v1 blob), like a Live set saved by the previous release
+                            const loaded = C.deserializeState(C.serializeState(v1)).mappings[0];
+                            eq(loaded.curve, undefined, "old curve field dropped after migration");
+                            ok(Array.isArray(loaded.shape) && loaded.shape.length >= 2, "migrated mapping has a shape");
+                            eq(loaded.shape[0].x, 0, "migrated shape starts at 0"); eq(loaded.shape[loaded.shape.length - 1].x, 1, "migrated shape ends at 1");
+                            const tbl = C.mappingTable(loaded);
+                            for (let j = 0; j < 256; j++) {
+                                const u = j === 255 ? 1 : j / 256;
+                                let c = C.shapeCurve(u, type, amt, steps);
+                                if (inv) c = 1 - c;
+                                const want = mode === "remote" ? Math.min(1, Math.max(0, 0.1 + 0.8 * c)) : 0.9 * (bip ? 2 * c - 1 : c);
+                                worst = Math.max(worst, Math.abs(tbl[j] - want));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ok(worst < 0.02, `migrated tables match the old formula (max error ${worst.toFixed(4)} < 0.02)`);
+        const v1 = { schema: 1, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 3, mod: 0, curve: C.CURVE_STEPPED, curveSteps: 3, amount: 1, target: { path: "p" } }], nextMapId: 4 };
+        const st = C.normalizeState(v1);
+        eq(st.schema, 5, "migrated state is the current schema");
+        eq(st.mappings[0].shape.length, 6, "stepped(3) = 3 hard steps = 6 points");
+        eq(st.mappings[0].shape.map((p) => p.y).join(), "0,0,0.5,0.5,1,1", "stepped levels 0, 0.5, 1");
+        near(C.mappingTable(st.mappings[0])[128], 0.0, 1e-9, "stepped middle step is flat");
+        // exact one-segment conversions
+        eq(C.curveToShape(C.CURVE_EXP, 0.5, 4).length, 2, "exp is a single bent segment");
+        eq(C.curveToShape(C.CURVE_S, 0.5, 4)[0].sCurve, 1, "S is a single S-flag segment");
+        eq(C.curveToShape(C.CURVE_LINEAR, 0.5, 4).length, 2, "linear is two points");
+        // a schema-2 state round-trips its shape untouched
+        const s2 = C.defaultState();
+        s2.mods[0] = C.makeModSlot(C.MOD_LFO, 0);
+        const m2 = C.defaultMapping(1, 0, { path: "p" });
+        m2.shape = [{ x: 0, y: 0.1, curve: 0.3, sCurve: 0 }, { x: 0.4, y: 0.9, curve: -0.2, sCurve: 1 }, { x: 1, y: 0.2, curve: 0, sCurve: 0 }];
+        s2.mappings.push(m2); s2.nextMapId = 2;
+        const back = C.deserializeState(C.serializeState(s2));
+        eq(JSON.stringify(back.mappings[0].shape), JSON.stringify(m2.shape), "shape round trip");
+        eq(back.schema, 5, "current schema stays");
+        // a legacy-field mapping handed straight to the table helpers still resolves (audio-test fixtures)
+        const legacy = { mode: "mod", amount: 0.8, bipolar: 1, invert: 0, curve: C.CURVE_S, curveAmt: 0.6, curveSteps: 4 };
+        near(C.mappingOutput(legacy, 0.3), C.mappingOutput(Object.assign({}, legacy, { shape: C.curveToShape(C.CURVE_S, 0.6, 4) }), 0.3), 1e-12, "legacy fields fall back to the converted shape");
+    }
     eq(new Set(Array.from({ length: 200 }, (_, j) => C.shapeCurve(j / 199, C.CURVE_STEPPED, 0, 4))).size, 4, "stepped 4 -> 4 levels");
-    const t = C.mappingTable(Object.assign({}, base, { amount: 1, bipolar: 1 }));
+    const t = C.mappingTable(Object.assign({}, base, { amount: 1 }));
     eq(t.length, C.CURVE_REGION, "table size");
     near(t[0], -1, 1e-12, "mod bipolar table start");
     near(t[255], 1, 1e-12, "mod bipolar table end");
-    const inv = C.mappingTable(Object.assign({}, base, { amount: 1, bipolar: 1, invert: 1 }));
-    near(inv[0], 1, 1e-12, "invert start"); near(inv[255], -1, 1e-12, "invert end");
-    const uni = C.mappingTable(Object.assign({}, base, { amount: 0.5, bipolar: 0 }));
+    const inv = C.mappingTable(Object.assign({}, base, { amount: 1, polarity: -1 }));
+    near(inv[0], 0, 1e-12, "minus start"); near(inv[255], -1, 1e-12, "minus end");
+    const uni = C.mappingTable(Object.assign({}, base, { amount: 0.5, polarity: 1 }));
     near(uni[0], 0, 1e-12, "unipolar start"); near(uni[255], 0.5, 1e-12, "unipolar end");
-    const rem = C.mappingTable(Object.assign({}, base, { mode: "remote", min: 0.2, max: 0.8 }));
-    near(rem[0], 0.2, 1e-12, "remote min"); near(rem[255], 0.8, 1e-12, "remote max");
-    const rem2 = C.mappingOutput(Object.assign({}, base, { mode: "remote", min: 0.2, max: 0.8, invert: 1 }), -1);
-    near(rem2, 0.8, 1e-12, "remote invert");
-    near(C.mappingOutput(Object.assign({}, base, { amount: -0.5, bipolar: 1 }), 1), -0.5, 1e-12, "negative amount");
+    const rem = C.mappingTable(Object.assign({}, base, { mode: "remote", min: 0, max: 0.8 }));
+    near(rem[0], 0, 1e-12, "remote start = min"); near(rem[255], 0.8, 1e-12, "remote end = max");
+    const rem2 = C.mappingOutput(Object.assign({}, base, { mode: "remote", min: 1, max: 0.2 }), -1);
+    near(rem2, 1, 1e-12, "remote min > max: starts at min");
+    near(C.mappingOutput(Object.assign({}, base, { amount: -0.5 }), 1), -0.5, 1e-12, "negative amount");
 
     // modulators
     const lfo = C.makeModSlot(C.MOD_LFO, 0);
@@ -551,19 +776,31 @@ for (const v of variants) {
     near(tbl[255], 0.5, 1e-9, `${v}: mapping table end`);
     // edit range/curve only rewrites the table (no id traffic)
     const nSeq = env.log.seq.length;
-    run(`MM.updateMapping(${m1.id}, {amount: 1, invert: 1})`);
+    run(`MM.updateMapping(${m1.id}, {amount: 1, polarity: -1})`);
     eq(env.log.seq.length, nSeq, `${v}: editing a mapping sends no ids`);
-    near(tbl[0], 1, 1e-9, `${v}: inverted table`);
+    near(tbl[255], -1, 1e-9, `${v}: minus-polarity table`);
+    // an edited shape rewrites only the table (peak shape: 0 -> 1 -> 0, inverted, amount 1, bipolar)
+    const nSeqShape = env.log.seq.length;
+    run(`MM.updateMapping(${m1.id}, {shape: [{x: 0, y: 0, curve: 0, sCurve: 0}, {x: 0.5, y: 1, curve: 0, sCurve: 0}, {x: 1, y: 0, curve: 0, sCurve: 0}]})`);
+    eq(env.log.seq.length, nSeqShape, `${v}: editing the shape sends no ids`);
+    near(tbl[0], 0, 1e-9, `${v}: shape table start (minus, y 0 -> 0)`);
+    near(tbl[128], -1, 1e-9, `${v}: shape table peak (minus, y 1 -> -1)`);
+    eq(run(`MM.getMapping(${m1.id}).shape.length`), 3, `${v}: mapping stores the shape`);
+    run(`MM.updateMapping(${m1.id}, {shape: [{x: 0, y: 0, curve: 0, sCurve: 0}, {x: 1, y: 1, curve: 0, sCurve: 0}]})`);
     // mode switch: unbind the old box first, then bind the other one
-    run(`MM.updateMapping(${m1.id}, {mode: 'remote', min: 0.1, max: 0.9})`);
+    run(`MM.updateMapping(${m1.id}, {mode: 'remote'})`);
     const tail = env.log.seq.slice(nSeq);
     assert.deepStrictEqual(tail, [["mm_mid_0", ["int", 0]], ["mm_rid_0", ["int", pid(P_FREQ)]]]); passed++;
-    near(tbl[255], 0.1, 1e-9, `${v}: remote table end (inverted -> min)`);
+    near(tbl[255], 1, 1e-9, `${v}: remote table end (default max 1, polarity ignored)`);
+    run(`MM.updateMapping(${m1.id}, {min: 0.8, max: 0.2})`);
+    near(tbl[0], 0.8, 1e-9, `${v}: remote min > max table start`); near(tbl[255], 0.2, 1e-9, `${v}: remote min > max table end (inverted)`);
+    eq(run(`MM.getMapping(${m1.id}).min + ',' + MM.getMapping(${m1.id}).max`), "0.8,0.2", `${v}: mapper stores min / max`);
+    run(`MM.updateMapping(${m1.id}, {min: 0, max: 1})`);
     eq(route[0], 0, `${v}: route kept across mode switch`);
     // switching back unbinds remote first
     run(`MM.updateMapping(${m1.id}, {mode: 'mod'})`);
     assert.deepStrictEqual(env.log.seq.slice(-2), [["mm_rid_0", ["int", 0]], ["mm_mid_0", ["int", pid(P_FREQ)]]]); passed++;
-    run(`MM.updateMapping(${m1.id}, {amount: 0.5, invert: 0})`);
+    run(`MM.updateMapping(${m1.id}, {amount: 0.5, polarity: 0})`);
     // multi learn, dedupe, self exclusion
     run("MM.armLearn(1, true)");
     sel(P_RES); sel(P_DECAY); sel(P_RES); sel(0); sel(P_SELF);

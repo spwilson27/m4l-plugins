@@ -6,10 +6,17 @@
 //   0..95 original cepstrum c[1..96], 96..191 crushed, 192 N, 193 K, 194 bits, 195 held, 196 clock phase,
 //   197 tick counter, 198 shuffle roll, 199 level, 200 pitch quefrency, 201 confidence, 202 shifted pitch quefrency,
 //   203 frame counter, 204 samplerate, 205 Qs, 206 scramble mode, 207 amount, 208 shift ratio, 209 neutral,
-//   210..257 excitation strip original (48 bins, 1..25 ms), 258..305 crushed.
+//   210..257 excitation strip original (48 bins, 1..25 ms), 258..305 crushed,
+//   306 histA / 307 histB: 2-bit event codes of the 24 newest frames (histA = ages 0..11, histB = ages 12..23, the
+//   newest frame in bits 0-1 of histA; code of age i = floor(hist / 4^i) mod 4; 0 normal, 1 dropped, 2 repeat,
+//   3 reverse), 308 gmode 0..5, 309 pmode 0..3, 310 lag 0..1, 311 glitch slot phase 0..1, 312 slot active,
+//   313 W (frames in the repeat/reverse window), 314 slot counter, 315 frame gain (<1 during Drop),
+//   316 position inside the window, 317..319 reserved.
 // Messages in: setbuffer <name>, set_layout, set_size <idx>, set_coeffs <pct>, set_bits, set_smode <0..3>,
-//   set_samt <pct>, set_shift <st>, set_freeze <0|1>, set_hold <0..6>, set_mix <pct>, set_out <dB>.
-// Messages out (outlet 0): ["coeffs", pct] and ["bits", n] from dragging in layouts A and C.
+//   set_samt <pct>, set_shift <st>, set_gmode <0..5>, set_grate <0..5>, set_pmode <0..3>, set_lag <pct>,
+//   set_mix <pct>, set_out <dB>.
+// Messages out (outlet 0): ["coeffs", pct] and ["bits", n] from dragging in layouts A and C, ["gmode", n] when
+//   the Glitch pad (layout 3) is clicked.
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -23,7 +30,11 @@ var QC_NSTRIP = 48;
 var QC_NENV = 72;
 var QC_SCOPE_FLOATS = 320;
 var SIZES = [512, 1024, 2048, 4096];
-var HOLD_NAMES = ["Off", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"];
+var GRATE_NAMES = ["1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"];
+var GL_NAMES = ["OFF", "DROP", "RPT", "REV", "HOLD", "FRZ"];
+var PH_NAMES = ["ORIG", "ROBOT", "WHISP", "MIN"];
+var QC_NHIST = 24;
+var QC_LAG_MAX = 12;
 var SCR_NAMES = ["Off", "REV", "SHUF", "ROT"];
 
 var COL_BG = [0.043, 0.055, 0.075];
@@ -47,8 +58,10 @@ var curBits = 16;
 var curSmode = 0;
 var curSamt = 50;
 var curShift = 0;
-var curFreeze = 0;
-var curHold = 0;
+var curGmode = 0;
+var curGrate = 1;
+var curPmode = 0;
+var curLag = 0;
 var curMix = 100;
 var curOut = 0;
 
@@ -65,9 +78,12 @@ var envOut = [];
 var tele = {
     n: 2048, k: 1024, bits: 16, held: 0, clock: 0, tick: 0, roll: 1, level: 0, q0: 401, conf: 0.8, q0s: 401,
     frame: 0, sr: 44100, qs: 88, smode: 0, samt: 0.5, rho: 1, neutral: 1,
+    histA: 0, histB: 0, gmode: 0, pmode: 0, lag: 0, slotPhase: 0, slotActive: 0, win: 1, slot: 0, fgain: 1, wpos: 0,
 };
 var lastTick = -1;
 var tickFlash = 0;
+var lastSlot = -1;
+var slotFlash = 0;
 var lastRoll = -1;
 var rollFlash = 0;
 var uiSettled = false;
@@ -100,6 +116,44 @@ function cfOfK(k, n) {
 }
 
 function quantStep(bits) { return 1.5 * Math.pow(2, -(bits - 1) * 0.75); }
+
+// Lag: per-coefficient delay in frames (same formula as the DSP). lag is 0..1.
+function lagHash(q) {
+    var v = Math.sin(q * 12.9898 + 4.1414) * 43758.5453;
+    return v - Math.floor(v);
+}
+function lagSpread(q) { return 0.5 * Math.min(1, (q - 1) / 127) + 0.5 * lagHash(q); }
+function lagDelay(q, lag) {
+    if (q < 1) return 0;
+    return Math.floor(QC_LAG_MAX * clamp(lag, 0, 1) * lagSpread(q) + 0.5);
+}
+function lagMaxFrames(lag) {
+    var m = 0;
+    for (var q = 1; q <= QC_NC; q++) m = Math.max(m, lagDelay(q, lag));
+    return m;
+}
+
+// Glitch history: 24 frames, age 0 = newest. Codes 0 normal, 1 dropped, 2 repeat, 3 reverse.
+function histCode(hA, hB, age) {
+    var v = age < 12 ? hA : hB;
+    var i = age < 12 ? age : age - 12;
+    return Math.floor((Number(v) || 0) / Math.pow(4, i)) % 4;
+}
+function histDecode(hA, hB) {
+    var out = [];
+    for (var a = 0; a < QC_NHIST; a++) out.push(histCode(hA, hB, a));
+    return out;
+}
+function histEncode(codes) {
+    var hA = 0;
+    var hB = 0;
+    for (var a = 0; a < QC_NHIST; a++) {
+        var c = (codes[a] || 0) & 3;
+        if (a < 12) hA += c * Math.pow(4, a);
+        else hB += c * Math.pow(4, a - 12);
+    }
+    return [hA, hB];
+}
 
 // ----- demo state: a vowel-like cepstrum pushed through the current settings until telemetry arrives -----
 
@@ -228,7 +282,7 @@ function rebuildDemo() {
     var base = demoBase(0);
     if (!demoFrozen) demoFrozen = demoBase(1);
     cO = base;
-    var held = (curFreeze > 0.5 || curHold > 0.5) ? 1 : 0;
+    var held = curGmode >= 3.5 ? 1 : 0;
     cC = crushList(base, demoFrozen, kq, curBits, curSmode, curSamt / 100, held, 88);
     var rho = Math.pow(2, curShift / 12);
     exO = cumulativeStrip(401, 0.5);
@@ -243,7 +297,29 @@ function rebuildDemo() {
     tele.q0 = 401;
     tele.q0s = 401 / rho;
     tele.level = 0.3;
-    tele.neutral = (kq > 1e5 && curBits >= 15.5 && curSmode < 0.5 && Math.abs(curShift) < 0.01 && !held) ? 1 : 0;
+    tele.neutral = (kq > 1e5 && curBits >= 15.5 && curSmode < 0.5 && Math.abs(curShift) < 0.01 && !held && curPmode < 0.5 && curLag < 0.05 && curGmode < 0.5) ? 1 : 0;
+    // glitch history demo: slots of 3 frames, each fires with the Amount probability (hash based, deterministic)
+    var codes = [];
+    for (var a = 0; a < QC_NHIST; a++) {
+        var c = 0;
+        if (curGmode >= 0.5 && curGmode < 3.5) {
+            var slot = Math.floor((a + 1) / 3);
+            var hv = Math.sin(slot * 91.7 + 3.3) * 43758.5453;
+            if ((hv - Math.floor(hv)) < Math.max(curSamt / 100, 0.05)) c = Math.round(curGmode);
+        }
+        codes.push(c);
+    }
+    var enc = histEncode(codes);
+    tele.histA = enc[0];
+    tele.histB = enc[1];
+    tele.gmode = curGmode;
+    tele.pmode = curPmode;
+    tele.lag = curLag / 100;
+    tele.slotPhase = 0.62;
+    tele.slotActive = (curGmode >= 0.5 && curGmode < 3.5) ? 1 : 0;
+    tele.win = 3;
+    tele.wpos = 1;
+    tele.fgain = codes[0] === 1 ? 0 : 1;
     updateEnvelopes();
 }
 
@@ -300,12 +376,18 @@ function pullScope() {
     // the clock phase and tick counter are written every sample, even asleep
     var tick = sampleAt(ch, 197);
     tele.clock = clamp(sampleAt(ch, 196), 0, 1);
+    var slotNo = sampleAt(ch, 314);
+    tele.slotPhase = clamp(sampleAt(ch, 311), 0, 1);
     var silent = (level < 0.0003) && (!haveTelemetry || frame === tele.frame);
     if (tick !== lastTick) {
         if (lastTick >= 0) tickFlash = 1;
         lastTick = tick;
     }
-    if (silent && uiSettled && tickFlash <= 0.02) return;
+    if (slotNo !== lastSlot) {
+        if (lastSlot >= 0) slotFlash = 1;
+        lastSlot = slotNo;
+    }
+    if (silent && uiSettled && tickFlash <= 0.02 && slotFlash <= 0.02) return;
     if (frame > 0 && frame !== tele.frame) {
         haveTelemetry = true;
         var i;
@@ -339,6 +421,16 @@ function pullScope() {
         tele.samt = sampleAt(ch, 207);
         tele.rho = sampleAt(ch, 208) || 1;
         tele.neutral = sampleAt(ch, 209);
+        tele.histA = sampleAt(ch, 306);
+        tele.histB = sampleAt(ch, 307);
+        tele.gmode = sampleAt(ch, 308);
+        tele.pmode = sampleAt(ch, 309);
+        tele.lag = clamp(sampleAt(ch, 310), 0, 1);
+        tele.slotActive = sampleAt(ch, 312);
+        tele.win = clamp(sampleAt(ch, 313) || 1, 1, 8);
+        tele.slot = slotNo;
+        tele.fgain = ch && ch.length > 315 ? sampleAt(ch, 315) : 1;
+        tele.wpos = sampleAt(ch, 316);
         if (tele.roll !== lastRoll) {
             if (lastRoll >= 0 && tele.smode > 1.5 && tele.smode < 2.5) rollFlash = 1;
             lastRoll = tele.roll;
@@ -352,6 +444,7 @@ function pullScope() {
         uiSettled = false;
     }
     tickFlash *= 0.8;
+    slotFlash *= 0.82;
     rollFlash *= 0.85;
     animPhase = (animPhase + 0.12) % (Math.PI * 2);
     mgraphics.redraw();
@@ -372,17 +465,20 @@ function set_bits(v) { curBits = clamp(Math.round(Number(v)), 1, 16); rebuildDem
 function set_smode(v) { curSmode = clamp(Math.round(Number(v)), 0, 3); rebuildDemo(); mgraphics.redraw(); }
 function set_samt(v) { curSamt = clamp(Number(v), 0, 100); rebuildDemo(); mgraphics.redraw(); }
 function set_shift(v) { curShift = clamp(Number(v), -12, 12); rebuildDemo(); mgraphics.redraw(); }
-function set_freeze(v) { curFreeze = Number(v) > 0.5 ? 1 : 0; rebuildDemo(); mgraphics.redraw(); }
-function set_hold(v) { curHold = clamp(Math.round(Number(v)), 0, 6); rebuildDemo(); mgraphics.redraw(); }
+function set_gmode(v) { curGmode = clamp(Math.round(Number(v)), 0, 5); rebuildDemo(); mgraphics.redraw(); }
+function set_grate(v) { curGrate = clamp(Math.round(Number(v)), 0, 5); mgraphics.redraw(); }
+function set_pmode(v) { curPmode = clamp(Math.round(Number(v)), 0, 3); rebuildDemo(); mgraphics.redraw(); }
+function set_lag(v) { curLag = clamp(Number(v), 0, 100); rebuildDemo(); mgraphics.redraw(); }
 function set_mix(v) { curMix = clamp(Number(v), 0, 100); mgraphics.redraw(); }
 function set_out(v) { curOut = clamp(Number(v), -36, 12); mgraphics.redraw(); }
 
 // What the preview renderer shows (no audio there): the demo telemetry for the *current* control values.
-// Control state (Size, Coeffs, Bits, Scramble, Shift, Hold, Freeze) is never faked, only the audio telemetry.
+// Control state (Size, Coeffs, Bits, Scramble, Shift, Glitch, Rate, Phase, Lag) is never faked, only the audio telemetry.
 function preview() {
     haveTelemetry = false;
     tele.clock = 0.62;
     tickFlash = 0;
+    slotFlash = 0;
     rebuildDemo();
 }
 
@@ -448,7 +544,7 @@ function label(str, x, y, size, c, a, align) {
 }
 
 function chip(x, y, str, c, on) {
-    var w = tw(str, 8) + 8;
+    var w = tw(str, 8) + 10;
     rrect(x, y, w, 11, 3, c, on ? 0.9 : 0.16);
     if (!on) {
         rgba(c, 0.55);
@@ -456,7 +552,7 @@ function chip(x, y, str, c, on) {
         mgraphics.rectangle_rounded(x, y, w, 11, 3, 3);
         mgraphics.stroke();
     }
-    label(str, x + 4, y + 8.6, 8, on ? COL_BG : c, on ? 1 : 0.9, 0);
+    label(str, x + 5, y + 8.6, 8, on ? COL_BG : c, on ? 1 : 0.9, 0);
     return w;
 }
 
@@ -616,20 +712,201 @@ function drawEnvelope(x, y, w, h) {
     mgraphics.stroke();
 }
 
-// Hold clock: tick marks across the strip, a fill for the phase, a flash on each tick, ice tint while held.
+// ----- Glitch state -----
+
+function glColor(mode) {
+    var m = Math.round(mode);
+    if (m === 1) return COL_POS;
+    if (m === 2) return COL_ENV;
+    if (m === 3) return COL_VIOLET;
+    if (m >= 4) return COL_ICE;
+    return COL_DIM;
+}
+
+function glActive() { return curGmode > 0.5; }
+
+// "DROP 1/16", "HOLD 1/4", "FRZ", or "GLITCH" when off.
+function clockText() {
+    if (!glActive()) return "GLITCH";
+    if (curGmode > 4.5) return GL_NAMES[5];
+    return GL_NAMES[curGmode] + " " + GRATE_NAMES[curGrate];
+}
+
+function clockPhase() {
+    if (curGmode > 4.5) return 1;
+    if (curGmode > 3.5) return tele.clock;
+    return tele.slotPhase;
+}
+
+// Glitch / Hold clock: tick marks across the strip, a fill for the phase, a flash on each tick or slot.
 function drawClock(x, y, w, h) {
-    var rate = curHold;
+    var on = glActive();
     var held = tele.held > 0.5;
-    var col = held ? COL_ICE : COL_DIM;
+    var gc = glColor(curGmode);
+    var col = held ? COL_ICE : (on ? gc : COL_DIM);
     rrect(x, y, w, h, 2, [0.05, 0.065, 0.09], 1);
-    if (rate > 0.5 || curFreeze > 0.5) {
-        var ph = curFreeze > 0.5 ? 1 : tele.clock;
-        frect(x + 1, y + 1, (w - 2) * ph, h - 2, curFreeze > 0.5 ? COL_ICE : COL_ENV, curFreeze > 0.5 ? 0.35 : 0.5);
-        if (tickFlash > 0.05) frect(x + 1, y + 1, w - 2, h - 2, COL_ICE, 0.45 * tickFlash);
+    if (on) {
+        frect(x + 1, y + 1, (w - 2) * clockPhase(), h - 2, gc, curGmode > 4.5 ? 0.35 : 0.45);
+        var fl = Math.max(tickFlash, slotFlash);
+        if (fl > 0.05) frect(x + 1, y + 1, w - 2, h - 2, gc, 0.45 * fl);
     }
     var nt = 8;
     for (var i = 1; i < nt; i++) vline(x + w * i / nt, y + 2, y + h - 2, col, 0.35, 1);
     srect(x + 0.5, y + 0.5, w - 1, h - 1, col, 0.55, 1);
+}
+
+// Last 24 cepstral frames, newest at the right. normal = dim, dropped = coral gap with a cross, repeat = amber with a
+// loop mark, reverse = violet with a reversed arrow. A flash marks a new Glitch slot, the thin line is the slot phase.
+function drawHistory(x, y, w, h) {
+    rrect(x, y, w, h, 2, [0.05, 0.065, 0.09], 1);
+    var cw = (w - 2) / QC_NHIST;
+    var ch = h - 4;
+    var cy = y + 2;
+    var heldTint = tele.held > 0.5;
+    var gc = glColor(curGmode);
+    var codes = histDecode(tele.histA, tele.histB);
+    for (var idx = 0; idx < QC_NHIST; idx++) {
+        var code = codes[QC_NHIST - 1 - idx];
+        var cx = x + 1 + idx * cw;
+        var bw = Math.max(1.2, cw - 1.2);
+        var mx = cx + bw * 0.5;
+        var my = cy + ch * 0.5;
+        var r = Math.max(1, Math.min(bw, ch) * 0.28);
+        if (code === 1) {
+            srect(cx + 0.4, cy + 0.4, bw - 0.8, ch - 0.8, COL_POS, 0.95, 1);
+            if (bw >= 4) {
+                rgba(COL_POS, 0.95);
+                mgraphics.set_line_width(1);
+                mgraphics.move_to(mx - r, my - r);
+                mgraphics.line_to(mx + r, my + r);
+                mgraphics.move_to(mx + r, my - r);
+                mgraphics.line_to(mx - r, my + r);
+                mgraphics.stroke();
+            }
+        } else if (code === 2) {
+            frect(cx, cy, bw, ch, COL_ENV, 0.95);
+            if (bw >= 4) {
+                rgba(COL_BG, 0.95);
+                mgraphics.set_line_width(1);
+                mgraphics.arc(mx, my, r, 0.6, 5.7);
+                mgraphics.stroke();
+            }
+        } else if (code === 3) {
+            frect(cx, cy, bw, ch, COL_VIOLET, 0.95);
+            if (bw >= 4) {
+                rgba(COL_BG, 0.95);
+                mgraphics.set_line_width(1.1);
+                mgraphics.move_to(mx + r, my - r);
+                mgraphics.line_to(mx - r, my);
+                mgraphics.line_to(mx + r, my + r);
+                mgraphics.stroke();
+            }
+        } else {
+            frect(cx, cy, bw, ch, heldTint ? COL_ICE : COL_GHOST, heldTint ? 0.5 : 0.32);
+        }
+    }
+    // the newest frame
+    srect(x + 1 + (QC_NHIST - 1) * cw - 0.2, cy - 0.5, cw - 0.6, ch + 1, COL_TEXT, 0.85, 1);
+    // repeat / reverse window
+    if (tele.slotActive > 0.5 && (curGmode === 2 || curGmode === 3)) {
+        var wn = clamp(Math.round(tele.win), 1, 8);
+        hline(x + 1 + (QC_NHIST - wn) * cw, x + w - 1, y + 0.8, gc, 0.95, 1.2);
+    }
+    // slot phase
+    if (curGmode >= 0.5 && curGmode < 3.5) frect(x + 1, y + h - 1.8, (w - 2) * clamp(tele.slotPhase, 0, 1), 1.4, gc, 0.9);
+    if (slotFlash > 0.05) frect(x, y, w, h, gc, 0.32 * slotFlash);
+}
+
+// One glyph per Phase mode on a baseline: Orig = waveform, Robot = a single centred pulse, Whisp = noise dots,
+// Min = a pulse at the left edge decaying to the right.
+function drawPhaseGlyph(x, y, w, h, mode, c, a) {
+    var m = Math.round(mode);
+    var i;
+    var mid = y + h * 0.5;
+    var base = y + h - 1.5;
+    if (m === 0) {
+        hline(x, x + w, mid, COL_GRID, 0.8, 1);
+        rgba(c, a);
+        mgraphics.set_line_width(1.2);
+        for (i = 0; i <= 24; i++) {
+            var t = i / 24;
+            var yy = mid - Math.sin(t * Math.PI * 4) * (h * 0.36) * (0.45 + 0.55 * Math.sin(t * Math.PI));
+            if (i === 0) mgraphics.move_to(x + t * w, yy);
+            else mgraphics.line_to(x + t * w, yy);
+        }
+        mgraphics.stroke();
+    } else if (m === 1) {
+        hline(x, x + w, base, COL_GRID, 0.8, 1);
+        vline(x + w * 0.5, base, y + 1, c, a, 1.4);
+        frect(x + w * 0.5 - 1.2, y, 2.4, 2.4, c, a);
+    } else if (m === 2) {
+        hline(x, x + w, mid, COL_GRID, 0.6, 1);
+        for (i = 0; i < 11; i++) {
+            var hv = Math.sin(i * 17.31 + 2.7) * 43758.5453;
+            var hv2 = Math.sin(i * 5.77 + 9.1) * 12543.123;
+            var px = x + 1.5 + (i + 0.5) / 11 * (w - 3);
+            var py = y + 1.5 + (hv2 - Math.floor(hv2)) * (h - 3);
+            frect(px - 0.7, py - 0.7, 1.5, 1.5, c, a * (0.55 + 0.45 * (hv - Math.floor(hv))));
+        }
+    } else {
+        hline(x, x + w, base, COL_GRID, 0.8, 1);
+        vline(x + 1.2, base, y + 1, c, a, 1.4);
+        rgba(c, a);
+        mgraphics.set_line_width(1.1);
+        mgraphics.move_to(x + 2, base - (h - 3) * 0.7);
+        for (i = 1; i <= 16; i++) mgraphics.line_to(x + 2 + i / 16 * (w - 3), base - (h - 3) * 0.7 * Math.exp(-i / 4.5));
+        mgraphics.stroke();
+    }
+}
+
+// Phase chip: glyph + mode name (the Phase used to rebuild the crushed spectrum).
+function drawPhaseBox(x, y, w, h) {
+    var on = curPmode > 0.5;
+    var c = on ? COL_NEG : COL_DIM;
+    rrect(x, y, w, h, 2, [0.05, 0.065, 0.09], 1);
+    var gw = Math.min(30, w * 0.42);
+    drawPhaseGlyph(x + 3, y + 2, gw, h - 4, curPmode, c, on ? 1 : 0.7);
+    var nm = PH_NAMES[clamp(Math.round(curPmode), 0, 3)];
+    if (h >= 20) {
+        label("PHASE", x + gw + 8, y + 8.5, 6.5, COL_DIM, 0.9, 0);
+        label(nm, x + gw + 8, y + h - 4, 8, on ? COL_NEG : COL_DIM, 1, 0);
+    } else {
+        label(nm, x + gw + 8, y + h * 0.5 + 3, 7.5, on ? COL_NEG : COL_DIM, 1, 0);
+    }
+    srect(x + 0.5, y + 0.5, w - 1, h - 1, c, on ? 0.5 : 0.25, 1);
+}
+
+// Lag spread: per-coefficient delay (x = coefficient 1..96, y = 0..12 frames), same formula as the DSP.
+function drawLagBox(x, y, w, h) {
+    var lag = clamp(curLag / 100, 0, 1);
+    var on = lag > 0.004;
+    var c = on ? COL_NEG : COL_DIM;
+    rrect(x, y, w, h, 2, [0.05, 0.065, 0.09], 1);
+    var txt = "LAG " + lagMaxFrames(lag) + "f";
+    var px;
+    var py;
+    var pw;
+    var ph;
+    if (h >= 24) {
+        label(txt, x + 3, y + 8.5, 7, on ? COL_TEXT : COL_DIM, 0.95, 0);
+        px = x + 3;
+        py = y + 12;
+        pw = w - 6;
+        ph = h - 15;
+    } else {
+        label(txt, x + 3, y + h * 0.5 + 3, 7, on ? COL_TEXT : COL_DIM, 0.95, 0);
+        px = x + 3 + tw(txt, 7) + 4;
+        py = y + 2;
+        pw = x + w - 3 - px;
+        ph = h - 5;
+    }
+    hline(px, px + pw, py + ph, COL_GRID, 0.9, 1);
+    for (var q = 1; q <= QC_NC; q++) {
+        var d = lagDelay(q, lag);
+        var xx = px + (q - 1) / (QC_NC - 1) * pw;
+        var yy = py + ph - d / QC_LAG_MAX * ph;
+        frect(xx - 0.4, yy - 1, 1.1, 1.3, c, on ? 0.95 : 0.6);
+    }
 }
 
 function statusChips(x, y, maxw) {
@@ -641,17 +918,17 @@ function statusChips(x, y, maxw) {
     cx += chip(cx, cy, kText, COL_PINK, !kAll) + 3;
     var bText = Math.round(curBits) + " BIT";
     cx += chip(cx, cy, bText, COL_PINK, curBits < 15.5) + 3;
+    t = glActive() ? GL_NAMES[curGmode] + (curGmode < 4.5 ? " " + GRATE_NAMES[curGrate] : "") : "GL OFF";
+    if (cx + tw(t, 8) + 10 < x + maxw) cx += chip(cx, cy, t, glColor(curGmode), glActive()) + 3;
+    t = "PH " + PH_NAMES[clamp(Math.round(curPmode), 0, 3)];
+    if (cx + tw(t, 8) + 10 < x + maxw) cx += chip(cx, cy, t, COL_NEG, curPmode > 0.5) + 3;
     var scrOn = curSmode > 0 && curSamt > 0.05;
     t = scrOn ? SCR_NAMES[clamp(Math.round(curSmode), 0, 3)] + " " + Math.round(curSamt) : "SCR OFF";
-    if (cx + tw(t, 8) + 8 < x + maxw) cx += chip(cx, cy, t, COL_VIOLET, scrOn) + 3;
+    if (cx + tw(t, 8) + 10 < x + maxw) cx += chip(cx, cy, t, COL_VIOLET, scrOn) + 3;
     var st = Math.round(curShift);
     var shOn = Math.abs(curShift) > 0.05;
     t = (st > 0 ? "+" : "") + st + " ST";
-    if (cx + tw(t, 8) + 8 < x + maxw) cx += chip(cx, cy, t, COL_ENV, shOn) + 3;
-    if (tele.held > 0.5) {
-        t = curFreeze > 0.5 ? "FROZEN" : "HOLD " + HOLD_NAMES[curHold];
-        if (cx + tw(t, 8) + 8 < x + maxw) cx += chip(cx, cy, t, COL_ICE, true) + 3;
-    }
+    if (cx + tw(t, 8) + 10 < x + maxw) cx += chip(cx, cy, t, COL_ENV, shOn) + 3;
     return cx;
 }
 
@@ -667,39 +944,47 @@ function pitchText() {
 
 // ----- layouts -----
 
+var A_BARS_Y = 14;
+var A_BARS_H = 50;
+
 function paintA(w, h) {
-    // chips row
-    statusChips(2, 1, w - 86);
+    statusChips(2, 1, w - 70);
     label(pitchText(), w - 3, 9.6, 8.5, COL_ENV, 0.95, 2);
-    // bars (hero)
-    var by = 14;
-    var bh = 64;
-    drawBars(0, by, w, bh, true);
-    // lane labels and hold clock
-    drawStrip(0, by + bh + 3, w - 74, 12);
-    label("EXC", 3, by + bh + 12, 7, COL_DIM, 0.8, 0);
-    drawClock(w - 70, by + bh + 3, 70, 12);
-    label(curFreeze > 0.5 ? "FREEZE" : (curHold > 0.5 ? HOLD_NAMES[curHold] : "HOLD"), w - 35, by + bh + 12, 7.5, curHold > 0.5 || curFreeze > 0.5 ? COL_TEXT : COL_DIM, 0.95, 1);
-    // envelope
-    var ey = by + bh + 18;
-    drawEnvelope(0, ey, w, h - ey);
+    drawBars(0, A_BARS_Y, w, A_BARS_H, true);
+    var sy = A_BARS_Y + A_BARS_H + 3;
+    drawStrip(0, sy, w - 74, 11);
+    label("EXC", 3, sy + 9, 7, COL_DIM, 0.8, 0);
+    drawClock(w - 70, sy, 70, 11);
+    label(clockText(), w - 35, sy + 8.6, 7, glActive() ? COL_TEXT : COL_DIM, 0.95, 1);
+    // frame history + phase
+    var hy = sy + 14;
+    label("HIST", 2, hy + 9, 6.5, COL_DIM, 0.85, 0);
+    drawHistory(24, hy, w - 24 - 94, 13);
+    drawPhaseBox(w - 90, hy, 90, 13);
+    // envelope + lag spread
+    var ey = hy + 16;
+    drawEnvelope(0, ey, w - 94, h - ey);
     label("ENV", 3, ey + 9, 7, COL_DIM, 0.85, 0);
-    label("in", w - 36, ey + 9, 7, COL_GHOST, 0.95, 0);
-    label("out", w - 18, ey + 9, 7, tele.held > 0.5 ? COL_ICE : COL_ENV, 1, 0);
+    label("in", w - 94 - 36, ey + 9, 7, COL_GHOST, 0.95, 0);
+    label("out", w - 94 - 18, ey + 9, 7, tele.held > 0.5 ? COL_ICE : COL_ENV, 1, 0);
+    drawLagBox(w - 90, ey, 90, h - ey);
 }
 
 function paintB(w, h) {
     statusChips(1, 1, w - 2);
-    drawBars(0, 14, w, 52, true);
-    drawStrip(0, 68, w, 10);
-    drawEnvelope(0, 80, w, 38);
-    label("ENV", 3, 89, 7, COL_DIM, 0.85, 0);
-    label("in", w - 36, 89, 7, COL_GHOST, 0.95, 0);
-    label("out", w - 18, 89, 7, tele.held > 0.5 ? COL_ICE : COL_ENV, 1, 0);
-    // footer: hold clock + pitch
-    drawClock(0, 121, w * 0.5, 12);
-    label(curFreeze > 0.5 ? "FROZEN" : (curHold > 0.5 ? "HOLD " + HOLD_NAMES[curHold] : "HOLD OFF"), 4, 130, 7.5, curHold > 0.5 || curFreeze > 0.5 ? COL_TEXT : COL_DIM, 0.95, 0);
-    label(pitchText(), w - 2, 130, 8.5, COL_ENV, 0.95, 2);
+    drawBars(0, 14, w, 42, true);
+    drawStrip(0, 58, w - 66, 8);
+    label(pitchText(), w - 1, 65, 7.5, COL_ENV, 0.95, 2);
+    drawHistory(0, 69, w, 12);
+    drawEnvelope(0, 84, w, 27);
+    label("ENV", 3, 93, 7, COL_DIM, 0.85, 0);
+    label("in", w - 36, 93, 7, COL_GHOST, 0.95, 0);
+    label("out", w - 18, 93, 7, tele.held > 0.5 ? COL_ICE : COL_ENV, 1, 0);
+    // footer: glitch clock, lag spread, phase
+    drawClock(0, 114, 56, 19);
+    label(clockText(), 28, 126, 7, glActive() ? COL_TEXT : COL_DIM, 0.95, 1);
+    drawLagBox(60, 114, 60, 19);
+    drawPhaseBox(124, 114, 58, 19);
 }
 
 function padRect(w, h) {
@@ -728,61 +1013,35 @@ function paintC(w, h) {
     mgraphics.arc(px, py, 1.6, 0, 6.2832);
     mgraphics.fill();
     // axis labels
-    label("COEFFS >", w - 4, h - 4, 7.5, COL_TEXT, 0.7, 2);
-    label("BITS", 4, 10, 7.5, COL_TEXT, 0.7, 0);
-    label("16", 4, 20, 7, COL_DIM, 0.9, 0);
-    label("1", 4, h - 14, 7, COL_DIM, 0.9, 0);
+    label("COEFFS >", w - 4, 24, 7.5, COL_TEXT, 0.7, 2);
+    label("BITS", 4, 24, 7.5, COL_TEXT, 0.7, 0);
+    label("16", 4, 33, 7, COL_DIM, 0.9, 0);
+    label("1", 4, h - 17, 7, COL_DIM, 0.9, 0);
     var kt = curCoeffs >= 99.5 ? "K all" : "K " + Math.round(tele.k);
     var padTxt = kt + "  " + Math.round(curBits) + " bit";
-    if (px > w * 0.55) label(padTxt, px - 10, Math.max(py + 3, 22), 8, COL_PINK, 1, 2);
-    else label(padTxt, px + 10, Math.max(py + 3, 22), 8, COL_PINK, 1, 0);
-    // hold clock along the top edge
-    drawClock(w - 62, 2, 60, 9);
-    label(pitchText(), 22, h - 4, 8, COL_ENV, 0.95, 0);
-    // envelope mini-curves along the bottom third, behind the label row
+    if (px > w * 0.55) label(padTxt, px - 10, Math.max(py + 3, 44), 8, COL_PINK, 1, 2);
+    else label(padTxt, px + 10, Math.max(py + 3, 44), 8, COL_PINK, 1, 0);
+    // top edge: frame history and the glitch clock
+    drawHistory(2, 2, w - 72, 11);
+    drawClock(w - 66, 2, 64, 11);
+    label(clockText(), w - 34, 10.4, 6.5, glActive() ? COL_TEXT : COL_DIM, 0.95, 1);
+    // bottom edge: pitch, phase, lag
+    label(pitchText(), 4, h - 4, 7.5, COL_ENV, 0.95, 0);
+    drawPhaseBox(78, h - 14, 62, 12);
+    drawLagBox(144, h - 14, 62, 12);
 }
 
-function snowflake(cx, cy, r, c, a, lw) {
-    rgba(c, a);
-    mgraphics.set_line_width(lw);
-    for (var i = 0; i < 3; i++) {
-        var an = i * Math.PI / 3;
-        var dx = Math.cos(an) * r;
-        var dy = Math.sin(an) * r;
-        mgraphics.move_to(cx - dx, cy - dy);
-        mgraphics.line_to(cx + dx, cy + dy);
-        for (var sgn = -1; sgn <= 1; sgn += 2) {
-            var bx = cx + dx * 0.62 * sgn;
-            var by = cy + dy * 0.62 * sgn;
-            for (var sd = -1; sd <= 1; sd += 2) {
-                var ba = an + (sgn < 0 ? Math.PI : 0) + sd * 0.75;
-                mgraphics.move_to(bx, by);
-                mgraphics.line_to(bx + Math.cos(ba) * r * 0.3, by + Math.sin(ba) * r * 0.3);
-            }
-        }
-    }
-    mgraphics.stroke();
-}
-
-// Layout 3: the Freeze pad face above the Freeze button. Idle: snowflake + hint. Frozen: ice fill, held envelope bars.
-function paintFreeze(w, h) {
-    var on = curFreeze > 0.5;
-    rrect(0, 0, w, h, 5, on ? [0.10, 0.17, 0.26] : [0.055, 0.07, 0.095], 1);
-    if (on) {
-        // frozen envelope coefficient bars behind the icon
-        var nb = 24;
-        var bw = (w - 8) / nb;
-        for (var i = 0; i < nb; i++) {
-            var qi = Math.min(QC_NC - 1, Math.floor(i * QC_NC / nb * 0.5));
-            var v = Math.abs(cmp(cC.length > qi ? cC[qi] : 0));
-            var bh = Math.max(2, v * (h - 22));
-            frect(4 + i * bw + 0.5, h - 4 - bh, bw - 1.5, bh, COL_ICE, 0.35);
-        }
-    }
-    snowflake(w * 0.5, h * 0.4, on ? 17 : 15, COL_ICE, on ? 1 : 0.55, on ? 2 : 1.5);
-    label(on ? "FROZEN" : "FREEZE", w * 0.5, h - 15, 8.5, on ? COL_TEXT : COL_ICE, on ? 1 : 0.75, 1);
-    label(on ? "click to release" : "click to hold", w * 0.5, h - 5, 6.5, COL_DIM, 0.9, 1);
-    srect(0.5, 0.5, w - 1, h - 1, COL_ICE, on ? 1 : 0.45, on ? 1.6 : 1);
+// Layout 3: the Glitch pad above the Glitch tab. Click cycles Off > Drop > Rpt > Rev > Hold > Frz.
+function paintGlitch(w, h) {
+    var on = glActive();
+    var gc = glColor(curGmode);
+    var held = curGmode >= 3.5;
+    rrect(0, 0, w, h, 5, held ? [0.10, 0.17, 0.26] : [0.055, 0.07, 0.095], 1);
+    label("GLITCH", 5, 10, 7, COL_DIM, 0.9, 0);
+    label(curGmode > 4.5 ? "click: next" : (on ? GRATE_NAMES[curGrate] : "click: next"), w - 5, 10, 7, COL_DIM, 0.9, 2);
+    label(GL_NAMES[clamp(Math.round(curGmode), 0, 5)], w * 0.5, 27, 12, on ? gc : COL_DIM, on ? 1 : 0.8, 1);
+    drawHistory(4, h - 15, w - 8, 11);
+    srect(0.5, 0.5, w - 1, h - 1, on ? gc : COL_ICE, on ? 1 : 0.4, on ? 1.6 : 1);
 }
 
 function paint() {
@@ -790,7 +1049,7 @@ function paint() {
     var w = sz[0];
     var h = sz[1];
     frect(0, 0, w, h, COL_BG, 1);
-    if (layout === 3) paintFreeze(w, h);
+    if (layout === 3) paintGlitch(w, h);
     else if (layout === 1) paintB(w, h);
     else if (layout === 2) paintC(w, h);
     else paintA(w, h);
@@ -800,7 +1059,7 @@ function paint() {
 
 function barsRect() {
     var sz = mgraphics.size;
-    if (layout === 0) return { x: 0, y: 14, w: sz[0], h: 64 };
+    if (layout === 0) return { x: 0, y: A_BARS_Y, w: sz[0], h: A_BARS_H };
     return null;
 }
 
@@ -830,7 +1089,10 @@ function applyDragC(px, py) {
 
 function onclick(x, y) {
     if (layout === 3) {
-        outlet(0, "freeze", curFreeze > 0.5 ? 0 : 1);
+        curGmode = (Math.round(curGmode) + 1) % 6;
+        outlet(0, "gmode", curGmode);
+        rebuildDemo();
+        mgraphics.redraw();
         return;
     }
     if (layout === 0) {

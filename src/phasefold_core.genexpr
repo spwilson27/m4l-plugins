@@ -9,17 +9,27 @@
 // zero-phase frame, p = -1 the maximum-phase (time reversed) frame, and the
 // group delay, hence the energy centroid, moves linearly in between.
 //
-// Level: a folded frame has its energy in a different place, not a different
-// amount. Two things made the library's min/max-phase frames 3..12 dB quiet:
-//  1. Position. Min-phase energy sits at frame index 0 and max-phase energy at
-//     index N-1, where the Hann synthesis window is 0 (up to -16 dB for noise).
-//     Fix: pivot placement. Every frame is delayed so its sharpest energy
-//     (pf_pivot, the loudest n/64 samples of the windowed input) lands on the
-//     input's own pivot, which also keeps hits where they were.
-//  2. Overlap coherence. Frames with a rebuilt phase no longer add as
-//     amplitudes but as powers: 2/3 * sum(w^2) = 1 becomes 0.49 (-3.1 dB).
-//     Fix: Auto Gain scales each frame so its window-weighted energy equals the
-//     input frame's, times 1.43 (+3.1 dB) fading to 1.00 as Orig goes to 100%.
+// Artifacts this core avoids (measured with tests/test_phasefold.js, tests/phasefold_model.js):
+//  1. Cepstral time aliasing. A narrow-band input (a sine, one partial) has a
+//     min/max-phase response far longer than the frame. In an N-point cepstrum
+//     it wraps around the frame and comes back as 25 dB of hop-rate amplitude
+//     modulation. All cepstral FFTs run at 2N (zero padded), the tail past N is
+//     dropped instead of wrapped.
+//  2. Spikes. A rebuilt phase of a noisy frame is an impulse (flat magnitude =
+//     minimum phase = one click), so noise became a click train at the hop rate
+//     (crest factor 26 dB, 5 dB RMS ripple). pf_limit blends such a frame back
+//     toward the input frame until it is at most 8 dB spikier than the input.
+//  3. Pivot placement. Every frame is delayed so its sharpest event (pf_pivot,
+//     the strongest SIGNED stretch of the windowed input) lands where it was.
+//     The old energy criterion jumped between the positive and the negative
+//     peak of a periodic wave, which flips the sign of that frame (25 dB AM).
+//  4. Log floor. The phase is rebuilt from log(|X| + eps) with eps 50 dB below the
+//     frame's peak magnitude, so near-empty bins stop dominating the cepstrum.
+//     The same eps is taken out again by exp, the magnitude stays exact.
+//  5. Level. Re-phased frames add as powers (-3 dB) but tonal frames add as
+//     amplitudes. Auto Gain follows the ratio of smoothed input and output FRAME
+//     energies (a sample-wise ratio squashes a pre-ring, where the input is still
+//     silent), slewed over 20 ms, no per-frame jumps, faded out toward Orig 100 %.
 //
 // Telemetry buffer "phasefoldscope" (4 channels, bound with `scope #0-phasefoldscope`):
 //   frames 0..255 : ch0 dry max, ch1 dry min, ch2 wet max, ch3 wet min (mono,
@@ -32,7 +42,7 @@
 // constants, Buffer bound on loadbang by the GenExpr variable name.
 
 // Window-weighted energy and centroid of the windowed input frame in fx.
-// ep (shared energy profile): first = 1 writes, first = 0 adds. Results go to
+// ep (shared SIGNED sample profile of all channels): first = 1 writes, first = 0 adds. Results go to
 // ms[2 ch] = energy and ms[2 ch + 1] = centroid (0..1).
 pf_energy(fx, ep, ms, win, n, ch, first) {
 	ein = 0;
@@ -41,9 +51,9 @@ pf_energy(fx, ep, ms, win, n, ch, first) {
 		v = fx.peek(i, 0);
 		en = v * v;
 		if (first > 0.5) {
-			ep.poke(en, i);
+			ep.poke(v, i);
 		} else {
-			ep.poke(ep.peek(i) + en, i);
+			ep.poke(ep.peek(i) + v, i);
 		}
 		w2 = en * win.peek(i) * win.peek(i);
 		ein += w2;
@@ -58,11 +68,11 @@ pf_energy(fx, ep, ms, win, n, ch, first) {
 	return ein;
 }
 
-// Index of the loudest n/64-sample stretch of the energy profile (its centre).
+// Index of the strongest signed n/64-sample stretch of the profile (its centre).
 pf_pivot(ep, n) {
 	wl = max(8, round(n / 64));
 	s = 0;
-	best = -1;
+	best = -1e30;
 	bi = n * 0.5;
 	for (i = 0; i < n; i += 1) {
 		s += ep.peek(i);
@@ -79,7 +89,117 @@ pf_pivot(ep, n) {
 	return bi;
 }
 
-// Asymmetric quefrency weighting, in place (see the header).
+// Twiddles (cos and -sin of 2 pi k / 8192, k < 4096) in tab channels 0/1 and the
+// 13-bit bit-reversed index in channel 2. The library FFT stops at 4096 points;
+// the cepstral path runs at 2N (up to 8192), so Phase Fold has its own. Runs
+// once (History guard).
+pf_fft_init(tab) {
+	History done(0);
+	if (done == 0) {
+		for (k = 0; k < 4096; k += 1) {
+			ph = 6.283185307179586 * k / 8192;
+			tab.poke(cos(ph), k, 0);
+			tab.poke(-sin(ph), k, 1);
+		}
+		for (i = 0; i < 8192; i += 1) {
+			r = 0;
+			v = i;
+			for (b = 0; b < 13; b += 1) {
+				hv = floor(v * 0.5);
+				r = r * 2 + (v - hv * 2);
+				v = hv;
+			}
+			tab.poke(r, i, 2);
+		}
+		done = 1;
+	}
+	return done;
+}
+
+// In-place radix-2 FFT of x (channel 0 = real, 1 = imag) over n points, n a
+// power of two <= 8192. inv = 1 runs the inverse and scales by 1 / n.
+pf_fft(x, tab, n, inv) {
+	rdiv = 8192 / n;
+	for (i = 0; i < n; i += 1) {
+		j = tab.peek(i, 2) / rdiv;
+		if (j > i) {
+			tr = x.peek(i, 0);
+			ti = x.peek(i, 1);
+			x.poke(x.peek(j, 0), i, 0);
+			x.poke(x.peek(j, 1), i, 1);
+			x.poke(tr, j, 0);
+			x.poke(ti, j, 1);
+		}
+	}
+	sgn = inv > 0.5 ? -1 : 1;
+	for (len = 2; len <= n; len *= 2) {
+		half = len * 0.5;
+		stp = 8192 / len;
+		for (s = 0; s < n; s += len) {
+			for (k = 0; k < half; k += 1) {
+				wr = tab.peek(k * stp, 0);
+				wi = sgn * tab.peek(k * stp, 1);
+				a = s + k;
+				b = a + half;
+				xr = x.peek(b, 0);
+				xi = x.peek(b, 1);
+				tr = xr * wr - xi * wi;
+				ti = xr * wi + xi * wr;
+				ur = x.peek(a, 0);
+				ui = x.peek(a, 1);
+				x.poke(ur + tr, a, 0);
+				x.poke(ui + ti, a, 1);
+				x.poke(ur - tr, b, 0);
+				x.poke(ui - ti, b, 1);
+			}
+		}
+	}
+	if (inv > 0.5) {
+		sc = 1 / n;
+		for (i = 0; i < n; i += 1) {
+			x.poke(x.peek(i, 0) * sc, i, 0);
+			x.poke(x.peek(i, 1) * sc, i, 1);
+		}
+	}
+	return 0;
+}
+
+// Largest magnitude of the spectrum in fx over n bins.
+pf_maxmag(fx, n) {
+	mg = 0;
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		mg = max(mg, sqrt(xr * xr + xi * xi));
+	}
+	return mg;
+}
+
+// Real cepstrum of the spectrum in fx: fc = IFFT(log(|X| + eps)).
+pf_cepspec(fx, fc, tab, n, eps) {
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		fc.poke(log(sqrt(xr * xr + xi * xi) + eps), i, 0);
+		fc.poke(0, i, 1);
+	}
+	pf_fft(fc, tab, n, 1);
+	return 0;
+}
+
+// exp of the complex log spectrum in fc (re = log magnitude, im = phase) into
+// fx, minus the eps added in pf_cepspec.
+pf_expspec(fc, fx, n, eps) {
+	for (i = 0; i < n; i += 1) {
+		m = max(exp(fc.peek(i, 0)) - eps, 0);
+		ph = fc.peek(i, 1);
+		fx.poke(m * cos(ph), i, 0);
+		fx.poke(m * sin(ph), i, 1);
+	}
+	return 0;
+}
+
+// Asymmetric quefrency weighting, in place over n = 2N points (see the header).
 pf_weight(fc, n, p) {
 	half = n * 0.5;
 	wp1 = 1 + p;
@@ -95,7 +215,7 @@ pf_weight(fc, n, p) {
 }
 
 // Delay the new spectrum fx by t0 samples (linear phase) and blend it with the
-// original-phase spectrum xo: fx = (1 - orig) * shifted + orig * xo.
+// original-phase spectrum xo: fx = (1 - orig) * shifted + orig * xo. n = 2N.
 pf_place(fx, xo, n, t0, orig) {
 	for (k = 0; k < n; k += 1) {
 		a = -6.283185307179586 * ((k * t0) % n) / n;
@@ -134,45 +254,96 @@ pf_stats(fx, win, ms, n, t0, ch) {
 	return eo;
 }
 
-// Weighted overlap-add with a per-frame gain (stft_ola with g).
-pf_ola(acc, st, fx, win, n, g) {
+// Crest factor (peak / rms over n samples) of z = (1 - b) * y * win + b * zo,
+// y in fx channel 0, zo = the windowed input frame times win.
+pf_crest(fx, zo, win, n, b) {
+	pk = 0;
+	sq = 0;
+	for (i = 0; i < n; i += 1) {
+		z = (1 - b) * fx.peek(i, 0) * win.peek(i) + b * zo.peek(i);
+		pk = max(pk, abs(z));
+		sq += z * z;
+	}
+	return pk / sqrt(sq / n + 1e-30);
+}
+
+// Crest limiter. Picks the smallest blend b = 0, 1/8 .. 1 toward the input frame
+// zo whose crest is at most lim, and writes the final weighted frame
+// z = (1 - b) * y * win + b * zo into fx channel 0. Returns b.
+pf_limit(fx, zo, win, n, lim) {
+	chosen = 1;
+	found = 0;
+	for (s = 0; s <= 8; s += 1) {
+		bb = s * 0.125;
+		if (found < 0.5) {
+			cr = pf_crest(fx, zo, win, n, bb);
+			if (cr <= lim) {
+				chosen = bb;
+				found = 1;
+			}
+		}
+	}
+	for (i = 0; i < n; i += 1) {
+		fx.poke((1 - chosen) * fx.peek(i, 0) * win.peek(i) + chosen * zo.peek(i), i, 0);
+	}
+	return chosen;
+}
+
+// Energy of the weighted frame z in fx channel 0 (what the overlap-add receives).
+pf_zenergy(fx, n) {
+	ez = 0;
+	for (i = 0; i < n; i += 1) {
+		v = fx.peek(i, 0);
+		ez += v * v;
+	}
+	return ez;
+}
+
+// Overlap-add of the weighted frame z (already windowed) in fx channel 0.
+pf_ola(acc, st, fx, n) {
 	wp = st.peek(0);
 	for (i = 0; i < n; i += 1) {
 		j = wp + i;
 		if (j >= n) {
 			j -= n;
 		}
-		acc.poke(acc.peek(j) + fx.peek(i, 0) * win.peek(i) * 0.6666666666666666 * g, j);
+		acc.poke(acc.peek(j) + fx.peek(i, 0) * 0.6666666666666666, j);
 	}
 	return 0;
 }
 
-// One channel's frame: fx holds the windowed input frame on entry.
-pf_channel(fx, fc, xo, tab, win, acc, st, ms, n, p, orig, ag, t0, ch) {
-	ein = ms.peek(ch * 2);
-	fft_run(fx, tab, n, 0);
+// One channel's frame: fx holds the windowed input frame (n samples) on entry.
+// fx, fc, xo are 2N long: the cepstral path runs on the zero-padded frame.
+pf_channel(fx, fc, xo, zo, tab, win, acc, st, ms, n, p, orig, t0, ch) {
+	m = n * 2;
+	for (i = 0; i < n; i += 1) {
+		zo.poke(fx.peek(i, 0) * win.peek(i), i);
+	}
+	ms.poke(pf_crest(fx, zo, win, n, 1) * 2.5118864315095806, 10);
+	for (i = n; i < m; i += 1) {
+		fx.poke(0, i, 0);
+		fx.poke(0, i, 1);
+	}
+	pf_fft(fx, tab, m, 0);
 	if (orig > 0.001) {
-		for (i = 0; i < n; i += 1) {
+		for (i = 0; i < m; i += 1) {
 			xo.poke(fx.peek(i, 0), i, 0);
 			xo.poke(fx.peek(i, 1), i, 1);
 		}
 	}
-	cep_from_spec(fx, fc, tab, n, 1e-9);
-	pf_weight(fc, n, p);
-	cep_to_logmag(fc, tab, n);
-	cep_exp_spec(fc, fx, n, 1e-9);
-	pf_place(fx, xo, n, t0, orig);
-	fft_run(fx, tab, n, 1);
-	eo = pf_stats(fx, win, ms, n, t0, ch);
-	g = 1;
-	if (ag > 0.5) {
-		if (eo > 1e-24) {
-			g = min(sqrt(ein / eo) * (1 + 0.43 * (1 - orig)), 4);
-		}
-	}
-	ms.poke(g, 5 + ch * 2);
+	ms.poke(max(pf_maxmag(fx, m) * 0.0031622776601683794, 1e-9), 11);
+	pf_cepspec(fx, fc, tab, m, ms.peek(11));
+	pf_weight(fc, m, p);
+	pf_fft(fc, tab, m, 0);
+	pf_expspec(fc, fx, m, ms.peek(11));
+	pf_place(fx, xo, m, t0, orig);
+	pf_fft(fx, tab, m, 1);
+	pf_stats(fx, win, ms, n, t0, ch);
+	bl = pf_limit(fx, zo, win, n, ms.peek(10));
+	ms.poke(bl, 5 + ch * 2);
+	ms.poke(pf_zenergy(fx, n), 12 + ch);
 	ms.poke(t0 / n, 9);
-	pf_ola(acc, st, fx, win, n, g);
+	pf_ola(acc, st, fx, n);
 	return 0;
 }
 
@@ -193,13 +364,14 @@ Param autog(1);
 Param mixpct(100);
 Param outdb(0);
 
-Data tab(4096, 3);
+Data tab(8192, 3);
 Data win(4096);
-Data fx(4096, 2);
-Data fc(4096, 2);
-Data xo(4096, 2);
+Data fx(8192, 2);
+Data fc(8192, 2);
+Data xo(8192, 2);
+Data zo(4096);
 Data ep(4096);
-Data ms(12);
+Data ms(14);
 Data ringL(4096);
 Data accL(4096);
 Data stL(4);
@@ -226,6 +398,8 @@ History hcin(0.5);
 History hcout(0.5);
 History hpiv(0.5);
 History hgdb(0);
+History eiS(0);
+History eoS(0);
 
 // Active FFT size. A Size change fades the wet out over 512 samples, switches
 // (the library clears its ring and accumulator), holds the wet at 0 until the
@@ -257,7 +431,7 @@ ph1 = clip(phaseamt, -100, 100) / 100;
 or1 = clip(orig, 0, 100) / 100;
 ag1 = autog > 0.5 ? 1 : 0;
 
-fft_init(tab);
+pf_fft_init(tab);
 stft_win(win, n);
 rdyL = stft_in(ringL, stL, in1, n);
 rdyR = stft_in(ringR, stR, in2, n);
@@ -272,14 +446,33 @@ if (rdyL + rdyR > 0.5) {
 	if (ms.peek(0) + ms.peek(2) > 1e-12) {
 		t0 = pf_pivot(ep, n);
 		stft_frame(fx, ringL, stL, win, n);
-		pf_channel(fx, fc, xo, tab, win, accL, stL, ms, n, ph1, or1, ag1, t0, 0);
+		pf_channel(fx, fc, xo, zo, tab, win, accL, stL, ms, n, ph1, or1, t0, 0);
 		stft_frame(fx, ringR, stR, win, n);
-		pf_channel(fx, fc, xo, tab, win, accR, stR, ms, n, ph1, or1, ag1, t0, 1);
+		pf_channel(fx, fc, xo, zo, tab, win, accR, stR, ms, n, ph1, or1, t0, 1);
 		fr = 1;
 	}
 }
 yL = stft_out(accL, stL, n);
 yR = stft_out(accR, stR, n);
+
+// Auto Gain: sqrt(eiS / eoS) * 1.1 where eiS / eoS are per-frame one-poles (0.25) of
+// the input frame energy and of the energy of the frame actually added (after the
+// crest limiter). Both frames share one time support, so a pre-ring or a tail
+// inside the frame is not mistaken for a level mismatch. The gain target is
+// clipped to 0.25..4, fades out toward Orig 100 % and slews to the output over
+// 20 ms, so there are no per-frame jumps.
+einT = 0.5 * (ms.peek(0) + ms.peek(2));
+ezT = 0.5 * (ms.peek(12) + ms.peek(13));
+eiN = fr > 0.5 ? (eiS < 1e-20 ? einT : eiS + (einT - eiS) * 0.25) : eiS;
+eoN = fr > 0.5 ? (eoS < 1e-20 ? ezT : eoS + (ezT - eoS) * 0.25) : eoS;
+eiS = eiN;
+eoS = eoN;
+agcok = (eiN > 1e-20) * (eoN > 1e-20);
+agct = agcok > 0.5 ? clip(sqrt(eiN / max(eoN, 1e-20)) * 1.1, 0.25, 4) : 1;
+agct = ag1 > 0.5 ? 1 + (agct - 1) * (1 - or1) : 1;
+agcg = pf_slew(agct, 1 - 1 / (0.02 * samplerate));
+yL = yL * agcg;
+yR = yR * agcg;
 
 // Constant 4096-sample latency for every size; the dry path matches it.
 padL.write(yL);
@@ -298,8 +491,7 @@ og = pow(10, outS / 20);
 out1 = fixnan((drL * cos(ang) + wetL * sin(ang)) * og);
 out2 = fixnan((drR * cos(ang) + wetR * sin(ang)) * og);
 
-gv = 0.5 * (ms.peek(5) + ms.peek(7));
-gv = max(gv, 0.000001);
+gv = max(agcg, 0.000001);
 hcin = fr > 0.5 ? 0.5 * (ms.peek(1) + ms.peek(3)) : hcin;
 hcout = fr > 0.5 ? 0.5 * (ms.peek(4) + ms.peek(6)) : hcout;
 hpiv = fr > 0.5 ? ms.peek(9) : hpiv;

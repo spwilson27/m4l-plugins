@@ -4,7 +4,7 @@
  * (`scripts/ableton_mcp_server.js`, `ableton_eval_lom_js`).
  *
  * Needs a Live set with the MCP Bridge and at least one Delay+ pair, e.g. delayplus_test.als
- * (tracks "Delay+ A/B/C": rack [Delay+ X, Limiter 6 ms, Delay+ End]). Live runs in the tart VM
+ * (tracks "Delay+ 1/2/3": rack [Delay+, Limiter 6 ms, Delay+ End]). Live runs in the tart VM
  * (AGENTS.md 1a): `scripts/vm_delayplus.sh live`, then `scripts/vm_delayplus.sh test`. Every Start registers its buffers in
  * Global("delayplus_bus").reg, which is how the test finds the pairs and reads their shared header.
  *

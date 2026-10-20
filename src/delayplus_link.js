@@ -83,6 +83,7 @@ function init_link() {
         return;
     }
     dpRegister();
+    if (typeof dpApplyPanelTheme === "function") dpApplyPanelTheme();
     if (!dpTask) {
         dpTask = new Task(dpPoll, this);
         dpTask.interval = 500;
@@ -162,7 +163,7 @@ function dpPoll() {
     dpLink.status = "linked";
     if (DP_ROLE === "start") {
         dpHdrPoke(30, latency);
-        if (typeof dpTimeMs === "function") dpHdrPoke(31, dpTimeMs());
+        if (typeof dpPokeTimes === "function") dpPokeTimes();
     } else {
         var entry = reg[ids[partner]];
         var key = entry.xfer + "|" + entry.hdr;

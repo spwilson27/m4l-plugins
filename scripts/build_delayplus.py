@@ -3,22 +3,24 @@
 Build Delay+ (Bitwig Delay+ style delay whose feedback loop runs through a Live device chain).
 
 Outputs (devices/):
-  Delay+ A.amxd, Delay+ B.amxd, Delay+ C.amxd  Start device, one per visualization variant
-                                               (src/delayplus_viz_{a,b,c}.js), same DSP / params
-  Delay+ End.amxd                              End device (closes the loop, mixes dry/wet)
-  Delay+ A.adg, Delay+ B.adg, Delay+ C.adg     Audio Effect Rack presets: [Delay+ X] [Delay+ End]
-Plus the Live test set delayplus_test.als (tracks "Delay+ A/B/C": rack [Start, Limiter 6 ms, End],
-Ableton MCP Bridge on the Main track) via scripts/make_delayplus_sets.py.
+  Delay+.amxd       Start device: the tank and every control, laid out like Ableton's Echo
+                    (scripts/delayplus_layouts/echo.py) around the tape-loop display
+                    (src/delayplus_viz_b.js)
+  Delay+ End.amxd   End device (closes the loop, mixes dry/wet)
+  Delay+.adg        Audio Effect Rack preset: [Delay+] [Delay+ End]
+Plus the Live test set delayplus_test.als (tracks "Delay+ 1..3": rack [Delay+, Limiter 6 ms,
+Delay+ End], Ableton MCP Bridge on the Main track) via scripts/make_delayplus_sets.py. Three pairs
+keep instance isolation covered.
 
-Usage: build_delayplus.py [--variant a|b|c] [--no-sets]
+Usage: build_delayplus.py [--no-sets]
 
-Start layout (480 x 169): visualization v8ui x=6..228 (status header inside), control grid
-x=234..474: row 1 Time|Division, Offset, Feedback, Mix, Sync/Freeze buttons; row 2 HP, LP, Drive,
-Rate, Depth; row 3 Duck, Width, Stereo Mode / Time Mode tabs and the Debug button.
+A layout module returns the viz rect and presents every parameter in P (see load_layout); the
+build adds the DSP, buffers and the shared wiring.
 End layout (124 x 169): status v8ui only.
 """
 
 import argparse
+import importlib
 import json
 import os
 import struct
@@ -27,6 +29,7 @@ import time
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 OUT_DIR = os.path.join(ROOT, "devices")
 
@@ -38,9 +41,8 @@ SCOPE_SAMPS = 32 + 3 * 512
 ESCOPE_SAMPS = 32
 
 VARIANTS = {
-    "a": {"name": "Delay+ A", "viz": "delayplus_viz_a.js"},
-    "b": {"name": "Delay+ B", "viz": "delayplus_viz_b.js"},
-    "c": {"name": "Delay+ C", "viz": "delayplus_viz_c.js"},
+    # The device: Echo-style layout (scripts/delayplus_layouts/echo.py) + the tape-loop display.
+    "main": {"name": "Delay+", "viz": "delayplus_viz_b.js", "layout": "echo"},
 }
 END_NAME = "Delay+ End"
 
@@ -51,47 +53,103 @@ GREEN = (0.40, 0.88, 0.52)
 CORAL = (0.98, 0.42, 0.38)
 SLATE = (0.62, 0.68, 0.76)
 
-DIVISIONS = ["1/64", "1/32T", "1/32", "1/16T", "1/32D", "1/16", "1/8T", "1/16D", "1/8", "1/4T",
-             "1/8D", "1/4", "1/2T", "1/4D", "1/2", "1/1T", "1/2D", "1/1", "2/1", "4/1"]
+# Delay sync values (quarter-note beats in src/delayplus_config.js DP_NOTE_BEATS) and modes.
+NOTES = ["1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4"]
+SYNC_MODES = ["Notes", "Triplet", "Dotted"]
+LFO_DIVS = ["1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"]
+LFO_SHAPES = ["Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Noise"]
+ONOFF = ["Off", "On"]
 
 # key: long, short, lo, hi, initial, ptype (0 float, 1 int, 2 enum), unitstyle, exponent,
-#      gen param (None = UI only), scale (/100 before gen), help, enum
+#      gen param (None = UI only: the face script computes it), scale (/100 before gen), help, enum
+# Long names are what Live shows for automation and mapping; they mirror Echo's controls.
+def _side(s, name):
+    return {
+        f"sync_{s}": (f"{name} Sync", f"{name[0]} Sync", 0, 1, 1, 2, 9, 1.0, None, False,
+                      f"{name} delay time in milliseconds (Time) or in note values (Sync).", ["Time", "Sync"]),
+        f"time_{s}": (f"{name} Time", f"{name[0]} Time", 1.0, 5000.0, 375.0, 0, 2, 3.0, None, False,
+                      f"{name} delay time in Time mode. Never shorter than the chain latency (MIN in the display).", None),
+        f"div_{s}": (f"{name} Division", f"{name[0]} Division", 0, len(NOTES) - 1, 3, 2, 9, 1.0, None, False,
+                     f"{name} delay time in Sync mode.", NOTES),
+        f"mode_{s}": (f"{name} Sync Mode", f"{name[0]} Sync Mode", 0, len(SYNC_MODES) - 1, 0, 2, 9, 1.0, None, False,
+                      f"{name} note value as straight notes, triplets or dotted notes.", SYNC_MODES),
+        f"offs_{s}": (f"{name} Offset", f"{name[0]} Offset", -33.0, 33.0, 0.0, 0, 5, 1.0, None, False,
+                      f"Shortens or lengthens the {name.lower()} delay by a fraction of its time, for swing.", None),
+    }
+
+
 P = {
-    "time": ("Time", "Time", 1.0, 5000.0, 375.0, 0, 2, 3.0, None, False,
-             "Delay time in free mode. Never shorter than the chain latency (see MIN in the display).", None),
-    "div": ("Division", "Div", 0, len(DIVISIONS) - 1, 10, 2, 9, 1.0, None, False,
-            "Delay time in tempo-sync mode.", DIVISIONS),
-    "sync": ("Sync", "Sync", 0, 1, 1, 2, 9, 1.0, None, False,
-             "Free time in ms, or tempo-synced divisions.", ["Free", "Sync"]),
-    "offset": ("Stereo Offset", "Offset", -50.0, 50.0, 0.0, 0, 5, 1.0, "off", True,
-               "Delays one side by a fraction of the time: right when positive, left when negative.", None),
-    "fb": ("Feedback", "Feedback", 0.0, 110.0, 40.0, 0, 5, 1.0, "fb", True,
-           "How much of the processed echo goes back into the tank. Above 100% the loop saturates softly.", None),
-    "wet": ("Dry/Wet", "Mix", 0.0, 100.0, 35.0, 0, 5, 1.0, "wet", True,
-            "Dry/wet mix (done in Delay+ End). Dry stays at unity up to 50%, wet from 50%.", None),
+    **_side("l", "Left"),
+    **_side("r", "Right"),
+    "link": ("Stereo Link", "Link", 0, 1, 1, 2, 9, 1.0, None, False,
+             "Changes to one side's time, Sync and Sync Mode apply to both sides.", ONOFF),
+    "inputdb": ("Input", "Input", -36.0, 12.0, 0.0, 0, 4, 1.0, "inputdb", False,
+                "Gain of the signal going into the delay.", None),
+    "clipdry": ("Clip Dry", "Clip Dry", 0, 1, 0, 2, 9, 1.0, "clipdry", False,
+                "Soft-clips the signal going into the delay.", ONOFF),
+    "fb": ("Feedback", "Feedback", 0.0, 110.0, 50.0, 0, 5, 1.0, "fb", True,
+           "How much of the processed echo goes back into the delay. Above 100% the loop saturates softly.", None),
+    "inv": ("Feedback Invert", "Feedback Inv", 0, 1, 0, 2, 9, 1.0, "inv", False,
+            "Inverts the polarity of the feedback.", ONOFF),
+    "filton": ("Filter On", "Filter On", 0, 1, 1, 2, 9, 1.0, "filton", False,
+               "Turns the high-pass and low-pass filters in the loop on or off.", ONOFF),
+    "hp": ("HP Freq", "HP Freq", 20.0, 20000.0, 50.0, 0, 3, 3.0, "hp", False,
+           "High-pass cutoff. Also draggable in the Filter Display.", None),
+    "hpres": ("HP Res", "HP Res", 0.0, 1.0, 0.0, 0, 1, 1.0, "hpres", False, "High-pass resonance.", None),
+    "lp": ("LP Freq", "LP Freq", 20.0, 20000.0, 5000.0, 0, 3, 3.0, "lp", False,
+           "Low-pass cutoff. Also draggable in the Filter Display.", None),
+    "lpres": ("LP Res", "LP Res", 0.0, 1.0, 0.0, 0, 1, 1.0, "lpres", False, "Low-pass resonance.", None),
+    "filtdisp": ("Filter Display", "Filter Display", 0, 1, 1, 2, 9, 1.0, None, False,
+                 "Shows or hides the Filter Display.", ["Hidden", "Shown"]),
+    "lfosync": ("Mod Sync", "Mod Sync", 0, 1, 1, 2, 9, 1.0, None, False,
+                "LFO rate in Hz, or synced to note values.", ONOFF),
+    "lfohz": ("Mod Rate", "Mod Rate", 0.01, 40.0, 0.5, 0, 3, 3.0, None, False, "LFO rate (Sync off).", None),
+    "lfodiv": ("Mod Division", "Mod Division", 0, len(LFO_DIVS) - 1, 3, 2, 9, 1.0, None, False,
+               "LFO rate in note values (Sync on).", LFO_DIVS),
+    "phase": ("Mod Phase", "Mod Phase", 0.0, 360.0, 180.0, 0, 1, 1.0, "phase", False,
+              "Phase offset of the right channel's LFO.", None),
+    "lfoshape": ("Mod Waveform", "Mod Wave", 0, len(LFO_SHAPES) - 1, 0, 2, 9, 1.0, "lfoshape", False,
+                 "LFO waveform.", LFO_SHAPES),
+    "x4": ("Mod x4", "Mod x4", 0, 1, 0, 2, 9, 1.0, "x4", False, "Multiplies the delay modulation by 4.", ONOFF),
+    "moddelay": ("Mod Delay", "Mod Delay", 0.0, 100.0, 0.0, 0, 5, 1.0, "moddelay", True,
+                 "How much the LFO modulates the delay time (up to 8 ms, 32 ms with x4).", None),
+    "modfilt": ("Mod Filter", "Mod Filter", 0.0, 100.0, 0.0, 0, 5, 1.0, "modfilt", True,
+                "How much the LFO modulates the filter cutoffs (up to +-2 octaves).", None),
+    "envmix": ("Env Mix", "Env Mix", 0.0, 100.0, 0.0, 0, 5, 1.0, "envmix", True,
+               "Blends the LFO with an envelope follower on the input.", None),
+    "gateon": ("Gate On", "Gate On", 0, 1, 0, 2, 9, 1.0, "gateon", False,
+               "Only signal above the gate threshold goes into the delay.", ONOFF),
+    "gatethr": ("Gate Threshold", "Gate Thr", -60.0, 0.0, 0.0, 0, 4, 1.0, "gatethr", False, "Gate threshold.", None),
+    "gaterel": ("Gate Release", "Gate Rel", 1.0, 1000.0, 50.0, 0, 2, 2.0, "gaterel", False, "Gate release time.", None),
+    "duckon": ("Ducking On", "Duck On", 0, 1, 0, 2, 9, 1.0, "duckon", False,
+               "Turns the echoes down while the input is above the ducking threshold.", ONOFF),
+    "duckthr": ("Ducking Threshold", "Duck Thr", -60.0, 0.0, 0.0, 0, 4, 1.0, "duckthr", False,
+                "Ducking threshold.", None),
+    "duckrel": ("Ducking Release", "Duck Rel", 1.0, 1000.0, 100.0, 0, 2, 2.0, "duckrel", False,
+                "How fast the echoes come back after ducking.", None),
+    "noiseon": ("Noise On", "Noise On", 0, 1, 0, 2, 9, 1.0, "noiseon", False, "Adds noise inside the feedback loop.", ONOFF),
+    "noiseamt": ("Noise Amount", "Noise Amt", 0.0, 100.0, 0.0, 0, 5, 1.0, "noiseamt", True, "Noise level.", None),
+    "noisemorph": ("Noise Morph", "Noise Morph", 0.0, 100.0, 0.0, 0, 5, 1.0, "noisemorph", True,
+                   "From hiss (0%) to crackle (100%).", None),
+    "wobon": ("Wobble On", "Wobble On", 0, 1, 0, 2, 9, 1.0, "wobon", False,
+              "Irregular tape-style modulation of the delay time.", ONOFF),
+    "wobamt": ("Wobble Amount", "Wobble Amt", 0.0, 100.0, 0.0, 0, 5, 1.0, "wobamt", True, "Wobble depth (up to 3 ms).", None),
+    "wobmorph": ("Wobble Morph", "Wobble Morph", 0.0, 100.0, 0.0, 0, 5, 1.0, "wobmorph", True,
+                 "From slow wow (0%) to fast flutter (100%).", None),
+    "repitch": ("Repitch", "Repitch", 0, 1, 0, 2, 9, 1.0, "repitch", False,
+                "On: changing the time bends the pitch like tape. Off: crossfades to the new time.", ONOFF),
     "freeze": ("Freeze", "Freeze", 0, 1, 0, 2, 9, 1.0, "freeze", False,
-               "Stops input into the tank and loops what is in it at 100% feedback.", ["Off", "On"]),
-    "hp": ("Low Cut", "Low Cut", 20.0, 2000.0, 20.0, 0, 3, 3.0, "hp", False,
-           "High-pass on the tap: thins every repeat.", None),
-    "lp": ("High Cut", "High Cut", 500.0, 20000.0, 20000.0, 0, 3, 3.0, "lp", False,
-           "Low-pass on the tap: darkens every repeat.", None),
-    "drive": ("Drive", "Drive", 0.0, 100.0, 0.0, 0, 5, 1.0, "drive", True,
-              "Saturation on the tap, before the device chain.", None),
-    "mrate": ("Mod Rate", "Rate", 0.05, 10.0, 0.5, 0, 3, 3.0, "mrate", False,
-              "Speed of the delay-time modulation (wow).", None),
-    "mdepth": ("Mod Depth", "Depth", 0.0, 100.0, 0.0, 0, 5, 1.0, "mdepth", True,
-               "Depth of the delay-time modulation, up to 8 ms.", None),
-    "duck": ("Ducking", "Duck", 0.0, 100.0, 0.0, 0, 5, 1.0, "duck", True,
-             "Turns the echoes down while the input is playing.", None),
-    "width": ("Width", "Width", 0.0, 200.0, 100.0, 0, 5, 1.0, "width", True,
-              "Stereo width of the echoes.", None),
-    "pp": ("Stereo Mode", "Mode", 0, 1, 0, 2, 9, 1.0, "pp", False,
-           "Stereo keeps the sides apart; Ping-Pong bounces echoes between them.", ["Stereo", "Ping-Pong"]),
-    "tmode": ("Time Mode", "Time Mode", 0, 1, 0, 2, 9, 1.0, "tmode", False,
-              "Tape glides to a new time (pitch bends); Fade crossfades to it.", ["Tape", "Fade"]),
+               "Stops input into the delay and loops what is in it at 100% feedback.", ONOFF),
     "debug": ("Debug", "Debug", 0, 1, 0, 2, 9, 1.0, "debug", False,
               "Measures the chain latency with an impulse every 0.5 s (replaces the echoes) and compares it with Live's reported latency.",
-              ["Off", "On"]),
+              ONOFF),
+    "width": ("Stereo", "Stereo", 0.0, 200.0, 100.0, 0, 5, 1.0, "width", True,
+              "Stereo width of the echoes: 0% mono, above 100% wider.", None),
+    "outdb": ("Output", "Output", -36.0, 12.0, 0.0, 0, 4, 1.0, "outdb", False, "Gain of the echoes.", None),
+    "chmode": ("Channel Mode", "Channel Mode", 0, 2, 0, 2, 9, 1.0, "chmode", False,
+               "Stereo, Ping Pong (echoes bounce between the sides) or Mid/Side (Left = Mid, Right = Side).",
+               ["Stereo", "Ping Pong", "Mid/Side"]),
+    "wet": ("Dry/Wet", "Dry/Wet", 0.0, 100.0, 50.0, 0, 5, 1.0, "wet", True, "Dry/wet balance.", None),
 }
 
 COL_X = [234.0 + c * 48.0 for c in range(5)]
@@ -120,7 +178,26 @@ def valueof(key):
         v["parameter_unitstyle"] = unit
         if expo != 1.0:
             v["parameter_exponent"] = expo
+    if key == "phase":
+        v["parameter_unitstyle"] = 9
+        v["parameter_units"] = "%.0f\u00b0"
+    if key in UI_STATE:
+        v["parameter_invisible"] = 1  # stored with the set, not automatable
     return v
+
+
+# UI-state parameters (saved, not automatable).
+UI_STATE = {"filtdisp"}
+
+
+def theme(box, **attrs):
+    """Bind colour attributes to Live theme colours (Max for Live dynamic colours), e.g.
+    theme(b, bgcolor="live_lcd_bg"): they follow Live's theme / hue; the static value stays as fallback."""
+    b = box["box"] if "box" in box else box
+    saa = b.setdefault("saved_attribute_attributes", {})
+    for attr, name in attrs.items():
+        saa[attr] = {"expression": f"themecolor.{name}"}
+    return box
 
 
 def rgba(c, a=1.0):
@@ -142,49 +219,115 @@ def msgbox(oid, text, x, y, w=160.0):
     }}
 
 
-def dial(key, x, y, color, hidden=0):
+def _colors(box, color, attrs):
+    """Set colour attributes only when a colour is given; None keeps Live's theme colours (Echo look)."""
+    if color is not None:
+        for a in attrs:
+            box[a] = rgba(color)
+    return box
+
+
+def dial(key, x, y, color=None, hidden=0, w=None, h=None):
+    w = DIAL_W if w is None else w
+    h = DIAL_H if h is None else h
     long_name = P[key][0]
     box = {
-        "activedialcolor": rgba(color), "activeneedlecolor": rgba(color),
         "annotation": P[key][10], "annotation_name": long_name,
         "fontsize": 9.0, "id": f"obj-ctrl-{key}", "maxclass": "live.dial", "numinlets": 1, "numoutlets": 2,
         "outlettype": ["", "float"], "parameter_enable": 1,
-        "patching_rect": [x + 600.0, y + 300.0, DIAL_W, DIAL_H], "presentation": 1,
-        "presentation_rect": [x, y, DIAL_W, DIAL_H],
+        "patching_rect": [x + 600.0, y + 300.0, w, h], "presentation": 1,
+        "presentation_rect": [x, y, w, h],
         "saved_attribute_attributes": {"valueof": valueof(key)},
-        "textcolor": rgba(SLATE), "varname": long_name,
+        "varname": long_name,
+    }
+    _colors(box, color, ["activedialcolor", "activeneedlecolor"])
+    if hidden:
+        box["hidden"] = 1
+    return {"box": box}
+
+
+def menu(key, x, y, w, h, hidden=0):
+    long_name = P[key][0]
+    box = {
+        "annotation": P[key][10], "annotation_name": long_name, "fontsize": 9.0,
+        "id": f"obj-ctrl-{key}", "maxclass": "live.menu", "numinlets": 1, "numoutlets": 3,
+        "outlettype": ["", "", "float"], "parameter_enable": 1,
+        "patching_rect": [x + 600.0, y + 300.0, w, h], "presentation": 1, "presentation_rect": [x, y, w, h],
+        "saved_attribute_attributes": {"valueof": valueof(key)}, "varname": long_name,
     }
     if hidden:
         box["hidden"] = 1
     return {"box": box}
 
 
-def tab(key, x, y, w, h, color):
+def tab(key, x, y, w, h, color=None, rows=1, hidden=0):
     long_name = P[key][0]
-    return {"box": {
-        "activebgcolor": [0.10, 0.11, 0.14, 1.0], "activebgoncolor": rgba(color, 0.85),
-        "annotation": P[key][10], "annotation_name": long_name, "bordercolor": [0.22, 0.26, 0.32, 1.0],
-        "focusbordercolor": rgba(color), "fontsize": 8.5, "id": f"obj-ctrl-{key}", "maxclass": "live.tab",
-        "num_lines_patching": 1, "num_lines_presentation": 1, "numinlets": 1, "numoutlets": 3,
+    box = {
+        "annotation": P[key][10], "annotation_name": long_name, "fontsize": 9.0,
+        "id": f"obj-ctrl-{key}", "maxclass": "live.tab",
+        "num_lines_patching": rows, "num_lines_presentation": rows, "numinlets": 1, "numoutlets": 3,
         "outlettype": ["", "", "float"], "parameter_enable": 1,
         "patching_rect": [x + 600.0, y + 300.0, w, h], "presentation": 1, "presentation_rect": [x, y, w, h],
-        "saved_attribute_attributes": {"valueof": valueof(key)},
-        "textcolor": rgba(SLATE), "textoncolor": [0.05, 0.06, 0.08, 1.0], "varname": long_name,
-    }}
+        "saved_attribute_attributes": {"valueof": valueof(key)}, "varname": long_name,
+    }
+    _colors(box, color, ["activebgoncolor", "focusbordercolor"])
+    if hidden:
+        box["hidden"] = 1
+    return {"box": box}
 
 
-def button(key, x, y, w, h, color, text, texton):
+def button(key, x, y, w, h, color=None, text="", texton="", hidden=0):
     long_name = P[key][0]
-    return {"box": {
-        "activebgcolor": [0.10, 0.11, 0.14, 1.0], "activebgoncolor": rgba(color, 0.9),
-        "annotation": P[key][10], "annotation_name": long_name, "bordercolor": [0.22, 0.26, 0.32, 1.0],
-        "fontsize": 8.5, "id": f"obj-ctrl-{key}", "maxclass": "live.text", "mode": 1, "numinlets": 1,
+    box = {
+        "annotation": P[key][10], "annotation_name": long_name, "fontsize": 9.0,
+        "id": f"obj-ctrl-{key}", "maxclass": "live.text", "mode": 1, "numinlets": 1,
         "numoutlets": 2, "outlettype": ["", ""], "parameter_enable": 1,
         "patching_rect": [x + 600.0, y + 300.0, w, h], "presentation": 1, "presentation_rect": [x, y, w, h],
         "saved_attribute_attributes": {"valueof": valueof(key)},
-        "text": text, "texton": texton, "textcolor": rgba(SLATE), "textoncolor": [0.05, 0.06, 0.08, 1.0],
-        "varname": long_name,
-    }}
+        "text": text, "texton": texton or text, "varname": long_name,
+    }
+    _colors(box, color, ["activebgoncolor"])
+    if hidden:
+        box["hidden"] = 1
+    return {"box": box}
+
+
+def blend(accent, bg=(0.06, 0.07, 0.09), a=0.38):
+    """Pre-blended slider fill (Live paints activeslidercolor opaque, AGENTS.md 1.8)."""
+    return [accent[i] * a + bg[i] * (1 - a) for i in range(3)] + [1.0]
+
+
+def numbox(key, x, y, w, h, color=None, appearance=2, hidden=0):
+    """live.numbox: appearance 0 box, 1 triangle, 2 slider (value bar), 3 bipolar bar, 4 borderless."""
+    long_name = P[key][0]
+    box = {
+        "annotation": P[key][10], "annotation_name": long_name, "appearance": appearance,
+        "fontsize": 9.0, "id": f"obj-ctrl-{key}", "maxclass": "live.numbox", "numinlets": 1, "numoutlets": 2,
+        "outlettype": ["", "float"], "parameter_enable": 1,
+        "patching_rect": [x + 600.0, y + 300.0, w, h], "presentation": 1, "presentation_rect": [x, y, w, h],
+        "saved_attribute_attributes": {"valueof": valueof(key)}, "varname": long_name,
+    }
+    if color is not None:
+        box["activeslidercolor"] = blend(color)
+        box["textcolor"] = rgba(color)
+    if hidden:
+        box["hidden"] = 1
+    return {"box": box}
+
+
+def label(oid, text, x, y, w, h=12.0, size=9.0, color=None, bold=False, align=0, hidden=0):
+    box = {
+        "fontface": 1 if bold else 0, "fontsize": float(size),
+        "id": oid, "maxclass": "live.comment", "numinlets": 1, "numoutlets": 0,
+        "patching_rect": [x + 600.0, y + 600.0, w, h], "presentation": 1, "presentation_rect": [x, y, w, h],
+        "text": text, "textjustification": align, "varname": oid,
+    }
+    if color is not None:
+        box["textcolor"] = rgba(color)
+    if hidden:
+        box["hidden"] = 1
+        box["varname"] = oid
+    return {"box": box}
 
 
 def v8ui(oid, code, rect, patch_xy, outs):
@@ -252,33 +395,30 @@ def write_amxd(path, doc):
     print(f"Built {path} ({len(header) + len(payload)} bytes)")
 
 
-def build_start(variant):
+def load_layout(name):
+    mod = importlib.import_module(f"delayplus_layouts.{name}")
+    lay = mod.layout(sys.modules[__name__])
+    lay.setdefault("width", START_W)
+    lay.setdefault("panels", [])
+    lay.setdefault("extra_boxes", [])
+    lay.setdefault("extra_lines", [])
+    keys = [b["box"]["id"][len("obj-ctrl-"):] for b in lay["controls"] if b["box"]["id"].startswith("obj-ctrl-")]
+    missing = sorted(set(P) - set(keys))
+    dup = sorted({k for k in keys if keys.count(k) > 1})
+    if missing or dup:
+        raise SystemExit(f"layout {name}: missing {missing} duplicated {dup}")
+    return lay
+
+
+def build_start(variant, out_dir=None):
     cfg = VARIANTS[variant]
+    lay = load_layout(cfg.get("layout", "echo"))
     code = (read("delayplus_config.js").rstrip() + f"\n\nvar DP_ROLE = \"start\";\nvar DP_BUILD = \"{BUILD_STAMP}\";\n\n"
             + read("delayplus_link.js").rstrip() + "\n\n" + read("delayplus_ui.js").rstrip() + "\n\n"
             + read(cfg["viz"]))
     boxes = [
-        v8ui("obj-viz", code, [6.0, 6.0, 222.0, 157.0], (500.0, 20.0), 1),
-        # row 1
-        dial("time", COL_X[0], ROW_Y[0], CYAN, hidden=1),
-        dial("div", COL_X[0], ROW_Y[0], CYAN),
-        dial("offset", COL_X[1], ROW_Y[0], CYAN),
-        dial("fb", COL_X[2], ROW_Y[0], AMBER),
-        dial("wet", COL_X[3], ROW_Y[0], AMBER),
-        button("sync", COL_X[4], ROW_Y[0] + 6.0, 44.0, 16.0, CYAN, "Free", "Sync"),
-        button("freeze", COL_X[4], ROW_Y[0] + 27.0, 44.0, 16.0, VIOLET, "Freeze", "Freeze"),
-        # row 2
-        dial("hp", COL_X[0], ROW_Y[1], GREEN),
-        dial("lp", COL_X[1], ROW_Y[1], GREEN),
-        dial("drive", COL_X[2], ROW_Y[1], CORAL),
-        dial("mrate", COL_X[3], ROW_Y[1], VIOLET),
-        dial("mdepth", COL_X[4], ROW_Y[1], VIOLET),
-        # row 3
-        dial("duck", COL_X[0], ROW_Y[2], AMBER),
-        dial("width", COL_X[1], ROW_Y[2], CYAN),
-        tab("pp", COL_X[2], ROW_Y[2] + 6.0, 92.0, 16.0, CYAN),
-        tab("tmode", COL_X[2], ROW_Y[2] + 27.0, 92.0, 16.0, VIOLET),
-        button("debug", COL_X[4], ROW_Y[2] + 6.0, 44.0, 16.0, GREEN, "Debug", "Debug"),
+        v8ui("obj-viz", code, lay["viz_rect"], (500.0, 20.0), 2),
+        *lay["controls"],
         newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]),
         newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]),
         gen_box(read("delayplus_start.genexpr")),
@@ -290,10 +430,22 @@ def build_start(variant):
         msgbox("obj-msg-ui-names", "names ---dpxfer ---dphdr ---dpscope", 480, 460, 240),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, 1, 2, ["bang", "int"]),
         msgbox("obj-msg-init", "init_link", 780, 430, 70),
-        newobj("obj-sync-hide-time", "prepend hidden", 900, 260, 100),
-        newobj("obj-sync-not", "!- 1", 1010, 230, 40, 2, 1, ["int"]),
-        newobj("obj-sync-hide-div", "prepend hidden", 1010, 260, 100),
     ]
+    # Per side, Sync shows the Division control and hides the Time control (same rect).
+    for side in ("l", "r"):
+        boxes += [newobj(f"obj-sync-hide-time-{side}", "prepend hidden", 900, 260 + (side == "r") * 60, 100),
+                  newobj(f"obj-sync-not-{side}", "!- 1", 1010, 230 + (side == "r") * 60, 40, 2, 1, ["int"]),
+                  newobj(f"obj-sync-hide-div-{side}", "prepend hidden", 1010, 260 + (side == "r") * 60, 100)]
+    # Extra displays declared by the layout (filter display, LFO display, ...): their own script, the
+    # set_<key> messages of the parameters they show, and the telemetry buffer names.
+    for k, ex in enumerate(lay.get("v8uis", [])):
+        code_ex = read("delayplus_config.js").rstrip() + "\n\n" + read(ex["file"])
+        if ex.get("icon"):  # icon buttons: which icon this instance draws
+            code_ex = f'var DP_ICON = "{ex["icon"]}";\n' + code_ex
+        box = v8ui(ex["id"], code_ex, ex["rect"], (500.0, 200.0 + 180 * k), ex.get("outs", 1))
+        if ex.get("hidden"):
+            box["box"]["hidden"] = 1
+        boxes.append(box)
     lines = [
         line("obj-plugin", 0, "obj-gen", 0), line("obj-plugin", 1, "obj-gen", 1),
         line("obj-gen", 0, "obj-plugout", 0), line("obj-gen", 1, "obj-plugout", 1),
@@ -301,10 +453,16 @@ def build_start(variant):
         line("obj-loadbang", 0, "obj-msg-ui-names", 0), line("obj-msg-ui-names", 0, "obj-viz", 0),
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-viz", 0),
         line("obj-viz", 0, "obj-gen", 0),
-        line("obj-ctrl-sync", 0, "obj-sync-hide-time", 0), line("obj-sync-hide-time", 0, "obj-ctrl-time", 0),
-        line("obj-ctrl-sync", 0, "obj-sync-not", 0), line("obj-sync-not", 0, "obj-sync-hide-div", 0),
-        line("obj-sync-hide-div", 0, "obj-ctrl-div", 0),
     ]
+    for side in ("l", "r"):
+        lines += [line(f"obj-ctrl-sync_{side}", 0, f"obj-sync-hide-time-{side}", 0),
+                  line(f"obj-sync-hide-time-{side}", 0, f"obj-ctrl-time_{side}", 0),
+                  line(f"obj-ctrl-sync_{side}", 0, f"obj-sync-not-{side}", 0),
+                  line(f"obj-sync-not-{side}", 0, f"obj-sync-hide-div-{side}", 0),
+                  line(f"obj-sync-hide-div-{side}", 0, f"obj-ctrl-div_{side}", 0)]
+    for ex in lay.get("v8uis", []):
+        if ex.get("names"):
+            lines.append(line("obj-msg-ui-names", 0, ex["id"], 0))
     for i, key in enumerate(P):
         gen_param, scale = P[key][8], P[key][9]
         y = 500.0 + i * 26.0
@@ -312,6 +470,9 @@ def build_start(variant):
         boxes.append(newobj(ui_id, f"prepend set_{key}", 760, y, 110))
         lines.append(line(f"obj-ctrl-{key}", 0, ui_id, 0))
         lines.append(line(ui_id, 0, "obj-viz", 0))
+        for ex in lay.get("v8uis", []):
+            if key in ex.get("keys", ()):
+                lines.append(line(ui_id, 0, ex["id"], 0))
         if gen_param is None:
             continue
         src = f"obj-ctrl-{key}"
@@ -324,9 +485,11 @@ def build_start(variant):
         boxes.append(newobj(pid, f"prepend {gen_param}", 940, y, 100))
         lines.append(line(src, 0, pid, 0))
         lines.append(line(pid, 0, "obj-gen", 0))
-    boxes.append(panel("obj-panel-controls", 230, 4, 246, 161))  # background panels last
-    doc = patcher(boxes, lines, START_W, "Delay whose feedback loop runs through the devices between Delay+ and Delay+ End")
-    write_amxd(os.path.join(OUT_DIR, cfg["name"] + ".amxd"), doc)
+    boxes += lay["extra_boxes"]
+    lines += lay["extra_lines"]
+    boxes += lay["panels"]  # background panels last
+    doc = patcher(boxes, lines, lay["width"], "Delay whose feedback loop runs through the devices between Delay+ and Delay+ End")
+    write_amxd(os.path.join(out_dir or OUT_DIR, cfg["name"] + ".amxd"), doc)
 
 
 def build_end():
@@ -367,12 +530,11 @@ def build_sets(variants):
         start = os.path.join(OUT_DIR, name + ".amxd")
         subprocess.run([sys.executable, gen, "--start", start, "--end", end, "--name", "Delay+",
                         "--adg", os.path.join(OUT_DIR, name + ".adg")], check=True)
+    start = os.path.join(OUT_DIR, VARIANTS["main"]["name"] + ".amxd")
     tracks = []
-    for v in sorted(VARIANTS):
-        start = os.path.join(OUT_DIR, VARIANTS[v]["name"] + ".amxd")
-        if os.path.isfile(start):
-            tracks += ["--track", f"{VARIANTS[v]['name']}::{start}"]
-    subprocess.run([sys.executable, gen, "--start", tracks[1].split("::")[1], "--end", end, "--middle", "limiter",
+    for i in range(1, 4):
+        tracks += ["--track", f"Delay+ {i}::{start}"]
+    subprocess.run([sys.executable, gen, "--start", start, "--end", end, "--middle", "limiter",
                     "--name", "Delay+", "--als", os.path.join(ROOT, "delayplus_test.als")] + tracks, check=True)
 
 
@@ -382,12 +544,14 @@ def main():
     ap.add_argument("--no-sets", action="store_true")
     args = ap.parse_args()
     variants = [args.variant] if args.variant else sorted(VARIANTS)
-    variants = [v for v in variants if os.path.isfile(os.path.join(SRC, VARIANTS[v]["viz"]))]
+    variants = [v for v in variants if os.path.isfile(os.path.join(SRC, VARIANTS[v]["viz"])) and os.path.isfile(
+        os.path.join(ROOT, "scripts", "delayplus_layouts", VARIANTS[v].get("layout", "echo") + ".py"))]
     for v in variants:
         build_start(v)
     build_end()
     if not args.no_sets:
         build_sets(variants)
+
 
 
 if __name__ == "__main__":

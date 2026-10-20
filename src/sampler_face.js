@@ -628,6 +628,7 @@ function paintSlicedFooter(sx, sw, fy) {
     } else if (at === 2 || at === 3) {
         var sw2 = text(Math.round(paramValue("slice_sens")) + " %", vx, fy, 9.0, COL.blue, false, 0);
         zone("value", vx - 2, fy - 11, sw2 + 4, 14, { key: "slice_sens", norm: true });
+        if (sliceMonoJob) text("analyzing…", vx + sw2 + 8, fy, 8.0, COL.label, false, 0);
     } else {
         text("dbl-click: add / remove", vx, fy, 8.0, COL.label, false, 0);
     }

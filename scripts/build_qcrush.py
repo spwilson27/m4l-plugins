@@ -3,18 +3,21 @@
 Build devices/Quefrency Crush {A,B,C}.amxd — a creative cepstral codec (Max for Live audio effect).
 
 Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/qcrush_core.genexpr: stereo STFT, real
-cepstrum, Coeffs / Bits / Scramble / Shift / Hold, original phase) -> plugout~. Latency is a constant 4096
+cepstrum, Coeffs / Bits / Scramble / Shift / Glitch / Phase / Lag) -> plugout~. Latency is a constant 4096
 samples for every Size (patcher attribute "latency": 4096, the dry path is delayed identically).
 
-Live parameters (shared by the three variants): Size, Coeffs, Bits, Scramble, Amount, Shift, Freeze, Hold,
-Mix, Output. Telemetry (cepstral bars, envelopes, hold clock) goes through buffer~ #0-qcrushscope into the
-v8ui, which is the same script in all three variants (src/qcrush_ui.js); only the layout number differs.
+Live parameters (12, shared by the three variants): Size, Coeffs, Bits, Scramble, Amount, Shift, Glitch
+(Off/Drop/Rpt/Rev/Hold/Frz), Rate (tempo-synced Glitch slot length), Phase (Orig/Robot/Whisp/Min), Lag,
+Mix, Output. Amount doubles as the Glitch probability for Drop/Rpt/Rev. Telemetry (cepstral bars, envelopes,
+the 24-frame glitch history, clock) goes through buffer~ #0-qcrushscope into the v8ui, which is the same
+script in all three variants (src/qcrush_ui.js); only the layout number differs.
 
-  A (452 x 169)  Coefficient canvas hero (268 x 134 v8ui) + a column of value bars. Drag the canvas to set Coeffs.
-  B (470 x 169)  Degrade-style: compact view (182 x 134) + dark LCD matrix (Size / Scramble / Hold + Freeze)
-                 over six hero dials (Coeffs, Bits, Shift, Amount, Mix, Output).
-  C (434 x 169)  Performance: Coeffs x Bits crush pad over the bars (208 x 112), a big Freeze pad with the Hold
-                 rate and Scramble selector, and four dials (Shift, Amount, Mix, Output).
+  A (520 x 169)  Coefficient canvas hero (284 x 134 v8ui: bars, history strip, lag spread, phase glyph) + a column
+                 of eleven value bars. Drag the canvas to set Coeffs.
+  B (520 x 169)  Degrade-style: compact view (182 x 134) + dark LCD matrix (1.SIZE / 2.SCRAMBLE / 3.GLITCH /
+                 4.PHASE) over five hero dials (Coeffs, Bits, Shift, Mix, Output).
+  C (500 x 169)  Performance: Coeffs x Bits crush pad over the bars (208 x 112), a Glitch pad (click cycles the
+                 mode) with the Glitch tab, Rate and Phase, and five dials (Shift, Amount, Lag, Mix, Output).
 
 Usage: build_qcrush.py [--variant a|b|c]    (no argument builds all three)
 """
@@ -42,7 +45,9 @@ PINK = (1.0, 0.42, 0.62)
 
 SIZE_ENUM = ["512", "1k", "2k", "4k"]
 SCR_ENUM = ["Off", "Rev", "Shuf", "Rot"]
-HOLD_ENUM = ["Off", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"]
+GLITCH_ENUM = ["Off", "Drop", "Rpt", "Rev", "Hold", "Frz"]
+RATE_ENUM = ["1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"]
+PHASE_ENUM = ["Orig", "Robot", "Whisp", "Min"]
 
 # key: (long_name, short_name, lo, hi, initial, ptype, unitstyle, gen_message, scale, ui_message, help)
 # ptype 0 = Float, 1 = Int (<= 255 only), unitstyle 0 = Int, 4 = dB, 5 = percent, 7 = semitones
@@ -57,7 +62,11 @@ PARAM_SPECS = {
     ),
     "samt": (
         "Amount", "Amt", 0.0, 100.0, 50.0, 0, 5, "samt", 0.01, "set_samt",
-        "Scramble amount: blend between the original and the scrambled envelope (Reverse, Shuffle) or the rotation distance (Rotate).",
+        "Scramble amount (blend / rotation distance) and, for Glitch Drop/Rpt/Rev, the chance that a Rate slot fires",
+    ),
+    "lag": (
+        "Lag", "Lag", 0.0, 100.0, 0.0, 0, 5, "qlag", 0.01, "set_lag",
+        "Delay each cepstral coefficient by its own number of frames (0..12): 0% is none, higher values smear the spectral envelope and the harmonic comb apart in time.",
     ),
     "shift": (
         "Shift", "Shift", -12.0, 12.0, 0.0, 0, 7, "qshift", 1.0, "set_shift",
@@ -81,11 +90,19 @@ ENUM_SPECS = {
     ),
     "smode": (
         "Scramble", "Scr", SCR_ENUM, 0, "smode", "set_smode",
-        "Scramble the envelope coefficients: Reverse flips them, Shuffle uses a seeded permutation that re-rolls on every hold clock tick, Rotate cycles them.",
+        "Scramble the envelope coefficients: Reverse flips them, Shuffle uses a seeded permutation that re-rolls on every Glitch slot, Rotate cycles them.",
     ),
-    "hold": (
-        "Hold", "Hold", HOLD_ENUM, 0, "qhold", "set_hold",
-        "Hold clock synced to the Live tempo. Each tick samples the envelope coefficients and holds them while the excitation keeps moving (talkbox / vowel stepping). Off follows the input.",
+    "gmode": (
+        "Glitch", "Glitch", GLITCH_ENUM, 0, "gmode", "set_gmode",
+        "Cepstral frame glitch, one decision per Rate slot. Drop holds the last received frame and fades it out (packet loss), Rpt loops the last few frames, Rev plays them backwards (Amount is the chance a slot fires). Hold samples the envelope each slot and keeps it while the excitation moves, Frz freezes it. Off follows the input.",
+    ),
+    "grate": (
+        "Rate", "Rate", RATE_ENUM, 1, "grate", "set_grate",
+        "Glitch slot length, synced to the Live tempo (and locked to the host position). Hold re-freezes the envelope at this period.",
+    ),
+    "pmode": (
+        "Phase", "Phase", PHASE_ENUM, 0, "pmode", "set_pmode",
+        "Phase used to rebuild the crushed spectrum: Orig keeps the input phase, Robot zero phase (single centred pulse per frame), Whisp random phase (noise-like whisper), Min minimum phase (pulse at the frame start).",
     ),
 }
 
@@ -144,7 +161,7 @@ def make_dial(key, x, y, w, h, color):
     }
 
 
-def make_numbox(key, x, y, w, h, color, appearance=2):
+def make_numbox(key, x, y, w, h, color, appearance=2, fontsize=9.0):
     long_name, _s, _lo, _hi, _i, _t, _u, _g, _sc, _ui, help_text = PARAM_SPECS[key]
     bg = [0.06, 0.075, 0.095, 1.0]
     # Live ignores alpha in activeslidercolor: pre-blend 38% accent + 62% dark background.
@@ -158,7 +175,7 @@ def make_numbox(key, x, y, w, h, color, appearance=2):
             "appearance": int(appearance),
             "bordercolor": [0.22, 0.27, 0.33, 1.0],
             "fontface": 1,
-            "fontsize": 9.0,
+            "fontsize": float(fontsize),
             "id": f"obj-ctrl-{key}",
             "maxclass": "live.numbox",
             "numinlets": 1,
@@ -175,7 +192,7 @@ def make_numbox(key, x, y, w, h, color, appearance=2):
     }
 
 
-def make_tab(key, x, y, w, h, color, rows=1):
+def make_tab(key, x, y, w, h, color, rows=1, fontsize=8.5):
     long_name, _s, enums, _i, _g, _u, help_text = ENUM_SPECS[key]
     return {
         "box": {
@@ -186,7 +203,7 @@ def make_tab(key, x, y, w, h, color, rows=1):
             "bgoncolor": [color[0] * 0.45, color[1] * 0.45, color[2] * 0.45, 1.0],
             "bordercolor": [0.22, 0.28, 0.35, 1.0],
             "fontface": 1,
-            "fontsize": 8.5,
+            "fontsize": float(fontsize),
             "id": f"obj-ctrl-{key}",
             "maxclass": "live.tab",
             "num_lines_patching": int(rows),
@@ -206,7 +223,7 @@ def make_tab(key, x, y, w, h, color, rows=1):
     }
 
 
-def make_menu(key, x, y, w, h, color):
+def make_menu(key, x, y, w, h, color, fontsize=8.5):
     long_name, _s, _enums, _i, _g, _u, help_text = ENUM_SPECS[key]
     return {
         "box": {
@@ -215,7 +232,7 @@ def make_menu(key, x, y, w, h, color):
             "annotation_name": long_name,
             "bordercolor": [color[0], color[1], color[2], 0.8],
             "fontface": 1,
-            "fontsize": 8.5,
+            "fontsize": float(fontsize),
             "id": f"obj-ctrl-{key}",
             "maxclass": "live.menu",
             "numinlets": 1,
@@ -228,48 +245,6 @@ def make_menu(key, x, y, w, h, color):
             "saved_attribute_attributes": {"valueof": enum_valueof(key)},
             "textcolor": [color[0], color[1], color[2], 1.0],
             "varname": long_name,
-        }
-    }
-
-
-def make_freeze(x, y, w, h, big=False):
-    return {
-        "box": {
-            "activebgcolor": [0.10, 0.12, 0.15, 1.0],
-            "activebgoncolor": [ICE[0], ICE[1], ICE[2], 1.0],
-            "activetextcolor": [0.82, 0.88, 0.94, 1.0],
-            "activetextoncolor": [0.05, 0.08, 0.11, 1.0],
-            "annotation": "Freeze: sample the envelope coefficients now and hold them (the Hold clock pauses) while the excitation keeps moving. Click again to release.",
-            "annotation_name": "Freeze",
-            "bordercolor": [ICE[0], ICE[1], ICE[2], 1.0],
-            "fontface": 1,
-            "fontsize": 10.0 if big else 9.0,
-            "id": "obj-ctrl-freeze",
-            "maxclass": "live.text",
-            "mode": 1,
-            "numinlets": 1,
-            "numoutlets": 2,
-            "outlettype": ["", ""],
-            "parameter_enable": 1,
-            "patching_rect": [200.0, 18.0, float(w), float(h)],
-            "presentation": 1,
-            "presentation_rect": [float(x), float(y), float(w), float(h)],
-            "saved_attribute_attributes": {
-                "valueof": {
-                    "parameter_annotation_name": "Freeze",
-                    "parameter_enum": ["Off", "Freeze"],
-                    "parameter_initial": [0],
-                    "parameter_initial_enable": 1,
-                    "parameter_linknames": 1,
-                    "parameter_longname": "Freeze",
-                    "parameter_mmax": 1,
-                    "parameter_shortname": "Freeze",
-                    "parameter_type": 2,
-                }
-            },
-            "text": "FREEZE",
-            "texton": "FROZEN",
-            "varname": "Freeze",
         }
     }
 
@@ -348,15 +323,15 @@ def line(src, outlet, dst, inlet=0):
 # ----- the three layouts: (width, ui widgets, v8ui rect, panels, route targets) -----
 
 def layout_a():
-    W = 452.0
-    viz = [10.0, 26.0, 268.0, 134.0]
+    W = 520.0
+    viz = [10.0, 26.0, 284.0, 134.0]
     ui = [
         make_label("obj-title", "Quefrency Crush", 10, 7, 150, 15, size=11.0, color=(0.92, 0.96, 1.0)),
-        make_tab("size", 190, 8, 88, 15, CYAN),
+        make_tab("size", 202, 8, 92, 15, CYAN),
     ]
-    x_lbl, x_bar, w_bar = 292.0, 336.0, 106.0
-    pitch = 16.8
-    y0 = 9.0
+    x_lbl, x_bar, w_bar = 310.0, 356.0, 152.0
+    pitch = 14.0
+    y0 = 8.0
 
     def row(i):
         return y0 + i * pitch
@@ -367,78 +342,86 @@ def layout_a():
         ("shift", "Shift", AMBER, "bipolar"),
         ("smode", "Scramble", VIOLET, "tab"),
         ("samt", "Amount", VIOLET, "bar"),
-        ("hold", "Hold", ICE, "menu"),
-        ("freeze", "Freeze", ICE, "freeze"),
+        ("gmode", "Glitch", ICE, "tab"),
+        ("grate", "Rate", ICE, "menu"),
+        ("pmode", "Phase", CYAN, "tab"),
+        ("lag", "Lag", CYAN, "bar"),
         ("mix", "Mix", CYAN, "bar"),
         ("out", "Output", CYAN, "bar"),
     ]
     for i, (key, text, color, kind) in enumerate(rows):
         y = row(i)
-        ui.append(make_label(f"obj-lbl-{key}", text, x_lbl, y + 1.0, 44, 13, size=8.0, color=color))
+        ui.append(make_label(f"obj-lbl-{key}", text, x_lbl, y, 44, 13, size=8.0, color=color))
         if kind == "bar":
-            ui.append(make_numbox(key, x_bar, y, w_bar, 15, color, 2))
+            ui.append(make_numbox(key, x_bar, y, w_bar, 13, color, 2, 8.5))
         elif kind == "bipolar":
-            ui.append(make_numbox(key, x_bar, y, w_bar, 15, color, 3))
+            ui.append(make_numbox(key, x_bar, y, w_bar, 13, color, 3, 8.5))
         elif kind == "tab":
-            ui.append(make_tab(key, x_bar, y, w_bar, 15, color))
-        elif kind == "menu":
-            ui.append(make_menu(key, x_bar, y, w_bar, 15, color))
+            ui.append(make_tab(key, x_bar, y, w_bar, 13, color, fontsize=8.0))
         else:
-            ui.append(make_freeze(x_bar, y, w_bar, 15))
+            ui.append(make_menu(key, x_bar, y, w_bar, 13, color, 8.0))
     panels = [
-        make_panel("obj-panel-left", 6, 5, 276, 159, border=(0.20, 0.25, 0.32)),
-        make_panel("obj-panel-right", 286, 5, 160, 159, border=(0.30, 0.22, 0.28)),
+        make_panel("obj-panel-left", 6, 5, 292, 159, border=(0.20, 0.25, 0.32)),
+        make_panel("obj-panel-right", 302, 5, 212, 159, border=(0.30, 0.22, 0.28)),
     ]
     return W, ui, viz, panels, ["coeffs"]
 
 
 def layout_b():
-    W = 470.0
+    W = 520.0
     viz = [10.0, 26.0, 182.0, 134.0]
     ui = [make_label("obj-title", "Quefrency Crush", 10, 7, 150, 15, size=11.0, color=(0.92, 0.96, 1.0))]
-    cols = [(208.0, "1. SIZE", CYAN), (294.0, "2. SCRAMBLE", VIOLET), (380.0, "3. HOLD", ICE)]
+    cols = [(208.0, "1. SIZE", CYAN), (284.0, "2. SCRAMBLE", VIOLET), (360.0, "3. GLITCH", ICE), (436.0, "4. PHASE", CYAN)]
     for x, text, color in cols:
-        ui.append(make_label(f"obj-hdr-{text[0]}", text, x, 9, 78, 12, size=8.0, color=color))
-    ui.append(make_tab("size", 208, 24, 78, 34, CYAN, rows=2))
-    ui.append(make_label("obj-lbl-lat", "4096 smp latency", 208, 62, 82, 12, size=7.5, color=(0.52, 0.60, 0.70), bold=False))
-    ui.append(make_tab("smode", 294, 24, 78, 34, VIOLET, rows=2))
-    ui.append(make_label("obj-lbl-samt", "Amt", 294, 63, 24, 12, size=8.0, color=VIOLET))
-    ui.append(make_numbox("samt", 320, 62, 52, 15, VIOLET, 2))
-    ui.append(make_menu("hold", 380, 24, 78, 15, ICE))
-    ui.append(make_freeze(380, 43, 78, 34))
+        ui.append(make_label(f"obj-hdr-{text[0]}", text, x, 9, 72, 12, size=8.0, color=color))
+    ui.append(make_tab("size", 208, 24, 72, 34, CYAN, rows=2))
+    ui.append(make_label("obj-lbl-lat", "4096 smp latency", 208, 62, 72, 12, size=7.0, color=(0.52, 0.60, 0.70), bold=False))
+    ui.append(make_tab("smode", 284, 24, 72, 34, VIOLET, rows=2))
+    ui.append(make_label("obj-lbl-samt", "Amt", 284, 63, 24, 12, size=8.0, color=VIOLET))
+    ui.append(make_numbox("samt", 308, 62, 48, 15, VIOLET, 2))
+    ui.append(make_tab("gmode", 360, 24, 72, 34, ICE, rows=3, fontsize=8.0))
+    ui.append(make_label("obj-lbl-grate", "Rate", 360, 63, 24, 12, size=8.0, color=ICE))
+    ui.append(make_menu("grate", 384, 62, 48, 15, ICE))
+    ui.append(make_tab("pmode", 436, 24, 72, 34, CYAN, rows=2, fontsize=8.0))
+    ui.append(make_label("obj-lbl-lag", "Lag", 436, 63, 24, 12, size=8.0, color=CYAN))
+    ui.append(make_numbox("lag", 460, 62, 48, 15, CYAN, 2))
     dials = [("coeffs", CORAL), ("bits", CORAL), ("shift", AMBER), ("mix", CYAN), ("out", CYAN)]
-    # five hero dials; Amt lives in the LCD above
+    # five hero dials; Amt, Rate and Lag live in the LCD above
     for i, (key, color) in enumerate(dials):
-        ui.append(make_dial(key, 206 + i * 51.4, 104, 51, 52, color))
+        ui.append(make_dial(key, 207 + i * 61.0, 104, 58, 52, color))
     panels = [
-        make_panel("obj-panel-lcd", 204, 7, 258, 90, bg=(0.045, 0.06, 0.08), border=(0.27, 0.34, 0.42), rounded=5),
+        make_panel("obj-panel-lcd", 204, 7, 308, 90, bg=(0.045, 0.06, 0.08), border=(0.27, 0.34, 0.42), rounded=5),
         make_panel("obj-panel-left", 6, 5, 190, 159, border=(0.20, 0.25, 0.32)),
-        make_panel("obj-panel-right", 200, 5, 264, 159, border=(0.30, 0.22, 0.28)),
+        make_panel("obj-panel-right", 200, 5, 314, 159, border=(0.30, 0.22, 0.28)),
     ]
     return W, ui, viz, panels, []
 
 
 def layout_c():
-    W = 434.0
+    W = 500.0
     viz = [10.0, 26.0, 208.0, 112.0]
     ui = [
         make_label("obj-title", "Quefrency Crush", 10, 7, 126, 15, size=11.0, color=(0.92, 0.96, 1.0)),
         make_tab("size", 140, 8, 78, 15, CYAN),
         make_numbox("coeffs", 10, 142, 102, 15, CORAL, 2),
         make_numbox("bits", 116, 142, 102, 15, CORAL, 2),
-        make_freeze(232, 73, 84, 21, big=True),
-        make_menu("hold", 232, 98, 84, 15, ICE),
-        make_label("obj-lbl-smode", "SCRAMBLE", 232, 118, 84, 11, size=7.5, color=VIOLET),
-        make_tab("smode", 232, 130, 84, 30, VIOLET, rows=2),
-        make_dial("shift", 330, 10, 46, 64, AMBER),
-        make_dial("samt", 378, 10, 46, 64, VIOLET),
-        make_dial("mix", 330, 84, 46, 64, CYAN),
-        make_dial("out", 378, 84, 46, 64, CYAN),
+        make_tab("gmode", 231, 62, 102, 28, ICE, rows=2, fontsize=8.0),
+        make_label("obj-lbl-grate", "Rate", 231, 96, 26, 13, size=8.0, color=ICE),
+        make_menu("grate", 259, 95, 74, 15, ICE),
+        make_label("obj-lbl-pmode", "PHASE", 231, 115, 102, 11, size=7.5, color=CYAN),
+        make_tab("pmode", 231, 127, 102, 30, CYAN, rows=2, fontsize=8.0),
+        make_dial("shift", 348, 10, 46, 62, AMBER),
+        make_dial("samt", 396, 10, 46, 62, VIOLET),
+        make_dial("lag", 444, 10, 46, 62, CYAN),
+        make_dial("mix", 348, 82, 46, 62, CYAN),
+        make_dial("out", 396, 82, 46, 62, CYAN),
+        make_label("obj-lbl-smode", "SCRAMBLE", 444, 92, 46, 11, size=7.0, color=VIOLET),
+        make_tab("smode", 444, 106, 46, 34, VIOLET, rows=2, fontsize=7.5),
     ]
     panels = [
         make_panel("obj-panel-left", 6, 5, 216, 159, border=(0.20, 0.25, 0.32)),
-        make_panel("obj-panel-mid", 226, 5, 96, 159, border=(0.35, 0.50, 0.62)),
-        make_panel("obj-panel-right", 326, 5, 102, 159, border=(0.30, 0.22, 0.28)),
+        make_panel("obj-panel-mid", 226, 5, 112, 159, border=(0.35, 0.50, 0.62)),
+        make_panel("obj-panel-right", 342, 5, 152, 159, border=(0.30, 0.22, 0.28)),
     ]
     return W, ui, viz, panels, ["coeffs", "bits"]
 
@@ -482,22 +465,22 @@ def build_patcher(variant):
         }
     )
     if variant == "c":
-        # Freeze pad face (idle snowflake / frozen bars). It sits above the Freeze button, not under it.
+        # Glitch pad face (mode name + frame history, click cycles the mode). It sits above the Glitch tab, not under it.
         boxes.append(
             {
                 "box": {
                     "border": 0,
                     "filename": "none",
-                    "id": "obj-freeze-face",
+                    "id": "obj-glitch-face",
                     "maxclass": "v8ui",
                     "numinlets": 1,
                     "numoutlets": 1,
                     "outlettype": [""],
-                    "patching_rect": [20.0, 400.0, 84.0, 62.0],
+                    "patching_rect": [20.0, 400.0, 102.0, 50.0],
                     "presentation": 1,
-                    "presentation_rect": [232.0, 9.0, 84.0, 62.0],
+                    "presentation_rect": [231.0, 9.0, 102.0, 50.0],
                     "textfile": {"text": face_code, "filename": "none", "flags": 0, "embed": 1, "autowatch": 1},
-                    "varname": "QCrushFreezeFace",
+                    "varname": "QCrushGlitchFace",
                 }
             }
         )
@@ -591,27 +574,18 @@ def build_patcher(variant):
             boxes.append(newobj(prep, f"prepend {gen_msg}", 424, y, 110))
             lines.append(line(ctrl, 0, prep))
             lines.append(line(prep, 0, "obj-gen"))
-    y = 560.0 + row * 26.0
-    boxes.append(newobj("obj-prep-freeze", "prepend freeze", 424, y, 110))
-    boxes.append(newobj("obj-ui-freeze", "prepend set_freeze", 540, y, 130))
-    lines += [
-        line("obj-ctrl-freeze", 0, "obj-prep-freeze"),
-        line("obj-prep-freeze", 0, "obj-gen"),
-        line("obj-ctrl-freeze", 0, "obj-ui-freeze"),
-        line("obj-ui-freeze", 0, "obj-viz"),
-    ]
-
     if variant == "c":
-        boxes.append(newobj("obj-route-face", "route freeze", 20, 640, 90, numoutlets=2))
+        boxes.append(newobj("obj-route-face", "route gmode", 20, 640, 90, numoutlets=2))
         boxes.append(message("obj-msg-face-layout", "set_layout 3", 560, 405, 100))
         lines += [
             line("obj-loadbang", 0, "obj-msg-face-layout"),
-            line("obj-msg-face-layout", 0, "obj-freeze-face"),
-            line("obj-msg-ui-buf", 0, "obj-freeze-face"),
-            line("obj-ui-freeze", 0, "obj-freeze-face"),
-            line("obj-ui-hold", 0, "obj-freeze-face"),
-            line("obj-freeze-face", 0, "obj-route-face"),
-            line("obj-route-face", 0, "obj-ctrl-freeze"),
+            line("obj-msg-face-layout", 0, "obj-glitch-face"),
+            line("obj-msg-ui-buf", 0, "obj-glitch-face"),
+            line("obj-ui-gmode", 0, "obj-glitch-face"),
+            line("obj-ui-grate", 0, "obj-glitch-face"),
+            line("obj-ui-samt", 0, "obj-glitch-face"),
+            line("obj-glitch-face", 0, "obj-route-face"),
+            line("obj-route-face", 0, "obj-ctrl-gmode"),
         ]
 
     # Messages from the view (dragging the canvas / pad) set the value boxes, which then drive gen as usual.
@@ -644,8 +618,8 @@ def build_patcher(variant):
             "toolbarvisible": 1,
             "devicewidth": width,
             "latency": LATENCY,
-            "description": "Creative cepstral codec: truncate, quantize, scramble, shift and hold the real cepstrum",
-            "digest": "Crush the cepstrum: Coeffs, Bits, Scramble, Shift and a tempo-synced Hold with the original phase",
+            "description": "Creative cepstral codec: truncate, quantize, scramble, shift, glitch and re-phase the real cepstrum",
+            "digest": "Crush the cepstrum: Coeffs, Bits, Scramble, Shift, a tempo-synced Glitch (Drop, Repeat, Reverse, Hold, Freeze), Phase modes and per-coefficient Lag",
             "tags": "cepstrum codec glitch vocoder spectral",
             "style": "",
             "subpatcher_template": "",

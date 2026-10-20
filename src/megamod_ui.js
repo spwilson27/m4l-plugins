@@ -3,7 +3,9 @@
 // Prepended: header (mgraphics init) + megamod_config.js + megamod_mapper.js.
 //
 // Layout: [rail 20px] [strip 56px | expanded strip 204px]... [+ strip]   or, in Mapping-list mode,
-// [rail] [Bitwig-style mapping list, 172px] [remap editor for the selected row, 138px].
+// [rail] [Bitwig-style mapping list, 172px] [remap editor (MSEG transfer curve) for the selected row, 138px].
+// Learning lives on the rail LRN button only: click = single-shot for the selected modulator, Shift-click = multi-learn
+// (stays armed, follows the selection), click while armed = disarm.
 // Selection / expanded strip / list open+scroll / display order live in MM state.ui
 // ({sel, exp, pb (list open), pbScroll (first visible list item), pbSel (selected mapping id), order}).
 // Reordering is purely visual (state.ui.order) so no shared API is needed.
@@ -24,13 +26,17 @@ const UB_ROW_NONE = 12;
 const UB_FULL_FRAMES = 75; // "mapping pool full" pill lifetime in telemetry frames (~2.5 s)
 const UB_ORANGE = [0.98, 0.62, 0.18];
 const UB_CYAN = [0.30, 0.85, 0.95];
+// remap editor / mapping-row accents: Mod mode is cyan, Remote (remap) mode is orange
+const UB_MOD_COL = UB_CYAN;
+const UB_REM_COL = UB_ORANGE;
+const UB_MOD_BG = [0.05, 0.12, 0.15];
+const UB_REM_BG = [0.075, 0.085, 0.1];
 const UB_RED = [0.95, 0.32, 0.32];
 const UB_TYPES = [MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG];
 const UB_HIST = 200;
 
 var ubDrag = null;
 var ubHover = null; // {x, y, hit}
-var ubLatch = false;
 var ubPopup = null; // {mode: "add"|"type", slot, x, y}
 var ubEdit = null; // {slot, text}
 var ubDelArm = -1;
@@ -238,33 +244,31 @@ function ubStripRects(g) {
     const specs = ubKnobs(mod);
     if (!g.exp) {
         R.name = [x + 17, 0, w - 19, 17];
-        R.viz = [x + 4, 19, 38, 44];
-        R.meter = [x + 45, 19, 7, 68];
+        R.viz = [x + 4, 19, 38, 66];
+        R.meter = [x + 45, 19, 7, 112];
         for (let k = 0; k < 2; k++) {
             const cx = x + 14 + 19 * k;
-            R.knobs.push({ spec: specs[k], cx, cy: 77, r: 8, hit: [cx - 9.5, 66, 19, 43], valY: 97, labY: 106 });
+            R.knobs.push({ spec: specs[k], cx, cy: 103, r: 8, hit: [cx - 9.5, 92, 19, 43], valY: 123, labY: 132 });
         }
-        R.count = [x + 4, 112, 48, 12];
-        R.map = { cx: x + w / 2, cy: 142, r: 11 };
+        R.count = [x + 4, 143, 48, 12];
     } else {
         R.name = [x + 17, 0, w - 17 - 38 - 46, 17];
         R.type = [x + w - 36 - 46, 2, 44, 13];
         R.del = [x + w - 36, 1, 16, 15];
         R.collapse = [x + w - 19, 1, 16, 15];
-        R.viz = [x + 4, 18, w - 18, 68];
-        R.meter = [x + w - 11, 18, 7, 68];
+        R.viz = [x + 4, 18, w - 18, 71];
+        R.meter = [x + w - 11, 18, 7, 71];
         let cxp = x + 4;
         for (const c of ubChips(mod)) {
-            R.chips.push(Object.assign({ rect: [cxp, 89, c.w, 12] }, c));
+            R.chips.push(Object.assign({ rect: [cxp, 92, c.w, 12] }, c));
             cxp += c.w + 3;
         }
         const step = Math.min(46, (w - 8) / specs.length);
         for (let k = 0; k < specs.length; k++) {
             const cx = x + 4 + step * (k + 0.5);
-            R.knobs.push({ spec: specs[k], cx, cy: 113, r: 8, hit: [cx - step / 2, 102, step, 41], valY: 131, labY: 140 });
+            R.knobs.push({ spec: specs[k], cx, cy: 116, r: 8, hit: [cx - step / 2, 105, step, 41], valY: 134, labY: 143 });
         }
-        R.map = { cx: x + 14, cy: 152, r: 7 };
-        R.count = [x + 26, 146, 44, 12];
+        R.count = [x + w / 2 - 30, 147, 60, 12];
     }
     return R;
 }
@@ -317,25 +321,27 @@ function ubListVisible(items) {
 function ubRowParts(y) {
     const x = ubListGeom().lx;
     return {
-        del: [x + 3, y + 1, 11, 12],
-        name: [x + 16, y + 1, 68, 12],
-        curve: [x + 87, y + 2, 15, 10],
-        val: [x + 106, y + 1, 44, 12],
-        mode: [x + 152, y + 2, 15, 10],
+        tog: [x + 3, y + 1, 11, 12],
+        name: [x + 16, y + 1, 60, 12],
+        curve: [x + 78, y + 2, 15, 10],
+        val: [x + 96, y + 1, 38, 12],
+        mode: [x + 137, y + 2, 15, 10],
+        del: [x + 155, y + 1, 12, 12],
     };
 }
-function ubHeadArrowRect(y) {
-    const g = ubListGeom();
-    return [g.lx + g.lw - 33, y, 26, 14];
+// modulator enable button at the left end of a list header (same glyph as the strip's corner button)
+function ubHeadPwrRect(y) {
+    return [ubListGeom().lx + 4, y, 15, 15];
 }
 function ubPbSelMapping() {
     const id = ubUIs().pbSel;
     return id ? MM.getMapping(id) : null;
 }
 function ubValueText(m) {
-    if (m.mode === "remote") return Math.round(m.min * 100) + ".." + Math.round(m.max * 100);
-    const a = Math.round(m.amount * 100);
-    return (a > 0 ? "+" : "") + a + "%";
+    // Remote: the absolute window "20\u201380%" (min \u2013 max of the target parameter)
+    if (m.mode === "remote") return Math.round(m.min * 100) + "\u2013" + Math.round(m.max * 100) + "%";
+    // polarity glyph + amount: "+50%", "±50%", "\u221250%" (a negative amount keeps its own sign: "+-30%")
+    return (m.polarity > 0 ? "+" : m.polarity < 0 ? "\u2212" : "\u00b1") + Math.round(m.amount * 100) + "%";
 }
 function ubTargetPath(m) {
     const t = m.target;
@@ -343,23 +349,35 @@ function ubTargetPath(m) {
 }
 
 // detail panel controls: [{id, rect}]
+const UB_OUTMETER_W = 13; // output bar + range markers to the right of the remap MSEG (Phase Plant style, but a bar)
 function ubDetailRects(gm, m) {
     const x = gm.dx;
     const w = gm.dw;
     const out = [];
-    out.push({ id: "preview", rect: [x, 36, w, 46] });
-    for (let k = 0; k < 5; k++) out.push({ id: "curve" + k, rect: [x + k * 27, 85, 24, 14], curve: k });
-    out.push({ id: "camt", rect: [x, 103, w, 11] });
-    if (m && m.mode === "remote") {
-        out.push({ id: "min", rect: [x, 116, w, 11] });
-        out.push({ id: "max", rect: [x, 129, w, 11] });
+    const rem = m.mode === "remote";
+    const my = 49;
+    const mh = 62;
+    const msegR = [x, my, w - UB_OUTMETER_W - 3, mh];
+    // tab row: MOD / REM tabs on the left, delete at the right end
+    out.push({ id: "tabmod", rect: [x + 1, 35, 54, 12], mode: "mod", tip: "Mod: modulates around the parameter's value" });
+    out.push({ id: "tabrem", rect: [x + 57, 35, 54, 12], mode: "remote", tip: "Remote: takes over the parameter (absolute min / max)" });
+    out.push({ id: "del", rect: [x + w - 23, 35, 21, 12], tip: "Delete mapping" });
+    out.push({ id: "mseg", rect: msegR });
+    out.push({ id: "meter", rect: [x + w - UB_OUTMETER_W, my, UB_OUTMETER_W, mh],
+        tip: !rem ? "Drag the triangle to set the range (+ and \u2212 keep zero fixed, \u00b1 moves both); double-click = full"
+            : "Drag the nearest triangle: filled = max, outline = min (double-click resets it)" });
+    const py = my + mh + 3;
+    for (let k = 0; k < 5; k++) out.push({ id: "preset" + k, rect: [x + k * 28.25, py, 25, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
+    if (!rem) {
+        out.push({ id: "amt", rect: [x, 131, w, 11] });
+        const pw = w / 3; // the polarity control spans the full editor width
+        out.push({ id: "pol1", rect: [x, 144, pw, 15], pol: 1, tip: "Positive: output 0 to +amount" });
+        out.push({ id: "pol0", rect: [x + pw, 144, pw, 15], pol: 0, tip: "Bipolar: output -amount to +amount" });
+        out.push({ id: "pol-1", rect: [x + 2 * pw, 144, pw, 15], pol: -1, tip: "Negative: output 0 to -amount" });
     } else {
-        out.push({ id: "amt", rect: [x, 116, w, 11] });
+        out.push({ id: "vmin", rect: [x, 133, 67, 25], which: "min", tip: "Minimum (drag vertically, double-click = 0%)" });
+        out.push({ id: "vmax", rect: [x + 71, 133, 67, 25], which: "max", tip: "Maximum (drag vertically, double-click = 100%)" });
     }
-    out.push({ id: "inv", rect: [x, 144, 30, 15] });
-    out.push({ id: "bip", rect: [x + 33, 144, 30, 15] });
-    out.push({ id: "mode", rect: [x + 66, 144, 48, 15] });
-    out.push({ id: "del", rect: [x + 117, 144, 21, 15] });
     return out;
 }
 
@@ -375,7 +393,10 @@ function ubHit(x, y) {
         return { kind: "popup_out" };
     }
     const rr = ubRailRects();
-    if (ubIn(rr.learn, x, y)) return { kind: "rail_learn", tip: ubLatch ? "Learn latch ON: touch Live params to map to the selected strip" : "Learn latch: map every touched param to the selected strip" };
+    if (ubIn(rr.learn, x, y)) {
+        const L = MM.learn;
+        return { kind: "rail_learn", tip: L.armed ? "Learning: click to stop" + (L.multi ? "" : " (maps one parameter)") : "Learn: click = map one parameter, Shift-click = keep mapping" };
+    }
     if (ubIn(rr.list, x, y)) return { kind: "rail_list", tip: ubPb() ? "Back to rack strips" : "Mapping list (all mappings)" };
     if (x < UB_RAIL) return { kind: "rail" };
     if (ubPb()) return ubHitList(x, y);
@@ -397,10 +418,6 @@ function ubHit(x, y) {
         }
         for (const c of R.chips) if (ubIn(c.rect, x, y)) return { kind: "chip", slot, chip: c.id, tip: c.tip };
         if (ubIn(R.count, x, y)) return { kind: "count", slot, tip: "Show mappings in the list" };
-        const mp = R.map;
-        if ((x - mp.cx) * (x - mp.cx) + (y - mp.cy) * (y - mp.cy) <= (mp.r + 1) * (mp.r + 1)) {
-            return { kind: "map", slot, tip: "Map: click = single, Shift-click = multi-learn" };
-        }
         if (ubIn(R.viz, x, y)) return { kind: "viz", slot, rect: R.viz, tip: g.exp ? "" : "Double-click to expand" };
         if (ubIn(R.meter, x, y)) return { kind: "meter", slot };
         return { kind: "body", slot, tip: g.exp ? "" : "Double-click to expand" };
@@ -412,7 +429,12 @@ function ubHitList(x, y) {
     if (x >= gm.dx - 3) {
         const m = ubPbSelMapping();
         if (m) {
-            for (const d of ubDetailRects(gm, m)) if (ubIn(d.rect, x, y)) return { kind: "detail", id: d.id, rect: d.rect, curve: d.curve, tip: "" };
+            for (const d of ubDetailRects(gm, m)) {
+                if (!ubIn(d.rect, x, y)) continue;
+                let which = d.which;
+                if (d.pick) { which = d.pick(x, y); if (!which) continue; }
+                return { kind: "detail", id: d.id, rect: d.drect || d.rect, curve: d.curve, pol: d.pol, which, mode: d.mode, tip: d.tip || (d.id === "mseg" ? "Click = add point, drag = move / bend, double-click a point = delete" : "") };
+            }
         }
         return { kind: "detail_bg" };
     }
@@ -421,14 +443,14 @@ function ubHitList(x, y) {
         if (y < r.y || y >= r.y + r.h) continue;
         const it = r.item;
         if (it.kind === "head") {
-            if (ubIn(ubHeadArrowRect(r.y), x, y)) return { kind: "ls_harrow", slot: it.i, tip: "Map: click = single, Shift-click = multi-learn" };
+            if (ubIn(ubHeadPwrRect(r.y), x, y)) return { kind: "ls_hpwr", slot: it.i, tip: "Enable / bypass modulator" };
             return { kind: "ls_head", slot: it.i, tip: MM.state.mods[it.i].name };
         }
-        if (it.kind === "none") return { kind: "ls_none", slot: it.i, tip: "Click the arrow to map a parameter" };
+        if (it.kind === "none") return { kind: "ls_none", slot: it.i, tip: "Select the modulator and press LRN to map a parameter" };
         const P = ubRowParts(r.y);
         const base = { slot: it.i, m: it.m, tip: ubTargetPath(it.m) };
-        for (const k of ["del", "curve", "val", "mode"]) {
-            if (ubIn(P[k], x, y)) return Object.assign({ kind: "ls_" + k, rect: P[k] }, base, { tip: { del: "Delete mapping", curve: "Click = next curve", val: "Drag = amount / range", mode: "Mod / Remote" }[k] });
+        for (const k of ["tog", "del", "curve", "val", "mode"]) {
+            if (ubIn(P[k], x, y)) return Object.assign({ kind: "ls_" + k, rect: P[k] }, base, { tip: { tog: "Mapping on / off", del: "Delete mapping", curve: "Transfer curve (click = edit)", val: "Drag = amount / range", mode: "Mod / Remote" }[k] });
         }
         return Object.assign({ kind: "ls_row" }, base);
     }
@@ -436,17 +458,18 @@ function ubHitList(x, y) {
 }
 
 // ------------------------------------------------------------------ actions
+// multi-learn follows the selection (single-shot stays on the modulator it was armed for)
+function ubRetarget(slot) {
+    if (MM.learn.armed && MM.learn.multi && MM.learn.mod !== slot) MM.armLearn(slot, true);
+}
 function ubSelect(slot) {
     if (!ubValidSlot(slot) || ubSel() === slot) return;
     MM.setUI({ sel: slot });
-    if (ubLatch) MM.armLearn(slot, true); // latch retargets learning to the new selection
+    ubRetarget(slot);
 }
-function ubToggleLatch() {
-    if (ubLatch) {
-        ubLatch = false;
-        MM.disarmLearn();
-        return;
-    }
+// rail learn button: click = single-shot for the selected modulator, Shift-click = multi-learn, click while armed = off
+function ubRailLearn(shift) {
+    if (MM.learn.armed) { MM.disarmLearn(); return; }
     let s = ubSel();
     if (s < 0) {
         const o = ubOrder();
@@ -454,27 +477,21 @@ function ubToggleLatch() {
         s = o[0];
         MM.setUI({ sel: s });
     }
-    ubLatch = true;
-    MM.armLearn(s, true);
-}
-function ubMapClick(slot, shift) {
-    ubLatch = false;
-    const L = MM.learn;
-    if (L.armed && L.mod === slot && !!L.multi === !!shift) { MM.disarmLearn(); return; }
-    MM.armLearn(slot, !!shift);
+    MM.armLearn(s, !!shift);
 }
 function ubAddType(type) {
     const slot = MM.addModulator(type);
     if (slot >= 0) {
         const o = ubOrder();
         MM.setUI({ order: o, sel: slot });
-        if (ubLatch) MM.armLearn(slot, true);
+        ubRetarget(slot);
         ubSyncWidth();
     }
     return slot;
 }
 function ubSetExpanded(slot) {
     MM.setUI({ exp: slot, sel: slot >= 0 ? slot : ubSel() });
+    if (slot >= 0) ubRetarget(slot);
     ubSyncWidth();
 }
 function ubTogglePb(on) {
@@ -522,7 +539,7 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
     }
     if (ubDelArm >= 0 && !(h.kind === "del" && h.slot === ubDelArm)) ubDelArm = -1;
     switch (h.kind) {
-        case "rail_learn": ubToggleLatch(); break;
+        case "rail_learn": ubRailLearn(shift); break;
         case "rail_list": ubTogglePb(!ubPb()); break;
         case "plus": ubPopup = { mode: "add", slot: -1, x: Math.max(2, ubStrips().plus.x + ubStrips().plus.w - 94), y: 22 }; break;
         case "collapse": ubSetExpanded(-1); break;
@@ -558,14 +575,13 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
             ubTogglePb(true);
             { const ms = MM.mappingsFor(h.slot); MM.setUI({ pbSel: ms.length ? ms[0].id : 0 }); ubListReveal(ms.length ? ms[0].id : 0, h.slot); }
             break;
-        case "map": ubSelect(h.slot); ubMapClick(h.slot, shift); break;
         case "viz": ubSelect(h.slot); ubVizClick(h, x, y); break;
         case "meter":
         case "body": ubSelect(h.slot); break;
-        case "ls_harrow": ubSelect(h.slot); ubMapClick(h.slot, shift); break;
+        case "ls_hpwr": ubSelect(h.slot); MM.setParam(h.slot, "enabled", MM.state.mods[h.slot].enabled ? 0 : 1); break;
         case "ls_head": ubSelect(h.slot); break;
         case "ls_none": ubSelect(h.slot); break;
-        case "ls_row": case "ls_del": case "ls_curve": case "ls_val": case "ls_mode": ubListRowClick(h, x, y, opt); break;
+        case "ls_row": case "ls_tog": case "ls_del": case "ls_curve": case "ls_val": case "ls_mode": ubListRowClick(h, x, y); break;
         case "detail": ubDetailClick(h, x, y); break;
         default: break;
     }
@@ -597,15 +613,24 @@ function ondrag(x, y, but, cmd, shift) {
         const m = MM.getMapping(d.id);
         if (m) {
             const dv = ((x - d.x) - (y - d.y)) / (shift ? 400 : 90);
-            const patch = {};
-            patch[d.which] = clamp(d.v0 + dv, d.which === "amount" ? -1 : 0, 1);
-            if (d.which === "min") patch.min = Math.min(patch.min, m.max);
-            if (d.which === "max") patch.max = Math.max(patch.max, m.min);
-            MM.updateMapping(d.id, patch);
+            if (m.mode === "remote") {
+                // Remote has no amount: the row value drags the whole window (min and max together, width kept)
+                const sh = clamp(dv, -Math.min(d.min0, d.max0), 1 - Math.max(d.min0, d.max0));
+                MM.updateMapping(d.id, { min: d.min0 + sh, max: d.max0 + sh });
+            } else MM.updateMapping(d.id, { amount: clamp(d.v0 + dv, -1, 1) });
             d.dirty = true;
         }
+    } else if (d.kind === "limit") {
+        ubApplyLimit(d, x, y);
+        d.dirty = true;
+    } else if (d.kind === "vbox") {
+        MM.updateMapping(d.mapId, ubLimitPatch(d.which, clamp(d.v0 + (d.y0 - y) / (shift ? 400 : 100), 0, 1)));
+        d.dirty = true;
     } else if (d.kind === "dbar") {
         ubApplyBar(d.id, d.rect, x, d.mapId);
+        d.dirty = true;
+    } else if (d.kind === "range") {
+        ubApplyRange(d, y);
         d.dirty = true;
     }
     mgraphics.redraw();
@@ -639,7 +664,15 @@ function ondblclick(x, y, but, cmd, shift) {
             if (h.m && MM.getMapping(h.m.id)) MM.updateMapping(h.m.id, { enabled: MM.getMapping(h.m.id).enabled ? 0 : 1 });
             break;
         case "detail":
-            if (h.id === "amt" || h.id === "min" || h.id === "max" || h.id === "camt") ubResetBar(h.id);
+            if (h.id === "amt") ubResetBar(h.id);
+            else if (h.id === "mseg" && ubPbSelMapping()) ubMsegDbl(ubMapTgt(ubPbSelMapping().id), h.rect, x, y);
+            else if (h.id === "meter" && ubPbSelMapping()) {
+                const mm = ubPbSelMapping();
+                if (mm.mode !== "remote") MM.updateMapping(mm.id, { range: 1 });
+                else { const wh = ubNearestLimit(mm, ubLimitFromY(h.rect, y)); MM.updateMapping(mm.id, ubLimitPatch(wh, wh === "min" ? 0 : 1)); }
+            } else if (ubPbSelMapping() && (h.id === "vmin" || h.id === "vmax")) {
+                MM.updateMapping(ubPbSelMapping().id, ubLimitPatch(h.which, h.which === "min" ? 0 : 1));
+            }
             break;
         default: break;
     }
@@ -692,7 +725,7 @@ function ubVizClick(h, x, y) {
     const g = ubStrips().list.filter((s) => s.slot === h.slot)[0];
     if (!g || !g.exp) return;
     const r = h.rect;
-    if (mod.type === MOD_MSEG) ubMsegClick(h.slot, r, x, y);
+    if (mod.type === MOD_MSEG) ubMsegClick(ubMsegTgt(h.slot), r, x, y);
     else if (mod.type === MOD_STEPS) {
         ubDrag = { kind: "steps", slot: h.slot, rect: r, last: -1, lastV: 0, dirty: true };
         ubStepsDrag(ubDrag, x, y);
@@ -704,7 +737,7 @@ function ubVizClick(h, x, y) {
 }
 function ubVizDblClick(h, x, y) {
     const mod = MM.state.mods[h.slot];
-    if (mod.type === MOD_MSEG) ubMsegDbl(h.slot, h.rect, x, y);
+    if (mod.type === MOD_MSEG) ubMsegDbl(ubMsegTgt(h.slot), h.rect, x, y);
     else if (mod.type === MOD_LFO) { MM.setParam(h.slot, "phase", 0); MM.setParam(h.slot, "depth", 1); }
 }
 function ubLfoDrag(d, x, y) {
@@ -732,12 +765,30 @@ function ubStepsDrag(d, x, y) {
     d.dirty = true;
 }
 
-// MSEG editor: drag points, drag a segment's centre handle to bend it, double-click to add/delete a point
+// MSEG editor (modulator MSEG and the per-mapping transfer curve share it). A target is
+// {pts(): current points, set(pts): store, addOnClick: bool}.
+// Drag points, drag a segment's centre handle to bend it, double-click a point to delete it. Adding a point is a
+// double-click on empty space for a modulator MSEG and a single click for a mapping shape (the new point is dragged on).
+function ubMsegTgt(slot) {
+    return { pts: () => MM.state.mods[slot].points, set: (p) => MM.setMsegPoints(slot, p), addOnClick: false };
+}
+function ubMapTgt(id) {
+    return {
+        mapId: id, pts: () => { const m = MM.getMapping(id); return m ? m.shape : linearShape(); }, set: (p) => MM.updateMapping(id, { shape: p }), addOnClick: true,
+    };
+}
 function ubMsegXY(r, p) {
     return [r[0] + 2 + p.x * (r[2] - 4), r[1] + 3 + (1 - p.y) * (r[3] - 6)];
 }
-function ubMsegHit(slot, r, x, y) {
-    const pts = MM.state.mods[slot].points;
+// shape y 0..1 from a pixel y
+function ubMsegRawY(r, y) {
+    return clamp(1 - (y - r[1] - 3) / (r[3] - 6), 0, 1);
+}
+function ubMsegCopy(pts) {
+    return pts.map((p) => ({ x: p.x, y: p.y, curve: p.curve, sCurve: p.sCurve }));
+}
+function ubMsegHit(tgt, r, x, y) {
+    const pts = tgt.pts();
     for (let i = 0; i < pts.length; i++) {
         const q = ubMsegXY(r, pts[i]);
         if ((q[0] - x) * (q[0] - x) + (q[1] - y) * (q[1] - y) <= 36) return { type: "point", i };
@@ -750,20 +801,34 @@ function ubMsegHit(slot, r, x, y) {
     }
     return { type: "none" };
 }
-function ubMsegClick(slot, r, x, y) {
-    const mod = MM.state.mods[slot];
-    const hit = ubMsegHit(slot, r, x, y);
-    if (hit.type === "point") ubDrag = { kind: "mseg", mode: "point", slot, rect: r, i: hit.i, dirty: false };
-    else if (hit.type === "seg") ubDrag = { kind: "mseg", mode: "seg", slot, rect: r, i: hit.i, y0: y, c0: mod.points[hit.i].curve || 0, dirty: false };
+function ubMsegPos(r, x, y) {
+    return { x: clamp((x - r[0] - 2) / (r[2] - 4), 0.01, 0.99), y: ubMsegRawY(r, y) };
+}
+function ubMsegClick(tgt, r, x, y) {
+    const hit = ubMsegHit(tgt, r, x, y);
+    if (hit.type === "point") ubDrag = { kind: "mseg", mode: "point", tgt, rect: r, i: hit.i, dirty: false };
+    else if (hit.type === "seg") ubDrag = { kind: "mseg", mode: "seg", tgt, rect: r, i: hit.i, y0: y, c0: tgt.pts()[hit.i].curve || 0, dirty: false };
+    else if (tgt.addOnClick) {
+        const pts = ubMsegCopy(tgt.pts());
+        const np = ubMsegPos(r, x, y);
+        pts.push({ x: np.x, y: np.y, curve: 0, sCurve: 0 });
+        tgt.set(pts);
+        const now = tgt.pts();
+        let idx = 1;
+        for (let k = 0; k < now.length; k++) if (Math.abs(now[k].x - np.x) < 1e-6 && Math.abs(now[k].y - np.y) < 1e-6) idx = k;
+        ubDrag = { kind: "mseg", mode: "point", tgt, rect: r, i: idx, dirty: true };
+    }
 }
 function ubMsegDrag(d, x, y) {
-    const pts = MM.state.mods[d.slot].points.map((p) => ({ x: p.x, y: p.y, curve: p.curve, sCurve: p.sCurve }));
+    const pts = ubMsegCopy(d.tgt.pts());
     const r = d.rect;
     if (d.mode === "point") {
         const p = pts[d.i];
-        p.y = clamp(1 - (y - r[1] - 3) / (r[3] - 6), 0, 1);
+        p.y = ubMsegRawY(r, y);
         if (d.i > 0 && d.i < pts.length - 1) {
-            p.x = clamp((x - r[0] - 2) / (r[2] - 4), pts[d.i - 1].x + 0.002, pts[d.i + 1].x - 0.002);
+            const lo = pts[d.i - 1].x + 0.002;
+            const hi = pts[d.i + 1].x - 0.002;
+            if (hi >= lo) p.x = clamp((x - r[0] - 2) / (r[2] - 4), lo, hi);
         }
     } else {
         const a = pts[d.i];
@@ -771,29 +836,31 @@ function ubMsegDrag(d, x, y) {
         const dir = b.y >= a.y ? 1 : -1;
         a.curve = clamp(d.c0 + (dir * (d.y0 - y)) / ((r[3] - 6) * 0.5), -1, 1);
     }
-    MM.setMsegPoints(d.slot, pts);
+    d.tgt.set(pts);
     d.dirty = true;
 }
-function ubMsegDbl(slot, r, x, y) {
-    const hit = ubMsegHit(slot, r, x, y);
-    const pts = MM.state.mods[slot].points.map((p) => ({ x: p.x, y: p.y, curve: p.curve, sCurve: p.sCurve }));
+function ubMsegDbl(tgt, r, x, y) {
+    const hit = ubMsegHit(tgt, r, x, y);
+    const pts = ubMsegCopy(tgt.pts());
     if (hit.type === "point") {
         if (hit.i === 0 || hit.i === pts.length - 1) return;
         pts.splice(hit.i, 1);
     } else if (hit.type === "seg") {
         pts[hit.i].curve = 0;
     } else {
-        const nx = clamp((x - r[0] - 2) / (r[2] - 4), 0.01, 0.99);
-        const ny = clamp(1 - (y - r[1] - 3) / (r[3] - 6), 0, 1);
-        pts.push({ x: nx, y: ny, curve: 0, sCurve: 0 });
+        if (tgt.addOnClick) return;
+        const np = ubMsegPos(r, x, y);
+        pts.push({ x: np.x, y: np.y, curve: 0, sCurve: 0 });
     }
-    MM.setMsegPoints(slot, pts);
+    tgt.set(pts);
+    MM.commit();
 }
 
 // ------------------------------------------------------------------ mapping-list interactions
-function ubListRowClick(h, x, y, opt) {
+function ubListRowClick(h, x, y) {
     const m = MM.getMapping(h.m.id);
     if (!m) return;
+    if (h.kind === "ls_tog") { MM.updateMapping(m.id, { enabled: m.enabled ? 0 : 1 }); return; }
     ubSelect(h.slot);
     if (h.kind === "ls_del") {
         MM.deleteMapping(m.id);
@@ -802,12 +869,8 @@ function ubListRowClick(h, x, y, opt) {
     }
     MM.setUI({ pbSel: m.id });
     if (h.kind === "ls_mode") MM.updateMapping(m.id, { mode: m.mode === "remote" ? "mod" : "remote" });
-    else if (h.kind === "ls_curve") {
-        if (opt) MM.updateMapping(m.id, { invert: m.invert ? 0 : 1 });
-        else MM.updateMapping(m.id, { curve: (m.curve + 1) % CURVE_NAMES.length });
-    } else if (h.kind === "ls_val") {
-        const which = m.mode === "remote" ? (x < h.rect[0] + h.rect[2] / 2 ? "min" : "max") : "amount";
-        ubDrag = { kind: "lval", id: m.id, which, v0: m[which], x, y, dirty: false };
+    else if (h.kind === "ls_val") {
+        ubDrag = { kind: "lval", id: m.id, v0: m.amount, min0: m.min, max0: m.max, x, y, dirty: false };
     }
 }
 function ubListReveal(mapId, slot) {
@@ -816,42 +879,64 @@ function ubListReveal(mapId, slot) {
     for (let k = 0; k < items.length; k++) if ((mapId && items[k].kind === "map" && items[k].m.id === mapId) || (!mapId && items[k].kind === "head" && items[k].i === slot)) { idx = k; break; }
     if (idx >= 0) MM.setUI({ pbScroll: clamp(idx - 1, 0, ubListMaxScroll(items)) });
 }
+// Remote min / max helpers (absolute 0..1 of the target parameter)
+function ubLimitPatch(which, v) {
+    return which === "min" ? { min: v } : { max: v };
+}
+function ubLimitFromY(rect, y) {
+    return clamp(1 - (y - rect[1] - 3) / (rect[3] - 6), 0, 1);
+}
+// the closer of the two limits to v (a tie goes to min below it and max above it)
+function ubNearestLimit(m, v) {
+    const dn = Math.abs(v - m.min);
+    const dx = Math.abs(v - m.max);
+    if (dn < dx) return "min";
+    if (dx < dn) return "max";
+    return v <= m.min ? "min" : "max";
+}
+// drag of one limit triangle on the right-hand bar
+function ubApplyLimit(d, x, y) {
+    const m = MM.getMapping(d.mapId);
+    if (!m) return;
+    MM.updateMapping(m.id, ubLimitPatch(d.which, ubLimitFromY(d.rect, y)));
+}
+function ubStartLimit(m, which, rect, x, y) {
+    ubDrag = { kind: "limit", which, rect, mapId: m.id, dirty: true };
+    ubApplyLimit(ubDrag, x, y);
+}
 function ubBarValue(id, rect, x) {
     const t = clamp((x - rect[0]) / rect[2], 0, 1);
-    if (id === "amt") return t * 2 - 1;
-    return t;
+    return t * 2 - 1;
 }
 function ubApplyBar(id, rect, x, mapId) {
     const m = MM.getMapping(mapId);
     if (!m) return;
     const v = ubBarValue(id, rect, x);
     if (id === "amt") MM.updateMapping(m.id, { amount: v });
-    else if (id === "min") MM.updateMapping(m.id, { min: v });
-    else if (id === "max") MM.updateMapping(m.id, { max: v });
-    else if (id === "camt") {
-        if (m.curve === CURVE_STEPPED) MM.updateMapping(m.id, { curveSteps: 2 + Math.round(v * 14) });
-        else MM.updateMapping(m.id, { curveAmt: v });
-    }
 }
 function ubResetBar(id) {
     const m = ubPbSelMapping();
     if (!m) return;
     const d = defaultMapping(1, 0, {});
     if (id === "amt") MM.updateMapping(m.id, { amount: d.amount });
-    else if (id === "min") MM.updateMapping(m.id, { min: 0 });
-    else if (id === "max") MM.updateMapping(m.id, { max: 1 });
-    else MM.updateMapping(m.id, { curveAmt: d.curveAmt, curveSteps: d.curveSteps });
 }
 function ubDetailClick(h, x, y) {
     const m = ubPbSelMapping();
     if (!m) return;
     const id = h.id;
-    if (id.indexOf("curve") === 0) MM.updateMapping(m.id, { curve: Number(id.slice(5)) });
-    else if (id === "inv") MM.updateMapping(m.id, { invert: m.invert ? 0 : 1 });
-    else if (id === "bip") { if (m.mode !== "remote") MM.updateMapping(m.id, { bipolar: m.bipolar ? 0 : 1 }); }
-    else if (id === "mode") MM.updateMapping(m.id, { mode: x < h.rect[0] + h.rect[2] / 2 ? "mod" : "remote" });
+    if (id.indexOf("preset") === 0) MM.updateMapping(m.id, { shape: curveToShape(Number(id.slice(6)), 0.5, 4) });
+    else if (id === "mseg") ubMsegClick(ubMapTgt(m.id), h.rect, x, y);
+    else if (id === "meter" && m.mode === "remote") ubStartLimit(m, ubNearestLimit(m, ubLimitFromY(h.rect, y)), h.rect, x, y);
+    else if (id === "vmin" || id === "vmax") ubDrag = { kind: "vbox", which: h.which, v0: m[h.which], y0: y, mapId: m.id, dirty: false };
+    else if (id === "tabmod" || id === "tabrem") MM.updateMapping(m.id, { mode: h.mode });
+    else if (id === "meter") {
+        // the visible marker(s) follow the polarity: a press on the hidden zero side (+ below / \u2212 above the centre) is ignored
+        if (!ubRangeSideOk(m.polarity, h.rect, y)) return;
+        ubDrag = { kind: "range", rect: h.rect, mapId: m.id, dirty: true };
+        ubApplyRange(ubDrag, y);
+    } else if (id.indexOf("pol") === 0) MM.updateMapping(m.id, { polarity: h.pol });
     else if (id === "del") { MM.deleteMapping(m.id); MM.setUI({ pbSel: 0 }); }
-    else if (id === "amt" || id === "min" || id === "max" || id === "camt") {
+    else if (id === "amt") {
         ubDrag = { kind: "dbar", id, rect: h.rect, mapId: m.id, dirty: true };
         ubApplyBar(id, h.rect, x, m.id);
     }
@@ -891,9 +976,10 @@ function ubShapeGlyph(s, x, y, w, h, c, a) {
 }
 function ubCurveGlyph(type, x, y, w, h, c, a) {
     const pts = [];
+    const shape = curveToShape(type, 0.5, 4);
     for (let i = 0; i <= 14; i++) {
         const u = i / 14;
-        pts.push([x + w * u, y + h * (1 - shapeCurve(u, type, 0.5, 4))]);
+        pts.push([x + w * u, y + h * (1 - evalMseg(shape, u))]);
     }
     ubPoly(pts, c, a, 1.2);
 }
@@ -914,9 +1000,7 @@ function ubListIcon(r, c) {
     }
 }
 // enable / bypass button in a strip's upper-left corner: lit ring + type glyph when on, hollow grey when off
-function ubPowerButton(R, mod, c, hot) {
-    const cx = R.icon[0] + 7;
-    const cy = R.icon[1] + 6.5;
+function ubPowerGlyph(cx, cy, mod, c, hot) {
     if (mod.enabled) {
         ubCircle(cx, cy, 6.3, c, 0.26, true);
         ubCircle(cx, cy, 6.3, c, 1, false, 1.3);
@@ -926,6 +1010,22 @@ function ubPowerButton(R, mod, c, hot) {
         ubCircle(cx, cy, 6.3, hot ? [0.62, 0.65, 0.7] : [0.38, 0.4, 0.45], 1, false, 1.1);
         ubGlyph(mod.type, cx - 4, cy - 3, 8, 6, [0.38, 0.4, 0.45], 1);
     }
+}
+function ubPowerButton(R, mod, c, hot) {
+    ubPowerGlyph(R.icon[0] + 7, R.icon[1] + 6.5, mod, c, hot);
+}
+// per-mapping on/off: a power symbol (open ring + stem). Lit in the modulator colour when on, grey when off.
+function ubMapToggle(r, on, c, hot) {
+    const cx = r[0] + r[2] / 2;
+    const cy = r[1] + r[3] / 2 + 0.5;
+    const col = on ? c : hot ? [0.62, 0.65, 0.7] : [0.4, 0.42, 0.47];
+    const ring = [];
+    for (let i = 0; i <= 14; i++) {
+        const a = (-90 + 38 + (284 * i) / 14) * Math.PI / 180;
+        ring.push([cx + Math.cos(a) * 3.6, cy + Math.sin(a) * 3.6]);
+    }
+    ubPoly(ring, col, 1, 1.3);
+    ubLine(cx, cy - 5, cx, cy - 0.8, col, 1, 1.3);
 }
 function ubIconButton(r, on, tint) {
     ubRR(r[0], r[1], r[2], r[3], 3, on ? tint : [0.17, 0.18, 0.21], on ? 0.22 : 1);
@@ -965,23 +1065,6 @@ function ubKnob(k, mod, c, dim, compact) {
     ubTextC(compact && spec.short ? spec.short(v) : spec.fmt(v), k.cx, k.valY, 7, UB_ORANGE, dim ? 0.5 : 1);
     ubTextC(spec.label, k.cx, k.labY, 7, [0.58, 0.61, 0.67], 1);
 }
-function ubMapButton(R, slot, c) {
-    const mp = R.map;
-    const armed = MM.learn.armed && MM.learn.mod === slot;
-    const multi = armed && MM.learn.multi;
-    ubCircle(mp.cx, mp.cy, mp.r, armed ? UB_CYAN : [0.17, 0.18, 0.21], 1, true);
-    ubCircle(mp.cx, mp.cy, mp.r, armed ? UB_CYAN : [0.32, 0.55, 0.62], 1, false, 1.2);
-    if (multi) ubCircle(mp.cx, mp.cy, mp.r + 2.5, UB_CYAN, 0.55, false, 1.2);
-    const ic = armed ? [0.05, 0.08, 0.1] : UB_CYAN;
-    const k = mp.r / 11;
-    ubCircle(mp.cx, mp.cy, 4.5 * k + 0.3, ic, 1, false, 1.2);
-    ubCircle(mp.cx, mp.cy, 1.4, ic, 1, true);
-    ubLine(mp.cx, mp.cy - 7.5 * k, mp.cx, mp.cy - 3.5 * k, ic, 1, 1);
-    ubLine(mp.cx, mp.cy + 3.5 * k, mp.cx, mp.cy + 7.5 * k, ic, 1, 1);
-    ubLine(mp.cx - 7.5 * k, mp.cy, mp.cx - 3.5 * k, mp.cy, ic, 1, 1);
-    ubLine(mp.cx + 3.5 * k, mp.cy, mp.cx + 7.5 * k, mp.cy, ic, 1, 1);
-}
-
 function ubDrawViz(slot, mod, r, big) {
     const c = ubModCol(mod);
     const t = ubTel(slot);
@@ -1127,12 +1210,11 @@ function ubPaintStrip(g) {
         else ubTextC(ch.label, r[0] + r[2] / 2, r[1] + 9, 7, ch.on ? [1, 1, 1] : [0.6, 0.62, 0.68], 1);
     }
     for (const k of R.knobs) ubKnob(k, mod, c, dim, !g.exp);
-    // count chip + map button
+    // count chip
     const cnt = MM.mappingsFor(slot).length;
     ubRR(R.count[0], R.count[1], R.count[2], R.count[3], 5, cnt ? UB_CYAN : [0.2, 0.21, 0.24], cnt ? 0.16 : 1);
     ubRRStroke(R.count[0] + 0.5, R.count[1] + 0.5, R.count[2] - 1, R.count[3] - 1, 5, cnt ? UB_CYAN : [0.3, 0.32, 0.37], 1, 1);
     ubTextC(cnt + (cnt === 1 ? " map" : " maps"), R.count[0] + R.count[2] / 2, R.count[1] + 9, 7, cnt ? UB_CYAN : [0.55, 0.57, 0.62], 1);
-    ubMapButton(R, slot, c);
 }
 
 function ubPaintPlus(sg) {
@@ -1164,12 +1246,24 @@ function ubPaintPopup() {
     }
 }
 
+// pulse of the single-shot learn state (0.35 .. 1)
+function ubPulse() {
+    return 0.35 + 0.65 * Math.abs(Math.sin(ubFrame * 0.22));
+}
 function ubPaintRail() {
     ubRR(0, 0, UB_RAIL, 161, 5, [0.1, 0.108, 0.125], 1);
     const rr = ubRailRects();
-    ubIconButton(rr.learn, ubLatch, UB_CYAN);
-    ubLearnIcon(rr.learn, ubLatch, ubLatch ? UB_CYAN : [0.6, 0.64, 0.7]);
-    ubTextC("LRN", UB_RAIL / 2, 31, 6, ubLatch ? UB_CYAN : [0.5, 0.53, 0.58], 1);
+    const L = MM.learn;
+    const single = L.armed && !L.multi;
+    const multi = L.armed && L.multi;
+    const lr = rr.learn;
+    // armed: single-shot pulses, multi is solid with an outer ring
+    ubRR(lr[0], lr[1], lr[2], lr[3], 3, multi ? UB_CYAN : [0.17, 0.18, 0.21], multi ? 0.9 : 1);
+    if (single) ubRR(lr[0], lr[1], lr[2], lr[3], 3, UB_CYAN, 0.55 * ubPulse());
+    ubRRStroke(lr[0] + 0.5, lr[1] + 0.5, lr[2] - 1, lr[3] - 1, 3, L.armed ? UB_CYAN : [0.30, 0.32, 0.37], single ? ubPulse() : 1, 1);
+    if (multi) ubRRStroke(lr[0] - 1, lr[1] - 1, lr[2] + 2, lr[3] + 2, 4, UB_CYAN, 0.55, 1.2);
+    ubLearnIcon(lr, L.armed, multi ? [0.05, 0.08, 0.1] : L.armed ? UB_CYAN : [0.6, 0.64, 0.7]);
+    ubTextC("LRN", UB_RAIL / 2, 31, 6, L.armed ? UB_CYAN : [0.5, 0.53, 0.58], single ? ubPulse() : 1);
     ubIconButton(rr.list, ubPb(), UB_ORANGE);
     ubListIcon(rr.list, ubPb() ? UB_ORANGE : [0.6, 0.64, 0.7]);
     ubTextC("LST", UB_RAIL / 2, 67, 6, ubPb() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
@@ -1179,31 +1273,166 @@ function ubPaintRail() {
 }
 
 // ------------------------------------------------------------------ painting: patchbay
-function ubPaintCurvePreview(r, m, mod) {
-    ubRR(r[0], r[1], r[2], r[3], 3, [0.075, 0.085, 0.1], 1);
-    const ix = r[0] + 3;
+// editable transfer curve: x = modulator value 0..1, y = output 0..1 (the mapping's MSEG)
+const UB_OFF_GREY = [0.42, 0.44, 0.48];
+// Output bar of the remap editor (Phase Plant style, centred): zero is the vertical centre, positive output fills up, negative
+// fills down. `range` is the limit marker's distance from the centre (0..1 of the half height). "+" shows only the upper
+// triangle, "\u2212" only the lower one (the zero side is hidden and fixed at the centre); "\u00b1" shows both, linked
+// symmetrically. The fill is the live signed modulation o = amount * range * (...), so it reflects the real output.
+// A bypassed modulator (or disabled mapping) shows the markers and band but no live value.
+function ubMeterGeom(r) {
     const iy = r[1] + 3;
-    const iw = r[2] - 6;
     const ih = r[3] - 6;
-    ubLine(ix, iy + ih, ix + iw, iy, [0.2, 0.22, 0.26], 1, 1);
-    ubLine(ix, iy + ih / 2, ix + iw, iy + ih / 2, [0.15, 0.16, 0.19], 1, 1);
+    return { tx: r[0] + 5, tw: r[2] - 6, iy, ih, cy: iy + ih / 2, hh: ih / 2 };
+}
+function ubPaintOutMeter(r, m, mod) {
+    const g = ubMeterGeom(r);
+    const live = mod.enabled && m.enabled;
+    const c = live ? ubModCol(mod) : UB_OFF_GREY;
+    const pol = m.polarity;
+    ubRR(g.tx, r[1], g.tw, r[3], 3, [0.075, 0.085, 0.1], 1);
+    const yHi = g.cy - g.hh * m.range;
+    const yLo = g.cy + g.hh * m.range;
+    // limit band: centre..limit ("+" up, "\u2212" down) or both sides ("\u00b1")
+    if (pol >= 0) ubRect(g.tx + 1, yHi, g.tw - 2, Math.max(0, g.cy - yHi), c, 0.16);
+    if (pol <= 0) ubRect(g.tx + 1, g.cy, g.tw - 2, Math.max(0, yLo - g.cy), c, 0.16);
+    if (live) {
+        const o = clamp(mappingOutput(Object.assign({}, m, { mode: "mod" }), ubTel(m.mod).out), -1, 1);
+        const ty = g.cy - g.hh * o;
+        ubRect(g.tx + 2, Math.min(ty, g.cy), g.tw - 4, Math.abs(g.cy - ty), c, 0.6);
+        ubRect(g.tx + 1, ty - 0.75, g.tw - 2, 1.5, [1, 1, 1], 0.95);
+    }
+    ubLine(g.tx, g.cy, g.tx + g.tw, g.cy, [0.62, 0.64, 0.7], 1, 1);
+    const hot = ubDrag && ubDrag.kind === "range" && ubDrag.mapId === m.id;
+    const mc = hot ? [1, 1, 1] : [0.78, 0.8, 0.85];
+    if (pol >= 0) ubRangeMarker(r[0], yHi, mc);
+    if (pol <= 0) ubRangeMarker(r[0], yLo, mc);
+}
+function ubRangeMarker(x, y, c) {
+    ubCol(c, 1);
+    mgraphics.move_to(x, y - 3.5);
+    mgraphics.line_to(x + 4.5, y);
+    mgraphics.line_to(x, y + 3.5);
+    mgraphics.close_path();
+    mgraphics.fill();
+}
+// A press is only accepted on a visible marker's side of the centre: "+" above it, "\u2212" below it, "\u00b1" anywhere.
+function ubRangeSideOk(pol, rect, y) {
+    const g = ubMeterGeom(rect);
+    return pol === 0 || (pol > 0 ? y <= g.cy : y >= g.cy);
+}
+// range 0..1 from a y position (during a drag the hidden side just pins to 0)
+function ubRangeValue(rect, pol, y) {
+    const g = ubMeterGeom(rect);
+    const d = pol === 0 ? Math.abs(y - g.cy) : pol > 0 ? g.cy - y : y - g.cy;
+    return clamp(d / g.hh, 0, 1);
+}
+function ubApplyRange(d, y) {
+    const m = MM.getMapping(d.mapId);
+    if (!m) return;
+    MM.updateMapping(m.id, { range: ubRangeValue(d.rect, m.polarity, y) });
+}
+function ubPaintShapeEditor(r, m, mod) {
+    // a bypassed modulator greys the editor and hides its scan line; editing still works
+    const off = !mod.enabled;
+    const cyan = m.mode === "remote"; // the whole Remote editor is cyan
+    const ac = off ? UB_OFF_GREY : cyan ? UB_REM_COL : UB_MOD_COL;
+    ubRR(r[0], r[1], r[2], r[3], 3, cyan ? UB_REM_BG : UB_MOD_BG, 1);
+    const ix = r[0] + 2;
+    const iy = r[1] + 3;
+    const iw = r[2] - 4;
+    const ih = r[3] - 6;
+    const gh = cyan ? [0.09, 0.19, 0.23] : [0.14, 0.15, 0.18];
+    const gv = cyan ? [0.08, 0.17, 0.2] : [0.12, 0.13, 0.16];
+    for (let k = 1; k < 4; k++) ubLine(ix, iy + (ih * k) / 4, ix + iw, iy + (ih * k) / 4, gh, 1, 1);
+    for (let k = 1; k < 4; k++) ubLine(ix + (iw * k) / 4, iy, ix + (iw * k) / 4, iy + ih, gv, 1, 1);
+    ubLine(ix, iy + ih, ix + iw, iy, cyan ? [0.13, 0.27, 0.32] : [0.2, 0.22, 0.26], 1, 1);
+    const shape = m.shape;
+    const n = Math.max(24, Math.floor(iw));
     const pts = [];
-    for (let i = 0; i <= 40; i++) {
-        const u = i / 40;
-        let v = shapeCurve(u, m.curve, m.curveAmt, m.curveSteps);
-        if (m.invert) v = 1 - v;
-        pts.push([ix + iw * u, iy + ih * (1 - v)]);
+    for (let i = 0; i < n; i++) {
+        const u = i / (n - 1);
+        pts.push([ix + iw * u, iy + ih * (1 - evalMseg(shape, u))]);
     }
-    if (m.mode === "remote") {
-        ubRect(ix, iy + ih * (1 - Math.max(m.min, m.max)), iw, Math.max(1, ih * Math.abs(m.max - m.min)), UB_ORANGE, 0.12);
+    ubFillPoly(pts, iy + ih, ac, 0.1);
+    ubPoly(pts, ac, 1, 1.6);
+    if (!off) {
+        const out = ubTel(m.mod).out;
+        const u = clamp((out + 1) / 2, 0, 1);
+        const v = evalMseg(shape, u);
+        ubLine(ix + iw * u, iy, ix + iw * u, iy + ih, ubModCol(mod), 0.5, 1);
+        ubCircle(ix + iw * u, iy + ih * (1 - v), 2.4, [1, 1, 1], 1, true);
     }
-    ubPoly(pts, UB_ORANGE, 1, 1.6);
-    const out = ubTel(m.mod).out;
-    const u = clamp((out + 1) / 2, 0, 1);
-    let v = shapeCurve(u, m.curve, m.curveAmt, m.curveSteps);
-    if (m.invert) v = 1 - v;
-    ubLine(ix + iw * u, iy, ix + iw * u, iy + ih, ubModCol(mod), 0.5, 1);
-    ubCircle(ix + iw * u, iy + ih * (1 - v), 2.6, [1, 1, 1], 1, true);
+    // handles: points (white ring while dragged) and segment bend squares
+    const sel = ubDrag && ubDrag.kind === "mseg" && ubDrag.tgt && ubDrag.tgt.mapId === m.id ? ubDrag.i : -1;
+    for (let i = 0; i < shape.length - 1; i++) {
+        const mx = (shape[i].x + shape[i + 1].x) / 2;
+        const q = ubMsegXY(r, { x: mx, y: evalMseg(shape, mx) });
+        ubRect(q[0] - 2, q[1] - 2, 4, 4, [0.12, 0.13, 0.15], 1);
+        ubCol(ac, 0.9);
+        mgraphics.set_line_width(1);
+        mgraphics.rectangle(q[0] - 2, q[1] - 2, 4, 4);
+        mgraphics.stroke();
+    }
+    for (let i = 0; i < shape.length; i++) {
+        const q = ubMsegXY(r, shape[i]);
+        ubCircle(q[0], q[1], 3.2, ac, 1, true);
+        ubCircle(q[0], q[1], 3.2, i === sel ? [1, 1, 1] : [0.08, 0.09, 0.1], 1, false, 1);
+    }
+}
+// Remote output bar: absolute 0..1 of the target parameter, no centre line. The min..max band is shaded, the fill runs from
+// min to the live value, and two independent triangles mark the limits (max filled, min outlined).
+function ubPaintAbsMeter(r, m, mod) {
+    const g = ubMeterGeom(r);
+    const live = mod.enabled && m.enabled;
+    const c = live ? UB_REM_COL : UB_OFF_GREY;
+    ubRR(g.tx, r[1], g.tw, r[3], 3, UB_REM_BG, 1);
+    const yOf = (v) => g.iy + g.ih * (1 - v);
+    const y0 = yOf(m.min);
+    const y1 = yOf(m.max);
+    ubRect(g.tx + 1, Math.min(y0, y1), g.tw - 2, Math.abs(y1 - y0), c, 0.18);
+    if (live) {
+        const yv = yOf(clamp(mappingOutput(m, ubTel(m.mod).out), 0, 1));
+        ubRect(g.tx + 2, Math.min(y0, yv), g.tw - 4, Math.max(1, Math.abs(yv - y0)), c, 0.6);
+        ubRect(g.tx + 1, yv - 0.75, g.tw - 2, 1.5, [1, 1, 1], 0.95);
+    }
+    const hot = ubDrag && ubDrag.kind === "limit" && ubDrag.mapId === m.id ? ubDrag.which : "";
+    ubLimitMarker(r[0], y0, hot === "min" ? [1, 1, 1] : c, false);
+    ubLimitMarker(r[0], y1, hot === "max" ? [1, 1, 1] : c, true);
+}
+// limit triangle pointing at the bar: filled = max, outlined = min
+function ubLimitMarker(x, y, c, filled) {
+    mgraphics.move_to(x, y - 3.5);
+    mgraphics.line_to(x + 4.5, y);
+    mgraphics.line_to(x, y + 3.5);
+    mgraphics.close_path();
+    if (filled) { ubCol(c, 1); mgraphics.fill(); } else { ubCol(c, 1); mgraphics.set_line_width(1.1); mgraphics.stroke(); }
+}
+// MIN / MAX value box (Remote; drag vertically, double-click resets)
+function ubPaintValueBox(r, label, v, m, mod) {
+    const live = mod.enabled && m.enabled;
+    const c = live ? UB_REM_COL : UB_OFF_GREY;
+    const hot = ubDrag && ubDrag.kind === "vbox" && ubDrag.mapId === m.id && ubDrag.which === label.toLowerCase();
+    ubRR(r[0], r[1], r[2], r[3], 3, UB_REM_BG, 1);
+    ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, c, hot ? 1 : 0.55, 1);
+    ubTextC(label, r[0] + r[2] / 2, r[1] + 9.5, 6.5, [0.62, 0.7, 0.75], 1);
+    ubTextC(Math.round(v * 100) + "%", r[0] + r[2] / 2, r[1] + 20.5, 10, c, 1);
+}
+// MOD / REM tab (rounded top, lit tab in its mode colour)
+function ubPaintModeTab(r, label, on, accent) {
+    ubRR(r[0], r[1], r[2], r[3] + 1, 4, on ? accent : [0.17, 0.18, 0.21], on ? 0.28 : 1);
+    ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3], 4, on ? accent : [0.30, 0.32, 0.37], 1, 1);
+    ubTextC(label, r[0] + r[2] / 2, r[1] + 9, 7, on ? [1, 1, 1] : [0.55, 0.57, 0.62], 1);
+}
+// does the mapping's shape equal preset k (for the preset buttons' lit state)?
+function ubShapeIsPreset(m, k) {
+    const a = m.shape;
+    const b = curveToShape(k, 0.5, 4);
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        if (Math.abs(a[i].x - b[i].x) > 0.002 || Math.abs(a[i].y - b[i].y) > 0.002 || Math.abs(a[i].curve - b[i].curve) > 0.002 || !!a[i].sCurve !== !!b[i].sCurve) return false;
+    }
+    return true;
 }
 function ubPaintBar(r, label, text, n01, c, bipolar, dim) {
     ubRR(r[0], r[1], r[2], r[3], 2, [0.075, 0.085, 0.1], 1);
@@ -1216,7 +1445,7 @@ function ubPaintBar(r, label, text, n01, c, bipolar, dim) {
         ubRect(r[0], r[1] + 1, Math.max(1, n01 * r[2]), r[3] - 2, c, dim ? 0.25 : 0.7);
     }
     ubText(label, r[0] + 3, r[1] + 8.5, 7, [0.9, 0.92, 0.95], dim ? 0.5 : 1);
-    ubText(text, r[0] + r[2] - ubTextW(text, 7) - 3, r[1] + 8.5, 7, UB_ORANGE, dim ? 0.5 : 1);
+    ubText(text, r[0] + r[2] - ubTextW(text, 7) - 3, r[1] + 8.5, 7, c === UB_OFF_GREY ? [0.62, 0.64, 0.68] : UB_MOD_COL, dim ? 0.5 : 1);
 }
 function ubPaintDetail(gm) {
     const m = ubPbSelMapping();
@@ -1227,49 +1456,38 @@ function ubPaintDetail(gm) {
         ubTextC("Select a row", x + w / 2, 70, 8, [0.6, 0.63, 0.68], 1);
         ubTextC("to edit its curve,", x + w / 2, 82, 7, [0.45, 0.47, 0.52], 1);
         ubTextC("range & mode", x + w / 2, 91, 7, [0.45, 0.47, 0.52], 1);
-        ubTextC(MM.allMappings().length + " mappings", x + w / 2, 110, 8, UB_CYAN, 1);
+        ubTextC(MM.allMappings().length + " mappings", x + w / 2, 110, 8, UB_REM_COL, 1);
         return;
     }
     const mod = MM.state.mods[m.mod];
-    const c = ubModCol(mod);
+    const off = !mod.enabled;
+    const c = off ? UB_OFF_GREY : ubModCol(mod);
     const st = MM.mappingStatus(m.id);
-    ubText(ubFit(m.target.paramName || m.target.name, w, 8), x, 9, 8, st === "missing" ? UB_RED : [0.92, 0.94, 0.97], 1);
+    const rem = m.mode === "remote";
+    const hl = off ? UB_OFF_GREY : rem ? UB_REM_COL : UB_MOD_COL;
+    const pname = m.target.paramName || m.target.name || "?";
+    ubText(ubFit(pname, w, 8), x, 9, 8, st === "missing" ? UB_RED : [0.92, 0.94, 0.97], 1);
     ubText(ubFit((m.target.trackName || "?") + " / " + (m.target.deviceName || "?"), w, 7), x, 19, 7, [0.55, 0.58, 0.64], 1);
     ubCircle(x + 3, 28.5, 2.8, c, 1, true);
     ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), w - 10, 7), x + 9, 31, 7, st === "missing" ? UB_RED : c, 1);
+    // Remote: a cyan frame around the tab row and the editor
+    if (rem) ubRRStroke(x - 1.5, 33.5, w + 1, 79, 4, off ? UB_OFF_GREY : UB_REM_COL, 0.85, 1);
     for (const d of ubDetailRects(gm, m)) {
         const r = d.rect;
-        if (d.id === "preview") ubPaintCurvePreview(r, m, mod);
-        else if (d.id.indexOf("curve") === 0) {
-            const on = m.curve === d.curve;
-            ubRR(r[0], r[1], r[2], r[3], 3, on ? UB_ORANGE : [0.17, 0.18, 0.21], on ? 0.25 : 1);
-            ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, on ? UB_ORANGE : [0.30, 0.32, 0.37], 1, 1);
-            ubCurveGlyph(d.curve, r[0] + 5, r[1] + 3, r[2] - 10, r[3] - 6, on ? UB_ORANGE : [0.62, 0.64, 0.7], 1);
-        } else if (d.id === "camt") {
-            const stepped = m.curve === CURVE_STEPPED;
-            const lin = m.curve === CURVE_LINEAR;
-            const v = stepped ? (m.curveSteps - 2) / 14 : m.curveAmt;
-            ubPaintBar(r, stepped ? "Steps" : "Curve", stepped ? String(m.curveSteps) : Math.round(m.curveAmt * 100) + "%", v, UB_ORANGE, false, lin);
+        if (d.id === "mseg") ubPaintShapeEditor(r, m, mod);
+        else if (d.id === "meter") { if (rem) ubPaintAbsMeter(r, m, mod); else ubPaintOutMeter(r, m, mod); }
+        else if (d.id === "vmin") ubPaintValueBox(r, "MIN", m.min, m, mod);
+        else if (d.id === "vmax") ubPaintValueBox(r, "MAX", m.max, m, mod);
+        else if (d.id === "tabmod") ubPaintModeTab(r, "MOD", !rem, off ? UB_OFF_GREY : UB_MOD_COL);
+        else if (d.id === "tabrem") ubPaintModeTab(r, "REM", rem, off ? UB_OFF_GREY : UB_REM_COL);
+        else if (d.id.indexOf("preset") === 0) {
+            const on = ubShapeIsPreset(m, d.curve);
+            ubRR(r[0], r[1], r[2], r[3], 3, on ? hl : [0.17, 0.18, 0.21], on ? 0.25 : 1);
+            ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, on ? hl : [0.30, 0.32, 0.37], 1, 1);
+            ubCurveGlyph(d.curve, r[0] + 5, r[1] + 3, r[2] - 10, r[3] - 6, on ? hl : [0.62, 0.64, 0.7], 1);
         } else if (d.id === "amt") ubPaintBar(r, "Amount", (m.amount > 0 ? "+" : "") + Math.round(m.amount * 100) + "%", (m.amount + 1) / 2, c, true, false);
-        else if (d.id === "min") ubPaintBar(r, "Min", Math.round(m.min * 100) + "%", m.min, c, false, false);
-        else if (d.id === "max") ubPaintBar(r, "Max", Math.round(m.max * 100) + "%", m.max, c, false, false);
-        else if (d.id === "inv") {
-            ubRR(r[0], r[1], r[2], r[3], 3, m.invert ? UB_ORANGE : [0.17, 0.18, 0.21], m.invert ? 0.25 : 1);
-            ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, m.invert ? UB_ORANGE : [0.30, 0.32, 0.37], 1, 1);
-            ubTextC("INV", r[0] + r[2] / 2, r[1] + 10.5, 7, m.invert ? [1, 1, 1] : [0.6, 0.62, 0.68], 1);
-        } else if (d.id === "bip") {
-            const dis = m.mode === "remote";
-            ubRR(r[0], r[1], r[2], r[3], 3, m.bipolar && !dis ? UB_ORANGE : [0.17, 0.18, 0.21], m.bipolar && !dis ? 0.25 : 1);
-            ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, m.bipolar && !dis ? UB_ORANGE : [0.30, 0.32, 0.37], 1, 1);
-            ubTextC("BIP", r[0] + r[2] / 2, r[1] + 10.5, 7, dis ? [0.4, 0.42, 0.46] : m.bipolar ? [1, 1, 1] : [0.6, 0.62, 0.68], 1);
-        } else if (d.id === "mode") {
-            const half = r[2] / 2;
-            ubRR(r[0], r[1], r[2], r[3], 3, [0.17, 0.18, 0.21], 1);
-            ubRR(r[0] + (m.mode === "remote" ? half : 0) + 1, r[1] + 1, half - 2, r[3] - 2, 2, UB_CYAN, 0.3);
-            ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, [0.30, 0.32, 0.37], 1, 1);
-            ubTextC("MOD", r[0] + half / 2, r[1] + 10.5, 7, m.mode === "mod" ? [1, 1, 1] : [0.55, 0.57, 0.62], 1);
-            ubTextC("REM", r[0] + half * 1.5, r[1] + 10.5, 7, m.mode === "remote" ? [1, 1, 1] : [0.55, 0.57, 0.62], 1);
-        } else if (d.id === "del") {
+        else if (d.id.indexOf("pol") === 0) ubPaintPolarity(r, d.pol, m.polarity === d.pol, hl);
+        else if (d.id === "del") {
             ubRR(r[0], r[1], r[2], r[3], 3, [0.3, 0.14, 0.16], 1);
             ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, [0.6, 0.28, 0.3], 1, 1);
             const cx = r[0] + r[2] / 2;
@@ -1279,31 +1497,43 @@ function ubPaintDetail(gm) {
         }
     }
 }
-function ubPaintArrow(x, y, armed, multi, hover) {
-    const cy = y + 7;
-    if (armed && multi) ubRR(x - 1, y, 26, 14, 4, UB_CYAN, 0.25);
-    let a = hover ? 0.95 : 0.7;
-    if (armed && !multi) a = 0.35 + 0.65 * Math.abs(Math.sin(ubFrame * 0.22));
-    if (armed && multi) a = 1;
-    ubCircle(x + 5, cy, 2.6, UB_CYAN, a, true);
-    ubLine(x + 7, cy, x + 18, cy, UB_CYAN, a, 1.4);
-    ubCol(UB_CYAN, a);
-    mgraphics.move_to(x + 21, cy);
-    mgraphics.line_to(x + 16, cy - 3);
-    mgraphics.line_to(x + 16, cy + 3);
-    mgraphics.close_path();
-    mgraphics.fill();
+// segmented polarity control: the first cell paints the 3-cell container, every cell its lit state and vector glyph
+// (+, plus over minus, minus)
+function ubPaintPolarity(r, pol, on, hl) {
+    if (pol === 1) {
+        ubRR(r[0], r[1], r[2] * 3, r[3], 3, [0.17, 0.18, 0.21], 1);
+    }
+    if (on) ubRR(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2, 2, hl, 0.3);
+    if (pol === 1) ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] * 3 - 1, r[3] - 1, 3, [0.30, 0.32, 0.37], 1, 1);
+    else ubLine(r[0] + 0.5, r[1] + 1, r[0] + 0.5, r[1] + r[3] - 1, [0.30, 0.32, 0.37], 1, 1);
+    const c = on ? [1, 1, 1] : [0.6, 0.62, 0.68];
+    const cx = r[0] + r[2] / 2;
+    const cy = r[1] + r[3] / 2;
+    const lw = on ? 1.6 : 1.3;
+    if (pol === 1) {
+        ubLine(cx - 3.5, cy, cx + 3.5, cy, c, 1, lw);
+        ubLine(cx, cy - 3.5, cx, cy + 3.5, c, 1, lw);
+    } else if (pol === 0) {
+        ubLine(cx - 2.5, cy - 3, cx + 2.5, cy - 3, c, 1, lw);
+        ubLine(cx, cy - 5.5, cx, cy - 0.5, c, 1, lw);
+        ubLine(cx - 2.5, cy + 3, cx + 2.5, cy + 3, c, 1, lw);
+    } else {
+        ubLine(cx - 3.5, cy, cx + 3.5, cy, c, 1, lw);
+    }
 }
 function ubCurveRowGlyph(m, x, y, w, h, c, a) {
     const pts = [];
-    for (let k = 0; k <= 8; k++) {
-        const u = k / 8;
-        let v = shapeCurve(u, m.curve, m.curveAmt, m.curveSteps);
-        if (m.invert) v = 1 - v;
+    for (let k = 0; k <= 10; k++) {
+        const u = k / 10;
+        const v = evalMseg(m.shape, u);
         pts.push([x + w * u, y + h - h * clamp(v, 0, 1)]);
     }
     ubPoly(pts, c, a, 1.2);
 }
+// tint of the selected modulator's list header / mapping rows (always dimmer than the selected-mapping highlight)
+const UB_TINT_HEAD = 0.2;
+const UB_TINT_ROW = 0.075;
+const UB_SELROW_FILL = 0.14;
 function ubPaintList(gm) {
     const R = [gm.lx, 0, gm.lw, 161];
     const total = MM.allMappings().length;
@@ -1321,17 +1551,20 @@ function ubPaintList(gm) {
         const it = r.item;
         const m0 = MM.state.mods[it.i];
         const col = ubModCol(m0);
+        const selMod = it.i === ubSel();
         if (it.kind === "head") {
             ubRect(R[0] + 3, r.y + 1, R[2] - 6, r.h - 2, [0.17, 0.18, 0.21], 1);
-            ubCircle(R[0] + 9, r.y + 7.5, 2.5, col, m0.enabled ? 1 : 0.4, true);
-            ubText(ubFit(m0.name, R[2] - 70, 7.5), R[0] + 16, r.y + 10.5, 7.5, [0.9, 0.92, 0.95], m0.enabled ? 1 : 0.5);
-            const ar = ubHeadArrowRect(r.y);
-            const armed = MM.learn.armed && MM.learn.mod === it.i;
-            ubPaintArrow(ar[0], ar[1], armed, armed && MM.learn.multi, !!(hv && hv.kind === "ls_harrow" && hv.slot === it.i));
+            if (selMod) {
+                ubRect(R[0] + 3, r.y + 1, R[2] - 6, r.h - 2, col, UB_TINT_HEAD);
+            }
+            const pr = ubHeadPwrRect(r.y);
+            ubPowerGlyph(pr[0] + 7.5, pr[1] + 7.5, m0, col, !!(hv && hv.kind === "ls_hpwr" && hv.slot === it.i));
+            ubText(ubFit(m0.name, R[2] - 56, 7.5), R[0] + 22, r.y + 10.5, 7.5, [0.9, 0.92, 0.95], m0.enabled ? 1 : 0.5);
             const cs = String(MM.mappingsFor(it.i).length);
-            ubText(cs, ar[0] - 3 - ubTextW(cs, 7), r.y + 10.5, 7, [0.6, 0.63, 0.68], 1);
+            ubText(cs, R[0] + R[2] - 10 - ubTextW(cs, 7), r.y + 10.5, 7, [0.6, 0.63, 0.68], 1);
         } else if (it.kind === "none") {
-            ubText("no mappings - click the arrow", R[0] + 18, r.y + 9, 6.5, [0.42, 0.45, 0.5], 1);
+            if (selMod) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, col, UB_TINT_ROW);
+            ubText("no mappings - press LRN to map", R[0] + 18, r.y + 9, 6.5, [0.42, 0.45, 0.5], 1);
         } else {
             const m = it.m;
             const P = ubRowParts(r.y);
@@ -1341,20 +1574,27 @@ function ubPaintList(gm) {
             const a = miss ? 0.75 : dis ? 0.45 : 1;
             const isSel = !!(sel && sel.id === m.id);
             const rowHov = !!(hv && hv.m && hv.m.id === m.id);
+            if (selMod) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, col, UB_TINT_ROW);
             if (isSel) {
-                ubRect(R[0] + 3, r.y, R[2] - 6, r.h, UB_CYAN, 0.14);
+                ubRect(R[0] + 3, r.y, R[2] - 6, r.h, UB_CYAN, UB_SELROW_FILL);
                 ubRRStroke(R[0] + 3.5, r.y + 0.5, R[2] - 7, r.h - 1, 2, UB_CYAN, 0.9, 1);
             } else if (rowHov) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, [0.18, 0.19, 0.22], 1);
             if (miss) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, UB_RED, 0.08);
-            ubText("x", P.del[0] + 2.5, r.y + 10, 8, rowHov && hv.kind === "ls_del" ? UB_RED : [0.6, 0.63, 0.68], a);
+            ubMapToggle(P.tog, !!m.enabled, col, !!(hv && hv.kind === "ls_tog" && hv.m && hv.m.id === m.id));
             const nm = m.target.paramName || m.target.name || "?";
             ubText(ubFit(nm, P.name[2], 7.5), P.name[0], r.y + 10, 7.5, miss ? UB_RED : [0.84, 0.86, 0.9], a);
             ubCurveRowGlyph(m, P.curve[0], P.curve[1], P.curve[2], P.curve[3], rowHov && hv.kind === "ls_curve" ? [1, 1, 1] : [0.6, 0.64, 0.7], a);
             const vt = ubValueText(m);
-            ubText(vt, P.val[0] + P.val[2] - ubTextW(vt, 7.5), r.y + 10, 7.5, UB_ORANGE, a);
             const remote = m.mode === "remote";
-            ubRR(P.mode[0], P.mode[1], P.mode[2], P.mode[3], 3, remote ? UB_CYAN : [0.22, 0.24, 0.28], remote ? 0.85 : 1);
-            ubTextC(remote ? "R" : "M", P.mode[0] + P.mode[2] / 2, P.mode[1] + 8, 6.5, remote ? [0.05, 0.1, 0.14] : [0.7, 0.73, 0.78], 1);
+            const mc = remote ? UB_REM_COL : UB_MOD_COL;
+            ubText(vt, P.val[0] + P.val[2] - ubTextW(vt, 7.5), r.y + 10, 7.5, mc, a);
+            ubRR(P.mode[0], P.mode[1], P.mode[2], P.mode[3], 3, mc, 0.85);
+            ubTextC(remote ? "R" : "M", P.mode[0] + P.mode[2] / 2, P.mode[1] + 8, 6.5, [0.06, 0.07, 0.09], 1);
+            const dx = P.del[0] + P.del[2] / 2;
+            const dy = P.del[1] + P.del[3] / 2;
+            const dc = rowHov && hv.kind === "ls_del" ? UB_RED : [0.55, 0.58, 0.63];
+            ubLine(dx - 2.5, dy - 2.5, dx + 2.5, dy + 2.5, dc, a, 1.2);
+            ubLine(dx + 2.5, dy - 2.5, dx - 2.5, dy + 2.5, dc, a, 1.2);
             if (rowHov) hud = ubTargetPath(m) + (miss ? "  (missing)" : "");
         }
     }
@@ -1423,14 +1663,12 @@ function uiTelemetry(frame) {
 }
 function uiChanged(ev) {
     if (ev.kind === "full") { ubFullTTL = UB_FULL_FRAMES; mgraphics.redraw(); return; }
-    if (ev.kind === "learn") {
-        if (!MM.learn.armed) ubLatch = false;
-        return;
-    }
-    if (ev.kind === "load") { ubLatch = false; ubPopup = null; ubEdit = null; ubDelArm = -1; }
+    if (ev.kind === "learn") return;
+    if (ev.kind === "load") { ubPopup = null; ubEdit = null; ubDelArm = -1; }
     if (ev.kind === "mods" || ev.kind === "load" || ev.kind === "ui") ubSyncWidth();
 }
 
+const UB_PREVIEW_REMOTE = true; // preview: the selected mapping in Remote mode (false = Mod mode)
 const UB_PREVIEW_LIST = true; // preview: mapping list + remap editor (false = rack strips with MSEG expanded)
 function preview() {
     MM.demo();
@@ -1460,19 +1698,29 @@ function preview() {
         ubHist[1].push(e);
     }
     t.mods[1].u = ubHist[1][ubHist[1].length - 1];
-    // a few more mappings so the patchbay has content
+    // list view: the selected modulator (Dice) has several mappings, one of them disabled and one shaped by a bent MSEG;
+    // another modulator is switched off; one target is gone (red row)
     let selId = 0;
     const add = (mod, track, dev, par, extra) => {
         const m = MM.addMapping(mod, { path: "live_set tracks " + (mod + 2) + " devices 0 parameters " + (par.length + 3), trackName: track, deviceName: dev, paramName: par });
         if (m && extra) MM.updateMapping(m.id, extra);
         if (m && par === "Frequency") selId = m.id;
     };
-    add(0, "Bass", "Auto Filter", "Resonance", { amount: -0.4 });
-    add(2, "Bass", "Auto Filter", "Frequency", { mode: "remote", min: 0.2, max: 0.8, curve: CURVE_EXP });
-    add(3, "Pads", "Reverb", "Decay", { amount: 0.8, curve: CURVE_S });
-    add(4, "Pads", "Reverb", "Dry/Wet", { amount: 0.3, invert: 1 });
+    add(0, "Bass", "Auto Filter", "Resonance", { amount: -0.4, polarity: 1 });
+    add(2, "Bass", "Auto Filter", "Frequency", {
+        polarity: 0, range: 0.7, amount: 0.5,
+        mode: UB_PREVIEW_REMOTE ? "remote" : "mod", min: 0.2, max: 0.8, // preview: the selected mapping is in Remote mode, 20-80%
+        shape: [
+            { x: 0, y: 0.05, curve: -0.5, sCurve: 0 }, { x: 0.32, y: 0.7, curve: 0.45, sCurve: 0 },
+            { x: 0.62, y: 0.42, curve: 0, sCurve: 0 }, { x: 1, y: 0.95, curve: -0.3, sCurve: 0 },
+        ],
+    });
+    add(2, "Bass", "Auto Filter", "Q", { mode: "remote", polarity: 1, amount: 0.8, shape: curveToShape(CURVE_EXP, 0.5, 4) });
+    add(2, "Pads", "Reverb", "Size", { mode: "remote", polarity: 0, amount: 0.55, shape: curveToShape(CURVE_S, 0.5, 4) });
+    add(2, "Pads", "Reverb", "Dry/Wet", { amount: 0.3, polarity: -1 });
+    add(3, "Pads", "Reverb", "Decay", { polarity: 0, amount: 0.8, shape: curveToShape(CURVE_STEPPED, 0.5, 4) });
+    add(4, "Pads", "Chorus", "Rate", { mode: "remote", polarity: -1, amount: 0.6 });
     add(1, "Drums", "Drum Buss", "Drive", { amount: 0.6 });
-    // one target is gone (red row), one mapping is disabled (dimmed)
     const all = MM.allMappings();
     const gone = all.filter((m) => m.target.paramName === "Drive")[0];
     if (gone) {
@@ -1481,10 +1729,10 @@ function preview() {
     }
     const dis = all.filter((m) => m.target.paramName === "Dry/Wet")[0];
     if (dis) MM.updateMapping(dis.id, { enabled: 0 });
-    MM.setUI({ exp: 4, sel: 4, pb: UB_PREVIEW_LIST ? 1 : 0, pbSel: selId, pbScroll: 0 });
-    ubListReveal(selId, 0);
+    s.mods[3].enabled = 0; // "Seq 8" is switched off
+    MM.setUI({ exp: 4, sel: 2, pb: UB_PREVIEW_LIST ? 1 : 0, pbSel: selId, pbScroll: 0 });
+    ubListReveal(0, 2);
     ubFullTTL = 0;
-    if (!UB_PREVIEW_LIST) s.mods[3].enabled = 0;
-    if (!UB_PREVIEW_LIST) { MM.armLearn(4, true); ubLatch = true; }
+    if (!UB_PREVIEW_LIST) { MM.armLearn(4, true); MM.setUI({ sel: 4 }); }
     else MM.armLearn(2, false);
 }

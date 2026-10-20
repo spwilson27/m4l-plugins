@@ -6,6 +6,8 @@ const fs = require("fs");
 const path = require("path");
 const ref = require("../src/cepstrum_ref.js");
 const model = require("./phasefold_model.js");
+const legacy = require("./phasefold_legacy_model.js");
+const mx = require("./phasefold_metrics.js");
 
 const ROOT = path.join(__dirname, "..");
 const LIB_PATH = path.join(ROOT, "src", "cepstrum_lib.genexpr");
@@ -28,6 +30,12 @@ for (const decl of ["\nBuffer ", "\nParam ", "\nData ", "\nDelay ", "\nHistory "
 }
 assert.ok(core.includes('Buffer scope("phasefoldscope")'), "telemetry buffer");
 assert.ok(core.includes("padL.read(4096 - (n - 1))"), "constant 4096 sample pad");
+assert.ok(core.includes("Data tab(8192, 3);") && core.includes("Data fx(8192, 2);") && core.includes("Data fc(8192, 2);") && core.includes("Data xo(8192, 2);"), "2N zero-padded cepstral path needs 8192-point work buffers");
+assert.ok(core.includes("pf_fft(fx, tab, m, 0);") && !core.includes("fft_run(") && !core.includes("cep_from_spec("), "cepstral path uses the 2N FFT, not the 4096-point library FFT");
+assert.ok(core.includes("pf_limit(") && core.includes("0.0031622776601683794"), "crest limiter and relative log floor");
+assert.ok(core.includes("2.5118864315095806") && model.LIM_DB === 8 && Math.abs(Math.pow(10, model.LIM_DB / 20) - 2.5118864315095806) < 1e-12, "gen and model use the same crest limit");
+assert.ok(Math.abs(model.FLOOR_REL - 0.0031622776601683794) < 1e-15 && model.PAD === 2, "gen and model use the same log floor and padding");
+assert.ok(core.includes("* 1.1, 0.25, 4)") && model.AGC_KC === 1.1 && model.AGC_FRAME === 0.25, "gen and model use the same Auto Gain constants");
 assert.ok(core.includes("dryL.read(4096)"), "dry path delayed by the same 4096 samples");
 
 // ------------------------------------------------------------------ variants
@@ -247,35 +255,37 @@ function magnitudes(re, im) {
     return Array.from(re, (v, i) => Math.hypot(v, im[i]));
 }
 
-// Magnitude spectrum preserved for every Phase, and p = +/-1 equal the library folds.
+// Magnitude spectrum preserved for every Phase (on the whole 2N transform), and p = +/-1 equal the library folds.
 {
     const n = 1024;
+    const m = n * model.PAD;
     const { xw, win } = windowed(noise(4096, 0.3, 7), 500, n);
-    const xr = Float64Array.from(xw);
-    const xi = new Float64Array(n);
+    const xr = new Float64Array(m);
+    const xi = new Float64Array(m);
+    xr.set(xw);
     ref.fft(xr, xi, false);
     const magIn = magnitudes(xr, xi);
     for (const p of [-1, -0.5, 0, 0.5, 1]) {
         const r = model.processFrame(xw, win, p, 0, false, 0);
-        const yr = Float64Array.from(r.y);
-        const yi = new Float64Array(n);
+        const yr = Float64Array.from(r.yfull);
+        const yi = new Float64Array(m);
         ref.fft(yr, yi, false);
         const magOut = magnitudes(yr, yi);
         let worst = 0;
-        for (let k = 0; k < n; k++) worst = Math.max(worst, Math.abs(magOut[k] - magIn[k]) / (magIn[k] + 1e-3));
+        for (let k = 0; k < m; k++) worst = Math.max(worst, Math.abs(magOut[k] - magIn[k]) / (magIn[k] + 1e-3));
         assert.ok(worst < 1e-5, `phase ${p}: magnitude spectrum preserved (worst rel err ${worst})`);
     }
-    // p = +1 is exactly the library's minimum-phase frame, p = -1 the maximum-phase one
-    const c = ref.realCepstrum(xr, xi, model.EPS);
+    // p = +1 is exactly the library's minimum-phase frame, p = -1 the maximum-phase one (same log floor)
     for (const [p, fold] of [[1, ref.foldMinPhase], [-1, ref.foldMaxPhase]]) {
-        const ls = ref.cepToLogSpec(fold(c));
-        const sp = ref.expSpec(ls.re, ls.im, model.EPS);
-        ref.fft(sp.re, sp.im, true);
         const r = model.processFrame(xw, win, p, 0, false, 0);
+        const c = ref.realCepstrum(xr, xi, r.eps);
+        const ls = ref.cepToLogSpec(fold(c));
+        const sp = ref.expSpec(ls.re, ls.im, r.eps);
+        ref.fft(sp.re, sp.im, true);
         let worst = 0;
         let peak = 0;
-        for (let i = 0; i < n; i++) {
-            worst = Math.max(worst, Math.abs(r.y[i] - sp.re[i]));
+        for (let i = 0; i < m; i++) {
+            worst = Math.max(worst, Math.abs(r.yfull[i] - sp.re[i]));
             peak = Math.max(peak, Math.abs(sp.re[i]));
         }
         assert.ok(worst < 1e-6 * Math.max(1, peak), `p = ${p} matches the cepstrum_ref fold (${worst})`);
@@ -348,9 +358,10 @@ function magnitudes(re, im) {
             assert.ok(Math.abs(lk) < 1.5, `kick N=${n} Phase ${p * 100}: ${lk.toFixed(2)} dB`);
         }
     }
-    // the problem Auto Gain fixes: without it min/max phase noise is 3 dB down, pivot-less far more
+    // the problem Auto Gain fixes: re-phased frames add as powers, so without it the level is down
     const raw = level(sigNoise, 1024, -1, 0, false);
-    assert.ok(raw < -2.5 && raw > -3.6, `uncompensated level ${raw.toFixed(2)} dB is the -3.1 dB incoherent overlap`);
+    assert.ok(raw < -0.8 && raw > -3.6, `uncompensated level ${raw.toFixed(2)} dB is the incoherent overlap loss`);
+    assert.ok(Math.abs(level(sigNoise, 1024, -1, 0, true)) < Math.abs(raw), "Auto Gain brings it closer to 0 dB");
     // Orig 100%: the original spectrum goes through untouched, so unity gain and perfect identity
     const y = model.run(sigNoise, 1024, -1, 1, true);
     let worst = 0;
@@ -382,6 +393,158 @@ function magnitudes(re, im) {
 {
     const y = model.run(new Float64Array(8192), 1024, -1, 0, true);
     assert.strictEqual(Math.max(...y.map(Math.abs)), 0, "silence in, exact zeros out");
+}
+
+// ------------------------------------------------- crispiness regression (artifact metrics)
+// "Crispy" = crackly, gritty output. Causes found with these metrics (legacy model = before the fix):
+//   spikes     a rebuilt phase turns noise frames into clicks: hop-rate ripple 3..4 dB, crest +19 dB
+//   incoherence the loudest-sample pivot flips sign on tonal frames: 13 dB AM on a sine, +6 dB floor between saw harmonics
+//   aliasing   N-point cepstrum wraps long min/max-phase tails (narrow-band input) around the frame
+//   level      the +3.1 dB overlap compensation overshoots tonal frames (saw +3.0 dB)
+{
+    const n = 1024;
+    const len = Math.floor(mx.SR * 1.2);
+    const a0 = 8192;
+    const aEnd = len - 8192;
+    const lat = n - 1;
+    const phases = [-1, -0.5, 0, 0.5, 1];
+    const white = mx.whiteNoise(len);
+    const sine = mx.sine(len);
+    const saw = mx.saw(len);
+    const chord = mx.chord(len);
+    const inFloor = mx.interharmonicFloorDb(saw, a0, 200);
+    const inCrest = mx.crestDb(white, a0, aEnd);
+    const inRip = mx.envRipple(white, a0, aEnd);
+    const levels = {};
+    const worst = { rip: 0, crest: 0, am: 0, floor: -99, hf: -99 };
+    const bad = { rip: 0, crest: 0, am: 0, floor: -99, lvl: 0 };
+    const lp = { white: mx.lowpass(white, 5000), chord: mx.lowpass(chord, 5000) };
+    const hfIn = { white: mx.highBandDb(lp.white, a0), chord: mx.highBandDb(lp.chord, a0) };
+    for (const [label, m, w] of [["fixed", model, worst], ["legacy", legacy, bad]]) {
+        const lv = {};
+        for (const p of phases) {
+            const yw = m.run(white, n, p, 0, true);
+            w.rip = Math.max(w.rip, mx.envRipple(yw, a0 + lat, aEnd + lat));
+            w.crest = Math.max(w.crest, mx.crestDb(yw, a0 + lat, aEnd + lat));
+            w.am = Math.max(w.am, mx.amRipple(m.run(sine, n, p, 0, true), a0 + lat, aEnd + lat));
+            const ys = m.run(saw, n, p, 0, true);
+            w.floor = Math.max(w.floor, mx.interharmonicFloorDb(ys, a0 + lat, 200));
+            for (const [k, x, y] of [["noise", white, yw], ["saw", saw, ys], ["chord", chord, m.run(chord, n, p, 0, true)], ["sine", sine, m.run(sine, n, p, 0, true)]]) {
+                (lv[k] = lv[k] || []).push(mx.rmsDb(y, a0 + lat, aEnd + lat) - mx.rmsDb(x, a0, aEnd));
+            }
+            if (m === model) {
+                for (const k of ["white", "chord"]) {
+                    const y = m.run(lp[k], n, p, 0, true);
+                    worst.hf = Math.max(worst.hf, mx.highBandDb(y, a0 + lat) - hfIn[k]);
+                }
+            }
+        }
+        levels[label] = lv;
+    }
+    // each metric must (a) pass with the fix and (b) fail on the legacy model, so it really detects the artifact
+    assert.ok(worst.rip < inRip + 1.2, `noise hop-rate ripple ${worst.rip.toFixed(2)} dB (input ${inRip.toFixed(2)})`);
+    assert.ok(bad.rip > inRip + 2.2, `legacy noise ripple ${bad.rip.toFixed(2)} dB is the click train`);
+    assert.ok(worst.crest < inCrest + 12, `noise crest ${worst.crest.toFixed(1)} dB (input ${inCrest.toFixed(1)})`);
+    assert.ok(bad.crest > inCrest + 17, `legacy noise crest ${bad.crest.toFixed(1)} dB is the spikes`);
+    assert.ok(worst.am < 5, `sine amplitude modulation ${worst.am.toFixed(1)} dB p-p`);
+    assert.ok(bad.am > 9, `legacy sine amplitude modulation ${bad.am.toFixed(1)} dB p-p is the pivot incoherence`);
+    assert.ok(worst.floor < inFloor + 3.5, `saw floor between harmonics ${worst.floor.toFixed(1)} dB (input ${inFloor.toFixed(1)})`);
+    assert.ok(bad.floor > inFloor + 5, `legacy saw floor ${bad.floor.toFixed(1)} dB is the grit between harmonics`);
+    assert.ok(worst.hf < 3, `energy above 10 kHz on band-limited input rises ${worst.hf.toFixed(1)} dB at most`);
+    for (const [k, v] of Object.entries(levels.fixed)) {
+        const lo = Math.min(...v);
+        const hi = Math.max(...v);
+        assert.ok(lo > -1.5 && hi < 1.5, `${k}: level ${lo.toFixed(2)}..${hi.toFixed(2)} dB across Phase`);
+        assert.ok(hi - lo < 1.5, `${k}: level spread ${(hi - lo).toFixed(2)} dB across Phase`);
+    }
+    assert.ok(Math.max(...levels.legacy.saw) > 2.5, "legacy saw is +3 dB loud (overlap compensation overshoots coherent frames)");
+}
+
+// Cepstral time aliasing: a narrow-band frame has a min/max-phase response longer than the frame.
+// The 2N-point cepstral path keeps it in n..2n and drops it, the old N-point path wrapped it into the frame.
+{
+    const n = 1024;
+    const win = ref.hann(n);
+    const x = new Float64Array(n);
+    for (let i = 0; i < n; i++) x[i] = Math.sin((2 * Math.PI * 1000 * i) / mx.SR) * win[i];
+    for (const p of [1, -1]) {
+        const r = model.processFrame(x, win, p, 0, false, p > 0 ? 256 : 768);
+        let inside = 0;
+        let beyond = 0;
+        for (let i = 0; i < 2 * n; i++) {
+            if (i < n) inside += r.yfull[i] * r.yfull[i];
+            else beyond += r.yfull[i] * r.yfull[i];
+        }
+        assert.ok(beyond > 0.004 * inside, `p ${p}: ${(100 * beyond / (inside + beyond)).toFixed(1)} % of the response lies past the frame`);
+        assert.strictEqual(r.y.length, n);
+        assert.strictEqual(r.y[10], r.yfull[10], "y is the first n samples of the 2N transform");
+    }
+}
+
+// Relative log floor: eps follows the frame's peak magnitude (-50 dB), never below 1e-9.
+{
+    const n = 512;
+    const win = ref.hann(n);
+    for (const amp of [1e-6, 0.3, 1]) {
+        const { xw } = windowed(noise(2048, amp, 5), 100, n);
+        const r = model.processFrame(xw, win, 0.5, 0, false, 0);
+        const xr = new Float64Array(2 * n);
+        const xi = new Float64Array(2 * n);
+        xr.set(xw);
+        ref.fft(xr, xi, false);
+        let peak = 0;
+        for (let k = 0; k < 2 * n; k++) peak = Math.max(peak, Math.hypot(xr[k], xi[k]));
+        assert.ok(Math.abs(r.eps - Math.max(peak * Math.pow(10, -50 / 20), 1e-9)) < 1e-12, `eps follows the frame peak at amplitude ${amp}`);
+    }
+}
+
+// Crest limiter: a noise frame (its rebuilt phase is a click) is blended back, a click frame is left alone.
+{
+    const n = 1024;
+    const win = ref.hann(n);
+    const { xw } = windowed(noise(4096, 0.3, 21), 700, n);
+    const rn = model.processFrame(xw, win, 1, 0, false);
+    const zo = xw.map((v, i) => v * win[i]);
+    assert.ok(rn.blend > 0.2, `noise frame at +100 is blended toward the input (${rn.blend})`);
+    assert.ok(model.crestOf(rn.z, n) <= model.crestOf(zo, n) * Math.pow(10, model.LIM_DB / 20) + 1e-9, "limited frame is at most 8 dB spikier than the input frame");
+    const click = new Float64Array(n);
+    click[n / 2] = 1;
+    const rc = model.processFrame(click.map((v, i) => v * win[i]), win, 1, 0, false);
+    assert.strictEqual(rc.blend, 0, "a click frame is not limited");
+    // Orig 100 % stays an exact identity through the limiter
+    const ro = model.processFrame(xw, win, 1, 1, true);
+    let err = 0;
+    for (let i = 0; i < n; i++) err = Math.max(err, Math.abs(ro.z[i] - zo[i]));
+    assert.ok(err < 1e-12 && ro.blend === 0, `Orig 100 %: z == input frame (err ${err})`);
+}
+
+// Signed pivot: lands on the positive crest of a periodic wave whatever the sign or offset of the frame.
+{
+    const n = 1024;
+    const win = ref.hann(n);
+    for (const ph of [0, 1.1, 2.5, 4]) {
+        for (const sgn of [1, -1]) {
+            const xw = new Float64Array(n);
+            for (let i = 0; i < n; i++) xw[i] = sgn * Math.sin((2 * Math.PI * 441 * i) / mx.SR + ph) * win[i];
+            const piv = model.findPivot(xw);
+            const loc = Math.max(...xw.subarray(Math.max(0, piv - 6), piv + 7));
+            assert.ok(loc > 0.6 * Math.max(...xw), `sine phase ${ph} sign ${sgn}: pivot ${piv} on a positive crest`);
+        }
+    }
+}
+
+// Auto Gain is smooth: the gain changes by < 0.5 dB per 128 samples on steady noise, and ends at ~0 dB.
+{
+    const x = noise(40000, 0.3, 3);
+    const a = model.run(x, 1024, -0.5, 0, true);
+    const b = model.run(x, 1024, -0.5, 0, false);
+    let step = 0;
+    for (let i = 20000; i < 38000; i += 128) {
+        const g0 = model.rms(a, i, i + 128) / (model.rms(b, i, i + 128) + 1e-12);
+        const g1 = model.rms(a, i + 128, i + 256) / (model.rms(b, i + 128, i + 256) + 1e-12);
+        step = Math.max(step, Math.abs(20 * Math.log10(g1 / g0)));
+    }
+    assert.ok(step < 1.5, `Auto Gain steps ${step.toFixed(2)} dB between blocks`);
 }
 
 console.log("test_phasefold: ok");

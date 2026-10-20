@@ -675,7 +675,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             init_val = vof.get("parameter_initial", [1.0])[0]
             ustyle = vof.get("parameter_unitstyle", 0)
             enums = vof.get("parameter_enum", [])
-            if ustyle == 9 and enums:
+            if enums and (ustyle == 9 or vof.get("parameter_type") == 2):
                 idx = max(0, min(len(enums) - 1, int(round(init_val))))
                 val_str = str(enums[idx])
             elif ustyle == 3:
@@ -691,9 +691,10 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             else:
                 val_str = f"{int(init_val)}"
             fnt = get_font(9.5 * SCALE, bold=True)
-            # Label at top
-            bbox = draw.textbbox((0, 0), sname, font=fnt)
-            draw.text((rx + (rw - (bbox[2] - bbox[0])) * 0.5, ry - 1 * SCALE), sname, font=fnt, fill=(224, 230, 236, 255))
+            # Label at top (Live hides it with showname 0)
+            if w.get("showname", 1):
+                bbox = draw.textbbox((0, 0), sname, font=fnt)
+                draw.text((rx + (rw - (bbox[2] - bbox[0])) * 0.5, ry - 1 * SCALE), sname, font=fnt, fill=(224, 230, 236, 255))
             # Dial arc
             cx = rx + rw * 0.5
             cy = ry + rh * 0.52

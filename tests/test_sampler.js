@@ -173,9 +173,8 @@ assert.ok(fnAt >= 0 && fnAt < bufAt, "Helper functions must precede Buffer");
 assert.ok(bufAt < paramAt && paramAt < histAt, "Declarations follow Buffer -> Param -> History");
 assert.ok(histAt < exprAt, "History declarations precede top-level expressions");
 assert.ok(gen.includes("fixnan("), "Outputs must be protected with fixnan()");
-for (let vi = 0; vi < 16; vi++) {
-    assert.ok(new RegExp(`v${vi}L, v${vi}R, v${vi}P, v${vi}A, v${vi}M(, v${vi}S)? = voice_proc\\(samp, vdata, ${vi},`).test(gen), `voice ${vi} runs (all 16 voices)`);
-}
+assert.ok(/for \(vox = 0; vox < 16; vox \+= 1\) \{[\s\S]*?= voice_proc\(samp, vdata, vox,/.test(gen), "all 16 voices run from one loop (the voice engine compiles once)");
+assert.strictEqual((gen.match(/= voice_proc\(/g) || []).length, 1, "voice_proc has exactly one call site");
 assert.ok(/Param mode\(0, min=0, max=4\);/.test(gen), "gen has Param mode covering 5 engines (Repitch, Cycles, Textures, Spectral, Fragments)");
 assert.ok(/Param sliced\(0, min=0, max=1\);/.test(gen), "gen has Param sliced (Single / Sliced is separate from the engine)");
 assert.ok(gen.includes("Param freeze(0, min=0, max=1);"), "freeze param");
@@ -2046,6 +2045,9 @@ function assertMenuFits(key, picks, W, H) {
     m.paint();
     let picks = openMenuPicks(c, "slice_at");
     click(c, picks[2]);
+    // the mono copy is built lazily on a Task: step it to completion
+    assert.ok(m.sliceMonoJob, "Onsets starts the background mono copy");
+    while (m.sliceMonoJob) m.sliceMonoStep();
     assert.deepStrictEqual(Array.from(m.sliceMarkers), [0, 0.3, 0.6], "Onsets markers come from sliceOnsets");
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0][0], "onsets");
@@ -2554,4 +2556,57 @@ console.log("All Better Sampler tests passed!");
 }
 
 console.log("Spectral poly cap and tempo feed ok");
+
+// --- loading stays light: the slicers' mono copy is lazy, chunked, cancelled by a new load ---
+{
+    const lc = makeSandbox(mainViz);
+    const l = lc.sb;
+    const peeks = [];
+    const tasks = [];
+    lc.audioOn = true;
+    const baseBuffer = l.Buffer;
+    l.Buffer = function (name) { baseBuffer.call(this, name); const pk = this.peek; this.framecount = () => 2000000; this.peek = (ch, st, len) => { peeks.push(len || 1); return pk(ch, st, Math.min(len || 1, 4096)); }; };
+    l.Task = function (fn) { this.fn = fn; this.scheduled = 0; this.schedule = () => { this.scheduled++; }; this.cancel = () => { this.cancelled = true; }; tasks.push(this); };
+    l.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    peeks.length = 0;
+    l.sample_loaded("/Users/test/Long Take.wav");
+    l.sample_loaded("bang");
+    assert.strictEqual(l.hasLoadedSample, 1);
+    assert.ok(peeks.every((n) => n <= 4096), `a load reads only waveform-sized chunks (largest ${Math.max(...peeks)})`);
+    assert.strictEqual(l.sliceMono, null, "no mono copy at load");
+    assert.strictEqual(l.sliceMonoJob, null, "no mono job at load (Divisions needs none)");
+    // Onsets starts a chunked copy on a Task
+    l.set_sliced(1);
+    l.set_slice_at(2);
+    assert.ok(l.sliceMonoJob, "Onsets starts the mono job");
+    const job = l.sliceMonoJob;
+    const t = tasks[tasks.length - 1];
+    assert.ok(t.scheduled >= 1, "copy runs on a Task, not inline");
+    l.paint();
+    peeks.length = 0;
+    t.fn();
+    assert.ok(peeks.every((n) => n <= l.SLICE_MONO_CHUNK), "each tick copies one chunk");
+    assert.ok(job.pos > 0 && job.pos < job.n, "copy is in progress after one tick");
+    // a new sample cancels the job
+    l.sample_loaded("/Users/test/Other.wav");
+    l.sample_loaded("bang");
+    assert.ok(l.sliceMonoJob !== job, "loading another sample drops the old copy");
+    assert.ok(t.cancelled, "its Task is cancelled");
+    assert.ok(l.sliceMonoJob && l.sliceMonoJob.pos === 0, "Onsets still active: a fresh copy of the new sample starts");
+    // run the fresh job to completion: Onsets markers arrive afterwards
+    let onsetCalls = 0;
+    l.sliceOnsets = () => { onsetCalls++; return [0, 0.5]; };
+    const t2 = tasks[tasks.length - 1];
+    let guard = 0;
+    while (l.sliceMonoJob && guard++ < 100) t2.fn();
+    assert.strictEqual(l.sliceMonoJob, null, "copy finishes");
+    assert.ok(l.sliceMono && l.sliceMono.length === 2000000, "full-length mono copy");
+    assert.strictEqual(onsetCalls, 1, "slices once the copy lands");
+    assert.deepStrictEqual(Array.from(l.sliceMarkers), [0, 0.5]);
+    // a second Onsets / Pitches request reuses the copy
+    l.set_slice_at(3);
+    assert.strictEqual(l.sliceMonoJob, null, "Pitches reuses the existing copy");
+}
+
+console.log("Lazy, chunked slicer mono copy ok");
 

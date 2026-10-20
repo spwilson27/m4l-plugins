@@ -1,15 +1,13 @@
 // Shared Delay+ math, telemetry layout and pairing helpers.
 // Prepended into the Start / End v8ui scripts at build time and exported for Node tests.
 
-// Tempo-sync divisions, ordered by length. Beats are quarter notes.
-/** @type {Array<[string, number]>} */
-const DP_DIVISIONS = [
-    ["1/64", 1 / 16], ["1/32T", 1 / 12], ["1/32", 1 / 8], ["1/16T", 1 / 6], ["1/32D", 3 / 16],
-    ["1/16", 1 / 4], ["1/8T", 1 / 3], ["1/16D", 3 / 8], ["1/8", 1 / 2], ["1/4T", 2 / 3],
-    ["1/8D", 3 / 4], ["1/4", 1], ["1/2T", 4 / 3], ["1/4D", 3 / 2], ["1/2", 2],
-    ["1/1T", 8 / 3], ["1/2D", 3], ["1/1", 4], ["2/1", 8], ["4/1", 16],
-];
-const DP_DIV_DEFAULT = 10; // 1/8D
+// Delay sync note values (quarter-note beats) and modes, LFO sync values; the enums are in
+// scripts/build_delayplus.py (NOTES, SYNC_MODES, LFO_DIVS).
+const DP_NOTE_BEATS = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16];
+const DP_NOTE_NAMES = ["1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4"];
+const DP_MODE_MULT = [1, 2 / 3, 1.5]; // Notes, Triplet, Dotted
+const DP_LFO_BEATS = [1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32];
+const DP_DIV_DEFAULT = 3; // 1/8
 const DP_TIME_MAX_MS = 8000; // the gen core clips tms here (and to its 524288-sample tank)
 const DP_TANK = 524288;
 
@@ -17,7 +15,7 @@ const DP_TANK = 524288;
 const DP_SCOPE = {
     TL: 0, TR: 1, CLAMPED: 2, TMIN: 3, B: 4, K: 5, L: 6, PING_L: 7, PAIRED: 8, IN_PK: 9,
     TAP_L: 10, TAP_R: 11, RET_L: 12, RET_R: 13, FRAMES: 14, SR: 15, FREEZE: 16, DUCK: 17,
-    WET_PK: 18, HIST_HEAD: 19, TGT_L: 20, TGT_R: 21, DEBUG: 23,
+    WET_PK: 18, HIST_HEAD: 19, TGT_L: 20, TGT_R: 21, DEBUG: 23, LFO_L: 24, LFO_R: 25, ENV: 26, GATE: 27,
 };
 const DP_HIST_OFFSET = 32;
 const DP_HIST_BLOCKS = 512;
@@ -30,23 +28,69 @@ const DP_ESCOPE_SAMPS = 32;
 const DP_BUS_NAME = "delayplus_bus";
 const DP_REG_STALE_MS = 3000;
 
+// Live theme colours (Max for Live dynamic colours): follow Live's theme and hue settings. Outside Live
+// (node tests, the preview renderer) the fallback is used.
+function dpTheme(name, fallback) {
+    try {
+        if (typeof max !== "undefined" && max.getcolor) {
+            const c = max.getcolor(name);
+            if (c && c.length >= 3) return [c[0], c[1], c[2], c.length > 3 ? c[3] : 1];
+        }
+    } catch (e) {}
+    return fallback;
+}
+
+// Redraw a display when Live's theme changes (checked once a second, even while idle); a script may
+// also define dpOnThemeChange() to recolour patcher objects.
+var dpOnThemeChange = null;
+function dpThemeWatch() {
+    if (typeof Task === "undefined" || typeof mgraphics === "undefined") return null;
+    let last = "";
+    const t = new Task(function () {
+        const k = String(dpTheme("live_lcd_bg", [0, 0, 0, 1])) + String(dpTheme("live_display_line_one", [0, 0, 0, 1]))
+            + String(dpTheme("live_surface_bg", [0, 0, 0, 1])) + String(dpTheme("live_control_selection", [0, 0, 0, 1]));
+        if (k !== last) {
+            last = k;
+            mgraphics.redraw();
+            if (typeof dpOnThemeChange === "function") dpOnThemeChange();
+        }
+    });
+    t.interval = 1000;
+    t.repeat();
+    return t;
+}
+
 function dpClamp(v, lo, hi) {
     return Math.max(lo, Math.min(hi, v));
 }
 
-function dpDivisionIndex(i) {
-    return dpClamp(Math.round(Number(i) || 0), 0, DP_DIVISIONS.length - 1);
+function dpIndex(i, n) {
+    return dpClamp(Math.round(Number(i) || 0), 0, n - 1);
 }
 
-function dpSyncMs(divIndex, bpm) {
-    const beats = DP_DIVISIONS[dpDivisionIndex(divIndex)][1];
-    return beats * 60000 / dpClamp(Number(bpm) || 120, 20, 999);
+// One side's delay time in ms (Echo: Time or Sync x mode, then the offset in %).
+function dpSideMs(sync, timeMs, div, mode, offsetPct, bpm) {
+    let ms;
+    if (sync) {
+        const beats = DP_NOTE_BEATS[dpIndex(div, DP_NOTE_BEATS.length)] * DP_MODE_MULT[dpIndex(mode, DP_MODE_MULT.length)];
+        ms = beats * 60000 / dpClamp(Number(bpm) || 120, 20, 999);
+    } else {
+        ms = Number(timeMs) || 0;
+    }
+    return dpClamp(ms * (1 + dpClamp(Number(offsetPct) || 0, -33, 33) / 100), 1, DP_TIME_MAX_MS);
 }
 
-// Target delay time in ms sent to gen as `tms`.
-function dpTargetMs(sync, timeMs, divIndex, bpm) {
-    const ms = sync ? dpSyncMs(divIndex, bpm) : Number(timeMs) || 0;
-    return dpClamp(ms, 1, DP_TIME_MAX_MS);
+// LFO rate in Hz: free in Hz, or one cycle per note value when synced.
+function dpLfoHz(sync, hz, div, bpm) {
+    if (!sync) return dpClamp(Number(hz) || 0.5, 0.01, 40);
+    const beats = DP_LFO_BEATS[dpIndex(div, DP_LFO_BEATS.length)];
+    return dpClamp(dpClamp(Number(bpm) || 120, 20, 999) / 60 / beats, 0.01, 40);
+}
+
+// Label of one side's time for the face: "1/8", "1/8 T", "1/8 D" or "375 ms".
+function dpSideLabel(sync, timeMs, div, mode) {
+    if (!sync) return dpFormatMs(Number(timeMs) || 0);
+    return DP_NOTE_NAMES[dpIndex(div, DP_NOTE_NAMES.length)] + ["", " T", " D"][dpIndex(mode, 3)];
 }
 
 // Shortest time the tank can honour: one return slice (B) + chain latency (L) + the modulation
@@ -55,25 +99,12 @@ function dpMinTimeSamples(B, L, modDepth01, sr) {
     return B + L + dpClamp(modDepth01, 0, 1) * 0.008 * sr + 4;
 }
 
-// Per-channel delay in samples, before clamping. Offset > 0 delays the right channel by
-// offset * T, offset < 0 delays the left by |offset| * T (offset is -1..1, the UI shows +-50%
-// as -0.5..0.5).
-function dpChannelTimes(ms, offset, sr) {
-    const base = ms * sr / 1000;
-    const o = dpClamp(offset, -1, 1);
-    return { L: base * (1 + Math.max(-o, 0)), R: base * (1 + Math.max(o, 0)) };
-}
-
-function dpEffectiveTimes(ms, offset, sr, B, L, modDepth01) {
-    const t = dpChannelTimes(ms, offset, sr);
+function dpEffectiveTimes(msL, msR, sr, B, L, modDepth01) {
     const tmin = dpMinTimeSamples(B, L, modDepth01, sr);
     const tmax = DP_TANK - 8;
-    return {
-        L: dpClamp(t.L, tmin, tmax),
-        R: dpClamp(t.R, tmin, tmax),
-        tmin,
-        clamped: t.L < tmin || t.R < tmin,
-    };
+    const tl = msL * sr / 1000;
+    const tr = msR * sr / 1000;
+    return { L: dpClamp(tl, tmin, tmax), R: dpClamp(tr, tmin, tmax), tmin, clamped: tl < tmin || tr < tmin };
 }
 
 // Where Start adds the feedback return in its tank: the tap's original emit position.
@@ -161,9 +192,9 @@ function dpFormatMs(ms) {
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
-        DP_DIVISIONS, DP_DIV_DEFAULT, DP_TIME_MAX_MS, DP_TANK, DP_SCOPE, DP_HIST_OFFSET, DP_HIST_BLOCKS,
+        DP_NOTE_BEATS, DP_NOTE_NAMES, DP_MODE_MULT, DP_LFO_BEATS, DP_DIV_DEFAULT, DP_TIME_MAX_MS, DP_TANK, DP_SCOPE, DP_HIST_OFFSET, DP_HIST_BLOCKS,
         DP_HIST_BLOCK_SAMPS, DP_SCOPE_SAMPS, DP_ESCOPE, DP_ESCOPE_SAMPS, DP_BUS_NAME, DP_REG_STALE_MS,
-        dpClamp, dpDivisionIndex, dpSyncMs, dpTargetMs, dpMinTimeSamples, dpChannelTimes, dpEffectiveTimes,
+        dpTheme, dpThemeWatch, dpClamp, dpIndex, dpSideMs, dpLfoHz, dpSideLabel, dpMinTimeSamples, dpEffectiveTimes,
         dpReturnWriteIndex, dpEchoTaps, dpParseDevicePath, dpFindPartner, dpChainLatency, dpExtractIds,
         dpRoleOf, dpFormatMs,
     };

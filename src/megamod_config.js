@@ -43,8 +43,9 @@
 //   MM.mappingCapacity()            -> {used, max: MAX_MAPPINGS (256), free}
 //   MM.MAX_MAPPINGS                 256
 //   MM.mappingSlot(id)              the pool slot 0..255 of a mapping (-1 if none)
-//   MM.updateMapping(id, patch)     keys: mode ("mod"|"remote"), min, max, amount(-1..1), bipolar, invert,
-//                                   curve (CURVE_*), curveAmt(0..1), curveSteps(2..16), enabled, mod (retarget slot)
+//   MM.updateMapping(id, patch)     keys: min / max (0..1, Remote), mode ("mod"|"remote"), polarity (1 "+", 0 "±", -1 "−"), range (0..1), amount(-1..1),
+//                                   shape (MSEG points [{x,y,curve,sCurve}], the transfer curve), enabled,
+//                                   mod (retarget slot)
 //   MM.deleteMapping(id)
 //   MM.mappingsFor(i) / MM.allMappings() / MM.getMapping(id)
 //   MM.mappingStatus(id)            "ok" | "missing" | "disabled" | "pending"
@@ -68,7 +69,7 @@
 // STATE MODEL (persisted in blob param "MegaModState")
 // =====================================================================================
 // state = {
-//   schema: 1,
+//   schema: 5,                  // 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5) (see MIGRATION)
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
@@ -77,8 +78,9 @@
 // ModSlot = {type, name, color(0..15), enabled(0/1), p:{rate,sync,syncDiv,shape,phase,retrig,bipolar,depth,
 //            attack,release,gain,smooth,steps,glide,oneshot,seed,loopOn,loopStart,loopEnd},
 //            points:[{x,y,curve,sCurve}], stepVals:[32 x 0..1]}
-// Mapping = {id, mod, enabled, mode:"mod"|"remote", min, max, amount, bipolar, invert, curve, curveAmt,
-//            curveSteps, target:{path,name,trackName,deviceName,paramName}}   (runtime-only: slot, pid, missing)
+// Mapping = {id, mod, enabled, mode:"mod"|"remote", polarity(1 "+" | 0 "±" | -1 "−"), range(0..1), amount(-1..1),
+//            min(0..1), max(0..1) (Remote only: independent absolute limits of the target parameter, min > max inverts; defaults 0 / 1; polarity / range / amount are ignored in Remote but kept),
+//            shape:[{x,y,curve,sCurve}] (editable MSEG transfer curve, x = modulator 0..1, y = output 0..1), target:{path,name,trackName,deviceName,paramName}}   (runtime-only: slot, pid, missing)
 //
 // MAPPING POOL (no runtime scripting: live.modulate~ / live.remote~ created by scripting never attach in Live):
 //   The device file holds MAX_MAPPINGS = 256 pre-built slots. Slot k = router gen floor(k/32), outlet k%32 ->
@@ -91,10 +93,18 @@
 //   every generator yields u in 0..1; bipolar: out = depth*(2u-1); unipolar: out = 2*depth*u - 1
 //   (a unipolar modulator rests at -1 and spans the full table range up to 2*depth-1).
 //   Mapping lookup input x in -1..1 -> mod value m = (x+1)/2 in 0..1 ->
-//   c = invert ? 1 - curve(m) : curve(m);  Mod: offset = amount*(bipolar ? 2c-1 : c);  Remote: min + (max-min)*c.
+//   y = evalMseg(shape, u);  signed modulation  o = amount * range * (polarity === 0 ? 2y - 1 : polarity * y)  (-1..1).
+//   Mod:    mappingOutput = o  (the offset live.modulate~ gets).
+//   Remote (schema 5): live.remote~ @normalized gets an ABSOLUTE 0..1 value  clamp(min + (max - min) * y, 0, 1)  (min / max independent, min > max inverts).
+//           Schema 4 remote mappings migrate exactly (a = amount, r = range): "+": min 0, max a*r;  "−": min 1, max 1 - a*r;
+//           "±": min 0.5 - a*r/2, max 0.5 + a*r/2  (each clamped to 0..1; a clamp changes the response, e.g. a*r > 1 or a < 0 on "+").
+//   MIGRATION (schema < 4): the old affine parts are baked into the shape's point y values (an affine map of the
+//   y values affinely maps evalMseg for every curve / sCurve, since the segment easing is independent of y):
+//   Mod: y' = lo + (hi-lo)*(invert ? 1-y : y) (lo/hi = min/max for schema 3, 0/1 before), polarity = bipolar ? 0 : 1, range 1;
+//   Remote: y' = min + (max-min)*(invert ? 1-y : y), polarity 1, range 1, amount 1 (so v = y').
 // =====================================================================================
 
-const MEGAMOD_VERSION = 1; // schema version of the JSON state
+const MEGAMOD_VERSION = 5; // schema version of the JSON state
 const MAX_MODS = 16;
 
 // ---- engine buffer layouts (contract with src/megamod_engine.genexpr; tests parse the genexpr) ----
@@ -348,25 +358,125 @@ function sanitizeTarget(t) {
     };
 }
 
+// ---- mapping transfer shape (an MSEG: x = modulator 0..1, y = output 0..1; first/last point pinned to x 0 / 1) ----
+function linearShape() {
+    return [{ x: 0, y: 0, curve: 0, sCurve: 0 }, { x: 1, y: 1, curve: 0, sCurve: 0 }];
+}
+function sanitizeShape(pts) {
+    return Array.isArray(pts) && pts.length >= 2 ? sanitizeMsegPoints(pts) : linearShape();
+}
+// The shape equivalent of a legacy (schema 1) curve: type CURVE_*, amount 0..1, steps 2..16. Exp / Log / S with a
+// power up to 2^3.6 are ONE segment (exact: same power law as evalSegmentT); stronger ones are 32 segments with a per-segment
+// bend fitted at the segment midpoint; Stepped is hard steps (2 points per step, 0.0001 apart at the edges).
+function curveToShape(type, amt, steps) {
+    const t = clamp(Math.round(num(type, 0)), 0, 4);
+    const a = clamp(num(amt, 0.5), 0, 1);
+    const pt = (x, y, curve, sCurve) => ({ x, y, curve: curve || 0, sCurve: sCurve ? 1 : 0 });
+    if (t === CURVE_STEPPED) {
+        const n = clamp(Math.round(num(steps, 4)), 2, 16);
+        const out = [];
+        for (let k = 0; k < n; k++) {
+            const lv = Math.min(1, k / (n - 1));
+            out.push(pt(k === 0 ? 0 : k / n, lv));
+            out.push(pt(k === n - 1 ? 1 : (k + 1) / n - 0.0001, lv));
+        }
+        return out;
+    }
+    if (t === CURVE_LINEAR) return linearShape();
+    const cmag = (4 * a) / 3.6; // power 2^(4a) = 4^(2a)  ==  2^(3.6 * cmag)
+    if (cmag <= 1) {
+        if (cmag < 0.001) return linearShape();
+        if (t === CURVE_EXP) return [pt(0, 0, -cmag), pt(1, 1)];
+        if (t === CURVE_LOG) return [pt(0, 0, cmag), pt(1, 1)];
+        return [pt(0, 0, -cmag, 1), pt(1, 1)];
+    }
+    const N = 32;
+    const f = (x) => shapeCurve(x, t, a, 4);
+    const out = [];
+    for (let i = 0; i < N; i++) {
+        const x0 = i / N;
+        const y0 = f(x0);
+        const y1 = f((i + 1) / N);
+        let c = 0;
+        if (y1 - y0 > 1e-6) {
+            const tm = clamp((f((x0 + 0.5 / N)) - y0) / (y1 - y0), 1e-4, 1 - 1e-4);
+            if (tm < 0.5) c = -clamp(Math.log2(Math.log(tm) / Math.log(0.5)) / 3.6, 0, 1);
+            else c = clamp(Math.log2(Math.log(1 - tm) / Math.log(0.5)) / 3.6, 0, 1);
+            if (Math.abs(tm - 0.5) < 0.01) c = 0;
+        }
+        out.push(pt(x0, y0, c));
+    }
+    out.push(pt(1, 1));
+    return out;
+}
+// A mapping's shape: its own points, else (schema 1 / hand-written) the legacy curve fields, else linear.
+function mappingShape(m) {
+    if (m && Array.isArray(m.shape) && m.shape.length >= 2) return sanitizeMsegPoints(m.shape);
+    if (m && (m.curve !== undefined || m.curveAmt !== undefined || m.curveSteps !== undefined)) {
+        return sanitizeShape(curveToShape(m.curve, m.curveAmt, m.curveSteps));
+    }
+    return linearShape();
+}
+
 function defaultMapping(id, mod, target) {
     return {
-        id, mod, enabled: 1, mode: "mod", min: 0, max: 1, amount: 0.5, bipolar: 1, invert: 0,
-        curve: CURVE_LINEAR, curveAmt: 0.5, curveSteps: 4, target: sanitizeTarget(target),
+        id, mod, enabled: 1, mode: "mod", polarity: 0, range: 1, amount: 0.5, min: 0, max: 1,
+        shape: linearShape(), target: sanitizeTarget(target),
     };
 }
 
-function sanitizeMapping(m) {
+// Schema < 4 mapping -> schema 4 fields (see MIGRATION in the API contract). `schema` = the state's schema (undefined = unknown, treat
+// like < 3 for Mod mappings only when a min/max would otherwise be applied: raw objects with min/max keep them).
+function migrateLegacyMapping(m, schema) {
+    const remote = m && m.mode === "remote";
+    const shape = mappingShape(m);
+    const oldRange = remote || schema === 3 || schema === undefined;
+    const lo = oldRange ? clamp(num(m && m.min, 0), 0, 1) : 0;
+    const hi = oldRange ? clamp(num(m && m.max, 1), 0, 1) : 1;
+    const inv = m && m.invert;
+    const pts = shape.map((p) => {
+        const y = inv ? 1 - p.y : p.y;
+        return { x: p.x, y: lo + (hi - lo) * y, curve: p.curve, sCurve: p.sCurve };
+    });
+    const out = Object.assign({}, m, { shape: pts, range: 1 });
+    if (remote) { out.polarity = 1; out.amount = 1; }
+    else out.polarity = m && (m.bipolar === 0 || m.bipolar === false) ? 1 : 0;
+    return out;
+}
+
+// Schema 4 remote (polarity / range / amount) -> schema 5 absolute min / max (exact; clamped to 0..1).
+function remoteLimitsFromV4(polarity, range, amount) {
+    const ar = amount * range;
+    let lo, hi;
+    if (polarity === 0) { lo = 0.5 - ar / 2; hi = 0.5 + ar / 2; }
+    else if (polarity < 0) { lo = 1; hi = 1 - ar; }
+    else { lo = 0; hi = ar; }
+    return { min: clamp(lo, 0, 1), max: clamp(hi, 0, 1) };
+}
+
+function sanitizeMapping(m, schema) {
+    let derive = false; // remote mapping whose min / max must be derived from polarity / range / amount
+    if (m && m.polarity === undefined && (schema === undefined || schema < 4)) {
+        m = migrateLegacyMapping(m, schema);
+        derive = m.mode === "remote"; // legacy remote: polarity 1, range 1, amount 1 -> min 0, max 1 (the old limits are in the shape)
+        m = Object.assign({}, m, { min: undefined, max: undefined });
+    } else if (m && schema === 4) {
+        derive = m.mode === "remote";
+    }
     const d = defaultMapping(Math.max(1, Math.round(num(m && m.id, 1))), clamp(Math.round(num(m && m.mod, 0)), 0, MAX_MODS - 1), m && m.target);
     d.enabled = m && (m.enabled === 0 || m.enabled === false) ? 0 : 1;
     d.mode = m && m.mode === "remote" ? "remote" : "mod";
-    d.min = clamp(num(m && m.min, 0), 0, 1);
-    d.max = clamp(num(m && m.max, 1), 0, 1);
+    d.polarity = clamp(Math.round(num(m && m.polarity, 0)), -1, 1);
+    d.range = clamp(num(m && m.range, 1), 0, 1);
     d.amount = clamp(num(m && m.amount, 0.5), -1, 1);
-    d.bipolar = m && (m.bipolar === 0 || m.bipolar === false) ? 0 : 1;
-    d.invert = m && m.invert ? 1 : 0;
-    d.curve = clamp(Math.round(num(m && m.curve, 0)), 0, 4);
-    d.curveAmt = clamp(num(m && m.curveAmt, 0.5), 0, 1);
-    d.curveSteps = clamp(Math.round(num(m && m.curveSteps, 4)), 2, 16);
+    if (derive) {
+        const lim = remoteLimitsFromV4(d.polarity, d.range, d.amount);
+        d.min = lim.min; d.max = lim.max;
+    } else {
+        d.min = clamp(num(m && m.min, 0), 0, 1);
+        d.max = clamp(num(m && m.max, 1), 0, 1);
+    }
+    d.shape = mappingShape(m);
     return d;
 }
 
@@ -397,8 +507,9 @@ function normalizeState(obj) {
     const seen = {};
     let maxId = 0;
     if (Array.isArray(obj.mappings)) {
+        const schema = Math.round(num(obj.schema, 1));
         for (const raw of obj.mappings) {
-            const m = sanitizeMapping(raw);
+            const m = sanitizeMapping(raw, schema);
             if (!s.mods[m.mod] || seen[m.id]) continue;
             seen[m.id] = 1;
             maxId = Math.max(maxId, m.id);
@@ -640,6 +751,7 @@ function envelopeFollow(samples, sr, p) {
 // ------------------------------------------------------------------------------------
 // Mapping transfer tables
 // ------------------------------------------------------------------------------------
+// LEGACY (schema 1) curve formula. Kept as the reference for the migration (curveToShape) and its tests only.
 function shapeCurve(u, type, amt, steps) {
     const x = clamp(u, 0, 1);
     const p = Math.pow(4, clamp(amt, 0, 1) * 2); // 1 .. 16
@@ -656,13 +768,24 @@ function shapeCurve(u, type, amt, steps) {
     }
 }
 
-// Mapping output for engine value x in -1..1 (Mod: normalized offset; Remote: normalized 0..1 absolute).
+// Mapping output for engine value x in -1..1 (Mod: signed offset o; Remote: absolute 0..1 anchored on the polarity's zero).
+// Raw objects without `polarity` (hand-written / pre-schema-4) use the legacy invert / bipolar / min / max formula.
 function mappingOutput(m, x) {
     const u = clamp((x + 1) / 2, 0, 1);
-    let c = shapeCurve(u, m.curve, m.curveAmt, m.curveSteps);
-    if (m.invert) c = 1 - c;
-    if (m.mode === "remote") return clamp(m.min + (m.max - m.min) * c, 0, 1);
-    return m.amount * (m.bipolar ? 2 * c - 1 : c);
+    let c = evalMseg(m.shape && m.shape.length >= 2 ? m.shape : mappingShape(m), u);
+    if (m.polarity === undefined) {
+        if (m.invert) c = 1 - c;
+        c = num(m.min, 0) + (num(m.max, 1) - num(m.min, 0)) * c;
+        if (m.mode === "remote") return clamp(c, 0, 1);
+        return m.amount * (m.bipolar ? 2 * c - 1 : c);
+    }
+    if (m.mode === "remote") {
+        const lo = clamp(num(m.min, 0), 0, 1);
+        const hi = clamp(num(m.max, 1), 0, 1);
+        return clamp(lo + (hi - lo) * c, 0, 1);
+    }
+    const pol = m.polarity === 0 ? 0 : m.polarity < 0 ? -1 : 1;
+    return num(m.amount, 0.5) * num(m.range, 1) * (pol === 0 ? 2 * c - 1 : pol * c);
 }
 
 function mappingTable(m) {
@@ -762,8 +885,9 @@ if (nodeModule && nodeModule.exports) {
         CURVE_LINEAR, CURVE_EXP, CURVE_LOG, CURVE_S, CURVE_STEPPED, CURVE_NAMES, SYNC_BEATS, SYNC_LABELS, MOD_COLORS,
         MOD_PARAM_KEYS, MOD_PARAM_RANGE, MIN_WIDTH, MAX_WIDTH, BLOB_CHUNK,
         clamp, num, frac, smoothstep01, evalSegmentT, evalMseg, defaultMsegPoints, sanitizeMsegPoints, msegTable,
+        linearShape, sanitizeShape, curveToShape, mappingShape,
         defaultParams, defaultStepVals, makeModSlot, clampParam, defaultState, sanitizeTarget, defaultMapping,
-        sanitizeMapping, sanitizeMod, normalizeState, stateToJson, base64Encode, base64Decode, serializeState,
+        sanitizeMapping, migrateLegacyMapping, remoteLimitsFromV4, sanitizeMod, normalizeState, stateToJson, base64Encode, base64Decode, serializeState,
         deserializeState, slotConfigFloats, cfgBufferFloats, lfoShape, randHash01, glideValue, outputFromU,
         cycleAccumulator, evalModulator, envelopeFollow, shapeCurve, mappingOutput, mappingTable, targetKey,
         isSelfTarget, findDuplicateMapping, pathParts, resolveTarget, clampWidth, gridLayout,

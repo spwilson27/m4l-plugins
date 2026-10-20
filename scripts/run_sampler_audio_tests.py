@@ -10,6 +10,7 @@ Environment:
   SAMPLER_GEN=<path>    gen source to test instead of src/sampler_core.genexpr (e.g. the old core, to
                         show that the new assertions fail against it)
   SAMPLER_CPU=0         skip the CPU (real-time factor) measurement
+  SAMPLER_CPU_ENGINES=<regex>  measure only the matching CPU_ENGINES labels
 
 Cases:
   idle_silent      — All 16 voices released: output is silent and active voice count == 0
@@ -500,6 +501,8 @@ def measure_cpu(gen_code, short_ms=10000, long_ms=70000):
     print("CPU per engine: single-core load at real time (% of one core), from 10 s vs 70 s NonRealTime renders.")
     print("  The harness floor (record~, scheduler) is included; resolution is about +-2%.")
     for label, params in CPU_ENGINES:
+        if os.environ.get("SAMPLER_CPU_ENGINES") and not re.search(os.environ["SAMPLER_CPU_ENGINES"], label):
+            continue
         out = []
         for nv, notes in ((0, ""), (4, "57,60,64,67")):
             walls = []

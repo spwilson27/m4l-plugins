@@ -32,6 +32,20 @@ function dft(re, im, sign) {
     return { re: or, im: oi };
 }
 
+const TW_CACHE = new Map();
+function twiddles(n) {
+    let t = TW_CACHE.get(n);
+    if (!t) {
+        t = { c: new Float64Array(n / 2), s: new Float64Array(n / 2) };
+        for (let k = 0; k < n / 2; k++) {
+            t.c[k] = Math.cos((2 * Math.PI * k) / n);
+            t.s[k] = Math.sin((2 * Math.PI * k) / n);
+        }
+        TW_CACHE.set(n, t);
+    }
+    return t;
+}
+
 // In-place iterative radix-2 FFT (fft_run). inverse scales by 1 / n.
 function fft(re, im, inverse) {
     const n = re.length;
@@ -47,13 +61,14 @@ function fft(re, im, inverse) {
         }
     }
     const sgn = inverse ? 1 : -1;
+    const tw = twiddles(n);
     for (let len = 2; len <= n; len *= 2) {
         const half = len / 2;
+        const stride = n / len;
         for (let s = 0; s < n; s += len) {
             for (let k = 0; k < half; k++) {
-                const a = (sgn * 2 * Math.PI * k) / len;
-                const wr = Math.cos(a);
-                const wi = Math.sin(a);
+                const wr = tw.c[k * stride];
+                const wi = sgn * tw.s[k * stride];
                 const p = s + k;
                 const q = p + half;
                 const tr = re[q] * wr - im[q] * wi;

@@ -3,7 +3,7 @@
 // in1/in2 = the processed delay tap coming out of the FX chain (wet).
 //   * written back into `xfer` ch2/3 at End's counter index as the feedback return (Start adds
 //     it into its tank at the tap's original emit position, see delayplus_start.genexpr)
-//   * width + ducking, then mixed with the dry signal.
+//   * width, ducking and output gain, then mixed with the dry signal.
 // dry = Start's input from `xfer` ch0/1, read at Start-frame index (cE + K - L): the same slice
 //   position minus the chain latency, so dry lines up with the wet that went through the chain
 //   (Live's PDC then delays the whole track by L).
@@ -235,7 +235,10 @@ if (armed > 0.5) {
 
 // Mix stage. Wet/dry crossfade keeps dry at unity up to 50% and wet at unity from 50%.
 wet = peek(hdr, 5);
-duck = peek(hdr, 6);
+duckOn = peek(hdr, 6) > 0.5;
+duckThr = peek(hdr, 40);
+duckRel = max(peek(hdr, 41), 1);
+outG = peek(hdr, 42);
 width = peek(hdr, 7);
 sm = 1 / (0.02 * sr);
 gw = gw + (min(1, 2 * wet) * (dbg ? 0 : 1) - gw) * sm;
@@ -243,15 +246,17 @@ gd = gd + (min(1, 2 * (1 - wet)) - gd) * sm;
 ws = ws + (width - ws) * sm;
 
 lvl = max(abs(dryL), abs(dryR));
-env = lvl > env ? env + (lvl - env) * (1 - exp(-1 / (0.005 * sr))) : env * exp(-1 / (0.25 * sr));
+// Ducking (Echo): while the dry signal is above the threshold the echoes are pushed down, by up
+// to 24 dB the further it goes over; they come back with the release time.
+env = lvl > env ? env + (lvl - env) * (1 - exp(-1 / (0.002 * sr))) : env * exp(-1 / (duckRel * 0.001 * sr));
 envDb = 20 * log10(max(env, 0.00001));
-dgT = 1 - duck * clip((envDb + 40) / 40, 0, 1);
-dg = dg + (dgT - dg) * (1 / (0.01 * sr));
+dgT = duckOn ? dbtoa(-clip((envDb - duckThr) * 2, 0, 24)) : 1;
+dg = dgT < dg ? dg + (dgT - dg) * (1 / (0.003 * sr)) : dg + (dgT - dg) * (1 / (duckRel * 0.001 * sr));
 
 mid = (in1 + in2) * 0.5;
 side = (in1 - in2) * 0.5 * ws;
-wL = (mid + side) * dg;
-wR = (mid - side) * dg;
+wL = (mid + side) * dg * outG;
+wR = (mid - side) * dg * outG;
 
 link = link + (alive ? 1 : -1) * (1 / 512);
 link = clip(link, 0, 1);

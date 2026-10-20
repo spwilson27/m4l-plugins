@@ -254,7 +254,8 @@ function refreshWaveformFromBuffer() {
                     detectedRootMidi = estimateRootMidiNote(monoWin, 44100);
                 }
             }
-            captureSliceMono(b, frames, chans);
+            // The slicers' mono copy is built only when Onsets / Pitches need it (see requestSliceMono)
+            cancelSliceMono();
             if (restoredSlices) {
                 sliceMarkers = restoredSlices;
                 restoredSlices = null;
@@ -269,18 +270,59 @@ function refreshWaveformFromBuffer() {
     }
 }
 
-// Mono downmix for the onset / pitch slicers (capped at 10 minutes)
-function captureSliceMono(b, frames, chans) {
+// Mono downmix for the onset / pitch slicers (capped at 10 minutes). Built lazily, in chunks on a
+// Task, so loading a sample stays light and a long file never blocks the UI.
+var SLICE_MONO_CHUNK = 262144;
+var sliceMonoJob = null;   // { mono, n, chans, pos, task } while the copy is in progress
+
+function cancelSliceMono() {
+    if (sliceMonoJob && sliceMonoJob.task && typeof sliceMonoJob.task.cancel === "function") sliceMonoJob.task.cancel();
+    sliceMonoJob = null;
+    sliceMono = null;
+}
+
+function sliceMonoStep() {
+    var job = sliceMonoJob;
+    if (!job) return true;
     try {
-        var n = Math.min(frames, 48000 * 600);
-        var l = b.peek(1, 0, n);
-        var r = chans > 1 ? b.peek(2, 0, n) : null;
-        var mono = new Float32Array(n);
-        for (var i = 0; i < n; i++) mono[i] = r ? 0.5 * (l[i] + r[i]) : l[i];
-        sliceMono = mono;
+        var b = new Buffer(sampBufName);
+        var len = Math.min(SLICE_MONO_CHUNK, job.n - job.pos);
+        var l = b.peek(1, job.pos, len);
+        var r = job.chans > 1 ? b.peek(2, job.pos, len) : null;
+        for (var i = 0; i < len; i++) job.mono[job.pos + i] = r ? 0.5 * (l[i] + r[i]) : l[i];
+        job.pos += len;
     } catch (_) {
-        sliceMono = null;
+        sliceMonoJob = null;
+        return true;
     }
+    if (job.pos < job.n) return false;
+    sliceMono = job.mono;
+    sliceMonoJob = null;
+    recomputeSlices();
+    return true;
+}
+
+function requestSliceMono() {
+    if (sliceMono || sliceMonoJob || !sampBufName || !hasLoadedSample || typeof Buffer === "undefined") return;
+    var chans = 1;
+    try {
+        var b = new Buffer(sampBufName);
+        chans = (typeof b.channelcount === "function") ? Math.max(1, b.channelcount()) : 2;
+    } catch (_) {}
+    var n = Math.min(sampleFrames, 48000 * 600);
+    if (n <= 0) return;
+    sliceMonoJob = { mono: new Float32Array(n), n: n, chans: chans, pos: 0, task: null };
+    if (typeof Task === "undefined") {
+        while (!sliceMonoStep()) {}
+        return;
+    }
+    var job = sliceMonoJob;
+    job.task = new Task(function () {
+        if (sliceMonoJob !== job) return;
+        if (!sliceMonoStep()) job.task.schedule(1);
+        mgraphics.redraw();
+    });
+    job.task.schedule(1);
 }
 
 function liveTempo() {
@@ -302,6 +344,9 @@ function recomputeSlices() {
     } else if (at === 1 && typeof sliceBeats === "function") {
         var bpm = (typeof bpmFromName === "function" ? bpmFromName(sampleFileName) : 0) || liveTempo();
         next = sliceBeats(curStart, curEnd, sampleFrames, sampleRateHz, bpm, Math.round(paramValue("slice_beat")));
+    } else if ((at === 2 || at === 3) && !sliceMono && hasLoadedSample) {
+        // Analysis needs the mono copy: start it and slice when it lands (markers stay as they are)
+        requestSliceMono();
     } else if (at === 2 && sliceMono && typeof sliceOnsets === "function") {
         next = sliceOnsets(sliceMono, sampleRateHz, paramValue("slice_sens") * 0.01, 0, 1);
     } else if (at === 3 && sliceMono && typeof slicePitches === "function") {
