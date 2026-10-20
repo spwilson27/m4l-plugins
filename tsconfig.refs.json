@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.node.base.json",
+  "files": [
+    "src/cepstrum_ref.js",
+    "src/qcrush_ref.js",
+    "src/timbre_ref.js"
+  ]
+}

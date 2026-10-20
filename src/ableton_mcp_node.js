@@ -227,7 +227,7 @@ function queryExistingPortHealth(port) {
 }
 
 function requestPreviousInstanceShutdown(port) {
-    return new Promise((resolve) => {
+    return new Promise((/** @type {(value?: any) => void} */ resolve) => {
         const req = http.request(
             {
                 hostname: HOST,
@@ -254,7 +254,7 @@ function startListening(targetPort, attempt) {
     const srv = createBridgeServer(targetPort);
     server = srv;
 
-    srv.on("error", async (err) => {
+    srv.on("error", async (/** @type {NodeJS.ErrnoException} */ err) => {
         if (err && err.code === "EADDRINUSE" && attempt < MAX_PORT_SCAN) {
             const existing = await queryExistingPortHealth(targetPort);
             if (existing && existing.max_ppid === process.ppid) {

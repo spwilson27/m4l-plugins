@@ -129,6 +129,7 @@ var DEMO_PROTOS = {
 };
 
 function buildDemo() {
+    /** @type {Array<[string, number]>} */
     var segs = [["sine", 28], ["saw", 26], ["noise", 32], ["square", 24], ["bass", 18]];
     var cols = [];
     var protoAt = [];
@@ -529,6 +530,7 @@ function drawHeat(g) {
     mgraphics.rectangle(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
     mgraphics.stroke();
     if (g.gutter) {
+        /** @type {Array<[number, string]>} */
         var lab = [[0, "c1"], [6, "c7"], [12, "c13"]];
         for (var l = 0; l < lab.length; l++) {
             text(lab[l][1], 3, y0 + (lab[l][0] + 0.5) * ch + 2.3, 6.2, C_DIM, 0.9);

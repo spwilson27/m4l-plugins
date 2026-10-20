@@ -93,8 +93,9 @@ function routingChannelState(channels) {
     return { range: channels.map((c) => String(c.display_name)), active: 1 };
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         SCOPE_COLS,
         SCOPE_BLOCKS,
         SCOPE_RING_OFFSET,

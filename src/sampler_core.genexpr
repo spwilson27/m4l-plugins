@@ -1,22 +1,32 @@
 // Better Sampler — 16-Voice Polyphonic + Up to 8-Voice Stereo Unison Multi-Engine Sampler.
 //
-// Playback Engines (mode: 0..3) + Freeze:
-//   0 = REPITCH  : Varispeed playback. Forward loops use an equal-power sin/cos
-//                  crossfade (constant power across the join). Ping-pong folds
-//                  the read position so the turnaround is sample-continuous.
-//   1 = CYCLES   : Dual overlap-add Hann grains locked to the note pitch, with
-//                  independent formant stretch and a bouncing playhead scan.
-//   2 = TEXTURES : Dual overlap-add Hann granular cloud. Unison voices carry
-//                  their own detune, spray, and stereo pan.
-//   3 = SLICE    : Per-note slice bounds, played by the repitch engine. Bounds are read
-//                  from vdata every sample, so re-poking slots 4/5 of a held voice moves
-//                  its slice live. `slice_play` picks the behaviour:
-//                    0 to slice end (one-shot), 1 to sample end (slice start .. samp_end),
-//                    2 one-way loop, 3 ping-pong loop.
-//                  Pos (`play_pos`) only matters while Freeze is on.
+// Engines (mode: 0..4) and Single / Sliced (sliced: 0 / 1, orthogonal to the engine):
+//   0 = REPITCH   : Varispeed playback. Forward loops use an equal-power sin/cos crossfade,
+//                   ping-pong folds the read position (sample-continuous). Characters (rp_char):
+//                   Clean, Analog (rp_dist saturation with pre/post EQ, rp_color stereo tape),
+//                   Digital (rp_dist bit reduction, rp_color sample-rate reduction, rp_vsr,
+//                   rp_imaging).
+//   1 = CYCLES    : Dual overlap-add Hann grains locked to the note pitch, with formant stretch.
+//                   Characters (cy_char): Pulse (cy_width), Partials (cy_split, cy_fund) and
+//                   Phase (cy_mod, cy_harm). cy_xfade latches two anchors (duophonic smoothing).
+//   2 = TEXTURES  : Dual overlap-add Hann granular cloud with spray, unison detune and pan.
+//   3 = SPECTRAL  : Phase-vocoder stretching: Speed (grain_motion) is decoupled from pitch.
+//                   Computed OUTSIDE voice_proc by spec_voice() for voices 0..3 only (see below).
+//   4 = FRAGMENTS : Playful granular: a pool of up to 32 grains per voice (fr_max_grains is
+//                   capped at 32), density, repeats, envelope shape, motion randomisation.
+//
+// Sliced (sliced = 1): every engine plays the voice's slice bounds. They are read live from vdata
+// slots 4/5, and `slice_play` picks the behaviour: 0 to slice end (once), 1 to sample end
+// (slice start .. samp_end), 2 one-way loop, 3 ping-pong loop. Pitch ignores the MIDI note (the note
+// picks the slice). Pos (`play_pos`) only matters while Freeze is on.
+//
+// Spectral limits (CPU budget): at most 4 Spectral voices (vdata voices 0..3, the rest are silent in
+// Spectral mode). FFT 1024 / 2048 / 4096 by sp_quality (Low / Medium / High), 75% overlap, one FFT
+// pass or one O(N) slice of work per sample (the Cepstra pattern, time-sliced across each hop).
+// sp_live = On bursts the first 4 frames at note-on (no latency, one CPU spike); Off ramps in.
 //
 // Buffers (bound on loadbang via `samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope`):
-//   samp   ("bsamp")    : Audio sample buffer (1 or 2 channels; mono plays on both outputs; dynamically resized via replace / drop)
+//   samp   ("bsamp")    : Audio sample buffer (1 or 2 channels; mono plays on both outputs)
 //   vdata  ("bsvoices") : 128-sample control table (16 voices x 8 slots):
 //     slot + 0 : gate (0 = released, 1 = held)
 //     slot + 1 : target MIDI note (0..127)
@@ -29,18 +39,19 @@
 //   scope  ("bsscope")  : 64-sample UI telemetry buffer:
 //     0..15  : per-voice normalized playhead position (0..1)
 //     16..31 : per-voice amplitude envelope level (0..1)
-//     32     : output peak L
-//     33     : output peak R
+//     32 / 33: output peak L / R
 //     34     : active voice count (0..16)
 //     35     : current LFO value (-1..+1)
 //     36     : current Mod Env value (0..1)
 //     37     : effective filter cutoff in Hz
 //     38     : loaded sample frame count (dim(samp))
 //     39     : rolling telemetry frame counter
+//     48     : Fragments grains started (all voices, cumulative; test telemetry)
 //
 // GenExpr rules strictly enforced:
-//   - All helper functions appear before Buffer, Param, History, and expression statements.
+//   - All helper functions appear before Buffer, Data, Param, History, and expression statements.
 //   - No identifier is named e<digit> (Euler's constant lexer bug).
+//   - No Param is named after a GenExpr builtin.
 
 slew_val(target, coef) {
 	History s(0);
@@ -57,6 +68,15 @@ peek_lr(sampBuf, idx, maxIdx) {
 	smpL = peek(sampBuf, iClamped, 0, interp="linear", boundmode="clamp", channelmode="clamp");
 	smpR = peek(sampBuf, iClamped, 1, interp="linear", boundmode="clamp", channelmode="clamp");
 	return smpL, smpR;
+}
+
+rnd01(sd) {
+	return fract(sin(sd * 12.9898 + 78.233) * 43758.5453);
+}
+
+// One-pole coefficient for a cutoff in Hz.
+op_coef(fc, sr) {
+	return 1.0 - exp(-6.28318530718 * clip(fc, 5, sr * 0.45) / sr);
 }
 
 // Folded read position of a ping-pong phase that lives in [ps, ps + 2 * span).
@@ -89,6 +109,54 @@ unison_spread(u, uCount, unisonDetune, driftPhs, vSeed) {
 	detSemi = uFrac * unisonDetune * 0.72 + uDrift * unisonDetune * 0.16;
 	detRatio = pow(2.0, clip(detSemi, -1.25, 1.25) / 12.0);
 	return uFrac, detRatio;
+}
+
+// Effective play region (normalised). Sliced: the voice's slice bounds, extended to the sample
+// start / end for "to sample end". Single: start .. end.
+slice_region(vS, vE, startNorm, endNorm, slicedFlag, slicePlay, reverseOn) {
+	slicePlayId = round(clip(slicePlay, 0, 3));
+	revSlice = (reverseOn > 0.5);
+	toSampleEnd = (slicePlayId > 0.5) && (slicePlayId < 1.5);
+	sampStartN = clip(min(startNorm, endNorm - 0.005), 0, 0.995);
+	sampEndN = clip(max(endNorm, sampStartN + 0.005), 0.005, 1.0);
+	sliceEndN = max(vE, vS + 0.005);
+	sliceLoN = (toSampleEnd && revSlice) ? min(sampStartN, sliceEndN - 0.005) : vS;
+	sliceHiN = (toSampleEnd && (revSlice == 0)) ? max(sampEndN, vS + 0.005) : sliceEndN;
+	effS = (slicedFlag > 0.5) ? sliceLoN : sampStartN;
+	effE = (slicedFlag > 0.5) ? sliceHiN : sampEndN;
+	return effS, effE, sampStartN, sampEndN;
+}
+
+// Playhead step for the non-Repitch engines. wm: 0 stop at lo / hi, 1 wrap in [rlo, rhi], 2 ping-pong in
+// [rlo, rhi]. Returns the new position, the new direction and a done flag (reached lo / hi while stopping).
+head_step(pos, dir, stepN, lo, hi, rlo, rhi, wm) {
+	p = pos + dir * stepN;
+	d2 = dir;
+	done = 0;
+	if (wm > 1.5) {
+		if ((dir > 0) && (p >= rhi) && (pos >= rlo)) {
+			p = rhi - (p - rhi);
+			d2 = -1;
+		} else if ((dir < 0) && (p <= rlo) && (pos <= rhi)) {
+			p = rlo + (rlo - p);
+			d2 = 1;
+		}
+	} else if (wm > 0.5) {
+		if ((dir > 0) && (p >= rhi) && (pos >= rlo)) {
+			p = rlo + wrap(p - rhi, 0, max(rhi - rlo, 0.0001));
+		} else if ((dir < 0) && (p <= rlo) && (pos <= rhi)) {
+			p = rhi - wrap(rlo - p, 0, max(rhi - rlo, 0.0001));
+		}
+	}
+	if (p >= hi) {
+		p = hi;
+		done = (d2 > 0) ? 1 : 0;
+	}
+	if (p <= lo) {
+		p = lo;
+		done = (d2 < 0) ? 1 : 0;
+	}
+	return p, d2, done;
 }
 
 // Stereo reader. Forward loops (loopMode == 1) equal-power crossfade the tail
@@ -161,7 +229,722 @@ read_repitch(sampBuf, posFrames, startF, endF, loopStartF, loopEndF, loopMode, x
 	return outL, outR;
 }
 
-// Single polyphonic voice processor (with up to 8-voice stereo unison, Amp ADSR, Mod ADSR, and 4 playback engines).
+// ---------------------------------------------------------------------------------------------
+// Repitch characters
+// ---------------------------------------------------------------------------------------------
+
+// Analog, one channel. dist: saturator with pre / post EQ (even + odd harmonics via an asymmetric tanh).
+// colorV > 0: brighter shelf and tape hiss (scales with the playback rate). colorV < 0: low-mid
+// emphasis and softer transients (lowpass + gentle saturation).
+analog_chan(x, dist, colorV, rate, sr) {
+	History lpLo(0);
+	History lpHi(0);
+	History lpSoft(0);
+	History lpNz(0);
+	History lpPre(0);
+	History lpPost(0);
+	History dcX(0);
+	History dcY(0);
+	y = x;
+	posC = max(colorV, 0.0);
+	negC = max(0.0 - colorV, 0.0);
+	if (negC > 0.0005) {
+		lpLo = lpLo + op_coef(320, sr) * (y - lpLo);
+		y = (y + negC * 1.3 * lpLo) / (1.0 + 0.45 * negC);
+		lpSoft = lpSoft + op_coef(18000 * pow(0.18, negC), sr) * (y - lpSoft);
+		y = mix(lpSoft, tanh(lpSoft * 1.3) / 1.3, negC * 0.5);
+	}
+	if (posC > 0.0005) {
+		lpHi = lpHi + op_coef(2500 * clip(rate, 0.5, 2.0), sr) * (y - lpHi);
+		y = y + posC * 1.6 * (y - lpHi);
+		nz = noise();
+		lpNz = lpNz + op_coef(1500, sr) * (nz - lpNz);
+		y = y + (nz - lpNz) * posC * 0.012 * clip(rate, 0.25, 3.0);
+	}
+	if (dist > 0.0005) {
+		lpPre = lpPre + op_coef(250, sr) * (y - lpPre);
+		pre = y + dist * 1.2 * (y - lpPre);
+		drv = 1.0 + 2.0 * dist + 9.0 * dist * dist;
+		sat = tanh(drv * pre + 0.35 * dist) - tanh(0.35 * dist);
+		dcY = sat - dcX + 0.995 * dcY;
+		dcX = sat;
+		lpPost = lpPost + op_coef(9000 - 5000 * dist, sr) * (dcY - lpPost);
+		y = mix(y, lpPost / (1.0 + 0.5 * (drv - 1.0)), clip(dist * 8.0, 0, 1));
+	}
+	return y;
+}
+
+// Analog tape stereo: decalibrated heads (L and R warble out of phase, plus a head azimuth offset).
+// Wow / flutter rate and depth scale with the playback rate. The delay lines live in the shared tbuf
+// table (gen shares a function-level Data between every call site, so each voice gets its own slice).
+tape_st(xl, xr, colorV, rate, sr, tbuf, tbase) {
+	History wp(0);
+	History p1(0.0);
+	History p2(0.31);
+	History p3(0.17);
+	History p4(0.64);
+	posC = max(colorV, 0.0);
+	rt = sqrt(clip(rate, 0.25, 4.0));
+	p1 = fract(p1 + 0.9 * rt / sr);
+	p2 = fract(p2 + 1.13 * rt / sr);
+	p3 = fract(p3 + 7.3 * rt / sr);
+	p4 = fract(p4 + 9.1 * rt / sr);
+	wowA = 26.0 * posC * rt;
+	flA = 3.5 * posC * rt;
+	az = 18.0 * posC;
+	dlS = 2.0 + wowA * (1.0 + sin(6.28318530718 * p1)) + flA * (1.0 + sin(6.28318530718 * p3));
+	drS = 2.0 + az + wowA * (1.0 + sin(6.28318530718 * p2)) + flA * (1.0 + sin(6.28318530718 * p4));
+	poke(tbuf, xl, tbase + wp);
+	poke(tbuf, xr, tbase + 4096 + wp);
+	rl = wrap(wp - dlS, 0, 4096);
+	rr = wrap(wp - drS, 0, 4096);
+	il0 = int(floor(rl));
+	ir0 = int(floor(rr));
+	il1 = int(wrap(il0 + 1, 0, 4096));
+	ir1 = int(wrap(ir0 + 1, 0, 4096));
+	yl = mix(peek(tbuf, tbase + il0), peek(tbuf, tbase + il1), rl - il0);
+	yr = mix(peek(tbuf, tbase + 4096 + ir0), peek(tbuf, tbase + 4096 + ir1), rr - ir0);
+	wp = wrap(wp + 1, 0, 4096);
+	return yl, yr;
+}
+
+// Digital: bit reduction (13 bits at dist 0 down to 2), sample-rate reduction (positive colour = raw
+// sample-and-hold aliasing, negative = band-limited first), VSR (rate follows the playback rate) and an
+// imaging filter that follows the voice's sample rate.
+digital_st(xl, xr, dist, colorV, rate, vsr, imaging, sr) {
+	History acc(0);
+	History hL(0);
+	History hR(0);
+	History a1L(0);
+	History a2L(0);
+	History a3L(0);
+	History a1R(0);
+	History a2R(0);
+	History a3R(0);
+	History b1L(0);
+	History b2L(0);
+	History b3L(0);
+	History b1R(0);
+	History b2R(0);
+	History b3R(0);
+	bits = 13.0 - 11.0 * clip(dist, 0, 1);
+	q = pow(2.0, bits - 1.0);
+	ql = floor(xl * q + 0.5) / q;
+	qr = floor(xr * q + 0.5) / q;
+	srBase = sr * pow(2.0, 0.0 - 5.0 * abs(colorV));
+	srEff = (vsr > 0.5) ? (srBase * clip(rate, 0.05, 8.0)) : srBase;
+	srEff = clip(srEff, 400.0, sr * 4.0);
+	byp = (srEff >= sr * 0.999) ? 1 : 0;
+	outL = ql;
+	outR = qr;
+	if (byp == 0) {
+		inL = ql;
+		inR = qr;
+		if (colorV < -0.0005) {
+			cf = op_coef(srEff * 0.36, sr);
+			a1L = a1L + cf * (ql - a1L);
+			a2L = a2L + cf * (a1L - a2L);
+			a3L = a3L + cf * (a2L - a3L);
+			a1R = a1R + cf * (qr - a1R);
+			a2R = a2R + cf * (a1R - a2R);
+			a3R = a3R + cf * (a2R - a3R);
+			inL = a3L;
+			inR = a3R;
+		}
+		acc = acc + srEff / sr;
+		if (acc >= 1.0) {
+			acc = acc - floor(acc);
+			hL = inL;
+			hR = inR;
+		}
+		outL = hL;
+		outR = hR;
+		if (imaging > 0.5) {
+			ci = op_coef(srEff * 0.30, sr);
+			b1L = b1L + ci * (hL - b1L);
+			b2L = b2L + ci * (b1L - b2L);
+			b3L = b3L + ci * (b2L - b3L);
+			b1R = b1R + ci * (hR - b1R);
+			b2R = b2R + ci * (b1R - b2R);
+			b3R = b3R + ci * (b2R - b3R);
+			outL = b3L;
+			outR = b3R;
+		}
+	}
+	return outL, outR;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cycles
+// ---------------------------------------------------------------------------------------------
+
+cyc_read(sampBuf, anc, cycLen, form, ph, maxIdx) {
+	rdp = (ph - 0.5) * form + 0.5;
+	return peek_lr(sampBuf, anc + rdp * cycLen, maxIdx);
+}
+
+// One cycle read at phase ph with the character applied.
+//   charId 0 Pulse   : phase distortion with duty dutyD (0.5 = unchanged)
+//   charId 1 Partials: the cycle and its half-period shift give odd / even harmonics (splitV -1 odd .. +1 even)
+//   charId 2 Phase   : the read phase is offset by pmV (phase modulation)
+cyc_wave(sampBuf, anc, cycLen, form, ph, charId, dutyD, splitV, pmV, maxIdx) {
+	phw = ph;
+	if (charId < 0.5) {
+		phw = (ph < dutyD) ? (0.5 * ph / max(dutyD, 0.01)) : (0.5 + 0.5 * (ph - dutyD) / max(1.0 - dutyD, 0.01));
+	} else if (charId > 1.5) {
+		phw = ph + pmV;
+	}
+	xl, xr = cyc_read(sampBuf, anc, cycLen, form, phw, maxIdx);
+	if ((charId > 0.5) && (charId < 1.5)) {
+		pl, pr = cyc_read(sampBuf, anc, cycLen, form, ph + 0.5, maxIdx);
+		wOdd = 1.0 - max(splitV, 0.0);
+		wEven = 1.0 - max(0.0 - splitV, 0.0);
+		oddL = 0.5 * (xl - pl);
+		evenL = 0.5 * (xl + pl);
+		oddR = 0.5 * (xr - pr);
+		evenR = 0.5 * (xr + pr);
+		xl = wOdd * oddL + wEven * evenL;
+		xr = wOdd * oddR + wEven * evenR;
+	}
+	return xl, xr;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fragments
+// ---------------------------------------------------------------------------------------------
+
+// Grain envelope: peak at pk (0..1). 0.5 is a symmetric Hann; 0 / 1 click on purpose.
+fr_win(t, pk) {
+	rise = 0.5 - 0.5 * cos(3.14159265359 * clip(t / max(pk, 0.0001), 0, 1));
+	fall = 0.5 + 0.5 * cos(3.14159265359 * clip((t - pk) / max(1.0 - pk, 0.0001), 0, 1));
+	return (t < pk) ? rise : fall;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Spectral (phase vocoder, time-sliced). All helpers read frame parameters from the jp table:
+//   0 N, 1 N/2, 2 Hs, 3 pitch ratio, 4 formant ratio, 5 formant on, 6 source fundamental bin,
+//   7 bend ratio, 8 reharm, 9 quant mode, 10 quant amount, 11 key, 12 scale, 13 sr, 14 output f0 Hz,
+//   15 dispersion, 16 onsets on, 17 first frame, 18 Ha (analysis hop), 19 onset flag (this frame),
+//   20 seed, 21 capture centre (frames), 22 capture dir, 23 lo (frames), 24 hi (frames),
+//   25 numFrames, 26 stride, 27 OLA start, 28 OLA first index, 29 stretch (1 / speed)
+// ---------------------------------------------------------------------------------------------
+
+// In-place radix-2 DIT pass `s` (1..log2 n) over bit-reversed input. sgn = +1 forward, -1 inverse (unscaled).
+fft_pass(re, im, twr, twi, n, s, sgn) {
+	hlf = pow(2, s - 1);
+	blk = hlf * 2;
+	tstep = 4096 / blk;
+	nb = n * 0.5;
+	for (b = 0; b < nb; b += 1) {
+		grp = floor(b / hlf);
+		j = b - grp * hlf;
+		i0 = grp * blk + j;
+		i1 = i0 + hlf;
+		tIdx = j * tstep;
+		wr = peek(twr, tIdx);
+		wi = sgn * peek(twi, tIdx);
+		ar = peek(re, i0);
+		ai = peek(im, i0);
+		br = peek(re, i1);
+		bi = peek(im, i1);
+		tr = br * wr - bi * wi;
+		tm = br * wi + bi * wr;
+		poke(re, ar - tr, i1);
+		poke(im, ai - tm, i1);
+		poke(re, ar + tr, i0);
+		poke(im, ai + tm, i0);
+	}
+	return 0;
+}
+
+// One-time tables: twiddles exp(-2*pi*i*k/4096) for k = 0..2048 and the 12-bit bit-reversal table.
+init_tables(twr, twi, brv) {
+	for (k = 0; k <= 2048; k += 1) {
+		a = 6.28318530718 * k / 4096;
+		poke(twr, cos(a), k);
+		poke(twi, 0 - sin(a), k);
+	}
+	for (i = 0; i < 4096; i += 1) {
+		t = i;
+		r = 0;
+		for (q = 0; q < 12; q += 1) {
+			r = r * 2 + (t % 2);
+			t = floor(t / 2);
+		}
+		poke(brv, r, i);
+	}
+	return 0;
+}
+
+// Job: Hann-window N source frames around the capture centre (L real, R imaginary), bit-reversed.
+// Frames outside [lo, hi] are silent, so slices and the start / end points cut the analysis window.
+job_capture(fre, fim, brv, twr, sampBuf, jp) {
+	n = peek(jp, 0);
+	nh = n * 0.5;
+	stride = peek(jp, 26);
+	centre = peek(jp, 21);
+	dirc = peek(jp, 22);
+	lo = peek(jp, 23);
+	hi = peek(jp, 24);
+	maxIdx = max(peek(jp, 25) - 1, 1);
+	wmc = peek(jp, 30);
+	for (i = 0; i < n; i += 1) {
+		ci = (i <= nh) ? i : (n - i);
+		w = 0.5 - 0.5 * peek(twr, ci * stride);
+		idx = centre + dirc * (i - nh);
+		if (wmc > 1.5) {
+			idx = pp_pos(idx, lo, hi);
+		} else if (wmc > 0.5) {
+			idx = lo + wrap(idx - lo, 0, max(hi - lo, 4));
+		}
+		xl = 0;
+		xr = 0;
+		if ((idx >= lo) && (idx <= hi)) {
+			xl, xr = peek_lr(sampBuf, idx, maxIdx);
+		}
+		r = floor(peek(brv, i) / stride);
+		poke(fre, w * xl, r);
+		poke(fim, w * xr, r);
+	}
+	return 0;
+}
+
+// Job: magnitude, instantaneous frequency (phase advance over the analysis hop Ha) and the running sum
+// of magnitudes (for the formant envelope) of channel ch from the packed FFT. Channel 0 also measures
+// the spectral flux used to detect onsets.
+job_analyze(fre, fim, amag, wf, cs, pph, pmag, st, jp, ch) {
+	n = peek(jp, 0);
+	nh = peek(jp, 1);
+	ha = peek(jp, 18);
+	first = peek(jp, 17);
+	off = ch * 2049;
+	tau = 6.28318530718;
+	csum = 0;
+	flux = 0;
+	tot = 0;
+	poke(cs, 0, 0);
+	for (k = 0; k <= nh; k += 1) {
+		kk = (n - k) % n;
+		ar = peek(fre, k);
+		ai = peek(fim, k);
+		br = peek(fre, kk);
+		bi = peek(fim, kk);
+		xr = (ch < 0.5) ? (0.5 * (ar + br)) : (0.5 * (ai + bi));
+		xi = (ch < 0.5) ? (0.5 * (ai - bi)) : (0.5 * (br - ar));
+		am = sqrt(xr * xr + xi * xi);
+		ph = atan2(xi, xr);
+		prv = peek(pph, off + k);
+		wk = tau * k / n;
+		dv = ph - prv - wk * ha;
+		dv = dv - tau * round(dv / tau);
+		inst = wk;
+		if ((first < 0.5) && (ha >= 1.0)) {
+			inst = wk + dv / ha;
+		}
+		poke(amag, am, k);
+		poke(wf, inst, k);
+		poke(pph, ph, off + k);
+		csum = csum + am;
+		poke(cs, csum, k + 1);
+		if (ch < 0.5) {
+			flux = flux + max(am - peek(pmag, k), 0.0);
+			tot = tot + am;
+			poke(pmag, am, k);
+		}
+	}
+	if (ch < 0.5) {
+		poke(st, flux / (tot + 0.000000001), 0);
+	}
+	return 0;
+}
+
+// Spectral envelope (moving average of the magnitudes, wide enough to bridge harmonics) at bin kpos.
+env_at(cs, kpos, nh, n, sr) {
+	ki = round(clip(kpos, 0, nh));
+	w = max(4, floor(150.0 * n / sr + 0.08 * ki));
+	lo = max(ki - w, 0);
+	hi = min(ki + w, nh);
+	return (peek(cs, hi + 1) - peek(cs, lo)) / (hi - lo + 1);
+}
+
+// Job: remap the analysed bins of channel ch to the output spectrum (pitch ratio, optional harmonic bend and
+// quantise for Reharm), apply the formant envelope, and advance the synthesis phases by the shifted true
+// frequency times the synthesis hop.
+job_map(amag, wf, cs, pph, sph, zre, zim, tA, tW, tP, jp, ch) {
+	n = peek(jp, 0);
+	nh = peek(jp, 1);
+	hs = peek(jp, 2);
+	pr = peek(jp, 3);
+	fEff = peek(jp, 4);
+	formOn = peek(jp, 5);
+	kf = peek(jp, 6);
+	bendR = peek(jp, 7);
+	reharm = peek(jp, 8);
+	qMode = peek(jp, 9);
+	qAmt = peek(jp, 10);
+	keyV = peek(jp, 11);
+	scaleV = peek(jp, 12);
+	srv = peek(jp, 13);
+	fNote = peek(jp, 14);
+	disp = peek(jp, 15);
+	first = peek(jp, 17);
+	onset = peek(jp, 19);
+	seed = peek(jp, 20);
+	stretch = peek(jp, 29);
+	off = ch * 2049;
+	tau = 6.28318530718;
+	scaleMask = (scaleV < 0.5) ? 2741 : 1453;
+	for (j = 0; j <= nh; j += 1) {
+		poke(tA, 0, j);
+	}
+	for (k = 0; k <= nh; k += 1) {
+		am = peek(amag, k);
+		if (am > 0.000000001) {
+			wk = peek(wf, k);
+			rk = pr;
+			if ((reharm > 0.5) && (k > 1.5 * kf)) {
+				rk = rk * bendR;
+				if (qMode > 0.5) {
+					fOut = max(wk * rk * srv / tau, 1.0);
+					rel = 12.0 * log2(fOut / fNote);
+					tgt = 12.0 * round(rel / 12.0);
+					if (qMode > 1.5) {
+						midiAbs = 69.0 + 12.0 * log2(fOut / 440.0);
+						rel12 = midiAbs - keyV;
+						baseO = floor(rel12 / 12.0) * 12.0;
+						xo = rel12 - baseO;
+						bestD = 99.0;
+						bestM = 0.0;
+						for (mm = 0; mm <= 12; mm += 1) {
+							okm = floor(scaleMask / pow(2, mm % 12)) % 2;
+							dd = abs(xo - mm);
+							if ((okm > 0.5) && (dd < bestD)) {
+								bestD = dd;
+								bestM = mm;
+							}
+						}
+						tgt = (baseO + bestM + keyV) - (midiAbs - rel);
+					}
+					rk = rk * pow(2.0, (tgt - rel) * qAmt / 12.0);
+				}
+			}
+			j = k + round(wk * (rk - 1.0) * n / tau);
+			if ((j >= 0) && (j <= nh)) {
+				ex = am;
+				if (formOn > 0.5) {
+					ex = am / (env_at(cs, k, nh, n, srv) + 0.000000001);
+				}
+				if (ex > peek(tA, j)) {
+					poke(tA, ex, j);
+					poke(tW, wk * rk, j);
+					poke(tP, peek(pph, off + k), j);
+				}
+			}
+		}
+	}
+	jit = disp * clip((stretch - 1.0) / 6.0, 0, 1) * 3.14159265359;
+	rs = seed;
+	for (j = 0; j <= nh; j += 1) {
+		a = peek(tA, j);
+		wj = (a > 0) ? peek(tW, j) : (tau * j / n);
+		ph = peek(sph, off + j);
+		if (((first > 0.5) || (onset > 0.5)) && (a > 0)) {
+			ph = peek(tP, j);
+		} else {
+			rs = fract(rs * 7.31 + j * 0.6180339 + 0.137);
+			ph = ph + wj * hs + (rs - 0.5) * 2.0 * jit;
+		}
+		ph = ph - tau * round(ph / tau);
+		poke(sph, ph, off + j);
+		amp = a;
+		if ((formOn > 0.5) && (a > 0)) {
+			amp = a * env_at(cs, j / fEff, nh, n, srv);
+		}
+		yr = amp * cos(ph);
+		yi = amp * sin(ph);
+		if ((j == 0) || (j == nh)) {
+			yi = 0;
+		}
+		poke(zre, yr, off + j);
+		poke(zim, yi, off + j);
+	}
+	return 0;
+}
+
+// Job: pack the two hermitian channel spectra into one complex spectrum (L + jR), bit-reversed for the IFFT.
+job_pack(fre, fim, zre, zim, brv, jp) {
+	n = peek(jp, 0);
+	nh = peek(jp, 1);
+	stride = peek(jp, 26);
+	for (k = 0; k <= nh; k += 1) {
+		kk = (n - k) % n;
+		lr = peek(zre, k);
+		li = peek(zim, k);
+		rr = peek(zre, 2049 + k);
+		ri = peek(zim, 2049 + k);
+		r1 = floor(peek(brv, k) / stride);
+		r2 = floor(peek(brv, kk) / stride);
+		poke(fre, lr - ri, r1);
+		poke(fim, li + rr, r1);
+		poke(fre, lr + ri, r2);
+		poke(fim, rr - li, r2);
+	}
+	return 0;
+}
+
+// Job: synthesis Hann window and overlap-add into the L / R output rings (Hann^2 at 75% overlap = 1.5).
+job_ola(fre, fim, oL, oR, twr, jp) {
+	n = peek(jp, 0);
+	nh = peek(jp, 1);
+	stride = peek(jp, 26);
+	startPos = peek(jp, 27);
+	i0 = peek(jp, 28);
+	scl = 1.0 / (n * 1.5);
+	for (i = i0; i < n; i += 1) {
+		ci = (i <= nh) ? i : (n - i);
+		w = (0.5 - 0.5 * peek(twr, ci * stride)) * scl;
+		pos = wrap(startPos + i, 0, 8192);
+		poke(oL, peek(oL, pos) + w * peek(fre, i), pos);
+		poke(oR, peek(oR, pos) + w * peek(fim, i), pos);
+	}
+	return 0;
+}
+
+// Spectral voice: phase-vocoder stretcher for one of the first 4 voices. Returns the stereo output, the
+// normalised playhead and 0. Runs only while mode == 3 and the voice is held or releasing.
+spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, fre, fim, amag, wf, cs, tA, tW, tP, pmag, pph, sph, zre, zim, oL, oR, st, jp, vIdx, modeVal, freezeOn, playPosNorm, startNorm, endNorm, loopMode, loopStartNorm, loopEndNorm, reverseOn, rootMidi, pitchSt, fineCents, glideCoef, formantSt, speedIn, slicePlay, lfoSig, lfoPitchAmt, lfoPosAmt, menvPitchAmt, menvPosAmt, modEnvPrev, ampEnvPrev, numFrames, srVal) {
+	History prevTrig(-1);
+	History wasOn(0);
+	History nCur(2048);
+	History llog(11);
+	History hopN(512);
+	History jobCount(29);
+	History spacing(0);
+	History jobId(99);
+	History jobWait(0);
+	History hopCtr(0);
+	History rd(0);
+	History headN(0);
+	History dirS(1);
+	History stepPrev(0);
+	History finished(1);
+	History firstFrame(1);
+	History burstLeft(0);
+	History frameBurst(0);
+	History onsetHold(0);
+	History curNote(60);
+	History frameNo(0);
+	History onsetNow(0);
+
+	nFr = max(numFrames, 1);
+	baseSlot = vIdx * 8;
+	vGate = peek(vdataBuf, baseSlot + 0);
+	vNote = peek(vdataBuf, baseSlot + 1);
+	vTrig = peek(vdataBuf, baseSlot + 3);
+	vS = clip(peek(vdataBuf, baseSlot + 4), 0, 1);
+	vE = clip(peek(vdataBuf, baseSlot + 5), 0, 1);
+	vSeed = clip(peek(vdataBuf, baseSlot + 7), 0, 1);
+	slicedFlag = peek(prm, 0);
+	isOn = (round(clip(modeVal, 0, 4)) == 3) ? 1 : 0;
+	effS, effE, sampS, sampE = slice_region(vS, vE, startNorm, endNorm, slicedFlag, slicePlay, reverseOn);
+	act = ((isOn > 0.5) && ((vGate > 0.5) || (ampEnvPrev > 0.0004))) ? 1 : 0;
+	isNewTrig = ((vTrig != prevTrig) && (vGate > 0.5)) ? 1 : 0;
+	prevTrig = vTrig;
+	qIdx = round(clip(peek(prm, 50), 0, 2));
+	nWant = 1024 * pow(2, qIdx);
+	dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;
+	posMod = lfoSig * lfoPosAmt * 0.45 + modEnvPrev * menvPosAmt * 0.45;
+	speedUse = clip(speedIn, 0, 2);
+
+	// Pitch (same recipe as voice_proc, one frame late for the Mod Env)
+	curNote = mix(vNote, curNote, glideCoef);
+	pSemis = pitchSt + fineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + modEnvPrev * menvPitchAmt * 24.0;
+	semis = ((slicedFlag > 0.5) ? 0.0 : (curNote - rootMidi)) + pSemis;
+	pr = pow(2.0, clip(semis, -48, 48) / 12.0);
+	noteSemi = ((slicedFlag > 0.5) ? rootMidi : curNote) + pSemis;
+	fNote = 440.0 * pow(2.0, (noteSemi - 69.0) / 12.0);
+	rootHz = 440.0 * pow(2.0, (rootMidi - 69.0) / 12.0);
+	fmtSemi = formantSt * peek(prm, 41);
+	fEff = pow(2.0, clip(fmtSemi, -48, 48) / 12.0) * ((peek(prm, 52) > 0.5) ? pr : 1.0);
+	reharm = (peek(prm, 40) > 0.5) ? 1 : 0;
+	bendR = (reharm > 0.5) ? pow(2.0, clip(peek(prm, 42), -24, 24) / 12.0) : 1.0;
+
+	// Playhead behaviour: slice_play (Sliced) or the loop mode (Single).
+	slicePlayId = round(clip(slicePlay, 0, 3));
+	wmSl = (slicePlayId > 2.5) ? 2 : ((slicePlayId > 1.5) ? 1 : 0);
+	wmLp = (loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0);
+	wmEff = (slicedFlag > 0.5) ? wmSl : wmLp;
+	rlo = (slicedFlag > 0.5) ? effS : clip(loopStartNorm, effS, effE - 0.002);
+	rhi = (slicedFlag > 0.5) ? effE : clip(loopEndNorm, rlo + 0.002, effE);
+
+	doReset = ((isOn > 0.5) && ((isNewTrig > 0.5) || (nWant != nCur) || (wasOn < 0.5))) ? 1 : 0;
+	wasOn = isOn;
+	if (doReset > 0.5) {
+		nCur = nWant;
+		llog = 10 + qIdx;
+		hopN = nCur * 0.25;
+		jobCount = 2 * llog + 7;
+		spacing = max(0, floor((hopN - 1) / (jobCount - 1)) - 1);
+		for (ci = 0; ci < 8192; ci += 1) {
+			poke(oL, 0, ci);
+			poke(oR, 0, ci);
+		}
+		for (ci = 0; ci < 2049; ci += 1) {
+			poke(pmag, 0, ci);
+		}
+		for (ci = 0; ci < 4098; ci += 1) {
+			poke(pph, 0, ci);
+			poke(sph, 0, ci);
+		}
+		rd = 0;
+		jobId = jobCount;
+		jobWait = 0;
+		firstFrame = 1;
+		finished = 0;
+		stepPrev = 0;
+		onsetHold = 0;
+		curNote = vNote;
+		dirS = dirSign;
+		initN = (reverseOn > 0.5) ? effE : effS;
+		liveOn = (peek(prm, 51) > 0.5) ? 1 : 0;
+		burstLeft = (liveOn > 0.5) ? 4 : 0;
+		headN = (liveOn > 0.5) ? (initN - dirSign * hopN * speedUse / nFr) : initN;
+		hopCtr = hopN;
+	}
+
+	// Frame parameters for the jobs
+	poke(jp, nCur, 0);
+	poke(jp, nCur * 0.5, 1);
+	poke(jp, hopN, 2);
+	poke(jp, pr, 3);
+	poke(jp, fEff, 4);
+	poke(jp, peek(prm, 48), 5);
+	poke(jp, rootHz * nCur / srVal, 6);
+	poke(jp, bendR, 7);
+	poke(jp, reharm, 8);
+	poke(jp, round(clip(peek(prm, 43), 0, 2)), 9);
+	poke(jp, clip(peek(prm, 46), 0, 1), 10);
+	poke(jp, round(clip(peek(prm, 44), 0, 11)), 11);
+	poke(jp, round(clip(peek(prm, 45), 0, 1)), 12);
+	poke(jp, srVal, 13);
+	poke(jp, fNote, 14);
+	poke(jp, clip(peek(prm, 49), 0, 1), 15);
+	poke(jp, peek(prm, 47), 16);
+	poke(jp, onsetNow, 19);
+	poke(jp, fract(vSeed * 3.1 + frameNo * 0.137), 20);
+	poke(jp, effS * nFr, 23);
+	poke(jp, effE * nFr, 24);
+	poke(jp, nFr, 25);
+	poke(jp, 4096 / nCur, 26);
+	poke(jp, 1.0 / max(speedUse, 0.05), 29);
+	poke(jp, ((slicedFlag > 0.5) && (wmEff > 0.5)) ? wmEff : 0, 30);
+
+	marginN = (nCur * 0.5 + hopN * 4.0 + 64.0) / nFr;
+	if (jobWait > 0) {
+		jobWait = jobWait - 1;
+	}
+	nrun = (act > 0.5) ? ((burstLeft > 0) ? (4 * jobCount + 4) : 1) : 0;
+	for (q = 0; q < nrun; q += 1) {
+		if (jobId >= jobCount) {
+			due = ((burstLeft > 0) || (hopCtr >= hopN)) ? 1 : 0;
+			if ((due > 0.5) && (finished < 0.5)) {
+				startOff = hopN;
+				frameBurst = 0;
+				if (burstLeft > 0) {
+					bk = 4 - burstLeft;
+					burstLeft = burstLeft - 1;
+					startOff = (bk - 3) * hopN;
+					frameBurst = 1;
+					hopCtr = (burstLeft == 0) ? hopN : 0;
+				} else {
+					hopCtr = 0;
+				}
+				stepF = hopN * ((onsetHold > 0.5) ? 1.0 : speedUse);
+				cN = headN;
+				haNow = stepPrev;
+				if (freezeOn > 0.5) {
+					cN = clip(effS + playPosNorm * (effE - effS) + posMod, effS, effE);
+					haNow = 0;
+				}
+				poke(jp, cN * nFr, 21);
+				poke(jp, dirS, 22);
+				poke(jp, firstFrame, 17);
+				poke(jp, haNow, 18);
+				poke(jp, wrap(rd + startOff, 0, 8192), 27);
+				poke(jp, max(0.0 - startOff, 0.0), 28);
+				if (freezeOn < 0.5) {
+					hn, dn, dd = head_step(headN, dirS, stepF / nFr, effS - marginN, effE + marginN, rlo, rhi, wmEff);
+					headN = hn;
+					dirS = dn;
+					stepPrev = stepF;
+					if ((dd > 0.5) && (wmEff < 0.5)) {
+						finished = 1;
+					}
+				}
+				firstFrame = 0;
+				onsetHold = max(onsetHold - 1, 0);
+				onsetNow = 0;
+				frameNo = wrap(frameNo + 1, 0, 100000);
+				jobId = 0;
+				jobWait = 0;
+			}
+		}
+		if (jobId < jobCount) {
+			if ((frameBurst > 0.5) || (jobWait <= 0)) {
+				jj = jobId;
+				isFwd = ((jj >= 1) && (jj <= llog)) ? 1 : 0;
+				isInv = ((jj >= llog + 6) && (jj <= 2 * llog + 5)) ? 1 : 0;
+				if (jj == 0) {
+					job_capture(fre, fim, brv, twr, sampBuf, jp);
+				}
+				if ((isFwd > 0.5) || (isInv > 0.5)) {
+					sIdx = (isFwd > 0.5) ? jj : (jj - llog - 5);
+					sg = (isFwd > 0.5) ? 1 : -1;
+					fft_pass(fre, fim, twr, twi, nCur, sIdx, sg);
+				}
+				if ((jj == llog + 1) || (jj == llog + 3)) {
+					chA = (jj == llog + 1) ? 0 : 1;
+					job_analyze(fre, fim, amag, wf, cs, pph, pmag, st, jp, chA);
+					if (jj == llog + 1) {
+						onsetNow = ((peek(prm, 47) > 0.5) && (peek(jp, 17) < 0.5) && (peek(st, 0) > 0.35)) ? 1 : 0;
+						if (onsetNow > 0.5) {
+							onsetHold = 3;
+						}
+						poke(jp, onsetNow, 19);
+					}
+				}
+				if ((jj == llog + 2) || (jj == llog + 4)) {
+					chM = (jj == llog + 2) ? 0 : 1;
+					job_map(amag, wf, cs, pph, sph, zre, zim, tA, tW, tP, jp, chM);
+				}
+				if (jj == llog + 5) {
+					job_pack(fre, fim, zre, zim, brv, jp);
+				}
+				if (jj == 2 * llog + 6) {
+					job_ola(fre, fim, oL, oR, twr, jp);
+				}
+				jobId = jobId + 1;
+				jobWait = spacing;
+			}
+		}
+	}
+
+	outL = 0;
+	outR = 0;
+	if (act > 0.5) {
+		outL = peek(oL, rd);
+		outR = peek(oR, rd);
+		poke(oL, 0, rd);
+		poke(oR, 0, rd);
+		rd = wrap(rd + 1, 0, 8192);
+		hopCtr = hopCtr + 1;
+	}
+	return fixnan(outL), fixnan(outR), clip(headN, 0, 1), 0;
+}
+
+// Single polyphonic voice processor (up to 8-voice stereo unison, Amp ADSR, Mod ADSR, 5 engines).
+// Engine 3 (Spectral) takes its audio from spec_voice (extL / extR / extPos). New parameters come in
+// through the prm table (see the main section for the layout).
 voice_proc(
 	sampBuf,
 	vdataBuf,
@@ -203,7 +986,13 @@ voice_proc(
 	menvPosAmt,
 	numFrames,
 	srVal,
-	slicePlay
+	slicePlay,
+	prm,
+	vst,
+	tbuf,
+	extL,
+	extR,
+	extPos
 ) {
 	History prevTrig(-1);
 	History envStage(0);
@@ -234,7 +1023,17 @@ voice_proc(
 	History xfG(1);
 	History lastSigL(0);
 	History lastSigR(0);
+	History headDone(0);
+	History doneG(1);
+	History spawnTmr(0);
+	History spawnCnt(0);
+	History altFlip(1);
+	History rndCtr(0);
+	History survG(0);
 
+	gB = vIdx * 344;
+	latB = gB + 320;
+	mpB = gB + 336;
 	baseSlot = vIdx * 8;
 	vGate = peek(vdataBuf, baseSlot + 0);
 	vNote = peek(vdataBuf, baseSlot + 1);
@@ -246,21 +1045,18 @@ voice_proc(
 	vSeed = clip(peek(vdataBuf, baseSlot + 7), 0, 1);
 
 	isNewTrig = (vTrig != prevTrig) && (vGate > 0.5);
-	modeId = round(clip(modeVal, 0, 3));
-	isSlice = (modeId > 2.5);
+	modeId = round(clip(modeVal, 0, 4));
+	isSlice = (peek(prm, 0) > 0.5);
 
-	// Slice region. Bounds come straight from vdata every sample (live). "To sample end"
-	// (slice_play 1) extends the far side to the sample start / end point.
+	// Play region. Sliced: the voice's slice bounds, read live from vdata every sample.
 	slicePlayId = round(clip(slicePlay, 0, 3));
 	revSlice = (reverseOn > 0.5);
-	toSampleEnd = (slicePlayId > 0.5) && (slicePlayId < 1.5);
-	sampStartN = clip(min(startNorm, endNorm - 0.005), 0, 0.995);
-	sampEndN = clip(max(endNorm, sampStartN + 0.005), 0.005, 1.0);
-	sliceEndN = max(vSliceEnd, vSliceStart + 0.005);
-	sliceLoN = (toSampleEnd && revSlice) ? min(sampStartN, sliceEndN - 0.005) : vSliceStart;
-	sliceHiN = (toSampleEnd && (revSlice == 0)) ? max(sampEndN, vSliceStart + 0.005) : sliceEndN;
-	effStartNorm = isSlice ? sliceLoN : sampStartN;
-	effEndNorm = isSlice ? sliceHiN : sampEndN;
+	wmSlice = (slicePlayId > 2.5) ? 2 : ((slicePlayId > 1.5) ? 1 : 0);
+	effStartNorm, effEndNorm, sampStartN, sampEndN = slice_region(vSliceStart, vSliceEnd, startNorm, endNorm, peek(prm, 0), slicePlay, reverseOn);
+
+	hn = 0;
+	dn = 1;
+	dd = 0;
 
 	if (isNewTrig) {
 		prevTrig = vTrig;
@@ -270,6 +1066,9 @@ voice_proc(
 		// Pos (play_pos) only matters while Freeze is on, which overrides the playhead anyway.
 		initNorm = (reverseOn > 0.5) ? effEndNorm : effStartNorm;
 		playheadNorm = initNorm;
+		headDone = 0;
+		doneG = 1;
+		spawnTmr = 0;
 	}
 
 	if (vGate < 0.5) {
@@ -315,7 +1114,9 @@ voice_proc(
 		+ lfoSig * lfoPitchAmt * 24.0
 		+ modEnv * menvPitchAmt * 24.0;
 	baseRatio = pow(2.0, clip(pitchSemiOffset, -48, 48) / 12.0);
-	baseHz = 440.0 * pow(2.0, (curNote - 69.0 + pitchSt + fineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + modEnv * menvPitchAmt * 24.0) / 12.0);
+	// Sliced: the MIDI note picks the slice, so the pitch tracks the root key.
+	hzNote = isSlice ? rootMidi : curNote;
+	baseHz = 440.0 * pow(2.0, (hzNote - 69.0 + pitchSt + fineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + modEnv * menvPitchAmt * 24.0) / 12.0);
 
 	posMod = lfoSig * lfoPosAmt * 0.45 + modEnv * menvPosAmt * 0.45;
 	startF = effStartNorm * numFrames;
@@ -338,21 +1139,27 @@ voice_proc(
 		grainPhs = fract(vSeed * 3.71);
 		rndA = fract(vSeed * 17.31 + 0.13);
 		rndB = fract(vSeed * 43.19 + 0.57);
+		if (((isNewTrig) && (peek(prm, 30) < 0.5)) || (lastMode != modeId)) {
+			for (gi = 0; gi < 320; gi += 1) {
+				poke(vst, 0, gB + gi);
+			}
+		}
 	} else {
 		formSm = formSm + (formTarget - formSm) * 0.0018;
 	}
 	lastMode = modeId;
 
-	// Slice behaviour: 0 to slice end and 1 to sample end play once, 2 loops, 3 ping-pongs.
+	// Slice behaviour of the Repitch engine: 0 to slice end and 1 to sample end play once, 2 loops, 3 ping-pongs.
 	effLoopMode = isSlice ? ((slicePlayId > 2.5) ? 2 : ((slicePlayId > 1.5) ? 1 : 0)) : loopMode;
 	effLStart = isSlice ? startF : lStartF;
 	effLEnd = isSlice ? endF : lEndF;
 	xfEff = isSlice ? max(xfadeNorm, 0.02) : xfadeNorm;
 
 	// Live slice bounds: the UI may re-poke slots 4/5 of a held voice without a new trigger.
-	// A playhead that ends up outside the new bounds restarts at the new slice start (end
-	// when reversed) through a short held-tail crossfade; one-shots that already passed
-	// the end simply stay finished.
+	// Repitch: a playhead that ends up outside the new bounds restarts at the new slice start
+	// (end when reversed) through a short held-tail crossfade; one-shots that already passed the end
+	// simply stay finished. The other engines jump to the new start when the bounds changed and the
+	// playhead is outside them.
 	jumped = 0;
 	ppRemap = 0;
 	curF = playheadNorm * numFrames;
@@ -362,22 +1169,33 @@ voice_proc(
 	jumpTo = 0;
 	liveSlice = isSlice && (needInit == 0) && (vGate > 0.5) && (freezeOn < 0.5);
 	if (liveSlice) {
-		if (effLoopMode > 1.5) {
-			if (abs(effStartNorm - prevBS) + abs(effEndNorm - prevBE) > 0.0000001) {
-				ppRemap = 1;
-				oldBsF = prevBS * numFrames;
-				oldBeF = prevBE * numFrames;
-				oldFold = pp_pos(curF, oldBsF, oldBeF);
-				jumped = ((oldFold < startF - 1.0) || (oldFold > endF + 1.0)) ? 1 : 0;
-				playheadNorm = pp_remap(curF, oldBsF, oldBeF, startF, endF, dirSign) / max(numFrames, 1);
+		if (modeId < 0.5) {
+			if (effLoopMode > 1.5) {
+				if (abs(effStartNorm - prevBS) + abs(effEndNorm - prevBE) > 0.0000001) {
+					ppRemap = 1;
+					oldBsF = prevBS * numFrames;
+					oldBeF = prevBE * numFrames;
+					oldFold = pp_pos(curF, oldBsF, oldBeF);
+					jumped = ((oldFold < startF - 1.0) || (oldFold > endF + 1.0)) ? 1 : 0;
+					playheadNorm = pp_remap(curF, oldBsF, oldBeF, startF, endF, dirSign) / max(numFrames, 1);
+				}
+			} else {
+				jumpTo = (revSlice ? endF : startF);
+				farSide = (revSlice ? (curF < startF - 1.0) : (curF > endF + 1.0));
+				nearSide = (revSlice ? (curF > endF + 1.0) : (curF < startF - 1.0));
+				if (nearSide || (farSide && (effLoopMode > 0.5))) {
+					jumped = 1;
+					playheadNorm = jumpTo / max(numFrames, 1);
+				}
 			}
-		} else {
-			jumpTo = (revSlice ? endF : startF);
-			farSide = (revSlice ? (curF < startF - 1.0) : (curF > endF + 1.0));
-			nearSide = (revSlice ? (curF > endF + 1.0) : (curF < startF - 1.0));
-			if (nearSide || (farSide && (effLoopMode > 0.5))) {
-				jumped = 1;
-				playheadNorm = jumpTo / max(numFrames, 1);
+		} else if ((modeId < 2.5) || (modeId > 3.5)) {
+			if (abs(effStartNorm - prevBS) + abs(effEndNorm - prevBE) > 0.0000001) {
+				if ((playheadNorm < effStartNorm - 0.0001) || (playheadNorm > effEndNorm + 0.0001)) {
+					jumped = 1;
+					headDone = 0;
+					scanDir = dirSign;
+					playheadNorm = revSlice ? effEndNorm : effStartNorm;
+				}
 			}
 		}
 	}
@@ -387,8 +1205,10 @@ voice_proc(
 
 	sigL = 0;
 	sigR = 0;
+	aliveCnt = 0;
 
-	if ((modeId < 0.5) || isSlice) {
+	if (modeId < 0.5) {
+		// ---------------- REPITCH ----------------
 		spanF = max(effLEnd - effLStart, 4);
 		xfF = min(spanF * clip(xfEff, 0, 0.45), spanF * 0.5);
 		// Gen scopes a name to the if that first assigns it. Seed both so the
@@ -484,9 +1304,32 @@ voice_proc(
 			cycPhs6 = (u == 6) ? pNext : cycPhs6;
 			cycPhs7 = (u == 7) ? pNext : cycPhs7;
 		}
+
+		// Repitch characters: 1 Analog, 2 Digital
+		rpChar = round(clip(peek(prm, 1), 0, 2));
+		if (rpChar > 0.5) {
+			rpDist = clip(peek(prm, 2), 0, 1);
+			rpColor = clip(peek(prm, 3), -1, 1);
+			if (rpChar < 1.5) {
+				aL = analog_chan(sigL, rpDist, rpColor, baseRatio, srVal);
+				aR = analog_chan(sigR, rpDist, rpColor, baseRatio, srVal);
+				sigL, sigR = tape_st(aL, aR, rpColor, baseRatio, srVal, tbuf, vIdx * 8192);
+			} else {
+				sigL, sigR = digital_st(sigL, sigR, rpDist, rpColor, baseRatio, peek(prm, 4), peek(prm, 5), srVal);
+			}
+		}
 	} else if (modeId < 1.5) {
+		// ---------------- CYCLES ----------------
 		if (freezeOn > 0.5) {
 			playheadNorm = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm);
+		} else if (isSlice) {
+			// Sliced: natural-speed scan, with the slice_play end behaviour.
+			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion) / max(numFrames, 1), effStartNorm, effEndNorm, effStartNorm, effEndNorm, wmSlice);
+			playheadNorm = hn;
+			scanDir = dn;
+			if ((dd > 0.5) && (wmSlice < 0.5)) {
+				headDone = 1;
+			}
 		} else {
 			playheadNorm = playheadNorm + scanDir * abs(grainMotion) * 0.35 / max(srVal, 1);
 			if (playheadNorm >= effEndNorm) {
@@ -507,11 +1350,23 @@ voice_proc(
 		if (anchorTop > halfRead) {
 			anchorF = clip(anchorNorm * max(numFrames - 1, 1), halfRead, anchorTop);
 		}
+		cyChar = round(clip(peek(prm, 6), 0, 2));
+		cyDuty = 0.5 + 0.45 * clip(peek(prm, 7), -1, 1);
+		cySplit = clip(peek(prm, 8), -1, 1);
+		cyFund = clip(peek(prm, 9), 0, 1);
+		cyMod = clip(peek(prm, 10), 0, 1);
+		cyHarm = clip(peek(prm, 11), -1, 1);
+		cyXf = peek(prm, 12);
+		harmRatio = (cyHarm >= 0) ? (1.0 + round(cyHarm * 7.0)) : (1.0 / (1.0 + round(0.0 - cyHarm * 3.0)));
+		maxIdxC = max(numFrames - 1, 1);
 
 		for (u = 0; u < 8; u += 1) {
 			pCur = (u == 0) ? cycPhs0 : ((u == 1) ? cycPhs1 : ((u == 2) ? cycPhs2 : ((u == 3) ? cycPhs3 : ((u == 4) ? cycPhs4 : ((u == 5) ? cycPhs5 : ((u == 6) ? cycPhs6 : cycPhs7))))));
 			if (needInit) {
 				pCur = (u == 0) ? 0.0 : ((u == 1) ? 0.02 : ((u == 2) ? 0.05 : ((u == 3) ? 0.09 : ((u == 4) ? 0.14 : ((u == 5) ? 0.20 : ((u == 6) ? 0.27 : 0.35))))));
+				poke(vst, anchorF, latB + u);
+				poke(vst, anchorF, latB + 8 + u);
+				poke(vst, 0, mpB + u);
 			}
 			pCur = fract(pCur);
 			pNext = pCur;
@@ -523,15 +1378,40 @@ voice_proc(
 				phsInc = clip((baseHz * detRatio) / max(srVal, 1), 0, 0.45);
 				pNext = fract(pCur + phsInc);
 				pB = fract(pNext + 0.5);
+				pBprev = fract(pCur + 0.5);
 				wA = 0.5 - 0.5 * cos(6.28318530718 * pNext);
 				wB = 0.5 - 0.5 * cos(6.28318530718 * pB);
-				readA = (pNext - 0.5) * formSm + 0.5;
-				readB = (pB - 0.5) * formSm + 0.5;
-				maxIdxC = max(numFrames - 1, 1);
-				aL, aR = peek_lr(sampBuf, anchorF + readA * cycleLenF, maxIdxC);
-				bL, bR = peek_lr(sampBuf, anchorF + readB * cycleLenF, maxIdxC);
-				sigL = sigL + (aL * wA + bL * wB) * gL * uNormGain;
-				sigR = sigR + (aR * wA + bR * wB) * gR * uNormGain;
+				// Crossfade two voices: each window latches the anchor at its own cycle start.
+				ancA = anchorF;
+				ancB = anchorF;
+				if (cyXf > 0.5) {
+					if (pNext < pCur) {
+						poke(vst, anchorF, latB + u);
+					}
+					if (pB < pBprev) {
+						poke(vst, anchorF, latB + 8 + u);
+					}
+					ancA = peek(vst, latB + u);
+					ancB = peek(vst, latB + 8 + u);
+				}
+				// Phase character: dirty-sine modulator at a stepped multiple of the pitch.
+				pmV = 0;
+				if (cyChar > 1.5) {
+					mph = fract(peek(vst, mpB + u) + phsInc * harmRatio);
+					poke(vst, mph, mpB + u);
+					pmV = cyMod * 0.5 * (sin(6.28318530718 * mph) + 0.28 * sin(6.28318530718 * 3.0 * mph + 0.9) + 0.12 * sin(6.28318530718 * 5.0 * mph));
+				}
+				aL, aR = cyc_wave(sampBuf, ancA, cycleLenF, formSm, pNext, cyChar, cyDuty, cySplit, pmV, maxIdxC);
+				bL, bR = cyc_wave(sampBuf, ancB, cycleLenF, formSm, pB, cyChar, cyDuty, cySplit, pmV, maxIdxC);
+				cL = aL * wA + bL * wB;
+				cR = aR * wA + bR * wB;
+				if ((cyChar > 0.5) && (cyChar < 1.5)) {
+					fundS = sin(6.28318530718 * pNext) * 0.5;
+					cL = mix(cL, fundS, cyFund);
+					cR = mix(cR, fundS, cyFund);
+				}
+				sigL = sigL + cL * gL * uNormGain;
+				sigR = sigR + cR * gR * uNormGain;
 			}
 			cycPhs0 = (u == 0) ? pNext : cycPhs0;
 			cycPhs1 = (u == 1) ? pNext : cycPhs1;
@@ -542,9 +1422,17 @@ voice_proc(
 			cycPhs6 = (u == 6) ? pNext : cycPhs6;
 			cycPhs7 = (u == 7) ? pNext : cycPhs7;
 		}
-	} else {
+	} else if (modeId < 2.5) {
+		// ---------------- TEXTURES ----------------
 		if (freezeOn > 0.5) {
 			playheadNorm = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm);
+		} else if (isSlice) {
+			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion * baseRatio) / max(numFrames, 1), effStartNorm, effEndNorm, effStartNorm, effEndNorm, wmSlice);
+			playheadNorm = hn;
+			scanDir = dn;
+			if ((dd > 0.5) && (wmSlice < 0.5)) {
+				headDone = 1;
+			}
 		} else {
 			motionStep = dirSign * grainMotion * baseRatio / max(numFrames, 1);
 			playheadNorm = playheadNorm + motionStep;
@@ -599,6 +1487,117 @@ voice_proc(
 				sigR = sigR + (aR * winA + bR * winB) * gR * uNormGain;
 			}
 		}
+	} else if (modeId < 3.5) {
+		// ---------------- SPECTRAL (audio computed by spec_voice) ----------------
+		playheadNorm = extPos;
+		sigL = extL;
+		sigR = extR;
+	} else {
+		// ---------------- FRAGMENTS ----------------
+		frLenS = max(grainSizeMs * 0.001 * srVal, 16.0);
+		if (peek(prm, 26) > 0.5) {
+			// Sync: snap the grain size to a power-of-two fraction / multiple of a beat.
+			beatMs = 60000.0 / clip(peek(prm, 31), 20, 999);
+			frLenS = max(beatMs * pow(2.0, round(log2(max(grainSizeMs, 1.0) / beatMs))) * 0.001 * srVal, 16.0);
+		}
+		frDens = (peek(prm, 23) > 0.5) ? clip(peek(prm, 22), 0.1, 100) : 1.0;
+		frRep = int(clip(round(peek(prm, 21)), 1, 16));
+		frMaxGr = int(clip(round(peek(prm, 25)), 1, 32));
+		frMot = clip(peek(prm, 24), 0, 8);
+		frPk = clip(peek(prm, 20), 0, 1);
+		frDirMode = round(clip(peek(prm, 27), 0, 3));
+		frLatch = peek(prm, 28);
+		frRepInit = peek(prm, 29);
+		frSurv = peek(prm, 30);
+		maxIdxF = max(numFrames - 1, 1);
+
+		// Playhead
+		if (freezeOn > 0.5) {
+			playheadNorm = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm);
+		} else {
+			wmFr = isSlice ? wmSlice : ((loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0));
+			rloF = isSlice ? effStartNorm : clip(loopStartNorm, effStartNorm, effEndNorm - 0.002);
+			rhiF = isSlice ? effEndNorm : clip(loopEndNorm, rloF + 0.002, effEndNorm);
+			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion) / max(numFrames, 1), effStartNorm, effEndNorm, rloF, rhiF, wmFr);
+			playheadNorm = hn;
+			scanDir = dn;
+			if ((dd > 0.5) && (wmFr < 0.5)) {
+				headDone = 1;
+			}
+		}
+
+		// Spawn
+		spawnTmr = spawnTmr - 1;
+		if ((spawnTmr <= 0) && (vGate > 0.5) && (headDone < 0.5)) {
+			spawnTmr = spawnTmr + max(frLenS / frDens, 1.0);
+			if (spawnTmr < 1.0) {
+				spawnTmr = 1.0;
+			}
+			baseP = playheadNorm * numFrames + ((freezeOn > 0.5) ? 0.0 : posMod * numFrames);
+			gScale = 1.0 / sqrt(max(1.0, 0.5 * min(frDens * frRep, frMaxGr)));
+			for (rp = 0; rp < 16; rp += 1) {
+				if (rp < frRep) {
+					slot = -1;
+					for (gi = 0; gi < 32; gi += 1) {
+						if ((gi < frMaxGr) && (slot < 0) && (peek(vst, gB + gi * 10) < 0.5)) {
+							slot = gi;
+						}
+					}
+					rndCtr = rndCtr + 3;
+					rA = rnd01(rndCtr + vSeed * 91.7);
+					rB = rnd01(rndCtr + 1.0 + vSeed * 17.3);
+					rC = rnd01(rndCtr + 2.0 + vSeed * 53.9);
+					if (slot >= 0) {
+						altFlip = 0.0 - altFlip;
+						dsel = (frDirMode < 0.5) ? dirSign : ((frDirMode < 1.5) ? scanDir : ((frDirMode < 2.5) ? ((rC < 0.5) ? -1.0 : 1.0) : altFlip));
+						uIdx = spawnCnt % uCount;
+						uFrac, detRatio = unison_spread(uIdx, uCount, unisonDetune, driftPhs, vSeed);
+						pan = clip(uFrac * unisonWidth + vPanSeed * 0.15 + (rB - 0.5) * 2.0 * clip(frMot, 0, 1), -1, 1);
+						jitterP = (rA - 0.5) * 2.0 * frMot * frLenS * abs(baseRatio);
+						pStart = baseP + jitterP;
+						if ((frRepInit < 0.5) && (rp > 0)) {
+							pStart = pStart + dsel * rp * frLenS * abs(baseRatio);
+						}
+						b = slot * 10;
+						poke(vst, 1, gB + b + 0);
+						poke(vst, 0.0 - rp * frLenS, gB + b + 1);
+						poke(vst, frLenS, gB + b + 2);
+						poke(vst, pStart, gB + b + 3);
+						poke(vst, dsel * detRatio, gB + b + 4);
+						poke(vst, sqrt(0.5 * (1.0 - pan)) * gScale, gB + b + 5);
+						poke(vst, sqrt(0.5 * (1.0 + pan)) * gScale, gB + b + 6);
+						poke(vst, frPk, gB + b + 7);
+						poke(vst, abs(baseRatio), gB + b + 8);
+						spawnCnt = spawnCnt + 1;
+					}
+				}
+			}
+		}
+
+		// Render the pool
+		for (gi = 0; gi < 32; gi += 1) {
+			b = gi * 10;
+			if (peek(vst, gB + b) > 0.5) {
+				ageG = peek(vst, gB + b + 1);
+				lenG = peek(vst, gB + b + 2);
+				aliveCnt = aliveCnt + 1;
+				if (ageG >= 0) {
+					if (ageG >= lenG) {
+						poke(vst, 0, gB + b);
+					} else {
+						wG = fr_win(ageG / lenG, peek(vst, gB + b + 7));
+						rateG = peek(vst, gB + b + 4) * ((frLatch > 0.5) ? peek(vst, gB + b + 8) : abs(baseRatio));
+						rpos = peek(vst, gB + b + 3) + rateG * ageG;
+						if ((rpos >= startF) && (rpos <= endF)) {
+							gl, gr = peek_lr(sampBuf, rpos, maxIdxF);
+							sigL = sigL + gl * wG * peek(vst, gB + b + 5);
+							sigR = sigR + gr * wG * peek(vst, gB + b + 6);
+						}
+					}
+				}
+				poke(vst, ageG + 1, gB + b + 1);
+			}
+		}
 	}
 
 	// Held-tail crossfade after a live jump: the last output decays while the new read fades in.
@@ -615,12 +1614,23 @@ voice_proc(
 	lastSigL = sigL;
 	lastSigR = sigR;
 
+	// Sliced one-shots end: fade out once the playhead has reached the end (Fragments let their grains finish).
+	doneG = doneG + (((headDone > 0.5) ? 0.0 : 1.0) - doneG) * 0.01;
+	endGain = (modeId > 3.5) ? 1.0 : doneG;
+
 	velGain = mix(1.0, vVel, clip(velSens, 0, 1));
-	finalGain = ampEnv * velGain;
+	// Fragments "survive": the grains in flight keep the level the voice had at release.
+	if ((vGate > 0.5) || (modeId < 3.5) || (peek(prm, 30) < 0.5)) {
+		survG = ampEnv;
+	} else if (aliveCnt == 0) {
+		survG = 0;
+	}
+	envOut = ((modeId > 3.5) && (peek(prm, 30) > 0.5)) ? max(ampEnv, survG) : ampEnv;
+	finalGain = envOut * velGain * endGain;
 	// Ping-pong slices keep an unfolded phase; report the folded position.
-	ppTele = isSlice && (effLoopMode > 1.5) && (freezeOn < 0.5);
+	ppTele = isSlice && (modeId < 0.5) && (effLoopMode > 1.5) && (freezeOn < 0.5);
 	outPosNorm = clip(ppTele ? (pp_pos(playheadNorm * numFrames, startF, endF) / max(numFrames, 1)) : playheadNorm, 0, 1);
-	return fixnan(sigL * finalGain), fixnan(sigR * finalGain), outPosNorm, ampEnv, modEnv;
+	return fixnan(sigL * finalGain), fixnan(sigR * finalGain), outPosNorm, ampEnv, modEnv, spawnCnt;
 }
 
 // Buffers
@@ -628,8 +1638,85 @@ Buffer samp("bsamp");
 Buffer vdata("bsvoices");
 Buffer scope("bsscope");
 
+// Shared tables and the new-parameter table (layout below)
+Data twr(2049);
+Data twi(2049);
+Data brv(4096);
+Data prm(64);
+Data vst(5504);
+Data tbuf(131072);
+Data fre0(4096);
+Data fim0(4096);
+Data amag0(2049);
+Data wf0(2049);
+Data cs0(2050);
+Data tA0(2049);
+Data tW0(2049);
+Data tP0(2049);
+Data pmag0(2049);
+Data pph0(4098);
+Data sph0(4098);
+Data zre0(4098);
+Data zim0(4098);
+Data oL0(8192);
+Data oR0(8192);
+Data st0(16);
+Data jp0(32);
+Data fre1(4096);
+Data fim1(4096);
+Data amag1(2049);
+Data wf1(2049);
+Data cs1(2050);
+Data tA1(2049);
+Data tW1(2049);
+Data tP1(2049);
+Data pmag1(2049);
+Data pph1(4098);
+Data sph1(4098);
+Data zre1(4098);
+Data zim1(4098);
+Data oL1(8192);
+Data oR1(8192);
+Data st1(16);
+Data jp1(32);
+Data fre2(4096);
+Data fim2(4096);
+Data amag2(2049);
+Data wf2(2049);
+Data cs2(2050);
+Data tA2(2049);
+Data tW2(2049);
+Data tP2(2049);
+Data pmag2(2049);
+Data pph2(4098);
+Data sph2(4098);
+Data zre2(4098);
+Data zim2(4098);
+Data oL2(8192);
+Data oR2(8192);
+Data st2(16);
+Data jp2(32);
+Data fre3(4096);
+Data fim3(4096);
+Data amag3(2049);
+Data wf3(2049);
+Data cs3(2050);
+Data tA3(2049);
+Data tW3(2049);
+Data tP3(2049);
+Data pmag3(2049);
+Data pph3(4098);
+Data sph3(4098);
+Data zre3(4098);
+Data zim3(4098);
+Data oL3(8192);
+Data oR3(8192);
+Data st3(16);
+Data jp3(32);
+
 // Parameters
-Param mode(0, min=0, max=3);
+Param mode(0, min=0, max=4);
+Param sliced(0, min=0, max=1);
 Param freeze(0, min=0, max=1);
 Param root_note(60, min=0, max=127);
 Param pitch_st(0, min=-36, max=36);
@@ -649,6 +1736,51 @@ Param grain_size(65, min=5, max=500);
 Param grain_motion(1.0, min=0, max=2);
 Param grain_spray(0.15, min=0, max=1);
 Param formant(0, min=-24, max=24);
+
+// Repitch characters
+Param rp_char(0, min=0, max=2);
+Param rp_dist(0, min=0, max=1);
+Param rp_color(0, min=-1, max=1);
+Param rp_vsr(0, min=0, max=1);
+Param rp_imaging(1, min=0, max=1);
+
+// Cycles characters
+Param cy_char(0, min=0, max=2);
+Param cy_width(0, min=-1, max=1);
+Param cy_split(0, min=-1, max=1);
+Param cy_fund(0, min=0, max=1);
+Param cy_mod(0, min=0, max=1);
+Param cy_harm(0, min=-1, max=1);
+Param cy_xfade(0, min=0, max=1);
+
+// Spectral
+Param sp_char(0, min=0, max=1);
+Param sp_shift(1.0, min=0.01, max=1.22);
+Param sp_bend(0, min=-24, max=24);
+Param sp_quant(0, min=0, max=2);
+Param sp_key(0, min=0, max=11);
+Param sp_scale(0, min=0, max=1);
+Param sp_quant_amt(1.0, min=0.01, max=1);
+Param sp_onsets(0, min=0, max=1);
+Param sp_formant_on(1, min=0, max=1);
+Param sp_dispersion(0.667, min=0, max=1);
+Param sp_quality(1, min=0, max=2);
+Param sp_live(1, min=0, max=1);
+Param sp_rel_formant(0, min=0, max=1);
+
+// Fragments
+Param fr_env(0.5, min=0, max=1);
+Param fr_repeats(1, min=1, max=16);
+Param fr_density(4.0, min=0.1, max=100);
+Param fr_use_density(1, min=0, max=1);
+Param fr_motion(0, min=0, max=8);
+Param fr_max_grains(256, min=1, max=256);
+Param fr_sync(0, min=0, max=1);
+Param fr_direction(1, min=0, max=3);
+Param fr_latch(1, min=0, max=1);
+Param fr_repeat_init(0, min=0, max=1);
+Param fr_survive(0, min=0, max=1);
+Param tempo(120, min=20, max=999);
 
 // Unison & Voicing
 Param unison_voices(1, min=1, max=8);
@@ -690,6 +1822,7 @@ Param menv_pos(0.0, min=-1, max=1);
 Param out_gain(0.0, min=-36, max=18);
 
 // Global state histories
+History initDone(0);
 History lfoPhs(0);
 History lfoSH(0);
 History svfLpL(0);
@@ -700,9 +1833,68 @@ History scopeCount(0);
 History scopeFrame(0);
 History peakHoldL(0);
 History peakHoldR(0);
+History ap0(0);
+History ap1(0);
+History ap2(0);
+History ap3(0);
+History mp0(0);
+History mp1(0);
+History mp2(0);
+History mp3(0);
+
+if (initDone == 0) {
+	init_tables(twr, twi, brv);
+	initDone = 1;
+}
 
 srVal = max(samplerate, 8000);
 numFrames = max(dim(samp), 1);
+
+// New-parameter table (read by voice_proc / spec_voice):
+//   0 sliced, 1 rp_char, 2 rp_dist, 3 rp_color, 4 rp_vsr, 5 rp_imaging,
+//   6 cy_char, 7 cy_width, 8 cy_split, 9 cy_fund, 10 cy_mod, 11 cy_harm, 12 cy_xfade,
+//   20 fr_env, 21 fr_repeats, 22 fr_density, 23 fr_use_density, 24 fr_motion, 25 fr_max_grains,
+//   26 fr_sync, 27 fr_direction, 28 fr_latch, 29 fr_repeat_init, 30 fr_survive, 31 tempo,
+//   40 sp_char, 41 sp_shift, 42 sp_bend, 43 sp_quant, 44 sp_key, 45 sp_scale, 46 sp_quant_amt,
+//   47 sp_onsets, 48 sp_formant_on, 49 sp_dispersion, 50 sp_quality, 51 sp_live, 52 sp_rel_formant
+poke(prm, sliced, 0);
+poke(prm, rp_char, 1);
+poke(prm, rp_dist, 2);
+poke(prm, rp_color, 3);
+poke(prm, rp_vsr, 4);
+poke(prm, rp_imaging, 5);
+poke(prm, cy_char, 6);
+poke(prm, cy_width, 7);
+poke(prm, cy_split, 8);
+poke(prm, cy_fund, 9);
+poke(prm, cy_mod, 10);
+poke(prm, cy_harm, 11);
+poke(prm, cy_xfade, 12);
+poke(prm, fr_env, 20);
+poke(prm, fr_repeats, 21);
+poke(prm, fr_density, 22);
+poke(prm, fr_use_density, 23);
+poke(prm, fr_motion, 24);
+poke(prm, fr_max_grains, 25);
+poke(prm, fr_sync, 26);
+poke(prm, fr_direction, 27);
+poke(prm, fr_latch, 28);
+poke(prm, fr_repeat_init, 29);
+poke(prm, fr_survive, 30);
+poke(prm, tempo, 31);
+poke(prm, sp_char, 40);
+poke(prm, sp_shift, 41);
+poke(prm, sp_bend, 42);
+poke(prm, sp_quant, 43);
+poke(prm, sp_key, 44);
+poke(prm, sp_scale, 45);
+poke(prm, sp_quant_amt, 46);
+poke(prm, sp_onsets, 47);
+poke(prm, sp_formant_on, 48);
+poke(prm, sp_dispersion, 49);
+poke(prm, sp_quality, 50);
+poke(prm, sp_live, 51);
+poke(prm, sp_rel_formant, 52);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H
 prevLfoPhs = lfoPhs;
@@ -725,26 +1917,41 @@ mdecCoef = exp(-1000.0 / (max(mdec_ms, 1.0) * srVal));
 mrelCoef = exp(-1000.0 / (max(mrel_ms, 1.0) * srVal));
 glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (glide_ms * srVal));
 
+// Spectral voices (voices 0..3 only)
+s0L, s0R, s0P, s0Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre0, fim0, amag0, wf0, cs0, tA0, tW0, tP0, pmag0, pph0, sph0, zre0, zim0, oL0, oR0, st0, jp0, 0, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp0, ap0, numFrames, srVal);
+s1L, s1R, s1P, s1Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre1, fim1, amag1, wf1, cs1, tA1, tW1, tP1, pmag1, pph1, sph1, zre1, zim1, oL1, oR1, st1, jp1, 1, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp1, ap1, numFrames, srVal);
+s2L, s2R, s2P, s2Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre2, fim2, amag2, wf2, cs2, tA2, tW2, tP2, pmag2, pph2, sph2, zre2, zim2, oL2, oR2, st2, jp2, 2, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp2, ap2, numFrames, srVal);
+s3L, s3R, s3P, s3Z = spec_voice(samp, vdata, twr, twi, brv, prm, fre3, fim3, amag3, wf3, cs3, tA3, tW3, tP3, pmag3, pph3, sph3, zre3, zim3, oL3, oR3, st3, jp3, 3, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, mp3, ap3, numFrames, srVal);
+
 // Evaluate all 16 polyphonic voices
-v0L, v0R, v0P, v0A, v0M = voice_proc(samp, vdata, 0, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v1L, v1R, v1P, v1A, v1M = voice_proc(samp, vdata, 1, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v2L, v2R, v2P, v2A, v2M = voice_proc(samp, vdata, 2, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v3L, v3R, v3P, v3A, v3M = voice_proc(samp, vdata, 3, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v4L, v4R, v4P, v4A, v4M = voice_proc(samp, vdata, 4, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v5L, v5R, v5P, v5A, v5M = voice_proc(samp, vdata, 5, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v6L, v6R, v6P, v6A, v6M = voice_proc(samp, vdata, 6, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v7L, v7R, v7P, v7A, v7M = voice_proc(samp, vdata, 7, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v8L, v8R, v8P, v8A, v8M = voice_proc(samp, vdata, 8, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v9L, v9R, v9P, v9A, v9M = voice_proc(samp, vdata, 9, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v10L, v10R, v10P, v10A, v10M = voice_proc(samp, vdata, 10, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v11L, v11R, v11P, v11A, v11M = voice_proc(samp, vdata, 11, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v12L, v12R, v12P, v12A, v12M = voice_proc(samp, vdata, 12, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v13L, v13R, v13P, v13A, v13M = voice_proc(samp, vdata, 13, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v14L, v14R, v14P, v14A, v14M = voice_proc(samp, vdata, 14, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
-v15L, v15R, v15P, v15A, v15M = voice_proc(samp, vdata, 15, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play);
+v0L, v0R, v0P, v0A, v0M, v0S = voice_proc(samp, vdata, 0, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s0L, s0R, s0P);
+v1L, v1R, v1P, v1A, v1M, v1S = voice_proc(samp, vdata, 1, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s1L, s1R, s1P);
+v2L, v2R, v2P, v2A, v2M, v2S = voice_proc(samp, vdata, 2, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s2L, s2R, s2P);
+v3L, v3R, v3P, v3A, v3M, v3S = voice_proc(samp, vdata, 3, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, s3L, s3R, s3P);
+v4L, v4R, v4P, v4A, v4M, v4S = voice_proc(samp, vdata, 4, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v5L, v5R, v5P, v5A, v5M, v5S = voice_proc(samp, vdata, 5, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v6L, v6R, v6P, v6A, v6M, v6S = voice_proc(samp, vdata, 6, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v7L, v7R, v7P, v7A, v7M, v7S = voice_proc(samp, vdata, 7, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v8L, v8R, v8P, v8A, v8M, v8S = voice_proc(samp, vdata, 8, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v9L, v9R, v9P, v9A, v9M, v9S = voice_proc(samp, vdata, 9, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v10L, v10R, v10P, v10A, v10M, v10S = voice_proc(samp, vdata, 10, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v11L, v11R, v11P, v11A, v11M, v11S = voice_proc(samp, vdata, 11, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v12L, v12R, v12P, v12A, v12M, v12S = voice_proc(samp, vdata, 12, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v13L, v13R, v13P, v13A, v13M, v13S = voice_proc(samp, vdata, 13, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v14L, v14R, v14P, v14A, v14M, v14S = voice_proc(samp, vdata, 14, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+v15L, v15R, v15P, v15A, v15M, v15S = voice_proc(samp, vdata, 15, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, 0, 0, 0);
+ap0 = v0A;
+ap1 = v1A;
+ap2 = v2A;
+ap3 = v3A;
+mp0 = v0M;
+mp1 = v1M;
+mp2 = v2M;
+mp3 = v3M;
 
 sumL = v0L + v1L + v2L + v3L + v4L + v5L + v6L + v7L + v8L + v9L + v10L + v11L + v12L + v13L + v14L + v15L;
 sumR = v0R + v1R + v2R + v3R + v4R + v5R + v6R + v7R + v8R + v9R + v10R + v11R + v12R + v13R + v14R + v15R;
+spawnSum = v0S + v1S + v2S + v3S + v4S + v5S + v6S + v7S + v8S + v9S + v10S + v11S + v12S + v13S + v14S + v15S;
 
 maxModEnv = max(max(max(v0M, v1M), max(v2M, v3M)), max(max(max(v4M, v5M), max(v6M, v7M)), max(max(max(v8M, v9M), max(v10M, v11M)), max(max(v12M, v13M), max(v14M, v15M)))));
 
@@ -844,4 +2051,5 @@ if (scopeCount >= 64) {
 	poke(scope, effCutHz, 37);
 	poke(scope, numFrames, 38);
 	poke(scope, scopeFrame, 39);
+	poke(scope, spawnSum, 48);
 }

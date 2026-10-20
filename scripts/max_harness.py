@@ -3,12 +3,14 @@
 Shared real-Max test harness for every `scripts/run_<device>_audio_tests.py`.
 
 Why: several agents run standalone Max harnesses on this machine at once. On the hardware
-audio driver they share one CoreAudio device and the CPU, and `delay`-timed recordings come
-back partial or silent. This module renders each case on Max's **NonRealTime** driver, where
-every Max process runs its own audio clock, so any number of cases can run in parallel.
+audio driver, `delay`-timed recordings came back partial or silent. This module renders each case
+on Max's **NonRealTime** driver with all timing counted in samples, and runs ONE harness Max at a
+time machine-wide (MAX_LOCK): Max hands a newly launched patch to an already-running Max instance,
+so concurrent launches end up sharing one process. NonRealTime renders are fast, so serial is cheap.
 
 Rules (enforced by construction here; see AGENTS.md "Real Max Test Harness"):
-  * Never launch Max yourself. Build the device-specific boxes and call `run_case()`.
+  * Never launch Max yourself. Build the device-specific boxes and call `run_case()`. Runners may
+    call run_case from several threads/processes; the lock queues them.
   * Never time anything with `delay` / `metro` / wall-clock ms. In NonRealTime the scheduler
     does not follow audio time (measured: a 1000 ms `delay` window held 144000-244000 samples).
     The scaffold records from DSP start, counts samples in gen, trims the settle period and
@@ -58,16 +60,10 @@ MAX_PREFS = os.path.join(MAX_SUPPORT, "Settings", "maxpreferences.maxpref")
 MAX_PREFS_SAVED = "/tmp/m4l_maxprefs_maxatstartup.json"  # the user's own value while harnesses run
 TRIM_JS = os.path.join(ROOT, "tests", "max_harness_trim.js")
 
-# Same file as scripts/max_lock.py, so unmigrated real-time runners and audio_device cases
-# never overlap each other.
-AUDIO_DEVICE_LOCK = "/tmp/m4l_real_max.lock"
-# Held only for the few seconds around a Max launch (Crash Recovery cleanup + startup).
-LAUNCH_LOCK = "/tmp/m4l_max_launch.lock"
-
-# Machine-wide cap on concurrent harness Max instances (NonRealTime renders use a full core each;
-# an unbounded stampede of agents pushed load past 20 and made Max time out and crash).
-MAX_SLOTS = int(os.environ.get("M4L_MAX_SLOTS", "4"))
-SLOT_LOCK_FMT = "/tmp/m4l_max_slot_{}.lock"
+# Machine-wide lock held for the whole life of every harness Max (all modes). Same file as
+# scripts/max_lock.py, so unmigrated runners are serialized with us too.
+MAX_LOCK = "/tmp/m4l_real_max.lock"
+AUDIO_DEVICE_LOCK = MAX_LOCK
 
 DEFAULT_SR = 48000
 MODES = ("nrt", "stepped", "audio_device")
@@ -127,29 +123,6 @@ def file_lock(path):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-@contextlib.contextmanager
-def max_slot(timeout=3600.0):
-    """Hold one of MAX_SLOTS machine-wide slots for the whole life of a harness Max process."""
-    deadline = time.time() + timeout
-    while True:
-        for i in range(MAX_SLOTS):
-            f = open(SLOT_LOCK_FMT.format(i), "w")
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                f.close()
-                continue
-            try:
-                yield i
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-                f.close()
-            return
-        if time.time() > deadline:
-            raise RuntimeError(f"no free Max slot after {timeout:.0f} s")
-        time.sleep(0.5)
-
-
 def _pid_alive(pid):
     try:
         os.kill(pid, 0)
@@ -187,6 +160,37 @@ def _other_harness_max_running(own_pid=None):
     return any(int(p) != own_pid for p in out.split() if p.strip())
 
 
+def _harness_max_pids():
+    """Standalone harness Max processes (a .maxpat in argv). Max hosted by Live never matches."""
+    try:
+        out = subprocess.check_output(["pgrep", "-f", "[M]acOS/Max .*\\.maxpat"], text=True)
+    except subprocess.CalledProcessError:
+        return set()
+    return {int(p) for p in out.split() if p.strip()}
+
+
+def _kill_stale_harness_max(grace=3.0):
+    """Called while holding MAX_LOCK, so any harness Max still alive belongs to a finished or dead
+    run (or an unmigrated runner that skipped the lock). SIGTERM, then SIGKILL, until none remain."""
+    pids = _harness_max_pids()
+    for p in pids:
+        try:
+            os.kill(p, 15)
+        except OSError:
+            pass
+    t = time.time() + grace
+    while time.time() < t and _harness_max_pids():
+        time.sleep(0.1)
+    for p in _harness_max_pids():
+        try:
+            os.kill(p, 9)
+        except OSError:
+            pass
+    t = time.time() + grace
+    while time.time() < t and _harness_max_pids():
+        time.sleep(0.1)
+
+
 def _reap_orphans():
     """SIGTERM harness Max instances whose owning runner process has died (killed runner, crashed
     Python): nobody else would ever end them, and each NonRealTime render keeps a core busy."""
@@ -212,7 +216,7 @@ def _reap_orphans():
 
 
 def _launch_max(patch_path):
-    """Call under LAUNCH_LOCK. Returns the new Max pid (registered in PID_REGISTRY).
+    """Call under MAX_LOCK. Returns the new Max pid (registered in PID_REGISTRY).
 
     Exec the binary directly with the patch in argv. Measured on this machine:
       * `open -n ... ` (LaunchServices) makes the already-running Max instance quit, so parallel
@@ -297,7 +301,7 @@ def _wait_or_kill(pid, deadline, done_path=None, patch_path=None, result_path=No
 
 
 def _clear_crash_recovery():
-    """Only called under LAUNCH_LOCK and only when no other harness Max is running, so a
+    """Only called under MAX_LOCK and only when no other harness Max is running, so a
     parallel run never loses its recovery state mid-flight."""
     if _other_harness_max_running() or not os.path.isdir(CRASH_RECOVERY_DIR):
         return
@@ -513,19 +517,20 @@ def run_case(name, device_boxes, device_lines, *, probe_js, probe_args="", settl
     with open(patch_path, "w", encoding="utf-8") as f:
         json.dump(patch, f, indent=1)
 
-    lock = file_lock(AUDIO_DEVICE_LOCK) if mode == "audio_device" else contextlib.nullcontext()
-    with lock, max_slot():
+    # One harness Max at a time, machine-wide (same lock file as scripts/max_lock.py, so legacy
+    # runners are serialized with us). Max hands a newly launched patch to an already-running
+    # Max instance, so two concurrent harness launches end up in ONE process (shared `rec`
+    # buffers, shared DSP, one SIGTERM kills both). Measured 2026-10-20.
+    with file_lock(MAX_LOCK):
+        _kill_stale_harness_max()
+        _clear_crash_recovery()
         t0 = time.time()
-        with file_lock(LAUNCH_LOCK):
-            _reap_orphans()
-            _clear_crash_recovery()
-            pid = _launch_max(patch_path)
-            time.sleep(2.0)  # let this Max get past startup before the next launch
+        pid = _launch_max(patch_path)
         try:
             _wait_or_kill(pid, t0 + timeout, harness_info + ".done", patch_path, result)
         finally:
-            with file_lock(LAUNCH_LOCK):
-                _restore_audio_prefs()
+            _kill_stale_harness_max()  # the next run must not be handed to this instance
+            _restore_audio_prefs()
 
     if not os.path.exists(result) or os.path.getsize(result) == 0:
         raise RuntimeError(f"Case {name}: Max produced no result (patch kept at {patch_path})")

@@ -14,7 +14,7 @@ var LABEL = "MIDI TO";
 var open = 0;
 var lastWidth = -1;
 // Scripting names of the panel widgets; build_envtrig.py prepends `var PANEL_NAMES = [...]`.
-if (typeof PANEL_NAMES === "undefined") var PANEL_NAMES = [];
+if (typeof PANEL_NAMES === "undefined") var PANEL_NAMES = /** @type {string[]} */ ([]);
 
 function set_open(v) {
     open = Number(v) > 0.5 ? 1 : 0;

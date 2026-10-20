@@ -5,7 +5,8 @@ Records a gen sample counter (ch1) and a `sig~` that an `events` message flips t
   * the measured window must be exactly samples settle+1 .. settle+dur, contiguous, at 48 kHz;
   * in "stepped" mode the event must land within one 64-sample vector of its sample time;
   * in "nrt" mode the event lag is only reported (the scheduler runs behind the audio);
-  * three cases launched in parallel must all succeed.
+  * three runners started at once with DIFFERENT durations must each get exactly their own window
+    (the harness serializes Max; identical patches would hide a shared-process mix-up).
 """
 import concurrent.futures
 import os
@@ -32,18 +33,18 @@ def device():
     return boxes, lines
 
 
-def run(mode, tag=""):
+def run(mode, tag="", dur_ms=DUR_MS):
     b, l = device()
-    return mh.run_case(f"selftest_{mode}{tag}", b, l, probe_js=PROBE, settle_ms=SETTLE_MS, dur_ms=DUR_MS,
+    return mh.run_case(f"selftest_{mode}{tag}", b, l, probe_js=PROBE, settle_ms=SETTLE_MS, dur_ms=dur_ms,
                        mode=mode, events=[(EVENT_MS, "dev-sig", 0, "1")])
 
 
-def check_window(r, label):
-    settle, dur = mh.samples_for_ms(SETTLE_MS), mh.samples_for_ms(DUR_MS)
+def check_window(r, label, dur_ms=DUR_MS):
+    settle, dur = mh.samples_for_ms(SETTLE_MS), mh.samples_for_ms(dur_ms)
     assert r["harness_sr"] == 48000, f"{label}: DSP must run at 48 kHz (got {r['harness_sr']})"
     assert r["frames"] == dur and r["contiguous"] == 1, f"{label}: window must be {dur} contiguous samples ({r})"
     assert r["first"] == settle + 1 and r["last"] == settle + dur, f"{label}: window must start right after settle ({r})"
-    assert abs(r["bufms"] - DUR_MS) < 0.5, f"{label}: rec buffer length must read as {DUR_MS} ms ({r['bufms']})"
+    assert abs(r["bufms"] - dur_ms) < 0.5, f"{label}: rec buffer length must read as {dur_ms} ms ({r['bufms']})"
 
 
 def main():
@@ -62,11 +63,12 @@ def main():
     check_window(r, "nrt")
     print(f"[PASS] nrt      window ok, event lag {r['eventAt'] - want:.0f} samples (not guaranteed), wall {r['harness_wall_s']:.1f} s")
 
+    durs = [500, 600, 700]
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-        results = list(ex.map(lambda k: run("nrt", f"_par{k}"), range(3)))
-    for k, rr in enumerate(results):
-        check_window(rr, f"parallel {k}")
-    print(f"[PASS] parallel 3 x nrt windows ok, wall {max(x['harness_wall_s'] for x in results):.1f} s")
+        results = list(ex.map(lambda d: run("nrt", f"_par{d}", d), durs))
+    for d, rr in zip(durs, results):
+        check_window(rr, f"concurrent {d} ms", d)
+    print(f"[PASS] 3 concurrent runners (500/600/700 ms) each got their own window")
     print("max_harness self-test passed")
 
 

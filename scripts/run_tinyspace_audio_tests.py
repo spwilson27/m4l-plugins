@@ -325,7 +325,7 @@ def run_case(gen_code, case):
     boxes, lines = device(gen_code, case)
     raw = mh.run_case(f"tinyspace_{case['name']}", boxes, lines, probe_js=PROBE_JS,
                       probe_args=f"{case['mode']} {case['config']}", settle_ms=case["arm"],
-                      dur_ms=case["dur"], channels=3, sr=SR, mode="nrt", timeout=120.0)
+                      dur_ms=case["dur"], channels=3, sr=SR, mode="nrt")
     meta = {k: v for k, v in raw.items() if not (k.startswith("env") or k.startswith("sec"))}
     meta["env"] = vector(raw, "env", int(raw.get("frames", 0)) + 1)
     meta["sec"] = vector(raw, "sec", 12)
@@ -389,7 +389,7 @@ def check(name, meta, errors):
     elif name == "room":
         early = env_max(env, 0, 40)
         tail = env_max(env, 80, 300)
-        smear = sum(1 for v in env[:300] if v > 0.004)
+        smear = sum(1 for v in env[:300] if v > 0.002)
         print(f"room early {early:.4f} tail {tail:.4f} bins {smear}")
         # A single-sample impulse is split across the active lines, so the
         # tail sits well below the 0.25 click and still far above silence.

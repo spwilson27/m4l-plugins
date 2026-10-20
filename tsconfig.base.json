@@ -4,8 +4,12 @@
     "checkJs": true,
     "noEmit": true,
     "target": "es2022",
-    "lib": ["es2022"],
-    "types": [],
+    "lib": [
+      "es2022"
+    ],
+    "types": [
+      "maxmsp"
+    ],
     "strict": false,
     "noImplicitAny": false,
     "skipLibCheck": true

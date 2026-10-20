@@ -1279,6 +1279,7 @@ function preview() {
     showLinkStatus = true;
     rackContext = {
         parentRackPath: "live_set tracks 0 devices 0",
+        deviceIndex: 0,
         chainIndex: 1, // Highlight Band 2 (LO-MID) in preview as an active chain split
         nestingDepth: 1,
         isInRack: true,

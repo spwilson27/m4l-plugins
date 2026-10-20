@@ -232,8 +232,10 @@ function computeFftGlitchBands(bands, mode, glitchAmt, phaseVal) {
     return out;
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+// Export through a local so this file stays a global script for the type checker (see AGENTS.md 1c).
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         DEG_STATE_VERSION,
         SCOPE_FLOATS,
         SCOPE_COLS,

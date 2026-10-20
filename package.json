@@ -3,9 +3,12 @@
   "private": true,
   "description": "Dev tooling only: type-checks the plain JS in src/ (no build output).",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.sampler.json"
+    "typecheck": "for c in tsconfig.*.json; do case \"$c\" in *base*) ;; *) echo \"tsc -p $c\"; tsc -p \"$c\" || exit 1;; esac; done"
   },
   "devDependencies": {
+    "@types/max-api": "2.0.3",
+    "@types/maxmsp": "1.0.15",
+    "@types/node": "22.20.5",
     "typescript": "7.0.2"
   }
 }

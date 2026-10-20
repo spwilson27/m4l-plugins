@@ -2,6 +2,7 @@
 // Prepended into the Start / End v8ui scripts at build time and exported for Node tests.
 
 // Tempo-sync divisions, ordered by length. Beats are quarter notes.
+/** @type {Array<[string, number]>} */
 const DP_DIVISIONS = [
     ["1/64", 1 / 16], ["1/32T", 1 / 12], ["1/32", 1 / 8], ["1/16T", 1 / 6], ["1/32D", 3 / 16],
     ["1/16", 1 / 4], ["1/8T", 1 / 3], ["1/16D", 3 / 8], ["1/8", 1 / 2], ["1/4T", 2 / 3],
@@ -157,8 +158,9 @@ function dpFormatMs(ms) {
     return ms.toFixed(1) + " ms";
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         DP_DIVISIONS, DP_DIV_DEFAULT, DP_TIME_MAX_MS, DP_TANK, DP_SCOPE, DP_HIST_OFFSET, DP_HIST_BLOCKS,
         DP_HIST_BLOCK_SAMPS, DP_SCOPE_SAMPS, DP_ESCOPE, DP_ESCOPE_SAMPS, DP_BUS_NAME, DP_REG_STALE_MS,
         dpClamp, dpDivisionIndex, dpSyncMs, dpTargetMs, dpMinTimeSamples, dpChannelTimes, dpEffectiveTimes,

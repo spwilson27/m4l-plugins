@@ -1,7 +1,7 @@
 {
   "extends": "./tsconfig.base.json",
   "files": [
-    "src/types/max.d.ts",
+    "src/types/max-extras.d.ts",
     "src/types/sampler.d.ts",
     "src/sampler_config.js",
     "src/sampler_ui.js",

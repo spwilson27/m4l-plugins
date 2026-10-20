@@ -9,6 +9,26 @@ outlets = 3;
 var mode = jsarguments.length > 1 ? jsarguments[1] : "repitch_chord";
 // Optional 2nd argument: split point in ms. headRms covers [0, cut), afterRms / afterPeak [cut, end).
 var cutMs = jsarguments.length > 2 ? Number(jsarguments[2]) : 0;
+// Further arguments are key=value options:
+//   notes=57,64   MIDI notes triggered together (default: one centred note 60 for single-note cases)
+//   slice=0.1:0.5 slice bounds (normalised) written into slots 4/5 of every voice
+//   newslice=a:b  bounds a `rebound` message pokes into voice 0
+//   src=tone|tone48|sus48|rich48|clicks48   test sample (tone = the legacy 44.1 kHz decaying tone)
+//   f0=220        fundamental for the h1..h8 harmonic readout
+//   ana=100       start of the spectral analysis window in ms
+//   pan=1         use the legacy triad pan seeds
+//   start=live    trigger from the setbuffers message instead of the harness event (CPU cases)
+var opt = {};
+for (var ai = 3; ai < jsarguments.length; ai++) {
+    var tok = String(jsarguments[ai]);
+    var eq = tok.indexOf("=");
+    if (eq > 0) opt[tok.substring(0, eq)] = tok.substring(eq + 1);
+}
+function parseSlice(str) {
+    if (!str) return null;
+    var pr = String(str).split(":");
+    return { start: Number(pr[0]), end: Number(pr[1]) };
+}
 
 // Per-case voice setup: MIDI notes, slice bounds (normalized), and the bounds a mid-run
 // `rebound` message pokes into the held voice (slots 4/5 only, trigger counter untouched).
@@ -40,6 +60,7 @@ function setbuffers(sName, vName, scName) {
     voicesName = String(vName || "");
     scopeName = String(scName || "");
     seedSample();
+    if (opt.start === "live") { trigSeq += 1; seedVoices(); }
 }
 
 // Sent by the harness `events` list at the start of the measured window.
@@ -48,9 +69,17 @@ function trigger() {
     seedVoices();
 }
 
+// Harness `events` entry: release voice 0 (gate off, trigger counter untouched).
+function release() {
+    if (!voicesName) return;
+    new Buffer(voicesName).poke(1, 0, [0.0]);
+}
+
 // Harness `events` entry: move the held slice live (slots 4/5 of voice 0 only).
 function rebound() {
     var cfg = SLICE_CFG[mode];
+    var ns = parseSlice(opt.newslice);
+    if (ns) cfg = { newStart: ns.start, newEnd: ns.end };
     if (!voicesName || !cfg || cfg.newStart === undefined) return;
     new Buffer(voicesName).poke(1, 4, [cfg.newStart, cfg.newEnd]);
 }
@@ -66,14 +95,27 @@ function seedSample() {
     if (frames > 12000) frames = 12000;
     var ch1 = new Array(frames);
     var ch2 = new Array(frames);
+    var src = opt.src || "tone";
+    var sr0 = (src === "tone") ? 44100.0 : 48000.0;
     for (var i = 0; i < frames; i++) {
-        var t = i / 44100.0;
+        var t = i / sr0;
         var env = Math.min(1.0, i / 32.0) * Math.exp(-i / 3500.0);
-        var w = (
-            0.55 * Math.sin(2.0 * Math.PI * 220.0 * t) +
-            0.25 * Math.sin(2.0 * Math.PI * 440.0 * t) +
-            0.15 * Math.sin(2.0 * Math.PI * 660.0 * t)
-        ) * env;
+        if (src === "sus48" || src === "rich48") env = Math.min(1.0, i / 32.0);
+        var w = 0;
+        if (src === "rich48") {
+            // 220 Hz harmonics up to 10 kHz with a smooth 1/n spectral envelope.
+            for (var hn = 1; hn <= 45; hn++) w += 0.6 / hn * Math.sin(2.0 * Math.PI * 220.0 * hn * t) / 2.0;
+            w *= env;
+        } else if (src === "clicks48") {
+            var k = i % 3000;
+            w = 0.9 * Math.sin(2.0 * Math.PI * 1500.0 * t) * Math.exp(-k / 120.0);
+        } else {
+            w = (
+                0.55 * Math.sin(2.0 * Math.PI * 220.0 * t) +
+                0.25 * Math.sin(2.0 * Math.PI * 440.0 * t) +
+                0.15 * Math.sin(2.0 * Math.PI * 660.0 * t)
+            ) * env;
+        }
         ch1[i] = w;
         ch2[i] = w;
     }
@@ -98,8 +140,11 @@ function seedVoices() {
     // Centered single notes let Reverse / Freeze / 8-voice unison show up in the
     // recording instead of the triad's hardcoded pan seeds.
     var cfg = SLICE_CFG[mode];
-    var single = SINGLE_NOTE.test(mode) || !!cfg;
+    var sl = parseSlice(opt.slice);
+    if (sl) cfg = sl;
+    var single = SINGLE_NOTE.test(mode) || !!cfg || !!opt.notes;
     var notes = cfg ? [38] : (single ? [60] : [60, 64, 67]);
+    if (opt.notes) notes = String(opt.notes).split(",").map(Number);
     for (var v = 0; v < notes.length; v++) {
         var base = v * 8;
         vFlat[base + 0] = 1.0;        // gate
@@ -142,6 +187,7 @@ function analyze(durMs) {
     var earlyRms = bandRms(left, right, Math.floor(left.length * 0.12), Math.floor(left.length * 0.38));
     var lateRms = bandRms(left, right, Math.floor(left.length * 0.65), Math.floor(left.length * 0.92));
     var scopeStats = readScope();
+    var metrics = analyzeSpectrum(left, right, sr);
     var cutIdx = Math.max(0, Math.min(left.length, Math.floor(sr * cutMs / 1000)));
     var headRms = bandRms(left, right, 0, cutIdx);
     var afterRms = bandRms(left, right, cutIdx, left.length);
@@ -172,9 +218,18 @@ function analyze(durMs) {
         "scopeCutHz " + scopeStats.cutHz + "\n" +
         "scopeFrames " + scopeStats.sampFrames + "\n" +
         "scopeLen " + scopeStats.scopeLen + "\n" +
-        "jsFrames " + scopeStats.jsFrames + "\n"
+        "jsFrames " + scopeStats.jsFrames + "\n" +
+        "spawns " + scopeStats.spawns + "\n" +
+        "dbg0 " + scopeStats.dbg[0] + "\ndbg1 " + scopeStats.dbg[1] + "\ndbg2 " + scopeStats.dbg[2] + "\ndbg3 " + scopeStats.dbg[3] + "\n" +
+        dumpMetrics(metrics)
     );
     report.close();
+    if (opt.dump) {
+        var df = new File(resultPath + ".wav.txt", "write", "TEXT");
+        var a1 = Math.floor(sr * Number(opt.ana || 100) / 1000);
+        for (var di = 0; di < 1200; di++) df.writestring((left[a1 + di] === undefined ? 0 : left[a1 + di]) + "\n");
+        df.close();
+    }
     outlet(0, "bang");
 }
 
@@ -187,17 +242,19 @@ function readScope() {
             jsFrames = -2;
         }
     }
-    if (!scopeName) return { activeVoices: -1, peakL: -1, cutHz: -1, sampFrames: -1, scopeLen: 0, jsFrames: jsFrames };
+    if (!scopeName) return { dbg: [0,0,0,0], spawns: -1, activeVoices: -1, peakL: -1, cutHz: -1, sampFrames: -1, scopeLen: 0, jsFrames: jsFrames };
     var buf = new Buffer(scopeName);
-    var chunk = buf.peek(1, 0, 40);
+    var chunk = buf.peek(1, 0, 56);
     if (!chunk || !chunk.length) {
-        return { activeVoices: 0, peakL: 0, cutHz: 0, sampFrames: 0, scopeLen: 0, jsFrames: jsFrames };
+        return { dbg: [0,0,0,0], spawns: -1, activeVoices: 0, peakL: 0, cutHz: 0, sampFrames: 0, scopeLen: 0, jsFrames: jsFrames };
     }
     return {
         pos0: (chunk[0] === undefined) ? -1 : chunk[0],
         peakL: chunk[32] || 0,
         activeVoices: chunk[34] || 0,
         cutHz: chunk[37] || 0,
+        spawns: (chunk.length > 48 && chunk[48] !== undefined) ? chunk[48] : -1,
+        dbg: chunk.slice(50, 54),
         sampFrames: (chunk.length > 38 && chunk[38] !== undefined) ? chunk[38] : -3,
         scopeLen: chunk.length,
         jsFrames: jsFrames,
@@ -257,4 +314,144 @@ function scan(left, right, sr) {
     var rms = len > 0 ? Math.sqrt(sq / len) : 0;
     var stereoDiff = len > 0 ? Math.sqrt(diffSq / len) : 0;
     return { nan: nan, peak: peak, rms: rms, stereoDiff: stereoDiff };
+}
+
+
+// ---------------------------------------------------------------------------
+// Spectral / temporal metrics on the mid signal (all keys are single tokens).
+// ---------------------------------------------------------------------------
+function fftInPlace(re, im) {
+    var n = re.length;
+    for (var i = 1, j = 0; i < n; i++) {
+        var bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            var tr = re[i]; re[i] = re[j]; re[j] = tr;
+            var ti = im[i]; im[i] = im[j]; im[j] = ti;
+        }
+    }
+    for (var len = 2; len <= n; len <<= 1) {
+        var ang = -2 * Math.PI / len;
+        var wr = Math.cos(ang), wi = Math.sin(ang);
+        for (var a = 0; a < n; a += len) {
+            var cr = 1, ci = 0;
+            for (var b = 0; b < len / 2; b++) {
+                var ur = re[a + b], ui = im[a + b];
+                var vr = re[a + b + len / 2] * cr - im[a + b + len / 2] * ci;
+                var vi = re[a + b + len / 2] * ci + im[a + b + len / 2] * cr;
+                re[a + b] = ur + vr; im[a + b] = ui + vi;
+                re[a + b + len / 2] = ur - vr; im[a + b + len / 2] = ui - vi;
+                var nr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = nr;
+            }
+        }
+    }
+}
+
+function analyzeSpectrum(left, right, sr) {
+    var out = {};
+    var len = left.length;
+    var mid = new Array(len);
+    var peak = 0;
+    var chk = 0;
+    for (var i = 0; i < len; i++) {
+        mid[i] = 0.5 * (left[i] + right[i]);
+        if (Math.abs(mid[i]) > peak) peak = Math.abs(mid[i]);
+        chk += left[i] * ((i % 97) + 1) + right[i] * ((i % 89) + 1) * 0.5;
+    }
+    out.chk = chk;
+    // first audible sample (5% of the peak), in ms from the start of the recording
+    var startIdx = -1;
+    for (var q = 0; q < len; q++) { if (Math.abs(mid[q]) > 0.05 * peak) { startIdx = q; break; } }
+    out.startMs = (startIdx >= 0) ? 1000.0 * startIdx / sr : -1;
+
+    // Spectrum of the analysis window (Hann, zero padded to 16384).
+    var N = 16384;
+    var a0 = Math.floor((Number(opt.ana || 100) / 1000.0) * sr);
+    var re = new Array(N), im = new Array(N);
+    var cnt = Math.max(Math.min(len - a0, N), 0);
+    for (var k = 0; k < N; k++) {
+        var w = (k < cnt) ? (0.5 - 0.5 * Math.cos(2 * Math.PI * k / Math.max(cnt - 1, 1))) : 0;
+        re[k] = (k < cnt) ? mid[a0 + k] * w : 0;
+        im[k] = 0;
+    }
+    fftInPlace(re, im);
+    var half = N / 2;
+    var mag = new Array(half);
+    var tot = 0, cen = 0, best = 0, bestK = 0;
+    var edges = [20, 150, 300, 600, 1200, 2400, 4800, 9600, 24000];
+    var band = [0, 0, 0, 0, 0, 0, 0, 0];
+    var hf2 = 0;
+    var binHz = sr / N;
+    for (var m = 1; m < half; m++) {
+        mag[m] = Math.sqrt(re[m] * re[m] + im[m] * im[m]) / Math.max(cnt, 1) * 4;
+        var pw = mag[m] * mag[m];
+        var f = m * binHz;
+        if (f < 20) continue;
+        tot += pw; cen += pw * f;
+        if (f > 2000) hf2 += pw;
+        for (var e = 0; e < 8; e++) { if (f >= edges[e] && f < edges[e + 1]) { band[e] += pw; break; } }
+        if (f > 40 && f < 8000 && mag[m] > best) { best = mag[m]; bestK = m; }
+    }
+    mag[0] = 0;
+    var pkHz = bestK * binHz;
+    if (bestK > 1 && bestK < half - 1) {
+        var ya = Math.log(mag[bestK - 1] + 1e-12), yb = Math.log(mag[bestK] + 1e-12), yc = Math.log(mag[bestK + 1] + 1e-12);
+        var den = ya - 2 * yb + yc;
+        if (Math.abs(den) > 1e-9) pkHz = (bestK + 0.5 * (ya - yc) / den) * binHz;
+    }
+    out.specPeakHz = pkHz;
+    out.specPeakMag = best;
+    out.centroid = tot > 0 ? cen / tot : 0;
+    out.hfFrac = tot > 0 ? hf2 / tot : 0;
+    out.specPower = tot;
+    for (var bb = 0; bb < 8; bb++) out["band" + bb] = tot > 0 ? band[bb] / tot : 0;
+    // Harmonics of f0
+    var f0 = Number(opt.f0 || 220);
+    for (var h = 1; h <= 8; h++) {
+        var kc = Math.round(f0 * h / binHz);
+        var span = Math.max(2, Math.round(kc * 0.025));
+        var hm = 0;
+        for (var kk = Math.max(kc - span, 1); kk <= Math.min(kc + span, half - 1); kk++) hm = Math.max(hm, mag[kk]);
+        out["h" + h] = hm;
+    }
+    // Short-time RMS modulation depth and envelope onset count (analysis region only)
+    var hop = Math.floor(sr * 0.005);
+    var rmsList = [];
+    for (var s0 = a0; s0 + hop <= len; s0 += hop) {
+        var sq = 0;
+        for (var z = 0; z < hop; z++) sq += mid[s0 + z] * mid[s0 + z];
+        rmsList.push(Math.sqrt(sq / hop));
+    }
+    var mean = 0, vr = 0;
+    for (var r1 = 0; r1 < rmsList.length; r1++) mean += rmsList[r1];
+    mean = rmsList.length ? mean / rmsList.length : 0;
+    for (var r2 = 0; r2 < rmsList.length; r2++) vr += (rmsList[r2] - mean) * (rmsList[r2] - mean);
+    out.modDepth = (mean > 1e-9 && rmsList.length) ? Math.sqrt(vr / rmsList.length) / mean : 0;
+    var env = 0, mx = 0, envArr = new Array(len);
+    for (var n2 = a0; n2 < len; n2++) {
+        var ab = Math.abs(mid[n2]);
+        env = ab > env ? env + (ab - env) * 0.04 : env + (ab - env) * 0.004;
+        envArr[n2] = env;
+        if (env > mx) mx = env;
+    }
+    var armed = true, ons = 0;
+    for (var n3 = a0; n3 < len; n3++) {
+        if (armed && envArr[n3] > 0.5 * mx) { ons++; armed = false; }
+        else if (!armed && envArr[n3] < 0.25 * mx) armed = true;
+    }
+    out.envOnsets = ons;
+    return out;
+}
+
+function dumpMetrics(m) {
+    var txt = "";
+    for (var key in m) {
+        var v = m[key];
+        if (v !== v) v = -999;
+        txt += key + " " + v + "\n";
+    }
+    return txt;
 }

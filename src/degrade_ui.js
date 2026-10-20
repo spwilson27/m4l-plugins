@@ -637,6 +637,7 @@ function drawAbstractVisualizer(x, y, w, h) {
     var scanCount = stageEnabled[3] ? 9 : 15;
     mgraphics.set_line_width(0.8);
     for (var s = 0; s < scanCount; s++) {
+        /** @type {number} */
         var sy = y + 4 + (s / (scanCount - 1)) * (h - 8);
         var jitX = stageEnabled[1] ? Math.sin(s * 2.3 + animPhase) * curJitter * 8.0 : 0;
         mgraphics.set_source_rgba(0.18, 0.36, 0.46, 0.22);

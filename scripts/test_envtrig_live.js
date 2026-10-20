@@ -3,15 +3,16 @@
  * Live end-to-end test for the Envelope Trigger collapsible MIDI To panel, driven through the
  * Ableton MCP Bridge (`scripts/ableton_mcp_server.js`, `ableton_eval_lom_js`).
  *
- * Requires Ableton Live with `devices/Ableton MCP Bridge.amxd` and at least one freshly loaded
- * `devices/Envelope Trigger.amxd` in the set.
+ * Live runs only in the tart VM (AGENTS.md 1a). `scripts/vm_envtrig.sh live` starts the VM's Live
+ * with envtrig_test.als (MCP Bridge + two Envelope Trigger instances); `scripts/vm_envtrig.sh test`
+ * runs this script on the host through an ssh tunnel to the VM's bridge (`--port 19878`).
  *
  * Uses the device's test hook (`receive envtrig-test`): `test_click` clicks the strip of every
  * instance and `test_report` makes each strip write its state to Global("envtrig_test") as
  * `report_<LOM device id>`. Checks every instance: click -> state flips (toggle, setwidth 228/342,
  * panel widgets shown/hidden); click again -> back to the starting state, which is left as found.
  *
- *   node scripts/test_envtrig_live.js [--port 9878]
+ *   scripts/vm_envtrig.sh test        (or: node scripts/test_envtrig_live.js --port <tunnelled port>)
  */
 
 const { execFileSync } = require("child_process");

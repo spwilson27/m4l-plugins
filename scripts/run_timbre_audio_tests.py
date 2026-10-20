@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render Timbre Follower (`src/timbre_core.genexpr`) through the Ableton-bundled Max 9.
 
-Run it under the shared lock:  python3 scripts/max_lock.py python3 scripts/run_timbre_audio_tests.py
+Run it directly (shared scripts/max_harness.py, NonRealTime driver, no lock):  python3 scripts/run_timbre_audio_tests.py
 
 The gen code is src/cepstrum_lib.genexpr + src/timbre_core.genexpr. A deterministic stimulus is written into
 `buffer~ src` by tests/timbre_probe.js and read sample by sample (`index~`, driven by a gen counter) through the
@@ -121,7 +121,8 @@ def read_raw(path, channels=4):
     with open(path, "rb") as f:
         data = f.read()
     flat.frombytes(data[: len(data) // 4 * 4])
-    if sys.byteorder == "big":
+    # Max's `writeraw` always writes big-endian samples (verified: little-endian reads gave NaN / 3e38 garbage).
+    if sys.byteorder == "little":
         flat.byteswap()
     return [flat[c::channels] for c in range(channels)]
 
@@ -130,6 +131,12 @@ def raw_to_wav(raw_path, wav_path, sr, channels=4):
     """Wrap the raw float32 file in a WAV header for tests/timbre_mirror_compare.js."""
     with open(raw_path, "rb") as f:
         data = f.read()
+    data = data[: len(data) // 4 * 4]
+    if sys.byteorder == "little":  # writeraw is big-endian, a float WAV is little-endian
+        sw = array.array("f")
+        sw.frombytes(data)
+        sw.byteswap()
+        data = sw.tobytes()
     n = len(data)
     hdr = b"RIFF" + (36 + n).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little")
     hdr += (3).to_bytes(2, "little") + channels.to_bytes(2, "little") + int(sr).to_bytes(4, "little")
@@ -159,7 +166,7 @@ def run_audio_once(code, case):
     try:
         r = mh.run_case(f"timbre_{case['name']}", boxes, lines, probe_js=PROBE_JS,
                         probe_args=f"{case['scenario']} {raw}", settle_ms=0, dur_ms=case["dur"],
-                        channels=4, sr=SR, timeout=90)
+                        channels=4, sr=SR, timeout=300)
         res = {"rec": read_raw(raw), "scope": [r.get(f"s{i}", 0.0) for i in range(16)], "raw": raw}
         errs = []
         check_audio(case, res, errs)

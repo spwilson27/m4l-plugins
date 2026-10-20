@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/reciprocator_config.js",
+    "src/reciprocator_ui.js"
+  ]
+}

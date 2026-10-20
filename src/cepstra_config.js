@@ -327,8 +327,10 @@ function voicingGateStep(open, v, gate01) {
     return { open: op, logGain: -(1 - op) * 6.9 * clamp(gate01 * 10, 0, 1) };
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+// Export through a local so this file stays a global script for the type checker (see AGENTS.md 1c).
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         GATE_MODE_NAMES, VOICING_T0, VOICING_T_RATIO, cepstralVoicing, voicingThreshold, voicingGateStep,
         SCOPE_SAMPS, NUM_QUEF, QUEF_MIN_MS, QUEF_MAX_MS, QUEF_SENTINEL, quefMsAt, msToAxis01, axis01ToMs, resToAxis01, axis01ToRes, DISPLAY_K, cepstrumDisplayHeight, percentileAbs, adaptRef, columnRange, poolSigned, NUM_BINS, BIN_FMIN, BIN_FMAX, FFT_SIZES, MODE_NAMES, QUALITY_NAMES, SHIFT_RANGE_ST,
         LIFTER_MIN_MS, LIFTER_MAX_MS, DEFAULT_RES_PCT, GATE_RANGE_MIN_DB, GATE_RANGE_SPAN_DB, EPS_MAG,

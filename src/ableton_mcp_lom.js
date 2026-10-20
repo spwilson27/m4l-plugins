@@ -68,6 +68,10 @@ function getScalar(api, prop) {
     }
 }
 
+/**
+ * @param {string} [pathOrId]
+ * @returns {LomApi}
+ */
 function makeApi(pathOrId) {
     if (typeof LiveAPI === "undefined") {
         throw new Error("LiveAPI is not available in this Max environment");
@@ -471,9 +475,11 @@ function handleInspectMbsplit() {
     if (typeof Global !== "undefined") {
         try {
             var g = new Global("mbsplit_shared_bus");
-            if (g && g.peers) {
-                for (var id in g.peers) {
-                    var peer = g.peers[id];
+            /** @type {{ [id: string]: any }} */
+            var gPeers = g && /** @type {{ [id: string]: any }} */ (g.peers);
+            if (g && gPeers) {
+                for (var id in gPeers) {
+                    var peer = gPeers[id];
                     if (!peer) continue;
                     var peerEntry = {
                         id: id,

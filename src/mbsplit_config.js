@@ -692,8 +692,9 @@ function synthesizeSawWave8192(fundamentalHz, sampleRate) {
     return out;
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         MBSPLIT_MIN_FREQ: MBSPLIT_MIN_FREQ,
         MBSPLIT_MAX_FREQ: MBSPLIT_MAX_FREQ,
         MBSPLIT_MIN_GAP_OCT: MBSPLIT_MIN_GAP_OCT,

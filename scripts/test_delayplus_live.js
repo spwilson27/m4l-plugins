@@ -4,8 +4,8 @@
  * (`scripts/ableton_mcp_server.js`, `ableton_eval_lom_js`).
  *
  * Needs a Live set with the MCP Bridge and at least one Delay+ pair, e.g. delayplus_test.als
- * (tracks "Delay+ A/B/C": rack [Delay+ X, Limiter 6 ms, Delay+ End]); start it in its own Live
- * instance with scripts/relaunch_delayplus_live.sh. Every Start registers its buffers in
+ * (tracks "Delay+ A/B/C": rack [Delay+ X, Limiter 6 ms, Delay+ End]). Live runs in the tart VM
+ * (AGENTS.md 1a): `scripts/vm_delayplus.sh live`, then `scripts/vm_delayplus.sh test`. Every Start registers its buffers in
  * Global("delayplus_bus").reg, which is how the test finds the pairs and reads their shared header.
  *
  * Per pair:
@@ -83,7 +83,7 @@ const pairs = evalLom(`
 `);
 
 if (!pairs.length) {
-    console.error("No live Delay+ (Start) instance found. Load delayplus_test.als (scripts/relaunch_delayplus_live.sh).");
+    console.error("No live Delay+ (Start) instance found. Load delayplus_test.als (scripts/vm_delayplus.sh live).");
     process.exit(1);
 }
 

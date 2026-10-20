@@ -86,8 +86,10 @@ function applyCeiling(x, ceilingLin, outmode, limEnv = 0) {
     return clamp(x * (c / peak), -c, c);
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+// Export through a local so this file stays a global script for the type checker (see AGENTS.md 1c).
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         SCOPE_COLS,
         SCOPE_FLOATS,
         MAX_GAIN_DB,

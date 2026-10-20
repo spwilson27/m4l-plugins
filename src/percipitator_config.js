@@ -216,8 +216,10 @@ function evalWavetableSample(wtArray, phase01, wtPos01, warpMode, warp01) {
     return s0 + (s1 - s0) * fMix;
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+// Export through a local so this file stays a global script for the type checker (see AGENTS.md 1c).
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         NUM_BANDS,
         WT_FRAMES,
         WT_FRAME_SIZE,
