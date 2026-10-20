@@ -13,207 +13,69 @@ Cases:
   reverse_oneshot  — Mode 0 one-shot played backwards through the same decay
   freeze_hold      — Mode 0 playhead frozen at a non-zero sample position
   unison8_wide     — Mode 0 single note with 8 detuned stereo unison voices
+  mono_sample      — 1-channel buffer, unison 1: both outputs carry equal audio
 """
 
-import json
 import os
-import shutil
-import subprocess
 import sys
-import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import max_harness as mh
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN_PATH = os.path.join(ROOT, "src", "sampler_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "sampler_probe.js")
-HARNESS = os.path.join(ROOT, "tests", "sampler_harness.maxpat")
-RESULT = "/tmp/sampler_audio.txt"
-MAX_BIN = (
-    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/"
-    "Max/Max.app/Contents/MacOS/Max"
-)
-CRASH_RECOVERY = os.path.expanduser(
-    "~/Library/Application Support/Cycling '74/Max 9/Crash Recovery"
-)
+GEN_CODE = ""
 
 
-def box(obj_id, text, x, y, w, h, **extra):
-    b = {
-        "id": obj_id,
-        "maxclass": extra.pop("maxclass", "newobj"),
-        "numinlets": extra.pop("numinlets", 1),
-        "numoutlets": extra.pop("numoutlets", 1),
-        "outlettype": extra.pop("outlettype", [""]),
-        "patching_rect": [float(x), float(y), float(w), float(h)],
-        "text": text,
-    }
-    b.update(extra)
-    return {"box": b}
+SETTLE_MS = 100
 
 
-def line(src, outlet, dst, inlet):
-    return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
-
-
-def build_harness(gen_code, case):
-    mode = case["name"]
+def device_patch(case):
+    """Device-specific boxes for the shared scaffold (scripts/max_harness.py)."""
+    name = case["name"]
+    chans = 1 if name == "mono_sample" else 2
     boxes = [
-        box("obj-load", "loadbang", 40, 40, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
-        box("obj-del-dsp", "delay 2600", 40, 80, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-dsp", "; dsp start", 40, 120, 80, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-arm", "delay 1200", 40, 160, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-on", "1", 40, 200, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-stop", f"delay {case['dur']}", 40, 240, 80, 20, numinlets=2, numoutlets=1),
-        box("obj-rec-off", "0", 40, 280, 30, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-del-peak", "delay 40", 40, 320, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-del-analyze", "delay 80", 40, 360, 70, 20, numinlets=2, numoutlets=1),
-        box("obj-analyze", f"analyze {case['dur']}", 120, 360, 90, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-quit", "; max quit", 40, 420, 70, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-params", case["params"], 200, 40, 760, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-setbuf", "setbuffers #0-bsamp #0-bsvoices #0-bsscope", 200, 70, 290, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-bind", "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope", 200, 100, 320, 20, maxclass="message", numinlets=2, numoutlets=1),
-        box("obj-samp", "buffer~ #0-bsamp @samps 12000 2", 540, 70, 225, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-voices", "buffer~ #0-bsvoices @samps 128", 540, 100, 220, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-scope", "buffer~ #0-bsscope @samps 64", 540, 130, 210, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recbuf", "buffer~ rec 2000 2", 540, 160, 150, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
-        box("obj-recsize", "size 2000", 540, 185, 75, 20, maxclass="message", numinlets=2, numoutlets=1),
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [200.0, 215.0, 300.0, 75.0],
-            }
-        },
-        box("obj-record", "record~ rec 2", 200, 305, 90, 20, numinlets=4, numoutlets=1, outlettype=[""]),
-        box("obj-peak-l", "peakamp~", 200, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-peak-r", "peakamp~", 290, 340, 70, 20, numinlets=1, numoutlets=1, outlettype=["float"]),
-        box("obj-mute-l", "*~ 0", 200, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-mute-r", "*~ 0", 260, 390, 45, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
-        box("obj-dac", "dac~", 200, 430, 50, 20, numinlets=2, numoutlets=0, outlettype=[]),
-        box(
-            "obj-js",
-            f"js {PROBE_JS} {mode}",
-            200, 470, 420, 20,
-            numinlets=4,
-            numoutlets=3,
-            outlettype=["bang", "bang", ""],
-        ),
+        mh.msg("obj-params", case["params"], 200, 40, 760),
+        mh.msg("obj-setbuf", "setbuffers #0-bsamp #0-bsvoices #0-bsscope", 200, 70, 290),
+        mh.msg("obj-bind", "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope", 200, 100, 320),
+        mh.box("obj-samp", f"buffer~ #0-bsamp @samps 12000 {chans}", 540, 70, 225,
+               numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-voices", "buffer~ #0-bsvoices @samps 128", 540, 100, 220,
+               numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-scope", "buffer~ #0-bsscope @samps 64", 540, 130, 210,
+               numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-order", "t b b b", 200, 10, 60, numoutlets=3, outlettype=["bang", "bang", "bang"]),
+        mh.gen_box("obj-gen", GEN_CODE, 200, 215),
     ]
-
     lines = [
-        line("obj-load", 0, "obj-del-dsp", 0),
-        line("obj-load", 0, "obj-recsize", 0),
-        line("obj-recsize", 0, "obj-recbuf", 0),
-        line("obj-load", 0, "obj-params", 0),
-        line("obj-load", 0, "obj-setbuf", 0),
-        line("obj-load", 0, "obj-bind", 0),
-        line("obj-bind", 0, "obj-gen", 0),
-        line("obj-params", 0, "obj-gen", 0),
-        line("obj-setbuf", 0, "obj-js", 3),
-        line("obj-del-dsp", 0, "obj-dsp", 0),
-        line("obj-del-dsp", 0, "obj-del-arm", 0),
-        line("obj-del-arm", 0, "obj-setbuf", 0),
-        line("obj-del-arm", 0, "obj-rec-on", 0),
-        line("obj-del-arm", 0, "obj-del-stop", 0),
-        line("obj-rec-on", 0, "obj-record", 0),
-        line("obj-del-stop", 0, "obj-rec-off", 0),
-        line("obj-del-stop", 0, "obj-del-peak", 0),
-        line("obj-del-stop", 0, "obj-del-analyze", 0),
-        line("obj-rec-off", 0, "obj-record", 0),
-        line("obj-del-peak", 0, "obj-peak-l", 0),
-        line("obj-del-peak", 0, "obj-peak-r", 0),
-        line("obj-del-analyze", 0, "obj-analyze", 0),
-        line("obj-analyze", 0, "obj-js", 0),
-        line("obj-js", 0, "obj-quit", 0),
-        line("obj-gen", 0, "obj-record", 0),
-        line("obj-gen", 1, "obj-record", 1),
-        line("obj-gen", 0, "obj-peak-l", 0),
-        line("obj-gen", 1, "obj-peak-r", 0),
-        line("obj-gen", 0, "obj-mute-l", 0),
-        line("obj-gen", 1, "obj-mute-r", 0),
-        line("obj-mute-l", 0, "obj-dac", 0),
-        line("obj-mute-r", 0, "obj-dac", 1),
-        line("obj-peak-l", 0, "obj-js", 0),
-        line("obj-peak-r", 0, "obj-js", 2),
+        # Fixed order (right to left): bind buffers, then params, then seed the sample.
+        mh.line("obj-load", 0, "obj-order", 0),
+        mh.line("obj-order", 2, "obj-bind", 0),
+        mh.line("obj-order", 1, "obj-params", 0),
+        mh.line("obj-order", 0, "obj-setbuf", 0),
+        mh.line("obj-setbuf", 0, "obj-js", 3),
+        mh.line("obj-bind", 0, "obj-gen", 0),
+        mh.line("obj-params", 0, "obj-gen", 0),
+        mh.line("obj-gen", 0, "obj-record", 0),
+        mh.line("obj-gen", 1, "obj-record", 1),
+        mh.line("obj-gen", 0, "obj-mute-l", 0),
+        mh.line("obj-gen", 1, "obj-mute-r", 0),
     ]
-
-    return {
-        "patcher": {
-            "fileversion": 1,
-            "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
-            "rect": [80.0, 80.0, 960.0, 560.0],
-            "boxes": boxes,
-            "lines": lines,
-        }
-    }
-
-
-def stop_previous_harness():
-    # Max is single-instance. A harness that is still quitting will steal the
-    # next launch and measure silence.
-    subprocess.run(
-        ["pkill", "-9", "-f", "sampler_harness.maxpat"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    for _ in range(24):
-        still = subprocess.run(
-            ["pgrep", "-f", "sampler_harness.maxpat"],
-            stdout=subprocess.DEVNULL,
-        )
-        if still.returncode != 0:
-            break
-        time.sleep(0.25)
-    time.sleep(0.35)
+    return boxes, lines
 
 
 def run_case(gen_code, case):
-    stop_previous_harness()
-    if os.path.exists(RESULT):
-        os.remove(RESULT)
-    if os.path.exists(CRASH_RECOVERY):
-        shutil.rmtree(CRASH_RECOVERY, ignore_errors=True)
-
-    with open(HARNESS, "w", encoding="utf-8") as f:
-        json.dump(build_harness(gen_code, case), f, indent=2)
-
-    proc = subprocess.Popen([MAX_BIN, HARNESS], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    t0 = time.time()
-    stable = 0
-    last_size = -1
-    while time.time() - t0 < 48.0:
-        if os.path.exists(RESULT):
-            sz = os.path.getsize(RESULT)
-            if sz > 20 and sz == last_size:
-                stable += 1
-                if stable >= 2:
-                    break
-            else:
-                stable = 0
-                last_size = sz
-        time.sleep(0.15)
-
-    try:
-        proc.terminate()
-        proc.wait(timeout=2.0)
-    except Exception:
-        proc.kill()
-
-    if not os.path.exists(RESULT):
-        return None
-
-    out = {}
-    with open(RESULT, "r", encoding="utf-8") as f:
-        for line_str in f:
-            parts = line_str.strip().split()
-            if len(parts) == 2:
-                out[parts[0]] = float(parts[1])
-    return out
+    global GEN_CODE
+    GEN_CODE = gen_code
+    boxes, lines = device_patch(case)
+    # Voices are gated on at the start of the measured window (sample time, stepped mode).
+    return mh.run_case(
+        case["name"], boxes, lines,
+        probe_js=PROBE_JS, probe_args=case["name"],
+        settle_ms=SETTLE_MS, dur_ms=case["dur"], channels=2,
+        mode="stepped", events=[(SETTLE_MS, "obj-js", 3, "trigger")],
+    )
 
 
 CASES = [
@@ -262,12 +124,17 @@ CASES = [
         "dur": 500,
         "params": "mode 0, loop_mode 1, unison_voices 8, unison_detune 0.85, unison_width 1, freeze 0, reverse 0, filt_on 0, sus_lvl 1, out_gain 0",
     },
+    {
+        "name": "mono_sample",
+        "dur": 500,
+        "params": "mode 0, loop_mode 1, unison_voices 1, unison_width 0, unison_detune 0, freeze 0, reverse 0, filt_on 0, sus_lvl 1, out_gain 0",
+    },
 ]
 
 
 def main():
-    if not os.path.exists(MAX_BIN):
-        print(f"Skipping real Max audio test: {MAX_BIN} not found")
+    if not os.path.exists(mh.MAX_BIN):
+        print(f"Skipping real Max audio test: {mh.MAX_BIN} not found")
         return
 
     with open(GEN_PATH, "r", encoding="utf-8") as f:
@@ -277,21 +144,12 @@ def main():
     only = os.environ.get("SAMPLER_CASE", "").strip()
     cases = [c for c in CASES if not only or c["name"] == only]
     for c in cases:
-        r = None
-        for attempt in range(3):
-            r = run_case(gen_code, c)
-            if not r:
-                print(f"[{c['name']}] attempt {attempt + 1} produced no report, retrying")
-                continue
-            bound = r.get("scopeFrames", 0) >= 8000
-            audible = c["name"] == "idle_silent" or (
-                r.get("rendered", 0) >= 800 and r.get("peak", 0) > 0.02
-            )
-            if bound and audible and r.get("nan", 1) == 0:
-                break
-            print(f"[{c['name']}] attempt {attempt + 1} was not ready (scopeFrames={r.get('scopeFrames')} rendered={r.get('rendered')} peak={r.get('peak')}), retrying")
+        # One run per case: max_harness isolates each Max instance and rejects mismatched results,
+        # so a missing or unbound result is a real failure, not a reason to retry.
+        r = run_case(gen_code, c)
         if not r:
-            raise RuntimeError(f"Max audio harness did not produce {RESULT} for {c['name']}")
+            raise RuntimeError(f"Max audio harness did not produce a result for {c['name']}")
+        assert r.get("scopeFrames", 0) >= 8000, f"{c['name']}: sample buffer not bound (scopeFrames={r.get('scopeFrames')})"
         results[c["name"]] = r
         ratio = (r["lateRms"] / r["earlyRms"]) if r.get("earlyRms", 0) > 1e-8 else 0.0
         r["lateEarly"] = ratio
@@ -347,9 +205,12 @@ def main():
     )
     assert results["unison8_wide"]["scopeActive"] == 1, "Unison stacks inside one allocated voice"
 
-    if os.path.exists(HARNESS):
-        os.remove(HARNESS)
-    print("All 9 real Max 9 Better Sampler audio tests passed!")
+    mono = results["mono_sample"]
+    assert mono["peak"] > 0.04 and mono["rms"] > 0.008, "mono_sample: expected audible output"
+    assert mono["stereoDiff"] < 0.001, f"mono_sample: L/R must match (stereoDiff={mono['stereoDiff']})"
+    assert mono["scopePeakL"] > 0.02, "mono_sample: scope must report live output"
+
+    print("All 10 real Max 9 Better Sampler audio tests passed!")
 
 
 if __name__ == "__main__":

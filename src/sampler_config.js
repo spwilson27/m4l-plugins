@@ -18,55 +18,6 @@ function midiToNoteName(midi) {
     return NOTE_NAMES[pc] + oct;
 }
 
-// Compute dynamic multi-panel layout for any of the 3 UI variants ("standard", "compact", "expanded")
-// when collapsible panels (Filter/Amp, Mod/Unison) are toggled on or off.
-function computeSamplerDynamicLayout(variant, showFiltAmp, showModUni) {
-    var v = variant || "standard";
-    var faOn = showFiltAmp ? 1 : 0;
-    var muOn = showModUni ? 1 : 0;
-
-    var baseLeftW = 304.0;
-    var playStripW = 116.0;
-    var filtAmpW = 148.0;
-    var modUniW = 128.0;
-
-    if (v === "compact") {
-        baseLeftW = 248.0;
-        playStripW = 104.0;
-        filtAmpW = 132.0;
-        modUniW = 114.0;
-    } else if (v === "expanded") {
-        baseLeftW = 336.0;
-        playStripW = 124.0;
-        filtAmpW = 160.0;
-        modUniW = 144.0;
-    }
-
-    var curX = 6.0 + baseLeftW + 4.0 + playStripW + 4.0;
-    var filtAmpX = curX;
-    if (faOn) {
-        curX += filtAmpW + 4.0;
-    }
-    var modUniX = curX;
-    if (muOn) {
-        curX += modUniW + 4.0;
-    }
-    var deviceWidth = curX + 2.0;
-
-    return {
-        variant: v,
-        showFiltAmp: faOn,
-        showModUni: muOn,
-        baseLeftW: baseLeftW,
-        playStripW: playStripW,
-        filtAmpX: filtAmpX,
-        filtAmpW: filtAmpW,
-        modUniX: modUniX,
-        modUniW: modUniW,
-        deviceWidth: deviceWidth
-    };
-}
-
 // Transient & Grid Slicer on a downsampled waveform peak envelope (0..1 array).
 // Returns sorted normalized slice start positions in [0..1), always starting with 0.0.
 function detectTransientSlices(peaks, sensitivity, maxSlices) {
@@ -346,7 +297,6 @@ if (typeof module !== "undefined" && module.exports) {
         SAMPLER_MODES: SAMPLER_MODES,
         NOTE_NAMES: NOTE_NAMES,
         midiToNoteName: midiToNoteName,
-        computeSamplerDynamicLayout: computeSamplerDynamicLayout,
         detectTransientSlices: detectTransientSlices,
         estimateRootMidiNote: estimateRootMidiNote,
         createVoiceAllocator: createVoiceAllocator

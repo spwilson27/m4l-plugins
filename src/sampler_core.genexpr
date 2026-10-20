@@ -11,7 +11,7 @@
 //   3 = SLICE    : Per-note slice bounds, played by the repitch engine.
 //
 // Buffers (bound on loadbang via `samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope`):
-//   samp   ("bsamp")    : Stereo audio sample buffer (2 channels, dynamically resized via replace / drop)
+//   samp   ("bsamp")    : Audio sample buffer (1 or 2 channels; mono plays on both outputs; dynamically resized via replace / drop)
 //   vdata  ("bsvoices") : 128-sample control table (16 voices x 8 slots):
 //     slot + 0 : gate (0 = released, 1 = held)
 //     slot + 1 : target MIDI note (0..127)
@@ -47,8 +47,10 @@ slew_val(target, coef) {
 
 peek_lr(sampBuf, idx, maxIdx) {
 	iClamped = clip(idx, 0, maxIdx);
-	smpL = peek(sampBuf, iClamped, 0, interp="linear", boundmode="clamp");
-	smpR = peek(sampBuf, iClamped, 1, interp="linear", boundmode="clamp");
+	// channelmode="clamp": a 1-channel (mono) buffer returns channel 0 for the
+	// right read too, so mono samples play identically on both outputs.
+	smpL = peek(sampBuf, iClamped, 0, interp="linear", boundmode="clamp", channelmode="clamp");
+	smpR = peek(sampBuf, iClamped, 1, interp="linear", boundmode="clamp", channelmode="clamp");
 	return smpL, smpR;
 }
 

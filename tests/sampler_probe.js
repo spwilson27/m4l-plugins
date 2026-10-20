@@ -13,16 +13,24 @@ var sampName = "";
 var voicesName = "";
 var scopeName = "";
 var trigSeq = 0;
+var resultPath = "/tmp/sampler_audio.txt";
+
+function resultpath(p) { resultPath = String(p); }
 
 function setbuffers(sName, vName, scName) {
     sampName = String(sName || "");
     voicesName = String(vName || "");
     scopeName = String(scName || "");
-    trigSeq += 1;
-    seedSampleAndVoices();
+    seedSample();
 }
 
-function seedSampleAndVoices() {
+// Sent by the harness `events` list at the start of the measured window.
+function trigger() {
+    trigSeq += 1;
+    seedVoices();
+}
+
+function seedSample() {
     if (!sampName || !voicesName) return;
     var sb = new Buffer(sampName);
     // Short dual-mono tone with a steep decay. Reverse can walk from the quiet
@@ -45,8 +53,12 @@ function seedSampleAndVoices() {
         ch2[i] = w;
     }
     sb.poke(1, 0, ch1);
-    sb.poke(2, 0, ch2);
+    if (mode !== "mono_sample") sb.poke(2, 0, ch2);
 
+}
+
+function seedVoices() {
+    if (!voicesName) return;
     var vb = new Buffer(voicesName);
     var vFlat = new Array(128);
     for (var k = 0; k < 128; k++) vFlat[k] = 0.0;
@@ -61,7 +73,7 @@ function seedSampleAndVoices() {
     // Centered single notes let Reverse / Freeze / 8-voice unison show up in the
     // recording instead of the triad's hardcoded pan seeds.
     var single = (mode === "forward_oneshot" || mode === "reverse_oneshot"
-        || mode === "freeze_hold" || mode === "unison8_wide");
+        || mode === "freeze_hold" || mode === "unison8_wide" || mode === "mono_sample");
     var notes = (mode === "slice_trig") ? [38] : (single ? [60] : [60, 64, 67]);
     for (var v = 0; v < notes.length; v++) {
         var base = v * 8;
@@ -106,7 +118,7 @@ function analyze(durMs) {
     var lateRms = bandRms(left, right, Math.floor(left.length * 0.65), Math.floor(left.length * 0.92));
     var scopeStats = readScope();
 
-    var report = new File("/tmp/sampler_audio.txt", "write", "TEXT");
+    var report = new File(resultPath, "write", "TEXT");
     report.writestring(
         "genL " + peaks.genL + "\n" +
         "genR " + peaks.genR + "\n" +

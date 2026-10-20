@@ -47,8 +47,8 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Ableton MCP Bridge
      python3 scripts/build_ableton_mcp.py && node tests/test_ableton_mcp.js && python3 scripts/render_preview.py "devices/Ableton MCP Bridge.amxd"
 
-     # Better Sampler (one build writes all 4 .amxd variants)
-     python3 scripts/build_sampler.py && node tests/test_sampler.js && for v in "Better Sampler Compact" "Better Sampler Standard" "Better Sampler Expanded" "Better Sampler"; do python3 scripts/render_preview.py "devices/$v.amxd"; done
+     # Better Sampler
+     python3 scripts/build_sampler.py && node tests/test_sampler.js && python3 scripts/render_preview.py "devices/Better Sampler.amxd"
 
      # Envelope Trigger
      python3 scripts/build_envtrig.py && node tests/test_envtrig.js && python3 scripts/run_envtrig_ui_tests.py && python3 scripts/render_preview.py "devices/Envelope Trigger.amxd"
@@ -569,6 +569,81 @@ Audio checks (real Max render): `python3 scripts/run_envtrig_audio_tests.py`
 
 ---
 
-## 14. Architecture of `devices/Better Sampler*.amxd` (State)
+## 14. Architecture of `devices/Better Sampler.amxd`
 
-- **State**: `SamplerStateData` (blob, `parameter_type: 3`) is saved with the Set/preset by `getvalueof()` in `src/sampler_ui.js`. **Version 2** = the v1 fields (mode, start/end, loop, xfade, play pos, bottom tab, slice count + slice markers ×10000) followed by the **dropped sample file path** as the last element. `setvalueof()` still parses v1 (no path, no load). On a v2 restore it sets `sampleFilePath`/`sampleFileName`, emits `load_sample <path>` (→ `prepend replace` → `buffer~ #0-bsamp`), and re-sends it once from `setbuffers()` if the buffer is still silent (Set load can run before the buffers are bound). When the buffer finishes loading, `sample_loaded` refreshes the waveform and keeps the saved slice markers instead of re-running transient detection. The `live.drop` stays `parameter_enable: 0`; the path lives only in the blob. A moved/missing file leaves the device empty.
+### Presentation Layout (`600 x 169` px, Bitwig Sampler look)
+- **The whole face is drawn by two `v8ui` canvases**, both running `src/sampler_face.js`:
+  - `obj-viz` (`FACE_REGION "main"`, `x = 0, y = 0, w = 528`) draws the engine list, the sample panel and the bottom panels.
+  - `obj-viz-side` (`"side"`, `x = 531, y = 3, w = 66, h = 163`) draws the right-hand column.
+- **Loading a sample**: drop onto the waveform (`obj-drop-wave`), or click the file name or the side `LOAD` button to open the file dialog (`browse` → `opendialog sound`).
+  - Both reach the main face: the drop as `prepend dropfile`, the dialog pick as `prepend browsed`. The face emits `load_sample` → `prepend replace` → `buffer~ #0-bsamp`, and the buffer's done bang → `prepend sample_loaded` → face.
+  - A path split into several atoms by spaces is rejoined.
+  - An empty `live.drop` sends `none` when the device loads; `dropfile` ignores it.
+- **`live.drop` in Live only outputs in parameter mode**: `parameter_enable 1`, `parameter_type 4` (File), `parameter_invisible 1`, longname `Sample File`, as in Max's `live.drop` help patch.
+  - With `parameter_enable 0` it highlights on drag but never sends the path (verified in Live 12 with the load trace).
+  - In parameter mode Live saves the path and replays it on Set load. `dropfile` ignores a replay of the path that `SamplerStateData` is already restoring or has loaded.
+  - After a dialog pick the face sends `drop_set <path>` → `prepend set` → the drop zone, so its saved path matches.
+  - Keep exactly one `live.drop`: two would each replay their own saved path on load.
+- `obj-drop-wave` is the **one allowed `live.*` / `v8ui` overlap**: an invisible `live.drop` placed after `obj-viz` in `boxes` with `ignoreclick 1`. Clicks fall through to the waveform; only file drops land on it. It lights blue while a file is dragged over it.
+- One grey background `panel` (`obj-pnl-bg`) is the last box.
+- **Load trace**: the face appends each load step to `Global("better_sampler_trace").text`: `setbuffers`, `dropfile`, `browsed`, `sample_loaded` with its args, and `refresh` with frames, channels, peak and loaded flag, or an error. Read it in Live through the bridge: `ableton_eval_lom_js` with `return new Global("better_sampler_trace").text;`. `Buffer("#0-bsamp")` is readable there too: in a top-level device patch `#0` is not substituted.
+- `buffer~` also reports a finished load as `sample_loaded bang`, which must not rename the sample.
+- `replace` resizes `#0-bsamp` to the file's channel count, so a mono file leaves 1 channel. The face reads `channelcount()` and draws L for both sides. A failed waveform refresh sets `lastLoadError` and is `post()`ed, never silently swallowed.
+- With no sample loaded, MIDI still runs the voices, but the face draws no scan lines, grain clouds or `Pos` marker.
+- Every parameter is a real, automatable `live.*` object (`obj-ctrl-<key>`) kept off the face (`presentation 0`), as in Cepstra.
+- **Look**: flat panels (`0.165`) on a grey ground (`0.255`), and a near-black sample panel. Values are blue; the start / end flags and times are yellow, the loop is green, and knob arcs are orange. Knobs are grey discs with a white pointer, and the `Speed` knob is a white disc. All colours are in `COL` in `src/sampler_face.js`.
+- **Left column (`x = 3..56`)**:
+  - `Single` / `Sliced`: Sliced sets `mode 3`, and Single goes back to the last engine.
+  - The engine list (`Repitch`, `Cycles`, `Textures`, which are `mode 0..2`).
+  - 16 voice-activity LEDs.
+- **Sample panel (`x = 59..525, y = 3..103`)**:
+  - Header: the file name, active / max voices, `ROOT` note and `ct` fine tune (both drag vertically), and L/R output meters.
+  - Waveform: the region outside start..end is dimmed, and the yellow start / end flags sit at the top. When the loop is on, the loop region is green, with flags at the bottom and an xfade ramp. Sliced mode shows numbered slices (click to audition from C1). Textures shows the grain spray around each voice, and Cycles shows the cycle window. Drag a flag to move it, click elsewhere to set `Pos`, and double-click to reset.
+  - Footer:
+    - `PLAY` side: the reverse toggle, then start and end as draggable times.
+    - `LOOP` side: the mode toggle (off / → / ⇄), then loop start, loop end and xfade %.
+- **Bottom row (`y = 106..166`)**:
+  - Engine panel: `◀ engine ▶`, with `Size` / `Spray` / `Fmt`. Knobs that don't affect the current engine are dimmed.
+  - Play panel: the Freeze snowflake, `Pitch`, `Speed` (`grain_motion`) and `Pos`.
+  - Filter panel: power, a type glyph (click to cycle LP / BP / HP), the drive value, `Cutoff` (value shown under it), `Res` and `Env`.
+  - Envelope panel with `AMP` / `MOD` / `LFO` / `UNI` page tabs:
+    - `AMP`: A D S R.
+    - `MOD`: A D S R, plus env → `Pit` / `Pos`.
+    - `LFO`: Rate / Shape / → Pit / Flt / Pos.
+    - `UNI`: Uni / Detune / Poly.
+- **Side column**: `LOAD` (file dialog), `Poly` / `Mono` buttons (`mono_legato`), `Width` (L R), `Glide`, `Vel` and `Out`.
+- **Interaction**:
+  - Dragging a knob vertically covers its full range in 120 px, shift-drag is 8x finer, and double-click resets it.
+  - A knob click captures the mouse until release: the cursor is hidden, hover is frozen on that knob, and the drag keeps working outside the canvas.
+  - The LOM has no way to give the knob Live's own parameter focus: `live_set view selected_parameter` is read-only and ignores writes.
+  - Hovering or dragging a knob swaps its label for its value.
+  - Knob travel uses Live's mapping (`value = lo + (hi - lo) * norm^exponent`), from the `FACE_PARAMS` table the build injects.
+- **Sync**:
+  - Face edits emit `["param", key, value]` → `route param load_sample` → `route <every key>` → `obj-ctrl-<key>`.
+  - Each live object drives `prepend <gen>` → gen, and `prepend set_<key>` → both v8uis. Its setter calls `storeParam()` in `src/sampler_ui.js`.
+  - The echo only stores the value, so there is no feedback loop.
+
+### Gen core (`gen.codebox~`, hidden)
+- `src/sampler_core.genexpr`: 16 voices, each with up to 8 stereo unison sub-voices. There are 4 engines (`mode`):
+  - `0` Repitch: varispeed. Forward loops use an equal-power crossfade, and ping-pong is sample-continuous.
+  - `1` Cycles: pitch-locked dual Hann grains with `formant`.
+  - `2` Textures: a granular cloud.
+  - `3` Slice: per-note slices from C1.
+- Every engine also has `freeze` and `reverse`, a TPT SVF LP / BP / HP filter with drive, an Amp ADSR, a Mod ADSR and an LFO.
+- Buffers are bound on `loadbang` with `samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope`:
+  - `#0-bsamp`: the stereo sample.
+  - `#0-bsvoices`: `16 x 8` voice slots.
+  - `#0-bsscope`: 64-sample telemetry (voice playheads and envelopes, peaks, active voices, LFO, Mod Env, cutoff).
+- `src/sampler_config.js` holds the voice allocator (Poly, plus a Mono / Legato stack), `detectTransientSlices` and `estimateRootMidiNote`.
+
+### State
+- `SamplerStateData` (blob, `parameter_type: 3`, on `obj-viz`) is saved by `getvalueof()`.
+- Version 2 holds `[2, mode, start, end, loopMode, loopStart, loopEnd, xfade, playPos, envPage, sliceCount, ...slices]`, with positions stored as `x 10000`, followed by the dropped sample path. `setvalueof()` still parses v1, which has no path.
+- On a v2 restore it emits `load_sample <path>`, which goes `prepend replace` → `buffer~ #0-bsamp`. It sends it again from `setbuffers()` if the buffer is still silent, and keeps the saved slices instead of re-detecting them.
+- The `live.drop` stays `parameter_enable 0`; the path lives only in the blob.
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_sampler.py && node tests/test_sampler.js && python3 scripts/render_preview.py "devices/Better Sampler.amxd"
+```
+Audio checks (real Max render): `python3 scripts/run_sampler_audio_tests.py` (probe: `tests/sampler_probe.js`). Run it only while no other Max harness is running.

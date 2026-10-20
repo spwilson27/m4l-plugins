@@ -1,21 +1,13 @@
 #!/usr/bin/env node
 /**
- * Comprehensive verification suite for Better Sampler (.amxd):
- *   - devices/Better Sampler.amxd          (720 x 169 px Standard 4-Panel Workstation)
- *   - devices/Better Sampler Standard.amxd (720 x 169 px Standard 4-Panel Workstation)
- *   - devices/Better Sampler Compact.amxd  (622 x 169 px Compact Simpler-Sized Edition)
- *   - devices/Better Sampler Expanded.amxd (788 x 169 px Wide Flagship Studio Edition)
+ * Verification suite for Better Sampler (devices/Better Sampler.amxd, 600 x 169 px):
+ *   - one Bitwig-style face drawn by two v8ui boxes (main 528 px + side 66 px) plus a live.drop
+ *   - every automatable parameter is a hidden live.* object (presentation 0) wired through
+ *     route param -> obj-ctrl-<key> -> prepend -> obj-gen, with set_<key> echoes to both v8uis
  *
- * Covers:
- *  1. All 4 playback modes (Repitch, Cycles, Textures, Slice) plus Freeze and Reverse
- *  2. 16-voice polyphony, oldest-voice stealing, unison 1..8, and Mono/Legato/Glide
- *     single-trigger stack behavior
- *  3. Sample import via live.drop -> sample_loaded / dropfile, root-note estimation,
- *     and transient slices, with no preloaded library and no multisample zones
- *  4. Filt/Amp and Mod/Uni collapse wired to live.thisdevice setwidth and thispatcher,
- *     including set_panel_filt(0) sliding Mod/Uni left into Filt/Amp's slot
- *  5. Layout, zero-overlap, #0- isolation, background panel z-order,
- *     getvalueof/setvalueof, and undo/redo across all 3 UI sizes
+ * Covers: modes/slicer/root detection/voice allocator, GenExpr ordering, amxd structure and
+ * wiring, and a sandbox run of both embedded face scripts (paint, buttons, knobs, footer
+ * values, env page tabs, Poly/Mono, echoes, state round-trip).
  */
 
 const assert = require("assert");
@@ -50,24 +42,6 @@ function valueOf(box) {
     return box.saved_attribute_attributes && box.saved_attribute_attributes.valueof;
 }
 
-function widthExprFor(variant) {
-    const minW = cfg.computeSamplerDynamicLayout(variant, 0, 0).deviceWidth;
-    const filtW = cfg.computeSamplerDynamicLayout(variant, 1, 0).deviceWidth;
-    const modW = cfg.computeSamplerDynamicLayout(variant, 0, 1).deviceWidth;
-    return `expr ${Math.round(minW)} + $i1 * ${Math.round(filtW - minW)} + $i2 * ${Math.round(modW - minW)}`;
-}
-
-function modePillCenter(canvasW, modeIndex) {
-    const isExpanded = canvasW >= 312;
-    const isCompact = canvasW <= 255;
-    const badgeW = isCompact ? 58.0 : 64.0;
-    const badgeX = canvasW - badgeW - 3.0;
-    const matrixW = (!isCompact && canvasW >= 280) ? 38.0 : 0.0;
-    const modeAreaW = badgeX - matrixW - 6.0;
-    const modeCellW = Math.min(isExpanded ? 54.0 : 42.0, Math.floor((modeAreaW - 6.0) / 4.0));
-    const mx = 3.0 + modeIndex * (modeCellW + 2.0);
-    return { x: mx + modeCellW * 0.5, badgeX, modeCellW };
-}
 
 // ============================================================================
 // 1. Modes, layout math, slicer, pitch detector, voice allocator
@@ -81,24 +55,6 @@ assert.deepStrictEqual(cfg.SAMPLER_MODES.map((m) => m.id), [0, 1, 2, 3]);
 assert.strictEqual(cfg.midiToNoteName(60), "C3");
 assert.strictEqual(cfg.midiToNoteName(36), "C1");
 assert.strictEqual(cfg.midiToNoteName(69), "A3");
-
-const FULL_WIDTH = { compact: 622, standard: 720, expanded: 788 };
-for (const variant of ["compact", "standard", "expanded"]) {
-    const open = cfg.computeSamplerDynamicLayout(variant, 1, 1);
-    const noMod = cfg.computeSamplerDynamicLayout(variant, 1, 0);
-    const noFilt = cfg.computeSamplerDynamicLayout(variant, 0, 1);
-    const minLay = cfg.computeSamplerDynamicLayout(variant, 0, 0);
-    assert.strictEqual(open.deviceWidth, FULL_WIDTH[variant], `${variant} full width`);
-    assert.ok(open.deviceWidth > noMod.deviceWidth, `${variant}: hiding Mod/Uni shrinks width`);
-    assert.ok(noMod.deviceWidth > minLay.deviceWidth, `${variant}: hiding Filt/Amp shrinks width further`);
-    assert.strictEqual(
-        noFilt.modUniX,
-        open.filtAmpX,
-        `${variant}: collapsed Filt/Amp slides Mod/Uni into the Filt/Amp x slot`
-    );
-    assert.ok(noFilt.modUniX < open.modUniX, `${variant}: Mod/Uni x decreases when Filt/Amp collapses`);
-    assert.strictEqual(noFilt.deviceWidth, minLay.deviceWidth + noFilt.modUniW + 4);
-}
 
 const syntheticDrumPeaks = new Array(64).fill(0.02);
 syntheticDrumPeaks[0] = 0.95;
@@ -225,269 +181,289 @@ assert.ok((gen.match(/freezeOn > 0\.5/g) || []).length >= 3, "Freeze is handled 
 assert.ok(gen.includes("dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;"), "Reverse flips playback direction");
 assert.ok(gen.includes("REPITCH") && gen.includes("CYCLES") && gen.includes("TEXTURES") && gen.includes("SLICE"));
 
+
 // ============================================================================
-// 3. All 4 .amxd variants
+// 3. devices/Better Sampler.amxd structure and wiring
 // ============================================================================
-const VARIANT_FILES = [
-    ["Better Sampler.amxd", "standard", 720, 2],
-    ["Better Sampler Standard.amxd", "standard", 720, 2],
-    ["Better Sampler Compact.amxd", "compact", 622, 0],
-    ["Better Sampler Expanded.amxd", "expanded", 788, 3],
-];
+const DEVICE_W = 600;
+const DEVICE_H = 169;
+const FILE_NAME = "Better Sampler.amxd";
+const amxdPath = path.join(ROOT, "devices", FILE_NAME);
+assert.ok(fs.existsSync(amxdPath), `Missing built device: ${amxdPath}`);
+for (const old of ["Compact", "Standard", "Expanded"]) {
+    assert.ok(!fs.existsSync(path.join(ROOT, "devices", `Better Sampler ${old}.amxd`)), `no ${old} variant is built any more`);
+}
+const raw = fs.readFileSync(amxdPath);
+assert.strictEqual(raw.slice(0, 4).toString("ascii"), "ampf", "invalid ampf magic");
+assert.strictEqual(raw.slice(8, 12).toString("ascii"), "iiii", "expected Max Instrument 'iiii'");
+assert.strictEqual(raw.readUInt32LE(28), raw.length - 32, "JSON payload byte length mismatch");
 
-const GEN_PARAM_KEYS = [
-    "mode", "freeze", "reverse", "loop_mode",
-    "unison_voices", "unison_detune", "unison_width", "glide_ms",
-    "grain_size", "grain_motion", "grain_spray", "formant",
-    "filt_cutoff", "filt_on", "filt_type",
-];
+const doc = JSON.parse(raw.slice(32).toString("utf8"));
+const patcher = doc.patcher;
+assert.strictEqual(patcher.openinpresentation, 1, "opens in presentation mode");
+assert.deepStrictEqual(patcher.openrect, [0, 0, DEVICE_W, DEVICE_H], "openrect is 600 x 169");
+assert.strictEqual(patcher.devicewidth, DEVICE_W);
 
-for (const [fileName, variant, expectedW, previewMode] of VARIANT_FILES) {
-    const amxdPath = path.join(ROOT, "devices", fileName);
-    assert.ok(fs.existsSync(amxdPath), `Missing built device: ${amxdPath}`);
-    const raw = fs.readFileSync(amxdPath);
+const boxes = patcher.boxes.map((b) => b.box);
+const byId = new Map(boxes.map((b) => [b.id, b]));
+const lines = patcher.lines;
+assert.strictEqual(byId.size, boxes.length, "box ids are unique");
 
-    assert.strictEqual(raw.slice(0, 4).toString("ascii"), "ampf", `${fileName}: invalid ampf magic`);
-    assert.strictEqual(raw.slice(8, 12).toString("ascii"), "iiii", `${fileName}: expected Max Instrument 'iiii'`);
-    const jsonLen = raw.readUInt32LE(28);
-    assert.strictEqual(jsonLen, raw.length - 32, `${fileName}: JSON payload byte length mismatch`);
+// --- buffers, loadbang message, gen core ---
+assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ #0-bsamp 1000 2", "empty user sample buffer");
+assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ #0-bsvoices @samps 128");
+assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 64");
+assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope");
+assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope");
+assertLink(lines, "obj-loadbang", 0, "obj-msg-gen-buf", 0, "loadbang -> gen buffers");
+assertLink(lines, "obj-msg-gen-buf", 0, "obj-gen", 0, "gen buffers");
+assertLink(lines, "obj-msg-ui-buf", 0, "obj-viz", 0, "ui buffers");
+assert.strictEqual(byId.get("obj-gen").code.trim(), gen.trim(), "embeds the current GenExpr core");
+for (const b of boxes) {
+    const t = String(b.text || "");
+    if (/^(buffer~|send|receive)\b/.test(t)) assert.ok(t.includes("#0-"), `instance object must use #0- (${t})`);
+}
 
-    const doc = JSON.parse(raw.slice(32).toString("utf8"));
-    const p = doc.patcher;
-    assert.strictEqual(p.openinpresentation, 1, `${fileName}: presentation mode`);
-    assert.strictEqual(p.openrect[0], 0, `${fileName}: openrect x`);
-    assert.strictEqual(p.openrect[1], 0, `${fileName}: openrect y`);
-    assert.strictEqual(p.openrect[2], expectedW, `${fileName}: width`);
-    assert.strictEqual(p.openrect[3], 169.0, `${fileName}: height 169`);
-    assert.strictEqual(
-        cfg.computeSamplerDynamicLayout(variant, 1, 1).deviceWidth,
-        expectedW,
-        `${fileName}: openrect width matches the expanded layout`
-    );
+const stripped = JSON.stringify({
+    boxes: boxes.map((b) => {
+        const copy = Object.assign({}, b);
+        if (copy.textfile) copy.textfile = { embed: 1 };
+        if (copy.code) copy.code = "";
+        return copy;
+    }),
+    lines,
+});
+assert.ok(!/sfplay~/i.test(stripped), "no sfplay~ sample library");
+assert.ok(!/multisample|keyzone/i.test(stripped), "no multisample zone objects");
+assert.ok(!/\.(wav|aiff|aif|flac|mp3)\b/i.test(stripped), "no preloaded audio file");
+assert.ok(!/replace\s+\//i.test(stripped), "loadbang must not replace a library sample");
 
-    const boxes = p.boxes.map((b) => b.box);
-    const byId = new Map(boxes.map((b) => [b.id, b]));
-    const lines = p.lines;
+// --- background panel(s) last, background 1 ---
+const panels = boxes.filter((b) => b.maxclass === "panel");
+assert.ok(panels.length >= 1 && byId.get("obj-pnl-bg"), "background panel obj-pnl-bg exists");
+assert.strictEqual(boxes[boxes.length - 1].id, "obj-pnl-bg", "background panel is the last box");
+assert.ok(boxes.findIndex((b) => b.maxclass === "panel") > boxes.map((b) => b.maxclass !== "panel").lastIndexOf(true),
+    "panels are at the end of boxes");
+for (const b of panels) assert.strictEqual(b.background, 1, `panel ${b.id} background: 1`);
 
-    assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ #0-bsamp 1000 2", `${fileName}: empty user sample buffer`);
-    assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ #0-bsvoices @samps 128");
-    assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 64");
-    assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope");
-    assert.strictEqual(byId.get("obj-gen").code.trim(), gen.trim(), `${fileName}: embeds the current GenExpr core`);
-
-    for (const b of boxes) {
-        const text = String(b.text || "");
-        if (/^(buffer~|send|receive)\b/.test(text)) {
-            assert.ok(text.includes("#0-"), `${fileName}: instance object must use #0- (${text})`);
-        }
+// --- presentation: two v8ui canvases + the waveform drop target, all live.* controls kept off the face ---
+const liveBoxes = boxes.filter((b) => /^live\./.test(b.maxclass));
+for (const b of liveBoxes) {
+    if (b.id === "obj-drop-wave") continue;
+    assert.ok(b.presentation !== 1, `${b.id} (${b.maxclass}) must not be in presentation`);
+}
+assert.ok(!byId.has("obj-drop"), "one drop zone only: two would each replay a different saved path on load");
+// The waveform drop target is the one allowed overlap: an invisible live.drop above obj-viz that
+// ignores clicks, so the v8ui below keeps every click and drag while file drops land on it.
+const waveDrop = byId.get("obj-drop-wave");
+assert.strictEqual(waveDrop.maxclass, "live.drop");
+assert.strictEqual(waveDrop.presentation, 1);
+assert.strictEqual(waveDrop.ignoreclick, 1, "waveform drop target passes clicks through");
+assert.strictEqual(waveDrop.legend, "");
+assert.strictEqual(waveDrop.bordercolor[3], 0, "waveform drop target has no visible border");
+assert.strictEqual(waveDrop.textcolor[3], 0, "waveform drop target has no visible text");
+const wr = waveDrop.presentation_rect;
+const vr = [0, 0, 528, 169];
+assert.ok(wr[0] >= vr[0] && wr[1] >= vr[1] && wr[0] + wr[2] <= vr[2] && wr[1] + wr[3] <= vr[3], "waveform drop target sits inside obj-viz");
+const boxOrder = boxes.map((b) => b.id);
+assert.ok(boxOrder.indexOf("obj-drop-wave") > boxOrder.indexOf("obj-viz"), "waveform drop target is above obj-viz");
+const presBoxes = boxes.filter((b) => b.presentation === 1 && !b.hidden && b.maxclass !== "panel" && b.id !== "obj-drop-wave");
+assert.deepStrictEqual(presBoxes.map((b) => b.id).sort(), ["obj-viz", "obj-viz-side"]);
+// In Live a live.drop only outputs in parameter mode (File type), as in Max's live.drop help patch
+assert.strictEqual(waveDrop.parameter_enable, 1, "live.drop must be in parameter mode or Live never outputs the path");
+const wdv = waveDrop.saved_attribute_attributes.valueof;
+assert.strictEqual(wdv.parameter_type, 4, "live.drop parameter is the File type");
+assert.strictEqual(wdv.parameter_invisible, 1, "file parameter hidden from automation");
+assert.strictEqual(wdv.parameter_longname, "Sample File");
+for (let i = 0; i < presBoxes.length; i++) {
+    const r = presBoxes[i].presentation_rect;
+    assert.ok(r[0] >= 0 && r[0] + r[2] <= DEVICE_W, `${presBoxes[i].id} inside 0..${DEVICE_W}`);
+    assert.ok(r[1] >= 0 && r[1] + r[3] <= DEVICE_H, `${presBoxes[i].id} inside 0..${DEVICE_H}`);
+    for (let j = i + 1; j < presBoxes.length; j++) {
+        assert.ok(!rectsOverlap(r, presBoxes[j].presentation_rect), `overlap ${presBoxes[i].id} and ${presBoxes[j].id}`);
     }
+}
+// live.drop must stay clear of both canvases (v8ui would swallow its clicks)
+assert.deepStrictEqual(byId.get("obj-viz").presentation_rect, [0, 0, 528, 169]);
+assert.deepStrictEqual(byId.get("obj-viz-side").presentation_rect, [531, 3, 66, 163]);
+const bgPanel = byId.get("obj-pnl-bg");
+assert.deepStrictEqual(bgPanel.presentation_rect, [0, 0, DEVICE_W, DEVICE_H]);
 
-    const stripped = JSON.stringify({
-        boxes: boxes.map((b) => {
-            const copy = Object.assign({}, b);
-            if (copy.textfile) copy.textfile = { embed: 1 };
-            if (copy.code) copy.code = "";
-            return copy;
-        }),
-        lines,
-    });
-    assert.ok(!/sfplay~/i.test(stripped), `${fileName}: no sfplay~ sample library`);
-    assert.ok(!/multisample|keyzone/i.test(stripped), `${fileName}: no multisample zone objects`);
-    assert.ok(!/\.(wav|aiff|aif|flac|mp3)\b/i.test(stripped), `${fileName}: no preloaded audio file`);
-    assert.ok(!/replace\s+\//i.test(stripped), `${fileName}: loadbang must not replace a library sample`);
-
-    const firstPanelIdx = boxes.findIndex((b) => b.maxclass === "panel");
-    const lastNonPanelIdx = boxes.map((b) => b.maxclass !== "panel").lastIndexOf(true);
-    assert.ok(firstPanelIdx > lastNonPanelIdx, `${fileName}: panels are at the end of boxes`);
-    for (const b of boxes.filter((x) => x.maxclass === "panel")) {
-        assert.strictEqual(b.background, 1, `${fileName}: panel ${b.id} background: 1`);
+// --- controls: every key is an obj-ctrl-<key>; ranges, enums and 8-bit Int rule ---
+const ctrlBoxes = boxes.filter((b) => /^obj-ctrl-/.test(b.id));
+const ctrlKeys = ctrlBoxes.map((b) => b.id.replace(/^obj-ctrl-/, ""));
+assert.ok(ctrlKeys.length >= 40, `expected the full parameter set, got ${ctrlKeys.length}`);
+for (const b of ctrlBoxes) {
+    assert.ok(/^live\./.test(b.maxclass), `${b.id} is a live.* object`);
+    assert.strictEqual(b.presentation, 0, `${b.id} presentation 0`);
+    const vof = valueOf(b);
+    assert.ok(vof, `${b.id} has parameter data`);
+    if (typeof vof.parameter_mmax === "number" && vof.parameter_mmax > 255) {
+        assert.strictEqual(vof.parameter_type, 0, `${b.id}: range > 255 must be Float parameter_type 0`);
     }
+}
+const modeV = valueOf(byId.get("obj-ctrl-mode"));
+assert.deepStrictEqual(modeV.parameter_enum, ["Repitch", "Cycles", "Textures", "Slice"]);
+assert.strictEqual(modeV.parameter_mmax, 3);
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-freeze")).parameter_enum, ["Off", "Freeze"]);
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-reverse")).parameter_enum, ["Fwd", "Rev"]);
+assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-mono_legato")).parameter_enum, ["Poly", "Legato"]);
+const uniV = valueOf(byId.get("obj-ctrl-unison_voices"));
+assert.strictEqual(uniV.parameter_mmin, 1);
+assert.strictEqual(uniV.parameter_mmax, 8);
+assert.strictEqual(uniV.parameter_type, 0);
+const glideV = valueOf(byId.get("obj-ctrl-glide_ms"));
+assert.strictEqual(glideV.parameter_mmax, 1000);
+assert.strictEqual(glideV.parameter_type, 0, "glide 0..1000 cannot use Live's 8-bit Int type");
+const polyV = valueOf(byId.get("obj-ctrl-poly_voices"));
+assert.strictEqual(polyV.parameter_mmin, 1);
+assert.strictEqual(polyV.parameter_mmax, 16);
 
-    const presWidgets = boxes.filter((b) => b.presentation === 1 && !b.hidden && b.maxclass !== "panel");
-    for (let i = 0; i < presWidgets.length; i++) {
-        const a = presWidgets[i];
-        const ra = a.presentation_rect;
-        assert.ok(ra[0] >= 0 && ra[0] + ra[2] <= expectedW + 0.01, `${fileName}: ${a.id} outside horizontal bounds`);
-        assert.ok(ra[1] >= 0 && ra[1] + ra[3] <= 169.0, `${fileName}: ${a.id} outside 0..169`);
-        for (let j = i + 1; j < presWidgets.length; j++) {
-            const b = presWidgets[j];
-            assert.ok(
-                !rectsOverlap(ra, b.presentation_rect),
-                `${fileName}: overlap ${a.id} and ${b.id}`
-            );
-        }
-        const vof = valueOf(a);
-        if (vof && typeof vof.parameter_mmax === "number" && vof.parameter_mmax > 255) {
-            assert.strictEqual(vof.parameter_type, 0, `${fileName}: ${a.id} range > 255 must be Float parameter_type 0`);
-        }
-        if ((a.appearance === 2 || a.appearance === 3) && a.activeslidercolor && a.activebgcolor) {
-            assert.strictEqual(a.activeslidercolor[3], 1, `${fileName}: ${a.id} slider fill must be opaque`);
-            for (let c = 0; c < 3; c++) {
-                const ceiling = a.activebgcolor[c] * 0.62 + 0.38 + 0.03;
-                assert.ok(
-                    a.activeslidercolor[c] <= ceiling + 1e-6,
-                    `${fileName}: ${a.id} activeslidercolor must be pre-blended`
-                );
-            }
-        }
-        if (a.appearance === 3 && vof) {
-            assert.ok(vof.parameter_mmin < 0 && vof.parameter_mmax > 0, `${fileName}: ${a.id} bipolar range`);
-        }
-    }
+// --- import wiring ---
+assert.strictEqual(byId.get("obj-prep-replace").text, "prepend replace");
+assert.strictEqual(byId.get("obj-prep-loaded").text, "prepend sample_loaded");
+assert.strictEqual(byId.get("obj-prep-midi").text, "prepend midi_note");
+// Drops and dialog picks go through the face, which decides what to load
+assertLink(lines, "obj-drop-wave", 0, "obj-prep-dropfile", 0, "drop -> prepend dropfile");
+assert.strictEqual(byId.get("obj-prep-dropfile").text, "prepend dropfile");
+assertLink(lines, "obj-prep-dropfile", 0, "obj-viz", 0, "dropfile -> main face");
+assertLink(lines, "obj-opendialog", 0, "obj-prep-browsed", 0, "dialog -> prepend browsed");
+assert.strictEqual(byId.get("obj-prep-browsed").text, "prepend browsed");
+assertLink(lines, "obj-prep-browsed", 0, "obj-viz", 0, "browsed -> main face");
+assertLink(lines, "obj-route-viz", 1, "obj-prep-replace", 0, "load_sample -> replace");
+assertLink(lines, "obj-route-viz", 3, "obj-prep-dropset", 0, "drop_set route");
+assert.strictEqual(byId.get("obj-prep-dropset").text, "prepend set");
+assertLink(lines, "obj-prep-dropset", 0, "obj-drop-wave", 0, "browse keeps the drop zone's saved path in sync");
+for (const src of ["obj-drop-wave", "obj-opendialog"]) {
+    assert.ok(!lines.some((l) => l.patchline.source[0] === src && l.patchline.destination[0] === "obj-prep-replace"), `${src} must not bypass the face`);
+}
+assert.strictEqual(byId.get("obj-opendialog").text, "opendialog sound");
+assertLink(lines, "obj-prep-replace", 0, "obj-buf-samp", 0, "replace");
+assertLink(lines, "obj-buf-samp", 1, "obj-prep-loaded", 0, "buffer~ done");
+assertLink(lines, "obj-prep-loaded", 0, "obj-viz", 0, "sample_loaded -> main face");
+assertLink(lines, "obj-midiin", 0, "obj-midiparse", 0, "midi");
+assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, "midi");
+assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, "midi -> main face");
 
-    const modeV = valueOf(byId.get("obj-ctrl-mode"));
-    assert.deepStrictEqual(modeV.parameter_enum, ["Repitch", "Cycles", "Textures", "Slice"]);
-    assert.strictEqual(modeV.parameter_mmax, 3);
-    assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-freeze")).parameter_enum, ["Off", "Freeze"]);
-    assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-reverse")).parameter_enum, ["Fwd", "Rev"]);
-    assert.deepStrictEqual(valueOf(byId.get("obj-ctrl-mono_legato")).parameter_enum, ["Poly", "Legato"]);
-    const uniV = valueOf(byId.get("obj-ctrl-unison_voices"));
-    assert.strictEqual(uniV.parameter_mmin, 1);
-    assert.strictEqual(uniV.parameter_mmax, 8);
-    assert.strictEqual(uniV.parameter_type, 0);
-    const glideV = valueOf(byId.get("obj-ctrl-glide_ms"));
-    assert.strictEqual(glideV.parameter_mmin, 0);
-    assert.strictEqual(glideV.parameter_mmax, 1000);
-    assert.strictEqual(glideV.parameter_type, 0, "glide 0..1000 cannot use Live's 8-bit Int type");
-    const polyV = valueOf(byId.get("obj-ctrl-poly_voices"));
-    assert.strictEqual(polyV.parameter_mmin, 1);
-    assert.strictEqual(polyV.parameter_mmax, 16);
+// --- face -> route -> hidden control wiring ---
+assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set");
+assertLink(lines, "obj-route-viz", 2, "obj-opendialog", 0, "browse -> file dialog");
+assertLink(lines, "obj-viz", 0, "obj-route-viz", 0, "main face outlet");
+assertLink(lines, "obj-viz-side", 0, "obj-route-viz", 0, "side face outlet");
+assertLink(lines, "obj-route-viz", 0, "obj-route-param", 0, "param route");
+assertLink(lines, "obj-route-viz", 1, "obj-prep-replace", 0, "load_sample route");
+const routeKeys = byId.get("obj-route-param").text.split(/\s+/).slice(1);
+assert.strictEqual(new Set(routeKeys).size, routeKeys.length, "route keys are unique");
+assert.deepStrictEqual([...routeKeys].sort(), [...ctrlKeys].sort(), "route param covers exactly the obj-ctrl-<key> objects");
+assert.strictEqual(byId.get("obj-route-param").numoutlets, routeKeys.length + 1);
+routeKeys.forEach((key, i) => assertLink(lines, "obj-route-param", i, `obj-ctrl-${key}`, 0, `route ${key}`));
 
-    assert.strictEqual(byId.get("obj-drop").maxclass, "live.drop", `${fileName}: sample import drop target`);
-    assert.strictEqual(byId.get("obj-prep-replace").text, "prepend replace");
-    assert.strictEqual(byId.get("obj-prep-loaded").text, "prepend sample_loaded");
-    assert.strictEqual(byId.get("obj-prep-midi").text, "prepend midi_note");
-    assertLink(lines, "obj-drop", 0, "obj-prep-replace", 0, fileName);
-    assertLink(lines, "obj-drop", 0, "obj-prep-loaded", 0, fileName);
-    assertLink(lines, "obj-prep-replace", 0, "obj-buf-samp", 0, fileName);
-    assertLink(lines, "obj-buf-samp", 1, "obj-prep-loaded", 0, fileName);
-    assertLink(lines, "obj-prep-loaded", 0, "obj-viz", 0, fileName);
-    assertLink(lines, "obj-route-viz", 2, "obj-prep-replace", 0, fileName);
-    assertLink(lines, "obj-midiin", 0, "obj-midiparse", 0, fileName);
-    assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, fileName);
-    assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, fileName);
-
-    assert.strictEqual(byId.get("obj-toggle-filt").text, "Filt/Amp");
-    assert.strictEqual(byId.get("obj-toggle-mod").text, "Mod/Uni");
-    assert.deepStrictEqual(valueOf(byId.get("obj-toggle-filt")).parameter_enum, ["Hide", "Show"]);
-    assert.deepStrictEqual(valueOf(byId.get("obj-toggle-mod")).parameter_enum, ["Hide", "Show"]);
-    assert.strictEqual(byId.get("obj-prep-pfilt").text, "prepend set_panel_filt");
-    assert.strictEqual(byId.get("obj-prep-pmod").text, "prepend set_panel_mod");
-    assert.strictEqual(byId.get("obj-prep-setwidth").text, "prepend setwidth");
-    assert.strictEqual(byId.get("obj-thisdevice").text, "live.thisdevice");
-    assert.strictEqual(byId.get("obj-thispatcher").text, "thispatcher");
-    assert.strictEqual(byId.get("obj-expr-width").text, widthExprFor(variant), `${fileName}: setwidth expression`);
-    assert.strictEqual(byId.get("obj-inv-filt").text, "== 0");
-    assert.strictEqual(byId.get("obj-inv-mod").text, "== 0");
-    assert.strictEqual(byId.get("obj-prep-hide-filt").text, "prepend hidden");
-    assert.strictEqual(byId.get("obj-prep-hide-mod").text, "prepend hidden");
-
-    assertLink(lines, "obj-toggle-filt", 0, "obj-prep-pfilt", 0, fileName);
-    assertLink(lines, "obj-prep-pfilt", 0, "obj-viz", 0, fileName);
-    assertLink(lines, "obj-toggle-filt", 0, "obj-pak-vis", 0, fileName);
-    assertLink(lines, "obj-toggle-filt", 0, "obj-inv-filt", 0, fileName);
-    assertLink(lines, "obj-inv-filt", 0, "obj-prep-hide-filt", 0, fileName);
-    assertLink(lines, "obj-toggle-mod", 0, "obj-prep-pmod", 0, fileName);
-    assertLink(lines, "obj-prep-pmod", 0, "obj-viz", 0, fileName);
-    assertLink(lines, "obj-toggle-mod", 0, "obj-pak-vis", 1, fileName);
-    assertLink(lines, "obj-toggle-mod", 0, "obj-inv-mod", 0, fileName);
-    assertLink(lines, "obj-inv-mod", 0, "obj-prep-hide-mod", 0, fileName);
-    assertLink(lines, "obj-pak-vis", 0, "obj-expr-width", 0, fileName);
-    assertLink(lines, "obj-expr-width", 0, "obj-prep-setwidth", 0, fileName);
-    assertLink(lines, "obj-prep-setwidth", 0, "obj-thisdevice", 0, fileName);
-    assertLink(lines, "obj-route-viz", 3, "obj-thispatcher", 0, fileName);
-    assertLink(lines, "obj-route-viz", 4, "obj-prep-setwidth", 0, fileName);
-    assertLink(lines, "obj-prep-hide-filt", 0, "obj-pnl-filt", 0, fileName);
-    assertLink(lines, "obj-prep-hide-filt", 0, "obj-ctrl-filt_cutoff", 0, fileName);
-    assertLink(lines, "obj-prep-hide-mod", 0, "obj-pnl-mod", 0, fileName);
-    assertLink(lines, "obj-prep-hide-mod", 0, "obj-ctrl-unison_voices", 0, fileName);
-    assertLink(lines, "obj-prep-hide-mod", 0, "obj-ctrl-glide_ms", 0, fileName);
-    assertLink(lines, "obj-prep-hide-mod", 0, "obj-ctrl-mono_legato", 0, fileName);
-
-    for (const key of GEN_PARAM_KEYS) {
-        const prep = byId.get(`obj-prep-${key}`);
-        const uiPrep = byId.get(`obj-uiprep-${key}`);
-        assert.ok(prep, `${fileName}: missing gen prep for ${key}`);
-        assert.ok(uiPrep, `${fileName}: missing UI prep for ${key}`);
-        assert.strictEqual(prep.text, `prepend ${key}`);
-        assert.strictEqual(uiPrep.text, `prepend set_${key}`);
-        assertLink(lines, `obj-prep-${key}`, 0, "obj-gen", 0, fileName);
-        assertLink(lines, `obj-uiprep-${key}`, 0, "obj-viz", 0, fileName);
-        const scale = byId.get(`obj-scale-${key}`);
+// --- gen wiring and setter fan-out, per key ---
+const noGenKeys = [];
+// KNOWN BUG (scripts/build_sampler.py PARAM_SPECS: ui_setter is None for these): automation and
+// preset recall of these never reach the face. Remove an entry here once it is fixed.
+const KNOWN_NO_SETTER = [];
+const missingSetters = [];
+for (const key of routeKeys) {
+    const ctrlId = `obj-ctrl-${key}`;
+    const prep = byId.get(`obj-prep-${key}`);
+    const scale = byId.get(`obj-scale-${key}`);
+    if (prep) {
+        const m = /^prepend (\w+)$/.exec(prep.text);
+        assert.ok(m, `${key}: gen prepend text (${prep.text})`);
+        assert.ok(new RegExp(`\\bParam\\s+${m[1]}\\s*\\(`).test(gen), `${key}: gen has Param ${m[1]}`);
+        assertLink(lines, `obj-prep-${key}`, 0, "obj-gen", 0, `${key} -> gen`);
         if (scale) {
-            assertLink(lines, `obj-ctrl-${key}`, 0, `obj-scale-${key}`, 0, fileName);
-            assertLink(lines, `obj-scale-${key}`, 0, `obj-prep-${key}`, 0, fileName);
+            assert.ok(/^\* [\d.]+$/.test(scale.text), `${key}: scale text ${scale.text}`);
+            assertLink(lines, ctrlId, 0, scale.id, 0, `${key} ctrl -> scale`);
+            assertLink(lines, scale.id, 0, prep.id, 0, `${key} scale -> prep`);
         } else {
-            assertLink(lines, `obj-ctrl-${key}`, 0, `obj-prep-${key}`, 0, fileName);
+            assertLink(lines, ctrlId, 0, prep.id, 0, `${key} ctrl -> prep`);
         }
-        assertLink(lines, `obj-ctrl-${key}`, 0, `obj-uiprep-${key}`, 0, fileName);
+    } else {
+        noGenKeys.push(key);
     }
-    assert.strictEqual(byId.get("obj-scale-unison_detune").text, "* 0.01");
-    assert.strictEqual(byId.get("obj-scale-unison_width").text, "* 0.01");
-    assert.ok(!byId.has("obj-prep-mono_legato"), `${fileName}: legato is a voice-allocator flag, not a Gen param`);
-    assert.strictEqual(byId.get("obj-uiprep-mono_legato").text, "prepend set_mono_legato");
-    assertLink(lines, "obj-ctrl-mono_legato", 0, "obj-uiprep-mono_legato", 0, fileName);
-    assertLink(lines, "obj-uiprep-mono_legato", 0, "obj-viz", 0, fileName);
-    assert.strictEqual(byId.get("obj-uiprep-poly_voices").text, "prepend set_poly_voices");
-    assertLink(lines, "obj-uiprep-poly_voices", 0, "obj-viz", 0, fileName);
+    const uiPrep = byId.get(`obj-uiprep-${key}`);
+    if (!uiPrep && KNOWN_NO_SETTER.includes(key)) { missingSetters.push(key); continue; }
+    assert.ok(uiPrep, `${key}: missing UI setter prepend`);
+    assert.strictEqual(uiPrep.text, `prepend set_${key}`);
+    assertLink(lines, ctrlId, 0, uiPrep.id, 0, `${key} ctrl -> setter`);
+    assertLink(lines, uiPrep.id, 0, "obj-viz", 0, `${key} setter -> main face`);
+    assertLink(lines, uiPrep.id, 0, "obj-viz-side", 0, `${key} setter -> side face`);
+}
+if (missingSetters.length) console.warn(`WARNING known bug: no set_<key> wiring to the faces for: ${missingSetters.join(", ")}`);
+assert.deepStrictEqual(noGenKeys.sort(), ["mono_legato", "poly_voices"], "legato and poly cap are voice-allocator settings, not Gen params");
+assert.strictEqual(byId.get("obj-scale-unison_detune").text, "* 0.01");
+assert.strictEqual(byId.get("obj-scale-unison_width").text, "* 0.01");
+for (const key of ["mode", "freeze", "reverse", "loop_mode", "unison_voices", "glide_ms", "grain_size",
+    "grain_motion", "grain_spray", "formant", "filt_cutoff", "filt_on", "filt_type"]) {
+    assert.ok(byId.get(`obj-prep-${key}`), `${key} reaches Gen`);
+}
 
-    const stateV = valueOf(byId.get("obj-viz"));
-    assert.strictEqual(stateV.parameter_type, 3, `${fileName}: SamplerStateData blob`);
-    assert.strictEqual(stateV.parameter_longname, "SamplerStateData");
-    assert.strictEqual(stateV.parameter_initial[0], 1, `${fileName}: serialized state version`);
+// --- the two v8ui boxes ---
+const mainViz = byId.get("obj-viz");
+const sideViz = byId.get("obj-viz-side");
+assert.strictEqual(mainViz.maxclass, "v8ui");
+assert.strictEqual(sideViz.maxclass, "v8ui");
+assert.strictEqual(mainViz.parameter_enable, 1);
+assert.strictEqual(sideViz.parameter_enable, 0, "the side face is not a saved parameter");
+const stateV = valueOf(mainViz);
+assert.strictEqual(stateV.parameter_type, 3, "SamplerStateData blob");
+assert.strictEqual(stateV.parameter_longname, "SamplerStateData");
+assert.strictEqual(stateV.parameter_initial[0], 1, "initial blob is version 1 (still accepted)");
+assert.ok(!valueOf(sideViz), "side face stores no state");
+const mainText = mainViz.textfile.text;
+const sideText = sideViz.textfile.text;
+assert.ok(mainText.includes('var FACE_REGION = "main";'));
+assert.ok(sideText.includes('var FACE_REGION = "side";'));
+for (const t of [mainText, sideText]) {
+    assert.ok(t.includes("var FACE_PARAMS = {"), "FACE_PARAMS embedded");
+    assert.ok(t.includes("function storeParam") && t.includes("function paint") && t.includes("function onclick"));
+    assert.ok(!/multisample|keyzone/i.test(t), "UI has no multisample zones");
+    assert.ok(t.indexOf("var FACE_REGION") < t.indexOf("function storeParam"), "config -> FACE_* -> ui -> face order");
+}
+for (const t of [mainText, sideText]) {
+    const onclickAt = t.indexOf("function onclick");
+    const ondragAt = t.indexOf("function ondrag");
+    const ondblAt = t.indexOf("function ondblclick");
+    const onidleAt = t.indexOf("function onidle(");
+    assert.ok(onclickAt >= 0 && ondragAt > onclickAt && ondblAt > ondragAt && onidleAt > ondblAt, "mouse handlers in order");
+    assert.ok(t.slice(onclickAt, ondragAt).includes("pushUndoState("), "undo pushed on click gestures");
+    assert.ok(!t.slice(ondragAt, ondblAt).includes("pushUndoState("), "drag must not push undo per frame");
+    assert.ok(t.slice(ondblAt, onidleAt).includes("pushUndoState("), "undo pushed on double-click");
+}
 
-    const uiText = byId.get("obj-viz").textfile.text;
-    const onclickAt = uiText.indexOf("function onclick");
-    const ondragAt = uiText.indexOf("function ondrag");
-    const ondblAt = uiText.indexOf("function ondblclick");
-    assert.ok(onclickAt >= 0 && ondragAt > onclickAt && ondblAt > ondragAt, `${fileName}: mouse handlers`);
-    assert.ok(uiText.slice(onclickAt, ondragAt).includes("pushUndoState("), `${fileName}: undo pushed on click`);
-    assert.ok(!uiText.slice(ondragAt, ondblAt).includes("pushUndoState("), `${fileName}: drag must not push undo per frame`);
-    assert.ok(uiText.slice(ondblAt, ondblAt + 500).includes("pushUndoState("), `${fileName}: undo pushed on double-click`);
-    assert.ok(uiText.includes('DEFAULT_UI_VARIANT = "' + variant + '"'), `${fileName}: embedded variant`);
-    assert.ok(uiText.includes("function sample_loaded") && uiText.includes("function dropfile"));
-    assert.ok(uiText.includes("function set_panel_filt") && uiText.includes("MOD_PANEL_BASE_RECTS"));
-    assert.ok(!/multisample|keyzone/i.test(uiText), `${fileName}: UI has no multisample zones`);
-
-    const vizBox = byId.get("obj-viz");
-    const emitted = [];
-    const pokes = [];
-    let notified = 0;
-    let audioOn = false;
+// ============================================================================
+// 4. Sandbox run of both embedded face scripts
+// ============================================================================
+function makeSandbox(box) {
+    const ctx = { emitted: [], pokes: [], notified: 0, audioOn: false, channels: 2, cursor: { hide: 0, show: 0 } };
+    const noop = () => {};
     const sandbox = {
         mgraphics: {
-            size: [vizBox.presentation_rect[2], vizBox.presentation_rect[3]],
+            size: [box.presentation_rect[2], box.presentation_rect[3]],
             relative_coords: 1,
             autofill: 1,
-            init() {},
-            redraw() {},
-            set_source_rgba() {},
-            set_line_width() {},
-            rectangle() {},
-            rectangle_rounded() {},
-            move_to() {},
-            line_to() {},
-            curve_to() {},
-            close_path() {},
-            arc() {},
-            fill() {},
-            stroke() {},
-            select_font_face() {},
-            set_font_size() {},
-            show_text() {},
+            init: noop, redraw: noop, set_source_rgba: noop, set_line_width: noop,
+            rectangle: noop, rectangle_rounded: noop, move_to: noop, line_to: noop,
+            curve_to: noop, close_path: noop, arc: noop, fill: noop, stroke: noop,
+            select_font_face: noop, set_font_size: noop, show_text: noop,
         },
         inlets: 1,
         outlets: 1,
-        outlet: (...args) => emitted.push(args),
-        notifyclients: () => { notified++; },
+        outlet: (...args) => ctx.emitted.push(args),
+        notifyclients: () => { ctx.notified++; },
         arrayfromargs: (args) => Array.from(args),
         Buffer: function (name) {
             this.name = String(name || "");
             this.framecount = () => 44100;
+            this.channelcount = () => ctx.channels;
             this.peek = (ch, start, len) => {
+                // Max throws on a channel the buffer does not have (a mono `replace` leaves 1 channel)
+                if (ch > ctx.channels) throw new Error(`buffer~ has no channel ${ch}`);
                 const n = Math.max(1, len || 1);
                 const out = new Float32Array(n);
-                if (!audioOn) return out;
+                if (!ctx.audioOn) return out;
                 if (n >= 256) {
                     for (let i = 0; i < n; i++) {
                         out[i] = Math.sin((2.0 * Math.PI * 440.0 * ((start || 0) + i)) / 44100.0) * 0.8;
@@ -498,294 +474,822 @@ for (const [fileName, variant, expectedW, previewMode] of VARIANT_FILES) {
                 out[0] = (bin % 16 === 0) ? 0.95 : 0.02;
                 return out;
             };
-            this.poke = (ch, idx, data) => {
-                pokes.push({ name: this.name, ch, idx, data: Array.from(data) });
-            };
-            this.send = () => {};
+            this.poke = (ch, idx, data) => { ctx.pokes.push({ name: this.name, ch, idx, data: Array.from(data) }); };
+            this.send = noop;
         },
-        Task: function () { this.schedule = () => {}; },
-        Math, Number, String, Array, Object,
+        Task: function () { this.schedule = noop; },
+        max: { hidecursor: () => { ctx.cursor.hide++; }, showcursor: () => { ctx.cursor.show++; } },
+        post: noop,
+        Math, Number, String, Array, Object, Float32Array,
     };
-
     vm.createContext(sandbox);
-    vm.runInContext(uiText, sandbox);
-
-    assert.strictEqual(sandbox.mgraphics.relative_coords, 0, `${fileName}: relative_coords`);
-    assert.strictEqual(sandbox.mgraphics.autofill, 0, `${fileName}: autofill`);
-    assert.strictEqual(sandbox.uiVariant, variant, `${fileName}: uiVariant`);
-    assert.strictEqual(sandbox.hasLoadedSample, 0, `${fileName}: starts with no sample`);
-    assert.strictEqual(sandbox.sampleFileName, "Drop Audio Sample Here");
-    assert.strictEqual(sandbox.curFreeze, 0);
-    assert.strictEqual(sandbox.curReverse, 0);
-    assert.strictEqual(sandbox.curUnisonVoices, 1);
-    assert.strictEqual(sandbox.curMonoLegato, 0);
-    assert.strictEqual(sandbox.curGlideMs, 0);
-    sandbox.paint();
-
-    emitted.length = 0;
-    sandbox.dropfile("/Users/test/Drums/Kick_01.wav");
-    assert.strictEqual(sandbox.sampleFileName, "Kick_01.wav");
-    assert.strictEqual(sandbox.hasLoadedSample, 0, "dropfile arms the path and does not pretend audio is decoded");
-    assert.ok(emitted.some((a) => a[1] === "load_sample" && a[2] === "/Users/test/Drums/Kick_01.wav"));
-    const beforeDropCount = emitted.length;
-    sandbox.dropfile("");
-    assert.strictEqual(emitted.length, beforeDropCount, "empty dropfile is ignored");
-
-    sandbox.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
-    assert.strictEqual(sandbox.hasLoadedSample, 0, "Silent buffer does not count as a loaded sample");
-    audioOn = true;
-    const notesBefore = notified;
-    sandbox.sample_loaded("/Users/test/Drums/Kick_01.wav");
-    assert.ok(notified > notesBefore, "sample_loaded notifies Live");
-    assert.strictEqual(sandbox.hasLoadedSample, 1);
-    assert.ok(Math.abs(sandbox.detectedRootMidi - 69) <= 1, `${fileName}: imported 440 Hz window -> A3, got ${sandbox.detectedRootMidi}`);
-    assert.strictEqual(sandbox.sliceMarkers[0], 0);
-    assert.ok(sandbox.sliceMarkers.length >= 4 && sandbox.sliceMarkers.length <= 16);
-    assert.ok(sandbox.sliceMarkers.some((s) => Math.abs(s - 0.1) < 0.02), `${fileName}: transient slices replace the default grid`);
-
-    const canvasW = sandbox.mgraphics.size[0];
-    const badgeHit = modePillCenter(canvasW, 0);
-    emitted.length = 0;
-    sandbox.onclick(badgeHit.badgeX + 4, 8);
-    assert.strictEqual(sandbox.curRootNote, sandbox.detectedRootMidi);
-    assert.ok(emitted.some((a) => a[1] === "root_note" && a[2] === sandbox.curRootNote));
-
-    sandbox.set_freeze(1);
-    assert.strictEqual(sandbox.curFreeze, 1);
-    sandbox.set_freeze(0);
-    assert.strictEqual(sandbox.curFreeze, 0);
-    sandbox.set_reverse(1);
-    assert.strictEqual(sandbox.curReverse, 1);
-    sandbox.set_reverse(0.2);
-    assert.strictEqual(sandbox.curReverse, 0);
-    sandbox.set_mode(0);
-    sandbox.set_mode(1);
-    sandbox.set_mode(2);
-    sandbox.set_mode(3);
-    sandbox.set_mode(9);
-    assert.strictEqual(sandbox.curMode, 3, "set_mode clamps to Slice");
-    sandbox.set_mode(-4);
-    assert.strictEqual(sandbox.curMode, 0);
-
-    sandbox.set_unison_voices(8);
-    assert.strictEqual(sandbox.curUnisonVoices, 8);
-    sandbox.set_unison_voices(0);
-    assert.strictEqual(sandbox.curUnisonVoices, 1, "unison clamps to at least 1");
-    sandbox.set_unison_voices(12);
-    assert.strictEqual(sandbox.curUnisonVoices, 8, "unison clamps to at most 8");
-    sandbox.set_unison_detune(40);
-    sandbox.set_unison_width(90);
-    assert.strictEqual(sandbox.curUnisonDetune, 40);
-    assert.strictEqual(sandbox.curUnisonWidth, 90);
-    sandbox.set_glide_ms(250);
-    assert.strictEqual(sandbox.curGlideMs, 250);
-    sandbox.set_glide_ms(0);
-    assert.strictEqual(sandbox.curGlideMs, 0);
-    sandbox.set_poly_voices(16);
-    assert.strictEqual(sandbox.curPolyVoices, 16);
-    sandbox.set_poly_voices(4);
-    assert.strictEqual(sandbox.voiceAlloc.getMaxVoices(), 4);
-
-    sandbox.all_notes_off();
-    sandbox.set_mono_legato(0);
-    sandbox.set_poly_voices(16);
-    for (let n = 0; n < 16; n++) sandbox.midi_note(36 + n, 100);
-    assert.strictEqual(sandbox.voiceAlloc.voices.filter((v) => v.gate === 1).length, 16, `${fileName}: 16-voice poly`);
-    const oldestBefore = sandbox.voiceAlloc.voices.reduce((a, b) => (a.age <= b.age ? a : b));
-    const stolenNote = oldestBefore.note;
-    const stolenIndex = oldestBefore.index;
-    sandbox.midi_note(90, 120);
-    const heldNotes = sandbox.voiceAlloc.voices.filter((v) => v.gate === 1).map((v) => v.note);
-    assert.strictEqual(heldNotes.length, 16);
-    assert.strictEqual(sandbox.voiceAlloc.voices[stolenIndex].note, 90);
-    assert.ok(heldNotes.includes(90));
-    assert.ok(!heldNotes.includes(stolenNote), `${fileName}: 17th note steals the oldest voice`);
-
-    pokes.length = 0;
-    sandbox.all_notes_off();
-    sandbox.set_mono_legato(1);
-    sandbox.set_glide_ms(180);
-    sandbox.midi_note(60, 100);
-    const uiTrig = sandbox.voiceAlloc.voices[0].trigCount;
-    sandbox.midi_note(64, 96);
-    sandbox.midi_note(67, 110);
-    assert.strictEqual(sandbox.voiceAlloc.voices[0].note, 67);
-    assert.strictEqual(sandbox.voiceAlloc.voices[0].trigCount, uiTrig, `${fileName}: UI legato is single-trigger`);
-    assert.ok(sandbox.voiceAlloc.voices.slice(1).every((v) => v.gate === 0));
-    const legatoPoke = pokes.filter((pk) => pk.name === "#0-bsvoices").pop();
-    assert.ok(legatoPoke, `${fileName}: legato note is written into #0-bsvoices`);
-    assert.strictEqual(legatoPoke.data[0], 1);
-    assert.strictEqual(legatoPoke.data[1], 67);
-    assert.strictEqual(legatoPoke.data[3], uiTrig);
-    assert.ok(legatoPoke.data[4] >= 0 && legatoPoke.data[5] > legatoPoke.data[4]);
-    sandbox.midi_note(67, 0);
-    assert.strictEqual(sandbox.voiceAlloc.voices[0].note, 64);
-    assert.strictEqual(sandbox.voiceAlloc.voices[0].gate, 1);
-    sandbox.midi_note(64, 0);
-    sandbox.midi_note(60, 0);
-    assert.strictEqual(sandbox.voiceAlloc.voices[0].gate, 0);
-    sandbox.set_mono_legato(0);
-
-    const modBase = sandbox.MOD_PANEL_BASE_RECTS;
-    assert.ok(modBase && modBase["obj-pnl-mod"], `${fileName}: Mod/Uni base rects embedded`);
-    const openLay = cfg.computeSamplerDynamicLayout(variant, 1, 1);
-    assert.strictEqual(modBase["obj-pnl-mod"][0], openLay.modUniX);
-
-    emitted.length = 0;
-    sandbox.set_panel_filt(0);
-    const collapsed = cfg.computeSamplerDynamicLayout(variant, 0, 1);
-    const shiftX = collapsed.filtAmpW + 4.0;
-    const sends = emitted.filter((a) => a[1] === "patcher_cmd" && a[2] === "script" && a[3] === "sendbox" && a[5] === "presentation_rect");
-    assert.strictEqual(sends.length, Object.keys(modBase).length, `${fileName}: every Mod/Uni box is moved`);
-    for (const msg of sends) {
-        const base = modBase[msg[4]];
-        assert.ok(base, `${fileName}: sendbox target ${msg[4]}`);
-        assert.ok(Math.abs(msg[6] - (base[0] - shiftX)) < 1e-6, `${fileName}: ${msg[4]} slides left by filt width`);
-        assert.strictEqual(msg[7], base[1]);
-        assert.strictEqual(msg[8], base[2]);
-        assert.strictEqual(msg[9], base[3]);
-    }
-    const panelMsg = sends.find((a) => a[4] === "obj-pnl-mod");
-    assert.strictEqual(panelMsg[6], collapsed.modUniX, `${fileName}: Mod/Uni panel occupies the Filt/Amp slot`);
-    assert.ok(panelMsg[6] < modBase["obj-pnl-mod"][0]);
-    const widthCmd = emitted.find((a) => a[1] === "setwidth_cmd");
-    assert.strictEqual(widthCmd[2], collapsed.deviceWidth);
-    const winSize = emitted.find((a) => a[1] === "patcher_cmd" && a[2] === "window" && a[3] === "size");
-    assert.strictEqual(winSize[6], collapsed.deviceWidth);
-    assert.strictEqual(winSize[7], 169);
-    assert.ok(emitted.some((a) => a[1] === "patcher_cmd" && a[2] === "window" && a[3] === "exec"));
-
-    emitted.length = 0;
-    sandbox.set_panel_filt(1);
-    const restored = emitted.find((a) => a[4] === "obj-pnl-mod" && a[5] === "presentation_rect");
-    assert.strictEqual(restored[6], openLay.modUniX, `${fileName}: showing Filt/Amp restores Mod/Uni`);
-    assert.strictEqual(emitted.find((a) => a[1] === "setwidth_cmd")[2], expectedW);
-
-    sandbox.set_panel_mod(0);
-    assert.strictEqual(
-        emitted.filter((a) => a[1] === "setwidth_cmd").pop()[2],
-        cfg.computeSamplerDynamicLayout(variant, 1, 0).deviceWidth
-    );
-    sandbox.set_panel_filt(0);
-    assert.strictEqual(
-        emitted.filter((a) => a[1] === "setwidth_cmd").pop()[2],
-        cfg.computeSamplerDynamicLayout(variant, 0, 0).deviceWidth
-    );
-    sandbox.set_panel_filt(1);
-    sandbox.set_panel_mod(1);
-
-    sandbox.preview();
-    sandbox.paint();
-    assert.strictEqual(sandbox.curMode, previewMode, `${fileName}: preview showcases mode ${previewMode}`);
-    assert.strictEqual(sandbox.curUnisonVoices, 4);
-    const undoBeforeModes = sandbox.undoStack.length;
-    for (let mi = 0; mi < 4; mi++) {
-        const hit = modePillCenter(canvasW, mi);
-        const before = sandbox.curMode;
-        const depth = sandbox.undoStack.length;
-        emitted.length = 0;
-        sandbox.onclick(hit.x, 8);
-        assert.strictEqual(sandbox.curMode, mi, `${fileName}: mode pill ${mi}`);
-        assert.strictEqual(sandbox.undoStack.length, depth + 1, `${fileName}: one undo snapshot per mode click`);
-        assert.deepStrictEqual(sandbox.undoStack[sandbox.undoStack.length - 1].curMode, before);
-        assert.ok(emitted.some((a) => a[1] === "param" && a[2] === "mode" && a[3] === mi));
-        sandbox.paint();
-    }
-    assert.strictEqual(sandbox.bottomTab, 3, `${fileName}: Slice mode opens the slice strip`);
-    assert.strictEqual(sandbox.undoStack.length, undoBeforeModes + 4);
-    sandbox.performUndo();
-    assert.strictEqual(sandbox.curMode, 2, `${fileName}: undo restores the previous mode pill`);
-    sandbox.performRedo();
-    assert.strictEqual(sandbox.curMode, 3, `${fileName}: redo returns to Slice`);
-    const stalled = sandbox.undoStack.length;
-    sandbox.performRedo();
-    assert.strictEqual(sandbox.undoStack.length, stalled, "redo at the tip is a no-op");
-
-    sandbox.set_mode(0);
-    sandbox.curLoopMode = 1;
-    sandbox.curLoopStart = 0.18;
-    sandbox.curLoopEnd = 0.78;
-    sandbox.curStart = 0.04;
-    sandbox.curEnd = 0.96;
-    const wfW = canvasW - 8.0;
-    const loopX = 4.0 + 0.18 * wfW;
-    const dragDepth = sandbox.undoStack.length;
-    sandbox.onclick(loopX, 40);
-    assert.strictEqual(sandbox.dragTarget, "loop_start");
-    assert.strictEqual(sandbox.undoStack.length, dragDepth + 1);
-    sandbox.ondrag(loopX + 30, 40, 1);
-    sandbox.ondrag(loopX + 36, 40, 1);
-    sandbox.ondrag(loopX + 42, 40, 1);
-    assert.strictEqual(sandbox.undoStack.length, dragDepth + 1, `${fileName}: dragging does not push undo per frame`);
-    assert.ok(sandbox.curLoopStart > 0.18);
-    sandbox.performUndo();
-    assert.ok(Math.abs(sandbox.curLoopStart - 0.18) < 1e-9, `${fileName}: undo restores the loop start`);
-
-    const dblDepth = sandbox.undoStack.length;
-    const notesAtDbl = notified;
-    sandbox.ondblclick(20, 40);
-    assert.strictEqual(sandbox.undoStack.length, dblDepth + 1, `${fileName}: double-click pushes one undo state`);
-    assert.strictEqual(sandbox.curStart, 0);
-    assert.strictEqual(sandbox.curEnd, 1);
-    assert.strictEqual(sandbox.curLoopStart, 0.15);
-    assert.strictEqual(sandbox.curLoopEnd, 0.85);
-    assert.ok(notified > notesAtDbl);
-
-    const saved = sandbox.getvalueof();
-    assert.strictEqual(saved[0], 2, `${fileName}: getvalueof version`);
-    assert.strictEqual(saved[1], sandbox.curMode);
-    sandbox.setvalueof(0, 3, 0, 10000, 0, 0, 10000, 0, 0, 0, 1, 0);
-    assert.strictEqual(sandbox.curMode, saved[1], `${fileName}: version 0 payload is ignored`);
-    sandbox.setvalueof(1, 0);
-    assert.strictEqual(sandbox.curMode, saved[1], `${fileName}: short v1 payload is ignored`);
-    sandbox.setvalueof(1, 1, 2000, 9000, 2, 2000, 7000, 800, 2500, 3, 4, 0, 1000, 5000, 8000);
-    assert.strictEqual(sandbox.curMode, 1);
-    assert.ok(Math.abs(sandbox.curStart - 0.2) < 1e-9);
-    assert.ok(Math.abs(sandbox.curEnd - 0.9) < 1e-9);
-    assert.strictEqual(sandbox.curLoopMode, 2);
-    assert.strictEqual(sandbox.bottomTab, 3);
-    const expectSlices = [0, 0.1, 0.5, 0.8];
-    assert.strictEqual(sandbox.sliceMarkers.length, expectSlices.length);
-    for (let si = 0; si < expectSlices.length; si++) {
-        assert.ok(Math.abs(sandbox.sliceMarkers[si] - expectSlices[si]) < 1e-4, `${fileName}: slice ${si}`);
-    }
-    const roundTrip = sandbox.getvalueof();
-    sandbox.setvalueof(1, 0, 0, 10000, 0, 0, 10000, 0, 0, 0, 1, 0);
-    sandbox.setvalueof.apply(sandbox, roundTrip);
-    assert.strictEqual(sandbox.curMode, 1);
-    assert.strictEqual(sandbox.sliceMarkers.length, expectSlices.length);
-    for (let si = 0; si < expectSlices.length; si++) {
-        assert.ok(Math.abs(sandbox.sliceMarkers[si] - expectSlices[si]) < 1e-4, `${fileName}: round-trip slice ${si}`);
-    }
-
-    // v2 state: the sample path round-trips and reloads into buffer~ via load_sample
-    {
-        const wavPath = "/Users/test/My Samples/Snare 02.wav";
-        sandbox.dropfile(wavPath);
-        const v2 = sandbox.getvalueof();
-        assert.strictEqual(v2[0], 2);
-        assert.strictEqual(v2[v2.length - 1], wavPath, `${fileName}: path stored last`);
-        sandbox.setvalueof(1, 0, 0, 10000, 0, 0, 10000, 0, 0, 0, 1, 0);
-        emitted.length = 0;
-        sandbox.setvalueof.apply(sandbox, v2);
-        assert.strictEqual(sandbox.sampleFileName, "Snare 02.wav");
-        assert.strictEqual(sandbox.sampleFilePath, wavPath);
-        assert.ok(emitted.some((a) => a[1] === "load_sample" && a[2] === wavPath), `${fileName}: restore sends load_sample`);
-        audioOn = true;
-        sandbox.sample_loaded(wavPath);
-        assert.strictEqual(sandbox.sliceMarkers.length, expectSlices.length, `${fileName}: restored slices survive the reload refresh`);
-        // v1 blob: still parses, never emits a load
-        emitted.length = 0;
-        sandbox.setvalueof(1, 2, 1000, 9000, 0, 0, 10000, 0, 0, 0, 2, 0, 5000);
-        assert.strictEqual(sandbox.curMode, 2);
-        assert.ok(!emitted.some((a) => a[1] === "load_sample"), `${fileName}: v1 blob does not load`);
-        // v2 with an empty path does not load
-        sandbox.setvalueof.apply(sandbox, v2.slice(0, -1).concat([""]));
-        assert.ok(!emitted.some((a) => a[1] === "load_sample"), `${fileName}: empty path does not load`);
-    }
-    sandbox.paint();
-
-    console.log(`[${fileName}] ${expectedW}x169 ${variant} layout, import, voices, and panel slide ok`);
+    vm.runInContext(box.textfile.text, sandbox);
+    ctx.sb = sandbox;
+    return ctx;
 }
 
-console.log("All Better Sampler tests passed across all 3 size variants!");
+const mainCtx = makeSandbox(mainViz);
+const sideCtx = makeSandbox(sideViz);
+const sb = mainCtx.sb;
+const sd = sideCtx.sb;
+const emitted = mainCtx.emitted;
+
+function paramMsgs(ctx, key) { return ctx.emitted.filter((a) => a[1] === "param" && a[2] === key); }
+function zones(ctx, pred) { return ctx.sb.hitZones.filter(pred); }
+function center(z) { return [z.x + z.w * 0.5, z.y + z.h * 0.5]; }
+function click(ctx, z, shift) { const [x, y] = center(z); ctx.sb.onclick(x, y, 1, 0, shift ? 1 : 0); return [x, y]; }
+function release(ctx, x, y) { ctx.sb.ondrag(x, y, 0, 0, 0); }
+function findZone(ctx, pred, label) {
+    const z = ctx.sb.hitZones.find(pred);
+    assert.ok(z, `zone not found: ${label}`);
+    return z;
+}
+function actionZone(ctx, action, extra) {
+    return findZone(ctx, (z) => z.kind === "button" && z.action === action && (!extra || Object.keys(extra).every((k) => z[k] === extra[k])), action);
+}
+
+// --- load-time state ---
+for (const [name, c] of [["main", mainCtx], ["side", sideCtx]]) {
+    assert.strictEqual(c.sb.mgraphics.relative_coords, 0, `${name}: relative_coords`);
+    assert.strictEqual(c.sb.mgraphics.autofill, 0, `${name}: autofill`);
+    assert.strictEqual(c.sb.hasLoadedSample, 0, `${name}: starts with no sample`);
+    assert.strictEqual(c.sb.sampleFileName, "Drop Audio Sample Here");
+    assert.strictEqual(c.sb.curFreeze, 0);
+    assert.strictEqual(c.sb.curReverse, 0);
+    assert.strictEqual(c.sb.curMonoLegato, 0);
+    assert.strictEqual(c.sb.envPage, 0);
+}
+assert.strictEqual(sb.faceRegion, "main");
+assert.strictEqual(sd.faceRegion, "side");
+assert.deepStrictEqual(Array.from(Object.keys(sb.FACE_PARAMS)).sort(), [...ctrlKeys].sort(), "FACE_PARAMS has an entry per control");
+for (const key of ctrlKeys) {
+    const fp = sb.FACE_PARAMS[key];
+    const vof = valueOf(byId.get(`obj-ctrl-${key}`));
+    assert.strictEqual(fp.lo, vof.parameter_mmin === undefined ? 0 : vof.parameter_mmin, `${key} lo`);
+    assert.strictEqual(fp.hi, vof.parameter_mmax, `${key} hi`);
+    assert.strictEqual(fp.init, vof.parameter_initial[0], `${key} init`);
+    assert.strictEqual(typeof sb["set_" + key], "function", `${key}: set_${key} defined in the main face`);
+    assert.strictEqual(typeof sd["set_" + key], "function", `${key}: set_${key} defined in the side face`);
+}
+
+// --- paint, both regions ---
+sb.paint();
+sd.paint();
+assert.ok(sb.hitZones.length > 20, "main face builds hit zones");
+for (const kind of ["knob", "value", "button", "wave"]) {
+    assert.ok(sb.hitZones.some((z) => z.kind === kind), `main face has ${kind} zones`);
+}
+for (const z of [...sb.hitZones, ...sd.hitZones]) {
+    assert.ok(Number.isFinite(z.x + z.y + z.w + z.h), "finite zone rect");
+}
+const mainW = 528, sideW = 66;
+// KNOWN LAYOUT BUG: the loop_xfade value zone (sampler_face.js paintSamplePanel) is about 5 px wider than
+// the canvas (zone right edge ~533 vs 528). Slack is kept tight so anything worse still fails.
+const XFADE_ZONE_SLACK = 0;
+for (const z of sb.hitZones) {
+    assert.ok(z.x >= -1 && z.x + z.w <= mainW + XFADE_ZONE_SLACK && z.y >= -1 && z.y + z.h <= DEVICE_H + 1, `main zone inside canvas (${z.kind} ${z.key || z.action || z.region} ${[z.x, z.y, z.w, z.h]})`);
+}
+for (const z of sd.hitZones) {
+    assert.ok(z.x >= -1 && z.x + z.w <= sideW + 1 && z.y >= -1 && z.y + z.h <= sideViz.presentation_rect[3] + 1, `side zone inside canvas (${z.kind} ${z.key || z.action})`);
+}
+assert.deepStrictEqual(
+    Array.from(sd.hitZones.filter((z) => z.kind === "knob").map((z) => z.key).sort()),
+    ["glide_ms", "out_gain", "unison_width", "vel_sens"],
+    "side face knobs"
+);
+assert.deepStrictEqual(Array.from(sd.hitZones.filter((z) => z.kind === "button").map((z) => z.action)), ["browse", "voicing", "voicing"], "side face: LOAD then Poly / Mono");
+assert.ok(!sd.hitZones.some((z) => z.kind === "wave"), "side face has no waveform");
+sb.preview();
+sb.paint();
+sd.paint();
+
+// --- import: dropfile, buffers, sample_loaded, root detection, slices ---
+sb.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+emitted.length = 0;
+sb.dropfile("/Users/test/Drums/Kick_01.wav");
+assert.strictEqual(sb.sampleFileName, "Kick_01.wav");
+assert.ok(emitted.some((a) => a[1] === "load_sample" && a[2] === "/Users/test/Drums/Kick_01.wav"));
+const beforeDrop = emitted.length;
+sb.dropfile("");
+assert.strictEqual(emitted.length, beforeDrop, "empty dropfile is ignored");
+
+sb.hasLoadedSample = 0;
+sb.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+assert.strictEqual(sb.hasLoadedSample, 0, "silent buffer does not count as a loaded sample");
+mainCtx.audioOn = true;
+const notesBefore = mainCtx.notified;
+sb.sample_loaded("/Users/test/Drums/Kick_01.wav");
+assert.ok(mainCtx.notified > notesBefore, "sample_loaded notifies Live");
+assert.strictEqual(sb.hasLoadedSample, 1);
+assert.ok(Math.abs(sb.detectedRootMidi - 69) <= 1, `imported 440 Hz window -> A3, got ${sb.detectedRootMidi}`);
+assert.strictEqual(sb.sliceMarkers[0], 0);
+assert.ok(sb.sliceMarkers.length >= 4 && sb.sliceMarkers.length <= 16);
+assert.ok(sb.sliceMarkers.some((s) => Math.abs(s - 0.1) < 0.02), "transient slices replace the default grid");
+sb.paint();
+// --- a mono file leaves a 1-channel buffer: the face must still load it (regression) ---
+{
+    const monoCtx = makeSandbox(mainViz);
+    const m = monoCtx.sb;
+    m.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    monoCtx.channels = 1;
+    monoCtx.audioOn = true;
+    m.sample_loaded("/Users/test/Drums/Crash_Mono.wav");
+    m.sample_loaded("bang");
+    assert.strictEqual(m.lastLoadError, "", `mono refresh raised: ${m.lastLoadError}`);
+    assert.strictEqual(m.hasLoadedSample, 1, "mono sample loads");
+    assert.strictEqual(m.sampleFileName, "Crash_Mono.wav");
+    for (let i = 0; i < m.WAVE_BINS; i++) assert.strictEqual(m.wavePeaksR[i], m.wavePeaksL[i], "mono draws the same peaks on both sides");
+    // a failed refresh is recorded, not silently swallowed
+    const errCtx = makeSandbox(mainViz);
+    errCtx.sb.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    errCtx.sb.Buffer = function () { this.framecount = () => 44100; this.channelcount = () => 2; this.peek = () => { throw new Error("boom"); }; };
+    errCtx.sb.sample_loaded("/Users/test/x.wav");
+    assert.ok(/boom/.test(errCtx.sb.lastLoadError), "refresh failure is recorded");
+}
+
+// buffer~ reports a finished load as "sample_loaded bang": the name and saved path must survive it
+sb.sample_loaded("bang");
+assert.strictEqual(sb.sampleFileName, "Kick_01.wav", "buffer~ done bang keeps the file name");
+assert.strictEqual(sb.sampleFilePath, "/Users/test/Drums/Kick_01.wav", "buffer~ done bang keeps the saved path");
+sb.paint();
+{
+    // clicking the file name in the header opens the file dialog
+    const z = findZone(mainCtx, (zz) => zz.kind === "button" && zz.action === "browse", "browse");
+    emitted.length = 0;
+    sb.onclick(z.x + 4, z.y + 4, 1, 0, 0);
+    assert.ok(emitted.some((a) => a[1] === "browse"), "file name click emits browse");
+}
+
+// --- engine buttons set the mode and emit param mode ---
+{
+    const engineNames = ["Repitch", "Cycles", "Textures"];
+    assert.deepStrictEqual(Array.from(sb.ENGINE_NAMES), engineNames);
+    for (let e = 0; e < 3; e++) {
+        sb.paint();
+        const z = actionZone(mainCtx, "engine", { engine: e });
+        emitted.length = 0;
+        const depth = sb.undoStack.length;
+        click(mainCtx, z);
+        assert.strictEqual(sb.curMode, e, `engine button ${e}`);
+        assert.strictEqual(sb.lastEngine, e);
+        assert.deepStrictEqual(paramMsgs(mainCtx, "mode").map((a) => a[3]), [e], `engine ${e} emits one param mode`);
+        assert.strictEqual(sb.undoStack.length, depth + 1, "one undo snapshot per engine click");
+        sb.paint();
+    }
+    // prev/next arrows cycle the three engines
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "engine_next"));
+    assert.strictEqual(sb.curMode, 0, "next from Textures wraps to Repitch");
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "engine_prev"));
+    assert.strictEqual(sb.curMode, 2, "prev from Repitch wraps to Textures");
+
+    // Single / Sliced toggles between mode 3 and the last engine
+    sb.paint();
+    emitted.length = 0;
+    click(mainCtx, actionZone(mainCtx, "sliced"));
+    assert.strictEqual(sb.curMode, 3);
+    assert.deepStrictEqual(paramMsgs(mainCtx, "mode").map((a) => a[3]), [3]);
+    assert.strictEqual(sb.lastEngine, 2, "Sliced remembers the last engine");
+    sb.paint();
+    emitted.length = 0;
+    click(mainCtx, actionZone(mainCtx, "single"));
+    assert.strictEqual(sb.curMode, 2, "Single returns to the last engine");
+    assert.deepStrictEqual(paramMsgs(mainCtx, "mode").map((a) => a[3]), [2]);
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "engine", { engine: 0 }));
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "sliced"));
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "single"));
+    assert.strictEqual(sb.curMode, 0, "Single after Repitch -> Sliced returns to Repitch");
+    // in Sliced the engine arrows step from the remembered engine
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "sliced"));
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "engine_next"));
+    assert.strictEqual(sb.curMode, 1, "engine_next leaves Sliced for the engine after the remembered one");
+    // undo stack: one snapshot per click, undo/redo walk the UI state
+    const tip = sb.curMode;
+    sb.performUndo();
+    sb.performRedo();
+    assert.strictEqual(sb.curMode, tip, "undo then redo returns to the tip");
+    const stalled = sb.undoStack.length;
+    sb.performRedo();
+    assert.strictEqual(sb.undoStack.length, stalled, "redo at the tip is a no-op");
+}
+
+// --- toggle buttons: reverse, freeze, loop mode, filter on/type ---
+{
+    sb.storeParam("reverse", 0); sb.storeParam("freeze", 0); sb.storeParam("loop_mode", 1);
+    sb.storeParam("filt_on", 1); sb.storeParam("filt_type", 0);
+    sb.paint();
+    emitted.length = 0;
+    click(mainCtx, actionZone(mainCtx, "reverse"));
+    assert.deepStrictEqual(paramMsgs(mainCtx, "reverse").map((a) => a[3]), [1]);
+    assert.strictEqual(sb.curReverse, 1);
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "reverse"));
+    assert.strictEqual(sb.curReverse, 0);
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "freeze"));
+    assert.strictEqual(sb.curFreeze, 1);
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "freeze"));
+    assert.strictEqual(sb.curFreeze, 0);
+    const seen = [];
+    for (let i = 0; i < 3; i++) {
+        sb.paint();
+        click(mainCtx, actionZone(mainCtx, "loop_mode"));
+        seen.push(sb.curLoopMode);
+    }
+    assert.deepStrictEqual(seen, [2, 0, 1], "loop mode cycles Fwd -> Ping -> Off -> Fwd");
+    const types = [];
+    for (let i = 0; i < 4; i++) {
+        sb.paint();
+        click(mainCtx, actionZone(mainCtx, "filt_type"));
+        types.push(Math.round(sb.paramValue("filt_type")));
+    }
+    assert.deepStrictEqual(types, [1, 2, 0, 1], "filter type cycles LP -> BP -> HP");
+    sb.storeParam("filt_type", 0);
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "filt_on"));
+    assert.strictEqual(sb.curFiltOn, 0);
+    sb.paint();
+    click(mainCtx, actionZone(mainCtx, "filt_on"));
+    assert.strictEqual(sb.curFiltOn, 1);
+}
+
+// --- every knob in every region: drag up raises the value inside its range; shift moves 8x less ---
+function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob").map((z) => z.key); }
+{
+    const checked = new Set();
+    const regions = [[mainCtx, "main"], [sideCtx, "side"]];
+    for (const [ctx, name] of regions) {
+        const c = ctx.sb;
+        const pageList = name === "main" ? [0, 1, 2, 3] : [0];
+        const modeList = name === "main" ? [2] : [0];   // Textures lights every engine knob
+        for (const page of pageList) {
+            c.envPage = page;
+            c.storeParam("mode", modeList[0]);
+            c.paint();
+            for (const z of c.hitZones.filter((q) => q.kind === "knob")) {
+                const key = z.key;
+                const spec = c.FACE_PARAMS[key];
+                assert.ok(spec, `${key}: FACE_PARAMS entry`);
+                const [cx, cy] = center(z);
+                assert.strictEqual(c.zoneAt(cx, cy).key, key, `${key}: zone centre hits its own knob`);
+                for (const fine of [false, true]) {
+                    c.storeParam(key, c.fromNorm(key, 0.3));
+                    const start = c.paramValue(key);
+                    const n0 = c.toNorm(key, start);
+                    ctx.emitted.length = 0;
+                    c.onclick(cx, cy, 1, 0, fine ? 1 : 0);
+                    assert.strictEqual(c.drag.key, key);
+                    c.ondrag(cx, cy - 30, 1, 0, fine ? 1 : 0);
+                    const msgs = paramMsgs(ctx, key);
+                    const want = c.fromNorm(key, n0 + 30 / (120 * (fine ? 8 : 1)));
+                    if (!fine) {
+                        assert.strictEqual(msgs.length, 1, `${key}: one param message per drag frame`);
+                        assert.ok(msgs[0][3] > start, `${key}: dragging up raises the value (${start} -> ${msgs[0][3]})`);
+                    }
+                    if (msgs.length) {
+                        const v = msgs[msgs.length - 1][3];
+                        assert.ok(v >= spec.lo - 1e-9 && v <= spec.hi + 1e-9, `${key}: ${v} inside ${spec.lo}..${spec.hi}`);
+                        assert.ok(Math.abs(v - want) < 1e-9, `${key}: emitted ${v}, expected ${want}`);
+                        assert.strictEqual(c.paramValue(key), v, `${key}: face mirrors the emitted value`);
+                        if (fine && spec.unit !== 0 && !spec.enums) {
+                            const dn = c.toNorm(key, v) - n0;
+                            assert.ok(Math.abs(dn - 0.25 / 8) < 1e-6, `${key}: shift-drag moves 1/8 of normal (${dn})`);
+                        }
+                    } else {
+                        assert.ok(fine && (spec.unit === 0 || spec.enums), `${key}: only a fine drag on a stepped parameter may emit nothing`);
+                    }
+                    release(c === sb ? mainCtx : sideCtx, cx, cy - 30);
+                    assert.strictEqual(c.drag, null, `${key}: release ends the gesture`);
+                }
+                // exponent-mapped parameters follow Live's curve rather than a linear ramp
+                if (spec.exp && spec.exp !== 1) {
+                    const mid = c.fromNorm(key, 0.5);
+                    const linMid = spec.lo + (spec.hi - spec.lo) * 0.5;
+                    assert.ok(Math.abs(mid - linMid) > 1e-6, `${key}: exp ${spec.exp} bends the mapping`);
+                    assert.ok(Math.abs(c.toNorm(key, mid) - 0.5) < 1e-9, `${key}: toNorm inverts fromNorm`);
+                }
+                // double-click resets to the init value
+                c.storeParam(key, c.fromNorm(key, 0.9));
+                ctx.emitted.length = 0;
+                c.ondblclick(cx, cy);
+                const resets = paramMsgs(ctx, key);
+                assert.strictEqual(resets.length, 1, `${key}: double-click emits once`);
+                assert.strictEqual(resets[0][3], spec.init, `${key}: double-click resets to ${spec.init}`);
+                assert.strictEqual(c.paramValue(key), spec.init);
+                checked.add(key);
+            }
+        }
+    }
+    // every key of the face knobs the design lists must be reachable
+    for (const key of ["grain_size", "grain_spray", "formant", "pitch_st", "grain_motion", "play_pos",
+        "filt_cutoff", "filt_res", "filt_env_amt", "atk_ms", "dec_ms", "sus_lvl", "rel_ms",
+        "matk_ms", "mdec_ms", "msus_lvl", "mrel_ms", "menv_pitch", "menv_pos",
+        "lfo_rate", "lfo_shape", "lfo_pitch", "lfo_filt", "lfo_pos",
+        "unison_voices", "unison_detune", "poly_voices",
+        "unison_width", "glide_ms", "vel_sens", "out_gain"]) {
+        assert.ok(checked.has(key), `knob ${key} was exercised`);
+    }
+    sb.envPage = 0;
+    sb.storeParam("mode", 0);
+}
+
+// --- env page tabs: change envPage and the knobs drawn; saved in getvalueof slot 9 ---
+{
+    const expectKeys = [
+        ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"],
+        ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms", "menv_pitch", "menv_pos"],
+        ["lfo_rate", "lfo_shape", "lfo_pitch", "lfo_filt", "lfo_pos"],
+        ["unison_voices", "unison_detune", "poly_voices"],
+    ];
+    assert.deepStrictEqual(Array.from(sb.ENV_PAGES), ["AMP", "MOD", "LFO", "UNI"]);
+    const p4x = sb.MAIN.p4[0];
+    const envKnobs = () => Array.from(sb.hitZones.filter((z) => z.kind === "knob" && z.x >= p4x).map((z) => z.key));
+    sb.envPage = 0;
+    sb.paint();
+    assert.deepStrictEqual(envKnobs(), expectKeys[0], "AMP page knobs");
+    for (const page of [2, 1, 3, 0]) {
+        sb.paint();
+        const depth = sb.undoStack.length;
+        emitted.length = 0;
+        mainCtx.notified = 0;
+        click(mainCtx, actionZone(mainCtx, "env_page", { page }));
+        assert.strictEqual(sb.envPage, page, `env tab ${page}`);
+        assert.ok(mainCtx.notified > 0, "env page change notifies Live so the blob is saved");
+        assert.strictEqual(emitted.length, 0, "env tab emits nothing to the device");
+        assert.strictEqual(sb.undoStack.length, depth, "env tab is not an undo step");
+        sb.paint();
+        assert.deepStrictEqual(envKnobs(), expectKeys[page], `page ${page} draws its own knobs`);
+        assert.strictEqual(sb.getvalueof()[9], page, "envPage is saved in slot 9");
+        sb.envPage = 0;
+        sb.setvalueof.apply(sb, sb.getvalueof().slice(0, 9).concat([page]).concat(sb.getvalueof().slice(10)));
+        assert.strictEqual(sb.envPage, page, "setvalueof restores the env page");
+        sb.paint();
+    }
+    sb.setvalueof.apply(sb, sb.getvalueof().map((v, i) => (i === 9 ? 9 : v)));
+    assert.strictEqual(sb.envPage, 3, "an out-of-range env page clamps to 3");
+    sb.envPage = 0;
+}
+
+// --- footer values: samp_start / samp_end / loop_* drag and emit region params ---
+{
+    sb.hasLoadedSample = 1;
+    sb.curStart = 0; sb.curEnd = 1; sb.curLoopStart = 0.15; sb.curLoopEnd = 0.85; sb.curXfade = 0.05; sb.curPlayPos = 0;
+    sb.curLoopMode = 1;
+    sb.paint();
+    const regionKeys = ["samp_start", "samp_end", "loop_start", "loop_end", "loop_xfade", "play_pos"];
+    const zs = findZone(mainCtx, (z) => z.kind === "value" && z.region === "samp_start", "samp_start value");
+    const [x, y] = center(zs);
+
+    const depth = sb.undoStack.length;
+    emitted.length = 0;
+    sb.onclick(x, y, 1, 0, 0);
+    assert.strictEqual(sb.undoStack.length, depth + 1, "region drag pushes one undo snapshot");
+    sb.ondrag(x, y - 30, 1, 0, 0);
+    sb.ondrag(x, y - 30, 1, 0, 0);
+    assert.strictEqual(sb.undoStack.length, depth + 1, "region drag does not push undo per frame");
+    assert.ok(Math.abs(sb.curStart - 0.1) < 1e-9, `samp_start moved to 0.1, got ${sb.curStart}`);
+    const lastFrame = emitted.slice(-regionKeys.length);
+    assert.deepStrictEqual(lastFrame.map((a) => a[2]), regionKeys, "each drag frame emits all six region params");
+    assert.ok(lastFrame.every((a) => a[0] === 0 && a[1] === "param"));
+    assert.strictEqual(lastFrame[0][3], 10, "samp_start emitted as percent");
+    assert.strictEqual(lastFrame[1][3], 100);
+    assert.strictEqual(lastFrame[2][3], 15);
+    assert.strictEqual(lastFrame[3][3], 85);
+    const notesBeforeRelease = mainCtx.notified;
+    release(mainCtx, x, y - 30);
+    assert.ok(mainCtx.notified > notesBeforeRelease, "releasing a region drag notifies Live");
+    assert.strictEqual(sb.drag, null);
+
+    // shift-drag is 8x finer
+    sb.curStart = 0;
+    sb.paint();
+    emitted.length = 0;
+    sb.onclick(x, y, 1, 0, 1);
+    sb.ondrag(x, y - 30, 1, 0, 1);
+    assert.ok(Math.abs(sb.curStart - 30 / 2400) < 1e-9, `shift region drag moves 1/8 as far (${sb.curStart})`);
+    assert.ok(Math.abs(sb.curStart * 8 - 0.1) < 1e-9);
+    release(mainCtx, x, y);
+
+    // samp_end cannot cross samp_start; dragging samp_end down emits a smaller percent
+    sb.curStart = 0.2; sb.curEnd = 1;
+    sb.paint();
+    const ze = findZone(mainCtx, (z) => z.kind === "value" && z.region === "samp_end", "samp_end value");
+    const [ex, ey] = center(ze);
+    sb.onclick(ex, ey, 1, 0, 0);
+    emitted.length = 0;
+    sb.ondrag(ex, ey + 1000, 1, 0, 0);
+    assert.ok(Math.abs(sb.curEnd - 0.22) < 1e-9, "samp_end stops 0.02 above samp_start");
+    assert.strictEqual(paramMsgs(mainCtx, "samp_end").pop()[3], 22);
+    release(mainCtx, ex, ey);
+
+    // loop values and xfade
+    sb.curStart = 0; sb.curEnd = 1; sb.curLoopStart = 0.15; sb.curLoopEnd = 0.85; sb.curXfade = 0.05;
+    sb.paint();
+    for (const [region, getter] of [["loop_start", () => sb.curLoopStart], ["loop_end", () => sb.curLoopEnd], ["loop_xfade", () => sb.curXfade]]) {
+        const z = findZone(mainCtx, (q) => q.kind === "value" && q.region === region, region);
+        const [vx, vy] = center(z);
+        const before = getter();
+        emitted.length = 0;
+        sb.onclick(vx, vy, 1, 0, 0);
+        sb.ondrag(vx, vy + (region === "loop_end" ? 30 : -15), 1, 0, 0);
+        assert.notStrictEqual(getter(), before, `${region} moves`);
+        assert.ok(paramMsgs(mainCtx, region).length >= 1, `${region} emits its param`);
+        release(mainCtx, vx, vy);
+        sb.paint();
+    }
+    assert.ok(sb.curLoopEnd < 0.85, "dragging loop_end down shortens the loop");
+
+    // double-click on a region value restores its default
+    sb.curStart = 0.3;
+    sb.paint();
+    const zr = findZone(mainCtx, (z) => z.kind === "value" && z.region === "samp_start", "samp_start value");
+    const depth2 = sb.undoStack.length;
+    emitted.length = 0;
+    sb.ondblclick(...center(zr));
+    assert.strictEqual(sb.curStart, 0, "double-click resets samp_start");
+    assert.strictEqual(paramMsgs(mainCtx, "samp_start").pop()[3], 0);
+    assert.strictEqual(sb.undoStack.length, depth2 + 1, "region reset pushes one undo snapshot");
+
+    // numeric values: ROOT note and fine cents drag in whole units
+    sb.storeParam("root_note", 60); sb.storeParam("fine_cents", 0);
+    sb.paint();
+    const zroot = findZone(mainCtx, (z) => z.kind === "value" && z.key === "root_note", "root value");
+    const [rx, ry] = center(zroot);
+    emitted.length = 0;
+    sb.onclick(rx, ry, 1, 0, 0);
+    sb.ondrag(rx, ry - 8, 1, 0, 0);
+    assert.deepStrictEqual(paramMsgs(mainCtx, "root_note").map((a) => a[3]), [62], "root note drags 4 px per semitone");
+    release(mainCtx, rx, ry - 8);
+    sb.ondblclick(rx, ry);
+    assert.strictEqual(sb.curRootNote, 60, "double-click resets root note");
+}
+
+// --- waveform: loop handle drag (one undo per gesture), double-click resets the regions ---
+{
+    sb.curMode = 0; sb.storeParam("mode", 0);
+    sb.curLoopMode = 1; sb.curLoopStart = 0.18; sb.curLoopEnd = 0.78; sb.curStart = 0.04; sb.curEnd = 0.96;
+    sb.paint();
+    const wz = findZone(mainCtx, (z) => z.kind === "wave", "wave");
+    const loopX = wz.x + 0.18 * wz.w;
+    const wy = wz.y + wz.h * 0.5;
+    const depth = sb.undoStack.length;
+    sb.onclick(loopX, wy, 1, 0, 0);
+    assert.strictEqual(sb.drag.wave, "loop_start");
+    assert.strictEqual(sb.undoStack.length, depth + 1);
+    for (const dx of [30, 36, 42]) sb.ondrag(loopX + dx, wy, 1, 0, 0);
+    assert.strictEqual(sb.undoStack.length, depth + 1, "dragging does not push undo per frame");
+    assert.ok(sb.curLoopStart > 0.18);
+    release(mainCtx, loopX + 42, wy);
+    sb.performUndo();
+    assert.ok(Math.abs(sb.curLoopStart - 0.18) < 1e-9, "undo restores the loop start");
+
+    const dblDepth = sb.undoStack.length;
+    const notesAtDbl = mainCtx.notified;
+    sb.ondblclick(wz.x + 20, wy);
+    assert.strictEqual(sb.undoStack.length, dblDepth + 1, "double-click pushes one undo state");
+    assert.strictEqual(sb.curStart, 0);
+    assert.strictEqual(sb.curEnd, 1);
+    assert.strictEqual(sb.curLoopStart, 0.15);
+    assert.strictEqual(sb.curLoopEnd, 0.85);
+    assert.ok(mainCtx.notified > notesAtDbl);
+
+    // an empty spot of the waveform sets the play position
+    sb.paint();
+    emitted.length = 0;
+    sb.onclick(wz.x + 0.5 * wz.w, wy, 1, 0, 0);
+    assert.strictEqual(sb.drag.wave, "play_pos");
+    assert.ok(Math.abs(paramMsgs(mainCtx, "play_pos").pop()[3] - 50) < 0.1);
+    release(mainCtx, wz.x + 0.5 * wz.w, wy);
+
+    // Sliced: clicking the waveform auditions a slice via midi_note and releases it
+    sb.storeParam("mode", 3);
+    sb.paint();
+    const gate = () => sb.voiceAlloc.voices.filter((v) => v.gate === 1).length;
+    sb.all_notes_off();
+    sb.onclick(wz.x + 0.3 * wz.w, wy, 1, 0, 0);
+    assert.strictEqual(sb.drag.wave, "slice_audition");
+    assert.strictEqual(gate(), 1, "slice audition opens a voice");
+    release(mainCtx, wz.x, wy);
+    assert.strictEqual(gate(), 0, "releasing the mouse closes the audition voice");
+    sb.storeParam("mode", 0);
+}
+
+// --- Poly / Mono in the side region emits mono_legato ---
+{
+    sd.paint();
+    const polyZ = findZone(sideCtx, (z) => z.kind === "button" && z.action === "voicing" && z.value === 0, "Poly");
+    const monoZ = findZone(sideCtx, (z) => z.kind === "button" && z.action === "voicing" && z.value === 1, "Mono");
+    assert.ok(!rectsOverlap([polyZ.x, polyZ.y, polyZ.w, polyZ.h], [monoZ.x, monoZ.y, monoZ.w, monoZ.h]), "Poly and Mono do not overlap");
+    sideCtx.emitted.length = 0;
+    click(sideCtx, monoZ);
+    assert.deepStrictEqual(paramMsgs(sideCtx, "mono_legato").map((a) => a[3]), [1]);
+    assert.strictEqual(sd.curMonoLegato, 1);
+    sd.paint();
+    click(sideCtx, polyZ);
+    assert.deepStrictEqual(paramMsgs(sideCtx, "mono_legato").map((a) => a[3]), [1, 0]);
+    assert.strictEqual(sd.curMonoLegato, 0);
+    // hovering a side knob swaps its glyph for the value readout and clears on idleout
+    sd.paint();
+    const gz = findZone(sideCtx, (z) => z.kind === "knob" && z.key === "glide_ms", "glide knob");
+    sd.onidle(...center(gz));
+    assert.strictEqual(sd.hoverKey, "glide_ms");
+    sd.onidleout();
+    assert.strictEqual(sd.hoverKey, "");
+}
+
+// --- storeParam echoes (live.* automation -> set_<key>) update state and never re-emit ---
+{
+    const n0 = mainCtx.emitted.length;
+    sb.set_mode(2);
+    assert.strictEqual(sb.curMode, 2);
+    assert.strictEqual(sb.lastEngine, 2);
+    sb.set_mode(3);
+    assert.strictEqual(sb.curMode, 3);
+    assert.strictEqual(sb.lastEngine, 2, "Slice echo keeps the last engine");
+    sb.set_mode(9);
+    assert.strictEqual(sb.curMode, 3, "mode echo clamps to Slice");
+    sb.set_mode(-4);
+    assert.strictEqual(sb.curMode, 0);
+    sb.set_freeze(1); assert.strictEqual(sb.curFreeze, 1);
+    sb.set_freeze(0); assert.strictEqual(sb.curFreeze, 0);
+    sb.set_reverse(1); assert.strictEqual(sb.curReverse, 1);
+    sb.set_reverse(0.2); assert.strictEqual(sb.curReverse, 0);
+    sb.set_loop_mode(2); assert.strictEqual(sb.curLoopMode, 2);
+    sb.set_loop_mode(7); assert.strictEqual(sb.curLoopMode, 2, "loop_mode clamps");
+    sb.set_samp_start(25); assert.ok(Math.abs(sb.curStart - 0.25) < 1e-9);
+    sb.set_samp_end(80); assert.ok(Math.abs(sb.curEnd - 0.8) < 1e-9);
+    sb.set_loop_start(30); assert.ok(Math.abs(sb.curLoopStart - 0.3) < 1e-9);
+    sb.set_loop_end(70); assert.ok(Math.abs(sb.curLoopEnd - 0.7) < 1e-9);
+    sb.set_loop_xfade(100); assert.ok(Math.abs(sb.curXfade - 0.45) < 1e-9, "xfade 100% = 0.45");
+    sb.set_play_pos(40); assert.ok(Math.abs(sb.curPlayPos - 0.4) < 1e-9);
+    sb.set_root_note(200); assert.strictEqual(sb.curRootNote, 127);
+    sb.set_root_note(72); assert.strictEqual(sb.curRootNote, 72);
+    sb.set_poly_voices(16); assert.strictEqual(sb.curPolyVoices, 16);
+    sb.set_poly_voices(4); assert.strictEqual(sb.voiceAlloc.getMaxVoices(), 4);
+    sb.set_poly_voices(0); assert.strictEqual(sb.curPolyVoices, 1, "poly clamps to at least 1");
+    sb.set_mono_legato(1); assert.strictEqual(sb.curMonoLegato, 1);
+    sb.set_mono_legato(0); assert.strictEqual(sb.curMonoLegato, 0);
+    sb.set_filt_on(0); assert.strictEqual(sb.curFiltOn, 0);
+    sb.set_filt_on(1); assert.strictEqual(sb.curFiltOn, 1);
+    sb.set_filt_cutoff(1234); assert.strictEqual(sb.curFiltCutoff, 1234);
+    sb.set_unison_voices(8); assert.strictEqual(sb.paramValue("unison_voices"), 8);
+    sb.set_unison_detune(40); assert.strictEqual(sb.paramValue("unison_detune"), 40);
+    sb.set_unison_width(90); assert.strictEqual(sb.paramValue("unison_width"), 90);
+    sb.set_glide_ms(250); assert.strictEqual(sb.paramValue("glide_ms"), 250);
+    sb.set_out_gain(-6); assert.strictEqual(sb.paramValue("out_gain"), -6);
+    sb.set_mode("not-a-number");
+    assert.strictEqual(sb.curMode, 0, "non-numeric echoes are ignored");
+    assert.strictEqual(mainCtx.emitted.length, n0, "echoes never emit (no feedback loop)");
+    // an echo reaches the other face too (both receive every set_<key>)
+    sd.set_mono_legato(1);
+    assert.strictEqual(sd.curMonoLegato, 1);
+    sd.set_mono_legato(0);
+    // paramValue falls back to the Live init until an echo arrives
+    const fresh = makeSandbox(mainViz).sb;
+    for (const key of ctrlKeys) assert.strictEqual(fresh.paramValue(key), fresh.FACE_PARAMS[key].init, `${key}: default is init`);
+    // echoed value drives what the next paint shows
+    sb.set_pitch_st(7);
+    assert.strictEqual(sb.fmtParam("pitch_st", sb.paramValue("pitch_st")), "+7 st");
+    sb.set_pitch_st(0);
+}
+
+// --- voices: allocation, stealing and legato through the UI ---
+{
+    sb.set_poly_voices(16);
+    sb.set_mono_legato(0);
+    sb.all_notes_off();
+    for (let n = 0; n < 16; n++) sb.midi_note(36 + n, 100);
+    assert.strictEqual(sb.voiceAlloc.voices.filter((v) => v.gate === 1).length, 16, "16-voice poly");
+    const oldest = sb.voiceAlloc.voices.reduce((a, b) => (a.age <= b.age ? a : b));
+    const oldestNote = oldest.note, oldestIdx = oldest.index;
+    sb.midi_note(90, 120);
+    const held = sb.voiceAlloc.voices.filter((v) => v.gate === 1).map((v) => v.note);
+    assert.strictEqual(held.length, 16);
+    assert.strictEqual(sb.voiceAlloc.voices[oldestIdx].note, 90);
+    assert.ok(!held.includes(oldestNote), "17th note steals the oldest voice");
+
+    mainCtx.pokes.length = 0;
+    sb.all_notes_off();
+    sb.set_mono_legato(1);
+    sb.midi_note(60, 100);
+    const trig = sb.voiceAlloc.voices[0].trigCount;
+    sb.midi_note(64, 96);
+    sb.midi_note(67, 110);
+    assert.strictEqual(sb.voiceAlloc.voices[0].note, 67);
+    assert.strictEqual(sb.voiceAlloc.voices[0].trigCount, trig, "UI legato is single-trigger");
+    assert.ok(sb.voiceAlloc.voices.slice(1).every((v) => v.gate === 0));
+    const poke = mainCtx.pokes.filter((pk) => pk.name === "#0-bsvoices").pop();
+    assert.ok(poke, "legato note is written into #0-bsvoices");
+    assert.strictEqual(poke.data[0], 1);
+    assert.strictEqual(poke.data[1], 67);
+    assert.strictEqual(poke.data[3], trig);
+    sb.midi_note(67, 0);
+    assert.strictEqual(sb.voiceAlloc.voices[0].note, 64);
+    sb.midi_note(64, 0);
+    sb.midi_note(60, 0);
+    assert.strictEqual(sb.voiceAlloc.voices[0].gate, 0);
+    sb.set_mono_legato(0);
+    sb.all_notes_off();
+}
+
+// --- state: getvalueof / setvalueof v2 round-trip, v1 still accepted ---
+{
+    sb.set_mode(1);
+    sb.curLoopMode = 2; sb.curStart = 0.2; sb.curEnd = 0.9; sb.curLoopStart = 0.25; sb.curLoopEnd = 0.7; sb.curXfade = 0.08; sb.curPlayPos = 0.5;
+    sb.envPage = 2;
+    sb.sliceMarkers = [0, 0.1, 0.5, 0.8];
+    sb.dropfile("/Users/test/My Samples/Snare 02.wav");
+    const saved = sb.getvalueof();
+    assert.strictEqual(saved[0], 2, "getvalueof version 2");
+    assert.strictEqual(saved[1], 1);
+    assert.strictEqual(saved[4], 2);
+    assert.strictEqual(saved[9], 2, "slot 9 is the env page");
+    assert.strictEqual(saved[10], 4, "slot 10 is the slice count");
+    assert.strictEqual(saved.length, 11 + 4 + 1);
+    assert.strictEqual(saved[saved.length - 1], "/Users/test/My Samples/Snare 02.wav", "path stored last");
+
+    sb.setvalueof(1, 0, 0, 10000, 0, 0, 10000, 0, 0, 0, 1, 0);
+    assert.strictEqual(sb.curMode, 0);
+    assert.strictEqual(sb.envPage, 0);
+    emitted.length = 0;
+    sb.setvalueof.apply(sb, saved);
+    assert.strictEqual(sb.curMode, 1);
+    assert.strictEqual(sb.envPage, 2);
+    assert.strictEqual(sb.curLoopMode, 2);
+    assert.ok(Math.abs(sb.curStart - 0.2) < 1e-9 && Math.abs(sb.curEnd - 0.9) < 1e-9);
+    assert.ok(Math.abs(sb.curLoopStart - 0.25) < 1e-9 && Math.abs(sb.curLoopEnd - 0.7) < 1e-9);
+    assert.ok(Math.abs(sb.curXfade - 0.08) < 1e-9 && Math.abs(sb.curPlayPos - 0.5) < 1e-9);
+    assert.strictEqual(sb.sliceMarkers.length, 4);
+    [0, 0.1, 0.5, 0.8].forEach((s, i) => assert.ok(Math.abs(sb.sliceMarkers[i] - s) < 1e-4, `slice ${i}`));
+    assert.strictEqual(sb.sampleFileName, "Snare 02.wav");
+    assert.strictEqual(sb.sampleFilePath, "/Users/test/My Samples/Snare 02.wav");
+    assert.ok(emitted.some((a) => a[1] === "load_sample" && a[2] === saved[saved.length - 1]), "restore sends load_sample");
+    sb.sample_loaded(saved[saved.length - 1]);
+    assert.strictEqual(sb.sliceMarkers.length, 4, "restored slices survive the reload refresh");
+    assert.deepStrictEqual(Array.from(sb.getvalueof().slice(0, 11)), Array.from(saved.slice(0, 11)), "round-trip is stable");
+    sb.paint();
+
+    // v1 blobs (no path) still parse and never load
+    emitted.length = 0;
+    sb.setvalueof(1, 2, 1000, 9000, 0, 0, 10000, 0, 0, 3, 2, 0, 5000);
+    assert.strictEqual(sb.curMode, 2);
+    assert.strictEqual(sb.envPage, 3, "v1 carries the env page too");
+    assert.strictEqual(sb.sliceMarkers.length, 2);
+    assert.ok(!emitted.some((a) => a[1] === "load_sample"), "v1 blob does not load");
+    // the shipped initial blob (version 1) parses
+    sb.setvalueof.apply(sb, stateV.parameter_initial);
+    assert.strictEqual(sb.curMode, 0);
+    assert.strictEqual(sb.sliceMarkers.length, 8);
+    assert.ok(!emitted.some((a) => a[1] === "load_sample"));
+    // junk is ignored
+    const keepMode = sb.curMode;
+    sb.setvalueof(0, 3, 0, 10000, 0, 0, 10000, 0, 0, 0, 1, 0);
+    sb.setvalueof(1, 3);
+    assert.strictEqual(sb.curMode, keepMode, "version 0 / short payloads are ignored");
+    // v2 with an empty path does not load
+    emitted.length = 0;
+    sb.setvalueof.apply(sb, saved.slice(0, -1).concat([""]));
+    assert.ok(!emitted.some((a) => a[1] === "load_sample"), "empty path does not load");
+    sb.paint();
+    sd.paint();
+}
+
+console.log("Better Sampler: 600x169 two-v8ui face, wiring, knobs, buttons, regions, state and voices ok");
+console.log("All Better Sampler tests passed!");
+
+// --- knob drags capture the mouse: cursor hidden, hover frozen on the dragged knob, released on mouse-up ---
+{
+    const kc = makeSandbox(mainViz);
+    const k = kc.sb;
+    k.paint();
+    const knobs = k.hitZones.filter((z) => z.kind === "knob");
+    const a = knobs.find((z) => z.key === "pitch_st");
+    const other = knobs.find((z) => z.key === "filt_cutoff");
+    assert.ok(a && other, "pitch and cutoff knobs drawn");
+    k.onclick(a.x + a.w / 2, a.y + a.h / 2, 1, 0, 0);
+    assert.ok(k.drag && k.drag.captured && k.drag.key === "pitch_st", "click captures the knob");
+    assert.strictEqual(k.hoverKey, "pitch_st", "captured knob shows its value");
+    assert.strictEqual(kc.cursor.hide, 1, "cursor hidden while dragging a knob");
+    k.onidle(other.x + other.w / 2, other.y + other.h / 2);
+    assert.strictEqual(k.hoverKey, "pitch_st", "hover cannot move to another knob mid-drag");
+    k.onidleout();
+    assert.strictEqual(k.hoverKey, "pitch_st", "leaving the canvas mid-drag keeps the capture");
+    // dragging far outside the canvas still drives the same knob
+    k.ondrag(a.x + a.w / 2 + 400, a.y - 300, 1, 0, 0);
+    assert.strictEqual(k.paramValue("pitch_st"), 36, "drag outside the canvas keeps controlling the captured knob");
+    assert.strictEqual(k.paramValue("filt_cutoff"), 18000, "other knobs untouched");
+    k.ondrag(other.x + other.w / 2, other.y + other.h / 2, 0, 0, 0);
+    assert.strictEqual(k.drag, null, "release ends the capture");
+    assert.strictEqual(kc.cursor.show, 1, "cursor shown again on release");
+    assert.strictEqual(k.hoverKey, "filt_cutoff", "hover resumes under the mouse after release");
+    // a release we never saw is cleaned up by the next click
+    k.paint();
+    k.onclick(a.x + a.w / 2, a.y + a.h / 2, 1, 0, 0);
+    k.onclick(1, 1, 1, 0, 0);
+    assert.strictEqual(kc.cursor.show, kc.cursor.hide, "cursor never left hidden");
+}
+
+// --- no sample loaded: MIDI runs the voices but draws no scan line ---
+{
+    function bluePlayheadStrokes(ctx2, xNorm) {
+        const s2 = ctx2.sb;
+        const ops = [];
+        const g = s2.mgraphics;
+        const saved = {};
+        for (const name of ["set_source_rgba", "move_to", "line_to", "stroke", "fill", "rectangle"]) {
+            saved[name] = g[name];
+            g[name] = (...args) => ops.push([name, ...args]);
+        }
+        s2.paint();
+        Object.assign(g, saved);
+        const wave = s2.hitZones.find((z) => z.kind === "wave");
+        const px = wave.x + xNorm * wave.w;
+        let color = null, count = 0;
+        for (let i = 0; i < ops.length; i++) {
+            const op = ops[i];
+            if (op[0] === "set_source_rgba") color = op.slice(1);
+            if (op[0] === "move_to" && Math.abs(op[1] - px) < 0.01 && ops[i + 1] && ops[i + 1][0] === "line_to"
+                && Math.abs(ops[i + 1][1] - px) < 0.01 && color && color[2] > 0.9 && color[0] < 0.5) count++;
+        }
+        return count;
+    }
+    const nc = makeSandbox(mainViz);
+    const n = nc.sb;
+    n.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    assert.strictEqual(n.hasLoadedSample, 0, "empty device");
+    n.midi_note(60, 100);
+    n.voicePlayheads[0] = 0.31;
+    n.voiceAmps[0] = 0.8;
+    for (const mode of [0, 1, 2]) {
+        n.set_mode(mode);
+        assert.strictEqual(bluePlayheadStrokes(nc, 0.31), 0, `no scan line without a sample (mode ${mode})`);
+    }
+    // with a sample loaded the same voice draws its scan line
+    nc.audioOn = true;
+    n.sample_loaded("/Users/test/Drums/Kick_01.wav");
+    assert.strictEqual(n.hasLoadedSample, 1);
+    n.voicePlayheads[0] = 0.31;
+    n.voiceAmps[0] = 0.8;
+    n.set_mode(0);
+    assert.ok(bluePlayheadStrokes(nc, 0.31) >= 1, "scan line drawn once a sample is loaded");
+}
+
+console.log("Load, knob capture and empty-sampler scan-line regressions ok");
+
+// --- drop / browse logic: what Live sends at drop time and on Set load ---
+{
+    const dc = makeSandbox(mainViz);
+    const d = dc.sb;
+    d.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    const loads = () => dc.emitted.filter((a) => a[1] === "load_sample");
+    // an empty live.drop reports "none" on device load: nothing to load, nothing to save
+    d.dropfile("none");
+    assert.strictEqual(loads().length, 0, "\"none\" from an empty drop zone is ignored");
+    assert.strictEqual(d.sampleFilePath, "", "\"none\" is never saved as the sample path");
+    // a path with spaces split into several atoms is rejoined
+    d.dropfile("Macintosh", "HD:/Users/test/(Crash)", "Cymbal", "-", "707", "-", "525.wav");
+    assert.deepStrictEqual(loads().map((a) => a[2]), ["Macintosh HD:/Users/test/(Crash) Cymbal - 707 - 525.wav"], "split path rejoined and loaded once");
+    assert.strictEqual(d.sampleFileName, "(Crash) Cymbal - 707 - 525.wav");
+    assert.ok(!dc.emitted.some((a) => a[1] === "drop_set"), "a drop does not echo set back to the drop zone");
+    // the buffer finishes; Live replaying the same saved path must not reload it
+    dc.audioOn = true;
+    d.sample_loaded("bang");
+    assert.strictEqual(d.hasLoadedSample, 1);
+    d.dropfile("Macintosh HD:/Users/test/(Crash) Cymbal - 707 - 525.wav");
+    assert.strictEqual(loads().length, 1, "replay of the loaded path is ignored");
+    // a different dropped file loads
+    d.dropfile("/Users/test/Kick.wav");
+    assert.strictEqual(loads().length, 2);
+    assert.strictEqual(d.sampleFileName, "Kick.wav");
+    // a dialog pick loads and keeps the drop zone's saved path in sync
+    dc.emitted.length = 0;
+    d.browsed("/Users/test/Snare 02.wav");
+    assert.deepStrictEqual(dc.emitted.find((a) => a[1] === "load_sample"), [0, "load_sample", "/Users/test/Snare 02.wav"]);
+    assert.deepStrictEqual(dc.emitted.find((a) => a[1] === "drop_set"), [0, "drop_set", "/Users/test/Snare 02.wav"]);
+    d.browsed();
+    assert.strictEqual(dc.emitted.filter((a) => a[1] === "load_sample").length, 1, "cancelled dialog loads nothing");
+
+    // Set load: SamplerStateData restores a path, then Live replays the same saved drop path
+    const rc = makeSandbox(mainViz);
+    const r = rc.sb;
+    r.setvalueof(2, 0, 0, 10000, 1, 1500, 8500, 500, 0, 0, 1, 0, "/Users/test/Kick.wav");
+    r.dropfile("/Users/test/Kick.wav");
+    assert.strictEqual(rc.emitted.filter((a) => a[1] === "load_sample").length, 1, "restore + replay of the same path loads once");
+    // the LOAD button in the side face opens the dialog
+    const sc = makeSandbox(sideViz);
+    sc.sb.paint();
+    const load = sc.sb.hitZones.find((z) => z.kind === "button" && z.action === "browse");
+    assert.ok(load && load.y === 0 && load.h === 24, "LOAD button at the top of the side column");
+    sc.sb.onclick(load.x + 5, load.y + 5, 1, 0, 0);
+    assert.ok(sc.emitted.some((a) => a[1] === "browse"), "LOAD opens the file dialog");
+}
+
+console.log("Drop / browse load path ok");
+
