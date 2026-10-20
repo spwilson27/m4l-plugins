@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Render Cepstra through Ableton-bundled Max (shared scripts/max_harness.py) and verify its DSP & telemetry.
 
-Runs on the NonRealTime driver at 48 kHz (parallel-safe, no machine-wide lock) except `perf`, which uses
-`audio_device` (real CoreAudio, serialized) because CPU load cannot be measured offline. qswitch uses
-`stepped` so the mid-run `quality 2` lands on time.
+Run it inside the tart VM only (AGENTS.md section 1a), never on the host. Every case holds the harness's
+machine-wide Max lock (AGENTS.md section 1b). Cases render on the NonRealTime driver at 48 kHz, except `perf`, which
+uses `audio_device` (real CoreAudio) because CPU load cannot be measured offline. qswitch uses `stepped` so the
+mid-run `quality 2` lands on time.
 
 Stimulus: 120 Hz impulse train through three formant resonators (700 / 1220 / 2600 Hz), optionally with noise.
 

@@ -51,7 +51,7 @@ PARAM_SPECS = {
     ),
     "gate": (
         "Gate", "Gate", 0.0, 100.0, 0.0, 5, "gate", 0.01, "set_gate",
-        "Harmonic gate: removes the noise between partials (threshold 0 to +30 dB above the envelope) while partials keep the formant envelope.",
+        "Gate amount. Spec mode: removes the noise between partials (bins more than 48 dB at 0% down to 8 dB at 100% below the local partial peak) while partials keep their level. Ceps mode: voicing gate that mutes unpitched frames (breaths, hiss, noise); higher settings let only cleaner pitched sound through.",
     ),
 }
 
@@ -339,7 +339,7 @@ def build():
         make_tab("obj-quality", "Quality", "Quality", ["1k", "2k", "4k"], 1, 204, 6, 46, 16,
                  "FFT size: 1024, 2048 or 4096. Larger sizes resolve finer harmonics but add latency (N + N/8 samples).", NEUTRAL),
         make_tab("obj-gmode", "Gate Mode", "GateMode", ["Spec", "Ceps"], 0, 150, 6, 50, 16,
-                 "Gate algorithm: Spec = spectral gate on the fine-structure bins; Ceps = cepstral gate on the harmonic cepstrum coefficients (keeps strong pitch rahmonics, strips unpitched detail).", BLUE,
+                 "Gate algorithm: Spec = spectral gate that removes the noise between partials, relative to the local partial peaks; Ceps = voicing gate keyed by the cepstral pitch peak, muting unpitched frames (breaths, hiss, noise) while pitched sound passes.", BLUE,
                  pictures=["Auto_Mute.svg", "release_velocity.svg"]),
         make_toggle("obj-lock", "Lock Mid-Side", "Lock", ["Free", "Lock"], 93, 6, 20, 16, "Lock", "Lock",
                     "Lock Mid and Side: moving one formant shift moves the other by the same amount.", GREEN,

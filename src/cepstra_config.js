@@ -135,7 +135,7 @@ function applyLock(lockOn, changed, newValue, curMid, curSide) {
 
 
 // ---------------------------------------------------------------------------------------------
-// Cepstrum display axis (log quefrency, 0.2 ms .. 20 ms) and glyph-knob mapping helpers
+// Cepstrum display axis (linear quefrency, 0 .. 20 ms) and cutoff-bar <-> Res mapping helpers
 // ---------------------------------------------------------------------------------------------
 
 // Linear quefrency axis: telemetry column b covers [b, b + 1) * QUEF_MAX_MS / NUM_QUEF.
