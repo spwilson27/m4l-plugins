@@ -2012,16 +2012,15 @@ for (vox = 0; vox < 16; vox += 1) {
 	// A voice that is released, silent and has no Fragments tail left produces exact zeros, so skip its engine
 	// (state is frozen until the next note-on, which re-initialises it). vhist slots: 1 envStage, 2 ampEnv,
 	// 4 modEnv, 6 playheadNorm, 32 spawnCnt, 35 survG, 37 survTimer.
-	hsB = vox * 256;
-	idleV = (peek(vdata, vox * 8) < 0.5) && (peek(vhist, hsB + 1) == 0) && (peek(vhist, hsB + 2) == 0) && (peek(vhist, hsB + 4) == 0) && (peek(vhist, hsB + 35) <= 0) && (peek(vhist, hsB + 37) <= 0);
-	if (idleV) {
-		voL = 0;
-		voR = 0;
-		voP = peek(vhist, hsB + 6);
-		voA = 0;
-		voM = 0;
-		voS = peek(vhist, hsB + 32);
-	} else {
+	vhOff = vox * 256;
+	voIdle = (peek(vdata, vox * 8) < 0.5) && (peek(vhist, vhOff + 1) == 0) && (peek(vhist, vhOff + 2) == 0) && (peek(vhist, vhOff + 4) == 0) && (peek(vhist, vhOff + 35) <= 0) && (peek(vhist, vhOff + 37) <= 0);
+	voL = 0;
+	voR = 0;
+	voP = peek(vhist, vhOff + 6);
+	voA = 0;
+	voM = 0;
+	voS = peek(vhist, vhOff + 32);
+	if (voIdle < 0.5) {
 		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP);
 	}
 	sumL = sumL + voL;

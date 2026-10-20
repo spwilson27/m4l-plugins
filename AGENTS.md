@@ -742,11 +742,16 @@ Max and Live run only in the tart VM (section 1a), through `scripts/vm_envtrig.s
   - `#0-bsamp`: the sample.
   - `#0-bsvoices`: 16 x 8 voice slots.
   - `#0-bsscope`: telemetry 0..39, plus 48 for the cumulative Fragments grain count.
+- **One compiled voice engine (load time)**: GenExpr inlines every call, so the 16 voices run in one `for (vox = 0; vox < 16; ...)` loop around a single `voice_proc` call site, and the 4 Spectral voices in one `for (svx = 0; svx < 4; ...)` loop around `spec_voice`.
+  - A call site's `History` is shared across loop iterations, so all per-voice state lives in `Data vhist` (256 slots per voice) and `Data sdat` (one block per Spectral voice). Non-zero initial values are written once in the `initDone` block.
+  - Released, silent voices with no Fragments tail skip `voice_proc` and output exact zeros.
+  - Gen compile went from about 4.9 s to 1.3 s in the VM (`python3 scripts/measure_sampler_loadtime.py 3`, `gen - baseline`, run in the VM). Keep it under 1.5 s: never add a second call site of a big helper.
 - **Gen gotchas found here**:
+  - A function-local variable with the same name as a global `Data` (e.g. `hs`) silently breaks compilation: no output and `scopeFrames` 0.
   - A `Data` declared inside a function is shared by all its call sites, so per-voice state lives in global `Data` with offsets.
   - `int(clip(round(peek(...))))` misbehaved; use `floor(x + 0.5)`.
   - **Cycles pitch**: both overlap-add grains must read the source at the *same* phase (`pNext`); only the Hann window (offset 0.5) and the latched anchor differ. Reading grain B at `pNext + 0.5` made a periodic source sum to `-sin(2x)` and sounded an octave high (440 Hz instead of 220 Hz at the root). `run_sampler_audio_tests.py` now asserts 220 Hz at the root and 440 Hz an octave up for Pulse / Partials / Phase and `cy_xfade`.
-- **CPU** (VM, one core, including about 9 % harness floor): Repitch about 15 % (Analog 22 %), Cycles 17 %, Textures 12 %, Spectral 9–10 % idle / 16–17 % with 4 voices, Fragments 12–15 %. All 16 voices run their engine code even when idle.
+- **CPU** (VM, one core, including about 9 % harness floor, idle / 4 voices): Repitch 8 / 10 % (Analog 8 / 11 %, Digital 7 / 11 %), Cycles 8 / 9 %, Textures 7 / 9 %, Spectral 7–8 / 16–18 %, Fragments 7 / 13 %.
 - `src/sampler_config.js`: voice allocator (`setSliceBaseNote`, `updateSliceBounds`), `activeSliceStarts`, the slicers (`sliceDivisions`, `sliceBeats`, `bpmFromName`, `sliceOnsets`, `slicePitches`, `addSliceMarker`, `removeSliceMarker`) and `estimateRootMidiNote`.
 
 ### State
