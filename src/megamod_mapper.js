@@ -8,11 +8,13 @@
 
 const MM_THIS = this;
 const MM_ENGINE_VARNAME = "megamod_engine";
-// TEMPORARY debug trace of learn/mapping, rewritten whole on every line (last 1500 lines).
-const MM_DEBUG_LOG = "/private/tmp/claude-501/-Users-mrwilson-software-ableton/d121f0fc-10cf-4b45-90e7-0d9dd257f8c0/scratchpad/megamod_debug.log";
+// Debug trace of learn/mapping. Off by default; set MM_DEBUG_LOG to an absolute path to also mirror it to a file.
+const MM_DEBUG = false;
+const MM_DEBUG_LOG = "";
 const mmLogLines = [];
-function dlog() {
-    const parts = Array.prototype.slice.call(arguments).map((a) => {
+/** @param {...unknown} args */
+function dlog(...args) {
+    const parts = args.map((a) => {
         if (typeof a === "string") return a;
         try { return JSON.stringify(a); } catch (e) { return String(a); }
     });
@@ -20,7 +22,7 @@ function dlog() {
     mmLogLines.push(line);
     if (mmLogLines.length > 1500) mmLogLines.splice(0, mmLogLines.length - 1500);
     if (typeof post === "function") post("megamod: " + line + "\n");
-    if (typeof File === "undefined") return;
+    if (!MM_DEBUG_LOG || typeof File === "undefined") return;
     try {
         const f = new File(MM_DEBUG_LOG, "write", "TEXT");
         f.eof = 0;
@@ -33,7 +35,7 @@ dlog("script loaded; this.patcher=" + (MM_THIS && MM_THIS.patcher ? "yes" : "NO"
 var MM = (function () {
     const api = {};
     const listeners = { change: [], telemetry: [], ready: [] };
-    let names = null; // {cfg, mseg, steps, scope, curve, route} expanded #0 names
+    let names = null; // {cfg, mseg, steps, scope, curve, route} names as Live expanded them (--- -> 012...)
     let bufs = {};
     let lomReady = false;
     let readyFired = false;
@@ -538,13 +540,13 @@ var MM = (function () {
             const ui = p.getnamed("obj-viz");
             if (ui) {
                 const r = ui.getattr("presentation_rect");
-                if (r && r.length >= 4) ui.setattr("presentation_rect", r[0], r[1], Math.max(1, w - 2 * r[0]), r[3]);
+                if (Array.isArray(r) && r.length >= 4) ui.setattr("presentation_rect", r[0], r[1], Math.max(1, w - 2 * r[0]), r[3]);
             }
             for (let i = 0; i < 8; i++) {
                 const pn = p.getnamed("obj-panel-" + i);
                 if (!pn) break;
                 const r = pn.getattr("presentation_rect");
-                if (r && r.length >= 4 && r[0] === 0) pn.setattr("presentation_rect", 0, r[1], w, r[3]);
+                if (Array.isArray(r) && r.length >= 4 && r[0] === 0) pn.setattr("presentation_rect", 0, r[1], w, r[3]);
             }
         } catch (e) {}
     }
@@ -681,7 +683,7 @@ function setvalueof() {
     const a = typeof arrayfromargs === "function" ? arrayfromargs(arguments) : Array.prototype.slice.call(arguments);
     MM.load(a.length === 1 && Array.isArray(a[0]) ? a[0] : a);
 }
-// loadmess setnames #0-megamodcfg #0-megamodmseg #0-megamodsteps #0-megamodscope #0-mmcurve #0-megamodroute
+// loadmess setnames ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute
 function setnames(cfg, mseg, steps, scope, curve, route) {
     MM._setNames(String(cfg), String(mseg), String(steps), String(scope), String(curve), String(route));
 }

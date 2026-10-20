@@ -56,8 +56,8 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Envelope Trigger
      python3 scripts/build_envtrig.py && node tests/test_envtrig.js && python3 scripts/run_envtrig_ui_tests.py && python3 scripts/render_preview.py "devices/Envelope Trigger.amxd"
 
-     # Mega Modulator (one build writes A, B and C)
-     python3 scripts/build_megamod.py && node tests/test_megamod.js && for v in A B C; do python3 scripts/render_preview.py "devices/Mega Modulator $v.amxd"; done
+     # Mega Modulator
+     python3 scripts/build_megamod.py && node tests/test_megamod.js && node tests/test_megamod_ui.js && python3 scripts/render_preview.py "devices/Mega Modulator.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -817,3 +817,74 @@ Envelope follower driven by **changes in timbre**, not loudness. Analysis only: 
 python3 scripts/build_timbre.py && node tests/test_timbre.js && for v in A B C; do python3 scripts/render_preview.py "devices/Timbre Follower $v.amxd"; done
 ```
 Audio checks (real Max): `python3 scripts/run_timbre_audio_tests.py`
+
+---
+
+## 21. Architecture of `devices/Mega Modulator.amxd`
+
+One Audio Effect that hosts up to **16 modulators** (LFO, Envelope follower, Random / S&H, Steps, MSEG) and maps each to any number of Live parameters, from a pool of **256 mapping slots** per device. Audio passes straight through (`plugin~` → `plugout~`, zero latency). The buffer names below drop their per-instance prefix, because the prefix is being changed (see the instance-isolation work).
+
+### Files
+- `src/megamod_config.js`: pure, Node-requirable helpers. It holds the constants, the state model and its (de)serialization, the cfg buffer layout, MSEG evaluation (taken from `src/mseg_editor.js`), the curve/transfer-table math (`mappingOutput`, `mappingTable`), JS reference modulators used by the tests, and learn/target helpers. The **API CONTRACT** comment at its top is the UI-facing API.
+- `src/megamod_mapper.js`: the v8 runtime (`MM`). It owns state, the engine buffer writers, pool slot allocation, learn, target resolution and validation, telemetry polling, `getvalueof` / `setvalueof` and width requests.
+- `src/megamod_ui.js`: the UI ("Rack Strips").
+- `src/megamod_engine.genexpr`: the modulator engine.
+- `scripts/megamod_common.py` + `scripts/build_megamod.py`: the builder. `scripts/megamod_layout.json` sets the initial width and the v8ui rect.
+- Build order inside the v8ui: config, then mapper, then UI, concatenated into **one** script scope.
+
+### UI (`obj-viz`, `v8ui`, `x = 4, y = 4`, width follows the device)
+- **Rail (left, 20 px)**:
+  - `LRN` latch: while latched, every Live parameter you touch is mapped to the selected strip (multi-learn), and changing the selection retargets it.
+  - `LST`: toggles the mapping list.
+  - A modulator count `n / 16`.
+- **Strips (56 px each)**: one per modulator.
+  - The **upper-left corner glyph is the enable button**: type-coloured and lit when on, hollow grey when off. There is no LED.
+  - Below it: name, live mini-visualization, vertical output meter, two key knobs, a mapping-count chip and a round map button. A click on the map button is single-shot learn, shift-click is multi-learn.
+  - Click selects a strip. Double-click expands it **in place** to a 204 px editor with the full controls for its type: the MSEG point editor, the step painter, LFO shape/rate/sync/phase, follower attack/release/gain, random rate/smooth. The type chip in the expanded header changes the type.
+  - Dragging a strip header reorders strips. The order is visual only and is kept in `state.ui.order`.
+  - A trailing `+` strip opens the type picker.
+- **Mapping list (`LST`, 172 px)**: Bitwig-inspector style.
+  - Each modulator has a header (colour, name, count, map arrow: click = single-shot, shift-click = multi-learn).
+  - Rows under it: × delete, parameter name (hover shows track › device › param), curve icon (click cycles, alt-click inverts), orange value (drag edits amount or min/max), M/R toggle. Missing targets are red and disabled ones dimmed.
+  - Clicking a row opens the **remap editor** beside the list: curve preview, 5 curve buttons (Linear / Exp / Log / S / Stepped), curve amount or steps, amount or min/max bars, INV, BIP, MOD/REM, delete.
+- **Pool full**: a red pill "Mapping pool full (256)" shows when the mapper fires change kind `"full"`.
+- **Width**: the UI computes its layout width and calls `MM.requestWidth(w)`, which goes `width <w>` → `prepend setwidth` → `live.thisdevice`. `resizeFace()` grows the v8ui and every full-width background panel (looked up by varname = box id) with it.
+
+### Engine (`gen.codebox~`, varname `megamod_engine`, hidden)
+- **Slots**: 16 slots, all computed at audio rate. Per-slot config comes from `Buffer cfg("megamodcfg")` (16 × 24 floats). MSEG tables come from `megamodmseg` (16 × 1024) and steps from `megamodsteps` (16 × 32).
+- **Inputs**: the mono sum (for followers) and transport from `plugsync~` (`hplay`, `hbpm`, `hppq` Params).
+- **Outputs**: 16 signal outlets. Every generator yields `u` in 0..1. Bipolar output is `depth*(2u-1)`; unipolar output is `2*depth*u-1`, so the full −1..1 range always reaches the transfer table.
+- **Telemetry**: `megamodscope` (128 samples). Slot `s` writes `[out, phase, u, aux]` at `4*s`. The header holds frame, sr, beat, bpm and playing at `64..68`.
+
+### Mapping pool (saved objects, no runtime scripting)
+- **Why**: `live.modulate~` / `live.remote~` objects **created by JS scripting in a running device never attach to a parameter in Live**: no modulation ring, no value change. This was verified through the MCP bridge. Every mapping object must therefore be saved in the device file.
+- **Routers**: the build generates **8 router `gen.codebox~`** boxes, each with 16 inlets (wired from the 16 engine outlets) and 32 outlets. Slot `k` = router `floor(k/32)`, outlet `k%32`.
+  - Each slot reads `route[2k]` (source modulator index, or −1 when off) from `megamodroute` (512 samples).
+  - It looks up its 256-sample region `k*256` of `mmcurve` (fixed at 256 × 256), with the same convention as `lookup~`: index `(x+1)/2 * 256`, linear interpolation, clamped to the last sample.
+  - The whole mapping transform (mode, amount or min/max, bipolar, invert, curve and curve amount) is baked into that table, so editing a range only rewrites 256 samples.
+- **Per-slot objects**:
+  - `live.modulate~ @smoothing 1`, varname `mm_mod_<k>`.
+  - `live.remote~ @normalized 1`, varname `mm_rem_<k>`.
+  - Two `prepend id` boxes, `mm_mid_<k>` and `mm_rid_<k>`, wired to the **right inlet** of each. `id` must arrive on the right inlet; `Maxobj.message()` only reaches the left inlet.
+  - The mapper binds the active mode's object and sends `id 0` to the other one. It always unbinds before binding, and on delete it unbinds both and sets the route to −1.
+  - Slots are allocated lowest-free and reassigned on load. The 257th `addMapping` returns `null` and fires `"full"`.
+
+### Learn
+- **Observer**: `init_lom` (from `live.thisdevice`, never `loadbang`) observes `live_set view selected_parameter`. LiveAPI observers pass **one array** (`["selected_parameter", "id", N]` or `["id", N]`); flatten it before parsing.
+- **Deferral**: the selection is handled on the next scheduler tick (`Task.schedule(0)`). Never read the LOM or touch objects inside a Live notification.
+- **Lookup**: `describeParameter` uses a fresh `new LiveAPI(cb, "id N")`. Reusing a `goto` on a shared API returned nothing.
+- **Rejected selections**: the device's own parameters and duplicates (same modulator + same target) are ignored.
+- **Persistence**: targets are stored by LOM path plus track/device/parameter names. On load they are resolved by path first, then by name among top-level devices. Unresolved mappings are kept and marked `missing`, and a 1.5 s poll revives them or flags them.
+
+### State
+- The `MegaModState` blob (`parameter_type: 3`, v8ui `getvalueof` / `setvalueof`) holds the versioned JSON state, which covers the modulators, the mappings and an opaque `ui` object (selection, expanded strip, list open, scroll, selected mapping, strip order). Older versions still parse.
+
+### Debugging
+- **Debug trace**: `dlog()` in the mapper is silenced by `MM_DEBUG = false`. Set it to `true` (and optionally `MM_DEBUG_LOG` to an absolute file path) to trace learn, slot binding and target resolution.
+- **Test hook**: `receive megamod-test` → `obj-viz` supports `test_learn <mod> <param id>`, `test_report` (writes the slots, routes and ids to `Global("megamod_test")` as `report_<device id>` and `last`) and `test_poke <mapping id> <v>`. Drive it with `messnamed("megamod-test", ...)` from the MCP bridge's `ableton_eval_lom_js`, inside the VM (section 1a).
+
+### Build / Test / Preview
+```bash
+python3 scripts/build_megamod.py && node tests/test_megamod.js && node tests/test_megamod_ui.js && python3 scripts/render_preview.py "devices/Mega Modulator.amxd"
+```
+Audio checks (real Max, inside the VM, through `scripts/max_harness.py`): `python3 scripts/run_megamod_audio_tests.py`. They cover LFO period and shapes, unipolar/bipolar ranges, random, steps, MSEG, the envelope follower, tempo sync, retrigger, telemetry, slot isolation, and router slot output against `mappingOutput()`.

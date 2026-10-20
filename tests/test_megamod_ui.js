@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Variant-specific tests for devices/Mega Modulator B.amxd (design B "Rack Strips").
- * Runs src/megamod_ui_b.js (+ shared config/mapper) in a VM with a mocked mgraphics and checks: load, painting in every
- * mode (strips, expanded strip per type, patchbay, popup, name edit, tooltip), hit-testing, device width for
+ * Variant-specific tests for devices/Mega Modulator.amxd.
+ * Runs src/megamod_ui.js (+ shared config/mapper) in a VM with a mocked mgraphics and checks: load, painting in every
+ * mode (strips, expanded strip per type, mapping list + remap editor, popup, name edit, tooltip, "pool full" pill), hit-testing, device width for
  * 0 / 1 / 5 / 16 modulators, learn latch / single / shift behaviour, and the strip / patchbay interactions.
  */
 const assert = require("assert");
@@ -27,8 +27,8 @@ function makeEnv() {
     const patcher = { getnamed: (n) => (n === "obj-viz" ? box : null) };
     const ctx = { mgraphics: mg, console, box, patcher, outlet: (...a) => log.outlets.push(a), notifyclients: () => { log.notify++; }, post() {}, arrayfromargs: (a) => Array.prototype.slice.call(a), inlets: 1, outlets: 2 };
     vm.createContext(ctx);
-    const code = execFileSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.ui_script('b'))"], { cwd: ROOT, maxBuffer: 1 << 26 }).toString("utf8");
-    vm.runInContext(code, ctx, { filename: "megamod_ui_b.js" });
+    const code = execFileSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.ui_script())"], { cwd: ROOT, maxBuffer: 1 << 26 }).toString("utf8");
+    vm.runInContext(code, ctx, { filename: "megamod_ui.js" });
     return { ctx, log, run: (c) => vm.runInContext(c, ctx) };
 }
 
@@ -43,6 +43,8 @@ const strip = (i) => run(`ubStripRects(ubStrips().list[${i}])`);
 const center = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
 const spyLearn = () => {
     log.armed.length = 0; log.disarmed = 0;
+    if (ctx.__spied) return;
+    ctx.__spied = true;
     run("globalThis.__a = MM.armLearn; globalThis.__d = MM.disarmLearn;");
     run("MM.armLearn = function (i, m) { __rec.push([i, !!m]); return __a.call(MM, i, m); }; MM.disarmLearn = function () { __rec.push('off'); return __d.call(MM); };");
 };
@@ -76,12 +78,13 @@ run("paint()");
 // ---------------------------------------------------------------- hit testing (collapsed strips)
 const R0 = strip(0);
 eq(run("ubHit(11, 12).kind"), "rail_learn", "rail learn icon");
-eq(run("ubHit(11, 48).kind"), "rail_matrix", "rail matrix icon");
+eq(run("ubHit(11, 48).kind"), "rail_list", "rail list icon");
 const hk = (r) => run(`ubHit(${center(r)[0]}, ${center(r)[1]})`);
 eq(hk(R0.head).kind, "head", "header");
 eq(hk(R0.viz).kind, "viz", "viz");
 eq(hk(R0.knobs[0].hit).kind, "knob", "knob");
-eq(run(`ubHit(${R0.led[0] + 5}, ${R0.led[1] + 5})`).kind, "led", "led");
+eq(hk(R0.icon).kind, "pwr", "corner power button");
+ok(R0.led === undefined, "no LED rect on the strip");
 eq(hk(R0.count).kind, "count", "count chip");
 eq(run(`ubHit(${R0.map.cx}, ${R0.map.cy})`).kind, "map", "map button");
 eq(hk(R0.meter).kind, "meter", "meter");
@@ -159,9 +162,24 @@ const after = run(`MM.state.mods[${slot0}].p.${s0.knobs[0].spec.key}`);
 ok(after !== before, "dragging a knob changes the parameter");
 dbl(...kx);
 eq(run(`MM.state.mods[${slot0}].p.${s0.knobs[0].spec.key}`), run("defaultParams(MOD_LFO)." + s0.knobs[0].spec.key), "double-click resets the knob");
-click(s0.led[0] + 5, s0.led[1] + 5);
-eq(run("MM.state.mods[0].enabled"), 0, "led toggles enable");
-click(s0.led[0] + 5, s0.led[1] + 5);
+ok(s0.led === undefined, "collapsed strip has no LED rect");
+{
+    const allKinds = new Set();
+    for (let yy = 0; yy < 161; yy += 3) for (let xx = 22; xx < 80; xx += 3) allKinds.add(run(`ubHit(${xx}, ${yy})`).kind);
+    ok(!allKinds.has("led"), "no LED hit area anywhere on the strip");
+}
+eq(run("MM.state.mods[0].enabled"), 1, "enabled before toggle");
+click(...center(s0.icon));
+eq(run("MM.state.mods[0].enabled"), 0, "corner button turns the modulator off");
+click(...center(s0.icon));
+eq(run("MM.state.mods[0].enabled"), 1, "corner button turns it back on");
+{
+    log.texts.length = 0; log.draws = 0;
+    run("MM.setParam(0, 'enabled', 0)"); run("paint()");
+    const offDraws = log.draws;
+    run("MM.setParam(0, 'enabled', 1)"); run("paint()");
+    ok(offDraws > 0, "off state paints");
+}
 // expanded chips per type
 run("ubSetExpanded(0)");
 let ex = run("ubStripRects(ubStrips().list[0])");
@@ -171,6 +189,31 @@ click(...center(chipById("sync").rect));
 eq(run("MM.state.mods[0].p.sync"), syncBefore ? 0 : 1, "sync chip toggles");
 click(...center(chipById("shape3").rect));
 eq(run("MM.state.mods[0].p.shape"), 3, "shape glyph chip sets the shape");
+// expanded header: power button + type chip (type change lives here now)
+{
+    const eg0 = run("ubStrips().list[0]");
+    eq(run("ubStrips().list[0].exp"), true, "strip 0 expanded");
+    ok(ex.led === undefined, "expanded strip has no LED rect");
+    eq(run(`ubHit(${center(ex.icon)[0]}, ${center(ex.icon)[1]})`).kind, "pwr", "expanded corner power button");
+    click(...center(ex.icon));
+    eq(run("MM.state.mods[0].enabled"), 0, "expanded corner button disables");
+    click(...center(ex.icon));
+    eq(run("MM.state.mods[0].enabled"), 1, "expanded corner button re-enables");
+    eq(run(`ubHit(${center(ex.type)[0]}, ${center(ex.type)[1]})`).kind, "typechip", "type chip hit");
+    ok(ex.type[0] >= ex.name[0] + ex.name[2], "type chip does not overlap the name");
+    const t0 = run("MM.state.mods[0].type");
+    click(...center(ex.type));
+    ok(run("!!ubPopup && ubPopup.mode === 'type'"), "type chip opens the picker");
+    const pr0 = run("ubPopupRect()");
+    click(pr0[0] + 20, pr0[1] + 2 + 17 * 2 + 8); // 3rd type = Random
+    eq(run("MM.state.mods[0].type"), 3, "picking a type changes the modulator type");
+    ok(run("MM.state.mods[0].type") !== t0, "type actually changed");
+    run("MM.setModType(0, MOD_LFO)");
+    ok(run("!ubPopup"), "picker closed");
+    // clicking the name/header area no longer opens the picker
+    dbl(...center(ex.name)); ctx.onkeydown(27, 27, 1);
+    ok(run("!ubPopup"), "header name does not open the picker");
+}
 // expanded editors for every type paint and respond
 const ed = (slot) => { run(`ubSetExpanded(${slot})`); return run(`ubStripRects(ubStrips().filter ? 0 : ubStrips().list.filter((g) => g.slot === ${slot})[0])`); };
 for (let slot = 0; slot < 5; slot++) {
@@ -258,97 +301,184 @@ click(...center(dr.del));
 eq(run("MM.modCount()"), cnt - 1, "second click deletes the modulator");
 eq(run("ubExp()"), -1, "expanded state cleared after delete");
 
-// ---------------------------------------------------------------- patchbay
+// ---------------------------------------------------------------- mapping list + remap editor
 run("MM.demo()");
-run("MM.setUI({ order: [], sel: 0, exp: -1, pbSel: 0 })");
-const m0 = run("MM.mappingsFor(0)[0]");
-run("MM.addMapping(0, { path: 'live_set tracks 5 devices 0 parameters 1', trackName: 'T', deviceName: 'D', paramName: 'P1' })");
+run("MM.setUI({ order: [], sel: 0, exp: -1, pbSel: 0, pbScroll: 0 })");
+for (let k = 0; k < 4; k++) run(`MM.addMapping(0, { path: 'live_set tracks 5 devices 0 parameters ${k}', trackName: 'Tr', deviceName: 'Dev', paramName: 'P${k}' })`);
+run("MM.addMapping(1, { path: 'live_set tracks 6 devices 0 parameters 9', trackName: 'Tr2', deviceName: 'Dev2', paramName: 'Q1' })");
 run("ubTogglePb(true)");
-ok(run("ubPb()"), "patchbay on");
-const gm = run("ubPbGeom()");
-eq(lastWidth(), Math.max(220, gm.end) + 8, "patchbay width fits the columns");
+ok(run("ubPb()"), "list on");
+const gm = run("ubListGeom()");
+eq(gm.end, 22 + 172 + 6 + 138, "list geometry: rail + list + editor");
+eq(lastWidth(), gm.end + 8, "list width fits list + editor");
 log.texts.length = 0;
 run("paint()");
-ok(log.texts.includes("TARGETS") && log.texts.includes("P1"), "patchbay paints rows");
-const row0 = run("ubPbModel().items.filter((i) => i.t === 'row')[0]");
-const cellAt = (c, half) => [gm.gx + c * gm.cw + gm.cw / 2, 21 + row0.y + (half === "top" ? 3 : 10)];
-const rowKey = row0.row.key;
-const mapsInRow = Object.values(row0.row.cells);
-const firstMap = mapsInRow[0];
-const col = run(`ubPbGeom().ord.indexOf(${firstMap.mod})`);
-const cx = cellAt(col, "top");
-eq(run(`ubHit(${cx[0]}, ${cx[1]})`).kind, "pb_cell", "hit-test patchbay cell");
-click(...cx);
-eq(run("ubUIs().pbSel"), firstMap.id, "click selects the mapping");
-const a0 = run(`MM.getMapping(${firstMap.id}).amount`);
-drag(cx[0], cx[1] - 20);
-release();
-ok(run(`MM.getMapping(${firstMap.id}).amount`) > a0, "dragging a cell up raises the amount");
-const c0 = run(`MM.getMapping(${firstMap.id}).curve`);
-click(cx[0], cx[1], { alt: true });
-eq(run(`MM.getMapping(${firstMap.id}).curve`), (c0 + 1) % 5, "alt-click cycles the curve");
-// remote cell: top half = max, bottom half = min
-run(`MM.updateMapping(${firstMap.id}, { mode: 'remote', min: 0.3, max: 0.7 })`);
-click(cx[0], cellAt(col, "top")[1]);
-drag(cx[0], cellAt(col, "top")[1] - 10);
-release();
-ok(run(`MM.getMapping(${firstMap.id}).max`) > 0.7 && run(`MM.getMapping(${firstMap.id}).min`) === 0.3, "top half edits max");
-const bot = cellAt(col, "bot");
-click(...bot);
-drag(bot[0], bot[1] + 10);
-release();
-ok(run(`MM.getMapping(${firstMap.id}).min`) < 0.3, "bottom half edits min");
-// detail strip
-const dets = run(`ubDetailRects(ubPbGeom(), MM.getMapping(${firstMap.id}))`);
-const det = (id) => dets.filter((d) => d.id === id)[0];
+ok(log.texts.includes("MAPPINGS") && log.texts.includes("P0"), "list paints headers and rows");
+ok(log.texts.includes("Select a row"), "editor shows the empty prompt without a selection");
+ok(!log.texts.includes("TARGETS"), "patchbay is gone");
+const rowAt = (id) => {
+    const v = run("ubListVisible()");
+    for (const r of v.rows) if (r.item.kind === "map" && r.item.m.id === id) return r;
+    return null;
+};
+const m1 = run("MM.mappingsFor(0)[1]");
+const r1 = rowAt(m1.id);
+ok(!!r1, "mapping row is visible");
+const P1 = run(`ubRowParts(${r1.y})`);
+const at = (rect) => [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
+eq(run(`ubHit(${at(P1.name)[0]}, ${at(P1.name)[1]})`).kind, "ls_row", "name hit = row");
+eq(run(`ubHit(${at(P1.name)[0]}, ${at(P1.name)[1]})`).tip, `${m1.target.trackName} > ${m1.target.deviceName} > ${m1.target.paramName}`, "name hover tip shows track > device > param");
+eq(run(`ubHit(${at(P1.del)[0]}, ${at(P1.del)[1]})`).kind, "ls_del", "delete hit");
+eq(run(`ubHit(${at(P1.curve)[0]}, ${at(P1.curve)[1]})`).kind, "ls_curve", "curve hit");
+eq(run(`ubHit(${at(P1.val)[0]}, ${at(P1.val)[1]})`).kind, "ls_val", "value hit");
+eq(run(`ubHit(${at(P1.mode)[0]}, ${at(P1.mode)[1]})`).kind, "ls_mode", "mode hit");
+// row select -> editor shows that mapping
+click(...at(P1.name));
+eq(run("ubUIs().pbSel"), m1.id, "clicking a row selects the mapping");
+eq(run("ubSel()"), 0, "selecting a row selects its modulator");
+log.texts.length = 0;
+run("paint()");
+ok(log.texts.includes("P1") && log.texts.includes("INV") && log.texts.includes("BIP"), "editor shows the selected mapping");
+ok(log.texts.includes("Amount"), "mod-mode editor has an Amount bar");
+// editor controls
+const dets = () => run(`ubDetailRects(ubListGeom(), MM.getMapping(${m1.id}))`);
+const det = (id) => dets().filter((d) => d.id === id)[0];
 click(...center(det("curve2").rect));
-eq(run(`MM.getMapping(${firstMap.id}).curve`), 2, "curve type button");
+eq(run(`MM.getMapping(${m1.id}).curve`), 2, "editor curve type button");
 click(...center(det("inv").rect));
-eq(run(`MM.getMapping(${firstMap.id}).invert`), 1, "invert toggle");
+eq(run(`MM.getMapping(${m1.id}).invert`), 1, "editor invert");
+const bip0 = run(`MM.getMapping(${m1.id}).bipolar`) ? 1 : 0;
+click(...center(det("bip").rect));
+eq(run(`MM.getMapping(${m1.id}).bipolar`) ? 1 : 0, 1 - bip0, "editor BIP toggles");
+click(det("mode").rect[0] + det("mode").rect[2] - 5, det("mode").rect[1] + 5);
+eq(run(`MM.getMapping(${m1.id}).mode`), "remote", "editor MOD/REM -> Remote");
+ok(!!det("min") && !!det("max") && !det("amt"), "remote editor shows Min / Max bars");
+click(det("min").rect[0] + 20, det("min").rect[1] + 5);
+near(run(`MM.getMapping(${m1.id}).min`), 20 / det("min").rect[2], 0.02, "editor min bar");
 click(det("mode").rect[0] + 5, det("mode").rect[1] + 5);
-eq(run(`MM.getMapping(${firstMap.id}).mode`), "mod", "M/R segmented switches back to Mod");
-const dets2 = run(`ubDetailRects(ubPbGeom(), MM.getMapping(${firstMap.id}))`);
-const det2 = (id) => dets2.filter((d) => d.id === id)[0];
-click(det2("camt").rect[0] + 10, det2("camt").rect[1] + 5);
-near(run(`MM.getMapping(${firstMap.id}).curveAmt`), 10 / det2("camt").rect[2], 0.02, "curve amount bar");
-click(det2("amt").rect[0] + det2("amt").rect[2] - 1, det2("amt").rect[1] + 5);
-near(run(`MM.getMapping(${firstMap.id}).amount`), 1, 0.15, "amount bar");
-// empty-cell double-click adds, cell double-click deletes
-const emptyCol = run(`ubPbGeom().ord.filter((s) => !${JSON.stringify(Object.keys(row0.row.cells).map(Number))}.includes(s))[0]`);
-const ec = cellAt(run(`ubPbGeom().ord.indexOf(${emptyCol})`), "top");
-const nMaps = run("MM.allMappings().length");
-dbl(...ec);
-eq(run("MM.allMappings().length"), nMaps + 1, "double-click on an empty cell adds a mapping");
-dbl(...ec);
-eq(run("MM.allMappings().length"), nMaps, "double-click on a mapped cell deletes it");
-click(...cx);
-click(...center(det("del").rect));
-eq(run(`MM.getMapping(${firstMap.id})`), null, "detail delete removes the mapping");
-// scroll
-const before2 = run("ubUIs().pbScroll || 0");
-for (let k = 0; k < 8; k++) run(`MM.addMapping(1, { path: 'live_set tracks 7 devices 0 parameters ${k}', trackName: 'T7', deviceName: 'D', paramName: 'S${k}' })`);
-ctx.onwheel(80, 80, 0, -1);
-ok(run("ubUIs().pbScroll") > before2, "wheel scrolls the patchbay");
-// missing targets are painted red
-const mm = run("MM.allMappings()[0]");
-log.texts.length = 0;
+eq(run(`MM.getMapping(${m1.id}).mode`), "mod", "editor MOD/REM -> Mod");
+click(det("camt").rect[0] + 10, det("camt").rect[1] + 5);
+near(run(`MM.getMapping(${m1.id}).curveAmt`), 10 / det("camt").rect[2], 0.02, "editor curve amount bar");
+click(det("amt").rect[0] + det("amt").rect[2] - 1, det("amt").rect[1] + 5);
+near(run(`MM.getMapping(${m1.id}).amount`), 1, 0.15, "editor amount bar");
+dbl(...center(det("amt").rect));
+near(run(`MM.getMapping(${m1.id}).amount`), run("defaultMapping(1, 0, {}).amount"), 1e-9, "double-click resets the amount bar");
+// inline row gestures
+const c0 = run(`MM.getMapping(${m1.id}).curve`);
+click(...at(P1.curve));
+eq(run(`MM.getMapping(${m1.id}).curve`), (c0 + 1) % 5, "list curve icon cycles the curve");
+click(...at(P1.curve), { alt: true });
+eq(run(`MM.getMapping(${m1.id}).invert`), 0, "alt-click on the curve icon toggles invert");
+const a0 = run(`MM.getMapping(${m1.id}).amount`);
+click(...at(P1.val));
+drag(at(P1.val)[0] + 30, at(P1.val)[1]);
+release();
+ok(run(`MM.getMapping(${m1.id}).amount`) > a0 || a0 >= 1, "dragging the value changes the amount");
+click(...at(P1.mode));
+eq(run(`MM.getMapping(${m1.id}).mode`), "remote", "list M/R toggle -> remote");
+click(...at(P1.mode));
+eq(run(`MM.getMapping(${m1.id}).mode`), "mod", "list M/R toggle -> mod");
+dbl(...at(P1.name));
+eq(run(`MM.getMapping(${m1.id}).enabled`), 0, "double-click a row disables the mapping");
 run("paint()");
-ok(log.draws > 0, "patchbay paints");
-// column header click selects
-click(gm.gx + gm.cw * 2 + 3, 8);
-eq(run("ubSel()"), run("ubPbGeom().ord[2]"), "column header selects the modulator");
-// count chip opens the patchbay
+dbl(...at(P1.name));
+eq(run(`MM.getMapping(${m1.id}).enabled`), 1, "double-click again enables it");
+// editor delete
+click(...at(P1.name));
+click(...center(det("del").rect));
+eq(run(`MM.getMapping(${m1.id})`), null, "editor delete removes the mapping");
+eq(run("ubUIs().pbSel"), 0, "selection cleared after delete");
+// row x delete
+const m2 = run("MM.mappingsFor(0)[1]");
+const r2 = rowAt(m2.id);
+click(...at(run(`ubRowParts(${r2.y})`).del));
+eq(run(`MM.getMapping(${m2.id})`), null, "row x deletes the mapping");
+// missing + disabled paint
+{
+    const m3 = run("MM.mappingsFor(0)[0]");
+    run(`globalThis.__st = MM.mappingStatus; MM.mappingStatus = (id) => (id === ${m3.id} ? 'missing' : __st(id));`);
+    run(`MM.updateMapping(${run("MM.mappingsFor(1)[0]").id}, { enabled: 0 })`);
+    log.texts.length = 0;
+    run("paint()");
+    ok(log.texts.includes("P0"), "missing / disabled rows paint");
+    run("MM.mappingStatus = __st");
+}
+// header arrow: single / shift-multi learn
+spyLearn();
+ctx.__rec.length = 0;
+const hr = run("ubListVisible().rows.filter((r) => r.item.kind === 'head')[0]");
+const ha = run(`ubHeadArrowRect(${hr.y})`);
+eq(run(`ubHit(${at(ha)[0]}, ${at(ha)[1]}).kind`), "ls_harrow", "header arrow hit");
+const hslot = hr.item.i;
+click(...at(ha));
+eq(ctx.__rec[ctx.__rec.length - 1], [hslot, false], "header arrow = single-shot learn");
+click(...at(ha));
+eq(ctx.__rec[ctx.__rec.length - 1], "off", "header arrow again disarms");
+click(...at(ha), { shift: true });
+eq(ctx.__rec[ctx.__rec.length - 1], [hslot, true], "shift-click header arrow = multi-learn");
+click(...at(ha), { shift: true });
+eq(run("MM.learn.armed"), false, "shift-click again disarms");
+// header body selects the modulator
+const hr2 = run("ubListVisible().rows.filter((r) => r.item.kind === 'head')[1]");
+click(gm.lx + 30, hr2.y + 7);
+eq(run("ubSel()"), hr2.item.i, "clicking a list header selects that modulator");
+// scroll
+{
+    for (let k = 0; k < 10; k++) run(`MM.addMapping(2, { path: 'live_set tracks 8 devices 0 parameters ${k}', trackName: 'T8', deviceName: 'D', paramName: 'S${k}' })`);
+    run("MM.setUI({ pbScroll: 0 })");
+    ctx.onwheel(80, 80, 0, -1);
+    eq(run("ubUIs().pbScroll"), 1, "wheel scrolls the list by one item");
+    ctx.onwheel(80, 80, 0, 1);
+    eq(run("ubUIs().pbScroll"), 0, "wheel scrolls back");
+    for (let k = 0; k < 80; k++) ctx.onwheel(80, 80, 0, -1);
+    eq(run("ubUIs().pbScroll"), run("ubListMaxScroll(ubListItems())"), "scroll clamps at the end");
+    ctx.onwheel(300, 80, 0, -1);
+    run("MM.setUI({ pbScroll: 0 })");
+}
+// count chip opens the list on that modulator
 run("ubTogglePb(false)");
 click(...center(run("ubStripRects(ubStrips().list[0])").count));
-ok(run("ubPb()"), "count chip opens the patchbay");
+ok(run("ubPb()"), "count chip opens the mapping list");
+ok(run("ubUIs().pbSel") > 0 || run("MM.mappingsFor(0).length") === 0, "count chip selects the first mapping");
+// rail toggle back
+click(11, 48);
+ok(!run("ubPb()"), "rail list button toggles back to the strips");
+click(11, 48);
+ok(run("ubPb()"), "rail list button opens the list");
 run("ubTogglePb(false)");
+
+// ---------------------------------------------------------------- "pool full" pill
+{
+    run("ubFullTTL = 0");
+    log.texts.length = 0; run("paint()");
+    ok(!log.texts.some((t) => t.indexOf("Mapping pool full") === 0), "no pill normally");
+    ctx.uiChanged({ kind: "full", mod: 0 });
+    ok(run("ubFullTTL") > 0, "full event arms the pill");
+    log.texts.length = 0; run("paint()");
+    ok(log.texts.includes("Mapping pool full (256)"), "pill text painted");
+    for (let k = 0; k < 80; k++) ctx.uiTelemetry(run("MM.readTelemetry()"));
+    eq(run("ubFullTTL"), 0, "pill expires");
+    log.texts.length = 0; run("paint()");
+    ok(!log.texts.some((t) => t.indexOf("Mapping pool full") === 0), "pill gone after expiry");
+}
+// a real refused learn raises the event end-to-end
+{
+    const cap = run("MM.mappingCapacity()");
+    run("ubFullTTL = 0");
+    for (let k = cap.used; k < 256; k++) run(`MM.addMapping(0, { path: 'live_set tracks 9 devices 0 parameters ${k}', trackName: 'Z', deviceName: 'D', paramName: 'F${k}' })`);
+    eq(run("MM.mappingCapacity().free"), 0, "pool filled");
+    const seen = [];
+    run("MM.on('change', (ev) => __ev.push(ev.kind))"); ctx.__ev = seen;
+    eq(run("MM.addMapping(0, { path: 'live_set tracks 9 devices 0 parameters 999', trackName: 'Z', deviceName: 'D', paramName: 'X' })"), null, "add refused when full");
+    ok(seen.includes("full") && run("ubFullTTL") > 0, "refused add shows the pill through the real change event");
+}
 
 // ---------------------------------------------------------------- persistence of ui state
 run("MM.setUI({ sel: 2, exp: 2, pb: 1, pbScroll: 14, pbSel: 0 })");
 const saved = run("MM.save()");
 const E2 = makeEnv();
 E2.ctx.setvalueof(saved);
-eq(E2.run("[ubSel(), ubExp(), ubPb(), ubUIs().pbScroll]"), [2, 2, true, 14], "selection / expanded / patchbay / scroll persist");
+eq(E2.run("[ubSel(), ubExp(), ubPb(), ubUIs().pbScroll]"), [2, 2, true, 14], "selection / expanded / list / scroll persist");
 eq(E2.log.outlets.filter((o) => o[1] === "width").pop()[2], E2.run("ubLayoutWidth()") + 8, "width re-requested after restore");
 E2.run("paint()");
 
@@ -357,8 +487,12 @@ const E3 = makeEnv();
 E3.run("preview()");
 E3.log.texts.length = 0;
 E3.run("paint()");
-ok(E3.log.texts.includes("Swell"), "preview shows the expanded MSEG strip");
-E3.run("MM.setUI({pb: 1})");
+ok(E3.log.texts.includes("MAPPINGS") && E3.log.texts.includes("Frequency"), "preview shows the mapping list with the selected mapping");
+ok(E3.run("ubPbSelMapping() !== null") && E3.run("ubPb()"), "preview has a selected mapping and the editor");
+ok(E3.run("MM.allMappings().some((m) => MM.mappingStatus(m.id) === 'missing')"), "preview has a missing row");
+eq(E3.log.outlets.filter((o) => o[1] === "width").pop()[2], 22 + 172 + 6 + 138 + 8, "preview list width");
+E3.run("MM.setUI({pb: 0})");
+E3.log.texts.length = 0;
 E3.run("paint()");
-ok(true, "preview patchbay paints");
-console.log(`megamod B tests passed (${passed} checks)`);
+ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG strip");
+console.log(`megamod UI tests passed (${passed} checks)`);

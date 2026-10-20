@@ -47,9 +47,9 @@ gate = (tms >= t0ms && tms < t0ms + lenms) ? 1 : 0;
 out1 = (go > 0.5) ? sin(twopi * ph) * amp * gate : 0;
 """
 
-BIND = "cfg #0-megamodcfg, mseg #0-megamodmseg, steps #0-megamodsteps, scope #0-megamodscope"
-ROUTER_BIND = "route #0-megamodroute, curve #0-mmcurve"
-SETBUF = ("setbuffers #0-megamodcfg #0-megamodmseg #0-megamodsteps #0-megamodscope #0-mmcurve #0-megamodroute, configure")
+BIND = "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope"
+ROUTER_BIND = "route ---megamodroute, curve ---mmcurve"
+SETBUF = ("setbuffers ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute, configure")
 ROUTER = 3  # router under test (slots 96..127): outlet j = slot 96 + j
 
 
@@ -60,12 +60,12 @@ def device(gen_code, run):
         mh.msg("dev-params", run["params"], 40, 590, 400),
         mh.msg("dev-setbuf", SETBUF, 40, 620, 560),
         mh.msg("dev-srcparams", run.get("source", "amp 0") + ", go 1", 700, 560, 380),
-        mh.box("dev-b-cfg", "buffer~ #0-megamodcfg @samps 384", 800, 40, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-b-mseg", "buffer~ #0-megamodmseg @samps 16384", 800, 70, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-b-steps", "buffer~ #0-megamodsteps @samps 512", 800, 100, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-b-scope", "buffer~ #0-megamodscope @samps 128", 800, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-b-curve", f"buffer~ #0-mmcurve @samps {mc.CURVE_SAMPS}", 800, 160, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-b-route", f"buffer~ #0-megamodroute @samps {mc.ROUTE_SAMPS}", 800, 190, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-cfg", "buffer~ ---megamodcfg @samps 384", 800, 40, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-mseg", "buffer~ ---megamodmseg @samps 16384", 800, 70, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-steps", "buffer~ ---megamodsteps @samps 512", 800, 100, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-scope", "buffer~ ---megamodscope @samps 128", 800, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-curve", f"buffer~ ---mmcurve @samps {mc.CURVE_SAMPS}", 800, 160, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-route", f"buffer~ ---megamodroute @samps {mc.ROUTE_SAMPS}", 800, 190, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.gen_box("dev-gen", gen_code, 200, 220, numinlets=2, numoutlets=16),
         mh.gen_box("dev-src", SOURCE_GEN, 700, 280, numinlets=1, numoutlets=1),
     ]
@@ -413,8 +413,8 @@ def check(case, runs, metas, errors, notes):
             notes.append(f"{tag}: max err vs mappingOutput {m['lookup_err']:.5f}; decoy-region err {m['lookup_err_decoy']:.3f}; "
                          f"in {m['lookup_in_range']} out {m['lookup_out_range']}; samples {m['lookup_samples']}")
             # idx = clip((x + 1) * 128, 0, 256), linear interp, clamped to the last sample, from region slot*256
-            if m["lookup_err"] > 0.01:
-                err(f"{tag}: router output differs from mappingOutput by {m['lookup_err']} (> 0.01)")
+            if m["lookup_err"] > 0.02:  # 256-sample table quantization on steep exp curves
+                err(f"{tag}: router output differs from mappingOutput by {m['lookup_err']} (> 0.02)")
             if m["lookup_err_decoy"] < 0.3:
                 err(f"{tag}: output looks like the decoy region (wrong table offset)")
         off = ms[2]

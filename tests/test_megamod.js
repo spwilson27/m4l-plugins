@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * Verification suite for devices/Mega Modulator A/B/C.amxd (shared core).
- *  1. Build output: header, amxdtype, 169 px, presentation, #0- names, blob param, overlap & z-order rules
+ * Verification suite for devices/Mega Modulator.amxd (shared core).
+ *  1. Build output: header, amxdtype, 169 px, presentation, --- names (never #0), blob param, overlap & z-order rules
  *  2. State model: round trip (v2), legacy v1 fallback, sanitizing, chunking of big states
  *  3. Curve / transfer tables, MSEG, LFO / steps / random / envelope reference math
  *  4. Learn / target helpers (dedupe, self exclusion, resolve by path then by name)
@@ -30,9 +30,9 @@ function readAmxd(file) {
     const raw = fs.readFileSync(file);
     return { raw, doc: JSON.parse(raw.slice(32).toString("utf8")) };
 }
-const variants = ["A", "B", "C"];
+const variants = [""]; // one device; `v` only prefixes assertion messages
 for (const v of variants) {
-    const file = path.join(ROOT, "devices", `Mega Modulator ${v}.amxd`);
+    const file = path.join(ROOT, "devices", "Mega Modulator.amxd");
     const { raw, doc } = readAmxd(file);
     const p = doc.patcher;
     eq(raw.slice(0, 8).toString("latin1"), "ampf\u0004\u0000\u0000\u0000", `${v}: header magic`);
@@ -53,9 +53,11 @@ for (const v of variants) {
         const t = String(b.text || "");
         // `receive megamod-test` is the deliberately global test hook (one message reaches every instance)
         if (/^(buffer~|send|receive|s |r )/.test(t) && t !== "receive megamod-test") {
-            ok(t.includes("#0-"), `${v}: ${b.id} "${t}" must be #0- prefixed`);
+            ok(t.includes("---"), `${v}: ${b.id} "${t}" must be --- prefixed`);
         }
     }
+    // Live expands `---` per device but leaves `#0` literal in a device's own patcher (shared across instances)
+    ok(!JSON.stringify(p.boxes).includes("#0"), `${v}: no #0 names (not expanded by Live in a device patcher)`);
     ok(byId["obj-engine"] && byId["obj-engine"].numoutlets === 16 && byId["obj-engine"].maxclass === "gen.codebox~", `${v}: 16-outlet gen`);
     eq(byId["obj-engine"].varname, "megamod_engine", `${v}: engine varname used by the mapper`);
     eq(byId["obj-engine"].code, GEN, `${v}: embedded engine is current`);
@@ -69,10 +71,10 @@ for (const v of variants) {
     ok(!code.includes("require("), `${v}: no Node-only requires`);
     // bindings
     const msgs = boxes.filter((b) => b.maxclass === "message").map((b) => b.text);
-    ok(msgs.some((t) => t === "cfg #0-megamodcfg, mseg #0-megamodmseg, steps #0-megamodsteps, scope #0-megamodscope"), `${v}: gen binding message`);
-    ok(msgs.some((t) => t.startsWith("setnames #0-megamodcfg") && t.endsWith("#0-mmcurve #0-megamodroute")), `${v}: setnames message`);
-    ok(msgs.some((t) => t === "route #0-megamodroute, curve #0-mmcurve"), `${v}: router binding message`);
-    for (const n of ["#0-megamodcfg @samps 384", "#0-megamodmseg @samps 16384", "#0-megamodsteps @samps 512", "#0-megamodscope @samps 128", "#0-mmcurve @samps 65536", "#0-megamodroute @samps 512"]) {
+    ok(msgs.some((t) => t === "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope"), `${v}: gen binding message`);
+    ok(msgs.some((t) => t.startsWith("setnames ---megamodcfg") && t.endsWith("---mmcurve ---megamodroute")), `${v}: setnames message`);
+    ok(msgs.some((t) => t === "route ---megamodroute, curve ---mmcurve"), `${v}: router binding message`);
+    for (const n of ["---megamodcfg @samps 384", "---megamodmseg @samps 16384", "---megamodsteps @samps 512", "---megamodscope @samps 128", "---mmcurve @samps 65536", "---megamodroute @samps 512"]) {
         ok(boxes.some((b) => b.text === `buffer~ ${n}`), `${v}: buffer ${n}`);
     }
     // wiring: plugin~ -> plugout~ pass-through, width route, plugsync~ params
@@ -480,13 +482,13 @@ function makeEnv(lom) {
 
 function loadScript(variant, env) {
     const out = execFileSync("python3", ["-c",
-        "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.ui_script(sys.argv[1]))", variant.toLowerCase()],
+        "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.ui_script())"],
         { cwd: ROOT, maxBuffer: 1 << 26 }).toString("utf8");
-    vm.runInContext(out, env.ctx, { filename: `megamod_ui_${variant}.js` });
+    vm.runInContext(out, env.ctx, { filename: "megamod_ui.js" });
     return out;
 }
 
-const NAMES = ["#0-megamodcfg", "#0-megamodmseg", "#0-megamodsteps", "#0-megamodscope", "#0-mmcurve", "#0-megamodroute"];
+const NAMES = ["---megamodcfg", "---megamodmseg", "---megamodsteps", "---megamodscope", "---mmcurve", "---megamodroute"];
 
 for (const v of variants) {
     const lom = mockLom();
@@ -506,15 +508,15 @@ for (const v of variants) {
     // modulators write the engine buffers
     const s0 = run("MM.addModulator(MOD_LFO)");
     eq(s0, 0, `${v}: first slot`);
-    const cfg = env.bufs["#0-megamodcfg"].data;
+    const cfg = env.bufs["---megamodcfg"].data;
     eq(cfg[C.CF_TYPE], 1, `${v}: cfg type written`);
     eq(cfg[C.CF_ENABLED], 1, `${v}: cfg enabled written`);
     run("MM.setParam(0, 'rate', 3.5)");
     eq(cfg[C.CF_RATE], 3.5, `${v}: setParam writes cfg`);
     const s1 = run("MM.addModulator(MOD_MSEG)");
-    near(env.bufs["#0-megamodmseg"].data[s1 * C.MSEG_TABLE + 512], 1, 5e-3, `${v}: MSEG table written`);
+    near(env.bufs["---megamodmseg"].data[s1 * C.MSEG_TABLE + 512], 1, 5e-3, `${v}: MSEG table written`);
     run("MM.setStep(0, 2, 0.6)");
-    near(env.bufs["#0-megamodsteps"].data[2], 0.6, 1e-9, `${v}: step written`);
+    near(env.bufs["---megamodsteps"].data[2], 0.6, 1e-9, `${v}: step written`);
     // learn (single): select a parameter
     const pid = (p) => lom.idOf(p);
     const P_FREQ = "live_set tracks 1 devices 1 parameters 0";
@@ -535,8 +537,8 @@ for (const v of variants) {
     sel(P_RES);
     eq(run("MM.allMappings().length"), 1, `${v}: disarmed ignores selections`);
     // pool slot 0: route, table, ids go to the right box
-    const route = env.bufs["#0-megamodroute"].data;
-    const tbl = env.bufs["#0-mmcurve"].data;
+    const route = env.bufs["---megamodroute"].data;
+    const tbl = env.bufs["---mmcurve"].data;
     const lastMsg = (n) => { const o = env.pool[n]; return o && o.messages.length ? o.messages[o.messages.length - 1] : null; };
     const nonzero = (n) => !!env.pool[n] && env.pool[n].messages.some((a) => a[1] !== 0);
     eq(run(`MM.mappingSlot(${m1.id})`), 0, `${v}: first mapping takes slot 0`);
@@ -612,7 +614,7 @@ for (const v of variants) {
     eq(env.log.outlets[1][3] % 16, 3, `${v}: retrigger slot encoded`);
     // telemetry
     run("MM.readTelemetry()");
-    const scope = env.bufs["#0-megamodscope"].data;
+    const scope = env.bufs["---megamodscope"].data;
     scope[0] = 0.5; scope[C.SCOPE_FRAME] = 7; scope[C.SCOPE_BPM] = 128;
     const tel = run("MM.readTelemetry()");
     eq(tel.mods[0].out, 0.5, `${v}: telemetry out`); eq(tel.bpm, 128, `${v}: telemetry bpm`);
@@ -633,9 +635,9 @@ for (const v of variants) {
     for (const m2 of maps2) {
         const sl = vm.runInContext(`MM.mappingSlot(${m2.id})`, env2.ctx);
         ok(sl >= 0 && sl < maps2.length, `${v}: restored mapping ${m2.id} has a pool slot`);
-        eq(env2.bufs["#0-megamodroute"].data[2 * sl], m2.mod, `${v}: restored mapping ${m2.id} routed`);
+        eq(env2.bufs["---megamodroute"].data[2 * sl], m2.mod, `${v}: restored mapping ${m2.id} routed`);
     }
-    eq(env2.bufs["#0-megamodcfg"].data[C.CF_TYPE], 1, `${v}: engine buffers rewritten on load`);
+    eq(env2.bufs["---megamodcfg"].data[C.CF_TYPE], 1, `${v}: engine buffers rewritten on load`);
     // load before names / LOM (Live restores the blob first)
     const lom3 = mockLom();
     lom3.tree.tracks[1].devices[1].params = null;
@@ -669,7 +671,7 @@ for (const v of variants) {
     sel4.cb(["selected_parameter", "id", lom4.idOf("live_set tracks 1 devices 1 parameters 0")]);
     eq(run4("MM.allMappings().length"), 256, `${v}: learn at capacity adds nothing`);
     ok(run4("__kinds.indexOf('full') >= 0"), `${v}: learn at capacity fires "full"`);
-    const r4 = env4.bufs["#0-megamodroute"].data;
+    const r4 = env4.bufs["---megamodroute"].data;
     for (let k = 0; k < 256; k++) if (r4[2 * k] !== 0) { ok(false, `${v}: slot ${k} routed`); }
     const mid4 = run4("MM.allMappings()[255].id");
     eq(run4(`MM.mappingSlot(${mid4})`), 255, `${v}: slots are 0..255 in order`);

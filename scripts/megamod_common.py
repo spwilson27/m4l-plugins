@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Shared builder for the Mega Modulator devices (A, B, C).
+"""Builder for devices/Mega Modulator.amxd.
 
-Each variant is `src/megamod_ui_<x>.js` + `scripts/megamod_variant_<x>.json`. The patch (pass-through audio,
-hidden gen engine, buffers, transport sync, live.thisdevice width/LOM init wiring) is identical for all three.
+The UI is `src/megamod_ui.js`, laid out by `scripts/megamod_layout.json`. The patch adds pass-through audio,
+the hidden gen engine and routers, buffers, transport sync, the 256-slot mapping pool and live.thisdevice
+width/LOM init wiring.
 
-Variant JSON schema (all keys optional except `main.rect` and `width`):
+Layout JSON schema (all keys optional except `main.rect` and `width`):
 {
   "width": 300,                          # initial device width in px (UI can change it with MM.requestWidth)
   "main":  {"rect": [x, y, w, h]},       # presentation rect of the main v8ui (the one hosting the MM runtime)
@@ -35,7 +36,6 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT_DIR, "src")
 DEVICES = os.path.join(ROOT_DIR, "devices")
 DEVICE_H = 169.0
-VARIANTS = ("a", "b", "c")
 
 CFG_FLOATS = 16 * 24
 MSEG_FLOATS = 16 * 1024
@@ -219,8 +219,8 @@ def pool_boxes_and_lines():
     return boxes, lines
 
 
-def load_variant(key):
-    path = os.path.join(ROOT_DIR, "scripts", f"megamod_variant_{key}.json")
+def load_layout():
+    path = os.path.join(ROOT_DIR, "scripts", "megamod_layout.json")
     with open(path, "r", encoding="utf-8") as f:
         v = json.load(f)
     v.setdefault("width", 300)
@@ -230,21 +230,21 @@ def load_variant(key):
     return v
 
 
-def ui_script(key):
+def ui_script():
     header = V8_HEADER
     config = read(os.path.join(SRC, "megamod_config.js"))
     mapper = read(os.path.join(SRC, "megamod_mapper.js"))
-    ui = read(os.path.join(SRC, f"megamod_ui_{key}.js"))
+    ui = read(os.path.join(SRC, "megamod_ui.js"))
     return header + config.rstrip() + "\n\n" + mapper.rstrip() + "\n\n" + ui
 
 
-def build_patcher(key):
-    v = load_variant(key)
+def build_patcher():
+    v = load_layout()
     width = float(v["width"])
     gen_code = read(os.path.join(SRC, "megamod_engine.genexpr"))
     main_rect = v["main"]["rect"]
 
-    boxes = [v8ui_box("obj-viz", ui_script(key), main_rect, (20.0, 80.0), 1, 2)]
+    boxes = [v8ui_box("obj-viz", ui_script(), main_rect, (20.0, 80.0), 1, 2)]
     boxes[0]["box"]["parameter_enable"] = 1
     boxes[0]["box"]["saved_attribute_attributes"] = {
         "valueof": {
@@ -294,16 +294,19 @@ def build_patcher(key):
                 "varname": "megamod_engine",
             }
         },
-        buffer_box("obj-buf-cfg", "#0-megamodcfg", CFG_FLOATS, 560, 460),
-        buffer_box("obj-buf-mseg", "#0-megamodmseg", MSEG_FLOATS, 560, 485),
-        buffer_box("obj-buf-steps", "#0-megamodsteps", STEPS_FLOATS, 560, 510),
-        buffer_box("obj-buf-scope", "#0-megamodscope", SCOPE_SAMPS, 560, 535),
-        buffer_box("obj-buf-curve", "#0-mmcurve", CURVE_SAMPS, 560, 560),
-        buffer_box("obj-buf-route", "#0-megamodroute", ROUTE_SAMPS, 560, 585),
+        # `---` (not `#0-`): Live replaces it with a per-device number (`012megamodcfg`) in every box of the
+        # device, message boxes included. `#0` is only expanded inside abstractions, so `#0-` names were shared
+        # by every Mega Modulator in the Set (verified through the MCP bridge).
+        buffer_box("obj-buf-cfg", "---megamodcfg", CFG_FLOATS, 560, 460),
+        buffer_box("obj-buf-mseg", "---megamodmseg", MSEG_FLOATS, 560, 485),
+        buffer_box("obj-buf-steps", "---megamodsteps", STEPS_FLOATS, 560, 510),
+        buffer_box("obj-buf-scope", "---megamodscope", SCOPE_SAMPS, 560, 535),
+        buffer_box("obj-buf-curve", "---mmcurve", CURVE_SAMPS, 560, 560),
+        buffer_box("obj-buf-route", "---megamodroute", ROUTE_SAMPS, 560, 585),
         newobj("obj-loadbang", "loadbang", 560, 600, 60, outlettype=["bang"]),
-        message("obj-msg-gen-bind", "cfg #0-megamodcfg, mseg #0-megamodmseg, steps #0-megamodsteps, scope #0-megamodscope", 560, 630, 480),
-        message("obj-msg-names", "setnames #0-megamodcfg #0-megamodmseg #0-megamodsteps #0-megamodscope #0-mmcurve #0-megamodroute", 560, 660, 500),
-        message("obj-msg-router-bind", "route #0-megamodroute, curve #0-mmcurve", 560, 690, 300),
+        message("obj-msg-gen-bind", "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope", 560, 630, 480),
+        message("obj-msg-names", "setnames ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute", 560, 660, 500),
+        message("obj-msg-router-bind", "route ---megamodroute, curve ---mmcurve", 560, 690, 300),
         newobj("obj-thisdevice", "live.thisdevice", 700, 10, 85, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init-lom", "init_lom", 800, 40, 70),
         newobj("obj-route", "route width gen", 20, 120, 100, numinlets=1, numoutlets=3),
@@ -413,5 +416,4 @@ def write_amxd(patcher, out_path):
     return len(header) + len(payload)
 
 
-def out_path_for(key):
-    return os.path.join(DEVICES, f"Mega Modulator {key.upper()}.amxd")
+OUT_PATH = os.path.join(DEVICES, "Mega Modulator.amxd")

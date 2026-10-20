@@ -3,9 +3,9 @@
 // src/megamod_mapper.js) into every UI script at build time.
 //
 // =====================================================================================
-// API CONTRACT (read this before writing src/megamod_ui_<x>.js)
+// API CONTRACT (read this before writing src/megamod_ui.js)
 // =====================================================================================
-// Build order inside each UI script:  megamod_config.js + megamod_mapper.js + megamod_ui_<x>.js.
+// Build order inside each UI script:  megamod_config.js + megamod_mapper.js + megamod_ui.js.
 // All three are ONE v8ui script scope, so UI code may use every const/function of config and the
 // global `MM` object. Do NOT redeclare names that exist in config/mapper (prefix UI helpers with `ui`).
 // The mapper owns these Max entry points; a UI must NOT define them:
@@ -53,7 +53,7 @@
 //   MM.requestWidth(w)              device width in px (clamped 120..1600), re-emitted on load/ready
 //   MM.commit()                     end of a drag gesture: notifyclients() so Live saves the Set (setters during a
 //                                   drag only mark dirty; discrete actions commit by themselves)
-//   MM.emitAux(...args)             outlet 1 -> extra boxes declared in scripts/megamod_variant_<x>.json
+//   MM.emitAux(...args)             outlet 1 -> extra boxes declared in scripts/megamod_layout.json
 //   MM.modCount() / MM.freeSlot()   helpers
 //   MM.demo()                       fills a demo state (used by previews/tests)
 // Preview mock (scripts/render_preview.py) supports ONLY this mgraphics subset:
@@ -83,8 +83,8 @@
 // MAPPING POOL (no runtime scripting: live.modulate~ / live.remote~ created by scripting never attach in Live):
 //   The device file holds MAX_MAPPINGS = 256 pre-built slots. Slot k = router gen floor(k/32), outlet k%32 ->
 //   live.modulate~ (varname mm_mod_k) AND live.remote~ (mm_rem_k); `prepend id` boxes mm_mid_k / mm_rid_k feed their
-//   right inlets. A mapping owns the lowest free slot: its curve table lives at buffer~ #0-mmcurve[k*256 ..],
-//   route[2k] (buffer~ #0-megamodroute) = source modulator index when active else -1, and the live id is sent to
+//   right inlets. A mapping owns the lowest free slot: its curve table lives at buffer~ ---mmcurve[k*256 ..],
+//   route[2k] (buffer~ ---megamodroute) = source modulator index when active else -1, and the live id is sent to
 //   the box of the active mode (the other gets 0). Router output = table lookup of the selected engine outlet.
 //
 // OUTPUT CONVENTION (engine outlet k, normalized -1..1):
@@ -98,7 +98,7 @@ const MEGAMOD_VERSION = 1; // schema version of the JSON state
 const MAX_MODS = 16;
 
 // ---- engine buffer layouts (contract with src/megamod_engine.genexpr; tests parse the genexpr) ----
-const CFG_STRIDE = 24; // floats per slot in buffer~ #0-megamodcfg
+const CFG_STRIDE = 24; // floats per slot in buffer~ ---megamodcfg
 const CF_TYPE = 0; // 0 none, 1 LFO, 2 Env, 3 Random, 4 Steps, 5 MSEG
 const CF_ENABLED = 1;
 const CF_RATE = 2; // Hz (free) — cycles/s; Steps: steps/s
@@ -122,12 +122,12 @@ const CF_LOOPSTART = 19;
 const CF_LOOPEND = 20;
 const CFG_FLOATS = MAX_MODS * CFG_STRIDE;
 
-const MSEG_TABLE = 1024; // samples per slot in buffer~ #0-megamodmseg
+const MSEG_TABLE = 1024; // samples per slot in buffer~ ---megamodmseg
 const MSEG_FLOATS = MAX_MODS * MSEG_TABLE;
-const STEPS_MAX = 32; // per slot in buffer~ #0-megamodsteps
+const STEPS_MAX = 32; // per slot in buffer~ ---megamodsteps
 const STEPS_FLOATS = MAX_MODS * STEPS_MAX;
 
-// buffer~ #0-megamodscope: per slot SCOPE_STRIDE floats [out, phase, u, aux]; header from SCOPE_HEADER
+// buffer~ ---megamodscope: per slot SCOPE_STRIDE floats [out, phase, u, aux]; header from SCOPE_HEADER
 const SCOPE_STRIDE = 4;
 const SCOPE_HEADER = 64; // [0] frame counter [1] sr [2] beat [3] bpm [4] playing
 const SCOPE_FRAME = 64;
@@ -138,9 +138,9 @@ const SCOPE_PLAYING = 68;
 const SCOPE_SAMPS = 128;
 
 const MAX_MAPPINGS = 256; // saved mapping-slot pool: 256 live.modulate~ + 256 live.remote~ in the device file
-const CURVE_REGION = 256; // samples per mapping transfer table in buffer~ #0-mmcurve (FIXED: MAX_MAPPINGS x 256 samples)
+const CURVE_REGION = 256; // samples per mapping transfer table in buffer~ ---mmcurve (FIXED: MAX_MAPPINGS x 256 samples)
 const CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION;
-const ROUTE_SAMPS = 512; // buffer~ #0-megamodroute: [2k] = source modulator index or -1 (off), [2k+1] spare
+const ROUTE_SAMPS = 512; // buffer~ ---megamodroute: [2k] = source modulator index or -1 (off), [2k+1] spare
 const ROUTE_OFF = -1;
 const ROUTERS = 8; // router gen.codebox~ boxes (16 signal inlets, 32 outlets each): slot k = router floor(k/32), outlet k%32
 const ROUTER_SLOTS = MAX_MAPPINGS / ROUTERS;
@@ -750,8 +750,9 @@ function gridLayout(n, w, h, minW, minH, gap) {
     return cells;
 }
 
-if (typeof module !== "undefined" && module.exports) {
-    module.exports = {
+var nodeModule = (typeof module !== "undefined") ? module : undefined;
+if (nodeModule && nodeModule.exports) {
+    nodeModule.exports = {
         MEGAMOD_VERSION, MAX_MODS, CFG_STRIDE, CF_TYPE, CF_ENABLED, CF_RATE, CF_SYNC, CF_SYNCDIV, CF_SHAPE, CF_PHASE,
         CF_RETRIG, CF_BIPOLAR, CF_DEPTH, CF_ATTACK, CF_RELEASE, CF_GAIN, CF_SMOOTH, CF_STEPS, CF_GLIDE, CF_ONESHOT,
         CF_SEED, CF_LOOPON, CF_LOOPSTART, CF_LOOPEND, CFG_FLOATS, MSEG_TABLE, MSEG_FLOATS, STEPS_MAX, STEPS_FLOATS,
