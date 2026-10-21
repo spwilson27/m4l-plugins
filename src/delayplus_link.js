@@ -19,7 +19,7 @@ var dpChainApi = null;
 var dpTempoApi = null;
 var dpTask = null;
 var dpSelfId = 0;
-var dpOwnNames = { xfer: "", hdr: "", scope: "" };
+var dpOwnNames = { xfer: "", hdr: "", scope: "", spec: "" };
 var dpLink = {
     paired: false,
     partnerId: 0,
@@ -53,9 +53,10 @@ function dpRegister() {
     };
 }
 
-// From loadbang: `names <xfer> <hdr> <scope>` (the #0- names of this instance's own buffers).
-function names(xferName, hdrName, scopeName) {
+// From loadbang: `names <xfer> <hdr> <scope> [<spec>]` (this instance's own buffer~ names).
+function names(xferName, hdrName, scopeName, specName) {
     dpOwnNames.xfer = String(xferName);
+    dpOwnNames.spec = specName === undefined ? "" : String(specName);
     dpOwnNames.hdr = String(hdrName);
     dpOwnNames.scope = String(scopeName);
     if (typeof dpScopeBind === "function") dpScopeBind(dpOwnNames.scope);
@@ -68,6 +69,8 @@ var dpLoaded = false;
 
 function init_link() {
     dpLoaded = true;
+    // Start: create the gen~ now that the face is up (src/delayplus_dsp.js)
+    if (typeof dpDspSchedule === "function") dpDspSchedule();
     try {
         dpSelfApi = new LiveAPI(function () {}, "this_device");
         dpSelfId = Number(dpSelfApi.id);

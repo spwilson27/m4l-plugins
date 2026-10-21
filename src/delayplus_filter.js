@@ -76,7 +76,7 @@ function fdLayerFrame(L, head, peak) {
 }
 
 function fdSpecFrame() {
-    if (!filtdisp) return; // only while the Filter Display is open
+    if (!filtdisp || fdPage !== 0) return; // only while the Filter Display is open on the Echo page
     if (!fdSpecBuf && fdSpecName) {
         try { fdSpecBuf = new Buffer(fdSpecName); } catch (e) { fdSpecBuf = null; }
     }
@@ -141,6 +141,8 @@ function fdDrawSpectrogram(mg, w, h, wetCol, dryCol) {
     if (dry.on) fdDrawTrace(mg, dry, w, h, dryCol, wet.on ? 0.08 : 0.16, 0.5);
     if (wet.on) fdDrawTrace(mg, wet, w, h, wetCol, 0.16, 0.6);
 }
+
+var fdPage = 0; // Delay+ Page (set_page): 0 = Echo
 
 function fdStartTask() {
     if (fdTask) return;
@@ -373,6 +375,7 @@ function anything() {
     else if (k === "filton") filton = v ? 1 : 0;
     else if (k === "modfilt") modfilt = v;
     else if (k === "filtdisp") filtdisp = v ? 1 : 0;
+    else if (k === "page") fdPage = v;
     else if (k === "specwet") fdLayers[0].on = v ? 1 : 0;
     else if (k === "specdry") fdLayers[1].on = v ? 1 : 0;
     mgraphics.redraw();

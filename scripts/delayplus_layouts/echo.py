@@ -288,9 +288,15 @@ def layout(h):
                    nb("obj-echo-pak", "pak 0 1 1", 960, 300, 80, 3, 1),
                    nb("obj-echo-mirror", "route mirror", 960, 480, 80, 2, 2),
                    nb("obj-echo-route-filter", "route hp hpres lp lpres", 1100, 480, 140, 5, 5),
-                   nb("obj-echo-route-lfo", "route lfoshape", 1260, 480, 90, 2, 2)]
+                   nb("obj-echo-route-lfo", "route lfoshape", 1260, 480, 90, 2, 2),
+                   nb("obj-echo-page-ui", "prepend set_page", 960, 270, 100)]
     extra_lines = [
         h.line("obj-echo-page", 0, "obj-echo-pak", 0),
+        # the displays skip their telemetry work while their page is not shown
+        h.line("obj-echo-page", 0, "obj-echo-page-ui", 0),
+        h.line("obj-echo-page-ui", 0, "obj-viz", 0),
+        h.line("obj-echo-page-ui", 0, "obj-lfodisp", 0),
+        h.line("obj-echo-page-ui", 0, "obj-filtdisp", 0),
         h.line("obj-ctrl-filtdisp", 0, "obj-echo-pak", 1),
         h.line("obj-ctrl-lfosync", 0, "obj-echo-pak", 2),
         h.line("obj-thisdevice", 0, "obj-echo-pak", 0),  # bang: re-apply on load

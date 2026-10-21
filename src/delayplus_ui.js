@@ -41,7 +41,7 @@ var st = {
     msL: 250, msR: 250, lfoHzOut: 2,
     sr: 44100, TL: 0, TR: 0, tmin: 0, clamped: 0, B: 32, K: 0, L: 0, paired: 0,
     inPk: 0, tapL: 0, tapR: 0, retL: 0, retR: 0, freezeOn: 0, duckGain: 1, wetPk: 0,
-    hist: null, histHead: 0, chainGain: 1, frames: -1, idleFrames: 0, t: 0,
+    hist: null, histHead: 0, chainGain: 1, frames: -1, idleFrames: 0, t: 0, page: 0, hdrSig: "",
 };
 
 var dpScope = null;
@@ -114,7 +114,11 @@ function dpSetDiv(key, v) {
     return snapped;
 }
 
+// Raw parameter values as they arrived (the deferred DSP re-sends the gen-bound ones).
+var dpRaw = {};
+
 function dpSet(key, v) {
+    dpRaw[key] = v;
     if (key === "div_l" || key === "div_r") v = dpSetDiv(key, v);
     st[key] = DP_PCT[key] ? v / 100 : v;
     if (key === "divtrip" || key === "divdot") {
@@ -125,6 +129,7 @@ function dpSet(key, v) {
             if (nv !== st[dk]) { st[dk] = nv; outlet(1, "mirror", dk, nv); }
         }
     }
+    if (key === "page") st.hdrSig = ""; // back on Echo: read the history once more
     if (key === "chmode") st.pp = v === 1 ? 1 : 0;
     var m = key.match(/^([a-z]+)_(l|r)$/);
     if (m && st.link > 0.5 && DP_LINKED[m[1]]) dpMirror(m[1] + "_" + (m[2] === "l" ? "r" : "l"), v);
@@ -169,10 +174,17 @@ function dpFrame() {
     var ret = Math.max(st.retL, st.retR);
     if (tap > 0.003) st.chainGain += (dpClamp(ret / tap, 0, 4) - st.chainGain) * 0.05;
     var active = (tap + ret + st.inPk) > 0.00002;
-    st.hist = dpScope.peek(1, DP_HIST_OFFSET, 3 * DP_HIST_BLOCKS);
     st.idleFrames = active ? 0 : st.idleFrames + 1;
+    // The ring only shows on the Echo page (set_page). There, after silence longer than the loop
+    // (its last bars have scrolled out) it sleeps until signal or the header state changes.
+    var sig = [st.paired, st.clamped, Math.round(st.tmin), st.L, st.B, st.K, st.freezeOn].join(" ");
+    var changed = sig !== st.hdrSig;
+    st.hdrSig = sig;
+    if (st.page !== 0) return;
+    var idleLimit = 30 + Math.ceil(Math.max(st.TL, st.TR) / (st.sr || 44100) * 1000 / 33);
     var keep = typeof vizIdle === "function" && vizIdle(st);
-    if (!moving && !keep && st.idleFrames > 30) return;
+    if (!changed && !keep && (!moving || st.idleFrames > idleLimit)) return;
+    st.hist = dpScope.peek(1, DP_HIST_OFFSET, 3 * DP_HIST_BLOCKS);
     mgraphics.redraw();
 }
 
@@ -203,6 +215,15 @@ function dpPill(x, y, w, h, fill, alpha) {
 // Header: range warnings (left), link status (right). The link pill shows only when Delay+ End is
 // missing or not linked yet, or when the Options page's Link Latency is on (then with the latency).
 function dpDrawHeader(w) {
+    var dsp = typeof dpDspState === "function" ? dpDspState() : null;
+    if (dsp) {
+        // while the gen~ is created and compiles, in place of the link pill (it cannot link yet)
+        var dc = dsp.alert ? DP_COL.coral : DP_COL.amber;
+        var dw = dpTextW(dsp.label, 8.5, true) + 12;
+        dpPill(w - 2 - dw, 2, dw, 13, dc, 0.16);
+        dpText(dsp.label, w - 2 - dw + 6, 11.6, 8.5, dc, true);
+        return;
+    }
     var linked = dpLink.paired && st.paired > 0.5;
     var sr = st.sr || 44100;
     var label;
@@ -376,6 +397,7 @@ function paint() {
 
 // scripts/render_preview.py: representative state (linked, Limiter in the chain, music playing).
 function preview() {
+    if (typeof dpDsp !== "undefined") dpDsp.ready = 1; // the running state, not "DSP loading"
     dpLink.paired = true;
     dpLink.status = "linked";
     dpLink.latency = 256;

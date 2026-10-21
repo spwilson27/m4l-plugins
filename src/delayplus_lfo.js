@@ -6,6 +6,7 @@ inlets = 1; outlets = 1;
 var shape = 0, phase = 0, moddelay = 0, modfilt = 0, envmix = 0;
 var x4 = 0, lfosync = 1, lfohz = 1, lfodiv = 0;
 var scopeName = "", scopeBuf = null, lfoL = null, lfoR = null, lfoTask = null;
+var page = 0; // Delay+ Page (set_page): 1 = Modulation
 var C_L = [0.43, 0.78, 0.94], C_R = [0.96, 0.64, 0.23];
 var ICON_H = 16, NICON = 6;
 
@@ -52,6 +53,7 @@ function anything() {
     else if (k === "lfosync") lfosync = v;
     else if (k === "lfohz") lfohz = v;
     else if (k === "lfodiv") lfodiv = v;
+    else if (k === "page") page = v;
     mgraphics.redraw();
 }
 
@@ -67,7 +69,7 @@ function lfoFrame() {
     if (!scopeBuf && scopeName) {
         try { scopeBuf = new Buffer(scopeName); } catch (e) { scopeBuf = null; }
     }
-    if (!scopeBuf) return;
+    if (!scopeBuf || page !== 1) return; // the live dots only move on the Modulation page
     var a = null;
     try { a = scopeBuf.peek(1, DP_SCOPE.LFO_L, 2); } catch (e2) { a = null; }
     if (!a || a.length < 2 || isNaN(a[0]) || isNaN(a[1])) return;

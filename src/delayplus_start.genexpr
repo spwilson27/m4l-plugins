@@ -187,8 +187,10 @@ History hpG(0);
 History hpK(1.4142);
 History lpG(0);
 History lpK(1.4142);
-History cHpR(-1);
-History cLpR(-1);
+History hpGR(0);
+History lpGR(0);
+History cFmL(-99);      // filter coefficient cache keys (with cHp, cLp, cSr)
+History cFmR(-99);
 History tick(0);
 History dScale(0);     // smoothed allpass length scale (0 = off, so Diffusion 0 adds no delay)
 // Diffusion: four Schroeder allpasses per tank channel on the feedback return (lengths differ per
@@ -590,11 +592,19 @@ fmL = clip(modfilt, 0, 1) * 2 * lL;
 fmR = clip(modfilt, 0, 1) * 2 * lR;
 hpK = 1.4142 * (1 - 0.95 * clip(hpres, 0, 1));
 lpK = 1.4142 * (1 - 0.95 * clip(lpres, 0, 1));
-hpG = tan(pi * clip(hp * pow(2, fmL), 10, sr * 0.45) / sr);
-lpG = tan(pi * clip(lp * pow(2, fmL), 20, sr * 0.45) / sr);
-hpGR = tan(pi * clip(hp * pow(2, fmR), 10, sr * 0.45) / sr);
-lpGR = tan(pi * clip(lp * pow(2, fmR), 20, sr * 0.45) / sr);
-cSr = sr;
+// tan / pow only when a cutoff, the filter modulation or the rate changed (every sample only
+// while the LFO moves the filter)
+if (fmL != cFmL || fmR != cFmR || hp != cHp || lp != cLp || sr != cSr) {
+	hpG = tan(pi * clip(hp * pow(2, fmL), 10, sr * 0.45) / sr);
+	lpG = tan(pi * clip(lp * pow(2, fmL), 20, sr * 0.45) / sr);
+	hpGR = tan(pi * clip(hp * pow(2, fmR), 10, sr * 0.45) / sr);
+	lpGR = tan(pi * clip(lp * pow(2, fmR), 20, sr * 0.45) / sr);
+	cFmL = fmL;
+	cFmR = fmR;
+	cHp = hp;
+	cLp = lp;
+	cSr = sr;
+}
 hpA1 = 1 / (1 + hpG * (hpG + hpK));
 lpA1 = 1 / (1 + lpG * (lpG + lpK));
 hpA1R = 1 / (1 + hpGR * (hpGR + hpK));

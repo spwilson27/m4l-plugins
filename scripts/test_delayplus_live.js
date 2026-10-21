@@ -8,6 +8,7 @@
  * (AGENTS.md 1a): `scripts/vm_delayplus.sh live`, then `scripts/vm_delayplus.sh test`. Every Start registers its buffers in
  * Global("delayplus_bus").reg, which is how the test finds the pairs and reads their shared header.
  *
+ * First: every Start's deferred gen~ reports "dsp ready" in Global("delayplus_trace").
  * Per pair:
  *   link      Start and End see each other's counters (hdr 14/15), the return read lag B (hdr 3) is
  *             1..2048
@@ -102,6 +103,20 @@ function check(ok, msg) {
 
 function readHdr(name) {
     return evalLom(`var b = new Buffer(${JSON.stringify(name)}); return b.peek(1, 0, 24);`);
+}
+
+// Deferred DSP: each Start creates its gen~ after load and logs to Global("delayplus_trace").
+{
+    let trace = "";
+    for (let t = 0; t < 40; t++) {
+        trace = String(evalLom(`return String(new Global("delayplus_trace").text || "");`) || "");
+        if ((trace.match(/ dsp ready after /g) || []).length >= pairs.length || / dsp-error /.test(trace)) break;
+        sleep(500);
+    }
+    const ready = trace.match(/ dsp ready after \d+ ms/g) || [];
+    check(ready.length >= pairs.length && !/ dsp-error /.test(trace),
+        `deferred DSP: ${ready.length}/${pairs.length} Starts ready (${ready.map((r) => r.replace(" dsp ready after ", "")).join(", ")})`);
+    if (/ dsp-error /.test(trace)) console.log(trace);
 }
 
 for (const pair of pairs) {

@@ -371,6 +371,44 @@ test("echo tap model", () => {
 });
 
 // ---- built devices -----------------------------------------------------------------------------
+// The gen code embedded in the Start face for the deferred DSP (GEN_DSP_TEXT = .gendsp JSON).
+function embeddedGen(faceCode) {
+    const m = faceCode.match(/^var GEN_DSP_TEXT = (".*");$/m);
+    assert(m, "GEN_DSP_TEXT missing");
+    const patch = JSON.parse(JSON.parse(m[1]));
+    return patch.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox").code;
+}
+
+test("Delay+: deferred DSP (no gen~ in the file; hub, scripting names, dry passthrough, embedded gen)", () => {
+    const p = loadAmxd("Delay+");
+    const boxes = p.boxes.map((b) => b.box);
+    const byId = (id) => boxes.find((b) => b.id === id);
+    assert(!byId("obj-gen"), "the Start must not ship a gen~");
+    assert(!boxes.some((b) => /gen/.test(b.maxclass || "") && b.maxclass !== "v8ui"), "no gen object at all");
+    assert.strictEqual(byId("obj-gen-in").text, "gate 1 1");
+    assert.strictEqual(byId("obj-gen-in").varname, "dp_genin");
+    assert.strictEqual(byId("obj-plugin").varname, "dp_plugin");
+    assert.strictEqual(byId("obj-plugout").varname, "dp_plugout");
+    const cord = (s, so, d, di) => p.lines.some((l) => l.patchline.source[0] === s && l.patchline.source[1] === so
+        && l.patchline.destination[0] === d && l.patchline.destination[1] === di);
+    assert(cord("obj-plugin", 0, "obj-plugout", 0) && cord("obj-plugin", 1, "obj-plugout", 1), "dry passthrough until the gen loads");
+    assert(!p.lines.some((l) => l.patchline.destination[0] === "obj-gen-in" && l.patchline.destination[1] === 0),
+        "nothing may close the hub (left inlet)");
+    const code = byId("obj-viz").textfile.text;
+    const src = fs.readFileSync(path.join(ROOT, "src", "delayplus_start.genexpr"), "utf8");
+    assert.strictEqual(embeddedGen(code), src, "embedded gen = src/delayplus_start.genexpr");
+    assert(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(code));
+    // every prepend into the hub is a parameter the face re-sends (DP_GEN_PARAMS)
+    const gp = JSON.parse(code.match(/^var DP_GEN_PARAMS = (.*);$/m)[1]);
+    const into = boxes.filter((b) => /^prepend /.test(b.text || "") && p.lines.some((l) => l.patchline.source[0] === b.id
+        && l.patchline.destination[0] === "obj-gen-in")).map((b) => b.text.split(" ")[1]);
+    const sent = new Set(Object.values(gp).map((v) => v[0]));
+    for (const m of into) assert(sent.has(m), m + " not re-sent after the gen loads");
+    assert(/function dpDspLoad\(/.test(code) && /dpDspSchedule\(\)/.test(code));
+    // the End keeps its (small, ~0.1 s) gen
+    assert(loadAmxd("Delay+ End").boxes.some((b) => b.box.id === "obj-gen"));
+});
+
 function loadAmxd(name) {
     const p = path.join(ROOT, "devices", name + ".amxd");
     const buf = fs.readFileSync(p);
@@ -454,13 +492,14 @@ for (const name of devices.filter((n) => n !== "Delay+ End")) {
         const p = loadAmxd(name);
         const boxes = p.boxes.map((b) => b.box);
         const code = boxes.find((b) => b.id === "obj-viz").textfile.text;
-        const genCode = boxes.find((b) => b.id === "obj-gen").code;
+        const gen = boxes.find((b) => b.id === "obj-gen");
+        const genCode = gen ? gen.code : embeddedGen(code); // the Start creates its gen~ after load
         for (const b of boxes) {
             if (/^prepend set_/.test(b.text || "")) {
                 const fn = b.text.split(" ")[1];
                 assert(/function anything\(/.test(code) || new RegExp("function " + fn + "\\(").test(code), fn + " missing in UI");
             } else if (/^prepend /.test(b.text || "") && p.lines.some((l) => l.patchline.source[0] === b.id
-                && l.patchline.destination[0] === "obj-gen")) {
+                && (l.patchline.destination[0] === "obj-gen" || l.patchline.destination[0] === "obj-gen-in"))) {
                 const prm = b.text.split(" ")[1];
                 assert(new RegExp("Param " + prm + "\\(").test(genCode), prm + " missing in gen");
             }

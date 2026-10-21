@@ -20,6 +20,7 @@ End layout (124 x 169): status v8ui only.
 """
 
 import argparse
+import hashlib
 import importlib
 import json
 import os
@@ -382,6 +383,36 @@ def v8ui(oid, code, rect, patch_xy, outs):
     }}
 
 
+def gendsp_json(gen_code):
+    """The gen patcher (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text (the deferred
+    DSP writes it to a file and creates `gen~ @gen <file>`; same as scripts/build_sampler.py)."""
+    def b(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
+               "patching_rect": [float(x), float(y), 200.0, 22.0]}
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+    patch = {"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen",
+        "rect": [50.0, 50.0, 600.0, 450.0],
+        "boxes": [
+            b("obj-in1", "in 1", 20, 20, 0, 1), b("obj-in2", "in 2", 120, 20, 0, 1),
+            b("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+            b("obj-out1", "out 1", 20, 400, 1, 0), b("obj-out2", "out 2", 120, 400, 1, 0),
+        ],
+        "lines": [
+            {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+            {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+            {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+            {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+        ],
+    }}
+    return json.dumps(patch)
+
+
 def gen_box(code, outs=2):
     return {"box": {
         "code": code, "fontname": "<Monospaced>", "fontsize": 10.0, "id": "obj-gen", "maxclass": "gen.codebox~",
@@ -453,18 +484,42 @@ def load_layout(name):
     return lay
 
 
+def named(b, varname):
+    b["box"]["varname"] = varname
+    return b
+
+
+def to_gen_hub(ln):
+    """A cord into the (deferred) gen's inlet 0 goes into the hub's data inlet instead."""
+    pl = ln["patchline"]
+    if pl["destination"][0] == "obj-gen":
+        assert pl["destination"][1] == 0, "only gen inlet 0 takes messages"
+        pl["destination"] = ["obj-gen-in", 1]
+    assert pl["source"][0] != "obj-gen", "nothing reads the deferred gen's outlets but plugout~"
+    return ln
+
+
 def build_start(variant, out_dir=None):
     cfg = VARIANTS[variant]
     lay = load_layout(cfg.get("layout", "echo"))
-    code = (read("delayplus_config.js").rstrip() + f"\n\nvar DP_ROLE = \"start\";\nvar DP_BUILD = \"{BUILD_STAMP}\";\n\n"
+    # Deferred DSP (AGENTS.md 1d): the Start ships without its gen~; the face creates it after load
+    # from the embedded patch, and re-sends the gen-bound parameters from DP_GEN_PARAMS.
+    gen_text = gendsp_json(read("delayplus_start.genexpr"))
+    gen_params = {k: [P[k][8], bool(P[k][9])] for k in P if P[k][8] is not None}
+    code = (read("delayplus_config.js").rstrip() + f"\n\nvar DP_ROLE = \"start\";\nvar DP_BUILD = \"{BUILD_STAMP}\";\n"
+            + f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+            + f"var GEN_DSP_HASH = \"{hashlib.sha1(gen_text.encode()).hexdigest()[:12]}\";\n"
+            + f"var DP_GEN_PARAMS = {json.dumps(gen_params)};\n\n"
             + read("delayplus_link.js").rstrip() + "\n\n" + read("delayplus_ui.js").rstrip() + "\n\n"
-            + read(cfg["viz"]))
+            + read(cfg["viz"]).rstrip() + "\n\n" + read("delayplus_dsp.js"))
     boxes = [
         v8ui("obj-viz", code, lay["viz_rect"], (500.0, 20.0), 4),
         *lay["controls"],
-        newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]),
-        newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]),
-        gen_box(read("delayplus_start.genexpr")),
+        named(newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]), "dp_plugin"),
+        named(newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]), "dp_plugout"),
+        # every gen-bound message goes into this hub (data on its right inlet); the scripted gen~ is
+        # connected to its outlet. gate 1 1, not t a: a scripted connect from t a makes no cord.
+        named(newobj("obj-gen-in", "gate 1 1", 20, 100, 60, 2, 1), "dp_genin"),
         newobj("obj-buf-xfer", f"buffer~ ---dpxfer @samps {RING} @chans 5", 480, 300, 260, 1, 2, ["float", "bang"]),
         newobj("obj-buf-hdr", "buffer~ ---dphdr @samps 64", 480, 330, 200, 1, 2, ["float", "bang"]),
         newobj("obj-buf-scope", f"buffer~ ---dpscope @samps {SCOPE_SAMPS}", 480, 360, 220, 1, 2, ["float", "bang"]),
@@ -487,8 +542,8 @@ def build_start(variant, out_dir=None):
             box["box"]["hidden"] = 1
         boxes.append(box)
     lines = [
-        line("obj-plugin", 0, "obj-gen", 0), line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0), line("obj-gen", 1, "obj-plugout", 1),
+        # dry passes until the deferred gen~ is wired in (src/delayplus_dsp.js removes these two)
+        line("obj-plugin", 0, "obj-plugout", 0), line("obj-plugin", 1, "obj-plugout", 1),
         line("obj-loadbang", 0, "obj-msg-gen-bufs", 0), line("obj-msg-gen-bufs", 0, "obj-gen", 0),
         line("obj-loadbang", 0, "obj-msg-ui-names", 0), line("obj-msg-ui-names", 0, "obj-viz", 0),
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-viz", 0),
@@ -521,6 +576,7 @@ def build_start(variant, out_dir=None):
         lines.append(line(pid, 0, "obj-gen", 0))
     boxes += lay["extra_boxes"]
     lines += lay["extra_lines"]
+    lines = [to_gen_hub(l) for l in lines]
     boxes += lay["panels"]  # background panels last
     doc = patcher(boxes, lines, lay["width"], "Delay whose feedback loop runs through the devices between Delay+ and Delay+ End")
     write_amxd(os.path.join(out_dir or OUT_DIR, cfg["name"] + ".amxd"), doc)
