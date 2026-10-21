@@ -1042,6 +1042,9 @@ One Audio Effect that hosts up to **16 modulators** (LFO, Envelope follower, Ran
 python3 scripts/build_megamod.py && node tests/test_megamod.js && node tests/test_megamod_ui.js && python3 scripts/render_preview.py "devices/Mega Modulator.amxd"
 ```
 Audio checks (real Max, inside the VM, through `scripts/max_harness.py`): `python3 scripts/run_megamod_audio_tests.py`. They cover LFO period and shapes, the Options settings (`rate_mul`: `ratemul` 2 / 0.5 on a 2 Hz LFO measures 4 Hz / 1 Hz, free and synced, a mid-run change keeps the phase continuous within one normal step, the follower ignores it; `smoothing`: a square through a router slot with `smooth 50` rises with a 50 ms one-pole time constant, `smooth 0` is unchanged), unipolar/bipolar ranges, random, steps, MSEG, the envelope follower, tempo sync, retrigger, telemetry, slot isolation, and router slot output against `mappingOutput()`.
+Hotkey checks (real OS keys and clicks, inside the VM only):
+- Standalone Max: `scripts/vm_megamod_keys.sh max` from the host (syncs, rebuilds, runs `scripts/run_megamod_key_tests.py` in the VM). Seeds state through `pattr @bindto MegaModState` from `tests/megamod_key_seed.json` (regenerate with `node scripts/megamod_key_seed.js` on the host; the VM has no node). Keys come from System Events, clicks from CGEvent (`scripts/mm_os_input.py`). Verified: no-focus keys ignored, click + Delete deletes the selected modulator and its mappings, Cmd-Z / Ctrl-Z undo, Shift-Cmd-Z / Ctrl-Y redo, clicking outside clears focus.
+- Live: `scripts/vm_megamod_keys.sh live` then `scripts/vm_megamod_keys.sh test` (`scripts/test_megamod_keys_live.js`, prints `INTERCEPT` lines showing whether Live swallowed Delete / Cmd-Z). Not yet run in Live: needs a free Live in the VM and a freshly opened set.
 
 ---
 
