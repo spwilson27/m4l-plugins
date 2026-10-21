@@ -19,7 +19,9 @@ const UB_PLUS_EMPTY = 92;
 const UB_EDGE = 8; // device width = layout width + 2 * 4 px margin around the v8ui
 const UB_LIST_W = 172;
 const UB_LIST_GAP = 6;
-const UB_DETAIL_W = 138;
+const UB_PANEL_W = 144; // right-side remap panel (rounded, like the list panel)
+const UB_PANEL_PAD = 6; // left / right padding inside the panel
+const UB_DETAIL_W = UB_PANEL_W - 2 * UB_PANEL_PAD;
 const UB_ROW_HEAD = 15;
 const UB_ROW_MAP = 14;
 const UB_ROW_NONE = 12;
@@ -171,8 +173,9 @@ function ubStrips() {
 }
 function ubListGeom() {
     const lx = UB_RAIL + UB_GAP;
-    const dx = lx + UB_LIST_W + UB_LIST_GAP;
-    return { lx, lw: UB_LIST_W, dx, dw: UB_DETAIL_W, end: dx + UB_DETAIL_W };
+    const px = lx + UB_LIST_W + UB_LIST_GAP;
+    const dx = px + UB_PANEL_PAD;
+    return { lx, lw: UB_LIST_W, px, pw: UB_PANEL_W, panel: [px, 0, UB_PANEL_W, 161], dx, dw: UB_DETAIL_W, end: px + UB_PANEL_W };
 }
 function ubLayoutWidth() {
     if (ubPb()) return ubListGeom().end;
@@ -357,28 +360,38 @@ const UB_POL_TIPS = {
 };
 const UB_TAB_W = 40; // MOD / REM tabs: same size in both modes, so a mode switch never moves the tab under the cursor
 const UB_POL_W = 15; // one cell of the polarity control (Mod only, right end of the tab row)
+// fixed readout width (the widest usual text, "88\u201388%"; grows only for longer strings), so dragging never moves the layout
+const UB_READOUT_SIZE = 7.5;
+function ubReadoutW(m) {
+    return Math.max(Math.ceil(ubTextW("88\u201388%", UB_READOUT_SIZE)) + 1, Math.ceil(ubTextW(ubValueText(m), UB_READOUT_SIZE)) + 1);
+}
 function ubDetailRects(gm, m) {
     const x = gm.dx;
     const w = gm.dw;
     const out = [];
     const rem = m.mode === "remote";
-    const my = 49;
-    const py = 146; // presets row at the bottom (h 13 -> 159)
+    const my = 50;
+    const py = 143; // presets row at the bottom (h 13 -> 156, 5 px above the panel edge)
     const mh = py - 3 - my; // MSEG + output bar, same height in both modes
-    const msegW = w - UB_OUTMETER_W - 3;
+    const colW = UB_OUTMETER_W;
+    const msegW = w - colW - 3;
     const msegR = [x, my, msegW, mh];
-    const meterX = x + msegW + 3;
+    const meterX = x + msegW + 3 + (colW - UB_OUTMETER_W) / 2;
+    const meterH = mh;
     // tab row: MOD / REM tabs on the left; in Mod the polarity control sits at the right end (empty in Remote)
-    out.push({ id: "tabmod", rect: [x + 1, 35, UB_TAB_W, 12], mode: "mod", tip: "Mod: modulates around the parameter's value" });
-    out.push({ id: "tabrem", rect: [x + 1 + UB_TAB_W + 2, 35, UB_TAB_W, 12], mode: "remote", tip: "Remote: takes over the parameter (absolute min / max)" });
+    out.push({ id: "tabmod", rect: [x + 1, 36, UB_TAB_W, 12], mode: "mod", tip: "Mod: modulates around the parameter's value" });
+    out.push({ id: "tabrem", rect: [x + 1 + UB_TAB_W + 2, 36, UB_TAB_W, 12], mode: "remote", tip: "Remote: takes over the parameter (absolute min / max)" });
     out.push({ id: "mseg", rect: msegR });
-    out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, mh],
+    out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, meterH],
         tip: !rem ? "Drag the triangle to set the range (+ and \u2212 keep zero fixed, \u00b1 moves both); double-click = full"
             : "Drag the nearest triangle: filled = max, outline = min (double-click resets it)" });
-    for (let k = 0; k < 5; k++) out.push({ id: "preset" + k, rect: [x + k * 28.25, py, 25, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
+    // the five presets shrink evenly to leave the right end of the row for the readout
+    const pbw = (w - ubReadoutW(m) - 3 - 4 * 2) / 5;
+    const pstep = pbw + 2;
+    for (let k = 0; k < 5; k++) out.push({ id: "preset" + k, rect: [x + k * pstep, py, pbw, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
     if (!rem) {
         const px = x + w - 3 * UB_POL_W;
-        [1, 0, -1].forEach((p, k) => out.push({ id: "pol" + p, rect: [px + k * UB_POL_W, 35, UB_POL_W, 12], pol: p, tip: UB_POL_TIPS[p] }));
+        [1, 0, -1].forEach((p, k) => out.push({ id: "pol" + p, rect: [px + k * UB_POL_W, 36, UB_POL_W, 12], pol: p, tip: UB_POL_TIPS[p] }));
     }
     return out;
 }
@@ -428,7 +441,7 @@ function ubHit(x, y) {
 }
 function ubHitList(x, y) {
     const gm = ubListGeom();
-    if (x >= gm.dx - 3) {
+    if (x >= gm.px) {
         const m = ubPbSelMapping();
         if (m) {
             for (const d of ubDetailRects(gm, m)) {
@@ -1399,7 +1412,9 @@ function ubPaintDetail(gm) {
     const m = ubPbSelMapping();
     const x = gm.dx;
     const w = gm.dw;
-    ubLine(x - 3, 2, x - 3, 159, [0.22, 0.24, 0.28], 1, 1);
+    const P = gm.panel;
+    ubRR(P[0], P[1], P[2], P[3], 6, [0.125, 0.135, 0.155], 1);
+    ubRRStroke(P[0] + 0.5, 0.5, P[2] - 1, 160, 6, [0.26, 0.28, 0.32], 1, 1);
     if (!m) {
         ubTextC("Select a row", x + w / 2, 70, 8, [0.6, 0.63, 0.68], 1);
         ubTextC("to edit its curve,", x + w / 2, 82, 7, [0.45, 0.47, 0.52], 1);
@@ -1414,12 +1429,12 @@ function ubPaintDetail(gm) {
     const rem = m.mode === "remote";
     const hl = off ? UB_OFF_GREY : rem ? UB_REM_COL : UB_MOD_COL;
     const pname = m.target.paramName || m.target.name || "?";
-    ubText(ubFit(pname, w, 8), x, 9, 8, st === "missing" ? UB_RED : [0.92, 0.94, 0.97], 1);
-    ubText(ubFit((m.target.trackName || "?") + " / " + (m.target.deviceName || "?"), w, 7), x, 19, 7, [0.55, 0.58, 0.64], 1);
-    ubCircle(x + 3, 28.5, 2.8, c, 1, true);
-    ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), w - 10, 7), x + 9, 31, 7, st === "missing" ? UB_RED : c, 1);
+    ubText(ubFit(pname, w, 8), x, 12, 8, st === "missing" ? UB_RED : [0.92, 0.94, 0.97], 1);
+    ubText(ubFit((m.target.trackName || "?") + " / " + (m.target.deviceName || "?"), w, 7), x, 22, 7, [0.55, 0.58, 0.64], 1);
+    ubCircle(x + 3, 31.5, 2.8, c, 1, true);
+    ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), w - 10, 7), x + 9, 34, 7, st === "missing" ? UB_RED : c, 1);
     // Remote: a cyan frame around the tab row and the editor
-    if (rem) ubRRStroke(x - 1.5, 33.5, w + 1, 111, 4, off ? UB_OFF_GREY : UB_REM_COL, 0.85, 1);
+    if (rem) ubRRStroke(x - 1.5, 35.5, w + 1, 143 - 2 - 35.5, 4, off ? UB_OFF_GREY : UB_REM_COL, 0.85, 1);
     for (const d of ubDetailRects(gm, m)) {
         const r = d.rect;
         if (d.id === "mseg") ubPaintShapeEditor(r, m, mod);
@@ -1430,9 +1445,23 @@ function ubPaintDetail(gm) {
             const on = ubShapeIsPreset(m, d.curve);
             ubRR(r[0], r[1], r[2], r[3], 3, on ? hl : [0.17, 0.18, 0.21], on ? 0.25 : 1);
             ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, on ? hl : [0.30, 0.32, 0.37], 1, 1);
-            ubCurveGlyph(d.curve, r[0] + 5, r[1] + 3, r[2] - 10, r[3] - 6, on ? hl : [0.62, 0.64, 0.7], 1);
+            ubCurveGlyph(d.curve, r[0] + (r[2] < 22 ? 3.5 : 5), r[1] + 3, r[2] - (r[2] < 22 ? 7 : 10), r[3] - 6, on ? hl : [0.62, 0.64, 0.7], 1);
         } else if (d.id.indexOf("pol") === 0) ubPaintPolarity(r, d.pol, m.polarity === d.pol, hl);
     }
+    ubPaintReadout(ubReadoutSpec(gm, m), m, mod);
+}
+// Range readout: plain text at the right end of the presets row (the presets shrink to leave room).
+// Text is the list-row value text: Mod "\u00b170%" / "+45%" / "\u221230%", Remote "20\u201380%" (min first, so "80\u201320%" reads inverted).
+function ubReadoutSpec(gm, m) {
+    const W = ubReadoutW(m);
+    return { text: ubValueText(m), size: UB_READOUT_SIZE, base: 143 + 9.5, rect: [gm.dx + gm.dw - W, 143, W, 13] };
+}
+function ubPaintReadout(ro, m, mod) {
+    const rem = m.mode === "remote";
+    const off = !mod.enabled || !m.enabled;
+    const ac = off ? UB_OFF_GREY : rem ? UB_REM_COL : UB_MOD_COL;
+    const hot = ubDrag && (ubDrag.kind === "range" || ubDrag.kind === "limit") && ubDrag.mapId === m.id;
+    ubText(ro.text, ro.rect[0] + ro.rect[2] - ubTextW(ro.text, ro.size), ro.base, ro.size, hot ? [1, 1, 1] : ac, 1);
 }
 // polarity control, vector glyphs only (+, plus over minus, minus): a segmented 3-cell control, the first cell paints the container
 function ubPaintPolarity(r, pol, on, hl) {

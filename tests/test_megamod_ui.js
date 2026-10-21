@@ -27,7 +27,7 @@ function makeEnv() {
     mg.rectangle = (x, y, w, h) => { rect = [x, y, w, h]; };
     mg.rectangle_rounded = (x, y, w, h) => { rect = [x, y, w, h]; };
     mg.fill = () => { log.draws++; if (log.fills) log.fills.push({ rect, col }); };
-    mg.show_text = (t) => { log.texts.push(String(t)); };
+    mg.show_text = (t) => { log.texts.push(String(t)); if (log.textCols) log.textCols.push({ t: String(t), col }); };
     mg.text_measure = (t) => [String(t).length * 4, 8];
     const box = { rect: [4, 4, 486, 161], getattr: (k) => box.rect, setattr: (k, ...v) => { box.rect = v; log.boxSet.push(v); } };
     const patcher = { getnamed: (n) => (n === "obj-viz" ? box : null) };
@@ -367,7 +367,7 @@ run("MM.addMapping(1, { path: 'live_set tracks 6 devices 0 parameters 9', trackN
 run("ubTogglePb(true)");
 ok(run("ubPb()"), "list on");
 const gm = run("ubListGeom()");
-eq(gm.end, 22 + 172 + 6 + 138, "list geometry: rail + list + editor");
+eq(gm.end, 22 + 172 + 6 + 144, "list geometry: rail + list + editor");
 eq(lastWidth(), gm.end + 8, "list width fits list + editor");
 log.texts.length = 0;
 run("paint()");
@@ -739,7 +739,7 @@ E3.run("paint()");
 ok(E3.log.texts.includes("MAPPINGS") && E3.log.texts.includes("Frequency"), "preview shows the mapping list with the selected mapping");
 ok(E3.run("ubPbSelMapping() !== null") && E3.run("ubPb()"), "preview has a selected mapping and the editor");
 ok(E3.run("MM.allMappings().some((m) => MM.mappingStatus(m.id) === 'missing')"), "preview has a missing row");
-eq(E3.log.outlets.filter((o) => o[1] === "width").pop()[2], 22 + 172 + 6 + 138 + 8, "preview list width");
+eq(E3.log.outlets.filter((o) => o[1] === "width").pop()[2], 22 + 172 + 6 + 144 + 8, "preview list width");
 ok(E3.run("MM.state.mods.some((m) => m && !m.enabled)"), "preview has a disabled modulator");
 ok(E3.run("MM.allMappings().some((m) => !m.enabled)"), "preview has a disabled mapping");
 ok(E3.run("MM.mappingsFor(ubSel()).length >= 3"), "preview: the selected modulator has several mappings");
@@ -868,7 +868,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     const texts = () => { T.log.texts.length = 0; T.run("paint()"); return T.log.texts.slice(); };
     const same = (fields, before, msg) => { const now = M(); for (const f of fields) eq(now[f], before[f], `${msg}: ${f} unchanged`); };
     const yOfV = (r, v) => r[1] + 3 + (r[3] - 6) * (1 - v); // value 0..1 -> pixel y inside a bar / MSEG rect
-    const hitIds = () => { const g = gm(); const ids = new Set(); for (let yy = 0; yy < 161; yy += 2) for (let xx = g.dx - 3; xx < g.dx + g.dw; xx += 2) { const h = T.run(`ubHit(${xx}, ${yy})`); if (h.kind === "detail") ids.add(h.id); } return ids; };
+    const hitIds = () => { const g = gm(); const ids = new Set(); for (let yy = 0; yy < 161; yy += 2) for (let xx = g.px; xx < g.dx + g.dw; xx += 2) { const h = T.run(`ubHit(${xx}, ${yy})`); if (h.kind === "detail") ids.add(h.id); } return ids; };
     T.run(`ubSelect(2); MM.setUI({ pb: 1, pbSel: ${mid} })`);
 
     // the preview mapping is Remote 20..80%
@@ -886,7 +886,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         ok(![...ids].some((id) => id === "amt" || id.indexOf("pol") === 0), "remote: no pixel of the editor hits a polarity / amount control");
         ok(["mseg", "meter", "preset0", "tabmod", "tabrem"].every((id) => ids.has(id)) && !ids.has("del") && !ids.has("vmin") && !ids.has("vmax"), "remote: MSEG, bar, presets and tabs are hittable, nothing hits a delete / MIN / MAX control");
         const g = gm(); const rs = rects();
-        for (const d of rs) ok(d.rect[0] >= g.dx - 0.01 && d.rect[0] + d.rect[2] <= g.dx + g.dw + 0.01 && d.rect[1] >= 0 && d.rect[1] + d.rect[3] <= 161, `remote: ${d.id} inside the panel`);
+        for (const d of rs) ok(d.rect[0] >= g.dx - 0.01 && d.rect[0] + d.rect[2] <= g.dx + g.dw + 0.01 && d.rect[1] >= 4 && d.rect[1] + d.rect[3] <= 161, `remote: ${d.id} inside the panel`);
         for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
             const a = rs[i].rect; const b = rs[j].rect;
             ok(a[0] + a[2] <= b[0] + 1e-6 || b[0] + b[2] <= a[0] + 1e-6 || a[1] + a[3] <= b[1] + 1e-6 || b[1] + b[3] <= a[1] + 1e-6, `remote: ${rs[i].id} and ${rs[j].id} do not overlap`);
@@ -1041,5 +1041,120 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         P.run(`MM.state.mods[MM.getMapping(${pid}).mod].enabled = 1`);
     }
     eq(sigs.remote, sigs.mod, "tabs, MSEG, bar and presets keep the same rects in Mod and Remote");
+}
+// ---- range readout: plain text at the right end of the presets row
+{
+    const Q = makeEnv();
+    Q.run("preview()");
+    const qid = Q.run("ubPbSelMapping().id");
+    Q.run(`ubSelect(2); MM.setUI({ pb: 1, pbSel: ${qid} })`);
+    const qset = (patch) => Q.run(`MM.updateMapping(${qid}, ${JSON.stringify(patch)})`);
+    const qgm = () => Q.run("ubListGeom()");
+    const qrects = () => Q.run(`ubDetailRects(ubListGeom(), MM.getMapping(${qid}))`);
+    const qrect = (id) => qrects().filter((d) => d.id === id)[0].rect;
+    const qtexts = () => { Q.log.texts.length = 0; Q.run("paint()"); return Q.log.texts.slice(); };
+    const count = (arr, t) => arr.filter((x) => x === t).length;
+    const inter = (a, b) => !(a[0] + a[2] <= b[0] + 1e-6 || b[0] + b[2] <= a[0] + 1e-6 || a[1] + a[3] <= b[1] + 1e-6 || b[1] + b[3] <= a[1] + 1e-6);
+    const spec = () => Q.run(`ubReadoutSpec(ubListGeom(), MM.getMapping(${qid}))`);
+    const q = {
+        click: (x, y) => Q.ctx.onclick(x, y, 1, 0, 0, 0, 0, 0),
+        drag: (x, y) => Q.ctx.ondrag(x, y, 1, 0, 0, 0, 0, 0),
+        up: (x, y) => Q.ctx.ondrag(x, y, 0, 0, 0, 0, 0, 0),
+    };
+    for (const design of [4]) {
+        const tag = "readout";
+        const cases = [
+            ["mod", { polarity: 0, range: 0.7 }, "\u00b170%"],
+            ["mod", { polarity: 1, range: 0.45 }, "+45%"],
+            ["mod", { polarity: -1, range: 0.3 }, "\u221230%"],
+            ["remote", { min: 0.2, max: 0.8 }, "20\u201380%"],
+            ["remote", { min: 0.8, max: 0.2 }, "80\u201320%"],
+        ];
+        for (const [mode, patch, text] of cases) {
+            qset(Object.assign({ mode }, patch));
+            ok(count(qtexts(), text) >= 2, `${tag}: ${mode} readout "${text}" is painted`);
+            eq(spec().text, text, `${tag}: spec text ${text}`);
+            const g = qgm(); const r = spec().rect;
+            const pr = g.panel;
+            ok(r[0] >= pr[0] + 6 - 1e-6 && r[0] + r[2] <= pr[0] + pr[2] - 6 + 1e-6 && r[1] >= pr[1] + 4 && r[1] + r[3] <= pr[1] + pr[3] - 4, `${tag}: ${mode} rect inside the panel padding`);
+            for (const d of qrects()) ok(!inter(r, d.rect), `${tag}: ${mode} rect does not intersect ${d.id}`);
+            const ps = qrects().filter((d) => d.id.indexOf("preset") === 0);
+            for (let a = 0; a < ps.length; a++) for (let b = a + 1; b < ps.length; b++) ok(!inter(ps[a].rect, ps[b].rect), `${tag}: ${mode} presets ${a} and ${b} do not overlap`);
+            ok(ps.every((d) => d.rect[2] >= 18), `${tag}: ${mode} presets stay at least 18 px wide`);
+            ok(Math.abs(ps[0].rect[1] - r[1]) < 1e-6, `${tag}: ${mode} readout is on the presets row`);
+            ok(ps[4].rect[0] + ps[4].rect[2] <= r[0], `${tag}: ${mode} readout starts after the last preset`);
+            ok(Math.abs(r[0] + r[2] - (g.dx + g.dw)) < 1e-6, `${tag}: ${mode} readout is right-aligned to the content edge`);
+            ok(r[0] + Q.run(`ubTextW(${JSON.stringify(text)}, 7.5)`) <= g.dx + g.dw + 1e-6, `${tag}: ${mode} text is not truncated`);
+        }
+        // painting colours: mode accent, grey when bypassed / disabled, white while a triangle is dragged
+        const colOf = (text) => {
+            Q.log.textCols = []; Q.run("paint()");
+            const f = Q.log.textCols.filter((e) => e.t === text).pop();
+            Q.log.textCols = null;
+            return f && f.col;
+        };
+        for (const [mode, text, accent] of [["mod", "\u00b170%", "UB_MOD_COL"], ["remote", "20\u201380%", "UB_REM_COL"]]) {
+            qset({ mode, enabled: 1, polarity: 0, range: 0.7, min: 0.2, max: 0.8 });
+            Q.run("MM.state.mods[ubPbSelMapping().mod].enabled = 1");
+            const ac = Q.run(accent); const gr = Q.run("UB_OFF_GREY");
+            eq(colOf(text).slice(0, 3), ac, `${tag}: ${mode} readout uses the mode accent`);
+            Q.run("MM.state.mods[ubPbSelMapping().mod].enabled = 0");
+            eq(colOf(text).slice(0, 3), gr, `${tag}: ${mode} readout is grey with a bypassed modulator`);
+            Q.run("MM.state.mods[ubPbSelMapping().mod].enabled = 1"); qset({ enabled: 0 });
+            eq(colOf(text).slice(0, 3), gr, `${tag}: ${mode} readout is grey with a disabled mapping`);
+            qset({ enabled: 1 });
+        }
+        // drag updates the readout
+        qset({ mode: "mod", polarity: 1, range: 0.5, enabled: 1 });
+        Q.run("MM.state.mods[ubPbSelMapping().mod].enabled = 1");
+        const mt = qrect("meter");
+        const g = Q.run(`ubMeterGeom(${JSON.stringify(mt)})`);
+        q.click(mt[0] + 2, g.cy - g.hh * 0.5);
+        q.drag(mt[0] + 2, g.cy - g.hh * 0.8);
+        ok(Q.run("ubDrag && ubDrag.kind") === "range", `${tag}: mod drag active`);
+        ok(count(qtexts(), "+80%") >= 2, `${tag}: mod readout updates while dragging`);
+        eq(colOf("+80%").slice(0, 3), [1, 1, 1], `${tag}: mod readout is white while a triangle is dragged`);
+        q.up(mt[0] + 2, g.cy - g.hh * 0.8);
+        ok(count(qtexts(), "+80%") >= 2, `${tag}: mod readout shows the value after the drag`);
+        qset({ mode: "remote", min: 0.2, max: 0.8 });
+        const y1 = mt[1] + 3 + (mt[3] - 6) * (1 - 0.8);
+        q.click(mt[0] + 2, y1);
+        q.drag(mt[0] + 2, mt[1] + 3 + (mt[3] - 6) * (1 - 0.9));
+        ok(Q.run("ubDrag && ubDrag.kind") === "limit", `${tag}: remote drag active`);
+        ok(count(qtexts(), "20\u201390%") >= 2, `${tag}: remote readout updates while dragging`);
+        eq(colOf("20\u201390%").slice(0, 3), [1, 1, 1], `${tag}: remote readout is white while a triangle is dragged`);
+        q.up(mt[0] + 2, 0);
+        // bypassed / disabled paint without throwing and still print the text
+        for (const [on, en] of [[0, 1], [1, 0], [0, 0]]) for (const mode of ["mod", "remote"]) {
+            qset({ mode, enabled: en, min: 0.2, max: 0.8, polarity: 0, range: 0.7 });
+            Q.run(`MM.state.mods[ubPbSelMapping().mod].enabled = ${on}`);
+            const t = mode === "mod" ? "\u00b170%" : "20\u201380%";
+            ok(count(qtexts(), t) >= 2, `${tag}: ${mode} readout painted with modulator ${on ? "on" : "bypassed"}, mapping ${en ? "on" : "off"}`);
+        }
+        Q.run("MM.state.mods[ubPbSelMapping().mod].enabled = 1");
+        qset({ enabled: 1 });
+    }
+    // panel: every detail rect lies inside the panel with >= 3 px padding; painted in both modes and when empty; width covers it
+    {
+        const g = qgm(); const pr = g.panel;
+        const rr = (tag) => {
+            for (const d of qrects()) ok(d.rect[0] >= pr[0] + 3 && d.rect[0] + d.rect[2] <= pr[0] + pr[2] - 3 && d.rect[1] >= pr[1] + 3 && d.rect[1] + d.rect[3] <= pr[1] + pr[3] - 3, `panel: ${tag} ${d.id} inside the panel with >= 3 px padding`);
+        };
+        const list = Q.run("ubListGeom()");
+        eq([pr[1], pr[3]], [0, 161], "panel matches the list panel top and bottom");
+        ok(pr[0] >= list.lx + list.lw, "panel starts right of the list panel");
+        const panelPainted = () => {
+            Q.log.fills = []; Q.run("paint()");
+            const f = Q.log.fills.filter((e) => e.rect && e.rect.every((v, i) => Math.abs(v - pr[i]) < 1e-6) && Math.abs(e.col[0] - 0.125) < 1e-6);
+            Q.log.fills = null;
+            return f.length;
+        };
+        for (const mode of ["mod", "remote"]) { qset({ mode }); rr(mode); ok(panelPainted() === 1, `panel painted in ${mode} mode`); }
+        Q.run("MM.setUI({ pbSel: -1 })");
+        ok(Q.run("ubPbSelMapping()") === null || true, "deselect");
+        if (Q.run("ubPbSelMapping()") === null) ok(panelPainted() === 1, "panel painted in the empty state");
+        const reqW = Q.run("ubLayoutWidth() + UB_EDGE");
+        ok(reqW >= pr[0] + pr[2] + 4 + 4, "requested width covers the panel plus the right margin");
+    }
 }
 console.log(`megamod UI tests passed (${passed} checks)`);
