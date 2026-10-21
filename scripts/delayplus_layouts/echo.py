@@ -2,7 +2,7 @@
 by the tape-loop ring. Controls use Live's theme colours (no colour attributes), like Echo.
 
   left column   Left / Right time (Time or note value, swapped by each side's Sync button), the
-                Stereo Link icon between them, Sync, Sync Mode menu and Offset per side, then Input with the
+                Stereo Link icon between them, Time Mode menu, a mode row and Offset per side, then Input with the
                 D (clip) and Ø (invert) buttons, and Feedback
   centre        [Echo | Modulation | Character] tabs over the display area:
                   Echo        ring display (obj-viz); the triangle shows / hides the Filter Display
@@ -27,11 +27,10 @@ DIFF_DIAL_Y = 30.0       # Diffusion dial in the right column, under Freeze
 DIFF_DIAL_Y_MIDI = 68.0  # ... and under the MIDI From menus while a side is in MIDI mode
 
 # Stereo Link mirrors these per-side settings (DP_LINKED in src/delayplus_ui.js).
-LINKED_KEYS = ("tmode", "time", "div", "mode", "note", "cents", "fluid")
+LINKED_KEYS = ("tmode", "time", "div", "mult", "note", "cents")
 # Per side: widget (formatted with the side) -> the Time Modes (DP_TM) in which it shows.
-TMODE_SHOW = [("obj-ctrl-time_{s}", (0,)), ("obj-ctrl-div_{s}", (1, 3)), ("obj-ctrl-note_{s}", (2,)),
-              ("obj-notedial-{s}", (4,)), ("obj-ctrl-mode_{s}", (1,)), ("obj-ctrl-fluid_{s}", (3,)),
-              ("obj-ctrl-cents_{s}", (2, 4))]
+TMODE_SHOW = [("obj-ctrl-time_{s}", (0,)), ("obj-ctrl-div_{s}", (1,)), ("obj-ctrl-note_{s}", (2,)),
+              ("obj-notedial-{s}", (3,)), ("obj-ctrl-mult_{s}", (1,)), ("obj-ctrl-cents_{s}", (2, 3))]
 PAGES = ["Echo", "Modulation", "Options"] + (["Character"] if SHOW_CHARACTER else [])
 OPT_PAGE = PAGES.index("Options")
 # Geometry measured from Echo next to Delay+ in Live 12 (same scale): left column 0..109, display
@@ -68,11 +67,11 @@ def layout(h):
     # Each side's dial is two parameters (Time / Division) in one rect, so the "Left" / "Right" label
     # is a comment and the dials hide their own (unique) parameter names.
     # Buttons are sized like Echo's as drawn in Live (Live insets live.* boxes by about 1.5 px).
-    # Per side: the Time Mode menu (Time / Sync / Pitch / Fluid / MIDI) where Echo has its Sync
-    # button. The dial above it and the row under it change with the mode (TMODE_SHOW below):
-    #   dial  Time: ms   Sync, Fluid: note value   Pitch: note   MIDI: the last MIDI note (a
-    #         display-only v8ui, obj-notedial-<side>, drawn like a disabled dial)
-    #   row   Sync: Notes / Triplet / Dotted   Fluid: multiplier   Pitch, MIDI: fine tune (cents)
+    # Per side: the Time Mode menu (Time / Sync / Pitch / MIDI) where Echo has its Sync button.
+    # The dial above it and the row under it change with the mode (TMODE_SHOW below):
+    #   dial  Time: ms   Sync: note value (straight, triplet, dotted)   Pitch: note   MIDI: the last
+    #         MIDI note (a display-only v8ui, obj-notedial-<side>, drawn like a disabled dial)
+    #   row   Sync: multiplier   Pitch, MIDI: fine tune (cents)
     for side, x, name in (("l", 4.0, "Left"), ("r", 57.0, "Right")):
         labels.append(label(f"obj-echo-lbl-{side}", name, x, 2.0, 48.0, 13.0, align=1))
         # 40 px wide (centred as before) so the Stereo Link icon between them never covers a dial
@@ -83,8 +82,7 @@ def layout(h):
             b["box"]["showname"] = 0
         controls += dials + [
             menu(f"tmode_{side}", x, 59.0, 48.0, 13.0),
-            menu(f"mode_{side}", x, 75.0, 48.0, 13.0),
-            numbox(f"fluid_{side}", x, 75.0, 48.0, 13.0, appearance=0, hidden=1),
+            numbox(f"mult_{side}", x, 75.0, 48.0, 13.0, appearance=0),
             numbox(f"cents_{side}", x, 75.0, 48.0, 13.0, appearance=0, hidden=1),
             numbox(f"offs_{side}", x, 91.0, 48.0, 13.0, appearance=0),
         ]
@@ -169,14 +167,19 @@ def layout(h):
     oy = DISP_Y + 8.0
     # Spectrum: which signals the Filter Display's spectrogram shows (both by default).
     opt = [tab("clipmode", X0 + 12.0, oy + 16.0, 120.0, 15.0, hidden=1),
-           numbox("cliplevel", X0 + 12.0, oy + 54.0, 60.0, 14.0, color=VALUE_BLUE, appearance=4, hidden=1),
+           numbox("cliplevel", X0 + 12.0, oy + 54.0, 50.0, 14.0, color=VALUE_BLUE, appearance=4, hidden=1),
            button("specdry", X0 + 12.0, oy + 98.0, 40.0, 14.0, text="Dry", hidden=1),
            button("specwet", X0 + 56.0, oy + 98.0, 40.0, 14.0, text="Wet", hidden=1),
-           button("showlat", X0 + 12.0, oy + 122.0, 84.0, 14.0, text="Link Latency", hidden=1)]
+           button("showlat", X0 + 12.0, oy + 122.0, 84.0, 14.0, text="Link Latency", hidden=1),
+           # Sync divisions: whether the Division dials offer triplet / dotted values
+           button("divtrip", X0 + 68.0, oy + 54.0, 37.0, 14.0, text="Triplet", hidden=1),
+           button("divdot", X0 + 107.0, oy + 54.0, 37.0, 14.0, text="Dotted", hidden=1)]
     controls += opt
-    opt_labels = [("Feedback Clip", oy, 120.0), ("Level", oy + 40.0, 60.0), ("Spectrum", oy + 82.0, 90.0)]
+    opt_labels = [("Feedback Clip", oy, 120.0), ("Level", oy + 40.0, 60.0), ("Spectrum", oy + 82.0, 90.0),
+                  ("Divisions", oy + 40.0, 66.0)]
     for i, (text, y, w) in enumerate(opt_labels):
-        labels.append(label(f"obj-echo-lbl-opt{i}", text, X0 + 12.0, y, w, 13.0, hidden=1))
+        lx = X0 + (68.0 if text == "Divisions" else 12.0)
+        labels.append(label(f"obj-echo-lbl-opt{i}", text, lx, y, w, 13.0, hidden=1))
     opt_ids = [b["box"]["id"] for b in opt] + [f"obj-echo-lbl-opt{i}" for i in range(len(opt_labels))] + ["obj-clipcurve"]
 
     # ---- Character page: 2 x 2 sections + Repitch ---------------------------------------------
@@ -332,7 +335,7 @@ def layout(h):
                     nb("obj-stripnote", "stripnote", 1500, 820, 70, 2, 2),
                     nb("obj-midi-note", "prepend midi_note", 1500, 850, 110, 1, 1),
                     nb("obj-midi-pak", "pak 1 1", 1700, 760, 60, 2, 1),
-                    nb("obj-midi-x", "expr ($i1 != 4) && ($i2 != 4)", 1700, 790, 170, 1, 1),
+                    nb("obj-midi-x", "expr ($i1 != 3) && ($i2 != 3)", 1700, 790, 170, 1, 1),
                     nb("obj-midi-hide", "prepend hidden", 1700, 820, 90),
                     h.msgbox("obj-midi-settype", "settype $1", 1900, 760, 80),
                     h.msgbox("obj-midi-setchan", "setchannel $1", 1900, 790, 90)]
@@ -482,6 +485,9 @@ def layout(h):
              "outs": 1, "keys": ["link"], "icon": "link"},
             {"id": "obj-clipcurve", "file": "delayplus_clipcurve.js", "rect": [X0 + 150.0, DISP_Y + 8.0, 100.0, 66.0],
              "outs": 1, "hidden": 1, "keys": ["clipmode", "cliplevel"]},
+            # Clip LED after the page tabs: red while the Feedback Clip reduces the loop (display only)
+            {"id": "obj-clipled", "file": "delayplus_clipled.js", "rect": [TAB_X + TAB_W + 4.0, DISP_TOP + 4.0, 8.0, 8.0],
+             "outs": 1, "names": True},
             # MIDI mode: the last MIDI note in place of the dial, greyed (display only)
             {"id": "obj-notedial-l", "file": "delayplus_notedial.js", "rect": [8.0, 14.0, 40.0, 38.0], "outs": 1,
              "hidden": 1, "keys": ["cents_l"]},

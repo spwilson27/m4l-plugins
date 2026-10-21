@@ -31,6 +31,7 @@
 //   0 TL eff (samples) 1 TR eff 2 clamped 3 Tmin 4 B 5 K 6 L 8 paired 9 in peak
 //   10/11 tap peak L/R 12/13 return peak L/R 14 frame counter 15 sr 16 freeze 17 duck gain
 //   18 wet out peak 19 history head 20 TL target 21 TR target 22 tank fill L
+//   28 Feedback Clip reduction in dB (<= 0, deepest over the last 2048 samples; the clip LED after the tabs)
 //   history ring, one block per 256 samples: 32 + 3 * blk + (in, tapL, tapR) peaks, 512 blocks.
 // spec (Filter Display spectrogram): 0 write head (0..8191, every 64 samples), 1 sr, 2 / 3 wet / dry
 //   peak of the last 64 samples, then two mono rings of 8192: 32.. the wet (the delay tap after the
@@ -200,6 +201,9 @@ Delay apR2(4096);
 Delay apR3(4096);
 Delay apR4(4096);
 History limG(1);
+History clipR(1);      // smallest clip out / in ratio in the current 64-sample window
+History clipHold(1);   // deepest ratio over the last 32 windows (about 45 ms), what the LED reads
+History clipAge(0);
 History specPk(0);
 History specPkD(0);
 History frames(0);
@@ -457,6 +461,9 @@ limG = limT < limG ? limT : limG + (limT - limG) * (1 / (0.05 * sr));
 cm = floor(clip(clipmode, 0, 2) + 0.5);
 cOutL = cm == 1 ? clip(sumL, 0 - cT, cT) : (cm == 2 ? sumL * limG : sfL);
 cOutR = cm == 1 ? clip(sumR, 0 - cT, cT) : (cm == 2 ? sumR * limG : sfR);
+// Clip telemetry (not while frozen: the held loop skips the clip)
+pkC = max(abs(cOutL), abs(cOutR));
+clipR = frz ? clipR : min(clipR, pkS > 0.000001 ? min(1, pkC / pkS) : 1);
 // frozen: no clip (it would squeeze the held loop a little more on every pass)
 cOutL = sumL * fzW + cOutL * ig;
 cOutR = sumR * fzW + cOutR * ig;
@@ -711,6 +718,13 @@ if (tick >= 64) {
 	poke(scope, lR, 25);
 	poke(scope, envV, 26);
 	poke(scope, gateG, 27);
+	// The LED polls every 33 ms, so a single 64-sample window would mostly be missed: report the
+	// deepest reduction of the last 32 windows (2048 samples) instead.
+	clipAge = clipAge + 1;
+	clipHold = (clipR <= clipHold || clipAge >= 32) ? clipR : clipHold;
+	clipAge = clipR <= clipHold ? 0 : clipAge;
+	poke(scope, atodb(max(clipHold, 0.000001)), 28);
+	clipR = 1;
 	poke(spec, wrap(cn + 1, 0, 8192), 0);
 	poke(spec, sr, 1);
 	poke(spec, specPk, 2);

@@ -29,10 +29,10 @@ function near(a, b, tol, msg) {
 // ---- config -------------------------------------------------------------------------------------
 test("note values are ordered; 1/8 at 120 bpm is 250 ms, dotted 375, triplet 166.7", () => {
     for (let i = 1; i < C.DP_NOTE_BEATS.length; i++) assert(C.DP_NOTE_BEATS[i] > C.DP_NOTE_BEATS[i - 1]);
-    const sync = (div, mode, offs) => ({ tmode: C.DP_TM.SYNC, div, mode, offs });
-    near(C.dpSideMs(sync(3, 0, 0), 120), 250, 1e-9);
-    near(C.dpSideMs(sync(3, 2, 0), 120), 375, 1e-9);
-    near(C.dpSideMs(sync(3, 1, 0), 120), 500 / 3, 1e-9);
+    const sync = (name, offs) => ({ tmode: C.DP_TM.SYNC, div: C.DP_DIV_NAMES.indexOf(name), offs });
+    near(C.dpSideMs(sync("1/8", 0), 120), 250, 1e-9);
+    near(C.dpSideMs(sync("1/8 D", 0), 120), 375, 1e-9);
+    near(C.dpSideMs(sync("1/8 T", 0), 120), 500 / 3, 1e-9);
 });
 
 test("side time: free ms, offset in %, clamped to 1..8000 ms", () => {
@@ -41,15 +41,53 @@ test("side time: free ms, offset in %, clamped to 1..8000 ms", () => {
     near(C.dpSideMs(time(300, 10), 120), 330, 1e-9);
     near(C.dpSideMs(time(300, -50), 120), 300 * 0.67, 1e-9); // offset clamps at -33%
     near(C.dpSideMs(time(0, 0), 120), 1, 0);
-    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: 8, mode: 2, offs: 33 }, 20), 8000, 0);
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: 26, offs: 33 }, 20), 8000, 0); // 4 D
 });
 
-test("Fluid: note value times a free multiplier (0.02..50)", () => {
-    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 1.37 }, 120), 250 * 1.37, 1e-9);
-    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 20 }, 120), 5000, 1e-9);
-    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 0.02 }, 120), 5, 1e-9);
-    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 0.001 }, 120), 5, 1e-9); // clamps at 0.02
-    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 50 }, 120), 8000, 0); // 12.5 s -> the 8 s cap
+test("Sync: note value times a free multiplier (0.02..50)", () => {
+    const d8 = C.DP_DIV_NAMES.indexOf("1/8");
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, mult: 1.37 }, 120), 250 * 1.37, 1e-9); // default 1/8
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: d8, mult: 20 }, 120), 5000, 1e-9);
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: d8, mult: 0.02 }, 120), 5, 1e-9);
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: d8, mult: 0.001 }, 120), 5, 1e-9); // clamps at 0.02
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: d8, mult: 50 }, 120), 8000, 0); // 12.5 s -> the 8 s cap
+});
+
+test("Division: straight, triplet and dotted values sorted by length", () => {
+    assert.strictEqual(C.DP_DIV_NAMES.length, 27);
+    assert.deepStrictEqual(C.DP_TMODES, ["Time", "Sync", "Pitch", "MIDI"]);
+    for (let i = 1; i < C.DP_DIV_BEATS.length; i++) assert.ok(C.DP_DIV_BEATS[i] > C.DP_DIV_BEATS[i - 1]);
+    assert.deepStrictEqual(C.DP_DIV_NAMES.slice(0, 5), ["1/64 T", "1/64", "1/32 T", "1/64 D", "1/32"]);
+    const fd = (n) => C.DP_DIV_NAMES.indexOf(n);
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: fd("1/8 D"), mult: 1.5 }, 120), 375 * 1.5, 1e-9);
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: fd("1/4 D"), mult: 1, offs: 10 }, 120), 750 * 1.1, 1e-9);
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: fd("1/8 D"), mult: 2 }), "1/8 D x2.00");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: fd("1/8 T"), mult: 1 }), "1/8 T");
+    // 1/64 D = 46.875 ms at 120 bpm: the MIN multiplier is in that note value's terms (60 / 46.875 = 1.28)
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: fd("1/64 D"), mult: 1 }, 120, { tminMs: 60 }), "MIN x1.28");
+});
+
+test("Division: Options' Triplet / Dotted switches; the dial skips values that are off", () => {
+    const fd = (n) => C.DP_DIV_NAMES.indexOf(n);
+    const names = (t, d) => C.DP_DIV_NAMES.filter((_, i) => C.dpDivAllowed(i, t, d));
+    assert.strictEqual(names(1, 1).length, 27);
+    assert.deepStrictEqual(names(0, 0), ["1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4"]);
+    assert.ok(names(1, 0).every((n) => !n.endsWith(" D")) && names(1, 0).length === 18);
+    assert.ok(names(0, 1).every((n) => !n.endsWith(" T")) && names(0, 1).length === 18);
+    // order around 1/8: 1/8, 1/4 T, 1/8 D, 1/4. Turning up from 1/8 with triplets off lands on 1/8 D,
+    // turning down from 1/4 with dotted off lands on 1/4 T, with both off 1/8 <-> 1/4
+    assert.strictEqual(C.dpDivSnap(fd("1/4 T"), fd("1/8"), 0, 1), fd("1/8 D"));
+    assert.strictEqual(C.dpDivSnap(fd("1/8 D"), fd("1/4"), 1, 0), fd("1/4 T"));
+    assert.strictEqual(C.dpDivSnap(fd("1/4 T"), fd("1/8"), 0, 0), fd("1/4"));
+    assert.strictEqual(C.dpDivSnap(fd("1/8 D"), fd("1/4"), 0, 0), fd("1/8"));
+    assert.strictEqual(C.dpDivSnap(fd("1/4 T"), fd("1/4"), 0, 0), fd("1/8")); // a jump down past 1/8 D
+    assert.strictEqual(C.dpDivSnap(fd("1/8"), fd("1/16"), 0, 0), fd("1/8")); // offered values stay
+    // no direction (a switch turned off): nearest offered length
+    assert.strictEqual(C.dpDivSnap(fd("1/8 D"), null, 1, 0), fd("1/4 T")); // 0.75 beats: 0.667 is nearer than 1
+    assert.strictEqual(C.dpDivSnap(fd("1/4 T"), null, 0, 0), fd("1/8")); // 0.667: 0.5 nearer than 1 (log)
+    // edges: 1/64 T with triplets off -> 1/64 even turning down; 4 D with dotted off -> 4
+    assert.strictEqual(C.dpDivSnap(0, 1, 0, 1), fd("1/64"));
+    assert.strictEqual(C.dpDivSnap(26, 25, 1, 0), fd("4"));
 });
 
 test("Pitch / MIDI: one period of the note; folded to a whole multiple above the tank minimum", () => {
@@ -96,12 +134,12 @@ test("range warnings in each mode's own terms", () => {
     // 120 bpm: 1/64 = 31.25 ms, 1/32 = 62.5 ms
     assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.TIME, time: 10 }, 120, ctx), "MIN 20.0 ms");
     assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.TIME, time: 300 }, 120, ctx), null);
-    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 0, mode: 1 }, 120, ctx), null); // 1/64 T = 20.8 ms
-    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 0, mode: 1 }, 120, { tminMs: 25 }), "MIN 1/32 T");
-    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 8, mode: 2 }, 60, ctx), "MAX 1 D"); // 4 bars D = 24 s
-    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.FLUID, div: 3, fluid: 0.02 }, 120, ctx), "MIN x0.08");
-    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.FLUID, div: 3, fluid: 50 }, 120, ctx), "MAX x32.00");
-    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.FLUID, div: 3, fluid: 1 }, 120, ctx), null);
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 0 }, 120, ctx), null); // 1/64 T = 20.8 ms
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 0 }, 120, { tminMs: 25 }), "MIN x1.21"); // 25 / 20.83, rounded up
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 26 }, 60, ctx), "MAX x0.33"); // 4 D = 24 s
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, mult: 0.02 }, 120, ctx), "MIN x0.08");
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, mult: 50 }, 120, ctx), "MAX x32.00");
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, mult: 1 }, 120, ctx), null);
     // 20 ms loop: 50 Hz is the top, so G0 (49 Hz) plays at pitch, A2 folds
     assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.PITCH, note: 57 }, 120, ctx), "MAX G0");
     assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.PITCH, note: 30 }, 120, ctx), null);
@@ -187,10 +225,10 @@ test("Filter Display: box-select both filters, drag one, both move together", ()
 });
 
 test("side labels", () => {
-    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: 3, mode: 0 }), "1/8");
-    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: 3, mode: 2 }), "1/8 D");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: C.DP_DIV_NAMES.indexOf("1/8") }), "1/8");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: C.DP_DIV_NAMES.indexOf("1/8 D") }), "1/8 D");
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.TIME, time: 375 }), "375 ms");
-    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.FLUID, div: 3, fluid: 1.37 }), "1/8 x1.37");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, mult: 1.37 }), "1/8 x1.37");
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.PITCH, note: 45, cents: 12 }), "A1 +12 ct");
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.MIDI, cents: 0 }, 57), "MIDI A2");
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.MIDI }, -1), "MIDI -");
@@ -342,6 +380,24 @@ function loadAmxd(name) {
     assert.strictEqual(32 + len, buf.length, "header length");
     return JSON.parse(buf.slice(32).toString("utf8")).patcher;
 }
+
+test("built Division / Time Mode enums match the config; old Sync Mode / Fluid params are gone", () => {
+    const pat = loadAmxd("Delay+");
+    const boxes = pat.boxes.map((x) => x.box);
+    for (const side of ["l", "r"]) {
+        const b = boxes.find((x) => x.id === "obj-ctrl-div_" + side);
+        const v = b.saved_attribute_attributes.valueof;
+        assert.deepStrictEqual(v.parameter_enum, C.DP_DIV_NAMES);
+        assert.strictEqual(C.DP_DIV_NAMES[v.parameter_initial[0]], "1/8");
+        const tm = boxes.find((x) => x.id === "obj-ctrl-tmode_" + side).saved_attribute_attributes.valueof;
+        assert.deepStrictEqual(tm.parameter_enum, C.DP_TMODES);
+        for (const gone of ["mode_", "fluid_", "fdiv_"]) assert.ok(!boxes.some((x) => x.id === "obj-ctrl-" + gone + side), gone);
+    }
+    for (const k of ["divtrip", "divdot"]) {
+        const v = boxes.find((x) => x.id === "obj-ctrl-" + k).saved_attribute_attributes.valueof;
+        assert.strictEqual(v.parameter_initial[0], 1, k + " on by default");
+    }
+});
 
 function rect(b) {
     return b.presentation_rect;

@@ -54,10 +54,12 @@ GREEN = (0.40, 0.88, 0.52)
 CORAL = (0.98, 0.42, 0.38)
 SLATE = (0.62, 0.68, 0.76)
 
-# Delay sync values (quarter-note beats in src/delayplus_config.js DP_NOTE_BEATS) and modes.
+# Delay sync note values: every straight / triplet / dotted value sorted by length (DP_DIV_NAMES in
+# src/delayplus_config.js), the Division dials' enum.
 NOTES = ["1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4"]
-SYNC_MODES = ["Notes", "Triplet", "Dotted"]
-TMODES = ["Time", "Sync", "Pitch", "Fluid", "MIDI"]  # DP_TMODES in src/delayplus_config.js
+DIVS = [n for _, n in sorted((b * m, NOTES[i] + sfx) for i, b in enumerate([1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16])
+                             for sfx, m in (("", 1), (" T", 2 / 3), (" D", 1.5)))]
+TMODES = ["Time", "Sync", "Pitch", "MIDI"]  # DP_TMODES in src/delayplus_config.js
 LFO_DIVS = ["1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"]
 LFO_SHAPES = ["Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Noise"]
 ONOFF = ["Off", "On"]
@@ -68,22 +70,21 @@ ONOFF = ["Off", "On"]
 def _side(s, name):
     return {
         f"tmode_{s}": (f"{name} Time Mode", f"{name[0]} Time Mode", 0, len(TMODES) - 1, 1, 2, 9, 1.0, None, False,
-                       f"How the {name.lower()} delay time is set: milliseconds (Time), a note value (Sync), the period "
-                       "of a note so the echoes ring at that pitch (Pitch), a note value times a free multiplier "
-                       "(Fluid), or the pitch of the last note received on the MIDI input (MIDI).", TMODES),
+                       f"How the {name.lower()} delay time is set: milliseconds (Time), a note value times a free "
+                       "multiplier (Sync), the period of a note so the echoes ring at that pitch (Pitch), or the pitch "
+                       "of the last note received on the MIDI input (MIDI).", TMODES),
         f"note_{s}": (f"{name} Note", f"{name[0]} Note", 0, 127, 57, 1, 8, 1.0, None, False,
                       f"{name} delay time in Pitch mode: one period of this note.", None),
         f"cents_{s}": (f"{name} Fine", f"{name[0]} Fine", -100.0, 100.0, 0.0, 0, 9, 1.0, None, False,
                        f"Fine-tunes the {name.lower()} note in Pitch and MIDI mode, in cents.", None),
-        # 0.02..50, exponent 5.67 puts x1 at the middle of the control (DP_FLUID_MIN / MAX in the config)
-        f"fluid_{s}": (f"{name} Multiplier", f"{name[0]} Mult", 0.02, 50.0, 1.0, 0, 9, 5.67, None, False,
-                       f"{name} delay time in Fluid mode: the note value times this.", None),
+        # 0.02..50, exponent 5.67 puts x1 at the middle of the control (DP_MULT_MIN / MAX in the config)
+        f"mult_{s}": (f"{name} Multiplier", f"{name[0]} Mult", 0.02, 50.0, 1.0, 0, 9, 5.67, None, False,
+                      f"{name} delay time in Sync mode: the note value times this.", None),
         f"time_{s}": (f"{name} Time", f"{name[0]} Time", 1.0, 5000.0, 375.0, 0, 2, 3.0, None, False,
                       f"{name} delay time in Time mode. Never shorter than the chain latency (MIN in the display).", None),
-        f"div_{s}": (f"{name} Division", f"{name[0]} Division", 0, len(NOTES) - 1, 3, 2, 9, 1.0, None, False,
-                     f"{name} delay time in Sync mode.", NOTES),
-        f"mode_{s}": (f"{name} Sync Mode", f"{name[0]} Sync Mode", 0, len(SYNC_MODES) - 1, 0, 2, 9, 1.0, None, False,
-                      f"{name} note value as straight notes, triplets or dotted notes.", SYNC_MODES),
+        f"div_{s}": (f"{name} Division", f"{name[0]} Division", 0, len(DIVS) - 1, DIVS.index("1/8"), 2, 9, 1.0,
+                     None, False, f"{name} note value in Sync mode (straight, triplet or dotted), times the "
+                     "multiplier. Triplet and dotted values can be switched off on the Options page.", DIVS),
         f"offs_{s}": (f"{name} Offset", f"{name[0]} Offset", -33.0, 33.0, 0.0, 0, 5, 1.0, None, False,
                       f"Shortens or lengthens the {name.lower()} delay by a fraction of its time, for swing.", None),
     }
@@ -93,11 +94,15 @@ P = {
     **_side("l", "Left"),
     **_side("r", "Right"),
     "link": ("Stereo Link", "Link", 0, 1, 1, 2, 9, 1.0, None, False,
-             "Changes to one side's time settings (mode, time, note value, note, fine tune, multiplier) apply to both sides.", ONOFF),
+             "Changes to one side's time settings (mode, time, note value, multiplier, note, fine tune) apply to both sides.", ONOFF),
     "specdry": ("Spectrum Dry", "Spectrum Dry", 0, 1, 1, 2, 9, 1.0, None, False,
                 "Shows the dry input's spectrum in the Filter Display.", ONOFF),
     "specwet": ("Spectrum Wet", "Spectrum Wet", 0, 1, 1, 2, 9, 1.0, None, False,
                 "Shows the delay's spectrum (after the loop filter) in the Filter Display.", ONOFF),
+    "divtrip": ("Sync Triplets", "Triplets", 0, 1, 1, 2, 9, 1.0, None, False,
+                "Offers triplet note values on the Division dials (Sync mode).", ONOFF),
+    "divdot": ("Sync Dotted", "Dotted", 0, 1, 1, 2, 9, 1.0, None, False,
+               "Offers dotted note values on the Division dials (Sync mode).", ONOFF),
     "showlat": ("Show Link Latency", "Link Latency", 0, 1, 0, 2, 9, 1.0, None, False,
                 "Shows the link status and the latency of the devices between Delay+ and Delay+ End above the display "
                 "(otherwise it only appears while Delay+ End is missing).", ONOFF),
@@ -209,7 +214,7 @@ def valueof(key):
         v["parameter_units"] = "Size %.0f %"
     if key.startswith("cents_"):
         v["parameter_units"] = "%+.0f ct"
-    if key.startswith("fluid_"):
+    if key.startswith("mult_"):
         v["parameter_units"] = "x%.2f"
     if key in ("hpres", "lpres"):  # Echo shows resonance with two decimals
         v["parameter_unitstyle"] = 9
@@ -223,7 +228,7 @@ def valueof(key):
 
 
 # UI-state parameters (saved, not automatable).
-UI_STATE = {"filtdisp", "specdry", "specwet", "showlat"}
+UI_STATE = {"filtdisp", "specdry", "specwet", "showlat", "divtrip", "divdot"}
 
 
 def theme(box, **attrs):

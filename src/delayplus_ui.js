@@ -32,10 +32,10 @@ var DP_COL = {
 // Parameter values arrive as set_<key> (raw parameter units); percent parameters the display uses
 // are also kept as 0..1 (fb, wet, width, moddelay).
 var st = {
-    tmode_l: DP_TM.SYNC, time_l: 375, div_l: DP_DIV_DEFAULT, mode_l: 0, offs_l: 0,
-    note_l: DP_NOTE_DEFAULT, cents_l: 0, fluid_l: 1,
-    tmode_r: DP_TM.SYNC, time_r: 375, div_r: DP_DIV_DEFAULT, mode_r: 0, offs_r: 0,
-    note_r: DP_NOTE_DEFAULT, cents_r: 0, fluid_r: 1, link: 1, midiNote: -1,
+    tmode_l: DP_TM.SYNC, time_l: 375, div_l: DP_DIV_DEFAULT, mult_l: 1, offs_l: 0,
+    note_l: DP_NOTE_DEFAULT, cents_l: 0,
+    tmode_r: DP_TM.SYNC, time_r: 375, div_r: DP_DIV_DEFAULT, mult_r: 1, offs_r: 0,
+    note_r: DP_NOTE_DEFAULT, cents_r: 0, link: 1, midiNote: -1, divtrip: 1, divdot: 1,
     fb: 0.5, wet: 0.5, width: 1, hp: 50, lp: 5000, hpres: 0, lpres: 0, filton: 1, chmode: 0, pp: 0,
     showlat: 0, lfosync: 1, lfohz: 0.5, lfodiv: 3, moddelay: 0, freeze: 0, repitch: 0,
     msL: 250, msR: 250, lfoHzOut: 2,
@@ -65,8 +65,8 @@ function dpUsesPitch() {
 
 /** @param {string} s  "l" or "r" */
 function dpSide(s) {
-    return { tmode: st["tmode_" + s], time: st["time_" + s], div: st["div_" + s], mode: st["mode_" + s],
-        note: st["note_" + s], cents: st["cents_" + s], fluid: st["fluid_" + s], offs: st["offs_" + s] };
+    return { tmode: st["tmode_" + s], time: st["time_" + s], div: st["div_" + s], mult: st["mult_" + s],
+        note: st["note_" + s], cents: st["cents_" + s], offs: st["offs_" + s] };
 }
 
 // Delay times (per side) and the LFO rate go straight into the gen header (see dpHdrPoke).
@@ -93,11 +93,11 @@ dpOnChange = function () {
 };
 
 var DP_PCT = { fb: 1, wet: 1, width: 1, moddelay: 1 };
-// Stereo Link (Echo): a change of one side's time, Sync or Sync Mode is applied to the other side
+// Stereo Link (Echo): a change of one side's time settings is applied to the other side
 // too, and switching Link on copies Left onto Right. The other control is updated with `set`
 // (outlet 1 -> route mirror -> prepend set), which does not output, so nothing loops back here; the
 // layout also feeds a mirrored Sync into that side's Time / Division swap.
-var DP_LINKED = { tmode: 1, time: 1, div: 1, mode: 1, note: 1, cents: 1, fluid: 1 };
+var DP_LINKED = { tmode: 1, time: 1, div: 1, mult: 1, note: 1, cents: 1 };
 
 function dpMirror(other, v) {
     if (st[other] === v) return;
@@ -105,8 +105,26 @@ function dpMirror(other, v) {
     outlet(1, "mirror", other, v);
 }
 
+// Division dials skip the triplet / dotted values the Options page switched off: a value that is
+// not offered moves on to the next one in the direction the dial turned, and the dial is corrected
+// with `set` (same path as the Stereo Link mirror, so it does not output).
+function dpSetDiv(key, v) {
+    var snapped = dpDivSnap(v, st[key], st.divtrip > 0.5, st.divdot > 0.5);
+    if (snapped !== v) outlet(1, "mirror", key, snapped);
+    return snapped;
+}
+
 function dpSet(key, v) {
+    if (key === "div_l" || key === "div_r") v = dpSetDiv(key, v);
     st[key] = DP_PCT[key] ? v / 100 : v;
+    if (key === "divtrip" || key === "divdot") {
+        // a value that is no longer offered moves to the nearest offered one
+        for (var si = 0; si < 2; si++) {
+            var dk = si ? "div_r" : "div_l";
+            var nv = dpDivSnap(st[dk], null, st.divtrip > 0.5, st.divdot > 0.5);
+            if (nv !== st[dk]) { st[dk] = nv; outlet(1, "mirror", dk, nv); }
+        }
+    }
     if (key === "chmode") st.pp = v === 1 ? 1 : 0;
     var m = key.match(/^([a-z]+)_(l|r)$/);
     if (m && st.link > 0.5 && DP_LINKED[m[1]]) dpMirror(m[1] + "_" + (m[2] === "l" ? "r" : "l"), v);
