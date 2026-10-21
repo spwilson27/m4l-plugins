@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
  * Variant-specific tests for devices/Mega Modulator.amxd.
- * Runs src/megamod_ui.js (+ shared config/mapper) in a VM with a mocked mgraphics and checks: load, painting in every
- * mode (strips, expanded strip per type, mapping list + remap editor, popup, name edit, tooltip, "pool full" pill), hit-testing, device width for
- * 0 / 1 / 5 / 16 modulators, the rail learn button (single / Shift multi / disarm / retarget), and the strip / mapping-list / remap-editor
- * (MSEG transfer curve) interactions.
+ * Runs src/megamod_ui.js (+ shared config/mapper) in a VM with a mocked mgraphics and checks: load, painting in both views
+ * (rack strips, and the LST view = modulator inspector with tabs, expanded editor, filtered mapping list and remap editor;
+ * popup, name edit, tooltip, "pool full" pill), hit-testing, device width for 0 / 1 / 5 / 16 modulators in both views, the rail
+ * learn button (single / Shift multi / disarm / retarget), the LST toggle, and the strip / mapping-list / remap-editor
+ * (MSEG transfer curve) interactions, plus panel / chip bounds and overlaps.
  */
 const assert = require("assert");
 const path = require("path");
@@ -359,7 +360,7 @@ click(...center(dr.del));
 eq(run("MM.modCount()"), cnt - 1, "second click deletes the modulator");
 eq(run("ubExp()"), -1, "expanded state cleared after delete");
 
-// ---------------------------------------------------------------- mapping list + remap editor
+// ---------------------------------------------------------------- LST view: filtered mapping list + remap editor
 run("MM.demo()");
 run("MM.setUI({ order: [], sel: 0, exp: -1, pbSel: 0, pbScroll: 0 })");
 for (let k = 0; k < 4; k++) run(`MM.addMapping(0, { path: 'live_set tracks 5 devices 0 parameters ${k}', trackName: 'Tr', deviceName: 'Dev', paramName: 'P${k}' })`);
@@ -367,12 +368,20 @@ run("MM.addMapping(1, { path: 'live_set tracks 6 devices 0 parameters 9', trackN
 run("ubTogglePb(true)");
 ok(run("ubPb()"), "list on");
 const gm = run("ubListGeom()");
-eq(gm.end, 22 + 172 + 6 + 144, "list geometry: rail + list + editor");
-eq(lastWidth(), gm.end + 8, "list width fits list + editor");
+eq(gm.lx, 22 + 26 + 204 + 6, "list geometry: rail + tab column + expanded editor + gap");
+eq(gm.end, gm.lx + 172 + 6 + 144, "list geometry: list + remap panel");
+eq(lastWidth(), gm.end + 8, "LST width fits tabs + editor + list + remap panel");
 log.texts.length = 0;
 run("paint()");
 ok(log.texts.includes("MAPPINGS") && log.texts.includes("P0"), "list paints headers and rows");
-ok(log.texts.includes("Select a row"), "editor shows the empty prompt without a selection");
+ok(log.texts.includes("P0") && !log.texts.includes("No mappings yet"), "the editor follows the selected modulator's first mapping");
+{
+    run("MM.setUI({ sel: 4 })");
+    log.texts.length = 0; run("paint()");
+    ok(log.texts.includes("No mappings yet") && log.texts.some((q) => q.indexOf("0 mappings on ") === 0), "a modulator without mappings shows the empty prompt and a 0 count");
+    ok(!log.texts.includes("P0") && !log.texts.includes("Q1"), "the list shows only the selected modulator's mappings");
+    run("MM.setUI({ sel: 0 })");
+}
 ok(!log.texts.includes("TARGETS"), "patchbay is gone");
 const rowAt = (id) => {
     const v = run("ubListVisible()");
@@ -403,7 +412,7 @@ eq(run("ubUIs().pbSel"), m1.id, "clicking a row selects the mapping");
 eq(run("ubSel()"), 0, "selecting a row selects its modulator");
 log.texts.length = 0;
 run("paint()");
-ok(log.texts.includes("P1") && !log.texts.includes("INV") && !log.texts.includes("BIP"), "editor shows the selected mapping, without INV / BIP");
+ok(log.texts.includes("P1") && log.texts.includes("Param 2") && !log.texts.includes("INV"), "editor shows the selected mapping, without the old INV button (the BIP chip belongs to the modulator editor)");
 ok(!log.texts.includes("Amount"), "mod-mode editor has no Amount bar");
 ok(!log.texts.includes("Curve") && !log.texts.includes("Steps"), "no curve-amount / steps bar any more");
 // ---- row on/off toggle
@@ -639,8 +648,7 @@ eq(run(`MM.getMapping(${m2.id})`), null, "row x deletes the mapping");
     ok(selMapRows.length > 0, "selected modulator has mapping rows");
     ok(log.fills.some((f) => f.rect && f.rect[1] === headRows[0].y + 1 && Math.abs(f.col[0] - col[0]) < 1e-9 && Math.abs(f.col[3] - run("UB_TINT_HEAD")) < 1e-9), "selected modulator header is tinted");
     ok(selMapRows.every((r) => log.fills.some((f) => f.rect && f.rect[1] === r.y && f.rect[3] === r.h && Math.abs(f.col[0] - col[0]) < 1e-9 && Math.abs(f.col[3] - run("UB_TINT_ROW")) < 1e-9)), "all rows of the selected modulator are tinted");
-    const otherRows = vis.rows.filter((r) => r.item.i !== selSlot && r.item.kind === "map");
-    ok(otherRows.length > 0 && otherRows.every((r) => !log.fills.some((f) => f.rect && f.rect[1] === r.y && f.rect[3] === r.h && Math.abs(f.col[3] - run("UB_TINT_ROW")) < 1e-9 && Math.abs(f.col[0] - run(`ubModCol(MM.state.mods[${r.item.i}])`)[0]) < 1e-9)), "rows of other modulators are not tinted");
+    ok(vis.rows.every((r) => r.item.i === selSlot), "the list only holds the selected modulator (nothing else to tint)");
     ok(run("UB_TINT_ROW") < run("UB_SELROW_FILL") && run("UB_TINT_ROW") < run("UB_TINT_HEAD"), "tint constants: rows dimmer than header and the selected-mapping fill");
     // selected mapping row: tint first, then the stronger highlight on top (draw order)
     const mid = selMapRows[0].item.m.id;
@@ -656,39 +664,50 @@ eq(run(`MM.getMapping(${m2.id})`), null, "row x deletes the mapping");
     log.fills = null;
     // changing the selection moves the tint
     run(`MM.setUI({ sel: 0, pbSel: 0 })`);
+    const v0 = run("ubListVisible()");
+    const r0 = v0.rows.filter((r) => r.item.i === 0 && r.item.kind === "map")[0];
     log.fills = [];
     run("paint()");
-    const r0 = vis.rows.filter((r) => r.item.i === 0 && r.item.kind === "map")[0];
-    ok(!r0 || log.fills.some((f) => f.rect && f.rect[1] === r0.y && Math.abs(f.col[3] - run("UB_TINT_ROW")) < 1e-9 && Math.abs(f.col[0] - other[0]) < 1e-9), "tint follows the selection");
+    ok(!!r0 && log.fills.some((f) => f.rect && f.rect[1] === r0.y && Math.abs(f.col[3] - run("UB_TINT_ROW")) < 1e-9 && Math.abs(f.col[0] - other[0]) < 1e-9), "tint follows the selection");
     log.fills = null;
 }
-// header body selects the modulator
-const hr2 = run("ubListVisible().rows.filter((r) => r.item.kind === 'head')[1]");
-click(gm.lx + 30, hr2.y + 7);
-eq(run("ubSel()"), hr2.item.i, "clicking a list header selects that modulator");
+// the modulator tabs select (and the list follows); the list header body selects too
+{
+    const tab3 = run("ubStrips().list.filter((g) => g.tab && g.slot === 3)[0]");
+    click(tab3.x + tab3.w / 2, tab3.y + tab3.h / 2);
+    eq(run("ubSel()"), 3, "clicking a modulator tab selects it");
+    ok(run("ubListItems().every((it) => it.i === 3)"), "the list follows the selected tab");
+    const hr2 = run("ubListVisible().rows.filter((r) => r.item.kind === 'head')[0]");
+    eq(hr2.item.i, 3, "the list header belongs to the selected modulator");
+    click(gm.lx + 30, hr2.y + 7);
+    eq(run("ubSel()"), 3, "clicking the list header keeps its modulator selected");
+    run("MM.setUI({ sel: 0 })");
+}
 // scroll
 {
     for (let k = 0; k < 10; k++) run(`MM.addMapping(2, { path: 'live_set tracks 8 devices 0 parameters ${k}', trackName: 'T8', deviceName: 'D', paramName: 'S${k}' })`);
-    run("MM.setUI({ pbScroll: 0 })");
-    ctx.onwheel(80, 80, 0, -1);
+    run("MM.setUI({ sel: 2, pbScroll: 0 })");
+    ctx.onwheel(gm.lx + 20, 80, 0, -1);
     eq(run("ubUIs().pbScroll"), 1, "wheel scrolls the list by one item");
-    ctx.onwheel(80, 80, 0, 1);
+    ctx.onwheel(gm.lx + 20, 80, 0, 1);
     eq(run("ubUIs().pbScroll"), 0, "wheel scrolls back");
-    for (let k = 0; k < 80; k++) ctx.onwheel(80, 80, 0, -1);
+    for (let k = 0; k < 80; k++) ctx.onwheel(gm.lx + 20, 80, 0, -1);
     eq(run("ubUIs().pbScroll"), run("ubListMaxScroll(ubListItems())"), "scroll clamps at the end");
-    ctx.onwheel(300, 80, 0, -1);
-    run("MM.setUI({ pbScroll: 0 })");
+    const sc0 = run("ubUIs().pbScroll");
+    ctx.onwheel(100, 80, 0, -1);
+    eq(run("ubUIs().pbScroll"), sc0, "wheel outside the list does not scroll it");
+    run("MM.setUI({ sel: 0, pbScroll: 0 })");
 }
 // count chip opens the list on that modulator
 run("ubTogglePb(false)");
 click(...center(run("ubStripRects(ubStrips().list[0])").count));
-ok(run("ubPb()"), "count chip opens the mapping list");
+ok(run("ubPb()"), "count chip opens the LST view");
 ok(run("ubUIs().pbSel") > 0 || run("MM.mappingsFor(0).length") === 0, "count chip selects the first mapping");
 // rail toggle back
 click(11, 48);
-ok(!run("ubPb()"), "rail list button toggles back to the strips");
+ok(!run("ubPb()"), "rail LST button toggles back to the strips");
 click(11, 48);
-ok(run("ubPb()"), "rail list button opens the list");
+ok(run("ubPb()"), "rail LST button opens the inspector");
 run("ubTogglePb(false)");
 
 // ---------------------------------------------------------------- "pool full" pill
@@ -731,10 +750,11 @@ const E3 = makeEnv();
 E3.run("preview()");
 E3.log.texts.length = 0;
 E3.run("paint()");
-ok(E3.log.texts.includes("MAPPINGS") && E3.log.texts.includes("Frequency"), "preview shows the mapping list with the selected mapping");
+ok(E3.log.texts.includes("MAPPINGS") && E3.log.texts.includes("Frequency"), "preview shows the LST view with the selected mapping");
+ok(E3.log.texts.includes("4 mappings on Dice | click a row to edit") || E3.log.texts.some((t) => t.indexOf("4 mappings on Dice") === 0), "preview footer counts the shown mappings");
 ok(E3.run("ubPbSelMapping() !== null") && E3.run("ubPb()"), "preview has a selected mapping and the editor");
 ok(E3.run("MM.allMappings().some((m) => MM.mappingStatus(m.id) === 'missing')"), "preview has a missing row");
-eq(E3.log.outlets.filter((o) => o[1] === "width").pop()[2], 22 + 172 + 6 + 144 + 8, "preview list width");
+eq(E3.log.outlets.filter((o) => o[1] === "width").pop()[2], 22 + 26 + 204 + 6 + 172 + 6 + 144 + 8, "preview LST width");
 ok(E3.run("MM.state.mods.some((m) => m && !m.enabled)"), "preview has a disabled modulator");
 ok(E3.run("MM.allMappings().some((m) => !m.enabled)"), "preview has a disabled mapping");
 ok(E3.run("MM.mappingsFor(ubSel()).length >= 3"), "preview: the selected modulator has several mappings");
@@ -1172,4 +1192,359 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     }
     E3.run(`MM.updateMapping(${mm.id}, { mode: "mod" })`);
 }
+
+// ---------------------------------------------------------------- the two views: rack strips (LST off) and the LST inspector (LST on)
+{
+    const overlap = (a, b) => a[2] > 0 && a[3] > 0 && b[2] > 0 && b[3] > 0 && a[0] < b[0] + b[2] - 1e-6 && b[0] < a[0] + a[2] - 1e-6 && a[1] < b[1] + b[3] - 1e-6 && b[1] < a[1] + a[3] - 1e-6;
+    const inside = (r, o) => r[2] <= 0 || r[3] <= 0 || (r[0] >= o[0] - 1e-6 && r[1] >= o[1] - 1e-6 && r[0] + r[2] <= o[0] + o[2] + 1e-6 && r[1] + r[3] <= o[1] + o[3] + 1e-6);
+    const noOverlap = (rects, msg) => {
+        for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) ok(!overlap(rects[i][1], rects[j][1]), `${msg}: ${rects[i][0]} overlaps ${rects[j][0]}`);
+    };
+    function mk(n, open, opts = {}) {
+        const T = makeEnv();
+        T.ctx.uiReady();
+        for (let k = 0; k < n; k++) T.run(`ubAddType(${[1, 2, 3, 4, 5][k % 5]})`);
+        for (let k = 0; k < Math.min(n, 6); k++) for (let j = 0; j < 2 + (k === 0 ? 2 : 0); j++) T.run(`MM.addMapping(${k}, { path: "live_set tracks ${k} devices 0 parameters ${j + 1}", trackName: "Trk ${k}", deviceName: "Dev", paramName: "Par ${k}${j}" })`);
+        T.run(`MM.setUI({ pb: ${open ? 1 : 0}, sel: ${n ? 0 : -1}, exp: ${opts.exp === undefined ? -1 : opts.exp}, pbScroll: 0, pbSel: ${n ? "(MM.mappingsFor(0)[0] || { id: 0 }).id" : 0} })`);
+        T.run("ubSyncWidth(true)");
+        const w = () => { const o = T.log.outlets.filter((q) => q[1] === "width"); return o.length ? o[o.length - 1][2] : null; };
+        return { T, run: T.run, log: T.log, w, ctx: T.ctx };
+    }
+    const wOf = (E) => E.run("ubLayoutWidth()");
+    const clk = (E, x, y, o = {}) => E.ctx.onclick(x, y, 1, 0, o.shift ? 1 : 0, 0, 0, 0);
+
+    // ---- the LST toggle switches between the strips and the inspector (rail button), with the width following
+    {
+        const E = mk(5, false);
+        ok(!E.run("ubPb()"), "LST starts off");
+        let sg = E.run("ubStrips()");
+        ok(sg.list.length === 5 && sg.list.every((g) => !g.tab && !g.fixed && g.w === 56) && !!sg.plus, "LST off: five rack strips and the + strip");
+        eq(E.w(), 22 + 5 * 58 + 26 + 8, "LST off: strips width");
+        E.log.texts.length = 0; E.run("paint()");
+        ok(!E.log.texts.includes("MAPPINGS") && E.log.texts.includes("Par 00") === false, "LST off: no mapping list is painted");
+        const stripsW = E.w();
+        clk(E, 11, 48);
+        ok(E.run("ubPb()"), "the rail LST button turns the inspector on");
+        sg = E.run("ubStrips()");
+        const tabs = sg.list.filter((g) => g.tab);
+        ok(tabs.length === 5 && !!sg.main && sg.main.fixed && sg.main.exp && sg.main.w === 204 && sg.main.slot === E.run("ubSel()"), "LST on: five tabs and the selected modulator's expanded editor");
+        ok(tabs.every((g) => g.x + g.w <= sg.main.x) && sg.plus.x + sg.plus.w <= sg.main.x, "LST on: tabs and + tab left of the editor");
+        eq(E.w(), E.run("ubListGeom().end") + 8, "LST on: width request = tabs + editor + list + remap panel");
+        eq(E.w(), 22 + 26 + 204 + 6 + 172 + 6 + 144 + 8, "LST on (5 modulators): 588 px");
+        ok(E.w() > stripsW, "LST on is wider than the strips");
+        E.log.texts.length = 0; E.run("paint()");
+        ok(E.log.texts.includes("MAPPINGS") && E.log.texts.includes("Par 00"), "LST on: the mapping list of the selected modulator is painted");
+        // strips-only content (knob labels of the collapsed strips, the mapping-count chips) is gone
+        ok(!E.log.texts.includes("5 maps") && !E.log.texts.includes("2 maps"), "LST on: no strip count chips");
+        clk(E, 11, 48);
+        ok(!E.run("ubPb()") && E.w() === stripsW, "LST off again: back to the strips and their width");
+        sg = E.run("ubStrips()");
+        ok(sg.list.length === 5 && sg.list.every((g) => !g.tab), "LST off again: strips, no tabs");
+        // the same toggle through the API, with nothing selected: the inspector still shows a modulator
+        E.run("MM.setUI({ sel: -1 })");
+        E.run("ubTogglePb(true)");
+        ok(E.run("ubSel()") >= 0 && !!E.run("ubStrips().main"), "turning LST on with no selection selects the first modulator");
+        E.run("ubTogglePb(false)");
+    }
+
+    for (const open of [false, true]) {
+        const view = open ? "LST view" : "strips view";
+        // ---- painting with 0 / 1 / 5 / 16 modulators; requested width follows the content; nothing leaves the device
+        for (const n of [0, 1, 5, 16]) {
+            const E = mk(n, open);
+            E.log.texts.length = 0;
+            E.run("paint()");
+            ok(true, `${view}: paints with ${n} modulators`);
+            eq(E.w(), Math.max(120, wOf(E) + 8), `${view}: ${n} mods: requested width = content + margins`);
+            ok(E.w() >= 120 && E.w() <= (open ? 750 : 1000), `${view}: ${n} mods: width ${E.w()} in range`);
+            if (open && n > 0) ok(E.log.texts.includes("Par 00"), `${view}: a mapping name is drawn`);
+            if (open && n === 0) ok(E.log.texts.includes("Add a modulator first") && E.log.texts.includes("Add a modulator"), `${view}: empty hints with no modulator`);
+            const W = wOf(E);
+            const sg = E.run("ubStrips()");
+            const top = sg.list.map((g) => ["item " + g.slot, [g.x, g.y, g.w, g.h]]);
+            if (sg.plus) top.push(["plus", [sg.plus.x, sg.plus.y, sg.plus.w, sg.plus.h]]);
+            if (open) {
+                const gm = E.run("ubListGeom()");
+                top.push(["list", [gm.lx, gm.ly, gm.lw, gm.lh]]);
+                top.push(["panel", gm.panel]);
+                if (n === 0) top.push(["empty main", [sg.mainX, 0, 204, 161]]);
+            }
+            top.push(["rail", [0, 0, 20, 161]]);
+            noOverlap(top, `${view} n=${n} panels`);
+            for (const [name, r] of top) ok(inside(r, [0, 0, W, 161]), `${view} n=${n}: ${name} inside the device`);
+            // every filled shape stays inside the 161 px usable height
+            E.log.fills = []; E.run("paint()");
+            ok(E.log.fills.every((f) => !f.rect || f.rect[1] + f.rect[3] <= 161 + 1e-6), `${view} n=${n}: no fill crosses the bottom edge`);
+            E.log.fills = null;
+        }
+    }
+
+    // ---- every panel ends at the same bottom edge; chips, counts and knobs sit inside with padding (all five modulator types)
+    for (const mode of ["strips", "lst"]) {
+        for (let sel = 0; sel < 5; sel++) {
+            const E = mk(5, mode === "lst", { exp: mode === "strips" ? sel : -1 });
+            E.run(`MM.setUI({ sel: ${sel} })`);
+            const tag = `${mode} type ${sel}`;
+            const sg = E.run("ubStrips()");
+            const gm = E.run("ubListGeom()");
+            const bottoms = [["rail", 161]];
+            for (const g of sg.list.filter((q) => q.fixed || (!q.tab && mode === "strips"))) bottoms.push(["card " + g.slot, g.y + g.h]);
+            if (mode === "lst") { bottoms.push(["list", gm.lh + gm.ly], ["remap panel", gm.panel[1] + gm.panel[3]]); }
+            for (const [name, b] of bottoms) eq(b, 161, `${tag}: ${name} ends at the shared bottom edge`);
+            const g = sg.list.find((q) => q.exp);
+            ok(!!g, `${tag}: an expanded editor is shown`);
+            const R = E.run(`ubStripRects(${JSON.stringify(g)})`);
+            const card = [g.x, g.y, g.w, g.h];
+            const bottomLimit = 161 - 4;
+            for (const c of R.chips) {
+                ok(inside(c.rect, [g.x + 4, 0, g.w - 8, bottomLimit]), `${tag}: chip ${c.id} inside the card with padding`);
+            }
+            ok(inside(R.count, [g.x + 4, 0, g.w - 8, 161 - 6]), `${tag}: the maps chip is fully inside, >= 6 px above the bottom edge (${R.count[1] + R.count[3]})`);
+            ok(R.count[1] + R.count[3] <= 161 - 6, `${tag}: maps chip bottom padding`);
+            for (const k of R.knobs) {
+                ok(inside(k.hit, [g.x, 0, g.w, R.count[1]]), `${tag}: a knob sits above the maps chip`);
+                ok(k.labY + 3 <= R.count[1], `${tag}: knob labels clear the maps chip`);
+            }
+            const parts = [["icon", R.icon], ["viz", R.viz], ["meter", R.meter], ["type", R.type], ["del", R.del], ["collapse", R.collapse], ["count", R.count]];
+            R.knobs.forEach((k, i) => parts.push(["knob" + i, k.hit]));
+            R.chips.forEach((c) => parts.push(["chip " + c.id, c.rect]));
+            noOverlap(parts, `${tag}: editor parts`);
+            for (const [pn, r] of parts) ok(inside(r, card), `${tag}: ${pn} inside the card`);
+        }
+    }
+
+    // ---- hit areas inside items, list rows and editor controls (5 mods, LST view)
+    {
+        const E = mk(5, true);
+        const sg = E.run("ubStrips()");
+        for (const g of sg.list) {
+            if (g.tab) continue;
+            const R = E.run(`ubStripRects(${JSON.stringify(g)})`);
+            const parts = [["icon", R.icon], ["name", R.name], ["viz", R.viz], ["meter", R.meter], ["count", R.count]];
+            R.knobs.forEach((k, i) => parts.push(["knob" + i, k.hit]));
+            R.chips.forEach((c) => parts.push(["chip " + c.id, c.rect]));
+            if (g.exp) { parts.push(["collapse", R.collapse]); parts.push(["del", R.del]); parts.push(["type", R.type]); }
+            for (const [pn, r] of parts) ok(inside(r, [g.x, g.y, g.w, g.h]), `LST: strip ${g.slot} ${pn} inside its item`);
+            noOverlap(parts.filter((q) => q[0] !== "name" || !g.exp), `LST: item ${g.slot} parts`);
+        }
+        const gm = E.run("ubListGeom()");
+        const vis = E.run("ubListVisible()");
+        ok(vis.rows.length > 0, "LST: list rows visible");
+        const rows = vis.rows.map((r) => ["row" + r.index, [gm.lx, r.y, gm.lw, r.h]]);
+        noOverlap(rows, "LST: list rows");
+        for (const [rn, r] of rows) ok(inside(r, [gm.lx, gm.ly, gm.lw, gm.lh - gm.foot]), `LST: ${rn} inside the list above its footer`);
+        for (const r of vis.rows) if (r.item.kind === "map") {
+            const P = E.run(`ubRowParts(${r.y})`);
+            const pr = Object.keys(P).map((k) => [k, P[k]]);
+            noOverlap(pr, "LST: row parts");
+            for (const [pn, q] of pr) ok(inside(q, [gm.lx, r.y, gm.lw, r.h]), `LST: row part ${pn} inside its row`);
+        }
+        ok(E.run("ubPbSelMapping()"), "LST: a mapping is selected for the editor");
+        const dr = E.run("ubDetailRects(ubListGeom(), ubPbSelMapping())");
+        noOverlap(dr.map((d) => [d.id, d.rect]), "LST: editor controls");
+        for (const d of dr) ok(inside(d.rect, [gm.panel[0] + 3, 3, gm.panel[2] - 6, 161 - 6]), `LST: editor control ${d.id} inside the panel with padding`);
+        ok(dr.find((d) => d.id === "mseg").rect[3] >= 45, "LST: the MSEG stays usable");
+        // list header, footer and the other panels share top / bottom
+        eq([gm.ly, gm.ly + gm.lh, gm.panel[1], gm.panel[1] + gm.panel[3], sg.main.y, sg.main.y + sg.main.h], [0, 161, 0, 161, 0, 161], "LST: editor, list and remap panel share top and bottom");
+        eq([sg.main.x + sg.main.w + 6, gm.lx + gm.lw + 6], [gm.lx, gm.px], "LST: 6 px gaps between editor, list and remap panel");
+    }
+
+    // ---- footer: counts the shown mappings and stays inside the panel
+    {
+        const E = mk(5, true);
+        const nm0 = E.run("MM.state.mods[0].name");
+        const maxW = E.run("ubListGeom().lw - 14");
+        E.log.texts.length = 0; E.run("paint()");
+        const exp0 = E.run(`ubFooterText(4, ${JSON.stringify(nm0)}, ${maxW}, 6.5)`);
+        ok(E.log.texts.includes(exp0) && exp0.indexOf("4 mappings on ") === 0, "footer: the painted text counts the 4 shown mappings of the selected modulator");
+        ok(!E.log.texts.some((t) => /^\d+ mappings? \| click/.test(t)), "footer: no total-mapping text any more");
+        // realistic font metric: the full text fits
+        E.ctx.mgraphics.text_measure = (t) => [String(t).length * 3.2, 8];
+        E.run("MM.setName(0, 'Dice')");
+        E.log.texts.length = 0; E.run("paint()");
+        ok(E.log.texts.includes("4 mappings on Dice | click a row to edit"), "footer: '4 mappings on Dice | click a row to edit'");
+        E.run("MM.setUI({ sel: 1 })"); E.run("MM.setName(1, 'Wobble')");
+        E.log.texts.length = 0; E.run("paint()");
+        ok(E.log.texts.includes("2 mappings on Wobble | click a row to edit"), "footer: another modulator counts its own 2 mappings");
+        E.run("MM.deleteMapping(MM.mappingsFor(1)[0].id)");
+        E.log.texts.length = 0; E.run("paint()");
+        ok(E.log.texts.includes("1 mapping on Wobble | click a row to edit"), "footer: singular for one mapping");
+        E.run("MM.deleteMapping(MM.mappingsFor(1)[0].id)");
+        E.log.texts.length = 0; E.run("paint()");
+        ok(E.log.texts.includes("0 mappings on Wobble | click a row to edit"), "footer: zero mappings");
+        // long names / narrow metrics never overflow the list panel
+        for (const metric of [3.2, 4, 5]) {
+            E.ctx.mgraphics.text_measure = (t) => [String(t).length * metric, 8];
+            for (const name of ["Dice", "Wobble", "A very long name", "WWWWWWWWWWWWWWWW"]) {
+                for (const n of [0, 1, 4, 12, 256]) {
+                    const t = E.run(`ubFooterText(${n}, ${JSON.stringify(name)}, ${maxW}, 6.5)`);
+                    ok(t.length * metric <= maxW + 1e-6, `footer fits (${metric} px/char, "${name}", ${n}): "${t}"`);
+                    ok(t.indexOf(n + " mapping") === 0, `footer starts with the count (${n})`);
+                }
+            }
+        }
+        E.run("MM.setName(1, 'Wobble')");
+    }
+
+    // ---- the editor's header button returns to the strips; the X still deletes the modulator (two clicks)
+    {
+        const E = mk(5, true);
+        let main = E.run("ubStrips().main");
+        let R = E.run(`ubStripRects(ubStrips().main)`);
+        eq(E.run(`ubHit(${center(R.collapse)[0]}, ${center(R.collapse)[1]})`).kind, "collapse", "LST: the header has the back button");
+        eq(E.run(`ubHit(${center(R.collapse)[0]}, ${center(R.collapse)[1]})`).tip, "Back to rack strips", "LST: the back button tip");
+        eq(E.run(`ubHit(${center(R.del)[0]}, ${center(R.del)[1]})`).kind, "del", "LST: the delete X is a separate control");
+        ok(R.collapse[0] + R.collapse[2] <= main.x + main.w - 3 && R.del[0] + R.del[2] <= R.collapse[0], "LST: header buttons are padded and do not overlap");
+        // delete: first click only arms
+        const n0 = E.run("MM.modCount()");
+        clk(E, ...center(R.del));
+        eq(E.run("MM.modCount()"), n0, "LST: the X first only arms");
+        clk(E, ...center(R.del));
+        eq(E.run("MM.modCount()"), n0 - 1, "LST: the second click deletes the modulator");
+        ok(E.run("ubPb()") && !!E.run("ubStrips().main") && E.run("ubSel()") >= 0, "LST: still open, another modulator is selected and shown");
+        E.run("paint()");
+        R = E.run(`ubStripRects(ubStrips().main)`);
+        clk(E, ...center(R.collapse));
+        ok(!E.run("ubPb()"), "LST: the back button returns to the rack strips");
+        eq(E.w(), E.run("ubStrips().end") + 8, "back in the strips view the width follows the strips");
+        // strips view: the same button collapses in place and does not touch LST
+        E.run("ubSetExpanded(1)");
+        const gE = E.run("ubStrips().list.filter((g) => g.exp)[0]");
+        const RE = E.run(`ubStripRects(${JSON.stringify(gE)})`);
+        eq(E.run(`ubHit(${center(RE.collapse)[0]}, ${center(RE.collapse)[1]})`).tip, "Collapse", "strips: the header button still collapses");
+        clk(E, ...center(RE.collapse));
+        eq(E.run("ubExp()"), -1, "strips: collapsed in place");
+        ok(!E.run("ubPb()"), "strips: LST stays off");
+        // deleting the last modulator in LST leaves the empty hint, no crash
+        const E1 = mk(1, true);
+        const R1 = E1.run("ubStripRects(ubStrips().main)");
+        clk(E1, ...center(R1.del)); clk(E1, ...center(R1.del));
+        eq(E1.run("MM.modCount()"), 0, "LST: the last modulator can be deleted");
+        E1.run("paint()");
+        ok(E1.run("ubStrips().main") === null && E1.run("ubPb()"), "LST: no modulator left, empty hint");
+    }
+
+    // ---- selecting a modulator drives the list / editor
+    {
+        const E = mk(5, true);
+        const g3 = E.run("ubStrips().list.filter((g) => g.slot === 3 && g.tab)[0]");
+        const pt = [g3.x + g3.w / 2, g3.y + g3.h / 2];
+        eq(E.run(`ubHit(${pt[0]}, ${pt[1]})`).slot, 3, "LST: the tab click point hits modulator 3");
+        clk(E, ...pt);
+        eq(E.run("ubSel()"), 3, "LST: clicking a tab selects it");
+        const pm = E.run("ubPbSelMapping()");
+        ok(pm && pm.mod === 3, "LST: the editor shows a mapping of the selected modulator");
+        ok(E.run("ubListVisible().rows.some((r) => r.item.kind === 'head' && r.item.i === ubSel())"), "LST: the selected modulator's header is visible in the list");
+        ok(E.run("ubListItems().every((it) => it.i === 3)"), "LST: the list is filtered to the selected modulator");
+        eq(E.run("ubStrips().main.slot"), 3, "LST: the expanded editor shows the selected modulator");
+        // the enable toggle of the editor header still works
+        const R3 = E.run("ubStripRects(ubStrips().main)");
+        const ic = center(R3.icon);
+        const was = E.run("MM.state.mods[3].enabled");
+        clk(E, ic[0], ic[1]);
+        eq(E.run("MM.state.mods[3].enabled"), was ? 0 : 1, "LST: the corner glyph toggles enable");
+        clk(E, ic[0], ic[1]);
+        // a list row selects its mapping (and keeps the modulator)
+        const rows = E.run("ubListVisible().rows.filter((r) => r.item.kind === 'map')");
+        const rw = rows[rows.length - 1];
+        const P = E.run(`ubRowParts(${rw.y})`);
+        clk(E, ...center(P.name));
+        eq(E.run("ubSel()"), 3, "LST: clicking a list row keeps its modulator");
+        eq(E.run("ubUIs().pbSel"), rw.item.m.id, "LST: ... and selects the row for the editor");
+        // the strips view: clicking a strip selects it too
+        E.run("ubTogglePb(false)");
+        const s1 = E.run("ubStripRects(ubStrips().list[1])");
+        clk(E, ...center(s1.viz));
+        eq(E.run("ubSel()"), 1, "strips: clicking a strip selects it");
+    }
+
+    // ---- rail: learn (click / Shift-click) in both views
+    for (const open of [false, true]) {
+        const E = mk(5, open);
+        E.run("MM.setUI({ sel: 2 })");
+        clk(E, 11, 12);
+        ok(E.run("MM.learn.armed && !MM.learn.multi && MM.learn.mod === 2"), `${open ? "LST" : "strips"}: rail click arms single-shot learn`);
+        clk(E, 11, 12);
+        ok(!E.run("MM.learn.armed"), `${open ? "LST" : "strips"}: click while armed disarms`);
+        clk(E, 11, 12, { shift: true });
+        ok(E.run("MM.learn.armed && MM.learn.multi"), `${open ? "LST" : "strips"}: Shift-click arms multi-learn`);
+        const tab = E.run("ubStrips().list.filter((g) => g.slot === 3)[0]");
+        const tp = open ? [tab.x + tab.w / 2, tab.y + tab.h / 2] : center(E.run(`ubStripRects(${JSON.stringify(tab)})`).viz);
+        clk(E, ...tp);
+        eq(E.run("MM.learn.mod"), 3, `${open ? "LST" : "strips"}: multi-learn follows the selection`);
+        clk(E, 11, 12);
+    }
+
+    // ---- remap editor gestures in the LST view: MOD / REM tab, polarity, range triangle, presets, MSEG
+    {
+        const E = mk(5, true);
+        const C = (x, y) => E.ctx.onclick(x, y, 1, 0, 0, 0, 0, 0);
+        E.run("MM.setUI({ sel: 0 })");
+        const mid = E.run("ubPbSelMapping().id");
+        const rects = () => E.run("ubDetailRects(ubListGeom(), ubPbSelMapping())");
+        const rect = (id) => rects().find((d) => d.id === id).rect;
+        const mp = () => E.run(`MM.getMapping(${mid})`);
+        let c = center(rect("tabrem"));
+        C(c[0], c[1]);
+        eq(mp().mode, "remote", "LST: the REM tab switches to Remote");
+        c = center(rect("tabmod"));
+        C(c[0], c[1]);
+        eq(mp().mode, "mod", "LST: the MOD tab switches back");
+        c = center(rect("pol-1"));
+        C(c[0], c[1]);
+        eq(mp().polarity, -1, "LST: the minus polarity button works");
+        c = center(rect("pol0"));
+        C(c[0], c[1]);
+        eq(mp().polarity, 0, "LST: the bipolar polarity button works");
+        const mr = rect("meter");
+        const mg = E.run(`ubMeterGeom(${JSON.stringify(mr)})`);
+        C(mr[0] + 6, mg.cy - mg.hh * 0.8);
+        near(mp().range, 0.8, 0.02, "LST: a press on the output bar sets the range");
+        E.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+        C(...center(rect("preset3")));
+        ok(E.run(`ubShapeIsPreset(MM.getMapping(${mid}), 3)`), "LST: a preset button loads its curve");
+        const ms = rect("mseg");
+        const before = E.run(`MM.getMapping(${mid}).shape.length`);
+        C(ms[0] + ms[2] * 0.5, ms[1] + 8);
+        E.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+        ok(E.run(`MM.getMapping(${mid}).shape.length`) === before + 1, "LST: a click in the MSEG adds a point");
+        ok(E.run(`ubHit(${center(rect("mseg"))[0]}, ${center(rect("mseg"))[1]})`).kind === "detail", "LST: the editor is hit-testable");
+    }
+
+    // ---- LST specifics: tabs, + tab, knobs of the editor, 16 modulators
+    {
+        const E = mk(5, true);
+        const sg = E.run("ubStrips()");
+        eq(sg.list.filter((g) => g.tab).length, 5, "LST: one tab per modulator");
+        ok(sg.list.filter((g) => g.tab).every((g) => g.x < sg.main.x && g.w <= 28), "LST: the tab column is on the far left, narrow");
+        ok(sg.plus && sg.plus.x < sg.main.x, "LST: a + tab adds a modulator");
+        const C = (x, y) => E.ctx.onclick(x, y, 1, 0, 0, 0, 0, 0);
+        C(sg.plus.x + 5, sg.plus.y + 5);
+        ok(E.run("ubPopup !== null"), "LST: + opens the type picker");
+        const pr = E.run("ubPopupRect()");
+        C(pr[0] + 10, pr[1] + 2 + 17 * 4 + 8);
+        eq(E.run("MM.modCount()"), 6, "LST: the picker adds a modulator");
+        eq(E.run("ubSel()"), 5, "LST: the new modulator is selected and shown");
+        const mainR = E.run("ubStripRects(ubStrips().main)");
+        const k0 = center(mainR.knobs[0].hit);
+        const spec = E.run("ubKnobs(MM.state.mods[5])[0].key");
+        const before = E.run(`MM.state.mods[5].p.${spec}`);
+        C(k0[0], k0[1]);
+        E.ctx.ondrag(k0[0], k0[1] - 40, 1, 0, 0, 0, 0, 0);
+        E.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+        ok(E.run(`MM.state.mods[5].p.${spec}`) !== before, "LST: the expanded editor's knobs still drag");
+        // double-click on the editor header renames (no collapse in the fixed editor)
+        const hd = E.run("ubStripRects(ubStrips().main)").head;
+        E.ctx.ondblclick(hd[0] + 40, 8, 1, 0, 0, 0, 0, 0);
+        ok(E.run("ubEdit !== null") && E.run("ubExp()") === -1, "LST: double-clicking the editor header renames");
+        E.run("ubEdit = null");
+        // 16 modulators: a second tab column, still inside the device
+        const E16 = mk(16, true);
+        const s16 = E16.run("ubStrips()");
+        ok(new Set(s16.list.filter((g) => g.tab).map((g) => g.x)).size === 2, "LST: 16 modulators use two tab columns");
+        ok(E16.w() <= 750, "LST: 16 modulators stay within 750");
+        eq(E16.run("ubStrips().plus"), null, "LST: no + tab with 16 modulators");
+    }
+}
+
 console.log(`megamod UI tests passed (${passed} checks)`);
