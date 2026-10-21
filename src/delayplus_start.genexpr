@@ -113,6 +113,7 @@ Param wobon(0);
 Param wobamt(0);
 Param wobmorph(0);
 Param repitch(0);      // 1: the read head glides to a new time (pitch bends); 0: crossfade
+Param repsmooth(120);  // Repitch glide time constant, ms
 Param freeze(0);
 Param lat(0);
 Param wet(0.5);
@@ -519,7 +520,7 @@ wob = wobS * (0.5 + 0.5 * (wowS * (1 - wm) + flutS * wm));
 mL = mL + wob;
 mR = mR + wob;
 
-slew = 1 - exp(-1 / (0.12 * sr));
+slew = 1 - exp(-1 / (max(repsmooth, 1) * 0.001 * sr));
 xfRate = 1 / (0.05 * sr);
 if (repitch > 0.5) {
 	// Repitch (tape): the read head glides to the new time (pitch bends while it moves).

@@ -166,6 +166,8 @@ P = {
                  "From slow wow (0%) to fast flutter (100%).", None),
     "repitch": ("Repitch", "Repitch", 0, 1, 0, 2, 9, 1.0, "repitch", False,
                 "On: changing the time bends the pitch like tape. Off: crossfades to the new time.", ONOFF),
+    "repsmooth": ("Repitch Smoothing", "Rep Smooth", 10.0, 2000.0, 120.0, 0, 2, 2.0, "repsmooth", False,
+                  "With Repitch on, how long the read head takes to glide to a new delay time (time constant).", None),
     "freeze": ("Freeze", "Freeze", 0, 1, 0, 2, 9, 1.0, "freeze", False,
                "Stops input into the delay and loops what is in it at 100% feedback.", ONOFF),
     "width": ("Stereo", "Stereo", 0.0, 200.0, 100.0, 0, 5, 1.0, "width", True,

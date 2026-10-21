@@ -31,6 +31,9 @@ LINKED_KEYS = ("tmode", "time", "div", "mult", "note", "cents")
 # Per side: widget (formatted with the side) -> the Time Modes (DP_TM) in which it shows.
 TMODE_SHOW = [("obj-ctrl-time_{s}", (0,)), ("obj-ctrl-div_{s}", (1,)), ("obj-ctrl-note_{s}", (2,)),
               ("obj-notedial-{s}", (3,)), ("obj-ctrl-mult_{s}", (1,)), ("obj-ctrl-cents_{s}", (2, 3))]
+# Options page hairlines: under the clip section, between the columns, between the rows, above Repitch
+OPT_SEPS = [("obj-panel-opt-h0", [111.0 + 6.0, 76.0, 248.0, 4.0]), ("obj-panel-opt-v", [111.0 + 128.0, 80.0, 4.0, 66.0]),
+            ("obj-panel-opt-h1", [111.0 + 6.0, 124.0, 248.0, 4.0]), ("obj-panel-opt-h2", [111.0 + 6.0, 146.0, 248.0, 4.0])]
 PAGES = ["Echo", "Modulation", "Options"] + (["Character"] if SHOW_CHARACTER else [])
 OPT_PAGE = PAGES.index("Options")
 # Geometry measured from Echo next to Delay+ in Live 12 (same scale): left column 0..109, display
@@ -161,26 +164,30 @@ def layout(h):
     mod_ids = [b["box"]["id"] for b in mod if b["box"]["id"] not in ("obj-ctrl-lfohz", "obj-ctrl-lfodiv")]
     mod_ids += [f"obj-echo-lbl-mod{i}" for i in range(len(mod_labels))] + ["obj-lfodisp", "obj-panel-mod-sep"]
 
-    # ---- Options page: feedback clip ----------------------------------------------------------
-    # Clip Mode (Soft / Hard / Limit) and Clip Level on the left, the clip's transfer curve
-    # (obj-clipcurve, display only) on the right, Ducking and Repitch under it (see below).
-    oy = DISP_Y + 8.0
-    # Spectrum: which signals the Filter Display's spectrogram shows (both by default).
-    opt = [tab("clipmode", X0 + 12.0, oy + 16.0, 120.0, 15.0, hidden=1),
-           numbox("cliplevel", X0 + 12.0, oy + 54.0, 50.0, 14.0, color=VALUE_BLUE, appearance=4, hidden=1),
-           button("specdry", X0 + 12.0, oy + 98.0, 40.0, 14.0, text="Dry", hidden=1),
-           button("specwet", X0 + 56.0, oy + 98.0, 40.0, 14.0, text="Wet", hidden=1),
-           button("showlat", X0 + 12.0, oy + 122.0, 84.0, 14.0, text="Link Latency", hidden=1),
-           # Sync divisions: whether the Division dials offer triplet / dotted values
-           button("divtrip", X0 + 68.0, oy + 54.0, 37.0, 14.0, text="Triplet", hidden=1),
-           button("divdot", X0 + 107.0, oy + 54.0, 37.0, 14.0, text="Dotted", hidden=1)]
+    # ---- Options page ------------------------------------------------------------------------
+    # Sections, like the old Character page, with faint hairlines between them (OPT_SEPS):
+    #   Feedback Clip: Soft / Hard / Limit and Level        | the clip's transfer curve (obj-clipcurve)
+    #   [] Ducking: Threshold, Release                       | Divisions: Triplet, Dotted
+    #   Spectrum: Dry, Wet                                   | Link Latency
+    #   [] Repitch   Smoothing Time
+    # Ducking and Repitch are switched by small square toggles beside their titles; with the
+    # Character page off they live here (moved below), otherwise only Repitch's smoothing does.
+    opt = [tab("clipmode", X0 + 10.0, 35.0, 112.0, 15.0, hidden=1),
+           numbox("cliplevel", X0 + 44.0, 55.0, 50.0, 13.0, color=VALUE_BLUE, appearance=4, hidden=1),
+           button("divtrip", X0 + 138.0, 101.0, 52.0, 14.0, text="Triplet", hidden=1),
+           button("divdot", X0 + 194.0, 101.0, 52.0, 14.0, text="Dotted", hidden=1),
+           button("specdry", X0 + 62.0, 130.0, 30.0, 14.0, text="Dry", hidden=1),
+           button("specwet", X0 + 95.0, 130.0, 30.0, 14.0, text="Wet", hidden=1),
+           button("showlat", X0 + 138.0, 130.0, 84.0, 14.0, text="Link Latency", hidden=1),
+           numbox("repsmooth", X0 + 176.0, 152.0, 60.0, 13.0, color=VALUE_BLUE, appearance=4, hidden=1)]
     controls += opt
-    opt_labels = [("Feedback Clip", oy, 120.0), ("Level", oy + 40.0, 60.0), ("Spectrum", oy + 82.0, 90.0),
-                  ("Divisions", oy + 40.0, 66.0)]
-    for i, (text, y, w) in enumerate(opt_labels):
-        lx = X0 + (68.0 if text == "Divisions" else 12.0)
-        labels.append(label(f"obj-echo-lbl-opt{i}", text, lx, y, w, 13.0, hidden=1))
+    opt_labels = [("Feedback Clip", X0 + 10.0, 19.0, 110.0), ("Level", X0 + 10.0, 55.0, 34.0),
+                  ("Divisions", X0 + 138.0, 82.0, 80.0), ("Spectrum", X0 + 10.0, 131.0, 50.0),
+                  ("Smoothing Time", X0 + 92.0, 152.0, 84.0)]
+    for i, (text, x, y, w) in enumerate(opt_labels):
+        labels.append(label(f"obj-echo-lbl-opt{i}", text, x, y, w, 13.0, hidden=1))
     opt_ids = [b["box"]["id"] for b in opt] + [f"obj-echo-lbl-opt{i}" for i in range(len(opt_labels))] + ["obj-clipcurve"]
+    opt_ids += [sid for sid, _ in OPT_SEPS]
 
     # ---- Character page: 2 x 2 sections + Repitch ---------------------------------------------
     char_ids = []
@@ -215,24 +222,22 @@ def layout(h):
     else:
         rep["box"]["presentation"] = 0
         char_ids = []
-        # With the Character page off, Ducking and Repitch live on the Options page (right column,
-        # under the clip curve): Ducking on/off, its Threshold and Release, then Repitch.
+        # With the Character page off, Ducking and Repitch live on the Options page: a square
+        # toggle beside each title (like the Character page), Ducking's Threshold and Release under it.
         byid = {c["box"]["id"]: c["box"] for c in controls}
-        ox = X0 + 150.0
-        for cid, rect, text in (("obj-ctrl-duckon", [ox, oy + 78.0, 60.0, 14.0], "Ducking"),
-                                ("obj-ctrl-duckthr", [ox, oy + 109.0, 48.0, 13.0], None),
-                                ("obj-ctrl-duckrel", [ox + 52.0, oy + 109.0, 48.0, 13.0], None),
-                                ("obj-ctrl-repitch", [ox, oy + 128.0, 60.0, 14.0], "Repitch")):
+        for cid, rect in (("obj-ctrl-duckon", [X0 + 10.0, 84.0, 10.0, 10.0]),
+                          ("obj-ctrl-duckthr", [X0 + 10.0, 110.0, 52.0, 13.0]),
+                          ("obj-ctrl-duckrel", [X0 + 66.0, 110.0, 52.0, 13.0]),
+                          ("obj-ctrl-repitch", [X0 + 10.0, 154.0, 10.0, 10.0])):
             b = byid[cid]
             b["presentation"] = 1
             b["presentation_rect"] = rect
             b["hidden"] = 1
-            if text:
-                b["text"] = b["texton"] = text
             opt_ids.append(cid)
-        for i, (text, x) in enumerate((("Threshold", ox), ("Release", ox + 52.0))):
+        for i, (text, x, y, w) in enumerate((("Ducking", X0 + 24.0, 82.0, 80.0), ("Threshold", X0 + 10.0, 97.0, 54.0),
+                                             ("Release", X0 + 66.0, 97.0, 54.0), ("Repitch", X0 + 24.0, 152.0, 60.0))):
             lid = f"obj-echo-lbl-optduck{i}"
-            labels.append(label(lid, text, x, oy + 95.0, 48.0, 13.0, hidden=1))
+            labels.append(label(lid, text, x, y, w, 13.0, hidden=1))
             opt_ids.append(lid)
 
     # ---- Echo's accent lines ----------------------------------------------------------------
@@ -440,7 +445,7 @@ def layout(h):
             extra_boxes.append(h.msgbox(mid, "presentation_rect " + " ".join(f"{v:g}" for v in r), 960 + i * 230, 640 + j * 30, 220))
             extra_lines += [h.line("obj-echo-sel-tab", i, mid, 0), h.line(mid, 0, f"obj-echo-tab-ol-{side}", 0)]
     # page separators inside the display: hairlines in the display's frame colour (a 1 px panel drew 3 px)
-    seps = [("obj-panel-mod-sep", [X0 + 184.0, my, 5.0, 44.0])]
+    seps = [("obj-panel-mod-sep", [X0 + 184.0, my, 5.0, 44.0])] + OPT_SEPS
     if SHOW_CHARACTER:
         seps += [("obj-panel-char-v", [X0 + CW / 2.0 - 2.5, DISP_Y + 4.0, 5.0, 130.0]),
                  ("obj-panel-char-h", [X0 + 4.0, DISP_Y + 66.0, CW - 8.0, 5.0])]
@@ -483,7 +488,7 @@ def layout(h):
              "outs": 1, "keys": ["filtdisp"], "icon": "tri"},
             {"id": "obj-icon-link", "file": "delayplus_icon.js", "rect": [49.0, 24.0, 12.0, 10.0],
              "outs": 1, "keys": ["link"], "icon": "link"},
-            {"id": "obj-clipcurve", "file": "delayplus_clipcurve.js", "rect": [X0 + 150.0, DISP_Y + 8.0, 100.0, 66.0],
+            {"id": "obj-clipcurve", "file": "delayplus_clipcurve.js", "rect": [X0 + 136.0, 20.0, 112.0, 52.0],
              "outs": 1, "hidden": 1, "keys": ["clipmode", "cliplevel"]},
             # Clip LED after the page tabs: red while the Feedback Clip reduces the loop (display only)
             {"id": "obj-clipled", "file": "delayplus_clipled.js", "rect": [TAB_X + TAB_W + 4.0, DISP_TOP + 4.0, 8.0, 8.0],

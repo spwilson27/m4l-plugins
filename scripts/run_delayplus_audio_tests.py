@@ -171,6 +171,14 @@ def cases():
           dur=1700, mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
         c("freeze_mod", "wet 1, moddelay 0.5, lforate 3", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80",
           dur=1700, mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
+        # Repitch glide: the time jumps 100 -> 300 ms at 1000 ms; 100 ms later the tap time (scope 0)
+        # follows the one-pole glide (`repsmooth` ms, default 120) from wherever it was at the jump.
+        c("repitch_fast", "repitch 1, repsmooth 50", dur=600, mode="stepped",
+          events=[(1000, "dev-start", 0, "tmsL 300")]),
+        c("repitch_default", "repitch 1", dur=600, mode="stepped",
+          events=[(1000, "dev-start", 0, "tmsL 300")]),
+        c("repitch_slow", "repitch 1, repsmooth 500", dur=600, mode="stepped",
+          events=[(1000, "dev-start", 0, "tmsL 300")]),
         c("blowup", "tmsL 50, tmsR 50, fb 1.1, clipdry 1, inputdb 12, wet 1", source="kind 2, amp 1.0, pos 100", dur=5000, dump=False),
     )
 
@@ -387,6 +395,20 @@ def check(case, meta, data, errors):
                 errors.append(f"diffuse: echo 2 energy {db(d[3] / r[3]) / 2:+.2f} dB vs undiffused (want within 1.5 dB)")
         elif name == "diffuse":
             errors.append("diffuse: needs diffuse_ref (run both)")
+
+    elif name.startswith("repitch_"):
+        tau = {"repitch_fast": 50.0, "repitch_default": 120.0, "repitch_slow": 500.0}[name]
+        a, b = 0.1 * sr, 0.3 * sr
+        # the glide starts at DSP start from the tap's initial value (History tsL in the Start gen)
+        # and may not have reached 100 ms by the jump at 1000 ms with slow smoothing
+        s0 = 16537.0
+        at_jump = a + (s0 - a) * math.exp(-1000.0 / tau)
+        want = b - (b - at_jump) * math.exp(-100.0 / tau)
+        got = sc[0] if sc else 0
+        print(f"{name}: tap {got:.0f} samples 100 ms after the jump (expected {want:.0f}, smoothing {tau:g} ms)")
+        # the scope is written every 64 samples and the window ends within a vector of 1100 ms
+        if abs(got - want) > 0.04 * (b - a):
+            errors.append(f"{name}: tap {got:.0f}, expected {want:.0f} (+-{0.04 * (b - a):.0f})")
 
     elif name == "drywet":
         # equal power: at 75% the echo / dry ratio is tan(67.5 deg) = +7.66 dB (the old law gave +6.02)
