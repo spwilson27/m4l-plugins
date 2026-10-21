@@ -424,20 +424,15 @@ ok(!log.texts.includes("Curve") && !log.texts.includes("Steps"), "no curve-amoun
 const dets = () => run(`ubDetailRects(ubListGeom(), MM.getMapping(${m1.id}))`);
 const det = (id) => dets().filter((d) => d.id === id)[0];
 ok(!dets().some((d) => d.id.indexOf("curve") === 0 || d.id === "camt" || d.id === "preview"), "old curve buttons / curve amount / fixed preview are gone");
-eq(dets().filter((d) => d.id.indexOf("preset") === 0).length, 5, "five preset buttons");
+eq(dets().filter((d) => d.id.indexOf("preset") === 0).length, 4, "four preset buttons (no Stepped)");
+ok(!det("preset4"), "no Stepped preset in the remap editor");
 ok(det("mseg").rect[2] >= 100 && det("mseg").rect[3] >= 60, "MSEG editor is big enough to edit");
 const shapeOf = () => run(`MM.getMapping(${m1.id}).shape`);
 eq(shapeOf().length, 2, "starts as the linear two-point shape");
-for (const [k, name] of [[1, "Exp"], [2, "Log"], [3, "S"], [4, "Stepped"], [0, "Linear"]]) {
+for (const [k, name] of [[1, "Exp"], [2, "Log"], [3, "S"], [0, "Linear"]]) {
     click(...center(det("preset" + k).rect));
     eq(JSON.stringify(shapeOf()), JSON.stringify(run(`curveToShape(${k}, 0.5, 4)`)), `preset ${name} loads its point set`);
     ok(run(`ubShapeIsPreset(MM.getMapping(${m1.id}), ${k})`), `preset ${name} lights up`);
-}
-click(...center(det("preset4").rect));
-eq(shapeOf().length, 8, "Stepped preset = 4 hard steps (8 points)");
-{
-    const t = run(`mappingTable(Object.assign({}, MM.getMapping(${m1.id}), { range: 1, polarity: 1, mode: 'mod' }))`);
-    eq(new Set(t.map((v) => Math.round(v * 1e6))).size, 4, "stepped table has 4 levels");
 }
 click(...center(det("preset0").rect));
 // MSEG gestures
@@ -1082,7 +1077,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             for (let a = 0; a < ps.length; a++) for (let b = a + 1; b < ps.length; b++) ok(!inter(ps[a].rect, ps[b].rect), `${tag}: ${mode} presets ${a} and ${b} do not overlap`);
             ok(ps.every((d) => d.rect[2] >= 16), `${tag}: ${mode} presets stay at least 16 px wide`);
             ok(Math.abs(ps[0].rect[1] - r[1]) < 1e-6, `${tag}: ${mode} readout is on the presets row`);
-            ok(ps[4].rect[0] + ps[4].rect[2] <= r[0], `${tag}: ${mode} readout starts after the last preset`);
+            ok(ps[ps.length - 1].rect[0] + ps[ps.length - 1].rect[2] <= r[0], `${tag}: ${mode} readout starts after the last preset`);
             ok(Math.abs(r[0] + r[2] - (g.dx + g.dw)) < 1e-6, `${tag}: ${mode} readout is right-aligned to the content edge`);
             ok(r[0] + Q.run(`ubTextW(${JSON.stringify(text)}, 7.5)`) <= g.dx + g.dw + 1e-6, `${tag}: ${mode} text is not truncated`);
         }

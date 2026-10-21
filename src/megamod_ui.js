@@ -359,6 +359,7 @@ const UB_POL_TIPS = {
     "-1": "Negative: output 0 to -range"
 };
 const UB_TAB_W = 40; // MOD / REM tabs: same size in both modes, so a mode switch never moves the tab under the cursor
+const UB_PRESETS = 4; // remap shape presets: CURVE_LINEAR..CURVE_S (the Stepped curve is not offered here)
 const UB_POL_W = 15; // one cell of the polarity control (Mod only, right end of the tab row)
 // The readout's width is FIXED to the widest text it can ever show ("100\u2013100%" in Remote; Mod's "\u00b1100%" is
 // narrower), independent of the mapping and its values, so the presets row never shuffles while values change.
@@ -386,10 +387,10 @@ function ubDetailRects(gm, m) {
     out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, meterH],
         tip: !rem ? "Drag the triangle to set the range (+ and \u2212 keep zero fixed, \u00b1 moves both); double-click = full"
             : "Drag the nearest triangle: filled = max, outline = min (double-click resets it)" });
-    // the five presets shrink evenly to leave the right end of the row for the readout
-    const pbw = (w - ubReadoutW() - 3 - 4 * 2) / 5;
+    // the presets (Linear / Exp / Log / S; no Stepped) share the row, leaving its right end for the readout
+    const pbw = (w - ubReadoutW() - 3 - (UB_PRESETS - 1) * 2) / UB_PRESETS;
     const pstep = pbw + 2;
-    for (let k = 0; k < 5; k++) out.push({ id: "preset" + k, rect: [x + k * pstep, py, pbw, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
+    for (let k = 0; k < UB_PRESETS; k++) out.push({ id: "preset" + k, rect: [x + k * pstep, py, pbw, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
     if (!rem) {
         const px = x + w - 3 * UB_POL_W;
         [1, 0, -1].forEach((p, k) => out.push({ id: "pol" + p, rect: [px + k * UB_POL_W, 36, UB_POL_W, 12], pol: p, tip: UB_POL_TIPS[p] }));
