@@ -31,12 +31,21 @@ function makeEnv() {
     mg.show_text = (t) => { log.texts.push(String(t)); if (log.textCols) log.textCols.push({ t: String(t), col }); };
     mg.text_measure = (t) => [String(t).length * 4, 8];
     const box = { rect: [4, 4, 486, 161], getattr: (k) => box.rect, setattr: (k, ...v) => { box.rect = v; log.boxSet.push(v); } };
-    const patcher = { getnamed: (n) => (n === "obj-viz" ? box : null) };
+    // saved automatable pool objects (ap_<i>, ad_<k>): record messages and echo them straight back like Live does
+    const live = {};
+    const fronted = [];
+    const patcher = { bringtofront: (o) => fronted.push(o.name), getnamed: (n) => {
+        if (n === "obj-viz") return box;
+        if (!((/^ap_\d+$/.test(n) && Number(n.slice(3)) < 96) || (/^at_\d+$/.test(n) && Number(n.slice(3)) < 96) || (/^ad_\d+$/.test(n) && Number(n.slice(3)) < 64) || n === "ap_marker")) return null;
+        if (!live[n]) live[n] = { name: n, attrs: {}, setLog: [], messages: [], value: 0, setattr(k, ...v) { this.attrs[k] = v.length === 1 ? v[0] : v; this.setLog.push([k, ...v]); }, getattr(k) { return this.attrs[k]; }, getvalueof() { return this.value; },
+            message(t, v) { this.messages.push([t, v]); this.value = v; const m = /^(ap|ad|at)_(\d+)$/.exec(n); if (!m) ctx.autom(v); else if (m[1] === "ap") ctx.autop(Number(m[2]), v); else if (m[1] === "at") ctx.autot(Number(m[2]), v); else ctx.autod(Number(m[2]), v); } };
+        return live[n];
+    } };
     const ctx = { mgraphics: mg, console, box, patcher, outlet: (...a) => log.outlets.push(a), notifyclients: () => { log.notify++; }, post() {}, arrayfromargs: (a) => Array.prototype.slice.call(a), inlets: 1, outlets: 2 };
     vm.createContext(ctx);
     const code = execFileSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.ui_script())"], { cwd: ROOT, maxBuffer: 1 << 26 }).toString("utf8");
     vm.runInContext(code, ctx, { filename: "megamod_ui.js" });
-    return { ctx, log, run: (c) => vm.runInContext(c, ctx) };
+    return { ctx, log, live, fronted, run: (c) => vm.runInContext(c, ctx) };
 }
 
 const E = makeEnv();
@@ -1635,6 +1644,14 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         T.run("MM.setUI({ sel: 0 }); ubMapsPop = { slot: 0, scroll: 0 }");
         T.fire.key(27, 27);
         eq(T.run("ubMapsPop"), null, "keys: Esc closes the maps popover");
+        // Max's native onkeydown reports Escape as keycode -3 with textcharacter 27 (measured in Live): it must close, never delete
+        const nm0 = T.run("MM.state.mods.filter(Boolean).length");
+        T.run("MM.setUI({ sel: 0 }); ubPopup = { mode: 'add', slot: -1, x: 20, y: 22 }");
+        T.ctx.onkeydown(-3, 27, 1, 0, 0, 0, 0, 0);
+        eq(T.run("ubPopup"), null, "keys: native Escape (keycode -3, char 27) closes the popup");
+        eq(T.run("MM.state.mods.filter(Boolean).length"), nm0, "keys: native Escape (keycode -3, char 27) does not delete the selected modulator");
+        T.ctx.onkeydown(-3, 27, 1, 0, 0, 0, 0, 0);
+        eq(T.run("MM.state.mods.filter(Boolean).length"), nm0, "keys: native Escape with nothing open does nothing");
     }
 
     // ---- delete + undo round trips without any pill
@@ -2366,5 +2383,382 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     eq(JSON.stringify([pr2.bar, pr2.val]), JSON.stringify([pr.bar, pr.val]), "bar and value columns do not move between Mod and Remote");
     E3.run("paint()");
     E3.run(`MM.updateMapping(${mm.id}, { mode: "mod" }); ubMapsPop = null;`);
+}
+
+// ---------------------------------------------------------------- automatable parameters + per-mapping depth (UI side)
+{
+    // the pool's value curve is the UI knob curve, for every control of every type
+    const K = makeEnv();
+    for (const t of [1, 2, 3, 4, 5]) {
+        for (const sync of [0, 1]) {
+            K.run(`(function () { const m = makeModSlot(${t}, 0); m.p.sync = ${sync}; globalThis.__m = m; })()`);
+            const specs = K.run("ubKnobs(__m)");
+            for (let j = 0; j < specs.length; j++) {
+                const sp = K.run(`ubKnobs(__m)[${j}]`);
+                const keys = K.run(`AUTO_KEYS[${t}]`);
+                ok(keys.indexOf(sp.key) >= 0, `type ${t} sync ${sync}: knob ${sp.key} is in the automatable pool`);
+                for (const n of [0, 0.25, 0.5, 0.8, 1]) {
+                    const v = K.run(`ubKnobValue(ubKnobs(__m)[${j}], ${n})`);
+                    const a = K.run(`autoValue(${JSON.stringify(sp.key)}, ${n})`);
+                    const isInt = K.run(`MOD_PARAM_RANGE[${JSON.stringify(sp.key)}][2]`);
+                    near(isInt ? Math.round(v) : v, a, 1e-9 * Math.max(1, Math.abs(a)), `${sp.key}: pool value curve == knob curve at ${n}`);
+                }
+                near(K.run(`ubKnobNorm(ubKnobs(__m)[${j}], ${v0(sp)})`), K.run(`autoNorm(${JSON.stringify(sp.key)}, ${v0(sp)})`), 1e-9, `${sp.key}: norm curve`);
+            }
+        }
+    }
+    function v0(sp) { return sp.key === "rate" ? 3.3 : sp.key === "attack" ? 20 : sp.key === "release" ? 400 : sp.lo + (sp.hi - sp.lo) * 0.37; }
+
+    // strip knob drag -> live parameter output; Live input -> model + redraw, no echo loop
+    const E4 = makeEnv();
+    const c4 = (x, y) => E4.ctx.onclick(x, y, 1, 0, 0, 0, 0, 0);
+    const d4 = (x, y) => E4.ctx.ondrag(x, y, 1, 0, 0, 0, 0, 0);
+    const r4 = () => E4.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+    E4.ctx.uiReady && E4.ctx.uiReady();
+    E4.ctx.setnames("---megamodcfg", "---megamodmseg", "---megamodsteps", "---megamodscope", "---mmcurve", "---megamodroute");
+    E4.ctx.init_lom();
+    E4.run("ubAddType(MOD_LFO); ubAddType(MOD_ENV)");
+    near(E4.live.ap_0.value, 100 * E4.run("autoNorm('rate', 1)"), 1e-9, "UI add pushes the LFO Rate value into M1 A");
+    near(E4.live.ap_6.value, 100 * E4.run("autoNorm('attack', 5)"), 1e-9, "second strip: Envelope Attack goes to M2 A");
+    ok(Object.keys(E4.live).every((n) => Object.keys(E4.live[n].attrs).every((a) => a === "presentation_rect" || a === "hidden")), "no parameter is ever renamed (Live ignores runtime renames); only the faces move");
+    // tooltips tell which Live parameter a control is
+    {
+        E4.run("MM.setUI({ pb: 0, opt: 0, exp: -1 }); ubSyncWidth(true)");
+        const r0 = E4.run("ubStripRects(ubStrips().list[0])");
+        const tipAt = (r) => E4.run(`ubHit(${center(r)[0]}, ${center(r)[1]}).tip`);
+        ok(tipAt(r0.knobs[0].hit).indexOf("Live: M1 B") > 0, "LFO knob 0 (synced: Div) tooltip names M1 B: " + tipAt(r0.knobs[0].hit));
+        ok(tipAt(r0.icon).indexOf("Live: M1 On") > 0, "enable button tooltip names M1 On");
+        const r1 = E4.run("ubStripRects(ubStrips().list[1])");
+        ok(tipAt(r1.knobs[1].hit).indexOf("Live: M2 B") > 0, "Envelope knob 1 (Release) tooltip names M2 B: " + tipAt(r1.knobs[1].hit));
+    }
+    E4.run("MM.setParam(0, 'sync', 0)"); // free-running: knob 0 is Rate (synced it is Div)
+    const k0 = E4.run("ubStripRects(ubStrips().list[0]).knobs[0]");
+    eq(k0.spec.key, "rate", "knob 0 is the rate");
+    const n0 = E4.live.ap_0.messages.length;
+    const kc = center(k0.hit);
+    c4(kc[0], kc[1]);
+    d4(kc[0], kc[1] - 20);
+    r4();
+    ok(E4.live.ap_0.messages.length > n0, "knob drag messages the live parameter");
+    near(E4.live.ap_0.value, 100 * E4.run("autoNorm('rate', MM.state.mods[0].p.rate)"), 1e-6, "the live value follows the knob (same curve)");
+    ok(E4.live.ap_0.messages.every((m) => m[0] === "float"), "always a float message (Live records it), never `set`");
+    ok(E4.live.ap_0.messages.length - n0 <= 3, "no echo storm: one message per drag frame");
+    const rate = E4.run("MM.state.mods[0].p.rate");
+    E4.live.ap_0.value = 100 * 0.9; // (what Live holds when it outputs the value)
+    E4.ctx.autop(0, 100 * 0.9);
+    near(E4.run("MM.state.mods[0].p.rate"), E4.run("autoValue('rate', 0.9)"), 1e-9, "Live parameter input moves the model (and the knob)");
+    // expanded editor controls: the shape chip pushes the Shape parameter
+    E4.run("MM.setParam(0, 'shape', 3)");
+    eq(E4.live.at_0.value, 3, "the LFO shape chip pushes the Shape switch parameter (M1 Shape)");
+
+    // depth pill in the remap editor
+    E4.run("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 3', paramName: 'Frequency', trackName: 'T', deviceName: 'D', id: 5 })");
+    const mid = E4.run("MM.allMappings()[0].id");
+    E4.run(`ubSelect(0); MM.setUI({ pb: 1, pbSel: ${mid} }); ubSyncWidth(true)`);
+    E4.run("paint()");
+    ok(E4.live.ad_0.messages.length > 0, "the mapping's depth parameter (Depth 1) was pushed");
+    const dp = () => E4.run(`ubDetailRects(ubListGeom(), MM.getMapping(${mid})).filter((d) => d.id === "depth")[0]`);
+    ok(dp(), "depth pill exists in the remap editor");
+    for (const mode of ["mod", "remote"]) {
+        E4.run(`MM.updateMapping(${mid}, { mode: "${mode}" })`);
+        const rs = E4.run(`ubDetailRects(ubListGeom(), MM.getMapping(${mid}))`);
+        const d = rs.filter((x) => x.id === "depth")[0];
+        const g = E4.run("ubListGeom()");
+        ok(d.rect[0] >= g.dx && d.rect[0] + d.rect[2] <= g.dx + g.dw + 1e-6, `${mode}: depth pill inside the panel`);
+        const nameEnd = g.dx + 9 + E4.run(`ubTextW(ubFit(MM.state.mods[0].name, ${g.dw - 10} - ubDepthW() - 3, 7), 7)`);
+        ok(nameEnd <= d.rect[0] + 0.01, `${mode}: the modulator name stops before the depth pill`);
+        for (const o of rs) if (o.id !== "depth") ok(!(d.rect[0] < o.rect[0] + o.rect[2] && o.rect[0] < d.rect[0] + d.rect[2] && d.rect[1] < o.rect[1] + o.rect[3] && o.rect[1] < d.rect[1] + d.rect[3]), `${mode}: depth pill does not overlap ${o.id}`);
+        E4.log.texts.length = 0; E4.run("paint()");
+        ok(E4.log.texts.includes("Depth 100%"), `${mode}: pill reads Depth 100%`);
+    }
+    const r = dp().rect;
+    const cx = r[0] + r[2] / 2, cy = r[1] + r[3] / 2;
+    eq(E4.run(`ubHit(${cx}, ${cy}).kind`), "detail", "pill is a detail hit");
+    eq(E4.run(`ubHit(${cx}, ${cy}).id`), "depth", "pill hit id");
+    c4(cx, cy);
+    d4(cx - 25, cy);
+    near(E4.run(`MM.getMapping(${mid}).depth`), 0.5, 1e-9, "dragging left 25 px = -50%");
+    near(E4.live.ad_0.value, 50, 1e-6, "drag pushes the depth parameter");
+    d4(cx - 500, cy);
+    eq(E4.run(`MM.getMapping(${mid}).depth`), 0, "drag clamps at 0");
+    d4(cx + 500, cy);
+    eq(E4.run(`MM.getMapping(${mid}).depth`), 1, "drag clamps at 100%");
+    d4(cx - 10, cy);
+    r4();
+    E4.log.texts.length = 0; E4.run("paint()");
+    ok(E4.log.texts.includes("Depth 80%"), "pill shows the new value");
+    E4.live.ad_0.value = 33;
+    E4.ctx.autod(0, 33);
+    near(E4.run(`MM.getMapping(${mid}).depth`), 0.33, 1e-9, "Live depth input moves the UI value");
+    E4.log.texts.length = 0; E4.run("paint()");
+    ok(E4.log.texts.includes("Depth 33%"), "and redraws the pill");
+    E4.ctx.ondblclick(cx, cy, 1, 0, 0, 0, 0, 0);
+    eq(E4.run(`MM.getMapping(${mid}).depth`), 1, "double-click resets to 100%");
+    E4.ctx.onwheel(cx, cy, 0, -1);
+    eq(E4.run(`MM.getMapping(${mid}).depth`), 1, "wheel up clamps at 100%");
+    E4.ctx.onwheel(cx, cy, 0, 1);
+    near(E4.run(`MM.getMapping(${mid}).depth`), 0.95, 1e-9, "wheel down = -5%");
+    // delete modulator via the UI path re-names the parameters
+    E4.run("ubDeleteMod(0)");
+    near(E4.live.ad_0.value, 100, 1e-9, "deleting a modulator frees its depth parameter (back to 100%)");
+    E4.run("MM.undo()");
+    near(E4.live.ap_0.value, 100 * E4.run("autoNorm('rate', MM.state.mods[0].p.rate)"), 1e-6, "undo (UI path) re-applies the modulator values");
+    near(E4.live.ad_0.value, 95, 1e-6, "and the depth value");
+}
+
+// ---------------------------------------------------------------- parameter faces (transparent live.* objects over the drawn controls)
+{
+    const F = makeEnv();
+    F.ctx.uiReady && F.ctx.uiReady();
+    F.ctx.setnames("---megamodcfg", "---megamodmseg", "---megamodsteps", "---megamodscope", "---mmcurve", "---megamodroute");
+    F.ctx.init_lom();
+    const fr = (c) => F.run(c);
+    const shown = () => fr("MM.faceState().shown");
+    const setLen = () => Object.values(F.live).reduce((a, o) => a + o.setLog.length, 0);
+    const inter = (a, b) => a[0] < b[0] + b[2] - 1e-6 && b[0] < a[0] + a[2] - 1e-6 && a[1] < b[1] + b[3] - 1e-6 && b[1] < a[1] + a[3] - 1e-6;
+    const lim = () => fr("ubFaceLimit()");
+    // every control of a strip layout that is NOT its own face's control must stay clear of the face
+    const others = (R, own) => {
+        const all = [["count", R.count], ["name", R.name], ["type", R.type], ["del", R.del], ["collapse", R.collapse], ["viz", R.viz], ["icon", R.icon]]
+            .concat(R.chips.map((c) => ["chip " + c.id, c.rect]), R.knobs.map((k, i) => ["knob " + i, k.hit]));
+        return all.filter(([n, r]) => r && !own.some((o) => o === r));
+    };
+    // checks one layout: `expect` = {varname: {rect, own, R}}; every other pool object hidden / parked; faces are exactly those rects
+    function checkView(label, expect) {
+        fr("paint()");
+        const got = shown();
+        eq(Object.keys(got).sort(), Object.keys(expect).sort(), `${label}: exactly the expected faces are shown (none dropped)`);
+        const origin = fr("MM.faceState().origin");
+        eq(origin, [4, 4], `${label}: faces are placed relative to the v8ui's presentation origin`);
+        const rects = [];
+        for (const [k, e] of Object.entries(expect)) {
+            const r = e.rect;
+            const o = F.live[k];
+            ok(o, `${label}: ${k} exists`);
+            const pr = o.attrs.presentation_rect;
+            eq(o.attrs.hidden, 0, `${label}: ${k} unhidden`);
+            for (let i = 0; i < 4; i++) near(pr[i], r[i] + (i < 2 ? 4 : 0), 0.011, `${label}: ${k} rect[${i}] = the control's rect`);
+            ok(pr[0] >= 4 - 1e-6 && pr[1] >= 4 - 1e-6 && pr[0] + pr[2] <= 4 + lim() + 1e-6 && pr[1] + pr[3] <= 169 - 4 + 1e-6, `${label}: ${k} inside the device (${pr})`);
+            rects.push([k, pr]);
+            const lr = [pr[0] - 4, pr[1] - 4, pr[2], pr[3]];
+            // a face covers only its own control: no other control of its strip is touched
+            if (e.R) for (const [cn, c] of others(e.R, e.own)) ok(!inter(lr, c), `${label}: ${k} does not cover ${cn} (${c})`);
+        }
+        for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++) ok(!inter(rects[a][1], rects[b][1]), `${label}: ${rects[a][0]} and ${rects[b][0]} do not overlap`);
+        for (const [n, o] of Object.entries(F.live)) if (!expect[n] && /^a[pdt]_\d+$/.test(n)) ok(o.attrs.hidden === undefined || o.attrs.hidden === 1, `${label}: ${n} stays hidden`);
+    }
+    // the faces of one strip, derived independently of ubStripFaces: the power face, a 27 x 28 dial centred on each knob, a live.text on
+    // every chip and one live.tab over the five shape chips
+    const stripFaces = (slot, g0) => {
+        const g = g0 || fr(`ubStrips().list.filter((g) => g.slot === ${slot})[0]`);
+        const R = fr(`ubStripRects(${JSON.stringify(g)})`);
+        const type = fr(`MM.state.mods[${slot}].type`);
+        const keys = fr(`AUTO_KEYS[${type}]`);
+        const swKeys = fr("AUTO_SW_KEYS");
+        const out = {};
+        out["ap_" + (slot * 6 + 5)] = { rect: R.pwrFace, own: [R.icon], R };
+        for (const k of R.knobs) {
+            const j = keys.indexOf(k.spec.key);
+            ok(j >= 0, `type ${type}: knob ${k.spec.key} has a generic parameter`);
+            out["ap_" + (slot * 6 + j)] = { rect: [Math.round(k.cx - 13.5), Math.round(k.cy - 14), 27, 28], own: [k.hit], R };
+        }
+        const shapes = R.chips.filter((c) => c.key === "shape");
+        if (shapes.length) {
+            const a = shapes[0].rect, z = shapes[shapes.length - 1].rect;
+            out["at_" + (slot * 6 + swKeys.indexOf("shape"))] = { rect: [a[0], a[1], z[0] + z[2] - a[0], a[3]], own: shapes.map((c) => c.rect), R };
+        }
+        for (const c of R.chips) if (c.key !== "shape") out["at_" + (slot * 6 + swKeys.indexOf(c.key))] = { rect: c.rect, own: [c.rect], R };
+        return out;
+    };
+    fr("ubAddType(MOD_LFO); ubAddType(MOD_ENV); ubAddType(MOD_RANDOM)");
+    fr("MM.setUI({ pb: 0, opt: 0, exp: -1, sel: 0 }); ubSyncWidth(true)");
+    // 1. strips, all collapsed
+    checkView("collapsed strips", Object.assign({}, stripFaces(0), stripFaces(1), stripFaces(2)));
+    eq(Object.keys(shown()).length, 3 * 3, "3 strips x (enable + 2 knobs) = 9 faces");
+    // the faces follow the visible control: synced LFO shows Div (M1 B), not Rate (M1 A)
+    fr("MM.setParam(0, 'sync', 1)");
+    checkView("LFO synced shows Div", Object.assign({}, stripFaces(0), stripFaces(1), stripFaces(2)));
+    ok(shown().ap_1 && !shown().ap_0, "synced LFO: the knob face is M1 B (Div), not M1 A (Rate)");
+    fr("MM.setParam(0, 'sync', 0)");
+    fr("paint()");
+    ok(shown().ap_0 && !shown().ap_1, "free LFO: M1 A (Rate)");
+    ok(Object.keys(shown()).every((k) => F.fronted.indexOf(k) >= 0), "every face is brought to the front when it is first shown (Live loads obj-viz last in z-order)");
+    // 2. unchanged repaint touches nothing (cache)
+    fr("paint()");
+    const n0 = setLen();
+    for (let i = 0; i < 5; i++) fr("paint()");
+    eq(setLen(), n0, "repainting an unchanged layout makes no setattr call");
+    // a value change (knob drag) does not move a face either
+    fr("MM.setParam(0, 'rate', 7)");
+    fr("paint()");
+    eq(setLen(), n0, "a value change makes no setattr call");
+    // 3. expand a strip: its knobs move, the others keep their faces without setattr
+    fr("ubSetExpanded(1)");
+    checkView("strip 2 expanded", Object.assign({}, stripFaces(0), stripFaces(1), stripFaces(2)));
+    eq(Object.keys(shown()).length, 3 + 6 + 3, "faces: collapsed strips 3 + 3, the expanded Envelope 1 + 4 knobs + Bipolar = 6 (no face dropped)");
+    // 4. a type change retargets the knob faces (Envelope A..D -> Random: Rate/Smooth/Depth/Seed)
+    fr("MM.setModType(1, MOD_RANDOM)");
+    checkView("strip 2 retyped Random", Object.assign({}, stripFaces(0), stripFaces(1), stripFaces(2)));
+    fr("MM.setModType(1, MOD_ENV)");
+    // 5. deleting a strip hides its faces
+    fr("ubSetExpanded(-1)");
+    fr("ubDeleteMod(2)"); fr("ubDeleteMod(2)");
+    fr("paint()");
+    ok(!Object.keys(shown()).some((k) => /^ap_1[2-7]$/.test(k)), "a deleted modulator's faces are hidden");
+    ok(F.live.ap_12.attrs.hidden === 1 || F.live.ap_12.attrs.hidden === undefined, "...and parked");
+    fr("MM.undo()");
+    // 6. popups: type popup and maps popover hide every face
+    fr("ubSetExpanded(0)");
+    fr("ubPopup = { mode: 'type', slot: 0, x: 40, y: 18 }");
+    fr("paint()");
+    eq(Object.keys(shown()).length, 0, "type popup open: every face hidden");
+    for (const o of Object.values(F.live)) ok(o.attrs.hidden === undefined || o.attrs.hidden === 1, `popup: ${o.name} hidden`);
+    fr("ubPopup = null; ubMapsPop = { slot: 0, scroll: 0 }");
+    fr("paint()");
+    eq(Object.keys(shown()).length, 0, "maps popover open: every face hidden");
+    fr("ubMapsPop = null");
+    fr("paint()");
+    ok(Object.keys(shown()).length > 0, "faces return when the popover closes");
+    // 7. Options view: no parameters, no faces
+    fr("MM.setUI({ opt: 1, pb: 0 }); ubSyncWidth(true)");
+    fr("paint()");
+    eq(Object.keys(shown()).length, 0, "Options view: no faces");
+    fr("MM.setUI({ opt: 0 })");
+    // 8. LST inspector: tabs have no faces; the fixed editor gets enable + knobs; the selected mapping's depth pill gets Depth <slot>
+    const tgt = (par) => ({ path: "live_set tracks 2 devices 0 parameters " + (par === "Freq" ? 3 : 4), trackName: "T", deviceName: "D", paramName: par });
+    const mA = fr(`MM.addMapping(0, ${JSON.stringify(tgt("Freq"))}).id`);
+    const mB = fr(`MM.addMapping(0, ${JSON.stringify(tgt("Reso"))}).id`);
+    fr("MM.setUI({ pb: 1, opt: 0, sel: 0, exp: -1 }); ubSyncWidth(true)");
+    {
+        const sl = fr(`MM.mappingSlot(${mA})`);
+        fr(`MM.setUI({ pbSel: ${mA} })`);
+        const exp = stripFaces(0, fr("ubStrips().main"));
+        const d = fr("ubDetailRects(ubListGeom(), ubPbSelMapping()).filter((x) => x.id === 'depth')[0].face");
+        exp["ad_" + sl] = { rect: d, own: [] };
+        checkView("LST view", exp);
+        // the selected mapping changes: the depth face follows its pool slot
+        fr(`MM.setUI({ pbSel: ${mB} })`);
+        const sl2 = fr(`MM.mappingSlot(${mB})`);
+        const d2 = fr("ubDetailRects(ubListGeom(), ubPbSelMapping()).filter((x) => x.id === 'depth')[0].face");
+        exp["ad_" + sl2] = { rect: d2, own: [] };
+        delete exp["ad_" + sl];
+        checkView("LST view, other mapping", exp);
+        ok(F.live["ad_" + sl].attrs.hidden === 1, "the previous depth face is hidden again");
+        // the face rect is exactly the Depth pill (Live right-click -> Depth <slot + 1>)
+        eq(F.run(`autoDepthName(${sl2})`), "Depth " + (sl2 + 1), "the depth face is the mapping's Live parameter");
+    }
+    // 9. LST + many modulators: the device clamps at 1600 px; no face leaves it
+    fr("MM.setUI({ pb: 0 })");
+    for (let i = 3; i < 16; i++) fr("ubAddType(MOD_LFO)");
+    fr("MM.setUI({ exp: -1, sel: 0 }); ubSyncWidth(true)");
+    fr("paint()");
+    for (const [k, r] of Object.entries(shown())) {
+        const pr = F.live[k].attrs.presentation_rect;
+        ok(pr[0] + pr[2] <= 4 + lim() + 1e-6, `16 strips: ${k} inside the device width`);
+    }
+    // 9b. every control of the expanded editor of every type has a visible face (knobs, chips, shape tab, enable), faces never overlap
+    //     each other or another control, and the face geometry does not depend on any value
+    fr("MM.setUI({ pb: 0, opt: 0, exp: -1, sel: 0 }); ubSyncWidth(true)");
+    for (let i = fr("MM.state.mods.filter(Boolean).length") - 1; i >= 0; i--) fr(`MM.removeModulator(${i})`);
+    fr("ubAddType(MOD_LFO)");
+    const shownRects = () => Object.fromEntries(Object.keys(shown()).map((k) => { const r = F.live[k].attrs.presentation_rect; return [k, [r[0] - 4, r[1] - 4, r[2], r[3]]]; }));
+    const faceRects = () => JSON.stringify(Object.values(shownRects()).sort((a, b) => a.join().localeCompare(b.join())));
+    const covered = (slot, view) => {
+        const R = fr(`ubStripRects(ubStrips().list.filter((g) => g.slot === ${slot})[0])`);
+        const sh = shownRects();
+        const has = (c) => Object.keys(sh).some((k) => { const r = sh[k]; return c[0] >= r[0] && c[0] <= r[0] + r[2] && c[1] >= r[1] && c[1] <= r[1] + r[3]; });
+        ok(has([R.icon[0] + R.icon[2] / 2, R.icon[1] + R.icon[3] / 2]), `${view}: the enable glyph has a face`);
+        for (const k of R.knobs) ok(has([k.cx, k.cy]), `${view}: knob ${k.spec.key} has a face on the knob`);
+        for (const c of R.chips) ok(has([c.rect[0] + c.rect[2] / 2, c.rect[1] + c.rect[3] / 2]), `${view}: chip ${c.id} has a face`);
+        return R;
+    };
+    const SW = { sync: "sync", bip: "bipolar", osh: "oneshot", loop: "loopOn", rtg: "retrig" };
+    const TYPE_NAMES = ["", "LFO", "Envelope", "Random", "Steps", "MSEG"];
+    for (let t = 1; t <= 5; t++) {
+        fr(`MM.setModType(0, ${t})`);
+        fr("MM.setUI({ exp: 0, sel: 0 }); ubSyncWidth(true)");
+        const label = `${TYPE_NAMES[t]} expanded`;
+        checkView(label, stripFaces(0));
+        const R = covered(0, label);
+        const nKnobs = R.knobs.length;
+        const nSw = R.chips.filter((c) => c.key !== "shape").length + (R.chips.some((c) => c.key === "shape") ? 1 : 0);
+        eq(Object.keys(shown()).length, 1 + nKnobs + nSw, `${label}: faces = enable + ${nKnobs} knobs + ${nSw} switches`);
+        // all numeric keys of the type have a generic parameter, every chip a switch parameter of the same type
+        const keys = fr(`AUTO_KEYS[${t}]`);
+        for (const k of R.knobs) ok(keys.indexOf(k.spec.key) >= 0, `${label}: ${k.spec.key} has a generic parameter`);
+        for (const c of R.chips) ok(fr(`autoSwitchIndex(${t}, ${JSON.stringify(c.key)})`) >= 0, `${label}: chip ${c.id} has a switch parameter`);
+        // geometry does not depend on the value: every numeric control at its minimum and at its maximum, every boolean 0 / 1
+        const setAll = (hi) => {
+            for (const key of Object.keys(fr("MOD_PARAM_RANGE"))) {
+                if (key === "enabled") continue;
+                const rg = fr(`MOD_PARAM_RANGE[${JSON.stringify(key)}]`);
+                fr(`MM.setParam(0, ${JSON.stringify(key)}, ${hi ? rg[1] : rg[0]})`);
+            }
+            fr("paint()");
+        };
+        setAll(false);
+        const lo = faceRects();
+        const keysLo = Object.keys(shown()).sort().join();
+        setAll(true);
+        const hi = faceRects();
+        eq(hi, lo, `${label}: the face rects are the same at value 0 and at value 1`);
+        ok(Object.keys(shown()).length === 1 + nKnobs + nSw, `${label}: still one face per control at the other extreme`);
+        // (the shown parameter of the rate knob may switch between Rate and Div, the rect does not)
+        ok(typeof keysLo === "string", `${label}: faces at value 0 listed`);
+        fr(`MM.setModType(0, ${t})`);
+    }
+    // faces never change while the knobs / chips are dragged: same setattr count over a drag
+    {
+        fr("MM.setModType(0, MOD_LFO); MM.setParam(0, 'sync', 0)");
+        fr("MM.setUI({ exp: 0, sel: 0 }); ubSyncWidth(true)");
+        fr("paint()");
+        const R = fr("ubStripRects(ubStrips().list[0])");
+        const n1 = setLen();
+        const kc = [R.knobs[0].cx, R.knobs[0].cy];
+        F.ctx.onclick(kc[0], kc[1], 1, 0, 0, 0, 0, 0);
+        for (let dy = 1; dy <= 6; dy++) F.ctx.ondrag(kc[0], kc[1] - 4 * dy, 1, 0, 0, 0, 0, 0);
+        F.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+        fr("paint()");
+        eq(setLen(), n1, "a knob drag changes no face rect or visibility (the dot cannot move with the value)");
+    }
+    // 9c. toggles sync both ways (UI chip click <-> switch parameter <-> model), automation never pushes undo or dirties the Set
+    {
+        fr("MM.setModType(0, MOD_MSEG)");
+        fr("MM.setUI({ exp: 0, sel: 0 }); ubSyncWidth(true)");
+        fr("paint()");
+        const R = fr("ubStripRects(ubStrips().list[0])");
+        const swKeys = fr("AUTO_SW_KEYS");
+        for (const c of R.chips) {
+            const key = c.key;
+            const obj = F.live["at_" + swKeys.indexOf(key)];
+            const before = fr(`MM.state.mods[0].p.${key}`);
+            const undo0 = fr("MM.undoInfo().undo");
+            // chip click in the v8ui -> model -> switch parameter (messaged)
+            const m0 = obj.messages.length;
+            F.ctx.onclick(c.rect[0] + c.rect[2] / 2, c.rect[1] + c.rect[3] / 2, 1, 0, 0, 0, 0, 0);
+            F.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+            eq(fr(`MM.state.mods[0].p.${key}`), 1 - before, `${c.id}: a chip click flips the model`);
+            eq(obj.value, 1 - before, `${c.id}: ...and the switch parameter (M1 ${fr("AUTO_SW_NAMES")[swKeys.indexOf(key)]})`);
+            ok(obj.messages.length > m0 && obj.messages.every((m) => m[0] === "float"), `${c.id}: messaged as a float`);
+            // automation / macro -> model + redraw, no undo entry, no dirty
+            const notify0 = F.log.notify;
+            const undoInfo = fr("MM.undoInfo()");
+            obj.value = before; F.ctx.autot(swKeys.indexOf(key), before);
+            eq(fr(`MM.state.mods[0].p.${key}`), before, `${c.id}: automation flips the model back`);
+            deq(fr("MM.undoInfo()"), undoInfo, `${c.id}: automation does not push undo`);
+            eq(F.log.notify, notify0, `${c.id}: automation does not dirty the Set`);
+            F.log.texts.length = 0; fr("paint()");
+            const on = fr(`ubChips(MM.state.mods[0]).filter((q) => q.id === ${JSON.stringify(c.id)})[0].on`);
+            eq(on, !!before, `${c.id}: the chip is drawn from the model`);
+        }
+    }
+    function deq(a, b, m) { eq(a, b, m); }
+
+    // 10. before the pool is live (no ready), nothing is shown
+    const G = makeEnv();
+    G.run("ubAddType(MOD_LFO)");
+    G.run("paint()");
+    eq(G.run("Object.keys(MM.faceState().shown).length"), 0, "before ready (pool not live) no face is shown");
+    eq(Object.values(G.live).reduce((a, o) => a + o.setLog.length, 0), 0, "...and nothing is touched");
 }
 console.log(`megamod UI tests passed (${passed} checks)`);

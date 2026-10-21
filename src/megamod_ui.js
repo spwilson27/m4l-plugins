@@ -12,6 +12,8 @@ const UB_RAIL = 20;
 const UB_GAP = 2;
 const UB_H = 161; // usable height (169 - 2 * 4 margin)
 const UB_TAB_COL = 24; // inspector: tab column width
+const UB_DIAL_W = 27; // a live.dial face: Live forces 27 x 28 (measured in the VM), so a knob's face is exactly this box centred on the knob
+const UB_DIAL_H = 28;
 const UB_PAD_B = 6; // bottom padding of the chips inside a panel
 const UB_STRIP = 56;
 const UB_EXP = 204;
@@ -291,12 +293,12 @@ function ubKnobValue(spec, n) {
 function ubChips(mod) {
     const p = mod.p;
     const chips = [];
-    if (mod.type === MOD_LFO) for (let s = 0; s < 5; s++) chips.push({ id: "shape" + s, w: 16, glyph: s, on: Math.round(p.shape) === s, tip: LFO_SHAPES[s] });
-    if (mod.type !== MOD_ENV) chips.push({ id: "sync", w: 30, label: "SYNC", on: !!p.sync, tip: "Tempo sync" });
-    chips.push({ id: "bip", w: 28, label: "BIP", on: !!p.bipolar, tip: "Bipolar output" });
-    if (mod.type === MOD_STEPS || mod.type === MOD_MSEG) chips.push({ id: "osh", w: 28, label: "1SH", on: !!p.oneshot, tip: "One shot" });
-    if (mod.type === MOD_MSEG) chips.push({ id: "loop", w: 30, label: "LOOP", on: !!p.loopOn, tip: "Loop window" });
-    if (mod.type !== MOD_ENV) chips.push({ id: "rtg", w: 28, label: "RTG", on: !!p.retrig, tip: "Retrigger on transport start" });
+    if (mod.type === MOD_LFO) for (let s = 0; s < 5; s++) chips.push({ id: "shape" + s, key: "shape", w: 16, glyph: s, on: Math.round(p.shape) === s, tip: LFO_SHAPES[s] });
+    if (mod.type !== MOD_ENV) chips.push({ id: "sync", key: "sync", w: 30, label: "SYNC", on: !!p.sync, tip: "Tempo sync" });
+    chips.push({ id: "bip", key: "bipolar", w: 28, label: "BIP", on: !!p.bipolar, tip: "Bipolar output" });
+    if (mod.type === MOD_STEPS || mod.type === MOD_MSEG) chips.push({ id: "osh", key: "oneshot", w: 28, label: "1SH", on: !!p.oneshot, tip: "One shot" });
+    if (mod.type === MOD_MSEG) chips.push({ id: "loop", key: "loopOn", w: 30, label: "LOOP", on: !!p.loopOn, tip: "Loop window" });
+    if (mod.type !== MOD_ENV) chips.push({ id: "rtg", key: "retrig", w: 28, label: "RTG", on: !!p.retrig, tip: "Retrigger on transport start" });
     return chips;
 }
 
@@ -304,14 +306,15 @@ function ubStripRects(g) {
     const mod = MM.state.mods[g.slot];
     const x = g.x;
     const w = g.w;
-    const R = { g, head: [x, 0, w, 17], icon: [x + 2, 2, 14, 13], knobs: [], chips: [] };
+    const R = { g, head: [x, 0, w, 17], icon: [x + 2, 2, 14, 13], pwrFace: [x, 0, 17, 17], knobs: [], chips: [] };
     const specs = ubKnobs(mod);
     if (!g.exp) {
         R.name = [x + 17, 0, w - 19, 17];
         R.viz = [x + 4, 19, w - 8, 66];
+        // two 27 px dial faces side by side (x + 1 .. x + 55 of the 56 px strip); the value text and the label sit below the face box
         for (let k = 0; k < 2; k++) {
-            const cx = x + 17 + 22 * k;
-            R.knobs.push({ spec: specs[k], cx, cy: 103, r: 8, hit: [cx - 11, 92, 22, 43], valY: 123, labY: 132 });
+            const cx = x + 14.5 + UB_DIAL_W * k;
+            R.knobs.push({ spec: specs[k], cx, cy: 102, r: 8, hit: [x + 1 + UB_DIAL_W * k, 88, UB_DIAL_W, 54], valY: 124, labY: 133 });
         }
         R.count = [x + 4, 143, 48, 12];
     } else {
@@ -319,16 +322,17 @@ function ubStripRects(g) {
         R.type = [x + w - 36 - 46, 2, 44, 13];
         R.del = [x + w - 36, 1, 16, 15];
         R.collapse = [x + w - 19, 1, 16, 15]; // strips view: collapse in place; LST view: back to the strips
-        R.viz = [x + 4, 18, w - 8, 66];
+        R.viz = [x + 4, 18, w - 8, 62];
         let cxp = x + 4;
         for (const c of ubChips(mod)) {
-            R.chips.push(Object.assign({ rect: [cxp, 87, c.w, 12] }, c));
+            R.chips.push(Object.assign({ rect: [cxp, 82, c.w, 12] }, c));
             cxp += c.w + 3;
         }
+        // the dial face is 28 px tall: knob row at y = 95..123, value text and label below it, the count chip at 143
         const step = Math.min(46, (w - 8) / specs.length);
         for (let k = 0; k < specs.length; k++) {
             const cx = x + 4 + step * (k + 0.5);
-            R.knobs.push({ spec: specs[k], cx, cy: 109, r: 8, hit: [cx - step / 2, 100, step, 42], valY: 127, labY: 136 });
+            R.knobs.push({ spec: specs[k], cx, cy: 109, r: 8, hit: [cx - step / 2, 95, step, 46], valY: 131, labY: 140 });
         }
         R.count = [x + w / 2 - 30, 143, 60, 12];
     }
@@ -478,6 +482,18 @@ const UB_POL_W = 15; // one cell of the polarity control (Mod only, right end of
 // The readout's width is FIXED to the widest text it can ever show ("100\u2013100%" in Remote; Mod's "\u00b1100%" is
 // narrower), independent of the mapping and its values, so the presets row never shuffles while values change.
 const UB_READOUT_SIZE = 7.5;
+const UB_DEPTH_SIZE = 7; // the per-mapping Depth pill, right end of the name line of the remap editor
+function ubDepthW() {
+    return Math.ceil(ubTextW("Depth 100%", UB_DEPTH_SIZE)) + 14; // 7 px of padding each side (a numbox face's automation dot sits at its edge)
+}
+// " | Live: Depth 5" for a mapping in one of the first AUTO_DEPTH_SLOTS pool slots (its automatable parameter), else a hint that it has none
+function ubDepthLiveTip(m) {
+    const k = MM.mappingSlot(m.id);
+    return k >= 0 && k < AUTO_DEPTH_SLOTS ? " | Live: " + autoDepthName(k) : " | no Live parameter (pool slot " + (AUTO_DEPTH_SLOTS + 1) + "+)";
+}
+function ubDepthText(m) {
+    return "Depth " + Math.round(clamp(num(m.depth, 1), 0, 1) * 100) + "%";
+}
 function ubReadoutW() {
     return Math.ceil(Math.max(ubTextW("100\u2013100%", UB_READOUT_SIZE), ubTextW("\u00b1100%", UB_READOUT_SIZE))) + 1;
 }
@@ -487,7 +503,7 @@ function ubDetailRects(gm, m) {
     const out = [];
     const rem = m.mode === "remote";
     const y0 = gm.panel[1];
-    const ty = y0 + 36; // tab row (below the title lines)
+    const ty = y0 + 36; // tab row (below the title lines and the Depth pill's face)
     const my = ty + 14;
     const py = y0 + gm.panel[3] - 18; // presets row at the bottom (h 13, 5 px above the panel edge)
     const mh = py - 3 - my; // MSEG + output bar, same height in both modes
@@ -499,6 +515,9 @@ function ubDetailRects(gm, m) {
     // tab row: MOD / REM tabs on the left; in Mod the polarity control sits at the right end (empty in Remote)
     out.push({ id: "tabmod", rect: [x + 1, ty, UB_TAB_W, 12], mode: "mod", tip: "Mod: modulates around the parameter's value" });
     out.push({ id: "tabrem", rect: [x + 1 + UB_TAB_W + 2, ty, UB_TAB_W, 12], mode: "remote", tip: "Remote: takes over the parameter (absolute min / max)" });
+    // the pill is 13 px tall inside its 15 px live.numbox face (Live forces that height), so the face ends where the tab row starts
+    out.push({ id: "depth", rect: [x + w - ubDepthW(), y0 + 22, ubDepthW(), 13], face: [x + w - ubDepthW(), y0 + 21, ubDepthW(), 15],
+        tip: "Depth: scales the output (Mod: the modulation, Remote: the span toward Min). Drag, double-click = 100%" + ubDepthLiveTip(m) });
     out.push({ id: "mseg", rect: msegR });
     out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, meterH],
         tip: !rem ? "Drag the triangle to set the range (+ and \u2212 keep zero fixed, \u00b1 moves both); double-click = full"
@@ -559,11 +578,14 @@ function ubHitItem(g, x, y) {
         if (ubIn(R.collapse, x, y)) return hit({ kind: "collapse", slot, tip: g.fixed ? "Back to rack strips" : "Collapse" });
         if (ubIn(R.del, x, y)) return hit({ kind: "del", slot, tip: "Delete modulator (click twice)" });
     }
-    if (ubIn(R.icon, x, y)) return hit({ kind: "pwr", slot, tip: "Enable / bypass" });
+    if (ubIn(R.icon, x, y)) return hit({ kind: "pwr", slot, tip: "Enable / bypass | Live: " + autoLiveName(MM.state.mods[slot].type, slot, "enabled") });
     if (g.exp && ubIn(R.type, x, y)) return hit({ kind: "typechip", slot, tip: "Change type" });
     if (ubIn(R.head, x, y)) return hit({ kind: "head", slot, tip: g.exp ? (g.fixed ? "" : "Drag to reorder, double-click to collapse") : "Drag to reorder, double-click to expand" });
     for (let k = 0; k < R.knobs.length; k++) {
-        if (ubIn(R.knobs[k].hit, x, y)) return hit({ kind: "knob", slot, k, tip: R.knobs[k].spec.label + " (double-click resets)" });
+        if (ubIn(R.knobs[k].hit, x, y)) {
+            const ln = autoLiveName(MM.state.mods[slot].type, slot, R.knobs[k].spec.key);
+            return hit({ kind: "knob", slot, k, tip: R.knobs[k].spec.label + " (double-click resets)" + (ln ? " | Live: " + ln : "") });
+        }
     }
     for (const c of R.chips) if (ubIn(c.rect, x, y)) return hit({ kind: "chip", slot, chip: c.id, tip: c.tip });
     if (ubIn(R.count, x, y)) return hit({ kind: "count", slot, tip: "Mappings: click to edit their ranges" });
@@ -812,6 +834,9 @@ function ondrag(x, y, but, cmd, shift) {
     } else if (d.kind === "range") {
         ubApplyRange(d, y);
         d.dirty = true;
+    } else if (d.kind === "depth") {
+        if (MM.getMapping(d.mapId)) MM.updateMapping(d.mapId, { depth: clamp(d.v0 + (x - d.x0) / (shift ? 400 : 50), 0, 1) });
+        d.dirty = true;
     }
     mgraphics.redraw();
 }
@@ -848,7 +873,8 @@ function ondblclick(x, y, but, cmd, shift) {
             if (h.m && MM.getMapping(h.m.id)) MM.updateMapping(h.m.id, { enabled: MM.getMapping(h.m.id).enabled ? 0 : 1 });
             break;
         case "detail":
-            if (h.id === "mseg" && ubPbSelMapping()) ubMsegDbl(ubMapTgt(ubPbSelMapping().id), h.rect, x, y);
+            if (h.id === "depth" && ubPbSelMapping()) MM.updateMapping(ubPbSelMapping().id, { depth: 1 });
+            else if (h.id === "mseg" && ubPbSelMapping()) ubMsegDbl(ubMapTgt(ubPbSelMapping().id), h.rect, x, y);
             else if (h.id === "meter" && ubPbSelMapping()) {
                 const mm = ubPbSelMapping();
                 if (mm.mode !== "remote") MM.updateMapping(mm.id, { range: 1 });
@@ -869,6 +895,12 @@ function onwheel(x, y, dx, dy) {
         const p = smoothToPos(MM.getSettings().smoothMs) + (dy > 0 ? -1 : 1) * 0.04;
         const ms = smoothFromPos(p);
         MM.setSettings({ smoothMs: ms < 0.25 ? 0 : ms });
+        return;
+    }
+    if (h.kind === "detail" && h.id === "depth" && ubPbSelMapping()) {
+        const dm = ubPbSelMapping();
+        MM.updateMapping(dm.id, { depth: clamp(num(dm.depth, 1) + (dy > 0 ? -1 : 1) * 0.05, 0, 1) });
+        MM.commit();
         return;
     }
     if (h.kind === "knob") {
@@ -1086,6 +1118,7 @@ function ubDetailClick(h, x, y) {
     const id = h.id;
     if (id.indexOf("preset") === 0) MM.updateMapping(m.id, { shape: curveToShape(Number(id.slice(6)), 0.5, 4) });
     else if (id === "mseg") ubMsegClick(ubMapTgt(m.id), h.rect, x, y);
+    else if (id === "depth") ubDrag = { kind: "depth", mapId: m.id, x0: x, v0: num(m.depth, 1), dirty: true };
     else if (id === "meter" && m.mode === "remote") ubStartLimit(m, ubNearestLimit(m, ubLimitFromY(h.rect, y)), h.rect, x, y);
     else if (id === "tabmod" || id === "tabrem") MM.updateMapping(m.id, { mode: h.mode });
     else if (id === "meter") {
@@ -1153,13 +1186,15 @@ function ubKeyCommand(keycode, ch, cmd, shift, ctrl, src) {
     const isMod = !!(cmd || ctrl);
     const is = (a) => a.indexOf(k) >= 0 || a.indexOf(c) >= 0;
     let handled = 0;
-    if (isMod && is([122, 90, 26])) { if (shift) ubDoRedo(); else ubDoUndo(); handled = 1; }
-    else if (ctrl && is([121, 89, 25])) { ubDoRedo(); handled = 1; }
-    else if (!isMod && is([8, 127, -3, -4, 51, 117])) { if (ubSel() >= 0 && !ubOpt()) { ubDeleteMod(ubSel()); handled = 1; } }
-    else if (is([27])) {
+    // Escape is checked FIRST: Max's native onkeydown reports it as keycode -3 with textcharacter 27 (measured in Live), and -3 is also in
+    // the delete list below, so Escape used to delete the selected modulator
+    if (!isMod && (c === 27 || k === 27)) {
         if (ubMapsPop) { ubMapsPop = null; handled = 1; }
         else if (ubPopup) { ubPopup = null; handled = 1; }
     }
+    else if (isMod && is([122, 90, 26])) { if (shift) ubDoRedo(); else ubDoUndo(); handled = 1; }
+    else if (ctrl && is([121, 89, 25])) { ubDoRedo(); handled = 1; }
+    else if (!isMod && is([8, 127, -4, 51, 117])) { if (ubSel() >= 0 && !ubOpt()) { ubDeleteMod(ubSel()); handled = 1; } }
     if (handled) { ubLastKey = { k: sig, t: now, src }; ubSyncWidth(); mgraphics.redraw(); }
     return handled;
 }
@@ -1984,9 +2019,9 @@ function ubPaintDetail(gm) {
     const hl = off ? UB_OFF_GREY : rem ? UB_REM_COL : UB_MOD_COL;
     const pname = m.target.paramName || m.target.name || "?";
     ubText(ubFit(pname, w, 8), x, y0 + 12, 8, st === "missing" ? UB_RED : [0.92, 0.94, 0.97], 1);
-    ubText(ubFit((m.target.trackName || "?") + " / " + (m.target.deviceName || "?"), w, 7), x, y0 + 22, 7, [0.55, 0.58, 0.64], 1);
+    ubText(ubFit((m.target.trackName || "?") + " / " + (m.target.deviceName || "?"), w - ubDepthW() - 3, 7), x, y0 + 22, 7, [0.55, 0.58, 0.64], 1);
     ubCircle(x + 3, y0 + 31.5, 2.8, c, 1, true);
-    ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), w - 10, 7), x + 9, y0 + 34, 7, st === "missing" ? UB_RED : c, 1);
+    ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), w - 10 - ubDepthW() - 3, 7), x + 9, y0 + 34, 7, st === "missing" ? UB_RED : c, 1);
     // Remote: an orange frame around the tab row and the editor
     const tabY = 36;
     if (rem) ubRRStroke(x - 1.5, y0 + tabY - 0.5, w + 1, P[3] - 18 - 2 - (tabY - 0.5), 4, off ? UB_OFF_GREY : UB_REM_COL, 0.85, 1);
@@ -1994,6 +2029,7 @@ function ubPaintDetail(gm) {
         const r = d.rect;
         if (d.id === "mseg") ubPaintShapeEditor(r, m, mod);
         else if (d.id === "meter") { if (rem) ubPaintAbsMeter(r, m, mod); else ubPaintOutMeter(r, m, mod); }
+        else if (d.id === "depth") ubPaintDepth(r, m, off ? UB_OFF_GREY : hl);
         else if (d.id === "tabmod") ubPaintModeTab(r, "MOD", !rem, off ? UB_OFF_GREY : UB_MOD_COL);
         else if (d.id === "tabrem") ubPaintModeTab(r, "REM", rem, off ? UB_OFF_GREY : UB_REM_COL);
         else if (d.id.indexOf("preset") === 0) {
@@ -2004,6 +2040,16 @@ function ubPaintDetail(gm) {
         } else if (d.id.indexOf("pol") === 0) ubPaintPolarity(r, d.pol, m.polarity === d.pol, hl);
     }
     ubPaintReadout(ubReadoutSpec(gm, m), m, mod);
+}
+// Depth pill: a small slider-style readout ("Depth 100%", the fill is the value) at the right end of the name line
+function ubPaintDepth(r, m, ac) {
+    const dep = clamp(num(m.depth, 1), 0, 1);
+    const hot = ubDrag && ubDrag.kind === "depth" && ubDrag.mapId === m.id;
+    ubRR(r[0], r[1], r[2], r[3], 3, [0.17, 0.18, 0.21], 1);
+    if (dep > 0.005) ubRR(r[0] + 0.5, r[1] + 0.5, Math.max(3, (r[2] - 1) * dep), r[3] - 1, 2.5, ac, 0.28);
+    ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, hot ? ac : [0.30, 0.32, 0.37], 1, 1);
+    const t = ubDepthText(m);
+    ubText(t, r[0] + (r[2] - ubTextW(t, UB_DEPTH_SIZE)) / 2, r[1] + 9, UB_DEPTH_SIZE, hot ? [1, 1, 1] : [0.86, 0.89, 0.94], 1);
 }
 // Range readout: plain text at the right end of the presets row (the presets shrink to leave room).
 // Text is the list-row value text: Mod "\u00b170%" / "+45%" / "\u221230%", Remote "20\u201380%" (min first, so "80\u201320%" reads inverted).
@@ -2174,7 +2220,81 @@ function ubPaintTooltip() {
     ubText(tip, x + 5, y + 9.5, 7, [0.9, 0.95, 1], 1);
 }
 
+// ------------------------------------------------------------------ parameter faces
+// Each drawn control that is a Live parameter gets the matching saved pool object (a transparent live.dial / live.text / live.tab /
+// live.numbox) laid over its rect, so a real click / drag / right-click reaches Live's native parameter handling (Show Automation,
+// Map to Macro, MIDI / Key map). Wanted set = {pool object varname: [x, y, w, h]} in v8ui pixels; MM.faceApply moves exactly those and
+// parks the rest. A face covers only its own control, so none overlaps another control of the v8ui, and none is shown while a popup /
+// maps popover is open (the v8ui draws and closes those itself) or when it would leave the device.
+// Automation dot: Live draws it on the face widget, at a spot fixed by the widget's geometry. Every face is therefore a widget whose
+// size does not depend on the value, and the layout leaves its whole box (and a margin around the drawn control) free of text:
+//  * a knob: a live.dial (Live forces 27 x 28) centred on the knob, the value text and the label BELOW the 28 px box;
+//  * a chip / the power glyph: a live.text exactly on the chip (the power face starts at the strip's corner, 2 px left / up of the glyph);
+//  * the LFO shape chips: one 5-way live.tab over the row of chips (pitch 19 px, the tab's cells 18.4 px);
+//  * the Depth pill: a live.numbox (Live forces 15 px high) with 7 px of padding either side of the text.
+// (a live.slider's dot was seen to move with the value, so none is used)
+function ubFaceLimit() {
+    return clampWidth(ubLayoutWidth() + UB_EDGE) - UB_EDGE;
+}
+// the face rect of a knob: the dial box centred on the knob (rounded, top at the knob row's top)
+function ubKnobFace(k) {
+    return [Math.round(k.cx - UB_DIAL_W / 2), Math.round(k.cy - UB_DIAL_H / 2), UB_DIAL_W, UB_DIAL_H];
+}
+// every face of a strip layout `R`: [[pool object varname, rect], ...] (no limits applied)
+function ubStripFaces(g, mod, R) {
+    const out = [];
+    out.push([MM.autoKeyFor(g.slot, AUTO_PARAMS), R.pwrFace]);
+    const keys = AUTO_KEYS[mod.type] || [];
+    for (const k of R.knobs) {
+        const j = keys.indexOf(k.spec.key);
+        if (j >= 0) out.push([MM.autoKeyFor(g.slot, j), ubKnobFace(k)]);
+    }
+    const shapes = R.chips.filter((c) => c.key === "shape");
+    if (shapes.length) {
+        const a = shapes[0].rect;
+        const z = shapes[shapes.length - 1].rect;
+        out.push([MM.autoSwKeyFor(g.slot, AUTO_SW_KEYS.indexOf("shape")), [a[0], a[1], z[0] + z[2] - a[0], a[3]]]);
+    }
+    for (const c of R.chips) {
+        if (c.key === "shape") continue;
+        const t = autoSwitchIndex(mod.type, c.key);
+        if (t >= 0) out.push([MM.autoSwKeyFor(g.slot, t), c.rect]);
+    }
+    return out;
+}
+function ubFacesWanted() {
+    const want = {};
+    if (ubPopup || ubMapsPop) return want;
+    const lim = ubFaceLimit();
+    const put = (key, r) => {
+        if (!key || !r || r[2] < 1 || r[3] < 1 || r[0] < 0 || r[1] < 0 || r[0] + r[2] > lim + 1e-6 || r[1] + r[3] > UB_H + 1e-6) return;
+        if (!want[key]) want[key] = [r[0], r[1], r[2], r[3]];
+    };
+    const sg = ubStrips();
+    for (const g of sg.list) {
+        if (g.tab) continue;
+        const mod = MM.state.mods[g.slot];
+        if (!mod) continue;
+        for (const f of ubStripFaces(g, mod, ubStripRects(g))) put(f[0], f[1]);
+    }
+    if (ubPb() && !ubOpt()) {
+        const m = ubPbSelMapping();
+        const slot = m ? MM.mappingSlot(m.id) : -1;
+        if (m && slot >= 0 && slot < AUTO_DEPTH_SLOTS) {
+            const d = ubDetailRects(ubListGeom(), m).filter((x) => x.id === "depth")[0];
+            if (d) put("ad_" + slot, d.face);
+        }
+    }
+    return want;
+}
+function ubFacesUpdate() {
+    if (typeof MM.faceApply !== "function") return;
+    try { MM.faceApply(ubFacesWanted()); } catch (e) { post("megamod faces: " + e + "\n"); }
+}
+
+let ubPaintCount = 0; // test hook: how many paints Live asked for (a device that is not on screen is not painted)
 function paint() {
+    ubPaintCount++;
     ubPaintRail();
     const sg = ubStrips();
     if (ubPb() && !sg.main) ubPaintEmptyMain(sg);
@@ -2186,11 +2306,13 @@ function paint() {
     if (ubPopup) ubPaintPopup();
     ubPaintFull();
     ubPaintTooltip();
+    ubFacesUpdate();
 }
 
 // ------------------------------------------------------------------ lifecycle
 function uiReady() {
     ubSyncWidth(true);
+    ubFacesUpdate();
 }
 function uiTelemetry(frame) {
     ubFrame++;
@@ -2210,6 +2332,9 @@ function uiChanged(ev) {
         if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] }); // the inspector always shows a modulator
     }
     if (ev.kind === "mods" || ev.kind === "load" || ev.kind === "ui") ubSyncWidth();
+    // the faces follow every layout change even when no paint happens (a device that is not on screen is not painted);
+    // (a cheap pass: the wanted set is a few rects, and nothing is touched when it is unchanged)
+    if (ev.kind !== "learn" && ev.kind !== "full") ubFacesUpdate();
 }
 
 const UB_PREVIEW_REMOTE = false; // preview: the selected mapping in Remote mode (false = Mod mode)

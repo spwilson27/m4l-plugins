@@ -191,6 +191,8 @@ var MM = (function () {
             if (s < 0) { dlog("syncMapping: pool full, map", m.id); return; }
             slotOf[m.id] = s;
         }
+        m.slot = slotOf[m.id]; // persisted: the mapping keeps this slot (and its Depth parameter) across saves
+        autoPushDepth(m);
         if (!patcher() || !names || !lomReady) { dlog("syncMapping skip map", m.id, "patcher", !!patcher(), "names", !!names, "lomReady", lomReady); return; }
         const slot = slotOf[m.id];
         const active = mappingActive(m);
@@ -216,20 +218,316 @@ var MM = (function () {
         }
         bound[slot] = { mod: 0, rem: 0 };
         delete slotOf[m.id];
+        if (slot < AUTO_DEPTH_SLOTS) autoPush("ad_" + slot, 100);
     }
-    // Reassign every mapping to the lowest free slots (load / names / LOM ready). Releases everything first.
+    // Rebind every mapping (load / names / LOM ready). Releases everything first. Each mapping gets its saved slot
+    // back when it is free, so automation of its "Depth <k>" parameter follows the mapping across deletes and
+    // reloads; only mappings without a (valid, unclaimed) saved slot take the lowest free one.
     function rebuildAllSlots() {
         for (const k of Object.keys(bound)) unbindSlot(Number(k));
         slotOf = {};
         bound = {};
         if (names) flushRoute();
+        const claimed = {};
         for (const m of api.state.mappings) {
+            if (Number.isInteger(m.slot) && m.slot >= 0 && m.slot < MAX_MAPPINGS && !claimed[m.slot]) {
+                claimed[m.slot] = true;
+                slotOf[m.id] = m.slot;
+            }
+        }
+        for (const m of api.state.mappings) {
+            if (slotOf[m.id] !== undefined) { syncMapping(m); continue; }
             const s = allocSlot();
             if (s < 0) { dlog("rebuildAllSlots: pool full, map", m.id, "left unslotted"); continue; }
             slotOf[m.id] = s;
             syncMapping(m);
         }
     }
+
+    // ---------------------------------------------------------------- automatable parameter pool
+    // Saved live.* objects (scripts/megamod_common.py): ap_<slot * 6 + j> (j 0..4 = the type's controls via AUTO_KEYS, j 5 = On),
+    // ad_<k> (Depth of the mapping in pool slot k < 64) and ap_marker (hidden: "Live has stored the parameter values").
+    // The Live parameter NAMES are fixed ("M3 A".."M3 E", "M3 On", "Depth 5"): a runtime rename does not reach Live (see AUTO_LETTERS in config).
+    // JS -> Live: the value is MESSAGED into the object (it outputs, so Live records automation / macros see it), never `set`.
+    // Live -> JS: every object outputs through `prepend autop <idx>` / `prepend autod <k>` into this script (autop() / autod()).
+    // Echo of our own push is recognised by value (autoSent), an echo never changes the model; an external change never pushes
+    // back, marks the Set dirty or touches the undo stack. Nothing is pushed before `ready` (autoOn): at ready, a stored
+    // marker means Live's values win (adopted into the model), no marker (old Set, new device) means the blob's values are pushed.
+    let autoOn = false;
+    let autoFrozen = false; // test hook: Live input is dropped, so the blob goes stale against the parameter values
+    let autoInitInfo = null; // how the last autoInit decided: {stored, marker, cached, read, missing} (test_names / tests)
+    const autoCache = {}; // object key -> last value seen from / pushed to the object (normalized 0..100 for params)
+    const autoSent = {}; // object key -> value we pushed and whose echo has not arrived yet
+    let depthTask = null;
+    let depthLast = 0;
+    const depthPending = {}; // mapId -> true while a throttled table rewrite is waiting
+    const DEPTH_THROTTLE_MS = 33;
+    let nowFn = function () { return Date.now(); };
+    function autoBox(key) {
+        const p = patcher();
+        if (!p || typeof p.getnamed !== "function") return null;
+        try { return p.getnamed(key) || null; } catch (e) { return null; }
+    }
+    function autoKey(slot, j) { return "ap_" + (slot * AUTO_PER_SLOT + j); }
+    function swKey(slot, t) { return "at_" + (slot * AUTO_SW_PER_SLOT + t); }
+    function autoPush(key, v) {
+        if (!autoOn) return;
+        if (autoCache[key] !== undefined && Math.abs(autoCache[key] - v) < 1e-7) return;
+        const o = autoBox(key);
+        if (!o) return;
+        autoCache[key] = v;
+        autoSent[key] = v;
+        try { o.message("float", v); } catch (e) { dlog("autoPush failed", key, String(e)); }
+    }
+    // a value from a live.* object: true when it is the echo of our own push (consumed), else it is an external change
+    function autoIsEcho(key, v) {
+        const s = autoSent[key];
+        delete autoSent[key];
+        autoCache[key] = v;
+        return s !== undefined && Math.abs(s - v) < 0.01;
+    }
+    function autoReadBack(key) {
+        if (autoCache[key] !== undefined) { if (autoInitInfo) autoInitInfo.cached++; return autoCache[key]; }
+        const o = autoBox(key);
+        if (!o) { if (autoInitInfo) autoInitInfo.missing++; return undefined; }
+        try {
+            const v = typeof o.getvalueof === "function" ? o.getvalueof() : undefined;
+            const n = Array.isArray(v) ? Number(v[0]) : Number(v);
+            if (Number.isFinite(n)) { if (autoInitInfo) autoInitInfo.read++; return n; }
+        } catch (e) {}
+        if (autoInitInfo) autoInitInfo.missing++;
+        return undefined;
+    }
+    function autoPushSlot(i) {
+        const mod = api.state.mods[i];
+        if (!mod) return;
+        const keys = AUTO_KEYS[mod.type];
+        for (let j = 0; j < AUTO_PARAMS; j++) if (keys[j]) autoPush(autoKey(i, j), 100 * autoNorm(keys[j], mod.p[keys[j]]));
+        autoPush(autoKey(i, AUTO_PARAMS), mod.enabled ? 1 : 0);
+        for (const k of AUTO_SW_USED[mod.type]) autoPush(swKey(i, AUTO_SW_KEYS.indexOf(k)), mod.p[k]);
+    }
+    // one control changed in the model (UI path): push it, and its coupled partner (loop start / end)
+    function autoPushKey(i, key) {
+        if (!autoOn) return;
+        const mod = api.state.mods[i];
+        if (!mod) return;
+        if (key === "enabled") { autoPush(autoKey(i, AUTO_PARAMS), mod.enabled ? 1 : 0); return; }
+        const t = autoSwitchIndex(mod.type, key);
+        if (t >= 0) { autoPush(swKey(i, t), mod.p[key]); return; }
+        const keys = AUTO_KEYS[mod.type];
+        const ks = key === "loopStart" || key === "loopEnd" ? ["loopStart", "loopEnd"] : [key];
+        for (const kk of ks) {
+            const j = keys.indexOf(kk);
+            if (j >= 0) autoPush(autoKey(i, j), 100 * autoNorm(kk, mod.p[kk]));
+        }
+    }
+    function mappingInSlot() {
+        const out = {};
+        for (const m of api.state.mappings) if (slotOf[m.id] !== undefined) out[slotOf[m.id]] = m;
+        return out;
+    }
+    function autoPushDepth(m) {
+        const k = slotOf[m.id];
+        if (k !== undefined && k < AUTO_DEPTH_SLOTS) autoPush("ad_" + k, 100 * m.depth);
+    }
+    function autoPushAll(force) {
+        if (force) for (const k of Object.keys(autoCache)) delete autoCache[k];
+        for (let i = 0; i < MAX_MODS; i++) autoPushSlot(i);
+        for (const m of api.state.mappings) autoPushDepth(m);
+        for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) if (!mappingInSlot()[k]) autoPush("ad_" + k, 100);
+    }
+    // ready: Live's stored values win when the marker says Live has them, else the blob's values are pushed once
+    function autoInit() {
+        if (autoOn || !patcher()) return;
+        autoInitInfo = { stored: false, marker: null, cached: 0, read: 0, missing: 0 };
+        const mk = autoReadBack("ap_marker");
+        const stored = mk !== undefined && mk >= 0.5;
+        const swStored = mk !== undefined && mk >= 1.5; // marker 2: the switch parameters (shape / chips) were saved too
+        autoInitInfo.stored = stored;
+        autoInitInfo.marker = mk === undefined ? null : mk;
+        autoOn = true;
+        if (stored) {
+            for (let i = 0; i < MAX_MODS; i++) {
+                const mod = api.state.mods[i];
+                if (!mod) continue;
+                const keys = AUTO_KEYS[mod.type];
+                for (let j = 0; j < AUTO_PARAMS; j++) {
+                    if (!keys[j]) continue;
+                    const v = autoReadBack(autoKey(i, j));
+                    if (v === undefined) autoPush(autoKey(i, j), 100 * autoNorm(keys[j], mod.p[keys[j]]));
+                    else mod.p[keys[j]] = clampParam(keys[j], autoValue(keys[j], v / 100));
+                }
+                for (const k of AUTO_SW_USED[mod.type]) {
+                    const t = AUTO_SW_KEYS.indexOf(k);
+                    const v = swStored ? autoReadBack(swKey(i, t)) : undefined;
+                    if (v === undefined) autoPush(swKey(i, t), mod.p[k]);
+                    else mod.p[k] = clampParam(k, Math.round(v));
+                }
+                if (mod.p.loopEnd < mod.p.loopStart + 0.05) mod.p.loopEnd = Math.min(1, mod.p.loopStart + 0.05);
+                const en = autoReadBack(autoKey(i, AUTO_PARAMS));
+                if (en === undefined) autoPush(autoKey(i, AUTO_PARAMS), mod.enabled ? 1 : 0);
+                else mod.enabled = en >= 0.5 ? 1 : 0;
+            }
+            for (const m of api.state.mappings) {
+                const k = slotOf[m.id];
+                if (k === undefined || k >= AUTO_DEPTH_SLOTS) continue;
+                const v = autoReadBack("ad_" + k);
+                if (v === undefined) autoPushDepth(m);
+                else m.depth = clamp(v / 100, 0, 1);
+            }
+            flushEngine();
+            for (const m of api.state.mappings) writeMappingTable(m);
+            for (let i = 0; i < MAX_MODS; i++) syncMappingsFor(i);
+            for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) if (!mappingInSlot()[k] && autoReadBack("ad_" + k) === undefined) autoPush("ad_" + k, 100);
+            if (!swStored) autoPush("ap_marker", 2);
+            fire("mods");
+        } else {
+            autoPushAll(true);
+            autoPush("ap_marker", 2);
+        }
+    }
+    function writeDepthTables() {
+        for (const id of Object.keys(depthPending)) {
+            delete depthPending[id];
+            const m = api.getMapping(Number(id));
+            if (m) writeMappingTable(m);
+        }
+        depthLast = nowFn();
+    }
+    // automation can move a depth faster than a table is worth rewriting: at most one rewrite per DEPTH_THROTTLE_MS, trailing edge kept
+    function scheduleDepthTable(m) {
+        depthPending[m.id] = true;
+        if (nowFn() - depthLast >= DEPTH_THROTTLE_MS) { writeDepthTables(); return; }
+        if (typeof Task === "undefined") { writeDepthTables(); return; }
+        if (!depthTask) depthTask = new Task(writeDepthTables, MM_THIS);
+        depthTask.interval = DEPTH_THROTTLE_MS;
+        depthTask.cancel();
+        depthTask.schedule(DEPTH_THROTTLE_MS);
+    }
+    // Live -> model: a modulator control moved by automation / macro / MIDI / the parameter list
+    api._autoParamIn = function (idx, v) {
+        const key = "ap_" + idx;
+        const echo = autoIsEcho(key, v);
+        if (!autoOn || echo || autoFrozen) return;
+        const slot = Math.floor(idx / AUTO_PER_SLOT);
+        const j = idx % AUTO_PER_SLOT;
+        const mod = api.state.mods[slot];
+        if (!mod || slot >= MAX_MODS) return;
+        if (j === AUTO_PARAMS) {
+            const en = v >= 0.5 ? 1 : 0;
+            if (mod.enabled === en) return;
+            mod.enabled = en;
+            writeCfgSlot(slot);
+            syncMappingsFor(slot);
+            fire("param", slot);
+            return;
+        }
+        const k = AUTO_KEYS[mod.type][j];
+        if (!k) return;
+        const val = clampParam(k, autoValue(k, v / 100));
+        if (mod.p[k] === val) return;
+        mod.p[k] = val;
+        if (k === "loopStart" && mod.p.loopEnd < val + 0.05) mod.p.loopEnd = Math.min(1, val + 0.05);
+        if (k === "loopEnd" && val < mod.p.loopStart + 0.05) mod.p.loopStart = Math.max(0, val - 0.05);
+        writeCfgSlot(slot);
+        fire("param", slot);
+    };
+    // Live -> model: a switch parameter (LFO shape, SYNC / BIP / RTG / 1SH / LOOP) moved by automation / macro / MIDI / a face click
+    api._autoSwitchIn = function (idx, v) {
+        const key = "at_" + idx;
+        const echo = autoIsEcho(key, v);
+        if (!autoOn || echo || autoFrozen) return;
+        const slot = Math.floor(idx / AUTO_SW_PER_SLOT);
+        const t = idx % AUTO_SW_PER_SLOT;
+        const mod = slot < MAX_MODS ? api.state.mods[slot] : null;
+        if (!mod) return;
+        const k = AUTO_SW_KEYS[t];
+        if (autoSwitchIndex(mod.type, k) < 0) return;
+        const val = clampParam(k, Math.round(v));
+        if (mod.p[k] === val) return;
+        mod.p[k] = val;
+        writeCfgSlot(slot);
+        fire("param", slot);
+    };
+    // Live -> model: the Depth of the mapping in pool slot k
+    api._autoDepthIn = function (k, v) {
+        const key = "ad_" + k;
+        const echo = autoIsEcho(key, v);
+        if (!autoOn || echo) return;
+        const m = mappingInSlot()[k];
+        if (!m) return;
+        const d = clamp(v / 100, 0, 1);
+        if (Math.abs(m.depth - d) < 1e-6) return;
+        m.depth = d;
+        scheduleDepthTable(m);
+        fire("mapping", m.mod, m.id);
+    };
+    api._autoMarkerIn = function (v) { autoCache["ap_marker"] = v; };
+    api.autoInfo = function () {
+        return { on: autoOn, cache: Object.assign({}, autoCache), init: autoInitInfo };
+    };
+
+    // ---------------------------------------------------------------- parameter faces (Live's native right-click menu)
+    // Live shows Show Automation / Map to Macro / Edit MIDI Map only for a real live.* object under the mouse, and the v8ui draws every
+    // control itself. So each pool object is also a TRANSPARENT FACE (presentation, hidden, parked 1x1 in the saved file) that the UI
+    // moves over the control it belongs to: faceApply({key: [x, y, w, h]}) in v8ui-local pixels shows exactly those objects at their
+    // rect (+ the v8ui's presentation origin) and hides every other one. Only objects whose rect / visibility changed are touched.
+    // Faces are only shown once the pool is live (autoOn): before that a drag would be dropped by autop().
+    const faceCache = {}; // key -> "x,y,w,h" while shown (absent = hidden / parked as saved)
+    let faceOrigin = null; // [x, y] of the main v8ui's presentation rect (re-read when the width changes)
+    const faceStats = { applies: 0, setattrs: 0 };
+    function faceOriginXY() {
+        if (faceOrigin) return faceOrigin;
+        let o = [4, 4];
+        const p = patcher();
+        try {
+            const ui = p && p.getnamed ? p.getnamed("obj-viz") : null;
+            const r = ui ? ui.getattr("presentation_rect") : null;
+            if (Array.isArray(r) && r.length >= 2) o = [Number(r[0]), Number(r[1])];
+        } catch (e) {}
+        faceOrigin = o;
+        return o;
+    }
+    /** @returns {{bringtofront?: (box: any) => void}} the device patcher (Max's Patcher also has bringtofront, which @types/maxmsp lacks) */
+    function p0() { return /** @type {any} */ (patcher()) || {}; }
+    api.faceApply = function (want) {
+        want = autoOn ? want || {} : {};
+        faceStats.applies++;
+        let changed = 0;
+        const o = faceOriginXY();
+        for (const k of Object.keys(faceCache)) {
+            if (want[k]) continue;
+            const b = autoBox(k);
+            if (b) { try { b.setattr("hidden", 1); b.setattr("presentation_rect", 0, 0, 1, 1); } catch (e) {} faceStats.setattrs += 2; changed++; }
+            delete faceCache[k];
+        }
+        for (const k of Object.keys(want)) {
+            const r = want[k];
+            const x = Math.round((o[0] + r[0]) * 100) / 100, y = Math.round((o[1] + r[1]) * 100) / 100;
+            const w = Math.round(r[2] * 100) / 100, h = Math.round(r[3] * 100) / 100;
+            const sig = x + "," + y + "," + w + "," + h;
+            if (faceCache[k] === sig) continue;
+            const b = autoBox(k);
+            if (!b) continue;
+            const wasHidden = faceCache[k] === undefined;
+            try {
+                b.setattr("presentation_rect", x, y, w, h);
+                if (wasHidden) {
+                    b.setattr("hidden", 0);
+                    // z-order: Live loads the patcher with obj-viz LAST in the object chain (measured: v8ui index 1382 of 1383, faces
+                    // ~300), i.e. in front of every saved face, so a face must be brought to the front to get the click
+                    if (typeof p0().bringtofront === "function") p0().bringtofront(b);
+                }
+            } catch (e) { dlog("faceApply failed", k, String(e)); continue; }
+            faceStats.setattrs += wasHidden ? 2 : 1;
+            faceCache[k] = sig;
+            changed++;
+        }
+        return changed;
+    };
+    api.faceState = function () { return { shown: Object.assign({}, faceCache), stats: Object.assign({}, faceStats), origin: faceOrigin }; };
+    api.autoKeyFor = function (slot, j) { return autoKey(slot, j); };
+    api.autoSwKeyFor = function (slot, t) { return swKey(slot, t); };
 
     // ---------------------------------------------------------------- LOM access
     function scratchApi() {
@@ -385,6 +683,7 @@ var MM = (function () {
         if (s < 0 || s >= MAX_MODS || api.state.mods[s]) return -1;
         api.state.mods[s] = makeModSlot(clamp(Math.round(type), 1, 5), s);
         writeCfgSlot(s); writeMsegSlot(s); writeStepsSlot(s);
+        autoPushSlot(s);
         fire("mods", s);
         api.commit();
         return s;
@@ -410,6 +709,7 @@ var MM = (function () {
         fresh.name = keep.name; fresh.color = keep.color; fresh.enabled = keep.enabled;
         api.state.mods[i] = fresh;
         writeCfgSlot(i); writeMsegSlot(i); writeStepsSlot(i);
+        autoPushSlot(i);
         fire("mod", i);
         api.commit();
     };
@@ -423,6 +723,7 @@ var MM = (function () {
         if (key === "loopEnd" && m.p.loopEnd < m.p.loopStart + 0.05) m.p.loopStart = Math.max(0, m.p.loopEnd - 0.05);
         writeCfgSlot(i);
         if (key === "enabled") syncMappingsFor(i);
+        autoPushKey(i, key); // UI -> Live parameter (messaged, so automation records it)
         fire("param", i);
         markDirty();
     };
@@ -502,7 +803,7 @@ var MM = (function () {
         if (!m || !patch) return;
         const merged = sanitizeMapping(Object.assign({}, m, patch, { id: m.id, target: m.target }));
         const oldMod = m.mod;
-        for (const k of ["mod", "enabled", "mode", "polarity", "range", "min", "max", "shape"]) m[k] = merged[k];
+        for (const k of ["mod", "enabled", "mode", "polarity", "range", "depth", "min", "max", "shape"]) m[k] = merged[k];
         if (!api.state.mods[m.mod]) m.mod = oldMod;
         syncMapping(m);
         fire("mapping", m.mod, m.id);
@@ -572,6 +873,7 @@ var MM = (function () {
             e.slot = s;
             api.state.mods[s] = cloneJson(e.mod);
             writeCfgSlot(s); writeMsegSlot(s); writeStepsSlot(s);
+            autoPushSlot(s);
             restoreMappings(e.maps, s);
             fire("mods", s);
         } else {
@@ -651,6 +953,7 @@ var MM = (function () {
     api.getUI = function () { return api.state.ui; };
     api.requestWidth = function (w) {
         reqWidth = clampWidth(w);
+        faceOrigin = null;
         resizeFace(reqWidth);
         if (typeof outlet === "function") outlet(0, "width", reqWidth);
     };
@@ -711,6 +1014,8 @@ var MM = (function () {
     function fireReady() {
         if (readyFired || !names || !lomReady) return;
         readyFired = true;
+        autoInit();
+        redraw(); // the faces appear once the pool is live
         for (const fn of listeners.ready) { try { fn(); } catch (e) {} }
         if (typeof uiReady === "function") { try { uiReady(); } catch (e) { post2("uiReady: " + e); } }
         api.sendSettings();
@@ -763,6 +1068,7 @@ var MM = (function () {
         flushEngine();
         api.sendSettings();
         if (lomReady) { resolveMappingTargets(); if (names) rebuildAllSlots(); }
+        if (autoOn) autoPushAll(true); // a preset / undo load after ready: the blob wins, the params follow
         fire("load");
         if (reqWidth) api.requestWidth(reqWidth);
         return true;
@@ -799,6 +1105,10 @@ var MM = (function () {
         selfPath: function () { return selfPath; },
         setLomReady: function (v) { lomReady = v; },
         pollTelemetry,
+        setNow: function (f) { nowFn = f; },
+        flushDepth: writeDepthTables,
+        freeze: function (b) { autoFrozen = !!b; },
+        autoOn: function () { return autoOn; },
     };
     return api;
 })();
@@ -819,6 +1129,12 @@ function setnames(cfg, mseg, steps, scope, curve, route) {
 function init_lom() {
     MM._initLom();
 }
+
+// ---- automatable parameter pool: every saved live.* object outputs through a `prepend` into these (see MM._autoParamIn) ----
+function autop(idx, v) { MM._autoParamIn(Number(idx), Number(v)); } // modulator control / On (idx = slot * 6 + j)
+function autot(idx, v) { MM._autoSwitchIn(Number(idx), Number(v)); } // switch of a modulator (idx = slot * 6 + t): shape / sync / bipolar / retrig / oneshot / loopOn
+function autod(k, v) { MM._autoDepthIn(Number(k), Number(v)); } // Depth of the mapping in pool slot k
+function autom(v) { MM._autoMarkerIn(Number(v)); } // "Live has stored the parameter values" marker
 
 // ---- Test hook (global `receive megamod-test`, driven through the Ableton MCP bridge) ----
 //   test_learn <mod> <param id>  simulates a single-shot learn of that Live parameter
@@ -855,6 +1171,10 @@ function test_report() {
     const rep = {
         self: t.selfPath(), lomReady: t.lomReady(), names: t.names(), capacity: MM.mappingCapacity(),
         mods: MM.state.mods.map((m) => (m ? m.type : null)),
+        modP: MM.state.mods.map((m) => (m ? Object.assign({ enabled: m.enabled }, m.p) : null)),
+        auto: MM.autoInfo().on,
+        ui: MM.getUI(),
+        hover: typeof ubHover !== "undefined" && ubHover ? [ubHover.x, ubHover.y] : null, // last mouse position over the v8ui (real-mouse calibration)
         engine: (function () { try { const e = MM_THIS.patcher.getnamed(MM_ENGINE_VARNAME); return e ? { cls: e.maxclass, cords: cordsOf(e) } : null; } catch (x) { return "err " + x; } })(),
         mappings: MM.allMappings().map((m) => {
             const slot = slots[m.id] === undefined ? -1 : slots[m.id];
@@ -862,7 +1182,7 @@ function test_report() {
             const mid = slot >= 0 ? box("mm_mid_" + slot) : null, rid = slot >= 0 ? box("mm_rid_" + slot) : null;
             const lm = slot >= 0 ? box("mm_mod_" + slot) : null, lr = slot >= 0 ? box("mm_rem_" + slot) : null;
             return {
-                id: m.id, mod: m.mod, mode: m.mode, path: m.target.path, status: MM.mappingStatus(m.id), pid: t.pid(m.id),
+                id: m.id, mod: m.mod, mode: m.mode, depth: m.depth, path: m.target.path, status: MM.mappingStatus(m.id), pid: t.pid(m.id),
                 slot, route: slot >= 0 ? t.route(slot) : null, idMod: b.mod, idRem: b.rem,
                 boxes: { mid: !!mid, rid: !!rid, mod: lm ? lm.maxclass : null, rem: lr ? lr.maxclass : null },
                 modCords: lm ? cordsOf(lm) : null, remCords: lr ? cordsOf(lr) : null,
@@ -874,4 +1194,157 @@ function test_report() {
     const g = new Global("megamod_test");
     g["report_" + devId] = JSON.stringify(rep);
     g.last = g["report_" + devId];
+}
+
+//   test_add <type>              add a modulator of that type (MOD_LFO..MOD_MSEG) in the first free slot
+//   test_settype <slot> <type>   change a modulator's type
+//   test_remove <slot> / test_undo   delete a modulator (with its mappings) / undo the last delete
+//   test_setparam <slot> <key> <v>  MM.setParam (UI path: pushes into the live.* object)
+//   test_names                   writes the cached Live parameter names / values this script applied to Global("megamod_test") as `names_<device id>`
+//   test_probe <varname>         what the object reports about its attributes (Global("megamod_test").probe)
+//   test_rename <varname> <name> <mode>   renaming experiments (modes 0..7, see the function)
+function test_add(type) { MM.addModulator(Number(type)); }
+function test_settype(slot, type) { MM.setModType(Number(slot), Number(type)); }
+// test_freeze <0|1>: drop Live -> model parameter input (the blob then goes stale against the stored parameter values: load-order tests)
+function test_freeze(v) { MM._test.freeze(Number(v) !== 0); }
+function test_remove(slot) { MM.removeModulator(Number(slot)); }
+function test_undo() { MM.undo(); }
+// test_selui <slot>: select a modulator (the UI state `sel`); the faces tests use it to detect where a real click lands
+function test_selui(slot) { MM.setUI({ sel: Number(slot) }); }
+// test_expand <slot>: expand that strip in place (-1 collapses all); the faces tests use it to reach the expanded editor
+function test_expand(slot) { ubSetExpanded(Number(slot)); }
+function test_setparam(slot, key, v) { MM.setParam(Number(slot), String(key), Number(v)); }
+function test_names() {
+    if (typeof Global === "undefined") return;
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    const g = new Global("megamod_test");
+    g["names_" + devId] = JSON.stringify(MM.autoInfo());
+    g.last_names = g["names_" + devId];
+}
+// test_cls <class> <w> <h>: makes a scratch box of that Max class in the device patcher, sets its presentation rect, and reports the size
+// Live / Max really gave it plus its colour / size attribute names (face widget research), then removes it
+function test_cls(cls, w, h, par) {
+    if (typeof Global === "undefined") return;
+    const out = { cls: String(cls), stages: [] };
+    let o = null;
+    const rect = (label) => { try { out.stages.push(label + " " + JSON.stringify(o.getattr("presentation_rect"))); } catch (e) { out.stages.push(label + " ERR " + e); } };
+    try {
+        o = MM_THIS.patcher.newdefault(900, 2900, String(cls));
+        if (Number(par)) { o.setattr("parameter_enable", 1); o.setattr("_parameter_longname", "scratch_" + cls); }
+        o.setattr("presentation", 1);
+        o.setattr("hidden", 1);
+        o.setattr("presentation_rect", 300, 10, Number(w), Number(h));
+        rect("hidden, set");
+        o.setattr("hidden", 0);
+        rect("unhidden");
+        o.setattr("presentation_rect", 300, 10, Number(w), Number(h));
+        rect("set again");
+        out.attrs = o.getattrnames().filter((a) => /color|orient|trian|show|appearance/i.test(a)).join(" ");
+    } catch (e) { out.err = String(e); }
+    test_cls_obj = o;
+    const g = new Global("megamod_test");
+    g.cls = JSON.stringify(out);
+}
+let test_cls_obj = null;
+// test_cls_read: the scratch box's rect after the object had time to draw (Live / Max may snap a live.* size then), then removes it
+function test_cls_read() {
+    if (typeof Global === "undefined") return;
+    const out = {};
+    try { out.rect = test_cls_obj.getattr("presentation_rect"); } catch (e) { out.err = String(e); }
+    try { if (test_cls_obj) MM_THIS.patcher.remove(test_cls_obj); } catch (e) { out.rmErr = String(e); }
+    test_cls_obj = null;
+    new Global("megamod_test").clsr = JSON.stringify(out);
+}
+// test_poolrect <varname> <x> <y> <w> <h> / test_poolrect_read <varname>: size experiments on a saved pool object (does Live snap its size?)
+function test_poolrect(key, x, y, w, h) {
+    try { const o = MM_THIS.patcher.getnamed(String(key)); o.setattr("presentation_rect", Number(x), Number(y), Number(w), Number(h)); o.setattr("hidden", 0); } catch (e) { dlog("test_poolrect", String(e)); }
+}
+function test_poolrect_read(key) {
+    let r = null;
+    try { r = MM_THIS.patcher.getnamed(String(key)).getattr("presentation_rect"); } catch (e) { r = "ERR " + e; }
+    new Global("megamod_test").pr = JSON.stringify(r);
+}
+// face z-order / click experiments (Live): test_zorder reports box order of obj-viz and the pool faces; test_alpha <a> sets every colour
+// of every pool face to alpha a; test_front brings the shown faces to the front (patcher.bringtofront)
+function test_zorder() {
+    if (typeof Global === "undefined") return;
+    const order = [];
+    let b = MM_THIS.patcher.firstobject;
+    let i = 0;
+    while (b) { const vn = b.varname || ""; if (vn === "MegaModState" || /^a[pd]_\d+$/.test(vn)) order.push([i, vn, b.maxclass]); i++; b = b.nextobject; }
+    const viz = order.filter((x) => x[1] === "MegaModState")[0];
+    const shown = Object.keys(MM.faceState().shown);
+    new Global("megamod_test").zorder = JSON.stringify({ viz: viz, total: i, shown: order.filter((x) => shown.indexOf(x[1]) >= 0), first3: order.slice(0, 3), bringtofront: typeof MM_THIS.patcher.bringtofront });
+}
+function test_alpha(a) {
+    const cols = ["focusbordercolor", "modulationcolor", "slidercolor", "textcolor", "tribordercolor", "tricolor", "trioncolor"];
+    for (let i = 0; i < 96; i++) for (const n of ["ap_" + i]) { try { const o = MM_THIS.patcher.getnamed(n); if (i % 6 !== 5) for (const c of cols) o.setattr(c, 0.5, 0.5, 0.5, Number(a)); } catch (e) {} }
+}
+function test_front() {
+    const shown = Object.keys(MM.faceState().shown);
+    let n = 0;
+    for (const k of shown) { try { MM_THIS.patcher.bringtofront(MM_THIS.patcher.getnamed(k)); n++; } catch (e) { dlog("bringtofront failed", String(e)); } }
+    new Global("megamod_test").front = String(n);
+}
+// test_faces: the parameter faces this script placed, and what Live's objects really report (presentation_rect / hidden), as `faces_<device id>`
+function test_faces() {
+    if (typeof Global === "undefined") return;
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    const st = MM.faceState();
+    const real = {};
+    for (const k of Object.keys(st.shown)) {
+        try {
+            const o = MM_THIS.patcher.getnamed(k);
+            real[k] = { rect: o.getattr("presentation_rect"), hidden: o.getattr("hidden"), cls: o.maxclass };
+        } catch (e) { real[k] = "ERR " + e; }
+    }
+    let nHidden = 0;
+    try {
+        for (let i = 0; i < 96; i++) { const o = MM_THIS.patcher.getnamed("ap_" + i); if (o && o.getattr("hidden")) nHidden++; }
+        for (let i = 0; i < AUTO_SW_COUNT; i++) { const o = MM_THIS.patcher.getnamed("at_" + i); if (o && o.getattr("hidden")) nHidden++; }
+        for (let i = 0; i < 64; i++) { const o = MM_THIS.patcher.getnamed("ad_" + i); if (o && o.getattr("hidden")) nHidden++; }
+    } catch (e) {}
+    const g = new Global("megamod_test");
+    g["faces_" + devId] = JSON.stringify({ popup: typeof ubPopup !== "undefined" ? !!ubPopup : null, maps: typeof ubMapsPop !== "undefined" ? !!ubMapsPop : null, nmods: MM.state.mods.filter((m) => m).length, paints: typeof ubPaintCount !== "undefined" ? ubPaintCount : -1, hover: typeof ubHover !== "undefined" && ubHover ? [ubHover.x, ubHover.y] : null, shown: st.shown, real: real, stats: st.stats, origin: st.origin, hiddenCount: nHidden });
+    g.last_faces = g["faces_" + devId];
+}
+// test_probe <varname>: what the live.* object says about itself (attribute names with "param", the long / short name attributes)
+function test_probe(varname) {
+    if (typeof Global === "undefined") return;
+    let o = null;
+    try { o = MM_THIS.patcher.getnamed(String(varname)); } catch (e) {}
+    const out = { found: !!o };
+    if (o) {
+        try { out.cls = o.maxclass; } catch (e) {}
+        try { out.attrs = o.getattrnames().filter((a) => /param|name/i.test(a)); } catch (e) { out.attrsErr = String(e); }
+        for (const a of ["_parameter_longname", "_parameter_shortname", "parameter_longname", "varname"]) {
+            try { out["get_" + a] = o.getattr(a); } catch (e) { out["get_" + a] = "ERR " + e; }
+        }
+        try { out.val = o.getvalueof(); } catch (e) { out.val = "ERR " + e; }
+    }
+    const g = new Global("megamod_test");
+    g.probe = JSON.stringify(out);
+}
+function test_rename(varname, name, mode) {
+    let o = null;
+    try { o = MM_THIS.patcher.getnamed(String(varname)); } catch (e) {}
+    if (!o) { dlog("test_rename: no box", varname); return; }
+    const md = Number(mode) || 0;
+    const nm = String(name);
+    try {
+        if (md === 0) { o.setattr("_parameter_longname", nm); o.setattr("_parameter_shortname", nm); }
+        else if (md === 1) o.setattr("_parameter_longname", nm);
+        else if (md === 2) o.message("_parameter_longname", nm);
+        else if (md === 3) { o.setattr("_parameter_longname", nm); o.setattr("_parameter_shortname", nm); o.setattr("annotation_name", nm); }
+        else if (md === 4) { o.setattr("_parameter_longname", nm); o.setattr("_parameter_shortname", nm); o.setattr("parameter_enable", 0); o.setattr("parameter_enable", 1); }
+        else if (md === 5) { o.setattr("parameter_longname", nm); o.setattr("parameter_shortname", nm); }
+        else if (md === 6) { o.message("parameter_longname", nm); o.message("parameter_shortname", nm); }
+        else if (md === 7) { o.message("_parameter_longname", nm); o.message("_parameter_shortname", nm); o.message("annotation_name", nm); }
+        else if (md === 8) { o.setattr("_parameter_longname", nm); o.setattr("_parameter_shortname", nm); o.setattr("_parameter_invisible", 1); o.setattr("_parameter_invisible", 0); }
+        else if (md === 9) { o.setattr("_parameter_longname", nm); o.setattr("_parameter_shortname", nm); o.setattr("parameter_mappable", 0); o.setattr("parameter_mappable", 1); }
+        else if (md === 10) { o.setattr("_parameter_longname", nm); o.setattr("_parameter_shortname", nm); o.setattr("_parameter_enable", 0); o.setattr("_parameter_enable", 1); }
+        else if (md === 11) { o.setattr("_parameter_longname", nm); o.setattr("_parameter_shortname", nm); o.message("_parameter_invisible", 1); o.message("_parameter_invisible", 0); }
+    } catch (e) { dlog("test_rename failed", String(e)); }
 }

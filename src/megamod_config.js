@@ -28,7 +28,9 @@
 //   MM.addModulator(type[, slot])   -> slot index or -1 (full). type = MOD_LFO..MOD_MSEG
 //   MM.removeModulator(i)           also deletes its mappings
 //   MM.setModType(i, type)          resets params to that type's defaults, keeps name/color/mappings
-//   MM.setParam(i, key, v)          key in MOD_PARAM_KEYS ("rate","sync","syncDiv","shape","phase","retrig",
+//   MM.setParam(i, key, v)          (UI path: a control in AUTO_KEYS[type] is also MESSAGED into its saved live.* parameter so Live records
+//                                   automation; Live -> model input comes through autop() / autod() and never pushes back, dirties or undoes)
+//                                   key in MOD_PARAM_KEYS ("rate","sync","syncDiv","shape","phase","retrig",
 //                                   "bipolar","depth","attack","release","gain","smooth","steps","glide",
 //                                   "oneshot","seed","loopOn","loopStart","loopEnd","enabled"); clamps
 //   MM.setName(i, s) / MM.setColor(i, idx)
@@ -43,7 +45,7 @@
 //   MM.mappingCapacity()            -> {used, max: MAX_MAPPINGS (256), free}
 //   MM.MAX_MAPPINGS                 256
 //   MM.mappingSlot(id)              the pool slot 0..255 of a mapping (-1 if none)
-//   MM.updateMapping(id, patch)     keys: min / max (0..1, Remote), mode ("mod"|"remote"), polarity (1 "+", 0 "±", -1 "−"), range (0..1; the Mod depth),
+//   MM.updateMapping(id, patch)     keys: depth (0..1, default 1: scales the output, schema 8; the first AUTO_DEPTH_SLOTS pool slots mirror it in a Live parameter), min / max (0..1, Remote), mode ("mod"|"remote"), polarity (1 "+", 0 "±", -1 "−"), range (0..1; the Mod depth),
 //                                   shape (MSEG points [{x,y,curve,sCurve}], the transfer curve), enabled,
 //                                   mod (retarget slot)
 //   MM.deleteMapping(id)
@@ -73,7 +75,7 @@
 // STATE MODEL (persisted in blob param "MegaModState")
 // =====================================================================================
 // state = {
-//   schema: 7,                  // 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
+//   schema: 8,                  // 8 = per-mapping `depth` (older states get 1); 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
@@ -84,6 +86,7 @@
 //            attack,release,gain,smooth,steps,glide,oneshot,seed,loopOn,loopStart,loopEnd},
 //            points:[{x,y,curve,sCurve}], stepVals:[32 x 0..1]}
 // Mapping = {id, mod, enabled, mode:"mod"|"remote", polarity(1 "+" | 0 "±" | -1 "−"), range(0..1, default 0.5; the Mod depth, there is no separate amount),
+//            depth(0..1, default 1 = 100%; schema 8: scales the output, Mod: o *= depth, Remote: min + (max - min) * y * depth, i.e. the span shrinks toward `min`; 1:1 at 1),
 //            min(0..1), max(0..1) (Remote only: independent absolute limits of the target parameter, min > max inverts; defaults 0 / 1; polarity / range are ignored in Remote but kept),
 //            shape:[{x,y,curve,sCurve}] (editable MSEG transfer curve, x = modulator 0..1, y = output 0..1), target:{path,name,trackName,deviceName,paramName}}   (runtime-only: slot, pid, missing)
 //
@@ -112,8 +115,102 @@
 //   Remote: y' = min + (max-min)*(invert ? 1-y : y), polarity 1, range 1, amount 1 (so v = y').
 // =====================================================================================
 
-const MEGAMOD_VERSION = 7; // schema version of the JSON state
+const MEGAMOD_VERSION = 8; // schema version of the JSON state
 const MAX_MODS = 16;
+
+
+// ---- automatable parameter pool (saved live.* objects, see "AUTOMATION POOL" in AGENTS.md section 21) ----
+// Every numeric control of every modulator slot is one of AUTO_PARAMS generic Live parameters (+ an On toggle) per slot; a type maps
+// its controls to the generic positions with AUTO_KEYS (null = unused for that type). Every discrete control (the LFO shape and the
+// SYNC / BIP / RTG / 1SH / LOOP chips) has its own FIXED-meaning switch parameter (AUTO_SW_KEYS, objects at_<slot * 6 + t>), so those
+// Live names are stable across types: "M3 Shape", "M3 Sync", ... The generic parameter is a 0..100 "percent"
+// float: norm = value / 100, mapped to the control's real range with the SAME curve the UI knob uses (log for rate / attack /
+// release). Live objects are named ap_<slot * AUTO_PER_SLOT + j> (j = AUTO_PARAMS is On), depth objects ad_<k>, the load marker ap_marker.
+const AUTO_PARAMS = 5; // generic controls per slot (the max over the types)
+const AUTO_PER_SLOT = AUTO_PARAMS + 1; // + On
+const AUTO_COUNT = MAX_MODS * AUTO_PER_SLOT; // 96 modulator parameters
+// per-slot switch parameters: the LFO shape (a 5-way tab) and the five boolean chips (live.text toggles). The meaning of each is fixed
+// (the same model key for every type); AUTO_SW_USED says which ones a type shows (the others stay unused / hidden).
+const AUTO_SW_KEYS = ["shape", "sync", "bipolar", "retrig", "oneshot", "loopOn"];
+const AUTO_SW_NAMES = ["Shape", "Sync", "Bipolar", "Retrig", "1Shot", "Loop"];
+const AUTO_SW_PER_SLOT = AUTO_SW_KEYS.length;
+const AUTO_SW_COUNT = MAX_MODS * AUTO_SW_PER_SLOT; // 96 switch parameters
+const AUTO_DEPTH_SLOTS = 64; // mapping pool slots 0..63 have an automatable Depth parameter
+// type -> model keys per generic position (depth is always position 2 so a Depth lane keeps its meaning across types)
+const AUTO_KEYS = [
+    null,
+    ["rate", "syncDiv", "depth", "phase", null], // LFO (the shape is a switch parameter)
+    ["attack", "release", "depth", "gain", null], // Envelope follower
+    ["rate", "syncDiv", "depth", "smooth", "seed"], // Random
+    ["rate", "syncDiv", "depth", "steps", "glide"], // Steps
+    ["rate", "syncDiv", "depth", "loopStart", "loopEnd"], // MSEG
+];
+const AUTO_SW_USED = [
+    [],
+    ["shape", "sync", "bipolar", "retrig"], // LFO
+    ["bipolar"], // Envelope follower
+    ["sync", "bipolar", "retrig"], // Random
+    ["sync", "bipolar", "oneshot", "retrig"], // Steps
+    ["sync", "bipolar", "oneshot", "loopOn", "retrig"], // MSEG
+];
+const AUTO_LABELS = {
+    rate: "Rate", syncDiv: "Div", depth: "Depth", phase: "Phase", shape: "Shape", attack: "Attack", release: "Release",
+    gain: "Gain", smooth: "Smooth", seed: "Seed", steps: "Steps", glide: "Glide", loopStart: "Start", loopEnd: "End",
+};
+const AUTO_LOG = { rate: true, attack: true, release: true };
+// control value <-> normalized 0..1 (the UI knob curve: log for rate / attack / release, linear otherwise)
+function autoNorm(key, v) {
+    const r = MOD_PARAM_RANGE[key];
+    if (!r) return 0;
+    const x = clamp(num(v, r[0]), r[0], r[1]);
+    if (AUTO_LOG[key]) return clamp(Math.log(x / r[0]) / Math.log(r[1] / r[0]), 0, 1);
+    return clamp((x - r[0]) / (r[1] - r[0]), 0, 1);
+}
+function autoValue(key, n) {
+    const r = MOD_PARAM_RANGE[key];
+    if (!r) return 0;
+    const c = clamp(num(n, 0), 0, 1);
+    const x = AUTO_LOG[key] ? r[0] * Math.pow(r[1] / r[0], c) : r[0] + (r[1] - r[0]) * c;
+    return r[2] ? Math.round(x) : x;
+}
+// The Live parameter names are FIXED (saved in the device): "M3 A" .. "M3 E" (the generic controls) and "M3 On" for slot 3, "Depth 5" for
+// pool slot 5. Live does NOT pick up a runtime rename (verified in Live 12.4.6: `_parameter_longname` / `_parameter_shortname` and the
+// other attributes change the object but the LOM DeviceParameter.name stays), so the meaning of a letter depends on the modulator type
+// (AUTO_KEYS) and the UI shows it in the tooltips.
+const AUTO_LETTERS = ["A", "B", "C", "D", "E"];
+function autoSlotNames(slot) {
+    const out = [];
+    for (let j = 0; j < AUTO_PARAMS; j++) out.push("M" + (slot + 1) + " " + AUTO_LETTERS[j]);
+    out.push("M" + (slot + 1) + " On");
+    return out;
+}
+// "M3 Shape" / "M3 Sync" / ... (fixed meaning for every type)
+function autoSwitchName(slot, t) {
+    return "M" + (slot + 1) + " " + AUTO_SW_NAMES[t];
+}
+// index t (0..AUTO_SW_PER_SLOT-1) of a model key's switch parameter, or -1 (also -1 when the type does not show that control)
+function autoSwitchIndex(type, key) {
+    const used = AUTO_SW_USED[type];
+    if (!used || used.indexOf(key) < 0) return -1;
+    return AUTO_SW_KEYS.indexOf(key);
+}
+function autoDepthName(k) {
+    return "Depth " + (k + 1);
+}
+// what generic control j of a modulator of `type` means ("Rate", ...; "" when unused for that type)
+function autoControlLabel(type, j) {
+    const keys = AUTO_KEYS[type];
+    return keys && keys[j] ? AUTO_LABELS[keys[j]] : "";
+}
+// the Live parameter name of a modulator control (`key` in AUTO_KEYS[type]) or "" when it has none
+function autoLiveName(type, slot, key) {
+    const keys = AUTO_KEYS[type];
+    if (key === "enabled") return "M" + (slot + 1) + " On";
+    const t = autoSwitchIndex(type, key);
+    if (t >= 0) return autoSwitchName(slot, t);
+    const j = keys ? keys.indexOf(key) : -1;
+    return j >= 0 ? autoSlotNames(slot)[j] : "";
+}
 
 // ---- engine buffer layouts (contract with src/megamod_engine.genexpr; tests parse the genexpr) ----
 const CFG_STRIDE = 24; // floats per slot in buffer~ ---megamodcfg
@@ -485,7 +582,7 @@ function mappingShape(m) {
 
 function defaultMapping(id, mod, target, mode) {
     return {
-        id, mod, enabled: 1, mode: mode === "remote" ? "remote" : "mod", polarity: 0, range: 0.5, min: 0, max: 1,
+        id, mod, enabled: 1, mode: mode === "remote" ? "remote" : "mod", polarity: 0, range: 0.5, depth: 1, min: 0, max: 1,
         shape: linearShape(), target: sanitizeTarget(target),
     };
 }
@@ -535,6 +632,11 @@ function sanitizeMapping(m, schema) {
     d.mode = m && m.mode === "remote" ? "remote" : "mod";
     d.polarity = clamp(Math.round(num(m && m.polarity, 0)), -1, 1);
     d.range = clamp(num(m && m.range, 0.5), 0, 1);
+    d.depth = clamp(num(m && m.depth, 1), 0, 1); // schema < 8: no depth = 100%
+    // pool slot this mapping is bound to, kept across saves so a "Depth <k>" automation lane keeps following it
+    // (missing / invalid = allocate the lowest free slot on load)
+    const ps = Math.round(num(m && m.slot, -1));
+    if (ps >= 0 && ps < MAX_MAPPINGS) d.slot = ps;
     d.shape = mappingShape(m);
     // schema < 6 carried a separate amount (-1..1, default 0.5): fold it into range (see MIGRATION)
     const fold = legacy || (schema !== undefined && schema < 6);
@@ -845,7 +947,7 @@ function shapeCurve(u, type, amt, steps) {
     }
 }
 
-// Mapping output for engine value x in -1..1 (Mod: signed offset o = range * (...); Remote: absolute 0..1 from min / max).
+// Mapping output for engine value x in -1..1 (Mod: signed offset o = depth * range * (...); Remote: absolute 0..1, min + (max - min) * y * depth).
 // Raw objects without `polarity` (hand-written / pre-schema-4) use the legacy invert / bipolar / min / max formula.
 function mappingOutput(m, x) {
     const u = clamp((x + 1) / 2, 0, 1);
@@ -856,13 +958,14 @@ function mappingOutput(m, x) {
         if (m.mode === "remote") return clamp(c, 0, 1);
         return m.amount * (m.bipolar ? 2 * c - 1 : c);
     }
+    const dep = clamp(num(m.depth, 1), 0, 1); // per-mapping Depth (schema 8): Mod o *= depth, Remote span shrinks toward min
     if (m.mode === "remote") {
         const lo = clamp(num(m.min, 0), 0, 1);
         const hi = clamp(num(m.max, 1), 0, 1);
-        return clamp(lo + (hi - lo) * c, 0, 1);
+        return clamp(lo + (hi - lo) * c * dep, 0, 1);
     }
     const pol = m.polarity === 0 ? 0 : m.polarity < 0 ? -1 : 1;
-    return num(m.range, 0.5) * (pol === 0 ? 2 * c - 1 : pol * c);
+    return num(m.range, 0.5) * dep * (pol === 0 ? 2 * c - 1 : pol * c);
 }
 
 function mappingTable(m) {
@@ -961,6 +1064,7 @@ if (nodeModule && nodeModule.exports) {
         MOD_NONE, MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG, MOD_TYPE_NAMES, MOD_TYPE_SHORT, LFO_SHAPES,
         CURVE_LINEAR, CURVE_EXP, CURVE_LOG, CURVE_S, CURVE_STEPPED, CURVE_NAMES, SYNC_BEATS, SYNC_LABELS, MOD_COLORS,
         MOD_PARAM_KEYS, MOD_PARAM_RANGE, MIN_WIDTH, MAX_WIDTH, BLOB_CHUNK,
+        AUTO_PARAMS, AUTO_PER_SLOT, AUTO_COUNT, AUTO_SW_KEYS, AUTO_SW_NAMES, AUTO_SW_PER_SLOT, AUTO_SW_COUNT, AUTO_SW_USED, autoSwitchName, autoSwitchIndex, AUTO_DEPTH_SLOTS, AUTO_KEYS, AUTO_LABELS, AUTO_LOG, AUTO_LETTERS, autoNorm, autoValue, autoSlotNames, autoDepthName, autoControlLabel, autoLiveName,
         clamp, num, frac, smoothstep01, evalSegmentT, evalMseg, defaultMsegPoints, sanitizeMsegPoints, msegTable,
         linearShape, sanitizeShape, curveToShape, mappingShape,
         defaultParams, defaultStepVals, makeModSlot, clampParam, defaultState, defaultSettings, sanitizeSettings, SMOOTH_MAX_MS, RATE_MUL_MIN, RATE_MUL_MAX, RATE_MUL_STEPS, RATE_SNAP_OCT,

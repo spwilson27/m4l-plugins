@@ -240,8 +240,8 @@ function checkPool(v, p, boxes, byId, lines) {
     }
     near(C.shapeCurve(0.5, C.CURVE_EXP, 0.5, 4), 0.0625, 1e-9, "exp amt 0.5 -> power 4");
     // ---- mapping shape (MSEG transfer curve) ----
-    eq(C.MEGAMOD_VERSION, 7, "schema version 7 (device-global settings)");
-    eq(C.defaultState().schema, 7, "new states are schema 7");
+    eq(C.MEGAMOD_VERSION, 8, "schema version 8 (per-mapping depth)");
+    eq(C.defaultState().schema, 8, "new states are schema 8");
     {
         const d = C.defaultMapping(1, 0, {});
         eq(JSON.stringify([d.polarity, d.range, d.amount, d.invert, d.bipolar, d.min, d.max]), JSON.stringify([0, 0.5, null, null, null, 0, 1]), "default mapping: ± , range 0.5, no amount, min 0, max 1, no legacy invert / bipolar");
@@ -346,7 +346,7 @@ function checkPool(v, p, boxes, byId, lines) {
                         const old = { id: 1, mod: 0, mode: "mod", polarity: pol, range, amount, shape, target: { path: "p" } };
                         const st = C.normalizeState({ schema, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [old], nextMapId: 2 });
                         const m = st.mappings[0];
-                        eq(st.schema, 7, "migrated state is schema 7");
+                        eq(st.schema, 8, "migrated state is schema 8");
                         eq(m.amount, undefined, "amount dropped");
                         near(m.range, Math.abs(amount) * range, 1e-12, `schema ${schema} pol ${pol} a ${amount} r ${range}: range'`);
                         eq(m.polarity, amount < 0 && pol !== 0 ? -pol : pol, `schema ${schema} pol ${pol} a ${amount}: polarity swap`);
@@ -498,7 +498,7 @@ function checkPool(v, p, boxes, byId, lines) {
         ok(worst < 0.02, `migrated tables match the old formula (max error ${worst.toFixed(4)} < 0.02)`);
         const v1 = { schema: 1, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 3, mod: 0, curve: C.CURVE_STEPPED, curveSteps: 3, amount: 1, target: { path: "p" } }], nextMapId: 4 };
         const st = C.normalizeState(v1);
-        eq(st.schema, 7, "migrated state is the current schema");
+        eq(st.schema, 8, "migrated state is the current schema");
         eq(st.mappings[0].shape.length, 6, "stepped(3) = 3 hard steps = 6 points");
         eq(st.mappings[0].shape.map((p) => p.y).join(), "0,0,0.5,0.5,1,1", "stepped levels 0, 0.5, 1");
         near(C.mappingTable(st.mappings[0])[128], 0.0, 1e-9, "stepped middle step is flat");
@@ -514,7 +514,7 @@ function checkPool(v, p, boxes, byId, lines) {
         s2.mappings.push(m2); s2.nextMapId = 2;
         const back = C.deserializeState(C.serializeState(s2));
         eq(JSON.stringify(back.mappings[0].shape), JSON.stringify(m2.shape), "shape round trip");
-        eq(back.schema, 7, "current schema stays");
+        eq(back.schema, 8, "current schema stays");
         // a legacy-field mapping handed straight to the table helpers still resolves (audio-test fixtures)
         const legacy = { mode: "mod", amount: 0.8, bipolar: 1, invert: 0, curve: C.CURVE_S, curveAmt: 0.6, curveSteps: 4 };
         near(C.mappingOutput(legacy, 0.3), C.mappingOutput(Object.assign({}, legacy, { shape: C.curveToShape(C.CURVE_S, 0.6, 4) }), 0.3), 1e-12, "legacy fields fall back to the converted shape");
@@ -650,9 +650,9 @@ function checkPool(v, p, boxes, byId, lines) {
 
 // ---------------------------------------------------------------- 5b. settings (schema 7), engine ratemul
 {
-    eq(C.MEGAMOD_VERSION, 7, "schema 7");
+    eq(C.MEGAMOD_VERSION, 8, "schema 8");
     const d = C.defaultState();
-    eq(d.schema, 7, "default state is schema 7");
+    eq(d.schema, 8, "default state is schema 8");
     assert.deepStrictEqual(d.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true }); passed++;
     // sanitize: clamps, bad values -> defaults
     assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "remote", smoothMs: 9999, rateMul: 100 }), { defaultMode: "remote", smoothMs: 500, rateMul: 4, tooltips: true }); passed++;
@@ -678,7 +678,7 @@ function checkPool(v, p, boxes, byId, lines) {
     s.settings = { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, tooltips: true };
     const back = C.deserializeState(C.serializeState(s));
     assert.deepStrictEqual(back.settings, { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, tooltips: true }); passed++;
-    eq(back.schema, 7, "round trip is schema 7");
+    eq(back.schema, 8, "round trip is schema 8");
     // old states (schema 1..6, no settings) get the defaults and keep everything else
     for (const sc of [1, 2, 3, 4, 5, 6]) {
         const old = JSON.parse(C.stateToJson(s));
@@ -686,7 +686,7 @@ function checkPool(v, p, boxes, byId, lines) {
         old.schema = sc;
         const n = C.normalizeState(old);
         assert.deepStrictEqual(n.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true }); passed++;
-        eq(n.schema, 7, `schema ${sc} state normalizes to 7`);
+        eq(n.schema, 8, `schema ${sc} state normalizes to 8`);
         ok(!!n.mods[0], `schema ${sc}: modulators kept`);
     }
     // default mapping per mode
@@ -810,9 +810,33 @@ function makeEnv(lom) {
     // The saved pool: boxes are created lazily by name (mm_mid_k / mm_rid_k / mm_mod_k / mm_rem_k); every message is logged in order.
     const pool = {};
     let seq = 0;
+    // The saved automatable parameter pool (ap_<i>, ad_<k>, ap_marker): a mock live.* object holds a value, records setattr / message
+    // calls and (echo on, like Live) outputs a messaged value straight back through the script's autop / autod / autom entry points.
+    const live = {};
+    const liveCfg = { echo: true, canRead: true, ctx: null };
+    function liveObj(n) {
+        if (!live[n]) {
+            const o = { name: n, attrs: {}, attrLog: [], messages: [], value: 0 };
+            o.maxclass = /^ap_\d+$/.test(n) && Number(n.slice(3)) % 6 === 5 ? "live.text" : "live.numbox";
+            o.setattr = function (k, v) { this.attrs[k] = v; this.attrLog.push([k, v]); };
+            o.getattr = function (k) { return this.attrs[k]; };
+            o.message = function (t, v) { this.messages.push([t, v]); this.value = v; if (liveCfg.echo) emitLive(n, v); };
+            o.getvalueof = function () { if (!liveCfg.canRead) throw new Error("no getvalueof"); return this.value; };
+            live[n] = o;
+        }
+        return live[n];
+    }
+    function emitLive(n, v) {
+        const m = /^(ap|ad|at)_(\d+)$/.exec(n);
+        if (n === "ap_marker") liveCfg.ctx.autom(v);
+        else if (m[1] === "ap") liveCfg.ctx.autop(Number(m[2]), v);
+        else if (m[1] === "at") liveCfg.ctx.autot(Number(m[2]), v);
+        else liveCfg.ctx.autod(Number(m[2]), v);
+    }
     const patcher = {
         getnamed(n) {
             if (n === "megamod_engine") return engine;
+            if ((/^ap_\d+$/.test(n) && Number(n.slice(3)) < 96) || (/^at_\d+$/.test(n) && Number(n.slice(3)) < 96) || (/^ad_\d+$/.test(n) && Number(n.slice(3)) < 64) || n === "ap_marker") return liveObj(n);
             const m = /^mm_(mid|rid|mod|rem)_(\d+)$/.exec(n);
             if (!m || Number(m[2]) >= 256) return null;
             if (!pool[n]) {
@@ -842,7 +866,8 @@ function makeEnv(lom) {
         inlets: 1, outlets: 2,
     };
     vm.createContext(ctx);
-    return { ctx, log, bufs, observers, patcher, engine, pool };
+    liveCfg.ctx = ctx;
+    return { ctx, log, bufs, observers, patcher, engine, pool, live, liveCfg, liveObj, emitLive };
 }
 
 function loadScript(variant, env) {
@@ -1011,10 +1036,48 @@ for (const v of variants) {
     eq(vm.runInContext(`MM.mappingStatus(${freq2.id})`, env2.ctx), "ok", `${v}: restored mapping live`);
     for (const m2 of maps2) {
         const sl = vm.runInContext(`MM.mappingSlot(${m2.id})`, env2.ctx);
-        ok(sl >= 0 && sl < maps2.length, `${v}: restored mapping ${m2.id} has a pool slot`);
+        ok(sl >= 0 && sl < C.MAX_MAPPINGS, `${v}: restored mapping ${m2.id} has a pool slot`);
         eq(env2.bufs["---megamodroute"].data[2 * sl], m2.mod, `${v}: restored mapping ${m2.id} routed`);
     }
     eq(env2.bufs["---megamodcfg"].data[C.CF_TYPE], 1, `${v}: engine buffers rewritten on load`);
+    // stable pool slots: deleting a mapping never moves the others, and a reload gives every mapping its saved slot
+    // back (so a "Depth <k>" automation lane keeps following its mapping); a new mapping fills the lowest gap
+    {
+        const r2 = (c) => vm.runInContext(c, env2.ctx);
+        const ids = r2("MM.allMappings().map((m) => m.id)");
+        if (ids.length >= 2) {
+            const before = {};
+            for (const id of ids) before[id] = r2(`MM.mappingSlot(${id})`);
+            const victim = ids.reduce((a, b) => (before[a] <= before[b] ? a : b)); // the lowest slot
+            r2(`MM.deleteMapping(${victim})`);
+            for (const id of ids) if (id !== victim) eq(r2(`MM.mappingSlot(${id})`), before[id], `${v}: delete keeps mapping ${id} in slot ${before[id]}`);
+            const blob = r2("MM.save()");
+            const env3 = makeEnv(mockLom());
+            loadScript(v, env3);
+            env3.ctx.setvalueof(...blob);
+            env3.ctx.setnames(...NAMES);
+            env3.ctx.init_lom();
+            const r3 = (c) => vm.runInContext(c, env3.ctx);
+            for (const id of ids) if (id !== victim) {
+                eq(r3(`MM.mappingSlot(${id})`), before[id], `${v}: reload restores mapping ${id} to its saved slot ${before[id]}`);
+                eq(r3(`MM.getMapping(${id}).slot`), before[id], `${v}: mapping ${id} slot is in the saved state`);
+            }
+            const fresh = r3("MM.addMapping(1, {path: 'live_set tracks 0 devices 0 parameters 0', paramName: 'Dry/Wet', id: 1})");
+            if (fresh) eq(r3(`MM.mappingSlot(${fresh.id})`), before[victim], `${v}: a new mapping fills the freed slot ${before[victim]}`);
+            // a corrupt / duplicate saved slot falls back to the lowest free one instead of sharing a slot
+            const dup = JSON.parse(JSON.stringify(r3("MM.state")));
+            if (dup.mappings.length >= 2) {
+                dup.mappings[1].slot = dup.mappings[0].slot;
+                const env4 = makeEnv(mockLom());
+                loadScript(v, env4);
+                env4.ctx.setvalueof(...vm.runInContext(`serializeState(${JSON.stringify(dup)})`, env4.ctx));
+                env4.ctx.setnames(...NAMES);
+                env4.ctx.init_lom();
+                const sl = vm.runInContext("MM.allMappings().map((m) => MM.mappingSlot(m.id))", env4.ctx);
+                eq(new Set(sl).size, sl.length, `${v}: duplicate saved slots never share a pool slot`);
+            }
+        }
+    }
     // load before names / LOM (Live restores the blob first)
     const lom3 = mockLom();
     lom3.tree.tracks[1].devices[1].params = null;
@@ -1181,6 +1244,498 @@ for (const v of variants) {
     env.ctx.preview && env.ctx.preview();
     run("paint()");
     eq(env.log.notify > 0, true, `${v}: notifyclients called`);
+}
+
+// A parameter face: presentation 1, hidden 1, parked 1x1 outside the v8ui, every colour alpha 0, in front of the v8ui, before the panels
+// the faces move (presentation_rect / hidden) but nothing is ever renamed
+function isRename(a) { return a[0] !== "presentation_rect" && a[0] !== "hidden"; }
+function checkFace(id, b, boxes) {
+    eq(b.presentation, 1, `${id} face: presentation 1`);
+    eq(b.hidden, 1, `${id} face: hidden 1`);
+    deq(b.presentation_rect, [0, 0, 1, 1], `${id} face: parked 1x1`);
+    const ui = boxes.find((x) => x.id === "obj-viz");
+    const [bx, by, bw, bh] = ui.presentation_rect;
+    const [ax, ay, aw, ah] = b.presentation_rect;
+    ok(ax + aw <= bx || bx + bw <= ax || ay + ah <= by || by + bh <= ay, `${id} face: parked outside the interactive v8ui`);
+    ok(ax >= 0 && ay >= 0 && ax + aw <= p0Width(boxes) && ay + ah <= 169, `${id} face: parked inside the device`);
+    ok(boxes.indexOf(b) > boxes.indexOf(ui), `${id} face: in front of the v8ui (later in boxes)`);
+    const firstPanel = boxes.findIndex((x) => x.maxclass === "panel");
+    ok(boxes.indexOf(b) < firstPanel, `${id} face: before the background panels`);
+    const cols = Object.entries(b).filter(([k, v]) => /color/.test(k) && Array.isArray(v) && v.length === 4);
+    ok(cols.length >= 6 && cols.every(([k, v]) => v[3] === 0), `${id} face: every colour alpha 0 (${cols.length} colours)`);
+    ok(["live.dial", "live.text", "live.tab", "live.numbox"].includes(b.maxclass), `${id} face: ${b.maxclass} (no live.slider: its automation dot moves with the value)`);
+    if (b.maxclass === "live.dial") { eq(b.showname, 0, `${id} face: showname 0`); eq(b.shownumber, 0, `${id} face: shownumber 0`); }
+    else if (b.maxclass === "live.text") { eq(b.text, "", `${id} face: no text`); eq(b.texton, "", `${id} face: no texton`); }
+}
+function p0Width() { return 588; }
+
+// ---------------------------------------------------------------- 7. automatable parameter pool + per-mapping depth
+{
+    // ---- 7a. builder output: the saved pool objects
+    const { doc } = readAmxd(path.join(ROOT, "devices", "Mega Modulator.amxd"));
+    const boxes = doc.patcher.boxes.map((b) => b.box);
+    const byVar = Object.fromEntries(boxes.filter((b) => b.varname).map((b) => [b.varname, b]));
+    const apIds = [];
+    for (let i = 0; i < C.AUTO_COUNT; i++) apIds.push("ap_" + i);
+    const adIds = [];
+    for (let k = 0; k < C.AUTO_DEPTH_SLOTS; k++) adIds.push("ad_" + k);
+    const atIds = [];
+    for (let i = 0; i < C.AUTO_SW_COUNT; i++) atIds.push("at_" + i);
+    eq(C.AUTO_COUNT, 96, "16 slots x (5 generic + On) = 96 modulator parameters");
+    eq(C.AUTO_SW_COUNT, 96, "16 slots x (shape + 5 booleans) = 96 switch parameters");
+    eq(C.AUTO_PARAMS, 5, "N = 5 generic controls per slot (the max over the types)");
+    eq(C.AUTO_DEPTH_SLOTS, 64, "64 automatable mapping depths");
+    const allAuto = apIds.concat(atIds, adIds, ["ap_marker"]);
+    eq(new Set(allAuto).size, 257, "257 unique pool varnames (96 + 96 + 64 + marker)");
+    const longnames = new Set();
+    for (const id of allAuto) {
+        const b = byVar[id];
+        ok(b, `${id} exists`);
+        eq(b.parameter_enable, 1, `${id} parameter_enable 1`);
+        // parameter faces (AGENTS.md section 21): every pool object but the marker is a transparent, parked face; `hidden` does not
+        // remove a parameter from Live's list (checked in Live)
+        if (id === "ap_marker") ok(b.presentation === undefined && b.hidden === undefined, "the marker is not a face");
+        else checkFace(id, b, boxes);
+        const vo = b.saved_attribute_attributes.valueof;
+        if (id === "ap_marker") eq(vo.parameter_invisible, 1, "the marker is the only invisible parameter");
+        else ok(vo.parameter_invisible === undefined || vo.parameter_invisible === 0, `${id} visible in Live's parameter list`);
+        eq(vo.parameter_linknames, 0, `${id}: renaming the long name never changes the varname`);
+        eq(vo.parameter_longname, vo.parameter_shortname, `${id} long == short name`);
+        ok(!longnames.has(vo.parameter_longname), `${id} unique long name ${vo.parameter_longname}`);
+        longnames.add(vo.parameter_longname);
+        // AGENTS.md: Int parameters are 8 bit; everything here is a Float 0..100 (or an enum / 0..1 marker), so no int range > 255
+        if (b.maxclass === "live.text") { eq(vo.parameter_type, 2, `${id} toggle is an enum`); deq(vo.parameter_enum, ["Off", "On"], `${id} enum`); eq(b.mode, 1, `${id} Toggle mode`); }
+        else if (b.maxclass === "live.tab") { eq(id.startsWith("at_"), true, `${id} tab is a switch`); eq(vo.parameter_type, 2, `${id} shape is an enum`); deq(vo.parameter_enum, C.LFO_SHAPES, `${id} enum = LFO shapes`); eq(vo.parameter_mmax, 4, `${id} 5 values`); }
+        else if (id === "ap_marker") { eq(vo.parameter_type, 1, "marker int"); ok(vo.parameter_mmax <= 255, "marker int range"); eq(vo.parameter_mmax, 2, "marker 0 / 1 / 2"); }
+        else { eq(b.maxclass, id.startsWith("ad_") ? "live.numbox" : "live.dial", `${id} dial / numbox face`); eq(vo.parameter_type, 0, `${id} float`); eq(vo.parameter_mmin, 0, `${id} min`); eq(vo.parameter_mmax, 100, `${id} max`); eq(vo.parameter_unitstyle, 5, `${id} percent`); }
+    }
+    eq(boxes.filter((b) => b.maxclass === "live.text" && /^ap_\d+$/.test(b.varname)).length, 16, "16 On toggles");
+    eq(boxes.filter((b) => b.maxclass === "live.text" && /^at_\d+$/.test(b.varname)).length, 16 * 5, "80 boolean switch toggles");
+    eq(boxes.filter((b) => b.maxclass === "live.tab" && /^at_\d+$/.test(b.varname)).length, 16, "16 shape tabs");
+    eq(boxes.filter((b) => b.maxclass === "live.numbox").length, 64 + 1, "64 depth numbox faces + the marker");
+    eq(boxes.filter((b) => b.maxclass === "live.dial" && b.presentation === 1).length, 80, "80 generic dial faces");
+    eq(boxes.filter((b) => b.maxclass === "live.slider").length, 0, "no live.slider anywhere (its automation dot moves with the value)");
+    eq(boxes.filter((b) => b.presentation === 1 && b.hidden === 1 && /^(ap|at|ad)_\d+$/.test(b.varname || "")).length, 96 + 96 + 64, "256 faces, all parked hidden");
+    const nameOf = (v) => byVar[v].saved_attribute_attributes.valueof.parameter_longname;
+    eq(nameOf("at_0"), "M1 Shape", "slot 1 shape switch name");
+    deq([1, 2, 3, 4, 5].map((t) => nameOf("at_" + (2 * 6 + t))), ["M3 Sync", "M3 Bipolar", "M3 Retrig", "M3 1Shot", "M3 Loop"], "slot 3 toggle names");
+    // the saved names ARE the Live names (fixed; a runtime rename does not reach Live): M<n> A..E / M<n> On, Depth <k>
+    for (let sl = 0; sl < 16; sl++) {
+        const nm = C.autoSlotNames(sl);
+        for (let j = 0; j < 6; j++) eq(byVar["ap_" + (sl * 6 + j)].saved_attribute_attributes.valueof.parameter_longname, nm[j], `saved name ap_${sl * 6 + j}`);
+    }
+    for (let sl = 0; sl < 16; sl++) for (let t = 0; t < 6; t++) eq(nameOf("at_" + (sl * 6 + t)), C.autoSwitchName(sl, t), `saved name at_${sl * 6 + t}`);
+    for (let k = 0; k < 64; k++) eq(byVar["ad_" + k].saved_attribute_attributes.valueof.parameter_longname, C.autoDepthName(k), `saved name ad_${k}`);
+    // every object outputs through its own prepend into obj-viz (inlet 0), exactly once
+    const lines = doc.patcher.lines.map((l) => l.patchline);
+    const idOfVar = (v) => byVar[v].id;
+    for (let i = 0; i < 96; i++) {
+        const out = lines.filter((l) => l.source[0] === idOfVar("ap_" + i));
+        eq(out.length, 1, `ap_${i} has one cord`);
+        const pre = boxes.find((b) => b.id === out[0].destination[0]);
+        eq(pre.text, `prepend autop ${i}`, `ap_${i} prepend`);
+        ok(lines.some((l) => l.source[0] === pre.id && l.destination[0] === "obj-viz" && l.destination[1] === 0), `prepend autop ${i} -> obj-viz`);
+    }
+    for (let i = 0; i < 96; i++) {
+        const out = lines.filter((l) => l.source[0] === idOfVar("at_" + i));
+        eq(out.length, 1, `at_${i} has one cord`);
+        const pre = boxes.find((b) => b.id === out[0].destination[0]);
+        eq(pre.text, `prepend autot ${i}`, `at_${i} prepend`);
+        ok(lines.some((l) => l.source[0] === pre.id && l.destination[0] === "obj-viz" && l.destination[1] === 0), `prepend autot ${i} -> obj-viz`);
+    }
+    for (let k = 0; k < 64; k++) {
+        const out = lines.filter((l) => l.source[0] === idOfVar("ad_" + k));
+        const pre = boxes.find((b) => b.id === out[0].destination[0]);
+        eq(pre.text, `prepend autod ${k}`, `ad_${k} prepend`);
+        ok(lines.some((l) => l.source[0] === pre.id && l.destination[0] === "obj-viz"), `prepend autod ${k} -> obj-viz`);
+    }
+    ok(boxes.find((b) => b.text === "prepend autom"), "marker prepend");
+    // panels are still the last boxes
+    const nPan = boxes.filter((b) => b.maxclass === "panel").length;
+    ok(boxes.slice(-nPan).every((b) => b.maxclass === "panel" && b.background === 1), "background panels stay last");
+    // every parameter long name in the device is unique (Live requires it)
+    const allLong = boxes.filter((b) => b.saved_attribute_attributes && b.saved_attribute_attributes.valueof && b.saved_attribute_attributes.valueof.parameter_longname).map((b) => b.saved_attribute_attributes.valueof.parameter_longname);
+    eq(new Set(allLong).size, allLong.length, "device parameter names are unique");
+    ok(doc.patcher.boxes.length < 1700, `patch stays reasonable (${doc.patcher.boxes.length} boxes)`);
+    // the engine slot keys the generic params map to exist as model controls with ranges
+    for (let t = 1; t <= 5; t++) {
+        const keys = C.AUTO_KEYS[t];
+        eq(keys.length, 5, `type ${t} has 5 positions`);
+        eq(keys[2] === "depth" || t === 2 && keys[2] === "depth", true, `type ${t}: Depth is position 3`);
+        for (const k of keys) if (k) ok(C.MOD_PARAM_RANGE[k], `type ${t} key ${k} has a range`);
+        eq(new Set(keys.filter(Boolean)).size, keys.filter(Boolean).length, `type ${t} keys unique`);
+    }
+
+    // ---- 7b. name tables (fixed Live names, per-type control labels)
+    deq(C.autoSlotNames(2), ["M3 A", "M3 B", "M3 C", "M3 D", "M3 E", "M3 On"], "slot 3 Live names");
+    deq(C.autoSlotNames(15), ["M16 A", "M16 B", "M16 C", "M16 D", "M16 E", "M16 On"], "slot 16 Live names");
+    eq(C.autoDepthName(0), "Depth 1", "first depth name");
+    eq(C.autoDepthName(63), "Depth 64", "last depth name");
+    const allNames = [];
+    for (let sl = 0; sl < 16; sl++) allNames.push(...C.autoSlotNames(sl));
+    for (let sl = 0; sl < 16; sl++) for (let t = 0; t < 6; t++) allNames.push(C.autoSwitchName(sl, t));
+    for (let k = 0; k < 64; k++) allNames.push(C.autoDepthName(k));
+    eq(new Set(allNames).size, 256, "all 256 Live names are unique");
+    const lab = (t) => [0, 1, 2, 3, 4].map((j) => C.autoControlLabel(t, j));
+    deq(lab(C.MOD_LFO), ["Rate", "Div", "Depth", "Phase", ""], "LFO control labels (the shape is a switch parameter)");
+    deq(lab(C.MOD_ENV), ["Attack", "Release", "Depth", "Gain", ""], "Envelope control labels (one unused)");
+    deq(lab(C.MOD_RANDOM), ["Rate", "Div", "Depth", "Smooth", "Seed"], "Random control labels");
+    deq(lab(C.MOD_STEPS), ["Rate", "Div", "Depth", "Steps", "Glide"], "Steps control labels");
+    deq(lab(C.MOD_MSEG), ["Rate", "Div", "Depth", "Start", "End"], "MSEG control labels");
+    deq(lab(0), ["", "", "", "", ""], "no type: no labels");
+    eq(C.autoLiveName(C.MOD_LFO, 2, "rate"), "M3 A", "LFO rate is M3 A");
+    eq(C.autoLiveName(C.MOD_ENV, 0, "release"), "M1 B", "Envelope release is M1 B");
+    eq(C.autoLiveName(C.MOD_MSEG, 4, "loopEnd"), "M5 E", "MSEG end is M5 E");
+    eq(C.autoLiveName(C.MOD_LFO, 2, "enabled"), "M3 On", "enable is On");
+    eq(C.autoLiveName(C.MOD_LFO, 2, "gain"), "", "a control without a parameter has no name");
+    // value curves = the UI knob curve (log for rate / attack / release)
+    near(C.autoValue("rate", 0), 0.01, 1e-12, "rate lo");
+    near(C.autoValue("rate", 1), 40, 1e-9, "rate hi");
+    near(C.autoValue("rate", 0.5), Math.sqrt(0.01 * 40), 1e-9, "rate log midpoint");
+    near(C.autoNorm("rate", Math.sqrt(0.4)), 0.5, 1e-9, "rate norm");
+    eq(C.autoValue("syncDiv", 0.5), 8, "syncDiv rounds");
+    eq(C.autoValue("shape", 1), 4, "shape hi");
+    eq(C.autoValue("steps", 0), 1, "steps lo");
+    eq(C.autoValue("seed", 1), 1000, "seed hi");
+    for (const k of Object.keys(C.MOD_PARAM_RANGE)) {
+        if (["enabled", "sync", "retrig", "bipolar", "oneshot", "loopOn"].includes(k)) continue;
+        for (const n of [0, 0.13, 0.5, 0.97, 1]) {
+            const v = C.autoValue(k, n);
+            near(C.autoValue(k, C.autoNorm(k, v)), v, 1e-9 * Math.max(1, Math.abs(v)), `${k} value round trip at ${n}`);
+        }
+    }
+
+    // ---- 7c. depth in the model: output, migration, save / load
+    {
+        const sh = C.linearShape();
+        const modM = (depth, pol) => ({ id: 1, mod: 0, mode: "mod", polarity: pol, range: 0.8, depth, min: 0, max: 1, shape: sh });
+        for (const pol of [1, 0, -1]) for (const x of [-1, -0.3, 0, 0.6, 1]) {
+            near(C.mappingOutput(modM(1, pol), x), C.mappingOutput({ id: 1, mod: 0, mode: "mod", polarity: pol, range: 0.8, min: 0, max: 1, shape: sh }, x), 1e-12, `Mod depth 1 is 1:1 (pol ${pol}, x ${x})`);
+            near(C.mappingOutput(modM(0.5, pol), x), 0.5 * C.mappingOutput(modM(1, pol), x), 1e-12, `Mod depth 0.5 halves the output (pol ${pol}, x ${x})`);
+            near(C.mappingOutput(modM(0, pol), x), 0, 1e-12, "Mod depth 0 = no modulation");
+        }
+        const remM = (depth) => ({ id: 1, mod: 0, mode: "remote", polarity: 0, range: 1, depth, min: 0.2, max: 0.8, shape: sh });
+        for (const x of [-1, -0.5, 0, 0.5, 1]) {
+            const y = (x + 1) / 2;
+            near(C.mappingOutput(remM(1), x), 0.2 + 0.6 * y, 1e-12, "Remote depth 1 is 1:1");
+            near(C.mappingOutput(remM(0.5), x), 0.2 + 0.6 * y * 0.5, 1e-12, "Remote depth 0.5 shrinks the span toward min");
+            near(C.mappingOutput(remM(0), x), 0.2, 1e-12, "Remote depth 0 sits at min");
+        }
+        near(C.mappingOutput({ id: 1, mod: 0, mode: "remote", polarity: 0, range: 1, depth: 0.5, min: 0.8, max: 0.2, shape: sh }, 1), 0.5, 1e-12, "Remote inverted span (min > max) shrinks toward min");
+        // tables follow
+        const tb = C.mappingTable(modM(0.25, 1));
+        near(tb[255], 0.8 * 0.25, 1e-12, "table end value scaled");
+        // migration: a schema 7 mapping without depth loads at 100%
+        const old = C.normalizeState({ schema: 7, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, mode: "mod", polarity: 1, range: 0.6, shape: sh, target: {} }], nextMapId: 2 });
+        eq(old.schema, 8, "schema 7 -> 8");
+        eq(old.mappings[0].depth, 1, "migrated mapping depth defaults to 1");
+        near(C.mappingOutput(old.mappings[0], 1), 0.6, 1e-12, "migrated output unchanged");
+        const withD = C.normalizeState({ schema: 8, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, depth: 0.37, target: {} }, { id: 2, mod: 0, depth: 7, target: {} }, { id: 3, mod: 0, depth: "x", target: {} }] });
+        deq(withD.mappings.map((m) => m.depth), [0.37, 1, 1], "depth sanitized (clamped, junk -> 1)");
+        const rt = C.deserializeState(C.serializeState(withD));
+        eq(rt.mappings[0].depth, 0.37, "depth survives the blob round trip");
+        eq(C.defaultMapping(1, 0, {}).depth, 1, "default mapping depth 1");
+    }
+
+    // ---- 7d. the runtime: renames, pushes, Live -> model, depth, load order
+    const lomA = mockLom();
+    function boot(opts) {
+        const lom = mockLom();
+        const e = makeEnv(lom);
+        loadScript("", e);
+        if (opts && opts.beforeReady) opts.beforeReady(e);
+        e.ctx.setnames(...NAMES);
+        e.ctx.init_lom();
+        e.run = (c) => vm.runInContext(c, e.ctx);
+        e.lom = lom;
+        e.sel = (pth) => e.observers.find((x) => x._prop === "selected_parameter").cb(["selected_parameter", "id", lom.idOf(pth)]);
+        return e;
+    }
+    const lastVal = (e, n) => e.live[n].value;
+    const attr = (e, n) => e.live[n].attrs._parameter_longname;
+    {
+        const e = boot();
+        // ready: the marker was pushed; no object is ever renamed (Live ignores runtime renames, names are fixed)
+        eq(lastVal(e, "ap_marker"), 2, "a new device pushes the marker (2: values and switches stored)");
+        const renamed = () => Object.keys(e.live).filter((n) => e.live[n].attrLog.some(isRename));
+        deq(renamed(), [], "ready: nothing is renamed");
+        // add / type change / delete / undo push the values of the right generic position (names stay)
+        e.run("MM.addModulator(MOD_LFO)");
+        near(lastVal(e, "ap_0"), 100 * C.autoNorm("rate", 1), 1e-9, "LFO rate value pushed (position A)");
+        near(lastVal(e, "ap_1"), 100 * C.autoNorm("syncDiv", 9), 1e-9, "LFO syncDiv value pushed (B)");
+        near(lastVal(e, "ap_2"), 100, 1e-9, "LFO depth pushed (1.0) at C");
+        near(lastVal(e, "ap_3"), 100 * C.autoNorm("phase", 0), 1e-9, "LFO phase pushed (D)");
+        eq(lastVal(e, "at_0"), 0, "LFO shape pushed to the Shape switch (M1 Shape)");
+        const p0 = e.run("MM.state.mods[0].p");
+        eq(lastVal(e, "at_1"), p0.sync, "LFO sync pushed (M1 Sync)");
+        eq(lastVal(e, "at_2"), p0.bipolar, "LFO bipolar pushed (M1 Bipolar)");
+        eq(lastVal(e, "at_3"), p0.retrig, "LFO retrig pushed (M1 Retrig)");
+        ok(!e.live.at_4 && !e.live.at_5, "LFO has no 1Shot / Loop: those switches are never touched");
+        eq(lastVal(e, "ap_5"), 1, "On pushed");
+        e.run("MM.setModType(0, MOD_ENV)");
+        near(lastVal(e, "ap_0"), 100 * C.autoNorm("attack", 5), 1e-9, "Envelope attack pushed on the type change (A)");
+        near(lastVal(e, "ap_1"), 100 * C.autoNorm("release", 120), 1e-9, "Envelope release (B)");
+        near(lastVal(e, "ap_2"), 100, 1e-9, "depth stays at C");
+        near(lastVal(e, "ap_3"), 100 * C.autoNorm("gain", 0), 1e-9, "Envelope gain pushed (D)");
+        e.run("MM.setModType(0, MOD_MSEG)");
+        near(lastVal(e, "ap_3"), 100 * C.autoNorm("loopStart", 0), 1e-9, "MSEG start (D)");
+        near(lastVal(e, "ap_4"), 100 * C.autoNorm("loopEnd", 1), 1e-9, "MSEG end (E)");
+        e.run("MM.setModType(0, MOD_STEPS)");
+        near(lastVal(e, "ap_3"), 100 * C.autoNorm("steps", 8), 1e-9, "Steps count (D)");
+        e.run("MM.setModType(0, MOD_RANDOM)");
+        near(lastVal(e, "ap_4"), 100 * C.autoNorm("seed", 1), 1e-9, "Random seed (E)");
+        e.run("MM.setParam(0, 'smooth', 0.4)");
+        e.run("MM.removeModulator(0)");
+        e.run("MM.undo()");
+        near(lastVal(e, "ap_3"), 100 * C.autoNorm("smooth", 0.4), 1e-9, "undo re-applies the values");
+        e.run("MM.addModulator(MOD_LFO); MM.addModulator(MOD_ENV)");
+        near(lastVal(e, "ap_12"), 100 * C.autoNorm("attack", 5), 1e-9, "third modulator = slot 3 (ap_12 = M3 A)");
+        deq(renamed(), [], "no rename call in any flow (add / type change / delete / undo)");
+
+        // UI drag -> param output (messaged, so Live records it); the echo does not change anything
+        const n0 = e.live.ap_6.messages.length;
+        const undo0 = e.run("MM.undoInfo().undo");
+        e.run("MM.setParam(1, 'rate', 5)");
+        eq(e.live.ap_6.messages.length, n0 + 1, "UI change messages the live object once");
+        eq(e.live.ap_6.messages[n0][0], "float", "messaged as a float (not `set`)");
+        near(e.live.ap_6.messages[n0][1], 100 * C.autoNorm("rate", 5), 1e-9, "UI value mapped with the knob curve");
+        near(e.run("MM.state.mods[1].p.rate"), 5, 1e-12, "echo leaves the model value");
+        e.run("MM.setParam(1, 'rate', 5)");
+        eq(e.live.ap_6.messages.length, n0 + 1, "an unchanged value is not pushed again");
+        eq(e.run("MM.undoInfo().undo"), undo0, "UI parameter change does not touch the undo stack");
+        e.run("MM.setParam(1, 'bipolar', 0)");
+        eq(e.live.ap_6.messages.length, n0 + 1, "controls outside the pool push nothing");
+        e.run("MM.setParam(1, 'loopStart', 0.9)"); // not a mapped key for LFO: no push, still a model change
+        e.run("MM.setParam(1, 'enabled', 0)");
+        eq(lastVal(e, "ap_11"), 0, "On follows the strip enable button");
+        e.run("MM.setParam(1, 'enabled', 1)");
+
+        // param input -> model: automation / macro. No push back, no notifyclients, no undo, cfg + redraw
+        const cfgBase = 1 * C.CFG_STRIDE;
+        const msgs = e.live.ap_6.messages.length;
+        const notify0 = e.log.notify;
+        const undo1 = e.run("MM.undoInfo()");
+        let changes = [];
+        e.run("MM.on('change', function (ev) { globalThis.__ch = (globalThis.__ch || []).concat([ev.kind]); })");
+        e.ctx.autop(6, 100 * C.autoNorm("rate", 12.5));
+        near(e.run("MM.state.mods[1].p.rate"), 12.5, 1e-6, "param input updates the model");
+        near(e.bufs["---megamodcfg"].data[cfgBase + C.CF_RATE], 12.5, 1e-6, "param input updates the engine cfg");
+        eq(e.live.ap_6.messages.length, msgs, "param input is never pushed back");
+        eq(e.log.notify, notify0, "param input does not mark the Set dirty");
+        deq(e.run("MM.undoInfo()"), undo1, "param input does not touch the undo stack");
+        ok(e.run("globalThis.__ch").includes("param"), "param input redraws through a `param` change");
+        // syncDiv (integer) from a macro
+        e.ctx.autop(7, 100 * 0.2);
+        eq(e.run("MM.state.mods[1].p.syncDiv"), 3, "integer control rounds");
+        // unused position and empty slot: nothing happens
+        const before = JSON.stringify(e.run("MM.state.mods[2].p"));
+        e.ctx.autop(12 + 4, 55); // Envelope has no 5th control
+        eq(JSON.stringify(e.run("MM.state.mods[2].p")), before, "unused position does nothing");
+        e.ctx.autop(5 * 6, 50);
+        ok(true, "empty slot input is ignored without throwing"); 
+        // On from Live
+        e.ctx.autop(11, 0);
+        eq(e.run("MM.state.mods[1].enabled"), 0, "On = 0 from Live bypasses the modulator");
+        eq(e.bufs["---megamodcfg"].data[cfgBase + C.CF_ENABLED], 0, "engine sees the bypass");
+        e.ctx.autop(11, 1);
+        eq(e.run("MM.state.mods[1].enabled"), 1, "On = 1");
+        // loop start / end coupling from Live
+        e.run("MM.setModType(1, MOD_MSEG)");
+        e.ctx.autop(6 + 4, 100 * C.autoNorm("loopEnd", 0.3));
+        e.ctx.autop(6 + 3, 100 * C.autoNorm("loopStart", 0.5));
+        ok(e.run("MM.state.mods[1].p.loopEnd") >= e.run("MM.state.mods[1].p.loopStart") + 0.05 - 1e-9, "loop window stays valid from Live input");
+    }
+
+    // ---- switch parameters (LFO shape + the boolean chips): UI <-> Live, engine, undo, no dirty / undo from Live
+    {
+        const e = boot();
+        e.run("MM.addModulator(MOD_LFO); MM.addModulator(MOD_MSEG); MM.addModulator(MOD_ENV)");
+        const cfg = (slot, off) => e.bufs["---megamodcfg"].data[slot * C.CFG_STRIDE + off];
+        const swIdx = (slot, key) => slot * 6 + C.AUTO_SW_KEYS.indexOf(key);
+        const swObj = (slot, key) => "at_" + swIdx(slot, key);
+        // the MSEG (slot 1) shows all five booleans, the Envelope (slot 2) only Bipolar
+        for (const k of ["sync", "bipolar", "oneshot", "loopOn", "retrig"]) eq(lastVal(e, swObj(1, k)), e.run(`MM.state.mods[1].p.${k}`), `MSEG ${k} pushed into its switch parameter`);
+        eq(lastVal(e, swObj(2, "bipolar")), e.run("MM.state.mods[2].p.bipolar"), "Envelope bipolar pushed");
+        ok(!e.live[swObj(2, "sync")] && !e.live[swObj(2, "retrig")], "Envelope has no Sync / Retrig switch: never touched");
+        // UI -> Live: messaged once, echo ignored, unchanged value not pushed again
+        const n0 = e.live[swObj(1, "oneshot")].messages.length;
+        const undo0 = e.run("MM.undoInfo().undo");
+        e.run("MM.setParam(1, 'oneshot', 1)");
+        eq(e.live[swObj(1, "oneshot")].messages.length, n0 + 1, "UI chip click messages the switch once");
+        eq(e.live[swObj(1, "oneshot")].messages[n0][1], 1, "...with 1");
+        eq(e.run("MM.state.mods[1].p.oneshot"), 1, "the echo leaves the model value");
+        eq(cfg(1, C.CF_ONESHOT), 1, "engine cfg: oneshot on");
+        e.run("MM.setParam(1, 'oneshot', 1)");
+        eq(e.live[swObj(1, "oneshot")].messages.length, n0 + 1, "an unchanged switch is not pushed again");
+        e.run("MM.setParam(0, 'shape', 3)");
+        eq(lastVal(e, swObj(0, "shape")), 3, "LFO shape chip -> Shape switch = 3");
+        eq(e.run("MM.undoInfo().undo"), undo0, "UI switch changes are not on the undo stack");
+        // Live -> model: no push back, no dirty, no undo, engine updated, redraw
+        const notify0 = e.log.notify;
+        const msgs = e.live[swObj(1, "sync")].messages.length;
+        const undo1 = e.run("MM.undoInfo()");
+        e.run("globalThis.__sw = []; MM.on('change', function (ev) { globalThis.__sw.push(ev.kind); })");
+        const syncBefore = e.run("MM.state.mods[1].p.sync");
+        e.ctx.autot(swIdx(1, "sync"), 1 - syncBefore);
+        eq(e.run("MM.state.mods[1].p.sync"), 1 - syncBefore, "SYNC from Live flips the model");
+        eq(cfg(1, C.CF_SYNC), 1 - syncBefore, "...and the engine");
+        eq(e.live[swObj(1, "sync")].messages.length, msgs, "switch input is never pushed back");
+        eq(e.log.notify, notify0, "switch input does not mark the Set dirty");
+        deq(e.run("MM.undoInfo()"), undo1, "switch input does not touch the undo stack");
+        ok(e.run("globalThis.__sw").includes("param"), "switch input redraws through a `param` change");
+        e.ctx.autot(swIdx(0, "shape"), 4);
+        eq(e.run("MM.state.mods[0].p.shape"), 4, "Shape from Live (a 5-way tab)");
+        eq(cfg(0, C.CF_SHAPE), 4, "...reaches the engine");
+        e.ctx.autot(swIdx(0, "shape"), 9);
+        eq(e.run("MM.state.mods[0].p.shape"), 4, "an out-of-range shape is clamped (4)");
+        e.ctx.autot(swIdx(1, "bipolar"), 0); e.ctx.autot(swIdx(1, "loopOn"), 1); e.ctx.autot(swIdx(1, "retrig"), 0);
+        deq([0, 1, 0].map((v, i) => e.run(`MM.state.mods[1].p.${["bipolar", "loopOn", "retrig"][i]}`)), [0, 1, 0], "bipolar / loop / retrig from Live");
+        eq(cfg(1, C.CF_BIPOLAR) + cfg(1, C.CF_LOOPON) * 10 + cfg(1, C.CF_RETRIG) * 100, 10, "...in the engine cfg");
+        // a switch the type does not show, and an empty slot, do nothing
+        const before = JSON.stringify(e.run("MM.state.mods[2].p"));
+        e.ctx.autot(swIdx(2, "sync"), 1); e.ctx.autot(swIdx(2, "oneshot"), 1);
+        eq(JSON.stringify(e.run("MM.state.mods[2].p")), before, "unused switches (Envelope Sync / 1Shot) do nothing");
+        e.ctx.autot(7 * 6 + 1, 1);
+        ok(true, "an empty slot's switch is ignored without throwing");
+        // type change and undo push the switches of the new type / restore them
+        e.run("MM.setParam(1, 'bipolar', 1)");
+        e.run("MM.setModType(1, MOD_STEPS)");
+        for (const k of ["sync", "bipolar", "oneshot", "retrig"]) eq(lastVal(e, swObj(1, k)), e.run(`MM.state.mods[1].p.${k}`), `type change pushes ${k}`);
+        e.run("MM.setParam(1, 'retrig', 0); MM.setParam(1, 'oneshot', 1)");
+        e.run("MM.removeModulator(1)");
+        e.emitLive(swObj(1, "oneshot"), 0); // automation moved the (now unused) parameter meanwhile: the model has no modulator, so it is ignored
+        e.run("MM.undo()");
+        eq(lastVal(e, swObj(1, "oneshot")), 1, "undo re-applies the oneshot switch");
+        eq(lastVal(e, swObj(1, "retrig")), 0, "undo re-applies the retrig switch");
+        deq(Object.keys(e.live).filter((n) => e.live[n].attrLog.some(isRename)), [], "no switch object is ever renamed");
+    }
+
+    // ---- depth parameters
+    {
+        const e = boot();
+        e.run("MM.addModulator(MOD_LFO)");
+        const P_FREQ = "live_set tracks 1 devices 1 parameters 0";
+        const P_RES = "live_set tracks 1 devices 1 parameters 1";
+        const P_DRY = "live_set tracks 0 devices 0 parameters 0";
+        const P_DRY2 = "live_set tracks 1 devices 0 parameters 0";
+        e.run("MM.armLearn(0, false)"); e.sel(P_FREQ);
+        near(lastVal(e, "ad_0"), 100, 1e-9, "depth 100% pushed");
+        deq(Object.keys(e.live).filter((n) => e.live[n].attrLog.some(isRename)), [], "depth parameters are never renamed");
+        e.run("MM.armLearn(0, false)"); e.sel(P_DRY);
+        e.run("MM.armLearn(0, false)"); e.sel(P_DRY2);
+        // UI -> param: updateMapping({depth}) pushes, rewrites the table, and the echo changes nothing
+        const m = e.run("MM.allMappings()[0]");
+        e.run(`MM.setSettings({ defaultMode: 'mod' }); MM.updateMapping(${m.id}, { range: 1, polarity: 1 })`);
+        const msgs0 = e.live.ad_0.messages.length;
+        e.run(`MM.updateMapping(${m.id}, { depth: 0.5 })`);
+        near(lastVal(e, "ad_0"), 50, 1e-9, "UI depth pushed as percent");
+        eq(e.live.ad_0.messages.length, msgs0 + 1, "one push");
+        const slot0 = e.run(`MM.mappingSlot(${m.id})`);
+        eq(slot0, 0, "first mapping is pool slot 0");
+        near(e.bufs["---mmcurve"].data[slot0 * 256 + 255], 0.5, 1e-9, "the table is scaled by the depth");
+        near(e.run(`MM.getMapping(${m.id}).depth`), 0.5, 1e-12, "model depth");
+        // Live -> model, throttled table rewrite (fake clock)
+        let now = 1000;
+        e.run("MM._test.setNow(function () { return globalThis.__now; })");
+        e.ctx.__now = 1000;
+        const tableAt = () => e.bufs["---mmcurve"].data[slot0 * 256 + 255];
+        e.ctx.autod(0, 40);
+        near(e.run(`MM.getMapping(${m.id}).depth`), 0.4, 1e-9, "Live depth input updates the model");
+        near(tableAt(), 0.4, 1e-9, "first table write is immediate");
+        e.ctx.__now = 1010;
+        const pokesBefore = tableAt();
+        e.ctx.autod(0, 30);
+        near(e.run(`MM.getMapping(${m.id}).depth`), 0.3, 1e-9, "model follows every Live value");
+        // the mock Task runs a scheduled write at once, so a throttled write still lands (trailing edge); with a clock < 33 ms the
+        // direct path is skipped and goes through the Task
+        near(tableAt(), 0.3, 1e-9, "throttled table write lands (trailing edge)");
+        eq(e.live.ad_0.messages.length, msgs0 + 1, "Live depth input is never pushed back");
+        const undoN = e.run("MM.undoInfo().undo");
+        e.ctx.autod(0, 20);
+        eq(e.run("MM.undoInfo().undo"), undoN, "depth input does not touch the undo stack");
+        e.ctx.autod(7, 20); // unbound slot: ignored
+        // delete releases: name + value
+        e.run(`MM.deleteMapping(${m.id})`);
+        near(lastVal(e, "ad_0"), 100, 1e-9, "a released depth goes back to 100%");
+        e.run("MM.undo()");
+        near(lastVal(e, "ad_0"), 20, 1e-6, "undo re-applies the depth value");
+    }
+
+    // ---- the 64-slot limit: a mapping beyond it keeps the UI depth but has no Live parameter
+    {
+        const e = boot();
+        e.run("MM.addModulator(MOD_LFO)");
+        for (let k = 0; k < 70; k++) e.run(`MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters ${k + 1}', paramName: 'P${k}', trackName: 'Drums', deviceName: 'Reverb', id: ${1000 + k} })`);
+        eq(e.run("MM.allMappings().length"), 70, "70 mappings");
+        ok(Object.keys(e.live).includes("ad_63"), "slot 63 is the last with a Live parameter");
+        ok(!Object.keys(e.live).includes("ad_64"), "no ad_64 object is ever touched");
+        const m69 = e.run("MM.allMappings()[69]");
+        eq(e.run(`MM.mappingSlot(${m69.id})`), 69, "mapping 70 sits in slot 69");
+        e.run(`MM.updateMapping(${m69.id}, { depth: 0.25 })`);
+        near(e.run(`MM.getMapping(${m69.id}).depth`), 0.25, 1e-12, "depth stays editable beyond slot 64");
+        near(e.bufs["---mmcurve"].data[69 * 256 + 255], 0.5 * 0.25, 1e-9, "table of slot 69 carries the depth (range 0.5 x depth 0.25)");
+        e.ctx.autod(64, 10); // not a Live object, ignored safely
+        ok(true, "depth input beyond 64 is ignored");
+    }
+
+    // ---- load order
+    {
+        // a set saved by the first device: modulators + a mapping, params moved away from the blob afterwards (automation / macro)
+        const src = boot();
+        src.run("MM.addModulator(MOD_LFO); MM.addModulator(MOD_ENV)");
+        src.run("MM.setParam(0, 'rate', 2); MM.setParam(1, 'attack', 10)");
+        src.run("MM.armLearn(0, false)"); src.sel("live_set tracks 1 devices 1 parameters 0");
+        const blob = src.run("MM.save()");
+        const stored = {}; for (const n of Object.keys(src.live)) stored[n] = src.live[n].value;
+        // (1) Live restored its values (marker stored) and they differ from the blob: Live wins
+        const liveVals = Object.assign({}, stored, { ap_0: 100 * C.autoNorm("rate", 7), ap_6: 100 * C.autoNorm("attack", 300), ad_0: 35, at_2: 0, ap_marker: 2 });
+        const eL = boot({ beforeReady: (e) => { e.ctx.setvalueof(blob); for (const n of Object.keys(liveVals)) { e.liveObj(n).value = liveVals[n]; e.emitLive(n, liveVals[n]); } } });
+        near(eL.run("MM.state.mods[0].p.rate"), 7, 1e-6, "stored marker: Live's rate wins over the blob");
+        near(eL.run("MM.state.mods[1].p.attack"), 300, 1e-6, "stored marker: Live's attack wins");
+        near(eL.run("MM.allMappings()[0].depth"), 0.35, 1e-9, "stored marker: Live's depth wins");
+        near(eL.bufs["---megamodcfg"].data[C.CF_RATE], 7, 1e-6, "adopted values reach the engine");
+        const infoL = eL.run("MM.autoInfo().init");
+        eq(infoL.stored, true, "init info: marker restored");
+        ok(infoL.cached > 0 && infoL.missing === 0 || infoL.cached + infoL.read > 0, "init info: values came from the objects");
+        eq(eL.run("MM.state.mods[0].p.bipolar"), 0, "stored marker 2: Live's Bipolar switch wins over the blob");
+        eq(eL.live.ap_marker.messages.length, 0, "marker is not rewritten when stored");
+        // (1b) a Set saved before the switches existed (marker 1): its switch objects hold their initial 0, the blob's values win
+        const eS = boot({ beforeReady: (e) => { e.ctx.setvalueof(blob); for (const n of Object.keys(stored)) { e.liveObj(n).value = n.startsWith("at_") ? 0 : n === "ap_marker" ? 1 : stored[n]; e.emitLive(n, e.liveObj(n).value); } } });
+        eq(eS.run("MM.state.mods[0].p.bipolar"), 1, "marker 1 (old Set): the switch parameters are not adopted, the blob's Bipolar is kept");
+        eq(lastVal(eS, "at_2"), 1, "marker 1: the blob's switch values are pushed");
+        eq(lastVal(eS, "ap_marker"), 2, "marker 1: upgraded to 2");
+        deq(Object.keys(eL.live).filter((n) => eL.live[n].attrLog.some(isRename)), [], "load: nothing renamed");
+        // (2) an old Set: no marker, no param values -> the blob's values are pushed once
+        const eO = boot({ beforeReady: (e) => { e.ctx.setvalueof(blob); } });
+        near(eO.run("MM.state.mods[0].p.rate"), 2, 1e-9, "no marker: the blob's rate is kept");
+        near(lastVal(eO, "ap_0"), 100 * C.autoNorm("rate", 2), 1e-9, "no marker: the blob's value is pushed into the parameter");
+        near(lastVal(eO, "ap_6"), 100 * C.autoNorm("attack", 10), 1e-9, "no marker: every parameter is pushed");
+        eq(lastVal(eO, "ap_marker"), 2, "no marker: the marker is set (2)");
+        eq(lastVal(eO, "at_2"), 1, "no marker: the switch values are pushed too");
+        eq(eO.run("MM.autoInfo().init.stored"), false, "init info: no marker -> pushed");
+        near(lastVal(eO, "ad_0"), 100, 1e-9, "no marker: depth pushed");
+        // (3) Live restored params at their initial 0 but without the marker (it must not adopt them)
+        const eZ = boot({ beforeReady: (e) => { e.ctx.setvalueof(blob); for (const n of Object.keys(stored)) if (n !== "ap_marker") e.emitLive(n, 0); } });
+        near(eZ.run("MM.state.mods[0].p.rate"), 2, 1e-9, "initial-value outputs without a marker are not adopted");
+        // (4) a preset / undo load after ready: the blob wins and the params follow
+        const eP = boot();
+        eP.ctx.setvalueof(blob);
+        near(eP.run("MM.state.mods[0].p.rate"), 2, 1e-9, "post-ready load: the blob wins");
+        near(lastVal(eP, "ap_0"), 100 * C.autoNorm("rate", 2), 1e-9, "post-ready load pushes the blob into the parameters");
+        near(lastVal(eP, "ap_6"), 100 * C.autoNorm("attack", 10), 1e-9, "post-ready load pushes the second modulator too");
+        // (5) the stored marker but an object that never output: fall back to reading it, else push
+        const eR = boot({ beforeReady: (e) => { e.ctx.setvalueof(blob); e.liveObj("ap_marker").value = 1; e.liveObj("ap_0").value = 100 * C.autoNorm("rate", 9); } });
+        near(eR.run("MM.state.mods[0].p.rate"), 9, 1e-6, "stored marker: values are read back from the object when it never output");
+        eR.liveCfg.canRead = false;
+        const eN = boot({ beforeReady: (e) => { e.liveCfg.canRead = false; e.ctx.setvalueof(blob); e.ctx.autom(1); } });
+        near(eN.run("MM.state.mods[0].p.rate"), 2, 1e-9, "stored marker without readable values keeps the blob");
+        near(lastVal(eN, "ap_0"), 100 * C.autoNorm("rate", 2), 1e-9, "...and pushes it");
+        // nothing is pushed before ready
+        const eB = makeEnv(mockLom());
+        loadScript("", eB);
+        eB.ctx.setvalueof(blob);
+        eq(Object.keys(eB.live).length, 0, "no live object is touched before ready");
+    }
 }
 
 console.log(`megamod tests passed (${passed} checks)`);

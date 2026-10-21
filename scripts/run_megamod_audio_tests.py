@@ -50,6 +50,7 @@ out1 = (go > 0.5) ? sin(twopi * ph) * amp * gate : 0;
 BIND = "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope"
 ROUTER_BIND = "route ---megamodroute, curve ---mmcurve"
 SETBUF = ("setbuffers ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute, configure")
+AUTO_RATE_NORM_4HZ = __import__("math").log(4.0 / 0.01) / __import__("math").log(40.0 / 0.01)  # autoNorm("rate", 4) (log curve 0.01..40 Hz)
 ROUTER = 3  # router under test (slots 96..127): outlet j = slot 96 + j
 
 
@@ -108,7 +109,7 @@ def device(gen_code, run):
 
 def make_probe(run, tag):
     """Temp probe file: CASE data + src/megamod_config.js + tests/megamod_probe.js (unique per run)."""
-    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele", "smooth_ms") if k in run}
+    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele", "smooth_ms", "dep", "remote", "dmin") if k in run}
     fd, path = tempfile.mkstemp(prefix=f"megamod_probe_{tag}_", suffix=".js")
     with os.fdopen(fd, "w", encoding="utf-8") as out:
         out.write("var CASE = " + json.dumps(case_obj) + ";\n")
@@ -121,7 +122,8 @@ def run_once(gen_code, run, tag):
     boxes, lines = device(gen_code, run)
     probe = make_probe(run, tag)
     # events: (ms after the measured window starts, message to the engine); negative = before the window
-    events = [(SETTLE_MS + t, "dev-gen", 0, text) for t, text in run.get("events", [])]
+    # an event is (t, text) for the engine, or (t, text, "obj-js") for the probe (autorate: a Live parameter moved)
+    events = [(SETTLE_MS + ev[0], ev[2] if len(ev) > 2 else "dev-gen", 0, ev[1]) for ev in run.get("events", [])]
     try:
         r = mh.run_case(f"megamod_{tag}", boxes, lines, probe_js=probe, settle_ms=SETTLE_MS, dur_ms=run["dur"],
                         channels=2, mode="stepped" if events else "nrt", events=events, probe_object="v8")
@@ -165,6 +167,17 @@ ROUTER_CASE = {"base": ROUTER * mc.ROUTER_SLOTS, "slots": [
 # identity mapping (Mod, +-, range 1, linear) so the router output equals the engine output apart from smoothing
 MAPPING_ID = {"mode": "mod", "polarity": 0, "range": 1.0, "curve": 0, "curveAmt": 0.5, "curveSteps": 4}
 ROUTER_ID = {"base": ROUTER * mc.ROUTER_SLOTS, "slots": [{"slot": ROUTER * mc.ROUTER_SLOTS + 0, "src": 0, "map": MAPPING_ID}]}
+
+
+def depth_router(dep, mode, mn=0.2, mx=0.8):
+    """Router slots 96 (depth 1) and 97 (depth `dep`) from modulator 0 with the same Mod (+-, range 0.8) or Remote (min..max) mapping."""
+    base = ROUTER * mc.ROUTER_SLOTS
+    m = ({"mode": "remote", "min": mn, "max": mx, "polarity": 0, "range": 1.0} if mode == "remote"
+         else {"mode": "mod", "polarity": 0, "range": 0.8})
+    return {"base": base, "slots": [
+        {"slot": base, "src": 0, "map": dict(m, depth=1.0)},
+        {"slot": base + 1, "src": 0, "map": dict(m, depth=dep)},
+    ]}
 
 
 def cases():
@@ -222,6 +235,19 @@ def cases():
         "smoothing": [
             R("smooth50", [lfo(0, 4, 1.0)], (1, "rt0"), dur=2500, an="smooth", router=ROUTER_ID, rparams="smooth 50", smooth_ms=50),
             R("smooth0", [lfo(0, 4, 1.0)], (1, "rt0"), dur=2500, an="smooth", router=ROUTER_ID, rparams="smooth 0", smooth_ms=0),
+        ],
+        # Per-mapping Depth (schema 8, baked into the mapping table): Mod depth 0.5 halves the output, Remote shrinks the span toward min.
+        "mapping_depth": [
+            R("mod", [lfo(0, 0, 3.0)], ("rt0", "rt1"), dur=1000, an="depth", dep=0.5, router=depth_router(0.5, "mod")),
+            R("remote", [lfo(0, 0, 3.0)], ("rt0", "rt1"), dur=1000, an="depth", dep=0.5, remote=1, dmin=0.2,
+              router=depth_router(0.5, "remote")),
+            R("zero", [lfo(0, 0, 3.0)], ("rt0", "rt1"), dur=1000, an="depth", dep=0.0, router=depth_router(0.0, "mod")),
+        ],
+        # Automatable Rate parameter: `autorate` (obj-js) writes autoValue("rate", n) into the slot's cfg float mid-run, like the device
+        # does when the "M1 Rate" Live parameter moves; the LFO period follows (2 Hz -> 4 Hz = 0.5 s -> 0.25 s, no phase jump).
+        "auto_rate": [
+            R("rate_param", [lfo(0, 0, 2.0)], (1, 2), dur=2200, params="hbpm 120, hppq 0, hplay 0",
+              events=[(800, "autorate %.6f" % AUTO_RATE_NORM_4HZ, "obj-js")]),
         ],
         # Router gen (src: scripts/megamod_common.py router_gen_code): slots 96 / 97 route from two different
         # modulators with two different tables, slot 98 is off. Router outlet j = slot 96 + j.
@@ -457,6 +483,33 @@ def check(case, runs, metas, errors, notes):
                 err(f"{tag} mid-run change: out of range")
         if envx["env_maxerr"] > 0.05 or envx["env_peak_out"] < envx["env_peak_ref"] - 0.05:
             err("the envelope follower must ignore ratemul")
+    elif case == "mapping_depth":
+        mod, rem, zero = ms
+        notes.append(f"Mod depth 0.5: peak {mod['depth_peak_full']:.3f} -> {mod['depth_peak_scaled']:.3f}, max err vs 0.5 x full {mod['depth_err']:.2e}; "
+                     f"Remote depth 0.5 (min 0.2): err vs min + 0.5 (full - min) {rem['depth_err']:.2e}, peak {rem['depth_peak_full']:.3f} -> "
+                     f"{rem['depth_peak_scaled']:.3f}; Mod depth 0 peak {zero['depth_peak_scaled']:.2e}")
+        if mod["depth_peak_full"] < 0.7:
+            err(f"Mod depth 1 should modulate (peak {mod['depth_peak_full']})")
+        if not near(mod["depth_peak_scaled"], 0.5 * mod["depth_peak_full"], 0.01):
+            err(f"Mod depth 0.5 must halve the output ({mod['depth_peak_scaled']} vs {0.5 * mod['depth_peak_full']})")
+        if not mod["depth_err"] <= 0.002:  # (written so that a NaN fails)
+            err(f"Mod depth 0.5: router output is not 0.5 x the full-depth output (err {mod['depth_err']})")
+        if not rem["depth_err"] <= 0.002:
+            err(f"Remote depth 0.5: output is not min + 0.5 x (full - min) (err {rem['depth_err']})")
+        if rem["depth_peak_scaled"] >= rem["depth_peak_full"] - 0.1:
+            err("Remote depth 0.5 should shrink the span")
+        if not zero["depth_err"] <= 0.002 or zero["depth_peak_scaled"] > 1e-6:
+            err(f"Mod depth 0 must not modulate (peak {zero['depth_peak_scaled']})")
+    elif case == "auto_rate":
+        m = ms[0]
+        ps = m["c1_periods"]
+        sr = m["sr"]
+        one = 2 * 3.141592653589793 * 4.0 / sr
+        notes.append(f"periods {ps[0]:.3f} -> {ps[-1]:.3f} (2 Hz = 0.5 s, 4 Hz = 0.25 s), maxStep {m['c1_maxStep']:.2e} (limit {one:.2e})")
+        if len(ps) < 4 or not near(ps[0], 0.5, 0.01) or not near(ps[-1], 0.25, 0.006):
+            err(f"the Rate parameter change must move the LFO period 0.5 -> 0.25 s, got {ps}")
+        if m["c1_maxStep"] > one * 1.03:
+            err(f"phase jump on the rate change (max step {m['c1_maxStep']} > {one})")
     elif case == "smoothing":
         s50, s0 = ms
         notes.append(f"smooth 50: tau {s50['smooth_tau_ms']:.1f} ms (edges {s50['smooth_edges']:.0f}), +1 ms level {s50['smooth_instant']:.3f}, "

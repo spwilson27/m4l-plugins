@@ -107,6 +107,29 @@ function configure() {
     post("MEGAMOD_CONFIGURED\n");
 }
 
+// ---------------------------------------------------------------- automatable parameter (src/megamod_config.js autoValue)
+// `autorate <norm 0..1>`: what the device does when the "M<n> Rate" Live parameter moves (autop -> MM._autoParamIn): the parameter's
+// normalized value is mapped with autoValue("rate", n) and written to the slot's cfg float, which the engine reads every sample.
+function autorate(n) {
+    var slot = (CASE.mods && CASE.mods.length ? CASE.mods[0].slot : 0);
+    new Buffer(names.cfg).poke(1, slot * CFG_STRIDE + CF_RATE, [autoValue("rate", Number(n))]);
+}
+
+// Per-mapping Depth: a = router slot with depth 1, b = router slot with depth CASE.dep (same source, same table otherwise).
+// Mod: b must be dep * a; Remote (CASE.dmin = the mapping's min): b = min + dep * (a - min).
+function analyzeDepth(rep, a, b, sr) {
+    var err = 0, ma = 0, mb = 0, i, exp;
+    for (i = 0; i < a.length; i++) {
+        exp = CASE.remote ? CASE.dmin + CASE.dep * (a[i] - CASE.dmin) : CASE.dep * a[i];
+        err = Math.max(err, Math.abs(b[i] - exp));
+        ma = Math.max(ma, Math.abs(a[i]));
+        mb = Math.max(mb, Math.abs(b[i]));
+    }
+    rep.push("depth_err " + err);
+    rep.push("depth_peak_full " + ma);
+    rep.push("depth_peak_scaled " + mb);
+}
+
 // ---------------------------------------------------------------- generic stats
 function stats(x, sr) {
     var n = x.length;
@@ -496,6 +519,7 @@ function analyzeInner(durMs) {
     else if (an === "lookup") analyzeLookup(rep, c1, c2, sr);
     else if (an === "routeoff") analyzeRouteOff(rep, c1, c2);
     else if (an === "smooth") analyzeSmooth(rep, c1, c2, sr);
+    else if (an === "depth") analyzeDepth(rep, c1, c2, sr);
 
     if (CASE.tele) analyzeTelemetry(rep, sr);
     for (var q = 0; q < rep.length; q++) {

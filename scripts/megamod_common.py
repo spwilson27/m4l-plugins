@@ -48,6 +48,17 @@ ROUTE_SAMPS = 512           # [2k] = source mod index or -1, [2k+1] spare
 ROUTERS = 8                 # router gen.codebox~ boxes
 ROUTER_SLOTS = MAX_MAPPINGS // ROUTERS  # 32 outlets each
 
+# automatable parameter pool (contract with src/megamod_config.js AUTO_*; tests/test_megamod.js checks both)
+MAX_MODS = 16
+AUTO_PARAMS = 5             # generic controls per modulator slot
+AUTO_PER_SLOT = AUTO_PARAMS + 1   # + On
+AUTO_DEPTH_SLOTS = 64       # mapping pool slots with an automatable Depth parameter
+AUTO_LETTERS = "ABCDE"     # fixed Live parameter names: M3 A .. M3 E, M3 On, Depth 5 (runtime renames do not reach Live)
+# per-slot switch parameters (objects at_<slot*6+t>): the LFO shape (live.tab, 5 values) and the 5 boolean chips (live.text toggles)
+AUTO_SW_NAMES = ["Shape", "Sync", "Bipolar", "Retrig", "1Shot", "Loop"]
+AUTO_SW_PER_SLOT = len(AUTO_SW_NAMES)
+LFO_SHAPE_NAMES = ["Sine", "Triangle", "Saw Up", "Saw Down", "Square"]
+
 V8_HEADER = (
     "mgraphics.init();\n"
     "mgraphics.relative_coords = 0;\n"
@@ -229,6 +240,189 @@ def pool_boxes_and_lines():
     return boxes, lines
 
 
+def auto_valueof(longname, enum=None, initial=0):
+    """Saved-parameter attributes of one pool object: generic 0..100 percent float (`enum` None) or an Off / On toggle.
+    parameter_linknames is 0 so renaming the long name at runtime never changes the scripting name (varname)."""
+    v = {
+        "parameter_linknames": 0,
+        "parameter_longname": longname,
+        "parameter_shortname": longname,
+        "parameter_initial": [initial],
+        "parameter_initial_enable": 0,
+    }
+    if enum:
+        v.update({"parameter_enum": enum, "parameter_mmax": len(enum) - 1, "parameter_type": 2, "parameter_unitstyle": 9})
+    else:
+        v.update({"parameter_mmin": 0.0, "parameter_mmax": 100.0, "parameter_type": 0, "parameter_unitstyle": 5})
+    return v
+
+
+# Every pool object is also a TRANSPARENT FACE (AGENTS.md section 21): in presentation, hidden, parked 1x1 in a corner outside the
+# v8ui, in front of it in z-order. At runtime the UI script moves it over the drawn control it belongs to (MM.faceApply), so a real
+# click / drag / right-click lands on a live.* object and Live's native parameter menu works. Every colour has alpha 0.
+FACE_PARK = [0.0, 0.0, 1.0, 1.0]
+CLEAR = [0.0, 0.0, 0.0, 0.0]
+FACE_COLORS = {
+    # Live snaps the size of a displayed live.dial to 27 x 28 and a live.numbox to 15 px high, so those faces are laid out as boxes of
+    # exactly that size (the UI centres a dial on its knob). A live.slider's automation dot was seen to move with the value, so no
+    # slider is used any more. The names are the attributes Max reports (getattrnames).
+    "live.dial": ["activedialcolor", "activefgdialcolor", "activeneedlecolor", "bordercolor", "dialcolor", "fgdialcolor",
+                  "focusbordercolor", "needlecolor", "panelcolor", "textcolor", "tricolor", "tribordercolor"],
+    "live.numbox": ["activebgcolor", "activeslidercolor", "activetricolor", "bordercolor", "focusbordercolor", "inactivelcdcolor",
+                    "lcdbgcolor", "lcdcolor", "textcolor", "tricolor"],
+    "live.tab": ["activebgcolor", "activebgoncolor", "bgcolor", "bgoncolor", "bordercolor", "focusbordercolor", "inactivelcdcolor",
+                 "inactivetextoffcolor", "inactivetextoncolor", "lcdbgcolor", "lcdcolor", "textcolor", "textoncolor"],
+    "live.text": ["activebgcolor", "activebgoncolor", "activetextcolor", "activetextoncolor", "bgcolor", "bgoncolor", "bordercolor",
+                  "textcolor", "textoncolor", "focusbordercolor"],
+}
+
+
+def face_attrs(maxclass):
+    """presentation + hidden + the fully transparent look of a face."""
+    a = {"presentation": 1, "presentation_rect": list(FACE_PARK), "hidden": 1}
+    for k in FACE_COLORS[maxclass]:
+        a[k] = list(CLEAR)
+    if maxclass == "live.dial":
+        a.update({"showname": 0, "shownumber": 0})
+    elif maxclass == "live.numbox":
+        a.update({"appearance": 0})
+    elif maxclass == "live.tab":
+        a.update({"rounded": 0, "num_lines_patching": 1, "num_lines_presentation": 1})
+    else:
+        a.update({"text": "", "texton": "", "rounded": 0, "border": 0})
+    return a
+
+
+def auto_face_param(obj_id, maxclass, varname, longname, x, y, initial=0):
+    """A generic 0..100 percent float parameter whose face is `maxclass` (live.dial for the modulator controls, live.numbox for Depth)."""
+    b = {
+        "id": obj_id,
+        "maxclass": maxclass,
+        "numinlets": 1,
+        "numoutlets": 2,
+        "outlettype": ["", "float"],
+        "parameter_enable": 1,
+        "patching_rect": [float(x), float(y), 44.0, 15.0],
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname, initial=initial)},
+        "varname": varname,
+    }
+    b.update(face_attrs(maxclass))
+    return {"box": b}
+
+
+def auto_numbox(obj_id, varname, longname, x, y, invisible=0, ptype=None, mmax=None):
+    """The hidden marker (a plain numbox, never a face)."""
+    b = {
+        "id": obj_id,
+        "maxclass": "live.numbox",
+        "numinlets": 1,
+        "numoutlets": 2,
+        "outlettype": ["", "float"],
+        "parameter_enable": 1,
+        "patching_rect": [float(x), float(y), 44.0, 15.0],
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname)},
+        "varname": varname,
+    }
+    if invisible:
+        b["saved_attribute_attributes"]["valueof"]["parameter_invisible"] = 1
+    if ptype is not None:  # hidden marker: integer 0..1
+        vo = b["saved_attribute_attributes"]["valueof"]
+        vo["parameter_type"] = ptype
+        vo["parameter_mmax"] = mmax
+        vo["parameter_unitstyle"] = 0
+    return {"box": b}
+
+
+def auto_shape_tab(obj_id, varname, longname, x, y):
+    """The LFO shape: a 5-way live.tab face (enum parameter)."""
+    b = {
+        "id": obj_id,
+        "maxclass": "live.tab",
+        "numinlets": 1,
+        "numoutlets": 3,
+        "outlettype": ["", "", "float"],
+        "parameter_enable": 1,
+        "patching_rect": [float(x), float(y), 92.0, 12.0],
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname, LFO_SHAPE_NAMES)},
+        "varname": varname,
+    }
+    b.update(face_attrs("live.tab"))
+    return {"box": b}
+
+
+def auto_toggle(obj_id, varname, longname, x, y):
+    b = {
+        "id": obj_id,
+        "maxclass": "live.text",
+        "mode": 1,
+        "numinlets": 1,
+        "numoutlets": 2,
+        "outlettype": ["", ""],
+        "parameter_enable": 1,
+        "patching_rect": [float(x), float(y), 44.0, 15.0],
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname, ["Off", "On"])},
+        "varname": varname,
+    }
+    b.update(face_attrs("live.text"))
+    return {"box": b}
+
+
+def auto_boxes_and_lines():
+    """The automatable parameter pool: per modulator slot AUTO_PARAMS generic live.dial (varname ap_<slot*6+j>) + an On live.text
+    (ap_<slot*6+5>) + 6 switches (at_<slot*6+t>: the LFO shape live.tab, then Sync / Bipolar / Retrig / 1Shot / Loop live.text),
+    AUTO_DEPTH_SLOTS Depth live.numbox (ad_<k>) and the hidden marker (ap_marker, 0 none / 1 values stored / 2 switches stored too). Each outputs through a
+    `prepend autop <idx>` / `prepend autod <k>` / `prepend autom` into the main v8ui. Saved, not in presentation, visible in Live's
+    parameter list (parameter_invisible 0) except the marker. The names are fixed (src/megamod_config.js autoSlotNames / autoDepthName)."""
+    boxes, lines = [], []
+    x0, y0 = 20.0, 2400.0
+    for slot in range(MAX_MODS):
+        for j in range(AUTO_PER_SLOT):
+            idx = slot * AUTO_PER_SLOT + j
+            name = f"M{slot + 1} On" if j == AUTO_PARAMS else f"M{slot + 1} {AUTO_LETTERS[j]}"
+            x = x0 + j * 70.0
+            y = y0 + slot * 70.0
+            oid = f"obj-ap-{idx}"
+            if j == AUTO_PARAMS:
+                boxes.append(auto_toggle(oid, f"ap_{idx}", name, x, y))
+            else:
+                boxes.append(auto_face_param(oid, "live.dial", f"ap_{idx}", name, x, y, initial=100 if j == 2 else 0))
+            pid = f"obj-apx-{idx}"
+            boxes.append(newobj(pid, f"prepend autop {idx}", x, y + 22, 66, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
+            lines.append(line(oid, 0, pid, 0))
+            lines.append(line(pid, 0, "obj-viz", 0))
+    for slot in range(MAX_MODS):
+        for t in range(AUTO_SW_PER_SLOT):
+            idx = slot * AUTO_SW_PER_SLOT + t
+            name = f"M{slot + 1} {AUTO_SW_NAMES[t]}"
+            x = x0 + 1750.0 + t * 70.0
+            y = y0 + slot * 70.0
+            oid = f"obj-at-{idx}"
+            if t == 0:
+                boxes.append(auto_shape_tab(oid, f"at_{idx}", name, x, y))
+            else:
+                boxes.append(auto_toggle(oid, f"at_{idx}", name, x, y))
+            pid = f"obj-atx-{idx}"
+            boxes.append(newobj(pid, f"prepend autot {idx}", x, y + 22, 66, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
+            lines.append(line(oid, 0, pid, 0))
+            lines.append(line(pid, 0, "obj-viz", 0))
+    for k in range(AUTO_DEPTH_SLOTS):
+        name = f"Depth {k + 1}"
+        x = x0 + 600.0 + (k % 16) * 70.0
+        y = y0 + (k // 16) * 70.0
+        oid = f"obj-ad-{k}"
+        boxes.append(auto_face_param(oid, "live.numbox", f"ad_{k}", name, x, y, initial=100))
+        pid = f"obj-adx-{k}"
+        boxes.append(newobj(pid, f"prepend autod {k}", x, y + 22, 66, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
+        lines.append(line(oid, 0, pid, 0))
+        lines.append(line(pid, 0, "obj-viz", 0))
+    marker = auto_numbox("obj-ap-marker", "ap_marker", "MM Auto Stored", x0 + 600.0, y0 + 300.0, invisible=1, ptype=1, mmax=2.0)
+    boxes.append(marker)
+    boxes.append(newobj("obj-apx-marker", "prepend autom", x0 + 600.0, y0 + 322.0, 80, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
+    lines.append(line("obj-ap-marker", 0, "obj-apx-marker", 0))
+    lines.append(line("obj-apx-marker", 0, "obj-viz", 0))
+    return boxes, lines
+
+
 def load_layout():
     path = os.path.join(ROOT_DIR, "scripts", "megamod_layout.json")
     with open(path, "r", encoding="utf-8") as f:
@@ -373,6 +567,9 @@ def build_patcher():
     pool_boxes, pool_lines = pool_boxes_and_lines()
     boxes.extend(pool_boxes)
     lines.extend(pool_lines)
+    auto_boxes, auto_lines = auto_boxes_and_lines()
+    boxes.extend(auto_boxes)
+    lines.extend(auto_lines)
     for r in range(ROUTERS):
         lines.append(line("obj-msg-router-bind", 0, f"obj-router-{r}", 0))
         lines.append(line("obj-route", 2, f"obj-router-{r}", 0))  # `smooth <ms>` -> router Param smooth

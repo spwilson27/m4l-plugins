@@ -6,6 +6,10 @@ by scripts/test_megamod_keys_live.js (over ssh):
   python3 scripts/mm_os_input.py front Live          bring the process to the front (by name)
   python3 scripts/mm_os_input.py window Live         print {"x","y","w","h"} of its first window (screen points)
   python3 scripts/mm_os_input.py click X Y [double]  left click at screen point X, Y
+  python3 scripts/mm_os_input.py drag X Y DX DY      left press at X, Y, drag by DX, DY, release
+  python3 scripts/mm_os_input.py cgwindows Live     window-server list of the process' windows (a context menu is one)
+  python3 scripts/mm_os_input.py move X Y [SECS]    move the pointer (no click)
+  python3 scripts/mm_os_input.py rclick X Y          right click (context menu stays open)
   python3 scripts/mm_os_input.py key delete          one key: delete | fwddelete | undo | redo | ctrl_z | ctrl_y | escape | cmd_d
   python3 scripts/mm_os_input.py keys                list the key names
 
@@ -45,8 +49,8 @@ _cg.CGEventSetIntegerValueField.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ct
 _cg.CFRelease.argtypes = [ctypes.c_void_p]
 
 
-def _mouse(kind, x, y, click_state=1):
-    ev = _cg.CGEventCreateMouseEvent(None, kind, CGPoint(x, y), 0)
+def _mouse(kind, x, y, click_state=1, button=0):
+    ev = _cg.CGEventCreateMouseEvent(None, kind, CGPoint(x, y), button)
     _cg.CGEventSetIntegerValueField(ev, 1, click_state)  # kCGMouseEventClickState
     _cg.CGEventPost(0, ev)  # kCGHIDEventTap
     _cg.CFRelease(ev)
@@ -62,6 +66,30 @@ def click(x, y, double=False):
         _mouse(2, x, y, n)
         time.sleep(0.08)
     time.sleep(0.25)
+
+
+def drag(x, y, dx, dy, steps=12, shift=False):
+    """A real left press at (x, y), dragged by (dx, dy) in `steps` events, released there (a held drag, like a user turning a dial)."""
+    _mouse(5, x, y)
+    time.sleep(0.2)
+    _mouse(1, x, y, 1)
+    time.sleep(0.15)
+    for i in range(1, steps + 1):
+        _mouse(6, x + dx * i / steps, y + dy * i / steps, 1)  # kCGEventLeftMouseDragged
+        time.sleep(0.03)
+    time.sleep(0.1)
+    _mouse(2, x + dx, y + dy, 1)
+    time.sleep(0.3)
+
+
+def rclick(x, y):
+    """A real right click (the context menu), without choosing anything."""
+    _mouse(5, x, y)
+    time.sleep(0.2)
+    _mouse(3, x, y, 1, 1)  # kCGEventRightMouseDown, button 1
+    time.sleep(0.05)
+    _mouse(4, x, y, 1, 1)
+    time.sleep(0.5)
 
 
 KEYS = {
@@ -103,6 +131,38 @@ def main(argv):
         print(json.dumps(window(argv[2])))
     elif cmd == "click":
         click(float(argv[2]), float(argv[3]), len(argv) > 4 and argv[4] == "double")
+    elif cmd == "drag":
+        drag(float(argv[2]), float(argv[3]), float(argv[4]), float(argv[5]))
+    elif cmd == "move":
+        _mouse(5, float(argv[2]), float(argv[3]))
+        time.sleep(float(argv[4]) if len(argv) > 4 else 0.15)
+    elif cmd == "rclick":
+        rclick(float(argv[2]), float(argv[3]))
+    elif cmd == "cgwindows":
+        # on-screen windows of a process from the window server (JXA + CoreGraphics): [layer, name, x, y, w, h, number]. A context menu
+        # is its own window (layer >= 101), which System Events does not list.
+        js = ('ObjC.import("CoreGraphics");'
+              'var a = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));'
+              'JSON.stringify(a.filter(function (w) { return w.kCGWindowOwnerName == "%s"; }).map(function (w) {'
+              'var b = w.kCGWindowBounds; return [w.kCGWindowLayer, w.kCGWindowName || "", b.X, b.Y, b.Width, b.Height, w.kCGWindowNumber]; }))' % argv[2])
+        r = subprocess.run(["osascript", "-l", "JavaScript", "-e", js], capture_output=True, text=True, timeout=30)
+        print(r.stdout.strip() or ("ERR " + r.stderr.strip()))
+    elif cmd == "menu":
+        # what System Events can see of Live's context menu: windows, menus of the process, menu items of its menu bars / windows
+        probes = [
+            ("windows", 'tell process "%s" to get name of every window'),
+            ("window roles", 'tell process "%s" to get {role, subrole} of every window'),
+            ("process menus", 'tell process "%s" to get name of every menu'),
+            ("window 1 menus", 'tell process "%s" to get name of every menu of window 1'),
+            ("window 1 elements", 'tell process "%s" to get {role, name} of every UI element of window 1'),
+            ("frontmost window menu items", 'tell process "%s" to get name of every menu item of every menu of every window'),
+            ("menu bar item count", 'tell process "%s" to get count of menu items of menu 1 of menu bar item 1 of menu bar 1'),
+        ]
+        for label, body in probes:
+            try:
+                print(f"{label}: {sysevents(body % argv[2])}")
+            except Exception as e:  # the probe that fails is information too
+                print(f"{label}: ERR {str(e).splitlines()[0][-90:]}")
     elif cmd == "key":
         press(argv[2])
     else:
