@@ -1481,10 +1481,13 @@ function ubPaintPolarity(r, pol, on, hl) {
         ubLine(cx - s, cy, cx + s, cy, c, 1, lw);
         ubLine(cx, cy - s, cx, cy + s, c, 1, lw);
     } else if (pol === 0) {
-        const d = s * 0.85;
-        ubLine(cx - s * 0.7, cy - d, cx + s * 0.7, cy - d, c, 1, lw);
-        ubLine(cx, cy - d - s * 0.7, cx, cy - d + s * 0.7, c, 1, lw);
-        ubLine(cx - s * 0.7, cy + d, cx + s * 0.7, cy + d, c, 1, lw);
+        // same overall height as + and − (cy ± s): a half-height plus on top, the minus near the bottom
+        const pc = cy - s * 0.45;
+        const a = s * 0.55;
+        const hw = s * 0.75;
+        ubLine(cx - hw, pc, cx + hw, pc, c, 1, lw);
+        ubLine(cx, pc - a, cx, pc + a, c, 1, lw);
+        ubLine(cx - hw, cy + s * 0.85, cx + hw, cy + s * 0.85, c, 1, lw);
     } else {
         ubLine(cx - s, cy, cx + s, cy, c, 1, lw);
     }
