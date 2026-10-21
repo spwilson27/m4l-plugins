@@ -15,14 +15,17 @@ Cases:
   clamp        — T < L + B + 4 is clamped (scope[2]) and echoes land at tmin = B + L + 4
   pingpong     — echo 1 on L, echo 2 on R, echo 3 on L
   offset       — Offset 0.5: right echo at 1.5 T, left at T
-  freeze       — (stepped mode, Freeze message at a sample time) Freeze holds the loop within 1 dB over repeats and ignores new input
-  debug        — Debug ping measures the chain latency (hdr[10] == L) and the loop error hdr[17] is 0
+  freeze       — (stepped mode, Freeze message at a sample time) Freeze holds the loop within 0.3 dB over repeats and ignores new input
+  freeze_gain  — the same with a 1.5x gain in the chain: the frozen loop no longer passes through the chain, so it holds too
+  freeze_mod   — the same with the LFO on the delay time (the output is modulated, the held loop is not)
   midside      — Mid/Side mode: impulse on L -> mid echo (Left time) in phase on both sides, side echo
                  (Right time) +L / -R
   invert       — Feedback Invert: the second echo flips polarity
   gate         — Gate at -20 dB: a hit below it does not reach the delay
   filter       — Filter on, LP 400 Hz: the echo is darker than the dry hit
   blowup       — fb 1.1 + Clip Dry at +12 dB input on 5 s of noise stays finite and below 2.0
+  clip_soft / clip_hard / clip_limit — Clip Level -12 dB (0.251) on a 0.8 impulse: Hard and Limit
+                 echo exactly at the ceiling, Soft between its knee (0.8 x ceiling) and the ceiling
 """
 
 import concurrent.futures
@@ -82,11 +85,12 @@ def device(start_code, end_code, case):
     boxes = [
         mh.msg("dev-params", f"lat {lat}, {case['start']}", 40, 60, 600),
         mh.msg("dev-src-params", case["source"], 40, 90, 600),
-        mh.msg("dev-bind-start", "xfer #0-dpxfer, hdr #0-dphdr, scope #0-dpscope", 40, 120, 330),
+        mh.msg("dev-bind-start", "xfer #0-dpxfer, hdr #0-dphdr, scope #0-dpscope, spec #0-dpspec", 40, 120, 330),
         mh.msg("dev-bind-end", "xfer #0-dpxfer, hdr #0-dphdr, scope #0-dpscopeE", 380, 120, 330),
         mh.box("dev-buf-xfer", "buffer~ #0-dpxfer @samps 65536 @chans 5", 700, 20, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-hdr", "buffer~ #0-dphdr @samps 64", 700, 45, 190, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-scope", "buffer~ #0-dpscope @samps 1568", 700, 70, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-buf-spec", "buffer~ #0-dpspec @samps 16416", 940, 70, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-scopee", "buffer~ #0-dpscopeE @samps 32", 700, 95, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.msg("dev-setbuf", "setbuffers #0-dpxfer #0-dphdr #0-dpscope #0-dpscopeE", 380, 150, 380),
         mh.gen_box("dev-src", SOURCE_GEN, 40, 160, numinlets=1, numoutlets=3),
@@ -145,12 +149,18 @@ def cases():
         c("offset", "tmsR 150", dur=700),
         c("midside", "chmode 2, tmsL 100, tmsR 150", source="kind 0, amp 0.8, pos 600, rch 0", dur=700),
         c("invert", "inv 1"),
+        c("clip_soft", "clipmode 0, cliplevel -12"),
+        c("clip_hard", "clipmode 1, cliplevel -12"),
+        c("clip_limit", "clipmode 2, cliplevel -12"),
         c("gate", "gateon 1, gatethr -20", source="kind 0, amp 0.05, pos 600", dur=500),
         c("filter", "filton 1, hp 20, lp 400", dur=500),
         # Freeze needs a message at a sample time -> stepped mode (event lands within one vector).
         c("freeze", "wet 1", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80", dur=1700,
           mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
-        c("debug", "debug 1", source="kind 0, amp 0, pos 600", L=256, dur=1500, dump=False),
+        c("freeze_gain", "wet 1", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80", dur=1700, gain=1.5,
+          mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
+        c("freeze_mod", "wet 1, moddelay 0.5, lforate 3", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80",
+          dur=1700, mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
         c("blowup", "tmsL 50, tmsR 50, fb 1.1, clipdry 1, inputdb 12, wet 1", source="kind 2, amp 1.0, pos 100", dur=5000, dump=False),
     )
 
@@ -260,16 +270,6 @@ def check(case, meta, data, errors):
             errors.append(f"compile: K = {hdr[2]}, expected 0 (same-vector lockstep)")
         return
 
-    if name == "debug":
-        if len(hdr) < 12 or abs(hdr[10] - L) > 1:
-            errors.append(f"debug: ping-measured latency hdr[10] = {hdr[10:11]}, expected {L} (+-1)")
-        if len(hdr) > 11 and hdr[11] < 2:
-            errors.append(f"debug: expected >= 2 pings, got {hdr[11]}")
-        if len(hdr) > 17 and hdr[17] != 0:
-            errors.append(f"debug: loop error hdr[17] = {hdr[17]}, expected 0")
-        print(f"ping latency {hdr[10]:.0f} (L {L}), pings {hdr[11]:.0f}, loop error hdr[17] {hdr[17] if len(hdr) > 17 else 'n/a'}")
-        return
-
     if name == "blowup":
         if max(meta["maxabs1"], meta["maxabs2"]) >= 2.0:
             errors.append(f"blowup: output peak {max(meta['maxabs1'], meta['maxabs2']):.3f} >= 2.0")
@@ -354,6 +354,19 @@ def check(case, meta, data, errors):
         if not (l[i1] > 0 and l[i2] < 0):
             errors.append(f"invert: expected echo1 > 0 and echo2 < 0 (got {l[i1]:+.3f}, {l[i2]:+.3f})")
 
+    elif name.startswith("clip_"):
+        ceil = 10 ** (-12 / 20)
+        # The 33-sample Hann bump is flattened at the ceiling, so its first loudest sample comes a few
+        # samples early: check the level around the echo, not the peak position.
+        _, pk = peak_near(l, dry + T, half=24)
+        v = abs(pk)
+        print(f"{name}: echo1 {v:.4f} (ceiling {ceil:.4f})")
+        if name == "clip_soft":
+            if not (0.8 * ceil <= v <= ceil + 1e-3):
+                errors.append(f"{name}: echo1 {v:.4f} outside the knee {0.8 * ceil:.4f}..{ceil:.4f}")
+        elif abs(v - ceil) > 2e-3:
+            errors.append(f"{name}: echo1 {v:.4f}, expected the ceiling {ceil:.4f}")
+
     elif name == "gate":
         e = energy_near(l, dry + T)
         print(f"echo energy with the gate closed: {e:.2e}")
@@ -376,7 +389,7 @@ def check(case, meta, data, errors):
         if energy_near(l, dry + int(1.5 * T)) > 1e-3 * energy_near(l, dry + T):
             errors.append("offset: left channel has energy at 1.5T")
 
-    elif name == "freeze":
+    elif name.startswith("freeze"):
         wins = []
         for n in range(5, 13):
             s = r0 + n * T
@@ -387,8 +400,8 @@ def check(case, meta, data, errors):
         print("freeze window levels (dB): " + " ".join(f"{w:.2f}" for w in wins))
         if min(wins) < -60:
             errors.append(f"freeze: loop went silent ({min(wins):.1f} dB)")
-        if max(wins) - min(wins) > 1.0:
-            errors.append(f"freeze: level drifts {max(wins) - min(wins):.2f} dB over repeats (> 1 dB)")
+        if max(wins) - min(wins) > 0.3:
+            errors.append(f"{name}: level drifts {max(wins) - min(wins):.2f} dB over repeats (> 0.3 dB)")
 
 
 def main():

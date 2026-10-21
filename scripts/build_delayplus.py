@@ -38,6 +38,7 @@ START_W = 480.0
 END_W = 124.0
 RING = 65536
 SCOPE_SAMPS = 32 + 3 * 512
+SPEC_SAMPS = 32 + 2 * 8192  # Filter Display spectrogram rings, wet + dry (see delayplus_start.genexpr)
 ESCOPE_SAMPS = 32
 
 VARIANTS = {
@@ -56,6 +57,7 @@ SLATE = (0.62, 0.68, 0.76)
 # Delay sync values (quarter-note beats in src/delayplus_config.js DP_NOTE_BEATS) and modes.
 NOTES = ["1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4"]
 SYNC_MODES = ["Notes", "Triplet", "Dotted"]
+TMODES = ["Time", "Sync", "Pitch", "Fluid", "MIDI"]  # DP_TMODES in src/delayplus_config.js
 LFO_DIVS = ["1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8"]
 LFO_SHAPES = ["Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Noise"]
 ONOFF = ["Off", "On"]
@@ -65,8 +67,17 @@ ONOFF = ["Off", "On"]
 # Long names are what Live shows for automation and mapping; they mirror Echo's controls.
 def _side(s, name):
     return {
-        f"sync_{s}": (f"{name} Sync", f"{name[0]} Sync", 0, 1, 1, 2, 9, 1.0, None, False,
-                      f"{name} delay time in milliseconds (Time) or in note values (Sync).", ["Time", "Sync"]),
+        f"tmode_{s}": (f"{name} Time Mode", f"{name[0]} Time Mode", 0, len(TMODES) - 1, 1, 2, 9, 1.0, None, False,
+                       f"How the {name.lower()} delay time is set: milliseconds (Time), a note value (Sync), the period "
+                       "of a note so the echoes ring at that pitch (Pitch), a note value times a free multiplier "
+                       "(Fluid), or the pitch of the last note received on the MIDI input (MIDI).", TMODES),
+        f"note_{s}": (f"{name} Note", f"{name[0]} Note", 0, 127, 57, 1, 8, 1.0, None, False,
+                      f"{name} delay time in Pitch mode: one period of this note.", None),
+        f"cents_{s}": (f"{name} Fine", f"{name[0]} Fine", -100.0, 100.0, 0.0, 0, 9, 1.0, None, False,
+                       f"Fine-tunes the {name.lower()} note in Pitch and MIDI mode, in cents.", None),
+        # 0.02..50, exponent 5.67 puts x1 at the middle of the control (DP_FLUID_MIN / MAX in the config)
+        f"fluid_{s}": (f"{name} Multiplier", f"{name[0]} Mult", 0.02, 50.0, 1.0, 0, 9, 5.67, None, False,
+                       f"{name} delay time in Fluid mode: the note value times this.", None),
         f"time_{s}": (f"{name} Time", f"{name[0]} Time", 1.0, 5000.0, 375.0, 0, 2, 3.0, None, False,
                       f"{name} delay time in Time mode. Never shorter than the chain latency (MIN in the display).", None),
         f"div_{s}": (f"{name} Division", f"{name[0]} Division", 0, len(NOTES) - 1, 3, 2, 9, 1.0, None, False,
@@ -82,7 +93,19 @@ P = {
     **_side("l", "Left"),
     **_side("r", "Right"),
     "link": ("Stereo Link", "Link", 0, 1, 1, 2, 9, 1.0, None, False,
-             "Changes to one side's time, Sync and Sync Mode apply to both sides.", ONOFF),
+             "Changes to one side's time settings (mode, time, note value, note, fine tune, multiplier) apply to both sides.", ONOFF),
+    "specdry": ("Spectrum Dry", "Spectrum Dry", 0, 1, 1, 2, 9, 1.0, None, False,
+                "Shows the dry input's spectrum in the Filter Display.", ONOFF),
+    "specwet": ("Spectrum Wet", "Spectrum Wet", 0, 1, 1, 2, 9, 1.0, None, False,
+                "Shows the delay's spectrum (after the loop filter) in the Filter Display.", ONOFF),
+    "showlat": ("Show Link Latency", "Link Latency", 0, 1, 0, 2, 9, 1.0, None, False,
+                "Shows the link status and the latency of the devices between Delay+ and Delay+ End above the display "
+                "(otherwise it only appears while Delay+ End is missing).", ONOFF),
+    "clipmode": ("Clip Mode", "Clip Mode", 0, 2, 0, 2, 9, 1.0, "clipmode", False,
+                 "How the feedback loop is kept below the Clip Level: Soft (smooth knee), Hard (clips) or Limit (a fast limiter, clean below the level).",
+                 ["Soft", "Hard", "Limit"]),
+    "cliplevel": ("Clip Level", "Clip Level", -18.0, 6.0, 0.0, 0, 4, 1.0, "cliplevel", False,
+                  "Ceiling of the feedback loop, where the input and the repeats meet.", None),
     "inputdb": ("Input", "Input", -36.0, 12.0, 0.0, 0, 4, 1.0, "inputdb", False,
                 "Gain of the signal going into the delay.", None),
     "clipdry": ("Clip Dry", "Clip Dry", 0, 1, 0, 2, 9, 1.0, "clipdry", False,
@@ -140,9 +163,6 @@ P = {
                 "On: changing the time bends the pitch like tape. Off: crossfades to the new time.", ONOFF),
     "freeze": ("Freeze", "Freeze", 0, 1, 0, 2, 9, 1.0, "freeze", False,
                "Stops input into the delay and loops what is in it at 100% feedback.", ONOFF),
-    "debug": ("Debug", "Debug", 0, 1, 0, 2, 9, 1.0, "debug", False,
-              "Measures the chain latency with an impulse every 0.5 s (replaces the echoes) and compares it with Live's reported latency.",
-              ONOFF),
     "width": ("Stereo", "Stereo", 0.0, 200.0, 100.0, 0, 5, 1.0, "width", True,
               "Stereo width of the echoes: 0% mono, above 100% wider.", None),
     "outdb": ("Output", "Output", -36.0, 12.0, 0.0, 0, 4, 1.0, "outdb", False, "Gain of the echoes.", None),
@@ -178,6 +198,13 @@ def valueof(key):
         v["parameter_unitstyle"] = unit
         if expo != 1.0:
             v["parameter_exponent"] = expo
+    if key.startswith("cents_"):
+        v["parameter_units"] = "%+.0f ct"
+    if key.startswith("fluid_"):
+        v["parameter_units"] = "x%.2f"
+    if key in ("hpres", "lpres"):  # Echo shows resonance with two decimals
+        v["parameter_unitstyle"] = 9
+        v["parameter_units"] = "%.2f"
     if key == "phase":
         v["parameter_unitstyle"] = 9
         v["parameter_units"] = "%.0f\u00b0"
@@ -187,7 +214,7 @@ def valueof(key):
 
 
 # UI-state parameters (saved, not automatable).
-UI_STATE = {"filtdisp"}
+UI_STATE = {"filtdisp", "specdry", "specwet", "showlat"}
 
 
 def theme(box, **attrs):
@@ -417,7 +444,7 @@ def build_start(variant, out_dir=None):
             + read("delayplus_link.js").rstrip() + "\n\n" + read("delayplus_ui.js").rstrip() + "\n\n"
             + read(cfg["viz"]))
     boxes = [
-        v8ui("obj-viz", code, lay["viz_rect"], (500.0, 20.0), 2),
+        v8ui("obj-viz", code, lay["viz_rect"], (500.0, 20.0), 4),
         *lay["controls"],
         newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]),
         newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]),
@@ -425,21 +452,18 @@ def build_start(variant, out_dir=None):
         newobj("obj-buf-xfer", f"buffer~ ---dpxfer @samps {RING} @chans 5", 480, 300, 260, 1, 2, ["float", "bang"]),
         newobj("obj-buf-hdr", "buffer~ ---dphdr @samps 64", 480, 330, 200, 1, 2, ["float", "bang"]),
         newobj("obj-buf-scope", f"buffer~ ---dpscope @samps {SCOPE_SAMPS}", 480, 360, 220, 1, 2, ["float", "bang"]),
+        newobj("obj-buf-spec", f"buffer~ ---dpspec @samps {SPEC_SAMPS}", 700, 360, 200, 1, 2, ["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 480, 400, 60, 1, 1, ["bang"]),
-        msgbox("obj-msg-gen-bufs", "xfer ---dpxfer, hdr ---dphdr, scope ---dpscope", 480, 430, 280),
-        msgbox("obj-msg-ui-names", "names ---dpxfer ---dphdr ---dpscope", 480, 460, 240),
+        msgbox("obj-msg-gen-bufs", "xfer ---dpxfer, hdr ---dphdr, scope ---dpscope, spec ---dpspec", 480, 430, 360),
+        msgbox("obj-msg-ui-names", "names ---dpxfer ---dphdr ---dpscope ---dpspec", 480, 460, 300),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, 1, 2, ["bang", "int"]),
         msgbox("obj-msg-init", "init_link", 780, 430, 70),
     ]
-    # Per side, Sync shows the Division control and hides the Time control (same rect).
-    for side in ("l", "r"):
-        boxes += [newobj(f"obj-sync-hide-time-{side}", "prepend hidden", 900, 260 + (side == "r") * 60, 100),
-                  newobj(f"obj-sync-not-{side}", "!- 1", 1010, 230 + (side == "r") * 60, 40, 2, 1, ["int"]),
-                  newobj(f"obj-sync-hide-div-{side}", "prepend hidden", 1010, 260 + (side == "r") * 60, 100)]
     # Extra displays declared by the layout (filter display, LFO display, ...): their own script, the
     # set_<key> messages of the parameters they show, and the telemetry buffer names.
     for k, ex in enumerate(lay.get("v8uis", [])):
-        code_ex = read("delayplus_config.js").rstrip() + "\n\n" + read(ex["file"])
+        code_ex = "\n\n".join([read("delayplus_config.js").rstrip()] + [read(f).rstrip() for f in ex.get("pre", [])]
+                                + [read(ex["file"])])
         if ex.get("icon"):  # icon buttons: which icon this instance draws
             code_ex = f'var DP_ICON = "{ex["icon"]}";\n' + code_ex
         box = v8ui(ex["id"], code_ex, ex["rect"], (500.0, 200.0 + 180 * k), ex.get("outs", 1))
@@ -454,12 +478,6 @@ def build_start(variant, out_dir=None):
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-viz", 0),
         line("obj-viz", 0, "obj-gen", 0),
     ]
-    for side in ("l", "r"):
-        lines += [line(f"obj-ctrl-sync_{side}", 0, f"obj-sync-hide-time-{side}", 0),
-                  line(f"obj-sync-hide-time-{side}", 0, f"obj-ctrl-time_{side}", 0),
-                  line(f"obj-ctrl-sync_{side}", 0, f"obj-sync-not-{side}", 0),
-                  line(f"obj-sync-not-{side}", 0, f"obj-sync-hide-div-{side}", 0),
-                  line(f"obj-sync-hide-div-{side}", 0, f"obj-ctrl-div_{side}", 0)]
     for ex in lay.get("v8uis", []):
         if ex.get("names"):
             lines.append(line("obj-msg-ui-names", 0, ex["id"], 0))

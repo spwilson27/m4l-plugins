@@ -29,17 +29,49 @@ function near(a, b, tol, msg) {
 // ---- config -------------------------------------------------------------------------------------
 test("note values are ordered; 1/8 at 120 bpm is 250 ms, dotted 375, triplet 166.7", () => {
     for (let i = 1; i < C.DP_NOTE_BEATS.length; i++) assert(C.DP_NOTE_BEATS[i] > C.DP_NOTE_BEATS[i - 1]);
-    near(C.dpSideMs(1, 0, 3, 0, 0, 120), 250, 1e-9);
-    near(C.dpSideMs(1, 0, 3, 2, 0, 120), 375, 1e-9);
-    near(C.dpSideMs(1, 0, 3, 1, 0, 120), 500 / 3, 1e-9);
+    const sync = (div, mode, offs) => ({ tmode: C.DP_TM.SYNC, div, mode, offs });
+    near(C.dpSideMs(sync(3, 0, 0), 120), 250, 1e-9);
+    near(C.dpSideMs(sync(3, 2, 0), 120), 375, 1e-9);
+    near(C.dpSideMs(sync(3, 1, 0), 120), 500 / 3, 1e-9);
 });
 
 test("side time: free ms, offset in %, clamped to 1..8000 ms", () => {
-    near(C.dpSideMs(0, 300, 0, 0, 0, 120), 300, 1e-9);
-    near(C.dpSideMs(0, 300, 0, 0, 10, 120), 330, 1e-9);
-    near(C.dpSideMs(0, 300, 0, 0, -50, 120), 300 * 0.67, 1e-9); // offset clamps at -33%
-    near(C.dpSideMs(0, 0, 0, 0, 0, 120), 1, 0);
-    near(C.dpSideMs(1, 0, 8, 2, 33, 20), 8000, 0);
+    const time = (ms, offs) => ({ tmode: C.DP_TM.TIME, time: ms, offs });
+    near(C.dpSideMs(time(300, 0), 120), 300, 1e-9);
+    near(C.dpSideMs(time(300, 10), 120), 330, 1e-9);
+    near(C.dpSideMs(time(300, -50), 120), 300 * 0.67, 1e-9); // offset clamps at -33%
+    near(C.dpSideMs(time(0, 0), 120), 1, 0);
+    near(C.dpSideMs({ tmode: C.DP_TM.SYNC, div: 8, mode: 2, offs: 33 }, 20), 8000, 0);
+});
+
+test("Fluid: note value times a free multiplier (0.02..50)", () => {
+    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 1.37 }, 120), 250 * 1.37, 1e-9);
+    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 20 }, 120), 5000, 1e-9);
+    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 0.02 }, 120), 5, 1e-9);
+    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 0.001 }, 120), 5, 1e-9); // clamps at 0.02
+    near(C.dpSideMs({ tmode: C.DP_TM.FLUID, div: 3, fluid: 50 }, 120), 8000, 0); // 12.5 s -> the 8 s cap
+});
+
+test("Pitch / MIDI: one period of the note; folded to a whole multiple above the tank minimum", () => {
+    assert.strictEqual(C.dpNoteName(60), "C3");
+    assert.strictEqual(C.dpNoteName(57), "A2");
+    assert.strictEqual(C.dpNoteName(0), "C-2");
+    near(C.dpNotePeriodMs(69, 0), 1000 / 440, 1e-9);
+    near(C.dpNotePeriodMs(57, 1200), 1000 / 440, 1e-9); // A2 (220 Hz) + an octave
+    near(C.dpSideMs({ tmode: C.DP_TM.PITCH, note: 45, cents: 0 }, 120), 1000 / 110, 1e-9);
+    // 220 Hz (4.545 ms) behind an 8 ms minimum loop: two periods (9.09 ms), still on A
+    near(C.dpSideMs({ tmode: C.DP_TM.PITCH, note: 57, cents: 0 }, 120, { tminMs: 8 }), 2000 / 220, 1e-9);
+    near(C.dpSideMs({ tmode: C.DP_TM.MIDI, note: 0, cents: 0 }, 120, { midiNote: 45 }), 1000 / 110, 1e-9);
+    // highest note at its own pitch behind an 8 ms loop: 125 Hz -> B1 (123.5 Hz); C2 (130.8 Hz) folds
+    assert.strictEqual(C.dpNoteName(C.dpMaxNote(8)), "B1");
+    assert.strictEqual(C.dpMaxNote(0), 127);
+    assert(C.dpPitchFolded({ tmode: C.DP_TM.PITCH, note: 48 }, { tminMs: 8 }));
+    assert(!C.dpPitchFolded({ tmode: C.DP_TM.PITCH, note: 47 }, { tminMs: 8 }));
+    assert(C.dpPitchFolded({ tmode: C.DP_TM.MIDI }, { tminMs: 8, midiNote: 60 }));
+    assert(!C.dpPitchFolded({ tmode: C.DP_TM.MIDI }, { tminMs: 8, midiNote: -1 }));
+    assert(!C.dpPitchFolded({ tmode: C.DP_TM.SYNC, note: 100 }, { tminMs: 8 }));
+    // MIDI before any note arrives: the default note (A2)
+    near(C.dpSideMs({ tmode: C.DP_TM.MIDI }, 120, { midiNote: -1 }), C.dpNotePeriodMs(C.DP_NOTE_DEFAULT, 0), 1e-9);
 });
 
 test("LFO rate: Hz, or one cycle per note value", () => {
@@ -59,10 +91,43 @@ test("effective times clamp at B + L + mod + 4", () => {
     near(C.dpEffectiveTimes(100, 100, 48000, 32, 256, 1).tmin, 32 + 256 + 384 + 4, 1e-9);
 });
 
+test("range warnings in each mode's own terms", () => {
+    const ctx = { tminMs: 20 };
+    // 120 bpm: 1/64 = 31.25 ms, 1/32 = 62.5 ms
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.TIME, time: 10 }, 120, ctx), "MIN 20.0 ms");
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.TIME, time: 300 }, 120, ctx), null);
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 0, mode: 1 }, 120, ctx), null); // 1/64 T = 20.8 ms
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 0, mode: 1 }, 120, { tminMs: 25 }), "MIN 1/32 T");
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.SYNC, div: 8, mode: 2 }, 60, ctx), "MAX 1 D"); // 4 bars D = 24 s
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.FLUID, div: 3, fluid: 0.02 }, 120, ctx), "MIN x0.08");
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.FLUID, div: 3, fluid: 50 }, 120, ctx), "MAX x32.00");
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.FLUID, div: 3, fluid: 1 }, 120, ctx), null);
+    // 20 ms loop: 50 Hz is the top, so G0 (49 Hz) plays at pitch, A2 folds
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.PITCH, note: 57 }, 120, ctx), "MAX G0");
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.PITCH, note: 30 }, 120, ctx), null);
+    assert.strictEqual(C.dpSideWarn({ tmode: C.DP_TM.MIDI }, 120, { tminMs: 20, midiNote: -1 }), null);
+});
+
+test("rack latency: the longest chain, racks inside racks too", () => {
+    assert.strictEqual(C.dpDeviceLatency({ lat: 256 }), 256);
+    // Limiter (64) inside a rack that reports 0
+    assert.strictEqual(C.dpDeviceLatency({ lat: 0, chains: [[{ lat: 64 }]] }), 64);
+    // two chains: 64 + 128 in series vs 100 -> 192
+    assert.strictEqual(C.dpDeviceLatency({ lat: 0, chains: [[{ lat: 64 }, { lat: 128 }], [{ lat: 100 }]] }), 192);
+    // nested rack inside a chain, plus a device after it
+    assert.strictEqual(C.dpDeviceLatency({ lat: 0, chains: [[{ lat: 0, chains: [[{ lat: 256 }]] }, { lat: 32 }]] }), 288);
+    // a rack that does report its latency keeps the larger value
+    assert.strictEqual(C.dpDeviceLatency({ lat: 300, chains: [[{ lat: 64 }]] }), 300);
+});
+
 test("side labels", () => {
-    assert.strictEqual(C.dpSideLabel(1, 0, 3, 0), "1/8");
-    assert.strictEqual(C.dpSideLabel(1, 0, 3, 2), "1/8 D");
-    assert.strictEqual(C.dpSideLabel(0, 375, 0, 0), "375 ms");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: 3, mode: 0 }), "1/8");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: 3, mode: 2 }), "1/8 D");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.TIME, time: 375 }), "375 ms");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.FLUID, div: 3, fluid: 1.37 }), "1/8 x1.37");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.PITCH, note: 45, cents: 12 }), "A1 +12 ct");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.MIDI, cents: 0 }, 57), "MIDI A2");
+    assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.MIDI }, -1), "MIDI -");
 });
 
 test("path parsing", () => {
@@ -221,7 +286,7 @@ function overlaps(a, b) {
 }
 
 const devices = fs.readdirSync(path.join(ROOT, "devices"))
-    .filter((f) => /^Delay\+ .*\.amxd$/.test(f))
+    .filter((f) => /^Delay\+( .*)?\.amxd$/.test(f))
     .map((f) => f.slice(0, -5));
 
 for (const name of devices) {
@@ -239,10 +304,10 @@ for (const name of devices) {
         }
         const uis = boxes.filter((b) => b.maxclass === "v8ui" && b.presentation);
         const lives = boxes.filter((b) => /^live\.(dial|numbox|text|tab|menu|slider)$/.test(b.maxclass) && b.presentation);
-        // Page widgets may share the display rect when exactly one side starts hidden (the page
-        // switch sends `hidden` to both, so they are never clickable at the same time).
+        // Widgets that start hidden may share a rect with a v8ui (the page and Time Mode switches send
+        // `hidden` to both, so they are never clickable at the same time); visible ones never.
         for (const u of uis) for (const l of lives) {
-            if (Boolean(u.hidden) !== Boolean(l.hidden)) continue;
+            if (u.hidden || l.hidden) continue;
             assert(!overlaps(rect(u), rect(l)), `${l.varname} overlaps v8ui`);
         }
         for (const b of [...uis, ...lives]) {
@@ -272,7 +337,8 @@ for (const name of devices.filter((n) => n !== "Delay+ End")) {
             if (/^prepend set_/.test(b.text || "")) {
                 const fn = b.text.split(" ")[1];
                 assert(/function anything\(/.test(code) || new RegExp("function " + fn + "\\(").test(code), fn + " missing in UI");
-            } else if (/^prepend /.test(b.text || "") && b.text !== "prepend hidden") {
+            } else if (/^prepend /.test(b.text || "") && p.lines.some((l) => l.patchline.source[0] === b.id
+                && l.patchline.destination[0] === "obj-gen")) {
                 const prm = b.text.split(" ")[1];
                 assert(new RegExp("Param " + prm + "\\(").test(genCode), prm + " missing in gen");
             }

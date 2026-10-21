@@ -12,12 +12,14 @@
  *   link      Start and End see each other's counters (hdr 14/15), the return read lag B (hdr 3) is
  *             1..2048
  *   latency   L (hdr 4) == sum of latency_in_samples of the devices between Start and End
- *   ping      Debug on -> the ping-measured latency (hdr 10) == L, for each Limiter lookahead
- *             (1.5 / 3 / 6 ms) when a Limiter sits in the chain, so a latency change is followed
- *             and the returning ping is written back exactly at its emit position (hdr 17 == 0)
- *   music     a Core Library loop (clip created through the LOM) plays through the chain with Debug
- *             off -> End calibrates K from the audio (hdr 18); the pings afterwards confirm that K
- *   restore   Debug and the Limiter lookahead are put back as found
+ *   music     a Core Library loop (clip created through the LOM) plays through the chain -> End
+ *             calibrates K from the audio (hdr 18)
+ *   follow    for each Limiter lookahead (1.5 / 3 / 6 ms) when a Limiter sits in the chain, the L in
+ *             use (hdr 4) follows the LOM's latency_in_samples
+ *   restore   the Limiter lookahead is put back as found
+ *   grouped   on one pair the Limiter is replaced by an Audio Effect Rack holding a Limiter (Live
+ *             reports 0 latency for the rack itself): the L in use must follow the inner Limiter's
+ *             latency for each lookahead; then the plain Limiter is put back
  *
  *   node scripts/test_delayplus_live.js [--port 9879]
  */
@@ -118,7 +120,7 @@ for (const pair of pairs) {
     check(h[4] === lomL, `${tag} L in use ${h[4]} == LOM sum ${lomL}`);
     console.log(`${tag} diag: Start sees [${h[20]}, ${h[21]}], End sees [${h[22]}, ${h[23]}]`);
 
-    // Music calibration: play a loop through the chain (Debug off) -> End calibrates K from the audio.
+    // Music calibration: play a loop through the chain -> End calibrates K from the audio.
     const trackPath = pair.path.split(" devices ")[0];
     const loop = LOOPS[pairs.indexOf(pair) % LOOPS.length];
     const clipOk = evalLom(`
@@ -137,21 +139,18 @@ for (const pair of pairs) {
         sleep(4000);
         h = readHdr(pair.hdr);
         // Tonal material gives an ambiguous correlation peak, which End rejects by design (it keeps
-        // the counter estimate, which the pings below then verify). Drums must calibrate.
+        // the counter estimate). Drums must calibrate.
         if (loop === LOOPS[0]) check(h[18] === 1, `${tag} K calibrated from the drum loop (K ${h[2]}, calibrated ${h[18]})`);
         else console.log(`INFO ${tag} tonal loop: calibrated ${h[18]}, K ${h[2]} (ambiguous peaks are rejected by design)`);
     }
 
     const limiter = between.find((d) => d.cls === "Limiter");
-    const debugBefore = evalLom(HELPERS + `var p = param(${pair.id}, "Debug"); return p ? Number(p.get("value")) : -1;`);
-    check(debugBefore >= 0, `${tag} has a Debug parameter`);
-    evalLom(HELPERS + `param(${pair.id}, "Debug").set("value", 1); return 1;`);
     const looks = limiter ? [2, 0, 1] : [null];
     let lookBefore = null;
     if (limiter) lookBefore = evalLom(HELPERS + `return Number(param(${limiter.id}, "Lookahead").get("value"));`);
     for (const look of looks) {
         if (look !== null) evalLom(HELPERS + `param(${limiter.id}, "Lookahead").set("value", ${look}); return 1;`);
-        sleep(2500); // link poll (500 ms) + loop re-settle + several 0.5 s pings
+        sleep(1500); // link poll (500 ms) + loop re-settle
         const lat = limiter
             ? evalLom(`return Number(new LiveAPI("id ${limiter.id}").get("latency_in_samples"));`)
             : 0;
@@ -159,13 +158,51 @@ for (const pair of pairs) {
         h = readHdr(pair.hdr);
         const lbl = look === null ? "" : ` lookahead ${look} (${lat} smp)`;
         check(h[4] === expectL, `${tag}${lbl}: L in use ${h[4]} == LOM ${expectL}`);
-        check(Math.abs(h[10] - expectL) <= 1, `${tag}${lbl}: ping-measured ${h[10]} == ${expectL}`);
-        check(h[17] === 0, `${tag}${lbl}: feedback write lands on the emit position (loop error ${h[17]})`);
     }
     if (limiter && lookBefore !== null) evalLom(HELPERS + `param(${limiter.id}, "Lookahead").set("value", ${lookBefore}); return 1;`);
-    evalLom(HELPERS + `param(${pair.id}, "Debug").set("value", ${Math.max(debugBefore, 0)}); return 1;`);
     evalLom(`new LiveAPI("${trackPath}").call("stop_all_clips"); return 1;`);
 }
+// Grouped: a Limiter inside a rack between the pair (user report: latency read as 0).
+const gpair = pairs.find((p) => {
+    const e = p.devs.findIndex((d, i) => i > p.index && d.role === "end");
+    return e > 0 && p.devs.slice(p.index + 1, e).some((d) => d.cls === "Limiter");
+});
+if (gpair) {
+    const tag = `[${gpair.path}] grouped`;
+    const chainPath = gpair.path.replace(/ devices \d+$/, "");
+    const limIdx = gpair.devs.findIndex((d, i) => i > gpair.index && d.cls === "Limiter");
+    const lookBefore = evalLom(HELPERS + `return Number(param(${gpair.devs[limIdx].id}, "Lookahead").get("value"));`);
+    const built = evalLom(`
+        var ch = new LiveAPI("${chainPath}");
+        ch.call("delete_device", ${limIdx});
+        ch.call("insert_device", "Audio Effect Rack", ${limIdx});
+        var rack = new LiveAPI("${chainPath} devices ${limIdx}");
+        if (Number(rack.getcount("chains")) < 1) rack.call("insert_chain");
+        new LiveAPI("${chainPath} devices ${limIdx} chains 0").call("insert_device", "Limiter", 0);
+        var lim = new LiveAPI("${chainPath} devices ${limIdx} chains 0 devices 0");
+        return { rack: Number(rack.id), rackLat: Number(rack.get("latency_in_samples")), lim: Number(lim.id) };
+    `);
+    console.log(`${tag}: rack reports ${built.rackLat} samples itself`);
+    for (const look of [0, 1, 2]) {
+        evalLom(HELPERS + `param(${built.lim}, "Lookahead").set("value", ${look}); return 1;`);
+        sleep(1500);
+        const lat = evalLom(`return Number(new LiveAPI("id ${built.lim}").get("latency_in_samples"));`);
+        const gEnd = gpair.devs.findIndex((d, i) => i > gpair.index && d.role === "end");
+        const others = gpair.devs.slice(gpair.index + 1, gEnd).filter((d, i) => i + gpair.index + 1 !== limIdx)
+            .reduce((s, d) => s + Math.max(0, d.lat), 0);
+        const h = readHdr(gpair.hdr);
+        check(h[4] === lat + others, `${tag} lookahead ${look}: L in use ${h[4]} == inner Limiter ${lat}${others ? " + " + others : ""}`);
+    }
+    // restore: the plain Limiter at its old lookahead
+    evalLom(HELPERS + `
+        var ch = new LiveAPI("${chainPath}");
+        ch.call("delete_device", ${limIdx});
+        ch.call("insert_device", "Limiter", ${limIdx});
+        param(Number(new LiveAPI("${chainPath} devices ${limIdx}").id), "Lookahead").set("value", ${lookBefore});
+        return 1;
+    `);
+}
+
 evalLom(`new LiveAPI("live_set").call("stop_playing"); return 1;`);
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall Live checks passed");

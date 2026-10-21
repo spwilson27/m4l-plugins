@@ -8,7 +8,7 @@
 //   Both devices run a free counter mod M. Start pokes its counter to hdr[0], End to hdr[1].
 //   They run in vectors (32 samples in Live 12) but NOT in a fixed order per vector.
 //   End:   K = held min of (cS_latest - cE): End's sample cE carries Start's sample cE + K
-//          (causal bound, verified in Live with the debug ping), hdr[2].
+//          (causal bound), then calibrated from the audio by cross-correlation, hdr[2].
 //   Start: Smax = held max of (cS - cE_latest); reads the return at End index s - Smax (always
 //          written) and publishes the read lag B = Smax - K, hdr[3].
 //   L = chain latency (sum of the FX devices' latency_in_samples, sent by the JS as `lat`).
@@ -19,11 +19,8 @@
 // The tap then re-reads it exactly T later, so the first echo and every repeat land on T.
 // Requires T > L + B (+ modulation + interpolation margin) -> clamped, flagged in telemetry.
 //
-// hdr (shared, 64 samples): 0 cS, 1 cE, 2 K, 3 B, 4 L, 5 wet, 6 duck, 7 width, 8 debug,
-//   9 ping emit index (S frame), 10 ping-measured latency (End), 11 ping count (End),
-//   12 End wet peak, 13 freeze, 14 Start sees End, 15 End sees Start, 16 End duck gain,
-//   17 loop error (debug): where the returning ping would be written minus where it was emitted
-//   (0 = every repeat lands exactly on T).
+// hdr (shared, 64 samples): 0 cS, 1 cE, 2 K, 3 B, 4 L, 5 wet, 6 duck, 7 width,
+//   12 End wet peak, 13 freeze, 14 Start sees End, 15 End sees Start, 16 End duck gain.
 //   diagnostics per 16384-sample window: 20/21 min/max of (cS - cE_latest) seen by Start,
 //   22/23 min/max of (cS_latest - cE) seen by End, 24 Start window count.
 // xfer (shared, 5 ch x RING): ch0/1 dry L/R at Start index, ch2/3 return L/R at End index,
@@ -31,10 +28,13 @@
 // hdr 27 = LFO rate in Hz, 28 = right / side time in ms, 30 = L (chain latency), 31 = left / mid
 // time in ms: all poked by the UI script. 40..42 = End's ducking threshold / release and output gain.
 // scope (UI telemetry, Start only), every 64 samples:
-//   0 TL eff (samples) 1 TR eff 2 clamped 3 Tmin 4 B 5 K 6 L 7 ping L 8 paired 9 in peak
+//   0 TL eff (samples) 1 TR eff 2 clamped 3 Tmin 4 B 5 K 6 L 8 paired 9 in peak
 //   10/11 tap peak L/R 12/13 return peak L/R 14 frame counter 15 sr 16 freeze 17 duck gain
-//   18 wet out peak 19 history head 20 TL target 21 TR target 22 tank fill L 23 debug
+//   18 wet out peak 19 history head 20 TL target 21 TR target 22 tank fill L
 //   history ring, one block per 256 samples: 32 + 3 * blk + (in, tapL, tapR) peaks, 512 blocks.
+// spec (Filter Display spectrogram): 0 write head (0..8191, every 64 samples), 1 sr, 2 / 3 wet / dry
+//   peak of the last 64 samples, then two mono rings of 8192: 32.. the wet (the delay tap after the
+//   loop filter, what goes into the chain) and 8224.. the dry input.
 //
 // GenExpr: functions first, then declarations, then statements. No identifier e<digit>.
 
@@ -75,6 +75,7 @@ softsat(x, lim) {
 Buffer xfer("dpxfer");
 Buffer hdr("dphdr");
 Buffer scope("dpscope");
+Buffer spec("dpspec");
 
 Data tank(524288, 2);
 
@@ -86,6 +87,8 @@ Param fb(0.5);
 Param inv(0);
 Param chmode(0);       // 0 Stereo, 1 Ping Pong, 2 Mid/Side (Left time = Mid, Right time = Side)
 Param inputdb(0);
+Param clipmode(0);     // feedback clip: 0 Soft, 1 Hard, 2 Limit (Options page)
+Param cliplevel(0);    // its ceiling in dB, -18..+6
 Param clipdry(0);      // Echo's "D": soft clip on the input into the tank
 Param filton(1);
 Param hp(50);
@@ -111,7 +114,6 @@ Param wobmorph(0);
 Param repitch(0);      // 1: the read head glides to a new time (pitch bends); 0: crossfade
 Param freeze(0);
 Param lat(0);
-Param debug(0);
 Param wet(0.5);
 Param width(1);
 Param duckon(0);
@@ -135,6 +137,9 @@ History lastK(-1e9);
 History mute(0);
 History gLink(0);
 History ig(1);
+History frzTL(0);      // Freeze: loop period per side in whole samples, latched when Freeze engages
+History frzTR(0);
+History frzPrev(0);
 History fbs(0.4);
 History tsL(16537);
 History tsR(16537);
@@ -180,9 +185,10 @@ History lpG(0);
 History lpK(1.4142);
 History cHpR(-1);
 History cLpR(-1);
-History pingT(0);
-History pingArm(0);
 History tick(0);
+History limG(1);
+History specPk(0);
+History specPkD(0);
 History frames(0);
 History pkIn(0);
 History pkTL(0);
@@ -283,7 +289,6 @@ poke(hdr, clip(width, 0, 2), 7);
 poke(hdr, clip(duckthr, -60, 0), 40);
 poke(hdr, clip(duckrel, 1, 2000), 41);
 poke(hdr, dbtoa(clip(outdb, -36, 12)), 42);
-poke(hdr, debug > 0.5, 8);
 poke(hdr, freeze > 0.5, 13);
 
 // ---- dry into the ring ---------------------------------------------------------------------
@@ -293,17 +298,13 @@ poke(xfer, in2, ri, 1);
 
 // ---- feedback return ------------------------------------------------------------------------
 frz = freeze > 0.5;
-dbg = debug > 0.5;
 fbs = fbs + (clip(fb, 0, 1.1) - fbs) * 0.001;
-fbg = frz ? 1 : fbs;
-fbg = dbg ? 0 : fbg;
+// Freeze takes the chain out of the loop (see the tank write): the return fades out with the input
+// (ig), so the Feedback knob does nothing while frozen.
+fbg = fbs * ig;
 eIdx = wrap(cn - smax, 0, RING);
 retL = peek(xfer, eIdx, 2) * gLink;
 retR = peek(xfer, eIdx, 3) * gLink;
-if (debug > 0.5 && pingArm > 0.5 && max(abs(retL), abs(retR)) > 0.1) {
-	poke(hdr, wd(cn - bb - ll - peek(hdr, 9), M), 17);
-	pingArm = 0;
-}
 fsign = inv > 0.5 ? -1 : 1;
 fL = softsat(retL * fbg * fsign, 1.5);
 fR = softsat(retR * fbg * fsign, 1.5);
@@ -321,7 +322,7 @@ if (mode == 2) {
 }
 
 // ---- tank write: input at the head, return at its original emit position ---------------------
-ig = ig + ((frz || dbg) ? 0 - ig : 1 - ig) * (1 / (0.01 * sr));
+ig = ig + (frz ? 0 - ig : 1 - ig) * (1 / (0.01 * sr));
 // Input gain and Echo's "D" (soft clip), then the gate (opens above its threshold, closes after
 // its release), all on the signal that enters the tank only; the dry path stays untouched.
 ing = dbtoa(clip(inputdb, -36, 12));
@@ -351,17 +352,46 @@ if (mode == 2) {
 	inR = (xL - xR) * 0.5 * ig * gateG;
 }
 wi = wrap(cn, 0, TANK);
-poke(tank, inL, wi, 0);
-poke(tank, inR, wi, 1);
+// Freeze: the tank repeats itself. The head writes an exact copy of the tank one loop period earlier
+// (whole samples, no interpolation, no filter, no clip), so what is in the buffer repeats at the
+// same level forever, whatever the chain or the Feedback knob does. Ping Pong copies across sides
+// like its return. The copy fades in as the input and the return fade out (ig, 10 ms), and back.
+fzW = 1 - ig;
+cpL = 0;
+cpR = 0;
+if (fzW > 0 && frzTL > 0) {
+	srcL = mode == 1 ? 1 : 0;
+	srcR = mode == 1 ? 0 : 1;
+	cpL = peek(tank, wrap(cn - (mode == 1 ? frzTR : frzTL), 0, TANK), srcL);
+	cpR = peek(tank, wrap(cn - (mode == 1 ? frzTL : frzTR), 0, TANK), srcR);
+}
+poke(tank, inL + cpL * fzW, wi, 0);
+poke(tank, inR + cpR * fzW, wi, 1);
 fi = wrap(cn - bb - ll, 0, TANK);
-// soft limit where input and feedback meet, so a hot input at full feedback stays bounded
-// (linear below 1, then a tanh knee up to 1.8)
+// Feedback clip where input and feedback meet (Options page), ceiling T = Clip Level:
+//   Soft  linear up to 0.8 T, then a tanh knee that reaches T
+//   Hard  clipped at +-T
+//   Limit stereo-linked peak limiter, instant attack, 50 ms release, never above T
+// (inlined: the same expressions as a helper function with locals broke compilation, see AGENTS.md)
 sumL = peek(tank, fi, 0) + fL;
 sumR = peek(tank, fi, 1) + fR;
-amL = max(abs(sumL), 1);
-amR = max(abs(sumR), 1);
-poke(tank, sumL * (1 + 0.8 * tanh((amL - 1) / 0.8)) / amL, fi, 0);
-poke(tank, sumR * (1 + 0.8 * tanh((amR - 1) / 0.8)) / amR, fi, 1);
+cT = dbtoa(clip(cliplevel, -18, 6));
+cK = 0.8 * cT;
+amL = max(abs(sumL), cK);
+amR = max(abs(sumR), cK);
+sfL = sumL * (cK + (cT - cK) * tanh((amL - cK) / (cT - cK))) / amL;
+sfR = sumR * (cK + (cT - cK) * tanh((amR - cK) / (cT - cK))) / amR;
+pkS = max(abs(sumL), abs(sumR));
+limT = pkS > cT ? cT / pkS : 1;
+limG = limT < limG ? limT : limG + (limT - limG) * (1 / (0.05 * sr));
+cm = floor(clip(clipmode, 0, 2) + 0.5);
+cOutL = cm == 1 ? clip(sumL, 0 - cT, cT) : (cm == 2 ? sumL * limG : sfL);
+cOutR = cm == 1 ? clip(sumR, 0 - cT, cT) : (cm == 2 ? sumR * limG : sfR);
+// frozen: no clip (it would squeeze the held loop a little more on every pass)
+cOutL = sumL * fzW + cOutL * ig;
+cOutR = sumR * fzW + cOutR * ig;
+poke(tank, cOutL, fi, 0);
+poke(tank, cOutR, fi, 1);
 
 // ---- delay times ------------------------------------------------------------------------------
 tmsHL = peek(hdr, 31);
@@ -454,6 +484,13 @@ if (repitch > 0.5) {
 xfL = xtL > xfL ? min(xfL + xfRate, xtL) : max(xfL - xfRate, xtL);
 xfR = xtR > xfR ? min(xfR + xfRate, xtR) : max(xfR - xfRate, xtR);
 
+// Freeze latches the loop period (the tap time in use, without the LFO / wobble) when it engages.
+if (frz && frzPrev < 0.5) {
+	frzTL = floor(max(tAL, tmin) * (1 - xfL) + max(tBL, tmin) * xfL + 0.5);
+	frzTR = floor(max(tAR, tmin) * (1 - xfR) + max(tBR, tmin) * xfR + 0.5);
+}
+frzPrev = frz;
+
 // Taps never read closer than tmin, even mid-glide.
 dAL = max(tAL, tmin) + mL;
 dBL = max(tBL, tmin) + mL;
@@ -532,23 +569,17 @@ lpL2 = fixdenorm(lpL2);
 lpR1 = fixdenorm(lpR1);
 lpR2 = fixdenorm(lpR2);
 
-// ---- debug ping: replaces the tap with an impulse every 0.5 s; End times its arrival ----------
 outL = zL * gLink;
 outR = zR * gLink;
-if (dbg) {
-	pingT = pingT + 1;
-	outL = 0;
-	outR = 0;
-	if (pingT >= floor(0.5 * sr)) {
-		pingT = 0;
-		outL = 0.5;
-		outR = 0.5;
-		poke(hdr, cn, 9);
-		pingArm = 1;
-	}
-} else {
-	pingT = 0;
-}
+
+// Spectrogram rings: wet (the tap after the filter) and dry (the input), mono.
+specW = (outL + outR) * 0.5;
+specD = (in1 + in2) * 0.5;
+specI = wrap(cn, 0, 8192);
+poke(spec, specW, 32 + specI);
+poke(spec, specD, 8224 + specI);
+specPk = max(specPk, abs(specW));
+specPkD = max(specPkD, abs(specD));
 
 // Whitened (first-difference) mono copy of what goes into the chain: End cross-correlates it with
 // what comes out of the chain to find the exact counter offset K.
@@ -593,7 +624,6 @@ if (tick >= 64) {
 	poke(scope, bb, 4);
 	poke(scope, kk, 5);
 	poke(scope, ll, 6);
-	poke(scope, peek(hdr, 10), 7);
 	poke(scope, paired, 8);
 	poke(scope, pkIn, 9);
 	poke(scope, pkTL, 10);
@@ -607,11 +637,16 @@ if (tick >= 64) {
 	poke(scope, peek(hdr, 12), 18);
 	poke(scope, tgL, 20);
 	poke(scope, tgR, 21);
-	poke(scope, dbg, 23);
 	poke(scope, lL, 24);
 	poke(scope, lR, 25);
 	poke(scope, envV, 26);
 	poke(scope, gateG, 27);
+	poke(spec, wrap(cn + 1, 0, 8192), 0);
+	poke(spec, sr, 1);
+	poke(spec, specPk, 2);
+	poke(spec, specPkD, 3);
+	specPk = 0;
+	specPkD = 0;
 	pkIn = 0;
 	pkTL = 0;
 	pkTR = 0;

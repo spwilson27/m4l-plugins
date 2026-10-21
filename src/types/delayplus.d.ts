@@ -3,6 +3,10 @@ declare var DP_ROLE: "start" | "end";
 declare var DP_BUILD: string;
 
 // Optional hooks defined by only some of the concatenated scripts and called behind `typeof x === "function"`.
-// dpTimeMs lives in delayplus_ui.js (Start only; delayplus_link.js calls it); vizPreview lives in delayplus_viz_b.js.
+// dpTimeMs, dpPokeTimes, dpApplyPanelTheme and dpInitMidiRouting live in delayplus_ui.js (Start only; delayplus_link.js calls
+// them); vizPreview lives in delayplus_viz_b.js.
 declare function dpTimeMs(): number;
+declare function dpPokeTimes(): void;
+declare function dpApplyPanelTheme(): void;
+declare function dpInitMidiRouting(): void;
 declare function vizPreview(s: any): void;

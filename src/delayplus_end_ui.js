@@ -1,4 +1,4 @@
-// Delay+ End face: link status, the chain latency in use, the debug ping result and the wet /
+// Delay+ End face: link status, the chain latency in use (from Live's LOM) and the wet /
 // duck meters. Build order: delayplus_config.js + `var DP_ROLE = "end"` + delayplus_link.js +
 // this file. Outlet 0 -> gen (`xfer <name>`, `hdr <name>` from the link layer).
 
@@ -20,7 +20,7 @@ var EC = {
     green: [0.40, 0.88, 0.52, 1],
 };
 
-var es = { linked: 0, K: 0, L: 0, pingL: -1, wetPk: 0, dryPk: 0, duck: 1, frames: -1, B: 0, debug: 0, wetHold: 0, dryHold: 0 };
+var es = { linked: 0, K: 0, L: 0, wetPk: 0, dryPk: 0, duck: 1, frames: -1, B: 0, wetHold: 0, dryHold: 0 };
 var esScope = null;
 var esScopeName = "";
 var esTask = null;
@@ -49,8 +49,8 @@ function esFrame() {
     var E = DP_ESCOPE;
     if (h[E.FRAMES] === es.frames && es.wetHold < 0.001 && es.dryHold < 0.001) return;
     es.frames = h[E.FRAMES];
-    es.linked = h[E.LINKED]; es.K = h[E.K]; es.L = h[E.L]; es.pingL = h[E.PING_L];
-    es.wetPk = h[E.WET_PK]; es.dryPk = h[E.DRY_PK]; es.duck = h[E.DUCK]; es.B = h[E.B]; es.debug = h[E.DEBUG];
+    es.linked = h[E.LINKED]; es.K = h[E.K]; es.L = h[E.L];
+    es.wetPk = h[E.WET_PK]; es.dryPk = h[E.DRY_PK]; es.duck = h[E.DUCK]; es.B = h[E.B];
     es.wetHold = Math.max(es.wetPk, es.wetHold * 0.85);
     es.dryHold = Math.max(es.dryPk, es.dryHold * 0.85);
     mgraphics.redraw();
@@ -100,16 +100,6 @@ function paint() {
     esText(Math.round(es.L) + " smp", 8, y0 + 13, 11, EC.text, true);
     esText("SLICE " + Math.round(es.B) + "  K " + Math.round(es.K), 8, y0 + 25, 7.5, EC.dim, false);
 
-    var y1 = y0 + 44;
-    esText("PING", 8, y1, 7.5, EC.dim, true);
-    if (es.debug > 0.5) {
-        var good = es.pingL >= 0 && Math.abs(es.pingL - es.L) <= 1;
-        esText(es.pingL < 0 ? "…" : Math.round(es.pingL) + " smp", 8, y1 + 13, 11, good ? EC.green : EC.coral, true);
-        esText(good ? "matches LOM" : "differs from LOM", 8, y1 + 25, 7.5, good ? EC.green : EC.coral, false);
-    } else {
-        esText("off (Debug on Delay+)", 8, y1 + 13, 7.5, EC.dim, false);
-    }
-
     var mx = w - 34;
     esMeter(mx, 26, 9, h - 50, es.wetHold, EC.cyan, "W");
     esMeter(mx + 14, 26, 9, h - 50, es.dryHold, EC.text, "D");
@@ -124,9 +114,9 @@ function paint() {
     mgraphics.stroke();
 }
 
-// scripts/render_preview.py: representative state (linked, debug ping matching).
+// scripts/render_preview.py: representative state (linked).
 function preview() {
     dpLink.paired = true;
-    es.linked = 1; es.K = 0; es.L = 256; es.B = 32; es.pingL = 256; es.debug = 1;
+    es.linked = 1; es.K = 0; es.L = 256; es.B = 32;
     es.wetHold = 0.3; es.dryHold = 0.6; es.duck = 0.8;
 }

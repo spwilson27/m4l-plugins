@@ -63,7 +63,11 @@ function names(xferName, hdrName, scopeName) {
 }
 
 // From live.thisdevice (the LOM is ready).
+// True once live.thisdevice has fired (init_link): the Set's saved parameter values have all arrived.
+var dpLoaded = false;
+
 function init_link() {
+    dpLoaded = true;
     try {
         dpSelfApi = new LiveAPI(function () {}, "this_device");
         dpSelfId = Number(dpSelfApi.id);
@@ -84,6 +88,7 @@ function init_link() {
     }
     dpRegister();
     if (typeof dpApplyPanelTheme === "function") dpApplyPanelTheme();
+    if (typeof dpInitMidiRouting === "function") dpInitMidiRouting();
     if (!dpTask) {
         dpTask = new Task(dpPoll, this);
         dpTask.interval = 500;
@@ -108,6 +113,24 @@ function dpHdrPoke(index, value) {
 function dpGetNum(api, prop) {
     var v = api.get(prop);
     return Number(Array.isArray(v) ? v[0] : v) || 0;
+}
+
+// Latency tree of one device for dpDeviceLatency: its own latency_in_samples plus, for a rack,
+// every chain's devices (racks inside racks too, up to 6 levels).
+function dpLatencyNode(path, depth) {
+    var api = new LiveAPI(function () {}, path);
+    var node = { lat: dpGetNum(api, "latency_in_samples"), chains: [] };
+    if (depth < 6 && dpGetNum(api, "can_have_chains") > 0.5) {
+        var nc = api.getcount("chains");
+        for (var c = 0; c < nc; c++) {
+            var chain = [];
+            var cp = path + " chains " + c;
+            var nd = new LiveAPI(function () {}, cp).getcount("devices");
+            for (var d = 0; d < nd; d++) chain.push(dpLatencyNode(cp + " devices " + d, depth + 1));
+            node.chains.push(chain);
+        }
+    }
+    return node;
 }
 
 function dpPoll() {
@@ -144,7 +167,8 @@ function dpPoll() {
     for (var k = 0; k < ids.length; k++) {
         if (k > lo && k < hi) {
             dpProbeApi.id = ids[k];
-            lats.push(dpGetNum(dpProbeApi, "latency_in_samples"));
+            // a rack between the pair counts as its longest chain (Live reports 0 for the rack)
+            lats.push(dpDeviceLatency(dpLatencyNode(String(dpProbeApi.unquotedpath), 0)));
             namesList.push(String(dpProbeApi.get("name")));
         } else {
             lats.push(0);

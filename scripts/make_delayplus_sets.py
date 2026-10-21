@@ -293,7 +293,11 @@ def build_als(args):
         args.start = tstart
         devs = device_list(args, args.als)
         chain = "<Devices>\n" + "\n".join(d for d, _ in devs) + "\n</Devices>"
-        rack = rn(fill(tpl("alsrack"), RACKID=0, NAME=esc(args.name), DEVICES=chain))
+        # show the chain's devices (Delay+, the FX, Delay+ End) when the rack is opened, without the
+        # macro panel, so Delay+ fits in the device view next to the Help view
+        rack = rn(fill(tpl("alsrack"), RACKID=0, NAME=esc(args.name), DEVICES=chain).replace(
+            '<AreDevicesVisible Value="false" />', '<AreDevicesVisible Value="true" />').replace(
+            '<AreMacroControlsVisible Value="true" />', '<AreMacroControlsVisible Value="false" />'))
         track = fill(tpl("audiotrack"), TRACKID=max(1, args.track_id + i), TRACKNAME=esc(tname),
                      CLIPSLOTS=slots, DEVICES="<Devices>\n" + rack + "\n</Devices>")
         tracks.append(rn(track))

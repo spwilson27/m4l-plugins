@@ -16,7 +16,7 @@
 // `hdr <name>`); until then they point at End's own empty buffers.
 //
 // scope (End UI telemetry, 32 samples, every 64 samples):
-//   0 linked 1 K 2 L 3 ping L 4 wet peak 5 dry peak 6 duck gain 7 frame counter 8 B 9 debug
+//   0 linked 1 K 2 L 4 wet peak 5 dry peak 6 duck gain 7 frame counter 8 B
 
 wd(x, m) {
 	y = x;
@@ -61,8 +61,6 @@ History gw(0);
 History gd(1);
 History ws(1);
 History link(0);
-History lastPing(-1);
-History armed(0);
 History tick(0);
 History frames(0);
 History pkW(0);
@@ -203,7 +201,6 @@ if (cN >= 8192) {
 kk = calOk > 0.5 ? kCal : anchor;
 poke(hdr, kk, 2);
 poke(hdr, calOk, 18);
-dbg = peek(hdr, 8) > 0.5;
 
 // Dry from Start, aligned with the wet that went through the chain.
 di = wrap(cn + kk - ll, 0, RING);
@@ -215,24 +212,6 @@ wi = wrap(cn, 0, RING);
 poke(xfer, in1, wi, 2);
 poke(xfer, in2, wi, 3);
 
-// Ping measurement (debug): first arrival of Start's impulse, in Start-frame samples.
-pIdx = peek(hdr, 9);
-if (pIdx != lastPing) {
-	lastPing = pIdx;
-	armed = dbg;
-}
-if (armed > 0.5) {
-	age = wd(cn + kk - pIdx, M);
-	if (age >= 0 && max(abs(in1), abs(in2)) > 0.1) {
-		poke(hdr, age, 10);
-		poke(hdr, peek(hdr, 11) + 1, 11);
-		armed = 0;
-	} else if (age > RING) {
-		poke(hdr, -1, 10);
-		armed = 0;
-	}
-}
-
 // Mix stage. Wet/dry crossfade keeps dry at unity up to 50% and wet at unity from 50%.
 wet = peek(hdr, 5);
 duckOn = peek(hdr, 6) > 0.5;
@@ -241,7 +220,7 @@ duckRel = max(peek(hdr, 41), 1);
 outG = peek(hdr, 42);
 width = peek(hdr, 7);
 sm = 1 / (0.02 * sr);
-gw = gw + (min(1, 2 * wet) * (dbg ? 0 : 1) - gw) * sm;
+gw = gw + (min(1, 2 * wet) - gw) * sm;
 gd = gd + (min(1, 2 * (1 - wet)) - gd) * sm;
 ws = ws + (width - ws) * sm;
 
@@ -276,13 +255,11 @@ if (tick >= 64) {
 	poke(scope, alive, 0);
 	poke(scope, kk, 1);
 	poke(scope, ll, 2);
-	poke(scope, peek(hdr, 10), 3);
 	poke(scope, pkW, 4);
 	poke(scope, pkD, 5);
 	poke(scope, dg, 6);
 	poke(scope, frames, 7);
 	poke(scope, peek(hdr, 3), 8);
-	poke(scope, dbg, 9);
 	pkW = 0;
 	pkD = 0;
 }
