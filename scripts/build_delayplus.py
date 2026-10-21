@@ -169,6 +169,11 @@ P = {
     "chmode": ("Channel Mode", "Channel Mode", 0, 2, 0, 2, 9, 1.0, "chmode", False,
                "Stereo, Ping Pong (echoes bounce between the sides) or Mid/Side (Left = Mid, Right = Side).",
                ["Stereo", "Ping Pong", "Mid/Side"]),
+    "diffuse": ("Diffusion", "Diffusion", 0.0, 100.0, 0.0, 0, 5, 1.0, "diffuse", True,
+                "Smears each repeat inside the delay loop, so the echoes wash out toward a reverb as they repeat. "
+                "The first echo stays clean.", None),
+    "dsize": ("Diffusion Size", "Diff Size", 0.0, 100.0, 60.0, 0, 5, 1.0, "dsize", True,
+              "How long the Diffusion smear is (up to about 37 ms per repeat). Adds that much to the shortest delay time.", None),
     "wet": ("Dry/Wet", "Dry/Wet", 0.0, 100.0, 50.0, 0, 5, 1.0, "wet", True,
             "Dry/wet balance (equal power: the wet rises all the way to 100%, 50% is -3 dB on both).", None),
 }
@@ -199,6 +204,9 @@ def valueof(key):
         v["parameter_unitstyle"] = unit
         if expo != 1.0:
             v["parameter_exponent"] = expo
+    if key == "dsize":  # the bar reads "Size 60 %" (it has no label of its own)
+        v["parameter_unitstyle"] = 9
+        v["parameter_units"] = "Size %.0f %"
     if key.startswith("cents_"):
         v["parameter_units"] = "%+.0f ct"
     if key.startswith("fluid_"):

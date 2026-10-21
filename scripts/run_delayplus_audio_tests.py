@@ -24,6 +24,9 @@ Cases:
   gate         — Gate at -20 dB: a hit below it does not reach the delay
   filter       — Filter on, LP 400 Hz: the echo is darker than the dry hit
   blowup       — fb 1.1 + Clip Dry at +12 dB input on 5 s of noise stays finite and below 2.0
+  diffuse      — Diffusion 60 % (Size 60 %): echo 1 untouched (on time, same level), echo 2 smeared (peak
+                 >= 3 dB lower) with its energy within 1.5 dB of the undiffused echo (allpasses keep the level)
+  freeze_diffuse — Freeze still holds the level with Diffusion on (the self-loop skips the diffuser)
   drywet       — Dry/Wet 75% is equal power: echo / dry = tan(67.5 deg) (+7.66 dB)
   clip_soft / clip_hard / clip_limit — Clip Level -12 dB (0.251) on a 0.8 impulse: Hard and Limit
                  echo exactly at the ceiling, Soft between its knee (0.8 x ceiling) and the ceiling
@@ -155,6 +158,8 @@ def cases():
         c("clip_hard", "clipmode 1, cliplevel -12, wet 1"),
         c("clip_limit", "clipmode 2, cliplevel -12, wet 1"),
         c("drywet", "wet 0.75"),
+        c("diffuse_ref", "wet 1", dur=700),
+        c("diffuse", "wet 1, diffuse 0.6, dsize 0.6", dur=700),
         c("gate", "gateon 1, gatethr -20", source="kind 0, amp 0.05, pos 600", dur=500),
         c("filter", "filton 1, hp 20, lp 400", dur=500),
         # Freeze needs a message at a sample time -> stepped mode (event lands within one vector).
@@ -162,6 +167,8 @@ def cases():
           mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
         c("freeze_gain", "wet 1", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80", dur=1700, gain=1.5,
           mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
+        c("freeze_diffuse", "wet 1, diffuse 0.6", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80",
+          dur=1700, mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
         c("freeze_mod", "wet 1, moddelay 0.5, lforate 3", source="kind 1, amp 0.5, pos 700, b1l 80, b2s 1700, b2l 80",
           dur=1700, mode="stepped", events=[(1000, "dev-start", 0, "freeze 1")]),
         c("blowup", "tmsL 50, tmsR 50, fb 1.1, clipdry 1, inputdb 12, wet 1", source="kind 2, amp 1.0, pos 100", dur=5000, dump=False),
@@ -247,6 +254,9 @@ def check_echo(tag, ch, expect, errors, tol=1):
     if idx is None or abs(idx - expect) > tol:
         errors.append(f"{tag}: peak at {idx}, expected {expect:.0f} (+-{tol})")
     return idx, val
+
+
+DIFF_REF = {}
 
 
 def check(case, meta, data, errors):
@@ -357,6 +367,27 @@ def check(case, meta, data, errors):
         if not (l[i1] > 0 and l[i2] < 0):
             errors.append(f"invert: expected echo1 > 0 and echo2 < 0 (got {l[i1]:+.3f}, {l[i2]:+.3f})")
 
+    elif name in ("diffuse_ref", "diffuse"):
+        # wet 1: no dry in the output; echo windows +-45 ms around n * T
+        half = int(0.045 * sr)
+        e1i, e1 = peak_near(l, dry + T, half=24)
+        _, e2 = peak_near(l, dry + 2 * T, half=half)
+        en2 = energy_near(l, dry + 2 * T, half=half)
+        meta["_diff"] = (e1i - dry, abs(e1), abs(e2), en2)
+        print(f"{name}: echo1 at +{e1i - dry} peak {abs(e1):.4f}, echo2 peak {abs(e2):.4f}, echo2 energy {db(en2) / 2:+.2f} dB")
+        DIFF_REF[name] = meta["_diff"]
+        if name == "diffuse" and "diffuse_ref" in DIFF_REF:
+            r = DIFF_REF["diffuse_ref"]
+            d = meta["_diff"]
+            if abs(d[0] - r[0]) > 1 or abs(db(d[1] / r[1])) > 0.2:
+                errors.append(f"diffuse: echo 1 changed (at +{d[0]} vs +{r[0]}, {db(d[1] / r[1]):+.2f} dB)")
+            if db(d[2] / r[2]) > -3:
+                errors.append(f"diffuse: echo 2 peak only {db(d[2] / r[2]):+.2f} dB vs undiffused (want <= -3 dB)")
+            if abs(db(d[3] / r[3]) / 2) > 1.5:
+                errors.append(f"diffuse: echo 2 energy {db(d[3] / r[3]) / 2:+.2f} dB vs undiffused (want within 1.5 dB)")
+        elif name == "diffuse":
+            errors.append("diffuse: needs diffuse_ref (run both)")
+
     elif name == "drywet":
         # equal power: at 75% the echo / dry ratio is tan(67.5 deg) = +7.66 dB (the old law gave +6.02)
         _, dv = check_echo("dry", l, dry, errors)
@@ -413,8 +444,11 @@ def check(case, meta, data, errors):
         print("freeze window levels (dB): " + " ".join(f"{w:.2f}" for w in wins))
         if min(wins) < -60:
             errors.append(f"freeze: loop went silent ({min(wins):.1f} dB)")
-        if max(wins) - min(wins) > 0.3:
-            errors.append(f"{name}: level drifts {max(wins) - min(wins):.2f} dB over repeats (> 0.3 dB)")
+        # freeze_mod measures the LFO-modulated output read of an exact loop, so its windows wobble a
+        # little (0.23..0.30 dB measured); the unmodulated cases are 0.00 dB
+        lim = 0.5 if name == "freeze_mod" else 0.3
+        if max(wins) - min(wins) > lim:
+            errors.append(f"{name}: level drifts {max(wins) - min(wins):.2f} dB over repeats (> {lim} dB)")
 
 
 def main():

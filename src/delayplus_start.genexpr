@@ -115,6 +115,8 @@ Param repitch(0);      // 1: the read head glides to a new time (pitch bends); 0
 Param freeze(0);
 Param lat(0);
 Param wet(0.5);
+Param diffuse(0);      // Diffusion amount 0..1 (allpass smear on the feedback return)
+Param dsize(0.6);      // Diffusion Size 0..1 (allpass lengths, up to about 37 ms)
 Param width(1);
 Param duckon(0);
 Param duckthr(0);
@@ -186,6 +188,17 @@ History lpK(1.4142);
 History cHpR(-1);
 History cLpR(-1);
 History tick(0);
+History dScale(0);     // smoothed allpass length scale (0 = off, so Diffusion 0 adds no delay)
+// Diffusion: four Schroeder allpasses per tank channel on the feedback return (lengths differ per
+// side for decorrelation). Sized for 192 kHz at the longest setting.
+Delay apL1(4096);
+Delay apL2(4096);
+Delay apL3(4096);
+Delay apL4(4096);
+Delay apR1(4096);
+Delay apR2(4096);
+Delay apR3(4096);
+Delay apR4(4096);
 History limG(1);
 History specPk(0);
 History specPkD(0);
@@ -321,6 +334,63 @@ if (mode == 2) {
 	fL = tmp;
 }
 
+// ---- Diffusion: allpass smear on the return, timing compensated -------------------------------
+// Each repeat passes the four allpasses once more, so later repeats wash out further; the first
+// echo is untouched and the level is unchanged (|allpass| = 1). The chain delays the return by
+// dTot samples, so the return is written dTot earlier in the tank (see `fi`) and echoes stay on
+// n * T. The lengths scale with Size and fade in with the amount, so Diffusion 0 adds no delay
+// and is an exact bypass.
+fL0 = fL;
+fR0 = fR;
+dAmt = clip(diffuse, 0, 1);
+dTgt = (0.1 + 0.9 * clip(dsize, 0, 1)) * min(1, dAmt * 5) * sr / 48000;
+dScale = dScale + (dTgt - dScale) * (1 / (0.05 * sr));
+dScale = dScale < 0.00001 && dTgt == 0 ? 0 : dScale;
+dTot = floor(1788 * dScale + 0.5);
+dg = 0.7 * dAmt;
+// lengths 113 / 337 / 541 / (rest) and 127 / 359 / 563 / (rest), so each side sums to dTot exactly
+lA = 113 * dScale;
+lB = 337 * dScale;
+lC = 541 * dScale;
+lD = max(dTot - lA - lB - lC, 0);
+lE = 127 * dScale;
+lF = 359 * dScale;
+lG = 563 * dScale;
+lH = max(dTot - lE - lF - lG, 0);
+aR1 = apL1.read(lA, interp="linear");
+aW1 = fL + dg * aR1;
+apL1.write(aW1);
+aY1 = aR1 - dg * aW1;
+aR2 = apL2.read(lB, interp="linear");
+aW2 = aY1 + dg * aR2;
+apL2.write(aW2);
+aY2 = aR2 - dg * aW2;
+aR3 = apL3.read(lC, interp="linear");
+aW3 = aY2 + dg * aR3;
+apL3.write(aW3);
+aY3 = aR3 - dg * aW3;
+aR4 = apL4.read(lD, interp="linear");
+aW4 = aY3 + dg * aR4;
+apL4.write(aW4);
+bR1 = apR1.read(lE, interp="linear");
+bW1 = fR + dg * bR1;
+apR1.write(bW1);
+bY1 = bR1 - dg * bW1;
+bR2 = apR2.read(lF, interp="linear");
+bW2 = bY1 + dg * bR2;
+apR2.write(bW2);
+bY2 = bR2 - dg * bW2;
+bR3 = apR3.read(lG, interp="linear");
+bW3 = bY2 + dg * bR3;
+apR3.write(bW3);
+bY3 = bR3 - dg * bW3;
+bR4 = apR4.read(lH, interp="linear");
+bW4 = bY3 + dg * bR4;
+apR4.write(bW4);
+// off (no length yet): the return skips the chain, exactly as before
+fL = dTot > 0 ? fixdenorm(aR4 - dg * aW4) : fL0;
+fR = dTot > 0 ? fixdenorm(bR4 - dg * bW4) : fR0;
+
 // ---- tank write: input at the head, return at its original emit position ---------------------
 ig = ig + (frz ? 0 - ig : 1 - ig) * (1 / (0.01 * sr));
 // Input gain and Echo's "D" (soft clip), then the gate (opens above its threshold, closes after
@@ -367,7 +437,7 @@ if (fzW > 0 && frzTL > 0) {
 }
 poke(tank, inL + cpL * fzW, wi, 0);
 poke(tank, inR + cpR * fzW, wi, 1);
-fi = wrap(cn - bb - ll, 0, TANK);
+fi = wrap(cn - bb - ll - dTot, 0, TANK);
 // Feedback clip where input and feedback meet (Options page), ceiling T = Clip Level:
 //   Soft  linear up to 0.8 T, then a tanh knee that reaches T
 //   Hard  clipped at +-T
@@ -400,7 +470,7 @@ tgL = clip(tmsHL > 0 ? tmsHL : tmsL, 1, 8000) * sr / 1000;
 tgR = clip(tmsHR > 0 ? tmsHR : tmsR, 1, 8000) * sr / 1000;
 modS = clip(moddelay, 0, 1) * 0.008 * (x4 > 0.5 ? 4 : 1) * sr;
 wobS = (wobon > 0.5) * clip(wobamt, 0, 1) * 0.003 * sr;
-tmin = bb + ll + modS + wobS + 4;
+tmin = bb + ll + dTot + modS + wobS + 4;
 tmax = TANK - 8;
 clamped = (tgL < tmin) || (tgR < tmin);
 tgL = clip(tgL, tmin, tmax);

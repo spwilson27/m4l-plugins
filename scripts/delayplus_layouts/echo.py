@@ -23,6 +23,8 @@ parameter, so the state is re-applied when the device loads.
 # The Character page (Gate, Ducking, Noise, Wobble, Repitch) is off the face for now: its parameters
 # stay in the device (automatable, DSP unchanged, all off by default) but have no widgets on show.
 SHOW_CHARACTER = False
+DIFF_DIAL_Y = 30.0       # Diffusion dial in the right column, under Freeze
+DIFF_DIAL_Y_MIDI = 68.0  # ... and under the MIDI From menus while a side is in MIDI mode
 
 # Stereo Link mirrors these per-side settings (DP_LINKED in src/delayplus_ui.js).
 LINKED_KEYS = ("tmode", "time", "div", "mode", "note", "cents", "fluid")
@@ -97,6 +99,11 @@ def layout(h):
     # ---- right column ----------------------------------------------------------------------
     controls += [
         button("freeze", 375.0, 12.0, 54.0, 13.0, text="Freeze"),
+        # Diffusion (where Echo has its Reverb): the dial and its Size bar. While a side is in MIDI
+        # mode the MIDI From menus take the top of this slot, so the dial moves down under them
+        # and the Size bar hides (obj-midi-x below).
+        dial("diffuse", 382.0, DIFF_DIAL_Y, w=40.0),
+        numbox("dsize", 375.0, 82.0, 54.0, 13.0),
         dial("width", 431.0, 2.0),
         dial("outdb", 431.0, 64.0),
         tab("chmode", 375.0, 116.0, 54.0, 48.0, rows=3),
@@ -358,6 +365,16 @@ def layout(h):
             "varname": long_name}})
         extra_lines.append(h.line("obj-midi-hide", 0, mid, 0))
     extra_lines.append(h.line("obj-midi-hide", 0, "obj-midi-lbl", 0))
+    # Diffusion makes room for the MIDI From menus (obj-midi-x is 1 while no side is in MIDI mode)
+    extra_boxes += [nb("obj-diff-sel", "sel 0 1", 1700, 850, 60, 1, 3),
+                    h.msgbox("obj-diff-down", f"presentation_rect 382 {DIFF_DIAL_Y_MIDI:g} 40 47", 1700, 880, 200),
+                    h.msgbox("obj-diff-up", f"presentation_rect 382 {DIFF_DIAL_Y:g} 40 47", 1910, 880, 200),
+                    nb("obj-diff-x", "expr $i1 == 0", 1700, 910, 90, 1, 1),
+                    nb("obj-diff-hide", "prepend hidden", 1700, 940, 90)]
+    extra_lines += [h.line("obj-midi-x", 0, "obj-diff-sel", 0), h.line("obj-diff-sel", 0, "obj-diff-down", 0),
+                    h.line("obj-diff-sel", 1, "obj-diff-up", 0), h.line("obj-diff-down", 0, "obj-ctrl-diffuse", 0),
+                    h.line("obj-diff-up", 0, "obj-ctrl-diffuse", 0), h.line("obj-midi-x", 0, "obj-diff-x", 0),
+                    h.line("obj-diff-x", 0, "obj-diff-hide", 0), h.line("obj-diff-hide", 0, "obj-ctrl-dsize", 0)]
 
     # groups: (expr over page $i1, filter display $i2, mod sync $i3) -> hidden flag -> widgets
     groups = [
