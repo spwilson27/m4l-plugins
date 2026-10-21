@@ -120,6 +120,72 @@ test("rack latency: the longest chain, racks inside racks too", () => {
     assert.strictEqual(C.dpDeviceLatency({ lat: 300, chains: [[{ lat: 64 }]] }), 300);
 });
 
+// Filter Display mouse: run the real script (config + spectrum + filter) against a stub mgraphics.
+function loadFilterDisplay() {
+    const vm = require("vm");
+    const out = [];
+    const noop = () => {};
+    const mg = new Proxy({ size: [260, 66], text_measure: () => [10, 8] }, {
+        get: (t, k) => (k in t ? t[k] : noop), set: (t, k, v) => { t[k] = v; return true; },
+    });
+    const ctx = { mgraphics: mg, outlet: (i, ...a) => out.push(a), post: noop, Math, Number, String, Array, JSON, isNaN };
+    vm.createContext(ctx);
+    const src = ["delayplus_config.js", "delayplus_spectrum.js", "delayplus_filter.js"]
+        .map((f) => fs.readFileSync(path.join(ROOT, "src", f), "utf8")).join("\n");
+    vm.runInContext(src, ctx);
+    const handle = (i) => {
+        const w = 260, h = 66;
+        const [px, py] = vm.runInContext(`fdHandle(${i}, ${w}, ${h})`, ctx);
+        return [px, Math.max(7, Math.min(h - 7, py))];
+    };
+    return { ctx, out, handle, get: (k) => vm.runInContext(k, ctx) };
+}
+
+test("no Delay+ script redeclares Max's reserved v8ui globals", () => {
+    // `var box = ...` in delayplus_filter.js crashed Live on the first mouse drag (Max reads its own
+    // `box` accessor in pointer events). Same risk for the other built-ins Max provides.
+    const reserved = ["box", "patcher", "max", "messagename", "inlet", "jsarguments"];
+    for (const f of fs.readdirSync(path.join(ROOT, "src")).filter((n) => /^delayplus_.*\.js$/.test(n))) {
+        const code = fs.readFileSync(path.join(ROOT, "src", f), "utf8");
+        for (const r of reserved) {
+            assert(!new RegExp("(^|\\n)\\s*(var|let|const|function)\\s+" + r + "\\b").test(code), `${f} declares ${r}`);
+            assert(!new RegExp("(^|[^.\\w])" + r + "\\s*=[^=]").test(code), `${f} assigns ${r}`);
+        }
+    }
+});
+
+test("Filter Display: box-select both filters, drag one, both move together", () => {
+    const d = loadFilterDisplay();
+    const hp0 = d.get("hp"), lp0 = d.get("lp");
+    // box over the whole display selects both handles
+    d.ctx.onclick(1, 1, 1, 0, 0);
+    d.ctx.ondrag(259, 65, 1, 0, 0);
+    d.ctx.ondrag(259, 65, 0, 0, 0); // release
+    assert.deepStrictEqual(Array.from(d.get("sel")), [1, 1]);
+    // drag handle 1 by +26 px (1/10 of the width = 1/10 of the 3-decade range) and up 6 px
+    const [x, y] = d.handle(0);
+    d.ctx.onclick(x, y, 1, 0, 0);
+    d.ctx.ondrag(x + 26, y - 6, 1, 0, 0);
+    const ratio = Math.pow(1000, 0.1);
+    near(d.get("hp") / hp0, ratio, 1e-9);
+    near(d.get("lp") / lp0, ratio, 1e-9);
+    near(d.get("hpres"), 0.1, 1e-9);
+    near(d.get("lpres"), 0.1, 1e-9);
+    // a click on empty space clears the selection; then a handle drag moves only that filter
+    d.ctx.onclick(130, 2, 1, 0, 0);
+    d.ctx.ondrag(130, 2, 0, 0, 0);
+    assert.deepStrictEqual(Array.from(d.get("sel")), [0, 0]);
+    const lpBefore = d.get("lp");
+    const [x2, y2] = d.handle(0);
+    d.ctx.onclick(x2, y2, 1, 0, 0);
+    d.ctx.ondrag(x2 + 26, y2, 1, 0, 0);
+    near(d.get("lp"), lpBefore, 0);
+    // shift-click adds the other handle to the selection
+    const [x3, y3] = d.handle(1);
+    d.ctx.onclick(x3, y3, 1, 0, 1);
+    assert.deepStrictEqual(Array.from(d.get("sel")), [1, 1]);
+});
+
 test("side labels", () => {
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: 3, mode: 0 }), "1/8");
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: 3, mode: 2 }), "1/8 D");

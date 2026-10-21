@@ -11,6 +11,14 @@ outlets = 1;
 
 var hp = 50, lp = 5000, hpres = 0, lpres = 0, filton = 1, modfilt = 0;
 var drag = 0, lastX = 0, lastY = 0;
+// Selection like Ableton's EQ Eight: drag a box over empty space to select handles (shift adds),
+// shift-click toggles one; dragging any selected handle moves all selected ones together (same
+// frequency ratio, same resonance change). A click on an unselected handle selects only it.
+var sel = [0, 0];
+// Not named `box`: that is Max's own global for this object, and replacing it crashed Live
+// (v8wrap_getter_ext in a pointer event).
+var fdSelBox = null; // {x0, y0, x1, y1} while a selection box is being dragged
+var boxBase = [0, 0];
 var fdPal = null;
 var FMIN = 20, FMAX = 20000, DBHI = 12, DBLO = -24;
 var LOGR = Math.log(FMAX / FMIN);
@@ -233,7 +241,7 @@ function paint() {
     mg.set_font_size(9);
     for (i = 0; i < 2; i++) {
         var p = fdHandle(i, w, h), px = p[0], py = fdClamp(p[1], 7, h - 7);
-        var act = drag === i + 1;
+        var act = sel[i];
         var oc = dim ? [0.5, 0.5, 0.5] : (i === 0 ? fdPal.h1 : fdPal.h2);
         mg.ellipse(px - 6.5, py - 6.5, 13, 13);
         if (act) {
@@ -251,6 +259,17 @@ function paint() {
         mg.move_to(px - tw2 / 2, py + 3.2);
         mg.show_text(t);
     }
+    if (fdSelBox) {
+        var bx = Math.min(fdSelBox.x0, fdSelBox.x1), by = Math.min(fdSelBox.y0, fdSelBox.y1);
+        var bw = Math.abs(fdSelBox.x1 - fdSelBox.x0), bh = Math.abs(fdSelBox.y1 - fdSelBox.y0);
+        mg.set_source_rgba(fdPal.scale[0], fdPal.scale[1], fdPal.scale[2], 0.12);
+        mg.rectangle(bx, by, bw, bh);
+        mg.fill();
+        mg.set_source_rgba(fdPal.scale[0], fdPal.scale[1], fdPal.scale[2], 0.8);
+        mg.set_line_width(1);
+        mg.rectangle(Math.round(bx) + 0.5, Math.round(by) + 0.5, Math.round(bw), Math.round(bh));
+        mg.stroke();
+    }
 }
 
 function fdHit(x, y) {
@@ -263,11 +282,35 @@ function fdHit(x, y) {
     return best;
 }
 
-function onclick(x, y) {
-    drag = fdHit(x, y);
+function onclick(x, y, but, cmd, shift) {
+    var hit = fdHit(x, y);
     lastX = x;
     lastY = y;
+    if (hit) {
+        if (shift) sel[hit - 1] = sel[hit - 1] ? 0 : 1;
+        else if (!sel[hit - 1]) sel = [0, 0];
+        if (!shift) sel[hit - 1] = 1;
+        drag = sel[hit - 1] ? hit : 0;
+        fdSelBox = null;
+    } else {
+        drag = 0;
+        boxBase = shift ? sel.slice() : [0, 0];
+        sel = boxBase.slice();
+        fdSelBox = { x0: x, y0: y, x1: x, y1: y };
+    }
     mgraphics.redraw();
+}
+
+// Handles inside the selection box (plus the ones selected before a shift-drag).
+function fdBoxSelect() {
+    var w = mgraphics.size[0], h = mgraphics.size[1];
+    var xl = Math.min(fdSelBox.x0, fdSelBox.x1), xr = Math.max(fdSelBox.x0, fdSelBox.x1);
+    var yt = Math.min(fdSelBox.y0, fdSelBox.y1), yb = Math.max(fdSelBox.y0, fdSelBox.y1);
+    for (var i = 0; i < 2; i++) {
+        var p = fdHandle(i, w, h), py = fdClamp(p[1], 7, h - 7);
+        var inside = p[0] >= xl - 6.5 && p[0] <= xr + 6.5 && py >= yt - 6.5 && py <= yb + 6.5;
+        sel[i] = boxBase[i] || inside ? 1 : 0;
+    }
 }
 
 function ondblclick(x, y) {
@@ -280,18 +323,27 @@ function ondblclick(x, y) {
 }
 
 function ondrag(x, y, but, cmd, shift) {
+    if (fdSelBox) {
+        fdSelBox.x1 = x;
+        fdSelBox.y1 = y;
+        fdBoxSelect();
+        if (!but) fdSelBox = null; // released
+        mgraphics.redraw();
+        return;
+    }
     if (!drag) return;
     var w = mgraphics.size[0], dx = x - lastX, dy = y - lastY;
     lastX = x;
     lastY = y;
     var fine = shift ? 0.1 : 1;
     var fac = Math.exp(dx / w * LOGR * fine);
-    if (drag === 1) {
+    if (sel[0]) {
         hp = fdClamp(hp * fac, FMIN, FMAX);
         hpres = fdClamp(hpres - dy / 60 * fine, 0, 1);
         outlet(0, "hp", hp);
         outlet(0, "hpres", hpres);
-    } else {
+    }
+    if (sel[1]) {
         lp = fdClamp(lp * fac, FMIN, FMAX);
         lpres = fdClamp(lpres - dy / 60 * fine, 0, 1);
         outlet(0, "lp", lp);

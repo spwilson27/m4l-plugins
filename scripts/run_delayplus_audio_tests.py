@@ -24,6 +24,7 @@ Cases:
   gate         — Gate at -20 dB: a hit below it does not reach the delay
   filter       — Filter on, LP 400 Hz: the echo is darker than the dry hit
   blowup       — fb 1.1 + Clip Dry at +12 dB input on 5 s of noise stays finite and below 2.0
+  drywet       — Dry/Wet 75% is equal power: echo / dry = tan(67.5 deg) (+7.66 dB)
   clip_soft / clip_hard / clip_limit — Clip Level -12 dB (0.251) on a 0.8 impulse: Hard and Limit
                  echo exactly at the ceiling, Soft between its knee (0.8 x ceiling) and the ceiling
 """
@@ -149,9 +150,11 @@ def cases():
         c("offset", "tmsR 150", dur=700),
         c("midside", "chmode 2, tmsL 100, tmsR 150", source="kind 0, amp 0.8, pos 600, rch 0", dur=700),
         c("invert", "inv 1"),
-        c("clip_soft", "clipmode 0, cliplevel -12"),
-        c("clip_hard", "clipmode 1, cliplevel -12"),
-        c("clip_limit", "clipmode 2, cliplevel -12"),
+        # wet 1: the echo at unity gain (equal-power Dry/Wet), so its level is the tank's
+        c("clip_soft", "clipmode 0, cliplevel -12, wet 1"),
+        c("clip_hard", "clipmode 1, cliplevel -12, wet 1"),
+        c("clip_limit", "clipmode 2, cliplevel -12, wet 1"),
+        c("drywet", "wet 0.75"),
         c("gate", "gateon 1, gatethr -20", source="kind 0, amp 0.05, pos 600", dur=500),
         c("filter", "filton 1, hp 20, lp 400", dur=500),
         # Freeze needs a message at a sample time -> stepped mode (event lands within one vector).
@@ -353,6 +356,16 @@ def check(case, meta, data, errors):
         print(f"echo1 {l[i1]:+.3f}, echo2 {l[i2]:+.3f}")
         if not (l[i1] > 0 and l[i2] < 0):
             errors.append(f"invert: expected echo1 > 0 and echo2 < 0 (got {l[i1]:+.3f}, {l[i2]:+.3f})")
+
+    elif name == "drywet":
+        # equal power: at 75% the echo / dry ratio is tan(67.5 deg) = +7.66 dB (the old law gave +6.02)
+        _, dv = check_echo("dry", l, dry, errors)
+        _, e1 = check_echo("echo1", l, dry + T, errors)
+        want = 20 * math.log10(math.tan(0.75 * math.pi / 2))
+        got = db(abs(e1) / abs(dv))
+        print(f"drywet 75%: echo1/dry {got:+.2f} dB (expected {want:+.2f})")
+        if abs(got - want) > 0.3:
+            errors.append(f"drywet: echo1/dry {got:+.2f} dB, expected {want:+.2f} (equal power)")
 
     elif name.startswith("clip_"):
         ceil = 10 ** (-12 / 20)

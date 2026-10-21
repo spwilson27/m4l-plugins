@@ -169,7 +169,8 @@ P = {
     "chmode": ("Channel Mode", "Channel Mode", 0, 2, 0, 2, 9, 1.0, "chmode", False,
                "Stereo, Ping Pong (echoes bounce between the sides) or Mid/Side (Left = Mid, Right = Side).",
                ["Stereo", "Ping Pong", "Mid/Side"]),
-    "wet": ("Dry/Wet", "Dry/Wet", 0.0, 100.0, 50.0, 0, 5, 1.0, "wet", True, "Dry/wet balance.", None),
+    "wet": ("Dry/Wet", "Dry/Wet", 0.0, 100.0, 50.0, 0, 5, 1.0, "wet", True,
+            "Dry/wet balance (equal power: the wet rises all the way to 100%, 50% is -3 dB on both).", None),
 }
 
 COL_X = [234.0 + c * 48.0 for c in range(5)]

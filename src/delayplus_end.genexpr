@@ -212,7 +212,9 @@ wi = wrap(cn, 0, RING);
 poke(xfer, in1, wi, 2);
 poke(xfer, in2, wi, 3);
 
-// Mix stage. Wet/dry crossfade keeps dry at unity up to 50% and wet at unity from 50%.
+// Mix stage. Equal-power Dry/Wet: wet = sin(90 deg x Dry/Wet), dry = cos(...), so the wet keeps
+// rising all the way to 100% (50% = both at -3 dB). The earlier Echo-style law (both at unity up to
+// 50%) stopped changing the wet above 50%, which Freeze made obvious.
 wet = peek(hdr, 5);
 duckOn = peek(hdr, 6) > 0.5;
 duckThr = peek(hdr, 40);
@@ -220,8 +222,8 @@ duckRel = max(peek(hdr, 41), 1);
 outG = peek(hdr, 42);
 width = peek(hdr, 7);
 sm = 1 / (0.02 * sr);
-gw = gw + (min(1, 2 * wet) - gw) * sm;
-gd = gd + (min(1, 2 * (1 - wet)) - gd) * sm;
+gw = gw + (sin(clip(wet, 0, 1) * pi * 0.5) - gw) * sm;
+gd = gd + (cos(clip(wet, 0, 1) * pi * 0.5) - gd) * sm;
 ws = ws + (width - ws) * sm;
 
 lvl = max(abs(dryL), abs(dryR));
