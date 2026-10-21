@@ -26,6 +26,12 @@
 // (slice start .. samp_end), 2 one-way loop, 3 ping-pong loop. Pitch ignores the MIDI note (the note
 // picks the slice). Pos (`play_pos`) only matters while Freeze is on.
 //
+// Single (sliced = 0): `loop_mode` (0 Off, 1 Fwd, 2 Ping-Pong) applies to EVERY engine. Off plays start .. end once
+// and the voice goes silent (the playhead stops and the voice fades), Fwd wraps inside loop_start .. loop_end,
+// Ping-Pong bounces there. Cycles and Textures scan their playhead the same way (Cycles slowly, Textures at
+// the note's speed). Textures grains latch the playhead when their window starts, so the scan speed does not add to
+// the grain's own read speed (natural speed once sounded an octave high).
+//
 // Spectral limits (CPU budget): at most 4 Spectral voices (vdata voices 0..3, the rest are silent in
 // Spectral mode). FFT 1024 / 2048 / 4096 by sp_quality (Low / Medium / High), 75% overlap, one FFT
 // pass or one O(N) slice of work per sample (the Cepstra pattern, time-sliced across each hop).
@@ -52,6 +58,8 @@
 //     37     : effective filter cutoff in Hz
 //     38     : loaded sample frame count (dim(samp))
 //     39     : rolling telemetry frame counter
+//     40..47 : the running values of sliced, loop_mode, slice_play, mode, freeze, reverse, root_note, loop_start
+//              (test telemetry: proves the device's parameter messages reached the gen)
 //     48     : Fragments grains started (all voices, cumulative; test telemetry)
 //
 // GenExpr rules strictly enforced:
@@ -1383,24 +1391,19 @@ voice_proc(
 		// ---------------- CYCLES ----------------
 		if (freezeOn > 0.5) {
 			playheadNorm = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm);
-		} else if (isSlice) {
-			// Sliced: natural-speed scan, with the slice_play end behaviour.
-			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion) / max(numFrames, 1), effStartNorm, effEndNorm, effStartNorm, effEndNorm, wmSlice);
+		} else {
+			// Sliced: natural-speed scan with the slice_play end behaviour. Single: a slow scan whose end behaviour is
+			// the Loop mode (Off stops at the end, Fwd wraps inside the loop region, Ping-Pong bounces).
+			wmCy = isSlice ? wmSlice : ((loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0));
+			rloCy = isSlice ? effStartNorm : clip(loopStartNorm, effStartNorm, effEndNorm - 0.002);
+			rhiCy = isSlice ? effEndNorm : clip(loopEndNorm, rloCy + 0.002, effEndNorm);
+			stepCy = isSlice ? (abs(grainMotion) / max(numFrames, 1)) : (abs(grainMotion) * 0.35 / max(srVal, 1));
+			hn, dn, dd = head_step(playheadNorm, scanDir, stepCy, effStartNorm, effEndNorm, rloCy, rhiCy, wmCy);
 			playheadNorm = hn;
 			scanDir = dn;
-			if ((dd > 0.5) && (wmSlice < 0.5)) {
+			if ((dd > 0.5) && (wmCy < 0.5)) {
 				headDone = 1;
 			}
-		} else {
-			playheadNorm = playheadNorm + scanDir * abs(grainMotion) * 0.35 / max(srVal, 1);
-			if (playheadNorm >= effEndNorm) {
-				playheadNorm = effEndNorm - (playheadNorm - effEndNorm);
-				scanDir = -1;
-			} else if (playheadNorm < effStartNorm) {
-				playheadNorm = effStartNorm + (effStartNorm - playheadNorm);
-				scanDir = 1;
-			}
-			playheadNorm = clip(playheadNorm, effStartNorm, effEndNorm);
 		}
 		anchorNorm = clip(playheadNorm + ((freezeOn > 0.5) ? 0.0 : posMod), effStartNorm, effEndNorm);
 		rootHz = 440.0 * pow(2.0, (rootMidi - 69.0) / 12.0);
@@ -1489,22 +1492,17 @@ voice_proc(
 		// ---------------- TEXTURES ----------------
 		if (freezeOn > 0.5) {
 			playheadNorm = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm);
-		} else if (isSlice) {
-			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion * baseRatio) / max(numFrames, 1), effStartNorm, effEndNorm, effStartNorm, effEndNorm, wmSlice);
+		} else {
+			// The scan ends like the other engines: Sliced follows slice_play, Single follows the Loop mode.
+			wmTx = isSlice ? wmSlice : ((loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0));
+			rloTx = isSlice ? effStartNorm : clip(loopStartNorm, effStartNorm, effEndNorm - 0.002);
+			rhiTx = isSlice ? effEndNorm : clip(loopEndNorm, rloTx + 0.002, effEndNorm);
+			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion * baseRatio) / max(numFrames, 1), effStartNorm, effEndNorm, rloTx, rhiTx, wmTx);
 			playheadNorm = hn;
 			scanDir = dn;
-			if ((dd > 0.5) && (wmSlice < 0.5)) {
+			if ((dd > 0.5) && (wmTx < 0.5)) {
 				headDone = 1;
 			}
-		} else {
-			motionStep = dirSign * grainMotion * baseRatio / max(numFrames, 1);
-			playheadNorm = playheadNorm + motionStep;
-			if (playheadNorm >= effEndNorm) {
-				playheadNorm = effEndNorm - (playheadNorm - effEndNorm);
-			} else if (playheadNorm < effStartNorm) {
-				playheadNorm = effStartNorm + (effStartNorm - playheadNorm);
-			}
-			playheadNorm = clip(playheadNorm, effStartNorm, effEndNorm);
 		}
 		centerNorm = clip(playheadNorm + ((freezeOn > 0.5) ? 0.0 : posMod), effStartNorm, effEndNorm);
 		centerF = centerNorm * numFrames;
@@ -1519,13 +1517,35 @@ voice_proc(
 		}
 		prevG = grainPhs;
 		grainPhs = fract(grainPhs + gRate);
-		if (grainPhs < prevG) {
+		wrapA = (grainPhs < prevG);
+		if (wrapA) {
 			rndA = fract(rndA * 29.17 + 0.31 + vSeed * 0.07);
 		}
 		grainPhsB = fract(grainPhs + 0.5);
+		wrapB = (grainPhsB < fract(prevG + 0.5));
 		if (abs(grainPhs - 0.5) < gRate) {
 			rndB = fract(rndB * 37.91 + 0.19 + vSeed * 0.11);
 		}
+		// Each grain reads around the playhead position latched when its window starts (plus half a grain of scan,
+		// so the grain is centred on where the playhead is at the middle of its window). Reading around the live
+		// playhead added the scan speed to the grain's own read speed: natural speed sounded an octave high.
+		leadF = (freezeOn > 0.5) ? 0.0 : (scanDir * abs(grainMotion * baseRatio) * 0.5 * gLenSamps);
+		if (needInit) {
+			poke(vst, centerF, latB);
+			poke(vst, centerF, latB + 1);
+		}
+		// A looping slice can be shorter than a grain: its grains then wrap around inside the slice instead of
+		// sticking to the slice edge (a sine sample is exactly 0 there).
+		wrapGrain = (isSlice && (freezeOn < 0.5) && (wmSlice > 0.5)) ? 1 : 0;
+		spanGF = max(endF - startF, 1);
+		if (wrapA) {
+			poke(vst, (wrapGrain > 0.5) ? (centerF + leadF) : clip(centerF + leadF, startF, endF), latB);
+		}
+		if (wrapB) {
+			poke(vst, (wrapGrain > 0.5) ? (centerF + leadF) : clip(centerF + leadF, startF, endF), latB + 1);
+		}
+		cenA = (freezeOn > 0.5) ? centerF : peek(vst, latB);
+		cenB = (freezeOn > 0.5) ? centerF : peek(vst, latB + 1);
 		winA = 0.5 - 0.5 * cos(6.28318530718 * grainPhs);
 		winB = 0.5 - 0.5 * cos(6.28318530718 * grainPhsB);
 		spraySpanF = grainSpray * 0.65 * max(endF - startF, 0);
@@ -1542,8 +1562,10 @@ voice_proc(
 				sprB = (fract(rndB + u * 0.271 + vSeed * 0.47) - 0.5) * spraySpanF;
 				travelA = (grainPhs - 0.5) * gLenSamps * dirSign * detRatio;
 				travelB = (grainPhsB - 0.5) * gLenSamps * dirSign * detRatio;
-				idxA = clip(centerF + uChorus + travelA + sprA, startF, endF);
-				idxB = clip(centerF + uChorus + travelB + sprB, startF, endF);
+				rawA = cenA + uChorus + travelA + sprA;
+				rawB = cenB + uChorus + travelB + sprB;
+				idxA = (wrapGrain > 0.5) ? (startF + wrap(rawA - startF, 0, spanGF)) : clip(rawA, startF, endF);
+				idxB = (wrapGrain > 0.5) ? (startF + wrap(rawB - startF, 0, spanGF)) : clip(rawB, startF, endF);
 				aL, aR = peek_lr(sampBuf, idxA, maxIdxG);
 				bL, bR = peek_lr(sampBuf, idxB, maxIdxG);
 				sigL = sigL + (aL * winA + bL * winB) * gL * uNormGain;
@@ -2114,4 +2136,14 @@ if (scopeCount >= 64) {
 	poke(scope, numFrames, 38);
 	poke(scope, scopeFrame, 39);
 	poke(scope, spawnSum, 48);
+	// The parameter values the gen is actually running with (40..47), so a test or the bridge can tell whether the
+	// device's messages reached it: sliced, loop_mode, slice_play, mode, freeze, reverse, root_note, loop_start.
+	poke(scope, sliced, 40);
+	poke(scope, loop_mode, 41);
+	poke(scope, slice_play, 42);
+	poke(scope, mode, 43);
+	poke(scope, freeze, 44);
+	poke(scope, reverse, 45);
+	poke(scope, root_note, 46);
+	poke(scope, loop_start, 47);
 }

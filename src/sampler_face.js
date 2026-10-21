@@ -458,8 +458,17 @@ function paintSamplePanel() {
     zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
 
     var vx = sx + 228;
-    for (var b = 0; b < 4; b++) line(vx + b * 2.5, sy + 6, vx + b * 2.5, sy + 13, COL.blue, 0.9, 1.4);
-    text(liveActiveVoices + " / " + curPolyVoices, vx + 14, sy + 13, 9.0, COL.blue, false, 0);
+    if (!dspReady) {
+        // DSP still loading (deferred gen~) or failed: a pill in the voice-count slot
+        var failed = dspError.length > 0;
+        var pl = failed ? "DSP failed: " + dspError : "DSP loading…";
+        var pw = textW(pl, 8.0) + 12;
+        fillRR(vx - 4, sy + 3, pw, 12, 6, failed ? COL.red : COL.orange, 0.9);
+        text(pl, vx - 4 + pw * 0.5, sy + 12, 8.0, [0.10, 0.10, 0.10], true, 1);
+    } else {
+        for (var b = 0; b < 4; b++) line(vx + b * 2.5, sy + 6, vx + b * 2.5, sy + 13, COL.blue, 0.9, 1.4);
+        text(liveActiveVoices + " / " + curPolyVoices, vx + 14, sy + 13, 9.0, COL.blue, false, 0);
+    }
 
     var rx = sx + 340;
     text("ROOT", rx, sy + 13, 8.5, COL.label, true, 0);

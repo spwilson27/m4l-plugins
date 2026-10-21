@@ -151,6 +151,10 @@ function writeVoiceToBuffer(v) {
     try {
         var b = new Buffer(voicesBufName);
         var base = v.index * 8;
+        // The gen reads these slots on the audio thread while we write. A single poke goes slot by slot, so the
+        // trigger counter (slot 3) would land before the slice bounds (4, 5) and a note-on could start on the
+        // voice's previous slice. Write the bounds first, then the whole voice.
+        b.poke(1, base + 4, [v.sliceStart, v.sliceEnd, v.panSeed, v.rndSeed]);
         b.poke(1, base + 0, [
             v.gate,
             v.note,
@@ -191,11 +195,14 @@ function syncAllVoicesToBuffer() {
 var loadTrace = null;
 try { if (typeof Global !== "undefined") loadTrace = new Global("better_sampler_trace"); } catch (_) {}
 
+// Each line starts with "+<ms>" since this script was loaded (device load), so the bridge can time the load
+var traceT0 = Date.now();
+
 function trace(event, detail) {
     if (!loadTrace) return;
     try {
         var lines = String(loadTrace.text || "").split("\n").filter(function (l) { return l.length > 0; });
-        lines.push(event + " " + (detail === undefined ? "" : String(detail)));
+        lines.push("+" + (Date.now() - traceT0) + "ms " + event + " " + (detail === undefined ? "" : String(detail)));
         loadTrace.text = lines.slice(-40).join("\n");
     } catch (_) {}
 }
@@ -484,8 +491,196 @@ function sendTempo(t) {
     if (v > 20) outlet(0, "tempo", v);
 }
 
+// ---------------------------------------------------------------------------
+// Deferred DSP: the device ships without its gen~ so the GUI appears at once. Right after load the
+// main face writes the embedded gen patch to a .gendsp file (named by its hash, so it is written once)
+// and creates `gen~ @gen <file>`, wired to the bs_genin hub and plugin~ / plugout~. Then dsp_ready
+// re-sends the buffer binding and every parameter value.
+// ---------------------------------------------------------------------------
+var hostPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
+var dspReady = 0;
+var dspError = "";
+var dspTask = null;
+
+function dspFilePath() {
+    return "/tmp/better_sampler_core_" + GEN_DSP_HASH + ".gendsp";
+}
+
+function writeDspFile(path) {
+    try {
+        var rf = new File(path, "read");
+        var have = rf.isopen && rf.eof === GEN_DSP_TEXT.length;
+        rf.close();
+        if (have) return true;
+    } catch (_) {}
+    var f = new File(path, "write", "TEXT");
+    if (!f.isopen) return false;
+    f.eof = 0;
+    for (var i = 0; i < GEN_DSP_TEXT.length; i += 16384) f.writestring(GEN_DSP_TEXT.substring(i, i + 16384));
+    f.close();
+    return true;
+}
+
+function loadDsp() {
+    if (dspReady || dspCreatedAt || faceRegion !== "main" || typeof GEN_DSP_TEXT === "undefined" || !hostPatcher) return;
+    trace("dsp-start", "creating gen~");
+    try {
+        var g = hostPatcher.getnamed("obj-gen");
+        if (!g) {
+            var path = dspFilePath();
+            if (!writeDspFile(path)) throw new Error("no file");
+            g = hostPatcher.newdefault(30, 435, "gen~", "@gen", path);
+            if (!g) throw new Error("no gen~");
+            g.varname = "obj-gen";
+            var hub = hostPatcher.getnamed("bs_genin");
+            var pin = hostPatcher.getnamed("bs_plugin");
+            var pout = hostPatcher.getnamed("bs_plugout");
+            if (hub) hostPatcher.connect(hub, 0, g, 0);
+            if (pin) { hostPatcher.connect(pin, 0, g, 0); hostPatcher.connect(pin, 1, g, 1); }
+            if (pout) { hostPatcher.connect(g, 0, pout, 0); hostPatcher.connect(g, 1, pout, 1); }
+        }
+        // The gen keeps compiling after creation and drops messages until it runs, so re-send the
+        // buffer binding and parameters until its telemetry frame counter moves (dspConfirm)
+        dspCreatedAt = Date.now();
+        dspCounter0 = scopeFrameCounter();
+        dspConfirm();
+    } catch (err) {
+        dspError = String(err && err.message ? err.message : err);
+        trace("dsp-error", dspError);
+        if (typeof post === "function") post("Better Sampler: DSP load failed: " + dspError + "\n");
+    }
+    mgraphics.redraw();
+}
+
+// Diagnostics, reachable from the Ableton MCP bridge with messnamed("#0-bsdebug", "dsp_diag")
+// (#0 is not substituted in a top-level device); results land in the load trace
+function dsp_diag() {
+    var info = ["ready=" + dspReady, "err=" + dspError, "createdAt=" + dspCreatedAt, "counter=" + scopeFrameCounter(), "scope=" + scopeBufName];
+    try {
+        var g = hostPatcher ? hostPatcher.getnamed("obj-gen") : null;
+        info.push("gen=" + (g ? g.maxclass : "none"));
+        if (g) {
+            try { info.push("genattr=" + String(g.getattr("gen"))); } catch (e1) { info.push("genattrErr=" + e1); }
+            try {
+                var pc = g.patchcords;
+                info.push("cordsIn=" + (pc && pc.inputs ? pc.inputs.length : "?") + " cordsOut=" + (pc && pc.outputs ? pc.outputs.length : "?"));
+            } catch (e2) { info.push("cordsErr=" + e2); }
+        }
+        info.push("hub=" + (hostPatcher && hostPatcher.getnamed("bs_genin") ? 1 : 0) + " in=" + (hostPatcher && hostPatcher.getnamed("bs_plugin") ? 1 : 0) + " out=" + (hostPatcher && hostPatcher.getnamed("bs_plugout") ? 1 : 0));
+    } catch (e) { info.push("diagErr=" + e); }
+    trace("dsp-diag", info.join(" "));
+}
+
+// Test entry points (messnamed("#0-bsdebug", ...), see scripts/test_sampler_live.js). dbg_param drives a parameter
+// the way a click on the face does (face -> route -> hidden live.* -> prepend -> hub -> gen); dbg_state dumps what
+// the face and the voice allocator hold into the load trace.
+function dbg_param(key, v) {
+    if (faceRegion === "main" && typeof setParamFromFace === "function") setParamFromFace(String(key), Number(v));
+}
+
+function dbg_state() {
+    var vs = [];
+    for (var i = 0; i < 16; i++) {
+        var vo = voiceAlloc.voices[i];
+        if (vo.gate > 0) vs.push(i + ":" + vo.note + "@" + vo.sliceStart.toFixed(3) + "-" + vo.sliceEnd.toFixed(3) + "#" + vo.trigCount);
+    }
+    var starts = currentSliceStarts().map(function (x) { return x.toFixed(3); });
+    trace("dbg-state", "sliced=" + curSliced + " loop=" + curLoopMode + " from=" + curSliceFrom + " base=" + voiceAlloc.getSliceBaseNote() +
+        " starts=" + starts.join("/") + " voices=" + vs.join(","));
+}
+
+// Telemetry recorder for the bridge: dbg_record <ms> samples #0-bsscope every 15 ms into Global("better_sampler_rec").text
+// as "ms,voice,playhead,amp,peakL,active" rows (voice = the loudest one, -1 when none sounds).
+var recTask = null;
+var recRows = [];
+var recT0 = 0;
+var recUntil = 0;
+
+function recTick() {
+    try {
+        var ch = new Buffer(scopeBufName).peek(1, 0, 49);
+        var best = -1;
+        var bestA = 0.002;
+        for (var i = 0; i < 16; i++) if (ch[16 + i] > bestA) { bestA = ch[16 + i]; best = i; }
+        recRows.push((Date.now() - recT0) + "," + best + "," + (best >= 0 ? ch[best].toFixed(4) : "-1") + "," + bestA.toFixed(3) + "," + ch[32].toFixed(3) + "," + ch[34]);
+    } catch (_) {}
+    if (Date.now() < recUntil && recTask) recTask.schedule(15);
+    else new Global("better_sampler_rec").text = recRows.join(";");
+}
+
+function dbg_record(durMs) {
+    if (faceRegion !== "main" || typeof Task === "undefined") return;
+    recRows = [];
+    recT0 = Date.now();
+    recUntil = recT0 + Number(durMs);
+    new Global("better_sampler_rec").text = "";
+    if (!recTask) recTask = new Task(recTick);
+    recTick();
+}
+
+function dsp_retry() {
+    try {
+        var g = hostPatcher ? hostPatcher.getnamed("obj-gen") : null;
+        if (g) hostPatcher.remove(g);
+    } catch (_) {}
+    dspReady = 0; dspError = ""; dspCreatedAt = 0; dspCounter0 = -1;
+    loadDsp();
+}
+
+var dspCreatedAt = 0;
+var dspCounter0 = -1;
+var dspConfirmTask = null;
+var dspSettleTask = null;
+var DSP_SETTLE_MS = 300;
+var DSP_CONFIRM_MS = 150;
+var DSP_TIMEOUT_MS = 10000;
+
+function scopeFrameCounter() {
+    if (!scopeBufName || typeof Buffer === "undefined") return -1;
+    try {
+        var v = new Buffer(scopeBufName).peek(1, 39, 1);
+        return (typeof v === "number") ? v : (v && v.length ? v[0] : -1);
+    } catch (_) {
+        return -1;
+    }
+}
+
+function dspConfirm() {
+    var c = scopeFrameCounter();
+    if (dspCounter0 >= 0 && c >= 0 && c !== dspCounter0) {
+        dspReady = 1;
+        dspError = "";
+        trace("dsp", "ready after " + (Date.now() - dspCreatedAt) + " ms");
+        // The last re-send went out while the gen was still compiling and was dropped; send every parameter once more
+        // now that it runs, and once again after it has settled.
+        outlet(0, "dsp_ready", "bang");
+        if (typeof Task !== "undefined") {
+            if (!dspSettleTask) dspSettleTask = new Task(function () { outlet(0, "dsp_ready", "bang"); });
+            dspSettleTask.schedule(DSP_SETTLE_MS);
+        }
+        mgraphics.redraw();
+        return;
+    }
+    if (Date.now() - dspCreatedAt > DSP_TIMEOUT_MS) {
+        dspError = "not running (counter " + dspCounter0 + "/" + scopeFrameCounter() + ")";
+        trace("dsp-error", dspError);
+        mgraphics.redraw();
+        return;
+    }
+    outlet(0, "dsp_ready", "bang");
+    if (dspCounter0 < 0) dspCounter0 = c;
+    if (typeof Task === "undefined") return;
+    if (!dspConfirmTask) dspConfirmTask = new Task(dspConfirm);
+    dspConfirmTask.schedule(DSP_CONFIRM_MS);
+}
+
 function device_ready() {
     applyDeviceWidth();
+    // Let the GUI paint first, then build the DSP
+    if (faceRegion === "main" && !dspReady && typeof Task !== "undefined") {
+        if (!dspTask) dspTask = new Task(loadDsp);
+        dspTask.schedule(30);
+    }
     if (faceRegion !== "main" || tempoObserver || typeof LiveAPI === "undefined") return;
     try {
         tempoObserver = new LiveAPI(function (args) {
@@ -709,6 +904,7 @@ function set_out_gain(v) { storeParam("out_gain", v); }
 // Demo state for screenshots (render_preview.py calls preview())
 function preview() {
     hasLoadedSample = 1;
+    dspReady = 1;
     sampleFileName = "(Crash) Cymbal - 707 - 525.wav";
     sampleFrames = 53800;
     sampleDurationMs = 1220;

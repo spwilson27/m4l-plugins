@@ -171,6 +171,21 @@ Sources stay plain `.js`; nothing is compiled or emitted. TypeScript only checks
 
 ---
 
+## 1d. Fast Device Loading — Apply to Every Device with a Large Gen Core
+
+Live blocks while a device instantiates, and almost all of that time is the **gen compile**: the v8ui faces and the patcher itself cost next to nothing. Measure first: `scripts/measure_sampler_loadtime.py` runs in the VM and gives harness wall time for a trivial gen, the core, and the core plus faces. Better Sampler went from a 7 s load to an instant GUI, with DSP ready about 2 s later, using the steps below. Reference implementation: `src/sampler_ui.js` (`loadDsp`, `dspConfirm`, `dsp_diag`) and `scripts/build_sampler.py` (`gendsp_json`, the `obj-gen-in` hub).
+
+1. **Compile each piece of voice code once.** GenExpr inlines every call, so 16 calls to a big `voice_proc` compile it 16 times. Run voices in a `for (v = 0; v < N; v += 1)` loop around a single call site. A call site's `History` is shared across loop iterations, so move per-voice state into a global `Data` indexed by voice (e.g. `Data vhist(N * 256)`) and write non-zero initial values once in an `initDone` block. Skip idle voices (released, silent, no tail) and output exact zeros: CPU often halves. Never add a second call site of a big helper. Gotcha: a function-local variable with the same name as a global `Data` silently breaks the compile.
+2. **Ship the device without its `gen~` and create it after load (GUI first).**
+   - The build embeds the gen patch as `.gendsp` JSON in the main v8ui script only (`GEN_DSP_TEXT`, plus a content hash).
+   - On `live.thisdevice`'s ready bang, wait one Task tick (about 30 ms) so the GUI paints. Then write `/tmp/<device>_core_<hash>.gendsp` (only if missing), create `gen~ @gen <file>` with `this.patcher.newdefault`, and wire it with `patcher.connect`. Give the objects it connects to scripting names (`varname`).
+   - Route every gen-bound message (params, buffer binding, tempo) through one static hub that the new gen is connected to. **Use `gate 1 1` (open; data into the right inlet), never `t a`**: a scripted `connect()` from `t a` silently makes no cord.
+   - **Don't** pass the code as `@code` / `setattr("code")` to a new `gen.codebox~`: the text is re-tokenised (newlines and comments lost, commas split) and a large core never runs.
+   - The gen keeps compiling after creation and drops messages until it runs. Re-send (a `t b b` that re-bangs the buffer-binding message and every gen-bound `live.*` parameter) every 150 ms until the gen's telemetry frame counter moves, with a 10 s timeout. Only then mark the DSP ready.
+   - Show a small header pill: `DSP loading…`, or `DSP failed: <reason>`. Notes before that are silent.
+3. **Defer heavy UI work too.** Analysis such as a full mono copy of a sample runs lazily, in chunks on a `Task`, only when a feature needs it.
+4. **Verify in Live, not only in the harness.** The harness's offline driver never adds objects created mid-run to its DSP chain (not even a plain `cycle~`). Prove the deferred path with a Live set in the VM and the bridge, like `scripts/vm_sampler.sh live` + `test`. Add a debug receiver (`receive #0-<dev>debug` → face; `#0` is literal in a top-level device, so the bridge's `messnamed` reaches it) with a `dsp_diag` message that traces the gen's class, its cord counts and the state.
+
 ## 2. `.amxd` Binary Format Reference
 
 An unencrypted Max for Live `.amxd` file consists of a 32-byte binary header followed by UTF-8 JSON patcher data:
@@ -713,6 +728,32 @@ Max and Live run only in the tart VM (section 1a), through `scripts/vm_envtrig.s
 - **Pos (`play_pos`) only applies while Freeze is on**.
 - With no sample loaded, MIDI still runs the voices, but no scan lines are drawn.
 
+### Deferred DSP (GUI first)
+- **The device ships without its gen~.** All gen-bound messages (`prepend <param>`, the buffer-binding message, `prepend tempo`) go into a pass-through hub, `obj-gen-in` (`gate 1 1`, left open, scripting name `bs_genin`; a `t a` hub silently refused the scripted connect). `plugin~` / `plugout~` have the scripting names `bs_plugin` / `bs_plugout`.
+- The main face's script embeds the gen patch as `.gendsp` JSON (`GEN_DSP_TEXT`, built by `gendsp_json()` in `scripts/build_sampler.py`) and its hash (`GEN_DSP_HASH`). The side and inspector faces don't.
+- On `device_ready` the face waits one Task tick (30 ms) so the GUI paints. `loadDsp()` then:
+  - writes `/tmp/better_sampler_core_<hash>.gendsp` (only if missing or a different size);
+  - creates `gen~ @gen <file>` (named `obj-gen`) with `patcher.newdefault`;
+  - wires `bs_genin → gen`, `bs_plugin → gen` (both channels) and `gen → bs_plugout`.
+- The gen keeps compiling after creation and drops messages until it runs. So `dspConfirm()` re-sends `dsp_ready` every 150 ms until the gen's telemetry frame counter (`#0-bsscope` slot 39) moves, with a 10 s timeout.
+  - `dsp_ready` goes `route` → `obj-dsp-resend` (`t b b`): it re-bangs the buffer-binding message and every gen-bound `obj-ctrl-<key>`, so their current values reach the gen.
+  - It is sent once more on ready and again 300 ms later, because the last resend before the counter moved can still be dropped.
+- `writeVoiceToBuffer` pokes a voice's slice bounds (slots 4/5) before the whole slot. One `poke` writes slot by slot, so a new trigger counter could otherwise start the note on the previous slice.
+- The header shows an orange `DSP loading…` pill in the voice-count slot until then, or a red `DSP failed` pill (cannot write the file, no gen~ created, or timeout). Notes played before that are silent.
+- Measured in the VM: creating the gen blocks Max's main thread for about 0.37 s; the rest of the compile runs after the GUI is up.
+- **Things that don't work**:
+  - Passing the code as `@code` (or `setattr("code")`) to a new `gen.codebox~`: the text is re-tokenised, so newlines and comments are lost, and the core never ran.
+  - The shared harness's offline driver never adds objects created mid-run to its DSP chain (not even a plain `cycle~`), so the deferred path can only be verified in Live. The audio tests build the gen directly.
+
+### In Live (tart VM)
+The deferred path only runs inside Live, so it has an automated test (AGENTS.md 1a: the VM only):
+```bash
+python3 scripts/build_sampler.py && node tests/test_sampler.js
+scripts/vm_sampler.sh live    # sync, rebuild in the VM, write sampler_test.als (scripts/make_sampler_set.py), relaunch Live, wait for the bridge
+scripts/vm_sampler.sh test    # scripts/test_sampler_live.js through an ssh tunnel; scripts/vm_sampler.sh audio = the audio suite
+```
+`sampler_test.als` = one MIDI track with the device (`MxDeviceInstrument`) + the MCP Bridge on Main. The test waits up to 20 s for `dsp ready` in `Global("better_sampler_trace")` (each line is stamped `+<ms>` since the script loaded; fails with the trace on `dsp-error`), runs `dsp_diag`, checks the telemetry counter (slot 39) advances, drops a generated 220 Hz WAV and plays `midi_note 60 110`, expecting the track's `output_meter_left` above 0.05. Debug messages go through `messnamed("#0-bsdebug", ...)` (`#0` is not substituted in a top-level device, so the bridge can address it). Measured: gen~ creation starts about 0.5 s after the script loads and `dsp ready` follows about 1.6 s later (about 2.1 s total).
+
 ### Gen core (`gen.codebox~`, hidden)
 - `src/sampler_core.genexpr`: 16 voices, each with up to 8 stereo unison sub-voices.
 - **Engines** (`mode`):
@@ -736,13 +777,15 @@ Max and Live run only in the tart VM (section 1a), through `scripts/vm_envtrig.s
     - Controls: `fr_density` / `fr_use_density`, `fr_env` shape, `fr_motion` (pan and playhead randomisation), `fr_direction`, `fr_latch`, `fr_repeat_init`, `fr_survive` (timer).
     - `fr_sync` snaps the grain size to beat multiples of `tempo`. The face observes `live_set tempo` and sends `tempo <bpm>` → `prepend tempo` → gen.
 - **`sliced`** is orthogonal to the engine. Every engine reads the slice bounds from `#0-bsvoices` live (slots 4/5) and honours `slice_play` (0 slice end, 1 sample end, 2 one-way loop, 3 ping-pong) and reverse. Pitch ignores the note when sliced.
+- **`loop_mode` applies to every engine in Single mode**: Off plays to the end and stops, Fwd wraps in the loop region, Ping-Pong bounces. Cycles and Textures used to scan the whole sample and loop regardless.
+- **Textures grains latch the playhead** when their window starts, with half a grain of lead. Reading at the moving playhead added the scan speed to the grain's own speed and played an octave high.
 - Every engine also has `freeze`, the TPT SVF filter with drive, Amp / Mod ADSRs and the LFO.
 - `play_pos` only applies while `freeze` is on.
 - A mono buffer plays on both outputs (`channelmode="clamp"`).
 - **Buffers**:
   - `#0-bsamp`: the sample.
   - `#0-bsvoices`: 16 x 8 voice slots.
-  - `#0-bsscope`: telemetry 0..39, plus 48 for the cumulative Fragments grain count.
+  - `#0-bsscope`: telemetry 0..39, 40..47 echo the gen's running `sliced`, `loop_mode`, `slice_play`, `mode`, `freeze`, `reverse`, `root_note`, `loop_start` (the Live test compares them with the device parameters), and 48 holds the cumulative Fragments grain count.
 - **One compiled voice engine (load time)**: GenExpr inlines every call, so the 16 voices run in one `for (vox = 0; vox < 16; ...)` loop around a single `voice_proc` call site, and the 4 Spectral voices in one `for (svx = 0; svx < 4; ...)` loop around `spec_voice`.
   - A call site's `History` is shared across loop iterations, so all per-voice state lives in `Data vhist` (256 slots per voice) and `Data sdat` (one block per Spectral voice). Non-zero initial values are written once in the `initDone` block.
   - Released, silent voices with no Fragments tail skip `voice_proc` and output exact zeros.

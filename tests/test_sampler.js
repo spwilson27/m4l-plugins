@@ -3,7 +3,7 @@
  * Verification suite for Better Sampler (devices/Better Sampler.amxd, 600 x 169 px, 760 with the inspector):
  *   - one Bitwig-style face drawn by three v8ui boxes (main 528 px, side 66 px, inspector 160 px) plus a live.drop
  *   - every automatable parameter is a hidden live.* object (presentation 0) wired through
- *     route param -> obj-ctrl-<key> -> prepend -> obj-gen, with set_<key> echoes to both v8uis
+ *     route param -> obj-ctrl-<key> -> prepend -> obj-gen-in hub (-> the deferred gen~), with set_<key> echoes to the v8uis
  *
  * Covers: slicer/root detection/voice allocator, GenExpr ordering, amxd structure and wiring, and a
  * sandbox run of the three embedded face scripts (paint, engines + Single/Sliced, knobs, footer values,
@@ -228,9 +228,25 @@ assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 64
 assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope");
 assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope");
 assertLink(lines, "obj-loadbang", 0, "obj-msg-gen-buf", 0, "loadbang -> gen buffers");
-assertLink(lines, "obj-msg-gen-buf", 0, "obj-gen", 0, "gen buffers");
+assertLink(lines, "obj-msg-gen-buf", 0, "obj-gen-in", 1, "gen buffers");
 assertLink(lines, "obj-msg-ui-buf", 0, "obj-viz", 0, "ui buffers");
-assert.strictEqual(byId.get("obj-gen").code.trim(), gen.trim(), "embeds the current GenExpr core");
+// Deferred DSP: no gen box in the device; the main face carries the gen patch and creates it after load
+assert.ok(!byId.has("obj-gen"), "the device ships without its gen~ (created after load)");
+assert.ok(!boxes.some((b) => /gen/.test(b.maxclass || "") || /^gen~/.test(String(b.text || ""))), "no gen object in the device");
+assert.strictEqual(byId.get("obj-gen-in").text, "gate 1 1", "gen hub: an open gate passes every message through (t a cannot be a scripted connect source)");
+assert.strictEqual(byId.get("obj-gen-in").varname, "bs_genin");
+assert.strictEqual(byId.get("obj-plugin").varname, "bs_plugin");
+assert.strictEqual(byId.get("obj-plugout").varname, "bs_plugout");
+assert.strictEqual(byId.get("obj-dsp-resend").text, "t b b");
+assertLink(lines, "obj-dsp-resend", 1, "obj-msg-gen-buf", 0, "dsp_ready re-binds the buffers");
+const mainTextForGen = byId.get("obj-viz").textfile.text;
+const genDspMatch = mainTextForGen.match(/var GEN_DSP_TEXT = (".*?");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/s);
+assert.ok(genDspMatch, "main face embeds the gen patch and its hash");
+const genDsp = JSON.parse(JSON.parse(genDspMatch[1]));
+assert.strictEqual(genDsp.patcher.classnamespace, "dsp.gen");
+const codeBox = genDsp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
+assert.strictEqual(codeBox.code.trim(), gen.trim(), "embeds the current GenExpr core");
+assert.ok(!byId.get("obj-viz-side").textfile.text.includes("var GEN_DSP_TEXT"), "only the main face carries the gen patch");
 for (const b of boxes) {
     const t = String(b.text || "");
     if (/^(buffer~|send|receive)\b/.test(t)) assert.ok(t.includes("#0-"), `instance object must use #0- (${t})`);
@@ -370,7 +386,7 @@ assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, "midi");
 assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, "midi -> main face");
 
 // --- face -> route -> hidden control wiring ---
-assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo");
+assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready");
 assertLink(lines, "obj-route-viz", 2, "obj-opendialog", 0, "browse -> file dialog");
 assertLink(lines, "obj-viz", 0, "obj-route-viz", 0, "main face outlet");
 assertLink(lines, "obj-viz-side", 0, "obj-route-viz", 0, "side face outlet");
@@ -383,7 +399,7 @@ assertLink(lines, "obj-route-viz", 4, "obj-prep-setwidth", 0, "setwidth_cmd -> p
 assertLink(lines, "obj-prep-setwidth", 0, "obj-thisdevice", 0, "prepend setwidth -> live.thisdevice");
 assertLink(lines, "obj-thisdevice", 0, "obj-msg-ready", 0, "thisdevice ready -> device_ready");
 assertLink(lines, "obj-msg-ready", 0, "obj-viz", 0, "device_ready -> main face");
-assert.strictEqual(byId.get("obj-route-viz").numoutlets, 7, "route-viz: 6 selectors + reject");
+assert.strictEqual(byId.get("obj-route-viz").numoutlets, 8, "route-viz: 7 selectors + reject");
 assertLink(lines, "obj-route-viz", 0, "obj-route-param", 0, "param route");
 assertLink(lines, "obj-route-viz", 1, "obj-prep-replace", 0, "load_sample route");
 const routeKeys = byId.get("obj-route-param").text.split(/\s+/).slice(1);
@@ -406,7 +422,8 @@ for (const key of routeKeys) {
         const m = /^prepend (\w+)$/.exec(prep.text);
         assert.ok(m, `${key}: gen prepend text (${prep.text})`);
         assert.ok(new RegExp(`\\bParam\\s+${m[1]}\\s*\\(`).test(gen), `${key}: gen has Param ${m[1]}`);
-        assertLink(lines, `obj-prep-${key}`, 0, "obj-gen", 0, `${key} -> gen`);
+        assertLink(lines, `obj-prep-${key}`, 0, "obj-gen-in", 1, `${key} -> gen`);
+        assertLink(lines, "obj-dsp-resend", 0, ctrlId, 0, `dsp_ready re-sends ${key}`);
         if (scale) {
             assert.ok(/^\* [\d.]+$/.test(scale.text), `${key}: scale text ${scale.text}`);
             assertLink(lines, ctrlId, 0, scale.id, 0, `${key} ctrl -> scale`);
@@ -1244,6 +1261,14 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     assert.ok(sb.voiceAlloc.voices.slice(1).every((v) => v.gate === 0));
     const poke = mainCtx.pokes.filter((pk) => pk.name === "#0-bsvoices").pop();
     assert.ok(poke, "legato note is written into #0-bsvoices");
+    {
+        // slice bounds are written before the trigger counter, so a note-on never starts on a stale slice
+        const vp = mainCtx.pokes.filter((pk) => pk.name === "#0-bsvoices");
+        const last = vp[vp.length - 1], prev = vp[vp.length - 2];
+        assert.ok(prev && prev.idx === last.idx + 4 && prev.data.length === 4, "voice bounds are poked first (slots 4..7)");
+        assert.strictEqual(prev.data[0], last.data[4]);
+        assert.strictEqual(prev.data[1], last.data[5]);
+    }
     assert.strictEqual(poke.data[0], 1);
     assert.strictEqual(poke.data[1], 67);
     assert.strictEqual(poke.data[3], trig);
@@ -1960,6 +1985,63 @@ function assertMenuFits(key, picks, W, H) {
     assert.ok(texts(c).includes("C0"), "echoed base redraws the labels (C0)");
 }
 {
+    // --- A run of real notes in Sliced mode: every key writes ITS slice into its own voice slot ---
+    const c = loadedMain();
+    const m = c.sb;
+    auto(m, "sliced", 1);
+    const base = 36;
+    const keys = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45];
+    keys.forEach((k, i) => {
+        c.pokes.length = 0;
+        m.midi_note(k, 100);
+        const vp = c.pokes.filter((p) => p.name === "#0-bsvoices");
+        const last = vp[vp.length - 1];
+        const slot = last.idx / 8;
+        const idx = (k - base) % 8; // 8 default divisions; key 44 and 45 wrap to slices 0 and 1
+        assert.strictEqual(last.idx % 8, 0, "the whole voice is written at its own slot");
+        assert.deepStrictEqual(last.data.slice(0, 2), [1, k], `key ${k}: gate and note`);
+        assert.ok(Math.abs(last.data[2] - 100 / 127) < 1e-9, `key ${k}: velocity carried`);
+        assert.ok(Math.abs(last.data[4] - idx * 0.125) < 1e-9, `key ${k}: slice start ${last.data[4]} should be ${idx * 0.125}`);
+        assert.ok(Math.abs(last.data[5] - (idx + 1) * 0.125) < 1e-9, `key ${k}: slice end ${last.data[5]} should be ${(idx + 1) * 0.125}`);
+        assert.strictEqual(m.voiceAlloc.voices[slot].note, k, `key ${k}: voice ${slot} holds the note`);
+    });
+    // every held key stays in its own voice with its own slice (no slot is shared or overwritten)
+    const held = m.voiceAlloc.voices.filter((v) => v.gate > 0);
+    assert.strictEqual(new Set(held.map((v) => v.index)).size, held.length);
+    keys.forEach((k) => m.midi_note(k, 0));
+    assert.ok(m.voiceAlloc.voices.every((v) => v.gate === 0), "all keys released");
+    // notes outside the keymap: below the base maps to the first slice
+    c.pokes.length = 0;
+    m.midi_note(20, 100);
+    const lo = c.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.strictEqual(lo.data[4], 0, "keys below the base play the first slice");
+    m.midi_note(20, 0);
+    // a moved start point moves the first slice, and the last slice stops at the end point
+    auto(m, "samp_start", 25);
+    auto(m, "samp_end", 75);
+    c.pokes.length = 0;
+    m.midi_note(36, 100);
+    const a = c.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.ok(Math.abs(a.data[4] - 0.25) < 1e-9, `first slice starts at the start point (${a.data[4]})`);
+    m.midi_note(36, 0);
+    m.midi_note(43, 100);
+    const z = c.pokes.filter((p) => p.name === "#0-bsvoices").pop();
+    assert.ok(Math.abs(z.data[5] - 0.75) < 1e-9, `last slice stops at the end point (${z.data[5]})`);
+    m.midi_note(43, 0);
+}
+{
+    // --- bridge test entry point: dbg_param drives a parameter exactly like a click on the face ---
+    const c = loadedMain();
+    const m = c.sb;
+    c.emitted.length = 0;
+    m.dbg_param("loop_mode", 0);
+    assert.ok(c.emitted.some((a) => a[1] === "param" && a[2] === "loop_mode" && a[3] === 0), "dbg_param emits param loop_mode 0 toward route -> obj-ctrl-loop_mode");
+    assert.strictEqual(m.curLoopMode, 0, "and updates the face state");
+    m.dbg_param("sliced", 1);
+    assert.strictEqual(m.curSliced, 1);
+    m.dbg_param("loop_mode", 1);
+}
+{
     // --- Slice at: Divisions follow the start / end points and the division count ---
     const c = loadedMain();
     const m = c.sb;
@@ -2531,7 +2613,7 @@ console.log("All Better Sampler tests passed!");
 {
     assertLink(lines, "obj-route-viz", 5, "obj-prep-tempo", 0, "tempo route");
     assert.strictEqual(byId.get("obj-prep-tempo").text, "prepend tempo");
-    assertLink(lines, "obj-prep-tempo", 0, "obj-gen", 0, "tempo -> gen");
+    assertLink(lines, "obj-prep-tempo", 0, "obj-gen-in", 1, "tempo -> gen");
     const pc = makeSandbox(mainViz);
     const v = pc.sb;
     v.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
@@ -2609,4 +2691,119 @@ console.log("Spectral poly cap and tempo feed ok");
 }
 
 console.log("Lazy, chunked slicer mono copy ok");
+
+// --- deferred DSP: GUI first, then the face writes the gen patch and creates gen~ @gen <file> ---
+{
+    const dc = makeSandbox(mainViz);
+    const d = dc.sb;
+    // before the DSP exists the header shows the loading pill
+    assert.strictEqual(d.dspReady, 0, "DSP not ready right after load");
+    const texts = [];
+    const g0 = d.mgraphics.show_text;
+    d.mgraphics.show_text = (t) => texts.push(t);
+    d.paint();
+    d.mgraphics.show_text = g0;
+    assert.ok(texts.includes("DSP loading…"), "loading pill while the gen is not created");
+    // mock patcher + File: record what loadDsp does
+    const files = {};
+    d.File = function (path, mode) {
+        this.path = path; this.isopen = true;
+        this.eof = files[path] ? files[path].length : 0;
+        this.writestring = (t) => { files[path] = (files[path] || "") + t; };
+        this.close = () => {};
+        if (mode === "write") files[path] = "";
+    };
+    const created = [], conns = [];
+    const named = { bs_genin: { n: "hub" }, bs_plugin: { n: "in" }, bs_plugout: { n: "out" } };
+    d.hostPatcher = {
+        getnamed: (n) => named[n] || null,
+        newdefault: (...a) => { const o = { n: "gen", args: a }; created.push(o); named["obj-gen"] = o; return o; },
+        connect: (a, ao, b, bi) => conns.push([a.n, ao, b.n, bi]),
+    };
+    const tasks = [];
+    d.Task = function (fn) { this.fn = fn; this.schedule = (ms) => { this.ms = ms; }; tasks.push(this); };
+    dc.emitted.length = 0;
+    d.device_ready();
+    assert.strictEqual(created.length, 0, "the gen is not built inside device_ready (GUI paints first)");
+    const t = tasks[tasks.length - 1];
+    assert.ok(t && t.ms > 0, "gen creation is scheduled on a Task");
+    t.fn();
+    assert.strictEqual(created.length, 1, "one gen~ created");
+    const path = d.dspFilePath();
+    assert.ok(/^\/tmp\/better_sampler_core_[0-9a-f]{12}\.gendsp$/.test(path), path);
+    assert.deepStrictEqual(created[0].args.slice(2), ["gen~", "@gen", path], "gen~ @gen <written file>");
+    assert.strictEqual(files[path], d.GEN_DSP_TEXT, "the embedded gen patch was written in full");
+    assert.strictEqual(JSON.parse(files[path]).patcher.classnamespace, "dsp.gen");
+    assert.strictEqual(created[0].varname, "obj-gen");
+    for (const c of [["hub", 0, "gen", 0], ["in", 0, "gen", 0], ["in", 1, "gen", 1], ["gen", 0, "out", 0], ["gen", 1, "out", 1]]) {
+        assert.ok(conns.some((x) => JSON.stringify(x) === JSON.stringify(c)), `connect ${c}`);
+    }
+    assert.ok(dc.emitted.some((a) => a[1] === "dsp_ready"), "dsp_ready re-sends buffers and params");
+    // the gen drops messages while it compiles: keep re-sending until its telemetry counter moves
+    assert.strictEqual(d.dspReady, 0, "not ready until the gen runs");
+    let counter = 0;
+    const baseBuf = d.Buffer;
+    d.Buffer = function (name) { baseBuf.call(this, name); const pk = this.peek; this.peek = (ch, st, len) => (st === 39 && len === 1 ? [counter] : pk(ch, st, len)); };
+    d.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+    d.dspCounter0 = 0;
+    const confirmTask = tasks[tasks.length - 1];
+    dc.emitted.length = 0;
+    confirmTask.fn();
+    assert.ok(dc.emitted.some((a) => a[1] === "dsp_ready"), "still compiling: re-send again");
+    assert.strictEqual(d.dspReady, 0);
+    counter = 7;
+    dc.emitted.length = 0;
+    confirmTask.fn();
+    assert.strictEqual(d.dspReady, 1, "ready once the gen writes telemetry");
+    // The last re-send before this tick went out while the gen was still compiling (it dropped it) and nothing
+    // follows once the counter moves, so the gen would keep its Param defaults (sliced 0, loop_mode 0, ...) until
+    // each control is touched. Re-send once more at once, and once again after the gen has settled.
+    assert.ok(dc.emitted.some((a) => a[1] === "dsp_ready"), "gen is running: re-send every parameter once more");
+    const settle = tasks[tasks.length - 1];
+    assert.ok(settle !== confirmTask && settle.ms > 0, "and again after a short settle delay");
+    dc.emitted.length = 0;
+    settle.fn();
+    assert.ok(dc.emitted.some((a) => a[1] === "dsp_ready"), "settle re-send");
+    texts.length = 0;
+    d.mgraphics.show_text = (tx) => texts.push(tx);
+    d.paint();
+    d.mgraphics.show_text = g0;
+    assert.ok(!texts.includes("DSP loading…"), "pill gone once the DSP is ready");
+    // a second device_ready (re-init) does not create another gen
+    d.device_ready();
+    if (tasks[tasks.length - 1].fn) tasks[tasks.length - 1].fn();
+    assert.strictEqual(created.length, 1, "no second gen~");
+    // the file is written once: same hash, same content -> not rewritten
+    const before = Object.keys(files).length;
+    const d2c = makeSandbox(mainViz);
+    const d2 = d2c.sb;
+    let writes = 0;
+    d2.File = function (p, mode) { this.isopen = true; this.eof = files[p] ? files[p].length : 0; this.writestring = () => { writes++; }; this.close = () => {}; };
+    d2.hostPatcher = { getnamed: (n) => (n === "obj-gen" ? null : { n }), newdefault: () => ({}), connect: () => {} };
+    d2.loadDsp();
+    assert.strictEqual(writes, 0, "an existing identical .gendsp is reused");
+    assert.strictEqual(Object.keys(files).length, before);
+    // a gen that never starts times out with the failure pill
+    const tc = makeSandbox(mainViz);
+    const tt = tc.sb;
+    tt.dspCreatedAt = Date.now() - 20000;
+    tt.dspConfirm();
+    assert.ok(tt.dspError.length > 0 && tt.dspReady === 0, "timeout -> DSP failed");
+    // failure path: no file can be written -> "DSP failed" pill, nothing created
+    const fc = makeSandbox(mainViz);
+    const f = fc.sb;
+    f.File = function () { this.isopen = false; this.eof = 0; this.close = () => {}; };
+    let made = 0;
+    f.hostPatcher = { getnamed: () => null, newdefault: () => { made++; return {}; }, connect: () => {} };
+    f.loadDsp();
+    assert.strictEqual(made, 0);
+    assert.strictEqual(f.dspReady, 0);
+    assert.ok(f.dspError.length > 0, "failure recorded");
+    texts.length = 0;
+    f.mgraphics.show_text = (tx) => texts.push(tx);
+    f.paint();
+    assert.ok(texts.some((t) => String(t).indexOf("DSP failed: ") === 0), "failure pill says why");
+}
+
+console.log("Deferred DSP: GUI first, gen~ created from the embedded patch ok");
 

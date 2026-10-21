@@ -12,6 +12,7 @@ Features:
   - Writes `devices/Better Sampler.amxd`.
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -686,6 +687,35 @@ def face_params_json():
     return json.dumps(out)
 
 
+def gendsp_json(gen_code):
+    """The gen patcher (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text."""
+    def b(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
+               "patching_rect": [float(x), float(y), 200.0, 22.0]}
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+    patch = {"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen",
+        "rect": [50.0, 50.0, 600.0, 450.0],
+        "boxes": [
+            b("obj-in1", "in 1", 20, 20, 0, 1), b("obj-in2", "in 2", 120, 20, 0, 1),
+            b("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+            b("obj-out1", "out 1", 20, 400, 1, 0), b("obj-out2", "out 2", 120, 400, 1, 0),
+        ],
+        "lines": [
+            {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+            {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+            {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+            {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+        ],
+    }}
+    return json.dumps(patch)
+
+
 def make_viz(obj_id, rect, script, region, py):
     b = {
         "border": 0,
@@ -719,11 +749,18 @@ def build_patcher():
     ui_boxes, panels = build_face_layout()
     dev_w = DEVICE_W
 
+    gen_dsp_text = gendsp_json(gen_code)
+    gen_dsp_hash = hashlib.sha1(gen_dsp_text.encode("utf-8")).hexdigest()[:12]
+
     def face_script(region):
+        dsp = ""
+        if region == "main":
+            dsp = f"var GEN_DSP_TEXT = {json.dumps(gen_dsp_text)};\nvar GEN_DSP_HASH = \"{gen_dsp_hash}\";\n"
         return (
             config_js
             + f'\n\nvar FACE_REGION = "{region}";\n'
             + f"var FACE_PARAMS = {face_params_json()};\n"
+            + dsp
             + ui_js
             + "\n"
             + face_js
@@ -786,6 +823,7 @@ def build_patcher():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [30.0, 340.0, 52.0, 20.0],
                 "text": "plugin~",
+                "varname": "bs_plugin",
             }
         },
         {
@@ -797,6 +835,7 @@ def build_patcher():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [30.0, 510.0, 58.0, 20.0],
                 "text": "plugout~",
+                "varname": "bs_plugout",
             }
         },
         # MIDI Input -> midiparse -> note/velocity to v8ui voice allocator
@@ -833,19 +872,33 @@ def build_patcher():
                 "text": "prepend midi_note",
             }
         },
-        # GenExpr 16-Voice Polyphonic + Unison DSP Core
+        # The gen~ DSP core is NOT in the device: the face writes it as a .gendsp file and creates
+        # `gen~ @gen <file>` right after load (see loadDsp() in src/sampler_ui.js), so the GUI appears
+        # before the gen compiles. Every gen-bound message goes through this pass-through hub.
         {
             "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
+                "id": "obj-gen-in",
+                "maxclass": "newobj",
                 "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [30.0, 405.0, 60.0, 20.0],
+                # An open gate passes every message unchanged (right inlet). `t a` cannot be the
+                # source of a scripted patcher.connect(): the cord is silently not made.
+                "text": "gate 1 1",
+                "varname": "bs_genin",
+            }
+        },
+        # Once the gen exists, re-send the buffer binding and every parameter's current value
+        {
+            "box": {
+                "id": "obj-dsp-resend",
+                "maxclass": "newobj",
+                "numinlets": 1,
                 "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [30.0, 405.0, 320.0, 85.0],
-                "varname": "better_sampler_dsp",
+                "outlettype": ["bang", "bang"],
+                "patching_rect": [100.0, 405.0, 40.0, 20.0],
+                "text": "t b b",
             }
         },
         # 3 Instance-Isolated Buffers (#0-bsamp, #0-bsvoices, #0-bsscope)
@@ -934,6 +987,9 @@ def build_patcher():
                  "patching_rect": [780.0, 632.0, 82.0, 20.0], "text": "device_ready"}},
         {"box": {"id": "obj-prep-tempo", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1, "outlettype": [""],
                  "patching_rect": [900.0, 576.0, 92.0, 20.0], "text": "prepend tempo"}},
+        # Debug entry point for the MCP bridge: messnamed("#0-bsdebug", "dsp_diag") (see src/sampler_ui.js)
+        {"box": {"id": "obj-debug-recv", "maxclass": "newobj", "numinlets": 0, "numoutlets": 1, "outlettype": [""],
+                 "patching_rect": [900.0, 632.0, 110.0, 20.0], "text": "receive #0-bsdebug"}},
         # Loadbang buffer binding (rule #8: bind GenExpr Buffer varName with no `set` prefix)
         {
             "box": {
@@ -973,11 +1029,11 @@ def build_patcher():
             "box": {
                 "id": "obj-route-viz",
                 "maxclass": "newobj",
-                "numinlets": 7,
-                "numoutlets": 7,
-                "outlettype": ["", "", "", "", "", "", ""],
+                "numinlets": 8,
+                "numoutlets": 8,
+                "outlettype": ["", "", "", "", "", "", "", ""],
                 "patching_rect": [160.0, 555.0, 310.0, 20.0],
-                "text": "route param load_sample browse drop_set setwidth_cmd tempo",
+                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready",
             }
         },
         {
@@ -995,10 +1051,6 @@ def build_patcher():
 
     lines = [
         # Audio & GenExpr I/O
-        {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-gen", 0]}},
-        {"patchline": {"source": ["obj-plugin", 1], "destination": ["obj-gen", 1]}},
-        {"patchline": {"source": ["obj-gen", 0], "destination": ["obj-plugout", 0]}},
-        {"patchline": {"source": ["obj-gen", 1], "destination": ["obj-plugout", 1]}},
 
         # MIDI Input -> midiparse -> v8ui voice allocator
         {"patchline": {"source": ["obj-midiin", 0], "destination": ["obj-midiparse", 0]}},
@@ -1013,7 +1065,7 @@ def build_patcher():
         # Loadbang buffer binding
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-gen-buf", 0], "order": 1}},
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-ui-buf", 0], "order": 0}},
-        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-msg-ui-buf", 0], "destination": ["obj-viz", 0]}},
 
         # v8ui outlet routing (both face regions send ["param", key, value] / ["load_sample", path])
@@ -1022,10 +1074,13 @@ def build_patcher():
         {"patchline": {"source": ["obj-viz-insp", 0], "destination": ["obj-route-viz", 0]}},
         {"patchline": {"source": ["obj-route-viz", 4], "destination": ["obj-prep-setwidth", 0]}},
         {"patchline": {"source": ["obj-route-viz", 5], "destination": ["obj-prep-tempo", 0]}},
-        {"patchline": {"source": ["obj-prep-tempo", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-route-viz", 6], "destination": ["obj-dsp-resend", 0]}},
+        {"patchline": {"source": ["obj-dsp-resend", 1], "destination": ["obj-msg-gen-buf", 0]}},
+        {"patchline": {"source": ["obj-prep-tempo", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
         {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ready", 0]}},
         {"patchline": {"source": ["obj-msg-ready", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-debug-recv", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-route-viz", 0], "destination": ["obj-route-param", 0]}},
         {"patchline": {"source": ["obj-route-viz", 1], "destination": ["obj-prep-replace", 0]}},
         {"patchline": {"source": ["obj-route-viz", 2], "destination": ["obj-opendialog", 0]}},
@@ -1043,6 +1098,14 @@ def build_patcher():
 
     for i, key in enumerate(FACE_KEYS):
         lines.append({"patchline": {"source": ["obj-route-param", i], "destination": [f"obj-ctrl-{key}", 0]}})
+
+    # dsp_ready: bang every gen-bound parameter object so its current value reaches the new gen
+    for key, spec in PARAM_SPECS.items():
+        if spec[7]:
+            lines.append({"patchline": {"source": ["obj-dsp-resend", 0], "destination": [f"obj-ctrl-{key}", 0]}})
+    for key, spec in ENUM_SPECS.items():
+        if spec[4]:
+            lines.append({"patchline": {"source": ["obj-dsp-resend", 0], "destination": [f"obj-ctrl-{key}", 0]}})
 
     # Wire every continuous parameter into obj-gen and obj-viz
     px = 60.0
@@ -1081,7 +1144,7 @@ def build_patcher():
                 }
             })
             lines.append({"patchline": {"source": [src_for_prep, 0], "destination": [prep_id, 0]}})
-            lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen", 0]}})
+            lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen-in", 1]}})
 
         if ui_setter:
             ui_prep_id = f"obj-uiprep-{key}"
@@ -1122,7 +1185,7 @@ def build_patcher():
                 }
             })
             lines.append({"patchline": {"source": [ctrl_id, 0], "destination": [prep_id, 0]}})
-            lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen", 0]}})
+            lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen-in", 1]}})
 
         if ui_setter:
             ui_prep_id = f"obj-uiprep-{key}"

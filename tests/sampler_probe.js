@@ -100,9 +100,15 @@ function seedSample() {
     for (var i = 0; i < frames; i++) {
         var t = i / sr0;
         var env = Math.min(1.0, i / 32.0) * Math.exp(-i / 3500.0);
-        if (src === "sus48" || src === "rich48") env = Math.min(1.0, i / 32.0);
+        if (src === "sus48" || src === "rich48" || src === "slices4") env = Math.min(1.0, i / 32.0);
         var w = 0;
-        if (src === "rich48") {
+        if (src === "slices4") {
+            // Four distinct tones, one per quarter (3000 frames at 48 kHz = 62.5 ms each), whole numbers of cycles
+            // so a looped slice has no seam: 240 / 320 / 480 / 640 Hz.
+            var qIdx = Math.min(3, Math.floor(i / (frames / 4)));
+            var qHz = [240.0, 320.0, 480.0, 640.0][qIdx];
+            w = 0.6 * Math.sin(2.0 * Math.PI * qHz * i / sr0);
+        } else if (src === "rich48") {
             // 220 Hz harmonics up to 10 kHz with a smooth 1/n spectral envelope.
             for (var hn = 1; hn <= 45; hn++) w += 0.6 / hn * Math.sin(2.0 * Math.PI * 220.0 * hn * t) / 2.0;
             w *= env;
@@ -157,6 +163,44 @@ function seedVoices() {
         vFlat[base + 7] = 0.17 * (v + 1); // rndSeed
     }
     vb.poke(1, 0, vFlat);
+}
+
+// ---- Note sequence (real note path): the face's allocator writes the same vdata layout -------------
+// `noteon <key> <vel>` / `noteoff <key>` run src/sampler_config.js' createVoiceAllocator (concatenated in front of this
+// file by scripts/run_sampler_audio_tests.py) and poke the voice exactly as writeVoiceToBuffer() in src/sampler_ui.js.
+var alloc = null;
+var snaps = {};
+function getAlloc() {
+    if (alloc) return alloc;
+    alloc = createVoiceAllocator(16);
+    if (opt.base !== undefined) alloc.setSliceBaseNote(Number(opt.base));
+    if (opt.cap !== undefined) alloc.setMaxVoices(Number(opt.cap));
+    return alloc;
+}
+function sliceStarts() {
+    var markers = String(opt.markers || "0,0.25,0.5,0.75").split(",").map(Number);
+    var st = Number(opt.sstart === undefined ? 0 : opt.sstart);
+    var en = Number(opt.send === undefined ? 1 : opt.send);
+    return { starts: activeSliceStarts(markers, st, en), end: en };
+}
+function writeVoice(v) {
+    new Buffer(voicesName).poke(1, v.index * 8, [v.gate, v.note, v.vel, v.trigCount, v.sliceStart, v.sliceEnd, v.panSeed, v.rndSeed]);
+}
+function noteon(n, vel) {
+    var a = getAlloc();
+    var sl = sliceStarts();
+    writeVoice(a.noteOn(Number(n), Number(vel), 0, opt.single ? [0.0] : sl.starts, sl.end));
+}
+function noteoff(n) {
+    var rel = getAlloc().noteOff(Number(n), 0);
+    for (var i = 0; i < rel.length; i++) writeVoice(rel[i]);
+}
+// Telemetry at this instant: playhead (slots 0..15) of the loudest voice (amps 16..31)
+function snap(label) {
+    var chunk = new Buffer(scopeName).peek(1, 0, 49);
+    var best = -1, bestA = 0.0005;
+    for (var i = 0; i < 16; i++) if (chunk[16 + i] > bestA) { bestA = chunk[16 + i]; best = i; }
+    snaps[String(label)] = { voice: best, pos: best >= 0 ? chunk[best] : -1, amp: bestA };
 }
 
 function msg_float(v) {
@@ -220,7 +264,13 @@ function analyze(durMs) {
         "scopeLen " + scopeStats.scopeLen + "\n" +
         "jsFrames " + scopeStats.jsFrames + "\n" +
         "spawns " + scopeStats.spawns + "\n" +
-        dumpMetrics(metrics)
+        "gpSliced " + (scopeStats.gp ? scopeStats.gp[0] : -1) + "\n" +
+        "gpLoopMode " + (scopeStats.gp ? scopeStats.gp[1] : -1) + "\n" +
+        "gpSlicePlay " + (scopeStats.gp ? scopeStats.gp[2] : -1) + "\n" +
+        "gpMode " + (scopeStats.gp ? scopeStats.gp[3] : -1) + "\n" +
+        "gpRoot " + (scopeStats.gp ? scopeStats.gp[6] : -1) + "\n" +
+        dumpMetrics(metrics) +
+        seqReport(left, right, sr)
     );
     report.close();
     if (opt.dump) {
@@ -230,6 +280,41 @@ function analyze(durMs) {
         df.close();
     }
     outlet(0, "bang");
+}
+
+// Per-key readout of a note sequence (opt.seq = keys, opt.step / opt.hold / opt.skip in ms): dominant frequency,
+// rms and the playhead snapshot of every key's window.
+function seqReport(left, right, sr) {
+    if (!opt.seq) return "";
+    var keys = String(opt.seq).split(",").map(Number);
+    var step = Number(opt.step || 150), hold = Number(opt.hold || 120), skip = Number(opt.skip || 30);
+    var txt = "";
+    for (var k = 0; k < keys.length; k++) {
+        var i0 = Math.floor(sr * (k * step + skip) / 1000), i1 = Math.min(left.length, Math.floor(sr * (k * step + hold) / 1000));
+        var seg = [];
+        var sq = 0;
+        for (var i = i0; i < i1; i++) { var m = 0.5 * (left[i] + right[i]); seg.push(m); sq += m * m; }
+        var N = 16384, re = new Array(N), im = new Array(N);
+        var cnt = Math.min(seg.length, N);
+        for (var q = 0; q < N; q++) {
+            re[q] = q < cnt ? seg[q] * (0.5 - 0.5 * Math.cos(2 * Math.PI * q / Math.max(cnt - 1, 1))) : 0;
+            im[q] = 0;
+        }
+        fftInPlace(re, im);
+        var best = 0, bestK = 0, binHz = sr / N;
+        for (var b = 1; b < N / 2; b++) {
+            var f = b * binHz;
+            if (f < 60 || f > 8000) continue;
+            var mg = re[b] * re[b] + im[b] * im[b];
+            if (mg > best) { best = mg; bestK = b; }
+        }
+        var sn = snaps[String(k)] || { voice: -2, pos: -2, amp: 0 };
+        txt += "seq" + k + "Hz " + (best > 1e-9 ? bestK * binHz : 0) + "\n" +
+               "seq" + k + "Rms " + (seg.length ? Math.sqrt(sq / seg.length) : 0) + "\n" +
+               "seq" + k + "Pos " + sn.pos + "\n" +
+               "seq" + k + "Voice " + sn.voice + "\n";
+    }
+    return txt;
 }
 
 function readScope() {
@@ -256,6 +341,7 @@ function readScope() {
         sampFrames: (chunk.length > 38 && chunk[38] !== undefined) ? chunk[38] : -3,
         scopeLen: chunk.length,
         jsFrames: jsFrames,
+        gp: chunk.slice(40, 48),
     };
 }
 

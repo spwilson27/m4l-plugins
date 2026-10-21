@@ -44,6 +44,21 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GEN_PATH = os.path.join(ROOT, "src", "sampler_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "sampler_probe.js")
 GEN_CODE = ""
+CONFIG_PATH = os.path.join(ROOT, "src", "sampler_config.js")
+_SEQ_PROBE = None
+
+
+def seq_probe_path():
+    """Probe for note-sequence cases: src/sampler_config.js (the real voice allocator and activeSliceStarts) in front
+    of tests/sampler_probe.js, so the test pokes #0-bsvoices exactly like the face does."""
+    global _SEQ_PROBE
+    if _SEQ_PROBE is None:
+        import tempfile
+        d = tempfile.mkdtemp(prefix="sampler_seq_probe_")
+        _SEQ_PROBE = os.path.join(d, "sampler_seq_probe.js")
+        with open(_SEQ_PROBE, "w", encoding="utf-8") as f:
+            f.write(open(CONFIG_PATH, encoding="utf-8").read() + "\n" + open(PROBE_JS, encoding="utf-8").read())
+    return _SEQ_PROBE
 
 
 SETTLE_MS = 100
@@ -86,15 +101,24 @@ def device_patch(case, gen_code):
 def run_case(gen_code, case):
     boxes, lines = device_patch(case, gen_code)
     # Voices are gated on at the start of the measured window (sample time, stepped mode).
-    events = [] if case.get("no_trigger") else [(SETTLE_MS, "obj-js", 3, "trigger")]
+    events = [] if (case.get("no_trigger") or case.get("seq")) else [(SETTLE_MS, "obj-js", 3, "trigger")]
     if "rebound_ms" in case:
         events.append((SETTLE_MS + case["rebound_ms"], "obj-js", 3, "rebound"))
     if "release_ms" in case:
         events.append((SETTLE_MS + case["release_ms"], "obj-js", 3, "release"))
     opts = case.get("opts", "")
+    seq = case.get("seq")
+    if seq:
+        # keys=[...], step ms between key-ons, hold ms each key is held; snap slightly before the key-off
+        keys, step, hold = seq["keys"], seq.get("step", 150), seq.get("hold", 120)
+        opts += f" seq={','.join(str(k) for k in keys)} step={step} hold={hold} skip={seq.get('skip', 30)}"
+        for i, k in enumerate(keys):
+            events.append((SETTLE_MS + i * step, "obj-js", 3, f"noteon {k} 100"))
+            events.append((SETTLE_MS + i * step + int(hold * seq.get("snap", 0.85)), "obj-js", 3, f"snap {i}"))
+            events.append((SETTLE_MS + i * step + hold, "obj-js", 3, f"noteoff {k}"))
     return mh.run_case(
         case["name"], boxes, lines,
-        probe_js=PROBE_JS, probe_args=f"{case['name']} {case.get('cut_ms', 0)} {opts}".strip(),
+        probe_js=seq_probe_path() if seq else PROBE_JS, probe_args=f"{case['name']} {case.get('cut_ms', 0)} {opts}".strip(),
         settle_ms=SETTLE_MS, dur_ms=case["dur"], channels=2,
         mode=case.get("harness_mode", "stepped"), events=events,
     )
@@ -325,6 +349,40 @@ add("fr_rinit1", P(FRB + ", fr_density 2, fr_repeats 4, fr_repeat_init 1"), 600,
 add("fr_rinit0", P(FRB + ", fr_density 2, fr_repeats 4, fr_repeat_init 0"), 600, opts=S48)
 add("fr_uni", P(FRB + ", fr_density 4, unison_voices 4, unison_width 1, unison_detune 0.5"), 600, opts=S48)
 
+# ---------------------------------------------------------------------------------------------
+# Real note sequences (Sliced keymap) and Loop Off, per engine
+# ---------------------------------------------------------------------------------------------
+# A test sample with four distinct tones (240 / 320 / 480 / 640 Hz, one per quarter) is sliced at 0, .25, .5, .75 and
+# played with keys C1.. (36..39, then 40 wraps to slice 0) through the real voice allocator, written to #0-bsvoices
+# like the face does. Root note 60 on purpose: a key that does not play its slice at the root pitch is audibly wrong.
+SLICE_HZ = [240.0, 320.0, 480.0, 640.0]
+SEQ_ENGINES = (("repitch", 0, ""), ("cycles", 1, ""), ("textures", 2, "grain_size 40, "), ("spectral", 3, ""),
+               ("fragments", 4, "grain_size 40, fr_density 4, "))
+for _en, _e, _gp in SEQ_ENGINES:
+    # Spectral runs on voices 0..3 only; the face caps polyphony at 4 there (voiceCap()), so does the probe (cap=4)
+    add(f"keys_{_en}", P(f"mode {_e}, {_gp}sliced 1, slice_play 2, root_note 60"), 800,
+        opts="src=slices4 ana=0 " + ("cap=4 " if _e == 3 else ""), seq={"keys": [36, 37, 38, 39, 40], "step": 150, "hold": 120, "skip": 40})
+# slice_play 0 plays each slice once (62.5 ms) and stops
+add("keys_repitch_once", P("mode 0, sliced 1, slice_play 0, root_note 60"), 500,
+    opts="src=slices4 ana=0 ", seq={"keys": [36, 37, 38, 39], "step": 100, "hold": 80, "skip": 8, "snap": 0.45})
+# "Use keys from" moved to E2 (52): slice k plays on 52 + k
+add("keys_repitch_base52", P("mode 0, sliced 1, slice_play 2, root_note 60"), 700,
+    opts="src=slices4 ana=0 base=52 ", seq={"keys": [52, 53, 54, 55], "step": 150, "hold": 120, "skip": 40})
+# Start and end moved to 0.25..0.75: two slices, keys wrap
+add("keys_repitch_trim", P("mode 0, sliced 1, slice_play 2, root_note 60, samp_start 0.25, samp_end 0.75"), 700,
+    opts="src=slices4 ana=0 sstart=0.25 send=0.75 ", seq={"keys": [36, 37, 38], "step": 150, "hold": 120, "skip": 40})
+
+# Loop Off (Single): the sample plays once and then the voice is silent, in every engine. Loop Fwd keeps sounding.
+# The sample is 12000 frames = 250 ms at natural speed; Cycles scans at most 0.7 sample per second.
+for _en, _e, _gp in SEQ_ENGINES:
+    _dur, _cut = (2100, 1800) if _en == "cycles" else (900, 550)
+    _mo = ", grain_motion 2.0" if _en == "cycles" else ""
+    for _lm, _tag in ((0, "off"), (1, "fwd")):
+        add(f"lp_{_en}_{_tag}", P(f"mode {_e}, {_gp}loop_mode {_lm}, loop_start 0.05, loop_end 0.95, root_note 57{_mo}"), _dur,
+            cut_ms=_cut, opts=S48)
+add("lp_repitch_rev_off", P("mode 0, loop_mode 0, reverse 1, root_note 57"), 900, cut_ms=550, opts=S48)
+add("lp_repitch_pp", P("mode 0, loop_mode 2, loop_start 0.05, loop_end 0.95, root_note 57"), 900, cut_ms=550, opts=S48)
+
 
 def run_with_retry(gen_code, case):
     """One render per case. The harness serialises Max machine-wide, and a missing or invalid result is a
@@ -383,6 +441,14 @@ def main():
             with open(cache_path, "w") as cf:
                 json.dump(results, cf)
 
+    if only and os.environ.get("SAMPLER_SEQ_ONLY"):
+        # SAMPLER_CASE='^(keys_|lp_)' SAMPLER_SEQ_ONLY=1: just the note-sequence and Loop Off cases and their checks
+        run_seq_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Note-sequence and Loop Off checks passed.")
+        return
     if only:
         print("Partial sampler audio run; cross-case checks skipped.")
         return
@@ -476,6 +542,47 @@ def run_checks(results):
           f"Pos must move the frozen playhead (rms {on0['rms']} vs {on50['rms']})")
 
     run_new_checks(results)
+    run_seq_checks(results)
+
+
+def run_seq_checks(R):
+    """Sliced keys play their slices (dominant frequency per key, playhead inside the key's slice); Loop Off stops."""
+    def key_checks(name, slices, engine, lo_list, hz_list):
+        r = R[name]
+        for i, sl in enumerate(slices):
+            hz, rms, pos = r[f"seq{i}Hz"], r[f"seq{i}Rms"], r[f"seq{i}Pos"]
+            check(rms > 0.02, f"{name}: key #{i} must sound (rms={rms:.4f})")
+            lo = lo_list[sl]
+            check(lo - 0.006 <= pos <= lo + 0.25 + 0.006, f"{name}: key #{i} playhead must sit in slice {sl} {lo:.2f}..{lo + 0.25:.2f} (pos={pos:.3f})")
+            # Textures is a grain cloud: the grain-rate sidebands (25 Hz at 40 ms) can win the peak pick by a few %;
+            # an octave error (the old bug: scan speed added to the grain's own read speed) is 100 %.
+            tol = 0.09 if engine == "textures" else 0.04
+            if engine != "cycles":
+                check(abs(hz - hz_list[sl]) < tol * hz_list[sl],
+                      f"{name}: key #{i} must play slice {sl} at {hz_list[sl]:.0f} Hz (got {hz:.1f} Hz)")
+    q = [0.0, 0.25, 0.5, 0.75]
+    for _en, _e, _ in SEQ_ENGINES:
+        key_checks(f"keys_{_en}", [0, 1, 2, 3, 0], _en, q, SLICE_HZ)
+    key_checks("keys_repitch_once", [0, 1, 2, 3], "repitch", q, SLICE_HZ)
+    key_checks("keys_repitch_base52", [0, 1, 2, 3], "repitch", q, SLICE_HZ)
+    # start..end 0.25..0.75 holds two slices, 0.25..0.5 (320 Hz) and 0.5..0.75 (480 Hz); key 38 wraps to slice 0
+    key_checks("keys_repitch_trim", [0, 1, 0], "repitch", [0.25, 0.5], [320.0, 480.0])
+
+    # The gen reports the parameter values it runs with (scope 40..47)
+    kr = R["keys_repitch"]
+    check((kr["gpSliced"], kr["gpLoopMode"], kr["gpSlicePlay"], kr["gpMode"], kr["gpRoot"]) == (1, 0, 2, 0, 60),
+          f"gen telemetry must report its parameters (sliced, loop_mode, slice_play, mode, root_note) = (1, 0, 2, 0, 60), got "
+          f"{(kr['gpSliced'], kr['gpLoopMode'], kr['gpSlicePlay'], kr['gpMode'], kr['gpRoot'])}")
+    check((R["lp_cycles_fwd"]["gpLoopMode"], R["lp_cycles_fwd"]["gpMode"], R["lp_cycles_fwd"]["gpSliced"]) == (1, 1, 0),
+          "gen telemetry must report loop_mode 1 / mode 1 / sliced 0 in the Cycles Loop Fwd case")
+
+    for _en, _e, _ in SEQ_ENGINES:
+        off, fwd = R[f"lp_{_en}_off"], R[f"lp_{_en}_fwd"]
+        check(off["headRms"] > 0.02, f"lp_{_en}_off: the sample must play (headRms={off['headRms']:.4f})")
+        check(off["afterRms"] < 0.004, f"Loop Off must stop at the sample end in {_en} (afterRms={off['afterRms']:.4f})")
+        check(fwd["afterRms"] > 0.03, f"Loop Fwd must keep sounding in {_en} (afterRms={fwd['afterRms']:.4f})")
+    check(R["lp_repitch_rev_off"]["afterRms"] < 0.004, f"Reverse with Loop Off must stop (afterRms={R['lp_repitch_rev_off']['afterRms']:.4f})")
+    check(R["lp_repitch_pp"]["afterRms"] > 0.03, "Loop Ping-Pong must keep sounding")
 
 
 # CPU per engine. Each configuration renders a short and a long NonRealTime run of the same patch (voices start
