@@ -1,0 +1,220 @@
+// spectral_split_lib.genexpr — shared stereo MASK-STFT helpers for the Spectral Split suite
+// (Transient Split, Loud Split, Harmonic Split, Freq Split). Device build scripts PREPEND this file after
+// src/cepstrum_lib.genexpr and before their own core:
+//     gen_code = cepstrum_lib + "\n" + spectral_split_lib + "\n" + <slug>_core
+// (functions first, then the core's Buffer / Data / Param / History / Delay declarations; GenExpr rules as in
+// cepstrum_lib.genexpr). Everything here is generic: no device-specific analysis.
+//
+// IDEA. Every instance runs the identical analysis on the identical input and applies ONE real, per-bin mask to
+// BOTH stereo channels (the stereo image is kept). Left and right share one complex FFT:
+//     X = FFT(hann * (L + j R)),   L-spectrum = (X[k] + conj X[N-k]) / 2,   R-spectrum = (X[k] - conj X[N-k]) / 2j
+// A real mask m[k] with m[k] = m[N-k] multiplies X directly and IFFT(m X) = mL + j mR, so one forward and one
+// inverse FFT process both channels. The analysis works on the Mid signal (L+R)/2, extracted from the same X.
+// Masks of all channels of a device sum to exactly 1 at neutral settings, so the rack chains sum back to the
+// input (delayed by the constant latency).
+//
+// DATA the core must declare (n is 512..4096, half = n / 2):
+//   Data tab(4096, 3);   // twiddles (cepstrum_lib fft_init)
+//   Data win(4096);      // Hann (cepstrum_lib stft_win)
+//   Data fx(4096, 2);    // work spectrum: channel 0 = real, 1 = imag (L + jR packed)
+//   Data ringL(4096);  Data ringR(4096);   // input rings
+//   Data accL(4096);   Data accR(4096);    // overlap-add accumulators
+//   Data stt(8);         // framing state: 0 write pos, 1 hop counter, 2 n seen by ss_in, 3 n seen by L out, 4 n seen by R out
+//   Data ms(2049, 2);    // Mid spectrum: channel 0 = amplitude (a full-scale sine reads its amplitude), 1 = phase
+//   Data cols(512);      // telemetry columns, nslots * ncols (slot 0 = pre, slot 1.. = channels)
+//   Delay padL(4096);  Delay padR(4096);   // constant-latency pad
+// plus whatever per-bin state / masks the device needs (a device keeps its masks in its own Data, e.g. tsd(2049, 11)).
+//
+// API
+//   ss_in(ringL, ringR, stt, xl, xr, n)            push one stereo sample; returns 1 when a hop (n / 4) completed.
+//                                                  Changing n clears the rings and restarts the hop counter.
+//   ss_frame(fx, ringL, ringR, stt, win, n)        pack the last n samples (oldest first) times Hann: fx = hann*(L + jR)
+//   ss_mid(fx, ms, n)                              after fft_run(fx, tab, n, 0): Mid amplitude and phase for bins 0..n/2
+//   ss_apply(fx, mk, ch, n)                        multiply bins k and n-k by mk.peek(k, ch), k = 0..n/2 (real symmetric mask)
+//   ss_ola(accL, accR, stt, fx, win, n)            after fft_run(fx, tab, n, 1): window and overlap-add (real -> L, imag -> R)
+//   ss_out(acc, stt, n, slot)                      finished output sample; slot 3 for accL, 4 for accR (clears acc on n change)
+//   ss_cols(ms, mch, mk, kch, cols, slot, n, sr, ncols, fmin, fmax)
+//                                                  per log-frequency column c: max over its bins of ms.peek(k, mch) *
+//                                                  (kch < 0 ? 1 : mk.peek(k, kch)) into cols[slot * ncols + c] (linear amplitude)
+//   ss_db01(x)                                     linear amplitude -> 0..1 over -100..0 dB (0 for silence)
+//   ss_tele(cols, scope, ncols, nslots, off)       write cols as db01 into scope at off + slot * ncols + c
+//
+// PER-SAMPLE SKELETON (the Transient Split core follows it; see also src/transplit_core.genexpr):
+//   fft_init(tab);  stft_win(win, n);
+//   rdy = ss_in(ringL, ringR, stt, in1, in2, n);
+//   if (rdy > 0.5 && awake > 0.5) {
+//       ss_frame(fx, ringL, ringR, stt, win, n);
+//       fft_run(fx, tab, n, 0);
+//       ss_mid(fx, ms, n);
+//       <device>_masks(ms, ...);               // fills the device's mask Data (bare statement, never in an if condition)
+//       ss_apply(fx, mask, ownChannel, n);
+//       fft_run(fx, tab, n, 1);
+//       ss_ola(accL, accR, stt, fx, win, n);
+//   }
+//   yL = ss_out(accL, stt, n, 3);  yR = ss_out(accR, stt, n, 4);
+//   padL.write(yL);  padR.write(yR);
+//   out1 = padL.read(4096 - (n - 1));  out2 = padR.read(4096 - (n - 1));      // constant 4096 samples
+//
+// LATENCY. The STFT path is n - 1 samples (cepstrum_lib); the pad makes it a constant 4096 for every Size and the
+// patcher carries "latency": 4096 (Live's latency is a static attribute). Every device in a rack has the same value.
+//
+// SILENCE SLEEP (done in the core, 3 lines): quietCnt = max(|in|) > 1e-5 ? 0 : min(quietCnt + 1, 1e8);
+// awake = quietCnt < n; skip the frame block while not awake. Lossless (a frame that is silent for n samples has
+// zero output) and the output is exactly 0 after the tail has played out.
+//
+// TELEMETRY (per-instance buffer, bound on loadbang by the build, `---<slug>scope` in a top-level device, because
+// `#0` is NOT expanded there in Live): the core calls ss_cols for the pre spectrum and each channel's post spectrum
+// every >= 1024 samples and ss_tele to write them; device-specific scalars follow the columns.
+//
+// GenExpr notes learned while writing these (all verified in Max 9.1): a function call is never put in an if condition;
+// NEVER nest a user function call in the arguments of poke(): `poke(scope, my_fn(x), i, 0)` compiles to a codebox that
+// silently does nothing (no output, no telemetry), assign the result to a variable first; data arguments are by
+// reference; every function has a single return at function level; a History written this sample reads back its old
+// value, and an integer literal as large as 2^32 is not safe (use a float constant or an expression).
+
+// Push one stereo sample. st: 0 = write position (= oldest sample), 1 = hop counter, 2 = n seen here.
+ss_in(ringL, ringR, st, xl, xr, n) {
+	if (n != st.peek(2)) {
+		for (i = 0; i < n; i += 1) {
+			ringL.poke(0, i);
+			ringR.poke(0, i);
+		}
+		st.poke(0, 0);
+		st.poke(0, 1);
+		st.poke(n, 2);
+	}
+	wp = st.peek(0);
+	ringL.poke(xl, wp);
+	ringR.poke(xr, wp);
+	wp += 1;
+	if (wp >= n) {
+		wp = 0;
+	}
+	cnt = st.peek(1) + 1;
+	rdy = 0;
+	if (cnt >= n * 0.25) {
+		cnt = 0;
+		rdy = 1;
+	}
+	st.poke(wp, 0);
+	st.poke(cnt, 1);
+	return rdy;
+}
+
+// Last n samples, oldest first, times the Hann window: real part = left, imaginary part = right.
+ss_frame(fx, ringL, ringR, st, win, n) {
+	wp = st.peek(0);
+	for (i = 0; i < n; i += 1) {
+		j = wp + i;
+		if (j >= n) {
+			j -= n;
+		}
+		w = win.peek(i);
+		fx.poke(ringL.peek(j) * w, i, 0);
+		fx.poke(ringR.peek(j) * w, i, 1);
+	}
+	return 0;
+}
+
+// Mid spectrum Xm = (XL + XR) / 2 from the packed X: Xm[k] = ((1 - j) X[k] + (1 + j) conj(X[N-k])) / 4.
+// ms channel 0 = |Xm| * 4 / n (amplitude of a stationary sine), channel 1 = arg(Xm). Bins 0..n/2.
+ss_mid(fx, ms, n) {
+	half = n * 0.5;
+	sc = 4 / n;
+	for (k = 0; k <= half; k += 1) {
+		k2 = k == 0 ? 0 : n - k;
+		ar = fx.peek(k, 0);
+		ai = fx.peek(k, 1);
+		br = fx.peek(k2, 0);
+		bi = 0 - fx.peek(k2, 1);
+		xr = ((ar + ai) + (br - bi)) * 0.25;
+		xi = ((ai - ar) + (bi + br)) * 0.25;
+		ms.poke(sqrt(xr * xr + xi * xi) * sc, k, 0);
+		ms.poke(atan2(xi, xr), k, 1);
+	}
+	return half;
+}
+
+// Multiply the packed spectrum by the real mask mk[., ch] (bins k and n - k get the same value, so the mask is
+// Hermitian-symmetric and left / right stay separate real signals).
+ss_apply(fx, mk, ch, n) {
+	half = n * 0.5;
+	for (k = 0; k <= half; k += 1) {
+		m = mk.peek(k, ch);
+		fx.poke(fx.peek(k, 0) * m, k, 0);
+		fx.poke(fx.peek(k, 1) * m, k, 1);
+	}
+	for (k = 1; k < half; k += 1) {
+		m = mk.peek(k, ch);
+		fx.poke(fx.peek(n - k, 0) * m, n - k, 0);
+		fx.poke(fx.peek(n - k, 1) * m, n - k, 1);
+	}
+	return half;
+}
+
+// Weighted overlap-add of the inverse transform: real part into accL, imaginary part into accR (2 / 3 = 1 / sum(Hann^2)).
+ss_ola(accL, accR, st, fx, win, n) {
+	wp = st.peek(0);
+	for (i = 0; i < n; i += 1) {
+		j = wp + i;
+		if (j >= n) {
+			j -= n;
+		}
+		w = win.peek(i) * 0.6666666666666666;
+		accL.poke(accL.peek(j) + fx.peek(i, 0) * w, j);
+		accR.poke(accR.peek(j) + fx.peek(i, 1) * w, j);
+	}
+	return 0;
+}
+
+// One finished output sample from acc (read and clear). slot = index in st that remembers n for this accumulator.
+ss_out(acc, st, n, slot) {
+	if (n != st.peek(slot)) {
+		for (i = 0; i < n; i += 1) {
+			acc.poke(0, i);
+		}
+		st.poke(n, slot);
+	}
+	wp = st.peek(0);
+	y = acc.peek(wp);
+	acc.poke(0, wp);
+	return y;
+}
+
+// Display columns: ncols log-spaced columns from fmin to fmax; each takes the max over its bins (at least one).
+ss_cols(ms, mch, mk, kch, cols, slot, n, sr, ncols, fmin, fmax) {
+	half = n * 0.5;
+	ratio = fmax / fmin;
+	bw = n / sr;
+	for (c = 0; c < ncols; c += 1) {
+		lo = fmin * pow(ratio, c / ncols) * bw;
+		hi = fmin * pow(ratio, (c + 1) / ncols) * bw;
+		b0 = clip(floor(lo + 0.5), 1, half - 1);
+		b1 = clip(max(floor(hi - 0.5), b0), b0, half - 1);
+		v = 0;
+		for (k = b0; k <= b1; k += 1) {
+			a = ms.peek(k, mch);
+			a = kch < 0 ? a : a * mk.peek(k, kch);
+			v = max(v, a);
+		}
+		cols.poke(v, slot * ncols + c);
+	}
+	return ncols;
+}
+
+// Linear amplitude -> 0..1 over -100 dB .. 0 dB.
+ss_db01(x) {
+	return clip((20 * log10(max(x, 1e-9)) + 100) * 0.01, 0, 1);
+}
+
+// cols (linear amplitude, slot-major) -> scope at off as db01 (the same formula as ss_db01, inline: a user function call
+// nested in the arguments of poke() made the whole codebox fail to compile silently, see the notes at the top).
+ss_tele(cols, scope, ncols, nslots, off) {
+	for (s = 0; s < nslots; s += 1) {
+		for (c = 0; c < ncols; c += 1) {
+			v = clip((20 * log10(max(cols.peek(s * ncols + c), 1e-9)) + 100) * 0.01, 0, 1);
+			poke(scope, v, off + s * ncols + c, 0);
+		}
+	}
+	return nslots;
+}

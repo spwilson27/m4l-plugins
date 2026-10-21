@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/types/xo-strip.d.ts",
+    "src/xo_palette.js",
+    "src/xo_layouts/A.js",
+    "src/xo_strip_ui.js"
+  ]
+}

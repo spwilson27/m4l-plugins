@@ -17,7 +17,23 @@ var cutMs = jsarguments.length > 2 ? Number(jsarguments[2]) : 0;
 //   f0=220        fundamental for the h1..h8 harmonic readout
 //   ana=100       start of the spectral analysis window in ms
 //   pan=1         use the legacy triad pan seeds
+//   src=steps48   Analyzed Root Key test sample: 220 / 330 / 246.94 Hz sine (+ 2nd, 3rd harmonic) in thirds of the
+//                 sample, phase continuous; src=glide48: a glide from MIDI 57 to 64 over the whole sample
+//   pitch=steps|glide|zero  what the probe writes into the pitch buffer (#0-bspitch, 4096 points of fractional MIDI
+//                 over the whole sample); default follows src (steps48 -> steps, glide48 -> glide); zero = unfilled
+//   segs=a-b,c-d  analysis windows in ms (from the start of the recording): segHz<k> (dominant frequency, 60..8000
+//                 Hz, 32768-point Hann FFT with a log-parabolic peak) and segRms<k> are reported for each
+//   cen=261.63 / harm=261.63  also report segCen<k> / segHarm<k> per window (see segReport)
+//   wave=sine|saw|pulse|rich  waveform of the steps48 / glide48 / flat48 sources: pure sine, additive saw (1/n up to 24
+//                 harmonics), additive 25 % pulse, or (default) sine + 2nd + 3rd harmonic. src=flat48: constant
+//                 220 Hz (pitch curve = MIDI 57 exactly)
+//   clk=a-b       window (ms) of the click / ripple metrics (see clickReport)
 //   start=live    trigger from the setbuffers message instead of the harness event (CPU cases)
+//   src=marks48   Cycles timing test sample: 1 s (48000 frames) of a constant 220 Hz sine (pitch curve = MIDI 57) at a
+//                 low level with three loud Hann bursts (70 ms wide) centred at 0.20 / 0.45 / 0.80 s of the sample
+//   mk=1          report the burst envelope of the output: mkN (bursts found), mkT<k> (burst centre, ms from the start of
+//                 the recording) and mkEnd (last time the output is above the sample's low level, ms)
+//   Harness `snap t<ms>` events (case["snaps"]) record the loudest voice's playhead (slots 0..15): snp<ms>Pos / snp<ms>Amp
 var opt = {};
 for (var ai = 3; ai < jsarguments.length; ai++) {
     var tok = String(jsarguments[ai]);
@@ -50,16 +66,40 @@ var armed = false;
 var sampName = "";
 var voicesName = "";
 var scopeName = "";
+var pitchName = "";
 var trigSeq = 0;
 var resultPath = "/tmp/sampler_audio.txt";
 
 function resultpath(p) { resultPath = String(p); }
 
-function setbuffers(sName, vName, scName) {
+// Analyzed Root Key test material (src=steps48 / glide48). 12000 frames at 48 kHz.
+var STEP_HZ = [220.0, 330.0, 246.94];
+function midiOfHz(f) { return 69.0 + 12.0 * Math.log(f / 440.0) / Math.LN2; }
+function hzOfMidi(m) { return 440.0 * Math.pow(2.0, (m - 69.0) / 12.0); }
+// MIDI pitch of the test sample at frame f (the exact analyzed curve the face would write)
+function testMidiAtFrame(f, frames, kind) {
+    if (kind === "glide") return 57.0 + 7.0 * f / frames;
+    if (kind === "flat") return midiOfHz(220.0);
+    return midiOfHz(STEP_HZ[Math.min(2, Math.floor(f / (frames / 3)))]);
+}
+function seedPitch() {
+    if (!pitchName) return;
+    var kind = opt.pitch || (opt.src === "glide48" ? "glide" : (opt.src === "steps48" ? "steps" : ((opt.src === "flat48" || opt.src === "marks48") ? "flat" : "none")));
+    var vals = new Array(4096);
+    for (var i = 0; i < 4096; i++) {
+        // point i is position i / 4095 of the whole sample
+        vals[i] = (kind === "zero" || kind === "none") ? 0.0 : testMidiAtFrame(i / 4095.0 * 12000.0, 12000.0, kind);
+    }
+    new Buffer(pitchName).poke(1, 0, vals);
+}
+
+function setbuffers(sName, vName, scName, pName) {
     sampName = String(sName || "");
     voicesName = String(vName || "");
     scopeName = String(scName || "");
+    pitchName = String(pName || "");
     seedSample();
+    seedPitch();
     if (opt.start === "live") { trigSeq += 1; seedVoices(); }
 }
 
@@ -90,19 +130,46 @@ function seedSample() {
     // Short dual-mono tone with a steep decay. Reverse can walk from the quiet
     // tail back into the attack inside one rendered window, and stereo width
     // comes from unison rather than from a baked-in L/R difference.
-    sb.send("sizeinsamps", 12000);
-    var frames = sb.framecount() || 12000;
-    if (frames > 12000) frames = 12000;
+    var wantFrames = (opt.src === "marks48") ? 48000 : 12000;
+    sb.send("sizeinsamps", wantFrames);
+    var frames = sb.framecount() || wantFrames;
+    if (frames > wantFrames) frames = wantFrames;
     var ch1 = new Array(frames);
     var ch2 = new Array(frames);
     var src = opt.src || "tone";
     var sr0 = (src === "tone") ? 44100.0 : 48000.0;
+    var rdPhs = 0.0;
     for (var i = 0; i < frames; i++) {
         var t = i / sr0;
         var env = Math.min(1.0, i / 32.0) * Math.exp(-i / 3500.0);
-        if (src === "sus48" || src === "rich48" || src === "slices4") env = Math.min(1.0, i / 32.0);
+        if (src === "sus48" || src === "rich48" || src === "slices4" || src === "steps48" || src === "glide48" || src === "flat48" || src === "marks48") env = Math.min(1.0, i / 32.0);
         var w = 0;
-        if (src === "slices4") {
+        if (src === "marks48") {
+            // constant 220 Hz sine, low level, three Hann bursts (centres 0.20 / 0.45 / 0.80 s, 70 ms wide)
+            rdPhs += 2.0 * Math.PI * 220.0 / sr0;
+            var mkAmp = 0.12;
+            var mkCs = [0.20, 0.45, 0.80];
+            for (var mc = 0; mc < 3; mc++) {
+                var mkD = (t - mkCs[mc]) / 0.035;
+                if (Math.abs(mkD) < 1.0) mkAmp += 0.55 * (0.5 + 0.5 * Math.cos(Math.PI * mkD));
+            }
+            w = mkAmp * Math.sin(rdPhs);
+        } else if (src === "steps48" || src === "glide48" || src === "flat48") {
+            // Pitch moves over the sample; the phase is accumulated so the steps have no click.
+            var rdHz = hzOfMidi(testMidiAtFrame(i, frames, src === "glide48" ? "glide" : (src === "flat48" ? "flat" : "steps")));
+            rdPhs += 2.0 * Math.PI * rdHz / sr0;
+            var wv = opt.wave || "rich";
+            if (wv === "sine") {
+                w = 0.55 * Math.sin(rdPhs);
+            } else if (wv === "saw") {
+                for (var sn = 1; sn <= 24; sn++) w += 0.3 / sn * Math.sin(sn * rdPhs);
+            } else if (wv === "pulse") {
+                // 25 % pulse: a_n = sin(n pi / 4) / n, so H2 / H1 = 0.7071, H3 / H1 = 0.3333
+                for (var pn = 1; pn <= 24; pn++) w += 0.55 * Math.sin(pn * Math.PI / 4.0) / pn * Math.cos(pn * rdPhs) / 0.7071;
+            } else {
+                w = 0.55 * Math.sin(rdPhs) + 0.25 * Math.sin(2.0 * rdPhs) + 0.15 * Math.sin(3.0 * rdPhs);
+            }
+        } else if (src === "slices4") {
             // Four distinct tones, one per quarter (3000 frames at 48 kHz = 62.5 ms each), whole numbers of cycles
             // so a looped slice has no seam: 240 / 320 / 480 / 640 Hz.
             var qIdx = Math.min(3, Math.floor(i / (frames / 4)));
@@ -269,8 +336,13 @@ function analyze(durMs) {
         "gpSlicePlay " + (scopeStats.gp ? scopeStats.gp[2] : -1) + "\n" +
         "gpMode " + (scopeStats.gp ? scopeStats.gp[3] : -1) + "\n" +
         "gpRoot " + (scopeStats.gp ? scopeStats.gp[6] : -1) + "\n" +
+        "gpRootDyn " + scopeStats.rootDyn + "\n" +
         dumpMetrics(metrics) +
-        seqReport(left, right, sr)
+        segReport(left, right, sr) +
+        clickReport(left, right, sr) +
+        seqReport(left, right, sr) +
+        snapReport() +
+        markerReport(left, right, sr)
     );
     report.close();
     if (opt.dump) {
@@ -280,6 +352,133 @@ function analyze(durMs) {
         df.close();
     }
     outlet(0, "bang");
+}
+
+// Spectrum of mono samples seg[0..): Hann, 32768-point FFT. Returns the magnitudes, the bin width and the dominant
+// frequency (60..8000 Hz, log-parabolic peak refinement).
+function segSpectrum(seg, sr) {
+    var N = 32768, re = new Array(N), im = new Array(N);
+    var cnt = Math.min(seg.length, N);
+    for (var q = 0; q < N; q++) {
+        re[q] = q < cnt ? seg[q] * (0.5 - 0.5 * Math.cos(2 * Math.PI * q / Math.max(cnt - 1, 1))) : 0;
+        im[q] = 0;
+    }
+    fftInPlace(re, im);
+    var binHz = sr / N, best = 0, bk = 0, mg = new Array(N / 2);
+    mg[0] = 0;
+    for (var b = 1; b < N / 2; b++) {
+        mg[b] = Math.sqrt(re[b] * re[b] + im[b] * im[b]);
+        var f = b * binHz;
+        if (f < 60 || f > 8000) continue;
+        if (mg[b] > best) { best = mg[b]; bk = b; }
+    }
+    var hz = 0;
+    if (best >= 1e-7) {
+        hz = bk * binHz;
+        if (bk > 1 && bk < N / 2 - 1) {
+            var ya = Math.log(mg[bk - 1] + 1e-12), yb = Math.log(mg[bk] + 1e-12), yc = Math.log(mg[bk + 1] + 1e-12);
+            var den = ya - 2 * yb + yc;
+            if (Math.abs(den) > 1e-9) hz = (bk + 0.5 * (ya - yc) / den) * binHz;
+        }
+    }
+    return { mg: mg, binHz: binHz, hz: hz };
+}
+
+// segs=a-b,c-d (ms): per window of the mid signal
+//   segHz     dominant frequency
+//   segRms    rms
+//   segCen    (cen=<Hz>) power-weighted mean frequency in 0.6..1.45 x cen: the carrier of a grain cloud whose grain-rate
+//             sidebands can win the peak pick
+//   segHarm   (harm=<Hz>) fraction of the 60..4000 Hz power within +-4 % of a multiple of <Hz>: 1 for a waveform that
+//             repeats at <Hz>, low when the cycle read is the wrong length
+//   segH2_/segH3_ (harm=) 2nd / 3rd harmonic amplitude relative to the 1st: the waveform shape
+function segReport(left, right, sr) {
+    if (!opt.segs) return "";
+    var wins = String(opt.segs).split(",");
+    var txt = "";
+    var cenRef = Number(opt.cen || 0), harmRef = Number(opt.harm || 0);
+    for (var k = 0; k < wins.length; k++) {
+        var pr = wins[k].split("-");
+        var i0 = Math.floor(sr * Number(pr[0]) / 1000), i1 = Math.min(left.length, Math.floor(sr * Number(pr[1]) / 1000));
+        var seg = [], sq = 0;
+        for (var i = i0; i < i1; i++) { var m = 0.5 * (left[i] + right[i]); seg.push(m); sq += m * m; }
+        var sp = seg.length > 64 ? segSpectrum(seg, sr) : { mg: [], binHz: 1, hz: 0 };
+        txt += "segHz" + k + " " + sp.hz + "\n" +
+               "segRms" + k + " " + (seg.length ? Math.sqrt(sq / seg.length) : 0) + "\n";
+        if (cenRef > 0 && sp.mg.length) {
+            var num = 0, den2 = 0;
+            for (var b = 1; b < sp.mg.length; b++) {
+                var f = b * sp.binHz;
+                if (f < 0.6 * cenRef || f > 1.45 * cenRef) continue;
+                num += sp.mg[b] * sp.mg[b] * f; den2 += sp.mg[b] * sp.mg[b];
+            }
+            txt += "segCen" + k + " " + (den2 > 0 ? num / den2 : 0) + "\n";
+        }
+        if (harmRef > 0 && sp.mg.length) {
+            var inH = 0, tot = 0;
+            for (var b2 = 1; b2 < sp.mg.length; b2++) {
+                var f2 = b2 * sp.binHz;
+                if (f2 < 60 || f2 > 4000) continue;
+                var pw = sp.mg[b2] * sp.mg[b2];
+                tot += pw;
+                var hk = Math.round(f2 / harmRef);
+                if (hk >= 1 && Math.abs(f2 - hk * harmRef) <= 0.04 * hk * harmRef) inH += pw;
+            }
+            txt += "segHarm" + k + " " + (tot > 0 ? inH / tot : 0) + "\n";
+            // amplitude of the 2nd and 3rd harmonic relative to the 1st (+-4 % peak search): the waveform shape
+            var hmax = [0, 0, 0, 0];
+            for (var hh = 1; hh <= 3; hh++) {
+                var bLo = Math.floor(hh * harmRef * 0.96 / sp.binHz), bHi = Math.ceil(hh * harmRef * 1.04 / sp.binHz);
+                for (var bb = bLo; bb <= bHi && bb < sp.mg.length; bb++) hmax[hh] = Math.max(hmax[hh], sp.mg[bb]);
+            }
+            txt += "segH2_" + k + " " + (hmax[1] > 0 ? hmax[2] / hmax[1] : 0) + "\n" +
+                   "segH3_" + k + " " + (hmax[1] > 0 ? hmax[3] / hmax[1] : 0) + "\n";
+        }
+    }
+    return txt;
+}
+
+// clk=a-b (ms, opt.cen / opt.harm = the expected fundamental, default 261.63 Hz): continuity of the mid signal.
+//   clkRatio   largest per-window max |x[n] - x[n-1]| over the median of those windows (windows of 1.5 periods, hop of half
+//              a period): about 1 for a steady periodic waveform, large where a window join or a pitch step clicks
+//   clkRipple  (max - min) / mean of the RMS over windows of 2 periods (hop 1/2 period): amplitude modulation
+//   clkJump    largest sample-to-sample step relative to the signal peak
+function clickReport(left, right, sr) {
+    if (!opt.clk) return "";
+    var pr = String(opt.clk).split("-");
+    var i0 = Math.floor(sr * Number(pr[0]) / 1000), i1 = Math.min(left.length, Math.floor(sr * Number(pr[1]) / 1000));
+    var f0 = Number(opt.harm || opt.cen || 261.63);
+    var P = sr / f0;
+    var m = [], pk = 0;
+    for (var i = i0; i < i1; i++) { var v = 0.5 * (left[i] + right[i]); m.push(v); if (Math.abs(v) > pk) pk = Math.abs(v); }
+    var W = Math.floor(P * 1.5), hop = Math.max(1, Math.floor(P / 2)), mx = [], rms = [], mxAt = [];
+    var jump = 0;
+    for (var a = 1; a < m.length; a++) jump = Math.max(jump, Math.abs(m[a] - m[a - 1]));
+    for (var s0 = 1; s0 + W < m.length; s0 += hop) {
+        var mj = 0;
+        for (var q = 0; q < W; q++) mj = Math.max(mj, Math.abs(m[s0 + q] - m[s0 + q - 1]));
+        mx.push(mj);
+        mxAt.push(1000.0 * (i0 + s0) / sr);
+    }
+    var topAt = -1, topV = 0;
+    for (var t1 = 0; t1 < mx.length; t1++) if (mx[t1] > topV) { topV = mx[t1]; topAt = mxAt[t1]; }
+    var W2 = Math.floor(P * 2);
+    for (var s1 = 0; s1 + W2 < m.length; s1 += hop) {
+        var sq = 0;
+        for (var z = 0; z < W2; z++) sq += m[s1 + z] * m[s1 + z];
+        rms.push(Math.sqrt(sq / W2));
+    }
+    var sorted = mx.slice().sort(function (x, y) { return x - y; });
+    var med = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+    var top = sorted.length ? sorted[sorted.length - 1] : 0;
+    var rmin = 1e9, rmax = 0, rsum = 0;
+    for (var r = 0; r < rms.length; r++) { rmin = Math.min(rmin, rms[r]); rmax = Math.max(rmax, rms[r]); rsum += rms[r]; }
+    var rmean = rms.length ? rsum / rms.length : 0;
+    return "clkRatio " + (med > 1e-9 ? top / med : 0) + "\n" +
+           "clkRipple " + (rmean > 1e-9 ? (rmax - rmin) / rmean : 0) + "\n" +
+           "clkAtMs " + topAt + "\n" +
+           "clkJump " + (pk > 1e-9 ? jump / pk : 0) + "\n" +
+           "clkPeak " + pk + "\n";
 }
 
 // Per-key readout of a note sequence (opt.seq = keys, opt.step / opt.hold / opt.skip in ms): dominant frequency,
@@ -317,6 +516,47 @@ function seqReport(left, right, sr) {
     return txt;
 }
 
+// Playhead snapshots taken by `snap t<ms>` events: snp<ms>Pos (normalised playhead of the loudest voice) and snp<ms>Amp.
+function snapReport() {
+    var txt = "";
+    for (var key in snaps) {
+        if (key.charAt(0) !== "t") continue;
+        txt += "snp" + key.substring(1) + "Pos " + snaps[key].pos + "\n" + "snp" + key.substring(1) + "Amp " + snaps[key].amp + "\n";
+    }
+    return txt;
+}
+
+// mk=1: the burst envelope of the mid signal (|x| smoothed over 12 ms). Bursts = clusters of envelope above 60 % of the
+// maximum (gaps over 40 ms split them); mkT<k> = centroid in ms from the start of the recording; mkEnd = last time the
+// envelope is above 9 % of the maximum (the low level of marks48 is 18 % of the burst level).
+function markerReport(left, right, sr) {
+    if (!opt.mk) return "";
+    var n = left.length, win = Math.max(2, Math.floor(sr * 0.012));
+    var cum = new Array(n + 1);
+    cum[0] = 0;
+    for (var i = 0; i < n; i++) cum[i + 1] = cum[i] + Math.abs(0.5 * (left[i] + right[i]));
+    var env = new Array(n), mx = 0;
+    for (var j = 0; j < n; j++) {
+        var a = Math.max(0, j - (win >> 1)), b = Math.min(n, a + win);
+        env[j] = (cum[b] - cum[a]) / Math.max(b - a, 1);
+        if (env[j] > mx) mx = env[j];
+    }
+    var thr = 0.6 * mx, gap = Math.floor(sr * 0.040);
+    var cl = [], cur = null, lastAbove = -1e9, endIdx = -1;
+    for (var k = 0; k < n; k++) {
+        if (env[k] > 0.09 * mx) endIdx = k;
+        if (env[k] > thr) {
+            if (!cur || k - lastAbove > gap) { cur = { w: 0, wt: 0 }; cl.push(cur); }
+            cur.w += env[k] - thr;
+            cur.wt += (env[k] - thr) * k;
+            lastAbove = k;
+        }
+    }
+    var txt = "mkN " + cl.length + "\nmkMax " + mx + "\nmkEnd " + (endIdx >= 0 ? 1000.0 * endIdx / sr : -1) + "\n";
+    for (var c = 0; c < cl.length; c++) txt += "mkT" + c + " " + (1000.0 * cl[c].wt / cl[c].w / sr) + "\n";
+    return txt;
+}
+
 function readScope() {
     var jsFrames = -1;
     if (sampName) {
@@ -328,7 +568,7 @@ function readScope() {
     }
     if (!scopeName) return { spawns: -1, activeVoices: -1, peakL: -1, cutHz: -1, sampFrames: -1, scopeLen: 0, jsFrames: jsFrames };
     var buf = new Buffer(scopeName);
-    var chunk = buf.peek(1, 0, 49);
+    var chunk = buf.peek(1, 0, 50);
     if (!chunk || !chunk.length) {
         return { spawns: -1, activeVoices: 0, peakL: 0, cutHz: 0, sampFrames: 0, scopeLen: 0, jsFrames: jsFrames };
     }
@@ -341,6 +581,7 @@ function readScope() {
         sampFrames: (chunk.length > 38 && chunk[38] !== undefined) ? chunk[38] : -3,
         scopeLen: chunk.length,
         jsFrames: jsFrames,
+        rootDyn: (chunk.length > 49 && chunk[49] !== undefined) ? chunk[49] : -1,
         gp: chunk.slice(40, 48),
     };
 }

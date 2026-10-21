@@ -261,6 +261,8 @@ ENUM_SPECS = {
         "Sliced", "Sliced", ["Single", "Sliced"], 0, "sliced", "set_sliced",
         "Single sampler (start and loop points) or Sliced (each key plays a slice).",
     ),
+    "root_dyn": ("Analyzed Root Key", "RootDyn", ["Off", "On"], 0, "root_dyn", "set_root_dyn",
+                 "Dynamic pitch analysis instead of a fixed root key: playback follows the sample's pitch curve so every part plays at the keyed note."),
     "rp_char": ("Repitch Character", "RpChar", ["Clean", "Analog", "Digital"], 0, "rp_char", "set_rp_char",
                 "Repitch flavour: Clean tape machine, Analog warmth, or Digital polyphonic sample rates."),
     "rp_vsr": ("Variable Sample Rate", "VSR", ["Off", "On"], 0, "rp_vsr", "set_rp_vsr",
@@ -935,6 +937,18 @@ def build_patcher():
                 "text": "buffer~ #0-bsscope @samps 64",
             }
         },
+        # Analyzed root key: the sample's pitch (MIDI) at 4096 evenly spaced positions, written by the face
+        {
+            "box": {
+                "id": "obj-buf-pitch",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["float", "bang"],
+                "patching_rect": [420.0, 414.0, 220.0, 20.0],
+                "text": "buffer~ #0-bspitch @samps 4096",
+            }
+        },
         # Sample file loader wiring (live.drop -> prepend replace -> buffer~ #0-bsamp -> bang -> v8ui)
         {
             "box": {
@@ -1010,7 +1024,7 @@ def build_patcher():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [420.0, 450.0, 310.0, 20.0],
-                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope",
+                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch",
             }
         },
         {
@@ -1021,7 +1035,7 @@ def build_patcher():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [420.0, 480.0, 290.0, 20.0],
-                "text": "setbuffers #0-bsamp #0-bsvoices #0-bsscope",
+                "text": "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch",
             }
         },
         # Route messages emitted from v8ui

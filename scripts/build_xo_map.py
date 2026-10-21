@@ -2,12 +2,11 @@
 """
 Build script for devices/XO Sample Map.amxd
 Generates a self-contained Max for Live Audio Effect device (.amxd) combining:
-  - src/xo_node_engine.js + src/xo_map_ui.html (embedded in a Max 9 node.codebox object)
+  - src/xo_node_engine.js (embedded in a Max 9 node.codebox object)
   - src/xo_strip_ui.js (embedded in a Max 9 v8ui object for in-device mini-map, waveform scanner & saved list)
   - Visibly separate FILTERS panel (Search textbox, MaxLen 50ms..Infinite, Tone, Sim stepping)
     vs. PLAYBACK panel (Audition, Pitch, Trim/Decay, Gain)
   - Scrollable, selectable, drag-reorderable & deletable Saved Samples List with Raw vs. Edited OS file drag-out
-  - Pop-out floating window subpatcher (p XOMapWindow) hosting a full-screen jweb canvas
   - Stereo sfplay~ 2 audition engine with automatic Mono-to-Stereo routing (selector~ 2 1)
     and live waveform playhead scanning line (line 0. 20)
 """
@@ -18,139 +17,36 @@ import struct
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NODE_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_node_engine.js")
-HTML_UI_PATH = os.path.join(ROOT_DIR, "src", "xo_map_ui.html")
 STRIP_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_strip_ui.js")
 FOLDER_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_folder_ui.js")
-OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "XO Sample Map.amxd")
+STRETCH_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_stretch.js")
+PALETTE_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_palette.js")
+LAYOUTS_DIR = os.path.join(ROOT_DIR, "scripts", "xo_layouts")
 
 
-def make_map_window_subpatcher():
-    """
-    Creates the pop-out floating window subpatcher 'p XOMapWindow' containing
-    the high-DPI jweb HTML5 Canvas XO Sample Space UI.
-    """
-    return {
-        "fileversion": 1,
-        "appversion": {
-            "major": 9,
-            "minor": 1,
-            "revision": 5,
-            "architecture": "x64",
-            "modernui": 1
-        },
-        "classnamespace": "box",
-        "rect": [120.0, 90.0, 1040.0, 680.0],
-        "openrect": [120.0, 90.0, 1040.0, 680.0],
-        "bglocked": 0,
-        "openinpresentation": 1,
-        "default_fontsize": 10.0,
-        "default_fontface": 0,
-        "default_fontname": "Arial Bold",
-        "gridonopen": 1,
-        "gridsize": [15.0, 15.0],
-        "gridsnaponopen": 1,
-        "objectsnaponopen": 1,
-        "statusbarvisible": 0,
-        "toolbarvisible": 0,
-        "lefttoolbarpinned": 0,
-        "toptoolbarpinned": 0,
-        "righttoolbarpinned": 0,
-        "bottomtoolbarpinned": 0,
-        "toolbars_unpinned_last_save": 0,
-        "tallnewobj": 0,
-        "boxanimatetime": 200,
-        "enablehscroll": 0,
-        "enablevscroll": 0,
-        "devicewidth": 0.0,
-        "description": "XO Sample Space Floating Map Window",
-        "digest": "",
-        "tags": "",
-        "style": "",
-        "subpatcher_template": "",
-        "title": "XO Sample Space",
-        "boxes": [
-            {
-                "box": {
-                    "comment": "pcontrol inlet",
-                    "id": "obj-win-in",
-                    "index": 1,
-                    "maxclass": "inlet",
-                    "numinlets": 0,
-                    "numoutlets": 1,
-                    "outlettype": [""],
-                    "patching_rect": [20.0, 20.0, 25.0, 25.0]
-                }
-            },
-            {
-                "box": {
-                    "fontname": "Arial Bold",
-                    "fontsize": 10.0,
-                    "id": "obj-thispatcher",
-                    "maxclass": "newobj",
-                    "numinlets": 1,
-                    "numoutlets": 2,
-                    "outlettype": ["", ""],
-                    "patching_rect": [20.0, 60.0, 68.0, 20.0],
-                    "save": ["#N", "thispatcher", ";", "#Q", "end", ";"],
-                    "text": "thispatcher"
-                }
-            },
-            {
-                "box": {
-                    "fontname": "Arial Bold",
-                    "fontsize": 10.0,
-                    "id": "obj-r-jweb",
-                    "maxclass": "newobj",
-                    "numinlets": 0,
-                    "numoutlets": 1,
-                    "outlettype": [""],
-                    "patching_rect": [120.0, 20.0, 88.0, 20.0],
-                    "text": "r #0-to-jweb"
-                }
-            },
-            {
-                "box": {
-                    "disablefind": 1,
-                    "id": "obj-jweb",
-                    "maxclass": "jweb",
-                    "numinlets": 1,
-                    "numoutlets": 1,
-                    "outlettype": [""],
-                    "patching_rect": [120.0, 60.0, 820.0, 540.0],
-                    "presentation": 1,
-                    "presentation_rect": [0.0, 0.0, 1040.0, 680.0],
-                    "rendermode": 1,
-                    "url": ""
-                }
-            },
-            {
-                "box": {
-                    "fontname": "Arial Bold",
-                    "fontsize": 10.0,
-                    "id": "obj-s-jweb",
-                    "maxclass": "newobj",
-                    "numinlets": 1,
-                    "numoutlets": 0,
-                    "patching_rect": [120.0, 615.0, 98.0, 20.0],
-                    "text": "s #0-from-jweb"
-                }
-            }
-        ],
-        "lines": [
-            {"patchline": {"source": ["obj-win-in", 0], "destination": ["obj-thispatcher", 0]}},
-            {"patchline": {"source": ["obj-r-jweb", 0], "destination": ["obj-jweb", 0]}},
-            {"patchline": {"source": ["obj-jweb", 0], "destination": ["obj-s-jweb", 0]}}
-        ],
-        "bgcolor": [0.055, 0.067, 0.086, 1.0],
-        "editing_bgcolor": [0.055, 0.067, 0.086, 1.0]
-    }
+def list_variants():
+    """Variant names with a scripts/xo_layouts/<name>.py module (default first, then A, B, ...)."""
+    names = sorted(f[:-3] for f in os.listdir(LAYOUTS_DIR) if f.endswith(".py") and not f.startswith("_") and f[:-3] != "default")
+    return ["default"] + names
 
 
-def build():
+def load_layout(variant):
+    """Import scripts/xo_layouts/<variant>.py (a layout module: see scripts/xo_layouts/README.md)."""
+    import importlib.util
+    path = os.path.join(LAYOUTS_DIR, variant + ".py")
+    if not os.path.isfile(path):
+        raise SystemExit("unknown variant %r (no %s)" % (variant, path))
+    spec = importlib.util.spec_from_file_location("xo_layout_" + variant, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def build(variant="default"):
+    layout = load_layout(variant)
+    LAYOUT_JS_PATH = os.path.join(ROOT_DIR, layout.LAYOUT_JS)
+    OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", layout.DEVICE_NAME + ".amxd")
     os.makedirs(os.path.dirname(OUT_AMXD_PATH), exist_ok=True)
-
-    with open(HTML_UI_PATH, "r", encoding="utf-8") as f:
-        html_ui_str = f.read()
 
     with open(NODE_JS_PATH, "r", encoding="utf-8") as f:
         node_js_raw = f.read()
@@ -161,15 +57,25 @@ def build():
     with open(FOLDER_JS_PATH, "r", encoding="utf-8") as f:
         folder_js_code = f.read()
 
-    # Compact embedded HTML & JS comments/blank lines so node.codebox code buffer stays well under Max's atom limit
+    # Compact embedded JS comments/blank lines so node.codebox code buffer stays well under Max's atom limit
     import re
-    compact_html = re.sub(r"\n\s+", "\n", html_ui_str)
     compact_node_js = re.sub(r"(?m)^\s*//.*$\n?", "", node_js_raw)
     compact_node_js = re.sub(r"\n{2,}", "\n", compact_node_js)
 
-    embedded_node_code = (
-        f"const EMBEDDED_XO_HTML = {json.dumps(compact_html)};\n" + compact_node_js
+    # Offline stretch engines (src/xo_stretch.js): wrapped in a function so the codebox needs no require() of it and
+    # its helper names stay out of the engine's scope; the engine reads XO_STRETCH_EMBEDDED.
+    with open(STRETCH_JS_PATH, "r", encoding="utf-8") as f:
+        stretch_js_raw = f.read()
+    stretch_js = re.sub(r"(?m)^\s*//.*$\n?", "", stretch_js_raw)
+    stretch_js = re.sub(r"/\*.*?\*/", "", stretch_js, flags=re.S)
+    stretch_js = re.sub(r"\n{2,}", "\n", stretch_js)
+    stretch_wrapped = (
+        "const XO_STRETCH_EMBEDDED = (function () {\nconst module = { exports: {} };\n"
+        + stretch_js
+        + "\nreturn module.exports;\n})();\n"
     )
+
+    embedded_node_code = stretch_wrapped + compact_node_js
 
     boxes = [
         # --- 1. Audio Pass-Through + Mono-Safe Stereo Preview Mixer + Playhead Scanner ---
@@ -431,16 +337,17 @@ def build():
                 "fontsize": 10.0,
                 "id": "obj-route-node",
                 "maxclass": "newobj",
-                "numinlets": 23,
-                "numoutlets": 23,
-                "outlettype": [""] * 23,
+                "numinlets": 24,
+                "numoutlets": 24,
+                "outlettype": [""] * 24,
                 "patching_rect": [420.0, 435.0, 780.0, 20.0],
                 "text": (
-                    "route server_url minimap_clear minimap_batch minimap_done "
+                    "route minimap_clear minimap_batch minimap_done "
                     "selected_info play_file play_speed play_env play_scan_dur "
                     "play_mono play_gain saved_list_sync sync_playback_dials "
                     "prompt_folder strip_filter_cat strip_filter_maxlen strip_filter_tone "
-                    "strip_filter_tonal strip_filter_drum folder_list_sync patcher_cmd setwidth_cmd"
+                    "strip_filter_tonal strip_filter_drum folder_list_sync patcher_cmd setwidth_cmd "
+                    "selected_wave audition_info"
                 )
             }
         },
@@ -467,7 +374,7 @@ def build():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [900.0, 548.0, 232.0, 20.0],
-                "text": "expr 276 + $i1 * 116 + $i2 * 214 + $i3 * 170"
+                "text": layout.WIDTH_EXPR
             }
         },
         {
@@ -508,44 +415,6 @@ def build():
                 "outlettype": [""],
                 "patching_rect": [300.0, 398.0, 138.0, 20.0],
                 "text": "prepend folder_list_sync"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-prep-url",
-                "maxclass": "newobj",
-                "numinlets": 1,
-                "numoutlets": 1,
-                "outlettype": [""],
-                "patching_rect": [420.0, 468.0, 68.0, 20.0],
-                "text": "prepend url"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-s-to-jweb",
-                "maxclass": "newobj",
-                "numinlets": 1,
-                "numoutlets": 0,
-                "patching_rect": [420.0, 495.0, 88.0, 20.0],
-                "text": "s #0-to-jweb"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-r-from-jweb",
-                "maxclass": "newobj",
-                "numinlets": 0,
-                "numoutlets": 1,
-                "outlettype": [""],
-                "patching_rect": [520.0, 495.0, 98.0, 20.0],
-                "text": "r #0-from-jweb"
             }
         },
 
@@ -631,6 +500,19 @@ def build():
                 "outlettype": [""],
                 "patching_rect": [30.0, 398.0, 118.0, 20.0],
                 "text": "prepend selected_info"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-sel-wave",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [30.0, 372.0, 118.0, 20.0],
+                "text": "prepend selected_wave"
             }
         },
         {
@@ -732,9 +614,9 @@ def build():
                 "maxclass": "newobj",
                 "numinlets": 1,
                 "numoutlets": 7,
-                "outlettype": ["float", "float", "float", "int", "float", "float", "float"],
+                "outlettype": ["float", "float", "float", "int", "float", "float", "int"],
                 "patching_rect": [750.0, 468.0, 185.0, 20.0],
-                "text": "unpack 0. 2500. 0. 0 100. 45. 0."
+                "text": "unpack 0. 2500. 0. 0 100. 45. 1"
             }
         },
 
@@ -758,11 +640,12 @@ def build():
                 "fontsize": 10.0,
                 "id": "obj-sel-key",
                 "maxclass": "newobj",
-                "numinlets": 7,
-                "numoutlets": 7,
-                "outlettype": ["bang", "bang", "bang", "bang", "bang", "bang", ""],
-                "patching_rect": [640.0, 522.0, 145.0, 20.0],
-                "text": "sel 115 83 127 8 -5 -3"
+                "numinlets": 11,
+                "numoutlets": 11,
+                "outlettype": ["bang"] * 10 + [""],
+                "patching_rect": [640.0, 522.0, 205.0, 20.0],
+                # 115 / 83 = s / S, 127 / 8 / -5 / -3 = delete keys, 28 / 29 / 30 / 31 = left / right / up / down
+                "text": "sel 115 83 127 8 -5 -3 28 29 30 31"
             }
         },
         {
@@ -795,74 +678,52 @@ def build():
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-sel-map-win",
-                "maxclass": "newobj",
-                "numinlets": 3,
-                "numoutlets": 3,
-                "outlettype": ["bang", "bang", ""],
-                "patching_rect": [30.0, 480.0, 54.0, 20.0],
-                "text": "sel 1 0"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-msg-open-win",
+                "id": "obj-msg-hotkey-prev",
                 "maxclass": "message",
                 "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [30.0, 508.0, 38.0, 20.0],
-                "text": "open"
+                "patching_rect": [640.0, 578.0, 110.0, 20.0],
+                "text": "hotkey_prev_similar"
             }
         },
         {
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-msg-close-win",
+                "id": "obj-msg-hotkey-next",
                 "maxclass": "message",
                 "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [75.0, 508.0, 40.0, 20.0],
-                "text": "close"
+                "patching_rect": [755.0, 578.0, 110.0, 20.0],
+                "text": "hotkey_next_similar"
             }
         },
         {
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-pcontrol",
-                "maxclass": "newobj",
-                "numinlets": 1,
+                "id": "obj-msg-hotkey-back",
+                "maxclass": "message",
+                "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [30.0, 536.0, 56.0, 20.0],
-                "text": "pcontrol"
+                "patching_rect": [870.0, 578.0, 110.0, 20.0],
+                "text": "hotkey_history_back"
             }
         },
         {
             "box": {
-                "color": [0.22, 0.74, 0.97, 1.0],
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-map-window",
-                "maxclass": "newobj",
-                "numinlets": 1,
-                "numoutlets": 0,
-                "patching_rect": [30.0, 564.0, 98.0, 20.0],
-                "patcher": make_map_window_subpatcher(),
-                "saved_object_attributes": {
-                    "description": "XO Sample Space Floating Map Window",
-                    "digest": "",
-                    "editing_bgcolor": [0.055, 0.067, 0.086, 1.0],
-                    "globalpatchername": "",
-                    "locked_bgcolor": [0.055, 0.067, 0.086, 1.0],
-                    "tags": ""
-                },
-                "text": "p XOMapWindow"
+                "id": "obj-msg-hotkey-fwd",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [985.0, 578.0, 110.0, 20.0],
+                "text": "hotkey_history_forward"
             }
         },
         {
@@ -892,77 +753,27 @@ def build():
             }
         },
 
-        # --- 5. Left Panel Header Widgets (Above Mini Editor v8ui: Title + Open Map + Saved / Filters / Playback Toggles) ---
-        {
-            "box": {
-                "fontface": 1,
-                "fontsize": 9.0,
-                "id": "obj-title-lbl",
-                "maxclass": "live.comment",
-                "numinlets": 1,
-                "numoutlets": 0,
-                "patching_rect": [420.0, 30.0, 76.0, 16.0],
-                "presentation": 1,
-                "presentation_rect": [8.0, 8.0, 76.0, 16.0],
-                "text": "XO Sample Map",
-                "textcolor": [1.0, 0.709804, 0.196078, 1.0],
-                "textjustification": 0
-            }
-        },
-        {
-            "box": {
-                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
-                "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
-                "activetextcolor": [0.85, 0.89, 0.94, 1.0],
-                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Opens or closes the large resizable XO Sample Space floating map window.",
-                "annotation_name": "Open Map Window",
-                "bordercolor": [0.22, 0.74, 0.97, 1.0],
-                "id": "obj-open-map-btn",
-                "maxclass": "live.text",
-                "numinlets": 1,
-                "numoutlets": 2,
-                "outlettype": ["", ""],
-                "parameter_enable": 1,
-                "patching_rect": [520.0, 30.0, 54.0, 15.0],
-                "presentation": 1,
-                "presentation_rect": [86.0, 9.0, 54.0, 15.0],
-                "saved_attribute_attributes": {
-                    "valueof": {
-                        "parameter_annotation_name": "Open Map Window",
-                        "parameter_enum": ["Closed", "Open"],
-                        "parameter_initial": [0],
-                        "parameter_initial_enable": 1,
-                        "parameter_invisible": 2,
-                        "parameter_longname": "OpenMapWindow",
-                        "parameter_mmax": 1,
-                        "parameter_shortname": "Open Map",
-                        "parameter_type": 2
-                    }
-                },
-                "text": "Open Map",
-                "texton": "Map Open",
-                "varname": "OpenMapWindow"
-            }
-        },
+        # --- 5. Left Panel Header Widgets (Above Mini Editor v8ui: Saved / Filters / Playback Toggles; no title, Live's header names the device) ---
         {
             "box": {
                 "activebgcolor": [0.14, 0.17, 0.21, 1.0],
                 "activebgoncolor": [0.29, 0.87, 0.50, 1.0],
                 "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Shows or collapses the Saved Samples List pane inside the mini editor (shrinking the M4L device width).",
+                "annotation": "Toolbar: show or hide the Saved samples list (list icon). Hiding it shrinks the device.",
                 "annotation_name": "Show Saved List",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
+                "fontsize": 8.0,
                 "id": "obj-toggle-saved-btn",
                 "maxclass": "live.text",
+                "mode": 1,
                 "numinlets": 1,
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
                 "patching_rect": [590.0, 30.0, 40.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [143.0, 9.0, 40.0, 15.0],
+                "presentation_rect": [10.0, 9.0, 40.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Show Saved List",
@@ -976,8 +787,11 @@ def build():
                         "parameter_type": 2
                     }
                 },
+                "pictures": ["menu_closed.svg", "menu_closed.svg"],
+                "remapsvgcolors": 1,
                 "text": "Saved",
                 "texton": "Saved",
+                "usepicture": 1,
                 "varname": "ShowSavedList"
             }
         },
@@ -1000,18 +814,20 @@ def build():
                 "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
                 "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Shows or collapses the Filters section (shrinking the M4L device width).",
+                "annotation": "Toolbar: show or hide the Filters section (filter-curve icon). Hiding it shrinks the device.",
                 "annotation_name": "Show Filters Section",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
+                "fontsize": 8.0,
                 "id": "obj-toggle-filters-btn",
                 "maxclass": "live.text",
+                "mode": 1,
                 "numinlets": 1,
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
                 "patching_rect": [645.0, 30.0, 40.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [186.0, 9.0, 40.0, 15.0],
+                "presentation_rect": [53.0, 9.0, 40.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Show Filters Section",
@@ -1025,8 +841,11 @@ def build():
                         "parameter_type": 2
                     }
                 },
+                "pictures": ["bandpass.svg", "bandpass.svg"],
+                "remapsvgcolors": 1,
                 "text": "Filters",
                 "texton": "Filters",
+                "usepicture": 1,
                 "varname": "ShowFiltersSection"
             }
         },
@@ -1075,18 +894,20 @@ def build():
                 "activebgoncolor": [1.0, 0.694, 0.18, 1.0],
                 "activetextcolor": [0.75, 0.80, 0.86, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Shows or collapses the Playback section (shrinking the M4L device width).",
+                "annotation": "Toolbar: show or hide the Playback section (envelope icon). Hiding it shrinks the device.",
                 "annotation_name": "Show Playback Section",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
+                "fontsize": 8.0,
                 "id": "obj-toggle-playback-btn",
                 "maxclass": "live.text",
+                "mode": 1,
                 "numinlets": 1,
                 "numoutlets": 2,
                 "outlettype": ["", ""],
                 "parameter_enable": 1,
                 "patching_rect": [700.0, 30.0, 48.0, 15.0],
                 "presentation": 1,
-                "presentation_rect": [229.0, 9.0, 48.0, 15.0],
+                "presentation_rect": [96.0, 9.0, 48.0, 15.0],
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Show Playback Section",
@@ -1100,8 +921,11 @@ def build():
                         "parameter_type": 2
                     }
                 },
+                "pictures": ["sharkTooth.svg", "sharkTooth.svg"],
+                "remapsvgcolors": 1,
                 "text": "Playback",
                 "texton": "Playback",
+                "usepicture": 1,
                 "varname": "ShowPlaybackSection"
             }
         },
@@ -1523,7 +1347,7 @@ def build():
             }
         },
 
-        # --- 7. Right Panel: PLAYBACK CONTROLS (Pitch, Speed, Grain, Trim/Decay, Spectral, Gain, Reverse) ---
+        # --- 7. Right Panel: PLAYBACK CONTROLS (Pitch, Speed, Grain, Trim/Decay, Mode, Gain, Reverse) ---
         {
             "box": {
                 "fontface": 1,
@@ -1606,14 +1430,14 @@ def build():
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Pitch Transpose",
-                        "parameter_initial": [0.0],
+                        "parameter_initial": [0],
                         "parameter_initial_enable": 1,
                         "parameter_linknames": 1,
                         "parameter_longname": "PitchTranspose",
                         "parameter_mmax": 24.0,
                         "parameter_mmin": -24.0,
                         "parameter_shortname": "Pitch",
-                        "parameter_type": 0,
+                        "parameter_type": 1,
                         "parameter_unitstyle": 7
                     }
                 },
@@ -1636,7 +1460,7 @@ def build():
         {
             "box": {
                 "activedialcolor": [1.0, 0.694, 0.18, 1.0],
-                "annotation": "Granular & Spectral time-stretch playback speed (10% slow stretch up to 400% fast scan, 100% = 1:1). Saved with sample.",
+                "annotation": "Time-stretch playback speed (engine chosen with Mode) (10% slow stretch up to 400% fast scan, 100% = 1:1). Saved with sample.",
                 "annotation_name": "Granular Speed",
                 "id": "obj-speed-dial",
                 "maxclass": "live.dial",
@@ -1681,7 +1505,7 @@ def build():
         {
             "box": {
                 "activedialcolor": [1.0, 0.694, 0.18, 1.0],
-                "annotation": "Sets the Hann grain window size (5 ms micro-grains up to 250 ms smooth clouds) for granular stretching. Saved with sample.",
+                "annotation": "Grain mode: Hann grain size (5 ms micro-grains up to 250 ms smooth clouds). Texture mode: analysis window size (5..250 ms maps to a 4096..32768 sample window; larger = smoother). Dimmed in Cmplx. Saved with sample.",
                 "annotation_name": "Grain Size",
                 "id": "obj-grain-dial",
                 "maxclass": "live.dial",
@@ -1771,9 +1595,9 @@ def build():
         {
             "box": {
                 "activedialcolor": [0.66, 0.33, 0.97, 1.0],
-                "annotation": "Blends STFT phase-vocoder spectral stretch & phase dispersion (0% = Granular, 100% = Spectral Stretch). Saved with sample.",
-                "annotation_name": "Spectral Stretch",
-                "id": "obj-spec-dial",
+                "annotation": "Time-stretch engine used when Speed is not 100% (Texture always renders): Grain = granular clouds, Cmplx = phase vocoder with transient and phase-lock handling, Textr = PaulStretch-style frozen texture. Saved with sample.",
+                "annotation_name": "Stretch Mode",
+                "id": "obj-stretch-mode",
                 "maxclass": "live.dial",
                 "numinlets": 1,
                 "numoutlets": 2,
@@ -1784,32 +1608,72 @@ def build():
                 "presentation_rect": [664.0, 92.0, 48.0, 46.0],
                 "saved_attribute_attributes": {
                     "valueof": {
-                        "parameter_annotation_name": "Spectral Stretch",
-                        "parameter_initial": [0.0],
+                        "parameter_annotation_name": "Stretch Mode",
+                        "parameter_enum": ["Grain", "Cmplx", "Textr"],
+                        "parameter_initial": [1],
                         "parameter_initial_enable": 1,
                         "parameter_linknames": 1,
-                        "parameter_longname": "SpectralStretch",
-                        "parameter_mmax": 100.0,
-                        "parameter_mmin": 0.0,
-                        "parameter_shortname": "Spectral",
-                        "parameter_type": 0,
-                        "parameter_unitstyle": 5
+                        "parameter_longname": "StretchMode",
+                        "parameter_mmax": 2,
+                        "parameter_mmin": 0,
+                        "parameter_shortname": "Mode",
+                        "parameter_type": 2,
+                        "parameter_unitstyle": 9
                     }
                 },
-                "varname": "SpectralStretch"
+                "varname": "StretchMode"
             }
         },
         {
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-prep-spec",
+                "id": "obj-prep-stretch-mode",
                 "maxclass": "newobj",
                 "numinlets": 1,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [920.0, 215.0, 106.0, 20.0],
-                "text": "prepend set_spectral"
+                "patching_rect": [920.0, 215.0, 130.0, 20.0],
+                "text": "prepend set_stretchmode"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-audition-info",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [1060.0, 240.0, 130.0, 20.0],
+                "text": "prepend audition_info"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-test-width",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [1060.0, 265.0, 130.0, 20.0],
+                "text": "prepend test_width"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-r-test",
+                "maxclass": "newobj",
+                "numinlets": 0,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [1060.0, 290.0, 110.0, 20.0],
+                "text": "receive #0-xo-test"
             }
         },
         {
@@ -1882,6 +1746,146 @@ def build():
                 "outlettype": [""],
                 "patching_rect": [30.0, 625.0, 32.0, 20.0],
                 "text": "init"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-apply-layout",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [70.0, 625.0, 78.0, 20.0],
+                "text": "apply_layout"
+            }
+        },
+        # --- Options toolbar toggle + Theme selector (parameters appended after every existing one; in the variant
+        #     devices, which have no Options section, they stay as off-face parameters: presentation 0) ---
+        {
+            "box": {
+                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
+                "activebgoncolor": [0.66, 0.40, 0.97, 1.0],
+                "activetextcolor": [0.75, 0.80, 0.86, 1.0],
+                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
+                "annotation": "Options: show or hide the Options section (gear icon, bottom of the toolbar): the Theme selector.",
+                "annotation_name": "Show Options Section",
+                "bordercolor": [0.32, 0.38, 0.46, 1.0],
+                "fontsize": 8.0,
+                "id": "obj-toggle-options-btn",
+                "maxclass": "live.text",
+                "mode": 1,
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "parameter_enable": 1,
+                "patching_rect": [820.0, 30.0, 40.0, 15.0],
+                "presentation": 1,
+                "presentation_rect": [6.0, 145.0, 16.0, 16.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Show Options Section",
+                        "parameter_enum": ["Hidden", "Shown"],
+                        "parameter_initial": [0],
+                        "parameter_initial_enable": 1,
+                        "parameter_invisible": 2,
+                        "parameter_longname": "ShowOptions",
+                        "parameter_mmax": 1,
+                        "parameter_shortname": "Options",
+                        "parameter_type": 2
+                    }
+                },
+                "pictures": ["gear.svg", "gear.svg"],
+                "remapsvgcolors": 1,
+                "text": "Options",
+                "texton": "Options",
+                "usepicture": 1,
+                "varname": "ShowOptions"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-show-options",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [820.0, 52.0, 138.0, 20.0],
+                "text": "prepend set_show_options"
+            }
+        },
+        {
+            "box": {
+                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
+                "activebgoncolor": [0.66, 0.40, 0.97, 1.0],
+                "activetextcolor": [0.85, 0.89, 0.94, 1.0],
+                "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
+                "annotation": "Look of the device: LCD = amber hardware readouts, Focus = slim dial columns. Same parameters either way.",
+                "annotation_name": "Theme",
+                "bordercolor": [0.32, 0.38, 0.46, 1.0],
+                "fontsize": 9.0,
+                "id": "obj-theme-tab",
+                "maxclass": "live.tab",
+                "num_lines_patching": 1,
+                "num_lines_presentation": 1,
+                "numinlets": 1,
+                "numoutlets": 3,
+                "outlettype": ["", "", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [820.0, 90.0, 84.0, 18.0],
+                "presentation": 1,
+                "presentation_rect": [34.0, 44.0, 84.0, 18.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Theme",
+                        "parameter_enum": ["LCD", "Focus"],
+                        "parameter_initial": [0],
+                        "parameter_initial_enable": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "Theme",
+                        "parameter_mmax": 1,
+                        "parameter_shortname": "Theme",
+                        "parameter_type": 2,
+                        "parameter_unitstyle": 9
+                    }
+                },
+                "spacing_x": 2.0,
+                "varname": "Theme"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-prep-theme",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [820.0, 120.0, 102.0, 20.0],
+                "text": "prepend set_theme"
+            }
+        },
+        {
+            "box": {
+                "angle": 270.0,
+                "background": 1,
+                "bgcolor": [0.105, 0.125, 0.15, 1.0],
+                "border": 1,
+                "bordercolor": [0.06, 0.07, 0.08, 1.0],
+                "id": "obj-panel-toolbar",
+                "maxclass": "panel",
+                "mode": 0,
+                "numinlets": 1,
+                "numoutlets": 0,
+                "patching_rect": [30.0, 640.0, 100.0, 40.0],
+                "presentation": 1,
+                "presentation_rect": [3.0, 5.0, 22.0, 159.0],
+                "proportion": 0.39,
+                "rounded": 6
             }
         },
         {
@@ -2005,48 +2009,55 @@ def build():
 
         # 2. node.codebox Outlet Routing
         {"patchline": {"source": ["obj-node", 0], "destination": ["obj-route-node", 0]}},
-        {"patchline": {"source": ["obj-route-node", 0], "destination": ["obj-prep-url", 0]}},
-        {"patchline": {"source": ["obj-prep-url", 0], "destination": ["obj-s-to-jweb", 0]}},
-        {"patchline": {"source": ["obj-route-node", 1], "destination": ["obj-prep-mm-clear", 0]}},
+        {"patchline": {"source": ["obj-route-node", 0], "destination": ["obj-prep-mm-clear", 0]}},
         {"patchline": {"source": ["obj-prep-mm-clear", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 2], "destination": ["obj-prep-mm-batch", 0]}},
+        {"patchline": {"source": ["obj-route-node", 1], "destination": ["obj-prep-mm-batch", 0]}},
         {"patchline": {"source": ["obj-prep-mm-batch", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 3], "destination": ["obj-prep-mm-done", 0]}},
+        {"patchline": {"source": ["obj-route-node", 2], "destination": ["obj-prep-mm-done", 0]}},
         {"patchline": {"source": ["obj-prep-mm-done", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 4], "destination": ["obj-prep-sel-info", 0]}},
+        {"patchline": {"source": ["obj-route-node", 3], "destination": ["obj-prep-sel-info", 0]}},
         {"patchline": {"source": ["obj-prep-sel-info", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 5], "destination": ["obj-trig-play", 0]}},
-        {"patchline": {"source": ["obj-route-node", 6], "destination": ["obj-speed-reg", 1], "order": 1}},
-        {"patchline": {"source": ["obj-route-node", 6], "destination": ["obj-sfplay", 1], "order": 0}},
-        {"patchline": {"source": ["obj-route-node", 7], "destination": ["obj-env-line", 0]}},
-        {"patchline": {"source": ["obj-route-node", 8], "destination": ["obj-scan-msg", 0]}},
-        {"patchline": {"source": ["obj-route-node", 9], "destination": ["obj-r-chan-sel", 0]}},
-        {"patchline": {"source": ["obj-route-node", 10], "destination": ["obj-dbtoa", 0]}},
-        {"patchline": {"source": ["obj-route-node", 11], "destination": ["obj-prep-saved-sync", 0]}},
+        {"patchline": {"source": ["obj-route-node", 4], "destination": ["obj-trig-play", 0]}},
+        {"patchline": {"source": ["obj-route-node", 5], "destination": ["obj-speed-reg", 1], "order": 1}},
+        {"patchline": {"source": ["obj-route-node", 5], "destination": ["obj-sfplay", 1], "order": 0}},
+        {"patchline": {"source": ["obj-route-node", 6], "destination": ["obj-env-line", 0]}},
+        {"patchline": {"source": ["obj-route-node", 7], "destination": ["obj-scan-msg", 0]}},
+        {"patchline": {"source": ["obj-route-node", 8], "destination": ["obj-r-chan-sel", 0]}},
+        {"patchline": {"source": ["obj-route-node", 9], "destination": ["obj-dbtoa", 0]}},
+        {"patchline": {"source": ["obj-route-node", 10], "destination": ["obj-prep-saved-sync", 0]}},
         {"patchline": {"source": ["obj-prep-saved-sync", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 12], "destination": ["obj-unpack-recalled", 0]}},
+        {"patchline": {"source": ["obj-route-node", 11], "destination": ["obj-unpack-recalled", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 0], "destination": ["obj-pitch-dial", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 1], "destination": ["obj-decay-dial", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 2], "destination": ["obj-gain-dial", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 3], "destination": ["obj-reverse-btn", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 4], "destination": ["obj-speed-dial", 0]}},
         {"patchline": {"source": ["obj-unpack-recalled", 5], "destination": ["obj-grain-dial", 0]}},
-        {"patchline": {"source": ["obj-unpack-recalled", 6], "destination": ["obj-spec-dial", 0]}},
-        {"patchline": {"source": ["obj-route-node", 13], "destination": ["obj-opendialog", 0]}},
-        {"patchline": {"source": ["obj-route-node", 14], "destination": ["obj-prep-sf-cat", 0]}},
+        {"patchline": {"source": ["obj-unpack-recalled", 6], "destination": ["obj-stretch-mode", 0]}},
+        {"patchline": {"source": ["obj-route-node", 22], "destination": ["obj-prep-audition-info", 0]}},
+        {"patchline": {"source": ["obj-prep-audition-info", 0], "destination": ["obj-minimap", 0]}},
+        # Test hook (tests/test_xo_map.js, scripts/test_xo_live.js): `; #0-xo-test <message>` (literal #0 in a top-level device) drives the v8ui and
+        # test_report writes its state to Global("xo_test"); the device width is mirrored for the report.
+        {"patchline": {"source": ["obj-r-test", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-expr-width", 0], "destination": ["obj-prep-test-width", 0]}},
+        {"patchline": {"source": ["obj-prep-test-width", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-route-node", 12], "destination": ["obj-opendialog", 0]}},
+        {"patchline": {"source": ["obj-route-node", 13], "destination": ["obj-prep-sf-cat", 0]}},
         {"patchline": {"source": ["obj-prep-sf-cat", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 15], "destination": ["obj-prep-sf-maxlen", 0]}},
+        {"patchline": {"source": ["obj-route-node", 14], "destination": ["obj-prep-sf-maxlen", 0]}},
         {"patchline": {"source": ["obj-prep-sf-maxlen", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 16], "destination": ["obj-prep-sf-tone", 0]}},
+        {"patchline": {"source": ["obj-route-node", 15], "destination": ["obj-prep-sf-tone", 0]}},
         {"patchline": {"source": ["obj-prep-sf-tone", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 17], "destination": ["obj-prep-sf-tonal", 0]}},
+        {"patchline": {"source": ["obj-route-node", 16], "destination": ["obj-prep-sf-tonal", 0]}},
         {"patchline": {"source": ["obj-prep-sf-tonal", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 18], "destination": ["obj-prep-sf-drum", 0]}},
+        {"patchline": {"source": ["obj-route-node", 17], "destination": ["obj-prep-sf-drum", 0]}},
         {"patchline": {"source": ["obj-prep-sf-drum", 0], "destination": ["obj-minimap", 0]}},
-        {"patchline": {"source": ["obj-route-node", 19], "destination": ["obj-prep-folder-sync", 0]}},
+        {"patchline": {"source": ["obj-route-node", 18], "destination": ["obj-prep-folder-sync", 0]}},
         {"patchline": {"source": ["obj-prep-folder-sync", 0], "destination": ["obj-folder-list", 0]}},
-        {"patchline": {"source": ["obj-route-node", 20], "destination": ["obj-root-thispatcher", 0]}},
-        {"patchline": {"source": ["obj-route-node", 21], "destination": ["obj-prep-setwidth", 0]}},
+        {"patchline": {"source": ["obj-route-node", 19], "destination": ["obj-root-thispatcher", 0]}},
+        {"patchline": {"source": ["obj-route-node", 20], "destination": ["obj-prep-setwidth", 0]}},
+        {"patchline": {"source": ["obj-route-node", 21], "destination": ["obj-prep-sel-wave", 0]}},
+        {"patchline": {"source": ["obj-prep-sel-wave", 0], "destination": ["obj-minimap", 0]}},
 
         # 3. v8ui & Hotkeys ('S' -> hotkey_save, Delete/Backspace -> delete_selected_saved) -> node.codebox / v8ui
         {"patchline": {"source": ["obj-minimap", 0], "destination": ["obj-node", 0]}},
@@ -2058,17 +2069,18 @@ def build():
         {"patchline": {"source": ["obj-sel-key", 3], "destination": ["obj-msg-del-saved", 0]}},
         {"patchline": {"source": ["obj-sel-key", 4], "destination": ["obj-msg-del-saved", 0]}},
         {"patchline": {"source": ["obj-sel-key", 5], "destination": ["obj-msg-del-saved", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 6], "destination": ["obj-msg-hotkey-prev", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 7], "destination": ["obj-msg-hotkey-next", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 8], "destination": ["obj-msg-hotkey-fwd", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 9], "destination": ["obj-msg-hotkey-back", 0]}},
+        {"patchline": {"source": ["obj-msg-hotkey-prev", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-msg-hotkey-next", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-msg-hotkey-fwd", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-msg-hotkey-back", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-hotkey-save", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-del-saved", 0], "destination": ["obj-minimap", 0]}},
 
         # 4. Pop-out Map Window, Section Collapse/Show Toggles (with Dynamic Device Shrinking) & Folder Dialog Controls
-        {"patchline": {"source": ["obj-open-map-btn", 0], "destination": ["obj-sel-map-win", 0]}},
-        {"patchline": {"source": ["obj-sel-map-win", 0], "destination": ["obj-msg-open-win", 0], "order": 1}},
-        {"patchline": {"source": ["obj-sel-map-win", 0], "destination": ["obj-msg-init", 0], "order": 0}},
-        {"patchline": {"source": ["obj-sel-map-win", 1], "destination": ["obj-msg-close-win", 0]}},
-        {"patchline": {"source": ["obj-msg-open-win", 0], "destination": ["obj-pcontrol", 0]}},
-        {"patchline": {"source": ["obj-msg-close-win", 0], "destination": ["obj-pcontrol", 0]}},
-        {"patchline": {"source": ["obj-pcontrol", 0], "destination": ["obj-map-window", 0]}},
         {"patchline": {"source": ["obj-opendialog", 0], "destination": ["obj-prep-add-folder", 0]}},
         {"patchline": {"source": ["obj-prep-add-folder", 0], "destination": ["obj-node", 0]}},
         # Saved List Collapse/Show Toggle -> v8ui, node.codebox, AND live.thisdevice ("setwidth <w>")
@@ -2080,7 +2092,8 @@ def build():
         {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-inv-filters", 0], "order": 2}},
         {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-prep-show-filters", 0], "order": 1}},
         {"patchline": {"source": ["obj-toggle-filters-btn", 0], "destination": ["obj-pak-vis", 1], "order": 0}},
-        {"patchline": {"source": ["obj-prep-show-filters", 0], "destination": ["obj-node", 0]}},
+        {"patchline": {"source": ["obj-prep-show-filters", 0], "destination": ["obj-minimap", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-show-filters", 0], "destination": ["obj-node", 0], "order": 0}},
         {"patchline": {"source": ["obj-inv-filters", 0], "destination": ["obj-prep-hide-filters", 0]}},
         {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-panel-filters", 0], "order": 9}},
         {"patchline": {"source": ["obj-prep-hide-filters", 0], "destination": ["obj-hdr-filters", 0], "order": 8}},
@@ -2099,7 +2112,8 @@ def build():
         {"patchline": {"source": ["obj-pak-vis", 0], "destination": ["obj-expr-width", 0]}},
         {"patchline": {"source": ["obj-expr-width", 0], "destination": ["obj-prep-setwidth", 0]}},
         {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
-        {"patchline": {"source": ["obj-prep-show-playback", 0], "destination": ["obj-node", 0]}},
+        {"patchline": {"source": ["obj-prep-show-playback", 0], "destination": ["obj-minimap", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-show-playback", 0], "destination": ["obj-node", 0], "order": 0}},
         {"patchline": {"source": ["obj-inv-playback", 0], "destination": ["obj-prep-hide-playback", 0]}},
         {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-panel-playback", 0], "order": 8}},
         {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-hdr-playback", 0], "order": 7}},
@@ -2107,7 +2121,7 @@ def build():
         {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-speed-dial", 0], "order": 5}},
         {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-grain-dial", 0], "order": 4}},
         {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-decay-dial", 0], "order": 3}},
-        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-spec-dial", 0], "order": 2}},
+        {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-stretch-mode", 0], "order": 2}},
         {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-gain-dial", 0], "order": 1}},
         {"patchline": {"source": ["obj-prep-hide-playback", 0], "destination": ["obj-reverse-btn", 0], "order": 0}},
 
@@ -2150,21 +2164,22 @@ def build():
         {"patchline": {"source": ["obj-decay-dial", 0], "destination": ["obj-prep-decay", 0]}},
         {"patchline": {"source": ["obj-prep-decay", 0], "destination": ["obj-node", 0], "order": 1}},
         {"patchline": {"source": ["obj-prep-decay", 0], "destination": ["obj-minimap", 0], "order": 0}},
-        {"patchline": {"source": ["obj-spec-dial", 0], "destination": ["obj-prep-spec", 0]}},
-        {"patchline": {"source": ["obj-prep-spec", 0], "destination": ["obj-node", 0], "order": 1}},
-        {"patchline": {"source": ["obj-prep-spec", 0], "destination": ["obj-minimap", 0], "order": 0}},
+        {"patchline": {"source": ["obj-stretch-mode", 0], "destination": ["obj-prep-stretch-mode", 0]}},
+        {"patchline": {"source": ["obj-prep-stretch-mode", 0], "destination": ["obj-node", 0], "order": 1}},
+        {"patchline": {"source": ["obj-prep-stretch-mode", 0], "destination": ["obj-minimap", 0], "order": 0}},
         {"patchline": {"source": ["obj-reverse-btn", 0], "destination": ["obj-prep-reverse", 0]}},
         {"patchline": {"source": ["obj-prep-reverse", 0], "destination": ["obj-node", 0], "order": 1}},
         {"patchline": {"source": ["obj-prep-reverse", 0], "destination": ["obj-minimap", 0], "order": 0}},
 
         # 7. Device Startup
-        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-init", 0]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-init", 0], "order": 1}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-apply-layout", 0], "order": 0}},
+        {"patchline": {"source": ["obj-msg-apply-layout", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-init", 0], "destination": ["obj-node", 0]}}
     ]
 
     parameters_dict = {
         "obj-minimap": ["XOStateData", "XOStateData", 0],
-        "obj-open-map-btn": ["OpenMapWindow", "Open Map", 0],
         "obj-toggle-saved-btn": ["ShowSavedList", "Saved", 0],
         "obj-toggle-filters-btn": ["ShowFiltersSection", "Filters", 0],
         "obj-toggle-playback-btn": ["ShowPlaybackSection", "Playback", 0],
@@ -2178,10 +2193,83 @@ def build():
         "obj-speed-dial": ["StretchSpeed", "Speed", 0],
         "obj-grain-dial": ["GrainSize", "Grain", 0],
         "obj-decay-dial": ["DecayEnvelope", "Trim/Dec", 0],
-        "obj-spec-dial": ["SpectralStretch", "Spectral", 0],
+        "obj-stretch-mode": ["StretchMode", "Mode", 0],
         "obj-gain-dial": ["PreviewGain", "Gain", 0],
-        "obj-reverse-btn": ["ReversePlayback", "Reverse", 0]
+        "obj-reverse-btn": ["ReversePlayback", "Reverse", 0],
+        # appended after every existing parameter (order of the others is unchanged)
+        "obj-toggle-options-btn": ["ShowOptions", "Options", 0],
+        "obj-theme-tab": ["Theme", "Theme", 0]
     }
+
+    # Section layout (src/xo_layouts/<name>.js) is applied by the mini-map v8ui through
+    # patcher.getnamed(), so every box it moves needs a scripting name. Boxes that
+    # already have one (parameter objects) keep it; the rest use their box id.
+    with open(LAYOUT_JS_PATH, "r", encoding="utf-8") as f:
+        layout_js_code = f.read()
+    themed = bool(getattr(layout, "THEMED", False))
+    # Variants list their ids as literals; the themed layout builds some ids in loops, so tests/test_xo_variants.js
+    # compares its ids (and rects, all 32 theme x section combinations) with RECTS / layout_boxes instead.
+    layout_ids = set(layout.RECTS) if themed else set(re.findall(r'"(obj-[a-z0-9-]+)": \{ rect:', layout_js_code))
+    # Options toggle, Theme selector and their wiring exist in every device; only a themed layout presents them.
+    lines.append({"patchline": {"source": ["obj-toggle-options-btn", 0], "destination": ["obj-prep-show-options", 0], "order": 1}})
+    lines.append({"patchline": {"source": ["obj-prep-show-options", 0], "destination": ["obj-minimap", 0]}})
+    boxes_by_id = {b["box"]["id"]: b["box"] for b in boxes}
+    if themed:
+        # The layout function (applyXoLayout in the v8ui) is the single authority on visibility: drop the old
+        # per-section `prepend hidden` chains. Width comes from pak (saved filters playback options theme) -> expr.
+        drop = {"obj-inv-filters", "obj-inv-playback", "obj-prep-hide-filters", "obj-prep-hide-playback"}
+        boxes[:] = [b for b in boxes if b["box"]["id"] not in drop]
+        lines[:] = [ln for ln in lines if ln["patchline"]["source"][0] not in drop and ln["patchline"]["destination"][0] not in drop]
+        boxes_by_id = {b["box"]["id"]: b["box"] for b in boxes}
+        boxes_by_id["obj-pak-vis"]["numinlets"] = 5
+        boxes_by_id["obj-pak-vis"]["text"] = "pak 1 1 1 0 0"
+        boxes_by_id["obj-expr-width"]["numinlets"] = 5
+        boxes_by_id["obj-expr-width"]["patching_rect"][2] = 520.0
+        lines.append({"patchline": {"source": ["obj-toggle-options-btn", 0], "destination": ["obj-pak-vis", 3], "order": 0}})
+        lines.append({"patchline": {"source": ["obj-theme-tab", 0], "destination": ["obj-pak-vis", 4], "order": 0}})
+        lines.append({"patchline": {"source": ["obj-theme-tab", 0], "destination": ["obj-prep-theme", 0], "order": 1}})
+        lines.append({"patchline": {"source": ["obj-prep-theme", 0], "destination": ["obj-minimap", 0], "order": 1}})
+        lines.append({"patchline": {"source": ["obj-prep-theme", 0], "destination": ["obj-folder-list", 0], "order": 0}})
+        # themed layouts add their own boxes first (they get their rects below)
+        layout.customize(boxes_by_id, boxes, lines)
+        boxes_by_id = {b["box"]["id"]: b["box"] for b in boxes}
+        for b_ in boxes:   # hidden twin parameters (invisible 2) are listed like every other parameter
+            bx = b_["box"]
+            if bx["id"].endswith("-mir") and bx.get("parameter_enable") == 1:
+                vo = bx["saved_attribute_attributes"]["valueof"]
+                parameters_dict[bx["id"]] = [vo["parameter_longname"], vo["parameter_shortname"], 0]
+    else:
+        for bid in ("obj-toggle-options-btn", "obj-theme-tab"):
+            boxes_by_id[bid]["presentation"] = 0
+    if set(layout.RECTS) != layout_ids:
+        raise SystemExit("layout %s: RECTS ids differ from %s ids: %s" % (
+            layout.NAME, layout.LAYOUT_JS, sorted(set(layout.RECTS) ^ layout_ids)))
+    for box_id, rect in layout.RECTS.items():
+        boxes_by_id[box_id]["presentation_rect"] = [float(v) for v in rect]
+    for box_id, attrs in layout.STYLE.items():
+        boxes_by_id[box_id].update(attrs)
+    if themed:
+        for box_id in layout.HIDDEN:
+            boxes_by_id[box_id]["hidden"] = 1
+    else:
+        layout.customize(boxes_by_id, boxes, lines)
+    layout_names = {}
+    for box_id in sorted(layout_ids) if themed else layout_ids:
+        box = boxes_by_id[box_id]
+        box.setdefault("varname", box_id)
+        layout_names[box_id] = box["varname"]
+    palette_js = open(PALETTE_JS_PATH, "r", encoding="utf-8").read()
+    if themed:
+        palette_js += 'xoPaletteSet("%s");  // the default theme (set_theme switches it)\n' % layout.THEMES[0]
+    minimap_text = boxes_by_id["obj-minimap"]["textfile"]
+    theme_js = ""
+    if themed:
+        theme_js = f"var XO_THEME_STYLE = {json.dumps(layout.THEME_STYLE)};\n"
+    minimap_text["text"] = (
+        f"var XO_LAYOUT_NAMES = {json.dumps(layout_names)};\n{theme_js}\n" + palette_js + "\n" + layout_js_code + "\n" + minimap_text["text"]
+    )
+    folder_text = boxes_by_id["obj-folder-list"]["textfile"]
+    folder_text["text"] = palette_js + "\n" + folder_text["text"]
 
     patcher_doc = {
         "patcher": {
@@ -2195,7 +2283,7 @@ def build():
             },
             "classnamespace": "box",
             "rect": [100.0, 100.0, 1080.0, 720.0],
-            "openrect": [0.0, 0.0, 776.0, 169.0],
+            "openrect": [0.0, 0.0, layout.DEVICE_WIDTH, 169.0],
             "bglocked": 0,
             "openinpresentation": 1,
             "default_fontsize": 10.0,
@@ -2216,13 +2304,13 @@ def build():
             "boxanimatetime": 200,
             "enablehscroll": 1,
             "enablevscroll": 1,
-            "devicewidth": 776.0,
+            "devicewidth": layout.DEVICE_WIDTH,
             "description": "XLN Audio XO-inspired 2D Drum Sample Space Browser & OS File Drag-Out Exporter",
             "digest": "",
             "tags": "M4L Sample Browser XO Drum Map Export",
             "style": "",
             "subpatcher_template": "",
-            "title": "XO Sample Map",
+            "title": layout.DEVICE_NAME,
             "boxes": boxes,
             "lines": lines,
             "parameters": {
@@ -2236,8 +2324,7 @@ def build():
                             "ToneFilter",
                             "PitchTranspose",
                             "DecayEnvelope",
-                            "PreviewGain",
-                            "OpenMapWindow"
+                            "PreviewGain"
                         ]
                     }
                 },
@@ -2288,4 +2375,10 @@ def build():
 
 
 if __name__ == "__main__":
-    build()
+    import argparse
+    ap = argparse.ArgumentParser(description="Build devices/XO Sample Map[ <V>].amxd")
+    ap.add_argument("--variant", default="default", help="layout module scripts/xo_layouts/<name>.py (default: default)")
+    ap.add_argument("--all", action="store_true", help="build default plus every variant module present")
+    a = ap.parse_args()
+    for v in (list_variants() if a.all else [a.variant]):
+        build(v)

@@ -2,8 +2,7 @@
   "extends": "./tsconfig.node.base.json",
   "files": [
     "src/cepstrum_ref.js",
-    "src/qcrush_ref.js",
-    "src/timbre_ref.js",
-    "src/tsplit_ref.js"
+    "src/cepcrush_ref.js",
+    "src/glitch_ref.js"
   ]
 }

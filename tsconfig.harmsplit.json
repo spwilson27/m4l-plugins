@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/types/harmsplit.d.ts",
+    "src/harmsplit_config.js",
+    "src/spectral_link.js",
+    "src/harmsplit_ui.js"
+  ]
+}

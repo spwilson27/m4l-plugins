@@ -1,6 +1,7 @@
 /*
  * XO Sample Map — In-Device Mini Editor: 2D Map, Waveform Scanner & Saved Samples List (src/xo_strip_ui.js)
- * Embedded in Max 9 v8ui object (presentation_rect: [10.0, 27.0, 372.0, 134.0])
+ * Embedded in Max 9 v8ui object (presentation_rect: [32.0, 8.0, 372.0, 154.0]; 236 wide with the Saved list hidden)
+ * src/xo_layout.js is prepended (section layout).
  *
  * Features:
  *  - Left Pane (x = 0..236):
@@ -98,7 +99,8 @@ let searchQuery = "";
 let pitchSt = 0;
 let speedPct = 100;
 let grainMs = 45;
-let spectralPct = 0;
+// Stretch engine: 0 Granular, 1 Complex, 2 Texture (default Complex)
+let stretchMode = 1;
 let decayMs = 2500;
 let gainDb = 0;
 let reversePlayback = 0;
@@ -110,6 +112,13 @@ let selectedSavedIndex = 0;
 let savedScrollOffset = 0;
 let nextLocalSavedId = 1;
 let showSavedList = 1;
+let showFiltersSection = 1;
+let showPlaybackSection = 1;
+// Options section + theme (themed layouts only: XO_THEMES is defined by src/xo_layouts/default.js; the variant
+// devices keep the old three-argument layout, no Options section and the default palette).
+let showOptionsSection = 0;
+let xoThemeIdx = 0;
+let xoStyledTheme = "";
 let lastArmSentMs = 0;
 
 let selectedMeta = {
@@ -126,6 +135,10 @@ let selectedMeta = {
   ],
   neighbors: [10, 20, 30, 40, 50, 1, 11]
 };
+
+// Detailed waveform of the selected file (selected_wave): per-column min / max / RMS, linear amplitude.
+// null until it arrives (or when decoding failed); the 24 cached peaks are drawn as a smooth envelope meanwhile.
+let waveData = null; // { n, min: number[], max: number[], rms: number[] }
 
 let isScrubbing = false;
 let scrubTrail = [];
@@ -178,12 +191,19 @@ function initDefaultConstellation() {
 
 initDefaultConstellation();
 
+// Width / height the patcher gave this v8ui (applyXoLayout). In Live, mgraphics.size reads 0 x 0 while the
+// device is off screen, which made the map pane negative and broke hit-testing and zoom before the first paint.
+let xoBoxW = 372;
+let xoBoxH = 154;
+
 function getLayout() {
-  const sz = mgraphics.size || [372, 134];
-  const w = sz[0];
-  const h = sz[1];
-  const savedW = showSavedList ? 136 : 0;
-  const mapW = w - savedW;
+  const sz = mgraphics.size;
+  const w = (sz && sz[0] > 0) ? sz[0] : xoBoxW;
+  const h = (sz && sz[1] > 0) ? sz[1] : xoBoxH;
+  const savedW = showSavedList ? XO_SAVED_PANE_W : 0;
+  // The map pane keeps its width when the Saved list is hidden, even before the
+  // patcher has shrunk this v8ui (applyXoLayout).
+  const mapW = showSavedList ? w - savedW : Math.min(w, XO_MAP_PANE_W);
   return {
     w,
     h,
@@ -199,19 +219,140 @@ function getLayout() {
     toolbarH: 22,
     savedRowY0: 21,
     savedRowH: 22,
-    savedMaxRows: 4,
+    savedMaxRows: Math.max(4, Math.floor((h - 22 - 21) / 22)),
     savedBottomY: h - 22,
     scrollbarX: w - 5
   };
 }
 
+// ----------------------------------------------------------------------------
+// Map view (zoom / pan). The visible window is [viewX0, viewX0 + 1/zoom] x [viewY0, viewY0 + 1/zoom]
+// in normalized map coordinates; zoom 1 is exactly the full view.
+// ----------------------------------------------------------------------------
+const VIEW_ZOOM_MIN = 1.0;
+const VIEW_ZOOM_MAX = 16.0;
+const MAP_PAD_X = 5;
+const MAP_PAD_Y = 6;
+let viewZoom = 1.0;
+let viewX0 = 0.0;
+let viewY0 = 0.0;
+let panState = null; // { x, y, x0, y0 } while a pan gesture is active
+
+function clampView() {
+  viewZoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, Number(viewZoom) || 1.0));
+  if (viewZoom < 1.0005) {
+    viewZoom = 1.0;
+    viewX0 = 0.0;
+    viewY0 = 0.0;
+    return;
+  }
+  const span = 1.0 / viewZoom;
+  viewX0 = Math.max(0.0, Math.min(1.0 - span, viewX0));
+  viewY0 = Math.max(0.0, Math.min(1.0 - span, viewY0));
+}
+
+function resetView() {
+  viewZoom = 1.0;
+  viewX0 = 0.0;
+  viewY0 = 0.0;
+  panState = null;
+  mgraphics.redraw();
+}
+
 function normToScreen(nx, ny, lay) {
-  const padX = 5;
-  const padY = 6;
+  const pw = lay.plotW - MAP_PAD_X * 2;
+  const ph = lay.plotH - MAP_PAD_Y * 2;
   return [
-    lay.plotX + padX + nx * (lay.plotW - padX * 2),
-    lay.plotY + padY + ny * (lay.plotH - padY * 2)
+    lay.plotX + MAP_PAD_X + (nx - viewX0) * viewZoom * pw,
+    lay.plotY + MAP_PAD_Y + (ny - viewY0) * viewZoom * ph
   ];
+}
+
+function screenToNorm(sx, sy, lay) {
+  const pw = lay.plotW - MAP_PAD_X * 2;
+  const ph = lay.plotH - MAP_PAD_Y * 2;
+  return [
+    viewX0 + (sx - lay.plotX - MAP_PAD_X) / (pw * viewZoom),
+    viewY0 + (sy - lay.plotY - MAP_PAD_Y) / (ph * viewZoom)
+  ];
+}
+
+/** Zoom by `factor` keeping the map point under the screen position (sx, sy) fixed (unless clamped at the edges). */
+function zoomViewAt(sx, sy, factor, lay) {
+  const l = lay || getLayout();
+  const [nx, ny] = screenToNorm(sx, sy, l);
+  const pw = l.plotW - MAP_PAD_X * 2;
+  const ph = l.plotH - MAP_PAD_Y * 2;
+  const fx = (sx - l.plotX - MAP_PAD_X) / pw;
+  const fy = (sy - l.plotY - MAP_PAD_Y) / ph;
+  viewZoom = Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, viewZoom * factor));
+  viewX0 = nx - fx / viewZoom;
+  viewY0 = ny - fy / viewZoom;
+  clampView();
+  mgraphics.redraw();
+}
+
+/** Pan by a screen-space delta (content follows the cursor). */
+function panViewBy(dxPx, dyPx, lay) {
+  const l = lay || getLayout();
+  const pw = l.plotW - MAP_PAD_X * 2;
+  const ph = l.plotH - MAP_PAD_Y * 2;
+  viewX0 -= dxPx / (pw * viewZoom);
+  viewY0 -= dyPx / (ph * viewZoom);
+  clampView();
+  mgraphics.redraw();
+}
+
+function isInPlotRect(sx, sy, lay, margin) {
+  const m = margin || 0;
+  return sx >= lay.plotX + m && sx <= lay.plotX + lay.plotW - m && sy >= lay.plotY + m && sy <= lay.plotY + lay.plotH - m;
+}
+
+/** Zoom indicator pill rectangle (bottom-left of the plot, only shown while zoomed). */
+function zoomPillRect(lay) {
+  return [lay.plotX + 3, lay.plotY + lay.plotH - 14, 30, 11];
+}
+
+/** Pan so the selected sample is inside the view (centred when it is not). Only when zoomed. */
+function ensureSelectedInView() {
+  if (viewZoom <= 1.0 || selectedIndex < 0 || selectedIndex >= points.length) return;
+  const lay = getLayout();
+  const pt = points[selectedIndex];
+  const [sx, sy] = normToScreen(pt.x, pt.y, lay);
+  if (isInPlotRect(sx, sy, lay, 10)) return;
+  const span = 1.0 / viewZoom;
+  viewX0 = pt.x - span / 2;
+  viewY0 = pt.y - span / 2;
+  clampView();
+}
+
+/** Liang-Barsky: clip segment to the plot rect; returns [x0, y0, x1, y1] or null when fully outside. */
+function clipSegmentToPlot(x0, y0, x1, y1, lay) {
+  const xmin = lay.plotX;
+  const xmax = lay.plotX + lay.plotW;
+  const ymin = lay.plotY;
+  const ymax = lay.plotY + lay.plotH;
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  let t0 = 0;
+  let t1 = 1;
+  const p = [-dx, dx, -dy, dy];
+  const q = [x0 - xmin, xmax - x0, y0 - ymin, ymax - y0];
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) {
+      if (q[i] < 0) return null;
+    } else {
+      const r = q[i] / p[i];
+      if (p[i] < 0) {
+        if (r > t1) return null;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return null;
+        if (r < t1) t1 = r;
+      }
+    }
+  }
+  return [x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy];
 }
 
 function isInfiniteMaxLen(val) {
@@ -250,7 +391,7 @@ function isPointVisible(pt) {
   if (searchQuery && searchQuery.trim().length > 0) {
     const clauses = searchQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (clauses.length > 0) {
-      const haystack = `${pt.name || ""} ${pt.category || ""}`
+      const haystack = String(pt.name || "")
         .toLowerCase()
         .replace(/[_\-./\\]+/g, " ");
       for (let i = 0; i < clauses.length; i++) {
@@ -292,7 +433,7 @@ function scrollSavedList(deltaRows) {
 
 function getCategoryColor(catIdx) {
   const entry = CATEGORIES[catIdx + 1] || CATEGORIES[0];
-  return entry.color;
+  return xoPaletteCat(entry.id, entry.color);
 }
 
 function findNearestVisiblePoint(sx, sy, maxDistPx) {
@@ -303,6 +444,7 @@ function findNearestVisiblePoint(sx, sy, maxDistPx) {
     const pt = points[i];
     if (!isPointVisible(pt)) continue;
     const pos = normToScreen(pt.x, pt.y, lay);
+    if (viewZoom > 1.0 && !isInPlotRect(pos[0], pos[1], lay, 0)) continue;
     const dx = pos[0] - sx;
     const dy = pos[1] - sy;
     const d2 = dx * dx + dy * dy;
@@ -435,7 +577,18 @@ function minimap_done(totalCount, status) {
 }
 
 function selected_info(idx, name, category, catIdx, durMs, bright, fav, ...rest) {
-  selectedIndex = Number(idx) || 0;
+  xoSelLog.push({ idx: Number(idx), name: String(name) });
+  if (xoSelLog.length > 40) xoSelLog.shift();
+  const newIdx = Number(idx) || 0;
+  // Keep the detailed waveform when the same sample is re-announced (param change); drop it on a new one.
+  if (waveData && (waveData.idx !== newIdx || waveData.name !== String(name || "Sample"))) waveData = null;
+  selectedIndex = newIdx;
+  if (Date.now() - historyNavAtMs < 1500) {
+    historyNavAtMs = 0;
+    anchorIndex = newIdx;
+    simTourKey = "";
+    playheadPos = 0.0;
+  }
   const nbrMarker = rest.indexOf("nbrs");
   const peaks = nbrMarker >= 0 ? rest.slice(0, nbrMarker).map(Number) : rest.slice(0, 24).map(Number);
   const neighbors = nbrMarker >= 0 ? rest.slice(nbrMarker + 1).map(Number) : [];
@@ -449,7 +602,66 @@ function selected_info(idx, name, category, catIdx, durMs, bright, fav, ...rest)
     peaks: peaks.length > 0 ? peaks : selectedMeta.peaks,
     neighbors
   };
+  ensureSelectedInView();
   mgraphics.redraw();
+}
+
+/**
+ * selected_wave <idx> <n> <min0> <max0> <rms0> ... : whole-file waveform of the selected sample.
+ * n = 0 means the file could not be decoded (the cached peaks stay).
+ */
+function selected_wave(idx, n, ...vals) {
+  const count = Math.max(0, Math.floor(Number(n) || 0));
+  if (Number(idx) !== selectedIndex) return; // stale: another sample was selected meanwhile
+  if (count === 0 || vals.length < count * 3) {
+    waveData = null;
+    mgraphics.redraw();
+    return;
+  }
+  const mn = new Array(count);
+  const mx = new Array(count);
+  const rm = new Array(count);
+  for (let i = 0; i < count; i++) {
+    mn[i] = Math.max(-1, Math.min(1, Number(vals[i * 3]) || 0));
+    mx[i] = Math.max(-1, Math.min(1, Number(vals[i * 3 + 1]) || 0));
+    rm[i] = Math.max(0, Math.min(1, Number(vals[i * 3 + 2]) || 0));
+  }
+  waveData = { idx: selectedIndex, name: selectedMeta.name, n: count, min: mn, max: mx, rms: rm };
+  mgraphics.redraw();
+}
+
+/** Smooth envelope from the 24 cached peaks (symmetric), used until selected_wave arrives. */
+function fallbackWaveFromPeaks(peaks) {
+  const n0 = peaks.length;
+  const n = Math.max(2, n0) * 4;
+  const mn = [];
+  const mx = [];
+  const rm = [];
+  for (let i = 0; i < n; i++) {
+    const t = (i / (n - 1)) * (n0 - 1);
+    const a = Math.floor(t);
+    const b = Math.min(n0 - 1, a + 1);
+    const f = t - a;
+    const k = f * f * (3 - 2 * f);
+    const v = Math.max(0, Math.min(1, (Number(peaks[a]) || 0) * (1 - k) + (Number(peaks[b]) || 0) * k));
+    mx.push(v);
+    mn.push(-v);
+    rm.push(v * 0.55);
+  }
+  return { n, min: mn, max: mx, rms: rm };
+}
+
+/** Closed filled polygon over display columns [i0, i1] (upper edge left to right, lower edge back). */
+function waveformPolygon(wd, i0, i1, x0, x1, midY, halfH, mirror, useRms) {
+  const n = wd.n;
+  const xAt = (i) => (n > 1 ? x0 + (i / (n - 1)) * (x1 - x0) : x0);
+  const src = (i) => (mirror ? n - 1 - i : i);
+  const upper = (i) => midY - (useRms ? wd.rms[src(i)] : Math.max(0, wd.max[src(i)])) * halfH;
+  const lower = (i) => midY + (useRms ? wd.rms[src(i)] : Math.max(0, -wd.min[src(i)])) * halfH;
+  mgraphics.move_to(xAt(i0), upper(i0));
+  for (let i = i0 + 1; i <= i1; i++) mgraphics.line_to(xAt(i), upper(i));
+  for (let i = i1; i >= i0; i--) mgraphics.line_to(xAt(i), lower(i));
+  mgraphics.close_path();
 }
 
 function strip_filter_cat(...args) {
@@ -525,9 +737,34 @@ function set_grain(...args) {
   mgraphics.redraw();
 }
 
-function set_spectral(...args) {
-  spectralPct = Math.max(0, Math.min(100, parseTrailingNumber(args, 0)));
+function set_stretchmode(...args) {
+  stretchMode = Math.max(0, Math.min(2, Math.round(parseTrailingNumber(args, 1))));
+  applyGrainDialState();
   mgraphics.redraw();
+}
+
+// Grain is the grain size (Granular) or the window size (Texture); Complex ignores it, so it is dimmed.
+function applyGrainDialState() {
+  const pat = (typeof xoHostPatcher !== "undefined") ? xoHostPatcher : null;
+  if (!pat || typeof pat.getnamed !== "function" || typeof XO_LAYOUT_NAMES === "undefined") return;
+  const on = (stretchMode === 0 || stretchMode === 2) ? 1 : 0;
+  for (const id of ["obj-grain-dial", "obj-grain-dial-mir"]) {
+    const obj = pat.getnamed(XO_LAYOUT_NAMES[id] || id);
+    if (!obj) continue;
+    try {
+      obj.setattr("active", on);
+      // An inactive dial neither outputs a change nor takes the silent `set` of the parameter -> mirror sync, so when
+      // Grain gets dimmed (Cmplx) the Focus mirror is brought up to the parameter's current value through the script.
+      if (!on && id === "obj-grain-dial-mir") {
+        const src = pat.getnamed(XO_LAYOUT_NAMES["obj-grain-dial"] || "obj-grain-dial");
+        if (src) {
+          obj.setattr("active", 1);
+          obj.message("set", Number(src.getvalueof()));
+          obj.setattr("active", 0);
+        }
+      }
+    } catch (e) {}
+  }
 }
 
 function set_show_saved(...args) {
@@ -536,11 +773,116 @@ function set_show_saved(...args) {
   if (!showSavedList) {
     updateArmedDragZone("none", -1);
   }
+  applyXoLayout();
   mgraphics.redraw();
+}
+
+function set_show_filters(...args) {
+  showFiltersSection = parseTrailingNumber(args, 1) ? 1 : 0;
+  applyXoLayout();
+}
+
+function set_show_playback(...args) {
+  showPlaybackSection = parseTrailingNumber(args, 1) ? 1 : 0;
+  applyXoLayout();
+}
+
+function set_show_options(...args) {
+  showOptionsSection = parseTrailingNumber(args, 0) ? 1 : 0;
+  applyXoLayout();
+}
+
+/** Theme switch (Options > Theme): `set_theme <index>` or `set_theme <name>` ("LCD" | "Focus"). */
+function set_theme(...args) {
+  if (typeof XO_THEMES === "undefined") return;
+  const a = args.length ? args[args.length - 1] : 0;
+  let idx = (typeof a === "string") ? XO_THEMES.indexOf(a) : Math.round(Number(a));
+  if (!(idx >= 0 && idx < XO_THEMES.length)) idx = 0;
+  xoThemeIdx = idx;
+  xoPaletteSet(XO_THEMES[idx]);
+  applyXoLayout();
+  mgraphics.redraw();
+}
+
+function getXoThemeName() {
+  return (typeof XO_THEMES !== "undefined") ? XO_THEMES[xoThemeIdx] : "default";
+}
+
+function apply_layout() {
+  applyXoLayout();
+}
+
+// Captured at top level: `this` is only the jsthis there.
+const xoHostPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
+
+/** The layout for the current theme and section flags (themed: 5 arguments, variants: 3). */
+function xoCurrentLayout() {
+  const layoutFn = /** @type {(...a: any[]) => any} */ (computeXoLayout);
+  if (typeof XO_THEMES !== "undefined") {
+    return layoutFn(XO_THEMES[xoThemeIdx], showSavedList, showFiltersSection, showPlaybackSection, showOptionsSection);
+  }
+  return layoutFn(showSavedList, showFiltersSection, showPlaybackSection);
+}
+
+/**
+ * Sets the colours / fonts / texts of the shared boxes for the active theme (XO_THEME_STYLE, injected by
+ * scripts/build_xo_map.py: {theme: {box id: {attribute: value | [numbers]}}}). Runs once per theme change.
+ * @param {any} pat
+ */
+function applyXoThemeStyle(pat) {
+  if (typeof XO_THEME_STYLE === "undefined" || typeof XO_THEMES === "undefined") return;
+  const name = XO_THEMES[xoThemeIdx];
+  if (xoStyledTheme === name) return;
+  const table = XO_THEME_STYLE[name];
+  if (!table) return;
+  for (const id of Object.keys(table)) {
+    const obj = pat.getnamed(XO_LAYOUT_NAMES[id] || id);
+    if (!obj) continue;
+    const attrs = table[id];
+    for (const attr of Object.keys(attrs)) {
+      const v = attrs[attr];
+      try {
+        if (Array.isArray(v)) obj.setattr(attr, ...v); else obj.setattr(attr, v);
+      } catch (e) {}
+    }
+  }
+  xoStyledTheme = name;
+}
+
+// Moves / hides every laid-out box for the current theme and section visibility (src/xo_layouts/<name>.js)
+// and restyles the shared boxes when the theme changed.
+// Boxes are looked up by scripting name: XO_LAYOUT_NAMES (box id -> varname) is
+// prepended by scripts/build_xo_map.py. The device width itself is set by the
+// patcher (obj-expr-width -> live.thisdevice).
+function applyXoLayout() {
+  const layout = xoCurrentLayout();
+  xoBoxW = layout.boxes["obj-minimap"].rect[2];
+  xoBoxH = layout.boxes["obj-minimap"].rect[3];
+  const pat = xoHostPatcher;
+  if (!pat || typeof pat.getnamed !== "function" || typeof XO_LAYOUT_NAMES === "undefined") return layout;
+  applyXoThemeStyle(pat);
+  for (const id of Object.keys(layout.boxes)) {
+    const spec = layout.boxes[id];
+    const obj = pat.getnamed(XO_LAYOUT_NAMES[id] || id);
+    if (!obj) continue;
+    try {
+      obj.setattr("presentation_rect", spec.rect[0], spec.rect[1], spec.rect[2], spec.rect[3]);
+      obj.hidden = spec.hidden === 1;
+    } catch (e) {}
+  }
+  return layout;
+}
+
+function getXoSectionVisibility() {
+  return [showSavedList, showFiltersSection, showPlaybackSection];
 }
 
 function getShowSavedList() {
   return showSavedList;
+}
+
+function getShowOptions() {
+  return showOptionsSection;
 }
 
 function set_playhead(p) {
@@ -571,6 +913,14 @@ function getPoints() {
 
 function getSelectedIndex() {
   return selectedIndex;
+}
+
+function getView() {
+  return { zoom: viewZoom, x0: viewX0, y0: viewY0 };
+}
+
+function getWaveData() {
+  return waveData;
 }
 
 function getSavedList() {
@@ -604,7 +954,7 @@ function save_selected() {
     reverse: reversePlayback ? 1 : 0,
     speedPct,
     grainMs,
-    spectralPct
+    stretchMode
   };
   savedList.push(entry);
   selectedSavedIndex = savedList.length - 1;
@@ -625,7 +975,7 @@ function save_selected() {
     entry.reverse,
     speedPct,
     grainMs,
-    spectralPct
+    stretchMode
   );
   notifyclients();
   mgraphics.redraw();
@@ -649,7 +999,7 @@ function saved_list_sync(count, ...flat) {
       reverse: stride >= 8 ? (Number(flat[i + 7]) ? 1 : 0) : 0,
       speedPct: stride >= 11 ? (Number(flat[i + 8]) || 100) : 100,
       grainMs: stride >= 11 ? (Number(flat[i + 9]) || 45) : 45,
-      spectralPct: stride >= 11 ? (Number(flat[i + 10]) || 0) : 0
+      stretchMode: stride >= 11 && Number.isFinite(Number(flat[i + 10])) ? Math.max(0, Math.min(2, Math.round(Number(flat[i + 10])))) : 1
     });
   }
   if (next.length === 0 && savedList.length > 0) {
@@ -668,7 +1018,7 @@ function saved_list_sync(count, ...flat) {
         s.reverse ? 1 : 0,
         s.speedPct || 100,
         s.grainMs || 45,
-        s.spectralPct || 0
+        s.stretchMode !== undefined ? s.stretchMode : 1
       );
     }
     return;
@@ -690,10 +1040,11 @@ function recallSavedEntry(savedIdx) {
   reversePlayback = item.reverse ? 1 : 0;
   speedPct = item.speedPct !== undefined ? item.speedPct : 100;
   grainMs = item.grainMs !== undefined ? item.grainMs : 45;
-  spectralPct = item.spectralPct !== undefined ? item.spectralPct : 0;
+  stretchMode = item.stretchMode !== undefined ? item.stretchMode : (item.spectralPct > 0 ? 0 : 1);
+  applyGrainDialState();
   playheadPos = 0.0;
   outlet(0, "recall_saved", savedIdx);
-  outlet(1, "recalled_settings", pitchSt, decayMs, gainDb, reversePlayback, speedPct, grainMs, spectralPct);
+  outlet(1, "recalled_settings", pitchSt, decayMs, gainDb, reversePlayback, speedPct, grainMs, stretchMode);
   mgraphics.redraw();
 }
 
@@ -765,7 +1116,66 @@ function startDragOut(mode, savedIdx, x, y) {
   mgraphics.redraw();
 }
 
+// Arrow keys. The patcher's `key` object reports 28 / 29 / 30 / 31 (left / right / up / down) on macOS;
+// v8ui's onkeydown may deliver the same codes or a name. Both are accepted. A single key press can reach the
+// script through both paths (onkeydown AND obj-key -> obj-sel-key -> message), so each action is
+// de-duplicated: the same action within ARROW_DEDUP_MS is ignored (key auto-repeat is slower than that).
+const ARROW_DEDUP_MS = 20;
+let historyNavAtMs = 0; // a selected_info right after a history key re-anchors the similarity tour
+const lastArrowActionMs = { prev: 0, next: 0, back: 0, forward: 0 };
+
+function arrowOnce(action) {
+  const now = Date.now();
+  if (now - lastArrowActionMs[action] < ARROW_DEDUP_MS) return false;
+  lastArrowActionMs[action] = now;
+  return true;
+}
+
+/** Left arrow = Prev Similar (same path as the toolbar button). */
+function hotkey_prev_similar() {
+  if (arrowOnce("prev")) applyToolbarAction("sim_prev");
+}
+
+/** Right arrow = Next Similar (same path as the toolbar button). */
+function hotkey_next_similar() {
+  if (arrowOnce("next")) applyToolbarAction("sim_next");
+}
+
+/** Down arrow = history Back (previously selected sound). */
+function hotkey_history_back() {
+  if (arrowOnce("back")) {
+    historyNavAtMs = Date.now();
+    outlet(0, "history_back");
+  }
+}
+
+/** Up arrow = history Forward. */
+function hotkey_history_forward() {
+  if (arrowOnce("forward")) {
+    historyNavAtMs = Date.now();
+    outlet(0, "history_forward");
+  }
+}
+
+/** @param {any} k */
+function arrowKeyName(k) {
+  if (k === 28 || k === "ArrowLeft") return "left";
+  if (k === 29 || k === "ArrowRight") return "right";
+  if (k === 30 || k === "ArrowUp") return "up";
+  if (k === 31 || k === "ArrowDown") return "down";
+  if (typeof k === "string") {
+    const n = k.toLowerCase();
+    if (n === "left" || n === "right" || n === "up" || n === "down") return n;
+  }
+  return "";
+}
+
 function key(k) {
+  const arrow = arrowKeyName(k);
+  if (arrow === "left") { hotkey_prev_similar(); return; }
+  if (arrow === "right") { hotkey_next_similar(); return; }
+  if (arrow === "down") { hotkey_history_back(); return; }
+  if (arrow === "up") { hotkey_history_forward(); return; }
   if (k === 115 || k === 83 || k === "s" || k === "S") {
     hotkey_save();
     return;
@@ -779,10 +1189,39 @@ function onkeydown(k) {
   key(k);
 }
 
-function onwheel(x, y, dx, dy) {
+/**
+ * Wheel / trackpad scroll. v8 exposes `onwheel` (confirmed in the v8 / jsui externals; the Max docs do not list
+ * its arguments). The expected form is (x, y, ...modifiers, wheel_inc_x, wheel_inc_y) or simply (x, y, dx, dy):
+ * the LAST TWO numeric arguments are taken as (dx, dy), and a pointer-like object with deltaY is also accepted.
+ * Positive dy zooms in / scrolls up. Check the sign in Live: flip WHEEL_ZOOM_SIGN if it feels inverted.
+ */
+const WHEEL_ZOOM_SIGN = 1;
+
+/** @param {any[]} args */
+function parseWheelDelta(args) {
+  const last = args.length > 0 ? args[args.length - 1] : null;
+  if (last && typeof last === "object") {
+    const oy = Number(last.deltaY !== undefined ? -last.deltaY : (last.wheelDeltaY !== undefined ? last.wheelDeltaY : 0));
+    const ox = Number(last.deltaX !== undefined ? last.deltaX : 0);
+    return [ox || 0, oy || 0];
+  }
+  const nums = args.slice(2).map(Number).filter((v) => Number.isFinite(v));
+  if (nums.length >= 2) return [nums[nums.length - 2], nums[nums.length - 1]];
+  if (nums.length === 1) return [0, nums[0]];
+  return [0, 0];
+}
+
+function onwheel(x, y, ...rest) {
+  xoRawLog("onwheel", arguments);
   const lay = getLayout();
+  const [, dy] = parseWheelDelta([x, y, ...rest]);
   if (x >= lay.savedX && savedList.length > lay.savedMaxRows) {
     scrollSavedList(dy < 0 ? 1 : -1);
+    return;
+  }
+  if (x < lay.savedX && y > lay.topBarH && y < lay.toolbarY && dy !== 0) {
+    const clamped = Math.max(-3, Math.min(3, dy * WHEEL_ZOOM_SIGN));
+    zoomViewAt(x, y, Math.exp(0.3 * clamped), lay);
   }
 }
 
@@ -896,8 +1335,19 @@ function stepLocalNeighbor(dir) {
   playheadPos = 0.0;
 }
 
-function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
+/**
+ * Pan gesture: middle mouse button (the legacy handlers receive a PointerEvent as a 9th argument whose
+ * `buttons` bitmask has 4 for the middle button) or, as the fallback, Option-drag.
+ */
+function isPanGesture(option, pointerevent) {
+  if (option) return true;
+  return !!(pointerevent && typeof pointerevent === "object" && (Number(pointerevent.buttons) & 4));
+}
+
+function onclick(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
+  xoRawLog("onclick", arguments);
   const lay = getLayout();
+  panState = null; // a stale pan (release not delivered) must not hijack this gesture
 
   // --- RIGHT PANE: Saved Samples List & Drag-Out Dock (x >= lay.savedX) ---
   if (x >= lay.savedX) {
@@ -977,6 +1427,21 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
     return;
   }
 
+  // Zoom indicator pill: click resets the view
+  if (viewZoom > 1.0) {
+    const zr = zoomPillRect(lay);
+    if (x >= zr[0] && x <= zr[0] + zr[2] && y >= zr[1] && y <= zr[1] + zr[3]) {
+      resetView();
+      return;
+    }
+  }
+
+  // Pan (middle button / Option-drag) leaves selection and scrubbing untouched
+  if (isPanGesture(option, pointerevent)) {
+    panState = { x, y, x0: viewX0, y0: viewY0 };
+    return;
+  }
+
   pushUndoState();
   isScrubbing = true;
   scrubTrail = [[x, y]];
@@ -991,8 +1456,20 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
   mgraphics.redraw();
 }
 
-function ondrag(x, y, but, cmd, shift, capslock, option, ctrl) {
+function ondrag(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
+  xoRawLog("ondrag", arguments);
   const lay = getLayout();
+
+  if (panState) {
+    if (!but) {
+      panState = null;
+    } else {
+      viewX0 = panState.x0;
+      viewY0 = panState.y0;
+      panViewBy(x - panState.x, y - panState.y, lay);
+    }
+    return;
+  }
 
   if (previewPressState) {
     if (!but) {
@@ -1072,6 +1549,11 @@ function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
   const lay = getLayout();
   if (x < lay.savedX && y > lay.topBarH && y < lay.toolbarY) {
     const hit = findNearestVisiblePoint(x, y, 26);
+    if (hit < 0 && viewZoom > 1.0) {
+      // Double-click on empty map space (no sample within 26 px) resets zoom / pan
+      resetView();
+      return;
+    }
     if (hit >= 0) {
       selectedIndex = hit;
       anchorIndex = hit;
@@ -1264,7 +1746,7 @@ function drawToolbarIcon(id, x, y, w, h, col, isActive) {
   const cx = x + w * 0.5;
   const cy = y + h * 0.5;
   mgraphics.set_line_width(1.3);
-  mgraphics.set_source_rgba(col[0], col[1], col[2], isActive ? 1.0 : 0.88);
+  xoSrcRaw(col[0], col[1], col[2], isActive ? 1.0 : 0.88);
 
   if (id === "cat_ALL") {
     const r = 1.4;
@@ -1367,23 +1849,23 @@ function paint() {
   const { w, h, mapW, savedX, savedW, topBarH, plotX, plotY, plotW, plotH, toolbarY, toolbarH } = lay;
 
   // 1. Main Background
-  mgraphics.set_source_rgba(0.055, 0.067, 0.086, 1.0);
+  xoSrc(0.055, 0.067, 0.086, 1.0);
   mgraphics.rectangle_rounded(0, 0, w, h, 4, 4);
   mgraphics.fill();
 
   // 2. Top Sample Inspector & Waveform Banner (Left Pane: 0..mapW)
-  mgraphics.set_source_rgba(0.09, 0.11, 0.145, 1.0);
+  xoSrc(0.09, 0.11, 0.145, 1.0);
   mgraphics.rectangle(0, 0, mapW, topBarH);
   mgraphics.fill();
 
   const selCol = getCategoryColor(selectedMeta.catIdx || 0);
-  mgraphics.set_source_rgba(selCol[0], selCol[1], selCol[2], 1.0);
+  xoSrcRaw(selCol[0], selCol[1], selCol[2], 1.0);
   mgraphics.arc(9, 10, 3.8, 0, Math.PI * 2);
   mgraphics.fill();
 
   mgraphics.select_font_face("Arial", "normal", "bold");
   mgraphics.set_font_size(9.0);
-  mgraphics.set_source_rgba(0.94, 0.96, 0.98, 1.0);
+  xoSrc(0.94, 0.96, 0.98, 1.0);
   mgraphics.move_to(16, 13.5);
   const shortName = String(selectedMeta.name || "Select Sample").slice(0, 14);
   mgraphics.show_text(shortName);
@@ -1392,39 +1874,53 @@ function paint() {
   const peaks = selectedMeta.peaks || [];
   const waveX = 122;
   const waveW = mapW - waveX - 5;
-  mgraphics.set_source_rgba(0.04, 0.05, 0.07, 1.0);
+  xoSrc(0.04, 0.05, 0.07, 1.0);
   mgraphics.rectangle_rounded(waveX - 2, 2, waveW + 4, topBarH - 4, 2, 2);
   mgraphics.fill();
 
-  if (peaks.length > 0) {
-    const nBars = Math.min(24, peaks.length);
-    const stepW = waveW / nBars;
-    mgraphics.set_source_rgba(selCol[0], selCol[1], selCol[2], 0.85);
-    for (let i = 0; i < nBars; i++) {
-      const pIdx = reversePlayback ? (nBars - 1 - i) : i;
-      const totDur = selectedMeta.durationMs || 300;
-      let env = 1.0;
-      if (decayMs < totDur) {
-        if (reversePlayback) {
-          // In Reverse mode, Trim/Dec trims & sweeps the START (left side) leading up to the climax on the right
-          const distFromEndMs = ((nBars - 1 - i) / nBars) * totDur;
-          env = Math.max(0.05, 1.0 - distFromEndMs / Math.max(20, decayMs));
-        } else {
-          // In Forward mode, Trim/Dec trims & fades the END (right side)
-          const distFromStartMs = (i / nBars) * totDur;
-          env = Math.max(0.05, 1.0 - distFromStartMs / Math.max(20, decayMs));
-        }
-      }
-      const bh = Math.max(2, peaks[pIdx] * env * (topBarH - 6));
-      mgraphics.rectangle(waveX + i * stepW, 10 - bh * 0.5, Math.max(1.4, stepW - 1), bh);
+  // Ableton-style waveform: filled min/max envelope, brighter RMS core, thin centre line.
+  // Linear amplitude; Reverse mirrors it; Trim/Dec dims the part that will be cut.
+  const wd = waveData || (peaks.length > 0 ? fallbackWaveFromPeaks(peaks) : null);
+  const bannerTop = 2;
+  const bannerH = topBarH - 4;
+  const midY = bannerTop + bannerH / 2;
+  const halfH = bannerH / 2 - 1;
+  if (wd && wd.n > 0) {
+    const mirror = reversePlayback ? true : false;
+    const totDur = selectedMeta.durationMs || 300;
+    const keepFrac = decayMs < totDur ? Math.max(0.0, Math.min(1.0, decayMs / Math.max(20, totDur))) : 1.0;
+    const lastCol = wd.n - 1;
+    // Kept columns: forward keeps the start, Reverse keeps the end (Trim/Dec sweeps the start of a reversed sample)
+    const k0 = mirror ? Math.round(lastCol * (1.0 - keepFrac)) : 0;
+    const k1 = mirror ? lastCol : Math.round(lastCol * keepFrac);
+
+    if (keepFrac < 1.0) {
+      xoSrcRaw(selCol[0], selCol[1], selCol[2], 0.25);
+      waveformPolygon(wd, 0, lastCol, waveX, waveX + waveW, midY, halfH, mirror, false);
       mgraphics.fill();
     }
+    xoSrcRaw(selCol[0], selCol[1], selCol[2], 0.82);
+    waveformPolygon(wd, k0, k1, waveX, waveX + waveW, midY, halfH, mirror, false);
+    mgraphics.fill();
+    xoSrcRaw(
+      Math.min(1, selCol[0] * 0.45 + 0.55),
+      Math.min(1, selCol[1] * 0.45 + 0.55),
+      Math.min(1, selCol[2] * 0.45 + 0.55),
+      0.9
+    );
+    waveformPolygon(wd, k0, k1, waveX, waveX + waveW, midY, halfH, mirror, true);
+    mgraphics.fill();
   }
+  xoSrc(0.85, 0.9, 0.95, 0.28);
+  mgraphics.set_line_width(0.6);
+  mgraphics.move_to(waveX, midY);
+  mgraphics.line_to(waveX + waveW, midY);
+  mgraphics.stroke();
 
   // Visible Scanning Playhead Line across Waveform Viewer
   if (playheadPos >= 0.0 && playheadPos <= 1.0) {
     const scanX = waveX + playheadPos * waveW;
-    mgraphics.set_source_rgba(0.22, 0.88, 1.0, 0.95);
+    xoSrc(0.22, 0.88, 1.0, 0.95);
     mgraphics.set_line_width(1.6);
     mgraphics.move_to(scanX, 2);
     mgraphics.line_to(scanX, topBarH - 2);
@@ -1438,7 +1934,7 @@ function paint() {
   }
 
   // 3. Center 2D Map Background & Radar Rings
-  mgraphics.set_source_rgba(0.16, 0.20, 0.27, 0.35);
+  xoSrc(0.16, 0.20, 0.27, 0.35);
   mgraphics.set_line_width(1.0);
   const cx = plotX + plotW * 0.5;
   const cy = plotY + plotH * 0.5;
@@ -1452,14 +1948,16 @@ function paint() {
   if (selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
     const sp = points[selectedIndex];
     const [sx, sy] = normToScreen(sp.x, sp.y, lay);
-    mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.35);
+    xoSrc(0.22, 0.74, 0.97, 0.35);
     mgraphics.set_line_width(1.0);
     for (const nIdx of nbrSet) {
       if (nIdx >= 0 && nIdx < points.length && isPointVisible(points[nIdx])) {
         const np = points[nIdx];
         const [nx, ny] = normToScreen(np.x, np.y, lay);
-        mgraphics.move_to(sx, sy);
-        mgraphics.line_to(nx, ny);
+        const seg = clipSegmentToPlot(sx, sy, nx, ny, lay);
+        if (!seg) continue;
+        mgraphics.move_to(seg[0], seg[1]);
+        mgraphics.line_to(seg[2], seg[3]);
         mgraphics.stroke();
       }
     }
@@ -1467,7 +1965,7 @@ function paint() {
 
   // 5. Draw Scrub Trail
   if (scrubTrail.length > 1) {
-    mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.50);
+    xoSrc(0.22, 0.74, 0.97, 0.50);
     mgraphics.set_line_width(2.0);
     for (let i = 0; i < scrubTrail.length; i++) {
       if (i === 0) mgraphics.move_to(scrubTrail[i][0], scrubTrail[i][1]);
@@ -1482,39 +1980,53 @@ function paint() {
     const pt = points[i];
     const vis = isPointVisible(pt);
     const [px, py] = normToScreen(pt.x, pt.y, lay);
+    if (viewZoom > 1.0 && !isInPlotRect(px, py, lay, ptRadius + 1.0)) continue; // cull to the plot rect when zoomed
     if (!vis) {
-      mgraphics.set_source_rgba(0.25, 0.30, 0.38, 0.22);
+      xoSrc(0.25, 0.30, 0.38, 0.22);
       mgraphics.arc(px, py, 1.4, 0, Math.PI * 2);
       mgraphics.fill();
       continue;
     }
     const col = getCategoryColor(pt.catIdx);
-    mgraphics.set_source_rgba(col[0], col[1], col[2], 0.92);
+    xoSrcRaw(col[0], col[1], col[2], 0.92);
     mgraphics.arc(px, py, nbrSet.has(i) ? ptRadius + 0.7 : ptRadius, 0, Math.PI * 2);
     mgraphics.fill();
   }
 
   // 7. Highlight Selected & Hovered Point
-  if (hoveredIndex >= 0 && hoveredIndex < points.length && isPointVisible(points[hoveredIndex])) {
-    const hp = points[hoveredIndex];
-    const [hx, hy] = normToScreen(hp.x, hp.y, lay);
-    mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.85);
+  const hovPos = (hoveredIndex >= 0 && hoveredIndex < points.length) ? normToScreen(points[hoveredIndex].x, points[hoveredIndex].y, lay) : null;
+  if (hovPos && isPointVisible(points[hoveredIndex]) && (viewZoom <= 1.0 || isInPlotRect(hovPos[0], hovPos[1], lay, ptRadius + 3.0))) {
+    const [hx, hy] = hovPos;
+    xoSrc(1.0, 1.0, 1.0, 0.85);
     mgraphics.set_line_width(1.2);
     mgraphics.arc(hx, hy, ptRadius + 2.8, 0, Math.PI * 2);
     mgraphics.stroke();
   }
 
-  if (selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
-    const sp = points[selectedIndex];
-    const [sx, sy] = normToScreen(sp.x, sp.y, lay);
-    mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.22);
+  const selPos = (selectedIndex >= 0 && selectedIndex < points.length) ? normToScreen(points[selectedIndex].x, points[selectedIndex].y, lay) : null;
+  if (selPos && isPointVisible(points[selectedIndex]) && (viewZoom <= 1.0 || isInPlotRect(selPos[0], selPos[1], lay, ptRadius + 5.6))) {
+    const [sx, sy] = selPos;
+    xoSrc(1.0, 1.0, 1.0, 0.22);
     mgraphics.arc(sx, sy, ptRadius + 5.5, 0, Math.PI * 2);
     mgraphics.fill();
 
-    mgraphics.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+    xoSrc(1.0, 1.0, 1.0, 1.0);
     mgraphics.set_line_width(1.7);
     mgraphics.arc(sx, sy, ptRadius + 3.0, 0, Math.PI * 2);
     mgraphics.stroke();
+  }
+
+  // 7b. Zoom indicator (bottom-left corner of the plot; the hover tooltip lives top-right)
+  if (viewZoom > 1.0) {
+    const zr = zoomPillRect(lay);
+    xoSrc(0.08, 0.10, 0.13, 0.88);
+    mgraphics.rectangle_rounded(zr[0], zr[1], zr[2], zr[3], 2, 2);
+    mgraphics.fill();
+    mgraphics.select_font_face("Arial", "normal", "bold");
+    mgraphics.set_font_size(8.0);
+    xoSrc(0.22, 0.74, 0.97, 1.0);
+    mgraphics.move_to(zr[0] + 4, zr[1] + 8.5);
+    mgraphics.show_text(`${viewZoom.toFixed(1)}x`);
   }
 
   // 8. Hover HUD Overlay Tooltip (only for 2D map points and map toolbar icons)
@@ -1529,21 +2041,21 @@ function paint() {
     const boxW = Math.min(mapW - 10, Math.max(72, hudText.length * 5.0 + 10));
     mgraphics.select_font_face("Arial", "normal", "bold");
     mgraphics.set_font_size(8.5);
-    mgraphics.set_source_rgba(0.08, 0.10, 0.13, 0.90);
+    xoSrc(0.08, 0.10, 0.13, 0.90);
     mgraphics.rectangle_rounded(mapW - boxW - 5, plotY + 2, boxW, 13, 2, 2);
     mgraphics.fill();
-    mgraphics.set_source_rgba(0.90, 0.93, 0.96, 0.96);
+    xoSrc(0.90, 0.93, 0.96, 0.96);
     mgraphics.move_to(mapW - boxW - 1, plotY + 11.5);
     mgraphics.show_text(hudText);
   }
 
   // 9. Bottom Geometric Vector Icon Toolbar (Left Pane: 0..mapW)
-  mgraphics.set_source_rgba(0.11, 0.125, 0.15, 1.0);
+  xoSrc(0.11, 0.125, 0.15, 1.0);
   mgraphics.rectangle(0, toolbarY, mapW, toolbarH);
   mgraphics.fill();
 
   mgraphics.set_line_width(1.0);
-  mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.1);
+  xoSrc(1.0, 1.0, 1.0, 0.1);
   mgraphics.move_to(0, toolbarY);
   mgraphics.line_to(mapW, toolbarY);
   mgraphics.stroke();
@@ -1554,29 +2066,29 @@ function paint() {
     const bx = i * btnW;
     const isHov = (hoveredToolbarIndex === i);
     let isActive = false;
-    let iconCol = [0.72, 0.76, 0.82, 1.0];
+    let iconCol = xoPaletteColor(0.72, 0.76, 0.82, 1.0);
 
     if (item.id.startsWith("cat_")) {
       const cat = item.id.slice(4);
       isActive = (activeCategory === cat);
       const found = CATEGORIES.find((c) => c.id === cat);
-      if (found) iconCol = found.color;
+      if (found) iconCol = xoPaletteCat(found.id, found.color);
     } else if (isHov) {
-      iconCol = [0.22, 0.74, 0.97, 1.0];
+      iconCol = xoPaletteColor(0.22, 0.74, 0.97, 1.0);
     }
 
     if (isActive) {
-      mgraphics.set_source_rgba(iconCol[0], iconCol[1], iconCol[2], 0.24);
+      xoSrcRaw(iconCol[0], iconCol[1], iconCol[2], 0.24);
       mgraphics.rectangle(bx + 0.5, toolbarY + 1, btnW - 1, toolbarH - 2);
       mgraphics.fill();
     } else if (isHov) {
-      mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.08);
+      xoSrc(1.0, 1.0, 1.0, 0.08);
       mgraphics.rectangle(bx + 0.5, toolbarY + 1, btnW - 1, toolbarH - 2);
       mgraphics.fill();
     }
 
     if (i > 0) {
-      mgraphics.set_source_rgba(1.0, 1.0, 1.0, 0.07);
+      xoSrc(1.0, 1.0, 1.0, 0.07);
       mgraphics.move_to(bx, toolbarY + 3);
       mgraphics.line_to(bx, toolbarY + toolbarH - 3);
       mgraphics.stroke();
@@ -1590,40 +2102,40 @@ function paint() {
   // ==========================================================================
   if (!showSavedList || savedW <= 0) return;
 
-  mgraphics.set_source_rgba(0.075, 0.09, 0.115, 1.0);
+  xoSrc(0.075, 0.09, 0.115, 1.0);
   mgraphics.rectangle(savedX, 0, savedW, h);
   mgraphics.fill();
 
-  mgraphics.set_source_rgba(0.22, 0.26, 0.33, 1.0);
+  xoSrc(0.22, 0.26, 0.33, 1.0);
   mgraphics.set_line_width(1.0);
   mgraphics.move_to(savedX, 0);
   mgraphics.line_to(savedX, h);
   mgraphics.stroke();
 
   // Saved List Top Bar
-  mgraphics.set_source_rgba(0.10, 0.12, 0.16, 1.0);
+  xoSrc(0.10, 0.12, 0.16, 1.0);
   mgraphics.rectangle(savedX + 1, 0, savedW - 1, topBarH);
   mgraphics.fill();
 
   mgraphics.select_font_face("Arial", "normal", "bold");
   mgraphics.set_font_size(8.5);
-  mgraphics.set_source_rgba(1.0, 0.71, 0.20, 1.0);
+  xoSrc(1.0, 0.71, 0.20, 1.0);
   mgraphics.move_to(savedX + 5, 13.5);
   mgraphics.show_text(`SAVED (${savedList.length})`);
 
   // "+Save" mini button in header
-  mgraphics.set_source_rgba(0.20, 0.74, 0.45, 0.28);
+  xoSrc(0.20, 0.74, 0.45, 0.28);
   mgraphics.rectangle_rounded(savedX + 65, 3, 42, 14, 2, 2);
   mgraphics.fill();
-  mgraphics.set_source_rgba(0.35, 0.90, 0.55, 1.0);
+  xoSrc(0.35, 0.90, 0.55, 1.0);
   mgraphics.move_to(savedX + 73, 13);
   mgraphics.show_text("+Save");
 
   // Clear All ("x") mini button in header
-  mgraphics.set_source_rgba(0.20, 0.24, 0.30, 1.0);
+  xoSrc(0.20, 0.24, 0.30, 1.0);
   mgraphics.rectangle_rounded(savedX + 111, 3, 20, 14, 2, 2);
   mgraphics.fill();
-  mgraphics.set_source_rgba(0.75, 0.80, 0.86, 0.9);
+  xoSrc(0.75, 0.80, 0.86, 0.9);
   mgraphics.set_line_width(1.2);
   mgraphics.move_to(savedX + 118, 7);
   mgraphics.line_to(savedX + 124, 13);
@@ -1635,7 +2147,7 @@ function paint() {
   if (savedList.length === 0) {
     mgraphics.select_font_face("Arial", "normal", "normal");
     mgraphics.set_font_size(8.5);
-    mgraphics.set_source_rgba(0.50, 0.55, 0.62, 1.0);
+    xoSrc(0.50, 0.55, 0.62, 1.0);
     mgraphics.move_to(savedX + 10, 56);
     mgraphics.show_text("Press 'S' or +Save");
     mgraphics.move_to(savedX + 10, 69);
@@ -1651,7 +2163,7 @@ function paint() {
       const ry = lay.savedRowY0 + r * lay.savedRowH;
       const isRowSelected = (actualIdx === selectedSavedIndex);
 
-      mgraphics.set_source_rgba(
+      xoSrc(
         isRowSelected ? 0.14 : 0.11,
         isRowSelected ? 0.19 : 0.135,
         isRowSelected ? 0.26 : 0.175,
@@ -1661,26 +2173,26 @@ function paint() {
       mgraphics.fill();
 
       if (isRowSelected) {
-        mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.85);
+        xoSrc(0.22, 0.74, 0.97, 0.85);
         mgraphics.set_line_width(1.1);
         mgraphics.rectangle_rounded(savedX + 3, ry + 1, savedW - 10, lay.savedRowH - 2, 2, 2);
         mgraphics.stroke();
       }
 
       const cCol = getCategoryColor(item.catIdx || 0);
-      mgraphics.set_source_rgba(cCol[0], cCol[1], cCol[2], 1.0);
+      xoSrcRaw(cCol[0], cCol[1], cCol[2], 1.0);
       mgraphics.arc(savedX + 8, ry + 7, 2.5, 0, Math.PI * 2);
       mgraphics.fill();
 
       mgraphics.select_font_face("Arial", "normal", "bold");
       mgraphics.set_font_size(8.0);
-      mgraphics.set_source_rgba(0.92, 0.95, 0.98, 1.0);
+      xoSrc(0.92, 0.95, 0.98, 1.0);
       mgraphics.move_to(savedX + 13, ry + 9.5);
       mgraphics.show_text(String(item.name).slice(0, 12));
 
       mgraphics.select_font_face("Arial", "normal", "normal");
       mgraphics.set_font_size(7.5);
-      mgraphics.set_source_rgba(0.58, 0.64, 0.72, 1.0);
+      xoSrc(0.58, 0.64, 0.72, 1.0);
       const pStr = item.pitchSt >= 0 ? `+${item.pitchSt}st` : `${item.pitchSt}st`;
       const revSuffix = item.reverse ? "•Rev" : "";
       mgraphics.move_to(savedX + 13, ry + 18.5);
@@ -1692,28 +2204,28 @@ function paint() {
       const delX = savedX + savedW - 19;
 
       // [R] Raw Drag Handle
-      mgraphics.set_source_rgba(0.18, 0.23, 0.30, 1.0);
+      xoSrc(0.18, 0.23, 0.30, 1.0);
       mgraphics.rectangle_rounded(rawX, ry + 3, 15, 15, 2, 2);
       mgraphics.fill();
       mgraphics.select_font_face("Arial", "normal", "bold");
       mgraphics.set_font_size(7.8);
-      mgraphics.set_source_rgba(0.78, 0.84, 0.92, 1.0);
+      xoSrc(0.78, 0.84, 0.92, 1.0);
       mgraphics.move_to(rawX + 4.2, ry + 13);
       mgraphics.show_text("R");
 
       // [E] Edited Drag Handle
-      mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.25);
+      xoSrc(0.22, 0.74, 0.97, 0.25);
       mgraphics.rectangle_rounded(editX, ry + 3, 15, 15, 2, 2);
       mgraphics.fill();
-      mgraphics.set_source_rgba(0.22, 0.74, 0.97, 1.0);
+      xoSrc(0.22, 0.74, 0.97, 1.0);
       mgraphics.move_to(editX + 4.2, ry + 13);
       mgraphics.show_text("E");
 
       // [x] Delete Row Button (geometric vector X)
-      mgraphics.set_source_rgba(0.26, 0.16, 0.18, 0.85);
+      xoSrc(0.26, 0.16, 0.18, 0.85);
       mgraphics.rectangle_rounded(delX, ry + 3, 12, 15, 2, 2);
       mgraphics.fill();
-      mgraphics.set_source_rgba(0.95, 0.45, 0.48, 0.95);
+      xoSrc(0.95, 0.45, 0.48, 0.95);
       mgraphics.set_line_width(1.1);
       mgraphics.move_to(delX + 3.5, ry + 8);
       mgraphics.line_to(delX + 8.5, ry + 13);
@@ -1726,7 +2238,7 @@ function paint() {
     const trackX = w - 4;
     const trackY = lay.savedRowY0 + 2;
     const trackH = lay.savedBottomY - lay.savedRowY0 - 4;
-    mgraphics.set_source_rgba(0.14, 0.17, 0.22, 1.0);
+    xoSrc(0.14, 0.17, 0.22, 1.0);
     mgraphics.rectangle_rounded(trackX, trackY, 3, trackH, 1.5, 1.5);
     mgraphics.fill();
 
@@ -1734,30 +2246,219 @@ function paint() {
     const thumbH = Math.max(12, trackH * thumbRatio);
     const maxScroll = Math.max(1, savedList.length - lay.savedMaxRows);
     const thumbY = trackY + (savedScrollOffset / maxScroll) * (trackH - thumbH);
-    mgraphics.set_source_rgba(0.45, 0.55, 0.68, 0.9);
+    xoSrc(0.45, 0.55, 0.68, 0.9);
     mgraphics.rectangle_rounded(trackX, thumbY, 3, thumbH, 1.5, 1.5);
     mgraphics.fill();
   }
 
   // Bottom Batch Drag-Out Zones: [Drag Raw] vs [Drag Edit]
-  mgraphics.set_source_rgba(0.10, 0.12, 0.155, 1.0);
+  xoSrc(0.10, 0.12, 0.155, 1.0);
   mgraphics.rectangle(savedX + 1, lay.savedBottomY, savedW - 1, toolbarH);
   mgraphics.fill();
 
   const halfW = (savedW - 8) * 0.5;
-  mgraphics.set_source_rgba(0.16, 0.20, 0.26, 1.0);
+  xoSrc(0.16, 0.20, 0.26, 1.0);
   mgraphics.rectangle_rounded(savedX + 3, lay.savedBottomY + 3, halfW, toolbarH - 6, 2, 2);
   mgraphics.fill();
   mgraphics.select_font_face("Arial", "normal", "bold");
   mgraphics.set_font_size(8.0);
-  mgraphics.set_source_rgba(0.84, 0.88, 0.94, 1.0);
+  xoSrc(0.84, 0.88, 0.94, 1.0);
   mgraphics.move_to(savedX + 14, lay.savedBottomY + 14);
   mgraphics.show_text("Drag Raw");
 
-  mgraphics.set_source_rgba(1.0, 0.69, 0.18, 0.24);
+  xoSrc(1.0, 0.69, 0.18, 0.24);
   mgraphics.rectangle_rounded(savedX + 5 + halfW, lay.savedBottomY + 3, halfW, toolbarH - 6, 2, 2);
   mgraphics.fill();
-  mgraphics.set_source_rgba(1.0, 0.73, 0.22, 1.0);
+  xoSrc(1.0, 0.73, 0.22, 1.0);
   mgraphics.move_to(savedX + 16 + halfW, lay.savedBottomY + 14);
   mgraphics.show_text("Drag Edit");
+}
+
+// ============================================================================
+// Test hook (`receive #0-xo-test` -> this v8ui; messnamed("#0-xo-test", ...)). Used by tests/test_xo_map.js (mocks) and scripts/test_xo_live.js
+// (Live, through the MCP bridge):
+//   test_report                    writes the state below to Global("xo_test") as report_<device id> and last
+//   test_wheel x y dx dy           calls onwheel with synthetic arguments
+//   test_click x y [shift] [option]  calls onclick;  test_drag x y [option]  calls ondrag;  test_release x y  ondrag with button up
+//   test_select idx                select_index idx (audition)
+//   test_replay                    same as clicking the waveform (replay -> render + audition)
+//   test_clear_log                 forgets the selected_info log
+//   test_section saved|filters|playback|options 0|1   sets that toolbar toggle (a hidden parameter, so the LOM can't): the
+//                                  live.text outputs, exactly as a click does, through the real patcher wiring
+//   test_theme LCD|Focus|<index>   sets the Theme tab (Options section), the same way
+//   test_mirror <layout box id> <v>  sends a value to a theme mirror widget (obj-<x>-dial-mir) as a user drag would
+// Real (non-synthetic) event arguments are kept in `raw` (last arguments Max passed to onwheel / onclick / ondrag).
+// ============================================================================
+
+const xoSelLog = [];
+const xoRaw = {};
+const xoRawCount = {};
+let xoSynthetic = false;
+let xoLastWidth = -1;
+/** @type {any} */
+let xoAudition = null;
+
+/** @param {string} name @param {IArguments} args */
+function xoRawLog(name, args) {
+  if (xoSynthetic) return;
+  try {
+    xoRaw[name] = Array.prototype.map.call(args, function (a) {
+      return (a !== null && typeof a === "object") ? "<" + Object.prototype.toString.call(a) + ":" + Object.keys(a).slice(0, 8).join(",") + ">" : a;
+    });
+    xoRawCount[name] = (xoRawCount[name] || 0) + 1;
+  } catch (e) {}
+}
+
+function test_width(w) {
+  xoLastWidth = Number(w);
+}
+
+/** audition_info <file> <ms> <frames> <rendered> <engine> <pitch> <speed> <mode> */
+function audition_info(file, ms, frames, rendered, engine, pitch, speed, mode) {
+  xoAudition = { file: String(file), ms: Number(ms), frames: Number(frames), rendered: Number(rendered), engine: String(engine), pitchSt: Number(pitch), speedPct: Number(speed), mode: Number(mode) };
+}
+
+function xoDeviceId() {
+  try {
+    if (typeof LiveAPI !== "undefined") return String(new LiveAPI("this_device").id);
+  } catch (err) {}
+  return "0";
+}
+
+function test_clear_log() {
+  xoSelLog.length = 0;
+  xoAudition = null;
+}
+
+/** @param {...any} a */
+function test_wheel(...a) {
+  xoSynthetic = true;
+  try { onwheel(...a); } finally { xoSynthetic = false; }
+}
+
+function test_click(x, y, shift, option) {
+  xoSynthetic = true;
+  try { onclick(Number(x), Number(y), 1, 0, Number(shift) || 0, 0, Number(option) || 0, 0); } finally { xoSynthetic = false; }
+}
+
+function test_drag(x, y, option) {
+  xoSynthetic = true;
+  try { ondrag(Number(x), Number(y), 1, 0, 0, 0, Number(option) || 0, 0); } finally { xoSynthetic = false; }
+}
+
+function test_release(x, y) {
+  xoSynthetic = true;
+  try { ondrag(Number(x), Number(y), 0, 0, 0, 0, 0, 0); } finally { xoSynthetic = false; }
+}
+
+const XO_SECTION_TOGGLES = { saved: "ShowSavedList", filters: "ShowFiltersSection", playback: "ShowPlaybackSection", options: "ShowOptions" };
+
+function test_section(which, v) {
+  const name = XO_SECTION_TOGGLES[String(which)];
+  const obj = (name && xoHostPatcher) ? xoHostPatcher.getnamed(name) : null;
+  if (obj) obj.message("int", Number(v) ? 1 : 0);
+}
+
+/** @param {string | number} name */
+function test_theme(name) {
+  const obj = xoHostPatcher ? xoHostPatcher.getnamed("Theme") : null;
+  const idx = (typeof XO_THEMES !== "undefined" && typeof name === "string" && XO_THEMES.indexOf(name) >= 0) ? XO_THEMES.indexOf(name) : Math.round(Number(name));
+  if (obj) obj.message("int", idx);
+}
+
+/** @param {string} id @param {number} v */
+function test_mirror(id, v) {
+  const obj = (xoHostPatcher && typeof XO_LAYOUT_NAMES !== "undefined") ? xoHostPatcher.getnamed(XO_LAYOUT_NAMES[id] || id) : null;
+  if (obj) obj.message("float", Number(v));
+}
+
+function test_select(idx) {
+  outlet(0, "select_index", Number(idx), 1);
+}
+
+function test_replay() {
+  outlet(0, "replay");
+}
+
+function test_report() {
+  const pat = xoHostPatcher;
+  /** @type {Object<string, any>} */
+  const boxes = {};
+  if (pat && typeof pat.getnamed === "function" && typeof XO_LAYOUT_NAMES !== "undefined") {
+    for (const id of Object.keys(XO_LAYOUT_NAMES)) {
+      const obj = pat.getnamed(XO_LAYOUT_NAMES[id]);
+      if (!obj) { boxes[id] = null; continue; }
+      let rect = null;
+      try { rect = Array.prototype.slice.call(obj.getattr("presentation_rect")); } catch (e) {}
+      boxes[id] = { rect: rect, hidden: obj.hidden ? 1 : 0 };
+    }
+  }
+  // Mirror widgets' values and one styled attribute, to check the parameter -> mirror sync and the theme style.
+  /** @type {Object<string, any>} */
+  const mirrors = {};
+  /** @type {Object<string, any>} */
+  const mirrorAttrs = {};
+  /** @type {Object<string, any>} */
+  const sources = {};
+  /** @type {Object<string, any>} */
+  const styled = {};
+  if (pat && typeof pat.getnamed === "function" && typeof XO_LAYOUT_NAMES !== "undefined") {
+    for (const id of Object.keys(XO_LAYOUT_NAMES)) {
+      if (!/-mir$/.test(id)) continue;
+      const obj = pat.getnamed(XO_LAYOUT_NAMES[id]);
+      try { mirrors[id] = obj ? Number(obj.getvalueof()) : null; } catch (e) { mirrors[id] = null; }
+      try { const so = pat.getnamed(XO_LAYOUT_NAMES[id.replace(/-mir$/, "")] || id.replace(/-mir$/, "")); sources[id] = so ? Number(so.getvalueof()) : null; } catch (e) { sources[id] = null; }
+      // the parameter attributes Max applied (only a real parameter has them) of the mirror and of its source object
+      for (const [key, oid] of [[id, id], [id.replace(/-mir$/, ""), id.replace(/-mir$/, "")]]) {
+        const o2 = pat.getnamed(XO_LAYOUT_NAMES[oid] || oid);
+        /** @type {Object<string, any>} */
+        const at = {};
+        for (const n of ["_parameter_range", "_parameter_unitstyle", "_parameter_type", "_parameter_exponent", "_parameter_steps", "_parameter_longname"]) {
+          try { at[n] = o2 ? JSON.stringify(o2.getattr(n)) : null; } catch (e) { at[n] = "ERR"; }
+        }
+        mirrorAttrs[key] = at;
+      }
+    }
+    for (const id of ["obj-panel-filters", "obj-panel-playback", "obj-panel-options", "obj-hdr-filters", "obj-reseed-filtered-btn"]) {
+      const obj = pat.getnamed(XO_LAYOUT_NAMES[id] || id);
+      if (!obj) continue;
+      try {
+        styled[id] = { bgcolor: Array.prototype.slice.call(obj.getattr("bgcolor")), text: String(obj.getattr("text")) };
+      } catch (e) {}
+    }
+  }
+  let devWidth = -1;
+  try { devWidth = Number(pat.getattr("devicewidth")); } catch (e) {}
+  const sz = mgraphics.size || [0, 0];
+  const lay = getLayout();
+  const report = {
+    selectedIndex: selectedIndex,
+    name: selectedMeta.name,
+    durMs: selectedMeta.durationMs,
+    nPoints: points.length,
+    waveN: waveData ? waveData.n : 0,
+    view: getView(),
+    sections: getXoSectionVisibility(),
+    options: showOptionsSection,
+    theme: getXoThemeName(),
+    mirrors: mirrors,
+    mirrorAttrs: mirrorAttrs,
+    sources: sources,
+    styled: styled,
+    boxes: boxes,
+    width: xoLastWidth,
+    devicewidthAttr: devWidth,
+    v8size: [sz[0], sz[1]],
+    mapW: lay.mapW,
+    savedX: lay.savedX,
+    selLog: xoSelLog.slice(),
+    raw: xoRaw,
+    rawCount: xoRawCount,
+    audition: xoAudition,
+    savedCount: savedList.length
+  };
+  const g = new Global("xo_test");
+  const text = JSON.stringify(report);
+  g["report_" + xoDeviceId()] = text;
+  g.last = text;
 }

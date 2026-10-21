@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.node.base.json",
+  "files": [
+    "src/xo_stretch.js"
+  ]
+}

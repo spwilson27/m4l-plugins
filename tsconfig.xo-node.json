@@ -1,7 +1,7 @@
 {
   "extends": "./tsconfig.node.base.json",
   "files": [
-    "src/types/xo.d.ts",
+    "src/types/xo-node.d.ts",
     "src/xo_node_engine.js"
   ]
 }

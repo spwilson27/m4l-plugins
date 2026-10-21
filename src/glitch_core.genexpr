@@ -1,0 +1,1956 @@
+// Glitch core (gen.codebox~). Build scripts PREPEND src/cepstrum_lib.genexpr and replace the at-sign tokens (layout constants from
+// src/glitch_config.js, see scripts/glitch_common.py). Data model + contract: src/glitch_config.js.
+//
+// Fixed chain, one call site per position (stereo handled INSIDE each module through the 2-slot Data d_io):
+//   drvA -> filt -> form -> comb -> phas -> crush -> rect -> fm -> corr -> ring -> stut -> time -> gpit -> gstr -> rvs -> shuf
+//   -> chop -> SPECTRAL (one STFT, N=1024) -> drvB -> dly -> slap -> rev -> wid -> master soft limiter (identity below 0.8)
+//   -> Mix -> Output.   (Granular Pitch / Stretch are one loop of two over a single gl_grain call site.)
+// A module with smoothed wet <= 0.0005 is skipped (the time-group rings keep recording). The STFT only runs while the
+// spectral wet and at least one sub-op (Freeze, Smear, Cepstral Crush, Scramble, Scatter, Mirror, Shift, Spectral Gate / Lofi)
+// are above 0; otherwise the spectral stage is a plain 1023-sample delay. Latency is therefore ALWAYS 1023 samples (N - 1),
+// dry is delayed identically, neutral is an exact identity.
+//
+// Parameters: the UI fills buffer~ #0-glitchslots (8 slot vectors + 8 weights + the sequencer block, layout in
+// glitch_config.js). Every ~32 samples (and on the exact sample of a sequencer step boundary) gen blends the slots
+// (gl_blend: see glitch_config.js blendVectors) into d_tgt and smooths into d_pv. In Seq mode (header mode 2) the weights
+// are computed here from the host beat (gl_seq) instead of read from the buffer. Mix, Output, bpm, ppq and playing are gen
+// Params.
+//
+// GenExpr rules honoured: functions first; one return per function, at function level; no e<digit> / phi / pi
+// identifiers; no custom call inside poke() arguments or if() conditions; no wrap() with variable bounds; work functions
+// are called as bare statements; all module state lives in Data (functions cannot see globals, History in a function is
+// shared by every call site).
+
+// ---------------------------------------------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------------------------------------------
+// Musical division in beats (quarter notes): keep in sync with GL_DIV_BEATS.
+gl_div(i) {
+	return i < 0.5 ? 0.0625 : (i < 1.5 ? 0.125 : (i < 2.5 ? 0.25 : (i < 3.5 ? 0.375 : (i < 4.5 ? 0.5 : (i < 5.5 ? 0.75 : (i < 6.5 ? 1 : 2))))));
+}
+
+gl_hash(x, a) {
+	v = sin(x * 12.9898 + a) * 43758.5453;
+	return v - floor(v);
+}
+
+// Seeded permutation of 1..r into pm.
+gl_perm(pm, r, seed) {
+	for (i = 1; i <= r; i += 1) {
+		pm.poke(i, i);
+	}
+	for (t = 0; t < r - 1; t += 1) {
+		i = r - t;
+		v = sin(i * 12.9898 + seed * 78.233) * 43758.5453;
+		j = 1 + floor((v - floor(v)) * i);
+		j = min(j, i);
+		a = pm.peek(i);
+		pm.poke(pm.peek(j), i);
+		pm.poke(a, j);
+	}
+	return r;
+}
+
+// Linear-interpolated read from a stereo ring of 262144 samples; pos may be negative or past the end.
+gl_rd(rb, c, pos) {
+	p = pos - 262144 * floor(pos / 262144);
+	i0 = floor(p);
+	fr = p - i0;
+	i1 = i0 + 1 >= 262144 ? 0 : i0 + 1;
+	return rb.peek(i0, c) * (1 - fr) + rb.peek(i1, c) * fr;
+}
+
+// Same for a ring of ln samples starting at offset off inside a larger Data (reverb lines).
+gl_rd1(rb, off, ln, pos) {
+	p = pos - ln * floor(pos / ln);
+	i0 = floor(p);
+	fr = p - i0;
+	i1 = i0 + 1 >= ln ? 0 : i0 + 1;
+	return rb.peek(off + i0) * (1 - fr) + rb.peek(off + i1) * fr;
+}
+
+// Soft knee: identity below 0.8, rounds off to 1.0.
+gl_soft(x) {
+	a = abs(x);
+	return a <= 0.8 ? x : (x < 0 ? -1 : 1) * (0.8 + 0.2 * tanh((a - 0.8) * 5));
+}
+
+// Peak follower for the per-module level telemetry.
+gl_lvl(io, lv, k) {
+	m = max(abs(io.peek(0)), abs(io.peek(1)));
+	lv.poke(max(lv.peek(k), m), k);
+	return m;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Morph: slot vectors sv (8 x np) and weights wv -> tgt. Node twin: blendVectors() in src/glitch_config.js.
+// meta channels: 0 kind (0 wet, 1 lin, 2 log, 3 disc), 1 group (index of the amount param), 2 default.
+// ---------------------------------------------------------------------------------------------------------------
+gl_blend(sv, wv, meta, tgt, np) {
+	wsum = 0;
+	for (s = 0; s < 8; s += 1) {
+		wsum += max(wv.peek(s), 0);
+	}
+	for (i = 0; i < np; i += 1) {
+		kind = meta.peek(i, 0);
+		grp = meta.peek(i, 1);
+		res = meta.peek(i, 2);
+		num = 0;
+		den = 0;
+		bw = -1;
+		bv = res;
+		ba = -1;
+		bav = res;
+		if (wsum > 0.000000001) {
+			for (s = 0; s < 8; s += 1) {
+				w = max(wv.peek(s), 0) / wsum;
+				if (w > 0.000000001) {
+					v = sv.peek(s * np + i);
+					a = sv.peek(s * np + grp) > 0.0005 ? 1 : 0;
+					if (kind < 0.5) {
+						num += w * v;
+					} else if (kind < 1.5) {
+						num += w * a * v;
+						den += w * a;
+					} else if (kind < 2.5) {
+						num += w * a * log(max(v, 0.000000001));
+						den += w * a;
+					} else {
+						if (a > 0.5 && w > bw) {
+							bw = w;
+							bv = v;
+						}
+						if (w > ba) {
+							ba = w;
+							bav = v;
+						}
+					}
+				}
+			}
+			res = kind < 0.5 ? num : (kind < 1.5 ? (den > 0.000000001 ? num / den : res) : (kind < 2.5 ? (den > 0.000000001 ? exp(num / den) : res) : (bw >= 0 ? bv : bav)));
+		}
+		tgt.poke(res, i);
+	}
+	return wsum;
+}
+
+// One-pole towards tgt on continuous params; discrete params (meta kind 3) snap.
+gl_smooth(pv, tgt, meta, np, k) {
+	for (i = 0; i < np; i += 1) {
+		t = tgt.peek(i);
+		c = pv.peek(i);
+		pv.poke(meta.peek(i, 0) > 2.5 ? t : c + (t - c) * k, i);
+	}
+	return np;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Drive (A and B). Node twin: saturate() in src/glitch_ref.js.
+// ---------------------------------------------------------------------------------------------------------------
+gl_sat(u, mode) {
+	return mode < 0.5 ? tanh(u) : (mode < 1.5 ? sin(u) : (mode < 2.5 ? clip(u, -1, 1) : tanh(u + 0.4) - tanh(0.4)));
+}
+
+// Mode may be fractional while it glides between two shapes (click-free switching).
+gl_sat_m(u, m) {
+	i0 = floor(m);
+	fr = m - i0;
+	a = gl_sat(u, i0);
+	b = gl_sat(u, min(i0 + 1, 3));
+	return a + (b - a) * fr;
+}
+
+// params at b: wet, mode, drive dB, tone Hz. st: 0 mode (smoothed), then per channel (dcx, dcy, lowpass).
+gl_drive(io, pv, b, w, st, sr) {
+	m = st.peek(0);
+	m = m + (pv.peek(b + 1) - m) * 0.002;
+	st.poke(m, 0);
+	g = pow(10, pv.peek(b + 2) * 0.05);
+	cf = 1 - exp(-6.283185307179586 * pv.peek(b + 3) / sr);
+	comp = 1 / pow(g, 0.25);
+	for (c = 0; c < 2; c += 1) {
+		o = 1 + c * 3;
+		x = io.peek(c);
+		y = gl_sat_m(x * g, m);
+		hp = y - st.peek(o) + 0.995 * st.peek(o + 1);
+		st.poke(y, o);
+		st.poke(hp, o + 1);
+		lp = st.peek(o + 2);
+		lp = lp + (hp - lp) * cf;
+		st.poke(lp, o + 2);
+		io.poke(x + (lp * comp - x) * w, c);
+	}
+	return m;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Filter: TPT state variable filter, output morphs LP -> BP -> HP -> Notch with a fractional type.
+// Node twin: svfProcess() in src/glitch_ref.js.
+// ---------------------------------------------------------------------------------------------------------------
+gl_svf(st, o, x, g, k, ty) {
+	a1 = 1 / (1 + g * (g + k));
+	a2 = g * a1;
+	a3 = g * a2;
+	ic1 = st.peek(o);
+	ic2 = st.peek(o + 1);
+	v3 = x - ic2;
+	v1 = a1 * ic1 + a2 * v3;
+	v2 = ic2 + a2 * ic1 + a3 * v3;
+	st.poke(2 * v1 - ic1, o);
+	st.poke(2 * v2 - ic2, o + 1);
+	lpv = v2;
+	bpv = k * v1;
+	hpv = x - k * v1 - v2;
+	ntv = x - k * v1;
+	i0 = floor(ty);
+	fr = ty - i0;
+	sa = i0 < 0.5 ? lpv : (i0 < 1.5 ? bpv : (i0 < 2.5 ? hpv : ntv));
+	sb = i0 < 0.5 ? bpv : (i0 < 1.5 ? hpv : ntv);
+	return sa + (sb - sa) * fr;
+}
+
+// params at b: wet, type, cutoff Hz, resonance 0..1. st: 0 type (smoothed), 1..2 channel 0, 3..4 channel 1.
+gl_filter(io, pv, b, w, st, sr) {
+	ty = st.peek(0);
+	ty = ty + (pv.peek(b + 1) - ty) * 0.002;
+	st.poke(ty, 0);
+	fc = clip(pv.peek(b + 2), 20, sr * 0.45);
+	g = tan(3.141592653589793 * fc / sr);
+	k = 2 - 1.96 * clip(pv.peek(b + 3), 0, 1);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		y = gl_svf(st, 1 + c * 2, x, g, k, ty);
+		io.poke(x + (y - x) * w, c);
+	}
+	return ty;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Crush: mid-tread quantizer (continuous bits) + sample-and-hold with jittered period. Node twin: quantize().
+// ---------------------------------------------------------------------------------------------------------------
+gl_q(x, bits) {
+	step = pow(2, 1 - bits);
+	return round(x / step) * step;
+}
+
+// params at b: wet, bits, downsample factor, jitter. st: 0 phase, 1 period, 2 counter, 3..4 held L/R.
+gl_crush(io, pv, b, w, st, sr) {
+	bits = clip(pv.peek(b + 1), 1, 16);
+	fac = max(pv.peek(b + 2), 1);
+	jit = pv.peek(b + 3);
+	per = st.peek(1);
+	ph = st.peek(0) + 1;
+	if (ph >= per) {
+		ph = ph - per;
+		cnt = st.peek(2) + 1;
+		st.poke(cnt, 2);
+		hh = gl_hash(cnt, 7.7);
+		st.poke(max(1, fac * (1 + jit * 0.9 * (hh * 2 - 1))), 1);
+		st.poke(io.peek(0), 3);
+		st.poke(io.peek(1), 4);
+	}
+	st.poke(min(ph, 1000000), 0);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		q = gl_q(st.peek(3 + c), bits);
+		io.poke(x + (q - x) * w, c);
+	}
+	return ph;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Ring modulator / frequency shifter (Niemitalo 8-pole allpass Hilbert pair). Frequency shifting is a one-sided shift:
+// positive Hz up, negative down. Ring mode multiplies by a sine of |f|.
+// ---------------------------------------------------------------------------------------------------------------
+// Second order allpass y = a2 * (x + y[n-2]) - x[n-2]; state x1, x2, y1, y2 at o.
+gl_ap(st, o, x, a2) {
+	x2 = st.peek(o + 1);
+	y2 = st.peek(o + 3);
+	y = a2 * (x + y2) - x2;
+	st.poke(st.peek(o), o + 1);
+	st.poke(x, o);
+	st.poke(st.peek(o + 2), o + 3);
+	st.poke(y, o + 2);
+	return y;
+}
+
+// params at b: wet, mode (0 ring, 1 shift), freq Hz (signed). st: 0 phase, 1 mode (smoothed), then 40 per channel.
+gl_ring(io, pv, b, w, st, sr) {
+	ph = st.peek(0) + pv.peek(b + 2) / sr;
+	ph = ph - floor(ph);
+	st.poke(ph, 0);
+	ms = st.peek(1);
+	ms = ms + (pv.peek(b + 1) - ms) * 0.002;
+	st.poke(ms, 1);
+	cs = cos(6.283185307179586 * ph);
+	sn = sin(6.283185307179586 * ph);
+	for (c = 0; c < 2; c += 1) {
+		o = 2 + c * 40;
+		x = io.peek(c);
+		p1 = gl_ap(st, o, x, 0.47940086100000004);
+		p1 = gl_ap(st, o + 4, p1, 0.87627);
+		p1 = gl_ap(st, o + 8, p1, 0.97659);
+		p1 = gl_ap(st, o + 12, p1, 0.99750);
+		q = gl_ap(st, o + 16, x, 0.16176);
+		q = gl_ap(st, o + 20, q, 0.73302);
+		q = gl_ap(st, o + 24, q, 0.94534);
+		q = gl_ap(st, o + 28, q, 0.99059);
+		i1 = st.peek(o + 32);
+		st.poke(p1, o + 32);
+		sh = i1 * cs + q * sn;
+		rm = x * sn;
+		y = rm + (sh - rm) * ms;
+		io.poke(x + (y - x) * w, c);
+	}
+	return ph;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Stutter: beat-locked buffer repeat. Each beat slot engages with probability `chance` (hash of the absolute slot, so
+// renders repeat). Engaging loops the last `length` samples; the live input is written to the ring only while not engaged.
+// params at b: wet, div, chance, decay. st: 0 write pos, 1 engaged, 2 loop start, 3 loop length, 4 pos, 5 repeats,
+// 6 engage fade, 7 last slot. rb: Data(262144, 2). act 0 = only keep the ring warm.
+// ---------------------------------------------------------------------------------------------------------------
+gl_stut(io, pv, b, w, st, rb, beat, bpm, sr, act) {
+	wp = st.peek(0);
+	eng = st.peek(1);
+	slot = floor(beat);
+	if (slot != st.peek(7)) {
+		st.poke(slot, 7);
+		ln = clip(floor(gl_div(pv.peek(b + 1)) * 60 / bpm * sr + 0.5), 64, 262000);
+		ne = (act > 0.5 && gl_hash(slot, 3.3) < pv.peek(b + 2)) ? 1 : 0;
+		if (ne > 0.5 && eng < 0.5) {
+			start = wp - ln;
+			start = start + 262144 * (start < 0 ? 1 : 0);
+			st.poke(start, 2);
+			st.poke(ln, 3);
+			st.poke(0, 4);
+			st.poke(0, 5);
+		}
+		eng = ne;
+		st.poke(eng, 1);
+	}
+	if (act < 0.5) {
+		eng = 0;
+		st.poke(0, 1);
+	}
+	eg = st.peek(6);
+	eg = eg + (eng - eg) * 0.004;
+	eg = (eng < 0.5 && eg < 0.0005) ? 0 : eg;
+	st.poke(eg, 6);
+	ls = max(st.peek(3), 2);
+	pos = st.peek(4);
+	if (eg > 0 || eng > 0.5) {
+		rd = st.peek(2) + pos;
+		rd = rd - 262144 * floor(rd / 262144);
+		fe = min(1, min(pos, ls - pos) / 24);
+		gr = pow(1 - pv.peek(b + 3) * 0.6, st.peek(5));
+		for (c = 0; c < 2; c += 1) {
+			x = io.peek(c);
+			if (eng < 0.5) {
+				rb.poke(x, wp, c);
+			}
+			lp = rb.peek(rd, c);
+			mx = x * (1 - eg) + lp * fe * gr * eg;
+			io.poke(x + (mx - x) * w, c);
+		}
+		pos = pos + 1;
+		if (pos >= ls) {
+			pos = 0;
+			st.poke(st.peek(5) + 1, 5);
+		}
+		st.poke(pos, 4);
+	} else {
+		for (c = 0; c < 2; c += 1) {
+			rb.poke(io.peek(c), wp, c);
+		}
+	}
+	if (eng < 0.5) {
+		wp = wp + 1;
+		wp = wp >= 262144 ? 0 : wp;
+		st.poke(wp, 0);
+	}
+	return eg;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Tape stop / Varispeed / Reverse (one module, mode crossfaded). Cycle length = `length` division.
+// params at b: wet, mode (0 stop, 1 vari, 2 rev), amount, div. st: 0 write pos, 1..3 mode weights, 4 stop gain,
+// 5 stop delay, 6 last phase. rb: Data(262144, 2). act 0 = only write the ring.
+// ---------------------------------------------------------------------------------------------------------------
+gl_time(io, pv, b, w, st, rb, beat, bpm, sr, act) {
+	wp = st.peek(0);
+	for (c = 0; c < 2; c += 1) {
+		rb.poke(io.peek(c), wp, c);
+	}
+	if (act > 0.5) {
+		mt = pv.peek(b + 1);
+		amt = pv.peek(b + 2);
+		pb = gl_div(pv.peek(b + 3));
+		if (st.peek(1) + st.peek(2) + st.peek(3) < 0.5) {
+			st.poke(mt < 0.5 ? 1 : 0, 1);
+			st.poke(mt > 0.5 && mt < 1.5 ? 1 : 0, 2);
+			st.poke(mt > 1.5 ? 1 : 0, 3);
+		}
+		for (k = 0; k < 3; k += 1) {
+			tw = (mt > k - 0.5 && mt < k + 0.5) ? 1 : 0;
+			st.poke(st.peek(1 + k) + (tw - st.peek(1 + k)) * 0.003, 1 + k);
+		}
+		wst = st.peek(1);
+		wvr = st.peek(2);
+		wrv = st.peek(3);
+		cyc = beat / pb;
+		phs = cyc - floor(cyc);
+		per = clip(pb * 60 / bpm * sr, 256, 130000);
+		ts = phs < 0.4 ? 1 : pow(max(1 - (phs - 0.4) / 0.6, 0), 1.5);
+		spd = 1 - amt * (1 - ts);
+		dd = phs < st.peek(6) ? 0 : st.peek(5) + (1 - spd);
+		dd = min(dd, 261000);
+		st.poke(dd, 5);
+		st.poke(phs, 6);
+		gt = sqrt(max(spd, 0));
+		g0 = st.peek(4);
+		g0 = g0 + (gt - g0) * 0.01;
+		st.poke(g0, 4);
+		dv = 2 + 0.015 * sr * amt * (1 + sin(6.283185307179586 * phs)) * 0.5;
+		ph1 = phs;
+		ph2 = phs + 0.5 - floor(phs + 0.5);
+		d1 = 2 + 2 * per * ph1;
+		d2 = 2 + 2 * per * ph2;
+		w1 = sin(3.141592653589793 * ph1);
+		w1 = w1 * w1;
+		w2 = sin(3.141592653589793 * ph2);
+		w2 = w2 * w2;
+		for (c = 0; c < 2; c += 1) {
+			x = io.peek(c);
+			ys = wst > 0.001 ? gl_rd(rb, c, wp - dd) * g0 : 0;
+			yv = wvr > 0.001 ? gl_rd(rb, c, wp - dv) : 0;
+			yr = wrv > 0.001 ? gl_rd(rb, c, wp - d1) * w1 + gl_rd(rb, c, wp - d2) * w2 : 0;
+			y = ys * wst + yv * wvr + yr * wrv;
+			io.poke(x + (y - x) * w, c);
+		}
+	}
+	wp = wp + 1;
+	wp = wp >= 262144 ? 0 : wp;
+	st.poke(wp, 0);
+	return wp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Chopper: 16-step gate pattern (bit s of `pattern`), step length from the division, smoothed gain.
+// params at b: wet, pattern, div, smooth. st: 0 gain.
+// ---------------------------------------------------------------------------------------------------------------
+gl_chop_bit(pat, stp) {
+	return floor(pat / pow(2, stp)) - 2 * floor(pat / pow(2, stp + 1));
+}
+
+gl_chop(io, pv, b, w, st, beat, sr) {
+	pat = floor(pv.peek(b + 1) + 0.5);
+	sb = gl_div(pv.peek(b + 2));
+	idx = floor(beat / sb);
+	stp = idx - 16 * floor(idx / 16);
+	bit = gl_chop_bit(pat, stp);
+	tau = 0.0003 + pv.peek(b + 3) * 0.03;
+	cf = 1 - exp(-1 / (tau * sr));
+	g = st.peek(0);
+	g = g + (bit - g) * cf;
+	st.poke(g, 0);
+	st.poke(stp, 1);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		io.poke(x + (x * g - x) * w, c);
+	}
+	return stp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Delay: tempo-synced stereo delay with ping-pong crossfeed and damping in the feedback loop; send style (dry + wet*echo).
+// params at b: wet, div, feedback, ping-pong, damp Hz. st: 0 write pos, 1 smoothed delay (samples), 2..3 damping state.
+// ---------------------------------------------------------------------------------------------------------------
+gl_dly(io, pv, b, w, st, rb, bpm, sr) {
+	dt = clip(gl_div(pv.peek(b + 1)) * 60 / bpm * sr, 16, 262000);
+	ds = st.peek(1);
+	ds = ds < 1 ? dt : ds + (dt - ds) * 0.0008;
+	st.poke(ds, 1);
+	fb = pv.peek(b + 2);
+	pp = pv.peek(b + 3);
+	dc = 1 - exp(-6.283185307179586 * pv.peek(b + 4) / sr);
+	wp = st.peek(0);
+	rl = gl_rd(rb, 0, wp - ds);
+	rr = gl_rd(rb, 1, wp - ds);
+	ll = st.peek(2) + (rl - st.peek(2)) * dc;
+	lr = st.peek(3) + (rr - st.peek(3)) * dc;
+	st.poke(ll, 2);
+	st.poke(lr, 3);
+	xl = io.peek(0);
+	xr = io.peek(1);
+	fl = ll + (lr - ll) * pp;
+	fr = lr + (ll - lr) * pp;
+	rb.poke(clip(xl + fb * fl, -8, 8), wp, 0);
+	rb.poke(clip(xr + fb * fr, -8, 8), wp, 1);
+	wp = wp + 1;
+	wp = wp >= 262144 ? 0 : wp;
+	st.poke(wp, 0);
+	io.poke(xl + ll * w, 0);
+	io.poke(xr + lr * w, 1);
+	return ds;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Reverb: small stereo FDN (4 modulated lines, Householder feedback, damping, RT60 from Decay, Void multiplies the RT60).
+// params at b: wet, size, decay, damp Hz, void. st: 0 write pos, 1 lfo phase, 2..5 damping, 6..9 line outputs.
+// rb: Data(65536), line i at i * 16384.
+// ---------------------------------------------------------------------------------------------------------------
+gl_rev(io, pv, b, w, st, rb, sr) {
+	sc = (0.4 + 1.6 * pv.peek(b + 1)) * sr / 48000;
+	rt = 0.2 * pow(100, pv.peek(b + 2)) * (1 + pv.peek(b + 4) * 15);
+	dc = 1 - exp(-6.283185307179586 * pv.peek(b + 3) / sr);
+	wp = st.peek(0);
+	lf = st.peek(1) + 0.35 / sr;
+	lf = lf - floor(lf);
+	st.poke(lf, 1);
+	sm = 0;
+	for (i = 0; i < 4; i += 1) {
+		bl = i < 0.5 ? 1117 : (i < 1.5 ? 1399 : (i < 2.5 ? 1801 : 2203));
+		ln = floor(bl * sc);
+		y = gl_rd1(rb, i * 16384, 16384, wp - ln - 6 - 5 * sin(6.283185307179586 * (lf + i * 0.25)));
+		gi = min(pow(10, -3 * ln / sr / rt), 0.9995);
+		d = st.peek(2 + i);
+		d = d + (y - d) * dc;
+		st.poke(d, 2 + i);
+		yd = d * gi;
+		st.poke(yd, 6 + i);
+		sm += yd;
+	}
+	xl = io.peek(0);
+	xr = io.peek(1);
+	for (i = 0; i < 4; i += 1) {
+		yd = st.peek(6 + i);
+		inj = (i < 0.5 || (i > 1.5 && i < 2.5)) ? xl : xr;
+		rb.poke(clip(yd - 0.5 * sm + inj * 0.4, -8, 8), i * 16384 + wp);
+	}
+	wp = wp + 1;
+	wp = wp >= 16384 ? 0 : wp;
+	st.poke(wp, 0);
+	y0 = st.peek(6);
+	y1 = st.peek(7);
+	y2 = st.peek(8);
+	y3 = st.peek(9);
+	io.poke(xl + 0.5 * (y0 - y1 + y2 - y3) * w, 0);
+	io.poke(xr + 0.5 * (y0 + y1 - y2 - y3) * w, 1);
+	return sm;
+}
+
+// Zero n samples of a Data (both channels when ch2 = 1).
+gl_clear(rb, n, ch2) {
+	for (i = 0; i < n; i += 1) {
+		rb.poke(0, i, 0);
+		if (ch2 > 0.5) {
+			rb.poke(0, i, 1);
+		}
+	}
+	return n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Width / Gain (mid-side).
+// ---------------------------------------------------------------------------------------------------------------
+gl_wid(io, pv, b, w) {
+	wd = pv.peek(b + 1);
+	gn = pow(10, pv.peek(b + 2) * 0.05);
+	l = io.peek(0);
+	r = io.peek(1);
+	m = (l + r) * 0.5;
+	s = (l - r) * 0.5 * wd;
+	io.poke(l + ((m + s) * gn - l) * w, 0);
+	io.poke(r + ((m - s) * gn - r) * w, 1);
+	return gn;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Phase 2 modules. Every one is ONE function with ONE call site in the chain. Node twins: src/glitch_ref.js.
+// ---------------------------------------------------------------------------------------------------------------
+// Phaser LFO cycle length in beats: keep in sync with GL_LFO_BEATS.
+gl_lfobeats(i) {
+	return i < 0.5 ? 0.5 : (i < 1.5 ? 1 : (i < 2.5 ? 2 : (i < 3.5 ? 4 : (i < 4.5 ? 8 : (i < 5.5 ? 16 : 32)))));
+}
+
+// Vowel table (a e i o u), formant j (0..2) in Hz: keep in sync with GL_VOWELS.
+gl_vt(i, j) {
+	f0 = i < 0.5 ? 800 : (i < 1.5 ? 400 : (i < 2.5 ? 350 : (i < 3.5 ? 450 : 325)));
+	f1 = i < 0.5 ? 1150 : (i < 1.5 ? 1600 : (i < 2.5 ? 1700 : (i < 3.5 ? 800 : 700)));
+	f2 = i < 0.5 ? 2900 : (i < 1.5 ? 2700 : (i < 2.5 ? 2700 : (i < 3.5 ? 2830 : 2700)));
+	return j < 0.5 ? f0 : (j < 1.5 ? f1 : f2);
+}
+
+// Formant j for a vowel position 0..4 (linear between neighbouring vowels).
+gl_vf(v, j) {
+	i0 = clip(floor(v), 0, 3);
+	fr = clip(v - i0, 0, 1);
+	ia = gl_vt(i0, j);
+	ib = gl_vt(i0 + 1, j);
+	return ia + (ib - ia) * fr;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Formant: three parallel bandpass formants (a e i o u morph), shift in semitones, resonance.
+// params at b: wet, vowel, shift st, res. st: 3 filters x (L 2 states, R 2 states) = 12.
+// ---------------------------------------------------------------------------------------------------------------
+gl_form(io, pv, b, w, st, sr) {
+	rs = 1.6 - 1.5 * clip(pv.peek(b + 3), 0, 1);
+	sh = pow(2, pv.peek(b + 2) / 12);
+	vw = clip(pv.peek(b + 1), 0, 4);
+	xl = io.peek(0);
+	xr = io.peek(1);
+	sl = 0;
+	sq2 = 0;
+	for (j = 0; j < 3; j += 1) {
+		fq = gl_vf(vw, j);
+		fq = clip(fq * sh, 50, sr * 0.45);
+		g = tan(3.141592653589793 * fq / sr);
+		am = j < 0.5 ? 1 : (j < 1.5 ? 0.55 : 0.3);
+		yl = gl_svf(st, j * 4, xl, g, rs, 1);
+		yr = gl_svf(st, j * 4 + 2, xr, g, rs, 1);
+		sl += am * yl;
+		sq2 += am * yr;
+	}
+	io.poke(xl + (sl * 2.2 - xl) * w, 0);
+	io.poke(xr + (sq2 * 2.2 - xr) * w, 1);
+	return sl;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Comb: feedback comb at a frequency (delay = 1 / f), +- feedback, damped loop. Output is scaled by 1 - 0.7 |fb|.
+// params at b: wet, freq Hz, fb, damp Hz. st: 0 write pos, 1 smoothed delay, 2..3 damping. rb: Data(8192), channel c at c * 4096.
+// ---------------------------------------------------------------------------------------------------------------
+gl_comb(io, pv, b, w, st, rb, sr) {
+	dt = clip(sr / max(pv.peek(b + 1), 20), 2, 4000);
+	ds = st.peek(1);
+	ds = ds < 1 ? dt : ds + (dt - ds) * 0.002;
+	st.poke(ds, 1);
+	fb = clip(pv.peek(b + 2), -0.97, 0.97);
+	dc = 1 - exp(-6.283185307179586 * pv.peek(b + 3) / sr);
+	gn = 1 - 0.7 * abs(fb);
+	wp = st.peek(0);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		r = gl_rd1(rb, c * 4096, 4096, wp - ds);
+		lv = st.peek(2 + c);
+		lv = lv + (r - lv) * dc;
+		st.poke(lv, 2 + c);
+		y = x + fb * lv;
+		rb.poke(clip(y, -8, 8), c * 4096 + wp);
+		io.poke(x + (y * gn - x) * w, c);
+	}
+	wp = wp + 1;
+	wp = wp >= 4096 ? 0 : wp;
+	st.poke(wp, 0);
+	return ds;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Phaser: 2 / 4 / 6 / 8 fst-order allpass stages swept by an LFO (free in Hz, or locked to the host beat), feedback.
+// params at b: wet, stages (0..3), sync (0 free, 1 locked), rate Hz, sync rate (index), depth, feedback.
+// st: 0 free phase, 2..3 feedback state, 4..11 L stage states, 12..19 R stage states.
+// ---------------------------------------------------------------------------------------------------------------
+gl_phas(io, pv, b, w, st, beat, sr) {
+	nst = 2 * (floor(pv.peek(b + 1) + 0.5) + 1);
+	sy = pv.peek(b + 2) > 0.5 ? 1 : 0;
+	lb = gl_lfobeats(pv.peek(b + 4));
+	ph = st.peek(0) + pv.peek(b + 3) / sr;
+	ph = ph - floor(ph);
+	st.poke(ph, 0);
+	pp = sy > 0.5 ? beat / lb : ph;
+	pp = pp - floor(pp);
+	lfo = 0.5 - 0.5 * cos(6.283185307179586 * pp);
+	pos = 0.5 + (lfo - 0.5) * pv.peek(b + 5);
+	fcen = min(200 * pow(25, pos), sr * 0.45);
+	tn = tan(3.141592653589793 * fcen / sr);
+	ac = (tn - 1) / (tn + 1);
+	fb = pv.peek(b + 6);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		v = x + fb * st.peek(2 + c);
+		for (s = 0; s < 8; s += 1) {
+			if (s < nst) {
+				z = st.peek(4 + c * 8 + s);
+				y = ac * v + z;
+				st.poke(v - ac * y, 4 + c * 8 + s);
+				v = y;
+			}
+		}
+		st.poke(clip(v, -4, 4), 2 + c);
+		io.poke(x + (0.5 * (x + v) - x) * w, c);
+	}
+	return pp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Rectify: half / full / asymmetric rectifier crossfaded by Blend, DC blocked (0.995 one-pole high-pass).
+// params at b: wet, mode (0 half, 1 full, 2 asym), blend. st: per channel x1, y1.
+// ---------------------------------------------------------------------------------------------------------------
+gl_rect(io, pv, b, w, st) {
+	md = pv.peek(b + 1);
+	bl = pv.peek(b + 2);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		r = md < 0.5 ? max(x, 0) : (md < 1.5 ? abs(x) : (x > 0 ? x : 0 - 0.4 * x));
+		y = x + (r - x) * bl;
+		o = c * 2;
+		hp = y - st.peek(o) + 0.995 * st.peek(o + 1);
+		st.poke(y, o);
+		st.poke(hp, o + 1);
+		io.poke(x + (hp - x) * w, c);
+	}
+	return md;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// FM: the signal is read from a short delay line whose delay is 1 + A (1 + m) samples, A = index * 3 ms, m in -1..1
+// ("through zero": the delay never goes negative). m is an oscillator at ratio * 110 Hz (mode 0) or the input itself,
+// tanh(x * ratio) (mode 1, self-FM).
+// params at b: wet, mode, ratio, index. st: 0 write pos, 1 osc phase. rb: Data(4096), channel c at c * 2048.
+// ---------------------------------------------------------------------------------------------------------------
+gl_fm(io, pv, b, w, st, rb, sr) {
+	md = pv.peek(b + 1);
+	rt = pv.peek(b + 2);
+	am = pv.peek(b + 3) * 0.003 * sr;
+	wp = st.peek(0);
+	ph = st.peek(1) + 110 * rt / sr;
+	ph = ph - floor(ph);
+	st.poke(ph, 1);
+	osc = sin(6.283185307179586 * ph);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		rb.poke(x, c * 2048 + wp);
+		m = md > 0.5 ? tanh(x * rt) : osc;
+		d = 1 + am * (1 + m);
+		y = gl_rd1(rb, c * 2048, 2048, wp - d);
+		io.poke(x + (y - x) * w, c);
+	}
+	wp = wp + 1;
+	wp = wp >= 2048 ? 0 : wp;
+	st.poke(wp, 0);
+	return ph;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Corrupt: one decision per beat slot (hash of the absolute slot, so renders repeat): the slot is "corrupt" with
+// probability Chance. In a corrupt slot: overflow wrap (gain 1 + 7 Wrap, wrapped into -1..1), 1..3 bit flips of the 16-bit
+// offset-binary sample (bits 6..14 picked by hash), and sample drops (blocks of 48 samples held with probability Drops).
+// params at b: wet, div, chance, flips, wrap, drop. st: 0 last slot, 1 corrupt, 2 fade, 3..4 held L / R, 5..7 flip bits,
+// 8 sample counter.
+// ---------------------------------------------------------------------------------------------------------------
+gl_flip(x, bt) {
+	u = floor((clip(x, -1, 1) * 0.5 + 0.5) * 65535 + 0.5);
+	pw = pow(2, bt);
+	bit = floor(u / pw) - 2 * floor(u / (pw * 2));
+	u2 = u + (bit > 0.5 ? 0 - pw : pw);
+	return (u2 / 65535 - 0.5) * 2;
+}
+
+gl_corr(io, pv, b, w, st, beat) {
+	db = gl_div(pv.peek(b + 1));
+	slot = floor(beat / db);
+	if (slot != st.peek(0)) {
+		st.poke(slot, 0);
+		hh = gl_hash(slot, 9.1);
+		st.poke(hh < pv.peek(b + 2) ? 1 : 0, 1);
+		h1 = gl_hash(slot, 1.7);
+		h2 = gl_hash(slot, 2.9);
+		h3 = gl_hash(slot, 4.3);
+		st.poke(6 + floor(h1 * 9), 5);
+		st.poke(6 + floor(h2 * 9), 6);
+		st.poke(6 + floor(h3 * 9), 7);
+	}
+	cs = st.peek(1);
+	ea = st.peek(2);
+	ea = ea + (cs - ea) * 0.02;
+	st.poke(ea, 2);
+	cnt = st.peek(8) + 1;
+	cnt = cnt > 10000000 ? 0 : cnt;
+	st.poke(cnt, 8);
+	blk = floor(cnt / 48);
+	dh = gl_hash(blk + slot * 131, 6.6);
+	dr = (cs > 0.5 && dh < pv.peek(b + 5)) ? 1 : 0;
+	wr = 1 + pv.peek(b + 4) * 7;
+	fl = pv.peek(b + 3);
+	nf = fl < 0.01 ? 0 : 1 + floor(fl * 2.999);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		x2 = x * wr;
+		x2 = x2 - 2 * floor((x2 + 1) * 0.5);
+		x3 = x2;
+		for (q = 0; q < 3; q += 1) {
+			xf = gl_flip(x3, st.peek(5 + q));
+			x3 = q < nf ? xf : x3;
+		}
+		y = dr > 0.5 ? st.peek(3 + c) : x3;
+		st.poke(y, 3 + c);
+		io.poke(x + (y - x) * ea * w, c);
+	}
+	return cs;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Granular engine shared by Granular Pitch (kind 0) and Granular Stretch (kind 1): two grains, Hann windowed, half a grain
+// apart. A grain latches its size, rate and start position when it begins: pos = anchor + rate * size * g.
+//   Pitch: rate = 2^(pitch / 12), the anchor is that many samples behind the write head that the grain cannot overtake it,
+//          plus jitter * size / 2 * random.
+//   Stretch: rate = 1; the read gap behind the write head grows by (1 - speed) per sample (so the content plays at
+//          `speed`), at least one grain + 4 samples; speed < 0.01 FREEZES (the ring stops being written); spread moves the
+//          start back by up to 2 * spread * size.
+// params at b: wet, p1 (pitch st | speed), size ms, p3 (jitter | spread). st at so: 0 write pos, 1 stretch gap, 2 prev active,
+// 3 grain counter, then per grain at 4 + 4 q: g (phase), anchor, rate, size (0 = needs a latch).
+// rb: Data(524288, 2), instance at off (0 / 262144), 262144-sample ring.
+// ---------------------------------------------------------------------------------------------------------------
+gl_rdo(rb, c, off, pos) {
+	p = pos - 262144 * floor(pos / 262144);
+	i0 = floor(p);
+	fr = p - i0;
+	i1 = i0 + 1 >= 262144 ? 0 : i0 + 1;
+	return rb.peek(off + i0, c) * (1 - fr) + rb.peek(off + i1, c) * fr;
+}
+
+gl_grain(io, pv, b, w, st, so, rb, off, kind, sr, act) {
+	wp = st.peek(so);
+	szs = clip(pv.peek(b + 2) * 0.001 * sr, 64, 24000);
+	p1 = pv.peek(b + 1);
+	p3 = pv.peek(b + 3);
+	frz = (act > 0.5 && kind > 0.5 && p1 < 0.01) ? 1 : 0;
+	if (act > 0.5 && st.peek(so + 2) < 0.5) {
+		st.poke(0, so + 4);
+		st.poke(0, so + 7);
+		st.poke(0.5, so + 8);
+		st.poke(0, so + 11);
+	}
+	st.poke(act, so + 2);
+	xl = io.peek(0);
+	xr = io.peek(1);
+	yl = xl;
+	yr = xr;
+	if (act > 0.5) {
+		gp = st.peek(so + 1);
+		if (kind > 0.5 && frz < 0.5) {
+			gp = min(gp + 1 - p1, 200000);
+			st.poke(gp, so + 1);
+		}
+		yl = 0;
+		yr = 0;
+		for (q = 0; q < 2; q += 1) {
+			o = so + 4 + q * 4;
+			g0 = st.peek(o);
+			ss = st.peek(o + 3);
+			fst = ss < 1 ? 1 : 0;
+			g = g0 + 1 / max(ss, 1);
+			nw = (g >= 1 || fst > 0.5) ? 1 : 0;
+			if (nw > 0.5) {
+				g = fst > 0.5 ? g0 : g - 1;
+				cnt = st.peek(so + 3) + 1;
+				st.poke(cnt, so + 3);
+				h1 = gl_hash(cnt + q * 0.5, 2.2);
+				rr = pow(2, p1 / 12);
+				dd = szs * max(rr - 1, 0) + 4 + p3 * szs * 0.5 * h1;
+				gpl = clip(gp, szs + 4, 200000);
+				ancP = wp - dd;
+				ancS = wp - gpl - p3 * szs * 2 * h1;
+				st.poke(kind > 0.5 ? ancS : ancP, o + 1);
+				st.poke(kind > 0.5 ? 1 : rr, o + 2);
+				st.poke(szs, o + 3);
+			}
+			st.poke(g, o);
+			wn = sin(3.141592653589793 * g);
+			wn = wn * wn;
+			ss = st.peek(o + 3);
+			ps = st.peek(o + 1) + st.peek(o + 2) * ss * g;
+			yl += wn * gl_rdo(rb, 0, off, ps);
+			yr += wn * gl_rdo(rb, 1, off, ps);
+		}
+	}
+	if (frz < 0.5) {
+		rb.poke(xl, off + wp, 0);
+		rb.poke(xr, off + wp, 1);
+		wp = wp + 1;
+		wp = wp >= 262144 ? 0 : wp;
+		st.poke(wp, so);
+	}
+	io.poke(xl + (yl - xl) * w, 0);
+	io.poke(xr + (yr - xr) * w, 1);
+	return wp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Reverse Slices: at every slice boundary (beat grid) the slice that was just recorded is played backwards over the next
+// slice, with probability Chance (hash of the absolute slice). 96-sample fades at both ends.
+// params at b: wet, div, chance. st: 0 write pos, 1 last slice, 2 write pos at the boundary, 3 slice length, 4 fire,
+// 5 elapsed. rb: Data(262144, 2).
+// ---------------------------------------------------------------------------------------------------------------
+gl_rvs(io, pv, b, w, st, rb, beat, bpm, sr, act) {
+	wp = st.peek(0);
+	xl = io.peek(0);
+	xr = io.peek(1);
+	rb.poke(xl, wp, 0);
+	rb.poke(xr, wp, 1);
+	if (act > 0.5) {
+		db = gl_div(pv.peek(b + 1));
+		slot = floor(beat / db);
+		if (slot != st.peek(1)) {
+			st.poke(slot, 1);
+			st.poke(wp, 2);
+			st.poke(clip(floor(db * 60 / bpm * sr + 0.5), 64, 120000), 3);
+			hh = gl_hash(slot, 5.5);
+			st.poke(hh < pv.peek(b + 2) ? 1 : 0, 4);
+			st.poke(0, 5);
+		}
+		el = st.peek(5);
+		sln = st.peek(3);
+		fa = clip(min(el + 1, sln - el) / 96, 0, 1);
+		fa = fa * st.peek(4) * (el < sln ? 1 : 0);
+		pos = st.peek(2) - 1 - el;
+		rl = gl_rd(rb, 0, pos);
+		rr = gl_rd(rb, 1, pos);
+		yl = xl + (rl - xl) * fa;
+		yr = xr + (rr - xr) * fa;
+		io.poke(xl + (yl - xl) * w, 0);
+		io.poke(xr + (yr - xr) * w, 1);
+		st.poke(min(el + 1, 1000000), 5);
+	}
+	wp = wp + 1;
+	wp = wp >= 262144 ? 0 : wp;
+	st.poke(wp, 0);
+	return wp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Slice Shuffle: the previous span (1 beat / 2 beats / 1 bar) is cut into N slices (2 / 4 / 8 / 16); during the next span
+// each slice position replays a source slice from a seeded permutation (re-rolled every span, Seed varies it) with
+// probability Chance, else the live signal passes. Locked to the host beat.
+// params at b: wet, slices (0..3), span (0..2), chance, seed. st: 0 write pos, 1 span index, 2 write pos at the boundary,
+// 3 span length (samples), 5 slices, 6 perm span index, 7 perm seed. pm: Data(32), rb: Data(262144, 2).
+// ---------------------------------------------------------------------------------------------------------------
+gl_shuf(io, pv, b, w, st, rb, pm, beat, bpm, sr, act) {
+	wp = st.peek(0);
+	xl = io.peek(0);
+	xr = io.peek(1);
+	rb.poke(xl, wp, 0);
+	rb.poke(xr, wp, 1);
+	if (act > 0.5) {
+		nsl = pow(2, floor(pv.peek(b + 1) + 0.5) + 1);
+		spn = pow(2, floor(pv.peek(b + 2) + 0.5));
+		sd = floor(pv.peek(b + 4) + 0.5);
+		bt = beat / spn;
+		slot = floor(bt);
+		fr = bt - slot;
+		if (slot != st.peek(1)) {
+			st.poke(slot, 1);
+			st.poke(wp, 2);
+			st.poke(clip(floor(spn * 60 / bpm * sr + 0.5), 256, 120000), 3);
+		}
+		if (slot != st.peek(6) || nsl != st.peek(5) || sd != st.peek(7)) {
+			st.poke(slot, 6);
+			st.poke(nsl, 5);
+			st.poke(sd, 7);
+			gl_perm(pm, nsl, slot * 7.31 + sd * 13.7);
+		}
+		sp = fr * nsl;
+		k = min(floor(sp), nsl - 1);
+		of = sp - k;
+		sln = st.peek(3) / nsl;
+		pj = pm.peek(k + 1);
+		hh = gl_hash(slot * 17 + k, 3.1);
+		chn = hh < pv.peek(b + 3) ? 1 : 0;
+		pos = st.peek(2) - st.peek(3) + (pj - 1) * sln + of * sln;
+		fa = clip(min(of * sln, (1 - of) * sln) / 96, 0, 1) * chn;
+		rl = gl_rd(rb, 0, pos);
+		rr = gl_rd(rb, 1, pos);
+		io.poke(xl + (rl - xl) * fa * w, 0);
+		io.poke(xr + (rr - xr) * fa * w, 1);
+	}
+	wp = wp + 1;
+	wp = wp >= 262144 ? 0 : wp;
+	st.poke(wp, 0);
+	return wp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Slapback: one short echo (40..180 ms), tone (one-pole low-pass), stereo offset (negative delays L longer by up to 15 ms,
+// positive delays R). Send style: dry + wet * echo, no feedback.
+// params at b: wet, time ms, tone Hz, offset. st: 0 write pos, 1..2 smoothed delays, 3..4 tone states.
+// rb: Data(65536), channel c at c * 32768.
+// ---------------------------------------------------------------------------------------------------------------
+gl_slap(io, pv, b, w, st, rb, sr) {
+	tm = pv.peek(b + 1) * 0.001 * sr;
+	of = pv.peek(b + 3);
+	cf = 1 - exp(-6.283185307179586 * pv.peek(b + 2) / sr);
+	wp = st.peek(0);
+	for (c = 0; c < 2; c += 1) {
+		tg = tm + (c < 0.5 ? max(0 - of, 0) : max(of, 0)) * 0.015 * sr;
+		ds = st.peek(1 + c);
+		ds = ds < 1 ? tg : ds + (tg - ds) * 0.001;
+		st.poke(ds, 1 + c);
+		x = io.peek(c);
+		r = gl_rd1(rb, c * 32768, 32768, wp - ds);
+		lv = st.peek(3 + c);
+		lv = lv + (r - lv) * cf;
+		st.poke(lv, 3 + c);
+		rb.poke(x, c * 32768 + wp);
+		io.poke(x + lv * w, c);
+	}
+	wp = wp + 1;
+	wp = wp >= 32768 ? 0 : wp;
+	st.poke(wp, 0);
+	return wp;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Sequencer (see glitch_config.js). sq: header + steps copied from the engine buffer (0 mode, 1 length, 2 rate, 3 glide,
+// 4 curve, 8..23 steps). Node twins: seqSlotAt() / seqWeights().
+// ---------------------------------------------------------------------------------------------------------------
+gl_seqdiv(i) {
+	return i < 0.5 ? 0.125 : (i < 1.5 ? 0.16666666666666666 : (i < 2.5 ? 0.25 : (i < 3.5 ? 0.3333333333333333 : (i < 4.5 ? 0.5 : (i < 5.5 ? 0.6666666666666666 : (i < 6.5 ? 1 : (i < 7.5 ? 1.3333333333333333 : (i < 8.5 ? 2 : 4))))))));
+}
+
+gl_seq_slot(sq, idx, slen) {
+	res = -1;
+	for (k = 0; k < 16; k += 1) {
+		j = idx - k;
+		j = j - slen * floor(j / slen);
+		v = sq.peek(8 + j);
+		res = (res < -0.5 && v > -0.5) ? v : res;
+	}
+	return res;
+}
+
+// Weights of the 8 slots at host beat bt into wv; ss gets the telemetry (0 step, 1 slot, 2 previous slot, 3 glide progress,
+// 4 fraction, 5 absolute step).
+gl_seq(sq, wv, ss, bt) {
+	slen = clip(round(sq.peek(1)), 1, 16);
+	dv = gl_seqdiv(sq.peek(2));
+	gld = clip(sq.peek(3), 0, 1);
+	cv = sq.peek(4);
+	pos = bt / dv;
+	ab = floor(pos);
+	fr = pos - ab;
+	idx = ab - slen * floor(ab / slen);
+	im1 = idx - 1;
+	cur = gl_seq_slot(sq, idx, slen);
+	prv = gl_seq_slot(sq, im1, slen);
+	prog = gld > 0.0001 ? clip(fr / gld, 0, 1) : 1;
+	wc = cv > 0.5 ? prog : sin(prog * 1.5707963267948966);
+	wpv = cv > 0.5 ? 1 - prog : cos(prog * 1.5707963267948966);
+	for (s = 0; s < 8; s += 1) {
+		wv.poke(0, s);
+	}
+	if (prv > -0.5) {
+		wv.poke(wv.peek(prv) + wpv, prv);
+	}
+	if (cur > -0.5) {
+		wv.poke(wv.peek(cur) + wc, cur);
+	}
+	ss.poke(idx, 0);
+	ss.poke(cur, 1);
+	ss.poke(prv, 2);
+	ss.poke(prog, 3);
+	ss.poke(fr, 4);
+	ss.poke(ab, 5);
+	return idx;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Spectral stage helpers (STFT N = 1024, shared cepstrum_lib). Cepstral Crush / Scramble are a port of Quefrency
+// Crush's crusher (qc_proc without Hold and Shift); Node twin: crushCepstrum() in src/cepcrush_ref.js.
+// ---------------------------------------------------------------------------------------------------------------
+// Smooth 0..1 crossover between envelope (0) and excitation (1) around the formant quefrency qs.
+gl_hi(q, qs) {
+	w = max(qs * 0.25, 1);
+	t = clip((q - (qs - w)) / (2 * w), 0, 1);
+	return t * t * (3 - 2 * t);
+}
+
+// Coefficients kept for the Coeffs knob cf (0..1) at size n.
+gl_kq(cf, n, qs) {
+	kq = n * 0.5;
+	if (cf < 0.995) {
+		kq = cf < 0.75 ? 2 * pow(qs * 0.5, cf / 0.75) : qs + (n * 0.5 - qs) * (cf - 0.75) / 0.25;
+	}
+	return kq;
+}
+
+// Magnitude from the log spectrum in fc, original phase kept, gain change limited to [-dn, +up] nepers per bin, frame
+// scaled back to the input frame's energy.
+gl_remag(fx, fc, n, eps, up, dn) {
+	ein = 0;
+	eout = 0;
+	for (i = 0; i < n; i += 1) {
+		xr = fx.peek(i, 0);
+		xi = fx.peek(i, 1);
+		mag = sqrt(xr * xr + xi * xi);
+		g = 1;
+		if (mag > 1e-20) {
+			d = clip(fc.peek(i, 0) - log(mag + eps), 0 - dn, up);
+			g = max(((mag + eps) * exp(d) - eps) / mag, 0);
+			fx.poke(xr * g, i, 0);
+			fx.poke(xi * g, i, 1);
+		}
+		ein = ein + mag * mag;
+		eout = eout + mag * mag * g * g;
+	}
+	gn = 1;
+	if (eout > 1e-30 && ein > 1e-30) {
+		gn = clip(sqrt(ein / eout), 0.05, 20);
+	}
+	if (abs(gn - 1) > 0.000001) {
+		for (i = 0; i < n; i += 1) {
+			fx.poke(fx.peek(i, 0) * gn, i, 0);
+			fx.poke(fx.peek(i, 1) * gn, i, 1);
+		}
+	}
+	return gn;
+}
+
+// The crusher. fc (channel 0) holds the real cepstrum on entry and the crushed, mirrored cepstrum on exit (channel 1
+// zero). kq coefficients kept, bits (>= 15.5 = off), smode 0 off / 1 reverse / 2 shuffle / 3 rotate, samt scramble amount.
+// tele 1 = write the first 64 coefficients (before / after) to the scope at offO / offC.
+gl_cproc(fc, cn, us, pm, scope, offO, offC, n, qs, kq, bits, smode, samt, tele) {
+	half = n * 0.5;
+	w = max(qs * 0.25, 1);
+	qe = min(floor(qs + w) + 1, half - 1);
+	rr = max(2, min(floor(kq), floor(qs)));
+	cn.poke(fc.peek(0, 0), 0);
+	for (q = 1; q <= qe; q += 1) {
+		hv = gl_hi(q, qs);
+		cn.poke(fc.peek(q, 0) * (1 - hv), q);
+	}
+	if (smode > 0.5 && samt > 0.001) {
+		for (q = 1; q <= rr; q += 1) {
+			us.poke(cn.peek(q) * q, q);
+		}
+		for (q = 1; q <= rr; q += 1) {
+			u0 = us.peek(q);
+			u1 = u0;
+			if (smode < 1.5) {
+				u1 = us.peek(rr + 1 - q);
+			} else if (smode < 2.5) {
+				u1 = us.peek(pm.peek(q));
+			} else {
+				p0 = q - 1 - samt * rr * 0.5;
+				p0 = p0 - rr * floor(p0 / rr);
+				i0 = floor(p0) + 1;
+				fr = p0 - floor(p0);
+				i1 = i0 + 1;
+				if (i1 > rr) {
+					i1 = 1;
+				}
+				u1 = us.peek(i0) * (1 - fr) + us.peek(i1) * fr;
+			}
+			if (smode < 2.5) {
+				u1 = u0 + (u1 - u0) * samt;
+			}
+			cn.poke(u1 / q, q);
+		}
+	}
+	for (q = qe + 1; q <= half; q += 1) {
+		cn.poke(0, q);
+	}
+	for (q = 1; q <= half; q += 1) {
+		hv = gl_hi(q, qs);
+		cn.poke(cn.peek(q) + fc.peek(q, 0) * hv, q);
+	}
+	if (kq < half - 0.5) {
+		tw = max(2, kq * 0.2);
+		for (q = 1; q <= half; q += 1) {
+			g = 0;
+			if (q <= kq) {
+				g = 1;
+				if (q > kq - tw) {
+					g = 0.5 + 0.5 * cos(3.141592653589793 * (q - (kq - tw)) / tw);
+				}
+			}
+			cn.poke(cn.peek(q) * g, q);
+		}
+	}
+	if (bits < 15.5) {
+		stp = 1.5 * pow(2, 0 - (bits - 1) * 0.75);
+		inv = 1 / stp;
+		for (q = 1; q <= half; q += 1) {
+			cn.poke(round(cn.peek(q) * inv) * stp, q);
+		}
+	}
+	if (tele > 0.5) {
+		for (q = 1; q <= 64; q += 1) {
+			poke(scope, fc.peek(q, 0), offO + q - 1, 0);
+			poke(scope, cn.peek(q), offC + q - 1, 0);
+		}
+	}
+	fc.poke(cn.peek(0), 0, 0);
+	fc.poke(0, 0, 1);
+	for (q = 1; q < half; q += 1) {
+		v = cn.peek(q);
+		fc.poke(v, q, 0);
+		fc.poke(v, n - q, 0);
+		fc.poke(0, q, 1);
+		fc.poke(0, n - q, 1);
+	}
+	fc.poke(cn.peek(half), half, 0);
+	fc.poke(0, half, 1);
+	return half;
+}
+
+// Freeze + Smear on the magnitude of the spectrum in fx (Hermitian symmetry kept). frg / smg: per channel (chn) frozen /
+// smeared magnitudes, Data(1024, 2). cap 1 = (re)capture the frozen magnitude now. seed varies the random phase.
+// Smear: each bin follows the (frequency-blurred) magnitude with a time constant of up to ~25 frames. Freeze: the
+// magnitude crossfades to the captured one. Bins that carry live energy keep their phase; bins that are silent now but
+// not in the smeared / frozen spectrum get a pseudo-random phase (so a smear really sounds after the input stops).
+// Both are the identity at amount 0.
+gl_magops(fx, fc, frg, smg, chn, n, frzA, cap, smrA, blur, seed) {
+	half = n * 0.5;
+	for (k = 0; k <= half; k += 1) {
+		xr = fx.peek(k, 0);
+		xi = fx.peek(k, 1);
+		fc.poke(sqrt(xr * xr + xi * xi), k, 1);
+	}
+	al = 1 - 0.96 * smrA;
+	bl = blur * smrA;
+	for (k = 0; k <= half; k += 1) {
+		m = fc.peek(k, 1);
+		mb = m;
+		if (k > 0 && k < half) {
+			mb = m * (1 - bl) + bl * 0.5 * (fc.peek(k - 1, 1) + fc.peek(k + 1, 1));
+		}
+		sm = smg.peek(k, chn);
+		sm = sm + (mb - sm) * al;
+		smg.poke(sm, k, chn);
+		if (cap > 0.5) {
+			frg.poke(sm, k, chn);
+		}
+		mo = sm + (frg.peek(k, chn) - sm) * frzA;
+		xr = fx.peek(k, 0);
+		xi = fx.peek(k, 1);
+		if (m > 0.000001) {
+			xr = xr * mo / m;
+			xi = xi * mo / m;
+		} else {
+			th = 6.283185307179586 * gl_hash(k + chn * 1024, seed * 0.37);
+			xr = (k > 0 && k < half) ? mo * cos(th) : mo;
+			xi = (k > 0 && k < half) ? mo * sin(th) : 0;
+		}
+		fx.poke(xr, k, 0);
+		fx.poke(xi, k, 1);
+		if (k > 0 && k < half) {
+			fx.poke(xr, n - k, 0);
+			fx.poke(0 - xi, n - k, 1);
+		}
+	}
+	return half;
+}
+
+// Bin remapping on the complex spectrum fx (Hermitian symmetry kept), crossfaded by amt: mode 0 Scatter (the bins are cut
+// into bands of floor(p1) bins, nb of them, and the bands are re-ordered by the permutation pm of 1..nb), mode 1 Mirror (the
+// spectrum is reflected around bin round(p1)), mode 2 Shift (bin k takes bin k - round(p1)). ft: scratch Data(1024, 2).
+gl_binmap(fx, ft, n, mode, amt, p1, nb, pm) {
+	half = n * 0.5;
+	wb = max(floor(p1), 2);
+	pc = floor(p1 + 0.5);
+	pcm = min(pc, half - pc);
+	for (k = 0; k <= half; k += 1) {
+		bq = floor(k / wb);
+		bi = min(bq, nb - 1);
+		wi = k - bq * wb;
+		pj = pm.peek(bi + 1);
+		skS = k < nb * wb ? (pj - 1) * wb + wi : k;
+		skM = (k >= pc - pcm && k <= pc + pcm) ? 2 * pc - k : k;
+		skH = k - pc;
+		sk = mode < 0.5 ? skS : (mode < 1.5 ? skM : skH);
+		ok = (sk >= 0 && sk <= half) ? 1 : 0;
+		sk = clip(sk, 0, half);
+		ft.poke(fx.peek(sk, 0) * ok, k, 0);
+		ft.poke(fx.peek(sk, 1) * ok, k, 1);
+	}
+	for (k = 0; k <= half; k += 1) {
+		xr = fx.peek(k, 0);
+		xi = fx.peek(k, 1);
+		yr = xr + (ft.peek(k, 0) - xr) * amt;
+		yi = xi + (ft.peek(k, 1) - xi) * amt;
+		yi = (k > 0 && k < half) ? yi : 0;
+		fx.poke(yr, k, 0);
+		fx.poke(yi, k, 1);
+		if (k > 0 && k < half) {
+			fx.poke(yr, n - k, 0);
+			fx.poke(0 - yi, n - k, 1);
+		}
+	}
+	return half;
+}
+
+// Spectral Gate / Lofi on the magnitudes of fx (Hermitian kept), crossfaded by amt. mode 0 keeps the kk loudest bins
+// (threshold found by 14 bisection steps in the log domain), mode 1 quantizes the magnitudes to steps of sdb dB.
+// fc channel 1 is scratch for the magnitudes.
+gl_sgate(fx, fc, n, mode, amt, kk, sdb) {
+	half = n * 0.5;
+	mx = 0.000000000001;
+	for (k = 0; k <= half; k += 1) {
+		xr = fx.peek(k, 0);
+		xi = fx.peek(k, 1);
+		m = sqrt(xr * xr + xi * xi);
+		fc.poke(m, k, 1);
+		mx = max(mx, m);
+	}
+	lo = log(mx * 0.000001);
+	hi = log(mx);
+	its = mode < 0.5 ? 14 : 0;
+	for (it = 0; it < its; it += 1) {
+		md2 = (lo + hi) * 0.5;
+		th = exp(md2);
+		cnt = 0;
+		for (k = 0; k <= half; k += 1) {
+			cnt = cnt + (fc.peek(k, 1) >= th ? 1 : 0);
+		}
+		lo = cnt > kk ? md2 : lo;
+		hi = cnt > kk ? hi : md2;
+	}
+	thr = exp(hi);
+	sn = sdb / 8.685889638065035;
+	for (k = 0; k <= half; k += 1) {
+		m = fc.peek(k, 1);
+		ml = max(m, 0.000000000001);
+		gq = exp(round(log(ml) / sn) * sn) / ml;
+		gk = mode < 0.5 ? (m >= thr ? 1 : 0) : gq;
+		gk = 1 + (gk - 1) * amt;
+		xr = fx.peek(k, 0) * gk;
+		xi = fx.peek(k, 1) * gk;
+		fx.poke(xr, k, 0);
+		fx.poke(xi, k, 1);
+		if (k > 0 && k < half) {
+			fx.poke(xr, n - k, 0);
+			fx.poke(0 - xi, n - k, 1);
+		}
+	}
+	return thr;
+}
+
+// 64 log-spaced band magnitudes of the spectrum in fx (bins 2..511) as 0..1 over -90..0 dB into the scope at off.
+gl_bands(fx, scope, off, n) {
+	for (b = 0; b < 64; b += 1) {
+		a0 = floor(2 * pow(255.5, b / 64));
+		a1 = floor(2 * pow(255.5, (b + 1) / 64));
+		a1 = max(a1 - 1, a0);
+		mx = 0;
+		for (k = a0; k <= a1; k += 1) {
+			xr = fx.peek(k, 0);
+			xi = fx.peek(k, 1);
+			mx = max(mx, sqrt(xr * xr + xi * xi));
+		}
+		poke(scope, clip((8.685889638065035 * log(mx / 256 + 0.000001) + 90) / 90, 0, 1), off + b, 0);
+	}
+	return n;
+}
+
+// First 64 cepstral coefficients of fc into the scope at off.
+gl_cep_tele(fc, scope, off) {
+	for (q = 1; q <= 64; q += 1) {
+		poke(scope, fc.peek(q, 0), off + q - 1, 0);
+	}
+	return 64;
+}
+
+// Start the right channel's hop counter half a hop after the left's, so frames never complete in the same sample.
+gl_stagger(ring, st, n) {
+	for (i = 0; i < n; i += 1) {
+		ring.poke(0, i);
+	}
+	st.poke(0, 0);
+	st.poke(n * 0.125, 1);
+	st.poke(n, 2);
+	return n;
+}
+
+// One spectral frame: FFT -> Freeze / Smear -> Scatter / Mirror / Shift (bop) -> Spectral Gate / Lofi -> Cepstral Crush /
+// Scramble -> inverse FFT. fx holds the windowed input frame on entry and the processed time frame (before the synthesis
+// window) on exit. bop (Data 16): 0..2 scatter amount / width / bands, 3..5 mirror amount / pivot bin / 0, 6..8 shift amount /
+// bins / 0, 9..12 gate amount / mode / keep bins / step dB. ft Data(1024, 2) and pm2 Data(512) are scratch. When tele = 1 the
+// band and cepstrum telemetry is written (left channel only).
+gl_spec_frame(fx, fc, cn, us, pm, tab, frg, smg, scope, chn, n, sr, frzA, cap, smrA, blur, ccA, kq, bits, scA, scMode, tele, seed, bop, ft, pm2) {
+	qs = clip(round(sr * 0.002), 16, 96);
+	fft_run(fx, tab, n, 0);
+	if (tele > 0.5) {
+		gl_bands(fx, scope, @SC_BANDS_IN@, n);
+	}
+	if (frzA > 0.0005 || smrA > 0.0005) {
+		gl_magops(fx, fc, frg, smg, chn, n, frzA, cap, smrA, blur, seed);
+	}
+	for (op = 0; op < 3; op += 1) {
+		oa = bop.peek(op * 3);
+		op1 = bop.peek(op * 3 + 1);
+		op2 = bop.peek(op * 3 + 2);
+		if (oa > 0.0005) {
+			gl_binmap(fx, ft, n, op, oa, op1, op2, pm2);
+		}
+	}
+	sgA = bop.peek(9);
+	sgM = bop.peek(10);
+	sgK = bop.peek(11);
+	sgS = bop.peek(12);
+	if (sgA > 0.0005) {
+		gl_sgate(fx, fc, n, sgM, sgA, sgK, sgS);
+	}
+	cepOn = (ccA > 0.0005 || scA > 0.0005) ? 1 : 0;
+	if (cepOn > 0.5 || tele > 0.5) {
+		cep_from_spec(fx, fc, tab, n, 1e-9);
+	}
+	if (cepOn > 0.5) {
+		gl_cproc(fc, cn, us, pm, scope, @SC_CEP_IN@, @SC_CEP_OUT@, n, qs, kq, bits, scMode, scA, tele);
+		cep_to_logmag(fc, tab, n);
+		gl_remag(fx, fc, n, 1e-9, 3.45, 8);
+	} else {
+		if (tele > 0.5) {
+			gl_cep_tele(fc, scope, @SC_CEP_IN@);
+			gl_cep_tele(fc, scope, @SC_CEP_OUT@);
+		}
+	}
+	if (tele > 0.5) {
+		gl_bands(fx, scope, @SC_BANDS_OUT@, n);
+	}
+	fft_run(fx, tab, n, 1);
+	return n;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Declarations
+// ---------------------------------------------------------------------------------------------------------------
+Buffer slots("glitchslots");
+Buffer scope("glitchscope");
+
+Data d_tab(4096, 3);
+Data d_win(4096);
+Data d_fx(4096, 2);
+Data d_fc(4096, 2);
+Data d_ringL(4096);
+Data d_accL(4096);
+Data d_stL(4);
+Data d_ringR(4096);
+Data d_accR(4096);
+Data d_stR(4);
+Data d_cn(4096);
+Data d_us(256);
+Data d_pm(256);
+Data d_frg(1024, 2);
+Data d_smg(1024, 2);
+Data d_ft(1024, 2);
+Data d_pm2(512);
+Data d_bop(16);
+
+Data d_sv(@SVSIZE@);
+Data d_wv(8);
+Data d_sq(24);
+Data d_sqs(8);
+Data d_meta(@NP@, 3);
+Data d_tgt(@NP@);
+Data d_pv(@NP@);
+Data d_wS(@NINST@);
+Data d_wb(@NINST@);
+Data d_lv(@NINST@);
+Data d_io(2);
+
+Data d_sDrvA(8);
+Data d_sFilt(8);
+Data d_sForm(12);
+Data d_sComb(4);
+Data d_rComb(8192);
+Data d_sPhas(24);
+Data d_sCrush(8);
+Data d_sRect(4);
+Data d_sFm(2);
+Data d_rFm(4096);
+Data d_sCorr(10);
+Data d_sRing(88);
+Data d_sStut(8);
+Data d_sTime(8);
+Data d_sGr(32);
+Data d_rGr(524288, 2);
+Data d_sRvs(8);
+Data d_rRvs(262144, 2);
+Data d_sShuf(8);
+Data d_rShuf(262144, 2);
+Data d_pmS(32);
+Data d_sChop(4);
+Data d_sDrvB(8);
+Data d_sDly(8);
+Data d_sSlap(6);
+Data d_rSlap(65536);
+Data d_sRev(12);
+Data d_rStut(262144, 2);
+Data d_rTime(262144, 2);
+Data d_rDly(262144, 2);
+Data d_rRev(65536);
+
+Delay idlL(2048);
+Delay idlR(2048);
+Delay dryDL(2048);
+Delay dryDR(2048);
+
+Param bpm(120);
+Param ppq(0);
+Param playing(1);
+Param wet(1);
+Param outdb(0);
+
+History initDone(0);
+History ctlCnt(0);
+History nSeenR(0);
+History beat(0);
+History ppqPrev(0);
+History sqBeat(0);
+History sqStepPrev(-1);
+History hMode(0);
+History hSqInv(2);
+History quietCnt(0);
+History sRun(0);
+History sWarm(0);
+History ssm(0);
+History capL(0);
+History capR(0);
+History frzPrev(0);
+History fidxPrev(-1);
+History permRoll(-1);
+History permRR(0);
+History sctPermSlot(-1);
+History sctPermNb(0);
+History frameNo(0);
+History specFrames(0);
+History dlyUsed(0);
+History dlyAct(0);
+History revUsed(0);
+History revAct(0);
+History mixS(1);
+History outS(1);
+History pkIn(0);
+History pkOut(0);
+History inPk(0);
+History outPk(0);
+History waveCnt(0);
+History waveHead(0);
+History hFrzA(0);
+History hSmrA(0);
+History hSmrB(0);
+History hCcA(0);
+History hKq(512);
+History hBits(16);
+History hScA(0);
+History hScMode(1);
+History hFrzR(0);
+History hSpecW(0);
+History hCoef(0.5);
+History hCoefBits(16);
+History hSctA(0);
+History hSctW(8);
+History hSctNb(64);
+History hSctRate(5);
+History hMirA(0);
+History hBshA(0);
+History hSglA(0);
+History qsH(88);
+History rrH(88);
+
+// ---------------------------------------------------------------------------------------------------------------
+// Per-sample
+// ---------------------------------------------------------------------------------------------------------------
+sr = max(samplerate, 1);
+fft_init(d_tab);
+n = 1024;
+stft_win(d_win, n);
+
+if (initDone < 0.5) {
+@INIT@
+	initDone = 1;
+}
+
+// --- host clock: free-runs on the tempo, locks to the host position whenever it moves ---
+bpmE = max(bpm, 20);
+if (ppq != ppqPrev) {
+	beat = ppq;
+	ppqPrev = ppq;
+} else {
+	beat = beat + bpmE / (60 * sr);
+}
+
+// --- sequencer clock: the host beat, HELD while the transport is stopped. A step change forces a control tick, so a slot
+// switch starts on the exact sample of the step boundary (the tick blends the slots with the new weights). ---
+sqB = playing > 0.5 ? beat : sqBeat;
+sqBeat = sqB;
+stpNow = floor(sqB * hSqInv);
+chg = (hMode > 1.5 && stpNow != sqStepPrev) ? 1 : 0;
+sqStepPrev = stpNow;
+
+// --- control tick: blend the slots, smooth, derive ---
+ctlCnt = ctlCnt + 1;
+if (ctlCnt >= 32 || chg > 0.5) {
+	ctlCnt = 0;
+	for (i = 0; i < @SVSIZE@; i += 1) {
+		d_sv.poke(peek(slots, i, 0), i);
+	}
+	for (s = 0; s < 8; s += 1) {
+		d_wv.poke(peek(slots, @WOFF@ + s, 0), s);
+	}
+	for (i = 0; i < 24; i += 1) {
+		d_sq.poke(peek(slots, @SQOFF@ + i, 0), i);
+	}
+	modeNow = d_sq.peek(0);
+	hMode = modeNow;
+	sqd = gl_seqdiv(d_sq.peek(2));
+	hSqInv = 1 / sqd;
+	if (modeNow > 1.5) {
+		gl_seq(d_sq, d_wv, d_sqs, sqB);
+	}
+	gl_blend(d_sv, d_wv, d_meta, d_tgt, @NP@);
+	gl_smooth(d_pv, d_tgt, d_meta, @NP@, 0.15);
+	hSpecW = d_pv.peek(@B_spec@);
+	hFrzA = d_pv.peek(@B_spec@ + 1);
+	hFrzR = d_pv.peek(@B_spec@ + 2);
+	hSmrA = d_pv.peek(@B_spec@ + 3);
+	hSmrB = d_pv.peek(@B_spec@ + 4);
+	hCcA = d_pv.peek(@B_spec@ + 5);
+	hCoef = 1 - hCcA * (1 - d_pv.peek(@B_spec@ + 6));
+	hCoefBits = 16 - hCcA * (16 - d_pv.peek(@B_spec@ + 7));
+	hScA = d_pv.peek(@B_spec@ + 8);
+	hScMode = round(clip(d_pv.peek(@B_spec@ + 9), 1, 3));
+	// phase 2 spectral sub-ops -> d_bop (see gl_spec_frame)
+	hSctA = d_pv.peek(@I_spec_sct_amt@);
+	hSctW = clip(d_pv.peek(@I_spec_sct_w@), 2, 32);
+	hSctNb = floor(512 / max(floor(hSctW), 2));
+	hSctRate = d_pv.peek(@I_spec_sct_rate@);
+	hMirA = d_pv.peek(@I_spec_mir_amt@);
+	mirBin = floor(clip(d_pv.peek(@I_spec_mir_pivot@) / sr * 1024 + 0.5, 4, 508));
+	hBshA = d_pv.peek(@I_spec_bsh_amt@);
+	hSglA = d_pv.peek(@I_spec_sgl_amt@);
+	d_bop.poke(hSctA, 0);
+	d_bop.poke(hSctW, 1);
+	d_bop.poke(hSctNb, 2);
+	d_bop.poke(hMirA, 3);
+	d_bop.poke(mirBin, 4);
+	d_bop.poke(0, 5);
+	d_bop.poke(hBshA, 6);
+	d_bop.poke(round(d_pv.peek(@I_spec_bsh_bins@)), 7);
+	d_bop.poke(0, 8);
+	d_bop.poke(hSglA, 9);
+	d_bop.poke(round(clip(d_pv.peek(@I_spec_sgl_mode@), 0, 1)), 10);
+	d_bop.poke(floor(clip(d_pv.peek(@I_spec_sgl_k@), 1, 256) + 0.5), 11);
+	d_bop.poke(d_pv.peek(@I_spec_sgl_step@), 12);
+	qsH = clip(round(sr * 0.002), 16, 96);
+	hKq = gl_kq(hCoef, n, qsH);
+	rrH = max(2, min(floor(hKq), floor(qsH)));
+	// telemetry that is cheap to write every tick
+	frameNo = frameNo + 1;
+	if (frameNo >= 1000000) {
+		frameNo = 0;
+	}
+	poke(scope, frameNo, @SC_FRAME@, 0);
+	poke(scope, sr, @SC_SR@, 0);
+	poke(scope, inPk, @SC_IN_PEAK@, 0);
+	poke(scope, outPk, @SC_OUT_PEAK@, 0);
+	inPk = inPk * 0.9;
+	outPk = outPk * 0.9;
+	poke(scope, sRun, @SC_SPEC_RUN@, 0);
+	poke(scope, ssm, @SC_SPEC_MIX@, 0);
+	poke(scope, beat, @SC_BEAT@, 0);
+	poke(scope, bpmE, @SC_BPM@, 0);
+	poke(scope, d_sStut.peek(6), @SC_STUT_ENGAGED@, 0);
+	poke(scope, d_sStut.peek(4) / max(d_sStut.peek(3), 1), @SC_STUT_PHASE@, 0);
+	stLen = gl_div(d_pv.peek(@B_stut@ + 1));
+	poke(scope, stLen, @SC_STUT_LEN_BEATS@, 0);
+	poke(scope, d_sChop.peek(1), @SC_CHOP_STEP@, 0);
+	poke(scope, d_sChop.peek(0), @SC_CHOP_GATE@, 0);
+	poke(scope, d_pv.peek(@B_chop@ + 1), @SC_CHOP_PATTERN@, 0);
+	poke(scope, d_pv.peek(@B_time@ + 1), @SC_TIME_MODE@, 0);
+	tDiv = gl_div(d_pv.peek(@B_time@ + 3));
+	cycT = beat / tDiv;
+	poke(scope, cycT - floor(cycT), @SC_TIME_PHASE@, 0);
+	for (k = 0; k < @NINST@; k += 1) {
+		poke(scope, d_wS.peek(k), @SC_ACTIVITY@ + k, 0);
+		poke(scope, d_lv.peek(k), @SC_LEVEL@ + k, 0);
+		d_lv.poke(d_lv.peek(k) * 0.85, k);
+	}
+	wsm = 0;
+	for (s = 0; s < 8; s += 1) {
+		wsm += max(d_wv.peek(s), 0);
+	}
+	for (s = 0; s < 8; s += 1) {
+		poke(scope, wsm > 0.000000001 ? max(d_wv.peek(s), 0) / wsm : 0, @SC_WEIGHTS@ + s, 0);
+	}
+	poke(scope, modeNow > 1.5 ? 1 : 0, @SC_SEQ_ON@, 0);
+	poke(scope, playing, @SC_SEQ_PLAY@, 0);
+	poke(scope, d_sqs.peek(0), @SC_SEQ_STEP@, 0);
+	poke(scope, d_sqs.peek(1), @SC_SEQ_SLOT@, 0);
+	poke(scope, d_sqs.peek(2), @SC_SEQ_PREV@, 0);
+	poke(scope, d_sqs.peek(3), @SC_SEQ_GLIDE@, 0);
+	poke(scope, d_sqs.peek(4), @SC_SEQ_FRAC@, 0);
+	poke(scope, d_sqs.peek(5), @SC_SEQ_COUNT@, 0);
+}
+
+// --- smoothed module wets (per sample), modules below 0.0005 are skipped ---
+for (k = 0; k < @NINST@; k += 1) {
+	wi = d_wb.peek(k);
+	tw = d_pv.peek(wi);
+	cw = d_wS.peek(k);
+	cw = cw + (tw - cw) * 0.01;
+	cw = (tw < 0.0005 && cw < 0.0005) ? 0 : cw;
+	d_wS.poke(cw, k);
+}
+
+// --- input level and silence sleep ---
+inAbs = max(abs(in1), abs(in2));
+quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
+inPk = max(inPk, inAbs);
+// no STFT work for a silent input, except while Smear / Freeze still have a spectrum to play
+awake = (quietCnt < n || hSmrA > 0.0005 || hFrzA > 0.0005) ? 1 : 0;
+
+// --- pre-spectral chain ---
+d_io.poke(in1, 0);
+d_io.poke(in2, 1);
+if (d_wS.peek(@P_drvA@) > 0.0005) {
+	gl_drive(d_io, d_pv, @B_drvA@, d_wS.peek(@P_drvA@), d_sDrvA, sr);
+	gl_lvl(d_io, d_lv, @P_drvA@);
+}
+if (d_wS.peek(@P_filt@) > 0.0005) {
+	gl_filter(d_io, d_pv, @B_filt@, d_wS.peek(@P_filt@), d_sFilt, sr);
+	gl_lvl(d_io, d_lv, @P_filt@);
+}
+if (d_wS.peek(@P_form@) > 0.0005) {
+	gl_form(d_io, d_pv, @B_form@, d_wS.peek(@P_form@), d_sForm, sr);
+	gl_lvl(d_io, d_lv, @P_form@);
+}
+if (d_wS.peek(@P_comb@) > 0.0005) {
+	gl_comb(d_io, d_pv, @B_comb@, d_wS.peek(@P_comb@), d_sComb, d_rComb, sr);
+	gl_lvl(d_io, d_lv, @P_comb@);
+}
+if (d_wS.peek(@P_phas@) > 0.0005) {
+	gl_phas(d_io, d_pv, @B_phas@, d_wS.peek(@P_phas@), d_sPhas, beat, sr);
+	gl_lvl(d_io, d_lv, @P_phas@);
+}
+if (d_wS.peek(@P_crush@) > 0.0005) {
+	gl_crush(d_io, d_pv, @B_crush@, d_wS.peek(@P_crush@), d_sCrush, sr);
+	gl_lvl(d_io, d_lv, @P_crush@);
+}
+if (d_wS.peek(@P_rect@) > 0.0005) {
+	gl_rect(d_io, d_pv, @B_rect@, d_wS.peek(@P_rect@), d_sRect);
+	gl_lvl(d_io, d_lv, @P_rect@);
+}
+if (d_wS.peek(@P_fm@) > 0.0005) {
+	gl_fm(d_io, d_pv, @B_fm@, d_wS.peek(@P_fm@), d_sFm, d_rFm, sr);
+	gl_lvl(d_io, d_lv, @P_fm@);
+}
+if (d_wS.peek(@P_corr@) > 0.0005) {
+	gl_corr(d_io, d_pv, @B_corr@, d_wS.peek(@P_corr@), d_sCorr, beat);
+	gl_lvl(d_io, d_lv, @P_corr@);
+}
+if (d_wS.peek(@P_ring@) > 0.0005) {
+	gl_ring(d_io, d_pv, @B_ring@, d_wS.peek(@P_ring@), d_sRing, sr);
+	gl_lvl(d_io, d_lv, @P_ring@);
+}
+stutAct = d_wS.peek(@P_stut@) > 0.0005 ? 1 : 0;
+gl_stut(d_io, d_pv, @B_stut@, d_wS.peek(@P_stut@), d_sStut, d_rStut, beat, bpmE, sr, stutAct);
+if (stutAct > 0.5) {
+	gl_lvl(d_io, d_lv, @P_stut@);
+}
+timeAct = d_wS.peek(@P_time@) > 0.0005 ? 1 : 0;
+gl_time(d_io, d_pv, @B_time@, d_wS.peek(@P_time@), d_sTime, d_rTime, beat, bpmE, sr, timeAct);
+if (timeAct > 0.5) {
+	gl_lvl(d_io, d_lv, @P_time@);
+}
+// Granular Pitch (gk 0) and Granular Stretch (gk 1): one call site, two instances (chain positions P_gpit and P_gpit + 1)
+for (gk = 0; gk < 2; gk += 1) {
+	grW = d_wS.peek(@P_gpit@ + gk);
+	grAct = grW > 0.0005 ? 1 : 0;
+	grB = gk < 0.5 ? @B_gpit@ : @B_gstr@;
+	gl_grain(d_io, d_pv, grB, grW, d_sGr, gk * 16, d_rGr, gk * 262144, gk, sr, grAct);
+	if (grAct > 0.5) {
+		gl_lvl(d_io, d_lv, @P_gpit@ + gk);
+	}
+}
+rvsAct = d_wS.peek(@P_rvs@) > 0.0005 ? 1 : 0;
+gl_rvs(d_io, d_pv, @B_rvs@, d_wS.peek(@P_rvs@), d_sRvs, d_rRvs, beat, bpmE, sr, rvsAct);
+if (rvsAct > 0.5) {
+	gl_lvl(d_io, d_lv, @P_rvs@);
+}
+shufAct = d_wS.peek(@P_shuf@) > 0.0005 ? 1 : 0;
+gl_shuf(d_io, d_pv, @B_shuf@, d_wS.peek(@P_shuf@), d_sShuf, d_rShuf, d_pmS, beat, bpmE, sr, shufAct);
+if (shufAct > 0.5) {
+	gl_lvl(d_io, d_lv, @P_shuf@);
+}
+if (d_wS.peek(@P_chop@) > 0.0005) {
+	gl_chop(d_io, d_pv, @B_chop@, d_wS.peek(@P_chop@), d_sChop, beat, sr);
+	gl_lvl(d_io, d_lv, @P_chop@);
+}
+xL = d_io.peek(0);
+xR = d_io.peek(1);
+
+// --- spectral stage: STFT only while wet and a sub-op are on, else a plain 1023-sample delay ---
+sWant = (hSpecW > 0.0005 && (hFrzA > 0.0005 || hSmrA > 0.0005 || hCcA > 0.0005 || hScA > 0.0005 || hSctA > 0.0005 || hMirA > 0.0005 || hBshA > 0.0005 || hSglA > 0.0005)) ? 1 : 0;
+if (sWant > 0.5) {
+	sRun = 1;
+	sWarm = min(sWarm + 1, 100000);
+	if (sWarm >= 1200) {
+		ssm = min(ssm + 1 / 512, 1);
+	}
+} else {
+	ssm = max(ssm - 1 / 512, 0);
+	if (ssm <= 0) {
+		sRun = 0;
+		sWarm = 0;
+	}
+}
+// freeze capture: on engage and on the refresh grid
+fper = hFrzR < 0.5 ? 0 : (hFrzR < 1.5 ? 4 : (hFrzR < 2.5 ? 2 : 1));
+fidx = fper > 0 ? floor(beat / fper) : -1;
+if (fidx != fidxPrev) {
+	fidxPrev = fidx;
+	if (fper > 0 && hFrzA > 0.0005) {
+		capL = 1;
+		capR = 1;
+	}
+}
+if (hFrzA > 0.0005 && frzPrev < 0.0005) {
+	capL = 1;
+	capR = 1;
+}
+if (sRun < 0.5) {
+	capL = 1;
+	capR = 1;
+}
+frzPrev = hFrzA;
+
+rdyL = stft_in(d_ringL, d_stL, xL, n);
+if (nSeenR != n) {
+	nSeenR = n;
+	gl_stagger(d_ringR, d_stR, n);
+}
+rdyR = stft_in(d_ringR, d_stR, xR, n);
+// shuffle permutation, re-rolled every beat
+rollNow = floor(beat);
+if (hScMode > 1.5 && hScMode < 2.5 && hScA > 0.0005 && (rollNow != permRoll || rrH != permRR)) {
+	gl_perm(d_pm, rrH, rollNow);
+	permRoll = rollNow;
+	permRR = rrH;
+}
+// Scatter permutation (bands of bins), re-rolled on its synced rate
+if (hSctA > 0.0005) {
+	sctDb = gl_div(hSctRate);
+	sctSlot = floor(beat / sctDb);
+	if (sctSlot != sctPermSlot || hSctNb != sctPermNb) {
+		gl_perm(d_pm2, hSctNb, sctSlot * 3.17 + 0.5);
+		sctPermSlot = sctSlot;
+		sctPermNb = hSctNb;
+	}
+}
+if ((rdyL > 0.5 || rdyR > 0.5) && sRun > 0.5 && awake > 0.5) {
+	chn = rdyL > 0.5 ? 0 : 1;
+	capNow = chn < 0.5 ? capL : capR;
+	if (chn < 0.5) {
+		stft_frame(d_fx, d_ringL, d_stL, d_win, n);
+	} else {
+		stft_frame(d_fx, d_ringR, d_stR, d_win, n);
+	}
+	teleArg = (chn < 0.5 && (specFrames - 8 * floor(specFrames / 8)) < 0.5) ? 1 : 0;
+	gl_spec_frame(d_fx, d_fc, d_cn, d_us, d_pm, d_tab, d_frg, d_smg, scope, chn, n, sr, hFrzA, capNow, hSmrA, hSmrB, hCcA, hKq, hCoefBits, hScA, hScMode, teleArg, frameNo, d_bop, d_ft, d_pm2);
+	if (chn < 0.5) {
+		stft_ola(d_accL, d_stL, d_fx, d_win, n);
+		capL = 0;
+		specFrames = specFrames + 1;
+	} else {
+		stft_ola(d_accR, d_stR, d_fx, d_win, n);
+		capR = 0;
+	}
+}
+sL = stft_out(d_accL, d_stL, n);
+sR = stft_out(d_accR, d_stR, n);
+idlL.write(xL);
+idlR.write(xR);
+dL = idlL.read(1023);
+dR = idlR.read(1023);
+sw = d_wS.peek(@P_spec@) * ssm;
+yL = dL + (sL - dL) * sw;
+yR = dR + (sR - dR) * sw;
+// dry for Mix: the original input, same latency
+dryDL.write(in1);
+dryDR.write(in2);
+dryL = dryDL.read(1023);
+dryR = dryDR.read(1023);
+if (sw > 0.0005) {
+	d_io.poke(yL, 0);
+	d_io.poke(yR, 1);
+	gl_lvl(d_io, d_lv, @P_spec@);
+} else {
+	d_io.poke(dL, 0);
+	d_io.poke(dR, 1);
+}
+
+// --- post-spectral chain ---
+if (d_wS.peek(@P_drvB@) > 0.0005) {
+	gl_drive(d_io, d_pv, @B_drvB@, d_wS.peek(@P_drvB@), d_sDrvB, sr);
+	gl_lvl(d_io, d_lv, @P_drvB@);
+}
+dlyAct = d_wS.peek(@P_dly@) > 0.0005 ? 1 : 0;
+if (dlyAct > 0.5) {
+	if (dlyUsed > 0.5 && d_sDly.peek(7) < 0.5) {
+		gl_clear(d_rDly, 262144, 1);
+		d_sDly.poke(0, 0);
+		d_sDly.poke(0, 1);
+		d_sDly.poke(0, 2);
+		d_sDly.poke(0, 3);
+	}
+	d_sDly.poke(1, 7);
+	dlyUsed = 1;
+	gl_dly(d_io, d_pv, @B_dly@, d_wS.peek(@P_dly@), d_sDly, d_rDly, bpmE, sr);
+	gl_lvl(d_io, d_lv, @P_dly@);
+} else {
+	d_sDly.poke(0, 7);
+}
+if (d_wS.peek(@P_slap@) > 0.0005) {
+	gl_slap(d_io, d_pv, @B_slap@, d_wS.peek(@P_slap@), d_sSlap, d_rSlap, sr);
+	gl_lvl(d_io, d_lv, @P_slap@);
+}
+revAct = d_wS.peek(@P_rev@) > 0.0005 ? 1 : 0;
+if (revAct > 0.5) {
+	if (revUsed > 0.5 && d_sRev.peek(10) < 0.5) {
+		gl_clear(d_rRev, 65536, 0);
+		for (k = 0; k < 10; k += 1) {
+			d_sRev.poke(0, k);
+		}
+	}
+	d_sRev.poke(1, 10);
+	revUsed = 1;
+	gl_rev(d_io, d_pv, @B_rev@, d_wS.peek(@P_rev@), d_sRev, d_rRev, sr);
+	gl_lvl(d_io, d_lv, @P_rev@);
+} else {
+	d_sRev.poke(0, 10);
+}
+if (d_wS.peek(@P_wid@) > 0.0005) {
+	gl_wid(d_io, d_pv, @B_wid@, d_wS.peek(@P_wid@));
+	gl_lvl(d_io, d_lv, @P_wid@);
+}
+
+// --- master soft limiter, Mix, Output ---
+cL = gl_soft(d_io.peek(0));
+cR = gl_soft(d_io.peek(1));
+outDbC = clip(outdb, -36, 12);
+mixS = mixS + 0.002 * (clip(wet, 0, 1) - mixS);
+outS = outS + 0.002 * (pow(10, outDbC / 20) - outS);
+ov1 = fixnan(fixdenorm((dryL * (1 - mixS) + cL * mixS) * outS));
+ov2 = fixnan(fixdenorm((dryR * (1 - mixS) + cR * mixS) * outS));
+out1 = abs(ov1) < 1e-30 ? 0 : ov1;
+out2 = abs(ov2) < 1e-30 ? 0 : ov2;
+outPk = max(outPk, max(abs(out1), abs(out2)));
+
+// --- waveform rings (peak per 256-sample block) ---
+pkIn = max(pkIn, inAbs);
+pkOut = max(pkOut, max(abs(out1), abs(out2)));
+waveCnt = waveCnt + 1;
+if (waveCnt >= 256) {
+	waveCnt = 0;
+	poke(scope, pkIn, @SC_WAVE_IN@ + waveHead, 0);
+	poke(scope, pkOut, @SC_WAVE_OUT@ + waveHead, 0);
+	waveHead = waveHead >= 63 ? 0 : waveHead + 1;
+	poke(scope, waveHead, @SC_WAVE_HEAD@, 0);
+	poke(scope, specFrames, @SC_SPEC_FRAMES@, 0);
+	pkIn = 0;
+	pkOut = 0;
+}

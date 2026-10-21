@@ -111,9 +111,9 @@ check(c1 > c0, `telemetry frame counter advances (${c0} -> ${c1})`);
 // sample
 debug("dropfile", WAV);
 let loaded = false;
-for (let i = 0; i < 20 && !loaded; i++) { sleep(250); loaded = /sample_loaded|loaded=true/.test(trace().split("dropfile").pop()); }
+for (let i = 0; i < 20 && !loaded; i++) { sleep(250); loaded = /sample_loaded|loaded=(true|1)/.test(trace().split("dropfile").pop()); }
 // A repeat run on a live session finds the same path already loaded (dropfile returns early)
-const already = !loaded && /loaded=true/.test(trace());
+const already = !loaded && /loaded=(true|1)/.test(trace());
 check(loaded || already, `dropfile ${WAV} loaded` + (already ? " (already loaded by an earlier run)" : ""));
 
 // audio
@@ -263,5 +263,53 @@ for (const [lm, name] of [[0, "Off"], [1, "Fwd"], [2, "Ping"]]) {
     sleep(500);
 }
 setParam("loop_mode", 1);
+
+// Analyzed Root Key: ROOT -> root_dyn 1 tracks the 220 Hz test sample (MIDI 57), writes the curve to
+// #0-bspitch and the gen reports the feature active (scope slot 49)
+debug("dropfile", WAV);
+for (let i = 0; i < 20; i++) { sleep(250); if (/loaded=(true|1)/.test(trace().split("dropfile").pop())) break; }
+setParam("root_dyn", 1);
+let curveOk = false;
+for (let i = 0; i < 40; i++) { sleep(250); if (/pitch-curve voiced=/.test(trace().split("root_dyn").pop() || trace())) { curveOk = true; break; } }
+check(curveOk, "Analyzed Root Key: pitch curve tracked after ROOT is switched to Dynamic");
+const curve = evalLom(`var b = new Buffer("#0-bspitch"); var n = b.framecount(); var a = b.peek(1, 0, n); var lo = 1e9, hi = -1e9, sum = 0; for (var i = 0; i < n; i++) { lo = Math.min(lo, a[i]); hi = Math.max(hi, a[i]); sum += a[i]; } return { n: n, lo: lo, hi: hi, mean: sum / n };`);
+check(curve && curve.n === 4096 && Math.abs(curve.mean - 57) < 0.3 && curve.hi - curve.lo < 1.0,
+    `Analyzed Root Key: #0-bspitch holds the 220 Hz sample's pitch (n ${curve && curve.n}, mean ${curve && curve.mean.toFixed(2)}, range ${curve && curve.lo.toFixed(2)}..${curve && curve.hi.toFixed(2)}; want 57)`);
+const dynFlag = () => Number(evalLom(`var v = new Buffer(${JSON.stringify(scope)}).peek(1, 49, 1); return (typeof v === "number") ? v : v[0];`));
+let active = 0;
+for (let i = 0; i < 20 && active < 0.5; i++) { sleep(150); active = dynFlag(); }
+check(active > 0.5, `Analyzed Root Key: the gen reports it active (scope[49] = ${active})`);
+setParam("root_dyn", 0);
+let off = 1;
+for (let i = 0; i < 20 && off > 0.5; i++) { sleep(150); off = dynFlag(); }
+check(off < 0.5, `Analyzed Root Key off: the gen reports it inactive (scope[49] = ${off})`);
+
+// Cycles + Analyzed Root Key: the engine keeps sounding steadily on the 220 Hz sample with root_dyn 1 (the cycle length follows
+// the curve), and the gen's telemetry is sane (mode 1, root_dyn flag, frame counter advancing, finite level)
+setParam("mode", 1); setParam("freeze", 0); setParam("loop_mode", 1); setParam("root_dyn", 1);
+waitGen("mode", 1);
+{
+    const scopeAt = (i) => Number(evalLom(`var v = new Buffer(${JSON.stringify(scope)}).peek(1, ${i}, 1); return (typeof v === "number") ? v : v[0];`));
+    let dyn = 0;
+    for (let i = 0; i < 20 && dyn < 0.5; i++) { sleep(150); dyn = dynFlag(); }
+    check(dyn > 0.5, `Cycles + Analyzed Root Key: the gen reports root_dyn active (scope[49] = ${dyn})`);
+    const f0 = scopeAt(39);
+    const root2 = Math.round(genParams().root_note);
+    const recMs = 1600;
+    playClip([{ pitch: root2, start_time: 0, duration: 3.0, velocity: 100 }], 4, 120, recMs);
+    sleep(recMs + 600);
+    const rows = parseRec(recRead());
+    const first = rows.find((r) => r.peak > 0.05);
+    const body = rows.filter((r) => first && r.t >= first.t + 200 && r.t <= first.t + 1200);
+    const peaks = body.map((r) => r.peak);
+    const lo = peaks.length ? Math.min(...peaks) : -1, hi = peaks.length ? Math.max(...peaks) : -1;
+    check(!!first && body.length > 10 && lo > 0.03 && hi < 1.5 && lo > 0.4 * hi && peaks.every((v) => Number.isFinite(v)),
+        `Cycles + Analyzed Root Key: steady, finite output (${body.length} rows, peak ${lo.toFixed(3)}..${hi.toFixed(3)})`);
+    check(scopeAt(40 + 3) === 1 && scopeAt(49) > 0.5 && scopeAt(39) !== f0,
+        `Cycles + Analyzed Root Key: telemetry mode ${scopeAt(43)}, root_dyn ${scopeAt(49)}, frame counter ${f0} -> ${scopeAt(39)}`);
+    stopClip();
+    sleep(400);
+}
+setParam("root_dyn", 0); setParam("mode", 0);
 
 finish();

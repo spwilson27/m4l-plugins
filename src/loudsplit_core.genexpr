@@ -1,0 +1,280 @@
+// Loud Split core (appended after src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr at build time, so every
+// library function sits ahead of everything here). Reference of the mask maths: src/loudsplit_config.js (lsMasks).
+//
+// Three channels, 1 Quiet, 2 Mid, 3 Loud. Every instance in a rack chain runs the identical analysis on the identical
+// input with identical (linked) parameters and outputs only its own channel; the per-bin masks of the three channels sum
+// to exactly 1 for every setting, so the chains sum back to the input delayed by 4096 samples.
+//
+// Per hop (n / 4) and bin k of the Mid spectrum amplitude A[k]:
+//   lv  = 20 log10(max(A, 1e-6)) + Tilt * log2(f / 1 kHz)            instantaneous level, Tilt in dB/oct (analysis only)
+//   lev = Relative ? lv - max_k lv : lv                                 (the loudest bin of the frame is 0 dB)
+//   ls  = one-pole smoothing of lev in dB, per bin: coefficient 1 - exp(-1 / Rise) when lev > ls (louder), 1 - exp(-1 / Fall)
+//         when lev < ls (softer); Rise / Fall are fractional blocks 0.13..125 (blocks = hops of N / 4 samples).
+//   sH  = smoothstep((ls - (Hi - KneeHi / 2)) / KneeHi)  (Knee 1..24 dB)   Hi, Lo = absolute or relative thresholds,
+//   sL  = same around Lo (clamped to <= Hi), sH is limited to sL so the masks stay non negative.
+//   Quiet = 1 - sL,  Mid = sL - sH,  Loud = sH      (exact sum 1)
+//   Mix     out = wetamt * wet + (1 - wetamt) * dry4096 * kdry, kdry = 1 (All / no rack) or 1/3 (one of the 3 chains), so the
+//           rack sum is wetamt * wet + (1 - wetamt) * dry (dry delayed by the same 4096). wetamt = Mix / 100.
+//   Output  outsel 0 = sum of all masks (All; identity), 1 = Quiet, 2 = Mid, 3 = Loud.
+//
+// Data lsd(2049, 8) per-bin channels: 0 instantaneous tilted level (dB), 1 smoothed level ls, 2 Quiet, 3 Mid, 4 Loud, 5 their
+//   sum, 6 unused, 7 (bin 0 only) loudest bin level of the frame.
+//
+// Telemetry buffer (bound on loadbang via `scope ---loudsplitscope`), LS_SCOPE_SAMPS floats:
+//   0..127 input (Mid) level per log column, 128..255 Quiet post, 256..383 Mid post, 384..511 Loud post (0..1 over -100..0 dB),
+//   512 frame counter, 513 samplerate, 514 N, 515 awake, 516 input peak, 517 mean Loud mask (amplitude weighted), 518 latency,
+//   519 output selection, 520 effective Higher Threshold (dB at 1 kHz; relative mode: frame max + value), 521 effective Lower
+//   Threshold, 522 loudest bin level of the frame (dB).
+//
+// GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements. No identifier e<digit>,
+// no Param or argument named after an operator (rise, fall, noise, bias ...).
+
+ls_sm(x) {
+	c = clip(x, 0, 1);
+	return c * c * (3 - 2 * c);
+}
+
+// One analysis frame: ms (Mid amplitude from ss_mid) -> masks in lsd channels 2 / 3 / 4 and their sum in 5.
+// thi / tlo are the effective thresholds (absolute or relative), age = frames since the state was (re)started (0 resets).
+ls_masks(ms, lsd, n, sr, relm, thi, tlo, khi, klo, riseb, fallb, tlt, age) {
+	half = n * 0.5;
+	lmax = -200;
+	for (k = 0; k <= half; k += 1) {
+		f = max(k * sr / n, 20);
+		lv = 20 * log10(max(ms.peek(k, 0), 1e-6)) + tlt * log(f * 0.001) * 1.4426950408889634;
+		lsd.poke(lv, k, 0);
+		lmax = (k >= 1 && k < half) ? max(lmax, lv) : lmax;
+	}
+	lsd.poke(lmax, 0, 7);
+	lo = min(tlo, thi);
+	kdh = max(khi, 0.01);
+	kdl = max(klo, 0.01);
+	rk = 1 - exp(0 - 1 / clip(riseb, 0.13, 125));
+	fk = 1 - exp(0 - 1 / clip(fallb, 0.13, 125));
+	for (k = 0; k <= half; k += 1) {
+		lev = relm > 0.5 ? lsd.peek(k, 0) - lmax : lsd.peek(k, 0);
+		lev = max(lev, -150);
+		prev = age < 0.5 ? lev : lsd.peek(k, 1);
+		ls = prev + (lev - prev) * (lev > prev ? rk : fk);
+		lsd.poke(ls, k, 1);
+		sh = khi > 0.01 ? ls_sm((ls - (thi - khi * 0.5)) / kdh) : (ls >= thi ? 1 : 0);
+		sl = klo > 0.01 ? ls_sm((ls - (lo - klo * 0.5)) / kdl) : (ls >= lo ? 1 : 0);
+		sh = min(sh, sl);
+		mq = 1 - sl;
+		mm = sl - sh;
+		lsd.poke(mq, k, 2);
+		lsd.poke(mm, k, 3);
+		lsd.poke(sh, k, 4);
+		lsd.poke(mq + mm + sh, k, 5);
+	}
+	return half;
+}
+
+// Amplitude weighted mean of the Loud mask (telemetry).
+ls_mean(ms, lsd, n) {
+	half = n * 0.5;
+	sw = 0;
+	sm = 0;
+	for (k = 1; k < half; k += 1) {
+		a = ms.peek(k, 0);
+		sw += a;
+		sm += a * lsd.peek(k, 4);
+	}
+	return sw > 1e-9 ? sm / sw : 0;
+}
+
+// Zero the telemetry columns (device went to sleep).
+ls_zero(scope, cnt) {
+	for (c = 0; c < cnt; c += 1) {
+		poke(scope, 0, c, 0);
+	}
+	return cnt;
+}
+
+Buffer scope("loudsplitscope");
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data ringL(4096);
+Data ringR(4096);
+Data accL(4096);
+Data accR(4096);
+Data stt(8);
+Data ms(2049, 2);
+Data lsd(2049, 8);
+Data cols(512);
+Delay padL(4096);
+Delay padR(4096);
+Delay dryL(4097);
+Delay dryR(4097);
+
+Param fftn(2048);
+Param thrhi(-24);
+Param thrlo(-48);
+Param rthrhi(-12);
+Param rthrlo(-36);
+Param kneehi(6);
+Param kneelo(6);
+Param relmode(0);
+Param risebl(0);
+Param fallbl(0);
+Param tiltdb(0);
+Param outsel(0);
+Param wetamt(1);
+
+History nCur(0);
+History muteCnt(0);
+History gFade(1);
+History ctlCnt(0);
+History nCtl(0);
+History quietCnt(0);
+History levelPk(0);
+History teleAcc(0);
+History frameNo(0);
+History sleepNote(0);
+History age(0);
+History hiH(-24);
+History loH(-48);
+History khH(6);
+History klH(6);
+History relH(0);
+History rsH(0);
+History flH(0);
+History tlH(0);
+History selH(0);
+History wmH(1);
+History wmS(1);
+
+sr = max(samplerate, 1);
+fft_init(tab);
+
+// --- Size: a change restarts the pipeline; the output stays muted until the new frames have filled the 4096 pad ---
+nReq = cep_n(fftn);
+if (nCur < 1) {
+	nCur = nReq;
+}
+if (nReq != nCur) {
+	nCur = nReq;
+	muteCnt = 4096 + nReq + 128;
+	age = 0;
+}
+n = nCur;
+stft_win(win, n);
+
+// --- Control values, refreshed every 32 samples (and at once when N changes) ---
+ctlCnt = ctlCnt + 1;
+if (ctlCnt >= 32 || n != nCtl) {
+	ctlCnt = 0;
+	nCtl = n;
+	relH = relmode > 0.5 ? 1 : 0;
+	hiH = relH > 0.5 ? clip(rthrhi, -110, 0) : clip(thrhi, -110, 0);
+	loH = relH > 0.5 ? clip(rthrlo, -110, 0) : clip(thrlo, -110, 0);
+	khH = clip(kneehi, 1, 24);
+	klH = clip(kneelo, 1, 24);
+	rsH = clip(risebl, 0.13, 125);
+	flH = clip(fallbl, 0.13, 125);
+	wmH = clip(wetamt, 0, 1);
+	tlH = clip(tiltdb, -6, 6);
+	selH = clip(round(outsel), 0, 3);
+}
+
+// --- Input level and silence sleep ---
+inAbs = max(abs(in1), abs(in2));
+quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
+levelPk = max(inAbs, levelPk * 0.9995);
+awake = quietCnt < n ? 1 : 0;
+
+// --- Frame scheduling ---
+rdy = ss_in(ringL, ringR, stt, in1, in2, n);
+if (rdy > 0.5) {
+	teleAcc = teleAcc + n * 0.25;
+}
+teleNow = 0;
+if (rdy > 0.5 && teleAcc >= 1024) {
+	teleNow = awake > 0.5 ? 1 : 0;
+	teleAcc = 0;
+}
+if (rdy > 0.5 && awake < 0.5) {
+	age = 0;
+}
+if (rdy > 0.5 && awake > 0.5) {
+	ss_frame(fx, ringL, ringR, stt, win, n);
+	fft_run(fx, tab, n, 0);
+	ss_mid(fx, ms, n);
+	ls_masks(ms, lsd, n, sr, relH, hiH, loH, khH, klH, rsH, flH, tlH, age);
+	age = min(age + 1, 3);
+	if (selH > 2.5) {
+		ss_apply(fx, lsd, 4, n);
+	} else if (selH > 1.5) {
+		ss_apply(fx, lsd, 3, n);
+	} else if (selH > 0.5) {
+		ss_apply(fx, lsd, 2, n);
+	} else {
+		ss_apply(fx, lsd, 5, n);
+	}
+	if (teleNow > 0.5) {
+		ss_cols(ms, 0, lsd, -1, cols, 0, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, lsd, 2, cols, 1, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, lsd, 3, cols, 2, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, lsd, 4, cols, 3, n, sr, 128, 30, 20000);
+		ss_tele(cols, scope, 128, 4, 0);
+		lmean = ls_mean(ms, lsd, n);
+		lmx = lsd.peek(0, 7);
+		thEff = relH > 0.5 ? lmx + hiH : hiH;
+		tlEff = relH > 0.5 ? lmx + min(loH, hiH) : min(loH, hiH);
+		poke(scope, lmean, 517, 0);
+		poke(scope, thEff, 520, 0);
+		poke(scope, tlEff, 521, 0);
+		poke(scope, lmx, 522, 0);
+	}
+	fft_run(fx, tab, n, 1);
+	ss_ola(accL, accR, stt, fx, win, n);
+}
+yL = ss_out(accL, stt, n, 3);
+yR = ss_out(accR, stt, n, 4);
+
+// --- Telemetry scalars ---
+if (teleNow > 0.5) {
+	frameNo = wrap(frameNo + 1, 0, 100000);
+	poke(scope, frameNo, 512, 0);
+	poke(scope, sr, 513, 0);
+	poke(scope, n, 514, 0);
+	poke(scope, 1, 515, 0);
+	poke(scope, levelPk, 516, 0);
+	poke(scope, 4096, 518, 0);
+	poke(scope, selH, 519, 0);
+}
+if (awake < 0.5 && sleepNote < 0.5) {
+	ls_zero(scope, 512);
+	poke(scope, 0, 515, 0);
+	poke(scope, 0, 516, 0);
+	sleepNote = 1;
+}
+if (awake > 0.5) {
+	sleepNote = 0;
+}
+
+// --- Constant 4096 latency, mute while the pipeline refills after a Size change ---
+padL.write(yL);
+padR.write(yR);
+wetL = padL.read(4096 - (n - 1));
+wetR = padR.read(4096 - (n - 1));
+if (muteCnt > 0) {
+	muteCnt = muteCnt - 1;
+	gFade = 0;
+} else {
+	gFade = min(gFade + 1 / 512, 1);
+}
+wmS = wmS + (wmH - wmS) * 0.002;
+wmU = abs(wmH - wmS) < 0.00001 ? wmH : wmS;
+kdry = selH > 0.5 ? 0.3333333333333333 : 1;
+dryL.write(in1);
+dryR.write(in2);
+dL = dryL.read(4096);
+dR = dryR.read(4096);
+ov1 = fixnan(fixdenorm(wmU * wetL * gFade + (1 - wmU) * dL * kdry));
+ov2 = fixnan(fixdenorm(wmU * wetR * gFade + (1 - wmU) * dR * kdry));
+// fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
+out1 = abs(ov1) < 1e-30 ? 0 : ov1;
+out2 = abs(ov2) < 1e-30 ? 0 : ov2;

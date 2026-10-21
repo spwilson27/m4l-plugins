@@ -61,6 +61,7 @@
 //     40..47 : the running values of sliced, loop_mode, slice_play, mode, freeze, reverse, root_note, loop_start
 //              (test telemetry: proves the device's parameter messages reached the gen)
 //     48     : Fragments grains started (all voices, cumulative; test telemetry)
+//     49     : Analyzed Root Key active (root_dyn on and the pitch buffer bound; test telemetry)
 //
 // GenExpr rules strictly enforced:
 //   - All helper functions appear before Buffer, Data, Param, History, and expression statements.
@@ -91,6 +92,20 @@ rnd01(sd) {
 // One-pole coefficient for a cutoff in Hz.
 op_coef(fc, sr) {
 	return 1.0 - exp(-6.28318530718 * clip(fc, 5, sr * 0.45) / sr);
+}
+
+// Analyzed Root Key: the MIDI root at normalised sample position `pos`. With the curve on (dynOn 1: root_dyn on and
+// #0-bspitch bound, set in the main section) it is the linearly interpolated 4096-point pitch curve; otherwise, or
+// where the curve holds no pitch (an unfilled buffer reads 0), the static root_note.
+root_at(pbuf, pos, rootMidi, dynOn) {
+	rt = rootMidi;
+	if (dynOn > 0.5) {
+		cv = peek(pbuf, clip(pos, 0, 1) * 4095.0, 0, interp="linear", boundmode="clamp");
+		if (cv > 0.5) {
+			rt = cv;
+		}
+	}
+	return rt;
 }
 
 // Folded read position of a ping-pong phase that lives in [ps, ps + 2 * span).
@@ -420,9 +435,21 @@ digital_st(xl, xr, dist, colorV, rate, vsr, imaging, sr, vhist, stBase) {
 // Cycles
 // ---------------------------------------------------------------------------------------------
 
+// A cycle is a loop: over the last 15 % of its read phase it fades to the head of the cycle (the read one period earlier),
+// so it ends exactly where it starts even when the source pitch changes inside it. A periodic source reads the same
+// at both places, so a steady tone is untouched.
 cyc_read(sampBuf, anc, cycLen, form, ph, maxIdx) {
 	rdp = (ph - 0.5) * form + 0.5;
-	return peek_lr(sampBuf, anc + rdp * cycLen, maxIdx);
+	posC = anc + rdp * cycLen;
+	yl, yr = peek_lr(sampBuf, posC, maxIdx);
+	wcl = clip((fract(ph) - 0.85) / 0.15, 0, 1);
+	if ((wcl > 0.0) && (ph >= 0.0) && (ph <= 1.0)) {
+		wcl = wcl * wcl * (3.0 - 2.0 * wcl);
+		hl, hr = peek_lr(sampBuf, posC - form * cycLen, maxIdx);
+		yl = yl + (hl - yl) * wcl;
+		yr = yr + (hr - yr) * wcl;
+	}
+	return yl, yr;
 }
 
 // One cycle read at phase ph with the character applied.
@@ -438,7 +465,7 @@ cyc_wave(sampBuf, anc, cycLen, form, ph, charId, dutyD, splitV, pmV, maxIdx) {
 	}
 	xl, xr = cyc_read(sampBuf, anc, cycLen, form, phw, maxIdx);
 	if ((charId > 0.5) && (charId < 1.5)) {
-		pl, pr = cyc_read(sampBuf, anc, cycLen, form, ph + 0.5, maxIdx);
+		pl, pr = cyc_read(sampBuf, anc, cycLen, form, fract(ph + 0.5), maxIdx);
 		wOdd = 1.0 - max(splitV, 0.0);
 		wEven = 1.0 - max(0.0 - splitV, 0.0);
 		oddL = 0.5 * (xl - pl);
@@ -449,6 +476,77 @@ cyc_wave(sampBuf, anc, cycLen, form, ph, charId, dutyD, splitV, pmV, maxIdx) {
 		xr = wOdd * oddR + wEven * evenR;
 	}
 	return xl, xr;
+}
+
+// Cycle length (frames) of the source at frame position `frm`: one period of the root pitch there (the Analyzed Root
+// Key curve with root_dyn on, root_note otherwise).
+cyc_len(pbuf, frm, numFrames, rootMidi, dynOn, sr) {
+	rtHz = 440.0 * pow(2.0, (root_at(pbuf, frm / max(numFrames - 1, 1), rootMidi, dynOn) - 69.0) / 12.0);
+	return clip(sr / max(rtHz, 20.0), 32.0, 8192.0);
+}
+
+// How well a cycle of length cl starting at frame c continues the reference cycle (start r, length rl) from phase p0:
+// squared difference of 8 mono taps spread over half a cycle (the first two count 8x and 4x: they are the join, value and slope), and the
+// energy of the reference taps. A cycle that is congruent with the reference (a whole number of source periods away)
+// costs about 0.
+cyc_cost(sampBuf, c, cl, r, rl, p0, maxIdx) {
+	cstSum = 0.0;
+	cstEn = 1e-12;
+	for (jj = 0; jj < 8; jj += 1) {
+		pj = p0 + jj * 0.0625;
+		wj = (jj == 0) ? 8.0 : ((jj == 1) ? 4.0 : 1.0);
+		dv = peek(sampBuf, clip(c + pj * cl, 0, maxIdx), 0, interp="linear", boundmode="clamp", channelmode="clamp");
+		rv = peek(sampBuf, clip(r + pj * rl, 0, maxIdx), 0, interp="linear", boundmode="clamp", channelmode="clamp");
+		cstSum += wj * (dv - rv) * (dv - rv);
+		cstEn += wj * rv * rv;
+	}
+	return cstSum, cstEn;
+}
+
+// Pitch-synchronous anchor: where the next cycle starts. The scan target moves continuously, but a cycle may only start
+// a whole number of source periods (lc0) from the reference cycle, otherwise the output reads the source at the scan speed
+// plus its own (the pitch drifts) and two overlapping windows sit at different phases (they cancel). Where the source
+// pitch changes the lattice no longer lines up, so the start is searched (coarse over +-1 period, then fine) for the
+// cycle that best continues the reference. A cycle that spans a pitch step (the curve moves by more than 0.2 st inside
+// it) is penalised, so the cycles end before the step and restart after it. The search only runs while the lattice point
+// (and then each better candidate) does not match. One loop = one cyc_cost call site.
+cyc_align(sampBuf, pbuf, target, lc0, r, rl, p0, loB, hiB, maxIdx, numFrames, rootMidi, dynOn, sr) {
+	lcs = max(lc0, 8.0);
+	c0 = clip(r + floor((target - r) / lcs + 0.5) * lcs, loB, hiB);
+	bestC = c0;
+	bestS = 1e30;
+	bestE = 1.0;
+	cenF = c0;
+	stpC = lcs / 24.0;
+	stpF = stpC / 8.0;
+	nrm = max(numFrames - 1, 1);
+	for (it = 0; it < 67; it += 1) {
+		// it 0: the lattice point; 1..49: coarse +-lcs around it; 50..66: fine, +-8 steps around the coarse best
+		if (it == 50) {
+			cenF = bestC;
+		}
+		cndC = c0;
+		if (it > 0) {
+			cndC = (it < 50) ? (c0 + (it - 25) * stpC) : (cenF + (it - 58) * stpF);
+		}
+		cndC = clip(cndC, loB, hiB);
+		if ((it == 0) || (bestS > 0.0003 * bestE)) {
+			cndL = cyc_len(pbuf, cndC + 0.5 * lcs, numFrames, rootMidi, dynOn, sr);
+			cndS, cndE = cyc_cost(sampBuf, cndC, cndL, r, rl, p0, maxIdx);
+			m0 = root_at(pbuf, cndC / nrm, rootMidi, dynOn);
+			m1 = root_at(pbuf, (cndC + 0.5 * cndL) / nrm, rootMidi, dynOn);
+			m2 = root_at(pbuf, (cndC + cndL) / nrm, rootMidi, dynOn);
+			dmv = max(max(m0, m1), m2) - min(min(m0, m1), m2);
+			spanPen = max(dmv - 0.2, 0.0);
+			cndS = cndS + cndE * min(400.0 * spanPen * spanPen, 60.0);
+			if (cndS < bestS) {
+				bestS = cndS;
+				bestC = cndC;
+				bestE = cndE;
+			}
+		}
+	}
+	return bestC;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -754,7 +852,7 @@ job_ola(sdat, sb, twr) {
 
 // Spectral voice: phase-vocoder stretcher for one of the first 4 voices. Returns the stereo output, the
 // normalised playhead and 0. Runs only while mode == 3 and the voice is held or releasing.
-spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn, playPosNorm, startNorm, endNorm, loopMode, loopStartNorm, loopEndNorm, reverseOn, rootMidi, pitchSt, fineCents, glideCoef, formantSt, speedIn, slicePlay, lfoSig, lfoPitchAmt, lfoPosAmt, menvPitchAmt, menvPosAmt, modEnvPrev, ampEnvPrev, numFrames, srVal) {
+spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn, playPosNorm, startNorm, endNorm, loopMode, loopStartNorm, loopEndNorm, reverseOn, rootMidi, pitchSt, fineCents, glideCoef, formantSt, speedIn, slicePlay, lfoSig, lfoPitchAmt, lfoPosAmt, menvPitchAmt, menvPosAmt, modEnvPrev, ampEnvPrev, numFrames, srVal, pitchBuf) {
 	sb = vIdx * 55392;
 	prevTrig = peek(sdat, sb + 55360 + 0);
 	wasOn = peek(sdat, sb + 55360 + 1);
@@ -802,11 +900,15 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 	// Pitch (same recipe as voice_proc, one frame late for the Mod Env)
 	curNote = mix(vNote, curNote, glideCoef);
 	pSemis = pitchSt + fineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + modEnvPrev * menvPitchAmt * 24.0;
-	semis = ((slicedFlag > 0.5) ? 0.0 : (curNote - rootMidi)) + pSemis;
+	// Analyzed Root Key: the root at the analysis position (rootMidi when root_dyn is off).
+	// While frozen the analysis sits at Pos, not at the (parked) playhead.
+	rootPos = (freezeOn > 0.5) ? clip(effS + playPosNorm * (effE - effS) + posMod, effS, effE) : headN;
+	rootHere = root_at(pitchBuf, rootPos, rootMidi, peek(prm, 53));
+	semis = (((slicedFlag > 0.5) ? rootMidi : curNote) - rootHere) + pSemis;
 	pr = pow(2.0, clip(semis, -48, 48) / 12.0);
 	noteSemi = ((slicedFlag > 0.5) ? rootMidi : curNote) + pSemis;
 	fNote = 440.0 * pow(2.0, (noteSemi - 69.0) / 12.0);
-	rootHz = 440.0 * pow(2.0, (rootMidi - 69.0) / 12.0);
+	rootHz = 440.0 * pow(2.0, (rootHere - 69.0) / 12.0);
 	fmtSemi = formantSt * peek(prm, 41);
 	fEff = pow(2.0, clip(fmtSemi, -48, 48) / 12.0) * ((peek(prm, 52) > 0.5) ? pr : 1.0);
 	reharm = (peek(prm, 40) > 0.5) ? 1 : 0;
@@ -1058,7 +1160,8 @@ voice_proc(
 	vhist,
 	extL,
 	extR,
-	extPos
+	extPos,
+	pitchBuf
 ) {
 	stB = vIdx * 256;
 	prevTrig = peek(vhist, stB + 0);
@@ -1100,9 +1203,10 @@ voice_proc(
 	allocIdx = peek(vhist, stB + 36);
 	survTimer = peek(vhist, stB + 37);
 
-	gB = vIdx * 344;
+	gB = vIdx * 360;
 	latB = gB + 320;
 	mpB = gB + 336;
+	lenB = gB + 344;
 	baseSlot = vIdx * 8;
 	vGate = peek(vdataBuf, baseSlot + 0);
 	vNote = peek(vdataBuf, baseSlot + 1);
@@ -1177,12 +1281,6 @@ voice_proc(
 	modEnv = clip(modEnv, 0, 1);
 
 	curNote = mix(vNote, curNote, glideCoef);
-	pitchSemiOffset = (isSlice ? 0 : (curNote - rootMidi))
-		+ pitchSt
-		+ fineCents * 0.01
-		+ lfoSig * lfoPitchAmt * 24.0
-		+ modEnv * menvPitchAmt * 24.0;
-	baseRatio = pow(2.0, clip(pitchSemiOffset, -48, 48) / 12.0);
 	// Sliced: the MIDI note picks the slice, so the pitch tracks the root key.
 	hzNote = isSlice ? rootMidi : curNote;
 	baseHz = 440.0 * pow(2.0, (hzNote - 69.0 + pitchSt + fineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + modEnv * menvPitchAmt * 24.0) / 12.0);
@@ -1271,6 +1369,21 @@ voice_proc(
 	prevBS = effStartNorm;
 	prevBE = effEndNorm;
 	origin = playheadNorm * numFrames;
+
+	// Analyzed Root Key: the root at the voice's read position (folded for a ping-pong loop), so the ratio follows the
+	// pitch curve while the playhead moves. Sliced keys play the root pitch (the note picks the slice). With root_dyn
+	// off root_at returns rootMidi and this is the plain note - root ratio.
+	rootPosF = playheadNorm * numFrames;
+	if ((modeId < 0.5) && (effLoopMode > 1.5) && (isSlice || (rootPosF >= effLStart))) {
+		rootPosF = pp_pos(rootPosF, effLStart, effLEnd);
+	}
+	rootNow = root_at(pitchBuf, rootPosF / max(numFrames, 1), rootMidi, peek(prm, 53));
+	pitchSemiOffset = ((isSlice ? rootMidi : curNote) - rootNow)
+		+ pitchSt
+		+ fineCents * 0.01
+		+ lfoSig * lfoPitchAmt * 24.0
+		+ modEnv * menvPitchAmt * 24.0;
+	baseRatio = pow(2.0, clip(pitchSemiOffset, -48, 48) / 12.0);
 
 	sigL = 0;
 	sigR = 0;
@@ -1392,12 +1505,13 @@ voice_proc(
 		if (freezeOn > 0.5) {
 			playheadNorm = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm);
 		} else {
-			// Sliced: natural-speed scan with the slice_play end behaviour. Single: a slow scan whose end behaviour is
-			// the Loop mode (Off stops at the end, Fwd wraps inside the loop region, Ping-Pong bounces).
+			// The playhead moves by elapsed time x Speed (grain_motion 1.0 = real time, one source frame per output
+			// sample) whatever note is played: pitch is locked to the key, time is independent. Sliced ends like
+			// slice_play, Single like the Loop mode (Off stops at the end, Fwd wraps inside the loop region, Ping-Pong bounces).
 			wmCy = isSlice ? wmSlice : ((loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0));
 			rloCy = isSlice ? effStartNorm : clip(loopStartNorm, effStartNorm, effEndNorm - 0.002);
 			rhiCy = isSlice ? effEndNorm : clip(loopEndNorm, rloCy + 0.002, effEndNorm);
-			stepCy = isSlice ? (abs(grainMotion) / max(numFrames, 1)) : (abs(grainMotion) * 0.35 / max(srVal, 1));
+			stepCy = abs(grainMotion) / max(numFrames, 1);
 			hn, dn, dd = head_step(playheadNorm, scanDir, stepCy, effStartNorm, effEndNorm, rloCy, rhiCy, wmCy);
 			playheadNorm = hn;
 			scanDir = dn;
@@ -1406,7 +1520,7 @@ voice_proc(
 			}
 		}
 		anchorNorm = clip(playheadNorm + ((freezeOn > 0.5) ? 0.0 : posMod), effStartNorm, effEndNorm);
-		rootHz = 440.0 * pow(2.0, (rootMidi - 69.0) / 12.0);
+		rootHz = 440.0 * pow(2.0, (root_at(pitchBuf, anchorNorm, rootMidi, peek(prm, 53)) - 69.0) / 12.0);
 		cycleLenF = clip(srVal / max(rootHz, 20.0), 32.0, 8192.0);
 		halfRead = cycleLenF * max(formSm, 1.0) * 0.5;
 		anchorTop = max(numFrames - 1 - halfRead, 0);
@@ -1430,6 +1544,8 @@ voice_proc(
 				pCur = (u == 0) ? 0.0 : ((u == 1) ? 0.02 : ((u == 2) ? 0.05 : ((u == 3) ? 0.09 : ((u == 4) ? 0.14 : ((u == 5) ? 0.20 : ((u == 6) ? 0.27 : 0.35))))));
 				poke(vst, anchorF, latB + u);
 				poke(vst, anchorF, latB + 8 + u);
+				poke(vst, cycleLenF, lenB + u);
+				poke(vst, cycleLenF, lenB + 8 + u);
 				poke(vst, 0, mpB + u);
 			}
 			pCur = fract(pCur);
@@ -1445,21 +1561,34 @@ voice_proc(
 				pBprev = fract(pCur + 0.5);
 				wA = 0.5 - 0.5 * cos(6.28318530718 * pNext);
 				wB = 0.5 - 0.5 * cos(6.28318530718 * pB);
-				// Both grains read the SAME phase (pNext); only the window (offset 0.5) and the latched anchor differ.
-					// Reading B at pNext + 0.5 made a periodic source sum to -sin(2x) (an octave up).
-					// Crossfade two voices: each window latches the anchor at its own cycle start.
-				ancA = anchorF;
-				ancB = anchorF;
-				if (cyXf > 0.5) {
-					if (pNext < pCur) {
-						poke(vst, anchorF, latB + u);
+				// Both grains read the SAME phase (pNext); only the window (offset 0.5) and the latched cycle differ.
+				// Reading B at pNext + 0.5 made a periodic source sum to -sin(2x) (an octave up).
+				// Each grain latches a cycle (start anchor + length) when its own window is at zero: A at its read seam,
+				// B half a cycle later (cy_xfade), or B together with A (xfade off: one stream, the windows sum to 1).
+				// A cycle starts a whole number of source periods from the previous one (cyc_align), so the output period
+				// stays exactly the note period while the playhead scans, windows stay in phase and a pitch step in the
+				// source is joined at the best-matching phase.
+				seamA = (pNext < pCur);
+				seamB = (pB < pBprev);
+				if (seamA || ((cyXf > 0.5) && seamB)) {
+					refA = seamA ? peek(vst, latB + 8 + u) : peek(vst, latB + u);
+					refL = seamA ? peek(vst, lenB + 8 + u) : peek(vst, lenB + u);
+					lat1 = cyc_len(pitchBuf, anchorF + 0.5 * cycleLenF, numFrames, rootMidi, peek(prm, 53), srVal);
+					latC = cyc_align(sampBuf, pitchBuf, anchorF, lat1, refA, refL, seamA ? 0.0 : 0.5, (anchorTop > halfRead) ? halfRead : anchorF, (anchorTop > halfRead) ? anchorTop : anchorF, maxIdxC, numFrames, rootMidi, peek(prm, 53), srVal);
+					latL = cyc_len(pitchBuf, latC + 0.5 * lat1, numFrames, rootMidi, peek(prm, 53), srVal);
+					if (seamA) {
+						poke(vst, latC, latB + u);
+						poke(vst, latL, lenB + u);
 					}
-					if (pB < pBprev) {
-						poke(vst, anchorF, latB + 8 + u);
+					if (seamB || (cyXf < 0.5)) {
+						poke(vst, latC, latB + 8 + u);
+						poke(vst, latL, lenB + 8 + u);
 					}
-					ancA = peek(vst, latB + u);
-					ancB = peek(vst, latB + 8 + u);
 				}
+				ancA = peek(vst, latB + u);
+				ancB = peek(vst, latB + 8 + u);
+				lenA = max(peek(vst, lenB + u), 32.0);
+				lenBv = max(peek(vst, lenB + 8 + u), 32.0);
 				// Phase character: dirty-sine modulator at a stepped multiple of the pitch.
 				pmV = 0;
 				if (cyChar > 1.5) {
@@ -1467,8 +1596,8 @@ voice_proc(
 					poke(vst, mph, mpB + u);
 					pmV = cyMod * 0.5 * (sin(6.28318530718 * mph) + 0.28 * sin(6.28318530718 * 3.0 * mph + 0.9) + 0.12 * sin(6.28318530718 * 5.0 * mph));
 				}
-				aL, aR = cyc_wave(sampBuf, ancA, cycleLenF, formSm, pNext, cyChar, cyDuty, cySplit, pmV, maxIdxC);
-				bL, bR = cyc_wave(sampBuf, ancB, cycleLenF, formSm, pNext, cyChar, cyDuty, cySplit, pmV, maxIdxC);
+				aL, aR = cyc_wave(sampBuf, ancA, lenA, formSm, pNext, cyChar, cyDuty, cySplit, pmV, maxIdxC);
+				bL, bR = cyc_wave(sampBuf, ancB, lenBv, formSm, pNext, cyChar, cyDuty, cySplit, pmV, maxIdxC);
 				cL = aL * wA + bL * wB;
 				cR = aR * wA + bR * wB;
 				if ((cyChar > 0.5) && (cyChar < 1.5)) {
@@ -1759,13 +1888,14 @@ voice_proc(
 Buffer samp("bsamp");
 Buffer vdata("bsvoices");
 Buffer scope("bsscope");
+Buffer pitch("bspitch");
 
 // Shared tables and the new-parameter table (layout below)
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
 Data prm(64);
-Data vst(5504);
+Data vst(5760);
 Data vhist(4096);
 Data sext(12);
 Data vres(48);
@@ -1777,6 +1907,7 @@ Param mode(0, min=0, max=4);
 Param sliced(0, min=0, max=1);
 Param freeze(0, min=0, max=1);
 Param root_note(60, min=0, max=127);
+Param root_dyn(0, min=0, max=1);
 Param pitch_st(0, min=-36, max=36);
 Param fine_cents(0, min=-100, max=100);
 Param play_pos(0, min=0, max=1);
@@ -1945,7 +2076,8 @@ numFrames = max(dim(samp), 1);
 //   20 fr_env, 21 fr_repeats, 22 fr_density, 23 fr_use_density, 24 fr_motion, 25 fr_max_grains,
 //   26 fr_sync, 27 fr_direction, 28 fr_latch, 29 fr_repeat_init, 30 fr_survive, 31 tempo,
 //   40 sp_char, 41 sp_shift, 42 sp_bend, 43 sp_quant, 44 sp_key, 45 sp_scale, 46 sp_quant_amt,
-//   47 sp_onsets, 48 sp_formant_on, 49 sp_dispersion, 50 sp_quality, 51 sp_live, 52 sp_rel_formant
+//   47 sp_onsets, 48 sp_formant_on, 49 sp_dispersion, 50 sp_quality, 51 sp_live, 52 sp_rel_formant,
+//   53 effective Analyzed Root Key flag (root_dyn on and #0-bspitch bound)
 poke(prm, sliced, 0);
 poke(prm, rp_char, 1);
 poke(prm, rp_dist, 2);
@@ -1984,6 +2116,9 @@ poke(prm, sp_dispersion, 49);
 poke(prm, sp_quality, 50);
 poke(prm, sp_live, 51);
 poke(prm, sp_rel_formant, 52);
+// Analyzed Root Key: on only with root_dyn set and a bound pitch curve (dim >= 2); else every engine uses root_note.
+rootDynOn = ((root_dyn > 0.5) && (dim(pitch) >= 2)) ? 1 : 0;
+poke(prm, rootDynOn, 53);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H
 prevLfoPhs = lfoPhs;
@@ -2009,7 +2144,7 @@ glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (glide_ms * srVal));
 // Spectral voices (voices 0..3 only), one loop so the phase vocoder compiles once. The Mod / Amp envelope of
 // the previous sample comes from vres (written by the voice loop below).
 for (svx = 0; svx < 4; svx += 1) {
-	sL, sR, sP, sZ = spec_voice(samp, vdata, twr, twi, brv, prm, sdat, svx, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, peek(vres, svx * 3 + 2), peek(vres, svx * 3 + 1), numFrames, srVal);
+	sL, sR, sP, sZ = spec_voice(samp, vdata, twr, twi, brv, prm, sdat, svx, mode, freeze, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, reverse, root_note, pitch_st, fine_cents, glideCoef, formant, grain_motion, slice_play, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, peek(vres, svx * 3 + 2), peek(vres, svx * 3 + 1), numFrames, srVal, pitch);
 	poke(sext, sL, svx * 3);
 	poke(sext, sR, svx * 3 + 1);
 	poke(sext, sP, svx * 3 + 2);
@@ -2043,7 +2178,7 @@ for (vox = 0; vox < 16; vox += 1) {
 	voM = 0;
 	voS = peek(vhist, vhOff + 32);
 	if (voIdle < 0.5) {
-		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP);
+		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch);
 	}
 	sumL = sumL + voL;
 	sumR = sumR + voR;
@@ -2136,6 +2271,7 @@ if (scopeCount >= 64) {
 	poke(scope, numFrames, 38);
 	poke(scope, scopeFrame, 39);
 	poke(scope, spawnSum, 48);
+	poke(scope, rootDynOn, 49);
 	// The parameter values the gen is actually running with (40..47), so a test or the bridge can tell whether the
 	// device's messages reached it: sliced, loop_mode, slice_play, mode, freeze, reverse, root_note, loop_start.
 	poke(scope, sliced, 40);

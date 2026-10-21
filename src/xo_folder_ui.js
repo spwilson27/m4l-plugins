@@ -42,6 +42,13 @@ function loadbang() {
   mgraphics.redraw();
 }
 
+/** Theme switch (Options > Theme): picks the palette (src/xo_palette.js); `set_theme <index>` or `set_theme <name>`. */
+function set_theme(...args) {
+  const a = args.length ? args[args.length - 1] : 0;
+  xoPaletteSet(typeof a === "string" ? a : (Math.round(Number(a)) === 1 ? "Focus" : "LCD"));
+  mgraphics.redraw();
+}
+
 function folder_list_sync(count, ...flat) {
   const next = [];
   for (let i = 0; i + 3 < flat.length; i += 4) {
@@ -168,17 +175,17 @@ function paint() {
   const h = sz[1];
 
   // Background
-  mgraphics.set_source_rgba(0.065, 0.08, 0.105, 1.0);
+  xoSrc(0.065, 0.08, 0.105, 1.0);
   mgraphics.rectangle_rounded(0, 0, w, h, 3, 3);
   mgraphics.fill();
 
-  mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.35);
+  xoSrc(0.22, 0.74, 0.97, 0.35);
   mgraphics.set_line_width(1.0);
   mgraphics.rectangle_rounded(0.5, 0.5, w - 1, h - 1, 3, 3);
   mgraphics.stroke();
 
   // Top Header Bar
-  mgraphics.set_source_rgba(0.095, 0.12, 0.155, 1.0);
+  xoSrc(0.095, 0.12, 0.155, 1.0);
   mgraphics.rectangle(1, 1, w - 2, HEADER_H - 1);
   mgraphics.fill();
 
@@ -186,15 +193,15 @@ function paint() {
   const anyScanning = folders.some((f) => f.scanning);
   mgraphics.select_font_face("Arial", "normal", "bold");
   mgraphics.set_font_size(7.8);
-  mgraphics.set_source_rgba(0.22, 0.74, 0.97, 1.0);
+  xoSrc(0.22, 0.74, 0.97, 1.0);
   mgraphics.move_to(4, 10.5);
   mgraphics.show_text(`FOLDERS (${activeCount}/${folders.length})`);
 
   if (anyScanning) {
-    mgraphics.set_source_rgba(1.0, 0.70, 0.18, 0.24);
+    xoSrc(1.0, 0.70, 0.18, 0.24);
     mgraphics.rectangle_rounded(76, 2, 42, 11, 2, 2);
     mgraphics.fill();
-    mgraphics.set_source_rgba(1.0, 0.75, 0.22, 1.0);
+    xoSrc(1.0, 0.75, 0.22, 1.0);
     mgraphics.arc(82, 7.5, 2.0, 0, Math.PI * 2);
     mgraphics.fill();
     mgraphics.set_font_size(6.8);
@@ -205,19 +212,19 @@ function paint() {
   // "All" mini button
   const allBtnX = w - 53;
   const addBtnX = w - 30;
-  mgraphics.set_source_rgba(0.16, 0.21, 0.28, 1.0);
+  xoSrc(0.16, 0.21, 0.28, 1.0);
   mgraphics.rectangle_rounded(allBtnX, 2, 21, 11, 2, 2);
   mgraphics.fill();
-  mgraphics.set_source_rgba(0.82, 0.88, 0.95, 1.0);
+  xoSrc(0.82, 0.88, 0.95, 1.0);
   mgraphics.set_font_size(7.2);
   mgraphics.move_to(allBtnX + 5, 10);
   mgraphics.show_text("All");
 
   // "+Add" mini button
-  mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.24);
+  xoSrc(0.22, 0.74, 0.97, 0.24);
   mgraphics.rectangle_rounded(addBtnX, 2, 27, 11, 2, 2);
   mgraphics.fill();
-  mgraphics.set_source_rgba(0.35, 0.82, 1.0, 1.0);
+  xoSrc(0.35, 0.82, 1.0, 1.0);
   mgraphics.move_to(addBtnX + 3, 10);
   mgraphics.show_text("+Add");
 
@@ -230,7 +237,7 @@ function paint() {
     const ry = HEADER_H + 1 + r * ROW_H;
     const isOn = !!item.enabled;
 
-    mgraphics.set_source_rgba(
+    xoSrc(
       isOn ? 0.11 : 0.08,
       isOn ? 0.145 : 0.095,
       isOn ? 0.19 : 0.12,
@@ -244,18 +251,18 @@ function paint() {
     const cbY = ry + 3.5;
     const cbS = 9.5;
     if (isOn) {
-      mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.9);
+      xoSrc(0.22, 0.74, 0.97, 0.9);
       mgraphics.rectangle_rounded(cbX, cbY, cbS, cbS, 1.8, 1.8);
       mgraphics.fill();
       // Checkmark vector path
-      mgraphics.set_source_rgba(0.05, 0.07, 0.10, 1.0);
+      xoSrc(0.05, 0.07, 0.10, 1.0);
       mgraphics.set_line_width(1.4);
       mgraphics.move_to(cbX + 2.0, cbY + 5.0);
       mgraphics.line_to(cbX + 4.2, cbY + 7.2);
       mgraphics.line_to(cbX + 7.8, cbY + 2.5);
       mgraphics.stroke();
     } else {
-      mgraphics.set_source_rgba(0.35, 0.42, 0.50, 0.8);
+      xoSrc(0.35, 0.42, 0.50, 0.8);
       mgraphics.set_line_width(1.0);
       mgraphics.rectangle_rounded(cbX, cbY, cbS, cbS, 1.8, 1.8);
       mgraphics.stroke();
@@ -265,7 +272,7 @@ function paint() {
     const maxChars = w >= 180 ? 22 : 12;
     mgraphics.select_font_face("Arial", "normal", isOn ? "bold" : "normal");
     mgraphics.set_font_size(7.6);
-    mgraphics.set_source_rgba(
+    xoSrc(
       isOn ? 0.90 : 0.50,
       isOn ? 0.94 : 0.56,
       isOn ? 0.98 : 0.64,
@@ -276,21 +283,21 @@ function paint() {
 
     // Sample Count or Active Scanning Indicator
     if (item.scanning) {
-      mgraphics.set_source_rgba(1.0, 0.72, 0.20, 0.85);
+      xoSrc(1.0, 0.72, 0.20, 0.85);
       mgraphics.set_line_width(1.0);
       mgraphics.rectangle_rounded(2, ry + 1, w - 8, ROW_H - 2, 2, 2);
       mgraphics.stroke();
 
       mgraphics.select_font_face("Arial", "normal", "bold");
       mgraphics.set_font_size(6.6);
-      mgraphics.set_source_rgba(1.0, 0.75, 0.22, 1.0);
+      xoSrc(1.0, 0.75, 0.22, 1.0);
       const scanStr = `SCAN ${item.count || 0}`;
       mgraphics.move_to(w - 22 - scanStr.length * 3.8, ry + 11.0);
       mgraphics.show_text(scanStr);
     } else {
       mgraphics.select_font_face("Arial", "normal", "normal");
       mgraphics.set_font_size(6.8);
-      mgraphics.set_source_rgba(0.55, 0.63, 0.72, 0.9);
+      xoSrc(0.55, 0.63, 0.72, 0.9);
       const cntStr = String(item.count || 0);
       mgraphics.move_to(w - 21 - cntStr.length * 4.0, ry + 11.0);
       mgraphics.show_text(cntStr);
@@ -299,10 +306,10 @@ function paint() {
     // Per-Row [x] Delete Folder Button
     const delX = w - 18;
     const delY = ry + 3;
-    mgraphics.set_source_rgba(0.26, 0.16, 0.18, 0.88);
+    xoSrc(0.26, 0.16, 0.18, 0.88);
     mgraphics.rectangle_rounded(delX, delY, 11, 11, 2, 2);
     mgraphics.fill();
-    mgraphics.set_source_rgba(0.95, 0.45, 0.48, 0.95);
+    xoSrc(0.95, 0.45, 0.48, 0.95);
     mgraphics.set_line_width(1.1);
     mgraphics.move_to(delX + 3.0, delY + 3.0);
     mgraphics.line_to(delX + 8.0, delY + 8.0);
@@ -314,7 +321,7 @@ function paint() {
   if (folders.length === 0) {
     mgraphics.select_font_face("Arial", "normal", "normal");
     mgraphics.set_font_size(7.5);
-    mgraphics.set_source_rgba(0.50, 0.56, 0.64, 1.0);
+    xoSrc(0.50, 0.56, 0.64, 1.0);
     mgraphics.move_to(8, 38);
     mgraphics.show_text("No folders in index.");
     mgraphics.move_to(8, 50);
@@ -326,7 +333,7 @@ function paint() {
     const trackX = w - 4.5;
     const trackY = HEADER_H + 2;
     const trackH = h - HEADER_H - 4;
-    mgraphics.set_source_rgba(0.14, 0.17, 0.22, 1.0);
+    xoSrc(0.14, 0.17, 0.22, 1.0);
     mgraphics.rectangle_rounded(trackX, trackY, 2.5, trackH, 1, 1);
     mgraphics.fill();
 
@@ -334,7 +341,7 @@ function paint() {
     const thumbH = Math.max(10, trackH * thumbRatio);
     const maxScroll = Math.max(1, folders.length - MAX_VIS_ROWS);
     const thumbY = trackY + (scrollOffset / maxScroll) * (trackH - thumbH);
-    mgraphics.set_source_rgba(0.22, 0.74, 0.97, 0.85);
+    xoSrc(0.22, 0.74, 0.97, 0.85);
     mgraphics.rectangle_rounded(trackX, thumbY, 2.5, thumbH, 1, 1);
     mgraphics.fill();
   }

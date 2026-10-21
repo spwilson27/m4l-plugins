@@ -470,13 +470,22 @@ function paintSamplePanel() {
         text(liveActiveVoices + " / " + curPolyVoices, vx + 14, sy + 13, 9.0, COL.blue, false, 0);
     }
 
-    var rx = sx + 340;
-    text("ROOT", rx, sy + 13, 8.5, COL.label, true, 0);
-    var noteW = text(midiToNoteName(curRootNote), rx + 32, sy + 13, 9.0, COL.blue, false, 0);
-    zone("value", rx + 30, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
-    var fine = Math.round(paramValue("fine_cents"));
-    var fineW = text(fine + " ct", rx + 48, sy + 13, 9.0, COL.blue, false, 0);
-    zone("value", rx + 46, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
+    // ROOT: click the icon / label to switch between a fixed key and Analyzed Root Key ("Dynamic")
+    var rx = sx + 330;
+    var rc = rootDyn ? COL.blue : COL.label;
+    strokeArc(rx + 4, sy + 9, 3.6, 0, Math.PI * 2, rc, 1.0, 1.2);
+    line(rx + 1, sy + 9, rx + 7, sy + 9, rc, 1.0, 1.0);
+    text("ROOT", rx + 11, sy + 13, 8.5, COL.label, true, 0);
+    zone("button", rx - 2, sy + 1, 44, 15, { action: "toggle", key: "root_dyn" });
+    if (rootDyn) {
+        text(pitchCurve ? "Dynamic" : "Dynamic…", rx + 46, sy + 13, 9.0, COL.label, false, 0);
+    } else {
+        var noteW = text(midiToNoteName(curRootNote), rx + 46, sy + 13, 9.0, COL.blue, false, 0);
+        zone("value", rx + 44, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
+        var fine = Math.round(paramValue("fine_cents"));
+        var fineW = text(fine + " ct", rx + 62, sy + 13, 9.0, COL.blue, false, 0);
+        zone("value", rx + 60, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
+    }
 
     // L / R output meters
     var mx = sx + sw - 30;
@@ -551,6 +560,9 @@ function paintSamplePanel() {
         }
         line(phx, wy, phx, wy + wh, COL.blue, Math.min(1, 0.35 + voiceAmps[v]), 1.0);
     }
+
+    // Analyzed Root Key curve sits above the loop and slice overlays
+    if (rootDyn && pitchCurve && hasLoadedSample) paintPitchCurve(wx, wy, ww, wh);
 
     // Start / end: yellow flags at the top, or blue handles at the bottom in Sliced mode (Bitwig)
     var stX = wx + curStart * ww, enX = wx + curEnd * ww;
@@ -650,6 +662,35 @@ function paintSlicedFooter(sx, sw, fy) {
     var plW = text("Playback", px2 - 30, fy, 8.5, COL.label, true, 2);
     zone("button", px2 - 34 - plW, fy - 11, plW + 36, 14, { action: "menu", key: "slice_play", mw: 128 });
 }
+// Analyzed Root Key curve: pitch over the sample, scaled to its own range (padded 2 st), brighter
+// where the tracker is confident
+function paintPitchCurve(wx, wy, ww, wh) {
+    var n = pitchCurve.length;
+    var lo = Infinity, hi = -Infinity;
+    for (var i = 0; i < n; i++) { var v = pitchCurve[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    lo -= 2; hi += 2;
+    var span = Math.max(4, hi - lo);
+    var top = wy + 6, bot = wy + wh - 6;
+    var cols = Math.max(2, Math.round(ww));
+    var runVoiced = -1;
+    mgraphics.set_line_width(1.6);
+    for (var c = 0; c <= cols; c++) {
+        var idx = Math.min(n - 1, Math.round(c / cols * (n - 1)));
+        var vz = pitchVoiced ? pitchVoiced[idx] : 1;
+        var px = wx + c / cols * ww;
+        var py = bot - (pitchCurve[idx] - lo) / span * (bot - top);
+        if (vz !== runVoiced) {
+            if (runVoiced >= 0) { mgraphics.line_to(px, py); mgraphics.stroke(); }
+            setc(COL.orange, vz ? 0.95 : 0.4);
+            mgraphics.move_to(px, py);
+            runVoiced = vz;
+        } else {
+            mgraphics.line_to(px, py);
+        }
+    }
+    mgraphics.stroke();
+}
+
 function fmtPos(norm) {
     return sampleDurationMs > 0 ? fmtTime(norm * sampleDurationMs) : (norm * 100).toFixed(1) + " %";
 }

@@ -10,6 +10,8 @@
 #                                    MCP bridge. Live is the only instance there: no dialog, relaunch
 #                                    freely after every build (crash-recovery files are cleared after
 #                                    the quit, or Live stops at a "recover your work?" dialog).
+#   scripts/vm_delayplus.sh run      live + test under ONE hold of the Live lock (scripts/vm_live_lock.sh); live and
+#                                 test alone also take it. `scripts/vm_live_lock.sh status` shows the holder.
 #   scripts/vm_delayplus.sh test     run scripts/test_delayplus_live.js on the host through an ssh
 #                                    tunnel (local 19877 -> VM 127.0.0.1:9877, the bridge port)
 set -u
@@ -17,7 +19,7 @@ VM=macos-1
 LOCAL_PORT=19877
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IP="$(tart ip $VM 2>/dev/null)"
+IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
@@ -26,7 +28,13 @@ sync_repo() {
     -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
 }
 
+# Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
+# calls see M4L_LIVE_LOCK_HELD=1 and run directly). `run` = lock -> live -> test -> release.
+case "${1:-}" in live|test|run) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=delayplus_test.als exec "$ROOT/scripts/vm_live_lock.sh" delayplus -- "$0" "$@" ;; esac
+
 case "${1:-}" in
+  run)
+    "$0" live && "$0" test ;;
   sync)
     sync_repo ;;
   audio)
@@ -46,5 +54,5 @@ case "${1:-}" in
     for i in $(seq 1 20); do curl -s -m 1 "http://127.0.0.1:${LOCAL_PORT}/health" >/dev/null && break; sleep 0.5; done
     node "$ROOT/scripts/test_delayplus_live.js" --port "$LOCAL_PORT" ;;
   *)
-    sed -n '2,15p' "$0"; exit 1 ;;
+    sed -n '2,/^set -u/p' "$0"; exit 1 ;;
 esac

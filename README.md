@@ -2,13 +2,14 @@
 
 A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1+)**:
 
-1. **`devices/XO Sample Map.amxd`** — An XLN Audio XO–inspired 2D Drum Sample Space Browser, Auto-Categorizer, Similarity Explorer, and Simpler / Drum Rack Pad Loader (`Node for Max` + `jweb` pop-out window + in-device `v8ui` mini-map + `LiveAPI`).
+1. **`devices/XO Sample Map.amxd`** — An XLN Audio XO–inspired 2D Drum Sample Space Browser, Auto-Categorizer, Similarity Explorer, and Simpler / Drum Rack Pad Loader (`Node for Max` + in-device `v8ui` mini-map + `LiveAPI`).
 2. **`devices/Tiny Space.amxd`** — A "tiny space" reverb (20 delay lines) with Size, Damp, Width, Dry/Wet, Feedback, Pre-delay, Modulation, Crossfeed, and HP/LP. A Seed (0–1000) scales active delay-line density from 4 up to 20 lines and picks delay times and diffusion character. Vibrating delay-line display.
 3. **`devices/Better Shaper.amxd`** — A Bitwig Studio–inspired MSEG curve modulator with audio-rate wavetable lookup, loop sub-regions, step-brush painting, S-curves, undo/redo history, and an 8-slot modulation matrix.
 4. **`devices/Sand.amxd`** — A differential compander. It expands quiet parts of the signal’s derivative (orders −1 through 15) and soft-limits the peaks, with a movable filter, split dry/wet, and a final clip/limit stage.
 5. **`devices/Reciprocator.amxd`** — An upgraded reciprocal envelope dynamics & audio-rate waveshaping processor (`x / env^amount`) with a smooth noise gate floor, lookahead delay, Peak/RMS detector blend, sidechain HP/LP filters, soft-clip ceiling, and a live scrolling envelope/gate/output HUD.
 7. **`devices/Percipitator.amxd`** (`408 x 169` px) — A 16-band scale-quantized wavetable resynthesizer inspired by Woulg's *WR-Percipitator*, featuring a 4-frame `Sine -> Triangle -> Saw -> Square` wavetable bank, scrollable phase warp (`Bend`, `Asym`, `Sync`, `Fold`) & Partial Sieve (`All`, `Odd`, `Even`, `Sprs`, `Rise`) selectors, Spectral Tilt, `±2000 Hz` Frequency Shift, horizontal value-bar sliders for `Vol` and `Mix`, Sidechain MIDI pitch locking, and an audio-reactive Partials Viewer + 12-Note Scale Strip UI.
 8. **`devices/Degrade.amxd`** (`480 x 169` px) — A modular 5-section reorderable digital & codec degradation processor (`1. BIT` bitcrush/integer-wrap/dither, `2. SR` sample-rate/jitter, `3. COD` SpecOps `MP3ify`/`MAIM`-style 12-band sinusoidal MDCT spectral holes, block-smear pre-echo & birdies, `4. TEL` `uLaw`/`ALaw`/`ADPC`/`GSM` voice companding, and `5. FFT` `Den`/`Scr`/`Spl`/`Cmb` spectral glitch) with zero-CPU section bypass gates and a switchable Technical/Abstract audio-reactive visualizer.
+9. **Spectral Split suite** — copies of Bitwig's Spectral Suite splitters, each shipped with a ready rack preset (`.adg`, one chain per output; the device goes first in every chain and the chains sum back to the input, 4096 samples latency, parameters linked across the chains): **`devices/Transient Split.amxd`** (Transients / Tones), **`devices/Loud Split.amxd`** (Quiet / Mid / Loud), **`devices/Harmonic Split.amxd`** (Nonharmonics / Harmonics A / Harmonics B, pitch-tracked) and **`devices/Freq Split.amxd`** (up to 1024 frequency splits sorted into four channels). Details in AGENTS.md sections 22–26.
 
 ---
 
@@ -17,11 +18,10 @@ A collection of custom Max for Live devices for **Ableton Live 12 Suite (Max 9.1
 An XLN Audio XO–style 2D sample constellation browser and sample exporter that analyzes drum & one-shot folders, clusters samples by acoustic similarity, and lets you scrub-audition, shape (`Pitch`, `Trim/Decay`, `Gain`), save a curated list of samples with their associated playback settings, and drag them out of the device as either **Raw** or **Edited** (re-rendered with Pitch/Trim/Gain applied) audio files.
 
 ### Features
-- **Dual UI (Compact In-Device Mini Editor + Large Pop-Out `jweb` Sample Space Window)**:
+- **In-Device UI (Compact Mini Editor)**:
   - **In-Device Mini Editor (`v8ui`, `372 x 134` px)**:
     - **Left Pane (`x = 0..244`)**: 24-bar waveform viewer with a **live scanning playhead line**, interactive 2D sample constellation map with k-NN similarity lines, drag-to-scrub auditioning, and a 12-item geometric vector icon toolbar (`All`, `Kick`, `Snare`, `Hihat`, `Clap`, `Tom`, `Cymbal`, `Perc`, `FX`, `Prev Similar`, `Next Similar`, `Random`).
     - **Right Pane (`x = 237..372`) — Scrollable Saved Samples List & OS File Drag-Out Dock**: Displays saved samples alongside their captured playback settings (`Pitch`, `Trim/Decay`, `Gain`). Supports scrolling (scrollbar track/thumb & wheel), clicking to select/recall, vertical drag-to-reorder, deleting items (`[×]` button or `Delete`/`Backspace` key), a `+Save` button (`S` hotkey), per-item **`[R]` (Raw)** and **`[E]` (Edited)** OS file drag handles, and bottom **`[Drag Raw]`** / **`[Drag Edit]`** batch OS file drag zones.
-  - **Pop-Out Floating Window (`p XOMapWindow`, `1040 x 680` px `jweb` Canvas)**: High-DPI 60fps HTML5 Canvas with smooth wheel/pinch zoom, pan, hover tooltips, color mode switcher (`Category`, `Brightness`, `Pitch`, `Duration`), 4-band spectral analyzer (`SUB`, `LOW`, `MID`, `HIGH`), animated waveform scanning playhead, and full Saved Samples Raw/Edited drag-out sidebar.
 - **Visibly Separate Filters vs. Playback Controls**:
   - **`FILTERS` Panel (`x = 392..530`)**: Dedicated cyan-bordered panel housing the **Search Textbox** (`textedit` + `Clr` button for filtering by sample name), **`MaxLen`** dial (`50 ms` up to **Infinite / `Inf`** at max), **`Tone`** dial (`-100% Dark` to `+100% Bright`), and filter-aware **`< Sim`**, **`Sim >`**, and **`Rand`** buttons.
   - **`PLAYBACK` Panel (`x = 536..674`)**: Dedicated amber-bordered panel housing **`Audition / Replay`**, **`Pitch`** (`-24 st` to `+24 st`), **`Trim/Dec`** (`20 ms` to `5000 ms`), and **`Gain`** (`-36 dB` to `+12 dB`).
@@ -183,8 +183,7 @@ A Max for Live **Audio Effect** 16-band scale-quantized wavetable resynthesizer 
 │   ├── xo_sample_map.png    # Rendered 2x Retina visual screenshot for XO Sample Map
 │   └── better_shaper.png    # Rendered 2x Retina visual screenshot for Better Shaper
 ├── src/
-│   ├── xo_node_engine.js    # Node for Max audio analyzer, 2D map, edited WAV renderer & HTTP/SSE server
-│   ├── xo_map_ui.html       # Pop-out jweb HTML5 Canvas 2D Sample Space UI
+│   ├── xo_node_engine.js    # Node for Max audio analyzer, 2D map, edited WAV renderer
 │   ├── xo_strip_ui.js       # In-device v8ui mini-map, waveform scanner, vector toolbar & saved list
 │   └── mseg_editor.js       # Max 9 v8ui JavaScript source for Better Shaper MSEG editor
 ├── scripts/

@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.base.json",
-  "files": [
-    "src/types/max-extras.d.ts",
-    "src/types/timbre.d.ts",
-    "src/timbre_ui.js"
-  ]
-}

@@ -7,6 +7,8 @@
 #   scripts/vm_sampler.sh live     sync, rebuild in the VM, write sampler_test.als with VM paths
 #                                  (scripts/make_sampler_set.py), (re)start Live in the VM on it, clear
 #                                  crash recovery, wait for the MCP bridge (127.0.0.1:9877 in the VM)
+#   scripts/vm_sampler.sh run      live + test under ONE hold of the Live lock (scripts/vm_live_lock.sh); live and
+#                                 test alone also take it. `scripts/vm_live_lock.sh status` shows the holder.
 #   scripts/vm_sampler.sh test     make a 1.5 s 220 Hz WAV in the VM, then run scripts/test_sampler_live.js
 #                                  on the host through an ssh tunnel (local 19877 -> VM 9877)
 #   scripts/vm_sampler.sh audio    sync, then run scripts/run_sampler_audio_tests.py in the VM
@@ -18,7 +20,7 @@ WAV=/tmp/bs_test_220.wav
 WAV2=/tmp/bs_test_short.wav
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IP="$(tart ip $VM 2>/dev/null)"
+IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
@@ -27,7 +29,13 @@ sync_repo() {
     -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
 }
 
+# Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
+# calls see M4L_LIVE_LOCK_HELD=1 and run directly). `run` = lock -> live -> test -> release.
+case "${1:-}" in live|test|run) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=sampler_test.als exec "$ROOT/scripts/vm_live_lock.sh" sampler -- "$0" "$@" ;; esac
+
 case "${1:-}" in
+  run)
+    "$0" live && "$0" test ;;
   sync)
     sync_repo ;;
   audio)
@@ -56,5 +64,5 @@ PY" || exit 1
     for i in $(seq 1 20); do curl -s -m 1 "http://127.0.0.1:${LOCAL_PORT}/health" >/dev/null && break; sleep 0.5; done
     node "$ROOT/scripts/test_sampler_live.js" --port "$LOCAL_PORT" --wav "$WAV" --wav2 "$WAV2" ;;
   *)
-    sed -n '2,14p' "$0"; exit 1 ;;
+    sed -n '2,/^set -u/p' "$0"; exit 1 ;;
 esac

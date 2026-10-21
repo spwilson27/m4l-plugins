@@ -50,7 +50,7 @@ function splitFunctions(src) {
 
 const BUILTINS = {
     sin: Math.sin, cos: Math.cos, exp: Math.exp, log: Math.log, sqrt: Math.sqrt, pow: Math.pow, floor: Math.floor,
-    round: Math.round, abs: Math.abs, min: Math.min, max: Math.max, tanh: Math.tanh,
+    round: Math.round, abs: Math.abs, min: Math.min, max: Math.max, tanh: Math.tanh, tan: Math.tan,
     clip: (x, lo, hi) => Math.max(lo, Math.min(hi, x)),
 };
 

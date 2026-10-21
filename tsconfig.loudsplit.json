@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/types/loudsplit.d.ts",
+    "src/loudsplit_config.js",
+    "src/spectral_link.js",
+    "src/loudsplit_ui.js"
+  ]
+}

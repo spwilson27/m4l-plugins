@@ -605,6 +605,102 @@ function slicePitches(samples, sampleRate, sensitivity01, start, end) {
     return out;
 }
 
+// Pitch curve of a whole sample for "Analyzed Root Key". YIN on ~8 kHz decimated
+// audio (40 Hz .. 2 kHz), 25 ms hop, confidence threshold 0.2, then an octave
+// fold against a 7-frame voiced median (kills single-frame octave errors) and a
+// 5-frame voiced median. Unvoiced frames hold the last pitch; before the first
+// voiced frame the first voiced pitch is used (fallbackMidi if none).
+// Returns { curve: Float32Array(points) fractional MIDI over positions
+// i / (points - 1) of the buffer, voiced: Uint8Array(points), voicedRatio }.
+function trackPitchCurve(samples, sampleRate, points, fallbackMidi) {
+    var n = Math.max(1, Math.min(1 << 20, Math.floor(Number(points)) || 1));
+    var curve = new Float32Array(n), voiced = new Uint8Array(n);
+    var fb = isFinite(Number(fallbackMidi)) ? Number(fallbackMidi) : 60;
+    var result = { curve: curve, voiced: voiced, voicedRatio: 0 };
+    var len = samples && samples.length ? samples.length : 0;
+    var i, j, k;
+    function fill(v) { for (var q = 0; q < n; q++) curve[q] = v; return result; }
+    if (!(len > 0)) return fill(fb);
+    var sr = Number(sampleRate) > 0 ? Number(sampleRate) : 44100;
+    var dec = Math.max(1, Math.round(sr / 8000));
+    var fs = sr / dec;
+    var W = 256, tauMin = Math.max(2, Math.floor(fs / 2000)), tauMax = Math.ceil(fs / 40) + 2;
+    var nd = Math.floor(len / dec);
+    var hopD = Math.max(1, Math.round(0.025 * fs));
+    var span = W + tauMax + 1;
+    if (nd < span + 1) return fill(fb);
+    var d = new Float32Array(nd), gpeak = 0;
+    for (i = 0; i < nd; i++) {
+        var acc = 0, base = i * dec;
+        for (j = 0; j < dec; j++) acc += samples[base + j];
+        acc /= dec;
+        d[i] = acc;
+        var ab = acc < 0 ? -acc : acc;
+        if (ab > gpeak) gpeak = ab;
+    }
+    if (!(gpeak >= 1e-4)) return fill(fb);
+    var nf = Math.floor((nd - span) / hopD) + 1;
+    var diff = new Float64Array(tauMax + 2), cm = new Float64Array(tauMax + 2);
+    var gate = gpeak * 0.02;
+    var midi = new Float64Array(nf);
+    var nvoiced = 0;
+    for (var f = 0; f < nf; f++) {
+        var o = f * hopD, e2 = 0;
+        midi[f] = NaN;
+        for (k = 0; k < W; k += 2) e2 += d[o + k] * d[o + k];
+        if (Math.sqrt(e2 / (W / 2)) < gate) continue;
+        var hz = sliceYin(d, o, W, tauMin, tauMax, diff, cm, fs);
+        if (hz > 0) {
+            midi[f] = 69 + 12 * Math.log(hz / 440) / Math.LN2;
+            nvoiced++;
+        }
+    }
+    if (nvoiced === 0) return fill(fb);
+    // voiced neighbours of frame g within +-r frames (voiced only), sorted median
+    function med(src, g, r) {
+        var v = [];
+        for (var q = Math.max(0, g - r); q <= Math.min(nf - 1, g + r); q++) if (src[q] === src[q]) v.push(src[q]);
+        v.sort(function (a, b) { return a - b; });
+        var m = v.length >> 1;
+        return (v.length & 1) ? v[m] : (v[m - 1] + v[m]) * 0.5;
+    }
+    var oc = new Float64Array(nf), sm = new Float64Array(nf);
+    for (var g = 0; g < nf; g++) {
+        if (midi[g] !== midi[g]) { oc[g] = NaN; continue; }
+        var mm = med(midi, g, 3), dd = midi[g] - mm;
+        var oct = Math.round(dd / 12);
+        oc[g] = (oct !== 0 && Math.abs(dd - 12 * oct) < 1.0) ? midi[g] - 12 * oct : midi[g];
+    }
+    for (g = 0; g < nf; g++) sm[g] = oc[g] === oc[g] ? med(oc, g, 2) : NaN;
+    // hold through unvoiced frames; lead-in takes the first voiced pitch
+    var hp = new Float64Array(nf), vf = new Uint8Array(nf);
+    var first = -1;
+    for (g = 0; g < nf; g++) if (sm[g] === sm[g]) { first = g; break; }
+    var last = sm[first];
+    for (g = 0; g < nf; g++) {
+        if (sm[g] === sm[g]) { last = sm[g]; vf[g] = 1; }
+        hp[g] = last;
+    }
+    // frames onto the points grid (centres are roughly uniform: use f0 + 0.5 hop)
+    var c0 = W * 0.5 + 20; // frame centre (decimated samples) for a typical ~200 Hz period
+    var nv = 0;
+    for (i = 0; i < n; i++) {
+        var pos = n > 1 ? i / (n - 1) * (len - 1) : (len - 1) * 0.5;
+        var fc = (pos / dec - c0) / hopD;
+        var v, vv;
+        if (fc <= 0) { v = hp[0]; vv = vf[0]; }
+        else if (fc >= nf - 1) { v = hp[nf - 1]; vv = vf[nf - 1]; }
+        else {
+            var f0 = Math.floor(fc), fr = fc - f0;
+            v = (vf[f0] && vf[f0 + 1]) ? hp[f0] + (hp[f0 + 1] - hp[f0]) * fr : hp[f0];
+            vv = vf[fr < 0.5 ? f0 : f0 + 1];
+        }
+        curve[i] = v; voiced[i] = vv; nv += vv;
+    }
+    result.voicedRatio = nv / n;
+    return result;
+}
+
 // Manual markers: both return NEW arrays.
 function addSliceMarker(markers, pos) {
     var arr = Array.isArray(markers) ? markers.slice() : [];
@@ -643,6 +739,7 @@ if (nodeModule && nodeModule.exports) {
         bpmFromName: bpmFromName,
         sliceOnsets: sliceOnsets,
         slicePitches: slicePitches,
+        trackPitchCurve: trackPitchCurve,
         addSliceMarker: addSliceMarker,
         removeSliceMarker: removeSliceMarker
     };

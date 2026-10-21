@@ -1,0 +1,365 @@
+// Transient Split core (appended after src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr at build time, so every
+// library function sits ahead of everything here). Reference of the mask maths: src/transplit_config.js (tsMasks).
+//
+// Two channels, 1 Transients and 2 Tones. Every instance in a rack chain runs the identical analysis on the identical
+// input with identical (linked) parameters and outputs only its own channel; the per-bin masks of the two channels sum to
+// exactly 1 (Tilt 0, Blend 0), so the chains sum back to the input delayed by 4096 samples.
+//
+// Per hop (n / 4) the Mid spectrum amplitude A[k] (rms over +-2 bins) gives, per bin, an evidence ev in 0..1 that the bin
+// belongs to a transient:
+//   Perc    onset: ev = smoothstep of 20 log10(A / H) between d0 and d0 + 5.5 dB, d0 = 4.5 - 12 * Bias dB.
+//           H is a history of A (rise 14 ms, fall 40 ms).
+//   Noise   instability: ev = smoothstep of the (1, 2, 1) smoothed second phase difference |phi(t) - 2 phi(t-1) + phi(t-2)| / pi
+//           between 0.10 - 0.12 * Bias and 0.30 - 0.27 * Bias. Stationary sinusoids sit near 0, noise and smears near 0.5.
+//   Transients Decay (blocks)   tx = max(ev, tx_prev * exp(-1 / Decay)): a transient bin releases over Decay hops.
+//   Tones Smoothing (blocks)    tone = max(1 - tx, qx_prev * exp(-1 / Smooth) * A_prev / A): the part of a bin that the
+//                               previous amplitude, decaying by Smooth blocks, still explains stays a tone, so a fading tone
+//                               does not flicker into the transients (and an onset in an empty bin never leaks into the tones).
+//   mask(Tones) = tone, mask(Transients) = 1 - tone  (exact sum 1).
+//   Tilt    mask(Transients) *= g, mask(Tones) /= g, g = 10^(12 dB * Tilt * w(f) / 20); w = -1 (100 Hz) .. +1 (10 kHz) for
+//           Standard, -1 around 1 kHz and +1 at the edges for Contour (raises the highs and lows together).
+//   Blend   b = 0..1 (50 % neutral): mask(Transients) *= min(1, 2 b), mask(Tones) *= min(1, 2 (1 - b)) (explicit gains).
+//   Mix     out = mix * wet + (1 - mix) * dry / K, K = 2 for a single-channel output, 1 for All (dry delayed by 4096 too).
+//   Output  outsel 0 = sum of both masks (All; identity at neutral), 1 = Transients, 2 = Tones.
+//
+// Data tsd(2049, 11) per-bin channels: 0 A, 1 H, 2 A_prev, 3 phi(t-1), 4 phi(t-2), 5 phase deviation, 6 tx, 7 qx (tone),
+//   8 final Transients mask, 9 final Tones mask, 10 their sum. tw(2049, 2): tilt weights (Standard, Contour).
+//
+// Telemetry buffer (bound on loadbang via `scope ---transplitscope`), TS_SCOPE_SAMPS floats:
+//   0..127 input (Mid) level per log column, 128..255 Transients post, 256..383 Tones post (0..1 over -100..0 dB),
+//   384..511 transient fraction of the column's amplitude (0..1), 512 frame counter, 513 samplerate, 514 N, 515 awake,
+//   516 input peak, 517 mean Transients mask (amplitude weighted), 518 latency, 519 output selection,
+//   530.. waveform ring: frame f at slot f mod 64, 4 floats (pre Transients rms, pre Tones rms, post Transients rms, post Tones rms).
+//
+// GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements. No identifier e<digit>.
+
+ts_sm(x) {
+	c = clip(x, 0, 1);
+	return c * c * (3 - 2 * c);
+}
+
+// Tilt weight tables for n and sr: channel 0 Standard (-1 lows .. +1 highs), channel 1 Contour (-1 mids, +1 edges).
+ts_tilttab(tw, n, sr) {
+	half = n * 0.5;
+	for (k = 0; k <= half; k += 1) {
+		f = max(k * sr / n, 20);
+		u = clip(log(f * 0.01) / 4.605170185988092, 0, 1);
+		tw.poke(2 * u - 1, k, 0);
+		tw.poke(2 * abs(2 * u - 1) - 1, k, 1);
+	}
+	return half;
+}
+
+// One analysis frame: ms (Mid amplitude / phase from ss_mid) -> final masks in tsd channels 8 / 9 / 10.
+// age = frames since the state was (re)started: 0 resets it, 1 has a valid history, 2 a valid second phase difference.
+ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) {
+	half = n * 0.5;
+	hop = n * 0.25;
+	for (k = 0; k <= half; k += 1) {
+		sq = 0;
+		for (j = -2; j <= 2; j += 1) {
+			kk = clip(k + j, 0, half);
+			mg = ms.peek(kk, 0);
+			sq += mg * mg;
+		}
+		tsd.poke(sqrt(sq * 0.2), k, 0);
+	}
+	rsK = 1 - exp(0 - hop / (sr * 0.014));
+	flK = 1 - exp(0 - hop / (sr * 0.04));
+	bs = clip(anb, -1, 1);
+	d0 = 4.5 - 12 * bs;
+	d1 = d0 + 5.5;
+	t0 = 0.1 - 0.12 * bs;
+	t1 = max(0.3 - 0.27 * bs, t0 + 0.02);
+	dk = exp(0 - 1 / clip(tdecay, 1, 125));
+	dtn = exp(0 - 1 / clip(tsmooth, 1, 64));
+	nzMode = ttype > 0.5 ? 1 : 0;
+	for (k = 0; k <= half; k += 1) {
+		pd = ms.peek(k, 1) - 2 * tsd.peek(k, 3) + tsd.peek(k, 4);
+		pd = pd - 6.283185307179586 * floor((pd + 3.141592653589793) / 6.283185307179586);
+		tsd.poke(tsd.peek(k, 0) > 1e-7 ? abs(pd) * 0.3183098861837907 : 0.5, k, 5);
+	}
+	for (k = 0; k <= half; k += 1) {
+		a = tsd.peek(k, 0);
+		hh = age < 0.5 ? a : tsd.peek(k, 1);
+		db = 8.685889638065035 * log((a + 1e-9) / (hh + 1e-9));
+		evp = age < 0.5 ? 0 : ts_sm((db - d0) / (d1 - d0));
+		tsd.poke(hh + (a - hh) * (a > hh ? rsK : flK), k, 1);
+		dl = tsd.peek(max(k - 1, 0), 5);
+		dr = tsd.peek(min(k + 1, half), 5);
+		dv = 0.25 * dl + 0.5 * tsd.peek(k, 5) + 0.25 * dr;
+		evn = age < 1.5 ? 0 : ts_sm((dv - t0) / (t1 - t0));
+		ev = nzMode > 0.5 ? evn : evp;
+		txp = age < 0.5 ? 0 : tsd.peek(k, 6);
+		qxp = age < 0.5 ? 1 : tsd.peek(k, 7);
+		app = age < 0.5 ? a : tsd.peek(k, 2);
+		txn = max(ev, txp * dk);
+		leak = min(1, qxp * dtn * app / (a + 1e-9));
+		qxn = max(1 - txn, leak);
+		tsd.poke(txn, k, 6);
+		tsd.poke(qxn, k, 7);
+		tsd.poke(a, k, 2);
+	}
+	for (k = 0; k <= half; k += 1) {
+		tsd.poke(tsd.peek(k, 3), k, 4);
+		tsd.poke(ms.peek(k, 1), k, 3);
+	}
+	tl = clip(tlt, -1, 1);
+	bl = clip(bld, 0, 1);
+	gbT = min(1, 2 * bl);
+	gbQ = min(1, 2 * (1 - bl));
+	for (k = 0; k <= half; k += 1) {
+		w = tmode > 0.5 ? tw.peek(k, 1) : tw.peek(k, 0);
+		g = exp(tl * 12 * w * 0.11512925464970229);
+		q0 = tsd.peek(k, 7);
+		mt = (1 - q0) * g * gbT;
+		mq = q0 / g * gbQ;
+		tsd.poke(mt, k, 8);
+		tsd.poke(mq, k, 9);
+		tsd.poke(mt + mq, k, 10);
+	}
+	return half;
+}
+
+// Amplitude weighted mean of the final Transients mask (telemetry).
+ts_mean(ms, tsd, n) {
+	half = n * 0.5;
+	sw = 0;
+	sm = 0;
+	for (k = 1; k < half; k += 1) {
+		a = ms.peek(k, 0);
+		sw += a;
+		sm += a * tsd.peek(k, 8);
+	}
+	return sw > 1e-9 ? sm / sw : 0;
+}
+
+// Transient fraction of each display column, from the Transients / Tones post amplitudes in cols slots 1 and 2.
+ts_frac(cols, scope, ncols, off) {
+	for (c = 0; c < ncols; c += 1) {
+		at = cols.peek(ncols + c);
+		aq = cols.peek(2 * ncols + c);
+		poke(scope, at / (at + aq + 1e-12), off + c, 0);
+	}
+	return ncols;
+}
+
+// Waveform ring entry for the current frame (slot f mod 64, 4 floats): rms of the Transients / Tones signal pre (analysis masks
+// 1 - qx and qx) and post (final masks 8 / 9). rms of a bin of amplitude a is a / sqrt(2).
+ts_wave(ms, tsd, scope, n, slot) {
+	half = n * 0.5;
+	sPT = 0;
+	sPQ = 0;
+	sOT = 0;
+	sOQ = 0;
+	for (k = 1; k < half; k += 1) {
+		a = ms.peek(k, 0);
+		q = tsd.peek(k, 7);
+		sPT += (a * (1 - q)) * (a * (1 - q));
+		sPQ += (a * q) * (a * q);
+		sOT += (a * tsd.peek(k, 8)) * (a * tsd.peek(k, 8));
+		sOQ += (a * tsd.peek(k, 9)) * (a * tsd.peek(k, 9));
+	}
+	o = 530 + slot * 4;
+	poke(scope, sqrt(sPT * 0.5), o, 0);
+	poke(scope, sqrt(sPQ * 0.5), o + 1, 0);
+	poke(scope, sqrt(sOT * 0.5), o + 2, 0);
+	poke(scope, sqrt(sOQ * 0.5), o + 3, 0);
+	return half;
+}
+
+// Zero the telemetry columns (device went to sleep).
+ts_zero(scope, cnt) {
+	for (c = 0; c < cnt; c += 1) {
+		poke(scope, 0, c, 0);
+	}
+	return cnt;
+}
+
+Buffer scope("transplitscope");
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data ringL(4096);
+Data ringR(4096);
+Data accL(4096);
+Data accR(4096);
+Data stt(8);
+Data ms(2049, 2);
+Data tsd(2049, 11);
+Data tw(2049, 2);
+Data cols(512);
+Delay padL(4096);
+Delay padR(4096);
+Delay dryL(4097);
+Delay dryR(4097);
+
+Param fftn(1024);
+Param ttype(0);
+Param anbias(0);
+Param tdecay(8);
+Param tsmooth(1.5);
+Param tiltamt(0);
+Param tmode(0);
+Param blendamt(0.5);
+Param mixamt(1);
+Param outsel(0);
+
+History nCur(0);
+History muteCnt(0);
+History gFade(1);
+History ctlCnt(0);
+History nCtl(0);
+History quietCnt(0);
+History levelPk(0);
+History teleAcc(0);
+History frameNo(0);
+History sleepNote(0);
+History age(0);
+History twN(0);
+History twSr(0);
+History bsH(0);
+History tlH(0);
+History blH(0.5);
+History mixH(1);
+History mixS(1);
+History mixInit(0);
+History tdH(8);
+History tsH(1.5);
+History ttH(0);
+History tmH(0);
+History selH(0);
+
+sr = max(samplerate, 1);
+fft_init(tab);
+
+// --- Size: a change restarts the pipeline; the output stays muted until the new frames have filled the 4096 pad ---
+nReq = cep_n(fftn);
+if (nCur < 1) {
+	nCur = nReq;
+}
+if (nReq != nCur) {
+	nCur = nReq;
+	muteCnt = 4096 + nReq + 128;
+	age = 0;
+}
+n = nCur;
+stft_win(win, n);
+
+// --- Control values, refreshed every 32 samples (and at once when N changes) ---
+ctlCnt = ctlCnt + 1;
+if (ctlCnt >= 32 || n != nCtl) {
+	ctlCnt = 0;
+	nCtl = n;
+	bsH = clip(anbias, -1, 1);
+	tlH = clip(tiltamt, -1, 1);
+	blH = clip(blendamt, 0, 1);
+	mixH = clip(mixamt, 0, 1);
+	tdH = clip(tdecay, 1, 125);
+	tsH = clip(tsmooth, 1, 64);
+	ttH = ttype > 0.5 ? 1 : 0;
+	tmH = tmode > 0.5 ? 1 : 0;
+	selH = clip(round(outsel), 0, 2);
+}
+if (twN != n || twSr != sr) {
+	twN = n;
+	twSr = sr;
+	ts_tilttab(tw, n, sr);
+}
+
+// --- Input level and silence sleep ---
+inAbs = max(abs(in1), abs(in2));
+quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
+levelPk = max(inAbs, levelPk * 0.9995);
+awake = quietCnt < n ? 1 : 0;
+
+// --- Frame scheduling ---
+rdy = ss_in(ringL, ringR, stt, in1, in2, n);
+if (rdy > 0.5) {
+	teleAcc = teleAcc + n * 0.25;
+}
+teleNow = 0;
+if (rdy > 0.5 && teleAcc >= 1024) {
+	teleNow = awake > 0.5 ? 1 : 0;
+	teleAcc = 0;
+}
+if (rdy > 0.5 && awake < 0.5) {
+	age = 0;
+}
+if (rdy > 0.5 && awake > 0.5) {
+	ss_frame(fx, ringL, ringR, stt, win, n);
+	fft_run(fx, tab, n, 0);
+	ss_mid(fx, ms, n);
+	ts_masks(ms, tsd, tw, n, sr, ttH, bsH, tdH, tsH, tlH, tmH, blH, age);
+	age = min(age + 1, 3);
+	if (selH > 1.5) {
+		ss_apply(fx, tsd, 9, n);
+	} else if (selH > 0.5) {
+		ss_apply(fx, tsd, 8, n);
+	} else {
+		ss_apply(fx, tsd, 10, n);
+	}
+	if (teleNow > 0.5) {
+		ss_cols(ms, 0, tsd, -1, cols, 0, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, tsd, 8, cols, 1, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, tsd, 9, cols, 2, n, sr, 128, 30, 20000);
+		ss_tele(cols, scope, 128, 3, 0);
+		ts_frac(cols, scope, 128, 384);
+		trm = ts_mean(ms, tsd, n);
+		poke(scope, trm, 517, 0);
+		ts_wave(ms, tsd, scope, n, frameNo % 64);
+	}
+	fft_run(fx, tab, n, 1);
+	ss_ola(accL, accR, stt, fx, win, n);
+}
+yL = ss_out(accL, stt, n, 3);
+yR = ss_out(accR, stt, n, 4);
+
+// --- Telemetry scalars ---
+if (teleNow > 0.5) {
+	frameNo = wrap(frameNo + 1, 0, 102400);
+	poke(scope, frameNo, 512, 0);
+	poke(scope, sr, 513, 0);
+	poke(scope, n, 514, 0);
+	poke(scope, 1, 515, 0);
+	poke(scope, levelPk, 516, 0);
+	poke(scope, 4096, 518, 0);
+	poke(scope, selH, 519, 0);
+}
+if (awake < 0.5 && sleepNote < 0.5) {
+	ts_zero(scope, 512);
+	poke(scope, 0, 515, 0);
+	poke(scope, 0, 516, 0);
+	sleepNote = 1;
+}
+if (awake > 0.5) {
+	sleepNote = 0;
+}
+
+// --- Constant 4096 latency, mute while the pipeline refills after a Size change ---
+padL.write(yL);
+padR.write(yR);
+wetL = padL.read(4096 - (n - 1));
+wetR = padR.read(4096 - (n - 1));
+if (muteCnt > 0) {
+	muteCnt = muteCnt - 1;
+	gFade = 0;
+} else {
+	gFade = min(gFade + 1 / 512, 1);
+}
+// --- Mix: out = mix * wet + (1 - mix) * dry / K. K = 2 chains when the instance outputs one channel of a rack (the rack
+// sums the K chains, so the dry share adds up to 1 x dry); K = 1 for Output All / outside a rack. Dry shares the 4096 delay.
+dryL.write(in1);
+dryR.write(in2);
+if (mixInit < 0.5) {
+	mixInit = 1;
+	mixS = mixH;
+}
+mixS = mixS + (mixH - mixS) * 0.002;
+kShare = selH > 0.5 ? 0.5 : 1;
+ov1 = fixnan(fixdenorm(mixS * wetL * gFade + (1 - mixS) * kShare * dryL.read(4096)));
+ov2 = fixnan(fixdenorm(mixS * wetR * gFade + (1 - mixS) * kShare * dryR.read(4096)));
+// fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
+out1 = abs(ov1) < 1e-30 ? 0 : ov1;
+out2 = abs(ov2) < 1e-30 ? 0 : ov2;

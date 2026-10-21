@@ -1,0 +1,563 @@
+// Harmonic Split core (appended after src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr at build time, so every
+// library function sits ahead of everything here). Reference of the maths: src/harmsplit_config.js (hsFrame).
+//
+// Three channels: 1 Nonharmonics, 2 Harmonics A, 3 Harmonics B. Every instance in a rack chain runs the identical
+// analysis on the identical input with identical (linked) parameters and outputs only its own channel; the per-bin masks
+// of the three channels sum to exactly 1, so the chains sum back to the input delayed by 4096 samples.
+//
+// Per hop (n / 4) on the Mid spectrum amplitude (ms, from spectral_split_lib):
+//   hs_prep   dB spectrum (raw, and the ANALYSIS spectrum = raw + Tilt (dB per decade around 1 kHz, +Tilt at 10 kHz) + the soft
+//             attenuation of the detection filters: 4th-order high-pass at Low-cut and low-pass at High-cut, -3 dB at the cutoff),
+//             compressed 0..1 salience spectrum hc over the 45 dB below the loudest analysis bin; level = loudest attenuated bin.
+//             Low-cut / High-cut limit WHERE THE FUNDAMENTAL IS SEARCHED (hs_sal); once found, harmonics are sorted wherever they are.
+//   hs_sal    harmonic-comb salience of the candidate fundamentals (fixed grid 19.4 Hz * 2^(i/64), 642 candidates to 20.1 kHz, but ONLY
+//             those inside the detection band [Low-cut / sqrt2, High-cut * sqrt2] are evaluated, none when Low >= High; salience scaled by
+//             the cutoff-filter attenuation at the candidate: 1 down to -3 dB, 0 at -12 dB): up to 10 harmonics whose
+//             attenuation by the cutoff filters is under 30 dB (harmonics above High-cut still count), sum of (peak of hc within +-1 bin of h*g) - (hc half a spacing below) with weights 1/(1 + 0.12 (h-1)),
+//             divided by (sum of weights + 0.8). The lowest local maximum within 85 % of the best is taken (sub-octave check),
+//             refined by a parabola over the three neighbouring candidates.
+//   hs_decide accept (salience >= 0.38, or 0.209 while already tracking; level >= effective threshold) / hold for 8 hops / a new f0 (first lock or a jump) only after 2 consistent frames.
+//             Effective threshold: the Detection Threshold in dB, or AUTOMATIC when it is at its minimum (-120 dB): the running peak
+//             level of the analysis (instant attack, 12 dB per second release) minus 40 dB, never below -100 dB.
+//   hs_harm   per harmonic h = 1..404: local spectral peak near h*g (running least-squares estimate of g, window max(2 bins,
+//             15 % g)), parabolic peak position, prominence = peak dB - mean of the two dB values half a spacing either side.
+//   hs_post   f0 smoothing, voiced amount v (level gate smoothstep((level - thr) / 4 dB), attack 0.6, release 0.35).
+//   hs_masks  harmonic weight hw[h] = smoothstep((prominence - (14 - 12 sens)) / 6) * (h <= Max, 0 = 404) * v, smoothed
+//             over hops (attack 0.7, release 0.4). Bin k belongs to harmonic round(k / spacing); its lobe is flat to w0 bins
+//             from the harmonic centre then a raised cosine down to w1 (w0 = 0.7 + 1.3 sens, w1 = w0 + 0.7 + 0.5 sens, capped
+//             at 0.35 of the spacing). mask(A) = lobe * hw * isA, mask(B) = lobe * hw * (1 - isA), mask(NH) = 1 - mask(A) -
+//             mask(B): exact sum 1. isA: Pattern P >= 2: (h - 1) mod P == 0; Pattern 1: only the fundamental (h == 1).
+//   Output  outsel 0 = All (mask 1), 1 = Nonharmonics, 2 = Harmonics A, 3 = Harmonics B.
+//
+// Data hsd(2049, 8) per-bin channels: 0 NH mask, 1 A mask, 2 B mask, 3 sum (= 1), 4 analysis dB (tilt + cut filters), 5 salience spectrum hc, 6 raw dB, 7 cut-filter attenuation dB (<= 0).
+// hp(406, 4) per harmonic h: 0 centre Hz, 1 prominence dB, 2 smoothed weight, 3 weight routed to A.
+// hst(32): 0 f0, 1 pending f0, 2 pending count, 3 hold count, 4 voiced v, 5 last used f0, 8 tilted dB max, 9 level dB,
+//   10 raw candidate f0, 11 salience, 12 refined f0, 13 f0 the harmonics are searched with, 14 accepted flag,
+//   15 found harmonics, 16 active harmonics (hw > 0.5), 17 running peak level, 18 effective threshold dB, 19 running level initialised.
+// sal(646): candidate salience, index i + 1 for candidate i (zero padded).
+//
+// Telemetry buffer (bound on loadbang via `scope ---harmsplitscope`), HS_SCOPE_SAMPS floats:
+//   0..127 input (Mid) level per log column, 128..255 Nonharmonics post, 256..383 Harmonics A post, 384..511 Harmonics B post
+//   (0..1 over -100..0 dB), 512 frame counter, 513 samplerate, 514 N, 515 awake, 516 input peak, 517 f0 (Hz, 0 = none),
+//   518 salience, 519 voiced amount, 520 level dB, 521 latency, 522 output selection, 523 active harmonics, 524 effective
+//   detection threshold dB (the automatic one when Threshold is at -120).
+//   Mix     out = wetamt * wet + (1 - wetamt) * dry4096 * kdry, kdry = 1 (All / no rack) or 1/3 (one of the 3 chains), so the rack
+//           sum is wetamt * wet + (1 - wetamt) * dry (dry delayed by the same 4096). wetamt = Mix / 100.
+//
+// GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements. No identifier e<digit>.
+
+hs_sm(x) {
+	c = clip(x, 0, 1);
+	return c * c * (3 - 2 * c);
+}
+
+hs_reset(hst, hp) {
+	for (i = 0; i < 32; i += 1) {
+		hst.poke(0, i);
+	}
+	for (h = 0; h < 406; h += 1) {
+		hp.poke(0, h, 0);
+		hp.poke(0, h, 1);
+		hp.poke(0, h, 2);
+		hp.poke(0, h, 3);
+	}
+	return 0;
+}
+
+// dB spectra, cut-filter attenuation (hsd 7) and the compressed salience spectrum; level of the analysis (hst 8 / 9).
+// tl = Tilt in dB per decade around 1 kHz (+tl at 10 kHz); flo / fhi = detection low / high cut (4th order, -3 dB at the cutoff).
+hs_prep(ms, hsd, hst, n, sr, flo, fhi, tl) {
+	half = n * 0.5;
+	df = sr / n;
+	dbmx = -200;
+	lvl = -200;
+	for (k = 0; k <= half; k += 1) {
+		a = ms.peek(k, 0);
+		d = 8.685889638065035 * log(max(a, 1e-9));
+		f = max(k, 0.5) * df;
+		twt = tl * log(f * 0.001) * 0.4342944819032518;
+		ar = flo / f;
+		lr = f / fhi;
+		att = -4.342944819032518 * (log(1 + ar * ar * ar * ar) + log(1 + lr * lr * lr * lr));
+		hsd.poke(d, k, 6);
+		hsd.poke(d + twt + att, k, 4);
+		hsd.poke(att, k, 7);
+		if (k >= 1 && k <= half - 1) {
+			dbmx = max(dbmx, d + twt + att);
+			lvl = max(lvl, d + att);
+		}
+	}
+	for (k = 0; k <= half; k += 1) {
+		hsd.poke(clip((hsd.peek(k, 4) - (dbmx - 45)) / 45, 0, 1), k, 5);
+	}
+	hsd.poke(0, 0, 5);
+	hsd.poke(0, half, 5);
+	hst.poke(dbmx, 8);
+	hst.poke(lvl, 9);
+	return half;
+}
+
+// Harmonic-comb salience of the candidate fundamentals; best candidate and its salience into hst 10 / 11.
+// The candidate grid is FIXED (19.4 Hz * 2^(i / 64), i = 0..641, up to 20.1 kHz) but only the candidates inside the detection band are
+// evaluated: flo / fhi are the Low-cut / High-cut. A candidate is searched only if flo < fhi and it lies within half an octave of
+// [flo, fhi] (and below 0.45 sr); its salience is scaled by the 4th-order filter attenuation AT the candidate itself
+// (full weight down to -3 dB, linear to 0 at -12 dB), so a fundamental more than ~12 dB down cannot win and moving a cutoff fades
+// candidates in and out. Harmonics above High-cut still count while their attenuation is under 30 dB (the comb needs them to judge a candidate).
+hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
+	half = n * 0.5;
+	df = sr / n;
+	ftop = sr * 0.45;
+	for (i = 0; i < 646; i += 1) {
+		sal.poke(0, i);
+	}
+	smax = 0;
+	for (i = 0; i < 642; i += 1) {
+		g = 19.4 * pow(2, i / 64);
+		ssum = 0;
+		wt = 0;
+		cn = 0;
+		sv = 0;
+		act = (flo < fhi && g >= flo * 0.7071 && g <= fhi * 1.4142 && g <= ftop) ? 1 : 0;
+		if (act > 0.5) {
+			ga = flo / g;
+			gb = g / fhi;
+			gatt = -4.342944819032518 * (log(1 + ga * ga * ga * ga) + log(1 + gb * gb * gb * gb));
+			for (h = 1; h <= 10; h += 1) {
+				fp = h * g;
+				kc = clip(floor(fp / df + 0.5), 1, half - 1);
+				if (fp >= 20 && fp <= ftop && hsd.peek(kc, 7) > -30) {
+					pk = max(hsd.peek(kc - 1, 5), max(hsd.peek(kc, 5), hsd.peek(kc + 1, 5)));
+					kv = clip(floor((h - 0.5) * g / df + 0.5), 1, half - 1);
+					vl = hsd.peek(kv, 5);
+					w = 1 / (1 + 0.12 * (h - 1));
+					ssum += w * (pk - vl);
+					wt += w;
+					cn += 1;
+				}
+			}
+			sv = cn > 0.5 ? clip((gatt + 12) / 9, 0, 1) * ssum / (wt + 0.8) : 0;
+		}
+		sal.poke(sv, i + 1);
+		smax = max(smax, sv);
+	}
+	bi = 0;
+	fnd = 0;
+	for (i = 1; i <= 642; i += 1) {
+		sv = sal.peek(i);
+		cnd = (fnd < 0.5 && smax > 0 && sv >= 0.85 * smax && sv >= sal.peek(i - 1) && sv >= sal.peek(i + 1)) ? 1 : 0;
+		bi = cnd > 0.5 ? i : bi;
+		fnd = cnd > 0.5 ? 1 : fnd;
+	}
+	sa = sal.peek(max(bi - 1, 0));
+	sb = sal.peek(bi);
+	sc = sal.peek(bi + 1);
+	dd = sa - 2 * sb + sc;
+	dl = dd < -1e-12 ? clip(0.5 * (sa - sc) / dd, -0.5, 0.5) : 0;
+	g0 = fnd > 0.5 ? 19.4 * pow(2, (bi - 1 + dl) / 64) : 0;
+	hst.poke(g0, 10);
+	hst.poke(fnd > 0.5 ? sb : 0, 11);
+	return g0;
+}
+
+// Accept / hold / jump logic of the fundamental; hst 13 = the f0 the harmonics are searched with (0 = none).
+hs_decide(hst, thr, c0, dec) {
+	f0c = hst.peek(0);
+	pend = hst.peek(1);
+	pcn = hst.peek(2);
+	hold = hst.peek(3);
+	g0 = hst.peek(10);
+	conf = hst.peek(11);
+	lvl = hst.peek(9);
+	lm = hst.peek(19) > 0.5 ? max(lvl, hst.peek(17) - dec) : lvl;
+	te = thr < -119.5 ? max(lm - 40, -100) : thr;
+	hst.poke(lm, 17);
+	hst.poke(te, 18);
+	hst.poke(1, 19);
+	c0e = f0c > 0 ? c0 * 0.55 : c0;
+	okf = (conf >= c0e && lvl >= te && g0 > 0) ? 1 : 0;
+	gs = f0c;
+	rj = f0c > 0 ? abs(log(max(g0, 1) / f0c)) * 1.4426950408889634 : 0;
+	rp = pend > 0 ? abs(log(max(g0, 1) / pend)) * 1.4426950408889634 : 9;
+	if (okf > 0.5) {
+		hold = 0;
+		if (f0c <= 0) {
+			pcn = rp < 0.05 ? pcn + 1 : 1;
+			pend = g0;
+			if (pcn >= 2) {
+				f0c = g0;
+				gs = g0;
+				pcn = 0;
+			}
+		} else if (rj < 0.05) {
+			gs = g0;
+			pcn = 0;
+		} else {
+			pcn = rp < 0.05 ? pcn + 1 : 1;
+			pend = g0;
+			if (pcn >= 2) {
+				f0c = g0;
+				gs = g0;
+				pcn = 0;
+			}
+		}
+	} else {
+		hold += 1;
+		if (f0c <= 0) {
+			pcn = 0;
+			pend = 0;
+		}
+		if (hold > 8) {
+			f0c = 0;
+			gs = 0;
+			pcn = 0;
+		}
+	}
+	hst.poke(f0c, 0);
+	hst.poke(pend, 1);
+	hst.poke(pcn, 2);
+	hst.poke(hold, 3);
+	hst.poke(gs, 13);
+	hst.poke(okf, 14);
+	return gs;
+}
+
+// Per harmonic: spectral peak near h * g (running least-squares g), centre in hp 0, prominence in hp 1.
+hs_harm(hsd, hp, hst, n, sr) {
+	half = n * 0.5;
+	df = sr / n;
+	gs = hst.peek(13);
+	gest = gs;
+	num = 0.5 * gs;
+	den = 0.5;
+	nfd = 0;
+	for (h = 1; h <= 404; h += 1) {
+		fp = h * gest;
+		cen = fp;
+		prom = 0;
+		wn = 0;
+		k0 = 2;
+		k1 = 2;
+		kp = 2;
+		bv = -200;
+		okp = 0;
+		if (gs > 0 && fp < (half - 3) * df) {
+			wn = max(2 * df, 0.15 * gest);
+			k0 = max(floor((fp - wn) / df), 2);
+			k1 = min(floor((fp + wn) / df) + 1, half - 2);
+			kp = k0;
+			bv = hsd.peek(k0, 6);
+			for (k = k0 + 1; k <= k1; k += 1) {
+				v = hsd.peek(k, 6);
+				if (v > bv) {
+					bv = v;
+					kp = k;
+				}
+			}
+			pa = hsd.peek(kp - 1, 6);
+			pc = hsd.peek(kp + 1, 6);
+			okp = (bv >= pa && bv >= pc && kp > k0 && kp < k1) ? 1 : 0;
+			dd = pa - 2 * bv + pc;
+			dl = dd < -1e-9 ? clip(0.5 * (pa - pc) / dd, -0.5, 0.5) : 0;
+			vl = hsd.peek(clip(floor((fp - 0.5 * gest) / df + 0.5), 1, half - 1), 6);
+			vr = hsd.peek(clip(floor((fp + 0.5 * gest) / df + 0.5), 1, half - 1), 6);
+			prom = okp > 0.5 ? bv - 0.5 * (vl + vr) : 0;
+			cen = okp > 0.5 ? (kp + dl) * df : fp;
+			if (okp > 0.5 && prom >= 10) {
+				num += h * cen;
+				den += h * h;
+				gest = num / den;
+				nfd += 1;
+			}
+		}
+		hp.poke(cen, h, 0);
+		hp.poke(prom, h, 1);
+	}
+	hst.poke(gest, 12);
+	hst.poke(nfd, 15);
+	return gest;
+}
+
+// f0 smoothing, voiced amount, last used f0.
+hs_post(hst) {
+	f0c = hst.peek(0);
+	gr = hst.peek(12);
+	gs = hst.peek(13);
+	okf = hst.peek(14);
+	nfd = hst.peek(15);
+	lvl = hst.peek(9);
+	thr = hst.peek(18);
+	if (gs > 0 && f0c > 0 && (okf > 0.5 || nfd >= 3)) {
+		rr = abs(log(gr / f0c)) * 1.4426950408889634;
+		f0c = rr < 0.05 ? f0c + (gr - f0c) * 0.6 : gr;
+	}
+	gl = hs_sm((lvl - thr) / 4);
+	vt = f0c > 0 ? gl : 0;
+	v = hst.peek(4);
+	v = v + (vt - v) * (vt > v ? 0.6 : 0.35);
+	hst.poke(f0c, 0);
+	hst.poke(v, 4);
+	if (gs > 0) {
+		hst.poke(gr, 5);
+	}
+	return v;
+}
+
+// Harmonic weights (smoothed over hops) and the three per-bin masks.
+hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx) {
+	half = n * 0.5;
+	df = sr / n;
+	gs = hst.peek(13);
+	gu = gs > 0 ? hst.peek(12) : hst.peek(5);
+	v = hst.peek(4);
+	pmin = 14 - 12 * sens;
+	pat = max(hpat, 1);
+	nact = 0;
+	for (h = 1; h <= 404; h += 1) {
+		cen = hp.peek(h, 0);
+		prom = hp.peek(h, 1);
+		tw = (gs > 0 && h <= hmx && cen > 0) ? hs_sm((prom - pmin) / 6) * v : 0;
+		prev = hp.peek(h, 2);
+		cur = prev + (tw - prev) * (tw > prev ? 0.7 : 0.4);
+		isA = pat < 1.5 ? (h < 1.5 ? 1 : 0) : (((h - 1) - pat * floor((h - 1) / pat)) < 0.5 ? 1 : 0);
+		hp.poke(cur, h, 2);
+		hp.poke(isA > 0.5 ? cur : 0, h, 3);
+		nact += cur > 0.5 ? 1 : 0;
+	}
+	sp = max(gu / df, 0.001);
+	w1c = max(0.35 * sp, 0.6);
+	w1 = min(0.7 + 1.3 * sens + 0.7 + 0.5 * sens, w1c);
+	w0 = min(0.7 + 1.3 * sens, w1 - 0.3);
+	for (k = 0; k <= half; k += 1) {
+		hh = gu > 0 ? clip(floor(k / sp + 0.5), 0, 404) : 0;
+		m = 0;
+		wa = 0;
+		wb = 0;
+		cb = 0;
+		if (hh >= 1) {
+			cb = hp.peek(hh, 0) / df;
+			wa = hp.peek(hh, 3);
+			wb = hp.peek(hh, 2) - wa;
+		}
+		d = abs(k - cb);
+		m = hh >= 1 ? (d <= w0 ? 1 : (d >= w1 ? 0 : 0.5 * (1 + cos(3.141592653589793 * (d - w0) / (w1 - w0))))) : 0;
+		ma = m * wa;
+		mb = m * wb;
+		hsd.poke(1 - ma - mb, k, 0);
+		hsd.poke(ma, k, 1);
+		hsd.poke(mb, k, 2);
+		hsd.poke(1, k, 3);
+	}
+	hst.poke(nact, 16);
+	return nact;
+}
+
+// Zero the telemetry columns (device went to sleep).
+hs_zero(scope, cnt) {
+	for (c = 0; c < cnt; c += 1) {
+		poke(scope, 0, c, 0);
+	}
+	return cnt;
+}
+
+Buffer scope("harmsplitscope");
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data ringL(4096);
+Data ringR(4096);
+Data accL(4096);
+Data accR(4096);
+Data stt(8);
+Data ms(2049, 2);
+Data hsd(2049, 8);
+Data hp(406, 4);
+Data hst(32);
+Data sal(646);
+Data cols(512);
+Delay padL(4096);
+Delay padR(4096);
+Delay dryL(4097);
+Delay dryR(4097);
+
+Param fftn(2048);
+Param hpat(2);
+Param hmaxp(64);
+Param sensamt(0.5);
+Param tiltamt(0);
+Param thrdb(-60);
+Param flocut(30);
+Param fhicut(12000);
+Param outsel(0);
+Param wetamt(1);
+
+History nCur(0);
+History muteCnt(0);
+History gFade(1);
+History ctlCnt(0);
+History nCtl(0);
+History quietCnt(0);
+History levelPk(0);
+History teleAcc(0);
+History frameNo(0);
+History sleepNote(0);
+History age(0);
+History patH(2);
+History mxH(64);
+History snH(0.5);
+History tlH(0);
+History thH(-60);
+History loH(30);
+History hiH(12000);
+History selH(0);
+History wmH(1);
+History wmS(1);
+
+sr = max(samplerate, 1);
+fft_init(tab);
+
+// --- Size: a change restarts the pipeline; the output stays muted until the new frames have filled the 4096 pad ---
+nReq = cep_n(fftn);
+if (nCur < 1) {
+	nCur = nReq;
+}
+if (nReq != nCur) {
+	nCur = nReq;
+	muteCnt = 4096 + nReq + 128;
+	age = 0;
+}
+n = nCur;
+stft_win(win, n);
+
+// --- Control values, refreshed every 32 samples (and at once when N changes) ---
+ctlCnt = ctlCnt + 1;
+if (ctlCnt >= 32 || n != nCtl) {
+	ctlCnt = 0;
+	nCtl = n;
+	patH = clip(round(hpat), 1, 24);
+	mxH = hmaxp < 0.5 ? 404 : clip(round(hmaxp), 1, 404);
+	snH = clip(sensamt, 0, 1);
+	tlH = clip(tiltamt, -12, 12);
+	thH = clip(thrdb, -120, 0);
+	loH = clip(flocut, 19.4, 19900);
+	hiH = clip(fhicut, 19.4, 19900);
+	wmH = clip(wetamt, 0, 1);
+	selH = clip(round(outsel), 0, 3);
+}
+
+// --- Input level and silence sleep ---
+inAbs = max(abs(in1), abs(in2));
+quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
+levelPk = max(inAbs, levelPk * 0.9995);
+awake = quietCnt < n ? 1 : 0;
+
+// --- Frame scheduling ---
+rdy = ss_in(ringL, ringR, stt, in1, in2, n);
+if (rdy > 0.5) {
+	teleAcc = teleAcc + n * 0.25;
+}
+teleNow = 0;
+if (rdy > 0.5 && teleAcc >= 1024) {
+	teleNow = awake > 0.5 ? 1 : 0;
+	teleAcc = 0;
+}
+if (rdy > 0.5 && awake < 0.5) {
+	age = 0;
+}
+if (rdy > 0.5 && awake > 0.5) {
+	ss_frame(fx, ringL, ringR, stt, win, n);
+	fft_run(fx, tab, n, 0);
+	ss_mid(fx, ms, n);
+	if (age < 0.5) {
+		hs_reset(hst, hp);
+	}
+	hs_prep(ms, hsd, hst, n, sr, loH, hiH, tlH);
+	hs_sal(hsd, sal, hst, n, sr, loH, hiH);
+	hs_decide(hst, thH, 0.38, 3 * n / sr);
+	hs_harm(hsd, hp, hst, n, sr);
+	hs_post(hst);
+	hs_masks(hsd, hp, hst, n, sr, snH, patH, mxH);
+	age = min(age + 1, 3);
+	if (selH > 2.5) {
+		ss_apply(fx, hsd, 2, n);
+	} else if (selH > 1.5) {
+		ss_apply(fx, hsd, 1, n);
+	} else if (selH > 0.5) {
+		ss_apply(fx, hsd, 0, n);
+	} else {
+		ss_apply(fx, hsd, 3, n);
+	}
+	if (teleNow > 0.5) {
+		ss_cols(ms, 0, hsd, -1, cols, 0, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, hsd, 0, cols, 1, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, hsd, 1, cols, 2, n, sr, 128, 30, 20000);
+		ss_cols(ms, 0, hsd, 2, cols, 3, n, sr, 128, 30, 20000);
+		ss_tele(cols, scope, 128, 4, 0);
+		tf0 = hst.peek(0);
+		tsal = hst.peek(11);
+		tv = hst.peek(4);
+		tlv = hst.peek(9);
+		tnact = hst.peek(16);
+		tte = hst.peek(18);
+		poke(scope, tf0, 517, 0);
+		poke(scope, tsal, 518, 0);
+		poke(scope, tv, 519, 0);
+		poke(scope, tlv, 520, 0);
+		poke(scope, tnact, 523, 0);
+		poke(scope, tte, 524, 0);
+	}
+	fft_run(fx, tab, n, 1);
+	ss_ola(accL, accR, stt, fx, win, n);
+}
+yL = ss_out(accL, stt, n, 3);
+yR = ss_out(accR, stt, n, 4);
+
+// --- Telemetry scalars ---
+if (teleNow > 0.5) {
+	frameNo = wrap(frameNo + 1, 0, 100000);
+	poke(scope, frameNo, 512, 0);
+	poke(scope, sr, 513, 0);
+	poke(scope, n, 514, 0);
+	poke(scope, 1, 515, 0);
+	poke(scope, levelPk, 516, 0);
+	poke(scope, 4096, 521, 0);
+	poke(scope, selH, 522, 0);
+}
+if (awake < 0.5 && sleepNote < 0.5) {
+	hs_zero(scope, 512);
+	poke(scope, 0, 515, 0);
+	poke(scope, 0, 516, 0);
+	poke(scope, 0, 517, 0);
+	poke(scope, 0, 518, 0);
+	poke(scope, 0, 519, 0);
+	poke(scope, 0, 523, 0);
+	poke(scope, -120, 524, 0);
+	sleepNote = 1;
+}
+if (awake > 0.5) {
+	sleepNote = 0;
+}
+
+// --- Constant 4096 latency, mute while the pipeline refills after a Size change ---
+padL.write(yL);
+padR.write(yR);
+wetL = padL.read(4096 - (n - 1));
+wetR = padR.read(4096 - (n - 1));
+if (muteCnt > 0) {
+	muteCnt = muteCnt - 1;
+	gFade = 0;
+} else {
+	gFade = min(gFade + 1 / 512, 1);
+}
+wmS = wmS + (wmH - wmS) * 0.002;
+wmU = abs(wmH - wmS) < 0.00001 ? wmH : wmS;
+kdry = selH > 0.5 ? 0.3333333333333333 : 1;
+dryL.write(in1);
+dryR.write(in2);
+dL = dryL.read(4096);
+dR = dryR.read(4096);
+ov1 = fixnan(fixdenorm(wmU * wetL * gFade + (1 - wmU) * dL * kdry));
+ov2 = fixnan(fixdenorm(wmU * wetR * gFade + (1 - wmU) * dR * kdry));
+// fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
+out1 = abs(ov1) < 1e-30 ? 0 : ov1;
+out2 = abs(ov2) < 1e-30 ? 0 : ov2;

@@ -1,9 +1,0 @@
-{
-  "extends": "./tsconfig.base.json",
-  "files": [
-    "src/types/max-extras.d.ts",
-    "src/types/tsplit.d.ts",
-    "src/tsplit_config.js",
-    "src/tsplit_ui.js"
-  ]
-}

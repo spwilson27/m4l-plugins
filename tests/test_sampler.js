@@ -225,8 +225,9 @@ assert.strictEqual(byId.size, boxes.length, "box ids are unique");
 assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ #0-bsamp 1000 2", "empty user sample buffer");
 assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ #0-bsvoices @samps 128");
 assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 64");
-assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope");
-assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope");
+assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch");
+assert.strictEqual(byId.get("obj-buf-pitch").text, "buffer~ #0-bspitch @samps 4096", "Analyzed Root Key curve buffer");
+assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch");
 assertLink(lines, "obj-loadbang", 0, "obj-msg-gen-buf", 0, "loadbang -> gen buffers");
 assertLink(lines, "obj-msg-gen-buf", 0, "obj-gen-in", 1, "gen buffers");
 assertLink(lines, "obj-msg-ui-buf", 0, "obj-viz", 0, "ui buffers");
@@ -2343,7 +2344,7 @@ console.log("Loop overlay: body, gradient, move and xfade drags ok");
     assert.ok(texts(c).includes("Clean"), "character header shows the name");
     assert.strictEqual(knobAlpha(c, ops, "rp_dist"), 0.45, "Clean dims both knobs");
     assert.strictEqual(knobAlpha(c, ops, "rp_color"), 0.45);
-    assert.ok(!m.hitZones.some((z) => z.action === "toggle"), "Clean has no toggles");
+    assert.ok(!m.hitZones.some((z) => z.action === "toggle" && z.key !== "root_dyn"), "Clean has no toggles");
     assert.deepStrictEqual(Array.from(stepZones().map((z) => z.delta)), [-1, 1], "header has ◀ ▶ zones");
     // ▶ steps Clean -> Analog -> Digital -> Clean; ◀ wraps backwards
     c.emitted.length = 0;
@@ -2360,13 +2361,13 @@ console.log("Loop overlay: body, gradient, move and xfade drags ok");
     assert.strictEqual(knobAlpha(c, ops, "rp_dist"), 1.0, "Analog lights the knobs");
     assert.strictEqual(knobAlpha(c, ops, "rp_color"), 1.0);
     assert.ok(texts(c).includes("Crunch") && texts(c).includes("Tape"), "Analog knob labels");
-    assert.ok(!m.hitZones.some((z) => z.action === "toggle"), "Analog has no toggles");
+    assert.ok(!m.hitZones.some((z) => z.action === "toggle" && z.key !== "root_dyn"), "Analog has no toggles");
     // Digital: imaging and VSR toggles
     auto(m, "rp_char", 2);
     ops = paintP();
     assert.deepStrictEqual(p1Knobs(), ["rp_dist", "rp_color"]);
     assert.ok(texts(c).includes("Bits") && texts(c).includes("Color"), "Digital knob labels");
-    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["rp_imaging", "rp_vsr"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle" && z.key !== "root_dyn").map((z) => z.key)), ["rp_imaging", "rp_vsr"]);
     c.emitted.length = 0;
     click(c, toggleZone(c, "rp_imaging"));
     assert.deepStrictEqual(msgVals(c, "rp_imaging"), [0], "Imaging starts on and toggles off");
@@ -2382,7 +2383,7 @@ console.log("Loop overlay: body, gradient, move and xfade drags ok");
     auto(m, "sp_char", 0);
     ops = paintP();
     assert.deepStrictEqual(p1Knobs(), ["formant", "sp_shift"], "Pure: formant and shift");
-    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["sp_onsets", "sp_formant_on"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle" && z.key !== "root_dyn").map((z) => z.key)), ["sp_onsets", "sp_formant_on"]);
     assert.ok(!m.hitZones.some((z) => z.action === "menu" && z.key === "sp_quant"), "Pure has no quantize box");
     assert.ok(texts(c).includes("Pure"));
     c.emitted.length = 0;
@@ -2406,7 +2407,7 @@ console.log("Loop overlay: body, gradient, move and xfade drags ok");
     assert.ok(texts(c).includes("Oct"));
     auto(m, "sp_quant", 2);
     assert.ok(texts(c).includes("Key"));
-    assert.strictEqual(m.hitZones.filter((z) => z.action === "toggle").length, 2, "Reharm keeps onsets + formant toggles");
+    assert.strictEqual(m.hitZones.filter((z) => z.action === "toggle" && z.key !== "root_dyn").length, 2, "Reharm keeps onsets + formant toggles");
 
     // --- Cycles ---
     auto(m, "mode", 1);
@@ -2418,7 +2419,7 @@ console.log("Loop overlay: body, gradient, move and xfade drags ok");
         const tx = texts(c);
         for (const l of labels) assert.ok(tx.includes(l), `Cycles ${ch}: label ${l}`);
     }
-    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["cy_xfade"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle" && z.key !== "root_dyn").map((z) => z.key)), ["cy_xfade"]);
     c.emitted.length = 0;
     click(c, toggleZone(c, "cy_xfade"));
     assert.deepStrictEqual(msgVals(c, "cy_xfade"), [1]);
@@ -2430,14 +2431,14 @@ console.log("Loop overlay: body, gradient, move and xfade drags ok");
     auto(m, "mode", 2);
     m.paint();
     assert.deepStrictEqual(p1Knobs(), ["grain_size", "grain_spray", "formant"], "Textures: size, spray, formant");
-    assert.ok(!m.hitZones.some((z) => z.action === "toggle" || z.action === "step"), "Textures has no header controls");
+    assert.ok(!m.hitZones.some((z) => (z.action === "toggle" && z.key !== "root_dyn") || z.action === "step"), "Textures has no header controls");
 
     // --- Fragments ---
     auto(m, "mode", 4);
     ops = paintP();
     assert.deepStrictEqual(p1Knobs(), ["grain_size", "fr_density", "fr_motion"]);
     assert.deepStrictEqual(p1Values(), ["fr_env", "fr_repeats"], "envelope shape and repeats are draggable values");
-    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["fr_sync", "fr_use_density"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle" && z.key !== "root_dyn").map((z) => z.key)), ["fr_sync", "fr_use_density"]);
     assert.strictEqual(knobAlpha(c, ops, "fr_density"), 1.0);
     c.emitted.length = 0;
     click(c, toggleZone(c, "fr_use_density"));
@@ -2524,7 +2525,7 @@ console.log("Engine panels: Repitch, Spectral, Cycles, Textures, Fragments ok");
     for (const label of ["Phase Dispersion", "Quality / Cost", "Live Performance", "Relative Formants", "Local Key", "Local Scale"]) assert.ok(tx.includes(label), `Spectral row ${label}`);
     assert.deepStrictEqual(ids(m.hitZones.filter((z) => z.kind === "value")), ["glide_ms", "sp_dispersion"]);
     assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "menu").map((z) => z.key)), ["sp_quality", "sp_key", "sp_scale"]);
-    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["sp_live", "sp_rel_formant"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle" && z.key !== "root_dyn").map((z) => z.key)), ["sp_live", "sp_rel_formant"]);
     assert.ok(tx.includes("Medium") && tx.includes("C") && tx.includes("Major"), "menu boxes show their current values");
     c.emitted.length = 0;
     click(c, toggleZone(c, "sp_live"));
@@ -2544,7 +2545,7 @@ console.log("Engine panels: Repitch, Spectral, Cycles, Textures, Fragments ok");
     tx = texts(c);
     for (const label of ["Direction", "Latch Initial Rate", "Repeat at Initial Pos", "Grains Survive End", "Max Grains / Voice"]) assert.ok(tx.includes(label), `Fragments row ${label}`);
     assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "menu").map((z) => z.key)), ["fr_direction"]);
-    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle").map((z) => z.key)), ["fr_latch", "fr_repeat_init", "fr_survive"]);
+    assert.deepStrictEqual(Array.from(m.hitZones.filter((z) => z.action === "toggle" && z.key !== "root_dyn").map((z) => z.key)), ["fr_latch", "fr_repeat_init", "fr_survive"]);
     assert.deepStrictEqual(ids(m.hitZones.filter((z) => z.kind === "value")), ["glide_ms", "fr_max_grains"]);
     assert.ok(tx.includes("Playhead"), "Direction shows its value");
     c.emitted.length = 0;
@@ -2806,4 +2807,74 @@ console.log("Lazy, chunked slicer mono copy ok");
 }
 
 console.log("Deferred DSP: GUI first, gen~ created from the embedded patch ok");
+
+// --- Analyzed Root Key: ROOT toggles root_dyn; the curve is tracked once per sample, written to
+//     #0-bspitch and drawn in orange; a new sample re-analyses ---
+{
+    const rc = makeSandbox(mainViz);
+    const r = rc.sb;
+    r.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope", "#0-bspitch");
+    assert.strictEqual(r.pitchBufName, "#0-bspitch");
+    rc.audioOn = true;
+    r.sample_loaded("/Users/test/Sub - Jitter 5 - G - 172 BPM.wav");
+    r.sample_loaded("bang");
+    assert.strictEqual(r.hasLoadedSample, 1);
+    assert.strictEqual(r.pitchCurve, null, "no analysis while Analyzed Root Key is off");
+    // header: ROOT is a toggle zone; with it off, note + ct values are editable
+    r.paint();
+    const rootZone = r.hitZones.find((z) => z.action === "toggle" && z.key === "root_dyn");
+    assert.ok(rootZone, "ROOT toggles Analyzed Root Key");
+    assert.ok(r.hitZones.some((z) => z.key === "root_note"), "fixed root key editable when off");
+    // tracker spy: runs once on the mono copy with the fixed root as fallback
+    const calls = [];
+    r.trackPitchCurve = (samples, sr, points, fallback) => {
+        calls.push([samples.length, sr, points, fallback]);
+        const curve = new Float32Array(points), voiced = new Uint8Array(points);
+        for (let i = 0; i < points; i++) { curve[i] = 55 + 7 * i / (points - 1); voiced[i] = (i % 1000) < 800 ? 1 : 0; }
+        return { curve, voiced, voicedRatio: 0.8 };
+    };
+    rc.emitted.length = 0;
+    r.onclick(rootZone.x + 3, rootZone.y + 3, 1, 0, 0);
+    assert.ok(rc.emitted.some((a) => a[1] === "param" && a[2] === "root_dyn" && a[3] === 1), "ROOT click emits root_dyn 1");
+    assert.strictEqual(r.rootDyn, 1);
+    // the mono copy runs on a Task in the device; here (no Task stepping) drive it to completion
+    while (r.sliceMonoJob) r.sliceMonoStep();
+    assert.strictEqual(calls.length, 1, "pitch tracked once");
+    assert.deepStrictEqual(calls[0].slice(2), [4096, r.curRootNote], "4096 points, fixed root as fallback");
+    const pokes = rc.pokes.filter((p) => p.name === "#0-bspitch");
+    assert.strictEqual(pokes.length, 1, "curve written to #0-bspitch");
+    assert.strictEqual(pokes[0].data.length, 4096);
+    assert.ok(Math.abs(pokes[0].data[4095] - 62) < 1e-4 && Math.abs(pokes[0].data[0] - 55) < 1e-4, "curve values written as MIDI");
+    // header shows Dynamic; the fixed root is not editable
+    r.paint();
+    assert.ok(!r.hitZones.some((z) => z.key === "root_note"), "fixed root hidden while Dynamic");
+    const texts = [], g0 = r.mgraphics.show_text;
+    r.mgraphics.show_text = (t) => texts.push(t);
+    r.paint();
+    r.mgraphics.show_text = g0;
+    assert.ok(texts.includes("Dynamic"), "header shows Dynamic");
+    // orange curve drawn over the waveform, brighter where voiced
+    const cols = [];
+    const sc0 = r.mgraphics.set_source_rgba;
+    r.mgraphics.set_source_rgba = (rr, gg, bb, aa) => cols.push([rr, gg, bb, aa]);
+    r.paint();
+    r.mgraphics.set_source_rgba = sc0;
+    const orange = cols.filter((c) => Math.abs(c[0] - 0.98) < 1e-6 && Math.abs(c[1] - 0.63) < 1e-6);
+    assert.ok(orange.some((c) => c[3] > 0.9) && orange.some((c) => c[3] < 0.5), "curve: voiced bright, unvoiced dim");
+    // switching off hides the curve and restores the fixed root; turning on again does not re-analyse
+    r.set_root_dyn(0);
+    r.paint();
+    assert.ok(r.hitZones.some((z) => z.key === "root_note"));
+    r.set_root_dyn(1);
+    assert.strictEqual(calls.length, 1, "curve cached per sample");
+    // a new sample invalidates and re-analyses
+    r.sample_loaded("/Users/test/Other.wav");
+    r.sample_loaded("bang");
+    while (r.sliceMonoJob) r.sliceMonoStep();
+    assert.strictEqual(calls.length, 2, "new sample re-analysed");
+    // dsp_ready re-binds the pitch buffer too (it is in the gen binding message)
+    assert.ok(byId.get("obj-msg-gen-buf").text.includes("pitch #0-bspitch"));
+}
+
+console.log("Analyzed Root Key: toggle, tracking, curve buffer and drawing ok");
 

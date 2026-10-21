@@ -70,13 +70,17 @@ def device_patch(case, gen_code):
     chans = 1 if name == "mono_sample" else 2
     boxes = [
         mh.msg("obj-params", case["params"], 200, 40, 760),
-        mh.msg("obj-setbuf", "setbuffers #0-bsamp #0-bsvoices #0-bsscope", 200, 70, 290),
-        mh.msg("obj-bind", "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope", 200, 100, 320),
+        mh.msg("obj-setbuf", "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch", 200, 70, 290),
+        # The pitch curve (Analyzed Root Key) is bound like the device does; a "nopitchbind" case leaves it out.
+        mh.msg("obj-bind", "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope"
+               + ("" if case.get("nopitchbind") else ", pitch #0-bspitch"), 200, 100, 320),
         mh.box("obj-samp", f"buffer~ #0-bsamp @samps 12000 {chans}", 540, 70, 225,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-voices", "buffer~ #0-bsvoices @samps 128", 540, 100, 220,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-scope", "buffer~ #0-bsscope @samps 64", 540, 130, 210,
+               numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-pitchbuf", "buffer~ #0-bspitch @samps 4096", 540, 160, 220,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-order", "t b b b", 200, 10, 60, numoutlets=3, outlettype=["bang", "bang", "bang"]),
         mh.gen_box("obj-gen", gen_code, 200, 215),
@@ -107,6 +111,8 @@ def run_case(gen_code, case):
     if "release_ms" in case:
         events.append((SETTLE_MS + case["release_ms"], "obj-js", 3, "release"))
     opts = case.get("opts", "")
+    for sn in case.get("snaps", []):
+        events.append((SETTLE_MS + sn, "obj-js", 3, f"snap t{sn}"))
     seq = case.get("seq")
     if seq:
         # keys=[...], step ms between key-ons, hold ms each key is held; snap slightly before the key-off
@@ -384,6 +390,284 @@ add("lp_repitch_rev_off", P("mode 0, loop_mode 0, reverse 1, root_note 57"), 900
 add("lp_repitch_pp", P("mode 0, loop_mode 2, loop_start 0.05, loop_end 0.95, root_note 57"), 900, cut_ms=550, opts=S48)
 
 
+# ---------------------------------------------------------------------------------------------
+# Analyzed Root Key (root_dyn): the root of every engine follows the sample's pitch curve (#0-bspitch)
+# ---------------------------------------------------------------------------------------------
+# Test sample (probe src=steps48): 220 / 330 / 246.94 Hz in thirds of the 12000 frames, curve = exact MIDI per position.
+# Played on note 60 with root_note 57: with root_dyn on every part must sound at mtof(60) = 261.63 Hz; with it off the
+# ratio stays constant (2^(3/12): 261.6 / 392.4 / 293.7 Hz).
+import math
+
+RD_NOTE_HZ = 440.0 * 2.0 ** ((60 - 69) / 12.0)
+RD_STEP_HZ = (220.0, 330.0, 246.94)
+RD_FRAMES = 12000
+RD_SR = 48000.0
+
+
+def rd_midi(f):
+    return 69.0 + 12.0 * math.log2(f / 440.0)
+
+
+def rd_curve(kind):
+    """MIDI of the test sample at normalised position p (what the probe writes into the pitch buffer)."""
+    if kind == "glide":
+        return lambda p: 57.0 + 7.0 * p
+    return lambda p: rd_midi(RD_STEP_HZ[min(2, int(p * 3.0))])
+
+
+def rd_timeline(kind, dyn, reverse=False, note=60, root=57, pingpong=False, total_ms=480):
+    """Output-time ms at which the playhead reaches 0, 1/3, 2/3, 1 of the sample (forward) in Repitch."""
+    curve = rd_curve(kind)
+    pos, t, marks = (1.0 if reverse else 0.0), 0.0, {}
+    step = 1.0 / 4096
+    direction = -1.0 if reverse else 1.0
+    targets = [i / 3.0 for i in range(4)]
+    trace = [(0.0, pos)]
+    while t < total_ms and 0.0 <= pos <= 1.0:
+        r = 2.0 ** ((note - (curve(min(pos, 0.99999)) if dyn else root)) / 12.0)
+        dt = step * RD_FRAMES / r / RD_SR * 1000.0
+        pos += direction * step
+        t += dt
+        trace.append((t, pos))
+    return trace
+
+
+def rd_time_of(trace, p):
+    for t, pos in trace:
+        if (trace[1][1] > trace[0][1] and pos >= p) or (trace[1][1] < trace[0][1] and pos <= p):
+            return t
+    return trace[-1][0]
+
+
+def rd_windows(trace, margin=9.0):
+    """Interior windows (ms) of the three thirds of the sample along a Repitch time line."""
+    out = []
+    for a, b in ((0.0, 1 / 3.0), (1 / 3.0, 2 / 3.0), (2 / 3.0, 1.0)):
+        ta, tb = sorted((rd_time_of(trace, a), rd_time_of(trace, b)))
+        out.append((ta + margin, tb - margin))
+    return sorted(out)
+
+
+def segs_opt(wins):
+    return ",".join(f"{a:.1f}-{b:.1f}" for a, b in wins)
+
+
+RD_ENGINES = (("cycles", 1, ""), ("textures", 2, "grain_size 40, "), ("spectral", 3, ""),
+             ("fragments", 4, "grain_size 30, fr_motion 0, fr_density 1, fr_repeats 1, "))
+FRZ = {"A": 1 / 6.0, "B": 0.5, "C": 5 / 6.0}
+RD_SRC = "src=steps48 notes=60 "
+# analysis windows for frozen / sliced cases (Spectral needs its frames to settle); cen / harm refs = the keyed note
+RD_ANA = {"spectral": "segs=450-850 ana=450 cen=261.63 harm=261.63", "other": "segs=250-550 ana=250 cen=261.63 harm=261.63"}
+RD_CASES = []  # (case name, expectation kind) for run_rootdyn_checks
+
+
+def rd_add(name, params, dur, **kw):
+    add(name, params, dur, **kw)
+
+
+for _dyn in (1, 0):
+    _tag = "on" if _dyn else "off"
+    _tr = rd_timeline("steps", _dyn)
+    rd_add(f"rd_rp_{_tag}", P(f"mode 0, root_note 57, root_dyn {_dyn}"), 400,
+           opts=RD_SRC + "segs=" + segs_opt(rd_windows(_tr)))
+    _trr = rd_timeline("steps", _dyn, reverse=True)
+    rd_add(f"rd_rp_rev_{_tag}", P(f"mode 0, root_note 57, root_dyn {_dyn}, reverse 1"), 400,
+           opts=RD_SRC + "segs=" + segs_opt(rd_windows(_trr)))
+    # every engine frozen inside each third (Pos only applies while Freeze is on)
+    for _en, _e, _gp in RD_ENGINES:
+        for _k, _pos in FRZ.items():
+            if _dyn == 0 and _k != "B":
+                continue
+            rd_add(f"rd_{_en}_{_tag}_{_k}",
+                   P(f"mode {_e}, {_gp}root_note 57, root_dyn {_dyn}, freeze 1, play_pos {_pos:.4f}"),
+                   900 if _en == "spectral" else 600,
+                   opts=RD_SRC + RD_ANA["spectral" if _en == "spectral" else "other"])
+    # Sliced key inside the 330 Hz third (slice 0.40..0.60), looping: plays the root key
+    # (loop_xfade 0: Repitch's slice loop still crossfades 2 %, so the slice is 1632.65 frames = 11 source cycles + that 2 %;
+    # Cycles scans the slice at natural speed, which shifts a periodic source's pitch, so it is frozen inside the slice)
+    for _en, _e, _gp in (("repitch", 0, ""),) + RD_ENGINES:
+        _fz = ", freeze 1, play_pos 0.5" if _en == "cycles" else ""
+        rd_add(f"rd_sl_{_en}_{_tag}", P(f"mode {_e}, {_gp}sliced 1, slice_play 2, loop_xfade 0, root_note 60, root_dyn {_dyn}{_fz}"),
+               900 if _en == "spectral" else 600,
+               opts="src=steps48 notes=38 slice=0.40:0.5360542 " + RD_ANA["spectral" if _en == "spectral" else "other"])
+
+# continuous glide (MIDI 57 -> 64 over the sample), Repitch scanning
+_trg = rd_timeline("glide", 1)
+rd_add("rd_rp_glide", P("mode 0, root_note 57, root_dyn 1"), 400,
+       opts="src=glide48 notes=60 segs=" + segs_opt(rd_windows(_trg)))
+# ping-pong loop over the whole sample: forward then backwards pass, both flattened
+rd_add("rd_rp_pingpong", P("mode 0, root_note 57, root_dyn 1, loop_mode 2, loop_start 0, loop_end 1"), 520,
+       opts=RD_SRC + "segs=8-62,84-168,190-243,270-320,345-425")
+# Textures scanning (not frozen): the scan speed follows the curve too
+_trt = rd_timeline("steps", 1)
+rd_add("rd_tx_scan", P("mode 2, grain_size 12, root_note 57, root_dyn 1"), 420,
+       opts=RD_SRC + "cen=261.63 segs=" + segs_opt(rd_windows(_trt, margin=12.0)))
+# Fallbacks: pitch buffer not bound to the gen, or bound but never filled (zeros): static root_note
+_tr_off = rd_timeline("steps", 0)
+rd_add("rd_rp_unbound", P("mode 0, root_note 57, root_dyn 1"), 400, nopitchbind=True,
+       opts=RD_SRC + "segs=" + segs_opt(rd_windows(_tr_off)))
+rd_add("rd_rp_zero", P("mode 0, root_note 57, root_dyn 1"), 400,
+       opts=RD_SRC + "pitch=zero segs=" + segs_opt(rd_windows(_tr_off)))
+
+
+# ---------------------------------------------------------------------------------------------
+# Cycles + Analyzed Root Key (root_dyn 1): the cycle window must be one source period at the read position
+# ---------------------------------------------------------------------------------------------
+# Played on note 60 (root_note 57 / 60 is only the fallback: the curve in #0-bspitch wins). Neutral characters (width 0,
+# split 0, fund 0, mod 0), so the output is the source's own cycle replayed at mtof(60) = 261.63 Hz:
+#   (a) the fundamental is mtof(note) in every segment, (b) a sine source gives a sine, (c) a saw / pulse keeps its
+#   harmonic ratios, (d) no clicks or amplitude modulation at the pitch steps or the window joins, (e) a constant source
+#   pitch equal to root_note matches root_dyn off.
+# Source waves (probe wave=): sine, saw (a_n = 1/n: H2/H1 0.5, H3/H1 0.333), pulse (25 %: 0.7071, 0.3333).
+CD_WAVES = {"sine": (0.0, 0.0), "saw": (0.5, 1 / 3.0), "pulse": (0.7071, 1 / 3.0)}
+CD_CHARS = {0: "pulse", 1: "partials", 2: "phase"}
+CD_CASES = []     # (name, kind, wave, char, xfade)
+# Single mode, Motion 2: the playhead scans 0.7 of the sample per second, thirds end at 476 / 952 ms
+CD_SCAN_SEGS = "60-416,536-892,1012-1368"
+CD_SCAN_CLK = "50-1380"
+# Sliced (slice 0..1, Motion 0.5 = half the natural speed): thirds end at 167 / 333 ms of 500
+CD_SLICE_SEGS = "25-142,192-308,358-474"
+CD_SLICE_CLK = "30-480"
+
+
+def cd_add(kind, wave, char, xf, root_dyn=1, pos=None, steps="steps"):
+    tag = f"cd_{kind}_{wave}_c{char}_x{xf}" + ("" if root_dyn else "_off") + ("" if pos is None else f"_{pos}")
+    base = f"mode 1, cy_char {char}, cy_xfade {xf}, root_dyn {root_dyn}"
+    src = f"src={steps}48 wave={wave} notes=60 harm=261.63 cen=261.63 "
+    if kind == "scan":
+        add(tag, P(base + ", root_note 57, grain_motion 2.0"), 1450, opts=src + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
+    elif kind == "glide":
+        add(tag, P(base + ", root_note 57, grain_motion 2.0"), 1450, opts=src.replace("steps", "glide") + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
+    elif kind == "frozen":
+        add(tag, P(base + f", root_note 57, freeze 1, play_pos {FRZ[pos]:.4f}"), 600, opts=src + "segs=250-550 ana=250 clk=150-590")
+    elif kind == "sliced":
+        add(tag, P(base + ", root_note 60, sliced 1, slice_play 0, grain_motion 0.5"), 520,
+            opts=src.replace("notes=60", "notes=38") + f"slice=0.0:1.0 segs={CD_SLICE_SEGS} clk={CD_SLICE_CLK}")
+    elif kind == "const":
+        add(tag, P(base + ", root_note 57, grain_motion 2.0"), 1450, opts=src.replace("steps", "flat") + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
+    CD_CASES.append((tag, kind, wave, char, xf, pos))
+
+
+# Every character x crossfade on / off on a scanning sine and saw, a pulse source, glides, frozen in each third, sliced.
+# (Each case is one Max launch, so the matrix is kept to what tells the paths apart; at neutral settings the three
+# characters share the cycle read, they differ in the code they pass through.)
+for _w in ("sine", "saw"):
+    for _c in (0, 1, 2):
+        for _x in (0, 1):
+            cd_add("scan", _w, _c, _x)
+for _x in (0, 1):
+    cd_add("scan", "pulse", 0, _x)
+for _w, _c, _x in (("sine", 0, 0), ("sine", 0, 1), ("saw", 0, 0), ("saw", 0, 1), ("sine", 1, 0), ("sine", 2, 1)):
+    cd_add("glide", _w, _c, _x)
+for _k in ("A", "B", "C"):
+    cd_add("frozen", "sine", 0, 0, pos=_k)
+cd_add("frozen", "sine", 1, 0, pos="B")
+cd_add("frozen", "sine", 2, 1, pos="C")
+cd_add("frozen", "saw", 0, 0, pos="B")
+cd_add("frozen", "saw", 0, 1, pos="A")
+for _w, _c, _x in (("sine", 0, 0), ("sine", 0, 1), ("sine", 1, 0), ("sine", 2, 0), ("saw", 0, 0), ("saw", 0, 1)):
+    cd_add("sliced", _w, _c, _x)
+# (e) constant 220 Hz source with the curve at MIDI 57 = root_note: dyn on must equal dyn off
+for _w, _c, _x in (("sine", 0, 0), ("saw", 1, 1), ("sine", 2, 0)):
+    cd_add("const", _w, _c, _x, root_dyn=1)
+    cd_add("const", _w, _c, _x, root_dyn=0)
+
+
+# ---------------------------------------------------------------------------------------------
+# Cycles timing (Bitwig model): pitch is locked to the played key, time is independent. The playhead moves by elapsed
+# time x Speed (grain_motion, 1.0 = real time) whatever note is played, so the markers of src=marks48 (bursts centred
+# at 0.20 / 0.45 / 0.80 s of a 1 s sample) must appear at their source times / Speed in the output, the playhead
+# telemetry slope must be Speed, and Off / Fwd loop / Sliced end or wrap on the same clock. root_dyn on and off (the
+# sample's curve is flat MIDI 57 = root_note, so both give the same expectation).
+# ---------------------------------------------------------------------------------------------
+CT_BURSTS = (0.20, 0.45, 0.80)
+CT_CASES = []   # (name, expectation dict)
+
+
+def ct_timeline(speed, rev=False, lo=0.0, hi=1.0, loop=None, start=None, total=1.25, dt=0.0001):
+    """Simulate the playhead (source seconds, 1 s sample): burst-centre crossing times (ms), the time the head stops
+    (ms, or None when it loops) and the time of the first wrap / stop (ms)."""
+    pos = (hi if rev else lo) if start is None else start
+    direction = -1.0 if rev else 1.0
+    t, hits, stop, first_wrap = 0.0, [], None, None
+    while t < total:
+        new = pos + direction * speed * dt
+        wrapped = False
+        if loop and ((direction > 0 and new >= loop[1]) or (direction < 0 and new <= loop[0])):
+            if first_wrap is None:
+                first_wrap = t * 1000.0
+            new = loop[0] + (new - loop[1]) if direction > 0 else loop[1] - (loop[0] - new)
+            wrapped = True
+        elif new >= hi or new <= lo:
+            stop = t * 1000.0
+            first_wrap = first_wrap if first_wrap is not None else stop
+            break
+        for c in CT_BURSTS:
+            if not wrapped and (pos - c) * (new - c) < 0:
+                hits.append(t * 1000.0)
+        pos = new
+        t += dt
+    return hits, stop, first_wrap
+
+
+def ct_gap_window(hits, stop, lo_ms=30.0, guard=50.0, total=1100.0):
+    """The longest stretch between the bursts (and the start / stop), for the pitch measurement."""
+    edges = [lo_ms] + [x for h in hits for x in (h - guard, h + guard)] + [(stop - 30.0) if stop else total]
+    best = max(((edges[i], edges[i + 1]) for i in range(0, len(edges), 2)), key=lambda w: w[1] - w[0])
+    return best
+
+
+def ct_add(tag, note, dyn, speed, rev=0, loop=None, slc=None, xf=0, dur=None):
+    """loop = (a, b) normalised Fwd loop region; slc = (a, b, slice_play) for Sliced (key 38 plays the slice)."""
+    name = f"ct_{tag}_n{note}_{'dyn' if dyn else 'off'}" + (f"_x{xf}" if xf else "")
+    extra = ""
+    if loop:
+        extra += f", loop_mode 1, loop_start {loop[0]}, loop_end {loop[1]}, loop_xfade 0"
+    if slc:
+        extra += f", sliced 1, slice_play {slc[2]}"
+    params = P(f"mode 1, cy_char 0, cy_xfade {xf}, root_dyn {dyn}, root_note 57, grain_motion {speed}, reverse {rev}{extra}")
+    if slc:
+        a, b, play = slc
+        lo, hi = a, (b if play in (0, 2, 3) else 1.0)
+        tl = ct_timeline(speed, bool(rev), lo, hi, loop=(a, b) if play >= 2 else None)
+    else:
+        tl = ct_timeline(speed, bool(rev), 0.0, 1.0, loop=loop)
+    hits, stop, wrap = tl
+    horizon = (stop + 250.0) if stop else 1250.0
+    if speed == 0:
+        hits, stop, wrap, horizon = [], None, 600.0, 600.0
+    last = (stop or horizon) - 60.0
+    snaps = [ms for ms in range(60, int(((wrap if wrap else horizon) - 50.0)), 60)][:12]
+    gw = ct_gap_window(hits, stop, total=horizon - 100.0) if True else None
+    opts = f"src=marks48 notes={38 if slc else note} mk=1 harm=220 segs={gw[0]:.0f}-{gw[1]:.0f} "
+    if slc:
+        opts += f"slice={slc[0]}:{slc[1]} "
+    dur = int(horizon)
+    case = {"name": name, "dur": dur, "params": params, "opts": opts, "snaps": snaps}
+    if stop:
+        case["cut_ms"] = int(stop + 70)
+    CASES.append(case)
+    hz = 220.0 if slc else 220.0 * 2.0 ** ((note - 57) / 12.0)
+    CT_CASES.append((name, dict(hits=hits, stop=stop, speed=speed, rev=rev, hz=hz, snaps=snaps, wrap=wrap,
+                                tag=tag, note=note)))
+
+
+for _dyn in (1, 0):
+    for _n in (57, 64, 69, 45):
+        ct_add("fwd100", _n, _dyn, 1.0)
+    for _n in (57, 69):
+        ct_add("fwd50", _n, _dyn, 0.5)
+        ct_add("hold0", _n, _dyn, 0.0)
+        ct_add("rev100", _n, _dyn, 1.0, rev=1)
+        ct_add("loop100", _n, _dyn, 1.0, loop=(0.3, 0.6))
+    ct_add("fwd200", 64, _dyn, 2.0)
+    ct_add("slice100", 57, _dyn, 1.0, slc=(0.1, 0.6, 0))
+    ct_add("sliceloop100", 57, _dyn, 1.0, slc=(0.3, 0.6, 2))
+for _n in (69, 45):
+    ct_add("fwd100", _n, 1, 1.0, xf=1)
+ct_add("fwd50", 69, 1, 0.5, xf=1)
+
+
 def run_with_retry(gen_code, case):
     """One render per case. The harness serialises Max machine-wide, and a missing or invalid result is a
     real failure, not a reason to retry."""
@@ -441,6 +725,30 @@ def main():
             with open(cache_path, "w") as cf:
                 json.dump(results, cf)
 
+    if only and os.environ.get("SAMPLER_ROOTDYN_ONLY"):
+        # SAMPLER_CASE='^rd_' SAMPLER_ROOTDYN_ONLY=1: just the Analyzed Root Key cases and their checks
+        run_rootdyn_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Analyzed Root Key checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_CYCDYN_ONLY"):
+        # SAMPLER_CASE='^cd_' SAMPLER_CYCDYN_ONLY=1: just the Cycles + Analyzed Root Key cases and their checks
+        run_cycdyn_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Cycles + Analyzed Root Key checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_CYCTIME_ONLY"):
+        # SAMPLER_CASE='^ct_' SAMPLER_CYCTIME_ONLY=1: just the Cycles timing cases and their checks
+        run_cyctime_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Cycles timing checks passed.")
+        return
     if only and os.environ.get("SAMPLER_SEQ_ONLY"):
         # SAMPLER_CASE='^(keys_|lp_)' SAMPLER_SEQ_ONLY=1: just the note-sequence and Loop Off cases and their checks
         run_seq_checks(results)
@@ -543,6 +851,173 @@ def run_checks(results):
 
     run_new_checks(results)
     run_seq_checks(results)
+    run_rootdyn_checks(results)
+    run_cycdyn_checks(results)
+
+
+def run_rootdyn_checks(R):
+    """Analyzed Root Key: with root_dyn on every engine keeps each part of the pitch-moving sample at the keyed note."""
+    def cents(f, ref):
+        return 1200.0 * math.log2(max(f, 1e-9) / ref)
+
+    def seg(name, k):
+        r = R[name]
+        return r[f"segHz{k}"], r[f"segRms{k}"]
+
+    def at_note(name, k, tol_ct, ref=RD_NOTE_HZ):
+        if name not in R:  # partial run (SAMPLER_CASE)
+            return
+        hz, rms = seg(name, k)
+        check(rms > 0.01, f"{name}: window {k} must sound (rms={rms:.4f})")
+        check(abs(cents(hz, ref)) <= tol_ct,
+              f"{name}: window {k} must sit at {ref:.1f} Hz within {tol_ct} ct (got {hz:.2f} Hz = {cents(hz, ref):+.1f} ct)")
+
+    for name in sorted(n for n in R if n.startswith("rd_")):
+        hzs = [R[name][f"segHz{k}"] for k in range(5) if f"segHz{k}" in R[name]]
+        cens = [R[name][f"segCen{k}"] for k in range(5) if f"segCen{k}" in R[name]]
+        harms = [R[name][f"segHarm{k}"] for k in range(5) if f"segHarm{k}" in R[name]]
+        print(f"  {name:20s} segHz " + " ".join(f"{h:8.2f}" for h in hzs)
+              + ("   cen " + " ".join(f"{h:7.2f}" for h in cens) if cens else "")
+              + ("   harm " + " ".join(f"{h:5.3f}" for h in harms) if harms else "")
+              + ("   h2/h1 " + " ".join(f"{R[name][f'segH2_{k}']:5.3f}" for k in range(5) if f'segH2_{k}' in R[name]) if harms else "")
+              + f"   (keyed {RD_NOTE_HZ:.2f})")
+    # Repitch (scanning): forward, reverse, glide, ping-pong
+    for n in ("rd_rp_on", "rd_rp_rev_on", "rd_rp_glide"):
+        for k in range(3):
+            at_note(n, k, 6)
+    for k in range(5):
+        at_note("rd_rp_pingpong", k, 6)
+    # off: the ratio stays constant (sample frequency x 2^(3/12)), forward and reverse
+    off_hz = [f * 2.0 ** (3 / 12.0) for f in RD_STEP_HZ]
+    for n, order in (("rd_rp_off", (0, 1, 2)), ("rd_rp_rev_off", (2, 1, 0)), ("rd_rp_unbound", (0, 1, 2)), ("rd_rp_zero", (0, 1, 2))):
+        for k, srcseg in enumerate(order):
+            at_note(n, k, 6, off_hz[srcseg])
+    check("rd_rp_unbound" not in R or R["rd_rp_unbound"]["gpRootDyn"] == 0, "rd_rp_unbound: Analyzed Root Key must stay inactive without a bound pitch buffer")
+    check("rd_rp_on" not in R or R["rd_rp_on"]["gpRootDyn"] == 1, "rd_rp_on: Analyzed Root Key must report active with root_dyn 1 and a bound buffer")
+    check("rd_rp_off" not in R or R["rd_rp_off"]["gpRootDyn"] == 0, "rd_rp_off: Analyzed Root Key must report inactive with root_dyn 0")
+    # the three windows differ by more than 100 ct with the curve off: the assertions above would fail on the old gen
+    def have(*names):
+        return all(n in R for n in names)
+
+    def cen_within(name, k, ref, rel):
+        c = R[name][f"segCen{k}"]
+        check(R[name][f"segRms{k}"] > 0.01, f"{name}: window {k} must sound")
+        check(abs(c / ref - 1.0) <= rel,
+              f"{name}: carrier (centroid) must sit at {ref:.1f} Hz within {rel * 100:.0f} % (got {c:.2f} Hz, {cents(c, ref):+.0f} ct)")
+
+    # Frozen in each third of the sample: the carrier sits at the keyed note in every engine. Cycles' output pitch is the
+    # note by design, so there the root shows in the waveform: with the right cycle length the 2nd harmonic keeps the
+    # source's ratio (0.4545 for the test sample); a 220 Hz root on a 330 Hz part reads 1.5 source periods per cycle.
+    tol = {"textures": 0.05, "spectral": 0.03, "fragments": 0.03}
+    for en, rel in tol.items():
+        for k in "ABC":
+            if have(f"rd_{en}_on_{k}"):
+                cen_within(f"rd_{en}_on_{k}", 0, RD_NOTE_HZ, rel)
+        if have(f"rd_{en}_off_B"):
+            # off: the ratio stays constant, 330 Hz x 2^(3/12) = 392.4 Hz (Spectral / Textures: carrier clipped by the 1.45 x band)
+            hz = R[f"rd_{en}_off_B"]["segHz0"]
+            cen = R[f"rd_{en}_off_B"]["segCen0"]
+            check(cen > RD_NOTE_HZ * 1.3, f"rd_{en}_off_B: without root_dyn the 330 Hz part must not sit at the keyed note (carrier {cen:.1f} Hz)")
+            if en != "spectral":
+                check(abs(hz / off_hz[1] - 1.0) <= 0.10, f"rd_{en}_off_B: dominant must stay near {off_hz[1]:.1f} Hz (got {hz:.1f})")
+    for k in "ABC":
+        if have(f"rd_cycles_on_{k}"):
+            h2 = R[f"rd_cycles_on_{k}"]["segH2_0"]
+            check(abs(h2 - 0.4545) <= 0.04, f"rd_cycles_on_{k}: cycle length must follow the curve (h2/h1={h2:.3f}, source 0.4545)")
+    if have("rd_cycles_off_B"):
+        check(R["rd_cycles_off_B"]["segH2_0"] > 0.6, f"rd_cycles_off_B: a 220 Hz root on a 330 Hz part must distort the cycle (h2/h1={R['rd_cycles_off_B']['segH2_0']:.3f})")
+    # Sliced key inside the 330 Hz third: the keyed (root) pitch with root_dyn, the natural 330 Hz without
+    if have("rd_sl_repitch_on", "rd_sl_repitch_off"):
+        at_note("rd_sl_repitch_on", 0, 6)
+        at_note("rd_sl_repitch_off", 0, 6, 330.0)
+    for en in ("textures", "spectral", "fragments"):
+        if have(f"rd_sl_{en}_on", f"rd_sl_{en}_off"):
+            on, off = R[f"rd_sl_{en}_on"]["segCen0"], R[f"rd_sl_{en}_off"]["segCen0"]
+            want = RD_NOTE_HZ / 330.0
+            check(off > 270 and abs(on / off / want - 1.0) <= 0.03,
+                  f"rd_sl_{en}: root_dyn must lower the 330 Hz slice to the keyed note (on {on:.1f} Hz, off {off:.1f} Hz, ratio {on / max(off, 1e-9):.3f}, want {want:.3f})")
+    if have("rd_sl_cycles_on", "rd_sl_cycles_off"):
+        check(abs(R["rd_sl_cycles_on"]["segH2_0"] - 0.4545) <= 0.04 and R["rd_sl_cycles_off"]["segH2_0"] > 0.6,
+              f"rd_sl_cycles: the slice's cycle length must follow the curve (h2/h1 on {R['rd_sl_cycles_on']['segH2_0']:.3f}, off {R['rd_sl_cycles_off']['segH2_0']:.3f})")
+    # Textures scanning: the middle (330 Hz) part, away from the start and end transients
+    if have("rd_tx_scan"):
+        cen_within("rd_tx_scan", 1, RD_NOTE_HZ, 0.05)
+
+
+CD_CLK_RATIO_MAX = 1.6    # per-window max step over its median (steady periodic waveform: about 1)
+CD_CLK_RIPPLE_MAX = 0.05  # (max - min) / mean RMS over 2-period windows
+
+
+def run_cycdyn_checks(R):
+    """Cycles + Analyzed Root Key: a-e from the block above the cd_ cases."""
+    def cents(f, ref):
+        return 1200.0 * math.log2(max(f, 1e-9) / ref)
+
+    for name, kind, wave, char, xf, pos in CD_CASES:
+        if name not in R:
+            continue
+        r = R[name]
+        if kind == "const":
+            continue
+        nseg = 3 if kind in ("scan", "glide", "sliced") else 1
+        h2w, h3w = CD_WAVES[wave]
+        label = f"{name} ({CD_CHARS[char]}, xfade {xf}, {wave})"
+        for k in range(nseg):
+            hz, rms = r[f"segHz{k}"], r[f"segRms{k}"]
+            check(rms > 0.05, f"{label}: segment {k} must sound (rms {rms:.4f})")
+            check(abs(cents(hz, RD_NOTE_HZ)) <= 12, f"{label}: segment {k} fundamental must be the note ({hz:.2f} Hz, want {RD_NOTE_HZ:.2f})")
+            h2, h3 = r[f"segH2_{k}"], r[f"segH3_{k}"]
+            if wave == "sine":
+                check(h2 < 0.05 and h3 < 0.05, f"{label}: segment {k} must be a pure sine (H2/H1 {h2:.3f}, H3/H1 {h3:.3f})")
+            else:
+                check(abs(h2 - h2w) <= 0.08 and abs(h3 - h3w) <= 0.07,
+                      f"{label}: segment {k} must keep the source's harmonics (H2/H1 {h2:.3f} want {h2w:.3f}, H3/H1 {h3:.3f} want {h3w:.3f})")
+        check(r["clkRatio"] < CD_CLK_RATIO_MAX, f"{label}: clicks (max step / median {r['clkRatio']:.2f}, limit {CD_CLK_RATIO_MAX})")
+        check(r["clkRipple"] < CD_CLK_RIPPLE_MAX, f"{label}: amplitude ripple {r['clkRipple']:.3f} (limit {CD_CLK_RIPPLE_MAX})")
+    # (e) constant pitch == root_note: dyn on equals dyn off
+    for name, kind, wave, char, xf, pos in CD_CASES:
+        if kind != "const" or name.endswith("_off") or name not in R or name + "_off" not in R:
+            continue
+        a, b = R[name], R[name + "_off"]
+        check(a["gpRootDyn"] == 1 and b["gpRootDyn"] == 0, f"{name}: root_dyn telemetry")
+        check(abs(a["chk"] - b["chk"]) <= 1e-6 * max(abs(a["chk"]), 1.0) and abs(a["rms"] - b["rms"]) <= 1e-6,
+              f"{name}: a constant source pitch equal to root_note must match root_dyn off (chk {a['chk']:.6g} vs {b['chk']:.6g})")
+        check(abs(cents(a["segHz1"], RD_NOTE_HZ)) <= 12, f"{name}: fundamental {a['segHz1']:.2f} Hz")
+
+
+def run_cyctime_checks(R):
+    """Cycles timing: markers at source time / Speed, playhead slope = Speed, stop / wrap on the same clock, pitch = note."""
+    CT_TOL_MS = float(os.environ.get("CT_TOL_MS", "12"))
+    for name, ex in CT_CASES:
+        if name not in R:
+            continue
+        r = R[name]
+        label = f"{name} (note {ex['note']}, speed {ex['speed']}, {ex['tag']})"
+        hits = ex["hits"]
+        if ex["speed"] > 0:
+            n_want = len(hits)
+            got = [r[f"mkT{k}"] for k in range(int(r.get("mkN", 0)))]
+            check(len(got) == n_want, f"{label}: {n_want} bursts expected, found {len(got)} at {[round(g, 1) for g in got]} (want {[round(h, 1) for h in hits]})")
+            for g, h in zip(got, hits):
+                check(abs(g - h) <= CT_TOL_MS, f"{label}: burst at {g:.1f} ms, want {h:.1f} ms (tolerance {CT_TOL_MS} ms)")
+            if ex["stop"]:
+                check(abs(r["mkEnd"] - ex["stop"]) <= 20.0, f"{label}: output ends at {r['mkEnd']:.1f} ms, want {ex['stop']:.1f} ms")
+                check(r["afterPeak"] < 0.01, f"{label}: must be silent after the end (peak {r['afterPeak']:.4f})")
+        # playhead slope (telemetry slots 0..15) over the snapshots before the first wrap / stop
+        pts = [(ms, r[f"snp{ms}Pos"]) for ms in ex["snaps"] if r.get(f"snp{ms}Pos", -1) >= 0]
+        check(len(pts) >= 3, f"{label}: playhead telemetry missing ({len(pts)} snapshots)")
+        if len(pts) >= 3:
+            slope = (pts[-1][1] - pts[0][1]) / ((pts[-1][0] - pts[0][0]) / 1000.0)
+            want = (-1.0 if ex["rev"] else 1.0) * ex["speed"]
+            if ex["speed"] == 0:
+                check(abs(slope) < 0.01, f"{label}: the playhead must hold at Speed 0 (slope {slope:.3f})")
+            else:
+                check(abs(slope / want - 1.0) <= 0.02, f"{label}: playhead slope {slope:.3f} sample/s, want {want:.3f} (+-2 %)")
+        cents = 1200.0 * math.log2(max(r["segHz0"], 1e-9) / ex["hz"])
+        check(abs(cents) <= 12, f"{label}: pitch {r['segHz0']:.2f} Hz, want {ex['hz']:.2f} Hz ({cents:+.0f} ct)")
+        check(r["scopeFrames"] == 48000, f"{label}: the 48000-frame sample must be bound ({r['scopeFrames']})")
+    if os.environ.get("SAMPLER_DUMP"):
+        pass
 
 
 def run_seq_checks(R):

@@ -263,6 +263,9 @@ function refreshWaveformFromBuffer() {
             }
             // The slicers' mono copy is built only when Onsets / Pitches need it (see requestSliceMono)
             cancelSliceMono();
+            pitchCurve = null;
+            pitchVoiced = null;
+            if (rootDyn) ensurePitchCurve();
             if (restoredSlices) {
                 sliceMarkers = restoredSlices;
                 restoredSlices = null;
@@ -275,6 +278,44 @@ function refreshWaveformFromBuffer() {
         trace("refresh-error", lastLoadError);
         if (typeof post === "function") post("Better Sampler: waveform refresh failed: " + lastLoadError + "\n");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Analyzed Root Key (root_dyn): the sample's pitch at 4096 evenly spaced positions, tracked once per
+// sample on the lazy mono copy and written to #0-bspitch, which the gen reads as the root at the
+// playhead. The face draws it as the orange curve over the waveform.
+// ---------------------------------------------------------------------------
+var PITCH_POINTS = 4096;
+var pitchBufName = "";
+var rootDyn = 0;
+var pitchCurve = null;    // Float32Array(PITCH_POINTS) of MIDI pitch, or null until analysed
+var pitchVoiced = null;   // Uint8Array(PITCH_POINTS): 1 where the pitch is confident
+
+function ensurePitchCurve() {
+    if (!hasLoadedSample || pitchCurve) return;
+    if (sliceMono) computePitchCurve();
+    else requestSliceMono();
+}
+
+function computePitchCurve() {
+    if (!sliceMono || typeof trackPitchCurve !== "function") return;
+    try {
+        var r = trackPitchCurve(sliceMono, sampleRateHz, PITCH_POINTS, curRootNote);
+        pitchCurve = r.curve;
+        pitchVoiced = r.voiced;
+        trace("pitch-curve", "voiced=" + (r.voicedRatio === undefined ? "?" : Number(r.voicedRatio).toFixed(2)));
+        writePitchCurve();
+    } catch (err) {
+        trace("pitch-error", String(err));
+    }
+    mgraphics.redraw();
+}
+
+function writePitchCurve() {
+    if (!pitchCurve || !pitchBufName || typeof Buffer === "undefined") return;
+    try {
+        new Buffer(pitchBufName).poke(1, 0, Array.prototype.slice.call(pitchCurve));
+    } catch (_) {}
 }
 
 // Mono downmix for the onset / pitch slicers (capped at 10 minutes). Built lazily, in chunks on a
@@ -306,6 +347,7 @@ function sliceMonoStep() {
     sliceMono = job.mono;
     sliceMonoJob = null;
     recomputeSlices();
+    if (rootDyn && !pitchCurve) computePitchCurve();
     return true;
 }
 
@@ -394,11 +436,12 @@ var scopeTask = (typeof Task !== "undefined") ? new Task(function() {
     if (scopeTask) scopeTask.schedule(45);
 }) : null;
 
-function setbuffers(sName, vName, scName) {
-    trace("setbuffers", sName + " " + vName + " " + scName);
+function setbuffers(sName, vName, scName, pName) {
+    trace("setbuffers", sName + " " + vName + " " + scName + " " + pName);
     sampBufName = String(sName || "");
     voicesBufName = String(vName || "");
     scopeBufName = String(scName || "");
+    pitchBufName = String(pName || "");
     syncAllVoicesToBuffer();
     refreshWaveformFromBuffer();
     if (restorePath && !hasLoadedSample) outlet(0, "load_sample", restorePath);
@@ -791,6 +834,7 @@ function storeParam(key, v, fromFace) {
             break;
         case "slice_at": case "slice_div": case "slice_beat": case "slice_sens": recomputeSlices(); break;
         case "show_inspector": showInspector = n > 0.5 ? 1 : 0; applyDeviceWidth(); break;
+        case "root_dyn": rootDyn = n > 0.5 ? 1 : 0; if (rootDyn) ensurePitchCurve(); break;
         case "freeze": curFreeze = n > 0.5 ? 1 : 0; break;
         case "reverse": curReverse = n > 0.5 ? 1 : 0; break;
         case "loop_mode": curLoopMode = clampInt(n, 0, 2); break;
@@ -815,6 +859,7 @@ function set_freeze(v) { storeParam("freeze", v); }
 function set_reverse(v) { storeParam("reverse", v); }
 function set_loop_mode(v) { storeParam("loop_mode", v); }
 function set_slice_play(v) { storeParam("slice_play", v); }
+function set_root_dyn(v) { storeParam("root_dyn", v); }
 function set_rp_dist(v) { storeParam("rp_dist", v); }
 function set_rp_color(v) { storeParam("rp_color", v); }
 function set_sp_shift(v) { storeParam("sp_shift", v); }

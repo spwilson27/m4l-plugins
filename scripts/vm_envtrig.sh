@@ -13,6 +13,8 @@
 #                                 "Live unexpectedly quit" dialog blocks the next launch, so they are
 #                                 removed first. Restarting Live ends any other Live session in
 #                                 the VM: check `pgrep -fl MacOS/Live` there first when sharing it.
+#   scripts/vm_envtrig.sh run      live + test under ONE hold of the Live lock (scripts/vm_live_lock.sh); live and
+#                                 test alone also take it. `scripts/vm_live_lock.sh status` shows the holder.
 #   scripts/vm_envtrig.sh test    run scripts/test_envtrig_live.js on the host through an ssh tunnel
 #                                 (local 19878 -> VM 127.0.0.1:9877, the bridge port)
 set -u
@@ -20,7 +22,7 @@ VM=macos-1
 LOCAL_PORT=19878
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-IP="$(tart ip $VM 2>/dev/null)"
+IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"  # the DHCP-lease lookup can miss a running VM
 [ -n "$IP" ] || { echo "VM $VM is not running (tart run $VM)" >&2; exit 1; }
 SSH=(sshpass -e ssh -o StrictHostKeyChecking=accept-new "admin@${IP}")
 
@@ -29,7 +31,13 @@ sync_repo() {
     -e "sshpass -e ssh" "$ROOT/" "admin@${IP}:ableton/"
 }
 
+# Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
+# calls see M4L_LIVE_LOCK_HELD=1 and run directly). `run` = lock -> live -> test -> release.
+case "${1:-}" in live|test|run) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=envtrig_test.als exec "$ROOT/scripts/vm_live_lock.sh" envtrig -- "$0" "$@" ;; esac
+
 case "${1:-}" in
+  run)
+    "$0" live && "$0" test ;;
   sync)
     sync_repo ;;
   audio)
@@ -54,5 +62,5 @@ case "${1:-}" in
     for i in $(seq 1 20); do curl -s -m 1 "http://127.0.0.1:${LOCAL_PORT}/health" >/dev/null && break; sleep 0.5; done
     node "$ROOT/scripts/test_envtrig_live.js" --port "$LOCAL_PORT" ;;
   *)
-    sed -n '2,17p' "$0"; exit 1 ;;
+    sed -n '2,/^set -u/p' "$0"; exit 1 ;;
 esac
