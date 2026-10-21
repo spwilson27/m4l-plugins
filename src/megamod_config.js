@@ -47,9 +47,13 @@
 //                                   shape (MSEG points [{x,y,curve,sCurve}], the transfer curve), enabled,
 //                                   mod (retarget slot)
 //   MM.deleteMapping(id)
+//   MM.undo() / MM.redo()           undo / redo the last modulator or mapping delete (stack of 16, exact snapshots: slots, settings,
+//                                   mapping ids / targets / shapes, Live ids and pool slots are restored and re-bound);
+//                                   -> {kind: "mod"|"map", slot, ids} or null. MM.undoInfo() -> {undo, redo, max, label, kind}
 //   MM.mappingsFor(i) / MM.allMappings() / MM.getMapping(id)
 //   MM.mappingStatus(id)            "ok" | "missing" | "disabled" | "pending"
 //   MM.readTelemetry()              -> {frame, bpm, beat, playing, mods:[{out(-1..1), phase(0..1), u(0..1), aux}]} x MAX_MODS
+//   MM.getSettings() / MM.setSettings(patch)   device-global {defaultMode, smoothMs, rateMul} (clamped; sends `smooth <ms>` / `gen ratemul <x>`)
 //   MM.setUI(patch) / MM.getUI()    opaque JSON-able `state.ui` (merged shallowly). Persisted. UI-only data.
 //   MM.requestWidth(w)              device width in px (clamped 120..1600), re-emitted on load/ready
 //   MM.commit()                     end of a drag gesture: notifyclients() so Live saves the Set (setters during a
@@ -63,16 +67,17 @@
 //   set_font_size, show_text, text_measure, save/restore/translate/rotate, size, init, redraw
 //   (stroke does not preserve the path; rects/arcs/rrects follow translate only; define `preview()` to set up
 //   the state the preview should show; it is called before paint()).
-// Entry points per device (patch -> script): messages `setnames`, `init_lom` come from the patch; outlet 0 = [width <px>] / [gen <msg...>] (route width gen), outlet 1 = aux for extra boxes.
+// Entry points per device (patch -> script): messages `setnames`, `init_lom` come from the patch; outlet 0 = [width <px>] / [gen <msg...>] / [smooth <ms>] (route width gen smooth), outlet 1 = aux for extra boxes.
 //
 // =====================================================================================
 // STATE MODEL (persisted in blob param "MegaModState")
 // =====================================================================================
 // state = {
-//   schema: 6,                  // 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
+//   schema: 7,                  // 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
+//   settings: {defaultMode: "mod"|"remote", smoothMs: 0..500, rateMul: 0.25..4, tooltips: bool (default true)}   // device-global (Options panel), see SETTINGS below
 //   ui: {}                      // UI-private, opaque, JSON-able (expanded modulator, inspector open, ...)
 // }
 // ModSlot = {type, name, color(0..15), enabled(0/1), p:{rate,sync,syncDiv,shape,phase,retrig,bipolar,depth,
@@ -107,7 +112,7 @@
 //   Remote: y' = min + (max-min)*(invert ? 1-y : y), polarity 1, range 1, amount 1 (so v = y').
 // =====================================================================================
 
-const MEGAMOD_VERSION = 6; // schema version of the JSON state
+const MEGAMOD_VERSION = 7; // schema version of the JSON state
 const MAX_MODS = 16;
 
 // ---- engine buffer layouts (contract with src/megamod_engine.genexpr; tests parse the genexpr) ----
@@ -349,7 +354,64 @@ function clampParam(key, v) {
 function defaultState() {
     const mods = [];
     for (let i = 0; i < MAX_MODS; i++) mods.push(null);
-    return { schema: MEGAMOD_VERSION, mods, mappings: [], nextMapId: 1, ui: {} };
+    return { schema: MEGAMOD_VERSION, mods, mappings: [], nextMapId: 1, settings: defaultSettings(), ui: {} };
+}
+
+// ---- device-global settings (Options panel, schema 7) ----
+// defaultMode : mode of a NEW mapping (learn / addMapping). Mod keeps +-, range 0.5; Remote keeps min 0, max 1.
+// smoothMs    : global one-pole smoothing of every mapping output (router gen `smooth` Param, ms; 0 = bypass). Default 0 (no change to old sets).
+// tooltips    : rail TIP button; false hides hover tooltips and instructional hints (missing = true)
+// rateMul     : multiplies the rate of every LFO / Random / Steps / MSEG modulator (engine `ratemul` Param); the follower ignores it.
+const SMOOTH_MAX_MS = 500;
+const SMOOTH_LOG_K = 100; // smoothing slider feel: ms = 500 * (101^p - 1) / 100  (p 0..1: 0 -> 0, 0.5 -> 45 ms, 1 -> 500 ms)
+const RATE_MUL_MIN = 0.25;
+const RATE_MUL_MAX = 4;
+const RATE_MUL_STEPS = [0.25, 1 / 3, 0.5, 1, 1.5, 2, 3, 4]; // the musical steps the Rate dial snaps to
+const RATE_SNAP_OCT = 0.045; // snap window in octaves (log2) around a step; between the windows the dial is continuous
+function defaultSettings() {
+    return { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true };
+}
+function sanitizeSettings(o) {
+    const d = defaultSettings();
+    if (!o || typeof o !== "object") return d;
+    d.defaultMode = o.defaultMode === "remote" ? "remote" : "mod";
+    d.smoothMs = clamp(num(o.smoothMs, 0), 0, SMOOTH_MAX_MS);
+    d.rateMul = clamp(num(o.rateMul, 1), RATE_MUL_MIN, RATE_MUL_MAX);
+    d.tooltips = !(o.tooltips === false || o.tooltips === 0); // missing = on
+    return d;
+}
+function smoothFromPos(p) {
+    const q = clamp(num(p, 0), 0, 1);
+    return q <= 0 ? 0 : (SMOOTH_MAX_MS * (Math.pow(SMOOTH_LOG_K + 1, q) - 1)) / SMOOTH_LOG_K;
+}
+function smoothToPos(ms) {
+    return clamp(Math.log(1 + (SMOOTH_LOG_K * clamp(num(ms, 0), 0, SMOOTH_MAX_MS)) / SMOOTH_MAX_MS) / Math.log(SMOOTH_LOG_K + 1), 0, 1);
+}
+// dial position 0..1 <-> multiplier (log2 scale, 0.25x .. 4x, so 1x sits at 0.5)
+function rateToPos(v) {
+    return clamp((Math.log2(clamp(num(v, 1), RATE_MUL_MIN, RATE_MUL_MAX)) + 2) / 4, 0, 1);
+}
+function rateFromPos(p) {
+    return clamp(Math.pow(2, clamp(num(p, 0.5), 0, 1) * 4 - 2), RATE_MUL_MIN, RATE_MUL_MAX);
+}
+// magnetic snap: within RATE_SNAP_OCT octaves of a step the value is that step, elsewhere it is untouched (fine drag)
+function rateSnap(v) {
+    const x = clamp(num(v, 1), RATE_MUL_MIN, RATE_MUL_MAX);
+    for (const st of RATE_MUL_STEPS) if (Math.abs(Math.log2(x / st)) <= RATE_SNAP_OCT) return st;
+    return x;
+}
+function rateText(v) {
+    const names = { "0.25": "\u00bc", "0.5": "\u00bd" };
+    for (const st of RATE_MUL_STEPS) {
+        if (Math.abs(v - st) < 1e-6) {
+            if (Math.abs(st - 1 / 3) < 1e-6) return "\u00d7\u2153";
+            return "\u00d7" + (names[String(st)] || String(st));
+        }
+    }
+    return "\u00d7" + (Math.round(v * 100) / 100);
+}
+function smoothText(ms) {
+    return ms <= 0 ? "Off" : ms < 10 ? ms.toFixed(1) + " ms" : Math.round(ms) + " ms";
 }
 
 function sanitizeTarget(t) {
@@ -421,9 +483,9 @@ function mappingShape(m) {
     return linearShape();
 }
 
-function defaultMapping(id, mod, target) {
+function defaultMapping(id, mod, target, mode) {
     return {
-        id, mod, enabled: 1, mode: "mod", polarity: 0, range: 0.5, min: 0, max: 1,
+        id, mod, enabled: 1, mode: mode === "remote" ? "remote" : "mod", polarity: 0, range: 0.5, min: 0, max: 1,
         shape: linearShape(), target: sanitizeTarget(target),
     };
 }
@@ -531,6 +593,7 @@ function normalizeState(obj) {
         }
     }
     s.nextMapId = Math.max(maxId + 1, Math.round(num(obj.nextMapId, 1)));
+    s.settings = sanitizeSettings(obj.settings); // schema < 7 has none: defaults
     s.ui = obj.ui && typeof obj.ui === "object" && !Array.isArray(obj.ui) ? JSON.parse(JSON.stringify(obj.ui)) : {};
     return s;
 }
@@ -900,7 +963,8 @@ if (nodeModule && nodeModule.exports) {
         MOD_PARAM_KEYS, MOD_PARAM_RANGE, MIN_WIDTH, MAX_WIDTH, BLOB_CHUNK,
         clamp, num, frac, smoothstep01, evalSegmentT, evalMseg, defaultMsegPoints, sanitizeMsegPoints, msegTable,
         linearShape, sanitizeShape, curveToShape, mappingShape,
-        defaultParams, defaultStepVals, makeModSlot, clampParam, defaultState, sanitizeTarget, defaultMapping,
+        defaultParams, defaultStepVals, makeModSlot, clampParam, defaultState, defaultSettings, sanitizeSettings, SMOOTH_MAX_MS, RATE_MUL_MIN, RATE_MUL_MAX, RATE_MUL_STEPS, RATE_SNAP_OCT,
+        smoothFromPos, smoothToPos, rateToPos, rateFromPos, rateSnap, rateText, smoothText, sanitizeTarget, defaultMapping,
         sanitizeMapping, migrateLegacyMapping, remoteLimitsFromV4, sanitizeMod, normalizeState, stateToJson, base64Encode, base64Decode, serializeState,
         deserializeState, slotConfigFloats, cfgBufferFloats, lfoShape, randHash01, glideValue, outputFromU,
         cycleAccumulator, evalModulator, envelopeFollow, shapeCurve, mappingOutput, mappingTable, targetKey,

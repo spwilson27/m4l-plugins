@@ -151,6 +151,15 @@ def router_gen_code(r):
         'Buffer route("megamodroute");',
         'Buffer curve("mmcurve");',
         "",
+        "// Global smoothing (Options panel): `smooth <ms>` -> one-pole lowpass on every slot output, 0 = bypass (coefficient 0).",
+        "Param smooth(0);",
+    ]
+    out += [f"History ys{j}(0);" for j in range(ROUTER_SLOTS)]
+    out += [
+        "",
+        "smSr = max(samplerate, 1);",
+        "smCoef = (smooth > 0.0001) ? exp(-1000 / (smooth * smSr)) : 0;",
+        "",
     ]
     for j in range(ROUTER_SLOTS):
         k = r * ROUTER_SLOTS + j
@@ -166,7 +175,8 @@ def router_gen_code(r):
             f"\tvb{j} = peek(curve, {k * CURVE_REGION} + ib{j});",
             f"\tyv{j} = va{j} + (vb{j} - va{j}) * (fi{j} - ia{j});",
             "}",
-            f"out{j + 1} = yv{j};",
+            f"ys{j} = yv{j} + (ys{j} - yv{j}) * smCoef;",
+            f"out{j + 1} = ys{j};",
             "",
         ]
     return "\n".join(out)
@@ -309,7 +319,7 @@ def build_patcher():
         message("obj-msg-router-bind", "route ---megamodroute, curve ---mmcurve", 560, 690, 300),
         newobj("obj-thisdevice", "live.thisdevice", 700, 10, 85, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init-lom", "init_lom", 800, 40, 70),
-        newobj("obj-route", "route width gen", 20, 120, 100, numinlets=1, numoutlets=3),
+        newobj("obj-route", "route width gen smooth", 20, 120, 130, numinlets=1, numoutlets=4),
         newobj("obj-prep-setwidth", "prepend setwidth", 20, 150, 100),
         newobj("obj-sync", "plugsync~", 240, 30, 70, numinlets=1, numoutlets=9,
                outlettype=["int", "int", "int", "float", "list", "float", "float", "int", "int"]),
@@ -320,6 +330,11 @@ def build_patcher():
         newobj("obj-ppq-prep", "prepend hppq", 450, 90, 90),
         # Test hook: `test_learn <mod> <param id>` / `test_report` (see megamod_mapper.js)
         newobj("obj-r-test", "receive megamod-test", 800, 70, 130, numinlets=0, numoutlets=1),
+        # Keyboard fallback (the v8ui also gets native onkeydown): [key] ascii + modifiers -> `key <ascii> <mods>` -> obj-viz.
+        # The UI only acts on it while the device was the last thing clicked (ubFocus in src/megamod_ui.js).
+        newobj("obj-key", "key", 800, 100, 40, numinlets=0, numoutlets=4, outlettype=["int", "int", "int", "int"]),
+        newobj("obj-key-pack", "pack 0 0", 800, 130, 56, numinlets=2, numoutlets=1),
+        newobj("obj-key-prep", "prepend key", 800, 160, 80),
     ])
 
     lines = [
@@ -335,6 +350,10 @@ def build_patcher():
         line("obj-thisdevice", 0, "obj-msg-init-lom", 0),
         line("obj-msg-init-lom", 0, "obj-viz", 0),
         line("obj-r-test", 0, "obj-viz", 0),
+        line("obj-key", 0, "obj-key-pack", 0),
+        line("obj-key", 2, "obj-key-pack", 1),
+        line("obj-key-pack", 0, "obj-key-prep", 0),
+        line("obj-key-prep", 0, "obj-viz", 0),
         line("obj-viz", 0, "obj-route", 0),
         line("obj-route", 0, "obj-prep-setwidth", 0),
         line("obj-prep-setwidth", 0, "obj-thisdevice", 0),
@@ -356,6 +375,7 @@ def build_patcher():
     lines.extend(pool_lines)
     for r in range(ROUTERS):
         lines.append(line("obj-msg-router-bind", 0, f"obj-router-{r}", 0))
+        lines.append(line("obj-route", 2, f"obj-router-{r}", 0))  # `smooth <ms>` -> router Param smooth
 
     # Background panels MUST be last in boxes and have "background": 1
     for i, pn in enumerate(v["panels"]):

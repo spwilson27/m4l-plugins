@@ -89,6 +89,11 @@ def device(gen_code, run):
         boxes.append(mh.gen_box("dev-router", mc.router_gen_code(ROUTER), 400, 380, numinlets=16, numoutlets=32))
         lines.append(mh.line("obj-load", 0, "dev-rbind", 0))
         lines.append(mh.line("dev-rbind", 0, "dev-router", 0))
+        if run.get("rparams"):
+            # router Params (Options panel smoothing: `smooth <ms>`), sent before DSP like the other params
+            boxes.append(mh.msg("dev-rparams", run["rparams"], 40, 680, 300))
+            lines.append(mh.line("obj-load", 0, "dev-rparams", 0))
+            lines.append(mh.line("dev-rparams", 0, "dev-router", 0))
         for i in range(16):
             lines.append(mh.line("dev-gen", i, "dev-router", i))
     for inlet, spec in enumerate(run["outs"]):
@@ -103,7 +108,7 @@ def device(gen_code, run):
 
 def make_probe(run, tag):
     """Temp probe file: CASE data + src/megamod_config.js + tests/megamod_probe.js (unique per run)."""
-    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele") if k in run}
+    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele", "smooth_ms") if k in run}
     fd, path = tempfile.mkstemp(prefix=f"megamod_probe_{tag}_", suffix=".js")
     with os.fdopen(fd, "w", encoding="utf-8") as out:
         out.write("var CASE = " + json.dumps(case_obj) + ";\n")
@@ -157,6 +162,11 @@ ROUTER_CASE = {"base": ROUTER * mc.ROUTER_SLOTS, "slots": [
 ]}
 
 
+# identity mapping (Mod, +-, range 1, linear) so the router output equals the engine output apart from smoothing
+MAPPING_ID = {"mode": "mod", "polarity": 0, "range": 1.0, "curve": 0, "curveAmt": 0.5, "curveSteps": 4}
+ROUTER_ID = {"base": ROUTER * mc.ROUTER_SLOTS, "slots": [{"slot": ROUTER * mc.ROUTER_SLOTS + 0, "src": 0, "map": MAPPING_ID}]}
+
+
 def cases():
     return {
         "lfo_sine_2hz": [R("lfo_sine_2hz", [lfo(0, 0, 2.0)], (1, 2), dur=2000)],
@@ -196,6 +206,23 @@ def cases():
                         params="hbpm 133, hppq 0, hplay 0", events=[(0, "hplay 1")], tele=True)],
         "multi_slot_isolation": [R("multi", [lfo(0, 0, 2.0), lfo(7, 2, 1.0), lfo(15, 4, 3.0)], (1, 16), dur=1500,
                                    tele=True)],
+        # Options panel: global rate multiplier (engine Param ratemul) and router smoothing (router Param smooth, ms).
+        "rate_mul": [
+            R("x2", [lfo(0, 0, 2.0)], (1, 2), dur=2000, params="hbpm 120, hppq 0, hplay 0, ratemul 2"),
+            R("x0.5", [lfo(0, 0, 2.0)], (1, 2), dur=3500, params="hbpm 120, hppq 0, hplay 0, ratemul 0.5"),
+            R("sync_x2", [lfo(0, 0, 1.0, 1, 1.0, sync=1, syncDiv=9)], (1, 2), dur=2000, params="hbpm 120, hppq 0, hplay 0, ratemul 2"),
+            R("change_free", [lfo(0, 0, 2.0)], (1, 2), dur=2200, params="hbpm 120, hppq 0, hplay 0, ratemul 1",
+              events=[(800, "ratemul 2")]),
+            R("change_sync", [lfo(0, 0, 1.0, 1, 1.0, sync=1, syncDiv=9)], (1, 2), dur=2200,
+              params="hbpm 120, hppq 0, hplay 0, ratemul 1", events=[(800, "ratemul 2")]),
+            R("env_x4", [{"slot": 0, "type": MOD_ENV, "p": {"attack": 5, "release": 120, "gain": 0, "bipolar": 0, "depth": 1}}],
+              (1, "src"), dur=800, an="env", params="hbpm 120, hppq 0, hplay 0, ratemul 4",
+              source="amp 0.5, freq 1000, t0ms 500, lenms 200"),
+        ],
+        "smoothing": [
+            R("smooth50", [lfo(0, 4, 1.0)], (1, "rt0"), dur=2500, an="smooth", router=ROUTER_ID, rparams="smooth 50", smooth_ms=50),
+            R("smooth0", [lfo(0, 4, 1.0)], (1, "rt0"), dur=2500, an="smooth", router=ROUTER_ID, rparams="smooth 0", smooth_ms=0),
+        ],
         # Router gen (src: scripts/megamod_common.py router_gen_code): slots 96 / 97 route from two different
         # modulators with two different tables, slot 98 is off. Router outlet j = slot 96 + j.
         "lookup_chain": [
@@ -406,6 +433,45 @@ def check(case, runs, metas, errors, notes):
             err("slot 7 telemetry is dead")
         if any(abs(outs[i]) > 1e-9 for i in range(16) if i not in (0, 7, 15)):
             err("disabled slots must stay at 0")
+    elif case == "rate_mul":
+        x2, x05, sx2, chf, chs, envx = ms
+        sr = x2["sr"]
+        one = 2 * 3.141592653589793 * 4.0 / sr  # largest per-sample step of a 4 Hz unit sine
+        notes.append(f"x2: period {x2['c1_period']:.4f}s (4 Hz = 0.25); x0.5: period {x05['c1_period']:.4f}s (1 Hz = 1.0); "
+                     f"sync x2: {sx2['c1_period']:.4f}s; free change: periods {chf['c1_periods'][0]:.3f} -> {chf['c1_periods'][-1]:.3f} "
+                     f"maxStep {chf['c1_maxStep']:.2e} (limit {one:.2e}); sync change: {chs['c1_periods'][0]:.3f} -> "
+                     f"{chs['c1_periods'][-1]:.3f} maxStep {chs['c1_maxStep']:.2e}; env x4 err {envx['env_maxerr']:.4f}")
+        if not near(x2["c1_period"], 0.25, 0.005):
+            err(f"ratemul 2 on a 2 Hz LFO: period {x2['c1_period']} != 0.25")
+        if not near(x05["c1_period"], 1.0, 0.02):
+            err(f"ratemul 0.5 on a 2 Hz LFO: period {x05['c1_period']} != 1.0")
+        if not near(sx2["c1_period"], 0.25, 0.005):
+            err(f"synced 1/4 at 120 bpm with ratemul 2: period {sx2['c1_period']} != 0.25")
+        for tag, m in (("free", chf), ("sync", chs)):
+            ps = m["c1_periods"]
+            if len(ps) < 4 or not near(ps[0], 0.5, 0.01) or not near(ps[-1], 0.25, 0.006):
+                err(f"{tag} mid-run change: periods should go 0.5 -> 0.25, got {ps}")
+            if m["c1_maxStep"] > one * 1.03:
+                err(f"{tag} mid-run change: phase jump (max step {m['c1_maxStep']} > one normal step {one})")
+            if m["c1_min"] < -1.0001 or m["c1_max"] > 1.0001:
+                err(f"{tag} mid-run change: out of range")
+        if envx["env_maxerr"] > 0.05 or envx["env_peak_out"] < envx["env_peak_ref"] - 0.05:
+            err("the envelope follower must ignore ratemul")
+    elif case == "smoothing":
+        s50, s0 = ms
+        notes.append(f"smooth 50: tau {s50['smooth_tau_ms']:.1f} ms (edges {s50['smooth_edges']:.0f}), +1 ms level {s50['smooth_instant']:.3f}, "
+                     f"settled {s50['smooth_final']:.3f}; smooth 0: tau {s0['smooth_tau_ms']:.2f} ms maxdiff vs source {s0['smooth_maxdiff']:.4f}")
+        for tag, m, want in (("50 ms", s50, 50.0),):
+            if m["smooth_edges"] < 2:
+                err(f"smooth {tag}: no edges measured")
+            elif not near(m["smooth_tau_ms"], want, want * 0.08):
+                err(f"smooth {tag}: one-pole time constant {m['smooth_tau_ms']} ms != {want} +-8%")
+            if m["smooth_final"] < 0.97:
+                err(f"smooth {tag}: output does not settle at the source level ({m['smooth_final']})")
+        if s50["smooth_instant"] > -0.8:
+            err(f"smooth 50: the step is instant (level 1 ms after the edge {s50['smooth_instant']})")
+        if s0["smooth_tau_ms"] > 1.0 or s0["smooth_maxdiff"] > 0.02:
+            err(f"smooth 0 must pass the output unchanged (tau {s0['smooth_tau_ms']} ms, maxdiff {s0['smooth_maxdiff']})")
     elif case == "lookup_chain":
         for tag, m in zip(("slot A (src mod 0, mod-mode S curve)", "slot B (src mod 1, remote exp, min 0.85 > max 0.15 inverted)"), ms[:2]):
             notes.append(f"{tag}: max err vs mappingOutput {m['lookup_err']:.5f}; decoy-region err {m['lookup_err_decoy']:.3f}; "

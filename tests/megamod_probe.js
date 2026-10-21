@@ -428,6 +428,30 @@ function analyzeRouteOff(rep, off, on) {
     rep.push("neighbour_max " + mn);
 }
 
+// Router smoothing (Options panel): a = engine square (source), b = router output through the identity mapping.
+// For every rising source edge with >= 400 ms of data after it: the time for b to reach 63.2% of the -1 -> +1 step (the one-pole
+// time constant), the level 1 ms after the edge, and the settled level just before the next edge.
+function analyzeSmooth(rep, a, b, sr) {
+    var target = -1 + 2 * 0.6321205588;
+    var taus = [], instants = [], finals = [], maxdiff = 0, i, j;
+    for (i = 0; i < a.length; i++) maxdiff = Math.max(maxdiff, Math.abs(a[i] - b[i]));
+    for (i = 2; i < a.length; i++) {
+        if (!(a[i - 1] < 0 && a[i] >= 0)) continue;
+        if (i + Math.floor(0.45 * sr) >= a.length) break;
+        j = i;
+        while (j < a.length && b[j] < target) j++;
+        taus.push((j - i) * 1000 / sr);
+        instants.push(b[i + Math.floor(0.001 * sr)]);
+        finals.push(b[i + Math.floor(0.45 * sr)]);
+    }
+    function avg(v) { var s = 0, k; for (k = 0; k < v.length; k++) s += v[k]; return v.length ? s / v.length : 0; }
+    rep.push("smooth_edges " + taus.length);
+    rep.push("smooth_tau_ms " + avg(taus));
+    rep.push("smooth_instant " + avg(instants));
+    rep.push("smooth_final " + avg(finals));
+    rep.push("smooth_maxdiff " + maxdiff);
+}
+
 // ---------------------------------------------------------------- entry
 function analyze(durMs) {
     if (armed) return;
@@ -471,6 +495,7 @@ function analyzeInner(durMs) {
     else if (an === "retrig") analyzeRetrig(rep, c1, c2, sr);
     else if (an === "lookup") analyzeLookup(rep, c1, c2, sr);
     else if (an === "routeoff") analyzeRouteOff(rep, c1, c2);
+    else if (an === "smooth") analyzeSmooth(rep, c1, c2, sr);
 
     if (CASE.tele) analyzeTelemetry(rep, sr);
     for (var q = 0; q < rep.length; q++) {

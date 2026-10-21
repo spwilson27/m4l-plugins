@@ -389,12 +389,16 @@ var MM = (function () {
         api.commit();
         return s;
     };
-    api.removeModulator = function (i) {
-        if (!api.state.mods[i]) return;
+    // opts.noUndo: internal (undo / redo themselves); everything else is recorded on the undo stack
+    api.removeModulator = function (i, opts) {
+        const mod = api.state.mods[i];
+        if (!mod) return;
+        const entry = { kind: "mod", slot: i, mod: cloneJson(mod), maps: api.state.mappings.filter((x) => x.mod === i).map(snapMapping), label: mod.name };
         for (const m of api.state.mappings.filter((x) => x.mod === i)) removeMappingInternal(m);
         api.state.mods[i] = null;
         if (api.learn.mod === i) api.disarmLearn();
         writeCfgSlot(i); writeMsegSlot(i); writeStepsSlot(i);
+        if (!(opts && opts.noUndo)) pushUndo(entry);
         fire("mods", i);
         api.commit();
     };
@@ -477,7 +481,7 @@ var MM = (function () {
         if (findDuplicateMapping(api.state.mappings, i, t)) return null;
         if (selfPath && isSelfTarget(t.path, selfPath)) return null;
         if (allocSlot() < 0) { dlog("addMapping refused: pool full", MAX_MAPPINGS); fire("full", i); return null; }
-        const m = defaultMapping(api.state.nextMapId++, i, t);
+        const m = defaultMapping(api.state.nextMapId++, i, t, api.state.settings.defaultMode);
         api.state.mappings.push(m);
         if (target && target.id) { pidCache[m.id] = Number(target.id); missing[m.id] = false; }
         syncMapping(m);
@@ -511,14 +515,133 @@ var MM = (function () {
         delete pidCache[m.id];
         delete missing[m.id];
     }
-    api.deleteMapping = function (id) {
+    api.deleteMapping = function (id, opts) {
         const m = api.getMapping(id);
         if (!m) return;
+        const entry = { kind: "map", maps: [snapMapping(m)], label: m.target.paramName || m.target.name || "mapping" };
         removeMappingInternal(m);
+        if (!(opts && opts.noUndo)) pushUndo(entry);
         fire("mapping", m.mod, id);
         api.commit();
     };
 
+    // ---------------------------------------------------------------- undo / redo of deletes
+    // Deleting a modulator (with all its mappings) or a single mapping is recorded as an exact snapshot: the modulator slot and
+    // settings, each mapping (id, target, shape, ...) at its original list index, its Live parameter id, its missing flag and its
+    // pool slot. Undo puts all of it back (re-binding the pool slots and ids through syncMapping) and redo deletes it again.
+    // A new delete clears the redo stack; the undo stack keeps the last UNDO_MAX entries.
+    const UNDO_MAX = 16;
+    let undoStack = [];
+    let redoStack = [];
+    function cloneJson(o) {
+        return JSON.parse(JSON.stringify(o));
+    }
+    function snapMapping(m) {
+        return { index: api.state.mappings.indexOf(m), m: cloneJson(m), pid: pidCache[m.id] || 0, missing: !!missing[m.id], slot: slotOf[m.id] === undefined ? -1 : slotOf[m.id] };
+    }
+    function pushUndo(entry) {
+        undoStack.push(entry);
+        if (undoStack.length > UNDO_MAX) undoStack.shift();
+        redoStack = [];
+        fire("undo");
+    }
+    function restoreMappings(maps, modSlot) {
+        const used = {};
+        for (const k of Object.keys(slotOf)) used[slotOf[k]] = true;
+        const restored = [];
+        for (const sn of maps.slice().sort((a, b) => a.index - b.index)) {
+            if (api.getMapping(sn.m.id)) continue;
+            const m = cloneJson(sn.m);
+            if (modSlot !== undefined) m.mod = modSlot;
+            api.state.mappings.splice(clamp(sn.index, 0, api.state.mappings.length), 0, m);
+            if (sn.pid) pidCache[m.id] = sn.pid;
+            missing[m.id] = sn.missing;
+            let k = sn.slot;
+            if (k < 0 || used[k]) k = allocSlot();
+            if (k >= 0) { slotOf[m.id] = k; used[k] = true; }
+            restored.push(m);
+        }
+        for (const m of restored) syncMapping(m);
+        return restored;
+    }
+    function applyUndo(e) {
+        if (e.kind === "mod") {
+            let s = e.slot;
+            if (api.state.mods[s]) s = api.freeSlot();
+            if (s < 0) return false;
+            e.slot = s;
+            api.state.mods[s] = cloneJson(e.mod);
+            writeCfgSlot(s); writeMsegSlot(s); writeStepsSlot(s);
+            restoreMappings(e.maps, s);
+            fire("mods", s);
+        } else {
+            const mod = e.maps[0].m.mod;
+            if (!api.state.mods[mod]) return false;
+            const r = restoreMappings(e.maps);
+            fire("mapping", mod, r.length ? r[0].id : 0);
+        }
+        api.commit();
+        return true;
+    }
+    function applyRedo(e) {
+        if (e.kind === "mod") {
+            if (!api.state.mods[e.slot]) return false;
+            e.mod = cloneJson(api.state.mods[e.slot]);
+            e.maps = api.state.mappings.filter((x) => x.mod === e.slot).map(snapMapping);
+            api.removeModulator(e.slot, { noUndo: true });
+        } else {
+            const m = api.getMapping(e.maps[0].m.id);
+            if (!m) return false;
+            e.maps = [snapMapping(m)];
+            api.deleteMapping(m.id, { noUndo: true });
+        }
+        return true;
+    }
+    // Undo the last delete -> {kind, slot (modulator), ids (mappings)} or null when there is nothing (or it can't be restored)
+    api.undo = function () {
+        const e = undoStack.pop();
+        if (!e) return null;
+        if (!applyUndo(e)) return null;
+        redoStack.push(e);
+        fire("undo");
+        return { kind: e.kind, slot: e.kind === "mod" ? e.slot : e.maps[0].m.mod, ids: e.maps.map((x) => x.m.id) };
+    };
+    api.redo = function () {
+        const e = redoStack.pop();
+        if (!e) return null;
+        if (!applyRedo(e)) return null;
+        undoStack.push(e);
+        fire("undo");
+        return { kind: e.kind, slot: e.kind === "mod" ? e.slot : e.maps[0].m.mod, ids: e.maps.map((x) => x.m.id) };
+    };
+    api.undoInfo = function () {
+        const top = undoStack.length ? undoStack[undoStack.length - 1] : null;
+        return { undo: undoStack.length, redo: redoStack.length, max: UNDO_MAX, label: top ? top.label : "", kind: top ? top.kind : "" };
+    };
+    api.clearUndo = function () {
+        undoStack = [];
+        redoStack = [];
+    };
+
+    // ---------------------------------------------------------------- device-global settings (Options panel)
+    // smoothMs -> `smooth <ms>` to every router (patch: route width gen smooth), rateMul -> `gen ratemul <x>` to the engine.
+    api.getSettings = function () { return api.state.settings; };
+    api.sendSettings = function () {
+        if (typeof outlet !== "function") return;
+        outlet(0, "smooth", api.state.settings.smoothMs);
+        outlet(0, "gen", "ratemul", api.state.settings.rateMul);
+    };
+    api.setSettings = function (patch) {
+        const next = sanitizeSettings(Object.assign({}, api.state.settings, patch || {}));
+        const old = api.state.settings;
+        api.state.settings = next;
+        if (typeof outlet === "function") {
+            if (next.smoothMs !== old.smoothMs) outlet(0, "smooth", next.smoothMs);
+            if (next.rateMul !== old.rateMul) outlet(0, "gen", "ratemul", next.rateMul);
+        }
+        fire("settings");
+        markDirty();
+    };
     // ---------------------------------------------------------------- UI state, width, aux
     api.setUI = function (patch) {
         Object.assign(api.state.ui, patch || {});
@@ -590,6 +713,7 @@ var MM = (function () {
         readyFired = true;
         for (const fn of listeners.ready) { try { fn(); } catch (e) {} }
         if (typeof uiReady === "function") { try { uiReady(); } catch (e) { post2("uiReady: " + e); } }
+        api.sendSettings();
         if (reqWidth) api.requestWidth(reqWidth);
         startTasks();
     }
@@ -601,6 +725,7 @@ var MM = (function () {
         bufs = {};
         flushEngine();
         flushRoute();
+        api.sendSettings();
         if (lomReady) { rebuildAllSlots(); }
         fireReady();
     };
@@ -628,12 +753,15 @@ var MM = (function () {
         const s = deserializeState(list);
         if (!s) return false;
         api.state = s;
+        undoStack = [];
+        redoStack = [];
         if (api.learn.armed) api.learn = { armed: false, mod: -1, multi: false };
         pidCache = {};
         missing = {};
         slotOf = {};
         for (const m of api.state.mappings) { const k = allocSlot(); if (k >= 0) slotOf[m.id] = k; }
         flushEngine();
+        api.sendSettings();
         if (lomReady) { resolveMappingTargets(); if (names) rebuildAllSlots(); }
         fire("load");
         if (reqWidth) api.requestWidth(reqWidth);

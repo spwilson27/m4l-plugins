@@ -23,6 +23,7 @@ const GEN = fs.readFileSync(path.join(ROOT, "src", "megamod_engine.genexpr"), "u
 let passed = 0;
 function ok(cond, msg) { assert.ok(cond, msg); passed++; }
 function eq(a, b, msg) { assert.strictEqual(a, b, msg); passed++; }
+const deq = (a, b, m) => { assert.deepStrictEqual(a, b, m); passed++; };
 function near(a, b, tol, msg) { assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b}`); passed++; }
 
 // ---------------------------------------------------------------- 1. build output
@@ -133,12 +134,17 @@ function checkPool(v, p, boxes, byId, lines) {
         ok(code.indexOf('Buffer route("megamodroute");') >= 0 && code.indexOf('Buffer curve("mmcurve");') >= 0, `${v}: router ${r} buffers`);
         ok(code.indexOf("Buffer curve") < code.indexOf("sel0 ="), `${v}: router ${r} Buffers before statements`);
         ok(!/\be\d/.test(code), `${v}: router ${r} has no e<digit> identifier`);
+        ok(code.includes("Param smooth(0);"), `${v}: router ${r} has Param smooth (default 0)`);
+        ok(code.includes("smCoef = (smooth > 0.0001) ? exp(-1000 / (smooth * smSr)) : 0;"), `${v}: router ${r} one-pole coefficient from smooth ms at the sample rate, bypass at 0`);
+        ok(code.indexOf("Param smooth") < code.indexOf("smCoef =") && code.lastIndexOf("History ys") < code.indexOf("smSr ="), `${v}: router ${r} declarations before statements`);
+        ok((idx["obj-route:2"] || []).includes(`obj-router-${r}:0`), `${v}: smooth route outlet -> router ${r}`);
         for (let j = 0; j < 32; j++) {
             const k = r * 32 + j;
             ok(code.includes(`sel${j} = peek(route, ${2 * k}) + 1;`), `${v}: router ${r} slot ${k} route index`);
             ok(code.includes(`peek(curve, ${k * 256} + ia${j})`) && code.includes(`peek(curve, ${k * 256} + ib${j})`), `${v}: router ${r} slot ${k} table base`);
             ok(new RegExp(`xv${j} = selector\\(sel${j}, in1, in2, in3, in4, in5, in6, in7, in8, in9, in10, in11, in12, in13, in14, in15, in16\\);`).test(code), `${v}: slot ${k} selector`);
-            ok(code.includes(`out${j + 1} = yv${j};`), `${v}: slot ${k} output`);
+            ok(code.includes(`ys${j} = yv${j} + (ys${j} - yv${j}) * smCoef;`) && code.includes(`out${j + 1} = ys${j};`), `${v}: slot ${k} output goes through the smoothing one-pole`);
+            ok(code.includes(`History ys${j}(0);`), `${v}: slot ${k} smoothing history`);
             const dests = idx[`obj-router-${r}:${j}`] || [];
             ok(dests.includes(`obj-mm-mod-${k}:0`) && dests.includes(`obj-mm-rem-${k}:0`), `${v}: slot ${k} router -> both live.* inlet 0`);
             eq(byId[`obj-mm-mod-${k}`].varname, `mm_mod_${k}`, `${v}: mm_mod_${k}`);
@@ -234,8 +240,8 @@ function checkPool(v, p, boxes, byId, lines) {
     }
     near(C.shapeCurve(0.5, C.CURVE_EXP, 0.5, 4), 0.0625, 1e-9, "exp amt 0.5 -> power 4");
     // ---- mapping shape (MSEG transfer curve) ----
-    eq(C.MEGAMOD_VERSION, 6, "schema version 6 (amount folded into range)");
-    eq(C.defaultState().schema, 6, "new states are schema 6");
+    eq(C.MEGAMOD_VERSION, 7, "schema version 7 (device-global settings)");
+    eq(C.defaultState().schema, 7, "new states are schema 7");
     {
         const d = C.defaultMapping(1, 0, {});
         eq(JSON.stringify([d.polarity, d.range, d.amount, d.invert, d.bipolar, d.min, d.max]), JSON.stringify([0, 0.5, null, null, null, 0, 1]), "default mapping: ± , range 0.5, no amount, min 0, max 1, no legacy invert / bipolar");
@@ -340,7 +346,7 @@ function checkPool(v, p, boxes, byId, lines) {
                         const old = { id: 1, mod: 0, mode: "mod", polarity: pol, range, amount, shape, target: { path: "p" } };
                         const st = C.normalizeState({ schema, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [old], nextMapId: 2 });
                         const m = st.mappings[0];
-                        eq(st.schema, 6, "migrated state is schema 6");
+                        eq(st.schema, 7, "migrated state is schema 7");
                         eq(m.amount, undefined, "amount dropped");
                         near(m.range, Math.abs(amount) * range, 1e-12, `schema ${schema} pol ${pol} a ${amount} r ${range}: range'`);
                         eq(m.polarity, amount < 0 && pol !== 0 ? -pol : pol, `schema ${schema} pol ${pol} a ${amount}: polarity swap`);
@@ -492,7 +498,7 @@ function checkPool(v, p, boxes, byId, lines) {
         ok(worst < 0.02, `migrated tables match the old formula (max error ${worst.toFixed(4)} < 0.02)`);
         const v1 = { schema: 1, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 3, mod: 0, curve: C.CURVE_STEPPED, curveSteps: 3, amount: 1, target: { path: "p" } }], nextMapId: 4 };
         const st = C.normalizeState(v1);
-        eq(st.schema, 6, "migrated state is the current schema");
+        eq(st.schema, 7, "migrated state is the current schema");
         eq(st.mappings[0].shape.length, 6, "stepped(3) = 3 hard steps = 6 points");
         eq(st.mappings[0].shape.map((p) => p.y).join(), "0,0,0.5,0.5,1,1", "stepped levels 0, 0.5, 1");
         near(C.mappingTable(st.mappings[0])[128], 0.0, 1e-9, "stepped middle step is flat");
@@ -508,7 +514,7 @@ function checkPool(v, p, boxes, byId, lines) {
         s2.mappings.push(m2); s2.nextMapId = 2;
         const back = C.deserializeState(C.serializeState(s2));
         eq(JSON.stringify(back.mappings[0].shape), JSON.stringify(m2.shape), "shape round trip");
-        eq(back.schema, 6, "current schema stays");
+        eq(back.schema, 7, "current schema stays");
         // a legacy-field mapping handed straight to the table helpers still resolves (audio-test fixtures)
         const legacy = { mode: "mod", amount: 0.8, bipolar: 1, invert: 0, curve: C.CURVE_S, curveAmt: 0.6, curveSteps: 4 };
         near(C.mappingOutput(legacy, 0.3), C.mappingOutput(Object.assign({}, legacy, { shape: C.curveToShape(C.CURVE_S, 0.6, 4) }), 0.3), 1e-12, "legacy fields fall back to the converted shape");
@@ -640,6 +646,83 @@ function checkPool(v, p, boxes, byId, lines) {
     ok(decls.every((d) => d < firstExpr), "declarations before expressions");
     for (const pr of ["hbpm", "hppq", "hplay", "rtrg"]) ok(new RegExp(`^Param ${pr}\\(`, "m").test(GEN), `Param ${pr}`);
     ok(!/Param hold/.test(GEN), "no Param named hold");
+}
+
+// ---------------------------------------------------------------- 5b. settings (schema 7), engine ratemul
+{
+    eq(C.MEGAMOD_VERSION, 7, "schema 7");
+    const d = C.defaultState();
+    eq(d.schema, 7, "default state is schema 7");
+    assert.deepStrictEqual(d.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true }); passed++;
+    // sanitize: clamps, bad values -> defaults
+    assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "remote", smoothMs: 9999, rateMul: 100 }), { defaultMode: "remote", smoothMs: 500, rateMul: 4, tooltips: true }); passed++;
+    assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "x", smoothMs: -3, rateMul: 0 }), { defaultMode: "mod", smoothMs: 0, rateMul: 0.25, tooltips: true }); passed++;
+    assert.deepStrictEqual(C.sanitizeSettings(null), C.defaultSettings()); passed++;
+    assert.deepStrictEqual(C.sanitizeSettings({ smoothMs: "abc" }), C.defaultSettings()); passed++;
+    // tooltips: missing / junk = on, false / 0 = off, survives a round trip
+    eq(C.sanitizeSettings({}).tooltips, true, "tooltips default on");
+    eq(C.sanitizeSettings({ tooltips: false }).tooltips, false, "tooltips off kept");
+    eq(C.sanitizeSettings({ tooltips: 0 }).tooltips, false, "tooltips 0 = off");
+    eq(C.sanitizeSettings({ tooltips: "x" }).tooltips, true, "tooltips junk = on");
+    {
+        const t = C.defaultState();
+        t.settings.tooltips = false;
+        eq(C.deserializeState(C.serializeState(t)).settings.tooltips, false, "tooltips off round trip");
+        const o = JSON.parse(C.stateToJson(t));
+        delete o.settings.tooltips;
+        eq(C.normalizeState(o).settings.tooltips, true, "tooltips missing in a saved state = on");
+    }
+    // round trip through the blob
+    const s = C.defaultState();
+    s.mods[0] = C.makeModSlot(C.MOD_LFO, 0);
+    s.settings = { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, tooltips: true };
+    const back = C.deserializeState(C.serializeState(s));
+    assert.deepStrictEqual(back.settings, { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, tooltips: true }); passed++;
+    eq(back.schema, 7, "round trip is schema 7");
+    // old states (schema 1..6, no settings) get the defaults and keep everything else
+    for (const sc of [1, 2, 3, 4, 5, 6]) {
+        const old = JSON.parse(C.stateToJson(s));
+        delete old.settings;
+        old.schema = sc;
+        const n = C.normalizeState(old);
+        assert.deepStrictEqual(n.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true }); passed++;
+        eq(n.schema, 7, `schema ${sc} state normalizes to 7`);
+        ok(!!n.mods[0], `schema ${sc}: modulators kept`);
+    }
+    // default mapping per mode
+    const mm = C.defaultMapping(1, 0, { path: "p" }, "mod");
+    deq([mm.mode, mm.polarity, mm.range], ["mod", 0, 0.5], "Mod default stays +-, range 0.5");
+    const mr = C.defaultMapping(2, 0, { path: "p" }, "remote");
+    deq([mr.mode, mr.min, mr.max], ["remote", 0, 1], "Remote default is min 0, max 1");
+    eq(C.defaultMapping(3, 0, { path: "p" }).mode, "mod", "no mode argument = Mod");
+    // helpers: smoothing log feel, rate dial snapping
+    eq(C.smoothFromPos(0), 0, "smooth pos 0 = off");
+    near(C.smoothFromPos(1), 500, 1e-9, "smooth pos 1 = 500 ms");
+    for (let p = 0; p <= 1.0001; p += 0.05) near(C.smoothToPos(C.smoothFromPos(p)), Math.min(p, 1), 1e-9, "smooth pos round trip");
+    ok(C.smoothFromPos(0.5) < 60 && C.smoothFromPos(0.5) > 30, "smoothing slider is log-ish (half travel ~45 ms)");
+    for (const st of C.RATE_MUL_STEPS) {
+        near(C.rateFromPos(C.rateToPos(st)), st, 1e-9, `rate step ${st} round trip`);
+        near(C.rateSnap(st * 1.02), st, 1e-12, `rate ${st}*1.02 snaps to the step`);
+        near(C.rateSnap(st * 0.98), st, 1e-12, `rate ${st}*0.98 snaps to the step`);
+    }
+    near(C.rateFromPos(0.5), 1, 1e-12, "dial centre = x1");
+    near(C.rateSnap(1.25), 1.25, 1e-12, "between steps the value is free (fine drag)");
+    near(C.rateSnap(2.5), 2.5, 1e-12, "2.5 is between 2 and 3");
+    eq(C.rateText(1.5), "\u00d71.5", "rate text x1.5");
+    eq(C.rateText(1), "\u00d71", "rate text x1");
+    eq(C.rateText(2), "\u00d72", "rate text x2");
+    eq(C.rateText(1.25), "\u00d71.25", "rate text of a free value");
+    eq(C.smoothText(0), "Off", "smoothing 0 reads Off");
+    eq(C.smoothText(50), "50 ms", "smoothing text");
+    // engine: Param ratemul used in every rate path
+    ok(/Param ratemul\(1\);/.test(GEN), "engine has Param ratemul (default 1)");
+    ok(GEN.includes("accFree = accFree + rate * rmul / sr;"), "free-running phase increment uses ratemul");
+    ok(GEN.includes("(beat - anchored) / divBeats * rmul + syncOff"), "synced phase uses ratemul with a continuity offset");
+    ok(GEN.includes("syncOff = syncOff + (beat - anchored) / divBeats * (prevMul - rmul);"), "ratemul change keeps the synced phase continuous");
+    ok(/History prevMul\(1\);/.test(GEN) && GEN.includes("prevMul = rmul;"), "previous multiplier tracked");
+    ok(GEN.indexOf("Param ratemul") < GEN.indexOf("rmul = clip(ratemul"), "ratemul declared before use");
+    const envBranch = GEN.slice(GEN.indexOf("} else if (typ < 2.5) {"), GEN.indexOf("} else if (typ < 3.5) {"));
+    ok(!envBranch.includes("rmul") && !envBranch.includes("ratemul"), "the envelope follower ignores ratemul");
 }
 
 // ---------------------------------------------------------------- 6. VM: UI scripts + mapper
@@ -973,6 +1056,125 @@ for (const v of variants) {
     eq(r4[20], -1, `${v}: deleted slot 10 off`);
     ok(run4("!!MM.addMapping(0, {path: 'live_set tracks 0 devices 0 parameters 999', paramName: 'x', id: 5000})"), `${v}: refused mapping accepted after a delete`);
     eq(r4[20], 0, `${v}: reused slot 10 routed`);
+    // ---- undo / redo of modulator and mapping deletes (exact snapshot round trips)
+    {
+        const lomU = mockLom();
+        const envU = makeEnv(lomU);
+        loadScript(v, envU);
+        envU.ctx.setnames(...NAMES);
+        envU.ctx.init_lom();
+        const rU = (c) => vm.runInContext(c, envU.ctx);
+        rU("MM.addModulator(MOD_LFO); MM.addModulator(MOD_ENV); MM.addModulator(MOD_RANDOM);");
+        const ids = [];
+        const addU = (mod, k, extra) => { const m = rU(`MM.addMapping(${mod}, {path: 'live_set tracks 0 devices 0 parameters ${k}', paramName: 'p${k}', trackName: 'T', deviceName: 'D', id: ${500 + k}})`); ids.push(m.id); if (extra) rU(`MM.updateMapping(${m.id}, ${JSON.stringify(extra)})`); return m.id; };
+        const a = addU(0, 1, { mode: "remote", min: 0.2, max: 0.7 });
+        const b = addU(0, 2, { polarity: -1, range: 0.3 });
+        const c3 = addU(1, 3);
+        const d = addU(0, 4, { shape: [{ x: 0, y: 0, curve: 0, sCurve: 0 }, { x: 0.4, y: 0.9, curve: 0.3, sCurve: 0 }, { x: 1, y: 0.2, curve: 0, sCurve: 0 }] });
+        const routeU = envU.bufs["---megamodroute"].data;
+        const curveU = envU.bufs["---mmcurve"].data;
+        const snap = () => JSON.stringify({
+            st: rU("MM.state"), slots: rU("MM._test.slotOf()"), bound: rU("MM._test.bound()"),
+            route: Array.from(routeU.slice(0, 16)), curve: Array.from(curveU.slice(0, 4 * 256)),
+            cfg: Array.from(envU.bufs["---megamodcfg"].data.slice(0, 3 * C.CFG_STRIDE)),
+            pids: ids.map((i) => rU(`MM._test.pid(${i})`)),
+        });
+        const s0 = snap();
+        eq(rU("MM.undoInfo().undo"), 0, `${v}: undo stack starts empty`);
+        eq(rU("MM.undo()"), null, `${v}: undo with nothing is a no-op`);
+        // delete modulator 0 with its three mappings
+        const slotsBefore = JSON.parse(JSON.stringify(rU("MM._test.slotOf()")));
+        rU("MM.removeModulator(0)");
+        eq(rU("MM.state.mods[0]"), null, `${v}: modulator deleted`);
+        eq(rU("MM.mappingsFor(0).length"), 0, `${v}: its mappings are gone`);
+        for (const id of [a, b, d]) eq(routeU[2 * slotsBefore[id]], -1, `${v}: deleted mapping ${id} route off`);
+        eq(rU("MM.undoInfo().undo"), 1, `${v}: delete is on the undo stack`);
+        const r1 = rU("MM.undo()");
+        eq(r1.kind, "mod", `${v}: undo reports a modulator restore`);
+        eq(snap(), s0, `${v}: delete modulator then undo leaves an identical state (mapping ids, targets, slots, route, tables, ids)`);
+        eq(rU("MM.undoInfo().redo"), 1, `${v}: undone entry moved to redo`);
+        // redo deletes again, undo restores again
+        ok(rU("MM.redo()"), `${v}: redo`);
+        eq(rU("MM.state.mods[0]"), null, `${v}: redo deletes the modulator again`);
+        rU("MM.undo()");
+        eq(snap(), s0, `${v}: redo + undo round trip`);
+        // single mapping delete / undo
+        rU(`MM.deleteMapping(${b})`);
+        ok(!rU(`MM.getMapping(${b})`), `${v}: mapping deleted`);
+        eq(routeU[2 * slotsBefore[b]], -1, `${v}: mapping route off`);
+        rU("MM.undo()");
+        eq(snap(), s0, `${v}: delete mapping then undo leaves an identical state`);
+        eq(JSON.stringify(rU("MM.allMappings().map((m) => m.id)")), JSON.stringify([a, b, c3, d]), `${v}: mapping list order restored`);
+        // two deletes undo in LIFO order
+        rU(`MM.deleteMapping(${a})`); rU(`MM.deleteMapping(${c3})`);
+        rU("MM.undo()");
+        ok(rU(`!!MM.getMapping(${c3})`) && !rU(`MM.getMapping(${a})`), `${v}: LIFO: the last delete is undone first`);
+        rU("MM.undo()");
+        eq(snap(), s0, `${v}: both undone`);
+        // a new delete clears redo
+        rU(`MM.deleteMapping(${a})`); rU("MM.undo()"); eq(rU("MM.undoInfo().redo"), 1, `${v}: redo available`);
+        rU(`MM.deleteMapping(${b})`);
+        eq(rU("MM.undoInfo().redo"), 0, `${v}: a new delete clears redo`);
+        rU("MM.undo()");
+        // slot taken meanwhile: the modulator comes back in the next free slot with its mappings routed from it
+        rU("MM.removeModulator(0)");
+        eq(rU("MM.addModulator(MOD_STEPS)"), 0, `${v}: freed slot reused by a new modulator`);
+        const r2 = rU("MM.undo()");
+        eq(r2.slot, 3, `${v}: undo restores into the next free slot when the old one is taken`);
+        eq(rU(`MM.getMapping(${a}).mod`), 3, `${v}: restored mappings follow the modulator`);
+        eq(routeU[2 * rU(`MM.mappingSlot(${a})`)], 3, `${v}: restored mapping routed from its new slot`);
+        // the stack keeps 16 entries
+        for (let k = 0; k < 20; k++) { const m = rU(`MM.addMapping(2, {path: 'live_set tracks 3 devices 0 parameters ${k}', paramName: 'q${k}', id: ${900 + k}})`); rU(`MM.deleteMapping(${m.id})`); }
+        eq(rU("MM.undoInfo().undo"), 16, `${v}: undo stack is capped at 16`);
+        eq(rU("MM.undoInfo().max"), 16, `${v}: undo stack max`);
+        // loading a state clears the history
+        rU("MM.load(MM.save())");
+        eq(rU("MM.undoInfo().undo"), 0, `${v}: load clears the undo history`);
+    }
+    // device-global settings: gen messages, default mapping mode for learn / addMapping, load
+    {
+        const lomS = mockLom();
+        const envS = makeEnv(lomS);
+        loadScript(v, envS);
+        const runS = (c) => vm.runInContext(c, envS.ctx);
+        envS.ctx.setnames(...NAMES);
+        envS.ctx.init_lom();
+        runS("MM.addModulator(MOD_LFO)");
+        envS.log.outlets.length = 0;
+        runS("MM.setSettings({ smoothMs: 50 })");
+        assert.deepStrictEqual(envS.log.outlets.filter((o) => o[1] === "smooth"), [[0, "smooth", 50]]); passed++;
+        runS("MM.setSettings({ rateMul: 2 })");
+        assert.deepStrictEqual(envS.log.outlets.filter((o) => o[1] === "gen" && o[2] === "ratemul"), [[0, "gen", "ratemul", 2]]); passed++;
+        const n0 = envS.log.outlets.length;
+        runS("MM.setSettings({ rateMul: 2, smoothMs: 50 })");
+        eq(envS.log.outlets.length, n0, `${v}: unchanged settings send nothing`);
+        runS("MM.setSettings({ smoothMs: 9999, rateMul: 0 })");
+        eq(runS("MM.getSettings().smoothMs"), 500, `${v}: smoothing clamped`);
+        eq(runS("MM.getSettings().rateMul"), 0.25, `${v}: rate multiplier clamped`);
+        // default mapping mode: addMapping and learn, both modes
+        const selS = (p) => envS.observers.find((x) => x._prop === "selected_parameter").cb(["selected_parameter", "id", lomS.idOf(p)]);
+        runS("MM.setSettings({ defaultMode: 'remote' })");
+        runS("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 0', paramName: 'Dry/Wet' })");
+        let mp = runS("MM.allMappings()[0]");
+        deq([mp.mode, mp.min, mp.max], ["remote", 0, 1], `${v}: addMapping uses the Remote default`);
+        runS("MM.armLearn(0, false)");
+        selS("live_set tracks 1 devices 1 parameters 0");
+        mp = runS("MM.allMappings()[1]");
+        deq([mp.mode, mp.min, mp.max], ["remote", 0, 1], `${v}: learn uses the Remote default`);
+        runS("MM.setSettings({ defaultMode: 'mod' })");
+        runS("MM.armLearn(0, false)");
+        selS("live_set tracks 1 devices 1 parameters 1");
+        mp = runS("MM.allMappings()[2]");
+        deq([mp.mode, mp.polarity, mp.range], ["mod", 0, 0.5], `${v}: learn uses the Mod default (+-, 0.5)`);
+        eq(runS("MM.allMappings()[0].mode"), "remote", `${v}: existing mappings keep their mode`);
+        // saved / restored, and re-sent to gen on load
+        const savedS = runS("MM.save()");
+        const envL = makeEnv(mockLom());
+        loadScript(v, envL);
+        envL.ctx.setvalueof(savedS);
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(vm.runInContext("MM.getSettings()", envL.ctx))), { defaultMode: "mod", smoothMs: 500, rateMul: 0.25, tooltips: true }); passed++;
+        ok(envL.log.outlets.some((o) => o[1] === "smooth" && o[2] === 500) && envL.log.outlets.some((o) => o[1] === "gen" && o[2] === "ratemul" && o[3] === 0.25), `${v}: loaded settings are sent to gen`);
+    }
     // paint with content + demo
     run("MM.demo()");
     run("paint()");

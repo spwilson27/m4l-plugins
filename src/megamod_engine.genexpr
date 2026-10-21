@@ -15,6 +15,7 @@
 //     15 glide  16 oneshot  17 seed  18 loopon  19 loopstart  20 loopend
 //   mseg  (megamodmseg, 16 x 1024): MSEG lookup tables, values 0..1
 //   steps (megamodsteps, 16 x 32): step values 0..1
+//   (Param ratemul = global rate multiplier, default 1)
 //   scope (megamodscope, 128): per slot s at 4*s: [out, phase, u, aux]; header from 64:
 //     64 frame counter, 65 sample rate, 66 beat, 67 bpm, 68 playing
 //
@@ -78,6 +79,7 @@ Param hbpm(120);
 Param hppq(0);
 Param hplay(0);
 Param rtrg(0);
+Param ratemul(1);
 
 Data cf(384);
 Data st(128);
@@ -88,6 +90,7 @@ History beat(0);
 History lastPpq(-1);
 History lastPlay(0);
 History lastRtrg(0);
+History prevMul(1);
 History tick(0);
 History frameCount(0);
 History sampleCount(0);
@@ -116,6 +119,12 @@ if (hplay > 0.5) {
 rtEv = (rtrg != lastRtrg) ? 1 : 0;
 rtSlot = rtrg - 16 * floor(rtrg / 16);
 lastRtrg = rtrg;
+
+// Global rate multiplier (Options panel): scales every LFO / Random / Steps / MSEG rate, free and synced; the follower ignores it.
+// Free: the per-sample phase increment is rate * rmul / sr (the accumulator is continuous). Synced: phase = (beat - anchor) * rmul / div + off;
+// when rmul changes, off absorbs the difference so the phase does not jump.
+rmul = clip(ratemul, 0.05, 20);
+mulChg = (abs(rmul - prevMul) > 0.0000001) ? 1 : 0;
 
 // 3. Refresh one slot of the config cache per sample (full refresh every 16 samples).
 rs = sampleCount - 16 * floor(sampleCount / 16);
@@ -153,10 +162,16 @@ for (i = 0; i < 16; i += 1) {
 			accFree = 0;
 			t0 = beat;
 			poke(st, 0, sb + 2);
+			poke(st, 0, sb + 3);
 		}
-		accFree = accFree + rate / sr;
+		accFree = accFree + rate * rmul / sr;
 		anchored = (retrigOn > 0.5 || oneshot > 0.5) ? t0 : 0;
-		accv = (syncOn > 0.5) ? (beat - anchored) / divBeats : accFree;
+		syncOff = peek(st, sb + 3);
+		if (mulChg > 0.5) {
+			syncOff = syncOff + (beat - anchored) / divBeats * (prevMul - rmul);
+			poke(st, syncOff, sb + 3);
+		}
+		accv = (syncOn > 0.5) ? (beat - anchored) / divBeats * rmul + syncOff : accFree;
 		poke(st, accFree, sb);
 		poke(st, t0, sb + 1);
 
@@ -224,6 +239,8 @@ for (i = 0; i < 16; i += 1) {
 	poke(tl, uSlot, i * 4 + 2);
 	poke(tl, auxSlot, i * 4 + 3);
 }
+
+prevMul = rmul;
 
 // 5. Telemetry: one slot every 4 samples (each slot refreshed every 64), header once per 64 samples.
 tick = tick + 1;

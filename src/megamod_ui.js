@@ -23,6 +23,10 @@ const UB_LIST_GAP = 6;
 const UB_PANEL_W = 144; // right-side remap panel (rounded, like the list panel)
 const UB_PANEL_PAD = 6; // left / right padding inside the panel
 const UB_DETAIL_W = UB_PANEL_W - 2 * UB_PANEL_PAD;
+const UB_OPT_W = 360; // Options view: its rounded panel width
+const UB_OPT_ROW = 46; // height of one setting row (rows start at y = 17, under the 15 px header)
+const UB_OPT_TABW = 48; // MOD / REM segmented control: two tabs
+const UB_OPT_BARW = 130; // smoothing bar width
 const UB_ROW_HEAD = 15;
 const UB_ROW_MAP = 14;
 const UB_ROW_NONE = 12;
@@ -41,12 +45,29 @@ const UB_HIST = 200;
 var ubDrag = null;
 var ubHover = null; // {x, y, hit}
 var ubPopup = null; // {mode: "add"|"type", slot, x, y}
-var ubEdit = null; // {slot, text}
 var ubDelArm = -1;
 var ubLastReq = 0;
 var ubFullTTL = 0;
 var ubHist = [];
 var ubFrame = 0;
+const UB_POP_ROW = 14;
+const UB_POP_HEAD = 15;
+const UB_POP_MAXROWS = 9;
+const UB_POP_W = 168;
+const UB_POP_MIN = 132; // narrowest popover; the device is widened to fit it while it is open
+// width of the popover's value column, shared by all its rows: the widest text their MODES can show (any Remote row:
+// "100\u2013100%"; all Mod: the widest of "\u00b1100%" / "+100%" / "\u2212100%"). It depends on modes only, never on values,
+// so the column and the range bar never move while values change; the bar takes all the remaining width
+function ubPopValW(maps) {
+    let remote = false;
+    for (const m of maps || []) if (m.mode === "remote") remote = true;
+    const t = remote ? ["100\u2013100%"] : ["\u00b1100%", "+100%", "\u2212100%"];
+    return Math.ceil(Math.max(...t.map((x) => ubTextW(x, 6.5)))) + 1;
+}
+var ubMapsPop = null; // maps popover: {slot, scroll}
+var ubFocus = false; // the device UI was the last thing clicked (keys only act then)
+var ubMapSelBy = {}; // modulator slot -> mapping id last clicked for it (highlighted in the maps popover)
+var ubLastKey = { k: -1, t: 0, src: "" };
 for (let i = 0; i < MAX_MODS; i++) ubHist.push([]);
 
 // ------------------------------------------------------------------ small drawing helpers
@@ -153,6 +174,9 @@ function ubExp() {
 function ubPb() {
     return !!ubUIs().pb;
 }
+function ubOpt() {
+    return !!ubUIs().opt && !ubPb(); // OPT and LST are mutually exclusive (LST wins if a state ever has both)
+}
 function ubTel(slot) {
     return MM.readTelemetry().mods[slot];
 }
@@ -162,6 +186,7 @@ function ubTel(slot) {
 function ubStrips() {
     const ord = ubOrder();
     if (ubPb()) return ubTabsGeom(ord);
+    if (ubOpt()) return { list: [], plus: null, end: UB_RAIL + UB_GAP };
     const exp = ubExp();
     let x = UB_RAIL + UB_GAP;
     const list = [];
@@ -211,7 +236,11 @@ function ubListGeom() {
     };
 }
 function ubLayoutWidth() {
-    return ubPb() ? ubListGeom().end : ubStrips().end;
+    if (ubPb()) return ubListGeom().end;
+    if (ubOpt()) return ubOptGeom().end;
+    const w = ubStrips().end;
+    // an open maps popover needs room for its rows (a device with one or two strips grows while it is open)
+    return ubMapsPop ? Math.max(w, UB_RAIL + UB_GAP + UB_POP_MIN + 2) : w;
 }
 function ubSyncWidth(force) {
     const w = ubLayoutWidth() + UB_EDGE;
@@ -279,11 +308,10 @@ function ubStripRects(g) {
     const specs = ubKnobs(mod);
     if (!g.exp) {
         R.name = [x + 17, 0, w - 19, 17];
-        R.viz = [x + 4, 19, 38, 66];
-        R.meter = [x + 45, 19, 7, 112];
+        R.viz = [x + 4, 19, w - 8, 66];
         for (let k = 0; k < 2; k++) {
-            const cx = x + 14 + 19 * k;
-            R.knobs.push({ spec: specs[k], cx, cy: 103, r: 8, hit: [cx - 9.5, 92, 19, 43], valY: 123, labY: 132 });
+            const cx = x + 17 + 22 * k;
+            R.knobs.push({ spec: specs[k], cx, cy: 103, r: 8, hit: [cx - 11, 92, 22, 43], valY: 123, labY: 132 });
         }
         R.count = [x + 4, 143, 48, 12];
     } else {
@@ -291,8 +319,7 @@ function ubStripRects(g) {
         R.type = [x + w - 36 - 46, 2, 44, 13];
         R.del = [x + w - 36, 1, 16, 15];
         R.collapse = [x + w - 19, 1, 16, 15]; // strips view: collapse in place; LST view: back to the strips
-        R.viz = [x + 4, 18, w - 18, 66];
-        R.meter = [x + w - 11, 18, 7, 66];
+        R.viz = [x + 4, 18, w - 8, 66];
         let cxp = x + 4;
         for (const c of ubChips(mod)) {
             R.chips.push(Object.assign({ rect: [cxp, 87, c.w, 12] }, c));
@@ -316,7 +343,53 @@ function ubPopupRect() {
 }
 
 function ubRailRects() {
-    return { learn: [2, 4, 16, 16], list: [2, 40, 16, 16] };
+    return { learn: [2, 3, 16, 16], list: [2, 35, 16, 16], opt: [2, 67, 16, 16], tip: [2, 99, 16, 16] };
+}
+
+// ------------------------------------------------------------------ Options view (device-global settings, state.settings)
+// One rounded panel: header "OPTIONS", then three rows (label + hint on the left, the control on the right):
+// Default mapping mode (MOD | REM tabs), Global smoothing (0..500 ms bar, log feel) and Rate multiplier (dial, snaps to RATE_MUL_STEPS).
+function ubOptGeom() {
+    const x = UB_RAIL + UB_GAP;
+    const rows = [];
+    for (let i = 0; i < 3; i++) rows.push({ y: 17 + i * UB_OPT_ROW, h: UB_OPT_ROW });
+    const right = x + UB_OPT_W - 10;
+    const tabs = [right - 2 * UB_OPT_TABW - 2, rows[0].y + 16, UB_OPT_TABW, 14];
+    const tabr = [right - UB_OPT_TABW, rows[0].y + 16, UB_OPT_TABW, 14];
+    const bar = [right - UB_OPT_BARW, rows[1].y + 16, UB_OPT_BARW, 14];
+    const kcx = right - UB_OPT_BARW + 18;
+    const kcy = rows[2].y + 23;
+    const knob = { cx: kcx, cy: kcy, r: 13 };
+    return {
+        x, panel: [x, 0, UB_OPT_W, UB_H], end: x + UB_OPT_W, rows, textX: x + 10, textW: UB_OPT_W - UB_OPT_BARW - 40,
+        tabmod: tabs, tabrem: tabr, bar, knob, knobRect: [kcx - 15, kcy - 17, 30, 34],
+        valX: kcx + 22,
+    };
+}
+function ubHitOpt(x, y) {
+    const g = ubOptGeom();
+    if (ubIn(g.tabmod, x, y)) return { kind: "opt_mod", tip: "New mappings start in Mod mode (\u00b1, range 50%)" };
+    if (ubIn(g.tabrem, x, y)) return { kind: "opt_rem", tip: "New mappings start in Remote mode (min 0, max 100%)" };
+    if (ubIn(g.bar, x, y)) return { kind: "opt_smooth", rect: g.bar, tip: "Drag: smoothing 0..500 ms, double-click = off" };
+    if (ubIn(g.knobRect, x, y)) return { kind: "opt_rate", tip: "Drag: rate x0.25..x4 (snaps to musical steps), double-click = x1" };
+    if (ubIn(g.panel, x, y)) return { kind: "opt_panel" };
+    return { kind: "none" };
+}
+function ubOptSetSmoothFromX(rect, x) {
+    const p = clamp((x - (rect[0] + 1)) / (rect[2] - 2), 0, 1);
+    const ms = smoothFromPos(p);
+    MM.setSettings({ smoothMs: ms < 0.25 ? 0 : ms });
+}
+function ubOptSetRate(v) {
+    MM.setSettings({ rateMul: v });
+}
+// wheel: step to the neighbouring musical step
+function ubOptRateStep(dir) {
+    const cur = MM.getSettings().rateMul;
+    const up = RATE_MUL_STEPS.filter((v) => v > cur + 1e-6);
+    const dn = RATE_MUL_STEPS.filter((v) => v < cur - 1e-6);
+    if (dir > 0 && up.length) ubOptSetRate(up[0]);
+    else if (dir < 0 && dn.length) ubOptSetRate(dn[dn.length - 1]);
 }
 
 // ------------------------------------------------------------------ mapping list model (Bitwig-inspector style)
@@ -452,13 +525,17 @@ function ubHit(x, y) {
         }
         return { kind: "popup_out" };
     }
+    if (ubMapsPop) return ubHitMapsPop(x, y);
     const rr = ubRailRects();
     if (ubIn(rr.learn, x, y)) {
         const L = MM.learn;
         return { kind: "rail_learn", tip: L.armed ? "Learning: click to stop" + (L.multi ? "" : " (maps one parameter)") : "Learn: click = map one parameter, Shift-click = keep mapping" };
     }
     if (ubIn(rr.list, x, y)) return { kind: "rail_list", tip: ubPb() ? "Back to rack strips" : "Mapping inspector (selected modulator)" };
+    if (ubIn(rr.opt, x, y)) return { kind: "rail_opt", tip: ubOpt() ? "Back to rack strips" : "Options (default mapping mode, smoothing, rate multiplier)" };
+    if (ubIn(rr.tip, x, y)) return { kind: "rail_tip", tip: ubTipsOn() ? "Tooltips on: click to hide them" : "Tooltips off: click to show them" };
     if (x < UB_RAIL) return { kind: "rail" };
+    if (ubOpt()) return ubHitOpt(x, y);
     const h = ubHitStrips(x, y);
     if (h) return h;
     if (ubPb()) return ubHitList(x, y);
@@ -484,14 +561,13 @@ function ubHitItem(g, x, y) {
     }
     if (ubIn(R.icon, x, y)) return hit({ kind: "pwr", slot, tip: "Enable / bypass" });
     if (g.exp && ubIn(R.type, x, y)) return hit({ kind: "typechip", slot, tip: "Change type" });
-    if (ubIn(R.head, x, y)) return hit({ kind: "head", slot, tip: g.exp ? (g.fixed ? "Double-click to rename" : "Drag to reorder, double-click to collapse") : "Drag to reorder, double-click to rename" });
+    if (ubIn(R.head, x, y)) return hit({ kind: "head", slot, tip: g.exp ? (g.fixed ? "" : "Drag to reorder, double-click to collapse") : "Drag to reorder, double-click to expand" });
     for (let k = 0; k < R.knobs.length; k++) {
         if (ubIn(R.knobs[k].hit, x, y)) return hit({ kind: "knob", slot, k, tip: R.knobs[k].spec.label + " (double-click resets)" });
     }
     for (const c of R.chips) if (ubIn(c.rect, x, y)) return hit({ kind: "chip", slot, chip: c.id, tip: c.tip });
-    if (ubIn(R.count, x, y)) return hit({ kind: "count", slot, tip: "Show mappings in the list" });
+    if (ubIn(R.count, x, y)) return hit({ kind: "count", slot, tip: "Mappings: click to edit their ranges" });
     if (ubIn(R.viz, x, y)) return hit({ kind: "viz", slot, rect: R.viz, tip: g.exp ? "" : "Double-click to expand" });
-    if (ubIn(R.meter, x, y)) return hit({ kind: "meter", slot });
     return hit({ kind: "body", slot, tip: g.exp ? "" : "Double-click to expand" });
 }
 function ubHitList(x, y) {
@@ -565,8 +641,16 @@ function ubSetExpanded(slot) {
     if (slot >= 0) ubRetarget(slot);
     ubSyncWidth();
 }
+function ubTipsOn() {
+    return MM.getSettings().tooltips !== false;
+}
+function ubToggleOpt(on) {
+    MM.setUI({ opt: on ? 1 : 0, pb: on ? 0 : ubUIs().pb ? 1 : 0 }); // exclusive with LST
+    ubPopup = null; ubMapsPop = null;
+    ubSyncWidth();
+}
 function ubTogglePb(on) {
-    MM.setUI({ pb: on ? 1 : 0 });
+    MM.setUI({ pb: on ? 1 : 0, opt: on ? 0 : ubUIs().opt ? 1 : 0 });
     if (on && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] }); // the inspector always shows a modulator
     ubSyncWidth();
 }
@@ -596,8 +680,8 @@ function onidleout() {
 }
 
 function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
+    ubFocus = true;
     ubEndDrag();
-    if (ubEdit && !(ubHit(x, y).kind === "head" && ubHit(x, y).slot === ubEdit.slot)) ubCommitEdit();
     const h = ubHit(x, y);
     if (ubPopup) {
         const pop = ubPopup;
@@ -609,10 +693,22 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         mgraphics.redraw();
         return;
     }
+    if (ubMapsPop) {
+        ubMapsPopClick(h, x, y);
+        ubSyncWidth();
+        mgraphics.redraw();
+        return;
+    }
     if (ubDelArm >= 0 && !(h.kind === "del" && h.slot === ubDelArm)) ubDelArm = -1;
     switch (h.kind) {
         case "rail_learn": ubRailLearn(shift); break;
         case "rail_list": ubTogglePb(!ubPb()); break;
+        case "rail_tip": MM.setSettings({ tooltips: !ubTipsOn() }); break;
+        case "rail_opt": ubToggleOpt(!ubOpt()); break;
+        case "opt_mod": MM.setSettings({ defaultMode: "mod" }); MM.commit(); break;
+        case "opt_rem": MM.setSettings({ defaultMode: "remote" }); MM.commit(); break;
+        case "opt_smooth": ubDrag = { kind: "osmooth", rect: h.rect, dirty: true }; ubOptSetSmoothFromX(h.rect, x); break;
+        case "opt_rate": ubDrag = { kind: "orate", y, n: rateToPos(MM.getSettings().rateMul), dirty: false }; break;
         case "plus": {
             const pl = ubStrips().plus;
             ubPopup = ubPb()
@@ -627,10 +723,7 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         case "del":
             if (ubDelArm === h.slot) {
                 ubDelArm = -1;
-                MM.removeModulator(h.slot);
-                if (ubExp() < 0 && ubUIs().exp !== undefined && ubUIs().exp !== -1) MM.setUI({ exp: -1 });
-                if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] });
-                ubSyncWidth();
+                ubDeleteMod(h.slot);
             } else ubDelArm = h.slot;
             break;
         case "pwr": ubSelect(h.slot); MM.setParam(h.slot, "enabled", MM.state.mods[h.slot].enabled ? 0 : 1); break;
@@ -654,11 +747,10 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         case "chip": ubSelect(h.slot); ubChipClick(h.slot, h.chip); break;
         case "count":
             ubSelect(h.slot);
-            ubTogglePb(true);
-            { const ms = MM.mappingsFor(h.slot); MM.setUI({ pbSel: ms.length ? ms[0].id : 0 }); ubListReveal(ms.length ? ms[0].id : 0, h.slot); }
+            if (!ubPb()) ubMapsPop = { slot: h.slot, scroll: 0 };
+            else ubOpenLst(h.slot);
             break;
         case "viz": ubSelect(h.slot); ubVizClick(h, x, y); break;
-        case "meter":
         case "body": ubSelect(h.slot); break;
         case "ls_hpwr": ubSelect(h.slot); MM.setParam(h.slot, "enabled", MM.state.mods[h.slot].enabled ? 0 : 1); break;
         case "ls_head": ubSelect(h.slot); break;
@@ -667,6 +759,7 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         case "detail": ubDetailClick(h, x, y); break;
         default: break;
     }
+    ubSyncWidth();
     mgraphics.redraw();
 }
 
@@ -688,6 +781,14 @@ function ondrag(x, y, but, cmd, shift) {
         d.y = y;
         MM.setParam(d.slot, d.spec.key, ubKnobValue(d.spec, d.n));
         d.dirty = true;
+    } else if (d.kind === "osmooth") {
+        ubOptSetSmoothFromX(d.rect, x);
+        d.dirty = true;
+    } else if (d.kind === "orate") {
+        d.n = clamp(d.n + (d.y - y) / (shift ? 600 : 130), 0, 1);
+        d.y = y;
+        ubOptSetRate(rateSnap(rateFromPos(d.n)));
+        d.dirty = true;
     } else if (d.kind === "mseg") ubMsegDrag(d, x, y);
     else if (d.kind === "steps") ubStepsDrag(d, x, y);
     else if (d.kind === "lfo") ubLfoDrag(d, x, y);
@@ -702,6 +803,9 @@ function ondrag(x, y, but, cmd, shift) {
             } else MM.updateMapping(d.id, { range: clamp(d.v0 + dv, 0, 1) });
             d.dirty = true;
         }
+    } else if (d.kind === "hbar") {
+        ubHBarApply(d, x);
+        d.dirty = true;
     } else if (d.kind === "limit") {
         ubApplyLimit(d, x, y);
         d.dirty = true;
@@ -713,17 +817,21 @@ function ondrag(x, y, but, cmd, shift) {
 }
 
 function ondblclick(x, y, but, cmd, shift) {
+    ubFocus = true;
     const h = ubHit(x, y);
     if (ubPopup) return;
+    if (ubMapsPop && h.kind !== "mp_bar") return;
     switch (h.kind) {
+        case "mp_bar": { const m = MM.getMapping(h.m.id); if (m) ubHBarReset(m, h.rect, x); break; }
+        case "opt_smooth": MM.setSettings({ smoothMs: defaultSettings().smoothMs }); MM.commit(); break;
+        case "opt_rate": MM.setSettings({ rateMul: defaultSettings().rateMul }); MM.commit(); break;
         case "head": {
             const g = h.g;
             if (g && g.exp && !g.fixed) ubSetExpanded(-1);
-            else { ubEdit = { slot: h.slot, text: MM.state.mods[h.slot].name }; }
+            else if (g && !g.exp) ubSetExpanded(h.slot);
             break;
         }
         case "viz":
-        case "meter":
         case "body": {
             const g = h.g;
             if (g && !g.exp) ubSetExpanded(h.slot);
@@ -753,8 +861,16 @@ function ondblclick(x, y, but, cmd, shift) {
 }
 
 function onwheel(x, y, dx, dy) {
+    if (ubMapsPop) { ubWheelMapsPop(x, y, dy); return; }
     if (ubPb() && ubWheelList(x, y, dy)) return;
     const h = ubHit(x, y);
+    if (h.kind === "opt_rate") { ubOptRateStep(dy > 0 ? -1 : 1); return; }
+    if (h.kind === "opt_smooth") {
+        const p = smoothToPos(MM.getSettings().smoothMs) + (dy > 0 ? -1 : 1) * 0.04;
+        const ms = smoothFromPos(p);
+        MM.setSettings({ smoothMs: ms < 0.25 ? 0 : ms });
+        return;
+    }
     if (h.kind === "knob") {
         const mod = MM.state.mods[h.slot];
         const spec = ubKnobs(mod)[h.k];
@@ -774,23 +890,9 @@ function ubWheelList(x, y, dy) {
     return true;
 }
 
-// ------------------------------------------------------------------ name editing
-function ubCommitEdit() {
-    if (ubEdit && ubEdit.text.trim()) MM.setName(ubEdit.slot, ubEdit.text.trim());
-    ubEdit = null;
-}
-function onkeydown(keycode, textcharacter, down) {
-    if (!down || !ubEdit) return 0;
-    const k = Number(keycode) || 0;
-    const ch = typeof textcharacter === "string" ? textcharacter : Number(textcharacter) >= 32 ? String.fromCharCode(Number(textcharacter)) : "";
-    const code = typeof textcharacter === "number" ? textcharacter : k;
-    if (code === 13 || code === 3 || k === 13 || k === 36) { ubCommitEdit(); }
-    else if (code === 27 || k === 27) ubEdit = null;
-    else if (code === 8 || code === 127 || k === 8 || k === 127 || k === -3 || k === -4 || k === 51) ubEdit.text = ubEdit.text.slice(0, -1);
-    else if (ch.length === 1 && ch >= " " && ubEdit.text.length < 16) ubEdit.text += ch;
-    else return 0;
-    mgraphics.redraw();
-    return 1;
+function onkeydown(keycode, textcharacter, down, cmd, shift, capslock, option, ctrl) {
+    if (!down) return 0;
+    return ubKeyCommand(keycode, textcharacter, cmd, shift, ctrl, "n");
 }
 
 // ------------------------------------------------------------------ expanded editors (interaction)
@@ -937,11 +1039,11 @@ function ubListRowClick(h, x, y) {
     if (h.kind === "ls_tog") { MM.updateMapping(m.id, { enabled: m.enabled ? 0 : 1 }); return; }
     ubSelect(h.slot);
     if (h.kind === "ls_del") {
-        MM.deleteMapping(m.id);
-        if (ubUIs().pbSel === m.id) MM.setUI({ pbSel: 0 });
+        ubDeleteMapping(m);
         return;
     }
     MM.setUI({ pbSel: m.id });
+    ubMapSelBy[m.mod] = m.id;
     if (h.kind === "ls_mode") MM.updateMapping(m.id, { mode: m.mode === "remote" ? "mod" : "remote" });
     else if (h.kind === "ls_val") {
         ubDrag = { kind: "lval", id: m.id, v0: m.range, min0: m.min, max0: m.max, x, y, dirty: false };
@@ -994,6 +1096,198 @@ function ubDetailClick(h, x, y) {
     } else if (id.indexOf("pol") === 0) MM.updateMapping(m.id, { polarity: h.pol });
 }
 
+// ------------------------------------------------------------------ delete / undo (UI side; the stack lives in MM)
+// Delete / Backspace deletes the selected modulator (with its mappings); Cmd-Z / Ctrl-Z restores it, Shift-Cmd-Z / Ctrl-Y redoes.
+function ubDeleteMod(slot) {
+    if (!ubValidSlot(slot)) return false;
+    MM.removeModulator(slot);
+    delete ubMapSelBy[slot];
+    if (ubMapsPop && ubMapsPop.slot === slot) ubMapsPop = null;
+    if (ubExp() < 0 && ubUIs().exp !== undefined && ubUIs().exp !== -1) MM.setUI({ exp: -1 });
+    if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] });
+    ubSyncWidth();
+    return true;
+}
+function ubDeleteMapping(m) {
+    const id = m.id;
+    const mod = m.mod;
+    MM.deleteMapping(id);
+    if (ubUIs().pbSel === id) MM.setUI({ pbSel: 0 });
+    if (ubMapSelBy[mod] === id) delete ubMapSelBy[mod];
+}
+function ubDoUndo() {
+    const r = MM.undo();
+    if (!r) return false;
+    if (r.kind === "mod") MM.setUI({ sel: r.slot });
+    else { if (ubSel() !== r.slot) MM.setUI({ sel: r.slot }); MM.setUI({ pbSel: r.ids[0] }); }
+    ubSyncWidth();
+    return true;
+}
+function ubDoRedo() {
+    const r = MM.redo();
+    if (!r) return false;
+    if (ubMapsPop && !ubValidSlot(ubMapsPop.slot)) ubMapsPop = null;
+    if (ubExp() < 0 && ubUIs().exp !== undefined && ubUIs().exp !== -1) MM.setUI({ exp: -1 });
+    if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] });
+    ubSyncWidth();
+    return true;
+}
+function ubOpenLst(slot) {
+    ubSelect(slot);
+    ubTogglePb(true);
+    const ms = MM.mappingsFor(slot);
+    MM.setUI({ pbSel: ms.length ? ms[0].id : 0 });
+    ubListReveal(ms.length ? ms[0].id : 0, slot);
+}
+
+// ------------------------------------------------------------------ keyboard (native onkeydown + the patcher [key] fallback)
+// Keys act only while the device UI was the last thing clicked (ubFocus: set by any click on the UI, cleared by onblur).
+function ubKeyCommand(keycode, ch, cmd, shift, ctrl, src) {
+    if (!ubFocus) return 0;
+    const k = Number(keycode) || 0;
+    const c = Number(ch) || k;
+    const now = typeof Date !== "undefined" ? Date.now() : 0;
+    // the native handler and the [key] object can both report one stroke: ignore the echo from the other source
+    const sig = k * 1000 + c + (cmd ? 0.1 : 0) + (shift ? 0.2 : 0) + (ctrl ? 0.4 : 0);
+    if (ubLastKey.k === sig && ubLastKey.src !== src && now - ubLastKey.t < 40) return 1;
+    const isMod = !!(cmd || ctrl);
+    const is = (a) => a.indexOf(k) >= 0 || a.indexOf(c) >= 0;
+    let handled = 0;
+    if (isMod && is([122, 90, 26])) { if (shift) ubDoRedo(); else ubDoUndo(); handled = 1; }
+    else if (ctrl && is([121, 89, 25])) { ubDoRedo(); handled = 1; }
+    else if (!isMod && is([8, 127, -3, -4, 51, 117])) { if (ubSel() >= 0 && !ubOpt()) { ubDeleteMod(ubSel()); handled = 1; } }
+    else if (is([27])) {
+        if (ubMapsPop) { ubMapsPop = null; handled = 1; }
+        else if (ubPopup) { ubPopup = null; handled = 1; }
+    }
+    if (handled) { ubLastKey = { k: sig, t: now, src }; ubSyncWidth(); mgraphics.redraw(); }
+    return handled;
+}
+function onfocus() {
+    ubFocus = true;
+}
+function onblur() {
+    ubFocus = false;
+}
+// patcher [key] fallback: "key <ascii> <modifiers>" (modifier bits as in src/mseg_editor.js)
+function key(ascii, mod) {
+    const m = Number(mod) || 0;
+    const cmd = (m & 1) || (m & 256) ? 1 : 0;
+    const shift = (m & 2) || (m & 512) ? 1 : 0;
+    const ctrl = (m & 4) || (m & 4096) ? 1 : 0;
+    ubKeyCommand(ascii, ascii, cmd, shift, ctrl, "k");
+}
+
+// ------------------------------------------------------------------ range editing from the strips view (maps popover)
+function ubMapName(m) {
+    return m.target.paramName || m.target.name || "?";
+}
+// the mapping shown / edited for a modulator in the strips view: the one last clicked for it, else its first
+function ubStripSelMapping(slot) {
+    const ms = MM.mappingsFor(slot);
+    if (!ms.length) return null;
+    const id = ubMapSelBy[slot];
+    for (const m of ms) if (m.id === id) return m;
+    return ms[0];
+}
+// ---- horizontal range bar (maps popover rows): Mod = centred bar (range from the centre, polarity decides the side(s)),
+// Remote = two-handle min / max bar (the nearest handle is dragged)
+function ubHBarFromX(r, x) {
+    return clamp((x - (r[0] + 1)) / (r[2] - 2), 0, 1);
+}
+function ubHBarModValue(r, pol, x) {
+    const cx = r[0] + r[2] / 2;
+    const d = pol === 0 ? Math.abs(x - cx) : pol > 0 ? x - cx : cx - x;
+    return clamp(d / ((r[2] - 2) / 2), 0, 1);
+}
+function ubHBarStart(m, rect, x, pop) {
+    ubMapSelBy[m.mod] = m.id;
+    ubDrag = { kind: "hbar", mapId: m.id, rect, which: m.mode === "remote" ? ubNearestLimit(m, ubHBarFromX(rect, x)) : "range", pop: !!pop, dirty: true };
+    ubHBarApply(ubDrag, x);
+}
+function ubHBarApply(d, x) {
+    const m = MM.getMapping(d.mapId);
+    if (!m) return;
+    if (m.mode === "remote") MM.updateMapping(m.id, ubLimitPatch(d.which === "max" ? "max" : "min", ubHBarFromX(d.rect, x)));
+    else MM.updateMapping(m.id, { range: ubHBarModValue(d.rect, m.polarity, x) });
+}
+function ubHBarReset(m, rect, x) {
+    if (m.mode !== "remote") MM.updateMapping(m.id, { range: 1 });
+    else { const wh = ubNearestLimit(m, ubHBarFromX(rect, x)); MM.updateMapping(m.id, ubLimitPatch(wh, wh === "min" ? 0 : 1)); }
+}
+function ubBarTip(m) {
+    return ubMapName(m) + "  " + ubValueText(m);
+}
+// ---- maps popover
+function ubMapsPopGeom() {
+    if (!ubMapsPop) return null;
+    const g = ubStrips().list.filter((q) => q.slot === ubMapsPop.slot && !q.tab)[0];
+    const mod = MM.state.mods[ubMapsPop.slot];
+    if (!g || !mod) return null;
+    const maps = MM.mappingsFor(ubMapsPop.slot);
+    const lw = ubLayoutWidth();
+    const pw = Math.max(UB_POP_MIN, Math.min(UB_POP_W, lw - UB_RAIL - UB_GAP - 2));
+    const rows = Math.min(UB_POP_MAXROWS, Math.max(1, maps.length));
+    const ph = UB_POP_HEAD + rows * UB_POP_ROW + 5;
+    const px = clamp(g.x, UB_RAIL + UB_GAP, Math.max(UB_RAIL + UB_GAP, lw - pw - 2)); // never over the rail
+    const py = clamp(141 - ph, 2, UB_H - 2 - ph);
+    const first = clamp(Math.floor(num(ubMapsPop.scroll, 0)), 0, Math.max(0, maps.length - rows));
+    const vis = [];
+    for (let k = 0; k < rows && first + k < maps.length; k++) vis.push({ m: maps[first + k], y: py + UB_POP_HEAD + 2 + k * UB_POP_ROW });
+    return { vw: ubPopValW(maps), rect: [px, py, pw, ph], slot: ubMapsPop.slot, mod, maps, rows, first, vis, lst: [px + pw - 29, py + 2, 25, 11] };
+}
+function ubPopRowParts(R, y, vw) {
+    if (vw === undefined) vw = ubPopValW(ubMapsPop ? MM.mappingsFor(ubMapsPop.slot) : []);
+    // name | M/R chip | bar | value: the value column has a fixed width and x, so nothing shuffles while a bar is dragged
+    const val = [R[0] + R[2] - 6 - vw, y + 2, vw, 10];
+    // the bar takes every pixel the name column (min 40 px) does not need
+    const barW = Math.max(24, R[2] - 10 - vw - 3 - 13 - 13 - 3 - 40);
+    const bar = [val[0] - 3 - barW, y + 2, barW, 10];
+    const pol = [bar[0] - 13, y + 2, 11, 10]; // Mod only: cycles + / \u00b1 / \u2212 (kept empty in Remote so columns never move)
+    const mode = [pol[0] - 13, y + 2, 11, 10];
+    return { name: [R[0] + 5, y, mode[0] - 3 - (R[0] + 5), UB_POP_ROW], mode, pol, bar, val };
+}
+function ubHitMapsPop(x, y) {
+    const P = ubMapsPopGeom();
+    if (!P || !ubIn(P.rect, x, y)) return { kind: "mp_out" };
+    if (ubIn(P.lst, x, y)) return { kind: "mp_lst", slot: P.slot, tip: "Open the mapping inspector" };
+    for (const r of P.vis) {
+        if (y < r.y || y >= r.y + UB_POP_ROW) continue;
+        const pr = ubPopRowParts(P.rect, r.y, P.vw);
+        const base = { slot: P.slot, m: r.m };
+        if (ubIn(pr.mode, x, y)) return Object.assign({ kind: "mp_mode", tip: "Mod / Remote" }, base);
+        if (r.m.mode !== "remote" && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol", tip: "Polarity: click to cycle + / \u00b1 / \u2212" }, base);
+        if (ubIn(pr.bar, x, y)) return Object.assign({ kind: "mp_bar", rect: pr.bar, tip: r.m.mode === "remote" ? "Drag the nearest handle: min / max (double-click resets it)" : "Drag to set the range (double-click = full)" }, base);
+        return Object.assign({ kind: "mp_row", tip: ubTargetPath(r.m) }, base);
+    }
+    return { kind: "mp_bg" };
+}
+const UB_POL_CYCLE = { 1: 0, 0: -1, "-1": 1 }; // + -> \u00b1 -> \u2212 -> +
+function ubMapsPopClick(h, x, y) {
+    switch (h.kind) {
+        case "mp_out": ubMapsPop = null; break;
+        case "mp_lst": { const s = h.slot; ubMapsPop = null; ubOpenLst(s); break; }
+        case "mp_mode": {
+            const m = MM.getMapping(h.m.id);
+            if (m) { ubMapSelBy[m.mod] = m.id; MM.updateMapping(m.id, { mode: m.mode === "remote" ? "mod" : "remote" }); }
+            break;
+        }
+        case "mp_pol": {
+            const m = MM.getMapping(h.m.id);
+            if (m) { ubMapSelBy[m.mod] = m.id; MM.updateMapping(m.id, { polarity: UB_POL_CYCLE[m.polarity] }); }
+            break;
+        }
+        case "mp_bar": { const m = MM.getMapping(h.m.id); if (m) ubHBarStart(m, h.rect, x, true); break; }
+        case "mp_row": ubMapSelBy[h.slot] = h.m.id; break;
+        default: break;
+    }
+}
+function ubWheelMapsPop(x, y, dy) {
+    const P = ubMapsPopGeom();
+    if (!P || !ubIn(P.rect, x, y)) return;
+    ubMapsPop.scroll = clamp(P.first + (dy > 0 ? -1 : 1), 0, Math.max(0, P.maps.length - P.rows));
+    mgraphics.redraw();
+}
 // ------------------------------------------------------------------ painting: icons
 function ubGlyph(type, x, y, w, h, c, a) {
     const pts = [];
@@ -1045,6 +1339,30 @@ function ubLearnIcon(r, on, c) {
     ubLine(cx - 8, cy, cx - 3.5, cy, c, 1, 1.2);
     ubLine(cx + 3.5, cy, cx + 8, cy, c, 1, 1.2);
 }
+// cog: a ring, a hub dot and eight teeth
+function ubCogIcon(r, c) {
+    const cx = r[0] + r[2] / 2;
+    const cy = r[1] + r[3] / 2;
+    ubCircle(cx, cy, 3.6, c, 1, false, 1.4);
+    ubCircle(cx, cy, 1, c, 1, true);
+    for (let i = 0; i < 8; i++) {
+        const a = (i * Math.PI) / 4;
+        ubLine(cx + Math.cos(a) * 4.8, cy + Math.sin(a) * 4.8, cx + Math.cos(a) * 7, cy + Math.sin(a) * 7, c, 1, i % 2 ? 1.2 : 2);
+    }
+}
+// question mark: a hook arc (open ring top, then a short stem) plus a dot
+function ubTipIcon(r, c) {
+    const cx = r[0] + r[2] / 2;
+    const cy = r[1] + r[3] / 2;
+    const pts = [];
+    for (let i = 0; i <= 10; i++) {
+        const a = (-200 + (250 * i) / 10) * Math.PI / 180;
+        pts.push([cx + Math.cos(a) * 3.3, cy - 2.6 + Math.sin(a) * 3.1]);
+    }
+    pts.push([cx, cy + 1.2]);
+    ubPoly(pts, c, 1, 1.5);
+    ubCircle(cx, cy + 4.6, 1, c, 1, true);
+}
 function ubListIcon(r, c) {
     for (let j = 0; j < 3; j++) {
         ubRect(r[0] + 2.5, r[1] + 3 + j * 4.4, 2.4, 2.4, c, 1);
@@ -1085,19 +1403,8 @@ function ubIconButton(r, on, tint) {
 }
 
 // ------------------------------------------------------------------ painting: strips
-function ubMeter(r, out, c, dim) {
-    ubRR(r[0], r[1], r[2], r[3], 2, [0.06, 0.07, 0.085], 1);
-    const mid = r[1] + r[3] / 2;
-    const v = clamp(out, -1, 1);
-    const hh = (r[3] / 2 - 1) * Math.abs(v);
-    if (v >= 0) ubRect(r[0] + 1, mid - hh, r[2] - 2, Math.max(0.5, hh), c, dim ? 0.3 : 1);
-    else ubRect(r[0] + 1, mid, r[2] - 2, Math.max(0.5, hh), c, dim ? 0.3 : 1);
-    ubLine(r[0], mid, r[0] + r[2], mid, [0.4, 0.42, 0.46], 1, 1);
-}
-function ubKnob(k, mod, c, dim, compact) {
-    const spec = k.spec;
-    const v = mod.p[spec.key];
-    const n = ubKnobNorm(spec, v);
+// the knob body shared by the strips and the Options dial: n 0..1 on a 270 degree arc
+function ubKnobBody(k, n, dim) {
     const a0 = Math.PI * 0.75;
     const a1 = a0 + Math.PI * 1.5 * n;
     const track = [];
@@ -1114,6 +1421,11 @@ function ubKnob(k, mod, c, dim, compact) {
     ubPoly(track, [0.30, 0.32, 0.36], 1, 2);
     if (n > 0.005) ubPoly(val, UB_ORANGE, dim ? 0.4 : 1, 2);
     ubLine(k.cx + Math.cos(a1) * 1.5, k.cy + Math.sin(a1) * 1.5, k.cx + Math.cos(a1) * (k.r - 3), k.cy + Math.sin(a1) * (k.r - 3), [0.92, 0.93, 0.95], 1, 1.3);
+}
+function ubKnob(k, mod, c, dim, compact) {
+    const spec = k.spec;
+    const v = mod.p[spec.key];
+    ubKnobBody(k, ubKnobNorm(spec, v), dim);
     ubTextC(compact && spec.short ? spec.short(v) : spec.fmt(v), k.cx, k.valY, 7, UB_ORANGE, dim ? 0.5 : 1);
     ubTextC(spec.label, k.cx, k.labY, 7, [0.58, 0.61, 0.67], 1);
 }
@@ -1226,13 +1538,7 @@ function ubPaintStrip(g) {
     ubCard(g, UB_H, c, sel, armed, dim);
     // header
     ubPowerButton(R, mod, c, ubHover && ubHover.hit && ubHover.hit.kind === "pwr" && ubHover.hit.slot === slot);
-    if (ubEdit && ubEdit.slot === slot) {
-        ubRR(R.name[0] - 1, 3, R.name[2] + 1, 12, 2, [0.04, 0.05, 0.06], 1);
-        ubRRStroke(R.name[0] - 0.5, 3.5, R.name[2], 11, 2, UB_CYAN, 1, 1);
-        ubText(ubFit(ubEdit.text + "|", R.name[2] - 3, 8), R.name[0] + 2, 12, 8, [1, 1, 1], 1);
-    } else {
-        ubText(ubFit(mod.name, R.name[2], 8), R.name[0], 12, 8, [0.9, 0.92, 0.95], dim ? 0.5 : 1);
-    }
+    ubText(ubFit(mod.name, R.name[2], 8), R.name[0], 12, 8, [0.9, 0.92, 0.95], dim ? 0.5 : 1);
     if (g.exp) {
         const tr = R.type;
         const thot = ubHover && ubHover.hit && ubHover.hit.kind === "typechip" && ubHover.hit.slot === slot;
@@ -1248,9 +1554,8 @@ function ubPaintStrip(g) {
         const cy = R.collapse[1] + 8;
         ubPoly([[cx + 3, cy - 4], [cx - 2, cy], [cx + 3, cy + 4]], [0.75, 0.77, 0.82], 1, 1.5);
     }
-    // viz + meter
+    // viz
     ubDrawViz(slot, mod, R.viz, g.exp);
-    ubMeter(R.meter, t.out, c, dim);
     for (const ch of R.chips) {
         const r = ch.rect;
         ubRR(r[0], r[1], r[2], r[3], 3, ch.on ? c : [0.17, 0.18, 0.21], ch.on ? 0.28 : 1);
@@ -1263,6 +1568,8 @@ function ubPaintStrip(g) {
     const cnt = MM.mappingsFor(slot).length;
     ubRR(R.count[0], R.count[1], R.count[2], R.count[3], 5, cnt ? UB_CYAN : [0.2, 0.21, 0.24], cnt ? 0.16 : 1);
     ubRRStroke(R.count[0] + 0.5, R.count[1] + 0.5, R.count[2] - 1, R.count[3] - 1, 5, cnt ? UB_CYAN : [0.3, 0.32, 0.37], 1, 1);
+    const chipHot = !!(ubMapsPop && ubMapsPop.slot === slot);
+    if (chipHot) ubRRStroke(R.count[0] + 0.5, R.count[1] + 0.5, R.count[2] - 1, R.count[3] - 1, 5, [1, 1, 1], 1, 1.3);
     ubTextC(cnt + (cnt === 1 ? " map" : " maps"), R.count[0] + R.count[2] / 2, R.count[1] + 9, 7, cnt ? UB_CYAN : [0.55, 0.57, 0.62], 1);
 }
 
@@ -1346,13 +1653,159 @@ function ubPaintRail() {
     ubRRStroke(lr[0] + 0.5, lr[1] + 0.5, lr[2] - 1, lr[3] - 1, 3, L.armed ? UB_CYAN : [0.30, 0.32, 0.37], single ? ubPulse() : 1, 1);
     if (multi) ubRRStroke(lr[0] - 1, lr[1] - 1, lr[2] + 2, lr[3] + 2, 4, UB_CYAN, 0.55, 1.2);
     ubLearnIcon(lr, L.armed, multi ? [0.05, 0.08, 0.1] : L.armed ? UB_CYAN : [0.6, 0.64, 0.7]);
-    ubTextC("LRN", UB_RAIL / 2, 31, 6, L.armed ? UB_CYAN : [0.5, 0.53, 0.58], single ? ubPulse() : 1);
+    ubTextC("LRN", UB_RAIL / 2, 30, 6, L.armed ? UB_CYAN : [0.5, 0.53, 0.58], single ? ubPulse() : 1);
     ubIconButton(rr.list, ubPb(), UB_ORANGE);
     ubListIcon(rr.list, ubPb() ? UB_ORANGE : [0.6, 0.64, 0.7]);
-    ubTextC("LST", UB_RAIL / 2, 67, 6, ubPb() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
+    ubTextC("LST", UB_RAIL / 2, 62, 6, ubPb() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
+    ubIconButton(rr.opt, ubOpt(), UB_ORANGE);
+    ubCogIcon(rr.opt, ubOpt() ? UB_ORANGE : [0.6, 0.64, 0.7]);
+    ubTextC("OPT", UB_RAIL / 2, 94, 6, ubOpt() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
+    ubIconButton(rr.tip, ubTipsOn(), UB_CYAN);
+    ubTipIcon(rr.tip, ubTipsOn() ? UB_CYAN : [0.6, 0.64, 0.7]);
+    ubTextC("TIP", UB_RAIL / 2, 126, 6, ubTipsOn() ? UB_CYAN : [0.5, 0.53, 0.58], 1);
     ubTextC(String(MM.modCount()), UB_RAIL / 2, 143, 7, [0.75, 0.77, 0.82], 1);
     ubLine(4, 147, UB_RAIL - 4, 147, [0.3, 0.32, 0.36], 1, 1);
     ubTextC("16", UB_RAIL / 2, 156, 7, [0.45, 0.47, 0.52], 1);
+}
+
+// ------------------------------------------------------------------ painting: Options view
+function ubPaintOpt() {
+    const g = ubOptGeom();
+    const st = MM.getSettings();
+    const P = g.panel;
+    ubRR(P[0], P[1], P[2], P[3], 6, [0.125, 0.135, 0.155], 1);
+    ubRRStroke(P[0] + 0.5, P[1] + 0.5, P[2] - 1, P[3] - 1, 6, [0.26, 0.28, 0.32], 1, 1);
+    ubText("OPTIONS", P[0] + 8, P[1] + 12, 7, UB_ORANGE, 1);
+    ubText("device-wide", P[0] + P[2] - 8 - ubTextW("device-wide", 6.5), P[1] + 12, 6.5, [0.5, 0.53, 0.58], 1);
+    ubLine(P[0] + 4, P[1] + 15, P[0] + P[2] - 4, P[1] + 15, [0.24, 0.26, 0.3], 1, 1);
+    const labels = [
+        ["Default mapping mode", "New mappings start as Mod or Remote"],
+        ["Global smoothing", "Lowpass on every mapping output, 0 = off"],
+        ["Rate multiplier", "Scales LFO / Random / Steps / MSEG rates"],
+    ];
+    labels.forEach((t, i) => {
+        const ry = g.rows[i].y;
+        if (i > 0) ubLine(P[0] + 8, ry, P[0] + P[2] - 8, ry, [0.2, 0.22, 0.26], 1, 1);
+        ubText(ubFit(t[0], g.textW, 8), g.textX, ry + 21, 8, [0.9, 0.92, 0.95], 1);
+        if (ubTipsOn()) ubText(ubFit(t[1], g.textW, 6.5), g.textX, ry + 32, 6.5, [0.55, 0.58, 0.64], 1);
+    });
+    // row 1: MOD | REM (same look and colours as the remap editor tabs)
+    ubPaintModeTab(g.tabmod, "MOD", st.defaultMode !== "remote", UB_MOD_COL);
+    ubPaintModeTab(g.tabrem, "REM", st.defaultMode === "remote", UB_REM_COL);
+    // row 2: smoothing bar (log feel), value centred
+    const b = g.bar;
+    ubRR(b[0], b[1], b[2], b[3], 3, [0.06, 0.07, 0.085], 1);
+    const fw = (b[2] - 2) * smoothToPos(st.smoothMs);
+    if (fw > 0.5) ubRR(b[0] + 1, b[1] + 1, fw, b[3] - 2, 2, UB_ORANGE, 0.55);
+    ubRRStroke(b[0] + 0.5, b[1] + 0.5, b[2] - 1, b[3] - 1, 3, [0.30, 0.32, 0.37], 1, 1);
+    ubTextC(smoothText(st.smoothMs), b[0] + b[2] / 2, b[1] + 10, 7.5, [1, 1, 1], 1);
+    // row 3: the rate dial (same painter as the strip knobs), snap ticks around it, value as "x1.5"
+    const k = g.knob;
+    for (const stp of RATE_MUL_STEPS) {
+        const a = Math.PI * 0.75 + Math.PI * 1.5 * rateToPos(stp);
+        const on = Math.abs(st.rateMul - stp) < 1e-6;
+        ubLine(k.cx + Math.cos(a) * (k.r + 1.5), k.cy + Math.sin(a) * (k.r + 1.5), k.cx + Math.cos(a) * (k.r + 3.5), k.cy + Math.sin(a) * (k.r + 3.5), on ? UB_ORANGE : [0.4, 0.42, 0.47], 1, 1);
+    }
+    ubKnobBody(k, rateToPos(st.rateMul), false);
+    ubText(rateText(st.rateMul), g.valX, k.cy + 4, 9, UB_ORANGE, 1);
+}
+
+// ------------------------------------------------------------------ painting: strips-view range UI + undo
+// horizontal range bar of a popover row (the value text is drawn in its own column, see ubPaintMapsPop)
+function ubPaintHBar(r, m, mod) {
+    const rem = m.mode === "remote";
+    const off = !mod.enabled || !m.enabled;
+    const ac = off ? UB_OFF_GREY : rem ? UB_REM_COL : UB_MOD_COL;
+    const d = ubDrag && ubDrag.kind === "hbar" && ubDrag.mapId === m.id ? ubDrag : null;
+    ubRR(r[0], r[1], r[2], r[3], Math.min(3, r[3] / 2), rem ? UB_REM_BG : UB_MOD_BG, 1);
+    const x0 = r[0] + 1;
+    const w = r[2] - 2;
+    const y0 = r[1] + 1;
+    const h = r[3] - 2;
+    if (rem) {
+        const a = x0 + w * Math.min(m.min, m.max);
+        const b = x0 + w * Math.max(m.min, m.max);
+        ubRect(a, y0, Math.max(1, b - a), h, ac, 0.4);
+        const hx = (v) => clamp(x0 + w * v, x0 + 1, x0 + w - 1);
+        ubRect(hx(m.max) - 1, r[1], 2, r[3], d && d.which === "max" ? [1, 1, 1] : ac, 1);
+        ubCol(d && d.which === "min" ? [1, 1, 1] : ac, 1);
+        mgraphics.set_line_width(1);
+        mgraphics.rectangle(hx(m.min) - 1.5, r[1] + 0.5, 3, r[3] - 1);
+        mgraphics.stroke();
+    } else {
+        const cx = r[0] + r[2] / 2;
+        const half = w / 2;
+        const len = half * m.range;
+        if (m.polarity >= 0) ubRect(cx, y0, len, h, ac, 0.5);
+        if (m.polarity <= 0) ubRect(cx - len, y0, len, h, ac, 0.5);
+        ubLine(cx, r[1], cx, r[1] + r[3], [0.62, 0.64, 0.7], 1, 1);
+        const mc = d ? [1, 1, 1] : ac;
+        if (m.polarity >= 0) ubRect(clamp(cx + len - 1, x0, x0 + w - 2), r[1], 2, r[3], mc, 1);
+        if (m.polarity <= 0) ubRect(clamp(cx - len - 1, x0, x0 + w - 2), r[1], 2, r[3], mc, 1);
+    }
+}
+function ubPaintMapsPop() {
+    const P = ubMapsPopGeom();
+    if (!P) return;
+    const R = P.rect;
+    const col = ubModCol(P.mod);
+    ubRR(R[0], R[1], R[2], R[3], 5, [0.07, 0.075, 0.09], 0.98);
+    ubRRStroke(R[0] + 0.5, R[1] + 0.5, R[2] - 1, R[3] - 1, 5, UB_CYAN, 1, 1);
+    ubCircle(R[0] + 8, R[1] + 8, 3, col, 1, true);
+    ubText(ubFit(P.mod.name, P.lst[0] - (R[0] + 14) - 3, 7.5), R[0] + 14, R[1] + 11, 7.5, [0.92, 0.94, 0.97], 1);
+    const hov = !!(ubHover && ubIn(P.lst, ubHover.x, ubHover.y));
+    ubRR(P.lst[0], P.lst[1], P.lst[2], P.lst[3], 3, hov ? [0.22, 0.24, 0.29] : [0.17, 0.18, 0.21], 1);
+    ubRRStroke(P.lst[0] + 0.5, P.lst[1] + 0.5, P.lst[2] - 1, P.lst[3] - 1, 3, [0.30, 0.32, 0.37], 1, 1);
+    ubTextC("LST", P.lst[0] + P.lst[2] / 2, P.lst[1] + 8.5, 6.5, UB_ORANGE, 1);
+    ubLine(R[0] + 4, R[1] + UB_POP_HEAD, R[0] + R[2] - 4, R[1] + UB_POP_HEAD, [0.24, 0.26, 0.3], 1, 1);
+    if (!P.maps.length) ubText(ubTipsOn() ? "no mappings - press LRN" : "no mappings", R[0] + 6, R[1] + UB_POP_HEAD + 12, 6.5, [0.5, 0.53, 0.58], 1);
+    const sel = ubStripSelMapping(P.slot);
+    for (const r of P.vis) {
+        const m = r.m;
+        const pr = ubPopRowParts(R, r.y, P.vw);
+        const status = MM.mappingStatus(m.id);
+        const miss = status === "missing";
+        const a = miss ? 0.75 : !m.enabled || status === "disabled" ? 0.5 : 1;
+        if (sel && sel.id === m.id) ubRect(R[0] + 2, r.y, R[2] - 4, UB_POP_ROW, UB_CYAN, 0.1);
+        ubText(ubFit(ubMapName(m), pr.name[2], 7), pr.name[0], r.y + 10, 7, miss ? UB_RED : [0.84, 0.86, 0.9], a);
+        const remote = m.mode === "remote";
+        const mc = remote ? UB_REM_COL : UB_MOD_COL;
+        ubRR(pr.mode[0], pr.mode[1], pr.mode[2], pr.mode[3], 3, mc, 0.85);
+        ubTextC(remote ? "R" : "M", pr.mode[0] + pr.mode[2] / 2, pr.mode[1] + 7.5, 6, [0.06, 0.07, 0.09], 1);
+        if (!remote) {
+            const ph = !!(ubHover && ubHover.hit && ubHover.hit.kind === "mp_pol" && ubHover.hit.m && ubHover.hit.m.id === m.id);
+            ubRR(pr.pol[0], pr.pol[1], pr.pol[2], pr.pol[3], 3, ph ? [0.22, 0.24, 0.29] : [0.17, 0.18, 0.21], 1);
+            ubRRStroke(pr.pol[0] + 0.5, pr.pol[1] + 0.5, pr.pol[2] - 1, pr.pol[3] - 1, 3, UB_MOD_COL, 0.7, 1);
+            ubPolGlyph(pr.pol[0] + pr.pol[2] / 2, pr.pol[1] + pr.pol[3] / 2, m.polarity, 2.6, [1, 1, 1], 1.2);
+        }
+        ubPaintHBar(pr.bar, m, P.mod);
+        const off = !P.mod.enabled || !m.enabled;
+        const vt = ubFit(ubValueText(m), pr.val[2], 6.5);
+        // right-aligned in the fixed column: the column's x never moves, and short values hug the panel edge
+        ubText(vt, pr.val[0] + pr.val[2] - ubTextW(vt, 6.5), r.y + 10, 6.5, off ? [0.7, 0.72, 0.76] : [1, 1, 1], off ? 0.7 : 1);
+    }
+    if (P.maps.length > P.rows) {
+        const ah = P.rows * UB_POP_ROW;
+        const th = Math.max(8, (ah * P.rows) / P.maps.length);
+        const ty = R[1] + UB_POP_HEAD + 2 + ((ah - th) * P.first) / Math.max(1, P.maps.length - P.rows);
+        ubRR(R[0] + R[2] - 4, ty, 2, th, 1, [0.5, 0.53, 0.58], 0.8);
+    }
+}
+function ubPaintUndoGlyph(cx, cy, c, a, mirror) {
+    const r = 4;
+    const sx = mirror ? -1 : 1;
+    const pts = [];
+    for (let i = 0; i <= 10; i++) {
+        const ang = (30 - (210 * i) / 10) * Math.PI / 180;
+        pts.push([cx + sx * Math.cos(ang) * r, cy + 1 + Math.sin(ang) * r]);
+    }
+    ubPoly(pts, c, a, 1.4);
+    ubCol(c, a);
+    mgraphics.move_to(cx - sx * (r + 2.6), cy + 0.5);
+    mgraphics.line_to(cx - sx * (r - 2.6), cy + 0.5);
+    mgraphics.line_to(cx - sx * r, cy + 4);
+    mgraphics.close_path();
+    mgraphics.fill();
 }
 
 // ------------------------------------------------------------------ painting: patchbay
@@ -1519,8 +1972,8 @@ function ubPaintDetail(gm) {
         const cy = y0 + (P[3] >= 150 ? 70 : Math.round(P[3] * 0.34));
         const has = ubValidSlot(ubSel());
         ubTextC(has ? "No mappings yet" : "No modulator", x + w / 2, cy, 8, [0.6, 0.63, 0.68], 1);
-        ubTextC(has ? "Press LRN, then touch" : "Add one with the + tab", x + w / 2, cy + 12, 7, [0.45, 0.47, 0.52], 1);
-        if (has) ubTextC("a Live parameter", x + w / 2, cy + 21, 7, [0.45, 0.47, 0.52], 1);
+        if (ubTipsOn()) ubTextC(has ? "Press LRN, then touch" : "Add one with the + tab", x + w / 2, cy + 12, 7, [0.45, 0.47, 0.52], 1);
+        if (has && ubTipsOn()) ubTextC("a Live parameter", x + w / 2, cy + 21, 7, [0.45, 0.47, 0.52], 1);
         return;
     }
     const mod = MM.state.mods[m.mod];
@@ -1567,17 +2020,8 @@ function ubPaintReadout(ro, m, mod) {
     ubText(ro.text, ro.rect[0] + ro.rect[2] - ubTextW(ro.text, ro.size), ro.base, ro.size, hot ? [1, 1, 1] : ac, 1);
 }
 // polarity control, vector glyphs only (+, plus over minus, minus): a segmented 3-cell control, the first cell paints the container
-function ubPaintPolarity(r, pol, on, hl) {
-    const edge = [0.30, 0.32, 0.37];
-    if (pol === 1) ubRR(r[0], r[1], r[2] * 3, r[3], 3, [0.17, 0.18, 0.21], 1);
-    if (on) ubRR(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2, 2, hl, 0.3);
-    if (pol === 1) ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] * 3 - 1, r[3] - 1, 3, edge, 1, 1);
-    else ubLine(r[0] + 0.5, r[1] + 1, r[0] + 0.5, r[1] + r[3] - 1, edge, 1, 1);
-    const c = on ? [1, 1, 1] : [0.6, 0.62, 0.68];
-    const cx = r[0] + r[2] / 2;
-    const cy = r[1] + r[3] / 2;
-    const lw = on ? 1.6 : 1.3;
-    const s = Math.min(3.5, r[3] / 3.6); // glyph half-size, fits the row height
+// vector polarity glyph (+, plus over minus, minus) centred on cx, cy with half-size s
+function ubPolGlyph(cx, cy, pol, s, c, lw) {
     if (pol === 1) {
         ubLine(cx - s, cy, cx + s, cy, c, 1, lw);
         ubLine(cx, cy - s, cx, cy + s, c, 1, lw);
@@ -1592,6 +2036,14 @@ function ubPaintPolarity(r, pol, on, hl) {
     } else {
         ubLine(cx - s, cy, cx + s, cy, c, 1, lw);
     }
+}
+function ubPaintPolarity(r, pol, on, hl) {
+    const edge = [0.30, 0.32, 0.37];
+    if (pol === 1) ubRR(r[0], r[1], r[2] * 3, r[3], 3, [0.17, 0.18, 0.21], 1);
+    if (on) ubRR(r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2, 2, hl, 0.3);
+    if (pol === 1) ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] * 3 - 1, r[3] - 1, 3, edge, 1, 1);
+    else ubLine(r[0] + 0.5, r[1] + 1, r[0] + 0.5, r[1] + r[3] - 1, edge, 1, 1);
+    ubPolGlyph(r[0] + r[2] / 2, r[1] + r[3] / 2, pol, Math.min(3.5, r[3] / 3.6), on ? [1, 1, 1] : [0.6, 0.62, 0.68], on ? 1.6 : 1.3);
 }
 function ubCurveRowGlyph(m, x, y, w, h, c, a) {
     const pts = [];
@@ -1613,7 +2065,7 @@ function ubPaintList(gm) {
 // footer of the list: "<n> mappings on <modulator> | click a row to edit", shortened to fit maxW (the name gives way first)
 function ubFooterText(n, name, maxW, size) {
     const head = n + " mapping" + (n === 1 ? "" : "s");
-    const tail = " | click a row to edit";
+    const tail = ubTipsOn() ? " | click a row to edit" : "";
     if (!name) return ubFit(head + tail, maxW, size);
     const full = head + " on " + name + tail;
     if (ubTextW(full, size) <= maxW) return full;
@@ -1652,7 +2104,7 @@ function ubPaintListPanel(gm) {
             ubText(cs, R[0] + R[2] - 10 - ubTextW(cs, 7), r.y + 10.5, 7, [0.6, 0.63, 0.68], 1);
         } else if (it.kind === "none") {
             if (isSelMod) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, col, UB_TINT_ROW);
-            ubText("no mappings - press LRN to map", R[0] + 18, r.y + 9, 6.5, [0.42, 0.45, 0.5], 1);
+            ubText(ubTipsOn() ? "no mappings - press LRN to map" : "no mappings", R[0] + 18, r.y + 9, 6.5, [0.42, 0.45, 0.5], 1);
         } else {
             const m = it.m;
             const P = ubRowParts(r.y, gm.lx, gm.lw);
@@ -1710,7 +2162,7 @@ function ubPaintFull() {
 
 // ------------------------------------------------------------------ paint
 function ubPaintTooltip() {
-    if (!ubHover || ubDrag || ubPopup) return;
+    if (!ubHover || ubDrag || ubPopup || !ubTipsOn()) return;
     const tip = ubHover.hit && ubHover.hit.tip;
     if (!tip) return;
     const w = ubTextW(tip, 7) + 10;
@@ -1729,6 +2181,8 @@ function paint() {
     for (const g of sg.list) ubPaintItem(g);
     if (sg.plus) ubPaintPlus(sg);
     if (ubPb()) ubPaintList(ubListGeom());
+    if (ubOpt()) ubPaintOpt();
+    if (ubMapsPop) ubPaintMapsPop();
     if (ubPopup) ubPaintPopup();
     ubPaintFull();
     ubPaintTooltip();
@@ -1752,14 +2206,15 @@ function uiChanged(ev) {
     if (ev.kind === "full") { ubFullTTL = UB_FULL_FRAMES; mgraphics.redraw(); return; }
     if (ev.kind === "learn") return;
     if (ev.kind === "load") {
-        ubPopup = null; ubEdit = null; ubDelArm = -1;
+        ubPopup = null; ubDelArm = -1; ubMapsPop = null; ubMapSelBy = {};
         if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] }); // the inspector always shows a modulator
     }
     if (ev.kind === "mods" || ev.kind === "load" || ev.kind === "ui") ubSyncWidth();
 }
 
 const UB_PREVIEW_REMOTE = false; // preview: the selected mapping in Remote mode (false = Mod mode)
-const UB_PREVIEW_LIST = true; // preview: the LST view = inspector (false = rack strips with the MSEG strip expanded)
+const UB_PREVIEW_LIST = true; // preview: the LST view = inspector (false = the rack strips, all collapsed, showing the maps popover)
+const UB_PREVIEW_OPT = false; // preview: the Options view (set the layout width to 390)
 function preview() {
     MM.demo();
     const names = ["Wobble", "Follow", "Dice", "Seq 8", "Swell"];
@@ -1821,8 +2276,17 @@ function preview() {
     if (dis) MM.updateMapping(dis.id, { enabled: 0 });
     s.mods[3].enabled = 0; // "Seq 8" is switched off
     // the strips view shows modulator 4 (Swell) expanded; the LST view always shows the selected one (Dice) expanded
-    MM.setUI({ exp: 4, sel: 2, pb: UB_PREVIEW_LIST ? 1 : 0, pbSel: selId, pbScroll: 0 });
+    MM.setUI({ exp: UB_PREVIEW_LIST ? 4 : -1, sel: 2, pb: UB_PREVIEW_LIST ? 1 : 0, pbSel: selId, pbScroll: 0 });
     ubFullTTL = 0;
-    if (!UB_PREVIEW_LIST) { MM.armLearn(4, true); MM.setUI({ sel: 4 }); }
-    else MM.armLearn(2, false);
+    if (UB_PREVIEW_OPT) {
+        MM.setUI({ pb: 0, opt: 1 });
+        MM.setSettings({ defaultMode: "remote", smoothMs: 45, rateMul: 1.5 });
+        return;
+    }
+    if (UB_PREVIEW_LIST) MM.armLearn(2, false);
+    else {
+        // strips view: Dice (4 mappings, mixed modes) is selected; the chosen range UI is shown on it
+        ubMapSelBy[2] = selId;
+        ubMapsPop = { slot: 2, scroll: 0 };
+    }
 }
