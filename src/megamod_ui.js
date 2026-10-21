@@ -360,10 +360,11 @@ const UB_POL_TIPS = {
 };
 const UB_TAB_W = 40; // MOD / REM tabs: same size in both modes, so a mode switch never moves the tab under the cursor
 const UB_POL_W = 15; // one cell of the polarity control (Mod only, right end of the tab row)
-// fixed readout width (the widest usual text, "88\u201388%"; grows only for longer strings), so dragging never moves the layout
+// The readout's width is FIXED to the widest text it can ever show ("100\u2013100%" in Remote; Mod's "\u00b1100%" is
+// narrower), independent of the mapping and its values, so the presets row never shuffles while values change.
 const UB_READOUT_SIZE = 7.5;
-function ubReadoutW(m) {
-    return Math.max(Math.ceil(ubTextW("88\u201388%", UB_READOUT_SIZE)) + 1, Math.ceil(ubTextW(ubValueText(m), UB_READOUT_SIZE)) + 1);
+function ubReadoutW() {
+    return Math.ceil(Math.max(ubTextW("100\u2013100%", UB_READOUT_SIZE), ubTextW("\u00b1100%", UB_READOUT_SIZE))) + 1;
 }
 function ubDetailRects(gm, m) {
     const x = gm.dx;
@@ -386,7 +387,7 @@ function ubDetailRects(gm, m) {
         tip: !rem ? "Drag the triangle to set the range (+ and \u2212 keep zero fixed, \u00b1 moves both); double-click = full"
             : "Drag the nearest triangle: filled = max, outline = min (double-click resets it)" });
     // the five presets shrink evenly to leave the right end of the row for the readout
-    const pbw = (w - ubReadoutW(m) - 3 - 4 * 2) / 5;
+    const pbw = (w - ubReadoutW() - 3 - 4 * 2) / 5;
     const pstep = pbw + 2;
     for (let k = 0; k < 5; k++) out.push({ id: "preset" + k, rect: [x + k * pstep, py, pbw, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
     if (!rem) {
@@ -1453,7 +1454,7 @@ function ubPaintDetail(gm) {
 // Range readout: plain text at the right end of the presets row (the presets shrink to leave room).
 // Text is the list-row value text: Mod "\u00b170%" / "+45%" / "\u221230%", Remote "20\u201380%" (min first, so "80\u201320%" reads inverted).
 function ubReadoutSpec(gm, m) {
-    const W = ubReadoutW(m);
+    const W = ubReadoutW();
     return { text: ubValueText(m), size: UB_READOUT_SIZE, base: 143 + 9.5, rect: [gm.dx + gm.dw - W, 143, W, 13] };
 }
 function ubPaintReadout(ro, m, mod) {

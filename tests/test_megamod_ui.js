@@ -1080,7 +1080,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             for (const d of qrects()) ok(!inter(r, d.rect), `${tag}: ${mode} rect does not intersect ${d.id}`);
             const ps = qrects().filter((d) => d.id.indexOf("preset") === 0);
             for (let a = 0; a < ps.length; a++) for (let b = a + 1; b < ps.length; b++) ok(!inter(ps[a].rect, ps[b].rect), `${tag}: ${mode} presets ${a} and ${b} do not overlap`);
-            ok(ps.every((d) => d.rect[2] >= 18), `${tag}: ${mode} presets stay at least 18 px wide`);
+            ok(ps.every((d) => d.rect[2] >= 16), `${tag}: ${mode} presets stay at least 16 px wide`);
             ok(Math.abs(ps[0].rect[1] - r[1]) < 1e-6, `${tag}: ${mode} readout is on the presets row`);
             ok(ps[4].rect[0] + ps[4].rect[2] <= r[0], `${tag}: ${mode} readout starts after the last preset`);
             ok(Math.abs(r[0] + r[2] - (g.dx + g.dw)) < 1e-6, `${tag}: ${mode} readout is right-aligned to the content edge`);
@@ -1156,5 +1156,25 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const reqW = Q.run("ubLayoutWidth() + UB_EDGE");
         ok(reqW >= pr[0] + pr[2] + 4 + 4, "requested width covers the panel plus the right margin");
     }
+}
+// regression: the presets row / readout / editor rects must not move when the range values change
+// (bug: "100-100%" vs "0-100%" resized the readout and shuffled the preset buttons)
+{
+    const mm = E3.run("ubPbSelMapping()");
+    const layout = () => JSON.stringify(E3.run("ubDetailRects(ubListGeom(), ubPbSelMapping()).map((d) => [d.id, d.rect])")) + JSON.stringify(E3.run("ubReadoutSpec(ubListGeom(), ubPbSelMapping()).rect"));
+    const fits = () => E3.run("(function () { const ro = ubReadoutSpec(ubListGeom(), ubPbSelMapping()); return ubTextW(ro.text, ro.size) <= ro.rect[2]; })()");
+    for (const mode of ["remote", "mod"]) {
+        E3.run(`MM.updateMapping(${mm.id}, { mode: "${mode}" })`);
+        const base = layout();
+        const cases = mode === "remote"
+            ? [[0, 0], [1, 1], [0, 1], [1, 0], [0.05, 0.5], [0.333, 0.999]]
+            : [[1, 0], [1, 1], [0, 0.07], [0, 1], [-1, 0.5], [-1, 1]];
+        for (const [a, b] of cases) {
+            E3.run(mode === "remote" ? `MM.updateMapping(${mm.id}, { min: ${a}, max: ${b} })` : `MM.updateMapping(${mm.id}, { polarity: ${a}, range: ${b} })`);
+            eq(layout(), base, `${mode} ${a}/${b}: editor layout does not shuffle when values change`);
+            ok(fits(), `${mode} ${a}/${b}: readout text fits its fixed box`);
+        }
+    }
+    E3.run(`MM.updateMapping(${mm.id}, { mode: "mod" })`);
 }
 console.log(`megamod UI tests passed (${passed} checks)`);
