@@ -1197,6 +1197,7 @@ xoX = {
   get searchTerms() { return searchTerms; }, set searchTerms(v) { searchTerms = v; },
   get matchFolders() { return matchFolders; }, set matchFolders(v) { matchFolders = v; },
   get searchesCatIdx() { return searchesCatIdx; }, set searchesCatIdx(v) { searchesCatIdx = v; },
+  get GROUP_DIST_FACTOR() { return GROUP_DIST_FACTOR; },
   get zoomSpeed() { return zoomSpeed; },
   get mapSamples() { return mapSamples; },
   get reseedTitle() { return reseedTitle(); }
@@ -2836,6 +2837,275 @@ setTimeout(() => {
     assert.strictEqual(r.deviceId, "103");
   }
   console.log("OK: hotkeys only act on the instance selected in Live (3 instances, rack-nested, switching, LOM unavailable, double fire)");
+}
+
+// --- Dot groups: dots that overlap almost entirely share one dot, one hit target and a round-robin audition ---
+{
+  const sent = [];
+  const prevOut = global.outlet;
+  global.outlet = (idx, ...args) => { sent.push([idx, ...args]); };
+  const selects = () => sent.filter((m) => m[0] === 0 && m[1] === "select_index").map((m) => m[2]);
+  const clearSent = () => { sent.length = 0; };
+  const L = getLayout();
+  const R = 2.1; // dot radius with <= 250 points
+  const DIST = xoX.GROUP_DIST_FACTOR * R;
+  assert(Math.abs(xoX.GROUP_DIST_FACTOR - 0.6) < 1e-12, "grouping distance is 0.6 x the dot radius");
+  // Place points at SCREEN positions of the 1x view: specs [sx, sy, catField, name]
+  const place = (specs) => {
+    resetView();
+    minimap_clear();
+    const flat = [];
+    for (const [sx, sy, cat, name] of specs) {
+      const [nx, ny] = screenToNorm(sx, sy, L);
+      flat.push(nx, ny, cat === undefined ? 16 + 0 : cat, 200, 50, 50, 50, name || "P");
+    }
+    minimap_batch(0, ...flat);
+    minimap_done(specs.length, "grp");
+  };
+  const grp = () => getGroups();
+  const sizes = () => grp().groups.map((g) => g.members.length).sort((a, b) => b - a);
+  const KICK = 16, SNARE = 33;
+
+  // 1. threshold: within 0.6 R of the first member joins; leader-based (no chaining)
+  place([[100, 60, KICK, "A"], [100 + DIST * 0.9, 60, KICK, "B"], [100 + DIST * 1.8, 60, KICK, "C"], [100 + DIST * 1.2, 60, KICK, "D"], [100, 80, KICK, "E"]]);
+  {
+    const g = grp();
+    assert.deepStrictEqual(g.groups.map((x) => x.members), [[0, 1], [2, 3], [4]].map((m) => m), "threshold: A+B group; C is beyond A (no chaining through B) and D joins C's group (D-C = 0.6 DIST)");
+    assert.strictEqual(g.groups[0].leader, 0, "a group's identity / position is its lowest member");
+    assert.strictEqual(g.groupOf[1], 0);
+    assert.strictEqual(g.groupOf[4], 2);
+  }
+  // 2. a pair straddling a spatial-hash cell boundary still groups
+  {
+    const edge = Math.round(100 / DIST) * DIST;
+    place([[edge - 0.1, 60, KICK], [edge + 0.2, 60, KICK], [edge + 0.2, 60 + DIST * 0.5, KICK], [edge - 0.1, 60 - DIST * 0.99, KICK]]);
+    assert.deepStrictEqual(sizes(), [4], "points on both sides of cell edges (x and y) group");
+  }
+  // 3. hit testing works on groups: the leader is hit, a group never splits a hit
+  place([[100, 60, KICK, "A"], [100, 60, SNARE, "B"], [100.2, 60.1, KICK, "C"], [150, 60, KICK, "D"]]);
+  assert.strictEqual(findNearestVisiblePoint(101, 61, 10), 0, "hit test returns the group's lead sample");
+  assert.strictEqual(findNearestVisiblePoint(150, 60, 3), 3);
+  assert.strictEqual(findNearestVisiblePoint(125, 60, 3), -1);
+  assert.strictEqual(grp().groups.length, 2);
+
+  // 4. cache: no rebuild without a change; filters / category / search / view / points / size invalidate it
+  {
+    const b0 = grp().builds;
+    paint(); paint(); findNearestVisiblePoint(100, 60, 5); onidle(100, 60, 0, 0, 0, 0, 0, 0);
+    assert.strictEqual(grp().builds, b0, "paint / hit-test / hover reuse the cached groups");
+    strip_filter_maxlen(5000); // unchanged value
+    assert.strictEqual(grp().builds, b0, "an unchanged filter value keeps the cache");
+    strip_filter_maxlen(100); grp(); assert.strictEqual(grp().builds, b0 + 1, "MaxLen invalidates"); strip_filter_maxlen(5000);
+    grp(); const b1 = grp().builds;
+    xoX.activeCategory = "kick"; grp(); assert.strictEqual(grp().builds, b1 + 1, "category invalidates"); xoX.activeCategory = "ALL"; grp();
+    const b2 = grp().builds;
+    strip_filter_search("zzz"); grp(); assert.strictEqual(grp().builds, b2 + 1, "search invalidates"); strip_filter_search("");
+    grp(); const b3 = grp().builds;
+    zoomViewAt(100, 60, 1.5, L); grp(); assert.strictEqual(grp().builds, b3 + 1, "zoom invalidates"); resetView();
+    grp(); const b4 = grp().builds;
+    minimap_batch(0, 0.5, 0.5, 16, 200, 50, 50, 50, "A"); grp(); assert.strictEqual(grp().builds, b4 + 1, "a point update invalidates");
+    place([[100, 60, KICK, "A"], [100, 60, KICK, "B"], [100.2, 60.1, KICK, "C"], [150, 60, KICK, "D"]]);
+  }
+
+  // 5. zoom splits a group, zooming out merges it again
+  place([[100, 60, KICK, "A"], [100 + DIST * 0.9, 60, KICK, "B"], [101, 61, KICK, "C"]]);
+  {
+    assert.deepStrictEqual(sizes(), [2, 1], "setup: A+B grouped, C apart");
+    const n1 = grp().groups.length;
+    zoomViewAt(100, 60, 6, L);
+    const n6 = grp().groups.length;
+    assert(n6 > n1, `zooming in splits groups (${n1} -> ${n6})`);
+    resetView();
+    assert.strictEqual(grp().groups.length, n1, "zooming out merges them again");
+  }
+
+  // 6. filters change membership: a hidden point never joins a visible one (and hidden points group among themselves)
+  place([[100, 60, KICK, "Kick A"], [100, 60, KICK, "Kick B"], [100.2, 60, KICK, "Snare C"], [100.3, 60, KICK, "Snare D"], [150, 60, KICK, "Kick E"]]);
+  {
+    assert.strictEqual(grp().groups.length, 2);
+    strip_filter_search("snare");
+    const g = grp();
+    const vis = g.groups.filter((x) => x.vis);
+    const hid = g.groups.filter((x) => !x.vis);
+    assert.deepStrictEqual(vis.map((x) => x.members), [[2, 3]], "only the visible Snare pair forms a visible group");
+    assert.deepStrictEqual(hid.map((x) => x.members), [[0, 1], [4]], "hidden points group among themselves");
+    assert.strictEqual(findNearestVisiblePoint(100, 60, 5), 2, "hidden groups cannot be hit");
+    strip_filter_search("");
+  }
+
+  // 7. round robin: each click plays the next member and cycles through all of them
+  place([[100, 60, KICK, "A"], [100, 60, KICK, "B"], [100.3, 60, KICK, "C"], [160, 60, KICK, "S"]]);
+  {
+    clearSent();
+    const seq = [];
+    for (let k = 0; k < 7; k++) { onclick(100, 60, 1, 0, 0, 0, 0, 0); ondrag(100, 60, 0, 0, 0, 0, 0, 0); }
+    seq.push(...selects());
+    assert.deepStrictEqual(seq, [0, 1, 2, 0, 1, 2, 0], "repeated clicks cycle through every member of the group");
+    clearSent();
+    onclick(160, 60, 1, 0, 0, 0, 0, 0); ondrag(160, 60, 0, 0, 0, 0, 0, 0);
+    onclick(160, 60, 1, 0, 0, 0, 0, 0); ondrag(160, 60, 0, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [3, 3], "a single dot plays itself every click");
+    clearSent();
+    onclick(100, 60, 1, 0, 0, 0, 0, 0); ondrag(100, 60, 0, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [1], "the group remembered its position while the groups were not rebuilt");
+    // groups rebuilt (view change) reset the counter
+    zoomViewAt(100, 60, 1.3, L); paint(); resetView();
+    clearSent();
+    onclick(100, 60, 1, 0, 0, 0, 0, 0); ondrag(100, 60, 0, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [0], "a rebuilt group starts again at its first member");
+  }
+
+  // 8. scrub: staying on a group does not re-trigger, re-entering plays the next member
+  place([[100, 60, KICK, "A"], [100, 60, KICK, "B"], [100.2, 60, KICK, "C"], [140, 60, KICK, "S"]]);
+  {
+    clearSent();
+    onclick(100, 60, 1, 0, 0, 0, 0, 0);
+    ondrag(100.4, 60.3, 1, 0, 0, 0, 0, 0);
+    ondrag(99.6, 59.8, 1, 0, 0, 0, 0, 0);
+    ondrag(100, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [0], "dragging within the same group does not re-trigger");
+    ondrag(140, 60, 1, 0, 0, 0, 0, 0);
+    ondrag(140.5, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [0, 3], "moving onto another dot plays it once");
+    ondrag(100, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [0, 3, 1], "re-entering the group plays its NEXT member");
+    ondrag(100, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [0, 3, 1], "still no re-trigger");
+    ondrag(100, 110, 1, 0, 0, 0, 0, 0); // empty space (> 24 px from every dot)
+    ondrag(100, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [0, 3, 1, 2], "leaving to empty space and coming back plays the next member");
+    ondrag(100, 60, 0, 0, 0, 0, 0, 0);
+    // a single dot that is already selected is not re-triggered by scrubbing off and on it
+    clearSent();
+    onclick(140, 60, 1, 0, 0, 0, 0, 0);
+    ondrag(140, 110, 1, 0, 0, 0, 0, 0);
+    ondrag(140, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [3], "a selected single dot is not re-triggered (as before)");
+    ondrag(140, 60, 0, 0, 0, 0, 0, 0);
+    // double-click replays the member the click just played
+    clearSent();
+    onclick(100, 60, 1, 0, 0, 0, 0, 0); ondrag(100, 60, 0, 0, 0, 0, 0, 0);
+    const first = selects()[0];
+    ondblclick(100, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(selects(), [first, first], "double-click replays the selected member instead of skipping ahead");
+  }
+
+  // 9. hover plays nothing; the HUD names the next member and the count
+  place([[100, 60, KICK, "Kick A"], [100, 60, KICK, "Kick B"], [100.2, 60, KICK, "Kick C"], [140, 60, KICK, "Solo"]]);
+  {
+    clearSent();
+    const texts = [];
+    const origText = mgraphics.show_text;
+    mgraphics.show_text = function (t) { texts.push(t); };
+    onidle(100, 60, 0, 0, 0, 0, 0, 0);
+    onidle(100.3, 60.2, 0, 0, 0, 0, 0, 0);
+    paint();
+    assert.strictEqual(sent.length, 0, "plain hover sends nothing (no audition)");
+    assert(texts.some((t) => /^Kick A \(200ms\) \+2$/.test(t)), `HUD shows the next member and the extra count (${texts.filter((t) => /Kick|Solo/.test(t))})`);
+    onclick(100, 60, 1, 0, 0, 0, 0, 0); ondrag(100, 60, 0, 0, 0, 0, 0, 0);
+    texts.length = 0; paint();
+    assert(texts.some((t) => /^Kick B \(200ms\) \+2$/.test(t)), "after a click the HUD shows the next member");
+    texts.length = 0;
+    onidle(140, 60, 0, 0, 0, 0, 0, 0); paint();
+    assert(texts.some((t) => /^Solo \(200ms\)$/.test(t)), "a single dot shows just its name");
+    mgraphics.show_text = origText;
+    onidle(300, 300, 0, 0, 0, 0, 0, 0);
+  }
+
+  // 10. selection ring and k-NN lines refer to the chosen member, drawn at the group's dot
+  place([[100, 60, KICK, "A"], [100, 60, KICK, "B"], [100.2, 60, KICK, "C"], [140, 70, KICK, "S"], [60, 70, KICK, "T"]]);
+  {
+    clearSent();
+    onclick(100, 60, 1, 0, 0, 0, 0, 0); onclick(100, 60, 1, 0, 0, 0, 0, 0); // plays B (index 1)
+    ondrag(100, 60, 0, 0, 0, 0, 0, 0);
+    assert.strictEqual(getSelectedIndex(), 1, "the chosen member is the selection");
+    selected_info(1, "B", "kick", 0, 200, 50, 0, ...new Array(24).fill(0.3), "nbrs", 3, 4, 2);
+    const arcs = [];
+    const lines = [];
+    const origArc = mgraphics.arc;
+    const origMove = mgraphics.move_to;
+    const origLine = mgraphics.line_to;
+    mgraphics.arc = function (cx, cy, r) { arcs.push([cx, cy, r]); };
+    mgraphics.move_to = function (x, y) { lines.push([x, y]); };
+    mgraphics.line_to = function (x, y) { lines.push([x, y]); };
+    paint();
+    mgraphics.arc = origArc; mgraphics.move_to = origMove; mgraphics.line_to = origLine;
+    const g0 = grp().groups[0];
+    assert(arcs.some((a) => Math.abs(a[0] - g0.x) < 1e-9 && Math.abs(a[1] - g0.y) < 1e-9 && Math.abs(a[2] - (R + 2.4)) < 1e-9), "selection ring sits on the group's dot");
+    assert(lines.some((l) => Math.abs(l[0] - g0.x) < 1e-9 && Math.abs(l[1] - g0.y) < 1e-9), "k-NN lines start at the group's dot");
+    // the neighbour (member C of the same group) does not draw a line to itself, S / T do
+    const gS = grp().groups[grp().groupOf[3]];
+    const gT = grp().groups[grp().groupOf[4]];
+    assert(lines.some((l) => Math.abs(l[0] - gS.x) < 1e-6 && Math.abs(l[1] - gS.y) < 1e-6), "a k-NN line reaches neighbour S's dot");
+    assert(lines.some((l) => Math.abs(l[0] - gT.x) < 1e-6 && Math.abs(l[1] - gT.y) < 1e-6), "a k-NN line reaches neighbour T's dot");
+    // arrow navigation / saved recall select individual samples: a selected non-leader still rings the group's dot
+    selected_info(2, "C", "kick", 0, 200, 50, 0, ...new Array(24).fill(0.3), "nbrs");
+    arcs.length = 0; mgraphics.arc = function (cx, cy, r) { arcs.push([cx, cy, r]); }; paint(); mgraphics.arc = origArc;
+    assert(arcs.some((a) => Math.abs(a[0] - g0.x) < 1e-9 && Math.abs(a[2] - (R + 2.4)) < 1e-9), "an individually selected member rings its group's dot");
+  }
+
+  // 11. paint: one dot per group, a ring on groups of 2+
+  place([[100, 60, KICK, "A"], [100, 60, KICK, "B"], [100.2, 60, KICK, "C"], [140, 60, KICK, "S"], [160, 60, SNARE, "T"], [160.2, 60, SNARE, "U"]]);
+  {
+    const arcs = [];
+    const origArc = mgraphics.arc;
+    mgraphics.arc = function (cx, cy, r) { arcs.push([cx, cy, r]); };
+    paint();
+    mgraphics.arc = origArc;
+    const inMap = arcs.filter((a) => a[1] > L.plotY && a[1] < L.toolbarY);
+    const dots = inMap.filter((a) => Math.abs(a[2] - R) < 1e-9);
+    const rings = inMap.filter((a) => Math.abs(a[2] - (R + 1.3)) < 1e-9);
+    assert.strictEqual(dots.length, 3, "6 points in 3 groups: 3 dots");
+    assert.strictEqual(rings.length, 2, "the two multi-member groups carry a ring");
+    assert.strictEqual(groupReport().drawn, 3);
+  }
+
+  // 12. performance and draw-count reduction on 1500 / 5000 points (pseudo-random layout, 9 cluster centres + scatter)
+  const rnd = (() => { let a = 12345; return () => { a = (a * 1664525 + 1013904223) >>> 0; return a / 4294967296; }; })();
+  for (const N of [1500, 5000]) {
+    minimap_clear();
+    for (let i = 0; i < N; i += 50) {
+      const flat = [];
+      for (let j = i; j < Math.min(N, i + 50); j++) {
+        const c = j % 9;
+        const clustered = j % 3 !== 0;
+        const x = clustered ? Math.max(0.02, Math.min(0.98, 0.15 + (c % 3) * 0.35 + (rnd() - 0.5) * 0.18)) : rnd();
+        const y = clustered ? Math.max(0.02, Math.min(0.98, 0.2 + Math.floor(c / 3) * 0.3 + (rnd() - 0.5) * 0.18)) : rnd();
+        flat.push(x, y, (j % 8) * 16 + (j % 8), 100 + (j % 900), 50, 40, 60, "P" + j);
+      }
+      minimap_batch(i, ...flat);
+    }
+    minimap_done(N, "grp");
+    resetView();
+    const t0 = process.hrtime.bigint();
+    const gg = grp();
+    const buildMs = Number(process.hrtime.bigint() - t0) / 1e6;
+    let members = 0;
+    for (const g of gg.groups) members += g.members.length;
+    assert.strictEqual(members, N, "every point belongs to exactly one group at 1x");
+    const t1 = process.hrtime.bigint();
+    for (let k = 0; k < 50; k++) grp();
+    const cachedMs = Number(process.hrtime.bigint() - t1) / 1e6 / 50;
+    paint();
+    const t2 = process.hrtime.bigint();
+    for (let k = 0; k < 20; k++) paint();
+    const paintMs = Number(process.hrtime.bigint() - t2) / 1e6 / 20;
+    const rep = groupReport();
+    console.log(`BENCH: ${N} points -> ${rep.count} dots drawn (${(100 * (1 - rep.count / N)).toFixed(1)} % fewer), ${rep.multi} groups of 2+ (max ${rep.maxSize}); first grouping ${buildMs.toFixed(2)} ms, cached lookup ${cachedMs.toFixed(4)} ms, paint ${paintMs.toFixed(2)} ms`);
+    assert(rep.count < N, "grouping reduces the dot count");
+    assert(buildMs < 50, `grouping ${N} points must stay far under a frame (${buildMs.toFixed(1)} ms)`);
+    assert(cachedMs < 0.2, "the cached lookup is free");
+    assert.strictEqual(rep.drawn, rep.count, "paint draws one dot per group");
+    // a zoomed view regroups only the points in view
+    zoomViewAt(100, 60, 4, L);
+    paint();
+    assert(groupReport().count < N, "zoomed view draws fewer dots than points");
+    resetView();
+  }
+  minimap_clear();
+  minimap_done(0, "grp");
+  global.outlet = prevOut;
+  console.log("OK: dot groups (threshold, cell edges, zoom, filters, cache, round robin on click / scrub / double-click, hover, selection, k-NN, paint, performance)");
 }
 
 // Paint cost with the maximum number of map points (5000): JS side only (the mock mgraphics draws nothing)

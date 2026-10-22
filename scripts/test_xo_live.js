@@ -708,6 +708,33 @@ try {
         const back = waitFor("map1500", () => { const x = report(); return x && x.mapSamples === 1500 && x.mapCount === nBefore ? x : null; }, 30000, 300);
         check(!!back, `m. Map Samples 1500 brings the map back to ${nBefore} points (now ${(back || report()).mapCount})`);
     }
+
+    // ---- n. dot groups: overlapping dots share one dot, repeated clicks play its members in round robin ----
+    {
+        hook("test_selected", 1);
+        hook("test_click", 5, 5, 0, 0); hook("test_release", 5, 5); // harmless click on the banner (no group): resets the gesture
+        const r0 = report();
+        const gr = r0.groups;
+        console.log(`  groups at ${r0.view.zoom}x: ${gr.count} dots for ${r0.nPoints} points, ${gr.multi} groups of 2+ (max ${gr.maxSize}); drawn ${gr.drawn}`);
+        check(gr.count > 0 && gr.count <= r0.nPoints, "n. the map is grouped into dots (one per group)");
+        const g = gr.sample.find((x) => x.n >= 2 && r0.view.zoom === 1);
+        if (check(!!g, `n. a group of 2+ samples exists on the map (${g ? "leader " + g.leader + " with " + g.n + " members at " + g.x.toFixed(1) + "," + g.y.toFixed(1) : "none"})`)) {
+            const seen = [];
+            for (let k = 0; k < g.n + 1; k++) {
+                hook("test_clear_log");
+                hook("test_click", g.x, g.y, 0, 0);
+                hook("test_release", g.x, g.y);
+                const got = waitFor("select" + k, () => { const x = report(); return x && x.selLog.length ? x.selLog[0].idx : null; }, 8000, 150);
+                seen.push(got);
+            }
+            console.log(`  group members ${JSON.stringify(g.members)}; clicks played ${JSON.stringify(seen)}`);
+            const want = []; for (let k = 0; k < g.n + 1; k++) want.push(g.members[k % g.members.length]);
+            check(JSON.stringify(seen) === JSON.stringify(want.slice(0, seen.length)) || g.n > g.members.length,
+                "n. each click on the group plays its NEXT member and the cycle wraps around");
+            check(new Set(seen).size === Math.min(g.n, seen.length) || g.n > g.members.length, "n. different members are played (not the same sample every time)");
+        }
+        hook("test_selected", -1);
+    }
 } catch (e) {
     check(false, "test error: " + (e && e.stack || e));
 } finally {

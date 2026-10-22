@@ -94,6 +94,7 @@ let mapSamples = MAP_SAMPLES_DEFAULT;
 function reseedTitle() { return `Re-Seed Map with active Filters (${mapSamples} max)`; }
 
 let points = [];
+let pointsVer = 0; // bumped whenever the point array changes (minimap_clear / minimap_batch / default constellation)
 let selectedIndex = 0;
 let anchorIndex = 0;
 let hoveredIndex = -1;
@@ -171,6 +172,7 @@ let simTourKey = "";
 
 function initDefaultConstellation() {
   points = [];
+  pointsVer++;
   const total = 80;
   const sampleNames = [
     "Kick Atmos", "Snare Crisp", "Hihat Closed", "Clap 808",
@@ -461,24 +463,133 @@ function getCategoryColor(catIdx) {
   return xoPaletteCat(entry.id, entry.color);
 }
 
-function findNearestVisiblePoint(sx, sy, maxDistPx) {
+// ----------------------------------------------------------------------------
+// Dot groups. Visible points whose screen centres lie within GROUP_DIST_FACTOR x the dot radius of a group's
+// first member overlap almost entirely: they are drawn as ONE dot and share one hit target. Auditioning a
+// group (click, drag-scrub landing) plays its members in round robin. Grouping is in SCREEN space at the
+// current view (zooming in splits groups, zooming out merges), computed with a spatial hash (cell = the
+// distance, so O(n)) and cached until the point set, the filters / category, the view or the size change.
+// Leader based, not transitive: a member is within the distance of the group's first (lowest-index) member,
+// which is also the group's identity and the position of its dot. Hidden (filtered-out) points group among
+// themselves only.
+// ----------------------------------------------------------------------------
+const GROUP_DIST_FACTOR = 0.6;
+/** @type {{key: string | null, groups: Array<{leader: number, x: number, y: number, vis: boolean, members: number[]}>, groupOf: Int32Array, builds: number}} */
+let groupCache = { key: null, groups: [], groupOf: new Int32Array(0), builds: 0 };
+/** Round-robin position per group (key = the group's lowest member index). Reset whenever the groups are rebuilt. */
+let groupRR = new Map();
+let scrubGroupLeader = -1; // the group the current scrub gesture is on (-1 = none)
+let lastDrawnDots = 0;
+
+function mapDotRadius() {
+  return points.length > 250 ? 1.7 : 2.1; // dots and rings ~20 % smaller than before (user request)
+}
+
+function groupsKey(lay) {
+  return pointsVer + "|" + points.length + "|" + activeCategory + "|" + maxLenMs + "|" + toneFilter + "|" + tonalFilter + "|" + drumFilter +
+    "|" + searchQuery + "|" + viewZoom + "|" + viewX0 + "|" + viewY0 + "|" + lay.plotX + "," + lay.plotY + "," + lay.plotW + "," + lay.plotH;
+}
+
+function ensureGroups() {
   const lay = getLayout();
-  let bestIdx = -1;
-  let bestD2 = maxDistPx * maxDistPx;
-  for (let i = 0; i < points.length; i++) {
+  const key = groupsKey(lay);
+  if (key === groupCache.key) return groupCache;
+  const r = mapDotRadius();
+  const dist = GROUP_DIST_FACTOR * r;
+  const d2max = dist * dist;
+  const inv = 1.0 / dist;
+  const n = points.length;
+  const groupOf = new Int32Array(n).fill(-1);
+  /** @type {Array<{leader: number, x: number, y: number, vis: boolean, members: number[]}>} */
+  const groups = [];
+  /** @type {Map<number, number[]>} */
+  const grid = new Map();
+  const cellKey = (cx, cy, vis) => ((cx + 4096) * 8192 + (cy + 4096)) * 2 + (vis ? 1 : 0);
+  for (let i = 0; i < n; i++) {
     const pt = points[i];
-    if (!isPointVisible(pt)) continue;
+    if (!pt) continue;
     const pos = normToScreen(pt.x, pt.y, lay);
-    if (viewZoom > 1.0 && !isInPlotRect(pos[0], pos[1], lay, 0)) continue;
-    const dx = pos[0] - sx;
-    const dy = pos[1] - sy;
-    const d2 = dx * dx + dy * dy;
-    if (d2 <= bestD2) {
-      bestD2 = d2;
-      bestIdx = i;
+    if (viewZoom > 1.0 && !isInPlotRect(pos[0], pos[1], lay, r + 1.0)) continue; // cull to the plot rect when zoomed
+    const vis = isPointVisible(pt);
+    const cx = Math.floor(pos[0] * inv);
+    const cy = Math.floor(pos[1] * inv);
+    let found = -1;
+    let bestD2 = d2max;
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oy = -1; oy <= 1; oy++) {
+        const cell = grid.get(cellKey(cx + ox, cy + oy, vis));
+        if (!cell) continue;
+        for (let k = 0; k < cell.length; k++) {
+          const g = groups[cell[k]];
+          const dx = g.x - pos[0];
+          const dy = g.y - pos[1];
+          const d2 = dx * dx + dy * dy;
+          if (d2 <= bestD2) { bestD2 = d2; found = cell[k]; }
+        }
+      }
+    }
+    if (found >= 0) {
+      groups[found].members.push(i);
+      groupOf[i] = found;
+    } else {
+      groups.push({ leader: i, x: pos[0], y: pos[1], vis, members: [i] });
+      groupOf[i] = groups.length - 1;
+      const ck = cellKey(cx, cy, vis);
+      const cell = grid.get(ck);
+      if (cell) cell.push(groups.length - 1);
+      else grid.set(ck, [groups.length - 1]);
     }
   }
-  return bestIdx;
+  groupRR = new Map();
+  groupCache = { key, groups, groupOf, builds: groupCache.builds + 1 };
+  return groupCache;
+}
+
+/** Screen position of the dot that represents point `idx` (its group's dot; the point's own position when ungrouped / culled). */
+function dotPosOf(idx, lay) {
+  const gc = ensureGroups();
+  const gi = idx >= 0 && idx < gc.groupOf.length ? gc.groupOf[idx] : -1;
+  if (gi >= 0) return [gc.groups[gi].x, gc.groups[gi].y];
+  return normToScreen(points[idx].x, points[idx].y, lay);
+}
+
+/** The member the group plays next (round robin; does not advance). */
+function groupPeek(g) {
+  if (g.members.length < 2) return g.members[0];
+  const c = groupRR.get(g.leader) || 0;
+  return g.members[c % g.members.length];
+}
+
+/** The member to audition now; advances the group's round-robin position. */
+function groupAdvance(g) {
+  if (g.members.length < 2) return g.members[0];
+  const c = (groupRR.get(g.leader) || 0) % g.members.length;
+  groupRR.set(g.leader, (c + 1) % g.members.length);
+  return g.members[c];
+}
+
+/** Index (into ensureGroups().groups) of the nearest visible group within maxDistPx of (sx, sy), or -1. */
+function findNearestGroup(sx, sy, maxDistPx) {
+  const gc = ensureGroups();
+  const lay = getLayout();
+  let best = -1;
+  let bestD2 = maxDistPx * maxDistPx;
+  for (let gi = 0; gi < gc.groups.length; gi++) {
+    const g = gc.groups[gi];
+    if (!g.vis) continue;
+    if (viewZoom > 1.0 && !isInPlotRect(g.x, g.y, lay, 0)) continue;
+    const dx = g.x - sx;
+    const dy = g.y - sy;
+    const d2 = dx * dx + dy * dy;
+    if (d2 <= bestD2) { bestD2 = d2; best = gi; }
+  }
+  return best;
+}
+
+/** Nearest visible point (the leader of the nearest group); does not advance any round robin. */
+function findNearestVisiblePoint(sx, sy, maxDistPx) {
+  const gi = findNearestGroup(sx, sy, maxDistPx);
+  return gi >= 0 ? groupCache.groups[gi].leader : -1;
 }
 
 function captureSnapshot() {
@@ -561,12 +672,14 @@ function loadbang() {
 
 function minimap_clear() {
   points = [];
+  pointsVer++;
   selectedIndex = 0;
   anchorIndex = 0;
   selectedMeta.nbrFor = -1; // indices change with the new batch: the old neighbour list no longer applies
 }
 
 function minimap_batch(offset, ...flat) {
+  pointsVer++;
   let stride = 5;
   if (flat.length % 8 === 0 && typeof flat[7] === "string") stride = 8;
   else if (flat.length % 6 === 0 && typeof flat[5] === "string") stride = 6;
@@ -1047,6 +1160,27 @@ function getSelectedIndex() {
 /** Playhead state for tests / the report. */
 function getPlayhead() {
   return { pos: playheadPos, active: playActive, map: playMap, posMsgs: playPosCount, stops: stopCount, idlePosMsgs: playPosIdle, doneAfterMs: playDoneAfterMs, trace: playTrace };
+}
+
+/** Dot-group summary for tests / the report: counts, drawn dots at the last paint and a few multi-member groups with their screen positions. */
+function groupReport() {
+  const gc = ensureGroups();
+  let multi = 0;
+  let maxSize = 0;
+  /** @type {Array<{leader: number, n: number, x: number, y: number, members: number[]}>} */
+  const sample = [];
+  for (const g of gc.groups) {
+    if (g.members.length > maxSize) maxSize = g.members.length;
+    if (g.members.length > 1) {
+      multi++;
+      if (g.vis && sample.length < 6) sample.push({ leader: g.leader, n: g.members.length, x: g.x, y: g.y, members: g.members.slice(0, 12) });
+    }
+  }
+  return { count: gc.groups.length, multi, maxSize, drawn: lastDrawnDots, builds: gc.builds, distFactor: GROUP_DIST_FACTOR, sample };
+}
+
+function getGroups() {
+  return ensureGroups();
 }
 
 function getView() {
@@ -1839,8 +1973,12 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
   pushUndoState();
   isScrubbing = true;
   scrubTrail = [[x, y]];
-  const hit = findNearestVisiblePoint(x, y, 26);
-  if (hit >= 0) {
+  const gi = findNearestGroup(x, y, 26);
+  scrubGroupLeader = -1;
+  if (gi >= 0) {
+    const g = groupCache.groups[gi];
+    const hit = groupAdvance(g); // a group plays its next member (round robin), a single dot itself
+    scrubGroupLeader = g.leader;
     selectedIndex = hit;
     anchorIndex = hit;
     simTourKey = "";
@@ -1885,6 +2023,7 @@ function ondrag(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
   }
 
   if (!but) {
+    scrubGroupLeader = -1;
     if (isScrubbing || dragOutState || reorderDragState || scrollbarDrag) {
       isScrubbing = false;
       scrubTrail = [];
@@ -1929,12 +2068,21 @@ function ondrag(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
   scrubTrail.push([x, y]);
   if (scrubTrail.length > 16) scrubTrail.shift();
 
-  const hit = findNearestVisiblePoint(x, y, 24);
-  if (hit >= 0 && hit !== selectedIndex) {
-    selectedIndex = hit;
-    anchorIndex = hit;
-    playheadPos = 0.0;
-    outlet(0, "select_index", hit, 1);
+  const gi = findNearestGroup(x, y, 24);
+  if (gi < 0) {
+    scrubGroupLeader = -1; // leaving every dot: landing on a group again plays its next member
+  } else {
+    const g = groupCache.groups[gi];
+    if (g.leader !== scrubGroupLeader) {
+      scrubGroupLeader = g.leader; // staying on the same group does not re-trigger
+      if (!(g.members.length === 1 && g.leader === selectedIndex)) {
+        const hit = groupAdvance(g);
+        selectedIndex = hit;
+        anchorIndex = hit;
+        playheadPos = 0.0;
+        outlet(0, "select_index", hit, 1);
+      }
+    }
   }
   mgraphics.redraw();
 }
@@ -1942,13 +2090,16 @@ function ondrag(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
 function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
   const lay = getLayout();
   if (x < lay.savedX && y > lay.topBarH && y < lay.toolbarY) {
-    const hit = findNearestVisiblePoint(x, y, 26);
-    if (hit < 0 && viewZoom > 1.0) {
+    const gi = findNearestGroup(x, y, 26);
+    if (gi < 0 && viewZoom > 1.0) {
       // Double-click on empty map space (no sample within 26 px) resets zoom / pan
       resetView();
       return;
     }
-    if (hit >= 0) {
+    if (gi >= 0) {
+      // The click of this double-click already played the group's member: replay it instead of skipping ahead.
+      const g = groupCache.groups[gi];
+      const hit = groupCache.groupOf[selectedIndex] === gi ? selectedIndex : groupAdvance(g);
       selectedIndex = hit;
       anchorIndex = hit;
       simTourKey = "";
@@ -2038,7 +2189,7 @@ function onidle(x, y, but, cmd, shift, capslock, option, ctrl) {
       mgraphics.redraw();
     }
   } else if (y > lay.topBarH && y < lay.toolbarY) {
-    const hit = findNearestVisiblePoint(x, y, 14);
+    const hit = findNearestVisiblePoint(x, y, 14); // hover only highlights (the group's dot); it never plays anything
     if (hit !== hoveredIndex || hoveredToolbarIndex !== -1) {
       hoveredIndex = hit;
       hoveredToolbarIndex = -1;
@@ -2481,14 +2632,12 @@ function paint() {
   // 4. Draw k-NN neighbor constellation lines from selected point
   const nbrSet = new Set(selectedMeta.neighbors || []);
   if (selectedMeta.nbrFor === selectedIndex && selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
-    const sp = points[selectedIndex];
-    const [sx, sy] = normToScreen(sp.x, sp.y, lay);
+    const [sx, sy] = dotPosOf(selectedIndex, lay); // a grouped member is drawn at its group's dot
     xoSrc(0.22, 0.74, 0.97, 0.35);
     mgraphics.set_line_width(1.0);
     for (const nIdx of nbrSet) {
       if (nIdx >= 0 && nIdx < points.length && isPointVisible(points[nIdx])) {
-        const np = points[nIdx];
-        const [nx, ny] = normToScreen(np.x, np.y, lay);
+        const [nx, ny] = dotPosOf(nIdx, lay);
         const seg = clipSegmentToPlot(sx, sy, nx, ny, lay);
         if (!seg) continue;
         mgraphics.move_to(seg[0], seg[1]);
@@ -2509,25 +2658,30 @@ function paint() {
     mgraphics.stroke();
   }
 
-  // 6. Draw Sample Points
-  const ptRadius = points.length > 250 ? 1.7 : 2.1; // dots and rings ~20 % smaller than before (user request)
+  // 6. Draw Sample Points: one dot per group (see "Dot groups"). A group's dot sits at its first member and takes
+  // that member's category colour (stable, no per-paint counting); groups of 2+ members get a thin ring.
+  const ptRadius = mapDotRadius();
+  const gc = ensureGroups();
+  const nbrGroups = new Set();
+  for (const n of nbrSet) if (n >= 0 && n < gc.groupOf.length && gc.groupOf[n] >= 0) nbrGroups.add(gc.groupOf[n]);
   // One path and one fill per colour (Options > Map Samples allows up to 5000 points: a fill per dot would be a draw call each).
   /** @type {Map<number, number[]>} */
   const dotBuckets = new Map();
   /** @type {number[]} */
   const dimDots = [];
+  /** @type {number[]} */
+  const ringDots = [];
   const bucketKeys = [];
-  for (let i = 0; i < points.length; i++) {
-    const pt = points[i];
-    const vis = isPointVisible(pt);
-    const [px, py] = normToScreen(pt.x, pt.y, lay);
-    if (viewZoom > 1.0 && !isInPlotRect(px, py, lay, ptRadius + 1.0)) continue; // cull to the plot rect when zoomed
-    if (!vis) { dimDots.push(px, py); continue; }
-    const key = pt.catIdx;
+  for (let gi = 0; gi < gc.groups.length; gi++) {
+    const g = gc.groups[gi];
+    if (!g.vis) { dimDots.push(g.x, g.y); continue; }
+    const key = points[g.leader].catIdx;
     let b = dotBuckets.get(key);
     if (!b) { b = []; dotBuckets.set(key, b); bucketKeys.push(key); }
-    b.push(px, py, nbrSet.has(i) ? ptRadius + 0.5 : ptRadius);
+    b.push(g.x, g.y, nbrGroups.has(gi) ? ptRadius + 0.5 : ptRadius);
+    if (g.members.length > 1) ringDots.push(g.x, g.y);
   }
+  lastDrawnDots = gc.groups.length;
   if (dimDots.length) {
     xoSrc(0.25, 0.30, 0.38, 0.22);
     for (let k = 0; k < dimDots.length; k += 2) {
@@ -2546,9 +2700,19 @@ function paint() {
     }
     mgraphics.fill();
   }
+  if (ringDots.length) {
+    xoSrc(1.0, 1.0, 1.0, 0.38);
+    mgraphics.set_line_width(0.6);
+    const rr = ptRadius + 1.3;
+    for (let k = 0; k < ringDots.length; k += 2) {
+      mgraphics.move_to(ringDots[k] + rr, ringDots[k + 1]);
+      mgraphics.arc(ringDots[k], ringDots[k + 1], rr, 0, Math.PI * 2);
+    }
+    mgraphics.stroke();
+  }
 
-  // 7. Highlight Selected & Hovered Point
-  const hovPos = (hoveredIndex >= 0 && hoveredIndex < points.length) ? normToScreen(points[hoveredIndex].x, points[hoveredIndex].y, lay) : null;
+  // 7. Highlight Selected & Hovered Point (at the group's dot when the point is grouped)
+  const hovPos = (hoveredIndex >= 0 && hoveredIndex < points.length) ? dotPosOf(hoveredIndex, lay) : null;
   if (hovPos && isPointVisible(points[hoveredIndex]) && (viewZoom <= 1.0 || isInPlotRect(hovPos[0], hovPos[1], lay, ptRadius + 2.5))) {
     const [hx, hy] = hovPos;
     xoSrc(1.0, 1.0, 1.0, 0.85);
@@ -2557,7 +2721,7 @@ function paint() {
     mgraphics.stroke();
   }
 
-  const selPos = (selectedIndex >= 0 && selectedIndex < points.length) ? normToScreen(points[selectedIndex].x, points[selectedIndex].y, lay) : null;
+  const selPos = (selectedIndex >= 0 && selectedIndex < points.length) ? dotPosOf(selectedIndex, lay) : null;
   if (selPos && isPointVisible(points[selectedIndex]) && (viewZoom <= 1.0 || isInPlotRect(selPos[0], selPos[1], lay, ptRadius + 4.5))) {
     const [sx, sy] = selPos;
     xoSrc(1.0, 1.0, 1.0, 0.22);
@@ -2588,8 +2752,10 @@ function paint() {
   if (hoveredToolbarIndex >= 0 && hoveredToolbarIndex < TOOLBAR_ITEMS.length) {
     hudText = TOOLBAR_ITEMS[hoveredToolbarIndex].title;
   } else if (hoveredIndex >= 0 && hoveredIndex < points.length) {
-    const hp = points[hoveredIndex];
-    hudText = `${hp.name || hp.category} (${Math.round(hp.durationMs)}ms)`;
+    // a hovered group shows the member the next click plays and how many more share the dot
+    const hg = gc.groupOf[hoveredIndex] >= 0 ? gc.groups[gc.groupOf[hoveredIndex]] : null;
+    const hp = hg && hg.members.length > 1 ? points[groupPeek(hg)] : points[hoveredIndex];
+    hudText = `${hp.name || hp.category} (${Math.round(hp.durationMs)}ms)` + (hg && hg.members.length > 1 ? ` +${hg.members.length - 1}` : "");
   }
   if (hudText) {
     const boxW = Math.min(mapW - 10, Math.max(72, hudText.length * 5.0 + 10));
@@ -3168,6 +3334,7 @@ function test_report() {
     audition: xoAudition,
     playhead: getPlayhead(),
     // The bridge returns at most 32 KB per call: only a sample of the map (names), plus the answers of test_pick / test_match
+    groups: groupReport(),
     mapCount: points.length,
     mapNames: points.slice(0, 120).map((pt) => String(pt.name).slice(0, 28)),
     pick: xoPick,
