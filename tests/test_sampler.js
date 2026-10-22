@@ -387,7 +387,7 @@ assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, "midi");
 assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, "midi -> main face");
 
 // --- face -> route -> hidden control wiring ---
-assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready");
+assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate");
 assertLink(lines, "obj-route-viz", 2, "obj-opendialog", 0, "browse -> file dialog");
 assertLink(lines, "obj-viz", 0, "obj-route-viz", 0, "main face outlet");
 assertLink(lines, "obj-viz-side", 0, "obj-route-viz", 0, "side face outlet");
@@ -400,7 +400,10 @@ assertLink(lines, "obj-route-viz", 4, "obj-prep-setwidth", 0, "setwidth_cmd -> p
 assertLink(lines, "obj-prep-setwidth", 0, "obj-thisdevice", 0, "prepend setwidth -> live.thisdevice");
 assertLink(lines, "obj-thisdevice", 0, "obj-msg-ready", 0, "thisdevice ready -> device_ready");
 assertLink(lines, "obj-msg-ready", 0, "obj-viz", 0, "device_ready -> main face");
-assert.strictEqual(byId.get("obj-route-viz").numoutlets, 8, "route-viz: 7 selectors + reject");
+assert.strictEqual(byId.get("obj-route-viz").numoutlets, 9, "route-viz: 8 selectors + reject");
+assert.strictEqual(byId.get("obj-prep-samprate").text, "prepend samp_rate");
+assertLink(lines, "obj-route-viz", 7, "obj-prep-samprate", 0, "samp_rate -> prepend");
+assertLink(lines, "obj-prep-samprate", 0, "obj-gen-in", 1, "samp_rate -> gen hub");
 assertLink(lines, "obj-route-viz", 0, "obj-route-param", 0, "param route");
 assertLink(lines, "obj-route-viz", 1, "obj-prep-replace", 0, "load_sample route");
 const routeKeys = byId.get("obj-route-param").text.split(/\s+/).slice(1);
@@ -508,7 +511,7 @@ for (const t of [mainText, sideText, inspText]) {
 // 4. Sandbox run of the three embedded face scripts
 // ============================================================================
 function makeSandbox(box) {
-    const ctx = { emitted: [], pokes: [], notified: 0, audioOn: false, channels: 2, cursor: { hide: 0, show: 0 } };
+    const ctx = { emitted: [], pokes: [], notified: 0, audioOn: false, channels: 2, fileRate: 44100, fileFrames: 44100, noLength: false, cursor: { hide: 0, show: 0 } };
     const noop = () => {};
     const sandbox = {
         mgraphics: {
@@ -527,7 +530,8 @@ function makeSandbox(box) {
         arrayfromargs: (args) => Array.from(args),
         Buffer: function (name) {
             this.name = String(name || "");
-            this.framecount = () => 44100;
+            this.framecount = () => ctx.fileFrames;
+            this.length = ctx.noLength ? undefined : () => ctx.fileFrames / ctx.fileRate * 1000;
             this.channelcount = () => ctx.channels;
             this.peek = (ch, start, len) => {
                 // Max throws on a channel the buffer does not have (a mono `replace` leaves 1 channel)
@@ -2639,6 +2643,73 @@ console.log("All Better Sampler tests passed!");
 }
 
 console.log("Spectral poly cap and tempo feed ok");
+
+// --- the file's sample rate: readouts use it, the gen gets it as samp_rate (and again with every dsp_ready) ---
+{
+    const rateOf = (c) => c.emitted.filter((a) => a[1] === "samp_rate").map((a) => a[2]);
+    for (const [fileRate, frames, ms] of [[48000, 96000, 2000], [44100, 44100, 1000], [32000, 16000, 500], [96000, 96000, 1000], [22050, 22050, 1000]]) {
+        const c = makeSandbox(mainViz);
+        const f = c.sb;
+        c.audioOn = true;
+        c.fileRate = fileRate;
+        c.fileFrames = frames;
+        f.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+        c.emitted.length = 0;
+        f.sample_loaded("/Users/test/Rate.wav");
+        assert.strictEqual(f.sampleRateHz, fileRate, `${fileRate} Hz file: the face learns its rate`);
+        assert.strictEqual(f.sampleDurationMs, ms, `${fileRate} Hz file: ${frames} frames last ${ms} ms (the footer readouts)`);
+        assert.deepStrictEqual(rateOf(c), [fileRate], `${fileRate} Hz file: samp_rate goes to the gen`);
+    }
+    // a rate the buffer reports with rounding noise snaps to the standard rate
+    {
+        const c = makeSandbox(mainViz);
+        c.audioOn = true;
+        c.fileRate = 48000;
+        c.fileFrames = 48000;
+        const f = c.sb;
+        f.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+        const b = new f.Buffer("#0-bsamp");
+        assert.strictEqual(f.bufferSampleRate({ length: () => 999.4 }, 48000), 48000);
+        assert.strictEqual(f.bufferSampleRate({ length: () => 0 }, 48000), 0, "unknown length -> 0");
+        assert.strictEqual(f.bufferSampleRate({}, 48000), 0, "no length() -> 0");
+    }
+    // unknown: samp_rate 0 (the gen plays at the DSP rate), readouts keep the 44.1 kHz assumption
+    {
+        const c = makeSandbox(mainViz);
+        c.audioOn = true;
+        c.noLength = true;
+        const f = c.sb;
+        f.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+        c.emitted.length = 0;
+        f.sample_loaded("/Users/test/Rate.wav");
+        assert.deepStrictEqual(rateOf(c), [0]);
+        assert.strictEqual(f.sampleDurationMs, 1000);
+    }
+    // only the main face talks to the gen
+    {
+        const c = makeSandbox(sideViz);
+        c.sb.sendSampleRate(48000);
+        assert.deepStrictEqual(rateOf(c), [], "the side face sends no samp_rate");
+    }
+    // dsp_ready: the rate is re-sent before the gen is asked to take every parameter again
+    {
+        const c = makeSandbox(mainViz);
+        c.audioOn = true;
+        c.fileRate = 48000;
+        c.fileFrames = 96000;
+        const f = c.sb;
+        f.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope");
+        f.sample_loaded("/Users/test/Rate.wav");
+        c.emitted.length = 0;
+        f.dspCreatedAt = Date.now();
+        f.dspCounter0 = -1;
+        f.dspConfirm();
+        const kinds = c.emitted.map((a) => a[1]);
+        assert.ok(kinds.indexOf("samp_rate") >= 0 && kinds.indexOf("samp_rate") < kinds.indexOf("dsp_ready"), "samp_rate precedes dsp_ready");
+        assert.strictEqual(c.emitted.find((a) => a[1] === "samp_rate")[2], 48000);
+    }
+}
+console.log("File sample rate feed ok");
 
 // --- loading stays light: the slicers' mono copy is lazy, chunked, cancelled by a new load ---
 {

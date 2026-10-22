@@ -19,6 +19,7 @@
  *   sliced   real MIDI (a clip with C1..G1 played by Live -> midiin -> midiparse -> face -> #0-bsvoices -> gen~):
  *            each key's voice playhead sits inside its own slice, whatever the engine pitch
  *   loop     Loop Off: a short sample ends and the output goes silent; Loop Fwd keeps sounding
+ *   cycles   Cycles timing: the playhead slope at Speed 100 % is the same at the root and an octave above it (about 1.0)
  *
  * Needs --wav2 (a short 220 Hz WAV, default /tmp/bs_test_short.wav) for the Loop test.
  *
@@ -310,6 +311,35 @@ waitGen("mode", 1);
     stopClip();
     sleep(400);
 }
-setParam("root_dyn", 0); setParam("mode", 0);
+// Cycles timing: pitch is locked to the key and time is independent, so at Speed 100 % (Loop Off) the playhead moves at the
+// sample's own speed whatever note is played. The loudest voice's playhead slope (telemetry slots 0..15, sample-seconds per
+// second) must be the same at the root and an octave above it, and about 1.0 (it was 0.35, and the audio followed it).
+setParam("mode", 1); setParam("freeze", 0); setParam("loop_mode", 0); setParam("root_dyn", 0);
+setParam("grain_motion", 100);
+waitGen("mode", 1); waitGen("loop_mode", 0);
+{
+    const frames = Number(evalLom('return new Buffer("#0-bsamp").framecount();'));
+    const fileSec = frames / 44100;   // the WAV made by scripts/vm_sampler.sh is 44.1 kHz
+    const slopeFor = (key) => {
+        const recMs = 1300;
+        playClip([{ pitch: key, start_time: 0, duration: 3.0, velocity: 100 }], 4, 120, recMs);
+        sleep(recMs + 600);
+        const rows = parseRec(recRead()).filter((r) => r.voice >= 0 && r.amp > 0.05);
+        stopClip();
+        sleep(500);
+        if (rows.length < 8) return { slope: NaN, n: rows.length };
+        const t0 = rows[0].t;
+        const body = rows.filter((r) => r.t >= t0 + 150 && r.t <= t0 + 900);
+        if (body.length < 6) return { slope: NaN, n: body.length };
+        const a = body[0], b = body[body.length - 1];
+        return { slope: (b.pos - a.pos) * fileSec / ((b.t - a.t) / 1000), n: body.length };
+    };
+    const rootKey = Math.round(genParams().root_note);
+    const sRoot = slopeFor(rootKey), sUp = slopeFor(rootKey + 12);
+    console.log(`Cycles playhead slope: root ${sRoot.slope.toFixed(3)} (${sRoot.n} rows), +12 ${sUp.slope.toFixed(3)} (${sUp.n} rows) sample-seconds per second`);
+    check(Math.abs(sUp.slope / sRoot.slope - 1) < 0.03, `Cycles timing: the playhead speed does not depend on the note (root ${sRoot.slope.toFixed(3)}, +12 st ${sUp.slope.toFixed(3)})`);
+    check(sUp.slope > 0.85 && sUp.slope < 1.15, `Cycles timing: Speed 100 % plays the sample at its own speed an octave above the root (slope ${sUp.slope.toFixed(3)}, want about 1.0)`);
+}
+setParam("root_dyn", 0); setParam("mode", 0); setParam("loop_mode", 1);
 
 finish();

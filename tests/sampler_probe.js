@@ -29,6 +29,7 @@ var cutMs = jsarguments.length > 2 ? Number(jsarguments[2]) : 0;
 //                 220 Hz (pitch curve = MIDI 57 exactly)
 //   clk=a-b       window (ms) of the click / ripple metrics (see clickReport)
 //   start=live    trigger from the setbuffers message instead of the harness event (CPU cases)
+//   src=marks44   the same 1 s marks sample at 44.1 kHz (44100 frames): needs `samp_rate 44100` in a 48 kHz harness
 //   src=marks48   Cycles timing test sample: 1 s (48000 frames) of a constant 220 Hz sine (pitch curve = MIDI 57) at a
 //                 low level with three loud Hann bursts (70 ms wide) centred at 0.20 / 0.45 / 0.80 s of the sample
 //   mk=1          report the burst envelope of the output: mkN (bursts found), mkT<k> (burst centre, ms from the start of
@@ -84,7 +85,7 @@ function testMidiAtFrame(f, frames, kind) {
 }
 function seedPitch() {
     if (!pitchName) return;
-    var kind = opt.pitch || (opt.src === "glide48" ? "glide" : (opt.src === "steps48" ? "steps" : ((opt.src === "flat48" || opt.src === "marks48") ? "flat" : "none")));
+    var kind = opt.pitch || (opt.src === "glide48" ? "glide" : (opt.src === "steps48" ? "steps" : ((opt.src === "flat48" || opt.src === "marks48" || opt.src === "marks44") ? "flat" : "none")));
     var vals = new Array(4096);
     for (var i = 0; i < 4096; i++) {
         // point i is position i / 4095 of the whole sample
@@ -130,21 +131,21 @@ function seedSample() {
     // Short dual-mono tone with a steep decay. Reverse can walk from the quiet
     // tail back into the attack inside one rendered window, and stereo width
     // comes from unison rather than from a baked-in L/R difference.
-    var wantFrames = (opt.src === "marks48") ? 48000 : 12000;
+    var wantFrames = (opt.src === "marks48") ? 48000 : ((opt.src === "marks44") ? 44100 : 12000);
     sb.send("sizeinsamps", wantFrames);
     var frames = sb.framecount() || wantFrames;
     if (frames > wantFrames) frames = wantFrames;
     var ch1 = new Array(frames);
     var ch2 = new Array(frames);
     var src = opt.src || "tone";
-    var sr0 = (src === "tone") ? 44100.0 : 48000.0;
+    var sr0 = (src === "tone" || src === "marks44") ? 44100.0 : 48000.0;
     var rdPhs = 0.0;
     for (var i = 0; i < frames; i++) {
         var t = i / sr0;
         var env = Math.min(1.0, i / 32.0) * Math.exp(-i / 3500.0);
-        if (src === "sus48" || src === "rich48" || src === "slices4" || src === "steps48" || src === "glide48" || src === "flat48" || src === "marks48") env = Math.min(1.0, i / 32.0);
+        if (src === "sus48" || src === "rich48" || src === "slices4" || src === "steps48" || src === "glide48" || src === "flat48" || src === "marks48" || src === "marks44") env = Math.min(1.0, i / 32.0);
         var w = 0;
-        if (src === "marks48") {
+        if (src === "marks48" || src === "marks44") {
             // constant 220 Hz sine, low level, three Hann bursts (centres 0.20 / 0.45 / 0.80 s, 70 ms wide)
             rdPhs += 2.0 * Math.PI * 220.0 / sr0;
             var mkAmp = 0.12;

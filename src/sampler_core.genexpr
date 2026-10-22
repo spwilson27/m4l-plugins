@@ -896,6 +896,7 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 	dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;
 	posMod = lfoSig * lfoPosAmt * 0.45 + modEnvPrev * menvPosAmt * 0.45;
 	speedUse = clip(speedIn, 0, 2);
+	srRat = peek(prm, 54);
 
 	// Pitch (same recipe as voice_proc, one frame late for the Mod Env)
 	curNote = mix(vNote, curNote, glideCoef);
@@ -953,7 +954,7 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 		initN = (reverseOn > 0.5) ? effE : effS;
 		liveOn = (peek(prm, 51) > 0.5) ? 1 : 0;
 		burstLeft = (liveOn > 0.5) ? 4 : 0;
-		headN = (liveOn > 0.5) ? (initN - dirSign * hopN * speedUse / nFr) : initN;
+		headN = (liveOn > 0.5) ? (initN - dirSign * hopN * speedUse * srRat / nFr) : initN;
 		hopCtr = hopN;
 	}
 
@@ -961,10 +962,10 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 	poke(sdat, nCur, sb + 55328 + 0);
 	poke(sdat, nCur * 0.5, sb + 55328 + 1);
 	poke(sdat, hopN, sb + 55328 + 2);
-	poke(sdat, pr, sb + 55328 + 3);
-	poke(sdat, fEff, sb + 55328 + 4);
+	poke(sdat, pr * srRat, sb + 55328 + 3);
+	poke(sdat, fEff * srRat, sb + 55328 + 4);
 	poke(sdat, peek(prm, 48), sb + 55328 + 5);
-	poke(sdat, rootHz * nCur / srVal, sb + 55328 + 6);
+	poke(sdat, rootHz * nCur / (srVal * srRat), sb + 55328 + 6);
 	poke(sdat, bendR, sb + 55328 + 7);
 	poke(sdat, reharm, sb + 55328 + 8);
 	poke(sdat, round(clip(peek(prm, 43), 0, 2)), sb + 55328 + 9);
@@ -1004,7 +1005,7 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 				} else {
 					hopCtr = 0;
 				}
-				stepF = hopN * ((onsetHold > 0.5) ? 1.0 : speedUse);
+				stepF = hopN * srRat * ((onsetHold > 0.5) ? 1.0 : speedUse);
 				cN = headN;
 				haNow = stepPrev;
 				if (freezeOn > 0.5) {
@@ -1384,6 +1385,10 @@ voice_proc(
 		+ lfoSig * lfoPitchAmt * 24.0
 		+ modEnv * menvPitchAmt * 24.0;
 	baseRatio = pow(2.0, clip(pitchSemiOffset, -48, 48) / 12.0);
+	// Source frames per output sample: a file at another rate than the DSP advances by its rate ratio too.
+	srRat = peek(prm, 54);
+	stepRatio = baseRatio * srRat;
+	srFile = srVal * srRat;
 
 	sigL = 0;
 	sigR = 0;
@@ -1408,7 +1413,7 @@ voice_proc(
 			playFrames = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm) * numFrames;
 		} else {
 			prevFrames = playheadNorm * numFrames;
-			playFrames = prevFrames + dirSign * baseRatio;
+			playFrames = prevFrames + dirSign * stepRatio;
 			if (effLoopMode > 1.5) {
 				if (isSlice || (playFrames >= effLStart)) {
 					playFrames = effLStart + wrap(playFrames - effLStart, 0, spanF * 2.0);
@@ -1448,7 +1453,7 @@ voice_proc(
 					pNext = playFrames;
 					readPos = playFrames + uFrac * unisonDetune * 28.0;
 				} else {
-					stepped = pCur + dirSign * baseRatio * detRatio;
+					stepped = pCur + dirSign * stepRatio * detRatio;
 					pNext = stepped;
 					readPos = stepped + uChorus + posModFrames;
 					if (effLoopMode > 1.5) {
@@ -1511,7 +1516,7 @@ voice_proc(
 			wmCy = isSlice ? wmSlice : ((loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0));
 			rloCy = isSlice ? effStartNorm : clip(loopStartNorm, effStartNorm, effEndNorm - 0.002);
 			rhiCy = isSlice ? effEndNorm : clip(loopEndNorm, rloCy + 0.002, effEndNorm);
-			stepCy = abs(grainMotion) / max(numFrames, 1);
+			stepCy = abs(grainMotion) * srRat / max(numFrames, 1);
 			hn, dn, dd = head_step(playheadNorm, scanDir, stepCy, effStartNorm, effEndNorm, rloCy, rhiCy, wmCy);
 			playheadNorm = hn;
 			scanDir = dn;
@@ -1521,7 +1526,7 @@ voice_proc(
 		}
 		anchorNorm = clip(playheadNorm + ((freezeOn > 0.5) ? 0.0 : posMod), effStartNorm, effEndNorm);
 		rootHz = 440.0 * pow(2.0, (root_at(pitchBuf, anchorNorm, rootMidi, peek(prm, 53)) - 69.0) / 12.0);
-		cycleLenF = clip(srVal / max(rootHz, 20.0), 32.0, 8192.0);
+		cycleLenF = clip(srFile / max(rootHz, 20.0), 32.0, 8192.0);
 		halfRead = cycleLenF * max(formSm, 1.0) * 0.5;
 		anchorTop = max(numFrames - 1 - halfRead, 0);
 		anchorF = max(numFrames - 1, 1) * 0.5;
@@ -1573,9 +1578,9 @@ voice_proc(
 				if (seamA || ((cyXf > 0.5) && seamB)) {
 					refA = seamA ? peek(vst, latB + 8 + u) : peek(vst, latB + u);
 					refL = seamA ? peek(vst, lenB + 8 + u) : peek(vst, lenB + u);
-					lat1 = cyc_len(pitchBuf, anchorF + 0.5 * cycleLenF, numFrames, rootMidi, peek(prm, 53), srVal);
-					latC = cyc_align(sampBuf, pitchBuf, anchorF, lat1, refA, refL, seamA ? 0.0 : 0.5, (anchorTop > halfRead) ? halfRead : anchorF, (anchorTop > halfRead) ? anchorTop : anchorF, maxIdxC, numFrames, rootMidi, peek(prm, 53), srVal);
-					latL = cyc_len(pitchBuf, latC + 0.5 * lat1, numFrames, rootMidi, peek(prm, 53), srVal);
+					lat1 = cyc_len(pitchBuf, anchorF + 0.5 * cycleLenF, numFrames, rootMidi, peek(prm, 53), srFile);
+					latC = cyc_align(sampBuf, pitchBuf, anchorF, lat1, refA, refL, seamA ? 0.0 : 0.5, (anchorTop > halfRead) ? halfRead : anchorF, (anchorTop > halfRead) ? anchorTop : anchorF, maxIdxC, numFrames, rootMidi, peek(prm, 53), srFile);
+					latL = cyc_len(pitchBuf, latC + 0.5 * lat1, numFrames, rootMidi, peek(prm, 53), srFile);
 					if (seamA) {
 						poke(vst, latC, latB + u);
 						poke(vst, latL, lenB + u);
@@ -1626,7 +1631,7 @@ voice_proc(
 			wmTx = isSlice ? wmSlice : ((loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0));
 			rloTx = isSlice ? effStartNorm : clip(loopStartNorm, effStartNorm, effEndNorm - 0.002);
 			rhiTx = isSlice ? effEndNorm : clip(loopEndNorm, rloTx + 0.002, effEndNorm);
-			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion * baseRatio) / max(numFrames, 1), effStartNorm, effEndNorm, rloTx, rhiTx, wmTx);
+			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion * stepRatio) / max(numFrames, 1), effStartNorm, effEndNorm, rloTx, rhiTx, wmTx);
 			playheadNorm = hn;
 			scanDir = dn;
 			if ((dd > 0.5) && (wmTx < 0.5)) {
@@ -1658,7 +1663,7 @@ voice_proc(
 		// Each grain reads around the playhead position latched when its window starts (plus half a grain of scan,
 		// so the grain is centred on where the playhead is at the middle of its window). Reading around the live
 		// playhead added the scan speed to the grain's own read speed: natural speed sounded an octave high.
-		leadF = (freezeOn > 0.5) ? 0.0 : (scanDir * abs(grainMotion * baseRatio) * 0.5 * gLenSamps);
+		leadF = (freezeOn > 0.5) ? 0.0 : (scanDir * abs(grainMotion * stepRatio) * 0.5 * gLenSamps);
 		if (needInit) {
 			poke(vst, centerF, latB);
 			poke(vst, centerF, latB + 1);
@@ -1689,8 +1694,8 @@ voice_proc(
 				uChorus = sin(6.28318530718 * fract(driftPhs * 1.37 + u * 0.125 + vSeed)) * unisonDetune * 18.0;
 				sprA = (fract(rndA + u * 0.173 + vSeed * 0.31) - 0.5) * spraySpanF;
 				sprB = (fract(rndB + u * 0.271 + vSeed * 0.47) - 0.5) * spraySpanF;
-				travelA = (grainPhs - 0.5) * gLenSamps * dirSign * detRatio;
-				travelB = (grainPhsB - 0.5) * gLenSamps * dirSign * detRatio;
+				travelA = (grainPhs - 0.5) * gLenSamps * srRat * dirSign * detRatio;
+				travelB = (grainPhsB - 0.5) * gLenSamps * srRat * dirSign * detRatio;
 				rawA = cenA + uChorus + travelA + sprA;
 				rawB = cenB + uChorus + travelB + sprB;
 				idxA = (wrapGrain > 0.5) ? (startF + wrap(rawA - startF, 0, spanGF)) : clip(rawA, startF, endF);
@@ -1732,7 +1737,7 @@ voice_proc(
 			wmFr = isSlice ? wmSlice : ((loopMode > 1.5) ? 2 : ((loopMode > 0.5) ? 1 : 0));
 			rloF = isSlice ? effStartNorm : clip(loopStartNorm, effStartNorm, effEndNorm - 0.002);
 			rhiF = isSlice ? effEndNorm : clip(loopEndNorm, rloF + 0.002, effEndNorm);
-			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion) / max(numFrames, 1), effStartNorm, effEndNorm, rloF, rhiF, wmFr);
+			hn, dn, dd = head_step(playheadNorm, scanDir, abs(grainMotion) * srRat / max(numFrames, 1), effStartNorm, effEndNorm, rloF, rhiF, wmFr);
 			playheadNorm = hn;
 			scanDir = dn;
 			if ((dd > 0.5) && (wmFr < 0.5)) {
@@ -1764,10 +1769,10 @@ voice_proc(
 						uIdx = spawnCnt % uCount;
 						uFrac, detRatio = unison_spread(uIdx, uCount, unisonDetune, driftPhs, vSeed);
 						pan = clip(uFrac * unisonWidth + vPanSeed * 0.15 + (rB - 0.5) * 2.0 * clip(frMot, 0, 1), -1, 1);
-						jitterP = (rA - 0.5) * 2.0 * frMot * frLenS * abs(baseRatio);
+						jitterP = (rA - 0.5) * 2.0 * frMot * frLenS * abs(stepRatio);
 						pStart = baseP + jitterP;
 						if ((frRepInit < 0.5) && (rp > 0)) {
-							pStart = pStart + dsel * rp * frLenS * abs(baseRatio);
+							pStart = pStart + dsel * rp * frLenS * abs(stepRatio);
 						}
 						b = slot * 10;
 						poke(vst, 1, gB + b + 0);
@@ -1778,7 +1783,7 @@ voice_proc(
 						poke(vst, sqrt(0.5 * (1.0 - pan)) * gScale, gB + b + 5);
 						poke(vst, sqrt(0.5 * (1.0 + pan)) * gScale, gB + b + 6);
 						poke(vst, frPk, gB + b + 7);
-						poke(vst, abs(baseRatio), gB + b + 8);
+						poke(vst, abs(stepRatio), gB + b + 8);
 						spawnCnt = spawnCnt + 1;
 					}
 				}
@@ -1799,7 +1804,7 @@ voice_proc(
 						poke(vst, 0, gB + b);
 					} else {
 						wG = fr_win(ageG / lenG, peek(vst, gB + b + 7));
-						rateG = peek(vst, gB + b + 4) * ((frLatch > 0.5) ? peek(vst, gB + b + 8) : abs(baseRatio));
+						rateG = peek(vst, gB + b + 4) * ((frLatch > 0.5) ? peek(vst, gB + b + 8) : abs(stepRatio));
 						rpos = peek(vst, gB + b + 3) + rateG * ageG;
 						if ((rpos >= startF) && (rpos <= endF)) {
 							gl, gr = peek_lr(sampBuf, rpos, maxIdxF);
@@ -1970,6 +1975,8 @@ Param fr_latch(1, min=0, max=1);
 Param fr_repeat_init(0, min=0, max=1);
 Param fr_survive(0, min=0, max=1);
 Param tempo(120, min=20, max=999);
+// Sample rate (Hz) of the loaded file, 0 = unknown. Every playhead step is scaled by file rate / DSP rate (prm 54).
+Param samp_rate(0, min=0, max=400000);
 
 // Unison & Voicing
 Param unison_voices(1, min=1, max=8);
@@ -2078,6 +2085,7 @@ numFrames = max(dim(samp), 1);
 //   40 sp_char, 41 sp_shift, 42 sp_bend, 43 sp_quant, 44 sp_key, 45 sp_scale, 46 sp_quant_amt,
 //   47 sp_onsets, 48 sp_formant_on, 49 sp_dispersion, 50 sp_quality, 51 sp_live, 52 sp_rel_formant,
 //   53 effective Analyzed Root Key flag (root_dyn on and #0-bspitch bound)
+//   54 file rate / DSP rate (samp_rate): source frames per output sample at pitch ratio 1
 poke(prm, sliced, 0);
 poke(prm, rp_char, 1);
 poke(prm, rp_dist, 2);
@@ -2119,6 +2127,8 @@ poke(prm, sp_rel_formant, 52);
 // Analyzed Root Key: on only with root_dyn set and a bound pitch curve (dim >= 2); else every engine uses root_note.
 rootDynOn = ((root_dyn > 0.5) && (dim(pitch) >= 2)) ? 1 : 0;
 poke(prm, rootDynOn, 53);
+srRatio = (samp_rate > 1000) ? clip(samp_rate / srVal, 0.05, 20.0) : 1.0;
+poke(prm, srRatio, 54);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H
 prevLfoPhs = lfoPhs;

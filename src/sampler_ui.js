@@ -222,6 +222,30 @@ function peakOf(data) {
     return pk;
 }
 
+// The loaded file's sample rate in Hz from the buffer (frames / length in ms), snapped to the usual rates; 0 = unknown
+var COMMON_SAMPLE_RATES = [8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000, 176400, 192000];
+function bufferSampleRate(b, frames) {
+    try {
+        var ms = (typeof b.length === "function") ? Number(b.length()) : 0;
+        if (!(ms > 0) || !(frames > 0)) return 0;
+        var raw = frames / (ms / 1000);
+        for (var i = 0; i < COMMON_SAMPLE_RATES.length; i++) {
+            if (Math.abs(raw / COMMON_SAMPLE_RATES[i] - 1) < 0.003) return COMMON_SAMPLE_RATES[i];
+        }
+        return (raw >= 1000 && raw <= 400000) ? Math.round(raw) : 0;
+    } catch (_) {
+        return 0;
+    }
+}
+
+// File rate to the gen (0 = unknown: it plays at the DSP rate). Re-sent with every dsp_ready, because a gen that is
+// still compiling drops messages.
+var lastFileRate = 0;
+function sendSampleRate(rate) {
+    if (rate !== undefined) lastFileRate = rate;
+    if (faceRegion === "main") outlet(0, "samp_rate", lastFileRate);
+}
+
 function refreshWaveformFromBuffer() {
     if (!sampBufName || typeof Buffer === "undefined") return;
     try {
@@ -234,7 +258,12 @@ function refreshWaveformFromBuffer() {
         // `replace` resizes the buffer to the file's channel count, so a mono file leaves 1 channel
         var chans = (typeof b.channelcount === "function") ? Math.max(1, b.channelcount()) : 2;
         sampleFrames = frames;
-        sampleDurationMs = Math.round((frames / 44.1));
+        // The file's own rate (buffer~ takes it from the file): readouts and the slicers use it, the gen gets it as
+        // `samp_rate` and scales every read step by file rate / DSP rate (see sendSampleRate).
+        var fileRate = bufferSampleRate(b, frames);
+        sampleRateHz = fileRate > 0 ? fileRate : 44100;
+        sampleDurationMs = Math.round(frames / sampleRateHz * 1000);
+        sendSampleRate(fileRate);
         var step = Math.max(1, Math.floor(frames / WAVE_BINS));
         var readLen = Math.min(step, 4096);
         var maxEnergy = 0.0;
@@ -258,7 +287,7 @@ function refreshWaveformFromBuffer() {
             if (winLen >= 256) {
                 var monoWin = b.peek(1, midFrame, winLen);
                 if (monoWin && monoWin.length >= 256) {
-                    detectedRootMidi = estimateRootMidiNote(monoWin, 44100);
+                    detectedRootMidi = estimateRootMidiNote(monoWin, sampleRateHz);
                 }
             }
             // The slicers' mono copy is built only when Onsets / Pitches need it (see requestSliceMono)
@@ -696,9 +725,10 @@ function dspConfirm() {
         trace("dsp", "ready after " + (Date.now() - dspCreatedAt) + " ms");
         // The last re-send went out while the gen was still compiling and was dropped; send every parameter once more
         // now that it runs, and once again after it has settled.
+        sendSampleRate();
         outlet(0, "dsp_ready", "bang");
         if (typeof Task !== "undefined") {
-            if (!dspSettleTask) dspSettleTask = new Task(function () { outlet(0, "dsp_ready", "bang"); });
+            if (!dspSettleTask) dspSettleTask = new Task(function () { sendSampleRate(); outlet(0, "dsp_ready", "bang"); });
             dspSettleTask.schedule(DSP_SETTLE_MS);
         }
         mgraphics.redraw();
@@ -710,6 +740,7 @@ function dspConfirm() {
         mgraphics.redraw();
         return;
     }
+    sendSampleRate();
     outlet(0, "dsp_ready", "bang");
     if (dspCounter0 < 0) dspCounter0 = c;
     if (typeof Task === "undefined") return;

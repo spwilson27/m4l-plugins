@@ -1001,6 +1001,9 @@ def build_patcher():
                  "patching_rect": [780.0, 632.0, 82.0, 20.0], "text": "device_ready"}},
         {"box": {"id": "obj-prep-tempo", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1, "outlettype": [""],
                  "patching_rect": [900.0, 576.0, 92.0, 20.0], "text": "prepend tempo"}},
+        # The loaded file's sample rate (Hz, 0 = unknown): the gen scales every read step by file rate / DSP rate
+        {"box": {"id": "obj-prep-samprate", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1, "outlettype": [""],
+                 "patching_rect": [1000.0, 576.0, 110.0, 20.0], "text": "prepend samp_rate"}},
         # Debug entry point for the MCP bridge: messnamed("#0-bsdebug", "dsp_diag") (see src/sampler_ui.js)
         {"box": {"id": "obj-debug-recv", "maxclass": "newobj", "numinlets": 0, "numoutlets": 1, "outlettype": [""],
                  "patching_rect": [900.0, 632.0, 110.0, 20.0], "text": "receive #0-bsdebug"}},
@@ -1043,11 +1046,11 @@ def build_patcher():
             "box": {
                 "id": "obj-route-viz",
                 "maxclass": "newobj",
-                "numinlets": 8,
-                "numoutlets": 8,
-                "outlettype": ["", "", "", "", "", "", "", ""],
+                "numinlets": 9,
+                "numoutlets": 9,
+                "outlettype": ["", "", "", "", "", "", "", "", ""],
                 "patching_rect": [160.0, 555.0, 310.0, 20.0],
-                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready",
+                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate",
             }
         },
         {
@@ -1091,6 +1094,8 @@ def build_patcher():
         {"patchline": {"source": ["obj-route-viz", 6], "destination": ["obj-dsp-resend", 0]}},
         {"patchline": {"source": ["obj-dsp-resend", 1], "destination": ["obj-msg-gen-buf", 0]}},
         {"patchline": {"source": ["obj-prep-tempo", 0], "destination": ["obj-gen-in", 1]}},
+        {"patchline": {"source": ["obj-route-viz", 7], "destination": ["obj-prep-samprate", 0]}},
+        {"patchline": {"source": ["obj-prep-samprate", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
         {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ready", 0]}},
         {"patchline": {"source": ["obj-msg-ready", 0], "destination": ["obj-viz", 0]}},

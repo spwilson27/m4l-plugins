@@ -9,6 +9,7 @@ Environment:
   SAMPLER_DUMP=1        print every metric of every case
   SAMPLER_GEN=<path>    gen source to test instead of src/sampler_core.genexpr (e.g. the old core, to
                         show that the new assertions fail against it)
+  SAMPLER_CYCTIME_ONLY=1  with SAMPLER_CASE='^ct': the Cycles timing cases and their checks only (run_cyctime_checks)
   SAMPLER_CPU=0         skip the CPU (real-time factor) measurement
   SAMPLER_CPU_ENGINES=<regex>  measure only the matching CPU_ENGINES labels
 
@@ -148,7 +149,7 @@ CASES = [
     {
         "name": "cycles_formant",
         "dur": 600,
-        "params": "mode 1, formant 7, grain_motion 1.0, unison_voices 2, filt_on 1, filt_cutoff 12000, out_gain 0",
+        "params": "mode 1, formant 7, grain_motion 0.0875, unison_voices 2, filt_on 1, filt_cutoff 12000, out_gain 0",
     },
     {
         "name": "textures_cloud",
@@ -242,7 +243,7 @@ R48 = "src=rich48 notes=57 "
 
 # Every engine sounds
 add("eng_repitch", P("mode 0"), 500, opts=T48)
-add("eng_cycles", P("mode 1"), 500, opts=S48)
+add("eng_cycles", P("mode 1, grain_motion 0.0875"), 500, opts=S48)
 add("eng_textures", P("mode 2, grain_size 60"), 500, opts=S48)
 add("eng_spectral", P("mode 3"), 700, opts=T48 + "ana=150")
 add("eng_spectral_q0", P("mode 3, sp_quality 0"), 700, opts=T48 + "ana=150")
@@ -303,8 +304,8 @@ add("cy_r_odd", P(CYB + ", cy_char 1, cy_split -1"), 500, opts=R48)
 add("cy_r_even", P(CYB + ", cy_char 1, cy_split 1"), 500, opts=R48)
 add("cy_ph_oct", P(CYB + ", cy_char 2, cy_mod 0.3"), 500, opts="src=sus48 notes=69 ")
 add("cy_xf1_root", P(CYB + ", cy_xfade 1"), 500, opts=S48)
-add("cy_xf0", P("mode 1, grain_motion 2.0, cy_xfade 0"), 500, opts=T48)
-add("cy_xf1", P("mode 1, grain_motion 2.0, cy_xfade 1"), 500, opts=T48)
+add("cy_xf0", P("mode 1, grain_motion 0.175, cy_xfade 0"), 500, opts=T48)
+add("cy_xf1", P("mode 1, grain_motion 0.175, cy_xfade 1"), 500, opts=T48)
 
 # Spectral
 add("sp_n", P("mode 3"), 800, opts=T48 + "ana=150")
@@ -379,10 +380,10 @@ add("keys_repitch_trim", P("mode 0, sliced 1, slice_play 2, root_note 60, samp_s
     opts="src=slices4 ana=0 sstart=0.25 send=0.75 ", seq={"keys": [36, 37, 38], "step": 150, "hold": 120, "skip": 40})
 
 # Loop Off (Single): the sample plays once and then the voice is silent, in every engine. Loop Fwd keeps sounding.
-# The sample is 12000 frames = 250 ms at natural speed; Cycles scans at most 0.7 sample per second.
+# The sample is 12000 frames = 250 ms at natural speed; Cycles runs at Speed 17.5 % (real time x Speed), so it lasts 1.43 s.
 for _en, _e, _gp in SEQ_ENGINES:
     _dur, _cut = (2100, 1800) if _en == "cycles" else (900, 550)
-    _mo = ", grain_motion 2.0" if _en == "cycles" else ""
+    _mo = ", grain_motion 0.175" if _en == "cycles" else ""
     for _lm, _tag in ((0, "off"), (1, "fwd")):
         add(f"lp_{_en}_{_tag}", P(f"mode {_e}, {_gp}loop_mode {_lm}, loop_start 0.05, loop_end 0.95, root_note 57{_mo}"), _dur,
             cut_ms=_cut, opts=S48)
@@ -522,7 +523,9 @@ rd_add("rd_rp_zero", P("mode 0, root_note 57, root_dyn 1"), 400,
 CD_WAVES = {"sine": (0.0, 0.0), "saw": (0.5, 1 / 3.0), "pulse": (0.7071, 1 / 3.0)}
 CD_CHARS = {0: "pulse", 1: "partials", 2: "phase"}
 CD_CASES = []     # (name, kind, wave, char, xfade)
-# Single mode, Motion 2: the playhead scans 0.7 of the sample per second, thirds end at 476 / 952 ms
+# Single mode: Speed 17.5 % moves the playhead 0.175 s of source per second, i.e. 0.7 of this 0.25 s sample per second
+# (Speed is real time x motion, so this is the same slow scan the old 0.35 / Motion-2 rate gave): thirds end at 476 / 952 ms
+CD_SCAN_MOTION = 0.175
 CD_SCAN_SEGS = "60-416,536-892,1012-1368"
 CD_SCAN_CLK = "50-1380"
 # Sliced (slice 0..1, Motion 0.5 = half the natural speed): thirds end at 167 / 333 ms of 500
@@ -535,16 +538,16 @@ def cd_add(kind, wave, char, xf, root_dyn=1, pos=None, steps="steps"):
     base = f"mode 1, cy_char {char}, cy_xfade {xf}, root_dyn {root_dyn}"
     src = f"src={steps}48 wave={wave} notes=60 harm=261.63 cen=261.63 "
     if kind == "scan":
-        add(tag, P(base + ", root_note 57, grain_motion 2.0"), 1450, opts=src + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
+        add(tag, P(base + f", root_note 57, grain_motion {CD_SCAN_MOTION}"), 1450, opts=src + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
     elif kind == "glide":
-        add(tag, P(base + ", root_note 57, grain_motion 2.0"), 1450, opts=src.replace("steps", "glide") + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
+        add(tag, P(base + f", root_note 57, grain_motion {CD_SCAN_MOTION}"), 1450, opts=src.replace("steps", "glide") + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
     elif kind == "frozen":
         add(tag, P(base + f", root_note 57, freeze 1, play_pos {FRZ[pos]:.4f}"), 600, opts=src + "segs=250-550 ana=250 clk=150-590")
     elif kind == "sliced":
         add(tag, P(base + ", root_note 60, sliced 1, slice_play 0, grain_motion 0.5"), 520,
             opts=src.replace("notes=60", "notes=38") + f"slice=0.0:1.0 segs={CD_SLICE_SEGS} clk={CD_SLICE_CLK}")
     elif kind == "const":
-        add(tag, P(base + ", root_note 57, grain_motion 2.0"), 1450, opts=src.replace("steps", "flat") + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
+        add(tag, P(base + f", root_note 57, grain_motion {CD_SCAN_MOTION}"), 1450, opts=src.replace("steps", "flat") + f"segs={CD_SCAN_SEGS} clk={CD_SCAN_CLK}")
     CD_CASES.append((tag, kind, wave, char, xf, pos))
 
 
@@ -584,7 +587,7 @@ CT_BURSTS = (0.20, 0.45, 0.80)
 CT_CASES = []   # (name, expectation dict)
 
 
-def ct_timeline(speed, rev=False, lo=0.0, hi=1.0, loop=None, start=None, total=1.25, dt=0.0001):
+def ct_timeline(speed, rev=False, lo=0.0, hi=1.0, loop=None, start=None, total=1.25, dt=0.0001, pingpong=False):
     """Simulate the playhead (source seconds, 1 s sample): burst-centre crossing times (ms), the time the head stops
     (ms, or None when it loops) and the time of the first wrap / stop (ms)."""
     pos = (hi if rev else lo) if start is None else start
@@ -596,8 +599,12 @@ def ct_timeline(speed, rev=False, lo=0.0, hi=1.0, loop=None, start=None, total=1
         if loop and ((direction > 0 and new >= loop[1]) or (direction < 0 and new <= loop[0])):
             if first_wrap is None:
                 first_wrap = t * 1000.0
-            new = loop[0] + (new - loop[1]) if direction > 0 else loop[1] - (loop[0] - new)
-            wrapped = True
+            if pingpong:
+                new = loop[1] - (new - loop[1]) if direction > 0 else loop[0] + (loop[0] - new)
+                direction = -direction
+            else:
+                new = loop[0] + (new - loop[1]) if direction > 0 else loop[1] - (loop[0] - new)
+                wrapped = True
         elif new >= hi or new <= lo:
             stop = t * 1000.0
             first_wrap = first_wrap if first_wrap is not None else stop
@@ -617,29 +624,37 @@ def ct_gap_window(hits, stop, lo_ms=30.0, guard=50.0, total=1100.0):
     return best
 
 
-def ct_add(tag, note, dyn, speed, rev=0, loop=None, slc=None, xf=0, dur=None):
-    """loop = (a, b) normalised Fwd loop region; slc = (a, b, slice_play) for Sliced (key 38 plays the slice)."""
-    name = f"ct_{tag}_n{note}_{'dyn' if dyn else 'off'}" + (f"_x{xf}" if xf else "")
+
+CT_ENG_NAME = {0: "rp", 1: "cy", 2: "tx", 3: "sp", 4: "fr"}
+
+
+def ct_add(tag, note, dyn, speed, rev=0, loop=None, slc=None, xf=0, dur=None, pingpong=False, eng=1, fsr=False, bursts="abs", ref=None):
+    """loop = (a, b) normalised Fwd loop region; slc = (a, b, slice_play) for Sliced (key 38 plays the slice).
+    eng = engine (mode index); fsr = the 1 s sample is a 44.1 kHz file (src=marks44, samp_rate 44100), so the
+    timeline is the same as for the 48 kHz file; bursts = "abs" (burst times from the timeline), "ref" (against the
+    48 kHz case `ref`, for engines with latency) or None."""
+    name = f"ct{CT_ENG_NAME[eng] if eng != 1 else ''}{'r' if fsr else ''}_{tag}_n{note}_{'dyn' if dyn else 'off'}" + (f"_x{xf}" if xf else "")
     extra = ""
     if loop:
-        extra += f", loop_mode 1, loop_start {loop[0]}, loop_end {loop[1]}, loop_xfade 0"
+        extra += f", loop_mode {2 if pingpong else 1}, loop_start {loop[0]}, loop_end {loop[1]}, loop_xfade 0"
     if slc:
         extra += f", sliced 1, slice_play {slc[2]}"
-    params = P(f"mode 1, cy_char 0, cy_xfade {xf}, root_dyn {dyn}, root_note 57, grain_motion {speed}, reverse {rev}{extra}")
+    params = P(f"mode {eng}, cy_char 0, cy_xfade {xf}, root_dyn {dyn}, root_note 57, grain_motion {speed}, reverse {rev}{extra}"
+               + (f", samp_rate 44100" if fsr else ""))
     if slc:
         a, b, play = slc
         lo, hi = a, (b if play in (0, 2, 3) else 1.0)
         tl = ct_timeline(speed, bool(rev), lo, hi, loop=(a, b) if play >= 2 else None)
     else:
-        tl = ct_timeline(speed, bool(rev), 0.0, 1.0, loop=loop)
+        tl = ct_timeline(speed, bool(rev), 0.0, 1.0, loop=loop, pingpong=pingpong)
     hits, stop, wrap = tl
     horizon = (stop + 250.0) if stop else 1250.0
     if speed == 0:
         hits, stop, wrap, horizon = [], None, 600.0, 600.0
     last = (stop or horizon) - 60.0
     snaps = [ms for ms in range(60, int(((wrap if wrap else horizon) - 50.0)), 60)][:12]
-    gw = ct_gap_window(hits, stop, total=horizon - 100.0) if True else None
-    opts = f"src=marks48 notes={38 if slc else note} mk=1 harm=220 segs={gw[0]:.0f}-{gw[1]:.0f} "
+    gw = ct_gap_window(hits, stop, total=horizon - 100.0)
+    opts = f"src={'marks44' if fsr else 'marks48'} notes={38 if slc else note} mk=1 harm=220 segs={gw[0]:.0f}-{gw[1]:.0f} "
     if slc:
         opts += f"slice={slc[0]}:{slc[1]} "
     dur = int(horizon)
@@ -649,7 +664,8 @@ def ct_add(tag, note, dyn, speed, rev=0, loop=None, slc=None, xf=0, dur=None):
     CASES.append(case)
     hz = 220.0 if slc else 220.0 * 2.0 ** ((note - 57) / 12.0)
     CT_CASES.append((name, dict(hits=hits, stop=stop, speed=speed, rev=rev, hz=hz, snaps=snaps, wrap=wrap,
-                                tag=tag, note=note)))
+                                tag=tag, note=note, frames=44100 if fsr else 48000, bursts=bursts, ref=ref)))
+    return name
 
 
 for _dyn in (1, 0):
@@ -660,12 +676,36 @@ for _dyn in (1, 0):
         ct_add("hold0", _n, _dyn, 0.0)
         ct_add("rev100", _n, _dyn, 1.0, rev=1)
         ct_add("loop100", _n, _dyn, 1.0, loop=(0.3, 0.6))
+        ct_add("pingpong100", _n, _dyn, 1.0, loop=(0.3, 0.6), pingpong=True)
     ct_add("fwd200", 64, _dyn, 2.0)
     ct_add("slice100", 57, _dyn, 1.0, slc=(0.1, 0.6, 0))
     ct_add("sliceloop100", 57, _dyn, 1.0, slc=(0.3, 0.6, 2))
 for _n in (69, 45):
     ct_add("fwd100", _n, 1, 1.0, xf=1)
 ct_add("fwd50", 69, 1, 0.5, xf=1)
+
+# Files whose sample rate differs from Live's (a 44.1 kHz file in the 48 kHz harness, samp_rate 44100): the playhead
+# must run in file time, so bursts, playhead slope, end and pitch are those of the 48 kHz file, in every engine.
+for _dyn in (1, 0):
+    for _n in (57, 69):
+        ct_add("fwd100", _n, _dyn, 1.0, fsr=True)
+ct_add("fwd50", 57, 1, 0.5, fsr=True)
+ct_add("loop100", 57, 1, 1.0, loop=(0.3, 0.6), fsr=True)
+ct_add("slice100", 57, 1, 1.0, slc=(0.1, 0.6, 0), fsr=True)
+ct_add("sliceloop100", 57, 1, 1.0, slc=(0.3, 0.6, 2), fsr=True)
+ct_add("fwd100", 69, 1, 1.0, xf=1, fsr=True)
+for _eng in (0, 2, 3, 4):
+    _abs = "abs" if _eng == 0 else "ref"
+    # (Repitch, Textures and Fragments move at Speed x pitch ratio, so only the root note is compared.)
+    for _n in (57,):
+        _r = ct_add("fwd100", _n, 0, 1.0, eng=_eng, bursts=None) if _eng else None
+        ct_add("fwd100", _n, 0, 1.0, eng=_eng, fsr=True, bursts=_abs, ref=_r)
+    _r = ct_add("loop100", 57, 0, 1.0, loop=(0.3, 0.6), eng=_eng, bursts=None) if _eng else None
+    ct_add("loop100", 57, 0, 1.0, loop=(0.3, 0.6), eng=_eng, fsr=True, bursts=_abs, ref=_r)
+    _r = ct_add("slice100", 57, 0, 1.0, slc=(0.1, 0.6, 0), eng=_eng, bursts=None) if _eng else None
+    ct_add("slice100", 57, 0, 1.0, slc=(0.1, 0.6, 0), eng=_eng, fsr=True, bursts=_abs, ref=_r)
+ct_add("rev100", 57, 0, 1.0, rev=1, eng=0, fsr=True)
+ct_add("pingpong100", 57, 0, 1.0, loop=(0.3, 0.6), pingpong=True, eng=0, fsr=True)
 
 
 def run_with_retry(gen_code, case):
@@ -742,7 +782,7 @@ def main():
         print("Cycles + Analyzed Root Key checks passed.")
         return
     if only and os.environ.get("SAMPLER_CYCTIME_ONLY"):
-        # SAMPLER_CASE='^ct_' SAMPLER_CYCTIME_ONLY=1: just the Cycles timing cases and their checks
+        # SAMPLER_CASE='^ct' SAMPLER_CYCTIME_ONLY=1: just the Cycles timing cases and their checks
         run_cyctime_checks(results)
         if FAILS:
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
@@ -994,7 +1034,21 @@ def run_cyctime_checks(R):
         r = R[name]
         label = f"{name} (note {ex['note']}, speed {ex['speed']}, {ex['tag']})"
         hits = ex["hits"]
-        if ex["speed"] > 0:
+        pts0 = [(ms, r[f"snp{ms}Pos"]) for ms in ex["snaps"] if r.get(f"snp{ms}Pos", -1) >= 0]
+        slope0 = ((pts0[-1][1] - pts0[0][1]) / ((pts0[-1][0] - pts0[0][0]) / 1000.0)) if len(pts0) >= 2 else float("nan")
+        print(f"  {name}: bursts {[round(r[f'mkT{k}'], 1) for k in range(int(r.get('mkN', 0)))] if ex['speed'] > 0 else '-'} "
+              f"want {[round(h, 1) for h in hits]}, end {r.get('mkEnd', -1):.0f} (want {ex['stop'] and round(ex['stop'])}), "
+              f"slope {slope0:.3f}, pitch {r['segHz0']:.1f} Hz (want {ex['hz']:.1f})")
+        if ex["speed"] > 0 and ex["bursts"] == "ref":
+            rr = R.get(ex["ref"])
+            if rr is not None:
+                got = [r[f"mkT{k}"] for k in range(int(r.get("mkN", 0)))]
+                want = [rr[f"mkT{k}"] for k in range(int(rr.get("mkN", 0)))]
+                check(len(got) == len(want) and all(abs(g - w) <= 8.0 for g, w in zip(got, want)),
+                      f"{label}: bursts {[round(g, 1) for g in got]} ms, the 48 kHz file ({ex['ref']}) gives {[round(w, 1) for w in want]} ms")
+                check(abs(r.get("mkEnd", -1) - rr.get("mkEnd", -1)) <= 20.0,
+                      f"{label}: output ends at {r.get('mkEnd', -1):.1f} ms, the 48 kHz file gives {rr.get('mkEnd', -1):.1f} ms")
+        if ex["speed"] > 0 and ex["bursts"] == "abs":
             n_want = len(hits)
             got = [r[f"mkT{k}"] for k in range(int(r.get("mkN", 0)))]
             check(len(got) == n_want, f"{label}: {n_want} bursts expected, found {len(got)} at {[round(g, 1) for g in got]} (want {[round(h, 1) for h in hits]})")
@@ -1014,10 +1068,8 @@ def run_cyctime_checks(R):
             else:
                 check(abs(slope / want - 1.0) <= 0.02, f"{label}: playhead slope {slope:.3f} sample/s, want {want:.3f} (+-2 %)")
         cents = 1200.0 * math.log2(max(r["segHz0"], 1e-9) / ex["hz"])
-        check(abs(cents) <= 12, f"{label}: pitch {r['segHz0']:.2f} Hz, want {ex['hz']:.2f} Hz ({cents:+.0f} ct)")
-        check(r["scopeFrames"] == 48000, f"{label}: the 48000-frame sample must be bound ({r['scopeFrames']})")
-    if os.environ.get("SAMPLER_DUMP"):
-        pass
+        check(abs(cents) <= (60 if (ex["tag"] == "pingpong100" or "cttx" in name) else 12), f"{label}: pitch {r['segHz0']:.2f} Hz, want {ex['hz']:.2f} Hz ({cents:+.0f} ct)")
+        check(r["scopeFrames"] == ex["frames"], f"{label}: the {ex['frames']}-frame sample must be bound ({r['scopeFrames']})")
 
 
 def run_seq_checks(R):
