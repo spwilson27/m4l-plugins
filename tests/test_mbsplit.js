@@ -10,7 +10,7 @@
  *  3. Ableton LOM path parsing & Nested Rack ("chain within a chain") scoping
  *  4. Automatic band creation per detected instance (1 -> 2 -> 3 -> 4 bands, and cleanup on delete)
  *  5. Top-Right Volume Slider (-inf to +18 dB) & Bottom-Right Clickable Link Status Toggle
- *  6. GenExpr ordering & lexer safety, .amxd binary header, #0-splitscope @samps 8224 isolation,
+ *  6. GenExpr ordering & lexer safety, .amxd binary header, ---mbsplitscope @samps 8224 isolation,
  *     removal of 2B/3B/4B & Phase buttons, and zero widget overlap
  */
 
@@ -23,6 +23,7 @@ const ROOT = path.resolve(__dirname, "..");
 const GEN_PATH = path.join(ROOT, "src", "mbsplit_core.genexpr");
 const CONFIG_PATH = path.join(ROOT, "src", "mbsplit_config.js");
 const UI_PATH = path.join(ROOT, "src", "mbsplit_ui.js");
+const DSP_PATH = path.join(ROOT, "src", "mbsplit_dsp.js");
 const AMXD_PATH = path.join(ROOT, "devices", "Multiband Split.amxd");
 
 const cfg = require(CONFIG_PATH);
@@ -260,7 +261,7 @@ function rectsOverlap(a, b) {
     assert.ok(!byId["obj-title"], "Duplicate MULTIBAND SPLIT title label must be removed");
     assert.ok(!byId["obj-ctrl-bands"], "2B/3B/4B buttons (obj-ctrl-bands) must be removed");
     assert.ok(!byId["obj-ctrl-phase"], "Phase button (obj-ctrl-phase) must be removed");
-    assert.strictEqual(byId["obj-buf-scope"].text, "buffer~ #0-splitscope @samps 8224", "Scope buffer must allocate 8224 samples for 8192-block FFT");
+    assert.strictEqual(byId["obj-buf-scope"].text, "buffer~ ---mbsplitscope @samps 8224", "Scope buffer must allocate 8224 samples for 8192-block FFT");
 
     const gainVo = byId["obj-ctrl-gain"].saved_attribute_attributes.valueof;
     assert.strictEqual(gainVo.parameter_mmin, -70.0, "Gain min must be -70 dB (-inf)");
@@ -279,7 +280,7 @@ function rectsOverlap(a, b) {
     assert.strictEqual(phaseBtn.texton, "DYN");
     assert.ok(hasLine("obj-ctrl-phasemode", "obj-prep-phasemode") && hasLine("obj-prep-phasemode", "obj-viz"), "Missing Phase Mode -> set_phasemode -> viz");
     assert.ok(byId["obj-route-ui"].text.split(/\s+/).includes("ui_phasemode"), "route must handle ui_phasemode");
-    assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 11 && l.destination[0] === "obj-gen"), "route-ui unmatched outlet (11) must feed gen");
+    assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 11 && l.destination[0] === "obj-gen-in" && l.destination[1] === 1), "route-ui unmatched outlet (11) must feed the gen hub's data inlet");
     for (const k of [1, 2, 3]) {
         assert.ok(byId["obj-route-ui"].text.split(/\s+/).includes(`ui_st_f${k}`), `route must handle ui_st_f${k}`);
         assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 7 + k && l.destination[0] === `obj-ctrl-f${k}`),
@@ -293,18 +294,41 @@ function rectsOverlap(a, b) {
 
     assert.ok(byId["obj-plugin"] && byId["obj-plugin"].text === "plugin~", "Missing plugin~");
     assert.ok(byId["obj-plugout"] && byId["obj-plugout"].text === "plugout~", "Missing plugout~");
-    assert.ok(byId["obj-gen"] && byId["obj-gen"].maxclass === "gen.codebox~", "Missing gen.codebox~");
-    assert.strictEqual(byId["obj-gen"].code, gen, "Embedded GenExpr mismatch");
-    assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-splitscope", "Gen buffer bind message must be 'scope #0-splitscope'");
-    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen"), "Missing loadbang -> scope #0-splitscope -> gen");
-    assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"), "Missing loadbang -> setbuffer #0-splitscope -> viz");
+    // Deferred DSP (AGENTS.md 1d): no gen in the device, a gate hub takes every gen-bound message, the face creates the gen~ later
+    assert.ok(!byId["obj-gen"] && !boxes.some((b) => /^gen/.test(b.maxclass || "")), "The device must ship without a gen / gen~ (it is created after load)");
+    assert.ok(byId["obj-gen-in"] && byId["obj-gen-in"].text === "gate 1 1" && byId["obj-gen-in"].varname === "mb_genin", "Missing the open gate hub (varname mb_genin)");
+    assert.strictEqual(byId["obj-plugin"].varname, "mb_plugin", "plugin~ needs the scripting name mb_plugin");
+    assert.strictEqual(byId["obj-plugout"].varname, "mb_plugout", "plugout~ needs the scripting name mb_plugout");
+    assert.ok(!lines.some((l) => l.source[0] === "obj-plugin" && l.destination[0] === "obj-plugout"), "No dry cord while the gen~ loads (a rack of K chains would be K times as loud)");
+    assert.ok(!lines.some((l) => l.source[0] === "obj-plugin"), "plugin~ is wired to the gen~ by the face, not in the file");
+    assert.ok(!lines.some((l) => l.destination[0] === "obj-plugout"), "plugout~ is wired to the gen~ by the face, not in the file");
+    for (const l of lines) {
+        if (l.destination[0] === "obj-gen-in") assert.strictEqual(l.destination[1], 1, "Every gen-bound cord must go into the hub's DATA inlet (a `t a` / left inlet hub makes no cord)");
+    }
+    assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope ---mbsplitscope", "Gen buffer bind message must be 'scope ---mbsplitscope'");
+    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in"), "Missing loadbang -> scope ---mbsplitscope -> gen hub");
+    assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"), "Missing loadbang -> setbuffer ---mbsplitscope -> viz");
+    assert.ok(byId["obj-msg-ui-dsp"] && byId["obj-msg-ui-dsp"].text === "init_dsp" && hasLine("obj-thisdevice", "obj-msg-ui-dsp") && hasLine("obj-msg-ui-dsp", "obj-viz"), "live.thisdevice must send init_dsp to the face");
+    assert.ok(!hasLine("obj-loadbang", "obj-msg-ui-dsp"), "Never start the DSP from loadbang (the LOM is not ready); only from live.thisdevice");
+    {
+        // the embedded gen patch is the core, with the build's hash
+        const vizText = byId["obj-viz"].textfile.text;
+        const m = vizText.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+        assert.ok(m, "The face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
+        const gp = JSON.parse(JSON.parse(m[1]));
+        assert.strictEqual(gp.patcher.classnamespace, "dsp.gen", "Embedded gen patch must be a dsp.gen patcher");
+        const codebox = gp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
+        assert.strictEqual(codebox.code, gen, "Embedded gen patch code mismatch");
+        assert.ok(gp.patcher.lines.length === 4, "gen patch: in 1 / in 2 -> codebox -> out 1 / out 2");
+    }
 
-    // Check #0- instance isolation on all buffer~/send/receive objects
+    // Instance isolation: in a device's top-level patcher `#0` is NOT expanded in Live (every instance would share the buffer), so
+    // buffer~ / send / receive names use the `---` prefix (Delay+, Reverb+, Spectral Split)
     for (const b of boxes) {
         if (b.maxclass === "newobj" && b.text) {
             const tok = b.text.split(/\s+/);
             if (["buffer~", "send", "receive", "s", "r", "send~", "receive~"].includes(tok[0])) {
-                assert.ok(tok[1] && tok[1].startsWith("#0-"), `Object '${b.text}' must use #0- prefix for instance isolation`);
+                assert.ok(tok[1] && tok[1].startsWith("---"), `Object '${b.text}' must use the --- prefix for instance isolation`);
             }
         }
     }
@@ -344,7 +368,8 @@ function rectsOverlap(a, b) {
 // 6. AUTO BAND CREATION PER DETECTED INSTANCE (1..4), VOLUME SLIDER & LINK TOGGLE
 // =========================================================================
 {
-    const combinedCode = fs.readFileSync(CONFIG_PATH, "utf8") + "\n\n" + fs.readFileSync(path.join(__dirname, "..", "src", "spectral_theme.js"), "utf8") + "\n\n" + fs.readFileSync(UI_PATH, "utf8");
+    const combinedCode = fs.readFileSync(CONFIG_PATH, "utf8") + "\n\n" + fs.readFileSync(path.join(__dirname, "..", "src", "spectral_theme.js"), "utf8") +
+        "\n\nvar GEN_DSP_TEXT = \"{}\";\nvar GEN_DSP_HASH = \"test\";\n" + fs.readFileSync(DSP_PATH, "utf8") + "\n\n" + fs.readFileSync(UI_PATH, "utf8");
     const sharedBus = { groups: {}, peers: {} };
     const sawRing8192 = cfg.synthesizeSawWave8192(110.0, 48000.0);
 
@@ -435,7 +460,8 @@ function rectsOverlap(a, b) {
         vm.runInContext(combinedCode, sandbox);
         assert.strictEqual(sandbox.mgraphics.relative_coords, 0, "v8ui must set mgraphics.relative_coords = 0");
         assert.strictEqual(sandbox.mgraphics.autofill, 0, "v8ui must set mgraphics.autofill = 0");
-        sandbox.setbuffer("#0-splitscope");
+        sandbox.setbuffer("---mbsplitscope");
+        sandbox.TOPO_INTERVAL_MS = 0;   // the unit tests call pullScope() back to back: poll the topology on every call
         sandbox.loadbang();
         sandbox.emitted0 = emitted0;
         sandbox.emitted1 = emitted1;
@@ -467,6 +493,59 @@ function rectsOverlap(a, b) {
     assert.strictEqual(inst1.curNumBands, 4, "Adding 4th instance must update Instance 1 to 4 bands");
     assert.strictEqual(inst4.curNumBands, 4, "Instance 4 must detect 4 bands");
     assert.strictEqual(inst4.getEffectiveMask(), 8, "Instance 4 (Chain 3) must solo Band 4 (HIGH)");
+
+    // 4b. Work sharing in a rack: gen prune, one FFT per link group, band meters merged over the group
+    {
+        const sentTail = (inst, name) => { const m = inst.emitted0.filter((e) => e[0] === name); return m.length ? m[m.length - 1][1] : undefined; };
+        for (const inst of [inst1, inst2, inst3, inst4]) inst.pullScope();
+        assert.strictEqual(sentTail(inst1, "prune"), 1, "A rack instance must prune its gen to its own band");
+        assert.strictEqual(sentTail(inst4, "prune"), 1, "Every rack instance prunes (4 linked instances)");
+        // leader = first alive instance in chain order: it runs the FFT, the others copy its columns
+        for (let k = 0; k < 3; k++) for (const inst of [inst1, inst2, inst3, inst4]) inst.pullScope();
+        assert.strictEqual(inst1.fftWantRing, true, "The first instance in chain order must run the FFT (ring on)");
+        for (const inst of [inst2, inst3, inst4]) {
+            assert.strictEqual(inst.fftWantRing, false, "Followers must not run the FFT while the leader publishes");
+            assert.strictEqual(sentTail(inst, "ringon"), 0, "Followers switch the gen's ring off");
+            assert.strictEqual(inst.fftComputed, 0, "A follower must not compute an FFT");
+            assert.ok(inst.fftCopied >= 2, `A follower must copy the leader's spectrogram frames (got ${inst.fftCopied})`);
+        }
+        assert.ok(inst1.fftComputed >= 3, "The leader computes the FFT every tick");
+        for (let c = 0; c < inst1.SPEC_COLS; c++) {
+            assert.ok(Math.abs(inst2.specColDb[c] - inst1.specColDb[c]) < 1e-9 || inst2.fftCopied !== inst1.fftComputed,
+                "A follower's smoothed columns equal the leader's when it saw every frame");
+        }
+        // band meters: each instance's gen measures only its own band; the face shows the max over the group
+        inst1.bandPeaksOwn = [0.5, 0, 0, 0];
+        inst2.bandPeaksOwn = [0, 0.4, 0, 0];
+        inst3.bandPeaksOwn = [0, 0, 0.3, 0];
+        inst4.bandPeaksOwn = [0, 0, 0, 0.2];
+        inst3.mergeBandPeaks(inst3.getAliveGroupPeers(inst3.getActiveGroupKey()));
+        assert.deepStrictEqual(Array.from(inst3.bandPeaks), [0.5, 0.4, 0.3, 0.2], "Band meters must merge the linked instances' own bands");
+        // fallback: leader goes quiet (deleted chain, DSP not loaded): after FFT_SHARE_FRESH_MS the next instance runs the FFT itself
+        const key = inst2.getActiveGroupKey();
+        sharedBus.spec[key].t -= 5000;
+        inst2.pullScope();
+        assert.strictEqual(inst2.fftWantRing, true, "A follower must take over the FFT when the shared frame is stale");
+        assert.strictEqual(sentTail(inst2, "ringon"), 1, "The takeover switches the gen's ring on");
+        inst2.fftRingOnSince = Date.now();
+        const computedBefore = inst2.fftComputed;
+        inst2.pullScope();
+        assert.strictEqual(inst2.fftComputed, computedBefore, "No FFT until the 8192-sample ring has refilled");
+        inst2.fftRingOnSince = Date.now() - 1000;
+        inst2.pullScope();
+        assert.strictEqual(inst2.fftComputed, computedBefore + 1, "FFT resumes after the ring refilled");
+        inst1.pullScope();   // the leader publishes again: the substitute hands the FFT back
+        inst2.pullScope();
+        assert.strictEqual(inst2.fftWantRing, false, "The substitute stops when the leader publishes again");
+        assert.strictEqual(sentTail(inst2, "ringon"), 0);
+        // a lone instance keeps every band (the face meters show all bands) and runs its own FFT
+        const lone = createUiInstance("live_set tracks 1 devices 0");
+        lone.pullScope();
+        assert.strictEqual(sentTail(lone, "prune"), 0, "A lone instance must not prune (it shows all band meters)");
+        assert.strictEqual(lone.fftWantRing, true);
+        lone.notifydeleted();
+        console.log(`[work sharing] leader FFTs ${inst1.fftComputed}, follower copies ${inst3.fftCopied}, follower FFTs ${inst3.fftComputed}`);
+    }
 
     // 5. Removing Instance 4 via notifydeleted() must update remaining instances back to 3 bands
     inst4.notifydeleted();

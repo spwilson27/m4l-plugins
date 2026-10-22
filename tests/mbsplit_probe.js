@@ -58,17 +58,15 @@ function computeStats(arr, startIdx, endIdx) {
 }
 
 function readScopeStats() {
-    var empty = { specMax: 0, b1: 0, b2: 0, b3: 0, b4: 0, pkIn: 0, pkOut: 0, beat: 0, firD: 0, dyn: 0 };
+    var empty = { b1: 0, b2: 0, b3: 0, b4: 0, pkIn: 0, pkOut: 0, beat: 0, firD: 0, dyn: 0, need: 0, asleep: 0, ringon: 0 };
     if (!scopeName) return empty;
     var buf = new Buffer(scopeName);
-    var vals = buf.peek(1, 0, 28);
+    var vals = buf.peek(1, 0, 32);
     if (!vals || !vals.length) return empty;
-    var specMax = 0.0;
-    for (var i = 0; i < 16; i++) {
-        if ((vals[i] || 0) > specMax) specMax = vals[i];
-    }
     return {
-        specMax: specMax,
+        need: vals[28] || 0,
+        asleep: vals[29] || 0,
+        ringon: vals[30] || 0,
         b1: vals[16] || 0,
         b2: vals[17] || 0,
         b3: vals[18] || 0,
@@ -122,7 +120,9 @@ function analyze(durMs) {
         "peakR " + stR.peak + "\n" +
         "rmsL " + stL.rms + "\n" +
         "rmsR " + stR.rms + "\n" +
-        "scopeSpecMax " + sc.specMax + "\n" +
+        "scopeNeed " + sc.need + "\n" +
+        "scopeAsleep " + sc.asleep + "\n" +
+        "scopeRingOn " + sc.ringon + "\n" +
         "scopeB1 " + sc.b1 + "\n" +
         "scopeB2 " + sc.b2 + "\n" +
         "scopeB3 " + sc.b3 + "\n" +

@@ -5,6 +5,7 @@
     "src/types/mbsplit.d.ts",
     "src/mbsplit_config.js",
     "src/spectral_theme.js",
+    "src/mbsplit_dsp.js",
     "src/mbsplit_ui.js"
   ]
 }

@@ -17,6 +17,13 @@ Cases:
   4. dyn_null_vs_delayed_allpass — Dynamic Phase 4-band sum vs the JS-reference F1 allpass of the
                                dry input delayed by 128 samples (null < -120 dB).
   5. dyn_band_isolation      — Dynamic Phase band 3 passes 2.4 kHz at 0 dB, rejects 300 Hz > 55 dB.
+  6. prune_*                 — work sharing: a rack of 4 instances with `prune 1` (only the filters of their own band,
+                               ringon 0) next to 4 unpruned instances of the same masks. Every pruned band must equal
+                               its unpruned twin (null < -140 dB, weighted so errors cannot cancel), i.e. the allpass phase
+                               compensation is unchanged and the rack still sums flat. IIR LR2 / LR4 / LR8 with 4, 3, 2
+                               bands and Dynamic Phase with 4 and 3 bands. Also the scope telemetry (bands computed, ring).
+  7. sleep_wake              — silence sleep: input silent for 0.63 s then a 440 Hz tone: the output is exactly 0 while
+                               asleep, wakes in the same sample, steady state at unity (0.05 dB), no click.
 """
 
 import math
@@ -182,6 +189,97 @@ def case_patch(gen_code, mode):
             line("obj-gen1", 1, "obj-mute-r", 0),
         ])
 
+    elif mode == "prune_telemetry":
+        boxes.extend([
+            box("obj-osc1", "cycle~ 2400", 200, 80, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            box("obj-scale", "*~ 0.4", 200, 115, 55, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+            gen_box("obj-gen1", gen_code, 220, 195),
+            box("obj-p1", "scope #0-splitscope, numbands 4, slope 1, f1 150, f2 900, f3 4200, bandmask 4, gain 0, phase 0, prune 1, ringon 0", 220, 155, 500, 20, maxclass="message", numinlets=2, numoutlets=1),
+        ])
+        lines.extend([
+            line("obj-osc1", 0, "obj-scale", 0),
+            line("obj-load", 0, "obj-p1", 0), line("obj-p1", 0, "obj-gen1", 0),
+            line("obj-scale", 0, "obj-gen1", 0), line("obj-scale", 0, "obj-gen1", 1),
+            line("obj-gen1", 0, "obj-record", 0), line("obj-gen1", 1, "obj-record", 1),
+            line("obj-gen1", 0, "obj-mute-l", 0), line("obj-gen1", 1, "obj-mute-r", 0),
+        ])
+
+    elif mode.startswith("prune_"):
+        return prune_patch(gen_code, mode)
+
+    elif mode == "sleep_wake":
+        stim = ("History cnt(0.0);\ncnt = cnt + 1.0;\n"
+                "sig = (cnt > 30000.0) ? 0.3 * sin(2.0 * 3.141592653589793 * 440.0 * (cnt - 30000.0) / samplerate) : 0.0;\n"
+                "out1 = sig;\nout2 = sig;\n")
+        boxes.extend([
+            gen_box("obj-stim", stim, 200, 80),
+            gen_box("obj-gen1", gen_code, 220, 195),
+            box("obj-p1", "scope #0-splitscope, numbands 4, slope 1, f1 150, f2 900, f3 4200, bandmask 15, gain 0, phase 0, dynphase 0, prune 0, ringon 1", 220, 155, 560, 20, maxclass="message", numinlets=2, numoutlets=1),
+        ])
+        lines.extend([
+            line("obj-load", 0, "obj-p1", 0),
+            line("obj-p1", 0, "obj-gen1", 0),
+            line("obj-stim", 0, "obj-gen1", 0),
+            line("obj-stim", 1, "obj-gen1", 1),
+            line("obj-gen1", 0, "obj-record", 0),
+            line("obj-stim", 0, "obj-record", 1),
+            line("obj-gen1", 0, "obj-mute-l", 0),
+            line("obj-stim", 0, "obj-mute-r", 0),
+        ])
+
+    return boxes, lines
+
+
+# (name, numbands, slope, dynphase, masks of the rack instances)
+PRUNE_CASES = {
+    "prune_nb4_lr4": (4, 1, 0, (1, 2, 4, 8)),
+    "prune_nb4_lr8": (4, 2, 0, (1, 2, 4, 8)),
+    "prune_nb4_lr2": (4, 0, 0, (1, 2, 4, 8)),
+    "prune_nb3_lr4": (3, 1, 0, (1, 2, 4)),
+    "prune_nb2_lr4": (2, 1, 0, (1, 2)),
+    "prune_nb4_dyn": (4, 1, 1, (1, 2, 4, 8)),
+    "prune_nb3_dyn": (3, 1, 1, (1, 2, 4)),
+}
+
+
+def prune_patch(gen_code, mode):
+    """K pruned instances (prune 1, ringon 0, one band each) next to K unpruned twins (prune 0, same mask). L = sum_k w_k *
+    (pruned_k - twin_k) with distinct weights (errors cannot cancel), R = sum of the twins (the signal level)."""
+    nb, slope, dyn, masks = PRUNE_CASES[mode]
+    boxes = [
+        box("obj-setbuf", "setbuffer #0-splitscope", 220, 30, 160, 20, maxclass="message", numinlets=2, numoutlets=1),
+        box("obj-scope", "buffer~ #0-splitscope @samps 8224", 400, 30, 220, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
+        box("obj-noise", "noise~", 545, 80, 50, 20, numinlets=1, numoutlets=1, outlettype=["signal"]),
+        box("obj-noise-amt", "*~ 0.1", 545, 105, 50, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+        box("obj-sum-in", "*~ 0.15", 260, 120, 60, 20, numinlets=2, numoutlets=1, outlettype=["signal"]),
+    ]
+    lines = [
+        line("obj-load", 0, "obj-setbuf", 0),
+        line("obj-setbuf", 0, "obj-js", 0),
+        line("obj-noise", 0, "obj-noise-amt", 0),
+        line("obj-noise-amt", 0, "obj-sum-in", 0),
+    ]
+    for i, f in enumerate((80, 380, 1900, 7500)):
+        boxes.append(box(f"obj-osc{i}", f"cycle~ {f}", 200 + 90 * i, 80, 80, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
+        lines.append(line(f"obj-osc{i}", 0, "obj-sum-in", 0))
+    common = f"numbands {nb}, slope {slope}, f1 150, f2 900, f3 4200, gain 0, phase 0, dynphase {dyn}"
+    for k, m in enumerate(masks):
+        for tag, prune, ring in (("p", 1, 0), ("t", 0, 1)):
+            gid, pid = f"obj-g{tag}{k}", f"obj-m{tag}{k}"
+            y = 260 if tag == "p" else 400
+            boxes.append(gen_box(gid, gen_code, 40 + 130 * k, y))
+            boxes.append(box(pid, f"scope #0-splitscope, {common}, bandmask {m}, prune {prune}, ringon {ring}", 40 + 130 * k, y - 40, 480, 20,
+                             maxclass="message", numinlets=2, numoutlets=1))
+            lines += [line("obj-load", 0, pid, 0), line(pid, 0, gid, 0),
+                      line("obj-sum-in", 0, gid, 0), line("obj-sum-in", 0, gid, 1)]
+        w = float(2 ** k)
+        boxes.append(box(f"obj-d{k}", "-~", 40 + 130 * k, 540, 30, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
+        boxes.append(box(f"obj-w{k}", f"*~ {w}", 40 + 130 * k, 570, 40, 20, numinlets=2, numoutlets=1, outlettype=["signal"]))
+        lines += [line(f"obj-gp{k}", 0, f"obj-d{k}", 0), line(f"obj-gt{k}", 0, f"obj-d{k}", 1),
+                  line(f"obj-d{k}", 0, f"obj-w{k}", 0), line(f"obj-w{k}", 0, "obj-record", 0),
+                  line(f"obj-gt{k}", 0, "obj-record", 1),
+                  line(f"obj-w{k}", 0, "obj-mute-l", 0), line(f"obj-gt{k}", 0, "obj-mute-r", 0)]
+        # the unused gen outputs are left unconnected on purpose
     return boxes, lines
 
 
@@ -240,6 +338,38 @@ def offline_dynamic_null(dump_path, sr, f1, slope):
     return math.sqrt(e / n), math.sqrt(p / n)
 
 
+def offline_diff(dump_path):
+    """rms of the weighted pruned-minus-twin sum (L) and of the twins' sum (R), skipping the first 4096 samples."""
+    rows = [tuple(float(t) for t in ln.split()) for ln in open(dump_path) if ln.strip()]
+    e = p = 0.0
+    n = 0
+    for r in rows[4096:]:
+        e += r[0] * r[0]
+        p += r[1] * r[1]
+        n += 1
+    return math.sqrt(e / n), math.sqrt(p / n)
+
+
+def offline_sleep_check(dump_path, sr):
+    """Rows are (splitter out, source). The source is silent for 30000 samples after the harness start; the window starts after the
+    300 ms settle (14400 samples at 48 kHz), then the tone starts. Asleep from 16384 quiet samples."""
+    rows = [tuple(float(t) for t in ln.split()) for ln in open(dump_path) if ln.strip()]
+    settle = int(round(0.3 * sr))
+    tone0 = 30000 - settle                       # first index with source tone
+    sleep0 = 16384 - settle + 8                  # asleep by here
+    if tone0 < 600:
+        return False, "stimulus geometry"
+    zeros = all(rows[i][0] == 0.0 for i in range(sleep0, tone0 - 1))
+    first = rows[tone0:tone0 + 96]
+    peak_start = max(abs(r[0]) for r in first)
+    tail = rows[len(rows) - 12000:]
+    rms_out = math.sqrt(sum(r[0] * r[0] for r in tail) / len(tail))
+    rms_in = math.sqrt(sum(r[1] * r[1] for r in tail) / len(tail))
+    err_db = 20.0 * math.log10(max(rms_out, 1e-12) / max(rms_in, 1e-12))
+    msg = f"zero while asleep={zeros} startPeak={peak_start:.3f} steady err={err_db:.3f} dB"
+    return (zeros and peak_start < 0.45 and abs(err_db) < 0.05 and rms_in > 0.1), msg
+
+
 def main():
     if not os.path.exists(mh.MAX_BIN):
         print(f"SKIP: Max binary not found at {mh.MAX_BIN}")
@@ -268,12 +398,12 @@ def main():
     assert r3["nan"] == 0, f"phase_gain_and_scope produced NaNs: {r3}"
     print(
         f"[PASS] phase_gain_and_scope  peakBoostL={r3['peakL']:.4f} phaseCancelR={r3['peakR']:.6f} "
-        f"specMax={r3['scopeSpecMax']:.3f} scopeOut={r3['scopeOut']:.3f}"
+        f"scopeIn={r3['scopeIn']:.3f} scopeOut={r3['scopeOut']:.3f}"
     )
     assert 0.48 <= r3["peakL"] <= 0.52, f"Expected +6 dB boosted 0.25 sine to peak near 0.50 (got {r3['peakL']})"
     assert r3["peakR"] < 0.002, f"Expected 180-deg phase invert to null against normal phase (got {r3['peakR']})"
     # scopeBeat wraps mod 1024, so 0 is a legal value at read time; check live meters instead.
-    assert r3["scopeSpecMax"] > 0.05 and r3["scopeOut"] > 0.20 and r3["scopeIn"] > 0.2, (
+    assert r3["scopeOut"] > 0.20 and r3["scopeIn"] > 0.2, (
         f"Expected active #0-splitscope telemetry (got {r3})"
     )
 
@@ -298,6 +428,40 @@ def main():
     print(f"[PASS] dyn_band_isolation    pass2400={pass_db:.3f} dB reject300={rej_db5:.1f} dB")
     assert abs(pass_db) < 0.1, f"Expected 2.4 kHz to pass Band 3 at 0 dB (got {pass_db:.3f} dB)"
     assert rej_db5 < -55.0, f"Expected 300 Hz rejected > 55 dB by Band 3 (got {rej_db5:.1f} dB)"
+
+    # Case 6: pruned rack instances equal their unpruned twins (sum identity of the full tree is therefore unchanged)
+    only = [a for a in sys.argv[1:] if not a.startswith("-")]
+    for name in PRUNE_CASES:
+        if only and name not in only:
+            continue
+        r6 = run_case(gen_code, name, keep_dir=True)
+        try:
+            err_rms, sig_rms = offline_diff(os.path.join(r6["harness_dir"], "result.txt.dump"))
+        finally:
+            shutil.rmtree(r6["harness_dir"], ignore_errors=True)
+        assert r6["nan"] == 0, f"{name} produced NaNs: {r6}"
+        diff_db = 20.0 * math.log10(max(err_rms, 1e-15) / max(sig_rms, 1e-15))
+        print(f"[PASS] {name:20s} weighted pruned-vs-twin residual {diff_db:.1f} dB (signal rms {sig_rms:.4f})")
+        assert sig_rms > 0.05, f"{name}: expected output signal (got {sig_rms})"
+        assert diff_db < -140.0, f"{name}: pruned bands must equal the unpruned bands ({diff_db:.1f} dB)"
+
+    # Telemetry of the work-sharing state (single pruned instance: band 3 of 4, ring off)
+    if not only or "prune_telemetry" in only:
+        r7 = run_case(gen_code, "prune_telemetry")
+        print(f"[PASS] prune_telemetry       need={r7['scopeNeed']:.0f} asleep={r7['scopeAsleep']:.0f} ringOn={r7['scopeRingOn']:.0f} out={r7['scopeOut']:.3f}")
+        assert r7["scopeNeed"] == 4 + 16, f"Expected bands computed = band 3 (bit 2) + prune (16), got {r7['scopeNeed']}"
+        assert r7["scopeRingOn"] == 0 and r7["scopeAsleep"] == 0, f"Expected ringon 0, awake (got {r7})"
+        assert r7["scopeB3"] > 0.01 and r7["scopeB1"] == 0.0 and r7["scopeB2"] == 0.0 and r7["scopeB4"] == 0.0, f"Only the computed band may meter (got {r7})"
+
+    # Case 7: silence sleep and wake-up
+    if not only or "sleep_wake" in only:
+        r8 = run_case(gen_code, "sleep_wake", keep_dir=True)
+        try:
+            ok, msg = offline_sleep_check(os.path.join(r8["harness_dir"], "result.txt.dump"), r8["sr"])
+        finally:
+            shutil.rmtree(r8["harness_dir"], ignore_errors=True)
+        print(f"[PASS] sleep_wake            {msg}")
+        assert ok, msg
 
     print("All Real Max 9 Multiband Split audio & telemetry tests passed!")
 

@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Multiband Split paint bounds: builds the face as scripts/build_mbsplit.py does (config + spectral_theme + ui), drives it through
+ * Multiband Split paint bounds: builds the face as scripts/build_mbsplit.py does (config + spectral_theme + deferred-DSP module + ui), drives it through
  * extreme crossover / gain / band-count / slope / link-badge states and spectrum edge cases (NaN, infinite, huge, silent), and asserts with
  * tests/paint_bounds_lib.js that everything stays inside the top strip or the plot, that handles are fully inside the canvas, that every
  * path starts with a fresh move_to and that no two text labels overlap.
@@ -13,7 +13,7 @@ const { makeRecorder, loadFace, checkRecording, grid } = require("./paint_bounds
 
 const SRC = path.join(__dirname, "..", "src");
 const rd = (f) => fs.readFileSync(path.join(SRC, f), "utf8");
-const code = [rd("mbsplit_config.js"), rd("spectral_theme.js"), rd("mbsplit_ui.js")].join("\n\n");
+const code = [rd("mbsplit_config.js"), rd("spectral_theme.js"), 'var GEN_DSP_TEXT = "{}"; var GEN_DSP_HASH = "t";', rd("mbsplit_dsp.js"), rd("mbsplit_ui.js")].join("\n\n");
 
 const W = 256, H = 136;
 const rec = makeRecorder(W, H);
@@ -95,6 +95,14 @@ for (const v of [-1e9, -300, 300, 1e9]) {
     ev(`for (var i = 0; i < SPEC_COLS; i++) { specColDb[i] = ${v}; specColPeaks[i] = ${v}; } specColHistory = [specColDb.slice(), specColDb.slice()];`);
     run("raw spectrum " + v);
 }
+// 4. the DSP pill (gen~ loading / failed / long error) next to every band count
+for (const nb of [1, 4]) for (const st of [[0, ""], [0, "x"], [0, "cannot write /tmp/mbsplit_core_0123456789ab.gendsp"], [1, ""]]) {
+    sb.set_numbands(nb);
+    ev(`mbDsp.ready = ${st[0]}; mbDsp.error = ${JSON.stringify(st[1])};`);
+    run(`dsp pill nb ${nb} ready ${st[0]} error "${st[1]}"`);
+}
+ev("mbDsp.ready = 1; mbDsp.error = '';");
+
 sb.preview();
 run("preview");
 

@@ -13,6 +13,7 @@ Architecture:
     - `Slope` (`12 dB` / `24 dB` / `48 dB`) selector tab + `F1`, `F2`, `F3` horizontal value sliders.
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -26,6 +27,7 @@ CONFIG_PATH = os.path.join(ROOT_DIR, "src", "mbsplit_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "mbsplit_ui.js")
 THEME_PATH = os.path.join(ROOT_DIR, "src", "spectral_theme.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "mbsplit_core.genexpr")
+DSP_PATH = os.path.join(ROOT_DIR, "src", "mbsplit_dsp.js")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Multiband Split.amxd")
 
 DEVICE_W = 268.0
@@ -250,6 +252,36 @@ def line(src, src_out, dst, dst_in=0):
     }
 
 
+def gendsp_json(gen_code):
+    """The gen patch (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text. The deferred DSP (src/mbsplit_dsp.js)
+    writes it to /tmp/mbsplit_core_<hash>.gendsp and creates `gen~ @gen <file>` (AGENTS.md 1d; same as build_reverbplus.py)."""
+    def bx(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
+               "patching_rect": [float(x), float(y), 200.0, 22.0]}
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+    patch = {"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen",
+        "rect": [50.0, 50.0, 600.0, 450.0],
+        "boxes": [
+            bx("obj-in1", "in 1", 20, 20, 0, 1), bx("obj-in2", "in 2", 120, 20, 0, 1),
+            bx("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+            bx("obj-out1", "out 1", 20, 400, 1, 0), bx("obj-out2", "out 2", 120, 400, 1, 0),
+        ],
+        "lines": [
+            {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+            {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+            {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+            {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+        ],
+    }}
+    return json.dumps(patch)
+
+
 def build_patcher():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
@@ -259,7 +291,12 @@ def build_patcher():
         gen_code = f.read()
 
     theme_js = sc.read(THEME_PATH)
-    combined_js = config_js + "\n\n" + theme_js.rstrip() + "\n\n" + ui_js
+    dsp_js = sc.read(DSP_PATH)
+    gen_text = gendsp_json(gen_code)
+    gen_vars = (f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+                f"var GEN_DSP_HASH = \"{hashlib.sha1(gen_text.encode()).hexdigest()[:12]}\";\n")
+    combined_js = (config_js.rstrip() + "\n\n" + theme_js.rstrip() + "\n\n" + gen_vars + "\n" + dsp_js.rstrip()
+                   + "\n\n" + ui_js)
     viz_rect = [8.0, 20.0, 252.0, 102.0]
 
     p_bands, parts_bands = sc.make_section("bands", 4, 4, 260, 120, "Bands")
@@ -288,29 +325,19 @@ def build_patcher():
         newobj("obj-plugin", "plugin~", 40, 40, 60, 20, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
         newobj("obj-plugout", "plugout~", 40, 520, 60, 20, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
 
-        # Gen DSP Core
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [40.0, 420.0, 260.0, 70.0],
-            }
-        },
+        # Gen DSP core: NOT in the device. The face creates `gen~ @gen <file>` after load (src/mbsplit_dsp.js, AGENTS.md 1d);
+        # every gen-bound message goes into the pass-through hub `gate 1 1` (open; data into the right inlet).
+        newobj("obj-gen-in", "gate 1 1", 40, 360, 60, 20, numinlets=2, numoutlets=1, outlettype=[""]),
 
-        # Instance-local scope & 8192-sample audio ring buffer (#0-splitscope @samps 8224)
-        newobj("obj-buf-scope", "buffer~ #0-splitscope @samps 8224", 340, 420, 225, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
+        # Instance-local scope & 8192-sample audio ring buffer (---mbsplitscope @samps 8224)
+        newobj("obj-buf-scope", "buffer~ ---mbsplitscope @samps 8224", 340, 420, 225, 20, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 340, 320, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
         newobj("obj-thisdevice", "live.thisdevice", 420, 320, 85, 20, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         newobj("obj-freebang", "freebang", 520, 320, 60, 20, numinlets=1, numoutlets=1, outlettype=["bang"]),
-        msgbox("obj-msg-gen-buf", "scope #0-splitscope", 340, 360, 130, 20),
-        msgbox("obj-msg-ui-buf", "setbuffer #0-splitscope", 480, 360, 150, 20),
+        msgbox("obj-msg-gen-buf", "scope ---mbsplitscope", 340, 360, 130, 20),
+        msgbox("obj-msg-ui-buf", "setbuffer ---mbsplitscope", 480, 360, 150, 20),
         msgbox("obj-msg-ui-init", "loadbang", 640, 360, 65, 20),
+        msgbox("obj-msg-ui-dsp", "init_dsp", 640, 390, 65, 20),
         msgbox("obj-msg-ui-free", "notifydeleted", 720, 360, 85, 20),
 
         # Hidden blob parameter for saving full splitter & custom mask state in Live Sets
@@ -396,11 +423,8 @@ def build_patcher():
     boxes.extend(panels)
 
     lines = [
-        # Audio signal path: plugin~ -> gen.codebox~ -> plugout~
-        line("obj-plugin", 0, "obj-gen", 0),
-        line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0),
-        line("obj-gen", 1, "obj-plugout", 1),
+        # Audio signal path: plugin~ -> gen~ -> plugout~ is wired by the face when the deferred gen~ exists (src/mbsplit_dsp.js).
+        # Until then there is no cord: the device is silent (a pass-through would make a rack of K chains K times as loud).
 
         # Loadbang & live.thisdevice initialization
         line("obj-loadbang", 0, "obj-msg-gen-buf", 0),
@@ -409,7 +433,9 @@ def build_patcher():
         line("obj-thisdevice", 0, "obj-msg-gen-buf", 0),
         line("obj-thisdevice", 0, "obj-msg-ui-buf", 0),
         line("obj-thisdevice", 0, "obj-msg-ui-init", 0),
-        line("obj-msg-gen-buf", 0, "obj-gen", 0),
+        line("obj-thisdevice", 0, "obj-msg-ui-dsp", 0),
+        line("obj-msg-ui-dsp", 0, "obj-viz", 0),
+        line("obj-msg-gen-buf", 0, "obj-gen-in", 1),
         line("obj-msg-ui-buf", 0, "obj-viz", 0),
         line("obj-msg-ui-init", 0, "obj-viz", 0),
         line("obj-freebang", 0, "obj-msg-ui-free", 0),
@@ -458,8 +484,13 @@ def build_patcher():
         line("obj-route-ui", 8, "obj-ctrl-f1", 0),
         line("obj-route-ui", 9, "obj-ctrl-f2", 0),
         line("obj-route-ui", 10, "obj-ctrl-f3", 0),
-        line("obj-route-ui", 11, "obj-gen", 0),
+        line("obj-route-ui", 11, "obj-gen-in", 1),
     ]
+
+    names = {"obj-gen-in": "mb_genin", "obj-plugin": "mb_plugin", "obj-plugout": "mb_plugout"}
+    for bx in boxes:
+        if bx["box"].get("id") in names:
+            bx["box"]["varname"] = names[bx["box"]["id"]]
 
     patcher = {
         "patcher": {

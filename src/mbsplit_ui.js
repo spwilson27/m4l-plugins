@@ -87,10 +87,30 @@ var specColHistory = []; // Rolling 2D waterfall rows of SPEC_COLS dB values
 var MAX_WATERFALL_ROWS = 16;
 var audioRingUnwrapped = new Array(MBSPLIT_FFT_SIZE);
 
-var specBands = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-var bandPeaks = [0, 0, 0, 0];
+var bandPeaks = [0, 0, 0, 0];      // meters shown on the band pills: max over the linked instances' own bands
+var bandPeaksOwn = [0, 0, 0, 0];   // this instance's gen only computes the bands it outputs (prune), see getBandPeaks()
 var inPeak = 0.0;
 var outPeak = 0.0;
+
+// Work sharing between the instances of one link group (rack): one instance computes the FFT spectrogram, the others
+// copy its columns through Global("mbsplit_shared_bus").spec[groupKey]; the gen of each instance only filters the
+// bands it outputs (`prune`, see src/mbsplit_core.genexpr).
+var TOPO_INTERVAL_MS = 250;        // LOM / topology polling (the scope itself is read every 40 ms)
+var FFT_RING_FILL_MS = 200;        // the 8192-sample ring (170 ms at 48 kHz) must refill after `ringon` turns on
+var FFT_SHARE_FRESH_MS = 400;
+var lastTopoTime = 0;
+var cachedAlivePeers = [];
+var fftWantRing = true;            // this instance runs the FFT (its gen writes the ring)
+var fftRingOnSince = 0;
+var sharedSeqSeen = -1;
+var fftSeq = 0;
+var fftComputed = 0;               // FFTs this instance ran
+var fftCopied = 0;                 // spectrogram frames this instance took from another instance
+var sentPrune = -1;
+var silentTicks = 0;
+var lastDrawSig = "";
+var gateNeedBits = 0;              // scope slot 28: bands the gen computes (bit 0..3) | prune (16)
+var gateAsleep = 0;                // scope slot 29: gen silence sleep
 
 (function initSpectrogramArrays() {
     for (var c = 0; c <= SPEC_COLS; c++) {
@@ -650,6 +670,7 @@ function registerPeerInBus() {
         getGroupKey: function() { return getActiveGroupKey(); },
         getChainIndex: function() { return rackContext.chainIndex; },
         getDeviceIndex: function() { return rackContext.deviceIndex || 0; },
+        getBandPeaks: function() { return bandPeaksOwn; },
         refreshOwnLomState: function(isOwnThread, quietPathUpdate) {
             return refreshSelfLomState(isOwnThread === true, quietPathUpdate === true);
         },
@@ -666,7 +687,20 @@ function registerPeerInBus() {
                 baseGroupKey: getBaseGroupKey(),
                 selfLomAlive: selfLomAlive,
                 dspTimedOut: dspTimedOut,
-                isDeleted: isDeleted
+                isDeleted: isDeleted,
+                f1: curF1, f2: curF2, f3: curF3, slope: curSlope, phaseMode: curPhaseMode,
+                dspReady: mbDsp.ready,
+                dspError: mbDsp.error,
+                dspReadyMs: mbDsp.readyMs,
+                dspRetries: mbDsp.retries,
+                prune: sentPrune,
+                ringOn: fftWantRing ? 1 : 0,
+                fftComputed: fftComputed,
+                fftCopied: fftCopied,
+                needBits: gateNeedBits,
+                asleep: gateAsleep,
+                beat: lastScopeBeat,
+                bandPeaksOwn: bandPeaksOwn.slice(0)
             };
         },
         onPeersChanged: function() { handlePeerTopologyChange(); },
@@ -987,7 +1021,18 @@ function emitCrossoverActive(force) {
     }
 }
 
+function wantPrune() {
+    return getLinkedPeerCount() >= 2 ? 1 : 0;
+}
+
+function emitWorkShare() {
+    sentPrune = wantPrune();
+    outlet(0, ["prune", sentPrune]);
+    outlet(0, ["ringon", fftWantRing ? 1 : 0]);
+}
+
 function emitDspState(syncUiControls) {
+    emitWorkShare();
     outlet(0, ["f1", curF1]);
     outlet(0, ["f2", curF2]);
     outlet(0, ["f3", curF3]);
@@ -1154,16 +1199,23 @@ function loadbang() {
 // =========================================================================
 // BLOCK-SIZE 8192 FFT SPECTROGRAM ANALYSIS & WATERFALL ENGINE
 // =========================================================================
-function updateSpectrogramFrom8192Samples(samples8192, sampleRate, pushWaterfallRow) {
+/** Raw (unsmoothed) dB value of every display column for one 8192-sample ring snapshot. The only FFT of a link group. */
+function computeRawSpecColumns(samples8192, sampleRate) {
     var sr = Number(sampleRate) || 48000.0;
     var dbBins = computeFft8192DbBins(samples8192);
-    var row = new Array(SPEC_COLS);
-
+    var raw = new Array(SPEC_COLS);
     for (var c = 0; c < SPEC_COLS; c++) {
-        var fLo = specColFreqs[c];
-        var fHi = specColFreqs[c + 1];
-        var rawDb = sampleFft8192DbForPixel(fLo, fHi, dbBins, sr);
-        rawDb = (rawDb === rawDb) ? clamp(rawDb, -200.0, 200.0) : -72.0;     // NaN / infinite telemetry must not poison the smoothing state
+        var rawDb = sampleFft8192DbForPixel(specColFreqs[c], specColFreqs[c + 1], dbBins, sr);
+        raw[c] = (rawDb === rawDb) ? clamp(rawDb, -200.0, 200.0) : -72.0;     // NaN / infinite telemetry must not poison the smoothing state
+    }
+    return raw;
+}
+
+/** Per-instance smoothing, peak hold and waterfall row from raw column values (own FFT or another instance's). */
+function applyRawSpecColumns(raw, pushWaterfallRow) {
+    var row = new Array(SPEC_COLS);
+    for (var c = 0; c < SPEC_COLS; c++) {
+        var rawDb = raw[c];
         var prevDb = specColDb[c];
         var smDb = (rawDb > prevDb)
             ? (prevDb * 0.25 + rawDb * 0.75)
@@ -1179,64 +1231,148 @@ function updateSpectrogramFrom8192Samples(samples8192, sampleRate, pushWaterfall
             specColHistory.pop();
         }
     }
+}
+
+function updateSpectrogramFrom8192Samples(samples8192, sampleRate, pushWaterfallRow) {
+    var sr = Number(sampleRate) || 48000.0;
+    var dbBins = computeFft8192DbBins(samples8192);
+    var raw = new Array(SPEC_COLS);
+    for (var c = 0; c < SPEC_COLS; c++) {
+        var rawDb = sampleFft8192DbForPixel(specColFreqs[c], specColFreqs[c + 1], dbBins, sr);
+        raw[c] = (rawDb === rawDb) ? clamp(rawDb, -200.0, 200.0) : -72.0;
+    }
+    applyRawSpecColumns(raw, pushWaterfallRow);
     return dbBins;
+}
+
+/**
+ * Who computes the FFT of a link group: the first alive instance (chain order) always does; the others only while no other
+ * instance has published a fresh frame in the last FFT_SHARE_FRESH_MS (leader missing, its DSP not loaded, stale after a
+ * deletion). Returns the fresh frame to copy, or null.
+ */
+function updateFftRole(now, alive) {
+    var key = getActiveGroupKey();
+    var bus = getSharedBus();
+    if (bus && !bus.spec) bus.spec = {};
+    var share = (key && bus && bus.spec) ? bus.spec[key] : null;
+    var fresh = (share && share.owner !== INSTANCE_ID && (now - share.t) < FFT_SHARE_FRESH_MS) ? share : null;
+    var iAmLeader = (alive.length === 0) || (alive[0].id === INSTANCE_ID);
+    var want = iAmLeader || !fresh;
+    if (want !== fftWantRing) {
+        fftWantRing = want;
+        if (want) fftRingOnSince = now;
+        outlet(0, ["ringon", want ? 1 : 0]);
+    }
+    return fresh;
+}
+
+function publishSpecShare(now, raw, silent) {
+    if (!mbDsp.ready && !raw) return;   // no heartbeat from an instance whose gen~ is not running: the followers then compute themselves
+    var key = getActiveGroupKey();
+    var bus = getSharedBus();
+    if (!key || !bus) return;
+    if (!bus.spec) bus.spec = {};
+    var share = bus.spec[key];
+    if (!share || share.owner !== INSTANCE_ID) {
+        share = { owner: INSTANCE_ID, t: now, seq: ++fftSeq, cols: raw || null, sr: scopeSampleRate };
+        bus.spec[key] = share;
+    }
+    share.t = now;
+    if (raw) {
+        share.seq = ++fftSeq;
+        share.cols = raw;
+        share.sr = scopeSampleRate;
+    }
+    share.silent = silent ? 1 : 0;
+}
+
+/** Max over the group's instances of every band meter (each instance's gen only measures the bands it computes). */
+function mergeBandPeaks(alive) {
+    for (var b = 0; b < 4; b++) bandPeaks[b] = bandPeaksOwn[b];
+    for (var i = 0; i < alive.length; i++) {
+        var p = alive[i];
+        if (!p || p.id === INSTANCE_ID || typeof p.getBandPeaks !== "function") continue;
+        try {
+            var pk = p.getBandPeaks();
+            for (var k = 0; k < 4; k++) if (pk[k] > bandPeaks[k]) bandPeaks[k] = pk[k];
+        } catch (err) {}
+    }
 }
 
 function pullScope() {
     if (isDeleted) return;
     var now = Date.now();
+    var redrawNeeded = false;
 
-    // Refresh sibling cached `selfLiveApi` paths quietly first so `isLeftMostInOwnChain()` sees up-to-date device indices
-    refreshAllSiblingLomPathsQuietly();
-    // Refresh our own LOM state on our own thread (`isOwnThread = true`)
-    refreshSelfLomState(true);
+    // LOM / topology work is polled every TOPO_INTERVAL_MS (was every 40 ms in every instance, O(instances^2) LiveAPI reads)
+    if (now - lastTopoTime >= TOPO_INTERVAL_MS) {
+        lastTopoTime = now;
 
-    var aliveNow = isSelfCurrentlyAlive();
-    if (!aliveNow) {
-        if (lastKnownAlive) {
-            lastKnownAlive = false;
-            var prevEff = lastEffectiveGroupKey;
-            var baseKey = getBaseGroupKey();
-            if (prevEff && prevEff !== baseKey) {
-                notifySiblingPeersOfTopologyChange(prevEff);
+        // Refresh sibling cached `selfLiveApi` paths quietly first so `isLeftMostInOwnChain()` sees up-to-date device indices
+        refreshAllSiblingLomPathsQuietly();
+        // Refresh our own LOM state on our own thread (`isOwnThread = true`)
+        refreshSelfLomState(true);
+
+        var aliveNow = isSelfCurrentlyAlive();
+        if (!aliveNow) {
+            if (lastKnownAlive) {
+                lastKnownAlive = false;
+                var prevEff = lastEffectiveGroupKey;
+                var baseKey = getBaseGroupKey();
+                if (prevEff && prevEff !== baseKey) {
+                    notifySiblingPeersOfTopologyChange(prevEff);
+                }
+                if (baseKey) {
+                    notifySiblingPeersOfTopologyChange(baseKey);
+                }
             }
-            if (baseKey) {
-                notifySiblingPeersOfTopologyChange(baseKey);
-            }
+            return;
         }
+
+        lastSeenTime = now;
+
+        if (!lastKnownAlive) {
+            // Restored from Undo (Cmd+Z) in Ableton Live — single transition from inactive -> active
+            lastKnownAlive = true;
+            updateAutoBandCountFromPeers(true);
+            var restoredBase = getBaseGroupKey();
+            if (restoredBase) {
+                notifySiblingPeersOfTopologyChange(restoredBase);
+            }
+            emitDspState(true);
+            broadcastLinkedState();
+        } else if (updateAutoBandCountFromPeers(true)) {
+            emitDspState(true);
+        }
+
+        cachedAlivePeers = getAliveGroupPeers(getActiveGroupKey());
+        var prNow = wantPrune();
+        if (prNow !== sentPrune) {
+            sentPrune = prNow;
+            outlet(0, ["prune", prNow]);
+        }
+    } else if (!isSelfCurrentlyAlive()) {
         return;
     }
 
-    lastSeenTime = now;
-
-    if (!lastKnownAlive) {
-        // Restored from Undo (Cmd+Z) in Ableton Live — single transition from inactive -> active
-        lastKnownAlive = true;
-        updateAutoBandCountFromPeers(true);
-        var restoredBase = getBaseGroupKey();
-        if (restoredBase) {
-            notifySiblingPeersOfTopologyChange(restoredBase);
-        }
-        emitDspState(true);
-        broadcastLinkedState();
-    } else if (updateAutoBandCountFromPeers(true)) {
-        emitDspState(true);
+    if (!scopeBufName || typeof Buffer === "undefined") {
+        if (redrawNeeded) mgraphics.redraw();
+        return;
     }
-
-    if (!scopeBufName || typeof Buffer === "undefined") return;
     try {
+        var fresh = updateFftRole(now, cachedAlivePeers);
         var buf = new Buffer(scopeBufName);
-        var hdr = buf.peek(1, 0, 28);
+        var hdr = buf.peek(1, 0, 32);
         if (!hdr || hdr.length < 24) return;
 
-        for (var i = 0; i < 16; i++) {
-            specBands[i] = clamp(Number(hdr[i]) || 0.0, 0.0, 2.0);
-        }
         for (var b = 0; b < 4; b++) {
-            bandPeaks[b] = clamp(Number(hdr[16 + b]) || 0.0, 0.0, 2.0);
+            bandPeaksOwn[b] = clamp(Number(hdr[16 + b]) || 0.0, 0.0, 2.0);
         }
+        mergeBandPeaks(cachedAlivePeers);
         inPeak = clamp(Number(hdr[20]) || 0.0, 0.0, 2.0);
         outPeak = clamp(Number(hdr[21]) || 0.0, 0.0, 2.0);
+        gateNeedBits = Number(hdr[28]) || 0;
+        gateAsleep = Number(hdr[29]) || 0;
 
         var scopeBeat = Number(hdr[23]) || 0;
         if (scopeBeat !== lastScopeBeat) {
@@ -1245,7 +1381,6 @@ function pullScope() {
             dspTimedOut = false;
         }
 
-        var ringPos = clamp(Math.floor(Number(hdr[24]) || 0), 0, MBSPLIT_FFT_SIZE - 1);
         var sr = Math.max(8000.0, Number(hdr[25]) || 48000.0);
         scopeSampleRate = sr;
         var firD = Math.round(Number(hdr[26]) || 0);
@@ -1255,27 +1390,57 @@ function pullScope() {
         }
 
         if (inPeak > 1e-4) {
-            var ringData = buf.peek(1, 32, MBSPLIT_FFT_SIZE);
-            if (ringData && ringData.length >= MBSPLIT_FFT_SIZE) {
-                var N = MBSPLIT_FFT_SIZE;
-                for (var n = 0; n < N; n++) {
-                    var rIdx = (ringPos + n) % N;
-                    var rv = Number(ringData[rIdx]);
-                    audioRingUnwrapped[n] = isFinite(rv) ? rv : 0.0;
+            silentTicks = 0;
+            if (fftWantRing) {
+                // the ring only holds one 8192-sample window of the current input after it has refilled
+                if (now - fftRingOnSince >= FFT_RING_FILL_MS) {
+                    var ringPos = clamp(Math.floor(Number(hdr[24]) || 0), 0, MBSPLIT_FFT_SIZE - 1);
+                    var ringData = buf.peek(1, 32, MBSPLIT_FFT_SIZE);
+                    if (ringData && ringData.length >= MBSPLIT_FFT_SIZE) {
+                        var N = MBSPLIT_FFT_SIZE;
+                        for (var n = 0; n < N; n++) {
+                            var rIdx = (ringPos + n) % N;
+                            var rv = Number(ringData[rIdx]);
+                            audioRingUnwrapped[n] = isFinite(rv) ? rv : 0.0;
+                        }
+                        var raw = computeRawSpecColumns(audioRingUnwrapped, sr);
+                        fftComputed++;
+                        publishSpecShare(now, raw, false);
+                        applyRawSpecColumns(raw, true);
+                        redrawNeeded = true;
+                    }
                 }
-                updateSpectrogramFrom8192Samples(audioRingUnwrapped, sr, true);
+            } else if (fresh && fresh.cols && fresh.seq !== sharedSeqSeen) {
+                sharedSeqSeen = fresh.seq;
+                fftCopied++;
+                applyRawSpecColumns(fresh.cols, true);
+                redrawNeeded = true;
             }
         } else {
-            var silentRow = new Array(SPEC_COLS);
-            for (var c = 0; c < SPEC_COLS; c++) {
-                specColDb[c] = Math.max(-72.0, specColDb[c] - 2.5);
-                specColPeaks[c] = Math.max(-72.0, specColPeaks[c] - 1.2);
-                silentRow[c] = specColDb[c];
+            if (fftWantRing) publishSpecShare(now, null, true);
+            // decay to the floor, scroll the empty rows out, then stop drawing (nothing moves any more)
+            if (silentTicks < 120) {
+                silentTicks++;
+                var silentRow = new Array(SPEC_COLS);
+                for (var c = 0; c < SPEC_COLS; c++) {
+                    specColDb[c] = Math.max(-72.0, specColDb[c] - 2.5);
+                    specColPeaks[c] = Math.max(-72.0, specColPeaks[c] - 1.2);
+                    silentRow[c] = specColDb[c];
+                }
+                specColHistory.unshift(silentRow);
+                if (specColHistory.length > MAX_WATERFALL_ROWS) specColHistory.pop();
+                redrawNeeded = true;
             }
-            specColHistory.unshift(silentRow);
-            if (specColHistory.length > MAX_WATERFALL_ROWS) specColHistory.pop();
         }
-        mgraphics.redraw();
+
+        // meters / pills: redraw when a displayed value moved visibly
+        var sig = Math.round(bandPeaks[0] * 200) + "," + Math.round(bandPeaks[1] * 200) + "," + Math.round(bandPeaks[2] * 200) + "," +
+            Math.round(bandPeaks[3] * 200) + "," + Math.round(outPeak * 200) + "," + mbDsp.ready + mbDsp.error;
+        if (sig !== lastDrawSig) {
+            lastDrawSig = sig;
+            redrawNeeded = true;
+        }
+        if (redrawNeeded) mgraphics.redraw();
     } catch (err) {}
 }
 
@@ -1289,6 +1454,8 @@ if (typeof Task !== "undefined") {
 }
 
 function preview() {
+    mbDsp.ready = 1;
+    mbDsp.error = "";
     manualBandsOverride = 4;
     curNumBands = 4;
     curSlope = 1; // 24 dB/oct LR4
@@ -1416,6 +1583,8 @@ function getBandPillRect(bandIdx) {
 
 // Text of the link badge (expanded status or compact "Link").
 function linkBadgeText() {
+    // until the deferred gen~ runs (src/mbsplit_dsp.js) the badge reports the DSP state instead of the link
+    if (!mbDsp.ready) return mbDsp.error ? "DSP failed: " + String(mbDsp.error).substring(0, 22) : "DSP loading...";
     var linkNames = [rackContext.shortLabel, "GRP A", "GRP B", "GRP C", "GRP D", "UNLINKED"];
     var linkLabel = linkNames[curLinkGroup] || rackContext.shortLabel;
     var peers = getLinkedPeerCount();
@@ -1946,11 +2115,14 @@ function drawBottomRightLinkBadge() {
     sptRgba(sptColor("live_lcd_bg"), 0.85);
     mgraphics.rectangle(lr[0], lr[1], lr[2], lr[3]);
     mgraphics.fill();
-    sptRgba(isLinked ? sptColor("live_control_selection") : sptColor("live_display_scale_text"), hoverLinkBadge ? 1.0 : 0.85);
+    var dspShown = !mbDsp.ready;
+    sptRgba(dspShown ? (mbDsp.error ? sptColor("live_alert") : sptColor("live_control_selection")) :
+        (isLinked ? sptColor("live_control_selection") : sptColor("live_display_scale_text")), hoverLinkBadge ? 1.0 : 0.85);
     mgraphics.arc(lr[0] + 5, lr[1] + lr[3] * 0.5, 1.8, 0, Math.PI * 2);
     mgraphics.fill();
     sptText(linkBadgeText(), lr[0] + 10, lr[1] + lr[3] - 3,
-        hoverLinkBadge ? sptColor("live_control_fg") : sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+        dspShown ? (mbDsp.error ? sptColor("live_alert") : sptColor("live_control_selection")) :
+            (hoverLinkBadge ? sptColor("live_control_fg") : sptColor("live_display_scale_text")), SPT_SIZE_SMALL, 0);
 }
 
 function paint() {
