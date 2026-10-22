@@ -44,6 +44,13 @@ for (const v of variants) {
     eq(p.openinpresentation, 1, `${v}: openinpresentation`);
     eq(p.rect[3], 169, `${v}: rect height`);
     eq(p.devicewidth, p.openrect[2], `${v}: devicewidth matches openrect`);
+    // resizeFace finds the v8ui by scripting name: the main v8ui box must carry exactly that varname, and "obj-viz" must NOT be what it looks up
+    {
+        const viz = p.boxes.map((b) => b.box).find((b) => b.id === "obj-viz");
+        eq(viz.varname, "MegaModState", `${v}: main v8ui varname is what resizeFace looks up`);
+        ok(/MM_UI_VARNAME\s*=\s*"MegaModState"/.test(fs.readFileSync(path.join(ROOT, "src", "megamod_mapper.js"), "utf8")), `${v}: resizeFace looks the v8ui up by MegaModState`);
+        ok(!/getnamed\("obj-viz"\)/.test(fs.readFileSync(path.join(ROOT, "src", "megamod_mapper.js"), "utf8")), `${v}: no getnamed("obj-viz") (the varname is MegaModState)`);
+    }
     const boxes = p.boxes.map((b) => b.box);
     const byId = Object.fromEntries(boxes.map((b) => [b.id, b]));
     for (const b of boxes) {
@@ -838,8 +845,19 @@ function makeEnv(lom) {
         else if (m[1] === "at") liveCfg.ctx.autot(Number(m[2]), v);
         else liveCfg.ctx.autod(Number(m[2]), v);
     }
+    // obj-viz / obj-panel-<i>: presentation_rect holders for the resizeFace checks (the saved builder rects)
+    const faceBoxes = {
+        "MegaModState": { attrs: { presentation_rect: [4, 4, 580, 161] } },
+        "obj-panel-0": { attrs: { presentation_rect: [0, 0, 588, 169] } },
+    };
+    for (const k of Object.keys(faceBoxes)) {
+        faceBoxes[k].setattr = function (name, ...v) { this.attrs[name] = v; this.log = (this.log || []).concat([[name, v]]); };
+        faceBoxes[k].getattr = function (name) { return this.attrs[name]; };
+    }
     const patcher = {
+        faceBoxes,
         getnamed(n) {
+            if (faceBoxes[n]) return faceBoxes[n];
             if (n === "megamod_engine") return engine;
             if ((/^ap_\d+$/.test(n) && Number(n.slice(3)) < 96) || (/^at_\d+$/.test(n) && Number(n.slice(3)) < 96) || (/^ad_\d+$/.test(n) && Number(n.slice(3)) < 64) || n === "ap_marker") return liveObj(n);
             const m = /^mm_(mid|rid|mod|rem)_(\d+)$/.exec(n);
@@ -1016,6 +1034,18 @@ for (const v of variants) {
     env.log.outlets.length = 0;
     run("MM.requestWidth(5)");
     assert.deepStrictEqual(env.log.outlets[0], [0, "width", 120]); passed++;
+    // resizeFace gets the very value that goes out to setwidth, on every request, up to the maximum (1600): the v8ui is
+    // device width - 2 * its left inset wide and the full-width background panel is the device width
+    for (const w of [300, 732, 1200, 1600, 5000, 588]) {
+        env.log.outlets.length = 0;
+        run(`MM.requestWidth(${w})`);
+        const sent = env.log.outlets[0][2];
+        eq(sent, Math.min(1600, Math.max(120, w)), `${v}: setwidth value for ${w}`);
+        const vr = env.patcher.faceBoxes["MegaModState"].attrs.presentation_rect, pr = env.patcher.faceBoxes["obj-panel-0"].attrs.presentation_rect;
+        eq(vr[2], sent - 2 * vr[0], `${v}: v8ui width = setwidth ${sent} - 2 * margin`);
+        eq(pr[2], sent, `${v}: background panel width = setwidth ${sent}`);
+        eq(pr[0], 0, `${v}: background panel stays at x 0`);
+    }
     run("MM.retrigger(3)");
     eq(env.log.outlets[1][1], "gen", `${v}: retrigger via gen message`);
     eq(env.log.outlets[1][3] % 16, 3, `${v}: retrigger slot encoded`);

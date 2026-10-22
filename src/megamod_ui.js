@@ -49,8 +49,10 @@ const UB_HIST = 200;
 
 var ubDrag = null;
 var ubHover = null; // {x, y, hit}
+var ubLastClick = null; // {x, y, kind, chip} of the last click that reached the v8ui (test_geom)
 var ubPopup = null; // {mode: "add"|"type", slot, x, y}
 var ubDelArm = -1;
+var ubDelWasExp = -1; // slot of the last deleted modulator when its strip was expanded
 var ubLastReq = 0;
 var ubFullTTL = 0;
 var ubFullInternal = false; // the "full" pill is about the internal matrix (64) rather than the Live pool (256)
@@ -60,8 +62,8 @@ var ubFrame = 0;
 const UB_POP_ROW = 14;
 const UB_POP_HEAD = 15;
 const UB_POP_MAXROWS = 9;
-const UB_POP_W = 168;
-const UB_POP_MIN = 132; // narrowest popover; the device is widened to fit it while it is open
+const UB_POP_W = 180;
+const UB_POP_MIN = 144; // narrowest popover; the device is widened to fit it while it is open
 // width of the popover's value column, shared by all its rows: the widest text their MODES can show (any Remote row:
 // "100\u2013100%"; all Mod: the widest of "\u00b1100%" / "+100%" / "\u2212100%"). It depends on modes only, never on values,
 // so the column and the range bar never move while values change; the bar takes all the remaining width
@@ -174,9 +176,32 @@ function ubSel() {
     const s = ubUIs().sel;
     return ubValidSlot(s) ? s : -1;
 }
-function ubExp() {
-    const s = ubUIs().exp;
-    return ubValidSlot(s) ? s : -1;
+// Expanded strips: `ui.exp` is a list of slots (older states hold one number, or -1 for none; both still load). Entries that
+// are not modulators are dropped, and the list is cut to what fits the 1600 px device width (the strips view has no
+// scrolling, so expanding past the limit is refused instead, see ubToggleExpanded).
+function ubExpRaw() {
+    const e = ubUIs().exp;
+    const arr = Array.isArray(e) ? e : e === undefined || e === null ? [] : [e];
+    const out = [];
+    for (const s of arr) if (ubValidSlot(s) && out.indexOf(s) < 0) out.push(s);
+    return out;
+}
+function ubMaxExpanded() {
+    const n = ubOrder().length;
+    const plus = n < MAX_MODS ? UB_GAP + UB_PLUS : 0;
+    const base = UB_RAIL + UB_GAP + n * UB_STRIP + (n - 1) * UB_GAP + plus + UB_EDGE;
+    return Math.max(0, Math.floor((MAX_WIDTH - base) / (UB_EXP - UB_STRIP)));
+}
+function ubExpList() {
+    const l = ubExpRaw();
+    return l.slice(0, ubMaxExpanded());
+}
+function ubIsExp(slot) {
+    return ubExpList().indexOf(slot) >= 0;
+}
+function ubExp() { // the most recently expanded strip, -1 when none
+    const l = ubExpList();
+    return l.length ? l[l.length - 1] : -1;
 }
 function ubPb() {
     return !!ubUIs().pb;
@@ -194,11 +219,11 @@ function ubStrips() {
     const ord = ubOrder();
     if (ubPb()) return ubTabsGeom(ord);
     if (ubOpt()) return { list: [], plus: null, end: UB_RAIL + UB_GAP };
-    const exp = ubExp();
+    const exps = ubExpList();
     let x = UB_RAIL + UB_GAP;
     const list = [];
     for (const slot of ord) {
-        const isExp = slot === exp;
+        const isExp = exps.indexOf(slot) >= 0;
         const w = isExp ? UB_EXP : UB_STRIP;
         list.push({ slot, x, y: 0, w, h: UB_H, exp: isExp });
         x += w + UB_GAP;
@@ -669,10 +694,28 @@ function ubAddType(type) {
     }
     return slot;
 }
+// slot >= 0: expand that strip (the others stay as they are); -1: collapse every strip. Returns false when refused (no room).
 function ubSetExpanded(slot) {
-    MM.setUI({ exp: slot, sel: slot >= 0 ? slot : ubSel() });
-    if (slot >= 0) ubRetarget(slot);
+    if (slot < 0) { MM.setUI({ exp: [] }); ubSyncWidth(); return true; }
+    if (!ubValidSlot(slot)) return false;
+    const l = ubExpList();
+    if (l.indexOf(slot) < 0) {
+        if (l.length >= ubMaxExpanded()) { ubNote = { text: "No room to expand: the device is at its maximum width", ttl: UB_FULL_FRAMES }; mgraphics.redraw(); return false; }
+        l.push(slot);
+    }
+    MM.setUI({ exp: l, sel: slot });
+    ubRetarget(slot);
     ubSyncWidth();
+    return true;
+}
+// collapse just one strip
+function ubCollapseSlot(slot) {
+    MM.setUI({ exp: ubExpList().filter((s) => s !== slot) });
+    ubSyncWidth();
+}
+function ubToggleExpanded(slot) {
+    if (ubIsExp(slot)) ubCollapseSlot(slot);
+    else ubSetExpanded(slot);
 }
 function ubTipsOn() {
     return MM.getSettings().tooltips !== false;
@@ -716,6 +759,7 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
     ubFocus = true;
     ubEndDrag();
     const h = ubHit(x, y);
+    ubLastClick = { x, y, kind: h.kind, chip: h.chip || null, slot: h.slot === undefined ? -1 : h.slot };
     if (ubPopup) {
         const pop = ubPopup;
         if (h.kind === "popup") {
@@ -753,7 +797,7 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
         }
         case "collapse":
             if (h.g && h.g.fixed) ubTogglePb(false); // LST view: back to the rack strips
-            else ubSetExpanded(-1);
+            else ubCollapseSlot(h.slot);
             break;
         case "del":
             if (ubDelArm === h.slot) {
@@ -865,8 +909,7 @@ function ondblclick(x, y, but, cmd, shift) {
         case "opt_rate": MM.setSettings({ rateMul: defaultSettings().rateMul }); MM.commit(); break;
         case "head": {
             const g = h.g;
-            if (g && g.exp && !g.fixed) ubSetExpanded(-1);
-            else if (g && !g.exp) ubSetExpanded(h.slot);
+            if (g && !g.fixed) ubToggleExpanded(h.slot);
             break;
         }
         case "viz":
@@ -1144,12 +1187,19 @@ function ubDetailClick(h, x, y) {
 
 // ------------------------------------------------------------------ delete / undo (UI side; the stack lives in MM)
 // Delete / Backspace deletes the selected modulator (with its mappings); Cmd-Z / Ctrl-Z restores it, Shift-Cmd-Z / Ctrl-Y redoes.
+// keeps `ui.exp` a clean list (deleted modulators and entries that do not fit are removed)
+function ubPruneExp() {
+    const raw = ubUIs().exp;
+    const l = ubExpList();
+    if (!Array.isArray(raw) || raw.length !== l.length || raw.some((s, i) => s !== l[i])) MM.setUI({ exp: l });
+}
 function ubDeleteMod(slot) {
     if (!ubValidSlot(slot)) return false;
+    ubDelWasExp = ubIsExp(slot) ? slot : -1; // Cmd-Z puts the strip back expanded
     MM.removeModulator(slot);
     delete ubMapSelBy[slot];
     if (ubMapsPop && ubMapsPop.slot === slot) ubMapsPop = null;
-    if (ubExp() < 0 && ubUIs().exp !== undefined && ubUIs().exp !== -1) MM.setUI({ exp: -1 });
+    ubPruneExp();
     if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] });
     ubSyncWidth();
     return true;
@@ -1164,7 +1214,11 @@ function ubDeleteMapping(m) {
 function ubDoUndo() {
     const r = MM.undo();
     if (!r) return false;
-    if (r.kind === "mod") MM.setUI({ sel: r.slot });
+    if (r.kind === "mod") {
+        MM.setUI({ sel: r.slot });
+        if (ubDelWasExp === r.slot && ubValidSlot(r.slot) && !ubPb() && !ubOpt()) ubSetExpanded(r.slot);
+        ubDelWasExp = -1;
+    }
     else { if (ubSel() !== r.slot) MM.setUI({ sel: r.slot }); MM.setUI({ pbSel: r.ids[0] }); }
     ubSyncWidth();
     return true;
@@ -1173,7 +1227,7 @@ function ubDoRedo() {
     const r = MM.redo();
     if (!r) return false;
     if (ubMapsPop && !ubValidSlot(ubMapsPop.slot)) ubMapsPop = null;
-    if (ubExp() < 0 && ubUIs().exp !== undefined && ubUIs().exp !== -1) MM.setUI({ exp: -1 });
+    ubPruneExp();
     if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] });
     ubSyncWidth();
     return true;
@@ -1250,6 +1304,18 @@ function ubSelfMark(m, x, y, a) {
         ubTextC("L", x + 4, y + 7.3, 6, [0.06, 0.07, 0.09], 1);
     }
 }
+// the tiny kind marker after a popover row's name: a 6 px loop (internal) or an orange "L" tag (via Live)
+function ubSelfMarkSmall(m, x, y, a) {
+    if (m.target.internal) {
+        const cx = x + 3, cy = y + 3.5;
+        const pts = [];
+        for (let i = 0; i <= 10; i++) { const an = (40 + (280 * i) / 10) * Math.PI / 180; pts.push([cx + Math.cos(an) * 2.2, cy + Math.sin(an) * 2.2]); }
+        ubPoly(pts, UB_SELF_COL, a, 1.1);
+    } else {
+        ubRR(x, y, 6, 7, 1.5, UB_REM_COL, 0.85 * a);
+        ubTextC("L", x + 3, y + 5.8, 5, [0.06, 0.07, 0.09], 1);
+    }
+}
 // a self-mapping's name fitted to a column: the full meaning name, else just the control ("Rate", "Shape", "On"; the modulator prefix goes first), else shortened
 function ubSelfFit(m, maxW, size) {
     const full = ubMapName(m);
@@ -1321,14 +1387,15 @@ function ubMapsPopGeom() {
 }
 function ubPopRowParts(R, y, vw) {
     if (vw === undefined) vw = ubPopValW(ubMapsPop ? MM.mappingsFor(ubMapsPop.slot) : []);
-    // name | M/R chip | bar | value: the value column has a fixed width and x, so nothing shuffles while a bar is dragged
+    // on/off | name (+ kind marker) | M/R chip | bar | value: the value column has a fixed width and x, so nothing shuffles while a bar is dragged
+    const tog = [R[0] + 3, y + 2, 11, 10]; // the same cell in every row (normal and self), so the columns never differ between them
     const val = [R[0] + R[2] - 6 - vw, y + 2, vw, 10];
     // the bar takes every pixel the name column (min 40 px) does not need
-    const barW = Math.max(24, R[2] - 10 - vw - 3 - 13 - 13 - 3 - 40);
+    const barW = Math.max(24, R[2] - 10 - vw - 3 - 13 - 13 - 3 - 12 - 40);
     const bar = [val[0] - 3 - barW, y + 2, barW, 10];
     const pol = [bar[0] - 13, y + 2, 11, 10]; // Mod only: cycles + / \u00b1 / \u2212 (kept empty in Remote so columns never move)
     const mode = [pol[0] - 13, y + 2, 11, 10];
-    return { name: [R[0] + 5, y, mode[0] - 3 - (R[0] + 5), UB_POP_ROW], mode, pol, bar, val };
+    return { tog, name: [R[0] + 17, y, mode[0] - 3 - (R[0] + 17), UB_POP_ROW], mode, pol, bar, val };
 }
 function ubHitMapsPop(x, y) {
     const P = ubMapsPopGeom();
@@ -1338,6 +1405,7 @@ function ubHitMapsPop(x, y) {
         if (y < r.y || y >= r.y + UB_POP_ROW) continue;
         const pr = ubPopRowParts(P.rect, r.y, P.vw);
         const base = { slot: P.slot, m: r.m };
+        if (ubIn(pr.tog, x, y)) return Object.assign({ kind: "mp_tog", tip: r.m.enabled ? "Mapping on (click to switch off)" : "Mapping off (click to switch on)" }, base);
         if (ubIn(pr.mode, x, y)) return Object.assign({ kind: "mp_mode", tip: r.m.target.internal ? "Internal routes are Mod only" : "Mod / Remote" }, base);
         if (r.m.mode !== "remote" && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol", tip: "Polarity: click to cycle + / \u00b1 / \u2212" }, base);
         if (ubIn(pr.bar, x, y)) return Object.assign({ kind: "mp_bar", rect: pr.bar, tip: r.m.mode === "remote" ? "Drag the nearest handle: min / max (double-click resets it)" : "Drag to set the range (double-click = full)" }, base);
@@ -1350,6 +1418,11 @@ function ubMapsPopClick(h, x, y) {
     switch (h.kind) {
         case "mp_out": ubMapsPop = null; break;
         case "mp_lst": { const s = h.slot; ubMapsPop = null; ubOpenLst(s); break; }
+        case "mp_tog": {
+            const m = MM.getMapping(h.m.id);
+            if (m) { ubMapSelBy[m.mod] = m.id; MM.updateMapping(m.id, { enabled: m.enabled ? 0 : 1 }); }
+            break;
+        }
         case "mp_mode": {
             const m = MM.getMapping(h.m.id);
             if (m) { ubMapSelBy[m.mod] = m.id; if (!m.target.internal) MM.updateMapping(m.id, { mode: m.mode === "remote" ? "mod" : "remote" }); }
@@ -1906,9 +1979,12 @@ function ubPaintMapsPop() {
         const a = miss ? 0.75 : !m.enabled || status === "disabled" ? 0.5 : 1;
         if (sel && sel.id === m.id) ubRect(R[0] + 2, r.y, R[2] - 4, UB_POP_ROW, UB_CYAN, 0.1);
         const selfM = isSelfMapping(m);
-        if (selfM) ubSelfMark(m, pr.name[0], r.y + 2.5, a);
-        const nOff = selfM ? 10 : 0;
-        ubText(selfM ? ubSelfFit(m, pr.name[2] - nOff, 7) : ubFit(ubMapName(m), pr.name[2] - nOff, 7), pr.name[0] + nOff, r.y + 10, 7, miss ? UB_RED : [0.84, 0.86, 0.9], a);
+        ubMapToggle(pr.tog, !!m.enabled, col, !!(ubHover && ubHover.hit && ubHover.hit.kind === "mp_tog" && ubHover.hit.m && ubHover.hit.m.id === m.id));
+        // a self-mapping's kind is a tiny marker right after its name (green loop = internal, orange L = via Live)
+        const nOff = selfM ? 8 : 0;
+        const nt = selfM ? ubSelfFit(m, pr.name[2] - nOff, 7) : ubFit(ubMapName(m), pr.name[2], 7);
+        ubText(nt, pr.name[0], r.y + 10, 7, miss ? UB_RED : [0.84, 0.86, 0.9], a);
+        if (selfM) ubSelfMarkSmall(m, pr.name[0] + ubTextW(nt, 7) + 2, r.y + 3.5, a);
         const remote = m.mode === "remote";
         const mc = remote ? UB_REM_COL : UB_MOD_COL;
         ubRR(pr.mode[0], pr.mode[1], pr.mode[2], pr.mode[3], 3, mc, m.target.internal ? 0.45 : 0.85);
@@ -2547,12 +2623,13 @@ function preview() {
         const st0 = MM.mappingStatus;
         MM.mappingStatus = (id) => (lv && id === lv.id ? "ok" : st0(id));
         MM.setSelfMod("internal", false);
+        MM.addSelfMapping(2, selfDestFor("ctl", 3, 0), "internal"); // Dice -> Seq 8 Rate (a second self row on the popover's strip)
         const e0 = t.eff[0];
         e0.ctl[0] = ubKnobNorm(ubKnobs(s.mods[0])[0], s.mods[0].p.rate) + 0.2; // Rate swings up
         e0.ctl[2] = 0.45; // Depth pulled down by the via-Live mapping
         e0.sw[2] = 1; // Bipolar switched on by the internal route
     }
-    MM.setUI({ exp: UB_PREVIEW_LIST ? 4 : (UB_PREVIEW_SELF ? 0 : -1), sel: 2, pb: UB_PREVIEW_LIST ? 1 : 0, pbSel: selId, pbScroll: 0 });
+    MM.setUI({ exp: UB_PREVIEW_LIST ? [4] : (UB_PREVIEW_SELF ? [0, 4] : []), sel: 2, pb: UB_PREVIEW_LIST ? 1 : 0, pbSel: selId, pbScroll: 0 });
     ubFullTTL = 0;
     if (UB_PREVIEW_OPT) {
         MM.setUI({ pb: 0, opt: 1 });

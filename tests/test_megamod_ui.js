@@ -2999,4 +2999,197 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     function C_SYNC_LFO1() { return 96 + 0 * 6 + 1; } // dest code of modulator 1's (slot 0) Sync switch
 }
 
+// ================================================================ several strips expanded at once + popover on/off toggle
+{
+    const ctr = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
+    const inter = (a, b) => a[0] < b[0] + b[2] - 1e-6 && b[0] < a[0] + a[2] - 1e-6 && a[1] < b[1] + b[3] - 1e-6 && b[1] < a[1] + a[3] - 1e-6;
+    function mkM(n) {
+        const T = makeEnv();
+        T.ctx.uiReady();
+        T.ctx.setnames("---megamodcfg", "---megamodmseg", "---megamodsteps", "---megamodscope", "---mmcurve", "---megamodroute");
+        T.ctx.init_lom();
+        for (let k = 0; k < n; k++) T.run(`ubAddType(${[1, 2, 3, 4, 5][k % 5]})`);
+        T.run("MM.setUI({ pb: 0, opt: 0, exp: [], sel: 0 }); ubSyncWidth(true)");
+        T.c = (x, y) => T.ctx.onclick(x, y, 1, 0, 0, 0, 0, 0);
+        T.up = () => T.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+        T.dbl = (x, y) => T.ctx.ondblclick(x, y, 1, 0, 0, 0, 0, 0);
+        T.w = () => { const w = T.log.outlets.filter((o) => o[1] === "width"); return w.length ? w[w.length - 1][2] : null; };
+        T.R = (slot) => T.run(`ubStripRects(ubStrips().list.filter((g) => g.slot === ${slot})[0])`);
+        T.exps = () => T.run("ubExpList()");
+        return T;
+    }
+    // ---- expand / collapse independently
+    {
+        const T = mkM(5);
+        const w0 = T.w();
+        T.dbl(...ctr(T.R(1).viz));
+        eq(T.exps(), [1], "multi: first double-click expands strip 1");
+        T.dbl(...ctr(T.R(3).viz));
+        eq(T.exps(), [1, 3], "multi: a second strip expands without collapsing the first");
+        eq(T.w(), w0 + 2 * (204 - 56), "multi: width = the sum of both expanded strips");
+        T.dbl(...ctr(T.R(0).head));
+        eq(T.exps(), [1, 3, 0], "multi: three strips stay expanded");
+        eq(T.w(), w0 + 3 * (204 - 56), "multi: three strips widen the device by three deltas");
+        eq(T.run("ubStrips().list.filter((g) => g.exp).map((g) => g.slot)"), [0, 1, 3], "multi: geometry shows exactly those strips expanded");
+        T.c(...ctr(T.R(3).collapse)); T.up();
+        eq(T.exps(), [1, 0], "multi: the chevron collapses only its own strip");
+        eq(T.w(), w0 + 2 * (204 - 56), "multi: width shrinks by one delta");
+        T.dbl(...ctr(T.R(1).head));
+        eq(T.exps(), [0], "multi: a header double-click collapses only that strip");
+        T.dbl(...ctr(T.R(0).head));
+        eq(T.exps(), [], "multi: and the last one");
+        eq(T.w(), w0, "multi: width back to the collapsed width");
+        T.dbl(...ctr(T.R(2).viz)); T.dbl(...ctr(T.R(4).viz));
+        T.c(...ctr(T.R(1).viz)); T.up();
+        eq([T.run("ubSel()"), T.exps()], [1, [2, 4]], "multi: selecting another strip does not change what is expanded");
+        T.run("ubTogglePb(true)");
+        eq(T.run("ubStrips().main.slot"), 1, "multi: the LST inspector shows the selected modulator");
+        eq(T.run("ubStrips().list.filter((g) => g.exp).length"), 1, "multi: LST view has just the one fixed expanded editor");
+        eq(T.w(), T.run("ubListGeom().end") + 8, "multi: LST width does not depend on the expanded strips");
+        T.run("ubTogglePb(false)");
+        eq(T.exps(), [2, 4], "multi: back in the strips the same strips are expanded");
+        T.run("ubToggleOpt(true)");
+        eq(T.run("ubStrips().list.length"), 0, "multi: OPT view shows no strips");
+        T.run("ubToggleOpt(false)");
+        eq(T.exps(), [2, 4], "multi: OPT leaves the expanded list alone");
+        T.run("ubSetExpanded(-1)");
+        eq(T.exps(), [], "multi: ubSetExpanded(-1) collapses all");
+    }
+    // ---- migration and persistence
+    {
+        const T = mkM(4);
+        for (const [raw, want] of [[2, [2]], [-1, []], [[1, 3], [1, 3]], [[1, 1, 9, "x", 3], [1, 3]], [7, []]]) {
+            T.run(`MM.setUI({ exp: ${JSON.stringify(raw)} })`);
+            eq(T.exps(), want, `multi: exp ${JSON.stringify(raw)} loads as ${JSON.stringify(want)}`);
+        }
+        T.run("MM.setUI({ exp: 2, sel: 2 }); ubSyncWidth(true)");
+        T.run("paint()");
+        T.dbl(...ctr(T.R(0).viz));
+        eq(T.exps(), [2, 0], "multi: a numeric exp is migrated to a list the moment another strip expands");
+        eq(T.run("Array.isArray(MM.getUI().exp)"), true, "multi: stored as a list");
+        const saved = T.run("MM.save()");
+        const T2 = makeEnv();
+        T2.ctx.setvalueof(saved);
+        eq(T2.run("ubExpList()"), [2, 0], "multi: round trip through the saved state keeps the expanded list");
+        eq(T2.log.outlets.filter((o) => o[1] === "width").pop()[2], T2.run("ubLayoutWidth()") + 8, "multi: width re-requested after restore");
+        const T3 = makeEnv();
+        const old = JSON.parse(JSON.stringify(T.run("JSON.parse(stateToJson(MM.state))")));
+        old.ui.exp = 3;
+        T3.ctx.setvalueof(T.run(`serializeState(normalizeState(${JSON.stringify(old)}))`));
+        eq(T3.run("ubExpList()"), [3], "multi: an old state with exp = 3 loads as [3]");
+    }
+    // ---- width limit: expanding past 1600 px is refused with a HUD note
+    {
+        const T = mkM(16);
+        const kmax = T.run("ubMaxExpanded()");
+        ok(kmax >= 1 && kmax < 16, `multi: 16 strips cannot all expand (max ${kmax})`);
+        for (let k = 0; k < 16; k++) T.run(`ubSetExpanded(${k})`);
+        eq(T.exps().length, kmax, "multi: expanding stops at the limit");
+        ok(T.run("ubLayoutWidth()") + 8 <= 1600, "multi: the device never needs more than 1600 px");
+        eq(T.run("ubSetExpanded(15)"), false, "multi: a refused expand returns false");
+        T.log.texts.length = 0;
+        T.run("paint()");
+        ok(T.log.texts.some((t) => /No room to expand/.test(t)), "multi: a HUD note says there is no room");
+        T.run("ubCollapseSlot(0)");
+        eq(T.run("ubSetExpanded(15)"), true, "multi: after a collapse there is room again");
+        T.run(`MM.setUI({ exp: [${[...Array(16).keys()].join(",")}] })`);
+        eq(T.exps().length, kmax, "multi: a saved list that does not fit is cut to the limit");
+        ok(T.run("ubStrips().end") + 8 <= 1600, "multi: ...and the layout fits");
+    }
+    // ---- delete / undo
+    {
+        const T = mkM(4);
+        T.run("ubSetExpanded(0); ubSetExpanded(2); ubSetExpanded(3)");
+        T.run("ubDeleteMod(2)");
+        eq(T.exps(), [0, 3], "multi: deleting an expanded modulator removes it from the expanded list");
+        eq(T.run("MM.getUI().exp"), [0, 3], "multi: the stored list is pruned too");
+        T.run("ubDoUndo()");
+        eq(T.exps(), [0, 3, 2], "multi: undo brings the modulator back expanded");
+        T.run("ubDeleteMod(1)");
+        eq(T.exps(), [0, 3, 2], "multi: deleting a collapsed one leaves the list alone");
+        T.run("ubDoUndo()");
+        eq(T.exps(), [0, 3, 2], "multi: ...and its undo does not expand it");
+        const cnt = T.run("MM.modCount()");
+        T.c(...ctr(T.R(3).del)); T.c(...ctr(T.R(3).del));
+        eq([T.run("MM.modCount()"), T.exps()], [cnt - 1, [0, 2]], "multi: the delete button removes just that strip");
+    }
+    // ---- faces: one per control, no overlap, inside the device, hidden while popups are open
+    {
+        const F = mkM(5);
+        F.run("ubSetExpanded(0); ubSetExpanded(2); ubSetExpanded(3)");
+        F.run("paint()");
+        const shown = F.run("MM.faceState().shown");
+        const names = Object.keys(shown);
+        const want = {};
+        for (const g of F.run("ubStrips().list")) for (const f of F.run(`ubStripFaces(ubStrips().list.filter((q) => q.slot === ${g.slot})[0], MM.state.mods[${g.slot}], ubStripRects(ubStrips().list.filter((q) => q.slot === ${g.slot})[0]))`)) want[f[0]] = (want[f[0]] || 0) + 1;
+        eq(names.slice().sort(), Object.keys(want).sort(), "multi faces: every control of every strip has a face");
+        ok(Object.values(want).every((n) => n === 1), "multi faces: exactly one face per control");
+        const lim = F.run("ubFaceLimit()");
+        const rects = names.map((n) => { const pr = F.live[n].attrs.presentation_rect; return [n, [pr[0] - 4, pr[1] - 4, pr[2], pr[3]]]; });
+        for (const [n, r] of rects) {
+            eq(F.live[n].attrs.hidden, 0, `multi faces: ${n} shown`);
+            ok(r[0] >= 0 && r[1] >= 0 && r[0] + r[2] <= lim + 1e-6 && r[1] + r[3] <= 161 + 1e-6, `multi faces: ${n} inside the device`);
+        }
+        for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++) ok(!inter(rects[a][1], rects[b][1]), `multi faces: ${rects[a][0]} and ${rects[b][0]} do not overlap`);
+        F.run("ubSetExpanded(-1)"); F.run("paint()");
+        ok(names.length > Object.keys(F.run("MM.faceState().shown")).length, "multi faces: the expanded strips add faces");
+        F.run("ubSetExpanded(0); ubSetExpanded(2); paint()");
+        const before = Object.keys(F.run("MM.faceState().shown")).length;
+        F.run("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 1', paramName: 'P', trackName: 'T', deviceName: 'D' })");
+        F.run("ubMapsPop = { slot: 0, scroll: 0 }; paint()");
+        eq(Object.keys(F.run("MM.faceState().shown")).length, 0, "multi faces: hidden while the maps popover is open");
+        F.run("ubMapsPop = null; ubPopup = { mode: 'add', slot: -1, x: 10, y: 22 }; paint()");
+        eq(Object.keys(F.run("MM.faceState().shown")).length, 0, "multi faces: hidden while the type menu is open");
+        F.run("ubPopup = null; paint()");
+        eq(Object.keys(F.run("MM.faceState().shown")).length, before, "multi faces: back when the popups close");
+    }
+    // ---- popover: left on/off toggle on normal and self rows
+    {
+        const T = mkM(3);
+        T.run("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 1', paramName: 'Decay', trackName: 'Drums', deviceName: 'Reverb' })");
+        T.run("MM.addSelfMapping(0, 12, 'internal')");
+        T.run("MM.setSelfMod('live', false); MM.addSelfMapping(0, 7, 'live')");
+        T.run("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 2', paramName: 'Size', trackName: 'Drums', deviceName: 'Reverb' })");
+        const ms = T.run("MM.mappingsFor(0)");
+        eq(ms.length, 4, "popover toggle: normal, internal, via Live, normal");
+        T.run("MM.updateMapping(" + ms[3].id + ", { enabled: 0 })");
+        T.run("ubMapsPop = { slot: 0, scroll: 0 }");
+        const P = T.run("ubMapsPopGeom()");
+        const rows = P.vis.map((r) => T.run(`ubPopRowParts(${JSON.stringify(P.rect)}, ${r.y}, ${P.vw})`));
+        for (const k of ["tog", "name", "mode", "pol", "bar", "val"]) for (const r of rows) eq([r[k][0], r[k][2]], [rows[0][k][0], rows[0][k][2]], `popover toggle: the ${k} column is aligned across normal and self rows`);
+        for (const r of rows) {
+            const seq = ["tog", "name", "mode", "pol", "bar", "val"];
+            for (let i = 0; i < seq.length; i++) {
+                ok(r[seq[i]][0] >= P.rect[0] && r[seq[i]][0] + r[seq[i]][2] <= P.rect[0] + P.rect[2], `popover toggle: ${seq[i]} inside the popover`);
+                for (let j = i + 1; j < seq.length; j++) ok(!inter(r[seq[i]], r[seq[j]]), `popover toggle: ${seq[i]} and ${seq[j]} do not overlap`);
+            }
+            ok(r.name[2] >= 25, "popover toggle: the name column keeps at least 25 px (as before the toggle)");
+            ok(r.bar[2] >= 24, "popover toggle: the bar keeps a usable width");
+            eq(r.bar[0] + r.bar[2] + 3, r.val[0], "popover toggle: the bar fills up to the fixed value column");
+        }
+        P.vis.forEach((r, i) => {
+            const before = JSON.parse(JSON.stringify(T.run(`MM.getMapping(${r.m.id})`)));
+            const [cx, cy] = ctr(rows[i].tog);
+            eq(T.run(`ubHit(${cx}, ${cy})`).kind, "mp_tog", `popover toggle: row ${i} hit area is the toggle`);
+            T.c(cx, cy); T.up();
+            const after = T.run(`MM.getMapping(${r.m.id})`);
+            eq(after.enabled ? 1 : 0, before.enabled ? 0 : 1, `popover toggle: row ${i} flips enabled`);
+            eq([after.mode, after.range, after.polarity, after.min, after.max], [before.mode, before.range, before.polarity, before.min, before.max], `popover toggle: row ${i} keeps its range and mode`);
+            T.c(cx, cy); T.up();
+            eq(T.run(`MM.getMapping(${r.m.id})`).enabled ? 1 : 0, before.enabled ? 1 : 0, `popover toggle: row ${i} flips back`);
+            ok(T.run("!!ubMapsPop"), "popover toggle: the popover stays open");
+        });
+        const [nx, ny] = ctr(rows[0].name);
+        eq(T.run(`ubHit(${nx}, ${ny})`).kind, "mp_row", "popover toggle: the name area is not a toggle");
+        T.log.texts.length = 0;
+        T.log.textCols = [];
+        T.run("paint()");
+        ok(T.log.texts.some((t) => /Decay/.test(t)) && T.log.texts.some((t) => /Size/.test(t)), "popover toggle: enabled and disabled normal rows paint their names");
+        ok(T.log.texts.includes("L"), "popover toggle: the via-Live kind marker (tiny L tag) is painted");
+        const sizeCol = T.log.textCols.filter((q) => q.t === "Size").pop();
+        const decayCol = T.log.textCols.filter((q) => q.t === "Decay").pop();
+        ok(sizeCol && decayCol && sizeCol.col[3] < decayCol.col[3], "popover toggle: the disabled row is dimmed");
+    }
+}
+
 console.log(`megamod UI tests passed (${passed} checks)`);

@@ -7,6 +7,7 @@
 // script also loads in Node mocks and in the preview renderer.
 
 const MM_THIS = this;
+const MM_UI_VARNAME = "MegaModState";
 const MM_ENGINE_VARNAME = "megamod_engine";
 // Debug trace of learn/mapping. Off by default; set MM_DEBUG_LOG to an absolute path to also mirror it to a file.
 const MM_DEBUG = false;
@@ -721,7 +722,7 @@ var MM = (function () {
         let o = [4, 4];
         const p = patcher();
         try {
-            const ui = p && p.getnamed ? p.getnamed("obj-viz") : null;
+            const ui = p && p.getnamed ? p.getnamed(MM_UI_VARNAME) : null;
             const r = ui ? ui.getattr("presentation_rect") : null;
             if (Array.isArray(r) && r.length >= 2) o = [Number(r[0]), Number(r[1])];
         } catch (e) {}
@@ -1393,7 +1394,8 @@ var MM = (function () {
         const p = patcher();
         if (!p || typeof p.getnamed !== "function") return;
         try {
-            const ui = p.getnamed("obj-viz");
+            // the v8ui's scripting name is "MegaModState" (the builder renames it), NOT its box id: looking up the box id returns null in Live
+            const ui = p.getnamed(MM_UI_VARNAME) || (MM_THIS.box && typeof MM_THIS.box.getattr === "function" ? MM_THIS.box : null);
             if (ui) {
                 const r = ui.getattr("presentation_rect");
                 if (Array.isArray(r) && r.length >= 4) ui.setattr("presentation_rect", r[0], r[1], Math.max(1, w - 2 * r[0]), r[3]);
@@ -1533,6 +1535,7 @@ var MM = (function () {
         return s;
     };
     api._test = {
+        reqWidth: function () { return reqWidth; },
         slotOf: function () { return slotOf; },
         islotOf: function () { return islotOf; },
         islot: function (id) { return islotOf[id] === undefined ? -1 : islotOf[id]; },
@@ -1793,6 +1796,31 @@ function test_faces() {
     const g = new Global("megamod_test");
     g["faces_" + devId] = JSON.stringify({ popup: typeof ubPopup !== "undefined" ? !!ubPopup : null, maps: typeof ubMapsPop !== "undefined" ? !!ubMapsPop : null, nmods: MM.state.mods.filter((m) => m).length, paints: typeof ubPaintCount !== "undefined" ? ubPaintCount : -1, hover: typeof ubHover !== "undefined" && ubHover ? [ubHover.x, ubHover.y] : null, shown: st.shown, real: real, stats: st.stats, origin: st.origin, hiddenCount: nHidden });
     g.last_faces = g["faces_" + devId];
+}
+// test_geom: the width story as Live sees it, as `geom_<device id>`: obj-viz / panel presentation rects, the v8ui's own box.rect /
+// mgraphics.size, the width last requested, the patcher's openrect / devicewidth attributes
+function test_geom() {
+    if (typeof Global === "undefined") return;
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    const out = { reqWidth: MM._test.reqWidth(), uiLayout: typeof ubLayoutWidth === "function" ? ubLayoutWidth() : -1 };
+    const rect = (n) => { try { const o = MM_THIS.patcher.getnamed(n); return o ? o.getattr("presentation_rect") : null; } catch (e) { return "ERR " + e; } };
+    out.viz = rect(MM_UI_VARNAME);
+    out.panels = [];
+    for (let i = 0; i < 8; i++) { const r = rect("obj-panel-" + i); if (!r) break; out.panels.push(r); }
+    try { out.boxRect = MM_THIS.box.rect; } catch (e) { out.boxRect = "ERR " + e; }
+    try { out.gfx = mgraphics.size; } catch (e) { out.gfx = "ERR " + e; }
+    out.lastClick = typeof ubLastClick !== "undefined" ? ubLastClick : null;
+    try { out.devwidth = MM_THIS.patcher.getattr("devicewidth"); } catch (e) { out.devwidth = "ERR " + e; }
+    try { out.openrect = MM_THIS.patcher.getattr("openrect"); } catch (e) { out.openrect = "ERR " + e; }
+    try {
+        out.strips = ubStrips().list.map((g2) => {
+            const c = g2.exp ? ubStripRects(g2).chips.filter((q) => q.id === "sync")[0] : null;
+            return { slot: g2.slot, x: g2.x, w: g2.w, exp: !!g2.exp, sync: c ? c.rect : null, chips: g2.exp ? ubStripRects(g2).chips.map((q) => [q.id, q.key, q.rect]) : [] };
+        });
+    } catch (e) { out.strips = "ERR " + e; }
+    const g = new Global("megamod_test");
+    g["geom_" + devId] = JSON.stringify(out);
 }
 // test_probe <varname>: what the live.* object says about itself (attribute names with "param", the long / short name attributes)
 function test_probe(varname) {
