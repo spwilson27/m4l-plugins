@@ -82,7 +82,7 @@ for (const v of variants) {
     ok(msgs.some((t) => t === "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope, ibuf ---megamodint, icurve ---megamodicurve, route ---megamodroute"), `${v}: gen binding message`);
     ok(msgs.some((t) => t.startsWith("setnames ---megamodcfg") && t.endsWith("---mmcurve ---megamodroute ---megamodint ---megamodicurve")), `${v}: setnames message`);
     ok(msgs.some((t) => t === "route ---megamodroute, curve ---mmcurve"), `${v}: router binding message`);
-    for (const n of ["---megamodcfg @samps 384", "---megamodmseg @samps 16384", "---megamodsteps @samps 512", "---megamodscope @samps 512", "---mmcurve @samps 65536", "---megamodroute @samps 1024", "---megamodint @samps 512", "---megamodicurve @samps 16384"]) {
+    for (const n of ["---megamodcfg @samps 384", "---megamodmseg @samps 16384", "---megamodsteps @samps 512", "---megamodscope @samps 640", "---mmcurve @samps 65536", "---megamodroute @samps 1024", "---megamodint @samps 512", "---megamodicurve @samps 16384"]) {
         ok(boxes.some((b) => b.text === `buffer~ ${n}`), `${v}: buffer ${n}`);
     }
     // wiring: plugin~ -> plugout~ pass-through, width route, plugsync~ params
@@ -247,8 +247,8 @@ function checkPool(v, p, boxes, byId, lines) {
     }
     near(C.shapeCurve(0.5, C.CURVE_EXP, 0.5, 4), 0.0625, 1e-9, "exp amt 0.5 -> power 4");
     // ---- mapping shape (MSEG transfer curve) ----
-    eq(C.MEGAMOD_VERSION, 9, "schema version 9 (self-mod)");
-    eq(C.defaultState().schema, 9, "new states are schema 9");
+    eq(C.MEGAMOD_VERSION, 10, "schema version 10 (depth routes)");
+    eq(C.defaultState().schema, 10, "new states are schema 10");
     {
         const d = C.defaultMapping(1, 0, {});
         eq(JSON.stringify([d.polarity, d.range, d.amount, d.invert, d.bipolar, d.min, d.max]), JSON.stringify([0, 0.5, null, null, null, 0, 1]), "default mapping: ± , range 0.5, no amount, min 0, max 1, no legacy invert / bipolar");
@@ -353,7 +353,7 @@ function checkPool(v, p, boxes, byId, lines) {
                         const old = { id: 1, mod: 0, mode: "mod", polarity: pol, range, amount, shape, target: { path: "p" } };
                         const st = C.normalizeState({ schema, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [old], nextMapId: 2 });
                         const m = st.mappings[0];
-                        eq(st.schema, 9, "migrated state is schema 9");
+                        eq(st.schema, 10, "migrated state is schema 10");
                         eq(m.amount, undefined, "amount dropped");
                         near(m.range, Math.abs(amount) * range, 1e-12, `schema ${schema} pol ${pol} a ${amount} r ${range}: range'`);
                         eq(m.polarity, amount < 0 && pol !== 0 ? -pol : pol, `schema ${schema} pol ${pol} a ${amount}: polarity swap`);
@@ -505,7 +505,7 @@ function checkPool(v, p, boxes, byId, lines) {
         ok(worst < 0.02, `migrated tables match the old formula (max error ${worst.toFixed(4)} < 0.02)`);
         const v1 = { schema: 1, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 3, mod: 0, curve: C.CURVE_STEPPED, curveSteps: 3, amount: 1, target: { path: "p" } }], nextMapId: 4 };
         const st = C.normalizeState(v1);
-        eq(st.schema, 9, "migrated state is the current schema");
+        eq(st.schema, 10, "migrated state is the current schema");
         eq(st.mappings[0].shape.length, 6, "stepped(3) = 3 hard steps = 6 points");
         eq(st.mappings[0].shape.map((p) => p.y).join(), "0,0,0.5,0.5,1,1", "stepped levels 0, 0.5, 1");
         near(C.mappingTable(st.mappings[0])[128], 0.0, 1e-9, "stepped middle step is flat");
@@ -521,7 +521,7 @@ function checkPool(v, p, boxes, byId, lines) {
         s2.mappings.push(m2); s2.nextMapId = 2;
         const back = C.deserializeState(C.serializeState(s2));
         eq(JSON.stringify(back.mappings[0].shape), JSON.stringify(m2.shape), "shape round trip");
-        eq(back.schema, 9, "current schema stays");
+        eq(back.schema, 10, "current schema stays");
         // a legacy-field mapping handed straight to the table helpers still resolves (audio-test fixtures)
         const legacy = { mode: "mod", amount: 0.8, bipolar: 1, invert: 0, curve: C.CURVE_S, curveAmt: 0.6, curveSteps: 4 };
         near(C.mappingOutput(legacy, 0.3), C.mappingOutput(Object.assign({}, legacy, { shape: C.curveToShape(C.CURVE_S, 0.6, 4) }), 0.3), 1e-12, "legacy fields fall back to the converted shape");
@@ -657,9 +657,9 @@ function checkPool(v, p, boxes, byId, lines) {
 
 // ---------------------------------------------------------------- 5b. settings (schema 7), engine ratemul
 {
-    eq(C.MEGAMOD_VERSION, 9, "schema 9");
+    eq(C.MEGAMOD_VERSION, 10, "schema 10");
     const d = C.defaultState();
-    eq(d.schema, 9, "default state is schema 9");
+    eq(d.schema, 10, "default state is schema 10");
     assert.deepStrictEqual(d.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }); passed++;
     // sanitize: clamps, bad values -> defaults
     assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "remote", smoothMs: 9999, rateMul: 100 }), { defaultMode: "remote", smoothMs: 500, rateMul: 4, selfMod: "internal" }); passed++;
@@ -681,7 +681,7 @@ function checkPool(v, p, boxes, byId, lines) {
     s.settings = { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, selfMod: "internal" };
     const back = C.deserializeState(C.serializeState(s));
     assert.deepStrictEqual(back.settings, { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, selfMod: "internal" }); passed++;
-    eq(back.schema, 9, "round trip is schema 9");
+    eq(back.schema, 10, "round trip is schema 10");
     // old states (schema 1..6, no settings) get the defaults and keep everything else
     for (const sc of [1, 2, 3, 4, 5, 6]) {
         const old = JSON.parse(C.stateToJson(s));
@@ -689,7 +689,7 @@ function checkPool(v, p, boxes, byId, lines) {
         old.schema = sc;
         const n = C.normalizeState(old);
         assert.deepStrictEqual(n.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }); passed++;
-        eq(n.schema, 9, `schema ${sc} state normalizes to 9`);
+        eq(n.schema, 10, `schema ${sc} state normalizes to 10`);
         ok(!!n.mods[0], `schema ${sc}: modulators kept`);
     }
     // default mapping per mode
@@ -784,7 +784,7 @@ function makeEnv(lom) {
     const log = { outlets: [], notify: 0, seq: [], posts: [] };
     const bufs = {};
     class Buffer {
-        constructor(name) { this.name = name; if (!bufs[name]) bufs[name] = { data: new Float64Array(name.endsWith("mmcurve") ? 65536 : name.endsWith("route") ? 1024 : name.endsWith("scope") ? 512 : name.endsWith("megamodint") ? 512 : name.endsWith("icurve") ? 16384 : 1 << 15) }; this.b = bufs[name]; }
+        constructor(name) { this.name = name; if (!bufs[name]) bufs[name] = { data: new Float64Array(name.endsWith("mmcurve") ? 65536 : name.endsWith("route") ? 1024 : name.endsWith("scope") ? 640 : name.endsWith("megamodint") ? 512 : name.endsWith("icurve") ? 16384 : 1 << 15) }; this.b = bufs[name]; }
         poke(ch, off, arr) { const a = Array.isArray(arr) ? arr : [arr]; for (let i = 0; i < a.length; i++) this.b.data[off + i] = a[i]; }
         peek(ch, off, n) { return Array.from(this.b.data.slice(off, off + n)); }
         framecount() { return this.b.data.length; }
@@ -1458,7 +1458,7 @@ function p0Width() { return 588; }
         near(tb[255], 0.8 * 0.25, 1e-12, "table end value scaled");
         // migration: a schema 7 mapping without depth loads at 100%
         const old = C.normalizeState({ schema: 7, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, mode: "mod", polarity: 1, range: 0.6, shape: sh, target: {} }], nextMapId: 2 });
-        eq(old.schema, 9, "schema 7 -> 9");
+        eq(old.schema, 10, "schema 7 -> 10");
         eq(old.mappings[0].depth, 1, "migrated mapping depth defaults to 1");
         near(C.mappingOutput(old.mappings[0], 1), 0.6, 1e-12, "migrated output unchanged");
         const withD = C.normalizeState({ schema: 8, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, depth: 0.37, target: {} }, { id: 2, mod: 0, depth: 7, target: {} }, { id: 3, mod: 0, depth: "x", target: {} }] });
@@ -1706,7 +1706,9 @@ function p0Width() { return 588; }
         eq(e.run(`MM.mappingSlot(${m69.id})`), 69, "mapping 70 sits in slot 69");
         e.run(`MM.updateMapping(${m69.id}, { depth: 0.25 })`);
         near(e.run(`MM.getMapping(${m69.id}).depth`), 0.25, 1e-12, "depth stays editable beyond slot 64");
-        near(e.bufs["---mmcurve"].data[69 * 256 + 255], 0.5 * 0.25, 1e-9, "table of slot 69 carries the depth (range 0.5 x depth 0.25)");
+        near(e.bufs["---mmcurve"].data[69 * 256 + 255], 0.5, 1e-9, "table of slot 69 is baked at depth 1 (schema 10: every slot applies the depth in its router)");
+        near(e.bufs["---megamodroute"].data[C.ROUTE_DEPTH_BASE + 69], 0.25, 1e-9, "the base depth of slot 69 is written to the route buffer (depth multiplier for slots >= 64)");
+        eq(e.bufs["---megamodroute"].data[C.ROUTE_DEPTH_MIN + 69], -1, "slot 69 is a Mod mapping: Remote min cell -1");
         e.ctx.autod(64, 10); // not a Live object, ignored safely
         ok(true, "depth input beyond 64 is ignored");
     }
@@ -1881,11 +1883,22 @@ function p0Width() { return 588; }
             ok(!/\bnormOf\(|\bvalOf\(/.test(g), "no helper function called with those argument shapes (it silently broke the gen compile in Max 9)");
             ok(/peek\(outv, sidx - 1\)/.test(g), "sources are read from outv before the slots of this sample run");
             ok(!/\be[0-9]\b/.test(g), "no e<digit> identifiers");
-            // router: only pool slots < 64 apply the depth per sample
-            const R0 = mcPy.router(0), R1 = mcPy.router(1), R2 = mcPy.router(2);
-            ok(R0.includes("dk0 = peek(route, 1);") && R0.includes("rm0 = peek(route, 576);") && R0.includes("yv0 = (rm0 < -0.5) ? yv0 * dk0 : rm0 + (yv0 - rm0) * dk0;"), "router 0 slot 0: Mod y * d, Remote min + (y - min) * d");
-            ok(R1.includes("dk0 = peek(route, 65);") && R1.includes("rm0 = peek(route, 608);"), "router 1 slot 32 reads route[65] and route[576 + 32]");
-            ok(!R2.includes("rm0 =") && !R2.includes("dk0 ="), "router 2 (slots 64+) has no per-sample depth (it is baked into the table)");
+            // routers: EVERY pool slot (schema 10) applies the depth per sample (the depth multiplier covers slots >= 64)
+            let covered = 0, baseOk = true;
+            for (let r = 0; r < 8; r++) {
+                const R = mcPy.router(r);
+                for (let jx = 0; jx < 32; jx++) {
+                    const k = r * 32 + jx;
+                    if (!R.includes(`dk${jx} = peek(route, ${2 * k + 1});`) || !R.includes(`rm${jx} = peek(route, ${C.ROUTE_DEPTH_MIN + k});`) || !R.includes(`yv${jx} = (rm${jx} < -0.5) ? yv${jx} * dk${jx} : rm${jx} + (yv${jx} - rm${jx}) * dk${jx};`)) baseOk = false;
+                    covered++;
+                }
+            }
+            ok(baseOk && covered === 256, "all 8 routers read dk = route[2k+1] and rm = route[768 + k] for each of their 32 slots (256 pool slots)");
+            ok(C.ROUTE_DEPTH_BASE === 512 && C.ROUTE_DEPTH_MIN === 768 && C.ROUTE_DEPTH_MIN + 256 <= C.ROUTE_SAMPS && C.ROUTE_DEPTH_BASE + 256 <= C.ROUTE_DEPTH_MIN && 2 * 256 <= C.ROUTE_DEPTH_BASE, "route buffer layout: [0..511] source/effective, [512..767] base, [768..1023] Remote min");
+            ok(/Data dsum\(512\);/.test(g) && /Data dcl\(512\);/.test(g), "the destination accumulators hold 448 depth / control cells");
+            ok(g.includes("dk = sampleCount - 256 * floor(sampleCount / 256);"), "the base -> effective depth refresh walks all 256 slots");
+            ok(g.includes("poke(route, clip(peek(route, 512 + dkk, 0) + dsm, 0, 1), 2 * dkk + 1, 0);") && g.includes("dkk = dst - 192;"), "a depth destination 192 + k (k up to 255) writes the summed effective depth of pool slot k");
+            ok(g.includes("poke(scope, peek(route, 2 * (ts + 192) + 1, 0), 512 + ts, 0);") && C.SCOPE_DEPTH + C.ROUTER_DEPTH_SLOTS <= C.SCOPE_SAMPS, "telemetry carries the effective depth of all 256 slots");
         }
         // ---- model: schema 9, selector, targets, serialization
         {
@@ -1893,7 +1906,7 @@ function p0Width() { return 588; }
             eq(C.sanitizeSettings({ selfMod: "live" }).selfMod, "live", "live accepted"); eq(C.sanitizeSettings({ selfMod: "bogus" }).selfMod, "internal", "anything else = internal");
             eq(C.sanitizeSettings({}).selfMod, "internal", "missing = internal");
             const old = C.normalizeState({ schema: 8, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, target: { path: "live_set tracks 0 devices 0 parameters 1", paramName: "x" } }], settings: { defaultMode: "remote", smoothMs: 10 } });
-            eq(old.schema, 9, "schema 8 -> 9"); eq(old.settings.selfMod, "internal", "migration defaults to internal"); eq(old.settings.defaultMode, "remote", "...and keeps the other settings");
+            eq(old.schema, 10, "schema 8 -> 10"); eq(old.settings.selfMod, "internal", "migration defaults to internal"); eq(old.settings.defaultMode, "remote", "...and keeps the other settings");
             eq(old.mappings.length, 1, "...and the mappings"); ok(!old.mappings[0].target.internal && old.mappings[0].target.selfDest === undefined, "an old mapping is not a self-mapping");
             const t = C.sanitizeTarget(C.makeInternalTarget(6));
             ok(t.internal === true && t.selfDest === 6 && t.kind === "ctl" && t.slot === 1 && t.ctl === 0 && t.path === "" && t.paramName === "M2 A", "internal target keeps its code and derived fields");
@@ -1954,10 +1967,10 @@ function p0Width() { return 588; }
             e.sel("live_set tracks 0 devices 0 parameters 1");
             learnOwn("M2 Shape"); e.sel("live_set tracks 0 devices 0 parameters 1");
             learnOwn("M2 On"); e.sel("live_set tracks 0 devices 0 parameters 1");
-            learnOwn("Depth 3");
-            eq(e.mapsOf().length, 4, "Shape, On and a Depth are targets too");
-            deq(e.mapsOf().map((m) => m.target.selfDest), [6, 96 + 6, 11, 194], "dest codes 6 / 102 / 11 / 194");
-            deq([0, 1, 2, 3].map((r) => ib(e, 4 * r + 1, 1)[0]), [6, 102, 11, 194], "...in the matrix");
+            learnOwn("M2 Bipolar");
+            eq(e.mapsOf().length, 4, "Shape, On and a Bipolar switch are targets too");
+            deq(e.mapsOf().map((m) => m.target.selfDest), [6, 96 + 6, 11, 104], "dest codes 6 / 102 / 11 / 104");
+            deq([0, 1, 2, 3].map((r) => ib(e, 4 * r + 1, 1)[0]), [6, 102, 11, 104], "...in the matrix");
             eq(ib(e, C.INT_COUNT_AT, 1)[0], 4, "count 4");
             eq(e.run("MM.addMapping(0, { internal: true, selfDest: 6, paramName: 'M2 A' })"), null, "addMapping never creates an internal target (addSelfMapping does)");
             eq(e.run("MM.addMapping(0, { path: 'live_set master_track devices 0 parameters 2', paramName: 'Foo' })"), null, "a normal mapping on the device's own non-pool parameter is refused");
@@ -1973,7 +1986,7 @@ function p0Width() { return 588; }
             eq(ib(e, C.INT_COUNT_AT, 1)[0], 3, "deleting the last route lowers the count");
             e.run("MM.undo()");
             eq(ib(e, C.INT_COUNT_AT, 1)[0], 4, "undo restores it");
-            deq(ib(e, 12, 2), [1, 194], "...on its route");
+            deq(ib(e, 12, 2), [1, 104], "...on its route");
         }
 
         // ---- the internal route cap: the 65th route fires "full" (id -1) and uses no Live pool slot
@@ -2193,6 +2206,145 @@ function p0Width() { return 588; }
             deq(t.eff[3].ctl.map((v) => Math.round(v * 10) / 10), [0.1, 0.2, 0.3, 0.4, 0.5], "tel.eff[slot].ctl = normalized A..E");
             eq(t.eff[3].on, 1, "tel.eff.on"); deq([t.eff[3].sw[0], t.eff[3].sw[2]], [3, 1], "tel.eff.sw = the switches (shape 3, bipolar 1)");
             near(t.depth[9], 0.37, 1e-6, "tel.depth[k]");
+        }
+
+        // ---- DEPTH-MODULATION ROUTES (schema 10): a modulator modulating the Depth of another mapping, followed by mapping id
+        {
+            const addMap = (e, mod, k) => e.run(`MM.addMapping(${mod}, { path: 'live_set tracks 0 devices 0 parameters ${k + 1}', paramName: 'P${k}', trackName: 'Drums', deviceName: 'Reverb', id: ${3000 + k} })`);
+            const routes = (e) => e.run("MM.allMappings()").filter((m) => C.isDepthRoute(m));
+            const slotOfId = (e, id) => e.run(`MM.mappingSlot(${id})`);
+            const route = (e, r) => ib(e, 4 * r, 2); // [src + 1, dest]
+            // -- model, no pool slot, engine matrix
+            {
+                const e = bootS(); e.addLfos(3);
+                const m = addMap(e, 0, 0);
+                const r = e.run(`MM.addDepthRoute(1, ${m.id})`);
+                ok(r && C.isDepthRoute(r) && r.target.internal === true && r.target.kind === "depth" && r.target.mapId === m.id, "addDepthRoute: target {internal, kind: depth, mapId}");
+                eq(r.mode, "mod", "a depth route is Mod only"); eq(e.run("MM.mappingCapacity().used"), 1, "no pool slot is used by the route");
+                eq(e.run("MM.internalCapacity().used"), 1, "one internal route is used"); eq(e.run(`MM.mappingSlot(${r.id})`), -1, "no Live pool slot");
+                eq(e.run(`MM.mappingStatus(${r.id})`), "ok", "status ok"); ok(!C.isSelfMapping(r), "a depth route is not a self-mapping (the selector never converts it)");
+                deq(route(e, 0), [2, 192 + slotOfId(e, m.id)], "matrix route = [source + 1, 192 + the pool slot of the mapping]");
+                eq(e.run(`MM.depthRoutesFor(${m.id})`).length, 1, "depthRoutesFor"); eq(e.run(`MM.depthRouteLabel(MM.getMapping(${r.id}))`), "P0 Depth", "labelled by the mapped parameter");
+                near(ic(e, 0, 255), 0.5, 1e-12, "the route's table is the usual transfer table (+- 0.5)");
+                eq(e.run(`MM.addDepthRoute(1, ${m.id})`), null, "the same source twice on one mapping is a duplicate");
+                eq(e.run(`MM.addDepthRoute(7, ${m.id})`), null, "an empty modulator slot cannot source a route");
+                eq(e.run("MM.addDepthRoute(1, 9999)"), null, "an unknown mapping is refused");
+                eq(e.run(`MM.addDepthRoute(2, ${r.id})`), null, "a route cannot target a depth route (no router stage)");
+                const own = e.run(`MM.addDepthRoute(0, ${m.id})`);
+                ok(own && own.mod === 0, "self-loop decision: the mapping's OWN modulator may modulate its depth (tremolo of self; no feedback, the router output never feeds the engine)");
+                eq(ib(e, C.INT_COUNT_AT, 1)[0], 2, "count 2");
+                // several routes onto one mapping share the destination (the engine sums them)
+                const r3 = e.run(`MM.addDepthRoute(2, ${m.id})`);
+                ok(r3, "a third source"); const d = [0, 1, 2].map((q) => route(e, q)[1]);
+                ok(d[0] === d[1] && d[1] === d[2], "three routes, one destination (they sum in the engine)");
+                near(C.effectiveDepth(1, [0.3, 0.4]), 1, 1e-12, "effective depth clamps at 1"); near(C.effectiveDepth(0.5, [-0.4, -0.4]), 0, 1e-12, "...and at 0");
+                near(C.effectiveDepth(0.5, [0.2, -0.1, 0.15]), 0.75, 1e-12, "sum of the offsets");
+                // editing a route edits the usual fields
+                e.run(`MM.updateMapping(${r.id}, { polarity: -1, range: 0.4, enabled: 0 })`);
+                deq(route(e, 0), [0, d[0]], "a disabled route is off"); e.run(`MM.updateMapping(${r.id}, { enabled: 1, polarity: -1, range: 0.4 })`);
+                near(ic(e, 0, 255), -0.4, 1e-12, "polarity - / range 0.4: the table's end is -0.4"); eq(e.run(`MM.getMapping(${r.id}).mode`), "mod", "stays Mod");
+            }
+            // -- it works for pool slots >= 64 (the depth multiplier covers every slot)
+            {
+                const e = bootS(); e.addLfos(2);
+                for (let k = 0; k < 70; k++) addMap(e, 0, k);
+                const m69 = e.run("MM.allMappings()[69]"); eq(slotOfId(e, m69.id), 69, "mapping 70 sits in slot 69");
+                const r = e.run(`MM.addDepthRoute(1, ${m69.id})`); ok(r, "a route onto a slot >= 64 mapping");
+                deq(route(e, 0), [2, 192 + 69], "destination 192 + 69 = 261");
+                e.run(`MM.updateMapping(${m69.id}, { depth: 0.6 })`);
+                near(e.bufs["---megamodroute"].data[C.ROUTE_DEPTH_BASE + 69], 0.6, 1e-6, "the base depth cell of slot 69 follows the mapping");
+                e.run("MM.readTelemetry()"); const sc = e.bufs["---megamodscope"].data; sc[C.SCOPE_DEPTH + 69] = 0.33;
+                near(e.run(`MM.readTelemetry().depth[69]`), 0.33, 1e-6, "telemetry reads the effective depth of slot 69"); eq(e.run("MM.readTelemetry().depth.length"), 256, "telemetry holds 256 depths");
+                near(e.run(`MM.effectiveDepth(${m69.id})`), 0.33, 1e-6, "MM.effectiveDepth reads it for a modulated mapping");
+            }
+            // -- refusals: internal targets; deleting the target / the source modulator
+            {
+                const e = bootS(); e.addLfos(3);
+                const a = addMap(e, 0, 0), b = addMap(e, 1, 1);
+                const self = e.run(`MM.addSelfMapping(0, ${C.selfDestFor("ctl", 2, 0)}, "internal")`);
+                eq(e.run(`MM.addDepthRoute(1, ${self.id})`), null, "an INTERNAL mapping has no router stage: no depth route on it");
+                const r1 = e.run(`MM.addDepthRoute(1, ${a.id})`), r2 = e.run(`MM.addDepthRoute(2, ${a.id})`), r3 = e.run(`MM.addDepthRoute(0, ${b.id})`);
+                const ids = () => e.run("MM.allMappings()").map((m) => m.id).join(",");
+                const before = ids(), cnt = e.run("MM.internalCapacity().used");
+                e.run(`MM.deleteMapping(${a.id})`);
+                ok(!ids().includes(String(r1.id)) && !ids().includes(String(r2.id)) && ids().includes(String(r3.id)), "deleting the target mapping deletes its depth routes (and only those)");
+                eq(e.run("MM.internalCapacity().used"), cnt - 2, "...and frees their matrix routes");
+                e.run("MM.undo()"); eq(ids(), before, "undo restores the mapping and its routes in the old list order (one step)");
+                deq(route(e, e.run(`MM.allMappings()`).findIndex((m) => m.id === r1.id) >= 0 ? 1 : 0).length, 2, "...and they are routed again");
+                e.run("MM.redo()"); ok(!ids().includes(String(r1.id)), "redo deletes them again"); e.run("MM.undo()");
+                // deleting the SOURCE modulator deletes its routes
+                e.run("MM.removeModulator(2)");
+                ok(!ids().includes(String(r2.id)) && ids().includes(String(r1.id)), "deleting the source modulator deletes its routes");
+                e.run("MM.undo()"); ok(ids().includes(String(r2.id)), "undo restores them");
+                // deleting the modulator that SOURCES the target mapping deletes the routes of every other modulator onto it
+                e.run("MM.removeModulator(0)");
+                ok(!ids().includes(String(a.id)) && !ids().includes(String(r1.id)) && !ids().includes(String(r2.id)) && !ids().includes(String(r3.id)), "deleting the modulator that owns the target mapping removes the routes aimed at it too");
+                e.run("MM.undo()"); eq(ids(), before, "undo brings everything back");
+                const slotA = slotOfId(e, a.id);
+                for (const q of e.run("MM.depthRoutesFor(" + a.id + ")")) { const ri = e.run("MM.allMappings()").findIndex((m) => m.id === q.id); ok(ri >= 0, "route restored"); }
+                ok(e.run(`MM.depthRoutesFor(${a.id})`).every((q) => ib(e, 0, 40).some((v, i) => i % 4 === 1 && v === 192 + slotA)), "restored routes aim at the restored slot");
+            }
+            // -- the route follows the mapping across a slot change (undo into another slot) and a reload
+            {
+                const e = bootS(); e.addLfos(2);
+                const a = addMap(e, 0, 0); addMap(e, 0, 1);
+                const r = e.run(`MM.addDepthRoute(1, ${a.id})`);
+                eq(slotOfId(e, a.id), 0, "slot 0"); e.run(`MM.deleteMapping(${a.id})`);
+                const x = addMap(e, 0, 5); eq(slotOfId(e, x.id), 0, "the freed slot 0 is reused by a new mapping");
+                e.run("MM.undo()");
+                const ns = slotOfId(e, a.id); ok(ns > 0, `undo restores the mapping into another slot (${ns})`);
+                const ri = e.run("MM.allMappings()").findIndex((m) => m.id === r.id);
+                ok(ri >= 0, "the route came back"); deq(ib(e, 4 * 2, 2).concat(ib(e, 4 * 1, 2)).concat(ib(e, 0, 2)).filter((v) => v === 192 + ns).length, 1, "its destination is the NEW slot (192 + " + ns + ")");
+                // reload from the saved blob: routes follow the mapping by id, also when the blob says another slot
+                const blob = e.run("MM.save()");
+                const e2 = bootS(); e2.addLfos(2); e2.ctx.setvalueof(blob);
+                const a2 = e2.run("MM.allMappings()").find((m) => m.id === a.id), rr = e2.run("MM.allMappings()").find((m) => C.isDepthRoute(m));
+                ok(a2 && rr && rr.target.mapId === a.id, "reload keeps the route and its mapId"); eq(e2.run(`MM.mappingSlot(${a.id})`), ns, "the mapping keeps its slot");
+                const rIdx = e2.run("MM.allMappings()").filter((m) => !m.target.internal).length;
+                deq(Array.from(e2.bufs["---megamodint"].data.slice(0, 40)).filter((v, i) => i % 4 === 1 && v > 0).includes(192 + ns), true, "the reloaded route aims at 192 + the mapping's slot");
+                const json = JSON.parse(C.stateToJson(e.run("MM.state") ? JSON.parse(JSON.stringify(e.run("MM.state"))) : null));
+                json.mappings.find((m) => m.id === a.id).slot = 9;
+                const e3 = bootS(); e3.addLfos(2); e3.ctx.setvalueof(C.serializeState(json));
+                eq(e3.run(`MM.mappingSlot(${a.id})`), 9, "a blob that moved the mapping to slot 9...");
+                ok(Array.from(e3.bufs["---megamodint"].data.slice(0, 40)).filter((v, i) => i % 4 === 1).includes(192 + 9), "...moves the route's destination to 192 + 9"); ok(rIdx >= 1, "pool mappings present");
+            }
+            // -- schema 10 migration: internal self-mappings that targeted `Depth k`
+            {
+                const s = C.defaultState(); s.schema = 9;
+                s.mods[0] = C.makeModSlot(C.MOD_LFO, 0); s.mods[1] = C.makeModSlot(C.MOD_LFO, 1);
+                const pm = C.defaultMapping(1, 0, { path: "live_set tracks 0 devices 0 parameters 1", paramName: "Freq" }, "mod"); pm.slot = 7;
+                const old = C.defaultMapping(2, 1, C.makeInternalTarget(192 + 7), "mod"); old.slot = 3; old.range = 0.4; old.polarity = -1;
+                const dead = C.defaultMapping(3, 1, C.makeInternalTarget(192 + 20), "mod"); dead.slot = 4;
+                const via = C.defaultMapping(4, 1, { path: "live_set master_track devices 0 parameters 9", paramName: "Depth 8", selfDest: 192 + 7 }, "mod"); via.slot = 9;
+                const other = C.defaultMapping(5, 1, C.makeInternalTarget(6), "mod"); other.slot = 5;
+                s.mappings = [pm, old, dead, via, other]; s.nextMapId = 6;
+                const n = C.normalizeState(JSON.parse(JSON.stringify(s)));
+                eq(n.schema, 10, "migrated state is schema 10");
+                const mr = n.mappings.find((m) => m.id === 2);
+                ok(mr && C.isDepthRoute(mr) && mr.target.mapId === 1 && mr.range === 0.4 && mr.polarity === -1 && mr.mod === 1, "the internal `Depth 8` self-mapping became a depth route on the mapping in slot 7 (range / polarity / source kept)");
+                ok(!n.mappings.some((m) => m.id === 3), "an internal Depth route on an EMPTY slot is dead and dropped");
+                const vv = n.mappings.find((m) => m.id === 4); ok(vv && !vv.target.internal && vv.target.selfDest === 199 && C.isSelfMapping(vv), "a VIA LIVE `Depth k` mapping stays as it is");
+                const oo = n.mappings.find((m) => m.id === 5); ok(oo && oo.target.internal && oo.target.selfDest === 6, "other internal self-mappings are untouched");
+                const back = C.deserializeState(C.serializeState(n)); ok(C.isDepthRoute(back.mappings.find((m) => m.id === 2)) && back.mappings.find((m) => m.id === 2).target.mapId === 1, "round trip");
+                // orphans / duplicates are repaired on load
+                const bad = JSON.parse(C.stateToJson(n)); bad.mappings.push(JSON.parse(JSON.stringify(mr)), Object.assign(JSON.parse(JSON.stringify(mr)), { id: 9, target: C.makeDepthTarget(99) }));
+                eq(C.normalizeState(bad).mappings.filter((m) => C.isDepthRoute(m)).length, 1, "a duplicate id / an orphan route (unknown mapId) is dropped");
+            }
+            // -- learn / selector interplay
+            {
+                const e = bootS(); e.addLfos(2);
+                const a = addMap(e, 0, 0); const slot = slotOfId(e, a.id);
+                e.run("MM.armLearn(1, false)"); e.selOwn(C.autoDepthName(slot));
+                const rs = routes(e); eq(rs.length, 1, "INTERNAL learn on `Depth 1` (the mapped slot) creates a depth route");
+                ok(rs[0] && rs[0].target.mapId === a.id, "...on that mapping");
+                e.run("MM.disarmLearn()"); e.sel("live_set tracks 0 devices 0 parameters 1");
+                e.run("MM.armLearn(1, false)"); e.selOwn(C.autoDepthName(30)); eq(routes(e).length, 1, "`Depth 31` has no mapping: refused");
+                e.run("MM.disarmLearn()");
+                e.run('MM.setSelfMod("live")'); eq(routes(e).length, 1, "the selector never converts a depth route");
+                eq(e.run(`MM.addSelfMapping(1, ${C.selfDestFor("depth", -1, slot)}, "live")`).target.selfDest, 192 + slot, "VIA LIVE `Depth k` still makes a pool mapping");
+                e.run('MM.setSelfMod("internal")');
+                eq(routes(e).length, 1, "converting the VIA LIVE `Depth k` mapping to INTERNAL: the source already routes this mapping, so it is left as it was (duplicate)");
+            }
         }
     }
 

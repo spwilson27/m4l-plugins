@@ -57,7 +57,7 @@ var MM = (function () {
     // eff[slot] = {ctl: [5 normalized A..E after internal modulation], on, sw: [6 effective switch values]}; depth[k] = effective Depth 0..1 of pool slot k
     const tel = { frame: 0, bpm: 120, beat: 0, playing: 0, mods: [], eff: [], depth: [] };
     for (let i = 0; i < MAX_MODS; i++) { tel.mods.push({ out: 0, phase: 0, u: 0, aux: 0 }); tel.eff.push({ ctl: [0, 0, 0, 0, 0], on: 1, sw: [0, 0, 0, 0, 0, 0] }); }
-    for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) tel.depth.push(1);
+    for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) tel.depth.push(1);
 
     api.state = defaultState();
     api.learn = { armed: false, mod: -1, multi: false };
@@ -136,6 +136,8 @@ var MM = (function () {
     // a self-mapping whose destination does not exist (the target modulator's type has no such control, or its slot is empty) is MISSING:
     // its route is off (nothing is modulated, no Live id bound) and it revives when the type changes back
     function selfDestMissing(m) {
+        // a depth route (schema 10) is missing while its target mapping has no pool slot (deleted / not yet slotted / converted to an internal route)
+        if (isDepthRoute(m)) return slotOf[m.target.mapId] === undefined || !api.getMapping(m.target.mapId);
         return isSelfMapping(m) && !selfDestExists(selfDestOf(m), api.state);
     }
     function mappingActive(m) {
@@ -180,14 +182,14 @@ var MM = (function () {
     function flushRoute() {
         const a = new Array(ROUTE_SAMPS).fill(0);
         for (let k = 0; k < MAX_MAPPINGS; k++) a[2 * k] = ROUTE_OFF;
-        for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) { a[2 * k + 1] = 1; a[ROUTE_DEPTH_BASE + k] = 1; a[ROUTE_DEPTH_MIN + k] = -1; }
+        for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) { a[2 * k + 1] = 1; a[ROUTE_DEPTH_BASE + k] = 1; a[ROUTE_DEPTH_MIN + k] = -1; }
         poke(BUF_ROUTE, 0, a);
     }
-    // pool slots below AUTO_DEPTH_SLOTS apply the Depth in the ROUTER (per sample, so a Depth lane / Depth modulation is smooth): their curve
+    // EVERY pool slot (schema 10) applies the Depth in the ROUTER (per sample, so a Depth lane / depth modulation is smooth): its curve
     // table is baked at depth 1 and the base depth (+ the Remote min, or -1 for Mod) lives in the route buffer. The engine copies base
-    // -> effective and adds the internal Depth modulation. Slots from AUTO_DEPTH_SLOTS up have no Depth parameter and bake the depth in the table.
+    // -> effective and adds the summed depth-modulation routes. Only the first AUTO_DEPTH_SLOTS slots also have a `Depth k` Live parameter.
     function writeDepthCells(m, slot) {
-        if (slot >= AUTO_DEPTH_SLOTS) return;
+        if (slot >= ROUTER_DEPTH_SLOTS) return;
         poke(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [clamp(m.depth, 0, 1)]);
         poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [m.mode === "remote" ? clamp(m.min, 0, 1) : -1]);
     }
@@ -209,7 +211,7 @@ var MM = (function () {
     function writeMappingTable(m) {
         const slot = slotOf[m.id];
         if (slot === undefined) return;
-        poke(BUF_CURVE, slot * CURVE_REGION, mappingTable(slot < AUTO_DEPTH_SLOTS ? Object.assign({}, m, { depth: 1 }) : m));
+        poke(BUF_CURVE, slot * CURVE_REGION, mappingTable(Object.assign({}, m, { depth: 1 })));
         writeDepthCells(m, slot);
     }
     // Bring one mapping's slot in line with the model: table, route, ids. Cheap when nothing changed.
@@ -226,6 +228,7 @@ var MM = (function () {
             slotOf[m.id] = s;
         }
         m.slot = slotOf[m.id]; // persisted: the mapping keeps this slot (and its Depth parameter) across saves
+        syncDepthRoutesFor(m.id); // depth routes aimed at this mapping follow its (possibly new) pool slot
         autoPushDepth(m);
         if (!patcher() || !names || !lomReady) { dlog("syncMapping skip map", m.id, "patcher", !!patcher(), "names", !!names, "lomReady", lomReady); return; }
         const slot = slotOf[m.id];
@@ -253,10 +256,9 @@ var MM = (function () {
         }
         bound[slot] = { mod: 0, rem: 0 };
         delete slotOf[m.id];
-        if (slot < AUTO_DEPTH_SLOTS) {
-            autoPush("ad_" + slot, 100);
-            if (patcher() && names) { poke(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [1]); poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [-1]); }
-        }
+        if (slot < AUTO_DEPTH_SLOTS) autoPush("ad_" + slot, 100);
+        if (patcher() && names) { poke(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [1]); poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [-1]); }
+        syncDepthRoutesFor(m.id); // its depth routes go off (missing)
     }
     // Rebind every mapping (load / names / LOM ready). Releases everything first. Each mapping gets its saved slot
     // back when it is free, so automation of its "Depth <k>" parameter follows the mapping across deletes and
@@ -285,6 +287,7 @@ var MM = (function () {
             syncMapping(m);
         }
         rebuildingAll = false;
+        for (const m of api.state.mappings) if (isDepthRoute(m)) syncInternal(m); // every pool slot is known now: re-aim the depth routes
         rebuildViaDests();
     }
 
@@ -306,7 +309,16 @@ var MM = (function () {
     function writeInternalRoute(m, off) {
         const r = islotOf[m.id];
         if (r === undefined) return;
-        poke(BUF_INT, 4 * r, [off ? 0 : m.mod + 1, selfDestOf(m), 0, 0]);
+        let dest = selfDestOf(m);
+        if (isDepthRoute(m)) {
+            const ts = slotOf[m.target.mapId];
+            if (ts === undefined) { off = true; dest = DEST_DEPTH; } else dest = depthRouteDest(ts);
+        }
+        poke(BUF_INT, 4 * r, [off ? 0 : m.mod + 1, dest, 0, 0]);
+    }
+    // depth routes (schema 10) aimed at mapping `mapId`: rewrite their engine destination (the target's pool slot may have changed)
+    function syncDepthRoutesFor(mapId) {
+        for (const x of api.state.mappings) if (isDepthRoute(x) && x.target.mapId === mapId) syncInternal(x);
     }
     function syncInternal(m) {
         if (islotOf[m.id] === undefined) {
@@ -617,8 +629,7 @@ var MM = (function () {
             const m = api.getMapping(Number(id));
             if (!m) continue;
             if (isInternal(m)) syncInternal(m); // the internal table has the depth baked in
-            else if (slotOf[m.id] !== undefined && slotOf[m.id] < AUTO_DEPTH_SLOTS) writeDepthCells(m, slotOf[m.id]); // the router applies it per sample
-            else writeMappingTable(m);
+            else if (slotOf[m.id] !== undefined) writeDepthCells(m, slotOf[m.id]); // the router applies it per sample
         }
         depthLast = nowFn();
     }
@@ -955,8 +966,11 @@ var MM = (function () {
         api.commit();
     };
     // mappings sourced by modulator slot i, plus self-mappings whose destination is a control / On / switch of slot i
+    // (plus the depth routes aimed at the mappings it sources: they go with their target mapping)
     function mappingsTouching(i) {
-        return api.state.mappings.filter((x) => x.mod === i || (isSelfMapping(x) && (function () { const d = selfDestInfo(selfDestOf(x)); return !!d && d.kind !== "depth" && d.slot === i; })()));
+        const sourced = {};
+        for (const x of api.state.mappings) if (x.mod === i && !isInternal(x)) sourced[x.id] = true;
+        return api.state.mappings.filter((x) => x.mod === i || (isSelfMapping(x) && (function () { const d = selfDestInfo(selfDestOf(x)); return !!d && d.kind !== "depth" && d.slot === i; })()) || (isDepthRoute(x) && sourced[x.target.mapId]));
     }
     api.setModType = function (i, type) {
         const m = api.state.mods[i];
@@ -1097,6 +1111,12 @@ var MM = (function () {
         if (!c.ok) return null;
         const k = kind === "live" || kind === "internal" ? kind : api.state.settings.selfMod;
         if (api.state.mappings.some((x) => x.mod === i && selfDestOf(x) === dest)) return null;
+        const di = selfDestInfo(dest);
+        if (k === "internal" && di && di.kind === "depth") {
+            // INTERNAL + `Depth k` (learn on a Depth parameter) is a depth route on the mapping that owns pool slot k (schema 10)
+            const owner = api.state.mappings.find((x) => !isInternal(x) && slotOf[x.id] === di.ctl);
+            return owner ? api.addDepthRoute(i, owner.id) : null;
+        }
         let m;
         if (k === "internal") {
             if (allocInternal() < 0) { dlog("addSelfMapping: internal matrix full", INT_ROUTES); fire("full", i, -1); return null; }
@@ -1115,6 +1135,41 @@ var MM = (function () {
         fire("mapping", i, m.id);
         api.commit();
         return m;
+    };
+    // ---------------------------------------------------------------- depth-modulation routes (schema 10)
+    // Modulator `i` modulates the Depth of the pool mapping `mapId` (an internal route aimed at the mapping's pool slot, see src/megamod_config.js).
+    // Allowed: any source (also the target mapping's own modulator: tremolo of self, no feedback loop), several routes per mapping (they sum).
+    // Refused (null): unknown modulator / mapping, an INTERNAL or depth-route target (no router stage), the same source twice on one mapping,
+    // a full internal matrix (change kind "full", id -1; the 64-route cap is shared with the self-mod routes).
+    api.addDepthRoute = function (i, mapId) {
+        if (!api.state.mods[i]) return null;
+        const tm = api.getMapping(mapId);
+        if (!tm || isInternal(tm)) return null;
+        if (findDuplicateMapping(api.state.mappings, i, makeDepthTarget(mapId))) return null;
+        if (allocInternal() < 0) { dlog("addDepthRoute: internal matrix full", INT_ROUTES); fire("full", i, -1); return null; }
+        const m = defaultMapping(api.state.nextMapId++, i, makeDepthTarget(mapId), "mod");
+        api.state.mappings.push(m);
+        syncInternal(m);
+        fire("mapping", i, m.id);
+        api.commit();
+        return m;
+    };
+    // the depth routes aimed at a mapping, in list order
+    api.depthRoutesFor = function (mapId) { return depthRoutesOf(api.state.mappings, mapId); };
+    // the mapping a depth route modulates (null when it is gone)
+    api.depthTargetOf = function (m) { return isDepthRoute(m) ? api.getMapping(m.target.mapId) : null; };
+    // "<parameter> Depth" / "Depth"
+    api.depthRouteLabel = function (m) {
+        const t = api.depthTargetOf(m);
+        const nm = t ? t.target.paramName || t.target.name || "" : "";
+        return nm ? nm + " Depth" : "Depth";
+    };
+    // the effective depth of a mapping (the engine's telemetry: base + the routes, clipped), or its own depth without a pool slot / telemetry
+    api.effectiveDepth = function (mapId) {
+        const m = api.getMapping(mapId);
+        if (!m) return 1;
+        const k = slotOf[mapId];
+        return k !== undefined && tel.depth[k] !== undefined && depthRoutesOf(api.state.mappings, mapId).length ? tel.depth[k] : m.depth;
     };
     api.selfMappingsOfKind = function (kind) {
         return api.state.mappings.filter((m) => isSelfMapping(m) && (kind === "internal") === isInternal(m));
@@ -1137,6 +1192,23 @@ var MM = (function () {
         if (to === "internal") {
             if (isInternal(m)) return true;
             if (allocInternal() < 0) return false;
+            const di = selfDestInfo(dest);
+            if (di && di.kind === "depth") {
+                // VIA LIVE `Depth k` -> INTERNAL = a depth route on the mapping that owns slot k (a mapping cannot modulate its own Depth parameter)
+                const owner = api.state.mappings.find((x) => x !== m && !isInternal(x) && slotOf[x.id] === di.ctl);
+                if (!owner || findDuplicateMapping(api.state.mappings, m.mod, makeDepthTarget(owner.id))) return false;
+                if (m.mode === "remote") {
+                    m.polarity = m.max >= m.min ? 1 : -1;
+                    m.range = clamp(Math.abs(m.max - m.min), 0, 1);
+                    m.mode = "mod";
+                }
+                releaseMappingSlot(m);
+                delete pidCache[m.id]; delete missing[m.id];
+                m.target = makeDepthTarget(owner.id);
+                delete m.slot;
+                syncInternal(m);
+                return true;
+            }
             if (m.mode === "remote") {
                 m.polarity = m.max >= m.min ? 1 : -1;
                 m.range = clamp(Math.abs(m.max - m.min), 0, 1);
@@ -1186,6 +1258,9 @@ var MM = (function () {
         fire("selfmod", -1, converted.length);
         return { from: old, to: k, converted: converted.length };
     };
+    function mappingLabel(m) {
+        return isDepthRoute(m) ? "depth route" : m.target.paramName || m.target.name || "mapping";
+    }
     api.mappingSlot = function (id) {
         return slotOf[id] === undefined ? -1 : slotOf[id];
     };
@@ -1211,7 +1286,10 @@ var MM = (function () {
     api.deleteMapping = function (id, opts) {
         const m = api.getMapping(id);
         if (!m) return;
-        const entry = { kind: "map", maps: [snapMapping(m)], label: m.target.paramName || m.target.name || "mapping" };
+        // the depth routes aimed at it go with it (one undo step restores all of them)
+        const deps = isInternal(m) ? [] : depthRoutesOf(api.state.mappings, m.id);
+        const entry = { kind: "map", maps: [m].concat(deps).map(snapMapping), label: mappingLabel(m) };
+        for (const d of deps) removeMappingInternal(d);
         removeMappingInternal(m);
         if (!(opts && opts.noUndo)) pushUndo(entry);
         fire("mapping", m.mod, id);
@@ -1321,7 +1399,7 @@ var MM = (function () {
         } else {
             const m = api.getMapping(e.maps[0].m.id);
             if (!m) return false;
-            e.maps = [snapMapping(m)];
+            e.maps = [m].concat(isInternal(m) ? [] : depthRoutesOf(api.state.mappings, m.id)).map(snapMapping);
             api.deleteMapping(m.id, { noUndo: true });
         }
         return true;
@@ -1432,7 +1510,7 @@ var MM = (function () {
             e.on = a[o + AUTO_PARAMS] || 0;
             for (let t2 = 0; t2 < AUTO_SW_PER_SLOT; t2++) e.sw[t2] = a[o + AUTO_PARAMS + 1 + t2] || 0;
         }
-        for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) tel.depth[k] = a.length > SCOPE_DEPTH + k ? a[SCOPE_DEPTH + k] : 1;
+        for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) tel.depth[k] = a.length > SCOPE_DEPTH + k ? a[SCOPE_DEPTH + k] : 1;
         return tel;
     };
     function pollTelemetry() {
@@ -1630,6 +1708,7 @@ function test_report() {
             return {
                 id: m.id, mod: m.mod, mode: m.mode, depth: m.depth, path: m.target.path, status: MM.mappingStatus(m.id), pid: t.pid(m.id),
                 internal: !!m.target.internal, selfDest: m.target.selfDest === undefined ? -1 : m.target.selfDest, islot: t.islot(m.id), label: MM.selfLabel(m),
+                depthRoute: isDepthRoute(m) ? m.target.mapId : 0, nRoutes: m.target.internal ? 0 : MM.depthRoutesFor(m.id).length, effDepth: slot >= 0 ? MM.readTelemetry().depth[slot] : null,
                 slot, route: slot >= 0 ? t.route(slot) : null, idMod: b.mod, idRem: b.rem,
                 boxes: { mid: !!mid, rid: !!rid, mod: lm ? lm.maxclass : null, rem: lr ? lr.maxclass : null },
                 modCords: lm ? cordsOf(lm) : null, remCords: lr ? cordsOf(lr) : null,
@@ -1642,6 +1721,25 @@ function test_report() {
     g["report_" + devId] = JSON.stringify(rep);
     g.last = g["report_" + devId];
 }
+
+// test_dmodgeom: the v8ui rects a real-click test of the depth-modulation UI needs (v8ui pixels), as `dmodgeom_<device id>`: the rail buttons, every LST
+// tab, the visible LST rows by mapping id (the name area), and the sub-rows
+function test_dmodgeom() {
+    const out = { rail: ubRailRects(), tabs: {}, rows: {}, subs: {}, pb: ubPb(), sel: ubSel(), width: ubLayoutWidth() };
+    for (const g of ubTabsGeom(ubOrder()).list) if (g.tab) out.tabs[g.slot] = [g.x, g.y, g.w, g.h];
+    const gm = ubListGeom();
+    out.list = [gm.lx, gm.ly, gm.lw, gm.lh];
+    for (const r of ubListVisible().rows) {
+        if (r.item.kind === "map") out.rows[r.item.m.id] = [gm.lx + 18, r.y, 40, r.h];
+        else if (r.item.kind === "dsub") out.subs[r.item.m.id] = [gm.lx, r.y, gm.lw, r.h];
+    }
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    const g = new Global("megamod_test");
+    g["dmodgeom_" + devId] = JSON.stringify(out);
+}
+// test_dmodroute <source mod> <mapping id>: MM.addDepthRoute (the model path)
+function test_dmodroute(mod, id) { MM.addDepthRoute(Number(mod), Number(id)); }
 
 //   test_add <type>              add a modulator of that type (MOD_LFO..MOD_MSEG) in the first free slot
 //   test_settype <slot> <type>   change a modulator's type

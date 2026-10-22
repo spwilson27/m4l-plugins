@@ -40,13 +40,13 @@ DEVICE_H = 169.0
 CFG_FLOATS = 16 * 24
 MSEG_FLOATS = 16 * 1024
 STEPS_FLOATS = 16 * 32
-SCOPE_SAMPS = 512           # per slot [out, phase, u, aux] + header (64..68) + effective control values (128..319) + effective depths (320..383)
+SCOPE_SAMPS = 640           # per slot [out, phase, u, aux] + header (64..68) + effective control values (128..319) + effective depths (320..575)
 INT_SAMPS = 512             # buffer~ ---megamodint: internal modulation matrix routes + control descriptors (src/megamod_config.js INT_*)
 ICURVE_SAMPS = 64 * 256     # buffer~ ---megamodicurve: 64 internal route transfer tables
 MAX_MAPPINGS = 256          # saved mapping-slot pool (contract with src/megamod_config.js MAX_MAPPINGS)
 CURVE_REGION = 256
 CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION
-ROUTE_SAMPS = 1024          # [2k] = source mod index or -1; pool slots k < 64: [2k+1] effective depth (engine), [512+k] base depth, [576+k] Remote min or -1
+ROUTE_SAMPS = 1024          # every pool slot k 0..255: [2k] = source mod index or -1, [2k+1] effective depth (engine), [512+k] base depth, [768+k] Remote min or -1
 ROUTERS = 8                 # router gen.codebox~ boxes
 ROUTER_SLOTS = MAX_MAPPINGS // ROUTERS  # 32 outlets each
 
@@ -54,9 +54,10 @@ ROUTER_SLOTS = MAX_MAPPINGS // ROUTERS  # 32 outlets each
 MAX_MODS = 16
 AUTO_PARAMS = 5             # generic controls per modulator slot
 AUTO_PER_SLOT = AUTO_PARAMS + 1   # + On
-AUTO_DEPTH_SLOTS = 64       # mapping pool slots with an automatable Depth parameter (their routers apply the depth per sample)
+AUTO_DEPTH_SLOTS = 64       # mapping pool slots with an automatable Depth parameter (`Depth k` live.numbox)
+ROUTER_DEPTH_SLOTS = 256    # pool slots whose router applies the depth per sample (schema 10: all of them)
 ROUTE_DEPTH_BASE = 512
-ROUTE_DEPTH_MIN = 576
+ROUTE_DEPTH_MIN = 768
 AUTO_LETTERS = "ABCDE"     # fixed Live parameter names: M3 A .. M3 E, M3 On, Depth 5 (runtime renames do not reach Live)
 # per-slot switch parameters (objects at_<slot*6+t>): the LFO shape (live.tab, 5 values) and the 5 boolean chips (live.text toggles)
 AUTO_SW_NAMES = ["Shape", "Sync", "Bipolar", "Retrig", "1Shot", "Loop"]
@@ -170,9 +171,8 @@ def router_gen_code(r):
         "Param smooth(0);",
     ]
     out += [f"History ys{j}(0);" for j in range(ROUTER_SLOTS)]
-    if r * ROUTER_SLOTS < AUTO_DEPTH_SLOTS:
-        out += ["", "// Pool slots below 64 apply their Depth here (per sample): the table is baked at depth 1, route[2k+1] = the effective depth the engine writes",
-                "// (base + internal Depth modulation), route[576+k] = Remote min or -1 for Mod: Mod y * d, Remote min + (y - min) * d."]
+    out += ["", "// Every pool slot applies its Depth here (per sample): the table is baked at depth 1, route[2k+1] = the effective depth the engine writes",
+            "// (base + the summed depth-modulation routes), route[768+k] = Remote min or -1 for Mod: Mod y * d, Remote min + (y - min) * d."]
     out += [
         "",
         "smSr = max(samplerate, 1);",
@@ -193,12 +193,11 @@ def router_gen_code(r):
             f"\tvb{j} = peek(curve, {k * CURVE_REGION} + ib{j});",
             f"\tyv{j} = va{j} + (vb{j} - va{j}) * (fi{j} - ia{j});",
         ]
-        if k < AUTO_DEPTH_SLOTS:
-            out += [
-                f"\tdk{j} = peek(route, {2 * k + 1});",
-                f"\trm{j} = peek(route, {ROUTE_DEPTH_MIN + k});",
-                f"\tyv{j} = (rm{j} < -0.5) ? yv{j} * dk{j} : rm{j} + (yv{j} - rm{j}) * dk{j};",
-            ]
+        out += [
+            f"\tdk{j} = peek(route, {2 * k + 1});",
+            f"\trm{j} = peek(route, {ROUTE_DEPTH_MIN + k});",
+            f"\tyv{j} = (rm{j} < -0.5) ? yv{j} * dk{j} : rm{j} + (yv{j} - rm{j}) * dk{j};",
+        ]
         out += [
             "}",
             f"ys{j} = yv{j} + (ys{j} - yv{j}) * smCoef;",

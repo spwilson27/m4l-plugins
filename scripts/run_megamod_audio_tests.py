@@ -200,6 +200,8 @@ DEST_RATE_1 = 1 * 6 + 0      # LFO in slot 1: generic control A = Rate
 DEST_RATE_0 = 0 * 6 + 0
 DEST_BIPOLAR_1 = 96 + 1 * 6 + 2
 DEST_DEPTH_0 = 192 + 0
+DEPTH_SLOT_HI = 96            # a pool slot >= 64 (router 3, outlet 0): depth routes work on all 256 slots (schema 10); dest = 192 + slot
+ROUTER_DEPTH_HI = {"base": DEPTH_SLOT_HI, "slots": [{"slot": DEPTH_SLOT_HI, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 0.5}}]}
 ROUTER_DEPTH = {"base": 0, "slots": [{"slot": 0, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 0.5}}]}
 
 
@@ -288,6 +290,20 @@ def cases():
             R("depth", [lfo(0, 0, 1.0), lfo(1, 0, 8.0)], ("rt0", 2), dur=2200, an="selfdepth", router_idx=0, router=ROUTER_DEPTH,
               selfmod={"routes": [{"src": 0, "dest": DEST_DEPTH_0, "map": selfmap(range=0.5)}]},
               sp={"settle_ms": SETTLE_MS, "f1": 1.0, "dbase": 0.5, "range": 0.5}),
+        ],
+        # Depth-modulation routes onto a mapping in pool slot 96 (>= 64; the mapping's source is LFO 2, an 8 Hz sine, base depth 0.5):
+        # LFO 1 (1 Hz, +-0.5) -> the per-cycle peak of the router output follows LFO 1 (amplitude modulation)
+        "depthmod_hi": [
+            R("one", [lfo(0, 0, 1.0), lfo(1, 0, 8.0)], ("rt0", 2), dur=2400, an="depthroutes", router_idx=3, router=ROUTER_DEPTH_HI,
+              selfmod={"routes": [{"src": 0, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=0.5)}]},
+              sp={"settle_ms": SETTLE_MS, "base": 0.5, "routes": [{"f": 1.0, "range": 0.5}]}),
+        ],
+        # two routes onto one mapping sum (and clamp at 0..1): LFO 1 (1 Hz, +-0.35) + LFO 3 (1.7 Hz, +-0.35) on base depth 0.5
+        "depthmod_sum": [
+            R("two", [lfo(0, 0, 1.0), lfo(1, 0, 8.0), lfo(2, 0, 1.7)], ("rt0", 2), dur=3000, an="depthroutes", router_idx=3, router=ROUTER_DEPTH_HI,
+              selfmod={"routes": [{"src": 0, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=0.35)},
+                                  {"src": 2, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=0.35)}]},
+              sp={"settle_ms": SETTLE_MS, "base": 0.5, "routes": [{"f": 1.0, "range": 0.35}, {"f": 1.7, "range": 0.35}]}),
         ],
         # LFO 1 (2 Hz) modulates the Bipolar switch of slot 1 (40 Hz sine, depth 0.5, base off): bipolar (-0.5..0.5) while LFO 1 > 0.5, else unipolar (-1..0)
         "selfmod_toggle": [
@@ -606,6 +622,22 @@ def check(case, runs, metas, errors, notes):
             err("the Depth should sweep 0..1")
         if d["sdepth_peak_min"] > 0.35 or d["sdepth_peak_max"] < 0.9:
             err("the slot output is not amplitude modulated")
+    elif case in ("depthmod_hi", "depthmod_sum"):
+        d = ms[0]
+        notes.append(f"pool slot {DEPTH_SLOT_HI}: out / src vs clip(base + sum of the routes): max err {d['dr_err']:.4f} over {d['dr_n']:.0f} samples, depth {d['dr_min']:.3f}..{d['dr_max']:.3f}; "
+                     f"per-cycle peak {d['dr_peak_min']:.3f}..{d['dr_peak_max']:.3f} over {d['dr_cycles']:.0f} cycles, max err {d['dr_peak_err']:.4f}, correlation {d['dr_corr']:.4f}")
+        if d["dr_n"] < 200 or d["dr_cycles"] < 10:
+            err("too few samples / cycles to measure the depth")
+        if not d["dr_err"] <= 0.05:
+            err(f"effective depth error {d['dr_err']} (> 0.05)")
+        if not d["dr_peak_err"] <= 0.05:
+            err(f"per-cycle peak error {d['dr_peak_err']} (> 0.05)")
+        if not d["dr_corr"] >= 0.98:
+            err(f"the per-cycle peaks do not follow the modulators (correlation {d['dr_corr']})")
+        if d["dr_peak_min"] > 0.3 or d["dr_peak_max"] < 0.9:
+            err("the slot output is not amplitude modulated over 0.3..0.9")
+        if case == "depthmod_sum" and not d["dr_min"] <= 0.05:
+            err("the summed depth should clamp down to 0 (two routes pulling the same way)")
     elif case == "selfmod_toggle":
         t = ms[0]
         notes.append(f"Bipolar toggled by LFO 1 > 0.5: {t['stoggle_windows']:.0f} windows ({t['stoggle_on']:.0f} bipolar, {t['stoggle_off']:.0f} unipolar), "

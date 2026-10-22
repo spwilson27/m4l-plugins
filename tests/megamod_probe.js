@@ -110,15 +110,15 @@ function configure() {
         var route = new Array(ROUTE_SAMPS);
         for (i = 0; i < route.length; i++) route[i] = 0;
         for (i = 0; i < MAX_MAPPINGS; i++) route[2 * i] = ROUTE_OFF;
-        for (i = 0; i < AUTO_DEPTH_SLOTS; i++) { route[2 * i + 1] = 1; route[ROUTE_DEPTH_BASE + i] = 1; route[ROUTE_DEPTH_MIN + i] = -1; }
+        for (i = 0; i < ROUTER_DEPTH_SLOTS; i++) { route[2 * i + 1] = 1; route[ROUTE_DEPTH_BASE + i] = 1; route[ROUTE_DEPTH_MIN + i] = -1; }
         var curveFloats = new Array(CURVE_SAMPS);
         for (i = 0; i < curveFloats.length; i++) curveFloats[i] = 0.9;
         for (var q = 0; q < CASE.router.slots.length; q++) {
             var sd = CASE.router.slots[q];
             route[2 * sd.slot] = sd.src;
-            // pool slots < 64 apply the Depth in the router: the table is baked at depth 1, base depth (+ Remote min) in the route buffer
+            // every pool slot (schema 10) applies the Depth in the router: the table is baked at depth 1, base depth (+ Remote min) in the route buffer
             var mp = sd.map;
-            if (sd.slot < AUTO_DEPTH_SLOTS) {
+            if (sd.slot < ROUTER_DEPTH_SLOTS) {
                 var dp = mp.depth === undefined ? 1 : mp.depth;
                 route[ROUTE_DEPTH_BASE + sd.slot] = dp;
                 route[2 * sd.slot + 1] = dp;
@@ -579,6 +579,49 @@ function analyzeSelfDepth(rep, out, src, sr) {
     rep.push("sdepth_peak_min " + pmin);
     rep.push("sdepth_peak_max " + pmax);
 }
+// Depth-modulation routes (schema 10) onto a mapping in a pool slot >= 64 (router 3): c1 = the router output, c2 = the mapping's source (a
+// bipolar sine). The effective depth = clip(base + sum of each route's range * sin(2 pi f t), 0, 1) (the routes' sources are free-running sines
+// from phase 0). dr_err = max |out / src - expected| where |src| is large; dr_peak_* = the per-cycle peak of |out| against the expected depth
+// at that peak (the amplitude of every cycle of the mapping's signal must follow the modulators), dr_corr = their correlation.
+function analyzeDepthRoutes(rep, out, src, sr) {
+    var sp = CASE.sp, t0 = sp.settle_ms / 1000, err = 0, cnt = 0, dmin = 9, dmax = -9, i, k;
+    var expAt = function (t) {
+        var d = sp.base;
+        for (k = 0; k < sp.routes.length; k++) d += sp.routes[k].range * Math.sin(2 * Math.PI * sp.routes[k].f * t);
+        return Math.max(0, Math.min(1, d));
+    };
+    for (i = 0; i < out.length; i++) {
+        if (Math.abs(src[i]) < 0.6) continue;
+        var d1 = out[i] / src[i];
+        err = Math.max(err, Math.abs(d1 - expAt(t0 + i / sr)));
+        dmin = Math.min(dmin, d1); dmax = Math.max(dmax, d1);
+        cnt++;
+    }
+    var peaks = [], exps = [], cur = 0, curI = 0;
+    for (i = 1; i < out.length; i++) {
+        if (Math.abs(out[i]) > cur) { cur = Math.abs(out[i]); curI = i; }
+        if (src[i - 1] < 0 && src[i] >= 0) {
+            if (cur > 0 || peaks.length) { peaks.push(cur / Math.max(0.2, Math.abs(src[curI]))); exps.push(expAt(t0 + curI / sr)); }
+            cur = 0;
+        }
+    }
+    var pe = 0, pmin = 9, pmax = -9, n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    for (i = 1; i < peaks.length; i++) {  // (the first cycle is partial)
+        pe = Math.max(pe, Math.abs(peaks[i] - exps[i]));
+        pmin = Math.min(pmin, peaks[i]); pmax = Math.max(pmax, peaks[i]);
+        n++; sx += peaks[i]; sy += exps[i]; sxx += peaks[i] * peaks[i]; syy += exps[i] * exps[i]; sxy += peaks[i] * exps[i];
+    }
+    var corr = (n * sxy - sx * sy) / Math.sqrt(Math.max(1e-12, (n * sxx - sx * sx) * (n * syy - sy * sy)));
+    rep.push("dr_err " + err);
+    rep.push("dr_min " + dmin);
+    rep.push("dr_max " + dmax);
+    rep.push("dr_n " + cnt);
+    rep.push("dr_cycles " + n);
+    rep.push("dr_peak_err " + pe);
+    rep.push("dr_peak_min " + pmin);
+    rep.push("dr_peak_max " + pmax);
+    rep.push("dr_corr " + corr);
+}
 // LFO 1 (slot 0, f1 Hz sine) modulates the BIPOLAR switch of slot 1 (a `fast` Hz sine with depth 0.5): bipolar on = -0.5..0.5, off (unipolar) = -1..0.
 // Base bipolar 0, range 1, +-: the toggle is on while the LFO 1 value is above 0.5. c1 = slot 1, c2 = LFO 1. Per window of one LFO 2 period.
 function analyzeSelfToggle(rep, x, lfo1, sr) {
@@ -656,6 +699,7 @@ function analyzeInner(durMs) {
     else if (an === "depth") analyzeDepth(rep, c1, c2, sr);
     else if (an === "selfrate") analyzeSelfRate(rep, c1, c2, sr);
     else if (an === "selfdepth") analyzeSelfDepth(rep, c1, c2, sr);
+    else if (an === "depthroutes") analyzeDepthRoutes(rep, c1, c2, sr);
     else if (an === "selftoggle") analyzeSelfToggle(rep, c1, c2, sr);
     else if (an === "selffb") analyzeSelfFeedback(rep, c1, c2, sr);
 

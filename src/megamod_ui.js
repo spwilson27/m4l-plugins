@@ -57,21 +57,33 @@ var ubLastReq = 0;
 var ubFullTTL = 0;
 var ubFullInternal = false; // the "full" pill is about the internal matrix (64) rather than the Live pool (256)
 var ubNote = null; // {text, ttl}: a short info pill (self-mapping conversion)
+// ---- DEPTH MODULATION (schema 10): a modulator modulating the Depth of another mapping (MM.addDepthRoute).
+// Arm LRN (Shift = multi) with modulator X, click a mapping row (LST list or maps popover) -> X modulates that mapping's depth; the routes show as indented sub-rows under the row.
+// A route is always also a row of its SOURCE modulator's list (violet D marker, "<parameter> Depth"), editable in the remap editor like any internal route.
+const UB_DEPTH_COL = [0.78, 0.56, 1.0]; // depth routes' accent (violet)
+const UB_ROW_SUB = 13; // height of a sub-row in the list
+var ubDmodSrc = -1; // the modulator LRN was armed from (multi-learn retargets MM.learn.mod with the selection, this does not)
+var ubSubSel = 0; // the route id of the sub-row last clicked (highlight)
 var ubHist = [];
 var ubFrame = 0;
-const UB_POP_ROW = 14;
-const UB_POP_HEAD = 15;
-const UB_POP_MAXROWS = 9;
-const UB_POP_W = 180;
-const UB_POP_MIN = 144; // narrowest popover; the device is widened to fit it while it is open
+// maps popover: 260 px wide, 19 px rows, 8 pt names, 6 rows before it scrolls
+const UB_POP_HEAD = 20; // header height
+const UB_POP_PAD = 6; // bottom padding of a popover
+const UB_POP_MAXH = 159; // tallest popover (inside the 161 px layout, 2 px margins)
+const UB_POP_W = 260;
+const UB_POP1_ROW = 19;
 // width of the popover's value column, shared by all its rows: the widest text their MODES can show (any Remote row:
 // "100\u2013100%"; all Mod: the widest of "\u00b1100%" / "+100%" / "\u2212100%"). It depends on modes only, never on values,
 // so the column and the range bar never move while values change; the bar takes all the remaining width
-function ubPopValW(maps) {
+function ubPopValW(maps, size) {
     let remote = false;
     for (const m of maps || []) if (m.mode === "remote") remote = true;
     const t = remote ? ["100\u2013100%"] : ["\u00b1100%", "+100%", "\u2212100%"];
-    return Math.ceil(Math.max(...t.map((x) => ubTextW(x, 6.5)))) + 1;
+    return Math.ceil(Math.max(...t.map((x) => ubTextW(x, size || 7.5)))) + 1;
+}
+// the popover's wanted width (a device with few strips is widened to hold it while it is open)
+function ubPopWant() {
+    return UB_POP_W;
 }
 var ubMapsPop = null; // maps popover: {slot, scroll}
 var ubFocus = false; // the device UI was the last thing clicked (keys only act then)
@@ -271,8 +283,9 @@ function ubLayoutWidth() {
     if (ubPb()) return ubListGeom().end;
     if (ubOpt()) return ubOptGeom().end;
     const w = ubStrips().end;
-    // an open maps popover needs room for its rows (a device with one or two strips grows while it is open)
-    return ubMapsPop ? Math.max(w, UB_RAIL + UB_GAP + UB_POP_MIN + 2) : w;
+    // an open maps popover needs room for its rows (a device with one or two strips grows while it is open); the drawer is
+    // part of the strips' own layout (ubStrips)
+    return ubMapsPop ? Math.max(w, UB_RAIL + UB_GAP + ubPopWant() + 2) : w;
 }
 function ubSyncWidth(force) {
     const w = ubLayoutWidth() + UB_EDGE;
@@ -440,7 +453,10 @@ function ubListItems() {
         items.push({ kind: "head", i, h: UB_ROW_HEAD });
         const maps = MM.mappingsFor(i);
         if (!maps.length) items.push({ kind: "none", i, h: UB_ROW_NONE });
-        for (const m of maps) items.push({ kind: "map", i, m, h: UB_ROW_MAP });
+        for (const m of maps) {
+            items.push({ kind: "map", i, m, h: UB_ROW_MAP });
+            for (const r of ubDepthRoutes(m)) items.push({ kind: "dsub", i, m: r, tm: m, h: UB_ROW_SUB });
+        }
     }
     return items;
 }
@@ -490,6 +506,7 @@ function ubPbSelMapping() {
     // the editor follows the selected modulator (its first mapping unless one of its rows is picked)
     const s = ubSel();
     if (m && m.mod === s) return m;
+    if (m && isDepthRoute(m)) { const tm = MM.depthTargetOf(m); if (tm && tm.mod === s) return m; } // a route picked from its target's row / pill
     const ms = s >= 0 ? MM.mappingsFor(s) : [];
     return ms.length ? ms[0] : null;
 }
@@ -500,9 +517,88 @@ function ubValueText(m) {
     return (m.polarity > 0 ? "+" : m.polarity < 0 ? "\u2212" : "\u00b1") + Math.round(m.range * 100) + "%";
 }
 function ubTargetPath(m) {
+    if (isDepthRoute(m)) return "Depth route: " + (MM.state.mods[m.mod] ? MM.state.mods[m.mod].name : "?") + " > " + MM.depthRouteLabel(m);
     if (isSelfMapping(m)) return ubSelfTip(m);
     const t = m.target;
     return (t.trackName || "?") + " > " + (t.deviceName || "?") + " > " + (t.paramName || t.name || "?");
+}
+
+// ------------------------------------------------------------------ depth modulation (schema 10): shared helpers
+function ubIsPoolMap(m) {
+    return !!(m && m.target && !m.target.internal);
+}
+// the depth routes aimed at a mapping (a normal / VIA LIVE pool mapping only)
+function ubDepthRoutes(m) {
+    return ubIsPoolMap(m) ? MM.depthRoutesFor(m.id) : [];
+}
+function ubRouteSrcCol(r) {
+    const mod = MM.state.mods[r.mod];
+    return mod && mod.enabled ? ubModCol(mod) : UB_OFF_GREY;
+}
+function ubDmodNote(text) {
+    ubNote = { text, ttl: UB_FULL_FRAMES };
+}
+// 8 px violet kind marker of a depth route's own row (the source's list): a bar with a down tick = "depth of ..."
+function ubDepthMark(x, y, a) {
+    ubRR(x, y + 0.5, 8, 8, 2, UB_DEPTH_COL, 0.85 * a);
+    ubTextC("D", x + 4, y + 7.3, 6, [0.06, 0.07, 0.09], 1);
+}
+// X modulates the depth of mapping `tm`: the common gesture end of the three designs. Returns the route or null (with a note why).
+function ubDmodAssign(src, tm) {
+    if (!ubValidSlot(src) || !tm) return null;
+    if (!ubIsPoolMap(tm)) { ubDmodNote("Depth modulation needs a mapping to a Live parameter"); return null; }
+    const dup = MM.depthRoutesFor(tm.id).filter((r) => r.mod === src)[0];
+    if (dup) { ubDmodNote(MM.state.mods[src].name + " already modulates this depth"); return null; }
+    const r = MM.addDepthRoute(src, tm.id);
+    if (r) ubDmodNote(MM.state.mods[src].name + " → " + (tm.target.paramName || tm.target.name || "?") + " depth");
+    return r;
+}
+// sub-row parts (list): elbow arrow, toggle, source dot + name, amount bar, value, x
+function ubSubParts(y, x, w) {
+    if (x === undefined) { const gm = ubListGeom(); x = gm.lx; w = gm.lw; }
+    return {
+        arrow: [x + 6, y + 1, 8, 10],
+        tog: [x + 15, y + 1, 11, 11],
+        dot: [x + 32, y + 6.5],
+        name: [x + 38, y + 1, 42, 11],
+        bar: [x + 83, y + 3, 42, 7],
+        val: [x + 127, y + 1, 26, 11],
+        del: [x + w - 17, y + 1, 12, 12],
+    };
+}
+// sub-row parts (maps popover rows, 19 px): the row's own bar / value columns, the x in the (empty) M/R chip slot
+function ubPopSubParts(R, y, vw) {
+    const b = ubPopRowParts(R, y, vw);
+    const x0 = R[0];
+    const top = Math.floor((UB_POP1_ROW - 13) / 2);
+    return {
+        arrow: [x0 + 8, y + 2, 8, 12],
+        tog: [x0 + 18, y + top, 12, 13],
+        dot: [x0 + 38, y + UB_POP1_ROW / 2],
+        name: [x0 + 44, y, b.mode[0] - 3 - (x0 + 44), UB_POP1_ROW],
+        bar: b.bar, val: b.val,
+        del: b.mode,
+    };
+}
+function ubPaintSubParts(P, rt, sel, hot) {
+    const src = MM.state.mods[rt.mod];
+    if (!src) return;
+    const col = ubRouteSrcCol(rt);
+    const st = MM.mappingStatus(rt.id);
+    const a = !rt.enabled || st !== "ok" ? 0.5 : 1;
+    const ax = P.arrow[0], ay = P.arrow[1];
+    ubPoly([[ax + 1, ay], [ax + 1, ay + P.arrow[3] - 4], [ax + 6, ay + P.arrow[3] - 4]], UB_DEPTH_COL, a, 1.1);
+    ubPoly([[ax + 3.6, ay + P.arrow[3] - 6.6], [ax + 6.4, ay + P.arrow[3] - 4], [ax + 3.6, ay + P.arrow[3] - 1.4]], UB_DEPTH_COL, a, 1.1);
+    ubMapToggle(P.tog, !!rt.enabled, col, hot === "tog");
+    ubCircle(P.dot[0], P.dot[1], 2.6, col, a, true);
+    ubText(ubFit(src.name, P.name[2], 7), P.name[0], ubPopBase(P.name, 7), 7, [0.84, 0.86, 0.9], a);
+    ubPaintHBar(P.bar, rt, src);
+    const vt = ubFit(ubValueText(rt), P.val[2], 7);
+    ubText(vt, P.val[0] + P.val[2] - ubTextW(vt, 7), ubPopBase(P.val, 7), 7, UB_DEPTH_COL, a);
+    const dx = P.del[0] + P.del[2] / 2, dy = P.del[1] + P.del[3] / 2;
+    const dc = hot === "del" ? UB_RED : [0.55, 0.58, 0.63];
+    ubLine(dx - 2.5, dy - 2.5, dx + 2.5, dy + 2.5, dc, a, 1.2);
+    ubLine(dx + 2.5, dy - 2.5, dx - 2.5, dy + 2.5, dc, a, 1.2);
 }
 
 // detail panel controls: [{id, rect}]
@@ -543,6 +639,7 @@ function ubDetailRects(gm, m) {
     out.push({ id: "tabrem", rect: [x + 1 + UB_TAB_W + 2, ty, UB_TAB_W, 12], mode: "remote" });
     // the pill is 13 px tall inside its 15 px live.numbox face (Live forces that height), so the face ends where the tab row starts
     out.push({ id: "depth", rect: [x + w - ubDepthW(), y0 + 22, ubDepthW(), 13], face: [x + w - ubDepthW(), y0 + 21, ubDepthW(), 15] });
+    if (isDepthRoute(m)) out.push({ id: "dback", rect: [x, y0 + 15, w - ubDepthW() - 3, 10] }); // the route's header line: back to the mapping it modulates
     out.push({ id: "mseg", rect: msegR });
     out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, meterH] });
     // the presets (Linear / Exp / Log / S; no Stepped) share the row, leaving its right end for the readout
@@ -621,7 +718,7 @@ function ubHitList(x, y) {
                 if (!ubIn(d.rect, x, y)) continue;
                 let which = d.which;
                 if (d.pick) { which = d.pick(x, y); if (!which) continue; }
-                return { kind: "detail", id: d.id, rect: d.drect || d.rect, curve: d.curve, pol: d.pol, which, mode: d.mode };
+                return { kind: "detail", id: d.id, rect: d.drect || d.rect, curve: d.curve, pol: d.pol, which, mode: d.mode, route: d.route };
             }
         }
         return { kind: "detail_bg" };
@@ -635,6 +732,11 @@ function ubHitList(x, y) {
             return { kind: "ls_head", slot: it.i };
         }
         if (it.kind === "none") return { kind: "ls_none", slot: it.i };
+        if (it.kind === "dsub") {
+            const S = ubSubParts(r.y);
+            for (const k of ["tog", "del", "bar"]) if (ubIn(S[k], x, y)) return { kind: "ds_" + k, rect: S[k], slot: it.i, m: it.m, tm: it.tm };
+            return { kind: "ds_row", slot: it.i, m: it.m, tm: it.tm };
+        }
         const P = ubRowParts(r.y);
         const base = { slot: it.i, m: it.m };
         for (const k of ["tog", "del", "curve", "val", "mode"]) {
@@ -658,7 +760,7 @@ function ubSelect(slot) {
 }
 // rail learn button: click = single-shot for the selected modulator, Shift-click = multi-learn, click while armed = off
 function ubRailLearn(shift) {
-    if (MM.learn.armed) { MM.disarmLearn(); return; }
+    if (MM.learn.armed) { MM.disarmLearn(); ubDmodSrc = -1; return; }
     let s = ubSel();
     if (s < 0) {
         const o = ubOrder();
@@ -667,6 +769,21 @@ function ubRailLearn(shift) {
         MM.setUI({ sel: s });
     }
     MM.armLearn(s, !!shift);
+    ubDmodSrc = s;
+}
+// the modulator an armed LRN assigns from (-1 = not armed)
+function ubDmodLearnSrc() {
+    if (!MM.learn.armed) return -1;
+    return ubDmodSrc >= 0 && ubValidSlot(ubDmodSrc) ? ubDmodSrc : MM.learn.mod;
+}
+// a click on mapping row `tm` while LRN is armed makes the armed modulator modulate its depth (single-shot disarms). true = handled.
+function ubDmodArmedAssign(tm) {
+    if (!tm || !ubIsPoolMap(tm)) return false;
+    const src = ubDmodLearnSrc();
+    if (src < 0) return false;
+    ubDmodAssign(src, tm);
+    if (MM.learn.armed && !MM.learn.multi) { MM.disarmLearn(); ubDmodSrc = -1; }
+    return true;
 }
 function ubAddType(type) {
     const slot = MM.addModulator(type);
@@ -785,7 +902,12 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
                 ubDeleteMod(h.slot);
             } else ubDelArm = h.slot;
             break;
-        case "pwr": ubSelect(h.slot); MM.setParam(h.slot, "enabled", MM.state.mods[h.slot].enabled ? 0 : 1); break;
+        case "pwr": {
+            ubSelect(h.slot);
+            const was = MM.state.mods[h.slot].enabled;
+            MM.setParam(h.slot, "enabled", was ? 0 : 1);
+            break;
+        }
         case "typechip": {
             ubSelect(h.slot);
             ubPopup = { mode: "type", slot: h.slot, x: ubStripRects(h.g).type[0], y: 18 };
@@ -811,10 +933,15 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
             break;
         case "viz": ubSelect(h.slot); ubVizClick(h, x, y); break;
         case "body": ubSelect(h.slot); break;
-        case "ls_hpwr": ubSelect(h.slot); MM.setParam(h.slot, "enabled", MM.state.mods[h.slot].enabled ? 0 : 1); break;
+        case "ls_hpwr": {
+            ubSelect(h.slot);
+            MM.setParam(h.slot, "enabled", MM.state.mods[h.slot].enabled ? 0 : 1);
+            break;
+        }
         case "ls_head": ubSelect(h.slot); break;
         case "ls_none": ubSelect(h.slot); break;
         case "ls_row": case "ls_tog": case "ls_del": case "ls_curve": case "ls_val": case "ls_mode": ubListRowClick(h, x, y); break;
+        case "ds_tog": case "ds_del": case "ds_bar": case "ds_row": ubSubClick(h.kind.slice(3), h, x, y, false); break;
         case "detail": ubDetailClick(h, x, y); break;
         default: break;
     }
@@ -1105,6 +1232,7 @@ function ubListRowClick(h, x, y) {
     const m = MM.getMapping(h.m.id);
     if (!m) return;
     if (h.kind === "ls_tog") { MM.updateMapping(m.id, { enabled: m.enabled ? 0 : 1 }); return; }
+    if (h.kind === "ls_row" && ubDmodArmedAssign(m)) return; // LRN armed -> this row's depth
     ubSelect(h.slot);
     if (h.kind === "ls_del") {
         ubDeleteMapping(m);
@@ -1116,6 +1244,17 @@ function ubListRowClick(h, x, y) {
     else if (h.kind === "ls_val") {
         ubDrag = { kind: "lval", id: m.id, v0: m.range, min0: m.min, max0: m.max, x, y, dirty: false };
     }
+}
+// sub-row clicks (list "ds_*" and popover "mp_ds_*"): toggle, delete (undoable), the amount bar, the row (select the route; armed LRN -> its target's depth)
+function ubSubClick(kind, h, x, y, pop) {
+    const rt = MM.getMapping(h.m.id);
+    if (!rt) return;
+    if (kind === "tog") { MM.updateMapping(rt.id, { enabled: rt.enabled ? 0 : 1 }); return; }
+    if (kind === "del") { ubDeleteMapping(rt); return; }
+    ubSubSel = rt.id;
+    if (!pop) MM.setUI({ pbSel: rt.id });
+    if (kind === "bar") ubHBarStart(rt, h.rect, x, !!pop);
+    else ubDmodArmedAssign(h.tm);
 }
 function ubListReveal(mapId, slot) {
     const items = ubListItems();
@@ -1152,6 +1291,7 @@ function ubDetailClick(h, x, y) {
     const m = ubPbSelMapping();
     if (!m) return;
     const id = h.id;
+    if (id === "dback") { const tm = MM.depthTargetOf(m); if (tm) MM.setUI({ pbSel: tm.id }); return; }
     if (id.indexOf("preset") === 0) MM.updateMapping(m.id, { shape: curveToShape(Number(id.slice(6)), 0.5, 4) });
     else if (id === "mseg") ubMsegClick(ubMapTgt(m.id), h.rect, x, y);
     else if (id === "depth") ubDrag = { kind: "depth", mapId: m.id, x0: x, v0: num(m.depth, 1), dirty: true };
@@ -1262,6 +1402,7 @@ function key(ascii, mod) {
 
 // ------------------------------------------------------------------ range editing from the strips view (maps popover)
 function ubMapName(m) {
+    if (isDepthRoute(m)) return MM.depthRouteLabel(m);
     if (isSelfMapping(m)) return MM.selfLabel(m) || m.target.paramName || "?";
     return m.target.paramName || m.target.name || "?";
 }
@@ -1344,53 +1485,89 @@ function ubHBarReset(m, rect, x) {
     if (m.mode !== "remote") MM.updateMapping(m.id, { range: 1 });
     else { const wh = ubNearestLimit(m, ubHBarFromX(rect, x)); MM.updateMapping(m.id, ubLimitPatch(wh, wh === "min" ? 0 : 1)); }
 }
-// ---- maps popover
+// ---- maps popover. The geometry object:
+//   {rect, slot, mod, maps, rows (capacity), first (scroll), maxScroll, vw (value column), lst,
+//    vis: [{m, y, rect, parts: {tog, name, mode, pol, bar, val}}]}
+function ubPopAnchor(g, pw, ph, lw) {
+    const px = clamp(g.x, UB_RAIL + UB_GAP, Math.max(UB_RAIL + UB_GAP, lw - pw - 2)); // never over the rail
+    const py = clamp(141 - ph, 2, Math.max(2, UB_H - 2 - ph));
+    return [px, py];
+}
 function ubMapsPopGeom() {
     if (!ubMapsPop) return null;
     const g = ubStrips().list.filter((q) => q.slot === ubMapsPop.slot && !q.tab)[0];
     const mod = MM.state.mods[ubMapsPop.slot];
     if (!g || !mod) return null;
     const maps = MM.mappingsFor(ubMapsPop.slot);
+    const items = [];
+    for (const m of maps) {
+        items.push({ kind: "map", m });
+        for (const r of ubDepthRoutes(m)) items.push({ kind: "dsub", m: r, tm: m }); // the routes under their mapping
+    }
+    const n = items.length;
     const lw = ubLayoutWidth();
-    const pw = Math.max(UB_POP_MIN, Math.min(UB_POP_W, lw - UB_RAIL - UB_GAP - 2));
-    const rows = Math.min(UB_POP_MAXROWS, Math.max(1, maps.length));
-    const ph = UB_POP_HEAD + rows * UB_POP_ROW + 5;
-    const px = clamp(g.x, UB_RAIL + UB_GAP, Math.max(UB_RAIL + UB_GAP, lw - pw - 2)); // never over the rail
-    const py = clamp(141 - ph, 2, UB_H - 2 - ph);
-    const first = clamp(Math.floor(num(ubMapsPop.scroll, 0)), 0, Math.max(0, maps.length - rows));
-    const vis = [];
-    for (let k = 0; k < rows && first + k < maps.length; k++) vis.push({ m: maps[first + k], y: py + UB_POP_HEAD + 2 + k * UB_POP_ROW });
-    return { vw: ubPopValW(maps), rect: [px, py, pw, ph], slot: ubMapsPop.slot, mod, maps, rows, first, vis, lst: [px + pw - 29, py + 2, 25, 11] };
+    const P = { slot: ubMapsPop.slot, mod, maps, items, vis: [] };
+    P.vw = ubPopValW(maps, 7.5);
+    const scroll = Math.floor(num(ubMapsPop.scroll, 0));
+    const row = UB_POP1_ROW;
+    const pw = ubPopWant();
+    const cap = Math.floor((UB_POP_MAXH - UB_POP_HEAD - 2 - UB_POP_PAD) / row);
+    P.rows = Math.min(cap, Math.max(1, n));
+    const ph = UB_POP_HEAD + 2 + P.rows * row + UB_POP_PAD;
+    const [px, py] = ubPopAnchor(g, pw, ph, lw);
+    P.rect = [px, py, pw, ph];
+    P.lst = [px + pw - 36, py + 3, 30, 13];
+    P.first = clamp(scroll, 0, Math.max(0, n - P.rows));
+    for (let k = 0; k < P.rows && P.first + k < n; k++) {
+        const y = py + UB_POP_HEAD + 2 + k * row;
+        const it = items[P.first + k];
+        P.vis.push({ m: it.m, kind: it.kind, tm: it.tm, y, rect: [px + 2, y, pw - 4, row], parts: it.kind === "dsub" ? ubPopSubParts(P.rect, y, P.vw) : ubPopRowParts(P.rect, y, P.vw) });
+    }
+    P.maxScroll = Math.max(0, n - P.rows);
+    return P;
 }
+// one row at top y: toggle | name (+ kind marker) | M/R chip | polarity (Mod only) | bar | value, all on one line.
+// The value column has a fixed width and x (vw), so nothing shuffles while a bar is dragged.
 function ubPopRowParts(R, y, vw) {
-    if (vw === undefined) vw = ubPopValW(ubMapsPop ? MM.mappingsFor(ubMapsPop.slot) : []);
-    // on/off | name (+ kind marker) | M/R chip | bar | value: the value column has a fixed width and x, so nothing shuffles while a bar is dragged
-    const tog = [R[0] + 3, y + 2, 11, 10]; // the same cell in every row (normal and self), so the columns never differ between them
-    const val = [R[0] + R[2] - 6 - vw, y + 2, vw, 10];
-    // the bar takes every pixel the name column (min 40 px) does not need
-    const barW = Math.max(24, R[2] - 10 - vw - 3 - 13 - 13 - 3 - 12 - 40);
-    const bar = [val[0] - 3 - barW, y + 2, barW, 10];
-    const pol = [bar[0] - 13, y + 2, 11, 10]; // Mod only: cycles + / \u00b1 / \u2212 (kept empty in Remote so columns never move)
-    const mode = [pol[0] - 13, y + 2, 11, 10];
-    return { tog, name: [R[0] + 17, y, mode[0] - 3 - (R[0] + 17), UB_POP_ROW], mode, pol, bar, val };
+    if (vw === undefined) vw = ubPopValW(ubMapsPop ? MM.mappingsFor(ubMapsPop.slot) : [], 7.5);
+    const x0 = R[0];
+    const x1 = R[0] + R[2];
+    const rh = UB_POP1_ROW;
+    const nameW = 92;
+    const top = Math.floor((rh - 13) / 2);
+    const val = [x1 - 10 - vw, y + top + 1, vw, 11];
+    // the bar takes every pixel the name column does not need
+    const barW = Math.max(28, R[2] - 22 - nameW - 3 - 15 - 3 - 15 - 3 - 4 - vw - 10);
+    const bar = [val[0] - 4 - barW, y + top + 1, barW, 11];
+    const pol = [bar[0] - 3 - 15, y + top, 15, 13]; // Mod only: cycles + / ± / − (kept empty in Remote so columns never move)
+    const mode = [pol[0] - 3 - 15, y + top, 15, 13];
+    return { tog: [x0 + 6, y + top, 12, 13], name: [x0 + 22, y, mode[0] - 3 - (x0 + 22), rh], mode, pol, bar, val };
 }
 function ubHitMapsPop(x, y) {
     const P = ubMapsPopGeom();
     if (!P || !ubIn(P.rect, x, y)) return { kind: "mp_out" };
     if (ubIn(P.lst, x, y)) return { kind: "mp_lst", slot: P.slot };
-    for (const r of P.vis) {
-        if (y < r.y || y >= r.y + UB_POP_ROW) continue;
-        const pr = ubPopRowParts(P.rect, r.y, P.vw);
-        const base = { slot: P.slot, m: r.m };
+    for (const v of P.vis) {
+        if (!ubIn(v.rect, x, y)) continue;
+        const pr = v.parts;
+        const base = { slot: P.slot, m: v.m };
+        if (v.kind === "dsub") {
+            base.tm = v.tm;
+            for (const k of ["tog", "del", "bar"]) if (ubIn(pr[k], x, y)) return Object.assign({ kind: "mp_ds_" + k, rect: pr[k] }, base);
+            return Object.assign({ kind: "mp_ds_row" }, base);
+        }
         if (ubIn(pr.tog, x, y)) return Object.assign({ kind: "mp_tog" }, base);
         if (ubIn(pr.mode, x, y)) return Object.assign({ kind: "mp_mode" }, base);
-        if (r.m.mode !== "remote" && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol" }, base);
+        if (v.m.mode !== "remote" && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol" }, base);
         if (ubIn(pr.bar, x, y)) return Object.assign({ kind: "mp_bar", rect: pr.bar }, base);
         return Object.assign({ kind: "mp_row" }, base);
     }
     return { kind: "mp_bg" };
 }
-const UB_POL_CYCLE = { 1: 0, 0: -1, "-1": 1 }; // + -> \u00b1 -> \u2212 -> +
+const UB_POL_CYCLE = { 1: 0, 0: -1, "-1": 1 }; // + -> ± -> − -> +
+function ubMapsPopSetScroll(P, v) {
+    ubMapsPop.scroll = clamp(v, 0, P.maxScroll);
+}
 function ubMapsPopClick(h, x, y) {
     switch (h.kind) {
         case "mp_out": ubMapsPop = null; break;
@@ -1411,14 +1588,15 @@ function ubMapsPopClick(h, x, y) {
             break;
         }
         case "mp_bar": { const m = MM.getMapping(h.m.id); if (m) ubHBarStart(m, h.rect, x, true); break; }
-        case "mp_row": ubMapSelBy[h.slot] = h.m.id; break;
+        case "mp_row": if (!ubDmodArmedAssign(MM.getMapping(h.m.id))) ubMapSelBy[h.slot] = h.m.id; break;
+        case "mp_ds_tog": case "mp_ds_del": case "mp_ds_bar": case "mp_ds_row": ubSubClick(h.kind.slice(6), h, x, y, true); break;
         default: break;
     }
 }
 function ubWheelMapsPop(x, y, dy) {
     const P = ubMapsPopGeom();
     if (!P || !ubIn(P.rect, x, y)) return;
-    ubMapsPop.scroll = clamp(P.first + (dy > 0 ? -1 : 1), 0, Math.max(0, P.maps.length - P.rows));
+    ubMapsPopSetScroll(P, P.first + (dy > 0 ? -1 : 1));
     mgraphics.redraw();
 }
 // ------------------------------------------------------------------ painting: icons
@@ -1886,7 +2064,7 @@ function ubSetSelfMod(kind) {
 function ubPaintHBar(r, m, mod) {
     const rem = m.mode === "remote";
     const off = !mod.enabled || !m.enabled;
-    const ac = off ? UB_OFF_GREY : rem ? UB_REM_COL : UB_MOD_COL;
+    const ac = off ? UB_OFF_GREY : isDepthRoute(m) ? UB_DEPTH_COL : rem ? UB_REM_COL : UB_MOD_COL;
     const d = ubDrag && ubDrag.kind === "hbar" && ubDrag.mapId === m.id ? ubDrag : null;
     ubRR(r[0], r[1], r[2], r[3], Math.min(3, r[3] / 2), rem ? UB_REM_BG : UB_MOD_BG, 1);
     const x0 = r[0] + 1;
@@ -1898,10 +2076,11 @@ function ubPaintHBar(r, m, mod) {
         const b = x0 + w * Math.max(m.min, m.max);
         ubRect(a, y0, Math.max(1, b - a), h, ac, 0.4);
         const hx = (v) => clamp(x0 + w * v, x0 + 1, x0 + w - 1);
-        ubRect(hx(m.max) - 1, r[1], 2, r[3], d && d.which === "max" ? [1, 1, 1] : ac, 1);
+        const th = r[3] >= 16 ? 4 : 2;
+        ubRect(hx(m.max) - th / 2, r[1], th, r[3], d && d.which === "max" ? [1, 1, 1] : ac, 1);
         ubCol(d && d.which === "min" ? [1, 1, 1] : ac, 1);
         mgraphics.set_line_width(1);
-        mgraphics.rectangle(hx(m.min) - 1.5, r[1] + 0.5, 3, r[3] - 1);
+        mgraphics.rectangle(hx(m.min) - th / 2 - 0.5, r[1] + 0.5, th + 1, r[3] - 1);
         mgraphics.stroke();
     } else {
         const cx = r[0] + r[2] / 2;
@@ -1911,61 +2090,102 @@ function ubPaintHBar(r, m, mod) {
         if (m.polarity <= 0) ubRect(cx - len, y0, len, h, ac, 0.5);
         ubLine(cx, r[1], cx, r[1] + r[3], [0.62, 0.64, 0.7], 1, 1);
         const mc = d ? [1, 1, 1] : ac;
-        if (m.polarity >= 0) ubRect(clamp(cx + len - 1, x0, x0 + w - 2), r[1], 2, r[3], mc, 1);
-        if (m.polarity <= 0) ubRect(clamp(cx - len - 1, x0, x0 + w - 2), r[1], 2, r[3], mc, 1);
+        const mw = r[3] >= 16 ? 4 : 2;
+        if (m.polarity >= 0) ubRect(clamp(cx + len - mw / 2, x0, x0 + w - mw), r[1], mw, r[3], mc, 1);
+        if (m.polarity <= 0) ubRect(clamp(cx - len - mw / 2, x0, x0 + w - mw), r[1], mw, r[3], mc, 1);
     }
+}
+// ---- maps popover painting
+function ubPopBase(r, size) {
+    return r[1] + r[3] / 2 + size * 0.36; // text baseline for a one-line text centred in a rect
+}
+function ubPopHot(kind, m) {
+    return !!(ubHover && ubHover.hit && ubHover.hit.kind === kind && ubHover.hit.m && ubHover.hit.m.id === m.id);
+}
+function ubPopButton(r, hover, edge) {
+    ubRR(r[0], r[1], r[2], r[3], 3, hover ? [0.22, 0.24, 0.29] : [0.17, 0.18, 0.21], 1);
+    ubRRStroke(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, edge || [0.30, 0.32, 0.37], 1, 1);
+}
+// M / R chip (inert for an internal route)
+function ubPopModeChip(r, m, size) {
+    const remote = m.mode === "remote";
+    ubRR(r[0], r[1], r[2], r[3], 3, remote ? UB_REM_COL : UB_MOD_COL, m.target.internal ? 0.45 : 0.85);
+    ubTextC(remote ? "R" : "M", r[0] + r[2] / 2, ubPopBase(r, size), size, [0.06, 0.07, 0.09], 1);
+}
+function ubPopPolButton(r, m, gs) {
+    ubPopButton(r, ubPopHot("mp_pol", m), UB_MOD_COL);
+    ubPolGlyph(r[0] + r[2] / 2, r[1] + r[3] / 2, m.polarity, gs, [1, 1, 1], 1.3);
+}
+function ubPopValueText(r, m, size, off, center) {
+    const vt = ubFit(ubValueText(m), r[2], size);
+    const w = ubTextW(vt, size);
+    ubText(vt, center ? r[0] + (r[2] - w) / 2 : r[0] + r[2] - w, ubPopBase(r, size), size, off ? [0.7, 0.72, 0.76] : [1, 1, 1], off ? 0.7 : 1);
+}
+// header: modulator dot + name, LST button
+function ubPaintPopHead(P, size) {
+    const R = P.rect;
+    const col = ubModCol(P.mod);
+    const hh = UB_POP_HEAD;
+    ubCircle(R[0] + 11, R[1] + hh / 2, 3.5, col, 1, true);
+    ubText(ubFit(P.mod.name, P.lst[0] - (R[0] + 19) - 4, size), R[0] + 19, R[1] + hh / 2 + size * 0.36, size, [0.92, 0.94, 0.97], 1);
+    const hov = !!(ubHover && ubIn(P.lst, ubHover.x, ubHover.y));
+    ubPopButton(P.lst, hov);
+    ubTextC("LST", P.lst[0] + P.lst[2] / 2, ubPopBase(P.lst, 7), 7, UB_ORANGE, 1);
+    ubLine(R[0] + 4, R[1] + hh, R[0] + R[2] - 4, R[1] + hh, [0.24, 0.26, 0.3], 1, 1);
+}
+// the name (+ kind marker for a self-mapping) of a row, at size, in the rect nm
+function ubPaintPopName(m, nm, size, a, miss) {
+    const selfM = isSelfMapping(m);
+    const dRoute = isDepthRoute(m);
+    const nOff = selfM || dRoute ? 8 : 0;
+    const nt = selfM ? ubSelfFit(m, nm[2] - nOff, size) : ubFit(ubMapName(m), nm[2] - nOff, size);
+    ubText(nt, nm[0], ubPopBase(nm, size), size, miss ? UB_RED : [0.84, 0.86, 0.9], a);
+    if (selfM) ubSelfMarkSmall(m, nm[0] + ubTextW(nt, size) + 2, nm[1] + nm[3] / 2 - 3.5, a);
+    else if (dRoute) {
+        const mx = nm[0] + ubTextW(nt, size) + 2, my = nm[1] + nm[3] / 2 - 3.5;
+        ubRR(mx, my, 6, 7, 1.5, UB_DEPTH_COL, 0.85 * a);
+        ubTextC("D", mx + 3, my + 5.8, 5, [0.06, 0.07, 0.09], 1);
+    }
+}
+function ubPaintPopRow(P, v, sel) {
+    const m = v.m;
+    const pr = v.parts;
+    const col = ubModCol(P.mod);
+    const status = MM.mappingStatus(m.id);
+    const miss = status === "missing";
+    const a = miss ? 0.75 : !m.enabled || status === "disabled" ? 0.5 : 1;
+    const off = !P.mod.enabled || !m.enabled;
+    if (sel && sel.id === m.id) ubRR(v.rect[0], v.rect[1], v.rect[2], v.rect[3], 3, UB_CYAN, 0.1);
+    ubMapToggle(pr.tog, !!m.enabled, col, ubPopHot("mp_tog", m));
+    ubPaintPopName(m, pr.name, 8, a, miss);
+    ubPopModeChip(pr.mode, m, 7);
+    if (m.mode !== "remote") ubPopPolButton(pr.pol, m, 3);
+    ubPaintHBar(pr.bar, m, P.mod);
+    ubPopValueText(pr.val, m, 7.5, off, false);
+}
+function ubPaintPopSub(P, v) {
+    const rt = v.m;
+    const hv = ubHover && ubHover.hit && ubHover.hit.m && ubHover.hit.m.id === rt.id ? ubHover.hit : null;
+    ubRect(v.rect[0], v.rect[1], 2, v.rect[3], UB_DEPTH_COL, 0.7);
+    if (ubSubSel === rt.id) ubRR(v.rect[0], v.rect[1], v.rect[2], v.rect[3], 3, UB_DEPTH_COL, 0.12);
+    ubPaintSubParts(v.parts, rt, false, hv && hv.kind.indexOf("mp_ds_") === 0 ? hv.kind.slice(6) : "");
 }
 function ubPaintMapsPop() {
     const P = ubMapsPopGeom();
     if (!P) return;
     const R = P.rect;
-    const col = ubModCol(P.mod);
     ubRR(R[0], R[1], R[2], R[3], 5, [0.07, 0.075, 0.09], 0.98);
     ubRRStroke(R[0] + 0.5, R[1] + 0.5, R[2] - 1, R[3] - 1, 5, UB_CYAN, 1, 1);
-    ubCircle(R[0] + 8, R[1] + 8, 3, col, 1, true);
-    ubText(ubFit(P.mod.name, P.lst[0] - (R[0] + 14) - 3, 7.5), R[0] + 14, R[1] + 11, 7.5, [0.92, 0.94, 0.97], 1);
-    const hov = !!(ubHover && ubIn(P.lst, ubHover.x, ubHover.y));
-    ubRR(P.lst[0], P.lst[1], P.lst[2], P.lst[3], 3, hov ? [0.22, 0.24, 0.29] : [0.17, 0.18, 0.21], 1);
-    ubRRStroke(P.lst[0] + 0.5, P.lst[1] + 0.5, P.lst[2] - 1, P.lst[3] - 1, 3, [0.30, 0.32, 0.37], 1, 1);
-    ubTextC("LST", P.lst[0] + P.lst[2] / 2, P.lst[1] + 8.5, 6.5, UB_ORANGE, 1);
-    ubLine(R[0] + 4, R[1] + UB_POP_HEAD, R[0] + R[2] - 4, R[1] + UB_POP_HEAD, [0.24, 0.26, 0.3], 1, 1);
-    if (!P.maps.length) ubText("no mappings", R[0] + 6, R[1] + UB_POP_HEAD + 12, 6.5, [0.5, 0.53, 0.58], 1);
+    ubPaintPopHead(P, 8);
+    if (!P.maps.length) ubText("no mappings", R[0] + 10, R[1] + UB_POP_HEAD + 14, 7.5, [0.5, 0.53, 0.58], 1);
     const sel = ubStripSelMapping(P.slot);
-    for (const r of P.vis) {
-        const m = r.m;
-        const pr = ubPopRowParts(R, r.y, P.vw);
-        const status = MM.mappingStatus(m.id);
-        const miss = status === "missing";
-        const a = miss ? 0.75 : !m.enabled || status === "disabled" ? 0.5 : 1;
-        if (sel && sel.id === m.id) ubRect(R[0] + 2, r.y, R[2] - 4, UB_POP_ROW, UB_CYAN, 0.1);
-        const selfM = isSelfMapping(m);
-        ubMapToggle(pr.tog, !!m.enabled, col, !!(ubHover && ubHover.hit && ubHover.hit.kind === "mp_tog" && ubHover.hit.m && ubHover.hit.m.id === m.id));
-        // a self-mapping's kind is a tiny marker right after its name (green loop = internal, orange L = via Live)
-        const nOff = selfM ? 8 : 0;
-        const nt = selfM ? ubSelfFit(m, pr.name[2] - nOff, 7) : ubFit(ubMapName(m), pr.name[2], 7);
-        ubText(nt, pr.name[0], r.y + 10, 7, miss ? UB_RED : [0.84, 0.86, 0.9], a);
-        if (selfM) ubSelfMarkSmall(m, pr.name[0] + ubTextW(nt, 7) + 2, r.y + 3.5, a);
-        const remote = m.mode === "remote";
-        const mc = remote ? UB_REM_COL : UB_MOD_COL;
-        ubRR(pr.mode[0], pr.mode[1], pr.mode[2], pr.mode[3], 3, mc, m.target.internal ? 0.45 : 0.85);
-        ubTextC(remote ? "R" : "M", pr.mode[0] + pr.mode[2] / 2, pr.mode[1] + 7.5, 6, [0.06, 0.07, 0.09], 1);
-        if (!remote) {
-            const ph = !!(ubHover && ubHover.hit && ubHover.hit.kind === "mp_pol" && ubHover.hit.m && ubHover.hit.m.id === m.id);
-            ubRR(pr.pol[0], pr.pol[1], pr.pol[2], pr.pol[3], 3, ph ? [0.22, 0.24, 0.29] : [0.17, 0.18, 0.21], 1);
-            ubRRStroke(pr.pol[0] + 0.5, pr.pol[1] + 0.5, pr.pol[2] - 1, pr.pol[3] - 1, 3, UB_MOD_COL, 0.7, 1);
-            ubPolGlyph(pr.pol[0] + pr.pol[2] / 2, pr.pol[1] + pr.pol[3] / 2, m.polarity, 2.6, [1, 1, 1], 1.2);
-        }
-        ubPaintHBar(pr.bar, m, P.mod);
-        const off = !P.mod.enabled || !m.enabled;
-        const vt = ubFit(ubValueText(m), pr.val[2], 6.5);
-        // right-aligned in the fixed column: the column's x never moves, and short values hug the panel edge
-        ubText(vt, pr.val[0] + pr.val[2] - ubTextW(vt, 6.5), r.y + 10, 6.5, off ? [0.7, 0.72, 0.76] : [1, 1, 1], off ? 0.7 : 1);
-    }
-    if (P.maps.length > P.rows) {
-        const ah = P.rows * UB_POP_ROW;
-        const th = Math.max(8, (ah * P.rows) / P.maps.length);
-        const ty = R[1] + UB_POP_HEAD + 2 + ((ah - th) * P.first) / Math.max(1, P.maps.length - P.rows);
-        ubRR(R[0] + R[2] - 4, ty, 2, th, 1, [0.5, 0.53, 0.58], 0.8);
+    for (const v of P.vis) { if (v.kind === "dsub") ubPaintPopSub(P, v); else ubPaintPopRow(P, v, sel); }
+    const n = P.items.length;
+    if (n > P.rows) {
+        const top = R[1] + UB_POP_HEAD + 2;
+        const ah = P.rows * UB_POP1_ROW;
+        const th = Math.max(8, (ah * P.rows) / n);
+        ubRR(R[0] + R[2] - 6, top + ((ah - th) * P.first) / Math.max(1, P.maxScroll), 2, th, 1, [0.5, 0.53, 0.58], 0.8);
     }
 }
 function ubPaintUndoGlyph(cx, cy, c, a, mirror) {
@@ -2159,11 +2379,17 @@ function ubPaintDetail(gm) {
     const hl = off ? UB_OFF_GREY : rem ? UB_REM_COL : UB_MOD_COL;
     const pname = ubMapName(m);
     const selfM = isSelfMapping(m);
+    const dRoute = isDepthRoute(m);
     if (selfM) ubSelfMark(m, x, y0 + 5, 1);
-    ubText(ubFit(pname, w - (selfM ? 10 : 0), 8), x + (selfM ? 10 : 0), y0 + 12, 8, st === "missing" ? UB_RED : [0.92, 0.94, 0.97], 1);
-    ubText(ubFit(selfM ? (m.target.internal ? "internal route" : "via Live: " + selfDestName(selfDestOf(m))) : (m.target.trackName || "?") + " / " + (m.target.deviceName || "?"), w - ubDepthW() - 3, 7), x, y0 + 22, 7, selfM ? UB_SELF_COL : [0.55, 0.58, 0.64], 1);
+    else if (dRoute) ubDepthMark(x, y0 + 5, 1);
+    ubText(ubFit(pname, w - (selfM || dRoute ? 10 : 0), 8), x + (selfM || dRoute ? 10 : 0), y0 + 12, 8, st === "missing" ? UB_RED : [0.92, 0.94, 0.97], 1);
+    const textR = x + w - ubDepthW() - 3; // the two text lines under the name end before the pill
+    if (dRoute) {
+        ubPoly([[x + 4, y0 + 17], [x + 1, y0 + 20], [x + 4, y0 + 23]], UB_DEPTH_COL, 1, 1.2);
+        ubText(ubFit("depth route", textR - x - 7, 7), x + 7, y0 + 22, 7, UB_DEPTH_COL, 1);
+    } else ubText(ubFit(selfM ? (m.target.internal ? "internal route" : "via Live: " + selfDestName(selfDestOf(m))) : (m.target.trackName || "?") + " / " + (m.target.deviceName || "?"), textR - x, 7), x, y0 + 22, 7, selfM ? UB_SELF_COL : [0.55, 0.58, 0.64], 1);
     ubCircle(x + 3, y0 + 31.5, 2.8, c, 1, true);
-    ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), w - 10 - ubDepthW() - 3, 7), x + 9, y0 + 34, 7, st === "missing" ? UB_RED : c, 1);
+    ubText(ubFit(mod.name + (st === "missing" ? "  MISSING" : st === "disabled" ? "  off" : ""), textR - x - 9, 7), x + 9, y0 + 34, 7, st === "missing" ? UB_RED : c, 1);
     // Remote: an orange frame around the tab row and the editor
     const tabY = 36;
     if (rem) ubRRStroke(x - 1.5, y0 + tabY - 0.5, w + 1, P[3] - 18 - 2 - (tabY - 0.5), 4, off ? UB_OFF_GREY : UB_REM_COL, 0.85, 1);
@@ -2298,6 +2524,17 @@ function ubPaintListPanel(gm) {
         } else if (it.kind === "none") {
             if (isSelMod) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, col, UB_TINT_ROW);
             ubText("no mappings", R[0] + 18, r.y + 9, 6.5, [0.42, 0.45, 0.5], 1);
+        } else if (it.kind === "dsub") {
+            const rt = it.m;
+            const isSel = !!(sel && sel.id === rt.id);
+            if (isSelMod) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, col, UB_TINT_ROW);
+            ubRect(R[0] + 3, r.y, 2, r.h, UB_DEPTH_COL, 0.7);
+            if (isSel) {
+                ubRect(R[0] + 3, r.y, R[2] - 6, r.h, UB_DEPTH_COL, UB_SELROW_FILL);
+                ubRRStroke(R[0] + 3.5, r.y + 0.5, R[2] - 7, r.h - 1, 2, UB_DEPTH_COL, 0.9, 1);
+            } else if (hv && hv.m && hv.m.id === rt.id) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, [0.18, 0.19, 0.22], 1);
+            ubPaintSubParts(ubSubParts(r.y, gm.lx, gm.lw), rt, isSel, hv && hv.m && hv.m.id === rt.id && hv.kind.indexOf("ds_") === 0 ? hv.kind.slice(3) : "");
+            if (hv && hv.m && hv.m.id === rt.id) hud = ubTargetPath(rt);
         } else {
             const m = it.m;
             const P = ubRowParts(r.y, gm.lx, gm.lw);
@@ -2312,17 +2549,20 @@ function ubPaintListPanel(gm) {
                 ubRect(R[0] + 3, r.y, R[2] - 6, r.h, UB_CYAN, UB_SELROW_FILL);
                 ubRRStroke(R[0] + 3.5, r.y + 0.5, R[2] - 7, r.h - 1, 2, UB_CYAN, 0.9, 1);
             } else if (rowHov) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, [0.18, 0.19, 0.22], 1);
+            if (rowHov && hv.kind === "ls_row" && ubIsPoolMap(m) && ubDmodLearnSrc() >= 0) ubRRStroke(R[0] + 3.5, r.y + 0.5, R[2] - 7, r.h - 1, 2, UB_DEPTH_COL, 1, 1.2); // armed LRN: this row's depth is the target
             if (miss) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, UB_RED, 0.08);
             ubMapToggle(P.tog, !!m.enabled, col, !!(hv && hv.kind === "ls_tog" && hv.m && hv.m.id === m.id));
             const nm = ubMapName(m);
             const selfM = isSelfMapping(m);
+            const dRoute = isDepthRoute(m);
             if (selfM) ubSelfMark(m, P.name[0], r.y + 2, a);
-            const nOff = selfM ? 10 : 0;
+            else if (dRoute) ubDepthMark(P.name[0], r.y + 2, a);
+            const nOff = selfM || dRoute ? 10 : 0;
             ubText(selfM ? ubSelfFit(m, P.name[2] - nOff, 7.5) : ubFit(nm, P.name[2] - nOff, 7.5), P.name[0] + nOff, r.y + 10, 7.5, miss ? UB_RED : [0.84, 0.86, 0.9], a);
             ubCurveRowGlyph(m, P.curve[0], P.curve[1], P.curve[2], P.curve[3], rowHov && hv.kind === "ls_curve" ? [1, 1, 1] : [0.6, 0.64, 0.7], a);
             const vt = ubValueText(m);
             const remote = m.mode === "remote";
-            const mc = remote ? UB_REM_COL : UB_MOD_COL;
+            const mc = dRoute ? UB_DEPTH_COL : remote ? UB_REM_COL : UB_MOD_COL;
             ubText(vt, P.val[0] + P.val[2] - ubTextW(vt, 7.5), r.y + 10, 7.5, mc, a);
             ubRR(P.mode[0], P.mode[1], P.mode[2], P.mode[3], 3, mc, m.target.internal ? 0.45 : 0.85); // an internal route is Mod only: its chip is dimmed
             ubTextC(remote ? "R" : "M", P.mode[0] + P.mode[2] / 2, P.mode[1] + 8, 6.5, [0.06, 0.07, 0.09], 1);
@@ -2412,7 +2652,7 @@ function ubStripFaces(g, mod, R) {
 }
 function ubFacesWanted() {
     const want = {};
-    if (ubPopup || ubMapsPop) return want;
+    if (ubPopup || ubMapsPop) return want; // a menu / popover is drawn by the v8ui: no face may sit over it
     const lim = ubFaceLimit();
     const put = (key, r) => {
         if (!key || !r || r[2] < 1 || r[3] < 1 || r[0] < 0 || r[1] < 0 || r[0] + r[2] > lim + 1e-6 || r[1] + r[3] > UB_H + 1e-6) return;
@@ -2480,9 +2720,9 @@ function uiChanged(ev) {
         mgraphics.redraw();
         return;
     }
-    if (ev.kind === "learn") return;
+    if (ev.kind === "learn") { if (!MM.learn.armed) ubDmodSrc = -1; return; }
     if (ev.kind === "load") {
-        ubPopup = null; ubDelArm = -1; ubMapsPop = null; ubMapSelBy = {};
+        ubPopup = null; ubDelArm = -1; ubMapsPop = null; ubMapSelBy = {}; ubSubSel = 0;
         if (ubPb() && ubSel() < 0 && ubOrder().length) MM.setUI({ sel: ubOrder()[0] }); // the inspector always shows a modulator
     }
     if (ev.kind === "mods" || ev.kind === "load" || ev.kind === "ui") ubSyncWidth();
@@ -2494,6 +2734,8 @@ function uiChanged(ev) {
 const UB_PREVIEW_REMOTE = false; // preview: the selected mapping in Remote mode (false = Mod mode)
 const UB_PREVIEW_LIST = true; // preview: the LST view = inspector (false = the rack strips, all collapsed, showing the maps popover)
 const UB_PREVIEW_OPT = false; // preview: the Options view (set the layout width to 390)
+const UB_PREVIEW_DMOD = 0; // preview: 0 = the committed LST preview (no depth routes); 1 = depth routes added, LRN armed on Dice (sub-rows under the rows)
+const UB_PREVIEW_DMOD_B = false; // ...with 1: show the maps popover with sub-rows instead of the LST view
 const UB_PREVIEW_SELF = false; // preview (strips view): self-mappings, with rings on the modulated knobs of the expanded LFO strip
 function preview() {
     MM.demo();
@@ -2574,6 +2816,22 @@ function preview() {
     }
     MM.setUI({ exp: UB_PREVIEW_LIST ? [4] : (UB_PREVIEW_SELF ? [0, 4] : []), sel: 2, pb: UB_PREVIEW_LIST ? 1 : 0, pbSel: selId, pbScroll: 0 });
     ubFullTTL = 0;
+    if (UB_PREVIEW_DMOD) {
+        // depth routes: Wobble (+-40%) and Follow (+25%) modulate Dice's Frequency depth, Swell (-60%) its Size depth, Dice modulates Swell's Rate depth
+        const fnd = (mod, nm) => MM.allMappings().filter((q) => q.mod === mod && q.target.paramName === nm)[0];
+        const fr = fnd(2, "Frequency"), sz = fnd(2, "Size"), rt = fnd(4, "Rate");
+        const mkr = (src, tm, patch) => { const r = MM.addDepthRoute(src, tm.id); if (r) MM.updateMapping(r.id, patch); return r; };
+        mkr(0, fr, { polarity: 0, range: 0.4 });
+        mkr(1, fr, { polarity: 1, range: 0.25 });
+        mkr(4, sz, { polarity: -1, range: 0.6 });
+        mkr(2, rt, { polarity: 0, range: 0.5 });
+        MM.updateMapping(fr.id, { depth: 0.8 });
+        t.depth[MM.mappingSlot(fr.id)] = 0.62; t.depth[MM.mappingSlot(sz.id)] = 0.42; t.depth[MM.mappingSlot(rt.id)] = 0.85;
+        MM.setUI({ pbSel: fr.id });
+        const popPreview = () => { MM.setUI({ pb: 0, exp: [], sel: 2 }); ubMapsPop = { slot: 2, scroll: 0 }; };
+        if (UB_PREVIEW_DMOD_B) popPreview(); else { MM.armLearn(2, false); ubDmodSrc = 2; }
+        return;
+    }
     if (UB_PREVIEW_OPT) {
         MM.setUI({ pb: 0, opt: 1 });
         MM.setSettings({ defaultMode: "remote", smoothMs: 45, rateMul: 1.5 });
@@ -2581,8 +2839,19 @@ function preview() {
     }
     if (UB_PREVIEW_LIST) MM.armLearn(2, false);
     else {
-        // strips view: Dice (4 mappings, mixed modes) is selected; the chosen range UI is shown on it
-        ubMapSelBy[2] = selId;
-        ubMapsPop = { slot: 2, scroll: 0 };
+        // strips view: the maps popover on an "LFO 2" strip: Depth (internal self-mapping, +28%) and Decay Time (Remote 0-100%),
+        // plus three more so the list scrolls
+        for (const own of MM.mappingsFor(0).slice()) MM.deleteMapping(own.id, { noUndo: true });
+        s.mods[0].name = "LFO 2";
+        MM.setSelfMod("internal", false);
+        const dep = MM.addSelfMapping(0, selfDestFor("ctl", 1, 2), "internal"); // -> Follow Depth
+        if (dep) MM.updateMapping(dep.id, { polarity: 1, range: 0.28 });
+        add(0, "Pads", "Reverb", "Decay Time", { mode: "remote", min: 0, max: 1 });
+        add(0, "Bass", "Auto Filter", "Resonance", { range: 0.4, polarity: -1 });
+        add(0, "Pads", "Reverb", "Feedback", { mode: "remote", min: 0.2, max: 0.7 });
+        add(0, "Pads", "Reverb", "Size", { polarity: 0, range: 0.62 });
+        MM.setUI({ sel: 0 });
+        ubMapSelBy[0] = dep ? dep.id : 0;
+        ubMapsPop = { slot: 0, scroll: 0 };
     }
 }

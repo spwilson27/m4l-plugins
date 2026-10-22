@@ -48,7 +48,9 @@
 //   MM.updateMapping(id, patch)     keys: depth (0..1, default 1: scales the output, schema 8; the first AUTO_DEPTH_SLOTS pool slots mirror it in a Live parameter), min / max (0..1, Remote), mode ("mod"|"remote"), polarity (1 "+", 0 "±", -1 "−"), range (0..1; the Mod depth),
 //                                   shape (MSEG points [{x,y,curve,sCurve}], the transfer curve), enabled,
 //                                   mod (retarget slot)
-//   MM.deleteMapping(id)
+//   MM.deleteMapping(id)            (also deletes the depth routes aimed at that mapping; one undo step)
+//   MM.addDepthRoute(i, mapId)      schema 10: modulator i modulates the DEPTH of the pool mapping mapId -> the route (an internal mapping, target {internal, kind: "depth", mapId}) | null
+//   MM.depthRoutesFor(mapId) / MM.depthTargetOf(route) / MM.depthRouteLabel(route) / MM.effectiveDepth(mapId)   (several routes onto one mapping sum, clamped 0..1)
 //   MM.undo() / MM.redo()           undo / redo the last modulator or mapping delete (stack of 16, exact snapshots: slots, settings,
 //                                   mapping ids / targets / shapes, Live ids and pool slots are restored and re-bound);
 //                                   -> {kind: "mod"|"map", slot, ids} or null. MM.undoInfo() -> {undo, redo, max, label, kind}
@@ -75,7 +77,7 @@
 // STATE MODEL (persisted in blob param "MegaModState")
 // =====================================================================================
 // state = {
-//   schema: 9,                  // 9 = settings.selfMod + self-mappings (target.internal / target.selfDest; older states get selfMod "internal" and have none); 8 = per-mapping `depth` (older states get 1); 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
+//   schema: 10,                 // 10 = depth-modulation routes (target {internal: true, kind: "depth", mapId}; internal self-mappings that targeted `Depth k` are migrated to them); 9 = settings.selfMod + self-mappings (target.internal / target.selfDest; older states get selfMod "internal" and have none); 8 = per-mapping `depth` (older states get 1); 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
@@ -115,7 +117,7 @@
 //   Remote: y' = min + (max-min)*(invert ? 1-y : y), polarity 1, range 1, amount 1 (so v = y').
 // =====================================================================================
 
-const MEGAMOD_VERSION = 9; // schema version of the JSON state
+const MEGAMOD_VERSION = 10; // schema version of the JSON state
 const MAX_MODS = 16;
 
 
@@ -301,7 +303,7 @@ function isInternalTarget(t) {
     return !!(t && t.internal === true);
 }
 function isSelfMapping(m) {
-    return !!(m && m.target && (m.target.internal === true || Number.isInteger(m.target.selfDest)));
+    return !!(m && m.target && !isDepthTarget(m.target) && (m.target.internal === true || Number.isInteger(m.target.selfDest)));
 }
 function selfDestOf(m) {
     if (!m || !m.target) return -1;
@@ -313,6 +315,60 @@ function makeInternalTarget(code) {
     const d = selfDestInfo(code);
     if (!d) return null;
     return { internal: true, selfDest: d.code, kind: d.kind, slot: d.slot, ctl: d.ctl, path: "", name: selfDestName(d.code), paramName: selfDestName(d.code), trackName: "", deviceName: "" };
+}
+// ---- DEPTH-MODULATION ROUTES (schema 10): a modulator modulating the DEPTH of another mapping --------------------------------------
+// An internal route whose target is {internal: true, kind: "depth", mapId}: it follows the mapping by id (not by pool slot), is Mod only, uses
+// no pool slot / live.* object / Live id, and lives in the engine's internal matrix like every internal route (shared cap INT_ROUTES). The engine
+// destination is 192 + the pool slot of the target mapping (0..255, INT_DEST_COUNT = 448 destination cells); the mapper rewrites the route whenever
+// the target mapping's slot changes. Several routes onto one mapping sum; the effective depth = clamp(mapping.depth + sum of the routes, 0, 1).
+// A route whose source is the target mapping's OWN modulator is allowed (tremolo of self): the depth only scales the router output, which never
+// feeds the engine, so it is not a feedback loop. The target must be a pool mapping (a normal or a VIA LIVE one): an INTERNAL route has no router
+// stage (its depth is baked in its table), and a depth route has no depth of its own.
+const INT_DEST_COUNT = 448;
+function depthRouteDest(slot) {
+    return DEST_DEPTH + clamp(Math.round(num(slot, 0)), 0, ROUTER_DEPTH_SLOTS - 1);
+}
+function isDepthTarget(t) {
+    return !!(t && t.internal === true && t.kind === "depth" && Number.isInteger(t.mapId));
+}
+function isDepthRoute(m) {
+    return !!(m && isDepthTarget(m.target));
+}
+function makeDepthTarget(mapId) {
+    return { internal: true, kind: "depth", mapId: Math.round(num(mapId, 0)), path: "", name: "Depth", paramName: "Depth", trackName: "", deviceName: "" };
+}
+// JS reference of the engine: the effective depth of a pool mapping = clamp(base + the SUM of its routes' offsets, 0, 1) (offsets: mappingOutput of each route)
+function effectiveDepth(base, offsets) {
+    let sum = clamp(num(base, 1), 0, 1);
+    for (const o of offsets || []) sum += num(o, 0);
+    return clamp(sum, 0, 1);
+}
+function depthRoutesOf(mappings, mapId) {
+    return mappings.filter((m) => isDepthRoute(m) && m.target.mapId === mapId);
+}
+// Schema 10 migration (also run on every load as a repair): an INTERNAL self-mapping that targeted `Depth k` (dest code 192 + k) becomes a depth route
+// on the pool mapping that owns slot k (resolved through mapping.slot); one whose slot has no mapping is dead and is dropped. Depth routes whose
+// target mapping is gone (or is not a pool mapping), and duplicate (source, mapping) routes, are dropped too.
+function migrateDepthRoutes(mappings) {
+    const pool = mappings.filter((m) => !(m.target && m.target.internal === true));
+    const out = [];
+    const seen = {};
+    for (const m of mappings) {
+        const t = m.target;
+        if (t && t.internal === true && !isDepthTarget(t) && Number.isInteger(t.selfDest) && t.selfDest >= DEST_DEPTH) {
+            const owner = pool.find((x) => x.slot === t.selfDest - DEST_DEPTH);
+            if (!owner) continue;
+            m.target = makeDepthTarget(owner.id);
+        }
+        if (isDepthRoute(m)) {
+            if (!pool.some((x) => x.id === m.target.mapId)) continue;
+            const key = m.mod + ":" + m.target.mapId;
+            if (seen[key]) continue;
+            seen[key] = 1;
+        }
+        out.push(m);
+    }
+    return out;
 }
 // What the learn gesture does with a selected own parameter. name = the Live parameter name, srcMod = the learning modulator.
 // -> {ok: true, dest} or {ok: false, reason}. Rejected: anything that is not a pool parameter (Device On, MegaModState, the marker) and a
@@ -393,15 +449,16 @@ const SCOPE_BPM = 67;
 const SCOPE_PLAYING = 68;
 const SCOPE_EFF = 128; // 12 floats per slot: [0..4] effective normalized A..E, [5] effective On, [6..11] effective switches (shape 0..4, toggles 0/1)
 const SCOPE_EFF_STRIDE = 12;
-const SCOPE_DEPTH = 320; // 64 floats: effective Depth 0..1 of the mapping in pool slot k
-const SCOPE_SAMPS = 512;
+const SCOPE_DEPTH = 320; // 256 floats: effective Depth 0..1 of the mapping in pool slot k (every pool slot, schema 10)
+const SCOPE_SAMPS = 640;
 
 const MAX_MAPPINGS = 256; // saved mapping-slot pool: 256 live.modulate~ + 256 live.remote~ in the device file
 const CURVE_REGION = 256; // samples per mapping transfer table in buffer~ ---mmcurve (FIXED: MAX_MAPPINGS x 256 samples)
 const CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION;
-const ROUTE_SAMPS = 1024; // buffer~ ---megamodroute: [2k] = source modulator index or -1 (off); for pool slots k < AUTO_DEPTH_SLOTS [2k+1] = effective depth (the engine writes it), [ROUTE_DEPTH_BASE + k] = base depth, [ROUTE_DEPTH_MIN + k] = Remote min or -1 (Mod)
+const ROUTE_SAMPS = 1024; // buffer~ ---megamodroute, for EVERY pool slot k 0..255 (schema 10): [2k] = source modulator index or -1 (off), [2k+1] = effective depth (the engine writes it), [ROUTE_DEPTH_BASE + k] = base depth, [ROUTE_DEPTH_MIN + k] = Remote min or -1 (Mod); the router applies the depth per sample
 const ROUTE_DEPTH_BASE = 512;
-const ROUTE_DEPTH_MIN = 576;
+const ROUTE_DEPTH_MIN = 768;
+const ROUTER_DEPTH_SLOTS = 256; // pool slots whose router applies the Depth (all of them since schema 10; Live parameters `Depth k` exist for the first AUTO_DEPTH_SLOTS only)
 const ROUTE_OFF = -1;
 const ROUTERS = 8; // router gen.codebox~ boxes (16 signal inlets, 32 outlets each): slot k = router floor(k/32), outlet k%32
 const ROUTER_SLOTS = MAX_MAPPINGS / ROUTERS;
@@ -667,6 +724,7 @@ function sanitizeTarget(t) {
         trackName: String(o.trackName || ""), deviceName: String(o.deviceName || ""),
         paramName: String(o.paramName || o.name || ""),
     };
+    if (o.internal === true && o.kind === "depth" && Number.isInteger(o.mapId)) return makeDepthTarget(o.mapId); // schema 10 depth route
     // self-mod (schema 9): an internal target is the dest code only (kind / slot / ctl are derived); a via-Live self target keeps its code
     const code = Math.round(num(o.selfDest, -1));
     if (code >= 0 && code < DEST_COUNT) {
@@ -855,6 +913,7 @@ function normalizeState(obj) {
             s.mappings.push(m);
         }
     }
+    s.mappings = migrateDepthRoutes(s.mappings); // schema 10
     s.nextMapId = Math.max(maxId + 1, Math.round(num(obj.nextMapId, 1)));
     s.settings = sanitizeSettings(obj.settings); // schema < 7 has none: defaults
     s.ui = obj.ui && typeof obj.ui === "object" && !Array.isArray(obj.ui) ? JSON.parse(JSON.stringify(obj.ui)) : {};
@@ -1144,6 +1203,7 @@ function mappingTable(m) {
 // Learn / target helpers
 // ------------------------------------------------------------------------------------
 function targetKey(t) {
+    if (isDepthTarget(t)) return "depth:" + t.mapId;
     if (t && Number.isInteger(t.selfDest) && t.selfDest >= 0) return "self:" + t.selfDest; // internal and via-Live self targets collide
     return t && t.path ? String(t.path) : "id:" + (t && t.id);
 }
@@ -1222,7 +1282,7 @@ if (nodeModule && nodeModule.exports) {
         CF_RETRIG, CF_BIPOLAR, CF_DEPTH, CF_ATTACK, CF_RELEASE, CF_GAIN, CF_SMOOTH, CF_STEPS, CF_GLIDE, CF_ONESHOT,
         CF_SEED, CF_LOOPON, CF_LOOPSTART, CF_LOOPEND, CFG_FLOATS, MSEG_TABLE, MSEG_FLOATS, STEPS_MAX, STEPS_FLOATS,
         SCOPE_STRIDE, SCOPE_HEADER, SCOPE_FRAME, SCOPE_SR, SCOPE_BEAT, SCOPE_BPM, SCOPE_PLAYING, SCOPE_SAMPS,
-        MAX_MAPPINGS, CURVE_REGION, CURVE_SAMPS, ROUTE_SAMPS, ROUTE_DEPTH_BASE, ROUTE_DEPTH_MIN, SCOPE_EFF, SCOPE_EFF_STRIDE, SCOPE_DEPTH, BUF_INT, BUF_ICURVE, INT_ROUTES, INT_COUNT_AT, INT_DESC_AT, INT_SW_AT, INT_SAMPS, ICURVE_SAMPS, DEST_CTL, DEST_SW, DEST_DEPTH, DEST_COUNT, SELF_MODES, SELF_MODE_LABELS, KEY_CF, selfDestFor, selfDestInfo, selfDestName, selfDestFromName, selfDestExists, selfDestLabel, isInternalTarget, isSelfMapping, selfDestOf, makeInternalTarget, classifySelfParam, intDescriptorFloats, selfCtlValue, ROUTE_OFF, ROUTERS, ROUTER_SLOTS, BUF_CFG, BUF_MSEG, BUF_STEPS, BUF_SCOPE, BUF_CURVE, BUF_ROUTE,
+        MAX_MAPPINGS, CURVE_REGION, CURVE_SAMPS, ROUTE_SAMPS, ROUTE_DEPTH_BASE, ROUTE_DEPTH_MIN, ROUTER_DEPTH_SLOTS, INT_DEST_COUNT, depthRouteDest, makeDepthTarget, isDepthTarget, isDepthRoute, depthRoutesOf, effectiveDepth, migrateDepthRoutes, SCOPE_EFF, SCOPE_EFF_STRIDE, SCOPE_DEPTH, BUF_INT, BUF_ICURVE, INT_ROUTES, INT_COUNT_AT, INT_DESC_AT, INT_SW_AT, INT_SAMPS, ICURVE_SAMPS, DEST_CTL, DEST_SW, DEST_DEPTH, DEST_COUNT, SELF_MODES, SELF_MODE_LABELS, KEY_CF, selfDestFor, selfDestInfo, selfDestName, selfDestFromName, selfDestExists, selfDestLabel, isInternalTarget, isSelfMapping, selfDestOf, makeInternalTarget, classifySelfParam, intDescriptorFloats, selfCtlValue, ROUTE_OFF, ROUTERS, ROUTER_SLOTS, BUF_CFG, BUF_MSEG, BUF_STEPS, BUF_SCOPE, BUF_CURVE, BUF_ROUTE,
         MOD_NONE, MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG, MOD_TYPE_NAMES, MOD_TYPE_SHORT, LFO_SHAPES,
         CURVE_LINEAR, CURVE_EXP, CURVE_LOG, CURVE_S, CURVE_STEPPED, CURVE_NAMES, SYNC_BEATS, SYNC_LABELS, MOD_COLORS,
         MOD_PARAM_KEYS, MOD_PARAM_RANGE, MIN_WIDTH, MAX_WIDTH, BLOB_CHUNK,

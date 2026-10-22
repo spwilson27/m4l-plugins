@@ -1817,7 +1817,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
                     paintOk(T, tag + " popover");
                     const P = T.run("ubMapsPopGeom()");
                     ok(P.rect[0] >= 0 && P.rect[1] >= 0 && P.rect[0] + P.rect[2] <= T.run("ubLayoutWidth()") && P.rect[1] + P.rect[3] <= 161, `${tag}: popover inside the UI`);
-                    eq(P.vis.length, Math.min(cnt, 9), `${tag}: popover rows`);
+                    eq(P.vis.length, Math.min(cnt, P.rows), `${tag}: popover rows`);
                     for (const r of P.vis) {
                         const pr = T.run(`ubPopRowParts(${JSON.stringify(P.rect)}, ${r.y})`);
                         ok(pr.name[2] > 10 && !overlap(pr.name, pr.mode) && !overlap(pr.mode, pr.bar) && inside(pr.bar, { x: P.rect[0], y: P.rect[1], w: P.rect[2], h: P.rect[3] }), `${tag}: popover row parts fit`);
@@ -1886,7 +1886,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         eq(T.maps(0)[0].mode, "mod", "popover: and back to Mod");
         // click outside closes (and the click is swallowed), Esc closes, LST button opens the inspector
         const modsBefore = T.run("ubSel()");
-        T.c(T.g(4).x + 10, 60); T.up();
+        T.c(T.run("ubMapsPopGeom().rect[0] + ubMapsPopGeom().rect[2]") + 8, 60); T.up();
         eq(T.run("ubMapsPop"), null, "popover: a click outside closes the popover");
         eq(T.run("ubSel()"), modsBefore, "popover: the closing click is swallowed");
         T.c(...chip); T.up();
@@ -1901,15 +1901,13 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const T12 = mk3([12, 0]);
         T12.c(...ctr(T12.R(0).count)); T12.up();
         const P12 = T12.run("ubMapsPopGeom()");
-        eq(P12.vis.length, 9, "popover: at most 9 rows are visible");
+        eq(P12.vis.length, 6, "popover: at most 6 (roomy) rows are visible");
         ok(P12.rect[1] >= 0 && P12.rect[1] + P12.rect[3] <= 161, "popover: tall popover fits the 169 px device height");
         T12.ctx.onwheel(P12.rect[0] + 20, P12.rect[1] + 40, 0, -1);
         eq(T12.run("ubMapsPop.scroll"), 1, "popover: the wheel scrolls the popover");
-        T12.ctx.onwheel(P12.rect[0] + 20, P12.rect[1] + 40, 0, -1);
-        T12.ctx.onwheel(P12.rect[0] + 20, P12.rect[1] + 40, 0, -1);
-        T12.ctx.onwheel(P12.rect[0] + 20, P12.rect[1] + 40, 0, -1);
-        eq(T12.run("ubMapsPop.scroll"), 3, "popover: scroll stops at the last row (12 - 9)");
-        eq(T12.run("ubMapsPopGeom().vis[0].m.target.paramName"), "Par 03", "popover: scrolled rows start at the right mapping");
+        for (let k = 0; k < 8; k++) T12.ctx.onwheel(P12.rect[0] + 20, P12.rect[1] + 40, 0, -1);
+        eq(T12.run("ubMapsPop.scroll"), 6, "popover: scroll stops at the last row (12 - 6)");
+        eq(T12.run("ubMapsPopGeom().vis[0].m.target.paramName"), "Par 06", "popover: scrolled rows start at the right mapping");
         paintOk(T12, "popover scrolled");
         // one modulator: the compact popover still fits a 106 px layout
         const T1 = mk3([3]);
@@ -1941,7 +1939,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         });
         // the widest possible value texts fit the fixed column
         T.run("ubMapsPop = null");
-        const wid = T.run("[ubTextW('100\u2013100%', 6.5), ubTextW('\u00b1100%', 6.5), ubTextW('+100%', 6.5), ubTextW('\u2212100%', 6.5), ubPopValW([{ mode: 'mod' }]), ubPopValW([{ mode: 'mod' }, { mode: 'remote' }])]");
+        const wid = T.run("[ubTextW('100\u2013100%', 7.5), ubTextW('\u00b1100%', 7.5), ubTextW('+100%', 7.5), ubTextW('\u2212100%', 7.5), ubPopValW([{ mode: 'mod' }]), ubPopValW([{ mode: 'mod' }, { mode: 'remote' }])]");
         ok(wid[0] <= wid[5], "popover: a mixed popover's column fits 100\u2013100%");
         ok(wid[1] <= wid[4] && wid[2] <= wid[4] && wid[3] <= wid[4] && wid[4] < wid[5], "popover: an all-Mod column fits the widest Mod text and is narrower");
         // dragging bars and changing values never moves the columns or the value text
@@ -1978,7 +1976,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             ok(inside(r.bar, rectOf(P)) && inside(r.val, rectOf(P)), `all-Mod row ${i}: inside the popover`);
         });
         aligned(rows, "all-Mod");
-        const wm = T.run("[ubTextW('\u00b1100%', 6.5), ubTextW('+100%', 6.5), ubTextW('\u2212100%', 6.5)]");
+        const wm = T.run("[ubTextW('\u00b1100%', 7.5), ubTextW('+100%', 7.5), ubTextW('\u2212100%', 7.5)]");
         ok(wm.every((w) => w <= rows[0].val[2]), "all-Mod: the widest Mod text fits the column");
         const barBefore = rows.map((r) => r.bar.join(",")).join("|");
         const b0 = rows[0].bar;
@@ -1992,7 +1990,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         T.run("MM.updateMapping(MM.mappingsFor(0)[1].id, { mode: 'remote', min: 0, max: 1 })");
         ({ P, rows } = popRows(T));
         ok(rows[0].val[2] > widthMod, "mixed: the column widens for 100\u2013100%");
-        ok(T.run("ubTextW('100\u2013100%', 6.5)") <= rows[0].val[2], "mixed: 100\u2013100% fits");
+        ok(T.run("ubTextW('100\u2013100%', 7.5)") <= rows[0].val[2], "mixed: 100\u2013100% fits");
         aligned(rows, "mixed");
         rows.forEach((r, i) => ok(r.val[0] - (r.bar[0] + r.bar[2]) <= 4, `mixed row ${i}: gap <= 4 px`));
         const barMixed = rows.map((r) => r.bar.join(",")).join("|");
@@ -2029,6 +2027,231 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             paintOk(T, `popover ${name}`);
             // nothing painted at the rail while the popover is open: the rail LST/LRN stay hit-testable? (a click outside closes it)
             eq(T.run("ubHit(11, 12).kind"), "mp_out", `popover ${name}: a click on the rail is outside the popover`);
+        }
+    }
+
+    // ---- the maps popover (roomy rows: 260 px wide, 19 px rows, 6 rows before it scrolls)
+    {
+        const tg = "popover";
+        const mkD = (per, opts) => mk3(per, opts);
+        const openAt = (T, slot) => { T.c(...ctr(T.R(slot).count)); T.up(); return T.run("ubMapsPopGeom()"); };
+        const geomJson = (T) => { const P = T.run("ubMapsPopGeom()"); return JSON.stringify([P.rect, P.lst, P.vw, P.vis.map((v) => [v.rect, v.parts])]); };
+        const partNames = ["tog", "name", "mode", "pol", "bar", "val"];
+        const valSize = 7.5;
+        const inR = (r, R) => r[0] >= R[0] - 1e-9 && r[1] >= R[1] - 1e-9 && r[0] + r[2] <= R[0] + R[2] + 1e-9 && r[1] + r[3] <= R[1] + R[3] + 1e-9;
+
+        // opens from the chip; geometry is sane; faces are hidden
+        {
+            const T = mkD([4, 2, 0, 0, 1]);
+            const P = openAt(T, 0);
+            eq(T.run("ubMapsPop && ubMapsPop.slot"), 0, `${tg}: opens from the maps chip`);
+            ok(!T.run("ubPb()"), `${tg}: the LST view stays closed`);
+            paintOk(T, tg);
+            eq(Object.keys(T.run("ubFacesWanted()")).length, 0, `${tg}: parameter faces hidden while open`);
+            eq(P.vis.length, Math.min(4, P.rows), `${tg}: visible entries`);
+            eq(P.rect[2], 260, `${tg}: 260 px wide`); ok(P.vis.every((v) => v.rect[3] === 19), `${tg}: rows are 19 px`);
+        }
+
+        // edits: toggle, M/R, polarity, range (Mod range with its polarity, Remote min / max)
+        {
+            const T = mkD([4, 2, 0, 0, 1]);
+            openAt(T, 0);
+            for (let i = 0; i < 4; i++) {
+                const P = T.run("ubMapsPopGeom()");
+                const v = P.vis.filter((q) => q.m.target.paramName === "Par 0" + i)[0];
+                ok(!!v, `${tg}: mapping ${i} is shown`);
+                const id = v.m.id;
+                const pr = v.parts;
+                const snap = () => JSON.parse(JSON.stringify(T.run(`MM.getMapping(${id})`)));
+                const m0 = snap();
+                // on / off
+                T.c(...ctr(pr.tog)); T.up();
+                let m1 = snap();
+                eq(diff(m0, m1), ["enabled"], `${tg} #${i}: the toggle changes only enabled`);
+                T.c(...ctr(pr.tog)); T.up();
+                eq(snap().enabled, m0.enabled, `${tg} #${i}: and back`);
+                // polarity (Mod only)
+                if (m0.mode !== "remote") {
+                    T.c(...ctr(pr.pol)); T.up();
+                    m1 = snap();
+                    eq(diff(m0, m1), ["polarity"], `${tg} #${i}: the polarity button changes only polarity`);
+                    eq(m1.polarity, { 1: 0, 0: -1, "-1": 1 }[m0.polarity], `${tg} #${i}: polarity cycles + -> ± -> − -> +`);
+                    T.c(...ctr(pr.pol)); T.up(); T.c(...ctr(pr.pol)); T.up();
+                    eq(snap().polarity, m0.polarity, `${tg} #${i}: three clicks come back`);
+                } else {
+                    ok(T.run(`ubHitMapsPop(${ctr(pr.pol)[0]}, ${ctr(pr.pol)[1]}).kind`) !== "mp_pol", `${tg} #${i}: no polarity button in Remote`);
+                }
+                // range
+                const m = snap();
+                if (m.mode !== "remote") {
+                    const b = pr.bar;
+                    const dir = m.polarity < 0 ? -1 : 1;
+                    const pt = (f) => [b[0] + b[2] / 2 + dir * ((b[2] - 2) / 2) * f, b[1] + b[3] / 2];
+                    T.c(...pt(0.8)); T.d(...pt(0.7)); T.up();
+                    const m2 = snap();
+                    near(m2.range, 0.7, 0.03, `${tg} #${i}: a Mod bar drag sets the range`);
+                    eq(diff(m, m2), ["range"], `${tg} #${i}: only range changed`);
+                    T.dbl(...pt(0.3)); T.up();
+                    eq(snap().range, 1, `${tg} #${i}: double-click resets the range`);
+                } else {
+                    const b = pr.bar;
+                    const pt = (val) => [b[0] + 1 + (b[2] - 2) * val, b[1] + b[3] / 2];
+                    T.c(...pt(0.9)); T.d(...pt(0.95)); T.up();
+                    const m2 = snap();
+                    near(m2.max, 0.95, 0.03, `${tg} #${i}: Remote bar: the nearest handle (max) follows`);
+                    eq(diff(m, m2), ["max"], `${tg} #${i}: only max changed`);
+                    T.c(...pt(0.1)); T.d(...pt(0.05)); T.up();
+                    const m3 = snap();
+                    near(m3.min, 0.05, 0.03, `${tg} #${i}: Remote bar: the nearest handle (min) follows`);
+                    eq(diff(m2, m3), ["min"], `${tg} #${i}: only min changed`);
+                }
+                // M / R
+                if (!m.target.internal) {
+                    const mode0 = snap().mode;
+                    T.c(...ctr(pr.mode)); T.up();
+                    eq(snap().mode, mode0 === "remote" ? "mod" : "remote", `${tg} #${i}: the M/R chip switches the mode`);
+                    T.c(...ctr(T.run("ubMapsPopGeom()").vis.filter((q) => q.m.id === id)[0].parts.mode)); T.up();
+                    eq(snap().mode, mode0, `${tg} #${i}: and back`);
+                }
+                ok(T.run("!!ubMapsPop"), `${tg}: the popover stays open through edits`);
+            }
+        }
+
+        // value text fits at the extremes; no overlaps; everything inside the popover
+        {
+            const T = mkD([4, 2, 0, 0, 1]);
+            for (const [rangeV, mn, mx] of [[1, 0, 1], [0, 0.4, 0.4], [0.37, 0.05, 0.95]]) {
+                for (const m of T.maps(0)) T.run(`MM.updateMapping(${m.id}, { range: ${rangeV}, min: ${mn}, max: ${mx} })`);
+                openAt(T, 0);
+                const P = T.run("ubMapsPopGeom()");
+                const n = P.maps.length;
+                for (let k = 0; k < n; k++) {
+                    const Q = T.run("ubMapsPopGeom()");
+                    for (const v of Q.vis) {
+                        const txt = T.run(`ubValueText(MM.getMapping(${v.m.id}))`);
+                        ok(T.run(`ubTextW(${JSON.stringify(txt)}, ${valSize})`) <= v.parts.val[2], `${tg}: value text "${txt}" fits its ${v.parts.val[2]} px column`);
+                        const names = partNames.filter((q) => v.parts[q]);
+                        for (const nm of names) ok(inR(v.parts[nm], Q.rect), `${tg}: ${nm} inside the popover`);
+                        for (const nm of names) ok(inR(v.parts[nm], v.rect), `${tg}: ${nm} inside its row / card`);
+                        for (let a = 0; a < names.length; a++) for (let b = a + 1; b < names.length; b++) {
+                            ok(!overlap(v.parts[names[a]], v.parts[names[b]]), `${tg}: ${names[a]} and ${names[b]} do not overlap`);
+                        }
+                        ok(v.parts.name[2] >= 54, `${tg}: the name column is wide (${v.parts.name[2]} px)`);
+                    }
+                    const rects = Q.vis.map((v) => v.rect);
+                    for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++) ok(!overlap(rects[a], rects[b]), `${tg}: entries do not overlap`);
+                    const fixed = [["lst", Q.lst]];
+                    for (const [nm, r] of fixed) {
+                        ok(inR(r, Q.rect), `${tg}: ${nm} inside the popover`);
+                        for (const v of Q.vis) for (const q of partNames) if (v.parts[q]) ok(!overlap(r, v.parts[q]), `${tg}: ${nm} does not overlap ${q}`);
+                    }
+                    for (let a = 0; a < fixed.length; a++) for (let b = a + 1; b < fixed.length; b++) ok(!overlap(fixed[a][1], fixed[b][1]), `${tg}: ${fixed[a][0]} and ${fixed[b][0]} do not overlap`);
+                }
+                paintOk(T, `${tg} extremes`);
+                T.run("ubMapsPop = null");
+            }
+        }
+
+        // inside the device for the first, last and expanded strips; clear of the rail
+        for (const [name, per, opts, slot] of [["first", [3, 2, 1, 1, 2], { exp: -1 }, 0], ["last", [3, 2, 1, 1, 2], { exp: -1 }, 4], ["expanded", [3, 2, 1, 1, 2], { exp: 2 }, 2], ["expanded first", [5, 1], { exp: 0 }, 0], ["expanded last", [2, 6], { exp: 1 }, 1], ["single", [12], { exp: -1 }, 0]]) {
+            const T = mkD(per, opts);
+            const g0 = T.g(slot);
+            const P = openAt(T, slot);
+            const lw = T.run("ubLayoutWidth()");
+            const r = P.rect;
+            ok(r[0] >= 22 && r[0] + r[2] <= lw && r[1] >= 0 && r[1] + r[3] <= 161, `${tg} ${name}: inside the device (${JSON.stringify(r)} in ${lw})`);
+            eq(T.run("ubLastReq"), lw + 8, `${tg} ${name}: the device is asked to be ${lw + 8} px wide`);
+            for (const v of P.vis) for (const q of partNames) if (v.parts[q]) ok(inR(v.parts[q], r), `${tg} ${name}: ${q} inside`);
+            ok(inR(P.lst, r), `${tg} ${name}: LST inside`);
+            paintOk(T, `${tg} ${name}`);
+            eq(Object.keys(T.run("ubFacesWanted()")).length, 0, `${tg} ${name}: faces hidden`);
+            eq(T.run("ubHit(11, 12).kind"), "mp_out", `${tg} ${name}: the rail is outside the popover`);
+            // closing restores the width and the faces
+            T.ctx.key(27, 0);
+            eq(T.run("ubMapsPop"), null, `${tg} ${name}: Esc closes`);
+            T.run("paint()");
+            ok(Object.keys(T.run("ubFacesWanted()")).length > 0, `${tg} ${name}: faces return`);
+        }
+
+        // scrolling / stepping with 1, 2, 6 and 12 mappings
+        for (const n of [1, 2, 6, 12]) {
+            const T = mkD([n, 1]);
+            let P = openAt(T, 0);
+            const ids = T.maps(0).map((m) => m.id);
+            eq(P.vis.length, Math.min(n, P.rows), `${tg} ${n} maps: visible entries`);
+            eq(P.first, 0, `${tg} ${n} maps: starts at the first`);
+            eq(P.vis[0].m.id, ids[0], `${tg} ${n} maps: the first mapping is shown first`);
+            paintOk(T, `${tg} ${n} maps`);
+            const wx = P.rect[0] + P.rect[2] / 2;
+            const wy = P.rect[1] + P.rect[3] / 2;
+            for (let k = 0; k < n + 3; k++) {
+                T.ctx.onwheel(wx, wy, 0, -1);
+            }
+            P = T.run("ubMapsPopGeom()");
+            eq(P.first, P.maxScroll, `${tg} ${n} maps: scroll stops at the end (${P.maxScroll})`);
+            eq(P.maxScroll, Math.max(0, n - P.rows), `${tg} ${n} maps: max scroll = n - capacity`);
+            eq(P.vis[P.vis.length - 1].m.id, ids[n - 1], `${tg} ${n} maps: the last mapping is reachable`);
+            paintOk(T, `${tg} ${n} maps scrolled`);
+            for (let k = 0; k < n + 3; k++) T.ctx.onwheel(wx, wy, 0, 1);
+            eq(T.run("ubMapsPop.scroll"), 0, `${tg} ${n} maps: wheel back to the start`);
+            // the wheel outside the popover does nothing
+            const before = T.run("ubMapsPop.scroll");
+            T.ctx.onwheel(P.rect[0] + P.rect[2] + 5, 80, 0, -1);
+            eq(T.run("ubMapsPop.scroll"), before, `${tg} ${n} maps: a wheel outside is ignored`);
+        }
+
+        // close: Esc, outside click (swallowed), LST, the chip again; the drawer's close button
+        {
+            const T = mkD([4, 2, 0, 0, 1]);
+            let P = openAt(T, 0);
+            T.ctx.key(27, 0);
+            eq(T.run("ubMapsPop"), null, `${tg}: Esc closes`);
+            P = openAt(T, 0);
+            const selBefore = T.run("ubSel()");
+            const out = P.rect[0] + P.rect[2] + 8 < T.run("ubLayoutWidth()") ? [P.rect[0] + P.rect[2] + 8, 60] : [P.rect[0] - 6, 60];
+            T.c(...out); T.up();
+            eq(T.run("ubMapsPop"), null, `${tg}: a click outside closes`);
+            eq(T.run("ubSel()"), selBefore, `${tg}: the closing click is swallowed`);
+            P = openAt(T, 0);
+            T.c(...ctr(P.lst)); T.up();
+            ok(T.run("ubPb()") && T.run("ubMapsPop") === null, `${tg}: LST opens the inspector`);
+            T.run("ubTogglePb(false)");
+            const P2 = openAt(T, 0);
+            const cc = ctr(T.R(0).count);
+            // a tall popover can cover its own chip (then Esc / an outside click close it); otherwise the chip toggles it away
+            if (!(cc[0] >= P2.rect[0] && cc[0] < P2.rect[0] + P2.rect[2] && cc[1] >= P2.rect[1] && cc[1] < P2.rect[1] + P2.rect[3])) { T.c(...cc); T.up(); eq(T.run("ubMapsPop"), null, `${tg}: the chip closes it again`); }
+        }
+
+        // stable layout while dragging, and while values change
+        {
+            const T = mkD([4, 2, 0, 0, 1]);
+            const P = openAt(T, 0);
+            const base = geomJson(T);
+            for (const v of P.vis) {
+                const b = v.parts.bar;
+                const a = [b[0] + b[2] * 0.3, b[1] + b[3] / 2];
+                const z = [b[0] + b[2] * 0.8, b[1] + b[3] / 2];
+                T.c(...a); T.d(...z); T.d(...a); T.up();
+                eq(geomJson(T), base, `${tg}: geometry unchanged after a drag`);
+            }
+            for (const val of [0, 0.05, 0.5, 1]) {
+                for (const m of T.maps(0)) T.run(`MM.updateMapping(${m.id}, { range: ${val}, min: ${val === 1 ? 0.99 : val}, max: ${val === 0 ? 0.01 : 1} })`);
+                eq(geomJson(T), base, `${tg}: geometry unchanged at value ${val}`);
+            }
+        }
+
+        // self-mapping kind markers
+        {
+            const T = mkD([1]);
+            T.run("MM.addSelfMapping(0, 12, 'internal')");
+            T.run("MM.setSelfMod('live', false); MM.addSelfMapping(0, 7, 'live')");
+            openAt(T, 0);
+            for (let k = 0; k < 3; k++) {
+                T.log.texts.length = 0; T.run("paint()");
+                const P = T.run("ubMapsPopGeom()");
+                if (P.vis.some((v) => T.run(`isSelfMapping(MM.getMapping(${v.m.id}))`) && !v.m.target.internal)) ok(T.log.texts.includes("L"), `${tg}: via-Live marker painted`);
+                for (const v of P.vis) if (T.run(`isSelfMapping(MM.getMapping(${v.m.id}))`)) eq(T.run(`ubHitMapsPop(${ctr(v.parts.mode)[0]}, ${ctr(v.parts.mode)[1]}).kind`), "mp_mode", `${tg}: self row keeps the mode chip hit area`);
+            }
         }
     }
 
@@ -2838,7 +3061,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
 
     // ---- "full" pills: the Live pool and the internal matrix say different things
     {
-        const E = mk(1);
+        const E = mk();
         E.ctx.uiChanged({ kind: "full", mod: 0, id: 0 }); E.paint();
         ok(E.log.texts.includes("Mapping pool full (256)"), "pool full pill");
         for (let k = 0; k < 80; k++) E.ctx.uiTelemetry(E.run("MM.readTelemetry()"));
@@ -2903,7 +3126,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         E.C(11, 48);
         E.run("ubMapsPop = { slot: 0, scroll: 0 }");
         E.paint();
-        ok(E.log.texts.includes("Rate"), "popover row: the control name (the full name does not fit the column)");
+        ok(E.log.texts.includes(E.run("ubMapName(MM.allMappings()[0])")), "popover row: the full meaning name fits the roomy column");
         const P = E.run("ubMapsPopGeom()");
         const pr = E.run(`ubPopRowParts(ubMapsPopGeom().rect, ubMapsPopGeom().vis[0].y, ubMapsPopGeom().vw)`);
         E.C(...ctr(pr.mode));
@@ -2957,14 +3180,11 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         E.run("MM.readTelemetry().eff[0].sw[1] = 0");
         E.paint();
         eq(E.strokes.filter((s) => isCol(s.col, GREEN) && s.lw === 1.4).length, 0, "...and not while it is off");
-        // Depth pill of the remap editor: a tick at the live depth
         E.run("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 1', paramName: 'Decay', trackName: 'Drums', deviceName: 'Reverb' })");
-        const dslot = E.run("MM.mappingSlot(MM.allMappings().filter((m) => !m.target.internal && m.target.selfDest === undefined)[0].id)");
+        // schema 10: an INTERNAL `Depth k` learn is a depth route (a mapId route)
+        const dmap = E.run("MM.allMappings().filter((m) => !m.target.internal && m.target.selfDest === undefined)[0].id");
         E.run(`MM.addSelfMapping(1, ${192 + 0}, 'internal')`);
-        E.run("MM.setUI({ exp: -1, sel: 0, pb: 1, pbSel: MM.allMappings().filter((m) => m.target.selfDest === undefined)[0].id })");
-        E.run("MM.readTelemetry().depth[" + dslot + "] = 0.4");
-        E.paint();
-        ok(E.strokes.some((s) => isCol(s.col, GREEN) && s.lw === 1.6), "the Depth pill shows a tick at the live (modulated) depth");
+        ok(E.run(`MM.depthRoutesFor(${dmap}).length`) === 1, "internal learn on Depth 1 = a depth route on the mapping in slot 0");
     }
     function C_SYNC_LFO1() { return 96 + 0 * 6 + 1; } // dest code of modulator 1's (slot 0) Sync switch
 }
@@ -3135,7 +3355,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             }
             ok(r.name[2] >= 25, "popover toggle: the name column keeps at least 25 px (as before the toggle)");
             ok(r.bar[2] >= 24, "popover toggle: the bar keeps a usable width");
-            eq(r.bar[0] + r.bar[2] + 3, r.val[0], "popover toggle: the bar fills up to the fixed value column");
+            eq(r.bar[0] + r.bar[2] + 4, r.val[0], "popover toggle: the bar fills up to the fixed value column");
         }
         P.vis.forEach((r, i) => {
             const before = JSON.parse(JSON.stringify(T.run(`MM.getMapping(${r.m.id})`)));
@@ -3159,6 +3379,173 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const sizeCol = T.log.textCols.filter((q) => q.t === "Size").pop();
         const decayCol = T.log.textCols.filter((q) => q.t === "Decay").pop();
         ok(sizeCol && decayCol && sizeCol.col[3] < decayCol.col[3], "popover toggle: the disabled row is dimmed");
+    }
+}
+
+// ================================================================ DEPTH MODULATION UI (schema 10): learn onto a mapping row + sub-rows
+{
+    const overlap = (a, b) => a[2] > 0 && a[3] > 0 && b[2] > 0 && b[3] > 0 && a[0] < b[0] + b[2] - 1e-6 && b[0] < a[0] + a[2] - 1e-6 && a[1] < b[1] + b[3] - 1e-6 && b[1] < a[1] + a[3] - 1e-6;
+    const inside = (r, o) => r[0] >= o[0] - 1e-6 && r[1] >= o[1] - 1e-6 && r[0] + r[2] <= o[0] + o[2] + 1e-6 && r[1] + r[3] <= o[1] + o[3] + 1e-6;
+    const ctr = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
+    const noOv = (rects, msg) => { for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) ok(!overlap(rects[i][1], rects[j][1]), `${msg}: ${rects[i][0]} overlaps ${rects[j][0]}`); };
+    function mk() {
+        const T = makeEnv();
+        T.ctx.uiReady();
+        // 0 Wobble (LFO), 1 Follow (ENV), 2 Dice (RANDOM), 3 Seq (STEPS)
+        for (const t of [1, 2, 3, 4]) T.run(`ubAddType(${t})`);
+        const mp = (mod, j, name) => T.run(`MM.addMapping(${mod}, { path: "live_set tracks ${mod} devices 0 parameters ${j + 1}", trackName: "Trk ${mod}", deviceName: "Dev", paramName: "${name}" })`);
+        const A = mp(2, 0, "Frequency"), B = mp(2, 1, "Resonance"), Cc = mp(0, 2, "Wet"), Dd = mp(1, 3, "Drive");
+        T.run(`MM.setUI({ pb: 1, sel: 2, exp: -1, pbScroll: 0, pbSel: ${A.id} }); ubSyncWidth(true)`);
+        const click = (x, y, o = {}) => T.ctx.onclick(x, y, 1, 0, o.shift ? 1 : 0, 0, 0, 0);
+        const drag = (x, y) => T.ctx.ondrag(x, y, 1, 0, 0, 0, 0, 0);
+        const rel = (x, y) => T.ctx.ondrag(x, y, 0, 0, 0, 0, 0, 0);
+        const idle = (x, y) => T.ctx.onidle(x, y, 0, 0, 0, 0, 0, 0);
+        const paint = () => { T.log.texts.length = 0; T.log.textCols = []; T.log.fills = []; T.run("paint()"); };
+        const routes = (id) => T.run(`MM.depthRoutesFor(${id})`);
+        const W = () => T.run("ubLayoutWidth()");
+        return { T, run: T.run, A, B, C: Cc, D: Dd, click, drag, rel, idle, paint, routes, W, log: T.log };
+    }
+    const rowOf = (E, mapId) => { const gm = E.run("ubListGeom()"); const r = E.run("ubListVisible()").rows.filter((q) => q.item.kind === "map" && q.item.m.id === mapId)[0]; return { gm, r }; };
+    const rowPt = (E, mapId) => { const { gm, r } = rowOf(E, mapId); return [gm.lx + 30, r.y + 6]; };
+    const tabPt = (E, slot) => { const g = E.run("ubStrips()").list.filter((q) => q.tab && q.slot === slot)[0]; return ctr([g.x, g.y, g.w, g.h]); };
+    const inDevice = (E, r) => r[0] >= 0 && r[1] >= 0 && r[0] + r[2] <= E.W() && r[1] + r[3] <= 161 + 1e-6;
+
+    // ---------------------------------------------------------------- shipped state: the committed LST preview without routes
+    {
+        const T0 = makeEnv();
+        eq([T0.run("UB_PREVIEW_DMOD"), T0.run("UB_PREVIEW_DMOD_B"), T0.run("UB_PREVIEW_LIST"), T0.run("UB_PREVIEW_OPT"), T0.run("UB_PREVIEW_SELF")], [0, false, true, false, false], "the committed preview is the default LST state");
+        eq(T0.run("MM.allMappings().filter((m) => m.target.kind === 'depth').length"), 0, "...with no depth routes");
+    }
+
+    // ---------------------------------------------------------------- common: route rows of the SOURCE modulator, remap editor of a route
+    {
+        const E = mk();
+        const r = E.run(`MM.addDepthRoute(0, ${E.A.id})`);
+        E.run(`MM.setUI({ sel: 0, pbSel: ${r.id} })`);
+        const items = E.run("ubListItems()");
+        ok(items.some((it) => it.kind === "map" && it.m.id === r.id), "the route is a row of its SOURCE modulator's list");
+        E.paint();
+        ok(E.log.texts.includes("D") && E.log.texts.some((t) => /Frequency Depth/.test(t)), "route row: violet D marker + '<parameter> Depth' name (not a normal mapping)");
+        eq(E.run("ubPbSelMapping().id"), r.id, "the remap editor edits the route like any internal mapping");
+        const dr = E.run(`ubDetailRects(ubListGeom(), MM.getMapping(${r.id}))`);
+        ok(dr.some((d) => d.id === "dback") && dr.some((d) => d.id === "pol1") && dr.some((d) => d.id === "mseg"), "route editor: back link, polarity, MSEG");
+        const pol = dr.filter((d) => d.id === "pol-1")[0];
+        E.click(...ctr(pol.rect)); E.idle(1, 1);
+        eq(E.run(`MM.getMapping(${r.id}).polarity`), -1, "route editor: polarity edits the route");
+        const rem = dr.filter((d) => d.id === "tabrem")[0];
+        E.click(...ctr(rem.rect)); E.idle(1, 1);
+        eq(E.run(`MM.getMapping(${r.id}).mode`), "mod", "route editor: Remote is inert (Mod only)");
+        const mseg = dr.filter((d) => d.id === "mseg")[0];
+        const n0 = E.run(`MM.getMapping(${r.id}).shape.length`);
+        E.click(mseg.rect[0] + mseg.rect[2] * 0.5, mseg.rect[1] + mseg.rect[3] * 0.2); E.idle(1, 1);
+        ok(E.run(`MM.getMapping(${r.id}).shape.length`) > n0, "route editor: the transfer curve is editable (a point was added)");
+        E.click(...ctr(dr.filter((d) => d.id === "dback")[0].rect)); E.idle(1, 1);
+    }
+
+    // ---------------------------------------------------------------- LRN onto a row + sub-rows
+    {
+        const E = mk();
+        const gm0 = E.run("ubListGeom()");
+        // single-shot: arm from Wobble (0), go to Dice (tab), click the Frequency row
+        E.run("MM.setUI({ sel: 0 })");
+        E.click(11, 11); E.idle(1, 1);
+        ok(E.run("MM.learn.armed") && E.run("MM.learn.mod") === 0, "LRN armed for Wobble");
+        E.click(...tabPt(E, 2)); E.idle(1, 1);
+        eq(E.run("ubSel()"), 2, "...the selection moved to Dice (single-shot stays on Wobble)");
+        eq(E.routes(E.A.id).length, 0, "no route yet");
+        E.click(...rowPt(E, E.A.id)); E.idle(1, 1);
+        const rs = E.routes(E.A.id);
+        eq(rs.length, 1, "a click on the mapping row creates the route");
+        eq(rs[0].mod, 0, "...from the modulator LRN was armed for");
+        ok(!E.run("MM.learn.armed"), "...and single-shot learn disarms");
+        eq(E.run("MM.mappingsFor(2).length"), 2, "no new mapping on Dice");
+        // sub-row under the Frequency row
+        const items = E.run("ubListItems()");
+        const k = items.findIndex((it) => it.kind === "map" && it.m.id === E.A.id);
+        eq(items[k + 1].kind, "dsub", "the sub-row sits directly under its mapping row");
+        eq(items[k + 1].m.id, rs[0].id, "...and is the route");
+        E.paint();
+        ok(E.log.texts.includes(E.run("MM.state.mods[0].name")), "the sub-row paints the source name (with its colour dot)");
+        // geometry
+        const vis = E.run("ubListVisible()");
+        const gm = E.run("ubListGeom()");
+        const srow = vis.rows.filter((q) => q.item.kind === "dsub")[0];
+        const S = E.run(`ubSubParts(${srow.y})`);
+        noOv(["tog", "name", "bar", "val", "del"].map((n) => [n, S[n]]), "sub-row parts");
+        for (const n of ["arrow", "tog", "name", "bar", "val", "del"]) ok(inside(S[n], [gm.lx, srow.y, gm.lw, srow.h]), `sub-row part ${n} inside its row`);
+        ok(srow.h < 14 && srow.y + srow.h <= gm.ly + gm.lh - gm.foot, "sub-row fits above the footer");
+        // hits + edits: bar sets the range, toggle, delete + undo
+        const hb = E.run(`ubHit(${ctr(S.bar)})`);
+        eq(hb.kind, "ds_bar", "bar hit"); eq(E.run(`ubHit(${ctr(S.tog)}).kind`), "ds_tog", "toggle hit"); eq(E.run(`ubHit(${ctr(S.del)}).kind`), "ds_del", "x hit");
+        E.click(S.bar[0] + S.bar[2] * 0.8, S.bar[1] + 3); E.drag(S.bar[0] + S.bar[2] * 0.9, S.bar[1] + 3); E.idle(1, 1);
+        near(E.run(`MM.getMapping(${rs[0].id}).range`), (0.9 - 0.5) / 0.5, 0.06, "dragging the sub-row bar edits the route's range");
+        E.click(...ctr(S.tog)); E.idle(1, 1);
+        eq(E.run(`MM.getMapping(${rs[0].id}).enabled`), 0, "the sub-row toggle disables the route");
+        E.click(...ctr(S.tog)); E.idle(1, 1);
+        E.click(...ctr(S.del)); E.idle(1, 1);
+        eq(E.routes(E.A.id).length, 0, "the sub-row x deletes the route");
+        E.run("ubDoUndo()");
+        eq(E.routes(E.A.id).length, 1, "...and Cmd-Z restores it");
+        // multi-learn: armed from Follow (1), tab to Seq (3)... uses the modulator LRN was armed from
+        E.run("MM.setUI({ sel: 1 })");
+        E.click(11, 11, { shift: true }); E.idle(1, 1);
+        ok(E.run("MM.learn.armed && MM.learn.multi"), "Shift-LRN = multi");
+        E.click(...tabPt(E, 2)); E.idle(1, 1);
+        eq(E.run("MM.learn.mod"), 2, "multi-learn retargets with the selection...");
+        E.click(...rowPt(E, E.B.id)); E.idle(1, 1);
+        eq(E.routes(E.B.id).map((r) => r.mod), [1], "...but the depth route comes from the modulator it was armed from");
+        ok(E.run("MM.learn.armed"), "multi stays armed");
+        E.click(...rowPt(E, E.A.id)); E.idle(1, 1);
+        eq(E.routes(E.A.id).map((r) => r.mod).sort(), [0, 1], "two routes onto one mapping (two sub-rows)");
+        // an internal row / a duplicate are refused
+        const before = E.run("MM.allMappings().length");
+        E.click(...rowPt(E, E.A.id)); E.idle(1, 1);
+        eq(E.run("MM.allMappings().length"), before, "armed again on the same source + mapping: a duplicate is refused");
+        E.run("MM.disarmLearn()");
+        // popover: sub-rows and assign through the popover row
+        E.run("MM.setUI({ pb: 0, sel: 2, exp: -1 }); ubSyncWidth(true)");
+        const cr = E.run("ubStripRects(ubStrips().list.filter((g) => g.slot === 2)[0]).count");
+        E.click(...ctr(cr)); E.idle(1, 1);
+        ok(E.run("!!ubMapsPop"), "popover opens");
+        let P = E.run("ubMapsPopGeom()");
+        ok(P.vis.some((v) => v.kind === "dsub"), "the popover shows the sub-rows");
+        for (const v of P.vis) {
+            const pr = v.parts;
+            const names = v.kind === "dsub" ? ["tog", "name", "bar", "val", "del"] : ["tog", "name", "mode", "bar", "val"];
+            noOv(names.map((n) => [n, pr[n]]), "popover " + v.kind + " parts");
+            for (const n of names) ok(inside(pr[n], v.rect), `popover ${v.kind} part ${n} inside its row`);
+            ok(inside(v.rect, P.rect) && inside(P.rect, [0, 0, E.W(), 161]), "popover row inside the popover and the device");
+        }
+        const sub = P.vis.filter((v) => v.kind === "dsub")[0];
+        eq(E.run(`ubHit(${ctr(sub.parts.bar)}).kind`), "mp_ds_bar", "popover sub-row: bar hit");
+        E.click(...ctr(sub.parts.del)); E.idle(1, 1);
+        eq(E.routes(E.A.id).length, 1, "popover sub-row x deletes one route");
+        // assign from the popover: arm Seq (3) and click the Resonance row
+        E.run("MM.setUI({ sel: 3 })"); E.run("MM.armLearn(3, false); ubDmodSrc = 3");
+        P = E.run("ubMapsPopGeom()");
+        const row = P.vis.filter((v) => v.kind === "map" && v.m.id === E.B.id)[0];
+        E.click(...ctr(row.parts.name)); E.idle(1, 1);
+        ok(E.routes(E.B.id).some((r) => r.mod === 3), "a click on a popover row while armed creates the route");
+        ok(E.run("Object.keys(ubFacesWanted()).length") === 0, "faces stay hidden while the popover is open");
+        E.run("ubMapsPop = null; MM.setUI({ pb: 1 })");
+        ok(inDevice(E, [gm.lx, gm.ly, gm.lw, gm.lh]) && gm0.end <= E.W(), "LST layout inside the device");
+    }
+
+    // ---------------------------------------------------------------- hit areas inside the device
+    {
+        const E = mk();
+        E.run(`MM.addDepthRoute(0, ${E.A.id}); MM.addDepthRoute(1, ${E.A.id}); MM.addDepthRoute(3, ${E.B.id}); MM.addDepthRoute(2, ${E.C.id})`);
+        const gm = E.run("ubListGeom()");
+        E.run("MM.setUI({ sel: 2, pb: 1, pbScroll: 0 })");
+        const vis = E.run("ubListVisible()");
+        for (const r of vis.rows) {
+            ok(inside([gm.lx, r.y, gm.lw, r.h], [gm.lx, gm.ly, gm.lw, gm.lh - gm.foot]), `list row ${r.index} inside the list`);
+        }
+        ok(E.W() >= gm.end && gm.end <= 1600, `the device is wide enough for the LST layout`);
+        E.paint();
+        ok(E.log.texts.length > 5, `the LST view paints`);
+        // 16 modulators: still fits
+        E.run("MM.setUI({ sel: 2, pb: 1, pbSel: 0 })");
     }
 }
 

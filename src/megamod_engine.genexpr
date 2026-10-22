@@ -20,16 +20,17 @@
 //     64 frame counter, 65 sample rate, 66 beat, 67 bpm, 68 playing
 //     128 + 12*s + [0..4] effective (modulated) normalized value of the slot's generic controls A..E (0 when the type has no such control),
 //     128 + 12*s + 5 effective On, 128 + 12*s + 6 + t effective switch t (shape 0..4, toggles 0/1)    (SCOPE_EFF)
-//     320 + k effective Depth 0..1 of the mapping in pool slot k < 64                                (SCOPE_DEPTH)
+//     320 + k effective Depth 0..1 of the mapping in pool slot k < 256                               (SCOPE_DEPTH)
 //   ibuf  (megamodint, 512): the INTERNAL modulation matrix (self-mod, schema 9). Route r (0..63) at 4*r: [src + 1 (0 = off), dest code, 0, 0];
 //     [256] = highest used route index + 1 (0 = no internal routes: the whole matrix is skipped);
 //     [264 + (type*5 + j)*5 + {0..4}] = control descriptor of generic control j for modulator type 0..5: [CF field + 1 (0 = none), lo, hi, log, int];
 //     [414 + t] = CF field + 1 of switch t (shape, sync, bipolar, retrig, oneshot, loopOn), [420 + t] = its max value (shape 4, toggles 1).
 //   icurve (megamodicurve, 64 * 256): route r's 256-sample transfer table at r*256 (the router convention: index (x+1)/2 * 256, linear interpolation).
-//   Dest codes (256): 0..95 = slot*6 + j (j 0..4 generic control A..E, j 5 = On), 96..191 = 96 + slot*6 + t (switch t), 192..255 = 192 + k (Depth of pool slot k).
-//   route (megamodroute, 1024): the router's buffer. [2k] source (routers), for pool slots k < 64 (routers 0 and 1 apply the Depth per sample):
+//   Dest codes (448): 0..95 = slot*6 + j (j 0..4 generic control A..E, j 5 = On), 96..191 = 96 + slot*6 + t (switch t), 192..447 = 192 + k (Depth of pool slot k, k 0..255:
+//     a depth-modulation route, schema 10; the mapper aims it at the pool slot of its target mapping).
+//   route (megamodroute, 1024): the router's buffer. [2k] source (routers), for EVERY pool slot k 0..255 (all 8 routers apply the Depth per sample):
 //     [2k+1] = EFFECTIVE depth (this engine writes it: base + the summed Depth modulation, clipped 0..1), [512 + k] = base depth (mapper),
-//     [576 + k] = Remote min of that mapping, or -1 for a Mod mapping (the router then computes min + (T - min) * d instead of T * d).
+//     [768 + k] = Remote min of that mapping, or -1 for a Mod mapping (the router then computes min + (T - min) * d instead of T * d).
 //
 // INTERNAL MODULATION (self-mod): per sample, each active route reads its source's PREVIOUS-sample output (the matrix runs before the slots,
 // so loops between modulators are stable with one sample of delay), maps it through the route's table (o in -1..1 = the Mod offset in
@@ -106,8 +107,8 @@ Param ratemul(1);
 
 Data cf(384);
 Data cm(384);
-Data dsum(256);
-Data dcl(256);
+Data dsum(512);
+Data dcl(512);
 Data st(128);
 Data outv(16);
 Data tl(64);
@@ -160,8 +161,8 @@ for (k = 0; k < 24; k += 1) {
 }
 sampleCount = sampleCount + 1;
 
-// 3b. Depth refresh: one pool slot per sample copies its base depth into the effective-depth cell (modulated slots are overwritten below).
-dk = sampleCount - 64 * floor(sampleCount / 64);
+// 3b. Depth refresh: one pool slot (of 256) per sample copies its base depth into the effective-depth cell (modulated slots are overwritten below).
+dk = sampleCount - 256 * floor(sampleCount / 256);
 poke(route, peek(route, 512 + dk, 0), 2 * dk + 1, 0);
 
 // 3c. Internal modulation matrix (skipped entirely with no routes).
@@ -374,6 +375,9 @@ if (ts - 4 * floor(ts / 4) < 0.5) {
 	}
 }
 poke(scope, peek(route, 2 * ts + 1, 0), 320 + ts, 0);
+poke(scope, peek(route, 2 * (ts + 64) + 1, 0), 384 + ts, 0);
+poke(scope, peek(route, 2 * (ts + 128) + 1, 0), 448 + ts, 0);
+poke(scope, peek(route, 2 * (ts + 192) + 1, 0), 512 + ts, 0);
 if (ts < 0.5) {
 	frameCount = frameCount + 1;
 	poke(scope, frameCount, 64, 0);
