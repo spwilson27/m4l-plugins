@@ -79,7 +79,7 @@
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
-//   settings: {defaultMode: "mod"|"remote", smoothMs: 0..500, rateMul: 0.25..4, tooltips: bool (default true), selfMod: "internal"|"live" (default "internal"; which kind NEW self-mappings use)}   // device-global (Options panel), see SETTINGS below
+//   settings: {defaultMode: "mod"|"remote", smoothMs: 0..500, rateMul: 0.25..4, selfMod: "internal"|"live" (default "internal"; which kind NEW self-mappings use)}   // device-global (Options panel), see SETTINGS below
 //   ui: {}                      // UI-private, opaque, JSON-able (expanded modulator, inspector open, ...)
 // }
 // ModSlot = {type, name, color(0..15), enabled(0/1), p:{rate,sync,syncDiv,shape,phase,retrig,bipolar,depth,
@@ -176,7 +176,7 @@ function autoValue(key, n) {
 // The Live parameter names are FIXED (saved in the device): "M3 A" .. "M3 E" (the generic controls) and "M3 On" for slot 3, "Depth 5" for
 // pool slot 5. Live does NOT pick up a runtime rename (verified in Live 12.4.6: `_parameter_longname` / `_parameter_shortname` and the
 // other attributes change the object but the LOM DeviceParameter.name stays), so the meaning of a letter depends on the modulator type
-// (AUTO_KEYS) and the UI shows it in the tooltips.
+// (AUTO_KEYS) and the UI shows it in its labels.
 const AUTO_LETTERS = ["A", "B", "C", "D", "E"];
 function autoSlotNames(slot) {
     const out = [];
@@ -603,10 +603,10 @@ function defaultState() {
 }
 
 // ---- device-global settings (Options panel, schema 7) ----
+// (an old saved `tooltips` key is ignored: sanitizeSettings copies only the known keys, so no schema bump)
 // defaultMode : mode of a NEW mapping (learn / addMapping). Mod keeps +-, range 0.5; Remote keeps min 0, max 1.
 // smoothMs    : global one-pole smoothing of every mapping output (router gen `smooth` Param, ms; 0 = bypass). Default 0 (no change to old sets).
 // selfMod     : which kind NEW self-mappings use (a modulator modulating this device's own controls): "internal" (engine matrix) | "live" (a pool mapping on the device's own Live parameter)
-// tooltips    : rail TIP button; false hides hover tooltips and instructional hints (missing = true)
 // rateMul     : multiplies the rate of every LFO / Random / Steps / MSEG modulator (engine `ratemul` Param); the follower ignores it.
 const SMOOTH_MAX_MS = 500;
 const SMOOTH_LOG_K = 100; // smoothing slider feel: ms = 500 * (101^p - 1) / 100  (p 0..1: 0 -> 0, 0.5 -> 45 ms, 1 -> 500 ms)
@@ -615,7 +615,7 @@ const RATE_MUL_MAX = 4;
 const RATE_MUL_STEPS = [0.25, 1 / 3, 0.5, 1, 1.5, 2, 3, 4]; // the musical steps the Rate dial snaps to
 const RATE_SNAP_OCT = 0.045; // snap window in octaves (log2) around a step; between the windows the dial is continuous
 function defaultSettings() {
-    return { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true, selfMod: "internal" };
+    return { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" };
 }
 function sanitizeSettings(o) {
     const d = defaultSettings();
@@ -623,7 +623,6 @@ function sanitizeSettings(o) {
     d.defaultMode = o.defaultMode === "remote" ? "remote" : "mod";
     d.smoothMs = clamp(num(o.smoothMs, 0), 0, SMOOTH_MAX_MS);
     d.rateMul = clamp(num(o.rateMul, 1), RATE_MUL_MIN, RATE_MUL_MAX);
-    d.tooltips = !(o.tooltips === false || o.tooltips === 0); // missing = on
     d.selfMod = o.selfMod === "live" ? "live" : "internal"; // schema < 9 has none: internal
     return d;
 }

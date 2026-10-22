@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Write xo_test.als: a Live Set for the automated XO Sample Map test (scripts/test_xo_live.js).
 
-The Set holds the Ableton MCP Bridge on the Main track and one audio track "XO Sample Map" with
-devices/XO Sample Map.amxd directly on it (no rack).  Reuses the Delay+ generator's machinery
+The Set holds the Ableton MCP Bridge on the Main track and three audio tracks with devices/XO Sample Map.amxd:
+track 1 "XO Sample Map" (instance 1, directly on the track), track 2 "XO Sample Map 2" (instance 2) and track 3
+"XO Sample Map Rack" (instance 3 inside an Audio Effect Rack chain), for the hotkey-selection test.  Reuses the Delay+ generator's machinery
 (scripts/make_delayplus_sets.py): base set = the repo's ableton_mcp_bridge.als, audio track and M4L
 device templates, pointee renumbering and validation.  The .amxd is referenced by absolute path (and a
 path relative to the Set), so run this where the Set will be opened: scripts/vm_xo.sh live runs it in the VM.
@@ -49,9 +50,17 @@ def build(args):
     slots = "<ClipSlotList>" + "".join(
         '<ClipSlot Id="%d"><LomId Value="0" /><ClipSlot><Value /></ClipSlot><HasStop Value="true" /></ClipSlot>' % i
         for i in range(scenes)) + "</ClipSlotList>"
-    track = mds.fill(mds.tpl("audiotrack"), TRACKID=args.track_id, TRACKNAME=mds.esc(args.track_name), CLIPSLOTS=slots,
-                     DEVICES="<Devices>\n" + dev + "\n</Devices>")
-    track = rn(track)
+    tracks = []
+    for i in range(3):
+        devs = "<Devices>\n" + dev + "\n</Devices>"
+        name = args.track_name + ("" if i == 0 else " 2" if i == 1 else " Rack")
+        if i == 2:  # instance 3 lives inside an Audio Effect Rack chain
+            rack = mds.fill(mds.tpl("alsrack"), RACKID=0, NAME=mds.esc("XO Rack"), DEVICES="<Devices>\n" + dev + "\n</Devices>").replace(
+                '<AreDevicesVisible Value="false" />', '<AreDevicesVisible Value="true" />')
+            devs = "<Devices>\n" + rack + "\n</Devices>"
+        track = mds.fill(mds.tpl("audiotrack"), TRACKID=args.track_id + i, TRACKNAME=mds.esc(name), CLIPSLOTS=slots, DEVICES=devs)
+        tracks.append(rn(track))
+    track = "\n".join(tracks)
     base, n = re.subn(r"<Tracks>.*?</Tracks>", lambda m: "<Tracks>\n" + track + "\n\t\t</Tracks>", base, count=1, flags=re.S)
     if n != 1:
         sys.exit("base set has no <Tracks>")

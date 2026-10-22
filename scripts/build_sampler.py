@@ -934,7 +934,7 @@ def build_patcher():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 386.0, 220.0, 20.0],
-                "text": "buffer~ #0-bsscope @samps 64",
+                "text": "buffer~ #0-bsscope @samps 128",
             }
         },
         # Analyzed root key: the sample's pitch (MIDI) at 4096 evenly spaced positions, written by the face

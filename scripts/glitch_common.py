@@ -23,8 +23,9 @@ console.log(JSON.stringify({ np: L.np, weightsOffset: L.weightsOffset, seqOffset
   bands: g.GL_BANDS,
   latency: g.GL_LATENCY, slotsBufSamps: g.GL_SLOTS_BUF_SAMPS, scopeSamps: g.GL_SCOPE_SAMPS, nslot: g.GL_NSLOT,
   order: L.instances.map((i) => i.id), params: g.GL_PARAMS, paramKeys: g.GL_PARAM_KEYS,
+  minsOffset: L.minsOffset, maxsOffset: L.maxsOffset, mvBase: L.mvBase, mvN: L.mvN, mv: L.mv,
   face: g.glitchFaceLayout(g.defaultUi()),
-  faces: { editor: g.glitchFaceLayout({ editor: 1, slots: 1 }), seq: g.glitchFaceLayout({ seq: 1, slots: 1 }), options: g.glitchFaceLayout({ options: 1, slots: 1 }), many: g.glitchFaceLayout({ slots: 1 }), many2: g.glitchFaceLayout({ slots: 1 }) } }));
+  faces: { editor: g.glitchFaceLayout({ editor: 1, slots: 1 }), seq: g.glitchFaceLayout({ seq: 1, slots: 1 }), options: g.glitchFaceLayout({ options: 1, slots: 1 }), motion: g.glitchFaceLayout({ editor: 1, slots: 1, edTab: 1 }), many: g.glitchFaceLayout({ slots: 1 }), many2: g.glitchFaceLayout({ slots: 1 }) } }));
 """
 
 
@@ -56,7 +57,15 @@ def tokens(layout):
         "DEFOFF": layout["defsOffset"],
         "WBOFF": layout["wbOffset"],
         "NINST": layout["ninst"],
+        "MINOFF": layout["minsOffset"],
+        "MAXOFF": layout["maxsOffset"],
+        "MVBASE": layout["mvBase"],
+        "MVN": layout["mvN"],
+        "MSTN": 8 * layout["ninst"],
+        "MTN": 4 * layout["ninst"],
     }
+    for k, v in layout["mv"].items():
+        t["MV_" + k.upper()] = v
     for k, v in layout["base"].items():
         t[f"B_{k}"] = v
     for pos, iid in enumerate(layout["order"]):

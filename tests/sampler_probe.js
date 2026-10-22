@@ -131,7 +131,7 @@ function seedSample() {
     // Short dual-mono tone with a steep decay. Reverse can walk from the quiet
     // tail back into the attack inside one rendered window, and stereo width
     // comes from unison rather than from a baked-in L/R difference.
-    var wantFrames = (opt.src === "marks48") ? 48000 : ((opt.src === "marks44") ? 44100 : 12000);
+    var wantFrames = (opt.src === "marks48") ? 48000 : ((opt.src === "marks44") ? 44100 : ((opt.src === "real48") ? Math.round(48000 * Number(opt.len || 8)) : 12000));
     sb.send("sizeinsamps", wantFrames);
     var frames = sb.framecount() || wantFrames;
     if (frames > wantFrames) frames = wantFrames;
@@ -140,12 +140,15 @@ function seedSample() {
     var src = opt.src || "tone";
     var sr0 = (src === "tone" || src === "marks44") ? 44100.0 : 48000.0;
     var rdPhs = 0.0;
+    realSrc = (src === "real48") ? genReal(frames, sr0) : null;
     for (var i = 0; i < frames; i++) {
         var t = i / sr0;
         var env = Math.min(1.0, i / 32.0) * Math.exp(-i / 3500.0);
         if (src === "sus48" || src === "rich48" || src === "slices4" || src === "steps48" || src === "glide48" || src === "flat48" || src === "marks48" || src === "marks44") env = Math.min(1.0, i / 32.0);
         var w = 0;
-        if (src === "marks48" || src === "marks44") {
+        if (realSrc) {
+            w = realSrc[i];
+        } else if (src === "marks48" || src === "marks44") {
             // constant 220 Hz sine, low level, three Hann bursts (centres 0.20 / 0.45 / 0.80 s, 70 ms wide)
             rdPhs += 2.0 * Math.PI * 220.0 / sr0;
             var mkAmp = 0.12;
@@ -196,6 +199,185 @@ function seedSample() {
     sb.poke(1, 0, ch1);
     if (mode !== "mono_sample") sb.poke(2, 0, ch2);
 
+}
+
+// ---- Real-world Cycles material (src=real48) ---------------------------------------------------------------------
+//   kind=pad     five detuned band-limited saws (-14 / -7 / 0 / +8 / +15 ct) + a low-passed noise bed
+//   kind=vowel   jittered band-limited saw through 700 / 1220 / 2600 Hz resonators, voiced 350 ms / unvoiced (noise only)
+//                150 ms, breath noise throughout
+//   kind=vib     sine (+ 2nd, 3rd harmonic) with 5.5 Hz +-35 ct vibrato
+//   off=0.35     the source's pitch in semitones above 220 Hz (the root the device is told about is 220 Hz)
+//   gstart=4.8 glen=2.4   only this stretch of the (len seconds long) buffer holds sound: the scan starts at gstart
+// Every component is band-limited to about 4.2 kHz (18 harmonics of the saw, noise low-passed at 1.5 kHz by six poles), so
+// anything above 5 kHz in the output is an artefact of the engine (joins, interpolation, aliasing), not source content.
+var realSrc = null;
+var rndState = 12345;
+function rnd01() { rndState = (rndState * 1664525 + 1013904223) % 4294967296; return rndState / 4294967296; }
+function sawTable(nh) {
+    var tb = new Array(4097);
+    for (var i = 0; i < 4096; i++) {
+        var s = 0;
+        for (var n = 1; n <= nh; n++) s += Math.sin(2 * Math.PI * n * i / 4096) / n;
+        tb[i] = s * 0.55;
+    }
+    tb[4096] = tb[0];
+    return tb;
+}
+function tabRead(tb, ph) {
+    var x = (ph - Math.floor(ph)) * 4096, i0 = Math.floor(x), fr = x - i0;
+    return tb[i0] + (tb[i0 + 1] - tb[i0]) * fr;
+}
+function lpNoise(n, fc, sr, poles, amp) {
+    var a = 1 - Math.exp(-2 * Math.PI * fc / sr), st = [], out = new Array(n), i, p;
+    for (p = 0; p < poles; p++) st.push(0);
+    var gain = 0;
+    for (i = 0; i < n; i++) {
+        var v = rnd01() * 2 - 1;
+        for (p = 0; p < poles; p++) { st[p] += a * (v - st[p]); v = st[p]; }
+        out[i] = v;
+        gain += v * v;
+    }
+    var rms = Math.sqrt(gain / Math.max(n, 1)) + 1e-12;
+    for (i = 0; i < n; i++) out[i] = out[i] / rms * amp;
+    return out;
+}
+function genReal(frames, sr) {
+    var kind = opt.kind || "pad", off = Number(opt.off === undefined ? 0.35 : opt.off);
+    var g0 = Math.floor(sr * Number(opt.gstart || 4.8)), g1 = Math.min(frames, g0 + Math.floor(sr * Number(opt.glen || 2.4)));
+    var f0 = 220.0 * Math.pow(2.0, off / 12.0);
+    var out = new Array(frames), i;
+    for (i = 0; i < frames; i++) out[i] = 0;
+    rndState = 12345;
+    var n = g1 - g0, tb = sawTable(18), noise = lpNoise(n, 1500, sr, 6, 1.0);
+    var peak = 0;
+    if (kind === "pad") {
+        var cents = [-14, -7, 0, 8, 15], ph = [0.1, 0.37, 0.55, 0.71, 0.9];
+        for (i = 0; i < n; i++) {
+            var s = 0;
+            for (var v = 0; v < 5; v++) {
+                ph[v] += f0 * Math.pow(2.0, cents[v] / 1200.0) / sr;
+                s += tabRead(tb, ph[v]);
+            }
+            var lfo = 1.0 + 0.2 * Math.sin(2 * Math.PI * 0.3 * i / sr);
+            out[g0 + i] = (s * 0.2 + noise[i] * 0.06) * lfo;
+        }
+    } else if (kind === "vowel") {
+        var fs = [700, 1220, 2600], qs = [9, 11, 14], gs = [1.0, 0.7, 0.35], bq = [];
+        for (var r = 0; r < 3; r++) {
+            var w0 = 2 * Math.PI * fs[r] / sr, al = Math.sin(w0) / (2 * qs[r]), a0 = 1 + al;
+            bq.push({ b0: al / a0, b2: -al / a0, a1: -2 * Math.cos(w0) / a0, a2: (1 - al) / a0, z1: 0, z2: 0, g: gs[r] });
+        }
+        var phv = 0, jit = 0, period = Math.floor(sr * 0.5), env = 0;
+        for (i = 0; i < n; i++) {
+            if (i % 480 === 0) jit = jit * 0.9 + (rnd01() - 0.5) * 0.012;
+            phv += f0 * (1 + jit) / sr;
+            var voiced = ((i % period) < Math.floor(sr * 0.35)) ? 1.0 : 0.0;
+            env += (voiced - env) * 0.002;
+            var x = tabRead(tb, phv) * env, y = 0;
+            for (var q = 0; q < 3; q++) {
+                var B = bq[q], o = B.b0 * x + B.z1;
+                B.z1 = -B.a1 * o + B.z2;
+                B.z2 = B.b2 * x - B.a2 * o;
+                y += o * B.g;
+            }
+            out[g0 + i] = y * 4.0 + noise[i] * (0.03 + 0.08 * (1 - env));
+        }
+    } else if (kind === "vowelst") {
+        // steady vowel: 18 harmonics shaped by formants at 700 / 1220 / 2600 Hz (Lorentzian-like, bandwidths 110 / 140 / 200 Hz)
+        var vt = new Array(4097), vph = 0, vi, vn;
+        for (vi = 0; vi < 4096; vi++) vt[vi] = 0;
+        for (vn = 1; vn <= 18; vn++) {
+            var vf = vn * f0, amp = 0;
+            amp += 1.0 / Math.sqrt(1 + Math.pow((vf - 700) / 110, 2));
+            amp += 0.6 / Math.sqrt(1 + Math.pow((vf - 1220) / 140, 2));
+            amp += 0.3 / Math.sqrt(1 + Math.pow((vf - 2600) / 200, 2));
+            amp /= (1 + 0.15 * vn);
+            for (vi = 0; vi < 4096; vi++) vt[vi] += amp * Math.sin(2 * Math.PI * vn * vi / 4096);
+        }
+        vt[4096] = vt[0];
+        for (i = 0; i < n; i++) {
+            vph += f0 / sr;
+            out[g0 + i] = tabRead(vt, vph);
+        }
+    } else {
+        var phs = 0;
+        for (i = 0; i < n; i++) {
+            var vib = 35 * Math.sin(2 * Math.PI * 5.5 * i / sr);
+            phs += f0 * Math.pow(2.0, vib / 1200.0) / sr;
+            out[g0 + i] = 0.5 * Math.sin(2 * Math.PI * phs) + 0.12 * Math.sin(4 * Math.PI * phs + 0.4) + 0.06 * Math.sin(6 * Math.PI * phs + 1.1);
+        }
+    }
+    for (i = g0; i < g1; i++) if (Math.abs(out[i]) > peak) peak = Math.abs(out[i]);
+    var sc = 0.5 / Math.max(peak, 1e-9);
+    // 20 ms fade at both ends of the sounding stretch
+    var fl = Math.floor(sr * 0.02);
+    for (i = g0; i < g1; i++) {
+        var fe = Math.min(1, (i - g0) / fl, (g1 - i) / fl);
+        out[i] *= sc * fe;
+    }
+    return out;
+}
+
+// crunch=a-b (ms): artefact metrics of the mid signal over the window, with the source stretch played at natural speed
+// (gstart + a .. gstart + b seconds, what a Speed 100 % scan reads) as the reference.
+//   crHfDb / crRefHfDb   power above 5 kHz (hfc=<Hz>) relative to the total (dB): the sources hold nothing there
+//   crHfFlat / crRefHfFlat  spectral flatness (geometric / arithmetic mean) of the 5..20 kHz power spectrum
+//   crBin                max / median over 16 phase bins of the output period of the second-difference energy
+//   crJmp999 / crRefJmp999  99.9th percentile of |x[n] - x[n-1]| over the rms of the step; crJmpMax the maximum
+//   cf0=<Hz> the output fundamental (period for the phase bins), cj=<sample> the trigger sample (default 1)
+function psdHf(x, sr, hfcIn) {
+    var hfc = hfcIn || Number(opt.hfc || 5000);
+    var N = 4096, hop = 2048, acc = new Array(N / 2), k, tot = 0, hf = 0, nseg = 0;
+    for (k = 0; k < N / 2; k++) acc[k] = 0;
+    var re = new Array(N), im = new Array(N);
+    for (var s0 = 0; s0 + N <= x.length; s0 += hop) {
+        for (k = 0; k < N; k++) { re[k] = x[s0 + k] * (0.5 - 0.5 * Math.cos(2 * Math.PI * k / (N - 1))); im[k] = 0; }
+        fftInPlace(re, im);
+        for (k = 1; k < N / 2; k++) acc[k] += re[k] * re[k] + im[k] * im[k];
+        nseg++;
+    }
+    var lo = Math.ceil(hfc / (sr / N)), hi = Math.min(N / 2 - 1, Math.floor(20000 / (sr / N)));
+    var lsum = 0, asum = 0, cnt = 0;
+    for (k = 1; k < N / 2; k++) {
+        tot += acc[k];
+        if (k >= lo && k <= hi) { hf += acc[k]; lsum += Math.log(acc[k] + 1e-30); asum += acc[k]; cnt++; }
+    }
+    var flat = cnt > 0 && asum > 0 ? Math.exp(lsum / cnt) / (asum / cnt) : 0;
+    return { hfDb: 10 * Math.log(Math.max(hf, 1e-30) / Math.max(tot, 1e-30)) / Math.LN10, flat: flat, segs: nseg };
+}
+function stepStats(x) {
+    var d = [], sq = 0, mx = 0, i;
+    for (i = 1; i < x.length; i++) { var v = Math.abs(x[i] - x[i - 1]); d.push(v); sq += v * v; if (v > mx) mx = v; }
+    var rms = Math.sqrt(sq / Math.max(d.length, 1)) + 1e-12;
+    d.sort(function (a, b) { return a - b; });
+    var p999 = d.length ? d[Math.min(d.length - 1, Math.floor(d.length * 0.999))] : 0;
+    return { p999: p999 / rms, max: mx / rms };
+}
+function crunchReport(left, right, sr) {
+    if (!opt.crunch) return "";
+    var pr = String(opt.crunch).split("-");
+    var i0 = Math.floor(sr * Number(pr[0]) / 1000), i1 = Math.min(left.length, Math.floor(sr * Number(pr[1]) / 1000));
+    var m = [], i;
+    for (i = i0; i < i1; i++) m.push(0.5 * (left[i] + right[i]));
+    var ref = [], g0 = Math.floor(sr * Number(opt.gstart || 4.8)) + i0, g1 = g0 + (i1 - i0);
+    var sc = (opt.sstart0 !== undefined) ? Number(opt.sstart0) : 0;
+    for (i = g0; i < g1 && realSrc && i < realSrc.length; i++) ref.push(realSrc[i]);
+    var o = psdHf(m, sr), rf = ref.length > 4096 ? psdHf(ref, sr, Number(opt.hfcr || opt.hfc || 5000)) : { hfDb: -999, flat: 0 };
+    var so = stepStats(m), sr2 = ref.length > 8 ? stepStats(ref) : { p999: 0, max: 0 };
+    // second-difference energy per phase bin of the output period
+    var P = sr / Number(opt.cf0 || 220), t0 = Number(opt.cj === undefined ? 1 : opt.cj), nb = 16, be = [], bc = [];
+    for (i = 0; i < nb; i++) { be.push(0); bc.push(0); }
+    for (i = 2; i < m.length; i++) {
+        var d2 = m[i] - 2 * m[i - 1] + m[i - 2];
+        var ph = (((i0 + i - t0) % P) + P) % P / P, b = Math.min(nb - 1, Math.floor(ph * nb));
+        be[b] += d2 * d2; bc[b]++;
+    }
+    var bm = [];
+    for (i = 0; i < nb; i++) bm.push(be[i] / Math.max(bc[i], 1));
+    var sorted = bm.slice().sort(function (a, b2) { return a - b2; });
+    var med = sorted[Math.floor(nb / 2)] + 1e-30, top = sorted[nb - 1];
+    return "crHfDb " + o.hfDb + "\ncrRefHfDb " + rf.hfDb + "\ncrHfFlat " + o.flat + "\ncrRefHfFlat " + rf.flat + "\n" +
+           "crBin " + (top / med) + "\ncrJmp999 " + so.p999 + "\ncrRefJmp999 " + sr2.p999 + "\ncrJmpMax " + so.max + "\ncrRefJmpMax " + sr2.max + "\n";
 }
 
 function seedVoices() {
@@ -269,6 +451,55 @@ function snap(label) {
     var best = -1, bestA = 0.0005;
     for (var i = 0; i < 16; i++) if (chunk[16 + i] > bestA) { bestA = chunk[16 + i]; best = i; }
     snaps[String(label)] = { voice: best, pos: best >= 0 ? chunk[best] : -1, amp: bestA };
+    if (opt.gt) { try { gtSnaps.push(new Buffer(scopeName).peek(1, 64, 64)); } catch (gerr) { } }
+}
+
+
+// Grain telemetry (#0-bsscope 64..127): slots 64..95 hold the read position of up to 32 grains (0..1, -1 unused), 96..127 their
+// level. gt* is the state at the end of the run, gtAll* aggregates every `snap` (the harness snaps during playback).
+var gtSnaps = [];
+function grainStats(g) {
+    var n = 0, mn = 2, mx = -2, lv = 0, distinct = {}, nd = 0, i, negOk = 1;
+    if (!g || g.length < 64) return { n: -1, min: -1, max: -1, lvl: -1, distinct: -1, negOk: 0 };
+    for (i = 0; i < 32; i++) {
+        var p = g[i], l = g[32 + i];
+        if (p >= 0) {
+            n++; if (p < mn) mn = p; if (p > mx) mx = p; if (l > lv) lv = l;
+            var key = Math.round(p * 1000);
+            if (!distinct[key]) { distinct[key] = 1; nd++; }
+            if (!(l > 0)) negOk = 0;
+        } else if (p !== -1) negOk = 0;
+        else if (l !== 0) negOk = 0;
+    }
+    return { n: n, min: n ? mn : -1, max: n ? mx : -1, lvl: lv, distinct: nd, negOk: negOk };
+}
+function grainReport(scopeStats) {
+    var f = grainStats(scopeStats.grains), txt = "gtN " + f.n + "\ngtMin " + f.min + "\ngtMax " + f.max + "\ngtLvlMax " + f.lvl + "\ngtDistinct " + f.distinct + "\ngtUnusedOk " + f.negOk + "\n";
+    if (gtSnaps.length) {
+        var all = {}, nd = 0, mn = 2, mx = -2, maxN = 0, minN = 99, lvMax = 0, bad = 0, i, s;
+        for (s = 0; s < gtSnaps.length; s++) {
+            var st = grainStats(gtSnaps[s]);
+            if (st.n > maxN) maxN = st.n;
+            if (st.n < minN) minN = st.n;
+            if (st.n > 0) { if (st.min < mn) mn = st.min; if (st.max > mx) mx = st.max; }
+            if (st.lvl > lvMax) lvMax = st.lvl;
+            if (!st.negOk) bad++;
+            for (i = 0; i < 32; i++) if (gtSnaps[s][i] >= 0) {
+                var k = Math.round(gtSnaps[s][i] * 1000);
+                if (!all[k]) { all[k] = 1; nd++; }
+            }
+        }
+        txt += "gtAllSnaps " + gtSnaps.length + "\ngtAllMaxN " + maxN + "\ngtAllMinN " + minN + "\ngtAllMin " + (mn > 1 ? -1 : mn) + "\ngtAllMax " + (mx < -1 ? -1 : mx) + "\ngtAllLvl " + lvMax + "\ngtAllDistinct " + nd + "\ngtAllBad " + bad + "\n";
+    }
+    return txt;
+}
+
+// dbgscope=1: slots 50..63 of the telemetry buffer (free for gen debugging variants), as dbgS50 .. dbgS63
+function dbgScopeReport() {
+    if (!opt.dbgscope || !scopeName) return "";
+    var c = new Buffer(scopeName).peek(1, 50, 14), txt = "";
+    for (var i = 0; i < 14; i++) txt += "dbgS" + (50 + i) + " " + c[i] + "\n";
+    return txt;
 }
 
 function msg_float(v) {
@@ -341,6 +572,9 @@ function analyze(durMs) {
         dumpMetrics(metrics) +
         segReport(left, right, sr) +
         clickReport(left, right, sr) +
+        crunchReport(left, right, sr) +
+        grainReport(scopeStats) +
+        dbgScopeReport() +
         seqReport(left, right, sr) +
         snapReport() +
         markerReport(left, right, sr)
@@ -435,6 +669,25 @@ function segReport(left, right, sr) {
             txt += "segH2_" + k + " " + (hmax[1] > 0 ? hmax[2] / hmax[1] : 0) + "\n" +
                    "segH3_" + k + " " + (hmax[1] > 0 ? hmax[3] / hmax[1] : 0) + "\n";
         }
+        // hs=<f0>: amplitude of the first 18 harmonics of <f0> (+-3 %), their power-weighted centroid and the frequency of
+        // the strongest one with a parabolic refinement over the neighbouring harmonics: where the formants sit
+        if (opt.hs && sp.mg.length) {
+            var hs0 = Number(opt.hs), ha = [], hq = 0, hqn = 0, hbest = 0, hbn = 1, hn2;
+            for (hn2 = 1; hn2 <= 18; hn2++) {
+                var hb0 = Math.floor(hn2 * hs0 * 0.97 / sp.binHz), hb1 = Math.ceil(hn2 * hs0 * 1.03 / sp.binHz), hm = 0;
+                for (var hb = hb0; hb <= hb1 && hb < sp.mg.length; hb++) hm = Math.max(hm, sp.mg[hb]);
+                ha.push(hm);
+                hq += hm * hm * hn2 * hs0; hqn += hm * hm;
+                if (hm > hbest) { hbest = hm; hbn = hn2; }
+                txt += "segA" + k + "_" + hn2 + " " + hm + "\n";
+            }
+            var hpk = hbn;
+            if (hbn > 1 && hbn < 18) {
+                var la = Math.log(ha[hbn - 2] + 1e-12), lb = Math.log(ha[hbn - 1] + 1e-12), lc = Math.log(ha[hbn] + 1e-12), hd = la - 2 * lb + lc;
+                if (Math.abs(hd) > 1e-9) hpk = hbn + 0.5 * (la - lc) / hd;
+            }
+            txt += "segHCen" + k + " " + (hqn > 0 ? hq / hqn : 0) + "\n" + "segHPk" + k + " " + hpk * hs0 + "\n";
+        }
     }
     return txt;
 }
@@ -472,12 +725,17 @@ function clickReport(left, right, sr) {
     var sorted = mx.slice().sort(function (x, y) { return x - y; });
     var med = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
     var top = sorted.length ? sorted[sorted.length - 1] : 0;
-    var rmin = 1e9, rmax = 0, rsum = 0;
-    for (var r = 0; r < rms.length; r++) { rmin = Math.min(rmin, rms[r]); rmax = Math.max(rmax, rms[r]); rsum += rms[r]; }
+    var rmin = 1e9, rmax = 0, rsum = 0, rminAt = 0, rmaxAt = 0;
+    for (var r = 0; r < rms.length; r++) {
+        if (rms[r] < rmin) { rmin = rms[r]; rminAt = 1000.0 * (i0 + r * hop) / sr; }
+        if (rms[r] > rmax) { rmax = rms[r]; rmaxAt = 1000.0 * (i0 + r * hop) / sr; }
+        rsum += rms[r];
+    }
     var rmean = rms.length ? rsum / rms.length : 0;
     return "clkRatio " + (med > 1e-9 ? top / med : 0) + "\n" +
            "clkRipple " + (rmean > 1e-9 ? (rmax - rmin) / rmean : 0) + "\n" +
            "clkAtMs " + topAt + "\n" +
+           "clkRipMinAt " + rminAt + "\n" + "clkRipMaxAt " + rmaxAt + "\n" +
            "clkJump " + (pk > 1e-9 ? jump / pk : 0) + "\n" +
            "clkPeak " + pk + "\n";
 }
@@ -573,6 +831,8 @@ function readScope() {
     if (!chunk || !chunk.length) {
         return { spawns: -1, activeVoices: 0, peakL: 0, cutHz: 0, sampFrames: 0, scopeLen: 0, jsFrames: jsFrames };
     }
+    var gchunk = null;
+    try { gchunk = buf.peek(1, 64, 64); } catch (gerr) { gchunk = null; }
     return {
         pos0: (chunk[0] === undefined) ? -1 : chunk[0],
         peakL: chunk[32] || 0,
@@ -584,6 +844,7 @@ function readScope() {
         jsFrames: jsFrames,
         rootDyn: (chunk.length > 49 && chunk[49] !== undefined) ? chunk[49] : -1,
         gp: chunk.slice(40, 48),
+        grains: gchunk,
     };
 }
 

@@ -92,14 +92,14 @@
 //   glitchEditorRows(key), glitchSetValue / glitchRemoveTile / glitchToggleLock, rerollWorking / mutateWorking (honour locks),
 //   GL_PARAMS (the Live parameters), glitchHitMap(ui, nTiles, nRows) (every interactive rect, used by the tests).
 
-var GL_STATE_VERSION = 3;
+var GL_STATE_VERSION = 4;
 var GL_GLITCH_VERSION = 1;
 var GL_NSLOT = 8;
 var GL_FFT_N = 1024;
 var GL_LATENCY = 1023; // STFT path N - 1; everything else is aligned to it
 var GL_ACTIVE_EPS = 0.0005;
-var GL_SLOTS_BUF_SAMPS = 1280;
-var GL_SCOPE_SAMPS = 512;
+var GL_SLOTS_BUF_SAMPS = 9472; // 8 slot vectors of NP floats + weights + sequencer block + the constants block (see glitchLayout().endOffset)
+var GL_SCOPE_SAMPS = 640;
 var GL_HOP_CTL = 32; // gen re-blends the weights every 32 samples
 var GL_SEQ_MAX = 16;
 var GL_SEQ_HDR = 8;
@@ -119,6 +119,18 @@ var GL_SHUF_SPANS = [1, 2, 4]; // Slice Shuffle: span in beats
 var GL_VOWELS = [[800, 1150, 2900], [400, 1600, 2700], [350, 1700, 2700], [450, 800, 2830], [325, 700, 2700]]; // a e i o u (F1..F3 Hz)
 
 var GL_CHOP_PATTERNS = [0xaaaa, 0x8888, 0xf0f0, 0xcccc, 0xb6b6, 0x9249, 0xff00, 0xa5a5, 0xe7e7, 0x8e8e];
+
+// ---- per-module MOVEMENT (phase 3): one optional source per chain instance (LFO / Steps / Envelope follower) that moves one
+// continuous param of that instance. Types: 0 Off, 1 LFO, 2 Steps, 3 Env. See the contract in the header.
+var GL_MV_TYPE_NAMES = ["Off", "LFO", "Steps", "Env"];
+var GL_MV_SHAPE_NAMES = ["Sine", "Tri", "Saw Up", "Saw Dn", "Square", "Smooth Rnd", "S&H"];
+var GL_MV_STEPS = 16;
+// synced rate = the LFO CYCLE (Steps: one STEP) length in beats, shortest first: 1/32 .. 4 bars with triplets and dotted values
+var GL_MV_DIV_BEATS = [0.125, 1 / 6, 0.25, 1 / 3, 0.375, 0.5, 2 / 3, 0.75, 1, 4 / 3, 1.5, 2, 3, 4, 8, 16];
+var GL_MV_DIV_NAMES = ["1/32", "1/16T", "1/16", "1/8T", "1/16.", "1/8", "1/4T", "1/8.", "1/4", "1/2T", "1/4.", "1/2", "1/2.", "1 bar", "2 bar", "4 bar"];
+var GL_MV_DIV_DEFAULT = { 1: 13, 2: 5, 3: 13 }; // per type: LFO 1 bar, Steps 1/8 per step
+var GL_MV_COL = [1.0, 0.36, 0.78]; // the "motion" colour (magenta) used by the tiles, bars and the Motion panel
+var GL_MV_PARAM_KEYS = ["mv_on", "mv_type", "mv_target", "mv_depth", "mv_hz", "mv_cpb", "mv_sync", "mv_phase", "mv_shape", "mv_glide", "mv_nsteps", "mv_atk", "mv_rel"];
 function glRange(a, b) { var o = []; for (var i = a; i <= b; i++) o.push(i); return o; }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -307,6 +319,46 @@ var GL_INSTANCES = [
 ];
 var GL_NINST = GL_INSTANCES.length;
 
+// The "main" continuous param of every module: the default movement target and the first param Randomize picks to move.
+// (One per instance; a spectral sub-op has its own, GL_MAIN_SUB. Freeze and Scramble have no continuous param.)
+var GL_MAIN_PARAM = { drvA: "drive", filt: "cutoff", form: "vowel", comb: "freq", phas: "depth", crush: "bits", rect: "blend", fm: "index", corr: "chance",
+    ring: "freq", stut: "decay", time: "amt", gpit: "pitch", gstr: "speed", rvs: "chance", shuf: "chance", chop: "smooth", spec: "smr_blur", drvB: "drive",
+    dly: "fb", slap: "tone", rev: "decay", wid: "width" };
+var GL_MAIN_SUB = { smear: "smr_blur", ccrush: "cc_coeffs", scatter: "sct_w", mirror: "mir_pivot", binshift: "bsh_bins", specgate: "sgl_k" };
+(function markMainParams() {
+    for (var i = 0; i < GL_INSTANCES.length; i++) {
+        var inst = GL_INSTANCES[i];
+        for (var j = 0; j < inst.params.length; j++) inst.params[j].main = inst.params[j].key === GL_MAIN_PARAM[inst.id];
+    }
+})();
+
+// Movement param specs of one instance (the movement block of the flat vector, GL_MV_PARAM_KEYS order, then 16 step values).
+// mv_on is a "wet"-kind flag (1 while the module has movement); every other movement param except mv_depth is only blended over
+// the slots where mv_on is set (group = mv_on), so a slot WITHOUT movement does not dilute rate / steps / shape; mv_depth is
+// blended over every slot where the module is on (a slot without movement contributes depth 0), so movement fades in and out
+// with the morph weights. mv_target is the POSITION of the target param in the instance's param list.
+function glMvSpecs(inst) {
+    var mainPos = 0;
+    for (var i = 0; i < inst.params.length; i++) if (inst.params[i].main) mainPos = i;
+    var specs = [
+        glP("mv_on", "Motion", "wet", 0, 1, 0),
+        glP("mv_type", "Type", "disc", 0, 3, 0, { choices: GL_MV_TYPE_NAMES }),
+        glP("mv_target", "Target", "disc", 0, 31, mainPos),
+        glP("mv_depth", "Depth", "lin", -1, 1, 0.4),
+        glP("mv_hz", "Rate", "log", 0.02, 20, 1, { unit: "Hz" }),
+        glP("mv_cpb", "Rate", "log", 0.0625, 8, 0.25),
+        glP("mv_sync", "Rate Mode", "disc", 0, 1, 1, { choices: ["Free", "Sync"] }),
+        glP("mv_phase", "Phase", "lin", 0, 1, 0),
+        glP("mv_shape", "Shape", "disc", 0, 6, 0, { choices: GL_MV_SHAPE_NAMES }),
+        glP("mv_glide", "Glide", "lin", 0, 1, 0),
+        glP("mv_nsteps", "Steps", "disc", 0, 1, 0, { choices: ["8", "16"] }),
+        glP("mv_atk", "Attack", "log", 1, 500, 10, { unit: "ms" }),
+        glP("mv_rel", "Release", "log", 5, 2000, 200, { unit: "ms" }),
+    ];
+    for (var s = 0; s < GL_MV_STEPS; s++) specs.push(glP("mv_s" + s, "Step " + (s + 1), "lin", -1, 1, 0));
+    return specs;
+}
+
 // Module types: what the user can switch on / off in the Options allow-list.
 // instances: where it lives. amountKey: for the spectral sub-ops, the amount param of the single `spec` instance.
 var GL_TYPES = [
@@ -341,12 +393,22 @@ var GL_TYPES = [
     { id: "width", name: "Width / Gain", category: "Utility", instances: ["wid"], weight: 0.5 },
 ];
 
+// Movement kinds in the Options allow-list (category "Movement"). mvType = the movement type they enable.
+var GL_MOVE_TYPES = [
+    { id: "mv_lfo", name: "LFO", category: "Movement", mvType: 1 },
+    { id: "mv_steps", name: "Steps", category: "Movement", mvType: 2 },
+    { id: "mv_env", name: "Envelope", category: "Movement", mvType: 3 },
+];
+// Everything the Options view lists, in index order: the module types, then the movement kinds.
+/** @type {Array<any>} */
+var GL_ALLOW_ITEMS = [].concat(GL_TYPES, GL_MOVE_TYPES);
+
 // ---------------------------------------------------------------------------------------------------------------
 // Layout (flat vector indices)
 // ---------------------------------------------------------------------------------------------------------------
 var GL_KIND_CODE = { wet: 0, lin: 1, log: 2, disc: 3 };
 
-/** @returns {{np:number, instances:Array<any>, params:Array<any>, index:Object<string, number>, base:Object<string, number>, weightsOffset:number, seqOffset:number, metaOffset:number, defsOffset:number, wbOffset:number, ninst:number}} */
+/** @returns {{np:number, instances:Array<any>, params:Array<any>, index:Object<string, number>, base:Object<string, number>, weightsOffset:number, seqOffset:number, metaOffset:number, defsOffset:number, wbOffset:number, minsOffset:number, maxsOffset:number, endOffset:number, ninst:number, mvBase:number, mvN:number, mv:Object<string, number>}} */
 function glitchLayout() {
     if (glitchLayout._cache) return glitchLayout._cache;
     var params = [];
@@ -369,12 +431,35 @@ function glitchLayout() {
             params.push({ idx: idx, inst: inst.id, instIdx: ii, key: spec.key, kind: spec.kind, kindCode: GL_KIND_CODE[spec.kind], group: grp, def: spec.def, min: spec.min, max: spec.max, spec: spec });
             index[inst.id + "." + spec.key] = idx;
         }
-        instances.push({ id: inst.id, pos: ii, base: wetIdx, count: inst.params.length, wet: wetIdx });
+        instances.push({ id: inst.id, pos: ii, base: wetIdx, count: inst.params.length, wet: wetIdx, mv: 0 });
     }
+    // the movement blocks, after every instance's own params: instance k at mvBase + mvN * k
+    var mvBase = params.length;
+    var mvN = 0;
+    for (var mi = 0; mi < GL_INSTANCES.length; mi++) {
+        var minst = GL_INSTANCES[mi];
+        var mvSpecs = glMvSpecs(minst);
+        var onIdx = params.length;
+        mvN = mvSpecs.length;
+        instances[mi].mv = onIdx;
+        for (var mj = 0; mj < mvSpecs.length; mj++) {
+            var ms = mvSpecs[mj];
+            var midx = params.length;
+            var mgrp = mj === 0 ? midx : (ms.key === "mv_depth" ? base[minst.id] : onIdx);
+            params.push({ idx: midx, inst: minst.id, instIdx: mi, key: ms.key, kind: ms.kind, kindCode: GL_KIND_CODE[ms.kind], group: mgrp, def: ms.def, min: ms.min, max: ms.max, spec: ms, mv: mj });
+            index[minst.id + "." + ms.key] = midx;
+        }
+    }
+    var mvOff = {};
+    for (var mk = 0; mk < GL_MV_PARAM_KEYS.length; mk++) mvOff[GL_MV_PARAM_KEYS[mk].replace("mv_", "")] = mk;
+    mvOff.step0 = GL_MV_PARAM_KEYS.length;
     var np = params.length;
     var seqOff = GL_NSLOT * np + GL_NSLOT;
-    glitchLayout._cache = { np: np, instances: instances, params: params, index: index, base: base, weightsOffset: GL_NSLOT * np, seqOffset: seqOff, metaOffset: seqOff + GL_SEQ_HDR + GL_SEQ_MAX,
-        defsOffset: seqOff + GL_SEQ_HDR + GL_SEQ_MAX + np, wbOffset: seqOff + GL_SEQ_HDR + GL_SEQ_MAX + 2 * np, ninst: instances.length };
+    var metaOff = seqOff + GL_SEQ_HDR + GL_SEQ_MAX;
+    var wbOff = metaOff + 2 * np;
+    glitchLayout._cache = { np: np, instances: instances, params: params, index: index, base: base, weightsOffset: GL_NSLOT * np, seqOffset: seqOff, metaOffset: metaOff,
+        defsOffset: metaOff + np, wbOffset: wbOff, minsOffset: wbOff + instances.length, maxsOffset: wbOff + instances.length + np, endOffset: wbOff + instances.length + 2 * np,
+        ninst: instances.length, mvBase: mvBase, mvN: mvN, mv: mvOff };
     return glitchLayout._cache;
 }
 glitchLayout._cache = null;
@@ -388,20 +473,23 @@ function glType(id) {
     return null;
 }
 
-/** The constants block of the engine buffer: np meta codes (kind + 4 * group index), np defaults, then the wet index per chain position. */
+/** The constants block of the engine buffer: np meta codes (kind + 4 * group index), np defaults, the wet index per chain
+ *  position, then np minimums and np maximums (the movement needs the range of its target). */
 function glitchEngineConstants() {
     var L = glitchLayout();
     var out = [];
     for (var i = 0; i < L.np; i++) out.push(L.params[i].kindCode + 4 * L.params[i].group);
     for (var j = 0; j < L.np; j++) out.push(L.params[j].def);
     for (var k = 0; k < L.instances.length; k++) out.push(L.instances[k].wet);
+    for (var m = 0; m < L.np; m++) out.push(L.params[m].min);
+    for (var x = 0; x < L.np; x++) out.push(L.params[x].max);
     return out;
 }
-// Per-param meta: [kindCode, groupIndex, default] x np (gen builds Data meta(np, 3) from the engine buffer's constants block).
+// Per-param meta: [kindCode, groupIndex, default, min, max] x np (gen builds Data meta(np, 5) from the engine buffer's constants block).
 function glitchMeta() {
     var L = glitchLayout();
     var m = [];
-    for (var i = 0; i < L.np; i++) m.push([L.params[i].kindCode, L.params[i].group, L.params[i].def]);
+    for (var i = 0; i < L.np; i++) m.push([L.params[i].kindCode, L.params[i].group, L.params[i].def, L.params[i].min, L.params[i].max]);
     return m;
 }
 
@@ -447,6 +535,10 @@ var GL_SCOPE = (function () {
     block("WAVE_OUT", 64); // same for the output
     one("WAVE_HEAD"); // next write slot 0..63 (both rings)
     one("SPEC_FRAMES"); // STFT frames processed (left channel)
+    block("MOVE_ON", GL_NINST); // 1 while the instance's movement runs (module on and a source set)
+    block("MOVE_OFS", GL_NINST); // the offset the movement adds to its target, in target-range fractions (depth * source)
+    block("MOVE_POS", GL_NINST); // the target's normalized position (0..1 on its own curve) AFTER the movement
+    block("MOVE_PH", GL_NINST); // source phase: LFO position in its cycle, Steps position in the pattern (both 0..1), Env level (0..1)
     o.END = p + 6;
     return o;
 })();
@@ -581,6 +673,7 @@ function randomizeGlitch(seed, chaos, allowList) {
         rollType(g, t, chaos, rnd);
         picked++;
     }
+    rollMovement(g, seed, chaos, allowList);
     return g;
 }
 
@@ -620,8 +713,384 @@ function mutateGlitch(g0, seed, amount, allowList) {
         var pool = allowedTypes(allowList);
         if (pool.length) rollType(g, pool[Math.floor(rnd() * pool.length) % pool.length], 0.5, rnd);
     }
+    mutateMovement(g, seed, amount, allowList);
     g.seed = (seed >>> 0);
     return g;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Movement (phase 3): an optional modulation source per chain instance. A glitch stores it as module.move:
+//   { type: 1 LFO | 2 Steps | 3 Env, target: <param key of that instance>, depth: -1..1 (fraction of the target's range, on
+//     the target's own curve: log params move in log space), sync: 1 host-beat locked | 0 free (Hz), div: 0..15 index into
+//     GL_MV_DIV_BEATS (LFO: cycle length; Steps: step length), hz: 0.02..20, phase: 0..1 of the LFO cycle / the step pattern,
+//     shape: 0..6 (LFO), glide: 0..1 fraction of a step spent gliding from the previous step (Steps), nsteps: 8 | 16,
+//     steps: [16 x -1..1], atk / rel: ms (Env) }
+// null / absent = no movement. In the flat vector it is the movement block (glMvSpecs). The gen evaluates the sources at control
+// rate (gl_move) and adds depth * source to the blended target in normalized (curve) space BEFORE the per-param smoothing.
+// Sources: LFO -1..1; Steps -1..1 (glide ramps between steps); Env 0..1 (-60..0 dB of the module's INPUT level, so a louder input
+// pushes the target up for positive depth). Synced sources use the host beat HELD while the transport is stopped (like the
+// sequencer), free (Hz) sources keep running; the follower always runs.
+// ---------------------------------------------------------------------------------------------------------------
+function glNum(v, def) { var n = Number(v); return isFinite(n) ? n : def; }
+function glIsContinuous(spec) { return (spec.kind === "lin" || spec.kind === "log") && !spec.patterns; }
+function glMoveMainKey(inst) { return GL_MAIN_PARAM[inst.id] || null; }
+/** Continuous param keys of an instance (limited to one spectral sub-op group when `sub` is its amount key). */
+function glMoveKeysOf(inst, sub) {
+    var out = [];
+    for (var i = 0; i < inst.params.length; i++) {
+        var ps = inst.params[i];
+        if (!glIsContinuous(ps)) continue;
+        if (sub && ps.group !== sub) continue;
+        out.push(ps.key);
+    }
+    return out;
+}
+function glParamPos(inst, key) {
+    for (var i = 0; i < inst.params.length; i++) if (inst.params[i].key === key) return i;
+    return -1;
+}
+function glMoveDefaultSteps() {
+    var base = [0.9, -0.3, 0.5, -0.9, 0.2, -0.5, 0.7, -0.1];
+    var out = [];
+    for (var i = 0; i < GL_MV_STEPS; i++) out.push(base[i % 8]);
+    return out;
+}
+function defaultMove(instId, target, type) {
+    var inst = glInstance(instId);
+    var t = type || 1;
+    var zero = [];
+    for (var i = 0; i < GL_MV_STEPS; i++) zero.push(0);
+    return { type: t, target: target || glMoveMainKey(inst), depth: 0.4, sync: 1, div: GL_MV_DIV_DEFAULT[t], hz: 1, phase: 0, shape: 0, glide: 0, nsteps: 8,
+        steps: t === 2 ? glMoveDefaultSteps() : zero, atk: 10, rel: 200 };
+}
+/** Sanitize a movement object for an instance (null when it is off or damaged). */
+function normalizeMove(m, instId) {
+    if (!m || typeof m !== "object") return null;
+    var inst = glInstance(instId);
+    if (!inst) return null;
+    var ty = Math.round(glNum(m.type, 0));
+    if (ty < 1 || ty > 3) return null;
+    var keys = glMoveKeysOf(inst, null);
+    var tk = typeof m.target === "string" && keys.indexOf(m.target) >= 0 ? m.target : glMoveMainKey(inst);
+    if (!tk || keys.indexOf(tk) < 0) return null;
+    var d = defaultMove(instId, tk, ty);
+    var o = { type: ty, target: tk };
+    o.depth = glClamp(glNum(m.depth, d.depth), -1, 1);
+    o.sync = glNum(m.sync, 1) > 0.5 ? 1 : 0;
+    o.div = glClamp(Math.round(glNum(m.div, d.div)), 0, GL_MV_DIV_BEATS.length - 1);
+    o.hz = glClamp(glNum(m.hz, 1), 0.02, 20);
+    o.phase = glClamp(glNum(m.phase, 0), 0, 1);
+    o.shape = glClamp(Math.round(glNum(m.shape, 0)), 0, GL_MV_SHAPE_NAMES.length - 1);
+    o.glide = glClamp(glNum(m.glide, 0), 0, 1);
+    o.nsteps = glNum(m.nsteps, 8) > 12 ? 16 : 8;
+    o.atk = glClamp(glNum(m.atk, 10), 1, 500);
+    o.rel = glClamp(glNum(m.rel, 200), 5, 2000);
+    o.steps = [];
+    for (var i = 0; i < GL_MV_STEPS; i++) o.steps.push(glClamp(glNum(m.steps && m.steps[i], 0), -1, 1));
+    return o;
+}
+/** One movement vector entry (key = "mv_..."). */
+function glMoveVecValue(mv, key, inst) {
+    switch (key) {
+        case "mv_on": return 1;
+        case "mv_type": return mv.type;
+        case "mv_target": return glParamPos(inst, mv.target);
+        case "mv_depth": return mv.depth;
+        case "mv_hz": return mv.hz;
+        case "mv_cpb": return 1 / GL_MV_DIV_BEATS[mv.div];
+        case "mv_sync": return mv.sync;
+        case "mv_phase": return mv.phase;
+        case "mv_shape": return mv.shape;
+        case "mv_glide": return mv.glide;
+        case "mv_nsteps": return mv.nsteps === 16 ? 1 : 0;
+        case "mv_atk": return mv.atk;
+        case "mv_rel": return mv.rel;
+    }
+    return mv.steps[Number(key.substring(4))] || 0;
+}
+/** The division index whose rate is nearest (in log space) to cycles-per-beat `cpb`. */
+function glMoveNearestDiv(cpb) {
+    var best = 0, bd = 1e9;
+    for (var i = 0; i < GL_MV_DIV_BEATS.length; i++) {
+        var d = Math.abs(Math.log(Math.max(cpb, 1e-6)) - Math.log(1 / GL_MV_DIV_BEATS[i]));
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+/** The movement of instance `instId` in a (plain or blended) vector, or null. */
+function glMoveFromVector(v, instId) {
+    var L = glitchLayout();
+    var inst = glInstance(instId);
+    var on = L.index[instId + ".mv_on"];
+    if (!inst || on === undefined || !(v[on] > GL_ACTIVE_EPS)) return null;
+    var tp = Math.round(v[on + L.mv.target]);
+    var tspec = inst.params[tp];
+    if (!tspec || !glIsContinuous(tspec)) return null;
+    var steps = [];
+    for (var i = 0; i < GL_MV_STEPS; i++) steps.push(v[on + L.mv.step0 + i]);
+    return normalizeMove({ type: Math.round(v[on + L.mv.type]), target: tspec.key, depth: v[on + L.mv.depth], sync: v[on + L.mv.sync], div: glMoveNearestDiv(v[on + L.mv.cpb]),
+        hz: v[on + L.mv.hz], phase: v[on + L.mv.phase], shape: Math.round(v[on + L.mv.shape]), glide: v[on + L.mv.glide], nsteps: v[on + L.mv.nsteps] > 0.5 ? 16 : 8,
+        atk: v[on + L.mv.atk], rel: v[on + L.mv.rel], steps: steps }, instId);
+}
+/** True when key `k` of instance `inst` belongs to the tile (a whole module, or one spectral sub-op's group). */
+function glMoveInTile(inst, key, sub) {
+    if (!sub) return true;
+    var pos = glParamPos(inst, key);
+    return pos >= 0 && inst.params[pos].group === sub;
+}
+/** The candidate targets of a tile key: [{id, name, spec}] (continuous params only). */
+function glitchMoveCandidates(key) {
+    var info = glitchTileInfo(key);
+    if (!info) return [];
+    var inst = glInstance(info.inst);
+    var keys = glMoveKeysOf(inst, info.sub);
+    var out = [];
+    for (var i = 0; i < keys.length; i++) {
+        var pos = glParamPos(inst, keys[i]);
+        out.push({ id: keys[i], name: inst.params[pos].name, spec: inst.params[pos] });
+    }
+    return out;
+}
+/** The default movement target of a tile (its "main" param) or null when it has no continuous param (Freeze, Scramble). */
+function glitchMainParam(key) {
+    var info = glitchTileInfo(key);
+    if (!info) return null;
+    var k = info.sub ? GL_MAIN_SUB[info.type] : GL_MAIN_PARAM[info.inst];
+    return k || null;
+}
+/** The movement shown for a tile: the instance's movement when its target belongs to the tile (a spectral instance has ONE
+ *  movement; a sub-op tile shows it only when the target is one of its params), else null. Returns the stored object. */
+function glitchGetMove(g, key) {
+    var info = glitchTileInfo(key);
+    if (!info || !g || !g.modules) return null;
+    var mod = g.modules[info.inst];
+    if (!mod || !mod.move) return null;
+    return glMoveInTile(glInstance(info.inst), mod.move.target, info.sub) ? mod.move : null;
+}
+/** Set the movement type of a tile (0 = off). Keeps the other settings when only the type changes. */
+function glitchSetMoveType(g, key, type) {
+    var info = glitchTileInfo(key);
+    type = Math.round(Number(type));
+    if (!info || !(type >= 0 && type <= 3)) return false;
+    var mod = g.modules[info.inst];
+    if (!mod) return false;
+    var cur = glitchGetMove(g, key);
+    if (type === 0) { if (cur) mod.move = null; return true; }
+    var main = glitchMainParam(key);
+    if (cur) {
+        var old = cur.type;
+        cur.type = type;
+        if (cur.div === GL_MV_DIV_DEFAULT[old]) cur.div = GL_MV_DIV_DEFAULT[type];
+        if (type === 2 && cur.steps.every(function (x) { return x === 0; })) cur.steps = glMoveDefaultSteps();
+        mod.move = normalizeMove(cur, info.inst);
+        return true;
+    }
+    if (!main) return false;
+    mod.move = defaultMove(info.inst, main, type);
+    return true;
+}
+/** Set one numeric / target field of a tile's movement ("target" takes a param key). */
+function glitchSetMove(g, key, field, v) {
+    var info = glitchTileInfo(key);
+    var cur = glitchGetMove(g, key);
+    if (!info || !cur) return false;
+    if (field === "target") {
+        var ok = false, cands = glitchMoveCandidates(key);
+        for (var i = 0; i < cands.length; i++) if (cands[i].id === v) ok = true;
+        if (!ok) return false;
+        cur.target = v;
+    } else if (["depth", "sync", "div", "hz", "phase", "shape", "glide", "nsteps", "atk", "rel"].indexOf(field) >= 0) cur[field] = Number(v);
+    else return false;
+    g.modules[info.inst].move = normalizeMove(cur, info.inst);
+    return true;
+}
+function glitchSetMoveStep(g, key, i, v) {
+    var cur = glitchGetMove(g, key);
+    i = Math.floor(Number(i));
+    if (!cur || !(i >= 0 && i < GL_MV_STEPS)) return false;
+    cur.steps[i] = glClamp(Number(v) || 0, -1, 1);
+    return true;
+}
+/** "1/4" or "2.5 Hz" for the rate of a movement. */
+function glitchMoveRateText(mv) {
+    if (mv.sync) return GL_MV_DIV_NAMES[mv.div];
+    return mv.hz >= 10 ? mv.hz.toFixed(1) + " Hz" : mv.hz.toFixed(2) + " Hz";
+}
+/** What a tile's motion indicator needs from a (blended) vector: { on, type, target key, depth } or null. */
+function glitchTileMove(vec, tile) {
+    if (!vec) return null;
+    var mv = glMoveFromVector(vec, tile.inst);
+    if (!mv || Math.abs(mv.depth) < 0.002) return null;
+    var info = glitchTileInfo(tile.key);
+    if (!glMoveInTile(glInstance(tile.inst), mv.target, info ? info.sub : null)) return null;
+    return mv;
+}
+
+// ---- Randomize / Mutate for movement (own RNG streams, so the module rolls of earlier versions are unchanged) ----
+function glMoveTypesAllowed(allowList) {
+    var out = [];
+    for (var i = 0; i < GL_MOVE_TYPES.length; i++) if (allowed(allowList, GL_MOVE_TYPES[i].id)) out.push(GL_MOVE_TYPES[i].mvType);
+    return out;
+}
+/** Targets Randomize may pick on a rolled module: its continuous params (spectral: only those of an active sub-op). */
+function glMoveRollKeys(inst, mod) {
+    var keys = glMoveKeysOf(inst, null);
+    if (inst.id !== "spec") return keys;
+    var out = [];
+    for (var i = 0; i < keys.length; i++) {
+        var ps = inst.params[glParamPos(inst, keys[i])];
+        if ((Number(mod.params[ps.group]) || 0) > GL_ACTIVE_EPS) out.push(keys[i]);
+    }
+    return out;
+}
+function glRandomMove(inst, mod, chaos, rnd, types) {
+    var cands = glMoveRollKeys(inst, mod);
+    if (!cands.length) return null;
+    var mains = [];
+    if (inst.id === "spec") { for (var sk in GL_MAIN_SUB) if (cands.indexOf(GL_MAIN_SUB[sk]) >= 0) mains.push(GL_MAIN_SUB[sk]); }
+    else if (cands.indexOf(GL_MAIN_PARAM[inst.id]) >= 0) mains.push(GL_MAIN_PARAM[inst.id]);
+    var useMain = rnd() < 0.8 - 0.35 * chaos;
+    var pick = rnd();
+    var tk = useMain && mains.length ? mains[Math.floor(pick * mains.length) % mains.length] : cands[Math.floor(pick * cands.length) % cands.length];
+    var ty = types[Math.floor(rnd() * types.length) % types.length];
+    var mv = defaultMove(inst.id, tk, ty);
+    var lo = glLerp(0.10, 0.30, chaos), hi = glLerp(0.30, 0.90, chaos);
+    var mag = lo + (hi - lo) * rnd();
+    var neg = rnd() < 0.3;
+    mv.depth = (ty === 3 || !neg) ? mag : -mag;
+    var calm = ty === 2 ? [2, 5, 8] : [8, 11, 13, 14];
+    var wild = ty === 2 ? [0, 1, 2, 3, 5, 6, 8, 9] : [2, 3, 5, 7, 8, 11, 13, 14, 15];
+    var set = rnd() < chaos ? wild : calm;
+    mv.div = set[Math.floor(rnd() * set.length) % set.length];
+    mv.sync = rnd() < 0.88 ? 1 : 0;
+    mv.hz = Math.exp(glLerp(Math.log(0.1), Math.log(6), rnd()));
+    mv.phase = Math.floor(rnd() * 4) / 4;
+    mv.shape = rnd() < chaos ? Math.floor(rnd() * GL_MV_SHAPE_NAMES.length) % GL_MV_SHAPE_NAMES.length : [0, 1, 2, 3][Math.floor(rnd() * 4) % 4];
+    mv.nsteps = rnd() < chaos * 0.6 ? 16 : 8;
+    mv.glide = rnd() < 0.4 ? Math.round(rnd() * 8) / 10 : 0;
+    mv.atk = Math.exp(glLerp(Math.log(2), Math.log(40), rnd()));
+    mv.rel = Math.exp(glLerp(Math.log(60), Math.log(700), rnd()));
+    var prev = 0;
+    for (var i = 0; i < GL_MV_STEPS; i++) {
+        var sv = rnd() < 0.2 ? prev : (rnd() * 2 - 1);
+        if (chaos < 0.5) sv = Math.round(sv * 4) / 4;
+        mv.steps[i] = sv;
+        prev = sv;
+    }
+    return normalizeMove(mv, inst.id);
+}
+/** Give some of the glitch's modules a movement: more of them at higher Chaos (10 % .. 60 % of the modules). Deterministic. */
+function rollMovement(g, seed, chaos, allowList) {
+    var types = glMoveTypesAllowed(allowList);
+    var rnd = glRng(((seed >>> 0) ^ 0x4d6f7665) >>> 0);
+    var p = 0.1 + 0.5 * chaos;
+    for (var ii = 0; ii < GL_INSTANCES.length; ii++) {
+        var inst = GL_INSTANCES[ii];
+        var mod = g.modules[inst.id];
+        if (!mod) continue;
+        var r = rnd(); // one draw per module so the others do not shift when a type is switched off
+        if (!types.length || r >= p || !(mod.wet > GL_ACTIVE_EPS)) continue;
+        var mv = glRandomMove(inst, mod, chaos, rnd, types);
+        if (mv) mod.move = mv;
+    }
+}
+/** Perturb the movement of a glitch (amount 0..1): depth and phase nudge, rates step along the division table, steps jitter, shape /
+ *  target / type flip with a small chance, and a module without movement may gain one (allow-list permitting). */
+function mutateMovement(g, seed, amount, allowList) {
+    var types = glMoveTypesAllowed(allowList);
+    var rnd = glRng(((seed >>> 0) ^ 0x4d757461) >>> 0);
+    for (var ii = 0; ii < GL_INSTANCES.length; ii++) {
+        var inst = GL_INSTANCES[ii];
+        var mod = g.modules[inst.id];
+        if (!mod) continue;
+        if (!mod.move) {
+            var r = rnd();
+            if (types.length && r < 0.12 * amount && mod.wet > GL_ACTIVE_EPS) { var nm = glRandomMove(inst, mod, 0.4, rnd, types); if (nm) mod.move = nm; }
+            continue;
+        }
+        var mv = glCopy(mod.move);
+        mv.depth = glClamp(mv.depth + (rnd() * 2 - 1) * amount * 0.3, -1, 1);
+        mv.phase = glClamp(mv.phase + (rnd() * 2 - 1) * amount * 0.25, 0, 1);
+        if (rnd() < amount * 0.35) mv.div = glClamp(mv.div + (rnd() < 0.5 ? -1 : 1) * (1 + Math.floor(rnd() * 2)), 0, GL_MV_DIV_BEATS.length - 1);
+        mv.hz = glClamp(mv.hz * Math.exp((rnd() * 2 - 1) * amount * 0.5), 0.02, 20);
+        for (var si = 0; si < GL_MV_STEPS; si++) if (rnd() < amount * 0.5) mv.steps[si] = glClamp(mv.steps[si] + (rnd() * 2 - 1) * amount * 0.6, -1, 1);
+        if (rnd() < amount * 0.15) mv.shape = Math.floor(rnd() * GL_MV_SHAPE_NAMES.length) % GL_MV_SHAPE_NAMES.length;
+        if (rnd() < amount * 0.12) {
+            var cands = glMoveRollKeys(inst, mod);
+            if (cands.length) mv.target = cands[Math.floor(rnd() * cands.length) % cands.length];
+        }
+        if (types.length && rnd() < amount * 0.08) mv.type = types[Math.floor(rnd() * types.length) % types.length];
+        mod.move = normalizeMove(mv, inst.id) || mod.move;
+    }
+}
+
+// ---- JS twins of the gen movement (gl_lfo, gl_stepv, gl_move); tests/test_glitch.js compares them through the transpiler ----
+function glMoveHash(x, a) { var v = Math.sin(x * 12.9898 + a) * 43758.5453; return v - Math.floor(v); }
+/** LFO value -1..1 at cycle position x (cycles; the integer part seeds the random shapes). */
+function glMoveLfo(shape, x, salt) {
+    var c = Math.floor(x);
+    var ph = x - c;
+    var rA = glMoveHash(c + salt, 3.7) * 2 - 1;
+    var rB = glMoveHash(c + salt + 1, 3.7) * 2 - 1;
+    var sm = 0.5 - 0.5 * Math.cos(ph * 3.141592653589793);
+    var tr3 = ph < 0.25 ? 4 * ph : (ph < 0.75 ? 2 - 4 * ph : 4 * ph - 4);
+    return shape < 0.5 ? Math.sin(ph * 6.283185307179586) : (shape < 1.5 ? tr3 : (shape < 2.5 ? 2 * ph - 1 : (shape < 3.5 ? 1 - 2 * ph : (shape < 4.5 ? (ph < 0.5 ? 1 : -1) : (shape < 5.5 ? rA + (rB - rA) * sm : rA)))));
+}
+/** Step value at step position x (steps of the pattern, ns = 8 | 16); glide = fraction of a step spent ramping from the previous step. */
+function glMoveStepValue(steps, ns, x, glide) {
+    var i0 = Math.floor(x);
+    var fr = x - i0;
+    var ci = i0 - ns * Math.floor(i0 / ns);
+    var pj = ci - 1 < -0.5 ? ns - 1 : ci - 1;
+    var cur = steps[ci], prv = steps[pj];
+    var pg = glide > 0.0001 ? glClamp(fr / glide, 0, 1) : 1;
+    return prv + (cur - prv) * pg;
+}
+function glMoveState() { return { free: 0, off: 0, prevCpb: 0, env: 0, run: 0 }; }
+/** One control tick of a movement source. p = the movement block of the (smoothed) vector in vector units
+ *  { type, depth, hz, cpb, sync, phase, shape, glide, nsteps (0 | 1), atk, rel, steps[16] }; k = chain position (the random seed);
+ *  bt = the held host beat; lvl = the module's input level (linear peak); tn = samples since the last tick. Returns { sg, ofs, ph }. */
+function glMoveTick(st, p, k, bt, lvl, tn, sr) {
+    var fa = st.free + p.hz * tn / sr;
+    st.free = fa;
+    var off = st.run > 0.5 ? st.off + bt * (st.prevCpb - p.cpb) : st.off;
+    st.off = off;
+    st.prevCpb = p.cpb;
+    st.run = 1;
+    var xb = p.sync > 0.5 ? bt * p.cpb + off : fa;
+    var ns = p.nsteps > 0.5 ? 16 : 8;
+    var xl = xb + p.phase;
+    var xs = xb + p.phase * ns;
+    var lv = Math.max(lvl, 0.000001);
+    var un = glClamp((8.685889638065035 * Math.log(lv) + 60) / 60, 0, 1);
+    var ca = Math.exp(-tn * 1000 / (sr * Math.max(p.atk, 0.1)));
+    var cr = Math.exp(-tn * 1000 / (sr * Math.max(p.rel, 0.1)));
+    var env = un > st.env ? un + (st.env - un) * ca : un + (st.env - un) * cr;
+    st.env = env;
+    var vl = glMoveLfo(p.shape, xl, k * 7.31);
+    var vs = glMoveStepValue(p.steps, ns, xs, p.glide);
+    var sg = p.type < 1.5 ? vl : (p.type < 2.5 ? vs : env);
+    var pxs = xs / ns;
+    return { sg: sg, ofs: p.depth * sg, ph: p.type < 1.5 ? xl - Math.floor(xl) : (p.type < 2.5 ? pxs - Math.floor(pxs) : env) };
+}
+/** Apply an offset (fraction of the target's range on its own curve) to a blended target value. kindCode: 1 lin, 2 log.
+ *  Returns { value, pos, ok } (ok = 0 for a wet / discrete / degenerate target, which is left alone). */
+function glMoveApply(kindCode, lo, hi, tv, ofs) {
+    if (!(kindCode > 0.5 && kindCode < 2.5 && hi > lo)) return { value: tv, pos: 0, ok: 0 };
+    var llo = Math.log(Math.max(lo, 0.000000001));
+    var lhi = Math.log(Math.max(hi, 0.000000001));
+    var nz = kindCode > 1.5 ? (Math.log(Math.max(tv, 0.000000001)) - llo) / Math.max(lhi - llo, 0.000000001) : (tv - lo) / Math.max(hi - lo, 0.000000001);
+    var n1 = glClamp(nz + ofs, 0, 1);
+    return { value: kindCode > 1.5 ? Math.exp(llo + n1 * (lhi - llo)) : lo + n1 * (hi - lo), pos: n1, ok: 1 };
+}
+/** The movement block of instance `instId` in a vector as the p object of glMoveTick. */
+function glMoveBlock(vec, instId) {
+    var L = glitchLayout();
+    var on = L.index[instId + ".mv_on"];
+    var steps = [];
+    for (var i = 0; i < GL_MV_STEPS; i++) steps.push(vec[on + L.mv.step0 + i]);
+    return { type: vec[on + L.mv.type], target: vec[on + L.mv.target], depth: vec[on + L.mv.depth], hz: vec[on + L.mv.hz], cpb: vec[on + L.mv.cpb], sync: vec[on + L.mv.sync],
+        phase: vec[on + L.mv.phase], shape: vec[on + L.mv.shape], glide: vec[on + L.mv.glide], nsteps: vec[on + L.mv.nsteps], atk: vec[on + L.mv.atk], rel: vec[on + L.mv.rel], steps: steps };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -631,10 +1100,19 @@ function mutateGlitch(g0, seed, amount, allowList) {
 function glitchToVector(g) {
     var L = glitchLayout();
     var v = new Array(L.np);
+    var mvs = {};
     for (var i = 0; i < L.np; i++) {
         var p = L.params[i];
         var mod = g && g.modules ? g.modules[p.inst] : null;
         var val = p.def;
+        if (p.mv !== undefined) {
+            // movement block: a module without movement contributes depth 0 to the blend (it fades with the morph weights)
+            if (mvs[p.inst] === undefined) mvs[p.inst] = mod && mod.move ? normalizeMove(mod.move, p.inst) : null;
+            var mvo = mvs[p.inst];
+            val = mvo ? glMoveVecValue(mvo, p.key, glInstance(p.inst)) : (p.key === "mv_depth" ? 0 : p.def);
+            v[i] = glClamp(isFinite(val) ? val : p.def, p.min, p.max);
+            continue;
+        }
         if (mod) {
             if (p.key === "wet") val = Number(mod.wet) || 0;
             else if (mod.params && mod.params[p.key] !== undefined) val = Number(mod.params[p.key]);
@@ -654,6 +1132,7 @@ function vectorToGlitch(v) {
         if (!(v[b] > GL_ACTIVE_EPS)) continue;
         var mod = { wet: v[b], params: {}, move: null };
         for (var pi = 0; pi < inst.params.length; pi++) if (inst.params[pi].key !== "wet") mod.params[inst.params[pi].key] = v[b + pi];
+        mod.move = glMoveFromVector(v, inst.id);
         g.modules[inst.id] = mod;
     }
     return g;
@@ -718,7 +1197,7 @@ function cornerSlotWeights(corners, x, y) {
 // ---------------------------------------------------------------------------------------------------------------
 function defaultAllow() {
     var a = {};
-    for (var i = 0; i < GL_TYPES.length; i++) a[GL_TYPES[i].id] = true;
+    for (var i = 0; i < GL_ALLOW_ITEMS.length; i++) a[GL_ALLOW_ITEMS[i].id] = true;
     return a;
 }
 function defaultState() {
@@ -741,7 +1220,7 @@ function normalizeGlitch(g) {
     for (var id in mods) {
         var inst = glInstance(id);
         if (!inst || !mods[id] || typeof mods[id] !== "object") continue;
-        var m = { wet: glClamp(Number(mods[id].wet) || 0, 0, 1), params: defaultParams(inst), move: mods[id].move === undefined ? null : mods[id].move };
+        var m = { wet: glClamp(Number(mods[id].wet) || 0, 0, 1), params: defaultParams(inst), move: normalizeMove(mods[id].move, id) };
         var src = mods[id].params || {};
         for (var pi = 0; pi < inst.params.length; pi++) {
             var ps = inst.params[pi];
@@ -801,6 +1280,7 @@ function engineWeights(state) {
     if (state.audition === "seq") return seqWeights(state.seq, 0).weights;
     return cornerSlotWeights(state.corners, state.xy[0], state.xy[1]);
 }
+var glPackVer = 0;
 function engineMode(state) { return state.audition === "seq" ? 2 : (state.audition === "morph" ? 1 : 0); }
 /** The whole engine buffer as one flat array (poke it into buffer~ #0-glitchslots at index 0). */
 function packEngineBuffer(state) {
@@ -813,6 +1293,9 @@ function packEngineBuffer(state) {
     for (var s2 = 0; s2 < GL_NSLOT; s2++) buf[L.weightsOffset + s2] = w[s2];
     var hdr = seqHeader(state);
     for (var h = 0; h < GL_SEQ_HDR; h++) buf[L.seqOffset + h] = hdr[h];
+    // SEQ+5 = a version number that changes with every pack: gen re-reads the 8 slot vectors and the constants only when it moves
+    glPackVer = glPackVer % 1000000 + 1;
+    buf[L.seqOffset + 5] = glPackVer;
     var steps = normalizeSeq(state.seq).steps;
     for (var q = 0; q < GL_SEQ_MAX; q++) buf[L.seqOffset + GL_SEQ_HDR + q] = steps[q];
     var consts = glitchEngineConstants();
@@ -1017,13 +1500,13 @@ var GL_TINY = { drvA: "DRV A", drvB: "DRV B", form: "FORMNT", phas: "PHASER", cr
     rvs: "REV SL", shuf: "SHUF", slap: "SLAP", rev: "REVERB", wid: "WIDTH", ccrush: "C-CRSH", scramble: "SCRAM", scatter: "SCATR", binshift: "BINSH", specgate: "S-GATE" };
 
 var GL_FACE = { MARGIN: 6, GAP: 4, TOP: 4, BOTTOM: 165, HEADER_H: 16, BODY_Y: 23, BODY_H: 114, ACTION_Y: 140, ACTION_H: 25,
-    PAD_W: 112, VIEW_W: 196, EDITOR_W: 190, SLOTS_W: 84, SEQ_W: 212, SIDE_W: 46, DEVICE_H: 169, ROW_H: 12, ROW_GAP: 1, MAX_ROWS: 10, MAX_TILES: 31,
+    PAD_W: 112, VIEW_W: 196, EDITOR_W: 190, SLOTS_W: 84, SEQ_W: 212, SIDE_W: 46, DEVICE_H: 169, ROW_H: 12, ROW_GAP: 1, MAX_ROWS: 9, TAB_H: 12, MAX_TILES: 31,
     // glitch view paging: up to 4 big tiles, up to 8 compact (4 x 2), up to 12 small (4 x 3) per page, then pages of 12
     PAGE_CAP: 12, STRIP_H: 12, SEQ_PITCH: 12.5 };
 // Options categories, in display order (the master list of the Options view)
-var GL_OPT_CATS = ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility"];
+var GL_OPT_CATS = ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility", "Movement"];
 
-function defaultUi() { return { editor: 0, slots: 1, seq: 0, options: 0, sel: "", optCat: 0 }; }
+function defaultUi() { return { editor: 0, slots: 1, seq: 0, options: 0, sel: "", optCat: 0, edTab: 0 }; }
 function normalizeUi(u) {
     var d = defaultUi();
     if (!u || typeof u !== "object") return d;
@@ -1033,6 +1516,7 @@ function normalizeUi(u) {
     d.options = u.options ? 1 : 0;
     d.sel = typeof u.sel === "string" && glitchTileInfo(u.sel) ? u.sel : "";
     d.optCat = glClamp(Math.floor(Number(u.optCat)) || 0, 0, GL_OPT_CATS.length - 1);
+    d.edTab = u.edTab ? 1 : 0;
     return d;
 }
 function glRect(x, y, w, h) { return { x: x, y: y, w: w, h: h }; }
@@ -1110,21 +1594,21 @@ function glitchOptionsLayout(x0) {
     var all = glRect(panel.x + panel.w - 44 - 4 - 56, panel.y + 4, 56, 14);
     var cats = [];
     for (var c = 0; c < GL_OPT_CATS.length; c++) {
-        var cy = panel.y + 22 + c * 15;
+        var cy = panel.y + 20 + c * 15;
         cats.push({ toggle: glRect(panel.x + 6, cy, 16, 14), select: glRect(panel.x + 24, cy, 66, 14) });
     }
     var tx = panel.x + 98, tw2 = (panel.x + panel.w - 6 - tx - 4) / 2;
     var slots = [];
     for (var k = 0; k < 8; k++) slots.push(glRect(tx + (k % 2) * (tw2 + 4), panel.y + 22 + Math.floor(k / 2) * 24, tw2, 22));
     // items[i] = the rect of type i in the CURRENT category's two-column grid, or null when i is not in it
-    return { panel: panel, close: close, all: all, cats: cats, slots: slots, note: glRect(panel.x + 6, panel.y + panel.h - 14, panel.w - 12, 13) };
+    return { panel: panel, close: close, all: all, cats: cats, slots: slots, note: glRect(tx, panel.y + panel.h - 14, panel.x + panel.w - 6 - tx, 13) };
 }
-/** Type indices (into GL_TYPES) per category, in GL_OPT_CATS order. */
+/** Item indices (into GL_ALLOW_ITEMS) per category, in GL_OPT_CATS order. */
 function glitchOptionCategories() {
     var out = [];
     for (var c = 0; c < GL_OPT_CATS.length; c++) {
         var list = [];
-        for (var i = 0; i < GL_TYPES.length; i++) if (GL_TYPES[i].category === GL_OPT_CATS[c]) list.push(i);
+        for (var i = 0; i < GL_ALLOW_ITEMS.length; i++) if (GL_ALLOW_ITEMS[i].category === GL_OPT_CATS[c]) list.push(i);
         out.push({ name: GL_OPT_CATS[c], types: list });
     }
     return out;
@@ -1132,12 +1616,12 @@ function glitchOptionCategories() {
 /** 0 = none allowed, 1 = all, 2 = some. */
 function glitchCategoryState(state, cat) {
     var cs = glitchOptionCategories()[cat].types, n = 0;
-    for (var i = 0; i < cs.length; i++) if (state.allow[GL_TYPES[cs[i]].id]) n++;
+    for (var i = 0; i < cs.length; i++) if (state.allow[GL_ALLOW_ITEMS[cs[i]].id]) n++;
     return n === 0 ? 0 : (n === cs.length ? 1 : 2);
 }
 function setAllowCategory(state, cat, on) {
     var cs = glitchOptionCategories()[cat].types;
-    for (var i = 0; i < cs.length; i++) state.allow[GL_TYPES[cs[i]].id] = !!on;
+    for (var i = 0; i < cs.length; i++) state.allow[GL_ALLOW_ITEMS[cs[i]].id] = !!on;
     return state;
 }
 /** The tile grid of the glitch view for n tiles. Up to 4 tiles: big (2 x 2 or a row), up to 8: compact 4 x 2, then 4 x 3, and
@@ -1171,17 +1655,52 @@ function glitchViewLayout(n, view, page) {
 }
 /** Back-compat helper: the rects of page 0. */
 function glitchTileRects(n, view) { return glitchViewLayout(n, view, 0).rects; }
-/** Editor: header buttons and one row rect per parameter. */
+/** Editor: header buttons, the PARAMS / MOTION tab chips under them and one row rect per parameter. */
 function glitchEditorLayout(ed, nRows) {
     var F = GL_FACE;
     var rows = [];
-    for (var i = 0; i < nRows; i++) rows.push(glRect(ed.x + 6, F.BODY_Y + 1 + i * (F.ROW_H + F.ROW_GAP), ed.w - 12, F.ROW_H));
-    return { close: glRect(ed.x + ed.w - 22, F.TOP + 2, 16, 14), remove: glRect(ed.x + ed.w - 42, F.TOP + 2, 16, 14), lock: glRect(ed.x + ed.w - 62, F.TOP + 2, 16, 14), rows: rows };
+    var y0 = F.BODY_Y + F.TAB_H + 2;
+    for (var i = 0; i < nRows; i++) rows.push(glRect(ed.x + 6, y0 + i * (F.ROW_H + F.ROW_GAP), ed.w - 12, F.ROW_H));
+    return { close: glRect(ed.x + ed.w - 22, F.TOP + 2, 16, 14), remove: glRect(ed.x + ed.w - 42, F.TOP + 2, 16, 14), lock: glRect(ed.x + ed.w - 62, F.TOP + 2, 16, 14), rows: rows,
+        tabParams: glRect(ed.x + 6, F.BODY_Y, 56, F.TAB_H), tabMotion: glRect(ed.x + 66, F.BODY_Y, 56, F.TAB_H) };
+}
+/** The Motion panel of the editor (the MOTION tab replaces the param rows). type: 0 off, 1 LFO, 2 Steps, 3 Env. Only the controls the
+ *  type uses are non-null: type[4] selector cells; target (cycles the candidates); sync chip + rate bar; LFO: shape[7] cells;
+ *  Steps: nsteps chip + glide bar; Env: atk, rel; depth and phase bars (Env has no phase); area = the waveform / step painter /
+ *  level display under them. Every rect is 178 wide at most and ends above the editor's bottom hint line (y <= 156). */
+function glitchMotionLayout(ed, type) {
+    var x = ed.x + 6, w = ed.w - 12;
+    var cw = w / 4;
+    var o = { type: [], target: null, sync: null, rate: null, shape: null, nsteps: null, glide: null, atk: null, rel: null, depth: null, phase: null, area: null };
+    for (var i = 0; i < 4; i++) o.type.push(glRect(x + i * cw, 37, i < 3 ? cw - 2 : cw, 14));
+    if (!(type >= 1 && type <= 3)) return o;
+    o.target = glRect(x, 54, w, 12);
+    o.sync = glRect(x, 69, 34, 12);
+    o.rate = glRect(x + 37, 69, w - 37, 12);
+    var y4 = 84, y5 = 99, y6 = 114;
+    if (type === 1) {
+        o.shape = [];
+        var sw = w / GL_MV_SHAPE_NAMES.length;
+        for (var k = 0; k < GL_MV_SHAPE_NAMES.length; k++) o.shape.push(glRect(x + k * sw, y4, k < GL_MV_SHAPE_NAMES.length - 1 ? sw - 1 : sw, 12));
+        o.depth = glRect(x, y5, w, 12);
+        o.phase = glRect(x, y6, w, 12);
+    } else if (type === 2) {
+        o.nsteps = glRect(x, y4, 34, 12);
+        o.glide = glRect(x + 37, y4, w - 37, 12);
+        o.depth = glRect(x, y5, w, 12);
+        o.phase = glRect(x, y6, w, 12);
+    } else {
+        o.atk = glRect(x, y4, w, 12);
+        o.rel = glRect(x, y5, w, 12);
+        o.depth = glRect(x, y6, w, 12);
+    }
+    o.area = glRect(x, 129, w, 27);
+    return o;
 }
 
 /** Every interactive rect: [{id, r, layer, panel}]. layer 1 sits on top of layer 0 inside the same panel (hit order).
  *  nTiles = ALL tiles of the glitch view (the pager shows `page`), nRows = rows of the editor. */
-function glitchHitMap(ui, nTiles, nRows, page) {
+function glitchHitMap(ui, nTiles, nRows, page, mvType) {
     var L = glitchFaceLayout(ui);
     var out = [];
     function add(id, r, panel, layer) { out.push({ id: id, r: r, panel: panel, layer: layer || 0 }); }
@@ -1211,7 +1730,15 @@ function glitchHitMap(ui, nTiles, nRows, page) {
         add("ed_close", E.close, L.editor);
         add("ed_remove", E.remove, L.editor);
         add("ed_lock", E.lock, L.editor);
-        for (var r = 0; r < E.rows.length; r++) add("ed_row" + r, E.rows[r], L.editor);
+        add("ed_tab0", E.tabParams, L.editor);
+        add("ed_tab1", E.tabMotion, L.editor);
+        if (L.ui.edTab) {
+            var Mo = glitchMotionLayout(L.editor, mvType === undefined ? 1 : mvType);
+            for (var mt = 0; mt < 4; mt++) add("mv_type" + mt, Mo.type[mt], L.editor);
+            var singles = ["target", "sync", "rate", "nsteps", "glide", "atk", "rel", "depth", "phase", "area"];
+            for (var sg = 0; sg < singles.length; sg++) if (Mo[singles[sg]]) add("mv_" + singles[sg], Mo[singles[sg]], L.editor);
+            if (Mo.shape) for (var sh = 0; sh < Mo.shape.length; sh++) add("mv_shape" + sh, Mo.shape[sh], L.editor);
+        } else for (var r = 0; r < E.rows.length; r++) add("ed_row" + r, E.rows[r], L.editor);
     }
     if (L.slots) {
         for (var s = 0; s < GL_NSLOT; s++) add("slot" + s, L.slots.pads[s], L.slots.rect);
@@ -1257,10 +1784,10 @@ function glitchTiles(vec) {
                 var t = GL_TYPES[ti];
                 if (t.instances[0] !== "spec") continue;
                 var amt = vec[L.index["spec." + t.amountKey]];
-                if (amt > GL_ACTIVE_EPS) tiles.push({ key: t.id, inst: "spec", sub: t.amountKey, name: GL_SHORT[t.id], category: t.category, wet: amt, chain: ii });
+                if (amt > GL_ACTIVE_EPS) tiles.push({ key: t.id, inst: "spec", sub: t.amountKey, name: GL_SHORT[t.id], category: t.category, wet: amt, chain: ii, mv: glitchTileMove(vec, { key: t.id, inst: "spec" }) });
             }
         } else if (vec[L.base[inst.id]] > GL_ACTIVE_EPS) {
-            tiles.push({ key: inst.id, inst: inst.id, sub: null, name: GL_SHORT[inst.id], category: inst.category, wet: vec[L.base[inst.id]], chain: ii });
+            tiles.push({ key: inst.id, inst: inst.id, sub: null, name: GL_SHORT[inst.id], category: inst.category, wet: vec[L.base[inst.id]], chain: ii, mv: glitchTileMove(vec, { key: inst.id, inst: inst.id }) });
         }
     }
     return tiles;
@@ -1321,6 +1848,7 @@ function glitchRemoveTile(g, key) {
         var mod = g.modules.spec;
         if (mod) {
             mod.params[info.sub] = 0;
+            if (mod.move && glMoveInTile(glInstance("spec"), mod.move.target, info.sub)) mod.move = null;
             var anyOn = false;
             for (var i = 0; i < GL_TYPES.length; i++) if (GL_TYPES[i].amountKey && mod.params[GL_TYPES[i].amountKey] > GL_ACTIVE_EPS) anyOn = true;
             if (!anyOn) delete g.modules.spec;
@@ -1350,6 +1878,9 @@ function glitchCopyTile(from, to, key) {
         var ps = inst.params[i];
         if (ps.key === info.sub || ps.group === info.sub) dst.params[ps.key] = src.params[ps.key] === undefined ? ps.def : src.params[ps.key];
     }
+    // the spectral instance's single movement travels with the sub-op it moves
+    if (src.move && glMoveInTile(inst, src.move.target, info.sub)) dst.move = glCopy(src.move);
+    else if (dst.move && glMoveInTile(inst, dst.move.target, info.sub)) dst.move = null;
     return true;
 }
 function glitchApplyLocks(old, neu) {
@@ -1423,6 +1954,14 @@ function glitchFormatValue(spec, v) {
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
+        GL_MV_TYPE_NAMES: GL_MV_TYPE_NAMES, GL_MV_SHAPE_NAMES: GL_MV_SHAPE_NAMES, GL_MV_STEPS: GL_MV_STEPS, GL_MV_DIV_BEATS: GL_MV_DIV_BEATS, GL_MV_DIV_NAMES: GL_MV_DIV_NAMES,
+        GL_MV_DIV_DEFAULT: GL_MV_DIV_DEFAULT, GL_MV_COL: GL_MV_COL, GL_MV_PARAM_KEYS: GL_MV_PARAM_KEYS, GL_MAIN_PARAM: GL_MAIN_PARAM, GL_MAIN_SUB: GL_MAIN_SUB,
+        GL_MOVE_TYPES: GL_MOVE_TYPES, GL_ALLOW_ITEMS: GL_ALLOW_ITEMS, glMvSpecs: glMvSpecs,
+        defaultMove: defaultMove, normalizeMove: normalizeMove, glMoveFromVector: glMoveFromVector, glMoveVecValue: glMoveVecValue, glMoveNearestDiv: glMoveNearestDiv,
+        glitchMoveCandidates: glitchMoveCandidates, glitchMainParam: glitchMainParam, glitchGetMove: glitchGetMove, glitchSetMoveType: glitchSetMoveType,
+        glitchSetMove: glitchSetMove, glitchSetMoveStep: glitchSetMoveStep, glitchMoveRateText: glitchMoveRateText, glitchTileMove: glitchTileMove,
+        glMoveTypesAllowed: glMoveTypesAllowed, rollMovement: rollMovement, mutateMovement: mutateMovement, glMoveLfo: glMoveLfo, glMoveStepValue: glMoveStepValue,
+        glMoveState: glMoveState, glMoveTick: glMoveTick, glMoveApply: glMoveApply, glMoveBlock: glMoveBlock, glitchMotionLayout: glitchMotionLayout, glMoveKeysOf: glMoveKeysOf,
         GL_STATE_VERSION: GL_STATE_VERSION, GL_NSLOT: GL_NSLOT, GL_FFT_N: GL_FFT_N, GL_LATENCY: GL_LATENCY, GL_ACTIVE_EPS: GL_ACTIVE_EPS,
         GL_SLOTS_BUF_SAMPS: GL_SLOTS_BUF_SAMPS, GL_SCOPE_SAMPS: GL_SCOPE_SAMPS, GL_SCOPE: GL_SCOPE, GL_DIV_BEATS: GL_DIV_BEATS,
         GL_DIV_NAMES: GL_DIV_NAMES, GL_CHOP_PATTERNS: GL_CHOP_PATTERNS, GL_INSTANCES: GL_INSTANCES, GL_TYPES: GL_TYPES,

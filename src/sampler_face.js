@@ -546,19 +546,28 @@ function paintSamplePanel() {
         }
     }
 
-    // Grain cloud (Textures, Fragments) / cycle window (Cycles) around each sounding voice
+    // Grain cloud (Textures, Fragments) / cycle window (Cycles) around each sounding voice, clipped to
+    // the waveform; Textures / Fragments also draw a line per playing grain at its read position
     // Scan lines only for a loaded sample: with an empty buffer the voices still run but play nothing
     for (var v = 0; v < 16 && hasLoadedSample; v++) {
         if ((voiceAmps[v] || 0) <= 0.02) continue;
         var phx = wx + clamp01(voicePlayheads[v]) * ww;
         if (curMode === 2 || curMode === 4) {
             var spread = Math.max(3, paramValue("grain_spray") * 0.01 * ww * 0.25);
-            fillRect(phx - spread, wy, spread * 2, wh, COL.blue, 0.10 * voiceAmps[v] + 0.05);
+            fillClipped(phx - spread, spread * 2, wx, ww, wy, wh, COL.blue, 0.08 * voiceAmps[v] + 0.04);
         } else if (curMode === 1) {
             var cw = Math.max(3, Math.min(ww * 0.2, paramValue("grain_size") / Math.max(1, sampleDurationMs) * ww));
-            fillRect(phx, wy, cw, wh, COL.blue, 0.12);
+            fillClipped(phx, cw, wx, ww, wy, wh, COL.blue, 0.12);
         }
         line(phx, wy, phx, wy + wh, COL.blue, Math.min(1, 0.35 + voiceAmps[v]), 1.0);
+    }
+    if (hasLoadedSample && (curMode === 2 || curMode === 4)) {
+        for (var g = 0; g < GRAIN_SLOTS; g++) {
+            var gp = grainPos[g], ga = grainAmp[g];
+            if (!(gp >= 0) || !(ga > 0.02)) continue;
+            var gx = wx + clamp01(gp) * ww;
+            line(gx, wy + 4, gx, wy + wh - 4, [0.85, 0.95, 1.0], Math.min(0.9, 0.2 + 0.7 * ga), 1.0);
+        }
     }
 
     // Analyzed Root Key curve sits above the loop and slice overlays
@@ -691,6 +700,12 @@ function paintPitchCurve(wx, wy, ww, wh) {
     mgraphics.stroke();
 }
 
+// A rect clipped horizontally to [cx, cx + cw] (overlays must never spill out of the waveform)
+function fillClipped(x, w, cx, cw, y, h, c, a) {
+    var x0 = Math.max(x, cx), x1 = Math.min(x + w, cx + cw);
+    if (x1 > x0) fillRect(x0, y, x1 - x0, h, c, a);
+}
+
 function fmtPos(norm) {
     return sampleDurationMs > 0 ? fmtTime(norm * sampleDurationMs) : (norm * 100).toFixed(1) + " %";
 }
@@ -761,9 +776,8 @@ function paintEnginePanel() {
         }
     } else if (curMode === 2) {
         text("Textures", x + 39, y + 12, 9.5, COL.text, true, 1);
-        drawKnob("grain_size", k3[0], ky, 10, "Size", { white: true });
-        drawKnob("grain_spray", k3[1], ky, 10, "Spray");
-        drawKnob("formant", k3[2], ky, 9, "Fmt");
+        drawKnob("grain_size", k2[0], ky, 10, "Size", { white: true });
+        drawKnob("grain_spray", k2[1], ky, 10, "Spray");
     } else {
         // Fragments: grain envelope glyph + Repeats in the header, Gr. Size / Density / Motion
         var env = paramValue("fr_env") * 0.01;

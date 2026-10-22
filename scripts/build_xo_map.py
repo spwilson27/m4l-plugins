@@ -18,8 +18,11 @@ import struct
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NODE_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_node_engine.js")
 STRIP_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_strip_ui.js")
+# category names of the Options > Searches picker (order = src/xo_search.js XO_SEARCH_CATS; tests/test_xo_search.js checks it)
+SEARCH_CAT_TITLES = ["Kick", "Snare", "Hi-Hat", "Clap", "Perc", "Shaker", "Cymbal", "Voice"]
 FOLDER_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_folder_ui.js")
 STRETCH_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_stretch.js")
+SEARCH_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_search.js")
 PALETTE_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_palette.js")
 LAYOUTS_DIR = os.path.join(ROOT_DIR, "scripts", "xo_layouts")
 
@@ -75,7 +78,19 @@ def build(variant="default"):
         + "\nreturn module.exports;\n})();\n"
     )
 
-    embedded_node_code = stretch_wrapped + compact_node_js
+    # Category search by words (src/xo_search.js): same wrapping, read by the engine as XO_SEARCH_EMBEDDED.
+    with open(SEARCH_JS_PATH, "r", encoding="utf-8") as f:
+        search_js_raw = f.read()
+    search_js = re.sub(r"(?m)^\s*//.*$\n?", "", search_js_raw)
+    search_js = re.sub(r"/\*.*?\*/", "", search_js, flags=re.S)
+    search_js = re.sub(r"\n{2,}", "\n", search_js)
+    search_wrapped = (
+        "const XO_SEARCH_EMBEDDED = (function () {\nconst module = { exports: {} };\n"
+        + search_js
+        + "\nreturn module.exports;\n})();\n"
+    )
+
+    embedded_node_code = stretch_wrapped + search_wrapped + compact_node_js
 
     boxes = [
         # --- 1. Audio Pass-Through + Mono-Safe Stereo Preview Mixer + Playhead Scanner ---
@@ -99,10 +114,11 @@ def build(variant="default"):
                 "id": "obj-sfplay",
                 "maxclass": "newobj",
                 "numinlets": 2,
-                "numoutlets": 3,
-                "outlettype": ["signal", "signal", "bang"],
-                "patching_rect": [120.0, 30.0, 68.0, 20.0],
-                "text": "sfplay~ 2"
+                "numoutlets": 4,
+                "outlettype": ["signal", "signal", "signal", "bang"],
+                "patching_rect": [120.0, 30.0, 82.0, 20.0],
+                # 2 channels, default disk buffer, position outlet (ms of the playing file, outlet 2); bang on finish / halt = outlet 3
+                "text": "sfplay~ 2 0 1"
             }
         },
         # Mono-to-Stereo Right Channel Selector (1 = Mono duplicated from Left, 2 = True Stereo Right)
@@ -185,44 +201,149 @@ def build(variant="default"):
                 "text": "line~ 1."
             }
         },
-        # Live Waveform Playhead Scanner (0. -> 1. over effective duration)
+        # Waveform playhead = the real sfplay~ position: snapshot~ samples the position outlet (ms) at ~30 Hz, only while playing
         {
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-scan-msg",
-                "maxclass": "message",
+                "id": "obj-snap-pos",
+                "maxclass": "newobj",
                 "numinlets": 2,
                 "numoutlets": 1,
-                "outlettype": [""],
-                "patching_rect": [355.0, 88.0, 62.0, 20.0],
-                "text": "0., 1. $1"
+                "outlettype": ["float"],
+                "patching_rect": [355.0, 88.0, 130.0, 20.0],
+                "text": "snapshot~ 33 @active 0"
             }
         },
         {
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-scan-line",
-                "maxclass": "newobj",
-                "numinlets": 3,
-                "numoutlets": 2,
-                "outlettype": ["", "bang"],
-                "patching_rect": [355.0, 115.0, 62.0, 20.0],
-                "text": "line 0. 20"
-            }
-        },
-        {
-            "box": {
-                "fontname": "Arial Bold",
-                "fontsize": 10.0,
-                "id": "obj-prep-playhead",
+                "id": "obj-prep-playpos",
                 "maxclass": "newobj",
                 "numinlets": 1,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [355.0, 142.0, 115.0, 20.0],
-                "text": "prepend set_playhead"
+                "patching_rect": [355.0, 115.0, 100.0, 20.0],
+                "text": "prepend play_pos"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-snap-start",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [355.0, 62.0, 40.0, 20.0],
+                "text": "start"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-snap-stop",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [400.0, 62.0, 40.0, 20.0],
+                "text": "stop"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-play-done",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [490.0, 115.0, 60.0, 20.0],
+                "text": "play_done"
+            }
+        },
+        # Esc / stop_playback from the v8ui (outlet 1): fade the audition out in 8 ms, then halt sfplay~ and restore the unity envelope
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-route-uiout",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "patching_rect": [355.0, 142.0, 120.0, 20.0],
+                "text": "route stop_playback"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-trig-stop",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["bang", "bang"],
+                "patching_rect": [480.0, 142.0, 40.0, 20.0],
+                "text": "t b b"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-stop-fade",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [480.0, 168.0, 40.0, 20.0],
+                "text": "0 8"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-del-stop",
+                "maxclass": "newobj",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": ["bang"],
+                "patching_rect": [525.0, 168.0, 60.0, 20.0],
+                "text": "delay 12"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-stop-zero",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [525.0, 194.0, 30.0, 20.0],
+                "text": "0"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-env-unity",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [560.0, 194.0, 30.0, 20.0],
+                "text": "1"
             }
         },
         {
@@ -640,12 +761,13 @@ def build(variant="default"):
                 "fontsize": 10.0,
                 "id": "obj-sel-key",
                 "maxclass": "newobj",
-                "numinlets": 11,
-                "numoutlets": 11,
-                "outlettype": ["bang"] * 10 + [""],
-                "patching_rect": [640.0, 522.0, 205.0, 20.0],
-                # 115 / 83 = s / S, 127 / 8 / -5 / -3 = delete keys, 28 / 29 / 30 / 31 = left / right / up / down
-                "text": "sel 115 83 127 8 -5 -3 28 29 30 31"
+                "numinlets": 14,
+                "numoutlets": 14,
+                "outlettype": ["bang"] * 13 + [""],
+                "patching_rect": [640.0, 522.0, 255.0, 20.0],
+                # 115 / 83 = s / S, 127 / 8 / -5 / -3 = delete keys, 28 / 29 / 30 / 31 = left / right / up / down,
+                # 114 / 82 = r / R (random sample), 27 = Esc (stop playback)
+                "text": "sel 115 83 127 8 -5 -3 28 29 30 31 114 82 27"
             }
         },
         {
@@ -698,6 +820,32 @@ def build(variant="default"):
                 "outlettype": [""],
                 "patching_rect": [755.0, 578.0, 110.0, 20.0],
                 "text": "hotkey_next_similar"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-hotkey-random",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [990.0, 550.0, 110.0, 20.0],
+                "text": "hotkey_random"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-hotkey-stop",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [990.0, 578.0, 110.0, 20.0],
+                "text": "hotkey_stop"
             }
         },
         {
@@ -1667,6 +1815,32 @@ def build(variant="default"):
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
+                "id": "obj-r-testkey",
+                "maxclass": "newobj",
+                "numinlets": 0,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [1060.0, 320.0, 130.0, 20.0],
+                "text": "receive #0-xo-testkey"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-init-selection",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [70.0, 625.0, 85.0, 20.0],
+                "text": "init_selection"
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
                 "id": "obj-r-test",
                 "maxclass": "newobj",
                 "numinlets": 0,
@@ -1869,6 +2043,156 @@ def build(variant="default"):
                 "text": "prepend set_theme"
             }
         },
+        # --- Options > Searches (themed layout only; presentation 0 elsewhere): category picker (hidden UI-state parameter),
+        # terms text field, Reset, Match folders (stored in the XOStateData blob, not a parameter)
+        {
+            "box": {
+                "annotation": "Category whose search terms are shown below.",
+                "annotation_name": "Searches Category",
+                "bordercolor": [0.32, 0.38, 0.46, 1.0],
+                "activebgcolor": [0.14, 0.17, 0.21, 1.0],
+                "textcolor": [0.85, 0.89, 0.94, 1.0],
+                "fontsize": 9.0,
+                "id": "obj-searches-cat",
+                "maxclass": "live.menu",
+                "numinlets": 1,
+                "numoutlets": 3,
+                "outlettype": ["", "", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [820.0, 160.0, 138.0, 15.0],
+                "presentation": 1,
+                "presentation_rect": [34.0, 80.0, 138.0, 15.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Searches Category",
+                        "parameter_enum": SEARCH_CAT_TITLES,
+                        "parameter_initial": [0],
+                        "parameter_initial_enable": 1,
+                        "parameter_invisible": 2,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "Searches Category",
+                        "parameter_mmax": len(SEARCH_CAT_TITLES) - 1,
+                        "parameter_shortname": "Search Cat",
+                        "parameter_type": 2,
+                        "parameter_unitstyle": 9
+                    }
+                },
+                "varname": "SearchesCategory"
+            }
+        },
+        {
+            "box": {
+                "annotation": "Search terms of the selected category, comma separated. Press Enter (or click elsewhere) to apply.",
+                "annotation_name": "Search terms",
+                "autoscroll": 0,
+                "bgcolor": [0.07, 0.085, 0.11, 1.0],
+                "border": 1.0,
+                "bordercolor": [0.22, 0.74, 0.97, 0.65],
+                "fontname": "Arial",
+                "fontsize": 9.0,
+                "id": "obj-searches-terms",
+                "keymode": 1,
+                "lines": 3,
+                "maxclass": "textedit",
+                "numinlets": 1,
+                "numoutlets": 4,
+                "outlettype": ["", "int", "", ""],
+                "outputmode": 1,
+                "parameter_enable": 0,
+                "patching_rect": [820.0, 180.0, 138.0, 40.0],
+                "presentation": 1,
+                "presentation_rect": [34.0, 97.0, 138.0, 40.0],
+                "tabmode": 1,
+                "textcolor": [0.92, 0.95, 0.98, 1.0],
+                "wordwrap": 1
+            }
+        },
+        {
+            "box": {
+                "annotation": "Restore the default terms of the selected category.",
+                "annotation_name": "Reset terms",
+                "id": "obj-searches-reset",
+                "maxclass": "live.text",
+                "mode": 0,
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "parameter_enable": 0,
+                "patching_rect": [820.0, 230.0, 44.0, 16.0],
+                "presentation": 1,
+                "presentation_rect": [34.0, 141.0, 44.0, 16.0],
+                "text": "Reset",
+                "texton": "Reset"
+            }
+        },
+        {
+            "box": {
+                "annotation": "Also match the folder names below the indexed folder (not its own name or parents).",
+                "annotation_name": "Match folders",
+                "id": "obj-searches-folders",
+                "maxclass": "live.text",
+                "mode": 1,
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", ""],
+                "parameter_enable": 0,
+                "patching_rect": [870.0, 230.0, 90.0, 16.0],
+                "presentation": 1,
+                "presentation_rect": [82.0, 141.0, 90.0, 16.0],
+                "text": "Match folders",
+                "texton": "Match folders",
+                "varname": "obj-searches-folders"
+            }
+        },
+        # --- Options > Zoom Speed: stored-only float parameter (appended last), one live.numbox for both themes (THEME_STYLE
+        # restyles it). Log feel: exponent 2.32 puts 1.0x at the middle of the 0.25..4 range (0.25 + 3.75 * 0.5^2.32 = 1.0).
+        {
+            "box": {
+                "annotation": "Mouse-wheel zoom speed of the map. 1.0x = the default rate; 0.25x slower .. 4x faster.",
+                "annotation_name": "Zoom Speed",
+                "appearance": 4,
+                "fontsize": 9.0,
+                "id": "obj-zoom-speed",
+                "maxclass": "live.numbox",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [820.0, 140.0, 50.0, 18.0],
+                "presentation": 1,
+                "presentation_rect": [94.0, 44.0, 50.0, 18.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Mouse-wheel zoom speed of the map",
+                        "parameter_exponent": 2.32,
+                        "parameter_initial": [1.0],
+                        "parameter_initial_enable": 1,
+                        "parameter_invisible": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "Zoom Speed",
+                        "parameter_mmax": 4.0,
+                        "parameter_mmin": 0.25,
+                        "parameter_shortname": "Zoom Spd",
+                        "parameter_type": 0,
+                        "parameter_unitstyle": 9,
+                        "parameter_units": "%.2fx"
+                    }
+                },
+                "varname": "ZoomSpeed"
+            }
+        },
+        {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-zoomspeed", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
+                 "outlettype": [""], "patching_rect": [820.0, 165.0, 120.0, 20.0], "text": "prepend set_zoomspeed"}},
+        {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-terms-cat", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
+                 "outlettype": [""], "patching_rect": [820.0, 260.0, 130.0, 20.0], "text": "prepend set_terms_cat"}},
+        {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-route-terms", "maxclass": "newobj", "numinlets": 1, "numoutlets": 2,
+                 "outlettype": ["", ""], "patching_rect": [820.0, 285.0, 70.0, 20.0], "text": "route text"}},
+        {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-terms-text", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
+                 "outlettype": [""], "patching_rect": [820.0, 310.0, 132.0, 20.0], "text": "prepend set_terms_text"}},
+        {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-terms-reset", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
+                 "outlettype": [""], "patching_rect": [820.0, 335.0, 140.0, 20.0], "text": "prepend set_terms_reset"}},
+        {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-match-folders", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
+                 "outlettype": [""], "patching_rect": [820.0, 360.0, 150.0, 20.0], "text": "prepend set_match_folders"}},
         {
             "box": {
                 "angle": 270.0,
@@ -2002,10 +2326,26 @@ def build(variant="default"):
         {"patchline": {"source": ["obj-gain-mul-r", 0], "destination": ["obj-mix-r", 1]}},
         {"patchline": {"source": ["obj-mix-l", 0], "destination": ["obj-plugout", 0]}},
         {"patchline": {"source": ["obj-mix-r", 0], "destination": ["obj-plugout", 1]}},
-        # Waveform Playhead Scan Line
-        {"patchline": {"source": ["obj-scan-msg", 0], "destination": ["obj-scan-line", 0]}},
-        {"patchline": {"source": ["obj-scan-line", 0], "destination": ["obj-prep-playhead", 0]}},
-        {"patchline": {"source": ["obj-prep-playhead", 0], "destination": ["obj-minimap", 0]}},
+        # Waveform playhead: sfplay~ position outlet (2) -> snapshot~ (started with the play message, stopped by the finish bang)
+        {"patchline": {"source": ["obj-sfplay", 2], "destination": ["obj-snap-pos", 0]}},
+        {"patchline": {"source": ["obj-snap-pos", 0], "destination": ["obj-prep-playpos", 0]}},
+        {"patchline": {"source": ["obj-prep-playpos", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-trig-play", 0], "destination": ["obj-msg-snap-start", 0]}},
+        {"patchline": {"source": ["obj-msg-snap-start", 0], "destination": ["obj-snap-pos", 0]}},
+        {"patchline": {"source": ["obj-sfplay", 3], "destination": ["obj-msg-snap-stop", 0]}},
+        {"patchline": {"source": ["obj-msg-snap-stop", 0], "destination": ["obj-snap-pos", 0]}},
+        {"patchline": {"source": ["obj-sfplay", 3], "destination": ["obj-msg-play-done", 0]}},
+        {"patchline": {"source": ["obj-msg-play-done", 0], "destination": ["obj-minimap", 0]}},
+        # Esc: v8ui outlet 1 `stop_playback` -> fade 8 ms, halt, unity envelope again
+        {"patchline": {"source": ["obj-minimap", 1], "destination": ["obj-route-uiout", 0]}},
+        {"patchline": {"source": ["obj-route-uiout", 0], "destination": ["obj-trig-stop", 0]}},
+        {"patchline": {"source": ["obj-trig-stop", 1], "destination": ["obj-msg-stop-fade", 0]}},
+        {"patchline": {"source": ["obj-msg-stop-fade", 0], "destination": ["obj-env-line", 0]}},
+        {"patchline": {"source": ["obj-trig-stop", 0], "destination": ["obj-del-stop", 0]}},
+        {"patchline": {"source": ["obj-del-stop", 0], "destination": ["obj-msg-stop-zero", 0]}},
+        {"patchline": {"source": ["obj-del-stop", 0], "destination": ["obj-msg-env-unity", 0]}},
+        {"patchline": {"source": ["obj-msg-stop-zero", 0], "destination": ["obj-sfplay", 0]}},
+        {"patchline": {"source": ["obj-msg-env-unity", 0], "destination": ["obj-env-line", 0]}},
 
         # 2. node.codebox Outlet Routing
         {"patchline": {"source": ["obj-node", 0], "destination": ["obj-route-node", 0]}},
@@ -2021,7 +2361,7 @@ def build(variant="default"):
         {"patchline": {"source": ["obj-route-node", 5], "destination": ["obj-speed-reg", 1], "order": 1}},
         {"patchline": {"source": ["obj-route-node", 5], "destination": ["obj-sfplay", 1], "order": 0}},
         {"patchline": {"source": ["obj-route-node", 6], "destination": ["obj-env-line", 0]}},
-        {"patchline": {"source": ["obj-route-node", 7], "destination": ["obj-scan-msg", 0]}},
+        # route-node outlet 7 (play_scan_dur) is informational only now: the playhead follows sfplay~'s real position
         {"patchline": {"source": ["obj-route-node", 8], "destination": ["obj-r-chan-sel", 0]}},
         {"patchline": {"source": ["obj-route-node", 9], "destination": ["obj-dbtoa", 0]}},
         {"patchline": {"source": ["obj-route-node", 10], "destination": ["obj-prep-saved-sync", 0]}},
@@ -2039,6 +2379,11 @@ def build(variant="default"):
         # Test hook (tests/test_xo_map.js, scripts/test_xo_live.js): `; #0-xo-test <message>` (literal #0 in a top-level device) drives the v8ui and
         # test_report writes its state to Global("xo_test"); the device width is mirrored for the report.
         {"patchline": {"source": ["obj-r-test", 0], "destination": ["obj-minimap", 0]}},
+        # Test hook for the hotkeys: `; #0-xo-testkey <key code>` reaches every instance's obj-sel-key exactly like the `key` object's output
+        {"patchline": {"source": ["obj-r-testkey", 0], "destination": ["obj-sel-key", 0]}},
+        # Which instance is the selected device in Live (hotkeys from `key` only act there): started by live.thisdevice, never loadbang
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-init-selection", 0], "order": 2}},
+        {"patchline": {"source": ["obj-msg-init-selection", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-expr-width", 0], "destination": ["obj-prep-test-width", 0]}},
         {"patchline": {"source": ["obj-prep-test-width", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-route-node", 12], "destination": ["obj-opendialog", 0]}},
@@ -2073,6 +2418,11 @@ def build(variant="default"):
         {"patchline": {"source": ["obj-sel-key", 7], "destination": ["obj-msg-hotkey-next", 0]}},
         {"patchline": {"source": ["obj-sel-key", 8], "destination": ["obj-msg-hotkey-fwd", 0]}},
         {"patchline": {"source": ["obj-sel-key", 9], "destination": ["obj-msg-hotkey-back", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 10], "destination": ["obj-msg-hotkey-random", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 11], "destination": ["obj-msg-hotkey-random", 0]}},
+        {"patchline": {"source": ["obj-sel-key", 12], "destination": ["obj-msg-hotkey-stop", 0]}},
+        {"patchline": {"source": ["obj-msg-hotkey-random", 0], "destination": ["obj-minimap", 0]}},
+        {"patchline": {"source": ["obj-msg-hotkey-stop", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-hotkey-prev", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-hotkey-next", 0], "destination": ["obj-minimap", 0]}},
         {"patchline": {"source": ["obj-msg-hotkey-fwd", 0], "destination": ["obj-minimap", 0]}},
@@ -2198,7 +2548,9 @@ def build(variant="default"):
         "obj-reverse-btn": ["ReversePlayback", "Reverse", 0],
         # appended after every existing parameter (order of the others is unchanged)
         "obj-toggle-options-btn": ["ShowOptions", "Options", 0],
-        "obj-theme-tab": ["Theme", "Theme", 0]
+        "obj-theme-tab": ["Theme", "Theme", 0],
+        "obj-searches-cat": ["Searches Category", "Search Cat", 0],
+        "obj-zoom-speed": ["ZoomSpeed", "Zoom Spd", 0]
     }
 
     # Section layout (src/xo_layouts/<name>.js) is applied by the mini-map v8ui through
@@ -2230,6 +2582,15 @@ def build(variant="default"):
         lines.append({"patchline": {"source": ["obj-theme-tab", 0], "destination": ["obj-prep-theme", 0], "order": 1}})
         lines.append({"patchline": {"source": ["obj-prep-theme", 0], "destination": ["obj-minimap", 0], "order": 1}})
         lines.append({"patchline": {"source": ["obj-prep-theme", 0], "destination": ["obj-folder-list", 0], "order": 0}})
+        lines.append({"patchline": {"source": ["obj-zoom-speed", 0], "destination": ["obj-prep-zoomspeed", 0]}})
+        lines.append({"patchline": {"source": ["obj-prep-zoomspeed", 0], "destination": ["obj-minimap", 0]}})
+        # Options > Searches -> v8ui (which owns the terms and tells the node engine)
+        for src, dst in (("obj-searches-cat", "obj-prep-terms-cat"), ("obj-searches-terms", "obj-route-terms"),
+                         ("obj-route-terms", "obj-prep-terms-text"), ("obj-searches-reset", "obj-prep-terms-reset"),
+                         ("obj-searches-folders", "obj-prep-match-folders")):
+            lines.append({"patchline": {"source": [src, 0], "destination": [dst, 0]}})
+        for prep in ("obj-prep-terms-cat", "obj-prep-terms-text", "obj-prep-terms-reset", "obj-prep-match-folders"):
+            lines.append({"patchline": {"source": [prep, 0], "destination": ["obj-minimap", 0]}})
         # themed layouts add their own boxes first (they get their rects below)
         layout.customize(boxes_by_id, boxes, lines)
         boxes_by_id = {b["box"]["id"]: b["box"] for b in boxes}
@@ -2239,7 +2600,8 @@ def build(variant="default"):
                 vo = bx["saved_attribute_attributes"]["valueof"]
                 parameters_dict[bx["id"]] = [vo["parameter_longname"], vo["parameter_shortname"], 0]
     else:
-        for bid in ("obj-toggle-options-btn", "obj-theme-tab"):
+        for bid in ("obj-toggle-options-btn", "obj-theme-tab", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset",
+                    "obj-searches-folders", "obj-zoom-speed"):
             boxes_by_id[bid]["presentation"] = 0
     if set(layout.RECTS) != layout_ids:
         raise SystemExit("layout %s: RECTS ids differ from %s ids: %s" % (
@@ -2266,7 +2628,8 @@ def build(variant="default"):
     if themed:
         theme_js = f"var XO_THEME_STYLE = {json.dumps(layout.THEME_STYLE)};\n"
     minimap_text["text"] = (
-        f"var XO_LAYOUT_NAMES = {json.dumps(layout_names)};\n{theme_js}\n" + palette_js + "\n" + layout_js_code + "\n" + minimap_text["text"]
+        f"var XO_LAYOUT_NAMES = {json.dumps(layout_names)};\n{theme_js}\n" + palette_js + "\n" + search_js_raw + "\n"
+        + layout_js_code + "\n" + minimap_text["text"]
     )
     folder_text = boxes_by_id["obj-folder-list"]["textfile"]
     folder_text["text"] = palette_js + "\n" + folder_text["text"]

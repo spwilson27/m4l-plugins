@@ -24,25 +24,34 @@ mgraphics.autofill = 0;
 inlets = 1;
 outlets = 2; // Outlet 0: commands to node.codebox, Outlet 1: UI sync
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 
+// Category buttons select samples by WORDS in their name / folders (src/xo_search.js, prepended; the node engine matches and
+// sends each point its category mask). Order = toolbar order = first-match colouring priority.
 const CATEGORIES = [
   { id: "ALL",    title: "Filter: All Samples", color: [0.88, 0.91, 0.95, 1.0] },
   { id: "kick",   title: "Filter: Kick",        color: [1.00, 0.30, 0.37, 1.0] },
   { id: "snare",  title: "Filter: Snare",       color: [1.00, 0.62, 0.11, 1.0] },
   { id: "hihat",  title: "Filter: Hi-Hat",      color: [1.00, 0.90, 0.43, 1.0] },
   { id: "clap",   title: "Filter: Clap",        color: [1.00, 0.40, 0.70, 1.0] },
-  { id: "tom",    title: "Filter: Tom",         color: [0.66, 0.33, 0.97, 1.0] },
-  { id: "rim",    title: "Filter: Rim",         color: [0.98, 0.44, 0.52, 1.0] },
-  { id: "cymbal", title: "Filter: Cymbal",      color: [0.22, 0.74, 0.97, 1.0] },
+  { id: "perc",   title: "Filter: Perc",        color: [0.29, 0.87, 0.50, 1.0] },
   { id: "shaker", title: "Filter: Shaker",      color: [0.18, 0.83, 0.75, 1.0] },
-  { id: "perc",   title: "Filter: Percussion",  color: [0.29, 0.87, 0.50, 1.0] },
-  { id: "fx",     title: "Filter: FX / Other",  color: [0.51, 0.55, 0.97, 1.0] }
+  { id: "cymbal", title: "Filter: Cymbal",      color: [0.22, 0.74, 0.97, 1.0] },
+  { id: "voice",  title: "Filter: Voice",       color: [0.66, 0.33, 0.97, 1.0] }
 ];
+// Colour of a sample that matches no category
+const CAT_NONE_COLOR = [0.50, 0.55, 0.62, 1.0];
 
-const CAT_ID_LIST = [
-  "kick", "snare", "hihat", "clap", "tom", "rim", "cymbal", "shaker", "perc", "fx"
-];
+const CAT_ID_LIST = CATEGORIES.slice(1).map((c) => c.id);
+
+// Category search terms (Options > Searches), one list per category in CAT_ID_LIST order, and Match folders.
+// Saved in the XOStateData blob (v3) and sent to the node engine (`search_config`), which matches samples.
+let searchTerms = xoDefaultSearchTerms();
+let matchFolders = 1;
+let searchesCatIdx = 0; // category shown in the Options text field (UI only)
+
+// Category id of the old (state version <= 2) blob index: ALL kick snare hihat clap tom rim cymbal shaker perc fx
+const OLD_CATEGORY_IDS = ["ALL", "kick", "snare", "hihat", "clap", "perc", "snare", "cymbal", "shaker", "perc", "ALL"];
 
 const PITCH_NOTE_ENUM = [
   "Off", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
@@ -68,14 +77,14 @@ const TOOLBAR_ITEMS = [
   { id: "cat_snare",  title: "Filter: Snare" },
   { id: "cat_hihat",  title: "Filter: Hi-Hat" },
   { id: "cat_clap",   title: "Filter: Clap" },
-  { id: "cat_tom",    title: "Filter: Tom" },
+  { id: "cat_perc",   title: "Filter: Perc" },
+  { id: "cat_shaker", title: "Filter: Shaker" },
   { id: "cat_cymbal", title: "Filter: Cymbal" },
-  { id: "cat_perc",   title: "Filter: Percussion" },
-  { id: "cat_fx",     title: "Filter: FX / Other" },
+  { id: "cat_voice",  title: "Filter: Voice" },
   { id: "sim_prev",   title: "Prev Similar Sample" },
   { id: "sim_next",   title: "Next Similar Sample" },
   { id: "random",     title: "Random Sample" },
-  { id: "reseed",     title: "Re-Seed Map Subset (1500 max)" }
+  { id: "reseed",     title: "Re-Seed Map with active Filters (1500 max)" }
 ];
 
 let points = [];
@@ -133,7 +142,8 @@ let selectedMeta = {
     0.36, 0.30, 0.25, 0.21, 0.17, 0.14, 0.11, 0.09,
     0.07, 0.05, 0.04, 0.03, 0.02, 0.02, 0.01, 0.01
   ],
-  neighbors: [10, 20, 30, 40, 50, 1, 11]
+  neighbors: [10, 20, 30, 40, 50, 1, 11],
+  nbrFor: 0
 };
 
 // Detailed waveform of the selected file (selected_wave): per-column min / max / RMS, linear amplitude.
@@ -157,8 +167,8 @@ function initDefaultConstellation() {
   points = [];
   const total = 80;
   const sampleNames = [
-    "Kick Atmos", "Snare Crisp", "Hihat Closed", "Clap 808", "Tom Low",
-    "Rim Click", "Cymbal Crash", "Shaker Groove", "Perc Wood", "FX Laser"
+    "Kick Atmos", "Snare Crisp", "Hihat Closed", "Clap 808",
+    "Perc Wood", "Shaker Groove", "Cymbal Crash", "Voice Chant"
   ];
   for (let i = 0; i < total; i++) {
     const catIdx = i % CAT_ID_LIST.length;
@@ -172,6 +182,7 @@ function initDefaultConstellation() {
       x,
       y,
       catIdx,
+      mask: 1 << catIdx,
       category: CAT_ID_LIST[catIdx],
       durationMs: i === 79 ? 8500 : (60 + ((i * 65) % 1200)),
       brightness: 10 + ((i * 19) % 85),
@@ -183,6 +194,7 @@ function initDefaultConstellation() {
   selectedIndex = 0;
   anchorIndex = 0;
   selectedMeta.neighbors = [10, 20, 30, 40, 50, 1, 11];
+  selectedMeta.nbrFor = 0;
   savedList = [];
   selectedSavedIndex = -1;
   savedScrollOffset = 0;
@@ -363,7 +375,10 @@ function isInfiniteMaxLen(val) {
 
 function isPointVisible(pt) {
   if (!pt) return false;
-  if (activeCategory !== "ALL" && pt.category !== activeCategory) return false;
+  if (activeCategory !== "ALL") {
+    const ci = CAT_ID_LIST.indexOf(activeCategory);
+    if (ci >= 0 && !(pt.mask & (1 << ci))) return false;
+  }
   if (!isInfiniteMaxLen(maxLenMs) && pt.durationMs > Number(maxLenMs)) return false;
   if (toneFilter < 0) {
     const maxB = 100.0 + toneFilter * 0.85;
@@ -411,6 +426,9 @@ function ensureValidSelection() {
     if (isPointVisible(points[i])) {
       selectedIndex = i;
       anchorIndex = i;
+      // The filter hid the selected sample. Ask the node to announce the new one (no audition) so its own
+      // neighbours, name and waveform arrive; until then no neighbour lines are drawn (nbrFor guard in paint).
+      outlet(0, "select_index", i, 0);
       return;
     }
   }
@@ -432,6 +450,7 @@ function scrollSavedList(deltaRows) {
 }
 
 function getCategoryColor(catIdx) {
+  if (catIdx < 0) return xoPaletteCat("none", CAT_NONE_COLOR);
   const entry = CATEGORIES[catIdx + 1] || CATEGORIES[0];
   return xoPaletteCat(entry.id, entry.color);
 }
@@ -538,6 +557,7 @@ function minimap_clear() {
   points = [];
   selectedIndex = 0;
   anchorIndex = 0;
+  selectedMeta.nbrFor = -1; // indices change with the new batch: the old neighbour list no longer applies
 }
 
 function minimap_batch(offset, ...flat) {
@@ -547,7 +567,13 @@ function minimap_batch(offset, ...flat) {
   for (let i = 0; i + (stride - 1) < flat.length; i += stride) {
     const x = Number(flat[i]);
     const y = Number(flat[i + 1]);
-    const catIdx = Math.max(0, Math.min(CAT_ID_LIST.length - 1, Number(flat[i + 2]) || 0));
+    // category field = mask * 16 + first matching category (15 = none), see the node engine's sampleCatField();
+    // a plain index 0..7 (older senders, preview) is a single-category mask
+    const catField = Math.max(0, Math.round(Number(flat[i + 2]) || 0));
+    let catIdx = catField & 15;
+    let mask = Math.floor(catField / 16);
+    if (catIdx >= CAT_ID_LIST.length) catIdx = -1;
+    if (mask === 0 && catIdx >= 0 && catField < 16) mask = 1 << catIdx;
     const durationMs = Number(flat[i + 3]) || 200;
     const brightness = Number(flat[i + 4]) || 50;
     const druminess = stride === 8 ? (Number(flat[i + 5]) || 65) : 65;
@@ -560,7 +586,8 @@ function minimap_batch(offset, ...flat) {
       x,
       y,
       catIdx,
-      category: CAT_ID_LIST[catIdx],
+      mask,
+      category: catIdx >= 0 ? CAT_ID_LIST[catIdx] : "none",
       durationMs,
       brightness,
       druminess,
@@ -571,6 +598,8 @@ function minimap_batch(offset, ...flat) {
 }
 
 function minimap_done(totalCount, status) {
+  // the node engine matches the samples: make sure it has the current terms (it ignores an unchanged config)
+  searchesPush();
   if (points.length === 0) initDefaultConstellation();
   ensureValidSelection();
   mgraphics.redraw();
@@ -600,7 +629,8 @@ function selected_info(idx, name, category, catIdx, durMs, bright, fav, ...rest)
     brightness: Number(bright) || 50,
     favorite: Number(fav) || 0,
     peaks: peaks.length > 0 ? peaks : selectedMeta.peaks,
-    neighbors
+    neighbors,
+    nbrFor: newIdx // the point these neighbours belong to (lines are only drawn from it)
   };
   ensureSelectedInView();
   mgraphics.redraw();
@@ -788,6 +818,7 @@ function set_show_playback(...args) {
 }
 
 function set_show_options(...args) {
+  if (showOptionsSection) searchesCommitField();
   showOptionsSection = parseTrailingNumber(args, 0) ? 1 : 0;
   applyXoLayout();
 }
@@ -810,6 +841,8 @@ function getXoThemeName() {
 
 function apply_layout() {
   applyXoLayout();
+  searchesSyncWidgets();
+  searchesPush();
 }
 
 // Captured at top level: `this` is only the jsthis there.
@@ -897,6 +930,89 @@ function setphase(p) {
   set_playhead(p);
 }
 
+// ----------------------------------------------------------------------------
+// Playhead = the real playback position of sfplay~ (AGENTS.md section 4, "Waveform playhead").
+// The patcher samples sfplay~'s position outlet (ms of the playing file) with `snapshot~` (~30 Hz, only while playing) and sends
+// `play_pos <ms>`; sfplay~'s "finished / halted" bang arrives as `play_done`. `audition_info` carries the map from the PLAYING file's
+// time to the source waveform the banner shows:
+//   source fraction = (skipMs + t) * rate / srcMs   (forward),   1 - that   (reverse: the rendered file is the reversed source)
+//   rate   = source ms per rendered ms (Speed ratio when a stretch render plays, else 1)
+//   skipMs = rendered ms dropped from the front (Reverse + Trim/Dec keeps the LAST part of the stretched source), else 0
+//   endMs  = audible length of the playing file (rendered length, Trim/Dec cut of a direct play, or the file length)
+// ----------------------------------------------------------------------------
+
+/** @typedef {{ rate: number, skipMs: number, srcMs: number, endMs: number, rev: number }} PlayMap */
+
+/**
+ * Pure: position in the playing file (ms) -> x fraction (0..1) over the source waveform. Stops at endMs.
+ * @param {PlayMap | null} m @param {number} posMs
+ */
+function playheadFraction(m, posMs) {
+  if (!m || !(m.srcMs > 0)) return 0;
+  const lim = m.endMs > 0 ? m.endMs : Infinity;
+  const t = Math.max(0, Math.min(Number(posMs) || 0, lim));
+  const f = Math.max(0, Math.min(1, (m.skipMs + t) * m.rate / m.srcMs));
+  return m.rev ? 1 - f : f;
+}
+
+/** @type {PlayMap | null} */
+let playMap = null;
+let playActive = false;
+let playStartedAtMs = 0;
+let playPosCount = 0; // test_report: position messages applied
+let stopCount = 0; // test_report: Esc stops
+let playPosIdle = 0; // test_report: position messages that arrived while nothing played (snapshot~ should be stopped then)
+/** @type {number[][]} test_report: [ms since the audition started, sfplay~ position ms, x fraction] per applied play_pos (max 600) */
+let playTrace = [];
+let playDoneAfterMs = -1; // test_report: ms from the audition start to the end of the playback (-1 = not ended)
+
+/** Ignores a done-bang this soon after an audition started (the halt bang of the file it replaced). */
+const PLAY_DONE_GUARD_MS = 150;
+
+/** play_pos <ms>: the playing file's position, from snapshot~. @param {any} ms */
+function play_pos(ms) {
+  if (!playActive || !playMap) { playPosIdle++; return; }
+  const pos = Number(ms);
+  if (!Number.isFinite(pos)) return;
+  playPosCount++;
+  const f = playheadFraction(playMap, pos);
+  if (playTrace.length < 600) playTrace.push([Math.round(Date.now() - playStartedAtMs), Math.round(pos * 10) / 10, Math.round(f * 10000) / 10000]);
+  if (playMap.endMs > 0 && pos >= playMap.endMs) {
+    finishPlayback();
+    return;
+  }
+  if (Math.abs(f - playheadPos) >= 0.0004) {
+    playheadPos = f;
+    mgraphics.redraw();
+  }
+}
+
+/** Playback ended by itself (file end, Trim/Dec cut): the line stays where it stopped. */
+function finishPlayback() {
+  if (!playActive || !playMap) return;
+  playActive = false;
+  playDoneAfterMs = Date.now() - playStartedAtMs;
+  playheadPos = playheadFraction(playMap, playMap.endMs > 0 ? playMap.endMs : 1e12);
+  mgraphics.redraw();
+}
+
+/** play_done: sfplay~'s bang (end of file or halted). */
+function play_done() {
+  if (!playActive) return;
+  if (Date.now() - playStartedAtMs < PLAY_DONE_GUARD_MS) return;
+  finishPlayback();
+}
+
+/** Esc: stop the audition at once (sfplay~ stop + short fade in the patcher) and clear the playhead. */
+function stopPlayback() {
+  stopCount++;
+  playActive = false;
+  playMap = null;
+  playheadPos = -1;
+  outlet(1, "stop_playback");
+  mgraphics.redraw();
+}
+
 // Helper used only by scripts/render_preview.py so the static preview screenshot shows example saved rows
 function preview() {
   playheadPos = 0.32;
@@ -911,8 +1027,17 @@ function getPoints() {
   return points;
 }
 
+function getCategoryIds() {
+  return CAT_ID_LIST.slice();
+}
+
 function getSelectedIndex() {
   return selectedIndex;
+}
+
+/** Playhead state for tests / the report. */
+function getPlayhead() {
+  return { pos: playheadPos, active: playActive, map: playMap, posMsgs: playPosCount, stops: stopCount, idlePosMsgs: playPosIdle, doneAfterMs: playDoneAfterMs, trace: playTrace };
 }
 
 function getView() {
@@ -1073,14 +1198,26 @@ function removeSavedEntry(savedIdx) {
   mgraphics.redraw();
 }
 
+/** Patcher path (`key` -> sel -> message): only the instance selected in Live acts. */
 function hotkey_save() {
+  if (!hotkeyAllowed()) return null;
+  return hotkeySaveCore();
+}
+
+function hotkeySaveCore() {
   const now = Date.now();
   if (now - lastHotkeySaveMs < 200) return null;
   lastHotkeySaveMs = now;
   return save_selected();
 }
 
+/** Patcher path: only the instance selected in Live acts. */
 function delete_selected_saved() {
+  if (!hotkeyAllowed()) return;
+  deleteSelectedSavedCore();
+}
+
+function deleteSelectedSavedCore() {
   const now = Date.now();
   if (now - lastHotkeyDelMs < 200) return;
   lastHotkeyDelMs = now;
@@ -1122,7 +1259,7 @@ function startDragOut(mode, savedIdx, x, y) {
 // de-duplicated: the same action within ARROW_DEDUP_MS is ignored (key auto-repeat is slower than that).
 const ARROW_DEDUP_MS = 20;
 let historyNavAtMs = 0; // a selected_info right after a history key re-anchors the similarity tour
-const lastArrowActionMs = { prev: 0, next: 0, back: 0, forward: 0 };
+const lastArrowActionMs = { prev: 0, next: 0, back: 0, forward: 0, random: 0, stop: 0 };
 
 function arrowOnce(action) {
   const now = Date.now();
@@ -1131,18 +1268,176 @@ function arrowOnce(action) {
   return true;
 }
 
+// ============================================================================
+// Instance selection: the patcher's `key` object hears every keystroke in Live, so with several XO Sample Map devices in a Set
+// each hotkey would act on all of them. This instance is "selected" when Live's selected track's `view selected_device` is this
+// device (a device inside a rack chain is reported by its own id when it is the selected one). Unknown / unavailable -> not
+// selected -> the `key` path does nothing (fail safe). AGENTS.md 11 / 21 LiveAPI rules: started from live.thisdevice (`init_selection`,
+// never loadbang), one cached LiveAPI("this_device") on this instance's own thread, observer notifications only record the id and
+// the work runs on the next scheduler tick (Task.schedule(0)), observer args are flattened.
+// ============================================================================
+
+/** @type {any} */
+let xoSelfApi = null;
+let xoSelfId = "";
+/** @type {any} */
+let xoSelTrackObs = null;
+/** @type {any} */
+let xoSelDevObs = null;
+let xoSelGen = 0;
+let xoSelectedDeviceId = "";
+let xoIsSelected = false;
+/** @type {number | null} test override (test_selected): 1 / 0, null = real detection */
+let xoSelForced = null;
+let xoTestOnly = "";
+/** @type {any[]} */
+const xoSelTasks = [];
+/** Diagnostics for test_report. @type {any} */
+const xoSelDebug = { trackId: "", viewId: "", viewPath: "", devEvents: 0, trackEvents: 0, selPath: "", selfPath: "" };
+
+/** The effective flag the `key`-object hotkeys are gated on. */
+function hotkeyAllowed() {
+  return xoSelForced !== null ? xoSelForced === 1 : xoIsSelected;
+}
+
+/** @param {any} v @returns {string} */
+function xoIdStr(v) {
+  const n = Number(v);
+  return (Number.isFinite(n) && n > 0) ? String(Math.round(n)) : "";
+}
+
+/** Finds the LOM id in a LiveAPI observer / get() result: ["selected_device","id",N], ["id",N], [["id", N]] or "id N". @param {any} raw @returns {string} */
+function xoLomId(raw) {
+  /** @type {any[]} */
+  const flat = [];
+  const walk = (/** @type {any} */ a) => {
+    if (Array.isArray(a)) a.forEach(walk);
+    else if (a !== null && typeof a === "object" && typeof a.length === "number") Array.prototype.forEach.call(a, walk);
+    else if (typeof a === "string" && /^id\s+\d+$/.test(a)) { flat.push("id"); flat.push(Number(a.slice(3))); }
+    else flat.push(a);
+  };
+  walk(raw);
+  for (let i = 0; i < flat.length - 1; i++) if (flat[i] === "id") return xoIdStr(flat[i + 1]);
+  return "";
+}
+
+/**
+ * True for an observer notification of `prop`. A LiveAPI with a callback also reports its OWN id when it is created (["id", N]),
+ * which must not be taken for the property value.
+ * @param {any[]} raw @param {string} prop
+ */
+function xoIsNotify(raw, prop) {
+  const head = Array.isArray(raw[0]) ? raw[0][0] : raw[0];
+  return head === prop;
+}
+
+/** @param {() => void} fn */
+function xoDefer(fn) {
+  if (typeof Task === "function") {
+    const t = new Task(function () {
+      const i = xoSelTasks.indexOf(t);
+      if (i >= 0) xoSelTasks.splice(i, 1);
+      try { fn(); } catch (e) { xoSelFail(e); }
+    }, this);
+    xoSelTasks.push(t); // keep a reference until it ran
+    t.schedule(0);
+  } else {
+    try { fn(); } catch (e) { xoSelFail(e); }
+  }
+}
+
+function xoSelFail(/** @type {any} */ e) {
+  xoIsSelected = false;
+  xoSelectedDeviceId = "";
+  if (typeof post === "function") post("xo selection: " + e + "\n");
+}
+
+/** @param {string} devId the selected device's LOM id ("" = none) */
+function xoSetSelectedDevice(devId) {
+  xoSelectedDeviceId = devId;
+  xoSelDebug.devEvents++;
+  try { xoSelDebug.selPath = devId ? String(new LiveAPI("id " + devId).unquotedpath || "") : ""; xoSelDebug.selfPath = xoSelfApi ? String(xoSelfApi.unquotedpath || "") : ""; } catch (e) { xoSelDebug.selPath = "ERR " + e; }
+  let sel = !!devId && !!xoSelfId && devId === xoSelfId;
+  if (!sel && devId && xoSelfApi && typeof LiveAPI === "function") {
+    // the same device can be reported under another id spelling: compare LOM paths as well
+    try {
+      const mine = String(xoSelfApi.unquotedpath || "");
+      const theirs = String(new LiveAPI("id " + devId).unquotedpath || "");
+      sel = !!mine && mine === theirs;
+    } catch (e) {}
+  }
+  xoIsSelected = sel;
+}
+
+/** (Re)points the device observer at the selected track's view. @param {string} trackId */
+function xoRefreshTrack(trackId) {
+  xoSelDebug.trackEvents++;
+  xoSelGen++;
+  const gen = xoSelGen;
+  if (xoSelDevObs) { try { xoSelDevObs.property = ""; } catch (e) {} xoSelDevObs = null; }
+  if (!trackId) { xoSetSelectedDevice(""); return; }
+  const trackApi = new LiveAPI("id " + trackId);
+  let viewId = "";
+  try { viewId = xoLomId(trackApi.get("view")); } catch (e) {}
+  const viewPath = viewId ? "id " + viewId : String(trackApi.unquotedpath || "") + " view";
+  xoSelDebug.trackId = trackId; xoSelDebug.viewId = viewId; xoSelDebug.viewPath = viewPath;
+  const onDev = function () {
+    const raw = Array.prototype.slice.call(arguments);
+    if (!xoIsNotify(raw, "selected_device")) return;
+    const id = xoLomId(raw);
+    xoDefer(function () { if (gen === xoSelGen) xoSetSelectedDevice(id); });
+  };
+  xoSelDevObs = new LiveAPI(onDev, viewPath);
+  xoSelDevObs.property = "selected_device";
+  xoSetSelectedDevice(xoLomId(xoSelDevObs.get("selected_device")));
+}
+
+/** From live.thisdevice (via obj-msg-init-selection): start tracking whether this device is the selected one. */
+function init_selection() {
+  if (xoSelTrackObs || typeof LiveAPI !== "function") return;
+  try {
+    xoSelfApi = new LiveAPI("this_device");
+    xoSelfId = xoIdStr(xoSelfApi.id);
+    const onTrack = function () {
+      const raw = Array.prototype.slice.call(arguments);
+      if (!xoIsNotify(raw, "selected_track")) return; // the creation notification (["id", N]) is not a selection
+      const id = xoLomId(raw);
+      xoDefer(function () { xoRefreshTrack(id); });
+    };
+    xoSelTrackObs = new LiveAPI(onTrack, "live_set view");
+    xoSelTrackObs.property = "selected_track";
+    const cur = xoLomId(xoSelTrackObs.get("selected_track"));
+    xoDefer(function () { xoRefreshTrack(cur); });
+  } catch (e) {
+    xoSelFail(e);
+  }
+}
+
+// The patcher's `key` object receives EVERY keystroke in Live, so the hotkey_* / delete_selected_saved messages (patcher path)
+// only act while this instance is the device selected in Live (see "Instance selection" below). onkeydown / key() is the v8ui's
+// own path (the v8ui has keyboard focus) and is never gated.
+
 /** Left arrow = Prev Similar (same path as the toolbar button). */
 function hotkey_prev_similar() {
+  if (hotkeyAllowed()) prevSimilarCore();
+}
+function prevSimilarCore() {
   if (arrowOnce("prev")) applyToolbarAction("sim_prev");
 }
 
 /** Right arrow = Next Similar (same path as the toolbar button). */
 function hotkey_next_similar() {
+  if (hotkeyAllowed()) nextSimilarCore();
+}
+function nextSimilarCore() {
   if (arrowOnce("next")) applyToolbarAction("sim_next");
 }
 
 /** Down arrow = history Back (previously selected sound). */
 function hotkey_history_back() {
+  if (hotkeyAllowed()) historyBackCore();
+}
+function historyBackCore() {
   if (arrowOnce("back")) {
     historyNavAtMs = Date.now();
     outlet(0, "history_back");
@@ -1151,10 +1446,29 @@ function hotkey_history_back() {
 
 /** Up arrow = history Forward. */
 function hotkey_history_forward() {
+  if (hotkeyAllowed()) historyForwardCore();
+}
+function historyForwardCore() {
   if (arrowOnce("forward")) {
     historyNavAtMs = Date.now();
     outlet(0, "history_forward");
   }
+}
+
+/** `r` / `R` = Random Sample (same path as the toolbar button, so the active category and filters apply). */
+function hotkey_random() {
+  if (hotkeyAllowed()) randomCore();
+}
+function randomCore() {
+  if (arrowOnce("random")) applyToolbarAction("random");
+}
+
+/** Esc = stop playback of the current sample at once and clear the playhead. */
+function hotkey_stop() {
+  if (hotkeyAllowed()) stopCore();
+}
+function stopCore() {
+  if (arrowOnce("stop")) stopPlayback();
 }
 
 /** @param {any} k */
@@ -1170,23 +1484,42 @@ function arrowKeyName(k) {
   return "";
 }
 
+/** @param {any} k @returns {boolean} true when k was a hotkey */
 function key(k) {
   const arrow = arrowKeyName(k);
-  if (arrow === "left") { hotkey_prev_similar(); return; }
-  if (arrow === "right") { hotkey_next_similar(); return; }
-  if (arrow === "down") { hotkey_history_back(); return; }
-  if (arrow === "up") { hotkey_history_forward(); return; }
+  if (arrow === "left") { prevSimilarCore(); return true; }
+  if (arrow === "right") { nextSimilarCore(); return true; }
+  if (arrow === "down") { historyBackCore(); return true; }
+  if (arrow === "up") { historyForwardCore(); return true; }
   if (k === 115 || k === 83 || k === "s" || k === "S") {
-    hotkey_save();
-    return;
+    hotkeySaveCore();
+    return true;
+  }
+  if (k === 114 || k === 82 || k === "r" || k === "R") {
+    randomCore();
+    return true;
+  }
+  if (k === 27 || k === "Escape" || k === "Esc") {
+    stopCore();
+    return true;
   }
   if (k === 127 || k === 8 || k === -5 || k === -3 || k === "Delete" || k === "Backspace") {
-    delete_selected_saved();
+    deleteSelectedSavedCore();
+    return true;
   }
+  return false;
 }
 
-function onkeydown(k) {
-  key(k);
+/**
+ * Native v8ui key event (keycode, textcharacter, down, ...). Live reports Escape as keycode -3 with textcharacter 27 (measured for
+ * Mega Modulator), so the character is checked first: -3 alone is still a delete code here, an Esc must never delete a saved row.
+ * Key-up events (down = 0) are ignored; callers without `down` (tests) act.
+ * @param {any} k @param {any} [ch] @param {any} [down]
+ */
+function onkeydown(k, ch, down) {
+  if (down === 0 || down === false) return;
+  if (Number(ch) === 27) { stopCore(); return; }
+  if (!key(k) && typeof ch === "number") key(ch);
 }
 
 /**
@@ -1196,10 +1529,48 @@ function onkeydown(k) {
  * Positive dy zooms in / scrolls up. Check the sign in Live: flip WHEEL_ZOOM_SIGN if it feels inverted.
  */
 const WHEEL_ZOOM_SIGN = 1;
+/** Zoom Speed (Options, parameter `Zoom Speed`, 0.25..4, default 1). Exponent per wheel unit at speed 1: 0.48 (= 1.6 x the former 0.3). */
+const WHEEL_ZOOM_RATE = 0.48;
+const ZOOM_SPEED_MIN = 0.25;
+const ZOOM_SPEED_MAX = 4;
+let zoomSpeed = 1;
+
+/** `set_zoomspeed <x>` from the Zoom Speed parameter (also on load). */
+function set_zoomspeed(...args) {
+  const v = Number(args[args.length - 1]);
+  if (!isFinite(v)) return;
+  zoomSpeed = Math.max(ZOOM_SPEED_MIN, Math.min(ZOOM_SPEED_MAX, v));
+}
+
+/**
+ * Zoom factor of ONE wheel event. dy is clamped to +-3 units (a trackpad flick can send big deltas), the log-zoom of the
+ * event is WHEEL_ZOOM_RATE * speed * dy, and its magnitude is capped at max(0.9, WHEEL_ZOOM_RATE * speed): a single
+ * mouse-wheel step (+-1) is never capped at any speed, while a fast flick can never jump more than that (factor 2.46 at
+ * speeds up to 1.9, e^(0.48 speed) above), so many small trackpad deltas stay smooth and big ones stay controlled.
+ * @param {number} dy @param {number} speed
+ */
+function wheelZoomFactor(dy, speed) {
+  const sp = Math.max(ZOOM_SPEED_MIN, Math.min(ZOOM_SPEED_MAX, Number(speed) || 1));
+  const units = Math.max(-3, Math.min(3, dy * WHEEL_ZOOM_SIGN));
+  const cap = Math.max(0.9, WHEEL_ZOOM_RATE * sp);
+  return Math.exp(Math.max(-cap, Math.min(cap, WHEEL_ZOOM_RATE * sp * units)));
+}
 
 /** @param {any[]} args */
+/**
+ * Max documents onwheel(x, y, wheel_inc_x, wheel_inc_y, cmd, shift, capslock, option, ctrl) (9 arguments). The
+ * previous parser took the LAST two numbers, which in that form are the option / ctrl flags (0), so a real wheel
+ * never zoomed; the synthetic (x, y, dx, dy) test calls hid it. No real wheel event can be produced in the VM, so the
+ * other plausible shapes stay supported, told apart by length: up to 9 arguments -> the deltas are at 2 / 3; 10 or
+ * more (onclick's arguments with the deltas appended) -> the last two; an event object last -> its deltaX / deltaY.
+ */
 function parseWheelDelta(args) {
   const last = args.length > 0 ? args[args.length - 1] : null;
+  if (args.length <= 9 && !(last && typeof last === "object")) {
+    const ix = Number(args[2]);
+    const iy = Number(args[3]);
+    return [Number.isFinite(ix) ? ix : 0, Number.isFinite(iy) ? iy : 0];
+  }
   if (last && typeof last === "object") {
     const oy = Number(last.deltaY !== undefined ? -last.deltaY : (last.wheelDeltaY !== undefined ? last.wheelDeltaY : 0));
     const ox = Number(last.deltaX !== undefined ? last.deltaX : 0);
@@ -1220,8 +1591,7 @@ function onwheel(x, y, ...rest) {
     return;
   }
   if (x < lay.savedX && y > lay.topBarH && y < lay.toolbarY && dy !== 0) {
-    const clamped = Math.max(-3, Math.min(3, dy * WHEEL_ZOOM_SIGN));
-    zoomViewAt(x, y, Math.exp(0.3 * clamped), lay);
+    zoomViewAt(x, y, wheelZoomFactor(dy, zoomSpeed), lay);
   }
 }
 
@@ -1260,18 +1630,11 @@ function applyToolbarAction(actionId) {
       outlet(0, "select_index", selectedIndex, 1);
     }
   } else if (actionId === "reseed") {
-    localSeed = (localSeed + 1) >>> 0;
+    // Same as the Filters section's Re-Seed button (obj-reseed-filtered-btn -> `reseed_filtered` -> node): the node re-seeds the
+    // map from the corpus samples that pass the Filters section's filters (search, MaxLen, Tone, Tonal, Drums, folders) and
+    // syncs the new points back, so no local shuffle is needed.
     simTourKey = "";
-    for (let i = 0; i < points.length; i++) {
-      const p = points[i];
-      const h = Math.sin((i + 1) * 12.9898 + localSeed * 78.233) * 43758.5453;
-      const frac = h - Math.floor(h);
-      const ang = (p.catIdx / CAT_ID_LIST.length) * Math.PI * 2 - Math.PI * 0.72 + (frac - 0.5) * 0.55;
-      const rad = 0.16 + ((frac * 17) % 1.0) * 0.28;
-      p.x = Math.max(0.04, Math.min(0.96, 0.5 + Math.cos(ang) * rad));
-      p.y = Math.max(0.06, Math.min(0.94, 0.5 + Math.sin(ang) * rad));
-    }
-    outlet(0, "reseed_map");
+    outlet(0, "reseed_filtered");
   }
   notifyclients();
   mgraphics.redraw();
@@ -1337,16 +1700,17 @@ function stepLocalNeighbor(dir) {
 
 /**
  * Pan gesture: middle mouse button (the legacy handlers receive a PointerEvent as a 9th argument whose
- * `buttons` bitmask has 4 for the middle button) or, as the fallback, Option-drag.
+ * `buttons` bitmask has 4 for the middle button), Cmd-drag, or Option-drag.
  */
-function isPanGesture(option, pointerevent) {
-  if (option) return true;
+function isPanGesture(option, pointerevent, cmd) {
+  if (option || cmd) return true;
   return !!(pointerevent && typeof pointerevent === "object" && (Number(pointerevent.buttons) & 4));
 }
 
 function onclick(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
   xoRawLog("onclick", arguments);
   const lay = getLayout();
+  if (showOptionsSection) searchesCommitField(); // a click elsewhere ends editing the Searches field
   panState = null; // a stale pan (release not delivered) must not hijack this gesture
 
   // --- RIGHT PANE: Saved Samples List & Drag-Out Dock (x >= lay.savedX) ---
@@ -1436,8 +1800,8 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl, pointerevent) {
     }
   }
 
-  // Pan (middle button / Option-drag) leaves selection and scrubbing untouched
-  if (isPanGesture(option, pointerevent)) {
+  // Pan (middle button / Cmd-drag / Option-drag) leaves selection and scrubbing untouched
+  if (isPanGesture(option, pointerevent, cmd)) {
     panState = { x, y, x0: viewX0, y0: viewY0 };
     return;
   }
@@ -1669,9 +2033,107 @@ function onidleout() {
 // State Persistence (getvalueof / setvalueof)
 // ============================================================================
 
+/** Category id stored in a blob: v3 indexes CATEGORIES; v1 / v2 index the old list (tom -> perc, rim -> snare, fx -> ALL). */
+function blobCategoryId(ver, raw) {
+  const n = Math.max(0, Math.round(Number(raw) || 0));
+  if (ver >= 3) return CATEGORIES[Math.min(CATEGORIES.length - 1, n)].id;
+  return OLD_CATEGORY_IDS[Math.min(OLD_CATEGORY_IDS.length - 1, n)];
+}
+
+// ============================================================================
+// Options > Searches: category terms + Match folders
+// ============================================================================
+
+/** The named Options widget (live.menu picker, textedit terms, live.text Match folders), or null (no patcher / variants). */
+function searchesWidget(id) {
+  const pat = xoHostPatcher;
+  if (!pat || typeof pat.getnamed !== "function") return null;
+  try { return pat.getnamed((typeof XO_LAYOUT_NAMES !== "undefined" && XO_LAYOUT_NAMES[id]) || id) || null; } catch (e) { return null; }
+}
+
+/** Shows the selected category's terms in the text field and the picker / toggle states (silent `set`). */
+function searchesSyncWidgets() {
+  const pick = searchesWidget("obj-searches-cat");
+  if (pick) { try { pick.message("set", searchesCatIdx); } catch (e) {} }
+  const field = searchesWidget("obj-searches-terms");
+  if (field) {
+    try {
+      field.message("clear");
+      const txt = xoFormatTerms(searchTerms[searchesCatIdx] || []);
+      if (txt) field.message("set", txt);
+    } catch (e) {}
+  }
+  const tog = searchesWidget("obj-searches-folders");
+  if (tog) { try { tog.message("set", matchFolders ? 1 : 0); } catch (e) {} }
+}
+
+/** Sends the terms and Match folders to the node engine, which matches and colours the samples. */
+function searchesPush() {
+  /** @type {Array<number | string>} */
+  const args = [0, "search_config", matchFolders ? 1 : 0];
+  for (let i = 0; i < CAT_ID_LIST.length; i++) args.push(xoEncodeTerms(searchTerms[i]));
+  outlet.apply(null, /** @type {any} */ (args));
+}
+
+// The text field's output belongs to the category that was selected when it was typed (or banged)
+let searchesTextTarget = -1;
+
+/** Makes the text field output what is typed in it now (the field has no focus-lost output). */
+function searchesCommitField() {
+  const field = searchesWidget("obj-searches-terms");
+  if (!field) return;
+  searchesTextTarget = searchesCatIdx;
+  try { field.message("bang"); } catch (e) {}
+}
+
+function searchesApplyTerms(catIdx, list) {
+  if (!(catIdx >= 0 && catIdx < CAT_ID_LIST.length)) return;
+  if (JSON.stringify(searchTerms[catIdx]) === JSON.stringify(list)) return;
+  searchTerms[catIdx] = list;
+  searchesPush();
+  notifyclients();
+  mgraphics.redraw();
+}
+
+/** Options picker: `set_terms_cat <index 0..7>`. */
+function set_terms_cat(...args) {
+  const i = Math.max(0, Math.min(CAT_ID_LIST.length - 1, Math.round(Number(args[args.length - 1]) || 0)));
+  searchesCommitField();
+  searchesCatIdx = i;
+  searchesSyncWidgets();
+}
+
+/** Text field (Enter / Tab / commit): `set_terms_text <comma separated terms>`. */
+function set_terms_text(...args) {
+  const target = searchesTextTarget >= 0 ? searchesTextTarget : searchesCatIdx;
+  searchesTextTarget = -1;
+  const text = args.map((a) => String(a)).join(" ");
+  searchesApplyTerms(target, xoParseTerms(text));
+}
+
+/** Reset button: restores the selected category's default terms. */
+function set_terms_reset(...args) {
+  if (!Number(args[args.length - 1])) return;
+  searchesTextTarget = -1;
+  searchesApplyTerms(searchesCatIdx, XO_SEARCH_CATS[searchesCatIdx].terms.slice());
+  searchesSyncWidgets();
+}
+
+/** Match folders toggle: `set_match_folders 0|1`. */
+function set_match_folders(...args) {
+  searchesCommitField();
+  const v = Number(args[args.length - 1]) ? 1 : 0;
+  if (v === matchFolders) return;
+  matchFolders = v;
+  searchesPush();
+  notifyclients();
+  mgraphics.redraw();
+}
+
 function getvalueof() {
   const catIdx = CATEGORIES.findIndex((c) => c.id === activeCategory);
   const serializedMaxLen = isInfiniteMaxLen(maxLenMs) ? 5000 : maxLenMs;
+  /** @type {Array<number | string>} */
   const out = [
     STATE_VERSION,
     catIdx >= 0 ? catIdx : 0,
@@ -1688,6 +2150,9 @@ function getvalueof() {
     const s = savedList[i];
     out.push(s.sampleIndex, s.catIdx, s.pitchSt, s.decayMs, s.gainDb);
   }
+  // v3: category search terms ("XS", Match folders, then one encoded term list per category, see xoEncodeTerms)
+  out.push("XS", matchFolders ? 1 : 0);
+  for (let i = 0; i < CAT_ID_LIST.length; i++) out.push(xoEncodeTerms(searchTerms[i]));
   return out;
 }
 
@@ -1696,8 +2161,7 @@ function setvalueof(...args) {
   if (!arr || arr.length < 2) return;
   const ver = Math.round(Number(arr[0]) || 1);
   if (ver === 1) {
-    const catIdx = Math.max(0, Math.min(CATEGORIES.length - 1, Math.round(Number(arr[1]) || 0)));
-    activeCategory = CATEGORIES[catIdx].id;
+    activeCategory = blobCategoryId(ver, arr[1]);
     const rawLen = Number(arr[2]) || 5000;
     maxLenMs = isInfiniteMaxLen(rawLen) ? Infinity : rawLen;
     toneFilter = Number(arr[3]) || 0;
@@ -1706,8 +2170,7 @@ function setvalueof(...args) {
     selectedIndex = Math.max(0, Math.round(Number(arr[7]) || 0));
     anchorIndex = Math.max(0, Math.round(Number(arr[8]) || 0));
   } else if (ver >= 2) {
-    const catIdx = Math.max(0, Math.min(CATEGORIES.length - 1, Math.round(Number(arr[1]) || 0)));
-    activeCategory = CATEGORIES[catIdx].id;
+    activeCategory = blobCategoryId(ver, arr[1]);
     const rawLen = Number(arr[2]) || 5000;
     maxLenMs = isInfiniteMaxLen(rawLen) ? Infinity : rawLen;
     toneFilter = Number(arr[3]) || 0;
@@ -1726,13 +2189,26 @@ function setvalueof(...args) {
         id: nextLocalSavedId++,
         sampleIndex: sIdx,
         name: pt ? pt.name : `Sample ${sIdx}`,
-        catIdx: Number(arr[offset + 1]) || 0,
+        // the node sends the real category with the saved list; the stored index only counts for v3
+        catIdx: ver >= 3 ? Math.max(-1, Math.min(CAT_ID_LIST.length - 1, Math.round(Number(arr[offset + 1])))) : (pt ? pt.catIdx : -1),
         pitchSt: Number(arr[offset + 2]) || 0,
         decayMs: Number(arr[offset + 3]) || 2500,
         gainDb: Number(arr[offset + 4]) || 0
       });
     }
+    // v3 tail: "XS" matchFolders terms x categories. Older blobs (or a missing / short tail) keep the defaults.
+    searchTerms = xoDefaultSearchTerms();
+    matchFolders = 1;
+    if (ver >= 3 && String(arr[offset]) === "XS") {
+      matchFolders = Number(arr[offset + 1]) ? 1 : 0;
+      for (let i = 0; i < CAT_ID_LIST.length; i++) {
+        if (arr[offset + 2 + i] !== undefined) searchTerms[i] = xoDecodeTerms(arr[offset + 2 + i]);
+      }
+    }
+    searchesSyncWidgets();
+    searchesPush();
   }
+  if (activeCategory !== "ALL") outlet(0, "set_cat", activeCategory);
   clampSavedScroll();
   ensureValidSelection();
   mgraphics.redraw();
@@ -1766,12 +2242,15 @@ function drawToolbarIcon(id, x, y, w, h, col, isActive) {
     mgraphics.line_to(cx + 3.8, cy - 2.6);
     mgraphics.stroke();
   } else if (id === "cat_hihat") {
-    mgraphics.move_to(cx - 4.2, cy - 1.2);
-    mgraphics.line_to(cx + 4.2, cy - 1.2);
-    mgraphics.move_to(cx - 4.2, cy + 1.2);
-    mgraphics.line_to(cx + 4.2, cy + 1.2);
-    mgraphics.move_to(cx, cy - 4.0);
-    mgraphics.line_to(cx, cy + 4.2);
+    // two flat cymbals with a gap and a stand
+    mgraphics.move_to(cx - 4.2, cy - 0.8);
+    mgraphics.curve_to(cx - 2.2, cy - 3.4, cx + 2.2, cy - 3.4, cx + 4.2, cy - 0.8);
+    mgraphics.stroke();
+    mgraphics.move_to(cx - 4.2, cy + 1.0);
+    mgraphics.curve_to(cx - 2.2, cy + 3.6, cx + 2.2, cy + 3.6, cx + 4.2, cy + 1.0);
+    mgraphics.stroke();
+    mgraphics.move_to(cx, cy - 3.6);
+    mgraphics.line_to(cx, cy + 4.4);
     mgraphics.stroke();
   } else if (id === "cat_clap") {
     mgraphics.move_to(cx - 3.8, cy + 3.0);
@@ -1780,28 +2259,54 @@ function drawToolbarIcon(id, x, y, w, h, col, isActive) {
     mgraphics.line_to(cx + 1.5, cy - 3.2);
     mgraphics.line_to(cx + 3.5, cy + 3.0);
     mgraphics.stroke();
-  } else if (id === "cat_tom") {
-    mgraphics.rectangle_rounded(cx - 3.6, cy - 3.4, 7.2, 6.8, 1.5, 1.5);
-    mgraphics.stroke();
-    mgraphics.move_to(cx - 3.6, cy - 1.0);
-    mgraphics.line_to(cx + 3.6, cy - 1.0);
-    mgraphics.stroke();
-  } else if (id === "cat_cymbal") {
-    mgraphics.move_to(cx - 4.2, cy - 0.8);
-    mgraphics.line_to(cx + 4.2, cy - 2.8);
-    mgraphics.move_to(cx, cy - 1.8);
-    mgraphics.line_to(cx, cy + 4.2);
-    mgraphics.stroke();
   } else if (id === "cat_perc") {
     mgraphics.move_to(cx, cy - 3.8);
     mgraphics.line_to(cx + 4.0, cy + 3.2);
     mgraphics.line_to(cx - 4.0, cy + 3.2);
     mgraphics.close_path();
     mgraphics.stroke();
-  } else if (id === "cat_fx") {
-    mgraphics.move_to(cx - 4.2, cy);
-    mgraphics.curve_to(cx - 1.8, cy - 4.6, cx - 0.6, cy - 4.6, cx, cy);
-    mgraphics.curve_to(cx + 0.6, cy + 4.6, cx + 1.8, cy + 4.6, cx + 4.2, cy);
+  } else if (id === "cat_shaker") {
+    // tilted capsule (egg shaker) with a centre band
+    const sr = 2.1;
+    const ax = cx - 2.2;
+    const ay = cy + 2.2;
+    const bx = cx + 2.2;
+    const by = cy - 2.2;
+    const steps = 6;
+    for (let k = 0; k <= steps; k++) {
+      const ang = Math.PI * 0.75 + (k / steps) * Math.PI; // semicircle round the lower-left end
+      const px = ax + Math.cos(ang) * sr;
+      const py = ay + Math.sin(ang) * sr;
+      if (k === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
+    }
+    for (let k = 0; k <= steps; k++) {
+      const ang = -Math.PI * 0.25 + (k / steps) * Math.PI; // and the upper-right end
+      mgraphics.line_to(bx + Math.cos(ang) * sr, by + Math.sin(ang) * sr);
+    }
+    mgraphics.close_path();
+    mgraphics.stroke();
+    mgraphics.move_to(cx - 1.5, cy - 1.5);
+    mgraphics.line_to(cx + 1.5, cy + 1.5);
+    mgraphics.stroke();
+  } else if (id === "cat_cymbal") {
+    // dome cymbal on a stand
+    mgraphics.move_to(cx - 4.4, cy + 0.6);
+    mgraphics.curve_to(cx - 4.4, cy - 4.8, cx + 4.4, cy - 4.8, cx + 4.4, cy + 0.6);
+    mgraphics.stroke();
+    mgraphics.move_to(cx - 4.4, cy + 0.6);
+    mgraphics.line_to(cx + 4.4, cy + 0.6);
+    mgraphics.move_to(cx, cy + 0.6);
+    mgraphics.line_to(cx, cy + 4.6);
+    mgraphics.stroke();
+  } else if (id === "cat_voice") {
+    // microphone: capsule, cradle arc, stem
+    mgraphics.rectangle_rounded(cx - 1.9, cy - 4.4, 3.8, 5.8, 1.9, 1.9);
+    mgraphics.stroke();
+    mgraphics.move_to(cx - 3.5, cy - 0.6);
+    mgraphics.curve_to(cx - 3.5, cy + 4.4, cx + 3.5, cy + 4.4, cx + 3.5, cy - 0.6);
+    mgraphics.stroke();
+    mgraphics.move_to(cx, cy + 3.1);
+    mgraphics.line_to(cx, cy + 4.8);
     mgraphics.stroke();
   } else if (id === "sim_prev") {
     mgraphics.move_to(cx + 1.8, cy - 3.6);
@@ -1945,7 +2450,7 @@ function paint() {
 
   // 4. Draw k-NN neighbor constellation lines from selected point
   const nbrSet = new Set(selectedMeta.neighbors || []);
-  if (selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
+  if (selectedMeta.nbrFor === selectedIndex && selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
     const sp = points[selectedIndex];
     const [sx, sy] = normToScreen(sp.x, sp.y, lay);
     xoSrc(0.22, 0.74, 0.97, 0.35);
@@ -2286,6 +2791,9 @@ function paint() {
 //   test_section saved|filters|playback|options 0|1   sets that toolbar toggle (a hidden parameter, so the LOM can't): the
 //                                  live.text outputs, exactly as a click does, through the real patcher wiring
 //   test_theme LCD|Focus|<index>   sets the Theme tab (Options section), the same way
+//   test_toolbar <id>              clicks a toolbar button (cat_kick, cat_ALL, sim_next, ...) at its centre
+//   test_terms_cat i | test_terms_text <comma separated terms> | test_terms_reset | test_match_folders 0|1
+//                                  Options > Searches without the widgets (the text goes to the selected category)
 //   test_mirror <layout box id> <v>  sends a value to a theme mirror widget (obj-<x>-dial-mir) as a user drag would
 // Real (non-synthetic) event arguments are kept in `raw` (last arguments Max passed to onwheel / onclick / ondrag).
 // ============================================================================
@@ -2314,39 +2822,79 @@ function test_width(w) {
 }
 
 /** audition_info <file> <ms> <frames> <rendered> <engine> <pitch> <speed> <mode> */
-function audition_info(file, ms, frames, rendered, engine, pitch, speed, mode) {
+function audition_info(file, ms, frames, rendered, engine, pitch, speed, mode, rate, skipMs, srcMs, endMs, rev) {
   xoAudition = { file: String(file), ms: Number(ms), frames: Number(frames), rendered: Number(rendered), engine: String(engine), pitchSt: Number(pitch), speedPct: Number(speed), mode: Number(mode) };
+  // The new audition's playhead map (Playhead section above): the line starts at the file's start (right end when reversed).
+  if (Number(srcMs) > 0) {
+    playMap = { rate: Number(rate) || 1, skipMs: Number(skipMs) || 0, srcMs: Number(srcMs), endMs: Number(endMs) || 0, rev: Number(rev) ? 1 : 0 };
+    playActive = true;
+    playStartedAtMs = Date.now();
+    playPosCount = 0;
+    playTrace = [];
+    playDoneAfterMs = -1;
+    playheadPos = playheadFraction(playMap, 0);
+    xoAudition.map = playMap;
+    mgraphics.redraw();
+  }
 }
 
 function xoDeviceId() {
+  if (xoSelfId) return xoSelfId;
   try {
     if (typeof LiveAPI !== "undefined") return String(new LiveAPI("this_device").id);
   } catch (err) {}
   return "0";
 }
 
+/** True when a test_only hook targets another instance: every test_* hook except test_only / test_width is ignored then. */
+function xoTestSkip() {
+  return xoTestOnly !== "" && xoTestOnly !== xoDeviceId();
+}
+
+/** test_only <device id | 0 | none>: with several instances in a Set, only that instance answers the other test_* hooks (0 = all). @param {any} id */
+function test_only(id) {
+  const v = String(id);
+  xoTestOnly = (v === "0" || v === "" || v === "none") ? "" : v;
+}
+
+/** test_selected 1|0|-1: forces the "selected in Live" flag (-1 = back to real detection). @param {any} v */
+function test_selected(v) {
+  if (xoTestSkip()) return;
+  const n = Number(v);
+  xoSelForced = n === 1 ? 1 : (n === 0 ? 0 : null);
+}
+
 function test_clear_log() {
+  if (xoTestSkip()) return;
   xoSelLog.length = 0;
   xoAudition = null;
+  playMap = null; playActive = false; playTrace = []; playDoneAfterMs = -1; playPosCount = 0;
 }
+
+/** Test hook: sets the zoom speed like the parameter does. */
+function test_zoomspeed(v) { if (xoTestSkip()) return; set_zoomspeed(v); }
 
 /** @param {...any} a */
 function test_wheel(...a) {
+  if (xoTestSkip()) return;
   xoSynthetic = true;
   try { onwheel(...a); } finally { xoSynthetic = false; }
 }
 
 function test_click(x, y, shift, option) {
+  if (xoTestSkip()) return;
   xoSynthetic = true;
   try { onclick(Number(x), Number(y), 1, 0, Number(shift) || 0, 0, Number(option) || 0, 0); } finally { xoSynthetic = false; }
 }
 
 function test_drag(x, y, option) {
+  if (xoTestSkip()) return;
   xoSynthetic = true;
   try { ondrag(Number(x), Number(y), 1, 0, 0, 0, Number(option) || 0, 0); } finally { xoSynthetic = false; }
 }
 
 function test_release(x, y) {
+  if (xoTestSkip()) return;
   xoSynthetic = true;
   try { ondrag(Number(x), Number(y), 0, 0, 0, 0, 0, 0); } finally { xoSynthetic = false; }
 }
@@ -2354,6 +2902,7 @@ function test_release(x, y) {
 const XO_SECTION_TOGGLES = { saved: "ShowSavedList", filters: "ShowFiltersSection", playback: "ShowPlaybackSection", options: "ShowOptions" };
 
 function test_section(which, v) {
+  if (xoTestSkip()) return;
   const name = XO_SECTION_TOGGLES[String(which)];
   const obj = (name && xoHostPatcher) ? xoHostPatcher.getnamed(name) : null;
   if (obj) obj.message("int", Number(v) ? 1 : 0);
@@ -2361,6 +2910,7 @@ function test_section(which, v) {
 
 /** @param {string | number} name */
 function test_theme(name) {
+  if (xoTestSkip()) return;
   const obj = xoHostPatcher ? xoHostPatcher.getnamed("Theme") : null;
   const idx = (typeof XO_THEMES !== "undefined" && typeof name === "string" && XO_THEMES.indexOf(name) >= 0) ? XO_THEMES.indexOf(name) : Math.round(Number(name));
   if (obj) obj.message("int", idx);
@@ -2368,19 +2918,120 @@ function test_theme(name) {
 
 /** @param {string} id @param {number} v */
 function test_mirror(id, v) {
+  if (xoTestSkip()) return;
   const obj = (xoHostPatcher && typeof XO_LAYOUT_NAMES !== "undefined") ? xoHostPatcher.getnamed(XO_LAYOUT_NAMES[id] || id) : null;
   if (obj) obj.message("float", Number(v));
 }
 
+let xoPick = -1;
+/** @type {any} */
+let xoMatch = null;
+/** test_pick <lo ms> <hi ms> <target ms>: the map point whose duration is within lo..hi and closest to target (-1 = none), reported as `pick`. */
+function test_pick(lo, hi, target) {
+  if (xoTestSkip()) return;
+  let best = Infinity;
+  xoPick = -1;
+  for (let i = 0; i < points.length; i++) {
+    const d = points[i].durationMs;
+    if (d >= Number(lo) && d <= Number(hi) && Math.abs(d - Number(target)) < best) { best = Math.abs(d - Number(target)); xoPick = i; }
+  }
+}
+/** test_match <word>: how many map names contain the word (name match like the node's search), reported as `match`. */
+function test_match(word) {
+  if (xoTestSkip()) return;
+  const w = String(word).toLowerCase();
+  let n = 0;
+  for (let i = 0; i < points.length; i++) {
+    if (String(points[i].name).toLowerCase().replace(/[_\-./\\]+/g, " ").includes(w)) n++;
+  }
+  xoMatch = { word: w, matching: n, total: points.length };
+}
+
+/** test_search <text>: sets the Filters section's search text the way the textedit chain does (v8ui filter + node engine). */
+function test_search(...words) {
+  if (xoTestSkip()) return;
+  const q = words.join(" ");
+  strip_filter_search(q);
+  outlet(0, "set_search", q);
+}
+
+/** Clicks a toolbar button by id ("cat_kick", "sim_next", ...) the way a user click at its centre would. */
+function test_toolbar(id) {
+  if (xoTestSkip()) return;
+  const lay = getLayout();
+  const idx = TOOLBAR_ITEMS.findIndex((it) => it.id === String(id));
+  if (idx < 0) return;
+  const btnW = lay.mapW / TOOLBAR_ITEMS.length;
+  onclick(btnW * (idx + 0.5), lay.toolbarY + lay.toolbarH * 0.5, 1, 0, 0, 0, 0, 0, null);
+}
+
+/** Options > Searches without the widgets: picker, field text (comma separated), Reset, Match folders. */
+function test_terms_cat(i) { if (xoTestSkip()) return; set_terms_cat(i); }
+function test_terms_text(...a) { if (xoTestSkip()) return; searchesTextTarget = -1; set_terms_text(...a); }
+function test_terms_reset() { if (xoTestSkip()) return; set_terms_reset(1); }
+function test_match_folders(v) { if (xoTestSkip()) return; set_match_folders(v); }
+
+/** Types text into the Searches field and makes it output, through the real widget chain (textedit -> route text -> v8ui). */
+function test_field_text(...a) {
+  if (xoTestSkip()) return;
+  const f = searchesWidget("obj-searches-terms");
+  if (!f) { test_terms_text(...a); return; }
+  f.message("clear");
+  f.message("set", a.join(" "));
+  searchesTextTarget = searchesCatIdx;
+  f.message("bang");
+}
+
+let xoBlobTest = null;
+/** getvalueof -> change the terms -> setvalueof: the terms must come back (what Live does when it saves and reloads a Set). */
+function test_blob() {
+  if (xoTestSkip()) return;
+  const blob = getvalueof();
+  const before = JSON.stringify(searchTerms);
+  const mf = matchFolders;
+  searchTerms = searchTerms.map((t) => t.slice());
+  searchTerms[0] = ["__changed__"];
+  matchFolders = mf ? 0 : 1;
+  setvalueof(blob);
+  xoBlobTest = { blob: blob, restored: JSON.stringify(searchTerms) === before && matchFolders === mf };
+}
+
 function test_select(idx) {
+  if (xoTestSkip()) return;
   outlet(0, "select_index", Number(idx), 1);
 }
 
 function test_replay() {
+  if (xoTestSkip()) return;
   outlet(0, "replay");
 }
 
+/** The text the Searches field holds (null when it has no such attribute / outside the device). */
+function searchesFieldText() {
+  const f = searchesWidget("obj-searches-terms");
+  if (!f) return null;
+  try { return String(f.getattr("text")); } catch (e) { return null; }
+}
+
+/** Per-category counts over the map points and the names the active filters show (for tests). */
+function categoryReport() {
+  const counts = CAT_ID_LIST.map(() => 0);
+  let none = 0;
+  const visible = [];
+  let visibleCount = 0;
+  for (let i = 0; i < points.length; i++) {
+    const pt = points[i];
+    if (!pt) continue;
+    if (isPointVisible(pt)) visibleCount++;
+    if ((pt.mask || 0) === 0) none++;
+    for (let c = 0; c < counts.length; c++) if (pt.mask & (1 << c)) counts[c]++;
+    if (isPointVisible(pt) && visible.length < 400) visible.push([pt.name, pt.mask || 0]);
+  }
+  return { ids: CAT_ID_LIST.slice(), counts: counts, none: none, visibleCount: visibleCount, visible: visible };
+}
+
 function test_report() {
+  if (xoTestSkip()) return;
   const pat = xoHostPatcher;
   /** @type {Object<string, any>} */
   const boxes = {};
@@ -2432,12 +3083,19 @@ function test_report() {
   const sz = mgraphics.size || [0, 0];
   const lay = getLayout();
   const report = {
+    deviceId: xoDeviceId(),
+    isSelected: hotkeyAllowed() ? 1 : 0,
+    detectedSelected: xoIsSelected ? 1 : 0,
+    selectedDeviceId: xoSelectedDeviceId,
+    selForced: xoSelForced,
+    selDebug: xoSelDebug,
     selectedIndex: selectedIndex,
     name: selectedMeta.name,
     durMs: selectedMeta.durationMs,
     nPoints: points.length,
     waveN: waveData ? waveData.n : 0,
     view: getView(),
+    zoomSpeed: zoomSpeed,
     sections: getXoSectionVisibility(),
     options: showOptionsSection,
     theme: getXoThemeName(),
@@ -2455,7 +3113,17 @@ function test_report() {
     raw: xoRaw,
     rawCount: xoRawCount,
     audition: xoAudition,
-    savedCount: savedList.length
+    playhead: getPlayhead(),
+    // The bridge returns at most 32 KB per call: only a sample of the map (names), plus the answers of test_pick / test_match
+    mapCount: points.length,
+    mapNames: points.slice(0, 120).map((pt) => String(pt.name).slice(0, 28)),
+    pick: xoPick,
+    match: xoMatch,
+    savedCount: savedList.length,
+    activeCategory: activeCategory,
+    searches: { terms: searchTerms, matchFolders: matchFolders, catIdx: searchesCatIdx, field: searchesFieldText() },
+    cats: categoryReport(),
+    blobTest: xoBlobTest
   };
   const g = new Global("xo_test");
   const text = JSON.stringify(report);

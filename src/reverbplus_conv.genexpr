@@ -1,0 +1,268 @@
+// reverbplus_conv.genexpr — time-sliced two-stage partitioned convolution (stereo IR, packed FFTs).
+// Prepended (after src/cepstrum_lib.genexpr, whose fft_init / twiddle table `tab` it reuses) to
+// src/reverbplus_start.genexpr by scripts/build_reverbplus.py. Plain functions with Data / Buffer
+// arguments only (they are run in Node by tests/test_reverbplus.js through tests/genexpr_functions.js,
+// and as real gen code by scripts/run_reverbplus_audio_tests.py).
+//
+// out[t] = (IR * x)[t - 256]: the engine delays the wet by LAT = 256 samples (2 * P1), which the
+// Start hides inside the pre-delay.
+//
+//   head stage  block P1 = 128, FFT N1 = 256, 32 partitions = IR[0, 4096). Block m ends at
+//               cn mod 128 == 127; its jobs run during the next block, one job every 4 samples (22 jobs),
+//               and its output (y-times m * 128 ..) is read 256 samples later.
+//   tail stage  block P2 = 2048, FFT N2 = 4096, partitions of IR[4096 + q * 2048 ..). Output block
+//               b = m + 2 depends only on input blocks <= m (H = 2 * P2), so the jobs of block m run during
+//               block m + 1: one job every 8 samples (load, 13 FFT passes, unpack, 33 MAC chunks of 64
+//               bins, 13 inverse passes, output; 62 jobs), long before y-time (m + 2) * 2048 + 256.
+//   One forward FFT per block carries L + jR; unpacked to separate L / R spectra it feeds the frequency
+//   domain delay line (FDL); the accumulated Y_L + j Y_R is packed back for ONE inverse FFT.
+//   No sample runs more than one FFT pass (a pass is at most N / 2 butterflies) or one MAC chunk.
+//
+// Data (sizes): tab(4096, 3) twiddles from fft_init; cvr(8192, 2) input ring; cxh(256, 2) / cxt(4096, 2)
+// work frames; fdh(32 * 129 * 4) / fdt(142 * 2049 * 4) FDL, per bin [Lre, Lim, Rre, Rim]; ohr(512, 2) /
+// otr(8192, 2) output rings; ach(256) MAC chunk accumulator; cout(2) result.
+// irs = the IR spectra (Buffer ---rpirspec or a Data of the same layout): bank b at b * 1163952, head
+// partition p bin k at (p * 129 + k) * 4, tail partition q bin k at 16512 + (q * 2049 + k) * 4.
+// cp(4): 0 bank, 1 head partitions, 2 tail partitions, 3 loaded (0 = no IR: the MAC jobs are skipped).
+//
+// GenExpr: single return at function level, no early return, no identifiers e<digit>.
+
+rpc_mod(x, m) {
+	return x - m * floor(x / m);
+}
+
+// One pass of an in-place radix-2 FFT over n points (n <= 4096, the twiddle table of fft_init):
+// pass 0 = bit reversal, pass p = 1..log2(n) = the butterfly stage with block length 2^p.
+// inv = 1 uses the conjugate kernel and does NOT scale (the caller multiplies by 1 / n).
+rpc_pass(x, tab, n, pass, inv) {
+	if (pass < 0.5) {
+		rdiv = 4096 / n;
+		for (i = 0; i < n; i += 1) {
+			j = tab.peek(i, 2) / rdiv;
+			if (j > i) {
+				tr = x.peek(i, 0);
+				ti = x.peek(i, 1);
+				x.poke(x.peek(j, 0), i, 0);
+				x.poke(x.peek(j, 1), i, 1);
+				x.poke(tr, j, 0);
+				x.poke(ti, j, 1);
+			}
+		}
+	} else {
+		sgn = inv > 0.5 ? -1 : 1;
+		len = floor(pow(2, pass) + 0.5);
+		half = len * 0.5;
+		stp = 4096 / len;
+		for (s = 0; s < n; s += len) {
+			for (k = 0; k < half; k += 1) {
+				wr = tab.peek(k * stp, 0);
+				wi = sgn * tab.peek(k * stp, 1);
+				a = s + k;
+				b = a + half;
+				xr = x.peek(b, 0);
+				xi = x.peek(b, 1);
+				tr = xr * wr - xi * wi;
+				ti = xr * wi + xi * wr;
+				ur = x.peek(a, 0);
+				ui = x.peek(a, 1);
+				x.poke(ur + tr, a, 0);
+				x.poke(ui + ti, a, 1);
+				x.poke(ur - tr, b, 0);
+				x.poke(ui - ti, b, 1);
+			}
+		}
+	}
+	return 0;
+}
+
+// One sample: push (xl, xr), run this sample's job of each stage, write cout = (L, R) of the sum of
+// both stages (y[cn - 256]).
+rpc_tick(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, ach, cout) {
+	w = rpc_mod(cn, 8192);
+	cvr.poke(xl, w, 0);
+	cvr.poke(xr, w, 1);
+	bank = cp.peek(0);
+	nh = cp.peek(1);
+	nt = cp.peek(2);
+	loaded = cp.peek(3);
+	base = bank * 1163952;
+
+	// ---------------- head stage ----------------
+	rh = rpc_mod(cn, 128);
+	if (rh - 4 * floor(rh / 4) < 0.5) {
+		kh = floor(rh / 4);
+		mp = floor(cn / 128) - 1;
+		if (kh == 0) {
+			for (i = 0; i < 256; i += 1) {
+				ix = rpc_mod(cn - 256 + i, 8192);
+				cxh.poke(cvr.peek(ix, 0), i, 0);
+				cxh.poke(cvr.peek(ix, 1), i, 1);
+			}
+		}
+		if (kh == 1) {
+			rpc_pass(cxh, tab, 256, 0, 0);
+		}
+		if (kh >= 2 && kh <= 9) {
+			rpc_pass(cxh, tab, 256, kh - 1, 0);
+		}
+		if (kh == 10) {
+			slot = rpc_mod(mp, 32);
+			for (kk = 0; kk < 129; kk += 1) {
+				nk = kk == 0 ? 0 : 256 - kk;
+				xr0 = cxh.peek(kk, 0);
+				xi0 = cxh.peek(kk, 1);
+				xr1 = cxh.peek(nk, 0);
+				xi1 = cxh.peek(nk, 1);
+				o = (slot * 129 + kk) * 4;
+				fdh.poke((xr0 + xr1) * 0.5, o);
+				fdh.poke((xi0 - xi1) * 0.5, o + 1);
+				fdh.poke((xi0 + xi1) * 0.5, o + 2);
+				fdh.poke(-(xr0 - xr1) * 0.5, o + 3);
+			}
+		}
+		if (kh == 11) {
+			for (kk = 0; kk < 129; kk += 1) {
+				ylr = 0;
+				yli = 0;
+				yrr = 0;
+				yri = 0;
+				if (loaded > 0.5) {
+					for (p = 0; p < nh; p += 1) {
+						sl = rpc_mod(mp - p, 32);
+						xo = (sl * 129 + kk) * 4;
+						ho = base + (p * 129 + kk) * 4;
+						xlr = fdh.peek(xo);
+						xli = fdh.peek(xo + 1);
+						xrr = fdh.peek(xo + 2);
+						xri = fdh.peek(xo + 3);
+						hlr = irs.peek(ho);
+						hli = irs.peek(ho + 1);
+						hrr = irs.peek(ho + 2);
+						hri = irs.peek(ho + 3);
+						ylr += xlr * hlr - xli * hli;
+						yli += xlr * hli + xli * hlr;
+						yrr += xrr * hrr - xri * hri;
+						yri += xrr * hri + xri * hrr;
+					}
+				}
+				cxh.poke(ylr - yri, kk, 0);
+				cxh.poke(yli + yrr, kk, 1);
+				if (kk > 0 && kk < 128) {
+					cxh.poke(ylr + yri, 256 - kk, 0);
+					cxh.poke(yrr - yli, 256 - kk, 1);
+				}
+			}
+		}
+		if (kh == 12) {
+			rpc_pass(cxh, tab, 256, 0, 1);
+		}
+		if (kh >= 13 && kh <= 20) {
+			rpc_pass(cxh, tab, 256, kh - 12, 1);
+		}
+		if (kh == 21) {
+			for (i = 0; i < 128; i += 1) {
+				oi = rpc_mod(mp * 128 + i, 512);
+				ohr.poke(cxh.peek(128 + i, 0) * 0.00390625, oi, 0);
+				ohr.poke(cxh.peek(128 + i, 1) * 0.00390625, oi, 1);
+			}
+		}
+	}
+
+	// ---------------- tail stage ----------------
+	rt = rpc_mod(cn, 2048);
+	if (rt - 8 * floor(rt / 8) < 0.5) {
+		kt = floor(rt / 8);
+		mt = floor(cn / 2048) - 1;
+		if (kt == 0) {
+			for (i = 0; i < 4096; i += 1) {
+				ix = rpc_mod(cn - 4096 + i, 8192);
+				cxt.poke(cvr.peek(ix, 0), i, 0);
+				cxt.poke(cvr.peek(ix, 1), i, 1);
+			}
+		}
+		if (kt == 1) {
+			rpc_pass(cxt, tab, 4096, 0, 0);
+		}
+		if (kt >= 2 && kt <= 13) {
+			rpc_pass(cxt, tab, 4096, kt - 1, 0);
+		}
+		if (kt == 14) {
+			slot = rpc_mod(mt, 142);
+			for (kk = 0; kk < 2049; kk += 1) {
+				nk = kk == 0 ? 0 : 4096 - kk;
+				xr0 = cxt.peek(kk, 0);
+				xi0 = cxt.peek(kk, 1);
+				xr1 = cxt.peek(nk, 0);
+				xi1 = cxt.peek(nk, 1);
+				o = (slot * 2049 + kk) * 4;
+				fdt.poke((xr0 + xr1) * 0.5, o);
+				fdt.poke((xi0 - xi1) * 0.5, o + 1);
+				fdt.poke((xi0 + xi1) * 0.5, o + 2);
+				fdt.poke(-(xr0 - xr1) * 0.5, o + 3);
+			}
+		}
+		if (kt >= 15 && kt <= 47) {
+			k0 = (kt - 15) * 64;
+			cntb = min(64, 2049 - k0);
+			for (i = 0; i < cntb * 4; i += 1) {
+				ach.poke(0, i);
+			}
+			if (loaded > 0.5) {
+				for (q = 0; q < nt; q += 1) {
+					sl = rpc_mod(mt - q, 142);
+					xo = (sl * 2049 + k0) * 4;
+					ho = base + 16512 + (q * 2049 + k0) * 4;
+					for (kk = 0; kk < cntb; kk += 1) {
+						j4 = kk * 4;
+						xlr = fdt.peek(xo + j4);
+						xli = fdt.peek(xo + j4 + 1);
+						xrr = fdt.peek(xo + j4 + 2);
+						xri = fdt.peek(xo + j4 + 3);
+						hlr = irs.peek(ho + j4);
+						hli = irs.peek(ho + j4 + 1);
+						hrr = irs.peek(ho + j4 + 2);
+						hri = irs.peek(ho + j4 + 3);
+						ach.poke(ach.peek(j4) + xlr * hlr - xli * hli, j4);
+						ach.poke(ach.peek(j4 + 1) + xlr * hli + xli * hlr, j4 + 1);
+						ach.poke(ach.peek(j4 + 2) + xrr * hrr - xri * hri, j4 + 2);
+						ach.poke(ach.peek(j4 + 3) + xrr * hri + xri * hrr, j4 + 3);
+					}
+				}
+			}
+			for (kk = 0; kk < cntb; kk += 1) {
+				j4 = kk * 4;
+				ylr = ach.peek(j4);
+				yli = ach.peek(j4 + 1);
+				yrr = ach.peek(j4 + 2);
+				yri = ach.peek(j4 + 3);
+				bk = k0 + kk;
+				cxt.poke(ylr - yri, bk, 0);
+				cxt.poke(yli + yrr, bk, 1);
+				if (bk > 0 && bk < 2048) {
+					cxt.poke(ylr + yri, 4096 - bk, 0);
+					cxt.poke(yrr - yli, 4096 - bk, 1);
+				}
+			}
+		}
+		if (kt == 48) {
+			rpc_pass(cxt, tab, 4096, 0, 1);
+		}
+		if (kt >= 49 && kt <= 60) {
+			rpc_pass(cxt, tab, 4096, kt - 48, 1);
+		}
+		if (kt == 61) {
+			for (i = 0; i < 2048; i += 1) {
+				oi = rpc_mod((mt + 2) * 2048 + i, 8192);
+				otr.poke(cxt.peek(2048 + i, 0) * 0.000244140625, oi, 0);
+				otr.poke(cxt.peek(2048 + i, 1) * 0.000244140625, oi, 1);
+			}
+		}
+	}
+
+	// ---------------- output: y[cn - 256] ----------------
+	ih = rpc_mod(cn - 256, 512);
+	it = rpc_mod(cn - 256, 8192);
+	cout.poke(ohr.peek(ih, 0) + otr.peek(it, 0), 0);
+	cout.poke(ohr.peek(ih, 1) + otr.peek(it, 1), 1);
+	return 0;
+}

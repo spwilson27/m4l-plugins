@@ -32,6 +32,8 @@ function ok(name, fn) {
 // ----------------------------------------------------------------------------- token substitution (twin of scripts/glitch_common.py)
 function tokensFor() {
     const t = { NP: L.np, WOFF: L.weightsOffset, SVSIZE: L.np * G.GL_NSLOT, SQOFF: L.seqOffset, METAOFF: L.metaOffset, DEFOFF: L.defsOffset, WBOFF: L.wbOffset, NINST: L.ninst };
+    Object.assign(t, { MINOFF: L.minsOffset, MAXOFF: L.maxsOffset, MVBASE: L.mvBase, MVN: L.mvN, MSTN: 8 * L.ninst, MTN: 4 * L.ninst });
+    for (const [k, v] of Object.entries(L.mv)) t["MV_" + k.toUpperCase()] = v;
     for (const i of L.instances) t[`B_${i.id}`] = i.base;
     L.instances.forEach((i, pos) => (t[`P_${i.id}`] = pos));
     for (const [k, v] of Object.entries(L.index)) t["I_" + k.replace(".", "_")] = v;
@@ -83,7 +85,9 @@ ok("registry", () => {
 });
 
 ok("layout has no overlaps and matches the buffer", () => {
-    assert.strictEqual(L.np, 113);
+    assert.strictEqual(L.mvBase, 113, "the 113 module params come first, the movement blocks after them");
+    assert.strictEqual(L.np, 113 + 23 * L.mvN);
+    assert.strictEqual(L.mvN, 13 + 16);
     const seen = new Set();
     L.params.forEach((p, i) => {
         assert.strictEqual(p.idx, i);
@@ -98,7 +102,8 @@ ok("layout has no overlaps and matches the buffer", () => {
     assert.strictEqual(L.weightsOffset, 8 * L.np);
     assert.strictEqual(L.seqOffset, L.weightsOffset + 8);
     assert.ok(L.seqOffset + G.GL_SEQ_HDR + G.GL_SEQ_MAX <= G.GL_SLOTS_BUF_SAMPS, "sequencer block fits the engine buffer");
-    assert.strictEqual(G.GL_SLOTS_BUF_SAMPS, 1280);
+    assert.ok(L.endOffset <= G.GL_SLOTS_BUF_SAMPS, `constants end at ${L.endOffset}, buffer ${G.GL_SLOTS_BUF_SAMPS}`);
+    assert.strictEqual(G.GL_SLOTS_BUF_SAMPS, 9472);
     // spectral param order that the core's main body hard-codes (B_spec + n)
     const keys = G.glInstance("spec").params.map((p) => p.key);
     assert.deepStrictEqual(keys, ["wet", "frz_amt", "frz_rate", "smr_amt", "smr_blur", "cc_amt", "cc_coeffs", "cc_bits", "sc_amt", "sc_mode", "sct_amt", "sct_w", "sct_rate", "mir_amt", "mir_pivot", "bsh_amt", "bsh_bins", "sgl_amt", "sgl_mode", "sgl_k", "sgl_step"]);
@@ -113,7 +118,7 @@ ok("layout has no overlaps and matches the buffer", () => {
     assert.strictEqual(G.glInstance("gpit").params.length, G.glInstance("gstr").params.length);
     // scope offsets do not overlap
     const S = G.GL_SCOPE;
-    const blocks = [["ACTIVITY", G.GL_NINST], ["LEVEL", G.GL_NINST], ["WEIGHTS", 8], ["BANDS_IN", 64], ["BANDS_OUT", 64], ["CEP_IN", 64], ["CEP_OUT", 64], ["WAVE_IN", 64], ["WAVE_OUT", 64]];
+    const blocks = [["ACTIVITY", G.GL_NINST], ["LEVEL", G.GL_NINST], ["MOVE_ON", G.GL_NINST], ["MOVE_OFS", G.GL_NINST], ["MOVE_POS", G.GL_NINST], ["MOVE_PH", G.GL_NINST], ["WEIGHTS", 8], ["BANDS_IN", 64], ["BANDS_OUT", 64], ["CEP_IN", 64], ["CEP_OUT", 64], ["WAVE_IN", 64], ["WAVE_OUT", 64]];
     const used = new Array(G.GL_SCOPE_SAMPS).fill(null);
     for (const [k, v] of Object.entries(S)) {
         if (k === "END") continue;
@@ -221,7 +226,7 @@ ok("mutate stays near and is deterministic", () => {
         const va = G.glitchToVector(g), vb = G.glitchToVector(m);
         let changed = 0;
         L.params.forEach((p, i) => {
-            if (p.kind === "disc") return;
+            if (p.kind === "disc" || p.mv !== undefined) return; // movement has its own test below
             const span = p.kind === "log" ? Math.log(p.max / p.min) : p.max - p.min;
             const d = p.kind === "log" ? Math.abs(Math.log(Math.max(vb[i], p.min) / Math.max(va[i], p.min))) : Math.abs(vb[i] - va[i]);
             assert.ok(d <= 0.2 * 0.5 * span + 1e-9 || (p.kind === "wet" && d <= 0.2 * 0.35 + 1e-9), `${p.inst}.${p.key} moved ${d / span}`);
@@ -652,7 +657,7 @@ ok("allow-list covers every new module: only that type is rolled, and it is roll
     for (const id of ["form", "comb", "phas", "rect", "fm", "corr", "gpit", "gstr", "rvs", "shuf", "slap"]) assert.ok(hit.has(id), `${id} is rolled by Randomize`);
 });
 
-ok("state migration v2 -> v3: new modules absent, sequence empty, old values map to the grown vector", () => {
+ok("state migration v2 -> v4: new modules absent, sequence empty, no movement, old values map to the grown vector", () => {
     const oldSlot = {
         version: 1, name: "old", seed: 3,
         modules: {
@@ -667,15 +672,16 @@ ok("state migration v2 -> v3: new modules absent, sequence empty, old values map
         chaos: 0.7, xy: [0.2, 0.9], working: oldSlot, audition: "morph", seed: 9, ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" },
     };
     const t = G.stateFromBlob([2, JSON.stringify(v2)]);
-    assert.strictEqual(t.version, 3);
+    assert.strictEqual(t.version, 4);
     assert.deepStrictEqual(t.seq, G.defaultSeq());
     assert.ok(t.seq.steps.every((x) => x === -1), "the sequence is empty");
     assert.strictEqual(t.audition, "morph");
     assert.strictEqual(t.allow.filter, false);
     assert.strictEqual(t.allow.gpitch, true, "new types start allowed");
-    assert.strictEqual(Object.keys(t.allow).length, G.GL_TYPES.length);
+    assert.strictEqual(Object.keys(t.allow).length, G.GL_ALLOW_ITEMS.length);
+    assert.strictEqual(t.allow.mv_lfo, true, "the movement kinds start allowed");
     const vec = G.glitchToVector(t.slots[0]);
-    assert.strictEqual(vec.length, 113);
+    assert.strictEqual(vec.length, L.np);
     assert.strictEqual(vec[L.index["filt.cutoff"]], 300);
     assert.strictEqual(vec[L.index["spec.cc_bits"]], 8);
     assert.strictEqual(vec[L.index["rev.void"]], 0.1);
@@ -837,11 +843,14 @@ ok("packEngineBuffer: the sequencer block (mode header + 16 steps) and Seq mode 
     assert.strictEqual(buf[L.seqOffset], 0, "Working");
     s.audition = "seq";
     buf = G.packEngineBuffer(s);
-    assert.deepStrictEqual(buf.slice(L.seqOffset, L.seqOffset + 8), [2, 4, 2, 0.3, 1, 0, 0, 0]);
+    assert.deepStrictEqual(buf.slice(L.seqOffset, L.seqOffset + 5).concat(buf.slice(L.seqOffset + 6, L.seqOffset + 8)), [2, 4, 2, 0.3, 1, 0, 0]);
+    assert.ok(buf[L.seqOffset + 5] >= 1, "SEQ+5 = the pack version");
+    const ver0 = buf[L.seqOffset + 5];
+    assert.ok(G.packEngineBuffer(s)[L.seqOffset + 5] !== ver0, "every pack changes the version (gen re-reads the vectors when it moves)");
     assert.deepStrictEqual(buf.slice(L.seqOffset + 8, L.seqOffset + 12), [0, 3, -1, 3]);
     assert.deepStrictEqual(buf.slice(0, L.np), G.glitchToVector(s.slots[0]), "Seq mode writes the saved slots, not the working glitch");
     assert.deepStrictEqual(buf.slice(3 * L.np, 4 * L.np), G.glitchToVector(s.slots[3]));
-    assert.strictEqual(buf.length, 1280);
+    assert.strictEqual(buf.length, G.GL_SLOTS_BUF_SAMPS);
     // setters clamp
     G.setSeqLength(s, 99); G.setSeqRate(s, -3); G.setSeqGlide(s, 7); G.setSeqStep(s, 15, 5); G.setSeqStep(s, 99, 5);
     assert.strictEqual(s.seq.length, 16); assert.strictEqual(s.seq.rate, 0); assert.strictEqual(s.seq.glide, 1); assert.strictEqual(s.seq.steps[15], 5);
@@ -1286,7 +1295,7 @@ ok("python and node substitute the core identically", () => {
 });
 ok("engine constants block: meta codes, defaults and wet indices in the buffer match the layout", () => {
     const c = G.glitchEngineConstants();
-    assert.strictEqual(c.length, 2 * L.np + L.ninst);
+    assert.strictEqual(c.length, 4 * L.np + L.ninst);
     const meta = G.glitchMeta();
     for (let i = 0; i < L.np; i++) {
         const code = c[i];
@@ -1298,7 +1307,16 @@ ok("engine constants block: meta codes, defaults and wet indices in the buffer m
     for (let k = 0; k < L.ninst; k++) assert.strictEqual(c[2 * L.np + k], L.instances[k].wet);
     assert.strictEqual(L.defsOffset, L.metaOffset + L.np);
     assert.strictEqual(L.wbOffset, L.defsOffset + L.np);
-    assert.ok(L.wbOffset + L.ninst <= G.GL_SLOTS_BUF_SAMPS);
+    assert.strictEqual(L.minsOffset, L.wbOffset + L.ninst);
+    assert.strictEqual(L.maxsOffset, L.minsOffset + L.np);
+    assert.strictEqual(L.endOffset, L.maxsOffset + L.np);
+    for (let i = 0; i < L.np; i++) {
+        assert.strictEqual(c[2 * L.np + L.ninst + i], L.params[i].min, `min of param ${i}`);
+        assert.strictEqual(c[3 * L.np + L.ninst + i], L.params[i].max, `max of param ${i}`);
+        assert.strictEqual(meta[i][3], L.params[i].min);
+        assert.strictEqual(meta[i][4], L.params[i].max);
+    }
+    assert.ok(L.endOffset <= G.GL_SLOTS_BUF_SAMPS);
     const buf = G.packEngineBuffer(G.defaultState());
     assert.deepStrictEqual(buf.slice(L.metaOffset, L.metaOffset + c.length), c);
     assert.ok(buf.slice(L.metaOffset + c.length).every((x) => x === 0), "nothing after the constants");
@@ -1335,7 +1353,7 @@ function hitMapsFor(ui) {
     const sets = [];
     for (const nTiles of [0, 1, 3, 4, 5, 8, 9, 12, 13, 24, 30]) {
         const pages = G.glitchViewLayout(nTiles, Lo.view, 0).pages;
-        for (let page = 0; page < pages; page++) for (const nRows of [0, 1, 5, 10]) sets.push({ nTiles, page, nRows, map: G.glitchHitMap(ui, nTiles, nRows, page) });
+        for (let page = 0; page < pages; page++) for (const nRows of [0, 1, 5, FACE.MAX_ROWS]) for (const mv of [0, 1, 2, 3]) sets.push({ nTiles, page, nRows, map: G.glitchHitMap(ui, nTiles, nRows, page, mv) });
     }
     return { Lo, sets };
 }
@@ -1392,8 +1410,9 @@ ok("layout: Options has a category list and one toggle per type; every category 
     const closed = new Set(G.glitchHitMap({ options: 0 }, 4, 0).map((m) => m.id));
     for (const id of ["pad", "tile0", "act_dice", "act_mutate", "act_chaos", "act_opt", "act_ab"]) assert.ok(closed.has(id), id);
     const cats = G.glitchOptionCategories();
-    assert.deepStrictEqual(cats.map((c) => c.name), ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility"]);
-    assert.strictEqual(cats.reduce((n, c) => n + c.types.length, 0), G.GL_TYPES.length, "every type is in exactly one category");
+    assert.deepStrictEqual(cats.map((c) => c.name), ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility", "Movement"]);
+    assert.strictEqual(cats.reduce((n, c) => n + c.types.length, 0), G.GL_ALLOW_ITEMS.length, "every type (and movement kind) is in exactly one category");
+    assert.deepStrictEqual(cats[7].types.map((i) => G.GL_ALLOW_ITEMS[i].id), ["mv_lfo", "mv_steps", "mv_env"]);
     assert.ok(cats.every((c) => c.types.length >= 1 && c.types.length <= 8));
     const seenTypes = new Set();
     for (let cat = 0; cat < cats.length; cat++) {
@@ -1404,11 +1423,11 @@ ok("layout: Options has a category list and one toggle per type; every category 
         for (let c = 0; c < cats.length; c++) assert.ok(open.includes("optcat_tg" + c) && open.includes("optcat_sel" + c));
         for (const id of ["opt_all", "opt_close", "tg_editor", "tg_seq", "side_mix"]) assert.ok(open.includes(id), id);
     }
-    assert.strictEqual(seenTypes.size, G.GL_TYPES.length);
+    assert.strictEqual(seenTypes.size, G.GL_ALLOW_ITEMS.length);
     const O = G.glitchOptionsLayout(FACE.MARGIN);
-    assert.ok(G.glInside(O.note, O.panel) && O.cats.length === 7 && O.slots.length === 8);
-    // the category rows stay above the note line and are at least 14 px tall; the type rows are at least 20 px tall
-    assert.ok(O.cats.every((c) => c.select.h >= 14 && c.toggle.h >= 14 && c.select.y + c.select.h <= O.note.y));
+    assert.ok(G.glInside(O.note, O.panel) && O.cats.length === 8 && O.slots.length === 8);
+    // the 8 category rows (left column) are at least 14 px tall and inside the panel; the note line sits under the type column, clear of them; the type rows are at least 20 px tall
+    assert.ok(O.cats.every((c) => c.select.h >= 14 && c.toggle.h >= 14 && G.glInside(c.select, O.panel) && !G.glOverlap(c.select, O.note) && !G.glOverlap(c.toggle, O.note)));
     assert.ok(O.slots.every((r) => r.h >= 20 && G.glInside(r, O.panel) && r.y + r.h <= O.note.y));
     // category state helpers
     const st = G.defaultState();
@@ -1422,7 +1441,7 @@ ok("layout: Options has a category list and one toggle per type; every category 
     assert.strictEqual(G.glitchCategoryState(st, 4), 1);
     // optCat survives normalizeUi and is clamped
     assert.strictEqual(G.normalizeUi({ optCat: 5 }).optCat, 5);
-    assert.strictEqual(G.normalizeUi({ optCat: 99 }).optCat, 6);
+    assert.strictEqual(G.normalizeUi({ optCat: 99 }).optCat, 7);
     assert.strictEqual(G.normalizeUi({ optCat: -3 }).optCat, 0);
 });
 
@@ -1612,14 +1631,14 @@ ok("allow-list: toggles gate Randomize and Mutate", () => {
 });
 
 ok("state versioning: v3 carries ui and seq, v1 and damaged blobs still load", () => {
-    assert.strictEqual(G.GL_STATE_VERSION, 3);
+    assert.strictEqual(G.GL_STATE_VERSION, 4);
     const s = G.defaultState();
     s.ui.editor = 1; s.ui.slots = 0; s.ui.options = 1; s.ui.seq = 1;
     s.working = G.randomizeGlitch(4, 0.5);
     s.ui.sel = G.glitchTiles(G.glitchToVector(s.working))[0].key;
     G.glitchToggleLock(s.working, s.ui.sel);
     const blob = G.stateToBlob(s);
-    assert.strictEqual(blob[0], 3);
+    assert.strictEqual(blob[0], 4);
     const back = G.stateFromBlob(blob);
     assert.strictEqual(back.ui.editor, 1); assert.strictEqual(back.ui.slots, 0); assert.strictEqual(back.ui.options, 1);
     assert.strictEqual(back.ui.seq, 1, "the sequencer section flag round-trips (the sequencer section opens again)");
@@ -1635,7 +1654,7 @@ ok("state versioning: v3 carries ui and seq, v1 and damaged blobs still load", (
     assert.strictEqual(old.chaos, 0.7);
     // garbage ui values are sanitized; a selection that is not a tile is dropped
     const bad = G.normalizeState({ ui: { editor: "yes", slots: 0, options: 5, sel: "bogus" } });
-    assert.deepStrictEqual(bad.ui, { editor: 1, slots: 0, seq: 0, options: 1, sel: "", optCat: 0 });
+    assert.deepStrictEqual(bad.ui, { editor: 1, slots: 0, seq: 0, options: 1, sel: "", optCat: 0, edTab: 0 });
     assert.deepStrictEqual(G.stateFromBlob([2, "{not json"]).ui, G.defaultUi());
     assert.deepStrictEqual(G.stateFromBlob([]).ui, G.defaultUi());
     // an unknown lock key is dropped

@@ -16,6 +16,11 @@
  *             for a LAST-chain edit going back (both directions), an enum parameter, and Size
  *   once      each edit bumps the group's version counter by exactly 1 (no re-publishing) and nothing moves in the next 2.5 s
  *   mix/frac  Mix (every device) and a fractional float (Freq Split Splits 7.5, Transient Decay 12.5, ...) propagate with their value intact
+ *   squares   (Harmonic Split only) generated WAVs (naive square 220 Hz mono 44.1 kHz, square 110 Hz on the LEFT channel only at 48 kHz,
+ *             square 440 Hz, triangle 220 Hz) are made in the VM over ssh, dropped on slot 1.. and played: every chain's f0
+ *             telemetry must lock within 1 % of the true pitch (regression: a square wave never reached the accept); and the C1 square
+ *             (32.7 Hz) with Low 156.1 Hz / High 2.9 kHz / Every 8th / Size 2k: every chain reports ROOT 163.5 Hz (f0 slot), series f0
+ *             32.7 Hz and root harmonic 5 (the band is set on chain 0 over the link and restored afterwards)
  *   output    Output is NOT linked: setting it on one instance leaves the others unchanged, and that gen's output selection follows
  *   restore   every parameter is put back at its initial value
  *
@@ -79,6 +84,45 @@ const HELPERS = `
     }
 `;
 const lom = (code) => evalLom(HELPERS + code);
+
+// ---- Harmonic Split: periodic test waves made in the VM (stdlib python over ssh), played from clip slots ----
+function vmIp() {
+    for (const args of [["ip", "macos-1"], ["ip", "--resolver=arp", "macos-1"]]) {
+        try { const ip = execFileSync("tart", args, { encoding: "utf8" }).trim(); if (ip) return ip; } catch (e) { /* try the next resolver */ }
+    }
+    return null;
+}
+function makeWaves(waves) {
+    const ip = vmIp();
+    if (!ip) throw new Error("no VM ip (tart ip macos-1)");
+    const py = `
+import wave, struct, math, sys, json
+for w in json.loads(sys.argv[1]):
+    sr, f0, kind, amp, ch, secs = w["sr"], w["f0"], w["kind"], w["amp"], w["ch"], w["secs"]
+    f = wave.open(w["path"], "wb"); f.setnchannels(ch); f.setsampwidth(2); f.setframerate(sr)
+    frames = bytearray()
+    for i in range(int(sr * secs)):
+        t = (f0 * i / sr) % 1.0
+        v = (1.0 if t < 0.5 else -1.0) if kind == "square" else (4 * t - 1 if t < 0.5 else 3 - 4 * t)
+        a = int(max(-1, min(1, amp * v)) * 32767)
+        frames += struct.pack("<h", a) if ch == 1 else struct.pack("<hh", a, 0)
+    f.writeframes(bytes(frames)); f.close()
+print("ok")
+`;
+    const out = execFileSync("sshpass", ["-e", "ssh", "-o", "StrictHostKeyChecking=accept-new", `admin@${ip}`, "/usr/bin/python3", "-", `'${JSON.stringify(waves)}'`],
+        { encoding: "utf8", input: py, env: Object.assign({}, process.env, { SSHPASS: process.env.SSHPASS || "admin" }) });
+    return out.trim() === "ok";
+}
+const SQUARE_WAVES = [
+    { path: "/tmp/hs_sq220.wav", sr: 44100, f0: 220, kind: "square", amp: 0.25, ch: 1, secs: 8, label: "square 220 Hz mono 44.1 kHz" },
+    { path: "/tmp/hs_sq110L.wav", sr: 48000, f0: 110, kind: "square", amp: 0.25, ch: 2, secs: 8, label: "square 110 Hz hard left 48 kHz" },
+    { path: "/tmp/hs_sq440.wav", sr: 44100, f0: 440, kind: "square", amp: 0.1, ch: 1, secs: 8, label: "square 440 Hz mono -20 dB" },
+    { path: "/tmp/hs_tri220.wav", sr: 44100, f0: 220, kind: "tri", amp: 0.25, ch: 1, secs: 8, label: "triangle 220 Hz mono" },
+    // the user's report: a C1 square (odd harmonics only), Low 156.1 Hz, High 2.90 kHz, Every 8th, Size 2k: ROOT = lowest partial inside the band
+    // (5th harmonic, 163.5 Hz), series f0 32.7 Hz below the band
+    { path: "/tmp/hs_c1sq.wav", sr: 48000, f0: 32.7, kind: "square", amp: 0.25, ch: 1, secs: 8, label: "C1 square 32.7 Hz mono 48 kHz (Low 156.1 / High 2900 / Every 8th / 2k)", root: 163.5, rootH: 5,
+      band: { "Low Cut": 156.1, "High Cut": 2900, "Pattern": 7, "Size": 1 } },
+];
 
 function runDevice(dev) {
     const cfg = require(path.join(__dirname, "..", "src", dev.slug + "_config.js"));
@@ -172,6 +216,63 @@ function runDevice(dev) {
         sleep(150);
     }
     check(meter > 0.02, `${tag} track output meter ${meter.toFixed(3)} > 0.02`);
+
+    if (dev.slug === "harmsplit") {
+        // periodic waves with missing harmonics: every chain's detector must lock within 1 % of the true pitch
+        let made = false;
+        try { made = makeWaves(SQUARE_WAVES); } catch (e) { console.log("      " + e.message); }
+        check(made, `${tag} test waves written in the VM`);
+        if (made) {
+            lom(`var s = new LiveAPI("live_set"); while (s.getcount("scenes") < ${SQUARE_WAVES.length + 1}) s.call("create_scene", -1); return s.getcount("scenes");`);
+            const IDXH = [cfg.HS_SC_F0, cfg.HS_SC_CONF, cfg.HS_SC_VOICED, cfg.HS_SC_SR, cfg.HS_SC_SERIES, cfg.HS_SC_ROOTH, cfg.HS_SC_ODD];
+            const chain0 = info.chains[0].path;
+            SQUARE_WAVES.forEach((w, wi) => {
+                const slot = wi + 1;
+                // a wave with its own detection band: set it on the first chain (linked to the others), restore it afterwards
+                const saved = {};
+                if (w.band) {
+                    for (const name of Object.keys(w.band)) {
+                        saved[name] = lom(`return getVal(${JSON.stringify(chain0)}, ${JSON.stringify(name)});`);
+                        // Low Cut / High Cut carry parameter_exponent 3 (the LOM value is the unwarped position): device = lo + span * x^3
+                        const warped = name === "Low Cut" || name === "High Cut";
+                        const lomV = warped ? 19.4 + 19880.6 * Math.pow((w.band[name] - 19.4) / 19880.6, 1 / 3) : w.band[name];
+                        lom(`return setVal(${JSON.stringify(chain0)}, ${JSON.stringify(name)}, ${lomV});`);
+                    }
+                    sleep(1500);
+                }
+                const ok = lom(`
+                    var slot = new LiveAPI("live_set tracks ${info.track} clip_slots ${slot}");
+                    if (Number(slot.get("has_clip")) === 0) { try { slot.call("create_audio_clip", ${JSON.stringify(w.path)}); } catch (e) { return "create_audio_clip: " + e; } }
+                    if (Number(slot.get("has_clip")) === 0) return "clip not created";
+                    new LiveAPI("live_set tracks ${info.track} clip_slots ${slot} clip").set("looping", 1);
+                    slot.call("fire");
+                    return "ok";`);
+                if (check(ok === "ok", `${tag} ${w.label}: clip playing (${ok})`)) {
+                    const want = w.root || w.f0;
+                    let f0s = [], last = [];
+                    for (let i = 0; i < 30; i++) {
+                        sleep(300);
+                        last = peers.map((p) => lom(`return scopeVals(${JSON.stringify(p.scope)}, ${JSON.stringify(IDXH)});`));
+                        f0s = last.map((v) => v[0]);
+                        if (f0s.every((f) => Math.abs(f / want - 1) < 0.01)) break;
+                    }
+                    check(f0s.every((f) => Math.abs(f / want - 1) < 0.01),
+                        `${tag} ${w.label}: ${w.root ? "ROOT" : "f0"} telemetry on every chain within 1 % of ${want} Hz: [${f0s.map((f) => f.toFixed(2))}] (series [${last.map((v) => v[4].toFixed(2))}], root harmonic [${last.map((v) => v[5])}], odd-only [${last.map((v) => v[6])}], salience [${last.map((v) => v[1].toFixed(2))}], voiced [${last.map((v) => v[2].toFixed(2))}], gen sr ${last[0][3]})`);
+                    if (w.root) check(last.every((v) => Math.abs(v[4] / w.f0 - 1) < 0.01 && v[5] === w.rootH),
+                        `${tag} ${w.label}: series f0 ${w.f0} Hz and root harmonic ${w.rootH} on every chain: [${last.map((v) => v[4].toFixed(2) + "/h" + v[5])}]`);
+                }
+                if (w.band) {
+                    for (const name of Object.keys(w.band)) lom(`return setVal(${JSON.stringify(chain0)}, ${JSON.stringify(name)}, ${saved[name]});`);
+                    sleep(1500);
+                }
+            });
+            lom(`new LiveAPI("live_set tracks ${info.track}").call("stop_all_clips"); return 1;`);
+            sleep(500);
+            // put the drum loop back for the rest of the test
+            lom(`new LiveAPI("live_set tracks ${info.track} clip_slots 0").call("fire"); return 1;`);
+            sleep(1500);
+        }
+    }
 
     // link
     const get = (chain, name) => lom(`return getVal(${JSON.stringify(info.chains[chain].path)}, ${JSON.stringify(name)});`);

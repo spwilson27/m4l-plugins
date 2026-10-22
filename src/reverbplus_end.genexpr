@@ -1,0 +1,269 @@
+// Reverb+ End — mixes dry and processed wet. Sits after the user FX in the same rack chain as Reverb+ (Start).
+//
+// in1/in2 = the reverb wet coming out of the FX chain.
+//   * written back into `xfer` ch2/3 at End's counter index as the outer loop return (Start adds
+//     Loop x return into its tank input after the loop delay, see reverbplus_start.genexpr)
+//   * ducking and output gain, then mixed (equal power) with the dry signal.
+// dry = Start's input from `xfer` ch0/1, read at Start-frame index (cE + K - L): the same slice
+//   position minus the chain latency, so dry lines up with the wet that went through the chain
+//   (Live's PDC then delays the whole track by L).
+//
+// K = counter offset, calibrated from the audio (cross-correlation of chain output against Start's
+//   tap, see below), anchored on the held minimum of (cS_latest - cE); hdr[2], hdr[18] = calibrated.
+// Unlinked (no Start counter moving): pass the input through untouched.
+//
+// Buffers are bound by name to the Start instance by the End UI script (`xfer <name>`,
+// `hdr <name>`); until then they point at End's own empty buffers.
+//
+// scope (End UI telemetry, 32 samples, every 64 samples):
+//   0 linked 1 K 2 L 4 wet peak 5 dry peak 6 duck gain 7 frame counter 8 B 9 / 10 out peak L / R
+
+wd(x, m) {
+	y = x;
+	if (y >= m * 0.5) y = y - m;
+	if (y < -m * 0.5) y = y + m;
+	return y;
+}
+
+Buffer xfer("rpxferE");
+Buffer hdr("rphdrE");
+Buffer scope("rpscopeE");
+
+History cnt(0);
+History lastCs(-1);
+History deadCnt(1e9);
+Data cin(8192);
+Data acc(128);
+History pmono(0);
+History cAnchor(1e9);
+History cLat(-1);
+History cN(0);
+History cEx(0);
+History cEt(0);
+History kCand(1e9);
+History kCal(0);
+History calOk(0);
+History kCur(1e9);
+History km1(1e9);
+History km2(1e9);
+History km3(1e9);
+History km4(1e9);
+History km5(1e9);
+History km6(1e9);
+History km7(1e9);
+History km8(1e9);
+History kWin(0);
+History eLo(1e9);
+History eHi(-1e9);
+History env(0);
+History dg(1);
+History gw(0);
+History gd(1);
+History link(0);
+History tick(0);
+History frames(0);
+History pkW(0);
+History pkD(0);
+History pkOL(0);
+History pkOR(0);
+
+age = 0;
+j = 0;
+tv = 0;
+av = 0;
+best = 0;
+bestV = 0;
+second = 0;
+norm = 0;
+cand = 0;
+M = 4194304;
+RING = 65536;
+sr = max(samplerate, 1);
+
+cn = wrap(cnt + 1, 0, M);
+cnt = cn;
+poke(hdr, cn, 1);
+cs = peek(hdr, 0);
+if (cs != lastCs) {
+	deadCnt = 0;
+} else {
+	deadCnt = deadCnt + 1;
+}
+lastCs = cs;
+alive = deadCnt < 8192;
+poke(hdr, alive, 15);
+
+// K = the counter offset: End's sample cE carries Start's sample cE + K. End can never consume a
+// sample Start has not produced, so (cS_latest - cE) >= K always, and the minimum is reached when
+// End runs right after Start in the same vector. Live/Max does not do that every vector (measured:
+// Start may run up to two vectors ahead), so window minima are held for 8 windows (~3 s); a lower
+// value is adopted at once, and the hold resets when Start's counter stops (re-link / device off).
+rE = wd(cs - cn, M);
+kCur = min(kCur, rE);
+eLo = min(eLo, rE);
+eHi = max(eHi, rE);
+kWin = kWin + 1;
+if (kWin >= 16384) {
+	poke(hdr, eLo, 22);
+	poke(hdr, eHi, 23);
+	eLo = 1e9;
+	eHi = -1e9;
+	km8 = km7;
+	km7 = km6;
+	km6 = km5;
+	km5 = km4;
+	km4 = km3;
+	km3 = km2;
+	km2 = km1;
+	km1 = kCur;
+	kCur = 1e9;
+	kWin = 0;
+}
+if (!alive) {
+	kCur = 1e9;
+	km1 = 1e9;
+	km2 = 1e9;
+	km3 = 1e9;
+	km4 = 1e9;
+	km5 = 1e9;
+	km6 = 1e9;
+	km7 = 1e9;
+	km8 = 1e9;
+}
+anchor = min(min(min(kCur, km1), min(km2, km3)), min(min(km4, km5), min(min(km6, km7), km8)));
+if (anchor > 1e8) anchor = 0;
+ll = peek(hdr, 4);
+
+// ---- K calibration through the audio path ---------------------------------------------------
+// The counter statistics only bound K: measured in Live, runs with identical statistics had K
+// differing by 31 samples. The truth is in the audio: End's input at cE is Start's tap at
+// cE + K - L. Every CAL_N samples, cross-correlate the whitened chain output (cin, delayed by
+// CAL_D so every read is long written) against Start's whitened tap (xfer ch4) for the CAL_LAGS
+// candidates K = anchor - CAL_OFF + j. A peak is accepted only when it is strong (normalized
+// > 0.4), unambiguous (1.5x the best peak more than 2 lags away; tonal input fails this and is
+// skipped) and inside the window; the same K twice in a row is adopted. Silence keeps the last K.
+mono = (in1 + in2) * 0.5;
+poke(cin, mono - pmono, wrap(cn, 0, 8192));
+pmono = mono;
+if (anchor != cAnchor || ll != cLat || !alive) {
+	cAnchor = anchor;
+	cLat = ll;
+	cN = 0;
+	cEx = 0;
+	cEt = 0;
+	for (j = 0; j < 128; j += 1) {
+		poke(acc, 0, j);
+	}
+}
+if (!alive) {
+	calOk = 0;
+	kCand = 1e9;
+}
+xe = peek(cin, wrap(cn - 1024, 0, 8192));
+cb = cn - 1024 + cAnchor - 32 - ll;
+for (j = 0; j < 128; j += 1) {
+	tv = peek(xfer, wrap(cb + j, 0, RING), 4);
+	poke(acc, peek(acc, j) + xe * tv, j);
+}
+tn = peek(xfer, wrap(cb + 32, 0, RING), 4);
+cEx = cEx + xe * xe;
+cEt = cEt + tn * tn;
+cN = cN + 1;
+if (cN >= 8192) {
+	best = 0;
+	bestV = -1;
+	for (j = 0; j < 128; j += 1) {
+		av = abs(peek(acc, j));
+		if (av > bestV) {
+			bestV = av;
+			best = j;
+		}
+	}
+	second = 0;
+	for (j = 0; j < 128; j += 1) {
+		if (abs(j - best) > 2) second = max(second, abs(peek(acc, j)));
+	}
+	norm = bestV / sqrt(cEx * cEt + 1e-30);
+	if (cEx > 1e-7 && cEt > 1e-7 && norm > 0.4 && bestV > 1.5 * second && best > 0 && best < 127) {
+		cand = cAnchor - 32 + best;
+		if (cand == kCand) {
+			kCal = cand;
+			calOk = 1;
+		}
+		kCand = cand;
+	}
+	cN = 0;
+	cEx = 0;
+	cEt = 0;
+	for (j = 0; j < 128; j += 1) {
+		poke(acc, 0, j);
+	}
+}
+kk = calOk > 0.5 ? kCal : anchor;
+poke(hdr, kk, 2);
+poke(hdr, calOk, 18);
+
+// Dry from Start, aligned with the wet that went through the chain.
+di = wrap(cn + kk - ll, 0, RING);
+dryL = peek(xfer, di, 0);
+dryR = peek(xfer, di, 1);
+
+// Feedback return = processed tap, pre-mix.
+wi = wrap(cn, 0, RING);
+poke(xfer, in1, wi, 2);
+poke(xfer, in2, wi, 3);
+
+// Mix stage. Equal-power Dry/Wet: wet = sin(90 deg x Dry/Wet), dry = cos(...). Ducking pushes the wet
+// down by up to 24 dB x Ducking while the dry signal is loud (level -40..0 dBFS maps onto 0..1); the
+// wet comes back with the release time.
+wet = peek(hdr, 5);
+duckAmt = peek(hdr, 6);
+duckRel = max(peek(hdr, 40), 1);
+outG = peek(hdr, 41);
+sm = 1 / (0.02 * sr);
+gw = gw + (sin(clip(wet, 0, 1) * pi * 0.5) - gw) * sm;
+gd = gd + (cos(clip(wet, 0, 1) * pi * 0.5) - gd) * sm;
+
+lvl = max(abs(dryL), abs(dryR));
+env = lvl > env ? env + (lvl - env) * (1 - exp(-1 / (0.002 * sr))) : env * exp(-1 / (duckRel * 0.001 * sr));
+envDb = 20 * log10(max(env, 0.00001));
+dgT = dbtoa(-24 * clip(duckAmt, 0, 1) * clip((envDb + 40) / 40, 0, 1));
+dg = dgT < dg ? dg + (dgT - dg) * (1 / (0.003 * sr)) : dg + (dgT - dg) * (1 / (duckRel * 0.001 * sr));
+
+wL = in1 * dg * outG;
+wR = in2 * dg * outG;
+
+link = link + (alive ? 1 : -1) * (1 / 512);
+link = clip(link, 0, 1);
+mixL = dryL * gd + wL * gw;
+mixR = dryR * gd + wR * gw;
+out1 = fixnan(mixL * link + in1 * (1 - link));
+out2 = fixnan(mixR * link + in2 * (1 - link));
+
+pkW = max(pkW, max(abs(wL * gw), abs(wR * gw)));
+pkOL = max(pkOL, abs(out1));
+pkOR = max(pkOR, abs(out2));
+pkD = max(pkD, max(abs(dryL), abs(dryR)));
+tick = tick + 1;
+if (tick >= 64) {
+	tick = 0;
+	frames = wrap(frames + 1, 0, 1000000);
+	poke(hdr, pkW, 12);
+	poke(hdr, dg, 16);
+	poke(hdr, pkOL, 17);
+	poke(hdr, pkOR, 19);
+	poke(scope, pkOL, 9);
+	poke(scope, pkOR, 10);
+	poke(scope, alive, 0);
+	poke(scope, kk, 1);
+	poke(scope, ll, 2);
+	poke(scope, pkW, 4);
+	poke(scope, pkD, 5);
+	poke(scope, dg, 6);
+	poke(scope, frames, 7);
+	poke(scope, peek(hdr, 3), 8);
+	pkW = 0;
+	pkD = 0;
+	pkOL = 0;
+	pkOR = 0;
+}

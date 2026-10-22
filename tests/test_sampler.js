@@ -224,7 +224,7 @@ assert.strictEqual(byId.size, boxes.length, "box ids are unique");
 // --- buffers, loadbang message, gen core ---
 assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ #0-bsamp 1000 2", "empty user sample buffer");
 assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ #0-bsvoices @samps 128");
-assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 64");
+assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 128", "telemetry incl. 32 grain slots (64..127)");
 assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch");
 assert.strictEqual(byId.get("obj-buf-pitch").text, "buffer~ #0-bspitch @samps 4096", "Analyzed Root Key curve buffer");
 assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch");
@@ -1995,14 +1995,22 @@ function assertMenuFits(key, picks, W, H) {
     const m = c.sb;
     auto(m, "sliced", 1);
     const base = 36;
-    const keys = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45];
+    const keys = [36, 37, 38, 39, 40, 41, 42, 43];
+    // unmapped keys (below the first slice key, past the last slice) play nothing: no voice is written
+    for (const k of [35, 44, 45, 100]) {
+        c.pokes.length = 0;
+        m.midi_note(k, 100);
+        assert.strictEqual(c.pokes.filter((p) => p.name === "#0-bsvoices").length, 0, `unmapped key ${k} plays nothing`);
+        assert.ok(!m.voiceAlloc.voices.some((v) => v.gate === 1 && v.note === k), `no voice for key ${k}`);
+        m.midi_note(k, 0);
+    }
     keys.forEach((k, i) => {
         c.pokes.length = 0;
         m.midi_note(k, 100);
         const vp = c.pokes.filter((p) => p.name === "#0-bsvoices");
         const last = vp[vp.length - 1];
         const slot = last.idx / 8;
-        const idx = (k - base) % 8; // 8 default divisions; key 44 and 45 wrap to slices 0 and 1
+        const idx = k - base; // 8 default divisions: keys 36..43
         assert.strictEqual(last.idx % 8, 0, "the whole voice is written at its own slot");
         assert.deepStrictEqual(last.data.slice(0, 2), [1, k], `key ${k}: gate and note`);
         assert.ok(Math.abs(last.data[2] - 100 / 127) < 1e-9, `key ${k}: velocity carried`);
@@ -2015,11 +2023,10 @@ function assertMenuFits(key, picks, W, H) {
     assert.strictEqual(new Set(held.map((v) => v.index)).size, held.length);
     keys.forEach((k) => m.midi_note(k, 0));
     assert.ok(m.voiceAlloc.voices.every((v) => v.gate === 0), "all keys released");
-    // notes outside the keymap: below the base maps to the first slice
+    // notes outside the keymap play nothing (below the base, as above past the last slice)
     c.pokes.length = 0;
     m.midi_note(20, 100);
-    const lo = c.pokes.filter((p) => p.name === "#0-bsvoices").pop();
-    assert.strictEqual(lo.data[4], 0, "keys below the base play the first slice");
+    assert.strictEqual(c.pokes.filter((p) => p.name === "#0-bsvoices").length, 0, "keys below the base play nothing");
     m.midi_note(20, 0);
     // a moved start point moves the first slice, and the last slice stops at the end point
     auto(m, "samp_start", 25);
@@ -2434,7 +2441,7 @@ console.log("Loop overlay: body, gradient, move and xfade drags ok");
     // --- Textures ---
     auto(m, "mode", 2);
     m.paint();
-    assert.deepStrictEqual(p1Knobs(), ["grain_size", "grain_spray", "formant"], "Textures: size, spray, formant");
+    assert.deepStrictEqual(p1Knobs(), ["grain_size", "grain_spray"], "Textures: size and spray (no Fmt)");
     assert.ok(!m.hitZones.some((z) => (z.action === "toggle" && z.key !== "root_dyn") || z.action === "step"), "Textures has no header controls");
 
     // --- Fragments ---
@@ -2948,4 +2955,61 @@ console.log("Deferred DSP: GUI first, gen~ created from the embedded patch ok");
 }
 
 console.log("Analyzed Root Key: toggle, tracking, curve buffer and drawing ok");
+
+// --- Textures: overlays stay inside the waveform; a line per playing grain from telemetry 64..127 ---
+{
+    const gc = makeSandbox(mainViz);
+    const g = gc.sb;
+    g.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope", "#0-bspitch");
+    gc.audioOn = true;
+    g.sample_loaded("/Users/test/Pad - Granular - Noise Sparkle - F#.wav");
+    g.sample_loaded("bang");
+    g.set_mode(2);
+    g.set_grain_spray(100);
+    g.paint();
+    const wave = g.hitZones.find((z) => z.kind === "wave");
+    // a voice right at the start with full spray: the spray band must not spill left of the waveform
+    g.voicePlayheads[0] = 0.01; g.voiceAmps[0] = 0.9;
+    g.voicePlayheads[1] = 0.995; g.voiceAmps[1] = 0.9;
+    const rects = [];
+    const R0 = g.mgraphics.rectangle;
+    g.mgraphics.rectangle = (x, y, w, h) => rects.push([x, y, w, h]);
+    g.paint();
+    g.mgraphics.rectangle = R0;
+    const inWave = (r) => r[1] >= wave.y - 0.01 && r[1] + r[3] <= wave.y + wave.h + 0.01;
+    const bands = rects.filter((r) => inWave(r) && Math.abs(r[3] - wave.h) < 0.01);
+    assert.ok(bands.length >= 2, "spray bands drawn for both voices");
+    for (const r of bands) assert.ok(r[0] >= wave.x - 0.01 && r[0] + r[2] <= wave.x + wave.w + 0.01, `spray band clipped to the waveform (${r})`);
+    // grain lines: telemetry slots 64..95 positions, 96..127 levels
+    const tele = new Float32Array(128);
+    for (let i = 64; i < 96; i++) tele[i] = -1;
+    const grains = [[0.2, 0.9], [0.35, 0.5], [0.61, 0.3], [0.8, 0.01]];
+    grains.forEach(([pos, amp], i) => { tele[64 + i] = pos; tele[96 + i] = amp; });
+    const B0 = g.Buffer;
+    g.Buffer = function (name) { B0.call(this, name); const pk = this.peek; this.peek = (ch, st, len) => (name === "#0-bsscope" && st === 0 && len === 128 ? tele : pk(ch, st, len)); };
+    g.pollTelemetryScope();
+    g.Buffer = B0;
+    assert.deepStrictEqual(Array.from(g.grainPos.slice(0, 5)).map((v) => Math.round(v * 100) / 100), [0.2, 0.35, 0.61, 0.8, -1], "grain positions read from 64..95");
+    const lines = [];
+    const M0 = g.mgraphics.move_to, L0 = g.mgraphics.line_to;
+    let last = null;
+    g.mgraphics.move_to = (x, y) => { last = [x, y]; };
+    g.mgraphics.line_to = (x, y) => { if (last && Math.abs(last[0] - x) < 1e-6 && Math.abs(y - last[1] - (wave.h - 8)) < 0.01) lines.push(x); };
+    g.voiceAmps[0] = 0; g.voiceAmps[1] = 0;
+    g.paint();
+    g.mgraphics.move_to = M0; g.mgraphics.line_to = L0;
+    const want = grains.filter(([, a]) => a > 0.02).map(([p]) => wave.x + p * wave.w);
+    for (const x of want) assert.ok(lines.some((lx) => Math.abs(lx - x) < 0.01), `grain line at ${x.toFixed(1)}`);
+    assert.strictEqual(lines.length, want.length, "one line per audible grain (quiet and unused slots skipped)");
+    // not in Repitch
+    g.set_mode(0);
+    lines.length = 0;
+    g.mgraphics.move_to = (x, y) => { last = [x, y]; };
+    g.mgraphics.line_to = (x, y) => { if (last && Math.abs(last[0] - x) < 1e-6 && Math.abs(y - last[1] - (wave.h - 8)) < 0.01) lines.push(x); };
+    g.paint();
+    g.mgraphics.move_to = M0; g.mgraphics.line_to = L0;
+    assert.strictEqual(lines.length, 0, "no grain lines outside Textures / Fragments");
+}
+
+console.log("Textures overlays clipped and grain lines ok");
 

@@ -1057,6 +1057,118 @@ gl_seq(sq, wv, ss, bt) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Movement (phase 3, contract in glitch_config.js). One source per chain instance, evaluated at control rate in ONE loop over a
+// single gl_move call site. Node twins: glMoveLfo(), glMoveStepValue(), glMoveTick(), glMoveApply().
+// ---------------------------------------------------------------------------------------------------------------
+// LFO value -1..1 at cycle position x (cycles); sh: 0 sine, 1 tri, 2 saw up, 3 saw down, 4 square, 5 smooth random, 6 S&H.
+gl_lfo(sh, x, salt) {
+	cyc = floor(x);
+	ph = x - cyc;
+	rA = gl_hash(cyc + salt, 3.7) * 2 - 1;
+	rB = gl_hash(cyc + salt + 1, 3.7) * 2 - 1;
+	sm = 0.5 - 0.5 * cos(ph * 3.141592653589793);
+	tr3 = ph < 0.25 ? 4 * ph : (ph < 0.75 ? 2 - 4 * ph : 4 * ph - 4);
+	lv = sh < 0.5 ? sin(ph * 6.283185307179586) : (sh < 1.5 ? tr3 : (sh < 2.5 ? 2 * ph - 1 : (sh < 3.5 ? 1 - 2 * ph : (sh < 4.5 ? (ph < 0.5 ? 1 : -1) : (sh < 5.5 ? rA + (rB - rA) * sm : rA)))));
+	return lv;
+}
+
+// Step value at step position x; the 16 step values sit at pv[sb ..]; glide = fraction of a step spent ramping from the previous one.
+gl_stepv(pv, sb, ns, x, gld) {
+	i0 = floor(x);
+	fr = x - i0;
+	ci = i0 - ns * floor(i0 / ns);
+	pj = ci - 1;
+	pj = pj < -0.5 ? ns - 1 : pj;
+	ia = sb + ci;
+	ib = sb + pj;
+	cur = pv.peek(ia);
+	prv = pv.peek(ib);
+	pg = gld > 0.0001 ? clip(fr / gld, 0, 1) : 1;
+	return prv + (cur - prv) * pg;
+}
+
+// One instance k: when act = 1 evaluate its source and add depth * source to its blended target in tgt (normalized on the target's
+// own curve, so log params move in log space); when act = 0 reset its state. pv = the smoothed vector (movement block at mvb), meta
+// channels 0 kind, 3 min, 4 max, mst = 8 floats per instance (0 free phase, 1 sync offset, 2 previous cycles per beat, 3 follower,
+// 4 running), mt = telemetry (4 per instance: active, offset, target position, source phase). bt = held host beat, lvl = the module's input
+// level, tn = samples since the last tick.
+gl_move(pv, tgt, meta, mst, mt, k, mvb, wbk, bt, lvl, tn, sr, act) {
+	so = k * 8;
+	mi = k * 4;
+	phv = 0;
+	ofs = 0;
+	pos = 0;
+	if (act > 0.5) {
+		ty = pv.peek(mvb + @MV_TYPE@);
+		tp = floor(pv.peek(mvb + @MV_TARGET@) + 0.5);
+		dp = pv.peek(mvb + @MV_DEPTH@);
+		hz = pv.peek(mvb + @MV_HZ@);
+		cpb = pv.peek(mvb + @MV_CPB@);
+		sy = pv.peek(mvb + @MV_SYNC@);
+		ps = pv.peek(mvb + @MV_PHASE@);
+		sh = pv.peek(mvb + @MV_SHAPE@);
+		gld = pv.peek(mvb + @MV_GLIDE@);
+		nsv = pv.peek(mvb + @MV_NSTEPS@);
+		ns = nsv > 0.5 ? 16 : 8;
+		at = pv.peek(mvb + @MV_ATK@);
+		rl = pv.peek(mvb + @MV_REL@);
+		fa = mst.peek(so) + hz * tn / sr;
+		mst.poke(fa, so);
+		off = mst.peek(so + 1);
+		pcp = mst.peek(so + 2);
+		run = mst.peek(so + 4);
+		off = run > 0.5 ? off + bt * (pcp - cpb) : off;
+		mst.poke(off, so + 1);
+		mst.poke(cpb, so + 2);
+		mst.poke(1, so + 4);
+		xb = sy > 0.5 ? bt * cpb + off : fa;
+		xl = xb + ps;
+		xs = xb + ps * ns;
+		lvm = max(lvl, 0.000001);
+		un = clip((8.685889638065035 * log(lvm) + 60) / 60, 0, 1);
+		env = mst.peek(so + 3);
+		ca = exp(-tn * 1000 / (sr * max(at, 0.1)));
+		cr = exp(-tn * 1000 / (sr * max(rl, 0.1)));
+		env = un > env ? un + (env - un) * ca : un + (env - un) * cr;
+		mst.poke(env, so + 3);
+		slt = k * 7.31;
+		sbs = mvb + @MV_STEP0@;
+		vl = gl_lfo(sh, xl, slt);
+		vs = gl_stepv(pv, sbs, ns, xs, gld);
+		sg = ty < 1.5 ? vl : (ty < 2.5 ? vs : env);
+		ofs = dp * sg;
+		ti = wbk + tp;
+		tk = meta.peek(ti, 0);
+		lo = meta.peek(ti, 3);
+		hi = meta.peek(ti, 4);
+		tv = tgt.peek(ti);
+		llo = log(max(lo, 0.000000001));
+		lhi = log(max(hi, 0.000000001));
+		okk = (tk > 0.5 && tk < 2.5 && hi > lo) ? 1 : 0;
+		nz = tk > 1.5 ? (log(max(tv, 0.000000001)) - llo) / max(lhi - llo, 0.000000001) : (tv - lo) / max(hi - lo, 0.000000001);
+		n1 = clip(nz + ofs, 0, 1);
+		nv = tk > 1.5 ? exp(llo + n1 * (lhi - llo)) : lo + n1 * (hi - lo);
+		pos = okk > 0.5 ? n1 : 0;
+		pxs = xs / ns;
+		phv = ty < 1.5 ? xl - floor(xl) : (ty < 2.5 ? pxs - floor(pxs) : env);
+		if (okk > 0.5) {
+			tgt.poke(nv, ti);
+		}
+	} else {
+		mst.poke(0, so);
+		mst.poke(0, so + 1);
+		mst.poke(0, so + 2);
+		mst.poke(0, so + 3);
+		mst.poke(0, so + 4);
+	}
+	mt.poke(act, mi);
+	mt.poke(ofs, mi + 1);
+	mt.poke(pos, mi + 2);
+	mt.poke(phv, mi + 3);
+	return ofs;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Spectral stage helpers (STFT N = 1024, shared cepstrum_lib). Cepstral Crush / Scramble are a port of Quefrency
 // Crush's crusher (qc_proc without Hold and Shift); Node twin: crushCepstrum() in src/cepcrush_ref.js.
 // ---------------------------------------------------------------------------------------------------------------
@@ -1443,12 +1555,15 @@ Data d_sv(@SVSIZE@);
 Data d_wv(8);
 Data d_sq(24);
 Data d_sqs(8);
-Data d_meta(@NP@, 3);
+Data d_meta(@NP@, 5);
 Data d_tgt(@NP@);
 Data d_pv(@NP@);
 Data d_wS(@NINST@);
 Data d_wb(@NINST@);
 Data d_lv(@NINST@);
+Data d_clk(2);
+Data d_mst(@MSTN@);
+Data d_mt(@MTN@);
 Data d_io(2);
 
 Data d_sDrvA(8);
@@ -1496,6 +1611,7 @@ Param outdb(0);
 
 History firstTick(1);
 History ctlCnt(0);
+History verPrev(-1);
 History nSeenR(0);
 History beat(0);
 History ppqPrev(0);
@@ -1576,32 +1692,47 @@ stpNow = floor(sqB * hSqInv);
 chg = (hMode > 1.5 && stpNow != sqStepPrev) ? 1 : 0;
 sqStepPrev = stpNow;
 
-// --- control tick: blend the slots, smooth, derive ---
+// --- control tick: blend the slots, move, smooth, derive ---
+// sample counter (Data, so a read in the same sample sees the write): the movement needs the true time between two ticks
+smpNow = d_clk.peek(0) + 1;
+d_clk.poke(smpNow, 0);
 ctlCnt = ctlCnt + 1;
 if (ctlCnt >= 32 || chg > 0.5) {
+	tickNow = min(smpNow - d_clk.peek(1), 4096);
+	d_clk.poke(smpNow, 1);
 	ctlCnt = 0;
-	for (i = 0; i < @SVSIZE@; i += 1) {
-		d_sv.poke(peek(slots, i, 0), i);
-	}
 	for (s = 0; s < 8; s += 1) {
 		d_wv.poke(peek(slots, @WOFF@ + s, 0), s);
 	}
 	for (i = 0; i < 24; i += 1) {
 		d_sq.poke(peek(slots, @SQOFF@ + i, 0), i);
 	}
-	// layout constants ride in the buffer (a 565-statement init block cost ~3 s of gen compile time): param kind + 4 * group,
-	// default, and the wet index of every chain position
-	for (i = 0; i < @NP@; i += 1) {
-		mcode = peek(slots, @METAOFF@ + i, 0);
-		mgrp = floor(mcode * 0.25);
-		mdef = peek(slots, @DEFOFF@ + i, 0);
-		d_meta.poke(mcode - 4 * mgrp, i, 0);
-		d_meta.poke(mgrp, i, 1);
-		d_meta.poke(mdef, i, 2);
-	}
-	for (k = 0; k < @NINST@; k += 1) {
-		mwb = peek(slots, @WBOFF@ + k, 0);
-		d_wb.poke(mwb, k);
+	// the 8 slot vectors and the layout constants are re-read only when the UI (or a harness) has written them again: the version
+	// number at SEQ+5 changes with every write (the vectors are ~6000 floats)
+	verNow = d_sq.peek(5);
+	if (verNow != verPrev) {
+		verPrev = verNow;
+		for (i = 0; i < @SVSIZE@; i += 1) {
+			d_sv.poke(peek(slots, i, 0), i);
+		}
+		// layout constants ride in the buffer (a 565-statement init block cost ~3 s of gen compile time): param kind + 4 * group,
+		// default, min and max of every param, and the wet index of every chain position
+		for (i = 0; i < @NP@; i += 1) {
+			mcode = peek(slots, @METAOFF@ + i, 0);
+			mgrp = floor(mcode * 0.25);
+			mdef = peek(slots, @DEFOFF@ + i, 0);
+			mmin = peek(slots, @MINOFF@ + i, 0);
+			mmax = peek(slots, @MAXOFF@ + i, 0);
+			d_meta.poke(mcode - 4 * mgrp, i, 0);
+			d_meta.poke(mgrp, i, 1);
+			d_meta.poke(mdef, i, 2);
+			d_meta.poke(mmin, i, 3);
+			d_meta.poke(mmax, i, 4);
+		}
+		for (k = 0; k < @NINST@; k += 1) {
+			mwb = peek(slots, @WBOFF@ + k, 0);
+			d_wb.poke(mwb, k);
+		}
 	}
 	modeNow = d_sq.peek(0);
 	hMode = modeNow;
@@ -1611,6 +1742,17 @@ if (ctlCnt >= 32 || chg > 0.5) {
 		gl_seq(d_sq, d_wv, d_sqs, sqB);
 	}
 	gl_blend(d_sv, d_wv, d_meta, d_tgt, @NP@);
+	// movement: one loop, one call site. The module's input level = the output level of the previous active module (or the device input)
+	mvLvl = inPk;
+	for (k = 0; k < @NINST@; k += 1) {
+		mvb = @MVBASE@ + @MVN@ * k;
+		mvTy = d_pv.peek(mvb + @MV_TYPE@);
+		mvW = d_wS.peek(k);
+		mvAct = (mvW > 0.0005 && mvTy > 0.5) ? 1 : 0;
+		mvWb = d_wb.peek(k);
+		gl_move(d_pv, d_tgt, d_meta, d_mst, d_mt, k, mvb, mvWb, sqB, mvLvl, tickNow, sr, mvAct);
+		mvLvl = mvW > 0.0005 ? d_lv.peek(k) : mvLvl;
+	}
 	snapK = firstTick > 0.5 ? 1 : 0.15;
 	firstTick = 0;
 	gl_smooth(d_pv, d_tgt, d_meta, @NP@, snapK);
@@ -1682,6 +1824,10 @@ if (ctlCnt >= 32 || chg > 0.5) {
 	for (k = 0; k < @NINST@; k += 1) {
 		poke(scope, d_wS.peek(k), @SC_ACTIVITY@ + k, 0);
 		poke(scope, d_lv.peek(k), @SC_LEVEL@ + k, 0);
+		poke(scope, d_mt.peek(4 * k), @SC_MOVE_ON@ + k, 0);
+		poke(scope, d_mt.peek(4 * k + 1), @SC_MOVE_OFS@ + k, 0);
+		poke(scope, d_mt.peek(4 * k + 2), @SC_MOVE_POS@ + k, 0);
+		poke(scope, d_mt.peek(4 * k + 3), @SC_MOVE_PH@ + k, 0);
 		d_lv.poke(d_lv.peek(k) * 0.85, k);
 	}
 	wsm = 0;

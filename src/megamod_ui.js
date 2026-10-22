@@ -323,12 +323,12 @@ function ubKnobValue(spec, n) {
 function ubChips(mod) {
     const p = mod.p;
     const chips = [];
-    if (mod.type === MOD_LFO) for (let s = 0; s < 5; s++) chips.push({ id: "shape" + s, key: "shape", w: 16, glyph: s, on: Math.round(p.shape) === s, tip: LFO_SHAPES[s] });
-    if (mod.type !== MOD_ENV) chips.push({ id: "sync", key: "sync", w: 30, label: "SYNC", on: !!p.sync, tip: "Tempo sync" });
-    chips.push({ id: "bip", key: "bipolar", w: 28, label: "BIP", on: !!p.bipolar, tip: "Bipolar output" });
-    if (mod.type === MOD_STEPS || mod.type === MOD_MSEG) chips.push({ id: "osh", key: "oneshot", w: 28, label: "1SH", on: !!p.oneshot, tip: "One shot" });
-    if (mod.type === MOD_MSEG) chips.push({ id: "loop", key: "loopOn", w: 30, label: "LOOP", on: !!p.loopOn, tip: "Loop window" });
-    if (mod.type !== MOD_ENV) chips.push({ id: "rtg", key: "retrig", w: 28, label: "RTG", on: !!p.retrig, tip: "Retrigger on transport start" });
+    if (mod.type === MOD_LFO) for (let s = 0; s < 5; s++) chips.push({ id: "shape" + s, key: "shape", w: 16, glyph: s, on: Math.round(p.shape) === s });
+    if (mod.type !== MOD_ENV) chips.push({ id: "sync", key: "sync", w: 30, label: "SYNC", on: !!p.sync });
+    chips.push({ id: "bip", key: "bipolar", w: 28, label: "BIP", on: !!p.bipolar });
+    if (mod.type === MOD_STEPS || mod.type === MOD_MSEG) chips.push({ id: "osh", key: "oneshot", w: 28, label: "1SH", on: !!p.oneshot });
+    if (mod.type === MOD_MSEG) chips.push({ id: "loop", key: "loopOn", w: 30, label: "LOOP", on: !!p.loopOn });
+    if (mod.type !== MOD_ENV) chips.push({ id: "rtg", key: "retrig", w: 28, label: "RTG", on: !!p.retrig });
     return chips;
 }
 
@@ -377,11 +377,11 @@ function ubPopupRect() {
 }
 
 function ubRailRects() {
-    return { learn: [2, 3, 16, 16], list: [2, 35, 16, 16], opt: [2, 67, 16, 16], tip: [2, 99, 16, 16] };
+    return { learn: [2, 3, 16, 16], list: [2, 39, 16, 16], opt: [2, 75, 16, 16] }; // pitch 36 px; the label sits 11 px under each button
 }
 
 // ------------------------------------------------------------------ Options view (device-global settings, state.settings)
-// One rounded panel: header "OPTIONS", then three rows (label + hint on the left, the control on the right):
+// One rounded panel: header "OPTIONS", then four rows (label on the left, the control on the right):
 // Default mapping mode (MOD | REM tabs), Global smoothing (0..500 ms bar, log feel) and Rate multiplier (dial, snaps to RATE_MUL_STEPS).
 function ubOptGeom() {
     const x = UB_RAIL + UB_GAP;
@@ -405,12 +405,12 @@ function ubOptGeom() {
 }
 function ubHitOpt(x, y) {
     const g = ubOptGeom();
-    if (ubIn(g.tabmod, x, y)) return { kind: "opt_mod", tip: "New mappings start in Mod mode (\u00b1, range 50%)" };
-    if (ubIn(g.tabrem, x, y)) return { kind: "opt_rem", tip: "New mappings start in Remote mode (min 0, max 100%)" };
-    if (ubIn(g.selfint, x, y)) return { kind: "opt_self_int", tip: "Self-mod INTERNAL: a modulator modulating this device's own controls runs in the engine (no Live parameter, sample-accurate)" };
-    if (ubIn(g.selflive, x, y)) return { kind: "opt_self_live", tip: "Self-mod VIA LIVE: the mapping targets the device's own Live parameter (live.modulate~ / live.remote~)" };
-    if (ubIn(g.bar, x, y)) return { kind: "opt_smooth", rect: g.bar, tip: "Drag: smoothing 0..500 ms, double-click = off" };
-    if (ubIn(g.knobRect, x, y)) return { kind: "opt_rate", tip: "Drag: rate x0.25..x4 (snaps to musical steps), double-click = x1" };
+    if (ubIn(g.tabmod, x, y)) return { kind: "opt_mod" };
+    if (ubIn(g.tabrem, x, y)) return { kind: "opt_rem" };
+    if (ubIn(g.selfint, x, y)) return { kind: "opt_self_int" };
+    if (ubIn(g.selflive, x, y)) return { kind: "opt_self_live" };
+    if (ubIn(g.bar, x, y)) return { kind: "opt_smooth", rect: g.bar };
+    if (ubIn(g.knobRect, x, y)) return { kind: "opt_rate" };
     if (ubIn(g.panel, x, y)) return { kind: "opt_panel" };
     return { kind: "none" };
 }
@@ -507,11 +507,6 @@ function ubTargetPath(m) {
 
 // detail panel controls: [{id, rect}]
 const UB_OUTMETER_W = 13; // output bar + range markers to the right of the remap MSEG (Phase Plant style, but a bar)
-const UB_POL_TIPS = {
-    1: "Positive: output 0 to +range",
-    0: "Bipolar: output -range to +range",
-    "-1": "Negative: output 0 to -range"
-};
 const UB_TAB_W = 40; // MOD / REM tabs: same size in both modes, so a mode switch never moves the tab under the cursor
 const UB_PRESETS = 4; // remap shape presets: CURVE_LINEAR..CURVE_S (the Stepped curve is not offered here)
 const UB_POL_W = 15; // one cell of the polarity control (Mod only, right end of the tab row)
@@ -521,11 +516,6 @@ const UB_READOUT_SIZE = 7.5;
 const UB_DEPTH_SIZE = 7; // the per-mapping Depth pill, right end of the name line of the remap editor
 function ubDepthW() {
     return Math.ceil(ubTextW("Depth 100%", UB_DEPTH_SIZE)) + 14; // 7 px of padding each side (a numbox face's automation dot sits at its edge)
-}
-// " | Live: Depth 5" for a mapping in one of the first AUTO_DEPTH_SLOTS pool slots (its automatable parameter), else a hint that it has none
-function ubDepthLiveTip(m) {
-    const k = MM.mappingSlot(m.id);
-    return k >= 0 && k < AUTO_DEPTH_SLOTS ? " | Live: " + autoDepthName(k) : " | no Live parameter (pool slot " + (AUTO_DEPTH_SLOTS + 1) + "+)";
 }
 function ubDepthText(m) {
     return "Depth " + Math.round(clamp(num(m.depth, 1), 0, 1) * 100) + "%";
@@ -549,22 +539,19 @@ function ubDetailRects(gm, m) {
     const meterX = x + msegW + 3 + (colW - UB_OUTMETER_W) / 2;
     const meterH = mh;
     // tab row: MOD / REM tabs on the left; in Mod the polarity control sits at the right end (empty in Remote)
-    out.push({ id: "tabmod", rect: [x + 1, ty, UB_TAB_W, 12], mode: "mod", tip: "Mod: modulates around the parameter's value" });
-    out.push({ id: "tabrem", rect: [x + 1 + UB_TAB_W + 2, ty, UB_TAB_W, 12], mode: "remote", tip: m.target.internal ? "Internal routes are Mod only (switch Self-mod to VIA LIVE for Remote)" : "Remote: takes over the parameter (absolute min / max)" });
+    out.push({ id: "tabmod", rect: [x + 1, ty, UB_TAB_W, 12], mode: "mod" });
+    out.push({ id: "tabrem", rect: [x + 1 + UB_TAB_W + 2, ty, UB_TAB_W, 12], mode: "remote" });
     // the pill is 13 px tall inside its 15 px live.numbox face (Live forces that height), so the face ends where the tab row starts
-    out.push({ id: "depth", rect: [x + w - ubDepthW(), y0 + 22, ubDepthW(), 13], face: [x + w - ubDepthW(), y0 + 21, ubDepthW(), 15],
-        tip: "Depth: scales the output (Mod: the modulation, Remote: the span toward Min). Drag, double-click = 100%" + ubDepthLiveTip(m) });
+    out.push({ id: "depth", rect: [x + w - ubDepthW(), y0 + 22, ubDepthW(), 13], face: [x + w - ubDepthW(), y0 + 21, ubDepthW(), 15] });
     out.push({ id: "mseg", rect: msegR });
-    out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, meterH],
-        tip: !rem ? "Drag the triangle to set the range (+ and \u2212 keep zero fixed, \u00b1 moves both); double-click = full"
-            : "Drag the nearest triangle: filled = max, outline = min (double-click resets it)" });
+    out.push({ id: "meter", rect: [meterX, my, UB_OUTMETER_W, meterH] });
     // the presets (Linear / Exp / Log / S; no Stepped) share the row, leaving its right end for the readout
     const pbw = (w - ubReadoutW() - 3 - (UB_PRESETS - 1) * 2) / UB_PRESETS;
     const pstep = pbw + 2;
-    for (let k = 0; k < UB_PRESETS; k++) out.push({ id: "preset" + k, rect: [x + k * pstep, py, pbw, 13], curve: k, tip: CURVE_NAMES[k] + " preset" });
+    for (let k = 0; k < UB_PRESETS; k++) out.push({ id: "preset" + k, rect: [x + k * pstep, py, pbw, 13], curve: k });
     if (!rem) {
         const px = x + w - 3 * UB_POL_W;
-        [1, 0, -1].forEach((p, k) => out.push({ id: "pol" + p, rect: [px + k * UB_POL_W, ty, UB_POL_W, 12], pol: p, tip: UB_POL_TIPS[p] }));
+        [1, 0, -1].forEach((p, k) => out.push({ id: "pol" + p, rect: [px + k * UB_POL_W, ty, UB_POL_W, 12], pol: p }));
     }
     return out;
 }
@@ -575,7 +562,7 @@ function ubHit(x, y) {
         const pr = ubPopupRect();
         if (ubIn(pr, x, y)) {
             const k = Math.floor((y - pr[1] - 2) / 17);
-            if (k >= 0 && k < UB_TYPES.length) return { kind: "popup", type: UB_TYPES[k], tip: "Choose type" };
+            if (k >= 0 && k < UB_TYPES.length) return { kind: "popup", type: UB_TYPES[k] };
             return { kind: "popup_pad" };
         }
         return { kind: "popup_out" };
@@ -583,12 +570,10 @@ function ubHit(x, y) {
     if (ubMapsPop) return ubHitMapsPop(x, y);
     const rr = ubRailRects();
     if (ubIn(rr.learn, x, y)) {
-        const L = MM.learn;
-        return { kind: "rail_learn", tip: L.armed ? "Learning: click to stop" + (L.multi ? "" : " (maps one parameter)") : "Learn: click = map one parameter, Shift-click = keep mapping" };
+        return { kind: "rail_learn" };
     }
-    if (ubIn(rr.list, x, y)) return { kind: "rail_list", tip: ubPb() ? "Back to rack strips" : "Mapping inspector (selected modulator)" };
-    if (ubIn(rr.opt, x, y)) return { kind: "rail_opt", tip: ubOpt() ? "Back to rack strips" : "Options (mapping mode, smoothing, rate multiplier, self-mod)" };
-    if (ubIn(rr.tip, x, y)) return { kind: "rail_tip", tip: ubTipsOn() ? "Tooltips on: click to hide them" : "Tooltips off: click to show them" };
+    if (ubIn(rr.list, x, y)) return { kind: "rail_list" };
+    if (ubIn(rr.opt, x, y)) return { kind: "rail_opt" };
     if (x < UB_RAIL) return { kind: "rail" };
     if (ubOpt()) return ubHitOpt(x, y);
     const h = ubHitStrips(x, y);
@@ -598,7 +583,7 @@ function ubHit(x, y) {
 }
 function ubHitStrips(x, y) {
     const sg = ubStrips();
-    if (sg.plus && ubIn([sg.plus.x, sg.plus.y, sg.plus.w, sg.plus.h], x, y)) return { kind: "plus", tip: "Add modulator" };
+    if (sg.plus && ubIn([sg.plus.x, sg.plus.y, sg.plus.w, sg.plus.h], x, y)) return { kind: "plus" };
     for (const g of sg.list) {
         if (!ubIn([g.x, g.y, g.w, g.h], x, y)) continue;
         return ubHitItem(g, x, y);
@@ -607,26 +592,25 @@ function ubHitStrips(x, y) {
 }
 function ubHitItem(g, x, y) {
     const slot = g.slot;
-    if (g.tab) return { kind: "tab", slot, g, tip: MM.state.mods[slot].name };
+    if (g.tab) return { kind: "tab", slot, g };
     const R = ubStripRects(g);
     const hit = (o) => Object.assign(o, { g });
     if (g.exp) {
-        if (ubIn(R.collapse, x, y)) return hit({ kind: "collapse", slot, tip: g.fixed ? "Back to rack strips" : "Collapse" });
-        if (ubIn(R.del, x, y)) return hit({ kind: "del", slot, tip: "Delete modulator (click twice)" });
+        if (ubIn(R.collapse, x, y)) return hit({ kind: "collapse", slot });
+        if (ubIn(R.del, x, y)) return hit({ kind: "del", slot });
     }
-    if (ubIn(R.icon, x, y)) return hit({ kind: "pwr", slot, tip: "Enable / bypass | Live: " + autoLiveName(MM.state.mods[slot].type, slot, "enabled") });
-    if (g.exp && ubIn(R.type, x, y)) return hit({ kind: "typechip", slot, tip: "Change type" });
-    if (ubIn(R.head, x, y)) return hit({ kind: "head", slot, tip: g.exp ? (g.fixed ? "" : "Drag to reorder, double-click to collapse") : "Drag to reorder, double-click to expand" });
+    if (ubIn(R.icon, x, y)) return hit({ kind: "pwr", slot });
+    if (g.exp && ubIn(R.type, x, y)) return hit({ kind: "typechip", slot });
+    if (ubIn(R.head, x, y)) return hit({ kind: "head", slot });
     for (let k = 0; k < R.knobs.length; k++) {
         if (ubIn(R.knobs[k].hit, x, y)) {
-            const ln = autoLiveName(MM.state.mods[slot].type, slot, R.knobs[k].spec.key);
-            return hit({ kind: "knob", slot, k, tip: R.knobs[k].spec.label + " (double-click resets)" + (ln ? " | Live: " + ln : "") });
+            return hit({ kind: "knob", slot, k });
         }
     }
-    for (const c of R.chips) if (ubIn(c.rect, x, y)) return hit({ kind: "chip", slot, chip: c.id, tip: c.tip });
-    if (ubIn(R.count, x, y)) return hit({ kind: "count", slot, tip: "Mappings: click to edit their ranges" });
-    if (ubIn(R.viz, x, y)) return hit({ kind: "viz", slot, rect: R.viz, tip: g.exp ? "" : "Double-click to expand" });
-    return hit({ kind: "body", slot, tip: g.exp ? "" : "Double-click to expand" });
+    for (const c of R.chips) if (ubIn(c.rect, x, y)) return hit({ kind: "chip", slot, chip: c.id });
+    if (ubIn(R.count, x, y)) return hit({ kind: "count", slot });
+    if (ubIn(R.viz, x, y)) return hit({ kind: "viz", slot, rect: R.viz });
+    return hit({ kind: "body", slot });
 }
 function ubHitList(x, y) {
     const gm = ubListGeom();
@@ -637,7 +621,7 @@ function ubHitList(x, y) {
                 if (!ubIn(d.rect, x, y)) continue;
                 let which = d.which;
                 if (d.pick) { which = d.pick(x, y); if (!which) continue; }
-                return { kind: "detail", id: d.id, rect: d.drect || d.rect, curve: d.curve, pol: d.pol, which, mode: d.mode, tip: d.tip || (d.id === "mseg" ? "Click = add point, drag = move / bend, double-click a point = delete" : "") };
+                return { kind: "detail", id: d.id, rect: d.drect || d.rect, curve: d.curve, pol: d.pol, which, mode: d.mode };
             }
         }
         return { kind: "detail_bg" };
@@ -647,14 +631,14 @@ function ubHitList(x, y) {
         if (y < r.y || y >= r.y + r.h) continue;
         const it = r.item;
         if (it.kind === "head") {
-            if (ubIn(ubHeadPwrRect(r.y), x, y)) return { kind: "ls_hpwr", slot: it.i, tip: "Enable / bypass modulator" };
-            return { kind: "ls_head", slot: it.i, tip: MM.state.mods[it.i].name };
+            if (ubIn(ubHeadPwrRect(r.y), x, y)) return { kind: "ls_hpwr", slot: it.i };
+            return { kind: "ls_head", slot: it.i };
         }
-        if (it.kind === "none") return { kind: "ls_none", slot: it.i, tip: "Select the modulator and press LRN to map a parameter" };
+        if (it.kind === "none") return { kind: "ls_none", slot: it.i };
         const P = ubRowParts(r.y);
-        const base = { slot: it.i, m: it.m, tip: ubTargetPath(it.m) };
+        const base = { slot: it.i, m: it.m };
         for (const k of ["tog", "del", "curve", "val", "mode"]) {
-            if (ubIn(P[k], x, y)) return Object.assign({ kind: "ls_" + k, rect: P[k] }, base, { tip: { tog: "Mapping on / off", del: "Delete mapping", curve: "Transfer curve (click = edit)", val: "Drag = range / window", mode: it.m.target.internal ? "Internal routes are Mod only" : "Mod / Remote" }[k] });
+            if (ubIn(P[k], x, y)) return Object.assign({ kind: "ls_" + k, rect: P[k] }, base);
         }
         return Object.assign({ kind: "ls_row" }, base);
     }
@@ -717,9 +701,6 @@ function ubToggleExpanded(slot) {
     if (ubIsExp(slot)) ubCollapseSlot(slot);
     else ubSetExpanded(slot);
 }
-function ubTipsOn() {
-    return MM.getSettings().tooltips !== false;
-}
 function ubToggleOpt(on) {
     MM.setUI({ opt: on ? 1 : 0, pb: on ? 0 : ubUIs().pb ? 1 : 0 }); // exclusive with LST
     ubPopup = null; ubMapsPop = null;
@@ -780,7 +761,6 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
     switch (h.kind) {
         case "rail_learn": ubRailLearn(shift); break;
         case "rail_list": ubTogglePb(!ubPb()); break;
-        case "rail_tip": MM.setSettings({ tooltips: !ubTipsOn() }); break;
         case "rail_opt": ubToggleOpt(!ubOpt()); break;
         case "opt_mod": MM.setSettings({ defaultMode: "mod" }); MM.commit(); break;
         case "opt_rem": MM.setSettings({ defaultMode: "remote" }); MM.commit(); break;
@@ -1364,9 +1344,6 @@ function ubHBarReset(m, rect, x) {
     if (m.mode !== "remote") MM.updateMapping(m.id, { range: 1 });
     else { const wh = ubNearestLimit(m, ubHBarFromX(rect, x)); MM.updateMapping(m.id, ubLimitPatch(wh, wh === "min" ? 0 : 1)); }
 }
-function ubBarTip(m) {
-    return ubMapName(m) + "  " + ubValueText(m);
-}
 // ---- maps popover
 function ubMapsPopGeom() {
     if (!ubMapsPop) return null;
@@ -1400,16 +1377,16 @@ function ubPopRowParts(R, y, vw) {
 function ubHitMapsPop(x, y) {
     const P = ubMapsPopGeom();
     if (!P || !ubIn(P.rect, x, y)) return { kind: "mp_out" };
-    if (ubIn(P.lst, x, y)) return { kind: "mp_lst", slot: P.slot, tip: "Open the mapping inspector" };
+    if (ubIn(P.lst, x, y)) return { kind: "mp_lst", slot: P.slot };
     for (const r of P.vis) {
         if (y < r.y || y >= r.y + UB_POP_ROW) continue;
         const pr = ubPopRowParts(P.rect, r.y, P.vw);
         const base = { slot: P.slot, m: r.m };
-        if (ubIn(pr.tog, x, y)) return Object.assign({ kind: "mp_tog", tip: r.m.enabled ? "Mapping on (click to switch off)" : "Mapping off (click to switch on)" }, base);
-        if (ubIn(pr.mode, x, y)) return Object.assign({ kind: "mp_mode", tip: r.m.target.internal ? "Internal routes are Mod only" : "Mod / Remote" }, base);
-        if (r.m.mode !== "remote" && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol", tip: "Polarity: click to cycle + / \u00b1 / \u2212" }, base);
-        if (ubIn(pr.bar, x, y)) return Object.assign({ kind: "mp_bar", rect: pr.bar, tip: r.m.mode === "remote" ? "Drag the nearest handle: min / max (double-click resets it)" : "Drag to set the range (double-click = full)" }, base);
-        return Object.assign({ kind: "mp_row", tip: ubTargetPath(r.m) }, base);
+        if (ubIn(pr.tog, x, y)) return Object.assign({ kind: "mp_tog" }, base);
+        if (ubIn(pr.mode, x, y)) return Object.assign({ kind: "mp_mode" }, base);
+        if (r.m.mode !== "remote" && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol" }, base);
+        if (ubIn(pr.bar, x, y)) return Object.assign({ kind: "mp_bar", rect: pr.bar }, base);
+        return Object.assign({ kind: "mp_row" }, base);
     }
     return { kind: "mp_bg" };
 }
@@ -1505,19 +1482,6 @@ function ubCogIcon(r, c) {
         const a = (i * Math.PI) / 4;
         ubLine(cx + Math.cos(a) * 4.8, cy + Math.sin(a) * 4.8, cx + Math.cos(a) * 7, cy + Math.sin(a) * 7, c, 1, i % 2 ? 1.2 : 2);
     }
-}
-// question mark: a hook arc (open ring top, then a short stem) plus a dot
-function ubTipIcon(r, c) {
-    const cx = r[0] + r[2] / 2;
-    const cy = r[1] + r[3] / 2;
-    const pts = [];
-    for (let i = 0; i <= 10; i++) {
-        const a = (-200 + (250 * i) / 10) * Math.PI / 180;
-        pts.push([cx + Math.cos(a) * 3.3, cy - 2.6 + Math.sin(a) * 3.1]);
-    }
-    pts.push([cx, cy + 1.2]);
-    ubPoly(pts, c, 1, 1.5);
-    ubCircle(cx, cy + 4.6, 1, c, 1, true);
 }
 function ubListIcon(r, c) {
     for (let j = 0; j < 3; j++) {
@@ -1856,16 +1820,13 @@ function ubPaintRail() {
     ubRRStroke(lr[0] + 0.5, lr[1] + 0.5, lr[2] - 1, lr[3] - 1, 3, L.armed ? UB_CYAN : [0.30, 0.32, 0.37], single ? ubPulse() : 1, 1);
     if (multi) ubRRStroke(lr[0] - 1, lr[1] - 1, lr[2] + 2, lr[3] + 2, 4, UB_CYAN, 0.55, 1.2);
     ubLearnIcon(lr, L.armed, multi ? [0.05, 0.08, 0.1] : L.armed ? UB_CYAN : [0.6, 0.64, 0.7]);
-    ubTextC("LRN", UB_RAIL / 2, 30, 6, L.armed ? UB_CYAN : [0.5, 0.53, 0.58], single ? ubPulse() : 1);
+    ubTextC("LRN", UB_RAIL / 2, lr[1] + 27, 6, L.armed ? UB_CYAN : [0.5, 0.53, 0.58], single ? ubPulse() : 1);
     ubIconButton(rr.list, ubPb(), UB_ORANGE);
     ubListIcon(rr.list, ubPb() ? UB_ORANGE : [0.6, 0.64, 0.7]);
-    ubTextC("LST", UB_RAIL / 2, 62, 6, ubPb() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
+    ubTextC("LST", UB_RAIL / 2, rr.list[1] + 27, 6, ubPb() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
     ubIconButton(rr.opt, ubOpt(), UB_ORANGE);
     ubCogIcon(rr.opt, ubOpt() ? UB_ORANGE : [0.6, 0.64, 0.7]);
-    ubTextC("OPT", UB_RAIL / 2, 94, 6, ubOpt() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
-    ubIconButton(rr.tip, ubTipsOn(), UB_CYAN);
-    ubTipIcon(rr.tip, ubTipsOn() ? UB_CYAN : [0.6, 0.64, 0.7]);
-    ubTextC("TIP", UB_RAIL / 2, 126, 6, ubTipsOn() ? UB_CYAN : [0.5, 0.53, 0.58], 1);
+    ubTextC("OPT", UB_RAIL / 2, rr.opt[1] + 27, 6, ubOpt() ? UB_ORANGE : [0.5, 0.53, 0.58], 1);
     ubTextC(String(MM.modCount()), UB_RAIL / 2, 143, 7, [0.75, 0.77, 0.82], 1);
     ubLine(4, 147, UB_RAIL - 4, 147, [0.3, 0.32, 0.36], 1, 1);
     ubTextC("16", UB_RAIL / 2, 156, 7, [0.45, 0.47, 0.52], 1);
@@ -1882,16 +1843,15 @@ function ubPaintOpt() {
     ubText("device-wide", P[0] + P[2] - 8 - ubTextW("device-wide", 6.5), P[1] + 12, 6.5, [0.5, 0.53, 0.58], 1);
     ubLine(P[0] + 4, P[1] + 15, P[0] + P[2] - 4, P[1] + 15, [0.24, 0.26, 0.3], 1, 1);
     const labels = [
-        ["Default mapping mode", "New mappings start as Mod or Remote"],
-        ["Global smoothing", "Lowpass on every mapping output, 0 = off"],
-        ["Rate multiplier", "Scales LFO / Random / Steps / MSEG rates"],
-        ["Self-mod", "Own controls modulated by the engine or Live"],
+        "Default mapping mode",
+        "Global smoothing",
+        "Rate multiplier",
+        "Self-mod",
     ];
     labels.forEach((t, i) => {
         const ry = g.rows[i].y;
         if (i > 0) ubLine(P[0] + 8, ry, P[0] + P[2] - 8, ry, [0.2, 0.22, 0.26], 1, 1);
-        ubText(ubFit(t[0], g.textW, 8), g.textX, ry + 15, 8, [0.9, 0.92, 0.95], 1);
-        if (ubTipsOn()) ubText(ubFit(t[1], g.textW, 6.5), g.textX, ry + 26, 6.5, [0.55, 0.58, 0.64], 1);
+        ubText(ubFit(t, g.textW, 8), g.textX, ry + 20, 8, [0.9, 0.92, 0.95], 1);
     });
     // row 1: MOD | REM (same look and colours as the remap editor tabs)
     ubPaintModeTab(g.tabmod, "MOD", st.defaultMode !== "remote", UB_MOD_COL);
@@ -1969,7 +1929,7 @@ function ubPaintMapsPop() {
     ubRRStroke(P.lst[0] + 0.5, P.lst[1] + 0.5, P.lst[2] - 1, P.lst[3] - 1, 3, [0.30, 0.32, 0.37], 1, 1);
     ubTextC("LST", P.lst[0] + P.lst[2] / 2, P.lst[1] + 8.5, 6.5, UB_ORANGE, 1);
     ubLine(R[0] + 4, R[1] + UB_POP_HEAD, R[0] + R[2] - 4, R[1] + UB_POP_HEAD, [0.24, 0.26, 0.3], 1, 1);
-    if (!P.maps.length) ubText(ubTipsOn() ? "no mappings - press LRN" : "no mappings", R[0] + 6, R[1] + UB_POP_HEAD + 12, 6.5, [0.5, 0.53, 0.58], 1);
+    if (!P.maps.length) ubText("no mappings", R[0] + 6, R[1] + UB_POP_HEAD + 12, 6.5, [0.5, 0.53, 0.58], 1);
     const sel = ubStripSelMapping(P.slot);
     for (const r of P.vis) {
         const m = r.m;
@@ -2189,8 +2149,6 @@ function ubPaintDetail(gm) {
         const cy = y0 + (P[3] >= 150 ? 70 : Math.round(P[3] * 0.34));
         const has = ubValidSlot(ubSel());
         ubTextC(has ? "No mappings yet" : "No modulator", x + w / 2, cy, 8, [0.6, 0.63, 0.68], 1);
-        if (ubTipsOn()) ubTextC(has ? "Press LRN, then touch" : "Add one with the + tab", x + w / 2, cy + 12, 7, [0.45, 0.47, 0.52], 1);
-        if (has && ubTipsOn()) ubTextC("a Live parameter", x + w / 2, cy + 21, 7, [0.45, 0.47, 0.52], 1);
         return;
     }
     const mod = MM.state.mods[m.mod];
@@ -2298,15 +2256,14 @@ function ubPaintList(gm) {
     ubPaintListPanel(gm);
     ubPaintDetail(gm);
 }
-// footer of the list: "<n> mappings on <modulator> | click a row to edit", shortened to fit maxW (the name gives way first)
+// footer of the list: "<n> mappings on <modulator>", shortened to fit maxW (the name gives way first)
 function ubFooterText(n, name, maxW, size) {
     const head = n + " mapping" + (n === 1 ? "" : "s");
-    const tail = ubTipsOn() ? " | click a row to edit" : "";
-    if (!name) return ubFit(head + tail, maxW, size);
-    const full = head + " on " + name + tail;
+    if (!name) return ubFit(head, maxW, size);
+    const full = head + " on " + name;
     if (ubTextW(full, size) <= maxW) return full;
-    const room = maxW - ubTextW(head + " on " + tail, size);
-    if (room >= ubTextW("Dic..", size)) return head + " on " + ubFit(name, room, size) + tail;
+    const room = maxW - ubTextW(head + " on ", size);
+    if (room >= ubTextW("Dic..", size)) return head + " on " + ubFit(name, room, size);
     return ubFit(head + " on " + name, maxW, size);
 }
 function ubPaintListPanel(gm) {
@@ -2340,7 +2297,7 @@ function ubPaintListPanel(gm) {
             ubText(cs, R[0] + R[2] - 10 - ubTextW(cs, 7), r.y + 10.5, 7, [0.6, 0.63, 0.68], 1);
         } else if (it.kind === "none") {
             if (isSelMod) ubRect(R[0] + 3, r.y, R[2] - 6, r.h, col, UB_TINT_ROW);
-            ubText(ubTipsOn() ? "no mappings - press LRN to map" : "no mappings", R[0] + 18, r.y + 9, 6.5, [0.42, 0.45, 0.5], 1);
+            ubText("no mappings", R[0] + 18, r.y + 9, 6.5, [0.42, 0.45, 0.5], 1);
         } else {
             const m = it.m;
             const P = ubRowParts(r.y, gm.lx, gm.lw);
@@ -2411,19 +2368,6 @@ function ubPaintFull() {
 }
 
 // ------------------------------------------------------------------ paint
-function ubPaintTooltip() {
-    if (!ubHover || ubDrag || ubPopup || !ubTipsOn()) return;
-    const tip = ubHover.hit && ubHover.hit.tip;
-    if (!tip) return;
-    const w = ubTextW(tip, 7) + 10;
-    const lw = ubLayoutWidth();
-    const x = clamp(ubHover.x + 8, 2, Math.max(2, lw - w - 2));
-    const y = ubHover.y > 135 ? ubHover.y - 18 : ubHover.y + 12;
-    ubRR(x, y, w, 13, 3, [0.04, 0.045, 0.055], 0.96);
-    ubRRStroke(x + 0.5, y + 0.5, w - 1, 12, 3, UB_CYAN, 0.8, 1);
-    ubText(tip, x + 5, y + 9.5, 7, [0.9, 0.95, 1], 1);
-}
-
 // ------------------------------------------------------------------ parameter faces
 // Each drawn control that is a Live parameter gets the matching saved pool object (a transparent live.dial / live.text / live.tab /
 // live.numbox) laid over its rect, so a real click / drag / right-click reaches Live's native parameter handling (Show Automation,
@@ -2510,7 +2454,6 @@ function paint() {
     if (ubMapsPop) ubPaintMapsPop();
     if (ubPopup) ubPaintPopup();
     ubPaintFull();
-    ubPaintTooltip();
     ubFacesUpdate();
 }
 

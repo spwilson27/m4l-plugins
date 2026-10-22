@@ -28,7 +28,12 @@ Cases:
   mix_0 / mix_50                  Mix 0 %: every chain outputs its third of the dry input (A energy = D / 9, All = D); Mix 50 %: the
                                   chains still sum to the delayed input (0.5 wet + 0.5 dry)
   sawnoise                        noise between the partials is mostly in Nonharmonics, the partials in A / B, f0 within 1 %
-  nofund                          the fundamental removed: f0 still within 1 %
+  c1_sq_2k / c1_sq_44k / c1_saw_4k   ROOT detection (the user's report): C1 (32.7 Hz) square at Size 2k (48 and 44.1 kHz) and sawtooth at 4k, band
+                                  156.1 Hz .. 2.9 kHz, Every 8th: series f0 32.7, root 163.5 Hz (5th harmonic), harmonics h' = 1, 9, 17 in A,
+                                  the other partials in B, the series partials below the root (32.7, 98.1 Hz) in Nonharmonics
+  c1_noise                        white noise in that band: no root, no series
+  saw110_low300                   110 Hz sawtooth with Low 300 Hz: series 110, root 330 Hz (harmonic 3), pattern counted from it
+  nofund                          the fundamental removed: the series f0 is still 220 Hz, the root is 440 Hz (harmonic 2)
   noise                           white noise: Nonharmonics > 99 %, no fundamental tracked
   thr_above / quiet               below an explicit Detection Threshold everything goes to Nonharmonics
   quiet_auto                      Threshold Automatic (-120 dB, the default): a -70 dB sawtooth is still split, the effective threshold
@@ -61,11 +66,11 @@ def gen_source():
     return "\n".join(parts)
 
 
-def stim_code(kind, delay_dry):
+def stim_code(kind, delay_dry, f0=F0, sr=SR):
     """Stimulus gen: out1 = x (left), out2 = x delayed 4096 (or raw), out3 unused."""
     head = ["History n(0);", "Delay dlyX(4097);"]
     body = ["dummy = in1 * 0;", "n = n + 1;", "k = n - 1;",
-            f"ph = k * {F0} / 48000;", "ph = ph - floor(ph);",
+            f"ph = k * {f0} / {sr};", "ph = ph - floor(ph);",
             "r = noise();",
             "s = 0;",
             "for (h = 1; h <= 90; h += 1) {", "  s += sin(6.283185307179586 * h * ph) / h;", "}",
@@ -79,13 +84,38 @@ def stim_code(kind, delay_dry):
     elif kind == "nofund":
         body.append("x = 0.25 * s2;")
     elif kind == "saw2500":
-        body.append("ph3 = k * 2500 / 48000;")
+        body.append(f"ph3 = k * 2500 / {sr};")
         body.append("ph3 = ph3 - floor(ph3);")
         body.append("s3 = 0;")
         body.append("for (h = 1; h <= 7; h += 1) {")
         body.append("  s3 += sin(6.283185307179586 * h * ph3) / h;")
         body.append("}")
         body.append("x = 0.25 * s3;")
+    elif kind == "sawc":
+        # sawtooth band-limited to 0.45 sr (a LOW f0 needs hundreds of harmonics, unlike `saw` which stops at 90)
+        hmax = min(int(0.45 * sr // f0), 700)
+        body += ["s5 = 0;", f"for (h = 1; h <= {hmax}; h += 1) {{", "  s5 += sin(6.283185307179586 * h * ph) / h;", "}", "x = 0.25 * s5;"]
+    elif kind in ("square", "square_q", "tri", "pulse25"):
+        # band-limited odd / gapped spectra below 0.45 sr: square = odd harmonics 1/h, triangle = odd 1/h^2 with alternating sign,
+        # 25 % pulse = every 4th harmonic missing
+        hmax = min(int(0.45 * sr // f0), 700)
+        body += ["s4 = 0;", f"for (h = 1; h <= {hmax}; h += 1) {{"]
+        if kind in ("square", "square_q"):
+            body += ["  odd = h - 2 * floor(h / 2);", "  s4 += odd * sin(6.283185307179586 * h * ph) / h;"]
+        elif kind == "tri":
+            body += ["  odd = h - 2 * floor(h / 2);", "  sg = (h - 4 * floor(h / 4)) < 1.5 ? 1 : -1;",
+                     "  s4 += odd * sg * sin(6.283185307179586 * h * ph) / (h * h);"]
+        else:
+            body += ["  s4 += sin(3.141592653589793 * h * 0.25) * sin(6.283185307179586 * h * ph) / h;"]
+        body.append("}")
+        if kind == "square":
+            body.append("x = 0.25 * 1.2732395447351628 * s4;")
+        elif kind == "square_q":
+            body.append("x = 0.008 * 1.2732395447351628 * s4;")
+        elif kind == "tri":
+            body.append("x = 0.25 * 1.2339 * s4;")
+        else:
+            body.append("x = 0.25 * 2 * 1.5707963267948966 * 0.6366197723675814 * s4;")
     elif kind == "quiet":
         body.append("x = 0.0003 * s;")
     elif kind == "impulse":
@@ -99,7 +129,7 @@ def stim_code(kind, delay_dry):
 
 def build_device(code, case):
     boxes = [
-        mh.gen_box("obj-stim", stim_code(case["stim"], case.get("delay", True)), 40, 120, numinlets=1, numoutlets=3),
+        mh.gen_box("obj-stim", stim_code(case["stim"], case.get("delay", True), case.get("f0", F0), case.get("sr", SR)), 40, 120, numinlets=1, numoutlets=3),
         mh.box("obj-half", "*~ 0.5", 40, 160, 45, numinlets=2, outlettype=["signal"]),
         mh.box("obj-scope", "buffer~ #0-harmsplitscope @samps 544", 520, 100, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.msg("obj-setbuf", "setbuffer #0-harmsplitscope", 520, 130, 220),
@@ -149,9 +179,28 @@ def cases():
     c("saw_p4", pat=4)
     c("saw_p1", pat=1)
     c("saw_maxh8", maxh=8)
+    # odd-only and gapped spectra (the f0 tracker used to need every harmonic: a square never reached the accept)
+    c("sq_p2", stim="square")
+    c("sq_p4", stim="square", pat=4)
+    c("sq_quiet", stim="square_q")
+    for f in (110, 440, 880):
+        c(f"sq_f{f}", stim="square", f0=f)
+    c("tri_220", stim="tri")
+    c("tri_110", stim="tri", f0=110)
+    for f in (220, 440):
+        c(f"pulse_f{f}", stim="pulse25", f0=f)
+    c("sq_wide_1760", stim="square", f0=1760, lo=19.4, hi=19900)
     c("sawnoise", stim="sawnoise")
     c("nofund", stim="nofund")
     c("noise", stim="noise")
+    # ROOT = lowest present partial of the series inside the band; the pattern counts from it (h' = h - hr + 1)
+    # the user's report: C1 square (32.7 Hz, odd harmonics), Low 156.1 Hz, High 2.9 kHz, Every 8th, Size 2k
+    U = dict(lo=156.1, hi=2900, pat=8, maxh=0, f0=32.7, xh=[1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23])
+    c("c1_sq_2k", stim="square", **U)
+    c("c1_sq_44k", stim="square", sr=44100, **U)
+    c("c1_saw_4k", stim="sawc", n=4096, settle=900, dur=900, **dict(U, xh=list(range(1, 30))))
+    c("c1_noise", stim="noise", lo=156.1, hi=2900, pat=8)
+    c("saw110_low300", stim="saw", f0=110, lo=300, hi=1500, xh=[1, 2, 3, 4, 5, 6, 7, 8, 9])
     c("saw_cut", lo=150, hi=400)
     c("band_low", lo=500, hi=1500)
     c("band_high", lo=19.4, hi=100)
@@ -176,14 +225,23 @@ def db(x):
 
 def run_case(code, case):
     boxes, lines = build_device(code, case)
-    return mh.run_case(f"harmsplit_{case['name']}", boxes, lines, probe_js=PROBE_JS, probe_args=case["stim"],
-                       settle_ms=case["settle"], dur_ms=case["dur"], channels=6, sr=SR)
+    xs = ",".join(str(h) for h in case.get("xh", []))
+    args = f"{case['stim']} {case.get('f0', F0)}" + (f" {xs}" if xs else "")
+    return mh.run_case(f"harmsplit_{case['name']}", boxes, lines, probe_js=PROBE_JS, probe_args=args,
+                       settle_ms=case["settle"], dur_ms=case["dur"], channels=6, sr=case.get("sr", SR))
 
 
 def share(r, h, ch, mid=False):
     """Share of the energy at harmonic h (or half way between h and h + 1) that sits in channel ch ('n', 'a', 'b')."""
     key = "m" if mid else "g"
     vals = {c: r.get(f"{key}{c}{h}", 0.0) for c in "nab"}
+    tot = sum(vals.values())
+    return vals[ch] / tot if tot > 0 else 0.0
+
+
+def share_x(r, h, ch):
+    """Share of the energy at the extra harmonic h (probe argument list) that sits in channel ch."""
+    vals = {c: r.get(f"x{c}{h}", 0.0) for c in "nab"}
     tot = sum(vals.values())
     return vals[ch] / tot if tot > 0 else 0.0
 
@@ -196,10 +254,10 @@ def check(case, r, errors):
 
     if r.get("nan", 1) != 0:
         err(f"NaN / inf samples ({r.get('nan')})")
-    if r.get("harness_sr") and abs(r["harness_sr"] - SR) > 1:
+    if r.get("harness_sr") and abs(r["harness_sr"] - case.get("sr", SR)) > 1:
         err(f"sample rate {r['harness_sr']}")
     eN, eA, eB = r["energyN"], r["energyA"], r["energyB"]
-    tot = eN + eA + eB
+    tot = max(eN + eA + eB, 1e-300)
     f0 = r["scopeF0"]
     if name.startswith("sum_"):
         null = db(r["nullE"] / max(r["energyD"], 1e-300))
@@ -230,6 +288,60 @@ def check(case, r, errors):
             err(f"Pattern 1: A carries just the fundamental, A / B energy about 1.55 (got {eA / eB:.2f})")
         if abs(f0 / F0 - 1) > 0.01:
             err(f"f0 telemetry must be within 1 % of {F0} Hz (got {f0:.2f})")
+    elif name.startswith("sq_") or name.startswith("tri_") or name.startswith("pulse_"):
+        f0w = case.get("f0", F0)
+        print(f"[{name}] f0={f0:.2f} Hz (want {f0w})  salience {r['scopeConf']:.2f}  Nonharmonics {100 * eN / tot:.2f} %  A {100 * eA / tot:.1f} %  B {100 * eB / tot:.1f} %")
+        if abs(f0 / f0w - 1) > 0.01:
+            err(f"f0 telemetry must be within 1 % of {f0w} Hz (got {f0:.2f})")
+        if not eN / tot < 0.05:
+            err(f"a clean periodic wave must leave < 5 % in Nonharmonics (got {100 * eN / tot:.2f} %)")
+        if f0w == F0 and name in ("sq_p2", "sq_p4"):
+            for h in (1, 3, 5, 7, 9, 11):
+                want = "a" if (h - 1) % case["pat"] == 0 else "b"
+                sh_ = share(r, h, want)
+                if not sh_ > 0.98:
+                    err(f"square harmonic {h} must be in {want.upper()} (share {sh_:.4f}; N {share(r, h, 'n'):.4f} A {share(r, h, 'a'):.4f} B {share(r, h, 'b'):.4f})")
+        if name == "sq_p2" and not eB / tot < 0.02:
+            err(f"square, Pattern 2: all harmonics are odd, so B stays empty (got {100 * eB / tot:.2f} %)")
+    elif name in ("c1_sq_2k", "c1_sq_44k", "c1_saw_4k"):
+        f1 = 32.7
+        xs = lambda h, ch: share_x(r, h, ch)  # noqa: E731
+        a_ok = [5, 13, 21]
+        b_odd = [7, 9, 11, 15, 17, 19, 23]
+        b_all = b_odd if name != "c1_saw_4k" else [6, 7, 8, 9, 10, 11, 12, 14]
+        a_share = [xs(h, "a") for h in a_ok]
+        b_share = [xs(h, "b") for h in b_all]
+        n_share = [xs(h, "n") for h in (1, 3)]
+        print(f"[{name}] root={f0:.2f} Hz (want 163.5)  series f0={r['scopeSeries']:.2f}  root harmonic {int(r['scopeRootH'])}  odd-only {int(r['scopeOdd'])}  salience {r['scopeConf']:.2f}  "
+              f"A partials 5/13/21: {', '.join(f'{v:.3f}' for v in a_share)}  B: min {min(b_share):.3f}  Nonharmonics 1/3: {', '.join(f'{v:.3f}' for v in n_share)}  "
+              f"N {100 * eN / tot:.1f} %  A {100 * eA / tot:.1f} %  B {100 * eB / tot:.1f} %")
+        if abs(f0 / 163.5 - 1) > 0.01:
+            err(f"the root of the C1 series inside 156.1 .. 2900 Hz is its 5th harmonic, 163.5 Hz (got {f0:.2f})")
+        if abs(r["scopeSeries"] / f1 - 1) > 0.01 or int(r["scopeRootH"]) != 5:
+            err(f"series f0 32.7 Hz, root harmonic 5 (got {r['scopeSeries']:.2f}, h {int(r['scopeRootH'])})")
+        if name != "c1_saw_4k" and int(r["scopeOdd"]) != 1:
+            err("a square wave is an odd-only series")
+        if not (min(a_share) > 0.85 and min(b_share) > 0.85):
+            err(f"Every 8th counts from the root: harmonics h' = 1, 9, 17 (series 5, 13, 21) in A, the others in B (A {a_share}, B {b_share})")
+        if not min(n_share) > 0.85:
+            err(f"series partials below the root (32.7, 98.1 Hz) go to Nonharmonics ({n_share})")
+        if not r["scopeConf"] > 0.42:
+            err(f"salience {r['scopeConf']:.2f} must have margin over the 0.36 accept")
+    elif name == "c1_noise":
+        print(f"[{name}] Nonharmonics {100 * eN / tot:.3f} %  root={f0:.2f}  series={r['scopeSeries']:.2f}  salience {r['scopeConf']:.2f}")
+        if f0 != 0 or r["scopeSeries"] != 0 or not eN / tot > 0.99:
+            err(f"white noise in the band 156.1 .. 2900 Hz: no root, no series, all Nonharmonics (root {f0:.2f}, series {r['scopeSeries']:.2f}, N {100 * eN / tot:.2f} %)")
+    elif name == "saw110_low300":
+        a_share = [share_x(r, h, "a") for h in (3, 5, 7, 9)]
+        b_share = [share_x(r, h, "b") for h in (4, 6, 8)]
+        n_share = [share_x(r, h, "n") for h in (1, 2)]
+        print(f"[{name}] root={f0:.2f} Hz (want 330)  series f0={r['scopeSeries']:.2f}  root harmonic {int(r['scopeRootH'])}  A 3/5/7/9: {', '.join(f'{v:.3f}' for v in a_share)}  B 4/6/8: {', '.join(f'{v:.3f}' for v in b_share)}  Nonharmonics 1/2: {', '.join(f'{v:.3f}' for v in n_share)}")
+        if abs(f0 / 330 - 1) > 0.01 or int(r["scopeRootH"]) != 3 or abs(r["scopeSeries"] / 110 - 1) > 0.01:
+            err(f"110 Hz saw with Low 300 Hz: series 110, root 330 Hz = harmonic 3 (got root {f0:.2f}, series {r['scopeSeries']:.2f}, h {int(r['scopeRootH'])})")
+        if not (min(a_share) > 0.98 and min(b_share) > 0.98):
+            err(f"Every 2nd counts from the root: harmonics 3, 5, 7, 9 in A, 4, 6, 8 in B (A {a_share}, B {b_share})")
+        if not min(n_share) > 0.9:
+            err(f"harmonics 1, 2 (below the root) go to Nonharmonics ({n_share})")
     elif name == "saw_cut":
         sh = []
         for h in range(1, 13):
@@ -309,9 +421,11 @@ def check(case, r, errors):
         if abs(f0 / F0 - 1) > 0.01:
             err(f"f0 telemetry must be within 1 % of {F0} Hz (got {f0:.2f})")
     elif name == "nofund":
-        print(f"[{name}] f0={f0:.2f} Hz")
-        if abs(f0 / F0 - 1) > 0.01:
-            err(f"f0 with the fundamental missing must be within 1 % of {F0} Hz (got {f0:.2f})")
+        print(f"[{name}] root={f0:.2f} Hz  series f0={r['scopeSeries']:.2f} Hz  root harmonic {int(r['scopeRootH'])}")
+        if abs(f0 / (2 * F0) - 1) > 0.01 or int(r["scopeRootH"]) != 2:
+            err(f"fundamental missing: the root is the lowest present partial, 440 Hz = series harmonic 2 (got {f0:.2f}, h {int(r['scopeRootH'])})")
+        if abs(r["scopeSeries"] / F0 - 1) > 0.01:
+            err(f"fundamental missing: the series f0 is still {F0} Hz (got {r['scopeSeries']:.2f})")
     elif name == "noise":
         print(f"[{name}] Nonharmonics {100 * eN / tot:.3f} %  f0={f0:.2f}  salience {r['scopeConf']:.2f}")
         if not eN / tot > 0.99:

@@ -3,7 +3,7 @@
  * Variant-specific tests for devices/Mega Modulator.amxd.
  * Runs src/megamod_ui.js (+ shared config/mapper) in a VM with a mocked mgraphics and checks: load, painting in both views
  * (rack strips, and the LST view = modulator inspector with tabs, expanded editor, filtered mapping list and remap editor;
- * popup, name edit, tooltip, "pool full" pill), hit-testing, device width for 0 / 1 / 5 / 16 modulators in both views, the rail
+ * popup, name edit, "pool full" pill), hit-testing, device width for 0 / 1 / 5 / 16 modulators in both views, the rail
  * learn button (single / Shift multi / disarm / retarget), the LST toggle, and the strip / mapping-list / remap-editor
  * (MSEG transfer curve) interactions, plus panel / chip bounds and overlaps.
  */
@@ -407,7 +407,6 @@ ok(!!r1, "mapping row is visible");
 const P1 = run(`ubRowParts(${r1.y})`);
 const at = (rect) => [rect[0] + rect[2] / 2, rect[1] + rect[3] / 2];
 eq(run(`ubHit(${at(P1.name)[0]}, ${at(P1.name)[1]})`).kind, "ls_row", "name hit = row");
-eq(run(`ubHit(${at(P1.name)[0]}, ${at(P1.name)[1]})`).tip, `${m1.target.trackName} > ${m1.target.deviceName} > ${m1.target.paramName}`, "name hover tip shows track > device > param");
 eq(run(`ubHit(${at(P1.del)[0]}, ${at(P1.del)[1]})`).kind, "ls_del", "delete hit");
 eq(run(`ubHit(${at(P1.curve)[0]}, ${at(P1.curve)[1]})`).kind, "ls_curve", "curve hit");
 eq(run(`ubHit(${at(P1.val)[0]}, ${at(P1.val)[1]})`).kind, "ls_val", "value hit");
@@ -766,7 +765,7 @@ E3.run("preview()");
 E3.log.texts.length = 0;
 E3.run("paint()");
 ok(E3.log.texts.includes("MAPPINGS") && E3.log.texts.includes("Frequency"), "preview shows the LST view with the selected mapping");
-ok(E3.log.texts.includes("4 mappings on Dice | click a row to edit") || E3.log.texts.some((t) => t.indexOf("4 mappings on Dice") === 0), "preview footer counts the shown mappings");
+ok(E3.log.texts.includes("4 mappings on Dice") || E3.log.texts.some((t) => t.indexOf("4 mappings on Dice") === 0), "preview footer counts the shown mappings");
 ok(E3.run("ubPbSelMapping() !== null") && E3.run("ubPb()"), "preview has a selected mapping and the editor");
 ok(E3.run("MM.allMappings().some((m) => MM.mappingStatus(m.id) === 'missing')"), "preview has a missing row");
 eq(E3.log.outlets.filter((o) => o[1] === "width").pop()[2], 22 + 26 + 204 + 6 + 172 + 6 + 144 + 8, "preview LST width");
@@ -1377,16 +1376,16 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         E.ctx.mgraphics.text_measure = (t) => [String(t).length * 3.2, 8];
         E.run("MM.setName(0, 'Dice')");
         E.log.texts.length = 0; E.run("paint()");
-        ok(E.log.texts.includes("4 mappings on Dice | click a row to edit"), "footer: '4 mappings on Dice | click a row to edit'");
+        ok(E.log.texts.includes("4 mappings on Dice"), "footer: '4 mappings on Dice'");
         E.run("MM.setUI({ sel: 1 })"); E.run("MM.setName(1, 'Wobble')");
         E.log.texts.length = 0; E.run("paint()");
-        ok(E.log.texts.includes("2 mappings on Wobble | click a row to edit"), "footer: another modulator counts its own 2 mappings");
+        ok(E.log.texts.includes("2 mappings on Wobble"), "footer: another modulator counts its own 2 mappings");
         E.run("MM.deleteMapping(MM.mappingsFor(1)[0].id)");
         E.log.texts.length = 0; E.run("paint()");
-        ok(E.log.texts.includes("1 mapping on Wobble | click a row to edit"), "footer: singular for one mapping");
+        ok(E.log.texts.includes("1 mapping on Wobble"), "footer: singular for one mapping");
         E.run("MM.deleteMapping(MM.mappingsFor(1)[0].id)");
         E.log.texts.length = 0; E.run("paint()");
-        ok(E.log.texts.includes("0 mappings on Wobble | click a row to edit"), "footer: zero mappings");
+        ok(E.log.texts.includes("0 mappings on Wobble"), "footer: zero mappings");
         // long names / narrow metrics never overflow the list panel
         for (const metric of [3.2, 4, 5]) {
             E.ctx.mgraphics.text_measure = (t) => [String(t).length * metric, 8];
@@ -1407,7 +1406,6 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         let main = E.run("ubStrips().main");
         let R = E.run(`ubStripRects(ubStrips().main)`);
         eq(E.run(`ubHit(${center(R.collapse)[0]}, ${center(R.collapse)[1]})`).kind, "collapse", "LST: the header has the back button");
-        eq(E.run(`ubHit(${center(R.collapse)[0]}, ${center(R.collapse)[1]})`).tip, "Back to rack strips", "LST: the back button tip");
         eq(E.run(`ubHit(${center(R.del)[0]}, ${center(R.del)[1]})`).kind, "del", "LST: the delete X is a separate control");
         ok(R.collapse[0] + R.collapse[2] <= main.x + main.w - 3 && R.del[0] + R.del[2] <= R.collapse[0], "LST: header buttons are padded and do not overlap");
         // delete: first click only arms
@@ -1426,7 +1424,6 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         E.run("ubSetExpanded(1)");
         const gE = E.run("ubStrips().list.filter((g) => g.exp)[0]");
         const RE = E.run(`ubStripRects(${JSON.stringify(gE)})`);
-        eq(E.run(`ubHit(${center(RE.collapse)[0]}, ${center(RE.collapse)[1]})`).tip, "Collapse", "strips: the header button still collapses");
         clk(E, ...center(RE.collapse));
         eq(E.run("ubExp()"), -1, "strips: collapsed in place");
         ok(!E.run("ubPb()"), "strips: LST stays off");
@@ -1686,7 +1683,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     {
         const T = mk2(3, [2, 1, 0]);
         const rr = T.run("ubRailRects()");
-        eq(Object.keys(rr).sort().join(","), "learn,list,opt,tip", "rail: only the LRN, LST, OPT and TIP hit areas exist");
+        eq(Object.keys(rr).sort().join(","), "learn,list,opt", "rail: only the LRN, LST, OPT hit areas exist");
         for (let y = 24; y < 140; y += 2) {
             const k = T.run(`ubHit(11, ${y}).kind`);
             ok(k !== "rail_undo" && k !== "rail_redo", `rail: no undo / redo hit at y=${y}`);
@@ -2062,7 +2059,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     {
         const E = mkO(5);
         const rr = E.run("ubRailRects()");
-        eq(rr.opt, [2, 67, 16, 16], "OPT rail button rect (under LST)");
+        eq(rr.opt, [2, 75, 16, 16], "OPT rail button rect (under LST)");
         ok(rr.opt[1] >= rr.list[1] + rr.list[3] + 4 && rr.opt[1] + rr.opt[3] + 10 < 140, "OPT sits under LST and above the count");
         eq(E.run(`ubHit(${RAIL_OPT[0]}, ${RAIL_OPT[1]}).kind`), "rail_opt", "rail OPT hit");
         ok(!E.run("ubOpt()") && !E.run("ubPb()"), "starts in the strips view");
@@ -2123,12 +2120,9 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         eq(E.run("ubHit(11, 12).kind"), "rail_learn", "LRN still on the rail");
         eq(E.run("ubHit(11, 48).kind"), "rail_list", "LST still on the rail");
         // text blocks end before the controls
-        ok(g.textX + g.textW <= g.tabmod[0] - 4 && g.textX + g.textW <= g.bar[0] - 4 && g.textX + g.textW <= g.knobRect[0] - 4, "label / hint column does not run under the controls");
-        // rows: every label and hint fits its column
+        ok(g.textX + g.textW <= g.tabmod[0] - 4 && g.textX + g.textW <= g.bar[0] - 4 && g.textX + g.textW <= g.knobRect[0] - 4, "label column does not run under the controls");
+        // rows: every label fits its column
         for (const t of ["Default mapping mode", "Global smoothing", "Rate multiplier"]) ok(E.run(`ubTextW(${JSON.stringify(t)}, 8)`) <= g.textW, "label fits: " + t);
-        for (const t of ["New mappings start as Mod or Remote", "Lowpass on every mapping output, 0 = off", "Scales LFO / Random / Steps / MSEG rates"]) ok(E.run(`ubTextW(${JSON.stringify(t)}, 6.5)`) <= g.textW, "hint fits: " + t);
-        // tooltips exist for every control
-        for (const k of ["tabmod", "tabrem", "bar", "knobRect"]) ok(!!E.run(`ubHit(${ctr(g[k])}).tip`), "tooltip: " + k);
     }
 
     // ---- default mapping mode: the MOD | REM segmented control, applied to new mappings
@@ -2271,12 +2265,12 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const saved = E.run("MM.save()");
         const E2 = mkO(0);
         E2.ctx.setvalueof(saved);
-        eq(S(E2), { defaultMode: "remote", smoothMs: 80, rateMul: 3, tooltips: true, selfMod: "internal" }, "settings restored from the saved state");
+        eq(S(E2), { defaultMode: "remote", smoothMs: 80, rateMul: 3, selfMod: "internal" }, "settings restored from the saved state");
         ok(E2.gen("smooth").length > 0 && E2.gen("ratemul").some((m) => m[3] === 3), "load re-sends smoothing and rate to gen");
         // an old state (no settings key) gets the defaults
         const old = E.run("JSON.stringify(Object.assign({}, MM.state, { schema: 6, settings: undefined }))");
         E2.run(`MM.load(serializeState(normalizeState(JSON.parse(${JSON.stringify(old)}))))`);
-        eq(S(E2), { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true, selfMod: "internal" }, "an old state gets the defaults");
+        eq(S(E2), { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }, "an old state gets the defaults");
     }
 
     // ---- painting with the panel open, in every combination; the keys do not reach the hidden modulators
@@ -2306,56 +2300,49 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     }
 }
 
-// ---------------------------------------------------------------- tooltips toggle (rail TIP button)
+// ---------------------------------------------------------------- no TIP button, no tooltips, no hint text
 {
     const T = makeEnv();
     T.ctx.uiReady();
     for (const t of [1, 2, 3]) T.run(`ubAddType(${t})`);
     const rr = T.run("ubRailRects()");
-    const names = ["learn", "list", "opt", "tip"];
+    const names = ["learn", "list", "opt"];
+    eq(Object.keys(rr).sort().join(","), "learn,list,opt", "rail: no TIP hit area");
     for (let i = 0; i < names.length; i++) {
         const r = rr[names[i]];
         ok(r[1] >= 0 && r[1] + r[3] <= 169 && r[0] >= 0 && r[0] + r[2] <= 20, "rail button inside the rail: " + names[i]);
         if (i) ok(rr[names[i - 1]][1] + rr[names[i - 1]][3] <= r[1], "rail buttons do not overlap: " + names[i]);
         if (i) ok(r[1] - rr[names[i - 1]][1] === rr[names[1]][1] - rr[names[0]][1], "rail buttons evenly spaced: " + names[i]);
     }
-    // label of the last button, then the count and the "16" all fit in 169 px with no overlap
-    ok(rr.tip[1] + 27 + 2 <= 143 - 7, "TIP label clears the modulator count");
-    ok(T.run("ubTipsOn()"), "tooltips default on");
-    eq(T.run("ubHit(11, 107).kind"), "rail_tip", "TIP hit area");
+    // button + 11 px label of the last one still clear the modulator count (baseline 143, 7 px text)
+    ok(rr.opt[1] + 27 + 2 <= 143 - 7, "OPT label clears the modulator count");
+    for (let y = 0; y < 169; y++) ok(T.run(`ubHit(11, ${y}).kind`) !== "rail_tip", "no rail_tip hit at y=" + y);
     T.log.texts.length = 0; T.run("paint()");
-    ok(T.log.texts.includes("TIP") && T.log.texts.includes("LRN") && T.log.texts.includes("3"), "rail paints TIP, LRN and the count");
-    // on: a hovered control with a tip paints it
-    const hoverTip = () => { T.run("ubHover = { x: 11, y: 12, hit: ubHit(11, 12) }"); T.log.texts.length = 0; T.run("paint()"); };
-    hoverTip();
-    ok(T.log.texts.some((t) => /Learn: click/.test(t)), "tips on: tooltip painted");
-    // the toggle flips and persists in settings.tooltips
-    T.ctx.onclick(11, 107, 1, 0, 0, 0, 0, 0);
-    eq(T.run("MM.getSettings().tooltips"), false, "click turns tooltips off");
-    ok(!T.run("ubTipsOn()"), "ubTipsOn follows");
-    hoverTip();
-    ok(!T.log.texts.some((t) => /Learn: click/.test(t)), "tips off: no tooltip painted");
-    ok(T.log.texts.includes("LRN") && T.log.texts.includes("3"), "tips off: labels and values still painted");
-    // off: the instructional hints are gone, info stays
+    ok(!T.log.texts.includes("TIP") && T.log.texts.includes("LRN") && T.log.texts.includes("LST") && T.log.texts.includes("OPT") && T.log.texts.includes("3"), "rail paints LRN, LST, OPT and the count, no TIP");
+    // hovering a control for a long time paints no tooltip
+    T.run("ubHover = { x: 11, y: 12, hit: ubHit(11, 12) }");
+    for (let i = 0; i < 20; i++) { T.log.texts.length = 0; T.run("paint()"); }
+    ok(!T.log.texts.some((t) => /Learn: click|Shift-click/.test(t)), "no tooltip painted after a long hover");
+    ok(T.run("typeof ubPaintTooltip") === "undefined" && T.run("typeof ubTipsOn") === "undefined", "tooltip code is gone");
+    // footer and empty states carry no instructions
     T.run("MM.setUI({ pb: 1, sel: 0 })"); T.log.texts.length = 0; T.run("paint()");
-    ok(!T.log.texts.some((t) => /click a row to edit|press LRN/.test(t)), "tips off: footer and empty-state hints hidden");
-    ok(T.log.texts.some((t) => /mapping/.test(t)), "tips off: footer count still shown");
-    eq(T.run('ubFooterText(2, "Dice", 1000, 6.5)'), "2 mappings on Dice", "tips off: footer keeps the info, drops the instruction");
-    T.ctx.onclick(11, 107, 1, 0, 0, 0, 0, 0);
-    eq(T.run("MM.getSettings().tooltips"), true, "click turns tooltips back on");
-    T.log.texts.length = 0; T.run("paint()");
-    ok(/click a row to edit/.test(T.run('ubFooterText(2, "Dice", 1000, 6.5)')), "tips on: footer hint shown");
-    // Options hints
+    ok(!T.log.texts.some((t) => /click a row to edit|press LRN|Press LRN/.test(t)), "no footer / empty-state instructions");
+    ok(T.log.texts.some((t) => /mapping/.test(t)), "footer count still shown");
+    eq(T.run('ubFooterText(2, "Dice", 1000, 6.5)'), "2 mappings on Dice", "footer keeps the info only");
+    // Options: no hint lines, rows do not overlap
     T.run("MM.setUI({ pb: 0, opt: 1 })"); T.log.texts.length = 0; T.run("paint()");
-    ok(T.log.texts.some((t) => /Lowpass on every/.test(t)), "tips on: Options hints shown");
-    T.run("MM.setSettings({ tooltips: false })"); T.log.texts.length = 0; T.run("paint()");
-    ok(!T.log.texts.some((t) => /Lowpass on every|New mappings start/.test(t)) && T.log.texts.includes("Global smoothing"), "tips off: Options hints hidden, labels kept");
-    // persistence: getvalueof / setvalueof round trip keeps it, a state without it is on
-    const blob = T.run("MM.save()");
+    ok(!T.log.texts.some((t) => /Lowpass on every|New mappings start|Scales LFO|engine or Live/.test(t)), "Options has no hint lines");
+    for (const t of ["Default mapping mode", "Global smoothing", "Rate multiplier", "Self-mod"]) ok(T.log.texts.includes(t), "Options keeps label " + t);
+    const og = T.run("ubOptGeom()");
+    og.rows.forEach((r, i) => { if (i) ok(og.rows[i - 1].y + og.rows[i - 1].h <= r.y, "Options rows do not overlap: " + i); ok(r.y + r.h <= 169, "Options row inside 169 px: " + i); });
+    [og.tabmod, og.bar, og.knobRect, og.selfint].forEach((r, i) => ok(r[1] >= og.rows[i].y && r[1] + r[3] <= og.rows[i].y + og.rows[i].h, "Options control inside its row: " + i));
+    // an old saved state with settings.tooltips loads (key ignored, not kept)
+    const blob = T.run("(() => { const st = JSON.parse(JSON.stringify(MM.state)); st.settings.tooltips = false; return serializeState(st); })()");
     const U = makeEnv();
     U.ctx.uiReady();
     U.ctx.setvalueof(blob);
-    eq(U.run("MM.getSettings().tooltips"), false, "tooltips off persists through save / setvalueof");
+    eq(U.run("MM.getSettings()"), { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }, "old state with settings.tooltips loads and drops the key");
+    eq(U.run("MM.modCount()"), 3, "...with its modulators");
 }
 
 // maps popover: Mod rows have a polarity button that cycles + -> ± -> − -> +; Remote rows have none
@@ -2421,16 +2408,6 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     near(E4.live.ap_0.value, 100 * E4.run("autoNorm('rate', 1)"), 1e-9, "UI add pushes the LFO Rate value into M1 A");
     near(E4.live.ap_6.value, 100 * E4.run("autoNorm('attack', 5)"), 1e-9, "second strip: Envelope Attack goes to M2 A");
     ok(Object.keys(E4.live).every((n) => Object.keys(E4.live[n].attrs).every((a) => a === "presentation_rect" || a === "hidden")), "no parameter is ever renamed (Live ignores runtime renames); only the faces move");
-    // tooltips tell which Live parameter a control is
-    {
-        E4.run("MM.setUI({ pb: 0, opt: 0, exp: -1 }); ubSyncWidth(true)");
-        const r0 = E4.run("ubStripRects(ubStrips().list[0])");
-        const tipAt = (r) => E4.run(`ubHit(${center(r)[0]}, ${center(r)[1]}).tip`);
-        ok(tipAt(r0.knobs[0].hit).indexOf("Live: M1 B") > 0, "LFO knob 0 (synced: Div) tooltip names M1 B: " + tipAt(r0.knobs[0].hit));
-        ok(tipAt(r0.icon).indexOf("Live: M1 On") > 0, "enable button tooltip names M1 On");
-        const r1 = E4.run("ubStripRects(ubStrips().list[1])");
-        ok(tipAt(r1.knobs[1].hit).indexOf("Live: M2 B") > 0, "Envelope knob 1 (Release) tooltip names M2 B: " + tipAt(r1.knobs[1].hit));
-    }
     E4.run("MM.setParam(0, 'sync', 0)"); // free-running: knob 0 is Rate (synced it is Div)
     const k0 = E4.run("ubStripRects(ubStrips().list[0]).knobs[0]");
     eq(k0.spec.key, "rate", "knob 0 is the rate");
@@ -2804,11 +2781,10 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         // each control sits in its own row band
         [g.tabmod, g.bar, g.knobRect, g.selfint].forEach((r, i) => ok(r[1] >= g.rows[i].y && r[1] + r[3] <= g.rows[i].y + g.rows[i].h, "row " + i + ": control inside its band"));
         eq(g.selfint[2] + g.selflive[2] + 2, 2 * 54 + 2, "two 54 px segments");
-        ok(g.textX + g.textW <= g.selfint[0] - 4, "label / hint column does not run under the Self-mod control");
+        ok(g.textX + g.textW <= g.selfint[0] - 4, "label column does not run under the Self-mod control");
         eq(E.run(`ubHit(${ctr(g.selfint)}).kind`), "opt_self_int", "INTERNAL hit"); eq(E.run(`ubHit(${ctr(g.selflive)}).kind`), "opt_self_live", "VIA LIVE hit");
-        ok(!!E.run(`ubHit(${ctr(g.selfint)}).tip`) && !!E.run(`ubHit(${ctr(g.selflive)}).tip`), "both have a tooltip");
         eq(E.w(), 390, "Options width is still 390");
-        ok(E.run("ubTextW('Self-mod', 8)") <= g.textW && E.run("ubTextW(\"Own controls modulated by the engine or Live\", 6.5)") <= g.textW, "label and hint fit");
+        ok(E.run("ubTextW('Self-mod', 8)") <= g.textW, "label fits");
         // paint: default INTERNAL is lit (green fill, white text), VIA LIVE dim
         E.paint();
         for (const t of ["Self-mod", "INTERNAL", "VIA LIVE"]) ok(E.log.texts.includes(t), "paints " + t);
@@ -2816,10 +2792,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         ok(tc("INTERNAL")[0] === 1 && tc("VIA LIVE")[0] < 0.7, "the lit segment has white text, the other is dim");
         const fillFor = (rect) => E.log.fills.filter((f) => Math.abs(f.rect[0] - rect[0]) < 1e-6 && Math.abs(f.rect[1] - rect[1]) < 1e-6)[0];
         ok(fillFor(g.selfint) && isCol([fillFor(g.selfint).col[0], fillFor(g.selfint).col[1], fillFor(g.selfint).col[2], 1], GREEN), "lit INTERNAL uses the internal (green) accent");
-        // hint line follows the TIP setting
-        E.run("MM.setSettings({ tooltips: false })"); E.paint();
-        ok(!E.log.texts.some((t) => /engine or Live/.test(t)), "hints hide with TIP off");
-        E.run("MM.setSettings({ tooltips: true })");
+        ok(!E.log.texts.some((t) => /engine or Live/.test(t)), "no hint line under Self-mod");
         // click VIA LIVE: the setting changes, the paint follows; a click on the lit segment changes nothing
         const undo0 = E.run("MM.undoInfo().undo");
         E.C(...ctr(g.selflive));
@@ -2909,7 +2882,6 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         eq(E.run("MM.allMappings()[1].mode"), "remote", "a via-Live row switches to Remote");
         E.C(...ctr(p1.mode));
         eq(E.run("MM.allMappings()[1].mode"), "mod", "...and back");
-        ok(!!E.run(`ubHit(${ctr(p0.mode)}).tip`).match(/Mod only/), "the internal chip's tooltip says Mod only");
         // the remap editor: the REM tab is greyed and inert for an internal mapping
         E.run(`MM.setUI({ pbSel: ${ms[0].id} })`);
         E.paint();
@@ -2918,7 +2890,6 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const rem = dr.filter((d) => d.id === "tabrem")[0], md = dr.filter((d) => d.id === "tabmod")[0];
         E.C(...ctr(rem.rect));
         eq(E.run("MM.allMappings()[0].mode"), "mod", "the REM tab of an internal mapping does nothing");
-        ok(/Mod only/.test(rem.tip), "...and says why");
         E.C(...ctr(md.rect));
         eq(E.run("MM.allMappings()[0].mode"), "mod", "(MOD still selectable)");
         E.run(`MM.setUI({ pbSel: ${ms[1].id} })`);
@@ -2937,7 +2908,6 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const pr = E.run(`ubPopRowParts(ubMapsPopGeom().rect, ubMapsPopGeom().vis[0].y, ubMapsPopGeom().vw)`);
         E.C(...ctr(pr.mode));
         eq(E.run("MM.allMappings()[0].mode"), "mod", "popover: the internal row's mode chip is inert");
-        eq(E.run(`ubHit(${ctr(pr.mode)}).tip`), "Internal routes are Mod only", "...with a tooltip");
         ok(inside(pr.name, P.rect) && pr.name[2] > 30, "popover name column keeps room for the marker + name");
         E.run("ubMapsPop = null");
     }

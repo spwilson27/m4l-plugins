@@ -772,8 +772,22 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             tc = rgba_tuple(w.get("textcolor", [0.85, 0.89, 0.94, 1.0]))
             draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2.5 * SCALE, fill=bg, outline=bd, width=1)
             txt = w.get("text", "") or w.get("annotation_name", "Filter by name...")
-            fnt = get_font(8.5 * SCALE, bold=False)
-            draw.text((rx + 4 * SCALE, ry + 2.5 * SCALE), txt, font=fnt, fill=(140, 152, 168, 255) if not w.get("text") else tc)
+            fnt = get_font(float(w.get("fontsize", 9.0)) * 0.94 * SCALE, bold=False)
+            fill_c = (140, 152, 168, 255) if not w.get("text") else tc
+            if w.get("lines", 1) and int(w.get("lines", 1)) > 1 and w.get("wordwrap", 1):
+                # multi-line field: wrap on word boundaries inside the box
+                line, ly = "", ry + 2.5 * SCALE
+                for word in str(txt).split(" "):
+                    trial = (line + " " + word).strip()
+                    if line and draw.textlength(trial, font=fnt) > rw - 8 * SCALE:
+                        draw.text((rx + 4 * SCALE, ly), line, font=fnt, fill=fill_c)
+                        ly += fnt.size * 1.25
+                        line = word
+                    else:
+                        line = trial
+                draw.text((rx + 4 * SCALE, ly), line, font=fnt, fill=fill_c)
+            else:
+                draw.text((rx + 4 * SCALE, ry + 2.5 * SCALE), txt, font=fnt, fill=fill_c)
 
     img.save(out_png_path)
     print(f"Saved preview to {out_png_path} ({img.width}x{img.height})")

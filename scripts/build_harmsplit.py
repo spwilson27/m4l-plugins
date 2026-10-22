@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build devices/Harmonic Split.amxd and devices/Harmonic Split.adg (Bitwig Spectral Suite style harmonic splitter).
+Build devices/Harmonic Split.amxd and devices/Harmonic Split.adg (harmonic splitter, Ableton-native look).
 
 Three channels: 1 Nonharmonics (grey), 2 Harmonics A (orange), 3 Harmonics B (turquoise). Use the device as the FIRST device of
 EVERY chain of an Audio Effect Rack, one chain per channel (the .adg preset does exactly that). Every instance runs the same
@@ -13,10 +13,12 @@ Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/spectral_sp
 fundamental and harmonics, hosts the draggable Low-cut / High-cut / Threshold handles and the Sensitivity slider, links the
 parameters with the other instances in the rack and sends the resolved output selection.
 
-Layout (440 x 169): v8ui canvas x=6..290, y=6..140 (Bitwig display: Low / High on the top row, Tilt / Threshold on the bottom row,
-purple draggable L / H / Threshold lines); Harmonics (Pattern menu), NH Sens, Max Harm and Mix in the right column (x=300..432);
-Size and Output under the canvas; Low / High / Tilt / Threshold are hidden automatable parameters edited by the display;
-two background panels last.
+Layout (440 x 169, Ableton-native, Reverb-like flat titled sections on the Live theme): `Detection` section (x=4..292) with the v8ui
+canvas x=8..288, y=20..161 (LCD spectrum with faint grid, thin 1 px lines, hollow L / H / Threshold handles, channel legend, Low /
+High / Tilt / Threshold values); `Harmonics` section (Pattern menu, NH Sens, Max Harm, Mix) and `Output` section (Output menu, Size
+tab) in the right column (x=296..436). Low / High / Tilt / Threshold are hidden automatable parameters edited by the display. All
+colours are Live theme colours (src/spectral_theme.js, spectral_common.make_*); the section panels and the body panel are the last
+boxes.
 """
 
 import os
@@ -100,18 +102,22 @@ def build_patcher():
                       os.path.join(SRC, "harmsplit_core.genexpr"))
     face = (sc.read(os.path.join(SRC, "harmsplit_config.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_link.js")).rstrip() + "\n\n"
+            + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "harmsplit_ui.js")))
 
     boxes = []
     lines = []
 
-    # ---- controls (presentation) ----
-    boxes.append(sc.make_label("obj-lbl-pattern", "Harmonics", 300, 11, 52, 13, size=8.0, color=ORG))
-    boxes.append(sc.make_menu("pattern", ENUM["pattern"], ENUM_HELP["pattern"], 352, 10, 80, 15, ORG, 8.5))
-    for i, (key, text, color) in enumerate([("sens", "NH Sens", GR), ("maxh", "Max Harm", TQ), ("mix", "Mix", sc.TEXT)]):
-        y = 30 + i * 20
-        boxes.append(sc.make_label(f"obj-lbl-{key}", text, 300, y + 1, 52, 13, size=8.0, color=color))
-        boxes.append(sc.make_numbox(key, NUM[key], NUM_HELP[key], 352, y, 80, 15, color, 2, 8.5))
+    # ---- controls (presentation): Reverb-style titled sections, theme-bound native live.* controls ----
+    RX, RW = 302, 128           # right column: label x, label + control width
+    CX, CW = 360, 70            # control x / width inside the right sections
+    boxes.append(sc.make_theme_comment("obj-lbl-pattern", "Pattern", RX, 22, 56))
+    boxes.append(sc.make_theme_menu("pattern", ENUM["pattern"], ENUM_HELP["pattern"], CX, 21, CW, 15))
+    for i, key in enumerate(["sens", "maxh", "mix"]):
+        y = 41 + i * 18
+        text = {"sens": "NH Sens", "maxh": "Max Harm", "mix": "Mix"}[key]
+        boxes.append(sc.make_theme_comment(f"obj-lbl-{key}", text, RX, y + 1, 56))
+        boxes.append(sc.make_lcd_numbox(key, NUM[key], NUM_HELP[key], CX, y, CW, 15))
     # Low / High / Tilt / Threshold: automatable parameters drawn and edited by the display (hidden from the face)
     for i, key in enumerate(HIDDEN_KEYS):
         b = sc.make_numbox(key, NUM[key], NUM_HELP[key], 20 + i * 100, 0, 80, 15, sc.TEXT, 3 if key == "tilt" else 2, 8.5)
@@ -121,18 +127,21 @@ def build_patcher():
             b["box"]["saved_attribute_attributes"]["valueof"]["parameter_exponent"] = 3.0
         boxes.append(b)
 
-    boxes.append(sc.make_label("obj-lbl-size", "Size", 8, 147, 28, 13, color=sc.DIM))
-    boxes.append(sc.make_tab("size", ENUM["size"], ENUM_HELP["size"], 38, 146, 96, 15, sc.DIM))
-    boxes.append(sc.make_label("obj-lbl-output", "Output", 146, 147, 44, 13, color=sc.TEXT))
-    boxes.append(sc.make_menu("output", ENUM["output"], ENUM_HELP["output"], 190, 146, 100, 15, sc.TEXT))
+    boxes.append(sc.make_theme_comment("obj-lbl-output", "Output", RX, 119, 56))
+    boxes.append(sc.make_theme_menu("output", ENUM["output"], ENUM_HELP["output"], CX, 118, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", RX, 136, 56))
+    boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], CX, 135, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-leg-lat", "Latency 4096 smp", RX, 152, 124, 12, size=8.5, name="live_display_scale_text"))
 
-    boxes.append(sc.make_label("obj-leg-1", "1  NONHARMONICS", 304, 106, 124, 13, size=8.0, color=GR))
-    boxes.append(sc.make_label("obj-leg-2", "2  HARMONICS A", 304, 120, 124, 13, size=8.0, color=ORG))
-    boxes.append(sc.make_label("obj-leg-3", "3  HARMONICS B", 304, 134, 124, 13, size=8.0, color=TQ))
-    boxes.append(sc.make_label("obj-leg-lat", "Latency 4096 smp", 304, 148, 124, 12, size=7.0, color=sc.DIM, bold=False))
+    # section titles + hairlines (the section panels themselves go last)
+    p_det, parts_det = sc.make_section("det", 4, 4, 288, 161, "Detection")
+    p_harm, parts_harm = sc.make_section("harm", 296, 4, 140, 92, "Harmonics")
+    p_out, parts_out = sc.make_section("out", 296, 100, 140, 65, "Output")
+    for parts in (parts_det, parts_harm, parts_out):
+        boxes += parts
 
     # ---- display (the only v8ui) ----
-    boxes.append(sc.v8ui("obj-viz", face, [6.0, 6.0, 284.0, 134.0], (20.0, 80.0), 3, "HarmsplitView"))
+    boxes.append(sc.v8ui("obj-viz", face, [8.0, 20.0, 280.0, 141.0], (20.0, 80.0), 3, "HarmsplitView"))
 
     # ---- audio ----
     boxes += [
@@ -188,9 +197,8 @@ def build_patcher():
     # resolved output selection -> gen
     lines.append(line("obj-viz", 2, "obj-gen", 0))
 
-    # ---- background panels last ----
-    boxes.append(sc.make_panel("obj-panel-left", 4, 4, 290, 161, border=(0.22, 0.26, 0.32)))
-    boxes.append(sc.make_panel("obj-panel-right", 296, 4, 140, 161, border=(0.32, 0.25, 0.20)))
+    # ---- background panels last: section panels, then the body (Max draws earlier boxes over later ones) ----
+    boxes += [p_det, p_harm, p_out, sc.make_body_panel(WIDTH)]
 
     return sc.patcher(
         boxes, lines, WIDTH,

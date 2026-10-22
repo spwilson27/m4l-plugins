@@ -18,7 +18,7 @@
  * Rules:
  *  - A slim toolbar column (XO_TB_W px) is the leftmost, always visible column: three section toggles at the top
  *    (Saved / Filters / Playback) and the Options toggle at the bottom.
- *  - The Options section (XO_OPTIONS_W px, the Theme selector and room for more) sits right of the toolbar.
+ *  - The Options section (XO_OPTIONS_W px: the Theme selector, the Zoom Speed value and Searches: category picker, terms field, Reset, Match folders) sits right of the toolbar.
  *  - The 2D map pane is XO_MAP_PANE_W wide in BOTH themes (the Saved list adds XO_SAVED_PANE_W).
  *  - Visible sections are packed left to right with a 6 px gap; a hidden section takes no space and the device
  *    width ends 6 px after the last visible panel. Filters and Playback are narrower in the Focus theme.
@@ -29,10 +29,24 @@
  */
 
 var XO_THEMES = ["LCD", "Focus"];
+/** live.comment labels (headers, LCD / Focus labels, the search prompt); also click-through (default.py customize). */
+var XO_LABEL_RE = /^obj-(hdr-|lbl-|lcd-[fp]-lbl-|focus-[fp]-lbl-|lcd-f-prompt$)/;
+/**
+ * Live sizes a single-line live.comment to exactly floor(font + 8) px tall, whatever the patch says (measured in
+ * the VM), and the theme changes some label fonts, so a label's laid-out height follows its font in that theme
+ * (fonts: scripts/xo_layouts/default.py THEME_STYLE / customize; tests/test_xo_map.js ties the two together).
+ * @param {string} id @param {string} th
+ */
+function xoLabelH(id, th) {
+  if (/^obj-lbl-/.test(id)) return th === "LCD" ? 15.0 : 17.0;   // 7 pt LCD, 9 pt Focus
+  if (/^obj-lcd-[fp]-lbl-/.test(id)) return 15.0;                // 7 pt
+  if (/^obj-focus-[fp]-lbl-/.test(id)) return 16.0;              // 8.5 pt
+  return 17.0;                                                     // headers 9 / 9.5 pt, the 9 pt prompt
+}
 var XO_MAP_PANE_W = 236.0;
 var XO_SAVED_PANE_W = 136.0;
 var XO_GAP = 6.0;
-var XO_OPTIONS_W = 96.0;
+var XO_OPTIONS_W = 150.0;
 var XO_FILTERS_W = { "LCD": 208.0, "Focus": 134.0 };
 var XO_PLAYBACK_W = { "LCD": 164.0, "Focus": 152.0 };
 var XO_DEVICE_H = 169.0;
@@ -99,6 +113,8 @@ function computeXoLayout(theme, showSaved, showFilters, showPlayback, showOption
    * @param {number[]} rect
    */
   function put(id, sec, only, rect) {
+    // Labels get Live's own live.comment height (xoLabelH); their text is top-aligned, so it does not move.
+    if (XO_LABEL_RE.test(id)) rect = [rect[0], rect[1], rect[2], xoLabelH(id, th)];
     var secOn = sec === "filters" ? fOn : (sec === "playback" ? pOn : (sec === "options" ? oOn : 1));
     boxes[id] = { rect: rect, hidden: (secOn && (!only || only === th)) ? 0 : 1 };
     sections[id] = sec;
@@ -112,11 +128,18 @@ function computeXoLayout(theme, showSaved, showFilters, showPlayback, showOption
   put("obj-toggle-playback-btn", "toolbar", "", [XO_TB_X + 3.0, 47.0, 16.0, 16.0]);
   put("obj-toggle-options-btn", "toolbar", "", [XO_TB_X + 3.0, 145.0, 16.0, 16.0]);
 
-  // --- Options: header, Theme selector (room for more rows below) ---
+  // --- Options: header, Theme selector, Searches (category picker, terms field, Reset, Match folders) ---
   put("obj-panel-options", "options", "", [optionsX, 5.0, XO_OPTIONS_W, 159.0]);
   put("obj-hdr-options", "options", "", [optionsX + 7.0, 8.0, 82.0, 14.0]);
   put("obj-lbl-theme", "options", "", [optionsX + 7.0, 30.0, 82.0, 11.0]);
   put("obj-theme-tab", "options", "", [optionsX + 6.0, 44.0, 84.0, 18.0]);
+  put("obj-lbl-zoom", "options", "", [optionsX + 94.0, 30.0, 50.0, 11.0]);
+  put("obj-zoom-speed", "options", "", [optionsX + 94.0, 44.0, 50.0, 18.0]);
+  put("obj-lbl-searches", "options", "", [optionsX + 7.0, 68.0, 138.0, 11.0]);
+  put("obj-searches-cat", "options", "", [optionsX + 6.0, 80.0, 138.0, 15.0]);
+  put("obj-searches-terms", "options", "", [optionsX + 6.0, 97.0, 138.0, 40.0]);
+  put("obj-searches-reset", "options", "", [optionsX + 6.0, 141.0, 44.0, 16.0]);
+  put("obj-searches-folders", "options", "", [optionsX + 54.0, 141.0, 90.0, 16.0]);
 
   // --- map (+ Saved list) ---
   put("obj-panel-left", "left", "", [leftX, 5.0, leftPanelW, 159.0]);
@@ -131,19 +154,19 @@ function computeXoLayout(theme, showSaved, showFilters, showPlayback, showOption
   put("obj-search-box", "filters", "", lcd ? [fx + 17.0, 25.0, 186.0, 15.0] : [fx + 6.0, 22.0, 88.0, 14.0]);
   put("obj-folder-list", "filters", "", lcd ? [fx + 4.0, 86.0, 200.0, 74.0] : [fx + 6.0, 128.0, 122.0, 33.0]);
   var fIds = ["maxlen", "tone", "filter-tonal", "filter-drum"];
-  var fFocus = [[4.0, 47.0], [68.0, 47.0], [4.0, 92.0], [68.0, 92.0]]; // dial x offset, y (label 10 px above)
+  var fFocus = [[4.0, 47.0], [68.0, 47.0], [4.0, 90.0], [68.0, 90.0]]; // dial x offset, y (label 10 px above)
   var i;
   for (i = 0; i < 4; i++) {
     put("obj-" + fIds[i] + "-dial", "filters", "LCD", [fx + XO_LCD_F_COL[i][0] + 1.0, 59.0, XO_LCD_F_COL[i][1] - 2.0, 22.0]);
-    put("obj-" + fIds[i] + "-dial-mir", "filters", "Focus", [fx + fFocus[i][0], fFocus[i][1], 60.0, 33.0]);
+    put("obj-" + fIds[i] + "-dial-mir", "filters", "Focus", [fx + fFocus[i][0], fFocus[i][1], 60.0, 37.0]); // Live's live.dial height for this size
     put("obj-lcd-f-cell-" + i, "filters", "LCD", [fx + XO_LCD_F_COL[i][0], 42.0, XO_LCD_F_COL[i][1], 42.0]);
     put("obj-lcd-f-lbl-" + i, "filters", "LCD", [fx + XO_LCD_F_COL[i][0], 46.0, XO_LCD_F_COL[i][1], 11.0]);
     put("obj-focus-f-lbl-" + i, "filters", "Focus", [fx + fFocus[i][0], fFocus[i][1] - 10.0, 60.0, 10.0]);
   }
   put("obj-lcd-f-cell-title", "filters", "LCD", [fx + 4.0, 8.0, 200.0, 15.0]);
   put("obj-lcd-f-cell-search", "filters", "LCD", [fx + 4.0, 24.0, 200.0, 17.0]);
-  put("obj-lcd-f-prompt", "filters", "LCD", [fx + 5.0, 26.0, 11.0, 13.0]);
-  put("obj-focus-tick-filters", "filters", "Focus", [fx - 4.0, 5.0, 2.0, 159.0]);
+  put("obj-lcd-f-prompt", "filters", "LCD", [fx + 3.5, 24.0, 14.0, 15.0]); // 1 px above obj-search-box (live.comment insets text 1 px more than textedit); 14 px = Live's minimum width, centred where the 11 px box was
+  put("obj-focus-tick-filters", "filters", "Focus", [fx - 5.0, 5.0, 4.0, 159.0]); // 4 px: Live's minimum panel width, centred in the 6 px gap
 
   // --- Playback ---
   var px = playbackX;
@@ -159,13 +182,13 @@ function computeXoLayout(theme, showSaved, showFilters, showPlayback, showOption
     var fdx = 4.0 + fc * 48.0;
     var fdy = fr ? 102.0 : 40.0;
     put(pObj[i], "playback", "LCD", [px + XO_LCD_PB_COL[lc] + 1.0, XO_LCD_PB_ROW[lr] + 19.0, lc ? 76.0 : 75.0, 20.0]);
-    put(pObj[i] + "-mir", "playback", "Focus", [px + fdx, fdy, 48.0, 40.0]);
+    put(pObj[i] + "-mir", "playback", "Focus", [px + fdx, fdy, 48.0, 37.0]); // Live's live.dial height for this size
     put("obj-lcd-p-cell-" + i, "playback", "LCD", [px + XO_LCD_PB_COL[lc], XO_LCD_PB_ROW[lr], XO_LCD_PB_W[lc], 44.0]);
     put("obj-lcd-p-lbl-" + i, "playback", "LCD", [px + XO_LCD_PB_COL[lc], XO_LCD_PB_ROW[lr] + 5.0, XO_LCD_PB_W[lc], 11.0]);
     put("obj-focus-p-lbl-" + i, "playback", "Focus", [px + fdx, fdy - 10.0, 48.0, 10.0]);
   }
   put("obj-lcd-p-cell-title", "playback", "LCD", [px + 4.0, 8.0, 156.0, 15.0]);
-  put("obj-focus-tick-playback", "playback", "Focus", [px - 4.0, 5.0, 2.0, 159.0]);
+  put("obj-focus-tick-playback", "playback", "Focus", [px - 5.0, 5.0, 4.0, 159.0]); // 4 px: Live's minimum panel width, centred in the 6 px gap
 
   return {
     theme: th,

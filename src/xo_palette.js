@@ -23,17 +23,17 @@ var XO_PALETTES = {
     // luminance 1.0 -> the LCD accent amber, 0 -> black
     tone: [1.0, 0.70, 0.10],
     cats: {
-      "ALL": [1.00, 0.86, 0.55],
-      "kick": [1.00, 0.34, 0.08],
-      "snare": [1.00, 0.56, 0.05],
-      "hihat": [1.00, 0.90, 0.45],
-      "clap": [0.96, 0.46, 0.30],
-      "tom": [0.78, 0.40, 0.04],
-      "rim": [1.00, 0.64, 0.36],
-      "cymbal": [1.00, 0.80, 0.14],
-      "shaker": [0.86, 0.72, 0.32],
-      "perc": [0.96, 0.74, 0.10],
-      "fx": [0.72, 0.52, 0.20]
+      // eight categories + "no match" that stay apart in the amber family: hue (red .. yellow-green), lightness
+      "ALL": [0.80, 0.78, 0.72],
+      "kick": [1.00, 0.30, 0.08],
+      "snare": [1.00, 0.58, 0.05],
+      "hihat": [1.00, 0.93, 0.40],
+      "clap": [0.96, 0.48, 0.36],
+      "perc": [0.74, 0.40, 0.05],
+      "shaker": [0.80, 0.76, 0.30],
+      "cymbal": [1.00, 0.78, 0.14],
+      "voice": [1.00, 0.96, 0.86],
+      "none": [0.46, 0.34, 0.14]
     }
   }
 };

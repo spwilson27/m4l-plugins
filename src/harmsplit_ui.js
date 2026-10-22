@@ -21,22 +21,17 @@ mgraphics.autofill = 0;
 inlets = 1;
 outlets = 3;
 
-var HS_VIZ_W = 284;
-var HS_VIZ_H = 134;
-var HS_COL_NH = [0.66, 0.70, 0.76];
-var HS_COL_A = [1.0, 0.62, 0.25];
-var HS_COL_B = [0.28, 0.84, 0.78];
-var HS_COL_PURPLE = [0.72, 0.45, 1.0];     // interactive analysis parameters (Bitwig's purple)
-var HS_COL_LABEL = [0.74, 0.78, 0.84];
-var HS_PLOT = { x: 4, y: 18, w: 276, h: 98 };
+var HS_VIZ_W = 280;
+var HS_VIZ_H = 141;
+var HS_PLOT = { x: 1, y: 1, w: 278, h: 90 };    // inside the 280 x 92 LCD rectangle
 var HS_ZONE = 6;                           // px strip below the -100 dB line: -120 dB (Automatic) .. -100 dB
 var HS_DEFAULTS = { thr: -120, lowcut: 80, highcut: 1500, tilt: 0 };
 var HS_RANGES = { thr: [-120, 0], lowcut: [19.4, 19900], highcut: [19.4, 19900], tilt: [-12, 12] };
 var HS_FIELDS = {
-    lowcut: { x: 4, y: 2, w: 76, h: 14 },
-    highcut: { x: HS_VIZ_W - 86, y: 2, w: 82, h: 14 },
-    tilt: { x: 4, y: 118, w: 64, h: 14 },
-    thr: { x: HS_VIZ_W - 112, y: 118, w: 108, h: 14 }
+    lowcut: { x: 2, y: 107, w: 130, h: 14 },
+    highcut: { x: 140, y: 107, w: 138, h: 14 },
+    tilt: { x: 2, y: 121, w: 130, h: 14 },
+    thr: { x: 140, y: 121, w: 138, h: 14 }
 };
 
 // pattern = control index (0..23 = Harmonics Pattern 1..24); maxh 0 = Off; thr -120 = Automatic
@@ -45,7 +40,7 @@ var hsPre = [];
 var hsNh = [];
 var hsA = [];
 var hsB = [];
-var hsScalars = { frame: 0, awake: 0, sr: 48000, n: 2048, level: 0, f0: 0, conf: 0, voiced: 0, lvl: -100, nact: 0, threff: -120 };
+var hsScalars = { frame: 0, awake: 0, sr: 48000, n: 2048, level: 0, f0: 0, series: 0, rootH: 0, odd: 0, conf: 0, voiced: 0, lvl: -100, nact: 0, threff: -120 };
 var hsBufName = "";
 var hsBuf = null;
 var hsTask = null;
@@ -153,6 +148,9 @@ function hsPoll() {
         hsScalars.n = d[HS_SC_N];
         hsScalars.level = d[HS_SC_LEVEL];
         hsScalars.f0 = d[HS_SC_F0];
+        hsScalars.series = d[HS_SC_SERIES];
+        hsScalars.rootH = d[HS_SC_ROOTH];
+        hsScalars.odd = d[HS_SC_ODD];
         hsScalars.conf = d[HS_SC_CONF];
         hsScalars.voiced = d[HS_SC_VOICED];
         hsScalars.lvl = d[HS_SC_LVL];
@@ -164,59 +162,15 @@ function hsPoll() {
     }
 }
 
-// ---------------------------------------------------------------- drawing helpers
-function hsRgba(c, a) {
-    mgraphics.set_source_rgba(c[0], c[1], c[2], a);
-}
+// ---------------------------------------------------------------- theme (colours from spectral_theme.js, one orange accent)
+// Channels: 1 Nonharmonics = Live's grey scale text, 2 Harmonics A = display line one (orange), 3 Harmonics B = display line two
+// (cyan). Always drawn muted: 1 px outlines and faint fills. Interactive handles use the handle colour (orange, hollow circles).
+function hsColNh() { return sptColor("live_display_scale_text"); }
+function hsColA() { return sptColor("live_display_line_one"); }
+function hsColB() { return sptColor("live_display_line_two"); }
+var HS_PANELS = [["obj-panel-body", "live_desktop"], ["obj-panel-det", "live_surface_bg"], ["obj-panel-harm", "live_surface_bg"], ["obj-panel-out", "live_surface_bg"]];
+var hsThemeTask = sptThemeWatch(function () { sptApplyPanelTheme(HS_PANELS); });
 
-function hsMix(a, b, t) {
-    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-}
-
-function hsText(str, x, y, size, col, a, align) {
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(size);
-    var xx = x;
-    if (align === 1 || align === 2) {
-        var w = mgraphics.text_measure(str)[0];
-        xx = align === 1 ? x - w * 0.5 : x - w;
-    }
-    hsRgba(col, a);
-    mgraphics.move_to(xx, y);
-    mgraphics.show_text(str);
-}
-
-function hsRRect(x, y, w, h, r) {
-    mgraphics.rectangle_rounded(x, y, w, h, r, r);
-}
-
-// ---------------------------------------------------------------- drawing helpers
-function hsRgba(c, a) {
-    mgraphics.set_source_rgba(c[0], c[1], c[2], a);
-}
-
-function hsText(str, x, y, size, col, a, align) {
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(size);
-    var xx = x;
-    if (align === 1 || align === 2) {
-        var w = mgraphics.text_measure(str)[0];
-        xx = align === 1 ? x - w * 0.5 : x - w;
-    }
-    hsRgba(col, a);
-    mgraphics.move_to(xx, y);
-    mgraphics.show_text(str);
-}
-
-function hsTextW(str, size) {
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(size);
-    return mgraphics.text_measure(str)[0];
-}
-
-function hsRRect(x, y, w, h, r) {
-    mgraphics.rectangle_rounded(x, y, w, h, r, r);
-}
 
 function hsBase() {
     return HS_PLOT.y + HS_PLOT.h;
@@ -263,23 +217,8 @@ function hsXFreq(x) {
     return HS_FMIN * Math.pow(HS_FMAX / HS_FMIN, t);
 }
 
-function hsArea(arr, col, a, lineA) {
-    var yb = hsBase() - HS_ZONE;
-    mgraphics.move_to(HS_PLOT.x, yb);
-    for (var c = 0; c < HS_NCOLS; c++) mgraphics.line_to(hsColX(c), yb - hsLvH(arr[c]));
-    mgraphics.line_to(HS_PLOT.x + HS_PLOT.w, yb);
-    mgraphics.close_path();
-    hsRgba(col, a);
-    mgraphics.fill();
-    mgraphics.set_line_width(1.0);
-    mgraphics.move_to(hsColX(0), yb - hsLvH(arr[0]));
-    for (var k = 1; k < HS_NCOLS; k++) mgraphics.line_to(hsColX(k), yb - hsLvH(arr[k]));
-    hsRgba(col, lineA);
-    mgraphics.stroke();
-}
-
 function hsToggleRect() {
-    return { x: 74, y: 119, w: 40, h: 13 };
+    return { x: HS_VIZ_W - 34, y: 4, w: 30, h: 13 };
 }
 
 function hsInside(r, x, y) {
@@ -294,206 +233,210 @@ function hsMaxHarm() {
     return hsVals.maxh < 0.5 ? HS_MAXH : Math.round(hsVals.maxh);
 }
 
-// "Low  80.0 Hz": dim label then the purple value; align 0 = starts at x, 2 = ends at x
-function hsLabelValue(x, y, label, value, align, active) {
-    var wl = hsTextW(label, 8);
-    var wv = hsTextW(value, 8);
-    var x0 = align === 2 ? x - (wl + 6 + wv) : x;
-    hsText(label, x0, y, 8, HS_COL_LABEL, 0.95, 0);
-    hsText(value, x0 + wl + 6, y, 8, HS_COL_PURPLE, active ? 1 : 0.92, 0);
-}
-
 // ---------------------------------------------------------------- paint
 function paint() {
     var W = HS_VIZ_W;
-    var H = HS_VIZ_H;
-    mgraphics.set_source_rgba(0.045, 0.06, 0.08, 1);
-    hsRRect(0, 0, W, H, 5);
-    mgraphics.fill();
     var drag = hsDrag ? hsDrag.kind : "";
+    var yb = hsBase() - HS_ZONE;
 
-    // top row: detection cut frequencies; bottom row: tilt and detection threshold
-    hsLabelValue(4, 12.5, "Low", hsFmtFreq(hsVals.lowcut), 0, drag === "lowcut");
-    hsLabelValue(W - 4, 12.5, "High", hsFmtFreq(hsVals.highcut), 2, drag === "highcut");
-    hsLabelValue(4, 128.5, "Tilt", hsVals.tilt.toFixed(1) + " dB", 0, drag === "tilt");
-    hsLabelValue(W - 4, 128.5, "Threshold", hsFmtThr(hsVals.thr), 2, drag === "thr");
-
-    // resolved channel pill (top middle)
-    var selName = hsSelName(hsSel);
-    var pillCol = hsSel === 1 ? HS_COL_NH : (hsSel === 2 ? HS_COL_A : (hsSel === 3 ? HS_COL_B : [0.86, 0.9, 0.94]));
-    var pillText = hsSel === 0 ? "OUT ALL" : "OUT " + hsSel + " " + selName.toUpperCase();
-    var pw = hsTextW(pillText, 7.0) + 18;
-    var px = 86 + (104 - pw) * 0.5;
-    hsRgba(pillCol, 0.22);
-    hsRRect(px, 3, pw, 12, 6);
-    mgraphics.fill();
-    hsRgba(pillCol, 0.9);
-    mgraphics.set_line_width(1);
-    hsRRect(px, 3, pw, 12, 6);
-    mgraphics.stroke();
-    hsText(pillText, px + 6, 11.8, 7.0, pillCol, 1, 0);
-
-    // bottom middle: PRE / POST and the chain chip
-    var t = hsToggleRect();
-    hsRgba([0.16, 0.2, 0.26], 1);
-    hsRRect(t.x, t.y, t.w, t.h, 3);
-    mgraphics.fill();
-    hsText(hsVals.dispost ? "POST" : "PRE", t.x + t.w * 0.5, t.y + 9.6, 7.5, [0.92, 0.96, 1.0], 1, 1);
-    var chip = hsInfo.isInRack ? ("CH " + (hsInfo.chainIndex + 1) + "/" + Math.max(hsInfo.chainCount, 1)
-        + (hsInfo.linked ? " LINKED" : "")) : "NO RACK";
-    hsText(chip, t.x + t.w + 6, 128.4, 6.5, [0.55, 0.64, 0.74], 1, 0);
-
-    // plot background, -100 dB line and frequency grid
-    mgraphics.set_source_rgba(0.075, 0.095, 0.12, 1);
-    hsRRect(HS_PLOT.x, HS_PLOT.y, HS_PLOT.w, HS_PLOT.h, 3);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(0.03, 0.04, 0.05, 0.6);
-    mgraphics.rectangle(HS_PLOT.x, hsBase() - HS_ZONE, HS_PLOT.w, HS_ZONE);
-    mgraphics.fill();
-    var freqs = [100, 1000, 10000];
+    // display: near-black LCD with a faint grid (100 Hz / 1 kHz / 10 kHz, -20 .. -80 dB)
+    var gx = [hsFreqX(100), hsFreqX(1000), hsFreqX(10000)];
+    var gy = [hsYOfDb(-20), hsYOfDb(-40), hsYOfDb(-60), hsYOfDb(-80), yb];
+    sptLcd(0, 0, W, HS_PLOT.h + 2, { xs: gx, ys: gy });
     var labels = ["100", "1k", "10k"];
-    for (var g = 0; g < freqs.length; g++) {
-        var gx = hsFreqX(freqs[g]);
-        mgraphics.set_source_rgba(0.5, 0.6, 0.7, 0.16);
-        mgraphics.rectangle(gx, HS_PLOT.y, 1, HS_PLOT.h - HS_ZONE);
-        mgraphics.fill();
-        hsText(labels[g], gx + 2, hsBase() - HS_ZONE - 2, 6.5, [0.5, 0.6, 0.7], 0.8, 0);
-    }
+    for (var g = 0; g < labels.length; g++) sptText(labels[g], gx[g] + 3, yb - 3, sptColor("live_display_scale_text"), SPT_SIZE_SMALL - 1, 0);
 
     if (hsVals.dispost) hsPaintPost();
     else hsPaintPre();
-
     hsPaintHarmonics();
     hsPaintAnalysis();
-    if (hsScalars.awake < 0.5) hsText("no signal", HS_PLOT.x + HS_PLOT.w * 0.5, HS_PLOT.y + 34, 8, [0.5, 0.6, 0.7], 0.8, 1);
+    if (hsScalars.awake < 0.5) sptText("no signal", HS_PLOT.x + HS_PLOT.w * 0.5, HS_PLOT.y + 40, sptColor("live_display_scale_text"), SPT_SIZE, 1);
+
+    // display / post toggle (top right of the LCD)
+    var t = hsToggleRect();
+    sptButton(t.x, t.y, t.w, t.h, "Post", hsVals.dispost ? 1 : 0);
+
+    // legend row: the output channel of this instance is the bright one; chain chip on the right
+    var ly = 105;
+    var names = ["Nonharmonics", "Harmonics A", "Harmonics B"];
+    var cols = [hsColNh(), hsColA(), hsColB()];
+    var lx = 2;
+    for (var i = 0; i < 3; i++) {
+        var on = hsSel === 0 || hsSel === i + 1;
+        sptLegendSwatch(lx, ly - 5, sptMuted(cols[i], on ? 1 : 0.55));
+        var tc = on ? sptColor("live_control_fg") : sptColor("live_display_scale_text");
+        sptText(names[i], lx + 9, ly, tc, SPT_SIZE_SMALL, 0);
+        lx += 9 + sptTextW(names[i], SPT_SIZE_SMALL) + 12;
+    }
+    var chip = hsInfo.isInRack ? ("Chain " + (hsInfo.chainIndex + 1) + "/" + Math.max(hsInfo.chainCount, 1)
+        + (hsInfo.linked ? ", linked" : "")) : "No rack";
+    sptText(chip, W - 2, ly, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
+
+    // value rows: Low / High (detection band), Tilt / Threshold
+    var f = HS_FIELDS;
+    sptLabelValue("Low", hsFmtFreq(hsVals.lowcut), f.lowcut.x, f.lowcut.y + 11, 0, drag === "lowcut");
+    sptLabelValue("High", hsFmtFreq(hsVals.highcut), f.highcut.x, f.highcut.y + 11, 0, drag === "highcut");
+    sptLabelValue("Tilt", hsVals.tilt.toFixed(1) + " dB", f.tilt.x, f.tilt.y + 11, 0, drag === "tilt");
+    sptLabelValue("Threshold", hsFmtThr(hsVals.thr), f.thr.x, f.thr.y + 11, 0, drag === "thr");
 }
 
+// y of the top of a column's line / bar
+function hsColTop(arr, c) {
+    return hsBase() - HS_ZONE - hsLvH(arr[c]);
+}
+
+// PRE: the Mid spectrum, one thin line per column in the colour of where its energy goes (blend of the three channel colours),
+// over a faint fill of the same colour.
 function hsPaintPre() {
     var yb = hsBase() - HS_ZONE;
     var cw = HS_PLOT.w / HS_NCOLS;
+    var cn = hsColNh(), ca = hsColA(), cb = hsColB();
+    var prev = null;
     for (var c = 0; c < HS_NCOLS; c++) {
         var h = hsLvH(hsPre[c]);
-        if (h < 0.5) continue;
         var wn = hsLin(hsNh[c]);
         var wa = hsLin(hsA[c]);
         var wb = hsLin(hsB[c]);
         var s = wn + wa + wb + 1e-12;
-        var col = [
-            (HS_COL_NH[0] * wn + HS_COL_A[0] * wa + HS_COL_B[0] * wb) / s,
-            (HS_COL_NH[1] * wn + HS_COL_A[1] * wa + HS_COL_B[1] * wb) / s,
-            (HS_COL_NH[2] * wn + HS_COL_A[2] * wa + HS_COL_B[2] * wb) / s
-        ];
-        hsRgba(col, 0.85);
-        mgraphics.rectangle(HS_PLOT.x + c * cw, yb - h, Math.max(cw - 0.4, 1), h);
-        mgraphics.fill();
+        var col = [(cn[0] * wn + ca[0] * wa + cb[0] * wb) / s, (cn[1] * wn + ca[1] * wa + cb[1] * wb) / s, (cn[2] * wn + ca[2] * wa + cb[2] * wb) / s, 1];
+        var x = hsColX(c);
+        var y = yb - h;
+        if (h >= 0.5) {
+            sptRgba(col, 0.16);
+            mgraphics.rectangle(HS_PLOT.x + c * cw, y, Math.max(cw, 1), h);
+            mgraphics.fill();
+        }
+        if (prev) sptCurve([[prev[0], prev[1]], [x, y]], prev[2], 0.9);
+        prev = [x, y, col];
     }
 }
 
+// POST: the three channels as thin outlines with a faint fill; the one this instance outputs is brighter.
 function hsPaintPost() {
-    var aN = hsSel === 1 || hsSel === 0 ? 0.55 : 0.2;
-    var aA = hsSel === 2 || hsSel === 0 ? 0.55 : 0.2;
-    var aB = hsSel === 3 || hsSel === 0 ? 0.55 : 0.2;
-    hsArea(hsNh, HS_COL_NH, aN, aN > 0.3 ? 0.95 : 0.5);
-    hsArea(hsB, HS_COL_B, aB, aB > 0.3 ? 0.95 : 0.5);
-    hsArea(hsA, HS_COL_A, aA, aA > 0.3 ? 0.95 : 0.5);
+    var arrs = [hsNh, hsB, hsA];
+    var cols = [hsColNh(), hsColB(), hsColA()];
+    var chan = [1, 3, 2];
+    for (var i = 0; i < 3; i++) {
+        var on = hsSel === chan[i] || hsSel === 0;
+        hsArea(arrs[i], cols[i], on ? 0.16 : 0.06, on ? 0.95 : 0.4);
+    }
 }
 
-// Purple analysis parameters: Low / High lines with L / H flags and the Detection Threshold line.
+function hsArea(arr, col, a, lineA) {
+    var yb = hsBase() - HS_ZONE;
+    mgraphics.move_to(HS_PLOT.x, yb);
+    for (var c = 0; c < HS_NCOLS; c++) mgraphics.line_to(hsColX(c), yb - hsLvH(arr[c]));
+    mgraphics.line_to(HS_PLOT.x + HS_PLOT.w, yb);
+    mgraphics.close_path();
+    sptRgba(col, a);
+    mgraphics.fill();
+    var pts = [];
+    for (var k = 0; k < HS_NCOLS; k++) pts.push([hsColX(k), yb - hsLvH(arr[k])]);
+    sptCurve(pts, col, lineA);
+}
+
+// Analysis parameters: Low / High lines with hollow L / H handles and the Detection Threshold line with its handle.
 function hsPaintAnalysis() {
     var top = HS_PLOT.y;
+    var hc = sptColor("live_display_handle_one");
     // outside the detection band (fundamental search range) the plot is dimmed; an empty band (Low >= High) dims all of it
-    var dimH = HS_PLOT.h - HS_ZONE - 10;
+    var dimH = HS_PLOT.h - HS_ZONE - 12;
     var xlo = hsFreqX(hsVals.lowcut), xhi = hsFreqX(hsVals.highcut);
     var px0 = HS_PLOT.x, px1 = HS_PLOT.x + HS_PLOT.w;
-    mgraphics.set_source_rgba(0.04, 0.05, 0.08, 0.72);
+    sptRgba(sptColor("live_lcd_bg"), 0.6);
     if (hsVals.lowcut >= hsVals.highcut) {
-        mgraphics.rectangle(px0, top + 10, px1 - px0, dimH);
+        mgraphics.rectangle(px0, top + 12, px1 - px0, dimH);
         mgraphics.fill();
     } else {
-        if (xlo > px0) { mgraphics.rectangle(px0, top + 10, xlo - px0, dimH); mgraphics.fill(); }
-        if (xhi < px1) { mgraphics.rectangle(xhi, top + 10, px1 - xhi, dimH); mgraphics.fill(); }
+        if (xlo > px0) { mgraphics.rectangle(px0, top + 12, xlo - px0, dimH); mgraphics.fill(); }
+        if (xhi < px1) { mgraphics.rectangle(xhi, top + 12, px1 - xhi, dimH); mgraphics.fill(); }
     }
-    var edges = [{ x: hsFreqX(hsVals.lowcut), k: "lowcut", t: "L" }, { x: hsFreqX(hsVals.highcut), k: "highcut", t: "H" }];
+    var edges = [{ x: xlo, k: "lowcut", t: "L" }, { x: xhi, k: "highcut", t: "H" }];
     for (var i = 0; i < 2; i++) {
         var e = edges[i];
         var on = hsDrag && hsDrag.kind === e.k;
-        hsRgba(HS_COL_PURPLE, on ? 1 : 0.8);
-        mgraphics.rectangle(e.x - 0.5, top + 10, 1, HS_PLOT.h - 10 - 1);
+        sptRgba(hc, on ? 1 : 0.7);
+        mgraphics.rectangle(Math.round(e.x) - 0.5, top + 11, 1, HS_PLOT.h - 12);
         mgraphics.fill();
-        hsRgba(HS_COL_PURPLE, 1);
-        hsRRect(e.x - 5, top + 1, 10, 10, 2);
-        mgraphics.fill();
-        hsText(e.t, e.x, top + 9.2, 7, [0.1, 0.05, 0.16], 1, 1);
+        sptHandle(e.x, top + 6.5, hc, e.t, 4.5);
     }
-    // Detection Threshold: solid line (Automatic sits on the bottom axis), faint dashed effective level while Automatic
+    // Detection Threshold: 1 px line (Automatic sits on the bottom axis), faint dashed effective level while Automatic
     var auto = hsVals.thr <= HS_THR_MIN + 0.5;
     var y = hsYOfDb(hsVals.thr);
-    var x0 = HS_PLOT.x + 2;
-    var x1 = HS_PLOT.x + HS_PLOT.w - 2;
+    var x0 = HS_PLOT.x + 1;
+    var x1 = HS_PLOT.x + HS_PLOT.w - 1;
     var onT = hsDrag && hsDrag.kind === "thr";
     if (auto && hsScalars.awake > 0.5 && hsScalars.threff > -119) {
         var ye = hsYOfDb(hsScalars.threff);
-        hsRgba(HS_COL_PURPLE, 0.35);
+        sptRgba(hc, 0.35);
         for (var xd = x0; xd < x1 - 6; xd += 6) {
-            mgraphics.rectangle(xd, ye - 0.5, 3, 1);
+            mgraphics.rectangle(xd, Math.round(ye) - 0.5, 3, 1);
             mgraphics.fill();
         }
     }
-    hsRgba(HS_COL_PURPLE, onT ? 1 : 0.85);
-    mgraphics.rectangle(x0, y - 0.5, x1 - x0, 1);
+    sptRgba(hc, onT ? 1 : 0.7);
+    mgraphics.rectangle(x0, Math.round(y) - 0.5, x1 - x0, 1);
     mgraphics.fill();
+    sptHandle(x1 - 9, Math.min(y, hsBase() - 6.5), hc, "T", 4.5);
 }
 
-// Harmonic markers (A orange, B turquoise by the Pattern rule) and the fundamental (white dot with crosshairs).
+// Harmonic markers (A / B colours by the Pattern rule) and the ROOT (small hollow circle with faint crosshairs).
+// The root is the lowest present partial of the tracked series inside the band; the series fundamental may lie below the band, so the
+// markers are placed at the series positions (hr + j) * fs, numbered h' = j + 1 from the root (odd-only series: even positions skipped).
 function hsPaintHarmonics() {
     var f0 = hsScalars.f0;
     if (!(f0 > 0)) return;
-    // the fundamental is only searched inside the detection band (half an octave of soft edge)
+    // the root lies inside the detection band by construction (half an octave of soft edge kept for the demo state)
     if (!(hsVals.lowcut < hsVals.highcut) || f0 < hsVals.lowcut * 0.7071 || f0 > hsVals.highcut * 1.4142) return;
+    var hr = hsScalars.rootH >= 1 ? hsScalars.rootH : 1;
+    var fs = hsScalars.series > 0 ? hsScalars.series : f0 / hr;
+    var odd = hsScalars.odd > 0.5;
     var top = HS_PLOT.y;
     var yb = hsBase() - HS_ZONE;
     var va = 0.35 + 0.65 * hsScalars.voiced;
     var maxh = Math.min(hsMaxHarm(), 404);
     var pat = hsPatternNumber();
-    for (var h = 1; h <= maxh; h++) {
-        var f = h * f0;
+    var ca = hsColA(), cb = hsColB();
+    for (var j = 0; j < maxh && hr + j <= 404; j++) {
+        var hs = hr + j;
+        if (odd && (hs % 2) === 0) continue;
+        var f = hs * fs;
         if (f > HS_FMAX * 0.99) break;
         if (f < HS_FMIN) continue;
         var x = hsFreqX(f);
-        if (hsFreqX(f + f0) - x < 3) break;      // markers merge into a smear: stop where they get denser than 3 px
-        var col = hsIsA(h, pat) > 0.5 ? HS_COL_A : HS_COL_B;
-        mgraphics.set_source_rgba(col[0], col[1], col[2], 0.8 * va);
-        mgraphics.rectangle(x - 0.5, top + 13, 1, 6);
+        if (hsFreqX(f + fs * (odd ? 2 : 1)) - x < 3) break;      // markers merge into a smear: stop where they get denser than 3 px
+        var col = hsIsA(j + 1, pat) > 0.5 ? ca : cb;
+        sptRgba(col, 0.75 * va);
+        mgraphics.rectangle(Math.round(x) - 0.5, top + 14, 1, 5);
         mgraphics.fill();
-        mgraphics.set_source_rgba(col[0], col[1], col[2], 0.2 * va);
-        mgraphics.rectangle(x - 0.5, top + 19, 1, yb - top - 19);
+        sptRgba(col, 0.14 * va);
+        mgraphics.rectangle(Math.round(x) - 0.5, top + 19, 1, yb - top - 19);
         mgraphics.fill();
     }
-    // fundamental: dot on the pre spectrum, crosshairs through it
+    // fundamental: hollow circle on the pre spectrum, faint crosshairs through it
+    var fg = sptColor("live_control_fg");
     var cx = hsFreqX(f0);
     var cidx = Math.round(Math.log(f0 / HS_FMIN) / Math.log(HS_FMAX / HS_FMIN) * HS_NCOLS - 0.5);
     cidx = cidx < 0 ? 0 : (cidx > HS_NCOLS - 1 ? HS_NCOLS - 1 : cidx);
     var cy = yb - hsLvH(hsPre[cidx]);
-    cy = Math.max(top + 14, Math.min(yb - 2, cy));
-    mgraphics.set_source_rgba(1, 1, 1, 0.5);
-    mgraphics.rectangle(cx - 0.5, top, 1, HS_PLOT.h - HS_ZONE);
+    cy = Math.max(top + 16, Math.min(yb - 3, cy));
+    sptRgba(fg, 0.3);
+    mgraphics.rectangle(Math.round(cx) - 0.5, top + 12, 1, HS_PLOT.h - HS_ZONE - 12);
     mgraphics.fill();
-    mgraphics.rectangle(HS_PLOT.x, cy - 0.5, HS_PLOT.w, 1);
+    mgraphics.rectangle(HS_PLOT.x, Math.round(cy) - 0.5, HS_PLOT.w, 1);
     mgraphics.fill();
-    mgraphics.set_source_rgba(1, 1, 1, 1);
-    mgraphics.arc(cx, cy, 3.4, 0, Math.PI * 2);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(0.05, 0.07, 0.1, 1);
-    mgraphics.arc(cx, cy, 1.4, 0, Math.PI * 2);
-    mgraphics.fill();
+    sptHandle(cx, cy, fg, "", 3);
     var ft = hsFmtFreq(f0);
-    var tx = cx + 6;
+    var tx = cx + 7;
     var al = 0;
-    if (tx + hsTextW(ft, 6.5) > HS_PLOT.x + HS_PLOT.w - 2) {
-        tx = cx - 6;
+    if (tx + sptTextW(ft, SPT_SIZE_SMALL) > HS_PLOT.x + HS_PLOT.w - 2) {
+        tx = cx - 7;
         al = 2;
     }
-    hsText(ft, tx, Math.max(top + 24, cy - 4), 6.5, [1, 1, 1], 0.9, al);
+    var ty = Math.max(top + 26, cy - 5);
+    sptText(ft, tx, ty, fg, SPT_SIZE_SMALL, al);
+    // series fundamental below the root (the root is its h-th harmonic): small dim note under the label
+    if (hr > 1 && fs > 0) sptText("f0 " + hsFmtFreq(fs) + "  h" + hr, tx, ty + 9, sptColor("live_display_scale_text"), SPT_SIZE_SMALL - 1, al);
 }
 
 // ---------------------------------------------------------------- interaction
@@ -609,7 +552,7 @@ function preview() {
     hsVals.maxh = 0;
     hsSel = 2;
     var f0 = 196;
-    hsScalars = { frame: 5, awake: 1, sr: 48000, n: 2048, level: 0.2, f0: f0, conf: 0.66, voiced: 1, lvl: -14, nact: 40, threff: -54 };
+    hsScalars = { frame: 5, awake: 1, sr: 48000, n: 2048, level: 0.2, f0: f0, series: f0, rootH: 1, odd: 0, conf: 0.66, voiced: 1, lvl: -14, nact: 40, threff: -54 };
     for (var c = 0; c < HS_NCOLS; c++) {
         var f = HS_FMIN * Math.pow(HS_FMAX / HS_FMIN, (c + 0.5) / HS_NCOLS);
         var floorLv = 0.30 - 0.12 * Math.log(f / 100) / Math.log(100);

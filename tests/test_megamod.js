@@ -660,31 +660,27 @@ function checkPool(v, p, boxes, byId, lines) {
     eq(C.MEGAMOD_VERSION, 9, "schema 9");
     const d = C.defaultState();
     eq(d.schema, 9, "default state is schema 9");
-    assert.deepStrictEqual(d.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true, selfMod: "internal" }); passed++;
+    assert.deepStrictEqual(d.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }); passed++;
     // sanitize: clamps, bad values -> defaults
-    assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "remote", smoothMs: 9999, rateMul: 100 }), { defaultMode: "remote", smoothMs: 500, rateMul: 4, tooltips: true, selfMod: "internal" }); passed++;
-    assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "x", smoothMs: -3, rateMul: 0 }), { defaultMode: "mod", smoothMs: 0, rateMul: 0.25, tooltips: true, selfMod: "internal" }); passed++;
+    assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "remote", smoothMs: 9999, rateMul: 100 }), { defaultMode: "remote", smoothMs: 500, rateMul: 4, selfMod: "internal" }); passed++;
+    assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "x", smoothMs: -3, rateMul: 0 }), { defaultMode: "mod", smoothMs: 0, rateMul: 0.25, selfMod: "internal" }); passed++;
     assert.deepStrictEqual(C.sanitizeSettings(null), C.defaultSettings()); passed++;
     assert.deepStrictEqual(C.sanitizeSettings({ smoothMs: "abc" }), C.defaultSettings()); passed++;
-    // tooltips: missing / junk = on, false / 0 = off, survives a round trip
-    eq(C.sanitizeSettings({}).tooltips, true, "tooltips default on");
-    eq(C.sanitizeSettings({ tooltips: false }).tooltips, false, "tooltips off kept");
-    eq(C.sanitizeSettings({ tooltips: 0 }).tooltips, false, "tooltips 0 = off");
-    eq(C.sanitizeSettings({ tooltips: "x" }).tooltips, true, "tooltips junk = on");
+    // an old saved `tooltips` key is ignored (no schema bump) and not carried forward
+    eq(C.sanitizeSettings({ tooltips: false }).tooltips, undefined, "tooltips key dropped by sanitize");
     {
         const t = C.defaultState();
         t.settings.tooltips = false;
-        eq(C.deserializeState(C.serializeState(t)).settings.tooltips, false, "tooltips off round trip");
-        const o = JSON.parse(C.stateToJson(t));
-        delete o.settings.tooltips;
-        eq(C.normalizeState(o).settings.tooltips, true, "tooltips missing in a saved state = on");
+        const back0 = C.deserializeState(C.serializeState(t));
+        eq("tooltips" in back0.settings, false, "old tooltips key dropped on load");
+        assert.deepStrictEqual(back0.settings, C.defaultSettings()); passed++;
     }
     // round trip through the blob
     const s = C.defaultState();
     s.mods[0] = C.makeModSlot(C.MOD_LFO, 0);
-    s.settings = { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, tooltips: true, selfMod: "internal" };
+    s.settings = { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, selfMod: "internal" };
     const back = C.deserializeState(C.serializeState(s));
-    assert.deepStrictEqual(back.settings, { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, tooltips: true, selfMod: "internal" }); passed++;
+    assert.deepStrictEqual(back.settings, { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, selfMod: "internal" }); passed++;
     eq(back.schema, 9, "round trip is schema 9");
     // old states (schema 1..6, no settings) get the defaults and keep everything else
     for (const sc of [1, 2, 3, 4, 5, 6]) {
@@ -692,7 +688,7 @@ function checkPool(v, p, boxes, byId, lines) {
         delete old.settings;
         old.schema = sc;
         const n = C.normalizeState(old);
-        assert.deepStrictEqual(n.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true, selfMod: "internal" }); passed++;
+        assert.deepStrictEqual(n.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }); passed++;
         eq(n.schema, 9, `schema ${sc} state normalizes to 9`);
         ok(!!n.mods[0], `schema ${sc}: modulators kept`);
     }
@@ -1270,7 +1266,7 @@ for (const v of variants) {
         const envL = makeEnv(mockLom());
         loadScript(v, envL);
         envL.ctx.setvalueof(savedS);
-        assert.deepStrictEqual(JSON.parse(JSON.stringify(vm.runInContext("MM.getSettings()", envL.ctx))), { defaultMode: "mod", smoothMs: 500, rateMul: 0.25, tooltips: true, selfMod: "internal" }); passed++;
+        assert.deepStrictEqual(JSON.parse(JSON.stringify(vm.runInContext("MM.getSettings()", envL.ctx))), { defaultMode: "mod", smoothMs: 500, rateMul: 0.25, selfMod: "internal" }); passed++;
         ok(envL.log.outlets.some((o) => o[1] === "smooth" && o[2] === 500) && envL.log.outlets.some((o) => o[1] === "gen" && o[2] === "ratemul" && o[3] === 0.25), `${v}: loaded settings are sent to gen`);
     }
     // paint with content + demo

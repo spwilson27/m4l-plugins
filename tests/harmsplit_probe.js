@@ -5,7 +5,8 @@
 //   1 Nonharmonics (left)   2 Harmonics A (left)   3 Harmonics B (left)   4 dry (the stimulus, delayed 4096 samples, or raw in the
 //   latency case)   5 All (left, Output = All)   6 Harmonics A (right; the stimulus' right channel is half the left)
 // Writes `key value` lines: energies, the sum null, per-harmonic energies (Goertzel at 220 * h, h = 1..12) and at the points half
-// way between harmonics (220 * (h + 0.5), h = 1..6) for the three channels, impulse positions, telemetry scalars.
+// way between harmonics (220 * (h + 0.5), h = 1..6) for the three channels, impulse positions, telemetry scalars (f0 = ROOT, series,
+// root harmonic number, odd-only flag). jsarguments: stimulus name, base frequency F0 for the Goertzel set (default 220), extra harmonics list.
 
 inlets = 1;
 outlets = 1;
@@ -14,6 +15,12 @@ var resultPath = "";
 var scopeName = "";
 var armed = false;
 var F0 = 220.0;
+var xHarm = [];       // extra harmonics (of F0) measured as x<ch><h>: jsarguments[3] = comma list
+if (jsarguments.length > 2 && isFinite(Number(jsarguments[2])) && Number(jsarguments[2]) > 0) F0 = Number(jsarguments[2]);
+if (jsarguments.length > 3) {
+    var xl = String(jsarguments[3]).split(",");
+    for (var xi = 0; xi < xl.length; xi++) if (isFinite(Number(xl[xi])) && Number(xl[xi]) > 0) xHarm.push(Number(xl[xi]));
+}
 
 function resultpath(p) { resultPath = String(p); }
 function setbuffer(name) { scopeName = name ? String(name) : ""; }
@@ -105,12 +112,13 @@ function analyze(durMs) {
             for (var m = 1; m <= 6; m++) lines += "m" + names[ch] + m + " " + goertzel(chans[ch], F0 * (m + 0.5), sr) + "\n";
             lines += "g" + names[ch] + "15 " + goertzel(chans[ch], F0 * 15, sr) + "\n";
             lines += "g" + names[ch] + "20 " + goertzel(chans[ch], F0 * 20, sr) + "\n";
+            for (var xj = 0; xj < xHarm.length; xj++) lines += "x" + names[ch] + xHarm[xj] + " " + goertzel(chans[ch], F0 * xHarm[xj], sr) + "\n";
         }
     }
 
     // telemetry
     var scopeFrame = 0, scopeN = 0, scopeAwake = 0, scopeLat = 0, scopeSel = 0, preMax = 0, nhMax = 0, aMax = 0, bMax = 0;
-    var f0 = 0, conf = 0, voiced = 0, lvl = 0, nact = 0, threff = 0;
+    var f0 = 0, conf = 0, voiced = 0, lvl = 0, nact = 0, threff = 0, series = 0, rootH = 0, oddFlag = 0;
     if (scopeName) {
         var vals = new Buffer(scopeName).peek(1, 0, 544);
         if (vals && vals.length >= 524) {
@@ -131,6 +139,9 @@ function analyze(durMs) {
             scopeSel = vals[522];
             nact = vals[523];
             threff = vals[524];
+            series = vals[525];
+            rootH = vals[526];
+            oddFlag = vals[527];
         }
     }
 
@@ -169,6 +180,9 @@ function analyze(durMs) {
         "scopeLvl " + lvl + "\n" +
         "scopeNact " + nact + "\n" +
         "scopeThrEff " + threff + "\n" +
+        "scopeSeries " + series + "\n" +
+        "scopeRootH " + rootH + "\n" +
+        "scopeOdd " + oddFlag + "\n" +
         lines
     );
     report.close();

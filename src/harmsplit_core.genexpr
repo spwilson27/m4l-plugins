@@ -8,39 +8,53 @@
 // Per hop (n / 4) on the Mid spectrum amplitude (ms, from spectral_split_lib):
 //   hs_prep   dB spectrum (raw, and the ANALYSIS spectrum = raw + Tilt (dB per decade around 1 kHz, +Tilt at 10 kHz) + the soft
 //             attenuation of the detection filters: 4th-order high-pass at Low-cut and low-pass at High-cut, -3 dB at the cutoff),
-//             compressed 0..1 salience spectrum hc over the 45 dB below the loudest analysis bin; level = loudest attenuated bin.
-//             Low-cut / High-cut limit WHERE THE FUNDAMENTAL IS SEARCHED (hs_sal); once found, harmonics are sorted wherever they are.
-//   hs_sal    harmonic-comb salience of the candidate fundamentals (fixed grid 19.4 Hz * 2^(i/64), 642 candidates to 20.1 kHz, but ONLY
-//             those inside the detection band [Low-cut / sqrt2, High-cut * sqrt2] are evaluated, none when Low >= High; salience scaled by
-//             the cutoff-filter attenuation at the candidate: 1 down to -3 dB, 0 at -12 dB): up to 10 harmonics whose
-//             attenuation by the cutoff filters is under 30 dB (harmonics above High-cut still count), sum of (peak of hc within +-1 bin of h*g) - (hc half a spacing below) with weights 1/(1 + 0.12 (h-1)),
-//             divided by (sum of weights + 0.8). The lowest local maximum within 85 % of the best is taken (sub-octave check),
-//             refined by a parabola over the three neighbouring candidates.
-//   hs_decide accept (salience >= 0.38, or 0.209 while already tracking; level >= effective threshold) / hold for 8 hops / a new f0 (first lock or a jump) only after 2 consistent frames.
+//             compressed 0..1 salience spectrum hc over the 45 dB below the loudest analysis bin; level = loudest attenuated bin;
+//             spectral ripple yd = hc minus its +-8 bin mean; band weight bw of every bin (1 down to -3 dB of cut attenuation, 0 at -12 dB).
+//             Low-cut / High-cut say WHERE THE EVIDENCE IS (partials inside the band) and where the ROOT must lie (hs_masks).
+//   hs_sal    SERIES estimation: which harmonic series explains the in-band partials. Candidate fundamentals on the FIXED grid
+//             19.4 Hz * 2^(i/64), i = 0..641, from max(19.4, Low-cut / 32) up to High-cut * sqrt2 (the fundamental may lie BELOW the band:
+//             missing / filtered fundamental). Only partials inside the band are evidence (weighted by bw). Full series (spacing g) or odd-only
+//             series (square, triangle, clarinet: spacing 2 g); the effective spacing in bins picks the statistic:
+//               >= 4.5 bins   peak / valley comb over 10 positions from the lowest in-band harmonic, weights bw / (1 + 0.12 j), score
+//                             sum / (sum of weights + 0.8 + 0.6 clip((3 - sum) / 2)); odd-only: odd harmonics of the first 7 positions, valley
+//                             an empty even position away (at least 2.5 bins);
+//               2.2 .. 4.5    the partials are not resolved but make a spectral RIPPLE of period S: correlation r of the detrended spectrum with
+//                             cos(2 pi f / S) over the first 192 weighted in-band bins, score 0.056 r sqrt(sum bw); S gives a full series g = S
+//                             (r > 0) and an odd-only series g = S / 2 (r < 0); the winner's spacing is refined in 0.2 % steps;
+//               < 2.2 bins    not scored (a ripple aliases onto longer spacings; a full series needs Size 4k below 51 Hz at 48 kHz).
+//             The LOWEST local maximum within 78 % of the best is taken (sub-octave check), refined by a parabola over the three neighbours.
+//   hs_decide accept (salience >= 0.36, or 0.198 while already tracking; level >= effective threshold) / hold for 8 hops / a new series (first lock or a jump) only after 2 consistent frames.
 //             Effective threshold: the Detection Threshold in dB, or AUTOMATIC when it is at its minimum (-120 dB): the running peak
 //             level of the analysis (instant attack, 12 dB per second release) minus 40 dB, never below -100 dB.
-//   hs_harm   per harmonic h = 1..404: local spectral peak near h*g (running least-squares estimate of g, window max(2 bins,
-//             15 % g)), parabolic peak position, prominence = peak dB - mean of the two dB values half a spacing either side.
+//   hs_harm   per harmonic h = 1..404 of the SERIES (odd-only: odd h): resolved series: local spectral peak near h*g (running least-squares
+//             estimate of g, window max(2 bins, 15 % g) capped at 0.45 spacing), parabolic peak position, prominence over the mean dB half an
+//             effective spacing either side; unresolved series: nominal position, louder of the two bins around it, present at >= 4 dB.
 //   hs_post   f0 smoothing, voiced amount v (level gate smoothstep((level - thr) / 4 dB), attack 0.6, release 0.35).
-//   hs_masks  harmonic weight hw[h] = smoothstep((prominence - (14 - 12 sens)) / 6) * (h <= Max, 0 = 404) * v, smoothed
-//             over hops (attack 0.7, release 0.4). Bin k belongs to harmonic round(k / spacing); its lobe is flat to w0 bins
-//             from the harmonic centre then a raised cosine down to w1 (w0 = 0.7 + 1.3 sens, w1 = w0 + 0.7 + 0.5 sens, capped
-//             at 0.35 of the spacing). mask(A) = lobe * hw * isA, mask(B) = lobe * hw * (1 - isA), mask(NH) = 1 - mask(A) -
-//             mask(B): exact sum 1. isA: Pattern P >= 2: (h - 1) mod P == 0; Pattern 1: only the fundamental (h == 1).
+//   hs_masks  ROOT = the lowest PRESENT partial of the series (hp 4) with its centre inside [Low-cut, High-cut]; held while present (3 dB lower
+//             bar), a lower one replaces it. Pattern numbering h' = h - hr + 1 counts from the root; series partials below it go to
+//             Nonharmonics. Harmonic weight hw[h] = smoothstep((prominence - pmE) / wd) * (h' <= Max, 0 = 404) * v, smoothed over hops
+//             (attack 0.7, release 0.4); pmE = 14 - 12 sens, wd = 6, both lowered for an unresolved series (down to 0 / 1 at 2 bins). Each
+//             weighted harmonic paints a lobe (flat to w0 bins from its centre, raised cosine to w1, w1 = 0.7 + 1.3 s + 0.7 + 0.5 s capped at
+//             0.35 effective spacing, 0.5 when unresolved) into A / B by max; B is clipped to 1 - A; mask(NH) = 1 - A - B: exact sum 1.
+//             isA: Pattern P >= 2: (h' - 1) mod P == 0; Pattern 1: only the root (h' == 1).
 //   Output  outsel 0 = All (mask 1), 1 = Nonharmonics, 2 = Harmonics A, 3 = Harmonics B.
 //
-// Data hsd(2049, 8) per-bin channels: 0 NH mask, 1 A mask, 2 B mask, 3 sum (= 1), 4 analysis dB (tilt + cut filters), 5 salience spectrum hc, 6 raw dB, 7 cut-filter attenuation dB (<= 0).
-// hp(406, 4) per harmonic h: 0 centre Hz, 1 prominence dB, 2 smoothed weight, 3 weight routed to A.
-// hst(32): 0 f0, 1 pending f0, 2 pending count, 3 hold count, 4 voiced v, 5 last used f0, 8 tilted dB max, 9 level dB,
+// Data hsd(2049, 10) per-bin channels: 0 NH mask, 1 A mask, 2 B mask, 3 sum (= 1), 4 analysis dB (tilt + cut filters), 5 salience spectrum hc, 6 raw dB,
+//   7 cut-filter attenuation dB (<= 0), 8 hc ripple (minus its local mean), 9 band weight (prefix sums of hc while hs_prep runs).
+// hp(406, 5) per harmonic h of the series: 0 centre Hz, 1 prominence dB, 2 smoothed weight, 3 weight routed to A, 4 present flag.
+// hst(32): 0 series f0 (tracked), 1 pending f0, 2 pending count, 3 hold count, 4 voiced v, 5 last used f0, 8 tilted dB max, 9 level dB,
 //   10 raw candidate f0, 11 salience, 12 refined f0, 13 f0 the harmonics are searched with, 14 accepted flag,
-//   15 found harmonics, 16 active harmonics (hw > 0.5), 17 running peak level, 18 effective threshold dB, 19 running level initialised.
-// sal(646): candidate salience, index i + 1 for candidate i (zero padded).
+//   15 found harmonics, 16 active harmonics (hw > 0.5), 17 running peak level, 18 effective threshold dB, 19 running level initialised,
+//   20 ROOT frequency (Hz, 0 = none), 21 root harmonic number hr, 22 odd-only flag of the candidate, 23 odd-only flag of the tracked series,
+//   24 effective partial spacing (bins).
+// sal(710, 5): 0 candidate salience (index i + 1 for candidate i), 1 odd-only flag, 2 / 3 ripple r / -r by spacing index, 4 fine-search scratch.
 //
 // Telemetry buffer (bound on loadbang via `scope ---harmsplitscope`), HS_SCOPE_SAMPS floats:
 //   0..127 input (Mid) level per log column, 128..255 Nonharmonics post, 256..383 Harmonics A post, 384..511 Harmonics B post
-//   (0..1 over -100..0 dB), 512 frame counter, 513 samplerate, 514 N, 515 awake, 516 input peak, 517 f0 (Hz, 0 = none),
+//   (0..1 over -100..0 dB), 512 frame counter, 513 samplerate, 514 N, 515 awake, 516 input peak, 517 ROOT frequency (Hz, 0 = none),
 //   518 salience, 519 voiced amount, 520 level dB, 521 latency, 522 output selection, 523 active harmonics, 524 effective
-//   detection threshold dB (the automatic one when Threshold is at -120).
+//   detection threshold dB (the automatic one when Threshold is at -120), 525 series fundamental (Hz, may lie below the band),
+//   526 root harmonic number in the series, 527 odd-only series flag.
 //   Mix     out = wetamt * wet + (1 - wetamt) * dry4096 * kdry, kdry = 1 (All / no rack) or 1/3 (one of the 3 chains), so the rack
 //           sum is wetamt * wet + (1 - wetamt) * dry (dry delayed by the same 4096). wetamt = Mix / 100.
 //
@@ -60,11 +74,13 @@ hs_reset(hst, hp) {
 		hp.poke(0, h, 1);
 		hp.poke(0, h, 2);
 		hp.poke(0, h, 3);
+		hp.poke(0, h, 4);
 	}
 	return 0;
 }
 
-// dB spectra, cut-filter attenuation (hsd 7) and the compressed salience spectrum; level of the analysis (hst 8 / 9).
+// dB spectra, cut-filter attenuation (hsd 7), the compressed salience spectrum (hsd 5), its local-mean-removed ripple (hsd 8) and the
+// band weight of every bin (hsd 9, 1 down to -3 dB of cut attenuation, 0 at -12 dB); level of the analysis (hst 8 / 9).
 // tl = Tilt in dB per decade around 1 kHz (+tl at 10 kHz); flo / fhi = detection low / high cut (4th order, -3 dB at the cutoff).
 hs_prep(ms, hsd, hst, n, sr, flo, fhi, tl) {
 	half = n * 0.5;
@@ -92,74 +108,210 @@ hs_prep(ms, hsd, hst, n, sr, flo, fhi, tl) {
 	}
 	hsd.poke(0, 0, 5);
 	hsd.poke(0, half, 5);
+	acc = 0;
+	for (k = 0; k <= half; k += 1) {
+		acc += hsd.peek(k, 5);
+		hsd.poke(acc, k, 9);
+	}
+	for (k = 0; k <= half; k += 1) {
+		a0 = max(k - 8, 0);
+		a1 = min(k + 8, half);
+		pre = (a0 > 0 ? 1 : 0) * hsd.peek(max(a0 - 1, 0), 9);
+		hsd.poke(hsd.peek(k, 5) - (hsd.peek(a1, 9) - pre) / (a1 - a0 + 1), k, 8);
+	}
+	for (k = 0; k <= half; k += 1) {
+		hsd.poke(clip((hsd.peek(k, 7) + 12) / 9, 0, 1), k, 9);
+	}
 	hst.poke(dbmx, 8);
 	hst.poke(lvl, 9);
 	return half;
 }
 
-// Harmonic-comb salience of the candidate fundamentals; best candidate and its salience into hst 10 / 11.
-// The candidate grid is FIXED (19.4 Hz * 2^(i / 64), i = 0..641, up to 20.1 kHz) but only the candidates inside the detection band are
-// evaluated: flo / fhi are the Low-cut / High-cut. A candidate is searched only if flo < fhi and it lies within half an octave of
-// [flo, fhi] (and below 0.45 sr); its salience is scaled by the 4th-order filter attenuation AT the candidate itself
-// (full weight down to -3 dB, linear to 0 at -12 dB), so a fundamental more than ~12 dB down cannot win and moving a cutoff fades
-// candidates in and out. Harmonics above High-cut still count while their attenuation is under 30 dB (the comb needs them to judge a candidate).
+// Series estimation. Candidate series fundamentals on the FIXED grid 19.4 Hz * 2^(i / 64), i = 0..641, from max(19.4, Low / 32) up to
+// High * sqrt2 (so the fundamental may lie BELOW the band: missing or filtered fundamental). Only partials inside the band count as evidence,
+// weighted by the band weight of their bin (hsd 9). Effective partial spacing (bins) = g for a full series, 2 g for an odd-only one.
+//   >= 4.5 bins: peak / valley comb over HS_JPOS = 10 positions from the lowest in-band harmonic (full: valley half a spacing either side;
+//                odd-only: harmonics 1, 3, 5, 7 of the in-band run, valley an empty even position away, at least 2.5 bins);
+//   2.2 .. 4.5 bins: ripple correlation (inline cos recurrence), score 0.056 * r * sqrt(sum of band weights); spacing S gives a full series g = S (r > 0) AND an
+//                odd-only series g = S / 2 (r < 0, peaks half way); coarse grid with three sub-offsets, then a fine spacing search of the winner;
+//   below 2.2 bins: not scored (a ripple aliases onto longer spacings; Size 4k resolves a full series down to 51 Hz, 2k down to 26 Hz odd-only).
+// Best candidate: the LOWEST local maximum within 78 % of the best (sub-octave check). Results: hst 10 g, 11 salience, 22 odd-only flag.
+// sal channels: 0 salience (index i + 1), 1 odd-only flag, 2 ripple r (peaks at multiples of S), 3 ripple -r (index by S), 4 fine search scratch.
 hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
 	half = n * 0.5;
 	df = sr / n;
 	ftop = sr * 0.45;
-	for (i = 0; i < 646; i += 1) {
-		sal.poke(0, i);
+	for (i = 0; i < 710; i += 1) {
+		sal.poke(0, i, 0);
+		sal.poke(0, i, 1);
+		sal.poke(0, i, 2);
+		sal.poke(0, i, 3);
+		sal.poke(0, i, 4);
+	}
+	gmin = max(19.4, flo / 32);
+	kst = -1;
+	kend = -1;
+	for (k = 2; k <= half - 3; k += 1) {
+		bwk = hsd.peek(k, 9);
+		kst = (kst < 0 && bwk > 0) ? k : kst;
+		kend = bwk > 0 ? k : kend;
+	}
+	kend = min(kend, kst + 191);
+	sw = 0;
+	sy = 0;
+	for (k = max(kst, 0); k <= kend; k += 1) {
+		bwk = hsd.peek(k, 9);
+		yk = hsd.peek(k, 8);
+		sw += bwk;
+		sy += bwk * yk * yk;
+	}
+	cosOk = (flo < fhi && kst >= 0 && sw >= 8) ? 1 : 0;
+	sq = sqrt(sw);
+	// ripple correlation r of the detrended spectrum (hsd 8, weights hsd 9) with cos(2 pi f / S), bins kst..kend (cos by recurrence),
+	// three sub-offsets of every spacing S = 19.4 * 2^(i / 64) with 2.2 <= S / df < 4.5; ch 2 = max r, ch 3 = max -r over the offsets
+	for (jb = 0; jb < 2118; jb += 1) {
+		idx = floor(jb / 3);
+		o = jb - 3 * idx;
+		ss = 19.4 * pow(2, idx / 64);
+		pers = ss / df;
+		doit = (cosOk > 0.5 && pers >= 2.2 && pers < 4.5) ? 1 : 0;
+		sq1 = ss * (1 + (o - 1) * 0.0038);
+		da = 6.283185307179586 * df / sq1;
+		ang = 6.283185307179586 * kst * df / sq1;
+		cc = cos(ang);
+		sn = sin(ang);
+		cd = cos(da);
+		sd = sin(da);
+		sxy = 0;
+		sxx = 0;
+		kq = doit > 0.5 ? kend : -1;
+		for (k = max(kst, 0); k <= kq; k += 1) {
+			wgt = hsd.peek(k, 9);
+			sxy += wgt * hsd.peek(k, 8) * cc;
+			sxx += wgt * cc * cc;
+			cnw = cc * cd - sn * sd;
+			sn = sn * cd + cc * sd;
+			cc = cnw;
+		}
+		ro = doit > 0.5 ? sxy / sqrt(sxx * sy + 1e-12) : 0;
+		rp0 = sal.peek(idx, 2);
+		rn0 = sal.peek(idx, 3);
+		sal.poke(doit > 0.5 ? (o < 0.5 ? ro : max(rp0, ro)) : 0, idx, 2);
+		sal.poke(doit > 0.5 ? (o < 0.5 ? 0 - ro : max(rn0, 0 - ro)) : 0, idx, 3);
 	}
 	smax = 0;
 	for (i = 0; i < 642; i += 1) {
 		g = 19.4 * pow(2, i / 64);
+		act = (flo < fhi && g >= gmin && g <= fhi * 1.4142 && g <= ftop) ? 1 : 0;
+		perf = g / df;
+		pero = 2 * g / df;
+		svf = 0;
+		svo = 0;
+		h0 = max(1, 0 - floor(0 - 0.51 * flo / g));
+		vodd = min(g, max(0.5 * g, 2.5 * df));
 		ssum = 0;
 		wt = 0;
 		cn = 0;
-		sv = 0;
-		act = (flo < fhi && g >= flo * 0.7071 && g <= fhi * 1.4142 && g <= ftop) ? 1 : 0;
-		if (act > 0.5) {
-			ga = flo / g;
-			gb = g / fhi;
-			gatt = -4.342944819032518 * (log(1 + ga * ga * ga * ga) + log(1 + gb * gb * gb * gb));
-			for (h = 1; h <= 10; h += 1) {
-				fp = h * g;
-				kc = clip(floor(fp / df + 0.5), 1, half - 1);
-				if (fp >= 20 && fp <= ftop && hsd.peek(kc, 7) > -30) {
-					pk = max(hsd.peek(kc - 1, 5), max(hsd.peek(kc, 5), hsd.peek(kc + 1, 5)));
-					kv = clip(floor((h - 0.5) * g / df + 0.5), 1, half - 1);
-					vl = hsd.peek(kv, 5);
-					w = 1 / (1 + 0.12 * (h - 1));
-					ssum += w * (pk - vl);
-					wt += w;
-					cn += 1;
-				}
+		osum = 0;
+		owt = 0;
+		pvOn = (act > 0.5 && pero >= 4.5) ? 1 : 0;
+		for (j = 0; j < 10; j += 1) {
+			hh = h0 + j;
+			fp = hh * g;
+			kc = clip(floor(fp / df + 0.5), 1, half - 1);
+			bwp = (pvOn > 0.5 && fp <= ftop) ? hsd.peek(kc, 9) : 0;
+			if (bwp > 0) {
+				pk = max(hsd.peek(kc - 1, 5), max(hsd.peek(kc, 5), hsd.peek(kc + 1, 5)));
+				kv = clip(floor((hh - 0.5) * g / df + 0.5), 1, half - 1);
+				ku = clip(floor((hh + 0.5) * g / df + 0.5), 1, half - 1);
+				term = max(pk - max(hsd.peek(kv, 5), hsd.peek(ku, 5)), 0);
+				w = bwp / (1 + 0.12 * j);
+				ssum += w * term;
+				wt += w;
+				cn += 1;
+				isod = (j <= 6 && (hh - 2 * floor(hh / 2)) > 0.5) ? 1 : 0;
+				kv2 = clip(floor((fp - vodd) / df + 0.5), 1, half - 1);
+				ku2 = clip(floor((fp + vodd) / df + 0.5), 1, half - 1);
+				term2 = max(pk - max(hsd.peek(kv2, 5), hsd.peek(ku2, 5)), 0);
+				osum += isod * w * term2;
+				owt += isod * w;
 			}
-			sv = cn > 0.5 ? clip((gatt + 12) / 9, 0, 1) * ssum / (wt + 0.8) : 0;
 		}
-		sal.poke(sv, i + 1);
+		sfull = cn > 0.5 ? ssum / (wt + 0.8 + 0.6 * clip((3 - wt) / 2, 0, 1)) : 0;
+		sodd = owt > 0 ? osum / (owt + 0.8 + 0.6 * clip((3 - owt) / 2, 0, 1)) : 0;
+		svo = pvOn > 0.5 ? sodd : 0;
+		svf = (pvOn > 0.5 && perf >= 4.5) ? sfull : 0;
+		svf = (act > 0.5 && cosOk > 0.5 && perf >= 2.2 && perf < 4.5) ? max(0.056 * sal.peek(i, 2) * sq, 0) : svf;
+		svo = (act > 0.5 && cosOk > 0.5 && pero >= 2.2 && pero < 4.5) ? max(0.056 * sal.peek(i + 64, 3) * sq, 0) : svo;
+		sv = max(svf, svo);
+		sal.poke(sv, i + 1, 0);
+		sal.poke(svo > svf ? 1 : 0, i + 1, 1);
 		smax = max(smax, sv);
 	}
 	bi = 0;
 	fnd = 0;
 	for (i = 1; i <= 642; i += 1) {
-		sv = sal.peek(i);
-		cnd = (fnd < 0.5 && smax > 0 && sv >= 0.85 * smax && sv >= sal.peek(i - 1) && sv >= sal.peek(i + 1)) ? 1 : 0;
+		svq = sal.peek(i, 0);
+		cnd = (fnd < 0.5 && smax > 0 && svq >= 0.78 * smax && svq >= sal.peek(i - 1, 0) && svq >= sal.peek(i + 1, 0)) ? 1 : 0;
 		bi = cnd > 0.5 ? i : bi;
 		fnd = cnd > 0.5 ? 1 : fnd;
 	}
-	sa = sal.peek(max(bi - 1, 0));
-	sb = sal.peek(bi);
-	sc = sal.peek(bi + 1);
+	sa = sal.peek(max(bi - 1, 0), 0);
+	sb = sal.peek(bi, 0);
+	sc = sal.peek(bi + 1, 0);
 	dd = sa - 2 * sb + sc;
 	dl = dd < -1e-12 ? clip(0.5 * (sa - sc) / dd, -0.5, 0.5) : 0;
 	g0 = fnd > 0.5 ? 19.4 * pow(2, (bi - 1 + dl) / 64) : 0;
+	conf0 = fnd > 0.5 ? sb : 0;
+	flag0 = fnd > 0.5 ? sal.peek(bi, 1) : 0;
+	perw = g0 * (flag0 > 0.5 ? 2 : 1) / df;
+	dofine = (fnd > 0.5 && cosOk > 0.5 && perw >= 2.2 && perw < 4.5) ? 1 : 0;
+	s0 = g0 * (flag0 > 0.5 ? 2 : 1);
+	sgn = flag0 > 0.5 ? -1 : 1;
+	for (m = 0; m < 11; m += 1) {
+		sq2 = s0 * (1 + (m - 5) * 0.002);
+		da = 6.283185307179586 * df / sq2;
+		ang = 6.283185307179586 * kst * df / sq2;
+		cc = cos(ang);
+		sn = sin(ang);
+		cd = cos(da);
+		sd = sin(da);
+		sxy = 0;
+		sxx = 0;
+		kq = dofine > 0.5 ? kend : -1;
+		for (k = max(kst, 0); k <= kq; k += 1) {
+			wgt = hsd.peek(k, 9);
+			sxy += wgt * hsd.peek(k, 8) * cc;
+			sxx += wgt * cc * cc;
+			cnw = cc * cd - sn * sd;
+			sn = sn * cd + cc * sd;
+			cc = cnw;
+		}
+		rm = dofine > 0.5 ? sgn * sxy / sqrt(sxx * sy + 1e-12) : 0;
+		sal.poke(rm, m, 4);
+	}
+	bm = 0;
+	bvr = -9;
+	for (m = 0; m < 11; m += 1) {
+		rm = sal.peek(m, 4);
+		bm = (dofine > 0.5 && rm > bvr) ? m : bm;
+		bvr = dofine > 0.5 ? max(bvr, rm) : bvr;
+	}
+	ra = sal.peek(max(bm - 1, 0), 4);
+	rb = sal.peek(min(bm + 1, 10), 4);
+	dd3 = ra - 2 * bvr + rb;
+	dl3 = (bm > 0 && bm < 10 && dd3 < -1e-12) ? clip(0.5 * (ra - rb) / dd3, -0.5, 0.5) : 0;
+	g0 = dofine > 0.5 ? s0 * (1 + (bm - 5 + dl3) * 0.002) / (flag0 > 0.5 ? 2 : 1) : g0;
+	conf0 = dofine > 0.5 ? max(conf0, max(0.056 * bvr * sq, 0)) : conf0;
+	flag0 = (flag0 > 0.5 && g0 / df < 4.5) ? 1 : 0;
 	hst.poke(g0, 10);
-	hst.poke(fnd > 0.5 ? sb : 0, 11);
+	hst.poke(conf0, 11);
+	hst.poke(flag0, 22);
 	return g0;
 }
 
-// Accept / hold / jump logic of the fundamental; hst 13 = the f0 the harmonics are searched with (0 = none).
+// Accept / hold / jump logic of the series fundamental; hst 13 = the f0 the harmonics are searched with (0 = none), hst 23 = odd-only flag
+// of the tracked series, hst 21 = root harmonic (reset when the series is new or lost).
 hs_decide(hst, thr, c0, dec) {
 	f0c = hst.peek(0);
 	pend = hst.peek(1);
@@ -167,6 +319,9 @@ hs_decide(hst, thr, c0, dec) {
 	hold = hst.peek(3);
 	g0 = hst.peek(10);
 	conf = hst.peek(11);
+	flag0 = hst.peek(22);
+	hodd = hst.peek(23);
+	hrk = hst.peek(21);
 	lvl = hst.peek(9);
 	lm = hst.peek(19) > 0.5 ? max(lvl, hst.peek(17) - dec) : lvl;
 	te = thr < -119.5 ? max(lm - 40, -100) : thr;
@@ -187,10 +342,13 @@ hs_decide(hst, thr, c0, dec) {
 				f0c = g0;
 				gs = g0;
 				pcn = 0;
+				hodd = flag0;
+				hrk = 0;
 			}
 		} else if (rj < 0.05) {
 			gs = g0;
 			pcn = 0;
+			hodd = flag0;
 		} else {
 			pcn = rp < 0.05 ? pcn + 1 : 1;
 			pend = g0;
@@ -198,6 +356,8 @@ hs_decide(hst, thr, c0, dec) {
 				f0c = g0;
 				gs = g0;
 				pcn = 0;
+				hodd = flag0;
+				hrk = 0;
 			}
 		}
 	} else {
@@ -210,6 +370,7 @@ hs_decide(hst, thr, c0, dec) {
 			f0c = 0;
 			gs = 0;
 			pcn = 0;
+			hrk = 0;
 		}
 	}
 	hst.poke(f0c, 0);
@@ -218,14 +379,23 @@ hs_decide(hst, thr, c0, dec) {
 	hst.poke(hold, 3);
 	hst.poke(gs, 13);
 	hst.poke(okf, 14);
+	hst.poke(hodd, 23);
+	hst.poke(hrk, 21);
 	return gs;
 }
 
-// Per harmonic: spectral peak near h * g (running least-squares g), centre in hp 0, prominence in hp 1.
+// Per harmonic h of the SERIES (odd-only: odd h only): spectral peak near h * g, centre in hp 0, prominence in hp 1, presence flag in hp 4.
+// Resolved series (effective spacing >= 4.5 bins): running least-squares g, window max(2 bins, 15 % g) capped at 0.45 spacing, valley half an
+// effective spacing either side. Unresolved series: nominal positions h * g (g from the ripple search), level = louder of the two bins
+// around the position, same valley rule, present at >= 4 dB (the Hann leakage of neighbours 1.4 bins away limits the contrast to 5..15 dB).
 hs_harm(hsd, hp, hst, n, sr) {
 	half = n * 0.5;
 	df = sr / n;
 	gs = hst.peek(13);
+	hodd = hst.peek(23);
+	seff = gs * (hodd > 0.5 ? 2 : 1) / df;
+	narrow = (gs > 0 && seff < 4.5) ? 1 : 0;
+	hst.poke(seff, 24);
 	gest = gs;
 	num = 0.5 * gs;
 	den = 0.5;
@@ -234,43 +404,58 @@ hs_harm(hsd, hp, hst, n, sr) {
 		fp = h * gest;
 		cen = fp;
 		prom = 0;
+		prs = 0;
 		wn = 0;
 		k0 = 2;
 		k1 = 2;
 		kp = 2;
 		bv = -200;
 		okp = 0;
-		if (gs > 0 && fp < (half - 3) * df) {
-			wn = max(2 * df, 0.15 * gest);
-			k0 = max(floor((fp - wn) / df), 2);
-			k1 = min(floor((fp + wn) / df) + 1, half - 2);
-			kp = k0;
-			bv = hsd.peek(k0, 6);
-			for (k = k0 + 1; k <= k1; k += 1) {
-				v = hsd.peek(k, 6);
-				if (v > bv) {
-					bv = v;
-					kp = k;
+		skip = (hodd > 0.5 && (h - 2 * floor(h / 2)) < 0.5) ? 1 : 0;
+		hs2 = 0.5 * seff * df;
+		if (gs > 0 && fp < (half - 3) * df && skip < 0.5) {
+			if (narrow > 0.5) {
+				kk = clip(floor(fp / df), 1, half - 2);
+				pkd = max(hsd.peek(kk, 6), hsd.peek(kk + 1, 6));
+				vl3 = hsd.peek(clip(floor((fp - hs2) / df + 0.5), 1, half - 1), 6);
+				vr3 = hsd.peek(clip(floor((fp + hs2) / df + 0.5), 1, half - 1), 6);
+				prom = pkd - 0.5 * (vl3 + vr3);
+				prs = prom >= 4 ? 1 : 0;
+			} else {
+				wn = max(2 * df, 0.15 * gest);
+				wn = max(df, min(wn, 0.45 * seff * df));
+				k0 = max(floor((fp - wn) / df), 2);
+				k1 = min(floor((fp + wn) / df) + 1, half - 2);
+				kp = k0;
+				bv = hsd.peek(k0, 6);
+				for (k = k0 + 1; k <= k1; k += 1) {
+					v = hsd.peek(k, 6);
+					if (v > bv) {
+						bv = v;
+						kp = k;
+					}
 				}
-			}
-			pa = hsd.peek(kp - 1, 6);
-			pc = hsd.peek(kp + 1, 6);
-			okp = (bv >= pa && bv >= pc && kp > k0 && kp < k1) ? 1 : 0;
-			dd = pa - 2 * bv + pc;
-			dl = dd < -1e-9 ? clip(0.5 * (pa - pc) / dd, -0.5, 0.5) : 0;
-			vl = hsd.peek(clip(floor((fp - 0.5 * gest) / df + 0.5), 1, half - 1), 6);
-			vr = hsd.peek(clip(floor((fp + 0.5 * gest) / df + 0.5), 1, half - 1), 6);
-			prom = okp > 0.5 ? bv - 0.5 * (vl + vr) : 0;
-			cen = okp > 0.5 ? (kp + dl) * df : fp;
-			if (okp > 0.5 && prom >= 10) {
-				num += h * cen;
-				den += h * h;
-				gest = num / den;
-				nfd += 1;
+				pa = hsd.peek(kp - 1, 6);
+				pc = hsd.peek(kp + 1, 6);
+				okp = (bv >= pa && bv >= pc && kp > k0 && kp < k1) ? 1 : 0;
+				dd = pa - 2 * bv + pc;
+				dl = dd < -1e-9 ? clip(0.5 * (pa - pc) / dd, -0.5, 0.5) : 0;
+				vl = hsd.peek(clip(floor((fp - hs2) / df + 0.5), 1, half - 1), 6);
+				vr = hsd.peek(clip(floor((fp + hs2) / df + 0.5), 1, half - 1), 6);
+				prom = okp > 0.5 ? bv - 0.5 * (vl + vr) : 0;
+				cen = okp > 0.5 ? (kp + dl) * df : fp;
+				prs = (okp > 0.5 && prom >= 10) ? 1 : 0;
+				if (okp > 0.5 && prom >= 10) {
+					num += h * cen;
+					den += h * h;
+					gest = num / den;
+					nfd += 1;
+				}
 			}
 		}
 		hp.poke(cen, h, 0);
 		hp.poke(prom, h, 1);
+		hp.poke(prs, h, 4);
 	}
 	hst.poke(gest, 12);
 	hst.poke(nfd, 15);
@@ -302,48 +487,82 @@ hs_post(hst) {
 	return v;
 }
 
-// Harmonic weights (smoothed over hops) and the three per-bin masks.
-hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx) {
+// Root, harmonic weights (smoothed over hops) and the three per-bin masks.
+// ROOT = the lowest PRESENT partial of the series (hp 4) whose centre lies inside [Low-cut, High-cut]; kept while it stays present (3 dB lower bar),
+// replaced at once by a lower one. Pattern numbering h' = h - hr + 1 counts from the root; series partials below the root go to Nonharmonics.
+// Weights: smoothstep((prominence - pmE) / wd) * v; unresolved series lower pmE / narrow wd (down to 0 / 1 dB at 2.2 bins).
+// Masks: every weighted harmonic paints a lobe (flat to w0 bins from its centre, raised cosine to w1, w1 <= 0.5 effective spacing when unresolved)
+// into A / B by max; B is clipped to 1 - A; Nonharmonics = 1 - A - B (exact sum 1).
+hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx, flo, fhi) {
 	half = n * 0.5;
 	df = sr / n;
 	gs = hst.peek(13);
 	gu = gs > 0 ? hst.peek(12) : hst.peek(5);
+	hodd = hst.peek(23);
+	seff = hst.peek(24);
+	narrow = (gs > 0 && seff < 4.5) ? 1 : 0;
+	hrk = hst.peek(21);
 	v = hst.peek(4);
 	pmin = 14 - 12 * sens;
+	rf = clip((seff - 2) / 4, 0, 1);
+	pme = narrow > 0.5 ? pmin * rf : pmin;
+	wd = narrow > 0.5 ? 1 + 5 * rf : 6;
 	pat = max(hpat, 1);
+	pr3 = narrow > 0.5 ? 2.5 : 7;
+	hnew = 0;
+	hhold = 0;
+	for (h = 404; h >= 1; h -= 1) {
+		cenh = hp.peek(h, 0);
+		inb = (gs > 0 && flo < fhi && cenh >= flo && cenh <= fhi) ? 1 : 0;
+		okn = (inb > 0.5 && hp.peek(h, 4) > 0.5) ? 1 : 0;
+		hnew = okn > 0.5 ? h : hnew;
+		okh = (inb > 0.5 && h == hrk && hp.peek(h, 1) >= pr3 && cenh > 0) ? 1 : 0;
+		hhold = okh > 0.5 ? h : hhold;
+	}
+	hr = hhold > 0 ? (hnew > 0 ? min(hnew, hhold) : hhold) : hnew;
+	hst.poke(hr, 21);
+	hst.poke(hr > 0 ? hr * gu : 0, 20);
 	nact = 0;
 	for (h = 1; h <= 404; h += 1) {
 		cen = hp.peek(h, 0);
 		prom = hp.peek(h, 1);
-		tw = (gs > 0 && h <= hmx && cen > 0) ? hs_sm((prom - pmin) / 6) * v : 0;
+		hpn = h - hr + 1;
+		tw = (gs > 0 && hr > 0 && h >= hr && hpn <= hmx && cen > 0) ? hs_sm((prom - pme) / wd) * v : 0;
 		prev = hp.peek(h, 2);
 		cur = prev + (tw - prev) * (tw > prev ? 0.7 : 0.4);
-		isA = pat < 1.5 ? (h < 1.5 ? 1 : 0) : (((h - 1) - pat * floor((h - 1) / pat)) < 0.5 ? 1 : 0);
+		isA = pat < 1.5 ? (hpn < 1.5 ? 1 : 0) : (((hpn - 1) - pat * floor((hpn - 1) / pat)) < 0.5 ? 1 : 0);
 		hp.poke(cur, h, 2);
 		hp.poke(isA > 0.5 ? cur : 0, h, 3);
 		nact += cur > 0.5 ? 1 : 0;
 	}
-	sp = max(gu / df, 0.001);
-	w1c = max(0.35 * sp, 0.6);
+	spe = max(gu * (hodd > 0.5 ? 2 : 1) / df, 0.001);
+	frl = 0.35 + 0.15 * clip((5 - spe) / 2.2, 0, 1);
+	w1c = max(frl * spe, 0.6);
 	w1 = min(0.7 + 1.3 * sens + 0.7 + 0.5 * sens, w1c);
 	w0 = min(0.7 + 1.3 * sens, w1 - 0.3);
 	for (k = 0; k <= half; k += 1) {
-		hh = gu > 0 ? clip(floor(k / sp + 0.5), 0, 404) : 0;
-		m = 0;
-		wa = 0;
-		wb = 0;
-		cb = 0;
-		if (hh >= 1) {
-			cb = hp.peek(hh, 0) / df;
-			wa = hp.peek(hh, 3);
-			wb = hp.peek(hh, 2) - wa;
+		hsd.poke(0, k, 1);
+		hsd.poke(0, k, 2);
+	}
+	for (h = 1; h <= 404; h += 1) {
+		cur2 = hp.peek(h, 2);
+		cb = hp.peek(h, 0) / df;
+		paint = (cur2 > 0 && cb > 0 && gu > 0) ? 1 : 0;
+		wa = hp.peek(h, 3);
+		wb = cur2 - wa;
+		kl = paint > 0.5 ? max(floor(cb - w1), 0) : 1;
+		kh = paint > 0.5 ? min(0 - floor(0 - cb - w1), half) : 0;
+		for (k = kl; k <= kh; k += 1) {
+			dist = abs(k - cb);
+			m = dist <= w0 ? 1 : (dist >= w1 ? 0 : 0.5 * (1 + cos(3.141592653589793 * (dist - w0) / (w1 - w0))));
+			hsd.poke(max(hsd.peek(k, 1), m * wa), k, 1);
+			hsd.poke(max(hsd.peek(k, 2), m * wb), k, 2);
 		}
-		d = abs(k - cb);
-		m = hh >= 1 ? (d <= w0 ? 1 : (d >= w1 ? 0 : 0.5 * (1 + cos(3.141592653589793 * (d - w0) / (w1 - w0))))) : 0;
-		ma = m * wa;
-		mb = m * wb;
+	}
+	for (k = 0; k <= half; k += 1) {
+		ma = hsd.peek(k, 1);
+		mb = min(hsd.peek(k, 2), 1 - ma);
 		hsd.poke(1 - ma - mb, k, 0);
-		hsd.poke(ma, k, 1);
 		hsd.poke(mb, k, 2);
 		hsd.poke(1, k, 3);
 	}
@@ -370,10 +589,10 @@ Data accL(4096);
 Data accR(4096);
 Data stt(8);
 Data ms(2049, 2);
-Data hsd(2049, 8);
-Data hp(406, 4);
+Data hsd(2049, 10);
+Data hp(406, 5);
 Data hst(32);
-Data sal(646);
+Data sal(710, 5);
 Data cols(512);
 Delay padL(4096);
 Delay padR(4096);
@@ -473,10 +692,10 @@ if (rdy > 0.5 && awake > 0.5) {
 	}
 	hs_prep(ms, hsd, hst, n, sr, loH, hiH, tlH);
 	hs_sal(hsd, sal, hst, n, sr, loH, hiH);
-	hs_decide(hst, thH, 0.38, 3 * n / sr);
+	hs_decide(hst, thH, 0.36, 3 * n / sr);
 	hs_harm(hsd, hp, hst, n, sr);
 	hs_post(hst);
-	hs_masks(hsd, hp, hst, n, sr, snH, patH, mxH);
+	hs_masks(hsd, hp, hst, n, sr, snH, patH, mxH, loH, hiH);
 	age = min(age + 1, 3);
 	if (selH > 2.5) {
 		ss_apply(fx, hsd, 2, n);
@@ -493,7 +712,10 @@ if (rdy > 0.5 && awake > 0.5) {
 		ss_cols(ms, 0, hsd, 1, cols, 2, n, sr, 128, 30, 20000);
 		ss_cols(ms, 0, hsd, 2, cols, 3, n, sr, 128, 30, 20000);
 		ss_tele(cols, scope, 128, 4, 0);
-		tf0 = hst.peek(0);
+		tf0 = hst.peek(20);
+		tfs = hst.peek(0);
+		thr0 = hst.peek(21);
+		tod = hst.peek(23);
 		tsal = hst.peek(11);
 		tv = hst.peek(4);
 		tlv = hst.peek(9);
@@ -505,6 +727,9 @@ if (rdy > 0.5 && awake > 0.5) {
 		poke(scope, tlv, 520, 0);
 		poke(scope, tnact, 523, 0);
 		poke(scope, tte, 524, 0);
+		poke(scope, tfs, 525, 0);
+		poke(scope, thr0, 526, 0);
+		poke(scope, tod, 527, 0);
 	}
 	fft_run(fx, tab, n, 1);
 	ss_ola(accL, accR, stt, fx, win, n);
@@ -532,6 +757,9 @@ if (awake < 0.5 && sleepNote < 0.5) {
 	poke(scope, 0, 519, 0);
 	poke(scope, 0, 523, 0);
 	poke(scope, -120, 524, 0);
+	poke(scope, 0, 525, 0);
+	poke(scope, 0, 526, 0);
+	poke(scope, 0, 527, 0);
 	sleepNote = 1;
 }
 if (awake > 0.5) {

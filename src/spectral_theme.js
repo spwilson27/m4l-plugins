@@ -1,0 +1,222 @@
+// spectral_theme.js — shared Ableton-native look for the Spectral Split v8ui faces (Harmonic Split, Transient Split,
+// Loud Split, Freq Split). The build concatenates it between spectral_link.js and the device's own *_ui.js (global script
+// scope, no module export, so every function is visible to the face). Prefix: spt / SPT_.
+//
+// Why: Live's own devices (Reverb, EQ Eight, ...) share one flat look driven by the user's Live theme. Every colour here is read
+// from the theme with max.getcolor(name) on each paint, so the face follows Live's theme and hue; the static fallback
+// (SPT_FALLBACK) is Live 12's default dark theme measured in Live 12.4.6 (so node tests, scripts/render_preview.py and a Live
+// without the colour all look the same). Never hard-code RGB in a face; ask sptColor("live_...").
+//
+// ---- API -------------------------------------------------------------------------------------------------------------------
+// Colours (all return [r, g, b, a] in 0..1; `name` is a Live theme colour name):
+//   sptColor(name, fallback?)          theme colour, falls back to SPT_FALLBACK[name] then `fallback`
+//   sptRgba(c, a?)                     mgraphics.set_source_rgba(c, alpha); `a` multiplies c[3]
+//   sptMix(a, b, t)                    linear blend of two colours (a at t = 0)
+//   sptMuted(c, amount)                channel colour toned down towards the LCD background (amount 0 = background, 1 = c);
+//                                      use ~0.75 for thin lines and 0.15..0.25 alpha fills (never big saturated fills)
+// Theme change handling:
+//   sptThemeWatch(onChange?)           Task (1 s): redraws the face when the theme colours change, then calls onChange
+//                                      (use it with sptApplyPanelTheme). Returns the Task. Call once at load.
+//   sptApplyPanelTheme(list, patcher)  list = [[scripting name of a panel, theme colour name], ...]: sets bgfillcolor / bgcolor /
+//                                      bordercolor of those patcher panels from the theme (attribute bindings on a panel do not
+//                                      repaint in Live, Delay+ does the same). patcher defaults to this.patcher.
+// Drawing helpers (UI px, mgraphics pixel coordinates; they set their own colours):
+//   sptLcd(x, y, w, h, grid?)          near-black LCD rectangle (live_lcd_bg), 1 px live_lcd_frame outline. grid =
+//                                      {xs: [x, ...], ys: [y, ...]} in absolute px: faint 1 px lines (live_lcd_frame colour).
+//   sptCurve(pts, col, a?)             1 px polyline through [[x, y], ...] (no fill, no glow); col is a colour array
+//   sptHandle(x, y, col, label?, r?)   small hollow circle handle (default r 4.5, LCD-filled, 1 px ring); an optional label
+//                                      (a number or a letter) is drawn centred inside, like Reverb's numbered handles
+//   sptText(str, x, y, col, size?, align?)  text at baseline y; align 0 left / 1 centre / 2 right; size default SPT_SIZE
+//   sptTextW(str, size?)               text width in px
+//   sptTitle(str, x, y)                section title text (live_lcd_title colour, SPT_SIZE)
+//   sptLabelValue(label, value, x, y, align?, active?)   "Low  80.0 Hz": label in live_lcd_title, value in the LCD value colour
+//                                      (live_lcd_control_fg_alt); align 0 starts at x, 2 ends at x; active = brighter (dragging)
+//   sptButton(x, y, w, h, text, on)    a live.text-looking toggle drawn in the canvas: orange fill (live_control_selection) with
+//                                      dark text when on, 1 px orange outline and orange text when off (Reverb's Lo Cut / Hi Cut)
+//   sptLegendSwatch(x, y, col)         6 x 2 px swatch for a legend entry
+// Constants: SPT_FONT ("Ableton Sans Medium", falls back by itself), SPT_SIZE 9.5 (values / titles), SPT_SIZE_SMALL 8.5 (axis
+// labels, legend). No bold, no ALL-CAPS badges.
+//
+// Theme names used by the Spectral Split faces (see the style guide): live_desktop (device body), live_surface_bg (section
+// panels), live_lcd_bg / live_lcd_frame (display + its grid), live_lcd_title (labels), live_lcd_control_fg_alt (values),
+// live_control_fg / live_control_bg (controls), live_control_selection + live_display_handle_one (active / handles, the one orange
+// accent), live_display_line_one / two (orange / cyan curves), live_display_scale_text (axis labels).
+
+var SPT_FONT = "Ableton Sans Medium";
+var SPT_SIZE = 9.5;
+var SPT_SIZE_SMALL = 8.5;
+
+// Live 12.4.6 default dark theme, measured with max.getcolor in Live.
+var SPT_FALLBACK = {
+    live_desktop: [0.165, 0.165, 0.165, 1],
+    live_surface_bg: [0.212, 0.212, 0.212, 1],
+    live_surface_frame: [0.141, 0.141, 0.141, 1],
+    live_lcd_bg: [0.094, 0.094, 0.094, 1],
+    live_lcd_frame: [0.243, 0.243, 0.243, 1],
+    live_lcd_title: [0.71, 0.71, 0.71, 1],
+    live_lcd_control_fg: [1, 0.678, 0.337, 1],
+    live_lcd_control_fg_alt: [0.012, 0.765, 0.835, 1],
+    live_display_line_one: [1, 0.678, 0.337, 1],
+    live_display_line_two: [0.012, 0.765, 0.835, 1],
+    live_display_handle_one: [1, 0.678, 0.337, 1],
+    live_display_handle_two: [1, 0.412, 0.498, 1],
+    live_display_scale_text: [0.525, 0.525, 0.525, 1],
+    live_control_bg: [0.118, 0.118, 0.118, 1],
+    live_control_fg: [0.71, 0.71, 0.71, 1],
+    live_control_selection: [1, 0.678, 0.337, 1],
+    live_control_zombie: [0.459, 0.459, 0.459, 1],
+    live_alert: [0.906, 0.412, 0.259, 1]
+};
+
+function sptColor(name, fallback) {
+    try {
+        if (typeof max !== "undefined" && max.getcolor) {
+            var c = max.getcolor(name);
+            if (c && c.length >= 3 && !(c.length > 3 && c[3] === 0 && c[0] === 0 && c[1] === 0 && c[2] === 0)) {
+                return [c[0], c[1], c[2], c.length > 3 ? c[3] : 1];
+            }
+        }
+    } catch (e) {}
+    var f = SPT_FALLBACK[name] || fallback || [0.5, 0.5, 0.5, 1];
+    return [f[0], f[1], f[2], f.length > 3 ? f[3] : 1];
+}
+
+function sptRgba(c, a) {
+    mgraphics.set_source_rgba(c[0], c[1], c[2], (c.length > 3 ? c[3] : 1) * (a === undefined ? 1 : a));
+}
+
+function sptMix(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, 1];
+}
+
+function sptMuted(c, amount) {
+    return sptMix(sptColor("live_lcd_bg"), c, amount);
+}
+
+var sptThemeKey = "";
+function sptThemeWatch(onChange) {
+    if (typeof Task === "undefined" || typeof mgraphics === "undefined") return null;
+    var t = new Task(function () {
+        var k = "";
+        var names = ["live_lcd_bg", "live_display_line_one", "live_display_line_two", "live_surface_bg", "live_desktop", "live_control_selection"];
+        for (var i = 0; i < names.length; i++) k += String(sptColor(names[i]));
+        if (k !== sptThemeKey) {
+            sptThemeKey = k;
+            mgraphics.redraw();
+            if (typeof onChange === "function") onChange();
+        }
+    });
+    t.interval = 1000;
+    t.repeat();
+    return t;
+}
+
+function sptApplyPanelTheme(list, patcher) {
+    var p = patcher || ((typeof this !== "undefined" && this && this.patcher) ? this.patcher : null);
+    if (!p) return;
+    for (var i = 0; i < list.length; i++) {
+        try {
+            var o = p.getnamed(list[i][0]);
+            if (!o) continue;
+            var c = sptColor(list[i][1]);
+            o.setattr("bgfillcolor", c[0], c[1], c[2], c[3]);
+            o.setattr("bgcolor", c[0], c[1], c[2], c[3]);
+            o.setattr("bordercolor", c[0], c[1], c[2], c[3]);
+        } catch (err) {}
+    }
+}
+
+function sptFont(size) {
+    mgraphics.select_font_face(SPT_FONT);
+    mgraphics.set_font_size(size === undefined ? SPT_SIZE : size);
+}
+
+function sptTextW(str, size) {
+    sptFont(size);
+    return mgraphics.text_measure(str)[0];
+}
+
+function sptText(str, x, y, col, size, align) {
+    sptFont(size);
+    var xx = x;
+    if (align === 1 || align === 2) {
+        var w = mgraphics.text_measure(str)[0];
+        xx = align === 1 ? x - w * 0.5 : x - w;
+    }
+    sptRgba(col);
+    mgraphics.move_to(xx, y);
+    mgraphics.show_text(str);
+}
+
+function sptTitle(str, x, y) {
+    sptText(str, x, y, sptColor("live_lcd_title"), SPT_SIZE, 0);
+}
+
+function sptLabelValue(label, value, x, y, align, active) {
+    var wl = sptTextW(label, SPT_SIZE);
+    var wv = sptTextW(value, SPT_SIZE);
+    var x0 = align === 2 ? x - (wl + 6 + wv) : x;
+    sptText(label, x0, y, sptColor("live_lcd_title"), SPT_SIZE, 0);
+    var vc = sptColor("live_lcd_control_fg_alt");
+    sptText(value, x0 + wl + 6, y, active ? sptMix(vc, [1, 1, 1, 1], 0.35) : vc, SPT_SIZE, 0);
+}
+
+function sptLcd(x, y, w, h, grid) {
+    sptRgba(sptColor("live_lcd_bg"));
+    mgraphics.rectangle(x, y, w, h);
+    mgraphics.fill();
+    if (grid) {
+        var gc = sptColor("live_lcd_frame");
+        sptRgba(gc);
+        var i;
+        if (grid.xs) for (i = 0; i < grid.xs.length; i++) { mgraphics.rectangle(Math.round(grid.xs[i]) - 0.5, y, 1, h); mgraphics.fill(); }
+        if (grid.ys) for (i = 0; i < grid.ys.length; i++) { mgraphics.rectangle(x, Math.round(grid.ys[i]) - 0.5, w, 1); mgraphics.fill(); }
+    }
+    sptRgba(sptColor("live_lcd_frame"));
+    mgraphics.set_line_width(1);
+    mgraphics.rectangle(x + 0.5, y + 0.5, w - 1, h - 1);
+    mgraphics.stroke();
+}
+
+function sptCurve(pts, col, a) {
+    if (!pts || pts.length < 2) return;
+    sptRgba(col, a);
+    mgraphics.set_line_width(1);
+    mgraphics.move_to(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) mgraphics.line_to(pts[i][0], pts[i][1]);
+    mgraphics.stroke();
+}
+
+function sptHandle(x, y, col, label, r) {
+    var rr = r === undefined ? 4.5 : r;
+    sptRgba(sptColor("live_lcd_bg"));
+    mgraphics.arc(x, y, rr, 0, Math.PI * 2);
+    mgraphics.fill();
+    sptRgba(col);
+    mgraphics.set_line_width(1);
+    mgraphics.arc(x, y, rr, 0, Math.PI * 2);
+    mgraphics.stroke();
+    if (label !== undefined && label !== null && label !== "") sptText(String(label), x, y + 2.6, col, 7, 1);
+}
+
+function sptButton(x, y, w, h, text, on) {
+    var sel = sptColor("live_control_selection");
+    if (on) {
+        sptRgba(sel);
+        mgraphics.rectangle(x, y, w, h);
+        mgraphics.fill();
+        sptText(text, x + w * 0.5, y + h - 3, sptColor("live_lcd_bg"), SPT_SIZE_SMALL, 1);
+    } else {
+        sptRgba(sel);
+        mgraphics.set_line_width(1);
+        mgraphics.rectangle(x + 0.5, y + 0.5, w - 1, h - 1);
+        mgraphics.stroke();
+        sptText(text, x + w * 0.5, y + h - 3, sel, SPT_SIZE_SMALL, 1);
+    }
+}
+
+function sptLegendSwatch(x, y, col) {
+    sptRgba(col);
+    mgraphics.rectangle(x, y, 6, 2);
+    mgraphics.fill();
+}

@@ -79,7 +79,7 @@ def device_patch(case, gen_code):
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-voices", "buffer~ #0-bsvoices @samps 128", 540, 100, 220,
                numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("obj-scope", "buffer~ #0-bsscope @samps 64", 540, 130, 210,
+        mh.box("obj-scope", "buffer~ #0-bsscope @samps 128", 540, 130, 210,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-pitchbuf", "buffer~ #0-bspitch @samps 4096", 540, 160, 220,
                numoutlets=2, outlettype=["float", "bang"]),
@@ -111,6 +111,8 @@ def run_case(gen_code, case):
         events.append((SETTLE_MS + case["rebound_ms"], "obj-js", 3, "rebound"))
     if "release_ms" in case:
         events.append((SETTLE_MS + case["release_ms"], "obj-js", 3, "release"))
+    for gev_ms, gev_msg in case.get("gen_events", []):
+        events.append((SETTLE_MS + gev_ms, "obj-gen", 0, gev_msg))
     opts = case.get("opts", "")
     for sn in case.get("snaps", []):
         events.append((SETTLE_MS + sn, "obj-js", 3, f"snap t{sn}"))
@@ -707,6 +709,129 @@ for _eng in (0, 2, 3, 4):
 ct_add("rev100", 57, 0, 1.0, rev=1, eng=0, fsr=True)
 ct_add("pingpong100", 57, 0, 1.0, loop=(0.3, 0.6), pingpong=True, eng=0, fsr=True)
 
+# ---------------------------------------------------------------------------------------------
+# Cycles on real-world material at Speed 100 % (the real-time scan): no crunch at the cycle joins
+# ---------------------------------------------------------------------------------------------
+# Long (8 s) sample whose sound sits at 4.8 s .. 7.2 s; the scan starts at Start 0.6 (4.8 s) and runs at Speed 100 %, root_dyn
+# off, the source 35 ct above the root the device is told about (220 Hz). Sources (probe src=real48): pad (5 detuned saws + a
+# noise bed), vowel (formants, jitter, voiced / unvoiced segments) and a sine with vibrato, all band-limited to about 4.2 kHz,
+# so power above 5 kHz can only be an artefact of the engine. The metrics (probe crunch=) compare the output with the
+# source stretch the scan reads: HF power above 5 kHz (dB), spectral flatness of that residual, the 99.9th percentile of the
+# sample-to-sample step over its rms, and the second-difference energy per phase bin of the output period (joins).
+CR_CASES = []   # (name, kind)
+
+
+def cr_add(kind, char=0, xf=0, off=0.35, note=57, extra="", tag=""):
+    name = f"cr_{kind}_c{char}_x{xf}{tag}"
+    hz = 220.0 * 2.0 ** ((note - 57) / 12.0)
+    params = P(f"mode 1, cy_char {char}, cy_xfade {xf}, root_dyn 0, root_note 57, grain_motion 1.0, samp_start 0.6, samp_end 1.0" + extra)
+    add(name, params, 1500, opts=f"src=real48 kind={kind} len=8 gstart=4.8 glen=2.4 off={off} notes={note} crunch=120-1400 cf0={hz:.4f} hfc={5000.0 * 2.0 ** ((note - 57) / 12.0):.0f} hfcr=5000 clk=120-1400 harm={hz:.4f} cen={hz:.4f} segs=120-1400 ")
+    CR_CASES.append((name, kind))
+
+
+for _k in ("pad", "vowel", "vib"):
+    cr_add(_k)
+for _k in ("pad", "vowel"):
+    cr_add(_k, xf=1)
+cr_add("pad", char=1)
+cr_add("pad", char=2)
+cr_add("pad", note=64, tag="_n64")
+cr_add("pad", off=0.0, tag="_on")
+
+# ---------------------------------------------------------------------------------------------
+# Spectral Pure: Formant (formant) and Shift % (sp_shift) move the spectral envelope, not the pitch
+# ---------------------------------------------------------------------------------------------
+# Steady vowel (probe kind=vowelst: harmonics shaped by formants at 700 / 1220 / 2600 Hz), played at its own pitch so the pitch
+# ratio is 1 (the fundamental must stay put) with the phase vocoder frozen mid-sample. The harmonics' power-weighted centroid
+# (segHCen) and the frequency of the strongest harmonic (segHPk) follow the formants: Formant +12 st must double them,
+# -12 st halve them, Shift % scales the shift (50 % -> +6 st), Formant processing off must ignore Formant.
+SPF_CASES = []
+
+
+def spf_add(tag, extra, f0=220.0, note=57, dur=900):
+    off = 12.0 * math.log2(f0 / 220.0)
+    name = f"spf_{tag}"
+    add(name, P(f"mode 3, freeze 1, play_pos 0.5, root_note {note}, " + extra), dur,
+        opts=f"src=real48 kind=vowelst len=2 gstart=0 glen=2 off={off:.5f} notes={note} segs=400-880 harm={f0:.4f} hs={f0:.4f} ana=400 ")
+    SPF_CASES.append(name)
+
+
+spf_add("base", "formant 0")
+spf_add("up", "formant 12")
+spf_add("dn", "formant -12")
+spf_add("half", "formant 12, sp_shift 0.5")
+spf_add("zero", "formant 12, sp_shift 0.01")
+spf_add("full122", "formant 12, sp_shift 1.22")
+spf_add("off", "formant 12, sp_formant_on 0")
+spf_add("hi_base", "formant 0", f0=329.63, note=64)
+spf_add("hi_up", "formant 12", f0=329.63, note=64)
+# the pitch moves a fifth up (ratio 1.5) with the formants staying where they are, and with Formant +12 they move up
+spf_add("p7", "formant 0", f0=329.63, note=64)
+SPF_CASES.pop()
+add("spf_p7", P("mode 3, freeze 1, play_pos 0.5, root_note 57, formant 0"), 900,
+    opts="src=real48 kind=vowelst len=2 gstart=0 glen=2 off=0 notes=64 segs=400-880 harm=329.63 hs=329.63 ana=400 ")
+add("spf_p7_up", P("mode 3, freeze 1, play_pos 0.5, root_note 57, formant 12"), 900,
+    opts="src=real48 kind=vowelst len=2 gstart=0 glen=2 off=0 notes=64 segs=400-880 harm=329.63 hs=329.63 ana=400 ")
+SPF_CASES += ["spf_p7", "spf_p7_up"]
+
+# ---------------------------------------------------------------------------------------------
+# Repitch Freeze: the read head glides to Pos like tape and loops seamlessly where it rests
+# ---------------------------------------------------------------------------------------------
+# Source: the steady 220 Hz tone (sus48), played at its root. Frozen, the head holds a short loop (a whole number of root cycles
+# of about 75 ms, crossfaded), so a static Pos is a stable periodic 220 Hz tone. Pos moves in 5 ms steps (events through
+# the stepped harness): the head follows with a short slew, so its speed adds to the playback speed (a tape-like Doppler bend:
+# a head moving at v frames per sample plays at 1 + v times the pitch) with no jumps and no noise.
+RPF_CASES = []
+RPF = "mode 0, freeze 1, loop_mode 0, root_note 57"
+
+
+def rpf_add(name, p0, dp, n=60, t0=100, step=5, extra="", dur=600, segs="260-400", f_hz=220.0, clk="120-420", gen_events=None):
+    ev = [(t0 + step * k, f"play_pos {p0 + dp * (k + 1):.5f}") for k in range(n)] if gen_events is None else gen_events
+    add(name, P(RPF + f", play_pos {p0}" + extra), dur, gen_events=ev,
+        opts=f"src=sus48 notes=57 segs={segs} harm={f_hz:.3f} cen={f_hz:.3f} clk={clk} ana=150 ")
+    RPF_CASES.append(name)
+
+
+add("rpf_static", P(RPF + ", play_pos 0.5"), 700, opts="src=sus48 notes=57 segs=150-650 harm=220 cen=220 clk=150-650 ana=150 ")
+RPF_CASES.append("rpf_static")
+add("rpf_static_lo", P(RPF + ", play_pos 0.08"), 700, opts="src=sus48 notes=57 segs=150-650 harm=220 cen=220 clk=150-650 ana=150 ")
+RPF_CASES.append("rpf_static_lo")
+add("rpf_static_hi", P(RPF + ", play_pos 0.97"), 700, opts="src=sus48 notes=57 segs=150-650 harm=220 cen=220 clk=150-650 ana=150 ")
+RPF_CASES.append("rpf_static_hi")
+add("rpf_static_up", P(RPF + ", play_pos 0.5"), 700, opts="src=sus48 notes=69 segs=150-650 harm=440 cen=440 clk=150-650 ana=150 ")
+RPF_CASES.append("rpf_static_up")
+# head speed v frames per sample: Pos steps of v * 240 frames / 12000 every 5 ms
+rpf_add("rpf_fwd10", 0.30, 0.002, f_hz=242.0)       # v = +0.10 -> 242 Hz
+rpf_add("rpf_fwd25", 0.25, 0.005, f_hz=275.0)       # v = +0.25 -> 275 Hz
+rpf_add("rpf_back10", 0.60, -0.002, f_hz=198.0)     # v = -0.10 -> 198 Hz
+add("rpf_step", P(RPF + ", play_pos 0.2"), 800, gen_events=[(150, "play_pos 0.7")],
+    opts="src=sus48 notes=57 segs=162-200,450-750 harm=220 cen=220 clk=100-780 ana=150 ")
+RPF_CASES.append("rpf_step")
+
+# ---------------------------------------------------------------------------------------------
+# Grain telemetry for the face's grain lines: #0-bsscope 64..95 = read position (0..1, -1 unused), 96..127 = level
+# ---------------------------------------------------------------------------------------------
+TEL_CASES = []
+TEL_SNAPS = list(range(100, 560, 20))
+
+
+def tel_add(name, params, dur=600, opts=S48, **kw):
+    add(name, params, dur, snaps=TEL_SNAPS, opts=opts + "gt=1 ", **kw)
+    TEL_CASES.append(name)
+
+
+tel_add("tel_idle", P("mode 2, freeze 1, play_pos 0.5, grain_size 55, grain_spray 0.35"), 300, no_trigger=True)
+tel_add("tel_cy", P("mode 1, grain_motion 1.0"), 500)
+tel_add("tel_rp", P("mode 0, loop_mode 1, loop_start 0.05, loop_end 0.95"), 500)
+tel_add("tel_tx", P("mode 2, freeze 1, play_pos 0.5, grain_size 55, grain_spray 0.35"), 600)
+tel_add("tel_tx_scan", P("mode 2, grain_size 40, grain_spray 0.2, grain_motion 1.0"), 600)
+tel_add("tel_tx_poly", P("mode 2, freeze 1, play_pos 0.5, grain_size 55, grain_spray 0.35, unison_voices 4, unison_detune 0.3"), 600,
+        opts="src=sus48 notes=57,60,64,67 ")
+tel_add("tel_tx_rel", P("mode 2, freeze 1, play_pos 0.5, grain_size 40, grain_spray 0.2, rel_ms 10"), 600, release_ms=150)
+tel_add("tel_fr", P("mode 4, freeze 1, play_pos 0.5, grain_size 40, fr_density 8, fr_repeats 1, fr_motion 0, fr_env 0.5, fr_use_density 1"), 600)
+tel_add("tel_fr_many", P("mode 4, freeze 1, play_pos 0.5, grain_size 200, fr_density 40, fr_repeats 1, fr_max_grains 256, fr_use_density 1"), 700,
+        opts="src=sus48 notes=57,60,64,67 ")
+
 
 def run_with_retry(gen_code, case):
     """One render per case. The harness serialises Max machine-wide, and a missing or invalid result is a
@@ -780,6 +905,38 @@ def main():
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
             raise SystemExit(1)
         print("Cycles + Analyzed Root Key checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_CRUNCH_ONLY"):
+        # SAMPLER_CASE='^cr_' SAMPLER_CRUNCH_ONLY=1: just the Cycles real-material crunch cases and their checks
+        run_crunch_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Cycles crunch checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_RPF_ONLY"):
+        # SAMPLER_CASE='^rpf_' SAMPLER_RPF_ONLY=1: just the Repitch Freeze cases and their checks
+        run_rpf_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Repitch Freeze checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_TEL_ONLY"):
+        # SAMPLER_CASE='^tel_' SAMPLER_TEL_ONLY=1: just the grain telemetry cases and their checks
+        run_tel_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Grain telemetry checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_SPF_ONLY"):
+        # SAMPLER_CASE='^spf_' SAMPLER_SPF_ONLY=1: just the Spectral Formant / Shift % cases and their checks
+        run_spf_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Spectral formant checks passed.")
         return
     if only and os.environ.get("SAMPLER_CYCTIME_ONLY"):
         # SAMPLER_CASE='^ct' SAMPLER_CYCTIME_ONLY=1: just the Cycles timing cases and their checks
@@ -893,6 +1050,10 @@ def run_checks(results):
     run_seq_checks(results)
     run_rootdyn_checks(results)
     run_cycdyn_checks(results)
+    run_crunch_checks(results)
+    run_spf_checks(results)
+    run_rpf_checks(results)
+    run_tel_checks(results)
 
 
 def run_rootdyn_checks(R):
@@ -1023,6 +1184,143 @@ def run_cycdyn_checks(R):
         check(abs(a["chk"] - b["chk"]) <= 1e-6 * max(abs(a["chk"]), 1.0) and abs(a["rms"] - b["rms"]) <= 1e-6,
               f"{name}: a constant source pitch equal to root_note must match root_dyn off (chk {a['chk']:.6g} vs {b['chk']:.6g})")
         check(abs(cents(a["segHz1"], RD_NOTE_HZ)) <= 12, f"{name}: fundamental {a['segHz1']:.2f} Hz")
+
+
+def run_crunch_checks(R):
+    """Cycles at Speed 100 % on pad / vowel / vibrato material: no HF crunch at the joins (see the block above the cr_ cases)."""
+    for name, kind in CR_CASES:
+        if name not in R:
+            continue
+        r = R[name]
+        print(f"  {name}: rms={r['rms']:.3f} hfDb={r['crHfDb']:.1f} (ref {r['crRefHfDb']:.1f}) flat={r['crHfFlat']:.3f} (ref {r['crRefHfFlat']:.3f}) "
+              f"bin={r['crBin']:.2f} harm={r['segHarm0']:.3f} jmp999={r['crJmp999']:.2f} (ref {r['crRefJmp999']:.2f}) jmpMax={r['crJmpMax']:.2f} (ref {r['crRefJmpMax']:.2f}) f={r['specPeakHz']:.1f}")
+
+
+def spf_vowel_env(f0):
+    """The harmonic amplitude of the probe's steady vowel (kind=vowelst) at harmonic index x of f0."""
+    def env(f):
+        return (1.0 / math.sqrt(1 + ((f - 700) / 110.0) ** 2) + 0.6 / math.sqrt(1 + ((f - 1220) / 140.0) ** 2)
+                + 0.3 / math.sqrt(1 + ((f - 2600) / 200.0) ** 2))
+    return lambda x: env(x * f0) / (1 + 0.15 * x)
+
+
+def spf_fit(r, f0, nh=12):
+    """Formant frequency ratio of a measured harmonic profile: the scale s of the vowel's envelope F(n / s) that best matches
+    the first nh harmonics (cosine similarity), 1.0 = the vowel as it is, 2.0 = formants an octave up."""
+    fn = spf_vowel_env(f0)
+    amps = [r[f"segA0_{n}"] for n in range(1, nh + 1)]
+    best = (-1.0, 1.0)
+    for i in range(30, 301):
+        sc = i / 100.0
+        e = [fn(n / sc) for n in range(1, nh + 1)]
+        num = sum(a * b for a, b in zip(amps, e))
+        den = math.sqrt(sum(a * a for a in amps) * sum(b * b for b in e)) + 1e-30
+        if num / den > best[0]:
+            best = (num / den, sc)
+    return best[1]
+
+
+def run_spf_checks(R):
+    """Spectral Pure Formant / Shift %: see the block above the spf_ cases. spf_fit reads the formant ratio off the harmonic
+    amplitudes (the vowel's formants at 700 / 1220 / 2600 Hz scaled by s), which is where the peaks of the envelope sit."""
+    if not all(n in R for n in SPF_CASES):
+        return
+    f0s = {n: (329.63 if ("hi_" in n or "p7" in n) else 220.0) for n in SPF_CASES}
+    fit = {n: spf_fit(R[n], f0s[n]) for n in SPF_CASES}
+    for n in SPF_CASES:
+        r = R[n]
+        print(f"  {n}: formant ratio {fit[n]:.2f} (cen={r['segHCen0']:.0f} pk={r['segHPk0']:.0f} harm={r['segHarm0']:.3f} rms={r['segRms0']:.3f})")
+    for n in SPF_CASES:
+        check(R[n]["segRms0"] > 0.02, f"{n}: must sound (rms {R[n]['segRms0']:.4f})")
+        # the fundamental stays: the strongest partial is a multiple of f0 and most of the power sits on that lattice
+        hz = R[n]["segHz0"]
+        k = max(round(hz / f0s[n]), 1)
+        check(abs(hz - k * f0s[n]) < 0.03 * k * f0s[n] and R[n]["segHarm0"] > 0.5,
+              f"{n}: the pitch must stay at {f0s[n]:.0f} Hz (strongest partial {hz:.1f} Hz, lattice fraction {R[n]['segHarm0']:.3f})")
+    want = (("spf_base", 0.9, 1.1), ("spf_up", 1.75, 2.2), ("spf_dn", 0.42, 0.6), ("spf_half", 1.25, 1.55), ("spf_zero", 0.9, 1.1),
+            ("spf_full122", 2.05, 2.6), ("spf_off", 0.9, 1.1), ("spf_hi_base", 0.9, 1.1), ("spf_hi_up", 1.75, 2.2),
+            ("spf_p7", 0.9, 1.15), ("spf_p7_up", 1.7, 2.2))
+    notes = {"spf_up": "Formant +12 st must double the formant frequencies", "spf_dn": "Formant -12 st must halve them",
+             "spf_half": "Shift 50 % must apply half of +12 st (+6 st = 1.41)", "spf_zero": "Shift about 0 % must leave the formants alone",
+             "spf_full122": "Shift 122 % must overshoot (+14.6 st = 2.33)", "spf_off": "Formant processing off must ignore Formant",
+             "spf_hi_up": "Formant +12 st must also move the formants of a 330 Hz voice",
+             "spf_p7": "Playing a fifth up must keep the formants where the vowel has them",
+             "spf_p7_up": "Formant +12 st on a transposed note must move them an octave", "spf_base": "The unshifted vowel must read 1.0",
+             "spf_hi_base": "The unshifted 330 Hz vowel must read 1.0"}
+    for n, lo, hi in want:
+        check(lo <= fit[n] <= hi, f"{notes[n]} (formant ratio {fit[n]:.2f}, want {lo}..{hi})")
+
+
+
+def run_rpf_checks(R):
+    """Repitch Freeze (see the block above the rpf_ cases)."""
+    if not all(n in R for n in RPF_CASES):
+        return
+    for n in RPF_CASES:
+        r = R[n]
+        print(f"  {n}: rms={r['rms']:.3f} seg0={r['segHz0']:.1f} Hz harm={r['segHarm0']:.3f} ripple={r['clkRipple']:.3f} "
+              f"ratio={r['clkRatio']:.2f} jump={r['clkJump']:.3f}")
+    # a static Pos: a stable, periodic tone at the played pitch (one root cycle of the source repeats exactly)
+    for n, hz in (("rpf_static", 220.0), ("rpf_static_lo", 220.0), ("rpf_static_hi", 220.0), ("rpf_static_up", 440.0)):
+        r = R[n]
+        check(r["segRms0"] > 0.1, f"{n}: the frozen loop must sound (rms {r['segRms0']:.4f})")
+        check(abs(r["segHz0"] - hz) < 0.01 * hz, f"{n}: the frozen loop must play at {hz:.0f} Hz ({r['segHz0']:.2f})")
+        check(r["segHarm0"] > 0.98, f"{n}: a static Pos must be periodic, not noise (harmonic fraction {r['segHarm0']:.4f})")
+        check(r["clkRipple"] < 0.03, f"{n}: the loop must be steady (amplitude ripple {r['clkRipple']:.3f})")
+        check(r["clkRatio"] < 1.5, f"{n}: the loop seam must not click (max step / median {r['clkRatio']:.2f})")
+    # a moving Pos: the pitch follows the head speed, without jumps or noise
+    for n, v in (("rpf_fwd10", 0.10), ("rpf_fwd25", 0.25), ("rpf_back10", -0.10)):
+        r = R[n]
+        want = 220.0 * (1.0 + v)
+        check(r["segRms0"] > 0.1, f"{n}: must sound (rms {r['segRms0']:.4f})")
+        check(abs(r["segHz0"] / 220.0 - (1.0 + v)) < 0.02, f"{n}: a head moving at {v:+.2f} frames/sample must play at {want:.0f} Hz (got {r['segHz0']:.1f})")
+        check(r["segHarm0"] > 0.95, f"{n}: sliding Pos must stay tonal, not grainy (harmonic fraction {r['segHarm0']:.4f})")
+        check(r["clkRatio"] < 1.8, f"{n}: no discontinuities while Pos moves (max step / median {r['clkRatio']:.2f})")
+        check(r["clkRipple"] < 0.08, f"{n}: no amplitude modulation while Pos moves (ripple {r['clkRipple']:.3f})")
+    # a jump of Pos: the head glides (a bend up that settles), then the loop is stable again
+    r = R["rpf_step"]
+    check(r["segHz0"] > 1.5 * 220.0, f"rpf_step: the head moving forward must bend the pitch up right after the jump ({r['segHz0']:.1f} Hz)")
+    check(abs(r["segHz1"] - 220.0) < 3.0 and r["segHarm1"] > 0.97,
+          f"rpf_step: after the glide the loop must be stable at 220 Hz ({r['segHz1']:.1f} Hz, harmonic fraction {r['segHarm1']:.3f})")
+    check(r["clkJump"] < 0.3, f"rpf_step: the glide must not jump (largest step / peak {r['clkJump']:.3f})")
+
+
+def run_tel_checks(R):
+    """Grain telemetry in #0-bsscope 64..127 (see the block above the tel_ cases)."""
+    if not all(n in R for n in TEL_CASES):
+        return
+    for n in TEL_CASES:
+        r = R[n]
+        print(f"  {n}: end N={r['gtN']:.0f} min={r['gtMin']:.3f} max={r['gtMax']:.3f} lvl={r['gtLvlMax']:.2f} | snaps "
+              f"{r.get('gtAllSnaps', 0):.0f} N {r.get('gtAllMinN', -1):.0f}..{r.get('gtAllMaxN', -1):.0f} pos {r.get('gtAllMin', -1):.3f}..{r.get('gtAllMax', -1):.3f} "
+              f"distinct {r.get('gtAllDistinct', 0):.0f}")
+    r = R["tel_idle"]
+    check(r["gtN"] == 0 and r["gtUnusedOk"] == 1, f"tel_idle: all 32 grain slots must be -1 / level 0 when idle (N={r['gtN']:.0f}, ok={r['gtUnusedOk']:.0f})")
+    for n in ("tel_cy", "tel_rp"):
+        check(R[n]["gtAllMaxN"] == 0 and R[n]["gtAllBad"] == 0, f"{n}: engines without grains must leave the slots at -1 (max N {R[n]['gtAllMaxN']:.0f})")
+    r = R["tel_tx_rel"]
+    check(r["gtN"] == 0 and r["gtUnusedOk"] == 1, f"tel_tx_rel: slots must go back to -1 after the voice has ended (N={r['gtN']:.0f})")
+    check(r["gtAllMaxN"] >= 1, "tel_tx_rel: grains must show while the note is held")
+    # Textures, frozen at Pos 0.5 with spray 35 % and 55 ms grains: the grains read around 0.5 +- (spray 0.114 + half a grain 0.11)
+    r = R["tel_tx"]
+    check(r["gtAllMinN"] >= 1 and r["gtAllMaxN"] <= 32 and r["gtAllBad"] == 0, f"tel_tx: 1..32 grains with valid slots (N {r['gtAllMinN']:.0f}..{r['gtAllMaxN']:.0f}, bad {r['gtAllBad']:.0f})")
+    check(r["gtAllDistinct"] >= 6, f"tel_tx: spray must give several distinct positions over time ({r['gtAllDistinct']:.0f})")
+    check(0.26 <= r["gtAllMin"] and r["gtAllMax"] <= 0.74, f"tel_tx: positions must stay around Pos 0.5 +- 0.23 ({r['gtAllMin']:.3f}..{r['gtAllMax']:.3f})")
+    check(0.0 < r["gtAllLvl"] <= 1.0, f"tel_tx: levels must be 0..1 ({r['gtAllLvl']:.3f})")
+    r = R["tel_tx_poly"]
+    check(r["gtAllMaxN"] == 32, f"tel_tx_poly: 4 voices x 4 unison x 2 windows fill all 32 slots ({r['gtAllMaxN']:.0f})")
+    check(r["gtAllBad"] == 0, "tel_tx_poly: unused slots must be exactly -1 / 0")
+    r = R["tel_tx_scan"]
+    check(r["gtAllDistinct"] >= 6 and r["gtAllMin"] >= 0.0 and r["gtAllMax"] <= 1.0,
+          f"tel_tx_scan: the scanning playhead must show moving grains within 0..1 (distinct {r['gtAllDistinct']:.0f}, {r['gtAllMin']:.3f}..{r['gtAllMax']:.3f})")
+    # Fragments: grains of 40 ms at density 8 from Pos 0.5, they read forward from there (up to 40 ms = 0.16 of the sample)
+    r = R["tel_fr"]
+    check(r["gtAllMaxN"] >= 3 and r["gtAllBad"] == 0, f"tel_fr: Fragments grains must show (max N {r['gtAllMaxN']:.0f}, bad {r['gtAllBad']:.0f})")
+    check(r["gtAllDistinct"] >= 6, f"tel_fr: grains of different ages read different positions ({r['gtAllDistinct']:.0f})")
+    check(0.49 <= r["gtAllMin"] and r["gtAllMax"] <= 0.70, f"tel_fr: positions must run forward from Pos 0.5 ({r['gtAllMin']:.3f}..{r['gtAllMax']:.3f})")
+    check(0.0 < r["gtAllLvl"] <= 1.0, f"tel_fr: levels must be 0..1 ({r['gtAllLvl']:.3f})")
+    r = R["tel_fr_many"]
+    check(r["gtAllMaxN"] == 32 and r["gtAllBad"] == 0, f"tel_fr_many: more than 32 grains in flight must fill, not overflow, the 32 slots ({r['gtAllMaxN']:.0f})")
 
 
 def run_cyctime_checks(R):

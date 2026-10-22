@@ -21,8 +21,7 @@ A, B and C were not picked but still build and pass).
 - **Adding a themed box:** add it to `layout_boxes` (Python) and `computeXoLayout` (JS) with its section and `only` theme, create it in
   `customize`, and give it a `varname` (the build does when missing). **Adding a theme:** extend `XO_THEMES`, `XO_FILTERS_W` /
   `XO_PLAYBACK_W`, `THEMES`, `THEME_STYLE`, `WIDTH_EXPR`, the palette (`src/xo_palette.js`) and the Theme tab's enum (appending
-  keeps saved sets valid). **Adding an option:** put its control under `obj-lbl-theme` in the Options panel (below y = 62 there is
-  room), as a new appended Live parameter.
+  keeps saved sets valid). **Adding an option:** the Options panel (150 px) is full down to y = 157 (Theme, then Searches: picker, terms field, Reset, Match folders); widen it first, then add the control and, if it must persist, a new appended Live parameter (or a field of the XOStateData blob, as the Searches terms do).
 - **Parameter / mirror pairs:** each value control is ONE parameter object (`live.numbox`, the old `live.dial` ids) shown in LCD, plus a
   non-parameter `live.dial` mirror (`<id>-mir`) shown in Focus, synced both ways without a loop (see AGENTS.md section 4).
 - **Palette:** `src/xo_palette.js` (`XO_PALETTES`, `xoSrc`); `set_theme` selects it in the map and folder-list v8uis.
@@ -66,7 +65,7 @@ Then Read `previews/xo_sample_map_c.png` and fix any truncation / overlap. In Li
 
 Full gate (integrator):
 ```bash
-for c in xo-strip xo-node xo-folder xo-stretch xo-strip-A xo-strip-B xo-strip-C xo-strip-D xo-strip-E; do npx tsc -p tsconfig.$c.json; done \
+for c in xo-strip xo-node xo-folder xo-stretch xo-search xo-strip-A xo-strip-B xo-strip-C xo-strip-D xo-strip-E; do npx tsc -p tsconfig.$c.json; done \
   && python3 scripts/build_xo_map.py --all && node tests/test_xo_map.js && XO_STRETCH_QUICK=1 node tests/test_xo_stretch.js \
   && for v in "" " A" " B" " C" " D" " E"; do python3 scripts/render_preview.py "devices/XO Sample Map$v.amxd"; done
 ```

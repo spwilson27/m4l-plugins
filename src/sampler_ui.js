@@ -440,12 +440,22 @@ function recomputeSlices() {
     mgraphics.redraw();
 }
 
+var GRAIN_SLOTS = 32;
+var grainPos = [];
+var grainAmp = [];
+for (var gi0 = 0; gi0 < GRAIN_SLOTS; gi0++) { grainPos.push(-1); grainAmp.push(0); }
+
 function pollTelemetryScope() {
     if (!scopeBufName || typeof Buffer === "undefined") return;
     try {
         var sb = new Buffer(scopeBufName);
-        var data = sb.peek(1, 0, 40);
+        var data = sb.peek(1, 0, 128);
         if (!data || data.length < 40) return;
+        // Grains (Textures / Fragments): read position 64..95 (-1 = unused), level 96..127
+        for (var g = 0; g < GRAIN_SLOTS; g++) {
+            grainPos[g] = data.length >= 128 ? data[64 + g] : -1;
+            grainAmp[g] = data.length >= 128 ? data[96 + g] : 0;
+        }
         for (var i = 0; i < 16; i++) {
             voicePlayheads[i] = data[i];
             voiceAmps[i] = data[16 + i];
@@ -774,6 +784,11 @@ function refreshHeldSlices() {
     for (var i = 0; i < touched.length; i++) writeVoiceToBuffer(touched[i]);
 }
 
+// Sliced keymap: slice k on key slice_from + k, nothing outside it
+function sliceKeyMapped(n, count) {
+    return n >= curSliceFrom && n < curSliceFrom + count;
+}
+
 // MIDI note handling from midiparse or test messages
 function midi_note(note, vel) {
     var n = Math.round(Number(note) || 60);
@@ -781,11 +796,14 @@ function midi_note(note, vel) {
     voiceAlloc.setMaxVoices(voiceCap());
     if (v > 0) {
         var starts = currentSliceStarts();
+        if (curSliced && !sliceKeyMapped(n, starts.length)) {
+            // Sliced: keys below the first slice key or past the last slice play nothing
+            trace("unmapped", n);
+            return;
+        }
         var allocated = voiceAlloc.noteOn(n, v, curMonoLegato, starts, curEnd);
         writeVoiceToBuffer(allocated);
-        if (curSliced) {
-            selectedSliceIdx = Math.max(0, n - curSliceFrom) % starts.length;
-        }
+        if (curSliced) selectedSliceIdx = n - curSliceFrom;
     } else {
         var released = voiceAlloc.noteOff(n, curMonoLegato);
         for (var i = 0; i < released.length; i++) {

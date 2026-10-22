@@ -671,6 +671,12 @@ function encodeStereoWav16(samplesMono, sampleRate) {
 /** @type {XoStretchApi} */
 const XS = (typeof XO_STRETCH_EMBEDDED !== "undefined" && XO_STRETCH_EMBEDDED) ? XO_STRETCH_EMBEDDED : /** @type {any} */ (require("./xo_stretch.js"));
 
+// Category search by words (src/xo_search.js): embedded as XO_SEARCH_EMBEDDED by scripts/build_xo_map.py, required under plain Node.
+const XO_SEARCH_PATH = "./xo_search.js"; // a global script (also prepended to the v8ui), so no static import
+/** @type {any} */
+const XSR = (typeof XO_SEARCH_EMBEDDED !== "undefined" && XO_SEARCH_EMBEDDED) ? XO_SEARCH_EMBEDDED : /** @type {any} */ (require(XO_SEARCH_PATH));
+const SEARCH_CAT_IDS = XSR.XO_SEARCH_CATS.map((c) => c.id);
+
 // Mode dial index -> engine name (the one table; the Mode dial and saved items use these indices).
 const STRETCH_MODES = ["granular", "complex", "texture"];
 const DEFAULT_STRETCH_MODE = 1;
@@ -1680,6 +1686,12 @@ const engineState = {
   tonalFilter: 0,
   drumFilter: 0,
   searchQuery: "",
+  // Category buttons select by words (src/xo_search.js): terms per category (SEARCH_CAT_IDS order), Match folders, the
+  // compiled index and a version stamp that invalidates the per-sample masks.
+  searchTerms: XSR.xoDefaultSearchTerms(),
+  matchFolders: true,
+  searchIndex: XSR.xoBuildSearchIndex(XSR.xoDefaultSearchTerms()),
+  searchVer: 1,
   pitchSt: 0,
   speedPct: 100,
   grainMs: 45,
@@ -1741,11 +1753,66 @@ function computeSampleDruminessPct(s) {
   return Math.max(0.0, Math.min(100.0, score * 100.0));
 }
 
+/**
+ * Category bit mask of a sample for the current terms (bit i = SEARCH_CAT_IDS[i]). Tokenises once per sample (cached on
+ * the sample); the mask is recomputed only when the terms or Match folders change (searchVer).
+ * @param {any} s
+ * @param {any} [st]
+ * @returns {number}
+ */
+function getSampleMask(s, st = engineState) {
+  if (!s) return 0;
+  const idx = st.searchIndex || engineState.searchIndex;
+  const ver = st.searchVer !== undefined ? st.searchVer : engineState.searchVer;
+  if (s.maskVer === ver && s.mask !== undefined) return s.mask;
+  if (!s.skeys) s.skeys = XSR.xoSampleKeys(s.name, XSR.xoRelFolders(s.path, s.rootFolder));
+  const mf = st.matchFolders !== undefined ? !!st.matchFolders : engineState.matchFolders;
+  s.mask = XSR.xoSampleMask(s.skeys, idx, mf);
+  s.maskVer = ver;
+  return s.mask;
+}
+
+/** First matching category index (colour / badge), -1 for none. */
+function getSampleFirstCat(s, st = engineState) {
+  return XSR.xoFirstCat(getSampleMask(s, st));
+}
+
+/** Map point category field: mask * 16 + first category (15 = none); decoded by the mini-map v8ui. */
+function sampleCatField(s) {
+  const mask = getSampleMask(s);
+  const first = XSR.xoFirstCat(mask);
+  return mask * 16 + (first < 0 ? 15 : first);
+}
+
+/**
+ * Applies new search terms / Match folders (message `search_config <matchFolders> <encoded terms x categories>`).
+ * @param {any} matchFolders
+ * @param {any[]} encoded
+ * @returns {boolean} whether anything changed
+ */
+function setSearchConfig(matchFolders, encoded) {
+  const mf = Number(matchFolders) ? true : false;
+  const terms = SEARCH_CAT_IDS.map((_, i) => {
+    if (encoded && encoded[i] !== undefined) return XSR.xoDecodeTerms(encoded[i]);
+    return XSR.xoDefaultSearchTerms()[i];
+  });
+  const same = mf === engineState.matchFolders && JSON.stringify(terms) === JSON.stringify(engineState.searchTerms);
+  if (same) return false;
+  engineState.matchFolders = mf;
+  engineState.searchTerms = terms;
+  engineState.searchIndex = XSR.xoBuildSearchIndex(terms);
+  engineState.searchVer++;
+  acousticSimTourKey = "";
+  if (engineState.samples.length > 0) syncMiniMapToMax(false);
+  return true;
+}
+
 function isSamplePassingFilters(s, st = engineState) {
   if (!s) return false;
   if (!isSampleFolderEnabled(s, st)) return false;
-  if (st.activeCategory && st.activeCategory !== "ALL" && s.category !== st.activeCategory) {
-    return false;
+  if (st.activeCategory && st.activeCategory !== "ALL") {
+    const ci = SEARCH_CAT_IDS.indexOf(st.activeCategory);
+    if (ci >= 0 && !(getSampleMask(s, st) & (1 << ci))) return false;
   }
   if (!isInfiniteMaxLen(st.maxLenMs) && s.durationMs > Number(st.maxLenMs)) {
     return false;
@@ -1987,7 +2054,7 @@ function buildAcousticSimilarityTour(startIdx) {
   }
   if (vis.length === 0) return [];
   const enabledFolderKey = engineState.knownFolders.map((f) => `${f.path}:${f.enabled ? 1 : 0}`).join(",");
-  const key = `${vis.length}|${engineState.activeCategory}|${engineState.maxLenMs}|${engineState.toneFilter}|${engineState.pitchFilter}|${engineState.tonalFilter}|${engineState.searchQuery}|${engineState.sampleSeed}|${enabledFolderKey}`;
+  const key = `${vis.length}|${engineState.activeCategory}|${engineState.maxLenMs}|${engineState.toneFilter}|${engineState.pitchFilter}|${engineState.tonalFilter}|${engineState.searchQuery}|${engineState.sampleSeed}|${engineState.searchVer}|${enabledFolderKey}`;
   if (acousticSimTourKey === key && acousticSimTourCache.length === vis.length && acousticSimTourCache.includes(startIdx)) {
     return acousticSimTourCache;
   }
@@ -2046,16 +2113,16 @@ function stepSimilarSample(dir = 1) {
   return nextIdx;
 }
 
-function syncMiniMapToMax() {
+function syncMiniMapToMax(clear = true) {
   if (!Max || typeof Max.outlet !== "function") return;
-  Max.outlet("minimap_clear");
+  if (clear) Max.outlet("minimap_clear");
   const batchSize = 35;
   for (let i = 0; i < engineState.samples.length; i += batchSize) {
     const slice = engineState.samples.slice(i, i + batchSize);
     const flat = [];
     for (let j = 0; j < slice.length; j++) {
       const s = slice[j];
-      const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
+      const catIdx = sampleCatField(s);
       const drumPct = Math.round(computeSampleDruminessPct(s));
       const tonalPct = Math.round(Math.max(0, Math.min(100, (1.0 - (s.flatness !== undefined ? s.flatness : 0.5)) * 100)));
       flat.push(
@@ -2073,9 +2140,21 @@ function syncMiniMapToMax() {
   }
   Max.outlet("minimap_done", engineState.samples.length, engineState.statusText);
   syncSavedListToMax();
+  if (!clear && engineState.selectedIndex >= 0) {
+    // the terms changed: re-announce the selected sample so its badge colour follows
+    const cur = engineState.samples[engineState.selectedIndex];
+    if (cur) emitSelectedToMax(engineState.selectedIndex, false, { record: false });
+  }
   if (engineState.selectedIndex >= 0) {
     emitSelectedToMax(engineState.selectedIndex, false, { record: false });
   }
+}
+
+/** First matching category of a saved item for the current terms (-1 none). */
+function savedItemCatIdx(item) {
+  const s = engineState.samples[item.sampleIndex];
+  if (s && s.name === item.name) return getSampleFirstCat(s);
+  return XSR.xoFirstCat(XSR.xoSampleMask(XSR.xoSampleKeys(item.name, []), engineState.searchIndex, false));
 }
 
 function syncSavedListToMax() {
@@ -2087,7 +2166,7 @@ function syncSavedListToMax() {
       item.id,
       item.sampleIndex,
       item.name,
-      item.catIdx,
+      savedItemCatIdx(item),
       item.pitchSt,
       item.decayMs,
       item.gainDb,
@@ -2146,12 +2225,32 @@ function stepSelectionHistory(dir) {
   return -1;
 }
 
+/**
+ * Map from time in the PLAYING file to the source waveform the banner shows (the strip's playheadFraction()):
+ * source fraction = (skipMs + t) * rate / srcMs, mirrored when reversed. See renderEditedAudioSamples for the render side:
+ * out length = min(source / ratio, Trim/Dec), and Reverse keeps the LAST outFrames of the stretched reversed source.
+ * @param {{ srcMs: number, ratio: number, reverse: boolean, rendered: boolean, renderedMs: number, decayMs: number }} a
+ */
+function buildPlayMap(a) {
+  const srcMs = Math.max(1, Number(a.srcMs) || 1);
+  const decayMs = Math.max(20, Number(a.decayMs) || 2500);
+  if (a.rendered) {
+    const ratio = Math.max(0.1, Math.min(4, Number(a.ratio) || 1));
+    const skipMs = a.reverse ? Math.max(0, srcMs / ratio - a.renderedMs) : 0;
+    return { rate: ratio, skipMs, srcMs, endMs: a.renderedMs, rev: a.reverse ? 1 : 0 };
+  }
+  // sfplay~ plays the source itself; Trim/Dec only fades it (the gain is 0 after the cut), so the line stops at the cut
+  const trimmed = decayMs < 19950 && decayMs < srcMs;
+  return { rate: 1, skipMs: 0, srcMs, endMs: trimmed ? decayMs : srcMs, rev: 0 };
+}
+
 function emitSelectedToMax(idx, audition = true, opts = null) {
   if (idx < 0 || idx >= engineState.samples.length) return;
   engineState.selectedIndex = idx;
   const s = engineState.samples[idx];
   if (!opts || opts.record !== false) recordSelectionHistory(s.path);
-  const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
+  const firstCat = getSampleFirstCat(s);
+  const catIdx = firstCat;
   const useOfflineGranular = stretchEngineWanted(resolveStretchMode(engineState), engineState.speedPct, engineState.pitchSt);
   // Duration depends on Speed only; Pitch never changes it.
   const stretchRatio = useOfflineGranular ? Math.max(0.1, Math.min(4, (Number(engineState.speedPct) || 100) / 100.0)) : 1.0;
@@ -2165,7 +2264,7 @@ function emitSelectedToMax(idx, audition = true, opts = null) {
       "selected_info",
       idx,
       s.name,
-      s.category,
+      firstCat >= 0 ? SEARCH_CAT_IDS[firstCat] : "none",
       catIdx,
       Math.round(s.durationMs),
       Math.round((s.centroid || 0.5) * 100),
@@ -2223,7 +2322,14 @@ function emitSelectedToMax(idx, audition = true, opts = null) {
         renderInfo ? renderInfo.engine : "plain",
         engineState.pitchSt || 0,
         engineState.speedPct || 100,
-        resolveStretchMode(engineState)
+        resolveStretchMode(engineState),
+        ...(() => {
+          const pm = buildPlayMap({
+            srcMs: s.durationMs || 300, ratio: stretchRatio, reverse: isRev, rendered: !!renderInfo,
+            renderedMs: rendersDuration, decayMs: decaySettingMs
+          });
+          return [pm.rate, pm.skipMs, pm.srcMs, pm.endMs, pm.rev];
+        })()
       );
     }
   }
@@ -2238,7 +2344,7 @@ function saveSampleToList(sampleIdx = engineState.selectedIndex, customSettings 
     durationMs: 320,
     path: ensureFallbackWavFile((customSettings && customSettings.name) || `Sample_${effIdx}`)
   };
-  const catIdx = Math.max(0, CATEGORY_LIST.indexOf(s.category));
+  const catIdx = getSampleFirstCat(s);
   const pitchSt = customSettings && customSettings.pitchSt !== undefined ? Number(customSettings.pitchSt) : engineState.pitchSt;
   const decayMs = customSettings && customSettings.decayMs !== undefined ? Number(customSettings.decayMs) : engineState.decayMs;
   const gainDb = customSettings && customSettings.gainDb !== undefined ? Number(customSettings.gainDb) : engineState.gainDb;
@@ -2871,6 +2977,10 @@ if (Max && typeof Max.addHandler === "function") {
     Max.outlet("strip_filter_search", q);
   });
 
+  Max.addHandler("search_config", (matchFolders, ...encoded) => {
+    setSearchConfig(matchFolders, encoded);
+  });
+
   Max.addHandler("set_cat", (cat) => {
     engineState.activeCategory = String(cat || "ALL");
     Max.outlet("strip_filter_cat", engineState.activeCategory);
@@ -2921,6 +3031,7 @@ module.exports = {
   rebuildActiveMapSubset,
   reseedMapSubset,
   reseedWithActiveFilters,
+  buildPlayMap,
   ensureKnownFoldersInitialized,
   addRememberedFolder,
   removeRememberedFolder,
@@ -2933,6 +3044,11 @@ module.exports = {
   isInfiniteMaxLen,
   computeSampleDruminessPct,
   isSamplePassingFilters,
+  getSampleMask,
+  getSampleFirstCat,
+  sampleCatField,
+  setSearchConfig,
+  SEARCH_CAT_IDS,
   saveSampleToList,
   recallSavedSample,
   reorderSavedSample,

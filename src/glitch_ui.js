@@ -38,7 +38,8 @@ var COL_AMBER = [1.0, 0.77, 0.30];
 var COL_CYAN = [0.30, 0.82, 0.88];
 var SLOT_COL = [[1.0, 0.42, 0.42], [1.0, 0.64, 0.26], [0.96, 0.84, 0.30], [0.50, 0.86, 0.46], [0.30, 0.82, 0.88], [0.40, 0.58, 0.98], [0.68, 0.48, 0.96], [0.96, 0.48, 0.78]];
 var SEQ_COL = [0.74, 0.56, 1.0];
-var CAT_COL = { Distort: [1.0, 0.52, 0.36], Filter: [0.30, 0.82, 0.88], Pitch: [0.74, 0.56, 1.0], Time: [1.0, 0.77, 0.30], Spectral: [0.46, 0.86, 0.56], Space: [0.44, 0.62, 1.0], Utility: [0.64, 0.70, 0.78] };
+var COL_MV = GL_MV_COL; // motion (movement sources): magenta, used by the tiles, the param bars and the Motion panel
+var CAT_COL = { Distort: [1.0, 0.52, 0.36], Filter: [0.30, 0.82, 0.88], Pitch: [0.74, 0.56, 1.0], Time: [1.0, 0.77, 0.30], Spectral: [0.46, 0.86, 0.56], Space: [0.44, 0.62, 1.0], Utility: [0.64, 0.70, 0.78], Movement: GL_MV_COL };
 
 // ---------------------------------------------------------------------------------------------------------------
 // state
@@ -543,8 +544,10 @@ function pullScope() {
         if (sig !== gSeqSig) { gSeqSig = sig; gModelDirty = true; quietDrawn = false; }
     }
     var seqMoving = seqLive && arr[GL_SCOPE.SEQ_PLAY] > 0.5 && gState.ui.seq;
-    if (quiet && quietDrawn && !gFlashLive() && !seqMoving) return;
-    quietDrawn = quiet && !seqMoving;
+    var mvMoving = false;
+    for (var mk = 0; mk < GL_NINST; mk++) if (arr[GL_SCOPE.MOVE_ON + mk] > 0.5) { mvMoving = true; break; }
+    if (quiet && quietDrawn && !gFlashLive() && !seqMoving && !mvMoving) return;
+    quietDrawn = quiet && !seqMoving && !mvMoving;
     gTele = arr;
     mgraphics.redraw();
 }
@@ -577,6 +580,17 @@ function demoTele() {
     for (var k = 0; k < GL_NINST; k++) {
         a[S.ACTIVITY + k] = clamp(gVec[L.base[GL_INSTANCES[k].id]] || 0, 0, 1);
         a[S.LEVEL + k] = a[S.ACTIVITY + k] > 0 ? 0.25 + 0.45 * Math.abs(Math.sin(k * 1.7 + 0.6)) : 0;
+    }
+    for (var mk = 0; mk < GL_NINST; mk++) {
+        var dmv = glMoveFromVector(gVec, GL_INSTANCES[mk].id);
+        if (!dmv || !(a[S.ACTIVITY + mk] > 0)) continue;
+        var dph = ((mk * 0.37 + 0.2) % 1);
+        var dsg = dmv.type === 1 ? glMoveLfo(dmv.shape, dph, mk * 7.31) : (dmv.type === 2 ? dmv.steps[Math.floor(dph * dmv.nsteps)] : dph);
+        a[S.MOVE_ON + mk] = 1;
+        a[S.MOVE_PH + mk] = dph;
+        a[S.MOVE_OFS + mk] = dmv.depth * dsg;
+        var dinst = GL_INSTANCES[mk], dpos = glParamPos(dinst, dmv.target), dsp = dinst.params[dpos];
+        a[S.MOVE_POS + mk] = clamp(glParamToNorm(dsp, gVec[L.base[dinst.id] + dpos]) + dmv.depth * dsg, 0, 1);
     }
     if (gState.audition === "seq") {
         var sw = seqWeights(gState.seq, gDemoBeat);
@@ -1126,6 +1140,18 @@ function paintTileBody(tile, x, y, w, h, c, act) {
     }
 }
 
+// The tile's motion indicator (a 10 x 6 px scope in the motion colour): a dot that travels with the movement's phase and rides the
+// source value up and down. Without telemetry it rests at the start of the cycle.
+function paintTileMotion(tile, x, y) {
+    var live = moveLive(tile.inst);
+    var mv = tile.mv;
+    rrect(x, y, 11, 7, 2, COL_BG, 1);
+    rsrect(x + 0.5, y + 0.5, 10, 6, 2, COL_MV, live ? 0.9 : 0.5, 1);
+    var sg = live && Math.abs(mv.depth) > 0.002 ? clamp(live.ofs / mv.depth, -1, 1) : 0;
+    var ph = live ? (mv.type === 3 ? 0.5 : live.ph) : 0;
+    if (mv.type === 3) sg = live ? live.ph * 2 - 1 : -1;
+    disc(x + 2 + 7 * ph, y + 3.5 - sg * 2.2, 1.5, COL_MV, 1);
+}
 function chainBadge(tile) { return (tile.chain < 9 ? "0" : "") + (tile.chain + 1); }
 
 function paintView(r) {
@@ -1157,8 +1183,10 @@ function paintView(r) {
         var bw2 = tw(badge, 5.5);
         label(badge, q.x + q.w - 3, q.y + (compact ? 7 : 9.5), 5.5, COL_DIM, 0.9, 2);
         var locked = glitchIsLocked(gState.working, tile.key);
-        label(fit(compact ? (GL_TINY[tile.key] || tile.name) : tile.name, q.w - 8 - bw2 - (locked ? 8 : 0), fs), q.x + 4, q.y + (compact ? 7.5 : 10), fs, c, 1, 0);
+        var mvw = tile.mv ? 13 : 0;
+        label(fit(compact ? (GL_TINY[tile.key] || tile.name) : tile.name, q.w - 8 - bw2 - (locked ? 8 : 0) - mvw, fs), q.x + 4, q.y + (compact ? 7.5 : 10), fs, c, 1, 0);
         if (locked) paintLockGlyph(q.x + q.w - 8 - bw2, q.y + (compact ? 5 : 7.5), COL_AMBER, 0.95);
+        if (tile.mv) paintTileMotion(tile, q.x + q.w - 6 - bw2 - (locked ? 8 : 0) - 11, q.y + (compact ? 3 : 5.5));
         var by = q.y + q.h - 4;
         frect(q.x + 3, by, q.w - 6, 2, c, 0.2);
         frect(q.x + 3, by, (q.w - 6) * clamp(tile.wet, 0, 1), 2, c, 0.9);
@@ -1218,8 +1246,8 @@ function paintOptions(O) {
     var cats = glitchOptionCategories();
     var cur = gState.ui.optCat;
     var n = 0;
-    for (var i = 0; i < GL_TYPES.length; i++) if (gState.allow[GL_TYPES[i].id]) n++;
-    chip(O.all, n === GL_TYPES.length ? "ALL OFF" : "ALL ON", false, COL_AMBER);
+    for (var i = 0; i < GL_ALLOW_ITEMS.length; i++) if (gState.allow[GL_ALLOW_ITEMS[i].id]) n++;
+    chip(O.all, n === GL_ALLOW_ITEMS.length ? "ALL OFF" : "ALL ON", false, COL_AMBER);
     for (var c = 0; c < cats.length; c++) {
         var cc = CAT_COL[cats[c].name] || COL_DIM;
         var st = glitchCategoryState(gState, c);
@@ -1229,13 +1257,13 @@ function paintOptions(O) {
         rsrect(row.select.x + 0.5, row.select.y + 0.5, row.select.w - 1, row.select.h - 1, 3, cc, selected ? 0.95 : (hoverIs("optcat_sel" + c) ? 0.7 : 0.3), 1);
         label(cats[c].name.toUpperCase(), row.select.x + 5, row.select.y + 10, 7.5, selected ? COL_TEXT : COL_DIM, 1, 0);
         var cnt = 0;
-        for (var q = 0; q < cats[c].types.length; q++) if (gState.allow[GL_TYPES[cats[c].types[q]].id]) cnt++;
+        for (var q = 0; q < cats[c].types.length; q++) if (gState.allow[GL_ALLOW_ITEMS[cats[c].types[q]].id]) cnt++;
         label(cnt + "/" + cats[c].types.length, row.select.x + row.select.w - 4, row.select.y + 10, 6.5, st ? cc : COL_DIM, 1, 2);
         paintCheck(row.toggle.x + 1, row.toggle.y + 1, 12, st, cc, hoverIs("optcat_tg" + c));
     }
     var cur3 = CAT_COL[cats[cur].name] || COL_DIM;
     for (var t = 0; t < cats[cur].types.length; t++) {
-        var ty = GL_TYPES[cats[cur].types[t]];
+        var ty = GL_ALLOW_ITEMS[cats[cur].types[t]];
         var on = !!gState.allow[ty.id];
         var r = O.slots[t];
         rrect(r.x, r.y, r.w, r.h, 4, on ? mix3(COL_BG, cur3, 0.25) : COL_ROW, 1);
@@ -1243,7 +1271,7 @@ function paintOptions(O) {
         label(fit(cats[cur].name === "Spectral" ? ty.name.replace(/^Spectral /, "") : ty.name, r.w - 26, 7.5), r.x + 6, r.y + r.h / 2 + 2.8, 7.5, on ? COL_TEXT : COL_DIM, 1, 0);
         paintCheck(r.x + r.w - 17, r.y + r.h / 2 - 6, 12, on ? 1 : 0, cur3, false);
     }
-    label(n + " of " + GL_TYPES.length + " types allowed  ·  used by Randomize and Mutate", O.note.x, O.note.y + 10, 7.5, n ? COL_DIM : COL_CORAL, 1, 0);
+    label(fit(n + " of " + GL_ALLOW_ITEMS.length + " allowed  ·  Randomize / Mutate", O.note.w, 7), O.note.x, O.note.y + 10, 7, n ? COL_DIM : COL_CORAL, 1, 0);
 }
 
 // ----- action bar -----
@@ -1336,6 +1364,178 @@ function editorValue(key, id) {
     var ix = info ? glitchLayout().index[info.inst + "." + id] : undefined;
     return ix === undefined || !gVec ? 0 : gVec[ix];
 }
+function chainPosOf(instId) {
+    for (var i = 0; i < GL_INSTANCES.length; i++) if (GL_INSTANCES[i].id === instId) return i;
+    return -1;
+}
+// The movement the editor shows for tile `key`: the Working glitch's, or (Morph / Seq) the one in the sounding blend.
+function editorMove(key) {
+    var info = glitchTileInfo(key);
+    if (!info) return null;
+    if (gState.audition === "working") return glitchGetMove(gState.working, key);
+    if (!gVec) return null;
+    var mv = glMoveFromVector(gVec, info.inst);
+    return mv && glMoveInTile(glInstance(info.inst), mv.target, info.sub) ? mv : null;
+}
+function editorMoveType() {
+    var key = editorTarget();
+    var mv = key ? editorMove(key) : null;
+    return mv ? mv.type : 0;
+}
+// live movement of an instance from the telemetry: { on, ofs, pos, ph } or null
+function moveLive(instId) {
+    var t = T();
+    var k = chainPosOf(instId);
+    if (!t || k < 0 || !(t[GL_SCOPE.MOVE_ON + k] > 0.5)) return null;
+    return { on: 1, ofs: t[GL_SCOPE.MOVE_OFS + k] || 0, pos: t[GL_SCOPE.MOVE_POS + k] || 0, ph: t[GL_SCOPE.MOVE_PH + k] || 0 };
+}
+// glyphs of the movement types: Off (a dash), LFO (a sine), Steps (stairs), Env (attack / decay)
+function mvTypeGlyph(ty, x, y, w, h, c, a) {
+    var cx = x + w / 2, cy = y + h / 2, i;
+    if (ty === 0) { hline(cx - 4, cx + 4, cy, c, a, 1.4); return; }
+    var pts = [];
+    if (ty === 1) for (i = 0; i <= 12; i++) pts.push([cx - 6 + i, cy - Math.sin(i / 12 * 6.2832) * 3.2]);
+    else if (ty === 2) pts = [[cx - 6, cy + 2], [cx - 6, cy - 1], [cx - 3, cy - 1], [cx - 3, cy - 3.5], [cx, cy - 3.5], [cx, cy + 3], [cx + 3, cy + 3], [cx + 3, cy], [cx + 6, cy]];
+    else for (i = 0; i <= 12; i++) pts.push([cx - 6 + i, i < 3 ? cy + 3 - i * 2.2 : cy - 3.6 + (i - 3) * 0.7]);
+    poly(pts, c, a, 1.3);
+}
+function mvShapeGlyph(sh, x, y, w, h, c, a) {
+    var pts = [], n = 12, cyc = sh >= 5 ? 2 : 1;
+    for (var i = 0; i <= n; i++) pts.push([x + 3 + (w - 6) * i / n, y + h / 2 - glMoveLfo(sh, cyc * i / n, 0) * (h / 2 - 2.5)]);
+    poly(pts, c, a, 1.2);
+}
+function mvBar(r, name, norm, text, hot, bip, dim) {
+    rrect(r.x, r.y, r.w, r.h, 3, COL_ROW, dim);
+    if (bip) {
+        var mid = r.x + r.w / 2, w = (r.w - 2) * (norm - 0.5);
+        frect(w >= 0 ? mid : mid + w, r.y + 1, Math.abs(w), r.h - 2, COL_MV, 0.45 * dim);
+        vline(mid, r.y + 1, r.y + r.h - 1, COL_DIM, 0.55 * dim, 1);
+    } else frect(r.x + 1, r.y + 1, (r.w - 2) * norm, r.h - 2, COL_MV, 0.4 * dim);
+    if (hot) rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, COL_MV, 0.8, 1);
+    label(name, r.x + 4, r.y + 9, 7, COL_TEXT, dim, 0);
+    label(text, r.x + r.w - 4, r.y + 9, 7, COL_MV, dim, 2);
+}
+function mvLogNorm(v, lo, hi) { return clamp((Math.log(Math.max(v, lo)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)), 0, 1); }
+function mvLogVal(n, lo, hi) { return Math.exp(Math.log(lo) + clamp(n, 0, 1) * (Math.log(hi) - Math.log(lo))); }
+function mvMs(v) { return v >= 100 ? Math.round(v) + " ms" : v.toFixed(v >= 10 ? 0 : 1) + " ms"; }
+// norm (0..1) of a bar for a movement field, and its text
+function mvFieldNorm(id, mv) {
+    switch (id) {
+        case "mv_rate": return mv.sync ? mv.div / (GL_MV_DIV_BEATS.length - 1) : mvLogNorm(mv.hz, 0.02, 20);
+        case "mv_depth": return (mv.depth + 1) / 2;
+        case "mv_phase": return mv.phase;
+        case "mv_glide": return mv.glide;
+        case "mv_atk": return mvLogNorm(mv.atk, 1, 500);
+        case "mv_rel": return mvLogNorm(mv.rel, 5, 2000);
+    }
+    return 0;
+}
+function mvFieldText(id, mv) {
+    switch (id) {
+        case "mv_rate": return glitchMoveRateText(mv);
+        case "mv_depth": return (mv.depth >= 0 ? "+" : "") + Math.round(mv.depth * 100) + "%";
+        case "mv_phase": return Math.round(mv.phase * 100) + "%";
+        case "mv_glide": return Math.round(mv.glide * 100) + "%";
+        case "mv_atk": return mvMs(mv.atk);
+        case "mv_rel": return mvMs(mv.rel);
+    }
+    return "";
+}
+function paintEditorTabs(E, key) {
+    var mv = editorMove(key);
+    var tabs = [[E.tabParams, "PARAMS", 0], [E.tabMotion, "MOTION", 1]];
+    for (var i = 0; i < 2; i++) {
+        var r = tabs[i][0], on = gState.ui.edTab === tabs[i][2];
+        var col = i === 1 ? COL_MV : COL_TEXT;
+        rrect(r.x, r.y, r.w, r.h, 3, on ? mix3(COL_BG, col, 0.3) : COL_ROW, 1);
+        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, i === 1 ? COL_MV : COL_LINE, on ? 0.95 : (hoverIs("ed_tab" + i) ? 0.7 : 0.35), 1);
+        label(tabs[i][1], r.x + r.w / 2 + (i === 1 && mv ? 3 : 0), r.y + 9, 7, on ? COL_TEXT : COL_DIM, 1, 1);
+        if (i === 1 && mv) disc(r.x + 8, r.y + r.h / 2, 2.2, COL_MV, 1);
+    }
+}
+function paintMotion(ed, key, info, c, morph) {
+    var mv = editorMove(key);
+    var dim = morph ? 0.7 : 1;
+    var cands = glitchMoveCandidates(key);
+    var ML = glitchMotionLayout(ed, mv ? mv.type : 0);
+    var ty = mv ? mv.type : 0;
+    for (var i = 0; i < 4; i++) {
+        var r = ML.type[i], on = i === ty;
+        rrect(r.x, r.y, r.w, r.h, 3, on ? mix3(COL_BG, COL_MV, 0.35) : COL_ROW, 1);
+        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, COL_MV, on ? 0.95 : (hoverIs("mv_type" + i) ? 0.7 : 0.3), 1);
+        mvTypeGlyph(i, r.x, r.y, r.w, r.h - 2, on ? COL_TEXT : COL_DIM, 1);
+        label(GL_MV_TYPE_NAMES[i].toUpperCase(), r.x + r.w / 2, r.y + r.h - 1.5, 4.8, on ? COL_TEXT : COL_DIM, 0.9, 1);
+    }
+    if (!cands.length) {
+        label("This module has no continuous", ed.x + ed.w / 2, ed.y + 88, 8, COL_DIM, 1, 1);
+        label("parameter to move.", ed.x + ed.w / 2, ed.y + 100, 8, COL_DIM, 1, 1);
+        return;
+    }
+    if (!mv) {
+        label("Pick LFO, Steps or Env to make", ed.x + ed.w / 2, ed.y + 84, 8, COL_DIM, 1, 1);
+        label(fit(info.name, ed.w - 20, 8) + " move over time.", ed.x + ed.w / 2, ed.y + 96, 8, COL_DIM, 1, 1);
+        label("Default target: " + (glitchMainParam(key) || "-"), ed.x + ed.w / 2, ed.y + 112, 7, COL_MV, 0.9, 1);
+        return;
+    }
+    var tr = ML.target;
+    var tname = "";
+    for (var ci = 0; ci < cands.length; ci++) if (cands[ci].id === mv.target) tname = cands[ci].name;
+    rrect(tr.x, tr.y, tr.w, tr.h, 3, COL_ROW, dim);
+    rsrect(tr.x + 0.5, tr.y + 0.5, tr.w - 1, tr.h - 1, 3, COL_MV, hoverIs("mv_target") ? 0.9 : 0.45, 1);
+    label("Moves", tr.x + 4, tr.y + 9, 7, COL_DIM, dim, 0);
+    label(fit(tname, tr.w - 60, 7.5), tr.x + 36, tr.y + 9, 7.5, COL_TEXT, dim, 0);
+    if (cands.length > 1) label("click: next", tr.x + tr.w - 4, tr.y + 9, 6, COL_DIM, dim, 2);
+    chip(ML.sync, mv.sync ? "SYNC" : "FREE", !!mv.sync, COL_MV);
+    mvBar(ML.rate, ty === 2 ? "Step" : "Rate", mvFieldNorm("mv_rate", mv), mvFieldText("mv_rate", mv), hoverIs("mv_rate"), false, dim);
+    if (ML.shape) {
+        for (var si = 0; si < ML.shape.length; si++) {
+            var sr2 = ML.shape[si], son = mv.shape === si;
+            rrect(sr2.x, sr2.y, sr2.w, sr2.h, 2, son ? mix3(COL_BG, COL_MV, 0.35) : COL_ROW, dim);
+            mvShapeGlyph(si, sr2.x, sr2.y, sr2.w, sr2.h, son ? COL_TEXT : COL_DIM, 1);
+            if (hoverIs("mv_shape" + si)) rsrect(sr2.x + 0.5, sr2.y + 0.5, sr2.w - 1, sr2.h - 1, 2, COL_MV, 0.8, 1);
+        }
+    }
+    if (ML.nsteps) {
+        chip(ML.nsteps, mv.nsteps + " ST", false, COL_MV);
+        mvBar(ML.glide, "Glide", mv.glide, mvFieldText("mv_glide", mv), hoverIs("mv_glide"), false, dim);
+    }
+    if (ML.atk) mvBar(ML.atk, "Attack", mvFieldNorm("mv_atk", mv), mvFieldText("mv_atk", mv), hoverIs("mv_atk"), false, dim);
+    if (ML.rel) mvBar(ML.rel, "Release", mvFieldNorm("mv_rel", mv), mvFieldText("mv_rel", mv), hoverIs("mv_rel"), false, dim);
+    mvBar(ML.depth, "Depth", mvFieldNorm("mv_depth", mv), mvFieldText("mv_depth", mv), hoverIs("mv_depth"), true, dim);
+    if (ML.phase) mvBar(ML.phase, "Phase", mvFieldNorm("mv_phase", mv), mvFieldText("mv_phase", mv), hoverIs("mv_phase"), false, dim);
+    // the display under the controls
+    var A = ML.area;
+    var live = moveLive(info.inst);
+    rrect(A.x, A.y, A.w, A.h, 3, COL_BG, 1);
+    rsrect(A.x + 0.5, A.y + 0.5, A.w - 1, A.h - 1, 3, COL_LINE, 1, 1);
+    var cy = A.y + A.h / 2, hh = A.h / 2 - 3, k;
+    hline(A.x + 2, A.x + A.w - 2, cy, COL_LINE, 0.8, 1);
+    var sgNow = live && Math.abs(mv.depth) > 0.002 ? clamp(live.ofs / mv.depth, -1, 1) : 0;
+    if (ty === 1) {
+        var pts = [], ncyc = mv.shape >= 5 ? 2 : 1, np2 = 64;
+        for (k = 0; k <= np2; k++) pts.push([A.x + 3 + (A.w - 6) * k / np2, cy - glMoveLfo(mv.shape, ncyc * k / np2, chainPosOf(info.inst) * 7.31) * hh]);
+        poly(pts, COL_MV, 0.9, 1.3);
+        if (live) {
+            var px = A.x + 3 + (A.w - 6) * (live.ph / ncyc);
+            vline(px, A.y + 2, A.y + A.h - 2, COL_TEXT, 0.35, 1);
+            disc(px, cy - sgNow * hh, 2.6, COL_TEXT, 1);
+        }
+    } else if (ty === 2) {
+        var ns = mv.nsteps, sw = (A.w - 6) / ns;
+        var cur = live ? Math.floor(live.ph * ns) : -1;
+        for (k = 0; k < ns; k++) {
+            var sv = mv.steps[k];
+            var bh = Math.abs(sv) * hh;
+            frect(A.x + 3 + k * sw + 0.5, sv >= 0 ? cy - bh : cy, Math.max(sw - 1, 1), Math.max(bh, 1), COL_MV, k === cur ? 1 : 0.55);
+        }
+    } else {
+        var lvl = live ? live.ph : 0;
+        frect(A.x + 3, A.y + A.h - 9, (A.w - 6) * lvl, 5, COL_MV, 0.85);
+        rsrect(A.x + 3.5, A.y + A.h - 8.5, A.w - 7, 4, 1, COL_LINE, 1, 1);
+        label("input level  " + (live ? "" : "(no DSP)"), A.x + 5, A.y + 11, 7, COL_DIM, 1, 0);
+    }
+    if (live) label((live.ofs >= 0 ? "+" : "") + Math.round(live.ofs * 100) + "%", A.x + A.w - 4, A.y + 10, 7, COL_MV, 1, 2);
+}
 function paintEditor(ed) {
     rrect(ed.x, ed.y, ed.w, ed.h, 5, COL_PANEL, 1);
     var key = editorTarget();
@@ -1363,8 +1563,17 @@ function paintEditor(ed) {
     mgraphics.move_to(rm.x + rm.w - 4.5, rm.y + 4.5); mgraphics.line_to(rm.x + 4.5, rm.y + rm.h - 4.5);
     mgraphics.stroke();
     paintEditorClose(E);
+    paintEditorTabs(E, key);
     var g = gState.working;
     var dim = morph ? 0.7 : 1;
+    if (gState.ui.edTab) {
+        paintMotion(ed, key, info, c, morph);
+        if (morph) label(gState.audition === "seq" ? "SEQ is playing: an edit copies it to WORKING" : "MORPH is playing: an edit copies it to WORKING", ed.x + ed.w / 2, ed.y + ed.h - 5, 6.5, COL_AMBER, 0.95, 1);
+        else label(locked ? "locked: kept by Randomize / Mutate" : "drag = set  ·  dbl-click = reset", ed.x + ed.w / 2, ed.y + ed.h - 5, 7, COL_DIM, 0.9, 1);
+        return;
+    }
+    var mv = editorMove(key);
+    var mvLive = mv ? moveLive(info.inst) : null;
     for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         var r = E.rows[i];
@@ -1380,13 +1589,22 @@ function paintEditor(ed) {
             }
             continue;
         }
+        var isTarget = !!mv && row.id === mv.target;
         if (spec.kind !== "disc") {
             var n = glParamToNorm(spec, v);
             if (row.id === "wet" || spec.kind === "wet") n = clamp(v, 0, 1);
             frect(r.x + 1, r.y + 1, (r.w - 2) * n, r.h - 2, c, 0.4 * dim);
+            if (isTarget) {
+                // the movement's target: the live modulated position as a band from the set value plus a moving marker
+                if (mvLive) {
+                    var x0 = r.x + 1 + (r.w - 2) * Math.min(n, mvLive.pos), bw = Math.abs(mvLive.pos - n) * (r.w - 2);
+                    frect(x0, r.y + 1, Math.max(bw, 0.5), r.h - 2, COL_MV, 0.5);
+                    vline(r.x + 1 + (r.w - 2) * mvLive.pos, r.y, r.y + r.h, COL_MV, 1, 2);
+                } else rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, COL_MV, 0.55, 1);
+            }
         } else rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, c, 0.35 * dim, 1);
         label(fit(row.name, r.w * 0.55, 7), r.x + 4, r.y + 9, 7, COL_TEXT, dim, 0);
-        label(fit(glitchFormatValue(spec, v), r.w * 0.45, 7), r.x + r.w - 4, r.y + 9, 7, c, dim, 2);
+        label(fit(glitchFormatValue(spec, v), r.w * 0.45, 7), r.x + r.w - 4, r.y + 9, 7, isTarget ? COL_MV : c, dim, 2);
     }
     if (morph) label(gState.audition === "seq" ? "SEQ is playing: an edit copies it to WORKING" : "MORPH is playing: an edit copies it to WORKING", ed.x + ed.w / 2, ed.y + ed.h - 5, 6.5, COL_AMBER, 0.95, 1);
     else label(locked ? "locked: kept by Randomize / Mutate" : "drag = set  ·  dbl-click = reset", ed.x + ed.w / 2, ed.y + ed.h - 5, 7, COL_DIM, 0.9, 1);
@@ -1574,7 +1792,7 @@ function currentRows() {
 }
 function hitAt(x, y) {
     var ui = gState.ui;
-    var map = glitchHitMap(ui, gTiles.length, ui.editor ? currentRows().length : 0, gTilePage);
+    var map = glitchHitMap(ui, gTiles.length, ui.editor ? currentRows().length : 0, gTilePage, ui.editor && ui.edTab ? editorMoveType() : 0);
     var best = null;
     for (var i = 0; i < map.length; i++) {
         if (!glHit(map[i].r, x, y)) continue;
@@ -1613,6 +1831,62 @@ function setRowFromX(rowIdx, x, shift, d) {
     if (glitchSetValue(gState.working, key, row.id, v)) modelChanged();
 }
 function barNorm(r, x) { return clamp((x - r.x - 2) / (r.w - 4), 0, 1); }
+// ----- Motion panel editing (all on the Working glitch; the caller pushed the undo snapshot and called beginWorkingEdit) -----
+function mvSetFromBar(id, x) {
+    var key = editorTarget();
+    var g = gState.working;
+    var mv = key ? glitchGetMove(g, key) : null;
+    if (!mv) return;
+    var ML = glitchMotionLayout(gLayout.editor, mv.type);
+    var r = ML[id.substring(3)];
+    if (!r) return;
+    var n = barNorm(r, x);
+    if (id === "mv_rate") {
+        if (mv.sync) glitchSetMove(g, key, "div", Math.round(n * (GL_MV_DIV_BEATS.length - 1)));
+        else glitchSetMove(g, key, "hz", mvLogVal(n, 0.02, 20));
+    } else if (id === "mv_depth") glitchSetMove(g, key, "depth", Math.abs(n * 2 - 1) < 0.04 ? 0 : n * 2 - 1);
+    else if (id === "mv_phase") glitchSetMove(g, key, "phase", Math.round(n * 100) / 100);
+    else if (id === "mv_glide") glitchSetMove(g, key, "glide", Math.round(n * 100) / 100);
+    else if (id === "mv_atk") glitchSetMove(g, key, "atk", mvLogVal(n, 1, 500));
+    else if (id === "mv_rel") glitchSetMove(g, key, "rel", mvLogVal(n, 5, 2000));
+    modelChanged();
+}
+function mvSetStep(x, y) {
+    var key = editorTarget();
+    var mv = key ? glitchGetMove(gState.working, key) : null;
+    if (!mv) return;
+    var A = glitchMotionLayout(gLayout.editor, mv.type).area;
+    if (!A) return;
+    var ns = mv.nsteps;
+    var i = clamp(Math.floor((x - A.x - 3) / ((A.w - 6) / ns)), 0, ns - 1);
+    var v = 1 - 2 * clamp((y - A.y - 2) / (A.h - 4), 0, 1);
+    if (Math.abs(v) < 0.1) v = 0;
+    glitchSetMoveStep(gState.working, key, i, Math.round(v * 100) / 100);
+    modelChanged();
+}
+function mvClick(id, x, y, shift) {
+    var key = editorTarget();
+    if (!key) return;
+    undoPush();
+    beginWorkingEdit();
+    var g = gState.working;
+    var m;
+    gDrag = { kind: "mvdone" };
+    if ((m = /^mv_type(\d)$/.exec(id))) { glitchSetMoveType(g, key, Number(m[1])); modelChanged(); return; }
+    var mv = glitchGetMove(g, key);
+    if (!mv) return;
+    if (id === "mv_target") {
+        var cands = glitchMoveCandidates(key);
+        var at = 0;
+        for (var i = 0; i < cands.length; i++) if (cands[i].id === mv.target) at = i;
+        glitchSetMove(g, key, "target", cands[(at + (shift ? cands.length - 1 : 1)) % cands.length].id);
+        modelChanged();
+    } else if (id === "mv_sync") { glitchSetMove(g, key, "sync", mv.sync ? 0 : 1); modelChanged(); }
+    else if (id === "mv_nsteps") { glitchSetMove(g, key, "nsteps", mv.nsteps === 8 ? 16 : 8); modelChanged(); }
+    else if ((m = /^mv_shape(\d)$/.exec(id))) { glitchSetMove(g, key, "shape", Number(m[1])); modelChanged(); }
+    else if (id === "mv_steps" || id === "mv_area") { if (mv.type === 2) { gDrag = { kind: "mvsteps" }; mvSetStep(x, y); } }
+    else { gDrag = { kind: "mvbar", id: id }; mvSetFromBar(id, x); }
+}
 function seqLenFromX(x) { var S = gLayout.seq; if (S) seqLengthSet(clamp(Math.floor((x - S.x0) / S.pitch) + 1, 1, GL_SEQ_MAX)); }
 function seqDrag(kind, x) {
     var S = gLayout.seq;
@@ -1666,7 +1940,7 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
     }
     if ((m = /^opt_(\d+)$/.exec(id))) {
         undoPush();
-        var ty = GL_TYPES[Number(m[1])];
+        var ty = GL_ALLOW_ITEMS[Number(m[1])];
         setAllow(gState, ty.id, !gState.allow[ty.id]);
         mgraphics.redraw(); done();
         return;
@@ -1732,6 +2006,13 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
         modelChanged(); done();
         return;
     }
+    if (id === "ed_tab0" || id === "ed_tab1") {
+        gState.ui.edTab = id === "ed_tab1" ? 1 : 0;
+        mgraphics.redraw();
+        done();
+        return;
+    }
+    if (/^mv_/.test(id)) { mvClick(id, x, y, shift); return; }
     if ((m = /^ed_row(\d+)$/.exec(id))) {
         var ri = Number(m[1]);
         var key2 = editorTarget();
@@ -1819,6 +2100,8 @@ function ondrag(x, y, but, cmd, shift) {
         mgraphics.redraw();
     } else if (d.kind === "knob") { knobDelta(d.key, d.y0 - y, shift); d.y0 = y; }
     else if (d.kind === "row") setRowFromX(d.idx, x, shift, d);
+    else if (d.kind === "mvbar") mvSetFromBar(d.id, x);
+    else if (d.kind === "mvsteps") mvSetStep(x, y);
     else if (d.kind === "seqlane" || d.kind === "seqlen" || d.kind === "seqrate" || d.kind === "seqglide") seqDrag(d.kind, x);
     else if (d.kind === "seqpal") {
         d.x = x; d.y = y;
@@ -1856,7 +2139,7 @@ function endDrag(x, y) {
         slotClick(d.i, d.shift, d.opt);
         return;
     }
-    if (d.kind === "pad" || d.kind === "row" || d.kind === "rowdone" || d.kind === "chaos" || /^seq(lane|len|rate|glide)$/.test(d.kind)) done();
+    if (d.kind === "pad" || d.kind === "row" || d.kind === "rowdone" || d.kind === "mvdone" || d.kind === "mvbar" || d.kind === "mvsteps" || d.kind === "chaos" || /^seq(lane|len|rate|glide)$/.test(d.kind)) done();
     mgraphics.redraw();
 }
 function slotClick(i, shift, opt) {
@@ -1894,6 +2177,19 @@ function ondblclick(x, y) {
     else if (id === "side_out") { sendParam("out", GL_PARAMS.out.init); mgraphics.redraw(); }
     else if (id === "seq_glide") { seqGlideSet(0); done(); }
     else if (id === "seq_len") { seqLengthSet(8); done(); }
+    else if (/^mv_(rate|depth|phase|glide|atk|rel)$/.test(id)) {
+        var mkey = editorTarget();
+        var mv0 = mkey ? editorMove(mkey) : null;
+        if (mv0) {
+            gDrag = null;
+            undoPush();
+            beginWorkingEdit();
+            var df = defaultMove(glitchTileInfo(mkey).inst, mv0.target, mv0.type);
+            var fld = { mv_rate: mv0.sync ? "div" : "hz", mv_depth: "depth", mv_phase: "phase", mv_glide: "glide", mv_atk: "atk", mv_rel: "rel" }[id];
+            glitchSetMove(gState.working, mkey, fld, df[fld]);
+            modelChanged(); done();
+        }
+    }
     else if ((m = /^ed_row(\d+)$/.exec(id))) {
         var key = editorTarget();
         var row = key ? glitchEditorRows(key)[Number(m[1])] : null;
@@ -1921,6 +2217,16 @@ function onidle(x, y) {
         else if (/^slot\d$/.test(id)) hint = "click: recall · shift: save · alt: clear · drag to a corner";
         else if (id === "ed_lock") hint = "keep this module through Randomize / Mutate";
         else if (id === "ed_remove") hint = "remove this module";
+        else if (id === "ed_tab0") hint = "the module's parameters";
+        else if (id === "ed_tab1") hint = "motion: an LFO, steps or envelope that moves a parameter";
+        else if (/^mv_type/.test(id)) hint = "movement source: off, LFO, steps or envelope follower";
+        else if (id === "mv_target") hint = "which parameter moves (click: next, shift: previous)";
+        else if (id === "mv_sync") hint = "locked to the host beat, or free in Hz";
+        else if (id === "mv_rate") hint = "LFO cycle / step length (dbl-click = default)";
+        else if (/^mv_shape/.test(id)) hint = "LFO shape";
+        else if (id === "mv_depth") hint = "how far it moves, as a share of the range (+/-)";
+        else if (id === "mv_steps") hint = "drag across the steps to paint their values";
+        else if (id === "mv_nsteps") hint = "8 or 16 steps";
         else if (id === "side_mix") hint = "Mix (drag, dbl-click = 100%)";
         else if (id === "side_out") hint = "Output (drag, dbl-click = 0 dB)";
         else if ((m = /^opt_(\d+)$/.exec(id))) hint = "click to allow / forbid";
@@ -1986,6 +2292,10 @@ function test_report() {
             rep.weights = a.slice(GL_SCOPE.WEIGHTS, GL_SCOPE.WEIGHTS + 8);
             rep.inPeak = a[GL_SCOPE.IN_PEAK]; rep.outPeak = a[GL_SCOPE.OUT_PEAK];
             rep.activity = a.slice(GL_SCOPE.ACTIVITY, GL_SCOPE.ACTIVITY + GL_NINST);
+            rep.moveOn = a.slice(GL_SCOPE.MOVE_ON, GL_SCOPE.MOVE_ON + GL_NINST);
+            rep.moveOfs = a.slice(GL_SCOPE.MOVE_OFS, GL_SCOPE.MOVE_OFS + GL_NINST);
+            rep.movePos = a.slice(GL_SCOPE.MOVE_POS, GL_SCOPE.MOVE_POS + GL_NINST);
+            rep.movePh = a.slice(GL_SCOPE.MOVE_PH, GL_SCOPE.MOVE_PH + GL_NINST);
             rep.seqTele = { on: a[GL_SCOPE.SEQ_ON], play: a[GL_SCOPE.SEQ_PLAY], step: a[GL_SCOPE.SEQ_STEP], slot: a[GL_SCOPE.SEQ_SLOT], prev: a[GL_SCOPE.SEQ_PREV], glide: a[GL_SCOPE.SEQ_GLIDE], frac: a[GL_SCOPE.SEQ_FRAC], count: a[GL_SCOPE.SEQ_COUNT], beat: a[GL_SCOPE.BEAT] };
         } catch (_) {}
     }
@@ -2022,7 +2332,28 @@ function preview() {
     gModelDirty = true;
     refreshModel();
     var pv = typeof UI_PREVIEW !== "undefined" ? UI_PREVIEW : "";
-    if (pv === "editor") {
+    // make sure the preview shows movement: if Randomize gave none, the first two tiles that can move get one (LFO, then Steps)
+    var anyMv = false;
+    for (var mi = 0; mi < gTiles.length; mi++) if (gTiles[mi].mv) anyMv = true;
+    if (!anyMv) {
+        var want = [1, 2];
+        for (var mj = 0; mj < gTiles.length && want.length; mj++) {
+            if (glitchMainParam(gTiles[mj].key) && glitchSetMoveType(gState.working, gTiles[mj].key, want[0])) want.shift();
+        }
+        gState.slots[0] = glCopy(gState.working);
+        gModelDirty = true;
+        refreshModel();
+    }
+    if (pv === "motion") {
+        gState.ui.editor = 1;
+        gState.ui.edTab = 1;
+        var mvKey = "";
+        for (var mk2 = 0; mk2 < gTiles.length; mk2++) if (gTiles[mk2].mv && !mvKey) mvKey = gTiles[mk2].key;
+        gState.ui.sel = mvKey || (gTiles.length ? gTiles[0].key : "");
+        if (!glitchGetMove(gState.working, gState.ui.sel)) glitchSetMoveType(gState.working, gState.ui.sel, 2);
+        gModelDirty = true;
+        refreshModel();
+    } else if (pv === "editor") {
         gState.ui.editor = 1;
         gState.ui.sel = gTiles.length ? gTiles[Math.min(1, gTiles.length - 1)].key : "";
         glitchToggleLock(gState.working, gState.ui.sel);

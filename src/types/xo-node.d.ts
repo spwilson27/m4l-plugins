@@ -7,3 +7,6 @@ interface XoStretchApi {
   ): { channels: Float32Array[]; engine: string; note: string };
 }
 declare const XO_STRETCH_EMBEDDED: XoStretchApi | undefined;
+
+/** src/xo_search.js, embedded by scripts/build_xo_map.py (plain Node requires it instead). */
+declare const XO_SEARCH_EMBEDDED: any;

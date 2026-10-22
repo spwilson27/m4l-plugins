@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/types/reverbplus.d.ts",
+    "src/reverbplus_config.js",
+    "src/reverbplus_face_common.js",
+    "src/types/reverbplus_face_c.d.ts",
+    "src/reverbplus_face_c_head.js"
+  ]
+}

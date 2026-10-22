@@ -48,7 +48,9 @@ for (const reqId of [
   "obj-pitch-dial", "obj-speed-dial", "obj-grain-dial", "obj-decay-dial", "obj-stretch-mode", "obj-gain-dial", "obj-reverse-btn",
   "obj-root-thispatcher", "obj-pak-vis", "obj-expr-width", "obj-prep-setwidth",
   "obj-panel-left", "obj-panel-filters", "obj-panel-playback",
-  "obj-scan-msg", "obj-scan-line", "obj-prep-playhead",
+  "obj-snap-pos", "obj-prep-playpos", "obj-msg-snap-start", "obj-msg-snap-stop", "obj-msg-play-done", "obj-route-uiout",
+  "obj-trig-stop", "obj-msg-stop-fade", "obj-del-stop", "obj-msg-stop-zero", "obj-msg-env-unity",
+  "obj-msg-hotkey-random", "obj-msg-hotkey-stop",
   "obj-key", "obj-sel-key", "obj-msg-hotkey-save", "obj-msg-del-saved"
 ]) {
   assert(boxMap.has(reqId), `Missing required box: ${reqId}`);
@@ -130,7 +132,38 @@ const linesFromPort = (srcId, srcOut) =>
     .map((pl) => `${pl.destination[0]}:${pl.destination[1]}`);
 
 // Arrow keys: obj-key -> obj-sel-key (28 / 29 / 30 / 31) -> hotkey messages -> obj-minimap
-assert(/^sel 115 83 127 8 -5 -3 28 29 30 31$/.test(boxMap.get("obj-sel-key").text), "obj-sel-key must also match the arrow key codes 28 29 30 31");
+assert(/^sel 115 83 127 8 -5 -3 28 29 30 31 114 82 27$/.test(boxMap.get("obj-sel-key").text), "obj-sel-key must match the arrow key codes 28 29 30 31, r / R (114 / 82) and Esc (27)");
+for (const [outlet, msgId, text] of [
+  [10, "obj-msg-hotkey-random", "hotkey_random"],
+  [11, "obj-msg-hotkey-random", "hotkey_random"],
+  [12, "obj-msg-hotkey-stop", "hotkey_stop"]
+]) {
+  assert.strictEqual(boxMap.get(msgId).text, text);
+  assert(linesFromPort("obj-sel-key", outlet).includes(`${msgId}:0`), `obj-sel-key outlet ${outlet} (114 / 82 / 27) must feed ${msgId}`);
+  assert(linesFrom(msgId).includes("obj-minimap"), `${msgId} must route to obj-minimap`);
+}
+assert.strictEqual(boxMap.get("obj-sel-key").numoutlets, 14, "sel with 13 arguments has 14 outlets");
+// Playhead: sfplay~ reports its real position (outlet 2, ms) and the finish bang (outlet 3); snapshot~ samples it only while playing
+assert.strictEqual(boxMap.get("obj-sfplay").text, "sfplay~ 2 0 1", "sfplay~ gets the position outlet");
+assert.strictEqual(boxMap.get("obj-sfplay").numoutlets, 4);
+assert(linesFromPort("obj-sfplay", 2).includes("obj-snap-pos:0"), "sfplay~ position outlet -> snapshot~");
+assert(/^snapshot~ 33 @active 0$/.test(boxMap.get("obj-snap-pos").text), "snapshot~ at ~30 Hz, inactive until a play starts");
+assert(linesFrom("obj-snap-pos").includes("obj-prep-playpos") && linesFrom("obj-prep-playpos").includes("obj-minimap"));
+assert.strictEqual(boxMap.get("obj-prep-playpos").text, "prepend play_pos");
+assert(linesFromPort("obj-trig-play", 0).includes("obj-msg-snap-start:0") && boxMap.get("obj-msg-snap-start").text === "start", "snapshot~ starts with the play message");
+assert(linesFromPort("obj-sfplay", 3).includes("obj-msg-snap-stop:0") && boxMap.get("obj-msg-snap-stop").text === "stop", "the finish bang stops snapshot~");
+assert(linesFromPort("obj-sfplay", 3).includes("obj-msg-play-done:0") && boxMap.get("obj-msg-play-done").text === "play_done" && linesFrom("obj-msg-play-done").includes("obj-minimap"), "the finish bang reaches the v8ui as play_done");
+for (const goneId of ["obj-scan-msg", "obj-scan-line", "obj-prep-playhead"]) {
+  assert(!boxMap.has(goneId), `${goneId}: the constant-speed playhead animation is gone`);
+}
+// Esc: v8ui outlet 1 `stop_playback` -> fade 8 ms on the envelope, halt sfplay~ 12 ms later, envelope back to unity
+assert.strictEqual(boxMap.get("obj-route-uiout").text, "route stop_playback");
+assert(linesFromPort("obj-minimap", 1).includes("obj-route-uiout:0"), "v8ui outlet 1 -> route stop_playback");
+assert(linesFromPort("obj-route-uiout", 0).includes("obj-trig-stop:0"));
+assert(linesFromPort("obj-trig-stop", 1).includes("obj-msg-stop-fade:0") && linesFromPort("obj-msg-stop-fade", 0).includes("obj-env-line:0") && boxMap.get("obj-msg-stop-fade").text === "0 8");
+assert(linesFromPort("obj-trig-stop", 0).includes("obj-del-stop:0") && linesFromPort("obj-del-stop", 0).includes("obj-msg-stop-zero:0"));
+assert(linesFromPort("obj-msg-stop-zero", 0).includes("obj-sfplay:0") && boxMap.get("obj-msg-stop-zero").text === "0", "stop sends 0 to sfplay~");
+assert(linesFromPort("obj-del-stop", 0).includes("obj-msg-env-unity:0") && linesFromPort("obj-msg-env-unity", 0).includes("obj-env-line:0"), "the envelope returns to unity after the stop");
 for (const [outlet, msgId, text] of [
   [6, "obj-msg-hotkey-prev", "hotkey_prev_similar"],
   [7, "obj-msg-hotkey-next", "hotkey_next_similar"],
@@ -196,7 +229,9 @@ const minimapRect = boxMap.get("obj-minimap").presentation_rect;
 const presWidgets = [];
 for (const [id, box] of boxMap.entries()) {
   if (box.maxclass === "panel" || box.maxclass === "node.codebox" || !box.presentation || !box.presentation_rect || box.hidden) continue;
-  presWidgets.push({ id, maxclass: box.maxclass, r: box.presentation_rect });
+  // Click-through live.comment labels are exempt from the pairwise check below: Live stretches a label to
+  // (font + 8) px, which may reach over the control under it, but ignoreclick keeps it from taking that control's clicks.
+  if (!(box.maxclass === "live.comment" && box.ignoreclick === 1)) presWidgets.push({ id, maxclass: box.maxclass, r: box.presentation_rect });
   if (id === "obj-minimap") continue;
   const r = box.presentation_rect;
   const overlapsX = r[0] < (minimapRect[0] + minimapRect[2]) && (r[0] + r[2]) > minimapRect[0];
@@ -674,7 +709,7 @@ const PANEL_OF = { toolbar: "obj-panel-toolbar", options: "obj-panel-options", l
 const contains = (outer, inner) =>
   inner[0] >= outer[0] && inner[1] >= outer[1] &&
   inner[0] + inner[2] <= outer[0] + outer[2] && inner[1] + inner[3] <= outer[1] + outer[3];
-// obj-expr-width: 'expr 278 + $i1 * 136 + $i4 * 102 + $i2 * (214 - 74 * $i5) + ...' over (saved filters playback options theme); evaluated here.
+// obj-expr-width: 'expr 278 + $i1 * 136 + $i4 * 156 + $i2 * (214 - 74 * $i5) + ...' over (saved filters playback options theme); evaluated here.
 // No comma (so no if()): a comma inside an expr box has to be escaped in Max.
 const exprWidth = (sv, fv, pv, ov, theme) => {
   const text = boxMap.get("obj-expr-width").text;
@@ -784,9 +819,9 @@ assert(linesFrom("obj-expr-width").includes("obj-prep-setwidth") && linesFrom("o
   assert.strictEqual(boxMap.get("obj-toggle-options-btn").pictures[0], "gear.svg");
   assert.strictEqual(boxMap.get("obj-toggle-options-btn").annotation_name, "Show Options Section");
   const keys = Object.keys(p.parameters).filter((k) => k !== "parameterbanks" && k !== "inherited_shortname");
-  assert.deepStrictEqual(keys.filter((k) => !k.endsWith("-mir")).slice(-2), ["obj-toggle-options-btn", "obj-theme-tab"], "new parameters are appended last");
+  assert.deepStrictEqual(keys.filter((k) => !k.endsWith("-mir")).slice(-4), ["obj-toggle-options-btn", "obj-theme-tab", "obj-searches-cat", "obj-zoom-speed"], "new parameters are appended last");
   const longs = p.boxes.map((b) => b.box).filter((b) => b.saved_attribute_attributes && b.saved_attribute_attributes.valueof && b.saved_attribute_attributes.valueof.parameter_longname).map((b) => b.saved_attribute_attributes.valueof.parameter_longname);
-  assert.deepStrictEqual(longs.filter((l) => !l.endsWith("View")).slice(-2), ["ShowOptions", "Theme"], "new parameter boxes come after every existing parameter box");
+  assert.deepStrictEqual(longs.filter((l) => !l.endsWith("View")).slice(-4), ["ShowOptions", "Theme", "Searches Category", "Zoom Speed"], "new parameter boxes come after every existing parameter box");
   assert.strictEqual(new Set(longs).size, longs.length, "parameter long names are unique (hidden mirrors included)");
 }
 
@@ -832,6 +867,41 @@ for (const id of ["obj-panel-filters", "obj-panel-playback", "obj-hdr-filters", 
   assert(THEME_STYLE.LCD[id] && THEME_STYLE.Focus[id], `${id} is restyled by both themes`);
 }
 assert(THEME_STYLE.LCD["obj-pitch-dial"].lcdcolor, "LCD numbox colours (lcdcolor) come from the LCD style");
+// Live drops a numbox's unit when its WIDEST value string does not fit the cell (12 pt in the 47 px filter cells
+// showed bare "0.00" / "5.00" in Live). Widest strings are Live's str_for_value output for each parameter;
+// Menlo advances 0.602 em, and the LCD numbox keeps about 5 px of inset on each side.
+{
+  const WIDEST = {
+    "obj-maxlen-dial": "1.29 s", "obj-tone-dial": "-100 %", "obj-filter-tonal-dial": "-100 %", "obj-filter-drum-dial": "-100 %",
+    "obj-pitch-dial": "+24 st", "obj-speed-dial": "52.4 %", "obj-grain-dial": "35.6 ms", "obj-decay-dial": "966 ms",
+    "obj-stretch-mode": "Cmplx", "obj-gain-dial": "-36 dB"
+  };
+  for (const [id, text] of Object.entries(WIDEST)) {
+    const style = THEME_STYLE.LCD[id];
+    assert(style && style.appearance === 4, `${id} is an LCD numbox in the LCD theme`);
+    const need = text.length * 0.602 * style.fontsize + 10;
+    const have = layAll.boxes[id].rect[2];
+    assert(need <= have, `LCD ${id}: widest value "${text}" needs ${need.toFixed(1)} px at ${style.fontsize} pt but the cell is ${have} px (Live would drop the unit)`);
+  }
+}
+// Live sizes every single-line live.comment to exactly floor(font + 8) px whatever the patch says (measured in the
+// VM: 7 pt -> 15, 9 / 9.5 pt -> 17), using the font the theme sets, so each laid-out label must have that height
+// (else applyXoLayout and Live disagree); labels are click-through so a taller box can't block the control under it.
+for (const theme of ["LCD", "Focus"]) {
+  const lay = xoLayout.computeXoLayout(theme, 1, 1, 1, 1);
+  for (const [id, spec] of Object.entries(lay.boxes)) {
+    const box = boxMap.get(id);
+    if (!box || box.maxclass !== "live.comment") continue;
+    const font = (THEME_STYLE[theme][id] && THEME_STYLE[theme][id].fontsize) || box.fontsize;
+    assert.strictEqual(spec.rect[3], Math.floor(font + 8), `${theme} ${id}: label height must be Live's floor(font + 8) for ${font} pt`);
+    assert.strictEqual(box.ignoreclick, 1, `${id}: labels are click-through`);
+  }
+}
+// The ">" prompt shares the search field's (regular) weight and sits 1 px higher, because live.comment
+// insets its text 1 px more than textedit (measured in Live), so the two text lines share a baseline.
+assert.strictEqual(layAll.boxes["obj-lcd-f-prompt"].rect[1], layAll.boxes["obj-search-box"].rect[1] - 1, "LCD prompt top is 1 px above the search box top");
+assert.strictEqual(layAll.boxes["obj-lcd-f-prompt"].rect[3], 17, "LCD prompt is a label: Live's 17 px minimum for 9 pt (its text is top-aligned, so only the top sets the baseline)");
+assert.strictEqual(boxMap.get("obj-lcd-f-prompt").fontface, 0, "LCD prompt is regular weight like the search text");
 
 // Scripting names: getnamed() needs a unique varname on every laid-out box, matching XO_LAYOUT_NAMES.
 const namesMatch = /var XO_LAYOUT_NAMES = (\{[^\n]*\});/.exec(boxMap.get("obj-minimap").textfile.text);
@@ -1044,9 +1114,21 @@ const fakeLayoutPatcher = {
 };
 this.patcher = fakeLayoutPatcher; // the script reads `this.patcher` at top level, like a jsthis
 
-eval(stripJs);
+// consts / lets of the script stay inside the eval; this exposes the few the category-search tests read or set
+var xoX = null;
+eval(stripJs + `
+xoX = {
+  get TOOLBAR_ITEMS() { return TOOLBAR_ITEMS; }, get CATEGORIES() { return CATEGORIES; }, get CAT_ID_LIST() { return CAT_ID_LIST; },
+  get CAT_NONE_COLOR() { return CAT_NONE_COLOR; },
+  get activeCategory() { return activeCategory; }, set activeCategory(v) { activeCategory = v; },
+  get searchTerms() { return searchTerms; }, set searchTerms(v) { searchTerms = v; },
+  get matchFolders() { return matchFolders; }, set matchFolders(v) { matchFolders = v; },
+  get searchesCatIdx() { return searchesCatIdx; }, set searchesCatIdx(v) { searchesCatIdx = v; },
+  get zoomSpeed() { return zoomSpeed; }
+};`);
 
 loadbang();
+test_selected(1); // the hotkey tests below call the patcher-path hotkeys directly: act as the device selected in Live
 const lay = getLayout();
 const pts = getPoints();
 
@@ -1092,6 +1174,28 @@ strip_filter_maxlen(5000);
     selected_info(3, "Wave Test", "kick", 0, 400, 50, 0, ...new Array(24).fill(0.5), "nbrs", 1, 2);
     test_wheel(100, 70, 0, 1);
     assert(getView().zoom > 1.0, "test_wheel zooms the map");
+    // Zoom Speed: one wheel step at 1.0x zooms by exp(0.48) (1.6x the former exp(0.3) exponent); the factor multiplies the exponent
+    {
+      const one = (speed, dy) => { resetView(); set_zoomspeed(speed); test_wheel(100, 70, 0, dy); return getView().zoom; };
+      assert(Math.abs(one(1, 1) - Math.exp(0.48)) < 1e-9, "1.0x: one wheel step = exp(0.48)");
+      assert(Math.abs(Math.log(one(1, 1)) / Math.log(Math.exp(0.3)) - 1.6) < 1e-9, "1.0x is 1.6x faster than the old exponent per wheel unit");
+      assert(Math.abs(one(2, 1) - Math.exp(0.96)) < 1e-9, "2x doubles the exponent");
+      assert(Math.abs(one(0.25, 1) - Math.exp(0.12)) < 1e-9, "0.25x quarters the exponent");
+      assert(Math.abs(one(0.5, 1) - Math.exp(0.24)) < 1e-9, "0.5x halves the exponent");
+      assert.strictEqual(one(1, 40), Math.exp(0.9), "a huge trackpad delta is capped (dy 3 units, exponent cap 0.9 at speed 1)");
+      assert.strictEqual(one(4, 40), Math.exp(1.92), "cap grows with speed so a single step is never cut: exp(0.48 * 4)");
+      assert(Math.abs(one(4, 1) - Math.exp(1.92)) < 1e-9, "4x: one step = exp(1.92), not clamped");
+      set_zoomspeed(99); assert.strictEqual(xoX.zoomSpeed, 4, "speed clamps to 4x");
+      set_zoomspeed(0); assert.strictEqual(xoX.zoomSpeed, 0.25, "speed clamps to 0.25x");
+      set_zoomspeed(1);
+      resetView(); for (let i = 0; i < 40; i++) test_wheel(100, 70, 0, 3);
+      assert.strictEqual(getView().zoom, 16, "zoom in clamps at 16x");
+      for (let i = 0; i < 40; i++) test_wheel(100, 70, 0, -3);
+      assert.strictEqual(getView().zoom, 1, "zoom out clamps at 1x");
+      // many small trackpad deltas add up like the same total (no jumpiness): 10 x 0.1 == 1 x 1
+      resetView(); for (let i = 0; i < 10; i++) test_wheel(100, 70, 0, 0.1);
+      assert(Math.abs(getView().zoom - Math.exp(0.48)) < 1e-9, "10 small deltas = one step");
+    }
     audition_info("/tmp/x.wav", 250, 11025, 1, "complex", 7, 50, 1);
     test_width(776);
     test_report();
@@ -1184,7 +1288,111 @@ strip_filter_maxlen(5000);
   const before = getSelectedIndex();
   run(() => { onkeydown(29); });
   assert.notStrictEqual(getSelectedIndex(), before, "Right arrow selects the next similar sound");
+  // r / R = Random Sample: same code path as the toolbar button (select_index), single fire over both delivery paths
+  run(() => { onkeydown(114); hotkey_random(); });
+  assert.strictEqual(count("select_index"), 1, "r via both paths selects ONE random sample");
+  run(() => { hotkey_random(); onkeydown(82); });
+  assert.strictEqual(count("select_index"), 1, "R via both paths selects ONE random sample");
+  run(() => { onkeydown("r"); });
+  assert.strictEqual(count("select_index"), 1);
+  run(() => { onkeydown(114, 114, 0); });
+  assert.strictEqual(count("select_index"), 0, "a key-up event (down = 0) does nothing");
+  {
+    // respects the active category: only visible points are picked
+    xoX.activeCategory = "kick";
+    const picked = new Set();
+    for (let n = 0; n < 12; n++) { sleep(25); sent.length = 0; hotkey_random(); const m = sent.find((x) => x[1] === "select_index"); if (m) picked.add(m[2]); }
+    assert(picked.size > 0 && [...picked].every((i) => isPointVisible(getPoints()[i])), "random hotkey respects the active category / filters");
+    xoX.activeCategory = "ALL";
+  }
+  // Esc: stop playback + clear the playhead; outlet 1 `stop_playback`. Native Esc = keycode -3 with textcharacter 27 (never a delete)
+  const stops = () => sent.filter((m) => m[0] === 1 && m[1] === "stop_playback").length;
+  const savedN = getSavedList().length;
+  run(() => { onkeydown(-3, 27, 1); hotkey_stop(); });
+  assert.strictEqual(stops(), 1, "Esc via both paths stops ONCE");
+  assert.strictEqual(getSavedList().length, savedN, "Esc (keycode -3, char 27) must not delete a saved row");
+  assert(getPlayhead().pos < 0, "Esc clears the playhead");
+  run(() => { onkeydown(27); });
+  assert.strictEqual(stops(), 1, "Esc keycode 27 stops");
+  run(() => { onkeydown("Escape"); });
+  assert.strictEqual(stops(), 1, "Esc by name stops");
+  run(() => { onkeydown(27, 27, 0); });
+  assert.strictEqual(stops(), 0, "Esc key-up does nothing");
   global.outlet = prevOutlet;
+}
+
+// --- Playhead: the real sfplay~ position mapped onto the source waveform ---
+{
+  const near = (a, b, m, eps = 1e-9) => assert(Math.abs(a - b) < eps, `${m}: ${a} vs ${b}`);
+  const SRC = 1000;
+  // source plays itself
+  const plain = engine.buildPlayMap({ srcMs: SRC, ratio: 1, reverse: false, rendered: false, renderedMs: 0, decayMs: 20000 });
+  assert.deepStrictEqual(plain, { rate: 1, skipMs: 0, srcMs: SRC, endMs: SRC, rev: 0 });
+  near(playheadFraction(plain, 0), 0, "plain start"); near(playheadFraction(plain, 250), 0.25, "plain quarter");
+  near(playheadFraction(plain, 1000), 1, "plain end"); near(playheadFraction(plain, 5000), 1, "stops at the end");
+  near(playheadFraction(plain, -5), 0, "never before the start");
+  // Trim/Dec on a direct play (a gain fade, sfplay~ keeps running): the line stops at the cut
+  const cut = engine.buildPlayMap({ srcMs: SRC, ratio: 1, reverse: false, rendered: false, renderedMs: 0, decayMs: 400 });
+  assert.strictEqual(cut.endMs, 400);
+  near(playheadFraction(cut, 700), 0.4, "Trim/Dec cut: held at the cut");
+  // rendered Speed 50 %: 2 s long, half the rate over the source
+  const slow = engine.buildPlayMap({ srcMs: SRC, ratio: 0.5, reverse: false, rendered: true, renderedMs: 2000, decayMs: 20000 });
+  assert.strictEqual(slow.rate, 0.5);
+  near(playheadFraction(slow, 1000), 0.5, "Speed 50 %: halfway after 1 s of 2 s"); near(playheadFraction(slow, 2000), 1, "Speed 50 %: end");
+  // Speed 200 %: 0.5 s long, twice the rate
+  const fast = engine.buildPlayMap({ srcMs: SRC, ratio: 2, reverse: false, rendered: true, renderedMs: 500, decayMs: 20000 });
+  near(playheadFraction(fast, 250), 0.5, "Speed 200 %: halfway after 250 ms"); near(playheadFraction(fast, 500), 1, "Speed 200 %: end");
+  // Speed 50 % + Trim/Dec 400 ms (forward): keeps the start: only the first 200 ms of the source are heard
+  const slowTrim = engine.buildPlayMap({ srcMs: SRC, ratio: 0.5, reverse: false, rendered: true, renderedMs: 400, decayMs: 400 });
+  near(playheadFraction(slowTrim, 400), 0.2, "Speed 50 % + Trim/Dec 400: ends at 20 % of the source");
+  // Reverse: moves right to left; Speed 100 % renders, nothing trimmed
+  const rev = engine.buildPlayMap({ srcMs: SRC, ratio: 1, reverse: true, rendered: true, renderedMs: 1000, decayMs: 20000 });
+  near(playheadFraction(rev, 0), 1, "Reverse starts at the right end"); near(playheadFraction(rev, 500), 0.5, "Reverse: middle"); near(playheadFraction(rev, 1000), 0, "Reverse ends at the left");
+  // Reverse + Trim/Dec 300: the LAST 300 ms of the reversed source = original 300 ms .. 0
+  const revTrim = engine.buildPlayMap({ srcMs: SRC, ratio: 1, reverse: true, rendered: true, renderedMs: 300, decayMs: 300 });
+  near(revTrim.skipMs, 700, "Reverse + Trim skips the front of the reversed render");
+  near(playheadFraction(revTrim, 0), 0.3, "Reverse + Trim/Dec starts where the kept part begins"); near(playheadFraction(revTrim, 300), 0, "Reverse + Trim/Dec ends at 0");
+  // Reverse + Speed 50 % + Trim 400: first sound is original 400*0.5 = 200 ms
+  const revSlowTrim = engine.buildPlayMap({ srcMs: SRC, ratio: 0.5, reverse: true, rendered: true, renderedMs: 400, decayMs: 400 });
+  near(playheadFraction(revSlowTrim, 0), 0.2, "Reverse + Speed 50 % + Trim: starts at 20 %"); near(playheadFraction(revSlowTrim, 400), 0, "... and ends at 0");
+
+  // The v8ui follows play_pos only while an audition is active; the line is where the position says, stops at the end, Esc clears
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  const prevOutlet = global.outlet;
+  const sent = [];
+  global.outlet = (idx, ...args) => { sent.push([idx, ...args]); };
+  play_pos(300);
+  assert.strictEqual(getPlayhead().active, false, "no audition: position messages are ignored");
+  audition_info("/x.wav", 2000, 88200, 1, "granular", 0, 50, 0, 0.5, 0, 1000, 2000, 0);
+  near(getPlayhead().pos, 0, "an audition starts the line at the file start");
+  assert.strictEqual(getPlayhead().active, true);
+  play_pos(500); near(getPlayhead().pos, 0.25, "Speed 50 %: 500 ms in = 25 %");
+  play_pos(1500); near(getPlayhead().pos, 0.75, "1500 ms in = 75 %");
+  play_done(); assert.strictEqual(getPlayhead().active, true, "a done bang right after the start (the halt of the replaced file) is ignored");
+  sleep(170);
+  play_pos(2000); assert.strictEqual(getPlayhead().active, false, "reaching endMs finishes the playback"); near(getPlayhead().pos, 1, "the line stays at the end");
+  play_pos(500); near(getPlayhead().pos, 1, "positions after the end are ignored");
+  // reversed + done bang
+  audition_info("/y.wav", 1000, 44100, 1, "plain", 0, 100, 0, 1, 0, 1000, 1000, 1);
+  near(getPlayhead().pos, 1, "Reverse starts at the right end");
+  play_pos(250); near(getPlayhead().pos, 0.75, "Reverse moves right to left");
+  sleep(170); play_done(); assert.strictEqual(getPlayhead().active, false, "the finish bang ends the playback"); near(getPlayhead().pos, 0, "... at the left end");
+  // Esc clears
+  audition_info("/z.wav", 1000, 44100, 0, "plain", 0, 100, 0, 1, 0, 1000, 1000, 0);
+  play_pos(100);
+  sent.length = 0; stopPlayback();
+  assert(sent.some((m) => m[0] === 1 && m[1] === "stop_playback"));
+  assert(getPlayhead().pos < 0 && !getPlayhead().active, "Esc hides the line and ends the audition");
+  play_pos(300); assert(getPlayhead().pos < 0, "positions after Esc are ignored");
+  // an unchanged position does not redraw
+  let redraws = 0; const keepRedraw = mgraphics.redraw; mgraphics.redraw = () => { redraws++; };
+  audition_info("/z.wav", 1000, 44100, 0, "plain", 0, 100, 0, 1, 0, 1000, 1000, 0);
+  redraws = 0; play_pos(100); play_pos(100); play_pos(100.1);
+  assert.strictEqual(redraws, 1, "redraw only when the position changed");
+  mgraphics.redraw = keepRedraw;
+  global.outlet = prevOutlet;
+  stopPlayback();
+  console.log("OK: playhead = real sfplay~ position (source, Speed 50 / 200 %, Reverse, Trim/Dec, end, Esc)");
 }
 
 
@@ -1226,6 +1434,24 @@ strip_filter_maxlen(5000);
   const z1 = getView().zoom;
   onwheel(cursor[0], cursor[1], 1, 0, 0, 0, 0, 0, 0, -1);
   assert(getView().zoom < z1, "wheel in the long (...modifiers, inc_x, inc_y) form zooms out");
+  resetView();
+  // Regression: Max's documented 9-argument form onwheel(x, y, inc_x, inc_y, cmd, shift, capslock, option, ctrl).
+  // The old parser read the trailing option / ctrl flags (0) as the delta, so a real wheel never zoomed.
+  onwheel(cursor[0], cursor[1], 0, 1, 0, 0, 0, 0, 0);
+  assert(getView().zoom > 1, "documented onwheel form: wheel up zooms in");
+  const z2 = getView().zoom;
+  onwheel(cursor[0], cursor[1], 0, -1, 0, 1, 0, 0, 0);
+  assert(getView().zoom < z2, "documented onwheel form with shift held: wheel down zooms out (modifiers are not deltas)");
+  resetView();
+  // Cmd-drag pans (user request) like Option-drag and the middle button, without changing the selection
+  zoomViewAt(cursor[0], cursor[1], 4, lz);
+  const vCmd = getView();
+  const selBeforeCmd = getSelectedIndex();
+  onclick(cursor[0], cursor[1], 1, 1, 0, 0, 0, 0);
+  ondrag(cursor[0] + 30, cursor[1] + 20, 1, 1, 0, 0, 0, 0);
+  ondrag(cursor[0] + 30, cursor[1] + 20, 0, 1, 0, 0, 0, 0);
+  assert(getView().x0 !== vCmd.x0 || getView().y0 !== vCmd.y0, "Cmd-drag pans the zoomed map");
+  assert.strictEqual(getSelectedIndex(), selBeforeCmd, "Cmd-drag does not change the selection");
   resetView();
 
   // Pan: Option-drag and middle button (PointerEvent.buttons & 4) move the view without touching selection
@@ -1320,6 +1546,47 @@ strip_filter_maxlen(5000);
   selected_info(0, "Kick Atmos", "kick", 0, 320, 38, 0, ...new Array(24).fill(0.3), "nbrs");
 }
 
+// Regression (user screenshot): toggling a toolbar category that hides the selected sample moved the selection to
+// the first visible point locally, but kept the OLD sample's neighbour list, so lines fanned out from the new point
+// to unrelated dots. Neighbour lines must only be drawn from the point they belong to, and the node must be asked
+// to announce the new selection (without auditioning it).
+{
+  const pts = getPoints();
+  const lineStartsAt = (idx) => {
+    paintCommands.length = 0;
+    paint();
+    const [sx, sy] = normToScreen(pts[idx].x, pts[idx].y, getLayout());
+    return paintCommands.filter((c) => c.op === "move_to" && Math.abs(c.x - sx) < 0.01 && Math.abs(c.y - sy) < 0.01).length;
+  };
+  strip_filter_cat("ALL");
+  const cats = getCategoryIds();
+  let sel = -1, hideCat = null;
+  for (let i = 0; i < pts.length && sel < 0; i++) {
+    for (let ci = 0; ci < cats.length; ci++) {
+      const bit = 1 << ci;
+      if (!(pts[i].mask & bit) && pts.some((p, j) => j !== i && (p.mask & bit))) { sel = i; hideCat = cats[ci]; break; }
+    }
+  }
+  assert(sel >= 0, "need a point that some category hides while others stay visible");
+  const nbrs = pts.map((_, j) => j).filter((j) => j !== sel).slice(0, 5);
+  selected_info(sel, "Glitch Test", "kick", 0, 300, 50, 0, ...new Array(24).fill(0.3), "nbrs", ...nbrs);
+  assert(lineStartsAt(sel) >= 3, "neighbour lines are drawn from the selected point");
+  const sent = [];
+  const prevOutlet = global.outlet;
+  global.outlet = (idx, ...args) => { sent.push([idx, ...args]); };
+  strip_filter_cat(hideCat);
+  global.outlet = prevOutlet;
+  const moved = getSelectedIndex();
+  assert.notStrictEqual(moved, sel, `category ${hideCat} hides the selected point, so the selection moves`);
+  assert(sent.some((m) => m[0] === 0 && m[1] === "select_index" && m[2] === moved && m[3] === 0),
+    "the moved selection is announced to the node with select_index <idx> 0 (no audition)");
+  assert.strictEqual(lineStartsAt(moved), 0, "no neighbour lines from the new point while it still holds the old point's neighbours");
+  selected_info(moved, "Moved", "kick", 0, 300, 50, 0, ...new Array(24).fill(0.3), "nbrs", ...nbrs.filter((j) => j !== moved));
+  strip_filter_cat("ALL");
+  assert(lineStartsAt(moved) >= 1, "once the node announces the new point, its own neighbour lines are drawn");
+  selected_info(0, "Kick Atmos", "kick", 0, 320, 38, 0, ...new Array(24).fill(0.3), "nbrs");
+}
+
 
 // --- Test B: Scrollable, Selectable, Reorderable & Deletable Saved List (Starts Empty!) ---
 assert.strictEqual(getSavedList().length, 0, "Regression: Saved list must always start empty on a new instance");
@@ -1372,9 +1639,9 @@ assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW mu
   set_show_options(1);
   assert.strictEqual(hid("obj-panel-options"), 0);
   assert.strictEqual(hid("obj-theme-tab"), 0, "Options shows the Theme selector");
-  assert.deepStrictEqual(rect("obj-panel-options"), [28, 5, 96, 159], "Options slides in right of the toolbar");
-  assert.strictEqual(rect("obj-panel-left")[0], 130, "the map panel slides right by the Options width + gap");
-  assert.strictEqual(rect("obj-panel-filters")[0], 130 + 380 + 6, "Filters follow (Saved shown)");
+  assert.deepStrictEqual(rect("obj-panel-options"), [28, 5, 150, 159], "Options slides in right of the toolbar");
+  assert.strictEqual(rect("obj-panel-left")[0], 184, "the map panel slides right by the Options width + gap");
+  assert.strictEqual(rect("obj-panel-filters")[0], 184 + 380 + 6, "Filters follow (Saved shown)");
   set_show_options(0);
   assert.strictEqual(hid("obj-panel-options"), 1);
   assert.strictEqual(rect("obj-panel-left")[0], 28);
@@ -1404,9 +1671,14 @@ assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW mu
   // LCD palette: amber monochrome (blue accent -> warm, alpha kept), category colours stay distinct warm tones
   const amber = xoPaletteColor(0.22, 0.74, 0.97, 0.5);
   assert(amber[0] > amber[1] && amber[1] > amber[2] && amber[3] === 0.5, `LCD maps the blue accent to amber (${amber})`);
-  const cats = ["kick", "snare", "hihat", "clap", "tom", "rim", "cymbal", "shaker", "perc", "fx"].map((c) => xoPaletteCat(c, [0, 0, 1, 1]).join());
-  assert.strictEqual(new Set(cats).size, cats.length, "LCD category colours stay distinct");
-  for (const c of cats) { const v = c.split(",").map(Number); assert(v[0] >= v[1] && v[1] >= v[2], `LCD category colour is warm (${c})`); }
+  const catIds = ["kick", "snare", "hihat", "clap", "perc", "shaker", "cymbal", "voice", "none"];
+  const cats = catIds.map((c) => xoPaletteCat(c, [0, 0, 1, 1]));
+  assert.strictEqual(new Set(cats.map((c) => c.join())).size, cats.length, "LCD category colours stay distinct");
+  for (let i = 0; i < cats.length; i++) for (let j = i + 1; j < cats.length; j++) {
+    const d = Math.hypot(cats[i][0] - cats[j][0], cats[i][1] - cats[j][1], cats[i][2] - cats[j][2]);
+    assert(d > 0.18, `LCD colours of ${catIds[i]} / ${catIds[j]} are far enough apart in the amber family (${d.toFixed(2)})`);
+  }
+  for (const c of cats) { const v = c; assert(v[0] >= v[1] && v[1] >= v[2], `LCD category colour is warm (${c})`); }
   paintCommands.length = 0;
   paint();
   const cols = paintCommands.filter((c) => c.op === "rgba" && c.a > 0.5);
@@ -1557,7 +1829,24 @@ assert.deepStrictEqual(stripOutletHistory[0], ["step_similar", -1]);
 
 // Click Re-Seed button on bottom toolbar tray
 applyToolbarAction("reseed");
-assert.deepStrictEqual(stripOutlets[0], ["reseed_map"], "Clicking Re-Seed toolbar button must emit reseed_map");
+assert.deepStrictEqual(stripOutlets[0], ["reseed_filtered"], "Clicking Re-Seed toolbar button must emit reseed_filtered (the Filters section button's message)");
+assert.strictEqual(boxMap.get("obj-msg-reseed-filtered").text, "reseed_filtered", "the Filters-section button sends the same message");
+assert(linesFrom("obj-msg-reseed-filtered").includes("obj-node"), "reseed_filtered goes to the node engine");
+assert(xoX.TOOLBAR_ITEMS.find((it) => it.id === "reseed").title.includes("Filters"), "toolbar Re-Seed tooltip mentions the active Filters");
+{
+  // The node's handler of that message only returns samples passing the filters (search text, MaxLen, Tone, Tonal, Drums, folders)
+  const es = engine.engineState;
+  const keepF = { corpusSamples: es.corpusSamples, knownFolders: es.knownFolders, maxLenMs: es.maxLenMs, searchQuery: es.searchQuery };
+  es.corpusSamples = scanRes.samples;
+  es.knownFolders = [{ path: tmpDir, name: "TestDrums", enabled: true, count: scanRes.samples.length }];
+  es.searchQuery = "hihat";
+  nodeHandlers.reseed_filtered();
+  assert(es.samples.length > 0 && es.samples.every((smp) => /hihat/i.test(smp.name) && engine.isSamplePassingFilters(smp)), "reseed_filtered with a search filter returns only matching samples");
+  es.searchQuery = "";
+  nodeHandlers.reseed_filtered();
+  assert(es.samples.length >= 2, "without a search filter other samples come back");
+  Object.assign(es, keepF);
+}
 
 // Test Folder List v8ui widget (obj-folder-list): toggle, enable all, scanning indicator, and [x] delete folder from index
 const vm = require("vm");
@@ -1614,7 +1903,7 @@ folderCtx.paint();
     const get = (n) => nodeOutletLog.find((m) => m[0] === n);
     const file = get("play_file")[1];
     const dec = engine.parseAudioBuffer(fs.readFileSync(file), fs.statSync(file).size, 25);
-    return { file, rendered: file !== scanRes.samples[monoSampleIdx].path, speed: get("play_speed")[1], scan: get("play_scan_dur")[1], dec };
+    return { file, rendered: file !== scanRes.samples[monoSampleIdx].path, speed: get("play_speed")[1], scan: get("play_scan_dur")[1], info: get("audition_info"), dec };
   };
   for (const mode of [0, 1, 2]) {
     const a = play(0, 50, mode), b = play(7, 50, mode), c = play(-12, 50, mode);
@@ -1623,6 +1912,8 @@ folderCtx.paint();
       assert.strictEqual(r.speed, 1, "sfplay~ is never repitched on a rendered file");
       assert(Math.abs(r.dec.durationMs - srcMs * 2) <= 15, `mode ${mode}: length ${r.dec.durationMs} must be input/0.5 = ${srcMs * 2} whatever the Pitch`);
       assert(Math.abs(r.scan - r.dec.durationMs) <= 2, `mode ${mode}: scan duration ${r.scan} must match the rendered length ${r.dec.durationMs}`);
+      const [rate, skipMs, mapSrc, endMs, rev] = r.info.slice(9);
+      assert(rate === 0.5 && skipMs === 0 && mapSrc === srcMs && rev === 0 && Math.abs(endMs - r.dec.durationMs) <= 2, `mode ${mode}: audition_info carries the playhead map (${r.info.slice(9)})`);
     }
     // Pitch at Speed 100 %: rendered (not plain repitch), length unchanged, play speed 1
     const d = play(12, 100, mode);
@@ -1899,6 +2190,540 @@ Max.addHandler("drag_out", (mode, savedIdx = -1) => {
   }
   fs.rmSync(durDir, { recursive: true, force: true });
   console.log("OK: indexed durationMs equals the header length for 13 WAV/AIFF/AIFC layouts (+ truncated data chunk)");
+}
+
+// ============================================================================
+// Category search by words (Options > Searches, toolbar categories): node engine <-> v8ui agreement, toolbar, Options UI, state blob
+// ============================================================================
+require("child_process").execFileSync(process.execPath, [path.join(__dirname, "test_xo_search.js")], { stdio: "inherit" });
+// (runs after the timer based render tests above, which share the engine state)
+setTimeout(() => {
+  const S = require("../src/xo_search.js");
+  const CATS = S.XO_SEARCH_CATS.map((c) => c.id);
+  const strip = { mapW: getLayout().mapW };
+
+  // --- toolbar: All + 8 categories (name order) + 4 navigation items, each with a title, an icon and a colour ---
+  const ids = xoX.TOOLBAR_ITEMS.map((i) => i.id);
+  assert.deepStrictEqual(ids, ["cat_ALL", ...CATS.map((c) => "cat_" + c), "sim_prev", "sim_next", "random", "reseed"], "toolbar: All, the 8 word categories, then the navigation items");
+  assert.deepStrictEqual(xoX.CAT_ID_LIST, CATS, "v8ui category order = xo_search order (toolbar order = first-match priority)");
+  assert(!ids.includes("cat_tom") && !ids.includes("cat_fx") && !ids.includes("cat_rim"), "Tom, FX and Rim categories are gone");
+  assert.deepStrictEqual(xoX.TOOLBAR_ITEMS.filter((i) => i.id.startsWith("cat_")).map((i) => i.title),
+    ["Filter: All Categories", "Filter: Kick", "Filter: Snare", "Filter: Hi-Hat", "Filter: Clap", "Filter: Perc", "Filter: Shaker", "Filter: Cymbal", "Filter: Voice"]);
+  const cellW = getLayout().mapW / xoX.TOOLBAR_ITEMS.length;
+  assert(cellW >= 18, `toolbar cells stay >= 18 px wide (${cellW.toFixed(2)})`);
+  // distinct colours in both palettes
+  for (const palette of ["Focus", "LCD"]) {
+    xoPaletteSet(palette);
+    const cols = xoX.CATEGORIES.map((c) => xoPaletteCat(c.id, c.color)).concat([xoPaletteCat("none", xoX.CAT_NONE_COLOR)]);
+    assert.strictEqual(new Set(cols.map((c) => c.slice(0, 3).join())).size, cols.length, `${palette}: every category and "none" has its own colour`);
+    for (let i = 0; i < cols.length; i++) for (let j = i + 1; j < cols.length; j++) {
+      const d = Math.hypot(cols[i][0] - cols[j][0], cols[i][1] - cols[j][1], cols[i][2] - cols[j][2]);
+      assert(d > 0.18, `${palette}: colours ${i}/${j} are distinguishable (${d.toFixed(2)})`);
+    }
+  }
+  xoPaletteSet("LCD");
+  // every icon paints (vector paths, no text) and the tooltip shows the full title
+  {
+    const lay2 = getLayout();
+    for (let i = 0; i < xoX.TOOLBAR_ITEMS.length; i++) {
+      paintCommands.length = 0;
+      drawToolbarIcon(xoX.TOOLBAR_ITEMS[i].id, i * cellW, lay2.toolbarY, cellW, lay2.toolbarH, [1, 0.5, 0.2, 1], false);
+      assert(paintCommands.length >= 0);
+    }
+  }
+
+  // --- node engine: words, folders, Match folders, first-match category field ---
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "xo_search_"));
+  const mk = (rel) => {
+    const fp = path.join(root, rel);
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, makeSynthWav(110 + rel.length * 7, 0.05, 0.3));
+    return fp;
+  };
+  const files = ["Kick Deep.wav", "Snare/Thing A.wav", "Hats/Thing B.wav", "Custom Tom Of.wav", "Bottom End.wav", "Misc/Rim Perc.wav", "Crash 1.wav", "Vox/Chant.wav", "Tambourine.wav", "Sine Pad.wav", "Clap Snap.wav"];
+  const items = files.map((f) => engine.analyzeAudioFile(mk(f), null, root));
+  assert(items.every(Boolean), "indexed");
+  const st = engine.engineState;
+  st.samples = items;
+  st.corpusSamples = items.slice();
+  engine.setSearchConfig(1, []); // defaults
+  const idxOf = (n) => items.findIndex((s) => s.name === n);
+  const catsOf = (s) => CATS.filter((c, i) => engine.getSampleMask(s) & (1 << i));
+  assert.deepStrictEqual(catsOf(items[idxOf("Kick Deep")]), ["kick"]);
+  assert.deepStrictEqual(catsOf(items[idxOf("Thing A")]), ["snare"], "folder Snare below the root counts");
+  assert.deepStrictEqual(catsOf(items[idxOf("Thing B")]), ["hihat"], "folder Hats");
+  assert.deepStrictEqual(catsOf(items[idxOf("Custom Tom Of")]), ["perc"]);
+  assert.deepStrictEqual(catsOf(items[idxOf("Bottom End")]), [], "bottom is not tom");
+  assert.deepStrictEqual(catsOf(items[idxOf("Rim Perc")]), ["snare", "perc"]);
+  assert.deepStrictEqual(catsOf(items[idxOf("Clap Snap")]), ["clap"]);
+  assert.deepStrictEqual(catsOf(items[idxOf("Chant")]), ["voice"]);
+  assert.deepStrictEqual(catsOf(items[idxOf("Tambourine")]), ["shaker"]);
+  assert.deepStrictEqual(catsOf(items[idxOf("Sine Pad")]), []);
+  assert.strictEqual(engine.sampleCatField(items[idxOf("Rim Perc")]), (0b10010) * 16 + CATS.indexOf("snare"), "category field = mask * 16 + first (Snare > Perc)");
+  assert.strictEqual(engine.sampleCatField(items[idxOf("Sine Pad")]), 15, "no match = 15");
+  // the root's own name is not searched: index a root called "Kicks Root"
+  {
+    const kroot = path.join(root, "Kicks Root");
+    const fp = path.join(kroot, "Zed.wav");
+    fs.mkdirSync(kroot, { recursive: true });
+    fs.writeFileSync(fp, makeSynthWav(200, 0.05, 0.3));
+    const it = engine.analyzeAudioFile(fp, null, kroot);
+    assert.strictEqual(engine.getSampleMask(it), 0, "the indexed root's own name never matches");
+    assert.strictEqual(it.rootFolder, kroot);
+  }
+  // category filter = membership, ANDed with the other filters
+  const passing = (cat, extra) => {
+    st.activeCategory = cat;
+    Object.assign(st, { searchQuery: "", maxLenMs: 5000 }, extra || {});
+    const r = items.filter((s) => engine.isSamplePassingFilters(s)).map((s) => s.name);
+    st.activeCategory = "ALL";
+    st.searchQuery = "";
+    return r;
+  };
+  assert.strictEqual(passing("ALL").length, items.length, "All shows everything");
+  assert.deepStrictEqual(passing("kick"), ["Kick Deep"]);
+  assert.deepStrictEqual(passing("snare").sort(), ["Rim Perc", "Thing A"]);
+  assert.deepStrictEqual(passing("perc").sort(), ["Custom Tom Of", "Rim Perc"]);
+  assert.deepStrictEqual(passing("perc", { searchQuery: "tom" }), ["Custom Tom Of"], "category AND the search box");
+  assert.deepStrictEqual(passing("voice"), ["Chant"]);
+  assert.deepStrictEqual(passing("tom"), items.map((s) => s.name), "an unknown category id (old tom) filters nothing");
+  // Match folders off
+  const before = nodeOutletLog.length;
+  assert.strictEqual(engine.setSearchConfig(0, []), true);
+  assert(!catsOf(items[idxOf("Thing A")]).includes("snare") && catsOf(items[idxOf("Thing A")]).length === 0, "Match folders off: the Snare folder no longer counts");
+  assert.deepStrictEqual(passing("snare"), ["Rim Perc"]);
+  assert.strictEqual(engine.setSearchConfig(0, []), false, "an unchanged config is ignored");
+  engine.setSearchConfig(1, []);
+  // custom terms (v8ui encoding): Kick -> "thump", Voice emptied
+  {
+    const enc = S.xoDefaultSearchTerms().map(S.xoEncodeTerms);
+    enc[0] = S.xoEncodeTerms(["deep"]);
+    enc[7] = "-";
+    assert.strictEqual(engine.setSearchConfig(1, enc), true);
+    assert.deepStrictEqual(passing("kick"), ["Kick Deep"], "custom term deep matches Kick Deep (kick word no longer needed)");
+    assert.deepStrictEqual(passing("voice"), [], "emptied terms match nothing");
+    enc[0] = S.xoEncodeTerms(["thump"]);
+    engine.setSearchConfig(1, enc);
+    assert.deepStrictEqual(passing("kick"), [], "edited terms apply immediately");
+    engine.setSearchConfig(1, []);
+  }
+
+  // --- node -> v8ui: the batch the node sends decodes to the same membership / colour index ---
+  nodeOutletLog.length = 0;
+  engine.setSearchConfig(0, []);          // a change re-sends the batches (no clear) and minimap_done
+  engine.setSearchConfig(1, []);
+  const batches = nodeOutletLog.filter((m) => m[0] === "minimap_batch");
+  assert(batches.length >= 2 && !nodeOutletLog.some((m) => m[0] === "minimap_clear"), "a terms change resends the points without clearing (selection stays)");
+  const vOffset = nodeOutletLog.length;
+  minimap_clear();
+  for (const m of nodeOutletLog.slice(-0).filter((m) => m[0] === "minimap_batch").slice(-1)) minimap_batch(...m.slice(1));
+  assert.strictEqual(getPoints().length, items.length);
+  getPoints().forEach((pt, i) => {
+    const mask = engine.getSampleMask(items[i]);
+    assert.strictEqual(pt.mask, mask, `v8ui mask of ${pt.name} equals the node's`);
+    assert.strictEqual(pt.catIdx, S.xoFirstCat(mask), `v8ui first category of ${pt.name} equals the node's`);
+  });
+  for (const cat of CATS) {
+    xoX.activeCategory = cat;
+    const mine = getPoints().filter((pt) => isPointVisible(pt)).map((pt) => pt.name).sort();
+    st.activeCategory = cat;
+    const theirs = items.filter((s) => engine.isSamplePassingFilters(s)).map((s) => s.name).sort();
+    st.activeCategory = "ALL";
+    assert.deepStrictEqual(mine, theirs, `v8ui and node agree on ${cat}`);
+  }
+  xoX.activeCategory = "ALL";
+  // colours follow the FIRST matching category; no match = neutral
+  xoPaletteSet("Focus");
+  const kickPt = getPoints()[idxOf("Kick Deep")], rimPt = getPoints()[idxOf("Rim Perc")], nonePt = getPoints()[idxOf("Sine Pad")];
+  assert.deepStrictEqual(getCategoryColor(kickPt.catIdx).slice(0, 3), xoX.CATEGORIES[1].color.slice(0, 3));
+  assert.deepStrictEqual(getCategoryColor(rimPt.catIdx).slice(0, 3), xoX.CATEGORIES[2].color.slice(0, 3), "Rim Perc is coloured as Snare (first match)");
+  assert.deepStrictEqual(getCategoryColor(nonePt.catIdx).slice(0, 3), xoX.CAT_NONE_COLOR.slice(0, 3), "no match is neutral");
+  xoPaletteSet("LCD");
+  // selected_info / saved list carry the first-match category from the node
+  nodeOutletLog.length = 0;
+  engine.emitSelectedToMax(idxOf("Rim Perc"), false);
+  const sel = nodeOutletLog.find((m) => m[0] === "selected_info");
+  assert.strictEqual(sel[3], "snare");
+  assert.strictEqual(sel[4], 1);
+  nodeOutletLog.length = 0;
+  engine.emitSelectedToMax(idxOf("Sine Pad"), false);
+  const sel2 = nodeOutletLog.find((m) => m[0] === "selected_info");
+  assert.strictEqual(sel2[3], "none");
+  assert.strictEqual(sel2[4], -1);
+  // node handler
+  assert.strictEqual(typeof nodeHandlers.search_config, "function", "node handles search_config");
+  nodeHandlers.search_config(1, ...S.xoDefaultSearchTerms().map(S.xoEncodeTerms));
+  // next / random stay inside the category (shared membership)
+  st.activeCategory = "perc";
+  st.selectedIndex = idxOf("Custom Tom Of");
+  for (let i = 0; i < 6; i++) {
+    const nx = engine.stepSimilarSample(1);
+    assert(engine.isSamplePassingFilters(items[nx]), `next similar stays in Perc (${items[nx].name})`);
+  }
+  for (let i = 0; i < 12; i++) {
+    nodeOutletLog.length = 0;
+    nodeHandlers.random_sample();
+    const m = nodeOutletLog.find((x) => x[0] === "selected_info");
+    assert(m && ["Custom Tom Of", "Rim Perc"].includes(m[2]), `random stays in Perc (${m && m[2]})`);
+  }
+  st.activeCategory = "ALL";
+  fs.rmSync(root, { recursive: true, force: true });
+
+  // --- old toolbar categories load into the new set ---
+  const base = (ver, cat) => [ver, cat, 5000, 0, 0, 2500, 0, 0, 0, 0];
+  const catAfter = (arr) => { setvalueof(arr); return getvalueof()[1]; };
+  const idxNew = (id) => xoX.CATEGORIES.findIndex((c) => c.id === id);
+  assert.strictEqual(catAfter(base(2, 5)), idxNew("perc"), "v2 tom -> Perc");
+  assert.strictEqual(catAfter(base(2, 6)), idxNew("snare"), "v2 rim -> Snare");
+  assert.strictEqual(catAfter(base(2, 8)), idxNew("shaker"), "v2 shaker -> Shaker");
+  assert.strictEqual(catAfter(base(2, 9)), idxNew("perc"), "v2 perc -> Perc");
+  assert.strictEqual(catAfter(base(2, 10)), 0, "v2 fx -> All");
+  assert.strictEqual(catAfter(base(1, 1)), idxNew("kick"), "v1 kick -> Kick");
+  assert.strictEqual(catAfter(base(3, 8)), idxNew("voice"), "v3 indexes the new list");
+  xoX.activeCategory = "ALL";
+
+  // --- state blob v3: searches round trip, old versions load with the defaults ---
+  {
+    const defaults = S.xoDefaultSearchTerms();
+    setvalueof(base(2, 0));
+    assert.deepStrictEqual(xoX.searchTerms, defaults, "v2 blob (no searches): defaults");
+    assert.strictEqual(xoX.matchFolders, 1);
+    xoX.searchTerms[0] = ["thump", "hi hat"];
+    xoX.searchTerms[7] = [];
+    xoX.matchFolders = 0;
+    const blob = getvalueof();
+    assert.strictEqual(blob[0], 3, "state version 3");
+    assert(blob.every((v) => typeof v === "number" || (typeof v === "string" && !/\s/.test(v) && !v.includes(","))), "blob elements are numbers or single safe tokens");
+    xoX.searchTerms = S.xoDefaultSearchTerms();
+    xoX.matchFolders = 1;
+    setvalueof(blob);
+    assert.deepStrictEqual(xoX.searchTerms[0], ["thump", "hi hat"]);
+    assert.deepStrictEqual(xoX.searchTerms[7], []);
+    assert.deepStrictEqual(xoX.searchTerms[1], defaults[1]);
+    assert.strictEqual(xoX.matchFolders, 0);
+    assert.strictEqual(stripOutlets[0][0], "search_config", "loading a blob tells the node engine");
+    assert.strictEqual(stripOutlets[0][1], 0);
+    // a v3 blob with a short / missing tail keeps defaults for the rest
+    setvalueof(base(3, 0));
+    assert.deepStrictEqual(xoX.searchTerms, defaults);
+    setvalueof([...base(3, 0), "XS", 1, S.xoEncodeTerms(["only"])]);
+    assert.deepStrictEqual(xoX.searchTerms[0], ["only"]);
+    assert.deepStrictEqual(xoX.searchTerms[1], defaults[1]);
+    // saved entries before the tail keep their place
+    setvalueof([3, 0, 5000, 0, 0, 2500, 0, 0, 0, 1, 4, 2, 0, 2500, 0, "XS", 1, ...defaults.map(S.xoEncodeTerms)]);
+    assert.strictEqual(getSavedList().length, 1);
+    assert.strictEqual(getSavedList()[0].sampleIndex, 4);
+    assert.deepStrictEqual(xoX.searchTerms, defaults);
+    setvalueof(base(2, 0));
+  }
+
+  // --- Options > Searches wiring: boxes, lines, layout in both themes ---
+  {
+    const need = ["obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders",
+      "obj-prep-terms-cat", "obj-route-terms", "obj-prep-terms-text", "obj-prep-terms-reset", "obj-prep-match-folders"];
+    for (const id of need) assert(boxMap.has(id), `${id} exists`);
+    assert.strictEqual(boxMap.get("obj-searches-cat").maxclass, "live.menu");
+    assert.deepStrictEqual(boxMap.get("obj-searches-cat").saved_attribute_attributes.valueof.parameter_enum, ["Kick", "Snare", "Hi-Hat", "Clap", "Perc", "Shaker", "Cymbal", "Voice"], "picker items = categories in order");
+    assert.strictEqual(boxMap.get("obj-searches-cat").saved_attribute_attributes.valueof.parameter_invisible, 2, "the picker is a hidden UI-state parameter");
+    assert.strictEqual(boxMap.get("obj-searches-terms").maxclass, "textedit");
+    assert.strictEqual(boxMap.get("obj-searches-terms").outputmode, 1, "terms are output as one symbol (commas survive)");
+    assert.strictEqual(boxMap.get("obj-searches-terms").keymode, 1, "Enter outputs the text");
+    assert.strictEqual(boxMap.get("obj-searches-folders").mode, 1, "Match folders is a toggle");
+    assert.strictEqual(boxMap.get("obj-searches-reset").mode, 0, "Reset is a button");
+    assert.strictEqual(boxMap.get("obj-searches-folders").parameter_enable, 0, "Match folders lives in the blob, not a parameter");
+    const lf = (from) => p.lines.map((l) => l.patchline).filter((l) => l.source[0] === from).map((l) => l.destination[0]);
+    assert(lf("obj-searches-cat").includes("obj-prep-terms-cat") && lf("obj-prep-terms-cat").includes("obj-minimap"));
+    assert(lf("obj-searches-terms").includes("obj-route-terms") && lf("obj-route-terms").includes("obj-prep-terms-text") && lf("obj-prep-terms-text").includes("obj-minimap"));
+    assert(lf("obj-searches-reset").includes("obj-prep-terms-reset") && lf("obj-prep-terms-reset").includes("obj-minimap"));
+    assert(lf("obj-searches-folders").includes("obj-prep-match-folders") && lf("obj-prep-match-folders").includes("obj-minimap"));
+    assert.strictEqual(boxMap.get("obj-prep-terms-text").text, "prepend set_terms_text");
+    for (const th of ["LCD", "Focus"]) for (let m = 0; m < 16; m++) {
+      const lay3 = computeXoLayout(th, m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1);
+      const panel = lay3.boxes["obj-panel-options"].rect;
+      const ids2 = ["obj-hdr-options", "obj-lbl-theme", "obj-theme-tab", "obj-lbl-zoom", "obj-zoom-speed", "obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders"];
+      for (const id of ids2) {
+        const r = lay3.boxes[id].rect;
+        assert.strictEqual(lay3.boxes[id].hidden, (m >> 3) & 1 ? 0 : 1, `${th}/${m}: ${id} follows the Options section`);
+        assert(r[0] >= panel[0] && r[1] >= panel[1] && r[0] + r[2] <= panel[0] + panel[2] && r[1] + r[3] <= panel[1] + panel[3], `${th}/${m}: ${id} inside the Options panel`);
+      }
+      for (let i = 0; i < ids2.length; i++) for (let j = i + 1; j < ids2.length; j++) {
+        // click-through labels (stretched to Live's live.comment minimum height) may reach over a control
+        if (/^obj-(hdr|lbl)-/.test(ids2[i]) || /^obj-(hdr|lbl)-/.test(ids2[j])) continue;
+        const a = lay3.boxes[ids2[i]].rect, b = lay3.boxes[ids2[j]].rect;
+        const overlap = a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+        assert(!overlap, `${th}/${m}: ${ids2[i]} and ${ids2[j]} do not overlap`);
+      }
+    }
+    // Zoom Speed: appended stored-only float parameter, label + numbox in the Options panel
+    {
+      const z = boxMap.get("obj-zoom-speed"), vz = z.saved_attribute_attributes.valueof;
+      assert.strictEqual(z.maxclass, "live.numbox");
+      assert.deepStrictEqual([vz.parameter_longname, vz.parameter_shortname, vz.parameter_type, vz.parameter_mmin, vz.parameter_mmax, vz.parameter_initial, vz.parameter_invisible, vz.parameter_unitstyle], ["Zoom Speed", "Zoom Spd", 0, 0.25, 4, [1], 1, 9]);
+      assert(Math.abs(0.25 + 3.75 * Math.pow(0.5, vz.parameter_exponent) - 1) < 0.01, "log feel: 1.0x sits at the middle of the range");
+      assert.strictEqual(boxMap.get("obj-prep-zoomspeed").text, "prepend set_zoomspeed");
+      const lf2 = (from) => p.lines.map((l) => l.patchline).filter((l) => l.source[0] === from).map((l) => l.destination[0]);
+      assert(lf2("obj-zoom-speed").includes("obj-prep-zoomspeed") && lf2("obj-prep-zoomspeed").includes("obj-minimap"), "Zoom Speed reaches the v8ui");
+      assert.strictEqual(boxMap.get("obj-lbl-zoom").ignoreclick, 1, "the label is click-through");
+      for (const th of ["LCD", "Focus"]) assert(THEME_STYLE[th]["obj-zoom-speed"] && THEME_STYLE[th]["obj-lbl-zoom"], `${th} styles the Zoom Speed widgets`);
+    }
+    // both themes style every new box
+    for (const id of ["obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders"]) {
+      assert(THEME_STYLE.LCD[id] && THEME_STYLE.Focus[id], `${id} is styled by both themes`);
+    }
+  }
+
+  // --- Options handlers with recording widgets ---
+  {
+    const log = [];
+    const widgets = {};
+    const origGet = fakeLayoutPatcher.getnamed;
+    const mkWidget = (id) => widgets[id] = widgets[id] || {
+      text: "",
+      message(...a) { log.push([id, ...a]); if (id === "obj-searches-terms") { if (a[0] === "clear") this.text = ""; if (a[0] === "set") this.text = a.slice(1).join(" "); if (a[0] === "bang") set_terms_text(this.text); } },
+      getattr(n) { return n === "text" ? this.text : null; }
+    };
+    fakeLayoutPatcher.getnamed = function (name) {
+      for (const id of ["obj-searches-cat", "obj-searches-terms", "obj-searches-folders"]) if (builtLayoutNames[id] === name) return mkWidget(id);
+      return origGet.call(this, name);
+    };
+    setvalueof(base(2, 0));
+    xoX.searchesCatIdx = 0;
+    searchesSyncWidgets();
+    assert.strictEqual(widgets["obj-searches-terms"].text, "kick, bd, kik, bassdrum", "the field shows the selected category's terms, comma separated");
+    set_terms_cat(2);
+    assert.strictEqual(widgets["obj-searches-terms"].text, "hihat, hi hat, hi-hat, hh, hat", "picking Hi-Hat shows its terms");
+    assert(log.some((l) => l[0] === "obj-searches-cat" && l[1] === "set" && l[2] === 2));
+    // typing + Enter
+    widgets["obj-searches-terms"].text = "hat, open hat";
+    set_terms_text("hat, open hat");
+    assert.deepStrictEqual(xoX.searchTerms[2], ["hat", "open hat"]);
+    assert.strictEqual(stripOutlets[0][0], "search_config");
+    assert.strictEqual(stripOutlets[0][4], "hat|open~hat", "sent to the node engine encoded");
+    // switching category commits what is typed first ("focus lost"), and it lands on the OLD category
+    widgets["obj-searches-terms"].text = "hat, open hat, pedal";
+    set_terms_cat(3);
+    assert.deepStrictEqual(xoX.searchTerms[2], ["hat", "open hat", "pedal"], "an uncommitted edit is applied to its own category when the picker changes");
+    assert.strictEqual(widgets["obj-searches-terms"].text, "clap, snap");
+    // a click on the map commits too
+    widgets["obj-searches-terms"].text = "clap";
+    set_show_options(1);
+    onclick(80, 60, 1, 0, 0, 0, 0, 0);
+    assert.deepStrictEqual(xoX.searchTerms[3], ["clap"], "a click elsewhere commits the field");
+    // Reset restores the selected category only
+    set_terms_reset(1);
+    assert.deepStrictEqual(xoX.searchTerms[3], ["clap", "snap"]);
+    assert.deepStrictEqual(xoX.searchTerms[2], ["hat", "open hat", "pedal"], "Reset touches only the selected category");
+    assert.strictEqual(widgets["obj-searches-terms"].text, "clap, snap");
+    set_terms_reset(0);
+    // Match folders
+    const folderEchoes = log.length;
+    set_match_folders(0);
+    assert.strictEqual(xoX.matchFolders, 0);
+    assert.strictEqual(stripOutlets[0][1], 0, "Match folders off goes to the node engine");
+    set_match_folders(1);
+    assert.strictEqual(xoX.matchFolders, 1);
+    // minimap_done re-sends the config (the node may have started after the v8ui)
+    stripOutlets = [[], []];
+    minimap_done(10, "x");
+    assert.strictEqual(stripOutlets[0][0], "search_config");
+    // test hook helpers
+    test_terms_cat(5);
+    test_terms_text("shaker, egg");
+    assert.deepStrictEqual(xoX.searchTerms[5], ["shaker", "egg"]);
+    test_terms_reset();
+    assert.deepStrictEqual(xoX.searchTerms[5], ["shaker", "tamb", "tambourine", "cabasa"]);
+    set_terms_reset(1);
+    xoX.searchTerms = S.xoDefaultSearchTerms();
+    set_show_options(0);
+    fakeLayoutPatcher.getnamed = origGet;
+    xoX.searchesCatIdx = 0;
+  }
+  console.log("OK: category search (toolbar, node <-> v8ui agreement, colours, Options > Searches wiring / layout / handlers, state blob v3 + old versions)");
+}, 600);
+
+
+// --- Test S: hotkeys from the patcher's `key` object only act on the instance selected in Live ---
+{
+  // wiring: live.thisdevice starts the selection tracking; the test key hook enters obj-sel-key like the `key` object
+  assert(linesFrom("obj-thisdevice").includes("obj-msg-init-selection"), "live.thisdevice must start init_selection (never loadbang)");
+  assert(linesFrom("obj-msg-init-selection").includes("obj-minimap"), "init_selection reaches the mini-map v8ui");
+  assert(linesFrom("obj-r-testkey").includes("obj-sel-key"), "receive #0-xo-testkey feeds obj-sel-key");
+  assert(!/loadbang/.test(boxMap.get("obj-msg-init-selection").text), "no loadbang for init_selection");
+
+  const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  // A tiny LOM world: tracks with a view, each view has a selected_device; observers fire like Live's (on set and on change).
+  const world = {
+    selTrack: 0, views: {}, selDev: {}, paths: {}, observers: [], unavailable: false,
+    setSelTrack(id) { this.selTrack = id; this.fire(1, "selected_track"); },
+    setSelDev(viewId, dev) { this.selDev[viewId] = dev; this.fire(viewId, "selected_device"); },
+    fire(id, prop) { for (const o of this.observers.slice()) if (o.id === id && o.prop === prop && o.cb) o.cb(o.api.get(prop)); },
+  };
+  world.paths = { 101: "live_set tracks 0 devices 0", 102: "live_set tracks 1 devices 0", 103: "live_set tracks 2 devices 0 chains 0 devices 0", 104: "live_set tracks 2 devices 0" };
+  world.views = { 21: 31, 22: 32, 23: 33 }; // track -> view
+  function makeInstance(selfId) {
+    const tasks = [];
+    const out = [];
+    class Task { constructor(fn) { this.fn = fn; } schedule() { tasks.push(this.fn); } }
+    class LiveAPI {
+      constructor(a, b) {
+        if (world.unavailable) throw new Error("LOM unavailable");
+        this.cb = typeof a === "function" ? a : null;
+        const p = typeof a === "function" ? b : a;
+        this.p = p;
+        this.id = p === "this_device" ? selfId : p === "live_set view" ? 1 : /^id \d+$/.test(p) ? Number(p.slice(3)) : 0;
+        this._prop = "";
+        this.api = this;
+        if (this.cb) this.cb(["id", this.id]); // like Max: a new LiveAPI with a callback first reports its own id
+      }
+      get unquotedpath() { return world.paths[this.id] || ""; }
+      get(prop) {
+        if (this.id === 1 && prop === "selected_track") return ["selected_track", "id", world.selTrack];
+        if (world.views[this.id] && prop === "view") return ["view", "id", world.views[this.id]];
+        if (prop === "selected_device") return ["selected_device", "id", world.selDev[this.id] || 0];
+        return [];
+      }
+      set property(prop) {
+        this._prop = prop;
+        world.observers = world.observers.filter((o) => o.api !== this);
+        if (!prop) return;
+        world.observers.push({ id: this.id, prop, cb: this.cb, api: this });
+        if (this.cb) this.cb(this.get(prop));
+      }
+      get property() { return this._prop; }
+    }
+    const ctx = vm.createContext({
+      mgraphics: Object.assign({}, global.mgraphics), inlets: 1, outlets: 2, outlet: (i, ...a) => out.push([i, ...a]),
+      notifyclients() {}, post() {}, Task, LiveAPI, Global: function () { return {}; },
+      Math, Number, String, Date, JSON, Object, Array, Atomics, SharedArrayBuffer, Int32Array, Map, Set, console
+    });
+    vm.runInContext(stripJs, ctx, { filename: "xo_strip_ui.js" });
+    ctx.loadbang();
+    const inst = {
+      ctx, out, id: selfId,
+      flush() { while (tasks.length) tasks.shift()(); },
+      count(name) { return out.filter((m) => m[0] === 0 && m[1] === name).length; },
+      // what the `key` object -> sel -> message boxes would send, by key code
+      key(code) {
+        const m = { 115: "hotkey_save", 83: "hotkey_save", 127: "delete_selected_saved", 8: "delete_selected_saved", [-5]: "delete_selected_saved", [-3]: "delete_selected_saved",
+          28: "hotkey_prev_similar", 29: "hotkey_next_similar", 30: "hotkey_history_forward", 31: "hotkey_history_back",
+          114: "hotkey_random", 82: "hotkey_random", 27: "hotkey_stop" }[code];
+        if (m) ctx[m]();
+      }
+    };
+    return inst;
+  }
+  const keyAll = (insts, code) => { sleep(210); insts.forEach((i) => i.key(code)); };
+  const A = makeInstance(101), B = makeInstance(102), C = makeInstance(103); // C is inside a rack chain on track 3
+  const all = [A, B, C];
+  all.forEach((i) => i.ctx.init_selection());
+  all.forEach((i) => i.flush());
+  assert(all.every((i) => !i.ctx.hotkeyAllowed()), "nothing selected in Live (no selected track / device) -> no instance acts");
+  all.forEach((i) => { i.out.length = 0; });
+  [28, 29, 30, 31, 115, 127, 8, 114, 82, 27].forEach((k) => keyAll(all, k));
+  assert(all.every((i) => i.out.length === 0), "no selection known -> the key path does nothing (fail safe)");
+
+  // select instance A (track 21, its view 31)
+  world.setSelTrack(21); all.forEach((i) => i.flush());
+  assert(all.every((i) => !i.ctx.hotkeyAllowed()), "a selected track without a selected device selects no instance");
+  world.setSelDev(31, 101); all.forEach((i) => i.flush());
+  assert(A.ctx.hotkeyAllowed() && !B.ctx.hotkeyAllowed() && !C.ctx.hotkeyAllowed(), "only the instance whose id is selected_device is selected");
+  const expectOnly = (target, label) => {
+    all.forEach((i) => { i.out.length = 0; });
+    const first = (i) => i.ctx.getSelectedIndex();
+    const before = all.map(first);
+    keyAll(all, 29); // Right = Next Similar: selection moves, `step_similar` is not emitted by the strip itself
+    all.forEach((i, n) => {
+      const moved = first(i) !== before[n];
+      assert.strictEqual(moved, i === target, `${label}: Right arrow ${i === target ? "moves" : "must not move"} instance ${i.id}`);
+    });
+    const savedBefore = all.map((i) => i.ctx.getSavedList().length);
+    keyAll(all, 115);
+    all.forEach((i, n) => assert.strictEqual(i.ctx.getSavedList().length - savedBefore[n], i === target ? 1 : 0, `${label}: 's' saves only in the selected instance (${i.id})`));
+    for (const code of [127, 8]) {
+      const cnt = all.map((i) => i.ctx.getSavedList().length);
+      // make one saved row selected so Delete has something to remove
+      all.forEach((i) => { i.ctx.save_selected(); });
+      sleep(210);
+      all.forEach((i) => { const n = i.ctx.getSavedList().length; if (n) i.ctx.onclick(i.ctx.getLayout().savedX + 20, i.ctx.getLayout().savedRowY0 + 8, 1, 0, 0, 0, 0, 0); });
+      const mid = all.map((i) => i.ctx.getSavedList().length);
+      keyAll(all, code);
+      all.forEach((i, n) => assert.strictEqual(i.ctx.getSavedList().length - mid[n], i === target ? -1 : 0, `${label}: key ${code} deletes only in the selected instance (${i.id})`));
+    }
+    // r (random sample) and Esc (stop playback) only act in the selected instance
+    for (const code of [114, 82]) {
+      all.forEach((i) => { i.out.length = 0; });
+      keyAll(all, code);
+      all.forEach((i) => assert.strictEqual(i.count("select_index") > 0, i === target, `${label}: key ${code} (random) only in the selected instance (${i.id})`));
+      all.forEach((i) => assert(i.count("select_index") <= 1, `${label}: key ${code} fires once (${i.id})`));
+    }
+    all.forEach((i) => { i.out.length = 0; });
+    keyAll(all, 27);
+    all.forEach((i) => assert.strictEqual(i.out.filter((m) => m[0] === 1 && m[1] === "stop_playback").length, i === target ? 1 : 0, `${label}: Esc only in the selected instance (${i.id})`));
+    for (const [code, name] of [[28, "step_similar"], [31, "history_back"], [30, "history_forward"]]) {
+      all.forEach((i) => { i.out.length = 0; });
+      keyAll(all, code);
+      all.forEach((i) => assert.strictEqual(i.count(name) > 0, i === target, `${label}: key ${code} (${name}) only in the selected instance (${i.id})`));
+    }
+  };
+  expectOnly(A, "A selected");
+
+  // switching the selection moves the hotkeys (track change re-points the device observer)
+  world.setSelTrack(22); all.forEach((i) => i.flush());
+  assert(all.every((i) => !i.ctx.hotkeyAllowed()), "track 2 selected, its selected_device (0) is none of ours");
+  world.setSelDev(32, 102); all.forEach((i) => i.flush());
+  expectOnly(B, "B selected");
+  // a device change on the OLD track's view no longer matters
+  world.setSelDev(31, 101); all.forEach((i) => i.flush());
+  assert(B.ctx.hotkeyAllowed() && !A.ctx.hotkeyAllowed(), "a stale track's selected_device change is ignored");
+
+  // rack-nested instance: selected_device of a rack track reports the nested device when it is the selected one
+  world.setSelTrack(23); all.forEach((i) => i.flush());
+  world.setSelDev(33, 104); all.forEach((i) => i.flush());
+  assert(all.every((i) => !i.ctx.hotkeyAllowed()), "the rack itself selected: no instance inside it acts");
+  world.setSelDev(33, 103); all.forEach((i) => i.flush());
+  expectOnly(C, "rack-nested C selected");
+
+  // double fire (v8ui onkeydown AND the patcher message) is still single
+  sleep(210);
+  C.out.length = 0;
+  C.ctx.onkeydown(31); C.ctx.hotkey_history_back();
+  assert.strictEqual(C.count("history_back"), 1, "both delivery paths of one press still act once");
+  // v8ui's own onkeydown is not gated: an unselected instance with keyboard focus still acts
+  sleep(25); A.out.length = 0; A.ctx.onkeydown(31);
+  assert.strictEqual(A.count("history_back"), 1, "onkeydown works on a focused v8ui even when not the selected device");
+
+  // test overrides
+  A.ctx.test_selected(1); assert(A.ctx.hotkeyAllowed());
+  B.ctx.test_selected(0); assert(!B.ctx.hotkeyAllowed());
+  B.ctx.test_selected(-1); assert(!B.ctx.hotkeyAllowed() && C.ctx.hotkeyAllowed(), "-1 returns to the real detection (C is selected)");
+  A.ctx.test_selected(-1); assert(!A.ctx.hotkeyAllowed());
+  // test_only: other hooks ignore instances that were not targeted
+  A.ctx.test_only(103);
+  assert(A.ctx.xoTestSkip(), "test_only 103 silences instance 101's other test hooks");
+  A.ctx.test_only(101);
+  assert(!A.ctx.xoTestSkip());
+  A.ctx.test_only(0);
+  assert(!A.ctx.xoTestSkip());
+
+  // LOM unavailable (init throws) -> not selected, nothing acts
+  world.unavailable = true;
+  const D = makeInstance(105);
+  D.ctx.init_selection(); D.flush();
+  assert(!D.ctx.hotkeyAllowed(), "LOM unavailable -> no selection -> no hotkeys");
+  D.out.length = 0; keyAll([D], 29); keyAll([D], 115);
+  assert.strictEqual(D.out.length, 0, "LOM unavailable: the key path does nothing");
+  world.unavailable = false;
+  // report exposes the flag
+  {
+    const store = {};
+    C.ctx.Global = function () { return store; };
+    C.ctx.test_report();
+    const r = JSON.parse(store.last);
+    assert.strictEqual(r.isSelected, 1, "test_report exposes isSelected");
+    assert.strictEqual(r.selectedDeviceId, "103");
+    assert.strictEqual(r.deviceId, "103");
+  }
+  console.log("OK: hotkeys only act on the instance selected in Live (3 instances, rack-nested, switching, LOM unavailable, double fire)");
 }
 
 console.log("SUCCESS: All mono/stereo audio routing, M4L runtime 's' hotkey, native Cocoa OS file drag-out, scrollable/reorderable/deletable saved list, and Infinite MaxLen filter tests passed!");

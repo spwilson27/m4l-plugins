@@ -46,10 +46,10 @@ const energy = (a, s, e) => {
     for (let i = s; i < e; i++) v += a[i] * a[i];
     return v;
 };
-const goertzel = (x, s, e, f) => {
+const goertzel = (x, s, e, f, sr) => {
     let re = 0, im = 0;
     for (let i = s; i < e; i++) {
-        const w = (2 * Math.PI * f * i) / SR;
+        const w = (2 * Math.PI * f * i) / (sr || SR);
         re += x[i] * Math.cos(w);
         im += x[i] * Math.sin(w);
     }
@@ -57,7 +57,8 @@ const goertzel = (x, s, e, f) => {
 };
 
 // ---- a Node mirror of the packed-stereo mask STFT (reference path, uses hsFrame) ----
-function splitRef(L, R, n, p) {
+function splitRef(L, R, n, p, sr) {
+    sr = sr || SR;
     const hop = n / 4;
     const win = ref.hann(n);
     const half = n / 2;
@@ -81,8 +82,8 @@ function splitRef(L, R, n, p) {
             const xi = (ai - ar + (bi + br)) / 4;
             mag[k] = Math.hypot(xr, xi) * 4 / n;
         }
-        cfg.hsFrame(st, mag, p, SR);
-        trace.push({ f0: st.hst[0], conf: st.hst[11], v: st.hst[4], nact: st.hst[16], lvl: st.hst[9], mN: Float64Array.from(st.mN), mA: Float64Array.from(st.mA), mB: Float64Array.from(st.mB) });
+        cfg.hsFrame(st, mag, p, sr);
+        trace.push({ f0: st.hst[20], series: st.hst[0], hr: st.hst[21], conf: st.hst[11], v: st.hst[4], nact: st.hst[16], lvl: st.hst[9], mN: Float64Array.from(st.mN), mA: Float64Array.from(st.mA), mB: Float64Array.from(st.mB) });
         [st.mN, st.mA, st.mB].forEach((m, ch) => {
             const r2 = Float64Array.from(re);
             const i2 = Float64Array.from(im);
@@ -116,6 +117,15 @@ const sawSig = (f0, hmin, amp, len) => {
     }
     return x;
 };
+const sawAt = (f0, sr, len, amp) => {
+    const x = new Float64Array(len);
+    for (let i = 0; i < len; i++) {
+        let v = 0;
+        for (let h = 1; h * f0 < sr * 0.45; h++) v += Math.sin((2 * Math.PI * f0 * h * i) / sr) / h;
+        x[i] = amp * v;
+    }
+    return x;
+};
 const noiseSig = (amp, seed, len) => {
     const r = rng(seed);
     const x = new Float64Array(len || NS);
@@ -124,8 +134,9 @@ const noiseSig = (amp, seed, len) => {
 };
 const add = (a, b) => a.map((v, i) => v + b[i]);
 const W0 = SR * 1.0, W1 = SR * 1.8;      // measurement window (state settled)
-const share = (o, f, which) => {
-    const e = [goertzel(o.nh.L, W0, W1, f) ** 2, goertzel(o.a.L, W0, W1, f) ** 2, goertzel(o.b.L, W0, W1, f) ** 2];
+const share = (o, f, which, sr) => {
+    const w0 = sr ? Math.round(sr * 1.0) : W0, w1 = sr ? Math.round(sr * 1.8) : W1;
+    const e = [goertzel(o.nh.L, w0, w1, f, sr) ** 2, goertzel(o.a.L, w0, w1, f, sr) ** 2, goertzel(o.b.L, w0, w1, f, sr) ** 2];
     return which === undefined ? e : e[which] / (e[0] + e[1] + e[2] + 1e-30);
 };
 
@@ -210,7 +221,7 @@ const share = (o, f, which) => {
         // inside the band (e.g. 220, 330) is a sub-/non-harmonic of the real series, so f0 is either 0 or a candidate inside [Low/sqrt2, High*sqrt2]
         const lo = f0of(s110, 2048, { flo: 300 });
         console.log("  110 Hz saw, Low 300:", lo);
-        assert.ok(Math.abs(lo / 110 - 1) > 0.05 && (lo === 0 || (lo >= 300 / 1.4143 && lo <= 1500 * 1.4143)), `Low-cut 300 Hz: f0 of a 110 Hz saw is not 110 (got ${lo})`);
+        assert.ok(Math.abs(lo / 330 - 1) < 0.01, `Low-cut 300 Hz: the root of a 110 Hz saw is its lowest in-band partial, 330 Hz (got ${lo})`);
         const hi = f0of(saw, 2048, { fhi: 100, flo: 19.4 });
         console.log("  220 Hz saw, High 100:", hi);
         assert.ok(Math.abs(hi / 220 - 1) > 0.05 && (hi === 0 || hi <= 100 * 1.4143), `High-cut 100 Hz: f0 of a 220 Hz saw is not 220 (got ${hi})`);
@@ -276,7 +287,12 @@ const share = (o, f, which) => {
     // --- fundamental missing / tilt ---
     const nf = sawSig(220, 2, 0.25);
     const onf = splitRef(nf, nf, 2048, P0);
-    assert.ok(Math.abs(onf.trace[onf.trace.length - 1].f0 / 220 - 1) < 0.01, `f0 found with the fundamental missing (${onf.trace[onf.trace.length - 1].f0})`);
+    {
+        const lf = onf.trace[onf.trace.length - 1];
+        assert.ok(Math.abs(lf.series / 220 - 1) < 0.01, `series f0 found with the fundamental missing (${lf.series})`);
+        // the root is the lowest PRESENT partial inside the band: 440 Hz (series harmonic 2), numbered 1 for the pattern
+        assert.ok(Math.abs(lf.f0 / 440 - 1) < 0.01 && lf.hr === 2, `missing fundamental: root is the 2nd series harmonic, 440 Hz (got ${lf.f0}, h ${lf.hr})`);
+    }
     for (const f of [60, 110, 440, 1000]) {
         const o2 = splitRef(sawSig(f, 1, 0.25), sawSig(f, 1, 0.25), 4096, Object.assign({}, P0, { flo: 19.4 }));
         assert.ok(Math.abs(o2.trace[o2.trace.length - 1].f0 / f - 1) < 0.01, `f0 ${f} Hz tracked within 1 % (${o2.trace[o2.trace.length - 1].f0})`);
@@ -372,6 +388,217 @@ const share = (o, f, which) => {
     assert.strictEqual(cfg.hsFmtFreq(19900), "19.9 kHz");
 }
 
+// Odd-only and gapped spectra (square, triangle, pulse): the comb must not need every harmonic.
+// Reproduced bug: a square wave never reached the 0.38 accept (salience 0.23..0.35, f0 = 0) because the even comb terms added nothing.
+{
+    // waveforms by phase; band-limited (additive, below 0.45 sr) or naive
+    const wave = (kind, f0, sr, len, amp, naive) => {
+        const x = new Float64Array(len);
+        for (let i = 0; i < len; i++) {
+            let v = 0;
+            const t = (f0 * i / sr) % 1;
+            if (naive) v = kind === "square" ? (t < 0.5 ? 1 : -1) : kind === "tri" ? (t < 0.5 ? 4 * t - 1 : 3 - 4 * t) : (t < 0.25 ? 1 : -1);
+            else {
+                for (let h = 1; h * f0 < sr * 0.45; h++) {
+                    let c = 0;
+                    if (kind === "square") c = h % 2 ? 4 / (Math.PI * h) : 0;
+                    else if (kind === "tri") c = h % 2 ? (8 / (Math.PI * Math.PI * h * h)) * (h % 4 === 1 ? 1 : -1) : 0;
+                    else c = (2 * Math.sin(Math.PI * h * 0.25)) / (Math.PI * h);
+                    if (c) v += c * Math.sin((2 * Math.PI * f0 * h * i) / sr);
+                }
+            }
+            x[i] = amp * v;
+        }
+        return x;
+    };
+    // run hsFrame on a mono signal (Mid = the signal) and return the last frame's tracker state
+    const frames = (sig, sr, n, p) => {
+        const win = ref.hann(n), half = n / 2, st = cfg.hsNewState(n);
+        const mag = new Float64Array(half + 1), re = new Float64Array(n), im = new Float64Array(n);
+        let maxSal = 0, locked = 0;
+        for (let t = n; t <= sig.length; t += n / 4) {
+            for (let i = 0; i < n; i++) { re[i] = sig[t - n + i] * win[i]; im[i] = sig[t - n + i] * win[i]; }
+            ref.fft(re, im, false);
+            for (let k = 0; k <= half; k++) {
+                const k2 = (n - k) % n;
+                const ar = re[k], ai = im[k], br = re[k2], bi = -im[k2];
+                mag[k] = (Math.hypot((ar + ai + (br - bi)) / 4, (ai - ar + (bi + br)) / 4) * 4) / n;
+            }
+            cfg.hsFrame(st, mag, p, sr);
+            maxSal = Math.max(maxSal, st.hst[11]);
+            if (st.hst[20] > 0) locked++;
+        }
+        return { f0: st.hst[20], series: st.hst[0], hr: st.hst[21], sal: st.hst[11], maxSal, locked };
+    };
+    const results = [];
+    // square waves: every octave from 110 Hz to 880 Hz (the default band reaches 1.5 kHz), both sample rates, both levels
+    for (const sr of [44100, 48000]) {
+        for (const naive of [false, true]) {
+            for (const db of [-6, -30]) {
+                for (const f0 of [110, 220, 440, 880]) {
+                    const r = frames(wave("square", f0, sr, sr, 0.5 * Math.pow(10, db / 20), naive), sr, 2048, P0);
+                    results.push(`sq${f0}`);
+                    assert.ok(Math.abs(r.f0 / f0 - 1) < 0.01, `square ${f0} Hz (${naive ? "naive" : "band-limited"}, ${sr}, ${db} dB) tracked within 1 % (f0 ${r.f0.toFixed(2)}, salience ${r.sal.toFixed(2)})`);
+                    assert.ok(r.sal > 0.42, `square ${f0} Hz salience ${r.sal.toFixed(2)} has margin over the accept ${cfg.HS_ACCEPT}`);
+                }
+            }
+        }
+        // triangle (odd, 1/h^2), 25 % pulse (every 4th harmonic missing)
+        for (const f0 of [110, 220]) {
+            const r = frames(wave("tri", f0, sr, sr, 0.3, false), sr, 2048, P0);
+            assert.ok(Math.abs(r.f0 / f0 - 1) < 0.01, `triangle ${f0} Hz tracked (${sr}): f0 ${r.f0.toFixed(2)}, salience ${r.sal.toFixed(2)}`);
+        }
+        for (const f0 of [110, 220, 440, 880]) {
+            const r = frames(wave("pulse", f0, sr, sr, 0.3, false), sr, 2048, P0);
+            assert.ok(Math.abs(r.f0 / f0 - 1) < 0.01, `25 % pulse ${f0} Hz tracked (${sr}): f0 ${r.f0.toFixed(2)}, salience ${r.sal.toFixed(2)}`);
+        }
+    }
+    // no octave errors with the full range open, also a triangle up to 1.76 kHz
+    const wide = Object.assign({}, P0, { flo: 19.4, fhi: 19900 });
+    for (const f0 of [110, 220, 440, 880, 1760]) {
+        for (const kind of ["square", "tri"]) {
+            const r = frames(wave(kind, f0, SR, SR, 0.3, false), SR, 2048, wide);
+            assert.ok(Math.abs(r.f0 / f0 - 1) < 0.01, `${kind} ${f0} Hz with the full range tracked (f0 ${r.f0.toFixed(2)})`);
+        }
+    }
+    // 55 Hz square needs Size 4k and Low 30 Hz
+    {
+        const r = frames(wave("square", 55, SR, SR * 2, 0.3, false), SR, 4096, Object.assign({}, P0, { flo: 30 }));
+        assert.ok(Math.abs(r.f0 / 55 - 1) < 0.01, `square 55 Hz at Size 4k, Low 30 Hz (f0 ${r.f0.toFixed(2)})`);
+    }
+    // the band still limits the search for a square: 220 Hz with High 100 Hz finds nothing, with Low 500 Hz it never reports 220
+    assert.strictEqual(frames(wave("square", 220, SR, SR, 0.3, false), SR, 2048, Object.assign({}, P0, { fhi: 100 })).f0, 0, "square 220 Hz with High 100 Hz: nothing");
+    {
+        const r = frames(wave("square", 220, SR, SR, 0.3, false), SR, 2048, Object.assign({}, P0, { flo: 500, fhi: 1500 }));
+        assert.ok(r.f0 === 0 || r.f0 >= 500 * 0.7, `square 220 Hz with Low 500 Hz is not reported below the band (f0 ${r.f0})`);
+    }
+    // white noise: highest salience of any frame stays well under the accept (6 seeds x 3 sizes), and it never locks
+    {
+        let worst = 0, locks = 0;
+        for (const n of [1024, 2048, 4096]) {
+            for (let seed = 1; seed <= 6; seed++) {
+                const r = frames(noiseSig(0.3, seed, SR / 2), SR, n, P0);
+                worst = Math.max(worst, r.maxSal);
+                locks += r.locked;
+            }
+        }
+        console.log(`[ref] white noise: highest salience ${worst.toFixed(3)} (accept ${cfg.HS_ACCEPT})`);
+        assert.ok(worst < 0.31, `white noise salience ${worst.toFixed(3)} keeps its margin below the accept`);
+        assert.strictEqual(locks, 0, "white noise never locks");
+    }
+    // sorting of a 220 Hz square: Pattern 2 = all odd harmonics in A; Pattern 4 = 1, 5, 9 in A and 3, 7, 11 in B
+    const sq = wave("square", 220, SR, NS, 0.25, false);
+    const sq2 = splitRef(sq, sq, 2048, P0);
+    const lq = sq2.trace[sq2.trace.length - 1];
+    assert.ok(Math.abs(lq.f0 / 220 - 1) < 0.005, `square 220 Hz through the full split: f0 ${lq.f0.toFixed(2)}`);
+    for (const h of [1, 3, 5, 7, 9, 11]) assert.ok(share(sq2, 220 * h, 1) > 0.985, `square, Pattern 2: harmonic ${h} in A`);
+    const eqN = energy(sq2.nh.L, W0, W1), eqA = energy(sq2.a.L, W0, W1), eqB = energy(sq2.b.L, W0, W1);
+    assert.ok(eqN / (eqN + eqA + eqB) < 0.02 && eqB / (eqN + eqA + eqB) < 0.02, "square, Pattern 2: A carries it all (NH and B under 2 %)");
+    const sq4 = splitRef(sq, sq, 2048, Object.assign({}, P0, { hpat: 4 }));
+    for (const h of [1, 5, 9]) assert.ok(share(sq4, 220 * h, 1) > 0.985, `square, Pattern 4: harmonic ${h} in A`);
+    for (const h of [3, 7, 11]) assert.ok(share(sq4, 220 * h, 2) > 0.985, `square, Pattern 4: harmonic ${h} in B`);
+    {
+        let err = 0, tot = 0;
+        for (let i = 2048; i < NS - 2048; i++) { const d = sq4.nh.L[i] + sq4.a.L[i] + sq4.b.L[i] - sq[i]; err += d * d; tot += sq[i] * sq[i]; }
+        assert.ok(10 * Math.log10(err / tot + 1e-300) < -250, "square: three channels still null against the input");
+    }
+
+    // ---- ROOT detection: the user's report (C1 square, Low 156.1 Hz, High 2.90 kHz, Every 8th, NH Sens 50 %, Automatic, Size 2k) ----
+    // The series fundamental (32.7 Hz) lies below the band; the ROOT is the lowest present partial inside it (5th harmonic, 163.5 Hz) and the
+    // pattern counts from it: h' = h - hr + 1. Series partials below the root (32.7, 98.1 Hz) are Nonharmonics.
+    {
+        const PU = { hpat: 8, hmaxp: 0, sens: 0.5, tilt: 0, thr: -120, flo: 156.1, fhi: 2900 };
+        const rootRes = [];
+        for (const sr of [48000, 44100]) {
+            const sqc = wave("square", 32.7, sr, Math.round(sr * 2), 0.25, false);
+            const r = frames(sqc, sr, 2048, PU);
+            rootRes.push(`${sr}: root ${r.f0.toFixed(2)} (series ${r.series.toFixed(2)}, h ${r.hr}, salience ${r.sal.toFixed(2)})`);
+            assert.ok(Math.abs(r.f0 / 163.5 - 1) < 0.01, `C1 square (${sr}): root ${r.f0.toFixed(2)} Hz is the 5th harmonic, 163.5 Hz`);
+            assert.ok(Math.abs(r.series / 32.7 - 1) < 0.01 && r.hr === 5, `C1 square (${sr}): series f0 ${r.series.toFixed(2)} Hz, root harmonic ${r.hr}`);
+            assert.ok(r.sal > 0.42, `C1 square (${sr}): salience ${r.sal.toFixed(2)} has margin over the accept`);
+            // every settled frame has the root (no flicker)
+            const o = splitRef(sqc, sqc, 2048, PU, sr);
+            const tr = o.trace.slice(14);
+            assert.ok(tr.every((f) => Math.abs(f.f0 / 163.5 - 1) < 0.01), `C1 square (${sr}): the root is reported in every settled frame`);
+            // Pattern 8 counting from the root: h' = 1, 9, 17 (series h = 5, 13, 21 = 163.5, 425.1, 686.7 Hz) in A, the other odd partials in B
+            for (const h of [5, 13, 21, 29]) assert.ok(share(o, 32.7 * h, 1, sr) > 0.9, `C1 square (${sr}), Every 8th: series harmonic ${h} (h' ${h - 4}) in A (${share(o, 32.7 * h, 1, sr).toFixed(3)})`);
+            for (const h of [7, 9, 11, 15, 17, 19, 23, 25]) assert.ok(share(o, 32.7 * h, 2, sr) > 0.9, `C1 square (${sr}), Every 8th: series harmonic ${h} (h' ${h - 4}) in B (${share(o, 32.7 * h, 2, sr).toFixed(3)})`);
+            for (const h of [1, 3]) assert.ok(share(o, 32.7 * h, 0, sr) > 0.9, `C1 square (${sr}): series harmonic ${h} is below the root and goes to Nonharmonics (${share(o, 32.7 * h, 0, sr).toFixed(3)})`);
+            let err = 0, tot = 0;
+            for (let i = 2048; i < sqc.length - 2048; i++) { const d = o.nh.L[i] + o.a.L[i] + o.b.L[i] - sqc[i]; err += d * d; tot += sqc[i] * sqc[i]; }
+            assert.ok(10 * Math.log10(err / tot + 1e-300) < -250, `C1 square (${sr}): three channels null against the input`);
+        }
+        console.log("[ref] C1 square, band 156.1 Hz .. 2.9 kHz, Size 2k:", rootRes.join("; "));
+        // also at Size 4k and 1k, and quieter
+        for (const [n, db] of [[4096, 0], [2048, -30], [2048, -6]]) {
+            const r = frames(wave("square", 32.7, SR, SR * 2, 0.25 * Math.pow(10, db / 20), false), SR, n, PU);
+            assert.ok(Math.abs(r.f0 / 163.5 - 1) < 0.01, `C1 square Size ${n}, ${db} dB: root ${r.f0.toFixed(2)}`);
+        }
+        // naive (aliased) square
+        {
+            const r = frames(wave("square", 32.7, SR, SR * 2, 0.25, true), SR, 2048, PU);
+            assert.ok(Math.abs(r.f0 / 163.5 - 1) < 0.01, `C1 naive square: root ${r.f0.toFixed(2)}`);
+        }
+        // C1 sawtooth (all harmonics, 1.4 bins apart at Size 2k): needs Size 4k (2.8 bins); the root is again the 5th harmonic
+        {
+            const r = frames(sawAt(32.7, SR, SR * 2, 0.25), SR, 4096, PU);
+            console.log(`[ref] C1 saw, Size 4k: root ${r.f0.toFixed(2)} (series ${r.series.toFixed(2)}, h ${r.hr}, salience ${r.sal.toFixed(2)})`);
+            assert.ok(Math.abs(r.f0 / 163.5 - 1) < 0.01 && r.hr === 5, `C1 saw at Size 4k: root ${r.f0.toFixed(2)}`);
+            const sw = sawAt(32.7, SR, SR * 2, 0.25);
+            const o = splitRef(sw, sw, 4096, PU);
+            for (const h of [5, 13, 21]) assert.ok(share(o, 32.7 * h, 1) > 0.85, `C1 saw Size 4k, Every 8th: series harmonic ${h} in A (${share(o, 32.7 * h, 1).toFixed(3)})`);
+            for (const h of [6, 7, 8, 9, 10, 14]) assert.ok(share(o, 32.7 * h, 2) > 0.85, `C1 saw Size 4k, Every 8th: series harmonic ${h} in B (${share(o, 32.7 * h, 2).toFixed(3)})`);
+            const r2 = frames(sawAt(32.7, 44100, 44100 * 2, 0.25), 44100, 4096, PU);
+            assert.ok(Math.abs(r2.f0 / 163.5 - 1) < 0.01, `C1 saw Size 4k (44.1 kHz): root ${r2.f0.toFixed(2)}`);
+            // at Size 2k its partials are only 1.4 bins apart (a 2048 sample frame holds 1.4 periods): not resolvable, so nothing is reported rather than a wrong root
+            const r3 = frames(sawAt(32.7, SR, SR * 2, 0.25), SR, 2048, PU);
+            assert.ok(r3.f0 === 0, `C1 saw at Size 2k is not resolvable: no root (got ${r3.f0})`);
+        }
+        // 110 Hz sawtooth with Low 300 Hz: series 110, root 330 (3rd harmonic), pattern counts from it (h' = h - 2): 110 / 220 Hz to Nonharmonics
+        {
+            const s110 = sawSig(110, 1, 0.25);
+            const P3 = Object.assign({}, P0, { flo: 300 });
+            const o = splitRef(s110, s110, 2048, P3);
+            const lt = o.trace[o.trace.length - 1];
+            assert.ok(Math.abs(lt.f0 / 330 - 1) < 0.01 && Math.abs(lt.series / 110 - 1) < 0.01 && lt.hr === 3, `110 Hz saw, Low 300: root ${lt.f0.toFixed(2)}, series ${lt.series.toFixed(2)}, h ${lt.hr}`);
+            for (const h of [3, 5, 7, 9]) assert.ok(share(o, 110 * h, 1) > 0.985, `110 Hz saw, Low 300, Every 2nd: harmonic ${h} (h' ${h - 2}, odd) in A`);
+            for (const h of [4, 6, 8]) assert.ok(share(o, 110 * h, 2) > 0.985, `110 Hz saw, Low 300, Every 2nd: harmonic ${h} (h' ${h - 2}, even) in B`);
+            for (const h of [1, 2]) assert.ok(share(o, 110 * h, 0) > 0.95, `110 Hz saw, Low 300: harmonic ${h} is below the root, Nonharmonics`);
+        }
+        // Maximum Harmonics counts from the root: 4 keeps series harmonics 5, 6, 7, 8 (only 5 and 7 exist in a square), 9 and up go to Nonharmonics
+        {
+            const sqc = wave("square", 32.7, SR, SR * 2, 0.25, false);
+            const o = splitRef(sqc, sqc, 2048, Object.assign({}, PU, { hmaxp: 4, hpat: 2 }));
+            for (const h of [5, 7]) assert.ok(share(o, 32.7 * h, 1) > 0.9, `C1 square, Max Harm 4: series harmonic ${h} (h' ${h - 4}) is still sorted (${share(o, 32.7 * h, 1).toFixed(3)})`);
+            for (const h of [9, 11, 13]) assert.ok(share(o, 32.7 * h, 0) > 0.9, `C1 square, Max Harm 4: series harmonic ${h} (h' ${h - 4}) is beyond the limit, Nonharmonics (${share(o, 32.7 * h, 0).toFixed(3)})`);
+            // Pattern 1st only: only the root is in A
+            const o1 = splitRef(sqc, sqc, 2048, Object.assign({}, PU, { hpat: 1 }));
+            assert.ok(share(o1, 163.5, 1) > 0.9 && share(o1, 32.7 * 7, 2) > 0.9 && share(o1, 32.7 * 9, 2) > 0.9, "C1 square, Pattern 1st only: the root alone in A, the other partials in B");
+        }
+        // an empty band or Low >= High reports nothing; with the full range the C1 series is found at its own fundamental (root = series f0)
+        {
+            const sqc = wave("square", 32.7, SR, SR * 2, 0.25, false);
+            assert.strictEqual(frames(sqc, SR, 2048, Object.assign({}, PU, { flo: 2900, fhi: 156.1 })).locked, 0, "Low >= High: no root");
+            const rw = frames(sqc, SR, 4096, Object.assign({}, PU, { flo: 19.4, fhi: 19900 }));
+            assert.ok(Math.abs(rw.f0 / 32.7 - 1) < 0.01 && rw.hr === 1, `C1 square with the full range at Size 4k: root = fundamental (${rw.f0.toFixed(2)}, h ${rw.hr})`);
+        }
+        // white noise in the user's band never gets a root or a series, all three sizes
+        for (const n of [1024, 2048, 4096]) for (const seed of [2, 5, 11]) {
+            const r = frames(noiseSig(0.3, seed, SR), SR, n, PU);
+            assert.strictEqual(r.locked, 0, `white noise (seed ${seed}, Size ${n}, band 156.1 .. 2900 Hz): no root`);
+            assert.ok(r.maxSal < 0.34, `white noise salience ${r.maxSal.toFixed(3)} in the user's band (Size ${n}) stays under the accept ${cfg.HS_ACCEPT} (a lock also needs two consecutive hops)`);
+        }
+        // A 220 Hz saw / square with the defaults is unchanged: root = f0, numbering untouched
+        for (const kind of ["saw", "square"]) {
+            const r = frames(wave(kind, 220, SR, SR, 0.25, false), SR, 2048, P0);
+            assert.ok(Math.abs(r.f0 / 220 - 1) < 0.005 && r.hr === 1 && Math.abs(r.series / 220 - 1) < 0.005, `${kind} 220 Hz defaults: root = series = 220 (${r.f0.toFixed(2)}, h ${r.hr})`);
+        }
+        // a series wholly above High (2.5 kHz saw, default band) has no root
+        assert.strictEqual(frames(sawSig(2500, 1, 0.25), SR, 2048, P0).f0, 0, "2.5 kHz saw with High 1.5 kHz: no root");
+    }
+    console.log("[ref] square / triangle / pulse tracking tests passed");
+}
+
 // ======================================================================
 // 2. GenExpr functions transpiled to JS: lib + hs_* match the reference
 // ======================================================================
@@ -388,7 +615,7 @@ function prep(src) {
         const half = n / 2;
         const tab = new DataSim(4096, 3), win = new DataSim(4096), fx = new DataSim(4096, 2);
         const ringL = new DataSim(4096), ringR = new DataSim(4096), accL = new DataSim(4096), accR = new DataSim(4096);
-        const stt = new DataSim(8), ms = new DataSim(2049, 2), hsd = new DataSim(2049, 8), hp = new DataSim(406, 4), hst = new DataSim(32), sal = new DataSim(646);
+        const stt = new DataSim(8), ms = new DataSim(2049, 2), hsd = new DataSim(2049, 10), hp = new DataSim(406, 5), hst = new DataSim(32), sal = new DataSim(710, 5);
         const cols = new DataSim(512), scope = new DataSim(544);
         const outL = new Float64Array(x.length), outR = new Float64Array(x.length);
         let age = 0;
@@ -407,7 +634,7 @@ function prep(src) {
                 gx.hs_decide(hst, p.thr, cfg.HS_ACCEPT, 3 * n / SR);
                 gx.hs_harm(hsd, hp, hst, n, SR);
                 gx.hs_post(hst);
-                gx.hs_masks(hsd, hp, hst, n, SR, p.sens, p.hpat, p.hmaxp < 0.5 ? 404 : p.hmaxp);
+                gx.hs_masks(hsd, hp, hst, n, SR, p.sens, p.hpat, p.hmaxp < 0.5 ? 404 : p.hmaxp, p.flo, p.fhi);
                 age = Math.min(age + 1, 3);
                 if (masks.length < frames) {
                     masks.push({
@@ -415,7 +642,7 @@ function prep(src) {
                         mN: Array.from({ length: half + 1 }, (_, k) => hsd.peek(k, 0)),
                         mA: Array.from({ length: half + 1 }, (_, k) => hsd.peek(k, 1)),
                         mB: Array.from({ length: half + 1 }, (_, k) => hsd.peek(k, 2)),
-                        hst: Array.from({ length: 20 }, (_, k) => hst.peek(k))
+                        hst: Array.from({ length: 26 }, (_, k) => hst.peek(k))
                     });
                 }
                 gx.ss_apply(fx, hsd, sel === 3 ? 2 : (sel === 2 ? 1 : (sel === 1 ? 0 : 3)), n);
@@ -470,14 +697,77 @@ function prep(src) {
         for (const f of g.masks) {
             cfg.hsFrame(st, Float64Array.from(f.mag), p, SR);
             for (let k = 0; k <= n / 2; k++) maxd = Math.max(maxd, Math.abs(st.mN[k] - f.mN[k]), Math.abs(st.mA[k] - f.mA[k]), Math.abs(st.mB[k] - f.mB[k]));
-            for (const i of [0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]) maxs = Math.max(maxs, Math.abs(st.hst[i] - f.hst[i]));
+            for (const i of [0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) maxs = Math.max(maxs, Math.abs(st.hst[i] - f.hst[i]));
         }
         assert.ok(maxd < 1e-9, `GenExpr masks equal the JS reference (max diff ${maxd})`);
         assert.ok(maxs < 1e-9, `GenExpr tracker state equals the JS reference (max diff ${maxs})`);
         const f0g = g.masks[g.masks.length - 1].hst[0];
         if (p.flo >= p.fhi) assert.strictEqual(f0g, 0, "the transpiled tracker finds nothing in an empty band");
         else if (p.flo > 220 * 1.5) assert.ok(Math.abs(f0g / 220 - 1) > 0.05, "the transpiled tracker does not report 220 Hz when it is below Low-cut");
-        else assert.ok(Math.abs(f0g / 220 - 1) < 0.01, "the transpiled tracker finds the sawtooth");
+        else assert.ok(Math.abs(f0g / 220 - 1) < 0.01, "the transpiled tracker finds the sawtooth " + JSON.stringify(p) + " f0=" + f0g);
+    }
+    // a square wave (odd comb) in the transpiled GenExpr: same tracker state as the reference, and f0 found
+    {
+        const xs = new Float64Array(N), ys = new Float64Array(N);
+        for (let i = 0; i < N; i++) {
+            let v = 0;
+            for (let h = 1; h * 220 < 20000; h += 2) v += Math.sin((2 * Math.PI * 220 * h * i) / SR) / h;
+            xs[i] = 0.25 * v;
+            ys[i] = 0.5 * xs[i];
+        }
+        const g = run(n, 1, P0, xs, ys, 60);
+        const st = cfg.hsNewState(n);
+        let maxd = 0, maxs = 0;
+        for (const f of g.masks) {
+            cfg.hsFrame(st, Float64Array.from(f.mag), P0, SR);
+            for (let k = 0; k <= n / 2; k++) maxd = Math.max(maxd, Math.abs(st.mN[k] - f.mN[k]), Math.abs(st.mA[k] - f.mA[k]), Math.abs(st.mB[k] - f.mB[k]));
+            for (const i of [0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) maxs = Math.max(maxs, Math.abs(st.hst[i] - f.hst[i]));
+        }
+        assert.ok(maxd < 1e-9 && maxs < 1e-9, `GenExpr equals the reference on a square wave (masks ${maxd}, state ${maxs})`);
+        assert.ok(Math.abs(g.masks[g.masks.length - 1].hst[0] / 220 - 1) < 0.01, "the transpiled tracker finds the square wave");
+    }
+    // ROOT detection in the transpiled GenExpr (series below the band, unresolved ripple regime): C1 square at Size 2k and C1 sawtooth at 4k, the user's band
+    {
+        const PU = { hpat: 8, hmaxp: 0, sens: 0.5, tilt: 0, thr: -120, flo: 156.1, fhi: 2900 };
+        for (const [kind, nn, expectRoot] of [["square", 2048, 163.5], ["saw", 4096, 163.5], ["square", 4096, 163.5]]) {
+            const xs = new Float64Array(N), ys = new Float64Array(N);
+            for (let i = 0; i < N; i++) {
+                let v = 0;
+                for (let h = 1; h * 32.7 < SR * 0.45; h++) {
+                    if (kind === "square" && h % 2 === 0) continue;
+                    v += (kind === "square" ? 4 / (Math.PI * h) : 1 / h) * Math.sin((2 * Math.PI * 32.7 * h * i) / SR);
+                }
+                xs[i] = 0.25 * v;
+                ys[i] = 0.5 * xs[i];
+            }
+            const g = run(nn, 1, PU, xs, ys, 80);
+            const st = cfg.hsNewState(nn);
+            let maxd = 0, maxs = 0;
+            for (const f of g.masks) {
+                cfg.hsFrame(st, Float64Array.from(f.mag), PU, SR);
+                for (let k = 0; k <= nn / 2; k++) maxd = Math.max(maxd, Math.abs(st.mN[k] - f.mN[k]), Math.abs(st.mA[k] - f.mA[k]), Math.abs(st.mB[k] - f.mB[k]));
+                for (const i of [0, 1, 2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]) maxs = Math.max(maxs, Math.abs(st.hst[i] - f.hst[i]));
+            }
+            assert.ok(maxd < 1e-9 && maxs < 1e-9, `GenExpr equals the reference on the C1 ${kind} at Size ${nn} (masks ${maxd}, state ${maxs})`);
+            const lastH = g.masks[g.masks.length - 1].hst;
+            assert.ok(Math.abs(lastH[20] / expectRoot - 1) < 0.01 && lastH[21] === 5 && Math.abs(lastH[0] / 32.7 - 1) < 0.01, `the transpiled tracker finds root ${lastH[20]} (series ${lastH[0]}, h ${lastH[21]}) of the C1 ${kind} at Size ${nn}`);
+        }
+        // sum identity with the root numbering (Every 8th counts from the root)
+        const xs = new Float64Array(N), ys = new Float64Array(N);
+        for (let i = 0; i < N; i++) {
+            let v = 0;
+            for (let h = 1; h * 32.7 < SR * 0.45; h += 2) v += (4 / (Math.PI * h)) * Math.sin((2 * Math.PI * 32.7 * h * i) / SR);
+            xs[i] = 0.25 * v;
+            ys[i] = 0.5 * xs[i];
+        }
+        const a = run(2048, 1, PU, xs, ys, 4), b = run(2048, 2, PU, xs, ys, 4), c = run(2048, 3, PU, xs, ys, 4);
+        let e = 0, t = 0;
+        for (let i = 2048; i < N; i++) {
+            const dl = a.outL[i] + b.outL[i] + c.outL[i] - xs[i - 2047], dr = a.outR[i] + b.outR[i] + c.outR[i] - ys[i - 2047];
+            e += dl * dl + dr * dr;
+            t += xs[i - 2047] ** 2 + ys[i - 2047] ** 2;
+        }
+        assert.ok(10 * Math.log10(e / t) < -250, `C1 square: Nonharmonics + A + B null against the delayed input (got ${10 * Math.log10(e / t)} dB)`);
     }
     // the GenExpr Mid analysis equals a direct transform of the Hann windowed (L + R) / 2 (frame 4 covers samples 0..n-1)
     {
@@ -531,6 +821,14 @@ function prep(src) {
     const firstStmt = lines.findIndex((l, i) => i > lastDecl && /^[a-zA-Z_]/.test(l));
     assert.ok(firstStmt > lastDecl, "statements follow the declarations");
     for (const l of lines.slice(firstDecl, lastDecl + 1)) assert.ok(l.trim() === "" || /^(Buffer|Data|Param|History|Delay)\b|^\/\//.test(l), `declaration block only holds declarations: ${l}`);
+    // the series-estimation constants of the reference are the literals of the core (kept in agreement by hand: this catches a one-sided edit)
+    for (const [label, val, re] of [
+        ["HS_COS_K", cfg.HS_COS_K, /0\.056 \* /], ["HS_PWIDE", cfg.HS_PWIDE, /pers < 4\.5/], ["HS_PMIN", cfg.HS_PMIN, /pers >= 2\.2/], ["HS_COS_BINS", cfg.HS_COS_BINS, new RegExp(`kst \\+ ${cfg.HS_COS_BINS - 1}\\)`)],
+        ["HS_COS_SUBOFF", cfg.HS_COS_SUBOFF, /\* 0\.0038\)/], ["HS_REG0", cfg.HS_REG0, /\+ 0\.8 \+ 0\.6 \* clip/], ["HS_REGX", cfg.HS_REGX, /0\.8 \+ 0\.6 \* clip/],
+        ["HS_JPOS", cfg.HS_JPOS, /for \(j = 0; j < 10;/], ["HS_DETREND", cfg.HS_DETREND, /a0 = max\(k - 8, 0\)/], ["HS_PRES_WIDE", cfg.HS_PRES_WIDE, /prom >= 10\) \? 1 : 0/], ["HS_PRES_NARROW", cfg.HS_PRES_NARROW, /prom >= 4 \? 1 : 0/]]) {
+        assert.ok(re.test(CORE_SRC), `core literal for ${label} = ${val} matches the reference`);
+    }
+    assert.ok(/pr3 = narrow > 0\.5 \? 2\.5 : 7;/.test(CORE_SRC) && cfg.HS_PRES_NARROW - 1.5 === 2.5 && cfg.HS_PRES_WIDE - 3 === 7, "root hold bars (presence - 1.5 / - 3 dB)");
     // Param names used by the build exist
     for (const name of ["fftn", "hpat", "hmaxp", "sensamt", "tiltamt", "thrdb", "flocut", "fhicut", "outsel", "wetamt"]) assert.ok(new RegExp(`^Param ${name}\\(`, "m").test(CORE_SRC), `Param ${name}`);
     assert.ok(/Buffer scope\("harmsplitscope"\)/.test(CORE_SRC), "Buffer bound by the GenExpr variable name `scope` (no set prefix)");
@@ -539,6 +837,8 @@ function prep(src) {
     assert.strictEqual(Number(m[1]), cfg.HS_SC_FRAME, "telemetry frame counter slot");
     assert.ok(CORE_SRC.includes(`poke(scope, tf0, ${cfg.HS_SC_F0}, 0)`), "f0 slot");
     assert.ok(CORE_SRC.includes(`poke(scope, tsal, ${cfg.HS_SC_CONF}, 0)`), "salience slot");
+    assert.ok(CORE_SRC.includes(`poke(scope, tfs, ${cfg.HS_SC_SERIES}, 0)`) && CORE_SRC.includes(`poke(scope, thr0, ${cfg.HS_SC_ROOTH}, 0)`) && CORE_SRC.includes(`poke(scope, tod, ${cfg.HS_SC_ODD}, 0)`), "series / root harmonic / odd-only slots");
+    assert.ok(cfg.HS_SC_ODD < cfg.HS_SCOPE_SAMPS, "telemetry slots inside the buffer");
     assert.ok(CORE_SRC.includes(`poke(scope, tv, ${cfg.HS_SC_VOICED}, 0)`), "voiced slot");
     assert.ok(CORE_SRC.includes(`poke(scope, tlv, ${cfg.HS_SC_LVL}, 0)`), "level slot");
     assert.ok(CORE_SRC.includes(`poke(scope, 4096, ${cfg.HS_SC_LATENCY}, 0)`), "latency slot");
@@ -547,7 +847,7 @@ function prep(src) {
     assert.ok(CORE_SRC.includes(`poke(scope, tte, ${cfg.HS_SC_THREFF}, 0)`), "effective threshold slot");
     assert.ok(CORE_SRC.includes("ov1 = fixnan(fixdenorm(wmU * wetL * gFade + (1 - wmU) * dL * kdry))") && CORE_SRC.includes("kdry = selH > 0.5 ? 0.3333333333333333 : 1;") && CORE_SRC.includes("dryL.read(4096)"), "Mix: wet / dry-share crossfade with the 4096-delayed dry");
     assert.ok(cfg.HS_SCOPE_SAMPS <= 544, "scope buffer big enough");
-    assert.ok(/Data hsd\(2049, 8\)/.test(CORE_SRC) && /Data hp\(406, 4\)/.test(CORE_SRC) && /Data sal\(646\)/.test(CORE_SRC), "Data sizes");
+    assert.ok(/Data hsd\(2049, 10\)/.test(CORE_SRC) && /Data hp\(406, 5\)/.test(CORE_SRC) && /Data sal\(710, 5\)/.test(CORE_SRC), "Data sizes");
     assert.strictEqual(cfg.HS_NCAND, 642);
     assert.ok(CORE_SRC.includes("for (i = 0; i < 642; i += 1)"), "candidate count in the core");
 
