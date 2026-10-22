@@ -268,7 +268,7 @@ THEME_STYLE = {
         "obj-theme-tab": {"activebgcolor": BTN, "activebgoncolor": VIOLET, "activetextcolor": [0.85, 0.89, 0.94, 1.0],
                           "activetextoncolor": INK, "bordercolor": BTN_EDGE, "fontname": UI_FONT, "fontface": 0, "fontsize": 9.0},
         "obj-lbl-zoom": {"textcolor": BTN_TEXT, "fontname": "Arial", "fontface": 1, "fontsize": 9.0},
-        "obj-zoom-speed": {"appearance": 0, "activebgcolor": BTN, "bgcolor": BTN, "lcdbgcolor": BTN, "lcdcolor": [0.85, 0.89, 0.94, 1.0],
+        "obj-zoom-speed": {"appearance": 4, "activebgcolor": BTN, "bgcolor": BTN, "lcdbgcolor": BTN, "lcdcolor": [0.85, 0.89, 0.94, 1.0],
                            "textcolor": [0.85, 0.89, 0.94, 1.0], "inactivelcdcolor": BTN_TEXT, "bordercolor": BTN_EDGE,
                            "focusbordercolor": VIOLET, "fontname": UI_FONT, "fontface": 0, "fontsize": 9.0},
         "obj-lbl-searches": {"textcolor": BTN_TEXT, "fontname": "Arial", "fontface": 1, "fontsize": 9.0},

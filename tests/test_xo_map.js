@@ -1518,14 +1518,15 @@ strip_filter_maxlen(5000);
   mgraphics.show_text = function (t) { texts.push(t); };
   zoomViewAt(lz.plotX + 60, lz.plotY + 40, 2, lz);
   paint();
-  const dotArcs = arcs.filter((a) => a[2] === 2.6 || a[2] === 3.3 || a[2] === 1.4);
+  const isDotR = (r) => Math.abs(r - 2.1) < 1e-9 || Math.abs(r - 2.6) < 1e-9 || Math.abs(r - 1.2) < 1e-9; // dot, k-NN neighbour dot, hidden dot
+  const dotArcs = arcs.filter((a) => isDotR(a[2]));
   assert(dotArcs.length > 0, "some dots are drawn");
   for (const [cx, cy] of dotArcs) {
     if (cy >= lz.toolbarY || cy < lz.plotY - 1) continue; // toolbar icons / banner are not map dots
     assert(cx >= lz.plotX && cx <= lz.plotX + lz.plotW && cy >= lz.plotY && cy <= lz.plotY + lz.plotH, `dot (${cx},${cy}) must stay inside the plot rect`);
   }
-  const expectedDots = pts.filter((p) => { const [sx, sy] = normToScreen(p.x, p.y, lz); return isInPlotRect(sx, sy, lz, 3.6); }).length;
-  assert(arcs.filter((a) => (a[2] === 2.6 || a[2] === 3.3 || a[2] === 1.4) && a[1] > lz.plotY - 1 && a[1] < lz.toolbarY).length >= Math.min(expectedDots, 1), "culling keeps in-view dots");
+  const expectedDots = pts.filter((p) => { const [sx, sy] = normToScreen(p.x, p.y, lz); return isInPlotRect(sx, sy, lz, 3.1); }).length;
+  assert(arcs.filter((a) => isDotR(a[2]) && a[1] > lz.plotY - 1 && a[1] < lz.toolbarY).length >= Math.min(expectedDots, 1), "culling keeps in-view dots");
   assert(texts.some((t) => /^\d+\.\dx$/.test(t)), "zoom indicator is shown while zoomed");
   mgraphics.arc = origArc;
   mgraphics.show_text = origText;

@@ -468,6 +468,18 @@ try {
         check(z0 === 1 && r1.view.zoom > 1.2, "e. wheel up zooms the map in (onwheel with synthetic (x, y, dx, dy))");
         check(r2.view.zoom === r1.view.zoom && (r2.view.x0 !== r1.view.x0 || r2.view.y0 !== r1.view.y0), "e. Option-dragging the zoomed map pans it (view window moved)");
         check(r3.view.zoom === 1 && r3.view.x0 === 0, "e. wheel down zooms back out to 1x and resets the window");
+        // Zoom Speed (Options): one wheel step zooms by exp(0.48 * speed)
+        for (const sp of [0.5, 1, 2]) {
+            hook("test_zoomspeed", sp);
+            for (let i = 0; i < 4; i++) hook("test_wheel", 110, 70, 0, -3, 0, 0, 0, 0, 0); // back to 1x
+            hook("test_wheel", 110, 70, 0, 1, 0, 0, 0, 0, 0);
+            const rz = report();
+            const want = Math.exp(0.48 * sp);
+            console.log(`  zoom speed ${sp}x: reported ${rz.zoomSpeed}, one wheel step -> ${rz.view.zoom.toFixed(4)} (expected ${want.toFixed(4)})`);
+            check(rz.zoomSpeed === sp && Math.abs(rz.view.zoom - want) < 1e-3, `e. Zoom Speed ${sp}x: one wheel step zooms by exp(0.48 * ${sp})`);
+        }
+        hook("test_zoomspeed", 1);
+        for (let i = 0; i < 4; i++) hook("test_wheel", 110, 70, 0, -3, 0, 0, 0, 0, 0);
         const real = report();
         console.log("  real event args seen by Max: " + (Object.keys(real.rawCount).length ? JSON.stringify(real.raw) + " counts " + JSON.stringify(real.rawCount) : "none (no real mouse event could be produced in the VM; arguments of real onwheel/onclick/ondrag stay unverified)"));
     }

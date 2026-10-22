@@ -2480,7 +2480,7 @@ function paint() {
   }
 
   // 6. Draw Sample Points
-  const ptRadius = points.length > 250 ? 2.1 : 2.6;
+  const ptRadius = points.length > 250 ? 1.7 : 2.1; // dots and rings ~20 % smaller than before (user request)
   for (let i = 0; i < points.length; i++) {
     const pt = points[i];
     const vis = isPointVisible(pt);
@@ -2488,36 +2488,36 @@ function paint() {
     if (viewZoom > 1.0 && !isInPlotRect(px, py, lay, ptRadius + 1.0)) continue; // cull to the plot rect when zoomed
     if (!vis) {
       xoSrc(0.25, 0.30, 0.38, 0.22);
-      mgraphics.arc(px, py, 1.4, 0, Math.PI * 2);
+      mgraphics.arc(px, py, 1.2, 0, Math.PI * 2);
       mgraphics.fill();
       continue;
     }
     const col = getCategoryColor(pt.catIdx);
     xoSrcRaw(col[0], col[1], col[2], 0.92);
-    mgraphics.arc(px, py, nbrSet.has(i) ? ptRadius + 0.7 : ptRadius, 0, Math.PI * 2);
+    mgraphics.arc(px, py, nbrSet.has(i) ? ptRadius + 0.5 : ptRadius, 0, Math.PI * 2);
     mgraphics.fill();
   }
 
   // 7. Highlight Selected & Hovered Point
   const hovPos = (hoveredIndex >= 0 && hoveredIndex < points.length) ? normToScreen(points[hoveredIndex].x, points[hoveredIndex].y, lay) : null;
-  if (hovPos && isPointVisible(points[hoveredIndex]) && (viewZoom <= 1.0 || isInPlotRect(hovPos[0], hovPos[1], lay, ptRadius + 3.0))) {
+  if (hovPos && isPointVisible(points[hoveredIndex]) && (viewZoom <= 1.0 || isInPlotRect(hovPos[0], hovPos[1], lay, ptRadius + 2.5))) {
     const [hx, hy] = hovPos;
     xoSrc(1.0, 1.0, 1.0, 0.85);
     mgraphics.set_line_width(1.2);
-    mgraphics.arc(hx, hy, ptRadius + 2.8, 0, Math.PI * 2);
+    mgraphics.arc(hx, hy, ptRadius + 2.3, 0, Math.PI * 2);
     mgraphics.stroke();
   }
 
   const selPos = (selectedIndex >= 0 && selectedIndex < points.length) ? normToScreen(points[selectedIndex].x, points[selectedIndex].y, lay) : null;
-  if (selPos && isPointVisible(points[selectedIndex]) && (viewZoom <= 1.0 || isInPlotRect(selPos[0], selPos[1], lay, ptRadius + 5.6))) {
+  if (selPos && isPointVisible(points[selectedIndex]) && (viewZoom <= 1.0 || isInPlotRect(selPos[0], selPos[1], lay, ptRadius + 4.5))) {
     const [sx, sy] = selPos;
     xoSrc(1.0, 1.0, 1.0, 0.22);
-    mgraphics.arc(sx, sy, ptRadius + 5.5, 0, Math.PI * 2);
+    mgraphics.arc(sx, sy, ptRadius + 4.4, 0, Math.PI * 2);
     mgraphics.fill();
 
     xoSrc(1.0, 1.0, 1.0, 1.0);
     mgraphics.set_line_width(1.7);
-    mgraphics.arc(sx, sy, ptRadius + 3.0, 0, Math.PI * 2);
+    mgraphics.arc(sx, sy, ptRadius + 2.4, 0, Math.PI * 2);
     mgraphics.stroke();
   }
 
