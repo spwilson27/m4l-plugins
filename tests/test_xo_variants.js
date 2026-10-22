@@ -78,7 +78,8 @@ for (const name of names) {
     configs.push({ theme, s: n & 1, f: (n >> 1) & 1, p: (n >> 2) & 1, o: (n >> 3) & 1 });
   }
   // Height, width, title.
-  const all = callLayout({ theme: "LCD", s: 1, f: 1, p: 1, o: 0 });
+  // saved / default state: the default device starts with Saved only; the variants keep all sections shown
+  const all = callLayout(themed ? { theme: "LCD", s: 1, f: 0, p: 0, o: 0 } : { theme: null, s: 1, f: 1, p: 1, o: 0 });
   assert.strictEqual(p.devicewidth, all.deviceWidth, `${tag} devicewidth must equal the saved-state layout's deviceWidth`);
   assert.deepStrictEqual(p.openrect, [0, 0, all.deviceWidth, 169], `${tag} openrect (presentation height 169)`);
   assert.strictEqual(p.openinpresentation, 1, `${tag} openinpresentation`);
@@ -91,7 +92,9 @@ for (const name of names) {
   assert.deepStrictEqual(table.banks, baseTable.banks, `${tag} parameter banks must equal the default's`);
   assert.deepStrictEqual(Object.keys(table.rows), Object.keys(baseTable.rows), `${tag} parameter set must equal the default's`);
   for (const [long, row] of Object.entries(table.rows)) {
-    assert.deepStrictEqual(row.valueof, baseTable.rows[long].valueof, `${tag} parameter ${long}: name / range / default / type must equal the default's`);
+    // the default device starts with Filters and Playback closed (a new instance); the variants keep them shown
+    const strip = (v) => (themed || !/^Show(Filters|Playback)Section$/.test(long)) ? v : Object.assign({}, v, { parameter_initial: baseTable.rows[long].valueof.parameter_initial });
+    assert.deepStrictEqual(strip(row.valueof), baseTable.rows[long].valueof, `${tag} parameter ${long}: name / range / default / type must equal the default's`);
     assert.strictEqual(row.varname, baseTable.rows[long].varname, `${tag} parameter ${long}: varname`);
   }
 

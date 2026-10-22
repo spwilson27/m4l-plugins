@@ -86,6 +86,12 @@ const TOOLBAR_ITEMS = [
   { id: "random",     title: "Random Sample" },
   { id: "reseed",     title: "Re-Seed Map with active Filters (1500 max)" }
 ];
+/** Options > Map Samples (parameter `Map Samples`, 100..5000, default 1500): the most samples the node engine puts on the map. */
+const MAP_SAMPLES_MIN = 100;
+const MAP_SAMPLES_MAX = 5000;
+const MAP_SAMPLES_DEFAULT = 1500;
+let mapSamples = MAP_SAMPLES_DEFAULT;
+function reseedTitle() { return `Re-Seed Map with active Filters (${mapSamples} max)`; }
 
 let points = [];
 let selectedIndex = 0;
@@ -600,6 +606,7 @@ function minimap_batch(offset, ...flat) {
 function minimap_done(totalCount, status) {
   // the node engine matches the samples: make sure it has the current terms (it ignores an unchanged config)
   searchesPush();
+  mapSamplesPush();
   if (points.length === 0) initDefaultConstellation();
   ensureValidSelection();
   mgraphics.redraw();
@@ -843,6 +850,8 @@ function apply_layout() {
   applyXoLayout();
   searchesSyncWidgets();
   searchesPush();
+  mapSamplesPush();
+  set_mapsamples(mapSamples); // refresh the tooltips (the widgets exist now)
 }
 
 // Captured at top level: `this` is only the jsthis there.
@@ -1529,11 +1538,32 @@ function onkeydown(k, ch, down) {
  * Positive dy zooms in / scrolls up. Check the sign in Live: flip WHEEL_ZOOM_SIGN if it feels inverted.
  */
 const WHEEL_ZOOM_SIGN = 1;
-/** Zoom Speed (Options, parameter `Zoom Speed`, 0.25..4, default 1). Exponent per wheel unit at speed 1: 0.48 (= 1.6 x the former 0.3). */
-const WHEEL_ZOOM_RATE = 0.48;
+/** Zoom Speed (Options, parameter `Zoom Speed`, 0.25..4, default 1). Exponent per wheel unit at speed 1: 0.96 (= 2 x the former 0.48 = 3.2 x the first 0.3). */
+const WHEEL_ZOOM_RATE = 0.96;
 const ZOOM_SPEED_MIN = 0.25;
 const ZOOM_SPEED_MAX = 4;
 let zoomSpeed = 1;
+
+/**
+ * `set_mapsamples <n>` from the Map Samples parameter (also on load): rounds and clamps, tells the node engine (which
+ * debounces the re-pick) and updates the Re-Seed tooltips (HUD title and the Filters button's Live tooltip).
+ */
+function set_mapsamples(...args) {
+  const v = Number(args[args.length - 1]);
+  if (!isFinite(v)) return;
+  const n = Math.max(MAP_SAMPLES_MIN, Math.min(MAP_SAMPLES_MAX, Math.round(v)));
+  const changed = n !== mapSamples;
+  mapSamples = n;
+  TOOLBAR_ITEMS[TOOLBAR_ITEMS.length - 1].title = reseedTitle();
+  const btn = searchesWidget("obj-reseed-filtered-btn");
+  if (btn) { try { btn.setattr("annotation", reseedTitle()); } catch (e) {} }
+  if (changed) mapSamplesPush();
+}
+
+/** Tells the node engine the number of map samples (it ignores an unchanged value). */
+function mapSamplesPush() {
+  outlet(0, "map_samples", mapSamples);
+}
 
 /** `set_zoomspeed <x>` from the Zoom Speed parameter (also on load). */
 function set_zoomspeed(...args) {
@@ -1544,15 +1574,15 @@ function set_zoomspeed(...args) {
 
 /**
  * Zoom factor of ONE wheel event. dy is clamped to +-3 units (a trackpad flick can send big deltas), the log-zoom of the
- * event is WHEEL_ZOOM_RATE * speed * dy, and its magnitude is capped at max(0.9, WHEEL_ZOOM_RATE * speed): a single
- * mouse-wheel step (+-1) is never capped at any speed, while a fast flick can never jump more than that (factor 2.46 at
- * speeds up to 1.9, e^(0.48 speed) above), so many small trackpad deltas stay smooth and big ones stay controlled.
+ * event is WHEEL_ZOOM_RATE * speed * dy, and its magnitude is capped at max(1.8, WHEEL_ZOOM_RATE * speed): a single
+ * mouse-wheel step (+-1) is never capped at any speed, while a fast flick can never jump more than that (factor 6.05 at
+ * speeds up to 1.9, e^(0.96 speed) above), so many small trackpad deltas stay smooth and big ones stay controlled.
  * @param {number} dy @param {number} speed
  */
 function wheelZoomFactor(dy, speed) {
   const sp = Math.max(ZOOM_SPEED_MIN, Math.min(ZOOM_SPEED_MAX, Number(speed) || 1));
   const units = Math.max(-3, Math.min(3, dy * WHEEL_ZOOM_SIGN));
-  const cap = Math.max(0.9, WHEEL_ZOOM_RATE * sp);
+  const cap = Math.max(1.8, WHEEL_ZOOM_RATE * sp);
   return Math.exp(Math.max(-cap, Math.min(cap, WHEEL_ZOOM_RATE * sp * units)));
 }
 
@@ -2481,20 +2511,39 @@ function paint() {
 
   // 6. Draw Sample Points
   const ptRadius = points.length > 250 ? 1.7 : 2.1; // dots and rings ~20 % smaller than before (user request)
+  // One path and one fill per colour (Options > Map Samples allows up to 5000 points: a fill per dot would be a draw call each).
+  /** @type {Map<number, number[]>} */
+  const dotBuckets = new Map();
+  /** @type {number[]} */
+  const dimDots = [];
+  const bucketKeys = [];
   for (let i = 0; i < points.length; i++) {
     const pt = points[i];
     const vis = isPointVisible(pt);
     const [px, py] = normToScreen(pt.x, pt.y, lay);
     if (viewZoom > 1.0 && !isInPlotRect(px, py, lay, ptRadius + 1.0)) continue; // cull to the plot rect when zoomed
-    if (!vis) {
-      xoSrc(0.25, 0.30, 0.38, 0.22);
-      mgraphics.arc(px, py, 1.2, 0, Math.PI * 2);
-      mgraphics.fill();
-      continue;
+    if (!vis) { dimDots.push(px, py); continue; }
+    const key = pt.catIdx;
+    let b = dotBuckets.get(key);
+    if (!b) { b = []; dotBuckets.set(key, b); bucketKeys.push(key); }
+    b.push(px, py, nbrSet.has(i) ? ptRadius + 0.5 : ptRadius);
+  }
+  if (dimDots.length) {
+    xoSrc(0.25, 0.30, 0.38, 0.22);
+    for (let k = 0; k < dimDots.length; k += 2) {
+      mgraphics.move_to(dimDots[k] + 1.2, dimDots[k + 1]);
+      mgraphics.arc(dimDots[k], dimDots[k + 1], 1.2, 0, Math.PI * 2);
     }
-    const col = getCategoryColor(pt.catIdx);
+    mgraphics.fill();
+  }
+  for (const key of bucketKeys) {
+    const b = /** @type {number[]} */ (dotBuckets.get(key));
+    const col = getCategoryColor(key);
     xoSrcRaw(col[0], col[1], col[2], 0.92);
-    mgraphics.arc(px, py, nbrSet.has(i) ? ptRadius + 0.5 : ptRadius, 0, Math.PI * 2);
+    for (let k = 0; k < b.length; k += 3) {
+      mgraphics.move_to(b[k] + b[k + 2], b[k + 1]);
+      mgraphics.arc(b[k], b[k + 1], b[k + 2], 0, Math.PI * 2);
+    }
     mgraphics.fill();
   }
 
@@ -2873,6 +2922,8 @@ function test_clear_log() {
 
 /** Test hook: sets the zoom speed like the parameter does. */
 function test_zoomspeed(v) { if (xoTestSkip()) return; set_zoomspeed(v); }
+/** Test hook: sets the Map Samples value like the parameter does. */
+function test_mapsamples(v) { if (xoTestSkip()) return; set_mapsamples(v); }
 
 /** @param {...any} a */
 function test_wheel(...a) {
@@ -3096,6 +3147,8 @@ function test_report() {
     waveN: waveData ? waveData.n : 0,
     view: getView(),
     zoomSpeed: zoomSpeed,
+    mapSamples: mapSamples,
+    reseedTitle: TOOLBAR_ITEMS[TOOLBAR_ITEMS.length - 1].title,
     sections: getXoSectionVisibility(),
     options: showOptionsSection,
     theme: getXoThemeName(),

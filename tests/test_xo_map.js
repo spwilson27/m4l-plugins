@@ -26,9 +26,9 @@ assert.strictEqual(32 + ptchLen, raw.length, "ptch chunk length mismatch");
 
 const doc = JSON.parse(raw.slice(32).toString("utf8"));
 const p = doc.patcher;
-assert.strictEqual(p.devicewidth, 798.0, "Expected devicewidth 798.0");
+assert.strictEqual(p.devicewidth, 414.0, "Expected devicewidth 414.0 (a new instance: toolbar + map + Saved list)");
 assert.strictEqual(p.openinpresentation, 1, "Expected openinpresentation = 1");
-assert.deepStrictEqual(p.openrect, [0.0, 0.0, 798.0, 169.0], "Expected 798x169 openrect");
+assert.deepStrictEqual(p.openrect, [0.0, 0.0, 414.0, 169.0], "Expected 414x169 openrect");
 
 const boxMap = new Map();
 for (const b of p.boxes) {
@@ -192,10 +192,13 @@ assert(
 // Verify Filters panel and Playback panel are visibly separate (non-overlapping)
 const filterPanelRect = boxMap.get("obj-panel-filters").presentation_rect;
 const playbackPanelRect = boxMap.get("obj-panel-playback").presentation_rect;
+// (a new instance starts with both closed: they are hidden then and share the slot; the 16 combinations below check the shown ones)
+const secHidden = (id) => (boxMap.get(id).hidden || 0) === 1;
 assert(
-  filterPanelRect[0] + filterPanelRect[2] <= playbackPanelRect[0],
+  (secHidden("obj-panel-filters") && secHidden("obj-panel-playback")) || filterPanelRect[0] + filterPanelRect[2] <= playbackPanelRect[0],
   "Expected FILTERS panel and PLAYBACK panel to be visibly separate"
 );
+assert(secHidden("obj-panel-filters") && secHidden("obj-panel-playback"), "a new instance starts with Filters and Playback closed");
 
 // Regression Check: Verify obj-maxlen-dial and obj-tone-dial connect directly to strip_filter_*
 assert(
@@ -719,7 +722,7 @@ const exprWidth = (sv, fv, pv, ov, theme) => {
   return Function('"use strict"; return (' + body + ");")();
 };
 
-const layAll = xoLayout.computeXoLayout("LCD", 1, 1, 1, 0);
+const layAll = xoLayout.computeXoLayout("LCD", 1, 0, 0, 0); // the saved / default state of a new instance: Saved list only
 assert.strictEqual(layAll.deviceWidth, p.devicewidth, "Saved-state layout width must equal devicewidth");
 for (const [id, spec] of Object.entries(layAll.boxes)) {
   assert(boxMap.has(id), `Layout box ${id} must exist in the device`);
@@ -784,6 +787,7 @@ assert.strictEqual(xoLayout.computeXoLayout("LCD", 0, 0, 0, 0).deviceWidth, 278.
 assert.strictEqual(xoLayout.computeXoLayout("Focus", 0, 0, 0, 0).deviceWidth, 278.0, "Compact width equal in both themes");
 assert.strictEqual(xoLayout.computeXoLayout("LCD", 1, 1, 1, 0).deviceWidth, 798.0);
 assert.strictEqual(xoLayout.computeXoLayout("Focus", 1, 1, 1, 0).deviceWidth, 712.0);
+assert.strictEqual(xoLayout.computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth, 414.0, "new-instance default: toolbar + map + Saved");
 assert.strictEqual(xoLayout.computeXoLayout("LCD", 1, 1, 1, 1).deviceWidth, 798.0 + xoLayout.XO_OPTIONS_W + 6, "Options adds its width (+6 gap)");
 assert.strictEqual(xoLayout.computeXoLayout(0, 1, 1, 1, 0).theme, "LCD", "theme accepts its index");
 assert.strictEqual(xoLayout.computeXoLayout(1, 1, 1, 1, 0).theme, "Focus", "theme accepts its index");
@@ -792,7 +796,7 @@ assert.strictEqual(xoLayout.computeXoLayout(1, 1, 1, 1, 0).theme, "Focus", "them
 assert(linesFrom("obj-toggle-saved-btn").includes("obj-pak-vis"), "Saved toggle must drive the device width");
 assert(linesFrom("obj-toggle-options-btn").includes("obj-pak-vis") && linesFrom("obj-toggle-options-btn").includes("obj-prep-show-options"), "Options toggle drives width and the v8ui");
 assert(linesFromPort("obj-theme-tab", 0).includes("obj-pak-vis:4"), "Theme tab drives the device width (pak inlet 5)");
-assert.strictEqual(boxMap.get("obj-pak-vis").text, "pak 1 1 1 0 0", "pak: saved filters playback options theme");
+assert.strictEqual(boxMap.get("obj-pak-vis").text, "pak 1 0 0 0 0", "pak: saved filters playback options theme (initial = the new-instance default)");
 assert.strictEqual(boxMap.get("obj-pak-vis").numinlets, 5);
 assert.strictEqual(boxMap.get("obj-expr-width").numinlets, 5);
 assert(linesFrom("obj-prep-show-filters").includes("obj-minimap"), "obj-prep-show-filters must reach obj-minimap (layout)");
@@ -819,9 +823,9 @@ assert(linesFrom("obj-expr-width").includes("obj-prep-setwidth") && linesFrom("o
   assert.strictEqual(boxMap.get("obj-toggle-options-btn").pictures[0], "gear.svg");
   assert.strictEqual(boxMap.get("obj-toggle-options-btn").annotation_name, "Show Options Section");
   const keys = Object.keys(p.parameters).filter((k) => k !== "parameterbanks" && k !== "inherited_shortname");
-  assert.deepStrictEqual(keys.filter((k) => !k.endsWith("-mir")).slice(-4), ["obj-toggle-options-btn", "obj-theme-tab", "obj-searches-cat", "obj-zoom-speed"], "new parameters are appended last");
+  assert.deepStrictEqual(keys.filter((k) => !k.endsWith("-mir")).slice(-5), ["obj-toggle-options-btn", "obj-theme-tab", "obj-searches-cat", "obj-zoom-speed", "obj-map-samples"], "new parameters are appended last");
   const longs = p.boxes.map((b) => b.box).filter((b) => b.saved_attribute_attributes && b.saved_attribute_attributes.valueof && b.saved_attribute_attributes.valueof.parameter_longname).map((b) => b.saved_attribute_attributes.valueof.parameter_longname);
-  assert.deepStrictEqual(longs.filter((l) => !l.endsWith("View")).slice(-4), ["ShowOptions", "Theme", "Searches Category", "Zoom Speed"], "new parameter boxes come after every existing parameter box");
+  assert.deepStrictEqual(longs.filter((l) => !l.endsWith("View")).slice(-5), ["ShowOptions", "Theme", "Searches Category", "Zoom Speed", "Map Samples"], "new parameter boxes come after every existing parameter box");
   assert.strictEqual(new Set(longs).size, longs.length, "parameter long names are unique (hidden mirrors included)");
 }
 
@@ -908,6 +912,12 @@ const namesMatch = /var XO_LAYOUT_NAMES = (\{[^\n]*\});/.exec(boxMap.get("obj-mi
 assert(namesMatch, "Mini-map script must start with the injected XO_LAYOUT_NAMES");
 const builtLayoutNames = JSON.parse(namesMatch[1]);
 const allVarnames = p.boxes.map((b) => b.box.varname).filter(Boolean);
+{ // a new instance: the toggles' initial values, the v8ui's starting flags and the pak all agree on "Saved only"
+  const txt = boxMap.get("obj-minimap").textfile.text;
+  assert(/let showSavedList = 1;/.test(txt) && /let showFiltersSection = 0;/.test(txt) && /let showPlaybackSection = 0;/.test(txt) && /let showOptionsSection = 0;/.test(txt), "v8ui starts with Saved only");
+  const init = (id) => boxMap.get(id).saved_attribute_attributes.valueof.parameter_initial[0];
+  assert.deepStrictEqual(["obj-toggle-saved-btn", "obj-toggle-filters-btn", "obj-toggle-playback-btn", "obj-toggle-options-btn"].map(init), [1, 0, 0, 0], "toolbar toggles start Saved on, Filters / Playback / Options off");
+}
 assert.deepStrictEqual(Object.keys(builtLayoutNames).sort(), Object.keys(layAll.boxes).sort(), "XO_LAYOUT_NAMES ids are the layout's ids");
 for (const id of Object.keys(layAll.boxes)) {
   const vn = boxMap.get(id).varname;
@@ -1031,6 +1041,69 @@ assert.strictEqual(engine.engineState.knownFolders.length, 1, "Deleting PackB mu
 assert.strictEqual(engine.engineState.knownFolders[0].path, "/tmp/PackA");
 assert(engine.engineState.corpusSamples.every((s) => s.rootFolder === "/tmp/PackA"), "Deleting PackB must remove its samples from corpusSamples");
 
+// Options > Map Samples: the node engine's map subset follows the setting; a change re-picks the map after a debounce and keeps the selection
+{
+  const es = engine.engineState;
+  const savedState = { corpus: es.corpusSamples, samples: es.samples, folders: es.knownFolders, sel: es.selectedIndex, max: es.maxDisplaySamples };
+  es.knownFolders = [{ path: "/tmp/PackA", name: "PackA", enabled: true, count: 1000 }, { path: "/tmp/PackB", name: "PackB", enabled: true, count: 1000 }];
+  es.corpusSamples = syntheticCorpus.slice();
+  es.maxDisplaySamples = 1500;
+  engine.rebuildActiveMapSubset(1);
+  assert.strictEqual(es.samples.length, 1500, "default: 1500 map samples");
+  const timers = [];
+  const realSet = global.setTimeout, realClear = global.clearTimeout;
+  global.setTimeout = (fn, ms) => { const t = { fn, ms, cleared: false, unref() {} }; timers.push(t); return t; };
+  global.clearTimeout = (t) => { if (t) t.cleared = true; };
+  try {
+    assert.strictEqual(engine.setMapSamples(1500), false, "an unchanged value does nothing");
+    assert.strictEqual(timers.length, 0);
+    es.selectedIndex = 3;
+    const keepPath = es.samples[3].path;
+    // dragging the numbox: many values in a row -> one re-pick of the last value
+    for (const v of [1400, 1200, 900, 400]) assert.strictEqual(engine.setMapSamples(v), true);
+    assert.strictEqual(es.samples.length, 1500, "nothing is re-picked while the value is still moving");
+    assert.strictEqual(timers.filter((t) => !t.cleared).length, 1, "only the last change keeps a timer (debounce)");
+    const live = timers.filter((t) => !t.cleared)[0];
+    assert.strictEqual(live.ms, engine.MAP_SAMPLES_DEBOUNCE_MS);
+    assert.strictEqual(engine.MAP_SAMPLES_DEBOUNCE_MS, 300);
+    live.fn();
+    assert.strictEqual(es.samples.length, 400, "after the debounce the map has the new number of samples");
+    assert.strictEqual(es.maxDisplaySamples, 400);
+    const nowSel = es.samples[es.selectedIndex];
+    assert(es.samples.some((x) => x.path === keepPath) ? nowSel.path === keepPath : es.selectedIndex >= 0 && es.selectedIndex < 400, "the selection stays on its sample while it is still on the map");
+    // a selected sample that is on both maps stays selected even when its index changes
+    const common = es.samples[17];
+    es.selectedIndex = 17;
+    engine.setMapSamples(100, true);
+    assert.strictEqual(es.samples.length, 100, "100 samples");
+    const nowIdx = es.samples.findIndex((x) => x.path === common.path);
+    if (nowIdx >= 0) assert.strictEqual(es.samples[es.selectedIndex].path, common.path, "selection follows its sample to the new index");
+    engine.setMapSamples(5000, true);
+    assert.strictEqual(es.samples.length, 2000, "above the corpus size every sample is shown (5000 max)");
+    assert.strictEqual(es.maxDisplaySamples, 5000);
+    engine.setMapSamples(99999, true); assert.strictEqual(es.maxDisplaySamples, 5000, "clamped to 5000");
+    engine.setMapSamples(-5, true); assert.strictEqual(es.maxDisplaySamples, 100, "clamped to 100");
+    // Re-Seed (filtered) and folder changes use the setting too
+    engine.setMapSamples(300, true);
+    engine.reseedWithActiveFilters();
+    assert.strictEqual(es.samples.length, 300, "filtered Re-Seed picks Map Samples samples");
+    engine.toggleFolderFilter("/tmp/PackB", 0);
+    assert.strictEqual(es.samples.length, 300, "a folder change re-picks Map Samples samples");
+    engine.enableAllFolderFilters();
+    assert.strictEqual(es.samples.length, 300);
+    // before any corpus exists the value is only stored (the scan applies it)
+    es.corpusSamples = [];
+    const before = es.samples;
+    engine.setMapSamples(700, true);
+    assert.strictEqual(es.maxDisplaySamples, 700);
+    assert.strictEqual(es.samples, before, "no corpus: nothing to re-pick");
+  } finally {
+    global.setTimeout = realSet; global.clearTimeout = realClear;
+  }
+  es.corpusSamples = savedState.corpus; es.samples = savedState.samples; es.knownFolders = savedState.folders;
+  es.selectedIndex = savedState.sel; es.maxDisplaySamples = 1500;
+}
+
 // Restore scanRes samples for Infinite Similarity Stepping test (both Next +1 and Prev -1) in Node engine
 engine.engineState.corpusSamples = scanRes.samples;
 engine.engineState.knownFolders = [{ path: tmpDir, name: "TestDrums", enabled: true, count: scanRes.samples.length }];
@@ -1124,7 +1197,9 @@ xoX = {
   get searchTerms() { return searchTerms; }, set searchTerms(v) { searchTerms = v; },
   get matchFolders() { return matchFolders; }, set matchFolders(v) { matchFolders = v; },
   get searchesCatIdx() { return searchesCatIdx; }, set searchesCatIdx(v) { searchesCatIdx = v; },
-  get zoomSpeed() { return zoomSpeed; }
+  get zoomSpeed() { return zoomSpeed; },
+  get mapSamples() { return mapSamples; },
+  get reseedTitle() { return reseedTitle(); }
 };`);
 
 loadbang();
@@ -1174,17 +1249,18 @@ strip_filter_maxlen(5000);
     selected_info(3, "Wave Test", "kick", 0, 400, 50, 0, ...new Array(24).fill(0.5), "nbrs", 1, 2);
     test_wheel(100, 70, 0, 1);
     assert(getView().zoom > 1.0, "test_wheel zooms the map");
-    // Zoom Speed: one wheel step at 1.0x zooms by exp(0.48) (1.6x the former exp(0.3) exponent); the factor multiplies the exponent
+    // Zoom Speed: one wheel step at 1.0x zooms by exp(0.96) (2x the former exp(0.48) exponent); the factor multiplies the exponent
     {
       const one = (speed, dy) => { resetView(); set_zoomspeed(speed); test_wheel(100, 70, 0, dy); return getView().zoom; };
-      assert(Math.abs(one(1, 1) - Math.exp(0.48)) < 1e-9, "1.0x: one wheel step = exp(0.48)");
-      assert(Math.abs(Math.log(one(1, 1)) / Math.log(Math.exp(0.3)) - 1.6) < 1e-9, "1.0x is 1.6x faster than the old exponent per wheel unit");
-      assert(Math.abs(one(2, 1) - Math.exp(0.96)) < 1e-9, "2x doubles the exponent");
-      assert(Math.abs(one(0.25, 1) - Math.exp(0.12)) < 1e-9, "0.25x quarters the exponent");
-      assert(Math.abs(one(0.5, 1) - Math.exp(0.24)) < 1e-9, "0.5x halves the exponent");
-      assert.strictEqual(one(1, 40), Math.exp(0.9), "a huge trackpad delta is capped (dy 3 units, exponent cap 0.9 at speed 1)");
-      assert.strictEqual(one(4, 40), Math.exp(1.92), "cap grows with speed so a single step is never cut: exp(0.48 * 4)");
-      assert(Math.abs(one(4, 1) - Math.exp(1.92)) < 1e-9, "4x: one step = exp(1.92), not clamped");
+      assert(Math.abs(one(1, 1) - Math.exp(0.96)) < 1e-9, "1.0x: one wheel step = exp(0.96)");
+      assert(Math.abs(Math.log(one(1, 1)) / 0.48 - 2) < 1e-9, "1.0x is the former 2.0x (2x the old 0.48 exponent per wheel unit)");
+      assert(Math.abs(one(2, 1) - Math.exp(1.92)) < 1e-9, "2x doubles the exponent");
+      assert(Math.abs(one(0.25, 1) - Math.exp(0.24)) < 1e-9, "0.25x quarters the exponent");
+      assert(Math.abs(one(0.5, 1) - Math.exp(0.48)) < 1e-9, "0.5x halves the exponent");
+      assert.strictEqual(one(1, 40), Math.exp(1.8), "a huge trackpad delta is capped (dy 3 units, exponent cap 1.8 at speed 1)");
+      assert.strictEqual(one(4, 40), 16, "4x: the exponent cap (0.96 * 4) lets a flick through, zoom clamps at 16x");
+      assert(Math.abs(one(1.5, 1) - Math.exp(1.44)) < 1e-9, "1.5x: one step = exp(1.44), not cut");
+      assert.strictEqual(one(4, 1), 16, "4x: one step = exp(3.84), clamped to 16x");
       set_zoomspeed(99); assert.strictEqual(xoX.zoomSpeed, 4, "speed clamps to 4x");
       set_zoomspeed(0); assert.strictEqual(xoX.zoomSpeed, 0.25, "speed clamps to 0.25x");
       set_zoomspeed(1);
@@ -1194,7 +1270,26 @@ strip_filter_maxlen(5000);
       assert.strictEqual(getView().zoom, 1, "zoom out clamps at 1x");
       // many small trackpad deltas add up like the same total (no jumpiness): 10 x 0.1 == 1 x 1
       resetView(); for (let i = 0; i < 10; i++) test_wheel(100, 70, 0, 0.1);
-      assert(Math.abs(getView().zoom - Math.exp(0.48)) < 1e-9, "10 small deltas = one step");
+      assert(Math.abs(getView().zoom - Math.exp(0.96)) < 1e-9, "10 small deltas = one step");
+      // Map Samples (Options): clamps / rounds, tells the node engine, and the Re-Seed tooltips show the number
+      {
+        const sent = []; const prevOut = global.outlet;
+        global.outlet = (i, ...args) => { sent.push(args); prevOut(i, ...args); };
+        set_mapsamples(800.4);
+        assert.strictEqual(xoX.mapSamples, 800, "rounds");
+        assert.deepStrictEqual(sent.filter((m) => m[0] === "map_samples"), [["map_samples", 800]], "a change goes to the node engine");
+        set_mapsamples(800.2);
+        assert.strictEqual(sent.filter((m) => m[0] === "map_samples").length, 1, "an unchanged value is not re-sent");
+        set_mapsamples(99999); assert.strictEqual(xoX.mapSamples, 5000, "clamps to 5000");
+        set_mapsamples(3); assert.strictEqual(xoX.mapSamples, 100, "clamps to 100");
+        set_mapsamples(1234);
+        assert.strictEqual(xoX.reseedTitle, "Re-Seed Map with active Filters (1234 max)", "toolbar Re-Seed tooltip shows the number");
+        const reseedBtn = fakeLayoutPatcher.attrs[builtLayoutNames["obj-reseed-filtered-btn"]] || {};
+        assert.strictEqual(reseedBtn.annotation, "Re-Seed Map with active Filters (1234 max)", "the Filters Re-Seed button's tooltip shows the number");
+        test_mapsamples(1500);
+        assert.strictEqual(xoX.mapSamples, 1500);
+        global.outlet = prevOut;
+      }
     }
     audition_info("/tmp/x.wav", 250, 11025, 1, "complex", 7, 50, 1);
     test_width(776);
@@ -1640,9 +1735,9 @@ assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW mu
   set_show_options(1);
   assert.strictEqual(hid("obj-panel-options"), 0);
   assert.strictEqual(hid("obj-theme-tab"), 0, "Options shows the Theme selector");
-  assert.deepStrictEqual(rect("obj-panel-options"), [28, 5, 150, 159], "Options slides in right of the toolbar");
-  assert.strictEqual(rect("obj-panel-left")[0], 184, "the map panel slides right by the Options width + gap");
-  assert.strictEqual(rect("obj-panel-filters")[0], 184 + 380 + 6, "Filters follow (Saved shown)");
+  assert.deepStrictEqual(rect("obj-panel-options"), [28, 5, 190, 159], "Options slides in right of the toolbar");
+  assert.strictEqual(rect("obj-panel-left")[0], 224, "the map panel slides right by the Options width + gap");
+  assert.strictEqual(rect("obj-panel-filters")[0], 224 + 380 + 6, "Filters follow (Saved shown)");
   set_show_options(0);
   assert.strictEqual(hid("obj-panel-options"), 1);
   assert.strictEqual(rect("obj-panel-left")[0], 28);
@@ -2441,7 +2536,7 @@ setTimeout(() => {
     for (const th of ["LCD", "Focus"]) for (let m = 0; m < 16; m++) {
       const lay3 = computeXoLayout(th, m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1);
       const panel = lay3.boxes["obj-panel-options"].rect;
-      const ids2 = ["obj-hdr-options", "obj-lbl-theme", "obj-theme-tab", "obj-lbl-zoom", "obj-zoom-speed", "obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders"];
+      const ids2 = ["obj-hdr-options", "obj-lbl-theme", "obj-theme-tab", "obj-lbl-zoom", "obj-zoom-speed", "obj-lbl-map", "obj-map-samples", "obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders"];
       for (const id of ids2) {
         const r = lay3.boxes[id].rect;
         assert.strictEqual(lay3.boxes[id].hidden, (m >> 3) & 1 ? 0 : 1, `${th}/${m}: ${id} follows the Options section`);
@@ -2466,6 +2561,18 @@ setTimeout(() => {
       assert(lf2("obj-zoom-speed").includes("obj-prep-zoomspeed") && lf2("obj-prep-zoomspeed").includes("obj-minimap"), "Zoom Speed reaches the v8ui");
       assert.strictEqual(boxMap.get("obj-lbl-zoom").ignoreclick, 1, "the label is click-through");
       for (const th of ["LCD", "Focus"]) assert(THEME_STYLE[th]["obj-zoom-speed"] && THEME_STYLE[th]["obj-lbl-zoom"], `${th} styles the Zoom Speed widgets`);
+    }
+    // Map Samples: appended stored-only float parameter with Int display (Live's Int stops at 255), label + numbox in the Options panel
+    {
+      const m = boxMap.get("obj-map-samples"), vm = m.saved_attribute_attributes.valueof;
+      assert.strictEqual(m.maxclass, "live.numbox");
+      assert.deepStrictEqual([vm.parameter_longname, vm.parameter_shortname, vm.parameter_type, vm.parameter_mmin, vm.parameter_mmax, vm.parameter_initial, vm.parameter_invisible, vm.parameter_unitstyle], ["Map Samples", "Map Smpl", 0, 100, 5000, [1500], 1, 0]);
+      assert.strictEqual(boxMap.get("obj-prep-mapsamples").text, "prepend set_mapsamples");
+      const lf3 = (from) => p.lines.map((l) => l.patchline).filter((l) => l.source[0] === from).map((l) => l.destination[0]);
+      assert(lf3("obj-map-samples").includes("obj-prep-mapsamples") && lf3("obj-prep-mapsamples").includes("obj-minimap"), "Map Samples reaches the v8ui");
+      assert.strictEqual(boxMap.get("obj-lbl-map").ignoreclick, 1, "the label is click-through");
+      for (const th of ["LCD", "Focus"]) assert(THEME_STYLE[th]["obj-map-samples"] && THEME_STYLE[th]["obj-lbl-map"], `${th} styles the Map Samples widgets`);
+      assert.strictEqual(boxMap.get("obj-map-samples").presentation, 1);
     }
     // both themes style every new box
     for (const id of ["obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders"]) {
@@ -2525,8 +2632,12 @@ setTimeout(() => {
     assert.strictEqual(xoX.matchFolders, 1);
     // minimap_done re-sends the config (the node may have started after the v8ui)
     stripOutlets = [[], []];
+    const sentMsgs = []; const prevOutlet = global.outlet;
+    global.outlet = (i, ...a) => { sentMsgs.push(a); prevOutlet(i, ...a); };
     minimap_done(10, "x");
-    assert.strictEqual(stripOutlets[0][0], "search_config");
+    global.outlet = prevOutlet;
+    assert(sentMsgs.some((a) => a[0] === "search_config"), "minimap_done re-sends the search config");
+    assert(sentMsgs.some((a) => a[0] === "map_samples" && a[1] === xoX.mapSamples), "minimap_done re-sends Map Samples (a node that started later still gets it)");
     // test hook helpers
     test_terms_cat(5);
     test_terms_text("shaker, egg");
@@ -2727,6 +2838,33 @@ setTimeout(() => {
   console.log("OK: hotkeys only act on the instance selected in Live (3 instances, rack-nested, switching, LOM unavailable, double fire)");
 }
 
+// Paint cost with the maximum number of map points (5000): JS side only (the mock mgraphics draws nothing)
+{
+  const prevOut = global.outlet;
+  global.outlet = () => {};
+  minimap_clear();
+  for (let i = 0; i < 5000; i += 35) {
+    const flat = [];
+    for (let j = i; j < Math.min(5000, i + 35); j++) flat.push((j * 0.6180339) % 1, (j * 0.7548777) % 1, (j % 8) * 16 + (j % 8), 100 + j % 900, 50, 40, 60, "P" + j);
+    minimap_batch(i, ...flat);
+  }
+  minimap_done(5000, "bench");
+  const bench = (label, zoomIn) => {
+    resetView();
+    if (zoomIn) zoomViewAt(100, 70, 4, getLayout());
+    paint();
+    const t0 = process.hrtime.bigint();
+    for (let k = 0; k < 20; k++) paint();
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6 / 20;
+    console.log(`BENCH: paint with 5000 map points (${label}): ${ms.toFixed(2)} ms`);
+    return ms;
+  };
+  const full = bench("full view", false);
+  const zoomed = bench("4x zoom", true);
+  resetView();
+  assert(full < 50 && zoomed < 50, `painting 5000 points must stay well under a frame (${full.toFixed(1)} / ${zoomed.toFixed(1)} ms)`);
+  global.outlet = prevOut;
+}
 console.log("SUCCESS: All mono/stereo audio routing, M4L runtime 's' hotkey, native Cocoa OS file drag-out, scrollable/reorderable/deletable saved list, and Infinite MaxLen filter tests passed!");
 
 // Every layout variant (default, A..E): structural / layout checks (tests/test_xo_variants.js).

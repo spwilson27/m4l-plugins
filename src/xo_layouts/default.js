@@ -18,7 +18,7 @@
  * Rules:
  *  - A slim toolbar column (XO_TB_W px) is the leftmost, always visible column: three section toggles at the top
  *    (Saved / Filters / Playback) and the Options toggle at the bottom.
- *  - The Options section (XO_OPTIONS_W px: the Theme selector, the Zoom Speed value and Searches: category picker, terms field, Reset, Match folders) sits right of the toolbar.
+ *  - The Options section (XO_OPTIONS_W px: the Theme selector, the Zoom Speed and Map Samples values and Searches: category picker, terms field, Reset, Match folders) sits right of the toolbar.
  *  - The 2D map pane is XO_MAP_PANE_W wide in BOTH themes (the Saved list adds XO_SAVED_PANE_W).
  *  - Visible sections are packed left to right with a 6 px gap; a hidden section takes no space and the device
  *    width ends 6 px after the last visible panel. Filters and Playback are narrower in the Focus theme.
@@ -46,7 +46,7 @@ function xoLabelH(id, th) {
 var XO_MAP_PANE_W = 236.0;
 var XO_SAVED_PANE_W = 136.0;
 var XO_GAP = 6.0;
-var XO_OPTIONS_W = 150.0;
+var XO_OPTIONS_W = 190.0;
 var XO_FILTERS_W = { "LCD": 208.0, "Focus": 134.0 };
 var XO_PLAYBACK_W = { "LCD": 164.0, "Focus": 152.0 };
 var XO_DEVICE_H = 169.0;
@@ -131,15 +131,17 @@ function computeXoLayout(theme, showSaved, showFilters, showPlayback, showOption
   // --- Options: header, Theme selector, Searches (category picker, terms field, Reset, Match folders) ---
   put("obj-panel-options", "options", "", [optionsX, 5.0, XO_OPTIONS_W, 159.0]);
   put("obj-hdr-options", "options", "", [optionsX + 7.0, 8.0, 82.0, 14.0]);
-  put("obj-lbl-theme", "options", "", [optionsX + 7.0, 30.0, 82.0, 11.0]);
-  put("obj-theme-tab", "options", "", [optionsX + 6.0, 44.0, 84.0, 18.0]);
-  put("obj-lbl-zoom", "options", "", [optionsX + 94.0, 30.0, 50.0, 11.0]);
-  put("obj-zoom-speed", "options", "", [optionsX + 94.0, 44.0, 50.0, 18.0]);
-  put("obj-lbl-searches", "options", "", [optionsX + 7.0, 68.0, 138.0, 11.0]);
-  put("obj-searches-cat", "options", "", [optionsX + 6.0, 80.0, 138.0, 15.0]);
-  put("obj-searches-terms", "options", "", [optionsX + 6.0, 97.0, 138.0, 40.0]);
+  put("obj-lbl-theme", "options", "", [optionsX + 7.0, 30.0, 70.0, 11.0]);
+  put("obj-theme-tab", "options", "", [optionsX + 6.0, 44.0, 70.0, 18.0]);
+  put("obj-lbl-zoom", "options", "", [optionsX + 80.0, 30.0, 48.0, 11.0]);
+  put("obj-zoom-speed", "options", "", [optionsX + 80.0, 44.0, 48.0, 18.0]);
+  put("obj-lbl-map", "options", "", [optionsX + 132.0, 30.0, 52.0, 11.0]);
+  put("obj-map-samples", "options", "", [optionsX + 132.0, 44.0, 52.0, 18.0]);
+  put("obj-lbl-searches", "options", "", [optionsX + 7.0, 68.0, 178.0, 11.0]);
+  put("obj-searches-cat", "options", "", [optionsX + 6.0, 80.0, 178.0, 15.0]);
+  put("obj-searches-terms", "options", "", [optionsX + 6.0, 97.0, 178.0, 40.0]);
   put("obj-searches-reset", "options", "", [optionsX + 6.0, 141.0, 44.0, 16.0]);
-  put("obj-searches-folders", "options", "", [optionsX + 54.0, 141.0, 90.0, 16.0]);
+  put("obj-searches-folders", "options", "", [optionsX + 54.0, 141.0, 100.0, 16.0]);
 
   // --- map (+ Saved list) ---
   put("obj-panel-left", "left", "", [leftX, 5.0, leftPanelW, 159.0]);

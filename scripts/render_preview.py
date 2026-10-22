@@ -165,6 +165,9 @@ def render_v8ui(cmds, w, h):
     subpaths = []
     cur_path = []
     pending_shape = None  # ("rect", ...), ("rrect", ...), ("arc", ...)
+    # Every arc since the last fill / stroke: cairo fills all of them (move_to + arc per dot batches many circles in
+    # one fill); keeping only the last one drew one dot per fill.
+    pending_arcs = []
     # Affine user->device matrix (a, b, c, d, e, f) as in cairo; paths and text follow it,
     # rects and arcs only follow its translation.
     mtx = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
@@ -205,9 +208,10 @@ def render_v8ui(cmds, w, h):
             cur_path = []
         elif op == "arc":
             pending_shape = ("arc", (cmd["x"] + mtx[4]) * SCALE, (cmd["y"] + mtx[5]) * SCALE, cmd["r"] * SCALE, cmd["a1"], cmd["a2"])
+            pending_arcs.append(pending_shape)
             cur_path = []
         elif op == "move_to":
-            pending_shape = None
+            pending_shape = pending_arcs[-1] if pending_arcs else None
             if len(cur_path) > 1:
                 subpaths.append(cur_path)
             cur_pt = tp(cmd["x"], cmd["y"])
@@ -271,14 +275,17 @@ def render_v8ui(cmds, w, h):
                     else:
                         d.rounded_rectangle(box, radius=rad, outline=cur_color, width=line_w)
                 elif kind == "arc":
-                    _, ax, ay, ar, a1, a2 = pending_shape
-                    box = [ax - ar, ay - ar, ax + ar, ay + ar]
-                    if op == "fill":
-                        d.ellipse(box, fill=cur_color)
-                    else:
-                        d.ellipse(box, outline=cur_color, width=line_w)
+                    for _, ax, ay, ar, a1, a2 in (pending_arcs or [pending_shape]):
+                        box = [ax - ar, ay - ar, ax + ar, ay + ar]
+                        if op == "fill":
+                            d.ellipse(box, fill=cur_color)
+                        else:
+                            d.ellipse(box, outline=cur_color, width=line_w)
                 if not cmd.get("preserve", False):
                     pending_shape = None
+                    pending_arcs = []
+                    subpaths = []
+                    cur_path = []
             else:
                 all_paths = subpaths + ([cur_path] if len(cur_path) > 1 else [])
                 for pth in all_paths:
@@ -289,6 +296,7 @@ def render_v8ui(cmds, w, h):
                 if not cmd.get("preserve", False):
                     subpaths = []
                     cur_path = []
+                    pending_arcs = []
             canvas = Image.alpha_composite(canvas, overlay)
 
     return canvas

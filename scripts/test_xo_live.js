@@ -33,6 +33,9 @@
  *   k  Esc: during an audition the track meter drops to ~0 within 500 ms of the key (Live's meter release is ~400 ms) (a control read before it is > 0), the
  *      playhead hides and stops, no position messages afterwards
  *   l  toolbar Re-Seed with a search filter set yields only matching samples on the map (same as the Filters section's button)
+ *   m  Options > Map Samples: 300 re-picks the map to 300 points (debounced, the selected sample stays when it is still on the map),
+ *      the Re-Seed tooltip shows the number, 1500 brings the full map back
+ *   a2 a new instance starts with Saved only (Filters, Playback, Options closed): device width 414
  *
  *   node scripts/test_xo_live.js [--port 19879] [--ssh admin@192.168.64.4] [--variant C]
  *   (--variant picks src/xo_layouts/<V>.js; the set must hold devices/XO Sample Map <V>.amxd: scripts/vm_xo.sh run C)
@@ -146,6 +149,13 @@ try {
     let rep = waitFor("points", () => { const r = report(); return r && r.nPoints > 0 ? r : null; }, 120000, 1000);
     check(!!rep, `a. node.codebox started and indexed: ${rep ? rep.nPoints + " map points after " + (Date.now() - t0) + " ms" : "no map points within 120 s (node did not start or no samples indexed)"}`);
     if (!rep) finish();
+
+    // ---- a2. a new instance starts with the toolbar, map and Saved list only ----
+    if (THEMED) {
+        const x = rep0;
+        check(x.sections.join() === "1,0,0" && x.options === 0 && x.width === computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth,
+            `a2. a new instance starts with Saved only: sections ${x.sections}, options ${x.options}, width ${x.width} (expected 1,0,0 / 0 / ${computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth})`);
+    }
 
     // ---- c. select a sample ----
     hook("test_clear_log");
@@ -468,15 +478,15 @@ try {
         check(z0 === 1 && r1.view.zoom > 1.2, "e. wheel up zooms the map in (onwheel with synthetic (x, y, dx, dy))");
         check(r2.view.zoom === r1.view.zoom && (r2.view.x0 !== r1.view.x0 || r2.view.y0 !== r1.view.y0), "e. Option-dragging the zoomed map pans it (view window moved)");
         check(r3.view.zoom === 1 && r3.view.x0 === 0, "e. wheel down zooms back out to 1x and resets the window");
-        // Zoom Speed (Options): one wheel step zooms by exp(0.48 * speed)
+        // Zoom Speed (Options): one wheel step zooms by exp(0.96 * speed)
         for (const sp of [0.5, 1, 2]) {
             hook("test_zoomspeed", sp);
             for (let i = 0; i < 4; i++) hook("test_wheel", 110, 70, 0, -3, 0, 0, 0, 0, 0); // back to 1x
             hook("test_wheel", 110, 70, 0, 1, 0, 0, 0, 0, 0);
             const rz = report();
-            const want = Math.exp(0.48 * sp);
+            const want = Math.exp(0.96 * sp);
             console.log(`  zoom speed ${sp}x: reported ${rz.zoomSpeed}, one wheel step -> ${rz.view.zoom.toFixed(4)} (expected ${want.toFixed(4)})`);
-            check(rz.zoomSpeed === sp && Math.abs(rz.view.zoom - want) < 1e-3, `e. Zoom Speed ${sp}x: one wheel step zooms by exp(0.48 * ${sp})`);
+            check(rz.zoomSpeed === sp && Math.abs(rz.view.zoom - want) < 1e-3, `e. Zoom Speed ${sp}x: one wheel step zooms by exp(0.96 * ${sp})`);
         }
         hook("test_zoomspeed", 1);
         for (let i = 0; i < 4; i++) hook("test_wheel", 110, 70, 0, -3, 0, 0, 0, 0, 0);
@@ -676,6 +686,27 @@ try {
             const back = waitFor("unfiltered", () => { const x = report(); return x && x.mapCount >= nBefore * 0.9 ? x : null; }, 30000, 500);
             check(!!back, "l. clearing the search and re-seeding brings the full map back");
         }
+    }
+
+    // ---- m. Options > Map Samples ----
+    if (THEMED) {
+        const r0 = report();
+        const nBefore = r0.mapCount;
+        check(r0.mapSamples === 1500 && /\(1500 max\)/.test(r0.reseedTitle), `m. default Map Samples 1500, Re-Seed tooltip "${r0.reseedTitle}"`);
+        const selName = r0.name;
+        hook("test_mapsamples", 300);
+        const want = Math.min(300, nBefore);
+        const small = waitFor("map300", () => { const x = report(); return x && x.mapSamples === 300 && x.mapCount === want ? x : null; }, 30000, 300);
+        const sNow = small || report();
+        check(!!small, `m. Map Samples 300: the map has ${sNow.mapCount} points (expected ${want}; it had ${nBefore})`);
+        check(/\(300 max\)/.test(sNow.reseedTitle), `m. the Re-Seed tooltip shows the number: "${sNow.reseedTitle}"`);
+        check(sNow.nPoints > 0 && sNow.selectedIndex >= 0, `m. a sample stays selected after the re-pick ("${selName}" -> "${sNow.name}")`);
+        hook("test_toolbar", "reseed");
+        const again = waitFor("reseed300", () => { const x = report(); return x && x.mapCount === want ? x : null; }, 30000, 300);
+        check(!!again, "m. toolbar Re-Seed also picks Map Samples points");
+        hook("test_mapsamples", 1500);
+        const back = waitFor("map1500", () => { const x = report(); return x && x.mapSamples === 1500 && x.mapCount === nBefore ? x : null; }, 30000, 300);
+        check(!!back, `m. Map Samples 1500 brings the map back to ${nBefore} points (now ${(back || report()).mapCount})`);
     }
 } catch (e) {
     check(false, "test error: " + (e && e.stack || e));

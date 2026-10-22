@@ -26,17 +26,18 @@ DEVICE_NAME = "XO Sample Map"            # device title, output file devices/<DE
 LAYOUT_JS = "src/xo_layouts/default.js"  # computeXoLayout geometry, prepended to the mini-map v8ui
 THEMED = True
 THEMES = ["LCD", "Focus"]
-DEVICE_WIDTH = 798.0                     # LCD, all sections but Options shown; must equal computeXoLayout("LCD", 1, 1, 1, 0).deviceWidth
+DEFAULT_SECTIONS = (1, 0, 0, 0)          # a NEW instance starts with the toolbar, map and Saved list only (Filters / Playback / Options closed)
+DEVICE_WIDTH = 414.0                     # LCD, DEFAULT_SECTIONS; must equal computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth
 # obj-expr-width: device width from pak (saved filters playback options theme) = $i1 .. $i5 (theme 0 = LCD, 1 = Focus).
 # Must equal computeXoLayout(...).deviceWidth for every theme x 16 section combinations (tests/test_xo_variants.js).
-WIDTH_EXPR = ("expr 278 + $i1 * 136 + $i4 * 156 + $i2 * (214 - 74 * $i5) + $i3 * (170 - 12 * $i5)")
+WIDTH_EXPR = ("expr 278 + $i1 * 136 + $i4 * 196 + $i2 * (214 - 74 * $i5) + $i3 * (170 - 12 * $i5)")
 # (no if(): a comma inside an expr box has to be escaped in Max; Filters are 74 px and Playback 12 px narrower in Focus)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Geometry (mirror of src/xo_layouts/default.js)
 # ---------------------------------------------------------------------------------------------------------------
 XO_TB_X, XO_TB_W, XO_LEFT_X, XO_GAP = 3.0, 22.0, 28.0, 6.0
-XO_MAP_PANE_W, XO_SAVED_PANE_W, XO_OPTIONS_W = 236.0, 136.0, 150.0
+XO_MAP_PANE_W, XO_SAVED_PANE_W, XO_OPTIONS_W = 236.0, 136.0, 190.0
 XO_FILTERS_W = {"LCD": 208.0, "Focus": 134.0}
 def label_h(bid, th):
     """Live's fixed live.comment height, floor(font + 8), for the label's font in theme th (src/xo_layouts/default.js xoLabelH)."""
@@ -102,15 +103,17 @@ def layout_boxes(theme, s, f, p, o):
     put("obj-toggle-options-btn", "toolbar", "", [XO_TB_X + 3.0, 145.0, 16.0, 16.0])
     put("obj-panel-options", "options", "", [ox, 5.0, XO_OPTIONS_W, 159.0])
     put("obj-hdr-options", "options", "", [ox + 7.0, 8.0, 82.0, 14.0])
-    put("obj-lbl-theme", "options", "", [ox + 7.0, 30.0, 82.0, 11.0])
-    put("obj-theme-tab", "options", "", [ox + 6.0, 44.0, 84.0, 18.0])
-    put("obj-lbl-zoom", "options", "", [ox + 94.0, 30.0, 50.0, 11.0])
-    put("obj-zoom-speed", "options", "", [ox + 94.0, 44.0, 50.0, 18.0])
-    put("obj-lbl-searches", "options", "", [ox + 7.0, 68.0, 138.0, 11.0])
-    put("obj-searches-cat", "options", "", [ox + 6.0, 80.0, 138.0, 15.0])
-    put("obj-searches-terms", "options", "", [ox + 6.0, 97.0, 138.0, 40.0])
+    put("obj-lbl-theme", "options", "", [ox + 7.0, 30.0, 70.0, 11.0])
+    put("obj-theme-tab", "options", "", [ox + 6.0, 44.0, 70.0, 18.0])
+    put("obj-lbl-zoom", "options", "", [ox + 80.0, 30.0, 48.0, 11.0])
+    put("obj-zoom-speed", "options", "", [ox + 80.0, 44.0, 48.0, 18.0])
+    put("obj-lbl-map", "options", "", [ox + 132.0, 30.0, 52.0, 11.0])
+    put("obj-map-samples", "options", "", [ox + 132.0, 44.0, 52.0, 18.0])
+    put("obj-lbl-searches", "options", "", [ox + 7.0, 68.0, 178.0, 11.0])
+    put("obj-searches-cat", "options", "", [ox + 6.0, 80.0, 178.0, 15.0])
+    put("obj-searches-terms", "options", "", [ox + 6.0, 97.0, 178.0, 40.0])
     put("obj-searches-reset", "options", "", [ox + 6.0, 141.0, 44.0, 16.0])
-    put("obj-searches-folders", "options", "", [ox + 54.0, 141.0, 90.0, 16.0])
+    put("obj-searches-folders", "options", "", [ox + 54.0, 141.0, 100.0, 16.0])
     put("obj-panel-left", "left", "", [lx, 5.0, left_w, 159.0])
     put("obj-minimap", "left", "", [lx + 4.0, 8.0, map_w, 154.0])
 
@@ -149,11 +152,11 @@ def layout_boxes(theme, s, f, p, o):
     return out, cur
 
 
-_ALL, _W = layout_boxes("LCD", 1, 1, 1, 0)
+_ALL, _W = layout_boxes("LCD", *DEFAULT_SECTIONS)
 assert _W == DEVICE_WIDTH
-# Presentation rects of every layout box in the saved / default state (LCD theme, Options closed).
+# Presentation rects of every layout box in the saved / default state (LCD theme, DEFAULT_SECTIONS).
 RECTS = {bid: v[0] for bid, v in _ALL.items()}
-# Boxes hidden in that state (the Focus-only boxes and the closed Options section).
+# Boxes hidden in that state (the Focus-only boxes and the closed Filters / Playback / Options sections).
 HIDDEN = sorted(bid for bid, v in _ALL.items() if v[1])
 
 
@@ -239,6 +242,8 @@ THEME_STYLE = {
                           "bordercolor": EDGE, "fontname": MONO, "fontface": 1, "fontsize": 8.0},
         "obj-lbl-zoom": {"textcolor": DIM, "fontname": MONO, "fontface": 1, "fontsize": 7.0},
         "obj-zoom-speed": dict(_LCD_NUMBOX, fontsize=9.0),
+        "obj-lbl-map": {"textcolor": DIM, "fontname": MONO, "fontface": 1, "fontsize": 7.0},
+        "obj-map-samples": dict(_LCD_NUMBOX, fontsize=9.0),
         "obj-lbl-searches": {"textcolor": DIM, "fontname": MONO, "fontface": 1, "fontsize": 7.0},
         "obj-searches-cat": {"activebgcolor": GLASS, "bordercolor": EDGE, "textcolor": ACC, "fontname": MONO, "fontface": 1, "fontsize": 8.0},
         "obj-searches-terms": {"bgcolor": GLASS, "border": 1.0, "bordercolor": EDGE, "textcolor": ACC, "fontname": MONO, "fontsize": 8.0},
@@ -271,6 +276,10 @@ THEME_STYLE = {
         "obj-zoom-speed": {"appearance": 4, "activebgcolor": BTN, "bgcolor": BTN, "lcdbgcolor": BTN, "lcdcolor": [0.85, 0.89, 0.94, 1.0],
                            "textcolor": [0.85, 0.89, 0.94, 1.0], "inactivelcdcolor": BTN_TEXT, "bordercolor": BTN_EDGE,
                            "focusbordercolor": VIOLET, "fontname": UI_FONT, "fontface": 0, "fontsize": 9.0},
+        "obj-lbl-map": {"textcolor": BTN_TEXT, "fontname": "Arial", "fontface": 1, "fontsize": 9.0},
+        "obj-map-samples": {"appearance": 4, "activebgcolor": BTN, "bgcolor": BTN, "lcdbgcolor": BTN, "lcdcolor": [0.85, 0.89, 0.94, 1.0],
+                            "textcolor": [0.85, 0.89, 0.94, 1.0], "inactivelcdcolor": BTN_TEXT, "bordercolor": BTN_EDGE,
+                            "focusbordercolor": VIOLET, "fontname": UI_FONT, "fontface": 0, "fontsize": 9.0},
         "obj-lbl-searches": {"textcolor": BTN_TEXT, "fontname": "Arial", "fontface": 1, "fontsize": 9.0},
         "obj-searches-cat": {"activebgcolor": BTN, "bordercolor": BTN_EDGE, "textcolor": [0.85, 0.89, 0.94, 1.0], "fontname": UI_FONT,
                              "fontface": 0, "fontsize": 9.0},
@@ -369,6 +378,7 @@ def customize(boxes_by_id, boxes, lines):
     fg.append(_comment("obj-hdr-options", "OPTIONS", RECTS["obj-hdr-options"], ACC, MONO, 9.0, 0))
     fg.append(_comment("obj-lbl-theme", "THEME", RECTS["obj-lbl-theme"], DIM, MONO, 7.0, 0))
     fg.append(_comment("obj-lbl-zoom", "ZOOM", RECTS["obj-lbl-zoom"], DIM, MONO, 7.0, 0))
+    fg.append(_comment("obj-lbl-map", "SAMPLES", RECTS["obj-lbl-map"], DIM, MONO, 7.0, 0))
     fg.append(_comment("obj-lbl-searches", "SEARCHES", RECTS["obj-lbl-searches"], DIM, MONO, 7.0, 0))
     for i in range(4):
         fg.append(_comment("obj-lcd-f-lbl-%d" % i, F_LCD_NAMES[i], RECTS["obj-lcd-f-lbl-%d" % i], DIM, MONO, 7.0, 1))

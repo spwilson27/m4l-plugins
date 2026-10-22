@@ -12,7 +12,7 @@ A, B and C were not picked but still build and pass).
   playback) and `themeOnly` (box -> the one theme it exists in). Hidden = its section is closed OR it belongs to the other theme.
   Toolbar | Options | map (+ Saved) | Filters | Playback are packed left to right (3 px after the toolbar, 6 px between sections); the
   map pane is `XO_MAP_PANE_W` 236 px wide and 154 px high in both themes, Filters / Playback are narrower in Focus.
-- `scripts/xo_layouts/default.py` is its Python mirror (`layout_boxes`, used for the saved state = LCD, Options closed;
+- `scripts/xo_layouts/default.py` is its Python mirror (`layout_boxes`, used for the saved state = LCD with `DEFAULT_SECTIONS` = Saved only;
   `tests/test_xo_variants.js` compares it with the JS for all 2 x 16 combinations), the per-theme style `THEME_STYLE`
   (`{theme: {box id: {attribute: value}}}`: colours, fonts, button texts; injected as `XO_THEME_STYLE`, applied with `setattr` when
   the theme changes and on load), `WIDTH_EXPR` (`obj-expr-width`: plain arithmetic over `$i1..$i5` = saved filters playback options theme, no `if()` / commas:
@@ -21,7 +21,7 @@ A, B and C were not picked but still build and pass).
 - **Adding a themed box:** add it to `layout_boxes` (Python) and `computeXoLayout` (JS) with its section and `only` theme, create it in
   `customize`, and give it a `varname` (the build does when missing). **Adding a theme:** extend `XO_THEMES`, `XO_FILTERS_W` /
   `XO_PLAYBACK_W`, `THEMES`, `THEME_STYLE`, `WIDTH_EXPR`, the palette (`src/xo_palette.js`) and the Theme tab's enum (appending
-  keeps saved sets valid). **Adding an option:** the Options panel (150 px) is full down to y = 157 (Theme, then Searches: picker, terms field, Reset, Match folders); widen it first, then add the control and, if it must persist, a new appended Live parameter (or a field of the XOStateData blob, as the Searches terms do).
+  keeps saved sets valid). **Adding an option:** the Options panel (190 px) is full down to y = 157 (Theme / Zoom Speed / Map Samples, then Searches: picker, terms field, Reset, Match folders); widen it first, then add the control and, if it must persist, a new appended Live parameter (or a field of the XOStateData blob, as the Searches terms do).
 - **Parameter / mirror pairs:** each value control is ONE parameter object (`live.numbox`, the old `live.dial` ids) shown in LCD, plus a
   non-parameter `live.dial` mirror (`<id>-mir`) shown in Focus, synced both ways without a loop (see AGENTS.md section 4).
 - **Palette:** `src/xo_palette.js` (`XO_PALETTES`, `xoSrc`); `set_theme` selects it in the map and folder-list v8uis.
@@ -69,5 +69,5 @@ for c in xo-strip xo-node xo-folder xo-stretch xo-search xo-strip-A xo-strip-B x
   && python3 scripts/build_xo_map.py --all && node tests/test_xo_map.js && XO_STRETCH_QUICK=1 node tests/test_xo_stretch.js \
   && for v in "" " A" " B" " C" " D" " E"; do python3 scripts/render_preview.py "devices/XO Sample Map$v.amxd"; done
 ```
-The default preview renders the saved state (LCD, Options closed). Focus and the Options-open state are rendered from scratch copies
+The default preview renders the saved state (LCD, Saved only, 414 px). Focus and the Options-open state are rendered from scratch copies
 (apply `computeXoLayout` + `XO_THEME_STYLE` to a copy of the device JSON, then reuse `render_preview.render_device`).

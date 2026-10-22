@@ -36,6 +36,10 @@ const CACHE_BIN_FILE = path.join(CACHE_DIR, ".xo_sample_map_cache_v4.bin");
 const CACHE_IDX_FILE = path.join(CACHE_DIR, ".xo_sample_map_cache_v4.idx.json");
 const RECORD_BYTE_SIZE = 104; // 12*4B vector (48B) + 8*4B scalars (32B) + 24*1B uint8 peaks (24B) = 104 bytes/sample
 const MAX_DISPLAY_SAMPLES = 1500;
+// Options > Map Samples (parameter `Map Samples`): the user's maximum number of map points, and the quiet time before a change re-picks the map
+const MAP_SAMPLES_MIN = 100;
+const MAP_SAMPLES_MAX = 5000;
+const MAP_SAMPLES_DEBOUNCE_MS = 300;
 const MAX_FILES_PER_FOLDER = 50000;
 const EXPORT_BASE_DIR = path.join(os.tmpdir(), "xo_sample_map_exports");
 const SUPPORTED_EXTS = new Set([".wav", ".aif", ".aiff", ".flac", ".mp3", ".ogg", ".m4a", ".caf"]);
@@ -1928,11 +1932,15 @@ function rebuildActiveMapSubset(seed = engineState.sampleSeed, applyActiveFilter
     ? engineState.corpusSamples.filter((s) => isSamplePassingFilters(s, engineState))
     : engineState.corpusSamples.filter((s) => isSampleFolderEnabled(s, engineState));
   const maxDisp = Math.max(1, Number(engineState.maxDisplaySamples) || MAX_DISPLAY_SAMPLES);
+  const prevSel = engineState.samples[engineState.selectedIndex];
+  const prevSelPath = prevSel ? prevSel.path : "";
   const subset = selectSeededMapSubset(candidateCorpus, maxDisp, engineState.sampleSeed);
   computeKNN(subset, 8);
   compute2DMap(subset, engineState.sampleSeed);
   engineState.samples = subset;
-  if (engineState.selectedIndex < 0 || engineState.selectedIndex >= subset.length) {
+  const keptIdx = prevSelPath ? subset.findIndex((x) => x.path === prevSelPath) : -1;
+  if (keptIdx >= 0) engineState.selectedIndex = keptIdx; // the selected sample is still on the map: keep it
+  else if (engineState.selectedIndex < 0 || engineState.selectedIndex >= subset.length) {
     engineState.selectedIndex = subset.length > 0 ? 0 : -1;
   }
   engineState.statusText = `${subset.length} / ${candidateCorpus.length} samples mapped (Seed #${engineState.sampleSeed})`;
@@ -1940,6 +1948,28 @@ function rebuildActiveMapSubset(seed = engineState.sampleSeed, applyActiveFilter
   syncMiniMapToMax();
   return subset;
 }
+
+/**
+ * Options > Map Samples (message `map_samples <n>`): the maximum number of samples on the map. A change re-picks the map
+ * (same seed, so the picks are stable) after MAP_SAMPLES_DEBOUNCE_MS of quiet, so dragging the numbox does not re-seed per step.
+ * @param {any} n
+ * @param {boolean} [immediate] re-pick now (tests)
+ * @returns {boolean} whether the value changed
+ */
+function setMapSamples(n, immediate = false) {
+  const v = Math.max(MAP_SAMPLES_MIN, Math.min(MAP_SAMPLES_MAX, Math.round(Number(n))));
+  if (!isFinite(v) || v === engineState.maxDisplaySamples) return false;
+  engineState.maxDisplaySamples = v;
+  if (mapSamplesTimer) { clearTimeout(mapSamplesTimer); mapSamplesTimer = null; }
+  const apply = () => {
+    mapSamplesTimer = null;
+    if (engineState.corpusSamples.length > 0) rebuildActiveMapSubset(engineState.sampleSeed, false);
+  };
+  if (immediate) apply();
+  else { mapSamplesTimer = setTimeout(apply, MAP_SAMPLES_DEBOUNCE_MS); if (mapSamplesTimer.unref) mapSamplesTimer.unref(); }
+  return true;
+}
+let mapSamplesTimer = null;
 
 function reseedMapSubset(applyActiveFilters = false) {
   engineState.sampleSeed = ((engineState.sampleSeed || 1) + 1) >>> 0;
@@ -2981,6 +3011,10 @@ if (Max && typeof Max.addHandler === "function") {
     setSearchConfig(matchFolders, encoded);
   });
 
+  Max.addHandler("map_samples", (n) => {
+    setMapSamples(n);
+  });
+
   Max.addHandler("set_cat", (cat) => {
     engineState.activeCategory = String(cat || "ALL");
     Max.outlet("strip_filter_cat", engineState.activeCategory);
@@ -3064,6 +3098,8 @@ module.exports = {
   engineState,
   CATEGORY_LIST,
   MAX_DISPLAY_SAMPLES,
+  MAP_SAMPLES_DEBOUNCE_MS,
+  setMapSamples,
   MAX_FILES_PER_FOLDER,
   RECORD_BYTE_SIZE
 };

@@ -1140,7 +1140,7 @@ def build(variant="default"):
                 "activebgoncolor": [0.22, 0.74, 0.97, 1.0],
                 "activetextcolor": [0.22, 0.74, 0.97, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Re-seeds and fills the 2D map with up to 1,500 samples from the full corpus that match all active filters.",
+                "annotation": "Re-seeds and fills the 2D map with up to Map Samples (Options, default 1,500) samples from the full corpus that match all active filters.",
                 "annotation_name": "Re-Seed Filtered Map",
                 "bordercolor": [0.22, 0.74, 0.97, 0.75],
                 "id": "obj-reseed-filtered-btn",
@@ -2181,6 +2181,43 @@ def build(variant="default"):
                 "varname": "ZoomSpeed"
             }
         },
+        # --- Options > Map Samples: maximum number of samples on the map (stored-only float parameter with Int display, appended
+        # last: Live's Int type stops at 255). The node engine picks the map subset from it (src/xo_node_engine.js `map_samples`).
+        {
+            "box": {
+                "annotation": "Maximum number of samples shown on the map (100..5000). Changing it re-picks the map; the selection stays if it is still on it.",
+                "annotation_name": "Map Samples",
+                "appearance": 4,
+                "fontsize": 9.0,
+                "id": "obj-map-samples",
+                "maxclass": "live.numbox",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["", "float"],
+                "parameter_enable": 1,
+                "patching_rect": [820.0, 190.0, 52.0, 18.0],
+                "presentation": 1,
+                "presentation_rect": [132.0, 44.0, 52.0, 18.0],
+                "saved_attribute_attributes": {
+                    "valueof": {
+                        "parameter_annotation_name": "Maximum number of samples shown on the map",
+                        "parameter_initial": [1500.0],
+                        "parameter_initial_enable": 1,
+                        "parameter_invisible": 1,
+                        "parameter_linknames": 1,
+                        "parameter_longname": "Map Samples",
+                        "parameter_mmax": 5000.0,
+                        "parameter_mmin": 100.0,
+                        "parameter_shortname": "Map Smpl",
+                        "parameter_type": 0,
+                        "parameter_unitstyle": 0
+                    }
+                },
+                "varname": "MapSamples"
+            }
+        },
+        {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-mapsamples", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
+                 "outlettype": [""], "patching_rect": [820.0, 215.0, 130.0, 20.0], "text": "prepend set_mapsamples"}},
         {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-zoomspeed", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
                  "outlettype": [""], "patching_rect": [820.0, 165.0, 120.0, 20.0], "text": "prepend set_zoomspeed"}},
         {"box": {"fontname": "Arial Bold", "fontsize": 10.0, "id": "obj-prep-terms-cat", "maxclass": "newobj", "numinlets": 1, "numoutlets": 1,
@@ -2550,7 +2587,8 @@ def build(variant="default"):
         "obj-toggle-options-btn": ["ShowOptions", "Options", 0],
         "obj-theme-tab": ["Theme", "Theme", 0],
         "obj-searches-cat": ["Searches Category", "Search Cat", 0],
-        "obj-zoom-speed": ["ZoomSpeed", "Zoom Spd", 0]
+        "obj-zoom-speed": ["ZoomSpeed", "Zoom Spd", 0],
+        "obj-map-samples": ["MapSamples", "Map Smpl", 0]
     }
 
     # Section layout (src/xo_layouts/<name>.js) is applied by the mini-map v8ui through
@@ -2574,7 +2612,11 @@ def build(variant="default"):
         lines[:] = [ln for ln in lines if ln["patchline"]["source"][0] not in drop and ln["patchline"]["destination"][0] not in drop]
         boxes_by_id = {b["box"]["id"]: b["box"] for b in boxes}
         boxes_by_id["obj-pak-vis"]["numinlets"] = 5
-        boxes_by_id["obj-pak-vis"]["text"] = "pak 1 1 1 0 0"
+        d_s, d_f, d_p, d_o = layout.DEFAULT_SECTIONS
+        boxes_by_id["obj-pak-vis"]["text"] = "pak %d %d %d %d 0" % (d_s, d_f, d_p, d_o)
+        # A new instance starts in layout.DEFAULT_SECTIONS: the toggles' initial values (existing Sets keep what they saved)
+        for tid, val in (("obj-toggle-saved-btn", d_s), ("obj-toggle-filters-btn", d_f), ("obj-toggle-playback-btn", d_p)):
+            boxes_by_id[tid]["saved_attribute_attributes"]["valueof"]["parameter_initial"] = [val]
         boxes_by_id["obj-expr-width"]["numinlets"] = 5
         boxes_by_id["obj-expr-width"]["patching_rect"][2] = 520.0
         lines.append({"patchline": {"source": ["obj-toggle-options-btn", 0], "destination": ["obj-pak-vis", 3], "order": 0}})
@@ -2584,6 +2626,8 @@ def build(variant="default"):
         lines.append({"patchline": {"source": ["obj-prep-theme", 0], "destination": ["obj-folder-list", 0], "order": 0}})
         lines.append({"patchline": {"source": ["obj-zoom-speed", 0], "destination": ["obj-prep-zoomspeed", 0]}})
         lines.append({"patchline": {"source": ["obj-prep-zoomspeed", 0], "destination": ["obj-minimap", 0]}})
+        lines.append({"patchline": {"source": ["obj-map-samples", 0], "destination": ["obj-prep-mapsamples", 0]}})
+        lines.append({"patchline": {"source": ["obj-prep-mapsamples", 0], "destination": ["obj-minimap", 0]}})
         # Options > Searches -> v8ui (which owns the terms and tells the node engine)
         for src, dst in (("obj-searches-cat", "obj-prep-terms-cat"), ("obj-searches-terms", "obj-route-terms"),
                          ("obj-route-terms", "obj-prep-terms-text"), ("obj-searches-reset", "obj-prep-terms-reset"),
@@ -2601,7 +2645,7 @@ def build(variant="default"):
                 parameters_dict[bx["id"]] = [vo["parameter_longname"], vo["parameter_shortname"], 0]
     else:
         for bid in ("obj-toggle-options-btn", "obj-theme-tab", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset",
-                    "obj-searches-folders", "obj-zoom-speed"):
+                    "obj-searches-folders", "obj-zoom-speed", "obj-map-samples"):
             boxes_by_id[bid]["presentation"] = 0
     if set(layout.RECTS) != layout_ids:
         raise SystemExit("layout %s: RECTS ids differ from %s ids: %s" % (
@@ -2624,6 +2668,12 @@ def build(variant="default"):
     if themed:
         palette_js += 'xoPaletteSet("%s");  // the default theme (set_theme switches it)\n' % layout.THEMES[0]
     minimap_text = boxes_by_id["obj-minimap"]["textfile"]
+    if themed:   # the v8ui starts in the same section state as the toggles' initial values
+        for var, val in zip(("showSavedList", "showFiltersSection", "showPlaybackSection", "showOptionsSection"), layout.DEFAULT_SECTIONS):
+            old = "let %s = " % var
+            i0 = minimap_text["text"].index(old)
+            i1 = minimap_text["text"].index(";", i0)
+            minimap_text["text"] = minimap_text["text"][:i0] + old + str(val) + minimap_text["text"][i1:]
     theme_js = ""
     if themed:
         theme_js = f"var XO_THEME_STYLE = {json.dumps(layout.THEME_STYLE)};\n"
