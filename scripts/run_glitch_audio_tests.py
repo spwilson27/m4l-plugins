@@ -36,10 +36,13 @@ SQOFF = LAYOUT["seqOffset"]
 POS = {iid: i for i, iid in enumerate(LAYOUT["order"])}  # chain position of each instance (telemetry ACTIVITY / LEVEL index)
 SC_ARGS = [f"sc:{k}={v}" for k, v in LAYOUT["scope"].items()] + [f"meta:{LAYOUT['metaOffset']}"]
 CONSTANTS = LAYOUT["constants"]  # kind + 4 * group per param, defaults, wet index per chain position (the engine buffer's constants block)
-GEN = gc.gen_source(LAYOUT)
+STAGES = gc.stage_sources(LAYOUT)  # a, b, s (spectral), c: the gen~ stages the device is made of (src/glitch_config.js glitchStages)
+GEN = STAGES
 DEFAULTS = [m[2] for m in LAYOUT["meta"]]
 
 BASE = "bpm 120, ppq 0, wet 1, outdb 0"
+NOSPEC = [st["id"] for st in LAYOUT["stages"] if st["role"] != "spec"]
+TAIL_PARAMS = ("wet", "outdb")  # Params of the tail stage only; the spectral stage also gets `go 1`
 DIV_BEATS = LAYOUT["mvDivBeats"]  # LFO cycle / step length in beats per division index (GL_MV_DIV_BEATS)
 
 
@@ -74,10 +77,33 @@ def weights_msg(w):
     return "weights " + " ".join(f"{x:.5g}" for x in w)
 
 
-def build_device(code, case):
+PARAM_STAGES = {  # which stage roles own a Param (a message for a Param a stage does not have would be an unknown message)
+    "bpm": ("head", "group", "spec"), "ppq": ("head",), "playing": ("head",), "wet": ("tail",), "outdb": ("tail",), "go": ("group", "spec"),
+}
+
+
+def targets_for(param, chain):
+    return [st for st in chain if st["role"] in PARAM_STAGES.get(param, ("head", "group", "spec", "tail"))]
+
+
+def build_device(stages, case):
+    """The staged device in one patch (the harness's offline driver never adds objects created mid-run, so the stages are built directly):
+    wave~ -> groups in chain order (the spectral stage in the middle) -> tail, the head (control) beside them feeding every group its
+    tick counter and beat. case["stages"] = the stage ids that exist (default all): a missing group is bypassed and a missing spectral
+    stage is replaced by delay~ 1023, exactly what the loader does while a lazy stage does not exist yet."""
+    by = {st["id"]: st for st in stages}
+    want = case.get("stages")
+    if want == "needed":
+        # what the loader would have loaded for these slots: the head, the tail and every stage with a module on in some slot
+        wets = {st["id"]: [LAYOUT["base"][i] for i in st["insts"]] for st in stages if st["role"] in ("group", "spec")}
+        want = [sid for sid, idx in wets.items() if any(v[ix] > 0.0005 for v in case.get("slots", []) if v is not None for ix in idx)]
+    chain = [st for st in stages if want is None or st["id"] in want or st["role"] in ("head", "tail")]
+    if case.get("trivial"):
+        chain = [{"id": "t", "role": "tail", "code": "out1 = in1;\nout2 = in2;\n", "ins": ["L", "R"], "outs": ["L", "R"]}]
+    head = next((st for st in chain if st["role"] == "head"), None)
+    tail = next(st for st in chain if st["role"] == "tail")
+    gid = lambda st: "obj-gen-" + st["id"]
     boxes = [
-        mh.msg("obj-params", case.get("params", BASE), 200, 40, 700),
-        mh.msg("obj-bind", "slots glitchslots, scope glitchscope", 200, 70, 300),
         mh.msg("obj-fill", "fill", 300, 130, 40),
         mh.msg("obj-slotmsg", slotdata(case.get("slots", [])), 200, 160, 700),
         mh.msg("obj-wmsg", weights_msg(case.get("weights", [1])), 200, 190, 300),
@@ -85,26 +111,12 @@ def build_device(code, case):
         mh.msg("obj-metamsg", "meta " + " ".join(f"{x:.7g}" for x in CONSTANTS), 200, 240, 900),
         mh.box("obj-slots-buf", f"buffer~ glitchslots @samps {LAYOUT['slotsBufSamps']}", 520, 70, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-scope-buf", f"buffer~ glitchscope @samps {LAYOUT['scopeSamps']}", 520, 100, 260, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-ctl-buf", f"buffer~ glitchctl @samps {LAYOUT['ctl']['samps']}", 520, 160, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-stim", f"buffer~ stim @samps {3 * SR} @chans 1", 520, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
-        {
-            "box": {
-                "code": code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [200.0, 240.0, 300.0, 80.0],
-            }
-        },
         mh.box("obj-phasor", "phasor~ 0.3333333333", 700, 200, 80, numinlets=2, outlettype=["signal"]),
         mh.box("obj-wave", "wave~ stim", 700, 240, 90, numinlets=3, numoutlets=2, outlettype=["signal", "signal"]),
     ]
     lines = [
-        mh.line("obj-load", 0, "obj-params", 0),
-        mh.line("obj-load", 0, "obj-bind", 0),
         mh.line("obj-load", 0, "obj-fill", 0),
         mh.line("obj-load", 0, "obj-slotmsg", 0),
         mh.line("obj-load", 0, "obj-wmsg", 0),
@@ -115,21 +127,69 @@ def build_device(code, case):
         mh.line("obj-fill", 0, "obj-js", 0),
         mh.line("obj-slotmsg", 0, "obj-js", 0),
         mh.line("obj-wmsg", 0, "obj-js", 0),
-        mh.line("obj-bind", 0, "obj-gen", 0),
-        mh.line("obj-params", 0, "obj-gen", 0),
-        mh.line("obj-gen", 0, "obj-record", 0),
-        mh.line("obj-wave", 0, "obj-record", 1),
-        mh.line("obj-gen", 1, "obj-record", 2),
         mh.line("obj-phasor", 0, "obj-record", 3),
-        mh.line("obj-gen", 0, "obj-mute-l", 0),
         mh.line("obj-phasor", 0, "obj-wave", 0),
-        mh.line("obj-wave", 0, "obj-gen", 0),
-        mh.line("obj-wave", 0, "obj-gen", 1),
     ]
+    # messages: the buffer bindings per role, then each Param to the stages that have it
+    bind = {"head": "slots glitchslots, scope glitchscope, ctl glitchctl", "group": "scope glitchscope, ctl glitchctl", "spec": "scope glitchscope, ctl glitchctl", "tail": "scope glitchscope"}
+    for k, st in enumerate(chain):
+        boxes.append(mh.gen_box(gid(st), st["code"], 200 + 40 * k, 300 + 30 * k, len(st["ins"]), len(st["outs"])))
+        if not case.get("trivial"):
+            boxes.append(mh.msg("obj-bind-" + st["id"], bind[st["role"]], 200, 70 + 3 * k, 300))
+            lines += [mh.line("obj-load", 0, "obj-bind-" + st["id"], 0), mh.line("obj-bind-" + st["id"], 0, gid(st), 0)]
+    per = {}
+    for part in case.get("params", BASE).split(","):
+        part = part.strip()
+        if part:
+            for st in targets_for(part.split()[0], chain):
+                per.setdefault(st["id"], []).append(part)
+    for st in chain:
+        if st["role"] in ("group", "spec") and case.get("go", 1):
+            per.setdefault(st["id"], []).append("go 1")
+    for sid, msgs in per.items():
+        boxes.append(mh.msg("obj-params-" + sid, ", ".join(msgs), 200, 40, 700))
+        lines += [mh.line("obj-load", 0, "obj-params-" + sid, 0), mh.line("obj-params-" + sid, 0, "obj-gen-" + sid, 0)]
+    # signals: the stimulus feeds the first group (and the head, and the tail's dry inlets); stage to stage in chain order; a missing
+    # group is bypassed, a missing spectral stage becomes delay~ 1023
+    groups = [st for st in stages if st["role"] in ("group", "spec")]
+    sig = ("obj-wave", 0, "obj-wave", 0)  # (box L, outlet L, box R, outlet R)
+    if head:
+        lines += [mh.line("obj-wave", 0, gid(head), 0), mh.line("obj-wave", 0, gid(head), 1)]
+    cur = ("obj-wave", 0, "obj-wave", 0)
+    for st in groups:
+        present = any(c["id"] == st["id"] for c in chain)
+        if present:
+            lines += [mh.line(cur[0], cur[1], gid(st), 0), mh.line(cur[2], cur[3], gid(st), 1)]
+            for name in ("tk", "bi", "bf", "quiet"):
+                if name in st["ins"] and head:
+                    lines.append(mh.line(gid(head), head["outs"].index(name), gid(st), st["ins"].index(name)))
+            cur = (gid(st), 0, gid(st), 1)
+        elif st["role"] == "spec":
+            for ch, nm in ((0, "L"), (1, "R")):
+                boxes.append(mh.box(f"obj-stub{nm}", "delay~ 2048 1023", 640, 300 + 30 * ch, 90, numinlets=2, outlettype=["signal"]))
+                lines.append(mh.line(cur[2 * ch], cur[2 * ch + 1], f"obj-stub{nm}", 0))
+            cur = ("obj-stubL", 0, "obj-stubR", 0)
+    lines += [mh.line(cur[0], cur[1], gid(tail), 0), mh.line(cur[2], cur[3], gid(tail), 1)]
+    if not case.get("trivial"):
+        lines += [mh.line("obj-wave", 0, gid(tail), tail["ins"].index("dryL")), mh.line("obj-wave", 0, gid(tail), tail["ins"].index("dryR"))]
+    else:
+        lines += [mh.line("obj-wave", 0, gid(tail), 0), mh.line("obj-wave", 0, gid(tail), 1)]
+    lines += [
+        mh.line(gid(tail), 0, "obj-record", 0),
+        mh.line("obj-wave", 0, "obj-record", 1),
+        mh.line(gid(tail), 1, "obj-record", 2),
+        mh.line(gid(tail), 0, "obj-mute-l", 0),
+    ]
+    # the head only produces signals: keep it pulled by the groups; make sure a harness with no group still pulls it
+    if head and not any(c["role"] in ("group", "spec") for c in chain):
+        lines.append(mh.line(gid(head), 0, "obj-mute-r", 0))
     events = []
     for ev in case.get("events", []):
         ms, text = ev[0], ev[1]
-        events.append((ms, ev[2] if len(ev) > 2 else case.get("event_target", "obj-js"), 0, text))
+        target = ev[2] if len(ev) > 2 else case.get("event_target", "obj-js")
+        # a Param message for "obj-gen" reaches every stage that has that Param (one event per stage: delivered in the same vector)
+        for t in ([gid(st) for st in targets_for(text.split()[0], chain)] if target == "obj-gen" else [target]):
+            events.append((ms, t, 0, text))
     if case.get("cpu"):
         boxes += [
             mh.msg("obj-metro-on", "1", 40, 480, 30),
@@ -210,6 +270,17 @@ def cases():
         one("ccrush", {"spec": {"wet": 1, "cc_amt": 1, "cc_coeffs": 0.1, "cc_bits": 16}}, stim="vowel", dur=3000),
         one("scramble", {"spec": {"wet": 1, "sc_amt": 1, "sc_mode": 1}}, stim="vowel", dur=3000),
         one("spec_latency", {"spec": {"wet": 1, "smr_amt": 0.001}}, stim="mix", dur=2200),
+        # the lazy spectral stage (the device has no spectral gen~ until a glitch needs it): the last pre stage's own delay stands in
+        c("neutral_stub", dur=2200, stages=NOSPEC),
+        one("spec_stub", {"spec": {"wet": 1, "smr_amt": 0.001}}, stim="mix", dur=2200, stages=NOSPEC),
+        # sparse devices (what the loader builds for a glitch that uses a few modules): groups that are not needed do not exist and are
+        # bypassed; the result must be what the full chain gives. Only the head, the groups a glitch uses and the tail:
+        c("neutral_min", dur=2200, stages=["h", "t"], **{"as": "neutral_stub"}),
+        one("drive_sparse", {"drvA": {"wet": 1, "mode": 0, "drive": 24, "tone": 20000}}, stim="sine", stages=["h", "drvA", "t"], **{"as": "drive"}),
+        one("delay_sparse", {"dly": {"wet": 1, "div": 6, "fb": 0.0, "pp": 0, "damp": 16000}}, stim="noise", dur=3000, lags=[24000], stages=["h", "dly", "t"], **{"as": "delay"}),
+        one("stutter_sparse", {"stut": {"wet": 1, "div": 6, "prob": 1, "decay": 0}}, stim="noise", dur=4000, lags=[24000], stages=["h", "stut", "t"], **{"as": "stutter"}),
+        # the hand-over: the spectral gen~ runs from the start with `go 0` (plain delay), `go 1` arrives at 1.2 s while the module is on (transparent smear)
+        one("spec_go", {"spec": {"wet": 1, "smr_amt": 0.001}}, stim="mix", dur=2800, go=0, events=[(1200, "go 1", "obj-gen-spec")]),
         one("delay", {"dly": {"wet": 1, "div": 6, "fb": 0.0, "pp": 0, "damp": 16000}}, stim="noise", dur=3000, lags=[24000]),
         one("delay_pp", {"dly": {"wet": 1, "div": 4, "fb": 0.6, "pp": 1, "damp": 8000}}, stim="burst", dur=3000),
         one("reverb", {"rev": {"wet": 1, "size": 0.6, "decay": 0.6, "damp": 8000, "void": 0}}, stim="burst", dur=3000),
@@ -229,7 +300,7 @@ def cases():
     six = {"drvA": {"wet": 1, "mode": 0, "drive": 12}, "filt": {"wet": 1, "type": 1, "cutoff": 1500, "res": 0.5}, "crush": {"wet": 1, "bits": 8, "rate": 3},
            "stut": {"wet": 1, "div": 4, "prob": 0.6}, "spec": {"wet": 1, "smr_amt": 0.5, "cc_amt": 0.6, "cc_coeffs": 0.4}, "dly": {"wet": 0.5, "div": 4, "fb": 0.5},
            "rev": {"wet": 0.4, "size": 0.7, "decay": 0.7}}
-    out.append(one("cpu6", six, stim="mix", dur=2500, cpu=True))
+    out.append(one("cpu6", six, stim="mix", dur=2500, cpu=True, stages="needed"))
     out.append(one("six_nrt", six, stim="mix", dur=2500))
 
     # ---- phase 2 modules, each alone ----
@@ -379,8 +450,8 @@ def cases():
                "psw_amt": 0.5, "psw_w": 128, "rph_amt": 0.5, "rph_mode": 1, "rph_rand": 0.6}
     out.append(one("stress_p4", {"spec": allspec, "ratc": {"wet": 0.7, "div": 5, "count": 8, "accel": 0.6, "pitch": 5, "decay": 0.3, "prob": 1},
                                  "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}, "wid": {"wet": 1, "width": 1.2, "gain": 3}}, stim="mix", dur=3200))
-    out.append(one("cpu_spec_all", {"spec": allspec}, stim="mix", dur=2500, cpu=True))  # all 19 spectral sub-ops on (the single STFT)
-    out.append(one("cpu_p4_modules", {"ratc": {"wet": 0.7, "div": 5, "count": 8, "accel": 0.6, "pitch": 5, "decay": 0.3, "prob": 1}, "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}}, stim="mix", dur=2500, cpu=True))
+    out.append(one("cpu_spec_all", {"spec": allspec}, stim="mix", dur=2500, cpu=True, stages="needed"))  # all 19 spectral sub-ops on (the single STFT)
+    out.append(one("cpu_p4_modules", {"ratc": {"wet": 0.7, "div": 5, "count": 8, "accel": 0.6, "pitch": 5, "decay": 0.3, "prob": 1}, "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}}, stim="mix", dur=2500, cpu=True, stages="needed"))
     # a Ratchet / Scratch morph: no clicks while the weights move
     ra = vec({"ratc": {"wet": 1, "div": 6, "count": 6, "accel": 0.6, "prob": 1}})
     rb = vec({"scrb": {"wet": 1, "size": 4, "shape": 0, "rate": 3, "depth": 0.5}})
@@ -405,9 +476,9 @@ def cases():
     }
     out.append(one("stress_all", allmods, stim="mix", dur=3000))
     typical_new = {k: allmods[k] for k in ("form", "phas", "rect", "gpit", "shuf", "slap")}
-    out.append(c("cpu_idle", stim="mix", dur=2500, cpu=True))  # no module on: the cost of the engine itself (slot blend, clocks, telemetry)
-    out.append(one("cpu6_new", typical_new, stim="mix", dur=2500, cpu=True))
-    out.append(one("cpu_all", allmods, stim="mix", dur=2500, cpu=True))
+    out.append(c("cpu_idle", stim="mix", dur=2500, cpu=True, stages="needed"))  # no module on: the cost of the engine itself (slot blend, clocks, telemetry)
+    out.append(one("cpu6_new", typical_new, stim="mix", dur=2500, cpu=True, stages="needed"))
+    out.append(one("cpu_all", allmods, stim="mix", dur=2500, cpu=True, stages="needed"))
     # six modules WITH movement (LFO / Steps / Env mixed): the cost of the movement engine on top of cpu6
     six_mv = {k: dict(v) for k, v in six.items()}
     six_mv["drvA"].update(mv("drvA", 1, "drive", 0.4, div=8))
@@ -416,7 +487,7 @@ def cases():
     six_mv["stut"].update(mv("stut", 1, "decay", 0.4, div=11, shape=2))
     six_mv["dly"].update(mv("dly", 1, "fb", 0.3, div=11))
     six_mv["rev"].update(mv("rev", 1, "decay", 0.3, div=13))
-    out.append(one("cpu6_move", six_mv, stim="mix", dur=2500, cpu=True))
+    out.append(one("cpu6_move", six_mv, stim="mix", dur=2500, cpu=True, stages="needed"))
     return out
 
 
@@ -497,6 +568,16 @@ def checks(name, r):
     elif name == "spec_latency":
         check(r["lag"] == LATENCY, f"spec_latency: lag {r['lag']} != {LATENCY}")
         check(r["errdb"] < -35, f"spec_latency: STFT path is transparent at the same latency (errdb {r['errdb']:.1f})")
+    elif name in ("neutral_stub", "spec_stub"):
+        check(r["lag"] == LATENCY, f"{name}: lag {r['lag']} != {LATENCY}")
+        check(r["errdb"] < -120, f"{name}: errdb {r['errdb']:.1f} (the stand-in delay is an exact identity)")
+        check(r["scFrame"] > 10, f"{name}: telemetry frame counter moves")
+        check(r["scSpecRun"] == 0, f"{name}: no STFT (there is no spectral stage)")
+    elif name == "spec_go":
+        check(r["lag"] == LATENCY, f"spec_go: lag {r['lag']} != {LATENCY}")
+        check(r["errdb"] < -35, f"spec_go: the hand-over is transparent at the same latency (errdb {r['errdb']:.1f})")
+        check(r["maxd2"] <= 1.05 * max(r["maxd2in"], 0.01), f"spec_go: no click at go (max d2 {r['maxd2']:.4f} vs input {r['maxd2in']:.4f})")
+        check(r["scSpecRun"] == 1, "spec_go: the STFT starts after go")
     elif name == "delay":
         check(r["xc0"] > 0.4, f"delay: echo at one beat (corr {r['xc0']:.2f})")
     elif name == "delay_pp":
@@ -987,16 +1068,17 @@ def print_case(case, r):
 
 
 def compile_time():
-    """Gen compile time: harness wall time of the Glitch core minus a trivial pass-through gen."""
+    """Gen compile time: harness wall time of the whole staged device (stages compile one after the other at patch load) and of the one-gen
+    reference build, each minus a trivial pass-through gen. Per stage numbers: scripts/measure_glitch_load.py."""
     triv = {"name": "trivial", "stim": "sine", "arm": 300, "dur": 400, "lags": [], "events": [], "slots": [], "weights": [1], "params": "bpm 120"}
     walls = {}
-    for label, code in (("trivial", "out1 = in1;\nout2 = in2;\n"), ("glitch", GEN)):
+    for label, kw in (("trivial", {"trivial": True}), ("all stages", {}), ("no spectral", {"stages": NOSPEC}), ("head + tail", {"stages": ["h", "t"]})):
         ws = []
         for _ in range(2):
-            r = run_case(code, dict(triv, name="compile_" + label))
+            r = run_case(GEN, dict(triv, name="compile_" + label.replace(" ", "_").replace("+", ""), **kw))
             ws.append(r["harness_wall_s"])
         walls[label] = min(ws)
-    print(f"compile: trivial gen {walls['trivial']:.1f}s, glitch gen {walls['glitch']:.1f}s -> gen compile about {walls['glitch'] - walls['trivial']:.1f}s")
+    print("compile (harness wall minus a trivial gen; the stages compile one after the other at patch load): " + ", ".join(f"{k} {v - walls['trivial']:.2f}s" for k, v in walls.items() if k != "trivial"))
     return walls
 
 
@@ -1012,7 +1094,7 @@ def main():
     for case in allc:
         r = run_case(GEN, case)
         print_case(case, r)
-        checks(case["name"], r)
+        checks(case.get("as", case["name"]), r)
     if not want or "compile" in want:
         compile_time()
     if FAILS:

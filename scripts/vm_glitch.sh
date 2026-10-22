@@ -49,7 +49,7 @@ case "${1:-}" in
       pkill -f 'MacOS/Live' ; for i in \$(seq 1 40); do pgrep -f 'MacOS/Live' >/dev/null || break; sleep 0.5; done;
       rm -f \"\$HOME\"/Library/Preferences/Ableton/Live\\ */CrashRecoveryInfo.cfg \"\$HOME\"/Library/Preferences/Ableton/Live\\ */CrashDetection.cfg;
       rm -rf \"\$HOME\"/Library/Preferences/Ableton/Live\\ */Undo;
-      rm -f /tmp/glitch_core_*.gendsp;
+      rm -f /tmp/glitch_core_*.gendsp /tmp/glitch_[abcs]_*.gendsp;
       open -a 'Ableton Live 12 Suite' \"\$HOME/${VM_DIR}/glitch_test.als\" &&
       for i in \$(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo 'bridge up'; exit 0; }; sleep 2; done;
       echo 'bridge did not come up' >&2; exit 1" ;;

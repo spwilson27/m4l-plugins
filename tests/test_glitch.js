@@ -33,6 +33,9 @@ function ok(name, fn) {
 function tokensFor() {
     const t = { NP: L.np, WOFF: L.weightsOffset, SVSIZE: L.np * G.GL_NSLOT, SQOFF: L.seqOffset, METAOFF: L.metaOffset, DEFOFF: L.defsOffset, WBOFF: L.wbOffset, NINST: L.ninst };
     Object.assign(t, { MINOFF: L.minsOffset, MAXOFF: L.maxsOffset, MVBASE: L.mvBase, MVN: L.mvN, MSTN: 8 * L.ninst, MTN: 4 * L.ninst });
+    // the raw (directive-commented) text: twin of glitch_common.raw_stage / tokens
+    Object.assign(t, { K0: 0, K1: L.ninst, PLO: 0, PHI: L.mvBase, MLO: L.mvBase, MHI: L.np, PVN: L.np, RINGOFF: 0, CTLSLOTS: G.GL_CTL_SLOTS, CTLSTRIDE: L.mvBase,
+        TKIN: 3, BIIN: 4, BFIN: 5, QUIET: "in6", DRYL: "in1", DRYR: "in1", SC_STAGEF: G.GL_SCOPE.STAGE_FRAME, WETS: "" });
     for (const [k, v] of Object.entries(L.mv)) t["MV_" + k.toUpperCase()] = v;
     for (const i of L.instances) t[`B_${i.id}`] = i.base;
     L.instances.forEach((i, pos) => (t[`P_${i.id}`] = pos));
@@ -404,7 +407,7 @@ ok("gen blend equals blendVectors", () => {
         const sv = new DataSim(8 * L.np, 1);
         vecs.forEach((v, s) => v.forEach((x, i) => (sv.a[s * L.np + i] = x)));
         const tgt = new DataSim(L.np, 1);
-        GEN.gl_blend(sv, dataFrom(w), meta, tgt, L.np);
+        GEN.gl_blend(sv, dataFrom(w), meta, tgt, L.np, 0, L.np);
         const want = G.blendVectors(vecs, w);
         for (let i = 0; i < L.np; i++) assert.ok(Math.abs(tgt.a[i] - want[i]) <= 1e-9 * Math.max(1, Math.abs(want[i])), `trial ${trial} param ${i}: gen ${tgt.a[i]} vs ${want[i]}`);
     }
@@ -1813,6 +1816,198 @@ ok("engine constants block: meta codes, defaults and wet indices in the buffer m
     assert.ok(buf.slice(L.metaOffset + c.length).every((x) => x === 0), "nothing after the constants");
 });
 
+// ----------------------------------------------------------------------------- staged build (load time, AGENTS.md 1d)
+const STAGE_SRC = (() => {
+    const out = cp.spawnSync("python3", ["-c", "import sys, json; sys.path.insert(0,'scripts'); import glitch_common as g; L = g.load_layout(); print(json.dumps({st['id']: g.gen_source(L, stage=st) for st in L['stages']}))"], { cwd: ROOT, encoding: "utf8", maxBuffer: 1 << 26 });
+    assert.strictEqual(out.status, 0, out.stderr);
+    return JSON.parse(out.stdout);
+})();
+const FN_NAMES = (src) => Array.from(src.matchAll(/^([a-z_0-9]+)\(.*\) \{$/gm)).map((m) => m[1]);
+const BODY_OF = (src) => src.slice(src.indexOf("\nBuffer "));
+const STAGES = G.glitchStages();
+const GROUPS = STAGES.filter((x) => x.role === "group" || x.role === "spec");
+const stage = (id) => STAGES.find((x) => x.id === id);
+
+ok("stages: roles, contiguous cover of the chain, ports, parameter ranges, ring layout", () => {
+    // one stage per chain instance (granular pitch + stretch share one call site), the head first, the tail last
+    assert.deepStrictEqual(STAGES.map((x) => x.id), ["h"].concat(L.instances.map((i) => i.id).filter((id) => id !== "gstr"), ["t"]));
+    assert.deepStrictEqual(STAGES.map((x) => x.role), ["head"].concat(STAGES.slice(1, -1).map((x) => (x.id === "spec" ? "spec" : "group")), ["tail"]));
+    assert.ok(STAGES.length <= 32, "the scope has 32 per-stage frame counters (GL_SCOPE.STAGE_FRAME)");
+    assert.strictEqual(G.GL_SCOPE.STAGE_FRAME + 32 <= G.GL_SCOPE.END && G.GL_SCOPE.END <= G.GL_SCOPE_SAMPS, true);
+    let next = 0;
+    for (const s of GROUPS) {
+        assert.strictEqual(s.k0, next, `${s.id} starts where the last one ended`);
+        next = s.k1;
+        assert.strictEqual(s.plo, L.instances[s.k0].base);
+        assert.strictEqual(s.phi, s.k1 < L.ninst ? L.instances[s.k1].base : L.mvBase);
+        assert.strictEqual(s.mlo, L.mvBase + L.mvN * s.k0);
+        assert.strictEqual(s.mhi, L.mvBase + L.mvN * s.k1);
+        assert.deepStrictEqual(s.insts, L.instances.slice(s.k0, s.k1).map((i) => i.id));
+    }
+    assert.strictEqual(next, L.ninst, "the groups cover the whole chain");
+    for (let i = 1; i < GROUPS.length; i++) { assert.strictEqual(GROUPS[i].plo, GROUPS[i - 1].phi); assert.strictEqual(GROUPS[i].mlo, GROUPS[i - 1].mhi); }
+    assert.strictEqual(GROUPS[0].plo, 0);
+    assert.strictEqual(GROUPS[GROUPS.length - 1].phi, L.mvBase);
+    // granular pitch and stretch share one call site: they live in one stage
+    const owner = (id) => GROUPS.find((x) => x.insts.includes(id)).id;
+    assert.strictEqual(owner("gpit"), owner("gstr"));
+    assert.strictEqual(owner("spec"), "spec");
+    assert.deepStrictEqual(GROUPS.filter((x) => x.role === "spec").map((x) => x.insts), [["spec"]], "the STFT stage holds only the spectral module");
+    assert.deepStrictEqual(GROUPS.map((x) => x.side), GROUPS.map((x) => (x.id === "spec" ? "spec" : (L.instances.findIndex((i) => i.id === x.id) < L.instances.findIndex((i) => i.id === "spec") ? "pre" : "post"))));
+    assert.deepStrictEqual(GROUPS.find((x) => x.id === "gpit").insts, ["gpit", "gstr"]);
+    // ports
+    assert.deepStrictEqual([stage("h").ins, stage("h").outs], [["L", "R"], ["tk", "bi", "bf", "quiet"]]);
+    for (const s of GROUPS.filter((x) => x.role === "group")) assert.deepStrictEqual([s.ins, s.outs], [["L", "R", "tk", "bi", "bf"], ["L", "R"]]);
+    assert.deepStrictEqual([stage("spec").ins, stage("spec").outs], [["L", "R", "tk", "bi", "bf", "quiet"], ["L", "R"]]);
+    assert.deepStrictEqual([stage("t").ins, stage("t").outs], [["L", "R", "dryL", "dryR"], ["L", "R"]]);
+    // the ring: a power-of-two number of ticks (the tick counter wraps at 2^22) of one module-param vector each, one buffer
+    const ctl = G.glitchCtlLayout();
+    assert.strictEqual(ctl.slots, 256);
+    assert.strictEqual(4194304 % ctl.slots, 0, "the tick counter wraps at a multiple of the ring length");
+    assert.strictEqual(ctl.stride, L.mvBase, "a ring entry is the module params (the movement blocks never leave the head)");
+    assert.strictEqual(ctl.samps, ctl.slots * ctl.stride);
+    // a ring of 256 ticks of 32 samples holds 8192 samples: more than the largest signal vector (Live: up to 2048) plus the forced ticks
+    assert.ok(ctl.slots * 32 >= 4 * 2048);
+});
+
+ok("stages: each stage's gen holds only its own code (functions, state, Params), nothing unused", () => {
+    // which stage defines which module functions
+    const fnOwner = { gl_blend: "h", gl_move: "h", gl_seq: "h", gl_smooth: "h", gl_soft: "t",
+        gl_drive: "drvA", gl_filter: "filt", gl_form: "form", gl_comb: "comb", gl_phas: "phas", gl_crush: "crush", gl_rect: "rect", gl_fm: "fm", gl_corr: "corr", gl_ring: "ring",
+        gl_stut: "stut", gl_ratchet: "ratc", gl_time: "time", gl_scratch: "scrb", gl_grain: "gpit", gl_rvs: "rvs", gl_shuf: "shuf", gl_chop: "chop",
+        gl_spec_frame: "spec", fft_run: "spec", stft_frame: "spec", gl_mapfx: "spec", gl_magfx: "spec", gl_phasefx: "spec", gl_cproc: "spec",
+        gl_dly: "dly", gl_slap: "slap", gl_rev: "rev", gl_wid: "wid" };
+    for (const [fn, sid] of Object.entries(fnOwner)) {
+        for (const s of STAGES) {
+            const has = new RegExp(`^${fn}\\(.*\\) \\{$`, "m").test(STAGE_SRC[s.id]);
+            if (fn === "gl_drive" && s.id === "drvB") { assert.ok(has, "drvB has its own drive"); continue; }
+            assert.strictEqual(has, s.id === sid, `${fn} defined in stage ${s.id}? (owner ${sid})`);
+        }
+    }
+    for (const s of STAGES) {
+        const src = STAGE_SRC[s.id];
+        const names = FN_NAMES(src);
+        const body = BODY_OF(src);
+        // every defined function is called from the body or from another defined function (gen compiles unused ones too)
+        const fnBody = (n) => { const ls = src.split("\n"); const i = ls.findIndex((l) => l.startsWith(n + "(") && /\) \{$/.test(l)); const j = ls.indexOf("}", i); return ls.slice(i, j + 1).join("\n"); };
+        for (const n of names) {
+            const used = new RegExp(`\\b${n}\\(`).test(body) || names.some((m) => m !== n && new RegExp(`\\b${n}\\(`).test(fnBody(m)));
+            assert.ok(used, `stage ${s.id}: function ${n} is unused`);
+        }
+        // helpers are defined before they are used
+        const seen = new Set();
+        for (const n of names) {
+            const fb = fnBody(n);
+            for (const other of names) if (other !== n && new RegExp(`\\b${other}\\(`).test(fb.slice(n.length + 1))) assert.ok(seen.has(other), `stage ${s.id}: ${n} calls ${other} before it is defined`);
+            seen.add(n);
+        }
+        // every declaration is used
+        const decls = body.split("\n").filter((l) => /^(Buffer|Data|Delay|Param|History) /.test(l));
+        const code = body.split("\n").filter((l) => !/^(Buffer|Data|Delay|Param|History) /.test(l)).join("\n");
+        for (const d of decls) { const nm = /^\w+ (\w+)/.exec(d)[1]; assert.ok(new RegExp(`\\b${nm}\\b`).test(code), `stage ${s.id}: ${nm} is declared but unused`); }
+        // one call site per big helper inside a stage
+        for (const f of ["gl_drive", "gl_filter", "gl_stut", "gl_time", "gl_chop", "gl_dly", "gl_rev", "gl_wid", "gl_spec_frame", "gl_blend", "gl_smooth", "gl_move", "gl_ratchet", "gl_scratch", "gl_grain", "gl_seq"]) {
+            assert.ok((code.match(new RegExp(`\\b${f}\\(`, "g")) || []).length <= 1, `stage ${s.id}: ${f} has more than one call site`);
+        }
+        // ports: only the inlets / outlets the stage has, and all of its outlets are written
+        const ins = Array.from(src.matchAll(/\bin(\d)\b/g)).map((m) => Number(m[1]));
+        assert.ok(ins.every((n) => n >= 1 && n <= s.ins.length), `stage ${s.id}: inlets used ${ins}`);
+        for (let n = 1; n <= s.outs.length; n++) assert.ok(new RegExp(`\\bout${n} =`).test(src), `stage ${s.id}: out${n} is written`);
+        assert.ok(!/\bout\d/.test(src.replace(new RegExp(`\\bout[1-${s.outs.length}]\\b`, "g"), "")), `stage ${s.id}: only its own outlets`);
+        assert.ok(!/@[A-Za-z0-9_]+@|\/\/@/.test(src), `stage ${s.id}: tokens and directives resolved`);
+        // buffers: the scope everywhere, the slots only where the control engine runs, the ring in the head and the groups
+        assert.ok(/^Buffer scope\(/m.test(src));
+        assert.strictEqual(/^Buffer slots\(/m.test(src), s.role === "head", `${s.id}: slots`);
+        assert.strictEqual(/^Buffer ctl\(/m.test(src), s.role !== "tail", `${s.id}: ctl`);
+        // Params
+        assert.strictEqual(/^Param bpm\(/m.test(src), s.role !== "tail", `${s.id}: bpm`);
+        for (const p of ["ppq", "playing"]) assert.strictEqual(new RegExp(`^Param ${p}\\(`, "m").test(src), s.role === "head", `${s.id}: ${p}`);
+        for (const p of ["wet", "outdb"]) assert.strictEqual(new RegExp(`^Param ${p}\\(`, "m").test(src), s.role === "tail", `${s.id}: ${p}`);
+        assert.strictEqual(/^Param go\(/m.test(src), s.role === "group" || s.role === "spec", `${s.id}: go`);
+    }
+    // the control engine exists exactly once (head): the blend / movement / sequencer / smoothing code is in no other stage
+    for (const s of STAGES.filter((x) => x.role !== "head")) for (const fn of ["gl_blend", "gl_move", "gl_seq", "gl_smooth", "gl_stepv"]) assert.ok(!STAGE_SRC[s.id].includes(fn + "("), `${fn} only in the head (stage ${s.id})`);
+    // the spectral stage holds the FFT, no other stage compiles it
+    assert.ok(STAGE_SRC.spec.includes("fft_run"));
+    for (const s of STAGES.filter((x) => x.id !== "spec")) assert.ok(!STAGE_SRC[s.id].includes("fft_run"), `no FFT in ${s.id}`);
+    // dry delay only in the tail; the stand-in delay is a Max delay~ (not a gen)
+    for (const s of STAGES) assert.strictEqual(/\bdryDL\.write/.test(STAGE_SRC[s.id]), s.role === "tail");
+});
+
+ok("stages: compile budget (what makes loading fast) and the head / group / tail interfaces", () => {
+    const lines = (id) => STAGE_SRC[id].split("\n").length;
+    // measured in the VM: gen compile follows the lines of control / module code; the always-on head + tail must stay small and no module may
+    // grow into a big gen. A new module is its own stage (src/glitch_config.js GL_STAGE_DEFS).
+    assert.ok(lines("h") + lines("t") < 470, `always-on stages (head + tail): ${lines("h")} + ${lines("t")} lines`);
+    for (const g of GROUPS.filter((x) => x.role === "group")) assert.ok(lines(g.id) < 200, `module stage ${g.id}: ${lines(g.id)} lines`);
+    assert.ok(lines("spec") < 1200, `spectral stage: ${lines("spec")} lines`);
+    // the head publishes the tick: counter in Data (a History would be a sample late), beat as integer + fraction, silence flag
+    const h = STAGE_SRC.h;
+    assert.ok(h.includes("d_tk.poke(tkv, 0);") && h.includes("out1 = d_tk.peek(0);") && h.includes("out2 = floor(beat);") && h.includes("out3 = beat - floor(beat);"));
+    assert.ok(h.includes("out4 = (quietCnt >= n) ? 1 : 0;"));
+    assert.ok(h.includes("gl_blend(d_sv, d_wv, d_meta, d_tgt, 885, 0, 885);") && h.includes("gl_smooth(d_pv, d_tgt, d_meta, 0, 885, snapK);"), "blend and smoothing cover the whole vector");
+    assert.ok(h.includes("poke(ctl, d_pv.peek(i), rsl + i, 0);") && h.includes("for (i = 0; i < 160; i += 1) {"), "the head publishes the module params of each tick");
+    // groups read the ring slot of the head's tick, their own param range only, and smooth their own wets (gated by go)
+    for (const g of GROUPS) {
+        const src = STAGE_SRC[g.id];
+        assert.ok(src.includes("beat = in4 + in5;") && src.includes("tkNow = in3;") && src.includes("if (tkNow != tkPrev) {"), `${g.id}: reads the head's clock`);
+        assert.ok(src.includes(`for (i = ${g.plo}; i < ${g.phi}; i += 1) {`) && src.includes("d_pv.poke(peek(ctl, rsl + i, 0), i);"), `${g.id}: its own param range of the ring`);
+        assert.ok(!/^History beat\(/m.test(src), `${g.id}: beat is a plain variable here (a History reads back the old value)`);
+        for (let k = g.k0; k < g.k1; k++) assert.ok(src.includes(`tw = (go > 0.5) ? d_pv.peek(${L.instances[k].wet}) : 0;`) && src.includes(`d_wS.poke(cw, ${k});`), `${g.id}: wet smoothing of instance ${k}`);
+        assert.ok(src.includes("out1 = d_io.peek(0);") && src.includes("out2 = d_io.peek(1);"));
+        assert.ok(src.includes(`for (k = ${g.k0}; k < ${g.k1}; k += 1) {`) && src.includes("poke(scope, d_lv.peek(k),"), `${g.id}: reports its modules' levels`);
+    }
+    assert.ok(STAGE_SRC.spec.includes("awake = (in6 < 0.5 ||") && STAGE_SRC.spec.includes("sWant = (go > 0.5 &&"), "the spectral stage sleeps on the head's silence flag and waits for go");
+    assert.ok(STAGE_SRC.spec.includes("dL = idlL.read(1023);"), "latency 1023");
+    const t = STAGE_SRC.t;
+    assert.ok(t.includes("dryDL.write(in3);") && t.includes("dryDR.write(in4);") && t.includes("dryL = dryDL.read(1023);") && t.includes("cL = gl_soft(in1);"), "the tail delays the dry input like the chain");
+    // the head reads the modules' levels back for the envelope follower
+    assert.ok(h.includes(`d_lv.poke(peek(scope, ${G.GL_SCOPE.LEVEL} + k, 0), k);`));
+});
+
+ok("glitchNeedsStage: a stage exists only when a glitch that can sound has its module on", () => {
+    const st = G.defaultState();
+    assert.deepStrictEqual(G.glitchNeededStages(st), ["h", "t"], "an empty device needs only the head and the tail");
+    st.working = G.defaultGlitch();
+    G.glitchSetValue(st.working, "filt", "wet", 1);
+    assert.deepStrictEqual(G.glitchNeededStages(st), ["h", "filt", "t"]);
+    assert.strictEqual(G.glitchNeedsSpectral(st), false, "a non-spectral working glitch");
+    G.glitchSetValue(st.working, "dly", "wet", 0.5);
+    G.glitchSetValue(st.working, "stut", "wet", 1);
+    G.glitchSetValue(st.working, "gstr", "wet", 1);
+    assert.deepStrictEqual(G.glitchNeededStages(st), ["h", "filt", "stut", "gpit", "dly", "t"], "granular pitch and stretch are one stage");
+    G.glitchSetValue(st.working, "smear", "smr_amt", 0.6);
+    G.glitchSetValue(st.working, "smear", "wet", 1);
+    assert.strictEqual(st.audition, "working");
+    assert.strictEqual(G.glitchNeedsSpectral(st), true, "a spectral working glitch");
+    assert.deepStrictEqual(G.glitchNeededStages(st), ["h", "filt", "stut", "gpit", "spec", "dly", "t"]);
+    // slots matter only in the modes that play them
+    const ws = G.defaultState();
+    ws.slots[2] = JSON.parse(JSON.stringify(st.working));
+    assert.deepStrictEqual(G.glitchNeededStages(ws), ["h", "t"], "a slot is silent while the working glitch plays");
+    ws.audition = "morph";
+    ws.corners = [0, 1, 3, 4];
+    assert.deepStrictEqual(G.glitchNeededStages(ws), ["h", "t"], "morph: slot 3 is not on a corner");
+    ws.corners = [0, 1, 2, 4];
+    assert.deepStrictEqual(G.glitchNeededStages(ws), ["h", "filt", "stut", "gpit", "spec", "dly", "t"], "morph: slot 3 is a corner");
+    ws.audition = "seq";
+    ws.seq = G.defaultSeq();
+    assert.deepStrictEqual(G.glitchNeededStages(ws), ["h", "t"], "seq: no step plays slot 3");
+    ws.seq.steps[5] = 2;
+    assert.strictEqual(G.glitchNeedsSpectral(ws), true, "seq: a step plays slot 3");
+    ws.seq.steps[5] = 1;
+    assert.strictEqual(G.glitchNeedsSpectral(ws), false, "seq: the step moved to an empty slot");
+    assert.deepStrictEqual(G.glitchSoundingSlots(ws), [1]);
+    // randomized glitches: the verdict per stage equals "one of its modules is on" in the vector
+    for (let seed = 1; seed <= 60; seed++) {
+        const s2 = G.defaultState();
+        s2.working = G.randomizeGlitch(seed, (seed % 5) / 4, null);
+        const vec = G.glitchToVector(s2.working);
+        const need = G.glitchNeededStages(s2);
+        for (const g of GROUPS) assert.strictEqual(need.includes(g.id), g.insts.some((id) => vec[L.instances.find((i) => i.id === id).wet] > 0.0005), `seed ${seed} stage ${g.id}`);
+    }
+});
+
 // ----------------------------------------------------------------------------- UI model (stage 2)
 const FACE = G.GL_FACE;
 const UI_COMBOS = [];
@@ -2813,41 +3008,81 @@ if (fs.existsSync(devicePath)) {
         assert.strictEqual(p.devicewidth, DEVICE_W({}));
         const byId = {};
         for (const b of p.boxes) byId[b.box.id] = b.box;
-        // deferred DSP (AGENTS.md 1d): no gen in the device, the gen patch rides in the v8ui script
+        // deferred DSP (AGENTS.md 1d): no gen~ in the saved device (the v8ui creates tiny file-backed shells right after load and hot-loads the code)
         assert.ok(!p.boxes.some((b) => /^gen/.test(b.box.maxclass) || /^gen~?\b/.test(b.box.text || "")), "no gen object in the saved device");
         const viz = byId["obj-viz"];
         const script = viz.textfile.text;
-        const m = /var GEN_DSP_TEXT = ("(?:[^"\\]|\\.)*");/.exec(script);
-        assert.ok(m, "GEN_DSP_TEXT embedded");
-        const dsp = JSON.parse(JSON.parse(m[1]));
-        assert.strictEqual(dsp.patcher.classnamespace, "dsp.gen");
-        const code = dsp.patcher.boxes.find((b) => b.box.maxclass === "codebox").box.code;
-        assert.ok(/@[A-Za-z0-9_]+@/.test(code) === false, "all tokens substituted");
-        assert.ok(code.includes('Buffer slots("glitchslots")') && code.includes("fft_run"));
-        assert.ok(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(script));
+        const m = /var GEN_STAGES = (\[[\s\S]*?\]);\nvar GEN_SHELLS/.exec(script);
+        assert.ok(/var GEN_SHELLS = \{/.test(script));
+        assert.ok(m, "GEN_STAGES embedded");
+        const stages = JSON.parse(m[1]);
+        const defs = G.glitchStages();
+        assert.deepStrictEqual(stages.map((x) => x.id), defs.map((x) => x.id));
+        for (const st of stages) {
+            const def = defs.find((x) => x.id === st.id);
+            assert.deepStrictEqual(st.ins, def.ins);
+            assert.deepStrictEqual(st.outs, def.outs);
+            assert.ok(/^[0-9a-f]{12}$/.test(st.hash), "content hash for the /tmp file name");
+            const dsp = JSON.parse(st.text);
+            assert.strictEqual(dsp.patcher.classnamespace, "dsp.gen");
+            const cb = dsp.patcher.boxes.find((b) => b.box.maxclass === "codebox").box;
+            assert.ok(/@[A-Za-z0-9_]+@/.test(cb.code) === false, `${st.id}: all tokens substituted`);
+            assert.ok(!/\/\/@/.test(cb.code), `${st.id}: no directive left`);
+            assert.strictEqual(cb.numinlets, st.ins.length);
+            assert.strictEqual(cb.numoutlets, st.outs.length);
+            assert.strictEqual(dsp.patcher.boxes.filter((b) => /^in \d+$/.test(b.box.text || "")).length, st.ins.length);
+            assert.strictEqual(dsp.patcher.boxes.filter((b) => /^out \d+$/.test(b.box.text || "")).length, st.outs.length);
+            assert.ok(cb.code.includes('Buffer scope("glitchscope")'));
+            assert.strictEqual(st.role, def.role);
+            assert.strictEqual(st.side, def.side);
+        }
+        assert.ok(stages.find((x) => x.id === "spec").text.includes("fft_run"), "the spectral stage holds the FFT");
+        assert.ok(!stages.some((x) => x.id !== "spec" && x.text.includes("fft_run")), "no other stage compiles the FFT");
+        assert.ok(!script.includes("GEN_DSP_TEXT"));
         assert.ok(script.includes("mgraphics.relative_coords = 0") && script.includes("mgraphics.autofill = 0"));
         assert.ok(!/\bvar\s+(box|patcher|max|messagename|inlet|jsarguments)\b/.test(script), "never declare Max's own v8ui globals");
-        // the hub is an open gate, never `t a`; every gen-bound message goes through its right inlet
-        assert.strictEqual(byId["obj-gen-in"].text, "gate 1 1");
-        assert.strictEqual(byId["obj-gen-in"].varname, "gl_genin");
+        // the hubs are open gates, never `t a`; every gen-bound message goes through the right inlet of the hub of the stages that have that Param
+        for (const [id, vn] of [["obj-gen-in-head", "gl_genhead"], ["obj-gen-in-mod", "gl_genmod"], ["obj-gen-tail-in", "gl_gentail"]]) {
+            assert.strictEqual(byId[id].text, "gate 1 1");
+            assert.strictEqual(byId[id].varname, vn);
+        }
         assert.ok(!p.boxes.some((b) => b.box.text === "t a"));
         const cords = p.lines.map((l) => l.patchline);
         const into = (dst, inlet) => cords.filter((c) => c.destination[0] === dst && (inlet === undefined || c.destination[1] === inlet)).map((c) => c.source[0]);
-        for (const src of ["obj-msg-gen-buf", "obj-bpm-prep", "obj-ppq-prep", "obj-prep-mix", "obj-prep-out"]) assert.ok(into("obj-gen-in", 1).includes(src), src);
-        assert.ok(!cords.some((c) => c.destination[0] === "obj-gen"), "nothing is wired to a gen that does not exist yet");
-        // dry until the gen runs: plugin~ -> selector~ input 1 -> plugout~; the v8ui adds gen -> input 2
+        assert.deepStrictEqual(into("obj-gen-in-head", 1).sort(), ["obj-bpm-prep", "obj-msg-bind-head", "obj-play-prep", "obj-ppq-prep"]);
+        assert.deepStrictEqual(into("obj-gen-in-mod", 1).sort(), ["obj-bpm-prep", "obj-msg-bind-mod"], "groups have bpm and the bindings only");
+        assert.deepStrictEqual(into("obj-gen-tail-in", 1).sort(), ["obj-msg-bind-tail", "obj-prep-mix", "obj-prep-out"], "Mix / Output are Params of the tail only");
+        assert.strictEqual(byId["obj-msg-bind-head"].text, "slots #0-glitchslots, scope #0-glitchscope, ctl #0-glitchctl");
+        assert.strictEqual(byId["obj-msg-bind-mod"].text, "scope #0-glitchscope, ctl #0-glitchctl");
+        assert.strictEqual(byId["obj-msg-bind-tail"].text, "scope #0-glitchscope");
+        // the bypass chain is pre-wired as if no group existed: plugin~ -> selector~ per group (input 1) -> ... -> delay~ 1023 -> selector~ (spectral stand-in)
+        let prevL = "obj-plugin";
+        for (const g of GROUPS) {
+            for (const nm of ["L", "R"]) {
+                const sel = byId[`obj-bp-${g.id}${nm}`];
+                assert.strictEqual(sel.text, "selector~ 2 1");
+                assert.strictEqual(sel.varname, `gl_bp${nm}_${g.id}`);
+                assert.ok(script.includes(`"gl_bp"`) || script.includes("gl_bp"), "wired by the script");
+            }
+            const srcL = g.role === "spec" ? "obj-stand-L" : prevL;
+            if (g.role === "spec") { assert.strictEqual(byId["obj-stand-L"].text, "delay~ 2048 1023"); assert.deepStrictEqual(into("obj-stand-L", 0), [prevL]); }
+            assert.deepStrictEqual(into(`obj-bp-${g.id}L`, 1), [srcL]);
+            prevL = `obj-bp-${g.id}L`;
+        }
+        // dry until the output selectors are switched: plugin~ -> selector~ input 1 -> plugout~
         assert.deepStrictEqual(into("obj-selL", 1), ["obj-plugin"]);
         assert.deepStrictEqual(into("obj-selR", 1), ["obj-plugin"]);
         assert.deepStrictEqual(into("obj-plugout", 0), ["obj-selL"]);
         assert.strictEqual(byId["obj-plugin"].varname, "gl_plugin");
         assert.strictEqual(byId["obj-selL"].text, "selector~ 2 1");
         assert.ok(cords.some((c) => c.source[0] === "obj-route-viz" && c.source[1] === 3 && c.destination[0] === "obj-selL"), "dsp_on switches the selectors");
-        // dsp_ready re-sends binding, Mix, Output, bpm, ppq, playing
+        // dsp_ready re-sends the three bindings, Mix, Output, bpm, ppq, playing
         assert.strictEqual(byId["obj-route-viz"].text, "route param setwidth_cmd dsp_ready dsp_on");
-        for (const dst of ["obj-msg-gen-buf", "obj-ctrl-mix", "obj-ctrl-out", "obj-bpm-hold", "obj-ppq-hold", "obj-play-hold"]) assert.ok(into(dst).includes("obj-dsp-resend"), dst);
+        assert.strictEqual(byId["obj-dsp-resend"].text, "t b b b b b b b b");
+        for (const dst of ["obj-msg-bind-head", "obj-msg-bind-mod", "obj-msg-bind-tail", "obj-ctrl-mix", "obj-ctrl-out", "obj-bpm-hold", "obj-ppq-hold", "obj-play-hold"]) assert.ok(into(dst).includes("obj-dsp-resend"), dst);
         assert.strictEqual(byId["obj-play-prep"].text, "prepend playing");
         assert.ok(cords.some((c) => c.source[0] === "obj-sync" && c.source[1] === 0 && c.destination[0] === "obj-play-chg"), "plugsync~ outlet 0 (transport) feeds the sequencer clock");
-        assert.ok(into("obj-gen-in", 1).includes("obj-play-prep"));
+        assert.ok(into("obj-gen-in-head", 1).includes("obj-play-prep"));
         // setwidth path and live.thisdevice ready
         assert.ok(into("obj-thisdevice").includes("obj-prep-setwidth") && into("obj-viz").includes("obj-msg-ready"));
         assert.strictEqual(byId["obj-msg-ready"].text, "device_ready");
@@ -2896,11 +3131,16 @@ if (fs.existsSync(devicePath)) {
         const texts = p.boxes.map((b) => b.box.text || "");
         assert.ok(texts.includes("buffer~ #0-glitchslots @samps " + G.GL_SLOTS_BUF_SAMPS));
         assert.ok(texts.includes("buffer~ #0-glitchscope @samps " + G.GL_SCOPE_SAMPS));
-        assert.ok(texts.includes("slots #0-glitchslots, scope #0-glitchscope"));
+        assert.ok(texts.includes("buffer~ #0-glitchctl @samps " + G.glitchCtlLayout().samps));
         assert.ok(texts.includes("setbuffer #0-glitchslots #0-glitchscope"));
         for (const t of texts) if (/^buffer~ /.test(t)) assert.ok(t.startsWith("buffer~ #0-"), t);
         // the script's own gen-binding strings are the same names
-        assert.ok(script.includes('"gl_genin"') && script.includes('"gl_selL"') && script.includes('"dsp_on"'));
+        assert.ok(script.includes('"obj-gen-"') && script.includes('"gl_bpL_"') && script.includes('setattr("gen"') && script.includes('"dsp_on"'), "the script hot-loads the code into the saved shells and switches the static selectors");
+        const loaderSrc = script.slice(script.indexOf("// Deferred, STAGED, LAZY DSP"), script.indexOf("// telemetry (buffer"));
+        const bg0 = loaderSrc.indexOf("function buildGraph()"), bg1 = loaderSrc.indexOf("/** Hot-load one stage's real code");
+        assert.ok(bg0 > 0 && bg1 > bg0);
+        assert.ok(!/newdefault|\.connect\(|\.remove\(|conn\(/.test(loaderSrc.slice(0, bg0) .replace(/function conn\([^\n]*\n/, "") + loaderSrc.slice(bg1)), "objects and cords are added only once, in buildGraph (adding them to a running device silences it for the compile time)");
+        assert.ok(loaderSrc.includes('"gen~", "@gen", sp') && loaderSrc.includes("graphBuilt"), "the shells are file-backed (identical shells share one compile)");
     });
 }
 
@@ -3220,7 +3460,7 @@ ok("gen movement: one call site in one loop over the chain, evaluated at control
     assert.ok(/smpNow = d_clk\.peek\(0\) \+ 1;/.test(main) && !/History tickN/.test(CORE_RAW));
     // the code grew by a bounded amount: keep the gen small enough to compile fast
     assert.ok((CORE_FN.match(/\.poke\(/g) || []).length < 500, `pokes: ${(CORE_FN.match(/\.poke\(/g) || []).length}`);
-    assert.ok(CORE_FN.split("\n").length < 2700, "core line count");
+    assert.ok(CORE_FN.split("\n").length < 2900, "core line count");
 });
 
 ok("Randomize / Mutate assign movement: deterministic, more at higher Chaos, respects the allow-list and locks", () => {

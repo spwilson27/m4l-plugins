@@ -2,22 +2,32 @@
 """
 Build devices/Glitch.amxd — a Max for Live audio effect with a pool of hidden FX modules in one fixed chain.
 
-Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/glitch_core.genexpr, tokens filled from
-src/glitch_config.js) -> plugout~. Latency is constant: 1023 samples (the STFT's N - 1, N = 1024), the dry path is
-delayed identically (patcher attribute "latency": 1023).
+Signal path: plugin~ -> a chain of module stages (one gen~ per chain module, the STFT is the `spec` stage) -> the tail gen~ -> plugout~;
+the head gen~ is the one control engine and feeds every module stage its tick counter and the host beat as signals (audio does not pass
+through it). Every stage's gen is built from src/cepstrum_lib.genexpr + src/glitch_core.genexpr by scripts/glitch_common.py (only the
+functions and declarations that stage's module uses, tokens filled from src/glitch_config.js; stages: glitchStages()). Reason: gen compiles
+every function definition even when nothing calls it (~2.3 s for all of them), so one gen cost 4.4 s, while a module stage costs 0.05 - 0.15 s
+(the spectral stage 1.3 s, the head 0.4 s) and only the modules a glitch uses are compiled. Latency is constant: 1023 samples (the STFT's
+N - 1, N = 1024), the dry path is delayed identically (patcher attribute "latency": 1023).
 
-Deferred DSP (AGENTS.md 1d): the device ships WITHOUT its gen~. The gen patch is embedded in the v8ui script as .gendsp
-JSON (GEN_DSP_TEXT); after live.thisdevice's ready bang plus one Task tick the v8ui writes /tmp/glitch_core_<hash>.gendsp,
-creates `gen~ @gen <file>` and wires it: every gen-bound message goes through the `gate 1 1` hub (varname gl_genin), plugin~
-(gl_plugin) feeds the gen, and its outputs enter selector~ 2 1 (gl_selL / gl_selR) input 2. Until the gen runs the selectors
-pass the dry signal (input 1); dsp_on 2 switches them. dsp_ready re-sends the buffer binding, Mix, Output, bpm and ppq.
+Deferred, staged, lazy DSP (AGENTS.md 1d): the device ships with NO gen~ and no stage code. The static part of the graph is saved here: the
+hubs (`gate 1 1`, varnames gl_genhead / gl_genmod / gl_gentail), the bypass selector~ per module stage (gl_bp<L|R>_<id>: input 1 = the
+signal before it) with delay~ 1023 as the spectral stand-in, and the dry/chain selectors (gl_selL / gl_selR). After live.thisdevice's ready
+bang the v8ui creates every stage's gen~ as a tiny file-backed SHELL (same ports, Params, Buffers; /tmp/glitch_shell_<role>_<in>_<out>.gendsp)
+and wires the whole graph once; from then on NOTHING is added or removed (adding a gen~ to a running device silences all of it while the
+gen~ compiles, measured 0.1 - 0.7 s). The real code (GEN_STAGES: id, ports, hash, .gendsp JSON text; /tmp/glitch_<id>_<hash>.gendsp) is
+hot-loaded into a shell with `setattr gen` (audio loss 2 - 24 ms measured): the head and the tail first, the chain goes on (dsp_on 2) when
+both run, then every module the glitch needs (glitchNeededStages), later the ones a new glitch needs. A running module stage is switched in
+by moving its selector~ while its Param `go` is 0, then `go 1` ramps its wets in. dsp_ready re-sends the three buffer bindings, Mix, Output,
+bpm, ppq and playing.
 
 Engine contract:
   buffer~ #0-glitchslots @samps 9472  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
                                       sequencer block at seqOffset (mode header, pack version, 16 steps) + the layout constants block (meta, defaults,
                                       wet indices, minimums, maximums; see src/glitch_config.js).
   buffer~ #0-glitchscope @samps 640   gen -> UI telemetry (layout GL_SCOPE in src/glitch_config.js).
-  loadbang binds both buffers in gen (`slots ..., scope ...`) and in the v8ui (`setbuffer ...`).
+  buffer~ #0-glitchctl @samps 40960   head -> module stages: a ring of 256 control ticks, each the 160 smoothed module params (glitchCtlLayout()).
+  loadbang sends the buffer bindings through the hubs (head: slots, scope, ctl; module stages: scope, ctl; tail: scope) and to the v8ui (`setbuffer ...`).
   plugsync~ feeds the gen Params `bpm`, `ppq` and `playing` (outlet 0, the transport state: the sequencer clock holds while 0). Mix -> Param `wet` (0..1), Output -> Param `outdb` (dB).
   The v8ui keeps the whole state in the blob parameter GlitchStateData ([version, json]).
 Live parameters (src/glitch_config.js GL_PARAMS, real live.* objects, NOT in presentation): Morph X / Y, Chaos, Mix, Output,
@@ -132,14 +142,14 @@ def param_box(key, spec, x, y):
 
 
 # ----------------------------------------------------------------------------- UI + parameters
-def ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview):
+def ui_boxes(layout, width, stages_js, preview):
     with open(gc.CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
     script = (
         config_js
-        + f"\nvar GEN_DSP_TEXT = {json.dumps(gen_dsp_text)};\nvar GEN_DSP_HASH = \"{gen_dsp_hash}\";\n"
+        + f"\nvar GEN_STAGES = {stages_js[0]};\nvar GEN_SHELLS = {stages_js[1]};\n"
         + f"var UI_PREVIEW = {json.dumps(preview)};\n"
         + ui_js
     )
@@ -208,26 +218,41 @@ def ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview):
                 lines.append(line(ctrl, 0, f"obj-scale-{key}"))
                 src = f"obj-scale-{key}"
             boxes.append(newobj(f"obj-prep-{key}", f"prepend {spec['gen']}", 20 + i * 70, 750, 90))
-            lines += [line(src, 0, f"obj-prep-{key}"), line(f"obj-prep-{key}", 0, "obj-gen-in", 1)]
+            # Mix / Output are Params of the tail stage only
+            hub = "obj-gen-tail-in"
+            lines += [line(src, 0, f"obj-prep-{key}"), line(f"obj-prep-{key}", 0, hub, 1)]
     return boxes, lines
 
 
 # ----------------------------------------------------------------------------- engine (everything except the gen~)
 def engine_boxes(layout):
-    """plugin~ -> selectors -> plugout~, the gen hub, the two buffers, their bindings and the transport."""
+    """The static part of the signal graph (AGENTS.md 1d): plugin~ -> selector~ per module stage (input 1 = the signal before it) -> ... ->
+    delay~ 1023 -> selector~ (the spectral stand-in) -> ... (the v8ui wires the tail from the last selector) -> selector~ gl_selL / gl_selR (dry
+    until the chain is up) -> plugout~, the gen hubs, the buffers, their bindings and the transport. The gen~ stages themselves are created by
+    the v8ui right after load as tiny file-backed SHELLS (same ports, Params and Buffers, no work; identical shells share one compile) and wired
+    completely at that moment: after that no object or cord is ever added or removed, because adding a gen~ to a running device silences all of
+    it for as long as that gen~ takes to compile (measured in Live: 0.1 - 0.7 s). The real code of a stage is hot-loaded into its shell with
+    `setattr gen` when a glitch needs it (audio loss 2 - 13 ms measured). Embedding the shells in the device instead costs ~0.8 s of device
+    load for 26 of them (each embedded patcher compiles on its own). Three hubs (`gate 1 1`, never `t a`) carry the gen-bound messages:
+    gl_genhead (binding, bpm, ppq, playing), gl_genmod (binding, bpm) and gl_gentail (binding, Mix, Output)."""
+    ctl_samps = layout["ctl"]["samps"]
     boxes = [
         newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="gl_plugin"),
         newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="gl_plugout"),
-        # dry until the gen runs (input 1), the gen's output afterwards (input 2): the v8ui sends dsp_on 2
+        # dry until the chain runs (input 1), the tail's output afterwards (input 2): the v8ui sends dsp_on 2
         newobj("obj-selL", "selector~ 2 1", 20, 340, 80, numinlets=3, numoutlets=1, outlettype=["signal"], varname="gl_selL"),
         newobj("obj-selR", "selector~ 2 1", 120, 340, 80, numinlets=3, numoutlets=1, outlettype=["signal"], varname="gl_selR"),
-        # the gen~ is created by the v8ui after load; every gen-bound message goes through this open gate
-        newobj("obj-gen-in", "gate 1 1", 240, 300, 60, numinlets=2, numoutlets=1, varname="gl_genin"),
+        newobj("obj-gen-in-head", "gate 1 1", 240, 300, 60, numinlets=2, numoutlets=1, varname="gl_genhead"),
+        newobj("obj-gen-in-mod", "gate 1 1", 320, 300, 60, numinlets=2, numoutlets=1, varname="gl_genmod"),
+        newobj("obj-gen-tail-in", "gate 1 1", 400, 300, 60, numinlets=2, numoutlets=1, varname="gl_gentail"),
         newobj("obj-slots-buf", f"buffer~ #0-glitchslots @samps {layout['slotsBufSamps']}", 560, 250, 260, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-scope-buf", f"buffer~ #0-glitchscope @samps {layout['scopeSamps']}", 560, 275, 260, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-loadbang", "loadbang", 560, 305, 60, outlettype=["bang"]),
-        message("obj-msg-ui-buf", "setbuffer #0-glitchslots #0-glitchscope", 560, 335, 260),
-        message("obj-msg-gen-buf", "slots #0-glitchslots, scope #0-glitchscope", 560, 365, 260),
+        newobj("obj-ctl-buf", f"buffer~ #0-glitchctl @samps {ctl_samps}", 560, 300, 260, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-loadbang", "loadbang", 560, 330, 60, outlettype=["bang"]),
+        message("obj-msg-ui-buf", "setbuffer #0-glitchslots #0-glitchscope", 560, 355, 260),
+        message("obj-msg-bind-head", "slots #0-glitchslots, scope #0-glitchscope, ctl #0-glitchctl", 560, 380, 330),
+        message("obj-msg-bind-mod", "scope #0-glitchscope, ctl #0-glitchctl", 560, 405, 330),
+        message("obj-msg-bind-tail", "scope #0-glitchscope", 560, 430, 330),
         newobj("obj-sync", "plugsync~", 740, 40, 80, numoutlets=9, outlettype=["int", "int", "int", "float", "list", "float", "float", "int", "int"]),
         newobj("obj-bpm-chg", "change 0.", 740, 70, 60, numoutlets=3, outlettype=["", "int", "int"]),
         newobj("obj-bpm-hold", "f", 740, 95, 30, numinlets=2, outlettype=["float"]),
@@ -235,59 +260,98 @@ def engine_boxes(layout):
         newobj("obj-ppq-chg", "change -1.", 840, 70, 66, numoutlets=3, outlettype=["", "int", "int"]),
         newobj("obj-ppq-hold", "f", 840, 95, 30, numinlets=2, outlettype=["float"]),
         newobj("obj-ppq-prep", "prepend ppq", 840, 120, 90),
-        # transport state (plugsync~ outlet 0) -> gen Param `playing`: the sequencer clock holds while it is 0
+        # transport state (plugsync~ outlet 0) -> head Param `playing`: the sequencer clock holds while it is 0
         newobj("obj-play-chg", "change 0", 940, 70, 60, numoutlets=3, outlettype=["", "int", "int"]),
         newobj("obj-play-hold", "f", 940, 95, 30, numinlets=2, outlettype=["float"]),
         newobj("obj-play-prep", "prepend playing", 940, 120, 100),
-        # dsp_ready: re-send the buffer binding (first), Mix, Output, bpm and ppq to the freshly created gen
-        newobj("obj-dsp-resend", "t b b b b b b", 380, 400, 100, numoutlets=6, outlettype=["bang"] * 6),
+        # dsp_ready: re-send the three buffer bindings (first), Mix, Output, bpm, ppq and playing to the freshly created gens
+        newobj("obj-dsp-resend", "t b b b b b b b b", 380, 400, 130, numoutlets=8, outlettype=["bang"] * 8),
     ]
     lines = [
-        # until the gen exists the output is the dry input
-        line("obj-plugin", 0, "obj-selL", 1),
-        line("obj-plugin", 1, "obj-selR", 1),
-        line("obj-selL", 0, "obj-plugout", 0),
-        line("obj-selR", 0, "obj-plugout", 1),
         line("obj-route-viz", 3, "obj-selL", 0),
         line("obj-route-viz", 3, "obj-selR", 0),
         line("obj-loadbang", 0, "obj-msg-ui-buf"),
-        line("obj-loadbang", 0, "obj-msg-gen-buf"),
+        line("obj-loadbang", 0, "obj-msg-bind-head"),
+        line("obj-loadbang", 0, "obj-msg-bind-mod"),
+        line("obj-loadbang", 0, "obj-msg-bind-tail"),
         line("obj-msg-ui-buf", 0, "obj-viz"),
-        line("obj-msg-gen-buf", 0, "obj-gen-in", 1),
+        line("obj-msg-bind-head", 0, "obj-gen-in-head", 1),
+        line("obj-msg-bind-mod", 0, "obj-gen-in-mod", 1),
+        line("obj-msg-bind-tail", 0, "obj-gen-tail-in", 1),
         line("obj-sync", 5, "obj-bpm-chg"),
         line("obj-bpm-chg", 0, "obj-bpm-hold"),
         line("obj-bpm-hold", 0, "obj-bpm-prep"),
-        line("obj-bpm-prep", 0, "obj-gen-in", 1),
+        line("obj-bpm-prep", 0, "obj-gen-in-head", 1),
+        line("obj-bpm-prep", 0, "obj-gen-in-mod", 1),
         line("obj-sync", 6, "obj-ppq-chg"),
         line("obj-ppq-chg", 0, "obj-ppq-hold"),
         line("obj-ppq-hold", 0, "obj-ppq-prep"),
-        line("obj-ppq-prep", 0, "obj-gen-in", 1),
+        line("obj-ppq-prep", 0, "obj-gen-in-head", 1),
         line("obj-sync", 0, "obj-play-chg"),
         line("obj-play-chg", 0, "obj-play-hold"),
         line("obj-play-hold", 0, "obj-play-prep"),
-        line("obj-play-prep", 0, "obj-gen-in", 1),
+        line("obj-play-prep", 0, "obj-gen-in-head", 1),
         line("obj-route-viz", 2, "obj-dsp-resend"),
-        line("obj-dsp-resend", 5, "obj-msg-gen-buf"),
+        line("obj-dsp-resend", 7, "obj-msg-bind-head"),
+        line("obj-dsp-resend", 6, "obj-msg-bind-mod"),
+        line("obj-dsp-resend", 5, "obj-msg-bind-tail"),
         line("obj-dsp-resend", 4, "obj-ctrl-mix"),
         line("obj-dsp-resend", 3, "obj-ctrl-out"),
         line("obj-dsp-resend", 2, "obj-bpm-hold"),
         line("obj-dsp-resend", 1, "obj-ppq-hold"),
         line("obj-dsp-resend", 0, "obj-play-hold"),
+        # until a stage exists the signal is the dry input: plugin~ -> the bypass chain -> (the v8ui wires the tail) ; and dry for the output selectors
+        line("obj-plugin", 0, "obj-selL", 1),
+        line("obj-plugin", 1, "obj-selR", 1),
+        line("obj-selL", 0, "obj-plugout", 0),
+        line("obj-selR", 0, "obj-plugout", 1),
     ]
+    # the bypass chain: one selector~ pair per module stage (input 1 = the previous point), delay~ 1023 + selector~ pair for the spectral stage
+    cur = (("obj-plugin", 0), ("obj-plugin", 1))
+    y = 460
+    for st in layout["stages"]:
+        if st["role"] not in ("group", "spec"):
+            continue
+        sid = st["id"]
+        nxt = []
+        for ch, nm in enumerate("LR"):
+            src, src_out = cur[ch]
+            if st["role"] == "spec":
+                dl = f"obj-stand-{nm}"
+                boxes.append(newobj(dl, "delay~ 2048 1023", 20 + 100 * ch, y, 100, numinlets=2, numoutlets=1, outlettype=["signal"]))
+                lines.append(line(src, src_out, dl, 0))
+                src, src_out = dl, 0
+            sel = f"obj-bp-{sid}{nm}"
+            boxes.append(newobj(sel, "selector~ 2 1", 20 + 100 * ch, y + 30, 90, numinlets=3, numoutlets=1, outlettype=["signal"], varname=f"gl_bp{nm}_{sid}"))
+            lines.append(line(src, src_out, sel, 1))
+            nxt.append((sel, 0))
+        cur = (nxt[0], nxt[1])
+        y += 70
     return boxes, lines
 
 
 PREVIEWS = ("editor", "seq", "options", "many", "many2", "motion", "new", "specedit", "options2")
 
 
+def stages_js(layout):
+    """GEN_STAGES: one entry per gen~ stage with its real .gendsp JSON text and a content hash (the file name in /tmp), and GEN_SHELLS: the
+    placeholder gendsp per distinct (role, inlets, outlets), used to put a stage back to its shell (dsp_retry, tests)."""
+    out = []
+    shells = {}
+    for st in gc.stage_sources(layout):
+        text = gc.gendsp_json(st["code"], len(st["ins"]), len(st["outs"]))
+        key = f"{st['role']}_{len(st['ins'])}_{len(st['outs'])}"
+        shells.setdefault(key, gc.gendsp_json(st["shell"], len(st["ins"]), len(st["outs"])))
+        out.append({"id": st["id"], "index": st["index"], "role": st["role"], "side": st["side"], "ins": st["ins"], "outs": st["outs"],
+                    "hash": hashlib.sha1(text.encode("utf-8")).hexdigest()[:12], "text": text, "shellKey": key})
+    return json.dumps(out), json.dumps(shells)
+
+
 def build_patcher(preview=""):
     layout = gc.load_layout()
     face = layout["faces"][preview] if preview else layout["face"]
     width = int(face["width"])
-    gen_code = gc.gen_source(layout)
-    gen_dsp_text = gc.gendsp_json(gen_code)
-    gen_dsp_hash = hashlib.sha1(gen_dsp_text.encode("utf-8")).hexdigest()[:12]
-    ui_b, ui_l = ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview)
+    ui_b, ui_l = ui_boxes(layout, width, stages_js(layout), preview)
     eng_b, eng_l = engine_boxes(layout)
     boxes = ui_b + eng_b
     return {

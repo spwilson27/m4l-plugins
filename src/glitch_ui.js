@@ -4,7 +4,7 @@
 // and is dropped when it is a stale echo of something the face sent (expectEcho / isStaleEcho).
 //
 // scripts/build_glitch.py prepends src/glitch_config.js (data model + layout, see its header) and injects
-// GEN_DSP_TEXT / GEN_DSP_HASH (the gen patch as .gendsp JSON, AGENTS.md 1d: deferred DSP) and UI_PREVIEW.
+// GEN_STAGES (one entry per gen~ stage with its .gendsp JSON text and hash, AGENTS.md 1d: deferred, staged DSP) and UI_PREVIEW.
 //
 // Sections (collapse / expand, device width follows through live.thisdevice setwidth): CORE (morph pad, glitch view with
 // module tiles, action bar; the Options view replaces it), EDIT (module editor), SLOTS (8 slots), SEQ (16-step slot
@@ -87,7 +87,7 @@ function trace(event, detail) {
         var gl = new Global("glitch_trace");
         var lines = String(gl.text || "").split("\n").filter(function (l) { return l.length > 0; });
         lines.push("+" + (Date.now() - traceT0) + "ms " + event + " " + (detail === undefined ? "" : String(detail)));
-        gl.text = lines.slice(-40).join("\n");
+        gl.text = lines.slice(-160).join("\n");
     } catch (_) {}
 }
 var traceT0 = Date.now();
@@ -105,6 +105,7 @@ function pushEngine() {
     gModelDirty = true;
     if (!gSlotsBuf) return;
     gSlotsBuf.poke(1, 0, packEngineBuffer(gState));
+    if (dspCreatedAt) maybeLoadStages();
 }
 function refreshModel() {
     if (!gModelDirty && gVec) return;
@@ -401,127 +402,339 @@ function setvalueof() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Deferred DSP (AGENTS.md 1d): the device ships without its gen~. After device_ready + one Task tick the face writes the
-// embedded gen patch to /tmp/glitch_core_<hash>.gendsp, creates `gen~ @gen <file>` and wires the gl_genin hub, plugin~ and
-// the two output selectors. The gen keeps compiling after creation and drops messages, so dsp_ready is re-sent every 150 ms
-// until its frame counter (scope slot 0) moves; then the selectors switch from the dry path to the gen.
+// Deferred, STAGED, LAZY DSP (AGENTS.md 1d). The engine is several gen~ stages (GEN_STAGES, from src/glitch_config.js glitchStages()): the
+// head (the one control engine), the tail (Mix, limiter) and one stage per chain module (the STFT is the spectral stage). Gen compiles every
+// function definition it contains, and a gen costs about what its code costs, so only the stages a glitch NEEDS are compiled
+// (glitchNeededStages: a sounding slot has the module on).
+// Right after load (before anything is audible) the face creates every stage's gen~ as a tiny file-backed SHELL (same ports, Params, Buffers,
+// no work; identical shells share one compile, embedding them in the device costs 0.8 s of load) and wires the whole graph. From then on the
+// graph is STATIC: the selector~ chain (gl_bp<L|R>_<id>; the spectral stand-in is delay~ 1023) bypasses a module until its code runs. Adding a
+// gen~ or a cord to a running device silences the whole device for as long as the new gen~ takes to compile (0.1 - 0.7 s, measured in Live),
+// but replacing a gen~'s code with `setattr gen` does not (2 - 13 ms): so the code is hot-loaded, one stage per Task tick (the main thread is
+// busy for the compile: 0.1 - 1.3 s per stage, the GUI repaints in between). A gen keeps starting after its code arrived and drops messages, so
+// dsp_ready (bindings, Mix, Output, bpm, ppq, playing) is sent right after each load and re-sent every 60 ms until each stage's own frame
+// counter (scope STAGE_FRAME + index) moves. A module stage that runs is switched in without a click: its selector~ moves to it while its Param
+// `go` is 0 (its wets are 0, so it passes the input), then `go 1` ramps the wets in. The chain (output off the dry path) goes on as soon as the
+// head and the tail run; the modules join as they compile. A stage a LATER glitch needs (Randomize, a slot, a morph corner, a sequencer step)
+// is loaded when the engine buffer is pushed and joins the same way; its module is bypassed for the ~0.1 - 1.5 s that takes. dsp_retry puts
+// the shells back (tests).
 // ---------------------------------------------------------------------------------------------------------------
 var dspReady = 0;
 var dspError = "";
 var dspCreatedAt = 0;
-var dspCounter0 = -1;
 var dspTask = null;
 var dspConfirmTask = null;
+var dspPumpTask = null;
 var dspSettleTask = null;
 var DSP_SETTLE_MS = 300;
-var DSP_CONFIRM_MS = 150;
-var DSP_TIMEOUT_MS = 12000;
+var DSP_CONFIRM_MS = 60;
+var DSP_TIMEOUT_MS = 20000;
+var STAGE_PRIME_MS = 120; // after a module stage runs: its first vectors are over, the binding is resent, then it is switched in
+var SPEC_PRIME_MS = 250; // the spectral stage: its 1023-sample delay is long primed
+var STAGE_TIMEOUT_MS = 20000;
+var dspStages = {}; // id -> { loadedAt, loadMs, cnt0, running, runAt, on, onAt, failed }
+var dspQueue = []; // ids waiting for their code
 
-function dspFilePath() { return "/tmp/glitch_core_" + GEN_DSP_HASH + ".gendsp"; }
-function writeDspFile(path) {
+function stageList() { return typeof GEN_STAGES !== "undefined" ? GEN_STAGES : []; }
+function stageById(id) { var l = stageList(); for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i]; return null; }
+function stageFilePath(st) { return "/tmp/glitch_" + st.id + "_" + st.hash + ".gendsp"; }
+function shellFilePath(st) { return "/tmp/glitch_shell_" + st.shellKey + ".gendsp"; }
+function writeDspFile(path, text) {
     try {
         var rf = new File(path, "read");
-        var have = rf.isopen && rf.eof === GEN_DSP_TEXT.length;
+        var have = rf.isopen && rf.eof === text.length;
         rf.close();
         if (have) return true;
     } catch (_) {}
     var f = new File(path, "write", "TEXT");
     if (!f.isopen) return false;
     f.eof = 0;
-    for (var i = 0; i < GEN_DSP_TEXT.length; i += 16384) f.writestring(GEN_DSP_TEXT.substring(i, i + 16384));
+    for (var i = 0; i < text.length; i += 16384) f.writestring(text.substring(i, i + 16384));
     f.close();
     return true;
 }
-function scopeFrameCounter() {
+function scopeAt(slot) {
     if (!gScopeName || typeof Buffer === "undefined") return -1;
     try {
-        var v = new Buffer(gScopeName).peek(1, GL_SCOPE.FRAME, 1);
+        var v = new Buffer(gScopeName).peek(1, slot, 1);
         return (typeof v === "number") ? v : (v && v.length ? v[0] : -1);
     } catch (_) { return -1; }
 }
-function loadDsp() {
-    if (dspReady || dspCreatedAt || typeof GEN_DSP_TEXT === "undefined" || !hostPatcher) return;
-    trace("dsp-start", "creating gen~");
-    try {
-        var g = hostPatcher.getnamed("obj-gen");
-        if (!g) {
-            var path = dspFilePath();
-            if (!writeDspFile(path)) throw new Error("no file");
-            g = hostPatcher.newdefault(30, 435, "gen~", "@gen", path);
-            if (!g) throw new Error("no gen~");
-            g.varname = "obj-gen";
-            var hub = hostPatcher.getnamed("gl_genin");
-            var pin = hostPatcher.getnamed("gl_plugin");
-            var selL = hostPatcher.getnamed("gl_selL");
-            var selR = hostPatcher.getnamed("gl_selR");
-            if (hub) hostPatcher.connect(hub, 0, g, 0);
-            if (pin) { hostPatcher.connect(pin, 0, g, 0); hostPatcher.connect(pin, 1, g, 1); }
-            if (selL) hostPatcher.connect(g, 0, selL, 2);
-            if (selR) hostPatcher.connect(g, 1, selR, 2);
+function scopeFrameCounter() { return scopeAt(GL_SCOPE.FRAME); }
+function stageCounter(st) { return scopeAt(GL_SCOPE.STAGE_FRAME + st.index); }
+function stageObj(id) { return hostPatcher ? hostPatcher.getnamed("obj-gen-" + id) : null; }
+function patchNamed(n) { return hostPatcher ? hostPatcher.getnamed(n) : null; }
+function stageNeedsGo(st) { return st.role === "group" || st.role === "spec"; }
+
+function conn(src, so, dst, di) { if (src && dst) hostPatcher.connect(src, so, dst, di); }
+/** The chain element before a module stage (null = plugin~): the previous module stage / the spectral stand-in selector. */
+function prevElement(st) {
+    var l = stageList(), prev = null;
+    for (var i = 0; i < l.length; i++) {
+        if (l[i].id === st.id) return prev;
+        if (l[i].role === "group" || l[i].role === "spec") prev = l[i];
+    }
+    return prev;
+}
+function lastElement() {
+    var l = stageList(), prev = null;
+    for (var i = 0; i < l.length; i++) if (l[i].role === "group" || l[i].role === "spec") prev = l[i];
+    return prev;
+}
+/** The signal after an element: its bypass selector~ (input 1 = the previous point, input 2 = the gen~), or plugin~ for the start. */
+function elemOut(el, ch) { return el ? [patchNamed("gl_bp" + (ch ? "R" : "L") + "_" + el.id), 0] : [patchNamed("gl_plugin"), ch]; }
+var graphBuilt = false;
+/** Create every stage's gen~ as a shell and wire the whole graph (once, before anything is audible; the hubs, selectors and plugin~ are static). */
+function buildGraph() {
+    if (graphBuilt || !hostPatcher) return;
+    var l = stageList();
+    var head = null;
+    // the objects first, then the cords
+    for (var i = 0; i < l.length; i++) {
+        var st = l[i];
+        var sp = shellFilePath(st);
+        if (!writeDspFile(sp, GEN_SHELLS[st.shellKey])) throw new Error("no shell file for stage " + st.id);
+        var g = stageObj(st.id) || hostPatcher.newdefault(900 + 6 * st.index, 40 + 24 * (st.index % 20), "gen~", "@gen", sp);
+        if (!g) throw new Error("no gen~ for stage " + st.id);
+        g.varname = "obj-gen-" + st.id;
+    }
+    head = stageObj("h");
+    for (var j = 0; j < l.length; j++) {
+        var s2 = l[j], g2 = stageObj(s2.id);
+        var ix = function (name) { return s2.ins.indexOf(name); };
+        if (s2.role === "head") {
+            conn(patchNamed("gl_genhead"), 0, g2, 0);
+            var pl = patchNamed("gl_plugin");
+            conn(pl, 0, g2, ix("L")); conn(pl, 1, g2, ix("R"));
+        } else if (s2.role === "tail") {
+            conn(patchNamed("gl_gentail"), 0, g2, 0);
+            var last = lastElement();
+            for (var c = 0; c < 2; c++) { var o = elemOut(last, c); conn(o[0], o[1], g2, ix(c ? "R" : "L")); }
+            conn(patchNamed("gl_plugin"), 0, g2, ix("dryL")); conn(patchNamed("gl_plugin"), 1, g2, ix("dryR"));
+            conn(g2, 0, patchNamed("gl_selL"), 2); conn(g2, 1, patchNamed("gl_selR"), 2);
+        } else {
+            conn(patchNamed("gl_genmod"), 0, g2, 0);
+            var prev = prevElement(s2);
+            for (var c2 = 0; c2 < 2; c2++) { var po = elemOut(prev, c2); conn(po[0], po[1], g2, ix(c2 ? "R" : "L")); }
+            var names = ["tk", "bi", "bf", "quiet"];
+            for (var q = 0; q < names.length; q++) if (ix(names[q]) >= 0) conn(head, stageById("h").outs.indexOf(names[q]), g2, ix(names[q]));
+            conn(g2, 0, patchNamed("gl_bpL_" + s2.id), 2); conn(g2, 1, patchNamed("gl_bpR_" + s2.id), 2);
         }
-        dspCreatedAt = Date.now();
-        dspCounter0 = scopeFrameCounter();
-        dspConfirm();
-    } catch (err) {
+    }
+    graphBuilt = true;
+    trace("graph", l.length + " shells created and wired");
+}
+/** Hot-load one stage's real code into its shell gen~ (the main thread is busy for the compile; audio keeps running). */
+function loadStageCode(st) {
+    var g = stageObj(st.id);
+    if (!g) throw new Error("no gen~ shell for stage " + st.id);
+    var path = stageFilePath(st);
+    if (!writeDspFile(path, st.text)) throw new Error("no file for stage " + st.id);
+    var t0 = Date.now();
+    g.setattr("gen", path);
+    dspStages[st.id] = { loadedAt: Date.now(), loadMs: Date.now() - t0, cnt0: stageCounter(st), running: false, runAt: 0, on: false, onAt: 0, failed: false };
+    trace("stage-load", st.id + " " + (Date.now() - t0) + "ms");
+}
+function queueStage(id) {
+    if (dspStages[id] || dspQueue.indexOf(id) >= 0) return;
+    dspQueue.push(id);
+}
+/** One stage per tick: the GUI repaints and the progress pill moves between the (blocking) compiles. */
+function pumpLoads() {
+    if (!dspQueue.length) return;
+    // the head and the tail first, and the chain goes on before any module is compiled (each compile keeps the main thread busy)
+    if (!dspReady && dspQueue[0] !== "h" && dspQueue[0] !== "t") { scheduleConfirm(); return; }
+    var id = dspQueue.shift();
+    try { loadStageCode(stageById(id)); }
+    catch (err) {
+        dspStages[id] = { loadedAt: Date.now(), loadMs: 0, cnt0: -1, running: false, runAt: 0, on: false, onAt: 0, failed: true };
+        trace("stage-error", id + " " + String(err && err.message ? err.message : err));
+        if ((id === "h" || id === "t") && !dspReady) dspError = "stage " + id + ": " + String(err && err.message ? err.message : err);
+    }
+    // the new gen~ has no bindings yet: send them at once (bindings, Mix, Output, bpm, ppq, playing) instead of at the next confirm tick
+    outlet(0, "dsp_ready", "bang");
+    mgraphics.redraw();
+    scheduleConfirm();
+    if (dspQueue.length && typeof Task !== "undefined") {
+        if (!dspPumpTask) dspPumpTask = new Task(pumpLoads);
+        dspPumpTask.schedule(5);
+    }
+}
+function loadDsp() {
+    if (dspReady || dspCreatedAt || stageList().length === 0 || !hostPatcher) return;
+    try { buildGraph(); }
+    catch (err) {
         dspError = String(err && err.message ? err.message : err);
         trace("dsp-error", dspError);
-        if (typeof post === "function") post("Glitch: DSP load failed: " + dspError + "\n");
+        mgraphics.redraw();
+        return;
     }
-    mgraphics.redraw();
+    trace("dsp-start", "loading stage code");
+    dspCreatedAt = Date.now();
+    dspQueue = [];
+    queueStage("h");
+    queueStage("t");
+    var need = glitchNeededStages(gState);
+    var l = stageList();
+    for (var i = 0; i < l.length; i++) if (need.indexOf(l[i].id) >= 0) queueStage(l[i].id);
+    pumpLoads();
 }
-function dspConfirm() {
-    var c = scopeFrameCounter();
-    if (dspCounter0 >= 0 && c >= 0 && c !== dspCounter0) {
-        dspReady = 1;
-        dspError = "";
-        trace("dsp", "ready after " + (Date.now() - dspCreatedAt) + " ms");
-        outlet(0, "dsp_ready", "bang");
-        pushEngine();
-        outlet(0, "dsp_on", 2);
-        if (typeof Task !== "undefined") {
-            if (!dspSettleTask) dspSettleTask = new Task(function () { outlet(0, "dsp_ready", "bang"); pushEngine(); });
-            dspSettleTask.schedule(DSP_SETTLE_MS);
-        }
-        mgraphics.redraw();
-        return;
+/** Queue the stages a glitch that can sound needs and that have no code yet (never unloaded once loaded). */
+function maybeLoadStages() {
+    if (!dspCreatedAt || !hostPatcher || stageList().length === 0) return;
+    var l = stageList();
+    var missing = false;
+    for (var m = 0; m < l.length; m++) if (!dspStages[l[m].id]) { missing = true; break; }
+    if (!missing) return; // every stage has its code: nothing to decide (the vectors are not rebuilt on every edit)
+    var need = glitchNeededStages(gState);
+    var queued = false;
+    for (var i = 0; i < l.length; i++) if (need.indexOf(l[i].id) >= 0 && !dspStages[l[i].id] && dspQueue.indexOf(l[i].id) < 0) { dspQueue.push(l[i].id); trace("stage-lazy", l[i].id); queued = true; }
+    if (queued) {
+        if (typeof Task === "undefined") { while (dspQueue.length) pumpLoads(); return; }
+        if (!dspPumpTask) dspPumpTask = new Task(pumpLoads);
+        dspPumpTask.schedule(1);
     }
-    if (Date.now() - dspCreatedAt > DSP_TIMEOUT_MS) {
-        dspError = "not running (counter " + dspCounter0 + "/" + scopeFrameCounter() + ")";
-        trace("dsp-error", dspError);
-        mgraphics.redraw();
-        return;
-    }
-    outlet(0, "dsp_ready", "bang");
-    pushEngine();
-    if (dspCounter0 < 0) dspCounter0 = c;
+}
+function scheduleConfirm() {
     if (typeof Task === "undefined") return;
     if (!dspConfirmTask) dspConfirmTask = new Task(dspConfirm);
     dspConfirmTask.schedule(DSP_CONFIRM_MS);
 }
+function switchInStage(st) {
+    // 1. the selector~ moves to the gen~ while go = 0 (its modules are off: it passes the input, sample for sample), 2. go 1 ramps them in
+    var g = stageObj(st.id);
+    var sl = patchNamed("gl_bpL_" + st.id), sr2 = patchNamed("gl_bpR_" + st.id);
+    if (sl) sl.message("int", 2);
+    if (sr2) sr2.message("int", 2);
+    if (g) g.message("go", 1);
+}
+/** How many of the stages queued at load run (the chain goes on as soon as the head and the tail do: the modules join as they compile). */
+function initialPending() {
+    var h = dspStages.h, t = dspStages.t;
+    var n = 0, m = 0;
+    for (var id in dspStages) { m++; if (dspStages[id].running) n++; }
+    return { done: n, total: m, core: !!(h && h.running && t && t.running) };
+}
+function dspConfirm() {
+    var now = Date.now();
+    var l = stageList();
+    var pending = dspQueue.length > 0;
+    for (var i = 0; i < l.length; i++) {
+        var st = l[i], rt = dspStages[st.id];
+        if (!rt || rt.failed) continue;
+        if (!rt.running) {
+            var c = stageCounter(st);
+            if (rt.cnt0 < 0 && c >= 0) rt.cnt0 = c;
+            if (rt.cnt0 >= 0 && c >= 0 && c !== rt.cnt0) { rt.running = true; rt.runAt = now; trace("stage-run", st.id + " +" + (now - rt.loadedAt) + "ms"); }
+            else if (now - rt.loadedAt > STAGE_TIMEOUT_MS) {
+                rt.failed = true; trace("stage-error", st.id + " not running");
+                if ((st.id === "h" || st.id === "t") && !dspReady) dspError = "stage " + st.id + " not running";
+                mgraphics.redraw();
+            } else pending = true;
+        }
+        if (rt.running && stageNeedsGo(st) && !rt.on) {
+            var head = dspStages.h, tailR = dspStages.t;
+            var prime = st.role === "spec" ? SPEC_PRIME_MS : STAGE_PRIME_MS;
+            if (head && head.running && tailR && tailR.running && now - rt.runAt >= prime) {
+                switchInStage(st); rt.on = true; rt.onAt = now; trace("stage-on", st.id + " +" + (now - rt.loadedAt) + "ms");
+                mgraphics.redraw();
+            } else pending = true;
+        }
+        if (rt.on && now - rt.onAt < 600) { var g2 = stageObj(st.id); if (g2) g2.message("go", 1); pending = true; }
+    }
+    if (!dspReady && dspCreatedAt) {
+        var ip = initialPending();
+        if (ip.core) {
+            dspReady = 1;
+            dspError = "";
+            trace("dsp", "ready after " + (now - dspCreatedAt) + " ms");
+            if (dspQueue.length && typeof Task !== "undefined") { if (!dspPumpTask) dspPumpTask = new Task(pumpLoads); dspPumpTask.schedule(1); }
+            outlet(0, "dsp_ready", "bang");
+            pushEngine();
+            outlet(0, "dsp_on", 2);
+            if (typeof Task !== "undefined") {
+                if (!dspSettleTask) dspSettleTask = new Task(function () { outlet(0, "dsp_ready", "bang"); pushEngine(); });
+                dspSettleTask.schedule(DSP_SETTLE_MS);
+            }
+            mgraphics.redraw();
+        } else if (dspError !== "" || now - dspCreatedAt > DSP_TIMEOUT_MS) {
+            if (dspError === "") dspError = "not running (" + ip.done + "/" + ip.total + ")";
+            trace("dsp-error", dspError);
+            mgraphics.redraw();
+            return;
+        } else { pending = true; mgraphics.redraw(); }
+    }
+    if (pending) {
+        outlet(0, "dsp_ready", "bang");
+        pushEngine();
+        scheduleConfirm();
+    }
+}
+/** id -> "none" | "loading" | "running" | "on" | "failed" for every stage (the Live test reads it). */
+function stageStates() {
+    var out = {}, l = stageList();
+    for (var i = 0; i < l.length; i++) {
+        var rt = dspStages[l[i].id];
+        out[l[i].id] = !rt ? (dspQueue.indexOf(l[i].id) >= 0 ? "loading" : "none") : (rt.failed ? "failed" : (rt.on ? "on" : (rt.running ? (stageNeedsGo(l[i]) ? "running" : "on") : "loading")));
+    }
+    return out;
+}
+function stagesFailed() {
+    var out = [], l = stageList();
+    for (var i = 0; i < l.length; i++) { var rt = dspStages[l[i].id]; if (rt && rt.failed && dspReady) out.push(l[i].id); }
+    return out;
+}
 function dsp_retry() {
-    try { var g = hostPatcher ? hostPatcher.getnamed("obj-gen") : null; if (g) hostPatcher.remove(g); } catch (_) {}
-    dspReady = 0; dspError = ""; dspCreatedAt = 0; dspCounter0 = -1;
+    // back to the shells (tests): every stage that has code gets its placeholder again, the selectors go back to the bypass, the output to dry
+    try {
+        var l = stageList();
+        for (var i = 0; i < l.length; i++) {
+            var g = stageObj(l[i].id);
+            if (g && dspStages[l[i].id]) { var sp = shellFilePath(l[i]); writeDspFile(sp, GEN_SHELLS[l[i].shellKey]); g.setattr("gen", sp); }
+            var a = patchNamed("gl_bpL_" + l[i].id), b = patchNamed("gl_bpR_" + l[i].id);
+            if (a) a.message("int", 1);
+            if (b) b.message("int", 1);
+        }
+    } catch (_) {}
+    dspReady = 0; dspError = ""; dspCreatedAt = 0; dspStages = {}; dspQueue = [];
+    outlet(0, "dsp_on", 1);
     loadDsp();
 }
 function dsp_diag() {
-    var info = ["ready=" + dspReady, "err=" + dspError, "createdAt=" + dspCreatedAt, "counter=" + scopeFrameCounter(), "scope=" + gScopeName];
+    var info = ["ready=" + dspReady, "err=" + dspError, "startedAt=" + dspCreatedAt, "counter=" + scopeFrameCounter(), "scope=" + gScopeName, "queue=" + dspQueue.join("")];
     try {
-        var g = hostPatcher ? hostPatcher.getnamed("obj-gen") : null;
-        info.push("gen=" + (g ? g.maxclass : "none"));
-        if (g) {
-            try { info.push("genattr=" + String(g.getattr("gen"))); } catch (e1) { info.push("genattrErr=" + e1); }
-            try { var pc = g.patchcords; info.push("cordsIn=" + (pc && pc.inputs ? pc.inputs.length : "?") + " cordsOut=" + (pc && pc.outputs ? pc.outputs.length : "?")); } catch (e2) { info.push("cordsErr=" + e2); }
+        var l = stageList();
+        for (var i = 0; i < l.length; i++) {
+            var g = stageObj(l[i].id);
+            var rt = dspStages[l[i].id];
+            var one = "stage " + l[i].id + ":" + (g ? g.maxclass : "none") + ":" + (rt ? "code" : "shell") + " cnt=" + stageCounter(l[i]) + " run=" + (rt && rt.running ? 1 : 0) + " on=" + (rt && rt.on ? 1 : 0);
+            if (g) {
+                try { var pc = g.patchcords; one += " in=" + (pc && pc.inputs ? pc.inputs.length : "?") + " out=" + (pc && pc.outputs ? pc.outputs.length : "?"); } catch (e2) { one += " cordsErr"; }
+            }
+            info.push(one);
         }
-        info.push("hub=" + (hostPatcher && hostPatcher.getnamed("gl_genin") ? 1 : 0) + " sel=" + (hostPatcher && hostPatcher.getnamed("gl_selL") ? 1 : 0));
+        info.push("hubs=" + (patchNamed("gl_genhead") ? 1 : 0) + (patchNamed("gl_genmod") ? 1 : 0) + (patchNamed("gl_gentail") ? 1 : 0) + " sel=" + (patchNamed("gl_selL") ? 1 : 0) + " sp=" + (patchNamed("gl_bpL_spec") ? 1 : 0));
     } catch (e) { info.push("diagErr=" + e); }
-    trace("dsp-diag", info.join(" "));
+    trace("dsp-diag", info.join(" | "));
+}
+/** Test hook: how much audio time the tail lost in the next `ms` ms (its tick counter against the wall clock; 1500 ticks per second at 48 kHz). */
+function test_watch(ms) {
+    var tl = stageById("t");
+    var c0 = stageCounter(tl), t0 = Date.now();
+    var last = [0, c0];
+    var tk = new Task(function () {
+        last = [Date.now() - t0, stageCounter(tl)];
+        if (last[0] < Number(ms)) { tk.schedule(2); return; }
+        trace("watch", "audio time lost " + Math.round(last[0] - (last[1] - c0) / 1.5) + " ms in " + last[0] + " ms");
+    });
+    tk.schedule(2);
 }
 function device_ready() {
     gReady = 1;
     syncParamsOut();
     applyLayout();
     pushEngine();
-    if (!dspReady && typeof Task !== "undefined" && typeof GEN_DSP_TEXT !== "undefined") {
+    if (!dspReady && typeof Task !== "undefined" && stageList().length > 0) {
         if (!dspTask) dspTask = new Task(loadDsp);
         dspTask.schedule(30);
     }
@@ -705,12 +918,26 @@ function paintHeader(L) {
     chip(L.toggles.seq, L.ui.seq ? "SEQ <" : "SEQ >", !!L.ui.seq, SEQ_COL);
     var h = L.hint;
     var cy = h.y + h.h / 2;
-    if (typeof GEN_DSP_TEXT !== "undefined" && !dspReady && !gDemo) {
-        var failed = dspError !== "";
-        var txt = failed ? "DSP failed: " + dspError : "DSP loading…";
-        var pw = Math.min(h.w, tw(txt, 8) + 14);
-        rrect(h.x + h.w - pw, cy - 7, pw, 14, 7, failed ? [0.55, 0.12, 0.14] : [0.45, 0.28, 0.06], 1);
-        label(fit(txt, pw - 8, 8), h.x + h.w - pw / 2, cy + 3, 8, failed ? [1, 0.82, 0.82] : [1, 0.86, 0.55], 1, 1);
+    var pill = null;
+    if (stageList().length > 0 && !gDemo) {
+        var made = 0, runN = 0, onN = 0, hasSpec = false;
+        var sts = stageStates();
+        for (var pi = 0; pi < stageList().length; pi++) {
+            var pst = stageList()[pi], stt = sts[pst.id];
+            if (stt === "none" || stt === "failed") continue;
+            made++;
+            if (stt === "on" || stt === "running") runN++;
+            if (stt === "on") onN++;
+            if (pst.role === "spec" && stt !== "on") hasSpec = true;
+        }
+        if (!dspReady) pill = dspError !== "" ? { txt: "DSP failed: " + dspError, bad: true } : { txt: "DSP loading… " + runN + "/" + (dspCreatedAt ? made : "?"), bad: false };
+        else if (stagesFailed().length) pill = { txt: "DSP failed: stage " + stagesFailed().join(","), bad: true };
+        else if (onN < made) pill = { txt: (hasSpec ? "SPECTRAL " : "MODULES ") + onN + "/" + made + " loading…", bad: false };
+    }
+    if (pill) {
+        var pw = Math.min(h.w, tw(pill.txt, 8) + 14);
+        rrect(h.x + h.w - pw, cy - 7, pw, 14, 7, pill.bad ? [0.55, 0.12, 0.14] : [0.45, 0.28, 0.06], 1);
+        label(fit(pill.txt, pw - 8, 8), h.x + h.w - pw / 2, cy + 3, 8, pill.bad ? [1, 0.82, 0.82] : [1, 0.86, 0.55], 1, 1);
         return;
     }
     var text = gHint;
@@ -2461,7 +2688,7 @@ function test_click(x, y) { onclick(Number(x), Number(y), 1, 0, 0, 0, 0); ondrag
 function test_report() {
     refreshModel();
     var rep = {
-        ready: dspReady, err: dspError, counter: scopeFrameCounter(), haveTele: gHaveTele, audition: gState.audition, seq: gState.seq, xy: gState.xy, chaos: gState.chaos,
+        ready: dspReady, err: dspError, stages: stageStates(), stagesRunning: Object.keys(dspStages).filter(function (k) { return dspStages[k].running; }), counter: scopeFrameCounter(), haveTele: gHaveTele, audition: gState.audition, seq: gState.seq, xy: gState.xy, chaos: gState.chaos,
         tiles: gTiles.map(function (t) { return t.key; }), slotsFilled: gState.slots.map(function (s) { return s ? 1 : 0; }), corners: gState.corners,
         ui: gState.ui, width: gLayout.width, seed: gState.seed, allow: gState.allow, locks: gState.working.locks || {}, parts: gParamVals,
     };
@@ -2513,6 +2740,46 @@ function test_p4(kind) {
         var keys = ["gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"];
         for (var i = 0; i < keys.length; i++) { glitchSetValue(g, keys[i], "wet", 1); glitchSetValue(g, keys[i], glitchTileInfo(keys[i]).sub, 0.55); }
     }
+    gState.working = g;
+    gState.audition = "working";
+    sendParam("mode", 0);
+    modelChanged();
+    done();
+}
+function test_spec(kind) {
+    // "quiet": the Spectral module on with a transparent Smear (identity within -76 dB, like the harness case spec_latency): the lazy spectral
+    // gen~ is needed, but the sound must not change. "off": the working glitch without any spectral module.
+    var g = defaultGlitch();
+    if (String(kind) === "quiet") { glitchSetValue(g, "smear", "wet", 1); glitchSetValue(g, "smear", "smr_amt", 0.001); }
+    else glitchSetValue(g, "filt", "wet", 0);
+    gState.working = g;
+    gState.audition = "working";
+    sendParam("mode", 0);
+    modelChanged();
+    done();
+}
+function test_load(kind) {
+    // load-time probe: the working glitch a restored device would have, then the whole stage load again (dsp_retry): "empty", "typical" (6 modules in
+    // 5 groups: filter, crush, stutter, shuffle, delay, width), "spectral" (typical + a transparent smear), "all" (every module on)
+    var g = defaultGlitch();
+    kind = String(kind);
+    if (kind === "typical" || kind === "spectral" || kind === "all") {
+        var ids = ["filt", "crush", "stut", "shuf", "dly", "wid"];
+        for (var i = 0; i < ids.length; i++) glitchSetValue(g, ids[i], "wet", 0.8);
+    }
+    if (kind === "spectral" || kind === "all") { glitchSetValue(g, "smear", "wet", 1); glitchSetValue(g, "smear", "smr_amt", 0.001); }
+    if (kind === "all") for (var q = 0; q < GL_INSTANCES.length; q++) glitchSetValue(g, GL_INSTANCES[q].id, "wet", 0.5);
+    gState.working = g;
+    gState.audition = "working";
+    sendParam("mode", 0);
+    gModelDirty = true;
+    done();
+    dsp_retry();
+}
+function test_module(id, wet) {
+    // the working glitch = one module at a given wet (a lazy stage is created when the module is first needed), for the Live load / swap tests
+    var g = defaultGlitch();
+    glitchSetValue(g, String(id), "wet", wet === undefined ? 0.3 : Number(wet));
     gState.working = g;
     gState.audition = "working";
     sendParam("mode", 0);

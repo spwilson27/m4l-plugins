@@ -594,6 +594,121 @@ function glitchEngineConstants() {
     return out;
 }
 // Per-param meta: [kindCode, groupIndex, default, min, max] x np (gen builds Data meta(np, 5) from the engine buffer's constants block).
+// ---------------------------------------------------------------------------------------------------------------
+// STAGES (load time, AGENTS.md 1d): the engine is compiled as several gen~ objects. Gen compiles every function definition even
+// when nothing calls it, and a gen costs about what its code costs (measured in the VM, ~1.4 ms per line of module / control code),
+// so one gen paid for all 25 modules whether the glitch used them or not. Roles (see the header of src/glitch_core.genexpr):
+//   head  the one control engine (clock, sequencer weights, blend, movement, smoothing). Publishes each control tick's smoothed
+//         module params in buffer~ glitchctl (a ring of GL_CTL_SLOTS ticks) and outputs tk (the tick counter), bi / bf (the host beat as
+//         integer + fraction: a float32 signal has 24 bits) and quiet (1 while the DEVICE input has been silent for a whole STFT
+//         window). Audio does not pass through it.
+//   group some chain instances; reads the ring slot named by tk, runs its modules; created only when a sounding glitch uses one.
+//   spec  the group with the STFT (Param go: 0 until the loader has switched onto it). Also reads quiet.
+//   tail  dry delay, master soft limiter, Mix, Output, level / waveform telemetry.
+// Signal ports: head ins L R, outs tk bi bf quiet | group ins L R tk bi bf, outs L R | spec ins L R tk bi bf quiet, outs L R |
+// tail ins L R dryL dryR, outs L R. While a group (or the spectral stage) does not exist, the loader bypasses it: selector~ pairs for
+// the groups and a static delay~ 1023 as the spectral stand-in (delay~ is exact, also below a vector).
+// ---------------------------------------------------------------------------------------------------------------
+var GL_CTL_SLOTS = 256;
+// One stage per chain instance (Granular Pitch and Stretch share one gl_grain call site, so they are one stage), the head first and the tail
+// last: a glitch pays only for the modules it uses (measured in the VM: 0.05 - 0.4 s of compile per module, the head 0.35 s, the tail nothing).
+var GL_STAGE_DEFS = (function () {
+    /** @type {Array<{ id: string, role?: string, from?: string, to?: string, spec?: boolean }>} */
+    var defs = [{ id: "h", role: "head" }];
+    for (var i = 0; i < GL_INSTANCES.length; i++) {
+        var id = GL_INSTANCES[i].id;
+        if (id === "gstr") continue; // part of gpit's stage
+        defs.push({ id: id, from: id, to: id === "gpit" ? "gstr" : id, spec: id === "spec" });
+    }
+    defs.push({ id: "t", role: "tail" });
+    return defs;
+})();
+function glitchCtlLayout() {
+    var L = glitchLayout();
+    return { slots: GL_CTL_SLOTS, stride: L.mvBase, ringOffset: 0, samps: GL_CTL_SLOTS * L.mvBase };
+}
+function glitchStages() {
+    if (glitchStages._cache) return glitchStages._cache;
+    var L = glitchLayout();
+    var pos = {};
+    for (var i = 0; i < L.instances.length; i++) pos[L.instances[i].id] = i;
+    var out = [];
+    var next = 0;
+    var seenSpec = false;
+    for (var si = 0; si < GL_STAGE_DEFS.length; si++) {
+        var def = GL_STAGE_DEFS[si];
+        var role = def.role || (def.spec ? "spec" : "group");
+        var st = { id: def.id, index: si, role: role, side: "", insts: [], k0: 0, k1: 0, plo: 0, phi: 0, mlo: 0, mhi: 0, ins: [], outs: [] };
+        if (role === "group" || role === "spec") {
+            var k0 = pos[def.from], k1 = pos[def.to] + 1;
+            if (k0 !== next) throw new Error("stage " + def.id + " does not start where the previous one ended");
+            next = k1;
+            if (role === "spec") seenSpec = true;
+            st.side = role === "spec" ? "spec" : (seenSpec ? "post" : "pre");
+            st.k0 = k0; st.k1 = k1;
+            st.insts = L.instances.slice(k0, k1).map(function (q) { return q.id; });
+            st.plo = L.instances[k0].base;
+            st.phi = k1 < L.instances.length ? L.instances[k1].base : L.mvBase;
+            st.mlo = L.mvBase + L.mvN * k0;
+            st.mhi = L.mvBase + L.mvN * k1;
+        } else if (role === "head") { st.k0 = 0; st.k1 = L.instances.length; }
+        else { st.k0 = st.k1 = L.instances.length; }
+        if (role === "head") { st.ins = ["L", "R"]; st.outs = ["tk", "bi", "bf", "quiet"]; }
+        else if (role === "group") { st.ins = ["L", "R", "tk", "bi", "bf"]; st.outs = ["L", "R"]; }
+        else if (role === "spec") { st.ins = ["L", "R", "tk", "bi", "bf", "quiet"]; st.outs = ["L", "R"]; }
+        else { st.ins = ["L", "R", "dryL", "dryR"]; st.outs = ["L", "R"]; }
+        out.push(st);
+    }
+    if (next !== L.instances.length) throw new Error("stages do not cover the whole chain");
+    glitchStages._cache = out;
+    return out;
+}
+glitchStages._cache = null;
+/** Slot indices (0..7) whose glitch can sound in the current mode: Working = the working glitch (slot 0 of the engine); Morph = the
+ *  four corner slots; Seq = every slot some step of the sequence plays. */
+function glitchSoundingSlots(state) {
+    if (state.audition === "working") return [0];
+    if (state.audition === "morph") {
+        var c = state.corners || [];
+        var o = [];
+        for (var i = 0; i < c.length; i++) if (c[i] >= 0 && c[i] < GL_NSLOT && o.indexOf(c[i]) < 0) o.push(c[i]);
+        return o;
+    }
+    var q = normalizeSeq(state.seq);
+    var seen = [];
+    for (var k = 0; k < q.steps.length; k++) if (q.steps[k] >= 0 && seen.indexOf(q.steps[k]) < 0) seen.push(q.steps[k]);
+    return seen;
+}
+/** True when stage `st` (a group or the spectral stage) is needed: some slot that can sound has one of its modules on (wet above the
+ *  active epsilon). A missing stage is bypassed, bit for bit as if its modules were off. */
+function glitchStageNeeded(st, vecs, slots) {
+    if (st.role !== "group" && st.role !== "spec") return false;
+    var L = glitchLayout();
+    for (var j = 0; j < slots.length; j++) {
+        for (var k = st.k0; k < st.k1; k++) if (vecs[slots[j]][L.instances[k].wet] > GL_ACTIVE_EPS) return true;
+    }
+    return false;
+}
+function glitchNeedsStage(state, id) {
+    var all = glitchStages();
+    for (var s = 0; s < all.length; s++) if (all[s].id === id) return glitchStageNeeded(all[s], engineVectors(state), glitchSoundingSlots(state));
+    return false;
+}
+function glitchNeedsSpectral(state) {
+    var all = glitchStages();
+    for (var s = 0; s < all.length; s++) if (all[s].role === "spec") return glitchNeedsStage(state, all[s].id);
+    return false;
+}
+/** Ids of the stages a state needs right now (head and tail always), in chain order. */
+function glitchNeededStages(state) {
+    var out = [];
+    var all = glitchStages();
+    var vecs = engineVectors(state);
+    var slots = glitchSoundingSlots(state);
+    for (var s = 0; s < all.length; s++) if (all[s].role === "head" || all[s].role === "tail" || glitchStageNeeded(all[s], vecs, slots)) out.push(all[s].id);
+    return out;
+}
+
 function glitchMeta() {
     var L = glitchLayout();
     var m = [];
@@ -655,6 +770,7 @@ var GL_SCOPE = (function () {
     one("RAT_LEN"); // length of the current repeat relative to the first one
     one("SCR_POS"); // Scratch read lag in its range 0..1 (0 = newest audio, 1 = oldest)
     one("SCR_SPEED"); // platter speed, -1 (backwards, full) .. +1 (forwards, double) after clipping; 0 = stopped
+    block("STAGE_FRAME", 32); // each gen~ stage's own control-tick counter (stage index = slot; GL_STAGE_DEFS has at most 32); FRAME is the head's, for the UI
     o.END = p + 6;
     return o;
 })();
@@ -2127,6 +2243,8 @@ if (nodeModule && nodeModule.exports) {
         GL_SLOTS_BUF_SAMPS: GL_SLOTS_BUF_SAMPS, GL_SCOPE_SAMPS: GL_SCOPE_SAMPS, GL_SCOPE: GL_SCOPE, GL_DIV_BEATS: GL_DIV_BEATS,
         GL_DIV_NAMES: GL_DIV_NAMES, GL_CHOP_PATTERNS: GL_CHOP_PATTERNS, GL_INSTANCES: GL_INSTANCES, GL_TYPES: GL_TYPES,
         GL_WAVE_LEN: GL_WAVE_LEN, GL_BANDS: GL_BANDS, GL_CEP_BINS: GL_CEP_BINS, GL_HOP_CTL: GL_HOP_CTL,
+        glitchStages: glitchStages, glitchNeedsSpectral: glitchNeedsSpectral, glitchNeedsStage: glitchNeedsStage, glitchNeededStages: glitchNeededStages, glitchSoundingSlots: glitchSoundingSlots, GL_STAGE_DEFS: GL_STAGE_DEFS,
+        GL_CTL_SLOTS: GL_CTL_SLOTS, glitchCtlLayout: glitchCtlLayout,
         glitchLayout: glitchLayout, glitchMeta: glitchMeta, glitchEngineConstants: glitchEngineConstants, glInstance: glInstance, glType: glType, defaultGlitch: defaultGlitch,
         randomizeGlitch: randomizeGlitch, mutateGlitch: mutateGlitch, glitchSpectralCap: glitchSpectralCap, glitchSpectralCount: glitchSpectralCount, glitchToVector: glitchToVector, vectorToGlitch: vectorToGlitch,
         blendVectors: blendVectors, xyWeights: xyWeights, cornerSlotWeights: cornerSlotWeights, randRange: randRange,

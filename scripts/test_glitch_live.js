@@ -110,19 +110,59 @@ while (Date.now() - t0 < DSP_WAIT_MS) {
 }
 if (state !== "ready") bail(state === "error" ? "dsp-error in the trace" : `no "dsp ready" within ${DSP_WAIT_MS / 1000} s`);
 check(true, `dsp ready (waited ${Date.now() - t0} ms)`);
-const stamp = (re) => { const m = tr.match(new RegExp("\\+(\\d+)ms " + re)); return m ? Number(m[1]) : null; };
+const stamp = (re, text) => { const m = (text || tr).match(new RegExp("\\+(\\d+)ms " + re)); return m ? Number(m[1]) : null; };
 const tStart = stamp("dsp-start"), tReady = stamp("dsp ready");
-console.log(`load -> dsp-ready: ${tReady} ms after the script loaded` + (tStart !== null ? ` (gen~ creation started at +${tStart} ms, gen compile+run ${tReady - tStart} ms)` : ""));
+console.log(`LOAD TIME  dsp-ready ${tReady} ms after the script loaded` + (tStart !== null ? ` (stage creation started at +${tStart} ms, compile+run ${tReady - tStart} ms)` : "") + "  [one gen, before staging: ~5700 ms]");
+for (const l of tr.split("\n")) if (/stage-|dsp-start|dsp ready/.test(l)) console.log("  " + l);
+check(tReady !== null && tReady < 3500, `an empty device is ready ${tReady} ms after the script loaded (< 3500 ms; one gen~ for everything: ~5700 ms; the ~1 s of that before the first code load is the patcher load with its 26 saved shell gen~ objects)`);
 debug("dsp_diag");
 sleep(300);
 const diag = (trace().split("\n").filter((l) => /dsp-diag/.test(l)).pop() || "");
 console.log(diag);
-check(/gen=gen~/.test(diag) && /cordsIn=[1-9]/.test(diag) && /cordsOut=[1-9]/.test(diag), "dsp_diag: gen~ present with input and output cords");
+check(/stage h:gen~:code cnt=\d+ run=1 on=0 in=[1-9]\d* /.test(diag), "dsp_diag: the head has its code, runs and has input cords");
+check(/stage t:gen~:code cnt=\d+ run=1 on=0 in=[1-9]\d* out=[1-9]/.test(diag), "dsp_diag: the tail has its code, runs and has input and output cords");
+const GSTAGES = require("../src/glitch_config.js").glitchStages();
+const NONHT = GSTAGES.filter((x) => x.role === "group" || x.role === "spec").map((x) => x.id);
+check(NONHT.every((id) => new RegExp(`stage ${id}:gen~:shell cnt=\\d+ run=0`).test(diag)), `an empty device has only shells for its ${NONHT.length} module stages (code is loaded when a glitch needs one)`);
+const SIDX = (id) => GSTAGES.findIndex((x) => x.id === id);
 const scope = (diag.match(/scope=(\S+)/) || [])[1];
-const counter = () => evalLom(`var v = new Buffer(${JSON.stringify(scope)}).peek(1, 0, 1); return typeof v === "number" ? v : v[0];`);
+const GSC = require("../src/glitch_config.js").GL_SCOPE;
+const counterAt = (slot) => evalLom(`var v = new Buffer(${JSON.stringify(scope)}).peek(1, ${slot}, 1); return typeof v === "number" ? v : v[0];`);
+const counter = () => counterAt(0);
 const c0 = counter(); sleep(600); const c1 = counter();
 check(c1 !== c0, `telemetry frame counter advances (${c0} -> ${c1})`);
+{
+    const before = { h: counterAt(GSC.STAGE_FRAME + SIDX("h")), t: counterAt(GSC.STAGE_FRAME + SIDX("t")), a: counterAt(GSC.STAGE_FRAME + SIDX("drvA")) };
+    sleep(500);
+    for (const k of ["h", "t"]) check(counterAt(GSC.STAGE_FRAME + SIDX(k)) !== before[k], `stage ${k}'s own frame counter advances`);
+    check(counterAt(GSC.STAGE_FRAME + SIDX("drvA")) === before.a, "a stage that was never created has a still counter");
+}
 
+// load time by kind of glitch: the working glitch a restored device would have, then the whole stage load again (test_load = dsp_retry)
+const loadStats = {};
+for (const kind of ["empty", "typical", "spectral", "all", "typical", "empty"]) {
+    evalLom('new Global("glitch_trace").text = ""; return 1;');
+    debug("test_load", kind);
+    let cur = "";
+    const tl = Date.now();
+    while (Date.now() - tl < 40000) { cur = trace(); if (/dsp ready/.test(cur)) break; sleep(80); }
+    const s0 = stamp("dsp-start", cur), s1 = stamp("dsp ready", cur);
+    // wait until every created stage is switched in (the spectral stage is the last)
+    const ton = Date.now();
+    while (Date.now() - ton < 25000) { const r = report(); if (Object.values(r.stages).every((x) => x === "none" || x === "on")) break; sleep(200); }
+    cur = trace();
+    const onAt = [...cur.matchAll(/\+(\d+)ms stage-on (\w+) \+(\d+)ms/g)].map((m) => Number(m[1]));
+    const allOn = onAt.length ? Math.max(...onAt) - s0 : 0;
+    const made = [...cur.matchAll(/stage-load (\w+)/g)].map((m) => m[1]);
+    const blocked = [...cur.matchAll(/stage-load (\w+) (\d+)ms/g)].map((m) => `${m[1]} ${m[2]}`).join(", ");
+    loadStats[kind] = { ready: s1 - s0, allOn: Math.max(allOn, s1 - s0), made: made.length };
+    console.log(`  load ${kind.padEnd(8)} ${String(made.length).padStart(2)} stages (${made.join(" ")}): chain on ${s1 - s0} ms after the first code load started; every module stage switched in after ${loadStats[kind].allOn} ms (main thread blocked per stage: ${blocked})`);
+}
+check(loadStats.empty.allOn < 1200, `empty device: DSP ready ${loadStats.empty.allOn} ms after the first code load (< 1200)`);
+check(loadStats.typical.ready < 1200, `typical 6-module glitch: the chain is on ${loadStats.typical.ready} ms after the first code load (head + tail first, < 1200)`);
+check(loadStats.typical.allOn < 2600, `typical 6-module glitch without spectral ops: every module on ${loadStats.typical.allOn} ms after the first code load (< 2600)`);
+check(loadStats.spectral.allOn < 4200, `the same plus the spectral stage: every stage on ${loadStats.spectral.allOn} ms after the first code load (< 4200)`);
+check(loadStats.all.allOn < 7000, `every module: all on after ${loadStats.all.allOn} ms`);
 // audio: a looped clip through the device
 const clipOk = evalLom(`
     var slot = new LiveAPI("live_set tracks ${dev.track} clip_slots 0");
@@ -165,6 +205,71 @@ console.log(`  dry: input peak ${dryPk.in.toFixed(3)}, output peak ${dryPk.out.t
 check(Math.abs(dryPk.db) < 3, "no glitch: the device output is the input (within 3 dB: soft limiter)");
 const r0 = report();
 check(r0.ready === 1 && r0.tiles.length === 0, "no glitch yet: no tiles");
+
+// lazy stages: a glitch without spectral ops never loads the spectral code; a spectral one loads it, and loading (a hot code swap into the saved
+// shell gen~, no object or cord is added) does not interrupt the audio
+{
+    const SC = GSC;
+    const traceLines = () => trace().split("\n");
+    const ring = () => { const a = evalLom(`return new Buffer(${JSON.stringify(scope)}).peek(1, ${SC.WAVE_OUT}, 129);`); return { out: a.slice(0, 64), inn: evalLom(`return new Buffer(${JSON.stringify(scope)}).peek(1, ${SC.WAVE_IN}, 64);`), head: a[64] }; };
+    // the longest run of consecutive SILENT output blocks (256 samples; out < 0.02 while the input is > 0.1) in the newest 62 blocks of the ring.
+    // (The test clip's loop seam only dips the level to 0.3 - 0.56 of the input; it is never silent.) The ring is written per processed audio sample,
+    // so a stall of the audio thread does not show in it: that is what test_watch measures (the tail's tick counter against the wall clock).
+    const silentRun = () => {
+        const r = ring();
+        let best = 0, run = 0;
+        for (let k = 1; k < 63; k++) { const i = (r.head + k) % 64; if (r.inn[i] > 0.1 && r.out[i] < 0.02) { run++; best = Math.max(best, run); } else run = 0; }
+        return best;
+    };
+    const watched = (ms) => { const m = trace().split("\n").filter((l) => /watch audio time lost/.test(l)).pop(); const n = m && m.match(/lost (-?\d+) ms in (\d+) ms/); return n && Number(n[2]) >= ms - 100 ? Number(n[1]) : null; };
+    const waitWatch = (ms) => { for (let i = 0; i < 80; i++) { const w = watched(ms); if (w !== null) return w; sleep(100); } return null; };
+    evalLom('new Global("glitch_trace").text = ""; return 1;');
+    debug("test_watch", 3000);
+    debug("test_fill");
+    for (let i = 0; i < 60 && report().stages.drvA !== "on"; i++) sleep(150);
+    const lostFill = waitWatch(3000);
+    check(report().stages.spec === "none" && !traceLines().some((l) => /stage-load spec|stage-lazy spec/.test(l)), "non-spectral glitches (test_fill: drive, low pass) never load the spectral code");
+    check(report().stages.drvA === "on" && NONHT.filter((k) => k !== "drvA").every((k) => report().stages[k] === "none"), "... only the stage that holds their module (drvA) has code");
+    check(lostFill !== null && lostFill < 60, `loading a module's code (drvA, lazily) loses ${lostFill} ms of audio (< 60 ms; creating a gen~ object instead lost 100 - 690 ms, measured)`);
+    debug("test_spec", "off");
+    sleep(800);
+    check(silentRun() === 0, "steady tone through the stand-in delay: no silent block");
+    // the transparent spectral glitch: its code is loaded into the shell (main thread busy ~1 s, the audio is not), then the chain is switched onto it
+    // (a message: no graph change) and `go 1` starts it
+    const events = [];
+    evalLom('new Global("glitch_trace").text = ""; return 1;');
+    debug("test_watch", 6000);
+    const tStartSpec = Date.now();
+    debug("test_spec", "quiet");
+    let st = "none", lastSt = "";
+    let maxRun = 0;
+    while (Date.now() - tStartSpec < 14000) {
+        const run = silentRun();
+        maxRun = Math.max(maxRun, run);
+        st = report().stages.spec;
+        if (st !== lastSt) { events.push(`${Date.now() - tStartSpec}ms ${st}`); lastSt = st; }
+        if (st === "on" && Date.now() - tStartSpec > 3500) break;
+        sleep(40);
+    }
+    const lostSpec = waitWatch(6000);
+    console.log("  lazy spectral stage timeline: " + events.join(" | ") + ` ; audio lost ${lostSpec} ms, longest silent run in the output ring ${maxRun} blocks`);
+    check(st === "on", `a spectral glitch loads the spectral code and switches onto it (state ${st}, ${Date.now() - tStartSpec} ms)`);
+    const tl = traceLines();
+    const stampOf = (ev) => { const l = tl.find((x) => new RegExp(ev).test(x)); const m = l && l.match(/^\+(\d+)ms/); return m ? Number(m[1]) : null; };
+    const tc = stampOf("stage-lazy spec"), tr2 = stampOf("stage-run spec"), ton = stampOf("stage-on spec");
+    check(tc !== null && tr2 !== null && ton !== null && tc <= tr2 && tr2 <= ton, `trace: stage-lazy spec +${tc} ms, stage-run spec +${tr2} ms, stage-on spec +${ton} ms`);
+    if (tc !== null && ton !== null) console.log(`  SPECTRAL  queued -> running ${tr2 - tc} ms, -> switched on ${ton - tc} ms; ${(tl.find((x) => /stage-load spec/.test(x)) || "").replace(/^\+\d+ms /, "")}`);
+    check(lostSpec !== null && lostSpec < 60, `loading the spectral code and switching onto it loses ${lostSpec} ms of audio (< 60 ms)`);
+    check(maxRun === 0, `no silent output block while the spectral gen~ is loaded and swapped in (${maxRun})`);
+    sleep(600);
+    const a2 = evalLom(`return new Buffer(${JSON.stringify(scope)}).peek(1, 0, ${SC.END});`);
+    check(a2[SC.SPEC_RUN] === 1 && a2[SC.SPEC_FRAMES] > 20, `the STFT runs after the swap (frames ${a2[SC.SPEC_FRAMES]})`);
+    const dgx = (() => { debug("dsp_diag"); sleep(300); return trace().split("\n").filter((l) => /dsp-diag/.test(l)).pop() || ""; })();
+    check(/stage spec:gen~:code cnt=\d+ run=1 on=1 in=[1-9]\d* out=[1-9]/.test(dgx), "dsp_diag: the spectral stage has its code, runs and is wired");
+    check(a2[SC.STAGE_FRAME + SIDX("spec")] > 0, "the spectral stage's frame counter moves");
+    debug("test_fill");
+    sleep(800);
+}
 
 // randomize through the hook
 let changed = 0;
@@ -311,8 +416,9 @@ check(sm.every((t) => t.glide > 0.999), "Glide 0 %: the crossfade is a hard swit
 setP("Glide", 50);
 sleep(700);
 sm = seqSamples(10, 90);
+for (let round = 0; round < 6 && !sm.some((t) => t.glide < 0.95); round++) sm = sm.concat(seqSamples(10, 90)); // a fade is only visible while a step changes slot
 const gl = sm.map((t) => Math.abs(t.glide - Math.min(1, t.frac / 0.5)));
-check(Math.max(...gl) < 0.06 && sm.some((t) => t.glide < 0.95), `Glide 50 % via the LOM: crossfade progress = fraction / 0.5 in the gen (max error ${Math.max(...gl).toFixed(3)}, ${sm.filter((t) => t.glide < 0.95).length} of 10 samples mid-fade)`);
+check(Math.max(...gl) < 0.06 && sm.some((t) => t.glide < 0.95), `Glide 50 % via the LOM: crossfade progress = fraction / 0.5 in the gen (max error ${Math.max(...gl).toFixed(3)}, ${sm.filter((t) => t.glide < 0.95).length} of ${sm.length} samples mid-fade)`);
 setP("Glide", 0);
 // Randomize Sequence and a step edit from the face's own clicks
 {
