@@ -18,6 +18,13 @@
  *   ir          Convolution: the engine's `dropfile` (the live.drop path, through the test hook `#0-rptest`) loads a Core
  *               Library file as the IR: status ready, length 1..RP_IR_MAX, header version bumped, the Start convolves (wet peak > 0);
  *               IR Stretch 150 % reprocesses it (longer, new version)
+ *   face        (needs --ssh admin@<VM ip>, SSHPASS in the environment; scripts/mm_os_input.py real OS mouse events, scripts/rp_drag_source.m
+ *               a real file drag source) the whole-face drop target (Max `dropfile`, ignoreclick): the device is located on screen with the
+ *               real pointer (the display reports hover), then with the target in place a real click on the Tone tab changes the tab, a
+ *               real drag turns the Dry/Wet dial, a click toggles Freeze, a click reaches the display, a real right click on a dial still
+ *               opens Live's native context menu window; and a real file drag dropped on ten places of the face (dials,
+ *               tabs, display, LCD numbox, IR box, corner...) loads the IR each time and stores its path in the `IR File` parameter,
+ *               and a drop in Hall / Plate / Spring switches Algorithm to Convolution (the real parameter) and loads it, while a .txt file or a drop outside the device does nothing (no switch)
  *   loop        the derived chain loop: period = K x the tank's period (never below MIN), gain = 10^(-3 (T + allpass delay) / Decay),
  *               tank RT60 = Decay x TANK_FRAC
  *   shimmer     (first linked pair) Live's Shifter inserted between Reverb+ and Reverb+ End through the LOM (insert_device), +12 st, Dry/Wet 100 %:
@@ -34,6 +41,8 @@ const CFG = require(require("path").join(__dirname, "..", "src", "reverbplus_con
 const path = require("path");
 
 const SERVER = path.join(__dirname, "ableton_mcp_server.js");
+const sshIdx = process.argv.indexOf("--ssh");
+const SSH_TARGET = sshIdx > 0 ? process.argv[sshIdx + 1] : "";
 const portIdx = process.argv.indexOf("--port");
 const PORT = portIdx > 0 ? Number(process.argv[portIdx + 1]) : null;
 
@@ -138,6 +147,136 @@ function report(id) {
     return JSON.parse(evalLom(`return String(new Global("reverbplus_test")["report_${id}"] || "null");`));
 }
 
+
+// ---- face: the whole-face drop target with real OS input (clicks must pass through it, a real file drag must reach it) ----
+function faceSection(pair, setP, getP, trackPath) {
+    const tag = "[face]";
+    if (!SSH_TARGET) { console.log("INFO face checks skipped (no --ssh): they need real OS input in the VM"); return; }
+    const env = Object.assign({ SSHPASS: "admin" }, process.env);
+    const sh = (cmd) => execFileSync("sshpass", ["-e", "ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10", SSH_TARGET, cmd], { encoding: "utf8", env });
+    const os = (...a) => sh(`cd ~/ableton && /usr/bin/python3 scripts/mm_os_input.py ${a.join(" ")}`);
+    const note = (code) => evalLom(code);
+    sh("cd ~/ableton && clang -fobjc-arc -framework Cocoa scripts/rp_drag_source.m -o /tmp/rp_drag_source && mkdir -p /tmp/rpdrop && rm -f /tmp/rpdrop/* && /usr/bin/python3 - <<'PYEOF'\n" +
+        "import wave, struct, math\n" +
+        "w = wave.open('/tmp/rpdrop/ir_src.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100)\n" +
+        "w.writeframes(b''.join(struct.pack('<h', int(20000 * math.exp(-i / 4000.0) * math.sin(i * 0.37))) for i in range(30000)))\n" +
+        "w.close()\nPYEOF\necho hello > /tmp/rpdrop/notes.txt");
+    // the device must be the one on screen: select its track (master first, Live paints the device view only after that)
+    note(`var v = new LiveAPI("live_set view"); v.set("selected_track", "id " + new LiveAPI("live_set master_track").id);
+          v.set("selected_track", "id " + new LiveAPI("${trackPath}").id);
+          var g = new Global("reverbplus_test"); g.hoverOn = 1; g.hover = null; g.click = null; return 1;`);
+    sleep(1500);
+    os("front", "Live");
+    const win = JSON.parse(os("window", "Live"));
+    os("move", win.x + 5, win.y + 5, 0.5); // away from the device, then forget any stale hover
+    note(`new Global("reverbplus_test").hover = null; return 1;`);
+    let origin = null;
+    outer: for (let y = win.y + win.h - 150; y < win.y + win.h - 8; y += 8) {
+        for (let px = win.x + 20; px < win.x + win.w - 20; px += 24) {
+            os("move", px, y, 0.05);
+            const hv = note(`return new Global("reverbplus_test").hover;`);
+            if (hv) {
+                // confirm with a second move: an idle event queued from an earlier pointer position can arrive late
+                note(`new Global("reverbplus_test").hover = null; return 1;`);
+                os("move", px + 12, y + 4, 0.3);
+                const hv2 = note(`return new Global("reverbplus_test").hover;`);
+                if (!hv2) continue;
+                const r = JSON.parse(hv2);
+                origin = { x: px + 12 - r.x - 64, y: y + 4 - r.y - 22 };
+                break outer;
+            }
+        }
+    }
+    check(!!origin, `${tag} the display reports the real pointer: device origin on screen ${origin && JSON.stringify(origin)}`);
+    if (!origin) return;
+    const at = (lx, ly) => [origin.x + lx, origin.y + ly];
+    const page = () => { os("move", ...at(200, 60), 0.3); return JSON.parse(note(`return new Global("reverbplus_test").hover;`)).page; };
+    const wins = () => JSON.parse(os("cgwindows", "Live"));
+    const dev = (n) => n;
+    void dev;
+    // 1. clicks reach the widgets behind the drop target
+    check(page() === 0, `${tag} starts on the Reverb tab`);
+    os("click", ...at(222, 13));
+    check(page() === 1, `${tag} a real click on the Tone tab changes the tab (page ${page()})`);
+    os("click", ...at(160, 13));
+    check(page() === 0, `${tag} a real click on the Reverb tab changes it back`);
+    const dw0 = getP("Dry/Wet");
+    os("drag", ...at(413, 123), 0, -30);
+    const dw1 = getP("Dry/Wet");
+    check(dw1 > dw0 + 5, `${tag} a real drag turns the Dry/Wet dial (${dw0.toFixed(1)} -> ${dw1.toFixed(1)})`);
+    setP("Dry/Wet", dw0);
+    const fz0 = getP("Freeze");
+    os("click", ...at(413, 65));
+    const fz1 = getP("Freeze");
+    check(fz1 !== fz0, `${tag} a real click toggles Freeze (${fz0} -> ${fz1})`);
+    os("click", ...at(413, 65));
+    check(getP("Freeze") === fz0, `${tag} and back (${getP("Freeze")})`);
+    note(`new Global("reverbplus_test").click = null; return 1;`);
+    os("click", ...at(200, 60));
+    const ck = note(`return new Global("reverbplus_test").click;`);
+    check(!!ck && JSON.parse(ck).but === 1, `${tag} a real click on the display reaches the display (${ck})`);
+    const w0 = wins();
+    os("rclick", ...at(413, 123));
+    const w1 = wins();
+    const fresh = w1.filter((w) => !w0.some((o) => o[6] === w[6]));
+    check(fresh.length > 0, `${tag} a real right click on the Dry/Wet dial still opens Live's native menu window (${JSON.stringify(fresh)})`);
+    os("key", "escape");
+    sleep(500);
+
+    // 2. a real file drag dropped on the face
+    const algo0 = getP("Algorithm");
+    const irState = () => {
+        note(`messnamed("#0-rptest", "test_report"); return 1;`);
+        sleep(700);
+        const r = JSON.parse(note(`return String(new Global("reverbplus_test")["report_${pair.id}"] || "null");`));
+        return r && { name: r.ir.name, status: r.ir.status, ver: r.ir.ver, param: r.diag && r.diag.irParam };
+    };
+    let n = 0;
+    const drop = (label, sx, sy, file) => {
+        n++;
+        const f = file || `/tmp/rpdrop/ir_${n}.wav`;
+        if (!file) sh(`cp /tmp/rpdrop/ir_src.wav ${f}`);
+        sh(`rm -f /tmp/rpd.out; (nohup /tmp/rp_drag_source ${f} 100 200 40 20 > /tmp/rpd.out 2>&1 &); sleep 1.2`);
+        os("front", "Live");
+        os("drag", 120, 210, sx - 120, sy - 210);
+        sleep(1500);
+        const out = sh("cat /tmp/rpd.out");
+        const st = irState();
+        return { out, st, f };
+    };
+    setP("Algorithm", 5);
+    sleep(1500);
+    const spots = { "Dry/Wet dial": [413, 123], "Pre-Delay dial": [31, 30], "Width dial": [413, 29], "display": [200, 60], "Tone tab": [222, 13],
+        "Freeze button": [413, 65], "Algorithm menu": [100, 150], "LCD numbox": [270, 150], "IR box": [175, 150], "corner": [5, 5] };
+    for (const [label, [lx, ly]] of Object.entries(spots)) {
+        const r = drop(label, ...at(lx, ly));
+        const want = r.f.split("/").pop();
+        check(/END [1-7]/.test(r.out) && r.st && r.st.name === want && r.st.status === "ready" && !!r.st.param && r.st.param.endsWith(want),
+            `${tag} real file drop on the ${label}: ${want} loaded (${r.st && r.st.status}), IR File parameter ${r.st && r.st.param}`);
+    }
+    // 3. every algorithm: the drop switches Algorithm to Convolution (the real parameter) and loads the IR
+    for (const [aname, av] of [["Hall", 1], ["Plate", 0], ["Spring", 4]]) {
+        setP("Algorithm", av);
+        sleep(1500);
+        const r = drop(aname, ...at(200, 60));
+        const want = r.f.split("/").pop();
+        check(getP("Algorithm") === 5 && r.st && r.st.name === want && r.st.status === "ready" && !!r.st.param && r.st.param.endsWith(want),
+            `${tag} a drop in ${aname}: Algorithm -> ${getP("Algorithm")} (Convolution = 5), ${want} loaded (${r.st && r.st.status}), IR File ${r.st && r.st.param}`);
+    }
+    // non-audio / outside the device: nothing happens, no algorithm switch
+    const keep = irState();
+    setP("Algorithm", 1);
+    sleep(1500);
+    let r = drop("txt", ...at(200, 60), "/tmp/rpdrop/notes.txt");
+    check(r.st && r.st.name === keep.name && r.st.ver === keep.ver && getP("Algorithm") === 1, `${tag} a dropped .txt file is ignored, Algorithm stays ${getP("Algorithm")} (Hall = 1)`);
+    r = drop("outside", win.x + 600, win.y + 250);
+    check(r.st && r.st.name === keep.name && r.st.ver === keep.ver && getP("Algorithm") === 1, `${tag} a drop outside the device does nothing (${r.st && r.st.name})`);
+    // restore
+    setP("Algorithm", algo0);
+    note(`new Global("reverbplus_test").hoverOn = 0; return 1;`);
+    sh("pkill rp_drag_source; true");
+}
+
 for (const pair of pairs) {
     const tag = `[${pair.path}]`;
     const endIdx = pair.devs.findIndex((d, i) => i > pair.index && d.role === "end");
@@ -167,6 +306,9 @@ for (const pair of pairs) {
     const sizeNow = () => Number(evalLom(HELPERS + `var p = param(${pair.id}, "Size"); return p ? Number(p.get("value")) : 60;`)) / 100;
     const before = { drywet: getP("Dry/Wet"), algo: getP("Algorithm"), stretch: getP("IR Stretch") };
     check(before.algo !== null, `${tag} parameters reachable through the LOM (Algorithm ${before.algo}, Dry/Wet ${before.drywet})`);
+
+    // real OS input first, on the freshly loaded device (after the Shifter / clip work below Live's device view no longer reports the pointer)
+    if (pair === pairs[0]) faceSection(pair, setP, getP, trackPath);
 
     // audio: a drum loop through the chain at Dry/Wet 100 %
     setP("Dry/Wet", 100);

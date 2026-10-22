@@ -274,6 +274,18 @@ def irdrop(x, y, w, h, hidden=0, ignoreclick=0, legend="Drop IR"):
     return {"box": box}
 
 
+def dropany(x, y, w, h):
+    """Whole-face file drop target: Max's `dropfile` object, invisible (no border), ignoreclick 1 so every click, drag and
+    right click reaches the widgets under it. It only outputs the dropped path (`prepend anydrop` -> the engine, which loads it
+    as the IR in Convolution). NOT a parameter: the one parameter live.drop is `IR File`."""
+    return {"box": {
+        "bgcolor": [0.0, 0.0, 0.0, 0.0], "border": 0, "bordercolor": [0.0, 0.0, 0.0, 0.0], "id": "obj-dropany",
+        "ignoreclick": 1, "maxclass": "dropfile", "numinlets": 1, "numoutlets": 2, "outlettype": ["", ""],
+        "patching_rect": [1300.0, 300.0, float(w), float(h)], "presentation": 1,
+        "presentation_rect": [float(x), float(y), float(w), float(h)], "varname": "rp_dropany",
+    }}
+
+
 def label(oid, text, x, y, w, h=12.0, size=9.0, color=None, bold=False, align=0, hidden=0):
     box = {
         "fontface": 1 if bold else 0, "fontsize": float(size),
@@ -554,7 +566,7 @@ def build_start(layout_name, out_dir=None):
             box["box"]["ignoreclick"] = 1
         face_boxes.append(box)
     boxes = [
-        named(v8ui("obj-engine", engine, [0.0, 0.0, 64.0, 16.0], (500.0, 20.0), 5, presentation=0), "rp_engine"),
+        named(v8ui("obj-engine", engine, [0.0, 0.0, 64.0, 16.0], (500.0, 20.0), 6, presentation=0), "rp_engine"),
         *face_boxes,
         *lay["controls"],
         named(newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]), "rp_plugin"),
@@ -598,6 +610,7 @@ def build_start(layout_name, out_dir=None):
         line("obj-engine", 2, "obj-buf-ir", 0),
         line("obj-engine", 3, "obj-opendialog", 0),
         line("obj-engine", 4, "obj-prep-dropset", 0),
+        line("obj-engine", 5, "obj-route-key", 0),  # `algo <i>`: a drop outside Convolution switches the real Algorithm object
         line("obj-prep-dropset", 0, "obj-ctrl-irfile", 0),
         line("obj-opendialog", 0, "obj-prep-browsed", 0), line("obj-prep-browsed", 0, "obj-engine", 0),
         line("obj-ctrl-irfile", 0, "obj-prep-dropfile", 0), line("obj-prep-dropfile", 0, "obj-engine", 0),

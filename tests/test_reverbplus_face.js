@@ -472,6 +472,24 @@ test("every page x algorithm: no two visible live.* widgets overlap, none sits o
     assert(counts["0/1"] <= 14 && counts["1/1"] <= 14 && counts["2/1"] <= 14, "about 8-14 controls at a time");
 });
 
+test("whole-face file drop target: one invisible ignoreclick dropfile over the full face (present in every algorithm), in front of every widget, on every page x algorithm", () => {
+    const dfs = dev.boxes.map((b) => b.box).filter((b) => b.maxclass === "dropfile");
+    assert.strictEqual(dfs.length, 1);
+    const df = dfs[0];
+    assert.strictEqual(df.ignoreclick, 1);
+    assert.deepStrictEqual(rectOf(df), [0, 0, DW, 169]);
+    const ids = dev.boxes.map((b) => b.box.id);
+    for (let algo = 0; algo < 6; algo++) for (let page = 0; page < 3; page++) {
+        for (const b of visibleBoxes(page, algo)) {
+            if (b.id === df.id || b.maxclass === "panel") continue;
+            assert(ids.indexOf(b.id) < ids.indexOf(df.id), `${b.id} (page ${page}, algo ${algo}) is behind the drop target`);
+            // an interactive widget under it is only safe because the target ignores clicks
+        }
+    }
+    // the target is not a live.* widget, so it cannot count as a rule-4 overlap, and it never hides (visible in every state)
+    assert(!/^live\./.test(df.maxclass) && !df.hidden);
+});
+
 test("separators and labels sit inside the display / column panels; separators are thin; the LCD row is aligned", () => {
     const panels = boxes.filter((b) => b.maxclass === "panel" && b.id !== "obj-lay-body").map(rectOf);
     const inPanel = (r) => panels.some((p) => r[0] >= p[0] - 1e-6 && r[1] >= p[1] - 1e-6 && r[0] + r[2] <= p[0] + p[2] + 1e-6 && r[1] + r[3] <= p[1] + p[3] + 1e-6);

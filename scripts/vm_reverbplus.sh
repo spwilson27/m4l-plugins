@@ -12,7 +12,7 @@
 #                                    the quit, or Live stops at a "recover your work?" dialog).
 #   scripts/vm_reverbplus.sh run      live + test under ONE hold of the Live lock (scripts/vm_live_lock.sh); live and
 #                                 test alone also take it. `scripts/vm_live_lock.sh status` shows the holder.
-#   scripts/vm_reverbplus.sh test     run scripts/test_reverbplus_live.js on the host through an ssh
+#   scripts/vm_reverbplus.sh test     run scripts/test_reverbplus_live.js (with --ssh: real OS clicks / file drags) on the host through an ssh
 #                                    tunnel (local 19880 -> VM 127.0.0.1:9877, the bridge port)
 set -u
 VM=macos-1
@@ -60,7 +60,7 @@ n = 44100 * 6
 w.writeframes(b''.join(struct.pack('<h', int(14000 * math.sin(2 * math.pi * 220 * i / 44100)) if i < 17640 else 0) for i in range(n)))
 w.close()
 PYEOF"
-    node "$ROOT/scripts/test_reverbplus_live.js" --port "$LOCAL_PORT" ;;
+    node "$ROOT/scripts/test_reverbplus_live.js" --port "$LOCAL_PORT" --ssh "admin@${IP}" ;;
   *)
     sed -n '2,/^set -u/p' "$0"; exit 1 ;;
 esac

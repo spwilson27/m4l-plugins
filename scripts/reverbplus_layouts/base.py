@@ -201,6 +201,10 @@ def layout(h):
               h.line("obj-lay-tall-sel", 1, "obj-lay-tall-on", 0), h.line("obj-lay-tall-off", 0, "obj-lay-viz", 0),
               h.line("obj-lay-tall-on", 0, "obj-lay-viz", 0)]
 
+    # whole-face drop target (Convolution IR), in front of everything but the background panels, ignoreclick
+    extra += [h.dropany(0.0, 0.0, W, 169.0), h.newobj("obj-lay-prep-anydrop", "prepend anydrop", 1300.0, 340.0, 110)]
+    lines += [h.line("obj-dropany", 0, "obj-lay-prep-anydrop", 0), h.line("obj-lay-prep-anydrop", 0, "obj-engine", 0)]
+
     panels = [
         h.panel("obj-lay-left", 4.0, 4.0, 54.0, 161.0),
         h.panel("obj-lay-right", 386.0, 4.0, 54.0, 161.0),

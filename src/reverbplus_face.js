@@ -328,7 +328,7 @@ function rcDrawPlot(L, w, algo, frozen, info) {
         }
     }
     if (conv && !rpState.ir.loaded) {
-        var msg = rpState.ir.status === "loading" || rpState.ir.status === "processing" ? "loading impulse response…" : "drop an impulse response on the IR box below";
+        var msg = rpState.ir.status === "loading" || rpState.ir.status === "processing" ? "loading impulse response…" : "drop an impulse response anywhere";
         rpText(msg, w * 0.5 - 68, 52, 8.5, RPC.dim, true);
     } else if (conv && !RCS.irRows) {
         rpText("analysing impulse response…", w * 0.5 - 58, 40, 8, RPC.dim, true);
@@ -594,7 +594,20 @@ function rbTailSet(key, x) {
     }
 }
 
+// Test hook (scripts/test_reverbplus_live.js): while Global("reverbplus_test").hoverOn is set, the display records where the real
+// pointer is / was clicked (display-local x, y) and its tab, so a test can locate the device on screen and prove clicks and hovers
+// reach the display through the whole-face drop target.
+var rcTestG = null;
+function rcTestNote(kind, x, y, but) {
+    try {
+        if (!rcTestG) rcTestG = new Global("reverbplus_test");
+        if (!rcTestG.hoverOn) return;
+        rcTestG[kind] = JSON.stringify({ x: x, y: y, but: but, page: rbPage(), t: Date.now() });
+    } catch (e) { /* no Global: ignore */ }
+}
+
 function onclick(x, y, but) {
+    rcTestNote("click", x, y, but);
     if (!but) return;
     var page = rbPage();
     if (page === 1) {
@@ -634,6 +647,7 @@ function ondrag(x, y, but) {
 }
 
 function onidle(x, y) {
+    rcTestNote("hover", x, y, 0);
     if (rbPage() !== 1) return;
     var h = rbHitNode(rbNodesNow(), x, y, 10);
     if (h !== RCS.hover) { RCS.hover = h; mgraphics.redraw(); }

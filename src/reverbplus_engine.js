@@ -11,12 +11,14 @@
 //   names <xfer> <hdr> <scope> <spec> <ir> <irspec> <irview>   from loadbang
 //   init_link              from live.thisdevice (the LOM is ready): link layer + deferred DSP start
 //   dropfile <path...>     live.drop (also Live replaying the saved path on load)
+//   anydrop <path...>      Max `dropfile` over the whole face (audio files only; switches Algorithm to Convolution)
 //   browsed <path...>      file dialog result
 //   ir_loaded              buffer~ ---rpir finished loading
 //   browse_ir | clear_ir   commands from a face (`cmd browse_ir`)
 //   bang                   re-broadcast the state (a face that comes up late)
 // Outlets: 0 gen hub (messages for the gen~), 1 state bus (`state ...` -> s ---rpstate), 2 `replace <path>`
-//   -> buffer~ ---rpir, 3 bang -> opendialog sound, 4 path -> prepend set -> the live.drop.
+//   -> buffer~ ---rpir, 3 bang -> opendialog sound, 4 path -> prepend set -> the live.drop, 5 `algo <i>` -> route-key -> the
+//   real Algorithm object (a drop outside Convolution switches to it).
 // State bus (messages on outlet 1, all prefixed `state`):
 //   state dsp <ready 0|1> <error|->
 //   state link <paired 0|1> <status> <latency smp> <partner index>
@@ -24,7 +26,7 @@
 //   status: idle | loading | processing | ready | error
 
 inlets = 1;
-outlets = 5;
+outlets = 6;
 
 // Raw parameter values as they arrived (the deferred DSP re-sends the gen-bound ones).
 var rpRaw = {};
@@ -115,6 +117,25 @@ function dropfile() {
     var p = rpIrPathFromArgs(arguments);
     if (!p) return;
     if (p === rpLastDropped && rpIr.loaded) return; // Live replaying the path already loaded
+    rpIrLoad(p);
+}
+
+// A file dropped anywhere on the face (Max `dropfile`, ignoreclick, whole face) in ANY algorithm: audio files only. Outside
+// Convolution it first switches Algorithm to Convolution through the real parameter object (outlet 5 -> route-key -> obj-ctrl-algo,
+// the path the face's own controls take: Live sees it, it is undoable, the groups update), then loads like the IR box; the path is
+// also stored in the IR File parameter (outlet 4) so Live saves it.
+var RP_AUDIO_EXT = ["wav", "wave", "aif", "aiff", "aifc", "flac", "mp3", "m4a", "mp4", "caf", "au", "ogg", "oga", "opus", "sd2"];
+
+function rpIsAudioPath(p) {
+    var m = /\.([A-Za-z0-9]+)$/.exec(String(p));
+    return !!m && RP_AUDIO_EXT.indexOf(m[1].toLowerCase()) >= 0;
+}
+
+function anydrop() {
+    var p = rpIrPathFromArgs(arguments);
+    if (!p || !rpIsAudioPath(p)) return;
+    if (rpRaw.algo !== RP_ALGO.CONV) outlet(5, "algo", RP_ALGO.CONV);
+    outlet(4, p);
     rpIrLoad(p);
 }
 
@@ -323,6 +344,11 @@ function test_report() {
         diag.fileOpen = rf.isopen; diag.fileEof = rf.isopen ? rf.eof : -1; diag.textLen = GEN_DSP_TEXT.length;
         rf.close();
     } catch (e) { diag.err = String(e); }
+    try {
+        // the IR File parameter's stored value (a drop anywhere must reach it, so Live saves the path)
+        var ip = rpHost ? rpHost.getnamed("IR File") : null;
+        diag.irParam = ip ? String(ip.getattr("valueof")) : "none";
+    } catch (e2) { diag.irParamErr = String(e2); }
     g["report_" + rpSelfId] = JSON.stringify({
         id: rpSelfId, diag: diag, dsp: rpDsp.ready, dspError: rpDsp.error, link: rpLink.status, latency: rpLink.latency,
         ir: { status: rpIr.status, loaded: rpIr.loaded, len: rpIr.len, ver: rpIr.ver, bank: rpIr.bank, srMismatch: rpIr.srMismatch,

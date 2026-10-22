@@ -503,6 +503,21 @@ test("telemetry / header slots written by the cores are slots of RP_SCOPE / RP_H
     for (const m of stripComments(END_SRC).matchAll(/poke\(scope, [^;]*, (\d+)\);/g)) assert(Object.values(C.RP_ESCOPE).includes(Number(m[1])), "End scope slot " + m[1]);
 });
 
+test("anydrop (a file dropped anywhere on the face): every algorithm, audio files only, switches to Convolution, also stored in the IR File parameter", () => {
+    const src = fs.readFileSync(path.join(ROOT, "src", "reverbplus_engine.js"), "utf8");
+    const grab = (from, to) => { const a = src.indexOf(from), b = src.indexOf(to, a); assert(a >= 0 && b > a, from); return src.slice(a, b); };
+    const code = grab("function rpIrPathFromArgs", "var rpLastDropped") + grab("var RP_AUDIO_EXT", "function browsed");
+    const calls = [];
+    const ctx = { RP_ALGO: { CONV: 5 }, rpRaw: { algo: 5 }, outlet: (...a) => calls.push(["outlet", ...a]), rpIrLoad: (p) => calls.push(["load", p]), Array, String, RegExp };
+    vm.createContext(ctx);
+    vm.runInContext(code, ctx);
+    const drop = (algo, ...args) => { calls.length = 0; ctx.rpRaw.algo = algo; vm.runInContext("anydrop", ctx).apply(null, args); return calls.slice(); };
+    assert.deepStrictEqual(drop(5, "Macintosh HD:/tmp/My", "IR.WAV"), [["outlet", 4, "Macintosh HD:/tmp/My IR.WAV"], ["load", "Macintosh HD:/tmp/My IR.WAV"]], "in Convolution: loads, stores in the parameter, rejoins a split path, no switch");
+    for (let a = 0; a < 5; a++) assert.deepStrictEqual(drop(a, "/x/ir.wav"), [["outlet", 5, "algo", 5], ["outlet", 4, "/x/ir.wav"], ["load", "/x/ir.wav"]], "algorithm " + a + " switches to Convolution, then loads");
+    for (const ext of ["wav", "aif", "aiff", "flac", "mp3", "m4a", "caf"]) assert.strictEqual(drop(5, "/x/ir." + ext).length, 2, ext);
+    for (const bad of ["/x/notes.txt", "/x/folder", "/x/song.als", "/x/ir.wav.zip", "none", ""]) for (const a of [1, 5]) assert.strictEqual(drop(a, bad).length, 0, `ignored (no switch either): ${bad} in algorithm ${a}`);
+});
+
 test("no face / engine script declares Max's reserved v8ui globals", () => {
     const reserved = ["box", "patcher", "max", "messagename", "inlet", "jsarguments"];
     for (const f of fs.readdirSync(path.join(ROOT, "src")).filter((n) => /^reverbplus_.*\.js$/.test(n))) {
@@ -579,6 +594,27 @@ function checkDevice(name, doc, lay) {
     assert.strictEqual(d.parameter_enable, 1);
     // gen hub, no cord from the deferred gen, plugin~/plugout~ names
     const lines = p.lines.map((l) => l.patchline);
+    // whole-face drop target (Convolution IR): Max's `dropfile`, not a parameter, invisible, ignoreclick (every click reaches the
+    // widgets behind it), the whole 444 x 169 face, in front of every control and v8ui (only the background panels follow)
+    if (name === "Reverb+") {
+        const dfs = boxes.filter((b) => b.maxclass === "dropfile");
+        assert.strictEqual(dfs.length, 1, "exactly one dropfile");
+        const df = dfs[0];
+        assert.strictEqual(df.ignoreclick, 1, "dropfile ignoreclick 1 (rule 4: never captures a click)");
+        assert.strictEqual(df.presentation, 1);
+        assert.deepStrictEqual(df.presentation_rect, [0, 0, doc.patcher.openrect[2], 169], "covers the whole face");
+        assert.strictEqual(df.border, 0, "no frame");
+        assert.strictEqual(df.bordercolor[3], 0, "invisible");
+        assert.strictEqual(df.bgcolor[3], 0);
+        assert(!("parameter_enable" in df) || !df.parameter_enable, "not a parameter: IR File stays the only parameter drop");
+        const di = ids.indexOf(df.id);
+        for (const b of boxes) if (b.presentation === 1 && b.maxclass !== "panel" && b.id !== df.id) assert(ids.indexOf(b.id) < di, `${b.id} is behind the drop target`);
+        const hasL = (a, ao, c, ci) => lines.some((l) => l.source[0] === a && l.source[1] === ao && l.destination[0] === c && l.destination[1] === ci);
+        const prep = boxes.find((b) => b.text === "prepend anydrop");
+        assert(prep && hasL(df.id, 0, prep.id, 0) && hasL(prep.id, 0, "obj-engine", 0), "dropfile -> prepend anydrop -> engine");
+        assert(hasL("obj-engine", 5, "obj-route-key", 0), "engine outlet 5 -> route-key (switches the real Algorithm object)");
+        assert(!df.hidden, "the drop target exists in every algorithm");
+    }
     assert(!lines.some((l) => l.source[0] === "obj-gen"), "nothing reads the deferred gen's outlets");
     assert(!ids.includes("obj-gen"), "the Start ships without gen~");
     const hub = boxes.find((b) => b.id === "obj-gen-in");
@@ -587,7 +623,7 @@ function checkDevice(name, doc, lay) {
     assert.strictEqual(boxes.find((b) => b.id === "obj-plugout").varname, "rp_plugout");
     // wiring: every parameter -> prepend set_<key> -> engine; the face keys also reach their v8ui
     const eng = boxes.find((b) => b.id === "obj-engine");
-    assert(eng && eng.maxclass === "v8ui" && eng.numoutlets === 5 && !eng.presentation, "engine v8ui, not in presentation");
+    assert(eng && eng.maxclass === "v8ui" && eng.numoutlets === 6 && !eng.presentation, "engine v8ui, not in presentation");
     const has = (a, ao, b, bi) => lines.some((l) => l.source[0] === a && l.source[1] === ao && l.destination[0] === b && l.destination[1] === bi);
     for (const b of ctrl) {
         const k = b.id.slice("obj-ctrl-".length);
