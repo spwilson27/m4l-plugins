@@ -13,7 +13,8 @@ Examples:
   python3 scripts/make_delayplus_sets.py --start "devices/Delay Start.amxd" \\
       --end "devices/Delay End.amxd" --middle limiter --adg out/Delay+.adg --als out/test.als
 
---middle accepts none (default) or a comma list of native devices (limiter).
+--middle accepts none (default) or a comma list of limiter and fxrack (an empty nested
+Audio Effect Rack "<name> FX" with one empty chain "FX"). --fold-end saves the End device collapsed.
 "limiter" is a native Limiter with Lookahead at its maximum (6 ms), so the chain
 reports nonzero latency (handy for testing latency compensation).
 
@@ -172,7 +173,9 @@ def tpl(name):
 
 
 POINTEE_RE = re.compile(r'(<(?:\w*Target|Pointee) Id=")\d+(")')
-NATIVE = {"limiter"}
+NATIVE = {"limiter", "fxrack"}
+# "fxrack": an empty nested Audio Effect Rack with one empty chain "FX" (the user's FX go in there)
+FX_CHAIN_NAME = "FX"
 
 
 def esc(s):
@@ -201,6 +204,14 @@ class Renumber:
         return POINTEE_RE.sub(sub, xml)
 
 
+def fold_device(xml):
+    """Collapse a device as Live saves it (<IsFolded Value="true" />, the device's own flag)."""
+    out, n = re.subn(r'<IsFolded Value="false" />', '<IsFolded Value="true" />', xml, count=1)
+    if n != 1:
+        sys.exit("device XML has no IsFolded flag")
+    return out
+
+
 def m4l_xml(amxd, out_path, devid):
     amxd = os.path.abspath(amxd)
     if not os.path.isfile(amxd):
@@ -211,24 +222,51 @@ def m4l_xml(amxd, out_path, devid):
                 SIZE=st.st_size, CRC=0, MOD=int(st.st_mtime))
 
 
+def fxrack_preset_xml(rack_name, index):
+    """Nested empty Audio Effect Rack as it sits in a rack preset's DevicePresets list: a GroupDevicePreset
+    (same shape as the preset root, Id = list index, OverwriteProtectionNumber first) with one empty chain."""
+    t = tpl("adg")
+    a = t.index("<GroupDevicePreset>")
+    b = t.index("</GroupDevicePreset>") + len("</GroupDevicePreset>")
+    g = t[a:b].replace("<GroupDevicePreset>", '<GroupDevicePreset Id="%d">' % index, 1)
+    g = g.replace('<Name Value="@@NAME@@" />', '<Name Value="%s" />' % esc(FX_CHAIN_NAME), 1)
+    return fill(g, NAME=esc(rack_name), PRESETS="")
+
+
+def fxrack_set_xml(rack_name, devid):
+    t = tpl("alsrack").replace('<EffectiveName Value="@@NAME@@" />',
+                               '<EffectiveName Value="%s" />' % esc(FX_CHAIN_NAME), 1)
+    return fill(t, RACKID=devid, NAME=esc(rack_name), DEVICES="<Devices>\n</Devices>")
+
+
 def native_xml(kind, devid):
     if kind == "limiter":
         return fill(tpl("limiter"), DEVID=devid, LOOKAHEAD=2)  # 2 = 6 ms
     sys.exit("unknown middle device: %s" % kind)
 
 
-def device_list(args, out_path):
-    """[(device_xml_with_ids_zero_or_index, DeviceId name)] in chain order."""
-    middle = [] if args.middle in ("", "none") else [s.strip() for s in args.middle.split(",")]
+def device_list(args, out_path, middle_spec=None, fold=None):
+    """[(device_xml_with_ids_zero_or_index, DeviceId name)] in chain order.  A nested "fxrack" is a
+    GroupDevicePreset for a preset (out_path ends in .adg) and an AudioEffectGroupDevice for a Set."""
+    spec = args.middle if middle_spec is None else middle_spec
+    middle = [] if spec in ("", "none") else [s.strip() for s in spec.split(",")]
     for k in middle:
         if k not in NATIVE:
             sys.exit("--middle: unknown device %r (supported: none, %s)" % (k, ", ".join(sorted(NATIVE))))
+    fold = args.fold_end if fold is None else fold
+    is_preset = out_path.endswith(".adg")
     kinds = ["m4l"] + middle + ["m4l"]
     paths = [args.start] + [None] * len(middle) + [args.end]
     devs = []
     for i, (k, p) in enumerate(zip(kinds, paths)):
         if k == "m4l":
-            devs.append((m4l_xml(p, out_path, i), "MxDeviceAudioEffect"))
+            x = m4l_xml(p, out_path, i)
+            if fold and i == len(kinds) - 1:
+                x = fold_device(x)
+            devs.append((x, "MxDeviceAudioEffect"))
+        elif k == "fxrack":
+            rn_ = "%s FX" % args.name
+            devs.append((fxrack_preset_xml(rn_, i) if is_preset else fxrack_set_xml(rn_, i), "AudioEffectGroupDevice"))
         else:
             devs.append((native_xml(k, i), "Limiter"))
     return devs
@@ -253,6 +291,9 @@ def preset_ref(devname):
 def build_adg(args):
     parts = []
     for i, (dev, name) in enumerate(device_list(args, args.adg)):
+        if name == "AudioEffectGroupDevice":  # nested rack: a GroupDevicePreset is a DevicePresets entry itself
+            parts.append(dev)
+            continue
         parts.append('<AbletonDevicePreset Id="%d"><OverwriteProtectionNumber Value="3076" />'
                      "<Device>%s</Device>%s</AbletonDevicePreset>" % (i, zero_pointees(dev), preset_ref(name)))
     x = fill(tpl("adg"), NAME=esc(args.name), PRESETS="\n".join(parts))
@@ -284,14 +325,15 @@ def build_als(args):
     # audio track(s) + rack: one track per --track "Name::start.amxd", else one from --start
     nxt = int(re.search(r'<NextPointeeId Value="(\d+)"', base).group(1))
     rn = Renumber(nxt)
-    specs = [t.split("::", 1) for t in (args.track or [])] or [[args.track_name, args.start]]
+    # "Name::start.amxd[::middle[::fold]]": a track may override --middle (and fold its End device)
+    specs = [(t.split("::") + [None, None])[:4] for t in (args.track or [])] or [[args.track_name, args.start, None, None]]
     slots = "<ClipSlotList>" + "".join(
         '<ClipSlot Id="%d"><LomId Value="0" /><ClipSlot><Value /></ClipSlot><HasStop Value="true" /></ClipSlot>' % i
         for i in range(scenes)) + "</ClipSlotList>"
     tracks = []
-    for i, (tname, tstart) in enumerate(specs):
+    for i, (tname, tstart, tmid, tfold) in enumerate(specs):
         args.start = tstart
-        devs = device_list(args, args.als)
+        devs = device_list(args, args.als, tmid, None if tfold is None else tfold == "fold")
         chain = "<Devices>\n" + "\n".join(d for d, _ in devs) + "\n</Devices>"
         # show the chain's devices (Delay+, the FX, Delay+ End) when the rack is opened, without the
         # macro panel, so Delay+ fits in the device view next to the Help view
@@ -340,6 +382,7 @@ def main():
     ap.add_argument("--start", required=True, help="Start .amxd")
     ap.add_argument("--end", required=True, help="End .amxd")
     ap.add_argument("--middle", default="none", help="none | limiter | comma list (default none)")
+    ap.add_argument("--fold-end", action="store_true", help="save the End device collapsed (IsFolded)")
     ap.add_argument("--bridge", default=DEFAULT_BRIDGE, help="Ableton MCP Bridge .amxd for the master track")
     ap.add_argument("--base-set", default=DEFAULT_BASE_SET, help="Set used as base for --als")
     ap.add_argument("--name", default="Delay+", help="rack and chain name")

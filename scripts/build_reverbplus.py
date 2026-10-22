@@ -6,7 +6,7 @@ Outputs (devices/):
   Reverb+.amxd        Start device (layout `base`): the reverb engine (6 algorithms) and every control
   Reverb+ <X>.amxd    one Start device per extra layout scripts/reverbplus_layouts/<x>.py (face variants)
   Reverb+ End.amxd    End device (mixes dry / processed wet, closes the outer loop)
-  Reverb+.adg         Audio Effect Rack preset [Reverb+] [Reverb+ End] (also Reverb+ <X>.adg)
+  Reverb+.adg         Audio Effect Rack preset [Reverb+] [empty "Reverb+ FX" rack] [Reverb+ End, folded] (also Reverb+ <X>.adg)
 Plus the Live test set reverbplus_test.als (tracks "Reverb+ 1..3": rack [Reverb+, Limiter 6 ms,
 Reverb+ End], Ableton MCP Bridge on Main) via scripts/make_reverbplus_sets.py.
 
@@ -697,12 +697,14 @@ def build_sets(names, with_test_set):
     for name in names:
         start = os.path.join(OUT_DIR, name + ".amxd")
         subprocess.run([sys.executable, gen, "--start", start, "--end", end, "--name", name,
-                        "--adg", os.path.join(OUT_DIR, name + ".adg")], check=True)
+                        "--middle", "fxrack", "--fold-end", "--adg", os.path.join(OUT_DIR, name + ".adg")], check=True)
     if with_test_set:
         start = os.path.join(OUT_DIR, BASE_NAME + ".amxd")
         tracks = []
         for i in range(1, 4):
             tracks += ["--track", f"Reverb+ {i}::{start}"]
+        # same rack the shipped Reverb+.adg has (nested empty FX rack, End folded)
+        tracks += ["--track", f"Reverb+ Preset::{start}::fxrack::fold"]
         subprocess.run([sys.executable, gen, "--start", start, "--end", end, "--middle", "limiter",
                         "--name", BASE_NAME, "--als", os.path.join(ROOT, "reverbplus_test.als")] + tracks, check=True)
 

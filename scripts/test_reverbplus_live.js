@@ -526,6 +526,12 @@ for (const pair of pairs) {
     }
 }
 
+// Shipped rack preset (the "... Preset" track is built like devices/Reverb+.adg): nested empty FX rack, End folded.
+for (const pp of pairs.filter((p) => p.devs.length === 3 && p.devs[1].cls === "AudioEffectGroupDevice")) {
+    require("./live_preset_check.js").presetCheck({ evalLom, sleep, check, readHdr, HELPERS, loop: LOOP }, pp, "Reverb+");
+}
+if (!pairs.some((p) => p.devs.length === 3 && p.devs[1].cls === "AudioEffectGroupDevice")) check(false, "no preset track ([Start, rack, End]) in the set");
+
 evalLom(`new LiveAPI("live_set").call("stop_playing"); return 1;`);
 console.log(`INFO deferred DSP ready after (ms): ${dspMs && dspMs.join(", ")}`);
 console.log(`INFO trace tail:\n${String(evalLom(`return String(new Global("reverbplus_trace").text || "");`) || "").split("\n").filter((l) => / ir /.test(l)).slice(-6).join("\n")}`);

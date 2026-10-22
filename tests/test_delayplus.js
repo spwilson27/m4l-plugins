@@ -508,5 +508,9 @@ for (const name of devices.filter((n) => n !== "Delay+ End")) {
     });
 }
 
+test("devices/Delay+.adg: [Delay+] [empty nested 'Delay+ FX' rack, one empty chain] [Delay+ End folded]", () => {
+    require("./adg_check.js").checkRackPreset(path.join(ROOT, "devices", "Delay+.adg"), "Delay+", "Delay+.amxd", "Delay+ End.amxd");
+});
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

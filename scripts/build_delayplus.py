@@ -7,7 +7,7 @@ Outputs (devices/):
                     (scripts/delayplus_layouts/echo.py) around the tape-loop display
                     (src/delayplus_viz_b.js)
   Delay+ End.amxd   End device (closes the loop, mixes dry/wet)
-  Delay+.adg        Audio Effect Rack preset: [Delay+] [Delay+ End]
+  Delay+.adg        Audio Effect Rack preset: [Delay+] [empty "Delay+ FX" rack] [Delay+ End, folded]
 Plus the Live test set delayplus_test.als (tracks "Delay+ 1..3": rack [Delay+, Limiter 6 ms,
 Delay+ End], Ableton MCP Bridge on the Main track) via scripts/make_delayplus_sets.py. Three pairs
 keep instance isolation covered.
@@ -619,11 +619,13 @@ def build_sets(variants):
         name = VARIANTS[v]["name"]
         start = os.path.join(OUT_DIR, name + ".amxd")
         subprocess.run([sys.executable, gen, "--start", start, "--end", end, "--name", "Delay+",
-                        "--adg", os.path.join(OUT_DIR, name + ".adg")], check=True)
+                        "--middle", "fxrack", "--fold-end", "--adg", os.path.join(OUT_DIR, name + ".adg")], check=True)
     start = os.path.join(OUT_DIR, VARIANTS["main"]["name"] + ".amxd")
     tracks = []
     for i in range(1, 4):
         tracks += ["--track", f"Delay+ {i}::{start}"]
+    # same rack the shipped Delay+.adg has (nested empty FX rack, End folded): Live loads the .adg's rack from this
+    tracks += ["--track", f"Delay+ Preset::{start}::fxrack::fold"]
     subprocess.run([sys.executable, gen, "--start", start, "--end", end, "--middle", "limiter",
                     "--name", "Delay+", "--als", os.path.join(ROOT, "delayplus_test.als")] + tracks, check=True)
 

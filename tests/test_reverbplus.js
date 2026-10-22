@@ -754,6 +754,10 @@ test("built devices/Reverb+ End.amxd: static gen, link layer, 124 px wide", () =
     assert.strictEqual(boxes.filter((b) => b.maxclass === "v8ui").length, 1);
 });
 
+test("devices/Reverb+.adg: [Reverb+] [empty nested 'Reverb+ FX' rack, one empty chain] [Reverb+ End folded]", () => {
+    require("./adg_check.js").checkRackPreset(path.join(ROOT, "devices", "Reverb+.adg"), "Reverb+", "Reverb+.amxd", "Reverb+ End.amxd");
+});
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

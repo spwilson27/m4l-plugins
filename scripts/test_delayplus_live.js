@@ -218,6 +218,12 @@ if (gpair) {
     `);
 }
 
+// Shipped rack preset (the "... Preset" track is built like devices/Delay+.adg): nested empty FX rack, End folded.
+for (const pp of pairs.filter((p) => p.devs.length === 3 && p.devs[1].cls === "AudioEffectGroupDevice")) {
+    require("./live_preset_check.js").presetCheck({ evalLom, sleep, check, readHdr, HELPERS, loop: LOOPS[0] }, pp, "Delay+");
+}
+if (!pairs.some((p) => p.devs.length === 3 && p.devs[1].cls === "AudioEffectGroupDevice")) check(false, "no preset track ([Start, rack, End]) in the set");
+
 evalLom(`new LiveAPI("live_set").call("stop_playing"); return 1;`);
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall Live checks passed");
