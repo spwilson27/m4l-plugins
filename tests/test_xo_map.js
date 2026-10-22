@@ -3044,7 +3044,7 @@ setTimeout(() => {
     assert(arcs.some((a) => Math.abs(a[0] - g0.x) < 1e-9 && Math.abs(a[2] - (R + 2.4)) < 1e-9), "an individually selected member rings its group's dot");
   }
 
-  // 11. paint: one dot per group, a ring on groups of 2+
+  // 11. paint: one dot per group; a merged dot is drawn exactly like a single dot (no ring, same radius)
   place([[100, 60, KICK, "A"], [100, 60, KICK, "B"], [100.2, 60, KICK, "C"], [140, 60, KICK, "S"], [160, 60, SNARE, "T"], [160.2, 60, SNARE, "U"]]);
   {
     const arcs = [];
@@ -3054,9 +3054,13 @@ setTimeout(() => {
     mgraphics.arc = origArc;
     const inMap = arcs.filter((a) => a[1] > L.plotY && a[1] < L.toolbarY);
     const dots = inMap.filter((a) => Math.abs(a[2] - R) < 1e-9);
-    const rings = inMap.filter((a) => Math.abs(a[2] - (R + 1.3)) < 1e-9);
     assert.strictEqual(dots.length, 3, "6 points in 3 groups: 3 dots");
-    assert.strictEqual(rings.length, 2, "the two multi-member groups carry a ring");
+    // At each group position: its dot, plus (only for the selected group) the two selection rings; no group marker.
+    const sel = new Set([R + 4.4, R + 2.4].map((r) => r.toFixed(6)));
+    for (const [gx, gy] of [[100, 60], [140, 60], [160, 60]]) {
+      const here = inMap.filter((a) => Math.abs(a[0] - gx) < 1e-9 && Math.abs(a[1] - gy) < 1e-9 && !sel.has(a[2].toFixed(6)));
+      assert.deepStrictEqual(here.map((a) => a[2]), [R], `group at ${gx},${gy}: exactly one dot of the normal radius, no ring or marker`);
+    }
     assert.strictEqual(groupReport().drawn, 3);
   }
 

@@ -2659,7 +2659,8 @@ function paint() {
   }
 
   // 6. Draw Sample Points: one dot per group (see "Dot groups"). A group's dot sits at its first member and takes
-  // that member's category colour (stable, no per-paint counting); groups of 2+ members get a thin ring.
+  // that member's category colour (stable, no per-paint counting). A merged dot looks exactly like a single one (user
+  // request: a ring on groups made dense areas look odd).
   const ptRadius = mapDotRadius();
   const gc = ensureGroups();
   const nbrGroups = new Set();
@@ -2669,8 +2670,6 @@ function paint() {
   const dotBuckets = new Map();
   /** @type {number[]} */
   const dimDots = [];
-  /** @type {number[]} */
-  const ringDots = [];
   const bucketKeys = [];
   for (let gi = 0; gi < gc.groups.length; gi++) {
     const g = gc.groups[gi];
@@ -2679,7 +2678,6 @@ function paint() {
     let b = dotBuckets.get(key);
     if (!b) { b = []; dotBuckets.set(key, b); bucketKeys.push(key); }
     b.push(g.x, g.y, nbrGroups.has(gi) ? ptRadius + 0.5 : ptRadius);
-    if (g.members.length > 1) ringDots.push(g.x, g.y);
   }
   lastDrawnDots = gc.groups.length;
   if (dimDots.length) {
@@ -2699,16 +2697,6 @@ function paint() {
       mgraphics.arc(b[k], b[k + 1], b[k + 2], 0, Math.PI * 2);
     }
     mgraphics.fill();
-  }
-  if (ringDots.length) {
-    xoSrc(1.0, 1.0, 1.0, 0.38);
-    mgraphics.set_line_width(0.6);
-    const rr = ptRadius + 1.3;
-    for (let k = 0; k < ringDots.length; k += 2) {
-      mgraphics.move_to(ringDots[k] + rr, ringDots[k + 1]);
-      mgraphics.arc(ringDots[k], ringDots[k + 1], rr, 0, Math.PI * 2);
-    }
-    mgraphics.stroke();
   }
 
   // 7. Highlight Selected & Hovered Point (at the group's dot when the point is grouped)
