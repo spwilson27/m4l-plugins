@@ -19,11 +19,12 @@ const g = require(process.argv[1]);
 const L = g.glitchLayout();
 const base = {};
 for (const i of L.instances) base[i.id] = i.base;
-console.log(JSON.stringify({ np: L.np, weightsOffset: L.weightsOffset, seqOffset: L.seqOffset, ninst: L.ninst, base, meta: g.glitchMeta(), scope: g.GL_SCOPE, index: L.index,
+console.log(JSON.stringify({ np: L.np, weightsOffset: L.weightsOffset, seqOffset: L.seqOffset, metaOffset: L.metaOffset, defsOffset: L.defsOffset, wbOffset: L.wbOffset, ninst: L.ninst, constants: g.glitchEngineConstants(), base, meta: g.glitchMeta(), scope: g.GL_SCOPE, index: L.index,
   bands: g.GL_BANDS,
   latency: g.GL_LATENCY, slotsBufSamps: g.GL_SLOTS_BUF_SAMPS, scopeSamps: g.GL_SCOPE_SAMPS, nslot: g.GL_NSLOT,
   order: L.instances.map((i) => i.id), params: g.GL_PARAMS, paramKeys: g.GL_PARAM_KEYS,
-  face: g.glitchFaceLayout(g.defaultUi()), faceEditor: g.glitchFaceLayout({ editor: 1, slots: 1 }) }));
+  face: g.glitchFaceLayout(g.defaultUi()),
+  faces: { editor: g.glitchFaceLayout({ editor: 1, slots: 1 }), seq: g.glitchFaceLayout({ seq: 1, slots: 1 }), options: g.glitchFaceLayout({ options: 1, slots: 1 }), many: g.glitchFaceLayout({ slots: 1 }), many2: g.glitchFaceLayout({ slots: 1 }) } }));
 """
 
 
@@ -51,6 +52,9 @@ def tokens(layout):
         "WOFF": layout["weightsOffset"],
         "SVSIZE": layout["np"] * layout["nslot"],
         "SQOFF": layout["seqOffset"],
+        "METAOFF": layout["metaOffset"],
+        "DEFOFF": layout["defsOffset"],
+        "WBOFF": layout["wbOffset"],
         "NINST": layout["ninst"],
     }
     for k, v in layout["base"].items():
@@ -61,16 +65,6 @@ def tokens(layout):
         t["I_" + key.replace(".", "_")] = idx
     for k, v in layout["scope"].items():
         t[f"SC_{k}"] = v
-    init = []
-    for i, (kind, grp, dflt) in enumerate(layout["meta"]):
-        init.append(f"\td_meta.poke({_fmt(kind)}, {i}, 0);")
-        init.append(f"\td_meta.poke({_fmt(grp)}, {i}, 1);")
-        init.append(f"\td_meta.poke({_fmt(dflt)}, {i}, 2);")
-        init.append(f"\td_pv.poke({_fmt(dflt)}, {i});")
-        init.append(f"\td_tgt.poke({_fmt(dflt)}, {i});")
-    for k, iid in enumerate(layout["order"]):
-        init.append(f"\td_wb.poke({layout['base'][iid]}, {k});")
-    t["INIT"] = "\n".join(init)
     return t
 
 

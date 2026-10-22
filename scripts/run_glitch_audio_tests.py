@@ -34,7 +34,8 @@ NP = LAYOUT["np"]
 WOFF = LAYOUT["weightsOffset"]
 SQOFF = LAYOUT["seqOffset"]
 POS = {iid: i for i, iid in enumerate(LAYOUT["order"])}  # chain position of each instance (telemetry ACTIVITY / LEVEL index)
-SC_ARGS = [f"sc:{k}={v}" for k, v in LAYOUT["scope"].items()]
+SC_ARGS = [f"sc:{k}={v}" for k, v in LAYOUT["scope"].items()] + [f"meta:{LAYOUT['metaOffset']}"]
+CONSTANTS = LAYOUT["constants"]  # kind + 4 * group per param, defaults, wet index per chain position (the engine buffer's constants block)
 GEN = gc.gen_source(LAYOUT)
 DEFAULTS = [m[2] for m in LAYOUT["meta"]]
 
@@ -70,6 +71,7 @@ def build_device(code, case):
         mh.msg("obj-slotmsg", slotdata(case.get("slots", [])), 200, 160, 700),
         mh.msg("obj-wmsg", weights_msg(case.get("weights", [1])), 200, 190, 300),
         mh.msg("obj-seqmsg", case.get("seq", seq_msg(0, 8, 4, 0, 0, [])), 200, 215, 400),
+        mh.msg("obj-metamsg", "meta " + " ".join(f"{x:.7g}" for x in CONSTANTS), 200, 240, 900),
         mh.box("obj-slots-buf", f"buffer~ glitchslots @samps {LAYOUT['slotsBufSamps']}", 520, 70, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-scope-buf", f"buffer~ glitchscope @samps {LAYOUT['scopeSamps']}", 520, 100, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-stim", f"buffer~ stim @samps {3 * SR} @chans 1", 520, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
@@ -96,6 +98,8 @@ def build_device(code, case):
         mh.line("obj-load", 0, "obj-slotmsg", 0),
         mh.line("obj-load", 0, "obj-wmsg", 0),
         mh.line("obj-load", 0, "obj-seqmsg", 0),
+        mh.line("obj-load", 0, "obj-metamsg", 0),
+        mh.line("obj-metamsg", 0, "obj-js", 0),
         mh.line("obj-seqmsg", 0, "obj-js", 0),
         mh.line("obj-fill", 0, "obj-js", 0),
         mh.line("obj-slotmsg", 0, "obj-js", 0),
@@ -146,8 +150,8 @@ def gl_perm(r, seed):
     return pm
 
 
-def xc_token(name, out_start, in_start, ln, rev):
-    return f"xc:{name}:{int(out_start)}:{int(in_start)}:{int(ln)}:{1 if rev else 0}"
+def xc_token(name, out_start, in_start, ln, rev, search=48):
+    return f"xc:{name}:{int(out_start)}:{int(in_start)}:{int(ln)}:{1 if rev else 0}:{int(search)}"
 
 
 # --------------------------------------------------------------------------- cases
@@ -210,7 +214,7 @@ def cases():
     # discrete param switch exactly at the midpoint
     out.append(c("disc_switch", stim="mix", dur=3000, slots=[a, vec({"filt": {"wet": 1, "type": 2, "cutoff": 800, "res": 0.3}})], weights=[0.6, 0.4],
                  events=[(1400, weights_msg([0.4, 0.6]))]))
-    out.append(one("telemetry", {"spec": {"wet": 1, "smr_amt": 0.6, "cc_amt": 1, "cc_coeffs": 0.3}, "chop": {"wet": 1, "pattern": 0xF0F0, "div": 3}}, stim="vowel", dur=3000))
+    out.append(one("telemetry", {"spec": {"wet": 1, "smr_amt": 0.6, "cc_amt": 1, "cc_coeffs": 0.3}, "chop": {"wet": 1, "pattern": 0xFFFB, "div": 3}}, stim="vowel", dur=3000))  # mostly open: the spectral telemetry is only refreshed while sound reaches the STFT
     six = {"drvA": {"wet": 1, "mode": 0, "drive": 12}, "filt": {"wet": 1, "type": 1, "cutoff": 1500, "res": 0.5}, "crush": {"wet": 1, "bits": 8, "rate": 3},
            "stut": {"wet": 1, "div": 4, "prob": 0.6}, "spec": {"wet": 1, "smr_amt": 0.5, "cc_amt": 0.6, "cc_coeffs": 0.4}, "dly": {"wet": 0.5, "div": 4, "fb": 0.5},
            "rev": {"wet": 0.4, "size": 0.7, "decay": 0.7}}
@@ -293,6 +297,7 @@ def cases():
     }
     out.append(one("stress_all", allmods, stim="mix", dur=3000))
     typical_new = {k: allmods[k] for k in ("form", "phas", "rect", "gpit", "shuf", "slap")}
+    out.append(c("cpu_idle", stim="mix", dur=2500, cpu=True))  # no module on: the cost of the engine itself (slot blend, clocks, telemetry)
     out.append(one("cpu6_new", typical_new, stim="mix", dur=2500, cpu=True))
     out.append(one("cpu_all", allmods, stim="mix", dur=2500, cpu=True))
     return out
@@ -301,10 +306,9 @@ def cases():
 def run_case(code, case):
     boxes, lines, events = build_device(code, case)
     mode = "audio_device" if case.get("cpu") else ("stepped" if events else "nrt")
-    r = mh.run_case(f"glitch_{case['name']}", boxes, lines, probe_js=PROBE_JS,
-                    probe_args=" ".join([case["stim"], str(LATENCY), str(WOFF), str(SQOFF)] + SC_ARGS + case.get("probe", []) + [str(x) for x in case.get("lags", [])]),
-                    settle_ms=case["arm"], dur_ms=case["dur"], channels=4, sr=SR, mode=mode, events=events or None, timeout=240)
-    return r
+    return mh.run_case(f"glitch_{case['name']}", boxes, lines, probe_js=PROBE_JS,
+                       probe_args=" ".join([case["stim"], str(LATENCY), str(WOFF), str(SQOFF)] + SC_ARGS + case.get("probe", []) + [str(x) for x in case.get("lags", [])]),
+                       settle_ms=case["arm"], dur_ms=case["dur"], channels=4, sr=SR, mode=mode, events=events or None, timeout=240)
 
 
 # --------------------------------------------------------------------------- checks
@@ -400,11 +404,163 @@ def checks(name, r):
         check(r["scBandsIn"] > 1 and r["scBandsOut"] > 1 and r["scCep"] > 0 and r["scWave"] > 0, f"telemetry: bands {r['scBandsIn']:.1f}/{r['scBandsOut']:.1f} cep {r['scCep']:.2f} wave {r['scWave']:.2f}")
         check(abs(r["scW0"] - 1) < 1e-6 and abs(r["scBpm"] - 120) < 1e-3, "telemetry: weights and bpm echo")
         check(r[f"scLvl{POS['spec']}"] > 0 and r[f"scLvl{POS['chop']}"] > 0, "telemetry: module levels")
-    elif name == "cpu6":
-        check(r["cpuMax"] > 0, "cpu6: cpu measured")
-        check(r["cpuMax"] < 70, f"cpu6: audio CPU {r['cpuMax']:.1f} %")
+    elif name == "formant_a":
+        check(500 < r["peakhz"] < 1200 and r["bout4"] - r["bin4"] < -12, f"formant_a: peak at {r['peakhz']:.0f} Hz (want 500..1200), highs {r['bout4']-r['bin4']:.1f} dB")
+    elif name == "formant_i":
+        check(r["peakhz"] < 520 and r["bout4"] - r["bin4"] < -12, f"formant_i: peak at {r['peakhz']:.0f} Hz (want < 520), highs {r['bout4']-r['bin4']:.1f} dB")
+    elif name == "comb":
+        mult = r["peakhz"] / 480.0
+        check(abs(mult - round(mult)) * 480.0 < 20 and round(mult) >= 1, f"comb: peak {r['peakhz']:.1f} Hz is not a multiple of 480")
+        check(r["crest"] > 3.0, f"comb: tonal (crest {r['crest']:.2f})")
+    elif name == "phaser":
+        check(r["errdb"] > -9, f"phaser: changes the signal (errdb {r['errdb']:.1f})")
+        check(abs(r["gaindb"]) < 6, f"phaser: level {r['gaindb']:.1f} dB")
+    elif name == "rectify_full":
+        check(abs(r["peakhz"] - 880) < 12, f"rectify_full: peak at {r['peakhz']:.1f} Hz (want 880)")
+        check(r["pk440"] - r["pi440"] < -12, f"rectify_full: fundamental gone ({r['pk440']-r['pi440']:.1f} dB)")
+    elif name == "rectify_half":
+        check(r["nonfunddb"] > -25, f"rectify_half: harmonics {r['nonfunddb']:.1f} dB")
+    elif name == "fm_osc":
+        check(r["nonfunddb"] > -20, f"fm_osc: sidebands {r['nonfunddb']:.1f} dB (want > -20)")
+    elif name == "fm_self":
+        check(r["errdb"] > -10, f"fm_self: changes the signal (errdb {r['errdb']:.1f})")
+    elif name == "corrupt":
+        check(r["errdb"] > -8, f"corrupt: changes the signal (errdb {r['errdb']:.1f})")
+        check(r["nonfunddb"] > -25, f"corrupt: broadband damage {r['nonfunddb']:.1f} dB")
+    elif name == "corrupt_off":
+        check(r["lag"] == LATENCY and r["errdb"] < -120, f"corrupt_off: Chance 0 is the identity (lag {r['lag']}, errdb {r['errdb']:.1f})")
+    elif name == "gpitch_up":
+        check(abs(r["peakhz"] - 880) < 15, f"gpitch_up: peak at {r['peakhz']:.1f} Hz (want 880)")
+        check(r["pk440"] - r["pi440"] < -10 and -9 < r["gaindb"] < 3, f"gpitch_up: 440 Hz down {r['pk440']-r['pi440']:.1f} dB, level {r['gaindb']:.1f} dB")
+    elif name == "gpitch_down":
+        check(abs(r["peakhz"] - 220) < 12, f"gpitch_down: peak at {r['peakhz']:.1f} Hz (want 220)")
+        check(-9 < r["gaindb"] < 3, f"gpitch_down: level {r['gaindb']:.1f} dB")
+    elif name == "gstretch":
+        check(abs(r["peakhz"] - 440) < 12 and -9 < r["gaindb"] < 3, f"gstretch: pitch kept ({r['peakhz']:.1f} Hz), level {r['gaindb']:.1f} dB")
+    elif name == "gstretch_freeze":
+        check(r["pk1320"] - r["pi1320"] < -15, f"gstretch_freeze: 1320 Hz suppressed {r['pk1320']-r['pi1320']:.1f} dB (the freeze holds the 440 Hz grain)")
+        check(r["rmsB"] > 0.02, f"gstretch_freeze: still sounding ({r['rmsB']:.4f})")
+    elif name == "revslice":
+        lo = min(r[k] for k in r if k.startswith("x_rev"))
+        sh = sorted(set(int(r[k]) for k in r if k.startswith("xd_rev")))
+        print(f"  revslice: best correlation shifts {sh} samples")
+        check(lo > 0.8, f"revslice: output slices are the reversed previous slices (min corr {lo:.2f})")
+    elif name == "shuffle":
+        ks = [k for k in r if k.startswith("x_shuf")]
+        sh = sorted(set(int(r[k]) for k in r if k.startswith("xd_shuf")))
+        print(f"  shuffle: best correlation shifts {sh} samples")
+        check(len(ks) == 12 and min(r[k] for k in ks) > 0.8, f"shuffle: slices are the seeded permutation of the previous span (min corr {min(r[k] for k in ks):.2f})")
+    elif name == "slapback":
+        check(r["xc0"] > 0.4, f"slapback: echo at 90 ms (corr {r['xc0']:.2f})")
+    elif name == "scatter":
+        check(r["pk1000"] - r["pi1000"] < -10, f"scatter: 1 kHz moved away ({r['pk1000']-r['pi1000']:.1f} dB)")
+    elif name == "mirror":
+        check(abs(r["peakhz"] - 2000) < 80, f"mirror: 1 kHz reflected around 1.5 kHz to {r['peakhz']:.0f} Hz")
+    elif name == "binshift":
+        check(abs(r["peakhz"] - 1750) < 80, f"binshift: 1 kHz + 16 bins to {r['peakhz']:.0f} Hz (want 1750)")
+    elif name == "specgate_topk":
+        check(r["bout3"] - r["bin3"] < -10 and abs(r["pk440"] - r["pi440"]) < 4, f"specgate_topk: noise floor {r['bout3']-r['bin3']:.1f} dB, 440 Hz kept ({r['pk440']-r['pi440']:.1f} dB)")
+    elif name == "specgate_lofi":
+        check(r["errdb"] > -12 and abs(r["gaindb"]) < 8, f"specgate_lofi: quantized magnitudes (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name == "stress_all":
+        check(r["peak"] <= 1.0 and r["nan"] == 0, f"stress_all: bounded and finite (peak {r['peak']:.3f}, nan {r['nan']})")
+        check(r["peak"] > 0.01, "stress_all: sounds")
+    elif name in ("seq_steps", "seq_hold", "seq_stop", "seq_ppq", "seq_glide", "seq_empty"):
+        seq_checks(name, r)
+    elif name in ("cpu_idle", "cpu6", "cpu6_new", "cpu_all"):
+        check(r["cpuMax"] > 0, f"{name}: cpu measured")
+        check(r["cpuMax"] < (95 if name == "cpu_all" else 70), f"{name}: audio CPU {r['cpuMax']:.1f} % (avg {r['cpuAvg']:.1f})")
+        print(f"  CPU {name}: max {r['cpuMax']:.1f} % avg {r['cpuAvg']:.1f} %")
     elif name == "six_nrt":
         check(r["peak"] <= 1.0, "six_nrt: bounded")
+
+
+
+
+# --------------------------------------------------------------------------- sequencer analysis
+SL = SR // 4  # one step at 120 bpm, 1/8 note
+ARM_SAMPLES = SR * 750 // 1000
+
+
+def envelope(r):
+    out = []
+    while f"e{len(out)}" in r:
+        out.append(r[f"e{len(out)}"])
+    return out
+
+
+def lvl(e, blk, a, b):
+    i0, i1 = max(0, int(a // blk)), min(len(e), int(b // blk))
+    return sum(e[i0:i1]) / max(1, i1 - i0)
+
+
+def onset(e, blk, b, pre, post):
+    """Sample offset (relative to boundary b) of the first block that crosses the midpoint between the old and new level."""
+    mid = (pre + post) / 2.0
+    up = post > pre
+    for i in range(max(0, int((b - 3000) // blk)), min(len(e), int((b + 6000) // blk))):
+        if (e[i] > mid) == up and abs(e[i] - pre) > abs(e[i] - post):
+            return i * blk - b
+    return None
+
+
+def seq_checks(name, r):
+    blk = 256 if name == "seq_glide" else 128
+    e = envelope(r)
+    if name == "seq_empty":
+        check(r["lag"] == LATENCY and r["errdb"] < -120, f"seq_empty: an empty sequence is the dry sound (lag {r['lag']}, errdb {r['errdb']:.1f})")
+        return
+    check(len(e) > 100, f"{name}: envelope dump")
+    if name == "seq_glide":
+        check(r["maxd2"] <= 4.0 * max(r["maxd2in"], 0.01), f"seq_glide: click, max d2 {r['maxd2']:.4f} vs input {r['maxd2in']:.4f}")
+        # block rms of a 440 Hz sine ripples by a few percent; a 4-block mean shows the ramp (the gain is blended in dB: about 0.01 per block at the start of a 12 dB glide, a hard step would be 0.26)
+        sm = [sum(e[i:i + 4]) / 4 for i in range(len(e) - 4)]
+        steps = [abs(sm[i + 1] - sm[i]) for i in range(len(sm) - 1) if i * blk > 2000]
+        check(max(steps) < 0.02, f"seq_glide: smooth level, max smoothed block step {max(steps):.4f}")
+        hi, lo = lvl(e, blk, SL * 3 + 200, SL * 3 + 1200), lvl(e, blk, SL * 4 - 1200, SL * 4 - 200)
+        mid = lvl(e, blk, SL * 3 + 5500, SL * 3 + 6500)
+        check(lo < mid < hi or hi < mid < lo, f"seq_glide: halfway through the step the level is between the two slots ({hi:.3f} / {mid:.3f} / {lo:.3f})")
+        return
+    # boundaries k * SL in window samples (the window starts exactly on a step boundary: arm 750 ms = 3 steps)
+    plan = {
+        "seq_steps": {k: True for k in range(1, 9)},
+        "seq_hold": {k: (k % 2 == 1) for k in range(1, 8)},
+    }.get(name)
+    if plan:
+        for k, change in plan.items():
+            b = k * SL
+            pre, post = lvl(e, blk, b - 3000, b - 400), lvl(e, blk, b + 2500, b + 3500)
+            if change:
+                ratio = max(pre, post) / max(min(pre, post), 1e-9)
+                check(ratio > 2.5, f"{name}: boundary {k} changes the level (x{ratio:.2f})")
+                on = onset(e, blk, b, pre, post)
+                check(on is not None and -256 <= on <= 1500, f"{name}: boundary {k} onset {on} samples after the step boundary (want -256..1500)")
+                early = max(abs(x - pre) / pre for x in e[int((b - 3000) // blk):int((b - 300) // blk)])
+                check(early < 0.3, f"{name}: boundary {k} nothing happens before the boundary (dev {early:.2f})")
+            else:
+                check(abs(post - pre) / pre < 0.15, f"{name}: boundary {k} holds the slot ({pre:.4f} -> {post:.4f})")
+    if name == "seq_steps":
+        check(r["scSeqOn"] == 1 and r["scSeqPlay"] == 1, "seq_steps: telemetry on / playing")
+        check(r["scSeqSlot"] in (0, 1) and r["scSeqPrev"] in (0, 1) and r["scSeqCount"] > 10, f"seq_steps: telemetry slot {r['scSeqSlot']} prev {r['scSeqPrev']} count {r['scSeqCount']}")
+        check(abs(r["scW0"] + r["scW1"] - 1) < 1e-4, "seq_steps: weights telemetry")
+    if name == "seq_stop":
+        w0 = 1100 * SR // 1000 - ARM_SAMPLES  # 'playing 0' lands here
+        ref = lvl(e, blk, w0 - 2500, w0 - 300)
+        for a in range(w0 + 1500, len(e) * blk - 12000, 12000):
+            v = lvl(e, blk, a, a + 10000)
+            check(abs(v - ref) / ref < 0.12, f"seq_stop: step held after the transport stops (window {a}: {v:.4f} vs {ref:.4f})")
+        check(r["scSeqPlay"] == 0, "seq_stop: telemetry reports the stopped transport")
+    if name == "seq_ppq":
+        w0 = 1100 * SR // 1000 - ARM_SAMPLES
+        a_lvl, b_lvl = lvl(e, blk, w0 - 3000, w0 - 300), lvl(e, blk, w0 + 1500, w0 + 9000)
+        check(a_lvl / b_lvl > 2.5, f"seq_ppq: the ppq jump to step 1 switches to slot B (A {a_lvl:.4f}, B {b_lvl:.4f})")
+        on = onset(e, blk, w0, a_lvl, b_lvl)
+        check(on is not None and -256 <= on <= 1500, f"seq_ppq: the switch starts at the jump ({on} samples)")
+        b2 = w0 + SL  # the next boundary follows the new clock (one step after the jump)
+        a2 = lvl(e, blk, b2 + 2500, b2 + 3500)
+        check(a2 / b_lvl > 2.5, f"seq_ppq: next boundary one step after the jump (B {b_lvl:.4f} -> A {a2:.4f})")
+        on2 = onset(e, blk, b2, b_lvl, a2)
+        check(on2 is not None and -256 <= on2 <= 1500, f"seq_ppq: next boundary onset {on2}")
 
 
 def print_case(case, r):

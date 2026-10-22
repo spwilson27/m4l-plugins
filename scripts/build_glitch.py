@@ -13,8 +13,9 @@ creates `gen~ @gen <file>` and wires it: every gen-bound message goes through th
 pass the dry signal (input 1); dsp_on 2 switches them. dsp_ready re-sends the buffer binding, Mix, Output, bpm and ppq.
 
 Engine contract:
-  buffer~ #0-glitchslots @samps 1024  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
-                                      sequencer block at seqOffset (mode header + 16 steps, see src/glitch_config.js).
+  buffer~ #0-glitchslots @samps 1280  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
+                                      sequencer block at seqOffset (mode header + 16 steps) + the layout constants block (meta, defaults,
+                                      wet indices; see src/glitch_config.js).
   buffer~ #0-glitchscope @samps 512   gen -> UI telemetry (layout GL_SCOPE in src/glitch_config.js).
   loadbang binds both buffers in gen (`slots ..., scope ...`) and in the v8ui (`setbuffer ...`).
   plugsync~ feeds the gen Params `bpm`, `ppq` and `playing` (outlet 0, the transport state: the sequencer clock holds while 0). Mix -> Param `wet` (0..1), Output -> Param `outdb` (dB).
@@ -22,7 +23,8 @@ Engine contract:
 Live parameters (src/glitch_config.js GL_PARAMS, real live.* objects, NOT in presentation): Morph X / Y, Chaos, Mix, Output,
 Randomize, Mutate (trigger toggles), Mode (Working / Morph / Seq), Seq Rate, Glide and Seq Length. The v8ui draws every control.
 
-Usage: build_glitch.py [--preview-editor]   (--preview-editor writes tests/out/Glitch_editor.amxd with the module editor open)
+Usage: build_glitch.py [--preview-editor|--preview-seq|--preview-options|--preview-many|--preview-many2|--preview-all]
+(each writes tests/out/Glitch_<name>.amxd in that UI state; render_preview.py on it writes previews/glitch_<name>.png)
 """
 
 import hashlib
@@ -39,7 +41,7 @@ UI_PATH = os.path.join(ROOT_DIR, "src", "glitch_ui.js")
 DEVICES_DIR = os.path.join(ROOT_DIR, "devices")
 OUT_PATH = os.path.join(DEVICES_DIR, "Glitch.amxd")
 
-PREVIEW_PATH = os.path.join(ROOT_DIR, "tests", "out", "Glitch_editor.amxd")
+PREVIEW_DIR = os.path.join(ROOT_DIR, "tests", "out")
 
 DEVICE_H = 169.0
 
@@ -130,7 +132,7 @@ def param_box(key, spec, x, y):
 
 
 # ----------------------------------------------------------------------------- UI + parameters
-def ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview_editor):
+def ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview):
     with open(gc.CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
@@ -138,7 +140,7 @@ def ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview_editor):
     script = (
         config_js
         + f"\nvar GEN_DSP_TEXT = {json.dumps(gen_dsp_text)};\nvar GEN_DSP_HASH = \"{gen_dsp_hash}\";\n"
-        + f"var UI_PREVIEW_EDITOR = {'true' if preview_editor else 'false'};\n"
+        + f"var UI_PREVIEW = {json.dumps(preview)};\n"
         + ui_js
     )
     boxes = []
@@ -275,14 +277,17 @@ def engine_boxes(layout):
     return boxes, lines
 
 
-def build_patcher(preview_editor=False):
+PREVIEWS = ("editor", "seq", "options", "many", "many2")
+
+
+def build_patcher(preview=""):
     layout = gc.load_layout()
-    face = layout["faceEditor"] if preview_editor else layout["face"]
+    face = layout["faces"][preview] if preview else layout["face"]
     width = int(face["width"])
     gen_code = gc.gen_source(layout)
     gen_dsp_text = gc.gendsp_json(gen_code)
     gen_dsp_hash = hashlib.sha1(gen_dsp_text.encode("utf-8")).hexdigest()[:12]
-    ui_b, ui_l = ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview_editor)
+    ui_b, ui_l = ui_boxes(layout, width, gen_dsp_text, gen_dsp_hash, preview)
     eng_b, eng_l = engine_boxes(layout)
     boxes = ui_b + eng_b
     return {
@@ -330,8 +335,15 @@ def write_amxd(patcher, out_path):
 
 
 def main():
-    if "--preview-editor" in sys.argv:
-        write_amxd(build_patcher(True), PREVIEW_PATH)
+    flags = [a for a in sys.argv[1:] if a.startswith("--preview-")]
+    if "--preview-all" in flags:
+        flags = [f"--preview-{n}" for n in PREVIEWS]
+    if flags:
+        for f in flags:
+            name = f[len("--preview-"):]
+            if name not in PREVIEWS:
+                sys.exit(f"unknown preview {name} (one of {', '.join(PREVIEWS)}, all)")
+            write_amxd(build_patcher(name), os.path.join(PREVIEW_DIR, f"Glitch_{name}.amxd"))
         return
     write_amxd(build_patcher(), OUT_PATH)
 

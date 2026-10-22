@@ -14,6 +14,8 @@
  *   morph     slot 1 = hard drive, slot 2 = a 60 Hz low pass (test_fill, corners 1 2 1 2). Setting Morph X through the LOM
  *             flips Mode to Morph by itself; X = 0 is loud, X = 100 is >= 10 dB quieter (telemetry; the track meter, which
  *             is on Live's own scale, agrees in direction), X = 50 lies between
+ *   seq       Mode = Seq through the LOM: the step advances while the transport plays; Seq Rate / Glide / Seq Length set through the
+ *             LOM reach the gen (its reported step length, step = counter mod length, crossfade = fraction / glide)
  *   mix       Mix 0 returns the dry level while the strong glitch is active
  *
  *   node scripts/test_glitch_live.js [--port 19880] [--wav /tmp/glitch_test_220.wav]
@@ -86,7 +88,7 @@ const params = evalLom(`
     }
     return out;
 `);
-const WANT = ["Morph X", "Morph Y", "Chaos", "Mix", "Out", "Randomize", "Mutate", "Mode"];
+const WANT = ["Morph X", "Morph Y", "Chaos", "Mix", "Out", "Randomize", "Mutate", "Mode", "Seq Rate", "Glide", "Seq Length"];
 check(WANT.every((n) => params[n]), "Live parameters present: " + WANT.map((n) => (params[n] ? n : "!" + n)).join(", "));
 const getP = (name) => Number(evalLom(`return new LiveAPI("id ${params[name].id}").get("value");`));
 const setP = (name, v) => evalLom(`new LiveAPI("id ${params[name].id}").set("value", ${v}); return 1;`);
@@ -235,6 +237,92 @@ check(lo - hi >= 10, `Morph X 0 -> 100 changes the output by ${(lo - hi).toFixed
 check(loM > hiM + 0.05, "the track meter follows (X = 0 louder than X = 100)");
 check(mid < lo - 0.5 && mid > hi + 0.5, "X = 50 lies between the two corners");
 check(getP("Morph X") === 50, "Morph X reads back 50");
+
+// sequencer (phase 2): Mode = Seq through the LOM, two steps (slot 1 loud, slot 2 quiet), the transport plays (the clip is running).
+// Every value the sequencer reports in one tick (beat, step counter, fraction, glide progress) must agree with the settings that
+// came through the LOM: that proves Seq Rate / Glide / Seq Length reached the gen, not only the face's state.
+const GS = require("../src/glitch_config.js");
+debug("seqstep", 0, 0);
+debug("seqstep", 1, 1);
+sleep(300);
+setP("Seq Length", 2);
+setP("Seq Rate", 2);
+setP("Glide", 0);
+setP("Mode", 2);
+sleep(900);
+const isPlaying = () => Number(evalLom('return new LiveAPI("live_set").get("is_playing");')) === 1;
+check(isPlaying(), "the transport is playing (the clip launched it)");
+const sq0 = report();
+check(sq0.audition === "seq" && getP("Mode") === 2, "Mode = Seq through the LOM");
+check(sq0.seq && sq0.seq.length === 2 && sq0.seq.rate === 2 && sq0.seq.steps[0] === 0 && sq0.seq.steps[1] === 1, `Seq Length / Seq Rate reach the state (${JSON.stringify(sq0.seq)})`);
+check(sq0.seqHdr && sq0.seqHdr[0] === 2 && sq0.seqHdr[1] === 2 && sq0.seqHdr[2] === 2, `... and the engine buffer header (${JSON.stringify(sq0.seqHdr)})`);
+check(sq0.seqTele && sq0.seqTele.on === 1 && sq0.seqTele.play === 1, "sequencer telemetry on and playing");
+function seqSamples(n, gapMs) {
+    const out = [];
+    for (let i = 0; i < n; i++) { const t = report().seqTele; if (t) out.push(t); sleep(gapMs); }
+    return out;
+}
+// the step advances while the transport plays
+let sm = seqSamples(12, 150);
+const counts = [...new Set(sm.map((t) => t.count))];
+const seen = {};
+for (const t of sm) seen[t.step] = (seen[t.step] || 0) + 1;
+check(counts.length >= 4 && sm.every((t, i) => i === 0 || t.count >= sm[i - 1].count), `the step counter advances with the transport (${counts.length} distinct of 12: ${counts.slice(0, 6).join(",")}...)`);
+check(seen[0] > 0 && seen[1] > 0, `both steps are visited while the transport plays (${JSON.stringify(seen)})`);
+check(sm.every((t) => t.step === t.count % 2), "step = counter mod Seq Length (2)");
+const stepLen = (t) => t.beat / (t.count + t.frac);
+const near = (a, b, tol) => Math.abs(a - b) <= tol * b;
+check(sm.every((t) => near(stepLen(t), GS.GL_SEQ_RATES[2], 0.02)), `Seq Rate 1/16: the gen's step length is ${GS.GL_SEQ_RATES[2]} beat (${stepLen(sm[0]).toFixed(4)})`);
+// Seq Rate through the LOM: the gen's step length follows
+for (const idx of [6, 0]) {
+    setP("Seq Rate", idx);
+    sleep(700);
+    sm = seqSamples(4, 120);
+    check(sm.every((t) => near(stepLen(t), GS.GL_SEQ_RATES[idx], 0.02)), `Seq Rate ${GS.GL_SEQ_RATE_NAMES[idx]} via the LOM: gen step length ${GS.GL_SEQ_RATES[idx].toFixed(3)} beat (${stepLen(sm[0]).toFixed(4)})`);
+}
+setP("Seq Rate", 4);
+// Seq Length through the LOM
+debug("seqstep", 2, 0);
+sleep(200);
+setP("Seq Length", 3);
+sleep(700);
+sm = seqSamples(10, 130);
+check(getP("Seq Length") === 3 && sm.every((t) => t.step === t.count % 3 && t.step < 3), `Seq Length 3 via the LOM: step = counter mod 3 in the gen (steps ${[...new Set(sm.map((t) => t.step))].sort().join(",")})`);
+check(new Set(sm.map((t) => t.step)).size >= 2, "and the steps keep moving");
+setP("Seq Length", 5);
+sleep(700);
+sm = seqSamples(6, 130);
+check(sm.every((t) => t.step === t.count % 5), "Seq Length 5 via the LOM: step = counter mod 5");
+// Glide through the LOM: the gen's crossfade progress is fraction / glide
+setP("Glide", 0);
+sleep(600);
+sm = seqSamples(6, 100);
+check(sm.every((t) => t.glide > 0.999), "Glide 0 %: the crossfade is a hard switch in the gen (progress 1)");
+setP("Glide", 50);
+sleep(700);
+sm = seqSamples(10, 90);
+const gl = sm.map((t) => Math.abs(t.glide - Math.min(1, t.frac / 0.5)));
+check(Math.max(...gl) < 0.06 && sm.some((t) => t.glide < 0.95), `Glide 50 % via the LOM: crossfade progress = fraction / 0.5 in the gen (max error ${Math.max(...gl).toFixed(3)}, ${sm.filter((t) => t.glide < 0.95).length} of 10 samples mid-fade)`);
+setP("Glide", 0);
+// Randomize Sequence and a step edit from the face's own clicks
+{
+    const Gs = GS;
+    const Lq = Gs.glitchFaceLayout({ seq: 1 });
+    const midr = (r) => [r.x + r.w / 2, r.y + r.h / 2];
+    debug("test_section", "seq", 1);
+    sleep(500);
+    check(report().width === Lq.width, `the SEQ section opens through the face (width ${report().width})`);
+    const stepsBefore = JSON.stringify(report().seq.steps);
+    debug("test_click", ...midr(Lq.seq.dice));
+    sleep(500);
+    const rs = report();
+    check(JSON.stringify(rs.seq.steps) !== stepsBefore && rs.audition === "seq", "click on Randomize Sequence rolls a new sequence and keeps Seq");
+    debug("test_section", "seq", 0);
+    sleep(300);
+}
+setP("Seq Length", 2);
+setP("Mode", 0);
+sleep(500);
 
 // Mix: 0 = the dry level, with the strong glitch active
 setP("Morph X", 0);

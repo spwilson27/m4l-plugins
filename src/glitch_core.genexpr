@@ -10,8 +10,8 @@
 // are above 0; otherwise the spectral stage is a plain 1023-sample delay. Latency is therefore ALWAYS 1023 samples (N - 1),
 // dry is delayed identically, neutral is an exact identity.
 //
-// Parameters: the UI fills buffer~ #0-glitchslots (8 slot vectors + 8 weights + the sequencer block, layout in
-// glitch_config.js). Every ~32 samples (and on the exact sample of a sequencer step boundary) gen blends the slots
+// Parameters: the UI fills buffer~ #0-glitchslots (8 slot vectors + 8 weights + the sequencer block + the layout constants,
+// layout in glitch_config.js). Every ~32 samples (and on the exact sample of a sequencer step boundary) gen blends the slots
 // (gl_blend: see glitch_config.js blendVectors) into d_tgt and smooths into d_pv. In Seq mode (header mode 2) the weights
 // are computed here from the host beat (gl_seq) instead of read from the buffer. Mix, Output, bpm, ppq and playing are gen
 // Params.
@@ -1024,7 +1024,7 @@ gl_seq_slot(sq, idx, slen) {
 // Weights of the 8 slots at host beat bt into wv; ss gets the telemetry (0 step, 1 slot, 2 previous slot, 3 glide progress,
 // 4 fraction, 5 absolute step).
 gl_seq(sq, wv, ss, bt) {
-	slen = clip(round(sq.peek(1)), 1, 16);
+	slen = clip(floor(sq.peek(1) + 0.5), 1, 16);
 	dv = gl_seqdiv(sq.peek(2));
 	gld = clip(sq.peek(3), 0, 1);
 	cv = sq.peek(4);
@@ -1173,7 +1173,7 @@ gl_cproc(fc, cn, us, pm, scope, offO, offC, n, qs, kq, bits, smode, samt, tele) 
 		stp = 1.5 * pow(2, 0 - (bits - 1) * 0.75);
 		inv = 1 / stp;
 		for (q = 1; q <= half; q += 1) {
-			cn.poke(round(cn.peek(q) * inv) * stp, q);
+			cn.poke(floor(cn.peek(q) * inv + 0.5) * stp, q);
 		}
 	}
 	if (tele > 0.5) {
@@ -1494,7 +1494,7 @@ Param playing(1);
 Param wet(1);
 Param outdb(0);
 
-History initDone(0);
+History firstTick(1);
 History ctlCnt(0);
 History nSeenR(0);
 History beat(0);
@@ -1559,11 +1559,6 @@ fft_init(d_tab);
 n = 1024;
 stft_win(d_win, n);
 
-if (initDone < 0.5) {
-@INIT@
-	initDone = 1;
-}
-
 // --- host clock: free-runs on the tempo, locks to the host position whenever it moves ---
 bpmE = max(bpm, 20);
 if (ppq != ppqPrev) {
@@ -1594,6 +1589,20 @@ if (ctlCnt >= 32 || chg > 0.5) {
 	for (i = 0; i < 24; i += 1) {
 		d_sq.poke(peek(slots, @SQOFF@ + i, 0), i);
 	}
+	// layout constants ride in the buffer (a 565-statement init block cost ~3 s of gen compile time): param kind + 4 * group,
+	// default, and the wet index of every chain position
+	for (i = 0; i < @NP@; i += 1) {
+		mcode = peek(slots, @METAOFF@ + i, 0);
+		mgrp = floor(mcode * 0.25);
+		mdef = peek(slots, @DEFOFF@ + i, 0);
+		d_meta.poke(mcode - 4 * mgrp, i, 0);
+		d_meta.poke(mgrp, i, 1);
+		d_meta.poke(mdef, i, 2);
+	}
+	for (k = 0; k < @NINST@; k += 1) {
+		mwb = peek(slots, @WBOFF@ + k, 0);
+		d_wb.poke(mwb, k);
+	}
 	modeNow = d_sq.peek(0);
 	hMode = modeNow;
 	sqd = gl_seqdiv(d_sq.peek(2));
@@ -1602,7 +1611,9 @@ if (ctlCnt >= 32 || chg > 0.5) {
 		gl_seq(d_sq, d_wv, d_sqs, sqB);
 	}
 	gl_blend(d_sv, d_wv, d_meta, d_tgt, @NP@);
-	gl_smooth(d_pv, d_tgt, d_meta, @NP@, 0.15);
+	snapK = firstTick > 0.5 ? 1 : 0.15;
+	firstTick = 0;
+	gl_smooth(d_pv, d_tgt, d_meta, @NP@, snapK);
 	hSpecW = d_pv.peek(@B_spec@);
 	hFrzA = d_pv.peek(@B_spec@ + 1);
 	hFrzR = d_pv.peek(@B_spec@ + 2);
@@ -1628,13 +1639,17 @@ if (ctlCnt >= 32 || chg > 0.5) {
 	d_bop.poke(hMirA, 3);
 	d_bop.poke(mirBin, 4);
 	d_bop.poke(0, 5);
+	bshBins = floor(d_pv.peek(@I_spec_bsh_bins@) + 0.5);
+	sglMode = floor(clip(d_pv.peek(@I_spec_sgl_mode@), 0, 1) + 0.5);
+	sglKeep = floor(clip(d_pv.peek(@I_spec_sgl_k@), 1, 256) + 0.5);
+	sglStep = d_pv.peek(@I_spec_sgl_step@);
 	d_bop.poke(hBshA, 6);
-	d_bop.poke(round(d_pv.peek(@I_spec_bsh_bins@)), 7);
+	d_bop.poke(bshBins, 7);
 	d_bop.poke(0, 8);
 	d_bop.poke(hSglA, 9);
-	d_bop.poke(round(clip(d_pv.peek(@I_spec_sgl_mode@), 0, 1)), 10);
-	d_bop.poke(floor(clip(d_pv.peek(@I_spec_sgl_k@), 1, 256) + 0.5), 11);
-	d_bop.poke(d_pv.peek(@I_spec_sgl_step@), 12);
+	d_bop.poke(sglMode, 10);
+	d_bop.poke(sglKeep, 11);
+	d_bop.poke(sglStep, 12);
 	qsH = clip(round(sr * 0.002), 16, 96);
 	hKq = gl_kq(hCoef, n, qsH);
 	rrH = max(2, min(floor(hKq), floor(qsH)));

@@ -4,9 +4,10 @@
 // buffer~ rec holds 4 channels: 1 = device out L, 2 = device in L (the stimulus), 3 = device out R, 4 = stimulus phasor.
 // jsarguments: stimulus, latency (samples), weights offset in the slots buffer, sequencer block offset, then any number of
 //   "sc:NAME=offset" tokens (the GL_SCOPE layout from src/glitch_config.js), "dump:N" (write the output's rms per N-sample block
-//   as e0, e1, ...), "xc:name:outStart:inStart:len:rev" (normalized correlation of out[outStart + i] with in[inStart + i], or
-//   in[inStart - i] when rev = 1, reported as x_<name>; window sample indices) and plain numbers = lags (samples) for the correlations.
-// Inlet 0 also takes: seq <24 floats> (write the sequencer block at the sequencer offset).
+//   as e0, e1, ...), "xc:name:outStart:inStart:len:rev[:search]" (normalized correlation of out[outStart + i] with in[inStart + i], or
+//   in[inStart - i] when rev = 1, reported as x_<name>, the output shift -search..search that correlates best as xd_<name>; window sample indices) and plain numbers = lags (samples) for the correlations.
+// Inlet 0 also takes: seq <24 floats> (write the sequencer block at the sequencer offset), meta <floats> (the constants block at the
+//   offset given by the "meta:N" token).
 
 inlets = 2;
 outlets = 1;
@@ -19,10 +20,12 @@ var LAGS = [];
 var SC = {};
 var DUMP = 0;
 var XC = [];
+var METAOFF = 936;
 for (var ja = 5; ja < jsarguments.length; ja++) {
     var tok = String(jsarguments[ja]);
     if (tok.indexOf("sc:") === 0) { var eq = tok.indexOf("="); SC[tok.substring(3, eq)] = Number(tok.substring(eq + 1)); }
     else if (tok.indexOf("dump:") === 0) DUMP = Number(tok.substring(5));
+    else if (tok.indexOf("meta:") === 0) METAOFF = Number(tok.substring(5));
     else if (tok.indexOf("xc:") === 0) XC.push(tok.substring(3).split(":"));
     else LAGS.push(Number(tok));
 }
@@ -93,6 +96,12 @@ function weights() {
     var a = arrayfromargs(arguments);
     var buf = new Buffer("glitchslots");
     buf.poke(1, WOFF, a);
+}
+function meta() {
+    // the layout constants block of the engine buffer (param kinds / groups, defaults, wet indices): gen no longer has an init block
+    var a = arrayfromargs(arguments);
+    var buf = new Buffer("glitchslots");
+    buf.poke(1, METAOFF, a);
 }
 function seq() {
     var a = arrayfromargs(arguments);
@@ -287,7 +296,7 @@ function analyzeImpl(durMs) {
 
     // telemetry
     var tb = new Buffer("glitchscope");
-    var ch = tb.peek(1, 0, SC.END || 470);
+    var ch = tb.peek(1, 0, (SC.END || 470) + (SC.DBGN || 0));
     if (ch && ch.length) {
         R.scFrame = ch[SC.FRAME]; R.scSr = ch[SC.SR]; R.scInPeak = ch[SC.IN_PEAK]; R.scOutPeak = ch[SC.OUT_PEAK]; R.scSpecRun = ch[SC.SPEC_RUN]; R.scSpecMix = ch[SC.SPEC_MIX];
         R.scBeat = ch[SC.BEAT]; R.scBpm = ch[SC.BPM]; R.scStut = ch[SC.STUT_ENGAGED]; R.scChopPat = ch[SC.CHOP_PATTERN];
@@ -298,17 +307,25 @@ function analyzeImpl(durMs) {
         R.scActSum = act; R.scLvlSum = lvl; R.scBandsIn = bi; R.scBandsOut = bo; R.scCep = cp; R.scWave = wv; R.scSpecFrames = ch[SC.SPEC_FRAMES];
         for (i = 0; i < 8; i++) R["scW" + i] = ch[SC.WEIGHTS + i];
         R.scSeqOn = ch[SC.SEQ_ON]; R.scSeqPlay = ch[SC.SEQ_PLAY]; R.scSeqStep = ch[SC.SEQ_STEP]; R.scSeqSlot = ch[SC.SEQ_SLOT]; R.scSeqPrev = ch[SC.SEQ_PREV];
+        for (i = SC.END; i < ch.length; i++) R['scx' + i] = ch[i]; // debug slots beyond END (the runner asks for a larger END)
         R.scSeqGlide = ch[SC.SEQ_GLIDE]; R.scSeqFrac = ch[SC.SEQ_FRAC]; R.scSeqCount = ch[SC.SEQ_COUNT];
     }
     for (var xi = 0; xi < XC.length; xi++) {
         var xo = Number(XC[xi][1]), xs = Number(XC[xi][2]), xn = Number(XC[xi][3]), xr = Number(XC[xi][4]) > 0.5;
-        var xd = 0, xa = 1e-30, xb = 1e-30;
-        for (i = 0; i < xn; i++) {
-            var xv = outL[xo + i], xw = inL[xr ? xs - i : xs + i];
-            if (xv === undefined || xw === undefined) continue;
-            xd += xv * xw; xa += xv * xv; xb += xw * xw;
+        var xsearch = XC[xi].length > 5 ? Number(XC[xi][5]) : 0; // also try output shifts -S..S and keep the best correlation
+        var bestX = -2, bestD = 0;
+        for (var xdd = -xsearch; xdd <= xsearch; xdd++) {
+            var xd = 0, xa = 1e-30, xb = 1e-30;
+            for (i = 0; i < xn; i++) {
+                var xv = outL[xo + xdd + i], xw = inL[xr ? xs - i : xs + i];
+                if (xv === undefined || xw === undefined) continue;
+                xd += xv * xw; xa += xv * xv; xb += xw * xw;
+            }
+            var xcv = xd / Math.sqrt(xa * xb);
+            if (xcv > bestX) { bestX = xcv; bestD = xdd; }
         }
-        R["x_" + XC[xi][0]] = xd / Math.sqrt(xa * xb);
+        R["x_" + XC[xi][0]] = bestX;
+        R["xd_" + XC[xi][0]] = bestD;
     }
     if (DUMP > 0) {
         // rms of the output per block (sequencer / gating timing is read from this by the runner)

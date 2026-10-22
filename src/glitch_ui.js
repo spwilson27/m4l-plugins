@@ -4,11 +4,15 @@
 // and is dropped when it is a stale echo of something the face sent (expectEcho / isStaleEcho).
 //
 // scripts/build_glitch.py prepends src/glitch_config.js (data model + layout, see its header) and injects
-// GEN_DSP_TEXT / GEN_DSP_HASH (the gen patch as .gendsp JSON, AGENTS.md 1d: deferred DSP) and UI_PREVIEW_EDITOR.
+// GEN_DSP_TEXT / GEN_DSP_HASH (the gen patch as .gendsp JSON, AGENTS.md 1d: deferred DSP) and UI_PREVIEW.
 //
 // Sections (collapse / expand, device width follows through live.thisdevice setwidth): CORE (morph pad, glitch view with
-// module tiles, action bar; the Options view replaces it), EDIT (module editor), SLOTS (8 slots; the phase 2 sequencer goes
-// next to it). Layout lives in glitchFaceLayout() (config) so the tests can check every rect.
+// module tiles, action bar; the Options view replaces it), EDIT (module editor), SLOTS (8 slots), SEQ (16-step slot
+// sequencer). Layout lives in glitchFaceLayout() (config) so the tests can check every rect.
+//
+// Modes: Working (the working glitch), Morph (the XY pad over the corner slots), Seq (the sequencer plays the slots). In Morph
+// and Seq the pad, the glitch view and the editor show the SOUNDING blend (soundingWeights). Editing a module there first
+// copies the sounding blend into the Working glitch and switches to Working (beginWorkingEdit), so an edit is always audible.
 //
 // Messages in (inlet 0): setbuffer <slots> <scope>, set_<param> <v> (echo of a live.* object), device_ready, dbg_* / test_*
 //   (via receive #0-glitchdebug), randomize [seed], mutate [amount 0..1], audition working|morph|seq, xy x y, save|recall|clearslot <1..8>,
@@ -33,6 +37,7 @@ var COL_CORAL = [1.0, 0.45, 0.38];
 var COL_AMBER = [1.0, 0.77, 0.30];
 var COL_CYAN = [0.30, 0.82, 0.88];
 var SLOT_COL = [[1.0, 0.42, 0.42], [1.0, 0.64, 0.26], [0.96, 0.84, 0.30], [0.50, 0.86, 0.46], [0.30, 0.82, 0.88], [0.40, 0.58, 0.98], [0.68, 0.48, 0.96], [0.96, 0.48, 0.78]];
+var SEQ_COL = [0.74, 0.56, 1.0];
 var CAT_COL = { Distort: [1.0, 0.52, 0.36], Filter: [0.30, 0.82, 0.88], Pitch: [0.74, 0.56, 1.0], Time: [1.0, 0.77, 0.30], Spectral: [0.46, 0.86, 0.56], Space: [0.44, 0.62, 1.0], Utility: [0.64, 0.70, 0.78] };
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -63,6 +68,10 @@ var gVec = null;
 var gModelDirty = true;
 var gParamVals = {};
 var gTileSig = "";
+var gTilePage = 0;
+var gSeqArm = -1; // the armed sequencer step (click a slot to assign it), -1 = none
+var gSeqSig = "";
+var gDemoBeat = 0; // preview only: the beat the demo sequencer sits at
 var hostPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -93,12 +102,15 @@ function pushEngine() {
 }
 function refreshModel() {
     if (!gModelDirty && gVec) return;
-    gVec = currentVector(gState);
+    // the SOUNDING vector: Seq / Morph blend the slots by the weights that are audible right now (engine telemetry in Seq)
+    gVec = blendVectors(engineVectors(gState), soundingWeights(gState, gHaveTele ? gTele : null, gDemo && !gHaveTele ? gDemoBeat : 0));
     gTiles = glitchTiles(gVec);
-    if (gTiles.length > GL_FACE.MAX_TILES) gTiles = gTiles.slice(0, GL_FACE.MAX_TILES);
     gModelDirty = false;
     var sig = gTiles.map(function (t) { return t.key; }).join(",");
     if (sig !== gTileSig) gTileSig = sig;
+    var pages = glitchViewLayout(gTiles.length, gLayout.view, 0).pages;
+    if (gTilePage >= pages) gTilePage = pages - 1;
+    if (gTilePage < 0) gTilePage = 0;
 }
 function modelChanged() { gModelDirty = true; pushEngine(); mgraphics.redraw(); }
 
@@ -279,15 +291,42 @@ function mutate(amount) {
     } else doMutate();
 }
 function audition(mode) { setAudition(String(mode), true); mgraphics.redraw(); }
-// Sequencer hooks (no sequencer UI yet; the phase 2 UI builds on these): seqrandomize [seed], seqstep <0..15> <slot -1..7>
+// Sequencer entry points (also used by the face): seqrandomize [seed], seqstep <0..15> <slot -1..7>, seqmode
 function seqrandomize(seed) {
     undoPush();
     if (seed !== undefined && !isNaN(Number(seed))) gState.seed = Math.max(1, Math.floor(Number(seed)));
     rerollSequence(gState);
+    if (filledSlots(gState).length) setAudition("seq", true);
     modelChanged();
     done();
 }
 function seqstep(i, slot) { undoPush(); setSeqStep(gState, Number(i), Number(slot)); modelChanged(); done(); }
+function seqmode() { setAudition("seq", true); done(); }
+function seqLengthSet(n) { setSeqLength(gState, n); sendParam("seqlen", gState.seq.length); pushEngine(); mgraphics.redraw(); }
+function seqRateSet(r) { setSeqRate(gState, r); sendParam("seqrate", gState.seq.rate); pushEngine(); mgraphics.redraw(); }
+function seqGlideSet(g) { setSeqGlide(gState, Math.round(clamp(g, 0, 1) * 100) / 100); sendParam("glide", gState.seq.glide * 100); pushEngine(); mgraphics.redraw(); }
+// assign slot (-1 = hold) to step i
+function seqAssign(i, slot) {
+    undoPush();
+    setSeqStep(gState, i, slot);
+    modelChanged();
+    done();
+}
+// Editing a module while Morph or Seq plays: copy what you hear into the Working glitch and switch to it, so the edit is audible.
+// The caller has already pushed the undo snapshot of the gesture.
+function beginWorkingEdit() {
+    if (gState.audition === "working") return;
+    var from = gState.audition;
+    refreshModel();
+    if (gTiles.length) {
+        var cap = vectorToGlitch(gVec);
+        if (gState.working.locks) cap.locks = glCopy(gState.working.locks);
+        gState.working = cap;
+    }
+    setAudition("working", true);
+    gHint = "editing the WORKING glitch (copied from " + from.toUpperCase() + ")";
+    refreshModel();
+}
 function xy(x, y) { setXY(Number(x), Number(y), true); }
 function save(i) { var s = clamp(Math.floor(Number(i)) - 1, 0, 7); undoPush(); saveToSlot(gState, s); gLastSlot = s; modelChanged(); done(); }
 function recall(i) { var s = clamp(Math.floor(Number(i)) - 1, 0, 7); recallAction(s); }
@@ -331,6 +370,7 @@ function toggleSection(name) {
     var ui = gState.ui;
     ui[name] = ui[name] ? 0 : 1;
     if (name === "editor" && ui.editor) { ui.options = 0; selectFirstIfNone(); }
+    if (name === "seq" && !ui.seq) gSeqArm = -1;
     applyLayout();
     done();
 }
@@ -496,8 +536,15 @@ function pullScope() {
     var quiet = level < 0.0003 && !(arr[GL_SCOPE.SPEC_RUN] > 0.5 && level > 0.00005);
     if (arr[GL_SCOPE.FRAME] !== lastFrame) gHaveTele = true;
     lastFrame = arr[GL_SCOPE.FRAME];
-    if (quiet && quietDrawn && !gFlashLive()) return;
-    quietDrawn = quiet;
+    // Seq: the sounding blend follows the sequencer, so the tiles / pad are rebuilt when its slot or crossfade moves
+    var seqLive = gState.audition === "seq" && arr[GL_SCOPE.SEQ_ON] > 0.5;
+    if (seqLive) {
+        var sig = arr[GL_SCOPE.SEQ_SLOT] + "," + arr[GL_SCOPE.SEQ_PREV] + "," + Math.round(arr[GL_SCOPE.SEQ_GLIDE] * 10);
+        if (sig !== gSeqSig) { gSeqSig = sig; gModelDirty = true; quietDrawn = false; }
+    }
+    var seqMoving = seqLive && arr[GL_SCOPE.SEQ_PLAY] > 0.5 && gState.ui.seq;
+    if (quiet && quietDrawn && !gFlashLive() && !seqMoving) return;
+    quietDrawn = quiet && !seqMoving;
     gTele = arr;
     mgraphics.redraw();
 }
@@ -530,6 +577,14 @@ function demoTele() {
     for (var k = 0; k < GL_NINST; k++) {
         a[S.ACTIVITY + k] = clamp(gVec[L.base[GL_INSTANCES[k].id]] || 0, 0, 1);
         a[S.LEVEL + k] = a[S.ACTIVITY + k] > 0 ? 0.25 + 0.45 * Math.abs(Math.sin(k * 1.7 + 0.6)) : 0;
+    }
+    if (gState.audition === "seq") {
+        var sw = seqWeights(gState.seq, gDemoBeat);
+        var wsum = 0;
+        for (var wi = 0; wi < 8; wi++) wsum += sw.weights[wi];
+        for (var wj = 0; wj < 8; wj++) a[S.WEIGHTS + wj] = wsum > 0 ? sw.weights[wj] / wsum : 0;
+        a[S.SEQ_ON] = 1; a[S.SEQ_PLAY] = 1; a[S.SEQ_STEP] = sw.idx; a[S.SEQ_SLOT] = sw.cur; a[S.SEQ_PREV] = sw.prev; a[S.SEQ_GLIDE] = sw.prog; a[S.SEQ_FRAC] = sw.frac; a[S.SEQ_COUNT] = sw.abs;
+        a[S.BEAT] = gDemoBeat;
     }
     a[S.STUT_ENGAGED] = 1; a[S.STUT_PHASE] = 0.37; a[S.CHOP_STEP] = 5; a[S.CHOP_GATE] = 1; a[S.TIME_PHASE] = 0.42;
     for (var b = 0; b < GL_BANDS; b++) {
@@ -608,10 +663,12 @@ function paint() {
     }
     if (L.editor) paintEditor(L.editor);
     if (L.slots) paintSlots(L.slots);
+    if (L.seq) paintSeq(L.seq);
     paintSide(L.side);
-    if (gDrag && gDrag.kind === "slot" && gDrag.moved) {
-        rrect(gDrag.x - 16, gDrag.y - 11, 32, 22, 4, SLOT_COL[gDrag.i], 0.85);
-        label(gDrag.i + 1, gDrag.x, gDrag.y + 4, 11, COL_BG, 1, 1);
+    if (gDrag && (gDrag.kind === "slot" || gDrag.kind === "seqpal") && gDrag.moved) {
+        var gi = gDrag.kind === "slot" ? gDrag.i : gDrag.slot;
+        rrect(gDrag.x - 16, gDrag.y - 11, 32, 22, 4, gi >= 0 ? SLOT_COL[gi] : COL_DIM, 0.85);
+        label(gi >= 0 ? gi + 1 : "hold", gDrag.x, gDrag.y + 4, gi >= 0 ? 11 : 8, COL_BG, 1, 1);
     }
 }
 
@@ -626,6 +683,7 @@ function hoverIs(id) { return gHover === id; }
 function paintHeader(L) {
     chip(L.toggles.editor, L.ui.editor ? "EDIT <" : "EDIT >", !!L.ui.editor, COL_AMBER);
     chip(L.toggles.slots, L.ui.slots ? "SLOTS <" : "SLOTS >", !!L.ui.slots, COL_CYAN);
+    chip(L.toggles.seq, L.ui.seq ? "SEQ <" : "SEQ >", !!L.ui.seq, SEQ_COL);
     var h = L.hint;
     var cy = h.y + h.h / 2;
     if (typeof GEN_DSP_TEXT !== "undefined" && !dspReady && !gDemo) {
@@ -644,6 +702,15 @@ function paintHeader(L) {
             var parts = [];
             for (var i = 0; i < 4; i++) if (w4[i] > 0.01) parts.push((gState.corners[i] + 1) + ":" + Math.round(w4[i] * 100) + "%");
             text = "MORPH  " + parts.join("  ");
+        } else if (gState.audition === "seq") {
+            var tt = T();
+            var qn = gState.seq.length;
+            if (tt && tt[GL_SCOPE.SEQ_ON] > 0.5) {
+                var cs = tt[GL_SCOPE.SEQ_SLOT], ps = tt[GL_SCOPE.SEQ_PREV];
+                text = "SEQ  step " + (tt[GL_SCOPE.SEQ_STEP] + 1) + "/" + qn + "  slot " + (cs >= 0 ? cs + 1 : "-");
+                if (tt[GL_SCOPE.SEQ_GLIDE] < 0.98 && ps >= 0 && ps !== cs) text += " <- " + (ps + 1);
+                if (tt[GL_SCOPE.SEQ_PLAY] < 0.5) text += "  (stopped)";
+            } else text = "SEQ  " + filledSlots(gState).length + " slots, " + qn + " steps";
         } else {
             text = "WORKING  " + gTiles.length + (gTiles.length === 1 ? " module" : " modules");
         }
@@ -660,10 +727,24 @@ function weightedColor(cw) {
     return s > 0 ? [r / s, g / s, b / s] : COL_CORAL;
 }
 
+// Seq mode: the weight each XY corner carries = the audible weight of its slot (shared when two corners point at one slot)
+function seqCornerWeights(sw) {
+    var cw = [0, 0, 0, 0];
+    for (var c = 0; c < 4; c++) {
+        var same = 0;
+        for (var d = 0; d < 4; d++) if (gState.corners[d] === gState.corners[c]) same++;
+        cw[c] = (sw[gState.corners[c]] || 0) / same;
+    }
+    return cw;
+}
 function paintPad(r, L) {
-    var morph = gState.audition === "morph";
-    var cw = xyWeights(gState.xy[0], gState.xy[1]);
-    var col = weightedColor(cw);
+    var seq = gState.audition === "seq";
+    var morph = gState.audition === "morph" || seq; // "live": the pad shows the blend that is sounding
+    var sw = morph ? soundingWeights(gState, gHaveTele ? gTele : null, gDemo && !gHaveTele ? gDemoBeat : 0) : null;
+    var swSum = 0;
+    if (sw) for (var q0 = 0; q0 < 8; q0++) swSum += sw[q0];
+    var cw = seq ? seqCornerWeights(swSum > 0 ? sw.map(function (v) { return v / swSum; }) : sw) : xyWeights(gState.xy[0], gState.xy[1]);
+    var col = seq ? (cw[0] + cw[1] + cw[2] + cw[3] > 0 ? weightedColor(cw) : SEQ_COL) : weightedColor(cw);
     var t = T();
     rrect(r.x, r.y, r.w, r.h, 5, COL_BG, 1);
     // audio-reactive backdrop: the output spectrum rises from the bottom, tinted by the blended slot colour
@@ -687,8 +768,13 @@ function paintPad(r, L) {
         var wgt = cw[c];
         disc(cx[c] + (c % 2 ? -8 : 8), cy[c] + (c < 2 ? 8 : -8), 12 + 34 * wgt, sc, (filled ? 0.07 : 0.03) + (morph ? 0.26 : 0.1) * wgt);
     }
-    var px = r.x + 8 + gState.xy[0] * (r.w - 16);
-    var py = r.y + 8 + gState.xy[1] * (r.h - 16);
+    var pxy = gState.xy;
+    if (seq) {
+        var csum = cw[0] + cw[1] + cw[2] + cw[3];
+        pxy = csum > 1e-6 ? [(cw[1] + cw[3]) / csum, (cw[2] + cw[3]) / csum] : [0.5, 0.5];
+    }
+    var px = r.x + 8 + pxy[0] * (r.w - 16);
+    var py = r.y + 8 + pxy[1] * (r.h - 16);
     hline(r.x + 2, r.x + r.w - 2, py, col, morph ? 0.4 : 0.18, 1);
     vline(px, r.y + 2, r.y + r.h - 2, col, morph ? 0.4 : 0.18, 1);
     // corner badges: the assigned slot's number and colour (click cycles, or drop a slot pad on one)
@@ -705,11 +791,38 @@ function paintPad(r, L) {
     var pk = t ? 1 + 2.5 * clamp(t[GL_SCOPE.OUT_PEAK] || 0, 0, 1) : 1;
     if (morph) { disc(px, py, 7 + pk, col, 0.16); disc(px, py, 6, COL_BG, 0.95); ring(px, py, 6, col, 1, 2); disc(px, py, 1.8, col, 1); }
     else { ring(px, py, 6, col, 0.6, 1.5); disc(px, py, 1.4, col, 0.6); }
-    label(morph ? "MORPH" : "WORKING", r.x + r.w / 2, r.y + r.h - 5, 6.5, morph ? col : COL_DIM, 0.9, 1);
+    // the slot weights that are sounding (Morph / Seq): 8 small bars between the top corner badges
+    if (morph && swSum > 0) {
+        for (var q1 = 0; q1 < 8; q1++) {
+            var wn = sw[q1] / swSum;
+            frect(r.x + 27 + q1 * 7.2, r.y + 3 + 10, 5.5, 1.5, SLOT_COL[q1], 0.3);
+            if (wn > 0.01) frect(r.x + 27 + q1 * 7.2, r.y + 13 - 10 * wn, 5.5, 10 * wn, SLOT_COL[q1], 0.95);
+        }
+    }
+    label(seq ? "SEQ" : (morph ? "MORPH" : "WORKING"), r.x + r.w / 2, r.y + r.h - 5, 6.5, morph ? col : COL_DIM, 0.9, 1);
     rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 5, morph ? col : COL_LINE, morph ? 0.75 : 1, morph ? 1.4 : 1);
 }
 
 // ----- glitch view: module tiles -----
+function gv(id, key) { return gVec[glitchLayout().index[id + "." + key]]; }
+function hash2(a, b) { var x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return x - Math.floor(x); }
+function tileBeat() { var t = T(); return t ? (t[GL_SCOPE.BEAT] || 0) : 0; }
+function poly(pts, c, a, lw) {
+    if (pts.length < 2) return;
+    rgba(c, a); mgraphics.set_line_width(lw || 1);
+    mgraphics.move_to(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) mgraphics.line_to(pts[i][0], pts[i][1]);
+    mgraphics.stroke();
+}
+function polyArea(pts, baseY, c, a) {
+    if (pts.length < 2) return;
+    rgba(c, a);
+    mgraphics.move_to(pts[0][0], baseY);
+    for (var i = 0; i < pts.length; i++) mgraphics.line_to(pts[i][0], pts[i][1]);
+    mgraphics.line_to(pts[pts.length - 1][0], baseY);
+    mgraphics.close_path();
+    mgraphics.fill();
+}
 function tilePrimary(tile) {
     var v = gVec;
     var L = glitchLayout();
@@ -720,26 +833,52 @@ function tilePrimary(tile) {
     switch (tile.key) {
         case "drvA": case "drvB": return pick(spec("mode"), g(tile.key, "mode")) + " " + g(tile.key, "drive").toFixed(0) + "dB";
         case "filt": return pick(spec("type"), g("filt", "type")) + " " + pick(spec("cutoff"), g("filt", "cutoff"));
+        case "form": return "vowel " + "aeiou".charAt(Math.round(clamp(g("form", "vowel"), 0, 4))) + " " + (g("form", "shift") >= 0 ? "+" : "") + g("form", "shift").toFixed(0) + "st";
+        case "comb": return pick(spec("freq"), g("comb", "freq")) + "Hz fb " + Math.round(g("comb", "fb") * 100);
+        case "phas": return pick(spec("stages"), g("phas", "stages")) + "st " + (g("phas", "sync") > 0.5 ? pick(spec("div"), g("phas", "div")) : g("phas", "hz").toFixed(1) + "Hz");
         case "crush": return Math.round(g("crush", "bits")) + "b " + g("crush", "rate").toFixed(1) + "x";
+        case "rect": return pick(spec("mode"), g("rect", "mode")) + " " + Math.round(g("rect", "blend") * 100) + "%";
+        case "fm": return pick(spec("mode"), g("fm", "mode")) + " x" + g("fm", "ratio").toFixed(1);
+        case "corr": return pick(spec("div"), g("corr", "div")) + " " + Math.round(g("corr", "chance") * 100) + "%";
         case "ring": return pick(spec("mode"), g("ring", "mode")) + " " + Math.round(g("ring", "freq")) + "Hz";
         case "stut": return pick(spec("div"), g("stut", "div"));
         case "time": return pick(spec("mode"), g("time", "mode")) + " " + pick(spec("div"), g("time", "div"));
+        case "gpit": return (g("gpit", "pitch") >= 0 ? "+" : "") + g("gpit", "pitch").toFixed(0) + "st " + Math.round(g("gpit", "size")) + "ms";
+        case "gstr": return "speed " + Math.round(g("gstr", "speed") * 100) + "% " + Math.round(g("gstr", "size")) + "ms";
+        case "rvs": return pick(spec("div"), g("rvs", "div")) + " " + Math.round(g("rvs", "chance") * 100) + "%";
+        case "shuf": return pick(spec("slices"), g("shuf", "slices")) + " slices #" + Math.round(g("shuf", "seed"));
         case "chop": return pick(spec("div"), g("chop", "div")) + " " + pick(spec("pattern"), g("chop", "pattern"));
         case "dly": return pick(spec("div"), g("dly", "div")) + " fb " + Math.round(g("dly", "fb") * 100);
+        case "slap": return Math.round(g("slap", "time")) + "ms";
         case "rev": return "size " + Math.round(g("rev", "size") * 100) + "%";
         case "wid": return "W " + Math.round(g("wid", "width") * 100) + "% " + g("wid", "gain").toFixed(0) + "dB";
         case "freeze": return pick(spec("frz_rate"), g("spec", "frz_rate"));
         case "smear": return "blur " + Math.round(g("spec", "smr_blur") * 100) + "%";
         case "ccrush": return "K " + Math.round(g("spec", "cc_coeffs") * 100) + "% " + Math.round(g("spec", "cc_bits")) + "b";
         case "scramble": return pick(spec("sc_mode"), g("spec", "sc_mode"));
+        case "scatter": return "w " + Math.round(g("spec", "sct_w")) + " " + pick(spec("sct_rate"), g("spec", "sct_rate"));
+        case "mirror": return "pivot " + pick(spec("mir_pivot"), g("spec", "mir_pivot")) + "Hz";
+        case "binshift": return (g("spec", "bsh_bins") >= 0 ? "+" : "") + g("spec", "bsh_bins").toFixed(0) + " bins";
+        case "specgate": return g("spec", "sgl_mode") > 0.5 ? "Lofi " + g("spec", "sgl_step").toFixed(0) + "dB" : "Top-K " + Math.round(g("spec", "sgl_k"));
     }
     return "";
+}
+
+// The spectrum columns the spectral tiles draw: nb columns of BANDS_OUT (or BANDS_IN) values 0..1
+function specCols(t, off, nb) {
+    var out = [];
+    for (var b = 0; b < nb; b++) out.push(t ? clamp(t[off + Math.min(GL_BANDS - 1, Math.floor(b * GL_BANDS / nb))] || 0, 0, 1) : 0);
+    return out;
 }
 
 function paintTileBody(tile, x, y, w, h, c, act) {
     var t = T();
     var S = GL_SCOPE;
-    if (h < 10) return;
+    if (h < 8 || w < 8) return;
+    var lv = t ? clamp(t[S.LEVEL + tile.chain] || 0, 0, 1) : 0;
+    var amp = 0.35 + 0.65 * lv;
+    var beat = tileBeat();
+    var i, j, k, pts, nb, vals;
     switch (tile.key) {
         case "stut": {
             var cxs = x + w / 2, cys = y + h / 2, rs = Math.min(w, h) / 2 - 1;
@@ -756,7 +895,7 @@ function paintTileBody(tile, x, y, w, h, c, act) {
             var pat = Math.floor(gVec[glitchLayout().index["chop.pattern"]]);
             var step = t ? Math.floor(t[S.CHOP_STEP] || 0) : -1;
             var pw = (w - 15) / 16;
-            for (var i = 0; i < 16; i++) {
+            for (i = 0; i < 16; i++) {
                 var on = (pat >> i) & 1;
                 var ph2 = Math.min(h - 2, 14);
                 frect(x + i * (pw + 1), y + (h - ph2) / 2 + (on ? 0 : ph2 - 3), Math.max(pw, 1), on ? ph2 : 3, c, on ? (i === step ? 1 : 0.5) : 0.25);
@@ -770,20 +909,18 @@ function paintTileBody(tile, x, y, w, h, c, act) {
             break;
         }
         case "freeze": case "smear": {
-            var nb = Math.max(6, Math.floor(w / 3));
-            for (var b = 0; b < nb; b++) {
-                var bi = Math.floor(b * GL_BANDS / nb);
-                var vin = t ? t[S.BANDS_IN + bi] || 0 : 0;
-                var vout = t ? t[S.BANDS_OUT + bi] || 0 : 0;
-                frect(x + b * (w / nb), y + h - vin * h, w / nb - 1, vin * h, COL_DIM, 0.25);
-                frect(x + b * (w / nb), y + h - vout * h, w / nb - 1, vout * h, c, 0.8);
+            nb = Math.max(6, Math.floor(w / 3));
+            var vin = specCols(t, S.BANDS_IN, nb), vout = specCols(t, S.BANDS_OUT, nb);
+            for (i = 0; i < nb; i++) {
+                frect(x + i * (w / nb), y + h - vin[i] * h, w / nb - 1, vin[i] * h, COL_DIM, 0.25);
+                frect(x + i * (w / nb), y + h - vout[i] * h, w / nb - 1, vout[i] * h, c, 0.8);
             }
             break;
         }
         case "ccrush": case "scramble": {
             var nc = Math.max(8, Math.floor(w / 3));
             hline(x, x + w, y + h / 2, COL_DIM, 0.35, 1);
-            for (var k = 0; k < nc; k++) {
+            for (k = 0; k < nc; k++) {
                 var ki = Math.floor(k * GL_CEP_BINS / nc);
                 var co = t ? t[S.CEP_IN + ki] || 0 : 0;
                 var cn = t ? t[S.CEP_OUT + ki] || 0 : 0;
@@ -793,47 +930,269 @@ function paintTileBody(tile, x, y, w, h, c, act) {
             }
             break;
         }
+        case "form": { // three formant peaks (vowel, shift, resonance) pulsing with the level
+            var vw = clamp(gv("form", "vowel"), 0, 3.999), vi = Math.floor(vw), vf = vw - vi;
+            var VA = GL_VOWELS[vi], VB = GL_VOWELS[vi + 1], kf = Math.pow(2, gv("form", "shift") / 12);
+            var fwid = 0.16 / (0.6 + gv("form", "res") * 1.6);
+            pts = [];
+            for (i = 0; i <= 40; i++) {
+                var xn = i / 40, yv = 0.05;
+                for (j = 0; j < 3; j++) {
+                    var ff = (VA[j] + (VB[j] - VA[j]) * vf) * kf;
+                    var fxn = (Math.log(clamp(ff, 150, 6000)) - Math.log(150)) / (Math.log(6000) - Math.log(150));
+                    var dd = (xn - fxn) / (fwid * (j ? 0.7 : 1));
+                    yv = Math.max(yv, (j === 0 ? 1 : (j === 1 ? 0.8 : 0.6)) * Math.exp(-dd * dd));
+                }
+                pts.push([x + xn * w, y + h - 1 - yv * amp * (h - 2)]);
+            }
+            polyArea(pts, y + h - 1, c, 0.35);
+            poly(pts, c, 0.95, 1.2);
+            break;
+        }
+        case "comb": { // comb teeth: spacing from the frequency, height decays with the feedback (negative = odd teeth dim)
+            var cnorm = Math.log(gv("comb", "freq") / 40) / Math.log(100);
+            var cnt = 3 + Math.round(clamp(cnorm, 0, 1) * 10);
+            var fbk = gv("comb", "fb");
+            for (i = 0; i < cnt; i++) {
+                var th = (0.3 + 0.7 * Math.pow(Math.abs(fbk), i * 0.12)) * amp;
+                var odd = fbk < 0 && (i & 1);
+                frect(x + (i + 0.5) * w / cnt - 1, y + h - th * h, 2, th * h, c, odd ? 0.4 : 0.95);
+            }
+            hline(x, x + w, y + h - 0.5, c, 0.4, 1);
+            break;
+        }
+        case "phas": { // notches sweeping with the LFO (free in Hz or on the host beat)
+            var psync = gv("phas", "sync") > 0.5;
+            var pdiv = Math.round(clamp(gv("phas", "div"), 0, 6));
+            var pph = psync ? beat / GL_LFO_BEATS[pdiv] : (Date.now() / 1000) * gv("phas", "hz");
+            var sweep = 0.5 + 0.5 * Math.sin(pph * 6.2832);
+            var nn = Math.round(gv("phas", "stages")) + 1, dep = gv("phas", "depth");
+            pts = [];
+            for (i = 0; i <= 40; i++) {
+                var xq = i / 40, yq = 1;
+                for (j = 0; j < nn; j++) { var xj = ((j + 0.5) / nn) * (0.3 + 0.7 * sweep); var dq = (xq - xj) / 0.05; yq -= dep * 0.85 * Math.exp(-dq * dq); }
+                pts.push([x + xq * w, y + h - 1 - clamp(yq, 0.05, 1) * amp * (h - 2)]);
+            }
+            polyArea(pts, y + h - 1, c, 0.25);
+            poly(pts, c, 0.95, 1.2);
+            break;
+        }
+        case "rect": { // one sine cycle and what the rectifier makes of it
+            var rmode = Math.round(gv("rect", "mode")), rbl = gv("rect", "blend");
+            var rmid = y + h / 2, rh = (h / 2 - 1) * amp;
+            var p0 = [], p1 = [];
+            for (i = 0; i <= 40; i++) {
+                var sv = Math.sin(i / 40 * 6.2832);
+                var rv = rmode === 0 ? Math.max(sv, 0) : (rmode === 1 ? Math.abs(sv) : (sv > 0 ? sv : 0.35 * sv));
+                p0.push([x + i / 40 * w, rmid - sv * rh]);
+                p1.push([x + i / 40 * w, rmid - (sv + (rv - sv) * rbl) * rh]);
+            }
+            hline(x, x + w, rmid, COL_DIM, 0.3, 1);
+            poly(p0, COL_DIM, 0.45, 1);
+            poly(p1, c, 0.95, 1.4);
+            break;
+        }
+        case "fm": { // a carrier phase-modulated by its modulator (index, ratio)
+            var fidx = gv("fm", "index") * 6, frat = clamp(gv("fm", "ratio"), 0.5, 8);
+            pts = [];
+            for (i = 0; i <= 60; i++) {
+                var tt2 = i / 60;
+                pts.push([x + tt2 * w, y + h / 2 - Math.sin(6.2832 * (2 * tt2 + fidx * Math.sin(6.2832 * frat * tt2 * 0.5) * 0.3)) * (h / 2 - 1) * amp]);
+            }
+            hline(x, x + w, y + h / 2, COL_DIM, 0.3, 1);
+            poly(pts, c, 0.95, 1.2);
+            break;
+        }
+        case "corr": { // a grid of bits: how many flip is the Chance, the pattern re-rolls every Slot (host beat)
+            var gc = Math.max(4, Math.floor(w / 5.5)), gr = Math.max(1, Math.floor(h / 5.5));
+            var cslot = Math.floor(beat / GL_DIV_BEATS[Math.round(clamp(gv("corr", "div"), 0, 7))]);
+            var cch = gv("corr", "chance") * (0.35 + 0.65 * Math.max(gv("corr", "flips"), gv("corr", "wrap"), gv("corr", "drop"), 0.2));
+            for (i = 0; i < gc; i++) for (j = 0; j < gr; j++) {
+                var lit = hash2(i + j * 31, cslot) < cch;
+                frect(x + i * (w / gc), y + j * (h / gr), w / gc - 1.2, h / gr - 1.2, c, lit ? 0.4 + 0.55 * amp : 0.14);
+            }
+            break;
+        }
+        case "gpit": { // grains (size, jitter) lifted or dropped by the pitch
+            var gsz = clamp(gv("gpit", "size") / 400, 0.1, 0.6) * w * 0.55, gjt = gv("gpit", "jitter"), gpt = clamp(gv("gpit", "pitch") / 24, -1, 1);
+            var gslot = Math.floor(beat * 2);
+            for (i = 0; i < 5; i++) {
+                var gcx = x + (i + 0.5) / 5 * w * 0.86 + (hash2(i, gslot) - 0.5) * gjt * w * 0.18;
+                var gbase = y + h - 2 - (gpt * 0.5 + 0.5) * h * 0.3;
+                pts = [];
+                for (j = 0; j <= 8; j++) { var uu = j / 8; pts.push([gcx - gsz / 2 + uu * gsz, gbase - Math.sin(uu * 3.1416) * h * 0.5 * amp]); }
+                polyArea(pts, gbase, c, 0.5);
+                poly(pts, c, 0.9, 1);
+            }
+            var ay = y + h / 2, ax = x + w - 4;
+            poly(gpt >= 0 ? [[ax - 3, ay + 1], [ax, ay - 3], [ax + 3, ay + 1]] : [[ax - 3, ay - 1], [ax, ay + 3], [ax + 3, ay - 1]], COL_TEXT, 0.85, 1.4);
+            break;
+        }
+        case "gstr": { // the source ticks and a playhead that crawls at the Speed, with the grain window around it
+            var gspd = gv("gstr", "speed"), gsz2 = clamp(gv("gstr", "size") / 400, 0.1, 0.6) * w * 0.4;
+            nb = Math.max(8, Math.floor(w / 3));
+            for (i = 0; i < nb; i++) frect(x + i * (w / nb), y + h / 2 - (0.15 + 0.7 * hash2(i, 3)) * h / 2, w / nb - 1, (0.15 + 0.7 * hash2(i, 3)) * h, COL_DIM, 0.3);
+            var gph = gspd < 0.02 ? 0.5 : (Date.now() % (600 + Math.round((1 - gspd) * 8000))) / (600 + Math.round((1 - gspd) * 8000));
+            frect(x + gph * w - gsz2 / 2, y, gsz2, h, c, 0.25 + 0.3 * amp);
+            vline(x + gph * w, y, y + h, c, 1, 1.6);
+            break;
+        }
+        case "rvs": { // eight slices, each reversed (arrow left) or not by the seeded chance
+            var rdv = GL_DIV_BEATS[Math.round(clamp(gv("rvs", "div"), 0, 7))];
+            var rcur = Math.floor(beat / rdv) % 8, rgrp = Math.floor(beat / (8 * rdv));
+            for (i = 0; i < 8; i++) {
+                var rx = x + i * (w / 8), rw = w / 8 - 1.5;
+                var rev = hash2(i + 5 * rgrp, 7) < gv("rvs", "chance");
+                frect(rx, y, rw, h, c, i === rcur ? 0.5 : 0.18);
+                var rm = y + h / 2;
+                poly(rev ? [[rx + rw - 2, rm - 3], [rx + 2, rm], [rx + rw - 2, rm + 3]] : [[rx + 2, rm - 3], [rx + rw - 2, rm], [rx + 2, rm + 3]], c, rev ? 1 : 0.5, 1.2);
+            }
+            break;
+        }
+        case "shuf": { // the slices in their shuffled order: bar height = the slice that plays there
+            var sn = GL_SLICE_COUNTS[Math.round(clamp(gv("shuf", "slices"), 0, 3))], sseed = gv("shuf", "seed");
+            var sidx = [];
+            for (i = 0; i < sn; i++) sidx.push(i);
+            sidx.sort(function (a, b) { return hash2(a, sseed + 1) - hash2(b, sseed + 1); });
+            var sspan = GL_SHUF_SPANS[Math.round(clamp(gv("shuf", "span"), 0, 2))];
+            var scur = Math.floor(beat / (sspan / sn)) % sn;
+            for (i = 0; i < sn; i++) frect(x + i * (w / sn), y + h - (sidx[i] + 1) / sn * h, w / sn - 1, (sidx[i] + 1) / sn * h, c, i === scur ? 1 : 0.4);
+            break;
+        }
+        case "slap": { // the dry hit and its one short echo (time), left / right offset apart
+            var stm = (gv("slap", "time") - 40) / 140, soff = gv("slap", "offset");
+            frect(x + 2, y + 1, 3, h - 2, COL_DIM, 0.7);
+            var ex = x + 8 + stm * (w - 22);
+            frect(ex, y + h * 0.1, 3, (h * 0.8) * amp, c, 0.95);
+            frect(clamp(ex + soff * w * 0.1, x + 6, x + w - 3), y + h * 0.1, 3, (h * 0.8) * amp * 0.8, mix3(c, [1, 1, 1], 0.5), 0.8);
+            hline(x, x + w, y + h - 0.5, c, 0.3, 1);
+            break;
+        }
+        case "scatter": { // spectral peaks thrown sideways by the width, re-rolled every beat division
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var sctw = gv("spec", "sct_w") / 32, sslot = Math.floor(beat / GL_DIV_BEATS[Math.round(clamp(gv("spec", "sct_rate"), 0, 7))]);
+            for (i = 0; i < nb; i++) {
+                var dxs = (hash2(i, sslot) - 0.5) * sctw * w * 0.5;
+                frect(clamp(x + i * (w / nb) + dxs, x, x + w - 2.5), y + h - vals[i] * h, 2.5, Math.max(1.5, vals[i] * h), c, 0.85);
+            }
+            break;
+        }
+        case "mirror": { // the spectrum folded over the pivot (the right side is the mirror of the left)
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var mp = clamp((Math.log(gv("spec", "mir_pivot")) - Math.log(100)) / (Math.log(8000) - Math.log(100)), 0.12, 0.88);
+            for (i = 0; i < nb; i++) {
+                var xnn = (i + 0.5) / nb, src = xnn <= mp ? xnn : 2 * mp - xnn, mv = src >= 0 ? vals[Math.min(nb - 1, Math.floor(src * nb))] : 0;
+                frect(x + i * (w / nb), y + h - mv * h, w / nb - 1, mv * h, c, xnn <= mp ? 0.85 : 0.5);
+            }
+            for (j = 0; j < h; j += 4) vline(x + mp * w, y + j, y + Math.min(h, j + 2), COL_TEXT, 0.8, 1);
+            break;
+        }
+        case "binshift": { // the input spectrum (ghost) and the shifted result, with the shift arrow
+            nb = Math.max(8, Math.floor(w / 3));
+            var bin = specCols(t, S.BANDS_IN, nb), bout = specCols(t, S.BANDS_OUT, nb);
+            for (i = 0; i < nb; i++) {
+                frect(x + i * (w / nb), y + h - bin[i] * h, w / nb - 1, bin[i] * h, COL_DIM, 0.25);
+                frect(x + i * (w / nb), y + h - bout[i] * h, w / nb - 1, bout[i] * h, c, 0.8);
+            }
+            var bsh = clamp(gv("spec", "bsh_bins") / 64, -1, 1), bax = x + w / 2, bay = y + 3;
+            poly([[bax, bay], [bax + bsh * w * 0.45, bay]], COL_TEXT, 0.9, 1.5);
+            poly(bsh >= 0 ? [[bax + bsh * w * 0.45 - 3, bay - 2.5], [bax + bsh * w * 0.45, bay], [bax + bsh * w * 0.45 - 3, bay + 2.5]] : [[bax + bsh * w * 0.45 + 3, bay - 2.5], [bax + bsh * w * 0.45, bay], [bax + bsh * w * 0.45 + 3, bay + 2.5]], COL_TEXT, 0.9, 1.5);
+            break;
+        }
+        case "specgate": { // Top-K: only the loudest bins stay lit; Lofi: the levels are quantized into steps
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            if (gv("spec", "sgl_mode") > 0.5) {
+                var levels = clamp(Math.round(24 / gv("spec", "sgl_step")) + 1, 2, 12);
+                for (i = 0; i < nb; i++) { var qv = Math.floor(vals[i] * levels) / levels; frect(x + i * (w / nb), y + h - qv * h, w / nb - 1, qv * h, c, 0.85); }
+                for (j = 1; j < levels; j++) hline(x, x + w, y + h - j / levels * h, COL_TEXT, 0.12, 1);
+            } else {
+                var keep = Math.max(1, Math.ceil(clamp(Math.log(gv("spec", "sgl_k")) / Math.log(256), 0, 1) * nb));
+                var sorted = vals.slice().sort(function (a, b) { return b - a; });
+                var thr = sorted[Math.min(nb - 1, keep - 1)];
+                for (i = 0; i < nb; i++) frect(x + i * (w / nb), y + h - vals[i] * h, w / nb - 1, vals[i] * h, vals[i] >= thr && vals[i] > 0 ? c : COL_DIM, vals[i] >= thr && vals[i] > 0 ? 0.95 : 0.22);
+            }
+            break;
+        }
         default: {
-            var lv = t ? clamp(t[S.LEVEL + tile.chain] || 0, 0, 1) : 0;
             var nbar = Math.max(6, Math.floor(w / 5));
             for (var q = 0; q < nbar; q++) {
-                var thr = (q + 1) / nbar;
-                frect(x + q * (w / nbar), y + h / 2 - 3, w / nbar - 1.5, 6, c, lv >= thr - 0.5 / nbar ? 0.9 : 0.18);
+                var thr2 = (q + 1) / nbar;
+                frect(x + q * (w / nbar), y + h / 2 - 3, w / nbar - 1.5, 6, c, lv >= thr2 - 0.5 / nbar ? 0.9 : 0.18);
             }
         }
     }
 }
 
+function chainBadge(tile) { return (tile.chain < 9 ? "0" : "") + (tile.chain + 1); }
+
 function paintView(r) {
     var tiles = gTiles;
-    var rects = glitchTileRects(tiles.length, r);
+    var V = glitchViewLayout(tiles.length, r, gTilePage);
     var morph = gState.audition === "morph";
+    var seq = gState.audition === "seq";
     if (!tiles.length) {
         rrect(r.x, r.y, r.w, r.h, 5, COL_BG, 1);
         rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 5, COL_LINE, 1, 1);
-        label(morph ? "Nothing in the morph yet" : "No glitch yet", r.x + r.w / 2, r.y + r.h / 2 - 2, 10, COL_TEXT, 0.9, 1);
-        label(morph ? "save glitches into slots, assign corners" : "press RANDOMIZE", r.x + r.w / 2, r.y + r.h / 2 + 12, 8, COL_DIM, 0.9, 1);
+        label(seq ? "The sequence is silent" : (morph ? "Nothing in the morph yet" : "No glitch yet"), r.x + r.w / 2, r.y + r.h / 2 - 2, 10, COL_TEXT, 0.9, 1);
+        label(seq ? "save glitches into slots, then fill steps" : (morph ? "save glitches into slots, assign corners" : "press RANDOMIZE"), r.x + r.w / 2, r.y + r.h / 2 + 12, 8, COL_DIM, 0.9, 1);
         return;
     }
     var t = T();
-    for (var i = 0; i < tiles.length; i++) {
-        var tile = tiles[i];
-        var q = rects[i];
+    for (var i = 0; i < V.rects.length; i++) {
+        var ti = V.first + i;
+        var tile = tiles[ti];
+        var q = V.rects[i];
         var c = tileColor(tile);
         var act = t ? clamp(t[GL_SCOPE.ACTIVITY + tile.chain] || 0, 0, 1) : tile.wet;
         var sel = gState.ui.sel === tile.key;
-        var small = q.h < 34 || q.w < 44;
+        var compact = V.compact;
+        var small = q.h < 34;
         rrect(q.x, q.y, q.w, q.h, 4, mix3(COL_BG, c, 0.1 + 0.2 * act), 1);
         rsrect(q.x + 0.5, q.y + 0.5, q.w - 1, q.h - 1, 4, sel ? COL_TEXT : c, sel ? 1 : 0.55, sel ? 1.6 : 1);
-        label(fit(tile.name, q.w - 16, small ? 6.5 : 7.5), q.x + 4, q.y + (small ? 8 : 10), small ? 6.5 : 7.5, c, 1, 0);
-        if (glitchIsLocked(gState.working, tile.key)) paintLockGlyph(q.x + q.w - 8, q.y + 7, COL_AMBER, 0.95);
+        var fs = compact ? 6 : 7.5;
+        var badge = chainBadge(tile);
+        var bw2 = tw(badge, 5.5);
+        label(badge, q.x + q.w - 3, q.y + (compact ? 7 : 9.5), 5.5, COL_DIM, 0.9, 2);
+        var locked = glitchIsLocked(gState.working, tile.key);
+        label(fit(compact ? (GL_TINY[tile.key] || tile.name) : tile.name, q.w - 8 - bw2 - (locked ? 8 : 0), fs), q.x + 4, q.y + (compact ? 7.5 : 10), fs, c, 1, 0);
+        if (locked) paintLockGlyph(q.x + q.w - 8 - bw2, q.y + (compact ? 5 : 7.5), COL_AMBER, 0.95);
         var by = q.y + q.h - 4;
         frect(q.x + 3, by, q.w - 6, 2, c, 0.2);
         frect(q.x + 3, by, (q.w - 6) * clamp(tile.wet, 0, 1), 2, c, 0.9);
-        var top = q.y + (small ? 11 : 13);
-        var bodyH = small ? Math.max(0, by - top - 2) : Math.max(0, by - top - (q.h > 44 ? 12 : 2));
+        var top = q.y + (compact ? 10 : 13);
+        var bodyH = (small || compact) ? Math.max(0, by - top - 2) : Math.max(0, by - top - (q.h > 44 ? 12 : 2));
         paintTileBody(tile, q.x + 4, top, q.w - 8, bodyH, c, act);
-        if (!small && q.h > 44) label(fit(tilePrimary(tile), q.w - 6, 6.5), q.x + q.w / 2, q.y + q.h - 8, 6.5, COL_TEXT, 0.8, 1);
+        if (!compact && !small && q.h > 44) label(fit(tilePrimary(tile), q.w - 6, 6.5), q.x + q.w / 2, q.y + q.h - 8, 6.5, COL_TEXT, 0.8, 1);
+    }
+    paintRibbon(V, tiles, r);
+}
+// The chain ribbon under the tiles: 23 ticks, one per chain position; a tick is lit (category colour) where a tile sits, bright
+// for the tiles of this page. With more than 12 tiles the pager (prev / next, "page/pages +hidden") sits at the right.
+function paintRibbon(V, tiles, view) {
+    var R = V.ribbon;
+    var tkw = R.w / GL_NINST;
+    var onPage = {};
+    for (var i = 0; i < V.rects.length; i++) onPage[tiles[V.first + i].chain] = true;
+    var any = {};
+    for (var k = 0; k < tiles.length; k++) if (!any[tiles[k].chain]) any[tiles[k].chain] = tiles[k];
+    for (var p = 0; p < GL_NINST; p++) {
+        var tx = R.x + p * tkw;
+        if (any[p]) {
+            var cc = tileColor(any[p]);
+            frect(tx + 0.5, R.y + 3, tkw - 1, 6, cc, onPage[p] ? 0.95 : 0.4);
+        } else frect(tx + 0.5, R.y + 6, tkw - 1, 2, COL_LINE, 0.7);
+    }
+    if (V.prev) {
+        var hv = hoverIs("pg_prev"), hn = hoverIs("pg_next");
+        rrect(V.prev.x, V.prev.y, V.prev.w, V.prev.h, 3, COL_ROW, 1);
+        rrect(V.next.x, V.next.y, V.next.w, V.next.h, 3, COL_ROW, 1);
+        var mp2 = V.prev.y + V.prev.h / 2;
+        poly([[V.prev.x + 10, mp2 - 3.5], [V.prev.x + 5, mp2], [V.prev.x + 10, mp2 + 3.5]], COL_TEXT, V.page > 0 ? (hv ? 1 : 0.85) : 0.3, 1.6);
+        poly([[V.next.x + 6, mp2 - 3.5], [V.next.x + 11, mp2], [V.next.x + 6, mp2 + 3.5]], COL_TEXT, V.page < V.pages - 1 ? (hn ? 1 : 0.85) : 0.3, 1.6);
+        label((V.page + 1) + "/" + V.pages + " +" + (tiles.length - V.rects.length), V.pageText.x + V.pageText.w / 2, V.pageText.y + 9, 6.5, COL_AMBER, 1, 1);
     }
 }
 
@@ -843,31 +1202,48 @@ function paintLockGlyph(x, y, c, a) {
     mgraphics.arc(x, y - 0.5, 2.2, 3.1416, 6.2832); mgraphics.stroke();
 }
 
-// ----- options view -----
+// ----- options view: categories on the left (toggle for the whole category + select), the selected category's types on the right -----
+function paintCheck(x, y, s, st, c, hover) {
+    rrect(x, y, s, s, 2, st ? mix3(COL_BG, c, 0.35) : COL_ROW, 1);
+    rsrect(x + 0.5, y + 0.5, s - 1, s - 1, 2, c, st ? 1 : (hover ? 0.8 : 0.45), 1);
+    if (st === 1) { rgba(c, 1); mgraphics.set_line_width(1.6); mgraphics.move_to(x + s * 0.22, y + s * 0.52); mgraphics.line_to(x + s * 0.42, y + s * 0.74); mgraphics.line_to(x + s * 0.78, y + s * 0.26); mgraphics.stroke(); }
+    else if (st === 2) frect(x + s * 0.25, y + s * 0.42, s * 0.5, s * 0.16, c, 1);
+}
 function paintOptions(O) {
     var P = O.panel;
     rrect(P.x, P.y, P.w, P.h, 5, COL_PANEL, 1);
     rsrect(P.x + 0.5, P.y + 0.5, P.w - 1, P.h - 1, 5, COL_LINE, 1, 1);
     label("OPTIONS  –  what Randomize may use", P.x + 8, P.y + 14, 8.5, COL_TEXT, 1, 0);
     chip(O.close, "DONE", false, COL_CYAN);
+    var cats = glitchOptionCategories();
+    var cur = gState.ui.optCat;
     var n = 0;
-    for (var i = 0; i < GL_TYPES.length; i++) {
-        var ty = GL_TYPES[i];
-        var on = !!gState.allow[ty.id];
-        if (on) n++;
-        var r = O.items[i];
-        var c = CAT_COL[ty.category] || COL_DIM;
-        rrect(r.x, r.y, r.w, r.h, 3, on ? mix3(COL_BG, c, 0.28) : COL_ROW, 1);
-        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, c, on ? 0.9 : 0.3, 1);
-        disc(r.x + 7, r.y + r.h / 2, 3, c, on ? 1 : 0.3);
-        label(fit(ty.name, r.w - 32, 7.5), r.x + 14, r.y + r.h / 2 + 2.8, 7.5, on ? COL_TEXT : COL_DIM, 1, 0);
-        rsrect(r.x + r.w - 14, r.y + r.h / 2 - 4, 8, 8, 2, c, on ? 1 : 0.4, 1);
-        if (on) frect(r.x + r.w - 12, r.y + r.h / 2 - 2, 4, 4, c, 1);
+    for (var i = 0; i < GL_TYPES.length; i++) if (gState.allow[GL_TYPES[i].id]) n++;
+    chip(O.all, n === GL_TYPES.length ? "ALL OFF" : "ALL ON", false, COL_AMBER);
+    for (var c = 0; c < cats.length; c++) {
+        var cc = CAT_COL[cats[c].name] || COL_DIM;
+        var st = glitchCategoryState(gState, c);
+        var row = O.cats[c];
+        var selected = c === cur;
+        rrect(row.select.x, row.select.y, row.select.w, row.select.h, 3, selected ? mix3(COL_BG, cc, 0.3) : COL_ROW, 1);
+        rsrect(row.select.x + 0.5, row.select.y + 0.5, row.select.w - 1, row.select.h - 1, 3, cc, selected ? 0.95 : (hoverIs("optcat_sel" + c) ? 0.7 : 0.3), 1);
+        label(cats[c].name.toUpperCase(), row.select.x + 5, row.select.y + 10, 7.5, selected ? COL_TEXT : COL_DIM, 1, 0);
+        var cnt = 0;
+        for (var q = 0; q < cats[c].types.length; q++) if (gState.allow[GL_TYPES[cats[c].types[q]].id]) cnt++;
+        label(cnt + "/" + cats[c].types.length, row.select.x + row.select.w - 4, row.select.y + 10, 6.5, st ? cc : COL_DIM, 1, 2);
+        paintCheck(row.toggle.x + 1, row.toggle.y + 1, 12, st, cc, hoverIs("optcat_tg" + c));
     }
-    var ra = O.all;
-    var allOn = n === GL_TYPES.length;
-    chip(ra, allOn ? "ALL OFF" : "ALL ON", false, COL_AMBER);
-    label(n + " of " + GL_TYPES.length + " module types allowed  ·  used by Randomize and Mutate", O.note.x, O.note.y + 10, 7.5, n ? COL_DIM : COL_CORAL, 1, 0);
+    var cur3 = CAT_COL[cats[cur].name] || COL_DIM;
+    for (var t = 0; t < cats[cur].types.length; t++) {
+        var ty = GL_TYPES[cats[cur].types[t]];
+        var on = !!gState.allow[ty.id];
+        var r = O.slots[t];
+        rrect(r.x, r.y, r.w, r.h, 4, on ? mix3(COL_BG, cur3, 0.25) : COL_ROW, 1);
+        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 4, cur3, on ? 0.9 : (hoverIs("opt_" + cats[cur].types[t]) ? 0.7 : 0.3), 1);
+        label(fit(cats[cur].name === "Spectral" ? ty.name.replace(/^Spectral /, "") : ty.name, r.w - 26, 7.5), r.x + 6, r.y + r.h / 2 + 2.8, 7.5, on ? COL_TEXT : COL_DIM, 1, 0);
+        paintCheck(r.x + r.w - 17, r.y + r.h / 2 - 6, 12, on ? 1 : 0, cur3, false);
+    }
+    label(n + " of " + GL_TYPES.length + " types allowed  ·  used by Randomize and Mutate", O.note.x, O.note.y + 10, 7.5, n ? COL_DIM : COL_CORAL, 1, 0);
 }
 
 // ----- action bar -----
@@ -897,12 +1273,16 @@ function paintActions(L) {
     rsrect(o.x + 0.5, o.y + 0.5, o.w - 1, o.h - 1, 5, COL_CYAN, hoverIs("act_opt") ? 1 : 0.55, 1);
     paintCog(o.x + o.w / 2, o.y + o.h / 2, 7, COL_CYAN);
     var ab = A.ab;
-    var morph = gState.audition === "morph";
+    var mi = engineMode(gState);
     rrect(ab.x, ab.y, ab.w, ab.h, 5, COL_ROW, 1);
-    rrect(ab.x + 2, ab.y + 2, ab.w / 2 - 2, ab.h - 4, 4, morph ? COL_ROW : COL_CORAL, morph ? 0 : 0.95);
-    rrect(ab.x + ab.w / 2, ab.y + 2, ab.w / 2 - 2, ab.h - 4, 4, morph ? gState.corners.length ? weightedColor(xyWeights(gState.xy[0], gState.xy[1])) : COL_CORAL : COL_ROW, morph ? 0.95 : 0);
-    label("WORK", ab.x + ab.w / 4 + 0.5, ab.y + ab.h / 2 + 3, 6.5, morph ? COL_DIM : COL_BG, 1, 1);
-    label("MORPH", ab.x + ab.w * 3 / 4 - 0.5, ab.y + ab.h / 2 + 3, 6.5, morph ? COL_BG : COL_DIM, 1, 1);
+    var cw3 = (ab.w - 4) / 3;
+    var mcols = [COL_CORAL, gState.corners.length ? weightedColor(xyWeights(gState.xy[0], gState.xy[1])) : COL_CORAL, SEQ_COL];
+    var mnames = ["WORK", "MORPH", "SEQ"];
+    for (var mm = 0; mm < 3; mm++) {
+        var cx3 = ab.x + 2 + mm * cw3;
+        if (mm === mi) rrect(cx3, ab.y + 2, cw3, ab.h - 4, 4, mcols[mm], 0.95);
+        label(mnames[mm], cx3 + cw3 / 2, ab.y + ab.h / 2 + 3, 6.2, mm === mi ? COL_BG : COL_DIM, 1, 1);
+    }
 }
 function paintDice(x, y, s, c) {
     rrect(x, y, s, s, 3, c, 0.95);
@@ -949,10 +1329,17 @@ function editorTarget() {
     if (!key || !glitchTileInfo(key)) return null;
     return key;
 }
+// The value the editor shows: the working glitch while Working plays, else the sounding blend (Morph / Seq)
+function editorValue(key, id) {
+    if (gState.audition === "working") return glitchGetValue(gState.working, key, id);
+    var info = glitchTileInfo(key);
+    var ix = info ? glitchLayout().index[info.inst + "." + id] : undefined;
+    return ix === undefined || !gVec ? 0 : gVec[ix];
+}
 function paintEditor(ed) {
     rrect(ed.x, ed.y, ed.w, ed.h, 5, COL_PANEL, 1);
     var key = editorTarget();
-    var morph = gState.audition === "morph";
+    var morph = gState.audition !== "working"; // Morph or Seq: values are the sounding blend; an edit copies it to Working
     var rows = key ? glitchEditorRows(key) : [];
     var E = glitchEditorLayout(ed, rows.length);
     if (!key) {
@@ -977,12 +1364,12 @@ function paintEditor(ed) {
     mgraphics.stroke();
     paintEditorClose(E);
     var g = gState.working;
-    var dim = morph ? 0.4 : 1;
+    var dim = morph ? 0.7 : 1;
     for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         var r = E.rows[i];
         var spec = row.spec;
-        var v = glitchGetValue(g, key, row.id);
+        var v = editorValue(key, row.id);
         rrect(r.x, r.y, r.w, r.h, 3, COL_ROW, dim);
         if (spec.patterns) {
             label("Pattern", r.x + 4, r.y + 9, 7, COL_DIM, dim, 0);
@@ -1001,7 +1388,7 @@ function paintEditor(ed) {
         label(fit(row.name, r.w * 0.55, 7), r.x + 4, r.y + 9, 7, COL_TEXT, dim, 0);
         label(fit(glitchFormatValue(spec, v), r.w * 0.45, 7), r.x + r.w - 4, r.y + 9, 7, c, dim, 2);
     }
-    if (morph) label("Morph is playing: switch to WORK to edit", ed.x + ed.w / 2, ed.y + ed.h - 5, 7, COL_AMBER, 0.9, 1);
+    if (morph) label(gState.audition === "seq" ? "SEQ is playing: an edit copies it to WORKING" : "MORPH is playing: an edit copies it to WORKING", ed.x + ed.w / 2, ed.y + ed.h - 5, 6.5, COL_AMBER, 0.95, 1);
     else label(locked ? "locked: kept by Randomize / Mutate" : "drag = set  ·  dbl-click = reset", ed.x + ed.w / 2, ed.y + ed.h - 5, 7, COL_DIM, 0.9, 1);
 }
 function paintEditorClose(E) {
@@ -1057,6 +1444,127 @@ function paintSlots(S) {
     label("CLEAR", cl.x + cl.w / 2, cl.y + cl.h / 2 + 3, 7.5, gArmClear ? COL_BG : COL_TEXT, 1, 1);
 }
 
+// ----- sequencer -----
+function seqBar(r, name, norm, text, hot) {
+    rrect(r.x, r.y, r.w, r.h, 3, COL_ROW, 1);
+    if (norm > 0.003) rrect(r.x + 1, r.y + 1, Math.max(2, (r.w - 2) * clamp(norm, 0, 1)), r.h - 2, 2, SEQ_COL, 0.38);
+    rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, SEQ_COL, hot ? 0.9 : 0.35, 1);
+    label(name, r.x + 5, r.y + 9, 6.5, COL_DIM, 1, 0);
+    label(text, r.x + r.w - 5, r.y + 9, 7, COL_TEXT, 1, 2);
+}
+function seqPlayhead(t) { // { on, play, step, frac, slot, prev, glide } from the telemetry (or the preview demo)
+    if (!t || !(t[GL_SCOPE.SEQ_ON] > 0.5)) return null;
+    return { play: t[GL_SCOPE.SEQ_PLAY] > 0.5, step: Math.floor(t[GL_SCOPE.SEQ_STEP]), frac: clamp(t[GL_SCOPE.SEQ_FRAC] || 0, 0, 1), slot: t[GL_SCOPE.SEQ_SLOT], prev: t[GL_SCOPE.SEQ_PREV], glide: t[GL_SCOPE.SEQ_GLIDE] };
+}
+function paintSeq(S) {
+    var P = S.rect;
+    var q = normalizeSeq(gState.seq);
+    var len = q.length;
+    var seqOn = gState.audition === "seq";
+    rrect(P.x, P.y, P.w, P.h, 5, COL_PANEL, 1);
+    label("SEQUENCER", P.x + 8, P.y + 15, 8.5, seqOn ? SEQ_COL : COL_DIM, 1, 0);
+    var on = S.on;
+    rrect(on.x, on.y, on.w, on.h, 7, seqOn ? SEQ_COL : COL_ROW, 1);
+    rsrect(on.x + 0.5, on.y + 0.5, on.w - 1, on.h - 1, 7, SEQ_COL, seqOn ? 1 : (hoverIs("seq_on") ? 0.9 : 0.55), 1);
+    label(seqOn ? "SEQ ON" : "PLAY", on.x + on.w / 2, on.y + 10, 6.5, seqOn ? COL_BG : COL_TEXT, 1, 1);
+    // length lane: a flag at the end of the active steps (drag it)
+    var ln = S.lane;
+    rrect(ln.x, ln.y, ln.w, ln.h, 3, COL_ROW, hoverIs("seq_lane") ? 1 : 0.8);
+    var ex = S.x0 + len * S.pitch - 0.5;
+    frect(S.x0, ln.y + 8, len * S.pitch - 0.5, 2.5, SEQ_COL, 0.85);
+    mgraphics.set_line_width(1); rgba(SEQ_COL, 1);
+    mgraphics.move_to(ex, ln.y + 1.5); mgraphics.line_to(ex, ln.y + 11); mgraphics.stroke();
+    rgba(SEQ_COL, 1); mgraphics.move_to(ex, ln.y + 1.5); mgraphics.line_to(ex - 5, ln.y + 4.5); mgraphics.line_to(ex, ln.y + 7.5); mgraphics.close_path(); mgraphics.fill();
+    label("LEN " + len, Math.min(ex + 3, P.x + P.w - 30), ln.y + 7.5, 6, COL_DIM, 1, 0);
+    for (var b = 0; b < GL_SEQ_MAX; b += 4) if (b >= len) vline(S.x0 + b * S.pitch, ln.y + 8, ln.y + 11, COL_LINE, 0.8, 1);
+    // steps
+    var ph = seqPlayhead(T());
+    for (var i = 0; i < GL_SEQ_MAX; i++) {
+        var r = S.steps[i];
+        var slot = q.steps[i];
+        var inLen = i < len;
+        var eff = seqSlotAt(q.steps, i, len);
+        var a = inLen ? 1 : 0.28;
+        if (slot >= 0) {
+            rrect(r.x, r.y, r.w, r.h, 3, SLOT_COL[slot], 0.92 * a);
+            label(slot + 1, r.x + r.w / 2, r.y + r.h / 2 + 3, 8, COL_BG, a, 1);
+        } else {
+            rrect(r.x, r.y, r.w, r.h, 3, COL_ROW, a);
+            if (inLen) {
+                // hold: a tie arrow in the colour of the slot it keeps playing
+                var hc = eff >= 0 ? SLOT_COL[eff] : COL_DIM;
+                var my = r.y + r.h / 2;
+                rgba(hc, eff >= 0 ? 0.9 : 0.4); mgraphics.set_line_width(1.5);
+                mgraphics.move_to(r.x + 1.5, my); mgraphics.line_to(r.x + r.w - 2, my);
+                mgraphics.move_to(r.x + r.w - 5, my - 3); mgraphics.line_to(r.x + r.w - 1.5, my); mgraphics.line_to(r.x + r.w - 5, my + 3);
+                mgraphics.stroke();
+            }
+        }
+        if (inLen && i % 4 === 0) frect(r.x, r.y - 2, 1.5, 1.5, COL_TEXT, 0.5);
+        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, gSeqArm === i ? COL_TEXT : SEQ_COL, gSeqArm === i ? 1 : (hoverIs("seq_step" + i) ? 0.8 : (slot >= 0 ? 0 : 0.25)), gSeqArm === i ? 1.8 : 1);
+    }
+    // glide lane: the crossfade between steps (stacked slot colours; the glide % is the share of the step the fade takes)
+    var gl = S.glide;
+    rrect(gl.x, gl.y, gl.w, gl.h, 3, COL_BG, 1);
+    var lin = q.curve > 0.5;
+    for (var k = 0; k < len; k++) {
+        var cur = seqSlotAt(q.steps, k, len), prv = seqSlotAt(q.steps, k - 1, len);
+        if (cur < 0) continue;
+        var x0 = S.x0 + k * S.pitch;
+        var colW = 2.5;
+        for (var xs = 0; xs < S.pitch - 0.01; xs += colW) {
+            var cw = Math.min(colW, S.pitch - xs);
+            var pp = q.glide > 0.001 ? clamp((xs + cw / 2) / (q.glide * S.pitch), 0, 1) : 1;
+            var wc = lin ? pp : Math.sin(pp * 1.5708), wp = lin ? 1 - pp : Math.cos(pp * 1.5708);
+            var usePrev = prv >= 0 && prv !== cur && wp > 0.0001;
+            var share = usePrev ? wc / (wc + wp) : 1;
+            var hh = gl.h - 4;
+            frect(x0 + xs, gl.y + 2 + hh * (1 - share), cw, hh * share, SLOT_COL[cur], 0.85);
+            if (usePrev) frect(x0 + xs, gl.y + 2, cw, hh * (1 - share), SLOT_COL[prv], 0.85);
+        }
+    }
+    for (var gb = 4; gb < len; gb += 4) vline(S.x0 + gb * S.pitch, gl.y + 1, gl.y + gl.h - 1, COL_BG, 0.7, 1);
+    if (ph && ph.step < len && ph.step >= 0) {
+        var phx = S.x0 + (ph.step + ph.frac) * S.pitch;
+        vline(phx, S.lane.y + 9, gl.y + gl.h, COL_TEXT, ph.play ? 1 : 0.45, 1.6);
+        rsrect(S.steps[ph.step].x - 0.5, S.steps[ph.step].y - 0.5, S.steps[ph.step].w + 1, S.steps[ph.step].h + 1, 3, COL_TEXT, ph.play ? 0.9 : 0.4, 1.4);
+    }
+    if (!filledSlots(gState).length) label("save glitches into slots, then fill the steps", gl.x + gl.w / 2, gl.y + gl.h / 2 + 3, 7, COL_DIM, 1, 1);
+    // palette: click a step, then a slot here (or drag a slot onto a step)
+    for (var s = 0; s < GL_NSLOT; s++) {
+        var pr = S.palette[s];
+        var filled = !!gState.slots[s];
+        rrect(pr.x, pr.y, pr.w, pr.h, 3, filled ? SLOT_COL[s] : COL_ROW, filled ? (hoverIs("seq_pal" + s) ? 1 : 0.85) : 1);
+        if (!filled) rsrect(pr.x + 0.5, pr.y + 0.5, pr.w - 1, pr.h - 1, 3, SLOT_COL[s], hoverIs("seq_pal" + s) ? 0.8 : 0.3, 1);
+        label(s + 1, pr.x + pr.w / 2, pr.y + 10, 8, filled ? COL_BG : SLOT_COL[s], filled ? 1 : 0.6, 1);
+    }
+    var hr = S.palette[GL_NSLOT];
+    rrect(hr.x, hr.y, hr.w, hr.h, 3, COL_ROW, 1);
+    rsrect(hr.x + 0.5, hr.y + 0.5, hr.w - 1, hr.h - 1, 3, COL_TEXT, hoverIs("seq_pal8") ? 0.8 : 0.3, 1);
+    rgba(COL_TEXT, 0.85); mgraphics.set_line_width(1.5);
+    mgraphics.move_to(hr.x + 5, hr.y + 7); mgraphics.line_to(hr.x + hr.w - 5, hr.y + 7);
+    mgraphics.move_to(hr.x + hr.w - 8, hr.y + 4); mgraphics.line_to(hr.x + hr.w - 5, hr.y + 7); mgraphics.line_to(hr.x + hr.w - 8, hr.y + 10);
+    mgraphics.stroke();
+    // controls
+    seqBar(S.rate, "RATE", q.rate / (GL_SEQ_RATES.length - 1), GL_SEQ_RATE_NAMES[q.rate], hoverIs("seq_rate"));
+    seqBar(S.glideBar, "GLIDE", q.glide, Math.round(q.glide * 100) + "%", hoverIs("seq_glide"));
+    seqBar(S.len, "LENGTH", (len - 1) / (GL_SEQ_MAX - 1), "" + len, hoverIs("seq_len"));
+    var cv = S.curve;
+    rrect(cv.x, cv.y, cv.w, cv.h, 3, COL_ROW, 1);
+    rrect(cv.x + 1 + (lin ? (cv.w - 2) / 2 : 0), cv.y + 1, (cv.w - 2) / 2, cv.h - 2, 2, SEQ_COL, 0.9);
+    rsrect(cv.x + 0.5, cv.y + 0.5, cv.w - 1, cv.h - 1, 3, SEQ_COL, hoverIs("seq_curve") ? 0.95 : 0.4, 1);
+    label("EQ POWER", cv.x + cv.w / 4, cv.y + 9, 6.5, lin ? COL_DIM : COL_BG, 1, 1);
+    label("LINEAR", cv.x + cv.w * 3 / 4, cv.y + 9, 6.5, lin ? COL_BG : COL_DIM, 1, 1);
+    var d = S.dice;
+    rrect(d.x, d.y, d.w, d.h, 5, mix3(COL_CORAL, [1, 1, 1], 0.4 * gFlash.dice), hoverIs("seq_dice") ? 1 : 0.92);
+    paintDice(d.x + 5, d.y + 2, 12, COL_BG);
+    label("RANDOMIZE SEQUENCE", d.x + 22, d.y + d.h / 2 + 3, 7, COL_BG, 1, 0);
+    var cl = S.clear;
+    rrect(cl.x, cl.y, cl.w, cl.h, 5, COL_ROW, 1);
+    rsrect(cl.x + 0.5, cl.y + 0.5, cl.w - 1, cl.h - 1, 5, COL_AMBER, hoverIs("seq_clear") ? 1 : 0.6, 1);
+    label("CLEAR", cl.x + cl.w / 2, cl.y + cl.h / 2 + 3, 7, COL_TEXT, 1, 1);
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // interaction
 // ---------------------------------------------------------------------------------------------------------------
@@ -1066,7 +1574,7 @@ function currentRows() {
 }
 function hitAt(x, y) {
     var ui = gState.ui;
-    var map = glitchHitMap(ui, gTiles.length, ui.editor ? currentRows().length : 0);
+    var map = glitchHitMap(ui, gTiles.length, ui.editor ? currentRows().length : 0, gTilePage);
     var best = null;
     for (var i = 0; i < map.length; i++) {
         if (!glHit(map[i].r, x, y)) continue;
@@ -1104,21 +1612,55 @@ function setRowFromX(rowIdx, x, shift, d) {
     var v = row.id === "wet" || spec.kind === "wet" ? n : glNormToParam(spec, n);
     if (glitchSetValue(gState.working, key, row.id, v)) modelChanged();
 }
+function barNorm(r, x) { return clamp((x - r.x - 2) / (r.w - 4), 0, 1); }
+function seqLenFromX(x) { var S = gLayout.seq; if (S) seqLengthSet(clamp(Math.floor((x - S.x0) / S.pitch) + 1, 1, GL_SEQ_MAX)); }
+function seqDrag(kind, x) {
+    var S = gLayout.seq;
+    if (!S) return;
+    if (kind === "seqlane") seqLenFromX(x);
+    else if (kind === "seqlen") seqLengthSet(1 + Math.round(barNorm(S.len, x) * (GL_SEQ_MAX - 1)));
+    else if (kind === "seqrate") seqRateSet(Math.round(barNorm(S.rate, x) * (GL_SEQ_RATES.length - 1)));
+    else if (kind === "seqglide") seqGlideSet(barNorm(S.glideBar, x));
+}
+function dropStep(x, y) {
+    var S = gLayout.seq;
+    if (!S) return -1;
+    for (var i = 0; i < GL_SEQ_MAX; i++) if (glHit(S.steps[i], x, y)) return i;
+    return -1;
+}
+// assign `slot` (-1 = hold) to the armed step and move the arm to the next step (fast step entry: click a step, then slots)
+function assignToArmed(slot) {
+    if (gSeqArm < 0) { gHint = "click a step first, then a slot"; mgraphics.redraw(); return; }
+    if (slot >= 0 && !gState.slots[slot]) { gHint = "slot " + (slot + 1) + " is empty: save a glitch into it first"; mgraphics.redraw(); return; }
+    seqAssign(gSeqArm, slot);
+    gHint = "step " + (gSeqArm + 1) + " = " + (slot >= 0 ? "slot " + (slot + 1) : "hold");
+    if (gSeqArm + 1 < GL_SEQ_MAX) gSeqArm++;
+    mgraphics.redraw();
+}
 function onclick(x, y, but, cmd, shift, caps, opt) {
     gFocus = true;
     var h = hitAt(x, y);
-    if (!h) { gDrag = null; return; }
+    if (!h) { gDrag = null; if (gSeqArm >= 0) { gSeqArm = -1; mgraphics.redraw(); } return; }
     var id = h.id;
-    var morph = gState.audition === "morph";
     var m;
+    if (!/^(seq_step|seq_pal|slot\d)/.test(id)) gSeqArm = -1;
     if (id === "tg_editor") { toggleSection("editor"); return; }
     if (id === "tg_slots") { toggleSection("slots"); return; }
+    if (id === "tg_seq") { toggleSection("seq"); return; }
     if (id === "opt_close") { setOptions(0); return; }
     if (id === "opt_all") {
         undoPush();
         var any = false;
         for (var t in gState.allow) if (!gState.allow[t]) any = true;
         setAllowAll(gState, any);
+        mgraphics.redraw(); done();
+        return;
+    }
+    if ((m = /^optcat_sel(\d)$/.exec(id))) { gState.ui.optCat = Number(m[1]); gLayout = glitchFaceLayout(gState.ui); mgraphics.redraw(); done(); return; }
+    if ((m = /^optcat_tg(\d)$/.exec(id))) {
+        undoPush();
+        var cat = Number(m[1]);
+        setAllowCategory(gState, cat, glitchCategoryState(gState, cat) !== 1);
         mgraphics.redraw(); done();
         return;
     }
@@ -1146,7 +1688,6 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
     if ((m = /^tile(\d+)$/.exec(id))) {
         var tile = gTiles[Number(m[1])];
         if (!tile) return;
-        if (morph) { gHint = "Morph is playing: switch to WORK to edit modules"; mgraphics.redraw(); return; }
         var ui = gState.ui;
         if (ui.editor && ui.sel === tile.key) { toggleSection("editor"); return; }
         ui.sel = tile.key;
@@ -1154,12 +1695,20 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
         done();
         return;
     }
+    if (id === "pg_prev" || id === "pg_next") {
+        var pgs = glitchViewLayout(gTiles.length, gLayout.view, 0).pages;
+        gTilePage = clamp(gTilePage + (id === "pg_next" ? 1 : -1), 0, pgs - 1);
+        mgraphics.redraw();
+        return;
+    }
     if (id === "act_dice") { doRandomize(null); return; }
     if (id === "act_mutate") { doMutate(); return; }
     if (id === "act_opt") { setOptions(1); return; }
     if (id === "act_ab") {
-        var left = x < gLayout.action.ab.x + gLayout.action.ab.w / 2;
-        setAudition(left ? "working" : "morph", true);
+        var abr = gLayout.action.ab;
+        var third = clamp(Math.floor((x - abr.x - 2) / ((abr.w - 4) / 3)), 0, 2);
+        setAudition(["working", "morph", "seq"][third], true);
+        if (third === 2 && !filledSlots(gState).length) gHint = "SEQ plays saved slots: save glitches into slots first";
         done();
         return;
     }
@@ -1175,20 +1724,22 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
     if (id === "ed_close") { toggleSection("editor"); return; }
     if (id === "ed_lock" || id === "ed_remove") {
         var key = editorTarget();
-        if (!key || morph) return;
+        if (!key) return;
         undoPush();
+        beginWorkingEdit();
         if (id === "ed_lock") glitchToggleLock(gState.working, key);
-        else { glitchRemoveTile(gState.working, key); refreshModel(); gState.ui.sel = ""; selectFirstIfNone(); }
+        else { glitchRemoveTile(gState.working, key); gModelDirty = true; refreshModel(); gState.ui.sel = ""; selectFirstIfNone(); }
         modelChanged(); done();
         return;
     }
     if ((m = /^ed_row(\d+)$/.exec(id))) {
         var ri = Number(m[1]);
         var key2 = editorTarget();
-        if (!key2 || morph) return;
+        if (!key2) return;
         var row = glitchEditorRows(key2)[ri];
         if (!row) return;
         undoPush();
+        beginWorkingEdit();
         var spec = row.spec;
         if (spec.patterns) {
             var E = glitchEditorLayout(gLayout.editor, glitchEditorRows(key2).length);
@@ -1216,6 +1767,39 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
         setRowFromX(ri, x, false, null);
         return;
     }
+    if (id === "seq_on") { setAudition(gState.audition === "seq" ? "working" : "seq", true); if (gState.audition === "seq" && !filledSlots(gState).length) gHint = "SEQ plays saved slots: save glitches into slots first"; done(); return; }
+    if (id === "seq_lane" || id === "seq_len" || id === "seq_rate" || id === "seq_glide") {
+        undoPush();
+        var sk = id === "seq_lane" ? "seqlane" : id.replace("seq_", "seq");
+        gDrag = { kind: sk };
+        seqDrag(sk, x);
+        return;
+    }
+    if ((m = /^seq_step(\d+)$/.exec(id))) {
+        var si = Number(m[1]);
+        gSeqArm = si;
+        gDrag = { kind: "seqdone" };
+        if (!filledSlots(gState).length) { gHint = "save glitches into slots first (shift-click a slot)"; mgraphics.redraw(); return; }
+        undoPush();
+        if (opt) setSeqStep(gState, si, -1); else seqCycleStep(gState, si, shift ? -1 : 1);
+        gHint = "step " + (si + 1) + ": click again to cycle, or click a slot";
+        modelChanged(); done();
+        return;
+    }
+    if ((m = /^seq_pal(\d)$/.exec(id))) {
+        var pi = Number(m[1]);
+        gDrag = { kind: "seqpal", slot: pi === GL_NSLOT ? -1 : pi, x0: x, y0: y, x: x, y: y, moved: false };
+        return;
+    }
+    if (id === "seq_curve") { undoPush(); setSeqCurve(gState, normalizeSeq(gState.seq).curve ? 0 : 1); modelChanged(); done(); return; }
+    if (id === "seq_dice") {
+        gFlash.dice = 1;
+        seqrandomize();
+        gSeqArm = -1;
+        if (!filledSlots(gState).length) gHint = "save glitches into slots first";
+        return;
+    }
+    if (id === "seq_clear") { undoPush(); seqClear(gState); gSeqArm = -1; modelChanged(); done(); return; }
     if ((m = /^slot(\d)$/.exec(id))) {
         gDrag = { kind: "slot", i: Number(m[1]), x0: x, y0: y, x: x, y: y, moved: false, shift: !!shift, opt: !!opt };
         return;
@@ -1235,7 +1819,12 @@ function ondrag(x, y, but, cmd, shift) {
         mgraphics.redraw();
     } else if (d.kind === "knob") { knobDelta(d.key, d.y0 - y, shift); d.y0 = y; }
     else if (d.kind === "row") setRowFromX(d.idx, x, shift, d);
-    else if (d.kind === "slot") {
+    else if (d.kind === "seqlane" || d.kind === "seqlen" || d.kind === "seqrate" || d.kind === "seqglide") seqDrag(d.kind, x);
+    else if (d.kind === "seqpal") {
+        d.x = x; d.y = y;
+        if (!d.moved && Math.abs(x - d.x0) + Math.abs(y - d.y0) > 5) d.moved = true;
+        if (d.moved) mgraphics.redraw();
+    } else if (d.kind === "slot") {
         d.x = x; d.y = y;
         if (!d.moved && Math.abs(x - d.x0) + Math.abs(y - d.y0) > 5) d.moved = true;
         if (d.moved) mgraphics.redraw();
@@ -1245,8 +1834,20 @@ function endDrag(x, y) {
     var d = gDrag;
     gDrag = null;
     if (!d) return;
+    if (d.kind === "seqpal") {
+        if (d.moved) {
+            var ds = dropStep(x, y);
+            if (ds >= 0 && (d.slot < 0 || gState.slots[d.slot])) { gSeqArm = ds; assignToArmed(d.slot); } else mgraphics.redraw();
+        } else assignToArmed(d.slot);
+        return;
+    }
     if (d.kind === "slot") {
         if (d.moved) {
+            var dstep = dropStep(x, y);
+            if (dstep >= 0) {
+                if (gState.slots[d.i]) { gSeqArm = dstep; assignToArmed(d.i); } else { gHint = "slot " + (d.i + 1) + " is empty"; mgraphics.redraw(); }
+                return;
+            }
             var c = dropCorner(x, y);
             if (c >= 0) { undoPush(); assignCorner(gState, c, d.i); gFlash.slot = d.i; gFlash.slotT = 1; modelChanged(); done(); }
             else mgraphics.redraw();
@@ -1255,7 +1856,7 @@ function endDrag(x, y) {
         slotClick(d.i, d.shift, d.opt);
         return;
     }
-    if (d.kind === "pad" || d.kind === "row" || d.kind === "rowdone" || d.kind === "chaos") done();
+    if (d.kind === "pad" || d.kind === "row" || d.kind === "rowdone" || d.kind === "chaos" || /^seq(lane|len|rate|glide)$/.test(d.kind)) done();
     mgraphics.redraw();
 }
 function slotClick(i, shift, opt) {
@@ -1271,6 +1872,8 @@ function slotClick(i, shift, opt) {
         gArmClear = false;
         if (gState.slots[i]) { undoPush(); clearSlot(gState, i); if (gLastSlot === i) gLastSlot = -1; gHint = "cleared slot " + (i + 1); modelChanged(); done(); }
         else mgraphics.redraw();
+    } else if (gState.ui.seq && gSeqArm >= 0) {
+        assignToArmed(i);
     } else if (gState.slots[i]) {
         recallAction(i);
         gFlash.slot = i; gFlash.slotT = 1;
@@ -1289,7 +1892,9 @@ function ondblclick(x, y) {
     else if (id === "act_chaos") { gState.chaos = 0.5; sendParam("chaos", 50); mgraphics.redraw(); done(); }
     else if (id === "side_mix") { sendParam("mix", GL_PARAMS.mix.init); mgraphics.redraw(); }
     else if (id === "side_out") { sendParam("out", GL_PARAMS.out.init); mgraphics.redraw(); }
-    else if ((m = /^ed_row(\d+)$/.exec(id)) && gState.audition !== "morph") {
+    else if (id === "seq_glide") { seqGlideSet(0); done(); }
+    else if (id === "seq_len") { seqLengthSet(8); done(); }
+    else if ((m = /^ed_row(\d+)$/.exec(id))) {
         var key = editorTarget();
         var row = key ? glitchEditorRows(key)[Number(m[1])] : null;
         if (row && !row.spec.patterns) {
@@ -1311,7 +1916,7 @@ function onidle(x, y) {
         else if (id === "act_dice") hint = "roll a new glitch (Chaos shapes it)";
         else if (id === "act_mutate") hint = "nudge the working glitch";
         else if (id === "act_opt") hint = "which module types Randomize may use";
-        else if (id === "act_ab") hint = "what you hear: working glitch or morph";
+        else if (id === "act_ab") hint = "what you hear: working glitch, morph or sequence";
         else if (id === "act_chaos") hint = "Chaos: how wild Randomize / Mutate go";
         else if (/^slot\d$/.test(id)) hint = "click: recall · shift: save · alt: clear · drag to a corner";
         else if (id === "ed_lock") hint = "keep this module through Randomize / Mutate";
@@ -1319,6 +1924,20 @@ function onidle(x, y) {
         else if (id === "side_mix") hint = "Mix (drag, dbl-click = 100%)";
         else if (id === "side_out") hint = "Output (drag, dbl-click = 0 dB)";
         else if ((m = /^opt_(\d+)$/.exec(id))) hint = "click to allow / forbid";
+        else if (/^optcat_tg/.test(id)) hint = "allow / forbid the whole category";
+        else if (/^optcat_sel/.test(id)) hint = "show this category's module types";
+        else if (id === "tg_seq") hint = "the 16-step slot sequencer";
+        else if (id === "seq_on") hint = "play the sequencer (Mode = Seq)";
+        else if (id === "seq_lane") hint = "drag: sequence length";
+        else if (/^seq_step/.test(id)) hint = "click: cycle slot / hold  ·  shift: back  ·  alt: hold  ·  then click a slot";
+        else if (/^seq_pal/.test(id)) hint = gSeqArm >= 0 ? "assign to the armed step (or drag onto a step)" : "click a step first, or drag onto a step";
+        else if (id === "seq_rate") hint = "step length (Seq Rate)";
+        else if (id === "seq_glide") hint = "crossfade between steps (Glide, dbl-click = 0)";
+        else if (id === "seq_len") hint = "number of steps (Seq Length, dbl-click = 8)";
+        else if (id === "seq_curve") hint = "crossfade curve: equal power or linear";
+        else if (id === "seq_dice") hint = "roll a new sequence from the filled slots";
+        else if (id === "seq_clear") hint = "all steps hold (a silent sequence)";
+        else if (id === "pg_prev" || id === "pg_next") hint = "more modules: next / previous page";
     }
     if (id !== gHover || hint !== gHint) {
         if (!(gArmSave || gArmClear) || hint) { gHover = id; gHint = hint; mgraphics.redraw(); }
@@ -1331,6 +1950,7 @@ function onkeydown(keycode, textcharacter, down, cmd, shift) {
     if (!gFocus || down === 0) return;
     var ch = typeof textcharacter === "string" ? textcharacter.toLowerCase() : String.fromCharCode(textcharacter || 0).toLowerCase();
     if (cmd && ch === "z") { if (shift) redo(); else undo(); }
+    else if (keycode === 27 && gSeqArm >= 0) { gSeqArm = -1; mgraphics.redraw(); }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1366,9 +1986,11 @@ function test_report() {
             rep.weights = a.slice(GL_SCOPE.WEIGHTS, GL_SCOPE.WEIGHTS + 8);
             rep.inPeak = a[GL_SCOPE.IN_PEAK]; rep.outPeak = a[GL_SCOPE.OUT_PEAK];
             rep.activity = a.slice(GL_SCOPE.ACTIVITY, GL_SCOPE.ACTIVITY + GL_NINST);
-            rep.seqTele = { on: a[GL_SCOPE.SEQ_ON], step: a[GL_SCOPE.SEQ_STEP], slot: a[GL_SCOPE.SEQ_SLOT], prev: a[GL_SCOPE.SEQ_PREV], glide: a[GL_SCOPE.SEQ_GLIDE] };
+            rep.seqTele = { on: a[GL_SCOPE.SEQ_ON], play: a[GL_SCOPE.SEQ_PLAY], step: a[GL_SCOPE.SEQ_STEP], slot: a[GL_SCOPE.SEQ_SLOT], prev: a[GL_SCOPE.SEQ_PREV], glide: a[GL_SCOPE.SEQ_GLIDE], frac: a[GL_SCOPE.SEQ_FRAC], count: a[GL_SCOPE.SEQ_COUNT], beat: a[GL_SCOPE.BEAT] };
         } catch (_) {}
     }
+    rep.arm = gSeqArm; rep.page = gTilePage; rep.tileCount = gTiles.length;
+    if (gSlotsBuf) { try { rep.seqHdr = gSlotsBuf.peek(1, glitchLayout().seqOffset, GL_SEQ_HDR).slice(0, 5); } catch (_) {} }
     if (typeof Global !== "undefined") new Global("glitch_test").text = JSON.stringify(rep);
     return rep;
 }
@@ -1399,10 +2021,37 @@ function preview() {
     gParamVals.out = 0;
     gModelDirty = true;
     refreshModel();
-    if (typeof UI_PREVIEW_EDITOR !== "undefined" && UI_PREVIEW_EDITOR) {
+    var pv = typeof UI_PREVIEW !== "undefined" ? UI_PREVIEW : "";
+    if (pv === "editor") {
         gState.ui.editor = 1;
         gState.ui.sel = gTiles.length ? gTiles[Math.min(1, gTiles.length - 1)].key : "";
         glitchToggleLock(gState.working, gState.ui.sel);
+    } else if (pv === "seq") {
+        // sequencer open, all 8 slots filled, the sequence playing (demo telemetry: step 5, 40 % into it)
+        for (var s2 = 5; s2 < 8; s2++) { gState.slots[s2] = randomizeGlitch(40 + s2 * 5, gState.chaos, gState.allow); gState.slots[s2].name = "Glitch " + (s2 + 1); }
+        gState.ui.seq = 1;
+        gState.audition = "seq";
+        gState.seq = normalizeSeq({ steps: [0, -1, 1, -1, 2, 2, -1, 3, 0, -1, 1, 4, 5, 6, 7, -1], length: 12, rate: 4, glide: 0.4, curve: 0 });
+        gSeqArm = 8;
+        gDemoBeat = 5.4 * GL_SEQ_RATES[4];
+    } else if (pv === "options") {
+        gState.ui.options = 1;
+        gState.ui.optCat = 4;
+        gState.allow.mirror = false;
+        gState.allow.rectify = false;
+    } else if (pv === "many" || pv === "many2") {
+        // every module on: 22 instances + 8 spectral sub-ops = 30 tiles: "many" = page 1 of the glitch view, "many2" = page 2
+        var big = defaultGlitch();
+        for (var ii = 0; ii < GL_INSTANCES.length; ii++) glitchSetValue(big, GL_INSTANCES[ii].id, "wet", 0.4 + 0.5 * ((ii * 7) % 10) / 10);
+        for (var tt = 0; tt < GL_TYPES.length; tt++) if (GL_TYPES[tt].amountKey) glitchSetValue(big, GL_TYPES[tt].id, GL_TYPES[tt].amountKey, 0.5 + 0.05 * tt);
+        gState.working = big;
+        gState.slots[0] = glCopy(big);
+        gModelDirty = true;
+        gLayout = glitchFaceLayout(gState.ui);
+        refreshModel();
+        gTilePage = pv === "many2" ? 1 : 0;
+        gState.ui.sel = "form";
+        glitchToggleLock(gState.working, "comb");
     }
     gLayout = glitchFaceLayout(gState.ui);
     demoCache = null;

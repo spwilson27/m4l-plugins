@@ -26,7 +26,7 @@
 //   (discrete: mode / division / pattern). A param spec carries: kind, min, max, def, unit, rand [lo0,hi0,lo1,hi1] (the
 //   range rolled by Randomize at Chaos 0 and Chaos 1), calm / wild value lists for "disc", choices (names), group.
 //
-// ENGINE BUFFER `buffer~ #0-glitchslots` (GL_SLOTS_BUF_SAMPS = 1024 floats, bound in gen as `slots #0-glitchslots`):
+// ENGINE BUFFER `buffer~ #0-glitchslots` (GL_SLOTS_BUF_SAMPS = 1280 floats, bound in gen as `slots #0-glitchslots`):
 //   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 113 -> 0..903)
 //   [WOFF = 8*NP .. +8)         8 weights used in modes Working / Morph (any non-negative numbers, gen normalizes by
 //                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (904..911)
@@ -39,7 +39,13 @@
 //        SEQ+5..7        reserved (0)
 //        SEQ+8 .. +16    16 steps: slot index 0..7, or -1 = HOLD (keep the previous step's slot; a leading hold takes the
 //                        last step cyclically; a sequence with no slot at all = weights 0 = neutral dry sound)
-//   The UI writes it with packEngineBuffer(state) via Buffer.poke(1, 0, array). Gen re-reads it every ~32 samples.
+//   [META = SEQ+24 .. +NP)      per param: kind + 4 * (index of its group's amount param)   (kind 0 wet, 1 lin, 2 log, 3 disc)  (936..1048)
+//   [DEFS = META+NP .. +NP)     per param: its default value                                                        (1049..1161)
+//   [WBI = DEFS+NP .. +NINST)   per chain position: index of that instance's wet param                              (1162..1184)
+//   META / DEFS / WBI are constants of the layout (glitchEngineConstants()); they ride in the buffer instead of being poked by
+//   gen's init code because 565 init statements cost gen about 3 s of compile time (measured 2026-10-21: 5.3 ms per statement).
+//   The UI writes everything with packEngineBuffer(state) via Buffer.poke(1, 0, array); a harness must write the constants too.
+//   Gen re-reads the buffer every ~32 samples.
 // SEQUENCER (gen, sample-accurate, transport-locked): step position = host beat / GL_SEQ_RATES[rate]; step index =
 //   floor(position) mod length; fraction = position - floor. Weight vector: previous step's slot gets cos(p*pi/2) (curve 0)
 //   or 1-p, the current slot sin(p*pi/2) or p, with p = clip(fraction / glide, 0, 1) (p = 1 when glide = 0). A step change
@@ -92,7 +98,7 @@ var GL_NSLOT = 8;
 var GL_FFT_N = 1024;
 var GL_LATENCY = 1023; // STFT path N - 1; everything else is aligned to it
 var GL_ACTIVE_EPS = 0.0005;
-var GL_SLOTS_BUF_SAMPS = 1024;
+var GL_SLOTS_BUF_SAMPS = 1280;
 var GL_SCOPE_SAMPS = 512;
 var GL_HOP_CTL = 32; // gen re-blends the weights every 32 samples
 var GL_SEQ_MAX = 16;
@@ -340,7 +346,7 @@ var GL_TYPES = [
 // ---------------------------------------------------------------------------------------------------------------
 var GL_KIND_CODE = { wet: 0, lin: 1, log: 2, disc: 3 };
 
-/** @returns {{np:number, instances:Array<any>, params:Array<any>, index:Object<string, number>, base:Object<string, number>, weightsOffset:number, seqOffset:number, ninst:number}} */
+/** @returns {{np:number, instances:Array<any>, params:Array<any>, index:Object<string, number>, base:Object<string, number>, weightsOffset:number, seqOffset:number, metaOffset:number, defsOffset:number, wbOffset:number, ninst:number}} */
 function glitchLayout() {
     if (glitchLayout._cache) return glitchLayout._cache;
     var params = [];
@@ -366,7 +372,9 @@ function glitchLayout() {
         instances.push({ id: inst.id, pos: ii, base: wetIdx, count: inst.params.length, wet: wetIdx });
     }
     var np = params.length;
-    glitchLayout._cache = { np: np, instances: instances, params: params, index: index, base: base, weightsOffset: GL_NSLOT * np, seqOffset: GL_NSLOT * np + GL_NSLOT, ninst: instances.length };
+    var seqOff = GL_NSLOT * np + GL_NSLOT;
+    glitchLayout._cache = { np: np, instances: instances, params: params, index: index, base: base, weightsOffset: GL_NSLOT * np, seqOffset: seqOff, metaOffset: seqOff + GL_SEQ_HDR + GL_SEQ_MAX,
+        defsOffset: seqOff + GL_SEQ_HDR + GL_SEQ_MAX + np, wbOffset: seqOff + GL_SEQ_HDR + GL_SEQ_MAX + 2 * np, ninst: instances.length };
     return glitchLayout._cache;
 }
 glitchLayout._cache = null;
@@ -380,7 +388,16 @@ function glType(id) {
     return null;
 }
 
-// Per-param meta for gen: [kindCode, groupIndex, default] x np (gen: Data meta(np, 3)).
+/** The constants block of the engine buffer: np meta codes (kind + 4 * group index), np defaults, then the wet index per chain position. */
+function glitchEngineConstants() {
+    var L = glitchLayout();
+    var out = [];
+    for (var i = 0; i < L.np; i++) out.push(L.params[i].kindCode + 4 * L.params[i].group);
+    for (var j = 0; j < L.np; j++) out.push(L.params[j].def);
+    for (var k = 0; k < L.instances.length; k++) out.push(L.instances[k].wet);
+    return out;
+}
+// Per-param meta: [kindCode, groupIndex, default] x np (gen builds Data meta(np, 3) from the engine buffer's constants block).
 function glitchMeta() {
     var L = glitchLayout();
     var m = [];
@@ -798,6 +815,8 @@ function packEngineBuffer(state) {
     for (var h = 0; h < GL_SEQ_HDR; h++) buf[L.seqOffset + h] = hdr[h];
     var steps = normalizeSeq(state.seq).steps;
     for (var q = 0; q < GL_SEQ_MAX; q++) buf[L.seqOffset + GL_SEQ_HDR + q] = steps[q];
+    var consts = glitchEngineConstants();
+    for (var c = 0; c < consts.length; c++) buf[L.metaOffset + c] = consts[c];
     return buf;
 }
 function saveToSlot(state, i) { state.slots[i] = glCopy(state.working); state.slots[i].name = state.slots[i].name || ("Glitch " + (i + 1)); return state; }
@@ -926,6 +945,39 @@ function setSeqStep(state, i, slot) {
 function setSeqLength(state, n) { state.seq = normalizeSeq(state.seq); state.seq.length = glClamp(Math.round(Number(n)) || 1, 1, GL_SEQ_MAX); return state; }
 function setSeqRate(state, r) { state.seq = normalizeSeq(state.seq); state.seq.rate = glClamp(Math.round(Number(r)), 0, GL_SEQ_RATES.length - 1) || 0; return state; }
 function setSeqGlide(state, g) { state.seq = normalizeSeq(state.seq); state.seq.glide = glClamp(Number(g) || 0, 0, 1); return state; }
+function setSeqCurve(state, c) { state.seq = normalizeSeq(state.seq); state.seq.curve = Number(c) > 0.5 ? 1 : 0; return state; }
+/** Every step becomes a hold (an empty sequence is silent: weights 0). */
+function seqClear(state) { state.seq = normalizeSeq(state.seq); for (var i = 0; i < GL_SEQ_MAX; i++) state.seq.steps[i] = -1; return state; }
+/** The value after (dir > 0) or before (dir < 0) `cur` when cycling a step: hold, then the filled slots ascending, then hold again. */
+function seqCycleValue(state, cur, dir) {
+    var cyc = [-1].concat(filledSlots(state));
+    var i;
+    if (dir < 0) {
+        for (i = cyc.length - 1; i >= 0; i--) if (cyc[i] < cur) return cyc[i];
+        return cyc[cyc.length - 1];
+    }
+    for (i = 0; i < cyc.length; i++) if (cyc[i] > cur) return cyc[i];
+    return cyc[0];
+}
+/** Cycle step i through hold / filled slots. Returns the new value. */
+function seqCycleStep(state, i, dir) {
+    state.seq = normalizeSeq(state.seq);
+    var v = seqCycleValue(state, state.seq.steps[i], dir);
+    setSeqStep(state, i, v);
+    return v;
+}
+/** The 8 slot weights that are AUDIBLE: Working = slot 0 of the engine; Morph = the XY corners; Seq = the engine's own
+ *  normalized weights from the telemetry (`scope`, optional), else the sequencer evaluated at `beat` (default 0). */
+function soundingWeights(state, scope, beat) {
+    if (state.audition === "working") return [1, 0, 0, 0, 0, 0, 0, 0];
+    if (state.audition === "morph") return cornerSlotWeights(state.corners, state.xy[0], state.xy[1]);
+    if (scope && scope[GL_SCOPE.SEQ_ON] > 0.5) {
+        var w = [];
+        for (var k = 0; k < GL_NSLOT; k++) w.push(Math.max(0, Number(scope[GL_SCOPE.WEIGHTS + k]) || 0));
+        return w;
+    }
+    return seqWeights(state.seq, Number(beat) || 0).weights;
+}
 /** Roll the sequence into the state from the filled slots (keeps rate / glide). */
 function rerollSequence(state) {
     var q = normalizeSeq(state.seq);
@@ -952,7 +1004,7 @@ var GL_PARAMS = {
     mode: { kind: "enum", long: "Mode", short: "Mode", enums: GL_MODE_NAMES, init: 0 },
     seqrate: { kind: "enum", long: "Seq Rate", short: "Seq Rate", enums: GL_SEQ_RATE_NAMES, init: 4 },
     glide: { kind: "dial", long: "Glide", short: "Glide", lo: 0, hi: 100, init: 0, unit: 5 },
-    seqlen: { kind: "int", long: "Seq Length", short: "Seq Len", lo: 1, hi: 16, init: 8, unit: 0 },
+    seqlen: { kind: "int", long: "Seq Length", short: "Seq Length", lo: 1, hi: 16, init: 8, unit: 0 },
 };
 var GL_PARAM_KEYS = ["morphx", "morphy", "chaos", "mix", "out", "randomize", "mutate", "mode", "seqrate", "glide", "seqlen"];
 
@@ -960,40 +1012,49 @@ var GL_SHORT = { drvA: "DRIVE A", filt: "FILTER", form: "FORMANT", comb: "COMB",
     corr: "CORRUPT", ring: "RING", stut: "STUTTER", time: "TAPE", gpit: "G-PITCH", gstr: "G-STRETCH", rvs: "REVERSE", shuf: "SHUFFLE", chop: "CHOP",
     drvB: "DRIVE B", dly: "DELAY", slap: "SLAPBACK", rev: "REVERB", wid: "WIDTH", spec: "SPECTRAL", freeze: "FREEZE", smear: "SMEAR",
     ccrush: "C-CRUSH", scramble: "SCRAMBLE", scatter: "SCATTER", mirror: "MIRROR", binshift: "BIN SHIFT", specgate: "SPEC GATE" };
+// short names for the compact tiles (more than 4 modules in the glitch view)
+var GL_TINY = { drvA: "DRV A", drvB: "DRV B", form: "FORMNT", phas: "PHASER", crush: "CRUSH", rect: "RECT", corr: "CORR", stut: "STUT", gpit: "G-PIT", gstr: "G-STR",
+    rvs: "REV SL", shuf: "SHUF", slap: "SLAP", rev: "REVERB", wid: "WIDTH", ccrush: "C-CRSH", scramble: "SCRAM", scatter: "SCATR", binshift: "BINSH", specgate: "S-GATE" };
 
 var GL_FACE = { MARGIN: 6, GAP: 4, TOP: 4, BOTTOM: 165, HEADER_H: 16, BODY_Y: 23, BODY_H: 114, ACTION_Y: 140, ACTION_H: 25,
-    PAD_W: 112, VIEW_W: 196, EDITOR_W: 190, SLOTS_W: 84, SEQ_W: 0, SIDE_W: 46, DEVICE_H: 169, ROW_H: 12, ROW_GAP: 1, MAX_ROWS: 10, MAX_TILES: 15 };
+    PAD_W: 112, VIEW_W: 196, EDITOR_W: 190, SLOTS_W: 84, SEQ_W: 212, SIDE_W: 46, DEVICE_H: 169, ROW_H: 12, ROW_GAP: 1, MAX_ROWS: 10, MAX_TILES: 31,
+    // glitch view paging: up to 4 big tiles, up to 8 compact (4 x 2), up to 12 small (4 x 3) per page, then pages of 12
+    PAGE_CAP: 12, STRIP_H: 12, SEQ_PITCH: 12.5 };
+// Options categories, in display order (the master list of the Options view)
+var GL_OPT_CATS = ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility"];
 
-function defaultUi() { return { editor: 0, slots: 1, seq: 0, options: 0, sel: "" }; }
+function defaultUi() { return { editor: 0, slots: 1, seq: 0, options: 0, sel: "", optCat: 0 }; }
 function normalizeUi(u) {
     var d = defaultUi();
     if (!u || typeof u !== "object") return d;
     d.editor = u.editor ? 1 : 0;
     d.slots = u.slots === undefined ? 1 : (u.slots ? 1 : 0);
-    d.seq = u.seq ? 1 : 0; // the sequencer section flag (glitchFaceLayout ignores it until the sequencer UI exists: GL_FACE.SEQ_W = 0)
+    d.seq = u.seq ? 1 : 0;
     d.options = u.options ? 1 : 0;
     d.sel = typeof u.sel === "string" && glitchTileInfo(u.sel) ? u.sel : "";
+    d.optCat = glClamp(Math.floor(Number(u.optCat)) || 0, 0, GL_OPT_CATS.length - 1);
     return d;
 }
 function glRect(x, y, w, h) { return { x: x, y: y, w: w, h: h }; }
 
-/** Every rect of the face for a UI state, in device pixels (the v8ui covers the whole device, 0,0..width,169). */
+/** Every rect of the face for a UI state, in device pixels (the v8ui covers the whole device, 0,0..width,169).
+ *  Sections, left to right: core | EDIT | SLOTS | SEQ | side. Widths: 374 base, +194 EDIT, +88 SLOTS, +216 SEQ. */
 function glitchFaceLayout(ui) {
     ui = normalizeUi(ui);
     var F = GL_FACE;
     var x = F.MARGIN;
     var L = { ui: ui };
     L.core = glRect(x, F.TOP, F.PAD_W + F.GAP + F.VIEW_W, F.BOTTOM - F.TOP);
-    L.toggles = { editor: glRect(x, F.TOP, 40, F.HEADER_H), slots: glRect(x + 44, F.TOP, 40, F.HEADER_H) };
-    L.hint = glRect(x + 88, F.TOP, L.core.w - 88, F.HEADER_H);
+    L.toggles = { editor: glRect(x, F.TOP, 40, F.HEADER_H), slots: glRect(x + 44, F.TOP, 40, F.HEADER_H), seq: glRect(x + 88, F.TOP, 40, F.HEADER_H) };
+    L.hint = glRect(x + 132, F.TOP, L.core.w - 132, F.HEADER_H);
     L.pad = glRect(x, F.BODY_Y, F.PAD_W, F.BODY_H);
     L.view = glRect(x + F.PAD_W + F.GAP, F.BODY_Y, F.VIEW_W, F.BODY_H);
     L.action = {
         dice: glRect(x, F.ACTION_Y, 70, F.ACTION_H),
         mutate: glRect(x + 74, F.ACTION_Y, 52, F.ACTION_H),
-        chaos: glRect(x + 130, F.ACTION_Y, 78, F.ACTION_H),
-        opt: glRect(x + 212, F.ACTION_Y, 26, F.ACTION_H),
-        ab: glRect(x + 242, F.ACTION_Y, 70, F.ACTION_H),
+        chaos: glRect(x + 130, F.ACTION_Y, 62, F.ACTION_H),
+        opt: glRect(x + 196, F.ACTION_Y, 24, F.ACTION_H),
+        ab: glRect(x + 224, F.ACTION_Y, 88, F.ACTION_H),
     };
     L.options = ui.options ? glitchOptionsLayout(L.core.x) : null;
     x += L.core.w;
@@ -1007,7 +1068,8 @@ function glitchFaceLayout(ui) {
         L.slots = { rect: glRect(sx, F.TOP, F.SLOTS_W, F.BOTTOM - F.TOP), pads: pads, save: glRect(sx + 4, F.ACTION_Y, 36, F.ACTION_H), clear: glRect(sx + 44, F.ACTION_Y, 36, F.ACTION_H) };
         x += F.GAP + F.SLOTS_W;
     }
-    // phase 2: the sequencer section goes here (ui.seq, F.SEQ_W), between Slots and the side column
+    L.seq = null;
+    if (ui.seq) { L.seq = glitchSeqLayout(x + F.GAP); x += F.GAP + F.SEQ_W; }
     var sdx = x + F.GAP;
     L.side = { rect: glRect(sdx, F.TOP, F.SIDE_W, F.BOTTOM - F.TOP), mix: glRect(sdx, 8, F.SIDE_W, 72), out: glRect(sdx, 84, F.SIDE_W, 72) };
     L.width = sdx + F.SIDE_W + F.MARGIN;
@@ -1020,33 +1082,95 @@ function glitchCornerRects(pad) {
     return [glRect(pad.x + m, pad.y + m, bw, bh), glRect(pad.x + pad.w - m - bw, pad.y + m, bw, bh),
         glRect(pad.x + m, pad.y + pad.h - m - bh, bw, bh), glRect(pad.x + pad.w - m - bw, pad.y + pad.h - m - bh, bw, bh)];
 }
-/** Options view: one panel over the core area (pad + glitch view + action bar). One toggle per module type (GL_TYPES.length,
- *  29 in phase 2) in 4 columns x 8 rows, the "all" toggle in the last cell, the note line under them. */
+/** The SEQUENCER section at x0: header (ON chip), length lane, 16 steps, a glide lane (display only), a palette of the 8
+ *  slots + hold, Rate / Glide / Length / Curve controls and the Randomize / Clear buttons. */
+function glitchSeqLayout(x0) {
+    var F = GL_FACE;
+    var rect = glRect(x0, F.TOP, F.SEQ_W, F.BOTTOM - F.TOP);
+    var ix = x0 + 6, iw = F.SEQ_W - 12;
+    var steps = [];
+    for (var i = 0; i < GL_SEQ_MAX; i++) steps.push(glRect(ix + i * F.SEQ_PITCH, 36, 12, 30));
+    var pal = [];
+    for (var s = 0; s < GL_NSLOT; s++) pal.push(glRect(ix + s * 22, 102, 20, 14));
+    pal.push(glRect(ix + 8 * 22, 102, iw - 8 * 22, 14)); // index 8 = hold
+    return {
+        rect: rect, x0: ix, pitch: F.SEQ_PITCH, on: glRect(x0 + F.SEQ_W - 6 - 34, 6, 34, 14),
+        lane: glRect(ix, 23, iw, 12), steps: steps, glide: glRect(ix, 69, iw, 30), palette: pal,
+        rate: glRect(ix, 119, 98, 12), glideBar: glRect(ix + 102, 119, 98, 12), len: glRect(ix, 133, 98, 12), curve: glRect(ix + 102, 133, 98, 12),
+        dice: glRect(ix, 147, 140, 16), clear: glRect(ix + 144, 147, iw - 144, 16),
+    };
+}
+/** Options view: one panel over the core area (pad + glitch view + action bar). Master / detail: the 7 categories in a list on
+ *  the left (a toggle for the whole category + a select button each), the selected category's types as two columns of rows
+ *  on the right (a category holds at most 8 types), the "all" chip in the header and the note line at the bottom. */
 function glitchOptionsLayout(x0) {
     var F = GL_FACE;
     var panel = glRect(x0, F.BODY_Y, F.PAD_W + F.GAP + F.VIEW_W, F.BOTTOM - F.BODY_Y);
     var close = glRect(panel.x + panel.w - 44, panel.y + 4, 40, 14);
-    var cols = 4, pitchY = 13, itemH = 12;
-    var cw = (panel.w - 12 - (cols - 1) * 4) / cols;
-    var items = [];
-    for (var i = 0; i < GL_TYPES.length; i++) items.push(glRect(panel.x + 6 + (i % cols) * (cw + 4), panel.y + 22 + Math.floor(i / cols) * pitchY, cw, itemH));
-    var last = cols * 8 - 1;
-    var toggleAll = glRect(panel.x + 6 + (last % cols) * (cw + 4), panel.y + 22 + Math.floor(last / cols) * pitchY, cw, itemH);
-    return { panel: panel, close: close, items: items, all: toggleAll, note: glRect(panel.x + 6, panel.y + panel.h - 15, panel.w - 12, 14) };
+    var all = glRect(panel.x + panel.w - 44 - 4 - 56, panel.y + 4, 56, 14);
+    var cats = [];
+    for (var c = 0; c < GL_OPT_CATS.length; c++) {
+        var cy = panel.y + 22 + c * 15;
+        cats.push({ toggle: glRect(panel.x + 6, cy, 16, 14), select: glRect(panel.x + 24, cy, 66, 14) });
+    }
+    var tx = panel.x + 98, tw2 = (panel.x + panel.w - 6 - tx - 4) / 2;
+    var slots = [];
+    for (var k = 0; k < 8; k++) slots.push(glRect(tx + (k % 2) * (tw2 + 4), panel.y + 22 + Math.floor(k / 2) * 24, tw2, 22));
+    // items[i] = the rect of type i in the CURRENT category's two-column grid, or null when i is not in it
+    return { panel: panel, close: close, all: all, cats: cats, slots: slots, note: glRect(panel.x + 6, panel.y + panel.h - 14, panel.w - 12, 13) };
 }
-/** Tile grid inside the glitch view rect for n tiles (n <= GL_FACE.MAX_TILES). */
-function glitchTileRects(n, view) {
+/** Type indices (into GL_TYPES) per category, in GL_OPT_CATS order. */
+function glitchOptionCategories() {
     var out = [];
-    if (n <= 0) return out;
-    var cols = n <= 3 ? n : (n === 4 ? 2 : (n <= 6 ? 3 : (n <= 12 ? 4 : 5)));
-    var rows = Math.ceil(n / cols);
-    var gap = 3;
-    var tw = (view.w - (cols - 1) * gap) / cols;
-    var th = Math.min(76, (view.h - (rows - 1) * gap) / rows);
-    var y0 = view.y + (view.h - (rows * th + (rows - 1) * gap)) / 2; // centred when the grid does not fill the view
-    for (var i = 0; i < n; i++) out.push(glRect(view.x + (i % cols) * (tw + gap), y0 + Math.floor(i / cols) * (th + gap), tw, th));
+    for (var c = 0; c < GL_OPT_CATS.length; c++) {
+        var list = [];
+        for (var i = 0; i < GL_TYPES.length; i++) if (GL_TYPES[i].category === GL_OPT_CATS[c]) list.push(i);
+        out.push({ name: GL_OPT_CATS[c], types: list });
+    }
     return out;
 }
+/** 0 = none allowed, 1 = all, 2 = some. */
+function glitchCategoryState(state, cat) {
+    var cs = glitchOptionCategories()[cat].types, n = 0;
+    for (var i = 0; i < cs.length; i++) if (state.allow[GL_TYPES[cs[i]].id]) n++;
+    return n === 0 ? 0 : (n === cs.length ? 1 : 2);
+}
+function setAllowCategory(state, cat, on) {
+    var cs = glitchOptionCategories()[cat].types;
+    for (var i = 0; i < cs.length; i++) state.allow[GL_TYPES[cs[i]].id] = !!on;
+    return state;
+}
+/** The tile grid of the glitch view for n tiles. Up to 4 tiles: big (2 x 2 or a row), up to 8: compact 4 x 2, then 4 x 3, and
+ *  more than 12 tiles page (12 per page). The bottom strip (GL_FACE.STRIP_H) carries the chain ribbon and the pager.
+ *  Returns { rects (this page's tiles, in order), first (absolute index of rects[0]), pages, page, cols, rows, cap, compact,
+ *  grid, strip, ribbon, prev, next, pageText }. */
+function glitchViewLayout(n, view, page) {
+    var F = GL_FACE;
+    var strip = glRect(view.x, view.y + view.h - F.STRIP_H, view.w, F.STRIP_H);
+    var grid = glRect(view.x, view.y, view.w, view.h - F.STRIP_H - 2);
+    var cols, rows, cap;
+    if (n <= 4) { cols = n <= 3 ? Math.max(n, 1) : 2; rows = Math.max(1, Math.ceil(n / cols)); cap = 4; }
+    else if (n <= 8) { cols = 4; rows = 2; cap = 8; }
+    else { cols = 4; rows = 3; cap = F.PAGE_CAP; }
+    var pages = Math.max(1, Math.ceil(n / cap));
+    page = glClamp(Math.floor(Number(page)) || 0, 0, pages - 1);
+    var first = page * cap;
+    var cnt = Math.max(0, Math.min(cap, n - first));
+    var gap = 3;
+    var tw2 = (grid.w - (cols - 1) * gap) / cols;
+    var th = Math.min(n <= 4 ? 76 : 99, (grid.h - (rows - 1) * gap) / rows);
+    var y0 = grid.y + (grid.h - (rows * th + (rows - 1) * gap)) / 2;
+    var rects = [];
+    for (var i = 0; i < cnt; i++) rects.push(glRect(grid.x + (i % cols) * (tw2 + gap), y0 + Math.floor(i / cols) * (th + gap), tw2, th));
+    var paged = pages > 1;
+    var rw = paged ? view.w - 62 : view.w;
+    return { rects: rects, first: first, pages: pages, page: page, cols: cols, rows: rows, cap: cap, compact: n > 4, grid: grid, strip: strip,
+        ribbon: glRect(view.x, strip.y, rw, strip.h),
+        prev: paged ? glRect(view.x + view.w - 32, strip.y, 16, strip.h) : null, next: paged ? glRect(view.x + view.w - 16, strip.y, 16, strip.h) : null,
+        pageText: paged ? glRect(view.x + view.w - 62, strip.y, 30, strip.h) : null };
+}
+/** Back-compat helper: the rects of page 0. */
+function glitchTileRects(n, view) { return glitchViewLayout(n, view, 0).rects; }
 /** Editor: header buttons and one row rect per parameter. */
 function glitchEditorLayout(ed, nRows) {
     var F = GL_FACE;
@@ -1055,23 +1179,29 @@ function glitchEditorLayout(ed, nRows) {
     return { close: glRect(ed.x + ed.w - 22, F.TOP + 2, 16, 14), remove: glRect(ed.x + ed.w - 42, F.TOP + 2, 16, 14), lock: glRect(ed.x + ed.w - 62, F.TOP + 2, 16, 14), rows: rows };
 }
 
-/** Every interactive rect: [{id, r, layer, panel}]. layer 1 sits on top of layer 0 inside the same panel (hit order). */
-function glitchHitMap(ui, nTiles, nRows) {
+/** Every interactive rect: [{id, r, layer, panel}]. layer 1 sits on top of layer 0 inside the same panel (hit order).
+ *  nTiles = ALL tiles of the glitch view (the pager shows `page`), nRows = rows of the editor. */
+function glitchHitMap(ui, nTiles, nRows, page) {
     var L = glitchFaceLayout(ui);
     var out = [];
     function add(id, r, panel, layer) { out.push({ id: id, r: r, panel: panel, layer: layer || 0 }); }
     add("tg_editor", L.toggles.editor, L.core);
     add("tg_slots", L.toggles.slots, L.core);
+    add("tg_seq", L.toggles.seq, L.core);
     if (L.options) {
         var O = L.options;
         add("opt_close", O.close, O.panel);
-        for (var t = 0; t < O.items.length; t++) add("opt_" + t, O.items[t], O.panel);
         add("opt_all", O.all, O.panel);
+        var cats = glitchOptionCategories();
+        for (var c = 0; c < O.cats.length; c++) { add("optcat_tg" + c, O.cats[c].toggle, O.panel); add("optcat_sel" + c, O.cats[c].select, O.panel); }
+        var cur = cats[L.ui.optCat].types;
+        for (var t = 0; t < cur.length; t++) add("opt_" + cur[t], O.slots[t], O.panel);
     } else {
         add("pad", L.pad, L.core);
-        for (var c = 0; c < 4; c++) add("corner" + c, L.corners[c], L.pad, 1);
-        var tr = glitchTileRects(Math.min(nTiles, GL_FACE.MAX_TILES), L.view);
-        for (var i = 0; i < tr.length; i++) add("tile" + i, tr[i], L.view);
+        for (var c2 = 0; c2 < 4; c2++) add("corner" + c2, L.corners[c2], L.pad, 1);
+        var V = glitchViewLayout(Math.min(nTiles, GL_FACE.MAX_TILES), L.view, page);
+        for (var i = 0; i < V.rects.length; i++) add("tile" + (V.first + i), V.rects[i], L.view);
+        if (V.prev) { add("pg_prev", V.prev, L.view); add("pg_next", V.next, L.view); }
         for (var k in L.action) add("act_" + k, L.action[k], L.core);
     }
     add("side_mix", L.side.mix, L.side.rect);
@@ -1087,6 +1217,19 @@ function glitchHitMap(ui, nTiles, nRows) {
         for (var s = 0; s < GL_NSLOT; s++) add("slot" + s, L.slots.pads[s], L.slots.rect);
         add("slot_save", L.slots.save, L.slots.rect);
         add("slot_clear", L.slots.clear, L.slots.rect);
+    }
+    if (L.seq) {
+        var Q = L.seq;
+        add("seq_on", Q.on, Q.rect);
+        add("seq_lane", Q.lane, Q.rect);
+        for (var st = 0; st < GL_SEQ_MAX; st++) add("seq_step" + st, Q.steps[st], Q.rect);
+        for (var pl = 0; pl <= GL_NSLOT; pl++) add("seq_pal" + pl, Q.palette[pl], Q.rect);
+        add("seq_rate", Q.rate, Q.rect);
+        add("seq_glide", Q.glideBar, Q.rect);
+        add("seq_len", Q.len, Q.rect);
+        add("seq_curve", Q.curve, Q.rect);
+        add("seq_dice", Q.dice, Q.rect);
+        add("seq_clear", Q.clear, Q.rect);
     }
     return out;
 }
@@ -1284,7 +1427,7 @@ if (nodeModule && nodeModule.exports) {
         GL_SLOTS_BUF_SAMPS: GL_SLOTS_BUF_SAMPS, GL_SCOPE_SAMPS: GL_SCOPE_SAMPS, GL_SCOPE: GL_SCOPE, GL_DIV_BEATS: GL_DIV_BEATS,
         GL_DIV_NAMES: GL_DIV_NAMES, GL_CHOP_PATTERNS: GL_CHOP_PATTERNS, GL_INSTANCES: GL_INSTANCES, GL_TYPES: GL_TYPES,
         GL_WAVE_LEN: GL_WAVE_LEN, GL_BANDS: GL_BANDS, GL_CEP_BINS: GL_CEP_BINS, GL_HOP_CTL: GL_HOP_CTL,
-        glitchLayout: glitchLayout, glitchMeta: glitchMeta, glInstance: glInstance, glType: glType, defaultGlitch: defaultGlitch,
+        glitchLayout: glitchLayout, glitchMeta: glitchMeta, glitchEngineConstants: glitchEngineConstants, glInstance: glInstance, glType: glType, defaultGlitch: defaultGlitch,
         randomizeGlitch: randomizeGlitch, mutateGlitch: mutateGlitch, glitchToVector: glitchToVector, vectorToGlitch: vectorToGlitch,
         blendVectors: blendVectors, xyWeights: xyWeights, cornerSlotWeights: cornerSlotWeights, randRange: randRange,
         defaultState: defaultState, normalizeState: normalizeState, normalizeGlitch: normalizeGlitch, stateToBlob: stateToBlob,
@@ -1297,7 +1440,10 @@ if (nodeModule && nodeModule.exports) {
         defaultSeq: defaultSeq, normalizeSeq: normalizeSeq, seqSlotAt: seqSlotAt, seqWeights: seqWeights, seqHeader: seqHeader, filledSlots: filledSlots,
         randomizeSequence: randomizeSequence, setSeqStep: setSeqStep, setSeqLength: setSeqLength, setSeqRate: setSeqRate, setSeqGlide: setSeqGlide,
         rerollSequence: rerollSequence, engineMode: engineMode,
-        GL_PARAMS: GL_PARAMS, GL_PARAM_KEYS: GL_PARAM_KEYS, GL_SHORT: GL_SHORT, GL_FACE: GL_FACE, defaultUi: defaultUi, normalizeUi: normalizeUi,
+        setSeqCurve: setSeqCurve, seqClear: seqClear, seqCycleValue: seqCycleValue, seqCycleStep: seqCycleStep, soundingWeights: soundingWeights,
+        GL_OPT_CATS: GL_OPT_CATS, glitchSeqLayout: glitchSeqLayout, glitchViewLayout: glitchViewLayout, glitchOptionCategories: glitchOptionCategories,
+        glitchCategoryState: glitchCategoryState, setAllowCategory: setAllowCategory,
+        GL_PARAMS: GL_PARAMS, GL_PARAM_KEYS: GL_PARAM_KEYS, GL_SHORT: GL_SHORT, GL_TINY: GL_TINY, GL_FACE: GL_FACE, defaultUi: defaultUi, normalizeUi: normalizeUi,
         glitchFaceLayout: glitchFaceLayout, glitchCornerRects: glitchCornerRects, glitchOptionsLayout: glitchOptionsLayout, glitchTileRects: glitchTileRects,
         glitchEditorLayout: glitchEditorLayout, glitchHitMap: glitchHitMap, glInside: glInside, glOverlap: glOverlap, glHit: glHit,
         glitchTileInfo: glitchTileInfo, glitchTiles: glitchTiles, glitchEditorRows: glitchEditorRows, glitchGetValue: glitchGetValue, glitchSetValue: glitchSetValue,
