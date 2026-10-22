@@ -16,6 +16,9 @@
  *             is on Live's own scale, agrees in direction), X = 50 lies between
  *   seq       Mode = Seq through the LOM: the step advances while the transport plays; Seq Rate / Glide / Seq Length set through the
  *             LOM reach the gen (its reported step length, step = counter mod length, crossfade = fraction / glide)
+ *   movement  (phase 3) Randomize assigns movement (tiles with an indicator, gen telemetry MOVE_ON); a Width / Gain module with a synced
+ *             LFO on its gain (test_move) audibly varies the output over time while the transport plays, its phase equals the host beat
+ *             x cycles-per-beat (locked), and stopping the transport holds the synced phase
  *   mix       Mix 0 returns the dry level while the strong glitch is active
  *
  *   node scripts/test_glitch_live.js [--port 19880] [--wav /tmp/glitch_test_220.wav]
@@ -163,6 +166,7 @@ check(r0.ready === 1 && r0.tiles.length === 0, "no glitch yet: no tiles");
 
 // randomize through the hook
 let changed = 0;
+let moveSeeds = 0;
 for (let seed = 1; seed <= 8; seed++) {
     debug("randomize", seed);
     sleep(900);
@@ -171,10 +175,14 @@ for (let seed = 1; seed <= 8; seed++) {
     const act = (r.activity || []).reduce((a, b) => a + b, 0);
     const d = pk.db - dryPk.db;
     if (Math.abs(d) >= 1.5) changed++;
-    console.log(`  seed ${seed}: tiles ${r.tiles.join(",")} activity ${act.toFixed(2)} output ${pk.out.toFixed(3)} (${d.toFixed(1)} dB vs dry)`);
+    moveSeeds += (r.moves || []).length > 0 ? 1 : 0;
+    const mvOn = (r.moveOn || []).reduce((a, b) => a + b, 0);
+    if ((r.moves || []).length) check(mvOn >= 1, `seed ${seed}: movement on ${r.moves.join(",")} reaches the gen (telemetry MOVE_ON sum ${mvOn})`);
+    console.log(`  seed ${seed}: tiles ${r.tiles.join(",")} activity ${act.toFixed(2)} output ${pk.out.toFixed(3)} (${d.toFixed(1)} dB vs dry)` + ((r.moves || []).length ? ` movement ${r.moves.join(",")}` : ""));
     if (!(r.tiles.length > 0 && act > 0.05)) check(false, `seed ${seed}: tiles and telemetry activity`);
 }
 check(changed >= 4, `randomize changes the output level (|delta| >= 1.5 dB for ${changed} of 8 seeds)`);
+check(moveSeeds >= 1, `Randomize assigns movement to some modules (${moveSeeds} of 8 seeds)`);
 
 // the Randomize / Mutate Live parameters (automation, MIDI map): a rising edge rolls once and the parameter resets
 const seedBefore = report().seed;
@@ -323,6 +331,48 @@ setP("Glide", 0);
 setP("Seq Length", 2);
 setP("Mode", 0);
 sleep(500);
+
+
+// movement (phase 3): one Width / Gain module with a synced sine LFO on its gain, 1/4 note cycle (one beat), +-9 dB. The scope is read
+// straight from the buffer (no 300 ms report round trip): slot layout from src/glitch_config.js GL_SCOPE.
+{
+    const SC = GS.GL_SCOPE;
+    const kW = GS.GL_INSTANCES.findIndex((i) => i.id === "wid");
+    const readScope = () => evalLom(`return new Buffer(${JSON.stringify(scope)}).peek(1, 0, ${SC.END});`);
+    setP("Mode", 0);
+    debug("test_move");
+    sleep(1200);
+    check(report().moves.includes("wid"), "test_move: the Width / Gain tile carries a movement");
+    // make sure the transport plays (the clip launched it earlier; the sequencer test left it running)
+    if (!isPlaying()) { evalLom('new LiveAPI("live_set").call("start_playing"); return 1;'); sleep(800); }
+    const circ = (a, b) => { const d = Math.abs((a - b) % 1); return Math.min(d, 1 - d); };
+    const samples = [];
+    for (let i = 0; i < 26; i++) { const a = readScope(); samples.push({ on: a[SC.MOVE_ON + kW], ofs: a[SC.MOVE_OFS + kW], pos: a[SC.MOVE_POS + kW], ph: a[SC.MOVE_PH + kW], beat: a[SC.BEAT], out: a[SC.OUT_PEAK], inp: a[SC.IN_PEAK], play: a[SC.SEQ_PLAY] }); sleep(40); }
+    check(samples.every((x) => x.on === 1), "movement telemetry on for the Width / Gain module");
+    const ofs = samples.map((x) => x.ofs);
+    check(Math.max(...ofs) > 0.25 && Math.min(...ofs) < -0.25 && Math.max(...ofs.map(Math.abs)) <= 0.5001, `the offset swings +-0.5 over time (${Math.min(...ofs).toFixed(2)} .. ${Math.max(...ofs).toFixed(2)})`);
+    const outDb = samples.filter((x) => x.inp > 0.05).map((x) => db(x.out) - db(x.inp));
+    const span = Math.max(...outDb) - Math.min(...outDb);
+    console.log(`  output vs input while the LFO runs: ${Math.min(...outDb).toFixed(1)} .. ${Math.max(...outDb).toFixed(1)} dB (span ${span.toFixed(1)} dB, ${outDb.length} samples, playing ${samples[0].play})`);
+    check(outDb.length >= 12 && span >= 6, `the output level varies audibly with the movement (span ${span.toFixed(1)} dB >= 6)`);
+    const lockErr = Math.max(...samples.map((x) => circ(x.ph, x.beat * 1)));
+    check(lockErr < 0.06, `the LFO phase equals the host beat x 1 cycle/beat (largest phase error ${lockErr.toFixed(3)} of a cycle)`);
+    check(samples.every((x) => x.pos >= 0 && x.pos <= 1), "target position telemetry stays in 0..1");
+    // transport stopped: a synced source holds
+    evalLom('new LiveAPI("live_set").call("stop_playing"); return 1;');
+    sleep(900);
+    const held = [];
+    for (let i = 0; i < 6; i++) { const a = readScope(); held.push({ ph: a[SC.MOVE_PH + kW], play: a[SC.SEQ_PLAY + 0] }); sleep(200); }
+    check(held.every((x) => x.play === 0), "the gen sees the stopped transport");
+    check(Math.max(...held.map((x) => x.ph)) - Math.min(...held.map((x) => x.ph)) < 1e-6, `stopped transport: the synced LFO phase is held (${held[0].ph.toFixed(4)})`);
+    evalLom('new LiveAPI("live_set").call("start_playing"); return 1;');
+    sleep(900);
+    const resumed = [];
+    for (let i = 0; i < 4; i++) { const a = readScope(); resumed.push({ ph: a[SC.MOVE_PH + kW], beat: a[SC.BEAT] }); sleep(120); }
+    check(resumed.every((x) => circ(x.ph, x.beat) < 0.06), "playback resumes locked to the host beat");
+    check(Math.max(...resumed.map((x) => x.ph)) - Math.min(...resumed.map((x) => x.ph)) > 0.01 || circ(resumed[0].ph, resumed[3].ph) > 0.01, "and the phase moves again");
+    setP("Mode", 0);
+}
 
 // Mix: 0 = the dry level, with the strong glitch active
 setP("Morph X", 0);

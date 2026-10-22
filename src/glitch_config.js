@@ -18,7 +18,8 @@
 //     eight sub-ops of the single `spec` instance (freeze, smear, ccrush, scramble, scatter, mirror, binshift, specgate),
 //     delay, slapback, reverb, width.
 //
-// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 113).
+// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 780: 113 module
+//   params, then one 29-float MOVEMENT block per chain instance, see MOVEMENT below).
 //   Per instance the first param is its `wet` (amount, 0 = bypassed). The `spec` instance has one extra amount per sub-op
 //   (frz_amt, smr_amt, cc_amt, sc_amt, sct_amt, mir_amt, bsh_amt, sgl_amt); the sub-op's other params belong to that
 //   amount's group. Saved glitches store params BY KEY (not by index), so growing the vector never breaks a saved state.
@@ -26,23 +27,27 @@
 //   (discrete: mode / division / pattern). A param spec carries: kind, min, max, def, unit, rand [lo0,hi0,lo1,hi1] (the
 //   range rolled by Randomize at Chaos 0 and Chaos 1), calm / wild value lists for "disc", choices (names), group.
 //
-// ENGINE BUFFER `buffer~ #0-glitchslots` (GL_SLOTS_BUF_SAMPS = 1280 floats, bound in gen as `slots #0-glitchslots`):
-//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 113 -> 0..903)
+// ENGINE BUFFER `buffer~ #0-glitchslots` (GL_SLOTS_BUF_SAMPS = 9472 floats, bound in gen as `slots #0-glitchslots`):
+//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 780 -> 0..6239)
 //   [WOFF = 8*NP .. +8)         8 weights used in modes Working / Morph (any non-negative numbers, gen normalizes by
-//                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (904..911)
-//   [SEQ = WOFF+8 .. +24)       the sequencer block, SEQ = glitchLayout().seqOffset = 912:
+//                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (6240..6247)
+//   [SEQ = WOFF+8 .. +24)       the sequencer block, SEQ = glitchLayout().seqOffset = 6248:
 //        SEQ+0  mode     0 Working, 1 Morph, 2 Seq (gen uses the sequencer weights only when this is 2)
 //        SEQ+1  length   1..16 steps
 //        SEQ+2  rate     index into GL_SEQ_RATES (0..9: 1/32, 1/16T, 1/16, 1/8T, 1/8, 1/4T, 1/4, 1/2T, 1/2, 1 bar)
 //        SEQ+3  glide    0..1 = fraction of a step that the crossfade from the previous step's slot takes (0 = hard)
 //        SEQ+4  curve    0 equal-power (sin / cos, then gen normalizes by the sum) , 1 linear
-//        SEQ+5..7        reserved (0)
+//        SEQ+5           PACK VERSION: packEngineBuffer() writes a number that changes with every pack. Gen copies the 8 slot vectors
+//                        and the constants block (about 9000 floats) only when it moves; weights and the sequencer block are read
+//                        every tick. A harness that writes the buffer in pieces must bump it after each write.
+//        SEQ+6..7        reserved (0)
 //        SEQ+8 .. +16    16 steps: slot index 0..7, or -1 = HOLD (keep the previous step's slot; a leading hold takes the
 //                        last step cyclically; a sequence with no slot at all = weights 0 = neutral dry sound)
-//   [META = SEQ+24 .. +NP)      per param: kind + 4 * (index of its group's amount param)   (kind 0 wet, 1 lin, 2 log, 3 disc)  (936..1048)
-//   [DEFS = META+NP .. +NP)     per param: its default value                                                        (1049..1161)
-//   [WBI = DEFS+NP .. +NINST)   per chain position: index of that instance's wet param                              (1162..1184)
-//   META / DEFS / WBI are constants of the layout (glitchEngineConstants()); they ride in the buffer instead of being poked by
+//   [META = SEQ+24 .. +NP)      per param: kind + 4 * (index of its group's amount param)   (kind 0 wet, 1 lin, 2 log, 3 disc)
+//   [DEFS = META+NP .. +NP)     per param: its default value
+//   [WBI = DEFS+NP .. +NINST)   per chain position: index of that instance's wet param
+//   [MINS .. +NP) [MAXS .. +NP) per param: its minimum and maximum (the movement needs the range of its target)       (ends at endOffset 9415)
+//   META / DEFS / WBI / MINS / MAXS are constants of the layout (glitchEngineConstants()); they ride in the buffer instead of being poked by
 //   gen's init code because 565 init statements cost gen about 3 s of compile time (measured 2026-10-21: 5.3 ms per statement).
 //   The UI writes everything with packEngineBuffer(state) via Buffer.poke(1, 0, array); a harness must write the constants too.
 //   Gen re-reads the buffer every ~32 samples.
@@ -61,25 +66,50 @@
 //   "active" = the group's amount (its wet) > GL_ACTIVE_EPS in that slot. Slots with weight <= 1e-9 are skipped.
 //
 // ENGINE TELEMETRY `buffer~ #0-glitchscope` (GL_SCOPE_SAMPS = 512 floats, bound in gen as `scope #0-glitchscope`): see GL_SCOPE.
-//   Offsets are computed (ACTIVITY / LEVEL hold one float per chain position). Sequencer telemetry (written every tick):
+//   Offsets are computed (ACTIVITY / LEVEL / MOVE_* hold one float per chain position). Movement telemetry (every tick, per chain
+//   position): MOVE_ON 1 while that instance's movement runs, MOVE_OFS the offset it adds to its target (depth * source, in fractions of
+//   the target's range), MOVE_POS the target's normalized position after the movement, MOVE_PH the source phase (LFO: position in the
+//   cycle, Steps: position in the pattern, Env: the level, all 0..1). Sequencer telemetry (written every tick):
 //   SEQ_ON (1 while Seq mode is active), SEQ_PLAY (transport playing), SEQ_STEP (step index 0..15), SEQ_SLOT (current slot
 //   or -1), SEQ_PREV (previous step's slot or -1), SEQ_GLIDE (crossfade progress 0..1, 1 = settled), SEQ_FRAC (position in
 //   the step 0..1), SEQ_COUNT (absolute step counter). WEIGHTS holds the normalized weights the engine actually uses.
 //
 // LIVE PARAMETERS (GL_PARAMS / GL_PARAM_KEYS, real live.* objects kept OFF the face): morphx, morphy, chaos, mix, out,
 //   randomize, mutate, mode (Working / Morph / Seq, 3-way enum), seqrate (enum GL_SEQ_RATE_NAMES), glide (%), seqlen (int 1..16).
+//   (Movement has no Live parameters of its own: it is part of the glitch / slot state.)
 //   The face reports their values with `set_<key>`; the face's state mirrors seqrate / glide / seqlen in state.seq.
 //
 // STATE (versioned, saved as the v8ui blob GlitchStateData through getvalueof / setvalueof = [GL_STATE_VERSION, json]):
-//   { version: 3, slots: [glitch|null x8], corners: [slot index x4] (TL, TR, BL, BR), allow: {type: bool}, chaos 0..1,
+//   { version: 4, slots: [glitch|null x8], corners: [slot index x4] (TL, TR, BL, BR), allow: {type: bool}, chaos 0..1,
 //     xy: [x, y] (0..1, y 0 = top), working: glitch (the editable one), audition: "working" | "morph" | "seq", seed: int,
-//     ui: { editor, slots, seq, options: 0|1 section flags, sel: selected tile key },
+//     ui: { editor, slots, seq, options: 0|1 section flags, sel: selected tile key, optCat, edTab: 0 PARAMS | 1 MOTION tab of the editor },
 //     seq: { steps: [16 x (-1 hold | 0..7)], length 1..16, rate 0..9, glide 0..1, curve 0|1 } }
-//   Versions: 1 (no ui), 2 (+ ui), 3 (+ seq; new modules). A v1 / v2 blob loads with the sequence EMPTY (all steps -1,
-//   length 8, rate 1/8, glide 0) and every new module absent (wet 0, the new spectral sub-op amounts 0) in all slots.
-// GLITCH (preset): { version, name, seed, modules: { <instanceId>: { wet, params: {key: value}, move: null } }, movement: {} }
-//   An absent instance is off. `move` / `movement` are reserved for the phase 3 per-module movement source (LFO / steps).
+//   Versions: 1 (no ui), 2 (+ ui), 3 (+ seq; new modules), 4 (+ per-module movement, ui.edTab, the Movement allow-list kinds
+//   mv_lfo / mv_steps / mv_env). A v1 / v2 blob loads with the sequence EMPTY (all steps -1, length 8, rate 1/8, glide 0) and every
+//   new module absent (wet 0, the new spectral sub-op amounts 0) in all slots; a v1..v3 blob has no movement anywhere (`move: null`).
+// GLITCH (preset): { version, name, seed, modules: { <instanceId>: { wet, params: {key: value}, move: null | MOVE } }, movement: {} }
+//   An absent instance is off. `movement` at glitch level stays reserved (unused).
+// MOVEMENT (phase 3): MOVE = { type 1 LFO | 2 Steps | 3 Env, target: param key, depth -1..1, sync 0|1, div 0..15, hz, phase, shape 0..6,
+//   glide, nsteps 8|16, steps[16], atk, rel } (see the block above defaultMove()). One source per chain instance; the spectral
+//   instance has ONE source shared by its sub-ops (the target decides which sub-op's tile shows it).
+//   VECTOR: after the 113 module params, instance k owns 29 floats at mvBase + 29 * k: mv_on, mv_type, mv_target (position of the target in
+//   the instance's param list), mv_depth, mv_hz, mv_cpb (cycles per beat = 1 / GL_MV_DIV_BEATS[div]), mv_sync, mv_phase, mv_shape,
+//   mv_glide, mv_nsteps (0 = 8, 1 = 16), mv_atk, mv_rel, mv_s0..mv_s15. Blend: mv_depth over the slots where the module is on (a slot
+//   without movement counts as depth 0, so movement fades in and out with the morph weights); every other mv_* param only over the slots
+//   where mv_on = 1 (log for hz / cpb / atk / rel, linear for phase / glide / steps / depth, highest weight for type / target / shape /
+//   sync / nsteps, ties to the lowest slot). Nothing is blended from a slot without movement, so it never dilutes the others.
+//   ENGINE: gen evaluates every active source in the 32-sample control tick (gl_move, one call site in one loop over the chain) and
+//   adds depth * source to the BLENDED target in normalized space (so log params move in log space), before the per-param smoothing.
+//   Sources: LFO shapes sine / tri / saw up / saw down / square / smooth random / S&H; Steps (position = beat * cycles-per-beat + phase
+//   * nsteps, glide ramps from the previous step); Env follower of the module's INPUT level (-60..0 dB -> 0..1, attack / release ms).
+//   Synced sources are locked to the host beat (phase = beat * cpb + offset, the offset absorbs rate changes so the phase never jumps;
+//   cpb is read from the blended target, so a rate that has not changed since the module started has offset 0 = exactly beat * cpb) and
+//   HOLD while the transport is stopped (like the sequencer); free (Hz) sources keep running; the follower always runs.
 //
+// MOVEMENT API: defaultMove, normalizeMove, glitchMoveCandidates(tileKey), glitchMainParam(tileKey), glitchGetMove(g, tileKey),
+//   glitchSetMoveType(g, tileKey, 0..3), glitchSetMove(g, tileKey, field, v), glitchSetMoveStep, glMoveFromVector(vec, instId),
+//   glMoveTypesAllowed(allowList), rollMovement(g, seed, chaos, allowList), mutateMovement(g, seed, amount, allowList); JS twins of the gen:
+//   glMoveLfo, glMoveStepValue, glMoveTick, glMoveApply, glMoveBlock. UI model: glitchMotionLayout(ed, type).
 // API: glitchLayout(), defaultGlitch(), randomizeGlitch(seed, chaos, allowList), mutateGlitch(g, seed, amount, allowList),
 //   glitchToVector(g), blendVectors(vectors, weights), xyWeights(x, y), cornerSlotWeights(corners, x, y),
 //   defaultState(), normalizeState(obj), stateToBlob(state), stateFromBlob(arr), engineVectors(state),

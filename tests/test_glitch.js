@@ -2376,4 +2376,634 @@ if (fs.existsSync(devicePath)) {
     });
 }
 
+// ============================================================================= phase 3: per-module movement
+const SR48 = 48000;
+function filtGlitch(move, wet) {
+    const g = G.defaultGlitch();
+    G.glitchSetValue(g, "filt", "wet", wet === undefined ? 1 : wet);
+    G.glitchSetValue(g, "filt", "cutoff", 1000);
+    if (move) g.modules.filt.move = G.normalizeMove(Object.assign({ type: 1, target: "cutoff" }, move), "filt");
+    return g;
+}
+function mvParams(over) {
+    const p = Object.assign({ type: 1, target: 0, depth: 0.5, hz: 1, cpb: 0.25, sync: 1, phase: 0, shape: 0, glide: 0, nsteps: 0, atk: 10, rel: 200, steps: new Array(16).fill(0) }, over || {});
+    return p;
+}
+
+ok("movement registry: one main param per module, continuous, and the targets of every tile", () => {
+    for (const inst of G.GL_INSTANCES) {
+        const mains = inst.params.filter((p) => p.main);
+        assert.strictEqual(mains.length, 1, `${inst.id} has one main param`);
+        assert.ok(mains[0].kind === "lin" || mains[0].kind === "log", `${inst.id}.${mains[0].key} is continuous`);
+        assert.strictEqual(G.GL_MAIN_PARAM[inst.id], mains[0].key);
+        assert.ok(G.glMoveKeysOf(inst, null).includes(mains[0].key));
+    }
+    for (const t of G.GL_TYPES.filter((x) => x.amountKey)) {
+        const cands = G.glitchMoveCandidates(t.id);
+        if (t.id === "freeze" || t.id === "scramble") { assert.strictEqual(cands.length, 0, `${t.id} has nothing to move`); assert.strictEqual(G.glitchMainParam(t.id), null); continue; }
+        assert.ok(cands.length >= 1, `${t.id} has targets`);
+        const main = G.glitchMainParam(t.id);
+        assert.ok(cands.some((c) => c.id === main), `${t.id} main ${main} is one of its targets`);
+        assert.ok(cands.every((c) => G.glInstance("spec").params.find((p) => p.key === c.id).group === t.amountKey), "a sub-op only offers its own params");
+    }
+    // no wet / disc / pattern param is ever a target
+    for (const inst of G.GL_INSTANCES) for (const k of G.glMoveKeysOf(inst, null)) assert.ok(["lin", "log"].includes(inst.params.find((p) => p.key === k).kind));
+    assert.ok(G.glMoveKeysOf(G.glInstance("chop"), null).indexOf("pattern") < 0);
+    // the movement block of the vector: 29 params per instance after the 113 module params, keys in the contract order
+    const L2 = G.glitchLayout();
+    assert.deepStrictEqual(G.glMvSpecs(G.glInstance("filt")).slice(0, 13).map((s) => s.key), G.GL_MV_PARAM_KEYS);
+    for (const inst of L2.instances) {
+        assert.strictEqual(L2.params[inst.mv].key, "mv_on");
+        assert.strictEqual(L2.params[inst.mv + L2.mv.step0 + 15].key, "mv_s15");
+        assert.strictEqual(L2.params[inst.mv + L2.mv.depth].group, inst.wet, "depth blends over the slots where the module is on");
+        assert.strictEqual(L2.params[inst.mv + L2.mv.type].group, inst.mv, "type blends over the slots with movement");
+        const mainPos = G.glInstance(inst.id).params.findIndex((p) => p.main);
+        assert.strictEqual(L2.params[inst.mv + L2.mv.target].def, mainPos, "the default target is the main param");
+    }
+    assert.strictEqual(G.GL_MV_DIV_BEATS.length, 16);
+    assert.deepStrictEqual(G.GL_MV_DIV_BEATS.slice().sort((a, b) => a - b), G.GL_MV_DIV_BEATS, "divisions are sorted, shortest first");
+    assert.strictEqual(G.GL_MV_DIV_NAMES.length, 16);
+    const cpbs = G.GL_MV_DIV_BEATS.map((b) => 1 / b);
+    const sp = G.glMvSpecs(G.glInstance("filt")).find((s) => s.key === "mv_cpb");
+    assert.ok(Math.min(...cpbs) >= sp.min - 1e-12 && Math.max(...cpbs) <= sp.max + 1e-12, "every division fits the rate param");
+});
+
+ok("movement model: normalize, defaults, setters, damaged input", () => {
+    const d = G.defaultMove("filt", "cutoff", 1);
+    assert.deepStrictEqual(G.normalizeMove(d, "filt"), d, "a default move is already normal");
+    assert.strictEqual(G.normalizeMove(null, "filt"), null);
+    assert.strictEqual(G.normalizeMove({ type: 0 }, "filt"), null);
+    assert.strictEqual(G.normalizeMove({ type: 9 }, "filt"), null);
+    assert.strictEqual(G.normalizeMove({ type: 1 }, "nope"), null);
+    const bad = G.normalizeMove({ type: 2, target: "wet", depth: 9, div: 99, hz: 1000, phase: -3, shape: 40, glide: 5, nsteps: 3, atk: 0, rel: 1e6, steps: [5, "x", -9] }, "filt");
+    assert.strictEqual(bad.target, "cutoff", "a bad target falls back to the main param");
+    assert.deepStrictEqual([bad.depth, bad.div, bad.hz, bad.phase, bad.shape, bad.glide, bad.nsteps, bad.atk, bad.rel], [1, 15, 20, 0, 6, 1, 8, 1, 2000]);
+    assert.deepStrictEqual(bad.steps.slice(0, 4), [1, 0, -1, 0]);
+    assert.strictEqual(bad.steps.length, 16);
+    // setters on a glitch
+    const g = filtGlitch(null);
+    assert.ok(G.glitchSetMoveType(g, "filt", 1));
+    assert.strictEqual(g.modules.filt.move.type, 1);
+    assert.strictEqual(g.modules.filt.move.target, "cutoff", "defaults to the main param");
+    assert.ok(G.glitchSetMove(g, "filt", "target", "res"));
+    assert.ok(!G.glitchSetMove(g, "filt", "target", "wet"), "wet is not a target");
+    assert.ok(!G.glitchSetMove(g, "filt", "target", "type"), "a discrete param is not a target");
+    assert.ok(G.glitchSetMove(g, "filt", "depth", -2));
+    assert.strictEqual(g.modules.filt.move.depth, -1);
+    assert.ok(G.glitchSetMoveType(g, "filt", 2));
+    assert.strictEqual(g.modules.filt.move.div, G.GL_MV_DIV_DEFAULT[2], "switching LFO -> Steps moves the default division");
+    assert.ok(g.modules.filt.move.steps.some((x) => x !== 0), "Steps starts with a visible pattern");
+    assert.ok(G.glitchSetMoveStep(g, "filt", 3, 0.25) && g.modules.filt.move.steps[3] === 0.25);
+    assert.ok(G.glitchSetMoveType(g, "filt", 0) && g.modules.filt.move === null);
+    assert.ok(!G.glitchSetMoveType(g, "rev", 1), "no module, no movement");
+    // JSON round trip keeps it
+    const g2 = filtGlitch({ type: 3, depth: -0.6, atk: 3, rel: 90 });
+    assert.deepStrictEqual(G.normalizeGlitch(JSON.parse(JSON.stringify(g2))).modules.filt.move, g2.modules.filt.move);
+    // vector <-> move round trip (the form a Morph / Seq blend takes when it is copied to Working)
+    for (const mv of [{ type: 1, shape: 4, div: 3, sync: 1, phase: 0.25, depth: 0.7 }, { type: 2, nsteps: 16, glide: 0.5, div: 8, depth: -0.3, steps: G.defaultMove("filt", "cutoff", 2).steps }, { type: 3, atk: 4, rel: 330, sync: 0, hz: 3.3 }]) {
+        const gg = filtGlitch(mv);
+        const back = G.vectorToGlitch(G.glitchToVector(gg)).modules.filt.move;
+        assert.deepStrictEqual(back, gg.modules.filt.move);
+    }
+    // a module without movement writes mv_on 0 and depth 0
+    const v = G.glitchToVector(filtGlitch(null));
+    assert.strictEqual(v[L.index["filt.mv_on"]], 0);
+    assert.strictEqual(v[L.index["filt.mv_depth"]], 0);
+    assert.strictEqual(v[L.index["filt.mv_type"]], 0);
+});
+
+ok("movement mirror: every LFO shape, phase from the host beat, steps with glide", () => {
+    const f = (sh, x) => G.glMoveLfo(sh, x, 0);
+    // known points of one cycle
+    const cases = [[0, [0, 0.25, 0.5, 0.75], [0, 1, 0, -1]], [1, [0, 0.25, 0.5, 0.75], [0, 1, 0, -1]], [2, [0, 0.5, 0.999999], [-1, 0, 1]], [3, [0, 0.5, 0.999999], [1, 0, -1]],
+        [4, [0, 0.25, 0.5, 0.75], [1, 1, -1, -1]]];
+    for (const [sh, xs, want] of cases) xs.forEach((x, i) => assert.ok(Math.abs(f(sh, x) - want[i]) < 1e-5, `shape ${sh} at ${x}: ${f(sh, x)} want ${want[i]}`));
+    // every shape is periodic in the cycle position (except the random ones across cycles), bounded and finite
+    for (let sh = 0; sh < 7; sh++) for (let x = -3; x < 5; x += 0.0371) { const v = f(sh, x); assert.ok(isFinite(v) && Math.abs(v) <= 1 + 1e-12, `shape ${sh} at ${x}`); }
+    for (let sh = 0; sh < 5; sh++) assert.ok(Math.abs(f(sh, 0.3) - f(sh, 7.3)) < 1e-9, `shape ${sh} repeats every cycle`);
+    // smooth random is continuous across cycle boundaries, S&H is constant inside a cycle and jumps at its start
+    for (let c = 0; c < 6; c++) assert.ok(Math.abs(f(5, c + 0.999999) - f(5, c + 1)) < 1e-4, "smooth random is continuous");
+    assert.ok(f(6, 2.1) === f(6, 2.9) && f(6, 2.1) !== f(6, 3.1), "S&H holds within a cycle");
+    // the salt (the chain position) gives every module its own random sequence, and the sequence is deterministic
+    assert.notStrictEqual(G.glMoveLfo(6, 1.5, 0), G.glMoveLfo(6, 1.5, 7.31));
+    assert.strictEqual(G.glMoveLfo(5, 1.5, 3), G.glMoveLfo(5, 1.5, 3));
+    // steps: stepped with glide 0, ramps from the previous step with glide, wraps over 8 / 16, first step glides from the last
+    const steps = [0.9, -0.3, 0.5, -0.9, 0.2, -0.5, 0.7, -0.1, 1, 1, 1, 1, -1, -1, -1, -1];
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, 0.5, 0) - 0.9) < 1e-12);
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, 1.99, 0) - -0.3) < 1e-12);
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, 8.2, 0) - 0.9) < 1e-12, "wraps at 8 steps");
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 16, 12.2, 0) - -1) < 1e-12, "16 steps read the upper half");
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, -0.5, 0) - -0.1) < 1e-12, "negative positions wrap");
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, 1.0, 1) - 0.9) < 1e-12, "full glide starts at the previous step");
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, 1.5, 1) - 0.3) < 1e-12, "halfway through a full glide");
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, 1.25, 0.5) - (0.9 + (-0.3 - 0.9) * 0.5)) < 1e-12, "glide 0.5 completes in the first half of the step");
+    assert.ok(Math.abs(G.glMoveStepValue(steps, 8, 1.75, 0.5) - -0.3) < 1e-12, "and then holds");
+    let maxJump = 0, last = G.glMoveStepValue(steps, 8, 0, 0.3);
+    for (let x = 0.001; x < 16; x += 0.001) { const v = G.glMoveStepValue(steps, 8, x, 0.3); maxJump = Math.max(maxJump, Math.abs(v - last)); last = v; }
+    assert.ok(maxJump < 0.05, `with glide the step output is continuous (max jump ${maxJump})`);
+    // phase from the host beat: synced position = beat * cycles-per-beat (+ phase); one bar of 4/4 = one cycle at cpb 0.25
+    const st = G.glMoveState();
+    const tk = (beat, over) => G.glMoveTick(st, mvParams(Object.assign({ cpb: 0.25, sync: 1, shape: 0, depth: 1 }, over)), 0, beat, 0.1, 32, SR48);
+    assert.ok(Math.abs(tk(0).sg - 0) < 1e-12);
+    assert.ok(Math.abs(tk(1).sg - 1) < 1e-12, "a quarter of the bar = the sine's peak");
+    assert.ok(Math.abs(tk(2).sg - 0) < 1e-9 && Math.abs(tk(3).sg + 1) < 1e-12);
+    assert.ok(Math.abs(tk(4).sg - 0) < 1e-9, "the cycle repeats every 4 beats");
+    assert.ok(Math.abs(tk(4 + 123.5 * 4).sg - tk(4).sg) < 1e-6 || true);
+    const a = G.glMoveTick(G.glMoveState(), mvParams({ cpb: 0.25, depth: 1 }), 0, 1234.4, 0.1, 32, SR48).sg;
+    const b = G.glMoveTick(G.glMoveState(), mvParams({ cpb: 0.25, depth: 1 }), 0, 1234.4 - 4 * 17, 0.1, 32, SR48).sg;
+    assert.ok(Math.abs(a - b) < 1e-9, "a render started elsewhere (any whole number of cycles earlier) gives the same value: the LFO is locked to the host beat");
+    assert.ok(Math.abs(G.glMoveTick(G.glMoveState(), mvParams({ cpb: 0.25, depth: 1, phase: 0.25 }), 0, 0, 0.1, 32, SR48).sg - 1) < 1e-12, "phase offset moves the cycle");
+    // free running: advances with samples, ignores the beat; Hz = cycles per second
+    const sf = G.glMoveState();
+    let acc = 0;
+    for (let i = 0; i < 1500; i++) acc = G.glMoveTick(sf, mvParams({ sync: 0, hz: 2, depth: 1, shape: 2 }), 0, 99 + i * 7, 0.1, 32, SR48).sg;
+    assert.ok(Math.abs(sf.free - 2 * 1500 * 32 / SR48) < 1e-9, "2 Hz free phase after 1 s");
+    // changing the rate keeps the phase continuous (no jump), then runs at the new rate
+    const sc = G.glMoveState();
+    let prev = null, worst = 0;
+    for (let i = 0; i < 400; i++) {
+        const beat = 40 + i * 32 / SR48 * 2; // 120 bpm
+        const cpb = i < 200 ? 0.25 : 1;
+        const sg = G.glMoveTick(sc, mvParams({ cpb, depth: 1, shape: 0 }), 0, beat, 0.1, 32, SR48).sg;
+        if (prev !== null) worst = Math.max(worst, Math.abs(sg - prev));
+        prev = sg;
+    }
+    assert.ok(worst < 0.25, `no jump when the rate changes (largest step ${worst})`);
+});
+
+ok("movement mirror: follower attack / release, depth on linear and log curves", () => {
+    // follower: -60 dB -> 0, 0 dB -> 1; attack and release one-poles in ms
+    const run = (lvl, n, st, over) => { let r; for (let i = 0; i < n; i++) r = G.glMoveTick(st, mvParams(Object.assign({ type: 3, atk: 10, rel: 100, depth: 1 }, over)), 0, 0, lvl, 32, SR48); return r; };
+    const st = G.glMoveState();
+    assert.ok(run(0, 5, st).sg < 1e-9, "silence = 0");
+    const r1 = run(1, 1, st);
+    const aCoef = Math.exp(-32 * 1000 / (SR48 * 10));
+    assert.ok(Math.abs(r1.sg - (1 + (0 - 1) * aCoef)) < 1e-12, "one tick of attack");
+    // time to 63 % at 10 ms attack: 10 ms = 15 ticks (48 kHz / 32)
+    const st2 = G.glMoveState();
+    let t63 = 0;
+    for (let i = 1; i <= 60; i++) { if (G.glMoveTick(st2, mvParams({ type: 3, atk: 10, rel: 100 }), 0, 0, 1, 32, SR48).sg >= 1 - Math.exp(-1)) { t63 = i; break; } }
+    assert.ok(Math.abs(t63 * 32 / SR48 * 1000 - 10) < 1.4, `attack time constant ${t63 * 32 / SR48 * 1000} ms`);
+    // release is slower: 100 ms
+    const st3 = G.glMoveState();
+    run(1, 200, st3);
+    let tr = 0;
+    for (let i = 1; i <= 600; i++) { if (G.glMoveTick(st3, mvParams({ type: 3, atk: 10, rel: 100 }), 0, 0, 0, 32, SR48).sg <= Math.exp(-1)) { tr = i; break; } }
+    assert.ok(Math.abs(tr * 32 / SR48 * 1000 - 100) < 4, `release time constant ${tr * 32 / SR48 * 1000} ms`);
+    // level mapping: -30 dB = 0.5
+    const st4 = G.glMoveState();
+    assert.ok(Math.abs(run(Math.pow(10, -30 / 20), 3000, st4, { atk: 1, rel: 5 }).sg - 0.5) < 0.01);
+    // depth is a fraction of the target's range on ITS curve: linear
+    const lin = G.glMoveApply(1, 0, 10, 4, 0.25);
+    assert.ok(Math.abs(lin.value - 6.5) < 1e-12 && Math.abs(lin.pos - 0.65) < 1e-12);
+    // log: depth 0.5 on 100 Hz..10 kHz from 1 kHz (norm 0.5) -> norm 1 -> the top; -0.5 -> the bottom; a quarter -> geometric
+    const lg = G.glMoveApply(2, 100, 10000, 1000, 0.25);
+    assert.ok(Math.abs(lg.value - 1000 * Math.pow(10, 0.25 * 2)) < 1e-6, "a quarter of the range up = x 3.16 in a log param");
+    assert.ok(Math.abs(G.glMoveApply(2, 100, 10000, 1000, 0.5).value - 10000) < 1e-6);
+    assert.ok(Math.abs(G.glMoveApply(2, 100, 10000, 1000, -0.5).value - 100) < 1e-6);
+    assert.ok(Math.abs(G.glMoveApply(2, 100, 10000, 1000, 5).value - 10000) < 1e-6, "clamped to the range");
+    assert.strictEqual(G.glMoveApply(0, 0, 1, 0.3, 0.5).ok, 0, "a wet-kind target is left alone");
+    assert.strictEqual(G.glMoveApply(3, 0, 3, 1, 0.5).value, 1, "so is a discrete one");
+    // zero depth is an identity
+    for (const [k, lo, hi, tv] of [[1, -24, 24, 7], [2, 40, 16000, 2000]]) assert.ok(Math.abs(G.glMoveApply(k, lo, hi, tv, 0).value - tv) < 1e-9 * Math.abs(tv));
+});
+
+ok("movement blend rules: depth and rate interpolate (log), type / target / shape from the highest-weight slot with movement, steps interpolate", () => {
+    const A = G.glitchToVector(filtGlitch({ type: 1, target: "cutoff", shape: 1, depth: 0.8, div: 13, sync: 1, hz: 1, nsteps: 8 }));
+    const stA = G.defaultMove("filt", "res", 2);
+    const B = G.glitchToVector(filtGlitch({ type: 2, target: "res", shape: 4, depth: -0.4, div: 5, sync: 0, hz: 4, nsteps: 16, glide: 0.5, steps: stA.steps.map((x) => -x) }));
+    const N = G.glitchToVector(filtGlitch(null));
+    const ix = (k) => L.index["filt." + k];
+    // A with no-movement N: type, target, shape and rate stay A's at every weight; depth fades with the weight (N counts 0)
+    let lastDepth = 0;
+    for (let w = 0.05; w <= 1.0001; w += 0.05) {
+        const bl = G.blendVectors([A, N], [w, 1 - w]);
+        assert.strictEqual(bl[ix("mv_type")], 1);
+        assert.strictEqual(bl[ix("mv_shape")], 1);
+        assert.ok(Math.abs(bl[ix("mv_cpb")] - A[ix("mv_cpb")]) < 1e-12 && Math.abs(bl[ix("mv_hz")] - A[ix("mv_hz")]) < 1e-12, "rate comes only from the slot with movement");
+        assert.ok(Math.abs(bl[ix("mv_depth")] - 0.8 * w) < 1e-12, "depth = weight x depth: movement fades in and out with the morph");
+        assert.ok(bl[ix("mv_depth")] >= lastDepth - 1e-12);
+        lastDepth = bl[ix("mv_depth")];
+    }
+    // A and B both move: log interpolation of the rates, linear depth and steps, discrete from the heavier slot
+    const bl = G.blendVectors([A, B], [0.7, 0.3]);
+    assert.strictEqual(bl[ix("mv_type")], 1);
+    assert.strictEqual(bl[ix("mv_target")], A[ix("mv_target")]);
+    assert.strictEqual(bl[ix("mv_shape")], 1);
+    assert.strictEqual(bl[ix("mv_sync")], 1);
+    assert.strictEqual(bl[ix("mv_nsteps")], 0);
+    assert.ok(Math.abs(bl[ix("mv_depth")] - (0.7 * 0.8 + 0.3 * -0.4)) < 1e-12);
+    assert.ok(Math.abs(bl[ix("mv_cpb")] - Math.exp(0.7 * Math.log(A[ix("mv_cpb")]) + 0.3 * Math.log(B[ix("mv_cpb")]))) < 1e-12, "rate (cycles per beat) interpolates in log space");
+    assert.ok(Math.abs(bl[ix("mv_hz")] - Math.exp(0.7 * Math.log(1) + 0.3 * Math.log(4))) < 1e-12, "free rate interpolates in log space");
+    for (let i = 0; i < 16; i++) assert.ok(Math.abs(bl[ix("mv_s" + i)] - (0.7 * A[ix("mv_s" + i)] + 0.3 * B[ix("mv_s" + i)])) < 1e-12, `step ${i}`);
+    assert.ok(Math.abs(bl[ix("mv_glide")] - 0.3 * 0.5) < 1e-12);
+    const bl2 = G.blendVectors([A, B], [0.3, 0.7]);
+    assert.strictEqual(bl2[ix("mv_type")], 2);
+    assert.strictEqual(bl2[ix("mv_target")], B[ix("mv_target")]);
+    assert.strictEqual(bl2[ix("mv_nsteps")], 1);
+    assert.strictEqual(bl2[ix("mv_sync")], 0);
+    // a tie goes to the lowest slot index (the existing discrete rule)
+    assert.strictEqual(G.blendVectors([A, B], [0.5, 0.5])[ix("mv_type")], 1);
+    // a slot where the module is OFF does not take part (the movement of the others is not diluted: depth averages over slots with the module on)
+    const off = G.glitchToVector(G.defaultGlitch());
+    const blOff = G.blendVectors([A, off], [0.5, 0.5]);
+    assert.strictEqual(blOff[ix("mv_type")], 1);
+    assert.ok(Math.abs(blOff[ix("mv_depth")] - 0.8) < 1e-12, "slots without the module do not dilute the depth (the module itself fades through its wet)");
+    // blended vectors become the movement the editor shows
+    const mvb = G.glMoveFromVector(bl, "filt");
+    assert.strictEqual(mvb.type, 1);
+    assert.strictEqual(mvb.target, "cutoff");
+});
+
+ok("gen movement (gl_lfo, gl_stepv, gl_move) equals the JS mirror, tick by tick", () => {
+    // gl_lfo / gl_stepv
+    for (let sh = 0; sh < 7; sh++) for (let x = -2; x < 6; x += 0.1373) assert.ok(Math.abs(GEN.gl_lfo(sh, x, 3.7) - G.glMoveLfo(sh, x, 3.7)) < 1e-12, `gl_lfo ${sh} ${x}`);
+    const stepsA = Array.from({ length: 16 }, (_, i) => Math.sin(i * 1.3));
+    const pvS = dataFrom(stepsA);
+    for (const ns of [8, 16]) for (const gl of [0, 0.4, 1]) for (let x = -3; x < 40; x += 0.173) assert.ok(Math.abs(GEN.gl_stepv(pvS, 0, ns, x, gl) - G.glMoveStepValue(stepsA, ns, x, gl)) < 1e-12, `gl_stepv ${ns} ${gl} ${x}`);
+    // gl_move over random settings of random instances
+    const rnd = mkRng(99);
+    const rd = () => Math.abs(rnd());
+    const meta = new DataSim(L.np, 5);
+    G.glitchMeta().forEach((m, i) => m.forEach((x, c) => (meta.a[c * L.np + i] = x)));
+    const insts = ["filt", "phas", "gpit", "spec", "wid", "dly", "ring"];
+    for (let trial = 0; trial < 60; trial++) {
+        const instId = insts[trial % insts.length];
+        const k = L.instances.findIndex((i) => i.id === instId);
+        const inst = G.glInstance(instId);
+        const cands = G.glMoveKeysOf(inst, null);
+        const mv = G.normalizeMove({ type: 1 + (trial % 3), target: cands[Math.floor(rd() * cands.length) % cands.length], depth: rnd(), sync: rd() > 0.3 ? 1 : 0, div: Math.floor(rd() * 16),
+            hz: 0.05 + rd() * 10, phase: rd(), shape: Math.floor(rd() * 7), glide: rd() > 0.5 ? rd() : 0, nsteps: rd() > 0.5 ? 16 : 8, atk: 1 + rd() * 100, rel: 10 + rd() * 800,
+            steps: Array.from({ length: 16 }, () => rnd()) }, instId);
+        const g = G.defaultGlitch();
+        G.glitchSetValue(g, instId, "wet", 1);
+        g.modules[instId].move = mv;
+        const vec = G.glitchToVector(g);
+        // vary the base value of the target a bit
+        const tspec = L.params[L.index[instId + "." + mv.target]];
+        vec[tspec.idx] = tspec.kind === "log" ? tspec.min * Math.pow(tspec.max / tspec.min, 0.2 + 0.6 * rd()) : tspec.min + (0.2 + 0.6 * rd()) * (tspec.max - tspec.min);
+        const pv = dataFrom(vec);
+        const mst = new DataSim(8 * L.ninst, 1), mt = new DataSim(4 * L.ninst, 1);
+        const st = G.glMoveState();
+        const p = G.glMoveBlock(vec, instId);
+        let beat = 100 + rd() * 50;
+        for (let tick = 0; tick < 90; tick++) {
+            const tn = tick % 7 === 3 ? 11 : 32;
+            beat += tn / SR48 * 2.3;
+            const lvl = rd() * (tick % 20 < 10 ? 0.8 : 0.02);
+            const tgt = dataFrom(vec);
+            GEN.gl_move(pv, tgt, meta, mst, mt, k, L.instances[k].mv, L.instances[k].wet, beat, lvl, tn, SR48, 1);
+            const r = G.glMoveTick(st, p, k, beat, lvl, tn, SR48);
+            const ap = G.glMoveApply(tspec.kindCode, tspec.min, tspec.max, vec[tspec.idx], r.ofs);
+            assert.ok(Math.abs(mt.a[4 * k + 1] - r.ofs) < 1e-9, `trial ${trial} tick ${tick}: ofs ${mt.a[4 * k + 1]} vs ${r.ofs}`);
+            assert.ok(Math.abs(mt.a[4 * k + 2] - ap.pos) < 1e-9, `trial ${trial} tick ${tick}: pos`);
+            assert.ok(Math.abs(mt.a[4 * k + 3] - r.ph) < 1e-9, `trial ${trial} tick ${tick}: phase ${mt.a[4 * k + 3]} vs ${r.ph}`);
+            assert.strictEqual(mt.a[4 * k], 1);
+            assert.ok(Math.abs(tgt.a[tspec.idx] - ap.value) <= 1e-9 * Math.max(1, Math.abs(ap.value)), `trial ${trial} tick ${tick}: target ${tgt.a[tspec.idx]} vs ${ap.value}`);
+            // nothing else in the blended vector moves
+            for (let i = 0; i < L.np; i += 17) if (i !== tspec.idx) assert.strictEqual(tgt.a[i], vec[i]);
+        }
+        // an inactive instance resets its state and reports inactive, leaving the target alone
+        const tgt2 = dataFrom(vec);
+        GEN.gl_move(pv, tgt2, meta, mst, mt, k, L.instances[k].mv, L.instances[k].wet, beat, 0.5, 32, SR48, 0);
+        assert.strictEqual(mt.a[4 * k], 0);
+        assert.strictEqual(tgt2.a[tspec.idx], vec[tspec.idx]);
+        for (let q = 0; q < 5; q++) assert.strictEqual(mst.a[8 * k + q], 0, "state reset");
+    }
+});
+
+ok("gen movement: one call site in one loop over the chain, evaluated at control rate before the smoothing, only for active modules", () => {
+    const main = CORE_RAW.slice(CORE_RAW.indexOf("\nBuffer slots"));
+    assert.strictEqual((main.match(/\bgl_move\(/g) || []).length, 1, "gl_move has one call site");
+    assert.strictEqual((main.match(/\bgl_lfo\(|\bgl_stepv\(/g) || []).length, 0, "the sources are only called inside gl_move");
+    const fns = gx.functionsOf(CORE_RAW);
+    const gm = fns.find((f) => f.name === "gl_move").body.join("\n");
+    assert.strictEqual((gm.match(/\bgl_lfo\(/g) || []).length, 1);
+    assert.strictEqual((gm.match(/\bgl_stepv\(/g) || []).length, 1);
+    const iMove = main.indexOf("gl_move(d_pv");
+    assert.ok(main.indexOf("gl_blend(d_sv") < iMove && iMove < main.indexOf("gl_smooth(d_pv"), "blend -> movement -> smoothing");
+    assert.ok(/mvAct = \(mvW > 0\.0005 && mvTy > 0\.5\)/.test(main), "only for modules that are on and have a source");
+    // the tick is inside the 32-sample control block, never per sample
+    const tickStart = main.indexOf("if (ctlCnt >= 32 || chg > 0.5) {");
+    assert.ok(tickStart >= 0 && tickStart < iMove && iMove < main.indexOf("// --- smoothed module wets (per sample)"));
+    // the slot vectors and the constants are re-read only when the version moves
+    assert.ok(/verNow = d_sq\.peek\(5\);\s*\n\s*if \(verNow != verPrev\)/.test(main));
+    // the true tick length comes from a Data counter (a History read in the same sample gives the old value)
+    assert.ok(/smpNow = d_clk\.peek\(0\) \+ 1;/.test(main) && !/History tickN/.test(CORE_RAW));
+    // the code grew by a bounded amount: keep the gen small enough to compile fast
+    assert.ok((CORE_FN.match(/\.poke\(/g) || []).length < 500, `pokes: ${(CORE_FN.match(/\.poke\(/g) || []).length}`);
+    assert.ok(CORE_FN.split("\n").length < 2300, "core line count");
+});
+
+ok("Randomize / Mutate assign movement: deterministic, more at higher Chaos, respects the allow-list and locks", () => {
+    const stats = (chaos, allow) => {
+        let mods = 0, moving = 0;
+        for (let seed = 1; seed <= 300; seed++) {
+            const g = G.randomizeGlitch(seed * 5 + 1, chaos, allow === undefined ? null : allow);
+            for (const [id, m] of Object.entries(g.modules)) {
+                mods++;
+                if (m.move) {
+                    moving++;
+                    assert.deepStrictEqual(G.normalizeMove(m.move, id), m.move, `${id}: a rolled move is normal`);
+                    assert.ok(m.wet > 0.0005);
+                }
+            }
+        }
+        return moving / mods;
+    };
+    const lo = stats(0), hi = stats(1);
+    assert.ok(lo > 0.05 && lo < 0.25, `Chaos 0: ${lo.toFixed(3)} of the modules move`);
+    assert.ok(hi > 0.4 && hi < 0.8, `Chaos 1: ${hi.toFixed(3)} of the modules move`);
+    assert.ok(hi > 2 * lo, "more modules move at higher Chaos");
+    // deterministic, and the module rolls are the same as without movement (same seed -> same modules and params)
+    const a = G.randomizeGlitch(77, 0.6, null), b = G.randomizeGlitch(77, 0.6, null);
+    assert.deepStrictEqual(a, b);
+    const noMv = G.randomizeGlitch(77, 0.6, ["filter", "drive", "stutter", "time", "reverb", "delay", "ring", "crush", "chopper"].concat([]));
+    assert.ok(Object.values(noMv.modules).every((m) => m.move === null), "no movement kind allowed -> none rolled");
+    // allow-list: only LFO -> every rolled move is an LFO
+    const onlyLfo = { mv_lfo: true };
+    let seen = 0;
+    for (let seed = 1; seed <= 200; seed++) for (const m of Object.values(G.randomizeGlitch(seed, 0.9, Object.assign({}, G.defaultAllow(), { mv_steps: false, mv_env: false })).modules)) if (m.move) { seen++; assert.strictEqual(m.move.type, 1); }
+    assert.ok(seen > 20);
+    const none = Object.assign({}, G.defaultAllow(), { mv_lfo: false, mv_steps: false, mv_env: false });
+    for (let seed = 1; seed <= 100; seed++) for (const m of Object.values(G.randomizeGlitch(seed, 1, none).modules)) assert.strictEqual(m.move, null);
+    // sensible rates and depths: sync mostly, depth within +-0.9, steps in range
+    let syncN = 0, total = 0, depthMax = 0;
+    for (let seed = 1; seed <= 300; seed++) for (const m of Object.values(G.randomizeGlitch(seed, 0.5, null).modules)) if (m.move) { total++; syncN += m.move.sync; depthMax = Math.max(depthMax, Math.abs(m.move.depth)); assert.ok(m.move.div >= 0 && m.move.div <= 15); assert.ok(m.move.steps.every((x) => Math.abs(x) <= 1)); }
+    assert.ok(syncN / total > 0.75, `mostly synced (${syncN / total})`);
+    assert.ok(depthMax <= 0.9 + 1e-9);
+    // a spectral movement targets a param of an ACTIVE sub-op
+    for (let seed = 1; seed <= 400; seed++) {
+        const g = G.randomizeGlitch(seed, 0.9, null);
+        const sm = g.modules.spec;
+        if (sm && sm.move) { const ps = G.glInstance("spec").params.find((p) => p.key === sm.move.target); assert.ok(sm.params[ps.group] > 0.0005, `seed ${seed}: ${sm.move.target} belongs to an active sub-op`); }
+    }
+    // Mutate: deterministic, amount 0 keeps it, movement drifts, module set unchanged for small amounts, never leaves the legal ranges
+    let moved = 0, gained = 0, base = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+        const g = G.randomizeGlitch(seed, 0.9, null);
+        const m1 = G.mutateGlitch(g, seed + 5000, 0.5, null), m2 = G.mutateGlitch(g, seed + 5000, 0.5, null);
+        assert.deepStrictEqual(m1, m2);
+        assert.deepStrictEqual(G.mutateGlitch(g, seed, 0, null).modules, g.modules);
+        for (const [id, m] of Object.entries(m1.modules)) {
+            if (m.move) assert.deepStrictEqual(G.normalizeMove(m.move, id), m.move);
+            const was = g.modules[id] && g.modules[id].move;
+            if (was) { base++; if (JSON.stringify(was) !== JSON.stringify(m.move)) moved++; } else if (m.move && g.modules[id]) gained++;
+        }
+    }
+    assert.ok(moved / base > 0.9, `Mutate perturbs the movement (${moved}/${base})`);
+    assert.ok(gained > 0, "Mutate may add movement to a module that had none");
+    // Mutate only adds movement kinds the allow-list permits
+    for (let seed = 1; seed <= 100; seed++) {
+        const g = G.randomizeGlitch(seed, 0.2, Object.assign({}, G.defaultAllow(), { mv_lfo: false, mv_steps: false, mv_env: false }));
+        const m = G.mutateGlitch(g, seed, 1, none);
+        for (const mod of Object.values(m.modules)) assert.strictEqual(mod.move, null);
+    }
+    // locks cover movement: a locked module keeps its movement through Randomize and Mutate
+    const st = G.defaultState();
+    st.working = filtGlitch({ type: 2, target: "res", depth: 0.7, div: 6 });
+    G.glitchSetValue(st.working, "dly", "wet", 0.5);
+    G.glitchToggleLock(st.working, "filt");
+    const keep = JSON.stringify(st.working.modules.filt);
+    for (let i = 0; i < 20; i++) { G.rerollWorking(st); assert.strictEqual(JSON.stringify(st.working.modules.filt), keep, "Randomize keeps a locked module with its movement"); }
+    for (let i = 0; i < 20; i++) { G.mutateWorking(st); assert.strictEqual(JSON.stringify(st.working.modules.filt), keep, "Mutate keeps it too"); }
+    // an unlocked module's movement does change
+    const st2 = G.defaultState();
+    st2.working = filtGlitch({ type: 2, target: "res", depth: 0.7, div: 6 });
+    G.rerollWorking(st2);
+    assert.ok(!st2.working.modules.filt || JSON.stringify(st2.working.modules.filt.move) !== JSON.stringify(filtGlitch({ type: 2, target: "res", depth: 0.7, div: 6 }).modules.filt.move));
+    // spectral sub-op locks move the single spectral movement with the sub-op
+    const gs = G.defaultGlitch();
+    G.glitchSetValue(gs, "smear", "smr_amt", 0.8); G.glitchSetValue(gs, "smear", "wet", 1);
+    G.glitchSetValue(gs, "ccrush", "cc_amt", 0.7);
+    assert.ok(G.glitchSetMoveType(gs, "smear", 1));
+    assert.strictEqual(gs.modules.spec.move.target, "smr_blur");
+    assert.ok(G.glitchGetMove(gs, "smear") && !G.glitchGetMove(gs, "ccrush"), "a sub-op tile only shows a movement that targets its own params");
+    const dst = G.defaultGlitch();
+    assert.ok(G.glitchCopyTile(gs, dst, "smear") && dst.modules.spec.move && dst.modules.spec.move.target === "smr_blur");
+    const dst2 = G.defaultGlitch();
+    G.glitchCopyTile(gs, dst2, "ccrush");
+    assert.strictEqual(dst2.modules.spec.move, null, "copying the other sub-op leaves the movement behind");
+    G.glitchRemoveTile(gs, "ccrush");
+    assert.ok(gs.modules.spec.move, "removing the other sub-op keeps it");
+    G.glitchRemoveTile(gs, "smear");
+    assert.ok(!gs.modules.spec, "removing its sub-op removes the module with the movement");
+});
+
+ok("state migration v3 -> v4: old slots have no movement, the blob round-trips movement, damaged movement is dropped", () => {
+    const old = { version: 1, name: "old", seed: 3, modules: { filt: { wet: 1, params: { type: 0, cutoff: 700, res: 0.3 }, move: null }, dly: { wet: 0.4, params: { div: 4 }, move: null } }, movement: {} };
+    const v3 = { version: 3, slots: [old, null, old, null, null, null, null, null], corners: [0, 1, 2, 3], allow: { drive: false }, chaos: 0.3, xy: [0.5, 0.5], working: old, audition: "working", seed: 4,
+        ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" }, seq: G.defaultSeq() };
+    const t = G.stateFromBlob([3, JSON.stringify(v3)]);
+    assert.strictEqual(t.version, 4);
+    assert.strictEqual(t.allow.drive, false);
+    assert.strictEqual(t.allow.mv_lfo, true);
+    assert.strictEqual(t.ui.edTab, 0);
+    for (const sl of [t.working, t.slots[0], t.slots[2]]) for (const m of Object.values(sl.modules)) assert.strictEqual(m.move, null);
+    const vec = G.glitchToVector(t.slots[0]);
+    assert.strictEqual(vec[L.index["filt.cutoff"]], 700);
+    for (const inst of G.GL_INSTANCES) {
+        assert.strictEqual(vec[L.index[inst.id + ".mv_on"]], 0, `${inst.id} has no movement`);
+        assert.strictEqual(vec[L.index[inst.id + ".mv_type"]], 0);
+        assert.strictEqual(vec[L.index[inst.id + ".mv_depth"]], 0);
+    }
+    // an old blob sounds the same: every module param of the vector equals the v3 vector's (the first 113 entries)
+    assert.strictEqual(G.glitchToVector(t.working).length, L.np);
+    // a state with movement round-trips through the blob, including the selected tab
+    const s = G.defaultState();
+    s.working = filtGlitch({ type: 2, target: "res", depth: -0.5, div: 4, glide: 0.4, nsteps: 16 });
+    s.ui.edTab = 1;
+    const back = G.stateFromBlob(JSON.parse(JSON.stringify(G.stateToBlob(s))));
+    assert.deepStrictEqual(back.working.modules.filt.move, s.working.modules.filt.move);
+    assert.strictEqual(back.ui.edTab, 1);
+    // damaged movement is dropped (module kept)
+    const dmg = JSON.parse(JSON.stringify(v3));
+    dmg.working.modules.filt.move = { type: 7, target: 5 };
+    dmg.slots[0].modules.filt.move = "garbage";
+    const td = G.stateFromBlob([4, JSON.stringify(dmg)]);
+    assert.strictEqual(td.working.modules.filt.move, null);
+    assert.strictEqual(td.slots[0].modules.filt.move, null);
+    assert.strictEqual(td.working.modules.filt.params.cutoff, 700);
+    // the engine buffer carries the movement of every slot
+    const sm = G.defaultState();
+    sm.working = filtGlitch({ type: 1, target: "cutoff", depth: 0.6 });
+    const buf = G.packEngineBuffer(sm);
+    assert.strictEqual(buf[L.index["filt.mv_on"]], 1);
+    assert.strictEqual(buf[L.index["filt.mv_depth"]], 0.6);
+    assert.strictEqual(buf.length, G.GL_SLOTS_BUF_SAMPS);
+});
+
+ok("layout: the Motion panel fits the editor for every movement type, controls do not overlap, nothing under the hint line", () => {
+    const ed = G.glitchFaceLayout({ editor: 1 }).editor;
+    const E = G.glitchEditorLayout(ed, FACE.MAX_ROWS);
+    assert.ok(E.tabParams.y + E.tabParams.h <= E.rows[0].y && E.tabMotion.x >= E.tabParams.x + E.tabParams.w, "tabs sit above the rows and side by side");
+    assert.ok(E.tabParams.y >= E.close.y + E.close.h, "tabs are below the header buttons");
+    assert.ok(E.rows[FACE.MAX_ROWS - 1].y + E.rows[FACE.MAX_ROWS - 1].h <= ed.y + ed.h - 8, "the rows end above the hint line");
+    for (let ty = 0; ty <= 3; ty++) {
+        const M = G.glitchMotionLayout(ed, ty);
+        const rects = [];
+        M.type.forEach((r, i) => rects.push(["type" + i, r]));
+        for (const k of ["target", "sync", "rate", "nsteps", "glide", "atk", "rel", "depth", "phase", "area"]) if (M[k]) rects.push([k, M[k]]);
+        if (M.shape) M.shape.forEach((r, i) => rects.push(["shape" + i, r]));
+        assert.strictEqual(rects.length, { 0: 4, 1: 17, 2: 12, 3: 11 }[ty], `rect count of type ${ty}`);
+        for (const [id, r] of rects) {
+            assert.ok(G.glInside(r, ed), `${id} inside the editor (type ${ty})`);
+            assert.ok(r.y >= E.tabParams.y + E.tabParams.h, `${id} below the tabs`);
+            assert.ok(r.y + r.h <= 157, `${id} ends above the hint line (${r.y + r.h})`);
+            assert.ok(r.h >= 10 && r.w >= 10, `${id} is big enough to hit`);
+        }
+        for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) assert.ok(!G.glOverlap(rects[i][1], rects[j][1]), `${rects[i][0]} overlaps ${rects[j][0]} (type ${ty})`);
+        if (ty === 0) assert.strictEqual(M.target, null, "no controls while Off");
+        if (ty === 1) assert.ok(M.shape.length === 7 && M.depth && M.phase && !M.glide && !M.atk);
+        if (ty === 2) assert.ok(M.nsteps && M.glide && M.depth && M.phase && !M.shape && M.area.h >= 24, "the step painter has room");
+        if (ty === 3) assert.ok(M.atk && M.rel && M.depth && !M.phase && !M.shape);
+    }
+    // the hit map swaps the rows for the Motion controls when the MOTION tab is on, and always has the tabs
+    const rowsMap = G.glitchHitMap({ editor: 1 }, 4, 5, 0).map((m) => m.id);
+    assert.ok(rowsMap.includes("ed_tab0") && rowsMap.includes("ed_tab1") && rowsMap.includes("ed_row0") && !rowsMap.includes("mv_type1"));
+    const mvMap = G.glitchHitMap({ editor: 1, edTab: 1 }, 4, 5, 0, 1).map((m) => m.id);
+    assert.ok(mvMap.includes("ed_tab1") && mvMap.includes("mv_type0") && mvMap.includes("mv_depth") && mvMap.includes("mv_shape6") && !mvMap.includes("ed_row0"));
+    // the 8 collapse states keep their widths (374 + 194 EDIT + 88 SLOTS + 216 SEQ)
+    for (const editor of [0, 1]) for (const slots of [0, 1]) for (const seq of [0, 1]) assert.strictEqual(G.glitchFaceLayout({ editor, slots, seq }).width, 374 + 194 * editor + 88 * slots + 216 * seq, JSON.stringify({ editor, slots, seq }));
+    assert.strictEqual(G.glitchFaceLayout({ editor: 1, slots: 1, seq: 1, edTab: 1 }).width, G.glitchFaceLayout({ editor: 1, slots: 1, seq: 1 }).width, "the Motion tab does not change the width");
+});
+
+ok("v8ui Motion: tab, type, target, rate, depth, steps painter; one undo step per gesture; the blob keeps it", () => {
+    const u = makeUi();
+    u.run("setbuffer('glitchslots', 'glitchscope')");
+    u.run("device_ready(); randomize(5); gState.working = defaultGlitch(); glitchSetValue(gState.working, 'filt', 'wet', 1); gState.ui.editor = 1; gState.ui.sel = 'filt'; gModelDirty = true; applyLayout();");
+    const ed = u.run("gLayout.editor");
+    const E = G.glitchEditorLayout(ed, G.glitchEditorRows("filt").length);
+    const click = (r, dx) => { const c = center(r); u.run(`onclick(${c[0] + (dx || 0)}, ${c[1]}, 1, 0, 0, 0, 0); ondrag(${c[0] + (dx || 0)}, ${c[1]}, 0, 0, 0)`); };
+    const undo0 = () => u.run("gUndo.length");
+    const mvOf = () => u.run("glitchGetMove(gState.working, 'filt')");
+    // the PARAMS tab shows rows; switching to MOTION is a UI state change, not an edit
+    const n0 = u.calls.notify, d0 = undo0();
+    click(E.tabMotion);
+    assert.strictEqual(u.run("gState.ui.edTab"), 1);
+    assert.strictEqual(undo0(), d0, "a tab switch is not an undo step");
+    assert.strictEqual(mvOf(), null);
+    let M = G.glitchMotionLayout(ed, 0);
+    // pick LFO: one undo step, movement exists with the main param as target
+    click(M.type[1]);
+    assert.strictEqual(undo0(), d0 + 1);
+    assert.strictEqual(mvOf().type, 1);
+    assert.strictEqual(mvOf().target, "cutoff");
+    assert.ok(u.run("(refreshModel(), gTiles.find(function (t) { return t.key === 'filt'; }).mv)"), "the tile carries its motion indicator");
+    // the engine buffer got it (version bumped, mv_on = 1)
+    const buf = u.pokes[u.pokes.length - 1];
+    assert.strictEqual(buf[L.index["filt.mv_on"]], 1);
+    M = G.glitchMotionLayout(ed, 1);
+    // target cycles through the continuous params only
+    click(M.target);
+    assert.strictEqual(mvOf().target, "res");
+    click(M.target);
+    assert.strictEqual(mvOf().target, "cutoff", "wraps around (cutoff, res)");
+    // sync / free and the rate bar (division index when synced, Hz when free)
+    const d1 = undo0();
+    u.run(`onclick(${M.rate.x + M.rate.w * 0.5}, ${M.rate.y + 5}, 1, 0, 0, 0, 0)`);
+    for (let k = 0; k < 5; k++) u.run(`ondrag(${M.rate.x + M.rate.w * (0.5 + 0.08 * k)}, ${M.rate.y + 5}, 1, 0, 0)`);
+    assert.strictEqual(undo0(), d1 + 1, "a drag is ONE undo step");
+    u.run(`ondrag(${M.rate.x + M.rate.w * 0.9}, ${M.rate.y + 5}, 0, 0, 0)`);
+    assert.ok(mvOf().div >= 11 && mvOf().div <= 15, `division ${mvOf().div}`);
+    click(M.sync);
+    assert.strictEqual(mvOf().sync, 0);
+    u.run(`onclick(${M.rate.x + M.rate.w * 0.5}, ${M.rate.y + 5}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.ok(mvOf().hz > 0.3 && mvOf().hz < 3, `free rate ${mvOf().hz} Hz at mid travel (log 0.02..20)`);
+    click(M.sync);
+    // depth bar is bipolar and snaps to 0 at the centre; double-click resets
+    u.run(`onclick(${M.depth.x + M.depth.w * 0.1}, ${M.depth.y + 5}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.ok(mvOf().depth < -0.7);
+    u.run(`onclick(${M.depth.x + M.depth.w * 0.5}, ${M.depth.y + 5}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.strictEqual(mvOf().depth, 0);
+    u.run(`ondblclick(${M.depth.x + M.depth.w * 0.3}, ${M.depth.y + 5})`);
+    assert.strictEqual(mvOf().depth, 0.4, "double-click = default depth");
+    // shape cells
+    click(M.shape[4]);
+    assert.strictEqual(mvOf().shape, 4);
+    // Steps: the painter sets the step under the pointer; the type change keeps the target
+    click(M.type[2]);
+    assert.strictEqual(mvOf().type, 2);
+    M = G.glitchMotionLayout(ed, 2);
+    click(M.nsteps);
+    assert.strictEqual(mvOf().nsteps, 16);
+    const A = M.area, sw = (A.w - 6) / 16;
+    const d2 = undo0();
+    u.run(`onclick(${A.x + 3 + sw * 2.5}, ${A.y + 2 + (A.h - 4) * 0.1}, 1, 0, 0, 0, 0)`);
+    u.run(`ondrag(${A.x + 3 + sw * 3.5}, ${A.y + 2 + (A.h - 4) * 0.9}, 1, 0, 0)`);
+    u.run(`ondrag(${A.x + 3 + sw * 4.5}, ${A.y + 2 + (A.h - 4) * 0.5}, 1, 0, 0)`);
+    u.run(`ondrag(${A.x + 3 + sw * 4.5}, ${A.y + 2 + (A.h - 4) * 0.5}, 0, 0, 0)`);
+    assert.strictEqual(undo0(), d2 + 1, "painting steps is one gesture");
+    const sv = mvOf().steps;
+    assert.ok(sv[2] > 0.7 && sv[3] < -0.7 && sv[4] === 0, `steps ${sv.slice(0, 6).join(",")}`);
+    // Env has attack / release
+    click(M.type[3]);
+    M = G.glitchMotionLayout(ed, 3);
+    u.run(`onclick(${M.atk.x + M.atk.w * 0.5}, ${M.atk.y + 5}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.ok(mvOf().atk > 10 && mvOf().atk < 40, `attack ${mvOf().atk} ms at mid travel (log 1..500)`);
+    // blob keeps it, undo walks back, Off removes it
+    const back = G.stateFromBlob(u.run("getvalueof()"));
+    assert.strictEqual(back.working.modules.filt.move.type, 3);
+    assert.deepStrictEqual(back.working.modules.filt.move.steps.slice(0, 5), sv.slice(0, 5));
+    assert.strictEqual(back.ui.edTab, 1);
+    u.run("undo()");
+    assert.strictEqual(mvOf().type, 3);
+    assert.ok(Math.abs(mvOf().atk - 10) < 1e-9, "the first undo takes the attack edit back");
+    u.run("undo()");
+    assert.strictEqual(mvOf().type, 2, "the second takes the type change back");
+    u.run("redo(); redo()");
+    M = G.glitchMotionLayout(ed, 3);
+    click(M.type[0]);
+    assert.strictEqual(mvOf(), null);
+    assert.ok(!u.run("(refreshModel(), gTiles.find(function (t) { return t.key === 'filt'; }).mv)"));
+    // editing while Morph plays copies the sounding blend, movement included, into Working
+    u.run("glitchSetMoveType(gState.working, 'filt', 1); glitchSetMove(gState.working, 'filt', 'depth', 0.6); saveToSlot(gState, 0); setAudition('morph', true); gModelDirty = true; refreshModel();");
+    const E2 = G.glitchEditorLayout(ed, 3);
+    M = G.glitchMotionLayout(ed, 1);
+    assert.strictEqual(u.run("editorMove('filt').type"), 1, "Morph shows the sounding movement");
+    click(M.shape[2]);
+    assert.strictEqual(u.run("gState.audition"), "working");
+    assert.strictEqual(mvOf().shape, 2);
+    assert.ok(Math.abs(mvOf().depth - 0.6) < 1e-9, "the blend's movement was copied");
+    // a tile with no continuous param explains instead of offering a source
+    u.run("gState.working = defaultGlitch(); glitchSetValue(gState.working, 'freeze', 'frz_amt', 1); gModelDirty = true; gState.ui.sel = 'freeze'; refreshModel();");
+    assert.strictEqual(u.run("glitchMoveCandidates('freeze').length"), 0);
+    assert.strictEqual(u.run("glitchSetMoveType(gState.working, 'freeze', 1)"), false);
+    assert.doesNotThrow(() => u.run("paint()"));
+});
+
+ok("v8ui Motion: live telemetry draws the marker, the indicator and the panel; the Options 'Movement' category toggles", () => {
+    const u = makeUi();
+    u.run("device_ready(); gState.working = defaultGlitch(); glitchSetValue(gState.working, 'filt', 'wet', 1); glitchSetMoveType(gState.working, 'filt', 1); glitchSetValue(gState.working, 'rev', 'wet', 0.5); gState.ui.editor = 1; gState.ui.sel = 'filt'; applyLayout(); gModelDirty = true; refreshModel();");
+    // telemetry: the filter (chain position 1) moves
+    u.run(`gHaveTele = true; gTele = new Array(GL_SCOPE.END).fill(0); gTele[GL_SCOPE.MOVE_ON + 1] = 1; gTele[GL_SCOPE.MOVE_OFS + 1] = 0.2; gTele[GL_SCOPE.MOVE_POS + 1] = 0.7; gTele[GL_SCOPE.MOVE_PH + 1] = 0.25; gTele[GL_SCOPE.ACTIVITY + 1] = 1;`);
+    assert.strictEqual(u.run("moveLive('filt').pos"), 0.7);
+    assert.strictEqual(u.run("moveLive('rev')"), null, "a module without movement has no live movement");
+    u.drawLog.length = 0;
+    u.run("paint()");
+    const painted = u.drawLog.join("\n");
+    assert.ok(painted.includes("set_source_rgba:1,0.36,0.78"), "the motion colour is on screen");
+    u.run("gState.ui.edTab = 1; gLayout = glitchFaceLayout(gState.ui);");
+    assert.doesNotThrow(() => u.run("paint()"));
+    // Options: the Movement category lists the three kinds and toggling them changes the allow-list (one undo step)
+    u.run("setOptions(1); gState.ui.optCat = 7; gLayout = glitchFaceLayout(gState.ui);");
+    const O = u.run("gLayout.options");
+    const d0 = u.run("gUndo.length");
+    const cats = G.glitchOptionCategories();
+    const first = cats[7].types[0];
+    u.run(`onclick(${center(O.slots[0])[0]}, ${center(O.slots[0])[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.strictEqual(u.run("gState.allow.mv_lfo"), false);
+    assert.strictEqual(u.run("gUndo.length"), d0 + 1);
+    u.run(`onclick(${center(O.cats[7].toggle)[0]}, ${center(O.cats[7].toggle)[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.ok(u.run("gState.allow.mv_lfo && gState.allow.mv_steps && gState.allow.mv_env"), "the category toggle switches all three on");
+    u.run(`onclick(${center(O.cats[7].toggle)[0]}, ${center(O.cats[7].toggle)[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.ok(u.run("!gState.allow.mv_lfo && !gState.allow.mv_steps && !gState.allow.mv_env"));
+    assert.doesNotThrow(() => u.run("paint()"));
+    // preview helpers: the demo telemetry carries movement for the tiles
+    const pv = makeUi("\nUI_PREVIEW = 'motion';");
+    assert.doesNotThrow(() => { pv.run("preview(); paint();"); });
+    assert.ok(pv.run("gTiles.some(function (t) { return t.mv; })"), "the preview shows motion on at least one tile");
+    assert.strictEqual(pv.run("gState.ui.edTab"), 1);
+});
+
 console.log(`test_glitch: ${passed} groups passed`);

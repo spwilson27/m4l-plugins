@@ -78,6 +78,7 @@ function fill() {
     else if (stimMode === "sine1k") for (i = 0; i < n; i++) x[i] = 0.5 * Math.sin(2 * Math.PI * 1000 * i / sr);
     else if (stimMode === "mix") for (i = 0; i < n; i++) x[i] = 0.2 * (rnd() * 2 - 1) + 0.3 * Math.sin(2 * Math.PI * 440 * i / sr);
     else if (stimMode === "noise") for (i = 0; i < n; i++) x[i] = 0.4 * (rnd() * 2 - 1);
+    else if (stimMode === "levels") for (i = 0; i < n; i++) x[i] = ((Math.floor(i / sr * 4 / PERIOD) % 2) ? 0.5 : 0.05) * (rnd() * 2 - 1); // noise, loud / quiet every 0.75 s
     else if (stimMode === "burst") for (i = 0; i < Math.floor(0.15 * sr); i++) x[i] = 0.5 * (rnd() * 2 - 1);
     else if (stimMode === "sweep2") for (i = 0; i < n; i++) x[i] = 0.4 * Math.sin(2 * Math.PI * (i < n / 2 ? 440 : 1320) * i / sr);
     else if (stimMode === "clicks") for (i = 0; i < n; i += Math.floor(0.25 * sr)) x[i] = 0.8;
@@ -87,10 +88,17 @@ function fill() {
     post("GLITCH_STIM_POKED " + stimMode + " frames " + n + "\n");
 }
 
+// gen re-reads the slot vectors and the constants only when the version at SEQ+5 changes: every write below bumps it
+var packVer = 0;
+function bump() {
+    packVer += 1;
+    new Buffer("glitchslots").poke(1, SQOFF + 5, [packVer]);
+}
 function slots() {
     var a = arrayfromargs(arguments);
     var buf = new Buffer("glitchslots");
     buf.poke(1, 0, a);
+    bump();
 }
 function weights() {
     var a = arrayfromargs(arguments);
@@ -102,11 +110,13 @@ function meta() {
     var a = arrayfromargs(arguments);
     var buf = new Buffer("glitchslots");
     buf.poke(1, METAOFF, a);
+    bump();
 }
 function seq() {
     var a = arrayfromargs(arguments);
     var buf = new Buffer("glitchslots");
     buf.poke(1, SQOFF, a);
+    bump();
 }
 function msg_float(v) {
     if (inlet === 1) { cpuMax = Math.max(cpuMax, v); cpuSum += v; cpuCount++; }
@@ -308,6 +318,7 @@ function analyzeImpl(durMs) {
         for (i = 0; i < 8; i++) R["scW" + i] = ch[SC.WEIGHTS + i];
         R.scSeqOn = ch[SC.SEQ_ON]; R.scSeqPlay = ch[SC.SEQ_PLAY]; R.scSeqStep = ch[SC.SEQ_STEP]; R.scSeqSlot = ch[SC.SEQ_SLOT]; R.scSeqPrev = ch[SC.SEQ_PREV];
         for (i = SC.END; i < ch.length; i++) R['scx' + i] = ch[i]; // debug slots beyond END (the runner asks for a larger END)
+        if (SC.MOVE_ON !== undefined) for (i = 0; i < nInst; i++) { R["scMvOn" + i] = ch[SC.MOVE_ON + i]; R["scMvOfs" + i] = ch[SC.MOVE_OFS + i]; R["scMvPos" + i] = ch[SC.MOVE_POS + i]; R["scMvPh" + i] = ch[SC.MOVE_PH + i]; }
         R.scSeqGlide = ch[SC.SEQ_GLIDE]; R.scSeqFrac = ch[SC.SEQ_FRAC]; R.scSeqCount = ch[SC.SEQ_COUNT];
     }
     for (var xi = 0; xi < XC.length; xi++) {

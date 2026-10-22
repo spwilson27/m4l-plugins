@@ -16,6 +16,12 @@
 // are computed here from the host beat (gl_seq) instead of read from the buffer. Mix, Output, bpm, ppq and playing are gen
 // Params.
 //
+// Movement (phase 3): after the blend, one loop over the 23 instances calls gl_move once per instance (a single call site): a module that
+// is on and has a source (LFO / Steps / Envelope follower, contract in glitch_config.js) adds depth * source to its blended target in
+// normalized space, BEFORE gl_smooth, so the modulation rides on the per-param smoothing (one pole, about 3.3 ms: a square LFO on a
+// cutoff gets 3 ms edges, which is fine up to about 100 Hz). The slot vectors and the layout constants are re-read only when the pack
+// version (SEQ+5) moves.
+//
 // GenExpr rules honoured: functions first; one return per function, at function level; no e<digit> / phi / pi
 // identifiers; no custom call inside poke() arguments or if() conditions; no wrap() with variable bounds; work functions
 // are called as bare statements; all module state lives in Data (functions cannot see globals, History in a function is
@@ -1087,6 +1093,9 @@ gl_stepv(pv, sb, ns, x, gld) {
 	return prv + (cur - prv) * pg;
 }
 
+// The synced rate (cycles per beat) is read from the BLENDED target, not the smoothed vector: a smoothed rate would glide for ~30 ms after
+// the module switches on, and the phase offset below would absorb that glide, leaving the LFO off the host grid for good. With the
+// target, a rate that has not changed since the module started gives offset 0, i.e. phase = beat * cpb exactly.
 // One instance k: when act = 1 evaluate its source and add depth * source to its blended target in tgt (normalized on the target's
 // own curve, so log params move in log space); when act = 0 reset its state. pv = the smoothed vector (movement block at mvb), meta
 // channels 0 kind, 3 min, 4 max, mst = 8 floats per instance (0 free phase, 1 sync offset, 2 previous cycles per beat, 3 follower,
@@ -1103,7 +1112,7 @@ gl_move(pv, tgt, meta, mst, mt, k, mvb, wbk, bt, lvl, tn, sr, act) {
 		tp = floor(pv.peek(mvb + @MV_TARGET@) + 0.5);
 		dp = pv.peek(mvb + @MV_DEPTH@);
 		hz = pv.peek(mvb + @MV_HZ@);
-		cpb = pv.peek(mvb + @MV_CPB@);
+		cpb = tgt.peek(mvb + @MV_CPB@);
 		sy = pv.peek(mvb + @MV_SYNC@);
 		ps = pv.peek(mvb + @MV_PHASE@);
 		sh = pv.peek(mvb + @MV_SHAPE@);
@@ -1561,7 +1570,7 @@ Data d_pv(@NP@);
 Data d_wS(@NINST@);
 Data d_wb(@NINST@);
 Data d_lv(@NINST@);
-Data d_clk(2);
+Data d_clk(3);
 Data d_mst(@MSTN@);
 Data d_mt(@MTN@);
 Data d_io(2);
@@ -1709,6 +1718,7 @@ if (ctlCnt >= 32 || chg > 0.5) {
 	}
 	// the 8 slot vectors and the layout constants are re-read only when the UI (or a harness) has written them again: the version
 	// number at SEQ+5 changes with every write (the vectors are ~6000 floats)
+	k = 0; // declared out here: a variable first assigned inside the nested if below would not be visible after it
 	verNow = d_sq.peek(5);
 	if (verNow != verPrev) {
 		verPrev = verNow;
@@ -1743,15 +1753,18 @@ if (ctlCnt >= 32 || chg > 0.5) {
 	}
 	gl_blend(d_sv, d_wv, d_meta, d_tgt, @NP@);
 	// movement: one loop, one call site. The module's input level = the output level of the previous active module (or the device input)
-	mvLvl = inPk;
+	d_clk.poke(inPk, 2);
 	for (k = 0; k < @NINST@; k += 1) {
 		mvb = @MVBASE@ + @MVN@ * k;
 		mvTy = d_pv.peek(mvb + @MV_TYPE@);
 		mvW = d_wS.peek(k);
 		mvAct = (mvW > 0.0005 && mvTy > 0.5) ? 1 : 0;
 		mvWb = d_wb.peek(k);
+		mvLvl = d_clk.peek(2);
 		gl_move(d_pv, d_tgt, d_meta, d_mst, d_mt, k, mvb, mvWb, sqB, mvLvl, tickNow, sr, mvAct);
-		mvLvl = mvW > 0.0005 ? d_lv.peek(k) : mvLvl;
+		if (mvW > 0.0005) {
+			d_clk.poke(d_lv.peek(k), 2);
+		}
 	}
 	snapK = firstTick > 0.5 ? 1 : 0.15;
 	firstTick = 0;

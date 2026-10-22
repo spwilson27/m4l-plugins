@@ -13,10 +13,10 @@ creates `gen~ @gen <file>` and wires it: every gen-bound message goes through th
 pass the dry signal (input 1); dsp_on 2 switches them. dsp_ready re-sends the buffer binding, Mix, Output, bpm and ppq.
 
 Engine contract:
-  buffer~ #0-glitchslots @samps 1280  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
-                                      sequencer block at seqOffset (mode header + 16 steps) + the layout constants block (meta, defaults,
-                                      wet indices; see src/glitch_config.js).
-  buffer~ #0-glitchscope @samps 512   gen -> UI telemetry (layout GL_SCOPE in src/glitch_config.js).
+  buffer~ #0-glitchslots @samps 9472  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
+                                      sequencer block at seqOffset (mode header, pack version, 16 steps) + the layout constants block (meta, defaults,
+                                      wet indices, minimums, maximums; see src/glitch_config.js).
+  buffer~ #0-glitchscope @samps 640   gen -> UI telemetry (layout GL_SCOPE in src/glitch_config.js).
   loadbang binds both buffers in gen (`slots ..., scope ...`) and in the v8ui (`setbuffer ...`).
   plugsync~ feeds the gen Params `bpm`, `ppq` and `playing` (outlet 0, the transport state: the sequencer clock holds while 0). Mix -> Param `wet` (0..1), Output -> Param `outdb` (dB).
   The v8ui keeps the whole state in the blob parameter GlitchStateData ([version, json]).

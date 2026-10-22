@@ -40,6 +40,17 @@ GEN = gc.gen_source(LAYOUT)
 DEFAULTS = [m[2] for m in LAYOUT["meta"]]
 
 BASE = "bpm 120, ppq 0, wet 1, outdb 0"
+DIV_BEATS = LAYOUT["mvDivBeats"]  # LFO cycle / step length in beats per division index (GL_MV_DIV_BEATS)
+
+
+def mv(inst, typ, target, depth, div=8, sync=1, hz=1.0, shape=0, phase=0.0, steps=None, nsteps=0, glide=0.0, atk=10.0, rel=200.0):
+    """The movement block of a slot vector entry: vec({"filt": {"wet": 1, ..., **mv("filt", 1, "cutoff", 0.3)}})."""
+    pos = LAYOUT["index"][f"{inst}.{target}"] - LAYOUT["base"][inst]
+    d = {"mv_on": 1, "mv_type": typ, "mv_target": pos, "mv_depth": depth, "mv_hz": hz, "mv_cpb": 1.0 / DIV_BEATS[div], "mv_sync": sync, "mv_phase": phase,
+         "mv_shape": shape, "mv_glide": glide, "mv_nsteps": nsteps, "mv_atk": atk, "mv_rel": rel}
+    for i, v in enumerate(steps or []):
+        d[f"mv_s{i}"] = v
+    return d
 
 
 def vec(mods):
@@ -278,6 +289,54 @@ def cases():
     out.append(c("seq_glide", seq=seq_msg(2, 2, 4, 1.0, 0, [0, 1]), stim="sine", arm=ARM, dur=3000, probe=["dump:256"], slots=[sa, sb]))
     out.append(c("seq_empty", seq=seq_msg(2, 8, 4, 0, 0, []), stim="mix", dur=2200, slots=[sa, sb]))
 
+    # ---- phase 3: per-module movement (blk 1024 = 21 ms envelope blocks, 128 for the step edges) ----
+    ARMM = 750
+    lp = {"wet": 1, "type": 0, "cutoff": 1000, "res": 0.2}
+    mvc = dict(stim="noise", arm=ARMM, dur=3200, probe=["dump:1024"])
+    # synced LFO on a low pass cutoff: 1/4 note cycle = 0.5 s = 24000 samples at 120 bpm; log curve, +-0.3 of the range (x 0.17 .. x 6)
+    out.append(c("mv_lfo_sync", slots=[vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, div=8))})], **mvc))
+    out.append(c("mv_static", slots=[vec({"filt": dict(lp)})], **mvc))
+    # a different division (1/2 note, 48000 samples) must give a different, matching period
+    out.append(c("mv_lfo_half", slots=[vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, div=11))})], stim="noise", arm=ARMM, dur=4800, probe=["dump:1024"]))
+    # free running 2 Hz (period 24000 samples), ignores the host beat
+    out.append(c("mv_lfo_free", slots=[vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, sync=0, hz=2.0))})], **mvc))
+    # transport stops at 1100 ms: the synced LFO holds, the free one keeps running
+    out.append(c("mv_stop_sync", slots=[vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, div=8))})], events=[(1100, "playing 0", "obj-gen")], **mvc))
+    out.append(c("mv_stop_free", slots=[vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, sync=0, hz=2.0))})], events=[(1100, "playing 0", "obj-gen")], **mvc))
+    # host position jump to beat 100.25: the synced LFO follows the ppq (a quarter cycle shifts the phase)
+    out.append(c("mv_ppq", slots=[vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, div=8))})], events=[(1500, "ppq 100.25", "obj-gen")], **mvc))
+    # the module (and its movement) switches on at 900 ms, after the rate parameter has glided from its default: the synced LFO must still sit on the
+    # host grid (phase = beat * cycles per beat, no offset left over from the smoothing glide)
+    out.append(c("mv_late_on", slots=[vec({}), vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, div=8))})], weights=[1, 0], events=[(900, weights_msg([0, 1]))], **mvc))
+    # Steps on a gain: 4 distinct levels on 1/8 note boundaries (12000 samples); gain -12..+6 dB, depth 0.5 around 0 dB (norm 0.667)
+    stp = [1, -1, 0.5, -0.5, 1, -1, 0.5, -0.5]
+    out.append(c("mv_steps", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": 0, **mv("wid", 2, "gain", 0.5, div=5, steps=stp)}})], stim="noise", arm=ARMM, dur=3200, probe=["dump:128"]))
+    # Steps with glide: the same pattern ramps instead of jumping
+    out.append(c("mv_steps_glide", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": 0, **mv("wid", 2, "gain", 0.5, div=5, steps=stp, glide=1.0)}})], stim="noise", arm=ARMM, dur=3200, probe=["dump:128"]))
+    # Envelope follower on the gain: loud / quiet noise (x10), positive depth widens the contrast, negative narrows it
+    envm = dict(stim="levels", arm=ARMM, dur=3000, probe=["dump:1024"])
+    out.append(c("mv_env_pos", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": -12, **mv("wid", 3, "gain", 1.0, atk=5, rel=50)}})], **envm))
+    out.append(c("mv_env_neg", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": 6, **mv("wid", 3, "gain", -1.0, atk=5, rel=50)}})], **envm))
+    out.append(c("mv_env_off", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": -3}})], **envm))
+    # morph between slots with different movement, and between a moving and a still slot: no clicks
+    la = vec({"filt": dict(lp, cutoff=2000, **mv("filt", 1, "cutoff", 0.3, div=8))})
+    lb = vec({"filt": dict(lp, cutoff=2000, **mv("filt", 2, "cutoff", 0.4, div=5, steps=stp, glide=0.3))})
+    lc = vec({"filt": dict(lp, cutoff=2000)})
+    out.append(c("mv_morph", stim="sine", dur=3200, slots=[la, lb], weights=[1, 0], events=ramp_events([1, 0], [0, 1], 900, 2100, 24)))
+    out.append(c("mv_morph_off", stim="sine", dur=3200, slots=[la, lc], weights=[1, 0], events=ramp_events([1, 0], [0, 1], 900, 2100, 24)))
+    # a square LFO on the cutoff (the hardest case for the per-param smoothing): the level edges survive
+    out.append(c("mv_square", slots=[vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, div=8, shape=4))})], stim="sine1k", arm=ARMM, dur=3200, probe=["dump:128"]))
+    # movement on drive, filter, crush, stutter, a spectral param, delay and reverb at once (they run and stay finite)
+    out.append(c("mv_many", stim="mix", dur=3000, slots=[vec({
+        "drvA": {"wet": 0.6, "mode": 0, "drive": 12, **mv("drvA", 1, "drive", 0.4, div=8)},
+        "filt": {"wet": 0.6, "type": 1, "cutoff": 1500, "res": 0.5, **mv("filt", 2, "cutoff", 0.4, div=5, steps=stp)},
+        "crush": {"wet": 0.5, "bits": 6, "rate": 4, **mv("crush", 3, "bits", 0.5)},
+        "stut": {"wet": 0.5, "div": 4, "prob": 0.7, "decay": 0.3, **mv("stut", 1, "decay", 0.4, div=11, shape=2)},
+        "spec": {"wet": 1, "smr_amt": 0.5, "smr_blur": 0.4, "cc_amt": 0.5, "cc_coeffs": 0.4, **mv("spec", 1, "smr_blur", 0.4, div=8)},
+        "dly": {"wet": 0.4, "div": 4, "fb": 0.5, **mv("dly", 1, "fb", 0.3, div=11)},
+        "rev": {"wet": 0.4, "size": 0.7, "decay": 0.7, **mv("rev", 1, "decay", 0.3, div=13)},
+    })]))
+
     # ---- everything on at once ----
     allmods = {
         "drvA": {"wet": 0.6, "mode": 1, "drive": 12, "tone": 12000}, "filt": {"wet": 0.6, "type": 1, "cutoff": 1500, "res": 0.6},
@@ -300,6 +359,15 @@ def cases():
     out.append(c("cpu_idle", stim="mix", dur=2500, cpu=True))  # no module on: the cost of the engine itself (slot blend, clocks, telemetry)
     out.append(one("cpu6_new", typical_new, stim="mix", dur=2500, cpu=True))
     out.append(one("cpu_all", allmods, stim="mix", dur=2500, cpu=True))
+    # six modules WITH movement (LFO / Steps / Env mixed): the cost of the movement engine on top of cpu6
+    six_mv = {k: dict(v) for k, v in six.items()}
+    six_mv["drvA"].update(mv("drvA", 1, "drive", 0.4, div=8))
+    six_mv["filt"].update(mv("filt", 2, "cutoff", 0.4, div=5, steps=stp))
+    six_mv["crush"].update(mv("crush", 3, "bits", 0.5))
+    six_mv["stut"].update(mv("stut", 1, "decay", 0.4, div=11, shape=2))
+    six_mv["dly"].update(mv("dly", 1, "fb", 0.3, div=11))
+    six_mv["rev"].update(mv("rev", 1, "decay", 0.3, div=13))
+    out.append(one("cpu6_move", six_mv, stim="mix", dur=2500, cpu=True))
     return out
 
 
@@ -467,7 +535,9 @@ def checks(name, r):
         check(r["peak"] > 0.01, "stress_all: sounds")
     elif name in ("seq_steps", "seq_hold", "seq_stop", "seq_ppq", "seq_glide", "seq_empty"):
         seq_checks(name, r)
-    elif name in ("cpu_idle", "cpu6", "cpu6_new", "cpu_all"):
+    elif name.startswith("mv_"):
+        mv_checks(name, r)
+    elif name in ("cpu_idle", "cpu6", "cpu6_new", "cpu_all", "cpu6_move"):
         check(r["cpuMax"] > 0, f"{name}: cpu measured")
         check(r["cpuMax"] < (95 if name == "cpu_all" else 70), f"{name}: audio CPU {r['cpuMax']:.1f} % (avg {r['cpuAvg']:.1f})")
         print(f"  CPU {name}: max {r['cpuMax']:.1f} % avg {r['cpuAvg']:.1f} %")
@@ -561,6 +631,174 @@ def seq_checks(name, r):
         check(a2 / b_lvl > 2.5, f"seq_ppq: next boundary one step after the jump (B {b_lvl:.4f} -> A {a2:.4f})")
         on2 = onset(e, blk, b2, b_lvl, a2)
         check(on2 is not None and -256 <= on2 <= 1500, f"seq_ppq: next boundary onset {on2}")
+
+
+# --------------------------------------------------------------------------- movement analysis
+def smooth3(e):
+    return [sum(e[max(0, i - 1):i + 2]) / len(e[max(0, i - 1):i + 2]) for i in range(len(e))]
+
+
+def crossings(e, blk, t0_samples=0):
+    """Upward crossings (sample positions, window time) of the midpoint between the extremes of the smoothed envelope."""
+    sm = smooth3(e)
+    mid = (max(sm) + min(sm)) / 2.0
+    out = []
+    for i in range(1, len(sm)):
+        if sm[i - 1] < mid <= sm[i]:
+            out.append(t0_samples + (i - 1 + (mid - sm[i - 1]) / max(sm[i] - sm[i - 1], 1e-12) + 0.5) * blk)
+    return out
+
+
+def swing(e, a=0, b=None):
+    sm = smooth3(e)[a:b]
+    return max(sm) / max(min(sm), 1e-9)
+
+
+def median(xs):
+    xs = sorted(xs)
+    return xs[len(xs) // 2]
+
+
+def circ_mean(ps):
+    import cmath
+    z = sum(cmath.exp(2j * math.pi * (p - math.floor(p))) for p in ps) / len(ps)
+    return (cmath.phase(z) / (2 * math.pi)) % 1.0
+
+
+def circ_d(a, b):
+    d = (a - b) % 1.0
+    return min(d, 1.0 - d)
+
+
+MV_SKEW = 0.07  # beat phase of the level crossings of a synced 1/4 note sine LFO on the cutoff of a low passed noise (measured on mv_lfo_sync)
+
+
+def mv_checks(name, r):
+    arm = ARM_SAMPLES
+    e = envelope(r)
+    blk = 128 if name in ("mv_steps", "mv_steps_glide", "mv_square") else 1024
+    kf = POS["filt"]
+    if name in ("mv_morph", "mv_morph_off"):
+        check(r["maxd2"] <= 4.0 * max(r["maxd2in"], 0.01), f"{name}: click, max d2 {r['maxd2']:.4f} vs input {r['maxd2in']:.4f}")
+        check(r["maxstep"] < 0.8, f"{name}: step {r['maxstep']:.3f}")
+        return
+    if name == "mv_many":
+        check(r["peak"] <= 1.0 and r["nan"] == 0, f"mv_many: bounded and finite (peak {r['peak']:.3f}, nan {r['nan']})")
+        check(r["peak"] > 0.01, "mv_many: sounds")
+        for inst in ("drvA", "filt", "crush", "stut", "spec", "dly", "rev"):
+            check(r[f"scMvOn{POS[inst]}"] == 1, f"mv_many: {inst} movement runs (telemetry)")
+        check(r[f"scMvOn{POS['wid']}"] == 0, "mv_many: a module without movement reports none")
+        return
+    check(len(e) > 20, f"{name}: envelope dump")
+    if name == "mv_static":
+        # 21 ms blocks of low passed noise fluctuate by itself (x1.3 measured); the moving filter swings x7
+        check(swing(e) < 2.0, f"mv_static: no movement, a steady level (swing x{swing(e):.2f})")
+        check(r[f"scMvOn{kf}"] == 0, "mv_static: telemetry reports no movement")
+        return
+    if name in ("mv_lfo_sync", "mv_lfo_free", "mv_lfo_half", "mv_stop_free"):
+        want = {"mv_lfo_sync": 24000, "mv_lfo_free": 24000, "mv_lfo_half": 48000, "mv_stop_free": 24000}[name]
+        cr = crossings(e, blk)
+        if name == "mv_stop_free":
+            cr = [c for c in cr if c > 4000]
+        check(len(cr) >= 3, f"{name}: {len(cr)} cycles seen")
+        if len(cr) >= 3:
+            per = median([b - a for a, b in zip(cr, cr[1:])])
+            print(f"  {name}: period {per:.0f} samples (want {want}), swing x{swing(e):.1f}")
+            check(abs(per - want) / want < 0.02, f"{name}: period {per:.0f} samples, want {want}")
+        check(swing(e) > 3.0, f"{name}: the filter sweeps (level swing x{swing(e):.2f})")
+        check(r[f"scMvOn{kf}"] == 1 and abs(r[f"scMvOfs{kf}"]) <= 0.3 + 1e-6 and 0 <= r[f"scMvPos{kf}"] <= 1, f"{name}: telemetry on={r[f'scMvOn{kf}']} ofs={r[f'scMvOfs{kf}']:.3f} pos={r[f'scMvPos{kf}']:.3f}")
+        if name == "mv_lfo_sync":
+            bp = circ_mean([((c + arm - LATENCY) / SR) * 2.0 for c in cr])
+            print(f"  mv_lfo_sync: beat phase of the level crossings {bp:.3f}")
+            check(circ_d(bp, MV_SKEW) < 0.05, f"mv_lfo_sync: absolute beat lock, crossing beat phase {bp:.3f} vs {MV_SKEW}")
+        if name == "mv_stop_free":
+            check(r["scSeqPlay"] == 0, "mv_stop_free: the transport is stopped")
+        return
+    if name == "mv_late_on":
+        on = 900 * SR // 1000 - arm
+        i0 = int((on + 6000) // blk)
+        cr = crossings(e[i0:], blk, i0 * blk)  # only the part after the switch-on (the dry noise before it would dominate the extremes)
+        check(len(cr) >= 3, f"mv_late_on: {len(cr)} crossings after the switch-on")
+        if len(cr) >= 3:
+            bp = circ_mean([((c + arm - LATENCY) / SR) * 2.0 for c in cr])
+            print(f"  mv_late_on: beat phase of the level crossings after a late switch-on {bp:.3f} (on the grid = {MV_SKEW})")
+            check(circ_d(bp, MV_SKEW) < 0.05, f"mv_late_on: locked to the host grid after a late switch-on (beat phase {bp:.3f} vs {MV_SKEW})")
+        return
+    if name == "mv_stop_sync":
+        w0 = 1100 * SR // 1000 - arm
+        i0 = int((w0 + 3000) // blk)
+        after = swing(e, i0)
+        before = swing(e, 0, int(w0 // blk))
+        check(after < 1.15, f"mv_stop_sync: the synced LFO holds while the transport is stopped (level swing after the stop x{after:.3f}, before x{before:.2f})")
+        check(r["scSeqPlay"] == 0, "mv_stop_sync: the transport is stopped")
+        return
+    if name == "mv_ppq":
+        # the host jumps to beat 100.25 at 1500 ms: afterwards the synced LFO is locked to that position, so the beat phase of its
+        # upward level crossings is the same as before the jump (a free-running phase would be a quarter beat off)
+        jump = 1500 * SR // 1000 - arm
+        cr = crossings(e, blk)
+
+        def beat_of(c):
+            t = (c + arm - LATENCY) / SR  # when the movement happened (the output lags by the fixed latency)
+            return t * 2.0 if c < jump else 100.25 + (t - 1.5) * 2.0
+
+        pre = [beat_of(c) for c in cr if 3000 < c < jump - 3000]
+        post = [beat_of(c) for c in cr if c > jump + 6000]
+        check(len(pre) >= 1 and len(post) >= 3, f"mv_ppq: crossings before {len(pre)} / after {len(post)}")
+        if pre and len(post) >= 3:
+            dp, dq = circ_mean(pre), circ_mean(post)
+            print(f"  mv_ppq: beat phase of the crossings: before {dp:.3f}, after {dq:.3f} (a free-running phase would give {(dp - 0.25) % 1.0:.3f})")
+            check(circ_d(dp, dq) < 0.08, f"mv_ppq: the LFO follows the host position (beat phase {dp:.3f} -> {dq:.3f})")
+            check(circ_d(dq, (dp - 0.25) % 1.0) > 0.12, "mv_ppq: it is not the free-running phase")
+        return
+    if name in ("mv_steps", "mv_steps_glide"):
+        stp = [1, -1, 0.5, -0.5, 1, -1, 0.5, -0.5]
+        gain = lambda sv: -12 + 18 * min(max(2.0 / 3.0 + 0.5 * sv, 0.0), 1.0)
+        # window starts on step boundary x = 3 (beat 1.5 at 1/8 steps of 0.5 beat)
+        nsteps = min(11, len(e) * blk // SL - 1)
+        levels = []
+        for k in range(nsteps):
+            a = k * SL + (4000 if name == "mv_steps" else 6000)
+            levels.append(lvl(e, blk, a, a + (SL - 4000 - 500 if name == "mv_steps" else 1500)))
+        if name == "mv_steps_glide":
+            # 16-block moving average (2048 samples) of the 128-sample noise rms: a 15 dB ramp over 94 blocks moves it about 2 % per block, a hard
+            # 9 dB step would move it more than 10 % per block
+            sm = [sum(e[i:i + 16]) / 16 for i in range(len(e) - 16)]
+            stepsz = max(abs(sm[i + 1] - sm[i]) / max(sm[i], 1e-9) for i in range(len(sm) - 1) if i * blk > 2000)
+            check(stepsz < 0.06, f"mv_steps_glide: the ramp is smooth, largest relative smoothed block step {stepsz:.3f}")
+            return
+        for k in range(nsteps):
+            want = gain(stp[(3 + k) % 8]) - gain(stp[3 % 8])
+            got = 20 * math.log10(levels[k] / levels[0])
+            check(abs(got - want) < 1.2, f"mv_steps: step {k} (value {stp[(3 + k) % 8]}) is {got:.2f} dB vs step 0, want {want:.2f}")
+        for k in range(1, nsteps):
+            b = k * SL
+            pre, post = lvl(e, blk, b - 3000, b - 400), lvl(e, blk, b + 2500, b + 3500)
+            on = onset(e, blk, b, pre, post)
+            check(on is not None and -256 <= on <= 1500, f"mv_steps: boundary {k} changes the level {on} samples after the step boundary (want -256..1500)")
+            early = max(abs(x - pre) / pre for x in e[int((b - 3000) // blk):int((b - 300) // blk)])
+            check(early < 0.3, f"mv_steps: boundary {k} nothing before it (dev {early:.2f})")
+        return
+    if name == "mv_square":
+        sm = e
+        lo, hi = min(sm), max(sm)
+        mid = [x for x in sm if lo + 0.2 * (hi - lo) < x < lo + 0.8 * (hi - lo)]
+        check(hi / max(lo, 1e-9) > 3.0, f"mv_square: swing x{hi / max(lo, 1e-9):.2f}")
+        check(len(mid) / len(sm) < 0.12, f"mv_square: edges stay sharp ({len(mid)}/{len(sm)} blocks between the two levels; a 1 kHz sine, the cutoff jumps between x0.5 and x2 of it)")
+        return
+    if name.startswith("mv_env"):
+        # segments of the 'levels' stimulus: loud 0.75..1.5 s, quiet 1.5..2.25 s, loud 2.25..3.0 s, quiet 3.0..3.75 s (window starts at 0.75 s)
+        def seg(a_s, b_s):
+            return lvl(e, blk, a_s * SR - arm + 0.2 * SR, b_s * SR - arm - 0.15 * SR)
+        loud = (seg(0.75, 1.5) + seg(2.25, 3.0)) / 2
+        quiet = seg(1.5, 2.25)
+        con = 20 * math.log10(loud / max(quiet, 1e-9))
+        print(f"  {name}: loud / quiet contrast {con:.1f} dB")
+        want = {"mv_env_off": 20.0, "mv_env_pos": 26.2, "mv_env_neg": 13.8}[name]
+        check(abs(con - want) < 2.0, f"{name}: contrast {con:.1f} dB, want {want:.1f} (the follower moves the gain with the input level)")
+        if name != "mv_env_off":
+            check(r[f"scMvOn{POS['wid']}"] == 1, f"{name}: telemetry reports the follower")
+        return
 
 
 def print_case(case, r):

@@ -10,6 +10,11 @@
 // module tiles, action bar; the Options view replaces it), EDIT (module editor), SLOTS (8 slots), SEQ (16-step slot
 // sequencer). Layout lives in glitchFaceLayout() (config) so the tests can check every rect.
 //
+// Motion (phase 3): the editor has a PARAMS | MOTION tab. MOTION sets the module's movement source (Off / LFO / Steps / Env: target,
+// rate or division, shape, depth, phase, a step painter); the live value comes back from the gen telemetry (MOVE_*) and is drawn
+// as a band + marker on the target's param bar and as a small scope on the glitch-view tile. All edits go to the Working glitch
+// (one undo step per gesture, like every other edit).
+//
 // Modes: Working (the working glitch), Morph (the XY pad over the corner slots), Seq (the sequencer plays the slots). In Morph
 // and Seq the pad, the glitch view and the editor show the SOUNDING blend (soundingWeights). Editing a module there first
 // copies the sounding blend into the Working glitch and switches to Working (beginWorkingEdit), so an edit is always audible.
@@ -1180,9 +1185,10 @@ function paintView(r) {
         rsrect(q.x + 0.5, q.y + 0.5, q.w - 1, q.h - 1, 4, sel ? COL_TEXT : c, sel ? 1 : 0.55, sel ? 1.6 : 1);
         var fs = compact ? 6 : 7.5;
         var badge = chainBadge(tile);
-        var bw2 = tw(badge, 5.5);
-        label(badge, q.x + q.w - 3, q.y + (compact ? 7 : 9.5), 5.5, COL_DIM, 0.9, 2);
         var locked = glitchIsLocked(gState.working, tile.key);
+        var showBadge = !(compact && locked && tile.mv); // a compact tile that is locked AND moving drops its chain number to keep the name
+        var bw2 = showBadge ? tw(badge, 5.5) : 0;
+        if (showBadge) label(badge, q.x + q.w - 3, q.y + (compact ? 7 : 9.5), 5.5, COL_DIM, 0.9, 2);
         var mvw = tile.mv ? 13 : 0;
         label(fit(compact ? (GL_TINY[tile.key] || tile.name) : tile.name, q.w - 8 - bw2 - (locked ? 8 : 0) - mvw, fs), q.x + 4, q.y + (compact ? 7.5 : 10), fs, c, 1, 0);
         if (locked) paintLockGlyph(q.x + q.w - 8 - bw2, q.y + (compact ? 5 : 7.5), COL_AMBER, 0.95);
@@ -1866,7 +1872,7 @@ function mvSetStep(x, y) {
 }
 function mvClick(id, x, y, shift) {
     var key = editorTarget();
-    if (!key) return;
+    if (!key || !glitchMoveCandidates(key).length) return; // nothing to move on this tile (Freeze, Scramble)
     undoPush();
     beginWorkingEdit();
     var g = gState.working;
@@ -2299,10 +2305,28 @@ function test_report() {
             rep.seqTele = { on: a[GL_SCOPE.SEQ_ON], play: a[GL_SCOPE.SEQ_PLAY], step: a[GL_SCOPE.SEQ_STEP], slot: a[GL_SCOPE.SEQ_SLOT], prev: a[GL_SCOPE.SEQ_PREV], glide: a[GL_SCOPE.SEQ_GLIDE], frac: a[GL_SCOPE.SEQ_FRAC], count: a[GL_SCOPE.SEQ_COUNT], beat: a[GL_SCOPE.BEAT] };
         } catch (_) {}
     }
+    rep.moves = gTiles.filter(function (t) { return t.mv; }).map(function (t) { return t.key; });
     rep.arm = gSeqArm; rep.page = gTilePage; rep.tileCount = gTiles.length;
     if (gSlotsBuf) { try { rep.seqHdr = gSlotsBuf.peek(1, glitchLayout().seqOffset, GL_SEQ_HDR).slice(0, 5); } catch (_) {} }
     if (typeof Global !== "undefined") new Global("glitch_test").text = JSON.stringify(rep);
     return rep;
+}
+// A working glitch whose only module is Width / Gain (-3 dB) with a synced sine LFO on the gain: 1/4 note cycle (one beat), depth 0.5 =
+// +-9 dB around -3 dB. scripts/test_glitch_live.js uses it to check that movement is audible and locked to the host beat.
+function test_move() {
+    var g = defaultGlitch();
+    glitchSetValue(g, "wid", "wet", 1);
+    glitchSetValue(g, "wid", "gain", -3);
+    glitchSetMoveType(g, "wid", 1);
+    glitchSetMove(g, "wid", "target", "gain");
+    glitchSetMove(g, "wid", "depth", 0.5);
+    glitchSetMove(g, "wid", "div", 8);
+    glitchSetMove(g, "wid", "sync", 1);
+    gState.working = g;
+    gState.audition = "working";
+    sendParam("mode", 0);
+    modelChanged();
+    done();
 }
 function test_section(name, on) { gState.ui[String(name)] = Number(on) ? 1 : 0; applyLayout(); done(); }
 function test_select(key) { gState.ui.sel = String(key); fixSelection(); mgraphics.redraw(); }
@@ -2375,6 +2399,7 @@ function preview() {
         var big = defaultGlitch();
         for (var ii = 0; ii < GL_INSTANCES.length; ii++) glitchSetValue(big, GL_INSTANCES[ii].id, "wet", 0.4 + 0.5 * ((ii * 7) % 10) / 10);
         for (var tt = 0; tt < GL_TYPES.length; tt++) if (GL_TYPES[tt].amountKey) glitchSetValue(big, GL_TYPES[tt].id, GL_TYPES[tt].amountKey, 0.5 + 0.05 * tt);
+        for (var mm = 0; mm < GL_INSTANCES.length; mm += 3) if (glitchMainParam(GL_INSTANCES[mm].id)) glitchSetMoveType(big, GL_INSTANCES[mm].id, 1 + (mm / 3) % 3); // every third module moves
         gState.working = big;
         gState.slots[0] = glCopy(big);
         gModelDirty = true;
