@@ -405,7 +405,7 @@ function seedVoices() {
         var base = v * 8;
         vFlat[base + 0] = 1.0;        // gate
         vFlat[base + 1] = notes[v];   // MIDI note
-        vFlat[base + 2] = 0.90;       // velocity
+        vFlat[base + 2] = opt.vels ? Number(String(opt.vels).split(",")[v]) : 0.90;       // velocity (vels=0.2,1 per note)
         vFlat[base + 3] = trigSeq;    // trigCount
         vFlat[base + 4] = cfg ? cfg.start : 0.0; // sliceStart
         vFlat[base + 5] = cfg ? cfg.end : 1.0; // sliceEnd
@@ -450,7 +450,7 @@ function snap(label) {
     var chunk = new Buffer(scopeName).peek(1, 0, 49);
     var best = -1, bestA = 0.0005;
     for (var i = 0; i < 16; i++) if (chunk[16 + i] > bestA) { bestA = chunk[16 + i]; best = i; }
-    snaps[String(label)] = { voice: best, pos: best >= 0 ? chunk[best] : -1, amp: bestA };
+    snaps[String(label)] = { voice: best, pos: best >= 0 ? chunk[best] : -1, amp: bestA, lfo: chunk[35], frame: chunk[39] };
     if (opt.gt) { try { gtSnaps.push(new Buffer(scopeName).peek(1, 64, 64)); } catch (gerr) { } }
 }
 
@@ -474,7 +474,9 @@ function grainStats(g) {
     return { n: n, min: n ? mn : -1, max: n ? mx : -1, lvl: lv, distinct: nd, negOk: negOk };
 }
 function grainReport(scopeStats) {
-    var f = grainStats(scopeStats.grains), txt = "gtN " + f.n + "\ngtMin " + f.min + "\ngtMax " + f.max + "\ngtLvlMax " + f.lvl + "\ngtDistinct " + f.distinct + "\ngtUnusedOk " + f.negOk + "\n";
+    var loud = 0, gi;
+    if (scopeStats.grains) for (gi = 0; gi < 32; gi++) if (scopeStats.grains[gi] >= 0 && scopeStats.grains[32 + gi] > 0.25) loud++;
+    var f = grainStats(scopeStats.grains), txt = "gtLoud " + loud + "\n" + "gtN " + f.n + "\ngtMin " + f.min + "\ngtMax " + f.max + "\ngtLvlMax " + f.lvl + "\ngtDistinct " + f.distinct + "\ngtUnusedOk " + f.negOk + "\n";
     if (gtSnaps.length) {
         var all = {}, nd = 0, mn = 2, mx = -2, maxN = 0, minN = 99, lvMax = 0, bad = 0, i, s;
         for (s = 0; s < gtSnaps.length; s++) {
@@ -484,6 +486,7 @@ function grainReport(scopeStats) {
             if (st.n > 0) { if (st.min < mn) mn = st.min; if (st.max > mx) mx = st.max; }
             if (st.lvl > lvMax) lvMax = st.lvl;
             if (!st.negOk) bad++;
+            if (opt.gtlist) txt += "gtS" + s + " " + st.n + "\ngtS" + s + "Min " + st.min + "\ngtS" + s + "Max " + st.max + "\n";
             for (i = 0; i < 32; i++) if (gtSnaps[s][i] >= 0) {
                 var k = Math.round(gtSnaps[s][i] * 1000);
                 if (!all[k]) { all[k] = 1; nd++; }
@@ -780,7 +783,7 @@ function snapReport() {
     var txt = "";
     for (var key in snaps) {
         if (key.charAt(0) !== "t") continue;
-        txt += "snp" + key.substring(1) + "Pos " + snaps[key].pos + "\n" + "snp" + key.substring(1) + "Amp " + snaps[key].amp + "\n";
+        txt += "snp" + key.substring(1) + "Pos " + snaps[key].pos + "\n" + "snp" + key.substring(1) + "Amp " + snaps[key].amp + "\n" + "snp" + key.substring(1) + "Lfo " + snaps[key].lfo + "\n" + "snp" + key.substring(1) + "Frame " + snaps[key].frame + "\n";
     }
     return txt;
 }

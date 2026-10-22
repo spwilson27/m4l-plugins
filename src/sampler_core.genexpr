@@ -6,17 +6,21 @@
 //                   Clean, Analog (rp_dist saturation with pre/post EQ, rp_color stereo tape),
 //                   Digital (rp_dist bit reduction, rp_color sample-rate reduction, rp_vsr,
 //                   rp_imaging).
-//   1 = CYCLES    : Dual overlap-add Hann grains locked to the note pitch, with formant stretch.
-//                   Characters (cy_char): Pulse (cy_width), Partials (cy_split, cy_fund) and
-//                   Phase (cy_mod, cy_harm). cy_xfade latches two anchors (duophonic smoothing).
+//   1 = CYCLES    : One source period per cycle, resampled to the note period (pitch locked to the key, time
+//                   independent), with formant stretch. Consecutive cycles are joined by an overlap-add crossfade
+//                   (the old cycle keeps reading the source past its end while the new one fades in; the new
+//                   start is searched for the best match), not a switch. cy_xfade lengthens the overlap (0.5 -> 0.6).
+//                   Characters (cy_char): Pulse (cy_width), Partials (cy_split, cy_fund) and Phase (cy_mod, cy_harm).
 //   2 = TEXTURES  : Dual overlap-add Hann granular cloud with spray, unison detune and pan.
 //   3 = SPECTRAL  : Phase-vocoder stretching: Speed (grain_motion) is decoupled from pitch.
 //                   Computed OUTSIDE voice_proc by spec_voice() for voices 0..3 only (see below).
 //
 // Compile time: GenExpr inlines every call, so voice_proc and spec_voice are each called from ONE loop
 // (16 voices / 4 spectral voices). A function cannot hold per-call-site state in a loop, so all their
-// History lives in Data: vhist (256 slots per voice: voice_proc 0..37, analog 64..79, tape 80..84,
-// digital 96..110) and sdat (one block per spectral voice: FFT work arrays, jp and 22 History slots).
+// History lives in Data: vhist (256 slots per voice: voice_proc 0..37, frozen Repitch 40..42, analog 64..79, tape 80..84,
+// digital 96..110) and sdat (one block per spectral voice: FFT work arrays, jp and 22 History slots). vst is 400 slots per
+// voice: 0..319 Fragments grain pool, 320..359 Cycles / Textures latches (anchors, lengths, phase modulator), 360..391 Cycles
+// overlap state (match, overlap fraction, how the previous cycle continues, closed flag; 8 unison voices each).
 // Released, silent voices skip voice_proc altogether.
 //   4 = FRAGMENTS : Playful granular: a pool of up to 32 grains per voice (fr_max_grains is
 //                   capped at 32), density, repeats, envelope shape, motion randomisation.
@@ -89,7 +93,9 @@ peek_lr(sampBuf, idx, maxIdx) {
 }
 
 rnd01(sd) {
-	return fract(sin(sd * 12.9898 + 78.233) * 43758.5453);
+	// fract() of a negative number is negative in GenExpr (x - trunc(x)): use x - floor(x) so the result is 0..1
+	hx = sin(sd * 12.9898 + 78.233) * 43758.5453;
+	return hx - floor(hx);
 }
 
 // One-pole coefficient for a cutoff in Hz.
@@ -259,6 +265,21 @@ read_repitch(sampBuf, posFrames, startF, endF, loopStartF, loopEndF, loopMode, x
 		}
 	}
 	return outL, outR;
+}
+
+// Frozen Repitch loop reader: the loop window starts at ls, its audible period is `period` and the last xfLen of the window
+// (phase phi in [period, period + xfLen)) crossfade the tail into the head one period earlier. The two reads are one period
+// apart, so for a pitched source that fits the period they coincide: the fade is linear (the weights sum to 1, no level bump).
+frz_read(sampBuf, winS, winPh, winPer, winXf, maxIdx) {
+	tapL, tapR = peek_lr(sampBuf, winS + winPh, maxIdx);
+	fadeT = clip((winPh - winPer) / max(winXf, 1.0), 0, 1);
+	if (fadeT > 0.0) {
+		wHead = 0.5 - 0.5 * cos(3.14159265359 * fadeT);
+		headL, headR = peek_lr(sampBuf, winS + winPh - winPer, maxIdx);
+		tapL = tapL + (headL - tapL) * wHead;
+		tapR = tapR + (headR - tapR) * wHead;
+	}
+	return tapL, tapR;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -554,17 +575,18 @@ cyc_period(sampBuf, r, lcs, maxIdx) {
 
 // Pitch-synchronous anchor: where the next cycle starts. The scan target moves continuously, but a cycle may only start
 // a whole number of source periods (d) from the reference cycle, otherwise the output reads the source at the scan speed
-// plus its own (the pitch drifts) and the two overlapping reads sit at different phases (they cancel). With Analyzed Root Key
-// the period comes from the curve; without it the root can be a little off, so the period is measured (cyc_period) and the
-// cycle length follows it (so the continuation of one cycle and the start of the next coincide, and the output period still
-// is the note period). The start is searched around the lattice point (coarse over +-a period, then fine around the best),
-// and a candidate pays for its distance from the lattice point (8 % of the match energy per period squared), so a tie between
-// equal matches goes to the closest one and the alignment cannot jump back or ahead by a whole period for nothing, for the start whose first q of a cycle best matches the reference's
-// continuation. A cycle that spans a pitch step (the curve moves by more than 0.2 st inside it) is penalised, so the cycles
-// end before the step and restart after it. The search only runs while the lattice point (and then each better candidate)
-// does not match. One loop = one cyc_cost call site.
-// Returns the start, the match quality rho (1 = the two reads coincide, 0 = unrelated: sets the crossfade shape) and the
-// period / cycle length.
+// plus its own (the pitch drifts) and the two overlapping reads sit at different phases (they cancel).
+//   - Period: with Analyzed Root Key it comes from the curve; without it the root can be a little off, so it is measured
+//     (cyc_period) and the cycle length follows it (the continuation of one cycle and the start of the next then coincide,
+//     and the output period still is the note period).
+//   - Search: around the lattice point (coarse over +-a period, then fine around the best) for the start whose first q of a
+//     cycle best matches the reference's continuation. A candidate pays for its distance from the lattice point (8 % of the
+//     match energy per period squared), so a tie between equal matches goes to the closest one and the alignment cannot jump
+//     back or ahead by a whole period for nothing. A cycle that spans a pitch step (the curve moves by more than 0.2 st inside
+//     it) is penalised, so cycles end before the step and restart after it. The search only runs while the lattice point (and
+//     then each better candidate) does not match. One loop = one cyc_cost call site.
+// Returns the start, the match quality rho (1 = the two reads coincide, 0 = unrelated), the period / cycle length, the overlap
+// fraction used, how the reference continues (extPh) and whether the new cycle is closed (it spans a step).
 cyc_align(sampBuf, pbuf, target, lc0, r, rl, qBase, prevClosed, form, loB, hiB, maxIdx, numFrames, rootMidi, dynOn, sr) {
 	lcs = max(lc0, 8.0);
 	dUse = lcs;
@@ -1543,28 +1565,29 @@ voice_proc(
 		posModFrames = posMod * numFrames;
 		playFrames = playheadNorm * numFrames;
 		frzOn = (freezeOn > 0.5) ? 1 : 0;
-		// Frozen: a smooth, continuous read head. Pos is a target the head glides to (a first-order slew, about 45 ms, speed
-		// limited), so moving Pos drags the read position like tape: its speed adds to the playback speed (a Doppler bend),
-		// and there are no jumps. While the head rests it plays a seamless loop around itself: a whole number of root cycles
-		// of about 75 ms, with a 25 % equal-power crossfade at the loop seam (the head and the window ride together).
+		// Frozen: a smooth, continuous read head. Pos is a target the head glides to (two cascaded one-pole slews of 18 ms:
+		// the head has some inertia and steps of Pos do not make its speed jump; the speed is limited), so moving Pos drags
+		// the read position like tape: the head speed adds to the playback speed (a Doppler bend) and nothing jumps. While the
+		// head rests it plays a seamless loop around itself: a whole number of root cycles of about 75 ms, with a 25 % linear
+		// crossfade at the loop seam (the window rides with the head, its loop phase is relative to the window start).
 		fzLS = effLStart;
-		fzLE = effLEnd;
-		fzXf = xfEff;
-		fzLoop = effLoopMode;
 		fzSpan = 4.0;
 		fzPer = 4.0;
 		if (frzOn > 0.5) {
 			tgtF = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm) * numFrames;
-			slewC = 1.0 - exp(-1.0 / (0.045 * srVal));
-			playFrames = playFrames + clip((tgtF - playFrames) * slewC, -6.0, 6.0);
+			slewC = 1.0 - exp(-1.0 / (0.018 * srVal));
+			headMid = peek(vhist, stB + 42);
+			if (needInit || (frzPrev < 0.5)) {
+				headMid = playFrames;
+			}
+			headMid = headMid + (tgtF - headMid) * slewC;
+			poke(vhist, headMid, stB + 42);
+			playFrames = playFrames + clip((headMid - playFrames) * slewC, -6.0, 6.0);
 			cycFz = cyc_len(pitchBuf, playFrames / max(numFrames, 1), numFrames, rootMidi, peek(prm, 53), srFile);
 			fzPer = max(floor(0.075 * srFile / cycFz + 0.5), 1.0) * cycFz;
 			fzSpan = min(fzPer / 0.75, max(endF - startF, 16.0));
 			fzPer = fzSpan * 0.75;
 			fzLS = clip(playFrames - fzSpan * 0.5, startF, max(endF - fzSpan, startF));
-			fzLE = fzLS + fzSpan;
-			fzXf = 0.25;
-			fzLoop = 1;
 		} else {
 			prevFrames = playheadNorm * numFrames;
 			playFrames = prevFrames + dirSign * stepRatio;
@@ -1653,7 +1676,13 @@ voice_proc(
 					}
 				}
 
-				uL, uR = read_repitch(sampBuf, readPos, startF, endF, fzLS, fzLE, fzLoop, fzXf, numFrames);
+				uL = 0;
+				uR = 0;
+				if (frzOn > 0.5) {
+					uL, uR = frz_read(sampBuf, fzLS, pNext, fzPer, frzXfLen, max(numFrames - 1, 1));
+				} else {
+					uL, uR = read_repitch(sampBuf, readPos, startF, endF, effLStart, effLEnd, effLoopMode, xfEff, numFrames);
+				}
 				sigL = sigL + uL * gL * uNormGain;
 				sigR = sigR + uR * gR * uNormGain;
 			}
@@ -1745,9 +1774,9 @@ voice_proc(
 				// Overlap-add: the current cycle fades in over its first q while the previous one, still reading the source past
 				// its end at phase 1 + p, fades out. Both read the SAME phase, only the latched anchor / length differ. At the seam
 				// the current cycle becomes the previous one and the next is latched at the start that best matches its
-				// continuation (cyc_align, never more than half a period from the lattice), so the join is a crossfade of two
+				// continuation (cyc_align, close to the whole-period lattice), so the join is a crossfade of two
 				// reads of the same signal instead of a switch, and the output period stays exactly the note period while the
-				// playhead scans. cy_xfade only lengthens the overlap (q 0.3 -> 0.6).
+				// playhead scans. cy_xfade only lengthens the overlap (q 0.5 -> 0.6).
 				if (pNext < pCur) {
 					oldA = peek(vst, latB + u);
 					oldL = peek(vst, lenB + u);
@@ -1772,8 +1801,8 @@ voice_proc(
 				extU = peek(vst, ovB + 16 + u);
 				clsU = peek(vst, ovB + 24 + u);
 				clsPrv = (extU < 0.5) ? 1.0 : 0.0;
-				// window of the current cycle: 0 -> 1 over its first ovQ; equal-power for unrelated reads, linear (sums to 1)
-				// for coincident ones
+				// Window of the current cycle: a raised cosine 0 -> 1 over its first ovU, the previous cycle gets the complement
+				// (they sum to 1: no level change where the two reads coincide). rhoU < 0 = no previous cycle yet (note start).
 				wCur = 1.0;
 				wPrv = 0.0;
 				if ((pNext < ovU) && (rhoU >= 0.0)) {
@@ -1840,14 +1869,16 @@ voice_proc(
 		if (gRate < 0.0) {
 			gRate = 0.0;
 		}
-		prevG = grainPhs;
-		grainPhs = fract(grainPhs + gRate);
-		wrapA = (grainPhs < prevG);
+		// (`prevG = grainPhs; grainPhs = ...` would make prevG follow the new value: a plain `a = b` is an alias in GenExpr, so
+		// the wrap was never seen and the grains kept the playhead position of the note start.)
+		grainNew = fract(grainPhs + gRate);
+		wrapA = (grainNew < grainPhs);
+		wrapB = (fract(grainNew + 0.5) < fract(grainPhs + 0.5));
+		grainPhs = grainNew;
 		if (wrapA) {
 			rndA = fract(rndA * 29.17 + 0.31 + vSeed * 0.07);
 		}
 		grainPhsB = fract(grainPhs + 0.5);
-		wrapB = (grainPhsB < fract(prevG + 0.5));
 		if (abs(grainPhs - 0.5) < gRate) {
 			rndB = fract(rndB * 37.91 + 0.19 + vSeed * 0.11);
 		}
@@ -2110,6 +2141,7 @@ Data brv(4096);
 Data prm(64);
 Data vst(6400);
 Data gtel(1024);
+Data gtout(72);
 Data vhist(4096);
 Data sext(12);
 Data vres(48);
@@ -2344,7 +2376,8 @@ poke(prm, srRatio, 54);
 prevLfoPhs = lfoPhs;
 lfoPhs = fract(lfoPhs + clip(lfo_rate, 0.02, 40) / srVal);
 if (lfoPhs < prevLfoPhs) {
-	lfoSH = fract(sin(scopeFrame * 12.9898 + 78.233) * 43758.5453) * 2.0 - 1.0;
+	shHash = sin(scopeFrame * 12.9898 + 78.233) * 43758.5453;
+	lfoSH = (shHash - floor(shHash)) * 2.0 - 1.0;
 }
 lfoSin = sin(6.28318530718 * lfoPhs);
 lfoTri = 1.0 - 4.0 * abs(fract(lfoPhs + 0.25) - 0.5);
@@ -2498,31 +2531,37 @@ if (scopeCount >= 64) {
 	poke(scope, numFrames, 38);
 	poke(scope, scopeFrame, 39);
 	// Grain lines (Textures / Fragments): the 32 loudest grains of all voices. 64..95 the read position in the whole sample
-	// (0..1, -1 unused), 96..127 the window level times the voice gain (0..1).
+	// (0..1, -1 unused), 96..127 the window level times the voice gain (0..1). gtout is the working copy (slots 0..31 position,
+	// 32..63 level): the weakest slot is replaced whenever a louder grain turns up.
 	for (gs = 0; gs < 32; gs += 1) {
-		poke(scope, -1, 64 + gs);
-		poke(scope, 0, 96 + gs);
+		poke(gtout, -1, gs);
+		poke(gtout, 0, 32 + gs);
 	}
-	gtMinL = 0;
-	gtMinI = 0;
+	poke(gtout, 0, 64);
+	poke(gtout, 0, 65);
 	for (gv = 0; gv < 16; gv += 1) {
 		for (gj = 0; gj < 32; gj += 1) {
 			gtP = peek(gtel, gv * 64 + gj);
 			gtL = peek(gtel, gv * 64 + 32 + gj);
-			if ((gtP >= 0) && (gtL > 0.0005) && (gtL > gtMinL)) {
-				poke(scope, gtP, 64 + gtMinI);
-				poke(scope, min(gtL, 1.0), 96 + gtMinI);
-				gtMinL = 2;
-				gtMinI = 0;
+			if ((gtP >= 0) && (gtL > 0.0005) && (gtL > peek(gtout, 64))) {
+				gtSlot = peek(gtout, 65);
+				poke(gtout, gtP, gtSlot);
+				poke(gtout, min(gtL, 1.0), 32 + gtSlot);
+				poke(gtout, 2, 64);
+				poke(gtout, 0, 65);
 				for (gs2 = 0; gs2 < 32; gs2 += 1) {
-					gtV = peek(scope, 96 + gs2);
-					if (gtV < gtMinL) {
-						gtMinL = gtV;
-						gtMinI = gs2;
+					gtV = peek(gtout, 32 + gs2);
+					if (gtV < peek(gtout, 64)) {
+						poke(gtout, gtV, 64);
+						poke(gtout, gs2, 65);
 					}
 				}
 			}
 		}
+	}
+	for (gs = 0; gs < 32; gs += 1) {
+		poke(scope, peek(gtout, gs), 64 + gs);
+		poke(scope, peek(gtout, 32 + gs), 96 + gs);
 	}
 	poke(scope, spawnSum, 48);
 	poke(scope, rootDynOn, 49);
