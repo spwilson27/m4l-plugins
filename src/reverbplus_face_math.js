@@ -1,29 +1,30 @@
-// Reverb+ face `c` ("Decay Waterfall") pure helpers: layout rectangles, band tables, perspective geometry,
-// RT60-per-band curve, waterfall history, expected-decay ghost, impulse-response spectrogram.
-// Prepended (after reverbplus_config.js + reverbplus_face_common.js) to scripts/reverbplus_layouts/c.py's face
-// script, and loaded by tests/test_reverbplus_face.js. No Max objects are touched at load time.
+// Reverb+ face (scripts/reverbplus_layouts/base.py, 444 x 169) pure helpers for the display v8ui (316 x 104, or 316 x 135 on the
+// Tail tab): layout rectangles, band tables, perspective geometry, RT60-per-band curve, waterfall history, expected-decay ghost,
+// impulse-response spectrogram, the Tone tab's EQ view (filter + decay curves and their draggable nodes), the Tail tab's drawn
+// value bars (scales, rows, hit test) and the tab / algorithm visibility rules that show / hide the live.* widgets under the
+// display. Prepended (after reverbplus_config.js + reverbplus_face_common.js) to the face script and loaded by
+// tests/test_reverbplus_face.js. No Max objects are touched at load time.
 
 var RC = { BANDS: 32, ROWS: 28, ROW_MS: 150, IR_ROWS: 28, F0: 40, FMAX: 18000 };
 
-// Plot geometry in the hero v8ui's own pixels (the v8ui is 340 x 161).
-var RCG = { x0: 6, x1: 334, cx: 170, yFront: 112, yBack: 72, hFront: 56, backScale: 0.55 };
+// Waterfall geometry in the display canvas's own pixels (the v8ui is 316 x 104).
+var RCG = { x0: 6, x1: 310, cx: 158, yFront: 79, yBack: 41, hFront: 34, backScale: 0.55 };
+
+// Tone page: EQ view rectangle, axis ranges.
+var RBT = { x0: 26, x1: 310, y0: 15, y1: 91, fLo: 20, fHi: 20000, dbMax: 15 };
 
 /**
- * Every hit / draw rectangle of the hero, from the v8ui size.
+ * Every hit / draw rectangle of the display, from the v8ui size (316 x 104).
  * @param {number} w
  * @param {number} h
  */
 function rcLayout(w, h) {
-    var icons = [];
-    for (var i = 0; i < 6; i++) icons.push({ id: "algo", index: i, x: 1 + i * 28, y: 0, w: 26, h: 15 });
     return {
-        icons: icons,
-        info: { x: 0, y: 17, w: w, h: 12 },
-        plot: { x: 0, y: 30, w: w, h: 91 },
-        strip: { x: RCG.x0, y: 122, w: RCG.x1 - RCG.x0, h: 28 },
-        browse: { id: "browse", x: w - 36, y: 150, w: 16, h: 11 },
-        clear: { id: "clear", x: w - 17, y: 150, w: 14, h: 11 },
-        pillMinX: 172,
+        info: { x: 0, y: 0, w: w, h: 11 },
+        plot: { x: 0, y: 12, w: w, h: 74 },
+        strip: { x: RCG.x0, y: 90, w: RCG.x1 - RCG.x0, h: 13 },
+        tone: { x: RBT.x0, y: RBT.y0, w: RBT.x1 - RBT.x0, h: RBT.y1 - RBT.y0 },
+        pillMinX: 150,
     };
 }
 
@@ -70,19 +71,6 @@ function rcBandX(b, s) {
 function rcFreqX(f, sr, s) {
     var xf = RCG.x0 + (RCG.x1 - RCG.x0) * rcFreqPos(f, sr);
     return RCG.cx + (xf - RCG.cx) * (s === undefined ? 1 : s);
-}
-
-/** Band under a click in the waterfall plot (inverse of the perspective at the click's depth). Always 0..31. */
-function rcHitBand(x, y) {
-    var t = rpClamp((RCG.yFront - y) / (RCG.yFront - RCG.yBack), 0, 1);
-    var s = rcRowGeom(t).s;
-    var xf = (x - RCG.cx) / s + RCG.cx;
-    return rpClamp(Math.floor((xf - RCG.x0) / (RCG.x1 - RCG.x0) * RC.BANDS), 0, RC.BANDS - 1);
-}
-
-/** Band under an x in the flat dry / wet strip. */
-function rcStripBand(x) {
-    return rpClamp(Math.floor((x - RCG.x0) / (RCG.x1 - RCG.x0) * RC.BANDS), 0, RC.BANDS - 1);
 }
 
 /** wet / dry level in dB (full-scale sine = 0) -> 0..1 for the surface. */
@@ -188,14 +176,6 @@ function rcGhost(hist, rt, hit, rowSec) {
     return out;
 }
 
-/** dB of one band over the history, oldest first. */
-function rcBandSeries(hist, b) {
-    var n = hist.rows.length;
-    var out = new Float32Array(n);
-    for (var i = 0; i < n; i++) out[i] = hist.rows[n - 1 - i][b];
-    return out;
-}
-
 // ---- impulse-response spectrogram (from the partition spectra the engine writes) --------------------------
 
 /** Per band bin range [k0, k1) of an rfft of `nfft` points (nbins = nfft / 2 + 1). */
@@ -266,11 +246,184 @@ function rcIrLevel01(db) {
     return rpClamp((db + 60) / 60, 0, 1);
 }
 
+// ---- Tone page: EQ view -----------------------------------------------------------------------------------------
+
+/** x (px) of a frequency in the EQ view. */
+function rbToneX(f) {
+    return RBT.x0 + (RBT.x1 - RBT.x0) * Math.log(rpClamp(f, RBT.fLo, RBT.fHi) / RBT.fLo) / Math.log(RBT.fHi / RBT.fLo);
+}
+
+/** Frequency at an x in the EQ view. */
+function rbToneF(x) {
+    var t = rpClamp((x - RBT.x0) / (RBT.x1 - RBT.x0), 0, 1);
+    return RBT.fLo * Math.pow(RBT.fHi / RBT.fLo, t);
+}
+
+/** y (px) of a dB value in the EQ view (zero in the middle, +-dbMax at the edges). */
+function rbToneY(db) {
+    var mid = (RBT.y0 + RBT.y1) / 2;
+    return mid - rpClamp(db, -RBT.dbMax, RBT.dbMax) / RBT.dbMax * (RBT.y1 - RBT.y0) / 2;
+}
+
+function rbToneDb(y) {
+    var mid = (RBT.y0 + RBT.y1) / 2;
+    return (mid - y) / ((RBT.y1 - RBT.y0) / 2) * RBT.dbMax;
+}
+
+/** Response (dB) of the output filters: 12 dB/oct high-pass at Low Cut and low-pass at High Cut (-3 dB at each cutoff). */
+function rbFilterDb(f, lowcut, highcut) {
+    return -10 * Math.log10(1 + Math.pow(lowcut / f, 4)) - 10 * Math.log10(1 + Math.pow(f / highcut, 4));
+}
+
+/** Decay speed (relative RT60, dB): the bass multiplier below the crossover and the HF damping shelf, as rcRt60Curve. */
+function rbDecayDb(f, bass, xover, damp) {
+    var ratio = function (g) { return 0.2 + 0.8 / (1 + Math.pow(g / damp, 2)); };
+    var wl = 1 / (1 + Math.pow(f / xover, 4));
+    var v = (1 + (bass - 1) * wl) * Math.min(1, ratio(f) / ratio(1000));
+    return 20 * Math.log10(Math.max(v, 1e-3));
+}
+
+/**
+ * The four draggable nodes (1 Low Cut, 2 High Cut on the filter curve; 3 HF Damp, 4 Bass on the decay curve).
+ * @param {{lowcut: number, highcut: number, damp: number, bassmult: number, xover: number}} p
+ * @param {boolean} bassOn  Bass Mult / Crossover apply to the algorithm
+ * @returns {Array<{id: number, key: string, f: number, db: number, decay: boolean}>}
+ */
+function rbNodes(p, bassOn) {
+    var bass = bassOn ? p.bassmult : 1;
+    var out = [
+        { id: 1, key: "lowcut", f: p.lowcut, db: -3, decay: false },
+        { id: 2, key: "highcut", f: p.highcut, db: -3, decay: false },
+        { id: 3, key: "damp", f: p.damp, db: rbDecayDb(p.damp, bass, p.xover, p.damp), decay: true },
+    ];
+    if (bassOn) out.push({ id: 4, key: "bassmult", f: p.xover, db: rbDecayDb(p.xover, p.bassmult, p.xover, p.damp), decay: true });
+    return out;
+}
+
+/** Index of the node under (x, y), the nearest one within r px, or -1. */
+function rbHitNode(nodes, x, y, r) {
+    var best = -1;
+    var bd = (r || 9) * (r || 9);
+    for (var i = 0; i < nodes.length; i++) {
+        var dx = rbToneX(nodes[i].f) - x, dy = rbToneY(nodes[i].db) - y;
+        var d = dx * dx + dy * dy;
+        if (d <= bd) { bd = d; best = i; }
+    }
+    return best;
+}
+
+/** Parameter values a drag of `node` to (x, y) writes: {key: value}. */
+function rbNodeDrag(node, x, y) {
+    var f = rbToneF(x);
+    if (node.key === "lowcut") return { lowcut: rpClamp(f, 20, 1000) };
+    if (node.key === "highcut") return { highcut: rpClamp(f, 1000, 20000) };
+    if (node.key === "damp") return { damp: rpClamp(f, 1000, 20000) };
+    // Bass node: x = Crossover, y = decay at the crossover. The weight at the crossover is 0.5, so v = (1 + bass) / 2.
+    var v = Math.pow(10, rbToneDb(y) / 20);
+    return { xover: rpClamp(f, 100, 1000), bassmult: rpClamp(2 * v - 1, 0.25, 4) };
+}
+
+// ---- Tail tab: drawn value bars -----------------------------------------------------------------------------------
+
+// Parameter scales (lo, hi, exponent: value = lo + (hi - lo) * pos^exp, like the live.* objects) and defaults of the parameters the
+// Tail tab draws as bars; tests/test_reverbplus_face.js compares them with the build's parameter table.
+var REP = {
+    modrate: [0.05, 5, 3, 0.6], moddepth: [0, 100, 1, 25], erlevel: [-70, 6, 1, 0], latelevel: [-70, 6, 1, 0],
+    duck: [0, 100, 1, 0], duckrel: [10, 2000, 3, 250], output: [-36, 12, 1, 0], looplevel: [-18, 6, 1, 0],
+};
+
+/** Parameter value -> 0..1 bar position. */
+function rcPos(key, v) {
+    var e = REP[key];
+    return rpClamp(Math.pow(rpClamp((v - e[0]) / (e[1] - e[0]), 0, 1), 1 / e[2]), 0, 1);
+}
+
+/** 0..1 bar position -> parameter value. */
+function rcVal(key, pos) {
+    var e = REP[key];
+    return e[0] + (e[1] - e[0]) * Math.pow(rpClamp(pos, 0, 1), e[2]);
+}
+
+/** Text of a Tail-tab value. */
+function rcFormatTail(key, v) {
+    if (key === "modrate") return v.toFixed(2) + " Hz";
+    if (key === "moddepth" || key === "duck") return v.toFixed(0) + " %";
+    if (key === "duckrel") return rpFormatMs(v);
+    if (key === "erlevel" || key === "latelevel") return v <= -69.9 ? "Off" : (v > 0 ? "+" : "") + v.toFixed(1) + " dB";
+    return (v > 0 ? "+" : "") + v.toFixed(1) + " dB";
+}
+
+/**
+ * Layout of the Tail tab in the 316 x 135 canvas: group titles (each with a hairline), value bars and the Clip Mode chips,
+ * two columns split by a divider. Modulation, Levels | Ducking, Clip.
+ * @param {number} w
+ */
+function rbTailLayout(w) {
+    var colA = 6, colB = 166, lw = 44, bw = 100;
+    var rows = [], titles = [];
+    function title(text, x, y) { titles.push({ text: text, x: x, y: y, w: lw + 4 + bw }); }
+    function bar(key, label, x, y) { rows.push({ key: key, label: label, kind: "bar", x: x + lw + 4, y: y, w: bw, h: 12, lx: x, ly: y }); }
+    title("MODULATION", colA, 14); bar("modrate", "Rate", colA, 30); bar("moddepth", "Depth", colA, 45);
+    title("LEVELS", colA, 65); bar("erlevel", "Early", colA, 80); bar("latelevel", "Late", colA, 95); bar("output", "Output", colA, 110);
+    title("DUCKING", colB, 14); bar("duck", "Amount", colB, 30); bar("duckrel", "Release", colB, 45);
+    title("CLIP", colB, 65); bar("looplevel", "Level", colB, 80);
+    rows.push({ key: "loopclip", label: "Mode", kind: "chips", x: colB + lw + 4, y: 95, w: bw, h: 12, lx: colB, ly: 95 });
+    return { rows: rows, titles: titles, div: { x: 160, y0: 16, y1: 122 }, led: { x: colB + lw + 4 + bw - 7, y: 66 }, hint: { x: 6, y: 131 } };
+}
+
+/** Hit test of the Tail tab: {key, chip} (chip -1 for a bar) or null. */
+function rbTailHit(w, x, y) {
+    var T = rbTailLayout(w);
+    for (var i = 0; i < T.rows.length; i++) {
+        var r = T.rows[i];
+        if (!rcInRect({ x: r.x, y: r.y - 1, w: r.w, h: r.h + 2 }, x, y)) continue;
+        if (r.kind === "chips") return { key: r.key, chip: rpClamp(Math.floor((x - r.x) / (r.w / 3)), 0, 2) };
+        return { key: r.key, chip: -1 };
+    }
+    return null;
+}
+
+// ---- tab / algorithm visibility ----------------------------------------------------------------------------------
+
+/**
+ * Which groups of live.* widgets (and hairlines / labels) under the display are visible for a tab (0 Reverb, 1 Tone, 2 Tail) and
+ * an algorithm. The layout (scripts/reverbplus_layouts/base.py) wires one `route g_<name>` -> `prepend hidden` per group.
+ * `decay` / `irdecay` are the left column's second dial (Decay, or IR Decay in Convolution); `lcdsep` is the hairline above the
+ * LCD row (the Tail tab uses that space).
+ * @param {number} page
+ * @param {number} algo
+ * @returns {{[group: string]: boolean}}
+ */
+function rbVis(page, algo) {
+    var off = RP_INACTIVE[algo];
+    var on = function (k) { return off.indexOf(k) < 0; };
+    return {
+        rev: page === 0,
+        tank: page === 0 && on("size"),
+        ir: page === 0 && on("irstretch"),
+        tone: page === 1,
+        tonebass: page === 1 && on("bassmult"),
+        freeze: on("freeze"),
+        decay: on("decay"),
+        irdecay: on("irdecay"),
+        lcdsep: page !== 2,
+    };
+}
+
+var RB_GROUPS = ["rev", "tank", "ir", "tone", "tonebass", "freeze", "decay", "irdecay", "lcdsep"];
+
+/** The display is taller on the Tail tab (it takes the LCD row's space). */
+function rbTall(page) {
+    return page === 2;
+}
+
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
-        RC, RCG, rcLayout, rcInRect, rcBandEdges, rcBandHz, rcFreqPos, rcRowGeom, rcBandX, rcFreqX, rcHitBand, rcStripBand, rcLevel01,
-        rcRt60Curve, rcHistNew, rcHistPush, rcRowSec, rcFindHit, rcGhost, rcBandSeries, rcIrMap, rcIrPsd, rcIrNew, rcIrAdd, rcIrFinish,
+        RC, RCG, rcLayout, rcInRect, rcBandEdges, rcBandHz, rcFreqPos, rcRowGeom, rcBandX, rcFreqX, rcLevel01,
+        rcRt60Curve, rcHistNew, rcHistPush, rcRowSec, rcFindHit, rcGhost, rcIrMap, rcIrPsd, rcIrNew, rcIrAdd, rcIrFinish,
         rcIrLevel01, rcTotalDb,
+        RBT, rbToneX, rbToneF, rbToneY, rbToneDb, rbFilterDb, rbDecayDb, rbNodes, rbHitNode, rbNodeDrag, rbVis, RB_GROUPS, rbTall,
+        REP, rcPos, rcVal, rcFormatTail, rbTailLayout, rbTailHit,
     };
 }

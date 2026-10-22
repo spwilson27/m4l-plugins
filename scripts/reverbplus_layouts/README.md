@@ -3,16 +3,16 @@
 A *layout* is the face of a Reverb+ Start device: where every parameter's widget sits, which display `v8ui`s draw
 the telemetry, and the device width. The build (`scripts/build_reverbplus.py`) supplies everything that is not
 visual: the engine `v8ui` (parameter store, link layer, deferred gen~, IR pipeline), the gen hub, `plugin~` /
-`plugout~`, buffers, `live.thisdevice`, all routing and the state bus. The shipped face is `base.py` ("Decay Waterfall", chosen from five prototypes). An alternative face adds only its own files
+`plugout~`, buffers, `live.thisdevice`, all routing and the state bus. The shipped face is `base.py` ("Hybrid tabs", 444 x 169, chosen from prototypes; section 27 of AGENTS.md describes it). An alternative face adds only its own files
 and needs no edit to `build_reverbplus.py`, `src/reverbplus_config.js` or `tests/test_reverbplus.js`:
 
 | file | what |
 |---|---|
 | `scripts/reverbplus_layouts/<x>.py` | the layout module (this contract). `base` (the shipped face) -> `Reverb+`; any other name `<x>` -> device `Reverb+ <X>` |
 | `src/reverbplus_face*.js` | the face script(s), loaded after the prelude (below) |
-| `tsconfig.reverbplus-<name>.json` | type-check group: `src/types/max-extras.d.ts`, `src/types/reverbplus.d.ts`, `src/reverbplus_config.js`, `src/reverbplus_face_common.js`, your face files (copy `tsconfig.reverbplus-face.json`). Required: `npm run typecheck` picks up every `tsconfig.*.json`. |
-| `tests/test_reverbplus_face.js` | your own tests (auto-run by `tests/test_reverbplus.js`) |
-| `previews/reverb.png` | `python3 scripts/render_preview.py "devices/Reverb+.amxd"` (slug = lower-cased device name) |
+| `tsconfig.reverbplus-<name>.json` | type-check group: `src/types/max-extras.d.ts`, `src/types/reverbplus.d.ts`, `src/reverbplus_config.js`, `src/reverbplus_face_common.js`, your face files (copy `tsconfig.reverbplus-face.json`; the shipped face has one group per script because the hook names `paint` / `onclick` clash: `-face`, `-face-ir`). Required: `npm run typecheck` picks up every `tsconfig.*.json`. |
+| `tests/test_reverbplus_face.js` | your own tests (`tests/test_reverbplus.js` also runs every `tests/test_reverbplus_face_<x>.js`; the shipped face's is in the gate) |
+| `previews/reverb.png` | `python3 scripts/render_preview.py "devices/Reverb+.amxd"` (slug = lower-cased device name). The shipped face also has `reverb_tone.png`, `reverb_tail.png`, `reverb_conv.png`: `RC_PAGE=<0..2> RC_ALGO=<0..5>` at build AND render time, e.g. `RC_PAGE=2 python3 scripts/build_reverbplus.py --no-sets --out-dir /tmp/x && RC_PAGE=2 python3 scripts/render_preview.py /tmp/x/Reverb+.amxd _tail` |
 
 Build / gate:
 ```bash
@@ -20,7 +20,7 @@ npm run -s typecheck && python3 scripts/build_reverbplus.py && node tests/test_r
   && python3 scripts/render_preview.py "devices/Reverb+.amxd"     # then look at previews/reverb.png (AGENTS.md rule 3)
 ```
 `node tests/test_reverbplus.js` builds EVERY module found here into a temp dir and checks the contract for each.
-`python3 scripts/build_reverbplus.py --all` builds every layout. `--out-dir <dir>` builds elsewhere.
+`python3 scripts/build_reverbplus.py --variant <x>` builds one extra layout (default: `base`). `--out-dir <dir>` builds elsewhere, `--no-sets` skips the Live test set.
 
 ## `layout(h)` -> dict
 
@@ -61,17 +61,18 @@ Script = `src/reverbplus_config.js` + `src/reverbplus_face_common.js` (the *prel
   Subscribed keys only: list every key you read in `keys`.
 * **Parameters out:** `rpSend(key, value)` drives the parameter's `live.*` object (undo / automation / echo to every face). Works for any key,
   subscribed or not, on-face or `off_face`. `rpCmd("browse_ir")` / `rpCmd("clear_ir")` for the IR file.
-* **Telemetry:** `rpPoll(fps)` starts a Task that reads buffer `---rpscope` (layout `RP_SCOPE` in `src/reverbplus_config.js`:
-  header scalars `FRAMES..WAVE_HEAD`, 16 tank-line energies `LINES`, 16 early reflections `ER` (time ms, gain), the 256-entry decay ring
-  `DECAY` (wet RMS dB per 512 samples) with `DECAY_HEAD`, the 256-block min/max waveform ring `WAVE` with `WAVE_HEAD`, `RT60_*`, IR flags)
-  into `rpT.s` and calls `onFrame(rpT)` when the gen's frame counter moved (`rpT.active` = signal seen in the last ~3 s; redraw
-  only then). `rpDecayOrdered(s)`, `rpEstimateRt60(...)` are in the config. Other buffers by name through `rpBuf(rpNames.spec | irview)`:
-  `---rpspec` (wet / dry rings of 4096, `rpSpectrum32(buf, RP_SPEC.WET | RP_SPEC.DRY)` gives 32 log bands in dB) and `---rpirview`
-  (processed IR: 512-point dB envelope at 16.., 512 min/max pairs at 528.., see `reverbplus_face.js` IR spectrogram code).
+* **Telemetry:** `rpPoll(fps)` starts a Task that reads buffer `---rpscope` (layout `RP_SCOPE` in `src/reverbplus_config.js`, 64 samples: frame counter,
+  sr, algorithm, freeze, paired, `B` / `L` / `K`, `MIN_MS`, `LOOP_MS`, `PREDELAY_MS`, `CLAMPED`, peaks `IN_PK` / `WET_PK` / `RET_PK`, `CLIP_DB`, `RT60_LO` /
+  `RT60_MID` / `RT60_HI` (theoretical), IR flags, `ASLEEP`, the derived loop `LOOP_GAIN` / `TANK_RT`) into `rpT.s` and calls `onFrame(rpT)` when the gen's
+  frame counter moved (`rpT.active` = signal seen in the last ~3 s; nothing happens while idle). The prelude redraws after `onFrame` unless it
+  returns `false`: a face that does not need every frame (the shipped Tone / Tail tabs) returns `false` when nothing it shows changed. Other buffers
+  by name through `rpBuf(rpNames.spec | irview)`: `---rpspec` (wet / dry rings of 4096, `rpSpectrum32(buf, RP_SPEC.WET | RP_SPEC.DRY)` gives 32 log
+  bands in dB; run it only while the spectrum is shown) and `---rpirview` (processed IR: 512-point dB envelope at 16.., 512 min/max pairs at 528..,
+  see `reverbplus_face.js` IR spectrogram code).
 * **State:** `rpState.dsp {ready, error}`, `rpState.link {paired, status, latency, partner}`, `rpState.ir {status idle|loading|processing|ready|error, loaded,
-  len, sr, channels, srMismatch, name}` (the engine broadcasts them; define `onState(kind)` for changes). `rpHeaderPills()` / `rpDrawHeader(w, y)`
-  give the standard status pills (DSP loading / failed, no End, loop MIN, IR status).
-* **Drawing:** `rpRefreshTheme()` (call in `paint`), `RPC` palette, `rpColor`, `rpText`, `rpTextW`, `rpPill`, `rpDb01`.
+  len, sr, channels, srMismatch, name}` (the engine broadcasts them; define `onState(kind)` for changes). `rpHeaderPills()` gives the standard status pills
+  (DSP loading / failed, no End, `LATENCY: LOOP <min>`, IR status) to draw yourself.
+* **Drawing:** `rpRefreshTheme()` (call in `paint`), `RPC` palette, `rpColor`, `rpText`, `rpTextW`, `rpPill`.
 * **Preview:** define `preview()` (scripts/render_preview.py calls it before `paint()`); `rpPreviewBase(algo, rt60)` fills a representative state and
   a synthetic scope (`rpFakeScope`).
 * Define `paint()`. Start the script with nothing else needed: the prelude already has `inlets`, `outlets`, `mgraphics.init(); relative_coords = 0; autofill = 0`.
@@ -85,8 +86,8 @@ the device. The build wires `set_<key>` to the engine and to every v8ui that lis
 
 ### Parameters (the base table `P` in `scripts/build_reverbplus.py`)
 
-`algo predelay size decay diffusion damp bassmult xover modrate moddepth erlevel latelevel lowcut highcut width freeze loop looptime loopclip looplevel duck duckrel
-drywet output irstretch irstart irreverse irdecay irfile`. `irfile` is the `live.drop` (`h.irdrop(x, y, w, h, hidden=0, ignoreclick=0)`): exactly one, parameter mode,
+`algo predelay size decay diffusion damp bassmult xover modrate moddepth erlevel latelevel lowcut highcut width freeze loopclip looplevel duck duckrel
+drywet output irstretch irstart irreverse irdecay irfile input`. `irfile` is the `live.drop` (`h.irdrop(x, y, w, h, hidden=0, ignoreclick=0)`): exactly one, parameter mode,
 Live saves its path and replays it on load (the engine loads it). A layout may draw its own IR drop area and keep the live.drop transparent over it (`ignoreclick` face).
 Parameters that do not apply to the algorithm: `RP_INACTIVE` in the config (`rpActive`).
 
@@ -95,4 +96,6 @@ Parameters that do not apply to the algorithm: `RP_INACTIVE` in the config (`rpA
 The engine also listens on `receive #0-rptest` (the MCP bridge: `messnamed("#0-rptest", ...)`): `dropfile <path>` loads an IR, `test_report` writes
 `Global("reverbplus_test").report_<LOM device id>` (DSP, link, IR, header). `scripts/test_reverbplus_live.js` uses it.
 
-`base.py` is the worked example (the shipped waterfall face); `src/reverbplus_face.js` the shipped face.
+`base.py` is the worked example (the shipped face); `src/reverbplus_face.js` (display), `src/reverbplus_face_math.js` (pure helpers), and `src/reverbplus_face_ir.js` (IR box) are its scripts. It uses the optional `preamble`, `hidden` and `ignoreclick` entries of a `v8ui`, `h.register` for its Tab parameter, and `presentation_rect` messages (a `msgbox` into the display) to grow the display on the Tail tab.
+
+Note: the chain loop's time and gain are derived by the Start (AGENTS.md section 27); there are no `Loop` / `Loop Time` parameters. A face that wants them reads the Start's telemetry (`RP_SCOPE.LOOP_MS`, `LOOP_GAIN`, `TANK_RT`); the shipped face shows none of it except the `LATENCY` pill.

@@ -1,8 +1,8 @@
-// Reverb+ face `b`: the Convolution IR box under the display (scripts/reverbplus_layouts/b.py), two tiny v8uis sharing
+// Reverb+ face: the Convolution IR box under the display (scripts/reverbplus_layouts/base.py), two tiny v8uis sharing
 // this script; the layout prepends `var RBI_MODE = "name" | "btn"`.
-//   name  66 x 15, ignoreclick: the impulse response's file name in a dark field (the transparent live.drop `IR File`
+//   name  52 x 15, ignoreclick: the impulse response's file name in a dark field (the transparent live.drop `IR File`
 //         sits in front of it and takes the dropped file); amber hint / status text while there is none
-//   btn   30 x 15: folder glyph = browse (rpCmd browse_ir), x = clear (rpCmd clear_ir)
+//   btn   26 x 15: folder glyph = browse (rpCmd browse_ir), x = clear (rpCmd clear_ir)
 // Build order: config + face_common + this file.
 
 function rbiFit(str, w, size) {

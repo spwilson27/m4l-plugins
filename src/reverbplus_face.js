@@ -1,49 +1,60 @@
-// Reverb+ face `c` ("Decay Waterfall", scripts/reverbplus_layouts/c.py): one analysis display.
-//   icons    six vector glyphs (plate, hall arch, room box, chamber, spring coil, convolution waveform) = the
-//            Algorithm parameter (click -> rpSend("algo", i))
-//   plot     pseudo-3D waterfall of the WET spectrum (32 log bands, newest row in front, older rows receding in
-//            perspective), coloured by level; an amber ghost shows the decay the settings predict (RT60 per band
-//            from the telemetry, bass multiplier / crossover / HF damping) from the loudest moment; click or drag
-//            picks a band and its RT60 (set / measured). Convolution: the impulse response's spectrogram is
-//            drawn behind (computed once from the processed IR's partition spectra).
-//   strip    dry vs wet spectrum overlay
-//   footer   pre-delay, loop time, FROZEN, clip LED; in Convolution the IR name and browse / clear buttons
-// Freeze tints the plot and stops it scrolling. Build order: config + face_common + face_c_math + this file.
+// Reverb+ face (scripts/reverbplus_layouts/base.py, 444 x 169): the display of a Hybrid-Reverb-style device.
+//   canvas   316 x 104 (316 x 135 on the Tail tab, it takes over the LCD row's space), between the tabs [Reverb | Tone | Tail]
+//            (a hidden-state live.tab above it) and the LCD row of real live.* widgets below
+//   tab 0    Reverb: the decay waterfall (pseudo-3D wet spectrum, amber predicted-decay ghost, dry / wet strip;
+//            Convolution: the impulse response's spectrogram behind it). The LCD row under the display is Algorithm,
+//            Size / Diffusion (tank) or the IR box, IR Start / Stretch / Reverse (Convolution).
+//   tab 1    Tone: an EQ-style view. Cyan = output filters (Low Cut, High Cut), amber = how fast the tail decays per
+//            frequency (Bass Mult below the Crossover, HF Damping shelf). Four draggable numbered nodes; double-click resets.
+//   tab 2    Tail: nine rarely used parameters as drawn value bars / chips (Mod Rate / Depth, Early, Late, Output, Ducking
+//            Amount / Release, Clip Level / Mode) driving off-face live.* parameters through rpSend, plus the clip LED.
+// Show / hide of the widgets under the display: outlet 1 sends `g_<group> <0|1>` (1 = hide) per group, see rbVis, and
+// `viz_tall <0|1>` (the canvas grows on the Tail tab).
+// Build order: config + face_common + face_math + this file.
 
-outlets = 2; // 0 = parameter / command stream (prelude), 1 = hide_tank / hide_ir flags for the swap block
+outlets = 2; // 0 = parameter / command stream (prelude), 1 = g_<group> hide flags and viz_tall for the layout's wiring
 
 var RCS = {
     hist: rcHistNew(),
     wet: new Float32Array(RC.BANDS).fill(-120),
     dry: new Float32Array(RC.BANDS).fill(-120),
-    band: -1, drag: false, lastPush: 0, clipAt: 0, now: 0,
+    lastPush: 0, clipAt: 0, now: 0, sig: "",
     irRows: null, irVer: -1, irLen: 0, irBusy: null, irName: "",
-    hideTank: -1, hideIr: -1,
+    node: -1, hover: -1, tailDrag: "", last: {},
 };
 
 rpPoll(20);
 
 // ---- parameters / state -------------------------------------------------------------------------------------
 
-/** Hide the tank-only bars (Size, Diffusion, Mod) and show the IR bars in Convolution, and back. */
-function rcEmitSwap() {
-    var conv = rpAlgo() === RP_ALGO.CONV;
-    var ht = conv ? 1 : 0;
-    var hi = conv ? 0 : 1;
-    if (ht !== RCS.hideTank) { RCS.hideTank = ht; outlet(1, "hide_tank", ht); }
-    if (hi !== RCS.hideIr) { RCS.hideIr = hi; outlet(1, "hide_ir", hi); }
+function rbPage() {
+    return rpIndex(rpNum("page", 0), 3);
+}
+
+/** Show / hide the groups of widgets under the display for the current page and algorithm (only what changed). */
+function rbEmitVis() {
+    var v = rbVis(rbPage(), rpAlgo());
+    for (var i = 0; i < RB_GROUPS.length; i++) {
+        var g = RB_GROUPS[i];
+        var hide = v[g] ? 0 : 1;
+        if (RCS.last[g] !== hide) { RCS.last[g] = hide; outlet(1, "g_" + g, hide); }
+    }
+    var tall = rbTall(rbPage()) ? 1 : 0;
+    if (RCS.last.tall !== tall) { RCS.last.tall = tall; outlet(1, "viz_tall", tall); }
 }
 
 function onParam(key) {
-    if (key === "algo") {
-        rcEmitSwap();
-        if (rpAlgo() === RP_ALGO.CONV) rcIrEnsure();
+    if (key === "algo" || key === "page") {
+        rbEmitVis();
+        if (key === "algo" && rpAlgo() === RP_ALGO.CONV) rcIrEnsure();
+        RCS.node = -1;
+        RCS.tailDrag = "";
     }
 }
 
 function onState(kind) {
     if (kind === "ir") rcIrEnsure();
-    rcEmitSwap();
+    rbEmitVis();
 }
 
 function rcFrozen() {
@@ -52,7 +63,6 @@ function rcFrozen() {
 }
 
 // ---- telemetry -> history -----------------------------------------------------------------------------------
-
 function rcSmooth(dst, src) {
     for (var i = 0; i < RC.BANDS; i++) {
         var v = Math.max(src[i], -120);
@@ -75,13 +85,29 @@ function rcSample(nowMs) {
     }
 }
 
+/**
+ * Telemetry poll (20 fps, only while the device is not idle). Only the Reverb tab needs the two 4096-point FFTs and the
+ * waterfall history; the Tone tab is drawn from parameters alone and the Tail tab only follows the clip LED, so those
+ * redraw (return true) only when something they show changed. Leaving the Reverb tab drops the history (its time stamps
+ * would span the gap when the tab comes back).
+ */
 function onFrame(t) {
-    if (!t.active) return;
+    if (!t.active) return false;
     var now = Date.now();
     RCS.now = now;
     var s = t.s;
     if (s && s[RP_SCOPE.CLIP_DB] < -0.1) RCS.clipAt = now;
-    rcSample(now);
+    var page = rbPage();
+    if (page === 0) {
+        RCS.sig = "";
+        rcSample(now);
+        return true;
+    }
+    if (RCS.hist.rows.length) { RCS.hist = rcHistNew(); RCS.lastPush = 0; }
+    var sig = (now - RCS.clipAt < 1700 ? 1 : 0) + "|" + (s ? s[RP_SCOPE.CLAMPED] + "|" + s[RP_SCOPE.MIN_MS] + "|" + s[RP_SCOPE.PAIRED] : "");
+    if (sig === RCS.sig) return false;
+    RCS.sig = sig;
+    return true;
 }
 
 // ---- impulse-response spectrogram (once per processed IR, in chunks) --------------------------------------------
@@ -162,75 +188,6 @@ function rcRamp(v, frozen) {
 function rcRampIr(v) {
     var dark = [0.16, 0.12, 0.30, 1];
     return rcMix(dark, RPC.violet, Math.min(1, v * 1.1));
-}
-
-// ---- icons -----------------------------------------------------------------------------------------------------
-
-function rcArc(cx, cy, r, a0, a1) {
-    var n = 10;
-    for (var i = 0; i <= n; i++) {
-        var a = a0 + (a1 - a0) * i / n;
-        var px = cx + r * Math.cos(a), py = cy + r * Math.sin(a);
-        if (i === 0) mgraphics.move_to(px, py);
-        else mgraphics.line_to(px, py);
-    }
-}
-
-function rcIcon(i, cx, cy, c) {
-    rpColor(c);
-    mgraphics.set_line_width(1.2);
-    var k;
-    if (i === RP_ALGO.PLATE) {
-        mgraphics.move_to(cx - 8, cy + 3.5); mgraphics.line_to(cx - 4, cy - 4); mgraphics.line_to(cx + 8, cy - 4);
-        mgraphics.line_to(cx + 4, cy + 3.5); mgraphics.close_path(); mgraphics.stroke();
-        mgraphics.move_to(cx - 3, cy + 1); mgraphics.line_to(cx + 2, cy - 2); mgraphics.stroke();
-    } else if (i === RP_ALGO.HALL) {
-        mgraphics.move_to(cx - 7, cy + 5); mgraphics.line_to(cx - 7, cy - 0.5);
-        rcArc(cx, cy - 0.5, 7, Math.PI, 2 * Math.PI);
-        mgraphics.line_to(cx + 7, cy + 5); mgraphics.stroke();
-        mgraphics.move_to(cx - 3, cy + 5); mgraphics.line_to(cx - 3, cy + 1);
-        rcArc(cx, cy + 1, 3, Math.PI, 2 * Math.PI);
-        mgraphics.line_to(cx + 3, cy + 5); mgraphics.stroke();
-    } else if (i === RP_ALGO.ROOM) {
-        mgraphics.rectangle(cx - 8, cy - 1, 10, 6); mgraphics.stroke();
-        mgraphics.rectangle(cx - 3, cy - 5, 10, 6); mgraphics.stroke();
-        mgraphics.move_to(cx - 8, cy - 1); mgraphics.line_to(cx - 3, cy - 5);
-        mgraphics.move_to(cx + 2, cy - 1); mgraphics.line_to(cx + 7, cy - 5);
-        mgraphics.move_to(cx + 2, cy + 5); mgraphics.line_to(cx + 7, cy + 1); mgraphics.stroke();
-    } else if (i === RP_ALGO.CHAMBER) {
-        mgraphics.rectangle_rounded(cx - 8, cy - 5, 16, 10, 4, 4); mgraphics.stroke();
-        mgraphics.rectangle_rounded(cx - 4, cy - 2, 8, 4, 2, 2); mgraphics.stroke();
-        mgraphics.move_to(cx - 8, cy); mgraphics.line_to(cx - 4, cy); mgraphics.stroke();
-    } else if (i === RP_ALGO.SPRING) {
-        mgraphics.move_to(cx - 8, cy);
-        for (k = 1; k <= 24; k++) {
-            var t = k / 24;
-            mgraphics.line_to(cx - 8 + 16 * t + 1.5 * Math.cos(t * 6 * Math.PI) - 1.5, cy + 4.5 * Math.sin(t * 6 * Math.PI));
-        }
-        mgraphics.stroke();
-    } else {
-        for (k = 0; k < 7; k++) {
-            var a = 8.5 * Math.exp(-k * 0.42) * (k % 2 ? 0.8 : 1);
-            var x = cx - 8 + k * 2.6;
-            mgraphics.move_to(x, cy - a / 2); mgraphics.line_to(x, cy + a / 2);
-        }
-        mgraphics.stroke();
-    }
-}
-
-function rcDrawIcons(L, algo) {
-    for (var i = 0; i < 6; i++) {
-        var r = L.icons[i];
-        var on = i === algo;
-        if (on) {
-            rpPill(r.x, r.y, r.w, r.h, RPC.cyan, 0.24);
-            rpColor(RPC.cyan, 0.9);
-            mgraphics.set_line_width(1);
-            mgraphics.rectangle_rounded(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, r.h, r.h);
-            mgraphics.stroke();
-        }
-        rcIcon(i, r.x + r.w / 2, r.y + r.h / 2, on ? RPC.text : RPC.dim);
-    }
 }
 
 // ---- plot ------------------------------------------------------------------------------------------------------
@@ -327,27 +284,6 @@ function rcDrawGhost(hist, rt, hit, rowSec) {
     }
 }
 
-function rcDrawRibbon(hist, b) {
-    var n = hist.rows.length;
-    if (n < 2) return;
-    mgraphics.move_to(0, 0);
-    for (var r = 0; r < n; r++) {
-        var g = rcRowGeom(r / (n - 1));
-        var x = rcBandX(b, g.s), y = g.base - rcLevel01(hist.rows[r][b]) * g.hmax;
-        if (r === 0) mgraphics.move_to(x, y);
-        else mgraphics.line_to(x, y);
-    }
-    rpColor(RPC.text, 0.95);
-    mgraphics.set_line_width(1.5);
-    mgraphics.stroke();
-    var g0 = rcRowGeom(0);
-    mgraphics.move_to(rcBandX(b, 1), g0.base + 1);
-    mgraphics.line_to(rcBandX(b, 1), g0.base + 5);
-    rpColor(RPC.text, 0.95);
-    mgraphics.set_line_width(1.5);
-    mgraphics.stroke();
-}
-
 function rcRtInfo() {
     var s = rpT.s;
     var sr = (s && s[RP_SCOPE.SR]) || 48000;
@@ -359,15 +295,6 @@ function rcRtInfo() {
         t = { lo: bands.low, mid: bands.mid, hi: bands.high };
     }
     return { t: t, sr: sr, curve: rcRt60Curve(t, { conv: algo === RP_ALGO.CONV, damp: rpNum("damp", 7000), xover: rpNum("xover", 350) }, sr) };
-}
-
-function rcMeasured(hist, b, sr) {
-    if (hist.rows.length < 8) return null;
-    return rpEstimateRt60(rcBandSeries(hist, b), rcRowSec(hist) * sr, sr);
-}
-
-function rcFmtHz(f) {
-    return f >= 1000 ? (f / 1000).toFixed(f >= 10000 ? 1 : 2) + "k" : f.toFixed(0);
 }
 
 function rcDrawPlot(L, w, algo, frozen, info) {
@@ -387,7 +314,7 @@ function rcDrawPlot(L, w, algo, frozen, info) {
     if (n >= 2) {
         for (r = n - 1; r >= 0; r--) rcDrawRow(hist.rows[r], r, n, rcLevel01, function (v) { return rcRamp(v, frozen); }, !irOn, true, 1, r < 8);
     } else if (!(conv && !rpState.ir.loaded)) {
-        rpText("play audio into the device", w * 0.5 - 48, 78, 8.5, RPC.dim, true);
+        rpText("play audio into the device", w * 0.5 - 48, 52, 8.5, RPC.dim, true);
     }
     if (frozen) {
         rpColor([0.55, 0.82, 1, 1], 0.07);
@@ -398,28 +325,20 @@ function rcDrawPlot(L, w, algo, frozen, info) {
         var hit = rcFindHit(hist);
         if (hit > 0) {
             rcDrawGhost(hist, info.curve, hit, rcRowSec(hist));
-            rpColor(RPC.amber, 0.95);
-            mgraphics.set_line_width(1.2);
-            mgraphics.move_to(6, 41); mgraphics.line_to(16, 41); mgraphics.stroke();
-            rpText("predicted decay", 19, 43.5, 7, RPC.amber, true);
         }
     }
-    if (RCS.band >= 0 && n >= 2) rcDrawRibbon(hist, RCS.band);
     if (conv && !rpState.ir.loaded) {
-        var msg = rpState.ir.status === "loading" || rpState.ir.status === "processing" ? "loading impulse response…" : "click to load an impulse response";
-        rpText(msg, w * 0.5 - 58, 78, 8.5, RPC.dim, true);
+        var msg = rpState.ir.status === "loading" || rpState.ir.status === "processing" ? "loading impulse response…" : "drop an impulse response on the IR box below";
+        rpText(msg, w * 0.5 - 68, 52, 8.5, RPC.dim, true);
     } else if (conv && !RCS.irRows) {
-        rpText("analysing impulse response…", w * 0.5 - 58, 56, 8, RPC.dim, true);
+        rpText("analysing impulse response…", w * 0.5 - 58, 40, 8, RPC.dim, true);
     }
-    // axis
     var ticks = [[100, "100"], [1000, "1k"], [10000, "10k"]];
-    for (var i = 0; i < ticks.length; i++) rpText(ticks[i][1], rcFreqX(ticks[i][0], sr, 1) - 5, 120, 7, RPC.dim);
-    var rowSec = rcRowSec(hist);
-    if (conv && RCS.irRows) {
-        rpText("IR " + rpFormatSec(RCS.irLen / (RCS.irSr || sr)), w - 48, 38, 7, RPC.dim);
-    } else {
-        rpText("now", w - 20, 120, 7, RPC.dim);
-        rpText("back -" + rpFormatSec(rowSec * (RC.ROWS - 1)), w - 58, 38, 7, RPC.dim);
+    for (var i = 0; i < ticks.length; i++) rpText(ticks[i][1], rcFreqX(ticks[i][0], sr, 1) - 5, 86.5, 7, RPC.dim);
+    if (conv && RCS.irRows) rpText("IR " + rpFormatSec(RCS.irLen / (RCS.irSr || sr)), w - 48, 21, 7, RPC.dim);
+    if (frozen) {
+        rpPill(w - 56, 24, 48, 11, [0.55, 0.82, 1, 1], 0.22);
+        rpText("FROZEN", w - 50, 32, 7.5, [0.7, 0.9, 1, 1], true);
     }
 }
 
@@ -446,92 +365,192 @@ function rcDrawStrip(L, info) {
         mgraphics.set_line_width(1.1);
         mgraphics.stroke();
     }
-    if (RCS.band >= 0) {
-        rpColor(RPC.text, 0.16);
-        mgraphics.rectangle(S.x + S.w * RCS.band / RC.BANDS, S.y, S.w / RC.BANDS, S.h);
-        mgraphics.fill();
-    }
-    rpText("WET", S.x + S.w - 52, S.y + 8, 6.5, RPC.cyan, true);
-    rpText("DRY", S.x + S.w - 28, S.y + 8, 6.5, RPC.dim, true);
 }
 
-// ---- info row / footer -------------------------------------------------------------------------------------------
+// ---- Tone page: EQ view ---------------------------------------------------------------------------------------------
+
+function rbParams() {
+    return { lowcut: rpNum("lowcut", 60), highcut: rpNum("highcut", 16000), damp: rpNum("damp", 7000), bassmult: rpNum("bassmult", 1.2),
+        xover: rpNum("xover", 350) };
+}
+
+function rbNodeColor(nd) {
+    return nd.decay ? RPC.amber : RPC.cyan;
+}
+
+function rbDrawTone(L, w) {
+    var p = rbParams();
+    var bassOn = rpActive("bassmult");
+    var T = RBT;
+    var i, f;
+    // grid: decades, 0 dB and +-12 dB
+    var fl = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
+    for (i = 0; i < fl.length; i++) {
+        var gx = rbToneX(fl[i]);
+        mgraphics.move_to(gx, T.y0); mgraphics.line_to(gx, T.y1);
+        rpColor(RPC.frame, fl[i] === 100 || fl[i] === 1000 || fl[i] === 10000 ? 0.75 : 0.35);
+        mgraphics.set_line_width(0.8);
+        mgraphics.stroke();
+    }
+    var gl = [12, 0, -12];
+    for (i = 0; i < gl.length; i++) {
+        var gy = rbToneY(gl[i]);
+        mgraphics.move_to(T.x0, gy); mgraphics.line_to(T.x1, gy);
+        rpColor(RPC.frame, gl[i] === 0 ? 0.95 : 0.4);
+        mgraphics.set_line_width(gl[i] === 0 ? 1 : 0.8);
+        mgraphics.stroke();
+        rpText(gl[i] > 0 ? "+" + gl[i] : String(gl[i]), 6, gy + 2.5, 7, RPC.dim);
+    }
+    var tk = [[100, "100"], [1000, "1k"], [10000, "10k"]];
+    for (i = 0; i < tk.length; i++) rpText(tk[i][1], rbToneX(tk[i][0]) - 5, 100, 7, RPC.dim);
+    // decay profile (amber): area to the zero line, then the line
+    var step = 2;
+    var zy = rbToneY(0);
+    mgraphics.move_to(T.x0, zy);
+    for (f = T.x0; f <= T.x1; f += step) mgraphics.line_to(f, rbToneY(rbDecayDb(rbToneF(f), bassOn ? p.bassmult : 1, p.xover, p.damp)));
+    mgraphics.line_to(T.x1, zy);
+    mgraphics.close_path();
+    rpColor(RPC.amber, 0.12);
+    mgraphics.fill();
+    for (f = T.x0; f <= T.x1; f += step) {
+        var ya = rbToneY(rbDecayDb(rbToneF(f), bassOn ? p.bassmult : 1, p.xover, p.damp));
+        if (f === T.x0) mgraphics.move_to(f, ya);
+        else mgraphics.line_to(f, ya);
+    }
+    rpColor(RPC.amber, 0.95);
+    mgraphics.set_line_width(1.2);
+    mgraphics.stroke();
+    // output filter (cyan)
+    for (f = T.x0; f <= T.x1; f += step) {
+        var yc = rbToneY(rbFilterDb(rbToneF(f), p.lowcut, p.highcut));
+        if (f === T.x0) mgraphics.move_to(f, yc);
+        else mgraphics.line_to(f, yc);
+    }
+    rpColor(RPC.cyan, 1);
+    mgraphics.set_line_width(1.6);
+    mgraphics.stroke();
+    // nodes
+    var nodes = rbNodes(p, bassOn);
+    for (i = 0; i < nodes.length; i++) {
+        var nd = nodes[i];
+        var nx = rbToneX(nd.f), ny = rbToneY(nd.db);
+        var on = i === RCS.node || (RCS.node < 0 && i === RCS.hover);
+        var col = rbNodeColor(nd);
+        mgraphics.ellipse(nx - 6.5, ny - 6.5, 13, 13);
+        rpColor(RPC.bg, 1);
+        mgraphics.fill();
+        mgraphics.ellipse(nx - 6.5, ny - 6.5, 13, 13);
+        rpColor(col, on ? 1 : 0.85);
+        mgraphics.set_line_width(on ? 1.8 : 1.2);
+        mgraphics.stroke();
+        if (on) {
+            mgraphics.ellipse(nx - 6.5, ny - 6.5, 13, 13);
+            rpColor(col, 0.25);
+            mgraphics.fill();
+        }
+        rpText(String(nd.id), nx - 2.3, ny + 2.6, 7.5, col, true);
+    }
+    return nodes;
+}
+
+// ---- Tail tab: drawn value bars -----------------------------------------------------------------------------------------
+
+var RB_CLIPS = ["Soft", "Hard", "Limit"];
+
+function rbDrawTail(w) {
+    var T = rbTailLayout(w);
+    var i;
+    for (i = 0; i < T.titles.length; i++) {
+        var t = T.titles[i];
+        rpText(t.text, t.x, t.y + 8, 7.5, RPC.dim, true);
+        rpColor(RPC.frame, 0.9);
+        mgraphics.set_line_width(1);
+        mgraphics.move_to(t.x, t.y + 11.5); mgraphics.line_to(t.x + t.w, t.y + 11.5); mgraphics.stroke();
+    }
+    rpColor(RPC.frame, 0.7);
+    mgraphics.set_line_width(1);
+    mgraphics.move_to(T.div.x, T.div.y0); mgraphics.line_to(T.div.x, T.div.y1); mgraphics.stroke();
+    for (i = 0; i < T.rows.length; i++) {
+        var r = T.rows[i];
+        var al = rpActive(r.key) ? 1 : 0.35;
+        rpText(r.label, r.lx, r.ly + 9, 7.5, RPC.dim, true);
+        if (r.kind === "chips") {
+            var sel = rpIndex(rpNum("loopclip", 0), 3);
+            for (var k = 0; k < 3; k++) {
+                var cw = r.w / 3;
+                var cx = r.x + k * cw;
+                if (k === sel) {
+                    rpPill(cx + 1, r.y, cw - 2, r.h, RPC.amber, 0.28 * al);
+                    rpColor(RPC.amber, 0.9 * al);
+                    mgraphics.set_line_width(0.8);
+                    mgraphics.rectangle_rounded(cx + 1.5, r.y + 0.5, cw - 3, r.h - 1, r.h, r.h);
+                    mgraphics.stroke();
+                } else {
+                    rpPill(cx + 1, r.y, cw - 2, r.h, RPC.frame, 0.4 * al);
+                }
+                rpText(RB_CLIPS[k], cx + cw / 2 - rpTextW(RB_CLIPS[k], 7.5, true) / 2, r.y + 9, 7.5, k === sel ? RPC.text : RPC.dim, true);
+            }
+            continue;
+        }
+        var v = rpNum(r.key, REP[r.key][3]);
+        rpColor(RPC.frame, 0.5 * al);
+        mgraphics.rectangle_rounded(r.x, r.y, r.w, r.h, 3, 3);
+        mgraphics.fill();
+        var fw = Math.max(0, (r.w - 2) * rcPos(r.key, v));
+        if (fw > 0.5) {
+            rpColor(r.key === "looplevel" ? RPC.amber : RPC.cyan, 0.34 * al);
+            mgraphics.rectangle_rounded(r.x + 1, r.y + 1, Math.max(fw, 2), r.h - 2, 2, 2);
+            mgraphics.fill();
+        }
+        var txt = rcFormatTail(r.key, v);
+        rpText(txt, r.x + r.w / 2 - rpTextW(txt, 7.5, true) / 2, r.y + 9, 7.5, RPC.text, true);
+    }
+    // clip LED (lights while the Feedback Clip reduces the loop)
+    var age = RCS.now - RCS.clipAt;
+    var lit = RCS.clipAt > 0 && age < 1500 ? (age < 1000 ? 1 : 1 - (age - 1000) / 500) : 0;
+    rpColor(RPC.coral, 0.25 + 0.75 * lit);
+    mgraphics.ellipse(T.led.x, T.led.y, 6, 6);
+    mgraphics.fill();
+    rpText("drag a bar to set it, double-click to reset", T.hint.x, T.hint.y, 7, RPC.dim, true);
+}
+
+// ---- info row -------------------------------------------------------------------------------------------------------
 
 function rcDrawPills(w, minX) {
     var pills = rpHeaderPills();
     var x = w - 2;
     for (var i = 0; i < pills.length; i++) {
-        var pw = rpTextW(pills[i].label, 8, true) + 12;
+        var pw = rpTextW(pills[i].label, 7.5, true) + 12;
         if (x - pw < minX) break;
         x -= pw;
-        rpPill(x, 1, pw, 13, pills[i].color, 0.16);
-        rpText(pills[i].label, x + 6, 10.6, 8, pills[i].color, true);
+        rpPill(x, 0, pw, 11, pills[i].color, 0.16);
+        rpText(pills[i].label, x + 6, 8.4, 7.5, pills[i].color, true);
         x -= 4;
     }
 }
 
-function rcDrawInfo(w, algo, info) {
-    var s = rpT.s;
-    var name = RP_ALGOS[algo].toUpperCase();
-    rpText(name, 4, 26, 9, RPC.text, true);
-    var x = 4 + Math.max(72, rpTextW(name, 9, true) * 1.15 + 8);
-    var txt;
-    if (!s) {
-        txt = "waiting for the device";
-    } else {
-        var meas = s[RP_SCOPE.RT60_MEAS];
-        txt = (algo === RP_ALGO.CONV ? "IR" : "RT60 " + rpFormatSec(rpNum("decay", 2.5))) + (meas > 0.05 ? "  meas " + rpFormatSec(meas) : "");
+function rbDrawInfo(w, page, algo, info) {
+    // Reverb page: no top-left text (algorithm name / RT60 readout removed from the face)
+    if (page === 1) {
+        var names = { lowcut: "LOW CUT", highcut: "HIGH CUT", damp: "HF DAMP", bassmult: "BASS" };
+        var nodes = rbNodes(rbParams(), rpActive("bassmult"));
+        var k = RCS.node >= 0 ? RCS.node : RCS.hover;
+        if (k >= 0 && k < nodes.length) {
+            var nd = nodes[k];
+            var val = nd.key === "bassmult" ? "x" + rpNum("bassmult", 1.2).toFixed(2) + " below " + rpFormatHz(rpNum("xover", 350)) : rpFormatHz(nd.f);
+            rpText(names[nd.key], 4, 9, 8.5, rbNodeColor(nd), true);
+            rpText(val, 4 + rpTextW(names[nd.key], 8.5, true) * 1.12 + 10, 9, 8, RPC.text, true);
+        } else {
+            rpColor(RPC.cyan, 1); mgraphics.rectangle(4, 4, 8, 2.5); mgraphics.fill();
+            rpText("output filter", 16, 9, 7.5, RPC.dim, true);
+            rpColor(RPC.amber, 1); mgraphics.rectangle(80, 4, 8, 2.5); mgraphics.fill();
+            rpText("decay by frequency", 92, 9, 7.5, RPC.dim, true);
+        }
+    } else if (page === 2) {
+        rpText("TAIL", 4, 9, 8.5, RPC.text, true);
+        rpText("modulation, levels, ducking, clip", 4 + rpTextW("TAIL", 8.5, true) * 1.12 + 10, 9, 8, RPC.dim, true);
     }
-    rpText(txt, x, 26, 8, RPC.dim, true);
-    if (RCS.band >= 0) {
-        var b = RCS.band;
-        var meas2 = rcMeasured(RCS.hist, b, info.sr);
-        var lab = rcFmtHz(rcBandHz(b, info.sr)) + "Hz  " + rpFormatSec(info.curve[b]) + (meas2 ? " / " + rpFormatSec(meas2) : " / —");
-        var lw = rpTextW(lab, 8, true);
-        var bx = w - lw - 14;
-        rpPill(bx - 4, 17, lw + 12, 12, RPC.text, 0.12);
-        rpText(lab, bx + 2, 26, 8, RPC.text, true);
-    }
-}
-
-function rcDrawFooter(L, w, algo, frozen) {
-    var s = rpT.s;
-    var y = 159;
-    var parts = "PRE " + rpFormatMs(s ? s[RP_SCOPE.PREDELAY_MS] : rpNum("predelay", 20));
-    var loop = rpNum("loop", 0);
-    if (loop > 0 && s) parts += "   LOOP " + rpFormatMs(s[RP_SCOPE.LOOP_MS]) + (s[RP_SCOPE.CLAMPED] > 0.5 ? " MIN" : "");
-    rpText(parts, 4, y, 7.5, RPC.dim, true);
-    var x = 4 + rpTextW(parts, 7.5, true) + 8;
-    if (frozen) {
-        rpPill(x, y - 9, 44, 11, [0.55, 0.82, 1, 1], 0.22);
-        rpText("FROZEN", x + 6, y - 1, 7.5, [0.7, 0.9, 1, 1], true);
-        x += 50;
-    }
-    if (loop > 0) {
-        var age = RCS.now - RCS.clipAt;
-        var lit = RCS.clipAt > 0 && age < 1500 ? (age < 1000 ? 1 : 1 - (age - 1000) / 500) : 0;
-        rpColor(RPC.coral, 0.25 + 0.75 * lit);
-        mgraphics.ellipse(x, y - 7, 6, 6);
-        mgraphics.fill();
-        rpText("CLIP", x + 9, y, 7, lit > 0 ? RPC.coral : RPC.dim, true);
-    }
-    if (algo === RP_ALGO.CONV) {
-        var nm = rpState.ir.loaded ? (rpState.ir.name || "impulse response") : "no IR";
-        if (nm.length > 22) nm = nm.substring(0, 21) + "…";
-        rpText(nm, L.browse.x - rpTextW(nm, 7.5, true) - 6, y, 7.5, rpState.ir.loaded ? RPC.text : RPC.amber, true);
-        // browse = folder glyph, clear = x
-        var b = L.browse, c = L.clear;
-        rpColor(RPC.dim, 1);
-        mgraphics.set_line_width(1.1);
-        mgraphics.rectangle(b.x + 1, b.y + 3, 13, 7);
-        mgraphics.stroke();
-        mgraphics.move_to(b.x + 1, b.y + 3); mgraphics.line_to(b.x + 4, b.y + 1); mgraphics.line_to(b.x + 7, b.y + 1); mgraphics.line_to(b.x + 8, b.y + 3);
-        mgraphics.stroke();
-        rpColor(rpState.ir.loaded ? RPC.dim : RPC.frame, 1);
-        mgraphics.move_to(c.x + 3, c.y + 2); mgraphics.line_to(c.x + 11, c.y + 9);
-        mgraphics.move_to(c.x + 11, c.y + 2); mgraphics.line_to(c.x + 3, c.y + 9);
-        mgraphics.stroke();
-    }
+    rcDrawPills(w, page === 1 ? 150 : (page === 2 ? 170 : 150));
 }
 
 // ---- paint -------------------------------------------------------------------------------------------------------
@@ -546,60 +565,114 @@ function paint() {
     if (!RCS.now) RCS.now = Date.now();
     var L = rcLayout(w, h);
     var algo = rpAlgo();
+    var page = rbPage();
     var frozen = rcFrozen();
     var info = rcRtInfo();
-    rcDrawIcons(L, algo);
-    rcDrawPills(w, L.pillMinX);
-    rcDrawInfo(w, algo, info);
-    rcDrawPlot(L, w, algo, frozen, info);
-    rcDrawStrip(L, info);
-    rcDrawFooter(L, w, algo, frozen);
+    rbDrawInfo(w, page, algo, info);
+    if (page === 0) {
+        rcDrawPlot(L, w, algo, frozen, info);
+        rcDrawStrip(L, info);
+    } else if (page === 1) {
+        rbDrawTone(L, w);
+    } else {
+        rbDrawTail(w);
+    }
 }
 
 // ---- mouse ---------------------------------------------------------------------------------------------------------
 
-function rcPick(x, y) {
-    var L = rcLayout(mgraphics.size[0], mgraphics.size[1]);
-    if (rcInRect(L.strip, x, y)) return rcStripBand(x);
-    if (rcInRect(L.plot, x, y)) return rcHitBand(x, y);
-    return -1;
+function rbNodesNow() {
+    return rbNodes(rbParams(), rpActive("bassmult"));
+}
+
+function rbTailSet(key, x) {
+    var T = rbTailLayout(mgraphics.size[0]);
+    for (var i = 0; i < T.rows.length; i++) {
+        var r = T.rows[i];
+        if (r.key !== key || r.kind !== "bar") continue;
+        rpSend(key, rcVal(key, (x - r.x - 1) / (r.w - 2)));
+    }
 }
 
 function onclick(x, y, but) {
     if (!but) return;
-    var L = rcLayout(mgraphics.size[0], mgraphics.size[1]);
-    for (var i = 0; i < L.icons.length; i++) {
-        if (rcInRect(L.icons[i], x, y)) { rpSend("algo", i); return; }
-    }
-    var conv = rpAlgo() === RP_ALGO.CONV;
-    if (conv && rcInRect(L.browse, x, y)) { rpCmd("browse_ir"); return; }
-    if (conv && rcInRect(L.clear, x, y)) { rpCmd("clear_ir"); return; }
-    if (conv && !rpState.ir.loaded && rcInRect(L.plot, x, y)) { rpCmd("browse_ir"); return; }
-    var b = rcPick(x, y);
-    if (b >= 0) {
-        RCS.band = b === RCS.band ? -1 : b;
-        RCS.drag = true;
+    var page = rbPage();
+    if (page === 1) {
+        RCS.node = rbHitNode(rbNodesNow(), x, y, 10);
         mgraphics.redraw();
+        return;
     }
+    if (page === 2) {
+        var th = rbTailHit(mgraphics.size[0], x, y);
+        if (!th || !rpActive(th.key)) return;
+        if (th.chip >= 0) { rpSend("loopclip", th.chip); return; }
+        RCS.tailDrag = th.key;
+        rbTailSet(th.key, x);
+        return;
+    }
+    var L = rcLayout(mgraphics.size[0], mgraphics.size[1]);
+    var conv = rpAlgo() === RP_ALGO.CONV;
+    if (conv && !rpState.ir.loaded && rcInRect(L.plot, x, y)) rpCmd("browse_ir");
 }
 
 function ondrag(x, y, but) {
-    if (!but) { RCS.drag = false; return; }
-    if (!RCS.drag) return;
-    var b = rcPick(x, y);
-    if (b >= 0 && b !== RCS.band) { RCS.band = b; mgraphics.redraw(); }
+    if (!but) { RCS.tailDrag = ""; return; }
+    var page = rbPage();
+    if (page === 2) {
+        if (RCS.tailDrag) rbTailSet(RCS.tailDrag, x);
+        return;
+    }
+    if (page === 1) {
+        var nodes = rbNodesNow();
+        if (RCS.node < 0 || RCS.node >= nodes.length) return;
+        var vals = rbNodeDrag(nodes[RCS.node], x, y);
+        for (var k in vals) {
+            var cur = rpNum(k, vals[k]);
+            if (Math.abs(vals[k] - cur) > Math.abs(cur) * 0.002) rpSend(k, vals[k]);
+        }
+    }
 }
 
-function ondblclick() {
-    RCS.band = -1;
-    mgraphics.redraw();
+function onidle(x, y) {
+    if (rbPage() !== 1) return;
+    var h = rbHitNode(rbNodesNow(), x, y, 10);
+    if (h !== RCS.hover) { RCS.hover = h; mgraphics.redraw(); }
+}
+
+function onidleout() {
+    if (RCS.hover >= 0) { RCS.hover = -1; mgraphics.redraw(); }
+}
+
+function ondblclick(x, y) {
+    if (rbPage() === 2) {
+        var th = rbTailHit(mgraphics.size[0], x, y);
+        if (th && rpActive(th.key) && th.chip < 0) rpSend(th.key, REP[th.key][3]);
+        return;
+    }
+    if (rbPage() === 1) {
+        var nodes = rbNodesNow();
+        var i = rbHitNode(nodes, x, y, 10);
+        if (i < 0) return;
+        var key = nodes[i].key;
+        if (key === "lowcut") rpSend("lowcut", 60);
+        else if (key === "highcut") rpSend("highcut", 16000);
+        else if (key === "damp") rpSend("damp", 7000);
+        else { rpSend("xover", 350); rpSend("bassmult", 1.2); }
+    }
 }
 
 // ---- scripts/render_preview.py ----------------------------------------------------------------------------------------
 
+/** RC_PAGE (0..2) and RC_ALGO (0..5) pick the preview state (the build reads them too, they set the saved state): `RC_PAGE=1 python3 scripts/build_reverbplus.py`. */
 function preview() {
-    rpPreviewBase(1, 2.5);
-    rpP.algo = 1; rpP.decay = 2.5; rpP.bassmult = 1.3; rpP.xover = 350; rpP.damp = 7000; rpP.loop = 40; rpP.predelay = 20;
+    var g = /** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : {});
+    var env = g.process && g.process.env ? g.process.env : {};
+    var page = env.RC_PAGE ? Number(env.RC_PAGE) : 0;
+    var algo = env.RC_ALGO ? Number(env.RC_ALGO) : 1;
+    rpPreviewBase(algo, 2.5);
+    rpP.algo = algo; rpP.page = page; rpP.decay = 2.5; rpP.bassmult = 1.3; rpP.xover = 350; rpP.damp = 7000; rpP.predelay = 20;
+    rpP.lowcut = 60; rpP.highcut = 16000; rpP.loopclip = 0; rpP.looplevel = 0; rpP.modrate = 0.6; rpP.moddepth = 25; rpP.erlevel = 0;
+    rpP.latelevel = 0; rpP.duck = 20; rpP.duckrel = 250; rpP.output = 0;
     var sr = 48000;
     var rt = rcRt60Curve({ lo: 3.2, mid: 2.5, hi: 1.0 }, { conv: false, damp: 7000, xover: 350 }, sr);
     var hist = rcHistNew();
@@ -622,27 +695,15 @@ function preview() {
         RCS.wet[k] = hist.rows[4][k];
         RCS.dry[k] = -30 - k * 0.7 + 5 * Math.sin(k * 0.8 + 1);
     }
-    RCS.band = 14;
+    RCS.node = page === 1 ? 2 : -1;
     RCS.now = 1;
     RCS.clipAt = 0;
-    rcPreviewExtra();
-}
-
-// Extra preview states for a human check (RC_PREVIEW=conv|freeze python3 scripts/render_preview.py ...); inert in Max.
-function rcPreviewExtra() {
-    var g = /** @type {any} */ (typeof globalThis !== "undefined" ? globalThis : {});
-    var mode = g.process && g.process.env ? g.process.env.RC_PREVIEW : "";
-    if (mode === "freeze") {
-        rpP.freeze = 1;
-        rpT.s[RP_SCOPE.FREEZE] = 1;
-        RCS.band = -1;
-    } else if (mode === "conv") {
-        rpP.algo = 5;
+    if (algo === 5) {
         rpT.s = rpFakeScope(5, 2.2);
         var st = rcIrNew(100000);
         var psd = new Float64Array(RC.BANDS);
         for (var q = 0; q < 50; q++) {
-            for (var b = 0; b < RC.BANDS; b++) psd[b] = Math.exp(-q / (6 + 22 * (1 - b / RC.BANDS))) * (1 + 0.3 * Math.sin(b * 0.9 + q * 0.3)) * Math.pow(10, -b * 0.02);
+            for (var b2 = 0; b2 < RC.BANDS; b2++) psd[b2] = Math.exp(-q / (6 + 22 * (1 - b2 / RC.BANDS))) * (1 + 0.3 * Math.sin(b2 * 0.9 + q * 0.3)) * Math.pow(10, -b2 * 0.02);
             rcIrAdd(st, q * 2000, psd);
         }
         RCS.irRows = rcIrFinish(st);

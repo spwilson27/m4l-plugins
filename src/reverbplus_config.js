@@ -27,7 +27,7 @@ RP_CONV.BANK_FLOATS = RP_CONV.HEAD_FLOATS + RP_CONV.TAIL_MAX * RP_CONV.NB2 * 4;
 RP_CONV.IRSPEC_SAMPS = 2 * RP_CONV.BANK_FLOATS;
 const RP_IR_MAX = RP_CONV.H + RP_CONV.TAIL_MAX * RP_CONV.P2; // 290816 samples (6.06 s at 48 kHz)
 const RP_IR_VIEW_N = 512;
-const RP_IRVIEW_SAMPS = 2048; // buffer ---rpirview: 0 version, 1 length, 2 sr, 3 channels, 16.. env (512), 528.. min/max (1024)
+// buffer ---rpirview (2048 samples): 0 version, 1 length, 2 sr, 3 channels, 16.. env (512), 528.. min/max (1024)
 
 // buffer~ ---rphdr (shared Start <-> End header, 64 samples). Layout comment in reverbplus_start.genexpr.
 const RP_HDR = {
@@ -37,20 +37,17 @@ const RP_HDR = {
     IR_VER: 32, IR_BANK: 33, IR_NHEAD: 34, IR_NTAIL: 35, IR_LEN: 36, IR_LOADED: 37, IR_CH: 38, IR_SRMIS: 39,
     DUCK_REL: 40, OUT_GAIN: 41,
 };
-const RP_HDR_SAMPS = 64;
 
 // buffer~ ---rpscope (Start telemetry, written every 64 samples by the Start gen).
 const RP_SCOPE = {
     FRAMES: 0, SR: 1, ALGO: 2, FREEZE: 3, PAIRED: 4, B: 5, L: 6, K: 7, MIN_MS: 8, LOOP_MS: 9, PREDELAY_MS: 10,
-    CLAMPED: 11, IN_PK: 12, TANK_PK: 13, WET_PK: 14, RET_PK: 15, END_L_PK: 16, END_R_PK: 17, CLIP_DB: 18,
-    IN_RMS: 19, WET_RMS: 20, RT60_MEAS: 21, RT60_LO: 22, RT60_MID: 23, RT60_HI: 24,
-    IR_LOADED: 25, IR_LEN: 26, IR_VER: 27, IR_SRMIS: 28, NLINES: 29, DECAY_HEAD: 30, WAVE_HEAD: 31,
-    LINES: 32, N_LINES: 16, ER: 48, N_ER: 16, DECAY: 80, N_DECAY: 256, WAVE: 336, N_WAVE: 256,
-    ALGO_STATE: 848, LOOP_GAIN: 849, TANK_RT: 850,
+    CLAMPED: 11, IN_PK: 12, ASLEEP: 13, WET_PK: 14, RET_PK: 15, CLIP_DB: 18,
+    RT60_LO: 22, RT60_MID: 23, RT60_HI: 24,
+    IR_LOADED: 25, IR_LEN: 26, IR_VER: 27, IR_SRMIS: 28,
+    ALGO_STATE: 29, LOOP_GAIN: 30, TANK_RT: 31,
+    MUTE_N: 32, MUTE_L: 33, MUTE_B: 34, MUTE_K: 35, GLINK: 36,
 };
-const RP_DECAY_BLOCK = 512; // samples per decay-ring entry
-const RP_WAVE_BLOCK = 32;   // samples per waveform-ring entry (min / max)
-const RP_SCOPE_SAMPS = 1024;
+const RP_SCOPE_SAMPS = 64;
 // buffer~ ---rpscopeE (End telemetry, 32 samples)
 const RP_ESCOPE = { LINKED: 0, K: 1, L: 2, WET_PK: 4, DRY_PK: 5, DUCK: 6, FRAMES: 7, B: 8, OUT_L: 9, OUT_R: 10 };
 const RP_ESCOPE_SAMPS = 32;
@@ -99,11 +96,6 @@ function rpClamp(v, lo, hi) {
 
 function rpIndex(i, n) {
     return rpClamp(Math.round(Number(i) || 0), 0, n - 1);
-}
-
-// Level in dB -> linear; -70 dB and below is -inf (silent), like the parameter range's floor.
-function rpDbLin(db) {
-    return db <= -69.9 ? 0 : Math.pow(10, db / 20);
 }
 
 function rpLinDb(v) {
@@ -159,26 +151,19 @@ const RP_TANK_LINES = {
     spring: [1536, 2104],
 };
 const RP_LOOP = {
-    X: 0.4,                    // design point: x = g x max|H| (the loop's peak gain against the tank's largest resonance)
-    LAW: 0.55,                 // measured: RT60(tank + loop) = RT60(tank) / (1 - LAW x^2) (reference model and Max)
-    K: [0.3, 1.25, 6, 3.5, 2], // period = K x the tank's characteristic period (Plate, Hall, Room, Chamber, Spring)
-    NL: [2, 16, 8, 8, 2, 0],   // total loop delay N_m = NL x the characteristic period (number of delay elements)
+    TANK_FRAC: 0.3,            // while an End is paired the tank runs at Decay x TANK_FRAC; the recirculating chain loop carries the rest of the tail
+    G_MAX: 0.97,               // the loop gain never exceeds this (Decay 60 s would ask for 0.997)
+    K: [0.3, 1.25, 6, 3.5, 1.5], // period = K x the tank's characteristic period (Plate, Hall, Room, Chamber, Spring); Spring's K is not an
+                                 // integer: its two loops would line up with an integer loop time and reinforce every resonance alike
     MAX_S: 0.25,               // longest derived period, seconds
     SPRING_AP: 48,             // the spring's dispersion allpass chain counts as that many samples of loop
     CONV_FRAC: 0.15, CONV_MIN_S: 0.04, CONV_MAX_S: 0.15, // Convolution: 15 % of the IR length, 40..150 ms
+    // The recirculating path (return from End -> delay -> 4 Schroeder allpasses per channel -> HF damping -> bass shelf -> gain g -> clip -> back
+    // into the chain input). Its magnitude is flat: allpasses are exactly unity, the damping one-pole has |H| <= 1 and the bass shelf at most
+    // g^(1/bass - 1), so |loop| <= g max(1, bass shelf) <= g^(1/bass) < 1 at every frequency for a unity chain.
+    AP_LEN_L: [149, 233, 367, 523], AP_LEN_R: [163, 257, 389, 547], // samples at 48 kHz (x min(sr / 48000, 2))
+    AP_GAIN_MIN: 0.3, AP_GAIN_SPAN: 0.4, // allpass coefficient = 0.3 + 0.4 x Diffusion
 };
-// the tank runs at Decay x (1 - SHARE) while an End is paired: together with the loop (x = X) the decay is Decay
-RP_LOOP.SHARE = RP_LOOP.LAW * RP_LOOP.X * RP_LOOP.X;
-// Largest resonance of the open-loop transfer (tank input -> wet, one channel, Late 0 dB): max|H|^2 = A + B / aN, aN =
-// (decay rate per sample 6.9078 / (RT60 sr)) x N_m; Early reflections add an FIR peak E (Early 0 dB). Fitted to Max renders
-// (scripts/run_reverbplus_audio_tests.py egl_* / ege_*: peak and rms of |FFT| of the impulse response).
-// [Plate, Hall, Room, Chamber, Spring, Convolution]
-// EG / EGE: energy gain (sum h^2) of the late part and of the early reflections (Late / Early 0 dB).
-const RP_PK = {
-    A: [2, 2, 2, 2, 2, 16], B: [20, 20, 20, 20, 20, 0], E: [0, 0.6, 1, 1.2, 0, 0],
-    EG: [1.5, 0.25, 0.25, 0.27, 0.27, 1], EGE: [0, 0.08, 0.24, 0.36, 0, 0],
-};
-
 function rpMean(a) {
     let t = 0;
     for (let i = 0; i < a.length; i++) t += a[i];
@@ -222,54 +207,84 @@ function rpLoopPeriod(algo, size01, sr, irLenSamples) {
 }
 
 /**
- * RT60 the tank itself runs at: Decay x (1 - SHARE) while an End is paired (the loop provides the rest), Decay
+ * RT60 the tank itself runs at: Decay x (1 - TANK_SHARE) while an End is paired (the loop provides the rest), Decay
  * otherwise and for Convolution (the IR cannot be shortened).
  */
 function rpTankRt60(algo, decay, paired) {
     const rt = rpClamp(decay, 0.1, 60);
-    return algo === RP_ALGO.CONV || !paired ? rt : rt * (1 - RP_LOOP.SHARE);
-}
-
-/** Total delay of the tank's loops in samples (the number of its poles). */
-function rpTankNm(algo, size01, sr) {
-    return RP_LOOP.NL[rpIndex(algo, 6)] * rpTankPeriod(algo, size01, sr);
+    return algo === RP_ALGO.CONV || !paired ? rt : rt * RP_LOOP.TANK_FRAC;
 }
 
 /**
- * Largest resonance max|H| of the open-loop transfer (tank input -> wet) for a chain without gain.
+ * Per-pass gain of the recirculating chain loop: 10^(-3 T / RT60), so the tail that goes round the chain decays 60 dB in Decay.
+ * Convolution's reference is half the processed IR length (min 0.1 s). Capped at G_MAX.
  * @param {number} algo
- * @param {{decay: number, size: number, erlevel: number, latelevel: number}} p  size 0..1
- */
-function rpLoopPeak(algo, p, sr) {
-    const a = rpIndex(algo, 6);
-    const rtT = rpTankRt60(a, p.decay, true);
-    const aN = 6.907755 * rpTankNm(a, p.size, sr) / (Math.max(rtT, 0.05) * sr);
-    const la = rpDbLin(rpClamp(p.latelevel, -70, 6));
-    const er = a === RP_ALGO.CONV || a === RP_ALGO.PLATE || a === RP_ALGO.SPRING ? 0 : rpDbLin(rpClamp(p.erlevel, -70, 6));
-    return la * Math.sqrt(RP_PK.A[a] + RP_PK.B[a] / Math.max(aN, 0.02)) + er * RP_PK.E[a];
-}
-
-/**
- * Derived outer-loop gain for a chain WITHOUT gain: the smaller of
- *  - X / max|H|: the loop's peak gain against the tank's largest resonance (the slowest closed-loop mode is the tank's most
- *    aligned resonance, which the loop lengthens to RT60_tank / (1 - LAW x^2); the tank runs at Decay (1 - SHARE) so the
- *    product is about Decay; the loop time only rotates the phase at each resonance), and
- *  - 10^(-3 T / Decay) sqrt(SHARE / Eg): the loop's energy return against the decay it may add (short Decays, where the
- *    resonances overlap and the loop acts on the tail's energy).
- * @param {number} algo
- * @param {{decay: number, size: number, erlevel: number, latelevel: number}} p  size 0..1
- * @param {number} periodSamples  the period in use (>= MIN)
+ * @param {{decay: number}} p
+ * @param {number} periodSamples  the loop time in use (>= MIN)
  * @param {number} sr
  * @param {number} irLenSamples  Convolution only
  */
 function rpLoopGain(algo, p, periodSamples, sr, irLenSamples) {
     const a = rpIndex(algo, 6);
     const rt = a === RP_ALGO.CONV ? Math.max(0.5 * (irLenSamples || 0) / sr, 0.1) : rpClamp(p.decay, 0.1, 60);
-    const la = rpDbLin(rpClamp(p.latelevel, -70, 6));
-    const er = a === RP_ALGO.CONV || a === RP_ALGO.PLATE || a === RP_ALGO.SPRING ? 0 : rpDbLin(rpClamp(p.erlevel, -70, 6));
-    const gCoh = RP_LOOP.X / Math.max(rpLoopPeak(a, p, sr), 0.5);
-    const gInc = rpLineGain(periodSamples, rt, sr) * Math.sqrt(RP_LOOP.SHARE / Math.max(la * la * RP_PK.EG[a] + er * er * RP_PK.EGE[a], 0.02));
-    return Math.min(gCoh, gInc);
+    return Math.min(rpLineGain(periodSamples + rpLoopApDelay(sr), rt, sr), RP_LOOP.G_MAX);
+}
+
+/** Effective extra loop time of the allpass chain in samples: 1.5 x the mean of the two channels' summed lengths (the mean group delay is the sum itself; the smear of each recirculation lengthens the measured decay a further half of it). */
+function rpLoopApDelay(sr) {
+    const sum = (a) => a.reduce((t, v) => t + v, 0);
+    const sfc = Math.min(sr / 48000, 2);
+    return 0.75 * (sum(RP_LOOP.AP_LEN_L.map((v) => Math.floor(v * sfc + 0.5))) + sum(RP_LOOP.AP_LEN_R.map((v) => Math.floor(v * sfc + 0.5))));
+}
+
+/** Energy scale of the tank wet entering the chain while paired, so the wet's total energy (first pass + all recirculations, 1 / (1 - g^2)) stays that of the tank alone. */
+function rpLoopWetScale(g) {
+    return Math.sqrt(Math.max(1 - g * g, 0));
+}
+
+/** Gain of the bass shelf in the loop (FDN algorithms only): the low band decays `bass` times slower, g_low = g^(1/bass). */
+function rpLoopBassShelf(algo, g, bass) {
+    return algo === RP_ALGO.HALL || algo === RP_ALGO.ROOM || algo === RP_ALGO.CHAMBER ? Math.pow(g, 1 / rpClamp(bass, 0.25, 4) - 1) : 1;
+}
+
+/** Allpass coefficient of the loop diffusers for a Diffusion 0..1. */
+function rpLoopApGain(diffusion) {
+    return RP_LOOP.AP_GAIN_MIN + RP_LOOP.AP_GAIN_SPAN * rpClamp(diffusion, 0, 1);
+}
+
+/**
+ * Magnitude of the loop's transfer (without the chain) at normalised frequency w (rad / sample): g x shelf x damping x allpasses.
+ * Used by the tests: it must be <= g max(1, shelf) at every frequency.
+ */
+function rpLoopMagnitude(w, g, apGain, apLens, dampCoef, shelf, shelfCoef) {
+    let re = 1, im = 0;
+    for (const D of apLens) { // (-a + z^-D) / (1 - a z^-D)
+        const c = Math.cos(w * D), s = -Math.sin(w * D);
+        const nr = -apGain + c, ni = s, dr = 1 - apGain * c, di = -apGain * s;
+        const den = dr * dr + di * di;
+        const hr = (nr * dr + ni * di) / den, hi = (ni * dr - nr * di) / den;
+        const t = re * hr - im * hi;
+        im = re * hi + im * hr;
+        re = t;
+    }
+    if (dampCoef > 0) { // one-pole lowpass y += c (x - y): c / (1 - (1 - c) z^-1)
+        const dr = 1 - (1 - dampCoef) * Math.cos(w), di = (1 - dampCoef) * Math.sin(w);
+        const den = dr * dr + di * di;
+        const hr = dampCoef * dr / den, hi = -dampCoef * di / den;
+        const t = re * hr - im * hi;
+        im = re * hi + im * hr;
+        re = t;
+    }
+    if (shelfCoef > 0) { // y = x + (shelf - 1) lowpass(x)
+        const dr = 1 - (1 - shelfCoef) * Math.cos(w), di = (1 - shelfCoef) * Math.sin(w);
+        const den = dr * dr + di * di;
+        const lr = shelfCoef * dr / den, li = -shelfCoef * di / den;
+        const hr = 1 + (shelf - 1) * lr, hi = (shelf - 1) * li;
+        const t = re * hr - im * hi;
+        im = re * hi + im * hr;
+        re = t;
+    }
+    return g * Math.hypot(re, im);
 }
 
 // Pre-delay in ms actually in use: Convolution cannot go below its engine latency (hidden in the pre-delay).
@@ -566,39 +581,6 @@ function rpIrView(L, R, len) {
 // ---- telemetry helpers (faces) ---------------------------------------------------------------------
 
 /**
- * The 256 decay-ring entries (wet RMS in dB, one per RP_DECAY_BLOCK samples) oldest first.
- * @param {ArrayLike<number>} scope  the telemetry buffer contents (RP_SCOPE_SAMPS)
- */
-function rpDecayOrdered(scope) {
-    const n = RP_SCOPE.N_DECAY;
-    const head = Math.round(scope[RP_SCOPE.DECAY_HEAD]) % n;
-    const out = new Float32Array(n);
-    for (let i = 0; i < n; i++) out[i] = scope[RP_SCOPE.DECAY + (head + i) % n];
-    return out;
-}
-
-/**
- * RT60 estimate from a decay ring (dB per block, oldest first): after the loudest entry, the time between
- * the -5 dB and -25 dB points x 3. Null when the ring holds no decay that far.
- * @param {ArrayLike<number>} db
- * @param {number} blockSamples
- * @param {number} sr
- */
-function rpEstimateRt60(db, blockSamples, sr) {
-    let ip = 0;
-    for (let i = 1; i < db.length; i++) if (db[i] > db[ip]) ip = i;
-    const pk = db[ip];
-    if (pk < -90) return null;
-    let i1 = -1, i2 = -1;
-    for (let i = ip + 1; i < db.length; i++) {
-        if (i1 < 0 && db[i] <= pk - 5) i1 = i;
-        if (db[i] <= pk - 25) { i2 = i; break; }
-    }
-    if (i1 < 0 || i2 < 0) return null;
-    return 3 * (i2 - i1) * blockSamples / sr;
-}
-
-/**
  * 32 log-spaced bands (40 Hz..18 kHz) of one 4096-sample mono ring from the spectrum buffer, in dB
  * (full-scale sine = 0 dB). `buf` = contents of ---rpspec, which = RP_SPEC.WET or RP_SPEC.DRY.
  * @param {ArrayLike<number>} buf
@@ -631,13 +613,13 @@ function rpSpectrum32(buf, which) {
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
-        RP_ALGOS, RP_ALGO, RP_INACTIVE, RP_CONV, RP_IR_MAX, RP_IR_VIEW_N, RP_IRVIEW_SAMPS, RP_HDR, RP_HDR_SAMPS, RP_SCOPE,
-        RP_DECAY_BLOCK, RP_WAVE_BLOCK, RP_SCOPE_SAMPS, RP_ESCOPE, RP_ESCOPE_SAMPS, RP_SPEC, RP_SPEC_SAMPS, RP_BUS_NAME,
-        RP_REG_STALE_MS, RP_PREDELAY_MAX_MS, RP_LOOP, RP_PK, RP_TANK_LINES,
-        rpTheme, rpThemeWatch, rpClamp, rpIndex, rpDbLin, rpLinDb, rpLineGain, rpSizeScale, rpMinLoopSamples,
-        rpEffectiveLoop, rpLoopReadDelay, rpTankPeriod, rpLoopPeriod, rpTankRt60, rpTankNm, rpLoopPeak, rpLoopGain, rpEffectivePredelayMs, rpRt60Bands, rpFormatMs, rpFormatHz, rpFormatSec,
+        RP_ALGOS, RP_ALGO, RP_INACTIVE, RP_CONV, RP_IR_MAX, RP_IR_VIEW_N, RP_HDR, RP_SCOPE,
+        RP_SCOPE_SAMPS, RP_ESCOPE, RP_ESCOPE_SAMPS, RP_SPEC, RP_SPEC_SAMPS, RP_BUS_NAME,
+        RP_REG_STALE_MS, RP_PREDELAY_MAX_MS, RP_LOOP, RP_TANK_LINES,
+        rpTheme, rpThemeWatch, rpClamp, rpIndex, rpLinDb, rpLineGain, rpSizeScale, rpMinLoopSamples,
+        rpEffectiveLoop, rpLoopReadDelay, rpTankPeriod, rpLoopPeriod, rpTankRt60, rpLoopGain, rpLoopApDelay, rpLoopWetScale, rpLoopBassShelf, rpLoopApGain, rpLoopMagnitude, rpEffectivePredelayMs, rpRt60Bands, rpFormatMs, rpFormatHz, rpFormatSec,
         rpParseDevicePath, rpFindPartner, rpChainLatency, rpDeviceLatency, rpExtractIds, rpRoleOf,
-        rpFft, rpIrProcess, rpIrCounts, rpPartitionSpectrum, rpIrSpectra, rpIrView, rpDecayOrdered, rpEstimateRt60,
+        rpFft, rpIrProcess, rpIrCounts, rpPartitionSpectrum, rpIrSpectra, rpIrView,
         rpSpectrum32,
     };
 }

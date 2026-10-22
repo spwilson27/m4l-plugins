@@ -10,7 +10,7 @@ Outputs (devices/):
 Plus the Live test set reverbplus_test.als (tracks "Reverb+ 1..3": rack [Reverb+, Limiter 6 ms,
 Reverb+ End], Ableton MCP Bridge on Main) via scripts/make_reverbplus_sets.py.
 
-Usage: build_reverbplus.py [--variant X | --all] [--no-sets]
+Usage: build_reverbplus.py [--variant X] [--no-sets] [--out-dir DIR]
 
 A layout module (scripts/reverbplus_layouts/README.md is the contract) presents every parameter and
 declares its display v8uis; the build adds the DSP, buffers, the engine v8ui and all wiring. Nothing in
@@ -38,7 +38,7 @@ END_W = 124.0
 BASE_NAME = "Reverb+"
 END_NAME = "Reverb+ End"
 RING = 65536
-SCOPE_SAMPS = 1024
+SCOPE_SAMPS = 64
 SPEC_SAMPS = 32 + 2 * 4096
 IRSPEC_SAMPS = 2 * (32 * 129 * 4 + 140 * 2049 * 4)
 IRVIEW_SAMPS = 2048
@@ -105,6 +105,8 @@ P = {
     "irdecay": ("IR Decay", "IR Decay", 0.0, 100.0, 100.0, 0, 5, 1.0, None, 1,
                 "Convolution: 100% keeps the whole tail, lower values fade it out faster.", None),
     "irfile": ("IR File", "IR File", 0, 0, 0, 4, 9, 1.0, None, 1, "The impulse response file (drop an audio file on the device).", None),
+    "input": ("Input", "Input", -36.0, 12.0, 0.0, 0, 4, 1.0, "indb", 1,
+              "Level going into the reverb, before Pre-Delay. The dry signal and the chain loop return are not affected.", None),
 }
 BASE_KEYS = list(P)
 # UI-state parameters (saved, not automatable). Layouts add their own through h.register().
@@ -695,7 +697,6 @@ def build_sets(names, with_test_set):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--variant", default=None, help="build only this layout (a name from scripts/reverbplus_layouts, e.g. a)")
-    ap.add_argument("--all", action="store_true", help="build every layout")
     ap.add_argument("--no-sets", action="store_true")
     ap.add_argument("--out-dir", default=None, help="write the devices here instead of devices/ (tests)")
     args = ap.parse_args()
@@ -708,8 +709,6 @@ def main():
         if v not in avail:
             raise SystemExit(f"no layout {v!r} (found {avail})")
         todo = [v]
-    elif args.all:
-        todo = avail
     else:
         todo = ["base"]
     names = [build_start(v) for v in todo]

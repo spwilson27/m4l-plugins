@@ -52,6 +52,14 @@ case "${1:-}" in
     TUNNEL=$!
     trap 'kill $TUNNEL 2>/dev/null' EXIT
     for i in $(seq 1 20); do curl -s -m 1 "http://127.0.0.1:${LOCAL_PORT}/health" >/dev/null && break; sleep 0.5; done
+    # the shimmer test's tone: a 0.4 s 220 Hz sine burst, then silence (6 s loop), made in the VM
+    "${SSH[@]}" "/usr/bin/python3 - <<'PYEOF'
+import wave, struct, math
+w = wave.open('/tmp/rp_tone_220.wav', 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100)
+n = 44100 * 6
+w.writeframes(b''.join(struct.pack('<h', int(14000 * math.sin(2 * math.pi * 220 * i / 44100)) if i < 17640 else 0) for i in range(n)))
+w.close()
+PYEOF"
     node "$ROOT/scripts/test_reverbplus_live.js" --port "$LOCAL_PORT" ;;
   *)
     sed -n '2,/^set -u/p' "$0"; exit 1 ;;

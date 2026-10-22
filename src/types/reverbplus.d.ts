@@ -18,5 +18,5 @@ declare function rpScopeBind(name: string): void;
 
 // Hooks a face may define (src/reverbplus_face_common.js calls them behind `typeof`).
 declare function onParam(key: string, value: number): void;
-declare function onFrame(t: any): void;
+declare function onFrame(t: any): boolean | void;
 declare function onState(kind: string): void;

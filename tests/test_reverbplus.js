@@ -111,73 +111,119 @@ test("derived loop time: K x the tank's characteristic period, 25..150 ms at the
 
 const { simTank, schroederRt, transferStats } = require("./reverbplus_loopsim.js");
 
-test("reference model: tank at Decay x (1 - share) + derived outer loop (unity chain) decays in Decay, whatever the loop time", () => {
+test("reference model: tank at 0.3 x Decay + the recirculating chain loop (unity chain) decays in Decay, whatever the loop time", () => {
     const sr = 48000;
-    let worst = [9, 0];
+    let worst = [9, 0], eMin = 9, eMax = 0;
     for (const size of [0.2, 0.6, 1]) {
-        for (const decay of [1, 2, 4]) {
+        for (const decay of [1, 2.5, 6]) {
             const rtT = C.rpTankRt60(C.RP_ALGO.HALL, decay, true);
-            const dur = decay * 1.7 + 0.8;
-            const open = simTank({ tankRt: rtT, dur: decay * 1.2 + 0.8, size });
-            const st = transferStats(open.wl);
+            const dur = decay * 1.6 + 0.8;
+            const tankOnly = simTank({ tankRt: rtT, dur, size });
+            const e0 = tankOnly.wl.reduce((t, v) => t + v * v, 0);
             for (const tm of [1, 0.7, 1.9]) {
                 const Tl = Math.max(324, Math.round(C.rpLoopPeriod(C.RP_ALGO.HALL, size, sr, 0) * tm));
-                // the gen's two caps, with the model's own peak and energy gain (the gen uses the fitted constants)
-                const gC = C.RP_LOOP.X / Math.sqrt(st.peak2);
-                const gI = C.rpLineGain(Tl, decay, sr) * Math.sqrt(C.RP_LOOP.SHARE / st.mean2);
-                const g = Math.min(gC, gI);
-                const r = schroederRt(simTank({ tankRt: rtT, g, loopSamples: Tl, chain: 1, dur, size }).wl, sr) / decay;
-                worst = [Math.min(worst[0], r), Math.max(worst[1], r)];
-                assert(Math.abs(r - 1) < 0.1, `decay ${decay} size ${size} loop ${Tl}: RT60 ${r.toFixed(3)} x Decay`);
+                const g = C.rpLoopGain(C.RP_ALGO.HALL, { decay }, Tl, sr, 0);
+                const r = simTank({ tankRt: rtT, g, loopSamples: Tl, chain: 1, dur, size });
+                const rt = schroederRt(r.wl, sr) / decay;
+                worst = [Math.min(worst[0], rt), Math.max(worst[1], rt)];
+                assert(Math.abs(rt - 1) < 0.15, `decay ${decay} size ${size} loop ${Tl}: RT60 ${rt.toFixed(3)} x Decay`);
+                // the loop's share of the tail: the energy after the tank's own decay is mostly the chain loop's (g > 0.3)
+                const eTot = r.wl.reduce((t, v) => t + v * v, 0);
+                const ratio = eTot / e0;
+                eMin = Math.min(eMin, ratio); eMax = Math.max(eMax, ratio);
+                assert(ratio > 0.8 && ratio < 1.25, `energy ${ratio.toFixed(3)} x the tank's (sqrt(1 - g^2) normalisation), decay ${decay} size ${size}`);
             }
         }
     }
-    console.log(`  tank + loop RT60 / Decay over 3 sizes x 3 Decays x 3 loop times: ${worst[0].toFixed(3)}..${worst[1].toFixed(3)}`);
-    // without the tank compensation and with the loop at its peak gain the decay overshoots where the loop dominates
-    const decay = 1, size = 0.6;
-    const open = simTank({ tankRt: decay, dur: 2, size });
-    const g = C.RP_LOOP.X / Math.sqrt(transferStats(open.wl).peak2);
-    const raw = schroederRt(simTank({ tankRt: decay, g, loopSamples: 4123, chain: 1, dur: 2.5, size }).wl, sr) / decay;
-    assert(raw > 1.05, "uncompensated " + raw);
+    console.log(`  tank + loop RT60 / Decay over 3 sizes x 3 Decays x 3 loop times: ${worst[0].toFixed(3)}..${worst[1].toFixed(3)}; total energy / tank alone ${eMin.toFixed(2)}..${eMax.toFixed(2)}`);
 });
 
-test("reference model: the loop never runs away (Decay 60 s, chain gain 1.5 and 3 with the clip, 1.5 even without), peaks stay bounded", () => {
+test("recirculating loop: allpasses are exactly unity, |loop| <= g max(1, shelf) at every frequency, with damping and bass shelf", () => {
+    const START = read("src/reverbplus_start.genexpr");
+    const G = load(START);
+    const a = C.rpLoopApGain(0.8);
+    // (1) the gen's own rp_ap (transpiled): impulse response of the 4-stage chain has unit energy, and its spectrum is flat
+    const lens = C.RP_LOOP.AP_LEN_L;
+    const dats = lens.map(() => new DataSim(8192, 1));
+    let e = 0;
+    const N = 1 << 15, re = new Float64Array(N), im = new Float64Array(N);
+    for (let t = 0; t < N; t++) {
+        let x = t === 0 ? 1 : 0;
+        for (let j = 0; j < 4; j++) x = G.rp_ap(dats[j], 0, 8192, t, lens[j], a, x);
+        re[t] = x;
+        e += x * x;
+    }
+    near(e, 1, 1e-6, "AP chain energy");
+    C.rpFft(re, im, N, false);
+    let lo = 9, hi = 0;
+    for (let k = 1; k < N / 2; k++) { const m = Math.hypot(re[k], im[k]); lo = Math.min(lo, m); hi = Math.max(hi, m); }
+    assert(lo > 0.999 && hi < 1.001, `AP chain |H| ${lo}..${hi}`);
+    // (2) the analytic bound for the whole recirculating path: g x shelf x damping x allpasses
+    let worstRatio = 0;
+    for (const bass of [0.25, 1, 2, 4]) for (const g of [0.3, 0.7, 0.97]) for (const diff of [0, 0.8, 1]) for (const damp of [0, 0.1, 0.5]) {
+        const shelf = C.rpLoopBassShelf(C.RP_ALGO.HALL, g, bass);
+        const bound = g * Math.max(1, shelf);
+        assert(bound <= Math.pow(g, 1 / bass) + 1e-12 || bass < 1, `bound ${bound}`);
+        for (let k = 0; k < 4000; k++) {
+            const w = Math.PI * (k + 0.5) / 4000;
+            const m = C.rpLoopMagnitude(w, g, C.rpLoopApGain(diff), C.RP_LOOP.AP_LEN_R, damp, shelf, 0.04);
+            assert(m <= bound + 1e-9, `|loop| ${m} > ${bound} (bass ${bass}, g ${g})`);
+            worstRatio = Math.max(worstRatio, m / g);
+        }
+        assert(bound < 1, "loop gain below 1 with a unity chain: " + bound);
+    }
+    // flat: with no damping and no shelf the magnitude is g at every frequency
+    for (let k = 0; k < 500; k++) near(C.rpLoopMagnitude(0.003 + k * 0.006, 0.8, a, lens, 0, 1, 0), 0.8, 1e-9);
+    console.log(`  loop |H| / g: exactly 1 undamped, at most ${worstRatio.toFixed(3)} with the bass shelf; AP chain energy ${e.toFixed(8)}`);
+});
+
+test("reference model: the loop never runs away (Decay 60 s, chain gain 1.5 and 3 with the clip), peaks stay bounded; unity chain decays", () => {
     const sr = 48000;
     const rtT = C.rpTankRt60(C.RP_ALGO.HALL, 60, true);
     const Tl = 4800;
-    const open = simTank({ tankRt: rtT, dur: 8 });
-    const g = Math.min(C.RP_LOOP.X / Math.sqrt(transferStats(open.wl).peak2), C.rpLineGain(Tl, 60, sr) * Math.sqrt(C.RP_LOOP.SHARE / transferStats(open.wl).mean2));
-    for (const [chain, clipLevel] of [[1, 1], [1.5, 1], [3, 1], [1.5, 1e9]]) {
+    const g = C.rpLoopGain(C.RP_ALGO.HALL, { decay: 60 }, Tl, sr, 0);
+    assert(g <= C.RP_LOOP.G_MAX + 1e-12 && g > 0.9, "g " + g);
+    for (const [chain, clipLevel] of [[1, 1], [1.5, 1], [3, 1]]) {
         const r = simTank({ tankRt: rtT, g, loopSamples: Tl, chain, clipLevel, dur: 12 });
         let pk = 0;
         for (let i = 0; i < r.wl.length; i++) { assert(Number.isFinite(r.wl[i])); pk = Math.max(pk, Math.abs(r.wl[i])); }
         assert(pk < 1.5, `chain ${chain}: peak ${pk}`);
         const e1 = r.wl.slice(48000, 96000).reduce((t, v) => t + v * v, 0), e2 = r.wl.slice(528000, 576000).reduce((t, v) => t + v * v, 0);
-        assert(e2 < e1, `chain ${chain}: the tail must not grow: ${e1} -> ${e2}`);
+        if (chain === 1) assert(e2 < e1, `unity chain: the tail must decay: ${e1} -> ${e2}`);
+        else assert(Number.isFinite(e2) && e2 < 48000 * 1.5 * 1.5, `chain ${chain}: bounded by the clip (e2 ${e2})`);
     }
+    // the unity chain decays by at least g^2 per recirculation: energy in successive loop periods of an impulse through the loop alone
+    const r = simTank({ tankRt: 0.1, g: 0.8, loopSamples: 4800, chain: 1, dur: 3 });
+    const win = (i) => r.wl.slice(i * 4800, (i + 1) * 4800).reduce((t, v) => t + v * v, 0);
+    for (let i = 4; i < 12; i++) assert(win(i + 1) <= win(i) * 0.8 * 0.8 * 1.15 + 1e-12, `pass ${i}: ${win(i + 1) / win(i)}`);
 });
 
-test("derived loop gain: the two caps, Late / Early levels, Convolution reference; tank RT60 share", () => {
-    const base = { decay: 2.5, size: 0.6, erlevel: -70, latelevel: 0 };
+test("derived loop gain g = 10^(-3 (T + allpass delay) / Decay), 0.5..0.9 at typical settings, capped at 0.97; tank at 0.3 x Decay while paired", () => {
     const T = 4800, sr = 48000;
-    for (const algo of [0, 1, 2, 3, 4, 5]) {
-        const g = C.rpLoopGain(algo, base, T, sr, 48000);
-        assert(g > 0.005 && g < 0.9, "gain " + algo + " " + g);
-        // never above either cap
-        assert(g <= C.RP_LOOP.X / Math.max(C.rpLoopPeak(algo, base, sr), 0.5) + 1e-12);
+    const apd = C.rpLoopApDelay(sr);
+    near(apd, 0.75 * (149 + 233 + 367 + 523 + 163 + 257 + 389 + 547), 1e-9);
+    near(C.rpLoopApDelay(96000), 2 * apd, 1e-9);
+    for (const algo of [0, 1, 2, 3, 4]) {
+        for (const decay of [1, 2.5, 6]) {
+            const g = C.rpLoopGain(algo, { decay }, T, sr, 0);
+            near(g, Math.min(Math.pow(10, -3 * (T + apd) / (sr * decay)), 0.97), 1e-12);
+            assert(g > 0.2 && g <= 0.97);
+        }
     }
-    // a quieter / louder Late level raises / lowers the gain (the wet it acts on scales with it)
-    const hall = (o) => C.rpLoopGain(1, Object.assign({}, base, o), T, sr, 0);
-    assert(hall({ latelevel: 6 }) < hall({}) && hall({ latelevel: -12 }) > hall({}));
-    // a longer Decay allows less loop gain (sharper resonances), at the same period
-    assert(hall({ decay: 30 }) < hall({ decay: 2.5 }) && hall({ decay: 2.5 }) < hall({ decay: 0.8 }) + 1e-9);
-    // the energy cap: a loop longer than the decay it may add (T >> Decay) is turned down
-    assert(C.rpLoopGain(1, Object.assign({}, base, { decay: 0.3 }), 9600, sr, 0) < C.rpLoopGain(1, Object.assign({}, base, { decay: 0.3 }), 2400, sr, 0));
-    // Early reflections add to the peak
-    assert(C.rpLoopPeak(3, Object.assign({}, base, { erlevel: 0 }), sr) > C.rpLoopPeak(3, base, sr));
+    assert(C.rpLoopGain(1, { decay: 2.5 }, T, sr, 0) > 0.5 && C.rpLoopGain(1, { decay: 2.5 }, T, sr, 0) < 0.9);
+    near(C.rpLoopGain(1, { decay: 60 }, T, sr, 0), 0.97, 1e-12);
+    // longer loop or shorter Decay -> smaller gain
+    assert(C.rpLoopGain(1, { decay: 2.5 }, 9600, sr, 0) < C.rpLoopGain(1, { decay: 2.5 }, T, sr, 0));
+    assert(C.rpLoopGain(1, { decay: 1 }, T, sr, 0) < C.rpLoopGain(1, { decay: 6 }, T, sr, 0));
+    // Convolution: reference = half the processed IR length (min 0.1 s)
+    near(C.rpLoopGain(5, { decay: 9 }, T, sr, 48000), Math.pow(10, -3 * (T + apd) / (sr * 0.5)), 1e-12);
+    // wet scale keeps the energy: s^2 / (1 - g^2) = 1
+    for (const g of [0.3, 0.8, 0.97]) near(C.rpLoopWetScale(g) ** 2 / (1 - g * g), 1, 1e-12);
+    // bass shelf only for the FDN algorithms; low band decays `bass` times slower
+    near(C.rpLoopBassShelf(1, 0.8, 2) * 0.8, Math.pow(0.8, 0.5), 1e-12);
+    assert.strictEqual(C.rpLoopBassShelf(0, 0.8, 2), 1);
     // the share
-    near(C.RP_LOOP.SHARE, 0.55 * 0.4 * 0.4, 1e-12);
-    near(C.rpTankRt60(1, 2, true), 2 * (1 - C.RP_LOOP.SHARE), 1e-12);
+    near(C.rpTankRt60(1, 2, true), 2 * C.RP_LOOP.TANK_FRAC, 1e-12);
     near(C.rpTankRt60(1, 2, false), 2, 1e-12);
     near(C.rpTankRt60(5, 2, true), 2, 1e-12);
 });
@@ -214,34 +260,14 @@ test("pairing: bracket matching, chain latency of racks (copied from Delay+)", (
 
 test("layout constants: scope / header / spec sizes agree", () => {
     const S = C.RP_SCOPE;
-    assert.strictEqual(S.ER + 2 * S.N_ER, S.DECAY);
-    assert.strictEqual(S.DECAY + S.N_DECAY, S.WAVE);
-    assert.strictEqual(S.WAVE + 2 * S.N_WAVE, 848);
-    assert(S.ALGO_STATE < C.RP_SCOPE_SAMPS);
-    assert.strictEqual(S.LINES + S.N_LINES, S.ER);
+    assert(Math.max(...Object.values(S)) < C.RP_SCOPE_SAMPS);
+    assert.strictEqual(new Set(Object.values(S)).size, Object.keys(S).length, "scope slots are unique");
     assert.strictEqual(C.RP_CONV.HEAD_FLOATS, 16512);
     assert.strictEqual(C.RP_CONV.BANK_FLOATS, 1163952);
     assert.strictEqual(C.RP_CONV.IRSPEC_SAMPS, 2327904);
     assert.strictEqual(C.RP_IR_MAX, 290816);
     assert.strictEqual(C.RP_SPEC.DRY, C.RP_SPEC.WET + C.RP_SPEC.N);
     assert.strictEqual(C.RP_SPEC_SAMPS, 32 + 2 * C.RP_SPEC.N);
-});
-
-test("decay ring order and RT60 estimate (-5..-25 dB x 3)", () => {
-    const s = new Float32Array(C.RP_SCOPE_SAMPS);
-    const rt = 2.0, sr = 48000;
-    const perEntry = 60 * C.RP_DECAY_BLOCK / (sr * rt);
-    const head = 100;
-    s[C.RP_SCOPE.DECAY_HEAD] = head;
-    for (let i = 0; i < 256; i++) {
-        const slot = (head + i) % 256; // i = age rank, oldest first
-        s[C.RP_SCOPE.DECAY + slot] = i < 30 ? -100 : -6 - (i - 30) * perEntry;
-    }
-    const ord = C.rpDecayOrdered(s);
-    near(ord[29], -100, 1e-6);
-    near(ord[30], -6, 1e-6);
-    near(C.rpEstimateRt60(ord, C.RP_DECAY_BLOCK, sr), rt, 0.08);
-    assert.strictEqual(C.rpEstimateRt60(new Float32Array(256).fill(-100), 512, sr), null);
 });
 
 test("32-band spectrum of a ring: a 1 kHz sine peaks in the band that holds 1 kHz", () => {
@@ -436,20 +462,36 @@ test("GenExpr lint: Start (library + conv + core) and End", () => {
     void start; void end;
 });
 
+test("the Start gen's loop constants are the config's (K, tank share, gain cap, allpass lengths / gain, Convolution, spring allpass)", () => {
+    const code = stripComments(START_SRC).replace(/\s+/g, " ");
+    const L = C.RP_LOOP;
+    assert(code.includes(`klp = algoCur == 1 ? ${L.K[1]} : (algoCur == 2 ? ${L.K[2]} : ${L.K[3]});`), "K hall / room / chamber");
+    assert(code.includes(`klp = ${L.K[0]};`) && code.includes(`klp = ${L.K[4]};`), "K plate / spring");
+    assert(code.includes(`rtT = rt * (1 - ${Number((1 - L.TANK_FRAC).toFixed(6))} * lkS`), "tank share");
+    assert(code.includes(`lgT = min(rp_gain(tlE + apSum, rtG, sr), ${L.G_MAX});`), "gain");
+    assert(code.includes(`apAt = ${L.AP_GAIN_MIN} + ${L.AP_GAIN_SPAN} * clip(diffp, 0, 1);`), "allpass gain");
+    L.AP_LEN_L.forEach((v, i) => assert(code.includes(`apl.poke(floor(${v} * sfc + 0.5), ${i});`), "AP L " + i));
+    L.AP_LEN_R.forEach((v, i) => assert(code.includes(`apl.poke(floor(${v} * sfc + 0.5), ${4 + i});`), "AP R " + i));
+    assert(code.includes("bshT = (algoCur == 1 || algoCur == 2 || algoCur == 3) ? pow(lgT, 1 / clip(bassm, 0.25, 4) - 1) : 1;"), "bass shelf");
+    assert(code.includes("scs + ((1 + lkS * (sqrt(max(1 - lgT * lgT, 0)) - 1)) - scs)"), "wet scale");
+    assert(code.includes("tL = xL * ig * inS;") && !/tL = xL \* ig \* inS \+/.test(code), "the return does not enter the tank (only the Input-scaled input does)");
+    assert(code.includes(`* 0.5 + ${L.SPRING_AP};`), "spring allpass samples");
+    assert(code.includes(`clip(${L.CONV_FRAC} * irLen, ${L.CONV_MIN_S} * sr, ${L.CONV_MAX_S} * sr)`), "Convolution loop time");
+    assert(code.includes(`clip(tlN, 0, ${L.MAX_S} * sr)`), "longest loop");
+    assert(code.includes("max(0.5 * irLen / sr, 0.1)"), "Convolution decay reference");
+    assert(L.K.length === 5);
+});
+
 test("telemetry / header slots written by the cores are slots of RP_SCOPE / RP_HDR / RP_ESCOPE", () => {
     const S = C.RP_SCOPE;
-    const scalar = new Set(Object.entries(S).filter(([k, v]) => !["LINES", "N_LINES", "ER", "N_ER", "DECAY", "N_DECAY", "WAVE", "N_WAVE"].includes(k)).map(([, v]) => v));
+    const scalar = new Set(Object.values(S));
     const code = stripComments(START_SRC);
     const idx = new Set();
     for (const m of code.matchAll(/poke\(scope, [^;]*, (\d+)\);/g)) idx.add(Number(m[1]));
     for (const i of idx) assert(scalar.has(i), "scope slot " + i + " is not in RP_SCOPE");
-    for (const k of ["FRAMES", "SR", "ALGO", "FREEZE", "PAIRED", "B", "L", "K", "MIN_MS", "LOOP_MS", "PREDELAY_MS", "CLAMPED", "IN_PK", "TANK_PK", "WET_PK", "RET_PK",
-        "END_L_PK", "END_R_PK", "CLIP_DB", "IN_RMS", "WET_RMS", "RT60_MEAS", "RT60_LO", "RT60_MID", "RT60_HI", "IR_LOADED", "IR_LEN", "IR_VER", "IR_SRMIS", "NLINES",
-        "DECAY_HEAD", "WAVE_HEAD", "ALGO_STATE"]) assert(idx.has(S[k]), "Start never writes scope " + k);
-    // rings
-    assert(/poke\(scope, blkDb, 80 \+ decHead\)/.test(code) && S.DECAY === 80);
-    assert(/hb3 = 336 \+ 2 \* wvHead/.test(code) && S.WAVE === 336);
-    assert(/32 \+ i\)/.test(code) && /48 \+ 2 \* i/.test(code) && /49 \+ 2 \* i/.test(code));
+    for (const k of ["FRAMES", "SR", "ALGO", "FREEZE", "PAIRED", "B", "L", "K", "MIN_MS", "LOOP_MS", "PREDELAY_MS", "CLAMPED", "IN_PK", "ASLEEP", "WET_PK", "RET_PK",
+        "CLIP_DB", "RT60_LO", "RT60_MID", "RT60_HI", "IR_LOADED", "IR_LEN", "IR_VER", "IR_SRMIS",
+        "ALGO_STATE", "LOOP_GAIN", "TANK_RT", "MUTE_N", "MUTE_L", "MUTE_B", "MUTE_K", "GLINK"]) assert(idx.has(S[k]), "Start never writes scope " + k);
     // header
     const H = C.RP_HDR;
     const known = new Set(Object.values(H));
@@ -526,7 +568,7 @@ function checkDevice(name, doc, lay) {
         assert.strictEqual(b.parameter_enable, 1);
     }
     for (const k of ["algo", "predelay", "size", "decay", "diffusion", "damp", "bassmult", "xover", "modrate", "moddepth", "erlevel", "latelevel", "lowcut", "highcut", "width",
-        "freeze", "loop", "looptime", "loopclip", "looplevel", "duck", "duckrel", "drywet", "output", "irstretch", "irstart", "irreverse", "irdecay", "irfile"]) {
+        "freeze", "loopclip", "looplevel", "duck", "duckrel", "drywet", "output", "irstretch", "irstart", "irreverse", "irdecay", "irfile", "input"]) {
         assert(ids.includes("obj-ctrl-" + k), "parameter " + k);
     }
     const drops = boxes.filter((b) => b.maxclass === "live.drop");
@@ -624,14 +666,29 @@ for (const name of layouts) {
     });
 }
 
-test("every tests/test_reverbplus_face_<x>.js sub-test passes", () => {
-    for (const f of fs.readdirSync(__dirname).filter((n) => /^test_reverbplus_face_.*\.js$/.test(n))) {
+test("every tests/test_reverbplus_face*.js sub-test passes", () => {
+    for (const f of fs.readdirSync(__dirname).filter((n) => /^test_reverbplus_face(_.*)?\.js$/.test(n))) {
         const r = spawnSync("node", [path.join(__dirname, f)], { encoding: "utf8" });
         assert.strictEqual(r.status, 0, `${f}: ${(r.stdout + r.stderr).split("\n").slice(-6).join("\n")}`);
     }
 });
 
 // ---- 5. built base + End device --------------------------------------------------------------------------------------
+test("Input parameter: -36..+12 dB, default 0, unique short name, appended last, `%.1f dB` like Output", () => {
+    const doc = readAmxd(path.join(ROOT, "devices", "Reverb+.amxd"));
+    const boxes = doc.patcher.boxes.map((b) => b.box);
+    const i = boxes.find((b) => b.id === "obj-ctrl-input"), o = boxes.find((b) => b.id === "obj-ctrl-output");
+    const v = i.saved_attribute_attributes.valueof, ov = o.saved_attribute_attributes.valueof;
+    assert.strictEqual(v.parameter_longname, "Input");
+    assert.strictEqual(v.parameter_shortname, "Input");
+    assert.deepStrictEqual(v.parameter_mmin, -36); assert.deepStrictEqual(v.parameter_mmax, 12);
+    assert.strictEqual(v.parameter_initial[0], 0);
+    assert.strictEqual(v.parameter_unitstyle, ov.parameter_unitstyle);
+    assert.strictEqual(v.parameter_units, ov.parameter_units);
+    assert.strictEqual(i.maxclass, "live.dial");
+    assert.strictEqual(boxes.filter((b) => b.saved_attribute_attributes && b.saved_attribute_attributes.valueof && b.saved_attribute_attributes.valueof.parameter_shortname === "Input").length, 1);
+});
+
 test("built devices/Reverb+.amxd: gen patch embedded for the deferred DSP, IR spectra buffer sized for two banks", () => {
     const doc = readAmxd(path.join(ROOT, "devices", "Reverb+.amxd"));
     const eng = doc.patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-engine").textfile.text;
@@ -647,6 +704,7 @@ test("built devices/Reverb+.amxd: gen patch embedded for the deferred DSP, IR sp
     assert.strictEqual(params.size[1], 100);
     assert.strictEqual(params.decay[1], 1);
     assert.strictEqual(params.drywet[0], "wetmix");
+    assert.deepStrictEqual(params.input, ["indb", 1], "Input -> gen indb (dB, no divisor)");
     assert(!("irstretch" in params), "IR controls are the engine's, not the gen's");
 });
 

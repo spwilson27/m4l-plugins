@@ -12,7 +12,7 @@
 //   rpSend(key, value)  -> `param <key> <value>`: drives the live.* parameter object (undo, automation, echo)
 //   rpCmd(name)         -> `cmd <name>`: browse_ir | clear_ir
 // Telemetry: rpPoll(fps) reads buffer~ ---rpscope (layout RP_SCOPE in reverbplus_config.js) into rpT.s and
-// calls onFrame(rpT) when the gen's frame counter moved (then mgraphics.redraw()). Read other buffers
+// calls onFrame(rpT) when the gen's frame counter moved (then mgraphics.redraw(), unless onFrame returns false). Read other buffers
 // with rpBuf(name) (names in rpNames). Hooks a face may define: paint(), onFrame(t), onParam(key, v),
 // onState(kind), preview() (scripts/render_preview.py), onclick / ondrag / ... as in any v8ui.
 
@@ -132,18 +132,18 @@ function rpFrame() {
     var b = rpBuf(rpNames.scope);
     if (!b) return;
     var h = b.peek(1, 0, RP_SCOPE_SAMPS);
-    if (!h || h.length < RP_SCOPE.ALGO_STATE + 1) return;
+    if (!h || h.length < RP_SCOPE.GLINK + 1) return;
     var S = RP_SCOPE;
     var moved = h[S.FRAMES] !== rpT.frames;
     rpT.frames = h[S.FRAMES];
     rpT.s = h;
     var sig = h[S.IN_PK] + h[S.WET_PK] + h[S.RET_PK];
     rpT.idle = sig > 0.00002 ? 0 : rpT.idle + 1;
-    // keep animating for as long as the decay ring can still show something (about 2 s after silence)
+    // keep animating for about 2 s after silence (the waterfall history scrolls out)
     rpT.active = rpT.idle < 90;
     if (!moved) return;
-    if (typeof onFrame === "function") onFrame(rpT);
-    if (rpT.active) mgraphics.redraw();
+    var again = typeof onFrame === "function" ? onFrame(rpT) : true;
+    if (rpT.active && again !== false) mgraphics.redraw();
 }
 
 // ---- drawing helpers ------------------------------------------------------------------------------------
@@ -187,7 +187,8 @@ function rpHeaderPills() {
             color: RPC.amber });
     }
     var s = rpT.s;
-    if (s && s[RP_SCOPE.CLAMPED] > 0.5 && rpNum("loop", 0) > 0) out.push({ label: "LOOP MIN " + rpFormatMs(s[RP_SCOPE.MIN_MS]), color: RPC.amber });
+    // the chain's latency forces the outer loop longer than Size would make it (Delay+ shows its MIN the same way)
+    if (s && s[RP_SCOPE.PAIRED] > 0.5 && s[RP_SCOPE.CLAMPED] > 0.5) out.push({ label: "LATENCY: LOOP " + rpFormatMs(s[RP_SCOPE.MIN_MS]), color: RPC.amber });
     var algo = rpAlgo();
     if (algo === RP_ALGO.CONV) {
         var ir = rpState.ir;
@@ -199,28 +200,8 @@ function rpHeaderPills() {
     return out;
 }
 
-/** Draw the header pills right-aligned in a strip of width w at y. */
-function rpDrawHeader(w, y) {
-    var pills = rpHeaderPills();
-    var x = w - 2;
-    for (var i = 0; i < pills.length; i++) {
-        var pw = rpTextW(pills[i].label, 8.5, true) + 12;
-        x -= pw;
-        rpPill(x, y, pw, 13, pills[i].color, 0.16);
-        rpText(pills[i].label, x + 6, y + 9.6, 8.5, pills[i].color, true);
-        x -= 4;
-    }
-}
-
-/** dB (-120..0) -> 0..1 for level displays. */
-function rpDb01(db, floorDb) {
-    var f = floorDb === undefined ? -90 : floorDb;
-    return rpClamp((db - f) / -f, 0, 1);
-}
-
 /**
- * A representative telemetry buffer for scripts/render_preview.py (and tests): decay ring of an
- * exponential tail, line energies, early reflections, waveform ring.
+ * A representative telemetry buffer for scripts/render_preview.py (and tests).
  * @param {number} algo
  * @param {number} rt60
  */
@@ -229,26 +210,8 @@ function rpFakeScope(algo, rt60) {
     var s = new Float32Array(RP_SCOPE_SAMPS);
     s[S.FRAMES] = 10; s[S.SR] = 48000; s[S.ALGO] = algo; s[S.PAIRED] = 1; s[S.B] = 64; s[S.L] = 256; s[S.K] = 0;
     s[S.MIN_MS] = 6.7; s[S.LOOP_MS] = 120; s[S.PREDELAY_MS] = 20;
-    s[S.IN_PK] = 0.4; s[S.TANK_PK] = 0.4; s[S.WET_PK] = 0.25; s[S.RET_PK] = 0.05;
-    s[S.RT60_MEAS] = rt60; s[S.RT60_LO] = rt60 * 1.2; s[S.RT60_MID] = rt60; s[S.RT60_HI] = rt60 * 0.4;
-    s[S.NLINES] = algo === 1 ? 16 : (algo === 0 ? 4 : (algo === 5 ? 0 : 8));
-    for (var i = 0; i < S.N_LINES; i++) s[S.LINES + i] = i < s[S.NLINES] ? 0.35 + 0.4 * Math.abs(Math.sin(i * 1.7)) : 0;
-    for (var k = 0; k < S.N_ER; k++) {
-        var ms = 4 + k * k * 0.27;
-        s[S.ER + 2 * k] = ms;
-        s[S.ER + 2 * k + 1] = (k % 2 ? -1 : 1) * 0.5 * Math.exp(-ms / 40);
-    }
-    s[S.DECAY_HEAD] = 0;
-    for (var j = 0; j < S.N_DECAY; j++) {
-        var age = (j - 40 + S.N_DECAY) % S.N_DECAY; // entries since the hit at slot 40
-        s[S.DECAY + j] = j < 40 ? -90 : -12 - 60 * (age * RP_DECAY_BLOCK / 48000) / rt60;
-    }
-    s[S.WAVE_HEAD] = 0;
-    for (var w = 0; w < S.N_WAVE; w++) {
-        var e = w < 20 ? 0 : Math.exp(-(w - 20) * RP_WAVE_BLOCK / 48000 * 6.9 / rt60) * 0.5;
-        s[S.WAVE + 2 * w] = -e * (0.5 + 0.5 * Math.sin(w * 2.3));
-        s[S.WAVE + 2 * w + 1] = e * (0.5 + 0.5 * Math.cos(w * 1.9));
-    }
+    s[S.IN_PK] = 0.4; s[S.WET_PK] = 0.25; s[S.RET_PK] = 0.05;
+    s[S.RT60_LO] = rt60 * 1.2; s[S.RT60_MID] = rt60; s[S.RT60_HI] = rt60 * 0.4;
     return s;
 }
 

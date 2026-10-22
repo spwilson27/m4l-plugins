@@ -315,8 +315,16 @@ function test_report() {
     var g = new Global("reverbplus_test");
     var h = null;
     try { h = new Buffer(rpOwnNames.hdr).peek(1, 0, 48); } catch (e) { h = null; }
+    var diag = {};
+    try {
+        var gg = rpHost ? rpHost.getnamed("rp_gen") : null;
+        diag.gen = gg ? String(gg.maxclass) : "none";
+        var rf = new File(rpDspPath(), "read");
+        diag.fileOpen = rf.isopen; diag.fileEof = rf.isopen ? rf.eof : -1; diag.textLen = GEN_DSP_TEXT.length;
+        rf.close();
+    } catch (e) { diag.err = String(e); }
     g["report_" + rpSelfId] = JSON.stringify({
-        id: rpSelfId, dsp: rpDsp.ready, dspError: rpDsp.error, link: rpLink.status, latency: rpLink.latency,
+        id: rpSelfId, diag: diag, dsp: rpDsp.ready, dspError: rpDsp.error, link: rpLink.status, latency: rpLink.latency,
         ir: { status: rpIr.status, loaded: rpIr.loaded, len: rpIr.len, ver: rpIr.ver, bank: rpIr.bank, srMismatch: rpIr.srMismatch,
             name: rpIr.name, channels: rpIr.channels }, devSr: rpDevSr(), hdr: h ? Array.prototype.slice.call(h) : null, raw: rpRaw,
     });

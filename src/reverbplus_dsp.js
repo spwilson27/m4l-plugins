@@ -9,10 +9,21 @@
 // (scope FRAMES) moves, then twice more. The header shows "DSP loading…" / "DSP failed" meanwhile.
 
 var rpHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
-var rpDsp = { ready: 0, error: "", createdAt: 0, counter0: -1, task: null, confirmTask: null, settleTask: null };
+var rpDsp = { ready: 0, error: "", createdAt: 0, counter0: -1, task: null, confirmTask: null, settleTask: null, retries: 0 };
+var RP_DSP_RETRIES = 2;
+var RP_DSP_CLAIM_MS = 15000;
+var RP_DSP_QUEUE_POLL_MS = 100;
+var rpDspToken = Math.random();
 var RP_DSP_CONFIRM_MS = 150;
 var RP_DSP_SETTLE_MS = 300;
-var RP_DSP_TIMEOUT_MS = 10000;
+// A healthy gen~ runs about 1.8 s after its creation in Live (158 ms when the compile is cached); the first gen~ the
+// Live process creates is sometimes never added to the DSP chain. The first attempt is therefore given 3.5 s (about
+// twice the healthy time) before it is rebuilt, later attempts 6 s (before: 6 s for every attempt).
+var RP_DSP_FIRST_TIMEOUT_MS = 3500;
+var RP_DSP_TIMEOUT_MS = 6000;
+function rpDspTimeout() {
+    return rpDsp.retries === 0 ? RP_DSP_FIRST_TIMEOUT_MS : RP_DSP_TIMEOUT_MS;
+}
 
 // Load trace for scripts/test_reverbplus_live.js: Global("reverbplus_trace").text, one line per event,
 // stamped with ms since the script loaded.
@@ -20,7 +31,7 @@ var rpTraceT0 = Date.now();
 function rpTrace(tag, msg) {
     try {
         var g = new Global("reverbplus_trace");
-        var line = "+" + (Date.now() - rpTraceT0) + " " + tag + (msg ? " " + msg : "");
+        var line = "+" + (Date.now() - rpTraceT0) + " " + tag + (msg ? " " + msg : "") + " [#" + rpSelfId + " @" + (Date.now() % 1000000) + "]";
         var lines = (g.text ? String(g.text).split("\n") : []).concat([line]);
         g.text = lines.slice(-60).join("\n");
     } catch (_) {}
@@ -71,9 +82,32 @@ function rpDspResend() {
     }
 }
 
+// Only one instance creates its gen~ at a time. Measured in Live (3 pairs in one set): when several
+// Starts create their gen~ within a second of each other, one of them is never added to the DSP chain
+// (its frame counter stays 0 for good, with a valid .gendsp and a wired gen~); one pair in three, a
+// different one from run to run. The Global holds the token of the instance that is creating; it is
+// released when that gen~ runs (or has failed for good), a claim older than RP_DSP_CLAIM_MS is stale.
+function rpDspClaim() {
+    var q = new Global("reverbplus_dspq");
+    var now = Date.now();
+    if (q.owner && q.owner !== rpDspToken && now - Number(q.t) < RP_DSP_CLAIM_MS) return false;
+    q.owner = rpDspToken;
+    q.t = now;
+    return true;
+}
+function rpDspRelease() {
+    var q = new Global("reverbplus_dspq");
+    if (q.owner === rpDspToken) q.owner = 0;
+}
+
 function rpDspLoad() {
     if (rpDsp.ready || rpDsp.createdAt || !rpHost || typeof GEN_DSP_TEXT === "undefined") return;
-    rpTrace("dsp-start", "creating gen~");
+    if (!rpDspClaim()) {
+        if (!rpDsp.task) rpDsp.task = new Task(rpDspLoad, this);
+        rpDsp.task.schedule(RP_DSP_QUEUE_POLL_MS);
+        return;
+    }
+    rpTrace("dsp-start", "creating gen~" + (rpDsp.retries ? " (retry " + rpDsp.retries + ")" : ""));
     try {
         var g = rpHost.getnamed("rp_gen");
         if (!g) {
@@ -100,6 +134,7 @@ function rpDspLoad() {
         rpDspConfirm();
     } catch (err) {
         rpDsp.error = String(err && err.message ? err.message : err);
+        rpDspRelease();
         rpTrace("dsp-error", rpDsp.error);
         post("Reverb+: DSP load failed: " + rpDsp.error + "\n");
     }
@@ -112,6 +147,7 @@ function rpDspConfirm() {
         rpDsp.ready = 1;
         rpDsp.error = "";
         rpTrace("dsp", "ready after " + (Date.now() - rpDsp.createdAt) + " ms");
+        rpDspRelease();
         // the last re-send may have reached the gen while it was still compiling: once more now, and
         // again when it has settled
         rpDspResend();
@@ -120,8 +156,22 @@ function rpDspConfirm() {
         rpBroadcastDsp();
         return;
     }
-    if (Date.now() - rpDsp.createdAt > RP_DSP_TIMEOUT_MS) {
+    if (Date.now() - rpDsp.createdAt > rpDspTimeout() && rpDsp.retries < RP_DSP_RETRIES) {
+        // the gen~ was never added to the DSP chain: build a new one
+        rpDsp.retries++;
+        rpTrace("dsp-retry", "gen~ frames stayed " + c);
+        try {
+            var old = rpHost.getnamed("rp_gen");
+            if (old) rpHost.remove(old);
+        } catch (_) {}
+        rpDsp.createdAt = 0;
+        rpDsp.counter0 = -1;
+        rpDspLoad();
+        return;
+    }
+    if (Date.now() - rpDsp.createdAt > rpDspTimeout()) {
         rpDsp.error = "not running";
+        rpDspRelease();
         rpTrace("dsp-error", rpDsp.error + " (frames " + rpDsp.counter0 + " / " + c + ")");
         rpBroadcastDsp();
         return;
@@ -142,8 +192,4 @@ function rpDspSchedule() {
 // Faces show the pill: `state dsp <ready 0|1> <error text or ->` on the state bus (outlet 1).
 function rpBroadcastDsp() {
     outlet(1, "state", "dsp", rpDsp.ready ? 1 : 0, rpDsp.error ? rpDsp.error.replace(/\s+/g, "_") : "-");
-}
-// Tell a face that comes up later (or a new one): called from `bang`.
-function rpDspState() {
-    return rpDsp.ready || typeof GEN_DSP_TEXT === "undefined" ? null : { error: rpDsp.error };
 }

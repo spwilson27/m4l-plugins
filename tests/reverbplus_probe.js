@@ -195,15 +195,12 @@ function analyze(durMs) {
     }
     out += "cpuAvg " + (cpuCount ? cpuSum / cpuCount : 0) + "\ncpuMax " + cpuMax + "\ncpuCount " + cpuCount + "\n";
     const hdr = readHead(names.hdr, 48);
-    const sc = readHead(names.scope, 1024);
+    const sc = readHead(names.scope, RP_SCOPE_SAMPS);
     for (let i = 0; i < hdr.length; i++) out += "h" + i + " " + hdr[i] + "\n";
-    if (sc.length > 850) out += "lgain " + sc[RP_SCOPE.LOOP_GAIN] + "\ntankrt " + sc[RP_SCOPE.TANK_RT] + "\nloopms " + sc[RP_SCOPE.LOOP_MS] + "\n";
+    out += "lgain " + sc[RP_SCOPE.LOOP_GAIN] + "\ntankrt " + sc[RP_SCOPE.TANK_RT] + "\nloopms " + sc[RP_SCOPE.LOOP_MS] + "\n"
+        + "mutes " + sc[RP_SCOPE.MUTE_N] + "\nmutel " + sc[RP_SCOPE.MUTE_L] + "\nmuteb " + sc[RP_SCOPE.MUTE_B] + "\nmutek " + sc[RP_SCOPE.MUTE_K] + "\n"
+        + "asleep " + sc[RP_SCOPE.ASLEEP] + "\nastate " + sc[RP_SCOPE.ALGO_STATE] + "\n";
     for (let i = 0; i < 32; i++) out += "s" + i + " " + (sc[i] === undefined ? 0 : sc[i]) + "\n";
-    if (sc.length > 1000) {
-        for (let i = 0; i < 16; i++) out += "line" + i + " " + sc[RP_SCOPE.LINES + i] + "\n";
-        for (let i = 0; i < 32; i++) out += "er" + i + " " + sc[RP_SCOPE.ER + i] + "\n";
-        out += "astate " + sc[RP_SCOPE.ALGO_STATE] + "\n";
-    }
     const report = new File(resultPath, "write", "TEXT");
     report.eof = 0;
     report.writestring(out);

@@ -1,7 +1,8 @@
 "use strict";
 // Reference model of Reverb+'s combined system for tests/test_reverbplus.js: a Hall-like FDN (the real line lengths,
-// Hadamard mixing, per-line RT60 gains, the output normalisation of src/reverbplus_start.genexpr) with the outer loop
-// (delay, gain, a chain gain, the soft clip). No bass split, damping, diffusers or early reflections.
+// Hadamard mixing, per-line RT60 gains, the output normalisation of src/reverbplus_start.genexpr), fed from the input only, plus the
+// recirculating chain loop of the Start gen (return -> delay -> 4 Schroeder allpasses -> gain g -> clip -> added to the chain input,
+// chain input = tank wet x sqrt(1 - g^2) + loop). A chain gain multiplies the return. No bass shelf, damping or early reflections.
 const path = require("path");
 const C = require(path.join(__dirname, "..", "src", "reverbplus_config.js"));
 
@@ -15,18 +16,31 @@ function simTank(o) {
     const bufs = lens.map((l) => new Float64Array(l));
     const pos = new Int32Array(N);
     const n = Math.round(o.dur * sr);
-    const wl = new Float64Array(n), wr = new Float64Array(n);
+    const wl = new Float64Array(n), wr = new Float64Array(n), tl = new Float64Array(n);
     const Tl = o.loopSamples || 0;
+    const g = o.g || 0;
+    const wetScale = Tl > 0 ? C.rpLoopWetScale(g) : 1;
+    const a = C.rpLoopApGain(o.diffusion === undefined ? 0.8 : o.diffusion);
+    const mkAp = (lens2) => lens2.map((D) => ({ D, buf: new Float64Array(D + 1), p: 0 }));
+    const apL = mkAp(C.RP_LOOP.AP_LEN_L), apR = mkAp(C.RP_LOOP.AP_LEN_R);
+    const runAp = (chain, x) => {
+        for (const s of chain) {
+            const w0 = s.buf[s.p];
+            const w = x + a * w0;
+            s.buf[s.p] = w;
+            s.p = (s.p + 1) % s.D; // buffer length D: the sample written D samples ago is read back
+            x = w0 - a * w;
+        }
+        return x;
+    };
     const ringL = new Float64Array(Tl + 1), ringR = new Float64Array(Tl + 1);
     const cT = o.clipLevel === undefined ? 1 : o.clipLevel, cK = 0.8 * cT;
-    const soft = (v) => { const a = Math.abs(v); return a <= cK ? v : Math.sign(v) * (cK + (cT - cK) * Math.tanh((a - cK) / (cT - cK))); };
+    const soft = (v) => { const ab = Math.abs(v); return ab <= cK ? v : Math.sign(v) * (cK + (cT - cK) * Math.tanh((ab - cK) / (cT - cK))); };
     const y = new Float64Array(N), f = new Float64Array(N);
     const hn = 1 / Math.sqrt(N), ci = Math.sqrt(2 / N);
     const sgn = (m) => ((m & 1) === 0 ? 1 : -1);
     for (let t = 0; t < n; t++) {
-        let ret = [0, 0];
-        if (Tl > 0) { ret = [ringL[t % (Tl + 1)], ringR[t % (Tl + 1)]]; }
-        const inL = (t === 0 ? 1 : 0) + ret[0], inR = (t === 0 ? 1 : 0) + ret[1];
+        const inL = t === 0 ? 1 : 0, inR = t === 0 ? 1 : 0;
         let oL = 0, oR = 0;
         for (let i = 0; i < N; i++) {
             y[i] = gm[i] * bufs[i][pos[i]];
@@ -34,21 +48,30 @@ function simTank(o) {
             oL += sgn(i * 7 + Math.floor(i / 2)) * y[i];
             oR += sgn(i * 5 + 1 + Math.floor(i / 3)) * y[i];
         }
-        for (let h = 1; h < N; h *= 2) for (let j = 0; j < N; j += 2 * h) for (let k = j; k < j + h; k++) { const a = f[k], b = f[k + h]; f[k] = a + b; f[k + h] = a - b; }
+        for (let h = 1; h < N; h *= 2) for (let j = 0; j < N; j += 2 * h) for (let k = j; k < j + h; k++) { const x1 = f[k], x2 = f[k + h]; f[k] = x1 + x2; f[k + h] = x1 - x2; }
         for (let i = 0; i < N; i++) {
             bufs[i][pos[i]] = f[i] * hn + ci * ((i & 1) === 0 ? inL : inR);
             pos[i] = (pos[i] + 1) % lens[i];
         }
-        wl[t] = oL * 0.7071 * nsC;
-        wr[t] = oR * 0.7071 * nsC;
+        const twL = oL * 0.7071 * nsC, twR = oR * 0.7071 * nsC;
+        tl[t] = twL;
+        let dL = 0, dR = 0;
         if (Tl > 0) {
-            ringL[t % (Tl + 1)] = 0;
+            const k = t % (Tl + 1);
+            dL = soft(g * runAp(apL, ringL[k]));
+            dR = soft(g * runAp(apR, ringR[k]));
+            ringL[k] = 0;
+            ringR[k] = 0;
+        }
+        wl[t] = twL * wetScale + dL;
+        wr[t] = twR * wetScale + dR;
+        if (Tl > 0) {
             const w = (t + Tl) % (Tl + 1);
-            ringL[w] = o.g * soft(o.chain * wl[t]);
-            ringR[w] = o.g * soft(o.chain * wr[t]);
+            ringL[w] = o.chain * wl[t];
+            ringR[w] = o.chain * wr[t];
         }
     }
-    return { wl, wr, sr, nsC };
+    return { wl, wr, tl, sr, nsC };
 }
 function schroederRt(x, sr) {
     const s = new Float64Array(x.length);

@@ -1,18 +1,18 @@
 // Reverb+ (Start) — the reverb engine. Sits first in a rack chain: [Reverb+] [user FX ...] [Reverb+ End].
 //
-// Start outputs ONLY the reverb wet into the chain (when an End is paired). End mixes it with the
-// latency-aligned dry (Dry/Wet, Output, Ducking) and writes the processed wet back into `xfer`, which
-// Start adds into the TANK INPUT (after the pre-delay, before the diffusion / early reflections) as the
-// outer feedback loop: Loop x return, through a clip. Unpaired, the Start is a plain reverb: dry and wet
-// are mixed here (Dry/Wet, Output; no ducking).
+// Start outputs ONLY the reverb wet (plus the recirculating chain loop below) into the chain when an End is paired. End mixes it
+// with the latency-aligned dry (Dry/Wet, Output, Ducking) and writes the processed wet back into `xfer`. Unpaired, the Start is a
+// plain reverb: dry and wet are mixed here (Dry/Wet, Output; no ducking).
 //
-// The outer loop is DERIVED, the user sets neither its time nor its amount (AGENTS.md section 27), tuned for a chain
-// WITHOUT gain:
-//   period = K[algo] x the tank's characteristic period (mean line length, Plate branch, spring), never below MIN
-//   gain   = min(0.4 / max|H|, 10^(-3 period / Decay) sqrt(0.088 / Eg))  (max|H| = largest resonance of the open-loop
-//            tank transfer, Eg = its energy gain; the clip below is the safety net for chains that add gain)
-//   decay  = while an End is paired the tank runs at Decay x (1 - 0.088); the loop gives the rest (RT60 tank + loop =
-//            RT60 tank / (1 - 0.55 x^2) at x = 0.4, measured in the reference model and in Max).
+// The chain is truly IN the reverb's feedback (AGENTS.md section 27): the return does NOT go through the tank (its resonance peaks
+// would force a tiny gain). It goes through a recirculating path with a FLAT magnitude response:
+//   return -> delay (period - B - L) -> 4 Schroeder allpasses per channel (|H| = 1) -> HF damping (one-pole, |H| <= 1)
+//          -> bass shelf (FDN algorithms, <= g^(1/bass - 1)) -> gain g -> clip (safety) -> added to the chain input
+//   g      = min(10^(-3 period / Decay), 0.97)            (so |loop| <= g^(1/bass) < 1 for a unity chain, at every frequency)
+//   period = K[algo] x the tank's characteristic period, never below MIN
+//   chain input = wet x sqrt(1 - g^2) + loop   (the tank runs at Decay x 0.3 while paired; the sqrt keeps the wet's total energy that of
+//            the tank alone, since the recirculations add 1 / (1 - g^2))
+// The tank itself is fed from the input only (feed-forward), so its colour is the first pass and the loop carries the long tail.
 //
 // Cross-device timing is the Delay+ machinery (src/delayplus_start.genexpr / delayplus_end.genexpr): both
 // devices run a free counter mod M; K / B calibration; L = chain latency (poked by the face into hdr[30]).
@@ -82,6 +82,14 @@ rp_rd2(dat, ch, n, cn, d) {
 	return a + (b - a) * f;
 }
 
+// Schroeder allpass (canonical form, |H| = 1 for |a| < 1): reads the line d samples back, writes w, returns the output.
+rp_ap(dat, base, blen, cn, d, a, x) {
+	w0 = rp_rd(dat, base, blen, cn, d);
+	w = x + a * w0;
+	rp_wr(dat, base, blen, cn, w);
+	return w0 - a * w;
+}
+
 // 1 / n-th power of ten: per-pass gain of a loop of `len` samples that decays 60 dB in `rt` seconds.
 rp_gain(len, rt, sr) {
 	return pow(10, -3 * len / (sr * rt));
@@ -97,12 +105,13 @@ Data tab(4096, 3);
 Data dl(1048576);      // every algorithm's delay lines (one layout at a time)
 Data pdl(65536, 2);    // pre-delay
 Data lpr(262144, 2);   // outer loop: the return from End
+Data apd(65536);       // loop diffusers: 8 allpass lines (L 0..3, R 4..7) of 8192
+Data apl(8);           // loop diffuser lengths in samples
 Data lb(64, 2);        // line layout: 0 length in samples at the reference rate, 1 scale mode
 Data lc(64, 4);        // line state: 0 target length, 1 base, 2 buffer size (0 = unused), 3 current length
 Data lg(64, 3);        // per-line loop gain: 0 bass shelf gain s per stage (gl = s^2 gm), 1 mid gain gm, 2 HF shelf gain h
 Data ls(64, 3);        // per-line filter states: 0 / 2 the two bass shelf stages, 1 the HF shelf
 Data fv(16);           // FDN scratch
-Data lev(16);          // per-line energies (telemetry)
 Data erp(8);           // early reflection set: 0 first ms, 1 last ms, 2 power, 3 tau ms, 4 level
 Data ert(16, 4);       // early reflection taps: 0 target delay, 1 current delay, 2 gain, 3 side (0 L, 1 R)
 Data ptp(16, 3);       // plate output taps: 0 slot, 1 delay at the reference rate, 2 sign
@@ -143,6 +152,7 @@ Param duckamt(0);      // 0..1 (End)
 Param duckrel(250);    // ms (End)
 Param wetmix(0.35);    // 0..1 Dry/Wet
 Param outdb(0);
+Param indb(0);       // dB, gain into the reverb only (before pre-delay / tank / convolution)
 Param lat(0);          // chain latency fallback for the standalone harness
 
 History cnt(0);
@@ -159,10 +169,25 @@ History lastL(-1);
 History lastB(-1);
 History lastK(-1e9);
 History mute(0);
+History muteN(0);
+History muteL(0);
+History muteB(0);
+History muteK(0);
 History gLink(0);
 History lkS(0);
 History ig(1);
+History inS(1);      // smoothed input gain
 History lgs(0);
+History scs(1);        // wet scale into the chain (smoothed)
+History apAs(0.6);     // allpass coefficient (smoothed)
+History apAt(0.6);     // allpass coefficient target (block rate)
+History apSum(0);      // loop diffusers: summed length (block rate)
+History dpL(0);        // loop HF damping states
+History dpR(0);
+History loL(0);        // loop bass shelf low-band states
+History loR(0);
+History bshT(1);       // bass shelf gain (block rate)
+History dpByp(1);      // damping bypass (Damping 20 kHz)
 History limG(1);
 History clipR(1);
 History clipHold(1);
@@ -209,23 +234,12 @@ History lpA1(0);
 History hpByp(0);
 History lpByp(0);
 // telemetry accumulators
+History quietCnt(0);
+History asleep(0);
+History lastWet(0);
 History pkIn(0);
-History pkTank(0);
 History pkWet(0);
 History pkRet(0);
-History msIn(0);
-History msWet(0);
-History blkN(0);
-History blkMs(0);
-History wvN(0);
-History wvMin(0);
-History wvMax(0);
-History decHead(0);
-History wvHead(0);
-History rtPeak(-120);
-History rtA(-1);
-History rtN(0);
-History rtVal(0);
 History specPk(0);
 History specPkD(0);
 History ptap(0);
@@ -303,6 +317,13 @@ poke(hdr, ll, 4);
 poke(hdr, paired, 14);
 
 if (ll != lastL || bb != lastB || kk != lastK) {
+	// telemetry: count a mute only when it starts (a change that keeps moving, like B settling sample by sample, is one event)
+	if (mute <= 0) {
+		muteN = muteN + 1;
+		muteL = muteL + (ll != lastL ? 1 : 0);
+		muteB = muteB + (bb != lastB ? 1 : 0);
+		muteK = muteK + (kk != lastK ? 1 : 0);
+	}
 	mute = 2048;
 }
 lastL = ll;
@@ -344,7 +365,7 @@ poke(pdl, in2, pdi, 1);
 xL = rp_rd2(pdl, 0, 65536, cn, pdCur);
 xR = rp_rd2(pdl, 1, 65536, cn, pdCur);
 
-// ---- outer loop: the return from End, clipped, into the tank input ---------------------------------
+// ---- outer loop: the return from End through the flat recirculating path, clipped, into the chain input --------------------
 eIdx = wrap(cn - smax, 0, RING);
 retL = peek(xfer, eIdx, 2) * gLink;
 retR = peek(xfer, eIdx, 3) * gLink;
@@ -358,9 +379,29 @@ tlCur = max(tlCur, tmin);
 rdD = tlCur - bb - ll;
 lrL = rp_rd2(lpr, 0, 262144, cn, rdD);
 lrR = rp_rd2(lpr, 1, 262144, cn, rdD);
+apAs = apAs + (apAt - apAs) * 0.002;
+axL = lrL;
+axR = lrR;
+for (j = 0; j < 4; j += 1) {
+	axL = rp_ap(apd, j * 8192, 8192, cn, apl.peek(j), apAs, axL);
+	axR = rp_ap(apd, (4 + j) * 8192, 8192, cn, apl.peek(4 + j), apAs, axR);
+}
+dpL = dpL + ad * (axL - dpL);
+dpR = dpR + ad * (axR - dpR);
+dpL = fixdenorm(dpL);
+dpR = fixdenorm(dpR);
+ayL = dpByp > 0.5 ? axL : dpL;
+ayR = dpByp > 0.5 ? axR : dpR;
+loL = loL + ax * (ayL - loL);
+loR = loR + ax * (ayR - loR);
+loL = fixdenorm(loL);
+loR = fixdenorm(loR);
+ayL = ayL + (bshT - 1) * loL;
+ayR = ayR + (bshT - 1) * loR;
 lgs = lgs + (lgT * ig - lgs) * 0.002;
-jL = lrL * lgs;
-jR = lrR * lgs;
+scs = scs + ((1 + lkS * (sqrt(max(1 - lgT * lgT, 0)) - 1)) - scs) * 0.002;
+jL = ayL * lgs;
+jR = ayR * lgs;
 cT = dbtoa(clip(cliplevel, -18, 6));
 cK = 0.8 * cT;
 amL = max(abs(jL), cK);
@@ -375,10 +416,11 @@ cjL = cm == 1 ? clip(jL, 0 - cT, cT) : (cm == 2 ? jL * limG : sfL);
 cjR = cm == 1 ? clip(jR, 0 - cT, cT) : (cm == 2 ? jR * limG : sfR);
 pkC = max(abs(cjL), abs(cjR));
 clipR = min(clipR, pkS > 0.000001 ? min(1, pkC / pkS) : 1);
-tL = xL * ig + cjL;
-tR = xR * ig + cjR;
+// the tank is fed from the input only (the chain loop does not pass through it)
+inS = inS + (dbtoa(clip(indb, -36, 12)) - inS) * (1 / (0.01 * sr));
+tL = xL * ig * inS;
+tR = xR * ig * inS;
 pkIn = max(pkIn, max(abs(in1), abs(in2)));
-pkTank = max(pkTank, max(abs(tL), abs(tR)));
 // the tank input follows the algorithm fade too (fading it in avoids a step where a running signal first
 // reaches the empty lines of the new algorithm)
 tL = tL * agS;
@@ -422,7 +464,6 @@ if (asState == 2) {
 		}
 		for (i = 0; i < 16; i += 1) {
 			fv.poke(0, i);
-			lev.poke(0, i);
 		}
 		for (i = 0; i < 8; i += 1) {
 			plp.poke(0, i);
@@ -456,7 +497,25 @@ if (asState == 3) {
 		}
 	}
 }
-running = asState != 2 && algoCur >= 0;
+// Idle sleep (all algorithms but Convolution): the tank input and the wet output have both been below -140 dB for
+// 32768 samples (longer than any line of the tank), so what is left in the lines is far below audibility and the
+// algorithm blocks are skipped (exact zeros) until the input returns. On waking, lengths that glided toward a new
+// Size while asleep snap to their targets (the lines are empty).
+inQ = max(abs(tL), abs(tR));
+quietCnt = (inQ > 0.0000001 || lastWet > 0.0000001) ? 0 : min(quietCnt + 1, 65536);
+slp = (quietCnt >= 32768 && algoCur != 5 && asState == 0) ? 1 : 0;
+if (asleep > 0.5 && slp < 0.5) {
+	for (i = 0; i < 64; i += 1) {
+		if (lc.peek(i, 2) > 0 && lb.peek(i, 1) > 0.5 && lb.peek(i, 1) != 3) {
+			lc.poke(lc.peek(i, 0), i, 3);
+		}
+	}
+	for (k = 0; k < 16; k += 1) {
+		ert.poke(ert.peek(k, 0), k, 1);
+	}
+}
+asleep = slp;
+running = asState != 2 && algoCur >= 0 && slp < 0.5;
 
 // ---- layout of the delay lines for the current algorithm ----------------------------------------------
 if (layoutDirty > 0.5) {
@@ -568,8 +627,8 @@ if (doTick) {
 	frames = wrap(frames + 1, 0, 1000000);
 	szS = 0.4 + 1.2 * clip(szp, 0, 1);
 	rt = clip(dcy, 0.1, 60);
-	// the outer loop provides 0.55 x^2 = 8.8 % of the decay (x = 0.4, see the header) while an End is paired: the tank runs shorter (not for Convolution)
-	rtT = rt * (1 - 0.088 * lkS * (algoCur == 5 ? 0 : 1));
+	// the chain loop carries the long tail while an End is paired: the tank runs at 0.3 x Decay (not for Convolution)
+	rtT = rt * (1 - 0.7 * lkS * (algoCur == 5 ? 0 : 1));
 	ax = 1 - exp(-6.283185307179586 * clip(xoverf, 100, 1000) / sr);
 	ad = 1 - exp(-6.283185307179586 * clip(dampf, 1000, 20000) / sr);
 	// target lengths of every line
@@ -587,7 +646,6 @@ if (doTick) {
 	lsum = 0;
 	tcL = 0;
 	klp = 1;
-	nmT = 0;
 	nlx = algoCur == 1 ? 16 : 8;
 	if (algoCur == 1 || algoCur == 2 || algoCur == 3) {
 		bass = clip(bassm, 0.25, 4);
@@ -605,7 +663,6 @@ if (doTick) {
 		}
 		nsC = clip(sqrt(max(1 - gsum / nlx, 0)), 0.12, 1);
 		tcL = lsum / nlx;
-		nmT = lsum;
 		klp = algoCur == 1 ? 1.25 : (algoCur == 2 ? 6 : 3.5);
 		// early reflections: 16 taps, times spread between the first and last ms (size scaled), each with a
 		// deterministic jitter, level falling with tau; unit total energy times the set's level
@@ -639,7 +696,6 @@ if (doTick) {
 		lg.poke(gpr, 1, 1);
 		nsC = clip(sqrt(max(1 - pow(lg.peek(0, 1) * lg.peek(1, 1), 2), 0)), 0.12, 1);
 		tcL = (tauL + tauR) * 0.5;
-		nmT = tauL + tauR;
 		klp = 0.3;
 	}
 	if (algoCur == 4) {
@@ -649,8 +705,7 @@ if (doTick) {
 		lg.poke(gpr, 1, 1);
 		nsC = clip(sqrt(max(1 - pow(lg.peek(0, 1), 2), 0)), 0.12, 1);
 		tcL = (lc.peek(33, 3) + lc.peek(34, 3)) * 0.5 + 48;
-		nmT = lc.peek(33, 3) + lc.peek(34, 3) + 96;
-		klp = 2;
+		klp = 1.5;
 	}
 	// ---- outer loop, derived from the tank (period and gain; see the header comment and AGENTS.md section 27)
 	irLen = peek(hdr, 36);
@@ -662,21 +717,27 @@ if (doTick) {
 		tlCur = tlE;
 	}
 	rtG = algoCur == 5 ? max(0.5 * irLen / sr, 0.1) : rt;
-	// gain g = min(x / max|H|, 10^(-3 T / Decay) sqrt(share / Eg)): the first keeps the loop below the tank's largest resonance
-	// (x = g max|H| = 0.4; |H|^2 = HA + HB / aN, aN = decay rate per sample x total loop delay), the second is the loop's
-	// energy return against the decay it adds (share 0.088, Eg = energy gain of the wet). Both fitted per algorithm to Max renders.
-	aN = 6.907755 * nmT / (max(rtT, 0.05) * sr);
-	laQ = latelvl <= -69.9 ? 0 : dbtoa(clip(latelvl, -70, 6));
-	erQ = (erlvl <= -69.9 || algoCur == 0 || algoCur == 4 || algoCur == 5) ? 0 : dbtoa(clip(erlvl, -70, 6));
-	hA = algoCur == 0 ? 2 : (algoCur == 1 ? 2 : (algoCur == 2 ? 2 : (algoCur == 3 ? 2 : (algoCur == 4 ? 2 : 16))));
-	hB = algoCur == 0 ? 20 : (algoCur == 1 ? 20 : (algoCur == 2 ? 20 : (algoCur == 3 ? 20 : (algoCur == 4 ? 20 : 0))));
-	hE = algoCur == 1 ? 0.6 : (algoCur == 2 ? 1 : (algoCur == 3 ? 1.2 : 0));
-	eL = algoCur == 0 ? 1.5 : (algoCur == 1 ? 0.25 : (algoCur == 2 ? 0.25 : (algoCur == 3 ? 0.27 : (algoCur == 4 ? 0.27 : 1))));
-	eE = algoCur == 1 ? 0.08 : (algoCur == 2 ? 0.24 : (algoCur == 3 ? 0.36 : 0));
-	hpk = laQ * sqrt(hA + hB / max(aN, 0.02)) + erQ * hE;
-	gcoh = 0.4 / max(hpk, 0.5);
-	ginc = rp_gain(tlE, rtG, sr) * sqrt(0.088 / max(laQ * laQ * eL + erQ * erQ * eE, 0.02));
-	lgT = min(gcoh, ginc);
+	// loop diffusers (lengths scale with the sample rate); the allpass chain's mean group delay is its summed length, so the time a
+	// recirculation takes is the delay period + that sum
+	apl.poke(floor(149 * sfc + 0.5), 0);
+	apl.poke(floor(233 * sfc + 0.5), 1);
+	apl.poke(floor(367 * sfc + 0.5), 2);
+	apl.poke(floor(523 * sfc + 0.5), 3);
+	apl.poke(floor(163 * sfc + 0.5), 4);
+	apl.poke(floor(257 * sfc + 0.5), 5);
+	apl.poke(floor(389 * sfc + 0.5), 6);
+	apl.poke(floor(547 * sfc + 0.5), 7);
+	apSum = 0;
+	for (i = 0; i < 8; i += 1) {
+		apSum = apSum + apl.peek(i);
+	}
+	apSum = apSum * 0.75;
+	// loop gain: the tail that goes round the chain decays 60 dB in Decay (the loop's magnitude is flat: allpasses, damping and the bass
+	// shelf never exceed g max(1, shelf), see the header). Capped at 0.97.
+	lgT = min(rp_gain(tlE + apSum, rtG, sr), 0.97);
+	bshT = (algoCur == 1 || algoCur == 2 || algoCur == 3) ? pow(lgT, 1 / clip(bassm, 0.25, 4) - 1) : 1;
+	dpByp = dampf >= 19999.5 || algoCur == 5;
+	apAt = 0.3 + 0.4 * clip(diffp, 0, 1);
 	// post filters: 12 dB/oct TPT high-pass (Low Cut) and low-pass (High Cut; Convolution also Damping)
 	lpf = algoCur == 5 ? min(clip(highcut, 1000, 20000), clip(dampf, 1000, 20000)) : clip(highcut, 1000, 20000);
 	hpf = clip(lowcut, 20, 1000);
@@ -705,18 +766,13 @@ if (doTick) {
 	poke(scope, (algoReq == 5 ? max(clip(predelay, 0, 500), 256000 / sr) : clip(predelay, 0, 500)), 10);
 	poke(scope, loopClamped, 11);
 	poke(scope, pkIn, 12);
-	poke(scope, pkTank, 13);
+	poke(scope, asleep, 13);
 	poke(scope, pkWet, 14);
 	poke(scope, pkRet, 15);
-	poke(scope, peek(hdr, 17), 16);
-	poke(scope, peek(hdr, 19), 17);
 	clipAge = clipAge + 1;
 	clipHold = (clipR <= clipHold || clipAge >= 32) ? clipR : clipHold;
 	clipAge = clipR <= clipHold ? 0 : clipAge;
 	poke(scope, atodb(max(clipHold, 0.000001)), 18);
-	poke(scope, msIn > 0 ? 10 * log10(msIn / 64) : -120, 19);
-	poke(scope, msWet > 0 ? 10 * log10(msWet / 64) : -120, 20);
-	poke(scope, rtVal, 21);
 	bassT = (algoCur == 1 || algoCur == 2 || algoCur == 3) ? clip(bassm, 0.25, 4) : 1;
 	hiAtt = 0.2 + 0.8 / (1 + pow(10000 / clip(dampf, 1000, 20000), 2));
 	poke(scope, rt * bassT, 22);
@@ -726,23 +782,18 @@ if (doTick) {
 	poke(scope, peek(hdr, 36), 26);
 	poke(scope, peek(hdr, 32), 27);
 	poke(scope, peek(hdr, 39), 28);
-	poke(scope, algoCur == 1 ? 16 : (algoCur == 5 ? 0 : (algoCur == 0 ? 4 : (algoCur == 4 ? 16 : 8))), 29);
-	poke(scope, asState, 848);
-	poke(scope, lgT, 849);
-	poke(scope, rtT, 850);
-	for (i = 0; i < 16; i += 1) {
-		lv = lev.peek(i);
-		poke(scope, lv > 0 ? clip((10 * log10(lv) + 90) / 90, 0, 1) : 0, 32 + i);
-		poke(scope, ert.peek(i, 1) * 1000 / sr, 48 + 2 * i);
-		poke(scope, ert.peek(i, 2), 49 + 2 * i);
-	}
+	poke(scope, asState, 29);
+	poke(scope, lgT, 30);
+	poke(scope, rtT, 31);
+	poke(scope, muteN, 32);
+	poke(scope, muteL, 33);
+	poke(scope, muteB, 34);
+	poke(scope, muteK, 35);
+	poke(scope, gLink, 36);
 	snap = 0;
 	pkIn = 0;
-	pkTank = 0;
 	pkWet = 0;
 	pkRet = 0;
-	msIn = 0;
-	msWet = 0;
 	clipR = 1;
 	poke(spec, wrap(cn + 1, 0, 4096), 0);
 	poke(spec, sr, 1);
@@ -844,7 +895,6 @@ if (running && (algoCur == 1 || algoCur == 2 || algoCur == 3)) {
 		m2 = i * 5 + 1 + floor(i / 3);
 		oL = oL + ((m1 - 2 * floor(m1 / 2)) < 0.5 ? y : 0 - y);
 		oR = oR + ((m2 - 2 * floor(m2 / 2)) < 0.5 ? y : 0 - y);
-		lev.poke(lev.peek(i) + (y * y - lev.peek(i)) * 0.002, i);
 	}
 	// Hadamard mixing
 	for (hs2 = 1; hs2 < nlx; hs2 = hs2 * 2) {
@@ -904,7 +954,6 @@ if (running && algoCur == 0) {
 		blen = lc.peek(s0 + 1, 2);
 		x1 = rp_rd(dl, base, blen, cn, lc.peek(s0 + 1, 3) + (floor(lc.peek(s0 + 1, 3)) - lc.peek(s0 + 1, 3)) * fz);
 		rp_wr(dl, base, blen, cn, a);
-		lev.poke(lev.peek(br * 2) + (x1 * x1 - lev.peek(br * 2)) * 0.002, br * 2);
 		// damping, decay
 		lp = plp.peek(2 + br);
 		lp = lp + adE * (x1 - lp);
@@ -923,7 +972,6 @@ if (running && algoCur == 0) {
 		blen = lc.peek(s0 + 3, 2);
 		x2 = rp_rd(dl, base, blen, cn, lc.peek(s0 + 3, 3) + (floor(lc.peek(s0 + 3, 3)) - lc.peek(s0 + 3, 3)) * fz);
 		rp_wr(dl, base, blen, cn, x1);
-		lev.poke(lev.peek(br * 2 + 1) + (x2 * x2 - lev.peek(br * 2 + 1)) * 0.002, br * 2 + 1);
 		plp.poke(x2, br);
 	}
 	pscale = psr * szS * 0.75;
@@ -962,10 +1010,6 @@ if (running && algoCur == 4) {
 			y = aco * v + z;
 			spz.poke(v - aco * y, sp * 32 + j);
 			v = y;
-			if (j - 4 * floor(j / 4) > 2.5) {
-				q8 = sp * 8 + floor(j / 4);
-				lev.poke(lev.peek(q8) + (y * y - lev.peek(q8)) * 0.002, q8);
-			}
 		}
 		rp_wr(dl, base, blen, cn, v);
 		if (sp == 0) {
@@ -1046,62 +1090,19 @@ wetL = fixnan(wetL);
 wetR = fixnan(wetR);
 
 pkWet = max(pkWet, max(abs(wetL), abs(wetR)));
-msIn = msIn + (in1 * in1 + in2 * in2) * 0.5;
-msWet = msWet + (wetL * wetL + wetR * wetR) * 0.5;
+lastWet = max(abs(wetL), abs(wetR));
 
-// spectrum rings (face FFT), decay ring, waveform ring, RT60 estimate
+// spectrum rings (face FFT)
 sp0 = wrap(cn, 0, 4096);
 poke(spec, (wetL + wetR) * 0.5, 32 + sp0);
 poke(spec, (in1 + in2) * 0.5, 4128 + sp0);
 specPk = max(specPk, abs(wetL));
 specPkD = max(specPkD, abs(in1));
-wm = (wetL + wetR) * 0.5;
-wvMin = min(wvMin, wm);
-wvMax = max(wvMax, wm);
-wvN = wvN + 1;
-if (wvN >= 32) {
-	hb3 = 336 + 2 * wvHead;
-	poke(scope, wvMin, hb3);
-	poke(scope, wvMax, hb3 + 1);
-	wvHead = wrap(wvHead + 1, 0, 256);
-	poke(scope, wvHead, 31);
-	wvN = 0;
-	wvMin = 0;
-	wvMax = 0;
-}
-blkMs = blkMs + wm * wm;
-blkN = blkN + 1;
-if (blkN >= 512) {
-	blkDb = blkMs > 0 ? 10 * log10(blkMs / 512) : -120;
-	blkDb = max(blkDb, -120);
-	poke(scope, blkDb, 80 + decHead);
-	decHead = wrap(decHead + 1, 0, 256);
-	poke(scope, decHead, 30);
-	if (blkDb > rtPeak - 0.5) {
-		rtPeak = max(rtPeak, blkDb);
-		rtN = 0;
-		rtA = -1;
-	} else {
-		rtN = rtN + 1;
-		if (rtA < 0 && blkDb <= rtPeak - 5) {
-			rtA = rtN;
-		}
-		if (rtA >= 0 && blkDb <= rtPeak - 25) {
-			rtVal = 3 * (rtN - rtA) * 512 / sr;
-			rtPeak = -120;
-			rtA = -1;
-		}
-		if (blkDb < -100) {
-			rtPeak = -120;
-			rtA = -1;
-		}
-	}
-	blkMs = 0;
-	blkN = 0;
-}
 
 // whitened mono copy of what goes into the chain (End's K calibration)
-tapM = (wetL + wetR) * 0.5 * gLink;
+cL = wetL * scs + cjL;
+cR = wetR * scs + cjR;
+tapM = (cL + cR) * 0.5 * gLink;
 poke(xfer, tapM - ptap, ri, 4);
 ptap = tapM;
 
@@ -1110,5 +1111,5 @@ og = dbtoa(clip(outdb, -36, 12));
 wmx = clip(wetmix, 0, 1);
 solL = in1 * cos(wmx * pi * 0.5) + wetL * sin(wmx * pi * 0.5) * og;
 solR = in2 * cos(wmx * pi * 0.5) + wetR * sin(wmx * pi * 0.5) * og;
-out1 = fixnan(wetL * gLink * lkS + solL * (1 - lkS));
-out2 = fixnan(wetR * gLink * lkS + solR * (1 - lkS));
+out1 = fixnan(cL * gLink * lkS + solL * (1 - lkS));
+out2 = fixnan(cR * gLink * lkS + solR * (1 - lkS));
