@@ -2,7 +2,7 @@
 // mask maths in src/loudsplit_core.genexpr (the core mirrors ls_masks() line for line).
 // Node-requirable (nodeModule pattern, AGENTS.md 1c) and also prepended to the v8ui script by the build.
 //
-// Three channels (chain order): 1 Quiet (green), 2 Mid (yellow), 3 Loud (red). Per bin the (tilted) Mid level is classified
+// Three channels (chain order): 1 Loud (red), 2 Mid (yellow), 3 Quiet (green). Per bin the (tilted) Mid level is classified
 // against the Higher and Lower Threshold, each with a Knee (crossfade width in dB); the three masks sum to exactly 1 for
 // every setting (Tilt only weights the ANALYSIS level, it never changes the output gain).
 
@@ -10,10 +10,10 @@ var LS_NCOLS = 128;          // display columns (log frequency)
 var LS_FMIN = 30.0;
 var LS_FMAX = 20000.0;
 var LS_LATENCY = 4096;
-var LS_CH_NAMES = ["Quiet", "Mid", "Loud"];
+var LS_CH_NAMES = ["Loud", "Mid", "Quiet"];
 var LS_SIZES = [1024, 2048, 4096];
 var LS_SIZE_ENUM = ["1k", "2k", "4k"];
-var LS_OUT_ENUM = ["Auto", "Quiet", "Mid", "Loud", "All"];
+var LS_OUT_ENUM = ["Auto", "Loud", "Mid", "Quiet", "All"];
 var LS_DB_MIN = -110.0;      // display / threshold floor (Bitwig: thresholds -110..0 dB)
 var LS_DB_MAX = 0.0;
 var LS_LEVEL_FLOOR = -150.0; // classification level floor (dB)
@@ -36,7 +36,7 @@ var LS_SC_AWAKE = LS_SC_FRAME + 3;
 var LS_SC_LEVEL = LS_SC_FRAME + 4;     // input peak (decaying)
 var LS_SC_LOUDMEAN = LS_SC_FRAME + 5;  // amplitude-weighted mean Loud mask
 var LS_SC_LATENCY = LS_SC_FRAME + 6;
-var LS_SC_SEL = LS_SC_FRAME + 7;       // output selection the gen is running (0 sum, 1 Quiet, 2 Mid, 3 Loud)
+var LS_SC_SEL = LS_SC_FRAME + 7;       // output selection the gen is running (0 sum, 1 Loud, 2 Mid, 3 Quiet; the spectrum slots above stay by channel name, not by number)
 var LS_SC_THI = LS_SC_FRAME + 8;       // effective Higher Threshold, dB at 1 kHz (relative mode: frame max + relative value)
 var LS_SC_TLO = LS_SC_FRAME + 9;       // effective Lower Threshold (clamped to <= Higher)
 var LS_SC_LMAX = LS_SC_FRAME + 10;     // loudest (tilted) bin level of the frame, dB
@@ -85,7 +85,7 @@ function lsSmooth01(x) {
 }
 
 // Output selector for the gen from the Output menu and the resolved Auto channel (0-based, -1 = no rack).
-// Returns 0 = all channels summed, 1 = Quiet, 2 = Mid, 3 = Loud.
+// Returns 0 = all channels summed, 1 = Loud, 2 = Mid, 3 = Quiet.
 function lsResolveSel(outputIdx, autoChannel) {
     var o = Math.round(outputIdx);
     if (o >= 1 && o <= 3) return o;

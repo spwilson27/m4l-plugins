@@ -2,7 +2,7 @@
 """
 Build devices/Loud Split.amxd and devices/Loud Split.adg (Bitwig Spectral Suite style loudness splitter).
 
-Three channels: 1 Quiet (green), 2 Mid (yellow), 3 Loud (red). Use the device as the FIRST device of EVERY chain of an Audio
+Three channels: 1 Loud (red), 2 Mid (yellow), 3 Quiet (green). Use the device as the FIRST device of EVERY chain of an Audio
 Effect Rack, one chain per channel (the .adg preset does exactly that). Every instance runs the same mask-STFT analysis on the
 same input with linked parameters and outputs only its own channel (Output = Auto: the chain index); the per-bin masks sum to
 exactly 1, so the chains sum back to the input delayed by 4096 samples ("latency": 4096).
@@ -63,12 +63,12 @@ NUM_UNITS = {"hithr": "%.1f dB", "lothr": "%.1f dB", "rhithr": "%.1f dB", "rloth
 ENUM = {
     "relative": ("Relative Loudness Mode", "Relative", ["Absolute", "Relative"], 0),
     "size": ("Size", "Size", ["1k", "2k", "4k"], 1),
-    "output": ("Output", "Output", ["Auto", "Quiet", "Mid", "Loud", "All"], 0),
+    "output": ("Output", "Output", ["Auto", "Loud", "Mid", "Quiet", "All"], 0),
 }
 ENUM_HELP = {
     "relative": "Relative Loudness Mode: classify against the Relative thresholds, measured from the loudest bin of the current block (0 dB), instead of absolute levels.",
     "size": "Analysis block size: 1k favours time resolution, 4k frequency resolution. The latency stays 4096 samples at every size.",
-    "output": "Output: Auto uses this chain's index in the parent Rack (1 Quiet, 2 Mid, 3 Loud; outside a Rack the sum of all), or pick a channel, or All.",
+    "output": "Output: Auto uses this chain's index in the parent Rack (1 Loud, 2 Mid, 3 Quiet; outside a Rack the sum of all), or pick a channel, or All.",
 }
 # key: (gen message, scale)
 GEN_MSG = {
@@ -225,7 +225,7 @@ def main():
     doc = build_patcher()
     sc.write_amxd(doc, OUT_AMXD)
     subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "make_spectral_rack.py"), "--amxd", OUT_AMXD,
-                    "--name", "Loud Split", "--chains", "Quiet,Mid,Loud", "--out", OUT_ADG], check=True)
+                    "--name", "Loud Split", "--chains", "Loud,Mid,Quiet", "--out", OUT_ADG], check=True)
 
 
 if __name__ == "__main__":

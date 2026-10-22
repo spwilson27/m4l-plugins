@@ -3,7 +3,7 @@
 // Inlet 0: `setbuffer <telemetry buffer name>` (sent from loadbang), `analyze <durMs>`.
 // js arguments: the tone frequencies (Hz) whose amplitude is measured per channel, e.g. `500 1500 3000`.
 // buffer~ rec holds 6 channels:
-//   1 Quiet (left)   2 Mid (left)   3 Loud (left)   4 dry (the stimulus, delayed 4096 samples, or raw in the latency case)
+//   1 Quiet (left)   2 Mid (left)   3 Loud (left)   (by name; the runner patches Quiet = outsel 3, Loud = outsel 1)   4 dry (the stimulus, delayed 4096 samples, or raw in the latency case)
 //   5 window flag (the stimulus' marker, aligned with channel 4; 0 = none, 1..4 = case specific)   6 Loud (right)
 // Writes `key value` lines: energies (total and per flag), the sum null, tone amplitudes per channel, impulse positions,
 // telemetry scalars and column maxima.

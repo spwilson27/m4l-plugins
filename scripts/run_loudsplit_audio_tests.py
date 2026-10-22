@@ -6,7 +6,7 @@
     /usr/bin/python3 scripts/run_loudsplit_audio_tests.py [case ...]      (inside the VM)
 
 Every case patches three instances of the REAL core (src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr +
-src/loudsplit_core.genexpr, exactly what the device embeds), fed by one stimulus gen: outsel 1 (Quiet), 2 (Mid) and 3 (Loud).
+src/loudsplit_core.genexpr, exactly what the device embeds), fed by one stimulus gen: outsel 1 (Loud), 2 (Mid) and 3 (Quiet); the probe records them by name.
 The stimulus has a left channel x and a right channel 0.5 x. The probe (tests/loudsplit_probe.js) records Quiet L, Mid L,
 Loud L, the stimulus delayed by 4096 samples, a window flag and Loud R.
 
@@ -115,7 +115,7 @@ def build_device(code, case):
     params = dict(DEFAULT_PARAMS)
     params.update(case.get("params", {}))
     ptxt = ", ".join(f"{k} {v}" for k, v in params.items())
-    for tag, sel in (("q", 1), ("m", 2), ("l", 3)):
+    for tag, sel in (("q", 3), ("m", 2), ("l", 1)):   # outsel 1 = Loud, 2 = Mid, 3 = Quiet; recorded by name (q, m, l)
         gid = f"obj-gen-{tag}"
         x = 200 + 240 * (sel - 1)
         boxes.append(mh.gen_box(gid, code, x, 260))
@@ -249,7 +249,7 @@ def check(case, r, store, errors):
                     f"pre={r['scopePreMax']:.3f} q={r['scopeQMax']:.3f} m={r['scopeMMax']:.3f} l={r['scopeLMax']:.3f} "
                     f"thi={r['scopeThi']:.2f} tlo={r['scopeTlo']:.2f} lmax={r['scopeLmax']:.2f} mean={r['scopeMean']:.3f}")
             print(f"[{name}] telemetry {tele}")
-            if r["scopeFrame"] < 5 or r["scopeN"] != 2048 or r["scopeAwake"] != 1 or r["scopeLat"] != LATENCY or r["scopeSel"] != 3:
+            if r["scopeFrame"] < 5 or r["scopeN"] != 2048 or r["scopeAwake"] != 1 or r["scopeLat"] != LATENCY or r["scopeSel"] != 1:
                 err(f"telemetry scalars wrong ({tele})")
             if not (r["scopePreMax"] > 0.3 and r["scopeLMax"] > 0.3 and r["scopeMMax"] > 0.1 and r["scopeQMax"] > 0.1):
                 err(f"telemetry columns empty ({tele})")

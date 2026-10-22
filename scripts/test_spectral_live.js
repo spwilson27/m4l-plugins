@@ -59,7 +59,7 @@ function check(ok, msg) {
 // Per device: track name, kind (bus), config module + constant prefix, edits (LOM short name, new value; the Size edit is last)
 const CHAIN_COLOR_INDEX = {
     "Transient Split": [1, 21],
-    "Loud Split": [55, 1, 21],
+    "Loud Split": [21, 1, 55],
     "Harmonic Split": [55, 1, 21],
     "Freq Split": [28, 9, 59, 11],
 };

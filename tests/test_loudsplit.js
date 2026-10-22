@@ -328,7 +328,7 @@ function prep(src) {
                         m: [2, 3, 4].map((ch) => Array.from({ length: half + 1 }, (_, k) => lsd.peek(k, ch))),
                         sum: Array.from({ length: half + 1 }, (_, k) => lsd.peek(k, 5)) });
                 }
-                gx.ss_apply(fx, lsd, sel === 0 ? 5 : sel + 1, n);
+                gx.ss_apply(fx, lsd, sel === 0 ? 5 : 5 - sel, n);   // outsel 1 Loud = lsd ch 4, 2 Mid = 3, 3 Quiet = 2
                 if (i % 4096 < 256) {
                     gx.ss_cols(ms, 0, lsd, -1, cols, 0, n, SR, 128, 30, 20000);
                     for (let c = 1; c <= 3; c++) gx.ss_cols(ms, 0, lsd, c + 1, cols, c, n, SR, 128, 30, 20000);
@@ -469,8 +469,8 @@ function prep(src) {
     assert.strictEqual(cfg.lsResolveSel(2, 0), 2);
     assert.strictEqual(cfg.lsResolveSel(3, 0), 3);
     assert.strictEqual(cfg.lsResolveSel(4, 0), 0);
-    assert.strictEqual(cfg.lsSelName(1), "Quiet");
-    assert.strictEqual(cfg.lsSelName(3), "Loud");
+    assert.strictEqual(cfg.lsSelName(1), "Loud");
+    assert.strictEqual(cfg.lsSelName(3), "Quiet");
     console.log("[lint] genexpr lint and link module tests passed");
 }
 
@@ -541,7 +541,7 @@ function prep(src) {
         names.add(v.parameter_shortname);
     }
     assert.strictEqual(byId["obj-ctrl-size"].saved_attribute_attributes.valueof.parameter_initial[0], 1, "Size defaults to 2k");
-    assert.deepStrictEqual(byId["obj-ctrl-output"].saved_attribute_attributes.valueof.parameter_enum, ["Auto", "Quiet", "Mid", "Loud", "All"]);
+    assert.deepStrictEqual(byId["obj-ctrl-output"].saved_attribute_attributes.valueof.parameter_enum, ["Auto", "Loud", "Mid", "Quiet", "All"]);
     for (const key of ["dispost", "disstyle"]) {
         const b = byId[`obj-ctrl-${key}`];
         assert.strictEqual(b.saved_attribute_attributes.valueof.parameter_invisible, 1, `${key} is UI state only`);
@@ -592,7 +592,7 @@ function prep(src) {
     const branches = adg.match(/<AudioEffectBranchPreset Id="\d+">/g);
     assert.strictEqual(branches.length, 3, "three chains");
     const names2 = [...adg.matchAll(/<AudioEffectBranchPreset Id="\d+">\s*<Name Value="([^"]+)"/g)].map((m) => m[1]);
-    assert.deepStrictEqual(names2, ["Quiet", "Mid", "Loud"], "chains are named after the channels, in order");
+    assert.deepStrictEqual(names2, ["Loud", "Mid", "Quiet"], "chains are named after the channels, in order");
     assert.strictEqual((adg.match(/<MxDeviceAudioEffect /g) || []).length, 3, "one device per chain");
     assert.strictEqual((adg.match(/<UserName Value="Loud Split"/g) || []).length, 1, "rack name");
     assert.strictEqual((adg.match(/Loud Split\.amxd/g) || []).length >= 6, true, "each chain references the .amxd (relative and absolute)");

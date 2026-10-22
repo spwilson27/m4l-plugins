@@ -93,7 +93,7 @@ function set_disstyle(v) { lsSetVal("disstyle", Number(v) ? 1 : 0); }
 
 function lsEmitSel() {
     var base = lsResolveSel(lsVals.output, lsInfo.autoChannel);
-    lsSel = lsSolo === "hi" ? 3 : (lsSolo === "lo" ? 1 : base);
+    lsSel = lsSolo === "hi" ? 1 : (lsSolo === "lo" ? 3 : base);
     if (lsSel !== lsLastSel) {
         lsLastSel = lsSel;
         outlet(2, "outsel", lsSel);
@@ -223,7 +223,7 @@ function lsPushSono() {
 }
 
 // ---------------------------------------------------------------- theme (colours from spectral_theme.js, one orange accent)
-// Channels: 1 Quiet = Live's grey scale text, 2 Mid = display line one (orange), 3 Loud = display line two (cyan). Always drawn muted:
+// Channels: 1 Loud = display line two (cyan), 2 Mid = display line one (orange), 3 Quiet = Live's grey scale text. Always drawn muted:
 // 1 px outlines and faint fills. Threshold lines and their handles use the handle colour (orange, hollow circles).
 function lsColQ() { return sptColor("live_display_scale_text"); }
 function lsColM() { return sptColor("live_display_line_one"); }
@@ -361,8 +361,8 @@ function paint() {
 
     // legend row: the output channel of this instance (a held solo overrides it) is the bright one; chain chip on the right
     var ly = 105;
-    var names = ["Quiet", "Mid", "Loud"];
-    var cols = [lsColQ(), lsColM(), lsColL()];
+    var names = ["Loud", "Mid", "Quiet"];
+    var cols = [lsColL(), lsColM(), lsColQ()];
     var lx = 2;
     for (var i = 0; i < 3; i++) {
         var on = lsSel === 0 || lsSel === i + 1;
@@ -416,9 +416,9 @@ function lsArea(arr, col, a, lineA) {
 
 function lsPaintPost() {
     // the selected channel is bright, the others dimmed (All: all bright)
-    var aq = (lsSel === 0 || lsSel === 1) ? 0.2 : 0.06;
+    var aq = (lsSel === 0 || lsSel === 3) ? 0.2 : 0.06;
     var am = (lsSel === 0 || lsSel === 2) ? 0.2 : 0.06;
-    var al = (lsSel === 0 || lsSel === 3) ? 0.2 : 0.06;
+    var al = (lsSel === 0 || lsSel === 1) ? 0.2 : 0.06;
     lsArea(lsQ, lsColQ(), aq, aq > 0.1 ? 0.95 : 0.45);
     lsArea(lsM, lsColM(), am, am > 0.1 ? 0.95 : 0.45);
     lsArea(lsL, lsColL(), al, al > 0.1 ? 0.95 : 0.45);
@@ -608,7 +608,7 @@ function onidleout() {}
 
 // ---------------------------------------------------------------- preview (scripts/render_preview.py calls preview() then paint())
 function preview() {
-    lsInfo = { instanceId: "p", isInRack: true, chainIndex: 2, chainCount: 3, peers: 3, linked: true, autoChannel: 2 };
+    lsInfo = { instanceId: "p", isInRack: true, chainIndex: 0, chainCount: 3, peers: 3, linked: true, autoChannel: 0 };
     // demo state = the live.* parameter defaults (Higher -30, Lower -85, knees 6 dB, Rise 2, Fall 8, Tilt 0)
     lsVals.hithr = -30;
     lsVals.lothr = -85;
@@ -616,7 +616,7 @@ function preview() {
     lsVals.loknee = 6;
     lsVals.tilt = 0;
     lsVals.dispost = 0;
-    lsSel = 3;
+    lsSel = 1;
     lsScalars.awake = 1;
     var q = [0, 0, 0];
     for (var c = 0; c < LS_NCOLS; c++) {

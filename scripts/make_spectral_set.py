@@ -26,7 +26,7 @@ DEFAULT_OUT = os.path.join(REPO, "spectral_test.als")
 # (track name, .amxd, chain names in channel order)
 DEVICES = [
     ("Transient Split", "Transient Split.amxd", ["Transients", "Tones"]),
-    ("Loud Split", "Loud Split.amxd", ["Quiet", "Mid", "Loud"]),
+    ("Loud Split", "Loud Split.amxd", ["Loud", "Mid", "Quiet"]),
     ("Harmonic Split", "Harmonic Split.amxd", ["Nonharmonics", "Harmonics A", "Harmonics B"]),
     ("Freq Split", "Freq Split.amxd", ["Red", "Blue", "Yellow", "Magenta"]),
 ]
