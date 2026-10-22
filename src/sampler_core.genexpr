@@ -873,11 +873,28 @@ job_map(sdat, sb, ch) {
 	off = ch * 2049;
 	tau = 6.28318530718;
 	scaleMask = (scaleV < 0.5) ? 2741 : 1453;
+	// Shadow phases (sdat 221568 + 4098 per voice, per channel and source bin): the phase a bend-free, quantise-free mapping gives
+	// each source bin (analysis phase at a lock, then advanced by the true frequency times the pitch ratio times the synthesis hop).
+	// Bend / Quantize / dispersion offset the synthesis phases from it. While the mapping is neutral the synthesis phases are pulled back
+	// onto it, so a control that has been moved and returned leaves nothing behind (the harmonics' relative phases come back).
+	shb = 221568 + floor(sb / 55392) * 4098 + off;
+	ha = peek(sdat, sb + 55328 + 18);
+	// identity (no pitch shift, no stretch): the analysis phase itself is the reference, so the shadow snaps to it every frame
+	idMap = ((abs(pr - 1.0) < 0.0001) && (abs(ha - hs) < 0.5)) ? 1 : 0;
+	fresh = ((first > 0.5) || (onset > 0.5) || (idMap > 0.5)) ? 1 : 0;
+	lockHard = ((first > 0.5) || (onset > 0.5)) ? 1 : 0;
+	neutralMap = ((reharm < 0.5) || ((abs(bendR - 1.0) < 0.000001) && (qMode < 0.5))) ? 1 : 0;
 	for (j = 0; j <= nh; j += 1) {
 		poke(sdat, 0, sb + 14340 + j);
 	}
 	for (k = 0; k <= nh; k += 1) {
 		am = peek(sdat, sb + 8192 + k);
+		psh = peek(sdat, sb + 22536 + (off + k));
+		if (fresh < 0.5) {
+			psh = peek(sdat, shb + k) + peek(sdat, sb + 10241 + k) * pr * hs;
+			psh = psh - tau * round(psh / tau);
+		}
+		poke(sdat, psh, shb + k);
 		if (am > 0.000000001) {
 			wk = peek(sdat, sb + 10241 + k);
 			rk = pr;
@@ -916,7 +933,7 @@ job_map(sdat, sb, ch) {
 				if (ex > peek(sdat, sb + 14340 + j)) {
 					poke(sdat, ex, sb + 14340 + j);
 					poke(sdat, wk * rk, sb + 16389 + j);
-					poke(sdat, peek(sdat, sb + 22536 + (off + k)), sb + 18438 + j);
+					poke(sdat, psh, sb + 18438 + j);
 				}
 			}
 		}
@@ -927,11 +944,17 @@ job_map(sdat, sb, ch) {
 		a = peek(sdat, sb + 14340 + j);
 		wj = (a > 0) ? peek(sdat, sb + 16389 + j) : (tau * j / n);
 		ph = peek(sdat, sb + 26634 + (off + j));
-		if (((first > 0.5) || (onset > 0.5)) && (a > 0)) {
+		if ((lockHard > 0.5) && (a > 0)) {
 			ph = peek(sdat, sb + 18438 + j);
 		} else {
 			rs = fract(rs * 7.31 + j * 0.6180339 + 0.137);
 			ph = ph + wj * hs + (rs - 0.5) * 2.0 * jit;
+			if ((neutralMap > 0.5) && (jit < 0.0000001) && (a > 0)) {
+				phT = peek(sdat, sb + 18438 + j);
+				eR = ph - phT;
+				eR = eR - tau * round(eR / tau);
+				ph = phT + eR * 0.35;
+			}
 		}
 		ph = ph - tau * round(ph / tau);
 		poke(sdat, ph, sb + 26634 + (off + j));
@@ -2146,7 +2169,7 @@ Data vhist(4096);
 Data sext(12);
 Data vres(48);
 Data tbuf(131072);
-Data sdat(221568);
+Data sdat(237960);
 Data senv(16448);
 
 // Parameters

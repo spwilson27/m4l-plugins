@@ -13,6 +13,7 @@ Environment:
   SAMPLER_NEW_ONLY=1      with SAMPLER_CASE='^(cr_|spf_|rpf_|tel_)': the Cycles crunch (cr_), Spectral Formant / Shift % (spf_),
                           Repitch Freeze (rpf_) and grain telemetry (tel_) cases and checks; or one group with SAMPLER_CRUNCH_ONLY /
                           SAMPLER_SPF_ONLY / SAMPLER_RPF_ONLY / SAMPLER_TEL_ONLY
+  SAMPLER_REHARM_ONLY=1   with SAMPLER_CASE='^rh_': Spectral controls returned to neutral null against a never-moved reference
   SAMPLER_CPU=0         skip the CPU (real-time factor) measurement
   SAMPLER_CPU_ENGINES=<regex>  measure only the matching CPU_ENGINES labels
 
@@ -132,7 +133,7 @@ def run_case(gen_code, case):
         case["name"], boxes, lines,
         probe_js=seq_probe_path() if seq else PROBE_JS, probe_args=f"{case['name']} {case.get('cut_ms', 0)} {opts}".strip(),
         settle_ms=SETTLE_MS, dur_ms=case["dur"], channels=2,
-        mode=case.get("harness_mode", "stepped"), events=events,
+        mode=case.get("harness_mode", "stepped"), events=events, keep_dir=bool(case.get("keep")),
     )
 
 
@@ -779,6 +780,57 @@ add("spf_p7_up", P("mode 3, freeze 1, play_pos 0.5, root_note 57, formant 12"), 
 SPF_CASES += ["spf_p7", "spf_p7_up"]
 
 # ---------------------------------------------------------------------------------------------
+# Spectral state returns to neutral: moving a Spectral control away from neutral and back must sound like never moving it
+# ---------------------------------------------------------------------------------------------
+# The phase vocoder keeps one synthesis phase per bin and advances it by the (bent) frequency every frame. Reharm Bend, Quantize,
+# Pitch, ... shift the bins' phases by different amounts, and nothing ever took that offset out again, so the harmonics came
+# back with permanently scrambled relative phases (a different waveform, phasiness, a softened attack) even at Bend 0.
+# Every case renders a reference (the neutral setting throughout, plus the same unrelated events) and a test (the control moved
+# at 120 ms and back at 400 ms), both of the same note on a steady source, and compares the output 520..880 ms after the
+# return: the residual of the null test (dB below the reference), the harmonic magnitudes (dB) and the harmonic phase
+# alignment (phase of harmonic k minus k times the fundamental's, rms over the strong harmonics, radians).
+RH_CASES = []     # (reference name, test name, source, f0, magnitude tolerance dB)
+RH_RAW = "520-880"
+RH_SRC = {"saw": "kind=saw", "vow": "kind=vowelst", "pad": "kind=pad"}
+
+
+def rh_add(tag, src, params, test_ev, ref_ev=(), extra="", ref_params=None, mag_tol=0.5):
+    opts = f"src=real48 {RH_SRC[src]} len=2 gstart=0 glen=2 off=0 notes=57 raw={RH_RAW} ana=300 harm=220 "
+    rn, tn = f"rh_{tag}_ref", f"rh_{tag}_test"
+    add(rn, P("mode 3, root_note 57, " + (params if ref_params is None else ref_params)), 900, gen_events=list(ref_ev), opts=opts, keep=True)
+    add(tn, P("mode 3, root_note 57, " + params + extra), 900, gen_events=list(test_ev), opts=opts, keep=True)
+    RH_CASES.append((rn, tn, src, 220.0, mag_tol))
+
+
+_RH_BACK = 400
+for _src, _tol in (("saw", 0.5), ("vow", 0.5), ("pad", 1.0)):
+    rh_add(f"bend7_{_src}", _src, "sp_char 1, sp_bend 0", [(120, "sp_bend 7"), (_RH_BACK, "sp_bend 0")], mag_tol=_tol)
+rh_add("bendm12_saw", "saw", "sp_char 1, sp_bend 0", [(120, "sp_bend -12"), (_RH_BACK, "sp_bend 0")])
+rh_add("bendm12_pad", "pad", "sp_char 1, sp_bend 0", [(120, "sp_bend -12"), (_RH_BACK, "sp_bend 0")], mag_tol=1.0)
+# a started value in the preset (Bend +7 from the first frame) that is then reset
+rh_add("bend7pre_saw", "saw", "sp_char 1, sp_bend 7", [(_RH_BACK, "sp_bend 0")], ref_params="sp_char 1, sp_bend 0")
+# frozen playhead: no analysis phase advance to lock to, the phases advance at the bin centres
+rh_add("bend7_saw_frz", "saw", "sp_char 1, sp_bend 0, freeze 1, play_pos 0.5", [(120, "sp_bend 7"), (_RH_BACK, "sp_bend 0")])
+rh_add("bend7_pad_frz", "pad", "sp_char 1, sp_bend 0, freeze 1, play_pos 0.5", [(120, "sp_bend 7"), (_RH_BACK, "sp_bend 0")], mag_tol=1.0)
+# Quantize Octaves / Key -> Off
+rh_add("quantoct_saw", "saw", "sp_char 1, sp_quant 0", [(120, "sp_quant 1"), (_RH_BACK, "sp_quant 0")])
+rh_add("quantkey_vow", "vow", "sp_char 1, sp_quant 0, sp_key 2", [(120, "sp_quant 2"), (_RH_BACK, "sp_quant 0")])
+rh_add("quantbend_pad", "pad", "sp_char 1, sp_quant 0, sp_bend 0", [(120, "sp_bend 5, sp_quant 1"), (_RH_BACK, "sp_bend 0, sp_quant 0")], mag_tol=1.0)
+# Pure: Formant / Shift back to neutral (they only reshape magnitudes, so this guards against regressions)
+rh_add("formant_vow", "vow", "sp_char 0, formant 0", [(120, "formant 12"), (_RH_BACK, "formant 0")])
+rh_add("shift_vow", "vow", "sp_char 0, formant 12, sp_shift 0.01", [(120, "sp_shift 1"), (_RH_BACK, "sp_shift 0.01")])
+# Reharm -> Pure -> Reharm (Bend moved while in Reharm, returned while in Pure, so the switch back is neutral)
+rh_add("char_saw", "saw", "sp_char 1, sp_bend 0", [(120, "sp_bend 7"), (200, "sp_char 0"), (300, "sp_bend 0"), (_RH_BACK, "sp_char 1")])
+rh_add("char_pad", "pad", "sp_char 1, sp_bend 0", [(120, "sp_bend 7"), (200, "sp_char 0"), (300, "sp_bend 0"), (_RH_BACK, "sp_char 1")], mag_tol=1.0)
+# Quality changes restart the vocoder (the playhead too), so the reference makes the same quality changes
+rh_add("quality_saw", "saw", "sp_char 1, sp_bend 7", [(200, "sp_quality 2"), (300, "sp_quality 1"), (_RH_BACK, "sp_bend 0")],
+       ref_ev=[(200, "sp_quality 2"), (300, "sp_quality 1")], ref_params="sp_char 1, sp_bend 0")
+rh_add("quality_pad", "pad", "sp_char 1, sp_bend 7", [(200, "sp_quality 0"), (300, "sp_quality 1"), (_RH_BACK, "sp_bend 0")],
+       ref_ev=[(200, "sp_quality 0"), (300, "sp_quality 1")], ref_params="sp_char 1, sp_bend 0", mag_tol=1.0)
+# Pitch +7 st and back (the same phase state)
+rh_add("pitch7_saw", "saw", "sp_char 1, pitch_st 0", [(120, "pitch_st 7"), (_RH_BACK, "pitch_st 0")])
+
+# ---------------------------------------------------------------------------------------------
 # Repitch Freeze: the read head glides to Pos like tape and loops seamlessly where it rests
 # ---------------------------------------------------------------------------------------------
 # Source: the steady 220 Hz tone (sus48), played at its root. Frozen, the head holds a short loop (a whole number of root cycles
@@ -892,6 +944,13 @@ def main():
         if not r:
             raise RuntimeError(f"Max audio harness did not produce a result for {c['name']}")
         results[c["name"]] = r
+        if r.get("harness_dir"):
+            import shutil
+            try:
+                r["raw"] = rh_read_raw(os.path.join(r["harness_dir"], "result.txt.raw.txt"))
+            finally:
+                shutil.rmtree(r["harness_dir"], ignore_errors=True)
+            r["harness_dir"] = ""
         ratio = (r["lateRms"] / r["earlyRms"]) if r.get("earlyRms", 0) > 1e-8 else 0.0
         r["lateEarly"] = ratio
         print(
@@ -969,6 +1028,14 @@ def main():
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
             raise SystemExit(1)
         print("Grain telemetry checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_REHARM_ONLY"):
+        # SAMPLER_CASE='^rh_' SAMPLER_REHARM_ONLY=1: just the Spectral return-to-neutral null tests
+        run_reharm_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Spectral return-to-neutral checks passed.")
         return
     if only and os.environ.get("SAMPLER_SPF_ONLY"):
         # SAMPLER_CASE='^spf_' SAMPLER_SPF_ONLY=1: just the Spectral Formant / Shift % cases and their checks
@@ -1092,6 +1159,7 @@ def run_checks(results):
     run_cycdyn_checks(results)
     run_crunch_checks(results)
     run_spf_checks(results)
+    run_reharm_checks(results)
     run_rpf_checks(results)
     run_tel_checks(results)
     run_lfo_checks(results)
@@ -1315,6 +1383,72 @@ def run_spf_checks(R):
     for n, lo, hi in want:
         check(lo <= fit[n] <= hi, f"{notes[n]} (formant ratio {fit[n]:.2f}, want {lo}..{hi})")
 
+
+
+def rh_read_raw(path):
+    left = []
+    with open(path, "r") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) == 2:
+                left.append(float(parts[0]))
+    return left
+
+
+def rh_harmonics(x, f0, sr, nh=8):
+    """Hann-windowed single-bin DFT at k * f0 (k = 1..nh): list of (magnitude, phase)."""
+    n = len(x)
+    win = [0.5 - 0.5 * math.cos(2.0 * math.pi * i / n) for i in range(n)]
+    xs = [x[i] * win[i] for i in range(n)]
+    out = []
+    for k in range(1, nh + 1):
+        w = 2.0 * math.pi * k * f0 / sr
+        cr, ci = math.cos(w), math.sin(w)
+        rr, ri = 1.0, 0.0
+        sr_, si_ = 0.0, 0.0
+        for v in xs:
+            sr_ += v * rr
+            si_ -= v * ri
+            rr, ri = rr * cr - ri * ci, rr * ci + ri * cr
+        out.append((math.hypot(sr_, si_) * 2.0 / n, math.atan2(si_, sr_)))
+    return out
+
+
+def rh_compare(ref, tst, f0, sr=48000.0):
+    """Residual of the null test (dB re the reference), worst harmonic magnitude difference (dB) and the rms difference of the
+    harmonic phase alignment (phase of harmonic k minus k times the fundamental's, strong harmonics only, radians)."""
+    n = min(len(ref), len(tst))
+    ref, tst = ref[:n], tst[:n]
+    e_ref = sum(v * v for v in ref)
+    e_res = sum((a - b) ** 2 for a, b in zip(ref, tst))
+    res_db = 10.0 * math.log10((e_res + 1e-20) / (e_ref + 1e-20))
+    hr, ht = rh_harmonics(ref, f0, sr), rh_harmonics(tst, f0, sr)
+    top = max(m for m, _ in hr)
+    mag_db, errs = 0.0, []
+    for k in range(8):
+        if hr[k][0] < top * 0.01:
+            continue
+        mag_db = max(mag_db, abs(20.0 * math.log10((ht[k][0] + 1e-12) / (hr[k][0] + 1e-12))))
+        if k >= 1:
+            d = (ht[k][1] - (k + 1) * ht[0][1]) - (hr[k][1] - (k + 1) * hr[0][1])
+            d = d - 2.0 * math.pi * round(d / (2.0 * math.pi))
+            errs.append(d * d)
+    ph = math.sqrt(sum(errs) / max(len(errs), 1))
+    return res_db, mag_db, ph, math.sqrt(e_ref / max(n, 1))
+
+
+def run_reharm_checks(R):
+    """Spectral controls returned to neutral must sound like never moved: see the block above the rh_ cases."""
+    for rn, tn, src, f0, tol in RH_CASES:
+        if rn not in R or tn not in R or "raw" not in R[rn] or "raw" not in R[tn]:
+            continue
+        res_db, mag_db, ph, rms = rh_compare(R[rn]["raw"], R[tn]["raw"], f0)
+        print(f"  {tn}: null {res_db:.1f} dB, harmonic magnitude {mag_db:.2f} dB, harmonic phase {ph:.3f} rad (ref rms {rms:.3f})")
+        check(rms > 0.02, f"{rn}: the reference must sound (rms {rms:.4f})")
+        check(res_db < -40.0, f"{tn}: after the control returned to neutral the output must null against the reference "
+                              f"(residual {res_db:.1f} dB, want < -40)")
+        check(mag_db < tol, f"{tn}: harmonic magnitudes must match the reference (worst {mag_db:.2f} dB, want < {tol})")
+        check(ph < 0.1, f"{tn}: harmonic phase alignment must match the reference (rms {ph:.3f} rad, want < 0.1)")
 
 
 def run_rpf_checks(R):

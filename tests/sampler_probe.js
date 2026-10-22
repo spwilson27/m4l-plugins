@@ -27,6 +27,8 @@ var cutMs = jsarguments.length > 2 ? Number(jsarguments[2]) : 0;
 //   wave=sine|saw|pulse|rich  waveform of the steps48 / glide48 / flat48 sources: pure sine, additive saw (1/n up to 24
 //                 harmonics), additive 25 % pulse, or (default) sine + 2nd + 3rd harmonic. src=flat48: constant
 //                 220 Hz (pitch curve = MIDI 57 exactly)
+//   raw=a-b       write the output of the window a..b ms (from the start of the recording) as "l r" text lines to
+//                 <resultpath>.raw.txt (the runner reads it with keep_dir; null tests against a reference render)
 //   clk=a-b       window (ms) of the click / ripple metrics (see clickReport)
 //   start=live    trigger from the setbuffers message instead of the harness event (CPU cases)
 //   src=marks44   the same 1 s marks sample at 44.1 kHz (44100 frames): needs `samp_rate 44100` in a 48 kHz harness
@@ -205,6 +207,7 @@ function seedSample() {
 //   kind=pad     five detuned band-limited saws (-14 / -7 / 0 / +8 / +15 ct) + a low-passed noise bed
 //   kind=vowel   jittered band-limited saw through 700 / 1220 / 2600 Hz resonators, voiced 350 ms / unvoiced (noise only)
 //                150 ms, breath noise throughout
+//   kind=saw     steady band-limited saw (18 harmonics) at f0
 //   kind=vib     sine (+ 2nd, 3rd harmonic) with 5.5 Hz +-35 ct vibrato
 //   off=0.35     the source's pitch in semitones above 220 Hz (the root the device is told about is 220 Hz)
 //   gstart=4.8 glen=2.4   only this stretch of the (len seconds long) buffer holds sound: the scan starts at gstart
@@ -281,6 +284,13 @@ function genReal(frames, sr) {
                 y += o * B.g;
             }
             out[g0 + i] = y * 4.0 + noise[i] * (0.03 + 0.08 * (1 - env));
+        }
+    } else if (kind === "saw") {
+        // steady band-limited saw (18 harmonics, 1/n) at f0
+        var sph = 0;
+        for (i = 0; i < n; i++) {
+            sph += f0 / sr;
+            out[g0 + i] = tabRead(tb, sph);
         }
     } else if (kind === "vowelst") {
         // steady vowel: 18 harmonics shaped by formants at 700 / 1220 / 2600 Hz (Lorentzian-like, bandwidths 110 / 140 / 200 Hz)
@@ -583,6 +593,18 @@ function analyze(durMs) {
         markerReport(left, right, sr)
     );
     report.close();
+    if (opt.raw) {
+        var rw = String(opt.raw).split("-");
+        var r0 = Math.floor(sr * Number(rw[0]) / 1000), r1 = Math.min(left.length, Math.floor(sr * Number(rw[1]) / 1000));
+        var rf = new File(resultPath + ".raw.txt", "write", "TEXT");
+        var chunk = [];
+        for (var ri = r0; ri < r1; ri++) {
+            chunk.push(left[ri] + " " + right[ri]);
+            if (chunk.length >= 512) { rf.writestring(chunk.join("\n") + "\n"); chunk = []; }
+        }
+        if (chunk.length) rf.writestring(chunk.join("\n") + "\n");
+        rf.close();
+    }
     if (opt.dump) {
         var df = new File(resultPath + ".wav.txt", "write", "TEXT");
         var a1 = Math.floor(sr * Number(opt.ana || 100) / 1000);
