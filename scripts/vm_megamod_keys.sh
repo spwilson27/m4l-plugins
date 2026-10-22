@@ -5,6 +5,7 @@
 #   scripts/vm_megamod_keys.sh sync   rsync scripts/ src/ tests/ devices/ to ~/Software/ableton-mmnames in the VM
 #                                     (no --delete), rebuild the device there
 #   scripts/vm_megamod_keys.sh max    sync, then scripts/run_megamod_key_tests.py in the VM (standalone Max)
+#   scripts/vm_megamod_keys.sh audio [case ...]  sync, then scripts/run_megamod_audio_tests.py in the VM (standalone Max)
 #   scripts/vm_megamod_keys.sh live   sync, write megamod_keys_test.als in the VM and (re)start Live on it.
 #                                     Refuses when a Live with another set is running (another session may be
 #                                     using it); FORCE=1 overrides. Waits for the MCP bridge.
@@ -57,6 +58,9 @@ case "${1:-}" in
     sync_repo ;;
   max)
     sync_repo && "${SSH[@]}" "cd $VMDIR && /usr/bin/python3 scripts/run_megamod_key_tests.py" ;;
+  audio)
+    # engine / router audio checks in standalone Max (scripts/run_megamod_audio_tests.py [case ...], harness: AGENTS.md 1b)
+    shift; sync_repo && "${SSH[@]}" "cd $VMDIR && /usr/bin/python3 scripts/run_megamod_audio_tests.py $*" ;;
   live)
     BUSY="$("${SSH[@]}" 'pgrep -f "MacOS/Live$" >/dev/null || exit 0;
       osascript -e "tell application \"System Events\" to get name of every window of process \"Live\""' 2>/dev/null)"

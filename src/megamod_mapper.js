@@ -43,7 +43,8 @@ var MM = (function () {
     let scratch = null;
     let selObserver = null;
     let lastSelectedId = 0;
-    let slotOf = {}; // mapId -> pool slot 0..MAX_MAPPINGS-1 (runtime only)
+    let slotOf = {}; // mapId -> pool slot 0..MAX_MAPPINGS-1 (runtime only; internal self-mappings have none)
+    let islotOf = {}; // mapId -> internal matrix route 0..INT_ROUTES-1 (internal self-mappings, runtime; persisted in mapping.slot)
     let bound = {}; // slot -> {mod, rem}: ids last sent to mm_mid_<k> / mm_rid_<k>
     let rtrgCounter = 0;
     let reqWidth = 0;
@@ -52,8 +53,10 @@ var MM = (function () {
     let notifyTask = null;
     let pidCache = {}; // mapId -> live id (number), runtime only
     let missing = {}; // mapId -> true
-    const tel = { frame: 0, bpm: 120, beat: 0, playing: 0, mods: [] };
-    for (let i = 0; i < MAX_MODS; i++) tel.mods.push({ out: 0, phase: 0, u: 0, aux: 0 });
+    // eff[slot] = {ctl: [5 normalized A..E after internal modulation], on, sw: [6 effective switch values]}; depth[k] = effective Depth 0..1 of pool slot k
+    const tel = { frame: 0, bpm: 120, beat: 0, playing: 0, mods: [], eff: [], depth: [] };
+    for (let i = 0; i < MAX_MODS; i++) { tel.mods.push({ out: 0, phase: 0, u: 0, aux: 0 }); tel.eff.push({ ctl: [0, 0, 0, 0, 0], on: 1, sw: [0, 0, 0, 0, 0, 0] }); }
+    for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) tel.depth.push(1);
 
     api.state = defaultState();
     api.learn = { armed: false, mod: -1, multi: false };
@@ -104,6 +107,7 @@ var MM = (function () {
     // ---------------------------------------------------------------- engine buffers
     function writeCfgSlot(i) {
         poke(BUF_CFG, i * CFG_STRIDE, slotConfigFloats(api.state.mods[i]));
+        reapplyVia(i); // a control that live.modulate~ is modulating keeps its modulated engine value
     }
     function writeMsegSlot(i) {
         const m = api.state.mods[i];
@@ -116,20 +120,33 @@ var MM = (function () {
     function flushEngine() {
         if (!names) return;
         poke(BUF_CFG, 0, cfgBufferFloats(api.state));
+        for (let i = 0; i < MAX_MODS; i++) reapplyVia(i);
         for (let i = 0; i < MAX_MODS; i++) { writeMsegSlot(i); writeStepsSlot(i); }
+        flushInternal();
     }
 
     // ---------------------------------------------------------------- mapping slots
     function lomPid(m) {
         return pidCache[m.id] || 0;
     }
+    function isInternal(m) {
+        return !!(m && m.target && m.target.internal === true);
+    }
+    // a self-mapping whose destination does not exist (the target modulator's type has no such control, or its slot is empty) is MISSING:
+    // its route is off (nothing is modulated, no Live id bound) and it revives when the type changes back
+    function selfDestMissing(m) {
+        return isSelfMapping(m) && !selfDestExists(selfDestOf(m), api.state);
+    }
     function mappingActive(m) {
         const mod = api.state.mods[m.mod];
-        return !!(m.enabled && mod && mod.enabled && !missing[m.id] && lomPid(m) > 0);
+        if (isInternal(m)) return !!(m.enabled && mod && mod.enabled && !selfDestMissing(m));
+        return !!(m.enabled && mod && mod.enabled && !missing[m.id] && lomPid(m) > 0 && !selfDestMissing(m));
     }
     api.mappingStatus = function (id) {
         const m = api.getMapping(id);
         if (!m) return "missing";
+        if (selfDestMissing(m)) return "missing";
+        if (isInternal(m)) return mappingActive(m) ? "ok" : "disabled";
         if (missing[m.id]) return "missing";
         if (!lomReady || !lomPid(m)) return "pending";
         return mappingActive(m) ? "ok" : "disabled";
@@ -162,7 +179,16 @@ var MM = (function () {
     function flushRoute() {
         const a = new Array(ROUTE_SAMPS).fill(0);
         for (let k = 0; k < MAX_MAPPINGS; k++) a[2 * k] = ROUTE_OFF;
+        for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) { a[2 * k + 1] = 1; a[ROUTE_DEPTH_BASE + k] = 1; a[ROUTE_DEPTH_MIN + k] = -1; }
         poke(BUF_ROUTE, 0, a);
+    }
+    // pool slots below AUTO_DEPTH_SLOTS apply the Depth in the ROUTER (per sample, so a Depth lane / Depth modulation is smooth): their curve
+    // table is baked at depth 1 and the base depth (+ the Remote min, or -1 for Mod) lives in the route buffer. The engine copies base
+    // -> effective and adds the internal Depth modulation. Slots from AUTO_DEPTH_SLOTS up have no Depth parameter and bake the depth in the table.
+    function writeDepthCells(m, slot) {
+        if (slot >= AUTO_DEPTH_SLOTS) return;
+        poke(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [clamp(m.depth, 0, 1)]);
+        poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [m.mode === "remote" ? clamp(m.min, 0, 1) : -1]);
     }
     function unbindSlot(slot) {
         const b = boundOf(slot);
@@ -182,10 +208,17 @@ var MM = (function () {
     function writeMappingTable(m) {
         const slot = slotOf[m.id];
         if (slot === undefined) return;
-        poke(BUF_CURVE, slot * CURVE_REGION, mappingTable(m));
+        poke(BUF_CURVE, slot * CURVE_REGION, mappingTable(slot < AUTO_DEPTH_SLOTS ? Object.assign({}, m, { depth: 1 }) : m));
+        writeDepthCells(m, slot);
     }
     // Bring one mapping's slot in line with the model: table, route, ids. Cheap when nothing changed.
     function syncMapping(m) {
+        syncMappingBody(m);
+        if (!rebuildingAll) rebuildViaDests();
+    }
+    let rebuildingAll = false;
+    function syncMappingBody(m) {
+        if (isInternal(m)) { syncInternal(m); return; }
         if (slotOf[m.id] === undefined) {
             const s = allocSlot();
             if (s < 0) { dlog("syncMapping: pool full, map", m.id); return; }
@@ -210,6 +243,7 @@ var MM = (function () {
         for (const m of api.state.mappings) if (m.mod === modIndex) syncMapping(m);
     }
     function releaseMappingSlot(m) {
+        if (isInternal(m)) { releaseInternal(m); return; }
         const slot = slotOf[m.id];
         if (slot === undefined) return;
         if (patcher() && names) {
@@ -218,31 +252,221 @@ var MM = (function () {
         }
         bound[slot] = { mod: 0, rem: 0 };
         delete slotOf[m.id];
-        if (slot < AUTO_DEPTH_SLOTS) autoPush("ad_" + slot, 100);
+        if (slot < AUTO_DEPTH_SLOTS) {
+            autoPush("ad_" + slot, 100);
+            if (patcher() && names) { poke(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [1]); poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [-1]); }
+        }
     }
     // Rebind every mapping (load / names / LOM ready). Releases everything first. Each mapping gets its saved slot
     // back when it is free, so automation of its "Depth <k>" parameter follows the mapping across deletes and
     // reloads; only mappings without a (valid, unclaimed) saved slot take the lowest free one.
     function rebuildAllSlots() {
+        rebuildingAll = true;
         for (const k of Object.keys(bound)) unbindSlot(Number(k));
         slotOf = {};
         bound = {};
         if (names) flushRoute();
         const claimed = {};
+        rebuildInternal();
         for (const m of api.state.mappings) {
+            if (isInternal(m)) continue;
             if (Number.isInteger(m.slot) && m.slot >= 0 && m.slot < MAX_MAPPINGS && !claimed[m.slot]) {
                 claimed[m.slot] = true;
                 slotOf[m.id] = m.slot;
             }
         }
         for (const m of api.state.mappings) {
+            if (isInternal(m)) continue;
             if (slotOf[m.id] !== undefined) { syncMapping(m); continue; }
             const s = allocSlot();
             if (s < 0) { dlog("rebuildAllSlots: pool full, map", m.id, "left unslotted"); continue; }
             slotOf[m.id] = s;
             syncMapping(m);
         }
+        rebuildingAll = false;
+        rebuildViaDests();
     }
+
+    // ---------------------------------------------------------------- internal self-modulation matrix (schema 9, no Live pool slot)
+    // An internal self-mapping is a route of the ENGINE's matrix: source modulator -> destination code (selfDestFor) with its 256-sample transfer
+    // table (the same mappingTable() as a pool mapping, depth baked in). megamodint[4r..] = [src + 1 | 0, dest, 0, 0], megamodint[256] = highest
+    // used route + 1 (0 = the engine skips the whole matrix), megamodicurve[r * 256 ..] = the table.
+    function allocInternal() {
+        const used = {};
+        for (const k of Object.keys(islotOf)) used[islotOf[k]] = true;
+        for (let k = 0; k < INT_ROUTES; k++) if (!used[k]) return k;
+        return -1;
+    }
+    function writeInternalCount() {
+        let hi = 0;
+        for (const k of Object.keys(islotOf)) hi = Math.max(hi, islotOf[k] + 1);
+        poke(BUF_INT, INT_COUNT_AT, [hi]);
+    }
+    function writeInternalRoute(m, off) {
+        const r = islotOf[m.id];
+        if (r === undefined) return;
+        poke(BUF_INT, 4 * r, [off ? 0 : m.mod + 1, selfDestOf(m), 0, 0]);
+    }
+    function syncInternal(m) {
+        if (islotOf[m.id] === undefined) {
+            const r = allocInternal();
+            if (r < 0) { dlog("syncInternal: matrix full, map", m.id); return; }
+            islotOf[m.id] = r;
+        }
+        m.slot = islotOf[m.id];
+        const r = islotOf[m.id];
+        if (!names) return;
+        poke(BUF_ICURVE, r * CURVE_REGION, mappingTable(m));
+        writeInternalRoute(m, !mappingActive(m));
+        writeInternalCount();
+    }
+    function releaseInternal(m) {
+        const r = islotOf[m.id];
+        if (r === undefined) return;
+        if (names) { poke(BUF_INT, 4 * r, [0, 0, 0, 0]); }
+        delete islotOf[m.id];
+        if (names) writeInternalCount();
+    }
+    // (re)assign every internal mapping its saved route (or the lowest free one) and rewrite the whole matrix
+    function assignInternalSlots() {
+        const claimed = {};
+        for (const k of Object.keys(islotOf)) claimed[islotOf[k]] = true;
+        for (const m of api.state.mappings) {
+            if (isInternal(m) && islotOf[m.id] === undefined && Number.isInteger(m.slot) && m.slot >= 0 && m.slot < INT_ROUTES && !claimed[m.slot]) { claimed[m.slot] = true; islotOf[m.id] = m.slot; }
+        }
+        for (const m of api.state.mappings) {
+            if (isInternal(m) && islotOf[m.id] === undefined) { const r = allocInternal(); if (r >= 0) islotOf[m.id] = r; }
+        }
+    }
+    function rebuildInternal() {
+        islotOf = {};
+        flushInternal();
+    }
+    function flushInternal() {
+        if (!names) return;
+        const hdr = new Array(INT_SAMPS).fill(0);
+        const desc = intDescriptorFloats();
+        for (let i = 0; i < desc.length; i++) hdr[INT_DESC_AT + i] = desc[i];
+        poke(BUF_INT, 0, hdr);
+        assignInternalSlots();
+        for (const m of api.state.mappings) if (isInternal(m) && islotOf[m.id] !== undefined) syncInternal(m);
+        writeInternalCount();
+    }
+    api.internalCapacity = function () {
+        const used = Object.keys(islotOf).length;
+        return { used, max: INT_ROUTES, free: INT_ROUTES - used };
+    };
+
+    // ---------------------------------------------------------------- VIA LIVE: a pool mapping modulating this device's OWN parameter
+    // Measured in Live 12.4.6 (VM, scripts/test_megamod_selfmod_live.js): live.modulate~ on one of the device's own parameters DOES work. The LOM
+    // DeviceParameter.value keeps the STORED value (what the model holds), while the parameter's live.dial / live.text / live.tab OUTPUTS the
+    // MODULATED value (stored + modulation) into `autop` / `autot` / `autod`. A modulated output therefore must drive the engine but never the
+    // model: for the destinations in `viaDests` (an active Mod-mode via-Live self-mapping on them) the incoming value goes to the engine's cfg
+    // float (or the Depth cell) only, never to mod.p / m.depth, the undo stack, dirty state or the autoCache; the stored value is re-read from the
+    // LOM (`value`, 4 Hz) so a real change of the stored value (face drag, automation, macro) still reaches the model. Remote mappings take the
+    // parameter over (its value really moves, like automation), so they use the normal path. The modulation updates at Live's control rate, not per sample.
+    let viaDests = {}; // dest code -> true
+    const viaVal = {}; // dest code -> the last modulated engine value (re-applied after the cfg slot is rewritten)
+    let viaTask = null;
+    const viaApis = {}; // dest code -> LiveAPI of the parameter (stored value reads)
+    function viaCfgField(code) {
+        const d = selfDestInfo(code);
+        if (!d || d.kind === "depth") return -1;
+        const mod = api.state.mods[d.slot];
+        if (!mod) return -1;
+        if (d.kind === "on") return CF_ENABLED;
+        if (d.kind === "sw") return KEY_CF[AUTO_SW_KEYS[d.ctl]];
+        const key = AUTO_KEYS[mod.type][d.ctl];
+        return key ? KEY_CF[key] : -1;
+    }
+    function applyViaValue(code) {
+        const d = selfDestInfo(code);
+        if (!d || viaVal[code] === undefined) return;
+        if (d.kind === "depth") { poke(BUF_ROUTE, ROUTE_DEPTH_BASE + d.ctl, [viaVal[code]]); return; }
+        const f = viaCfgField(code);
+        if (f >= 0) poke(BUF_CFG, d.slot * CFG_STRIDE + f, [viaVal[code]]);
+    }
+    function reapplyVia(slot) {
+        for (const k of Object.keys(viaDests)) {
+            const d = selfDestInfo(Number(k));
+            if (d && d.kind !== "depth" && d.slot === slot) applyViaValue(Number(k));
+        }
+    }
+    // the model's value of a destination goes back into the engine (modulation stopped / the mapping went away)
+    function restoreDest(code) {
+        const d = selfDestInfo(code);
+        delete viaVal[code];
+        delete viaApis[code];
+        if (!d) return;
+        if (d.kind === "depth") {
+            for (const m of api.state.mappings) if (slotOf[m.id] === d.ctl && !isInternal(m)) writeDepthCells(m, d.ctl);
+        } else if (api.state.mods[d.slot]) writeCfgSlot(d.slot);
+    }
+    function rebuildViaDests() {
+        const old = viaDests;
+        viaDests = {};
+        for (const m of api.state.mappings) {
+            if (isSelfMapping(m) && !isInternal(m) && m.mode === "mod" && mappingActive(m)) viaDests[selfDestOf(m)] = true;
+        }
+        for (const k of Object.keys(old)) if (!viaDests[k]) restoreDest(Number(k));
+        const any = Object.keys(viaDests).length > 0;
+        if (typeof Task === "undefined") return;
+        if (any && !viaTask) { viaTask = new Task(viaReadStored, MM_THIS); viaTask.interval = 250; viaTask.repeat(); }
+        if (!any && viaTask) { try { viaTask.cancel(); } catch (e) {} viaTask = null; }
+    }
+    // the STORED value of a modulated parameter (LOM `value`, in the parameter's own 0..100 percent / enum units)
+    function viaStored(code) {
+        if (typeof LiveAPI === "undefined" || !lomReady) return undefined;
+        if (!viaApis[code]) {
+            const path = ownParamPath(selfDestName(code));
+            if (!path) return undefined;
+            try { viaApis[code] = new LiveAPI(function () {}, path); } catch (e) { return undefined; }
+        }
+        try {
+            const v = viaApis[code].get("value");
+            const n = Number(Array.isArray(v) ? v[0] : v);
+            return Number.isFinite(n) ? n : undefined;
+        } catch (e) { return undefined; }
+    }
+    function viaReadStored() {
+        for (const k of Object.keys(viaDests)) {
+            const code = Number(k);
+            const v = viaStored(code);
+            if (v === undefined) continue;
+            const d = selfDestInfo(code);
+            // unchanged (within float noise) = nothing to adopt
+            let cur = null;
+            if (d.kind === "depth") { for (const m of api.state.mappings) if (slotOf[m.id] === d.ctl && !isInternal(m)) cur = 100 * m.depth; }
+            else {
+                const mod = api.state.mods[d.slot];
+                if (mod && d.kind === "on") cur = mod.enabled ? 1 : 0;
+                else if (mod && d.kind === "sw") cur = mod.p[AUTO_SW_KEYS[d.ctl]];
+                else if (mod && AUTO_KEYS[mod.type][d.ctl]) cur = 100 * autoNorm(AUTO_KEYS[mod.type][d.ctl], mod.p[AUTO_KEYS[mod.type][d.ctl]]);
+            }
+            if (cur === null || Math.abs(cur - v) < 0.02) continue;
+            if (d.kind === "depth") api._autoDepthStored(d.ctl, v);
+            else if (d.kind === "sw") api._autoSwitchStored(code - DEST_SW, v);
+            else api._autoParamStored(code, v);
+        }
+    }
+    // an incoming (modulated) value of a destination in viaDests: the engine only
+    function viaIn(code, v) {
+        const d = selfDestInfo(code);
+        if (!d) return;
+        if (d.kind === "depth") { viaVal[code] = clamp(v / 100, 0, 1); applyViaValue(code); return; }
+        const mod = api.state.mods[d.slot];
+        if (!mod) return;
+        if (d.kind === "on") viaVal[code] = v >= 0.5 ? 1 : 0;
+        else if (d.kind === "sw") viaVal[code] = clampParam(AUTO_SW_KEYS[d.ctl], Math.round(v));
+        else {
+            const key = AUTO_KEYS[mod.type][d.ctl];
+            if (!key) return;
+            viaVal[code] = clampParam(key, autoValue(key, v / 100));
+        }
+        applyViaValue(code);
+    }
+    api.viaDests = function () { return Object.keys(viaDests).map(Number); };
+    api._viaStoredRead = viaReadStored; // test hook: poll the stored values now
 
     // ---------------------------------------------------------------- automatable parameter pool
     // Saved live.* objects (scripts/megamod_common.py): ap_<slot * 6 + j> (j 0..4 = the type's controls via AUTO_KEYS, j 5 = On),
@@ -390,7 +614,10 @@ var MM = (function () {
         for (const id of Object.keys(depthPending)) {
             delete depthPending[id];
             const m = api.getMapping(Number(id));
-            if (m) writeMappingTable(m);
+            if (!m) continue;
+            if (isInternal(m)) syncInternal(m); // the internal table has the depth baked in
+            else if (slotOf[m.id] !== undefined && slotOf[m.id] < AUTO_DEPTH_SLOTS) writeDepthCells(m, slotOf[m.id]); // the router applies it per sample
+            else writeMappingTable(m);
         }
         depthLast = nowFn();
     }
@@ -406,6 +633,11 @@ var MM = (function () {
     }
     // Live -> model: a modulator control moved by automation / macro / MIDI / the parameter list
     api._autoParamIn = function (idx, v) {
+        if (viaDests[idx] && autoOn && !autoFrozen) { delete autoSent["ap_" + idx]; viaIn(idx, v); return; } // a modulated output: the engine only
+        api._autoParamStored(idx, v);
+    };
+    // the value is the parameter's STORED value (not modulated): the model follows it (and the engine, through the cfg write)
+    api._autoParamStored = function (idx, v) {
         const key = "ap_" + idx;
         const echo = autoIsEcho(key, v);
         if (!autoOn || echo || autoFrozen) return;
@@ -434,6 +666,10 @@ var MM = (function () {
     };
     // Live -> model: a switch parameter (LFO shape, SYNC / BIP / RTG / 1SH / LOOP) moved by automation / macro / MIDI / a face click
     api._autoSwitchIn = function (idx, v) {
+        if (viaDests[DEST_SW + idx] && autoOn && !autoFrozen) { delete autoSent["at_" + idx]; viaIn(DEST_SW + idx, v); return; }
+        api._autoSwitchStored(idx, v);
+    };
+    api._autoSwitchStored = function (idx, v) {
         const key = "at_" + idx;
         const echo = autoIsEcho(key, v);
         if (!autoOn || echo || autoFrozen) return;
@@ -451,6 +687,10 @@ var MM = (function () {
     };
     // Live -> model: the Depth of the mapping in pool slot k
     api._autoDepthIn = function (k, v) {
+        if (viaDests[DEST_DEPTH + k] && autoOn) { delete autoSent["ad_" + k]; viaIn(DEST_DEPTH + k, v); return; }
+        api._autoDepthStored(k, v);
+    };
+    api._autoDepthStored = function (k, v) {
         const key = "ad_" + k;
         const echo = autoIsEcho(key, v);
         if (!autoOn || echo) return;
@@ -575,6 +815,7 @@ var MM = (function () {
     function resolveMappingTargets() {
         const lom = lomIface();
         for (const m of api.state.mappings) {
+            if (isInternal(m)) continue;
             const r = resolveTarget(m.target, lom);
             if (r.ok) {
                 m.target.path = r.path;
@@ -589,12 +830,13 @@ var MM = (function () {
     }
     // Slow poll: detect deleted / moved targets, and revive missing ones when they come back.
     function validateTargets() {
-        if (!lomReady || !api.state.mappings.length) return;
+        if (!lomReady || !api.state.mappings.some((m) => !isInternal(m))) return;
         const a = scratchApi();
         if (!a) return;
         const lom = lomIface();
         let changed = false;
         for (const m of api.state.mappings) {
+            if (isInternal(m)) continue;
             const pid = lomPid(m);
             let ok = false;
             if (pid > 0) {
@@ -642,7 +884,15 @@ var MM = (function () {
         const info = describeParameter(id);
         dlog("describeParameter", info);
         if (!info) return;
-        if (isSelfTarget(info.path, selfPath)) { dlog("ignored: own parameter", info.path, "self", selfPath); return; }
+        if (isSelfTarget(info.path, selfPath)) {
+            // the device's own parameter: a modulator control / On / switch / mapping Depth becomes a self-mapping of the selected kind
+            const c = classifySelfParam(info.paramName, api.learn.mod, api.state);
+            if (!c.ok) { dlog("ignored: own parameter", info.path, info.paramName, c.reason); return; }
+            const sm = api.addSelfMapping(api.learn.mod, c.dest, undefined, info);
+            dlog("addSelfMapping ->", sm ? { id: sm.id, mod: sm.mod, internal: isInternal(sm), dest: c.dest } : "NULL (duplicate / full)");
+            if (!api.learn.multi) api.disarmLearn();
+            return;
+        }
         if (allocSlot() < 0) {
             dlog("learn: mapping pool full", MAX_MAPPINGS);
             fire("full", api.learn.mod);
@@ -692,8 +942,10 @@ var MM = (function () {
     api.removeModulator = function (i, opts) {
         const mod = api.state.mods[i];
         if (!mod) return;
-        const entry = { kind: "mod", slot: i, mod: cloneJson(mod), maps: api.state.mappings.filter((x) => x.mod === i).map(snapMapping), label: mod.name };
-        for (const m of api.state.mappings.filter((x) => x.mod === i)) removeMappingInternal(m);
+        // the mappings it sources AND the self-mappings that target it (their destination goes away with it) are deleted together, undo restores all
+        const touching = mappingsTouching(i);
+        const entry = { kind: "mod", slot: i, orig: i, mod: cloneJson(mod), maps: touching.map(snapMapping), label: mod.name };
+        for (const m of touching) removeMappingInternal(m);
         api.state.mods[i] = null;
         if (api.learn.mod === i) api.disarmLearn();
         writeCfgSlot(i); writeMsegSlot(i); writeStepsSlot(i);
@@ -701,6 +953,10 @@ var MM = (function () {
         fire("mods", i);
         api.commit();
     };
+    // mappings sourced by modulator slot i, plus self-mappings whose destination is a control / On / switch of slot i
+    function mappingsTouching(i) {
+        return api.state.mappings.filter((x) => x.mod === i || (isSelfMapping(x) && (function () { const d = selfDestInfo(selfDestOf(x)); return !!d && d.kind !== "depth" && d.slot === i; })()));
+    }
     api.setModType = function (i, type) {
         const m = api.state.mods[i];
         if (!m) return;
@@ -710,6 +966,9 @@ var MM = (function () {
         api.state.mods[i] = fresh;
         writeCfgSlot(i); writeMsegSlot(i); writeStepsSlot(i);
         autoPushSlot(i);
+        // self-mappings aimed at this slot are kept; those whose control the new type does not have become MISSING (route off) and revive on a type
+        // change back. The meaning of a letter changes with the type (position based): A..E keep modulating whichever control now sits there.
+        for (const x of api.state.mappings) if (isSelfMapping(x)) { const d = selfDestInfo(selfDestOf(x)); if (d && d.kind !== "depth" && d.slot === i) syncMapping(x); }
         fire("mod", i);
         api.commit();
     };
@@ -779,8 +1038,12 @@ var MM = (function () {
         if (!api.state.mods[i]) return null;
         const t = sanitizeTarget(target);
         if (target && target.id) t.id = target.id;
+        if (isInternal({ target: t })) return null; // internal routes go through addSelfMapping
         if (findDuplicateMapping(api.state.mappings, i, t)) return null;
-        if (selfPath && isSelfTarget(t.path, selfPath)) return null;
+        if (t.selfDest !== undefined) {
+            const c = classifySelfParam(selfDestName(t.selfDest), i, api.state);
+            if (!c.ok || isInternal({ target: t })) return null;
+        } else if (selfPath && isSelfTarget(t.path, selfPath)) return null; // an own parameter only through addSelfMapping / learn
         if (allocSlot() < 0) { dlog("addMapping refused: pool full", MAX_MAPPINGS); fire("full", i); return null; }
         const m = defaultMapping(api.state.nextMapId++, i, t, api.state.settings.defaultMode);
         api.state.mappings.push(m);
@@ -794,6 +1057,133 @@ var MM = (function () {
     api.mappingCapacity = function () {
         const used = Object.keys(slotOf).length;
         return { used, max: MAX_MAPPINGS, free: MAX_MAPPINGS - used };
+    };
+
+    // ---------------------------------------------------------------- self-mappings (a modulator modulating this device's own controls)
+    // The Live parameter of a dest code on THIS device as a mapping target {path, paramName, deviceName, trackName, selfDest, id?}. The path is found by
+    // scanning the device's parameter names (cached); without the LOM (Node tests, before init_lom) path / id stay empty and validateTargets
+    // resolves the target by track / device / parameter name once the LOM is ready.
+    let ownParamIdx = null;
+    function ownParamPath(name) {
+        if (!lomReady || !selfPath) return "";
+        if (!ownParamIdx) {
+            ownParamIdx = {};
+            const lom = lomIface();
+            const n = lom.count(selfPath, "parameters");
+            for (let q = 0; q < n; q++) ownParamIdx[lom.name(selfPath + " parameters " + q)] = q;
+        }
+        return ownParamIdx[name] === undefined ? "" : selfPath + " parameters " + ownParamIdx[name];
+    }
+    function ownTarget(dest, info) {
+        if (info && info.path) return Object.assign({}, info, { selfDest: dest });
+        const nm = selfDestName(dest);
+        const lom = lomIface();
+        const tm = /^live_set (?:tracks \d+|return_tracks \d+|master_track)/.exec(selfPath);
+        return { path: ownParamPath(nm), name: nm, paramName: nm, selfDest: dest, deviceName: selfPath && lomReady ? lom.name(selfPath) : "", trackName: tm && lomReady ? lom.name(tm[0]) : "" };
+    }
+    function bindOwnPid(m) {
+        const a = m.target.path && lomReady ? scratchApi() : null;
+        let pid = 0;
+        if (a) { try { a.goto(m.target.path); pid = Number(a.id) || 0; } catch (e) { pid = 0; } }
+        pidCache[m.id] = pid;
+        missing[m.id] = pid <= 0;
+    }
+    // kind: "internal" | "live" (default settings.selfMod). info = describeParameter() of the learned own parameter (via Live).
+    // Returns the mapping, or null (duplicate, rejected target, the chosen pool is full: change kind "full", id -1 = the internal matrix).
+    api.addSelfMapping = function (i, dest, kind, info) {
+        if (!api.state.mods[i]) return null;
+        const c = classifySelfParam(selfDestName(dest), i, api.state);
+        if (!c.ok) return null;
+        const k = kind === "live" || kind === "internal" ? kind : api.state.settings.selfMod;
+        if (api.state.mappings.some((x) => x.mod === i && selfDestOf(x) === dest)) return null;
+        let m;
+        if (k === "internal") {
+            if (allocInternal() < 0) { dlog("addSelfMapping: internal matrix full", INT_ROUTES); fire("full", i, -1); return null; }
+            m = defaultMapping(api.state.nextMapId++, i, makeInternalTarget(dest), "mod");
+            api.state.mappings.push(m);
+            syncInternal(m);
+        } else {
+            if (allocSlot() < 0) { fire("full", i); return null; }
+            const t = ownTarget(dest, info);
+            m = defaultMapping(api.state.nextMapId++, i, t, api.state.settings.defaultMode);
+            m.target.selfDest = dest;
+            api.state.mappings.push(m);
+            if (info && info.id) { pidCache[m.id] = Number(info.id); missing[m.id] = false; } else bindOwnPid(m);
+            syncMapping(m);
+        }
+        fire("mapping", i, m.id);
+        api.commit();
+        return m;
+    };
+    api.selfMappingsOfKind = function (kind) {
+        return api.state.mappings.filter((m) => isSelfMapping(m) && (kind === "internal") === isInternal(m));
+    };
+    // The target of a mapping by meaning ("LFO 2 Rate" / "Frequency Depth"), plus " (M2 A)" for a via-Live row. "" for a normal mapping.
+    api.selfLabel = function (m) {
+        if (!isSelfMapping(m)) return "";
+        const owner = function (k) {
+            for (const x of api.state.mappings) if (slotOf[x.id] === k) return x.target.paramName || x.target.name || "";
+            return "";
+        };
+        const lab = selfDestLabel(selfDestOf(m), api.state, owner);
+        return isInternal(m) ? lab : lab + " (" + selfDestName(selfDestOf(m)) + ")";
+    };
+    // Convert ONE mapping to `to` ("internal" | "live"), in place (id, source, polarity, range, depth, shape and enabled are kept). Returns true,
+    // or false when the destination kind has no room (the mapping is left as it was). Via Live -> internal: Remote becomes Mod (the closest equivalent:
+    // an absolute window [min, max] becomes an offset of the same span in the same direction, "+" for max >= min, "-" otherwise, range = |max - min|).
+    function convertOne(m, to) {
+        const dest = selfDestOf(m);
+        if (to === "internal") {
+            if (isInternal(m)) return true;
+            if (allocInternal() < 0) return false;
+            if (m.mode === "remote") {
+                m.polarity = m.max >= m.min ? 1 : -1;
+                m.range = clamp(Math.abs(m.max - m.min), 0, 1);
+                m.mode = "mod";
+            }
+            releaseMappingSlot(m);
+            delete pidCache[m.id]; delete missing[m.id];
+            m.target = makeInternalTarget(dest);
+            delete m.slot;
+            syncInternal(m);
+            return true;
+        }
+        if (!isInternal(m)) return true;
+        if (allocSlot() < 0) return false;
+        releaseInternal(m);
+        delete m.slot;
+        m.target = ownTarget(dest, null);
+        m.target.selfDest = dest;
+        m.mode = "mod";
+        bindOwnPid(m);
+        syncMapping(m);
+        return true;
+    }
+    function convertMany(ms, to) {
+        const done = [];
+        for (const m of ms) if (convertOne(m, to)) done.push(m.id);
+        return done;
+    }
+    // Switch the Options selector. `convert` (default true): the self-mappings of the OTHER kind are converted to the new one as ONE undo step.
+    api.setSelfMod = function (kind, convert) {
+        const k = kind === "live" ? "live" : "internal";
+        const old = api.state.settings.selfMod;
+        api.setSettings({ selfMod: k });
+        let converted = [];
+        if (convert !== false) {
+            const other = api.selfMappingsOfKind(k === "internal" ? "live" : "internal");
+            if (other.length) {
+                const entry = { kind: "conv", to: k, items: other.map(snapMapping), label: other.length + " self-mapping" + (other.length === 1 ? "" : "s") };
+                converted = convertMany(other, k);
+                entry.items = entry.items.filter((it) => converted.indexOf(it.m.id) >= 0);
+                if (converted.length) pushUndo(entry);
+                if (converted.length < other.length) fire("full", other[0].mod, k === "internal" ? -1 : 0);
+                fire("mapping", other[0].mod, converted[0] || 0);
+                api.commit();
+            }
+        }
+        fire("selfmod", -1, converted.length);
+        return { from: old, to: k, converted: converted.length };
     };
     api.mappingSlot = function (id) {
         return slotOf[id] === undefined ? -1 : slotOf[id];
@@ -815,6 +1205,7 @@ var MM = (function () {
         if (i >= 0) api.state.mappings.splice(i, 1);
         delete pidCache[m.id];
         delete missing[m.id];
+        rebuildViaDests();
     }
     api.deleteMapping = function (id, opts) {
         const m = api.getMapping(id);
@@ -846,15 +1237,24 @@ var MM = (function () {
         redoStack = [];
         fire("undo");
     }
-    function restoreMappings(maps, modSlot) {
+    // orig = the modulator slot the snapshot was taken from; modSlot = the slot it is restored into (may differ when the old one was reused):
+    // mappings it sourced follow it, and self-mappings that targeted it are re-aimed at the new slot.
+    function restoreMappings(maps, modSlot, orig) {
         const used = {};
         for (const k of Object.keys(slotOf)) used[slotOf[k]] = true;
         const restored = [];
         for (const sn of maps.slice().sort((a, b) => a.index - b.index)) {
             if (api.getMapping(sn.m.id)) continue;
             const m = cloneJson(sn.m);
-            if (modSlot !== undefined) m.mod = modSlot;
+            if (modSlot !== undefined && m.mod === orig) m.mod = modSlot;
+            if (modSlot !== undefined && modSlot !== orig && isSelfMapping(m)) retargetSelf(m, orig, modSlot);
             api.state.mappings.splice(clamp(sn.index, 0, api.state.mappings.length), 0, m);
+            if (isInternal(m)) {
+                const r = Number.isInteger(m.slot) && m.slot >= 0 && !Object.keys(islotOf).some((q) => islotOf[q] === m.slot) ? m.slot : allocInternal();
+                if (r >= 0) islotOf[m.id] = r;
+                restored.push(m);
+                continue;
+            }
             if (sn.pid) pidCache[m.id] = sn.pid;
             missing[m.id] = sn.missing;
             let k = sn.slot;
@@ -865,6 +1265,15 @@ var MM = (function () {
         for (const m of restored) syncMapping(m);
         return restored;
     }
+    // re-aim a self-mapping that targeted modulator slot `from` at slot `to` (an undo that had to use another free slot)
+    function retargetSelf(m, from, to) {
+        const d = selfDestInfo(selfDestOf(m));
+        if (!d || d.kind === "depth" || d.slot !== from) return;
+        const code = selfDestFor(d.kind, to, d.ctl);
+        if (isInternal(m)) { m.target = makeInternalTarget(code); return; }
+        m.target.selfDest = code; m.target.paramName = selfDestName(code); m.target.name = m.target.paramName; m.target.path = "";
+        pidCache[m.id] = 0;
+    }
     function applyUndo(e) {
         if (e.kind === "mod") {
             let s = e.slot;
@@ -874,8 +1283,17 @@ var MM = (function () {
             api.state.mods[s] = cloneJson(e.mod);
             writeCfgSlot(s); writeMsegSlot(s); writeStepsSlot(s);
             autoPushSlot(s);
-            restoreMappings(e.maps, s);
+            restoreMappings(e.maps, s, e.orig);
+            if (s !== e.orig) e.orig = s; // the entry now describes the new slot
             fire("mods", s);
+        } else if (e.kind === "conv") {
+            // put every converted mapping back exactly as it was (the current object is released and replaced by its snapshot)
+            for (const it of e.items) {
+                const cur = api.getMapping(it.m.id);
+                if (cur) removeMappingInternal(cur);
+            }
+            restoreMappings(e.items, undefined, undefined);
+            fire("mapping", e.items.length ? e.items[0].m.mod : -1, e.items.length ? e.items[0].m.id : 0);
         } else {
             const mod = e.maps[0].m.mod;
             if (!api.state.mods[mod]) return false;
@@ -889,8 +1307,16 @@ var MM = (function () {
         if (e.kind === "mod") {
             if (!api.state.mods[e.slot]) return false;
             e.mod = cloneJson(api.state.mods[e.slot]);
-            e.maps = api.state.mappings.filter((x) => x.mod === e.slot).map(snapMapping);
+            e.maps = mappingsTouching(e.slot).map(snapMapping);
+            e.orig = e.slot;
             api.removeModulator(e.slot, { noUndo: true });
+        } else if (e.kind === "conv") {
+            const ms = e.items.map((it) => api.getMapping(it.m.id)).filter(Boolean);
+            if (!ms.length) return false;
+            e.items = ms.map(snapMapping);
+            convertMany(ms, e.to);
+            fire("mapping", ms[0].mod, ms[0].id);
+            api.commit();
         } else {
             const m = api.getMapping(e.maps[0].m.id);
             if (!m) return false;
@@ -906,15 +1332,19 @@ var MM = (function () {
         if (!applyUndo(e)) return null;
         redoStack.push(e);
         fire("undo");
-        return { kind: e.kind, slot: e.kind === "mod" ? e.slot : e.maps[0].m.mod, ids: e.maps.map((x) => x.m.id) };
+        return undoResult(e);
     };
+    function undoResult(e) {
+        if (e.kind === "conv") return { kind: "conv", slot: e.items[0].m.mod, ids: e.items.map((x) => x.m.id) };
+        return { kind: e.kind, slot: e.kind === "mod" ? e.slot : e.maps[0].m.mod, ids: e.maps.map((x) => x.m.id) };
+    }
     api.redo = function () {
         const e = redoStack.pop();
         if (!e) return null;
         if (!applyRedo(e)) return null;
         undoStack.push(e);
         fire("undo");
-        return { kind: e.kind, slot: e.kind === "mod" ? e.slot : e.maps[0].m.mod, ids: e.maps.map((x) => x.m.id) };
+        return undoResult(e);
     };
     api.undoInfo = function () {
         const top = undoStack.length ? undoStack[undoStack.length - 1] : null;
@@ -995,7 +1425,12 @@ var MM = (function () {
             const t = tel.mods[i];
             t.out = a[i * SCOPE_STRIDE]; t.phase = a[i * SCOPE_STRIDE + 1];
             t.u = a[i * SCOPE_STRIDE + 2]; t.aux = a[i * SCOPE_STRIDE + 3];
+            const e = tel.eff[i], o = SCOPE_EFF + i * SCOPE_EFF_STRIDE;
+            for (let j = 0; j < AUTO_PARAMS; j++) e.ctl[j] = a[o + j] || 0;
+            e.on = a[o + AUTO_PARAMS] || 0;
+            for (let t2 = 0; t2 < AUTO_SW_PER_SLOT; t2++) e.sw[t2] = a[o + AUTO_PARAMS + 1 + t2] || 0;
         }
+        for (let k = 0; k < AUTO_DEPTH_SLOTS; k++) tel.depth[k] = a.length > SCOPE_DEPTH + k ? a[SCOPE_DEPTH + k] : 1;
         return tel;
     };
     function pollTelemetry() {
@@ -1022,10 +1457,12 @@ var MM = (function () {
         if (reqWidth) api.requestWidth(reqWidth);
         startTasks();
     }
-    api._setNames = function (cfg, mseg, steps, scope, curve, route) {
+    api._setNames = function (cfg, mseg, steps, scope, curve, route, ibuf, icurve) {
         names = {};
         names[BUF_CFG] = cfg; names[BUF_MSEG] = mseg; names[BUF_STEPS] = steps; names[BUF_SCOPE] = scope; names[BUF_CURVE] = curve;
         names[BUF_ROUTE] = route;
+        if (ibuf) names[BUF_INT] = ibuf;
+        if (icurve) names[BUF_ICURVE] = icurve;
         dlog("setnames", names);
         bufs = {};
         flushEngine();
@@ -1064,7 +1501,9 @@ var MM = (function () {
         pidCache = {};
         missing = {};
         slotOf = {};
-        for (const m of api.state.mappings) { const k = allocSlot(); if (k >= 0) slotOf[m.id] = k; }
+        islotOf = {};
+        ownParamIdx = null;
+        for (const m of api.state.mappings) { if (isInternal(m)) continue; const k = allocSlot(); if (k >= 0) slotOf[m.id] = k; }
         flushEngine();
         api.sendSettings();
         if (lomReady) { resolveMappingTargets(); if (names) rebuildAllSlots(); }
@@ -1095,8 +1534,11 @@ var MM = (function () {
     };
     api._test = {
         slotOf: function () { return slotOf; },
+        islotOf: function () { return islotOf; },
+        islot: function (id) { return islotOf[id] === undefined ? -1 : islotOf[id]; },
+        intBuf: function (off, n) { const b = buf(BUF_INT); if (!b) return null; try { return b.peek(1, off, n); } catch (e) { return null; } },
         bound: function () { return bound; },
-        route: function (slot) { const b = buf(BUF_ROUTE); if (!b) return null; try { return b.peek(1, 2 * slot, 1)[0]; } catch (e) { return null; } },
+        route: function (slot) { const b = buf(BUF_ROUTE); if (!b) return null; try { const v = b.peek(1, 2 * slot, 1); return Array.isArray(v) ? v[0] : v; } catch (e) { return null; } },
         pid: function (id) { return pidCache[id]; },
         missing: function (id) { return !!missing[id]; },
         validate: validateTargets,
@@ -1121,9 +1563,9 @@ function setvalueof() {
     const a = typeof arrayfromargs === "function" ? arrayfromargs(arguments) : Array.prototype.slice.call(arguments);
     MM.load(a.length === 1 && Array.isArray(a[0]) ? a[0] : a);
 }
-// loadmess setnames ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute
-function setnames(cfg, mseg, steps, scope, curve, route) {
-    MM._setNames(String(cfg), String(mseg), String(steps), String(scope), String(curve), String(route));
+// loadmess setnames ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute ---megamodint ---megamodicurve
+function setnames(cfg, mseg, steps, scope, curve, route, ibuf, icurve) {
+    MM._setNames(String(cfg), String(mseg), String(steps), String(scope), String(curve), String(route), ibuf === undefined ? "" : String(ibuf), icurve === undefined ? "" : String(icurve));
 }
 // live.thisdevice bang (the LOM is ready): observers + target resolution + slot reassignment
 function init_lom() {
@@ -1173,6 +1615,7 @@ function test_report() {
         mods: MM.state.mods.map((m) => (m ? m.type : null)),
         modP: MM.state.mods.map((m) => (m ? Object.assign({ enabled: m.enabled }, m.p) : null)),
         auto: MM.autoInfo().on,
+        learn: MM.learn, settings: MM.getSettings(), eff: MM.readTelemetry().eff.slice(0, 4), cache: MM.autoInfo().cache, internalCap: MM.internalCapacity(),
         ui: MM.getUI(),
         hover: typeof ubHover !== "undefined" && ubHover ? [ubHover.x, ubHover.y] : null, // last mouse position over the v8ui (real-mouse calibration)
         engine: (function () { try { const e = MM_THIS.patcher.getnamed(MM_ENGINE_VARNAME); return e ? { cls: e.maxclass, cords: cordsOf(e) } : null; } catch (x) { return "err " + x; } })(),
@@ -1183,6 +1626,7 @@ function test_report() {
             const lm = slot >= 0 ? box("mm_mod_" + slot) : null, lr = slot >= 0 ? box("mm_rem_" + slot) : null;
             return {
                 id: m.id, mod: m.mod, mode: m.mode, depth: m.depth, path: m.target.path, status: MM.mappingStatus(m.id), pid: t.pid(m.id),
+                internal: !!m.target.internal, selfDest: m.target.selfDest === undefined ? -1 : m.target.selfDest, islot: t.islot(m.id), label: MM.selfLabel(m),
                 slot, route: slot >= 0 ? t.route(slot) : null, idMod: b.mod, idRem: b.rem,
                 boxes: { mid: !!mid, rid: !!rid, mod: lm ? lm.maxclass : null, rem: lr ? lr.maxclass : null },
                 modCords: lm ? cordsOf(lm) : null, remCords: lr ? cordsOf(lr) : null,
@@ -1208,12 +1652,52 @@ function test_settype(slot, type) { MM.setModType(Number(slot), Number(type)); }
 // test_freeze <0|1>: drop Live -> model parameter input (the blob then goes stale against the stored parameter values: load-order tests)
 function test_freeze(v) { MM._test.freeze(Number(v) !== 0); }
 function test_remove(slot) { MM.removeModulator(Number(slot)); }
+// test_selflearn <mod> <dest code> [internal|live]: create a self-mapping the way a learn of that own parameter does (kind default = Options selector)
+function test_selflearn(mod, dest, kind) { MM.addSelfMapping(Number(mod), Number(dest), kind === undefined ? undefined : String(kind)); }
+// test_selfmod <internal|live>: the Options selector (converts existing self-mappings of the other kind)
+function test_selfmod(kind) { MM.setSelfMod(String(kind)); }
 function test_undo() { MM.undo(); }
 // test_selui <slot>: select a modulator (the UI state `sel`); the faces tests use it to detect where a real click lands
 function test_selui(slot) { MM.setUI({ sel: Number(slot) }); }
 // test_expand <slot>: expand that strip in place (-1 collapses all); the faces tests use it to reach the expanded editor
 function test_expand(slot) { ubSetExpanded(Number(slot)); }
 function test_setparam(slot, key, v) { MM.setParam(Number(slot), String(key), Number(v)); }
+// test_measure <slot> <ms>: busy-poll the engine's scope phase of that slot for ms milliseconds on the LOM thread and count the wraps (an LFO's cycles).
+// Writes {wraps, ms, polls, out0, out1, rate} (rate = the slot's cfg rate float at the end) to Global("megamod_test").measure_<device id>.
+function test_measure(slot, ms) {
+    if (typeof Global === "undefined") return;
+    const nm = MM._test.names();
+    const sb = new Buffer(nm.megamodscope);
+    const cb = new Buffer(nm.megamodcfg);
+    const s = Number(slot);
+    const t0 = Date.now();
+    let last = -1, wraps = 0, polls = 0, out0 = null, out1 = 0;
+    while (Date.now() - t0 < Number(ms)) {
+        const a = sb.peek(1, s * 4, 2);
+        polls++;
+        if (out0 === null) out0 = a[0];
+        out1 = a[0];
+        if (last >= 0 && a[1] < last - 0.5) wraps++;
+        last = a[1];
+    }
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    new Global("megamod_test")["measure_" + devId] = JSON.stringify({ wraps, ms: Date.now() - t0, polls, out0, out1, rate: (function () { const v = cb.peek(1, s * CFG_STRIDE + CF_RATE, 1); return Array.isArray(v) ? v[0] : v; })() });
+}
+// test_mapupd <mapping id> <key> <value>: MM.updateMapping(id, {key: value}) (value JSON-parsed when it is not a plain string)
+function test_delmap(id) { MM.deleteMapping(Number(id)); }
+function test_mapupd(id, key, v) {
+    let val = v;
+    try { val = JSON.parse(String(v)); } catch (e) { val = v; }
+    MM.updateMapping(Number(id), { [String(key)]: val });
+}
+// test_cfg <slot> <field>: the engine's cfg float (what the engine really reads) -> Global("megamod_test").cfg_<device id>
+function test_cfg(slot, field) {
+    if (typeof Global === "undefined") return;
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    new Global("megamod_test")["cfg_" + devId] = String((function () { const v = new Buffer(MM._test.names().megamodcfg).peek(1, Number(slot) * CFG_STRIDE + Number(field), 1); return Array.isArray(v) ? v[0] : v; })());
+}
 function test_names() {
     if (typeof Global === "undefined") return;
     let devId = "0";

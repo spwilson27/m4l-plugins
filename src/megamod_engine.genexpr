@@ -16,8 +16,28 @@
 //   mseg  (megamodmseg, 16 x 1024): MSEG lookup tables, values 0..1
 //   steps (megamodsteps, 16 x 32): step values 0..1
 //   (Param ratemul = global rate multiplier, default 1)
-//   scope (megamodscope, 128): per slot s at 4*s: [out, phase, u, aux]; header from 64:
+//   scope (megamodscope, SCOPE_SAMPS = 512): per slot s at 4*s: [out, phase, u, aux]; header from 64:
 //     64 frame counter, 65 sample rate, 66 beat, 67 bpm, 68 playing
+//     128 + 12*s + [0..4] effective (modulated) normalized value of the slot's generic controls A..E (0 when the type has no such control),
+//     128 + 12*s + 5 effective On, 128 + 12*s + 6 + t effective switch t (shape 0..4, toggles 0/1)    (SCOPE_EFF)
+//     320 + k effective Depth 0..1 of the mapping in pool slot k < 64                                (SCOPE_DEPTH)
+//   ibuf  (megamodint, 512): the INTERNAL modulation matrix (self-mod, schema 9). Route r (0..63) at 4*r: [src + 1 (0 = off), dest code, 0, 0];
+//     [256] = highest used route index + 1 (0 = no internal routes: the whole matrix is skipped);
+//     [264 + (type*5 + j)*5 + {0..4}] = control descriptor of generic control j for modulator type 0..5: [CF field + 1 (0 = none), lo, hi, log, int];
+//     [414 + t] = CF field + 1 of switch t (shape, sync, bipolar, retrig, oneshot, loopOn), [420 + t] = its max value (shape 4, toggles 1).
+//   icurve (megamodicurve, 64 * 256): route r's 256-sample transfer table at r*256 (the router convention: index (x+1)/2 * 256, linear interpolation).
+//   Dest codes (256): 0..95 = slot*6 + j (j 0..4 generic control A..E, j 5 = On), 96..191 = 96 + slot*6 + t (switch t), 192..255 = 192 + k (Depth of pool slot k).
+//   route (megamodroute, 1024): the router's buffer. [2k] source (routers), for pool slots k < 64 (routers 0 and 1 apply the Depth per sample):
+//     [2k+1] = EFFECTIVE depth (this engine writes it: base + the summed Depth modulation, clipped 0..1), [512 + k] = base depth (mapper),
+//     [576 + k] = Remote min of that mapping, or -1 for a Mod mapping (the router then computes min + (T - min) * d instead of T * d).
+//
+// INTERNAL MODULATION (self-mod): per sample, each active route reads its source's PREVIOUS-sample output (the matrix runs before the slots,
+// so loops between modulators are stable with one sample of delay), maps it through the route's table (o in -1..1 = the Mod offset in
+// normalized knob space) and the offsets of all routes into one destination are SUMMED. Numeric controls: normalized = curve(real value) (log
+// for rate / attack / release, linear otherwise, the same curves as the UI knob), + offset, clipped 0..1, back to the real value
+// (integer controls rounded) -> `cm`, the modulated copy of the config cache that the slots read. Toggles and On: on when the clipped
+// normalized value + offset is above 0.5. Shape (enum): round(normalized * 4). All of these are evaluated PER SAMPLE. Depth: the effective
+// depth is written per sample to route[2k+1] (the routers read it at their own block: a router sees the engine's last sample of a vector).
 //
 // Retrigger: Param rtrg = counter * 16 + slot. A changed value restarts that slot.
 // GenExpr ordering: helper functions, then Buffer / Param / History / Data, then expressions.
@@ -74,6 +94,9 @@ Buffer cfg("megamodcfg");
 Buffer mseg("megamodmseg");
 Buffer steps("megamodsteps");
 Buffer scope("megamodscope");
+Buffer ibuf("megamodint");
+Buffer icurve("megamodicurve");
+Buffer route("megamodroute");
 
 Param hbpm(120);
 Param hppq(0);
@@ -82,6 +105,9 @@ Param rtrg(0);
 Param ratemul(1);
 
 Data cf(384);
+Data cm(384);
+Data dsum(256);
+Data dcl(256);
 Data st(128);
 Data outv(16);
 Data tl(64);
@@ -130,29 +156,104 @@ mulChg = (abs(rmul - prevMul) > 0.0000001) ? 1 : 0;
 rs = sampleCount - 16 * floor(sampleCount / 16);
 for (k = 0; k < 24; k += 1) {
 	poke(cf, peek(cfg, rs * 24 + k, 0), rs * 24 + k);
+	poke(cm, peek(cfg, rs * 24 + k, 0), rs * 24 + k);
 }
 sampleCount = sampleCount + 1;
+
+// 3b. Depth refresh: one pool slot per sample copies its base depth into the effective-depth cell (modulated slots are overwritten below).
+dk = sampleCount - 64 * floor(sampleCount / 64);
+poke(route, peek(route, 512 + dk, 0), 2 * dk + 1, 0);
+
+// 3c. Internal modulation matrix (skipped entirely with no routes).
+nHi = floor(peek(ibuf, 256, 0) + 0.5);
+if (nHi > 0.5) {
+	for (rt = 0; rt < 64; rt += 1) {
+		if (rt < nHi) {
+			dz = peek(ibuf, rt * 4 + 1, 0);
+			poke(dsum, 0, dz);
+			poke(dcl, 0, dz);
+		}
+	}
+	for (rt = 0; rt < 64; rt += 1) {
+		if (rt < nHi) {
+			sidx = peek(ibuf, rt * 4, 0);
+			if (sidx > 0.5) {
+				dst = peek(ibuf, rt * 4 + 1, 0);
+				xv = peek(outv, sidx - 1);
+				fi = clip((xv + 1) * 128, 0, 256);
+				ia = min(floor(fi), 255);
+				ib = min(ia + 1, 255);
+				va = peek(icurve, rt * 256 + ia, 0);
+				vb = peek(icurve, rt * 256 + ib, 0);
+				poke(dsum, peek(dsum, dst) + va + (vb - va) * (fi - ia), dst);
+				poke(dcl, peek(dcl, dst) + 1, dst);
+			}
+		}
+	}
+	for (rt = 0; rt < 64; rt += 1) {
+		if (rt < nHi) {
+			dst = peek(ibuf, rt * 4 + 1, 0);
+			if (peek(ibuf, rt * 4, 0) > 0.5 && peek(dcl, dst) > 0.5) {
+				poke(dcl, -1, dst);
+				dsm = peek(dsum, dst);
+				if (dst < 96) {
+					msl = floor(dst / 6);
+					mjj = dst - msl * 6;
+					if (mjj > 4.5) {
+						poke(cm, (clip(peek(cf, msl * 24 + 1) + dsm, 0, 1) > 0.5) ? 1 : 0, msl * 24 + 1);
+					} else {
+						dpos = 264 + (peek(cf, msl * 24) * 5 + mjj) * 5;
+						fld = peek(ibuf, dpos, 0) - 1;
+						if (fld > -0.5) {
+							dlo = peek(ibuf, dpos + 1, 0);
+							dhi = peek(ibuf, dpos + 2, 0);
+							dlg = peek(ibuf, dpos + 3, 0);
+							dit = peek(ibuf, dpos + 4, 0);
+							draw = peek(cf, msl * 24 + fld);
+							nr = (dlg > 0.5) ? log(max(draw, dlo) / dlo) / log(dhi / dlo) : (draw - dlo) / (dhi - dlo);
+							nr = clip(clip(nr, 0, 1) + dsm, 0, 1);
+							dvv = (dlg > 0.5) ? dlo * exp(nr * log(dhi / dlo)) : dlo + (dhi - dlo) * nr;
+							dvv = (dit > 0.5) ? floor(dvv + 0.5) : dvv;
+							poke(cm, dvv, msl * 24 + fld);
+						}
+					}
+				} else if (dst < 192) {
+					mt2 = dst - 96;
+					msl = floor(mt2 / 6);
+					mtt = mt2 - msl * 6;
+					fld = peek(ibuf, 414 + mtt, 0) - 1;
+					mxv = peek(ibuf, 420 + mtt, 0);
+					nr = clip(peek(cf, msl * 24 + fld) / mxv + dsm, 0, 1);
+					poke(cm, (mtt < 0.5) ? floor(nr * mxv + 0.5) : ((nr > 0.5) ? 1 : 0), msl * 24 + fld);
+				} else {
+					dkk = dst - 192;
+					poke(route, clip(peek(route, 512 + dkk, 0) + dsm, 0, 1), 2 * dkk + 1, 0);
+				}
+			}
+		}
+	}
+}
 
 // 4. Evaluate the slots.
 for (i = 0; i < 16; i += 1) {
 	cb = i * 24;
 	sb = i * 8;
 	typ = peek(cf, cb);
-	active = (typ > 0.5 && peek(cf, cb + 1) > 0.5) ? 1 : 0;
+	active = (typ > 0.5 && peek(cm, cb + 1) > 0.5) ? 1 : 0;
 	outSlot = 0;
 	uSlot = 0;
 	phSlot = 0;
 	auxSlot = 0;
 	if (active > 0.5) {
-		rate = peek(cf, cb + 2);
-		syncOn = peek(cf, cb + 3);
-		divBeats = syncBeats(peek(cf, cb + 4));
-		shape = peek(cf, cb + 5);
-		phaseOff = peek(cf, cb + 6);
-		retrigOn = peek(cf, cb + 7);
-		bipolar = peek(cf, cb + 8);
-		depth = peek(cf, cb + 9);
-		oneshot = peek(cf, cb + 16);
+		rate = peek(cm, cb + 2);
+		syncOn = peek(cm, cb + 3);
+		divBeats = syncBeats(peek(cm, cb + 4));
+		shape = peek(cm, cb + 5);
+		phaseOff = peek(cm, cb + 6);
+		retrigOn = peek(cm, cb + 7);
+		bipolar = peek(cm, cb + 8);
+		depth = peek(cm, cb + 9);
+		oneshot = peek(cm, cb + 16);
 
 		// cycle accumulator (cycles, or steps for Steps)
 		accFree = peek(st, sb);
@@ -182,9 +283,9 @@ for (i = 0; i < 16; i += 1) {
 			u = lfoShape(floor(shape + 0.5), ph);
 			phSlot = ph;
 		} else if (typ < 2.5) {
-			atk = max(peek(cf, cb + 10), 0.05);
-			rel = max(peek(cf, cb + 11), 0.5);
-			gainLin = pow(10, peek(cf, cb + 12) / 20);
+			atk = max(peek(cm, cb + 10), 0.05);
+			rel = max(peek(cm, cb + 11), 0.5);
+			gainLin = pow(10, peek(cm, cb + 12) / 20);
 			xin = abs(mono) * gainLin;
 			envPrev = peek(st, sb + 2);
 			coef = (xin > envPrev) ? exp(-1000 / (atk * sr)) : exp(-1000 / (rel * sr));
@@ -194,8 +295,8 @@ for (i = 0; i < 16; i += 1) {
 			u = clip(envNow, 0, 1);
 			phSlot = u;
 		} else if (typ < 3.5) {
-			sm = peek(cf, cb + 13);
-			seed = peek(cf, cb + 17);
+			sm = peek(cm, cb + 13);
+			seed = peek(cm, cb + 17);
 			xr = accv + phaseOff;
 			idxr = floor(xr);
 			fr = xr - idxr;
@@ -203,8 +304,8 @@ for (i = 0; i < 16; i += 1) {
 			phSlot = fr;
 			auxSlot = idxr;
 		} else if (typ < 4.5) {
-			nSteps = clip(floor(peek(cf, cb + 14) + 0.5), 1, 32);
-			gl = peek(cf, cb + 15);
+			nSteps = clip(floor(peek(cm, cb + 14) + 0.5), 1, 32);
+			gl = peek(cm, cb + 15);
 			xs = accv + phaseOff * nSteps;
 			xs = (oneshot > 0.5) ? min(xs, nSteps - 0.000000001) : xs;
 			ks = floor(xs);
@@ -218,9 +319,9 @@ for (i = 0; i < 16; i += 1) {
 			auxSlot = idxs;
 		} else {
 			phm = (oneshot > 0.5) ? clip(accv, 0, 1) : frac01(accv + phaseOff);
-			loopOn = peek(cf, cb + 18);
-			ls = (loopOn > 0.5) ? peek(cf, cb + 19) : 0;
-			le = (loopOn > 0.5) ? max(peek(cf, cb + 20), ls + 0.05) : 1;
+			loopOn = peek(cm, cb + 18);
+			ls = (loopOn > 0.5) ? peek(cm, cb + 19) : 0;
+			le = (loopOn > 0.5) ? max(peek(cm, cb + 20), ls + 0.05) : 1;
 			xm = ls + phm * (le - ls);
 			fi = clip(xm, 0, 1) * 1023;
 			i0 = floor(fi);
@@ -251,7 +352,28 @@ if (ts - 4 * floor(ts / 4) < 0.5) {
 	poke(scope, peek(tl, sl * 4 + 1), sl * 4 + 1, 0);
 	poke(scope, peek(tl, sl * 4 + 2), sl * 4 + 2, 0);
 	poke(scope, peek(tl, sl * 4 + 3), sl * 4 + 3, 0);
+	// effective (modulated) control values for the UI rings: normalized A..E, On, switches
+	etyp = peek(cf, sl * 24);
+	for (ej = 0; ej < 5; ej += 1) {
+		edp = 264 + (etyp * 5 + ej) * 5;
+		efp = peek(ibuf, edp, 0);
+		effv = 0;
+		if (efp > 0.5) {
+			elo = peek(ibuf, edp + 1, 0);
+			ehi = peek(ibuf, edp + 2, 0);
+			eraw = peek(cm, sl * 24 + efp - 1);
+			effv = (peek(ibuf, edp + 3, 0) > 0.5) ? log(max(eraw, elo) / elo) / log(ehi / elo) : (eraw - elo) / (ehi - elo);
+			effv = clip(effv, 0, 1);
+		}
+		poke(scope, effv, 128 + sl * 12 + ej, 0);
+	}
+	poke(scope, peek(cm, sl * 24 + 1), 128 + sl * 12 + 5, 0);
+	for (et = 0; et < 6; et += 1) {
+		eswp = peek(ibuf, 414 + et, 0);
+		poke(scope, (eswp > 0.5) ? peek(cm, sl * 24 + eswp - 1) : 0, 128 + sl * 12 + 6 + et, 0);
+	}
 }
+poke(scope, peek(route, 2 * ts + 1, 0), 320 + ts, 0);
 if (ts < 0.5) {
 	frameCount = frameCount + 1;
 	poke(scope, frameCount, 64, 0);

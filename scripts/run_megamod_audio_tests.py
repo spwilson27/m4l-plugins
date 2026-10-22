@@ -22,7 +22,7 @@ import max_harness as mh
 import megamod_common as mc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GEN_PATH = os.path.join(ROOT, "src", "megamod_engine.genexpr")
+GEN_PATH = os.environ.get("MEGAMOD_GEN") or os.path.join(ROOT, "src", "megamod_engine.genexpr")  # (MEGAMOD_GEN: test another engine file)
 CONFIG_JS = os.path.join(ROOT, "src", "megamod_config.js")
 PROBE_JS = os.path.join(ROOT, "tests", "megamod_probe.js")
 
@@ -47,9 +47,11 @@ gate = (tms >= t0ms && tms < t0ms + lenms) ? 1 : 0;
 out1 = (go > 0.5) ? sin(twopi * ph) * amp * gate : 0;
 """
 
-BIND = "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope"
+BIND = ("cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope, "
+        "ibuf ---megamodint, icurve ---megamodicurve, route ---megamodroute")
 ROUTER_BIND = "route ---megamodroute, curve ---mmcurve"
-SETBUF = ("setbuffers ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute, configure")
+SETBUF = ("setbuffers ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute "
+          "---megamodint ---megamodicurve, configure")
 AUTO_RATE_NORM_4HZ = __import__("math").log(4.0 / 0.01) / __import__("math").log(40.0 / 0.01)  # autoNorm("rate", 4) (log curve 0.01..40 Hz)
 ROUTER = 3  # router under test (slots 96..127): outlet j = slot 96 + j
 
@@ -64,7 +66,9 @@ def device(gen_code, run):
         mh.box("dev-b-cfg", "buffer~ ---megamodcfg @samps 384", 800, 40, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-mseg", "buffer~ ---megamodmseg @samps 16384", 800, 70, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-steps", "buffer~ ---megamodsteps @samps 512", 800, 100, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-b-scope", "buffer~ ---megamodscope @samps 128", 800, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-scope", f"buffer~ ---megamodscope @samps {mc.SCOPE_SAMPS}", 800, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-int", f"buffer~ ---megamodint @samps {mc.INT_SAMPS}", 800, 250, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-icurve", f"buffer~ ---megamodicurve @samps {mc.ICURVE_SAMPS}", 800, 280, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-curve", f"buffer~ ---mmcurve @samps {mc.CURVE_SAMPS}", 800, 160, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-route", f"buffer~ ---megamodroute @samps {mc.ROUTE_SAMPS}", 800, 190, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.gen_box("dev-gen", gen_code, 200, 220, numinlets=2, numoutlets=16),
@@ -87,7 +91,7 @@ def device(gen_code, run):
     if any(str(o).startswith("rt") for o in run["outs"]):
         # the real generated router (scripts/megamod_common.py router_gen_code), fed by the 16 engine outlets
         boxes.append(mh.msg("dev-rbind", ROUTER_BIND, 40, 650, 400))
-        boxes.append(mh.gen_box("dev-router", mc.router_gen_code(ROUTER), 400, 380, numinlets=16, numoutlets=32))
+        boxes.append(mh.gen_box("dev-router", mc.router_gen_code(run.get("router_idx", ROUTER)), 400, 380, numinlets=16, numoutlets=32))
         lines.append(mh.line("obj-load", 0, "dev-rbind", 0))
         lines.append(mh.line("dev-rbind", 0, "dev-router", 0))
         if run.get("rparams"):
@@ -109,7 +113,7 @@ def device(gen_code, run):
 
 def make_probe(run, tag):
     """Temp probe file: CASE data + src/megamod_config.js + tests/megamod_probe.js (unique per run)."""
-    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele", "smooth_ms", "dep", "remote", "dmin") if k in run}
+    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele", "smooth_ms", "dep", "remote", "dmin", "selfmod", "sp") if k in run}
     fd, path = tempfile.mkstemp(prefix=f"megamod_probe_{tag}_", suffix=".js")
     with os.fdopen(fd, "w", encoding="utf-8") as out:
         out.write("var CASE = " + json.dumps(case_obj) + ";\n")
@@ -180,6 +184,25 @@ def depth_router(dep, mode, mn=0.2, mx=0.8):
     ]}
 
 
+OCT_NORM = __import__("math").log(2.0) / __import__("math").log(40.0 / 0.01)  # one octave of the Rate knob (log 0.01..40 Hz) in normalized knob space
+MAP_PM = {"mode": "mod", "polarity": 0, "range": 1.0}  # +-: output = range * x (x = the source output -1..1)
+
+
+def selfmap(**kw):
+    m = dict(MAP_PM)
+    m.update(kw)
+    return m
+
+
+# self-mod (internal matrix): dest codes (src/megamod_config.js selfDestFor): slot * 6 + j (generic control j), 96 + slot * 6 + t (switch t:
+# shape, sync, bipolar, retrig, oneshot, loopOn), 192 + k (Depth of pool slot k)
+DEST_RATE_1 = 1 * 6 + 0      # LFO in slot 1: generic control A = Rate
+DEST_RATE_0 = 0 * 6 + 0
+DEST_BIPOLAR_1 = 96 + 1 * 6 + 2
+DEST_DEPTH_0 = 192 + 0
+ROUTER_DEPTH = {"base": 0, "slots": [{"slot": 0, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 0.5}}]}
+
+
 def cases():
     return {
         "lfo_sine_2hz": [R("lfo_sine_2hz", [lfo(0, 0, 2.0)], (1, 2), dur=2000)],
@@ -248,6 +271,29 @@ def cases():
         "auto_rate": [
             R("rate_param", [lfo(0, 0, 2.0)], (1, 2), dur=2200, params="hbpm 120, hppq 0, hplay 0",
               events=[(800, "autorate %.6f" % AUTO_RATE_NORM_4HZ, "obj-js")]),
+        ],
+        # Self-mod, INTERNAL matrix (schema 9): the engine adds a route's output to a destination in normalized knob space.
+        "selfmod_internal": [
+            # LFO 1 (0.5 Hz) modulates LFO 2's Rate (4 Hz base) by +-1 octave: instantaneous frequency 2..8 Hz in phase with LFO 1
+            R("rate", [lfo(0, 0, 0.5), lfo(1, 0, 4.0)], (2, 1), dur=2200, an="selfrate",
+              selfmod={"routes": [{"src": 0, "dest": DEST_RATE_1, "map": selfmap(range=OCT_NORM)}]},
+              sp={"settle_ms": SETTLE_MS, "f1": 0.5, "f2": 4.0, "oct": 1.0}),
+            # feedback LFO 1 <-> LFO 2 (each modulates the other's Rate by +-0.3 of the knob travel): finite, in range, still oscillating
+            R("feedback", [lfo(0, 0, 3.0), lfo(1, 0, 5.0)], (1, 2), dur=2500, an="selffb",
+              selfmod={"routes": [{"src": 0, "dest": DEST_RATE_1, "map": selfmap(range=0.3)},
+                                  {"src": 1, "dest": DEST_RATE_0, "map": selfmap(range=0.3)}]}),
+        ],
+        # LFO 1 (1 Hz) modulates the Depth of mapping X (router slot 0, source LFO 2 at 8 Hz, base depth 0.5, +-0.5): amplitude modulation
+        "selfmod_depth": [
+            R("depth", [lfo(0, 0, 1.0), lfo(1, 0, 8.0)], ("rt0", 2), dur=2200, an="selfdepth", router_idx=0, router=ROUTER_DEPTH,
+              selfmod={"routes": [{"src": 0, "dest": DEST_DEPTH_0, "map": selfmap(range=0.5)}]},
+              sp={"settle_ms": SETTLE_MS, "f1": 1.0, "dbase": 0.5, "range": 0.5}),
+        ],
+        # LFO 1 (2 Hz) modulates the Bipolar switch of slot 1 (40 Hz sine, depth 0.5, base off): bipolar (-0.5..0.5) while LFO 1 > 0.5, else unipolar (-1..0)
+        "selfmod_toggle": [
+            R("toggle", [lfo(0, 0, 2.0), lfo(1, 0, 40.0, 0, 0.5)], (2, 1), dur=2200, an="selftoggle",
+              selfmod={"routes": [{"src": 0, "dest": DEST_BIPOLAR_1, "map": selfmap(range=1.0)}]},
+              sp={"settle_ms": SETTLE_MS, "fast": 40.0}),
         ],
         # Router gen (src: scripts/megamod_common.py router_gen_code): slots 96 / 97 route from two different
         # modulators with two different tables, slot 98 is off. Router outlet j = slot 96 + j.
@@ -525,6 +571,49 @@ def check(case, runs, metas, errors, notes):
             err(f"smooth 50: the step is instant (level 1 ms after the edge {s50['smooth_instant']})")
         if s0["smooth_tau_ms"] > 1.0 or s0["smooth_maxdiff"] > 0.02:
             err(f"smooth 0 must pass the output unchanged (tau {s0['smooth_tau_ms']} ms, maxdiff {s0['smooth_maxdiff']})")
+    elif case == "selfmod_internal":
+        a, fb = ms
+        notes.append(f"LFO 2 Rate by LFO 1 (+-1 oct): {a['self_crossings']:.0f} crossings, max crossing error {a['self_cross_err_ms']:.3f} ms vs the integrated "
+                     f"reference, f {a['self_fmin']:.2f}..{a['self_fmax']:.2f} Hz (want ~2..8), fastest at t = {a['self_tfmax']:.2f} s (LFO 1 peak at "
+                     f"{a['self_lfo1_peak_t']:.2f} s)")
+        if a["self_crossings"] < 6:
+            err("LFO 2 should complete more than 6 cycles")
+        if not a["self_cross_err_ms"] <= 3.0:
+            err(f"zero crossings of LFO 2 differ from the +-1 octave rate-modulation reference by {a['self_cross_err_ms']} ms")
+        if not (7.0 <= a["self_fmax"] <= 8.4):
+            err(f"fastest LFO 2 frequency {a['self_fmax']} Hz (want ~ 8 = 2x the 4 Hz base)")
+        if not (1.9 <= a["self_fmin"] <= 2.5):
+            err(f"slowest LFO 2 frequency {a['self_fmin']} Hz (want ~ 2 = 1/2 x the 4 Hz base)")
+        if not abs(a["self_tfmax"] - a["self_lfo1_peak_t"]) <= 0.3:
+            err("LFO 2's fastest cycle is not in phase with LFO 1's positive peak")
+        notes.append(f"feedback LFO 1 <-> LFO 2: {fb['sfb_cross1']:.0f} / {fb['sfb_cross2']:.0f} cycles, f {fb['sfb_fmin']:.2f}..{fb['sfb_fmax']:.2f} Hz, "
+                     f"range {fb['c1_min']:.3f}..{fb['c1_max']:.3f} / {fb['c2_min']:.3f}..{fb['c2_max']:.3f}")
+        if fb["sfb_cross1"] < 3 or fb["sfb_cross2"] < 3:
+            err("feedback: an oscillator stopped")
+        if fb["sfb_fmax"] > 41:
+            err(f"feedback: frequency {fb['sfb_fmax']} Hz exceeds the Rate range")
+        if fb["c1_min"] < -1.0001 or fb["c1_max"] > 1.0001 or fb["c2_min"] < -1.0001 or fb["c2_max"] > 1.0001:
+            err("feedback: output out of -1..1")
+    elif case == "selfmod_depth":
+        d = ms[0]
+        notes.append(f"effective depth = out / LFO 2: max err vs clip(0.5 + 0.5 sin(2 pi t), 0, 1) {d['sdepth_err']:.4f} over {d['sdepth_n']:.0f} samples, "
+                     f"range {d['sdepth_min']:.3f}..{d['sdepth_max']:.3f}; per-cycle peak of the output {d['sdepth_peak_min']:.3f}..{d['sdepth_peak_max']:.3f}")
+        if d["sdepth_n"] < 200:
+            err("too few samples to measure the depth")
+        if not d["sdepth_err"] <= 0.04:
+            err(f"Depth modulation error {d['sdepth_err']} (> 0.04)")
+        if d["sdepth_min"] > 0.1 or d["sdepth_max"] < 0.9:
+            err("the Depth should sweep 0..1")
+        if d["sdepth_peak_min"] > 0.35 or d["sdepth_peak_max"] < 0.9:
+            err("the slot output is not amplitude modulated")
+    elif case == "selfmod_toggle":
+        t = ms[0]
+        notes.append(f"Bipolar toggled by LFO 1 > 0.5: {t['stoggle_windows']:.0f} windows ({t['stoggle_on']:.0f} bipolar, {t['stoggle_off']:.0f} unipolar), "
+                     f"{t['stoggle_mismatch']:.0f} mismatches")
+        if t["stoggle_windows"] < 30 or t["stoggle_on"] < 5 or t["stoggle_off"] < 5:
+            err("the toggle should switch between bipolar and unipolar")
+        if t["stoggle_mismatch"] > 1:
+            err(f"{t['stoggle_mismatch']} windows disagree with 'bipolar while LFO 1 > 0.5'")
     elif case == "lookup_chain":
         for tag, m in zip(("slot A (src mod 0, mod-mode S curve)", "slot B (src mod 1, remote exp, min 0.85 > max 0.15 inverted)"), ms[:2]):
             notes.append(f"{tag}: max err vs mappingOutput {m['lookup_err']:.5f}; decoy-region err {m['lookup_err_decoy']:.3f}; "

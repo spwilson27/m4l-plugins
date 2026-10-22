@@ -2271,12 +2271,12 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const saved = E.run("MM.save()");
         const E2 = mkO(0);
         E2.ctx.setvalueof(saved);
-        eq(S(E2), { defaultMode: "remote", smoothMs: 80, rateMul: 3, tooltips: true }, "settings restored from the saved state");
+        eq(S(E2), { defaultMode: "remote", smoothMs: 80, rateMul: 3, tooltips: true, selfMod: "internal" }, "settings restored from the saved state");
         ok(E2.gen("smooth").length > 0 && E2.gen("ratemul").some((m) => m[3] === 3), "load re-sends smoothing and rate to gen");
         // an old state (no settings key) gets the defaults
         const old = E.run("JSON.stringify(Object.assign({}, MM.state, { schema: 6, settings: undefined }))");
         E2.run(`MM.load(serializeState(normalizeState(JSON.parse(${JSON.stringify(old)}))))`);
-        eq(S(E2), { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true }, "an old state gets the defaults");
+        eq(S(E2), { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true, selfMod: "internal" }, "an old state gets the defaults");
     }
 
     // ---- painting with the panel open, in every combination; the keys do not reach the hidden modulators
@@ -2761,4 +2761,242 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     eq(G.run("Object.keys(MM.faceState().shown).length"), 0, "before ready (pool not live) no face is shown");
     eq(Object.values(G.live).reduce((a, o) => a + o.setLog.length, 0), 0, "...and nothing is touched");
 }
+
+// ================================================================ self-modulation UI (schema 9): Options selector, self rows, rings, pills
+{
+    const ctr = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
+    const overlap = (a, b) => a[0] < b[0] + b[2] - 1e-6 && b[0] < a[0] + a[2] - 1e-6 && a[1] < b[1] + b[3] - 1e-6 && b[1] < a[1] + a[3] - 1e-6;
+    const inside = (r, o) => r[0] >= o[0] - 1e-6 && r[1] >= o[1] - 1e-6 && r[0] + r[2] <= o[0] + o[2] + 1e-6 && r[1] + r[3] <= o[1] + o[3] + 1e-6;
+    function mk(n = 3) {
+        const T = makeEnv();
+        T.ctx.uiReady();
+        for (let k = 0; k < n; k++) T.run(`ubAddType(${[1, 2, 3, 4, 5][k % 5]})`);
+        // stroke log: every stroke with the colour and line width it was drawn with
+        const mg = T.ctx.mgraphics;
+        const strokes = [];
+        let col = [0, 0, 0, 1], lw = 1;
+        const sc = mg.set_source_rgba, sl = mg.set_line_width;
+        mg.set_source_rgba = (r, g, b, a) => { col = [r, g, b, a]; sc(r, g, b, a); };
+        mg.set_line_width = (w) => { lw = w; sl(w); };
+        mg.stroke = () => strokes.push({ col: col.slice(), lw });
+        const C = (x, y) => T.ctx.onclick(x, y, 1, 0, 0, 0, 0, 0);
+        const w = () => { const o = T.log.outlets.filter((q) => q[1] === "width"); return o.length ? o[o.length - 1][2] : null; };
+        const paint = () => { T.log.texts.length = 0; T.log.textCols = []; T.log.fills = []; strokes.length = 0; T.run("paint()"); };
+        return { T, ctx: T.ctx, run: T.run, log: T.log, C, w, paint, strokes };
+    }
+    const RAIL_OPT = [11, 75];
+    const GREEN = [0.62, 0.86, 0.50], ORANGE = [0.98, 0.62, 0.18];
+    const isCol = (c, ref) => Math.abs(c[0] - ref[0]) < 1e-6 && Math.abs(c[1] - ref[1]) < 1e-6 && Math.abs(c[2] - ref[2]) < 1e-6 && c[3] > 0.99;
+
+    // ---- Options: the fourth row, "Self-mod  INTERNAL | VIA LIVE"
+    {
+        const E = mk(3);
+        E.C(...RAIL_OPT);
+        const g = E.run("ubOptGeom()");
+        eq(g.rows.length, 4, "Options has four rows");
+        ok(g.rows[3].y + g.rows[3].h <= 161 && g.rows[0].y >= 16, "...inside the panel and the 161 px height");
+        const rects = [["tabmod", g.tabmod], ["tabrem", g.tabrem], ["bar", g.bar], ["knob", g.knobRect], ["selfint", g.selfint], ["selflive", g.selflive]];
+        for (const [n, r] of rects) {
+            ok(inside(r, g.panel), "Options: " + n + " inside the panel");
+            ok(r[0] + r[2] <= E.run("ubLayoutWidth()") && r[1] >= 0 && r[1] + r[3] <= 161, "Options: " + n + " inside the device");
+        }
+        for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) ok(!overlap(rects[i][1], rects[j][1]), `Options: ${rects[i][0]} / ${rects[j][0]} do not overlap`);
+        // each control sits in its own row band
+        [g.tabmod, g.bar, g.knobRect, g.selfint].forEach((r, i) => ok(r[1] >= g.rows[i].y && r[1] + r[3] <= g.rows[i].y + g.rows[i].h, "row " + i + ": control inside its band"));
+        eq(g.selfint[2] + g.selflive[2] + 2, 2 * 54 + 2, "two 54 px segments");
+        ok(g.textX + g.textW <= g.selfint[0] - 4, "label / hint column does not run under the Self-mod control");
+        eq(E.run(`ubHit(${ctr(g.selfint)}).kind`), "opt_self_int", "INTERNAL hit"); eq(E.run(`ubHit(${ctr(g.selflive)}).kind`), "opt_self_live", "VIA LIVE hit");
+        ok(!!E.run(`ubHit(${ctr(g.selfint)}).tip`) && !!E.run(`ubHit(${ctr(g.selflive)}).tip`), "both have a tooltip");
+        eq(E.w(), 390, "Options width is still 390");
+        ok(E.run("ubTextW('Self-mod', 8)") <= g.textW && E.run("ubTextW(\"Own controls modulated by the engine or Live\", 6.5)") <= g.textW, "label and hint fit");
+        // paint: default INTERNAL is lit (green fill, white text), VIA LIVE dim
+        E.paint();
+        for (const t of ["Self-mod", "INTERNAL", "VIA LIVE"]) ok(E.log.texts.includes(t), "paints " + t);
+        const tc = (t) => E.log.textCols.filter((q) => q.t === t).map((q) => q.col)[0];
+        ok(tc("INTERNAL")[0] === 1 && tc("VIA LIVE")[0] < 0.7, "the lit segment has white text, the other is dim");
+        const fillFor = (rect) => E.log.fills.filter((f) => Math.abs(f.rect[0] - rect[0]) < 1e-6 && Math.abs(f.rect[1] - rect[1]) < 1e-6)[0];
+        ok(fillFor(g.selfint) && isCol([fillFor(g.selfint).col[0], fillFor(g.selfint).col[1], fillFor(g.selfint).col[2], 1], GREEN), "lit INTERNAL uses the internal (green) accent");
+        // hint line follows the TIP setting
+        E.run("MM.setSettings({ tooltips: false })"); E.paint();
+        ok(!E.log.texts.some((t) => /engine or Live/.test(t)), "hints hide with TIP off");
+        E.run("MM.setSettings({ tooltips: true })");
+        // click VIA LIVE: the setting changes, the paint follows; a click on the lit segment changes nothing
+        const undo0 = E.run("MM.undoInfo().undo");
+        E.C(...ctr(g.selflive));
+        eq(E.run("MM.getSettings().selfMod"), "live", "VIA LIVE segment sets settings.selfMod");
+        E.paint();
+        ok(tc("VIA LIVE")[0] === 1 && tc("INTERNAL")[0] < 0.7, "the lit segment moved");
+        ok(isCol([fillFor(g.selflive).col[0], fillFor(g.selflive).col[1], fillFor(g.selflive).col[2], 1], ORANGE), "lit VIA LIVE uses the Live (orange) accent");
+        eq(E.run("MM.undoInfo().undo"), undo0, "with nothing to convert the selector does not touch the undo stack");
+        E.C(...ctr(g.selfint));
+        eq(E.run("MM.getSettings().selfMod"), "internal", "INTERNAL segment sets it back");
+        // saved with the state
+        const saved = E.run("MM.save()");
+        const E2 = mk(0);
+        E2.ctx.setvalueof(saved);
+        eq(E2.run("MM.getSettings().selfMod"), "internal", "the selector is part of the saved state");
+        E.C(...ctr(g.selflive));
+        const E3 = mk(0);
+        E3.ctx.setvalueof(E.run("MM.save()"));
+        eq(E3.run("MM.getSettings().selfMod"), "live", "...VIA LIVE too");
+        // the other views are unchanged: the other rows still behave
+        E.C(...ctr(g.tabrem));
+        eq(E.run("MM.getSettings().defaultMode"), "remote", "REM tab still works");
+        eq(E.run("MM.getSettings().selfMod"), "live", "...and does not touch Self-mod");
+    }
+
+    // ---- switching the selector converts existing self-mappings, with a note pill; Cmd-Z restores them
+    {
+        const E = mk(3);
+        E.run("MM.addSelfMapping(0, 12, 'internal'); MM.addSelfMapping(0, 13, 'internal')");
+        E.C(...RAIL_OPT);
+        const g = E.run("ubOptGeom()");
+        E.C(...ctr(g.selflive));
+        ok(E.run("MM.allMappings().every((m) => !m.target.internal)"), "VIA LIVE converted both internal mappings");
+        E.paint();
+        ok(E.log.texts.some((t) => /Converted 2 self-mappings/.test(t)), "a note pill says so");
+        ok(E.log.texts.some((t) => /Cmd-Z/.test(t)), "...and where to undo");
+        E.ctx.onkeydown(122, 122, 1, 1, 0, 0, 0, 0); // Cmd-Z
+        ok(E.run("MM.allMappings().every((m) => m.target.internal)"), "Cmd-Z restores the INTERNAL mappings");
+        for (let k = 0; k < 80; k++) E.ctx.uiTelemetry(E.run("MM.readTelemetry()"));
+        E.paint();
+        ok(!E.log.texts.some((t) => /Converted/.test(t)), "the note pill fades after about 2.5 s");
+    }
+
+    // ---- "full" pills: the Live pool and the internal matrix say different things
+    {
+        const E = mk(1);
+        E.ctx.uiChanged({ kind: "full", mod: 0, id: 0 }); E.paint();
+        ok(E.log.texts.includes("Mapping pool full (256)"), "pool full pill");
+        for (let k = 0; k < 80; k++) E.ctx.uiTelemetry(E.run("MM.readTelemetry()"));
+        E.ctx.uiChanged({ kind: "full", mod: 0, id: -1 }); E.paint();
+        ok(E.log.texts.includes("Internal routes full (64)"), "internal matrix full pill");
+    }
+
+    // ---- the list, popover and detail panel mark and name self-mappings
+    {
+        const E = mk(3);
+        // modulator names: LFO 1, Envelope 2, Random 3
+        E.run("MM.addSelfMapping(0, " + 12 + ", 'internal')");                    // LFO 1 -> Random 3 Rate
+        E.run("MM.setSelfMod('live', false); MM.addSelfMapping(0, " + 7 + ", 'live')");  // LFO 1 -> Envelope 2 Release (M2 B) via Live
+        E.run("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 1', paramName: 'Decay', trackName: 'Drums', deviceName: 'Reverb' })");
+        const ms = E.run("MM.allMappings()");
+        eq(ms.length, 3, "an internal, a via-Live and a normal mapping");
+        E.run("MM.setUI({ sel: 0 })");
+        eq(E.run("ubMapName(MM.allMappings()[0])"), "Random 3 Rate", "internal row: named by meaning");
+        eq(E.run("ubMapName(MM.allMappings()[1])"), "Envelope 2 Release (M2 B)", "via-Live row: named by meaning with the Live parameter");
+        eq(E.run("ubMapName(MM.allMappings()[2])"), "Decay", "a normal row keeps its parameter name");
+        ok(E.run("ubTargetPath(MM.allMappings()[0])").indexOf("Internal route") === 0 && E.run("ubTargetPath(MM.allMappings()[1])").indexOf("Via Live") === 0, "hover text spells out internal / via Live");
+        // LST list
+        E.C(11, 48);
+        E.paint();
+        ok(E.log.texts.includes("Rate") && E.log.texts.includes("Release") && E.log.texts.includes("Decay"), "the list paints the control name when the column is too narrow for the full meaning name");
+        eq(E.run("ubSelfFit(MM.allMappings()[0], 200, 7.5)"), "Random 3 Rate", "...and the full meaning name when it fits");
+        eq(E.run("ubSelfFit(MM.allMappings()[1], 40, 7.5)"), "Release", "a via-Live row falls back to the control too");
+        const gm = E.run("ubListGeom()");
+        const vis = E.run("ubListVisible().rows.filter((r) => r.item.kind === 'map')");
+        eq(vis.length, 3, "three rows");
+        // the row markers: a loop glyph for internal (a green stroke), an L badge for via Live (text "L"); none on the normal row
+        E.paint();
+        ok(E.strokes.some((s) => isCol(s.col, GREEN) && s.lw === 1.2), "internal row: loop glyph (green)");
+        ok(E.log.texts.includes("L"), "via-Live row: L badge");
+        // the mode chip of an internal row is inert; the via-Live row switches as usual
+        const rowParts = (r) => E.run(`ubRowParts(${r.y}, ${gm.lx}, ${gm.lw})`);
+        const p0 = rowParts(vis[0]), p1 = rowParts(vis[1]);
+        E.C(...ctr(p0.mode));
+        eq(E.run("MM.allMappings()[0].mode"), "mod", "clicking an internal row's M/R chip does not switch it to Remote");
+        E.C(...ctr(p1.mode));
+        eq(E.run("MM.allMappings()[1].mode"), "remote", "a via-Live row switches to Remote");
+        E.C(...ctr(p1.mode));
+        eq(E.run("MM.allMappings()[1].mode"), "mod", "...and back");
+        ok(!!E.run(`ubHit(${ctr(p0.mode)}).tip`).match(/Mod only/), "the internal chip's tooltip says Mod only");
+        // the remap editor: the REM tab is greyed and inert for an internal mapping
+        E.run(`MM.setUI({ pbSel: ${ms[0].id} })`);
+        E.paint();
+        ok(E.log.texts.includes("internal route"), "detail panel: 'internal route'");
+        const dr = E.run(`ubDetailRects(ubListGeom(), MM.allMappings()[0])`);
+        const rem = dr.filter((d) => d.id === "tabrem")[0], md = dr.filter((d) => d.id === "tabmod")[0];
+        E.C(...ctr(rem.rect));
+        eq(E.run("MM.allMappings()[0].mode"), "mod", "the REM tab of an internal mapping does nothing");
+        ok(/Mod only/.test(rem.tip), "...and says why");
+        E.C(...ctr(md.rect));
+        eq(E.run("MM.allMappings()[0].mode"), "mod", "(MOD still selectable)");
+        E.run(`MM.setUI({ pbSel: ${ms[1].id} })`);
+        E.paint();
+        ok(E.log.texts.includes("via Live: M2 B"), "detail panel of a via-Live mapping names the Live parameter");
+        const dr2 = E.run(`ubDetailRects(ubListGeom(), MM.allMappings()[1])`);
+        E.C(...ctr(dr2.filter((d) => d.id === "tabrem")[0].rect));
+        eq(E.run("MM.allMappings()[1].mode"), "remote", "...and its REM tab works (Remote is allowed through Live)");
+        E.C(...ctr(dr2.filter((d) => d.id === "tabmod")[0].rect));
+        // strips popover rows
+        E.C(11, 48);
+        E.run("ubMapsPop = { slot: 0, scroll: 0 }");
+        E.paint();
+        ok(E.log.texts.includes("Rate"), "popover row: the control name (the full name does not fit the column)");
+        const P = E.run("ubMapsPopGeom()");
+        const pr = E.run(`ubPopRowParts(ubMapsPopGeom().rect, ubMapsPopGeom().vis[0].y, ubMapsPopGeom().vw)`);
+        E.C(...ctr(pr.mode));
+        eq(E.run("MM.allMappings()[0].mode"), "mod", "popover: the internal row's mode chip is inert");
+        eq(E.run(`ubHit(${ctr(pr.mode)}).tip`), "Internal routes are Mod only", "...with a tooltip");
+        ok(inside(pr.name, P.rect) && pr.name[2] > 30, "popover name column keeps room for the marker + name");
+        E.run("ubMapsPop = null");
+    }
+
+    // ---- modulated controls show a ring (internal: green, via Live: orange) and their switches / depth are marked
+    {
+        const E = mk(3);
+        E.run("MM.addSelfMapping(0, 12, 'internal')"); // LFO 1 -> Random 3 Rate (slot 2, control A)
+        E.run("ubSetExpanded(-1)");
+        E.run("MM.state.mods[2].p.sync = 0"); // (synced, the first knob shows Div = control B, not Rate)
+        const tel = E.run("MM.readTelemetry()");
+        const spec = E.run("ubKnobs(MM.state.mods[2])[0]");
+        eq(spec.key, "rate", "Random's first knob is Rate");
+        const base = E.run("ubKnobNorm(ubKnobs(MM.state.mods[2])[0], MM.state.mods[2].p.rate)");
+        tel.eff[2].ctl[0] = Math.min(1, base + 0.2);
+        E.paint();
+        const ring = E.strokes.filter((s) => isCol(s.col, GREEN) && s.lw === 1.8);
+        ok(ring.length === 1, "the modulated knob draws a bright arc between the stored and the live value (1 stroke)");
+        ok(E.strokes.filter((s) => Math.abs(s.col[0] - GREEN[0]) < 1e-6 && Math.abs(s.col[3] - 0.28) < 1e-6 && s.lw === 1).length >= 1, "...on a faint full-travel track");
+        // not modulated: no ring
+        tel.eff[2].ctl[0] = base;
+        E.paint();
+        eq(E.strokes.filter((s) => isCol(s.col, GREEN) && s.lw === 1.8).length, 0, "live value == stored value: no arc (only the faint track)");
+        // a disabled mapping, a disabled source or a missing control draw no ring
+        tel.eff[2].ctl[0] = Math.min(1, base + 0.2);
+        E.run("MM.updateMapping(MM.allMappings()[0].id, { enabled: 0 })"); E.paint();
+        eq(E.strokes.filter((s) => Math.abs(s.col[0] - GREEN[0]) < 1e-6 && Math.abs(s.col[1] - GREEN[1]) < 1e-6 && s.col[3] > 0.2 && s.lw <= 1.8).length, 0, "mapping off: no ring");
+        E.run("MM.updateMapping(MM.allMappings()[0].id, { enabled: 1 })");
+        E.run("MM.setParam(0, 'enabled', 0)"); E.paint();
+        eq(E.strokes.filter((s) => Math.abs(s.col[0] - GREEN[0]) < 1e-6 && Math.abs(s.col[1] - GREEN[1]) < 1e-6 && s.col[3] > 0.2 && s.lw <= 1.8).length, 0, "source off: no ring");
+        E.run("MM.setParam(0, 'enabled', 1)");
+        E.run("MM.setModType(2, MOD_ENV)");
+        E.run("MM.setModType(2, MOD_RANDOM)");
+        // via Live: orange ring
+        E.run("MM.setSelfMod('live'); ");
+        tel.eff[2].ctl[0] = Math.min(1, base + 0.2);
+        E.paint();
+        // (a via-Live mapping is "pending" without a Live id in this mock: it draws no ring until it is bound)
+        eq(E.strokes.filter((s) => isCol(s.col, ORANGE) && s.lw === 1.8).length, 0, "an unbound via-Live mapping (no Live id yet) draws no ring");
+        E.run("MM.setSelfMod('internal')");
+        // switches: the SYNC chip of an expanded LFO strip, modulated by another modulator
+        E.run("MM.addSelfMapping(1, " + C_SYNC_LFO1() + ", 'internal')");
+        E.run("MM.setUI({ exp: 0, sel: 0 }); ubSyncWidth(true)");
+        E.run("MM.readTelemetry().eff[0].sw[1] = 1");
+        E.paint();
+        ok(E.strokes.some((s) => isCol(s.col, GREEN) && s.lw === 1.4), "a modulated switch that is on is outlined in the self-mod colour");
+        E.run("MM.readTelemetry().eff[0].sw[1] = 0");
+        E.paint();
+        eq(E.strokes.filter((s) => isCol(s.col, GREEN) && s.lw === 1.4).length, 0, "...and not while it is off");
+        // Depth pill of the remap editor: a tick at the live depth
+        E.run("MM.addMapping(0, { path: 'live_set tracks 0 devices 0 parameters 1', paramName: 'Decay', trackName: 'Drums', deviceName: 'Reverb' })");
+        const dslot = E.run("MM.mappingSlot(MM.allMappings().filter((m) => !m.target.internal && m.target.selfDest === undefined)[0].id)");
+        E.run(`MM.addSelfMapping(1, ${192 + 0}, 'internal')`);
+        E.run("MM.setUI({ exp: -1, sel: 0, pb: 1, pbSel: MM.allMappings().filter((m) => m.target.selfDest === undefined)[0].id })");
+        E.run("MM.readTelemetry().depth[" + dslot + "] = 0.4");
+        E.paint();
+        ok(E.strokes.some((s) => isCol(s.col, GREEN) && s.lw === 1.6), "the Depth pill shows a tick at the live (modulated) depth");
+    }
+    function C_SYNC_LFO1() { return 96 + 0 * 6 + 1; } // dest code of modulator 1's (slot 0) Sync switch
+}
+
 console.log(`megamod UI tests passed (${passed} checks)`);

@@ -15,8 +15,8 @@ var armed = false;
 
 function dbg(m) { }
 
-function setbuffers(cfg, mseg, steps, scope, curve, route) {
-    names = { cfg: "" + cfg, mseg: "" + mseg, steps: "" + steps, scope: "" + scope, curve: "" + curve, route: "" + route };
+function setbuffers(cfg, mseg, steps, scope, curve, route, ibuf, icurve) {
+    names = { cfg: "" + cfg, mseg: "" + mseg, steps: "" + steps, scope: "" + scope, curve: "" + curve, route: "" + route, ibuf: "" + ibuf, icurve: "" + icurve };
 }
 
 var dspSr = 0;
@@ -85,18 +85,47 @@ function configure() {
     pokeAll(names.mseg, mseg);
     pokeAll(names.steps, steps);
 
+    if (CASE.selfmod) {
+        // internal modulation matrix (self-mod): descriptors + routes + tables, exactly what MM.flushInternal / syncInternal write
+        var hdr = new Array(INT_SAMPS);
+        for (i = 0; i < hdr.length; i++) hdr[i] = 0;
+        var desc = intDescriptorFloats();
+        for (i = 0; i < desc.length; i++) hdr[INT_DESC_AT + i] = desc[i];
+        var ic = new Array(ICURVE_SAMPS);
+        for (i = 0; i < ic.length; i++) ic[i] = 0;
+        var rts = CASE.selfmod.routes;
+        for (var r = 0; r < rts.length; r++) {
+            hdr[4 * r] = rts[r].src + 1;
+            hdr[4 * r + 1] = rts[r].dest;
+            var it = mappingTable(rts[r].map);
+            for (i = 0; i < CURVE_REGION; i++) ic[r * CURVE_REGION + i] = it[i];
+        }
+        hdr[INT_COUNT_AT] = rts.length;
+        pokeAll(names.ibuf, hdr);
+        pokeAll(names.icurve, ic);
+    }
     if (CASE.router) {
         // route buffer: every slot off (-1), then the case's slots -> source modulator; curve buffer: decoy 0.9
         // everywhere (a wrong table offset would read it), then each slot's mappingTable at slot * CURVE_REGION.
         var route = new Array(ROUTE_SAMPS);
         for (i = 0; i < route.length; i++) route[i] = 0;
         for (i = 0; i < MAX_MAPPINGS; i++) route[2 * i] = ROUTE_OFF;
+        for (i = 0; i < AUTO_DEPTH_SLOTS; i++) { route[2 * i + 1] = 1; route[ROUTE_DEPTH_BASE + i] = 1; route[ROUTE_DEPTH_MIN + i] = -1; }
         var curveFloats = new Array(CURVE_SAMPS);
         for (i = 0; i < curveFloats.length; i++) curveFloats[i] = 0.9;
         for (var q = 0; q < CASE.router.slots.length; q++) {
             var sd = CASE.router.slots[q];
             route[2 * sd.slot] = sd.src;
-            var tb = mappingTable(sd.map);
+            // pool slots < 64 apply the Depth in the router: the table is baked at depth 1, base depth (+ Remote min) in the route buffer
+            var mp = sd.map;
+            if (sd.slot < AUTO_DEPTH_SLOTS) {
+                var dp = mp.depth === undefined ? 1 : mp.depth;
+                route[ROUTE_DEPTH_BASE + sd.slot] = dp;
+                route[2 * sd.slot + 1] = dp;
+                route[ROUTE_DEPTH_MIN + sd.slot] = mp.mode === "remote" ? mp.min : -1;
+                mp = JSON.parse(JSON.stringify(mp)); mp.depth = 1;
+            }
+            var tb = mappingTable(mp);
             for (i = 0; i < CURVE_REGION; i++) curveFloats[sd.slot * CURVE_REGION + i] = tb[i];
         }
         pokeAll(names.route, route);
@@ -475,6 +504,111 @@ function analyzeSmooth(rep, a, b, sr) {
     rep.push("smooth_maxdiff " + maxdiff);
 }
 
+// ---------------------------------------------------------------- self-modulation (internal matrix)
+// rising zero crossings of x with linear interpolation -> times in seconds from the window start
+function risingCrossings(x, sr) {
+    var out = [];
+    for (var i = 1; i < x.length; i++) {
+        if (x[i - 1] < 0 && x[i] >= 0) out.push((i - 1 + (0 - x[i - 1]) / (x[i] - x[i - 1])) / sr);
+    }
+    return out;
+}
+// LFO 1 (slot 0, f1 Hz sine) modulates the Rate of LFO 2 (slot 1, f2 Hz base) by +-`oct` octaves through the internal matrix.
+// c1 = LFO 2 output, c2 = LFO 1 output. The reference integrates f(t) = f2 * 2^(oct * sin(2 pi f1 t)) and predicts every rising zero crossing of LFO 2.
+function analyzeSelfRate(rep, x, lfo1, sr) {
+    var sp = CASE.sp, t0 = sp.settle_ms / 1000;
+    var cr = risingCrossings(x, sr);
+    var dt = 1 / 48000, ph = 0, t = 0, k = 1, pred = [];
+    var tEnd = t0 + x.length / sr + 0.01;
+    while (t < tEnd) {
+        var f = sp.f2 * Math.pow(2, sp.oct * Math.sin(2 * Math.PI * sp.f1 * t));
+        var nph = ph + f * dt;
+        while (nph >= k) { pred.push(t + dt * (k - ph) / (nph - ph) - t0); k++; }
+        ph = nph; t += dt;
+    }
+    var n = Math.min(cr.length, pred.length), maxErr = 0, i, best = 1e9;
+    // the first crossing in the window may be crossing k0 of the run: align on the nearest predicted one
+    var shift = 0;
+    for (var sh = -3; sh <= 3; sh++) {
+        var e = 0, c = 0;
+        for (i = 0; i < cr.length; i++) { var pi = i + sh; if (pi >= 0 && pi < pred.length) { e += Math.abs(cr[i] - pred[pi]); c++; } }
+        if (c && e / c < best) { best = e / c; shift = sh; }
+    }
+    for (i = 0; i < cr.length; i++) { var q = i + shift; if (q >= 0 && q < pred.length) maxErr = Math.max(maxErr, Math.abs(cr[i] - pred[q])); }
+    var fmin = 1e9, fmax = 0, tmax = 0;
+    for (i = 1; i < cr.length; i++) {
+        var fi = 1 / (cr[i] - cr[i - 1]);
+        if (fi > fmax) { fmax = fi; tmax = 0.5 * (cr[i] + cr[i - 1]) + t0; }
+        if (fi < fmin) fmin = fi;
+    }
+    rep.push("self_crossings " + cr.length);
+    rep.push("self_cross_err_ms " + (maxErr * 1000));
+    rep.push("self_cross_shift " + shift);
+    rep.push("self_fmin " + fmin);
+    rep.push("self_fmax " + fmax);
+    rep.push("self_tfmax " + tmax);
+    // phase relation: LFO 2's fastest period sits where LFO 1 is at its positive peak (sin = 1)
+    var pk = 0, pkv = -9;
+    for (i = 0; i < lfo1.length; i++) if (lfo1[i] > pkv) { pkv = lfo1[i]; pk = i; }
+    rep.push("self_lfo1_peak_t " + (pk / sr + t0));
+}
+// mapping X (router slot 0, source = LFO 2 slot 1) with its Depth modulated by LFO 1 (slot 0, f1 Hz) through the internal matrix.
+// c1 = router output, c2 = LFO 2 output: where |c2| is large, c1 / c2 is the effective depth = clip(base + range * sin(2 pi f1 t), 0, 1).
+function analyzeSelfDepth(rep, out, src, sr) {
+    var sp = CASE.sp, t0 = sp.settle_ms / 1000, err = 0, cnt = 0, dmin = 9, dmax = -9, i;
+    for (i = 0; i < out.length; i++) {
+        if (Math.abs(src[i]) < 0.6) continue;
+        var d = out[i] / src[i];
+        var exp = Math.max(0, Math.min(1, sp.dbase + sp.range * Math.sin(2 * Math.PI * sp.f1 * (t0 + i / sr))));
+        err = Math.max(err, Math.abs(d - exp));
+        dmin = Math.min(dmin, d); dmax = Math.max(dmax, d);
+        cnt++;
+    }
+    rep.push("sdepth_err " + err);
+    rep.push("sdepth_min " + dmin);
+    rep.push("sdepth_max " + dmax);
+    rep.push("sdepth_n " + cnt);
+    // amplitude modulation really happens: the per-LFO2-cycle peak of |out| varies
+    var pks = [], cur = 0;
+    for (i = 1; i < out.length; i++) {
+        cur = Math.max(cur, Math.abs(out[i]));
+        if (src[i - 1] < 0 && src[i] >= 0) { pks.push(cur); cur = 0; }
+    }
+    var pmin = 9, pmax = -9;
+    for (i = 1; i < pks.length; i++) { pmin = Math.min(pmin, pks[i]); pmax = Math.max(pmax, pks[i]); }
+    rep.push("sdepth_peak_min " + pmin);
+    rep.push("sdepth_peak_max " + pmax);
+}
+// LFO 1 (slot 0, f1 Hz sine) modulates the BIPOLAR switch of slot 1 (a `fast` Hz sine with depth 0.5): bipolar on = -0.5..0.5, off (unipolar) = -1..0.
+// Base bipolar 0, range 1, +-: the toggle is on while the LFO 1 value is above 0.5. c1 = slot 1, c2 = LFO 1. Per window of one LFO 2 period.
+function analyzeSelfToggle(rep, x, lfo1, sr) {
+    var sp = CASE.sp, w = Math.round(sr / sp.fast), mism = 0, tot = 0, nOn = 0, nOff = 0, i, j;
+    for (i = 0; i + w <= x.length; i += w) {
+        var mx = -9, mn = 9, l1min = 9, l1max = -9;
+        for (j = i; j < i + w; j++) { mx = Math.max(mx, x[j]); mn = Math.min(mn, x[j]); l1min = Math.min(l1min, lfo1[j]); l1max = Math.max(l1max, lfo1[j]); }
+        if (l1min < 0.5 && l1max > 0.5) continue; // the threshold is crossed inside this window
+        var wantOn = l1min >= 0.5;
+        var isOn = mx > 0.25; // bipolar: max +0.5, unipolar: max 0
+        if (!(mx > 0.25 || mx < 0.1)) continue;
+        tot++;
+        if (isOn) nOn++; else nOff++;
+        if (isOn !== wantOn) mism++;
+    }
+    rep.push("stoggle_windows " + tot);
+    rep.push("stoggle_mismatch " + mism);
+    rep.push("stoggle_on " + nOn);
+    rep.push("stoggle_off " + nOff);
+}
+// feedback: LFO 1 and LFO 2 modulate each other's Rate. Everything stays finite and in range; the oscillators keep running.
+function analyzeSelfFeedback(rep, x, y, sr) {
+    var a = risingCrossings(x, sr), b = risingCrossings(y, sr), i, fmax = 0, fmin = 1e9;
+    for (i = 1; i < a.length; i++) { var f = 1 / (a[i] - a[i - 1]); fmax = Math.max(fmax, f); fmin = Math.min(fmin, f); }
+    rep.push("sfb_cross1 " + a.length);
+    rep.push("sfb_cross2 " + b.length);
+    rep.push("sfb_fmax " + fmax);
+    rep.push("sfb_fmin " + (fmin > 1e8 ? 0 : fmin));
+}
+
 // ---------------------------------------------------------------- entry
 function analyze(durMs) {
     if (armed) return;
@@ -520,6 +654,10 @@ function analyzeInner(durMs) {
     else if (an === "routeoff") analyzeRouteOff(rep, c1, c2);
     else if (an === "smooth") analyzeSmooth(rep, c1, c2, sr);
     else if (an === "depth") analyzeDepth(rep, c1, c2, sr);
+    else if (an === "selfrate") analyzeSelfRate(rep, c1, c2, sr);
+    else if (an === "selfdepth") analyzeSelfDepth(rep, c1, c2, sr);
+    else if (an === "selftoggle") analyzeSelfToggle(rep, c1, c2, sr);
+    else if (an === "selffb") analyzeSelfFeedback(rep, c1, c2, sr);
 
     if (CASE.tele) analyzeTelemetry(rep, sr);
     for (var q = 0; q < rep.length; q++) {

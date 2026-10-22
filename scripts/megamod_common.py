@@ -40,11 +40,13 @@ DEVICE_H = 169.0
 CFG_FLOATS = 16 * 24
 MSEG_FLOATS = 16 * 1024
 STEPS_FLOATS = 16 * 32
-SCOPE_SAMPS = 128
+SCOPE_SAMPS = 512           # per slot [out, phase, u, aux] + header (64..68) + effective control values (128..319) + effective depths (320..383)
+INT_SAMPS = 512             # buffer~ ---megamodint: internal modulation matrix routes + control descriptors (src/megamod_config.js INT_*)
+ICURVE_SAMPS = 64 * 256     # buffer~ ---megamodicurve: 64 internal route transfer tables
 MAX_MAPPINGS = 256          # saved mapping-slot pool (contract with src/megamod_config.js MAX_MAPPINGS)
 CURVE_REGION = 256
 CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION
-ROUTE_SAMPS = 512           # [2k] = source mod index or -1, [2k+1] spare
+ROUTE_SAMPS = 1024          # [2k] = source mod index or -1; pool slots k < 64: [2k+1] effective depth (engine), [512+k] base depth, [576+k] Remote min or -1
 ROUTERS = 8                 # router gen.codebox~ boxes
 ROUTER_SLOTS = MAX_MAPPINGS // ROUTERS  # 32 outlets each
 
@@ -52,7 +54,9 @@ ROUTER_SLOTS = MAX_MAPPINGS // ROUTERS  # 32 outlets each
 MAX_MODS = 16
 AUTO_PARAMS = 5             # generic controls per modulator slot
 AUTO_PER_SLOT = AUTO_PARAMS + 1   # + On
-AUTO_DEPTH_SLOTS = 64       # mapping pool slots with an automatable Depth parameter
+AUTO_DEPTH_SLOTS = 64       # mapping pool slots with an automatable Depth parameter (their routers apply the depth per sample)
+ROUTE_DEPTH_BASE = 512
+ROUTE_DEPTH_MIN = 576
 AUTO_LETTERS = "ABCDE"     # fixed Live parameter names: M3 A .. M3 E, M3 On, Depth 5 (runtime renames do not reach Live)
 # per-slot switch parameters (objects at_<slot*6+t>): the LFO shape (live.tab, 5 values) and the 5 boolean chips (live.text toggles)
 AUTO_SW_NAMES = ["Shape", "Sync", "Bipolar", "Retrig", "1Shot", "Loop"]
@@ -166,6 +170,9 @@ def router_gen_code(r):
         "Param smooth(0);",
     ]
     out += [f"History ys{j}(0);" for j in range(ROUTER_SLOTS)]
+    if r * ROUTER_SLOTS < AUTO_DEPTH_SLOTS:
+        out += ["", "// Pool slots below 64 apply their Depth here (per sample): the table is baked at depth 1, route[2k+1] = the effective depth the engine writes",
+                "// (base + internal Depth modulation), route[576+k] = Remote min or -1 for Mod: Mod y * d, Remote min + (y - min) * d."]
     out += [
         "",
         "smSr = max(samplerate, 1);",
@@ -185,6 +192,14 @@ def router_gen_code(r):
             f"\tva{j} = peek(curve, {k * CURVE_REGION} + ia{j});",
             f"\tvb{j} = peek(curve, {k * CURVE_REGION} + ib{j});",
             f"\tyv{j} = va{j} + (vb{j} - va{j}) * (fi{j} - ia{j});",
+        ]
+        if k < AUTO_DEPTH_SLOTS:
+            out += [
+                f"\tdk{j} = peek(route, {2 * k + 1});",
+                f"\trm{j} = peek(route, {ROUTE_DEPTH_MIN + k});",
+                f"\tyv{j} = (rm{j} < -0.5) ? yv{j} * dk{j} : rm{j} + (yv{j} - rm{j}) * dk{j};",
+            ]
+        out += [
             "}",
             f"ys{j} = yv{j} + (ys{j} - yv{j}) * smCoef;",
             f"out{j + 1} = ys{j};",
@@ -507,9 +522,11 @@ def build_patcher():
         buffer_box("obj-buf-scope", "---megamodscope", SCOPE_SAMPS, 560, 535),
         buffer_box("obj-buf-curve", "---mmcurve", CURVE_SAMPS, 560, 560),
         buffer_box("obj-buf-route", "---megamodroute", ROUTE_SAMPS, 560, 585),
+        buffer_box("obj-buf-int", "---megamodint", INT_SAMPS, 560, 735),
+        buffer_box("obj-buf-icurve", "---megamodicurve", ICURVE_SAMPS, 560, 760),
         newobj("obj-loadbang", "loadbang", 560, 600, 60, outlettype=["bang"]),
-        message("obj-msg-gen-bind", "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope", 560, 630, 480),
-        message("obj-msg-names", "setnames ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute", 560, 660, 500),
+        message("obj-msg-gen-bind", "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope, ibuf ---megamodint, icurve ---megamodicurve, route ---megamodroute", 560, 630, 480),
+        message("obj-msg-names", "setnames ---megamodcfg ---megamodmseg ---megamodsteps ---megamodscope ---mmcurve ---megamodroute ---megamodint ---megamodicurve", 560, 660, 700),
         message("obj-msg-router-bind", "route ---megamodroute, curve ---mmcurve", 560, 690, 300),
         newobj("obj-thisdevice", "live.thisdevice", 700, 10, 85, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init-lom", "init_lom", 800, 40, 70),

@@ -75,11 +75,11 @@
 // STATE MODEL (persisted in blob param "MegaModState")
 // =====================================================================================
 // state = {
-//   schema: 8,                  // 8 = per-mapping `depth` (older states get 1); 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
+//   schema: 9,                  // 9 = settings.selfMod + self-mappings (target.internal / target.selfDest; older states get selfMod "internal" and have none); 8 = per-mapping `depth` (older states get 1); 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
-//   settings: {defaultMode: "mod"|"remote", smoothMs: 0..500, rateMul: 0.25..4, tooltips: bool (default true)}   // device-global (Options panel), see SETTINGS below
+//   settings: {defaultMode: "mod"|"remote", smoothMs: 0..500, rateMul: 0.25..4, tooltips: bool (default true), selfMod: "internal"|"live" (default "internal"; which kind NEW self-mappings use)}   // device-global (Options panel), see SETTINGS below
 //   ui: {}                      // UI-private, opaque, JSON-able (expanded modulator, inspector open, ...)
 // }
 // ModSlot = {type, name, color(0..15), enabled(0/1), p:{rate,sync,syncDiv,shape,phase,retrig,bipolar,depth,
@@ -115,7 +115,7 @@
 //   Remote: y' = min + (max-min)*(invert ? 1-y : y), polarity 1, range 1, amount 1 (so v = y').
 // =====================================================================================
 
-const MEGAMOD_VERSION = 8; // schema version of the JSON state
+const MEGAMOD_VERSION = 9; // schema version of the JSON state
 const MAX_MODS = 16;
 
 
@@ -212,6 +212,147 @@ function autoLiveName(type, slot, key) {
     return j >= 0 ? autoSlotNames(slot)[j] : "";
 }
 
+// ---- SELF-MODULATION (schema 9): a modulator modulating the device's own controls --------------------------------------------
+// Every automatable parameter of the device has a DEST CODE 0..255: 0..95 = slot * 6 + j (j 0..4 the generic controls A..E, j 5 = On),
+// 96..191 = 96 + slot * 6 + t (switch t of AUTO_SW_KEYS: shape, sync, bipolar, retrig, oneshot, loopOn), 192..255 = 192 + k (the Depth of
+// the mapping in pool slot k). The Live parameter names ("M2 A", "M2 Shape", "Depth 5") map 1:1 to the codes. A self-mapping is
+//   INTERNAL: target {internal: true, selfDest: code, kind, slot, ctl}, Mod only, no pool slot, no live.* object: the engine's internal matrix
+//             (INT_ROUTES routes, buffer megamodint + megamodicurve) adds the route output to the destination in normalized knob space.
+//   VIA LIVE: a normal pool mapping whose target is the device's own Live parameter (target.selfDest = code marks it for the UI).
+const INT_ROUTES = 64; // capacity of the internal matrix
+const INT_COUNT_AT = 256; // megamodint[256] = highest used route index + 1
+const INT_DESC_AT = 264; // megamodint[264 + (type * 5 + j) * 5 + {0 field+1, 1 lo, 2 hi, 3 log, 4 int}]
+const INT_SW_AT = 414; // megamodint[414 + t] = CF field + 1 of switch t, [420 + t] = its max value
+const INT_SAMPS = 512;
+const ICURVE_SAMPS = INT_ROUTES * 256;
+const DEST_CTL = 0;
+const DEST_SW = 96;
+const DEST_DEPTH = 192;
+const DEST_COUNT = 256;
+const SELF_MODES = ["internal", "live"];
+const SELF_MODE_LABELS = ["INTERNAL", "VIA LIVE"];
+// the CF_* field a model key lives in (cfg buffer layout below)
+const KEY_CF = { rate: 2, sync: 3, syncDiv: 4, shape: 5, phase: 6, retrig: 7, bipolar: 8, depth: 9, attack: 10, release: 11, gain: 12, smooth: 13, steps: 14, glide: 15, oneshot: 16, seed: 17, loopOn: 18, loopStart: 19, loopEnd: 20 };
+// dest code <-> {kind: "ctl"|"on"|"sw"|"depth", slot, ctl}. For "depth": slot = -1 and ctl = the pool slot k.
+function selfDestFor(kind, slot, ctl) {
+    if (kind === "depth") return DEST_DEPTH + clamp(Math.round(num(ctl, 0)), 0, AUTO_DEPTH_SLOTS - 1);
+    const s = clamp(Math.round(num(slot, 0)), 0, MAX_MODS - 1);
+    if (kind === "sw") return DEST_SW + s * AUTO_SW_PER_SLOT + clamp(Math.round(num(ctl, 0)), 0, AUTO_SW_PER_SLOT - 1);
+    if (kind === "on") return DEST_CTL + s * AUTO_PER_SLOT + AUTO_PARAMS;
+    return DEST_CTL + s * AUTO_PER_SLOT + clamp(Math.round(num(ctl, 0)), 0, AUTO_PARAMS - 1);
+}
+function selfDestInfo(code) {
+    const c = Math.round(num(code, -1));
+    if (c < 0 || c >= DEST_COUNT) return null;
+    if (c >= DEST_DEPTH) return { code: c, kind: "depth", slot: -1, ctl: c - DEST_DEPTH };
+    if (c >= DEST_SW) { const q = c - DEST_SW; return { code: c, kind: "sw", slot: Math.floor(q / AUTO_SW_PER_SLOT), ctl: q % AUTO_SW_PER_SLOT }; }
+    const j = c % AUTO_PER_SLOT;
+    return { code: c, kind: j === AUTO_PARAMS ? "on" : "ctl", slot: Math.floor(c / AUTO_PER_SLOT), ctl: j };
+}
+// The Live parameter name of a dest code ("M2 A", "M2 On", "M2 Shape", "Depth 5").
+function selfDestName(code) {
+    const d = selfDestInfo(code);
+    if (!d) return "";
+    if (d.kind === "depth") return autoDepthName(d.ctl);
+    if (d.kind === "sw") return autoSwitchName(d.slot, d.ctl);
+    return autoSlotNames(d.slot)[d.ctl];
+}
+// Inverse of selfDestName: the Live parameter name -> dest code, or -1 (Device On, MegaModState, the marker, any other parameter).
+function selfDestFromName(name) {
+    const n = String(name || "");
+    let m = /^Depth (\d+)$/.exec(n);
+    if (m) { const k = Number(m[1]) - 1; return k >= 0 && k < AUTO_DEPTH_SLOTS ? DEST_DEPTH + k : -1; }
+    m = /^M(\d+) (A|B|C|D|E|On|Shape|Sync|Bipolar|Retrig|1Shot|Loop)$/.exec(n);
+    if (!m) return -1;
+    const s = Number(m[1]) - 1;
+    if (s < 0 || s >= MAX_MODS) return -1;
+    if (m[2] === "On") return selfDestFor("on", s, 0);
+    const ti = AUTO_SW_NAMES.indexOf(m[2]);
+    if (ti >= 0) return selfDestFor("sw", s, ti);
+    return selfDestFor("ctl", s, AUTO_LETTERS.indexOf(m[2]));
+}
+// Does the destination exist for the modulator's CURRENT type? (a letter / switch the type does not show has no control)
+function selfDestExists(code, state) {
+    const d = selfDestInfo(code);
+    if (!d) return false;
+    if (d.kind === "depth") return true;
+    const mod = state && state.mods ? state.mods[d.slot] : null;
+    if (!mod) return false;
+    if (d.kind === "on") return true;
+    if (d.kind === "sw") return AUTO_SW_USED[mod.type].indexOf(AUTO_SW_KEYS[d.ctl]) >= 0;
+    return !!AUTO_KEYS[mod.type][d.ctl];
+}
+// The target named by meaning: "LFO 2 Rate", "LFO 2 Shape", "LFO 2 On", "<mapped parameter> Depth" (depthOwner(k) -> that mapping's parameter name or "").
+function selfDestLabel(code, state, depthOwner) {
+    const d = selfDestInfo(code);
+    if (!d) return "";
+    if (d.kind === "depth") {
+        const owner = depthOwner ? depthOwner(d.ctl) : "";
+        return owner ? owner + " Depth" : "Depth " + (d.ctl + 1);
+    }
+    const mod = state && state.mods ? state.mods[d.slot] : null;
+    const base = mod ? mod.name : "M" + (d.slot + 1);
+    if (d.kind === "on") return base + " On";
+    if (d.kind === "sw") return base + " " + AUTO_SW_NAMES[d.ctl];
+    const lab = mod ? autoControlLabel(mod.type, d.ctl) : "";
+    return base + " " + (lab || AUTO_LETTERS[d.ctl]);
+}
+function isInternalTarget(t) {
+    return !!(t && t.internal === true);
+}
+function isSelfMapping(m) {
+    return !!(m && m.target && (m.target.internal === true || Number.isInteger(m.target.selfDest)));
+}
+function selfDestOf(m) {
+    if (!m || !m.target) return -1;
+    const t = m.target;
+    if (Number.isInteger(t.selfDest) && t.selfDest >= 0) return t.selfDest;
+    return -1;
+}
+function makeInternalTarget(code) {
+    const d = selfDestInfo(code);
+    if (!d) return null;
+    return { internal: true, selfDest: d.code, kind: d.kind, slot: d.slot, ctl: d.ctl, path: "", name: selfDestName(d.code), paramName: selfDestName(d.code), trackName: "", deviceName: "" };
+}
+// What the learn gesture does with a selected own parameter. name = the Live parameter name, srcMod = the learning modulator.
+// -> {ok: true, dest} or {ok: false, reason}. Rejected: anything that is not a pool parameter (Device On, MegaModState, the marker) and a
+// self-loop: any control, switch or On of the SOURCE modulator itself (a modulator that switches itself off stops producing the signal that would
+// switch it on again; a control modulated by its own output is a degenerate loop). Other modulators (and any mapping Depth) are fine, feedback between
+// two modulators (LFO 1 <-> LFO 2) is allowed.
+function classifySelfParam(name, srcMod, state) {
+    const code = selfDestFromName(name);
+    if (code < 0) return { ok: false, reason: "not a modulation target" };
+    const d = selfDestInfo(code);
+    if (d.kind !== "depth" && d.slot === srcMod) return { ok: false, reason: d.kind === "on" ? "a modulator cannot switch itself off" : "self-loop" };
+    if (state && d.kind !== "depth" && !(state.mods && state.mods[d.slot])) return { ok: false, reason: "no modulator in that slot" };
+    return { ok: true, dest: code };
+}
+// control descriptors for the engine ([field + 1, lo, hi, log, int] per type / generic position)
+function intDescriptorFloats() {
+    const a = new Array(INT_SAMPS - INT_DESC_AT).fill(0);
+    for (let t = 1; t <= 5; t++) {
+        for (let j = 0; j < AUTO_PARAMS; j++) {
+            const key = AUTO_KEYS[t][j];
+            if (!key) continue;
+            const r = MOD_PARAM_RANGE[key];
+            const o = (t * AUTO_PARAMS + j) * 5;
+            a[o] = KEY_CF[key] + 1; a[o + 1] = r[0]; a[o + 2] = r[1]; a[o + 3] = AUTO_LOG[key] ? 1 : 0; a[o + 4] = r[2] ? 1 : 0;
+        }
+    }
+    for (let t = 0; t < AUTO_SW_PER_SLOT; t++) {
+        a[INT_SW_AT - INT_DESC_AT + t] = KEY_CF[AUTO_SW_KEYS[t]] + 1;
+        a[INT_SW_AT - INT_DESC_AT + 6 + t] = t === 0 ? 4 : 1;
+    }
+    return a;
+}
+// Reference of the engine's numeric destination math: the real value of generic control j of a modulator of `type` whose model value is
+// `base`, with the summed route offset `off` added in the normalized (0..1) knob space.
+function selfCtlValue(type, j, base, off) {
+    const key = AUTO_KEYS[type][j];
+    if (!key) return base;
+    return autoValue(key, clamp(autoNorm(key, base) + off, 0, 1));
+}
+
 // ---- engine buffer layouts (contract with src/megamod_engine.genexpr; tests parse the genexpr) ----
 const CFG_STRIDE = 24; // floats per slot in buffer~ ---megamodcfg
 const CF_TYPE = 0; // 0 none, 1 LFO, 2 Env, 3 Random, 4 Steps, 5 MSEG
@@ -250,12 +391,17 @@ const SCOPE_SR = 65;
 const SCOPE_BEAT = 66;
 const SCOPE_BPM = 67;
 const SCOPE_PLAYING = 68;
-const SCOPE_SAMPS = 128;
+const SCOPE_EFF = 128; // 12 floats per slot: [0..4] effective normalized A..E, [5] effective On, [6..11] effective switches (shape 0..4, toggles 0/1)
+const SCOPE_EFF_STRIDE = 12;
+const SCOPE_DEPTH = 320; // 64 floats: effective Depth 0..1 of the mapping in pool slot k
+const SCOPE_SAMPS = 512;
 
 const MAX_MAPPINGS = 256; // saved mapping-slot pool: 256 live.modulate~ + 256 live.remote~ in the device file
 const CURVE_REGION = 256; // samples per mapping transfer table in buffer~ ---mmcurve (FIXED: MAX_MAPPINGS x 256 samples)
 const CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION;
-const ROUTE_SAMPS = 512; // buffer~ ---megamodroute: [2k] = source modulator index or -1 (off), [2k+1] spare
+const ROUTE_SAMPS = 1024; // buffer~ ---megamodroute: [2k] = source modulator index or -1 (off); for pool slots k < AUTO_DEPTH_SLOTS [2k+1] = effective depth (the engine writes it), [ROUTE_DEPTH_BASE + k] = base depth, [ROUTE_DEPTH_MIN + k] = Remote min or -1 (Mod)
+const ROUTE_DEPTH_BASE = 512;
+const ROUTE_DEPTH_MIN = 576;
 const ROUTE_OFF = -1;
 const ROUTERS = 8; // router gen.codebox~ boxes (16 signal inlets, 32 outlets each): slot k = router floor(k/32), outlet k%32
 const ROUTER_SLOTS = MAX_MAPPINGS / ROUTERS;
@@ -266,6 +412,8 @@ const BUF_STEPS = "megamodsteps";
 const BUF_SCOPE = "megamodscope";
 const BUF_CURVE = "mmcurve";
 const BUF_ROUTE = "megamodroute";
+const BUF_INT = "megamodint"; // internal modulation matrix routes + control descriptors (INT_* below)
+const BUF_ICURVE = "megamodicurve"; // 64 x 256 internal route transfer tables
 
 const MOD_NONE = 0;
 const MOD_LFO = 1;
@@ -457,6 +605,7 @@ function defaultState() {
 // ---- device-global settings (Options panel, schema 7) ----
 // defaultMode : mode of a NEW mapping (learn / addMapping). Mod keeps +-, range 0.5; Remote keeps min 0, max 1.
 // smoothMs    : global one-pole smoothing of every mapping output (router gen `smooth` Param, ms; 0 = bypass). Default 0 (no change to old sets).
+// selfMod     : which kind NEW self-mappings use (a modulator modulating this device's own controls): "internal" (engine matrix) | "live" (a pool mapping on the device's own Live parameter)
 // tooltips    : rail TIP button; false hides hover tooltips and instructional hints (missing = true)
 // rateMul     : multiplies the rate of every LFO / Random / Steps / MSEG modulator (engine `ratemul` Param); the follower ignores it.
 const SMOOTH_MAX_MS = 500;
@@ -466,7 +615,7 @@ const RATE_MUL_MAX = 4;
 const RATE_MUL_STEPS = [0.25, 1 / 3, 0.5, 1, 1.5, 2, 3, 4]; // the musical steps the Rate dial snaps to
 const RATE_SNAP_OCT = 0.045; // snap window in octaves (log2) around a step; between the windows the dial is continuous
 function defaultSettings() {
-    return { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true };
+    return { defaultMode: "mod", smoothMs: 0, rateMul: 1, tooltips: true, selfMod: "internal" };
 }
 function sanitizeSettings(o) {
     const d = defaultSettings();
@@ -475,6 +624,7 @@ function sanitizeSettings(o) {
     d.smoothMs = clamp(num(o.smoothMs, 0), 0, SMOOTH_MAX_MS);
     d.rateMul = clamp(num(o.rateMul, 1), RATE_MUL_MIN, RATE_MUL_MAX);
     d.tooltips = !(o.tooltips === false || o.tooltips === 0); // missing = on
+    d.selfMod = o.selfMod === "live" ? "live" : "internal"; // schema < 9 has none: internal
     return d;
 }
 function smoothFromPos(p) {
@@ -513,11 +663,22 @@ function smoothText(ms) {
 
 function sanitizeTarget(t) {
     const o = t || {};
-    return {
+    const out = {
         path: String(o.path || ""), name: String(o.name || o.paramName || ""),
         trackName: String(o.trackName || ""), deviceName: String(o.deviceName || ""),
         paramName: String(o.paramName || o.name || ""),
     };
+    // self-mod (schema 9): an internal target is the dest code only (kind / slot / ctl are derived); a via-Live self target keeps its code
+    const code = Math.round(num(o.selfDest, -1));
+    if (code >= 0 && code < DEST_COUNT) {
+        const d = selfDestInfo(code);
+        out.selfDest = code;
+        if (o.internal === true) {
+            out.internal = true; out.kind = d.kind; out.slot = d.slot; out.ctl = d.ctl;
+            out.name = selfDestName(code); out.paramName = out.name; out.path = "";
+        }
+    }
+    return out;
 }
 
 // ---- mapping transfer shape (an MSEG: x = modulator 0..1, y = output 0..1; first/last point pinned to x 0 / 1) ----
@@ -630,6 +791,7 @@ function sanitizeMapping(m, schema) {
     const d = defaultMapping(Math.max(1, Math.round(num(m && m.id, 1))), clamp(Math.round(num(m && m.mod, 0)), 0, MAX_MODS - 1), m && m.target);
     d.enabled = m && (m.enabled === 0 || m.enabled === false) ? 0 : 1;
     d.mode = m && m.mode === "remote" ? "remote" : "mod";
+    if (d.target.internal) d.mode = "mod"; // internal routes are offsets in normalized knob space: Mod only
     d.polarity = clamp(Math.round(num(m && m.polarity, 0)), -1, 1);
     d.range = clamp(num(m && m.range, 0.5), 0, 1);
     d.depth = clamp(num(m && m.depth, 1), 0, 1); // schema < 8: no depth = 100%
@@ -983,6 +1145,7 @@ function mappingTable(m) {
 // Learn / target helpers
 // ------------------------------------------------------------------------------------
 function targetKey(t) {
+    if (t && Number.isInteger(t.selfDest) && t.selfDest >= 0) return "self:" + t.selfDest; // internal and via-Live self targets collide
     return t && t.path ? String(t.path) : "id:" + (t && t.id);
 }
 function isSelfTarget(path, ownDevicePath) {
@@ -1060,7 +1223,7 @@ if (nodeModule && nodeModule.exports) {
         CF_RETRIG, CF_BIPOLAR, CF_DEPTH, CF_ATTACK, CF_RELEASE, CF_GAIN, CF_SMOOTH, CF_STEPS, CF_GLIDE, CF_ONESHOT,
         CF_SEED, CF_LOOPON, CF_LOOPSTART, CF_LOOPEND, CFG_FLOATS, MSEG_TABLE, MSEG_FLOATS, STEPS_MAX, STEPS_FLOATS,
         SCOPE_STRIDE, SCOPE_HEADER, SCOPE_FRAME, SCOPE_SR, SCOPE_BEAT, SCOPE_BPM, SCOPE_PLAYING, SCOPE_SAMPS,
-        MAX_MAPPINGS, CURVE_REGION, CURVE_SAMPS, ROUTE_SAMPS, ROUTE_OFF, ROUTERS, ROUTER_SLOTS, BUF_CFG, BUF_MSEG, BUF_STEPS, BUF_SCOPE, BUF_CURVE, BUF_ROUTE,
+        MAX_MAPPINGS, CURVE_REGION, CURVE_SAMPS, ROUTE_SAMPS, ROUTE_DEPTH_BASE, ROUTE_DEPTH_MIN, SCOPE_EFF, SCOPE_EFF_STRIDE, SCOPE_DEPTH, BUF_INT, BUF_ICURVE, INT_ROUTES, INT_COUNT_AT, INT_DESC_AT, INT_SW_AT, INT_SAMPS, ICURVE_SAMPS, DEST_CTL, DEST_SW, DEST_DEPTH, DEST_COUNT, SELF_MODES, SELF_MODE_LABELS, KEY_CF, selfDestFor, selfDestInfo, selfDestName, selfDestFromName, selfDestExists, selfDestLabel, isInternalTarget, isSelfMapping, selfDestOf, makeInternalTarget, classifySelfParam, intDescriptorFloats, selfCtlValue, ROUTE_OFF, ROUTERS, ROUTER_SLOTS, BUF_CFG, BUF_MSEG, BUF_STEPS, BUF_SCOPE, BUF_CURVE, BUF_ROUTE,
         MOD_NONE, MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG, MOD_TYPE_NAMES, MOD_TYPE_SHORT, LFO_SHAPES,
         CURVE_LINEAR, CURVE_EXP, CURVE_LOG, CURVE_S, CURVE_STEPPED, CURVE_NAMES, SYNC_BEATS, SYNC_LABELS, MOD_COLORS,
         MOD_PARAM_KEYS, MOD_PARAM_RANGE, MIN_WIDTH, MAX_WIDTH, BLOB_CHUNK,
