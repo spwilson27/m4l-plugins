@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Write glitch_test.als: a Live Set for the automated Glitch test (scripts/test_glitch_live.js).
 
-The Set holds the Ableton MCP Bridge on the Main track and one audio track "Glitch" with devices/Glitch.amxd directly on it
-(a Max Audio Effect, <MxDeviceAudioEffect>). Same machinery as scripts/make_delayplus_sets.py / make_sampler_set.py: the Set
+The Set holds the Ableton MCP Bridge on the Main track and TWO audio tracks ("Glitch A", "Glitch B") with devices/Glitch.amxd directly
+on each (a Max Audio Effect, <MxDeviceAudioEffect>): two instances in one Set prove the per-instance `---` buffer names (instance
+isolation). --tracks 1 writes a single-instance Set. Same machinery as scripts/make_delayplus_sets.py / make_sampler_set.py: the Set
 base is the repo's ableton_mcp_bridge.als, the device element comes from the M4L template, pointee Ids are renumbered and
 validated. The .amxd is referenced by absolute path (and relative to the Set), so run this where the Set will be opened:
 scripts/vm_glitch.sh live runs it inside the VM.
@@ -45,14 +46,17 @@ def build(args):
         sys.exit("base set: no Max device found on the Main track")
     base = base[:mt] + tail
     rn = mds.Renumber(int(re.search(r'<NextPointeeId Value="(\d+)"', base).group(1)))
-    dev = mds.m4l_xml(args.glitch, out, 0)
-    slots = "<ClipSlotList>" + "".join(
-        '<ClipSlot Id="%d"><LomId Value="0" /><ClipSlot><Value /></ClipSlot><HasStop Value="true" /></ClipSlot>' % i
-        for i in range(scenes)) + "</ClipSlotList>"
-    track = mds.fill(mds.tpl("audiotrack"), TRACKID=args.track_id, TRACKNAME=mds.esc(args.track_name), CLIPSLOTS=slots,
-                     DEVICES="<Devices>\n" + dev + "\n</Devices>")
-    track = rn(track)
-    base, n = re.subn(r"<Tracks>.*?</Tracks>", lambda m: "<Tracks>\n" + track + "\n\t\t</Tracks>", base, count=1, flags=re.S)
+    tracks = ""
+    for i in range(args.tracks):
+        dev = mds.m4l_xml(args.glitch, out, 0)
+        slots = "<ClipSlotList>" + "".join(
+            '<ClipSlot Id="%d"><LomId Value="0" /><ClipSlot><Value /></ClipSlot><HasStop Value="true" /></ClipSlot>' % k
+            for k in range(scenes)) + "</ClipSlotList>"
+        name = args.track_name if args.tracks == 1 else "%s %s" % (args.track_name, "AB"[i] if i < 2 else i + 1)
+        track = mds.fill(mds.tpl("audiotrack"), TRACKID=args.track_id + i, TRACKNAME=mds.esc(name), CLIPSLOTS=slots,
+                         DEVICES="<Devices>\n" + dev + "\n</Devices>")
+        tracks += rn(track) + "\n"
+    base, n = re.subn(r"<Tracks>.*?</Tracks>", lambda m: "<Tracks>\n" + tracks + "\t\t</Tracks>", base, count=1, flags=re.S)
     if n != 1:
         sys.exit("base set has no <Tracks>")
     base = re.sub(r'(<NextPointeeId Value=")\d+', lambda m: "%s%d" % (m.group(1), rn.n), base, count=1)
@@ -68,6 +72,7 @@ def main():
     ap.add_argument("--base-set", default=mds.DEFAULT_BASE_SET)
     ap.add_argument("--track-name", default="Glitch")
     ap.add_argument("--track-id", type=int, default=32)
+    ap.add_argument("--tracks", type=int, default=2, help="number of Glitch tracks (default 2: instance isolation test)")
     args = ap.parse_args()
     out = build(args)
     probs = mds.validate(out, True)

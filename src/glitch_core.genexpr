@@ -26,7 +26,7 @@
 // stage. Because the head runs the whole control engine once and each tick is read by index, a staged chain behaves like the one-gen
 // chain it replaced: a slot switch starts on the exact sample of the step boundary in every group.
 //
-// Parameters: the UI fills buffer~ #0-glitchslots (8 slot vectors + 8 weights + the sequencer block + the layout constants,
+// Parameters: the UI fills buffer~ ---glitchslots (8 slot vectors + 8 weights + the sequencer block + the layout constants,
 // layout in glitch_config.js). Every ~32 samples (and on the exact sample of a sequencer step boundary) the head blends the slots
 // (gl_blend: see glitch_config.js blendVectors) into d_tgt and smooths into d_pv. In Seq mode (header mode 2) the weights
 // are computed here from the host beat (gl_seq) instead of read from the buffer. Mix, Output, bpm, ppq and playing are gen

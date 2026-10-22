@@ -19,8 +19,8 @@
 // and Seq the pad, the glitch view and the editor show the SOUNDING blend (soundingWeights). Editing a module there first
 // copies the sounding blend into the Working glitch and switches to Working (beginWorkingEdit), so an edit is always audible.
 //
-// Messages in (inlet 0): setbuffer <slots> <scope>, set_<param> <v> (echo of a live.* object), device_ready, dbg_* / test_*
-//   (via receive #0-glitchdebug), randomize [seed], mutate [amount 0..1], audition working|morph|seq, xy x y, save|recall|clearslot <1..8>,
+// Messages in (inlet 0): setbuffer <slots> <scope> <debug receive name> (all three are `---` names expanded per instance by Live), set_<param> <v> (echo of a live.* object), device_ready, dbg_* / test_*
+//   (via receive ---glitchdebug), randomize [seed], mutate [amount 0..1], audition working|morph|seq, xy x y, save|recall|clearslot <1..8>,
 //   getvalueof / setvalueof (blob GlitchStateData).
 // Messages out (outlet 0): param <key> <value> | setwidth_cmd <px> | dsp_ready bang | dsp_on 2
 
@@ -81,22 +81,50 @@ var gDemoBeat = 0; // preview only: the beat the demo sequencer sits at
 var hostPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 
 function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+// Per-instance key: the expanded name of this instance's `---glitchdebug` receive (the patcher passes it in with `setbuffer`; Live expands `---`
+// per device instance, v8ui script strings are NOT expanded). Trace and test-report Globals carry it, so two instances never share them.
+var gInstKey = "";
+var pendingTrace = [];
+function traceGlobalName() { return "glitch_trace_" + gInstKey; }
 function trace(event, detail) {
     if (typeof Global === "undefined") return;
+    var line = "+" + (Date.now() - traceT0) + "ms " + event + " " + (detail === undefined ? "" : String(detail));
+    if (!gInstKey) { pendingTrace.push(line); if (pendingTrace.length > 160) pendingTrace.shift(); return; }
     try {
-        var gl = new Global("glitch_trace");
+        var gl = new Global(traceGlobalName());
         var lines = String(gl.text || "").split("\n").filter(function (l) { return l.length > 0; });
-        lines.push("+" + (Date.now() - traceT0) + "ms " + event + " " + (detail === undefined ? "" : String(detail)));
+        lines.push(line);
         gl.text = lines.slice(-160).join("\n");
     } catch (_) {}
 }
 var traceT0 = Date.now();
-if (typeof Global !== "undefined") { try { new Global("glitch_trace").text = ""; } catch (_) {} }
+function setInstanceKey(key) {
+    if (!key || gInstKey) return;
+    gInstKey = "" + key;
+    if (typeof Global === "undefined") return;
+    try { new Global(traceGlobalName()).text = pendingTrace.join("\n"); } catch (_) {}
+    pendingTrace = [];
+}
+// Register this instance (key -> LOM device id) in Global("glitch_hooks") so scripts/test_glitch_live.js can find the hook name of the instance
+// on a given track: messnamed(<key>, ...) reaches only that instance's `receive ---glitchdebug`.
+function registerHook() {
+    if (typeof Global === "undefined" || typeof LiveAPI === "undefined" || !gInstKey) return;
+    try {
+        var api = new LiveAPI(function () {}, "this_device");
+        var id = String(api.id);
+        var gl = new Global("glitch_hooks");
+        var m = {};
+        try { m = JSON.parse(String(gl.text || "{}")); } catch (_) { m = {}; }
+        m[id] = gInstKey;
+        gl.text = JSON.stringify(m);
+    } catch (_) {}
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // engine buffers, model, parameters
 // ---------------------------------------------------------------------------------------------------------------
-function setbuffer(slotsName, scopeName) {
+function setbuffer(slotsName, scopeName, debugName) {
+    if (debugName) setInstanceKey(debugName);
     if (slotsName) { gSlotsName = "" + slotsName; gSlotsBuf = new Buffer(gSlotsName); }
     if (scopeName) { gScopeName = "" + scopeName; gScopeBuf = new Buffer(gScopeName); }
     pushEngine();
@@ -731,6 +759,7 @@ function test_watch(ms) {
 }
 function device_ready() {
     gReady = 1;
+    registerHook();
     syncParamsOut();
     applyLayout();
     pushEngine();
@@ -741,7 +770,7 @@ function device_ready() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// telemetry (buffer #0-glitchscope, layout GL_SCOPE); skip redraws while silent
+// telemetry (buffer ---glitchscope, layout GL_SCOPE); skip redraws while silent
 // ---------------------------------------------------------------------------------------------------------------
 var quietDrawn = false;
 var lastFrame = -1;
@@ -2666,7 +2695,7 @@ function onkeydown(keycode, textcharacter, down, cmd, shift) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// test / debug entry points (messnamed("#0-glitchdebug", ...); scripts/test_glitch_live.js)
+// test / debug entry points (messnamed(<this instance's expanded ---glitchdebug>, ...), found through Global("glitch_hooks"); scripts/test_glitch_live.js)
 // ---------------------------------------------------------------------------------------------------------------
 function test_fill() {
     // deterministic slots: 0 = loud drive, 1 = a 60 Hz low pass (almost silent), 2 = width, 3 = delay; corners 0, 1, 0, 1
@@ -2708,7 +2737,7 @@ function test_report() {
     rep.moves = gTiles.filter(function (t) { return t.mv; }).map(function (t) { return t.key; });
     rep.arm = gSeqArm; rep.page = gTilePage; rep.tileCount = gTiles.length;
     if (gSlotsBuf) { try { rep.seqHdr = gSlotsBuf.peek(1, glitchLayout().seqOffset, GL_SEQ_HDR).slice(0, 5); } catch (_) {} }
-    if (typeof Global !== "undefined") new Global("glitch_test").text = JSON.stringify(rep);
+    if (typeof Global !== "undefined") new Global("glitch_test_" + gInstKey).text = JSON.stringify(rep);
     return rep;
 }
 // A working glitch whose only module is Width / Gain (-3 dB) with a synced sine LFO on the gain: 1/4 note cycle (one beat), depth 0.5 =

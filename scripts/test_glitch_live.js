@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
  * Live end-to-end test for Glitch, driven through the Ableton MCP Bridge (`scripts/ableton_mcp_server.js`,
- * `ableton_eval_lom_js`). Needs glitch_test.als (audio track "Glitch" + the bridge on Main). Live runs in the tart VM
+ * `ableton_eval_lom_js`). Needs glitch_test.als (audio tracks "Glitch A" and "Glitch B", each with a Glitch instance, + the bridge on Main). Live runs in the tart VM
  * (AGENTS.md 1a): `scripts/vm_glitch.sh run` (live + test under the Live lock). Checks, in order:
  *   find      the Glitch device (class MxDeviceAudioEffect) on a track; its Live parameters (Morph X / Y, Chaos, Mix, Out,
  *             Randomize, Mutate, Mode) are listed by the LOM
- *   dsp       Global("glitch_trace") gets "dsp ready" (deferred gen~, AGENTS.md 1d); prints the load -> dsp-ready time
+ *   dsp       Global("glitch_trace_<hook name>") gets "dsp ready" (deferred gen~, AGENTS.md 1d); prints the load -> dsp-ready time
  *   counter   the gen's telemetry frame counter advances
  *   audio     a looped 220 Hz + 1.76 kHz clip plays through the device: the track meter rises (dry through the gen)
  *   randomize `randomize <seed>` through the test hook: tiles appear, the telemetry shows activity, and the device's output
@@ -22,8 +22,15 @@
  *   phase4    (phase 4) test_p4: Ratchet + Scratch (roll and lag telemetry move), the 11 new spectral sub-ops (STFT runs, spectra alive), both at
  *             once: gen keeps running, telemetry finite, output bounded
  *   mix       Mix 0 returns the dry level while the strong glitch is active
+ *   isolate   (instance isolation, needs both Glitch instances) every per-instance buffer / receive is a `---` name that Live expands per
+ *             instance: each instance reaches DSP ready on its own scope buffer, the scope names differ, instance A (drive, no spectral
+ *             code) and B (spectral sub-ops) show different telemetry and stages, A's Mix 0 gives its track's dry level while B stays wet
+ *             (and the other way round), and hot-loading the spectral stage in B leaves A's stages, frame counter and level alone
  *
- *   node scripts/test_glitch_live.js [--port 19880] [--wav /tmp/glitch_test_220.wav]
+ * Hook names: the patcher passes each instance its expanded `---glitchdebug` name; the v8ui registers it in Global("glitch_hooks")
+ * ({LOM device id: name}); trace / test reports are Global("glitch_trace_<name>") / Global("glitch_test_<name>").
+ *
+ *   node scripts/test_glitch_live.js [--port 19880] [--wav /tmp/glitch_test_220.wav] [--inst 0]
  */
 
 const { execFileSync } = require("child_process");
@@ -44,13 +51,33 @@ function evalLom(code) {
     return out.result;
 }
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const trace = () => String(evalLom('return new Global("glitch_trace").text;') || "");
-const debug = (...m) => evalLom(`messnamed("#0-glitchdebug", ${m.map((x) => JSON.stringify(x)).join(", ")}); return 1;`);
-function report() {
-    debug("test_report");
-    sleep(300);
-    return JSON.parse(String(evalLom('return new Global("glitch_test").text;')));
+const INST = Number(arg("--inst", 0));
+// Per-instance hook / trace / report access. `key` = the instance's expanded ---glitchdebug name (see the header).
+function hookKey(deviceId, waitMs) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < waitMs) {
+        const m = JSON.parse(String(evalLom('return new Global("glitch_hooks").text || "{}";')));
+        if (m[String(deviceId)]) return m[String(deviceId)];
+        sleep(300);
+    }
+    return null;
 }
+const mkInst = (key) => ({
+    key,
+    trace: () => String(evalLom(`return new Global(${JSON.stringify("glitch_trace_" + key)}).text;`) || ""),
+    clearTrace: () => evalLom(`new Global(${JSON.stringify("glitch_trace_" + key)}).text = ""; return 1;`),
+    debug: (...m) => evalLom(`messnamed(${JSON.stringify(key)}, ${m.map((x) => JSON.stringify(x)).join(", ")}); return 1;`),
+    report() {
+        this.debug("test_report");
+        sleep(300);
+        return JSON.parse(String(evalLom(`return new Global(${JSON.stringify("glitch_test_" + key)}).text;`)));
+    },
+});
+let me = null; // the instance the single-instance checks drive
+const trace = () => me.trace();
+const debug = (...m) => me.debug(...m);
+const report = () => me.report();
+const clearTrace = () => me.clearTrace();
 
 let failures = 0;
 function check(ok, msg) {
@@ -69,19 +96,27 @@ function bail(msg) {
 }
 
 // find
-const dev = evalLom(`
+const found = evalLom(`
+    var out = [];
     var n = new LiveAPI("live_set").getcount("tracks");
     for (var t = 0; t < n; t++) {
         var tr = new LiveAPI("live_set tracks " + t);
         var nd = tr.getcount("devices");
         for (var d = 0; d < nd; d++) {
             var dv = new LiveAPI("live_set tracks " + t + " devices " + d);
-            if (/Glitch/.test(String(dv.get("name")))) return { track: t, device: d, cls: String(dv.get("class_name")) };
+            if (/Glitch/.test(String(dv.get("name")))) out.push({ track: t, device: d, cls: String(dv.get("class_name")), id: String(dv.id) });
         }
     }
-    return null;
+    return out;
 `);
-if (!check(!!dev, "Glitch device found" + (dev ? ` (track ${dev.track}, ${dev.cls})` : ""))) finish();
+const dev = found[INST] || null;
+if (!check(!!dev, `Glitch device found (${found.length} instance(s))` + (dev ? ` (track ${dev.track}, ${dev.cls})` : ""))) finish();
+{
+    const key = hookKey(dev.id, 30000);
+    if (!check(!!key, `instance ${INST} registered its hook name${key ? ` (${key})` : ""}`)) finish();
+    check(!/#0|^---/.test(key), "the hook name is an expanded per-instance name (not a literal #0- / ---)");
+    me = mkInst(key);
+}
 const devPath = `live_set tracks ${dev.track} devices ${dev.device}`;
 const params = evalLom(`
     var dv = new LiveAPI(${JSON.stringify(devPath)});
@@ -141,7 +176,7 @@ check(c1 !== c0, `telemetry frame counter advances (${c0} -> ${c1})`);
 // load time by kind of glitch: the working glitch a restored device would have, then the whole stage load again (test_load = dsp_retry)
 const loadStats = {};
 for (const kind of ["empty", "typical", "spectral", "all", "typical", "empty"]) {
-    evalLom('new Global("glitch_trace").text = ""; return 1;');
+    clearTrace();
     debug("test_load", kind);
     let cur = "";
     const tl = Date.now();
@@ -223,7 +258,7 @@ check(r0.ready === 1 && r0.tiles.length === 0, "no glitch yet: no tiles");
     };
     const watched = (ms) => { const m = trace().split("\n").filter((l) => /watch audio time lost/.test(l)).pop(); const n = m && m.match(/lost (-?\d+) ms in (\d+) ms/); return n && Number(n[2]) >= ms - 100 ? Number(n[1]) : null; };
     const waitWatch = (ms) => { for (let i = 0; i < 80; i++) { const w = watched(ms); if (w !== null) return w; sleep(100); } return null; };
-    evalLom('new Global("glitch_trace").text = ""; return 1;');
+    clearTrace();
     debug("test_watch", 3000);
     debug("test_fill");
     for (let i = 0; i < 60 && report().stages.drvA !== "on"; i++) sleep(150);
@@ -237,7 +272,7 @@ check(r0.ready === 1 && r0.tiles.length === 0, "no glitch yet: no tiles");
     // the transparent spectral glitch: its code is loaded into the shell (main thread busy ~1 s, the audio is not), then the chain is switched onto it
     // (a message: no graph change) and `go 1` starts it
     const events = [];
-    evalLom('new Global("glitch_trace").text = ""; return 1;');
+    clearTrace();
     debug("test_watch", 6000);
     const tStartSpec = Date.now();
     debug("test_spec", "quiet");
@@ -533,6 +568,116 @@ sleep(1000);
 const mix0 = peaks(700).db;
 check(Math.abs(mix0 - dryPk.db) < 2.5, `Mix 0 returns the dry level (${mix0.toFixed(1)} dB vs dry ${dryPk.db.toFixed(1)} dB) while the strong glitch is active`);
 setP("Mix", 100);
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// INSTANCE ISOLATION: instance A (the one tested above) and instance B on the other track. Every per-instance buffer / receive is a `---` name
+// (Live expands it per device instance); with a literal #0- both instances shared slots / scope / ctl and clobbered each other.
+// ---------------------------------------------------------------------------------------------------------------------------------------
+if (found.length >= 2 && INST === 0) {
+    console.log("\n--- instance isolation: two Glitch instances ---");
+    const A = me;
+    const bDev = found[1];
+    const bKey = hookKey(bDev.id, 30000);
+    if (!check(!!bKey && bKey !== A.key, `instance B has its own hook name (A ${A.key}, B ${bKey})`)) finish();
+    const B = mkInst(bKey);
+    const waitReady = (I, label) => { // the trace keeps only its newest 160 lines, so ask the instance (test_report.ready)
+        const t = Date.now();
+        while (Date.now() - t < DSP_WAIT_MS) { const r = I.report(); if (r.err) return bail(`${label}: dsp-error ${r.err}`); if (r.ready === 1) return true; sleep(300); }
+        return bail(`${label}: not ready`);
+    };
+    waitReady(A, "A"); waitReady(B, "B");
+    check(true, "both instances reached DSP ready");
+    const diagScope = (I) => { I.debug("dsp_diag"); sleep(300); return ((I.trace().split("\n").filter((l) => /dsp-diag/.test(l)).pop() || "").match(/scope=(\S+)/) || [])[1]; };
+    const scA = diagScope(A), scB = diagScope(B);
+    check(!!scA && !!scB && scA !== scB, `the two instances bind different scope buffers (A ${scA}, B ${scB})`);
+    check(!/#0/.test(scA + scB) && !/^---/.test(scA + scB), "scope buffer names are expanded per-instance names");
+    const pathB = `live_set tracks ${bDev.track} devices ${bDev.device}`;
+    const paramsB = evalLom(`
+        var dv = new LiveAPI(${JSON.stringify(pathB)}); var ids = dv.get("parameters"); var out = {};
+        for (var i = 0; i + 1 < ids.length; i += 2) { var p = new LiveAPI("id " + ids[i + 1]); out[String(p.get("name"))] = Number(ids[i + 1]); }
+        return out;`);
+    const setPB = (name, v) => evalLom(`new LiveAPI("id ${paramsB[name]}").set("value", ${v}); return 1;`);
+    const bufPeaks = (sc, ms) => {
+        let pin = 1e-6, pout = 0;
+        const t = Date.now();
+        while (Date.now() - t < ms) { const a = evalLom(`return new Buffer(${JSON.stringify(sc)}).peek(1, 2, 2);`); pin = Math.max(pin, a[0]); pout = Math.max(pout, a[1]); sleep(40); }
+        return { in: pin, out: pout, db: db(pout) - db(pin) };
+    };
+    const levelOf = (track, ms) => { let m = 0; const t = Date.now(); while (Date.now() - t < ms) { m = Math.max(m, Number(evalLom(`return new LiveAPI("live_set tracks ${track}").get("output_meter_left");`))); sleep(60); } return m; };
+    const fireClip = (track) => evalLom(`
+        var slot = new LiveAPI("live_set tracks ${track} clip_slots 0");
+        if (Number(slot.get("has_clip")) === 0) slot.call("create_audio_clip", ${JSON.stringify(WAV)});
+        var clip = new LiveAPI("live_set tracks ${track} clip_slots 0 clip");
+        clip.set("looping", 1); try { clip.set("launch_quantization", 0); } catch (e) {}
+        slot.call("fire"); return "ok";`);
+    check(fireClip(dev.track) === "ok" && fireClip(bDev.track) === "ok", "the test clip plays on both tracks");
+    setP("Mix", 0); setPB("Mix", 0);
+    sleep(1500);
+    const dryA = levelOf(dev.track, 1000), dryB = levelOf(bDev.track, 1000);
+    check(dryA > 0.05 && dryB > 0.05, `both tracks carry the clip dry (track meters A ${dryA.toFixed(3)}, B ${dryB.toFixed(3)})`);
+    const pkDryA = bufPeaks(scA, 600), pkDryB = bufPeaks(scB, 600);
+    check(Math.abs(pkDryA.db) < 2.5 && Math.abs(pkDryB.db) < 2.5, `Mix 0 on both: out = in (A ${pkDryA.db.toFixed(1)} dB, B ${pkDryB.db.toFixed(1)} dB)`);
+
+    // different glitches: A = loud drive (no spectral code), B = Width / Gain with a synced LFO (no spectral code either)
+    A.debug("test_fill"); B.debug("test_move");
+    sleep(2500);
+    const rA0 = A.report(), rB0 = B.report();
+    check(rA0.tiles.join() !== rB0.tiles.join(), `different glitches: A tiles ${rA0.tiles.join(",")} vs B tiles ${rB0.tiles.join(",")}`);
+    check(rB0.stages.spec === "none" && !B.trace().split("\n").some((l) => /stage-lazy spec/.test(l)), `B has no spectral code yet (A\'s spec stage is "${rA0.stages.spec}": the checks above loaded it there)`);
+    check(rA0.stages.drvA === "on" && rB0.stages.drvA !== "on" && rB0.stages.wid === "on", `stages follow each instance's own glitch (A drvA ${rA0.stages.drvA}, B drvA ${rB0.stages.drvA} / wid ${rB0.stages.wid})`);
+
+    // hot-load the spectral stage in B while watching A: A's stages, counter, trace and level must not notice
+    const aStagesBefore = JSON.stringify(rA0.stages);
+    setPB("Mix", 100); setP("Mix", 100);
+    sleep(800);
+    const pkA0 = bufPeaks(scA, 700);
+    A.clearTrace(); B.clearTrace();
+    const frames = [];
+    const tH = Date.now();
+    B.debug("test_p4", "spec");
+    let bSpec = "none", aMin = Infinity, aMax = 0;
+    while (Date.now() - tH < 14000) {
+        const ca = evalLom(`var v = new Buffer(${JSON.stringify(scA)}).peek(1, 0, 1); return typeof v === "number" ? v : v[0];`);
+        frames.push([Date.now() - tH, ca]);
+        const o = bufPeaks(scA, 120); aMin = Math.min(aMin, o.out); aMax = Math.max(aMax, o.out);
+        bSpec = B.report().stages.spec;
+        if (bSpec === "on" && Date.now() - tH > 3500) break;
+    }
+    check(bSpec === "on", `B hot-loaded its spectral stage (${Date.now() - tH} ms)`);
+    let worstGap = 0;
+    for (let i = 1; i < frames.length; i++) worstGap = Math.max(worstGap, frames[i][0] - frames[i - 1][0]);
+    check(frames.length > 5 && frames.every((f, i) => i === 0 || f[1] !== frames[i - 1][1]), `A's telemetry frame counter kept advancing during B's load (${frames[0][1]} -> ${frames[frames.length - 1][1]}, ${frames.length} reads)`);
+    const rA1 = A.report();
+    check(JSON.stringify(rA1.stages) === aStagesBefore, `A's stages are unchanged by B's hot load (spec ${rA1.stages.spec} before and after)`);
+    check(!A.trace().split("\n").some((l) => /stage-load|stage-lazy|stage-run|stage-on/.test(l)), "A's trace has no stage load events while B loaded");
+    check(B.trace().split("\n").some((l) => /stage-lazy spec/.test(l)), "B's trace shows the spectral stage loading");
+    check(aMin > pkA0.out * 0.5 && aMax < pkA0.out * 2 + 0.01, `A's output level stayed put while B loaded (${pkA0.out.toFixed(3)}; window ${aMin.toFixed(3)}..${aMax.toFixed(3)})`);
+    check(rA1.tiles.join() === rA0.tiles.join(), "A's glitch (tiles) is unchanged");
+    const aS = evalLom(`return new Buffer(${JSON.stringify(scA)}).peek(1, 0, ${GSC.END});`);
+    const bS = evalLom(`return new Buffer(${JSON.stringify(scB)}).peek(1, 0, ${GSC.END});`);
+    check(bS[GSC.SPEC_RUN] === 1 && bS[GSC.SPEC_FRAMES] > 20 && aS[GSC.SPEC_RUN] === 0, `telemetry differs: B's STFT runs (frames ${bS[GSC.SPEC_FRAMES]}), A's does not (run ${aS[GSC.SPEC_RUN]})`);
+    check(Math.abs(aS[GSC.OUT_PEAK] - bS[GSC.OUT_PEAK]) > 1e-4 || aS.some((v, i) => v !== bS[i]), "the two scope buffers hold different data");
+
+    // each track's output reflects only its own glitch: Mix 0 on one gives that track's dry level while the other stays wet
+    sleep(800);
+    setP("Mix", 0); setPB("Mix", 100);
+    sleep(1200);
+    const a0 = bufPeaks(scA, 800), b100 = bufPeaks(scB, 800);
+    const mA = levelOf(dev.track, 900), mB = levelOf(bDev.track, 900);
+    console.log(`  A Mix 0: ${a0.db.toFixed(1)} dB vs dry, meter ${mA.toFixed(3)} (dry ${dryA.toFixed(3)}); B Mix 100: ${b100.db.toFixed(1)} dB vs dry, meter ${mB.toFixed(3)} (dry ${dryB.toFixed(3)})`);
+    check(Math.abs(a0.db) < 2.5, `A at Mix 0 is its dry level (${a0.db.toFixed(1)} dB) while B is wet`);
+    check(Math.abs(b100.db) > 1.5 || Math.abs(mB / dryB - 1) > 0.2, `B stays wet while A is dry (${b100.db.toFixed(1)} dB; track meter ${mB.toFixed(3)} vs dry ${dryB.toFixed(3)})`);
+    check(Math.abs(mA / dryA - 1) < 0.25, `A's track meter is its dry level (${mA.toFixed(3)} vs ${dryA.toFixed(3)})`);
+    setP("Mix", 100); setPB("Mix", 0);
+    sleep(1200);
+    const a100 = bufPeaks(scA, 800), b0 = bufPeaks(scB, 800);
+    const mA2 = levelOf(dev.track, 900), mB2 = levelOf(bDev.track, 900);
+    console.log(`  A Mix 100: ${a100.db.toFixed(1)} dB, meter ${mA2.toFixed(3)}; B Mix 0: ${b0.db.toFixed(1)} dB, meter ${mB2.toFixed(3)}`);
+    check(Math.abs(b0.db) < 2.5 && Math.abs(mB2 / dryB - 1) < 0.25, `B at Mix 0 is its dry level (${b0.db.toFixed(1)} dB) while A is wet`);
+    check(Math.abs(a100.db) > 1.5 || Math.abs(mA2 / dryA - 1) > 0.2, `A stays wet while B is dry (${a100.db.toFixed(1)} dB)`);
+    setPB("Mix", 100);
+    evalLom(`new LiveAPI("live_set tracks ${bDev.track} clip_slots 0").call("stop"); return 1;`);
+}
 
 // leave the clip stopped
 evalLom(`new LiveAPI("live_set tracks ${dev.track} clip_slots 0").call("stop"); return 1;`);

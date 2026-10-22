@@ -5,7 +5,7 @@
 #
 #   scripts/vm_glitch.sh sync     rsync the repo to ~/Software/ableton-glitch in the VM (GLITCH_VM_DIR overrides)
 #   scripts/vm_glitch.sh audio    sync, then scripts/run_glitch_audio_tests.py in the VM (standalone Max harness, no Live lock)
-#   scripts/vm_glitch.sh live     sync, rebuild in the VM, write glitch_test.als with VM paths (scripts/make_glitch_set.py),
+#   scripts/vm_glitch.sh live     sync, rebuild in the VM, write glitch_test.als (TWO tracks, one Glitch each: instance isolation) with VM paths (scripts/make_glitch_set.py),
 #                                 (re)start Live in the VM on it, clear crash recovery, wait for the MCP bridge
 #   scripts/vm_glitch.sh test     make a 1.5 s test WAV in the VM, then run scripts/test_glitch_live.js on the host through an
 #                                 ssh tunnel (local 19880 -> VM 9877)

@@ -34,7 +34,7 @@
 //   (discrete: mode / division / pattern). A param spec carries: kind, min, max, def, unit, rand [lo0,hi0,lo1,hi1] (the
 //   range rolled by Randomize at Chaos 0 and Chaos 1), calm / wild value lists for "disc", choices (names), group.
 //
-// ENGINE BUFFER `buffer~ #0-glitchslots` (GL_SLOTS_BUF_SAMPS = 10752 floats, bound in gen as `slots #0-glitchslots`):
+// ENGINE BUFFER `buffer~ ---glitchslots` (GL_SLOTS_BUF_SAMPS = 10752 floats, bound in gen as `slots ---glitchslots`):
 //   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 885 -> 0..7079)
 //   [WOFF = 8*NP .. +8)         8 weights used in modes Working / Morph (any non-negative numbers, gen normalizes by
 //                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (7080..7087)
@@ -72,7 +72,7 @@
 //   disc: value of the highest-weight slot where the group is active (ties: lowest slot index)
 //   "active" = the group's amount (its wet) > GL_ACTIVE_EPS in that slot. Slots with weight <= 1e-9 are skipped.
 //
-// ENGINE TELEMETRY `buffer~ #0-glitchscope` (GL_SCOPE_SAMPS = 512 floats, bound in gen as `scope #0-glitchscope`): see GL_SCOPE.
+// ENGINE TELEMETRY `buffer~ ---glitchscope` (GL_SCOPE_SAMPS = 512 floats, bound in gen as `scope ---glitchscope`): see GL_SCOPE.
 //   Offsets are computed (ACTIVITY / LEVEL / MOVE_* hold one float per chain position). Movement telemetry (every tick, per chain
 //   position): MOVE_ON 1 while that instance's movement runs, MOVE_OFS the offset it adds to its target (depth * source, in fractions of
 //   the target's range), MOVE_POS the target's normalized position after the movement, MOVE_PH the source phase (LFO: position in the
@@ -716,7 +716,7 @@ function glitchMeta() {
     return m;
 }
 
-// Telemetry buffer layout (floats in buffer~ #0-glitchscope). Written by gen; the UI only reads. Offsets are computed in
+// Telemetry buffer layout (floats in buffer~ ---glitchscope). Written by gen; the UI only reads. Offsets are computed in
 // order: single floats, then blocks (ACTIVITY and LEVEL have GL_NINST floats, one per chain position).
 var GL_SCOPE = (function () {
     var o = {};
@@ -1543,7 +1543,7 @@ function engineWeights(state) {
 }
 var glPackVer = 0;
 function engineMode(state) { return state.audition === "seq" ? 2 : (state.audition === "morph" ? 1 : 0); }
-/** The whole engine buffer as one flat array (poke it into buffer~ #0-glitchslots at index 0). */
+/** The whole engine buffer as one flat array (poke it into buffer~ ---glitchslots at index 0). */
 function packEngineBuffer(state) {
     var L = glitchLayout();
     var vecs = engineVectors(state);

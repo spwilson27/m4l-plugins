@@ -22,11 +22,11 @@ by moving its selector~ while its Param `go` is 0, then `go 1` ramps its wets in
 bpm, ppq and playing.
 
 Engine contract:
-  buffer~ #0-glitchslots @samps 9472  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
+  buffer~ ---glitchslots @samps 9472  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
                                       sequencer block at seqOffset (mode header, pack version, 16 steps) + the layout constants block (meta, defaults,
                                       wet indices, minimums, maximums; see src/glitch_config.js).
-  buffer~ #0-glitchscope @samps 640   gen -> UI telemetry (layout GL_SCOPE in src/glitch_config.js).
-  buffer~ #0-glitchctl @samps 40960   head -> module stages: a ring of 256 control ticks, each the 160 smoothed module params (glitchCtlLayout()).
+  buffer~ ---glitchscope @samps 640   gen -> UI telemetry (layout GL_SCOPE in src/glitch_config.js).
+  buffer~ ---glitchctl @samps 40960   head -> module stages: a ring of 256 control ticks, each the 160 smoothed module params (glitchCtlLayout()).
   loadbang sends the buffer bindings through the hubs (head: slots, scope, ctl; module stages: scope, ctl; tail: scope) and to the v8ui (`setbuffer ...`).
   plugsync~ feeds the gen Params `bpm`, `ppq` and `playing` (outlet 0, the transport state: the sequencer clock holds while 0). Mix -> Param `wet` (0..1), Output -> Param `outdb` (dB).
   The v8ui keeps the whole state in the blob parameter GlitchStateData ([version, json]).
@@ -193,7 +193,7 @@ def ui_boxes(layout, width, stages_js, preview):
         newobj("obj-prep-setwidth", "prepend setwidth", 380, 560, 102),
         newobj("obj-thisdevice", "live.thisdevice", 380, 590, 90, numoutlets=3, outlettype=["bang", "int", "int"]),
         message("obj-msg-ready", "device_ready", 380, 620, 82),
-        newobj("obj-debug-recv", "receive #0-glitchdebug", 560, 520, 150, numinlets=0),
+        newobj("obj-debug-recv", "receive ---glitchdebug", 560, 520, 150, numinlets=0),
     ]
     lines += [
         line("obj-viz", 0, "obj-route-viz"),
@@ -245,14 +245,14 @@ def engine_boxes(layout):
         newobj("obj-gen-in-head", "gate 1 1", 240, 300, 60, numinlets=2, numoutlets=1, varname="gl_genhead"),
         newobj("obj-gen-in-mod", "gate 1 1", 320, 300, 60, numinlets=2, numoutlets=1, varname="gl_genmod"),
         newobj("obj-gen-tail-in", "gate 1 1", 400, 300, 60, numinlets=2, numoutlets=1, varname="gl_gentail"),
-        newobj("obj-slots-buf", f"buffer~ #0-glitchslots @samps {layout['slotsBufSamps']}", 560, 250, 260, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-scope-buf", f"buffer~ #0-glitchscope @samps {layout['scopeSamps']}", 560, 275, 260, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-ctl-buf", f"buffer~ #0-glitchctl @samps {ctl_samps}", 560, 300, 260, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-slots-buf", f"buffer~ ---glitchslots @samps {layout['slotsBufSamps']}", 560, 250, 260, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-scope-buf", f"buffer~ ---glitchscope @samps {layout['scopeSamps']}", 560, 275, 260, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-ctl-buf", f"buffer~ ---glitchctl @samps {ctl_samps}", 560, 300, 260, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 560, 330, 60, outlettype=["bang"]),
-        message("obj-msg-ui-buf", "setbuffer #0-glitchslots #0-glitchscope", 560, 355, 260),
-        message("obj-msg-bind-head", "slots #0-glitchslots, scope #0-glitchscope, ctl #0-glitchctl", 560, 380, 330),
-        message("obj-msg-bind-mod", "scope #0-glitchscope, ctl #0-glitchctl", 560, 405, 330),
-        message("obj-msg-bind-tail", "scope #0-glitchscope", 560, 430, 330),
+        message("obj-msg-ui-buf", "setbuffer ---glitchslots ---glitchscope ---glitchdebug", 560, 355, 260),
+        message("obj-msg-bind-head", "slots ---glitchslots, scope ---glitchscope, ctl ---glitchctl", 560, 380, 330),
+        message("obj-msg-bind-mod", "scope ---glitchscope, ctl ---glitchctl", 560, 405, 330),
+        message("obj-msg-bind-tail", "scope ---glitchscope", 560, 430, 330),
         newobj("obj-sync", "plugsync~", 740, 40, 80, numoutlets=9, outlettype=["int", "int", "int", "float", "list", "float", "float", "int", "int"]),
         newobj("obj-bpm-chg", "change 0.", 740, 70, 60, numoutlets=3, outlettype=["", "int", "int"]),
         newobj("obj-bpm-hold", "f", 740, 95, 30, numinlets=2, outlettype=["float"]),

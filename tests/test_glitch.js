@@ -2417,7 +2417,7 @@ const center = (r) => [r.x + r.w / 2, r.y + r.h / 2];
 
 ok("v8ui: Randomize, tiles, the editor section grows the device", () => {
     const u = makeUi();
-    u.run("setbuffer('#0-glitchslots', '#0-glitchscope'); device_ready()");
+    u.run("setbuffer('---glitchslots', '---glitchscope'); device_ready()");
     assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 462]);
     const A = G.glitchFaceLayout({}).action;
     const [dx, dy] = center(A.dice);
@@ -2499,7 +2499,7 @@ ok("v8ui: the morph pad, Mode and automation of Morph X / Y", () => {
     assert.deepStrictEqual(u.run("gState.xy"), [0.5, 0.5]);
     // automation / LOM: Working -> Morph flips by itself and the engine weights follow
     const u2 = makeUi();
-    u2.run("device_ready(); setbuffer('#0-glitchslots', '#0-glitchscope'); test_fill();");
+    u2.run("device_ready(); setbuffer('---glitchslots', '---glitchscope'); test_fill();");
     assert.strictEqual(u2.run("gState.audition"), "working");
     u2.run("set_morphx(0); set_morphy(0)");
     assert.strictEqual(u2.run("gState.audition"), "morph");
@@ -2615,7 +2615,7 @@ ok("v8ui: slots save / recall / clear / drag to a corner, Options toggles", () =
 const clickAt = (u, x, y, shift, opt) => u.run(`onclick(${x}, ${y}, 1, 0, ${shift ? 1 : 0}, 0, ${opt ? 1 : 0}); ondrag(${x}, ${y}, 0, 0, 0)`);
 const clickR = (u, r, shift, opt) => clickAt(u, center(r)[0], center(r)[1], shift, opt);
 // three filled slots: 0 = drive, 1 = filter, 2 = delay
-const SEQ_SETUP = "setbuffer('#0-glitchslots', '#0-glitchscope'); device_ready(); test_fill();" +
+const SEQ_SETUP = "setbuffer('---glitchslots', '---glitchscope'); device_ready(); test_fill();" +
     "var d2 = defaultGlitch(); glitchSetValue(d2, 'dly', 'wet', 0.8); gState.working = d2; saveToSlot(gState, 2); gState.working = defaultGlitch(); gUndo = [];";
 function seqHeaderOf(u) { const b = u.pokes[u.pokes.length - 1]; return b.slice(L.seqOffset, L.seqOffset + 5); }
 
@@ -2703,7 +2703,7 @@ ok("v8ui: SEQ section: toggle, width follows, steps cycle hold -> filled slots -
 
 ok("v8ui: SEQ with no filled slot: the step click explains instead of changing anything", () => {
     const u = makeUi();
-    u.run("setbuffer('#0-glitchslots', '#0-glitchscope'); device_ready(); test_section('seq', 1);");
+    u.run("setbuffer('---glitchslots', '---glitchscope'); device_ready(); test_section('seq', 1);");
     const Q = G.glitchFaceLayout({ seq: 1 }).seq;
     const undo0 = u.run("gUndo.length");
     clickR(u, Q.steps[0]);
@@ -3052,9 +3052,9 @@ if (fs.existsSync(devicePath)) {
         assert.deepStrictEqual(into("obj-gen-in-head", 1).sort(), ["obj-bpm-prep", "obj-msg-bind-head", "obj-play-prep", "obj-ppq-prep"]);
         assert.deepStrictEqual(into("obj-gen-in-mod", 1).sort(), ["obj-bpm-prep", "obj-msg-bind-mod"], "groups have bpm and the bindings only");
         assert.deepStrictEqual(into("obj-gen-tail-in", 1).sort(), ["obj-msg-bind-tail", "obj-prep-mix", "obj-prep-out"], "Mix / Output are Params of the tail only");
-        assert.strictEqual(byId["obj-msg-bind-head"].text, "slots #0-glitchslots, scope #0-glitchscope, ctl #0-glitchctl");
-        assert.strictEqual(byId["obj-msg-bind-mod"].text, "scope #0-glitchscope, ctl #0-glitchctl");
-        assert.strictEqual(byId["obj-msg-bind-tail"].text, "scope #0-glitchscope");
+        assert.strictEqual(byId["obj-msg-bind-head"].text, "slots ---glitchslots, scope ---glitchscope, ctl ---glitchctl");
+        assert.strictEqual(byId["obj-msg-bind-mod"].text, "scope ---glitchscope, ctl ---glitchctl");
+        assert.strictEqual(byId["obj-msg-bind-tail"].text, "scope ---glitchscope");
         // the bypass chain is pre-wired as if no group existed: plugin~ -> selector~ per group (input 1) -> ... -> delay~ 1023 -> selector~ (spectral stand-in)
         let prevL = "obj-plugin";
         for (const g of GROUPS) {
@@ -3129,11 +3129,33 @@ if (fs.existsSync(devicePath)) {
             if (b.box.maxclass === "panel") { assert.strictEqual(b.box.background, 1); seenBg = true; } else assert.ok(!seenBg, "panels are last");
         }
         const texts = p.boxes.map((b) => b.box.text || "");
-        assert.ok(texts.includes("buffer~ #0-glitchslots @samps " + G.GL_SLOTS_BUF_SAMPS));
-        assert.ok(texts.includes("buffer~ #0-glitchscope @samps " + G.GL_SCOPE_SAMPS));
-        assert.ok(texts.includes("buffer~ #0-glitchctl @samps " + G.glitchCtlLayout().samps));
-        assert.ok(texts.includes("setbuffer #0-glitchslots #0-glitchscope"));
-        for (const t of texts) if (/^buffer~ /.test(t)) assert.ok(t.startsWith("buffer~ #0-"), t);
+        assert.ok(texts.includes("buffer~ ---glitchslots @samps " + G.GL_SLOTS_BUF_SAMPS));
+        assert.ok(texts.includes("buffer~ ---glitchscope @samps " + G.GL_SCOPE_SAMPS));
+        assert.ok(texts.includes("buffer~ ---glitchctl @samps " + G.glitchCtlLayout().samps));
+        assert.ok(texts.includes("setbuffer ---glitchslots ---glitchscope ---glitchdebug"));
+        for (const t of texts) if (/^buffer~ /.test(t)) assert.ok(t.startsWith("buffer~ ---"), t);
+        // INSTANCE ISOLATION: Live expands `---` per device instance but NOT `#0` in a top-level patcher, so every per-instance buffer / send /
+        // receive / value name in the device (patcher boxes, message boxes, the embedded v8ui script, the generated stage shells) must use `---`.
+        {
+            let named = 0;
+            for (const t of texts) {
+                assert.ok(!/#0(?![0-9])/.test(t), `box text must not use a literal #0: ${t}`);
+                const mm = /^(buffer~|send|s|receive|r|send~|receive~|value|v|pv|forward|coll|table|dict)\s+(\S+)/.exec(t);
+                if (mm) { named++; assert.ok(/^---glitch[a-z]+$/.test(mm[2]) || /^---/.test(mm[2]), `per-instance name must start with ---: ${t}`); }
+            }
+            assert.ok(named >= 4, "slots / scope / ctl buffers and the debug receive are named");
+            assert.ok(texts.includes("receive ---glitchdebug"), "test hook receive is per instance");
+            for (const b of p.boxes) for (const k of ["text", "name", "bufname"]) if (typeof b.box[k] === "string") assert.ok(!/#0(?![0-9])/.test(b.box[k]), `${b.box.id}.${k}`);
+            // message boxes that carry names: every glitch* name in them is a --- name
+            for (const t of texts) for (const mt of t.matchAll(/(\S*)glitch(slots|scope|ctl|debug)\b/g)) assert.ok(mt[1] === "---", `unprefixed engine name in "${t}"`);
+            // the v8ui script and the stage shells (their Buffer("...") names are external names bound by message, never the per-instance ones)
+            assert.ok(!/#0-/.test(script.replace(/\/\/[^\n]*/g, "")), "no #0- in the v8ui script code");
+            assert.ok(/function setbuffer\(slotsName, scopeName, debugName\)/.test(script), "the script gets its names from the patcher");
+            for (const st of stages) assert.ok(!/#0/.test(st.text), `${st.id}: no #0 in the stage .gendsp`);
+            const shells = /var GEN_SHELLS = (\{[\s\S]*?\});\n/.exec(script);
+            if (shells) assert.ok(!/#0/.test(shells[1]), "no #0 in the shells");
+            for (const mt of script.matchAll(/new Buffer\(([^)]*)\)/g)) assert.ok(!/["']#0|["']---/.test(mt[1]), `v8ui Buffer names come from setbuffer, not literals: ${mt[0]}`);
+        }
         // the script's own gen-binding strings are the same names
         assert.ok(script.includes('"obj-gen-"') && script.includes('"gl_bpL_"') && script.includes('setattr("gen"') && script.includes('"dsp_on"'), "the script hot-loads the code into the saved shells and switches the static selectors");
         const loaderSrc = script.slice(script.indexOf("// Deferred, STAGED, LAZY DSP"), script.indexOf("// telemetry (buffer"));
