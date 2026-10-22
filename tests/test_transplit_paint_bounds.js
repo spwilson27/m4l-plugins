@@ -13,7 +13,8 @@ const { makeRecorder, loadFace, checkRecording, grid } = require("./paint_bounds
 const SRC = path.join(__dirname, "..", "src");
 const read = (f) => fs.readFileSync(path.join(SRC, f), "utf8").trimEnd();
 // same order as scripts/build_transplit.py
-const code = [read("transplit_config.js"), read("spectral_link.js"), read("spectral_theme.js"), fs.readFileSync(path.join(SRC, "transplit_ui.js"), "utf8")].join("\n\n");
+const header = 'var GEN_DSP_TEXT = "";\nvar GEN_DSP_HASH = "test";\nvar SS_PREFIX = "transplit";\n';
+const code = [header, read("transplit_config.js"), read("spectral_link.js"), read("spectral_theme.js"), read("spectral_dsp.js"), fs.readFileSync(path.join(SRC, "transplit_ui.js"), "utf8")].join("\n\n");
 
 const W = 280, H = 141;
 const rec = makeRecorder(W, H);
@@ -53,6 +54,27 @@ function fillTelemetry(kind) {
 
 let n = 0;
 const failures = [];
+// the DSP pill (deferred gen~): loading, ready, failed with short and very long reasons, over every telemetry kind
+for (const st of [{ ready: 0, error: "" }, { ready: 1, error: "" }, { ready: 0, error: "not running" }, { ready: 0, error: "cannot write /tmp/transplit_core_0123456789ab.gendsp (disk full)" }]) {
+    for (const tk of ["mid", "nan"]) {
+        sb.ssDsp.ready = st.ready;
+        sb.ssDsp.error = st.error;
+        sb.tsVals.dispost = 1; sb.tsVals.disstyle = 0; sb.tsDrag = null; sb.tsSel = 1;
+        sb.tsInfo = { instanceId: "t", isInRack: true, chainIndex: 0, chainCount: 2, peers: 2, linked: true, autoChannel: 0 };
+        for (let c = 0; c < sb.TS_NCOLS; c++) { const v = tk === "nan" ? NaN : 0.5; sb.tsPre[c] = v; sb.tsTr[c] = v; sb.tsTone[c] = v; sb.tsFrac[c] = v; }
+        const label = `dsp pill ${JSON.stringify(st)} ${tk}`;
+        rec.begin(label);
+        sb.paint();
+        rec.end();
+        textOverlaps(rec.shapes, label, rec.bad);
+        const v = checkRecording(rec, { regions });
+        if (v.length) failures.push(...v);
+        rec.bad.length = 0;
+        n++;
+    }
+}
+sb.ssDsp.ready = 1;
+sb.ssDsp.error = "";
 const tele = ["nan", "huge", "neg", "inf", "one", "mid"];
 for (const tk of tele) {
     for (const g of grid({

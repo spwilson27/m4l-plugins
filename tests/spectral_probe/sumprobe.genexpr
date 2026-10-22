@@ -1,0 +1,37 @@
+// Spectral Sum Probe: passes audio through and records the last 131072 stereo samples of its input into `cap` (a ring). The recording stops when
+// `frz` is 1, or when the probe's own sample counter reaches `stopat` (>= 0): probes on the same track that start together have equal counters,
+// so two probes with the same `stopat` freeze at the SAME absolute sample and their rings are index-aligned. Setting frz 0 and stopat -1 resumes.
+// info[0] = next write index, info[1] = samples recorded, info[2] = the counter (mod 2^22) of the next sample, info[3] = frozen flag.
+// Used in pairs around a rack (one before it = the dry input, one after it = the rack sum) by scripts/test_spectral_sum_live.js.
+Buffer cap("sspcap");
+Buffer info("sspinfo");
+Param frz(0);
+Param stopat(-1);
+History pos(0);
+History moving(0);
+History cnt(0);
+History held(0);
+
+hit = (stopat >= 0 && cnt == stopat) ? 1 : 0;
+if (frz > 0.5 || hit > 0.5) {
+	held = 1;
+}
+if (frz < 0.5 && stopat < 0) {
+	held = 0;
+}
+if (held < 0.5) {
+	poke(cap, in1, pos, 0);
+	poke(cap, in2, pos, 1);
+	pos = pos + 1;
+	if (pos >= 131072) {
+		pos = 0;
+	}
+	moving = moving + 1;
+}
+cnt = cnt + 1 >= 4194304 ? 0 : cnt + 1;
+poke(info, pos, 0);
+poke(info, moving, 1);
+poke(info, cnt, 2);
+poke(info, held, 3);
+out1 = in1;
+out2 = in2;

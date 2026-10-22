@@ -21,6 +21,14 @@ The widget id is always `obj-ctrl-<key>`.
                                         set_<key> -> face (see build_transplit.py for the full wiring recipe)
 Rack presets (.adg) come from scripts/make_spectral_rack.py.
 
+Rack machinery (one analysis per rack, deferred gen~; AGENTS.md section 22, reference device: Transient Split):
+  sc.rack_subs(K, mask_data, mask_base, scope_base, zero_count)   placeholder values for src/spectral_split_rack_main.genexpr
+  sc.gen_code_rack(core_path, subs)      cepstrum_lib + spectral_split_lib + spectral_split_rack + the core with the template expanded
+  sc.expand_rack_core(core, template, subs)   the expansion itself (`//@SS_DECL`, `//@SS_MAIN`, `//@hook ctl|frame|tele`, @@KEY@@)
+  sc.gendsp_json(code) / sc.deferred_header(prefix, code)   .gendsp text, and the GEN_DSP_TEXT / GEN_DSP_HASH / SS_PREFIX prelude for the face script
+  sc.to_gen_hub(lines)                   retarget cords into the (not yet existing) gen's inlet 0 to the `gate 1 1` hub's data inlet
+  sc.rack_ring_samps(K), sc.RACK_LATENCY the ring buffer length and the constant latency (5120) of a rack device
+
 Ableton-native theme builders (no hard colours; see src/spectral_theme.js and the style guide). Every colour attribute is bound
 to a Live theme colour (`saved_attribute_attributes: {attr: {"expression": "themecolor.<name>"}}`) next to a static fallback taken
 from LIVE_THEME (Live 12 default dark, measured), so the device follows Live's theme and hue while node tests and
@@ -37,8 +45,10 @@ scripts/render_preview.py see the same colours:
   sc.PANELS_THEME(...)                          the [[scripting name, theme name], ...] list a face feeds to sptApplyPanelTheme
 """
 
+import hashlib
 import json
 import os
+import re
 import struct
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -219,6 +229,133 @@ def read(path):
 
 def gen_code(*paths):
     return "\n".join(read(p).rstrip() + "\n" for p in paths)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------
+# Rack machinery (one analysis per rack, leader / follower; src/spectral_split_rack*.genexpr, src/spectral_link.js, src/spectral_dsp.js)
+# ---------------------------------------------------------------------------------------------------------------------------------
+RACK_RING_SLOTS = 8192        # output ring length in slots (counters modulo 2^22; must be a power of two)
+RACK_HDR = 16                 # header floats at the start of the ring buffer
+RACK_LATENCY = 5120           # constant latency of a rack device: 4096 (largest STFT latency n - 1 + pad) + 1024 (host block margin)
+RACK_VERSION = 1
+
+
+def rack_subs(channels, mk_data, mk_base, scope_base, zero_count, latency=RACK_LATENCY):
+    """Placeholder values for src/spectral_split_rack_main.genexpr. channels = K output channels; the device keeps the final mask of channel c
+    in row mk_base + c of Data mk_data (c = 0..K-1) and the sum of all channels in row mk_base + K; scope_base = first scope slot of the 18
+    common scalars (frame counter, sample rate, N, awake, input peak, -, latency, output selection, ... alive counter at +17)."""
+    k = int(channels)
+    return {
+        "K": k, "ACCROWS": 2 * (k + 1), "STRIDE": 1 + 2 * (k + 1), "RS": RACK_RING_SLOTS, "HDR": RACK_HDR, "LAT": int(latency),
+        "LAT1": int(latency) + 1, "GAPHEAD": 129, "SERVEMAX": (1 << (k + 1)) - 1, "KSHARE": repr(1.0 / k), "MKD": mk_data, "MKB": int(mk_base),
+        "SCB": int(scope_base), "VERSION": RACK_VERSION, "ZEROCNT": int(zero_count),
+    }
+
+
+def rack_ring_samps(channels):
+    return RACK_HDR + RACK_RING_SLOTS * (1 + 2 * (int(channels) + 1))
+
+
+def expand_rack_core(core_text, template_text, subs):
+    """Expand a device core written for the rack machinery: `//@SS_DECL` / `//@SS_MAIN` receive the template's `decl` / `main` sections, the
+    core's `//@hook <name>` ... `//@endhook` blocks (ctl, frame, tele) replace the template's `//@hook <name>` marker lines (indentation of
+    the marker), and every @@KEY@@ is substituted from `subs`. The result is plain GenExpr for gen.codebox~."""
+    hooks, cur, kept = {}, None, []
+    for line in core_text.split("\n"):
+        m = re.match(r"\s*//@hook (\w+)\s*$", line)
+        if m:
+            cur = m.group(1)
+            hooks[cur] = []
+            continue
+        if re.match(r"\s*//@endhook\s*$", line):
+            cur = None
+            continue
+        if cur is not None:
+            if line.strip():
+                hooks[cur].append(line.strip())
+            continue
+        kept.append(line)
+    core = "\n".join(kept)
+    sections = {}
+    for m in re.finditer(r"^//@@SECTION (\w+)\n(.*?)(?=^//@@SECTION |\Z)", template_text, re.S | re.M):
+        sections[m.group(1)] = m.group(2).rstrip() + "\n"
+    main = sections["main"]
+
+    def put(m):
+        ind, name = m.group(1), m.group(2)
+        body = hooks.get(name)
+        if body is None:
+            raise SystemExit(f"core has no `//@hook {name}` block")
+        return "\n".join(ind + b for b in body)
+
+    main = re.sub(r"^([ \t]*)//@hook (\w+)[ \t]*$", put, main, flags=re.M)
+    if "//@SS_DECL" not in core or "//@SS_MAIN" not in core:
+        raise SystemExit("core needs //@SS_DECL and //@SS_MAIN markers")
+    core = core.replace("//@SS_DECL", sections["decl"].rstrip()).replace("//@SS_MAIN", main.rstrip())
+    for k, v in subs.items():
+        core = core.replace(f"@@{k}@@", str(v))
+    left = re.findall(r"@@\w+@@", core)
+    if left:
+        raise SystemExit(f"unexpanded placeholders: {sorted(set(left))}")
+    return core
+
+
+def gen_code_rack(core_path, subs, libs=()):
+    """cepstrum_lib + spectral_split_lib + spectral_split_rack (functions) + the expanded core. `libs` = extra gen sources between the shared
+    libraries and the core (a device's own helper functions)."""
+    src = os.path.join(ROOT_DIR, "src")
+    parts = [read(os.path.join(src, "cepstrum_lib.genexpr")), read(os.path.join(src, "spectral_split_lib.genexpr")),
+             read(os.path.join(src, "spectral_split_rack.genexpr"))] + [read(p) for p in libs]
+    core = expand_rack_core(read(core_path), read(os.path.join(src, "spectral_split_rack_main.genexpr")), subs)
+    return "\n".join(p.rstrip() + "\n" for p in parts + [core])
+
+
+def gendsp_json(gen_code):
+    """The gen patcher (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text (the deferred DSP writes it to a file and creates
+    `gen~ @gen <file>`; same as scripts/build_reverbplus.py and AGENTS.md 1d)."""
+    def b(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
+               "patching_rect": [float(x), float(y), 200.0, 22.0]}
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+    patch = {"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen",
+        "rect": [50.0, 50.0, 600.0, 450.0],
+        "boxes": [
+            b("obj-in1", "in 1", 20, 20, 0, 1), b("obj-in2", "in 2", 120, 20, 0, 1),
+            b("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+            b("obj-out1", "out 1", 20, 400, 1, 0), b("obj-out2", "out 2", 120, 400, 1, 0),
+        ],
+        "lines": [
+            {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+            {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+            {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+            {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+        ],
+    }}
+    return json.dumps(patch)
+
+
+def deferred_header(prefix, gen_code):
+    """JS prelude for the face script of a deferred-DSP device (src/spectral_dsp.js): the embedded .gendsp text, its hash and the device prefix."""
+    text = gendsp_json(gen_code)
+    h = hashlib.sha1(text.encode()).hexdigest()[:12]
+    return (f"var GEN_DSP_TEXT = {json.dumps(text)};\nvar GEN_DSP_HASH = \"{h}\";\nvar SS_PREFIX = {json.dumps(prefix)};\n", h)
+
+
+def to_gen_hub(lines, hub_id="obj-genin", gen_id="obj-gen"):
+    """Cords into the deferred gen's inlet 0 go into the hub's data (right) inlet instead (`gate 1 1`, AGENTS.md 1d)."""
+    for ln in lines:
+        pl = ln["patchline"]
+        if pl["destination"][0] == gen_id:
+            assert pl["destination"][1] == 0, "only gen inlet 0 takes messages"
+            pl["destination"] = [hub_id, 1]
+        assert pl["source"][0] != gen_id, "nothing reads the deferred gen's outlets but plugout~"
+    return lines
 
 
 def num_valueof(spec):

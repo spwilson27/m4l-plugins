@@ -6,6 +6,9 @@
 //   4 window flag (the stimulus' marker, aligned with channel 3): 1 = first 40 ms after a burst onset, 2 = a quiet gap
 //     (200..360 ms after an onset), 0 otherwise
 //   5 All (left, Output = sum of both masks)   6 Transients (right; the stimulus' right channel is half the left)
+//   7 Tones (left) of a SELF instance (role 0, computes alone): in rack cases the follower's Tones must equal it (delayed by the follower's input delay K)
+// probe args: "<stimulus> <K>" (K = delay in samples of the follower's input, default 0)
+// Inlet 0 also takes `setbuffer2 <name>`: the follower's telemetry buffer (rack scalars are read from both buffers).
 // Writes `key value` lines: sample counts, energies, fractions, the sum null, impulse positions, telemetry scalars.
 
 inlets = 1;
@@ -17,6 +20,9 @@ var armed = false;
 
 function resultpath(p) { resultPath = String(p); }
 function setbuffer(name) { scopeName = name ? String(name) : ""; }
+var scopeName2 = "";
+function setbuffer2(name) { scopeName2 = name ? String(name) : ""; }
+var inDelayK = (typeof jsarguments !== "undefined" && jsarguments.length > 2) ? parseInt(jsarguments[2], 10) || 0 : 0;
 
 function readChannel(buf, channel, n) {
     var out = [];
@@ -59,6 +65,7 @@ function analyze(durMs) {
     var F = readChannel(rec, 4, n);
     var A = readChannel(rec, 5, n);
     var TR = readChannel(rec, 6, n);
+    var S7 = readChannel(rec, 7, n);
 
     var nan = 0, nanC = [0, 0, 0, 0, 0, 0];
     var eT = 0, eQ = 0, eD = 0, eA = 0, eTR = 0, nullE = 0, nullD = 0, mixNullE = 0, mixRefE = 0;
@@ -97,6 +104,13 @@ function analyze(durMs) {
         }
     }
     var pt = peakIndex(T), pq = peakIndex(Q), pa = peakIndex(A), pd = peakIndex(D);
+    // follower Tones vs the SELF instance's Tones delayed by the follower's input delay
+    var qsErr = 0, qsRef = 0;
+    for (var m = inDelayK; m < n; m++) {
+        var dq = Q[m] - S7[m - inDelayK];
+        if (isFinite(dq)) { qsErr += dq * dq; qsRef += S7[m - inDelayK] * S7[m - inDelayK]; }
+    }
+    var peakS = peakIndex(S7).peak;
 
     // telemetry
     var waveMaxT = 0, waveMaxQ = 0, waveMaxPT = 0, waveMaxPQ = 0;
@@ -125,6 +139,15 @@ function analyze(durMs) {
         }
     }
 
+    function scalars(name, prefix) {
+        var out = "";
+        if (!name) return out;
+        var v = new Buffer(name).peek(1, 512, 20);
+        var keys = ["frame", "sr", "n", "awake", "level", "mean", "lat", "sel", "cmp", "fol", "aligned", "fb", "doff", "under", "lag", "serve", "role", "alive"];
+        for (var q = 0; q < keys.length; q++) out += prefix + keys[q] + " " + v[q] + "\n";
+        return out;
+    }
+    var rackKeys = scalars(scopeName, "t_") + scalars(scopeName2, "q_");
     var report = new File(resultPath, "write", "TEXT");
     report.writestring(
         "sr " + sr + "\n" +
@@ -161,7 +184,8 @@ function analyze(durMs) {
         "scopeTrMax " + trMax + "\n" +
         "scopeToneMax " + toneMax + "\n" +
         "scopeFracMax " + fracMax + "\n" +
-        "scopeTrMean " + trMean + "\n"
+        "scopeTrMean " + trMean + "\n" +
+        "qsErr " + qsErr + "\nqsRef " + qsRef + "\npeakS " + peakS + "\n" + rackKeys
     );
     report.close();
     outlet(0, "bang");

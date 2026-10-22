@@ -11,7 +11,7 @@ var TS_NCOLS = 128;          // display columns (log frequency)
 var TS_FMIN = 30.0;
 var TS_FMAX = 20000.0;
 var TS_MAX_TILT_DB = 12.0;
-var TS_LATENCY = 4096;
+var TS_LATENCY = 5120;       // 4096 (largest STFT latency, padded) + 1024 margin for the host block: the rack machinery reads the leader's data that late
 var TS_CH_NAMES = ["Transients", "Tones"];
 var TS_SIZES = [512, 1024, 2048, 4096];
 var TS_SIZE_ENUM = ["512", "1k", "2k", "4k"];
@@ -30,6 +30,18 @@ var TS_SC_LEVEL = TS_SC_FRAME + 4;     // input peak (decaying)
 var TS_SC_TRMEAN = TS_SC_FRAME + 5;    // energy-weighted mean transient mask
 var TS_SC_LATENCY = TS_SC_FRAME + 6;
 var TS_SC_SEL = TS_SC_FRAME + 7;       // output selection the gen is running (0 sum, 1, 2)
+// Rack machinery scalars (written by the template src/spectral_split_rack_main.genexpr every 1024 samples, by every instance)
+var TS_SC_CMP = TS_SC_FRAME + 8;       // 1 = this instance runs the STFT pipeline (leader or alone), 0 = it follows
+var TS_SC_FOL = TS_SC_FRAME + 9;       // 1 = following a leader
+var TS_SC_ALIGNED = TS_SC_FRAME + 10;  // 1 = the offset to the leader's sample counter is known (content aligned)
+var TS_SC_FB = TS_SC_FRAME + 11;       // fallback: 0 none, 1 the input differs from the leader's, 2 the leader's data stopped, 3 ring underrun
+var TS_SC_DOFF = TS_SC_FRAME + 12;     // counter offset to the leader (modulo 2^22)
+var TS_SC_UNDER = TS_SC_FRAME + 13;    // underrun counter
+var TS_SC_LAG = TS_SC_FRAME + 14;      // leader's newest fingerprint counter minus this instance's own counter (samples)
+var TS_SC_SERVE = TS_SC_FRAME + 15;    // channel mask this instance computes
+var TS_SC_ROLE = TS_SC_FRAME + 16;     // role the face asked for (0 self, 1 leader, 2 follower)
+var TS_SC_ALIVE = TS_SC_FRAME + 17;    // counter that moves every 1024 samples while the gen runs, also in silence (DSP ready detection)
+var TS_RACK_CHANNELS = 2;
 // Waveform ring: one entry per telemetry frame (frame f at slot f mod TS_WAVE_FRAMES), 4 floats per entry:
 // pre Transients rms, pre Tones rms (analysis masks), post Transients rms, post Tones rms (after Tilt / Blend), linear amplitude.
 var TS_WAVE_FRAMES = 64;
@@ -64,6 +76,11 @@ var TS_ENUMS = {
     tmode: ["Tilt Mode", "Tilt Mode", ["Standard", "Contour"], 0],
     size: ["Size", "Size", TS_SIZE_ENUM, 1],
     output: ["Output", "Output", TS_OUT_ENUM, 0]
+};
+// gen messages for the live.* parameters, key -> [message, scale] (size -> fftn = 512 * 2^index); the face re-sends them until the deferred gen runs
+var TS_GEN_PARAMS = {
+    bias: ["anbias", 0.01], tdecay: ["tdecay", 1], tsmooth: ["tsmooth", 1], tilt: ["tiltamt", 0.01], blend: ["blendamt", 0.01],
+    mix: ["mixamt", 0.01], ttype: ["ttype", 1], tmode: ["tmode", 1]
 };
 // keys shared between all instances in a rack (everything except Output and the display toggles)
 var TS_LINKED_KEYS = ["ttype", "bias", "tdecay", "tsmooth", "tilt", "tmode", "blend", "mix", "size"];
@@ -224,7 +241,7 @@ if (nodeModule && nodeModule.exports) {
         TS_SIZES: TS_SIZES, TS_PARAMS: TS_PARAMS, TS_ENUMS: TS_ENUMS, TS_LINKED_KEYS: TS_LINKED_KEYS,
         TS_SC_PRE: TS_SC_PRE, TS_SC_TR: TS_SC_TR, TS_SC_TONE: TS_SC_TONE, TS_SC_FRAC: TS_SC_FRAC,
         TS_SC_FRAME: TS_SC_FRAME, TS_SC_SR: TS_SC_SR, TS_SC_N: TS_SC_N, TS_SC_AWAKE: TS_SC_AWAKE,
-        TS_SC_LEVEL: TS_SC_LEVEL, TS_SC_TRMEAN: TS_SC_TRMEAN, TS_SC_LATENCY: TS_SC_LATENCY, TS_SC_SEL: TS_SC_SEL,
+        TS_SC_LEVEL: TS_SC_LEVEL, TS_SC_TRMEAN: TS_SC_TRMEAN, TS_SC_LATENCY: TS_SC_LATENCY, TS_SC_SEL: TS_SC_SEL, TS_SC_CMP: TS_SC_CMP, TS_SC_FOL: TS_SC_FOL, TS_SC_ALIGNED: TS_SC_ALIGNED, TS_SC_FB: TS_SC_FB, TS_SC_DOFF: TS_SC_DOFF, TS_SC_UNDER: TS_SC_UNDER, TS_SC_LAG: TS_SC_LAG, TS_SC_SERVE: TS_SC_SERVE, TS_SC_ROLE: TS_SC_ROLE, TS_SC_ALIVE: TS_SC_ALIVE, TS_RACK_CHANNELS: TS_RACK_CHANNELS, TS_GEN_PARAMS: TS_GEN_PARAMS,
         TS_SCOPE_SAMPS: TS_SCOPE_SAMPS, TS_MAX_TILT_DB: TS_MAX_TILT_DB,
         TS_ONSET_DB0: TS_ONSET_DB0, TS_ONSET_SPAN: TS_ONSET_SPAN, TS_BIAS_DB: TS_BIAS_DB,
         TS_HIST_RISE_S: TS_HIST_RISE_S, TS_HIST_FALL_S: TS_HIST_FALL_S,

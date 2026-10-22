@@ -1,0 +1,461 @@
+// spectral_split_rack_main.genexpr — template of the per-sample code of a Spectral Split device that shares ONE analysis per rack.
+// scripts/spectral_common.py (expand_rack_core) splices the two sections below into a device core at its `//@SS_DECL` and `//@SS_MAIN`
+// markers, substitutes the @@...@@ placeholders and moves the device's `//@hook <name>` blocks into the marked places.
+// Written for src/transplit_core.genexpr (the reference device); Loud / Harmonic / Freq Split adopt it with the same contract.
+//
+// WHY. A device sits first in EVERY chain of an Audio Effect Rack and all instances see the identical input. Before this, each ran the
+// whole analysis + STFT and kept one channel (K x the work), and each framed the signal at its own sample phase (instances started at
+// different times, or a linked Size change reaching the peers 80-160 ms apart, gave different frames, so the chains no longer summed to the
+// input). Measured in Live (VM, scripts/test_spectral_probe_live.js, AGENTS.md section 22): the chains of a rack are processed on DIFFERENT
+// THREADS in blocks of the host buffer (512 samples = 8 vectors of 64), in no fixed order, so one instance's data is visible to another only
+// after the block (the join) and reads inside the other's current block can be torn. The design therefore never relies on same-vector
+// visibility: it exchanges data with a lag larger than a block.
+//
+// ROLES (set by the face through the messages role / serve / epoch / ring / lead, see src/spectral_link.js):
+//   (role -1, the default) not told yet: the instance neither computes nor follows and outputs silence until the face sends its role (a deferred gen~
+//                   starts before its messages arrive; starting as SELF would frame the signal at a phase unrelated to the leader's and break the rack sum).
+//   SELF   (role 0) outside a rack: compute only the own output channel, exactly the pre-rack behaviour.
+//   LEAD   (role 1) the one instance of a rack group that computes: frames the signal, analyses it once, and for every served output
+//                   channel applies the channel's mask, inverse-transforms and overlap-adds. The outputs are written into the instance's own
+//                   output RING at INPUT time (field 1.. of the slot of the input sample's counter), next to the input fingerprint (field 0).
+//   FOLLOW (role 2) does not frame or analyse. It reads its channel from the leader's ring. All instances output the ring at INPUT time
+//                   index (counter - LATENCY), which is why LATENCY must exceed (the largest STFT latency n - 1) + (the host block): 5120 here.
+//                   If its leader data cannot be used (not aligned, leader gone, different input, ring underrun) it falls back to computing
+//                   its own channel (SELF behaviour) and keeps doing so until the face sends a new epoch.
+//   The leader writes the pure wet channel signals; Mix, the dry path, Output and the final gain are applied by every instance itself.
+//
+// SHARED SAMPLE CLOCK. Every instance counts its samples modulo 2^22. The offset D between the leader's counter and an instance's own counter is
+// found by CONTENT: both write a fingerprint of the (bit-identical) input into their ring, and the follower finds the leader sample index whose
+// fingerprint window equals its own (ss2_align), then re-verifies it at every vector (ss2_verify). No other clock exists inside a host that
+// processes the chains concurrently, and the same check detects a follower whose input differs from the leader's (a device placed after
+// another device): it then computes by itself. A late-started instance does not frame at all, so its hop phase cannot differ; a Size change
+// happens only in the leader (followers never use their own Size); an instance that restarts re-finds D and plays from the ring again.
+//
+// GAPS. When the leader's pipeline restarts (first start, Size change, becoming leader) the output between the last complete old output and the
+// first complete new one is invalid. The leader zeroes it, publishes its bounds (gapS, gapE) and every reader fades its output down before
+// gapS and up after gapE by the READ index (the reader is more than 1000 samples ahead of the leader's write, so it knows in time).
+//
+// RING LAYOUT (buffer ---ssring, one per instance, 16 + RS * STRIDE floats). Header: 0 next output index to write (wTau), 1 fingerprint count
+// (leader counter + 1 of the last completed vector), 2 gapS, 3 gapE, 4 computing flag, 5 served-channel mask, 6 n, 7 layout version, 8 LATENCY,
+// 9 ring age in samples (saturating). Slot i (counter mod RS): field 0 fingerprint, field 1 + 2c / 2 + 2c = output row c left / right
+// (c = 0..K-1 the channels, c = K the "All" mask row).
+//
+// DEVICE CONTRACT (what a core must add; transplit_core.genexpr is the example):
+//   * functions first (device analysis), then `//@SS_DECL`, then its own Data / Param / History declarations (Buffer scope, the per-bin
+//     state, its Params and History), then its control-refresh statements?  NO: control refresh is a hook, see below. Then `//@SS_MAIN`.
+//   * Buffer scope(...) with the device's telemetry (the template writes the common scalars at @@SCB@@ + 0..17); Data ms(2049, 2) Mid
+//     spectrum comes from the template; the device declares its mask Data (@@MKD@@) with the final masks of channel c in row @@MKB@@ + c
+//     (c = 0..K-1) and the sum of all channels in row @@MKB@@ + K.
+//   * `//@hook ctl` ... `//@endhook`: statements that copy Params into History every 32 samples (variables: n, sr, selH, mixH are set).
+//   * `//@hook frame` ... `//@endhook`: statements run once per hop after ss_mid(): compute the masks. Variables: ms, n, sr, sAge (0 = state just
+//     restarted, up to 3), the template advances sAge afterwards.
+//   * `//@hook tele` ... `//@endhook`: statements run on telemetry frames (about every 1024 samples, awake) of the computing instance after
+//     the masks exist: fill the device's columns of `scope`. (Followers' faces read the leader's scope.)
+//   * Mix: the device's Param is called mixamt. outsel is 0 = All, 1..K = channel.
+//
+// GenExpr: see the rules at the top of spectral_split_rack.genexpr.
+
+//@@SECTION decl
+Buffer ring("ssring");
+Buffer lead("sslead");
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data fy(4096, 2);
+Data ringL(4096);
+Data ringR(4096);
+Data accD(4096, @@ACCROWS@@);
+Data stt(8);
+Data ms(2049, 2);
+Data cols(512);
+Data aw(64);
+Data sFlag(8);
+Delay dryL(@@LAT1@@);
+Delay dryR(@@LAT1@@);
+
+Param fftn(1024);
+Param outsel(0);
+Param mixamt(1);
+Param role(-1);
+Param serve(0);
+Param epoch(0);
+
+History sCnt(0);
+History nCur(0);
+History sCtl(0);
+History sBoot(0);
+History selH(0);
+History roleH(-1);
+History serveH(0);
+History epH(0);
+History epSeen(-1);
+History mixH(1);
+History mixS(1);
+History mixInit(0);
+History sOwnH(1);
+History eserveH(1);
+History cmpH(0);
+History fbk(0);
+History als(0);
+History dOff(0);
+History noMatch(0);
+History staleN(0);
+History misN(0);
+History vecN(0);
+History underN(0);
+History lastFp(-1);
+History hLWt(0);
+History hLFp(0);
+History hLGs(0);
+History hLGe(0);
+History hLCm(0);
+History hLAg(0);
+History ringOk(0);
+History wTau(0);
+History gapS(0);
+History gapE(0);
+History muteLeft(0);
+History sAge(0);
+History quietCnt(0);
+History levelPk(0);
+History teleAcc(0);
+History frameNo(0);
+History sleepNote(0);
+History ringAge(0);
+History gRun(0);
+History alignRes(0);
+
+//@@SECTION main
+sr = max(samplerate, 1);
+
+// ---- sample counter (modulo 2^22), vector position ----
+sCc = sCnt;
+sCnt = sCc + 1 >= 4194304 ? 0 : sCc + 1;
+sVsz = vectorsize;
+sVp = sCc - sVsz * floor(sCc / sVsz);
+sVec = sVp < 0.5 ? 1 : 0;
+sVend = sVp > sVsz - 1.5 ? 1 : 0;
+ringAge = min(ringAge + 1, 4194304);
+
+// ---- Size (the leader's; a follower ignores it) ----
+nReq = cep_n(fftn);
+nOld = nCur;
+nChg = (nOld > 0.5 && nReq != nOld) ? 1 : 0;
+nCur = nReq;
+n = nReq;
+
+// ---- control values, refreshed every 32 samples (and at once when n changes) ----
+sCtl = sCtl + 1;
+if (sCtl >= 32 || nChg > 0.5 || sBoot < 0.5) {
+	sBoot = 1;
+	sCtl = 0;
+	selH = clip(floor(outsel + 0.5), 0, @@K@@);
+	roleH = clip(floor(role + 0.5), -1, 2);
+	serveH = clip(floor(serve + 0.5), 0, @@SERVEMAX@@);
+	epH = floor(epoch + 0.5);
+	mixH = clip(mixamt, 0, 1);
+	sOwnH = selH > 0.5 ? pow(2, selH - 1) : pow(2, @@K@@);
+	ownBit = floor(serveH / sOwnH);
+	ownBit = ownBit - 2 * floor(ownBit / 2);
+	eserveH = serveH > 0.5 ? (ownBit > 0.5 ? serveH : serveH + sOwnH) : sOwnH;
+	for (c = 0; c <= @@K@@; c += 1) {
+		fb2 = floor(eserveH / pow(2, c));
+		fb2 = fb2 - 2 * floor(fb2 / 2);
+		sFlag.poke(fb2, c);
+	}
+	//@hook ctl
+}
+
+// ---- roles: follow the leader's ring, or compute ----
+sEpNew = epH != epSeen ? 1 : 0;
+epSeen = epH;
+if (sEpNew > 0.5) {
+	fbk = 0;
+	als = 0;
+	noMatch = 0;
+	staleN = 0;
+	misN = 0;
+	underN = 0;
+}
+sWantF = roleH > 1.5 ? 1 : 0;
+sPend = roleH < -0.5 ? 1 : 0;
+sFol = (sWantF > 0.5 && fbk < 0.5) ? 1 : 0;
+sCmp = (sFol > 0.5 || sPend > 0.5) ? 0 : 1;
+sStart = (sCmp > 0.5 && cmpH < 0.5) ? 1 : 0;
+cmpH = sCmp;
+sRest = (sStart > 0.5 || (nChg > 0.5 && sCmp > 0.5)) ? 1 : 0;
+
+// ---- input level, silence sleep, fingerprint into the ring ----
+inAbs = max(abs(in1), abs(in2));
+quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
+levelPk = max(inAbs, levelPk * 0.9995);
+awake = quietCnt < n ? 1 : 0;
+sFp = in1 + 0.6180339887498949 * in2;
+sBase = ss2_slot(sCc, @@RS@@, @@STRIDE@@, @@HDR@@);
+poke(ring, sFp, sBase, 0);
+
+// ---- follower: leader header (once per vector), freshness, alignment, verification ----
+if (sFol > 0.5 && sVec > 0.5) {
+	hLWt = peek(lead, 0, 0);
+	hLFp = peek(lead, 1, 0);
+	hLGs = peek(lead, 2, 0);
+	hLGe = peek(lead, 3, 0);
+	hLCm = peek(lead, 4, 0);
+	hLAg = peek(lead, 9, 0);
+	vecN = vecN + 1;
+	if (hLFp != lastFp) {
+		lastFp = hLFp;
+		staleN = 0;
+	} else {
+		staleN = staleN + sVsz;
+	}
+	if (hLCm < 0.5 || staleN > 4096) {
+		als = 0;
+		if (staleN > 24000 || (hLCm < 0.5 && hLAg > 0.5 && staleN > 12000)) {
+			fbk = 2;
+		}
+	} else if (als < 0.5) {
+		if (hLAg > 2304 && ringAge > 2304) {
+			alignRes = ss2_align(ring, lead, aw, sCc, hLFp, @@RS@@, @@STRIDE@@, @@HDR@@, 64, 1500, 2048);
+			if (alignRes < 7999999) {
+				dOff = alignRes;
+				als = 1;
+				misN = 0;
+				noMatch = 0;
+			} else if (alignRes > 8999999) {
+				noMatch = noMatch + 1;
+				if (noMatch >= 160) {
+					fbk = 1;       // the input differs from the leader's (or is displaced by more than the search span)
+				}
+			}
+		}
+	} else {
+		alignRes = ss2_verify(ring, lead, sCc, dOff, @@RS@@, @@STRIDE@@, @@HDR@@, 4, 1100);
+		if (alignRes < -0.5) {
+			misN = misN + 1;
+			if (misN >= 2) {
+				als = 0;
+			}
+		} else if (alignRes > 0.5) {
+			misN = 0;
+		}
+	}
+}
+sUse = (sFol > 0.5 && als > 0.5) ? 1 : 0;
+
+// ---- computing instance: the STFT pipeline, all served channels, output ring writes ----
+sTele = 0;
+wNew = wTau;
+if (sCmp > 0.5) {
+	fft_init(tab);
+	stft_win(win, n);
+	if (sRest > 0.5) {
+		// a new pipeline: clear its state; the output ring gets a gap [gapS, gapE) that readers fade around
+		ss2_clear(accD, @@ACCROWS@@, 4096);
+		stt.poke(0, 2);
+		sAge = 0;
+		tau0 = sCc - (n - 1);
+		tau0 = tau0 - 4194304 * floor(tau0 / 4194304);
+		if (ringOk < 0.5) {
+			wTau = tau0;
+			wNew = tau0;
+			gapS = tau0;
+		} else {
+			wOldS = wTau;
+			dGap = ss2_wd(tau0, wOldS);
+			if (dGap > 0.5) {
+				ss2_zero(ring, wOldS, dGap, @@RS@@, @@STRIDE@@, @@HDR@@);
+				wTau = tau0;
+				wNew = tau0;
+			}
+			gapS = wOldS;
+		}
+		ringOk = 1;
+		gapE = sCc + @@GAPHEAD@@ >= 4194304 ? sCc + @@GAPHEAD@@ - 4194304 : sCc + @@GAPHEAD@@;
+		muteLeft = n + 128;
+	}
+	sRdy = ss_in(ringL, ringR, stt, in1, in2, n);
+	if (sRdy > 0.5) {
+		teleAcc = teleAcc + n * 0.25;
+	}
+	if (sRdy > 0.5 && teleAcc >= 1024) {
+		sTele = awake > 0.5 ? 1 : 0;
+		teleAcc = 0;
+	}
+	if (sRdy > 0.5 && awake < 0.5) {
+		sAge = 0;
+	}
+	if (sRdy > 0.5 && awake > 0.5) {
+		ss_frame(fx, ringL, ringR, stt, win, n);
+		fft_run(fx, tab, n, 0);
+		ss_mid(fx, ms, n);
+		//@hook frame
+		sAge = min(sAge + 1, 3);
+		for (c = 0; c <= @@K@@; c += 1) {
+			fl = sFlag.peek(c);
+			if (fl > 0.5) {
+				ss2_copy(fx, fy, n);
+				ss_apply(fy, @@MKD@@, @@MKB@@ + c, n);
+				fft_run(fy, tab, n, 1);
+				ss2_ola(accD, 2 * c, stt, fy, win, n);
+			}
+		}
+		if (sTele > 0.5) {
+			//@hook tele
+		}
+	}
+	// this sample's output (the pipeline emits the sample of input time sCc - (n - 1)); rows that are not served read as zeros
+	tauE = sCc - (n - 1);
+	tauE = tauE - 4194304 * floor(tauE / 4194304);
+	sWr = 0;
+	if (ringOk > 0.5) {
+		dW = ss2_wd(tauE, wTau);
+		sWr = dW > -0.5 ? 1 : 0;
+	}
+	sBase2 = ss2_slot(tauE, @@RS@@, @@STRIDE@@, @@HDR@@);
+	for (c = 0; c <= @@K@@; c += 1) {
+		eyl = ss2_out(accD, 2 * c, stt);
+		eyr = ss2_out(accD, 2 * c + 1, stt);
+		if (muteLeft > 0.5) {
+			eyl = 0;
+			eyr = 0;
+		}
+		if (sWr > 0.5) {
+			poke(ring, eyl, sBase2 + 1 + 2 * c, 0);
+			poke(ring, eyr, sBase2 + 2 + 2 * c, 0);
+		}
+	}
+	if (sWr > 0.5) {
+		wNew = wTau + 1 >= 4194304 ? 0 : wTau + 1;
+		wTau = wNew;
+	}
+	if (muteLeft > 0.5) {
+		muteLeft = muteLeft - 1;
+	}
+} else {
+	ringOk = 0;
+}
+
+// ---- header of this instance's ring (read by followers), once per vector, after the vector's data ----
+if (sVend > 0.5) {
+	fpHw = sCc + 1 >= 4194304 ? 0 : sCc + 1;
+	poke(ring, sCmp, 4, 0);
+	poke(ring, ringOk > 0.5 ? wNew : 0, 0, 0);
+	poke(ring, fpHw, 1, 0);
+	poke(ring, gapS, 2, 0);
+	poke(ring, gapE, 3, 0);
+	poke(ring, sCmp > 0.5 ? eserveH : 0, 5, 0);
+	poke(ring, n, 6, 0);
+	poke(ring, @@VERSION@@, 7, 0);
+	poke(ring, @@LAT@@, 8, 0);
+	poke(ring, ringAge, 9, 0);
+}
+
+// ---- reader: this instance's output channel from the own ring (computing) or the leader's ring (aligned follower) ----
+sDo = sUse > 0.5 ? dOff : 0;
+sTr = sCc + sDo - @@LAT@@;
+sTr = sTr - 4194304 * floor(sTr / 4194304);
+gS = sUse > 0.5 ? hLGs : gapS;
+gE = sUse > 0.5 ? hLGe : gapE;
+wT = sUse > 0.5 ? hLWt : wTau;
+dS = ss2_wd(gS, sTr);
+dE = ss2_wd(sTr, gE);
+dU = ss2_wd(wT, sTr);
+gG = 1;
+if (dS > 0.5) {
+	gG = min(1, dS / 256);
+} else if (dE < 0) {
+	gG = 0;
+} else {
+	gG = min(1, dE / 512);
+}
+sOkR = 0;
+if (sUse > 0.5) {
+	sOkR = (dU > 64 && dU < @@RS@@ - 64) ? 1 : 0;
+	if (sOkR < 0.5) {
+		underN = underN + 1;
+	} else {
+		underN = max(underN - 0.01, 0);
+	}
+	if (underN > 2000) {
+		fbk = 3;
+	}
+} else if (sCmp > 0.5 && ringOk > 0.5) {
+	sOkR = dU > 0 ? 1 : 0;
+}
+gRun = gRun + ((sOkR > 0.5 ? 1 : 0) - gRun) * 0.004;
+sBase3 = ss2_slot(sTr, @@RS@@, @@STRIDE@@, @@HDR@@);
+sKrow = (sUse < 0.5 && sFlag.peek(@@K@@) > 0.5 && selH < 0.5) ? 1 : 0;
+yl = 0;
+yr = 0;
+if (sOkR > 0.5) {
+	if (selH > 0.5) {
+		yl = ss2_rd(ring, lead, sUse, sBase3 + 1 + 2 * (selH - 1));
+		yr = ss2_rd(ring, lead, sUse, sBase3 + 2 + 2 * (selH - 1));
+	} else if (sKrow > 0.5) {
+		yl = ss2_rd(ring, lead, sUse, sBase3 + 1 + 2 * @@K@@);
+		yr = ss2_rd(ring, lead, sUse, sBase3 + 2 + 2 * @@K@@);
+	} else {
+		for (c = 0; c < @@K@@; c += 1) {
+			yl += ss2_rd(ring, lead, sUse, sBase3 + 1 + 2 * c);
+			yr += ss2_rd(ring, lead, sUse, sBase3 + 2 + 2 * c);
+		}
+	}
+}
+wetL = yl * gG * gRun;
+wetR = yr * gG * gRun;
+
+// ---- telemetry scalars: every 1024 samples for every instance (arrays come from the computing instance's hook) ----
+sT1k = (sCc - 1024 * floor(sCc / 1024)) < 0.5 ? 1 : 0;
+if (sTele > 0.5) {
+	frameNo = wrap(frameNo + 1, 0, 102400);
+	poke(scope, frameNo, @@SCB@@, 0);
+}
+if (sT1k > 0.5) {
+	sLag = ss2_wd(hLFp, sCc + dOff);
+	sLag = sUse > 0.5 ? sLag : 0;
+	if (sCmp < 0.5) {
+		frameNo = wrap(frameNo + 1, 0, 102400);
+		poke(scope, frameNo, @@SCB@@, 0);
+	}
+	poke(scope, sr, @@SCB@@ + 1, 0);
+	poke(scope, n, @@SCB@@ + 2, 0);
+	poke(scope, awake, @@SCB@@ + 3, 0);
+	poke(scope, levelPk, @@SCB@@ + 4, 0);
+	poke(scope, @@LAT@@, @@SCB@@ + 6, 0);
+	poke(scope, selH, @@SCB@@ + 7, 0);
+	poke(scope, sCmp, @@SCB@@ + 8, 0);
+	poke(scope, sFol, @@SCB@@ + 9, 0);
+	poke(scope, als, @@SCB@@ + 10, 0);
+	poke(scope, fbk, @@SCB@@ + 11, 0);
+	poke(scope, sUse > 0.5 ? dOff : 0, @@SCB@@ + 12, 0);
+	poke(scope, underN, @@SCB@@ + 13, 0);
+	poke(scope, sLag, @@SCB@@ + 14, 0);
+	poke(scope, eserveH, @@SCB@@ + 15, 0);
+	poke(scope, roleH, @@SCB@@ + 16, 0);
+	poke(scope, floor(sCc / 1024), @@SCB@@ + 17, 0);
+}
+if (awake < 0.5 && sleepNote < 0.5 && sCmp > 0.5) {
+	ss2_zeroscope(scope, @@ZEROCNT@@);
+	poke(scope, 0, @@SCB@@ + 3, 0);
+	poke(scope, 0, @@SCB@@ + 4, 0);
+	sleepNote = 1;
+}
+if (awake > 0.5) {
+	sleepNote = 0;
+}
+
+// ---- Mix: out = mix * wet + (1 - mix) * dry / K (K chains sum in a rack), dry delayed like the wet ----
+dryL.write(in1);
+dryR.write(in2);
+if (mixInit < 0.5) {
+	mixInit = 1;
+	mixS = mixH;
+}
+mixS = mixS + (mixH - mixS) * 0.002;
+kShare = selH > 0.5 ? @@KSHARE@@ : 1;
+ov1 = fixnan(fixdenorm(mixS * wetL + (1 - mixS) * kShare * dryL.read(@@LAT@@)));
+ov2 = fixnan(fixdenorm(mixS * wetR + (1 - mixS) * kShare * dryR.read(@@LAT@@)));
+// fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
+out1 = abs(ov1) < 1e-30 ? 0 : ov1;
+out2 = abs(ov2) < 1e-30 ? 0 : ov2;

@@ -10,10 +10,11 @@
 // The live.* objects stay outside the canvas (right column); canvas edits go out of outlet 0 into them.
 //
 // Messages in:  set_<key> <value> for ttype bias tdecay tsmooth tilt tmode blend mix size output dispost disstyle,
-//               setbuffer <name>, init_link (live.thisdevice), names / preview helpers.
+//               setnames <scope buffer> <ring buffer>, init_link (live.thisdevice), dsp_restart <chain> (test hook), names / preview helpers.
 // Outlets:      0 [key value]  edits made on the canvas -> route -> the live.* object (which then drives gen as usual)
 //               1 [key value]  values applied from a rack peer -> route -> `prepend set` into the live.* object + gen
-//               2 outsel <0|1|2>  resolved output selection for the gen (0 = all channels summed)
+//               2 gen messages -> the ss_genin hub (gate 1 1; the gen~ is created after load, src/spectral_dsp.js): outsel <0|1|2> (0 = all
+//                 channels summed), scope / ring / lead <buffer name>, role, serve, epoch (rack sharing, src/spectral_link.js), parameters (re-sent)
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -44,8 +45,10 @@ var tsFrac = [];
 var tsSono = [];          // rows of {lv: [...60], fr: [...60]}, newest last
 var tsWave = [];          // {pt, pq, ot, oq} linear rms per telemetry frame, newest last
 var tsScalars = { frame: 0, awake: 0, sr: 48000, n: 1024, level: 0, mean: 0 };
-var tsBufName = "";
+var tsNames = { scope: "", ring: "" };
+var tsBufName = "";            // the buffer the display is drawn from (the leader's scope while following)
 var tsBuf = null;
+var tsOwnBuf = null;
 var tsTask = null;
 var tsLastFrame = -1;
 var tsDrag = null;
@@ -100,6 +103,12 @@ function init_link() {
         kind: "transplit",
         keys: TS_LINKED_KEYS,
         channelCount: 2,
+        rack: {
+            channels: TS_RACK_CHANNELS,
+            ring: function () { return tsNames.ring; },
+            genState: function () { return { alive: tsGenValue(TS_SC_ALIVE), fb: Math.max(0, tsGenValue(TS_SC_FB)) }; },
+            send: function (name, value) { outlet(2, name, value); }
+        },
         getLocal: function (key) { return tsVals[key]; },
         apply: function (key, value) {
             tsVals[key] = value;
@@ -108,19 +117,69 @@ function init_link() {
         },
         onInfo: function (info) {
             tsInfo = info;
+            ssDspDry(!info.isInRack);
             tsEmitSel();
             mgraphics.redraw();
         }
     });
     tsLink.init();
     tsStartPolling();
+    ssDspSchedule(tsInfo.instanceId);
 }
 
-function setbuffer(name) {
-    splNoteScope(name);
-    tsBufName = name ? String(name) : "";
+function setnames(scopeName, ringName) {
+    tsNames.scope = scopeName ? String(scopeName) : "";
+    tsNames.ring = ringName ? String(ringName) : "";
+    splNoteScope(tsNames.scope);
     tsBuf = null;
+    tsOwnBuf = null;
     tsStartPolling();
+}
+
+// Kept for tools that only know the scope buffer.
+function setbuffer(name) {
+    setnames(name, tsNames.ring);
+}
+
+// ---------------------------------------------------------------- deferred DSP (src/spectral_dsp.js) and rack messages
+function tsGenValue(idx) {
+    if (!tsNames.scope) return -1;
+    try {
+        if (!tsOwnBuf) tsOwnBuf = new Buffer(tsNames.scope);
+        var v = tsOwnBuf.peek(1, idx, 1);
+        return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
+    } catch (err) {
+        tsOwnBuf = null;
+        return -1;
+    }
+}
+
+function ssGenAlive() {
+    return tsGenValue(TS_SC_ALIVE);
+}
+
+// Every gen-bound message from the values the face holds (a deferred gen~ drops messages until it runs).
+function ssDevResend() {
+    if (tsNames.scope) outlet(2, "scope", tsNames.scope);
+    if (tsNames.ring) outlet(2, "ring", tsNames.ring);
+    for (var key in TS_GEN_PARAMS) {
+        if (key in tsVals) outlet(2, TS_GEN_PARAMS[key][0], tsVals[key] * TS_GEN_PARAMS[key][1]);
+    }
+    outlet(2, "fftn", 512 * Math.pow(2, tsVals.size));
+    outlet(2, "outsel", tsSel);
+    if (tsLink && tsLink.rack) {
+        var m = tsLink.rack.messages();
+        for (var i = 0; i < m.length; i++) outlet(2, m[i][0], m[i][1]);
+    }
+}
+
+function ssDevChanged() {
+    mgraphics.redraw();
+}
+
+// Test hook (receive #0-sstest): restart the DSP of the instance in chain <c> (a late start: a new gen~ with a new sample counter).
+function dsp_restart(c) {
+    if (tsInfo.chainIndex === Number(c) || Number(c) < 0) ssDspRestart();
 }
 
 function tsStartPolling() {
@@ -135,15 +194,28 @@ function tsPushWave(pt, pq, ot, oq) {
     while (tsWave.length > TS_WAVE_VIEW) tsWave.shift();
 }
 
+function tsDispName() {
+    var lead = tsLink && tsLink.rack ? tsLink.rack.displayScope() : "";
+    return lead || tsNames.scope;
+}
+
 function tsPoll() {
-    if (!tsBufName) return;
+    var name = tsDispName();
+    if (!name) return;
     try {
-        if (!tsBuf) tsBuf = new Buffer(tsBufName);
+        if (!tsBuf || name !== tsBufName) {
+            tsBuf = new Buffer(name);
+            tsBufName = name;
+            tsLastFrame = -1;
+        }
+        // header first (frame counter, awake): the other 800 floats are only read when a new telemetry frame exists
+        var h = tsBuf.peek(1, TS_SC_FRAME, 4);
+        if (!h || h.length < 4) return;
+        var frame = h[0];
+        var aw = h[3];
+        if (frame === tsLastFrame && aw === tsScalars.awake) return;
         var d = tsBuf.peek(1, 0, TS_SCOPE_SAMPS);
         if (!d || d.length < TS_SC_WAVE + 4) return;
-        var frame = d[TS_SC_FRAME];
-        var aw = d[TS_SC_AWAKE];
-        if (frame === tsLastFrame && aw === tsScalars.awake) return;
         // new waveform ring entries since the last poll (the ring holds TS_WAVE_FRAMES frames)
         if (aw > 0.5) {
             var delta = tsLastFrame < 0 ? Math.min(frame, TS_WAVE_FRAMES) : ((frame - tsLastFrame + TS_FRAME_WRAP) % TS_FRAME_WRAP);
@@ -253,6 +325,8 @@ function paint() {
     if (tsVals.disstyle) tsPaintSono();
     else tsPaintWave();
     if (tsScalars.awake < 0.5) sptText("no signal", TS_PLOT.x + TS_PLOT.w * 0.5, mid - 4, sptColor("live_display_scale_text"), SPT_SIZE, 1);
+    var pill = ssDspPill();
+    if (pill) sptText(pill, TS_PLOT.x + 4, TS_PLOT.y + 11, sptColor(ssDsp.error ? "live_alert" : "live_control_selection"), SPT_SIZE_SMALL, 0);
 
     tsPaintSlider(TS_SLIDER_L, (tsVals.bias + 100) / 200, drag === "bias");
     tsPaintSlider(TS_SLIDER_R, tsVals.blend / 100, drag === "blend");
@@ -284,7 +358,7 @@ function paint() {
     sptLabelValue("Tilt", tsFormatPct(sptClamp(tsVals.tilt, -999, 999)), R.tilt.x, R.tilt.y + 11, 0, drag === "tilt", 36);
     sptLabelValue("Decay", tsFormatBlocks(sptClamp(tsVals.tdecay, 0, 999)), R.decay.x, R.decay.y + 11, 0, drag === "tdecay", 40);
     sptLabelValue("Smoothing", tsFormatBlocks(sptClamp(tsVals.tsmooth, 0, 999)), R.smooth.x, R.smooth.y + 11, 0, drag === "tsmooth", 56);
-    sptText("Latency 4096 smp", 0, 138, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+    sptText("Latency " + TS_LATENCY + " smp", 0, 138, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
 }
 
 function tsPaintIcon(r, kind, on) {
@@ -486,6 +560,7 @@ function onidleout() {}
 
 // ---------------------------------------------------------------- preview (scripts/render_preview.py calls preview() then paint())
 function preview() {
+    ssDsp.ready = 1;
     tsInfo = { instanceId: "p", isInRack: true, chainIndex: 0, chainCount: 2, peers: 2, linked: true, autoChannel: 0 };
     // demo state = the live.* parameter defaults (Tilt 0, Decay 8, Smoothing 1.5, Bias 0, Blend 50)
     tsVals.dispost = 1;

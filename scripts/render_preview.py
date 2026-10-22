@@ -161,6 +161,7 @@ def render_v8ui(cmds, w, h):
     cur_color = (255, 255, 255, 255)
     line_w = max(1, int(round(1.0 * SCALE)))
     font_size = 9.0
+    font_bold = True   # "Ableton Sans ..." faces (Live-native look, src/spectral_theme.js) draw regular weight
     cur_pt = (0.0, 0.0)
     subpaths = []
     cur_path = []
@@ -198,6 +199,8 @@ def render_v8ui(cmds, w, h):
             cur_color = rgba_tuple([cmd["r"], cmd["g"], cmd["b"], cmd["a"]])
         elif op == "line_width":
             line_w = max(1, int(round(cmd["w"] * SCALE)))
+        elif op == "font_face":
+            font_bold = not str(cmd.get("face", "")).startswith("Ableton Sans")
         elif op == "font_size":
             font_size = cmd["size"]
         elif op == "rect":
@@ -239,7 +242,7 @@ def render_v8ui(cmds, w, h):
         elif op == "show_text":
             overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
             d = ImageDraw.Draw(overlay)
-            fnt = get_font(font_size * SCALE, bold=True)
+            fnt = get_font(font_size * SCALE, bold=font_bold)
             angle = math.degrees(math.atan2(mtx[1], mtx[0]))
             if abs(angle) < 0.01:
                 d.text((cur_pt[0], cur_pt[1] - font_size * SCALE * 0.85), str(cmd["text"]), font=fnt, fill=cur_color)
@@ -302,6 +305,13 @@ def render_v8ui(cmds, w, h):
     return canvas
 
 
+def is_themed(box):
+    """True for a live.* / comment box with colour attributes bound to Live theme colours (saved_attribute_attributes expression
+    `themecolor.*`): Live draws these in its regular-weight UI font."""
+    saa = box.get("saved_attribute_attributes", {})
+    return any(isinstance(v, dict) and "expression" in v for v in saa.values())
+
+
 def is_fully_transparent(box):
     """A live.* widget whose every colour attribute has alpha 0 draws nothing in Live, so the preview skips it."""
     if not str(box.get("maxclass", "")).startswith("live.") or box.get("maxclass") == "live.comment":
@@ -355,6 +365,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
     for w in widgets:
         mc = w.get("maxclass")
         rx, ry, rw, rh = [v * SCALE for v in w["presentation_rect"]]
+        W_BOLD = not is_themed(w)   # theme-bound widgets (spectral_common.theme) use Live's regular-weight font
 
         if mc == "v8ui":
             cmds = capture_v8ui_commands(w["textfile"]["text"], w["presentation_rect"][2], w["presentation_rect"][3])
@@ -414,7 +425,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 (cx + 2.6 * SCALE, cy - 1.4 * SCALE),
                 (cx, cy + 2.0 * SCALE),
             ], fill=tc)
-            fnt = get_font(8.5 * SCALE, bold=True)
+            fnt = get_font(8.5 * SCALE, bold=W_BOLD)
             bbox = draw.textbbox((0, 0), val_str, font=fnt)
             tw = bbox[2] - bbox[0]
             draw.text((rx + (rw - 10 * SCALE - tw) * 0.5 + 1 * SCALE, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
@@ -446,7 +457,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     val_str = f"{init_val:.1f} %"
                 else:
                     val_str = f"{int(init_val)}"
-                fnt = get_font(8.5 * SCALE, bold=True)
+                fnt = get_font(8.5 * SCALE, bold=W_BOLD)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
                 draw.text((rx + (rw - 7 * SCALE - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
@@ -498,7 +509,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     val_str = f"{int(round(init_val))}"
                 else:
                     val_str = f"{init_val:.1f}"
-                fnt = get_font(float(w.get("fontsize", 8.5)) * SCALE, bold=True)
+                fnt = get_font(float(w.get("fontsize", 8.5)) * SCALE, bold=W_BOLD)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
                 text_c = (242, 246, 252, 255) if (ustyle == 9 and enums) else tc
@@ -525,7 +536,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     val_str = f"{init_val:.1f} ms" if init_val < 10 else f"{int(round(init_val))} ms"
                 else:
                     val_str = f"{int(round(init_val))}"
-                fnt = get_font(9.0 * SCALE, bold=True)
+                fnt = get_font(9.0 * SCALE, bold=W_BOLD)
                 bbox = draw.textbbox((0, 0), val_str, font=fnt)
                 tw = bbox[2] - bbox[0]
                 tx = (rx + 2 * SCALE) if bg[3] == 0 else (rx + (rw - tw) * 0.5)
@@ -554,7 +565,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 tc = rgba_tuple(w.get("activetextcolor", [0.576, 0.631, 0.678, 1.0]))
                 draw.ellipse([rx, ry, rx + rw, ry + rh], fill=bg, outline=bd, width=max(1, int(1.1 * SCALE)))
                 txt = w.get("text", "R")
-                fnt = get_font(8.0 * SCALE, bold=True)
+                fnt = get_font(8.0 * SCALE, bold=W_BOLD)
                 bbox = draw.textbbox((0, 0), txt, font=fnt)
                 tw = bbox[2] - bbox[0]
                 draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), txt, font=fnt, fill=tc)
@@ -573,7 +584,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 tc = rgba_tuple(w.get("activetextoncolor", [0.08, 0.1, 0.12, 1.0]) if init_on else w.get("textcolor", [0.75, 0.78, 0.82, 1.0]))
                 draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
                 txt = w.get("texton" if init_on else "text", "Map")
-                fnt = get_font(9.0 * SCALE, bold=True)
+                fnt = get_font(9.0 * SCALE, bold=W_BOLD)
                 bbox = draw.textbbox((0, 0), txt, font=fnt)
                 tw = bbox[2] - bbox[0]
                 draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), txt, font=fnt, fill=tc)
@@ -589,7 +600,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 # Horizontal tab row (e.g. [ Loop ] [ 1-Shot ] [ Manual ])
                 gap_x = w.get("spacing_x", 3.0) * SCALE
                 cell_w = (rw - gap_x * (len(enums) - 1)) / max(1, len(enums))
-                fnt = get_font(8.5 * SCALE, bold=True)
+                fnt = get_font(8.5 * SCALE, bold=W_BOLD)
                 for idx, label in enumerate(enums):
                     cx0 = rx + idx * (cell_w + gap_x)
                     is_on = (idx == init_idx)
@@ -651,7 +662,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 gap_y = w.get("spacing_y", 2.5) * SCALE if (use_svg or num_cols > 1) else 0
                 cell_w = (rw - gap_x * (num_cols - 1)) / max(1, num_cols)
                 cell_h = (rh - gap_y * (num_rows - 1)) / max(1, num_rows)
-                fnt = get_font((8.0 if use_svg else 8.5) * SCALE, bold=True)
+                fnt = get_font((8.0 if use_svg else 8.5) * SCALE, bold=W_BOLD)
                 for idx, label in enumerate(enums):
                     r_idx = idx // num_cols if num_cols > 1 else idx
                     c_idx = idx % num_cols if num_cols > 1 else 0
@@ -698,7 +709,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                 val_str = f"{int(init_val)} %"
             else:
                 val_str = f"{int(init_val)}"
-            fnt = get_font(9.5 * SCALE, bold=True)
+            fnt = get_font(9.5 * SCALE, bold=W_BOLD)
             # Label at top (Live hides it with showname 0)
             if w.get("showname", 1):
                 bbox = draw.textbbox((0, 0), sname, font=fnt)
@@ -728,7 +739,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             hi_val = float(vof.get("parameter_mmax", 18.0))
             norm = max(0.0, min(1.0, (init_val - lo_val) / max(1e-6, hi_val - lo_val)))
             scol = rgba_tuple(w.get("slidercolor", [0.28, 0.84, 0.96, 1.0]))
-            fnt = get_font(8.5 * SCALE, bold=True)
+            fnt = get_font(8.5 * SCALE, bold=W_BOLD)
             bbox = draw.textbbox((0, 0), sname, font=fnt)
             draw.text((rx + (rw - (bbox[2] - bbox[0])) * 0.5, ry), sname, font=fnt, fill=(224, 230, 236, 255))
             tx = rx + rw * 0.5
@@ -751,7 +762,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             bd = rgba_tuple(w.get("bordercolor", [0.42, 0.48, 0.56, 1.0]))
             tc = rgba_tuple(w.get("textcolor", [0.96, 0.66, 0.25, 1.0]))
             draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
-            fnt = get_font(8.5 * SCALE, bold=True)
+            fnt = get_font(8.5 * SCALE, bold=W_BOLD)
             draw.text((rx + 4 * SCALE, ry + 1.5 * SCALE), label, font=fnt, fill=tc)
             # Dropdown caret triangle on the right
             cx_t = rx + rw - 6.5 * SCALE
@@ -768,7 +779,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             tc = rgba_tuple(w.get("textcolor", [0.68, 0.73, 0.80, 1.0]))
             draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=3 * SCALE, fill=bg, outline=bd, width=1)
             txt = w.get("legend", "Drop Sample Folder")
-            fnt = get_font(8.5 * SCALE, bold=True)
+            fnt = get_font(8.5 * SCALE, bold=W_BOLD)
             bbox = draw.textbbox((0, 0), txt, font=fnt)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]

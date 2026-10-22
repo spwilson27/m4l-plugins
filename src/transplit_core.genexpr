@@ -1,9 +1,10 @@
 // Transient Split core (appended after src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr at build time, so every
 // library function sits ahead of everything here). Reference of the mask maths: src/transplit_config.js (tsMasks).
 //
-// Two channels, 1 Transients and 2 Tones. Every instance in a rack chain runs the identical analysis on the identical
-// input with identical (linked) parameters and outputs only its own channel; the per-bin masks of the two channels sum to
-// exactly 1 (Tilt 0, Blend 0), so the chains sum back to the input delayed by 4096 samples.
+// Two channels, 1 Transients and 2 Tones. ONE instance per rack (the leader, see src/spectral_split_rack_main.genexpr) runs the analysis on the
+// input, applies the masks of both channels and publishes the channel signals in a ring; the other instances read their channel from it. A lone
+// instance (outside a rack) computes only its own channel. The per-bin masks of the two channels sum to exactly 1 (Tilt 0, Blend 50 %), so the
+// chains sum back to the input delayed by the constant latency (5120 samples: 4096 + the host block, see the template).
 //
 // Per hop (n / 4) the Mid spectrum amplitude A[k] (rms over +-2 bins) gives, per bin, an evidence ev in 0..1 that the bin
 // belongs to a transient:
@@ -19,17 +20,18 @@
 //   Tilt    mask(Transients) *= g, mask(Tones) /= g, g = 10^(12 dB * Tilt * w(f) / 20); w = -1 (100 Hz) .. +1 (10 kHz) for
 //           Standard, -1 around 1 kHz and +1 at the edges for Contour (raises the highs and lows together).
 //   Blend   b = 0..1 (50 % neutral): mask(Transients) *= min(1, 2 b), mask(Tones) *= min(1, 2 (1 - b)) (explicit gains).
-//   Mix     out = mix * wet + (1 - mix) * dry / K, K = 2 for a single-channel output, 1 for All (dry delayed by 4096 too).
+//   Mix     out = mix * wet + (1 - mix) * dry / K, K = 2 for a single-channel output, 1 for All (dry delayed by the latency 5120 too).
 //   Output  outsel 0 = sum of both masks (All; identity at neutral), 1 = Transients, 2 = Tones.
 //
 // Data tsd(2049, 11) per-bin channels: 0 A, 1 H, 2 A_prev, 3 phi(t-1), 4 phi(t-2), 5 phase deviation, 6 tx, 7 qx (tone),
 //   8 final Transients mask, 9 final Tones mask, 10 their sum. tw(2049, 2): tilt weights (Standard, Contour).
 //
-// Telemetry buffer (bound on loadbang via `scope ---transplitscope`), TS_SCOPE_SAMPS floats:
+// Telemetry buffer (bound by the face's `scope <name>` message, resent until the deferred gen~ runs), TS_SCOPE_SAMPS floats:
 //   0..127 input (Mid) level per log column, 128..255 Transients post, 256..383 Tones post (0..1 over -100..0 dB),
-//   384..511 transient fraction of the column's amplitude (0..1), 512 frame counter, 513 samplerate, 514 N, 515 awake,
-//   516 input peak, 517 mean Transients mask (amplitude weighted), 518 latency, 519 output selection,
-//   530.. waveform ring: frame f at slot f mod 64, 4 floats (pre Transients rms, pre Tones rms, post Transients rms, post Tones rms).
+//   384..511 transient fraction of the column's amplitude (0..1)  [these arrays and 517, 530.. are written by the computing instance only],
+//   512 frame counter, 513 samplerate, 514 N, 515 awake, 516 input peak, 517 mean Transients mask (amplitude weighted), 518 latency,
+//   519 output selection, 520..529 rack scalars (template: computing, following, aligned, fallback, counter offset, underruns, lag, serve mask,
+//   role, alive counter), 530.. waveform ring: frame f at slot f mod 64, 4 floats (pre Transients rms, pre Tones rms, post Transients rms, post Tones rms).
 //
 // GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements. No identifier e<digit>.
 
@@ -168,34 +170,13 @@ ts_wave(ms, tsd, scope, n, slot) {
 	return half;
 }
 
-// Zero the telemetry columns (device went to sleep).
-ts_zero(scope, cnt) {
-	for (c = 0; c < cnt; c += 1) {
-		poke(scope, 0, c, 0);
-	}
-	return cnt;
-}
+//@SS_DECL
 
 Buffer scope("transplitscope");
 
-Data tab(4096, 3);
-Data win(4096);
-Data fx(4096, 2);
-Data ringL(4096);
-Data ringR(4096);
-Data accL(4096);
-Data accR(4096);
-Data stt(8);
-Data ms(2049, 2);
 Data tsd(2049, 11);
 Data tw(2049, 2);
-Data cols(512);
-Delay padL(4096);
-Delay padR(4096);
-Delay dryL(4097);
-Delay dryR(4097);
 
-Param fftn(1024);
 Param ttype(0);
 Param anbias(0);
 Param tdecay(8);
@@ -203,163 +184,45 @@ Param tsmooth(1.5);
 Param tiltamt(0);
 Param tmode(0);
 Param blendamt(0.5);
-Param mixamt(1);
-Param outsel(0);
 
-History nCur(0);
-History muteCnt(0);
-History gFade(1);
-History ctlCnt(0);
-History nCtl(0);
-History quietCnt(0);
-History levelPk(0);
-History teleAcc(0);
-History frameNo(0);
-History sleepNote(0);
-History age(0);
 History twN(0);
 History twSr(0);
 History bsH(0);
 History tlH(0);
 History blH(0.5);
-History mixH(1);
-History mixS(1);
-History mixInit(0);
 History tdH(8);
 History tsH(1.5);
 History ttH(0);
 History tmH(0);
-History selH(0);
 
-sr = max(samplerate, 1);
-fft_init(tab);
-
-// --- Size: a change restarts the pipeline; the output stays muted until the new frames have filled the 4096 pad ---
-nReq = cep_n(fftn);
-if (nCur < 1) {
-	nCur = nReq;
-}
-if (nReq != nCur) {
-	nCur = nReq;
-	muteCnt = 4096 + nReq + 128;
-	age = 0;
-}
-n = nCur;
-stft_win(win, n);
-
-// --- Control values, refreshed every 32 samples (and at once when N changes) ---
-ctlCnt = ctlCnt + 1;
-if (ctlCnt >= 32 || n != nCtl) {
-	ctlCnt = 0;
-	nCtl = n;
-	bsH = clip(anbias, -1, 1);
-	tlH = clip(tiltamt, -1, 1);
-	blH = clip(blendamt, 0, 1);
-	mixH = clip(mixamt, 0, 1);
-	tdH = clip(tdecay, 1, 125);
-	tsH = clip(tsmooth, 1, 64);
-	ttH = ttype > 0.5 ? 1 : 0;
-	tmH = tmode > 0.5 ? 1 : 0;
-	selH = clip(round(outsel), 0, 2);
-}
-if (twN != n || twSr != sr) {
+//@hook ctl
+bsH = clip(anbias, -1, 1);
+tlH = clip(tiltamt, -1, 1);
+blH = clip(blendamt, 0, 1);
+tdH = clip(tdecay, 1, 125);
+tsH = clip(tsmooth, 1, 64);
+ttH = ttype > 0.5 ? 1 : 0;
+tmH = tmode > 0.5 ? 1 : 0;
+if ((cmpH > 0.5 || nChg > 0.5) && (twN != n || twSr != sr)) {
 	twN = n;
 	twSr = sr;
 	ts_tilttab(tw, n, sr);
 }
+//@endhook
 
-// --- Input level and silence sleep ---
-inAbs = max(abs(in1), abs(in2));
-quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
-levelPk = max(inAbs, levelPk * 0.9995);
-awake = quietCnt < n ? 1 : 0;
+//@hook frame
+ts_masks(ms, tsd, tw, n, sr, ttH, bsH, tdH, tsH, tlH, tmH, blH, sAge);
+//@endhook
 
-// --- Frame scheduling ---
-rdy = ss_in(ringL, ringR, stt, in1, in2, n);
-if (rdy > 0.5) {
-	teleAcc = teleAcc + n * 0.25;
-}
-teleNow = 0;
-if (rdy > 0.5 && teleAcc >= 1024) {
-	teleNow = awake > 0.5 ? 1 : 0;
-	teleAcc = 0;
-}
-if (rdy > 0.5 && awake < 0.5) {
-	age = 0;
-}
-if (rdy > 0.5 && awake > 0.5) {
-	ss_frame(fx, ringL, ringR, stt, win, n);
-	fft_run(fx, tab, n, 0);
-	ss_mid(fx, ms, n);
-	ts_masks(ms, tsd, tw, n, sr, ttH, bsH, tdH, tsH, tlH, tmH, blH, age);
-	age = min(age + 1, 3);
-	if (selH > 1.5) {
-		ss_apply(fx, tsd, 9, n);
-	} else if (selH > 0.5) {
-		ss_apply(fx, tsd, 8, n);
-	} else {
-		ss_apply(fx, tsd, 10, n);
-	}
-	if (teleNow > 0.5) {
-		ss_cols(ms, 0, tsd, -1, cols, 0, n, sr, 128, 30, 20000);
-		ss_cols(ms, 0, tsd, 8, cols, 1, n, sr, 128, 30, 20000);
-		ss_cols(ms, 0, tsd, 9, cols, 2, n, sr, 128, 30, 20000);
-		ss_tele(cols, scope, 128, 3, 0);
-		ts_frac(cols, scope, 128, 384);
-		trm = ts_mean(ms, tsd, n);
-		poke(scope, trm, 517, 0);
-		ts_wave(ms, tsd, scope, n, frameNo % 64);
-	}
-	fft_run(fx, tab, n, 1);
-	ss_ola(accL, accR, stt, fx, win, n);
-}
-yL = ss_out(accL, stt, n, 3);
-yR = ss_out(accR, stt, n, 4);
+//@hook tele
+ss_cols(ms, 0, tsd, -1, cols, 0, n, sr, 128, 30, 20000);
+ss_cols(ms, 0, tsd, 8, cols, 1, n, sr, 128, 30, 20000);
+ss_cols(ms, 0, tsd, 9, cols, 2, n, sr, 128, 30, 20000);
+ss_tele(cols, scope, 128, 3, 0);
+ts_frac(cols, scope, 128, 384);
+trm = ts_mean(ms, tsd, n);
+poke(scope, trm, 517, 0);
+ts_wave(ms, tsd, scope, n, frameNo % 64);
+//@endhook
 
-// --- Telemetry scalars ---
-if (teleNow > 0.5) {
-	frameNo = wrap(frameNo + 1, 0, 102400);
-	poke(scope, frameNo, 512, 0);
-	poke(scope, sr, 513, 0);
-	poke(scope, n, 514, 0);
-	poke(scope, 1, 515, 0);
-	poke(scope, levelPk, 516, 0);
-	poke(scope, 4096, 518, 0);
-	poke(scope, selH, 519, 0);
-}
-if (awake < 0.5 && sleepNote < 0.5) {
-	ts_zero(scope, 512);
-	poke(scope, 0, 515, 0);
-	poke(scope, 0, 516, 0);
-	sleepNote = 1;
-}
-if (awake > 0.5) {
-	sleepNote = 0;
-}
-
-// --- Constant 4096 latency, mute while the pipeline refills after a Size change ---
-padL.write(yL);
-padR.write(yR);
-wetL = padL.read(4096 - (n - 1));
-wetR = padR.read(4096 - (n - 1));
-if (muteCnt > 0) {
-	muteCnt = muteCnt - 1;
-	gFade = 0;
-} else {
-	gFade = min(gFade + 1 / 512, 1);
-}
-// --- Mix: out = mix * wet + (1 - mix) * dry / K. K = 2 chains when the instance outputs one channel of a rack (the rack
-// sums the K chains, so the dry share adds up to 1 x dry); K = 1 for Output All / outside a rack. Dry shares the 4096 delay.
-dryL.write(in1);
-dryR.write(in2);
-if (mixInit < 0.5) {
-	mixInit = 1;
-	mixS = mixH;
-}
-mixS = mixS + (mixH - mixS) * 0.002;
-kShare = selH > 0.5 ? 0.5 : 1;
-ov1 = fixnan(fixdenorm(mixS * wetL * gFade + (1 - mixS) * kShare * dryL.read(4096)));
-ov2 = fixnan(fixdenorm(mixS * wetR * gFade + (1 - mixS) * kShare * dryR.read(4096)));
-// fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
-out1 = abs(ov1) < 1e-30 ? 0 : ov1;
-out2 = abs(ov2) < 1e-30 ? 0 : ov2;
+//@SS_MAIN

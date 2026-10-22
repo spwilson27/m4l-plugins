@@ -1,1 +1,4 @@
-// Transient Split face: no build-injected globals (transplit_config.js, spectral_link.js and transplit_ui.js are concatenated as they are).
+// Transient Split face: globals that scripts/build_transplit.py injects in front of the concatenated scripts (deferred DSP, src/spectral_dsp.js).
+declare var GEN_DSP_TEXT: string;
+declare var GEN_DSP_HASH: string;
+declare var SS_PREFIX: string;

@@ -20,6 +20,7 @@
 //                                                (`prepend set`) and into the gen, and update the face's own state. Must
 //                                                NOT call link.notify (the link also guards against that).
 //         onInfo:      function (info)           optional; called when chain index / count / link state changed
+//         scopeName:   string (tests only: overrides the module-level scope name the face registers with splNoteScope)
 //         pollMs: 80, heartbeatMs: 500, topoMs: 500, staleMs: 3000    optional timing
 //       }
 //       env (tests only) = {LiveAPI, Global, Task, now}; defaults to the Max globals.
@@ -33,6 +34,24 @@
 //   link.autoChannel()          0-based output channel for Output = Auto: the chain index clamped to channelCount - 1;
 //                               -1 outside a rack (then Auto means "all channels summed" = pass-through).
 //   link.dispose()              stop the Task and leave the group.
+//
+// RACK SHARING (optional, cfg.rack; Transient Split and every device that adopts src/spectral_split_rack_main.genexpr). The instances of a rack
+// group share ONE analysis: one of them is the LEADER (role 1: computes every channel, publishes the outputs in its ring), the others FOLLOW
+// (role 2: read their channel from the leader's ring). The link elects the leader on the bus and tells this instance's gen what to do with the
+// messages `lead <leader's ring buffer name>`, `epoch <n>`, `serve <channel mask>`, `role <0|1|2>` (sent through cfg.rack.send; resent every 2 s and
+// on demand through link.rack.messages(), because a deferred gen~ drops messages until it runs).
+//   cfg.rack = {
+//     channels:   K                                  output channels of the device (serve mask = 2^K - 1)
+//     ring:       function () -> string              this instance's ring buffer name ("" until known)
+//     genState:   function () -> {alive, fb}         alive = the gen's alive counter (any number that moves while it runs, -1 = unknown), fb = its
+//                                                    fallback flag (0 none, 1 the input differs from the leader's, 2 the leader died, 3 ring underrun)
+//     send:       function (name, value)             emit one gen-bound message
+//   }
+//   Election (all instances evaluate it on the bus, in one JS thread, so it is race free): the group record keeps `leader` (an instance id) and
+//   `epoch`; a leader stays until its peer record is stale, its gen is not running, it reports a fallback, or a follower reports it dead (fb 2);
+//   then the READY instance (gen running, not in fallback 1) with the lowest chain index, then id, becomes the leader and the epoch grows.
+//   An instance whose gen reports fb 1 (input differs: it is not the first device of its chain) is private: role 0 (computes alone), never leader.
+//   link.rack = {role, leader, epoch, serve, lead, ready, fb, messages()}.
 //
 // FACE WIRING (see scripts/build_transplit.py): the face's set_<key> handler stores the value and calls link.notify. Its
 // `apply` callback emits ["link", key, value] on a v8ui outlet -> [route key1 key2 ...] -> per key a `prepend set` into the
@@ -113,6 +132,8 @@ function splCreateLink(cfg, envIn) {
         linked: false
     };
     var seen = {};
+    var rack = cfg.rack || null;
+    var rs = { alive: -2, aliveT: 0, ready: false, fb: 0, dead: "", role: 0, leader: "", epoch: 0, serve: 0, lead: "", key: "", sentT: -1e9, fbSince: 0 };
     var selfApi = null;
     var rackApi = null;
     var task = null;
@@ -184,7 +205,15 @@ function splCreateLink(cfg, envIn) {
     function heartbeat(now) {
         var bus = splBus(env);
         bus.peers[id] = { kind: cfg.kind, group: state.groupKey, chainIndex: state.chainIndex, deviceIndex: state.deviceIndex, path: state.path,
-                          auto: autoChannel(), scope: splScopeName, t: now };
+                          auto: autoChannel(), scope: cfg.scopeName || splScopeName, t: now };
+        if (rack) {
+            var rp = bus.peers[id];
+            rp.ring = rack.ring() || "";
+            rp.ready = rs.ready;
+            rp.fb = rs.fb;
+            rp.dead = rs.dead;
+            rp.role = rs.role;
+        }
         var alive = 0;
         var gone = [];
         for (var pid in bus.peers) {
@@ -267,6 +296,104 @@ function splCreateLink(cfg, envIn) {
         seen[key] = g.counter;
     }
 
+    function peerOk(p, now) {
+        return p && p.group === state.groupKey && now - p.t <= staleMs && p.ready && p.fb !== 1 && !!p.ring;
+    }
+
+    // Elect the leader of this group (idempotent: every instance may run it, the result only changes when the leader is invalid).
+    function elect(now) {
+        var bus = splBus(env);
+        var g = getGroup(true);
+        var cur = g.leader ? bus.peers[g.leader] : null;
+        var deadReported = false;
+        for (var pid in bus.peers) {
+            var q = bus.peers[pid];
+            if (q.group === state.groupKey && now - q.t <= staleMs && q.dead && q.dead === g.leader) deadReported = true;
+        }
+        var valid = peerOk(cur, now) && !deadReported && (cur.fb === 0 || cur.fb === undefined);
+        if (valid) return;
+        var best = null;
+        var bestId = "";
+        for (var id2 in bus.peers) {
+            var p = bus.peers[id2];
+            if (!peerOk(p, now) || id2 === g.leader && deadReported) continue;
+            if (!best || p.chainIndex < best.chainIndex || (p.chainIndex === best.chainIndex && id2 < bestId)) { best = p; bestId = id2; }
+        }
+        // a leader that is merely reported dead by followers may be the only ready candidate left: it is replaced by the reporters (they are ready too)
+        var newLeader = best ? bestId : "";
+        if (newLeader !== (g.leader || "")) {
+            g.leader = newLeader;
+            g.epoch = (g.epoch || 0) + 1;
+        }
+    }
+
+    function rackDesired(now) {
+        var g = getGroup(false) || { leader: "", epoch: 0 };
+        var bus = splBus(env);
+        var role = 0;
+        var lead = "";
+        var serve = 0;
+        if (state.isInRack && g.leader) {
+            if (g.leader === id) {
+                role = 1;
+                serve = state.peers > 1 ? (1 << rack.channels) - 1 : 0;
+            } else if (rs.fb === 1) {
+                role = 0;
+            } else {
+                var lp = bus.peers[g.leader];
+                if (lp && lp.ring) { role = 2; lead = lp.ring; }
+            }
+        }
+        // an own fallback of kind 1 is private; kinds 2 and 3 compute alone until the epoch changes (a new leader)
+        if (role === 2 && rs.fb > 0) role = 0;
+        return { role: role, lead: lead, serve: serve, epoch: g.epoch || 0, leader: g.leader || "" };
+    }
+
+    function rackTick(now) {
+        var gs = rack.genState() || { alive: -1, fb: 0 };
+        if (gs.alive >= 0) {
+            if (rs.alive === -2) rs.alive = gs.alive;                       // first reading: a baseline, not a sign of life
+            else if (gs.alive !== rs.alive) { rs.alive = gs.alive; rs.aliveT = now; }
+        }
+        var ready = gs.alive >= 0 && rs.aliveT > 0 && now - rs.aliveT < 1500;
+        var fb = gs.fb | 0;
+        var changed = ready !== rs.ready || fb !== rs.fb;
+        rs.ready = ready;
+        if (fb !== rs.fb) rs.fbSince = now;
+        rs.fb = fb;
+        // a follower that lost its leader tells the others (fb 2), so the election does not wait for the stale heartbeat
+        var dead = fb === 2 ? (rs.leader || rs.dead) : "";
+        if (dead !== rs.dead) { rs.dead = dead; changed = true; }
+        if (changed && state.inited) heartbeat(now);
+        if (state.isInRack) elect(now);
+        var want = rackDesired(now);
+        rs.role = want.role;
+        rs.leader = want.leader;
+        rs.epoch = want.epoch;
+        rs.serve = want.serve;
+        rs.lead = want.lead;
+        var key = [want.role, want.lead, want.serve, want.epoch].join("|");
+        if (key !== rs.key || now - rs.sentT > 2000) {
+            rs.key = key;
+            rs.sentT = now;
+            rackSendAll();
+        }
+    }
+
+    function rackMessages() {
+        var m = [];
+        if (rs.lead) m.push(["lead", rs.lead]);
+        m.push(["epoch", rs.epoch]);
+        m.push(["serve", rs.serve]);
+        m.push(["role", rs.role]);
+        return m;
+    }
+
+    function rackSendAll() {
+        var m = rackMessages();
+        for (var i = 0; i < m.length; i++) rack.send(m[i][0], m[i][1]);
+    }
+
     var lastInfoKey = "";
     function tick() {
         if (!state.inited) return;
@@ -276,6 +403,7 @@ function splCreateLink(cfg, envIn) {
         else if (now - lastBeat >= heartbeatMs) heartbeat(now);
         if (rejoined) joinInitial();
         else applyNewer();
+        if (rack) rackTick(now);
         var k = infoKey();
         if (k !== lastInfoKey) {
             lastInfoKey = k;
@@ -307,6 +435,16 @@ function splCreateLink(cfg, envIn) {
         },
         info: info,
         autoChannel: autoChannel,
+        rack: rack ? {
+            state: function () { return { role: rs.role, leader: rs.leader, epoch: rs.epoch, serve: rs.serve, lead: rs.lead, ready: rs.ready, fb: rs.fb }; },
+            messages: rackMessages,
+            /** the scope buffer the face should DRAW from: the leader's while following, else its own */
+            displayScope: function () {
+                if (rs.role !== 2 || !rs.leader) return "";
+                var lp = splBus(env).peers[rs.leader];
+                return lp && lp.scope ? lp.scope : "";
+            }
+        } : null,
         dispose: function () {
             if (task) {
                 try { task.cancel(); } catch (err) {}

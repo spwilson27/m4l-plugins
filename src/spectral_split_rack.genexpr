@@ -1,0 +1,175 @@
+// spectral_split_rack.genexpr — functions for the "one analysis per rack" machinery of the Spectral Split suite (leader / follower,
+// shared sample clock, output ring). Prepended by scripts/spectral_common.py (gen_code_rack) AFTER cepstrum_lib + spectral_split_lib and before
+// the device core. Only devices that adopt the rack machinery include this file (a function costs compile time even when never called).
+// The per-sample statements live in src/spectral_split_rack_main.genexpr (a template the build expands into the core); this file only
+// holds helpers. The whole design and the device-side contract are described in src/spectral_split_rack_main.genexpr and AGENTS.md section 22.
+//
+// COUNTERS. Every instance counts its own samples, modulo 2^22 (exact in a float32 buffer). All indices into the ring are counters
+// modulo 2^22; differences are taken with ss2_wd (signed, centred). Slot of counter i = hdr + (i mod rs) * stride; slot field 0 is the
+// input fingerprint written at the instance's own time, fields 1.. are the output rows written at INPUT time (see the main template).
+//
+// GenExpr rules (verified in Max 9.1, see the notes in spectral_split_lib.genexpr): single return per function at function level, no function
+// call in an if condition, no function call nested in poke() arguments, variables first assigned inside an if are not visible after it,
+// Buffers are passed as arguments and used with peek(buf, i, ch) / poke(buf, v, i, ch).
+
+// Signed circular difference a - b of two counters modulo 2^22, in [-2^21, 2^21).
+ss2_wd(a, b) {
+	d = a - b;
+	d = d - 4194304 * floor((d + 2097152) / 4194304);
+	return d;
+}
+
+// Counter value -> slot base index in the ring buffer: hdr + (i mod rs) * stride.
+ss2_slot(i, rs, stride, hdr) {
+	m = i - 4194304 * floor(i / 4194304);
+	return hdr + (m - rs * floor(m / rs)) * stride;
+}
+
+// Read one value from the source ring (use = 1: the leader's ring `lead`, else the own ring `ring`).
+ss2_rd(ring, lead, usel, idx) {
+	v = 0;
+	if (usel > 0.5) {
+		v = peek(lead, idx, 0);
+	} else {
+		v = peek(ring, idx, 0);
+	}
+	return v;
+}
+
+// Zero the output fields (1 .. stride - 1) of the slots of counters i0 .. i0 + cnt - 1.
+ss2_zero(ring, i0, cnt, rs, stride, hdr) {
+	for (i = 0; i < cnt; i += 1) {
+		b = ss2_slot(i0 + i, rs, stride, hdr);
+		for (f = 1; f < stride; f += 1) {
+			poke(ring, 0, b + f, 0);
+		}
+	}
+	return cnt;
+}
+
+// Copy the packed spectrum fx (n bins, 2 channels) to fy.
+ss2_copy(fx, fy, n) {
+	for (i = 0; i < n; i += 1) {
+		fy.poke(fx.peek(i, 0), i, 0);
+		fy.poke(fx.peek(i, 1), i, 1);
+	}
+	return n;
+}
+
+// Overlap-add of the inverse transform fy into acc rows row (left) and row + 1 (right), same weighting as ss_ola.
+ss2_ola(acc, row, st, fy, win, n) {
+	wp = st.peek(0);
+	for (i = 0; i < n; i += 1) {
+		j = wp + i;
+		if (j >= n) {
+			j -= n;
+		}
+		w = win.peek(i) * 0.6666666666666666;
+		acc.poke(acc.peek(j, row) + fy.peek(i, 0) * w, j, row);
+		acc.poke(acc.peek(j, row + 1) + fy.peek(i, 1) * w, j, row + 1);
+	}
+	return 0;
+}
+
+// One finished output sample of acc row `row` (read and clear), at the framing write position st[0].
+ss2_out(acc, row, st) {
+	wp = st.peek(0);
+	y = acc.peek(wp, row);
+	acc.poke(0, wp, row);
+	return y;
+}
+
+// Zero every row of acc (n entries per row).
+ss2_clear(acc, rows, n) {
+	for (r = 0; r < rows; r += 1) {
+		for (i = 0; i < n; i += 1) {
+			acc.poke(0, i, r);
+		}
+	}
+	return rows;
+}
+
+// Find the counter offset D between this instance and the leader (leader counter = own counter + D, modulo 2^22) from the CONTENT of the
+// input: the identical input of both instances is written to both rings as a fingerprint (field 0 of every slot, rounded to float32 by the
+// buffer on both sides). The own window of w samples ending `back` samples ago is searched in the leader's ring around the prior
+// d0 = leader counter - own counter (the true D is within +-span of it: the two instances are at most one host block apart).
+// aw is scratch Data (>= w). Returns D, 8000000 when the own window is silent or constant (nothing to match), 9000000 when nothing matches.
+// Candidates are tried in order of increasing |offset| from the prior, the first complete match wins (a periodic input matches several
+// candidates one period apart: the output of an exactly periodic signal is periodic too, so any of them is correct).
+ss2_align(ring, lead, aw, cc, lfp, rs, stride, hdr, w, back, span) {
+	mx = 0;
+	for (i = 0; i < w; i += 1) {
+		idx = cc - back - (w - 1) + i;
+		s = ss2_slot(idx, rs, stride, hdr);
+		v = peek(ring, s, 0);
+		aw.poke(v, i);
+		mx = max(mx, abs(v));
+	}
+	lo = aw.peek(0);
+	vary = 0;
+	for (i = 1; i < w; i += 1) {
+		if (abs(aw.peek(i) - lo) > 1e-9) {
+			vary = 1;
+		}
+	}
+	res = 8000000;
+	if (mx > 1e-7 && vary > 0.5) {
+		res = 9000000;
+		d0 = ss2_wd(lfp, cc);
+		for (j = 0; j <= 2 * span; j += 1) {
+			off = j - 2 * floor(j / 2) > 0.5 ? (j + 1) * 0.5 : 0 - j * 0.5;
+			dd = d0 + off;
+			li = cc - back - (w - 1) + dd;
+			ag = ss2_wd(lfp, li);
+			if (res > 8999999 && ag > w && ag < rs - 64) {
+				s0 = ss2_slot(li, rs, stride, hdr);
+				v0 = peek(lead, s0, 0);
+				if (v0 == lo) {
+					ok = 1;
+					for (i = 1; i < w; i += 1) {
+						s1 = ss2_slot(li + i, rs, stride, hdr);
+						v1 = peek(lead, s1, 0);
+						if (v1 != aw.peek(i)) {
+							ok = 0;
+						}
+					}
+					if (ok > 0.5) {
+						res = dd - 4194304 * floor((dd + 2097152) / 4194304);
+					}
+				}
+			}
+		}
+	}
+	return res;
+}
+
+// Check an established offset D: compare w fingerprint samples that ended `back` samples ago. Returns 1 (match), 0 (own window silent: nothing
+// to compare), -1 (mismatch: the inputs differ or D is wrong).
+ss2_verify(ring, lead, cc, dOff, rs, stride, hdr, w, back) {
+	mx = 0;
+	bad = 0;
+	for (i = 0; i < w; i += 1) {
+		idx = cc - back - (w - 1) + i;
+		s = ss2_slot(idx, rs, stride, hdr);
+		v = peek(ring, s, 0);
+		mx = max(mx, abs(v));
+		s1 = ss2_slot(idx + dOff, rs, stride, hdr);
+		v1 = peek(lead, s1, 0);
+		if (v1 != v) {
+			bad = 1;
+		}
+	}
+	r = 0;
+	if (mx > 1e-7) {
+		r = bad > 0.5 ? -1 : 1;
+	}
+	return r;
+}
+
+// Zero the first cnt entries of the telemetry buffer (the device went to sleep).
+ss2_zeroscope(scope, cnt) {
+	for (c = 0; c < cnt; c += 1) {
+		poke(scope, 0, c, 0);
+	}
+	return cnt;
+}

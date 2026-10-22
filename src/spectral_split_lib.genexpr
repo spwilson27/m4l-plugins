@@ -5,6 +5,11 @@
 // (functions first, then the core's Buffer / Data / Param / History / Delay declarations; GenExpr rules as in
 // cepstrum_lib.genexpr). Everything here is generic: no device-specific analysis.
 //
+// RACK SHARING (optional, newer than everything below): a device can run ONE analysis per rack instead of one per chain. That machinery is NOT in this
+// file (a function costs compile time even when uncalled): see src/spectral_split_rack.genexpr (helpers), src/spectral_split_rack_main.genexpr (the
+// per-sample template and the DEVICE CONTRACT: the SS_DECL and SS_MAIN markers, hooks ctl / frame / tele, mask rows, scope scalars) and AGENTS.md section 22.
+// Transient Split is the reference. The functions here (ss_in, ss_frame, ss_mid, ss_apply, ss_ola, ss_out, ss_cols, ss_tele) are shared by both styles.
+//
 // IDEA. Every instance runs the identical analysis on the identical input and applies ONE real, per-bin mask to
 // BOTH stereo channels (the stereo image is kept). Left and right share one complex FFT:
 //     X = FFT(hann * (L + j R)),   L-spectrum = (X[k] + conj X[N-k]) / 2,   R-spectrum = (X[k] - conj X[N-k]) / 2j

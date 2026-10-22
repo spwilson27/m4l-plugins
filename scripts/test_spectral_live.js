@@ -10,6 +10,9 @@
  * running state. Per device (Track "<Name>", rack on devices 0):
  *   chains    the rack has one chain per channel, each holding one instance; all instances sit in one bus group
  *   auto      every instance resolved Auto to its chain index (peer record) AND its gen runs that channel (telemetry output selection)
+ *   rack      (devices on the rack machinery: Transient Split) exactly one instance computes (leader, role 1, serves every channel), the others follow it
+ *             (aligned to its sample clock by content, no fallback, no ring underrun), every gen reports the same latency (5120), the deferred gen~ of
+ *             every instance reached "dsp ready" (Global spectral_split_trace), and its DSP-ready time after the script load is printed
  *   audio     a Core Library loop plays through the track: output_meter_left > 0.02, per instance: frame counter advances, awake = 1,
  *             input level > 0 (the gen is running)
  *   link      a numeric parameter set on the FIRST chain's instance reaches every other instance within 600 ms (measured), the same
@@ -64,7 +67,7 @@ const CHAIN_COLOR_INDEX = {
     "Freq Split": [28, 9, 59, 11],
 };
 const DEVICES = [
-    { slug: "transplit", track: "Transient Split", pre: "TS", channels: 2, num: ["Bias", 40], num2: ["Tilt", -35], en: ["Type", 1], frac: ["Decay", 12.5], blend: ["Blend", 80] },
+    { slug: "transplit", track: "Transient Split", pre: "TS", rack: true, channels: 2, num: ["Bias", 40], num2: ["Tilt", -35], en: ["Type", 1], frac: ["Decay", 12.5], blend: ["Blend", 80] },
     { slug: "loudsplit", track: "Loud Split", pre: "LS", channels: 3, num: ["Higher", -40], num2: ["Hi Knee", 14], en: ["Relative", 1], frac: ["Rise", 3.75] },
     { slug: "harmsplit", track: "Harmonic Split", pre: "HS", channels: 3, num: ["NH Sens", 70], num2: ["Threshold", -45], en: ["Pattern", 3], frac: ["Tilt", 2.5] },
     { slug: "freqsplit", track: "Freq Split", pre: "FS", channels: 4, num: ["XFade", 60], num2: ["Pinch", 30], en: ["Limiter", 1], frac: ["Splits", 7.5], fracExp: { lo: 1, hi: 1024, exp: 3, key: "splits" } },
@@ -229,6 +232,29 @@ function runDevice(dev) {
         sleep(150);
     }
     check(meter > 0.02, `${tag} track output meter ${meter.toFixed(3)} > 0.02`);
+
+    if (dev.rack) {
+        const RK = ["CMP", "FOL", "ALIGNED", "FB", "ROLE", "SERVE", "ALIVE", "LAG", "UNDER", "LATENCY"].map((k) => cfg[dev.pre + "_SC_" + k]);
+        check(RK.every((v) => typeof v === "number"), `${tag} rack telemetry constants present in the config`);
+        let rk = [];
+        for (let i = 0; i < 20; i++) {
+            rk = peers.map((p) => lom(`return scopeVals(${JSON.stringify(p.scope)}, ${JSON.stringify(RK)});`));
+            if (rk.filter((v) => v[0] === 1).length === 1 && rk.filter((v) => v[1] === 1 && v[2] === 1).length === N - 1) break;
+            sleep(500);
+        }
+        const leaders = rk.map((v, i) => (v[0] === 1 ? i : -1)).filter((i) => i >= 0);
+        check(leaders.length === 1, `${tag} exactly one instance computes (the leader): chains [${leaders}]  (cmp [${rk.map((v) => v[0])}], role [${rk.map((v) => v[4])}])`);
+        check(rk.every((v, i) => i === leaders[0] || (v[1] === 1 && v[2] === 1 && v[3] === 0)), `${tag} every other instance follows, aligned by content, no fallback: follow [${rk.map((v) => v[1])}] aligned [${rk.map((v) => v[2])}] fb [${rk.map((v) => v[3])}]`);
+        check(leaders.length === 1 && rk[leaders[0]][5] >= Math.pow(2, dev.channels) - 1, `${tag} the leader serves every channel (serve mask ${leaders.length ? rk[leaders[0]][5] : "?"})`);
+        check(rk.every((v) => v[9] === cfg.TS_LATENCY), `${tag} every gen reports the latency ${cfg.TS_LATENCY}: [${rk.map((v) => v[9])}]`);
+        sleep(1500);
+        const rk2 = peers.map((p) => lom(`return scopeVals(${JSON.stringify(p.scope)}, ${JSON.stringify(RK)});`));
+        check(rk2.every((v) => v[8] === 0), `${tag} no ring underrun: [${rk2.map((v) => v[8])}]  (follower lag to the leader's clock: [${rk2.map((v) => v[7])}] samples)`);
+        const trace = lom(`var g = new Global("spectral_split_trace"); return g.text ? String(g.text) : "";`);
+        const ready = (trace.match(/ transplit dsp ready after (\d+) ms/g) || []).length;
+        check(ready >= N, `${tag} every instance's deferred gen~ reached ready (${ready} trace lines)`);
+        console.log("      load trace:\n      " + trace.split("\n").slice(-12).join("\n      "));
+    }
 
     if (dev.slug === "harmsplit") {
         // periodic waves with missing harmonics: every chain's detector must lock within 1 % of the true pitch

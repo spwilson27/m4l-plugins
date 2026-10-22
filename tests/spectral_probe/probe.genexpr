@@ -1,0 +1,92 @@
+// Spectral Probe: how does Live process the chains of one Audio Effect Rack? (Goal 1 of the splitter optimisation.)
+// One instance per chain. All instances share ONE buffer (`sh`, bound by name to the first instance's own `---probesh`) and
+// write into it at every sample: slot 8 + 4 * id = the absolute time `ab` of the input (a ramp clip: x[n] = n / 2^20, so every
+// instance sees the same exact absolute sample index) and slot 9 + 4 * id = its own sample counter.
+// At the first sample of each of ITS vectors an instance reads the slots of every other instance and compares their last
+// absolute time with its own: d = seen - ab. If the other instance ran earlier in this vector it already wrote the whole vector
+// (d = vectorsize - 1); if it runs later, its last write is from the previous vector (d = -1). Any other d means the vectors
+// are not aligned or the instances run concurrently. Results go to the instance's own buffer `res`:
+//   0 vectorsize   1 vectors seen   2 samples seen   3 ticket gap != K count   4 last ticket gap   5 vectors with ab == 0
+//   16 + 8 * j + {0 other AHEAD (d >= 0: it already processed this vector, or more), 1 BEHIND (d < 0), 2 misaligned ((d+1) mod vectorsize != 0),
+//                  3 last d, 4 max |d|, 5 compared vectors};  128 + 32 * j + 16 + floor((d+1)/vectorsize): histogram of d in vectors;
+//   400 + r: how many times a run of r consecutive own vectors (no other instance in between) ended = vectors per block
+//   128 + 4 * j + {0 count of vectors where j was processed earlier, ...}  (unused)
+Buffer sh("probesh");
+Buffer res("probeown");
+Param id(0);
+Param kn(4);
+History cnt(0);
+History nvec(0);
+History lastTk(-1);
+History badGap(0);
+History runLen(0);
+History zeroVec(0);
+
+x = in1;
+ab = floor(x * 1048576 + 0.5);
+vsz = vectorsize;
+s = cnt - vsz * floor(cnt / vsz);
+if (s < 0.5) {
+	nvec = nvec + 1;
+	tk = peek(sh, 0);
+	poke(sh, tk + 1, 0);
+	ptk = lastTk;
+	if (ptk >= 0) {
+		gap = tk - ptk;
+		poke(res, gap, 4);
+		if (gap != kn) {
+			badGap = badGap + 1;
+		}
+	}
+	lastTk = tk;
+	if (ab < 0.5) {
+		zeroVec = zeroVec + 1;
+	}
+	for (j = 0; j < 8; j += 1) {
+		seen = peek(sh, 8 + j * 4);
+		o = 16 + j * 8;
+		if (j != id && seen > 0.5 && ab > 0.5) {
+			d = seen - ab;
+			d = d - 1048576 * floor((d + 524288) / 1048576);
+			if (abs(d) < 4000) {
+				if (d >= 0) {
+					poke(res, peek(res, o) + 1, o);
+				} else {
+					poke(res, peek(res, o + 1) + 1, o + 1);
+				}
+				rm = (d + 1) - vsz * floor((d + 1) / vsz);
+				if (rm > 0.5) {
+					poke(res, peek(res, o + 2) + 1, o + 2);
+				}
+				bk = clip(floor((d + 1) / vsz), -15, 16);
+				hi = 128 + j * 32 + bk + 16;
+				poke(res, peek(res, hi) + 1, hi);
+				poke(res, d, o + 3);
+				poke(res, max(peek(res, o + 4), abs(d)), o + 4);
+			}
+			poke(res, peek(res, o + 5) + 1, o + 5);
+		}
+	}
+	if (ptk >= 0 && tk - ptk == 1) {
+		runLen = runLen + 1;
+	} else {
+		if (runLen > 0) {
+			rb = 400 + min(runLen + 1, 63);
+			poke(res, peek(res, rb) + 1, rb);
+		}
+		runLen = 0;
+	}
+	poke(res, vsz, 0);
+	poke(res, nvec, 1);
+	poke(res, badGap, 3);
+	poke(res, zeroVec, 5);
+	poke(res, samplerate, 6);
+}
+poke(sh, ab, 8 + id * 4);
+poke(sh, cnt, 9 + id * 4);
+cnt = cnt + 1;
+if (s > vsz - 1.5) {
+	poke(res, cnt, 2);
+}
+out1 = in1;
+out2 = in2;

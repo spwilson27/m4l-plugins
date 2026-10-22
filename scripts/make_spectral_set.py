@@ -23,7 +23,8 @@ import make_spectral_rack as msr  # noqa: E402
 REPO = mds.REPO
 DEFAULT_OUT = os.path.join(REPO, "spectral_test.als")
 
-# (track name, .amxd, chain names in channel order)
+# (track name, .amxd, chain names in channel order[, probes]). With probes=True a Spectral Sum Probe (tests/spectral_probe) sits before and
+# after the rack (scripts/make_spectral_sum_set.py); chains=None makes a control track with just the two probes.
 DEVICES = [
     ("Transient Split", "Transient Split.amxd", ["Transients", "Tones"]),
     ("Loud Split", "Loud Split.amxd", ["Loud", "Mid", "Quiet"]),
@@ -80,11 +81,18 @@ def build(args):
         '<ClipSlot Id="%d"><LomId Value="0" /><ClipSlot><Value /></ClipSlot><HasStop Value="true" /></ClipSlot>' % i
         for i in range(scenes)) + "</ClipSlotList>"
     tracks = []
-    for i, (tname, file, chains) in enumerate(DEVICES):
+    for i, entry in enumerate(DEVICES):
+        tname, file, chains = entry[:3]
+        probes = len(entry) > 3 and entry[3]
         amxd = os.path.join(args.devices, file)
-        if not os.path.isfile(amxd):
+        if chains is not None and not os.path.isfile(amxd):
             sys.exit("missing device: %s" % amxd)
-        rack = rn(rack_xml(amxd, out, tname, chains))
+        rack = rn(rack_xml(amxd, out, tname, chains)) if chains is not None else ""
+        if probes:
+            pr = os.path.join(args.probe_devices, "Spectral Sum Probe.amxd")
+            if not os.path.isfile(pr):
+                sys.exit("missing probe device: %s" % pr)
+            rack = rn(mds.m4l_xml(pr, out, 1)) + "\n" + rack + "\n" + rn(mds.m4l_xml(pr, out, 2))
         track = mds.fill(mds.tpl("audiotrack"), TRACKID=args.track_id + i, TRACKNAME=mds.esc(tname), CLIPSLOTS=slots,
                          DEVICES="<Devices>\n" + rack + "\n</Devices>")
         tracks.append(rn(track))
@@ -100,6 +108,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--devices", default=os.path.join(REPO, "devices"))
+    ap.add_argument("--probe-devices", default=os.path.join(REPO, "tests", "spectral_probe"))
     ap.add_argument("--bridge", default=mds.DEFAULT_BRIDGE)
     ap.add_argument("--base-set", default=mds.DEFAULT_BASE_SET)
     ap.add_argument("--track-id", type=int, default=32)

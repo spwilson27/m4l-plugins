@@ -27,6 +27,19 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const LIB_SRC = read("src/cepstrum_lib.genexpr");
 const SS_SRC = read("src/spectral_split_lib.genexpr");
 const CORE_SRC = read("src/transplit_core.genexpr");
+const RACK_SRC = read("src/spectral_split_rack.genexpr");
+const RACK_MAIN = read("src/spectral_split_rack_main.genexpr");
+// The gen code the device really embeds (the face writes it to a .gendsp file): lib + ss lib + rack functions + the expanded core.
+function builtGenCode() {
+    const raw = fs.readFileSync(path.join(ROOT, "devices", "Transient Split.amxd"));
+    const p = JSON.parse(raw.slice(32).toString("utf8")).patcher;
+    const face = p.boxes.map((b) => b.box).find((b) => b.id === "obj-viz").textfile.text;
+    const m = /^var GEN_DSP_TEXT = (".*");$/m.exec(face);
+    assert.ok(m, "face carries GEN_DSP_TEXT");
+    const gendsp = JSON.parse(JSON.parse(m[1]));
+    return gendsp.patcher.boxes.find((b) => b.box.maxclass === "codebox").box.code;
+}
+const GEN_CODE = builtGenCode();
 
 function rng(seed) {
     let s = seed >>> 0;
@@ -390,22 +403,26 @@ function prep(src) {
 // 3. GenExpr lint, link module
 // ======================================================================
 {
-    const fnsLib = functionsOf(SS_SRC);
+    const fnsLib = functionsOf(SS_SRC).concat(functionsOf(RACK_SRC));
     const fnsCore = functionsOf(CORE_SRC);
     for (const fn of fnsLib.concat(fnsCore)) {
         const rets = fn.body.filter((l) => /^\s*return\b/.test(l));
         assert.strictEqual(rets.length, 1, `${fn.name}: exactly one return`);
         assert.ok(/^\treturn\b/.test(fn.body[fn.body.length - 1]), `${fn.name}: the return is the last statement, at function level`);
-        for (const l of fn.body) assert.ok(!/\bif\s*\(\s*[^)]*\b(ss|ts|stft|fft|cep)_\w+\(/.test(l), `${fn.name}: no function call inside an if condition`);
+        for (const l of fn.body) assert.ok(!/\bif\s*\(\s*[^)]*\b(ss2?|ts|stft|fft|cep)_\w+\(/.test(l), `${fn.name}: no function call inside an if condition`);
     }
-    for (const src of [SS_SRC, CORE_SRC]) {
+    for (const src of [SS_SRC, RACK_SRC, GEN_CODE]) {
         const code = src.replace(/\/\/.*$/gm, "");
-        assert.ok(!/\bpoke\([^;]*\b(ss|ts|stft|fft|cep)_\w+\(/.test(code), "no user function call inside poke() arguments (silent compile failure in Max)");
+        assert.ok(!/\bpoke\([^;]*\b(ss2?|ts|stft|fft|cep)_\w+\(/.test(code), "no user function call inside poke() arguments (silent compile failure in Max)");
         assert.ok(!/\be\d\b/.test(code), "no identifier e<digit>");
         assert.ok(!/\b(phi|pi)\s*=/.test(code), "no phi / pi assignments");
     }
+    // statements of the expanded core: no function call in an if condition either
+    for (const l of GEN_CODE.split("\n")) {
+        if (/^\s*(\}\s*else\s*)?if\s*\(/.test(l)) assert.ok(!/\b(ss2?|ts|stft|fft|cep)_\w+\(/.test(l.replace(/\/\/.*$/, "")), `no function call inside an if condition: ${l.trim()}`);
+    }
     // ordering: all functions, then Buffer, Data, Param, History, Delay, then statements
-    const lines = CORE_SRC.split("\n");
+    const lines = GEN_CODE.split("\n");
     const firstDecl = lines.findIndex((l) => /^(Buffer|Data|Param|History|Delay)\b/.test(l));
     const lastFnHeader = lines.reduce((m, l, i) => (/^[A-Za-z_]\w*\([^)]*\) \{$/.test(l) ? i : m), -1);
     assert.ok(lastFnHeader > 0 && lastFnHeader < firstDecl, "every function sits before the first Buffer / Data / Param / History / Delay declaration");
@@ -414,19 +431,29 @@ function prep(src) {
     assert.ok(firstStmt > lastDecl, "statements follow the declarations");
     for (const l of lines.slice(firstDecl, lastDecl + 1)) assert.ok(l.trim() === "" || /^(Buffer|Data|Param|History|Delay)\b|^\/\//.test(l), `declaration block only holds declarations: ${l}`);
     // Param names used by the build exist
-    for (const name of ["fftn", "ttype", "anbias", "tdecay", "tsmooth", "tiltamt", "tmode", "blendamt", "mixamt", "outsel"]) assert.ok(new RegExp(`^Param ${name}\\(`, "m").test(CORE_SRC), `Param ${name}`);
+    for (const name of ["fftn", "ttype", "anbias", "tdecay", "tsmooth", "tiltamt", "tmode", "blendamt", "mixamt", "outsel", "role", "serve", "epoch"]) assert.ok(new RegExp(`^Param ${name}\\(`, "m").test(GEN_CODE), `Param ${name}`);
     assert.ok(/Buffer scope\("transplitscope"\)/.test(CORE_SRC), "Buffer bound by the GenExpr variable name `scope` (no set prefix)");
     // the scope layout matches the config constants
-    const m = CORE_SRC.match(/poke\(scope, frameNo, (\d+), 0\)/);
+    const m = GEN_CODE.match(/poke\(scope, frameNo, (\d+), 0\)/);
     assert.strictEqual(Number(m[1]), cfg.TS_SC_FRAME, "telemetry frame counter slot");
-    assert.ok(CORE_SRC.includes(`poke(scope, trm, ${cfg.TS_SC_TRMEAN}, 0)`) && CORE_SRC.includes("trm = ts_mean(ms, tsd, n);"), "mean slot");
-    assert.ok(CORE_SRC.includes(`poke(scope, selH, ${cfg.TS_SC_SEL}, 0)`), "selection slot");
-    assert.ok(CORE_SRC.includes(`ts_frac(cols, scope, 128, ${cfg.TS_SC_FRAC})`), "fraction block offset");
+    assert.ok(GEN_CODE.includes(`poke(scope, trm, ${cfg.TS_SC_TRMEAN}, 0)`) && GEN_CODE.includes("trm = ts_mean(ms, tsd, n);"), "mean slot");
+    // the rack template writes the common scalars at SCB + offset (SCB = TS_SC_FRAME): every offset is the config's
+    const scal = { 1: "TS_SC_SR", 2: "TS_SC_N", 3: "TS_SC_AWAKE", 4: "TS_SC_LEVEL", 6: "TS_SC_LATENCY", 7: "TS_SC_SEL", 8: "TS_SC_CMP", 9: "TS_SC_FOL", 10: "TS_SC_ALIGNED",
+        11: "TS_SC_FB", 12: "TS_SC_DOFF", 13: "TS_SC_UNDER", 14: "TS_SC_LAG", 15: "TS_SC_SERVE", 16: "TS_SC_ROLE", 17: "TS_SC_ALIVE" };
+    for (const [off, key] of Object.entries(scal)) {
+        assert.strictEqual(cfg.TS_SC_FRAME + Number(off), cfg[key], `${key} = TS_SC_FRAME + ${off}`);
+        assert.ok(GEN_CODE.includes(`, ${cfg.TS_SC_FRAME} + ${off}, 0);`), `gen writes scope slot ${key}`);
+    }
+    assert.ok(cfg.TS_SC_FRAME + 18 <= cfg.TS_SC_WAVE, "the scalars stay below the waveform ring");
+    assert.ok(GEN_CODE.includes(`ts_frac(cols, scope, 128, ${cfg.TS_SC_FRAC})`), "fraction block offset");
     assert.ok(cfg.TS_SCOPE_SAMPS <= 800, "scope buffer big enough");
-    assert.ok(CORE_SRC.includes(`o = ${cfg.TS_SC_WAVE} + slot * 4;`) && CORE_SRC.includes("ts_wave(ms, tsd, scope, n, frameNo % 64);"), "waveform ring offset / slot");
+    assert.ok(GEN_CODE.includes(`o = ${cfg.TS_SC_WAVE} + slot * 4;`) && GEN_CODE.includes("ts_wave(ms, tsd, scope, n, frameNo % 64);"), "waveform ring offset / slot");
     assert.strictEqual(cfg.TS_WAVE_FRAMES, 64);
-    assert.ok(CORE_SRC.includes(`wrap(frameNo + 1, 0, ${cfg.TS_FRAME_WRAP})`) && cfg.TS_FRAME_WRAP % cfg.TS_WAVE_FRAMES === 0, "frame counter wraps on a ring multiple");
-    assert.ok(/^Param blendamt\(0\.5\)/m.test(CORE_SRC) && /^Param mixamt\(1\)/m.test(CORE_SRC) && /^Param tdecay\(8\)/m.test(CORE_SRC) && /^Param tsmooth\(1\.5\)/m.test(CORE_SRC), "gen Param defaults match the parameter table");
+    assert.ok(GEN_CODE.includes(`wrap(frameNo + 1, 0, ${cfg.TS_FRAME_WRAP})`) && cfg.TS_FRAME_WRAP % cfg.TS_WAVE_FRAMES === 0, "frame counter wraps on a ring multiple");
+    assert.ok(GEN_CODE.includes("ss2_zeroscope(scope, 512)"), "sleep zeroes the 512 telemetry columns");
+    assert.ok(/^Param blendamt\(0\.5\)/m.test(GEN_CODE) && /^Param mixamt\(1\)/m.test(GEN_CODE) && /^Param tdecay\(8\)/m.test(GEN_CODE) && /^Param tsmooth\(1\.5\)/m.test(GEN_CODE), "gen Param defaults match the parameter table");
+    assert.ok(!/@@/.test(GEN_CODE) && !/\/\/@(hook|endhook|SS_)/.test(GEN_CODE), "the template is fully expanded");
+    assert.ok(GEN_CODE.includes(`Delay dryL(${cfg.TS_LATENCY + 1})`) && GEN_CODE.includes(`dryL.read(${cfg.TS_LATENCY})`), "dry delay = the reported latency");
 
     runLinkTests();
     // tsResolveSel / names
@@ -451,7 +478,7 @@ function prep(src) {
     assert.strictEqual(raw.slice(8, 12).toString(), "aaaa", "audio effect");
     assert.strictEqual(raw.readUInt32LE(28), raw.length - 32);
     const p = JSON.parse(raw.slice(32).toString("utf8")).patcher;
-    assert.strictEqual(p.latency, cfg.TS_LATENCY, "latency attribute 4096");
+    assert.strictEqual(p.latency, cfg.TS_LATENCY, "latency attribute = TS_LATENCY (5120)");
     assert.strictEqual(p.openrect[3], 169, "169 px high");
     assert.strictEqual(p.openrect[2], p.devicewidth);
     assert.strictEqual(p.openinpresentation, 1);
@@ -464,15 +491,28 @@ function prep(src) {
     for (const l of p.lines) {
         assert.ok(byId[l.patchline.source[0]] && byId[l.patchline.destination[0]], `line endpoints exist ${JSON.stringify(l.patchline)}`);
     }
-    // gen code is exactly lib + ss lib + core
-    const gen = byId["obj-gen"];
-    assert.strictEqual(gen.code, [LIB_SRC, SS_SRC, CORE_SRC].map((s) => s.replace(/\s+$/, "") + "\n").join("\n"), "gen code = cepstrum_lib + spectral_split_lib + transplit_core");
-    assert.ok(gen.code.indexOf("fft_run(") < gen.code.indexOf("ss_in(") && gen.code.indexOf("ss_in(") < gen.code.indexOf("ts_masks("), "library functions come first");
+    // deferred DSP (AGENTS.md 1d): no gen~ in the saved device, a gate 1 1 hub, scripting names, no static audio cords
+    assert.ok(!byId["obj-gen"], "the device ships without its gen~");
+    assert.strictEqual(byId["obj-genin"].text, "gate 1 1");
+    assert.deepStrictEqual([byId["obj-genin"].varname, byId["obj-plugin"].varname, byId["obj-plugout"].varname], ["ss_genin", "ss_plugin", "ss_plugout"]);
+    const allLines = p.lines.map((l) => l.patchline);
+    assert.ok(!allLines.some((l) => l.source[0] === "obj-plugin" || l.destination[0] === "obj-plugout"), "no static audio cord (the face wires plugin~ -> gen~ -> plugout~)");
+    assert.ok(allLines.every((l) => l.destination[0] !== "obj-gen"), "no cord into a gen~ that is not there");
+    assert.ok(allLines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 2 && l.destination[0] === "obj-genin" && l.destination[1] === 1), "face outlet 2 -> hub data inlet");
+    // the embedded gen = lib + ss lib + rack functions + the expanded core
+    assert.ok(GEN_CODE.indexOf("fft_run(") < GEN_CODE.indexOf("ss_in(") && GEN_CODE.indexOf("ss_in(") < GEN_CODE.indexOf("ss2_align(") && GEN_CODE.indexOf("ss2_align(") < GEN_CODE.indexOf("ts_masks("), "library functions come first");
+    assert.ok(GEN_CODE.startsWith(LIB_SRC.replace(/\s+$/, "") + "\n"), "gen code starts with cepstrum_lib");
+    assert.ok(GEN_CODE.includes(SS_SRC.replace(/\s+$/, "") + "\n") && GEN_CODE.includes(RACK_SRC.replace(/\s+$/, "") + "\n"), "gen code contains spectral_split_lib and spectral_split_rack verbatim");
+    const faceTxt = byId["obj-viz"].textfile.text;
+    assert.ok(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(faceTxt) && /var SS_PREFIX = "transplit";/.test(faceTxt), "face carries the gen patch hash and prefix");
+    assert.ok(faceTxt.includes("function ssDspLoad") && faceTxt.includes("function ssDspRestart"), "face carries the deferred-DSP module");
     // buffers: `---` per instance
     assert.ok(byId["obj-scope-buf"].text.startsWith("buffer~ ---transplitscope"), "per-instance buffer name");
     assert.ok(Number(byId["obj-scope-buf"].text.match(/@samps (\d+)/)[1]) >= cfg.TS_SCOPE_SAMPS, "scope buffer length");
-    for (const id of ["obj-msg-ui-buf", "obj-msg-gen-buf"]) assert.ok(byId[id].text.includes("---transplitscope"), `${id} uses the --- name`);
-    assert.ok(!boxes.some((b) => /#0/.test(b.text || "")), "no #0 names in a top-level device");
+    assert.ok(byId["obj-ring-buf"].text.startsWith("buffer~ ---ssring @samps "), "per-instance ring buffer");
+    assert.ok(Number(byId["obj-ring-buf"].text.match(/@samps (\d+)/)[1]) === 16 + 8192 * 7, "ring length = header + slots * stride");
+    assert.strictEqual(byId["obj-msg-ui-names"].text, "setnames ---transplitscope ---ssring", "the face learns both per-instance buffer names");
+    assert.ok(!boxes.some((b) => /#0/.test(b.text || "") && b.text !== "r #0-sstest"), "no #0 names in a top-level device (the test hook receive #0-sstest is the one deliberate shared name)");
     // panels last with background 1
     const firstPanel = boxes.findIndex((b) => b.maxclass === "panel");
     assert.ok(firstPanel > 0 && boxes.slice(firstPanel).every((b) => b.maxclass === "panel"), "panels are the last boxes");
@@ -527,7 +567,7 @@ function prep(src) {
     const GEN = { bias: "anbias", tdecay: "tdecay", tsmooth: "tsmooth", tilt: "tiltamt", blend: "blendamt", mix: "mixamt", ttype: "ttype", tmode: "tmode", size: "fftn" };
     for (const [key, msg] of Object.entries(GEN)) {
         assert.strictEqual(byId[`obj-prep-${key}`].text, `prepend ${msg}`);
-        assert.ok(from(`obj-prep-${key}`).includes("obj-gen"), `${key} -> gen`);
+        assert.ok(from(`obj-prep-${key}`).includes("obj-genin"), `${key} -> hub -> gen`);
         assert.ok(from(`obj-ui-${key}`).includes("obj-viz") && byId[`obj-ui-${key}`].text === `prepend set_${key}`, `${key} -> face`);
     }
     assert.strictEqual(byId["obj-scale-bias"].text, "* 0.01");
@@ -548,8 +588,9 @@ function prep(src) {
         assert.strictEqual(byId[`obj-lset-${key}`].text, "prepend set");
         assert.ok(from(`obj-lset-${key}`).includes(`obj-ctrl-${key}`), `${key}: prepend set -> control`);
         assert.ok(dests.length === 2, `${key}: peer value also feeds the gen path`);
+        assert.ok(!dests.includes("obj-gen"), `${key}: only through the hub`);
     });
-    assert.ok(lines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 2 && l.destination[0] === "obj-gen"), "face outlet 2 -> gen (outsel)");
+    assert.ok(lines.some((l) => l.source[0] === "obj-r-sstest" && l.destination[0] === "obj-viz"), "test hook receive #0-sstest -> face");
     assert.ok(lines.some((l) => l.source[0] === "obj-thisdevice" && l.destination[0] === "obj-msg-init") && byId["obj-msg-init"].text === "init_link", "init from live.thisdevice, not loadbang");
     // the face script carries config + link + ui, and no forbidden globals
     const face = byId["obj-viz"].textfile.text;
@@ -569,4 +610,6 @@ function prep(src) {
 }
 
 console.log("All Transient Split tests passed");
+require("./test_spectral_rack.js");
+require("./test_spectral_dsp.js");
 require("./test_transplit_paint_bounds.js");
