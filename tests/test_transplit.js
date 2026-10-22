@@ -569,3 +569,4 @@ function prep(src) {
 }
 
 console.log("All Transient Split tests passed");
+require("./test_transplit_paint_bounds.js");

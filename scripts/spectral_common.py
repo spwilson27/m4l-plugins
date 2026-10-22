@@ -29,7 +29,7 @@ scripts/render_preview.py see the same colours:
   sc.make_theme_panel(id, x, y, w, h, name)     flat background panel (varname = id: the face recolours it, spt_apply_panel_theme)
   sc.make_section(id, x, y, w, h, title)        -> (panel box, [title live.comment, hairline live.line]); append the panel at the END
                                                 of `boxes` (after all other section panels, before the body panel), the rest anywhere
-  sc.make_body_panel(width)                     device body (live_desktop); the very last box
+  sc.make_body_panel(width)                     device body (live_surface_bg); the very last box
   sc.make_theme_line(id, x, y, w)               2 px live.line hairline (live_lcd_frame)
   sc.make_theme_comment(id, text, x, y, w, ...) live.comment in a theme text colour (default live_control_fg)
   sc.make_lcd_numbox(key, spec, help, x, y, w, h)   borderless LCD numbox (appearance 4), value in live_lcd_control_fg_alt
@@ -112,7 +112,7 @@ def make_theme_panel(obj_id, x, y, w, h, name, rounded=2):
 
 
 def make_body_panel(width):
-    return make_theme_panel("obj-panel-body", 0, 0, width, DEVICE_H, "live_desktop", rounded=0)
+    return make_theme_panel("obj-panel-body", 0, 0, width, DEVICE_H, "live_surface_bg", rounded=0)
 
 
 def make_theme_line(obj_id, x, y, w, name="live_lcd_frame"):
@@ -140,10 +140,10 @@ def make_theme_comment(obj_id, text, x, y, w, h=13.0, size=THEME_FONT_SIZE, name
 
 
 def make_section(obj_id, x, y, w, h, title, title_w=None):
-    """Reverb-style section: flat live_surface_bg panel with a small title top-left and a hairline running from the title to the
+    """Reverb-style section: flat recessed live_desktop panel with a small title top-left and a hairline running from the title to the
     right edge. Returns (panel box, [title comment, hairline])."""
     tw = title_w if title_w is not None else len(title) * 5.3 + 4
-    panel = make_theme_panel(f"obj-panel-{obj_id}", x, y, w, h, "live_surface_bg")
+    panel = make_theme_panel(f"obj-panel-{obj_id}", x, y, w, h, "live_desktop")
     parts = [make_theme_comment(f"obj-title-{obj_id}", title, x + 4, y + 2, tw, 13.0, name="live_lcd_title"),
              make_theme_line(f"obj-rule-{obj_id}", x + 4 + tw + 3, y + 9, w - tw - 14)]
     return panel, parts
@@ -154,8 +154,9 @@ def make_lcd_numbox(key, spec, help_text, x, y, w, h, fontsize=THEME_FONT_SIZE, 
     b = make_numbox(key, spec, help_text, x, y, w, h, LIVE_THEME["live_lcd_control_fg_alt"], appearance=4, fontsize=fontsize,
                     unit_text=unit_text)
     bx = b["box"]
-    for k in ("activebgcolor", "activeslidercolor", "bordercolor"):
+    for k in ("activeslidercolor", "bordercolor"):
         bx.pop(k, None)
+    bx["activebgcolor"] = [0.0, 0.0, 0.0, 0.0]   # borderless: no background (the LCD panel behind shows through)
     bx["fontface"] = 0
     bx["fontname"] = THEME_FONT
     return theme(b, textcolor="live_lcd_control_fg_alt", lcdcolor="live_lcd_control_fg_alt")
@@ -181,7 +182,7 @@ def make_theme_tab(key, spec, help_text, x, y, w, h, rows=1, fontsize=THEME_FONT
     for k in ("activebgoncolor", "bgcolor", "bgoncolor", "bordercolor", "textcolor", "textoncolor"):
         bx.pop(k, None)
     return theme(b, bgcolor="live_control_bg", textcolor="live_control_fg", bgoncolor="live_control_selection",
-                 activebgoncolor="live_control_selection", textoncolor="live_lcd_bg", bordercolor="live_surface_bg")
+                 activebgoncolor="live_control_selection", textoncolor="live_lcd_bg", bordercolor="live_desktop")
 
 
 def make_theme_text(obj_id, text, x, y, w, h, toggle=True):

@@ -1,13 +1,14 @@
 // harmsplit_ui.js — Harmonic Split face (v8ui, one canvas) + spectral_link wiring. The build concatenates
-//   harmsplit_config.js, spectral_link.js, this file  into the v8ui script. Bitwig Harmonic Split (Spectral) display:
+//   harmsplit_config.js, spectral_link.js, spectral_theme.js, this file  into the v8ui script. Ableton-native (Reverb-like) display:
 //
-// Canvas (HS_VIZ_W x HS_VIZ_H): top row `Low 80.0 Hz` / `High 1.50 kHz` (Detection Low-cut / High-cut), bottom row
-// `Tilt 0.0 dB` / `Threshold Automatic`, a log-frequency plot between them (Mid spectrum coloured by where its energy goes,
-// or the three channels after the masks), harmonic markers in the A / B colours, the tracked fundamental as a white dot with
-// crosshairs, and the purple interactive analysis parameters: vertical Low / High lines with L / H flags and the horizontal
-// Detection Threshold line (dragged all the way down it reads Automatic). The four value fields are draggable too (vertical
-// drag, double-click resets). The Low / High / Tilt / Threshold parameters live in hidden live.* objects (automatable from
-// Live's parameter lists); Pattern, Sensitivity, Max Harm, Mix, Size and Output are real widgets on the device face.
+// Canvas (HS_VIZ_W x HS_VIZ_H = 280 x 141): a 280 x 92 near-black LCD (faint grid, 1 px lines, log-frequency plot: the Mid spectrum
+// in the colour of where each column's energy goes, or the three channels after the masks, as thin outlines with faint fills),
+// harmonic ticks in the A / B colours, the tracked fundamental as a small hollow circle with faint crosshairs, hollow orange
+// handles with 1 px lines for Low (L) / High (H) / Detection Threshold (T; dragged all the way down it reads Automatic), and a Post
+// toggle button top right. Below it: the channel legend (this instance's output channel bright) + chain chip, then the value rows
+// `Low` / `High` / `Tilt` / `Threshold` (draggable, double-click resets). All colours come from spectral_theme.js. The
+// Low / High / Tilt / Threshold parameters live in hidden live.* objects (automatable from Live's parameter lists); Pattern,
+// Sensitivity, Max Harm, Mix, Size and Output are real widgets in the sections beside / under it.
 //
 // Messages in:  set_<key> <value> for pattern maxh sens tilt thr lowcut highcut mix size output dispost,
 //               setbuffer <name>, init_link (live.thisdevice), preview helpers.
@@ -168,7 +169,7 @@ function hsPoll() {
 function hsColNh() { return sptColor("live_display_scale_text"); }
 function hsColA() { return sptColor("live_display_line_one"); }
 function hsColB() { return sptColor("live_display_line_two"); }
-var HS_PANELS = [["obj-panel-body", "live_desktop"], ["obj-panel-det", "live_surface_bg"], ["obj-panel-harm", "live_surface_bg"], ["obj-panel-out", "live_surface_bg"]];
+var HS_PANELS = [["obj-panel-body", "live_surface_bg"], ["obj-panel-det", "live_desktop"], ["obj-panel-harm", "live_desktop"], ["obj-panel-out", "live_desktop"]];
 var hsThemeTask = sptThemeWatch(function () { sptApplyPanelTheme(HS_PANELS); });
 
 
@@ -179,6 +180,7 @@ function hsBase() {
 // dB -> y: -100..0 dB over the plot (spectra grow from the -100 dB line), -120..-100 dB in the strip below it
 function hsYOfDb(db) {
     var base = hsBase();
+    if (!(db === db)) db = HS_THR_MIN;
     if (db < -100) return base - 1 - (Math.max(db, -120) + 120) / 20 * (HS_ZONE - 1);
     var t = Math.min(db, 0) + 100;
     return base - HS_ZONE - t / 100 * (HS_PLOT.h - HS_ZONE - 6);
@@ -193,11 +195,13 @@ function hsDbOfY(y) {
 
 // telemetry level 0..1 (-100..0 dB) -> height in px above the -100 dB line
 function hsLvH(v) {
-    var t = v < 0 ? 0 : (v > 1 ? 1 : v);
+    var t = !(v > 0) ? 0 : (v > 1 ? 1 : v);      // NaN / negative -> 0
     return t * (HS_PLOT.h - HS_ZONE - 6);
 }
 
 function hsLin(v) {
+    if (!(v > 0)) v = 0;
+    else if (v > 1) v = 1;
     return Math.pow(10, (v * 100 - 100) / 20);
 }
 
@@ -207,7 +211,7 @@ function hsColX(c) {
 
 function hsFreqX(f) {
     var t = Math.log(f / HS_FMIN) / Math.log(HS_FMAX / HS_FMIN);
-    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    t = !(t > 0) ? 0 : (t > 1 ? 1 : t);      // NaN / below FMIN -> left edge
     return HS_PLOT.x + t * HS_PLOT.w;
 }
 
@@ -219,6 +223,12 @@ function hsXFreq(x) {
 
 function hsToggleRect() {
     return { x: HS_VIZ_W - 34, y: 4, w: 30, h: 13 };
+}
+
+// x of the L / H flag handles: the line keeps the true frequency x, the handle stays fully inside the canvas and clear of the Post button
+function hsFlagX(x) {
+    var t = hsToggleRect();
+    return sptClamp(x, HS_PLOT.x + 5, t.x - 6);
 }
 
 function hsInside(r, x, y) {
@@ -244,10 +254,10 @@ function paint() {
     var gy = [hsYOfDb(-20), hsYOfDb(-40), hsYOfDb(-60), hsYOfDb(-80), yb];
     sptLcd(0, 0, W, HS_PLOT.h + 2, { xs: gx, ys: gy });
     var labels = ["100", "1k", "10k"];
-    for (var g = 0; g < labels.length; g++) sptText(labels[g], gx[g] + 3, yb - 3, sptColor("live_display_scale_text"), SPT_SIZE_SMALL - 1, 0);
 
     if (hsVals.dispost) hsPaintPost();
     else hsPaintPre();
+    for (var g = 0; g < labels.length; g++) sptText(labels[g], gx[g] + 3, yb - 3, sptColor("live_display_scale_text"), SPT_SIZE_SMALL - 1, 0);
     hsPaintHarmonics();
     hsPaintAnalysis();
     if (hsScalars.awake < 0.5) sptText("no signal", HS_PLOT.x + HS_PLOT.w * 0.5, HS_PLOT.y + 40, sptColor("live_display_scale_text"), SPT_SIZE, 1);
@@ -258,7 +268,7 @@ function paint() {
 
     // legend row: the output channel of this instance is the bright one; chain chip on the right
     var ly = 105;
-    var names = ["Nonharmonics", "Harmonics A", "Harmonics B"];
+    var names = ["Nonharm", "Harm A", "Harm B"];
     var cols = [hsColNh(), hsColA(), hsColB()];
     var lx = 2;
     for (var i = 0; i < 3; i++) {
@@ -270,14 +280,15 @@ function paint() {
     }
     var chip = hsInfo.isInRack ? ("Chain " + (hsInfo.chainIndex + 1) + "/" + Math.max(hsInfo.chainCount, 1)
         + (hsInfo.linked ? ", linked" : "")) : "No rack";
-    sptText(chip, W - 2, ly, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
+    if (sptTextW(chip, SPT_SIZE_SMALL) > W - 2 - (lx - 12) - 8) chip = hsInfo.isInRack ? ("Chain " + (hsInfo.chainIndex + 1)) : "No rack";
+    sptTextIn(chip, W - 2, ly, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2, { x: lx - 4, y: ly - 8, w: W - (lx - 4), h: 11 });
 
     // value rows: Low / High (detection band), Tilt / Threshold
     var f = HS_FIELDS;
-    sptLabelValue("Low", hsFmtFreq(hsVals.lowcut), f.lowcut.x, f.lowcut.y + 11, 0, drag === "lowcut");
-    sptLabelValue("High", hsFmtFreq(hsVals.highcut), f.highcut.x, f.highcut.y + 11, 0, drag === "highcut");
-    sptLabelValue("Tilt", hsVals.tilt.toFixed(1) + " dB", f.tilt.x, f.tilt.y + 11, 0, drag === "tilt");
-    sptLabelValue("Threshold", hsFmtThr(hsVals.thr), f.thr.x, f.thr.y + 11, 0, drag === "thr");
+    sptLabelValue("Low", hsFmtFreq(hsVals.lowcut), f.lowcut.x, f.lowcut.y + 11, 0, drag === "lowcut", 32);
+    sptLabelValue("High", hsFmtFreq(hsVals.highcut), f.highcut.x, f.highcut.y + 11, 0, drag === "highcut", 56);
+    sptLabelValue("Tilt", sptClamp(hsVals.tilt, -99, 99).toFixed(1) + " dB", f.tilt.x, f.tilt.y + 11, 0, drag === "tilt", 32);
+    sptLabelValue("Threshold", hsFmtThr(hsVals.thr), f.thr.x, f.thr.y + 11, 0, drag === "thr", 56);
 }
 
 // y of the top of a column's line / bar
@@ -355,10 +366,11 @@ function hsPaintAnalysis() {
     for (var i = 0; i < 2; i++) {
         var e = edges[i];
         var on = hsDrag && hsDrag.kind === e.k;
-        sptRgba(hc, on ? 1 : 0.7);
+        sptRgba(hc, on ? 1 : 0.5);
         mgraphics.rectangle(Math.round(e.x) - 0.5, top + 11, 1, HS_PLOT.h - 12);
         mgraphics.fill();
-        sptHandle(e.x, top + 6.5, hc, e.t, 4.5);
+        // the handle stays fully inside the canvas at the extreme frequencies (the line keeps the true x)
+        sptHandle(hsFlagX(e.x), top + 6.5, hc, e.t, 4.5);
     }
     // Detection Threshold: 1 px line (Automatic sits on the bottom axis), faint dashed effective level while Automatic
     var auto = hsVals.thr <= HS_THR_MIN + 0.5;
@@ -374,10 +386,13 @@ function hsPaintAnalysis() {
             mgraphics.fill();
         }
     }
-    sptRgba(hc, onT ? 1 : 0.7);
+    sptRgba(hc, onT ? 1 : 0.5);
     mgraphics.rectangle(x0, Math.round(y) - 0.5, x1 - x0, 1);
     mgraphics.fill();
-    sptHandle(x1 - 9, Math.min(y, hsBase() - 6.5), hc, "T", 4.5);
+    // the T handle sits at the right edge; near the top (threshold close to 0 dB) it moves left of the Post button and the flags
+    var tg = hsToggleRect();
+    var hy = Math.min(y, hsBase() - 6.5);
+    sptHandle(hy - 4.5 < tg.y + tg.h + 1 ? tg.x - 22 : x1 - 9, hy, hc, "T", 4.5);
 }
 
 // Harmonic markers (A / B colours by the Pattern rule) and the ROOT (small hollow circle with faint crosshairs).
@@ -425,18 +440,24 @@ function hsPaintHarmonics() {
     mgraphics.fill();
     mgraphics.rectangle(HS_PLOT.x, Math.round(cy) - 0.5, HS_PLOT.w, 1);
     mgraphics.fill();
-    sptHandle(cx, cy, fg, "", 3);
+    var hx = sptClamp(cx, HS_PLOT.x + 4, HS_PLOT.x + HS_PLOT.w - 4);
+    sptHandle(hx, cy, fg, "", 3);
     var ft = hsFmtFreq(f0);
-    var tx = cx + 7;
+    var sub = hr > 1 && fs > 0 ? "f0 " + hsFmtFreq(fs) + "  h" + hr : "";
+    var wide = Math.max(sptTextW(ft, SPT_SIZE_SMALL), sptTextW(sub, SPT_SIZE_SMALL - 1));
+    var tx = hx + 7;
     var al = 0;
-    if (tx + sptTextW(ft, SPT_SIZE_SMALL) > HS_PLOT.x + HS_PLOT.w - 2) {
-        tx = cx - 7;
+    if (tx + wide > HS_PLOT.x + HS_PLOT.w - 2) {
+        tx = hx - 7;
         al = 2;
     }
-    var ty = Math.max(top + 26, cy - 5);
-    sptText(ft, tx, ty, fg, SPT_SIZE_SMALL, al);
+    // the label rows stay above the axis labels (100 / 1k / 10k, baseline yb - 3) and inside the plot
+    var axisTop = yb - 3 - (SPT_SIZE_SMALL - 1) * 0.8 - 1;
+    var ty = Math.min(Math.max(top + 26, cy - 5), axisTop - 1.5 - (sub ? 9 : 0));
+    var lr = { x: HS_PLOT.x, y: top, w: HS_PLOT.w, h: yb - top };
+    sptTextIn(ft, tx, ty, fg, SPT_SIZE_SMALL, al, lr);
     // series fundamental below the root (the root is its h-th harmonic): small dim note under the label
-    if (hr > 1 && fs > 0) sptText("f0 " + hsFmtFreq(fs) + "  h" + hr, tx, ty + 9, sptColor("live_display_scale_text"), SPT_SIZE_SMALL - 1, al);
+    if (sub) sptTextIn(sub, tx, ty + 9, sptColor("live_display_scale_text"), SPT_SIZE_SMALL - 1, al, lr);
 }
 
 // ---------------------------------------------------------------- interaction
@@ -494,8 +515,8 @@ function hsHandleDown(x, y, dbl) {
     // the flags at the top belong to the vertical lines
     if (y < HS_PLOT.y + 12) {
         dT = 99;
-        dL = Math.abs(x - xl) <= 6 ? 0 : dL;
-        dH = Math.abs(x - xh) <= 6 ? 0 : dH;
+        dL = Math.abs(x - hsFlagX(xl)) <= 6 ? 0 : dL;
+        dH = Math.abs(x - hsFlagX(xh)) <= 6 ? 0 : dH;
     }
     var best = Math.min(dT, Math.min(dL, dH));
     if (best > 5) return;

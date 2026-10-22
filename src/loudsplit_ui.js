@@ -23,15 +23,14 @@ mgraphics.autofill = 0;
 inlets = 1;
 outlets = 4;
 
-var LS_VIZ_W = 290;
-var LS_VIZ_H = 157;
-var LS_COL_Q = [0.45, 0.85, 0.45];
-var LS_COL_M = [1.0, 0.80, 0.25];
-var LS_COL_L = [1.0, 0.42, 0.38];
-var LS_PLOT = { x: 4, y: 33, w: 262, h: 108 };
-var LS_DOT_X = 278;
-var LS_COL_RISE = [1.0, 0.62, 0.25];
-var LS_COL_TILT = [0.78, 0.45, 1.0];
+var LS_VIZ_W = 284;
+var LS_VIZ_H = 141;
+var LS_PLOT = { x: 1, y: 1, w: 262, h: 90 };     // inside the 284 x 92 LCD rectangle
+var LS_LCD = { x: 0, y: 0, w: 284, h: 92 };
+var LS_DOT_X = 274;
+var LS_DOT_GAP = 10;                              // min distance between the two solo handles
+var LS_LABEL_GAP = 10;                            // min distance between the two threshold labels
+var LS_DOT_MIN_Y = 20;                            // handles stay below the Post / Sono buttons
 var LS_SONO_COLS = 64;
 var LS_SONO_ROWS = 22;
 var LS_DEFAULTS = { hithr: -30, lothr: -85, rhithr: -12, rlothr: -36, rise: 2, fall: 8, tilt: 0 };
@@ -68,6 +67,7 @@ var lsLastAct = -1;
 
 // ---------------------------------------------------------------- state in
 function lsSetVal(key, v) {
+    if (typeof v !== "number" || !isFinite(v)) return;     // a NaN / Infinity would poison every y mapping
     lsVals[key] = v;
     if (key === "output") lsEmitSel();
     if (key === "relative") lsEmitActive();
@@ -173,7 +173,7 @@ function lsPoll() {
         lsScalars.level = d[LS_SC_LEVEL];
         lsScalars.mean = d[LS_SC_LOUDMEAN];
         lsScalars.lmax = d[LS_SC_LMAX];
-        if (aw > 0.5) lsLmaxS += (lsScalars.lmax - lsLmaxS) * 0.5;
+        if (aw > 0.5 && isFinite(lsScalars.lmax)) lsLmaxS = sptClamp(lsLmaxS + (lsScalars.lmax - lsLmaxS) * 0.5, -200, 100);
         lsPushSono();
         mgraphics.redraw();
     } catch (err) {
@@ -183,7 +183,7 @@ function lsPoll() {
 
 // linear amplitude of a 0..1 (-100..0 dB) telemetry value
 function lsAmp(v) {
-    return v <= 0 ? 0 : Math.pow(10, (v * 100 - 100) / 20);
+    return !(v > 0) ? 0 : Math.pow(10, (Math.min(v, 1) * 100 - 100) / 20);
 }
 
 // Quiet / Mid / Loud shares [q, m, l] of a column (amplitudes after the masks)
@@ -222,32 +222,21 @@ function lsPushSono() {
     while (lsSono.length > LS_SONO_ROWS) lsSono.shift();
 }
 
-// ---------------------------------------------------------------- drawing helpers
-function lsRgba(c, a) {
-    mgraphics.set_source_rgba(c[0], c[1], c[2], a);
-}
+// ---------------------------------------------------------------- theme (colours from spectral_theme.js, one orange accent)
+// Channels: 1 Quiet = Live's grey scale text, 2 Mid = display line one (orange), 3 Loud = display line two (cyan). Always drawn muted:
+// 1 px outlines and faint fills. Threshold lines and their handles use the handle colour (orange, hollow circles).
+function lsColQ() { return sptColor("live_display_scale_text"); }
+function lsColM() { return sptColor("live_display_line_one"); }
+function lsColL() { return sptColor("live_display_line_two"); }
+var LS_PANELS = [["obj-panel-body", "live_surface_bg"], ["obj-panel-det", "live_desktop"], ["obj-panel-thr", "live_desktop"], ["obj-panel-out", "live_desktop"]];
+var lsThemeTask = sptThemeWatch(function () { sptApplyPanelTheme(LS_PANELS); });
 
+// blend of the three channel colours by the [q, m, l] shares
 function lsMix3(w) {
-    return [LS_COL_Q[0] * w[0] + LS_COL_M[0] * w[1] + LS_COL_L[0] * w[2],
-        LS_COL_Q[1] * w[0] + LS_COL_M[1] * w[1] + LS_COL_L[1] * w[2],
-        LS_COL_Q[2] * w[0] + LS_COL_M[2] * w[1] + LS_COL_L[2] * w[2]];
-}
-
-function lsText(str, x, y, size, col, a, align) {
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(size);
-    var xx = x;
-    if (align === 1 || align === 2) {
-        var w = mgraphics.text_measure(str)[0];
-        xx = align === 1 ? x - w * 0.5 : x - w;
-    }
-    lsRgba(col, a);
-    mgraphics.move_to(xx, y);
-    mgraphics.show_text(str);
-}
-
-function lsRRect(x, y, w, h, r) {
-    mgraphics.rectangle_rounded(x, y, w, h, r, r);
+    var q = lsColQ();
+    var m = lsColM();
+    var l = lsColL();
+    return [q[0] * w[0] + m[0] * w[1] + l[0] * w[2], q[1] * w[0] + m[1] * w[1] + l[1] * w[2], q[2] * w[0] + m[2] * w[1] + l[2] * w[2], 1];
 }
 
 // dB (-90..0) <-> plot y
@@ -262,7 +251,7 @@ function lsDbY(y) {
 // 0..1 telemetry level (-100..0 dB) -> plot height fraction
 function lsLv(v) {
     var t = (v * 100 - 100 - LS_DB_MIN) / (LS_DB_MAX - LS_DB_MIN);
-    return t < 0 ? 0 : (t > 1 ? 1 : t);
+    return !(t > 0) ? 0 : (t > 1 ? 1 : t);
 }
 
 function lsColX(c) {
@@ -297,13 +286,41 @@ function lsLineY(eff, x) {
 
 function lsToggleRects() {
     return {
-        post: { x: LS_VIZ_W - 94, y: 18, w: 44, h: 13 },
-        style: { x: LS_VIZ_W - 46, y: 18, w: 42, h: 13 },
-        rel: { x: 4, y: 2, w: 132, h: 14 },
-        rise: { x: LS_VIZ_W - 92, y: 2, w: 88, h: 14 },
-        tilt: { x: 4, y: LS_VIZ_H - 16, w: 112, h: 14 },
-        fall: { x: LS_VIZ_W - 92, y: LS_VIZ_H - 16, w: 88, h: 14 }
+        post: { x: LS_VIZ_W - 66, y: 3, w: 30, h: 13 },
+        style: { x: LS_VIZ_W - 34, y: 3, w: 30, h: 13 },
+        rise: { x: 0, y: 109, w: 134, h: 14 },
+        fall: { x: 142, y: 109, w: 134, h: 14 },
+        tilt: { x: 0, y: 123, w: 134, h: 14 },
+        rel: { x: 142, y: 123, w: 62, h: 13 }
     };
+}
+
+// y of both solo handles (kept clear of the buttons in the LCD's top-right corner, inside the plot, and never on top of each other)
+function lsDotYs() {
+    var xr = LS_PLOT.x + LS_PLOT.w;
+    var maxY = LS_PLOT.y + LS_PLOT.h - 6;
+    var lo = sptClamp(lsLineY(lsEffLo(), xr), LS_DOT_MIN_Y + LS_DOT_GAP, maxY);
+    var hi = sptClamp(lsLineY(lsEffHi(), xr), LS_DOT_MIN_Y, maxY);
+    if (lo - hi < LS_DOT_GAP) hi = lo - LS_DOT_GAP;
+    return { hi: hi, lo: lo };
+}
+
+// baseline y of both threshold labels: inside the plot, above the axis-label row, and not on top of each other
+function lsLabelYs() {
+    var out = {};
+    var top = LS_PLOT.y + 10;
+    var bot = LS_PLOT.y + LS_PLOT.h - 11;            // axis labels (100 / 1k / 10k) sit on the row below
+    var ws = ["hi", "lo"];
+    for (var i = 0; i < 2; i++) {
+        var hi = ws[i] === "hi";
+        var kp = (hi ? lsVals.hiknee : lsVals.loknee) * 0.5 * LS_PLOT.h / (LS_DB_MAX - LS_DB_MIN);
+        out[ws[i]] = sptClamp(lsLineY(hi ? lsEffHi() : lsEffLo(), LS_PLOT.x) - kp - 3, top, bot);
+    }
+    if (out.lo - out.hi < LS_LABEL_GAP) {
+        out.lo = Math.min(bot, out.hi + LS_LABEL_GAP);
+        out.hi = Math.max(top, out.lo - LS_LABEL_GAP);
+    }
+    return out;
 }
 
 function lsInside(r, x, y) {
@@ -319,132 +336,92 @@ function lsKeys(which) {
 // ---------------------------------------------------------------- paint
 function paint() {
     var W = LS_VIZ_W;
-    var H = LS_VIZ_H;
-    mgraphics.set_source_rgba(0.045, 0.06, 0.08, 1);
-    lsRRect(0, 0, W, H, 5);
-    mgraphics.fill();
-
-    // HUD: resolved channel pill (a held solo dot overrides it) and chain chip
-    var selName = lsSelName(lsSel);
-    var pillCol = lsSel === 1 ? LS_COL_Q : (lsSel === 2 ? LS_COL_M : (lsSel === 3 ? LS_COL_L : [0.78, 0.84, 0.9]));
-    var pillText = lsSel === 0 ? "OUT ALL" : (lsSolo ? "SOLO " : "OUT ") + lsSel + " " + selName.toUpperCase();
-    var pw = pillText.length * 5.2 + 12;
-    lsRgba(pillCol, 0.22);
-    lsRRect(4, 18, pw, 13, 6);
-    mgraphics.fill();
-    lsRgba(pillCol, 0.9);
-    mgraphics.set_line_width(1);
-    lsRRect(4, 18, pw, 13, 6);
-    mgraphics.stroke();
-    lsText(pillText, 10, 27.6, 7.5, pillCol, 1, 0);
-    var chip = lsInfo.isInRack ? ("CH " + (lsInfo.chainIndex + 1) + "/" + Math.max(lsInfo.chainCount, 1)
-        + (lsInfo.linked ? " LINKED" : "")) : "NO RACK";
-    lsText(chip, 4 + pw + 6, 27.6, 7.0, [0.55, 0.64, 0.74], 1, 0);
-
-    var t = lsToggleRects();
-    lsRgba([0.16, 0.2, 0.26], 1);
-    lsRRect(t.post.x, t.post.y, t.post.w, t.post.h, 3);
-    mgraphics.fill();
-    lsRRect(t.style.x, t.style.y, t.style.w, t.style.h, 3);
-    mgraphics.fill();
-    lsText(lsVals.dispost ? "POST" : "PRE", t.post.x + t.post.w * 0.5, 27.4, 7.5, [0.92, 0.96, 1.0], 1, 1);
-    lsText(lsVals.disstyle ? "SONO" : "SPEC", t.style.x + t.style.w * 0.5, 27.4, 7.5, [0.92, 0.96, 1.0], 1, 1);
-
-    // plot background, frequency and level grid
-    mgraphics.set_source_rgba(0.075, 0.095, 0.12, 1);
-    lsRRect(LS_PLOT.x, LS_PLOT.y, LS_PLOT.w, LS_PLOT.h, 3);
-    mgraphics.fill();
-    var freqs = [100, 1000, 10000];
+    var drag = lsDrag && lsDrag.kind === "val" ? lsDrag.key : "";
+    var gx = [lsFreqX(100), lsFreqX(1000), lsFreqX(10000)];
+    var gy = [];
+    for (var d = -100; d <= -20; d += 20) gy.push(lsYdb(d));
+    sptLcd(0, 0, W, LS_PLOT.h + 2, { xs: gx, ys: gy });
+    var scale = sptColor("live_display_scale_text");
     var labels = ["100", "1k", "10k"];
-    for (var g = 0; g < freqs.length; g++) {
-        var gx = lsFreqX(freqs[g]);
-        mgraphics.set_source_rgba(0.5, 0.6, 0.7, 0.16);
-        mgraphics.rectangle(gx, LS_PLOT.y, 1, LS_PLOT.h);
-        mgraphics.fill();
-        lsText(labels[g], gx + 2, LS_PLOT.y + LS_PLOT.h - 2, 6.5, [0.5, 0.6, 0.7], 0.8, 0);
-    }
-    for (var d = -100; d <= -20; d += 20) {
-        var gy = lsYdb(d);
-        mgraphics.set_source_rgba(0.5, 0.6, 0.7, 0.12);
-        mgraphics.rectangle(LS_PLOT.x, gy, LS_PLOT.w, 1);
-        mgraphics.fill();
-        lsText(String(d), LS_PLOT.x + LS_PLOT.w - 2, gy - 1.5, 6.0, [0.5, 0.6, 0.7], 0.7, 2);
-    }
+    for (var g = 0; g < labels.length; g++) sptText(labels[g], gx[g] + 3, LS_PLOT.y + LS_PLOT.h - 3, scale, SPT_SIZE_SMALL - 1, 0);
+    for (var e = 0; e < gy.length - 1; e++) sptText(String(-100 + e * 20), LS_PLOT.x + LS_PLOT.w - 2, gy[e] - 4, scale, SPT_SIZE_SMALL - 1.5, 2);
 
     if (lsVals.disstyle) lsPaintSono();
     else if (lsVals.dispost) lsPaintPost();
     else lsPaintPre();
-
-    if (lsScalars.awake < 0.5) lsText("no signal", LS_PLOT.x + LS_PLOT.w * 0.5, LS_PLOT.y + 20, 8, [0.5, 0.6, 0.7], 0.8, 1);
+    if (lsScalars.awake < 0.5) sptText("no signal", LS_PLOT.x + LS_PLOT.w * 0.5, LS_PLOT.y + 40, scale, SPT_SIZE, 1);
 
     lsPaintThreshold("lo");
     lsPaintThreshold("hi");
-    lsPaintCorners();
-}
 
-// Bitwig's four display values: Relative Loudness Mode toggle + Rise (top), Tilt + Fall (bottom)
-function lsPaintCorners() {
+    // display toggles (top right of the LCD)
     var t = lsToggleRects();
-    var on = lsVals.relative ? 1 : 0;
-    var cb = { x: t.rel.x, y: t.rel.y + 2, w: 9, h: 9 };
-    mgraphics.set_line_width(1);
-    lsRgba(on ? LS_COL_M : [0.5, 0.6, 0.7], 1);
-    lsRRect(cb.x, cb.y, cb.w, cb.h, 2);
-    if (on) mgraphics.fill();
-    else mgraphics.stroke();
-    lsText("Relative Loudness Mode", cb.x + 14, t.rel.y + 10.5, 8, on ? [0.92, 0.96, 1.0] : [0.62, 0.7, 0.78], 1, 0);
-    var items = [{ lab: "Rise", txt: lsVals.rise.toFixed(2), r: t.rise, col: LS_COL_RISE, key: "rise" },
-        { lab: "Fall", txt: lsVals.fall.toFixed(2), r: t.fall, col: LS_COL_RISE, key: "fall" },
-        { lab: "Tilt", txt: lsVals.tilt.toFixed(1) + " dB/oct", r: t.tilt, col: LS_COL_TILT, key: "tilt" }];
-    for (var i = 0; i < items.length; i++) {
-        var it = items[i];
-        var r = it.r;
-        var act = lsDrag && lsDrag.kind === "val" && lsDrag.key === it.key;
-        if (it.key === "tilt") {
-            lsText(it.lab, r.x, r.y + 10.5, 8, [0.62, 0.7, 0.78], 1, 0);
-            lsText(it.txt, r.x + 28, r.y + 10.5, 8, it.col, act ? 1 : 0.9, 0);
-        } else {
-            lsText(it.lab, r.x + 20, r.y + 10.5, 8, [0.62, 0.7, 0.78], 1, 0);
-            lsText(it.txt, r.x + r.w, r.y + 10.5, 8, it.col, act ? 1 : 0.9, 2);
-        }
+    sptButton(t.post.x, t.post.y, t.post.w, t.post.h, "Post", lsVals.dispost ? 1 : 0);
+    sptButton(t.style.x, t.style.y, t.style.w, t.style.h, "Sono", lsVals.disstyle ? 1 : 0);
+
+    // legend row: the output channel of this instance (a held solo overrides it) is the bright one; chain chip on the right
+    var ly = 105;
+    var names = ["Quiet", "Mid", "Loud"];
+    var cols = [lsColQ(), lsColM(), lsColL()];
+    var lx = 2;
+    for (var i = 0; i < 3; i++) {
+        var on = lsSel === 0 || lsSel === i + 1;
+        sptLegendSwatch(lx, ly - 5, sptMuted(cols[i], on ? 1 : 0.55));
+        sptText(names[i], lx + 9, ly, on ? sptColor("live_control_fg") : scale, SPT_SIZE_SMALL, 0);
+        lx += 9 + sptTextW(names[i], SPT_SIZE_SMALL) + 12;
     }
+    var chip = lsSolo ? ("Solo " + lsSelName(lsSel)) : (lsInfo.isInRack ? ("Chain " + (lsInfo.chainIndex + 1) + "/" + Math.max(lsInfo.chainCount, 1)
+        + (lsInfo.linked ? ", linked" : "")) : "No rack");
+    sptText(chip, W - 2, ly, scale, SPT_SIZE_SMALL, 2);
+
+    // value rows: Rise / Fall, Tilt and the Relative Loudness Mode toggle
+    sptLabelValue("Rise", lsVals.rise.toFixed(2), t.rise.x, t.rise.y + 11, 0, drag === "rise", 32);
+    sptLabelValue("Fall", lsVals.fall.toFixed(2), t.fall.x, t.fall.y + 11, 0, drag === "fall", 32);
+    sptLabelValue("Tilt", lsVals.tilt.toFixed(1) + " dB/oct", t.tilt.x, t.tilt.y + 11, 0, drag === "tilt", 32);
+    sptButton(t.rel.x, t.rel.y, t.rel.w, t.rel.h, "Relative", lsVals.relative ? 1 : 0);
 }
 
+// PRE: the Mid spectrum, one thin line per column in the blend of the channel colours where its energy goes, over a faint fill.
 function lsPaintPre() {
     var base = LS_PLOT.y + LS_PLOT.h;
     var cw = LS_PLOT.w / LS_NCOLS;
+    var prev = null;
     for (var c = 0; c < LS_NCOLS; c++) {
-        var h = lsLv(lsPre[c]) * (LS_PLOT.h - 2);
-        if (h < 0.5) continue;
-        lsRgba(lsMix3(lsShares(c)), 0.85);
-        mgraphics.rectangle(LS_PLOT.x + c * cw, base - h, Math.max(cw - 0.4, 1), h);
-        mgraphics.fill();
+        var h = lsLv(lsPre[c]) * (LS_PLOT.h - 6);
+        var col = lsMix3(lsShares(c));
+        var x = lsColX(c);
+        if (h >= 0.5) {
+            sptRgba(sptMuted(col, 1), 0.14);
+            mgraphics.rectangle(LS_PLOT.x + c * cw, base - h, Math.max(cw, 1), h);
+            mgraphics.fill();
+        }
+        var pt = [x, base - h];
+        if (prev) sptCurve([prev, pt], sptMuted(col, 0.85));
+        prev = pt;
     }
 }
 
 function lsArea(arr, col, a, lineA) {
     var base = LS_PLOT.y + LS_PLOT.h;
     mgraphics.move_to(LS_PLOT.x, base);
-    for (var c = 0; c < LS_NCOLS; c++) mgraphics.line_to(lsColX(c), base - lsLv(arr[c]) * (LS_PLOT.h - 2));
+    for (var c = 0; c < LS_NCOLS; c++) mgraphics.line_to(lsColX(c), base - lsLv(arr[c]) * (LS_PLOT.h - 6));
     mgraphics.line_to(LS_PLOT.x + LS_PLOT.w, base);
     mgraphics.close_path();
-    lsRgba(col, a);
+    sptRgba(sptMuted(col, 1), a);
     mgraphics.fill();
-    mgraphics.set_line_width(1.0);
-    mgraphics.move_to(lsColX(0), base - lsLv(arr[0]) * (LS_PLOT.h - 2));
-    for (var k = 1; k < LS_NCOLS; k++) mgraphics.line_to(lsColX(k), base - lsLv(arr[k]) * (LS_PLOT.h - 2));
-    lsRgba(col, lineA);
-    mgraphics.stroke();
+    var pts = [];
+    for (var k = 0; k < LS_NCOLS; k++) pts.push([lsColX(k), base - lsLv(arr[k]) * (LS_PLOT.h - 6)]);
+    sptCurve(pts, sptMuted(col, lineA));
 }
 
 function lsPaintPost() {
     // the selected channel is bright, the others dimmed (All: all bright)
-    var aq = (lsSel === 0 || lsSel === 1) ? 0.55 : 0.2;
-    var am = (lsSel === 0 || lsSel === 2) ? 0.55 : 0.2;
-    var al = (lsSel === 0 || lsSel === 3) ? 0.55 : 0.2;
-    lsArea(lsQ, LS_COL_Q, aq, aq > 0.3 ? 0.95 : 0.4);
-    lsArea(lsM, LS_COL_M, am, am > 0.3 ? 0.95 : 0.4);
-    lsArea(lsL, LS_COL_L, al, al > 0.3 ? 0.95 : 0.4);
+    var aq = (lsSel === 0 || lsSel === 1) ? 0.2 : 0.06;
+    var am = (lsSel === 0 || lsSel === 2) ? 0.2 : 0.06;
+    var al = (lsSel === 0 || lsSel === 3) ? 0.2 : 0.06;
+    lsArea(lsQ, lsColQ(), aq, aq > 0.1 ? 0.95 : 0.45);
+    lsArea(lsM, lsColM(), am, am > 0.1 ? 0.95 : 0.45);
+    lsArea(lsL, lsColL(), al, al > 0.1 ? 0.95 : 0.45);
 }
 
 function lsPaintSono() {
@@ -457,17 +434,18 @@ function lsPaintSono() {
         for (var c = 0; c < LS_SONO_COLS; c++) {
             var a = lsLv(row.lv[c]);
             if (a < 0.04) continue;
-            lsRgba(lsMix3(row.w[c]), 0.12 + 0.88 * a);
+            sptRgba(sptMuted(lsMix3(row.w[c]), 1), 0.06 + 0.6 * a);
             mgraphics.rectangle(LS_PLOT.x + c * cw, y, cw + 0.3, rh + 0.3);
             mgraphics.fill();
         }
     }
 }
 
-// One threshold: knee band, line (follows Tilt), value label and the solo dot at the right.
+// One threshold: knee band, 1 px line (follows Tilt), value label and the hollow solo handle at the right. At a parameter extreme
+// (a threshold at its minimum, Relative on a loud frame, Tilt at +-6) the line can leave the plot: it is clipped to the plot rect.
 function lsPaintThreshold(which) {
     var hi = which === "hi";
-    var col = hi ? LS_COL_L : LS_COL_Q;
+    var col = sptColor("live_display_handle_one");
     var eff = hi ? lsEffHi() : lsEffLo();
     var knee = hi ? lsVals.hiknee : lsVals.loknee;
     var x0 = LS_PLOT.x;
@@ -477,47 +455,27 @@ function lsPaintThreshold(which) {
     var kp = knee * 0.5 * LS_PLOT.h / (LS_DB_MAX - LS_DB_MIN);
     var dragging = lsDrag && lsDrag.which === which;
     if (kp > 0.3) {
-        mgraphics.move_to(x0, y0 - kp);
-        mgraphics.line_to(x1, y1 - kp);
-        mgraphics.line_to(x1, y1 + kp);
-        mgraphics.line_to(x0, y0 + kp);
-        mgraphics.close_path();
-        lsRgba(col, dragging && lsDrag.kind === "knee" ? 0.28 : 0.14);
-        mgraphics.fill();
+        sptFillPolyIn([[x0, y0 - kp], [x1, y1 - kp], [x1, y1 + kp], [x0, y0 + kp]], col, dragging && lsDrag.kind === "knee" ? 0.2 : 0.09, LS_PLOT);
     }
-    mgraphics.set_line_width(dragging ? 1.6 : 1.1);
-    lsRgba(col, 0.95);
-    mgraphics.move_to(x0, y0);
-    mgraphics.line_to(x1, y1);
-    mgraphics.stroke();
-    // stub to the dot and the dot itself
-    var dy = Math.max(LS_PLOT.y + 3, Math.min(LS_PLOT.y + LS_PLOT.h - 3, y1));
-    mgraphics.set_line_width(1);
-    lsRgba(col, 0.5);
-    mgraphics.move_to(x1, y1);
-    mgraphics.line_to(LS_DOT_X, dy);
-    mgraphics.stroke();
+    sptCurveIn([[x0, y0], [x1, y1]], col, dragging ? 1 : 0.7, LS_PLOT);
+    // stub to the handle and the handle itself (both inside the LCD, right of the plot)
+    var dy = lsDotYs()[which];
+    sptCurveIn([[x1, sptClamp(y1, LS_PLOT.y, LS_PLOT.y + LS_PLOT.h)], [LS_DOT_X, dy]], col, 0.45, LS_LCD);
     var held = lsSolo === which;
-    lsRgba(col, held ? 1 : 0.85);
-    mgraphics.arc(LS_DOT_X, dy, held ? 5.2 : 4.2, 0, Math.PI * 2);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(0.04, 0.05, 0.07, 1);
-    mgraphics.arc(LS_DOT_X, dy, 1.6, 0, Math.PI * 2);
-    mgraphics.fill();
-    // label (value as set, "REL" in Relative mode) above the line at the left
+    if (held) {
+        sptRgba(col);
+        mgraphics.arc(LS_DOT_X, dy, 4.5, 0, Math.PI * 2);
+        mgraphics.fill();
+        sptText(hi ? "H" : "L", LS_DOT_X, dy + 2.6, sptColor("live_lcd_bg"), 7, 1);
+    } else {
+        sptHandle(LS_DOT_X, dy, col, hi ? "H" : "L", 4.5);
+    }
+    // value label above the line at the left (value as set, "rel" in Relative mode; same precision as the Live box)
     var keys = lsKeys(which);
     var v = lsVals[keys.thr];
-    var txt = (hi ? "HI " : "LO ") + v.toFixed(1) + (lsVals.relative ? " REL" : " dB");
-    if (dragging && lsDrag.kind === "knee") txt = "KNEE " + knee.toFixed(1) + " dB";
-    var ly = Math.max(LS_PLOT.y + 8, Math.min(LS_PLOT.y + LS_PLOT.h - 3, y0 - kp - 2));
-    if (hi && ly > LS_PLOT.y + LS_PLOT.h - 10) ly = y0 + kp + 8;
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(7);
-    var tw = mgraphics.text_measure(txt)[0];
-    mgraphics.set_source_rgba(0.045, 0.06, 0.08, 0.78);
-    lsRRect(LS_PLOT.x + 2, ly - 8, tw + 6, 10, 3);
-    mgraphics.fill();
-    lsText(txt, LS_PLOT.x + 5, ly, 7, col, 1, 0);
+    var txt = (hi ? "Higher " : "Lower ") + v.toFixed(1) + (lsVals.relative ? " dB rel" : " dB");
+    if (dragging && lsDrag.kind === "knee") txt = "Knee " + knee.toFixed(1) + " dB";
+    sptTextIn(txt, LS_PLOT.x + 4, lsLabelYs()[which], sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0, LS_PLOT);
 }
 
 // ---------------------------------------------------------------- interaction
@@ -540,8 +498,7 @@ function lsPick(x, y) {
     for (var i = 0; i < 2; i++) {
         var w = which[i];
         var eff = w === "hi" ? lsEffHi() : lsEffLo();
-        var yr = lsLineY(eff, LS_PLOT.x + LS_PLOT.w);
-        var dyDot = Math.max(LS_PLOT.y + 3, Math.min(LS_PLOT.y + LS_PLOT.h - 3, yr));
+        var dyDot = lsDotYs()[w];
         if (Math.abs(x - LS_DOT_X) < 9 && Math.abs(y - dyDot) < 9) {
             var dd = Math.abs(y - dyDot);
             if (!best || dd < best.dist) best = { which: w, dot: true, dist: dd };

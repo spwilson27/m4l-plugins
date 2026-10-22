@@ -5,6 +5,7 @@
     "src/types/freqsplit.d.ts",
     "src/freqsplit_config.js",
     "src/spectral_link.js",
+    "src/spectral_theme.js",
     "src/freqsplit_ui.js"
   ]
 }

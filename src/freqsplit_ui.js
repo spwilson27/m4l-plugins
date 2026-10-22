@@ -23,11 +23,14 @@ mgraphics.autofill = 0;
 inlets = 1;
 outlets = 3;
 
-var FV_W = 330;
-var FV_H = 119;
+var FV_W = 328;
+var FV_H = 100;
+// the four channel colours (red, blue, yellow, magenta): the only non-theme colours, always drawn muted (thin lines / faint tints)
 var FV_COLS = [[1.0, 0.42, 0.38], [0.32, 0.62, 1.0], [1.0, 0.80, 0.25], [0.92, 0.42, 0.85]];
-var FV_ORANGE = [1.0, 0.62, 0.20];
-var FV_PLOT = { x: 4, y: 18, w: 322, h: 97 };
+var FV_NAMES = ["Red", "Blue", "Yellow", "Magenta"];
+var FV_PLOT = { x: 1, y: 1, w: 326, h: 82 };     // inside the LCD rectangle (0, 0, FV_W, 84); the legend row sits below it
+var FV_PANELS = [["obj-panel-body", "live_surface_bg"], ["obj-panel-spl", "live_desktop"], ["obj-panel-spc", "live_desktop"], ["obj-panel-out", "live_desktop"]];
+var fvThemeTask = sptThemeWatch(function () { sptApplyPanelTheme(FV_PANELS); });
 var FV_DB_LO = -80;          // plot level range
 var FV_DB_HI = 6;
 var FV_DENSE = 120;          // above this many splits the split lines are not drawn
@@ -85,6 +88,9 @@ function fvRebuild() {
 
 // ---------------------------------------------------------------- state in
 function fvSetVal(key, v) {
+    if (!isFinite(v)) return;
+    var pr = FS_PARAMS[key];
+    if (pr) v = Math.max(pr[2], Math.min(pr[3], v));     // every drawn mapping then sees an in-range value
     fvVals[key] = v;
     if (key === "output") fvEmitSel();
     else if (FV_PATTERN_KEYS.indexOf(key) >= 0) fvRebuild();
@@ -179,29 +185,13 @@ function fvPoll() {
 }
 
 // ---------------------------------------------------------------- drawing helpers
-function fvRgba(c, a) {
-    mgraphics.set_source_rgba(c[0], c[1], c[2], a);
-}
-
-function fvText(str, x, y, size, col, a, align) {
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(size);
-    var xx = x;
-    if (align === 1 || align === 2) {
-        var w = mgraphics.text_measure(str)[0];
-        xx = align === 1 ? x - w * 0.5 : x - w;
-    }
-    fvRgba(col, a);
-    mgraphics.move_to(xx, y);
-    mgraphics.show_text(str);
-}
-
-function fvRRect(x, y, w, h, r) {
-    mgraphics.rectangle_rounded(x, y, w, h, r, r);
+function fvMute(ch, amount) {
+    return sptMuted(FV_COLS[ch], amount);
 }
 
 // telemetry level 0..1 (-100..0 dB) -> plot height fraction (-80..+6 dB)
 function fvLv(v) {
+    if (!(v === v)) return 0;
     var t = (v * 100 - 100 - FV_DB_LO) / (FV_DB_HI - FV_DB_LO);
     return t < 0 ? 0 : (t > 1 ? 1 : t);
 }
@@ -226,72 +216,49 @@ function fvDot() {
     };
 }
 
-function fvArea(arr, col, a, lineA) {
+function fvPts(arr) {
     var base = FV_PLOT.y + FV_PLOT.h;
-    mgraphics.move_to(FV_PLOT.x, base);
-    for (var c = 0; c < FS_NCOLS; c++) mgraphics.line_to(fvColX(c), base - fvLv(arr[c]) * (FV_PLOT.h - 2));
-    mgraphics.line_to(FV_PLOT.x + FV_PLOT.w, base);
-    mgraphics.close_path();
-    fvRgba(col, a);
-    mgraphics.fill();
-    mgraphics.set_line_width(1.0);
-    mgraphics.move_to(fvColX(0), base - fvLv(arr[0]) * (FV_PLOT.h - 2));
-    for (var k = 1; k < FS_NCOLS; k++) mgraphics.line_to(fvColX(k), base - fvLv(arr[k]) * (FV_PLOT.h - 2));
-    fvRgba(col, lineA);
-    mgraphics.stroke();
+    var pts = [];
+    for (var c = 0; c < FS_NCOLS; c++) pts.push([fvColX(c), base - fvLv(arr[c]) * (FV_PLOT.h - 2)]);
+    return pts;
 }
 
 // ---------------------------------------------------------------- paint
 function paint() {
     var W = FV_W;
-    var H = FV_H;
-    mgraphics.set_source_rgba(0.045, 0.06, 0.08, 1);
-    fvRRect(0, 0, W, H, 5);
-    mgraphics.fill();
-
-    // HUD: resolved channel pill and chain chip
-    var pillCol = fvSel >= 1 && fvSel <= 4 ? FV_COLS[fvSel - 1] : [0.78, 0.84, 0.9];
-    var pillText = fvSel === 0 ? "OUT ALL" : "OUT " + fvSel + " " + fsSelName(fvSel).toUpperCase();
-    var pw = pillText.length * 5.2 + 12;
-    fvRgba(pillCol, 0.22);
-    fvRRect(4, 3, pw, 13, 6);
-    mgraphics.fill();
-    fvRgba(pillCol, 0.9);
-    mgraphics.set_line_width(1);
-    fvRRect(4, 3, pw, 13, 6);
-    mgraphics.stroke();
-    fvText(pillText, 10, 12.6, 7.5, pillCol, 1, 0);
-    var chip = fvInfo.isInRack ? ("CH " + (fvInfo.chainIndex + 1) + "/" + Math.max(fvInfo.chainCount, 1)
-        + (fvInfo.linked ? " LINKED" : "")) : "NO RACK";
-    fvText(chip, 4 + pw + 6, 12.6, 7.0, [0.55, 0.64, 0.74], 1, 0);
-    fvText(fvVals.dispost ? "POST" : "PRE", W - 6, 12.6, 7.0, [0.55, 0.64, 0.74], 1, 2);
-
-    // plot background
-    mgraphics.set_source_rgba(0.075, 0.095, 0.12, 1);
-    fvRRect(FV_PLOT.x, FV_PLOT.y, FV_PLOT.w, FV_PLOT.h, 3);
-    mgraphics.fill();
-    fvPaintRegions();
-
+    var yb = FV_PLOT.y + FV_PLOT.h;
+    var gx = [];
+    var gy = [FV_PLOT.y + FV_PLOT.h * 0.25, FV_PLOT.y + FV_PLOT.h * 0.5, FV_PLOT.y + FV_PLOT.h * 0.75];
     var freqs = [100, 1000, 10000];
     var labels = ["100", "1k", "10k"];
-    for (var g = 0; g < freqs.length; g++) {
-        var gx = fvUX(fsHzToU(freqs[g]));
-        mgraphics.set_source_rgba(0.5, 0.6, 0.7, 0.16);
-        mgraphics.rectangle(gx, FV_PLOT.y, 1, FV_PLOT.h);
-        mgraphics.fill();
-        fvText(labels[g], gx + 2, FV_PLOT.y + FV_PLOT.h - 2, 6.5, [0.5, 0.6, 0.7], 0.8, 0);
-    }
+    for (var g = 0; g < freqs.length; g++) gx.push(fvUX(fsHzToU(freqs[g])));
+    sptLcd(0, 0, W, FV_PLOT.h + 2, { xs: gx, ys: gy });
 
+    fvPaintRegions();
+    for (var l = 0; l < labels.length; l++) sptText(labels[l], gx[l] + 3, yb - 3, sptColor("live_display_scale_text"), SPT_SIZE_SMALL - 1, 0);
     if (fvVals.dispost) fvPaintPost();
     else fvPaintPre();
-    if (fvScalars.awake < 0.5) fvText("no signal", FV_PLOT.x + FV_PLOT.w * 0.5, FV_PLOT.y + FV_PLOT.h * 0.5, 8, [0.5, 0.6, 0.7], 0.8, 1);
+    if (fvScalars.awake < 0.5) sptText("no signal", FV_PLOT.x + FV_PLOT.w * 0.5, FV_PLOT.y + 40, sptColor("live_display_scale_text"), SPT_SIZE, 1);
 
     fvPaintSplits();
     fvPaintLimiter();
     fvPaintDot();
+
+    // legend row under the display: channel swatches (this instance's output bright), chain chip right-aligned
+    var ly = FV_PLOT.h + 13;
+    var lx = 2;
+    for (var c = 0; c < 4; c++) {
+        var on = fvSel === 0 || fvSel === c + 1;
+        sptLegendSwatch(lx, ly - 5, fvMute(c, on ? 1 : 0.55));
+        sptText(FV_NAMES[c], lx + 9, ly, on ? sptColor("live_control_fg") : sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+        lx += 9 + sptTextW(FV_NAMES[c], SPT_SIZE_SMALL) + 12;
+    }
+    var chip = fvInfo.isInRack ? ("Chain " + (fvInfo.chainIndex + 1) + "/" + Math.max(fvInfo.chainCount, 1)
+        + (fvInfo.linked ? ", linked" : "")) : "No rack";
+    sptText(chip, W - 2, ly, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
 }
 
-// Stacked channel masks, one 2 px column at a time (the crossfades show as blends).
+// Stacked channel masks as faint tints, one 2 px column at a time (the crossfades show as blends).
 function fvPaintRegions() {
     var cols = fvRegion.length;
     var cw = FV_PLOT.w / cols;
@@ -302,7 +269,7 @@ function fvPaintRegions() {
             if (m[c] <= 0.001) continue;
             var h = FV_PLOT.h * m[c];
             var dim = fvSel >= 1 && fvSel <= 4 && fvSel - 1 !== c;
-            fvRgba(FV_COLS[c], dim ? 0.08 : 0.24);
+            sptRgba(FV_COLS[c], dim ? 0.05 : 0.15);
             mgraphics.rectangle(FV_PLOT.x + i * cw, y - h, cw + 0.4, h);
             mgraphics.fill();
             y -= h;
@@ -310,88 +277,97 @@ function fvPaintRegions() {
     }
 }
 
-// Pre: the Mid spectrum, each column coloured by the channel mix it is sorted into.
+// Pre: the Mid spectrum as a thin outline + faint fill, each column in the muted colour of the channel mix it is sorted into.
 function fvPaintPre() {
     var base = FV_PLOT.y + FV_PLOT.h;
     var cw = FV_PLOT.w / FS_NCOLS;
+    var bg = sptColor("live_lcd_bg");
+    var prev = null;
     for (var c = 0; c < FS_NCOLS; c++) {
         var h = fvLv(fvPre[c]) * (FV_PLOT.h - 2);
-        if (h < 0.5) continue;
-        fvRgba(fvColRgb[c], 0.85);
-        mgraphics.rectangle(FV_PLOT.x + c * cw, base - h, Math.max(cw - 0.4, 1), h);
-        mgraphics.fill();
+        var col = sptMix(bg, fvColRgb[c], 0.8);
+        if (h >= 0.5) {
+            sptRgba(col, 0.28);
+            mgraphics.rectangle(FV_PLOT.x + c * cw, base - h, Math.max(cw - 0.4, 1), h);
+            mgraphics.fill();
+        }
+        var pt = [fvColX(c), base - h, col];
+        if (prev) sptCurve([[prev[0], prev[1]], [pt[0], pt[1]]], pt[2], 0.95);
+        prev = pt;
     }
 }
 
 function fvPaintPost() {
     for (var c = 0; c < 4; c++) {
         var dim = fvSel >= 1 && fvSel <= 4 && fvSel - 1 !== c;
-        fvArea(fvCh[c], FV_COLS[c], dim ? 0.15 : 0.5, dim ? 0.45 : 0.95);
+        var pts = fvPts(fvCh[c]);
+        var base = FV_PLOT.y + FV_PLOT.h;
+        sptRgba(FV_COLS[c], dim ? 0.05 : 0.16);
+        mgraphics.move_to(pts[0][0], base);
+        for (var k = 0; k < pts.length; k++) mgraphics.line_to(pts[k][0], pts[k][1]);
+        mgraphics.line_to(pts[pts.length - 1][0], base);
+        mgraphics.close_path();
+        mgraphics.fill();
+        sptCurve(pts, fvMute(c, 0.8), dim ? 0.4 : 0.95);
     }
 }
 
 function fvPaintSplits() {
     var S = fvSplitXs.length;
     if (S < FV_DENSE) {
-        mgraphics.set_line_width(1);
         for (var j = 0; j < S; j++) {
-            var x = Math.round(fvUX(fvSplitXs[j])) + 0.5;
-            mgraphics.set_source_rgba(0.95, 0.97, 1.0, 0.55);
-            mgraphics.move_to(x, FV_PLOT.y);
-            mgraphics.line_to(x, FV_PLOT.y + FV_PLOT.h);
-            mgraphics.stroke();
+            var x = Math.max(FV_PLOT.x + 0.5, Math.min(FV_PLOT.x + FV_PLOT.w - 0.5, Math.round(fvUX(fvSplitXs[j])) + 0.5));
+            sptCurve([[x, FV_PLOT.y], [x, FV_PLOT.y + FV_PLOT.h]], sptColor("live_display_scale_text"), 0.5);
         }
     }
+    var lb = fvLimLabel();
     for (var i = 0; i < fvSegs.length; i++) {
         var sg = fvSegs[i];
-        fvText(String(sg.ch + 1), fvUX((sg.x0 + sg.x1) * 0.5), FV_PLOT.y + 9, 7.5, FV_COLS[sg.ch], 1, 1);
+        var nx = fvUX((sg.x0 + sg.x1) * 0.5);
+        // the limiter readout wins where it would sit on a region number
+        if (lb && nx + 4 > lb.x0 && lb.y0 < FV_PLOT.y + 14) continue;     // (text and handle together span lb.x0 .. plot right)
+        sptText(String(sg.ch + 1), nx, FV_PLOT.y + 10, fvMute(sg.ch, 0.85), SPT_SIZE_SMALL, 1);
     }
 }
 
+// Limiter threshold: thin orange line with a hollow "T" handle, drawn only while the limiter is on (or being dragged).
 function fvPaintLimiter() {
     var on = fvVals.limon === 1;
     var y = fvLimY();
-    var x0 = FV_PLOT.x;
     var x1 = FV_PLOT.x + FV_PLOT.w;
-    // Bitwig draws the threshold line only while the limiter is active (kept visible while it is being dragged)
     if (!on && !(fvDrag && fvDrag.kind === "limiter")) return;
-    if (on) {
-        fvRgba(FV_ORANGE, 0.10);
-        mgraphics.rectangle(x0, FV_PLOT.y, FV_PLOT.w, y - FV_PLOT.y);
-        mgraphics.fill();
-    }
-    mgraphics.set_line_width(on ? 1.5 : 1);
-    fvRgba(FV_ORANGE, on ? 0.95 : 0.35);
-    mgraphics.move_to(x0, y);
-    mgraphics.line_to(x1, y);
-    mgraphics.stroke();
-    var tag = fsFormatDb(fvVals.limthr);
-    var tw = tag.length * 4.6 + 8;
-    var py = Math.min(Math.max(y, FV_PLOT.y + 14), FV_PLOT.y + FV_PLOT.h - 6);
-    fvRgba(FV_ORANGE, 0.95);
-    fvRRect(x1 - tw - 2, py - 6, tw, 11, 3);
-    mgraphics.fill();
-    fvText(tag, x1 - tw * 0.5 - 2, py + 2.6, 6.5, [0.1, 0.07, 0.03], 1, 1);
+    var hc = sptColor("live_display_handle_one");
+    sptCurve([[FV_PLOT.x, y], [x1, y]], hc, on ? 0.8 : 0.4);
+    var lb = fvLimLabel();
+    sptHandle(x1 - 9, lb.py, hc, "T", 4.5);
+    sptText(lb.text, x1 - 17, lb.base, hc, SPT_SIZE_SMALL, 2);
 }
 
+// Limiter handle + readout geometry. The handle stays inside the plot; the readout never sits in the axis label row (100 / 1k / 10k)
+// along the plot bottom, so it is lifted above it at the low end of the threshold range.
+function fvLimLabel() {
+    if (!(fvVals.limon === 1 || (fvDrag && fvDrag.kind === "limiter"))) return null;
+    var py = Math.min(Math.max(fvLimY(), FV_PLOT.y + 8), FV_PLOT.y + FV_PLOT.h - 8);
+    var text = fsFormatDb(fvVals.limthr);
+    var w = sptTextW(text, SPT_SIZE_SMALL);
+    var axisTop = FV_PLOT.y + FV_PLOT.h - 3 - (SPT_SIZE_SMALL - 1) * 0.8;     // top of the axis label boxes
+    var base = Math.min(py + 3, axisTop - 1 - SPT_SIZE_SMALL * 0.2);
+    var x1 = FV_PLOT.x + FV_PLOT.w - 17;
+    return { py: py, text: text, base: base, x0: x1 - w, x1: x1, y0: base - SPT_SIZE_SMALL * 0.8, y1: base + SPT_SIZE_SMALL * 0.2 };
+}
+
+// XY dot: a hollow handle with faint crosshair lines.
 function fvPaintDot() {
     var d = fvDot();
     var active = fvDrag && fvDrag.kind === "dot";
-    mgraphics.set_source_rgba(1, 1, 1, 0.18);
-    mgraphics.rectangle(Math.round(d.x), FV_PLOT.y, 1, FV_PLOT.h);
-    mgraphics.fill();
-    mgraphics.rectangle(FV_PLOT.x, Math.round(d.y), FV_PLOT.w, 1);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(1, 1, 1, active ? 1 : 0.95);
-    mgraphics.arc(d.x, d.y, 3.8, 0, Math.PI * 2);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(0.05, 0.06, 0.08, 0.9);
-    mgraphics.set_line_width(1);
-    mgraphics.arc(d.x, d.y, 3.8, 0, Math.PI * 2);
-    mgraphics.stroke();
+    var hc = sptColor("live_display_handle_one");
+    var gc = sptColor("live_display_scale_text");
+    sptCurve([[Math.round(d.x) + 0.5, FV_PLOT.y], [Math.round(d.x) + 0.5, FV_PLOT.y + FV_PLOT.h]], gc, 0.35);
+    sptCurve([[FV_PLOT.x, Math.round(d.y) + 0.5], [FV_PLOT.x + FV_PLOT.w, Math.round(d.y) + 0.5]], gc, 0.35);
+    sptHandle(d.x, d.y, active ? sptMix(hc, [1, 1, 1, 1], 0.4) : hc, "", 4);
     if (fvVals.bend !== 0 || fvVals.pinch !== 0 || active) {
-        var txt = "BEND " + (fvVals.bend > 0 ? "+" : "") + Math.round(fvVals.bend) + "%  PINCH " + (fvVals.pinch > 0 ? "+" : "") + Math.round(fvVals.pinch) + "%";
-        fvText(txt, FV_PLOT.x + 4, FV_PLOT.y + FV_PLOT.h - 12, 6.5, [0.92, 0.96, 1.0], 0.8, 0);
+        var txt = "Bend " + (fvVals.bend > 0 ? "+" : "") + Math.round(fvVals.bend) + " %   Pinch " + (fvVals.pinch > 0 ? "+" : "") + Math.round(fvVals.pinch) + " %";
+        sptText(txt, FV_PLOT.x + 4, FV_PLOT.y + FV_PLOT.h - 14, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
     }
 }
 

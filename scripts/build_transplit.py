@@ -11,8 +11,8 @@ Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/spectral_sp
 -> plugout~. The v8ui face (src/transplit_config.js + src/spectral_link.js + src/transplit_ui.js) draws the spectrum, hosts the
 Bias slider / Tilt grip, links the parameters with the other instances in the rack and sends the resolved output selection.
 
-Layout (440 x 169): v8ui canvas x=6..290, y=6..118; Tilt / Decay / Smoothing / Bias / Blend / Mix value bars in the right column
-(x=300..432); Type, Tilt Mode, Size and Output controls under the canvas; two background panels last.
+Layout (440 x 169, Ableton-native): Detection section with the v8ui canvas (x=8..288, y=20..161); Analysis (Type, Tilt Mode, Bias,
+Blend) and Output (Output, Size, Mix) sections on the right; Tilt / Decay / Smoothing are hidden parameters edited on the canvas.
 """
 
 import os
@@ -87,33 +87,44 @@ def build_patcher():
                       os.path.join(SRC, "transplit_core.genexpr"))
     face = (sc.read(os.path.join(SRC, "transplit_config.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_link.js")).rstrip() + "\n\n"
+            + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "transplit_ui.js")))
 
     boxes = []
     lines = []
 
-    # ---- controls (presentation) ----
-    rows = [("tilt", "Tilt", YEL), ("tdecay", "Decay", YEL), ("tsmooth", "Smoothing", BLU), ("bias", "Bias", sc.TEXT),
-            ("blend", "Blend", sc.TEXT), ("mix", "Mix", sc.TEXT)]
-    for i, (key, text, color) in enumerate(rows):
-        y = 9 + i * 19
-        boxes.append(sc.make_label(f"obj-lbl-{key}", text, 300, y + 1, 52, 13, size=8.0, color=color))
-        app = 3 if key in ("bias", "tilt") else 2
-        boxes.append(sc.make_numbox(key, NUM[key], NUM_HELP[key], 354, y, 78, 15, color, app, 8.5, NUM_UNITS.get(key)))
+    # ---- controls (presentation): Reverb-style titled sections, theme-bound native live.* controls ----
+    RX, CX, CW = 302, 360, 70           # right column: label x, control x / width
+    boxes.append(sc.make_theme_comment("obj-lbl-ttype", "Type", RX, 22, 56))
+    boxes.append(sc.make_theme_menu("ttype", ENUM["ttype"], ENUM_HELP["ttype"], CX, 21, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-tmode", "Tilt Mode", RX, 39, 56))
+    boxes.append(sc.make_theme_menu("tmode", ENUM["tmode"], ENUM_HELP["tmode"], CX, 38, CW, 15))
+    for key, text, y in (("bias", "Bias", 55), ("blend", "Blend", 72)):
+        boxes.append(sc.make_theme_comment(f"obj-lbl-{key}", text, RX, y + 1, 56))
+        boxes.append(sc.make_lcd_numbox(key, NUM[key], NUM_HELP[key], CX, y, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-output", "Output", RX, 111, 56))
+    boxes.append(sc.make_theme_menu("output", ENUM["output"], ENUM_HELP["output"], CX, 110, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", RX, 128, 56))
+    boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], CX, 127, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-mix", "Mix", RX, 145, 56))
+    boxes.append(sc.make_lcd_numbox("mix", NUM["mix"], NUM_HELP["mix"], CX, 144, CW, 15))
+    # Tilt / Decay / Smoothing: automatable parameters drawn and edited by the display (hidden from the face)
+    for i, key in enumerate(("tilt", "tdecay", "tsmooth")):
+        b = sc.make_numbox(key, NUM[key], NUM_HELP[key], 20 + i * 100, 0, 80, 15, sc.TEXT, 3 if key == "tilt" else 2, 8.5,
+                           NUM_UNITS.get(key))
+        b["box"]["presentation"] = 0
+        b["box"].pop("presentation_rect", None)
+        boxes.append(b)
 
-    boxes.append(sc.make_label("obj-lbl-ttype", "Type", 8, 125, 28, 13, color=YEL))
-    boxes.append(sc.make_tab("ttype", ENUM["ttype"], ENUM_HELP["ttype"], 38, 124, 110, 15, YEL))
-    boxes.append(sc.make_label("obj-lbl-tmode", "Tilt Mode", 154, 125, 44, 13, color=sc.TEXT))
-    boxes.append(sc.make_tab("tmode", ENUM["tmode"], ENUM_HELP["tmode"], 198, 124, 92, 15, sc.TEXT))
-    boxes.append(sc.make_label("obj-lbl-size", "Size", 8, 145, 28, 13, color=sc.DIM))
-    boxes.append(sc.make_tab("size", ENUM["size"], ENUM_HELP["size"], 38, 144, 120, 15, sc.DIM))
-    boxes.append(sc.make_label("obj-lbl-output", "Output", 168, 145, 44, 13, color=sc.TEXT))
-    boxes.append(sc.make_menu("output", ENUM["output"], ENUM_HELP["output"], 214, 144, 76, 15, sc.TEXT))
-
-    boxes.append(sc.make_label("obj-leg-lat", "Latency 4096 smp", 304, 147, 124, 12, size=7.0, color=sc.DIM, bold=False))
+    # section titles + hairlines (the section panels themselves go last)
+    p_det, parts_det = sc.make_section("det", 4, 4, 288, 161, "Detection")
+    p_ana, parts_ana = sc.make_section("ana", 296, 4, 140, 86, "Analysis")
+    p_out, parts_out = sc.make_section("out", 296, 94, 140, 71, "Output")
+    for parts in (parts_det, parts_ana, parts_out):
+        boxes += parts
 
     # ---- display (the only v8ui) ----
-    boxes.append(sc.v8ui("obj-viz", face, [6.0, 6.0, 284.0, 112.0], (20.0, 80.0), 3, "TransplitView"))
+    boxes.append(sc.v8ui("obj-viz", face, [8.0, 20.0, 280.0, 141.0], (20.0, 80.0), 3, "TransplitView"))
 
     # ---- audio ----
     boxes += [
@@ -172,8 +183,7 @@ def build_patcher():
     lines.append(line("obj-viz", 2, "obj-gen", 0))
 
     # ---- background panels last ----
-    boxes.append(sc.make_panel("obj-panel-left", 4, 4, 290, 161, border=(0.22, 0.26, 0.32)))
-    boxes.append(sc.make_panel("obj-panel-right", 296, 4, 140, 161, border=(0.30, 0.26, 0.20)))
+    boxes += [p_det, p_ana, p_out, sc.make_body_panel(WIDTH)]
 
     return sc.patcher(
         boxes, lines, WIDTH,

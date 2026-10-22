@@ -21,14 +21,16 @@ mgraphics.autofill = 0;
 inlets = 1;
 outlets = 3;
 
-var TS_VIZ_W = 284;
-var TS_VIZ_H = 112;
-var TS_COL_TR = [1.0, 0.80, 0.25];
-var TS_COL_TONE = [0.32, 0.62, 1.0];
-var TS_COL_ORANGE = [1.0, 0.62, 0.15];
-var TS_PLOT = { x: 22, y: 18, w: 240, h: 78 };
-var TS_SLIDER_L = { x: 5, y: 18, w: 12, h: 78 };
-var TS_SLIDER_R = { x: 267, y: 18, w: 12, h: 78 };
+var TS_VIZ_W = 280;
+var TS_VIZ_H = 141;
+var TS_LCD_H = 92;
+var TS_PLOT = { x: 20, y: 4, w: 240, h: 84 };
+var TS_SLIDER_L = { x: 5, y: 6, w: 10, h: 80 };
+var TS_SLIDER_R = { x: 265, y: 6, w: 10, h: 80 };
+var TS_PANELS = [["obj-panel-body", "live_surface_bg"], ["obj-panel-det", "live_desktop"], ["obj-panel-ana", "live_desktop"], ["obj-panel-out", "live_desktop"]];
+var tsThemeTask = sptThemeWatch(function () { sptApplyPanelTheme(TS_PANELS); });
+function tsColTr() { return sptColor("live_display_line_one"); }
+function tsColTone() { return sptColor("live_display_line_two"); }
 var TS_SONO_COLS = 60;
 var TS_SONO_ROWS = 22;
 var TS_WAVE_VIEW = 80;                 // telemetry frames shown by the waveform (3 px each)
@@ -198,35 +200,10 @@ function tsPushSono() {
 }
 
 // ---------------------------------------------------------------- drawing helpers
-function tsRgba(c, a) {
-    mgraphics.set_source_rgba(c[0], c[1], c[2], a);
-}
-
-function tsMix(a, b, t) {
-    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-}
-
-function tsText(str, x, y, size, col, a, align) {
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(size);
-    var xx = x;
-    if (align === 1 || align === 2) {
-        var w = mgraphics.text_measure(str)[0];
-        xx = align === 1 ? x - w * 0.5 : x - w;
-    }
-    tsRgba(col, a);
-    mgraphics.move_to(xx, y);
-    mgraphics.show_text(str);
-}
-
-function tsRRect(x, y, w, h, r) {
-    mgraphics.rectangle_rounded(x, y, w, h, r, r);
-}
-
 // 0..1 level (-100..0 dB) -> plot height fraction, floor at -80 dB
 function tsLv(v) {
     var t = (v * 100 - 20) / 80;
-    return t < 0 ? 0 : (t > 1 ? 1 : t);
+    return !(t > 0) ? 0 : (t > 1 ? 1 : t);      // NaN / negative -> 0
 }
 
 // linear rms -> 0..1 (-60..0 dB)
@@ -248,71 +225,72 @@ function tsInside(r, x, y) {
 // ---------------------------------------------------------------- layout (hit rects shared by paint and interaction)
 function tsRects() {
     return {
-        tilt: { x: 56, y: 2, w: 80, h: 14 },
-        decay: { x: 146, y: 2, w: 80, h: 14 },
-        smooth: { x: 140, y: 97, w: 100, h: 14 },
-        wave: { x: 24, y: 98, w: 16, h: 12 },
-        sono: { x: 44, y: 98, w: 16, h: 12 },
-        post: { x: 66, y: 98, w: 36, h: 12 }
+        tilt: { x: 0, y: 112, w: 92, h: 14 },
+        decay: { x: 94, y: 112, w: 92, h: 14 },
+        smooth: { x: 188, y: 112, w: 92, h: 14 },
+        wave: { x: 156, y: 96, w: 16, h: 12 },
+        sono: { x: 176, y: 96, w: 16, h: 12 },
+        post: { x: TS_PLOT.x + TS_PLOT.w - 34, y: TS_PLOT.y + 3, w: 30, h: 13 }
     };
 }
 
 function tsSliderY(sl, frac) {
-    return sl.y + sl.h * (1 - frac);
+    return sl.y + sl.h * (1 - sptClamp(frac, 0, 1));
 }
 
 // ---------------------------------------------------------------- paint
-function tsValueLabel(rect, label, value, col, active) {
-    tsText(label, rect.x, rect.y + 11, 9, [0.80, 0.84, 0.88], 0.75, 0);
-    tsText(value, rect.x + rect.w, rect.y + 11, 9, col, active ? 1 : 0.95, 2);
-}
-
 function paint() {
     var W = TS_VIZ_W;
-    var H = TS_VIZ_H;
-    mgraphics.set_source_rgba(0.075, 0.078, 0.085, 1);
-    tsRRect(0, 0, W, H, 5);
-    mgraphics.fill();
+    var drag = tsDrag ? tsDrag.kind : "";
     var R = tsRects();
+    var cTr = tsColTr();
+    var cTone = tsColTone();
+    var mid = TS_PLOT.y + TS_PLOT.h * 0.5;
 
-    // top row: Tilt and Decay
-    tsValueLabel(R.tilt, "Tilt", tsFormatPct(tsVals.tilt), TS_COL_TR, tsDrag && tsDrag.kind === "tilt");
-    tsValueLabel(R.decay, "Decay", tsFormatBlocks(tsVals.tdecay), TS_COL_TR, tsDrag && tsDrag.kind === "tdecay");
-
-    // plot background
-    mgraphics.set_source_rgba(0.115, 0.118, 0.125, 1);
-    tsRRect(TS_PLOT.x, TS_PLOT.y, TS_PLOT.w, TS_PLOT.h, 3);
-    mgraphics.fill();
+    // display: near-black LCD with a faint grid (zero line and quarter levels)
+    sptLcd(0, 0, W, TS_LCD_H, { xs: [TS_PLOT.x - 3, TS_PLOT.x + TS_PLOT.w + 3], ys: [mid - TS_PLOT.h * 0.25, mid, mid + TS_PLOT.h * 0.25] });
 
     if (tsVals.disstyle) tsPaintSono();
     else tsPaintWave();
+    if (tsScalars.awake < 0.5) sptText("no signal", TS_PLOT.x + TS_PLOT.w * 0.5, mid - 4, sptColor("live_display_scale_text"), SPT_SIZE, 1);
 
-    // channel pill and chain chip inside the plot corners
-    var pillCol = tsSel === 1 ? TS_COL_TR : (tsSel === 2 ? TS_COL_TONE : [0.78, 0.84, 0.9]);
-    var pillText = tsSel === 0 ? "OUT ALL" : "OUT " + tsSel + " " + tsSelName(tsSel).toUpperCase();
-    tsText(pillText, TS_PLOT.x + 4, TS_PLOT.y + 8.5, 6.5, pillCol, 0.9, 0);
-    var chip = tsInfo.isInRack ? ("CH " + (tsInfo.chainIndex + 1) + "/" + Math.max(tsInfo.chainCount, 1)
-        + (tsInfo.linked ? " LINKED" : "")) : "NO RACK";
-    tsText(chip, TS_PLOT.x + TS_PLOT.w - 4, TS_PLOT.y + 8.5, 6.5, [0.62, 0.66, 0.72], 0.9, 2);
-    if (tsScalars.awake < 0.5) tsText("no signal", TS_PLOT.x + TS_PLOT.w * 0.5, TS_PLOT.y + 20, 8, [0.6, 0.64, 0.7], 0.8, 1);
+    tsPaintSlider(TS_SLIDER_L, (tsVals.bias + 100) / 200, drag === "bias");
+    tsPaintSlider(TS_SLIDER_R, tsVals.blend / 100, drag === "blend");
 
-    // bottom row: style icons, PRE | POST, Smoothing
+    // Pre / Post toggle (top right of the LCD)
+    sptButton(R.post.x, R.post.y, R.post.w, R.post.h, "Post", tsVals.dispost ? 1 : 0);
+
+    // legend row: the output channel of this instance is the bright one; display style icons; chain chip on the right
+    var ly = 105;
+    var names = ["Transients", "Tones"];
+    var cols = [cTr, cTone];
+    var lx = 2;
+    for (var i = 0; i < 2; i++) {
+        var on = tsSel === 0 || tsSel === i + 1;
+        sptLegendSwatch(lx, ly - 5, sptMuted(cols[i], on ? 1 : 0.55));
+        sptText(names[i], lx + 9, ly, on ? sptColor("live_control_fg") : sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+        lx += 9 + sptTextW(names[i], SPT_SIZE_SMALL) + 12;
+    }
     tsPaintIcon(R.wave, 0, tsVals.disstyle === 0);
     tsPaintIcon(R.sono, 1, tsVals.disstyle === 1);
-    tsRgba([0.2, 0.21, 0.23], 1);
-    tsRRect(R.post.x, R.post.y, R.post.w, R.post.h, 3);
-    mgraphics.fill();
-    tsText(tsVals.dispost ? "POST" : "PRE", R.post.x + R.post.w * 0.5, R.post.y + 9.2, 7.5, [0.9, 0.92, 0.95], 1, 1);
-    tsValueLabel(R.smooth, "Smoothing", tsFormatBlocks(tsVals.tsmooth), TS_COL_TONE, tsDrag && tsDrag.kind === "tsmooth");
+    var chip = tsInfo.isInRack ? ("Chain " + (tsInfo.chainIndex + 1) + "/" + Math.max(tsInfo.chainCount, 1)
+        + (tsInfo.linked ? ", linked" : "")) : "No rack";
+    // the chip must not run into the display style icons (x 156..192): shorten it when needed
+    var chipMinX = R.sono.x + R.sono.w + 3;
+    if (W - 2 - sptTextW(chip, SPT_SIZE_SMALL) < chipMinX) chip = tsInfo.isInRack ? ("Chain " + (tsInfo.chainIndex + 1)) : "No rack";
+    sptTextIn(chip, W - 2, ly, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2, { x: chipMinX, y: ly - 8, w: W - chipMinX, h: 11 });
 
-    tsPaintSlider(TS_SLIDER_L, (tsVals.bias + 100) / 200, tsVals.bias >= 0 ? TS_COL_TR : TS_COL_TONE);
-    tsPaintSlider(TS_SLIDER_R, tsVals.blend / 100, tsVals.blend >= 50 ? TS_COL_TR : TS_COL_TONE);
+    // value rows: Tilt / Decay / Smoothing (drag to edit), latency footnote
+    sptLabelValue("Tilt", tsFormatPct(sptClamp(tsVals.tilt, -999, 999)), R.tilt.x, R.tilt.y + 11, 0, drag === "tilt", 36);
+    sptLabelValue("Decay", tsFormatBlocks(sptClamp(tsVals.tdecay, 0, 999)), R.decay.x, R.decay.y + 11, 0, drag === "tdecay", 40);
+    sptLabelValue("Smoothing", tsFormatBlocks(sptClamp(tsVals.tsmooth, 0, 999)), R.smooth.x, R.smooth.y + 11, 0, drag === "tsmooth", 56);
+    sptText("Latency 4096 smp", 0, 138, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
 }
 
 function tsPaintIcon(r, kind, on) {
-    var col = on ? TS_COL_ORANGE : [0.46, 0.48, 0.52];
-    tsRgba(col, 1);
-    mgraphics.set_line_width(1.2);
+    var col = on ? sptColor("live_control_selection") : sptColor("live_display_scale_text");
+    sptRgba(col);
+    mgraphics.set_line_width(1);
     var i;
     if (kind === 0) {
         // decaying burst
@@ -332,68 +310,77 @@ function tsPaintIcon(r, kind, on) {
     }
 }
 
-// centre-marked vertical slider: grey track, orange centre tick, fill from the centre to the orange handle
-function tsPaintSlider(s, frac, col) {
-    mgraphics.set_source_rgba(0.2, 0.21, 0.23, 1);
-    tsRRect(s.x, s.y, s.w, s.h, 4);
-    mgraphics.fill();
+// centre-marked vertical slider inside the LCD: 1 px track, centre tick, line from the centre to a hollow orange handle
+function tsPaintSlider(s, frac, active) {
+    var hc = sptColor("live_display_handle_one");
+    var tx = s.x + s.w * 0.5;
     var cy = s.y + s.h * 0.5;
     var hy = tsSliderY(s, frac);
-    tsRgba(col, 0.42);
-    mgraphics.rectangle(s.x + 3, Math.min(hy, cy), s.w - 6, Math.abs(cy - hy));
+    sptRgba(sptColor("live_display_scale_text"), 0.5);
+    mgraphics.rectangle(tx - 0.5, s.y, 1, s.h);
     mgraphics.fill();
-    tsRgba(TS_COL_ORANGE, 1);
-    mgraphics.rectangle(s.x - 1, cy - 0.5, s.w + 2, 1.5);
+    sptRgba(sptColor("live_display_scale_text"), 0.9);
+    mgraphics.rectangle(tx - 3.5, Math.round(cy) - 0.5, 7, 1);
     mgraphics.fill();
-    if (Math.abs(hy - cy) > 1) {
-        tsRgba(TS_COL_ORANGE, 1);
-        mgraphics.rectangle(s.x, hy - 1, s.w, 2.5);
-        mgraphics.fill();
-    }
+    sptRgba(hc, 0.75);
+    mgraphics.rectangle(tx - 0.5, Math.min(hy, cy), 1, Math.abs(cy - hy));
+    mgraphics.fill();
+    sptHandle(tx, hy, active ? sptMix(hc, [1, 1, 1, 1], 0.35) : hc, "", 3.5);
 }
 
-// Waveform: Transients above zero (yellow), Tones below (blue), newest on the right. Post dims the channel that is not this
-// instance's output; Pre shows the analysis split before Tilt / Blend.
+// Waveform: Transients above zero (orange), Tones below (cyan), newest on the right; thin muted outline over a faint fill.
+// Post dims the channel that is not this instance's output; Pre shows the analysis split before Tilt / Blend.
 function tsPaintWave() {
     var mid = TS_PLOT.y + TS_PLOT.h * 0.5;
-    var half = TS_PLOT.h * 0.5 - 9;
+    var half = TS_PLOT.h * 0.5 - 3;
     var fw = TS_PLOT.w / TS_WAVE_VIEW;
-    mgraphics.set_source_rgba(0.55, 0.57, 0.6, 0.55);
-    mgraphics.rectangle(TS_PLOT.x + 4, mid - 0.5, TS_PLOT.w - 8, 1);
-    mgraphics.fill();
+    var cTr = tsColTr();
+    var cTone = tsColTone();
     var post = tsVals.dispost === 1;
-    var trA = post && tsSel === 2 ? 0.3 : 0.95;
-    var toA = post && tsSel === 1 ? 0.3 : 0.95;
+    var trA = post && tsSel === 2 ? 0.35 : 1;
+    var toA = post && tsSel === 1 ? 0.35 : 1;
     var off = TS_WAVE_VIEW - tsWave.length;
+    var ptsT = [];
+    var ptsQ = [];
+    var wfill = Math.max(fw - 0.5, 1);
     for (var i = 0; i < tsWave.length; i++) {
         var w = tsWave[i];
         var t = tsAmp(post ? w.ot : w.pt) * half;
         var q = tsAmp(post ? w.oq : w.pq) * half;
         var x = TS_PLOT.x + (off + i) * fw;
         if (t > 0.4) {
-            tsRgba(TS_COL_TR, trA);
-            mgraphics.rectangle(x, mid - 0.5 - t, Math.max(fw - 0.5, 1), t);
+            sptRgba(cTr, 0.18 * trA);
+            mgraphics.rectangle(x, mid - t, wfill, t);
             mgraphics.fill();
         }
         if (q > 0.4) {
-            tsRgba(TS_COL_TONE, toA);
-            mgraphics.rectangle(x, mid + 0.5, Math.max(fw - 0.5, 1), q);
+            sptRgba(cTone, 0.18 * toA);
+            mgraphics.rectangle(x, mid, wfill, q);
             mgraphics.fill();
         }
+        ptsT.push([x, mid - t]);
+        ptsT.push([x + wfill, mid - t]);
+        ptsQ.push([x, mid + q]);
+        ptsQ.push([x + wfill, mid + q]);
     }
+    sptCurve(ptsT, sptMuted(cTr, 0.75), trA);
+    sptCurve(ptsQ, sptMuted(cTone, 0.75), toA);
+    sptCurve([[TS_PLOT.x, mid], [TS_PLOT.x + TS_PLOT.w, mid]], sptColor("live_display_scale_text"), 0.8);
 }
 
 function tsPaintSono() {
     var cw = TS_PLOT.w / TS_SONO_COLS;
     var rh = TS_PLOT.h / TS_SONO_ROWS;
     var off = TS_SONO_ROWS - tsSono.length;
+    var cTr = tsColTr();
+    var cTone = tsColTone();
     for (var r = 0; r < tsSono.length; r++) {
         var row = tsSono[r];
         var y = TS_PLOT.y + (off + r) * rh;
         for (var c = 0; c < TS_SONO_COLS; c++) {
             var a = tsLv(row.lv[c]);
             if (a < 0.04) continue;
-            tsRgba(tsMix(TS_COL_TONE, TS_COL_TR, row.fr[c]), 0.12 + 0.88 * a);
+            sptRgba(sptMuted(sptMix(cTone, cTr, sptClamp(row.fr[c], 0, 1)), 0.85), 0.10 + 0.75 * a);
             mgraphics.rectangle(TS_PLOT.x + c * cw, y, cw + 0.3, rh + 0.3);
             mgraphics.fill();
         }

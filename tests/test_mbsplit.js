@@ -285,7 +285,7 @@ function rectsOverlap(a, b) {
         assert.ok(lines.some((l) => l.source[0] === "obj-route-ui" && l.source[1] === 7 + k && l.destination[0] === `obj-ctrl-f${k}`),
             `ui_st_f${k} must drive obj-ctrl-f${k} (active / textcolor)`);
         const vo = byId[`obj-ctrl-f${k}`];
-        assert.ok(vo.slidercolor && vo.bgcolor, `obj-ctrl-f${k} needs inactive slidercolor / bgcolor for the greyed state`);
+        assert.ok(vo.saved_attribute_attributes.textcolor && vo.saved_attribute_attributes.textcolor.expression.startsWith("themecolor."), `obj-ctrl-f${k} must use a theme-bound text colour (Live dims it with active 0)`);
     }
     assert.ok(hasLine("obj-set-phasemode", "obj-ctrl-phasemode"), "ui_phasemode must `set` the toggle");
     assert.strictEqual(byId["obj-ctrl-slope"].presentation_rect[0] + byId["obj-ctrl-slope"].presentation_rect[2] <= phaseBtn.presentation_rect[0], true, "Slope tab must end before Phase toggle");
@@ -344,7 +344,7 @@ function rectsOverlap(a, b) {
 // 6. AUTO BAND CREATION PER DETECTED INSTANCE (1..4), VOLUME SLIDER & LINK TOGGLE
 // =========================================================================
 {
-    const combinedCode = fs.readFileSync(CONFIG_PATH, "utf8") + "\n\n" + fs.readFileSync(UI_PATH, "utf8");
+    const combinedCode = fs.readFileSync(CONFIG_PATH, "utf8") + "\n\n" + fs.readFileSync(path.join(__dirname, "..", "src", "spectral_theme.js"), "utf8") + "\n\n" + fs.readFileSync(UI_PATH, "utf8");
     const sharedBus = { groups: {}, peers: {} };
     const sawRing8192 = cfg.synthesizeSawWave8192(110.0, 48000.0);
 
@@ -415,6 +415,7 @@ function rectsOverlap(a, b) {
                 stroke: function() { drawCmds.push({ op: "stroke" }); },
                 select_font_face: function(f) {},
                 set_font_size: function(s) {},
+                text_measure: function(t) { return [String(t).length * 5, 9]; },
                 show_text: function(t) { drawCmds.push({ op: "text", text: t }); }
             },
             inlets: 1,
@@ -668,7 +669,7 @@ function rectsOverlap(a, b) {
     assert.strictEqual(inst1.patcher.latency, 0);
     assert.strictEqual(inst2.patcher.latency, 0);
 
-    // 11. Crossover sliders for missing splits are greyed out (active 0 + dim text)
+    // 11. Crossover sliders for missing splits are greyed out (active 0, theme-dimmed)
     function lastActive(inst, k) {
         const msgs = inst.emitted0.filter((m) => m[0] === `ui_st_f${k}` && m[1] === "active");
         return msgs.length ? msgs[msgs.length - 1][2] : undefined;
@@ -677,8 +678,7 @@ function rectsOverlap(a, b) {
         inst1.set_numbands(nb);
         for (const k of [1, 2, 3]) {
             assert.strictEqual(lastActive(inst1, k), nb > k ? 1 : 0, `${nb} band(s): F${k} must be ${nb > k ? "active" : "greyed out"}`);
-            const tc = inst1.emitted0.filter((m) => m[0] === `ui_st_f${k}` && m[1] === "textcolor").pop();
-            assert.ok(tc && (nb > k ? tc[2] > 0.8 : tc[2] < 0.5), `${nb} band(s): F${k} text colour must follow its active state`);
+            assert.ok(!inst1.emitted0.some((m) => m[0] === `ui_st_f${k}` && m[1] === "textcolor"), "greyed state must not hard-code a text colour");
         }
     }
     const before = inst1.emitted0.length;
@@ -972,3 +972,5 @@ if (process.env.MBSPLIT_SKIP_LIVE_MCP) {
 }
 
 console.log("All Multiband Split tests passed! (UI 2, 8192-FFT harmonics, auto 1..4 instance bands, -inf..+18dB volume slider, clickable link badge)");
+
+require("./test_mbsplit_paint_bounds.js");

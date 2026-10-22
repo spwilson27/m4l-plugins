@@ -5,6 +5,7 @@
     "src/types/loudsplit.d.ts",
     "src/loudsplit_config.js",
     "src/spectral_link.js",
+    "src/spectral_theme.js",
     "src/loudsplit_ui.js"
   ]
 }

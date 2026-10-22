@@ -654,3 +654,4 @@ function prep(src) {
 }
 
 console.log("All Loud Split tests passed");
+require("./test_loudsplit_paint_bounds.js");

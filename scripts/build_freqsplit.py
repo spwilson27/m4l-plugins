@@ -18,9 +18,9 @@ Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/spectral_sp
 the XY dot, the limiter line and the spectrum, links the parameters with the other instances in the rack and sends the resolved
 output selection; the small header v8ui (src/freqsplit_top_ui.js) draws the direction arrows and the crossfade ramp.
 
-Layout (480 x 169): top row (y=6) Splits | direction arrows + ramp | XFade; main v8ui canvas x=6..336, y=23..142; bottom row (y=146)
-Nudge | Spin | Bend | Pinch; right column (x=344..474): Display Pre | Post, Limiter + Threshold, Mix dial, Size, Output; two
-background panels last. No live.* widget overlaps a v8ui.
+Layout (480 x 169, Live Reverb style, Live theme colours): left section "Splits" (x=4..340: Splits | Insert arrows | XFade row, the
+display canvas, Nudge | Spin | Bend | Pinch row), right sections "Spectrum" (Display Pre | Post, Limiter + threshold) and "Output"
+(Output, Size, Mix dial, latency note); section panels then the body panel last. No live.* widget overlaps a v8ui.
 """
 
 import os
@@ -101,42 +101,42 @@ CANVAS_KEYS = ["bend", "pinch", "limthr", "spin"]     # edited from the canvas -
 UI_KEYS = ["splits", "dir", "xfade", "nudge", "spin", "bend", "pinch", "limon", "limthr", "mix", "size", "output", "dispost"]
 
 
-def numbox(key, x, y, w, h, color, appearance):
-    box = sc.make_numbox(key, NUM[key], NUM_HELP[key], x, y, w, h, color, appearance, 8.5, NUM_UNITS[key])
-    if key in NUM_EXPONENT:
-        box["box"]["saved_attribute_attributes"]["valueof"]["parameter_exponent"] = NUM_EXPONENT[key]
-    return box
-
-
-def make_toggle(key, x, y, w, h, color, text):
-    """Spectral Limiter: a live.text toggle (Off / On parameter)."""
-    t = sc.make_tab(key, ENUM[key], ENUM_HELP[key], x, y, w, h, color)
+def make_toggle(key, x, y, w, h, text):
+    """Spectral Limiter: a live.text toggle (Off / On parameter), Live theme colours (outlined off, orange on)."""
+    t = sc.make_tab(key, ENUM[key], ENUM_HELP[key], x, y, w, h, sc.ORANGE)
     b = t["box"]
-    for k in ("num_lines_patching", "num_lines_presentation", "bgoncolor", "textoncolor", "textcolor"):
+    for k in ("num_lines_patching", "num_lines_presentation", "bgoncolor", "textoncolor", "textcolor", "activebgcolor",
+              "activebgoncolor", "activetextcolor", "activetextoncolor", "bordercolor", "bgcolor", "activeslidercolor"):
         b.pop(k, None)
-    b.update({
-        "maxclass": "live.text", "mode": 1, "numoutlets": 2, "outlettype": ["", ""], "text": text, "texton": text,
-        "activebgcolor": [0.07, 0.09, 0.12, 1.0], "activebgoncolor": [color[0], color[1], color[2], 1.0],
-        "activetextcolor": [0.68, 0.76, 0.84, 1.0], "activetextoncolor": [0.08, 0.1, 0.12, 1.0],
-    })
-    return t
+    b.update({"maxclass": "live.text", "mode": 1, "numoutlets": 2, "outlettype": ["", ""], "text": text, "texton": text,
+              "fontface": 0, "fontname": sc.THEME_FONT, "fontsize": sc.THEME_FONT_SIZE})
+    return sc.theme(t, bgcolor="live_control_bg", activebgcolor="live_control_bg", bgoncolor="live_control_selection",
+                    activebgoncolor="live_control_selection", textcolor="live_control_fg", activetextcolor="live_control_fg",
+                    textoncolor="live_lcd_bg", activetextoncolor="live_lcd_bg", bordercolor="live_desktop")
 
 
-def make_dial(key, x, y, w, h, color):
+def make_dial(key, x, y, w, h):
+    """Mix: a native live.dial with no colour attributes besides the label (Live paints the orange arc in the current theme)."""
     valueof = sc.num_valueof(NUM[key])
     valueof["parameter_units"] = NUM_UNITS[key]
     valueof["parameter_unitstyle"] = 9
-    return {"box": {
-        "activedialcolor": [color[0], color[1], color[2], 1.0],
-        "activeneedlecolor": [color[0], color[1], color[2], 1.0],
+    return sc.theme({"box": {
         "annotation": NUM_HELP[key], "annotation_name": NUM[key][0],
+        "fontface": 0, "fontname": sc.THEME_FONT, "fontsize": sc.THEME_FONT_SIZE,
         "id": f"obj-ctrl-{key}", "maxclass": "live.dial", "numinlets": 1, "numoutlets": 2, "outlettype": ["", "float"],
         "parameter_enable": 1,
         "patching_rect": [float(x), 300.0, float(w), float(h)],
         "presentation": 1, "presentation_rect": [float(x), float(y), float(w), float(h)],
         "saved_attribute_attributes": {"valueof": valueof},
-        "showname": 1, "shownumber": 1, "textcolor": [0.82, 0.86, 0.90, 1.0], "varname": NUM[key][0],
-    }}
+        "showname": 1, "shownumber": 1, "varname": NUM[key][0],
+    }}, textcolor="live_control_fg")
+
+
+def lcd_numbox(key, x, y, w, h=15.0):
+    box = sc.make_lcd_numbox(key, NUM[key], NUM_HELP[key], x, y, w, h, unit_text=NUM_UNITS[key])
+    if key in NUM_EXPONENT:
+        box["box"]["saved_attribute_attributes"]["valueof"]["parameter_exponent"] = NUM_EXPONENT[key]
+    return box
 
 
 def build_patcher():
@@ -144,43 +144,54 @@ def build_patcher():
                       os.path.join(SRC, "freqsplit_core.genexpr"))
     face = (sc.read(os.path.join(SRC, "freqsplit_config.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_link.js")).rstrip() + "\n\n"
+            + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "freqsplit_ui.js")))
-    top = sc.read(os.path.join(SRC, "freqsplit_top_ui.js"))
+    top = (sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
+           + sc.read(os.path.join(SRC, "freqsplit_top_ui.js")))
 
     boxes = []
     lines = []
 
-    # ---- top row (y = 6) ----
-    boxes.append(sc.make_label("obj-lbl-splits", "Splits", 8, 7, 32, 13, color=sc.TEXT))
-    boxes.append(numbox("splits", 42, 6, 56, 15, ORG, 2))
-    boxes.append(numbox("xfade", 268, 6, 66, 15, ORG, 2))
+    # ---- Reverb-style titled sections, theme-bound native live.* controls ----
+    # Splits section (x = 4..340): header row (y = 20), display canvas (y = 36), value row (y = 142)
+    boxes.append(sc.make_theme_comment("obj-lbl-splits", "Splits", 8, 21, 34))
+    boxes.append(lcd_numbox("splits", 42, 20, 50))
+    boxes.append(sc.make_theme_comment("obj-lbl-insert", "Insert", 98, 21, 34))
+    boxes.append(sc.make_theme_comment("obj-lbl-xfade", "XFade", 226, 21, 38))
+    boxes.append(lcd_numbox("xfade", 266, 20, 68))
     # direction tab: a real automatable parameter, kept off the face (the header v8ui draws the arrows and drives it)
     dirbox = sc.make_tab("dir", ENUM["dir"], ENUM_HELP["dir"], 0, 0, 90, 15, ORG)
     dirbox["box"]["presentation"] = 0
     dirbox["box"].pop("presentation_rect", None)
     boxes.append(dirbox)
+    row = [("nudge", "Nudge", 8, 36, 44, 38), ("spin", "Spin", 94, 28, 122, 50), ("bend", "Bend", 176, 30, 206, 38),
+           ("pinch", "Pinch", 250, 34, 284, 48)]
+    for key, text, lx, lw, nx, nw in row:
+        boxes.append(sc.make_theme_comment(f"obj-lbl-{key}", text, lx, 144, lw))
+        boxes.append(lcd_numbox(key, nx, 143, nw))
 
-    # ---- bottom row (y = 146) ----
-    row = [("nudge", "Nudge", 8, 34, 42, 44, 3), ("spin", "Spin", 90, 26, 116, 54, 3), ("bend", "Bend", 174, 28, 202, 46, 3),
-           ("pinch", "Pinch", 252, 32, 284, 46, 3)]
-    for key, text, lx, lw, nx, nw, app in row:
-        boxes.append(sc.make_label(f"obj-lbl-{key}", text, lx, 147, lw, 13, color=sc.TEXT))
-        boxes.append(numbox(key, nx, 146, nw, 15, ORG, app))
+    # right column (x = 344..476)
+    RX, CX, CW = 350, 404, 68
+    boxes.append(sc.make_theme_comment("obj-lbl-dispost", "Display", RX, 21, 50))
+    boxes.append(sc.make_theme_tab("dispost", ENUM["dispost"], ENUM_HELP["dispost"], CX, 20, CW, 15))
+    boxes.append(make_toggle("limon", RX, 39, 50, 15, "Limiter"))
+    boxes.append(lcd_numbox("limthr", CX, 39, CW))
+    boxes.append(sc.make_theme_comment("obj-lbl-output", "Output", RX, 80, 50))
+    boxes.append(sc.make_theme_menu("output", ENUM["output"], ENUM_HELP["output"], CX, 79, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", RX, 98, 50))
+    boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], CX, 97, CW, 15))
+    boxes.append(make_dial("mix", RX, 116, 52, 46))
+    boxes.append(sc.make_theme_comment("obj-leg-lat", "Lat 4096 smp", 410, 134, 64, 14, size=8.5, name="live_display_scale_text"))
 
-    # ---- right column ----
-    boxes.append(sc.make_tab("dispost", ENUM["dispost"], ENUM_HELP["dispost"], 350, 8, 120, 15, sc.TEXT))
-    boxes.append(make_toggle("limon", 350, 28, 56, 15, ORG, "Limiter"))
-    boxes.append(numbox("limthr", 410, 28, 60, 15, ORG, 2))
-    boxes.append(make_dial("mix", 372, 50, 56, 60, ORG))
-    boxes.append(sc.make_label("obj-lbl-size", "Size", 350, 119, 28, 13, color=sc.DIM))
-    boxes.append(sc.make_tab("size", ENUM["size"], ENUM_HELP["size"], 380, 118, 90, 15, sc.DIM))
-    boxes.append(sc.make_label("obj-lbl-output", "Output", 350, 139, 36, 13, color=sc.TEXT))
-    boxes.append(sc.make_menu("output", ENUM["output"], ENUM_HELP["output"], 388, 138, 82, 15, sc.TEXT))
-    boxes.append(sc.make_label("obj-leg-lat", "Latency 4096 smp", 350, 154, 120, 10, size=7.0, color=sc.DIM, bold=False))
+    p_spl, parts_spl = sc.make_section("spl", 4, 4, 336, 161, "Splits")
+    p_spc, parts_spc = sc.make_section("spc", 344, 4, 132, 54, "Spectrum")
+    p_out, parts_out = sc.make_section("out", 344, 62, 132, 103, "Output")
+    for parts in (parts_spl, parts_spc, parts_out):
+        boxes += parts
 
     # ---- displays (the only v8uis) ----
-    boxes.append(sc.v8ui("obj-viz-top", top, [104.0, 6.0, 160.0, 15.0], (20.0, 40.0), 1, "FreqsplitTop"))
-    boxes.append(sc.v8ui("obj-viz", face, [6.0, 23.0, 330.0, 119.0], (20.0, 80.0), 3, "FreqsplitView"))
+    boxes.append(sc.v8ui("obj-viz-top", top, [134.0, 20.0, 84.0, 15.0], (20.0, 40.0), 1, "FreqsplitTop"))
+    boxes.append(sc.v8ui("obj-viz", face, [8.0, 38.0, 328.0, 100.0], (20.0, 80.0), 3, "FreqsplitView"))
 
     # ---- audio ----
     boxes += [
@@ -237,9 +248,8 @@ def build_patcher():
     # resolved output selection -> gen
     lines.append(line("obj-viz", 2, "obj-gen", 0))
 
-    # ---- background panels last ----
-    boxes.append(sc.make_panel("obj-panel-left", 4, 4, 336, 161, border=(0.22, 0.26, 0.32)))
-    boxes.append(sc.make_panel("obj-panel-right", 342, 4, 134, 161, border=(0.30, 0.26, 0.20)))
+    # ---- background panels last: section panels, then the body (Max draws earlier boxes over later ones) ----
+    boxes += [p_spl, p_spc, p_out, sc.make_body_panel(WIDTH)]
 
     return sc.patcher(
         boxes, lines, WIDTH,

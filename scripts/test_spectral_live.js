@@ -57,6 +57,12 @@ function check(ok, msg) {
 }
 
 // Per device: track name, kind (bus), config module + constant prefix, edits (LOM short name, new value; the Size edit is last)
+const CHAIN_COLOR_INDEX = {
+    "Transient Split": [1, 21],
+    "Loud Split": [55, 1, 21],
+    "Harmonic Split": [55, 1, 21],
+    "Freq Split": [28, 9, 59, 11],
+};
 const DEVICES = [
     { slug: "transplit", track: "Transient Split", pre: "TS", channels: 2, num: ["Bias", 40], num2: ["Tilt", -35], en: ["Type", 1], frac: ["Decay", 12.5], blend: ["Blend", 80] },
     { slug: "loudsplit", track: "Loud Split", pre: "LS", channels: 3, num: ["Higher", -40], num2: ["Hi Knee", 14], en: ["Relative", 1], frac: ["Rise", 3.75] },
@@ -152,6 +158,13 @@ function runDevice(dev) {
     check(info.chains.length === dev.channels && info.chains.every((c) => c.nd === 1),
         `${tag} rack has ${info.chains.length} chains (want ${dev.channels}), one device each`);
     const N = info.chains.length;
+    // chain colours (scripts/make_spectral_rack.py CHAIN_COLORS: palette index nearest to the face's channel colour)
+    const wantColors = CHAIN_COLOR_INDEX[dev.track];
+    if (wantColors) {
+        const got = lom(`var r = []; for (var c = 0; c < ${N}; c++) { var a = new LiveAPI("live_set tracks ${info.track} devices 0 chains " + c); r.push([Number(a.get("color_index")), Number(a.get("color"))]); } return r;`);
+        check(got.length === wantColors.length && got.every((g, i) => g[0] === wantColors[i]),
+            `${tag} chain colours follow the channel colours: color_index [${got.map((g) => g[0])}] (want [${wantColors}]), RGB [${got.map((g) => "#" + (g[1] >>> 0).toString(16).padStart(6, "0"))}]`);
+    }
     // a device under redesign (tolerant): look the edited parameters up by name at run time, skip what no longer exists
     const hasParam = (name) => lom(`return !!findParam(${JSON.stringify(info.chains[0].path)}, ${JSON.stringify(name)});`);
     for (const k of ["num", "num2", "en"]) {

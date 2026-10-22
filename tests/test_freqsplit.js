@@ -736,3 +736,5 @@ function prep(src) {
 }
 
 console.log("All Freq Split tests passed");
+
+require("./test_freqsplit_paint_bounds.js");

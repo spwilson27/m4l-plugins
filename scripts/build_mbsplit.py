@@ -16,10 +16,15 @@ Architecture:
 import json
 import os
 import struct
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import spectral_common as sc
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "mbsplit_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "mbsplit_ui.js")
+THEME_PATH = os.path.join(ROOT_DIR, "src", "spectral_theme.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "mbsplit_core.genexpr")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Multiband Split.amxd")
 
@@ -76,123 +81,60 @@ def valueof_dict(key):
     return v
 
 
-def make_slider_numbox(key, x, y, w=54.0, h=15.0, accent_rgb=(0.22, 0.74, 0.97), bipolar=False, hidden=0):
-    long_name, _short, _lo, _hi, _init, _unit, _exp, help_text = PARAM_SPECS[key]
-    box_dict = {
-        "activebgcolor": [BG_DARK[0], BG_DARK[1], BG_DARK[2], 1.0],
-        "activeslidercolor": blend_slider_color(accent_rgb),
-        "annotation": help_text,
-        "annotation_name": long_name,
-        "appearance": 3 if bipolar else 2,
-        "bgcolor": [0.06, 0.07, 0.085, 1.0],  # inactive (greyed: split not present)
-        "slidercolor": [0.20, 0.22, 0.25, 1.0],  # inactive fill
-        "bordercolor": [0.22, 0.28, 0.35, 1.0],
-        "fontface": 1,
-        "fontsize": 8.5,
-        "id": f"obj-ctrl-{key}",
-        "maxclass": "live.numbox",
-        "numinlets": 1,
-        "numoutlets": 2,
-        "outlettype": ["", "float"],
+def make_xover_numbox(key, x, y, w, h):
+    """Crossover frequency as a borderless LCD value (Live theme colours); the face greys missing splits with `active 0`."""
+    long_name, short, lo, hi, initial, unit, exponent, help_text = PARAM_SPECS[key]
+    b = sc.make_lcd_numbox(key, (long_name, short, lo, hi, initial, 0, unit), help_text, x, y, w, h)
+    bx = b["box"]
+    bx["saved_attribute_attributes"]["valueof"]["parameter_exponent"] = exponent
+    return b
+
+
+def make_gain_numbox(x, y, w, h):
+    """Hidden automatable Chain Gain (the volume slider in the v8ui drives it)."""
+    long_name, short, lo, hi, initial, unit, exponent, help_text = PARAM_SPECS["gain"]
+    b = sc.make_lcd_numbox("gain", (long_name, short, lo, hi, initial, 0, unit), help_text, x, y, w, h)
+    bx = b["box"]
+    bx["saved_attribute_attributes"]["valueof"].pop("parameter_exponent", None)
+    bx["presentation"] = 0
+    bx["hidden"] = 1
+    bx["patching_rect"] = [float(x), 240.0, float(w), float(h)]
+    return b
+
+
+def make_slope_tab(x, y, w=54.0, h=15.0):
+    spec = ("Slope", "Slope", ["12", "24", "48"], 1)
+    help_text = ("Linkwitz-Riley phase-compensated filter slope (12, 24, or 48 dB/oct). In Dynamic Phase mode it sets the F1 "
+                 "slope only. Linked across instances in the same Rack.")
+    return sc.make_theme_tab("slope", spec, help_text, x, y, w, h)
+
+
+def make_phase_button(x, y, w=26.0, h=15.0):
+    b = sc.make_theme_text("obj-ctrl-phasemode", "MIN", x, y, w, h)
+    bx = b["box"]
+    bx.update({
+        "annotation": "Dynamic Phase: F1 stays a zero-latency Linkwitz-Riley split, F2 and F3 become linear-phase FIR splits "
+                      "(phase-coherent mids and highs, no bass pre-ringing). Adds 128 samples of latency at 44.1/48 kHz "
+                      "(about 2.7 ms), reported to Live. Off (MIN) is the all-IIR minimum-phase tree with zero latency. "
+                      "Linked across instances in the same Rack.",
+        "annotation_name": "Phase Mode",
         "parameter_enable": 1,
-        "patching_rect": [float(x), 240.0, float(w), float(h)],
-        "presentation": 0 if hidden else 1,
-        "presentation_rect": [float(x), float(y), float(w), float(h)],
-        "saved_attribute_attributes": {"valueof": valueof_dict(key)},
-        "textcolor": [0.92, 0.96, 1.0, 1.0],
-        "varname": long_name,
+        "texton": "DYN",
+        "varname": "Phase Mode",
+    })
+    bx["saved_attribute_attributes"]["valueof"] = {
+        "parameter_annotation_name": "Phase Mode",
+        "parameter_enum": ["Min", "Dynamic"],
+        "parameter_initial": [0],
+        "parameter_initial_enable": 1,
+        "parameter_longname": "Phase Mode",
+        "parameter_mmax": 1,
+        "parameter_shortname": "Phase",
+        "parameter_type": 2,
     }
-    if hidden:
-        box_dict["hidden"] = 1
-    return {"box": box_dict}
-
-
-def make_slope_tab(x, y, w=84.0, h=15.0):
-    return {
-        "box": {
-            "activebgoncolor": [0.20, 0.78, 0.62, 1.0],
-            "annotation": "Linkwitz-Riley phase-compensated filter slope (12, 24, or 48 dB/oct). In Dynamic Phase mode it sets the F1 slope only. Linked across instances in the same Rack.",
-            "annotation_name": "Slope",
-            "bgcolor": [0.07, 0.09, 0.12, 1.0],
-            "bgoncolor": [0.15, 0.48, 0.40, 1.0],
-            "bordercolor": [0.22, 0.28, 0.35, 1.0],
-            "fontface": 1,
-            "fontsize": 8.5,
-            "id": "obj-ctrl-slope",
-            "maxclass": "live.tab",
-            "num_lines_patching": 1,
-            "num_lines_presentation": 1,
-            "numinlets": 1,
-            "numoutlets": 3,
-            "outlettype": ["", "", "float"],
-            "parameter_enable": 1,
-            "patching_rect": [210.0, 80.0, float(w), float(h)],
-            "presentation": 1,
-            "presentation_rect": [float(x), float(y), float(w), float(h)],
-            "saved_attribute_attributes": {
-                "valueof": {
-                    "parameter_enum": ["12", "24", "48"],
-                    "parameter_initial": [1],
-                    "parameter_initial_enable": 1,
-                    "parameter_longname": "Slope",
-                    "parameter_mmax": 2,
-                    "parameter_shortname": "Slope",
-                    "parameter_type": 2,
-                    "parameter_unitstyle": 9,
-                }
-            },
-            "textcolor": [0.68, 0.76, 0.84, 1.0],
-            "textoncolor": [0.98, 1.0, 1.0, 1.0],
-            "varname": "Slope",
-        }
-    }
-
-
-def make_phase_button(x, y, w=22.0, h=15.0):
-    return {
-        "box": {
-            "activebgcolor": [0.07, 0.09, 0.12, 1.0],
-            "activebgoncolor": [0.55, 0.42, 0.95, 1.0],
-            "activetextcolor": [0.68, 0.76, 0.84, 1.0],
-            "activetextoncolor": [0.98, 1.0, 1.0, 1.0],
-            "annotation": "Dynamic Phase: F1 stays a zero-latency Linkwitz-Riley split, F2 and F3 become linear-phase FIR splits "
-                          "(phase-coherent mids and highs, no bass pre-ringing). Adds 128 samples of latency at 44.1/48 kHz "
-                          "(about 2.7 ms), reported to Live. Off (MIN) is the all-IIR minimum-phase tree with zero latency. "
-                          "Linked across instances in the same Rack.",
-            "annotation_name": "Phase Mode",
-            "bgcolor": [0.07, 0.09, 0.12, 1.0],
-            "bgoncolor": [0.55, 0.42, 0.95, 1.0],
-            "bordercolor": [0.22, 0.28, 0.35, 1.0],
-            "fontface": 1,
-            "fontsize": 8.0,
-            "id": "obj-ctrl-phasemode",
-            "maxclass": "live.text",
-            "numinlets": 1,
-            "numoutlets": 2,
-            "outlettype": ["", ""],
-            "parameter_enable": 1,
-            "patching_rect": [300.0, 80.0, float(w), float(h)],
-            "presentation": 1,
-            "presentation_rect": [float(x), float(y), float(w), float(h)],
-            "saved_attribute_attributes": {
-                "valueof": {
-                    "parameter_annotation_name": "Phase Mode",
-                    "parameter_enum": ["Min", "Dynamic"],
-                    "parameter_initial": [0],
-                    "parameter_initial_enable": 1,
-                    "parameter_longname": "Phase Mode",
-                    "parameter_mmax": 1,
-                    "parameter_shortname": "Phase",
-                    "parameter_type": 2,
-                }
-            },
-            "text": "MIN",
-            "texton": "DYN",
-            "textcolor": [0.68, 0.76, 0.84, 1.0],
-            "textoncolor": [0.98, 1.0, 1.0, 1.0],
-            "varname": "Phase Mode",
-        }
-    }
+    # a native toggle: grey text off, orange fill on
+    sc.theme(b, textcolor="live_control_fg", activetextcolor="live_control_fg", bordercolor="live_control_bg")
+    return b
 
 
 def make_link_menu(x, y, w=46.0, h=15.0, hidden=1):
@@ -316,42 +258,30 @@ def build_patcher():
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
 
-    combined_js = config_js + "\n\n" + ui_js
-    viz_rect = [6.0, 6.0, 256.0, 136.0]
+    theme_js = sc.read(THEME_PATH)
+    combined_js = config_js + "\n\n" + theme_js.rstrip() + "\n\n" + ui_js
+    viz_rect = [8.0, 20.0, 252.0, 102.0]
+
+    p_bands, parts_bands = sc.make_section("bands", 4, 4, 260, 120, "Bands")
+    p_xo, parts_xo = sc.make_section("xo", 4, 128, 260, 37, "Crossover")
 
     ui_widgets = [
-        make_slope_tab(6.0, 146.0, 60.0, 15.0),
-        make_phase_button(69.0, 146.0, 22.0, 15.0),
-        make_slider_numbox("f1", 94.0, 146.0, 54.0, 15.0, accent_rgb=(0.22, 0.74, 0.97), hidden=0),
-        make_slider_numbox("f2", 151.0, 146.0, 54.0, 15.0, accent_rgb=(0.20, 0.83, 0.60), hidden=0),
-        make_slider_numbox("f3", 208.0, 146.0, 54.0, 15.0, accent_rgb=(0.98, 0.75, 0.15), hidden=0),
+        make_slope_tab(8.0, 145.0, 50.0, 15.0),
+        make_phase_button(61.0, 145.0, 26.0, 15.0),
+        sc.make_theme_comment("obj-lbl-f1", "F1", 91.0, 145.0, 11.0),
+        make_xover_numbox("f1", 105.0, 145.0, 41.0, 15.0),
+        sc.make_theme_comment("obj-lbl-f2", "F2", 147.0, 145.0, 11.0),
+        make_xover_numbox("f2", 161.0, 145.0, 41.0, 15.0),
+        sc.make_theme_comment("obj-lbl-f3", "F3", 203.0, 145.0, 11.0),
+        make_xover_numbox("f3", 217.0, 145.0, 41.0, 15.0),
         # Automatable Live parameters synced with v8ui controls (non-overlapping / hidden in presentation)
-        make_slider_numbox("gain", 320.0, 240.0, 56.0, 15.0, accent_rgb=(0.98, 0.75, 0.15), bipolar=False, hidden=1),
+        make_gain_numbox(320.0, 240.0, 56.0, 15.0),
         make_link_menu(390.0, 240.0, 46.0, 15.0, hidden=1),
         make_bandmode_menu(460.0, 240.0, 65.0, 15.0, hidden=1),
-    ]
+    ] + parts_bands + parts_xo
 
-    panels = [
-        {
-            "box": {
-                "angle": 270.0,
-                "background": 1,
-                "bgcolor": [0.055, 0.068, 0.088, 1.0],
-                "border": 1,
-                "bordercolor": [0.16, 0.22, 0.30, 1.0],
-                "id": "obj-panel-main",
-                "maxclass": "panel",
-                "mode": 0,
-                "numinlets": 1,
-                "numoutlets": 0,
-                "patching_rect": [3.0, 4.0, 262.0, 161.0],
-                "presentation": 1,
-                "presentation_rect": [3.0, 4.0, 262.0, 161.0],
-                "proportion": 0.5,
-                "rounded": 8,
-            }
-        }
-    ]
+    # Background panels MUST be at the end of `boxes` with `"background": 1`: section panels, then the body panel last.
+    panels = [p_bands, p_xo, sc.make_body_panel(DEVICE_W)]
 
     boxes = [
         # Audio I/O

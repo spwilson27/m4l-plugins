@@ -1002,3 +1002,4 @@ function prep(src) {
 }
 
 console.log("All Harmonic Split tests passed");
+require("./test_harmsplit_paint_bounds.js");

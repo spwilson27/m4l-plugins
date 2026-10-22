@@ -971,10 +971,8 @@ function emitEffectiveBandMask() {
 }
 
 // Bottom-bar crossover sliders: crossover k (F1..F3) only exists with more than k bands, so the
-// sliders for missing splits are greyed out (`active 0` + dim text) and come back when bands appear.
+// sliders for missing splits are greyed out (`active 0`; Live draws them dim in the theme) and come back when bands appear.
 var crossoverActiveSent = [-1, -1, -1];
-var XOVER_TEXT_ON = [0.92, 0.96, 1.0, 1.0];
-var XOVER_TEXT_OFF = [0.38, 0.42, 0.48, 1.0];
 
 function isCrossoverActive(k) {
     return curNumBands > k ? 1 : 0;
@@ -985,9 +983,7 @@ function emitCrossoverActive(force) {
         var on = isCrossoverActive(k);
         if (!force && crossoverActiveSent[k - 1] === on) continue;
         crossoverActiveSent[k - 1] = on;
-        var col = on ? XOVER_TEXT_ON : XOVER_TEXT_OFF;
         outlet(0, ["ui_st_f" + k, "active", on]);
-        outlet(0, ["ui_st_f" + k, "textcolor", col[0], col[1], col[2], col[3]]);
     }
 }
 
@@ -1167,6 +1163,7 @@ function updateSpectrogramFrom8192Samples(samples8192, sampleRate, pushWaterfall
         var fLo = specColFreqs[c];
         var fHi = specColFreqs[c + 1];
         var rawDb = sampleFft8192DbForPixel(fLo, fHi, dbBins, sr);
+        rawDb = (rawDb === rawDb) ? clamp(rawDb, -200.0, 200.0) : -72.0;     // NaN / infinite telemetry must not poison the smoothing state
         var prevDb = specColDb[c];
         var smDb = (rawDb > prevDb)
             ? (prevDb * 0.25 + rawDb * 0.75)
@@ -1263,7 +1260,8 @@ function pullScope() {
                 var N = MBSPLIT_FFT_SIZE;
                 for (var n = 0; n < N; n++) {
                     var rIdx = (ringPos + n) % N;
-                    audioRingUnwrapped[n] = Number(ringData[rIdx]) || 0.0;
+                    var rv = Number(ringData[rIdx]);
+                    audioRingUnwrapped[n] = isFinite(rv) ? rv : 0.0;
                 }
                 updateSpectrogramFrom8192Samples(audioRingUnwrapped, sr, true);
             }
@@ -1343,8 +1341,8 @@ function preview() {
 // =========================================================================
 // UI 2 GEOMETRY & COORDINATE HELPERS (256 x 136 px Canvas)
 // =========================================================================
-var PLOT_X = 3;
-var PLOT_Y = 20;
+var PLOT_X = 0;
+var PLOT_Y = 16;
 var PLOT_W = 250;
 var PLOT_H = 113;
 
@@ -1352,10 +1350,10 @@ function updatePlotBounds() {
     var size = mgraphics.size || [256, 136];
     var w = size[0] || 256;
     var h = size[1] || 136;
-    PLOT_X = 3;
-    PLOT_Y = 20;
-    PLOT_W = w - 6;
-    PLOT_H = h - 23;
+    PLOT_X = 0;
+    PLOT_Y = 16;
+    PLOT_W = w;
+    PLOT_H = h - 16;
 }
 
 function freqToX(freq) {
@@ -1395,13 +1393,13 @@ function getCrossoverFreq(idx) {
 }
 
 function getAutoBtnRect() {
-    return [3, 2, 32, 15];
+    return [0, 1, 30, 13];
 }
 
 function getVolumeSliderRect() {
     var size = mgraphics.size || [256, 136];
     var w = size[0] || 256;
-    return [w - 68, 2, 65, 15];
+    return [w - 66, 1, 66, 13];
 }
 
 function getBandPillRect(bandIdx) {
@@ -1416,12 +1414,23 @@ function getBandPillRect(bandIdx) {
     return [bx, ar[1], pillW, ar[3]];
 }
 
+// Text of the link badge (expanded status or compact "Link").
+function linkBadgeText() {
+    var linkNames = [rackContext.shortLabel, "GRP A", "GRP B", "GRP C", "GRP D", "UNLINKED"];
+    var linkLabel = linkNames[curLinkGroup] || rackContext.shortLabel;
+    var peers = getLinkedPeerCount();
+    var countBadge = (manualBandsOverride !== null) ? Math.max(peers, curNumBands) : peers;
+    if (!showLinkStatus) return "Link";
+    return (curLinkGroup === 5) ? "Link off" : ("Link " + linkLabel + " (" + countBadge + "x)");
+}
+
 function getLinkBadgeRect() {
     updatePlotBounds();
-    var bw = showLinkStatus ? 104 : 30;
-    var bh = 13;
-    var bx = PLOT_X + PLOT_W - bw - 3;
-    var by = PLOT_Y + PLOT_H - bh - 3;
+    // wide enough for the measured text (dot + 10 px lead, 4 px tail), never wider than the plot
+    var bw = clamp(sptTextW(linkBadgeText(), SPT_SIZE_SMALL) + 14, 26, PLOT_W - 4);
+    var bh = 12;
+    var bx = PLOT_X + PLOT_W - bw - 2;
+    var by = PLOT_Y + PLOT_H - bh - 2;
     return [bx, by, bw, bh];
 }
 
@@ -1703,164 +1712,118 @@ function ownerBandForFreq(f) {
     return (f < curF1) ? 0 : ((f < curF2) ? 1 : ((f < curF3) ? 2 : 3));
 }
 
+// =========================================================================
+// ABLETON-NATIVE LOOK (Live theme colours via spectral_theme.js; flat, 1 px lines, one orange accent)
+// =========================================================================
+var MB_PANELS = [["obj-panel-body", "live_surface_bg"], ["obj-panel-bands", "live_desktop"], ["obj-panel-xo", "live_desktop"]];
+var mbThemeTask = sptThemeWatch(function () { sptApplyPanelTheme(MB_PANELS); });
+
+// Muted band colours from the theme (cyan, pink, salmon, grey-orange); the orange accent stays for handles and active controls.
+function bandColor(b) {
+    var cy = sptColor("live_display_line_two");
+    var pk = sptColor("live_display_handle_two");
+    var og = sptColor("live_display_line_one");
+    if (b === 0) return cy;
+    if (b === 1) return pk;
+    if (b === 2) return sptMix(og, pk, 0.5);
+    return sptMix(cy, og, 0.5);
+}
+
+function bandAlpha(c, a) {
+    return sptMuted(c, a);
+}
+
+function mbBandPath(fn) {
+    // fn(i, x, f) -> y
+    var innerW = PLOT_W - 2;
+    for (var i = 0; i < SPEC_COLS; i++) {
+        var x = PLOT_X + 1 + (i / (SPEC_COLS - 1)) * innerW;
+        var y = fn(i, x, specColFreqs[i]);
+        if (i === 0) mgraphics.move_to(x, y);
+        else mgraphics.line_to(x, y);
+    }
+}
+
 function drawSpectrogramAndCurves(activeMask, xoverCount) {
     var plotBottom = PLOT_Y + PLOT_H - 2;
     var innerW = PLOT_W - 2;
+    var span = PLOT_H - 10;
+    var scaleCol = sptColor("live_display_scale_text");
 
-    // 4A. 2D Scrolling Harmonic Waterfall Spectrogram (8192-Point FFT History)
+    // 4A. Waterfall history (8192-point FFT rows), very faint muted cells
     var numRows = specColHistory.length;
-    if (numRows > 0) {
-        var rowH = (PLOT_H - 4) / MAX_WATERFALL_ROWS;
-        var colW = innerW / SPEC_COLS;
-        for (var r = 0; r < numRows; r++) {
-            var wfRow = specColHistory[r];
-            var ry = PLOT_Y + 2 + r * rowH;
-            var ageFade = 1.0 - (r / MAX_WATERFALL_ROWS) * 0.65;
-            for (var c = 0; c < SPEC_COLS; c++) {
-                var cellDb = wfRow[c];
-                var intensity = clamp((cellDb + 54.0) / 52.0, 0.0, 1.0);
-                if (intensity <= 0.08) continue;
-                var fMid = specColFreqs[c];
-                var bOwner = ownerBandForFreq(fMid);
-                var isBandOn = ((activeMask & (1 << bOwner)) !== 0);
-                var bCol = MBSPLIT_BAND_COLORS[bOwner] || MBSPLIT_BAND_COLORS[0];
-                var hot = Math.pow(intensity, 1.65);
-                var alpha = hot * ageFade * (isBandOn ? 0.34 : 0.09);
-                if (alpha < 0.015) continue;
-
-                mgraphics.set_source_rgba(
-                    bCol[0] * (0.75 + 0.35 * hot),
-                    bCol[1] * (0.75 + 0.35 * hot),
-                    bCol[2] * (0.75 + 0.35 * hot),
-                    alpha
-                );
-                mgraphics.rectangle(PLOT_X + 1 + c * colW, ry, Math.max(1.15, colW + 0.25), rowH + 0.35);
-                mgraphics.fill();
-            }
+    var rowH = (PLOT_H - 4) / MAX_WATERFALL_ROWS;
+    var colW = innerW / SPEC_COLS;
+    for (var r = 0; r < numRows; r++) {
+        var wfRow = specColHistory[r];
+        var ry = PLOT_Y + 2 + r * rowH;
+        var ageFade = 1.0 - (r / MAX_WATERFALL_ROWS) * 0.65;
+        for (var c = 0; c < SPEC_COLS; c++) {
+            var intensity = clamp((wfRow[c] + 54.0) / 52.0, 0.0, 1.0);
+            if (intensity <= 0.08) continue;
+            var bOwner = ownerBandForFreq(specColFreqs[c]);
+            var isBandOn = ((activeMask & (1 << bOwner)) !== 0);
+            var alpha = Math.pow(intensity, 1.65) * ageFade * (isBandOn ? 0.20 : 0.05);
+            if (alpha < 0.012) continue;
+            sptRgba(bandColor(bOwner), alpha);
+            mgraphics.rectangle(PLOT_X + 1 + c * colW, ry, Math.max(1.15, colW + 0.25), rowH + 0.35);
+            mgraphics.fill();
         }
     }
 
-    // 4B. Full-Spectrum Unfiltered 8192-Point FFT Harmonic Silhouette (248 columns = 1px resolution)
-    mgraphics.set_source_rgba(0.36, 0.48, 0.64, 0.16);
+    // 4B. Unfiltered input spectrum: faint fill + 1 px grey trace
+    var inY = function (i) { return plotBottom - clamp((specColDb[i] + 56.0) / 54.0, 0.0, 1.0) * span; };
+    sptRgba(scaleCol, 0.10);
     mgraphics.move_to(PLOT_X + 1, plotBottom);
-    for (var cAll = 0; cAll < SPEC_COLS; cAll++) {
-        var xAll = PLOT_X + 1 + (cAll / (SPEC_COLS - 1)) * innerW;
-        var normAll = clamp((specColDb[cAll] + 56.0) / 54.0, 0.0, 1.0);
-        var yAll = plotBottom - normAll * (PLOT_H - 10);
-        mgraphics.line_to(xAll, yAll);
-    }
+    for (var cAll = 0; cAll < SPEC_COLS; cAll++) mgraphics.line_to(PLOT_X + 1 + (cAll / (SPEC_COLS - 1)) * innerW, inY(cAll));
     mgraphics.line_to(PLOT_X + PLOT_W - 1, plotBottom);
     mgraphics.close_path();
     mgraphics.fill();
-
-    // Unfiltered input harmonic trace (subtle slate line showing harmonics outside soloed band)
-    mgraphics.set_line_width(0.85);
-    mgraphics.set_source_rgba(0.48, 0.60, 0.74, 0.32);
-    for (var cIn = 0; cIn < SPEC_COLS; cIn++) {
-        var xIn = PLOT_X + 1 + (cIn / (SPEC_COLS - 1)) * innerW;
-        var normIn = clamp((specColDb[cIn] + 56.0) / 54.0, 0.0, 1.0);
-        var yIn = plotBottom - normIn * (PLOT_H - 10);
-        if (cIn === 0) mgraphics.move_to(xIn, yIn);
-        else mgraphics.line_to(xIn, yIn);
-    }
+    mgraphics.set_line_width(1);
+    sptRgba(scaleCol, 0.55);
+    mbBandPath(function (i) { return inY(i); });
     mgraphics.stroke();
 
-    // 4C. Active-Band Post-Crossover 8192-Point Harmonic Spectrogram Fill & Crisp Harmonic Crest
+    // 4C. Active band(s): faint fill under the post-crossover spectrum and a 1 px crest line
     for (var bBand = 0; bBand < curNumBands; bBand++) {
-        var bandOn = ((activeMask & (1 << bBand)) !== 0);
-        if (!bandOn) continue;
-        var sCol = MBSPLIT_BAND_COLORS[bBand] || MBSPLIT_BAND_COLORS[0];
-
-        var glowAlphas = [0.20, 0.30];
-        var glowScales = [1.0, 0.78];
-        for (var gl = 0; gl < 2; gl++) {
-            mgraphics.set_source_rgba(sCol[0], sCol[1], sCol[2], glowAlphas[gl]);
-            mgraphics.move_to(PLOT_X + 1, plotBottom);
-            for (var i = 0; i < SPEC_COLS; i++) {
-                var sx = PLOT_X + 1 + (i / (SPEC_COLS - 1)) * innerW;
-                var sf = specColFreqs[i];
-                var sDb = specColDb[i];
-                var respBand = computeBandMagnitudesAtFreq(sf, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
-                var bandGainDb = linToDb(Math.max(respBand.bands[bBand], 1e-4));
-                var effDb = sDb + bandGainDb;
-                var normY = clamp((effDb + 56.0) / 54.0, 0.0, 1.0) * glowScales[gl];
-                var sy = plotBottom - normY * (PLOT_H - 10);
-                mgraphics.line_to(sx, sy);
-            }
-            mgraphics.line_to(PLOT_X + PLOT_W - 1, plotBottom);
-            mgraphics.close_path();
-            mgraphics.fill();
+        if ((activeMask & (1 << bBand)) === 0) continue;
+        var sCol = bandColor(bBand);
+        var ys = [];
+        for (var i = 0; i < SPEC_COLS; i++) {
+            var resp = computeBandMagnitudesAtFreq(specColFreqs[i], curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
+            var effDb = specColDb[i] + linToDb(Math.max(resp.bands[bBand], 1e-4));
+            ys.push(plotBottom - clamp((effDb + 56.0) / 54.0, 0.0, 1.0) * span);
         }
-
-        // High-resolution 1px-stepped harmonic crest line (shows every sawtooth overtone spike clearly)
-        mgraphics.set_line_width(1.15);
-        mgraphics.set_source_rgba(
-            Math.min(1.0, sCol[0] + 0.25),
-            Math.min(1.0, sCol[1] + 0.25),
-            Math.min(1.0, sCol[2] + 0.25),
-            0.94
-        );
-        for (var j = 0; j < SPEC_COLS; j++) {
-            var tx = PLOT_X + 1 + (j / (SPEC_COLS - 1)) * innerW;
-            var tf = specColFreqs[j];
-            var tDb = specColDb[j];
-            var tResp = computeBandMagnitudesAtFreq(tf, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
-            var tEffDb = tDb + linToDb(Math.max(tResp.bands[bBand], 1e-4));
-            var tNorm = clamp((tEffDb + 56.0) / 54.0, 0.0, 1.0);
-            var ty = plotBottom - tNorm * (PLOT_H - 10);
-            if (j === 0) mgraphics.move_to(tx, ty);
-            else mgraphics.line_to(tx, ty);
-        }
+        sptRgba(sCol, 0.26);
+        mgraphics.move_to(PLOT_X + 1, plotBottom);
+        for (var j = 0; j < SPEC_COLS; j++) mgraphics.line_to(PLOT_X + 1 + (j / (SPEC_COLS - 1)) * innerW, ys[j]);
+        mgraphics.line_to(PLOT_X + PLOT_W - 1, plotBottom);
+        mgraphics.close_path();
+        mgraphics.fill();
+        mgraphics.set_line_width(1);
+        sptRgba(sptMuted(sCol, 0.95));
+        mbBandPath(function (k) { return ys[k]; });
         mgraphics.stroke();
     }
 
-    // 4D. 8192-Point Peak-Hold Harmonic Envelope Trace
-    mgraphics.set_line_width(0.8);
-    mgraphics.set_source_rgba(0.80, 0.90, 1.0, 0.34);
-    for (var pk = 0; pk < SPEC_COLS; pk++) {
-        var pkX = PLOT_X + 1 + (pk / (SPEC_COLS - 1)) * innerW;
-        var pkNorm = clamp((specColPeaks[pk] + 56.0) / 54.0, 0.0, 1.0);
-        var pkY = plotBottom - pkNorm * (PLOT_H - 10);
-        if (pk === 0) mgraphics.move_to(pkX, pkY);
-        else mgraphics.line_to(pkX, pkY);
-    }
+    // 4D. Peak-hold trace (thin, faint)
+    mgraphics.set_line_width(1);
+    sptRgba(sptColor("live_lcd_title"), 0.30);
+    mbBandPath(function (i) { return plotBottom - clamp((specColPeaks[i] + 56.0) / 54.0, 0.0, 1.0) * span; });
     mgraphics.stroke();
 
-    // 5. Linkwitz-Riley Filter Transfer Curves (Inactive Bands first, Active Band(s) on top)
+    // 5. Linkwitz-Riley transfer curves (inactive first, active on top), 1 px
     var numSteps = 96;
     for (var pass = 0; pass < 2; pass++) {
         for (var bIdx = 0; bIdx < curNumBands; bIdx++) {
             var isBandActive = ((activeMask & (1 << bIdx)) !== 0);
             if ((pass === 0 && isBandActive) || (pass === 1 && !isBandActive)) continue;
-
-            var bCol2 = MBSPLIT_BAND_COLORS[bIdx] || MBSPLIT_BAND_COLORS[0];
-
-            if (isBandActive) {
-                mgraphics.set_source_rgba(bCol2[0], bCol2[1], bCol2[2], 0.10);
-                mgraphics.move_to(PLOT_X, PLOT_Y + PLOT_H - 1);
-                for (var s = 0; s <= numSteps; s++) {
-                    var px = PLOT_X + (s / numSteps) * PLOT_W;
-                    var pf = xToFreq(px);
-                    var resp = computeBandMagnitudesAtFreq(pf, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
-                    var py = magToY(resp.bands[bIdx]);
-                    mgraphics.line_to(px, py);
-                }
-                mgraphics.line_to(PLOT_X + PLOT_W, PLOT_Y + PLOT_H - 1);
-                mgraphics.close_path();
-                mgraphics.fill();
-            }
-
-            mgraphics.set_line_width(isBandActive ? 1.8 : 1.0);
-            mgraphics.set_source_rgba(
-                bCol2[0],
-                bCol2[1],
-                bCol2[2],
-                isBandActive ? 0.95 : 0.28
-            );
+            var bCol2 = bandColor(bIdx);
+            sptRgba(isBandActive ? sptMuted(bCol2, 0.95) : sptMuted(bCol2, 0.55), isBandActive ? 1.0 : 0.7);
+            mgraphics.set_line_width(1);
             for (var s2 = 0; s2 <= numSteps; s2++) {
                 var px2 = PLOT_X + (s2 / numSteps) * PLOT_W;
-                var pf2 = xToFreq(px2);
-                var resp2 = computeBandMagnitudesAtFreq(pf2, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
+                var resp2 = computeBandMagnitudesAtFreq(xToFreq(px2), curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
                 var py2 = magToY(resp2.bands[bIdx]);
                 if (s2 === 0) mgraphics.move_to(px2, py2);
                 else mgraphics.line_to(px2, py2);
@@ -1869,16 +1832,14 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
         }
     }
 
-    // Composite active sum curve when multiple bands are enabled in Custom mode
-    var enabledCount = ((activeMask & 1) ? 1 : 0) + ((activeMask & 2) ? 1 : 0) +
-                       ((activeMask & 4) ? 1 : 0) + ((activeMask & 8) ? 1 : 0);
+    // Composite sum curve when several bands pass (Custom mask)
+    var enabledCount = ((activeMask & 1) ? 1 : 0) + ((activeMask & 2) ? 1 : 0) + ((activeMask & 4) ? 1 : 0) + ((activeMask & 8) ? 1 : 0);
     if (enabledCount > 1) {
-        mgraphics.set_line_width(1.4);
-        mgraphics.set_source_rgba(0.95, 0.98, 1.0, 0.85);
+        mgraphics.set_line_width(1);
+        sptRgba(sptColor("live_control_fg"), 0.9);
         for (var sc = 0; sc <= numSteps; sc++) {
             var pxc = PLOT_X + (sc / numSteps) * PLOT_W;
-            var pfc = xToFreq(pxc);
-            var respc = computeBandMagnitudesAtFreq(pfc, curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
+            var respc = computeBandMagnitudesAtFreq(xToFreq(pxc), curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
             var pyc = magToY(respc.activeSum);
             if (sc === 0) mgraphics.move_to(pxc, pyc);
             else mgraphics.line_to(pxc, pyc);
@@ -1886,317 +1847,168 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
         mgraphics.stroke();
     }
 
-    // 6. Draggable Crossover Handles (F1, F2, F3) with Collision-Free Frequency Pills
+    // 6. Crossover lines (1 px grey) with small hollow orange numbered handles and plain frequency labels
+    var orange = sptColor("live_display_handle_one");
+    var labelRects = [];
+    var nodeY = magToY(0.5);
+    // Handle circles sit on their crossover line but stay fully inside the canvas; crossovers near a range end are nudged inward and
+    // kept 10 px apart so neighbouring handles (and their digits) never overlap.
+    var handleXs = [];
+    var hMin = PLOT_X + 5.5;
+    var hMax = PLOT_X + PLOT_W - 5.5;
+    for (var hq = 0; hq < xoverCount; hq++) {
+        var hxq = clamp(Math.round(freqToX(getCrossoverFreq(hq))) + 0.5, hMin, hMax);
+        handleXs.push(hq > 0 ? Math.max(hxq, handleXs[hq - 1] + 10) : hxq);
+    }
+    for (var hb = xoverCount - 1; hb >= 0; hb--) {
+        if (handleXs[hb] > hMax - (xoverCount - 1 - hb) * 10) handleXs[hb] = hMax - (xoverCount - 1 - hb) * 10;
+    }
     for (var cIdx = 0; cIdx < xoverCount; cIdx++) {
         var fc = getCrossoverFreq(cIdx);
-        var hx = freqToX(fc);
+        // the line stays inside the plot (a crossover at 20 kHz would sit on the right edge); the handle circle stays fully inside too
+        var hx = clamp(Math.round(freqToX(fc)) + 0.5, PLOT_X + 0.5, PLOT_X + PLOT_W - 0.5);
+        var handleX = handleXs[cIdx];
         var isActiveDrag = (dragHandleIdx === cIdx);
         var isHover = (hoverHandleIdx === cIdx);
-
-        mgraphics.set_line_width(isActiveDrag ? 1.8 : (isHover ? 1.5 : 1.1));
-        mgraphics.set_source_rgba(
-            isActiveDrag ? 1.0 : 0.86,
-            isActiveDrag ? 0.92 : 0.92,
-            isActiveDrag ? 0.55 : 0.98,
-            isActiveDrag ? 1.0 : (isHover ? 0.92 : 0.72)
-        );
-        mgraphics.move_to(hx, PLOT_Y + 2);
-        mgraphics.line_to(hx, PLOT_Y + PLOT_H - 2);
+        mgraphics.set_line_width(1);
+        sptRgba(isActiveDrag ? orange : sptColor("live_lcd_title"), isActiveDrag ? 0.9 : (isHover ? 0.8 : 0.5));
+        mgraphics.move_to(hx, PLOT_Y + 1);
+        mgraphics.line_to(hx, PLOT_Y + PLOT_H - 1);
         mgraphics.stroke();
 
-        var nodeY = magToY(0.5); // -6.02 dB Linkwitz-Riley crossover point
-        mgraphics.set_source_rgba(0.06, 0.08, 0.11, 1.0);
-        mgraphics.arc(hx, nodeY, isActiveDrag ? 4.8 : 3.8, 0, Math.PI * 2);
-        mgraphics.fill();
-
-        mgraphics.set_line_width(1.6);
-        mgraphics.set_source_rgba(
-            isActiveDrag ? 1.0 : 0.52,
-            isActiveDrag ? 0.85 : 0.90,
-            isActiveDrag ? 0.32 : 1.0,
-            1.0
-        );
-        mgraphics.arc(hx, nodeY, isActiveDrag ? 4.8 : 3.8, 0, Math.PI * 2);
-        mgraphics.stroke();
+        // -6.02 dB Linkwitz-Riley crossover point
+        sptHandle(handleX, nodeY, isActiveDrag || isHover ? sptMix(orange, [1, 1, 1, 1], 0.3) : orange, cIdx + 1, 4.5);
 
         var fText = formatFreq(fc);
-        var pillW = 36;
-        var pillH = 12;
-        var pillX = clamp(hx - pillW * 0.5, PLOT_X + 2, PLOT_X + PLOT_W - pillW - 2);
-        var pillY = PLOT_Y + 4 + (cIdx % 2) * 14;
-
-        mgraphics.set_source_rgba(0.05, 0.07, 0.10, 0.90);
-        mgraphics.rectangle_rounded(pillX, pillY, pillW, pillH, 3, 3);
-        mgraphics.fill();
-
-        mgraphics.set_line_width(1.0);
-        mgraphics.set_source_rgba(0.32, 0.44, 0.56, isActiveDrag ? 0.95 : 0.65);
-        mgraphics.rectangle_rounded(pillX + 0.5, pillY + 0.5, pillW - 1, pillH - 1, 3, 3);
-        mgraphics.stroke();
-
-        mgraphics.select_font_face("Arial Bold");
-        mgraphics.set_font_size(7.5);
-        mgraphics.set_source_rgba(0.92, 0.96, 1.0, 1.0);
-        mgraphics.move_to(pillX + 4, pillY + 9);
-        mgraphics.show_text(fText);
+        var tw = sptTextW(fText, SPT_SIZE_SMALL);
+        var tx = clamp(hx + 4, PLOT_X + 2, PLOT_X + PLOT_W - tw - 2);
+        if (hx + 4 + tw > PLOT_X + PLOT_W - 2) tx = clamp(hx - 4 - tw, PLOT_X + 2, PLOT_X + PLOT_W - tw - 2);
+        // frequency labels take the first row (10 px apart) where they do not touch an earlier label
+        var rowY = PLOT_Y + 10;
+        for (var row = 0; row < 5; row++) {
+            rowY = PLOT_Y + 10 + row * 10;
+            var clash = false;
+            for (var lq = 0; lq < labelRects.length; lq++) {
+                if (labelRects[lq][1] === rowY && tx < labelRects[lq][2] + 3 && tx + tw > labelRects[lq][0] - 3) clash = true;
+            }
+            // ... nor sits on any handle circle (and its digit)
+            for (var hq2 = 0; hq2 < xoverCount; hq2++) {
+                if (tx < handleXs[hq2] + 6 && tx + tw > handleXs[hq2] - 6 && rowY - 7 < nodeY + 6 && rowY + 2 > nodeY - 6) clash = true;
+            }
+            if (!clash) break;
+        }
+        labelRects.push([tx, rowY, tx + tw]);
+        sptText(fText, tx, rowY, sptColor("live_lcd_control_fg_alt"), SPT_SIZE_SMALL, 0);
     }
+}
+
+function mbControl(r, text, on, hot, dotCol, meter) {
+    var bg = sptColor("live_control_bg");
+    sptRgba(on ? sptColor("live_control_selection") : (hot ? sptMix(bg, sptColor("live_control_fg"), 0.12) : bg));
+    mgraphics.rectangle(r[0], r[1], r[2], r[3]);
+    mgraphics.fill();
+    if (meter && meter > 0.01) {
+        sptRgba(dotCol, on ? 0.9 : 0.6);
+        mgraphics.rectangle(r[0] + 1, r[1] + r[3] - 2, Math.max(1, (r[2] - 2) * Math.pow(meter, 0.65)), 1);
+        mgraphics.fill();
+    }
+    var tc = on ? sptColor("live_lcd_bg") : sptColor("live_control_fg");
+    sptText(text, r[0] + r[2] * 0.5, r[1] + r[3] - 3.5, tc, SPT_SIZE_SMALL, 1);
 }
 
 function drawTopVolumeSlider() {
     var vr = getVolumeSliderRect();
-    var vx = vr[0], vy = vr[1], vw = vr[2], vh = vr[3];
     var norm = gainDbToSliderNorm(curGainDb);
     var zeroNorm = gainDbToSliderNorm(0.0);
-
-    // Track background
-    mgraphics.set_source_rgba(0.07, 0.09, 0.12, 1.0);
-    mgraphics.rectangle_rounded(vx, vy, vw, vh, 3, 3);
+    var bg = sptColor("live_control_bg");
+    sptRgba(bg);
+    mgraphics.rectangle(vr[0], vr[1], vr[2], vr[3]);
     mgraphics.fill();
-
-    // Pre-blended fill bar from left edge
-    var fillW = Math.max(0.0, (vw - 2) * norm);
+    var fillW = Math.max(0.0, (vr[2] - 2) * norm);
     if (fillW > 0.5) {
-        var isBoost = (curGainDb > 0.05);
-        mgraphics.set_source_rgba(
-            isBoost ? 0.44 : 0.16,
-            isBoost ? 0.34 : 0.38,
-            isBoost ? 0.14 : 0.48,
-            0.95
-        );
-        mgraphics.rectangle_rounded(vx + 1, vy + 1, fillW, vh - 2, 2, 2);
+        sptRgba(sptMix(bg, sptColor("live_control_fg"), (dragVolume || hoverVolSlider) ? 0.32 : 0.24));
+        mgraphics.rectangle(vr[0] + 1, vr[1] + 1, fillW, vr[3] - 2);
         mgraphics.fill();
     }
-
-    // 0 dB unity reference tick
-    var zeroX = Math.round(vx + 1 + (vw - 2) * zeroNorm) + 0.5;
-    mgraphics.set_line_width(1.0);
-    mgraphics.set_source_rgba(0.55, 0.68, 0.82, 0.45);
-    mgraphics.move_to(zeroX, vy + 2);
-    mgraphics.line_to(zeroX, vy + vh - 2);
+    var zeroX = Math.round(vr[0] + 1 + (vr[2] - 2) * zeroNorm) + 0.5;
+    mgraphics.set_line_width(1);
+    sptRgba(sptColor("live_display_scale_text"), 0.8);
+    mgraphics.move_to(zeroX, vr[1] + 2);
+    mgraphics.line_to(zeroX, vr[1] + vr[3] - 2);
     mgraphics.stroke();
-
-    // Slider border
-    mgraphics.set_line_width(1.0);
-    mgraphics.set_source_rgba(
-        dragVolume ? 0.38 : (hoverVolSlider ? 0.32 : 0.22),
-        dragVolume ? 0.86 : (hoverVolSlider ? 0.72 : 0.28),
-        dragVolume ? 0.98 : (hoverVolSlider ? 0.88 : 0.36),
-        0.95
-    );
-    mgraphics.rectangle_rounded(vx + 0.5, vy + 0.5, vw - 1, vh - 1, 3, 3);
-    mgraphics.stroke();
-
-    // High-contrast dB readout text ("-inf dB" .. "+18.0 dB")
-    var gLabel = formatGainDb(curGainDb);
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(7.5);
-    mgraphics.set_source_rgba(0.92, 0.96, 1.0, 1.0);
-    var textX = vx + (gLabel.length >= 7 ? 7 : 10);
-    mgraphics.move_to(textX, vy + vh - 4.2);
-    mgraphics.show_text(gLabel);
+    sptText(formatGainDb(curGainDb), vr[0] + vr[2] * 0.5, vr[1] + vr[3] - 3.5, sptColor("live_lcd_control_fg_alt"), SPT_SIZE_SMALL, 1);
 }
 
 function drawBottomRightLinkBadge() {
     var lr = getLinkBadgeRect();
-    var lx = lr[0], ly = lr[1], lw = lr[2], lh = lr[3];
-
-    var linkNames = [rackContext.shortLabel, "GRP A", "GRP B", "GRP C", "GRP D", "UNLINKED"];
-    var linkLabel = linkNames[curLinkGroup] || rackContext.shortLabel;
-    var peers = getLinkedPeerCount();
-    var countBadge = (manualBandsOverride !== null) ? Math.max(peers, curNumBands) : peers;
-    var peerBadge = (curLinkGroup === 5)
-        ? "LINK: OFF"
-        : ("LINK: " + linkLabel + " (" + countBadge + "x)");
-
-    // Dark translucent pill background inside bottom-right corner of spectrogram
-    mgraphics.set_source_rgba(0.04, 0.055, 0.075, showLinkStatus ? 0.88 : 0.72);
-    mgraphics.rectangle_rounded(lx, ly, lw, lh, 3, 3);
-    mgraphics.fill();
-
-    mgraphics.set_line_width(1.0);
-    mgraphics.set_source_rgba(
-        hoverLinkBadge ? 0.38 : 0.22,
-        hoverLinkBadge ? 0.82 : 0.34,
-        hoverLinkBadge ? 0.96 : 0.46,
-        showLinkStatus ? 0.85 : 0.55
-    );
-    mgraphics.rectangle_rounded(lx + 0.5, ly + 0.5, lw - 1, lh - 1, 3, 3);
-    mgraphics.stroke();
-
-    // Link status dot
     var isLinked = (curLinkGroup !== 5);
-    mgraphics.set_source_rgba(
-        isLinked ? 0.25 : 0.45,
-        isLinked ? 0.88 : 0.50,
-        isLinked ? 0.72 : 0.58,
-        showLinkStatus ? 0.98 : 0.75
-    );
-    mgraphics.arc(lx + 5.5, ly + lh * 0.5, 2.0, 0, Math.PI * 2);
-    mgraphics.fill();
 
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(6.8);
-    mgraphics.set_source_rgba(0.76, 0.90, 0.98, showLinkStatus ? 0.96 : 0.78);
-    if (showLinkStatus) {
-        mgraphics.move_to(lx + 10, ly + lh - 3.5);
-        mgraphics.show_text(peerBadge);
-    } else {
-        mgraphics.move_to(lx + 9.5, ly + lh - 3.5);
-        mgraphics.show_text("LNK");
-    }
+    sptRgba(sptColor("live_lcd_bg"), 0.85);
+    mgraphics.rectangle(lr[0], lr[1], lr[2], lr[3]);
+    mgraphics.fill();
+    sptRgba(isLinked ? sptColor("live_control_selection") : sptColor("live_display_scale_text"), hoverLinkBadge ? 1.0 : 0.85);
+    mgraphics.arc(lr[0] + 5, lr[1] + lr[3] * 0.5, 1.8, 0, Math.PI * 2);
+    mgraphics.fill();
+    sptText(linkBadgeText(), lr[0] + 10, lr[1] + lr[3] - 3,
+        hoverLinkBadge ? sptColor("live_control_fg") : sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
 }
 
 function paint() {
     var size = mgraphics.size;
-    var w = size[0] || 256;
-    var h = size[1] || 136;
+    var w = size[0] || 252;
+    var h = size[1] || 102;
     updatePlotBounds();
 
     var activeMask = getEffectiveMask();
     var bandNames = getBandNames(curNumBands);
     var xoverCount = getActiveCrossoverCount();
 
-    // 1. Canvas Outer Background
-    mgraphics.set_source_rgba(0.045, 0.055, 0.072, 1.0);
-    mgraphics.rectangle_rounded(0, 0, w, h, 5, 5);
+    // Canvas background = the recessed section colour; the top strip sits on it, the LCD below
+    sptRgba(sptColor("live_desktop"));
+    mgraphics.rectangle(0, 0, w, h);
     mgraphics.fill();
 
-    // 2. Top Bar: [AUTO] + Detected Instance Band Pills (1..4) + Volume Slider (-inf..+18 dB)
-    var ar = getAutoBtnRect();
-    var isAuto = (curBandMode === 0);
-    mgraphics.set_source_rgba(
-        isAuto ? 0.14 : (hoverAutoBtn ? 0.12 : 0.08),
-        isAuto ? 0.34 : (hoverAutoBtn ? 0.16 : 0.10),
-        isAuto ? 0.44 : (hoverAutoBtn ? 0.22 : 0.14),
-        1.0
-    );
-    mgraphics.rectangle_rounded(ar[0], ar[1], ar[2], ar[3], 3, 3);
-    mgraphics.fill();
-
-    mgraphics.set_line_width(1.0);
-    mgraphics.set_source_rgba(
-        isAuto ? 0.28 : 0.22,
-        isAuto ? 0.82 : 0.28,
-        isAuto ? 0.96 : 0.36,
-        isAuto ? 0.95 : 0.7
-    );
-    mgraphics.rectangle_rounded(ar[0] + 0.5, ar[1] + 0.5, ar[2] - 1, ar[3] - 1, 3, 3);
-    mgraphics.stroke();
-
-    mgraphics.select_font_face("Arial Bold");
-    mgraphics.set_font_size(7.2);
-    mgraphics.set_source_rgba(
-        isAuto ? 0.55 : 0.62,
-        isAuto ? 0.94 : 0.68,
-        isAuto ? 1.00 : 0.76,
-        1.0
-    );
-    mgraphics.move_to(ar[0] + 5, ar[1] + ar[3] - 4.2);
-    mgraphics.show_text("AUTO");
-
-    // Band Solo / Pass Pills (1..curNumBands, auto-created per detected instance)
+    // Top strip: Auto + band pills + volume
+    mbControl(getAutoBtnRect(), "Auto", curBandMode === 0, hoverAutoBtn, null, 0);
     for (var b = 0; b < curNumBands; b++) {
         var pr = getBandPillRect(b);
         var isOn = ((activeMask & (1 << b)) !== 0);
-        var col = MBSPLIT_BAND_COLORS[b] || MBSPLIT_BAND_COLORS[0];
-
-        mgraphics.set_source_rgba(
-            isOn ? col[0] * 0.26 : 0.075,
-            isOn ? col[1] * 0.26 : 0.090,
-            isOn ? col[2] * 0.26 : 0.115,
-            1.0
-        );
-        mgraphics.rectangle_rounded(pr[0], pr[1], pr[2], pr[3], 3, 3);
-        mgraphics.fill();
-
-        var bPeak = clamp(bandPeaks[b] || 0.0, 0.0, 1.0);
-        if (bPeak > 0.01) {
-            var mw = Math.max(2, (pr[2] - 4) * Math.pow(bPeak, 0.65));
-            mgraphics.set_source_rgba(col[0], col[1], col[2], isOn ? 0.55 : 0.25);
-            mgraphics.rectangle(pr[0] + 2, pr[1] + pr[3] - 2.5, mw, 1.8);
-            mgraphics.fill();
-        }
-
-        mgraphics.set_line_width(isOn ? 1.2 : 1.0);
-        mgraphics.set_source_rgba(
-            isOn ? col[0] : 0.20,
-            isOn ? col[1] : 0.25,
-            isOn ? col[2] : 0.32,
-            isOn ? 0.95 : 0.65
-        );
-        mgraphics.rectangle_rounded(pr[0] + 0.5, pr[1] + 0.5, pr[2] - 1, pr[3] - 1, 3, 3);
-        mgraphics.stroke();
-
-        mgraphics.set_source_rgba(
-            isOn ? col[0] : 0.30,
-            isOn ? col[1] : 0.35,
-            isOn ? col[2] : 0.42,
-            isOn ? 1.0 : 0.55
-        );
-        mgraphics.arc(pr[0] + 5.0, pr[1] + pr[3] * 0.5, 1.8, 0, Math.PI * 2);
-        mgraphics.fill();
-
-        mgraphics.select_font_face("Arial Bold");
-        mgraphics.set_font_size(curNumBands === 4 ? 6.8 : 7.4);
-        mgraphics.set_source_rgba(
-            isOn ? 0.96 : 0.55,
-            isOn ? 0.98 : 0.62,
-            isOn ? 1.00 : 0.70,
-            1.0
-        );
-        var compactNames4 = ["LOW", "LO-M", "HI-M", "HIGH"];
-        var shortName = (curNumBands === 4) ? compactNames4[b] : bandNames[b];
-        var bLabel = (curNumBands === 4) ? shortName : ((b + 1) + ":" + shortName);
-        mgraphics.move_to(pr[0] + 9, pr[1] + ar[3] - 4.2);
-        mgraphics.show_text(bLabel);
+        var compactNames4 = ["Low", "Lo-M", "Hi-M", "High"];
+        var bLabel = (curNumBands === 4) ? compactNames4[b] : ((b + 1) + ":" + titleCase(bandNames[b]));
+        mbControl(pr, bLabel, isOn, false, bandColor(b), clamp(bandPeaks[b] || 0.0, 0.0, 1.0));
     }
-
-    // Top-right Volume Slider (-inf to +18 dB, replacing the Rack debug string)
     drawTopVolumeSlider();
 
-    // 3. Main Bode / 8192-Block Spectrogram Viewport
-    mgraphics.set_source_rgba(0.028, 0.036, 0.050, 1.0);
-    mgraphics.rectangle_rounded(PLOT_X, PLOT_Y, PLOT_W, PLOT_H, 4, 4);
-    mgraphics.fill();
-
-    // Logarithmic frequency grid lines
+    // LCD with faint log-frequency / dB grid
+    var xs = [];
     var gridFreqs = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
-    mgraphics.set_line_width(1.0);
-    for (var gf = 0; gf < gridFreqs.length; gf++) {
-        var gx = Math.round(freqToX(gridFreqs[gf])) + 0.5;
-        var isMajor = (gridFreqs[gf] === 100 || gridFreqs[gf] === 1000 || gridFreqs[gf] === 10000);
-        mgraphics.set_source_rgba(0.16, 0.21, 0.28, isMajor ? 0.48 : 0.22);
-        mgraphics.move_to(gx, PLOT_Y + 1);
-        mgraphics.line_to(gx, PLOT_Y + PLOT_H - 1);
-        mgraphics.stroke();
-    }
-
-    // Horizontal dB reference lines (0 dB, -6 dB crossover point, -18 dB, -30 dB)
+    for (var gf = 0; gf < gridFreqs.length; gf++) xs.push(freqToX(gridFreqs[gf]));
+    var ys = [];
     var gridDbs = [0, -6, -18, -30];
-    for (var gd = 0; gd < gridDbs.length; gd++) {
-        var gy = Math.round(magToY(dbToLin(gridDbs[gd]))) + 0.5;
-        var isZero = (gridDbs[gd] === 0);
-        var isMinus6 = (gridDbs[gd] === -6);
-        mgraphics.set_source_rgba(
-            isZero ? 0.28 : (isMinus6 ? 0.22 : 0.15),
-            isZero ? 0.36 : (isMinus6 ? 0.30 : 0.20),
-            isZero ? 0.46 : (isMinus6 ? 0.40 : 0.26),
-            isZero ? 0.58 : (isMinus6 ? 0.40 : 0.20)
-        );
-        mgraphics.move_to(PLOT_X + 1, gy);
-        mgraphics.line_to(PLOT_X + PLOT_W - 1, gy);
-        mgraphics.stroke();
-    }
+    for (var gd = 0; gd < gridDbs.length; gd++) ys.push(magToY(dbToLin(gridDbs[gd])));
+    sptLcd(PLOT_X, PLOT_Y, PLOT_W, PLOT_H, { xs: xs, ys: ys });
 
-    // 4-6. Render 8192-Block Waterfall Spectrogram, Harmonic Spectrum, LR Bode Curves & Handles
     drawSpectrogramAndCurves(activeMask, xoverCount);
-
-    // 7. Bottom-Right Clickable Link Status Badge inside Spectrogram
     drawBottomRightLinkBadge();
 
-    // Viewport border
-    mgraphics.set_line_width(1.0);
-    mgraphics.set_source_rgba(0.18, 0.24, 0.32, 1.0);
-    mgraphics.rectangle_rounded(PLOT_X + 0.5, PLOT_Y + 0.5, PLOT_W - 1, PLOT_H - 1, 4, 4);
+    // axis labels (small, grey)
+    var badge = getLinkBadgeRect();
+    var axCol = sptColor("live_display_scale_text");
+    var axisF = [[100, "100"], [1000, "1k"], [10000, "10k"]];
+    for (var af = 0; af < axisF.length; af++) {
+        var axX = freqToX(axisF[af][0]) + 2;
+        if (axX + sptTextW(axisF[af][1], SPT_SIZE_SMALL) > badge[0] - 2 && axX < badge[0] + badge[2]) continue;
+        sptText(axisF[af][1], axX, PLOT_Y + PLOT_H - 4, axCol, SPT_SIZE_SMALL, 0);
+    }
+
+
+    sptRgba(sptColor("live_lcd_frame"));
+    mgraphics.set_line_width(1);
+    mgraphics.rectangle(PLOT_X + 0.5, PLOT_Y + 0.5, PLOT_W - 1, PLOT_H - 1);
     mgraphics.stroke();
+}
+
+function titleCase(str) {
+    var t = String(str).toLowerCase();
+    return t.charAt(0).toUpperCase() + t.slice(1);
 }

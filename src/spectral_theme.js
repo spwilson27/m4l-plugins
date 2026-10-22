@@ -29,15 +29,16 @@
 //   sptText(str, x, y, col, size?, align?)  text at baseline y; align 0 left / 1 centre / 2 right; size default SPT_SIZE
 //   sptTextW(str, size?)               text width in px
 //   sptTitle(str, x, y)                section title text (live_lcd_title colour, SPT_SIZE)
-//   sptLabelValue(label, value, x, y, align?, active?)   "Low  80.0 Hz": label in live_lcd_title, value in the LCD value colour
-//                                      (live_lcd_control_fg_alt); align 0 starts at x, 2 ends at x; active = brighter (dragging)
+//   sptLabelValue(label, value, x, y, align?, active?, labelW?)   "Low  80.0 Hz": label in live_lcd_title, value in the LCD value colour
+//                                      (live_lcd_control_fg_alt); align 0 starts at x, 2 ends at x; active = brighter (dragging);
+//                                      labelW (optional) = fixed label column width in px, so values line up between rows
 //   sptButton(x, y, w, h, text, on)    a live.text-looking toggle drawn in the canvas: orange fill (live_control_selection) with
 //                                      dark text when on, 1 px orange outline and orange text when off (Reverb's Lo Cut / Hi Cut)
 //   sptLegendSwatch(x, y, col)         6 x 2 px swatch for a legend entry
 // Constants: SPT_FONT ("Ableton Sans Medium", falls back by itself), SPT_SIZE 9.5 (values / titles), SPT_SIZE_SMALL 8.5 (axis
 // labels, legend). No bold, no ALL-CAPS badges.
 //
-// Theme names used by the Spectral Split faces (see the style guide): live_desktop (device body), live_surface_bg (section
+// Theme names used by the Spectral Split faces (see the style guide): live_surface_bg (device body), live_desktop (recessed section
 // panels), live_lcd_bg / live_lcd_frame (display + its grid), live_lcd_title (labels), live_lcd_control_fg_alt (values),
 // live_control_fg / live_control_bg (controls), live_control_selection + live_display_handle_one (active / handles, the one orange
 // accent), live_display_line_one / two (orange / cyan curves), live_display_scale_text (axis labels).
@@ -152,8 +153,8 @@ function sptTitle(str, x, y) {
     sptText(str, x, y, sptColor("live_lcd_title"), SPT_SIZE, 0);
 }
 
-function sptLabelValue(label, value, x, y, align, active) {
-    var wl = sptTextW(label, SPT_SIZE);
+function sptLabelValue(label, value, x, y, align, active, labelW) {
+    var wl = labelW ? labelW - 6 : sptTextW(label, SPT_SIZE);
     var wv = sptTextW(value, SPT_SIZE);
     var x0 = align === 2 ? x - (wl + 6 + wv) : x;
     sptText(label, x0, y, sptColor("live_lcd_title"), SPT_SIZE, 0);
@@ -219,4 +220,126 @@ function sptLegendSwatch(x, y, col) {
     sptRgba(col);
     mgraphics.rectangle(x, y, 6, 2);
     mgraphics.fill();
+}
+
+// ---- Bounds helpers (keep every drawn coordinate inside its plot rect; tests/paint_bounds_lib.js enforces it) ----------------------
+// A value-to-pixel mapping may leave the plot at a parameter extreme (threshold at its minimum, tilt at +-max, a knee band, ...):
+// clamp scalars with sptClamp, and clip lines / polygons to the plot rect with the helpers below instead of drawing them raw.
+// rect = {x, y, w, h}. All helpers are NaN-safe (a non-finite input is treated as the lower bound / dropped).
+//   sptClamp(v, lo, hi)                      v limited to lo..hi (NaN -> lo)
+//   sptClipLine(x0, y0, x1, y1, rect)        Liang-Barsky: [x0, y0, x1, y1] clipped to rect, or null when fully outside
+//   sptClipPoly(pts, rect)                   Sutherland-Hodgman: polygon [[x, y], ...] clipped to rect ([] when fully outside)
+//   sptCurveIn(pts, col, a, rect)            like sptCurve, but every segment is clipped to rect (a fresh move_to per piece)
+//   sptFillPolyIn(pts, col, a, rect)         filled polygon clipped to rect
+//   sptTextIn(str, x, y, col, size, align, rect)  like sptText, but x / baseline y are shifted so the text box (measured width,
+//                                            0.8 size above and 0.2 size below the baseline) lies inside rect
+function sptClamp(v, lo, hi) {
+    if (!(v === v)) return lo;
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+function sptClipLine(x0, y0, x1, y1, rect) {
+    if (!isFinite(x0) || !isFinite(y0) || !isFinite(x1) || !isFinite(y1)) return null;
+    var xl = rect.x;
+    var xh = rect.x + rect.w;
+    var yl = rect.y;
+    var yh = rect.y + rect.h;
+    var dx = x1 - x0;
+    var dy = y1 - y0;
+    var t0 = 0;
+    var t1 = 1;
+    var p = [-dx, dx, -dy, dy];
+    var q = [x0 - xl, xh - x0, y0 - yl, yh - y0];
+    for (var i = 0; i < 4; i++) {
+        if (p[i] === 0) {
+            if (q[i] < 0) return null;
+        } else {
+            var r = q[i] / p[i];
+            if (p[i] < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+            else { if (r < t0) return null; if (r < t1) t1 = r; }
+        }
+    }
+    return [sptClamp(x0 + t0 * dx, xl, xh), sptClamp(y0 + t0 * dy, yl, yh), sptClamp(x0 + t1 * dx, xl, xh), sptClamp(y0 + t1 * dy, yl, yh)];
+}
+
+function sptClipPoly(pts, rect) {
+    var xl = rect.x;
+    var xh = rect.x + rect.w;
+    var yl = rect.y;
+    var yh = rect.y + rect.h;
+    var out = [];
+    var i;
+    for (i = 0; i < pts.length; i++) if (isFinite(pts[i][0]) && isFinite(pts[i][1])) out.push([pts[i][0], pts[i][1]]);
+    var edges = [
+        function (p) { return p[0] >= xl; }, function (p) { return p[0] <= xh; },
+        function (p) { return p[1] >= yl; }, function (p) { return p[1] <= yh; }
+    ];
+    var cut = [
+        function (a, b) { return [xl, a[1] + (b[1] - a[1]) * (xl - a[0]) / (b[0] - a[0])]; },
+        function (a, b) { return [xh, a[1] + (b[1] - a[1]) * (xh - a[0]) / (b[0] - a[0])]; },
+        function (a, b) { return [a[0] + (b[0] - a[0]) * (yl - a[1]) / (b[1] - a[1]), yl]; },
+        function (a, b) { return [a[0] + (b[0] - a[0]) * (yh - a[1]) / (b[1] - a[1]), yh]; }
+    ];
+    for (var e = 0; e < 4; e++) {
+        var inp = out;
+        out = [];
+        if (inp.length === 0) break;
+        var prev = inp[inp.length - 1];
+        for (i = 0; i < inp.length; i++) {
+            var cur = inp[i];
+            var ci = edges[e](cur);
+            var pi2 = edges[e](prev);
+            if (ci) {
+                if (!pi2) out.push(cut[e](prev, cur));
+                out.push(cur);
+            } else if (pi2) {
+                out.push(cut[e](prev, cur));
+            }
+            prev = cur;
+        }
+    }
+    for (i = 0; i < out.length; i++) {
+        out[i][0] = sptClamp(out[i][0], xl, xh);
+        out[i][1] = sptClamp(out[i][1], yl, yh);
+    }
+    return out;
+}
+
+function sptCurveIn(pts, col, a, rect) {
+    if (!pts || pts.length < 2) return;
+    sptRgba(col, a);
+    mgraphics.set_line_width(1);
+    var open = false;
+    var lx = 0;
+    var ly = 0;
+    for (var i = 1; i < pts.length; i++) {
+        var s = sptClipLine(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], rect);
+        if (!s) { open = false; continue; }
+        if (!open || s[0] !== lx || s[1] !== ly) mgraphics.move_to(s[0], s[1]);
+        mgraphics.line_to(s[2], s[3]);
+        lx = s[2];
+        ly = s[3];
+        open = true;
+    }
+    mgraphics.stroke();
+}
+
+function sptFillPolyIn(pts, col, a, rect) {
+    var p = sptClipPoly(pts, rect);
+    if (p.length < 3) return;
+    mgraphics.move_to(p[0][0], p[0][1]);
+    for (var i = 1; i < p.length; i++) mgraphics.line_to(p[i][0], p[i][1]);
+    mgraphics.close_path();
+    sptRgba(col, a);
+    mgraphics.fill();
+}
+
+function sptTextIn(str, x, y, col, size, align, rect) {
+    var sz = size === undefined ? SPT_SIZE : size;
+    var w = sptTextW(str, sz);
+    var x0 = align === 1 ? x - w * 0.5 : (align === 2 ? x - w : x);
+    var xmax = rect.x + rect.w - w;
+    x0 = xmax < rect.x ? rect.x : sptClamp(x0, rect.x, xmax);
+    var yy = sptClamp(y, rect.y + sz * 0.8, rect.y + rect.h - sz * 0.2);
+    sptText(str, x0, yy, col, sz, 0);
 }

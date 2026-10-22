@@ -18,6 +18,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import make_delayplus_sets as mds  # noqa: E402
+import make_spectral_rack as msr  # noqa: E402
 
 REPO = mds.REPO
 DEFAULT_OUT = os.path.join(REPO, "spectral_test.als")
@@ -27,7 +28,7 @@ DEVICES = [
     ("Transient Split", "Transient Split.amxd", ["Transients", "Tones"]),
     ("Loud Split", "Loud Split.amxd", ["Quiet", "Mid", "Loud"]),
     ("Harmonic Split", "Harmonic Split.amxd", ["Nonharmonics", "Harmonics A", "Harmonics B"]),
-    ("Freq Split", "Freq Split.amxd", ["Ch 1", "Ch 2", "Ch 3", "Ch 4"]),
+    ("Freq Split", "Freq Split.amxd", ["Red", "Blue", "Yellow", "Magenta"]),
 ]
 
 
@@ -41,6 +42,12 @@ def rack_xml(amxd, out, rack_name, chains):
         dev = mds.m4l_xml(amxd, out, 0)
         x = branch.replace("@@NAME@@", mds.esc(name)).replace("@@DEVICES@@", "<Devices>\n" + dev + "\n</Devices>")
         x = x.replace('<AudioEffectBranch Id="0">', '<AudioEffectBranch Id="%d">' % i, 1)
+        ci = msr.chain_color(name)
+        if ci is not None:
+            x, n = re.subn(r'<Color Value="\d+" />(\s*)<AutoColored Value="true" />',
+                           lambda m: '<Color Value="%d" />%s<AutoColored Value="false" />' % (ci, m.group(1)), x, count=1)
+            if n != 1:
+                sys.exit("set template branch has no colour fields")
         if i:
             x = x.replace('<IsSelected Value="true" />', '<IsSelected Value="false" />', 1)
         parts.append(x)

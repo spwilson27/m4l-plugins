@@ -47,11 +47,13 @@ NUM = {
     "maxh": ("Maximum Harmonics", "Max Harm", 0.0, 404.0, 0.0, 0, 0),
     "sens": ("Nonharmonic Sensitivity", "NH Sens", 1.0, 100.0, 50.0, 0, 5),
     "tilt": ("Tilt", "Tilt", -12.0, 12.0, 0.0, 0, 4),
-    "thr": ("Detection Threshold", "Threshold", -120.0, 0.0, -120.0, 0, 4),
+    "thr": ("Detection Threshold", "Threshold", -120.0, 0.0, -120.0, 0,9),
     "lowcut": ("Detection Low-cut Frequency", "Low Cut", 19.4, 19900.0, 80.0, 0, 3),
     "highcut": ("Detection High-cut Frequency", "High Cut", 19.4, 19900.0, 1500.0, 0, 3),
     "mix": ("Mix", "Mix", 0.0, 100.0, 100.0, 0, 5),
 }
+# custom units: Live shows -inf at about -70 dB with unitstyle 4, but Threshold goes down to -120 dB (Automatic)
+NUM_UNITS = {"thr": "%.1f dB"}
 NUM_HELP = {
     "maxh": "Maximum Harmonics: limits the number of harmonic peaks tracked; harmonics above it go to Nonharmonics. 0 = Off (no limit, up to 404).",
     "sens": "Nonharmonic Sensitivity: a relative threshold for the Nonharmonics channel. Lower values put more signal in Nonharmonics (less in the harmonic channels), higher values the opposite.",
@@ -120,7 +122,7 @@ def build_patcher():
         boxes.append(sc.make_lcd_numbox(key, NUM[key], NUM_HELP[key], CX, y, CW, 15))
     # Low / High / Tilt / Threshold: automatable parameters drawn and edited by the display (hidden from the face)
     for i, key in enumerate(HIDDEN_KEYS):
-        b = sc.make_numbox(key, NUM[key], NUM_HELP[key], 20 + i * 100, 0, 80, 15, sc.TEXT, 3 if key == "tilt" else 2, 8.5)
+        b = sc.make_numbox(key, NUM[key], NUM_HELP[key], 20 + i * 100, 0, 80, 15, sc.TEXT, 3 if key == "tilt" else 2, 8.5, NUM_UNITS.get(key))
         b["box"]["presentation"] = 0
         b["box"].pop("presentation_rect", None)
         if key in ("lowcut", "highcut"):

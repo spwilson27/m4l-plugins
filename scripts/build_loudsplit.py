@@ -12,8 +12,10 @@ Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/spectral_sp
 threshold lines (drag = threshold, Alt/Shift-drag = knee, dot = momentary band solo), links the parameters with the other
 instances in the rack and sends the resolved output selection.
 
-Layout (480 x 169): v8ui canvas x=6..296, y=6..163 (Relative toggle / Rise / Tilt / Fall drawn inside it, Bitwig layout); threshold + knee strips,
-Size, Output and Mix in the right column; two background panels last.
+Layout (480 x 169, Ableton-native: Reverb-like flat titled sections on the Live theme): `Detection` section (x=4..296) with the v8ui canvas
+x=8..292, y=20..161 (LCD spectrum, threshold lines, legend, Rise / Fall / Tilt values, Relative button drawn inside it); `Thresholds`
+(Higher / Hi Knee, Lower / Lo Knee, Rel High / Rel Low) and `Output` (Output, Size, Mix) sections in the right column (x=300..476);
+section panels, then the body panel, last.
 """
 
 import os
@@ -30,10 +32,6 @@ OUT_AMXD = os.path.join(sc.DEVICES_DIR, "Loud Split.amxd")
 OUT_ADG = os.path.join(sc.DEVICES_DIR, "Loud Split.adg")
 WIDTH = 480.0
 LATENCY = 4096
-
-GRN = sc.GREEN
-YEL = sc.YELLOW
-RED = sc.RED
 
 # key: (long name, short name, min, max, initial, ptype, unitstyle[, units])
 NUM = {
@@ -60,7 +58,7 @@ NUM_HELP = {
     "mix": "Mix: this chain outputs Mix x its channel + (1 - Mix) x its share (1/3) of the dry input, so the rack sum is Mix x wet + (1 - Mix) x dry (dry delayed by the same 4096 samples; the dry share passes through each chain's devices). Outside a rack: ordinary dry/wet.",
     "tilt": "Tilt (+-6 dB/oct): weights the analysed level by dB per octave around 1 kHz (positive favours highs, negative lows) before it is classified. The output level is not changed.",
 }
-NUM_UNITS = {"hiknee": "%.1f dB", "loknee": "%.1f dB", "rise": "%.2f", "fall": "%.2f", "tilt": "%.1f dB/oct", "mix": "%.0f %"}
+NUM_UNITS = {"hithr": "%.1f dB", "lothr": "%.1f dB", "rhithr": "%.1f dB", "rlothr": "%.1f dB", "hiknee": "%.1f dB", "loknee": "%.1f dB", "rise": "%.2f", "fall": "%.2f", "tilt": "%.1f dB/oct", "mix": "%.0f %"}
 # key: (long name, short name, values, initial)
 ENUM = {
     "relative": ("Relative Loudness Mode", "Relative", ["Absolute", "Relative"], 0),
@@ -101,20 +99,23 @@ def build_patcher():
                       os.path.join(SRC, "loudsplit_core.genexpr"))
     face = (sc.read(os.path.join(SRC, "loudsplit_config.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_link.js")).rstrip() + "\n\n"
+            + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "loudsplit_ui.js")))
 
     boxes = []
     lines = []
 
-    # ---- controls (presentation), right column x = 298..474: threshold + knee strips like Bitwig's channel section ----
-    X1, X2, W1, W2 = 300, 388, 84, 86
-    strips = [("hithr", "hiknee", RED, 8), ("lothr", "loknee", GRN, 25), ("rhithr", "rlothr", None, 42)]
-    for k1, k2, col, y in strips:
-        c1 = col or RED
-        c2 = col or GRN
-        boxes.append(sc.make_numbox(k1, NUM[k1], NUM_HELP[k1], X1, y, W1, 15, c1, 2, 8.5, NUM_UNITS.get(k1)))
-        boxes.append(sc.make_numbox(k2, NUM[k2], NUM_HELP[k2], X2, y, W2, 15, c2, 2, 8.5, NUM_UNITS.get(k2)))
-    boxes.append(sc.make_label("obj-lbl-rel", "Relative thresholds: dB re loudest bin", 300, 59, 172, 11, size=7.0, color=sc.DIM))
+    # ---- controls (presentation): Reverb-style titled sections, theme-bound native live.* controls ----
+    # Thresholds section (x = 300..476): two columns of label + LCD value, three rows
+    LX1, NX1, LX2, NX2 = 306, 350, 392, 436
+    rows = [("hithr", "Higher", "hiknee", "Hi Knee"), ("lothr", "Lower", "loknee", "Lo Knee"), ("rhithr", "Rel High", "rlothr", "Rel Low")]
+    for i, (k1, t1, k2, t2) in enumerate(rows):
+        y = 21 + i * 17
+        boxes.append(sc.make_theme_comment(f"obj-lbl-{k1}", t1, LX1, y + 1, 42))
+        boxes.append(sc.make_lcd_numbox(k1, NUM[k1], NUM_HELP[k1], NX1, y, 38, 15, unit_text=NUM_UNITS.get(k1)))
+        boxes.append(sc.make_theme_comment(f"obj-lbl-{k2}", t2, LX2, y + 1, 42))
+        boxes.append(sc.make_lcd_numbox(k2, NUM[k2], NUM_HELP[k2], NX2, y, 38, 15, unit_text=NUM_UNITS.get(k2)))
+    boxes.append(sc.make_theme_comment("obj-lbl-relnote", "Rel: dB below the loudest bin", 306, 74, 166, 12, size=8.5, name="live_display_scale_text"))
     # Rise / Fall / Tilt / Relative Loudness Mode live in the canvas: real parameters, kept off the face
     for key in ("rise", "fall", "tilt"):
         box = sc.make_numbox(key, NUM[key], NUM_HELP[key], 0, 0, 60, 15, sc.ORANGE, 2, 8.5, NUM_UNITS.get(key))
@@ -125,18 +126,24 @@ def build_patcher():
     box["box"]["presentation"] = 0
     del box["box"]["presentation_rect"]
     boxes.append(box)
-    boxes.append(sc.make_label("obj-lbl-size", "Size", 300, 82, 30, 13, color=sc.DIM))
-    boxes.append(sc.make_tab("size", ENUM["size"], ENUM_HELP["size"], 336, 81, 138, 15, sc.DIM))
-    boxes.append(sc.make_label("obj-lbl-output", "Output", 300, 102, 40, 13, color=sc.TEXT))
-    boxes.append(sc.make_menu("output", ENUM["output"], ENUM_HELP["output"], 342, 101, 132, 15, sc.TEXT))
-    boxes.append(sc.make_label("obj-lbl-mix", "Mix", 300, 122, 30, 13, color=sc.TEXT))
-    boxes.append(sc.make_numbox("mix", NUM["mix"], NUM_HELP["mix"], 336, 121, 138, 15, sc.TEXT, 2, 8.5, NUM_UNITS.get("mix")))
-    boxes.append(sc.make_label("obj-leg-1", "1  QUIET", 300, 146, 50, 13, size=8.0, color=GRN))
-    boxes.append(sc.make_label("obj-leg-2", "2  MID", 362, 146, 44, 13, size=8.0, color=YEL))
-    boxes.append(sc.make_label("obj-leg-3", "3  LOUD", 418, 146, 52, 13, size=8.0, color=RED))
+    # Output section: Output menu, Size tab, Mix value
+    CX, CW = 364, 106
+    boxes.append(sc.make_theme_comment("obj-lbl-output", "Output", 306, 110, 56))
+    boxes.append(sc.make_theme_menu("output", ENUM["output"], ENUM_HELP["output"], CX, 109, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", 306, 128, 56))
+    boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], CX, 127, CW, 15))
+    boxes.append(sc.make_theme_comment("obj-lbl-mix", "Mix", 306, 146, 56))
+    boxes.append(sc.make_lcd_numbox("mix", NUM["mix"], NUM_HELP["mix"], CX, 145, 70, 15, unit_text=NUM_UNITS.get("mix")))
+
+    # section titles + hairlines (the section panels themselves go last)
+    p_det, parts_det = sc.make_section("det", 4, 4, 292, 161, "Detection")
+    p_thr, parts_thr = sc.make_section("thr", 300, 4, 176, 85, "Thresholds")
+    p_out, parts_out = sc.make_section("out", 300, 93, 176, 72, "Output")
+    for parts in (parts_det, parts_thr, parts_out):
+        boxes += parts
 
     # ---- display (the only v8ui) ----
-    boxes.append(sc.v8ui("obj-viz", face, [6.0, 6.0, 290.0, 157.0], (20.0, 80.0), 4, "LoudsplitView"))
+    boxes.append(sc.v8ui("obj-viz", face, [8.0, 20.0, 284.0, 141.0], (20.0, 80.0), 4, "LoudsplitView"))
 
     # ---- audio ----
     boxes += [
@@ -204,9 +211,8 @@ def build_patcher():
     for key in REL_KEYS:
         lines.append(line("obj-act-rel", 0, f"obj-ctrl-{key}"))
 
-    # ---- background panels last ----
-    boxes.append(sc.make_panel("obj-panel-left", 4, 4, 294, 161, border=(0.22, 0.26, 0.32)))
-    boxes.append(sc.make_panel("obj-panel-right", 300, 4, 176, 161, border=(0.26, 0.28, 0.24)))
+    # ---- background panels last: section panels, then the body (Max draws earlier boxes over later ones) ----
+    boxes += [p_det, p_thr, p_out, sc.make_body_panel(WIDTH)]
 
     return sc.patcher(
         boxes, lines, WIDTH,

@@ -67,7 +67,7 @@ var HS_PARAMS = {
     maxh: ["Maximum Harmonics", "Max Harm", 0.0, 404.0, 0.0, 0, 0],
     sens: ["Nonharmonic Sensitivity", "NH Sens", 1.0, 100.0, 50.0, 0, 5],
     tilt: ["Tilt", "Tilt", -12.0, 12.0, 0.0, 0, 4],
-    thr: ["Detection Threshold", "Threshold", -120.0, 0.0, -120.0, 0, 4],
+    thr: ["Detection Threshold", "Threshold", -120.0, 0.0, -120.0, 0, 9],   // unitstyle 9 + "%.1f dB": style 4 shows -inf below about -70 dB
     lowcut: ["Detection Low-cut Frequency", "Low Cut", 19.4, 19900.0, 80.0, 0, 3],
     highcut: ["Detection High-cut Frequency", "High Cut", 19.4, 19900.0, 1500.0, 0, 3],
     mix: ["Mix", "Mix", 0.0, 100.0, 100.0, 0, 5]
