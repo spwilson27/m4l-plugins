@@ -3,7 +3,7 @@
 # stay on the host; this copies the repo into the VM and runs the rest there over ssh. Modelled on vm_sampler.sh.
 # Key auth first (ssh -o BatchMode=yes admin@<ip>), sshpass admin / admin (tart's default test-VM login) as the fallback.
 #
-#   scripts/vm_glitch.sh sync     rsync the repo to ~/Software/ableton-cepstral in the VM (GLITCH_VM_DIR overrides)
+#   scripts/vm_glitch.sh sync     rsync the repo to ~/Software/ableton-glitch in the VM (GLITCH_VM_DIR overrides)
 #   scripts/vm_glitch.sh audio    sync, then scripts/run_glitch_audio_tests.py in the VM (standalone Max harness, no Live lock)
 #   scripts/vm_glitch.sh live     sync, rebuild in the VM, write glitch_test.als with VM paths (scripts/make_glitch_set.py),
 #                                 (re)start Live in the VM on it, clear crash recovery, wait for the MCP bridge
@@ -15,7 +15,7 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
-VM_DIR="${GLITCH_VM_DIR:-Software/ableton-cepstral}"
+VM_DIR="${GLITCH_VM_DIR:-Software/ableton-glitch}"
 WAV=/tmp/glitch_test_220.wav
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

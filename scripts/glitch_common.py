@@ -25,7 +25,8 @@ console.log(JSON.stringify({ np: L.np, weightsOffset: L.weightsOffset, seqOffset
   order: L.instances.map((i) => i.id), params: g.GL_PARAMS, paramKeys: g.GL_PARAM_KEYS,
   mvDivBeats: g.GL_MV_DIV_BEATS, minsOffset: L.minsOffset, maxsOffset: L.maxsOffset, mvBase: L.mvBase, mvN: L.mvN, mv: L.mv,
   face: g.glitchFaceLayout(g.defaultUi()),
-  faces: { editor: g.glitchFaceLayout({ editor: 1, slots: 1 }), seq: g.glitchFaceLayout({ seq: 1, slots: 1 }), options: g.glitchFaceLayout({ options: 1, slots: 1 }), motion: g.glitchFaceLayout({ editor: 1, slots: 1, edTab: 1 }), many: g.glitchFaceLayout({ slots: 1 }), many2: g.glitchFaceLayout({ slots: 1 }) } }));
+  faces: { editor: g.glitchFaceLayout({ editor: 1, slots: 1 }), seq: g.glitchFaceLayout({ seq: 1, slots: 1 }), options: g.glitchFaceLayout({ options: 1, slots: 1 }), motion: g.glitchFaceLayout({ editor: 1, slots: 1, edTab: 1 }), many: g.glitchFaceLayout({ slots: 1 }), many2: g.glitchFaceLayout({ slots: 1 }),
+    new: g.glitchFaceLayout({ slots: 1 }), specedit: g.glitchFaceLayout({ editor: 1, slots: 1 }), options2: g.glitchFaceLayout({ options: 1, slots: 1 }) } }));
 """
 
 

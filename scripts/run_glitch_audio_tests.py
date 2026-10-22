@@ -337,6 +337,55 @@ def cases():
         "rev": {"wet": 0.4, "size": 0.7, "decay": 0.7, **mv("rev", 1, "decay", 0.3, div=13)},
     })]))
 
+    # ---- phase 4: Ratchet / Scratch / the 11 spectral sub-ops ----
+    # Ratchet: noise, span 1/2 note (div 7 = 2 beats = 48000 samples at 120 bpm), 4 repeats, accel +-2/3 (ratio 2^(-2) = 1/4 over the roll):
+    # the dips at the repeat starts (24-sample fades) are 21082 / 13281 / 8366 / 5271 samples apart (reversed when decelerating)
+    for nm, acc in (("ratchet_accel", 2 / 3), ("ratchet_decel", -2 / 3), ("ratchet_even", 0.0)):
+        out.append(one(nm, {"ratc": {"wet": 1, "div": 7, "count": 4, "accel": acc, "pitch": 0, "decay": 0, "prob": 1}}, stim="noise", arm=ARM, dur=3000, probe=["dips:16"]))
+    # Scratch: a slow ramp played through the platter: the output steps go backwards part of the time and never jump (a ramp sample is 8.3e-6)
+    out.append(one("scratch_sine", {"scrb": {"wet": 1, "size": 5, "shape": 0, "rate": 4, "depth": 0.6}}, stim="ramp", arm=ARM, dur=2200))
+    out.append(one("scratch_saw", {"scrb": {"wet": 1, "size": 5, "shape": 1, "rate": 3, "depth": 1}}, stim="ramp", arm=ARM, dur=2200))
+    out.append(one("scratch_random", {"scrb": {"wet": 1, "size": 5, "shape": 2, "rate": 2, "depth": 1}}, stim="ramp", arm=ARM, dur=2200))
+    out.append(one("scratch_click", {"scrb": {"wet": 1, "size": 4, "shape": 0, "rate": 3, "depth": 0.7}}, stim="sine", arm=ARM, dur=2800))
+    out.append(one("scratch_off", {"scrb": {"wet": 1, "size": 4, "shape": 0, "rate": 3, "depth": 0}}, stim="mix", dur=2200))
+    # spectral sub-ops
+    out += [
+        one("gfreeze", {"spec": {"wet": 1, "gfz_amt": 1, "gfz_dens": 0.6, "gfz_rate": 5}}, stim="mix", dur=3000),
+        one("stretch_up", {"spec": {"wet": 1, "str_amt": 1, "str_mode": 0, "str_st": 7, "str_inh": 0}}, stim="sine1k", dur=3000),
+        one("stretch_down", {"spec": {"wet": 1, "str_amt": 1, "str_mode": 0, "str_st": -12, "str_inh": 0}}, stim="sine1k", dur=3000),
+        one("bubbler", {"spec": {"wet": 1, "bub_amt": 1, "bub_spread": 4, "bub_dens": 0.3}}, stim="mix", dur=3000),
+        one("mp3ify_lo", {"spec": {"wet": 1, "mp3_amt": 1, "mp3_kbps": 16, "mp3_mask": 1}}, stim="noise", dur=3000),
+        one("mp3ify_mid", {"spec": {"wet": 1, "mp3_amt": 1, "mp3_kbps": 64, "mp3_mask": 0.5}}, stim="noise", dur=3000),
+        one("mp3ify_hi", {"spec": {"wet": 1, "mp3_amt": 1, "mp3_kbps": 320, "mp3_mask": 0.2}}, stim="noise", dur=3000),
+        one("dust_offset", {"spec": {"wet": 1, "dst_amt": 1, "dst_kbps": 64, "dst_mode": 0, "dst_depth": 0.8, "dst_rate": 3}}, stim="noise", dur=3000),
+        one("dust_offset2", {"spec": {"wet": 1, "dst_amt": 1, "dst_kbps": 64, "dst_mode": 0, "dst_depth": 0.8, "dst_rate": 3}}, stim="noise", dur=3000),  # identical render: host-locked repeatable
+        one("dust_permute", {"spec": {"wet": 1, "dst_amt": 1, "dst_kbps": 64, "dst_mode": 1, "dst_depth": 1, "dst_rate": 3}}, stim="noise", dur=3000),
+        one("thinner", {"spec": {"wet": 1, "thn_amt": 1, "thn_n": 8, "thn_soft": 0}}, stim="mix", dur=3000),
+        one("decap", {"spec": {"wet": 1, "dec_amt": 1, "dec_k": 4, "dec_boost": 0}}, stim="sine1k", dur=3000),
+        one("noisify", {"spec": {"wet": 1, "nsf_amt": 1, "nsf_depth": 18, "nsf_grain": 1}}, stim="noise", dur=3000),
+        one("clipper", {"spec": {"wet": 1, "clp_amt": 1, "clp_mode": 1, "clp_db": -9}}, stim="mix", dur=3000),
+        one("pswap", {"spec": {"wet": 1, "psw_amt": 1, "psw_w": 512}}, stim="mix", dur=3000),
+        one("robot_noise", {"spec": {"wet": 1, "rph_amt": 1, "rph_mode": 0, "rph_rand": 0}}, stim="noise", dur=3000),
+        one("robot_sine", {"spec": {"wet": 1, "rph_amt": 1, "rph_mode": 0, "rph_rand": 0}}, stim="sine", dur=3000),
+        one("whisper", {"spec": {"wet": 1, "rph_amt": 1, "rph_mode": 1, "rph_rand": 1}}, stim="sine", dur=3000),
+        one("whisper_noise", {"spec": {"wet": 1, "rph_amt": 1, "rph_mode": 1, "rph_rand": 1}}, stim="mix", dur=3000),
+    ]
+    # every phase 4 sub-op on at once next to the old ones, plus Ratchet and Scratch: finite, bounded, sounds
+    allspec = {"wet": 1, "frz_amt": 0.3, "frz_rate": 1, "smr_amt": 0.4, "smr_blur": 0.5, "cc_amt": 0.5, "cc_coeffs": 0.4, "cc_bits": 10, "sc_amt": 0.4, "sc_mode": 2,
+               "sct_amt": 0.4, "sct_w": 6, "sct_rate": 4, "mir_amt": 0.4, "mir_pivot": 1500, "bsh_amt": 0.4, "bsh_bins": -5, "sgl_amt": 0.4, "sgl_mode": 0, "sgl_k": 40, "sgl_step": 9,
+               "gfz_amt": 0.5, "gfz_dens": 0.4, "gfz_rate": 5, "str_amt": 0.5, "str_mode": 1, "str_st": 5, "str_inh": 0.3, "bub_amt": 0.5, "bub_spread": 3, "bub_dens": 0.2,
+               "mp3_amt": 0.5, "mp3_kbps": 96, "mp3_mask": 0.5, "dst_amt": 0.5, "dst_kbps": 96, "dst_mode": 1, "dst_depth": 0.5, "dst_rate": 4, "thn_amt": 0.5, "thn_n": 3, "thn_soft": 0.3,
+               "dec_amt": 0.5, "dec_k": 3, "dec_boost": 6, "nsf_amt": 0.5, "nsf_depth": 9, "nsf_grain": 2, "clp_amt": 0.5, "clp_mode": 0, "clp_db": -9,
+               "psw_amt": 0.5, "psw_w": 128, "rph_amt": 0.5, "rph_mode": 1, "rph_rand": 0.6}
+    out.append(one("stress_p4", {"spec": allspec, "ratc": {"wet": 0.7, "div": 5, "count": 8, "accel": 0.6, "pitch": 5, "decay": 0.3, "prob": 1},
+                                 "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}, "wid": {"wet": 1, "width": 1.2, "gain": 3}}, stim="mix", dur=3200))
+    out.append(one("cpu_spec_all", {"spec": allspec}, stim="mix", dur=2500, cpu=True))  # all 19 spectral sub-ops on (the single STFT)
+    out.append(one("cpu_p4_modules", {"ratc": {"wet": 0.7, "div": 5, "count": 8, "accel": 0.6, "pitch": 5, "decay": 0.3, "prob": 1}, "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}}, stim="mix", dur=2500, cpu=True))
+    # a Ratchet / Scratch morph: no clicks while the weights move
+    ra = vec({"ratc": {"wet": 1, "div": 6, "count": 6, "accel": 0.6, "prob": 1}})
+    rb = vec({"scrb": {"wet": 1, "size": 4, "shape": 0, "rate": 3, "depth": 0.5}})
+    out.append(c("p4_morph", stim="sine", dur=3200, slots=[ra, rb], weights=[1, 0], events=ramp_events([1, 0], [0, 1], 900, 2100, 24)))
+
     # ---- everything on at once ----
     allmods = {
         "drvA": {"wet": 0.6, "mode": 1, "drive": 12, "tone": 12000}, "filt": {"wet": 0.6, "type": 1, "cutoff": 1500, "res": 0.6},
@@ -530,6 +579,21 @@ def checks(name, r):
         check(r["bout3"] - r["bin3"] < -10 and abs(r["pk440"] - r["pi440"]) < 4, f"specgate_topk: noise floor {r['bout3']-r['bin3']:.1f} dB, 440 Hz kept ({r['pk440']-r['pi440']:.1f} dB)")
     elif name == "specgate_lofi":
         check(r["errdb"] > -12 and abs(r["gaindb"]) < 8, f"specgate_lofi: quantized magnitudes (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name.startswith("ratchet_"):
+        ratchet_checks(name, r)
+    elif name.startswith("scratch_"):
+        scratch_checks(name, r)
+    elif name == "p4_morph":
+        check(r["nan"] == 0 and r["peak"] <= 1.0, "p4_morph: finite and bounded")
+    elif name in P4_SPEC_NAMES:
+        p4_spec_checks(name, r)
+    elif name == "stress_p4":
+        check(r["peak"] <= 1.0 and r["nan"] == 0, f"stress_p4: bounded and finite (peak {r['peak']:.3f}, nan {r['nan']})")
+        check(r["peak"] > 0.01, "stress_p4: sounds")
+    elif name in ("cpu_spec_all", "cpu_p4_modules"):
+        check(r["cpuMax"] > 0, f"{name}: cpu measured")
+        check(r["cpuMax"] < 95, f"{name}: audio CPU {r['cpuMax']:.1f} % (avg {r['cpuAvg']:.1f})")
+        print(f"  CPU {name}: max {r['cpuMax']:.1f} % avg {r['cpuAvg']:.1f} %")
     elif name == "stress_all":
         check(r["peak"] <= 1.0 and r["nan"] == 0, f"stress_all: bounded and finite (peak {r['peak']:.3f}, nan {r['nan']})")
         check(r["peak"] > 0.01, "stress_all: sounds")
@@ -545,6 +609,121 @@ def checks(name, r):
         check(r["peak"] <= 1.0, "six_nrt: bounded")
 
 
+
+
+# --------------------------------------------------------------------------- phase 4 analysis
+P4_SPEC_NAMES = ("gfreeze", "stretch_up", "stretch_down", "bubbler", "mp3ify_lo", "mp3ify_mid", "mp3ify_hi", "dust_offset", "dust_offset2", "dust_permute", "thinner", "decap",
+                 "noisify", "clipper", "pswap", "robot_noise", "robot_sine", "whisper", "whisper_noise")
+RESULTS = {}  # name -> r, so a check can compare two cases (Duststorm vs MP3ify, a repeated Duststorm render)
+
+
+def dip_events(r):
+    """Centres (sample index in the window) of the dips the probe found in the block rms of the output (dips:N)."""
+    return [r[f"dip{i}"] for i in range(int(r.get("dipn", 0)))]
+
+
+def ratchet_checks(name, r):
+    acc = {"ratchet_accel": 2 / 3, "ratchet_decel": -2 / 3, "ratchet_even": 0.0}[name]
+    cnt = 4
+    q = 2 ** (-3 * acc / (cnt - 1))
+    span = 48000
+    d0 = span * (1 - q) / (1 - q ** cnt) if abs(1 - q) > 1e-4 else span / cnt
+    want = [d0 * q ** i for i in range(cnt)]
+    ev = dip_events(r)
+    # the second roll of the window starts at the span boundary of beat 4 (2 s): window sample 2 s - arm, plus the fixed latency of the chain. The start of a roll
+    # has no dip of its own (the dry signal fades out as the first repeat fades in), but the previous roll's last repeat ends there
+    start = 2 * SR - ARM_SAMPLES + LATENCY
+    near = [x for x in ev if abs(x - start) < 400]
+    check(len(near) >= 1, f"{name}: a dip at the span start ({start}), events {[int(x) for x in ev[:8]]}")
+    if not near:
+        return
+    s0 = near[0]
+    got = []
+    prev = s0
+    for x in ev:
+        if x > prev + 100 and len(got) < cnt:
+            got.append(x - prev)
+            prev = x
+    print(f"  {name}: repeat spacings {[int(g) for g in got]} (want {[int(w) for w in want[:cnt]]})")
+    check(len(got) == cnt, f"{name}: {len(got)} spacings found")
+    for i, g in enumerate(got):
+        check(abs(g - want[i]) < 60, f"{name}: repeat {i} lasts {g:.0f} samples, want {want[i]:.0f}")
+    if acc > 0:
+        check(got[0] > got[-1] * 1.5, f"{name}: accelerates")
+    elif acc < 0:
+        check(got[0] * 1.5 < got[-1], f"{name}: decelerates")
+
+
+def scratch_checks(name, r):
+    if name == "scratch_off":
+        check(r["lag"] == LATENCY + 4, f"scratch_off: depth 0 is the dry signal delayed by 4 samples (best lag {r['lag']}, want {LATENCY + 4})")
+        return
+    if name == "scratch_click":
+        # a 440 Hz sine read at speeds -1.9 .. 3.9: the instantaneous frequency never exceeds 3.9 x 440 Hz, so the second difference stays below the sine's
+        # at that frequency (15 x the input's); a discontinuity at a turnaround would be a spike of the order of the amplitude
+        check(r["maxd2"] < 20 * max(r["maxd2in"], 0.001), f"scratch_click: no click, max d2 {r['maxd2']:.4f} vs input {r['maxd2in']:.4f} (speed up to 3.9 x -> 15 x; a jump would be 300 x)")
+        check(r["errdb"] > -20, f"scratch_click: the platter moves the signal (errdb {r['errdb']:.1f})")
+        return
+    slope = r["rampSlope"]
+    tot = r["rampNeg"] + r["rampPos"]
+    frac = r["rampNeg"] / max(tot, 1)
+    print(f"  {name}: backwards {frac * 100:.1f} % of the steps, largest step {r['rampMaxStep'] / slope:.2f} x the ramp slope")
+    check(0.05 < frac < 0.9, f"{name}: the platter reverses (backwards steps {frac * 100:.1f} %)")
+    lim = {"scratch_sine": 4.4, "scratch_saw": 16.0, "scratch_random": 9.0}[name]
+    check(r["rampMaxStep"] < lim * slope, f"{name}: the position never jumps (largest step {r['rampMaxStep'] / slope:.2f} x slope, limit {lim})")
+
+
+def p4_spec_checks(name, r):
+    RESULTS[name] = r
+    if name == "gfreeze":
+        check(r["errdb"] > -25 and -9 < r["gaindb"] < 3, f"gfreeze: holds bins (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name == "stretch_up":
+        check(abs(r["peakhz"] - 1498.3) < 40, f"stretch_up: 1 kHz + 7 st at {r['peakhz']:.0f} Hz (want 1498)")
+    elif name == "stretch_down":
+        check(abs(r["peakhz"] - 500) < 30, f"stretch_down: 1 kHz - 12 st at {r['peakhz']:.0f} Hz (want 500)")
+    elif name == "bubbler":
+        check(r["errdb"] > -15 and -9 < r["gaindb"] < 3, f"bubbler: changes the signal (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name == "mp3ify_lo":
+        check(r["bout3"] - r["bin3"] < -15 and r["bout4"] - r["bin4"] < -25, f"mp3ify_lo: HF cut at 2.5 kHz ({r['bout3'] - r['bin3']:.1f} / {r['bout4'] - r['bin4']:.1f} dB in 3-8 / 8-20 kHz)")
+        check(r["sparse"] > 0.6 and r["sparse"] > r["sparsein"] + 0.4, f"mp3ify_lo: starved spectrum (sparse bins {r['sparse']:.2f}, input {r['sparsein']:.2f})")
+    elif name == "mp3ify_mid":
+        check(r["sparse"] > r["sparsein"] + 0.1 and r["errdb"] > -25, f"mp3ify_mid: masking holes (sparse {r['sparse']:.2f} vs {r['sparsein']:.2f}, errdb {r['errdb']:.1f})")
+    elif name == "mp3ify_hi":
+        check(r["errdb"] < -12 and abs(r["gaindb"]) < 1.0, f"mp3ify_hi: 320 kbps is near transparent (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name in ("dust_offset", "dust_permute"):
+        m = RESULTS.get("mp3ify_mid")
+        if m:
+            diffs = [abs(r[f"bout{b}"] - m[f"bout{b}"]) for b in range(5)]
+            check(max(diffs) > 1.0 or abs(r["errdb"] - m["errdb"]) > 1.5, f"{name}: differs from MP3ify at the same bitrate (band levels differ by up to {max(diffs):.1f} dB, errdb {r['errdb']:.1f} vs {m['errdb']:.1f})")
+        check(r["errdb"] > -15, f"{name}: mismatched decode (errdb {r['errdb']:.1f})")
+    elif name == "dust_offset2":
+        a = RESULTS.get("dust_offset")
+        if a:
+            same = all(abs(a[k] - r[k]) < 1e-6 * max(1.0, abs(a[k])) for k in ("errdb", "gaindb", "peak", "nonfunddb", "bout1", "bout3"))
+            check(same, f"dust_offset2: the same render twice is identical (host-locked): errdb {a['errdb']:.4f} / {r['errdb']:.4f}, gain {a['gaindb']:.4f} / {r['gaindb']:.4f}")
+    elif name == "thinner":
+        check(r["gaindb"] < -3, f"thinner: non-peak energy removed (level {r['gaindb']:.1f} dB)")
+        check(r["pk440"] - r["pi440"] > -9 and r["pk440"] - r["pi440"] > r["bout3"] - r["bin3"] + 4, f"thinner: the 440 Hz peak mostly stays ({r['pk440'] - r['pi440']:.1f} dB), the noise floor drops more ({r['bout3'] - r['bin3']:.1f} dB)")
+    elif name == "decap":
+        check(r["pk1000"] - r["pi1000"] < -10, f"decap: the loudest bins (the 1 kHz line) removed ({r['pk1000'] - r['pi1000']:.1f} dB)")
+    elif name == "noisify":
+        check(r["errdb"] > -10 and abs(r["gaindb"]) < 6, f"noisify: random bin gains (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name == "clipper":
+        check(r["errdb"] > -30 and r["gaindb"] < 0.5, f"clipper: bins clipped below the frame peak (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name == "pswap":
+        check(r["errdb"] > -8 and abs(r["gaindb"]) < 3, f"pswap: phases reversed, magnitudes stay (errdb {r['errdb']:.1f}, level {r['gaindb']:.1f} dB)")
+    elif name == "robot_noise":
+        check(r["combratio"] > 3 and r["combratio"] > 2 * r["combratioin"], f"robot_noise: hop-rate buzz (comb at multiples of 187.5 Hz: {r['combratio']:.1f} vs {r['combratioin']:.1f} in)")
+        check(-7 < r["gaindb"] < 3, f"robot_noise: level {r['gaindb']:.1f} dB (zero-phase pulses are peaky: the master soft limiter takes the top, peak {r['peak']:.2f})")
+    elif name == "robot_sine":
+        mult = r["peakhz"] / 187.5
+        check(abs(mult - round(mult)) * 187.5 < 9 and abs(r["peakhz"] - 440) > 30, f"robot_sine: the strongest line {r['peakhz']:.1f} Hz is a multiple of the hop rate 187.5 Hz, not 440 Hz")
+        check(r["combratio"] > 3, f"robot_sine: comb ratio {r['combratio']:.1f}")
+    elif name == "whisper":
+        check(r["nonfunddb"] > -8, f"whisper: noisy (energy outside the strongest line {r['nonfunddb']:.1f} dB)")
+        check(abs(r["gaindb"]) < 1.5, f"whisper: level within 1.5 dB ({r['gaindb']:.2f} dB)")
+    elif name == "whisper_noise":
+        check(abs(r["gaindb"]) < 1.5, f"whisper_noise: level within 1.5 dB ({r['gaindb']:.2f} dB)")
 
 
 # --------------------------------------------------------------------------- sequencer analysis

@@ -19,6 +19,8 @@
  *   movement  (phase 3) Randomize assigns movement (tiles with an indicator, gen telemetry MOVE_ON); a Width / Gain module with a synced
  *             LFO on its gain (test_move) audibly varies the output over time while the transport plays, its phase equals the host beat
  *             x cycles-per-beat (locked), and stopping the transport holds the synced phase
+ *   phase4    (phase 4) test_p4: Ratchet + Scratch (roll and lag telemetry move), the 11 new spectral sub-ops (STFT runs, spectra alive), both at
+ *             once: gen keeps running, telemetry finite, output bounded
  *   mix       Mix 0 returns the dry level while the strong glitch is active
  *
  *   node scripts/test_glitch_live.js [--port 19880] [--wav /tmp/glitch_test_220.wav]
@@ -372,6 +374,49 @@ sleep(500);
     check(resumed.every((x) => circ(x.ph, x.beat) < 0.06), "playback resumes locked to the host beat");
     check(Math.max(...resumed.map((x) => x.ph)) - Math.min(...resumed.map((x) => x.ph)) > 0.01 || circ(resumed[0].ph, resumed[3].ph) > 0.01, "and the phase moves again");
     setP("Mode", 0);
+}
+
+// phase 4: Ratchet / Scratch and the 11 new spectral sub-ops run in Live: the gen keeps running (frame counter), the telemetry is finite, the
+// STFT runs with the new sub-ops, the roll telemetry of Ratchet moves, the output stays bounded, and an audio meter reading appears
+{
+    const P4 = require("../src/glitch_config.js");
+    const SC = P4.GL_SCOPE;
+    const readS = () => evalLom(`return new Buffer(${JSON.stringify(scope)}).peek(1, 0, ${SC.END});`);
+    if (!isPlaying()) { evalLom('new LiveAPI("live_set").call("start_playing"); return 1;'); sleep(800); }
+    setP("Mode", 0);
+    debug("test_p4", "mods");
+    sleep(1500);
+    check(["ratc", "scrb"].every((k) => report().tiles.includes(k)), `test_p4 mods: Ratchet and Scratch tiles (${report().tiles.join(",")})`);
+    const f0 = readS()[SC.FRAME];
+    let ratSeen = 0, ratMaxIdx = 0, scrMoved = new Set(), finite = true, bounded = true;
+    for (let i = 0; i < 40; i++) {
+        const a = readS();
+        if (a[SC.RAT_ON] > 0.5) { ratSeen++; ratMaxIdx = Math.max(ratMaxIdx, a[SC.RAT_IDX]); }
+        scrMoved.add(Math.round(a[SC.SCR_POS] * 10));
+        if (!a.every((v) => Number.isFinite(v))) finite = false;
+        if (a[SC.OUT_PEAK] > 1.01) bounded = false;
+        sleep(70);
+    }
+    check(readS()[SC.FRAME] > f0 + 20, "p4 mods: the gen runs (frame counter advances)");
+    check(finite && bounded, "p4 mods: telemetry finite, output bounded");
+    check(ratSeen >= 2, `p4 mods: the Ratchet roll shows in the telemetry (${ratSeen} of 40 reads, last repeat index ${ratMaxIdx})`);
+    check(scrMoved.size >= 3, `p4 mods: the Scratch lag moves (${scrMoved.size} distinct positions)`);
+    debug("test_p4", "spec");
+    sleep(1800);
+    const rs = report();
+    check(["gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"].every((k) => rs.tiles.includes(k)), `test_p4 spec: the 11 new sub-op tiles (${rs.tiles.length} tiles)`);
+    const g0 = readS();
+    sleep(900);
+    const g1 = readS();
+    check(g1[SC.SPEC_RUN] === 1 && g1[SC.SPEC_FRAMES] > g0[SC.SPEC_FRAMES] + 20, `p4 spec: the STFT runs the new sub-ops (frames ${g0[SC.SPEC_FRAMES]} -> ${g1[SC.SPEC_FRAMES]})`);
+    check(g1.every((v) => Number.isFinite(v)) && g1[SC.OUT_PEAK] <= 1.01, `p4 spec: finite telemetry, output peak ${g1[SC.OUT_PEAK].toFixed(3)}`);
+    let bo = 0;
+    for (let i = 0; i < 64; i++) bo += g1[SC.BANDS_OUT + i];
+    check(bo > 0.5, "p4 spec: the output spectrum telemetry is alive");
+    debug("test_p4", "p4all");
+    sleep(1500);
+    const g2 = readS();
+    check(g2.every((v) => Number.isFinite(v)) && g2[SC.OUT_PEAK] <= 1.01 && g2[SC.FRAME] > g1[SC.FRAME], "p4 all: both at once keep running, finite and bounded");
 }
 
 // Mix: 0 = the dry level, with the strong glitch active

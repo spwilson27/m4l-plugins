@@ -45,8 +45,8 @@ const CORE_FN = CORE_RAW.replace(/@([A-Za-z0-9_]+)@/g, (m, n) => (n === "INIT" ?
 
 // ----------------------------------------------------------------------------- registry / layout
 ok("registry", () => {
-    assert.strictEqual(G.GL_INSTANCES.length, 23);
-    assert.strictEqual(G.GL_NINST, 23);
+    assert.strictEqual(G.GL_INSTANCES.length, 25);
+    assert.strictEqual(G.GL_NINST, 25);
     const ids = new Set();
     for (const inst of G.GL_INSTANCES) {
         assert.ok(!ids.has(inst.id));
@@ -81,12 +81,14 @@ ok("registry", () => {
         if (t.amountKey) assert.ok(G.glInstance("spec").params.some((p) => p.key === t.amountKey && p.kind === "wet"));
     }
     for (const i of ids) assert.ok(covered.has(i), `instance ${i} belongs to a type`);
-    assert.strictEqual(G.GL_TYPES.length, 29);
+    assert.strictEqual(G.GL_TYPES.length, 42);
 });
 
 ok("layout has no overlaps and matches the buffer", () => {
-    assert.strictEqual(L.mvBase, 113, "the 113 module params come first, the movement blocks after them");
-    assert.strictEqual(L.np, 113 + 23 * L.mvN);
+    const modParams = G.GL_INSTANCES.reduce((a, i) => a + i.params.length, 0);
+    assert.strictEqual(L.mvBase, modParams, "the module params come first, the movement blocks after them");
+    assert.strictEqual(L.mvBase, 113 + 7 + 5 + 35, "phase 3 had 113 module params; phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params");
+    assert.strictEqual(L.np, L.mvBase + 25 * L.mvN);
     assert.strictEqual(L.mvN, 13 + 16);
     const seen = new Set();
     L.params.forEach((p, i) => {
@@ -103,17 +105,21 @@ ok("layout has no overlaps and matches the buffer", () => {
     assert.strictEqual(L.seqOffset, L.weightsOffset + 8);
     assert.ok(L.seqOffset + G.GL_SEQ_HDR + G.GL_SEQ_MAX <= G.GL_SLOTS_BUF_SAMPS, "sequencer block fits the engine buffer");
     assert.ok(L.endOffset <= G.GL_SLOTS_BUF_SAMPS, `constants end at ${L.endOffset}, buffer ${G.GL_SLOTS_BUF_SAMPS}`);
-    assert.strictEqual(G.GL_SLOTS_BUF_SAMPS, 9472);
+    assert.strictEqual(G.GL_SLOTS_BUF_SAMPS, 10752);
     // spectral param order that the core's main body hard-codes (B_spec + n)
     const keys = G.glInstance("spec").params.map((p) => p.key);
-    assert.deepStrictEqual(keys, ["wet", "frz_amt", "frz_rate", "smr_amt", "smr_blur", "cc_amt", "cc_coeffs", "cc_bits", "sc_amt", "sc_mode", "sct_amt", "sct_w", "sct_rate", "mir_amt", "mir_pivot", "bsh_amt", "bsh_bins", "sgl_amt", "sgl_mode", "sgl_k", "sgl_step"]);
+    assert.deepStrictEqual(keys, ["wet", "frz_amt", "frz_rate", "smr_amt", "smr_blur", "cc_amt", "cc_coeffs", "cc_bits", "sc_amt", "sc_mode", "sct_amt", "sct_w", "sct_rate", "mir_amt", "mir_pivot", "bsh_amt", "bsh_bins", "sgl_amt", "sgl_mode", "sgl_k", "sgl_step",
+        "gfz_amt", "gfz_dens", "gfz_rate", "str_amt", "str_mode", "str_st", "str_inh", "bub_amt", "bub_spread", "bub_dens", "mp3_amt", "mp3_kbps", "mp3_mask",
+        "dst_amt", "dst_kbps", "dst_mode", "dst_depth", "dst_rate", "thn_amt", "thn_n", "thn_soft", "dec_amt", "dec_k", "dec_boost", "nsf_amt", "nsf_depth", "nsf_grain",
+        "clp_amt", "clp_mode", "clp_db", "psw_amt", "psw_w", "rph_amt", "rph_mode", "rph_rand"]);
     // module param order the core's functions read (b + n)
     const want = { drvA: ["wet", "mode", "drive", "tone"], drvB: ["wet", "mode", "drive", "tone"], filt: ["wet", "type", "cutoff", "res"], crush: ["wet", "bits", "rate", "jitter"], ring: ["wet", "mode", "freq"], stut: ["wet", "div", "prob", "decay"], time: ["wet", "mode", "amt", "div"], chop: ["wet", "pattern", "div", "smooth"], dly: ["wet", "div", "fb", "pp", "damp"], rev: ["wet", "size", "decay", "damp", "void"], wid: ["wet", "width", "gain"],
         form: ["wet", "vowel", "shift", "res"], comb: ["wet", "freq", "fb", "damp"], phas: ["wet", "stages", "sync", "hz", "div", "depth", "fb"], rect: ["wet", "mode", "blend"],
         fm: ["wet", "mode", "ratio", "index"], corr: ["wet", "div", "chance", "flips", "wrap", "drop"], gpit: ["wet", "pitch", "size", "jitter"], gstr: ["wet", "speed", "size", "spread"],
+        ratc: ["wet", "div", "count", "accel", "pitch", "decay", "prob"], scrb: ["wet", "size", "shape", "rate", "depth"],
         rvs: ["wet", "div", "chance"], shuf: ["wet", "slices", "span", "chance", "seed"], slap: ["wet", "time", "tone", "offset"] };
     for (const [id, k] of Object.entries(want)) assert.deepStrictEqual(G.glInstance(id).params.map((p) => p.key), k, id);
-    assert.deepStrictEqual(L.instances.map((i) => i.id), ["drvA", "filt", "form", "comb", "phas", "crush", "rect", "fm", "corr", "ring", "stut", "time", "gpit", "gstr", "rvs", "shuf", "chop", "spec", "drvB", "dly", "slap", "rev", "wid"]);
+    assert.deepStrictEqual(L.instances.map((i) => i.id), ["drvA", "filt", "form", "comb", "phas", "crush", "rect", "fm", "corr", "ring", "stut", "ratc", "time", "scrb", "gpit", "gstr", "rvs", "shuf", "chop", "spec", "drvB", "dly", "slap", "rev", "wid"]);
     assert.strictEqual(L.index["gstr.wet"] - L.index["gpit.wet"], G.glInstance("gpit").params.length, "gpit / gstr are neighbours in the chain (one gen loop)");
     assert.strictEqual(G.glInstance("gpit").params.length, G.glInstance("gstr").params.length);
     // scope offsets do not overlap
@@ -198,7 +204,7 @@ ok("randomize module counts and chaos ranges", () => {
             counts[chaos].push(types.size);
             assert.ok(types.size >= 2 && types.size <= 6, `chaos ${chaos}: ${types.size} types`);
             const specOps = SPEC_TYPES.filter((t) => types.has(t)).length;
-            assert.ok(specOps <= 2);
+            assert.ok(specOps <= G.glitchSpectralCap(chaos), `chaos ${chaos}: ${specOps} spectral sub-ops, cap ${G.glitchSpectralCap(chaos)}`);
             const v = G.glitchToVector(g);
             assert.strictEqual(v.length, L.np);
             v.forEach((x) => assert.ok(isFinite(x)));
@@ -609,9 +615,9 @@ ok("phase 2 registry: every module has a wet, ranges per Chaos level, discrete f
         const p = L.params[L.index[k]];
         assert.strictEqual(p.kind, "log", k);
     }
-    // the spectral sub-ops: eight, each with its own amount
+    // the spectral sub-ops: nineteen (phase 4), in processing order, each with its own amount
     const subs = G.GL_TYPES.filter((t) => t.amountKey).map((t) => t.amountKey);
-    assert.deepStrictEqual(subs, ["frz_amt", "smr_amt", "cc_amt", "sc_amt", "sct_amt", "mir_amt", "bsh_amt", "sgl_amt"]);
+    assert.deepStrictEqual(subs, ["frz_amt", "smr_amt", "sct_amt", "mir_amt", "bsh_amt", "gfz_amt", "str_amt", "bub_amt", "mp3_amt", "dst_amt", "thn_amt", "dec_amt", "nsf_amt", "clp_amt", "sgl_amt", "cc_amt", "sc_amt", "psw_amt", "rph_amt"]);
     // wavetable-free: gpit and gstr share the grain engine layout
     assert.deepStrictEqual(G.glInstance("gpit").params.map((p) => p.kind), G.glInstance("gstr").params.map((p) => p.kind));
     // tables the gen code duplicates
@@ -644,7 +650,7 @@ ok("allow-list covers every new module: only that type is rolled, and it is roll
         assert.strictEqual(seen, 30);
     }
     // an allow-list that excludes the new modules never rolls them
-    const old = G.GL_TYPES.map((t) => t.id).filter((id) => !["formant", "comb", "phaser", "rectify", "fm", "corrupt", "gpitch", "gstretch", "revslice", "shuffle", "slapback", "scatter", "mirror", "binshift", "specgate"].includes(id));
+    const old = G.GL_TYPES.map((t) => t.id).filter((id) => !["formant", "comb", "phaser", "rectify", "fm", "corrupt", "gpitch", "gstretch", "revslice", "shuffle", "slapback", "scatter", "mirror", "binshift", "specgate", "ratchet", "scratch", "gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"].includes(id));
     for (let seed = 1; seed <= 60; seed++) {
         const g = G.randomizeGlitch(seed, 0.9, old);
         for (const id of Object.keys(g.modules)) assert.ok(["drvA", "filt", "crush", "ring", "stut", "time", "chop", "spec", "drvB", "dly", "rev", "wid"].includes(id), id);
@@ -657,7 +663,7 @@ ok("allow-list covers every new module: only that type is rolled, and it is roll
     for (const id of ["form", "comb", "phas", "rect", "fm", "corr", "gpit", "gstr", "rvs", "shuf", "slap"]) assert.ok(hit.has(id), `${id} is rolled by Randomize`);
 });
 
-ok("state migration v2 -> v4: new modules absent, sequence empty, no movement, old values map to the grown vector", () => {
+ok("state migration v2 -> v5: new modules absent, sequence empty, no movement, old values map to the grown vector", () => {
     const oldSlot = {
         version: 1, name: "old", seed: 3,
         modules: {
@@ -672,7 +678,7 @@ ok("state migration v2 -> v4: new modules absent, sequence empty, no movement, o
         chaos: 0.7, xy: [0.2, 0.9], working: oldSlot, audition: "morph", seed: 9, ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" },
     };
     const t = G.stateFromBlob([2, JSON.stringify(v2)]);
-    assert.strictEqual(t.version, 4);
+    assert.strictEqual(t.version, 5);
     assert.deepStrictEqual(t.seq, G.defaultSeq());
     assert.ok(t.seq.steps.every((x) => x === -1), "the sequence is empty");
     assert.strictEqual(t.audition, "morph");
@@ -1240,6 +1246,491 @@ ok("gen spectral bin ops (scatter, mirror, shift) and spectral gate / lofi equal
     for (let i = 0; i < n; i++) assert.ok(Math.abs(d.a[i] - s.re[i]) < 1e-12 && Math.abs(d.a[4096 + i] - s.im[i]) < 1e-12);
 });
 
+
+// ----------------------------------------------------------------------------- phase 4: Ratchet / Scratch
+ok("gen Ratchet equals its mirror; the repeats are geometric, accelerate / decelerate, fill the span, ramp the pitch and decay", () => {
+    const sr = 48000, bpm = 120;
+    const adv = (b) => b + bpm / (60 * sr);
+    const cfgs = [{ div: 6, count: 6, accel: 0.6, pitch: 0, decay: 0.2, prob: 1 }, { div: 5, count: 4, accel: -0.8, pitch: 7, decay: 0.5, prob: 1 }, { div: 7, count: 16, accel: 1, pitch: -12, decay: 0, prob: 0.6 },
+        { div: 4, count: 2, accel: 0, pitch: 3, decay: 1, prob: 1 }, { div: 6, count: 8, accel: 0.3, pitch: 0, decay: 0.2, prob: 0 }];
+    const xs = stream(130000, 5, 0.4);
+    for (const cfg of cfgs) {
+        const pv = pvFor(Object.fromEntries(Object.entries(cfg).map(([k, v]) => ["ratc." + k, v])));
+        const st = new DataSim(16), rb = new DataSim(262144, 2), io = new DataSim(2), m = new R.Ratchet();
+        let beat = 0.1, maxd = 0, engaged = 0;
+        for (let i = 0; i < xs.length; i++) {
+            io.a[0] = xs[i][0]; io.a[1] = xs[i][1];
+            GEN.gl_ratchet(io, pv, L.base.ratc, 0.9, st, rb, beat, bpm, sr, 1);
+            const y = m.process(xs[i][0], xs[i][1], Object.assign({ w: 0.9 }, cfg), beat, bpm, sr, 1);
+            maxd = Math.max(maxd, Math.abs(io.a[0] - y[0]), Math.abs(io.a[1] - y[1]));
+            if (st.a[6] > 0.5) engaged++;
+            beat = adv(beat);
+        }
+        cmpModule(`ratchet ${JSON.stringify(cfg)}`, 0, () => maxd);
+        if (cfg.prob === 0) assert.strictEqual(engaged, 0, "Chance 0 never fires");
+        else if (cfg.prob === 1) assert.ok(engaged > 5000, "the roll sounds");
+    }
+    // repeat lengths: record the sample count per repeat index inside one roll. accel +0.667 over 4 repeats of a 1/2 note span (48000 samples at 120 bpm): ratio 1/4
+    for (const [accel, count] of [[2 / 3, 4], [-2 / 3, 4], [0, 5], [1, 8]]) {
+        const pv = pvFor({ "ratc.div": 7, "ratc.count": count, "ratc.accel": accel, "ratc.prob": 1 });
+        const st = new DataSim(16), rb = new DataSim(262144, 2), io = new DataSim(2);
+        let beat = 1.9999, lens = {}, total = 0, lastSt = -1;
+        for (let i = 0; i < 47990; i++) {
+            io.a[0] = 0.3; io.a[1] = 0.3;
+            GEN.gl_ratchet(io, pv, L.base.ratc, 1, st, rb, beat, bpm, sr, 1);
+            if (st.a[2] > 0.5 || st.a[3] > 0) { lens[st.a[3]] = (lens[st.a[3]] || 0) + 1; }
+            beat = adv(beat);
+        }
+        const idxs = Object.keys(lens).map(Number).filter((k) => k < count).sort((a, b) => a - b);
+        assert.strictEqual(idxs.length, count, `accel ${accel}: ${count} repeats`);
+        const ls = idxs.map((k) => lens[k]);
+        const q = Math.pow(2, (-3 * accel) / (count - 1));
+        for (let k = 1; k < count; k++) assert.ok(Math.abs(ls[k] / ls[k - 1] - q) < 0.02, `accel ${accel}: repeat ${k} / ${k - 1} = ${ls[k] / ls[k - 1]}, want ${q}`);
+        const sum = ls.reduce((a, b) => a + b, 0);
+        assert.ok(Math.abs(sum - 48000) < 2 * count + 20, `accel ${accel}: the repeats fill the span (${sum})`);
+        if (accel > 0) assert.ok(ls[count - 1] < ls[0] / 1.5, "accelerates");
+        if (accel < 0) assert.ok(ls[count - 1] > ls[0] * 1.5, "decelerates");
+    }
+    // pitch ramp: a sine chunk read faster at the end of the roll (last repeat is 1 octave up), decay: last repeat quieter
+    {
+        const pv = pvFor({ "ratc.div": 7, "ratc.count": 3, "ratc.accel": 0, "ratc.pitch": 12, "ratc.decay": 1, "ratc.prob": 1 });
+        const st = new DataSim(16), rb = new DataSim(262144, 2), io = new DataSim(2);
+        let beat = 0;
+        const out = [];
+        for (let i = 0; i < 48000 + 49000; i++) {
+            const x = 0.5 * Math.sin((2 * Math.PI * 500 * i) / sr);
+            io.a[0] = x; io.a[1] = x;
+            GEN.gl_ratchet(io, pv, L.base.ratc, 1, st, rb, beat, bpm, sr, 1);
+            out.push(io.a[0]);
+            beat = adv(beat);
+        }
+        const zc = (a, b) => { let n = 0; for (let i = a + 1; i < b; i++) if (out[i - 1] <= 0 && out[i] > 0) n++; return (n * sr) / (b - a); };
+        const rmsr = (a, b) => { let t = 0; for (let i = a; i < b; i++) t += out[i] * out[i]; return Math.sqrt(t / (b - a)); };
+        // the span (1/2 note = 48000 samples) starts at sample 48000: repeats are 16000 samples each
+        const t0 = 48000; // beat 2 (the span start; the chunk before it holds the sine)
+        const f0 = zc(t0 + 1500, t0 + 14500), f2 = zc(t0 + 32000 + 1500, t0 + 32000 + 14500);
+        assert.ok(Math.abs(f0 - 500) < 15, `first repeat at ${f0} Hz`);
+        assert.ok(Math.abs(f2 / f0 - 2) < 0.12, `last repeat an octave up: ${f2} Hz`);
+        assert.ok(rmsr(t0 + 32000 + 1500, t0 + 32000 + 14500) < 0.5 * rmsr(t0 + 1500, t0 + 14500), "decay 1: the last repeat is quieter");
+    }
+});
+ok("gen Scratch equals its mirror; the platter reverses, the read position is continuous, depth 0 is about dry", () => {
+    const sr = 48000, bpm = 120;
+    const adv = (b) => b + bpm / (60 * sr);
+    const xs = stream(60000, 9, 0.4);
+    for (const cfg of [{ size: 4, shape: 0, rate: 3, depth: 0.6 }, { size: 5, shape: 1, rate: 2, depth: 1 }, { size: 6, shape: 2, rate: 4, depth: 0.8 }, { size: 3, shape: 0, rate: 1, depth: 0 }]) {
+        const pv = pvFor(Object.fromEntries(Object.entries(cfg).map(([k, v]) => ["scrb." + k, v])));
+        const st = new DataSim(8), rb = new DataSim(262144, 2), io = new DataSim(2), m = new R.Scratch();
+        let beat = 0.3, maxd = 0;
+        for (let i = 0; i < xs.length; i++) {
+            io.a[0] = xs[i][0]; io.a[1] = xs[i][1];
+            GEN.gl_scratch(io, pv, L.base.scrb, 0.8, st, rb, beat, bpm, sr, 1);
+            const y = m.process(xs[i][0], xs[i][1], Object.assign({ w: 0.8 }, cfg), beat, bpm, sr, 1);
+            maxd = Math.max(maxd, Math.abs(io.a[0] - y[0]), Math.abs(io.a[1] - y[1]));
+            beat = adv(beat);
+        }
+        cmpModule(`scratch ${JSON.stringify(cfg)}`, 0, () => maxd);
+    }
+    // a slow ramp in: the output direction flips with the platter (speed < 0), steps stay bounded (no click at the turnaround), speed spans reverse .. fast forward
+    for (const shape of [0, 1, 2]) {
+        const pv = pvFor({ "scrb.size": 5, "scrb.shape": shape, "scrb.rate": [4, 3, 2][shape], "scrb.depth": [0.6, 1, 1][shape] });
+        const st = new DataSim(8), rb = new DataSim(262144, 2), io = new DataSim(2);
+        let beat = 0.3, prev = null, maxStep = 0, maxAbsSp = 0, neg = 0, pos = 0, minSp = 9, maxSp = -9, maxLagStep = 0, lagPrev = null;
+        const slope = 1e-5;
+        for (let i = 0; i < 120000; i++) {
+            const x = slope * i - 0.6;
+            io.a[0] = x; io.a[1] = x;
+            GEN.gl_scratch(io, pv, L.base.scrb, 1, st, rb, beat, bpm, sr, 1);
+            if (i > 50000) {
+                if (prev !== null) { const d = io.a[0] - prev; maxStep = Math.max(maxStep, Math.abs(d)); if (d < -1e-9) neg++; else if (d > 1e-9) pos++; }
+                minSp = Math.min(minSp, st.a[3]); maxSp = Math.max(maxSp, st.a[3]); maxAbsSp = Math.max(maxAbsSp, Math.abs(st.a[3]));
+                if (lagPrev !== null) maxLagStep = Math.max(maxLagStep, Math.abs(st.a[1] - lagPrev));
+            }
+            prev = io.a[0]; lagPrev = st.a[1];
+            beat = adv(beat);
+        }
+        assert.ok(neg > 2000 && pos > 2000, `shape ${shape}: reverses (backwards ${neg}, forwards ${pos} samples)`);
+        assert.ok(minSp < -0.3 && maxSp > 1.5, `shape ${shape}: platter speed ${minSp.toFixed(2)} .. ${maxSp.toFixed(2)}`);
+        assert.ok(maxStep <= maxAbsSp * slope * 1.02 + 1e-9, `shape ${shape}: the output never jumps (max step ${maxStep}, platter speed up to ${maxAbsSp.toFixed(2)} x ${slope})`);
+        assert.ok(maxLagStep < [5, 16, 9][shape], `shape ${shape}: the read lag moves at most ${maxLagStep.toFixed(2)} samples per sample (speed continuous: no jump)`);
+    }
+    // depth 0: a 4-sample delay (about dry), the lag does not move
+    {
+        const pv = pvFor({ "scrb.depth": 0 }), st = new DataSim(8), rb = new DataSim(262144, 2), io = new DataSim(2);
+        let beat = 0.3, maxe = 0;
+        const xs2 = stream(20000, 3, 0.4);
+        const outp = [];
+        for (let i = 0; i < xs2.length; i++) { io.a[0] = xs2[i][0]; io.a[1] = xs2[i][1]; GEN.gl_scratch(io, pv, L.base.scrb, 1, st, rb, beat, bpm, sr, 1); outp.push(io.a[0]); beat = adv(beat); }
+        for (let i = 100; i < xs2.length; i++) maxe = Math.max(maxe, Math.abs(outp[i] - xs2[i - 4][0]));
+        assert.ok(maxe < 1e-12, `depth 0 is the input delayed by 4 samples (${maxe})`);
+    }
+});
+
+// ----------------------------------------------------------------------------- phase 4: spectral sub-ops
+function specTools() {
+    const n = 1024, half = 512, sr = 48000;
+    const rnd = mkRng(31);
+    const mkSpec = (decay) => {
+        const re = new Float64Array(n), im = new Float64Array(n);
+        for (let k = 0; k <= half; k++) {
+            const a = Math.abs(rnd()) * Math.exp(-k / (decay || 150)), ph = rnd() * Math.PI;
+            re[k] = a * Math.cos(ph);
+            im[k] = k === 0 || k === half ? 0 : a * Math.sin(ph);
+            if (k === 0 || k === half) re[k] = Math.abs(re[k]);
+            if (k > 0 && k < half) { re[n - k] = re[k]; im[n - k] = -im[k]; }
+        }
+        return { re, im };
+    };
+    const toData = (s) => { const d = new DataSim(4096, 2); for (let i = 0; i < n; i++) { d.a[i] = s.re[i]; d.a[4096 + i] = s.im[i]; } return d; };
+    const hermitian = (d, tag) => { for (let k = 1; k < half; k++) assert.ok(Math.abs(d.a[k] - d.a[n - k]) < 1e-12 && Math.abs(d.a[4096 + k] + d.a[4096 + n - k]) < 1e-12, `${tag}: bin ${k} hermitian`); assert.ok(Math.abs(d.a[4096]) < 1e-12 && Math.abs(d.a[4096 + half]) < 1e-12, `${tag}: DC / Nyquist real`); };
+    const mags = (re, im) => { const m = new Float64Array(half + 1); for (let k = 0; k <= half; k++) m[k] = Math.hypot(re[k], im[k]); return m; };
+    const maxDiff = (d, s) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(d.a[i] - s.re[i]), Math.abs(d.a[4096 + i] - s.im[i])); return m; };
+    const copy = (s) => ({ re: Float64Array.from(s.re), im: Float64Array.from(s.im) });
+    return { n, half, sr, mkSpec, toData, hermitian, mags, maxDiff, copy };
+}
+ok("gen gl_mapfx (Glitch Freeze, Stretch, Bubbler) equals its mirror, keeps the Hermitian symmetry and does what it says", () => {
+    const T = specTools();
+    const { n, half, sr } = T;
+    const mkCall = (op, amt, p1, p2, p3, chn, seed, beat, cap, hold, ghd, gsd) => (d) => GEN.gl_mapfx(d, new DataSim(4096, 2), new DataSim(1024, 2), ghd, gsd, n, op, amt, p1, p2, p3, chn, seed, beat, sr, cap);
+    // gen vs mirror over several frames (Glitch Freeze carries state)
+    for (const [op, amt, p1, p2, p3] of [[0, 1, 0.5, 6, 0], [0, 0.6, 0.9, 3, 0], [1, 1, 0, 7, 0], [1, 0.8, 1, 5.5, 0.6], [1, 1, 1, -9, -1], [2, 1, 3, 0.3, 0], [2, 0.5, 8, 0.1, 0]]) {
+        const hold = R.newHoldState(), ghd = new DataSim(1024, 4), gsd = new DataSim(8);
+        let beat = 3.1;
+        for (let f = 0; f < 7; f++) {
+            const s = T.mkSpec(), d = T.toData(s), m = T.copy(s);
+            const cap = f === 0 ? 1 : 0;
+            GEN.gl_mapfx(d, new DataSim(4096, 2), new DataSim(1024, 2), ghd, gsd, n, op, amt, p1, p2, p3, 0, 17 + f, beat, sr, cap);
+            R.mapFx(m.re, m.im, n, op, amt, p1, p2, p3, 0, 17 + f, beat, sr, cap, hold);
+            assert.ok(T.maxDiff(d, m) < 1e-11, `mapfx op ${op} frame ${f}: ${T.maxDiff(d, m)}`);
+            T.hermitian(d, `mapfx op ${op}`);
+            beat += 256 / sr * 2;
+        }
+    }
+    // amount 0 is the identity
+    for (const op of [0, 1, 2]) { const s = T.mkSpec(), d = T.toData(s); GEN.gl_mapfx(d, new DataSim(4096, 2), new DataSim(1024, 2), new DataSim(1024, 4), new DataSim(8), n, op, 0, 0.5, 6, 0.3, 0, 1, 1, sr, 1); assert.ok(T.maxDiff(d, s) < 1e-12, `op ${op} amount 0`); }
+    const one = (k, ph) => { const re = new Float64Array(n), im = new Float64Array(n); re[k] = Math.cos(ph); im[k] = Math.sin(ph); re[n - k] = re[k]; im[n - k] = -im[k]; return { re, im }; };
+    const peakOf = (d) => { let bk = 0, bv = -1; for (let k = 0; k <= half; k++) { const m = Math.hypot(d.a[k], d.a[4096 + k]); if (m > bv) { bv = m; bk = k; } } return bk; };
+    // Stretch: +12 st doubles the bin, +7 st (rounded) x1.4983, -5 st x0.7492; Harmonic mode keeps the fractional pitch and adds the inharmonic stretch
+    for (const [mode, st, bin, want] of [[0, 12, 40, 80], [0, 7.3, 100, 150], [0, -5, 200, 150], [0, 0, 60, 60], [1, 12, 40, 80], [1, 7.4, 100, 153]]) {
+        const d = T.toData(one(bin, 0.4));
+        GEN.gl_mapfx(d, new DataSim(4096, 2), new DataSim(1024, 2), new DataSim(1024, 4), new DataSim(8), n, 1, 1, mode, st, 0, 0, 1, 1, sr, 0);
+        assert.ok(Math.abs(peakOf(d) - want) <= 1, `stretch mode ${mode} ${st} st: bin ${bin} -> ${peakOf(d)}, want ${want}`);
+    }
+    {
+        const d = T.toData(one(100, 0.4));
+        GEN.gl_mapfx(d, new DataSim(4096, 2), new DataSim(1024, 2), new DataSim(1024, 4), new DataSim(8), n, 1, 1, 1, 0, 0.5, 0, 1, 1, sr, 0);
+        assert.ok(Math.abs(peakOf(d) - 100 / (1 - 0.5 * 100 / 256)) <= 1.5, `inharmonic stretch moves bin 100 to bin k with k / (1 + 0.5 k / 256) = 100, i.e. 124.3 (${peakOf(d)})`);
+    }
+    // Bubbler copies the chosen bins onto their neighbours
+    {
+        const s = T.mkSpec(), d = T.toData(s);
+        GEN.gl_mapfx(d, new DataSim(4096, 2), new DataSim(1024, 2), new DataSim(1024, 4), new DataSim(8), n, 2, 1, 2, 0.1, 0, 0, 5, 1, sr, 0);
+        let same = 0, tot = 0;
+        for (let k = 3; k < half - 3; k++) { tot++; if (Math.abs(d.a[k] - d.a[k + 1]) < 1e-12 && Math.abs(d.a[4096 + k] - d.a[4096 + k + 1]) < 1e-12) same++; }
+        assert.ok(same > 0.15 * tot, `Bubbler makes neighbouring bins equal (${same}/${tot})`);
+    }
+    // Glitch Freeze: the held bins keep their captured value (rotated by i^(k * frames)), the others follow the input; a re-roll recaptures
+    {
+        const hold = new DataSim(1024, 4), gsd = new DataSim(8);
+        const sA = T.mkSpec(), sB = T.mkSpec(), sC = T.mkSpec();
+        const run = (s, beat, cap) => { const d = T.toData(s); GEN.gl_mapfx(d, new DataSim(4096, 2), new DataSim(1024, 2), hold, gsd, n, 0, 1, 0.5, 7, 0, 0, 1, beat, sr, cap); return d; };
+        const dA = run(sA, 8.1, 1); // capture
+        const dB = run(sB, 8.2, 0); // same slot (1/2 note = 2 beats): frame 1
+        const dC = run(sC, 8.3, 0); // frame 2
+        const rot = (re, im, r4) => (r4 === 0 ? [re, im] : r4 === 1 ? [-im, re] : r4 === 2 ? [-re, -im] : [im, -re]);
+        let held = 0, live = 0;
+        for (let k = 1; k < half; k++) {
+            const isHeld = Math.abs(dA.a[k] - sA.re[k]) > 0 ? false : null;
+            const [er, ei] = rot(sA.re[k], sA.im[k], (k * 2) % 4);
+            if (Math.abs(dC.a[k] - er) < 1e-12 && Math.abs(dC.a[4096 + k] - ei) < 1e-12 && !(Math.abs(sC.re[k] - er) < 1e-12)) held++;
+            else if (Math.abs(dC.a[k] - sC.re[k]) < 1e-12) live++;
+            else assert.fail(`bin ${k} is neither held nor live`);
+        }
+        assert.ok(Math.abs(held / (held + live) - 0.5) < 0.1, `density 0.5 holds about half of the bins (${held} held, ${live} live)`);
+        assert.ok(T.maxDiff(dA, sA) < 1e-12, "the capture frame passes the input");
+        const dD = run(sC, 12.3, 0); // slot changed (beat 12.3 / 2): recapture, this frame is the input again
+        assert.ok(T.maxDiff(dD, sC) < 1e-12, "a re-roll captures again: the frame itself is unchanged");
+    }
+});
+ok("gen gl_magfx (MP3ify, Duststorm, Thinner, Decapitate, Noisify, Clipper) equals its mirror, keeps the Hermitian symmetry and does what it says", () => {
+    const T = specTools();
+    const { n, half, sr } = T;
+    const cases = [[0, 1, 64, 0.5, 0, 0], [0, 0.7, 16, 1, 0, 0], [0, 1, 320, 0.2, 0, 0], [1, 1, 64, 0, 0.8, 4], [1, 1, 128, 1, 1, 6], [1, 0.5, 32, 0, 0.3, 2], [2, 1, 4, 0, 0, 0], [2, 0.6, 9, 0.5, 0, 0],
+        [3, 1, 4, 6, 0, 0], [3, 1, 12, 20, 0, 0], [4, 1, 9, 1, 0, 0], [4, 0.8, 18, 5, 0, 0], [5, 1, 0, -12, 0, 0], [5, 1, 1, -20, 0, 0], [5, 0.5, 0, -3, 0, 0]];
+    for (const [op, amt, p1, p2, p3, p4] of cases) {
+        for (const beat of [3.1, 7.9]) {
+            const s = T.mkSpec(), d = T.toData(s), m = T.copy(s);
+            GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, op, amt, p1, p2, p3, p4, 1234, beat, sr);
+            R.magFx(m.re, m.im, n, op, amt, p1, p2, p3, p4, 1234, beat, sr);
+            assert.ok(T.maxDiff(d, m) < 1e-11, `magfx op ${op} ${[amt, p1, p2, p3, p4]}: ${T.maxDiff(d, m)}`);
+            T.hermitian(d, `magfx op ${op}`);
+        }
+    }
+    for (let op = 0; op < 6; op++) { const s = T.mkSpec(), d = T.toData(s); GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, op, 0, 64, 0.5, 0.5, 4, 3, 1, sr); assert.ok(T.maxDiff(d, s) < 1e-12, `op ${op} amount 0`); }
+    const magsOf = (d) => { const m = new Float64Array(half + 1); for (let k = 0; k <= half; k++) m[k] = Math.hypot(d.a[k], d.a[4096 + k]); return m; };
+    const phaseOK = (d, s) => { for (let k = 1; k < half; k++) { const m = Math.hypot(d.a[k], d.a[4096 + k]); if (m > 1e-9) assert.ok(Math.abs(d.a[k] / m - s.re[k] / Math.hypot(s.re[k], s.im[k])) < 1e-9, "phase kept"); } };
+    const flat = () => { const re = new Float64Array(n), im = new Float64Array(n); for (let k = 0; k <= half; k++) { const a = 0.2 + 0.8 * Math.abs(Math.sin(k * 0.37)); re[k] = a; if (k > 0 && k < half) re[n - k] = a; } return { re, im }; };
+    // MP3ify: distinct quantized magnitudes per band shrink with the bitrate, HF is cut, a hole appears under the masking threshold
+    {
+        const edges = R.barkEdges(n, sr);
+        assert.strictEqual(edges.length, 21);
+        assert.ok(edges.every((e, i) => e >= (i ? edges[i - 1] : 0)) && edges[20] === half + 1);
+        const distinct = (kbps) => {
+            const s = T.mkSpec(400), d = T.toData(s);
+            GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, 0, 1, kbps, 0, 0, 0, 1, 2, sr);
+            const m = magsOf(d);
+            let tot = 0, k0 = 0;
+            for (let b = 0; b < 21; b++) {
+                if ((k0 * sr) / n > 2500 * Math.pow(8, Math.log(kbps / 16) / Math.log(20))) break;
+                const vs = new Set();
+                for (let k = k0; k < edges[b]; k++) vs.add(Math.round(m[k] * 1e9));
+                tot += vs.size;
+                k0 = edges[b];
+            }
+            return tot;
+        };
+        const d16 = distinct(16), d64 = distinct(64), d320 = distinct(320);
+        assert.ok(d16 < d64 && d64 < d320, `distinct magnitude levels per band fall with the bitrate (${d16} < ${d64} < ${d320})`);
+        const s = T.mkSpec(400), lo = T.toData(s);
+        GEN.gl_magfx(lo, new DataSim(4096, 2), new DataSim(1024, 2), n, 0, 1, 16, 0.5, 0, 0, 1, 2, sr);
+        const mlo = magsOf(lo);
+        const cut = Math.ceil((2500 * n) / sr);
+        let hf = 0;
+        for (let k = cut + 2; k <= half; k++) hf += mlo[k];
+        assert.strictEqual(hf, 0, "16 kbps cuts everything above 2.5 kHz");
+        const zeros = Array.from(mlo).filter((v) => v === 0).length;
+        assert.ok(zeros > 0.55 * half, `16 kbps starves most bins (${zeros} of ${half + 1})`);
+        const hi = T.toData(s);
+        GEN.gl_magfx(hi, new DataSim(4096, 2), new DataSim(1024, 2), n, 0, 1, 320, 0.2, 0, 0, 1, 2, sr);
+        const mhi = magsOf(hi), m0 = T.mags(s.re, s.im);
+        let e0 = 0, e1 = 0;
+        for (let k = 0; k <= half; k++) { e0 += m0[k] * m0[k]; e1 += (mhi[k] - m0[k]) ** 2; }
+        assert.ok(e1 / e0 < 0.01, `320 kbps is near transparent (${e1 / e0})`);
+        phaseOK(lo, s);
+    }
+    // Duststorm: differs from MP3ify (same settings), the same beat gives the same frame, another re-roll slot another one, mode Permute keeps the set of scale factors
+    {
+        const s = T.mkSpec(400);
+        const run = (op, beat, mode, depth) => { const d = T.toData(s); GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, op, 1, 64, op ? mode : 0.5, depth, 6, 1, beat, sr); return magsOf(d); };
+        const mp = run(0, 5.2, 0, 0), a = run(1, 5.2, 0, 0.8), a2 = run(1, 5.2, 0, 0.8), b = run(1, 5.2 + 1.5, 0, 0.8), pm = run(1, 5.2, 1, 1);
+        const dist = (x, y) => { let e = 0, t = 0; for (let k = 0; k <= half; k++) { e += (x[k] - y[k]) ** 2; t += y[k] ** 2; } return e / t; };
+        assert.ok(dist(a, mp) > 0.05, `Duststorm differs from MP3ify (${dist(a, mp)})`);
+        assert.strictEqual(dist(a, a2), 0, "same beat, same frame");
+        assert.ok(dist(a, b) > 0.02, `another re-roll slot, another frame (${dist(a, b)})`);
+        assert.ok(dist(pm, mp) > 0.05, "Permute differs too");
+        const z = run(1, 5.2, 0, 0);
+        assert.ok(dist(z, mp) < 1e-18, "depth 0: Duststorm decodes like MP3ify");
+    }
+    // Thinner: non-peak energy shrinks, the peaks stay
+    {
+        const s = T.mkSpec(400), d = T.toData(s), m0 = T.mags(s.re, s.im);
+        GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, 2, 1, 4, 0, 0, 0, 1, 1, sr);
+        const m1 = magsOf(d);
+        let ePeak0 = 0, ePeak1 = 0, eRest0 = 0, eRest1 = 0;
+        for (let k = 0; k <= half; k++) {
+            let isPk = true;
+            for (let j = -4; j <= 4; j++) if (k + j >= 0 && k + j <= half && m0[k + j] > m0[k]) isPk = false;
+            if (isPk) { ePeak0 += m0[k] ** 2; ePeak1 += m1[k] ** 2; } else { eRest0 += m0[k] ** 2; eRest1 += m1[k] ** 2; }
+        }
+        assert.ok(Math.abs(ePeak1 - ePeak0) < 1e-12 && eRest1 === 0, "softness 0 keeps only the local peaks");
+        const d2 = T.toData(s);
+        GEN.gl_magfx(d2, new DataSim(4096, 2), new DataSim(1024, 2), n, 2, 1, 4, 0.5, 0, 0, 1, 1, sr);
+        const m2 = magsOf(d2);
+        let eRest2 = 0;
+        for (let k = 0; k <= half; k++) { let isPk = true; for (let j = -4; j <= 4; j++) if (k + j >= 0 && k + j <= half && m0[k + j] > m0[k]) isPk = false; if (!isPk) eRest2 += m2[k] ** 2; }
+        assert.ok(eRest2 > 0 && eRest2 < eRest0, "softness keeps part of the rest");
+    }
+    // Decapitate: the K loudest bins vanish, the next K gain the boost
+    {
+        const s = T.mkSpec(400), d = T.toData(s), m0 = T.mags(s.re, s.im);
+        GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, 3, 1, 5, 6, 0, 0, 1, 1, sr);
+        const m1 = magsOf(d);
+        const order = Array.from(m0.keys()).sort((a, b) => m0[b] - m0[a]);
+        for (let i = 0; i < 5; i++) assert.strictEqual(m1[order[i]], 0, `loudest bin #${i} removed`);
+        for (let i = 5; i < 10; i++) assert.ok(Math.abs(m1[order[i]] / m0[order[i]] - Math.pow(10, 6 / 20)) < 1e-9, `bin #${i} boosted by 6 dB`);
+        for (let i = 10; i < 40; i++) assert.ok(Math.abs(m1[order[i]] / m0[order[i]] - 1) < 1e-12, "the rest is untouched");
+    }
+    // Noisify: gains within +-depth, grouped by the grain width, new seed new gains, same seed same gains; Clipper: no bin above the ceiling
+    {
+        const s = flat(), run = (seed, grain) => { const d = T.toData(s); GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, 4, 1, 9, grain, 0, 0, seed, 1, sr); return magsOf(d); };
+        const m0 = T.mags(s.re, s.im), a = run(10, 1), a2 = run(10, 1), b = run(11, 1), g4 = run(10, 4);
+        let mn = 9, mx = -9;
+        for (let k = 0; k <= half; k++) { const g = 20 * Math.log10(a[k] / m0[k]); mn = Math.min(mn, g); mx = Math.max(mx, g); }
+        assert.ok(mx - mn <= 18 + 1e-9 && mx - mn > 12, `gains span 18 dB (${mn.toFixed(1)} .. ${mx.toFixed(1)})`);
+        let ein = 0, eout = 0; for (let k = 0; k <= half; k++) { ein += m0[k] ** 2; eout += a[k] ** 2; }
+        assert.ok(Math.abs(ein / eout - 1) < 1e-9, "Noisify keeps the frame energy");
+        assert.deepStrictEqual(Array.from(a), Array.from(a2));
+        assert.notDeepStrictEqual(Array.from(a), Array.from(b));
+        for (let k = 0; k < 64; k += 4) for (let j = 1; j < 4; j++) assert.ok(Math.abs(g4[k + j] / m0[k + j] - g4[k] / m0[k]) < 1e-9, "grain 4 shares one gain per 4 bins");
+        for (const [mode, db] of [[0, -12], [1, -12], [0, -3], [1, -20]]) {
+            const s2 = T.mkSpec(100), d = T.toData(s2), mm = T.mags(s2.re, s2.im);
+            GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, 5, 1, mode, db, 0, 0, 1, 1, sr);
+            const c = magsOf(d), pk = Math.max(...mm), cl = pk * Math.pow(10, db / 20);
+            assert.ok(Math.max(...c) <= (mode ? cl : cl) * (1 + 1e-9), `clipper mode ${mode} ${db} dB: peak ${Math.max(...c)} <= ceiling ${cl}`);
+            if (mode === 1) for (let k = 0; k <= half; k++) assert.ok(Math.abs(c[k] - Math.min(mm[k], cl)) < 1e-12, "hard clip = min");
+            else for (let k = 0; k <= half; k++) assert.ok(c[k] <= mm[k] + 1e-12 && c[k] >= 0, "soft clip never boosts");
+        }
+    }
+});
+ok("gen gl_phasefx (Phase Swap, Robot, Whisper) equals its mirror, keeps magnitudes and Hermitian symmetry, and matches the level", () => {
+    const T = specTools();
+    const { n, half } = T;
+    for (const [op, amt, p1, p2] of [[0, 1, 512, 0], [0, 0.6, 64, 0], [0, 1, 8, 0], [0, 1, 100.4, 0], [1, 1, 0, 0], [1, 0.7, 0, 0.4], [1, 1, 1, 1], [1, 0.5, 1, 0.6], [1, 1, 1, 0]]) {
+        const s = T.mkSpec(), d = T.toData(s), m = T.copy(s);
+        GEN.gl_phasefx(d, new DataSim(1024, 2), n, op, amt, p1, p2, 4321);
+        R.phaseFx(m.re, m.im, n, op, amt, p1, p2, 4321);
+        assert.ok(T.maxDiff(d, m) < 1e-11, `phasefx op ${op}: ${T.maxDiff(d, m)}`);
+        T.hermitian(d, `phasefx op ${op}`);
+    }
+    for (let k = 0; k < 1; k++) { const s = T.mkSpec(), d = T.toData(s); GEN.gl_phasefx(d, new DataSim(1024, 2), n, 0, 0, 100, 0, 1); assert.ok(T.maxDiff(d, s) < 1e-12, "amount 0 is the identity"); GEN.gl_phasefx(d, new DataSim(1024, 2), n, 1, 0, 1, 1, 1); assert.ok(T.maxDiff(d, s) < 1e-12); }
+    // Phase Swap keeps every magnitude and reverses the phase order inside each block
+    {
+        const s = T.mkSpec(), d = T.toData(s), m0 = T.mags(s.re, s.im);
+        GEN.gl_phasefx(d, new DataSim(1024, 2), n, 0, 1, 512, 0, 1);
+        const m1 = new Float64Array(half + 1);
+        for (let k = 0; k <= half; k++) m1[k] = Math.hypot(d.a[k], d.a[4096 + k]);
+        for (let k = 1; k < half; k++) assert.ok(Math.abs(m1[k] - 1.6 * m0[k]) < 1e-12, "magnitudes stay (times the level match 1.6)");
+        for (const k of [3, 17, 100, 250]) {
+            const pk = 511 - k, want = Math.atan2(s.im[pk], s.re[pk]), got = Math.atan2(d.a[4096 + k], d.a[k]);
+            assert.ok(Math.abs(Math.sin(want - got)) < 1e-9 && Math.cos(want - got) > 0, `bin ${k} carries the phase of bin ${pk}`);
+        }
+    }
+    // Robot: zero phase moved to the frame centre = real spectrum with (-1)^k signs, so the time frame is a symmetric pulse about n/2; Whisper: random phase, same magnitudes
+    {
+        const s = T.mkSpec(), d = T.toData(s), m0 = T.mags(s.re, s.im);
+        GEN.gl_phasefx(d, new DataSim(1024, 2), n, 1, 1, 0, 0, 5);
+        const kk = R.PHASE_K_ROBOT;
+        for (let k = 1; k < half; k++) { assert.ok(Math.abs(d.a[4096 + k]) < 1e-12 && Math.abs(d.a[k] - ((k & 1) ? -m0[k] : m0[k]) * kk) < 1e-12, `robot bin ${k}`); }
+        const d2 = T.toData(s);
+        GEN.gl_phasefx(d2, new DataSim(1024, 2), n, 1, 1, 1, 1, 5);
+        let rnd = 0;
+        for (let k = 1; k < half; k++) { const m = Math.hypot(d2.a[k], d2.a[4096 + k]); assert.ok(Math.abs(m - 2 * m0[k]) < 1e-9, "whisper keeps the magnitudes (times the level match 2 at Random 1)"); if (Math.abs(d2.a[4096 + k]) > 1e-3 * m) rnd++; }
+        assert.ok(rnd > 0.9 * half, "whisper phases are scattered");
+        const d3 = T.toData(s);
+        GEN.gl_phasefx(d3, new DataSim(1024, 2), n, 1, 1, 1, 1, 6);
+        assert.ok(T.maxDiff(d3, { re: d2.a.slice(0, n), im: d2.a.slice(4096, 4096 + n) }) > 0.01, "another hop seed, another phase");
+    }
+    // level match through a real STFT (Hann x Hann, hop N / 4): Whisper within 1.5 dB on noise / sine / mix / saw; Robot within 3 dB on noise / saw / mix and a hop-rate buzz
+    {
+        const cr = require("../src/cepstrum_ref.js");
+        const rnd = mkRng(77), len = 48000 * 2, sr = 48000;
+        const sig = {
+            noise: Float64Array.from({ length: len }, () => 0.4 * rnd()),
+            sine: Float64Array.from({ length: len }, (_, i) => 0.5 * Math.sin((2 * Math.PI * 440 * i) / sr)),
+            mix: Float64Array.from({ length: len }, (_, i) => 0.2 * rnd() + 0.3 * Math.sin((2 * Math.PI * 440 * i) / sr)),
+            saw: Float64Array.from({ length: len }, (_, i) => 0.4 * (((i * 110) / sr) % 1 * 2 - 1)),
+        };
+        const rmsOf = (x, a, b) => { let t = 0; for (let i = a; i < b; i++) t += x[i] * x[i]; return Math.sqrt(t / (b - a)); };
+        const lvl = (mode, rand, nm) => { let fr = 0; const st = new cr.Stft(n, (re, im) => R.phaseFx(re, im, n, 1, 1, mode, rand, 3 * fr++ + 1)); const y = st.run(sig[nm]).subarray(1023); return 20 * Math.log10(rmsOf(y, 12000, len - 2000) / rmsOf(sig[nm], 12000, len - 2000)); };
+        for (const nm of Object.keys(sig)) { const g = lvl(1, 1, nm); assert.ok(Math.abs(g) < 1.5, `whisper ${nm}: ${g.toFixed(2)} dB`); }
+        for (const nm of ["noise", "mix", "saw"]) { const g = lvl(0, 0, nm); assert.ok(Math.abs(g) < 3, `robot ${nm}: ${g.toFixed(2)} dB`); }
+        // robot on a sine: a pulse train at the hop rate sr / 256 = 187.5 Hz (the spectral peak sits on a multiple of it)
+        let fr = 0;
+        const y = new cr.Stft(n, (re, im) => R.phaseFx(re, im, n, 1, 1, 0, 0, 3 * fr++ + 1)).run(sig.sine);
+        const seg = 16384, off = 16384, rr = new Float64Array(seg), ii = new Float64Array(seg);
+        for (let i = 0; i < seg; i++) rr[i] = y[off + i] * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / seg));
+        cr.fft(rr, ii, false);
+        let bk = 3, bv = 0;
+        for (let k = 3; k < seg / 2; k++) { const p = rr[k] * rr[k] + ii[k] * ii[k]; if (p > bv) { bv = p; bk = k; } }
+        const hz = (bk * sr) / seg, mult = hz / 187.5;
+        assert.ok(Math.abs(mult - Math.round(mult)) * 187.5 < 8 && Math.abs(hz - 440) > 30, `robot sine: strongest partial ${hz.toFixed(1)} Hz is a multiple of the hop rate 187.5 Hz`);
+    }
+});
+ok("Chaos-scaled spectral cap: about 1 sub-op at Chaos 0 up to 4 at Chaos 1, Randomize and Mutate respect it", () => {
+    assert.deepStrictEqual([0, 0.2, 0.4, 0.5, 0.7, 0.9, 1].map(G.glitchSpectralCap), [1, 2, 2, 3, 3, 4, 4]);
+    const stat = {};
+    for (const chaos of [0, 0.25, 0.5, 0.75, 1]) {
+        const hist = [0, 0, 0, 0, 0, 0, 0];
+        for (let seed = 1; seed <= 600; seed++) {
+            const g = G.randomizeGlitch(seed * 13 + 1, chaos, null);
+            const n = G.glitchSpectralCount(g);
+            assert.ok(n <= G.glitchSpectralCap(chaos), `chaos ${chaos}: ${n} sub-ops`);
+            hist[n]++;
+        }
+        stat[chaos] = hist;
+    }
+    assert.strictEqual(stat[0].slice(2).reduce((a, b) => a + b, 0), 0, "Chaos 0 never rolls more than one");
+    assert.ok(stat[0][1] > 120, `Chaos 0 rolls one sub-op in ${stat[0][1]} of 600 glitches`);
+    const mean = (h) => h.reduce((a, c, i) => a + c * i, 0) / 600;
+    assert.ok(mean(stat[1]) > mean(stat[0.5]) && mean(stat[0.5]) > mean(stat[0]), `the mean grows with Chaos (${mean(stat[0]).toFixed(2)} < ${mean(stat[0.5]).toFixed(2)} < ${mean(stat[1]).toFixed(2)})`);
+    assert.ok(stat[1][4] > 20 && stat[1][5] === 0, `Chaos 1 reaches 4 (${stat[1][4]} of 600), never more`);
+    // Mutate never pushes a glitch past the cap, even when it swaps in spectral types
+    const allowSpec = G.defaultAllow();
+    for (const k of Object.keys(allowSpec)) allowSpec[k] = G.glType(k) ? G.glType(k).category === "Spectral" : false;
+    for (const chaos of [0, 0.3, 0.6, 1]) {
+        let g = G.randomizeGlitch(5, chaos, allowSpec);
+        for (let i = 0; i < 80; i++) {
+            g = G.mutateGlitch(g, 900 + i, G.mutateAmount({ chaos }), allowSpec, chaos);
+            assert.ok(G.glitchSpectralCount(g) <= G.glitchSpectralCap(chaos) + (G.glitchSpectralCount(g) > 0 ? 0 : 0), `mutate step ${i}, chaos ${chaos}: ${G.glitchSpectralCount(g)}`);
+        }
+    }
+    // the state-level mutate passes the state's Chaos
+    const st = G.defaultState();
+    st.chaos = 0;
+    st.working = G.randomizeGlitch(2, 0, st.allow);
+    for (let i = 0; i < 40; i++) { G.mutateWorking(st); assert.ok(G.glitchSpectralCount(st.working) <= 1); }
+});
+ok("phase 4 allow-list, main params, labels and layout", () => {
+    // every new module / sub-op is listed once in the allow-list and has labels and a main param
+    for (const id of ["ratchet", "scratch", "gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"]) {
+        assert.ok(G.glType(id), id);
+        assert.ok(G.GL_ALLOW_ITEMS.filter((t) => t.id === id).length === 1 && G.defaultAllow()[id] === true);
+    }
+    for (const iid of ["ratc", "scrb"]) { assert.ok(G.GL_SHORT[iid] && G.GL_TINY[iid].length <= 7); assert.ok(G.GL_MAIN_PARAM[iid]); assert.ok(G.glInstance(iid).params.some((p) => p.main && p.key === G.GL_MAIN_PARAM[iid])); }
+    for (const t of G.GL_TYPES.filter((q) => q.amountKey && ["gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"].includes(q.id))) {
+        assert.ok(G.GL_SHORT[t.id] && G.GL_TINY[t.id].length <= 7, t.id);
+        const mp = G.GL_MAIN_SUB[t.id];
+        const spec = G.glInstance("spec").params.find((p) => p.key === mp);
+        assert.ok(spec && spec.group === t.amountKey && (spec.kind === "lin" || spec.kind === "log"), `${t.id}: main param ${mp} is a continuous param of its group`);
+        // editor rows: amount, the sub-op's params, the shared Spectral Mix; movement candidates include the main param
+        const rows = G.glitchEditorRows(t.id);
+        assert.ok(rows.length >= 3 && rows.length <= G.GL_FACE.MAX_ROWS && rows[0].id === t.amountKey && rows[rows.length - 1].id === "wet", `${t.id} editor rows ${rows.map((r) => r.id)}`);
+        assert.ok(G.glitchMoveCandidates(t.id).some((c) => c.id === mp), `${t.id} movement targets include ${mp}`);
+        assert.strictEqual(G.glitchMainParam(t.id), mp);
+    }
+    for (const iid of ["ratc", "scrb"]) assert.ok(G.glitchEditorRows(iid).length <= G.GL_FACE.MAX_ROWS);
+    // the chain order of the two new time modules (canonical): stutter, ratchet, tape, scratch, granular
+    const order = L.instances.map((i) => i.id);
+    assert.ok(order.indexOf("stut") + 1 === order.indexOf("ratc") && order.indexOf("ratc") + 1 === order.indexOf("time") && order.indexOf("time") + 1 === order.indexOf("scrb") && order.indexOf("scrb") + 1 === order.indexOf("gpit"));
+    // the Time category holds the two new modules, in the Options list
+    const timeCat = G.glitchOptionCategories()[3].types.map((i) => G.GL_ALLOW_ITEMS[i].id);
+    assert.ok(timeCat.includes("ratchet") && timeCat.includes("scratch"));
+    // spectral sub-ops in processing order (docs): the tiles follow it
+    assert.deepStrictEqual(G.GL_TYPES.filter((t) => t.amountKey).map((t) => t.id), ["freeze", "smear", "scatter", "mirror", "binshift", "gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "specgate", "ccrush", "scramble", "pswap", "rphase"]);
+    // vector length / engine buffer carry the new parameters; a v4 glitch (no new keys) maps onto defaults / off
+    const g = G.defaultGlitch();
+    g.modules.spec = { wet: 1, params: { frz_amt: 0.5 }, move: null };
+    const v = G.glitchToVector(g);
+    assert.strictEqual(v.length, L.np);
+    for (const k of ["gfz_amt", "str_amt", "bub_amt", "mp3_amt", "dst_amt", "thn_amt", "dec_amt", "nsf_amt", "clp_amt", "psw_amt", "rph_amt"]) assert.strictEqual(v[L.index["spec." + k]], 0, k);
+    assert.strictEqual(v[L.base.ratc], 0);
+    assert.strictEqual(v[L.index["spec.mp3_kbps"]], 64);
+    // blending: continuous params of a new sub-op interpolate (log for the bitrate), the discrete ones come from the heaviest slot
+    const a = G.defaultGlitch(), b = G.defaultGlitch();
+    a.modules.spec = { wet: 1, params: { mp3_amt: 1, mp3_kbps: 32, dst_amt: 1, dst_mode: 0 }, move: null };
+    b.modules.spec = { wet: 1, params: { mp3_amt: 1, mp3_kbps: 128, dst_amt: 1, dst_mode: 1 }, move: null };
+    const bl = G.blendVectors([G.glitchToVector(a), G.glitchToVector(b)], [0.5, 0.5]);
+    assert.ok(Math.abs(bl[L.index["spec.mp3_kbps"]] - 64) < 1e-9, "log blend of 32 and 128 kbps is 64");
+    const bl2 = G.blendVectors([G.glitchToVector(a), G.glitchToVector(b)], [0.3, 0.7]);
+    assert.strictEqual(bl2[L.index["spec.dst_mode"]], 1, "discrete from the heaviest slot");
+    const ra = G.defaultGlitch(), rb = G.defaultGlitch();
+    ra.modules.ratc = { wet: 1, params: { count: 4, accel: 0.2, div: 5 }, move: null };
+    rb.modules.ratc = { wet: 1, params: { count: 12, accel: 1, div: 7 }, move: null };
+    const rbv = G.blendVectors([G.glitchToVector(ra), G.glitchToVector(rb)], [0.75, 0.25]);
+    assert.ok(Math.abs(rbv[L.index["ratc.count"]] - 6) < 1e-9 && Math.abs(rbv[L.index["ratc.accel"]] - 0.4) < 1e-9 && rbv[L.index["ratc.div"]] === 5);
+    // movement can target the new params
+    const mg = G.defaultGlitch();
+    G.glitchSetValue(mg, "ratc", "wet", 1);
+    assert.ok(G.glitchSetMoveType(mg, "ratc", 1) && mg.modules.ratc.move.target === "accel");
+    assert.ok(G.glitchSetMove(mg, "ratc", "target", "pitch"));
+    G.glitchSetValue(mg, "mp3ify", "mp3_amt", 1);
+    G.glitchSetValue(mg, "mp3ify", "wet", 1);
+    assert.ok(G.glitchSetMoveType(mg, "mp3ify", 2) && mg.modules.spec.move.target === "mp3_kbps");
+    const mvv = G.glitchToVector(mg);
+    assert.strictEqual(mvv[L.mvBase + L.mvN * order.indexOf("ratc") + L.mv.target], G.glInstance("ratc").params.findIndex((p) => p.key === "pitch"));
+    assert.strictEqual(mvv[L.mvBase + L.mvN * order.indexOf("spec") + L.mv.target], G.glInstance("spec").params.findIndex((p) => p.key === "mp3_kbps"), "spectral targets above position 31 are not clamped");
+});
+
 // ----------------------------------------------------------------------------- lint
 ok("GenExpr lint", () => {
     const code = CORE_RAW.replace(/\/\/.*$/gm, "");
@@ -1272,7 +1763,7 @@ ok("GenExpr lint", () => {
     for (const decl of ["\nBuffer ", "\nData ", "\nParam ", "\nHistory ", "\nDelay "]) assert.ok(CORE_RAW.indexOf(decl) > lastFn, `functions must precede ${decl.trim()}`);
     // the gen module functions and the one-call-site rule: each module function is called exactly once in the main body
     const main = CORE_RAW.slice(CORE_RAW.indexOf("\nBuffer slots"));
-    for (const f of ["gl_drive", "gl_filter", "gl_crush", "gl_ring", "gl_stut", "gl_time", "gl_chop", "gl_dly", "gl_rev", "gl_wid", "gl_spec_frame", "gl_blend"]) {
+    for (const f of ["gl_drive", "gl_filter", "gl_crush", "gl_ring", "gl_stut", "gl_time", "gl_chop", "gl_dly", "gl_rev", "gl_wid", "gl_spec_frame", "gl_blend", "gl_ratchet", "gl_scratch"]) {
         const calls = (main.match(new RegExp(`\\b${f}\\(`, "g")) || []).length;
         assert.strictEqual(calls, f === "gl_drive" ? 2 : 1, `${f} call sites`);
     }
@@ -1406,26 +1897,39 @@ ok("layout: the sequencer section: 16 steps in a row, the length lane above, con
     assert.ok(Q.lane.x <= Q.steps[0].x && Q.lane.x + Q.lane.w >= Q.steps[15].x + Q.steps[15].w);
 });
 
-ok("layout: Options has a category list and one toggle per type; every category fits its 8 slots", () => {
+ok("layout: Options has a category list and one toggle per type; every page of a category fits its 8 slots (Spectral pages)", () => {
     const closed = new Set(G.glitchHitMap({ options: 0 }, 4, 0).map((m) => m.id));
     for (const id of ["pad", "tile0", "act_dice", "act_mutate", "act_chaos", "act_opt", "act_ab"]) assert.ok(closed.has(id), id);
     const cats = G.glitchOptionCategories();
     assert.deepStrictEqual(cats.map((c) => c.name), ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility", "Movement"]);
     assert.strictEqual(cats.reduce((n, c) => n + c.types.length, 0), G.GL_ALLOW_ITEMS.length, "every type (and movement kind) is in exactly one category");
     assert.deepStrictEqual(cats[7].types.map((i) => G.GL_ALLOW_ITEMS[i].id), ["mv_lfo", "mv_steps", "mv_env"]);
-    assert.ok(cats.every((c) => c.types.length >= 1 && c.types.length <= 8));
+    assert.ok(cats.every((c) => c.types.length >= 1));
+    assert.ok(cats.filter((c) => c.types.length > FACE.OPT_PAGE).map((c) => c.name).join() === "Spectral", "only Spectral needs pages");
+    assert.strictEqual(cats[3].types.length, 8, "Time holds exactly 8 types (Ratchet and Scratch included)");
+    assert.strictEqual(G.glitchOptionPage(4, 0).pages, 3);
+    assert.strictEqual(G.glitchOptionPage(4, 2).items.length, 3);
+    assert.strictEqual(G.glitchOptionPage(4, 99).page, 2, "the page is clamped");
     const seenTypes = new Set();
     for (let cat = 0; cat < cats.length; cat++) {
-        const open = G.glitchHitMap({ options: 1, optCat: cat }, 4, 0).map((m) => m.id);
+      const npg = G.glitchOptionPage(cat, 0).pages;
+      for (let page = 0; page < npg; page++) {
+        const open = G.glitchHitMap({ options: 1, optCat: cat, optPage: page }, 4, 0).map((m) => m.id);
+        const pgItems = G.glitchOptionPage(cat, page).items;
+        assert.strictEqual(open.includes("opt_next"), npg > 1);
         for (const id of ["pad", "tile0", "act_dice", "act_mutate", "act_chaos", "act_opt", "act_ab"]) assert.ok(!open.includes(id), `${id} is replaced by Options`);
-        for (const ti of cats[cat].types) { assert.ok(open.includes("opt_" + ti), `category ${cat} lists type ${ti}`); seenTypes.add(ti); }
-        for (const o of open.filter((i) => /^opt_\d+$/.test(i))) assert.ok(cats[cat].types.includes(Number(o.slice(4))), "only this category's types");
+        for (const ti of pgItems) { assert.ok(open.includes("opt_" + ti), `category ${cat} page ${page} lists type ${ti}`); seenTypes.add(ti); }
+        for (const o of open.filter((i) => /^opt_\d+$/.test(i))) assert.ok(pgItems.includes(Number(o.slice(4))), "only this page's types");
         for (let c = 0; c < cats.length; c++) assert.ok(open.includes("optcat_tg" + c) && open.includes("optcat_sel" + c));
         for (const id of ["opt_all", "opt_close", "tg_editor", "tg_seq", "side_mix"]) assert.ok(open.includes(id), id);
+      }
     }
     assert.strictEqual(seenTypes.size, G.GL_ALLOW_ITEMS.length);
     const O = G.glitchOptionsLayout(FACE.MARGIN);
     assert.ok(G.glInside(O.note, O.panel) && O.cats.length === 8 && O.slots.length === 8);
+    for (const r of [O.prev, O.next, O.pageText]) assert.ok(G.glInside(r, O.panel) && !G.glOverlap(r, O.note) && r.y + r.h <= O.panel.y + O.panel.h, "pager inside the panel, clear of the note line");
+    assert.ok(!G.glOverlap(O.prev, O.pageText) && !G.glOverlap(O.pageText, O.next));
+    assert.ok(O.slots.every((r) => !G.glOverlap(r, O.prev) && !G.glOverlap(r, O.next)));
     // the 8 category rows (left column) are at least 14 px tall and inside the panel; the note line sits under the type column, clear of them; the type rows are at least 20 px tall
     assert.ok(O.cats.every((c) => c.select.h >= 14 && c.toggle.h >= 14 && G.glInside(c.select, O.panel) && !G.glOverlap(c.select, O.note) && !G.glOverlap(c.toggle, O.note)));
     assert.ok(O.slots.every((r) => r.h >= 20 && G.glInside(r, O.panel) && r.y + r.h <= O.note.y));
@@ -1436,7 +1940,7 @@ ok("layout: Options has a category list and one toggle per type; every category 
     assert.strictEqual(G.glitchCategoryState(st, 4), 2);
     G.setAllowCategory(st, 4, false);
     assert.strictEqual(G.glitchCategoryState(st, 4), 0);
-    assert.ok(["freeze", "smear", "ccrush", "scramble", "scatter", "mirror", "binshift", "specgate"].every((t) => st.allow[t] === false) && st.allow.drive === true);
+    assert.ok(SPEC_TYPES.every((t) => st.allow[t] === false) && st.allow.drive === true && SPEC_TYPES.length === 19);
     G.setAllowCategory(st, 4, true);
     assert.strictEqual(G.glitchCategoryState(st, 4), 1);
     // optCat survives normalizeUi and is clamped
@@ -1631,14 +2135,14 @@ ok("allow-list: toggles gate Randomize and Mutate", () => {
 });
 
 ok("state versioning: v3 carries ui and seq, v1 and damaged blobs still load", () => {
-    assert.strictEqual(G.GL_STATE_VERSION, 4);
+    assert.strictEqual(G.GL_STATE_VERSION, 5);
     const s = G.defaultState();
     s.ui.editor = 1; s.ui.slots = 0; s.ui.options = 1; s.ui.seq = 1;
     s.working = G.randomizeGlitch(4, 0.5);
     s.ui.sel = G.glitchTiles(G.glitchToVector(s.working))[0].key;
     G.glitchToggleLock(s.working, s.ui.sel);
     const blob = G.stateToBlob(s);
-    assert.strictEqual(blob[0], 4);
+    assert.strictEqual(blob[0], 5);
     const back = G.stateFromBlob(blob);
     assert.strictEqual(back.ui.editor, 1); assert.strictEqual(back.ui.slots, 0); assert.strictEqual(back.ui.options, 1);
     assert.strictEqual(back.ui.seq, 1, "the sequencer section flag round-trips (the sequencer section opens again)");
@@ -1654,7 +2158,7 @@ ok("state versioning: v3 carries ui and seq, v1 and damaged blobs still load", (
     assert.strictEqual(old.chaos, 0.7);
     // garbage ui values are sanitized; a selection that is not a tile is dropped
     const bad = G.normalizeState({ ui: { editor: "yes", slots: 0, options: 5, sel: "bogus" } });
-    assert.deepStrictEqual(bad.ui, { editor: 1, slots: 0, seq: 0, options: 1, sel: "", optCat: 0, edTab: 0 });
+    assert.deepStrictEqual(bad.ui, { editor: 1, slots: 0, seq: 0, options: 1, sel: "", optCat: 0, edTab: 0, optPage: 0 });
     assert.deepStrictEqual(G.stateFromBlob([2, "{not json"]).ui, G.defaultUi());
     assert.deepStrictEqual(G.stateFromBlob([]).ui, G.defaultUi());
     // an unknown lock key is dropped
@@ -1667,7 +2171,7 @@ ok("state versioning: v3 carries ui and seq, v1 and damaged blobs still load", (
     const was = JSON.stringify(st.working);
     st.working = G.randomizeGlitch(9, 0.9); st.ui.editor = 1; st.xy = [0.1, 0.1];
     G.glitchUndoRestore(st, snap);
-    assert.strictEqual(JSON.stringify(st.working), was);
+    assert.strictEqual(JSON.stringify(st.working), JSON.stringify(G.normalizeGlitch(JSON.parse(was)))); // the restore normalizes (registry key order)
     assert.strictEqual(st.ui.editor, 1);
     assert.deepStrictEqual(st.xy, [0.1, 0.1]);
 });
@@ -1883,9 +2387,26 @@ ok("v8ui: slots save / recall / clear / drag to a corner, Options toggles", () =
     click(O.cats[4].select);
     assert.strictEqual(u.run("gState.ui.optCat"), 4);
     const sp = G.glitchOptionCategories()[4].types;
-    assert.strictEqual(sp.length, 8);
+    assert.strictEqual(sp.length, 19);
     click(O.slots[7]);
     assert.strictEqual(u.run(`gState.allow[${JSON.stringify(G.GL_TYPES[sp[7]].id)}]`), false, "the eighth Spectral type toggles");
+    // the pager: 19 Spectral types are 3 pages (8, 8, 3); next / prev change the page, a category change resets it
+    assert.strictEqual(u.run("gState.ui.optPage"), 0);
+    click(O.next);
+    assert.strictEqual(u.run("gState.ui.optPage"), 1);
+    click(O.slots[7]);
+    assert.strictEqual(u.run(`gState.allow[${JSON.stringify(G.GL_TYPES[sp[15]].id)}]`), false, "the sixteenth Spectral type is on page 2");
+    click(O.next);
+    click(O.next);
+    assert.strictEqual(u.run("gState.ui.optPage"), 2, "the pager stops at the last page");
+    click(O.slots[2]);
+    assert.strictEqual(u.run(`gState.allow[${JSON.stringify(G.GL_TYPES[sp[18]].id)}]`), false, "the last Spectral type (Robot / Whisper) toggles");
+    click(O.prev);
+    assert.strictEqual(u.run("gState.ui.optPage"), 1);
+    u.run("paint()");
+    click(O.cats[3].select);
+    assert.strictEqual(u.run("gState.ui.optPage"), 0, "selecting a category resets the page");
+    click(O.cats[4].select);
     click(O.all);
     assert.ok(Object.values(u.run("gState.allow")).every((v) => v === true) || Object.values(u.run("gState.allow")).every((v) => v === false));
     click(O.close);
@@ -2156,16 +2677,16 @@ ok("v8ui: editing a module while Seq or Morph plays copies the sounding blend in
     assert.ok(!u2.run("gTiles.some(function (t) { return t.key === 'filt'; })"), "removed from what plays");
 });
 
-ok("v8ui: tile overflow: 30 tiles page, +N shows what is hidden, tiles on page 2 are clickable, the page clamps", () => {
+ok("v8ui: tile overflow: 43 tiles page, +N shows what is hidden, tiles on page 2 are clickable, the page clamps", () => {
     const u = makeUi();
     u.run("device_ready();" +
         "var big = defaultGlitch(); for (var i = 0; i < GL_INSTANCES.length; i++) glitchSetValue(big, GL_INSTANCES[i].id, 'wet', 0.8);" +
         "for (var t = 0; t < GL_TYPES.length; t++) if (GL_TYPES[t].amountKey) glitchSetValue(big, GL_TYPES[t].id, GL_TYPES[t].amountKey, 0.7);" +
         "gState.working = big; gModelDirty = true; refreshModel(); paint();");
-    assert.strictEqual(u.run("gTiles.length"), 30, "22 instances (spectral expands) + 8 sub-ops");
+    assert.strictEqual(u.run("gTiles.length"), 43, "24 instances (spectral expands) + 19 sub-ops");
     assert.strictEqual(u.run("gTiles[0].key"), "drvA");
     assert.deepStrictEqual(u.run("gTiles.map(function (t) { return t.chain; })").every((c, i, a) => i === 0 || c >= a[i - 1]), true, "chain order");
-    const V = () => G.glitchViewLayout(30, G.glitchFaceLayout({}).view, u.run("gTilePage"));
+    const V = () => G.glitchViewLayout(43, G.glitchFaceLayout({}).view, u.run("gTilePage"));
     assert.strictEqual(V().rects.length, 12);
     clickR(u, V().next);
     assert.strictEqual(u.run("gTilePage"), 1);
@@ -2177,14 +2698,17 @@ ok("v8ui: tile overflow: 30 tiles page, +N shows what is hidden, tiles on page 2
     clickR(u, G.glitchFaceLayout({ editor: 1 }).toggles.editor); // close the editor
     clickR(u, V().next);
     clickR(u, V().next);
-    assert.strictEqual(u.run("gTilePage"), 2, "the last page");
-    assert.strictEqual(V().rects.length, 6);
+    clickR(u, V().next);
+    clickR(u, V().next);
+    assert.strictEqual(u.run("gTilePage"), 3, "the last page");
+    assert.strictEqual(V().rects.length, 7);
+    clickR(u, V().prev);
     clickR(u, V().prev);
     clickR(u, V().prev);
     clickR(u, V().prev);
     assert.strictEqual(u.run("gTilePage"), 0, "page 0 stays");
     // a glitch with few modules puts the page back
-    u.run("gTilePage = 2; randomize(4);");
+    u.run("gTilePage = 3; randomize(4);");
     assert.ok(u.run("gTilePage") === 0 || u.run("gTiles.length") > 24);
     u.run("paint()");
     // paging works for every tile count and paints
@@ -2193,9 +2717,9 @@ ok("v8ui: tile overflow: 30 tiles page, +N shows what is hidden, tiles on page 2
     }
 });
 
-ok("v8ui: every tile has its own audio-reactive glyph and readout (all 22 instances and 8 spectral sub-ops)", () => {
+ok("v8ui: every tile has its own audio-reactive glyph and readout (all 24 instances and 19 spectral sub-ops)", () => {
     const keys = G.GL_INSTANCES.filter((i) => i.id !== "spec").map((i) => i.id).concat(SPEC_TYPES);
-    assert.strictEqual(keys.length, 30);
+    assert.strictEqual(keys.length, 43);
     const loud = (u) => {
         u.run("gHaveTele = true; gTele = new Array(GL_SCOPE.END).fill(0); for (var i = 0; i < GL_SCOPE.END; i++) gTele[i] = 0.2 + 0.7 * Math.abs(Math.sin(i * 1.3));" +
             "gTele[GL_SCOPE.BEAT] = 3.7; gTele[GL_SCOPE.STUT_ENGAGED] = 1; gTele[GL_SCOPE.CHOP_STEP] = 5;");
@@ -2221,7 +2745,8 @@ ok("v8ui: every tile has its own audio-reactive glyph and readout (all 22 instan
         // parameter-driven: the glyph changes with a parameter (not only with the audio)
     }
     // every phase 2 tile (15 modules / sub-ops) has a drawing of its own: different from every other tile and from the generic level bars (drive A / B, filter, crush, ring, delay, reverb, width)
-    const NEW_TILES = ["form", "comb", "phas", "rect", "fm", "corr", "gpit", "gstr", "rvs", "shuf", "slap", "scatter", "mirror", "binshift", "specgate"];
+    const NEW_TILES = ["form", "comb", "phas", "rect", "fm", "corr", "gpit", "gstr", "rvs", "shuf", "slap", "scatter", "mirror", "binshift", "specgate",
+        "ratc", "scrb", "gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"];
     const generics = new Set(["drvA", "drvB", "filt", "crush", "ring", "dly", "rev", "wid"].map((k) => glyph.get(k)));
     const seenNew = new Set();
     for (const k of NEW_TILES) {
@@ -2233,7 +2758,10 @@ ok("v8ui: every tile has its own audio-reactive glyph and readout (all 22 instan
     for (const [k, v] of Object.entries(G.GL_TINY)) assert.ok(G.glitchTileInfo(k) && v.length <= 7, k);
     // parameter-driven glyphs change when their parameters change (telemetry fixed)
     for (const [key, id, v0, v1] of [["form", "vowel", 0, 3], ["comb", "freq", 60, 2000], ["phas", "depth", 0.2, 1], ["rect", "mode", 0, 1], ["fm", "index", 0.1, 0.9], ["gpit", "pitch", -12, 12],
-        ["gstr", "size", 40, 300], ["slap", "time", 50, 170], ["mirror", "mir_pivot", 300, 6000], ["binshift", "bsh_bins", -30, 30], ["specgate", "sgl_mode", 0, 1], ["scatter", "sct_w", 3, 30]]) {
+        ["gstr", "size", 40, 300], ["slap", "time", 50, 170], ["mirror", "mir_pivot", 300, 6000], ["binshift", "bsh_bins", -30, 30], ["specgate", "sgl_mode", 0, 1], ["scatter", "sct_w", 3, 30],
+        ["ratc", "accel", -0.9, 0.9], ["ratc", "count", 3, 12], ["scrb", "depth", 0.1, 1], ["scrb", "shape", 0, 1], ["gfreeze", "gfz_dens", 0.1, 0.9], ["stretch", "str_st", -12, 12],
+        ["bubbler", "bub_dens", 0.1, 0.9], ["mp3ify", "mp3_kbps", 16, 256], ["duststorm", "dst_depth", 0.1, 1], ["thinner", "thn_soft", 0, 1], ["decap", "dec_boost", 0, 24],
+        ["noisify", "nsf_depth", 2, 24], ["clipper", "clp_db", -30, -3], ["pswap", "psw_w", 8, 512], ["rphase", "rph_mode", 0, 1]]) {
         const u = makeUi();
         const info = G.glitchTileInfo(key);
         const setup = `device_ready(); gState.working = defaultGlitch(); glitchSetValue(gState.working, ${JSON.stringify(key)}, 'wet', 1);` + (info.sub ? `glitchSetValue(gState.working, ${JSON.stringify(key)}, ${JSON.stringify(info.sub)}, 1);` : "");
@@ -2692,7 +3220,7 @@ ok("gen movement: one call site in one loop over the chain, evaluated at control
     assert.ok(/smpNow = d_clk\.peek\(0\) \+ 1;/.test(main) && !/History tickN/.test(CORE_RAW));
     // the code grew by a bounded amount: keep the gen small enough to compile fast
     assert.ok((CORE_FN.match(/\.poke\(/g) || []).length < 500, `pokes: ${(CORE_FN.match(/\.poke\(/g) || []).length}`);
-    assert.ok(CORE_FN.split("\n").length < 2300, "core line count");
+    assert.ok(CORE_FN.split("\n").length < 2700, "core line count");
 });
 
 ok("Randomize / Mutate assign movement: deterministic, more at higher Chaos, respects the allow-list and locks", () => {
@@ -2795,7 +3323,7 @@ ok("state migration v3 -> v4: old slots have no movement, the blob round-trips m
     const v3 = { version: 3, slots: [old, null, old, null, null, null, null, null], corners: [0, 1, 2, 3], allow: { drive: false }, chaos: 0.3, xy: [0.5, 0.5], working: old, audition: "working", seed: 4,
         ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" }, seq: G.defaultSeq() };
     const t = G.stateFromBlob([3, JSON.stringify(v3)]);
-    assert.strictEqual(t.version, 4);
+    assert.strictEqual(t.version, 5);
     assert.strictEqual(t.allow.drive, false);
     assert.strictEqual(t.allow.mv_lfo, true);
     assert.strictEqual(t.ui.edTab, 0);

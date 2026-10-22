@@ -23,7 +23,7 @@ Engine contract:
 Live parameters (src/glitch_config.js GL_PARAMS, real live.* objects, NOT in presentation): Morph X / Y, Chaos, Mix, Output,
 Randomize, Mutate (trigger toggles), Mode (Working / Morph / Seq), Seq Rate, Glide and Seq Length. The v8ui draws every control.
 
-Usage: build_glitch.py [--preview-editor|--preview-seq|--preview-options|--preview-many|--preview-many2|--preview-motion|--preview-all]
+Usage: build_glitch.py [--preview-editor|--preview-seq|--preview-options|--preview-many|--preview-many2|--preview-motion|--preview-new|--preview-specedit|--preview-options2|--preview-all]
 (each writes tests/out/Glitch_<name>.amxd in that UI state; render_preview.py on it writes previews/glitch_<name>.png)
 """
 
@@ -277,7 +277,7 @@ def engine_boxes(layout):
     return boxes, lines
 
 
-PREVIEWS = ("editor", "seq", "options", "many", "many2", "motion")
+PREVIEWS = ("editor", "seq", "options", "many", "many2", "motion", "new", "specedit", "options2")
 
 
 def build_patcher(preview=""):

@@ -879,6 +879,19 @@ function tilePrimary(tile) {
         case "mirror": return "pivot " + pick(spec("mir_pivot"), g("spec", "mir_pivot")) + "Hz";
         case "binshift": return (g("spec", "bsh_bins") >= 0 ? "+" : "") + g("spec", "bsh_bins").toFixed(0) + " bins";
         case "specgate": return g("spec", "sgl_mode") > 0.5 ? "Lofi " + g("spec", "sgl_step").toFixed(0) + "dB" : "Top-K " + Math.round(g("spec", "sgl_k"));
+        case "ratc": return pick(spec("div"), g("ratc", "div")) + " x" + Math.round(g("ratc", "count")) + (g("ratc", "accel") >= 0 ? " accel " : " decel ") + Math.round(Math.abs(g("ratc", "accel")) * 100) + "%";
+        case "scrb": return pick(spec("shape"), g("scrb", "shape")) + " " + pick(spec("rate"), g("scrb", "rate")) + " " + Math.round(g("scrb", "depth") * 100) + "%";
+        case "gfreeze": return Math.round(g("spec", "gfz_dens") * 100) + "% held " + pick(spec("gfz_rate"), g("spec", "gfz_rate"));
+        case "stretch": return (g("spec", "str_mode") > 0.5 ? "harm " : "") + (g("spec", "str_st") >= 0 ? "+" : "") + (g("spec", "str_mode") > 0.5 ? g("spec", "str_st").toFixed(1) : Math.round(g("spec", "str_st"))) + "st";
+        case "bubbler": return "spread " + Math.round(g("spec", "bub_spread")) + " " + Math.round(g("spec", "bub_dens") * 100) + "%";
+        case "mp3ify": return Math.round(g("spec", "mp3_kbps")) + " kbps";
+        case "duststorm": return pick(spec("dst_mode"), g("spec", "dst_mode")) + " " + Math.round(g("spec", "dst_kbps")) + "k " + pick(spec("dst_rate"), g("spec", "dst_rate"));
+        case "thinner": return "+-" + Math.round(g("spec", "thn_n")) + " bins soft " + Math.round(g("spec", "thn_soft") * 100) + "%";
+        case "decap": return "cut " + Math.round(g("spec", "dec_k")) + " boost " + g("spec", "dec_boost").toFixed(0) + "dB";
+        case "noisify": return "+-" + g("spec", "nsf_depth").toFixed(0) + "dB /" + Math.round(g("spec", "nsf_grain"));
+        case "clipper": return pick(spec("clp_mode"), g("spec", "clp_mode")) + " " + g("spec", "clp_db").toFixed(0) + "dB";
+        case "pswap": return "width " + Math.round(g("spec", "psw_w"));
+        case "rphase": return pick(spec("rph_mode"), g("spec", "rph_mode")) + " " + Math.round(g("spec", "rph_rand") * 100) + "%";
     }
     return "";
 }
@@ -1135,6 +1148,151 @@ function paintTileBody(tile, x, y, w, h, c, act) {
             }
             break;
         }
+        case "ratc": { // the repeats of a roll: bar widths are the geometric lengths (accel), heights the decay; the playing repeat lights up
+            var rn = Math.round(clamp(gv("ratc", "count"), 2, 16)), rq = Math.pow(2, -3 * gv("ratc", "accel") / (rn - 1)), rdc = gv("ratc", "decay");
+            var rtot = 0, rwd = [];
+            for (i = 0; i < rn; i++) { rwd.push(Math.pow(rq, i)); rtot += rwd[i]; }
+            var rcur = t && (t[S.RAT_ON] || 0) > 0.05 ? Math.round(t[S.RAT_IDX] || 0) : -1;
+            var rxx = x;
+            for (i = 0; i < rn; i++) {
+                var rbw = rwd[i] / rtot * w, rbh = h * (0.3 + 0.65 * Math.pow(1 - rdc * 0.6, i));
+                frect(rxx, y + h - rbh, Math.max(rbw - 1.2, 1), rbh, c, i === rcur ? 1 : 0.45);
+                rxx += rbw;
+            }
+            break;
+        }
+        case "scrb": { // one cycle of the scratch shape (sine / saw / random) with the platter dot riding it on the host beat; the live lag shows as a bar
+            var sshp = Math.round(clamp(gv("scrb", "shape"), 0, 2)), sdp = gv("scrb", "depth");
+            var scy = beat / GL_DIV_BEATS[Math.round(clamp(gv("scrb", "rate"), 0, 7))], sph = scy - Math.floor(scy);
+            var scv = function (u) { return sshp === 0 ? Math.sin(6.2832 * u) : (sshp === 1 ? (u < 0.85 ? -1 + 2 * u / 0.85 : 1 - 2 * (u - 0.85) / 0.15) : glMoveLfo(5, Math.floor(scy) + u, 3.3)); };
+            pts = [];
+            for (i = 0; i <= 40; i++) pts.push([x + i / 40 * w, y + h / 2 - scv(i / 40) * sdp * (h / 2 - 2)]);
+            hline(x, x + w, y + h / 2, COL_DIM, 0.3, 1);
+            poly(pts, c, 0.9, 1.3);
+            disc(x + sph * w, y + h / 2 - scv(sph) * sdp * (h / 2 - 2), 2.4, c, 1);
+            var slg = t ? clamp(t[S.SCR_POS] || 0, 0, 1) : 0;
+            frect(x + w - 3, y + h - slg * h, 3, slg * h, c, 0.7);
+            break;
+        }
+        case "gfreeze": { // the spectrum with the held bins (hash of bin and re-roll slot) flat-lined in the accent colour
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var gfs = Math.floor(beat / GL_DIV_BEATS[Math.round(clamp(gv("spec", "gfz_rate"), 0, 7))]), gfd = gv("spec", "gfz_dens");
+            for (i = 0; i < nb; i++) {
+                var held = hash2(i, gfs) < gfd;
+                frect(x + i * (w / nb), y + h - vals[i] * h, w / nb - 1, vals[i] * h, held ? c : COL_DIM, held ? 0.95 : 0.35);
+                if (held) hline(x + i * (w / nb), x + (i + 1) * (w / nb) - 1, y + h - vals[i] * h, COL_TEXT, 0.9, 1);
+            }
+            break;
+        }
+        case "stretch": { // the spectrum with its partials re-spaced: ghost = input, bars = result, arrow = the pitch
+            nb = Math.max(8, Math.floor(w / 3));
+            var tin = specCols(t, S.BANDS_IN, nb), tout = specCols(t, S.BANDS_OUT, nb);
+            for (i = 0; i < nb; i++) {
+                frect(x + i * (w / nb), y + h - tin[i] * h, w / nb - 1, tin[i] * h, COL_DIM, 0.25);
+                frect(x + i * (w / nb), y + h - tout[i] * h, w / nb - 1, tout[i] * h, c, 0.8);
+            }
+            var sts = clamp(gv("spec", "str_st") / 24, -1, 1), stx = x + w / 2, sty = y + 3;
+            poly([[stx, sty], [stx + sts * w * 0.45, sty]], COL_TEXT, 0.9, 1.5);
+            poly([[stx + sts * w * 0.45 - Math.sign(sts || 1) * 3, sty - 2.5], [stx + sts * w * 0.45, sty], [stx + sts * w * 0.45 - Math.sign(sts || 1) * 3, sty + 2.5]], COL_TEXT, 0.9, 1.5);
+            if (gv("spec", "str_mode") > 0.5) for (j = 1; j < 4; j++) vline(x + w * (j / 4 + gv("spec", "str_inh") * 0.05 * j), y + h - 4, y + h, COL_TEXT, 0.7, 1);
+            break;
+        }
+        case "bubbler": { // bars with bubbles rising off the chosen bins (density), as wide as the spread
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var bbs = Math.floor(beat * 8), bsp = gv("spec", "bub_spread"), bdn = gv("spec", "bub_dens");
+            for (i = 0; i < nb; i++) frect(x + i * (w / nb), y + h - vals[i] * h, w / nb - 1, vals[i] * h, c, 0.6);
+            for (i = 0; i < nb; i++) if (hash2(i, bbs) < bdn * 2.2) ring(x + (i + 0.5) * (w / nb), y + h - vals[i] * h - 3, Math.min(1 + bsp * 0.4, 4), c, 1, 1);
+            break;
+        }
+        case "mp3ify": case "duststorm": { // the 21 Bark-like bands as stair-stepped bars (levels from the bitrate), HF cut at the cutoff; Duststorm scrambles the band heights
+            var mkb = key2(tile.key === "mp3ify" ? "mp3_kbps" : "dst_kbps"), mtb = clamp(Math.log(mkb / 16) / Math.log(20), 0, 1), mlv = Math.min(12, 1 + Math.round(31 * Math.pow(mtb, 1.5)));
+            nb = 21;
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var mcut = 2500 * Math.pow(10, mtb), msr = (t && t[S.SR]) || 48000, mdust = tile.key === "duststorm";
+            var mdd = mdust ? gv("spec", "dst_depth") : 0, mslot = Math.floor(beat / GL_DIV_BEATS[Math.round(clamp(gv("spec", mdust ? "dst_rate" : "mp3_amt") * (mdust ? 1 : 0), 0, 7))]);
+            for (i = 0; i < nb; i++) {
+                var mfq = 1960 * ((i * 24 / 21) + 0.53) / (26.28 - i * 24 / 21);
+                var mqq = Math.max(1 / mlv, Math.round(vals[i] * mlv) / mlv) * (mfq <= mcut ? 1 : 0.06);
+                mqq = clamp(mqq * (1 + mdd * (hash2(i, mslot) - 0.5) * 1.6), 0, 1);
+                frect(x + i * (w / nb), y + h - mqq * h, w / nb - 1, mqq * h, mfq <= mcut ? c : COL_DIM, mfq <= mcut ? 0.9 : 0.3);
+            }
+            break;
+        }
+        case "thinner": { // only the local peaks stay lit
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var tnn = Math.max(1, Math.round(gv("spec", "thn_n") / 3)), tsf = gv("spec", "thn_soft");
+            for (i = 0; i < nb; i++) {
+                var tmx = 0;
+                for (j = Math.max(0, i - tnn); j <= Math.min(nb - 1, i + tnn); j++) tmx = Math.max(tmx, vals[j]);
+                var tpk = vals[i] >= tmx;
+                frect(x + i * (w / nb), y + h - vals[i] * h * (tpk ? 1 : tsf), w / nb - 1, vals[i] * h * (tpk ? 1 : tsf), tpk ? c : COL_DIM, tpk ? 0.95 : 0.3);
+            }
+            break;
+        }
+        case "decap": { // the loudest bins are cut off (outline), the next ones stand taller
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var dsort = vals.slice().sort(function (a, b) { return b - a; });
+            var dk = Math.max(1, Math.round(clamp(gv("spec", "dec_k"), 1, 32) / 32 * nb * 0.6)), dth = dsort[Math.min(nb - 1, dk - 1)], dth2 = dsort[Math.min(nb - 1, 2 * dk - 1)], dbg = Math.pow(10, gv("spec", "dec_boost") / 20);
+            for (i = 0; i < nb; i++) {
+                var dcut = vals[i] >= dth, dnx = !dcut && vals[i] >= dth2;
+                var dh = dcut ? 0 : Math.min(1, vals[i] * (dnx ? dbg : 1));
+                frect(x + i * (w / nb), y + h - dh * h, w / nb - 1, dh * h, dnx ? COL_TEXT : c, dnx ? 0.9 : 0.75);
+                if (dcut) frect(x + i * (w / nb), y + h - vals[i] * h, w / nb - 1, 1.2, COL_CORAL, 0.9);
+            }
+            break;
+        }
+        case "noisify": { // every bar jittered by a random gain (depth dB, grain bins), re-rolled each frame
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var nfr = Math.floor(Date.now() / 90), nde = gv("spec", "nsf_depth"), ngr = Math.max(1, Math.round(gv("spec", "nsf_grain") / 2));
+            for (i = 0; i < nb; i++) {
+                var ngn = Math.pow(10, (hash2(Math.floor(i / ngr), nfr) * 2 - 1) * nde / 20);
+                var nbh = clamp(vals[i] * ngn, 0, 1);
+                frect(x + i * (w / nb), y + h - nbh * h, w / nb - 1, nbh * h, c, 0.85);
+            }
+            break;
+        }
+        case "clipper": { // bars flattened at the ceiling line (soft = rounded corner)
+            nb = Math.max(8, Math.floor(w / 3));
+            vals = specCols(t, S.BANDS_OUT, nb);
+            var cdb = Math.pow(10, gv("spec", "clp_db") / 20), csoft = gv("spec", "clp_mode") < 0.5;
+            var cpk = 0.001;
+            for (i = 0; i < nb; i++) cpk = Math.max(cpk, vals[i]);
+            var cceil = Math.min(1, cpk * cdb * 1.0 + 0.04);
+            for (i = 0; i < nb; i++) {
+                var cv2 = vals[i] > cceil ? cceil : vals[i];
+                if (csoft && vals[i] > cceil) cv2 = cceil * (0.9 + 0.1 * Math.tanh(vals[i] - cceil));
+                frect(x + i * (w / nb), y + h - cv2 * h, w / nb - 1, cv2 * h, vals[i] > cceil ? COL_AMBER : c, 0.85);
+            }
+            hline(x, x + w, y + h - cceil * h, COL_TEXT, 0.6, 1);
+            break;
+        }
+        case "pswap": { // arcs joining the bins whose phases trade places (block width)
+            var pw = Math.max(1, Math.round(Math.log(clamp(gv("spec", "psw_w"), 8, 512) / 8) / Math.log(64) * 3) + 1);
+            var pbw = w / pw;
+            for (i = 0; i < pw; i++) {
+                var pa0 = x + i * pbw + 2, pa1 = x + (i + 1) * pbw - 2;
+                mgraphics.set_line_width(1.2); rgba(c, 0.55 + 0.4 * amp);
+                mgraphics.move_to(pa0, y + h - 2); mgraphics.curve_to(pa0, y + 1, pa1, y + 1, pa1, y + h - 2); mgraphics.stroke();
+                disc(pa0, y + h - 2, 1.6, c, 1);
+                disc(pa1, y + h - 2, 1.6, COL_TEXT, 0.9);
+            }
+            break;
+        }
+        case "rphase": { // Robot: evenly spaced pulses (hop-rate buzz); Whisper: scattered grains; Random blends them
+            var rmd = gv("spec", "rph_mode") > 0.5, rrd = gv("spec", "rph_rand"), rslot = Math.floor(Date.now() / 120);
+            var rnp = Math.max(6, Math.floor(w / 4));
+            for (i = 0; i < rnp; i++) {
+                var rjx = (hash2(i, rslot) - 0.5) * (rmd ? 1 : rrd) * (w / rnp) * 1.6;
+                var rbh2 = (rmd ? 0.2 + 0.8 * hash2(i, rslot + 3) : 1) * (0.35 + 0.65 * amp) * h * 0.85;
+                frect(clamp(x + (i + 0.5) * (w / rnp) + rjx - 0.8, x, x + w - 1.6), y + (h - rbh2) / 2, 1.6, rbh2, c, 0.9);
+            }
+            break;
+        }
         default: {
             var nbar = Math.max(6, Math.floor(w / 5));
             for (var q = 0; q < nbar; q++) {
@@ -1157,6 +1315,7 @@ function paintTileMotion(tile, x, y) {
     if (mv.type === 3) sg = live ? live.ph * 2 - 1 : -1;
     disc(x + 2 + 7 * ph, y + 3.5 - sg * 2.2, 1.5, COL_MV, 1);
 }
+function key2(k) { return gVec[glitchLayout().index["spec." + k]]; }
 function chainBadge(tile) { return (tile.chain < 9 ? "0" : "") + (tile.chain + 1); }
 
 function paintView(r) {
@@ -1203,7 +1362,7 @@ function paintView(r) {
     }
     paintRibbon(V, tiles, r);
 }
-// The chain ribbon under the tiles: 23 ticks, one per chain position; a tick is lit (category colour) where a tile sits, bright
+// The chain ribbon under the tiles: 25 ticks, one per chain position; a tick is lit (category colour) where a tile sits, bright
 // for the tiles of this page. With more than 12 tiles the pager (prev / next, "page/pages +hidden") sits at the right.
 function paintRibbon(V, tiles, view) {
     var R = V.ribbon;
@@ -1261,23 +1420,31 @@ function paintOptions(O) {
         var selected = c === cur;
         rrect(row.select.x, row.select.y, row.select.w, row.select.h, 3, selected ? mix3(COL_BG, cc, 0.3) : COL_ROW, 1);
         rsrect(row.select.x + 0.5, row.select.y + 0.5, row.select.w - 1, row.select.h - 1, 3, cc, selected ? 0.95 : (hoverIs("optcat_sel" + c) ? 0.7 : 0.3), 1);
-        label(cats[c].name.toUpperCase(), row.select.x + 5, row.select.y + 10, 7.5, selected ? COL_TEXT : COL_DIM, 1, 0);
         var cnt = 0;
         for (var q = 0; q < cats[c].types.length; q++) if (gState.allow[GL_ALLOW_ITEMS[cats[c].types[q]].id]) cnt++;
-        label(cnt + "/" + cats[c].types.length, row.select.x + row.select.w - 4, row.select.y + 10, 6.5, st ? cc : COL_DIM, 1, 2);
+        var cntText = cnt + "/" + cats[c].types.length;
+        label(fit(cats[c].name.toUpperCase(), row.select.w - 12 - tw(cntText, 6.5), 7.5), row.select.x + 5, row.select.y + 10, 7.5, selected ? COL_TEXT : COL_DIM, 1, 0);
+        label(cntText, row.select.x + row.select.w - 4, row.select.y + 10, 6.5, st ? cc : COL_DIM, 1, 2);
         paintCheck(row.toggle.x + 1, row.toggle.y + 1, 12, st, cc, hoverIs("optcat_tg" + c));
     }
     var cur3 = CAT_COL[cats[cur].name] || COL_DIM;
-    for (var t = 0; t < cats[cur].types.length; t++) {
-        var ty = GL_ALLOW_ITEMS[cats[cur].types[t]];
+    var pg = glitchOptionPage(cur, gState.ui.optPage);
+    for (var t = 0; t < pg.items.length; t++) {
+        var ty = GL_ALLOW_ITEMS[pg.items[t]];
         var on = !!gState.allow[ty.id];
         var r = O.slots[t];
         rrect(r.x, r.y, r.w, r.h, 4, on ? mix3(COL_BG, cur3, 0.25) : COL_ROW, 1);
-        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 4, cur3, on ? 0.9 : (hoverIs("opt_" + cats[cur].types[t]) ? 0.7 : 0.3), 1);
+        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 4, cur3, on ? 0.9 : (hoverIs("opt_" + pg.items[t]) ? 0.7 : 0.3), 1);
         label(fit(cats[cur].name === "Spectral" ? ty.name.replace(/^Spectral /, "") : ty.name, r.w - 26, 7.5), r.x + 6, r.y + r.h / 2 + 2.8, 7.5, on ? COL_TEXT : COL_DIM, 1, 0);
         paintCheck(r.x + r.w - 17, r.y + r.h / 2 - 6, 12, on ? 1 : 0, cur3, false);
     }
     label(fit(n + " of " + GL_ALLOW_ITEMS.length + " allowed  ·  Randomize / Mutate", O.note.w, 7), O.note.x, O.note.y + 10, 7, n ? COL_DIM : COL_CORAL, 1, 0);
+    if (pg.pages > 1) {
+        // pager of a long category (Spectral): [<] 1/3 [>]
+        chip(O.prev, "<", false, cur3);
+        chip(O.next, ">", false, cur3);
+        label((pg.page + 1) + "/" + pg.pages, O.pageText.x + O.pageText.w / 2, O.pageText.y + 10, 7.5, COL_TEXT, 1, 1);
+    }
 }
 
 // ----- action bar -----
@@ -1936,7 +2103,12 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
         mgraphics.redraw(); done();
         return;
     }
-    if ((m = /^optcat_sel(\d)$/.exec(id))) { gState.ui.optCat = Number(m[1]); gLayout = glitchFaceLayout(gState.ui); mgraphics.redraw(); done(); return; }
+    if (id === "opt_prev" || id === "opt_next") {
+        var npg = glitchOptionPage(gState.ui.optCat, gState.ui.optPage).pages;
+        gState.ui.optPage = Math.max(0, Math.min(npg - 1, gState.ui.optPage + (id === "opt_next" ? 1 : -1)));
+        gLayout = glitchFaceLayout(gState.ui); mgraphics.redraw(); done(); return;
+    }
+    if ((m = /^optcat_sel(\d)$/.exec(id))) { gState.ui.optCat = Number(m[1]); gState.ui.optPage = 0; gLayout = glitchFaceLayout(gState.ui); mgraphics.redraw(); done(); return; }
     if ((m = /^optcat_tg(\d)$/.exec(id))) {
         undoPush();
         var cat = Number(m[1]);
@@ -2238,6 +2410,7 @@ function onidle(x, y) {
         else if ((m = /^opt_(\d+)$/.exec(id))) hint = "click to allow / forbid";
         else if (/^optcat_tg/.test(id)) hint = "allow / forbid the whole category";
         else if (/^optcat_sel/.test(id)) hint = "show this category's module types";
+        else if (id === "opt_prev" || id === "opt_next") hint = "more types of this category";
         else if (id === "tg_seq") hint = "the 16-step slot sequencer";
         else if (id === "seq_on") hint = "play the sequencer (Mode = Seq)";
         else if (id === "seq_lane") hint = "drag: sequence length";
@@ -2328,6 +2501,24 @@ function test_move() {
     modelChanged();
     done();
 }
+// phase 4 test hook: kind "mods" = Ratchet + Scratch on, "spec" = the 11 phase 4 spectral sub-ops on at once, "p4all" = both
+function test_p4(kind) {
+    var g = defaultGlitch();
+    kind = String(kind);
+    if (kind === "mods" || kind === "p4all") {
+        glitchSetValue(g, "ratc", "wet", 1); glitchSetValue(g, "ratc", "div", 5); glitchSetValue(g, "ratc", "count", 8); glitchSetValue(g, "ratc", "accel", 0.6);
+        glitchSetValue(g, "scrb", "wet", 0.8); glitchSetValue(g, "scrb", "shape", 2); glitchSetValue(g, "scrb", "rate", 3); glitchSetValue(g, "scrb", "depth", 0.7);
+    }
+    if (kind === "spec" || kind === "p4all") {
+        var keys = ["gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"];
+        for (var i = 0; i < keys.length; i++) { glitchSetValue(g, keys[i], "wet", 1); glitchSetValue(g, keys[i], glitchTileInfo(keys[i]).sub, 0.55); }
+    }
+    gState.working = g;
+    gState.audition = "working";
+    sendParam("mode", 0);
+    modelChanged();
+    done();
+}
 function test_section(name, on) { gState.ui[String(name)] = Number(on) ? 1 : 0; applyLayout(); done(); }
 function test_select(key) { gState.ui.sel = String(key); fixSelection(); mgraphics.redraw(); }
 
@@ -2394,8 +2585,34 @@ function preview() {
         gState.ui.optCat = 4;
         gState.allow.mirror = false;
         gState.allow.rectify = false;
+    } else if (pv === "new" || pv === "specedit") {
+        // the phase 4 modules and sub-ops: "new" = a page of 12 of their tiles, "specedit" = the editor of Duststorm
+        var nw = defaultGlitch();
+        var newKeys = ["ratc", "scrb", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "stretch", "gfreeze", "bubbler", "rphase"];
+        for (var nk = 0; nk < newKeys.length; nk++) {
+            var ninfo = glitchTileInfo(newKeys[nk]);
+            glitchSetValue(nw, newKeys[nk], "wet", 0.6 + 0.04 * nk);
+            if (ninfo.sub) glitchSetValue(nw, newKeys[nk], ninfo.sub, 0.7 + 0.025 * nk);
+        }
+        glitchSetValue(nw, "rphase", "rph_mode", 1);
+        glitchSetValue(nw, "mp3ify", "mp3_kbps", 48);
+        glitchSetMoveType(nw, "scrb", 1);
+        glitchSetMoveType(nw, "mp3ify", 2);
+        gState.working = nw;
+        gState.slots[0] = glCopy(nw);
+        gModelDirty = true;
+        gLayout = glitchFaceLayout(gState.ui);
+        refreshModel();
+        if (pv === "specedit") { gState.ui.editor = 1; gState.ui.sel = "duststorm"; }
+        else gState.ui.sel = "mp3ify";
+    } else if (pv === "options2") {
+        gState.ui.options = 1;
+        gState.ui.optCat = 4;
+        gState.ui.optPage = 1;
+        gState.allow.noisify = false;
+        gState.allow.thinner = false;
     } else if (pv === "many" || pv === "many2") {
-        // every module on: 22 instances + 8 spectral sub-ops = 30 tiles: "many" = page 1 of the glitch view, "many2" = page 2
+        // every module on: 24 instances + 19 spectral sub-ops = 43 tiles: "many" = page 1 of the glitch view, "many2" = page 2
         var big = defaultGlitch();
         for (var ii = 0; ii < GL_INSTANCES.length; ii++) glitchSetValue(big, GL_INSTANCES[ii].id, "wet", 0.4 + 0.5 * ((ii * 7) % 10) / 10);
         for (var tt = 0; tt < GL_TYPES.length; tt++) if (GL_TYPES[tt].amountKey) glitchSetValue(big, GL_TYPES[tt].id, GL_TYPES[tt].amountKey, 0.5 + 0.05 * tt);

@@ -549,8 +549,380 @@ function specGate(re, im, n, mode, amt, kk, step) {
     return thr;
 }
 
+
+// ---- phase 4: Ratchet / Scratch (twins of gl_ratchet / gl_scratch) ----
+function lfoSmoothRandom(x, salt) {
+    const cyc = Math.floor(x);
+    const ph = x - cyc;
+    const rA = hash(cyc + salt, 3.7) * 2 - 1;
+    const rB = hash(cyc + salt + 1, 3.7) * 2 - 1;
+    const sm = 0.5 - 0.5 * Math.cos(ph * 3.141592653589793);
+    return rA + (rB - rA) * sm;
+}
+class Ratchet {
+    constructor() {
+        this.ring = [new Float64Array(262144), new Float64Array(262144)];
+        this.st = new Float64Array(16);
+    }
+    // p: {w, div, count, accel, pitch, decay, prob}
+    process(xl, xr, p, beat, bpm, sr, act) {
+        const st = this.st;
+        let wp = st[0];
+        let eng = st[2];
+        if (act > 0.5) {
+            const sb = DIV_BEATS[Math.max(0, Math.min(7, Math.round(p.div)))];
+            const slot = Math.floor(beat / sb);
+            if (slot !== st[1]) {
+                st[1] = slot;
+                const tl = Math.min((sb * 60) / bpm * sr, 190000);
+                const nn = clip(Math.floor(p.count + 0.5), 2, 16);
+                const qq = Math.pow(2, (-3 * p.accel) / (nn - 1));
+                const d0 = Math.abs(1 - qq) < 0.0001 ? tl / nn : (tl * (1 - qq)) / (1 - Math.pow(qq, nn));
+                const gc = clip(Math.floor(Math.max(d0, d0 * Math.pow(qq, nn - 1)) * Math.pow(2, Math.max(p.pitch, 0) / 12) + 0.5), 64, 120000);
+                const hh = hash(slot, 6.6);
+                eng = hh < p.prob && tl > 256 ? 1 : 0;
+                let cs = wp - gc;
+                cs = cs < 0 ? cs + 262144 : cs;
+                st[2] = eng;
+                st[3] = 0;
+                st[4] = 0;
+                st[5] = d0;
+                st[7] = cs;
+                st[8] = gc;
+                st[9] = d0;
+                st[10] = qq;
+                st[11] = nn;
+            }
+        } else {
+            eng = 0;
+            st[2] = 0;
+        }
+        let eg = st[6];
+        eg = eg + (eng - eg) * 0.01;
+        eg = eng < 0.5 && eg < 0.0005 ? 0 : eg;
+        st[6] = eg;
+        let ol = xl, or = xr;
+        if (eg > 0) {
+            let idx = st[3];
+            let pos = st[4];
+            const ln = Math.max(st[5], 2);
+            const nn = st[11];
+            const fq = nn > 1.5 ? idx / (nn - 1) : 0;
+            const rt = Math.pow(2, (p.pitch * fq) / 12);
+            const gr = Math.pow(1 - p.decay * 0.6, idx);
+            const rd = st[7] + pos * rt;
+            let fe = Math.min(1, Math.min(pos + 1, ln - pos) / 24);
+            fe = fe * clip((st[8] - pos * rt) / 24, 0, 1);
+            const x = [xl, xr], y = [0, 0];
+            for (let c = 0; c < 2; c++) {
+                const lp = ringRead(this.ring, c, rd);
+                const mx = x[c] * (1 - eg) + lp * fe * gr * eg;
+                y[c] = x[c] + (mx - x[c]) * p.w;
+            }
+            ol = y[0];
+            or = y[1];
+            pos = pos + 1;
+            if (pos >= ln) {
+                pos = 0;
+                idx = idx + 1;
+                st[3] = idx;
+                if (idx >= nn) st[2] = 0;
+                else st[5] = st[9] * Math.pow(st[10], idx);
+            }
+            st[4] = pos;
+        }
+        this.ring[0][wp] = xl;
+        this.ring[1][wp] = xr;
+        wp = wp + 1;
+        wp = wp >= 262144 ? 0 : wp;
+        st[0] = wp;
+        return [ol, or];
+    }
+}
+class Scratch {
+    constructor() {
+        this.ring = [new Float64Array(262144), new Float64Array(262144)];
+        this.st = new Float64Array(8);
+    }
+    // p: {w, size, shape, rate, depth}
+    process(xl, xr, p, beat, bpm, sr, act) {
+        const st = this.st;
+        let wp = st[0];
+        this.ring[0][wp] = xl;
+        this.ring[1][wp] = xr;
+        let ol = xl, or = xr;
+        if (act > 0.5) {
+            const bl = clip((DIV_BEATS[Math.max(0, Math.min(7, Math.round(p.size)))] * 60) / bpm * sr, 256, 130000);
+            const am = p.depth * (bl - 8) * 0.5;
+            const xc = beat / DIV_BEATS[Math.max(0, Math.min(7, Math.round(p.rate)))];
+            const ph = xc - Math.floor(xc);
+            const pSin = Math.sin(6.283185307179586 * ph);
+            const pSaw = ph < 0.85 ? -1 + (2 * ph) / 0.85 : 1 - (2 * (ph - 0.85)) / 0.15;
+            const pRnd = lfoSmoothRandom(xc, 3.3);
+            const pp = p.shape < 0.5 ? pSin : (p.shape < 1.5 ? pSaw : pRnd);
+            const tg = 4 + am * (1 + pp);
+            const lo = st[1];
+            const ls = st[2] < 0.5 ? tg : lo + (tg - lo) * 0.0103;
+            st[1] = ls;
+            st[2] = 1;
+            st[3] = 1 - (ls - lo);
+            st[4] = 2 * am;
+            const yl = ringRead(this.ring, 0, wp - ls), yr = ringRead(this.ring, 1, wp - ls);
+            ol = xl + (yl - xl) * p.w;
+            or = xr + (yr - xr) * p.w;
+        } else {
+            st[2] = 0;
+            st[3] = 0;
+        }
+        wp = wp + 1;
+        wp = wp >= 262144 ? 0 : wp;
+        st[0] = wp;
+        return [ol, or];
+    }
+}
+
+// ---- phase 4 spectral sub-ops on re / im arrays (length n, Hermitian). Twins of gl_mapfx / gl_magfx / gl_phasefx. ----
+const BARK_BANDS = 21;
+function barkEdges(n, sr) {
+    const half = n / 2;
+    const e = [];
+    let prev = 0;
+    for (let bb = 0; bb < BARK_BANDS; bb++) {
+        const z1 = ((bb + 1) * 24) / 21;
+        let k1 = bb > 19.5 ? half + 1 : Math.floor((1960 * (z1 + 0.53)) / (26.28 - z1) * n / sr + 0.5);
+        k1 = clip(k1, prev, half + 1);
+        e.push(k1);
+        prev = k1;
+    }
+    return e;
+}
+function applyComplex(re, im, tr, ti, n, amt) {
+    const half = n / 2;
+    for (let k = 0; k <= half; k++) {
+        const xr = re[k], xi = im[k];
+        const yr = xr + (tr[k] - xr) * amt;
+        let yi = xi + (ti[k] - xi) * amt;
+        yi = k > 0 && k < half ? yi : 0;
+        re[k] = yr;
+        im[k] = yi;
+        if (k > 0 && k < half) { re[n - k] = yr; im[n - k] = -yi; }
+    }
+}
+// state gs: {slot: [a, b], frames: [a, b], gh: [Float64Array(2 * 1024) x 2 (re, im)]}
+function newHoldState() {
+    return { slot: [0, 0], frames: [0, 0], re: [new Float64Array(1024), new Float64Array(1024)], im: [new Float64Array(1024), new Float64Array(1024)] };
+}
+function mapFx(re, im, n, op, amt, p1, p2, p3, chn, seed, beat, sr, cap, hold) {
+    const half = n / 2;
+    const tr = new Float64Array(half + 1), ti = new Float64Array(half + 1);
+    for (let k = 0; k <= half; k++) { tr[k] = re[k]; ti[k] = im[k]; }
+    if (op < 0.5) {
+        const slot = Math.floor(beat / DIV_BEATS[Math.max(0, Math.min(7, Math.round(p2)))]);
+        const cp = cap > 0.5 || slot !== hold.slot[chn] ? 1 : 0;
+        hold.slot[chn] = slot;
+        const fr = cp > 0.5 ? 0 : Math.min(hold.frames[chn] + 1, 1000000);
+        hold.frames[chn] = fr;
+        const fm = fr - 4 * Math.floor(fr / 4);
+        const hd = slot * 3.31 + 0.7;
+        for (let k = 0; k <= half; k++) {
+            if (cp > 0.5) { hold.re[chn][k] = re[k]; hold.im[chn][k] = im[k]; }
+            const hr = hold.re[chn][k], hq = hold.im[chn][k];
+            const r4 = k * fm - 4 * Math.floor((k * fm) / 4);
+            const rr = r4 < 0.5 ? hr : (r4 < 1.5 ? 0 - hq : (r4 < 2.5 ? 0 - hr : hq));
+            const ri = r4 < 0.5 ? hq : (r4 < 1.5 ? hr : (r4 < 2.5 ? 0 - hq : 0 - hr));
+            const hld = hash(k, hd) < p1 ? 1 : 0;
+            tr[k] = hld > 0.5 ? rr : re[k];
+            ti[k] = hld > 0.5 ? ri : im[k];
+        }
+    } else if (op < 1.5) {
+        const mag = new Float64Array(half + 1);
+        for (let k = 0; k <= half; k++) mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
+        const stq = p1 < 0.5 ? Math.floor(p2 + 0.5) : p2;
+        const r0 = Math.pow(2, stq / 12);
+        const ih = p1 < 0.5 ? 0 : p3;
+        for (let k = 0; k <= half; k++) {
+            const ra = Math.max(r0 * (1 + (ih * k) / 256), 0.25);
+            const sp = k / ra;
+            const ok = sp <= half ? 1 : 0;
+            const s0 = Math.min(Math.floor(sp), half);
+            const s1 = Math.min(s0 + 1, half);
+            const sf = sp - s0;
+            const mm = (mag[s0] * (1 - sf) + mag[s1] * sf) * ok;
+            const sn = clip(Math.floor(sp + 0.5), 0, half);
+            const mn = mag[sn];
+            const ur = mn > 1e-12 ? re[sn] / mn : 1;
+            const ui = mn > 1e-12 ? im[sn] / mn : 0;
+            const kd = (k - sn) * seed;
+            const r4 = kd - 4 * Math.floor(kd / 4);
+            const cr = r4 < 0.5 ? ur : (r4 < 1.5 ? 0 - ui : (r4 < 2.5 ? 0 - ur : ui));
+            const ci = r4 < 0.5 ? ui : (r4 < 1.5 ? ur : (r4 < 2.5 ? 0 - ui : 0 - ur));
+            tr[k] = mm * cr;
+            ti[k] = k > 0 && k < half ? mm * ci : 0;
+        }
+    } else {
+        const spn = clip(Math.floor(p1 + 0.5), 1, 8);
+        const sd = seed * 78.233;
+        for (let k = 1; k < half; k++) {
+            if (hash(k, sd) < p2) {
+                for (let j = 1; j <= spn; j++) {
+                    const ka = k - j, kb = k + j;
+                    if (ka >= 1) { tr[ka] = re[k]; ti[ka] = im[k]; }
+                    if (kb < half) { tr[kb] = re[k]; ti[kb] = im[k]; }
+                }
+            }
+        }
+    }
+    applyComplex(re, im, tr, ti, n, amt);
+}
+// op 0 MP3ify, 1 Duststorm, 2 Thinner, 3 Decapitate, 4 Noisify, 5 Clipper. Returns the per-bin gain array (before the amount crossfade).
+function magFx(re, im, n, op, amt, p1, p2, p3, p4, seed, beat, sr) {
+    const half = n / 2;
+    const mag = new Float64Array(half + 1);
+    let mx = 1e-12;
+    for (let k = 0; k <= half; k++) { mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]); mx = Math.max(mx, mag[k]); }
+    const g = new Float64Array(half + 1).fill(1);
+    if (op < 1.5) {
+        const tb = clip(Math.log(p1 / 16) / 2.995732273553991, 0, 1);
+        const lv = 1 + Math.floor(31 * Math.pow(tb, 1.5) + 0.5);
+        const cutHz = 2500 * Math.pow(10, tb);
+        const thr = (op < 0.5 ? p2 : 0.5) * (0.1 + 0.4 * (1 - tb));
+        const dmode = op < 0.5 ? 0 : p2;
+        const dd = op < 0.5 ? 0 : p3;
+        const slot = Math.floor(beat / DIV_BEATS[Math.max(0, Math.min(7, Math.round(p4)))]);
+        const hs = hash(slot, 9.1);
+        const pa = hs < 0.1667 ? 1 : (hs < 0.3333 ? 5 : (hs < 0.5 ? 11 : (hs < 0.6667 ? 13 : (hs < 0.8333 ? 17 : 19))));
+        const ps = Math.floor(hash(slot, 2.9) * 21);
+        const edges = barkEdges(n, sr);
+        const sfs = [];
+        let k0 = 0;
+        for (let bb = 0; bb < BARK_BANDS; bb++) {
+            let pk = 1e-12;
+            for (let k = k0; k < edges[bb]; k++) pk = Math.max(pk, mag[k]);
+            sfs.push(Math.exp(Math.floor(Math.log(pk) / 0.1727 + 0.5) * 0.1727));
+            k0 = edges[bb];
+        }
+        let kp = 0;
+        for (let bb = 0; bb < BARK_BANDS; bb++) {
+            const k1 = edges[bb];
+            const sf = sfs[bb];
+            let pb = bb * pa + ps;
+            pb = pb - 21 * Math.floor(pb / 21);
+            const so = sfs[pb];
+            const hv = hash(bb + slot * 31, 4.4);
+            const sfo = sf * Math.pow(10, ((hv * 2 - 1) * 24 * dd) / 20);
+            const sfp = Math.exp(Math.log(sf) * (1 - dd) + Math.log(so) * dd);
+            const sfd = op < 0.5 ? sf : (dmode < 0.5 ? sfo : sfp);
+            for (let k = kp; k < k1; k++) {
+                const m = mag[k];
+                const xn = m / sf;
+                const qn = Math.floor(Math.pow(Math.min(xn, 1), 0.75) * lv + 0.5) / lv;
+                const deq = Math.pow(qn, 1.3333333333333333) * sfd;
+                const kf = xn >= thr && (k * sr) / n <= cutHz ? 1 : 0;
+                g[k] = m > 1e-12 ? (deq * kf) / m : 1;
+            }
+            kp = k1;
+        }
+    } else if (op < 2.5) {
+        const nb = clip(Math.floor(p1 + 0.5), 1, 16);
+        for (let k = 0; k <= half; k++) {
+            const m = mag[k];
+            let mq = 0;
+            for (let j = -nb; j <= nb; j++) {
+                const kj = clip(k + j, 0, half);
+                mq = k + j >= 0 && k + j <= half ? Math.max(mq, mag[kj]) : mq;
+            }
+            g[k] = m >= mq ? 1 : (p2 * m) / Math.max(mq, 1e-12);
+        }
+    } else if (op < 3.5) {
+        const kk = clip(Math.floor(p1 + 0.5), 1, 32);
+        const th2 = [0, 0];
+        for (let pass = 0; pass < 2; pass++) {
+            const tk = (pass + 1) * kk;
+            let lo = Math.log(mx * 1e-6), hi = Math.log(mx);
+            for (let it = 0; it < 14; it++) {
+                const md = (lo + hi) * 0.5;
+                const th = Math.exp(md);
+                let cnt = 0;
+                for (let k = 0; k <= half; k++) cnt = cnt + (mag[k] >= th ? 1 : 0);
+                lo = cnt > tk ? md : lo;
+                hi = cnt > tk ? hi : md;
+            }
+            th2[pass] = Math.exp(hi);
+        }
+        const bg = Math.pow(10, p2 / 20);
+        for (let k = 0; k <= half; k++) g[k] = mag[k] >= th2[0] ? 0 : (mag[k] >= th2[1] ? bg : 1);
+    } else if (op < 4.5) {
+        const grn = clip(Math.floor(p2 + 0.5), 1, 16);
+        const sd = seed * 78.233;
+        for (let k = 0; k <= half; k++) {
+            const hv = hash(Math.floor(k / grn), sd);
+            g[k] = Math.pow(10, ((hv * 2 - 1) * p1) / 20);
+        }
+        let en0 = 1e-12, en1 = 1e-12;
+        for (let k = 0; k <= half; k++) { en0 = en0 + mag[k] * mag[k]; en1 = en1 + mag[k] * mag[k] * g[k] * g[k]; }
+        const gn = Math.sqrt(en0 / en1);
+        for (let k = 0; k <= half; k++) g[k] = g[k] * gn;
+    } else {
+        const cl = Math.max(mx * Math.pow(10, p2 / 20), 1e-12);
+        for (let k = 0; k <= half; k++) {
+            const m = mag[k];
+            g[k] = m > 1e-12 ? (p1 < 0.5 ? (cl * Math.tanh(m / cl)) / m : Math.min(m, cl) / m) : 1;
+        }
+    }
+    for (let k = 0; k <= half; k++) {
+        const gk = 1 + (g[k] - 1) * amt;
+        const xr = re[k] * gk, xi = im[k] * gk;
+        re[k] = xr;
+        im[k] = xi;
+        if (k > 0 && k < half) { re[n - k] = xr; im[n - k] = -xi; }
+    }
+    return g;
+}
+// level match of the re-phased modes (see gl_phasefx): gain kb * (2 / kb)^(random^1.3)
+const PHASE_K_ROBOT = 1.5;
+const PHASE_K_WHISPER = 1.0;
+function phaseFx(re, im, n, op, amt, p1, p2, seed) {
+    const half = n / 2;
+    const sd = seed * 78.233;
+    const wb = clip(Math.floor(p1 + 0.5), 8, 512);
+    const kb = p1 < 0.5 ? PHASE_K_ROBOT : PHASE_K_WHISPER;
+    const kq = kb * Math.pow(2 / kb, Math.pow(p2, 1.3));
+    const tr = new Float64Array(half + 1), ti = new Float64Array(half + 1);
+    for (let k = 0; k <= half; k++) {
+        const xr = re[k], xi = im[k];
+        const m = Math.sqrt(xr * xr + xi * xi);
+        const isEdge = k < 0.5 || k > half - 0.5 ? 1 : 0;
+        let zr = xr, zi = 0;
+        if (op < 0.5) {
+            const bq = Math.floor(k / wb);
+            const pk = clip(bq * wb + (wb - 1) - (k - bq * wb), 0, half);
+            const qr = re[pk], qi = im[pk];
+            const mp = Math.sqrt(qr * qr + qi * qi);
+            const gq = mp > 1e-12 ? m / mp : 0;
+            zr = isEdge > 0.5 ? xr : qr * gq * 1.6;
+            zi = isEdge > 0.5 ? 0 : qi * gq * 1.6;
+        } else {
+            const ang = p2 * 6.283185307179586 * hash(k, sd);
+            const br = p1 < 0.5 ? ((k - 2 * Math.floor(k / 2)) > 0.5 ? 0 - m : m) : xr;
+            const bi = p1 < 0.5 ? 0 : xi;
+            zr = isEdge > 0.5 ? br * kq : (br * Math.cos(ang) - bi * Math.sin(ang)) * kq;
+            zi = isEdge > 0.5 ? 0 : (br * Math.sin(ang) + bi * Math.cos(ang)) * kq;
+        }
+        let yr = xr + (zr - xr) * amt;
+        let yi = xi + (zi - xi) * amt;
+        yi = isEdge > 0.5 ? 0 : yi;
+        tr[k] = yr;
+        ti[k] = yi;
+    }
+    for (let k = 0; k <= half; k++) {
+        re[k] = tr[k];
+        im[k] = ti[k];
+        if (k > 0 && k < half) { re[n - k] = tr[k]; im[n - k] = -ti[k]; }
+    }
+}
+
 module.exports = {
     saturate, saturateMorph, Svf, svfCoefs, quantize, DIV_BEATS, chopBit, hash, crushParams, crushCepstrum,
     VOWELS, LFO_BEATS, SEQ_DIV, vowelFormant, rd1, Formant, Comb, Phaser, Rectify, DelayFm, flipBit, Corrupt, Grain, ReverseSlices,
-    SliceShuffle, Slapback, binMap, specGate,
+    SliceShuffle, Slapback, binMap, specGate, Ratchet, Scratch, mapFx, magFx, phaseFx, newHoldState, barkEdges, PHASE_K_ROBOT, PHASE_K_WHISPER, lfoSmoothRandom,
 };

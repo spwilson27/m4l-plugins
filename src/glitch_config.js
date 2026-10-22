@@ -9,29 +9,36 @@
 //   Morph    the 8 saved slots, weights = bilinear XY over the 4 corner slots               (UI writes both)
 //   Seq      the 8 saved slots, weights computed IN GEN from the host beat by the 16-step slot sequencer
 //
-//   Chain (GL_INSTANCES, in this order, `pos` = index; GL_NINST = 23):
-//     drvA -> filt -> form -> comb -> phas -> crush -> rect -> fm -> corr -> ring -> stut -> time -> gpit -> gstr -> rvs
-//     -> shuf -> chop -> spec(STFT N=1024) -> drvB -> dly -> slap -> rev -> wid
+//   Chain (GL_INSTANCES, in this order, `pos` = index; GL_NINST = 25):
+//     drvA -> filt -> form -> comb -> phas -> crush -> rect -> fm -> corr -> ring -> stut -> ratc -> time -> scrb -> gpit -> gstr
+//     -> rvs -> shuf -> chop -> spec(STFT N=1024) -> drvB -> dly -> slap -> rev -> wid
 //     then master soft limiter -> Mix -> Output (Mix / Output are Live parameters, not part of the glitch)
 //   Module TYPES (GL_TYPES, what the user sees and what the allow-list is about): drive (= drvA and drvB), filter, formant,
-//     comb, phaser, crush, rectify, fm, corrupt, ring, stutter, time, gpitch, gstretch, revslice, shuffle, chopper, the
-//     eight sub-ops of the single `spec` instance (freeze, smear, ccrush, scramble, scatter, mirror, binshift, specgate),
-//     delay, slapback, reverb, width.
+//     comb, phaser, crush, rectify, fm, corrupt, ring, stutter, ratchet, time, scratch, gpitch, gstretch, revslice, shuffle, chopper,
+//     the 19 sub-ops of the single `spec` instance, delay, slapback, reverb, width.
+//   SPECTRAL SUB-OPS (phase 4: 11 new), in the order they run inside the one STFT pass (GL_TYPES lists them in this order, so the tiles do too):
+//     freeze, smear | scatter, mirror, binshift | gfreeze (Glitch Freeze), stretch, bubbler | mp3ify, duststorm, thinner, decap (Decapitate),
+//     noisify, clipper | specgate | ccrush, scramble | pswap (Phase Swap), rphase (Robot / Whisper)
+//     = magnitude holds -> bin remaps -> complex bin remaps -> magnitude shapers -> cepstral crush -> phase-only ops. Gen: gl_magops,
+//     gl_binmap, gl_mapfx (loop of 3), gl_magfx (loop of 6), gl_sgate, gl_cproc, gl_phasefx (loop of 2); each helper has ONE call site.
+//     Randomize / Mutate roll at most glitchSpectralCap(chaos) of them: about 1 at Chaos 0 .. 4 at Chaos 1 (interpolated, rounded).
 //
-// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 780: 113 module
-//   params, then one 29-float MOVEMENT block per chain instance, see MOVEMENT below).
+// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 885: 258 module
+//   params (phase 3: 113; phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params), then one 29-float MOVEMENT block per chain
+//   instance, 25 x 29, see MOVEMENT below).
 //   Per instance the first param is its `wet` (amount, 0 = bypassed). The `spec` instance has one extra amount per sub-op
-//   (frz_amt, smr_amt, cc_amt, sc_amt, sct_amt, mir_amt, bsh_amt, sgl_amt); the sub-op's other params belong to that
+//   (frz_amt, smr_amt, cc_amt, sc_amt, sct_amt, mir_amt, bsh_amt, sgl_amt and the phase 4 gfz_amt, str_amt, bub_amt, mp3_amt, dst_amt,
+//   thn_amt, dec_amt, nsf_amt, clp_amt, psw_amt, rph_amt); the sub-op's other params belong to that
 //   amount's group. Saved glitches store params BY KEY (not by index), so growing the vector never breaks a saved state.
 //   Values are PHYSICAL (Hz, dB, 0..1 ...). Param kinds: "wet" (linear amount), "lin", "log" (blend in log space), "disc"
 //   (discrete: mode / division / pattern). A param spec carries: kind, min, max, def, unit, rand [lo0,hi0,lo1,hi1] (the
 //   range rolled by Randomize at Chaos 0 and Chaos 1), calm / wild value lists for "disc", choices (names), group.
 //
-// ENGINE BUFFER `buffer~ #0-glitchslots` (GL_SLOTS_BUF_SAMPS = 9472 floats, bound in gen as `slots #0-glitchslots`):
-//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 780 -> 0..6239)
+// ENGINE BUFFER `buffer~ #0-glitchslots` (GL_SLOTS_BUF_SAMPS = 10752 floats, bound in gen as `slots #0-glitchslots`):
+//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 885 -> 0..7079)
 //   [WOFF = 8*NP .. +8)         8 weights used in modes Working / Morph (any non-negative numbers, gen normalizes by
-//                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (6240..6247)
-//   [SEQ = WOFF+8 .. +24)       the sequencer block, SEQ = glitchLayout().seqOffset = 6248:
+//                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (7080..7087)
+//   [SEQ = WOFF+8 .. +24)       the sequencer block, SEQ = glitchLayout().seqOffset = 7088:
 //        SEQ+0  mode     0 Working, 1 Morph, 2 Seq (gen uses the sequencer weights only when this is 2)
 //        SEQ+1  length   1..16 steps
 //        SEQ+2  rate     index into GL_SEQ_RATES (0..9: 1/32, 1/16T, 1/16, 1/8T, 1/8, 1/4T, 1/4, 1/2T, 1/2, 1 bar)
@@ -46,7 +53,7 @@
 //   [META = SEQ+24 .. +NP)      per param: kind + 4 * (index of its group's amount param)   (kind 0 wet, 1 lin, 2 log, 3 disc)
 //   [DEFS = META+NP .. +NP)     per param: its default value
 //   [WBI = DEFS+NP .. +NINST)   per chain position: index of that instance's wet param
-//   [MINS .. +NP) [MAXS .. +NP) per param: its minimum and maximum (the movement needs the range of its target)       (ends at endOffset 9415)
+//   [MINS .. +NP) [MAXS .. +NP) per param: its minimum and maximum (the movement needs the range of its target)       (ends at endOffset 10677)
 //   META / DEFS / WBI / MINS / MAXS are constants of the layout (glitchEngineConstants()); they ride in the buffer instead of being poked by
 //   gen's init code because 565 init statements cost gen about 3 s of compile time (measured 2026-10-21: 5.3 ms per statement).
 //   The UI writes everything with packEngineBuffer(state) via Buffer.poke(1, 0, array); a harness must write the constants too.
@@ -80,12 +87,14 @@
 //   The face reports their values with `set_<key>`; the face's state mirrors seqrate / glide / seqlen in state.seq.
 //
 // STATE (versioned, saved as the v8ui blob GlitchStateData through getvalueof / setvalueof = [GL_STATE_VERSION, json]):
-//   { version: 4, slots: [glitch|null x8], corners: [slot index x4] (TL, TR, BL, BR), allow: {type: bool}, chaos 0..1,
+//   { version: 5, slots: [glitch|null x8], corners: [slot index x4] (TL, TR, BL, BR), allow: {type: bool}, chaos 0..1,
 //     xy: [x, y] (0..1, y 0 = top), working: glitch (the editable one), audition: "working" | "morph" | "seq", seed: int,
 //     ui: { editor, slots, seq, options: 0|1 section flags, sel: selected tile key, optCat, edTab: 0 PARAMS | 1 MOTION tab of the editor },
 //     seq: { steps: [16 x (-1 hold | 0..7)], length 1..16, rate 0..9, glide 0..1, curve 0|1 } }
 //   Versions: 1 (no ui), 2 (+ ui), 3 (+ seq; new modules), 4 (+ per-module movement, ui.edTab, the Movement allow-list kinds
-//   mv_lfo / mv_steps / mv_env). A v1 / v2 blob loads with the sequence EMPTY (all steps -1, length 8, rate 1/8, glide 0) and every
+//   mv_lfo / mv_steps / mv_env), 5 (phase 4: Ratchet, Scratch and the 11 spectral sub-ops; ui.optPage = page of a long Options category).
+//   A v1..v4 blob loads with every phase 4 module and sub-op absent (wet 0 / amount 0; their params are not saved, so they take the
+//   defaults) and their allow-list kinds switched ON. A v1 / v2 blob loads with the sequence EMPTY (all steps -1, length 8, rate 1/8, glide 0) and every
 //   new module absent (wet 0, the new spectral sub-op amounts 0) in all slots; a v1..v3 blob has no movement anywhere (`move: null`).
 // GLITCH (preset): { version, name, seed, modules: { <instanceId>: { wet, params: {key: value}, move: null | MOVE } }, movement: {} }
 //   An absent instance is off. `movement` at glitch level stays reserved (unused).
@@ -122,13 +131,13 @@
 //   glitchEditorRows(key), glitchSetValue / glitchRemoveTile / glitchToggleLock, rerollWorking / mutateWorking (honour locks),
 //   GL_PARAMS (the Live parameters), glitchHitMap(ui, nTiles, nRows) (every interactive rect, used by the tests).
 
-var GL_STATE_VERSION = 4;
+var GL_STATE_VERSION = 5;
 var GL_GLITCH_VERSION = 1;
 var GL_NSLOT = 8;
 var GL_FFT_N = 1024;
 var GL_LATENCY = 1023; // STFT path N - 1; everything else is aligned to it
 var GL_ACTIVE_EPS = 0.0005;
-var GL_SLOTS_BUF_SAMPS = 9472; // 8 slot vectors of NP floats + weights + sequencer block + the constants block (see glitchLayout().endOffset)
+var GL_SLOTS_BUF_SAMPS = 10752; // 8 slot vectors of NP floats + weights + sequencer block + the constants block (see glitchLayout().endOffset)
 var GL_SCOPE_SAMPS = 640;
 var GL_HOP_CTL = 32; // gen re-blends the weights every 32 samples
 var GL_SEQ_MAX = 16;
@@ -255,11 +264,29 @@ var GL_INSTANCES = [
         glP("prob", "Chance", "lin", 0, 1, 1, { rand: [0.6, 1, 0.3, 1] }),
         glP("decay", "Decay", "lin", 0, 1, 0.2, { rand: [0, 0.3, 0, 0.8] }),
     ] },
+    // phase 4: stutter whose repeats accelerate or decelerate geometrically inside a beat-locked span. gen: gl_ratchet.
+    { id: "ratc", type: "ratchet", name: "Ratchet / Roll", category: "Time", params: [
+        glWet(),
+        glP("div", "Span", "disc", 0, 7, 6, { choices: GL_DIV_NAMES, calm: [4, 6, 7], wild: [3, 4, 5, 6, 7] }),
+        glP("count", "Repeats", "lin", 2, 16, 6, { rand: [3, 8, 2, 16] }),
+        glP("accel", "Accel", "lin", -1, 1, 0.6, { rand: [0.3, 0.9, -1, 1] }),
+        glP("pitch", "Pitch Ramp", "lin", -12, 12, 0, { unit: "st", rand: [-2, 2, -12, 12] }),
+        glP("decay", "Decay", "lin", 0, 1, 0.2, { rand: [0, 0.4, 0, 0.8] }),
+        glP("prob", "Chance", "lin", 0, 1, 1, { rand: [0.6, 1, 0.3, 1] }),
+    ] },
     { id: "time", type: "time", name: "Tape / Reverse", category: "Time", params: [
         glWet(),
         glP("mode", "Mode", "disc", 0, 2, 2, { choices: ["Stop", "Vari", "Rev"], calm: [0, 1, 2], wild: [0, 1, 2] }),
         glP("amt", "Amount", "lin", 0, 1, 0.6, { rand: [0.4, 0.8, 0.2, 1] }),
         glP("div", "Length", "disc", 0, 7, 4, { choices: GL_DIV_NAMES, calm: [4, 5, 6], wild: [2, 3, 4, 5, 6, 7] }),
+    ] },
+    // phase 4: turntable-style back-and-forth playback of a short recent buffer; the read lag follows a beat-locked shape. gen: gl_scratch.
+    { id: "scrb", type: "scratch", name: "Scratch / Scrub", category: "Time", params: [
+        glWet(),
+        glP("size", "Buffer", "disc", 0, 7, 4, { choices: GL_DIV_NAMES, calm: [3, 4, 5], wild: [2, 3, 4, 5, 6, 7] }),
+        glP("shape", "Shape", "disc", 0, 2, 0, { choices: ["Sine", "Saw", "Random"], calm: [0, 1], wild: [0, 1, 2] }),
+        glP("rate", "Rate", "disc", 0, 7, 3, { choices: GL_DIV_NAMES, calm: [2, 3, 4], wild: [1, 2, 3, 4, 5, 6] }),
+        glP("depth", "Depth", "lin", 0, 1, 0.6, { rand: [0.4, 0.8, 0.3, 1] }),
     ] },
     // Granular Pitch and Granular Stretch share ONE grain engine (gen: gl_grain, a loop of two over one call site), so
     // both have the same param layout (wet, p1, size, p2).
@@ -318,6 +345,42 @@ var GL_INSTANCES = [
         glP("sgl_mode", "Gate Mode", "disc", 0, 1, 0, { choices: ["Top-K", "Lofi"], calm: [0, 1], wild: [0, 1], group: "sgl_amt" }),
         glP("sgl_k", "Keep Bins", "log", 1, 256, 32, { rand: [16, 96, 2, 64], group: "sgl_amt" }),
         glP("sgl_step", "Lofi Step", "lin", 1, 24, 6, { unit: "dB", rand: [3, 12, 6, 24], group: "sgl_amt" }),
+        // phase 4 sub-ops (appended; each with its own amount). Processing order: see GL_SPEC_ORDER.
+        glP("gfz_amt", "Glitch Freeze", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "gfz_amt" }),
+        glP("gfz_dens", "Hold Density", "lin", 0, 1, 0.4, { rand: [0.2, 0.5, 0.1, 0.9], group: "gfz_amt" }),
+        glP("gfz_rate", "Hold Re-roll", "disc", 0, 7, 6, { choices: GL_DIV_NAMES, calm: [5, 6, 7], wild: [3, 4, 5, 6, 7], group: "gfz_amt" }),
+        glP("str_amt", "Stretch", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "str_amt" }),
+        glP("str_mode", "Stretch Mode", "disc", 0, 1, 0, { choices: ["Semitone", "Harmonic"], calm: [0], wild: [0, 1], group: "str_amt" }),
+        glP("str_st", "Pitch", "lin", -24, 24, 7, { unit: "st", rand: [-7, 7, -24, 24], group: "str_amt" }),
+        glP("str_inh", "Inharmonic", "lin", -1, 1, 0, { rand: [0, 0.3, -1, 1], group: "str_amt" }),
+        glP("bub_amt", "Bubbler", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "bub_amt" }),
+        glP("bub_spread", "Bubble Spread", "lin", 1, 8, 3, { unit: "bins", rand: [2, 4, 1, 8], group: "bub_amt" }),
+        glP("bub_dens", "Bubble Density", "lin", 0, 1, 0.15, { rand: [0.05, 0.2, 0.02, 0.5], group: "bub_amt" }),
+        glP("mp3_amt", "MP3ify", "wet", 0, 1, 0, { rand: [0.6, 1, 0.4, 1], group: "mp3_amt" }),
+        glP("mp3_kbps", "Bitrate", "log", 16, 320, 64, { unit: "kbps", rand: [32, 128, 16, 320], group: "mp3_amt" }),
+        glP("mp3_mask", "Masking", "lin", 0, 1, 0.5, { rand: [0.2, 0.7, 0, 1], group: "mp3_amt" }),
+        glP("dst_amt", "Duststorm", "wet", 0, 1, 0, { rand: [0.5, 1, 0.3, 1], group: "dst_amt" }),
+        glP("dst_kbps", "Dust Bitrate", "log", 16, 320, 64, { unit: "kbps", rand: [32, 128, 16, 320], group: "dst_amt" }),
+        glP("dst_mode", "Decode", "disc", 0, 1, 0, { choices: ["Offset", "Permute"], calm: [0, 1], wild: [0, 1], group: "dst_amt" }),
+        glP("dst_depth", "Dust Depth", "lin", 0, 1, 0.6, { rand: [0.3, 0.7, 0.2, 1], group: "dst_amt" }),
+        glP("dst_rate", "Dust Re-roll", "disc", 0, 7, 5, { choices: GL_DIV_NAMES, calm: [4, 5, 6], wild: [2, 3, 4, 5, 6, 7], group: "dst_amt" }),
+        glP("thn_amt", "Thinner", "wet", 0, 1, 0, { rand: [0.5, 1, 0.3, 1], group: "thn_amt" }),
+        glP("thn_n", "Neighbours", "lin", 1, 16, 4, { unit: "bins", rand: [2, 6, 1, 16], group: "thn_amt" }),
+        glP("thn_soft", "Softness", "lin", 0, 1, 0.2, { rand: [0, 0.4, 0, 1], group: "thn_amt" }),
+        glP("dec_amt", "Decapitate", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "dec_amt" }),
+        glP("dec_k", "Remove", "lin", 1, 32, 4, { unit: "bins", rand: [1, 6, 1, 24], group: "dec_amt" }),
+        glP("dec_boost", "Boost Next", "lin", 0, 24, 6, { unit: "dB", rand: [0, 9, 0, 24], group: "dec_amt" }),
+        glP("nsf_amt", "Noisify", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "nsf_amt" }),
+        glP("nsf_depth", "Noise Depth", "lin", 0, 24, 9, { unit: "dB", rand: [3, 12, 3, 24], group: "nsf_amt" }),
+        glP("nsf_grain", "Noise Grain", "lin", 1, 16, 1, { unit: "bins", rand: [1, 3, 1, 16], group: "nsf_amt" }),
+        glP("clp_amt", "Clipper", "wet", 0, 1, 0, { rand: [0.5, 1, 0.3, 1], group: "clp_amt" }),
+        glP("clp_mode", "Clip Mode", "disc", 0, 1, 0, { choices: ["Soft", "Hard"], calm: [0, 1], wild: [0, 1], group: "clp_amt" }),
+        glP("clp_db", "Ceiling", "lin", -36, 0, -12, { unit: "dB", rand: [-18, -6, -36, -3], group: "clp_amt" }),
+        glP("psw_amt", "Phase Swap", "wet", 0, 1, 0, { rand: [0.5, 1, 0.3, 1], group: "psw_amt" }),
+        glP("psw_w", "Swap Width", "log", 8, 512, 512, { unit: "bins", rand: [128, 512, 8, 512], group: "psw_amt" }),
+        glP("rph_amt", "Robot / Whisper", "wet", 0, 1, 0, { rand: [0.5, 1, 0.3, 1], group: "rph_amt" }),
+        glP("rph_mode", "Phase Mode", "disc", 0, 1, 0, { choices: ["Robot", "Whisper"], calm: [0, 1], wild: [0, 1], group: "rph_amt" }),
+        glP("rph_rand", "Phase Random", "lin", 0, 1, 0.5, { rand: [0.2, 0.8, 0, 1], group: "rph_amt" }),
     ] },
     { id: "drvB", type: "drive", name: "Drive B", category: "Distort", params: glDriveParams() },
     { id: "dly", type: "delay", name: "Delay", category: "Space", params: [
@@ -352,9 +415,11 @@ var GL_NINST = GL_INSTANCES.length;
 // The "main" continuous param of every module: the default movement target and the first param Randomize picks to move.
 // (One per instance; a spectral sub-op has its own, GL_MAIN_SUB. Freeze and Scramble have no continuous param.)
 var GL_MAIN_PARAM = { drvA: "drive", filt: "cutoff", form: "vowel", comb: "freq", phas: "depth", crush: "bits", rect: "blend", fm: "index", corr: "chance",
-    ring: "freq", stut: "decay", time: "amt", gpit: "pitch", gstr: "speed", rvs: "chance", shuf: "chance", chop: "smooth", spec: "smr_blur", drvB: "drive",
+    ring: "freq", stut: "decay", ratc: "accel", time: "amt", scrb: "depth", gpit: "pitch", gstr: "speed", rvs: "chance", shuf: "chance", chop: "smooth", spec: "smr_blur", drvB: "drive",
     dly: "fb", slap: "tone", rev: "decay", wid: "width" };
-var GL_MAIN_SUB = { smear: "smr_blur", ccrush: "cc_coeffs", scatter: "sct_w", mirror: "mir_pivot", binshift: "bsh_bins", specgate: "sgl_k" };
+var GL_MAIN_SUB = { smear: "smr_blur", ccrush: "cc_coeffs", scatter: "sct_w", mirror: "mir_pivot", binshift: "bsh_bins", specgate: "sgl_k",
+    gfreeze: "gfz_dens", stretch: "str_st", bubbler: "bub_spread", mp3ify: "mp3_kbps", duststorm: "dst_depth", thinner: "thn_soft", decap: "dec_boost",
+    noisify: "nsf_depth", clipper: "clp_db", pswap: "psw_w", rphase: "rph_rand" };
 (function markMainParams() {
     for (var i = 0; i < GL_INSTANCES.length; i++) {
         var inst = GL_INSTANCES[i];
@@ -373,7 +438,7 @@ function glMvSpecs(inst) {
     var specs = [
         glP("mv_on", "Motion", "wet", 0, 1, 0),
         glP("mv_type", "Type", "disc", 0, 3, 0, { choices: GL_MV_TYPE_NAMES }),
-        glP("mv_target", "Target", "disc", 0, 31, mainPos),
+        glP("mv_target", "Target", "disc", 0, 63, mainPos),
         glP("mv_depth", "Depth", "lin", -1, 1, 0.4),
         glP("mv_hz", "Rate", "log", 0.02, 20, 1, { unit: "Hz" }),
         glP("mv_cpb", "Rate", "log", 0.0625, 8, 0.25),
@@ -403,7 +468,9 @@ var GL_TYPES = [
     { id: "corrupt", name: "Corrupt", category: "Distort", instances: ["corr"], weight: 0.8 },
     { id: "ring", name: "Ring / Freq Shift", category: "Pitch", instances: ["ring"], weight: 0.7 },
     { id: "stutter", name: "Stutter", category: "Time", instances: ["stut"], weight: 1 },
+    { id: "ratchet", name: "Ratchet / Roll", category: "Time", instances: ["ratc"], weight: 0.9 },
     { id: "time", name: "Tape Stop / Reverse", category: "Time", instances: ["time"], weight: 0.8 },
+    { id: "scratch", name: "Scratch / Scrub", category: "Time", instances: ["scrb"], weight: 0.7 },
     { id: "gpitch", name: "Granular Pitch", category: "Pitch", instances: ["gpit"], weight: 0.7 },
     { id: "gstretch", name: "Granular Stretch", category: "Time", instances: ["gstr"], weight: 0.6 },
     { id: "revslice", name: "Reverse Slices", category: "Time", instances: ["rvs"], weight: 0.8 },
@@ -411,12 +478,23 @@ var GL_TYPES = [
     { id: "chopper", name: "Chopper", category: "Time", instances: ["chop"], weight: 1 },
     { id: "freeze", name: "Spectral Freeze", category: "Spectral", instances: ["spec"], amountKey: "frz_amt", weight: 0.5 },
     { id: "smear", name: "Spectral Smear", category: "Spectral", instances: ["spec"], amountKey: "smr_amt", weight: 0.6 },
-    { id: "ccrush", name: "Cepstral Crush", category: "Spectral", instances: ["spec"], amountKey: "cc_amt", weight: 0.8 },
-    { id: "scramble", name: "Cepstral Scramble", category: "Spectral", instances: ["spec"], amountKey: "sc_amt", weight: 0.6 },
     { id: "scatter", name: "Spectral Scatter", category: "Spectral", instances: ["spec"], amountKey: "sct_amt", weight: 0.5 },
     { id: "mirror", name: "Spectral Mirror", category: "Spectral", instances: ["spec"], amountKey: "mir_amt", weight: 0.4 },
     { id: "binshift", name: "Spectral Shift", category: "Spectral", instances: ["spec"], amountKey: "bsh_amt", weight: 0.5 },
+    { id: "gfreeze", name: "Glitch Freeze", category: "Spectral", instances: ["spec"], amountKey: "gfz_amt", weight: 0.5 },
+    { id: "stretch", name: "Spectral Stretch", category: "Spectral", instances: ["spec"], amountKey: "str_amt", weight: 0.5 },
+    { id: "bubbler", name: "Bubbler", category: "Spectral", instances: ["spec"], amountKey: "bub_amt", weight: 0.45 },
+    { id: "mp3ify", name: "MP3ify", category: "Spectral", instances: ["spec"], amountKey: "mp3_amt", weight: 0.6 },
+    { id: "duststorm", name: "Duststorm", category: "Spectral", instances: ["spec"], amountKey: "dst_amt", weight: 0.45 },
+    { id: "thinner", name: "Thinner", category: "Spectral", instances: ["spec"], amountKey: "thn_amt", weight: 0.5 },
+    { id: "decap", name: "Decapitate", category: "Spectral", instances: ["spec"], amountKey: "dec_amt", weight: 0.4 },
+    { id: "noisify", name: "Noisify", category: "Spectral", instances: ["spec"], amountKey: "nsf_amt", weight: 0.45 },
+    { id: "clipper", name: "Spectral Clipper", category: "Spectral", instances: ["spec"], amountKey: "clp_amt", weight: 0.4 },
     { id: "specgate", name: "Spectral Gate / Lofi", category: "Spectral", instances: ["spec"], amountKey: "sgl_amt", weight: 0.5 },
+    { id: "ccrush", name: "Cepstral Crush", category: "Spectral", instances: ["spec"], amountKey: "cc_amt", weight: 0.8 },
+    { id: "scramble", name: "Cepstral Scramble", category: "Spectral", instances: ["spec"], amountKey: "sc_amt", weight: 0.6 },
+    { id: "pswap", name: "Phase Swap", category: "Spectral", instances: ["spec"], amountKey: "psw_amt", weight: 0.4 },
+    { id: "rphase", name: "Robot / Whisper", category: "Spectral", instances: ["spec"], amountKey: "rph_amt", weight: 0.5 },
     { id: "delay", name: "Delay", category: "Space", instances: ["dly"], weight: 1.1 },
     { id: "slapback", name: "Slapback", category: "Space", instances: ["slap"], weight: 0.7 },
     { id: "reverb", name: "Reverb", category: "Space", instances: ["rev"], weight: 1 },
@@ -569,6 +647,14 @@ var GL_SCOPE = (function () {
     block("MOVE_OFS", GL_NINST); // the offset the movement adds to its target, in target-range fractions (depth * source)
     block("MOVE_POS", GL_NINST); // the target's normalized position (0..1 on its own curve) AFTER the movement
     block("MOVE_PH", GL_NINST); // source phase: LFO position in its cycle, Steps position in the pattern (both 0..1), Env level (0..1)
+    // phase 4 (single floats): Ratchet and Scratch
+    one("RAT_ON"); // 1 while a Ratchet roll plays (smoothed engage gain 0..1)
+    one("RAT_POS"); // progress through the roll 0..1 (0 = span start)
+    one("RAT_IDX"); // index of the current repeat
+    one("RAT_N"); // repeats in the roll
+    one("RAT_LEN"); // length of the current repeat relative to the first one
+    one("SCR_POS"); // Scratch read lag in its range 0..1 (0 = newest audio, 1 = oldest)
+    one("SCR_SPEED"); // platter speed, -1 (backwards, full) .. +1 (forwards, double) after clipping; 0 = stopped
     o.END = p + 6;
     return o;
 })();
@@ -676,7 +762,22 @@ function rollType(g, type, chaos, rnd) {
     }
 }
 
-/** Roll a new glitch: typically 3..6 modules, ranges widen with Chaos (0..1). Deterministic for a seed. */
+/** How many spectral sub-ops Randomize / Mutate may switch on at a Chaos level: about 1 at Chaos 0, up to 4 at Chaos 1 (interpolated). */
+function glitchSpectralCap(chaos) {
+    chaos = glClamp(Number(chaos) || 0, 0, 1);
+    return Math.max(1, Math.min(4, Math.floor(1 + 3 * chaos + 0.5)));
+}
+/** Number of spectral sub-ops that are on in a glitch. */
+function glitchSpectralCount(g) {
+    var mod = g && g.modules ? g.modules.spec : null;
+    if (!mod || !(mod.wet > GL_ACTIVE_EPS)) return 0;
+    var n = 0;
+    for (var i = 0; i < GL_TYPES.length; i++) if (GL_TYPES[i].amountKey && (Number(mod.params[GL_TYPES[i].amountKey]) || 0) > GL_ACTIVE_EPS) n++;
+    return n;
+}
+
+/** Roll a new glitch: typically 3..6 modules, ranges widen with Chaos (0..1). At most glitchSpectralCap(chaos) spectral sub-ops
+ *  (1 at Chaos 0 .. 4 at Chaos 1). Deterministic for a seed. */
 function randomizeGlitch(seed, chaos, allowList) {
     chaos = glClamp(Number(chaos) || 0, 0, 1);
     var rnd = glRng(seed);
@@ -686,31 +787,39 @@ function randomizeGlitch(seed, chaos, allowList) {
     var lo = Math.round(2 + chaos), hi = Math.round(3 + chaos * 3);
     var want = lo + Math.floor(rnd() * (hi - lo + 1));
     want = Math.min(want, pool.length);
-    var picked = 0;
-    // the four spectral sub-ops share one STFT; keep it to at most 2 of them
-    var specCount = 0;
-    while (picked < want && pool.length) {
-        var tot = 0;
-        for (var i = 0; i < pool.length; i++) tot += pool[i].weight;
-        var x = rnd() * tot, k = 0;
-        for (; k < pool.length - 1; k++) { x -= pool[k].weight; if (x <= 0) break; }
-        var t = pool[k];
-        pool.splice(k, 1);
-        if (t.category === "Spectral") {
-            if (specCount >= 2) continue;
-            specCount++;
+    // the spectral sub-ops share one STFT: how many to roll is drawn first, about 1 at Chaos 0 .. 4 at Chaos 1 (never above the cap)
+    var specCap = glitchSpectralCap(chaos);
+    var specPool = pool.filter(function (t) { return t.category === "Spectral"; });
+    var restPool = pool.filter(function (t) { return t.category !== "Spectral"; });
+    var nSpec = Math.floor(1 + 3 * chaos + rnd()) - (rnd() < 0.25 ? 1 : 0);
+    nSpec = Math.max(0, Math.min(nSpec, specCap, specPool.length));
+    var nRest = Math.min(Math.max(want - nSpec, nSpec ? 1 : 2), restPool.length);
+    if (!restPool.length) nSpec = Math.min(Math.max(want, 1), specCap, specPool.length);
+    // roll in chain-independent weighted order: the spectral picks, then the others (same selection rule for both)
+    function pickFrom(list, count) {
+        var picked = 0;
+        while (picked < count && list.length) {
+            var tot = 0;
+            for (var i = 0; i < list.length; i++) tot += list[i].weight;
+            var x = rnd() * tot, k = 0;
+            for (; k < list.length - 1; k++) { x -= list[k].weight; if (x <= 0) break; }
+            var t = list[k];
+            list.splice(k, 1);
+            rollType(g, t, chaos, rnd);
+            picked++;
         }
-        rollType(g, t, chaos, rnd);
-        picked++;
     }
+    pickFrom(restPool, nRest);
+    pickFrom(specPool, nSpec);
     rollMovement(g, seed, chaos, allowList);
     return g;
 }
 
 /** Perturb a glitch (amount 0..1). Continuous params move in their own curve space; discrete flip with a small chance.
  *  With an allowList a module may also be swapped in / out at higher amounts. */
-function mutateGlitch(g0, seed, amount, allowList) {
+function mutateGlitch(g0, seed, amount, allowList, chaos) {
     amount = glClamp(Number(amount) || 0, 0, 1);
+    if (chaos === undefined) chaos = glClamp((amount - 0.15) / 0.35, 0, 1); // mutateAmount() = 0.15 + 0.35 * Chaos
     var rnd = glRng(seed);
     var g = glCopy(g0);
     if (amount <= 0) return g;
@@ -722,6 +831,7 @@ function mutateGlitch(g0, seed, amount, allowList) {
             var ps = inst.params[pi];
             var cur = ps.key === "wet" ? mod.wet : mod.params[ps.key];
             if (cur === undefined) continue;
+            if (ps.kind === "wet" && ps.key !== "wet" && !(cur > GL_ACTIVE_EPS)) continue; // a sub-op that is off stays off (the Chaos cap)
             var nv = cur;
             if (ps.kind === "disc") {
                 if (rnd() < amount * 0.3) {
@@ -741,7 +851,12 @@ function mutateGlitch(g0, seed, amount, allowList) {
     }
     if (amount >= 0.5 && allowList !== undefined && rnd() < amount * 0.4) {
         var pool = allowedTypes(allowList);
-        if (pool.length) rollType(g, pool[Math.floor(rnd() * pool.length) % pool.length], 0.5, rnd);
+        if (pool.length) {
+            var pick = pool[Math.floor(rnd() * pool.length) % pool.length];
+            // a new spectral sub-op only while the Chaos-scaled cap has room (a sub-op that is already on may be re-rolled)
+            var isOn = pick.amountKey && g.modules.spec && (Number(g.modules.spec.params[pick.amountKey]) || 0) > GL_ACTIVE_EPS;
+            if (pick.category !== "Spectral" || isOn || glitchSpectralCount(g) < glitchSpectralCap(chaos)) rollType(g, pick, 0.5, rnd);
+        }
     }
     mutateMovement(g, seed, amount, allowList);
     g.seed = (seed >>> 0);
@@ -1524,19 +1639,23 @@ var GL_PARAM_KEYS = ["morphx", "morphy", "chaos", "mix", "out", "randomize", "mu
 var GL_SHORT = { drvA: "DRIVE A", filt: "FILTER", form: "FORMANT", comb: "COMB", phas: "PHASER", crush: "CRUSH", rect: "RECTIFY", fm: "FM",
     corr: "CORRUPT", ring: "RING", stut: "STUTTER", time: "TAPE", gpit: "G-PITCH", gstr: "G-STRETCH", rvs: "REVERSE", shuf: "SHUFFLE", chop: "CHOP",
     drvB: "DRIVE B", dly: "DELAY", slap: "SLAPBACK", rev: "REVERB", wid: "WIDTH", spec: "SPECTRAL", freeze: "FREEZE", smear: "SMEAR",
-    ccrush: "C-CRUSH", scramble: "SCRAMBLE", scatter: "SCATTER", mirror: "MIRROR", binshift: "BIN SHIFT", specgate: "SPEC GATE" };
+    ccrush: "C-CRUSH", scramble: "SCRAMBLE", scatter: "SCATTER", mirror: "MIRROR", binshift: "BIN SHIFT", specgate: "SPEC GATE",
+    ratc: "RATCHET", scrb: "SCRATCH", gfreeze: "GL FREEZE", stretch: "STRETCH", bubbler: "BUBBLER", mp3ify: "MP3IFY", duststorm: "DUSTSTORM", thinner: "THINNER",
+    decap: "DECAPITATE", noisify: "NOISIFY", clipper: "CLIPPER", pswap: "PHASE SWAP", rphase: "ROBOT" };
 // short names for the compact tiles (more than 4 modules in the glitch view)
 var GL_TINY = { drvA: "DRV A", drvB: "DRV B", form: "FORMNT", phas: "PHASER", crush: "CRUSH", rect: "RECT", corr: "CORR", stut: "STUT", gpit: "G-PIT", gstr: "G-STR",
-    rvs: "REV SL", shuf: "SHUF", slap: "SLAP", rev: "REVERB", wid: "WIDTH", ccrush: "C-CRSH", scramble: "SCRAM", scatter: "SCATR", binshift: "BINSH", specgate: "S-GATE" };
+    rvs: "REV SL", shuf: "SHUF", slap: "SLAP", rev: "REVERB", wid: "WIDTH", ccrush: "C-CRSH", scramble: "SCRAM", scatter: "SCATR", binshift: "BINSH", specgate: "S-GATE",
+    ratc: "RATCH", scrb: "SCRUB", gfreeze: "G-FRZ", stretch: "STRTCH", bubbler: "BUBBL", mp3ify: "MP3", duststorm: "DUST", thinner: "THIN",
+    decap: "DECAP", noisify: "NOISE", clipper: "CLIP", pswap: "PH-SW", rphase: "ROBOT" };
 
 var GL_FACE = { MARGIN: 6, GAP: 4, TOP: 4, BOTTOM: 165, HEADER_H: 16, BODY_Y: 23, BODY_H: 114, ACTION_Y: 140, ACTION_H: 25,
-    PAD_W: 112, VIEW_W: 196, EDITOR_W: 190, SLOTS_W: 84, SEQ_W: 212, SIDE_W: 46, DEVICE_H: 169, ROW_H: 12, ROW_GAP: 1, MAX_ROWS: 9, TAB_H: 12, MAX_TILES: 31,
+    PAD_W: 112, VIEW_W: 196, EDITOR_W: 190, SLOTS_W: 84, SEQ_W: 212, SIDE_W: 46, DEVICE_H: 169, ROW_H: 12, ROW_GAP: 1, MAX_ROWS: 9, TAB_H: 12, MAX_TILES: 44, OPT_PAGE: 8,
     // glitch view paging: up to 4 big tiles, up to 8 compact (4 x 2), up to 12 small (4 x 3) per page, then pages of 12
     PAGE_CAP: 12, STRIP_H: 12, SEQ_PITCH: 12.5 };
 // Options categories, in display order (the master list of the Options view)
 var GL_OPT_CATS = ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility", "Movement"];
 
-function defaultUi() { return { editor: 0, slots: 1, seq: 0, options: 0, sel: "", optCat: 0, edTab: 0 }; }
+function defaultUi() { return { editor: 0, slots: 1, seq: 0, options: 0, sel: "", optCat: 0, edTab: 0, optPage: 0 }; }
 function normalizeUi(u) {
     var d = defaultUi();
     if (!u || typeof u !== "object") return d;
@@ -1547,6 +1666,7 @@ function normalizeUi(u) {
     d.sel = typeof u.sel === "string" && glitchTileInfo(u.sel) ? u.sel : "";
     d.optCat = glClamp(Math.floor(Number(u.optCat)) || 0, 0, GL_OPT_CATS.length - 1);
     d.edTab = u.edTab ? 1 : 0;
+    d.optPage = glClamp(Math.floor(Number(u.optPage)) || 0, 0, 7);
     return d;
 }
 function glRect(x, y, w, h) { return { x: x, y: y, w: w, h: h }; }
@@ -1631,7 +1751,10 @@ function glitchOptionsLayout(x0) {
     var slots = [];
     for (var k = 0; k < 8; k++) slots.push(glRect(tx + (k % 2) * (tw2 + 4), panel.y + 22 + Math.floor(k / 2) * 24, tw2, 22));
     // items[i] = the rect of type i in the CURRENT category's two-column grid, or null when i is not in it
-    return { panel: panel, close: close, all: all, cats: cats, slots: slots, note: glRect(tx, panel.y + panel.h - 14, panel.x + panel.w - 6 - tx, 13) };
+    // pager of a category with more than 8 types (Spectral): [<] 1/3 [>] at the right end of the note line
+    var py = panel.y + panel.h - 14, pr = panel.x + panel.w - 6;
+    return { panel: panel, close: close, all: all, cats: cats, slots: slots, note: glRect(tx, py, pr - tx - 66, 13),
+        prev: glRect(pr - 62, py, 16, 13), pageText: glRect(pr - 44, py, 28, 13), next: glRect(pr - 16, py, 16, 13) };
 }
 /** Item indices (into GL_ALLOW_ITEMS) per category, in GL_OPT_CATS order. */
 function glitchOptionCategories() {
@@ -1642,6 +1765,13 @@ function glitchOptionCategories() {
         out.push({ name: GL_OPT_CATS[c], types: list });
     }
     return out;
+}
+/** One page (GL_FACE.OPT_PAGE = 8 types) of an Options category: { items (indices into GL_ALLOW_ITEMS), page, pages }. */
+function glitchOptionPage(cat, page) {
+    var all = glitchOptionCategories()[cat].types;
+    var pages = Math.max(1, Math.ceil(all.length / GL_FACE.OPT_PAGE));
+    page = glClamp(Math.floor(Number(page)) || 0, 0, pages - 1);
+    return { items: all.slice(page * GL_FACE.OPT_PAGE, (page + 1) * GL_FACE.OPT_PAGE), page: page, pages: pages };
 }
 /** 0 = none allowed, 1 = all, 2 = some. */
 function glitchCategoryState(state, cat) {
@@ -1743,8 +1873,9 @@ function glitchHitMap(ui, nTiles, nRows, page, mvType) {
         add("opt_all", O.all, O.panel);
         var cats = glitchOptionCategories();
         for (var c = 0; c < O.cats.length; c++) { add("optcat_tg" + c, O.cats[c].toggle, O.panel); add("optcat_sel" + c, O.cats[c].select, O.panel); }
-        var cur = cats[L.ui.optCat].types;
-        for (var t = 0; t < cur.length; t++) add("opt_" + cur[t], O.slots[t], O.panel);
+        var pg = glitchOptionPage(L.ui.optCat, L.ui.optPage);
+        for (var t = 0; t < pg.items.length; t++) add("opt_" + pg.items[t], O.slots[t], O.panel);
+        if (pg.pages > 1) { add("opt_prev", O.prev, O.panel); add("opt_next", O.next, O.panel); }
     } else {
         add("pad", L.pad, L.core);
         for (var c2 = 0; c2 < 4; c2++) add("corner" + c2, L.corners[c2], L.pad, 1);
@@ -1931,7 +2062,7 @@ function mutateAmount(state) { return 0.15 + 0.35 * state.chaos; }
 /** Nudge the working glitch (locked modules are kept). */
 function mutateWorking(state) {
     var seed = state.seed++;
-    state.working = glitchApplyLocks(state.working, mutateGlitch(state.working, seed, mutateAmount(state), state.allow));
+    state.working = glitchApplyLocks(state.working, mutateGlitch(state.working, seed, mutateAmount(state), state.allow, state.chaos));
     return state;
 }
 function setAllow(state, typeId, on) { if (state.allow[typeId] !== undefined) state.allow[typeId] = !!on; return state; }
@@ -1997,7 +2128,7 @@ if (nodeModule && nodeModule.exports) {
         GL_DIV_NAMES: GL_DIV_NAMES, GL_CHOP_PATTERNS: GL_CHOP_PATTERNS, GL_INSTANCES: GL_INSTANCES, GL_TYPES: GL_TYPES,
         GL_WAVE_LEN: GL_WAVE_LEN, GL_BANDS: GL_BANDS, GL_CEP_BINS: GL_CEP_BINS, GL_HOP_CTL: GL_HOP_CTL,
         glitchLayout: glitchLayout, glitchMeta: glitchMeta, glitchEngineConstants: glitchEngineConstants, glInstance: glInstance, glType: glType, defaultGlitch: defaultGlitch,
-        randomizeGlitch: randomizeGlitch, mutateGlitch: mutateGlitch, glitchToVector: glitchToVector, vectorToGlitch: vectorToGlitch,
+        randomizeGlitch: randomizeGlitch, mutateGlitch: mutateGlitch, glitchSpectralCap: glitchSpectralCap, glitchSpectralCount: glitchSpectralCount, glitchToVector: glitchToVector, vectorToGlitch: vectorToGlitch,
         blendVectors: blendVectors, xyWeights: xyWeights, cornerSlotWeights: cornerSlotWeights, randRange: randRange,
         defaultState: defaultState, normalizeState: normalizeState, normalizeGlitch: normalizeGlitch, stateToBlob: stateToBlob,
         stateFromBlob: stateFromBlob, engineVectors: engineVectors, engineWeights: engineWeights, packEngineBuffer: packEngineBuffer,
@@ -2010,7 +2141,7 @@ if (nodeModule && nodeModule.exports) {
         randomizeSequence: randomizeSequence, setSeqStep: setSeqStep, setSeqLength: setSeqLength, setSeqRate: setSeqRate, setSeqGlide: setSeqGlide,
         rerollSequence: rerollSequence, engineMode: engineMode,
         setSeqCurve: setSeqCurve, seqClear: seqClear, seqCycleValue: seqCycleValue, seqCycleStep: seqCycleStep, soundingWeights: soundingWeights,
-        GL_OPT_CATS: GL_OPT_CATS, glitchSeqLayout: glitchSeqLayout, glitchViewLayout: glitchViewLayout, glitchOptionCategories: glitchOptionCategories,
+        GL_OPT_CATS: GL_OPT_CATS, glitchOptionPage: glitchOptionPage, glitchSeqLayout: glitchSeqLayout, glitchViewLayout: glitchViewLayout, glitchOptionCategories: glitchOptionCategories,
         glitchCategoryState: glitchCategoryState, setAllowCategory: setAllowCategory,
         GL_PARAMS: GL_PARAMS, GL_PARAM_KEYS: GL_PARAM_KEYS, GL_SHORT: GL_SHORT, GL_TINY: GL_TINY, GL_FACE: GL_FACE, defaultUi: defaultUi, normalizeUi: normalizeUi,
         glitchFaceLayout: glitchFaceLayout, glitchCornerRects: glitchCornerRects, glitchOptionsLayout: glitchOptionsLayout, glitchTileRects: glitchTileRects,

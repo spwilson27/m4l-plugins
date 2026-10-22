@@ -19,12 +19,14 @@ var SQOFF = jsarguments.length > 4 ? Number(jsarguments[4]) : 912;
 var LAGS = [];
 var SC = {};
 var DUMP = 0;
+var DIPS = 0; // "dips:N": block rms with N-sample blocks; report the centres of the dips (>= 2 blocks below 0.5 x the median or one below 0.3 x) as dip0, dip1, ...
 var XC = [];
 var METAOFF = 936;
 for (var ja = 5; ja < jsarguments.length; ja++) {
     var tok = String(jsarguments[ja]);
     if (tok.indexOf("sc:") === 0) { var eq = tok.indexOf("="); SC[tok.substring(3, eq)] = Number(tok.substring(eq + 1)); }
     else if (tok.indexOf("dump:") === 0) DUMP = Number(tok.substring(5));
+    else if (tok.indexOf("dips:") === 0) DIPS = Number(tok.substring(5));
     else if (tok.indexOf("meta:") === 0) METAOFF = Number(tok.substring(5));
     else if (tok.indexOf("xc:") === 0) XC.push(tok.substring(3).split(":"));
     else LAGS.push(Number(tok));
@@ -81,6 +83,7 @@ function fill() {
     else if (stimMode === "levels") for (i = 0; i < n; i++) x[i] = ((Math.floor(i / sr * 4 / PERIOD) % 2) ? 0.5 : 0.05) * (rnd() * 2 - 1); // noise, loud / quiet every 0.75 s
     else if (stimMode === "burst") for (i = 0; i < Math.floor(0.15 * sr); i++) x[i] = 0.5 * (rnd() * 2 - 1);
     else if (stimMode === "sweep2") for (i = 0; i < n; i++) x[i] = 0.4 * Math.sin(2 * Math.PI * (i < n / 2 ? 440 : 1320) * i / sr);
+    else if (stimMode === "ramp") for (i = 0; i < n; i++) x[i] = -0.6 + 1.2 * i / n; // one slow linear ramp per stimulus period (phase 4: Scratch direction / continuity)
     else if (stimMode === "clicks") for (i = 0; i < n; i += Math.floor(0.25 * sr)) x[i] = 0.8;
     else if (stimMode === "vowel") x = vowel(n, sr, 700, 1220, 2600);
     // silent: zeros
@@ -279,6 +282,51 @@ function analyzeImpl(durMs) {
         R["pk" + probes[pi2]] = db(pout[kk - 1] + pout[kk] + pout[kk + 1]);
         R["pi" + probes[pi2]] = db(pin[kk - 1] + pin[kk] + pin[kk + 1]);
     }
+    // phase 4: slow-ramp stimulus: direction and continuity of the output (the wrap of the stimulus and its echo are excluded)
+    if (stimMode === "ramp") {
+        var iw = -1;
+        for (i = Math.floor(sr * 0.3); i < n - 1; i++) if (inL[i + 1] - inL[i] < -0.5) { iw = i; break; }
+        var rneg = 0, rpos = 0, rmax = 0;
+        for (i = Math.floor(sr * 0.5); i < n - 1; i++) {
+            if (iw >= 0 && i >= iw - 8 && i < iw + 40000) continue;
+            var dd = outL[i + 1] - outL[i];
+            if (dd < -1e-9) rneg++; else if (dd > 1e-9) rpos++;
+            if (Math.abs(dd) > rmax) rmax = Math.abs(dd);
+        }
+        R.rampNeg = rneg; R.rampPos = rpos; R.rampMaxStep = rmax; R.rampWrap = iw;
+        R.rampSlope = 1.2 / n;
+    }
+    // phase 4: how sparse the output spectrum is (fraction of bins 3..400 of 1024-point frames below 3 % of the frame's rms bin), and the
+    // strength of a comb at multiples of sr / 256 (the hop rate: Robot's buzz) against the mid points, 300..5000 Hz
+    var spf = function (x, i0, i1) {
+        var cnt = 0, tot = 0, s0;
+        for (s0 = i0; s0 + 1024 <= i1; s0 += 3072) {
+            var fr = new Array(1024), fi = new Array(1024), q;
+            for (q = 0; q < 1024; q++) { fr[q] = (x[s0 + q] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * q / 1024)); fi[q] = 0; }
+            fft(fr, fi);
+            var mm = [], ms = 0;
+            for (q = 3; q < 400; q++) { var mg = Math.sqrt(fr[q] * fr[q] + fi[q] * fi[q]); mm.push(mg); ms += mg * mg; }
+            var rm = Math.sqrt(ms / mm.length) + 1e-12;
+            for (q = 0; q < mm.length; q++) { tot++; if (mm[q] < 0.03 * rm) cnt++; }
+        }
+        return cnt / Math.max(tot, 1);
+    };
+    R.sparse = spf(outL, Math.floor(n * 0.4), n - 100);
+    R.sparsein = spf(inL, Math.floor(n * 0.4) - LAG, n - 100 - LAG);
+    var combE = 0, midE = 0, hopHz = sr / 256, kc;
+    for (kc = 2; kc * hopHz < 5000; kc++) {
+        var kb = Math.round(kc * hopHz * SEG / sr), km = Math.round((kc + 0.5) * hopHz * SEG / sr);
+        combE += pout[kb - 1] + pout[kb] + pout[kb + 1];
+        midE += pout[km - 1] + pout[km] + pout[km + 1];
+    }
+    R.combratio = combE / Math.max(midE, 1e-30);
+    var combEi = 0, midEi = 0;
+    for (kc = 2; kc * hopHz < 5000; kc++) {
+        var kbi = Math.round(kc * hopHz * SEG / sr), kmi = Math.round((kc + 0.5) * hopHz * SEG / sr);
+        combEi += pin[kbi - 1] + pin[kbi] + pin[kbi + 1];
+        midEi += pin[kmi - 1] + pin[kmi] + pin[kmi + 1];
+    }
+    R.combratioin = combEi / Math.max(midEi, 1e-30);
     // block rms (256 samples) of the output: gating depth
     var mn = 1e9, mx = 0;
     for (i = Math.floor(sr * 0.8); i + 256 < n; i += 256) { var br = rms(outL, i, i + 256); mn = Math.min(mn, br); mx = Math.max(mx, br); }
@@ -341,6 +389,23 @@ function analyzeImpl(durMs) {
     if (DUMP > 0) {
         // rms of the output per block (sequencer / gating timing is read from this by the runner)
         for (i = 0; i * DUMP < n; i++) R["e" + i] = rms(outL, i * DUMP, (i + 1) * DUMP);
+    }
+    if (DIPS > 0) {
+        var eb = [], bi2;
+        for (bi2 = 0; bi2 * DIPS < n; bi2++) eb.push(rms(outL, bi2 * DIPS, (bi2 + 1) * DIPS));
+        var sorted = eb.slice().sort(function (a, b) { return a - b; });
+        var med = sorted[Math.floor(sorted.length / 2)];
+        var run0 = -1, nd = 0, runMin = 9;
+        for (bi2 = 0; bi2 <= eb.length; bi2++) {
+            var low = bi2 < eb.length && eb[bi2] < 0.5 * med;
+            if (low) { if (run0 < 0) { run0 = bi2; runMin = 9; } runMin = Math.min(runMin, eb[bi2] / med); }
+            if (!low && run0 >= 0) {
+                // a dip: two or more neighbouring blocks below 0.5 x the median, or one block below 0.3 x (white noise alone rarely does either)
+                if (bi2 - run0 >= 2 || runMin < 0.3) { if (nd < 80) R["dip" + nd] = (run0 + bi2) * DIPS / 2; nd++; }
+                run0 = -1;
+            }
+        }
+        R.dipn = Math.min(nd, 80); R.dipmed = med;
     }
     R.cpuMax = cpuMax;
     R.cpuAvg = cpuCount ? cpuSum / cpuCount : 0;
