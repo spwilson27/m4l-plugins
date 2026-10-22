@@ -79,7 +79,7 @@ for (const name of names) {
   }
   // Height, width, title.
   // saved / default state: the default device starts with Saved only; the variants keep all sections shown
-  const all = callLayout(themed ? { theme: "LCD", s: 1, f: 0, p: 0, o: 0 } : { theme: null, s: 1, f: 1, p: 1, o: 0 });
+  const all = callLayout(themed ? { theme: "Live", s: 1, f: 0, p: 0, o: 0 } : { theme: null, s: 1, f: 1, p: 1, o: 0 });
   assert.strictEqual(p.devicewidth, all.deviceWidth, `${tag} devicewidth must equal the saved-state layout's deviceWidth`);
   assert.deepStrictEqual(p.openrect, [0, 0, all.deviceWidth, 169], `${tag} openrect (presentation height 169)`);
   assert.strictEqual(p.openinpresentation, 1, `${tag} openinpresentation`);
@@ -136,11 +136,11 @@ for (const name of names) {
 
   // Section wiring: toggles exist, are icons, parameters unchanged, device width expression.
   const exprText = boxMap.get("obj-expr-width").text;
-  const exprM = themed ? /^expr [-+*()\s$i0-9.]+$/.exec(exprText) : /^expr (\d+) \+ \$i1 \* (\d+) \+ \$i2 \* (\d+) \+ \$i3 \* (\d+)$/.exec(exprText);
+  const exprM = themed ? /^expr [-+*()>\s$i0-9.]+$/.exec(exprText) : /^expr (\d+) \+ \$i1 \* (\d+) \+ \$i2 \* (\d+) \+ \$i3 \* (\d+)$/.exec(exprText);
   assert(exprM && !exprText.includes(","), `${tag} obj-expr-width must be 'expr base + $i1 * saved + $i2 * filters + $i3 * playback' (themed: plain arithmetic over $i1..$i5, no comma, saved filters playback options theme)`);
   const exprWidth = (cfg) => {
     if (themed) {
-      const vals = [cfg.s, cfg.f, cfg.p, cfg.o, cfg.theme === "LCD" ? 0 : 1];
+      const vals = [cfg.s, cfg.f, cfg.p, cfg.o, Math.max(0, lay.XO_THEMES.indexOf(cfg.theme))];
       return Function('"use strict"; return (' + exprText.replace(/^expr /, "").replace(/\$i(\d)/g, (m, d) => String(vals[Number(d) - 1])) + ");")();
     }
     const n = exprM.slice(1).map(Number);

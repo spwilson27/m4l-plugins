@@ -1997,7 +1997,7 @@ def build(variant="default"):
                 "activebgoncolor": [0.66, 0.40, 0.97, 1.0],
                 "activetextcolor": [0.85, 0.89, 0.94, 1.0],
                 "activetextoncolor": [0.06, 0.08, 0.10, 1.0],
-                "annotation": "Look of the device: LCD = amber hardware readouts, Focus = slim dial columns. Same parameters either way.",
+                "annotation": "Look of the device: LCD = amber hardware readouts, Focus = slim dial columns, Live = Ableton's own device look in your Live theme colours. Same parameters either way.",
                 "annotation_name": "Theme",
                 "bordercolor": [0.32, 0.38, 0.46, 1.0],
                 "fontsize": 9.0,
@@ -2015,12 +2015,12 @@ def build(variant="default"):
                 "saved_attribute_attributes": {
                     "valueof": {
                         "parameter_annotation_name": "Theme",
-                        "parameter_enum": ["LCD", "Focus"],
-                        "parameter_initial": [0],
+                        "parameter_enum": ["LCD", "Focus", "Live"],
+                        "parameter_initial": [2],
                         "parameter_initial_enable": 1,
                         "parameter_linknames": 1,
                         "parameter_longname": "Theme",
-                        "parameter_mmax": 1,
+                        "parameter_mmax": 2,
                         "parameter_shortname": "Theme",
                         "parameter_type": 2,
                         "parameter_unitstyle": 9
@@ -2306,7 +2306,7 @@ def build(variant="default"):
                 "rounded": 6
             }
         },
-        # --- 9. Embedded Node for Max Engine (placed at the very end of boxes in background layer with 1x1 rect inside 0..169 so it boots in Presentation Mode while remaining 100% hidden behind obj-panel-left) ---
+        # --- 9. Embedded Node for Max Engine (placed at the very end of boxes in background layer with 1x1 rect inside 0..169 so it boots in Presentation Mode while remaining 100% hidden: it sits under the centre of the Options (gear) toggle, an opaque toolbar button the layout never moves or hides, in every theme) ---
         {
             "box": {
                 "background": 1,
@@ -2322,7 +2322,7 @@ def build(variant="default"):
                 "outlettype": ["", ""],
                 "patching_rect": [420.0, 240.0, 360.0, 180.0],
                 "presentation": 1,
-                "presentation_rect": [7.0, 162.0, 1.0, 1.0],
+                "presentation_rect": [13.0, 152.0, 1.0, 1.0],
                 "saved_object_attributes": {
                     "autostart": 1,
                     "defer": 1,
@@ -2613,7 +2613,7 @@ def build(variant="default"):
         boxes_by_id = {b["box"]["id"]: b["box"] for b in boxes}
         boxes_by_id["obj-pak-vis"]["numinlets"] = 5
         d_s, d_f, d_p, d_o = layout.DEFAULT_SECTIONS
-        boxes_by_id["obj-pak-vis"]["text"] = "pak %d %d %d %d 0" % (d_s, d_f, d_p, d_o)
+        boxes_by_id["obj-pak-vis"]["text"] = "pak %d %d %d %d %d" % (d_s, d_f, d_p, d_o, layout.THEMES.index(layout.DEFAULT_THEME))
         # A new instance starts in layout.DEFAULT_SECTIONS: the toggles' initial values (existing Sets keep what they saved)
         for tid, val in (("obj-toggle-saved-btn", d_s), ("obj-toggle-filters-btn", d_f), ("obj-toggle-playback-btn", d_p)):
             boxes_by_id[tid]["saved_attribute_attributes"]["valueof"]["parameter_initial"] = [val]
@@ -2666,7 +2666,7 @@ def build(variant="default"):
         layout_names[box_id] = box["varname"]
     palette_js = open(PALETTE_JS_PATH, "r", encoding="utf-8").read()
     if themed:
-        palette_js += 'xoPaletteSet("%s");  // the default theme (set_theme switches it)\n' % layout.THEMES[0]
+        palette_js += 'xoPaletteSet("%s");  // the default theme (set_theme switches it)\n' % layout.DEFAULT_THEME
     minimap_text = boxes_by_id["obj-minimap"]["textfile"]
     if themed:   # the v8ui starts in the same section state as the toggles' initial values
         for var, val in zip(("showSavedList", "showFiltersSection", "showPlaybackSection", "showOptionsSection"), layout.DEFAULT_SECTIONS):
@@ -2674,6 +2674,11 @@ def build(variant="default"):
             i0 = minimap_text["text"].index(old)
             i1 = minimap_text["text"].index(";", i0)
             minimap_text["text"] = minimap_text["text"][:i0] + old + str(val) + minimap_text["text"][i1:]
+    if themed:
+        old = "let xoThemeIdx = "
+        i0 = minimap_text["text"].index(old)
+        i1 = minimap_text["text"].index(";", i0)
+        minimap_text["text"] = minimap_text["text"][:i0] + old + str(layout.THEMES.index(layout.DEFAULT_THEME)) + minimap_text["text"][i1:]
     theme_js = ""
     if themed:
         theme_js = f"var XO_THEME_STYLE = {json.dumps(layout.THEME_STYLE)};\n"

@@ -45,7 +45,12 @@ function loadbang() {
 /** Theme switch (Options > Theme): picks the palette (src/xo_palette.js); `set_theme <index>` or `set_theme <name>`. */
 function set_theme(...args) {
   const a = args.length ? args[args.length - 1] : 0;
-  xoPaletteSet(typeof a === "string" ? a : (Math.round(Number(a)) === 1 ? "Focus" : "LCD"));
+  xoPaletteSet(typeof a === "string" ? a : (XO_PALETTE_THEMES[Math.round(Number(a))] || "LCD"));
+  mgraphics.redraw();
+}
+
+/** Palette watcher callback (src/xo_palette.js): Live's theme colours changed while the Live theme is on. */
+function xoLiveThemeChanged() {
   mgraphics.redraw();
 }
 
@@ -179,7 +184,7 @@ function paint() {
   mgraphics.rectangle_rounded(0, 0, w, h, 3, 3);
   mgraphics.fill();
 
-  xoSrc(0.22, 0.74, 0.97, 0.35);
+  xoRole("frame", 0.22, 0.74, 0.97, 0.35);
   mgraphics.set_line_width(1.0);
   mgraphics.rectangle_rounded(0.5, 0.5, w - 1, h - 1, 3, 3);
   mgraphics.stroke();
@@ -193,9 +198,9 @@ function paint() {
   const anyScanning = folders.some((f) => f.scanning);
   mgraphics.select_font_face("Arial", "normal", "bold");
   mgraphics.set_font_size(7.8);
-  xoSrc(0.22, 0.74, 0.97, 1.0);
+  xoRole("title", 0.22, 0.74, 0.97, 1.0);
   mgraphics.move_to(4, 10.5);
-  mgraphics.show_text(`FOLDERS (${activeCount}/${folders.length})`);
+  mgraphics.show_text(xoTitleText(`FOLDERS (${activeCount}/${folders.length})`, `Folders (${activeCount}/${folders.length})`));
 
   if (anyScanning) {
     xoSrc(1.0, 0.70, 0.18, 0.24);
@@ -221,10 +226,10 @@ function paint() {
   mgraphics.show_text("All");
 
   // "+Add" mini button
-  xoSrc(0.22, 0.74, 0.97, 0.24);
+  xoRole("btn", 0.22, 0.74, 0.97, 0.24);
   mgraphics.rectangle_rounded(addBtnX, 2, 27, 11, 2, 2);
   mgraphics.fill();
-  xoSrc(0.35, 0.82, 1.0, 1.0);
+  xoRole("btntext", 0.35, 0.82, 1.0, 1.0);
   mgraphics.move_to(addBtnX + 3, 10);
   mgraphics.show_text("+Add");
 

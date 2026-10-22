@@ -25,22 +25,26 @@ NAME = "default"
 DEVICE_NAME = "XO Sample Map"            # device title, output file devices/<DEVICE_NAME>.amxd, preview slug
 LAYOUT_JS = "src/xo_layouts/default.js"  # computeXoLayout geometry, prepended to the mini-map v8ui
 THEMED = True
-THEMES = ["LCD", "Focus"]
+THEMES = ["LCD", "Focus", "Live"]
+DEFAULT_THEME = "Live"                  # the Theme parameter's initial value for NEW instances (saved sets keep their index)
 DEFAULT_SECTIONS = (1, 0, 0, 0)          # a NEW instance starts with the toolbar, map and Saved list only (Filters / Playback / Options closed)
-DEVICE_WIDTH = 414.0                     # LCD, DEFAULT_SECTIONS; must equal computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth
-# obj-expr-width: device width from pak (saved filters playback options theme) = $i1 .. $i5 (theme 0 = LCD, 1 = Focus).
+DEVICE_WIDTH = 414.0                     # DEFAULT_THEME, DEFAULT_SECTIONS; must equal computeXoLayout("Live", 1, 0, 0, 0).deviceWidth
+# obj-expr-width: device width from pak (saved filters playback options theme) = $i1 .. $i5 (theme 0 = LCD, 1 = Focus, 2 = Live).
 # Must equal computeXoLayout(...).deviceWidth for every theme x 16 section combinations (tests/test_xo_variants.js).
-WIDTH_EXPR = ("expr 278 + $i1 * 136 + $i4 * 196 + $i2 * (214 - 74 * $i5) + $i3 * (170 - 12 * $i5)")
-# (no if(): a comma inside an expr box has to be escaped in Max; Filters are 74 px and Playback 12 px narrower in Focus)
+WIDTH_EXPR = ("expr 278 + $i1 * 136 + $i4 * 196 + $i2 * 214 + $i3 * (170 - 12 * ($i5 > 0))")
+# (no if(): a comma inside an expr box has to be escaped in Max; Playback is 12 px narrower in Focus and Live,
+#  `($i5 > 0)` is 0 for LCD and 1 for Focus / Live; Filters are 208 px in every theme)
 
 # ---------------------------------------------------------------------------------------------------------------
 # Geometry (mirror of src/xo_layouts/default.js)
 # ---------------------------------------------------------------------------------------------------------------
 XO_TB_X, XO_TB_W, XO_LEFT_X, XO_GAP = 3.0, 22.0, 28.0, 6.0
 XO_MAP_PANE_W, XO_SAVED_PANE_W, XO_OPTIONS_W = 236.0, 136.0, 190.0
-XO_FILTERS_W = {"LCD": 208.0, "Focus": 134.0}
+XO_FILTERS_W = {"LCD": 208.0, "Focus": 208.0, "Live": 208.0}
 def label_h(bid, th):
     """Live's fixed live.comment height, floor(font + 8), for the label's font in theme th (src/xo_layouts/default.js xoLabelH)."""
+    if th == "Live" and not re.match(r"obj-lcd-[fp]-lbl-", bid):  # Ableton Sans Medium rounds up (measured in Live 12.4.6: 9.5 pt -> 18, 9 / 8.5 pt -> 17)
+        return 18.0 if (bid.startswith("obj-hdr-") or bid == "obj-lbl-searches") else 17.0
     if bid.startswith("obj-lbl-"):
         return 15.0 if th == "LCD" else 17.0
     if re.match(r"obj-lcd-[fp]-lbl-", bid):
@@ -51,12 +55,12 @@ def label_h(bid, th):
 
 
 LABEL_RE = re.compile(r"^obj-(hdr-|lbl-|lcd-[fp]-lbl-|focus-[fp]-lbl-|lcd-f-prompt$)")
-XO_PLAYBACK_W = {"LCD": 164.0, "Focus": 152.0}
+XO_PLAYBACK_W = {"LCD": 164.0, "Focus": 152.0, "Live": 152.0}
 LCD_PB_COL = [4.0, 82.0]
 LCD_PB_ROW = [25.0, 70.0, 115.0]
 LCD_PB_W = [77.0, 78.0]
 LCD_F_COL = [(4.0, 49.0), (54.0, 49.0), (104.0, 49.0), (154.0, 50.0)]
-FOCUS_F = [(4.0, 47.0), (68.0, 47.0), (4.0, 90.0), (68.0, 90.0)]  # row 2 ends at 127 with Live's 37 px dials, above the folder list (128)
+FOCUS_F = [(6.0, 50.0), (55.0, 50.0), (104.0, 50.0), (153.0, 50.0)]  # one row of four 48 px dials (a second row put a dial value right above the next label)
 
 F_IDS = ["maxlen", "tone", "filter-tonal", "filter-drum"]
 F_LCD_NAMES = ["MAXLEN", "TONE", "TONAL", "DRUMS"]
@@ -72,6 +76,7 @@ def layout_boxes(theme, s, f, p, o):
     """{box id: (rect, hidden, section, theme-only or "")} in layout order for (theme, saved, filters, playback, options)."""
     th = theme
     lcd = th == "LCD"
+    live = th == "Live"
     map_w = XO_MAP_PANE_W + (XO_SAVED_PANE_W if s else 0.0)
     left_w = map_w + 8.0
     cur = XO_LEFT_X
@@ -90,11 +95,15 @@ def layout_boxes(theme, s, f, p, o):
         cur += pw + XO_GAP
     out = {}
 
+    def only_ok(only):
+        """Mirror of xoOnlyOk: "" = every theme; "Dials" = Focus and Live; else that theme only."""
+        return (not only) or (th != "LCD" if only == "Dials" else only == th)
+
     def put(bid, sec, only, rect):
         if LABEL_RE.match(bid):  # Live's own live.comment height for this theme's font
             rect = [rect[0], rect[1], rect[2], label_h(bid, th)]
         sec_on = {"filters": f, "playback": p, "options": o}.get(sec, 1)
-        out[bid] = ([float(v) for v in rect], 0 if (sec_on and (not only or only == th)) else 1, sec, only)
+        out[bid] = ([float(v) for v in rect], 0 if (sec_on and only_ok(only)) else 1, sec, only)
 
     put("obj-panel-toolbar", "toolbar", "", [XO_TB_X, 5.0, XO_TB_W, 159.0])
     put("obj-toggle-saved-btn", "toolbar", "", [XO_TB_X + 3.0, 9.0, 16.0, 16.0])
@@ -102,14 +111,16 @@ def layout_boxes(theme, s, f, p, o):
     put("obj-toggle-playback-btn", "toolbar", "", [XO_TB_X + 3.0, 47.0, 16.0, 16.0])
     put("obj-toggle-options-btn", "toolbar", "", [XO_TB_X + 3.0, 145.0, 16.0, 16.0])
     put("obj-panel-options", "options", "", [ox, 5.0, XO_OPTIONS_W, 159.0])
-    put("obj-hdr-options", "options", "", [ox + 7.0, 8.0, 82.0, 14.0])
+    put("obj-hdr-options", "options", "", [ox + 7.0, 6.0 if live else 8.0, 82.0, 14.0])
+    put("obj-rule-options", "options", "Live", [ox + 52.0, 12.0, 132.0, 5.0])
     put("obj-lbl-theme", "options", "", [ox + 7.0, 30.0, 70.0, 11.0])
-    put("obj-theme-tab", "options", "", [ox + 6.0, 44.0, 70.0, 18.0])
-    put("obj-lbl-zoom", "options", "", [ox + 80.0, 30.0, 48.0, 11.0])
-    put("obj-zoom-speed", "options", "", [ox + 80.0, 44.0, 48.0, 18.0])
-    put("obj-lbl-map", "options", "", [ox + 132.0, 30.0, 52.0, 11.0])
-    put("obj-map-samples", "options", "", [ox + 132.0, 44.0, 52.0, 18.0])
+    put("obj-theme-tab", "options", "", [ox + 6.0, 44.0, 86.0, 18.0])
+    put("obj-lbl-zoom", "options", "", [ox + 95.0, 30.0, 38.0, 11.0])
+    put("obj-zoom-speed", "options", "", [ox + 95.0, 44.0, 38.0, 18.0])
+    put("obj-lbl-map", "options", "", [ox + 136.0, 30.0, 50.0, 11.0])
+    put("obj-map-samples", "options", "", [ox + 136.0, 44.0, 50.0, 18.0])
     put("obj-lbl-searches", "options", "", [ox + 7.0, 68.0, 178.0, 11.0])
+    put("obj-rule-searches", "options", "Live", [ox + 54.0, 74.0, 130.0, 5.0])
     put("obj-searches-cat", "options", "", [ox + 6.0, 80.0, 178.0, 15.0])
     put("obj-searches-terms", "options", "", [ox + 6.0, 97.0, 178.0, 40.0])
     put("obj-searches-reset", "options", "", [ox + 6.0, 141.0, 44.0, 16.0])
@@ -118,24 +129,26 @@ def layout_boxes(theme, s, f, p, o):
     put("obj-minimap", "left", "", [lx + 4.0, 8.0, map_w, 154.0])
 
     put("obj-panel-filters", "filters", "", [fx, 5.0, fw, 159.0])
-    put("obj-hdr-filters", "filters", "", [fx + 7.0, 9.0, 70.0, 13.0] if lcd else [fx + 11.0, 6.0, 56.0, 15.0])
-    put("obj-reseed-filtered-btn", "filters", "", [fx + 118.0, 9.0, 52.0, 13.0] if lcd else [fx + 70.0, 7.0, 58.0, 13.0])
-    put("obj-search-clear-btn", "filters", "", [fx + 174.0, 9.0, 28.0, 13.0] if lcd else [fx + 98.0, 22.0, 30.0, 14.0])
-    put("obj-search-box", "filters", "", [fx + 17.0, 25.0, 186.0, 15.0] if lcd else [fx + 6.0, 22.0, 88.0, 14.0])
-    put("obj-folder-list", "filters", "", [fx + 4.0, 86.0, 200.0, 74.0] if lcd else [fx + 6.0, 128.0, 122.0, 33.0])
+    put("obj-hdr-filters", "filters", "", [fx + 7.0, 9.0, 70.0, 13.0] if lcd else ([fx + 4.0, 6.0, 56.0, 15.0] if live else [fx + 11.0, 6.0, 56.0, 15.0]))
+    put("obj-rule-filters", "filters", "Live", [fx + 42.0, 12.0, 100.0, 5.0])
+    put("obj-reseed-filtered-btn", "filters", "", [fx + 118.0, 9.0, 52.0, 13.0] if lcd else [fx + 146.0, 7.0, 56.0, 13.0])
+    put("obj-search-clear-btn", "filters", "", [fx + 174.0, 9.0, 28.0, 13.0] if lcd else [fx + 160.0, 22.0, 42.0, 14.0])
+    put("obj-search-box", "filters", "", [fx + 17.0, 25.0, 186.0, 15.0] if lcd else [fx + 6.0, 22.0, 150.0, 14.0])
+    put("obj-folder-list", "filters", "", [fx + 4.0, 86.0, 200.0, 74.0] if lcd else [fx + 6.0, 92.0, 196.0, 68.0])
     for i in range(4):
         put("obj-%s-dial" % F_IDS[i], "filters", "LCD", [fx + LCD_F_COL[i][0] + 1.0, 59.0, LCD_F_COL[i][1] - 2.0, 22.0])
-        put("obj-%s-dial-mir" % F_IDS[i], "filters", "Focus", [fx + FOCUS_F[i][0], FOCUS_F[i][1], 60.0, 37.0])  # Live's live.dial height for this size
+        put("obj-%s-dial-mir" % F_IDS[i], "filters", "Dials", [fx + FOCUS_F[i][0], FOCUS_F[i][1], 48.0, 37.0])  # Live's live.dial height for this size
         put("obj-lcd-f-cell-%d" % i, "filters", "LCD", [fx + LCD_F_COL[i][0], 42.0, LCD_F_COL[i][1], 42.0])
         put("obj-lcd-f-lbl-%d" % i, "filters", "LCD", [fx + LCD_F_COL[i][0], 46.0, LCD_F_COL[i][1], 11.0])
-        put("obj-focus-f-lbl-%d" % i, "filters", "Focus", [fx + FOCUS_F[i][0], FOCUS_F[i][1] - 10.0, 60.0, 10.0])
+        put("obj-focus-f-lbl-%d" % i, "filters", "Dials", [fx + FOCUS_F[i][0], FOCUS_F[i][1] - 10.0, 48.0, 10.0])
     put("obj-lcd-f-cell-title", "filters", "LCD", [fx + 4.0, 8.0, 200.0, 15.0])
     put("obj-lcd-f-cell-search", "filters", "LCD", [fx + 4.0, 24.0, 200.0, 17.0])
     put("obj-lcd-f-prompt", "filters", "LCD", [fx + 3.5, 24.0, 14.0, 15.0])  # 1 px above obj-search-box; 14 px = Live's minimum width, centred where the 11 px box was
     put("obj-focus-tick-filters", "filters", "Focus", [fx - 5.0, 5.0, 4.0, 159.0])  # Live's minimum panel width, centred in the gap
 
     put("obj-panel-playback", "playback", "", [px, 5.0, pw, 159.0])
-    put("obj-hdr-playback", "playback", "", [px + 7.0, 9.0, 80.0, 13.0] if lcd else [px + 11.0, 6.0, 64.0, 15.0])
+    put("obj-hdr-playback", "playback", "", [px + 7.0, 9.0, 80.0, 13.0] if lcd else ([px + 4.0, 6.0, 64.0, 15.0] if live else [px + 11.0, 6.0, 64.0, 15.0]))
+    put("obj-rule-playback", "playback", "Live", [px + 54.0, 12.0, 38.0, 5.0])
     put("obj-reverse-btn", "playback", "", [px + 106.0, 9.0, 52.0, 13.0] if lcd else [px + 96.0, 7.0, 50.0, 13.0])
     for i in range(6):
         lc, lr = i % 2, i // 2
@@ -143,20 +156,20 @@ def layout_boxes(theme, s, f, p, o):
         fdx = 4.0 + fc * 48.0
         fdy = 102.0 if fr else 40.0
         put(P_OBJ[i], "playback", "LCD", [px + LCD_PB_COL[lc] + 1.0, LCD_PB_ROW[lr] + 19.0, 76.0 if lc else 75.0, 20.0])
-        put(P_OBJ[i] + "-mir", "playback", "Focus", [px + fdx, fdy, 48.0, 37.0])  # Live's live.dial height for this size
+        put(P_OBJ[i] + "-mir", "playback", "Dials", [px + fdx, fdy, 48.0, 37.0])  # Live's live.dial height for this size
         put("obj-lcd-p-cell-%d" % i, "playback", "LCD", [px + LCD_PB_COL[lc], LCD_PB_ROW[lr], LCD_PB_W[lc], 44.0])
         put("obj-lcd-p-lbl-%d" % i, "playback", "LCD", [px + LCD_PB_COL[lc], LCD_PB_ROW[lr] + 5.0, LCD_PB_W[lc], 11.0])
-        put("obj-focus-p-lbl-%d" % i, "playback", "Focus", [px + fdx, fdy - 10.0, 48.0, 10.0])
+        put("obj-focus-p-lbl-%d" % i, "playback", "Dials", [px + fdx, fdy - 10.0, 48.0, 10.0])
     put("obj-lcd-p-cell-title", "playback", "LCD", [px + 4.0, 8.0, 156.0, 15.0])
     put("obj-focus-tick-playback", "playback", "Focus", [px - 5.0, 5.0, 4.0, 159.0])  # Live's minimum panel width, centred in the gap
     return out, cur
 
 
-_ALL, _W = layout_boxes("LCD", *DEFAULT_SECTIONS)
+_ALL, _W = layout_boxes(DEFAULT_THEME, *DEFAULT_SECTIONS)
 assert _W == DEVICE_WIDTH
-# Presentation rects of every layout box in the saved / default state (LCD theme, DEFAULT_SECTIONS).
+# Presentation rects of every layout box in the saved / default state (DEFAULT_THEME, DEFAULT_SECTIONS).
 RECTS = {bid: v[0] for bid, v in _ALL.items()}
-# Boxes hidden in that state (the Focus-only boxes and the closed Filters / Playback / Options sections).
+# Boxes hidden in that state (the other themes' boxes and the closed Filters / Playback / Options sections).
 HIDDEN = sorted(bid for bid, v in _ALL.items() if v[1])
 
 
@@ -220,7 +233,76 @@ def _focus_btn(on, text, texton, **extra):
     d = {"activebgcolor": BTN, "activebgoncolor": on, "activetextcolor": on, "activetextoncolor": INK,
          "bordercolor": on[:3] + [0.75], "fontname": UI_FONT, "fontface": 0, "fontsize": 9.0, "text": text, "texton": texton}
     d.update(extra)
+    d["textcolor"] = d["activetextcolor"]
     return d
+
+
+# Live palette: Ableton's own devices (section 22 "Ableton-native look", Harmonic Split / Reverb / Echo). Values are theme
+# colour TOKENS "@live_<name>" (max.getcolor name): the v8ui resolves them with max.getcolor on theme select / load / when
+# Live's theme changes (Live-default-dark fallbacks: src/xo_palette.js XO_LIVE_FALLBACK, also what the preview and the node
+# tests use), because setattr replaces a saved themecolor binding. Literal lists pass through (alpha 0 = no background).
+CLEAR = [0.0, 0.0, 0.0, 0.0]
+LIVE_FONT = "Ableton Sans Medium"
+
+
+def _live_btn(text):
+    """Plain live.text in Live's button colours (Harmonic Split's Post / Size look): control fill, control text, the LCD frame as
+    border; only an ON toggle takes the accent (fill live_control_selection, dark text)."""
+    d = {"activebgcolor": "@live_control_bg", "activebgoncolor": "@live_control_selection", "activetextcolor": "@live_control_fg",
+         "activetextoncolor": "@live_lcd_bg", "bordercolor": "@live_lcd_frame"}
+    d.update({"fontname": LIVE_FONT, "fontface": 0, "fontsize": 9.0, "text": text, "texton": text, "textcolor": "@live_control_fg"})
+    return d
+
+
+_LIVE_PANEL = {"bgcolor": "@live_desktop", "bordercolor": "@live_desktop", "rounded": 3}
+_LIVE_TOOL = {"activebgcolor": "@live_control_bg", "activebgoncolor": "@live_control_selection", "activetextcolor": "@live_control_fg",
+              "activetextoncolor": "@live_lcd_bg", "bordercolor": "@live_control_bg"}
+_LIVE_TITLE = {"textcolor": "@live_lcd_title", "fontname": LIVE_FONT, "fontface": 0, "fontsize": 9.5}
+_LIVE_LABEL = {"textcolor": "@live_control_fg", "fontname": LIVE_FONT, "fontface": 0, "fontsize": 9.0}
+_LIVE_VALUE = {"appearance": 4, "activebgcolor": CLEAR, "bgcolor": CLEAR, "lcdbgcolor": CLEAR, "lcdcolor": "@live_lcd_control_fg_alt",
+               "textcolor": "@live_lcd_control_fg_alt", "inactivelcdcolor": "@live_control_zombie", "bordercolor": CLEAR,
+               "focusbordercolor": "@live_control_selection", "fontname": LIVE_FONT, "fontface": 0, "fontsize": 9.0}
+_LIVE_FIELD = {"bgcolor": "@live_lcd_bg", "border": 1.0, "bordercolor": "@live_lcd_frame", "textcolor": "@live_control_fg",
+               "fontname": LIVE_FONT, "fontsize": 9.0}
+
+LIVE_STYLE = {
+    "obj-panel-toolbar": dict(_LIVE_PANEL),
+    "obj-panel-left": dict(_LIVE_PANEL),
+    "obj-panel-options": dict(_LIVE_PANEL),
+    "obj-panel-filters": dict(_LIVE_PANEL),
+    "obj-panel-playback": dict(_LIVE_PANEL),
+    "obj-toggle-saved-btn": dict(_LIVE_TOOL),
+    "obj-toggle-filters-btn": dict(_LIVE_TOOL),
+    "obj-toggle-playback-btn": dict(_LIVE_TOOL),
+    "obj-toggle-options-btn": dict(_LIVE_TOOL),
+    "obj-hdr-options": dict(_LIVE_TITLE),
+    "obj-hdr-filters": dict(_LIVE_TITLE),
+    "obj-hdr-playback": dict(_LIVE_TITLE),
+    "obj-rule-options": {"linecolor": "@live_lcd_frame"},
+    "obj-rule-searches": {"linecolor": "@live_lcd_frame"},
+    "obj-rule-filters": {"linecolor": "@live_lcd_frame"},
+    "obj-rule-playback": {"linecolor": "@live_lcd_frame"},
+    "obj-lbl-theme": dict(_LIVE_LABEL),
+    "obj-theme-tab": {"activebgcolor": "@live_control_bg", "activebgoncolor": "@live_control_selection", "activetextcolor": "@live_control_fg",
+                      "activetextoncolor": "@live_lcd_bg", "bordercolor": "@live_desktop", "fontname": LIVE_FONT, "fontface": 0, "fontsize": 8.5},
+    "obj-lbl-zoom": dict(_LIVE_LABEL),
+    "obj-zoom-speed": dict(_LIVE_VALUE),
+    "obj-lbl-map": dict(_LIVE_LABEL),
+    "obj-map-samples": dict(_LIVE_VALUE),
+    "obj-lbl-searches": dict(_LIVE_TITLE),
+    "obj-searches-cat": {"activebgcolor": "@live_control_bg", "bordercolor": "@live_control_bg", "textcolor": "@live_control_fg",
+                         "fontname": LIVE_FONT, "fontface": 0, "fontsize": 9.0},
+    "obj-searches-terms": dict(_LIVE_FIELD),
+    "obj-searches-reset": _live_btn("Reset"),
+    "obj-searches-folders": _live_btn("Match folders"),
+    "obj-reseed-filtered-btn": _live_btn("Re-Seed"),
+    "obj-search-clear-btn": _live_btn("Clr"),
+    "obj-reverse-btn": _live_btn("Reverse"),
+    "obj-search-box": dict(_LIVE_FIELD),
+    **{"obj-focus-%s-lbl-%d" % (sec, i): {"textcolor": "@live_control_fg", "fontname": LIVE_FONT, "fontface": 0, "fontsize": 8.5}
+       for sec, n in (("f", 4), ("p", 6)) for i in range(n)},
+}
+
 
 
 THEME_STYLE = {
@@ -292,15 +374,49 @@ THEME_STYLE = {
         "obj-reverse-btn": _focus_btn(AMBER, "Reverse", "Reversed", activetextcolor=[0.85, 0.89, 0.94, 1.0]),
         "obj-search-box": {"bgcolor": [0.07, 0.085, 0.11, 1.0], "border": 1.0, "bordercolor": [0.22, 0.74, 0.97, 0.65],
                            "textcolor": [0.92, 0.95, 0.98, 1.0], "fontname": "Arial", "fontsize": 9.0},
+        # the Dials labels are shared with the Live theme, which restyles them; Focus puts them back
+        **{"obj-focus-%s-lbl-%d" % (sec, i): {"textcolor": BTN_TEXT, "fontname": "Arial", "fontface": 1, "fontsize": 8.5}
+           for sec, n in (("f", 4), ("p", 6)) for i in range(n)},
     },
+    "Live": LIVE_STYLE,
 }
+
+# Section titles and Options labels: upper case in LCD / Focus, title case in Live (live.comment `text`).
+_TITLE_TEXT = {
+    "obj-hdr-options": ("OPTIONS", "Options"), "obj-hdr-filters": ("FILTERS", "Filters"), "obj-hdr-playback": ("PLAYBACK", "Playback"),
+    "obj-lbl-theme": ("THEME", "Theme"), "obj-lbl-zoom": ("ZOOM", "Zoom"), "obj-lbl-map": ("SAMPLES", "Samples"),
+    "obj-lbl-searches": ("SEARCHES", "Searches"),
+}
+# the Dials labels are hidden in LCD, but a switch from Live must put their font back (Live's real label height follows it)
+THEME_STYLE["LCD"].update({k: dict(v) for k, v in THEME_STYLE["Focus"].items() if k.startswith("obj-focus-") and "-lbl-" in k})
+for _bid, (_up, _mixed) in _TITLE_TEXT.items():
+    THEME_STYLE["LCD"][_bid]["text"] = _up
+    THEME_STYLE["Focus"][_bid]["text"] = _up
+    THEME_STYLE["Live"][_bid]["text"] = _mixed
 
 
 # ---------------------------------------------------------------------------------------------------------------
 # Static state (LCD, Options closed) and the presentation-only boxes
 # ---------------------------------------------------------------------------------------------------------------
 # Static attributes are applied by the build (RECTS + STYLE) so the saved file already shows the default state.
-STYLE = THEME_STYLE["LCD"]
+def _live_fallbacks():
+    """{colour name: [r, g, b, a]} parsed from XO_LIVE_FALLBACK in src/xo_palette.js (the one copy of the default-dark values)."""
+    import os
+    src = open(os.path.join(os.path.dirname(__file__), "..", "..", "src", "xo_palette.js"), encoding="utf-8").read()
+    body = src[src.index("var XO_LIVE_FALLBACK = {"):]
+    body = body[:body.index("};")]
+    return {m.group(1): [float(v) for v in m.group(2).split(",")] for m in re.finditer(r"(live_\w+): \[([^\]]+)\]", body)}
+
+
+def resolve_style(table):
+    """A style table with "@live_<name>" colour tokens replaced by their default-dark fallback colours (the saved patch cannot call
+    max.getcolor; the v8ui applies the real Live colours at load)."""
+    fb = _live_fallbacks()
+    return {bid: {a: (fb[v[1:]] if isinstance(v, str) and v.startswith("@") else v) for a, v in attrs.items()} for bid, attrs in table.items()}
+
+
+# Static attributes applied by the build: the default theme's style, so the saved file already shows the default state.
+STYLE = resolve_style(THEME_STYLE[DEFAULT_THEME])
 
 
 def _comment(oid, text, rect, color, font, size, just):
@@ -310,6 +426,16 @@ def _comment(oid, text, rect, color, font, size, just):
         "numinlets": 1, "numoutlets": 0, "patching_rect": [x, 700.0 + y, w, h],
         "presentation": 1, "presentation_rect": rect, "text": text, "textcolor": color,
         "textjustification": just, "varname": oid,
+    }}
+
+
+def _rule(oid, rect):
+    """Live theme hairline: a live.line (Live makes its box at least 5 px tall and draws a 1 px line through the middle), click-through."""
+    x, y, w, h = rect
+    return {"box": {
+        "id": oid, "ignoreclick": 1, "justification": 1, "linecolor": [0.243, 0.243, 0.243, 1.0], "maxclass": "live.line",
+        "numinlets": 1, "numoutlets": 0, "patching_rect": [x, 900.0 + y, w, h], "presentation": 1, "presentation_rect": rect,
+        "varname": oid,
     }}
 
 
@@ -373,6 +499,10 @@ def customize(boxes_by_id, boxes, lines):
         lines.append({"patchline": {"source": [prep["id"], 0], "destination": [mir["id"], 0]}})
         lines.append({"patchline": {"source": [mir["id"], 0], "destination": [pid, 0]}})
         fg += [{"box": prep}, {"box": mir}]
+        # dial arc colour per theme: Focus keeps the original coloured arcs, Live uses its one display colour
+        THEME_STYLE["Focus"][mir["id"]] = {"activedialcolor": list(mir["activedialcolor"])}
+        THEME_STYLE["Live"][mir["id"]] = {"activedialcolor": "@live_lcd_control_fg_alt"}
+        STYLE.update(resolve_style({mir["id"]: THEME_STYLE[DEFAULT_THEME][mir["id"]]}))
 
     # foreground extras: Options header / label, LCD and Focus labels
     fg.append(_comment("obj-hdr-options", "OPTIONS", RECTS["obj-hdr-options"], ACC, MONO, 9.0, 0))
@@ -386,6 +516,8 @@ def customize(boxes_by_id, boxes, lines):
     for i in range(6):
         fg.append(_comment("obj-lcd-p-lbl-%d" % i, P_LCD_NAMES[i], RECTS["obj-lcd-p-lbl-%d" % i], DIM, MONO, 7.0, 1))
         fg.append(_comment("obj-focus-p-lbl-%d" % i, P_FOCUS_NAMES[i], RECTS["obj-focus-p-lbl-%d" % i], BTN_TEXT, "Arial", 8.5, 1))
+    for sec in ("options", "searches", "filters", "playback"):
+        fg.append(_rule("obj-rule-" + sec, RECTS["obj-rule-" + sec]))
     prompt = _comment("obj-lcd-f-prompt", ">", RECTS["obj-lcd-f-prompt"], ACC, MONO, 9.0, 1)
     prompt["box"]["fontface"] = 0  # regular, like the search text beside it
     fg.append(prompt)

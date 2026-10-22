@@ -77,8 +77,10 @@ assert.strictEqual(
   "Expected Trim/Dec (DecayEnvelope) max to be 20000.0 ms (20s)"
 );
 // Verify Filter Re-Seed button is placed to the left of the Clr button in the FILTERS header
-const reseedBtnRect = boxMap.get("obj-reseed-filtered-btn").presentation_rect;
-const clrBtnRect = boxMap.get("obj-search-clear-btn").presentation_rect;
+// (the saved state is the Live theme, which puts Clr on the search row, so this is checked on the LCD layout)
+const lcdLay0 = require("../src/xo_layouts/default.js").computeXoLayout("LCD", 1, 1, 1, 0).boxes;
+const reseedBtnRect = lcdLay0["obj-reseed-filtered-btn"].rect;
+const clrBtnRect = lcdLay0["obj-search-clear-btn"].rect;
 assert(
   reseedBtnRect[1] === clrBtnRect[1] && (reseedBtnRect[0] + reseedBtnRect[2]) <= clrBtnRect[0],
   "Expected Filter Re-Seed button to the left of the Clr button on the same header row"
@@ -95,7 +97,7 @@ assert(!boxMap.has("obj-play-btn"), "Audition / Replay button in Playback sectio
 assert(!boxMap.has("obj-prep-key"), "Regression: obj-prep-key ('prepend key') must not be used because v8ui swallows 'key' in C++");
 
 // Regression Check: obj-node (node.codebox) MUST have presentation=1 (inside 0..169 so Max does not cull it),
-// background=1, and a 1x1 presentation_rect at the end of boxes (behind obj-panel-left) so it boots in M4L presentation mode without ever showing "ox🔨"!
+// background=1, and a 1x1 presentation_rect at the end of boxes (under the centre of the opaque, never moving / hiding Options toggle) so it boots in M4L presentation mode without ever showing "ox🔨"!
 const nodeBox = boxMap.get("obj-node");
 assert.strictEqual(nodeBox.presentation, 1, "Regression: obj-node must have presentation: 1 to boot in M4L presentation mode");
 assert.strictEqual(nodeBox.background, 1, "Regression: obj-node must have background: 1 so it sits in the background layer");
@@ -104,6 +106,12 @@ assert(
   nodeBox.presentation_rect[2] <= 2.0 && nodeBox.presentation_rect[3] <= 2.0,
   "Regression: obj-node presentation_rect must be 1x1px so it never renders any text/icon over the UI"
 );
+{
+  // the node's 1x1 rect must be covered by an opaque foreground box that the layout never moves or hides: the Options (gear) toggle
+  const gear = boxMap.get("obj-toggle-options-btn").presentation_rect, nr = nodeBox.presentation_rect;
+  assert(nr[0] >= gear[0] && nr[1] >= gear[1] && nr[0] + nr[2] <= gear[0] + gear[2] && nr[1] + nr[3] <= gear[1] + gear[3], `obj-node ${JSON.stringify(nr)} sits inside the Options toggle ${JSON.stringify(gear)}`);
+  assert(boxMap.get("obj-toggle-options-btn").background !== 1 && p.boxes.findIndex((b) => b.box.id === "obj-toggle-options-btn") < p.boxes.findIndex((b) => b.box.id === "obj-node"), "the covering toggle is a foreground box (drawn over the background node)");
+}
 const nodeIdx = p.boxes.findIndex((b) => b.box.id === "obj-node");
 const minimapIdx = p.boxes.findIndex((b) => b.box.id === "obj-minimap");
 assert(nodeIdx > minimapIdx, "Expected obj-node at the end of boxes (backmost z-order in Max)");
@@ -704,7 +712,7 @@ engine.engineState.drumFilter = 0;
 // ============================================================================
 const xoLayout = require("../src/xo_layouts/default.js");
 const THEMES = xoLayout.XO_THEMES;
-assert.deepStrictEqual(THEMES, ["LCD", "Focus"], "theme order is part of the Theme parameter (enum LCD, Focus)");
+assert.deepStrictEqual(THEMES, ["LCD", "Focus", "Live"], "theme order is part of the Theme parameter (enum LCD, Focus, Live: appended, so saved sets keep their index)");
 
 const LAYOUT_COMBOS = [];
 for (let ov = 0; ov <= 1; ov++) for (let sv = 0; sv <= 1; sv++) for (let fv = 0; fv <= 1; fv++) for (let pv = 0; pv <= 1; pv++) LAYOUT_COMBOS.push([sv, fv, pv, ov]);
@@ -716,13 +724,13 @@ const contains = (outer, inner) =>
 // No comma (so no if()): a comma inside an expr box has to be escaped in Max.
 const exprWidth = (sv, fv, pv, ov, theme) => {
   const text = boxMap.get("obj-expr-width").text;
-  assert(/^expr [-+*()\s$i0-9.]+$/.test(text) && !text.includes(","), `obj-expr-width must be a plain arithmetic expr without commas: ${text}`);
-  const vals = [sv, fv, pv, ov, theme === "LCD" ? 0 : 1];
+  assert(/^expr [-+*()>\s$i0-9.]+$/.test(text) && !text.includes(","), `obj-expr-width must be a plain arithmetic expr without commas: ${text}`);
+  const vals = [sv, fv, pv, ov, THEMES.indexOf(theme)];
   const body = text.replace(/^expr /, "").replace(/\$i(\d)/g, (m, d) => String(vals[Number(d) - 1]));
   return Function('"use strict"; return (' + body + ");")();
 };
 
-const layAll = xoLayout.computeXoLayout("LCD", 1, 0, 0, 0); // the saved / default state of a new instance: Saved list only
+const layAll = xoLayout.computeXoLayout("Live", 1, 0, 0, 0); // the saved / default state of a new instance: Live theme, Saved list only
 assert.strictEqual(layAll.deviceWidth, p.devicewidth, "Saved-state layout width must equal devicewidth");
 for (const [id, spec] of Object.entries(layAll.boxes)) {
   assert(boxMap.has(id), `Layout box ${id} must exist in the device`);
@@ -743,7 +751,7 @@ for (const theme of THEMES) for (const [sv, fv, pv, ov] of LAYOUT_COMBOS) {
   // The map pane never changes size (and is identical in both themes); only the Saved list's width comes and goes.
   assert.strictEqual(lay.boxes["obj-minimap"].rect[2], xoLayout.XO_MAP_PANE_W + (sv ? xoLayout.XO_SAVED_PANE_W : 0), `[${tag}] mini-map width`);
   assert.strictEqual(lay.boxes["obj-minimap"].rect[3], 154, `[${tag}] map height is the same in both themes`);
-  assert.strictEqual(xoLayout.computeXoLayout(THEMES[0], sv, fv, pv, ov).boxes["obj-minimap"].rect[2], xoLayout.computeXoLayout(THEMES[1], sv, fv, pv, ov).boxes["obj-minimap"].rect[2], `[${tag}] map pane width equal in both themes`);
+  for (const other of THEMES) assert.strictEqual(xoLayout.computeXoLayout(other, sv, fv, pv, ov).boxes["obj-minimap"].rect[2], lay.boxes["obj-minimap"].rect[2], `[${tag}] map pane width equal in every theme`);
   // Visible panels are packed left to right: toolbar, then 3 px, Options / map, then 6 px between sections.
   const order = ["toolbar"].concat(ov ? ["options"] : [], ["left"], fv ? ["filters"] : [], pv ? ["playback"] : []);
   let x = 3;
@@ -757,7 +765,7 @@ for (const theme of THEMES) for (const [sv, fv, pv, ov] of LAYOUT_COMBOS) {
   for (const [id, spec] of Object.entries(lay.boxes)) {
     const sec = lay.sections[id];
     const secOn = sec === "toolbar" || sec === "left" || (sec === "filters" ? fv : sec === "playback" ? pv : ov);
-    const visible = secOn && (!lay.themeOnly[id] || lay.themeOnly[id] === theme);
+    const visible = secOn && xoLayout.xoOnlyOk(lay.themeOnly[id] || "", theme);
     assert.strictEqual(spec.hidden, visible ? 0 : 1, `[${tag}] ${id} hidden flag`);
     if (visible && !/^obj-(panel|focus-tick)/.test(id)) {
       assert(contains(lay.boxes[PANEL_OF[sec]].rect, spec.rect), `[${tag}] ${id} ${JSON.stringify(spec.rect)} must sit inside ${PANEL_OF[sec]}`);
@@ -768,7 +776,7 @@ for (const theme of THEMES) for (const [sv, fv, pv, ov] of LAYOUT_COMBOS) {
   for (const id of ["obj-maxlen-dial", "obj-tone-dial", "obj-filter-tonal-dial", "obj-filter-drum-dial", "obj-pitch-dial", "obj-speed-dial", "obj-grain-dial", "obj-decay-dial", "obj-stretch-mode", "obj-gain-dial"]) {
     const secOn = lay.sections[id] === "filters" ? fv : pv;
     assert.strictEqual(lay.boxes[id].hidden, secOn && theme === "LCD" ? 0 : 1, `[${tag}] ${id} (live.numbox) visible only in LCD`);
-    assert.strictEqual(lay.boxes[id + "-mir"].hidden, secOn && theme === "Focus" ? 0 : 1, `[${tag}] ${id}-mir (live.dial) visible only in Focus`);
+    assert.strictEqual(lay.boxes[id + "-mir"].hidden, secOn && theme !== "LCD" ? 0 : 1, `[${tag}] ${id}-mir (live.dial) visible in Focus and Live`);
   }
   // Toolbar: always visible; the three section toggles on top, Options at the bottom, all inside the toolbar panel.
   const TB = ["obj-toggle-saved-btn", "obj-toggle-filters-btn", "obj-toggle-playback-btn", "obj-toggle-options-btn"];
@@ -786,17 +794,31 @@ assert.strictEqual(xoLayout.computeXoLayout("LCD", 1, 0, 1, 0).playbackX, 414.0,
 assert.strictEqual(xoLayout.computeXoLayout("LCD", 0, 0, 0, 0).deviceWidth, 278.0, "Expected compact 278px width when all sections collapse");
 assert.strictEqual(xoLayout.computeXoLayout("Focus", 0, 0, 0, 0).deviceWidth, 278.0, "Compact width equal in both themes");
 assert.strictEqual(xoLayout.computeXoLayout("LCD", 1, 1, 1, 0).deviceWidth, 798.0);
-assert.strictEqual(xoLayout.computeXoLayout("Focus", 1, 1, 1, 0).deviceWidth, 712.0);
+assert.strictEqual(xoLayout.computeXoLayout("Focus", 1, 1, 1, 0).deviceWidth, 786.0);
+assert.strictEqual(xoLayout.computeXoLayout("Live", 1, 1, 1, 0).deviceWidth, 786.0, "Live reuses Focus's section widths");
+assert.strictEqual(xoLayout.computeXoLayout("Live", 0, 0, 0, 0).deviceWidth, 278.0, "Compact width equal in every theme");
+// Live-only hairlines, Focus-only edge ticks, shared dial boxes
+{
+  const L = xoLayout.computeXoLayout("Live", 1, 1, 1, 1), F = xoLayout.computeXoLayout("Focus", 1, 1, 1, 1), D = xoLayout.computeXoLayout("LCD", 1, 1, 1, 1);
+  for (const id of ["obj-rule-options", "obj-rule-searches", "obj-rule-filters", "obj-rule-playback"]) {
+    assert.strictEqual(L.boxes[id].hidden, 0, `${id} shows in Live`); assert.strictEqual(F.boxes[id].hidden, 1, `${id} hidden in Focus`); assert.strictEqual(D.boxes[id].hidden, 1, `${id} hidden in LCD`);
+    assert.strictEqual(L.boxes[id].rect[3], 5, `${id} is a 5 px live.line (Live's minimum height; it draws a 1 px line in the middle)`);
+  }
+  for (const id of ["obj-focus-tick-filters", "obj-focus-tick-playback"]) assert.strictEqual(L.boxes[id].hidden, 1, `${id} (coloured edge tick) is not part of the Live look`);
+  for (const id of ["obj-focus-f-lbl-0", "obj-focus-p-lbl-5", "obj-maxlen-dial-mir"]) assert.strictEqual(L.boxes[id].hidden, 0, `${id} shows in Live`);
+  assert.deepStrictEqual(L.boxes["obj-maxlen-dial-mir"].rect, F.boxes["obj-maxlen-dial-mir"].rect, "Live keeps Focus's dial geometry");
+}
 assert.strictEqual(xoLayout.computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth, 414.0, "new-instance default: toolbar + map + Saved");
 assert.strictEqual(xoLayout.computeXoLayout("LCD", 1, 1, 1, 1).deviceWidth, 798.0 + xoLayout.XO_OPTIONS_W + 6, "Options adds its width (+6 gap)");
 assert.strictEqual(xoLayout.computeXoLayout(0, 1, 1, 1, 0).theme, "LCD", "theme accepts its index");
 assert.strictEqual(xoLayout.computeXoLayout(1, 1, 1, 1, 0).theme, "Focus", "theme accepts its index");
+assert.strictEqual(xoLayout.computeXoLayout(2, 1, 1, 1, 0).theme, "Live", "theme accepts its index");
 
 // Wiring: the v8ui must hear about every section toggle and the theme, and re-apply the layout on load.
 assert(linesFrom("obj-toggle-saved-btn").includes("obj-pak-vis"), "Saved toggle must drive the device width");
 assert(linesFrom("obj-toggle-options-btn").includes("obj-pak-vis") && linesFrom("obj-toggle-options-btn").includes("obj-prep-show-options"), "Options toggle drives width and the v8ui");
 assert(linesFromPort("obj-theme-tab", 0).includes("obj-pak-vis:4"), "Theme tab drives the device width (pak inlet 5)");
-assert.strictEqual(boxMap.get("obj-pak-vis").text, "pak 1 0 0 0 0", "pak: saved filters playback options theme (initial = the new-instance default)");
+assert.strictEqual(boxMap.get("obj-pak-vis").text, "pak 1 0 0 0 2", "pak: saved filters playback options theme (initial = the new-instance default: Live)");
 assert.strictEqual(boxMap.get("obj-pak-vis").numinlets, 5);
 assert.strictEqual(boxMap.get("obj-expr-width").numinlets, 5);
 assert(linesFrom("obj-prep-show-filters").includes("obj-minimap"), "obj-prep-show-filters must reach obj-minimap (layout)");
@@ -815,8 +837,9 @@ assert(linesFrom("obj-expr-width").includes("obj-prep-setwidth") && linesFrom("o
 {
   const vo = (id) => boxMap.get(id).saved_attribute_attributes.valueof;
   assert.strictEqual(vo("obj-theme-tab").parameter_longname, "Theme");
-  assert.deepStrictEqual(vo("obj-theme-tab").parameter_enum, ["LCD", "Focus"]);
-  assert.deepStrictEqual(vo("obj-theme-tab").parameter_initial, [0], "default theme is LCD");
+  assert.deepStrictEqual(vo("obj-theme-tab").parameter_enum, ["LCD", "Focus", "Live"]);
+  assert.strictEqual(vo("obj-theme-tab").parameter_mmax, 2, "Theme range covers the three looks");
+  assert.deepStrictEqual(vo("obj-theme-tab").parameter_initial, [2], "default theme is Live (existing Sets keep their saved index)");
   assert.strictEqual(boxMap.get("obj-theme-tab").maxclass, "live.tab");
   assert.strictEqual(vo("obj-toggle-options-btn").parameter_longname, "ShowOptions");
   assert.deepStrictEqual(vo("obj-toggle-options-btn").parameter_initial, [0], "Options section starts closed");
@@ -864,11 +887,31 @@ assert(themeStyleM, "mini-map script must carry XO_THEME_STYLE");
 const THEME_STYLE = JSON.parse(themeStyleM[1]);
 assert.deepStrictEqual(Object.keys(THEME_STYLE), THEMES);
 for (const theme of THEMES) for (const id of Object.keys(THEME_STYLE[theme])) assert(boxMap.has(id) && layAll.boxes[id], `${theme} style box ${id} must exist and be laid out`);
-for (const [id, attrs] of Object.entries(THEME_STYLE.LCD)) {
-  for (const [k, v] of Object.entries(attrs)) assert.deepStrictEqual(boxMap.get(id)[k], v, `saved attribute ${id}.${k} equals the LCD style`);
+// the Options toggle (covers obj-node) is opaque in every theme (background and on colours alpha 1, after resolving the Live tokens)
+{
+  const fbAlpha = new Function(fs.readFileSync(path.join(__dirname, "..", "src", "xo_palette.js"), "utf8") + ";return XO_LIVE_FALLBACK;")();
+  for (const th of THEMES) for (const a of ["activebgcolor", "activebgoncolor"]) {
+    let v = THEME_STYLE[th]["obj-toggle-options-btn"][a];
+    if (typeof v === "string") v = fbAlpha[v.slice(1)];
+    assert.strictEqual(v[3], 1, `${th}: Options toggle ${a} is opaque (it hides the node's 1x1 box)`);
+  }
+  for (const [id, spec] of Object.entries(xoLayout.computeXoLayout("Live", 1, 0, 0, 0).boxes)) if (id === "obj-toggle-options-btn") {
+    for (const th of THEMES) for (let m = 0; m < 16; m++) {
+      const l2 = xoLayout.computeXoLayout(th, m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1).boxes[id];
+      assert.deepStrictEqual([l2.rect, l2.hidden], [spec.rect, 0], `${th}/${m}: the Options toggle never moves or hides`);
+    }
+  }
+}
+// the saved state is the default theme (Live) with its colour tokens resolved to the default-dark fallbacks at build time
+const LIVE_FB = new Function(fs.readFileSync(path.join(__dirname, "..", "src", "xo_palette.js"), "utf8") + ";return XO_LIVE_FALLBACK;")();
+for (const [id, attrs] of Object.entries(THEME_STYLE.Live)) {
+  for (const [k, v0] of Object.entries(attrs)) {
+    const v = (typeof v0 === "string" && v0.charAt(0) === "@") ? LIVE_FB[v0.slice(1)] : v0;
+    assert.deepStrictEqual(boxMap.get(id)[k], v, `saved attribute ${id}.${k} equals the Live style (colours resolved with the fallbacks)`);
+  }
 }
 for (const id of ["obj-panel-filters", "obj-panel-playback", "obj-hdr-filters", "obj-hdr-playback", "obj-reseed-filtered-btn", "obj-reverse-btn", "obj-search-box", "obj-search-clear-btn", "obj-panel-toolbar", "obj-panel-left", "obj-panel-options", "obj-theme-tab", "obj-toggle-saved-btn", "obj-toggle-options-btn", "obj-hdr-options", "obj-lbl-theme"]) {
-  assert(THEME_STYLE.LCD[id] && THEME_STYLE.Focus[id], `${id} is restyled by both themes`);
+  assert(THEME_STYLE.LCD[id] && THEME_STYLE.Focus[id] && THEME_STYLE.Live[id], `${id} is restyled by every theme`);
 }
 assert(THEME_STYLE.LCD["obj-pitch-dial"].lcdcolor, "LCD numbox colours (lcdcolor) come from the LCD style");
 // Live drops a numbox's unit when its WIDEST value string does not fit the cell (12 pt in the 47 px filter cells
@@ -891,20 +934,21 @@ assert(THEME_STYLE.LCD["obj-pitch-dial"].lcdcolor, "LCD numbox colours (lcdcolor
 // Live sizes every single-line live.comment to exactly floor(font + 8) px whatever the patch says (measured in the
 // VM: 7 pt -> 15, 9 / 9.5 pt -> 17), using the font the theme sets, so each laid-out label must have that height
 // (else applyXoLayout and Live disagree); labels are click-through so a taller box can't block the control under it.
-for (const theme of ["LCD", "Focus"]) {
+for (const theme of THEMES) {
   const lay = xoLayout.computeXoLayout(theme, 1, 1, 1, 1);
   for (const [id, spec] of Object.entries(lay.boxes)) {
     const box = boxMap.get(id);
     if (!box || box.maxclass !== "live.comment") continue;
     const font = (THEME_STYLE[theme][id] && THEME_STYLE[theme][id].fontsize) || box.fontsize;
-    assert.strictEqual(spec.rect[3], Math.floor(font + 8), `${theme} ${id}: label height must be Live's floor(font + 8) for ${font} pt`);
+    assert.strictEqual(spec.rect[3], theme === "Live" ? Math.ceil(font + 8) : Math.floor(font + 8), `${theme} ${id}: label height must be Live's ${theme === "Live" ? "ceil" : "floor"}(font + 8) for ${font} pt`);
     assert.strictEqual(box.ignoreclick, 1, `${id}: labels are click-through`);
   }
 }
 // The ">" prompt shares the search field's (regular) weight and sits 1 px higher, because live.comment
 // insets its text 1 px more than textedit (measured in Live), so the two text lines share a baseline.
-assert.strictEqual(layAll.boxes["obj-lcd-f-prompt"].rect[1], layAll.boxes["obj-search-box"].rect[1] - 1, "LCD prompt top is 1 px above the search box top");
-assert.strictEqual(layAll.boxes["obj-lcd-f-prompt"].rect[3], 17, "LCD prompt is a label: Live's 17 px minimum for 9 pt (its text is top-aligned, so only the top sets the baseline)");
+const layLCD = xoLayout.computeXoLayout("LCD", 1, 0, 0, 0);
+assert.strictEqual(layLCD.boxes["obj-lcd-f-prompt"].rect[1], layLCD.boxes["obj-search-box"].rect[1] - 1, "LCD prompt top is 1 px above the search box top");
+assert.strictEqual(layLCD.boxes["obj-lcd-f-prompt"].rect[3], 17, "LCD prompt is a label: Live's 17 px minimum for 9 pt (its text is top-aligned, so only the top sets the baseline)");
 assert.strictEqual(boxMap.get("obj-lcd-f-prompt").fontface, 0, "LCD prompt is regular weight like the search text");
 
 // Scripting names: getnamed() needs a unique varname on every laid-out box, matching XO_LAYOUT_NAMES.
@@ -1716,7 +1760,7 @@ set_show_saved(1);
 set_show_filters(1);
 set_show_playback(1);
 mgraphics.size = [372, 134];
-for (const [id, spec] of Object.entries(computeXoLayout("LCD", 1, 1, 1, 0).boxes)) {
+for (const [id, spec] of Object.entries(computeXoLayout("Live", 1, 1, 1, 0).boxes)) {
   const vn = builtLayoutNames[id];
   assert.deepStrictEqual(fakeLayoutPatcher.rects[vn], spec.rect, `Re-showing all sections restores ${id}`);
   assert.strictEqual(fakeLayoutPatcher.hidden[vn], spec.hidden, `Re-showing all sections restores the hidden flag of ${id}`);
@@ -1729,10 +1773,11 @@ assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW mu
 {
   const hid = (id) => fakeLayoutPatcher.hidden[builtLayoutNames[id]];
   const rect = (id) => fakeLayoutPatcher.rects[builtLayoutNames[id]];
+  const rectOf = rect;
   const attr = (id, a) => (fakeLayoutPatcher.attrs[builtLayoutNames[id]] || {})[a];
-  assert.strictEqual(getXoThemeName(), "LCD", "default theme is LCD");
+  assert.strictEqual(getXoThemeName(), "Live", "default theme is Live");
   assert.strictEqual(getShowOptions(), 0, "Options section starts closed");
-  assert.strictEqual(xoPaletteName, "LCD", "the default theme's palette is active before any set_theme (the variant devices stay on \"default\")");
+  assert.strictEqual(xoPaletteName, "Live", "the default theme's palette is active before any set_theme (the variant devices stay on \"default\")");
   set_show_options(1);
   assert.strictEqual(hid("obj-panel-options"), 0);
   assert.strictEqual(hid("obj-theme-tab"), 0, "Options shows the Theme selector");
@@ -1749,7 +1794,7 @@ assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW mu
   for (const id of ["obj-pitch-dial", "obj-maxlen-dial"]) assert.strictEqual(hid(id), 1, `${id} (numbox) hidden in Focus`);
   for (const id of ["obj-pitch-dial-mir", "obj-maxlen-dial-mir", "obj-focus-tick-filters", "obj-focus-p-lbl-0"]) assert.strictEqual(hid(id), 0, `${id} shown in Focus`);
   for (const id of ["obj-lcd-f-cell-0", "obj-lcd-p-lbl-3", "obj-lcd-f-prompt"]) assert.strictEqual(hid(id), 1, `${id} hidden in Focus`);
-  assert.strictEqual(rect("obj-panel-filters")[2], 134, "Focus Filters column is slim");
+  assert.strictEqual(rect("obj-panel-filters")[2], 208, "Focus Filters column is as wide as the LCD one (one row of four dials)");
   assert.strictEqual(rect("obj-minimap")[2], 372, "the map pane is the same size in Focus (236 + Saved 136)");
   assert.deepStrictEqual(attr("obj-panel-filters", "bgcolor"), THEME_STYLE.Focus["obj-panel-filters"].bgcolor, "Focus panel colour set with setattr");
   assert.strictEqual(attr("obj-reseed-filtered-btn", "text"), "Re-Seed");
@@ -1784,6 +1829,122 @@ assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW mu
   paintCommands.length = 0;
   paint();
   assert(paintCommands.some((c) => c.op === "rgba" && c.b > c.r + 0.2), "Focus paints the original blue accents again");
+  // ---- Live theme: Live's own colours (max.getcolor), re-applied on a theme change; LCD -> Live -> Focus -> Live restores each look ----
+  {
+    const DARK = {
+      live_desktop: [0.165, 0.165, 0.165, 1], live_surface_bg: [0.212, 0.212, 0.212, 1], live_lcd_bg: [0.094, 0.094, 0.094, 1],
+      live_lcd_frame: [0.243, 0.243, 0.243, 1], live_lcd_title: [0.71, 0.71, 0.71, 1], live_lcd_control_fg: [1, 0.678, 0.337, 1],
+      live_lcd_control_fg_alt: [0.012, 0.765, 0.835, 1], live_control_bg: [0.118, 0.118, 0.118, 1], live_control_fg: [0.71, 0.71, 0.71, 1],
+      live_control_selection: [1, 0.678, 0.337, 1], live_control_zombie: [0.459, 0.459, 0.459, 1], live_alert: [0.906, 0.412, 0.259, 1],
+      live_display_line_two: [0.012, 0.765, 0.835, 1]
+    };
+    // a light Live theme: light LCD, dark text, a blue accent (made-up values; only the contrast logic matters)
+    const LIGHT = Object.assign({}, DARK, {
+      live_desktop: [0.78, 0.78, 0.78, 1], live_lcd_bg: [0.86, 0.87, 0.88, 1], live_lcd_title: [0.30, 0.30, 0.30, 1], live_lcd_frame: [0.70, 0.70, 0.70, 1],
+      live_control_bg: [0.62, 0.62, 0.62, 1], live_control_fg: [0.10, 0.10, 0.10, 1], live_control_selection: [0.0, 0.45, 0.85, 1],
+      live_display_line_two: [0.0, 0.55, 0.60, 1], live_alert: [0.80, 0.20, 0.10, 1]
+    });
+    let theme = DARK, getcolorCalls = 0;
+    global.max = { getcolor(n) { getcolorCalls++; return theme[n] || null; } };
+    const taskLog = [];
+    global.Task = class { constructor(fn) { this.fn = fn; this.interval = 0; taskLog.push(this); } repeat() { this.on = true; } cancel() { this.on = false; } };
+    const attr = (id, a) => (fakeLayoutPatcher.attrs[builtLayoutNames[id]] || {})[a];
+    const hid = (id) => fakeLayoutPatcher.hidden[builtLayoutNames[id]];
+    const resolve = (v) => (typeof v === "string" && v.charAt(0) === "@") ? theme[v.slice(1)] : v;
+    const wantStyle = (name, id, a) => { const v = resolve(THEME_STYLE[name][id][a]); return Array.isArray(v) ? v : v; };
+    const sameAttrs = (name, th) => {
+      theme = th;
+      for (const [id, attrs] of Object.entries(THEME_STYLE[name])) for (const a of Object.keys(attrs)) {
+        const want = resolve(attrs[a]), got = attr(id, a);
+        assert.deepStrictEqual(got, want, `${name}: ${id}.${a} is ${JSON.stringify(want)} after selecting the theme (got ${JSON.stringify(got)})`);
+      }
+    };
+    assert(THEME_STYLE.Live["obj-panel-filters"].bgcolor === "@live_desktop", "Live panels use the section colour token");
+    // every Live colour token is a name the palette knows (so a typo cannot reach Live)
+    for (const attrs of Object.values(THEME_STYLE.Live)) for (const v of Object.values(attrs)) if (typeof v === "string" && v.charAt(0) === "@") assert(xoLiveColor(v.slice(1)).length === 4 && XO_LIVE_FALLBACK[v.slice(1)], `colour token ${v} has a fallback`);
+    set_theme(2);
+    set_show_options(1);
+    assert.strictEqual(getXoThemeName(), "Live");
+    assert.strictEqual(xoPaletteName, "Live");
+    assert.strictEqual(taskLog.filter((t) => t.on).length, 1, "the theme watcher runs while the Live theme is on");
+    assert.strictEqual(taskLog[taskLog.length - 1].interval, 1000, "watcher polls once a second");
+    // layout: Focus geometry, Live-only hairlines, no Focus ticks, dial mirrors, labels
+    assert.strictEqual(rectOf("obj-panel-filters")[2], 208);
+    for (const id of ["obj-rule-filters", "obj-rule-playback", "obj-rule-options", "obj-rule-searches", "obj-pitch-dial-mir", "obj-focus-f-lbl-1"]) assert.strictEqual(hid(id), 0, `${id} shown in Live`);
+    for (const id of ["obj-focus-tick-filters", "obj-focus-tick-playback", "obj-pitch-dial", "obj-lcd-f-cell-0", "obj-lcd-f-prompt"]) assert.strictEqual(hid(id), 1, `${id} hidden in Live`);
+    sameAttrs("Live", DARK);
+    assert.deepStrictEqual(attr("obj-panel-filters", "bgcolor"), DARK.live_desktop, "panels use max.getcolor(live_desktop)");
+    assert.deepStrictEqual(attr("obj-reverse-btn", "activebgoncolor"), DARK.live_control_selection, "toggle on = the theme's accent");
+    assert.strictEqual(attr("obj-hdr-filters", "text"), "Filters", "Live titles are title case");
+    assert.strictEqual(attr("obj-hdr-filters", "fontname"), "Ableton Sans Medium");
+    // theme change in Live: the watcher notices, the Live style is applied again with the new colours (panels, buttons, text)
+    const watcher = taskLog.find((t) => t.on);
+    const before = getcolorCalls;
+    watcher.fn();
+    assert.strictEqual(attr("obj-panel-filters", "bgcolor") && getcolorCalls > before, true);
+    assert.deepStrictEqual(attr("obj-panel-filters", "bgcolor"), DARK.live_desktop, "unchanged colours: nothing re-applied");
+    theme = LIGHT;
+    watcher.fn();
+    sameAttrs("Live", LIGHT);
+    assert.deepStrictEqual(attr("obj-panel-filters", "bgcolor"), LIGHT.live_desktop, "a Live theme change re-applies the panel colour");
+    assert.deepStrictEqual(attr("obj-search-box", "bgcolor"), LIGHT.live_lcd_bg);
+    // palette follows the theme: dark and light LCD
+    const pal = (th) => {
+      theme = th; xoLiveRefresh();
+      const ids = ["kick", "snare", "hihat", "clap", "perc", "shaker", "cymbal", "voice"];
+      return { cols: ids.map((c) => xoPaletteCat(c, [0, 0, 1, 1])).concat([xoPaletteCat("none", [0, 0, 1, 1]), xoPaletteCat("ALL", [0, 0, 1, 1])]), ids };
+    };
+    for (const [nm, th] of [["dark", DARK], ["light", LIGHT]]) {
+      const { cols, ids } = pal(th);
+      const bg = th.live_lcd_bg;
+      const lum = (c) => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+      for (let i = 0; i < cols.length; i++) for (let j = i + 1; j < cols.length; j++) {
+        const d = Math.hypot(cols[i][0] - cols[j][0], cols[i][1] - cols[j][1], cols[i][2] - cols[j][2]);
+        assert(d > 0.18, `Live palette (${nm} theme): colours ${i}/${j} are distinguishable (${d.toFixed(2)})`);
+      }
+      for (let i = 0; i < 8; i++) assert(Math.abs(lum(cols[i]) - lum(bg)) > 0.25, `Live palette (${nm}): category ${ids[i]} contrasts with the LCD background`);
+      const bgMapped = xoPaletteColor(0.04, 0.05, 0.07, 1);
+      assert(Math.abs(lum(bgMapped) - lum(bg)) < 0.08, `Live palette (${nm}): the map's near-black maps to the LCD background (${bgMapped})`);
+      const txt = xoPaletteColor(1, 1, 1, 0.5);
+      assert(Math.abs(lum(txt) - lum(bg)) > 0.4 && txt[3] === 0.5, `Live palette (${nm}): white maps to a text colour with contrast, alpha kept (${txt})`);
+      const acc = xoPaletteColor(0.22, 0.74, 0.97, 0.9);
+      assert.deepStrictEqual(acc, [th.live_control_selection[0], th.live_control_selection[1], th.live_control_selection[2], 0.9], `Live palette (${nm}): the blue accent becomes live_control_selection`);
+    }
+    theme = DARK; xoLiveRefresh();
+    // the map paints with the mocked Live colours only (no amber / blue leftovers): every opaque colour is near the ramp or an accent
+    paintCommands.length = 0;
+    paint();
+    assert(paintCommands.filter((c) => c.op === "rgba").length > 20, "the Live theme paints the map");
+    // v8ui chrome: titles and mini buttons use Live's neutral control colours, not the accent; titles are title case
+    paintCommands.length = 0;
+    xoRole("title", 1, 0.71, 0.2, 1); xoRole("btn", 0.2, 0.74, 0.45, 0.28); xoRole("btntext", 0.35, 0.9, 0.55, 1);
+    const near3 = (c, want) => Math.abs(c.r - want[0]) < 1e-6 && Math.abs(c.g - want[1]) < 1e-6 && Math.abs(c.b - want[2]) < 1e-6;
+    const rg = paintCommands.filter((c) => c.op === "rgba");
+    assert(near3(rg[0], DARK.live_lcd_title), "Live title colour = live_lcd_title (not amber)");
+    assert(near3(rg[2], DARK.live_control_fg), "Live mini-button text = live_control_fg (not teal)");
+    assert(rg[1].a === 1 && Math.abs(rg[1].r - rg[1].b) < 0.01, "Live mini-button fill is a neutral grey");
+    assert.strictEqual(xoTitleText("SAVED (2)", "Saved (2)"), "Saved (2)");
+    xoPaletteSet("LCD");
+    paintCommands.length = 0; xoRole("title", 1, 0.71, 0.2, 1);
+    assert.strictEqual(xoTitleText("SAVED (2)", "Saved (2)"), "SAVED (2)", "other themes keep upper case");
+    assert(paintCommands.some((c) => c.op === "rgba" && c.r > c.b), "other themes paint the given colour (amber-mapped)");
+    xoPaletteSet("Live");
+    // LCD -> Live -> Focus -> Live restores each theme's attributes
+    set_theme(0);
+    assert.strictEqual(taskLog.filter((t) => t.on).length, 0, "the watcher stops when the Live theme is left (no polling in LCD)");
+    sameAttrs("LCD", DARK);
+    assert.strictEqual(attr("obj-hdr-filters", "text"), "FILTERS");
+    set_theme(1);
+    sameAttrs("Focus", DARK);
+    assert.strictEqual(attr("obj-hdr-filters", "text"), "FILTERS");
+    assert.deepStrictEqual(attr("obj-focus-f-lbl-0", "fontname"), "Arial", "Focus restores its labels' font");
+    set_theme(2);
+    sameAttrs("Live", DARK);
+    assert.strictEqual(taskLog.filter((t) => t.on).length, 1, "one watcher again after returning to Live");
+    set_theme(0);
+    set_show_options(0);
+    delete global.max; delete global.Task;
+  }
   set_theme(0);
   // Repeated section toggles with the same theme stay consistent
   set_show_filters(0); set_show_filters(1);
@@ -1962,6 +2123,13 @@ const folderCtx = vm.createContext({
   String
 });
 vm.runInContext(folderJs, folderCtx, { filename: "xo_folder_ui.js" });
+// the folder list follows Options > Theme too: index 2 = the Live palette (no Task / max in this context: the fallback colours)
+folderCtx.set_theme(2);
+assert.strictEqual(vm.runInContext("xoPaletteName", folderCtx), "Live", "folder list: Theme 2 selects the Live palette");
+assert.strictEqual(typeof folderCtx.xoLiveThemeChanged, "function", "folder list repaints on a Live theme change");
+folderCtx.set_theme(1);
+assert.strictEqual(vm.runInContext("xoPaletteName", folderCtx), "Focus");
+folderCtx.set_theme("LCD");
 // Pass flags = 3 (bit 0 = enabled, bit 1 = scanning) on row 1 ("User Pack")
 folderCtx.folder_list_sync(2, 1, 80, "Ableton Core Drums", "/CoreDrums", 3, 42, "User Pack", "/UserPack");
 assert.strictEqual(folderCtx.getFolders().length, 2);
@@ -2309,7 +2477,7 @@ setTimeout(() => {
   const cellW = getLayout().mapW / xoX.TOOLBAR_ITEMS.length;
   assert(cellW >= 18, `toolbar cells stay >= 18 px wide (${cellW.toFixed(2)})`);
   // distinct colours in both palettes
-  for (const palette of ["Focus", "LCD"]) {
+  for (const palette of ["Focus", "LCD", "Live"]) {
     xoPaletteSet(palette);
     const cols = xoX.CATEGORIES.map((c) => xoPaletteCat(c.id, c.color)).concat([xoPaletteCat("none", xoX.CAT_NONE_COLOR)]);
     assert.strictEqual(new Set(cols.map((c) => c.slice(0, 3).join())).size, cols.length, `${palette}: every category and "none" has its own colour`);
@@ -2534,7 +2702,7 @@ setTimeout(() => {
     assert(lf("obj-searches-reset").includes("obj-prep-terms-reset") && lf("obj-prep-terms-reset").includes("obj-minimap"));
     assert(lf("obj-searches-folders").includes("obj-prep-match-folders") && lf("obj-prep-match-folders").includes("obj-minimap"));
     assert.strictEqual(boxMap.get("obj-prep-terms-text").text, "prepend set_terms_text");
-    for (const th of ["LCD", "Focus"]) for (let m = 0; m < 16; m++) {
+    for (const th of THEMES) for (let m = 0; m < 16; m++) {
       const lay3 = computeXoLayout(th, m & 1, (m >> 1) & 1, (m >> 2) & 1, (m >> 3) & 1);
       const panel = lay3.boxes["obj-panel-options"].rect;
       const ids2 = ["obj-hdr-options", "obj-lbl-theme", "obj-theme-tab", "obj-lbl-zoom", "obj-zoom-speed", "obj-lbl-map", "obj-map-samples", "obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders"];
@@ -2561,7 +2729,7 @@ setTimeout(() => {
       const lf2 = (from) => p.lines.map((l) => l.patchline).filter((l) => l.source[0] === from).map((l) => l.destination[0]);
       assert(lf2("obj-zoom-speed").includes("obj-prep-zoomspeed") && lf2("obj-prep-zoomspeed").includes("obj-minimap"), "Zoom Speed reaches the v8ui");
       assert.strictEqual(boxMap.get("obj-lbl-zoom").ignoreclick, 1, "the label is click-through");
-      for (const th of ["LCD", "Focus"]) assert(THEME_STYLE[th]["obj-zoom-speed"] && THEME_STYLE[th]["obj-lbl-zoom"], `${th} styles the Zoom Speed widgets`);
+      for (const th of THEMES) assert(THEME_STYLE[th]["obj-zoom-speed"] && THEME_STYLE[th]["obj-lbl-zoom"], `${th} styles the Zoom Speed widgets`);
     }
     // Map Samples: appended stored-only float parameter with Int display (Live's Int stops at 255), label + numbox in the Options panel
     {
@@ -2572,12 +2740,12 @@ setTimeout(() => {
       const lf3 = (from) => p.lines.map((l) => l.patchline).filter((l) => l.source[0] === from).map((l) => l.destination[0]);
       assert(lf3("obj-map-samples").includes("obj-prep-mapsamples") && lf3("obj-prep-mapsamples").includes("obj-minimap"), "Map Samples reaches the v8ui");
       assert.strictEqual(boxMap.get("obj-lbl-map").ignoreclick, 1, "the label is click-through");
-      for (const th of ["LCD", "Focus"]) assert(THEME_STYLE[th]["obj-map-samples"] && THEME_STYLE[th]["obj-lbl-map"], `${th} styles the Map Samples widgets`);
+      for (const th of THEMES) assert(THEME_STYLE[th]["obj-map-samples"] && THEME_STYLE[th]["obj-lbl-map"], `${th} styles the Map Samples widgets`);
       assert.strictEqual(boxMap.get("obj-map-samples").presentation, 1);
     }
     // both themes style every new box
     for (const id of ["obj-lbl-searches", "obj-searches-cat", "obj-searches-terms", "obj-searches-reset", "obj-searches-folders"]) {
-      assert(THEME_STYLE.LCD[id] && THEME_STYLE.Focus[id], `${id} is styled by both themes`);
+      assert(THEME_STYLE.LCD[id] && THEME_STYLE.Focus[id] && THEME_STYLE.Live[id], `${id} is styled by every theme`);
     }
   }
 

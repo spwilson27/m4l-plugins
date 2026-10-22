@@ -1,6 +1,6 @@
 # XO Sample Map layouts — contributor note
 
-`devices/XO Sample Map.amxd` is ONE device with two switchable looks ("themes": **LCD** and **Focus**, the former variants D and E),
+`devices/XO Sample Map.amxd` is ONE device with three switchable looks ("themes": **LCD** and **Focus**, the former variants D and E, and **Live**: Ableton's own look in Live's theme colours, Focus geometry),
 chosen at runtime in its Options section (Live parameter `Theme`). Its layout module is `default`
 (`scripts/xo_layouts/default.py` + `src/xo_layouts/default.js`). Variants A..E build to `devices/XO Sample Map <V>.amxd` from the same
 engine, v8ui scripts and parameter set; they are the earlier look experiments (D and E are the reference builds of the two themes;
@@ -18,7 +18,7 @@ A, B and C were not picked but still build and pass).
   the theme changes and on load), `WIDTH_EXPR` (`obj-expr-width`: plain arithmetic over `$i1..$i5` = saved filters playback options theme, no `if()` / commas:
   a comma inside an `expr` box must be escaped in Max) and `customize` (the presentation-only extras: LCD cells / labels, Focus ticks / labels, the
   Options header, the parameter mirrors and their `prepend set` wiring).
-- **Adding a themed box:** add it to `layout_boxes` (Python) and `computeXoLayout` (JS) with its section and `only` theme, create it in
+- **Adding a themed box:** add it to `layout_boxes` (Python) and `computeXoLayout` (JS) with its section and `only` tag (`""`, `LCD`, `Focus`, `Live` or `Dials` = Focus + Live), create it in
   `customize`, and give it a `varname` (the build does when missing). **Adding a theme:** extend `XO_THEMES`, `XO_FILTERS_W` /
   `XO_PLAYBACK_W`, `THEMES`, `THEME_STYLE`, `WIDTH_EXPR`, the palette (`src/xo_palette.js`) and the Theme tab's enum (appending
   keeps saved sets valid). **Adding an option:** the Options panel (190 px) is full down to y = 157 (Theme / Zoom Speed / Map Samples, then Searches: picker, terms field, Reset, Match folders); widen it first, then add the control and, if it must persist, a new appended Live parameter (or a field of the XOStateData blob, as the Searches terms do).

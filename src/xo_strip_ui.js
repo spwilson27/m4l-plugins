@@ -943,7 +943,7 @@ function set_show_options(...args) {
   applyXoLayout();
 }
 
-/** Theme switch (Options > Theme): `set_theme <index>` or `set_theme <name>` ("LCD" | "Focus"). */
+/** Theme switch (Options > Theme): `set_theme <index>` or `set_theme <name>` ("LCD" | "Focus" | "Live"). */
 function set_theme(...args) {
   if (typeof XO_THEMES === "undefined") return;
   const a = args.length ? args[args.length - 1] : 0;
@@ -995,13 +995,23 @@ function applyXoThemeStyle(pat) {
     if (!obj) continue;
     const attrs = table[id];
     for (const attr of Object.keys(attrs)) {
-      const v = attrs[attr];
+      let v = attrs[attr];
+      // "@live_<name>" = a Live theme colour, read now with max.getcolor (the Live theme re-applies on a theme change)
+      if (typeof v === "string" && v.charAt(0) === "@") v = xoLiveColor(v.slice(1));
       try {
         if (Array.isArray(v)) obj.setattr(attr, ...v); else obj.setattr(attr, v);
       } catch (e) {}
     }
   }
   xoStyledTheme = name;
+}
+
+/** Called by the palette's theme watcher (src/xo_palette.js) when Live's theme colours changed while the Live theme is on:
+ *  re-applies the Live style (the colours are read again) and repaints. */
+function xoLiveThemeChanged() {
+  xoStyledTheme = "";
+  applyXoLayout();
+  mgraphics.redraw();
 }
 
 // Moves / hides every laid-out box for the current theme and section visibility (src/xo_layouts/<name>.js)
@@ -2827,15 +2837,15 @@ function paint() {
 
   mgraphics.select_font_face("Arial", "normal", "bold");
   mgraphics.set_font_size(8.5);
-  xoSrc(1.0, 0.71, 0.20, 1.0);
+  xoRole("title", 1.0, 0.71, 0.20, 1.0);
   mgraphics.move_to(savedX + 5, 13.5);
-  mgraphics.show_text(`SAVED (${savedList.length})`);
+  mgraphics.show_text(xoTitleText(`SAVED (${savedList.length})`, `Saved (${savedList.length})`));
 
   // "+Save" mini button in header
-  xoSrc(0.20, 0.74, 0.45, 0.28);
+  xoRole("btn", 0.20, 0.74, 0.45, 0.28);
   mgraphics.rectangle_rounded(savedX + 65, 3, 42, 14, 2, 2);
   mgraphics.fill();
-  xoSrc(0.35, 0.90, 0.55, 1.0);
+  xoRole("btntext", 0.35, 0.90, 0.55, 1.0);
   mgraphics.move_to(savedX + 73, 13);
   mgraphics.show_text("+Save");
 
@@ -2922,10 +2932,10 @@ function paint() {
       mgraphics.show_text("R");
 
       // [E] Edited Drag Handle
-      xoSrc(0.22, 0.74, 0.97, 0.25);
+      xoRole("btn", 0.22, 0.74, 0.97, 0.25);
       mgraphics.rectangle_rounded(editX, ry + 3, 15, 15, 2, 2);
       mgraphics.fill();
-      xoSrc(0.22, 0.74, 0.97, 1.0);
+      xoRole("btntext", 0.22, 0.74, 0.97, 1.0);
       mgraphics.move_to(editX + 4.2, ry + 13);
       mgraphics.show_text("E");
 
@@ -2974,10 +2984,10 @@ function paint() {
   mgraphics.move_to(savedX + 14, lay.savedBottomY + 14);
   mgraphics.show_text("Drag Raw");
 
-  xoSrc(1.0, 0.69, 0.18, 0.24);
+  xoRole("btn", 1.0, 0.69, 0.18, 0.24);
   mgraphics.rectangle_rounded(savedX + 5 + halfW, lay.savedBottomY + 3, halfW, toolbarH - 6, 2, 2);
   mgraphics.fill();
-  xoSrc(1.0, 0.73, 0.22, 1.0);
+  xoRole("btntext", 1.0, 0.73, 0.22, 1.0);
   mgraphics.move_to(savedX + 16 + halfW, lay.savedBottomY + 14);
   mgraphics.show_text("Drag Edit");
 }
@@ -3283,13 +3293,24 @@ function test_report() {
         mirrorAttrs[key] = at;
       }
     }
-    for (const id of ["obj-panel-filters", "obj-panel-playback", "obj-panel-options", "obj-hdr-filters", "obj-reseed-filtered-btn"]) {
+    for (const id of ["obj-panel-filters", "obj-panel-playback", "obj-panel-options", "obj-hdr-filters", "obj-reseed-filtered-btn",
+      "obj-reverse-btn", "obj-search-box", "obj-theme-tab", "obj-hdr-playback"]) {
       const obj = pat.getnamed(XO_LAYOUT_NAMES[id] || id);
       if (!obj) continue;
-      try {
-        styled[id] = { bgcolor: Array.prototype.slice.call(obj.getattr("bgcolor")), text: String(obj.getattr("text")) };
-      } catch (e) {}
+      /** @type {Object<string, any>} */
+      const st = {};
+      for (const a of ["bgcolor", "textcolor", "activebgoncolor", "activetextcolor"]) {
+        try { st[a] = Array.prototype.slice.call(obj.getattr(a)); } catch (e) {}
+      }
+      try { st.text = String(obj.getattr("text")); } catch (e) {}
+      styled[id] = st;
     }
+  }
+  // Live's theme colours as max.getcolor reports them right now (the Live theme must have applied exactly these)
+  /** @type {Object<string, any>} */
+  const liveColors = {};
+  for (const n of ["live_desktop", "live_lcd_bg", "live_control_selection", "live_lcd_title", "live_control_fg", "live_control_bg"]) {
+    try { liveColors[n] = Array.prototype.slice.call(max.getcolor(n)); } catch (e) { liveColors[n] = null; }
   }
   let devWidth = -1;
   try { devWidth = Number(pat.getattr("devicewidth")); } catch (e) {}
@@ -3318,6 +3339,8 @@ function test_report() {
     mirrorAttrs: mirrorAttrs,
     sources: sources,
     styled: styled,
+    liveColors: liveColors,
+    palette: xoPaletteName,
     boxes: boxes,
     width: xoLastWidth,
     devicewidthAttr: devWidth,

@@ -9,11 +9,11 @@
  * reaches the mini-map v8ui (`test_report`, `test_select`, `test_replay`, `test_wheel`, `test_click`, ...) and
  * `test_report` writes its state to Global("xo_test") as `last`. Checks:
  *   a  device loads, node.codebox indexes (map points arrive)
- *   b  every Saved / Filters / Playback (x Options) combination, in BOTH themes (LCD, Focus), matches computeXoLayout (rects,
- *      hidden, device width, map pane); the map pane is the same width in both themes; Options shows the Theme selector and the
+ *   b  every Saved / Filters / Playback (x Options) combination, in ALL THREE themes (LCD, Focus, Live), matches computeXoLayout (rects,
+ *      hidden, device width, map pane); the map pane is the same width in every theme; Options shows the Theme selector and the
  *      theme style (panel colours, button texts) is applied
  *   b2 theme mirrors: set a parameter through the LOM -> its live.dial / live.numbox mirror shows it; change it through the
- *      mirror -> the LOM parameter follows (both themes)
+ *      mirror -> the LOM parameter follows (all three themes)
  *   c  a sample is selected and `selected_wave` arrives with n > 0 columns
  *   h  category search by words: each toolbar category (clicked through test_toolbar) shows only samples whose name / folders match
  *      the category's terms (counts per category are printed); editing a category's terms through the Options text field
@@ -153,8 +153,8 @@ try {
     // ---- a2. a new instance starts with the toolbar, map and Saved list only ----
     if (THEMED) {
         const x = rep0;
-        check(x.sections.join() === "1,0,0" && x.options === 0 && x.width === computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth,
-            `a2. a new instance starts with Saved only: sections ${x.sections}, options ${x.options}, width ${x.width} (expected 1,0,0 / 0 / ${computeXoLayout("LCD", 1, 0, 0, 0).deviceWidth})`);
+        check(x.sections.join() === "1,0,0" && x.options === 0 && x.theme === "Live" && x.palette === "Live" && x.width === computeXoLayout("Live", 1, 0, 0, 0).deviceWidth,
+            `a2. a new instance starts in the Live theme with Saved only: sections ${x.sections}, options ${x.options}, theme ${x.theme}, palette ${x.palette}, width ${x.width} (expected 1,0,0 / 0 / Live / ${computeXoLayout("Live", 1, 0, 0, 0).deviceWidth})`);
     }
 
     // ---- c. select a sample ----
@@ -273,7 +273,19 @@ try {
                     // the Options section shows the Theme selector; the theme's style was applied with setattr
                     if (o && r.boxes["obj-theme-tab"].hidden !== 0) errs.push("Options open but the Theme selector is hidden");
                     const pc = r.styled["obj-panel-filters"] && r.styled["obj-panel-filters"].bgcolor;
-                    if (!pc || pc.some((v, i) => !near(v, THEME_STYLE_PANEL[theme][i], 0.01))) errs.push(`Filters panel colour ${JSON.stringify(pc)}, expected ${JSON.stringify(THEME_STYLE_PANEL[theme])}`);
+                    const wantPanel = theme === "Live" ? r.liveColors.live_desktop : THEME_STYLE_PANEL[theme];
+                    if (!pc || !wantPanel || pc.some((v, i) => !near(v, wantPanel[i], 0.01))) errs.push(`Filters panel colour ${JSON.stringify(pc)}, expected ${JSON.stringify(wantPanel)}`);
+                    if (theme === "Live") {
+                        // the Live theme applies exactly what max.getcolor reports in Live (read in the same report)
+                        const lc = r.liveColors, sty = r.styled;
+                        const eq = (got, want, what) => { if (!got || !want || got.some((v, i) => !near(v, want[i], 0.01))) errs.push(`${what}: ${JSON.stringify(got)}, max.getcolor says ${JSON.stringify(want)}`); };
+                        eq(sty["obj-search-box"] && sty["obj-search-box"].bgcolor, lc.live_lcd_bg, "search field background = live_lcd_bg");
+                        eq(sty["obj-reverse-btn"] && sty["obj-reverse-btn"].activebgoncolor, lc.live_control_selection, "Reverse (on) = live_control_selection");
+                        eq(sty["obj-hdr-filters"] && sty["obj-hdr-filters"].textcolor, lc.live_lcd_title, "section title = live_lcd_title");
+                        eq(sty["obj-theme-tab"] && sty["obj-theme-tab"].activebgoncolor, lc.live_control_selection, "Theme tab selection = live_control_selection");
+                        if (r.palette !== "Live") errs.push(`palette ${r.palette}`);
+                    }
+                    // (a live.comment reports no `text` attribute through getattr, so the title text cannot be read back)
                     const rs = r.styled["obj-reseed-filtered-btn"];
                     if (!rs || rs.text !== (theme === "LCD" ? "RESEED" : "Re-Seed")) errs.push(`Re-Seed button text ${rs && rs.text}`);
                     widths[`${theme}/${s}`] = r.boxes["obj-minimap"].rect[2];
@@ -282,14 +294,14 @@ try {
                 else console.log(`  ${theme || "-"} S${s}F${f}P${p}O${o}: width ${r.width}, mapW ${r.mapW}, ${Object.keys(exp.boxes).length} boxes ok`);
             }
         }
-        check(bad.length === 0, `b. all ${THEMED ? "2 themes x 16" : "8"} section combinations match computeXoLayout (rects, hidden, device width, map pane${THEMED ? ", Theme selector, theme style" : ""})` + (bad.length ? "\n   " + bad.join("\n   ") : ""));
-        if (THEMED) check(widths["LCD/0"] === widths["Focus/0"] && widths["LCD/1"] === widths["Focus/1"], `b. the map pane has the same width in both themes (${JSON.stringify(widths)})`);
+        check(bad.length === 0, `b. all ${THEMED ? "3 themes x 16" : "8"} section combinations match computeXoLayout (rects, hidden, device width, map pane${THEMED ? ", Theme selector, theme style" : ""})` + (bad.length ? "\n   " + bad.join("\n   ") : ""));
+        if (THEMED) check(THEMES.every((t) => widths[t + "/0"] === widths["LCD/0"] && widths[t + "/1"] === widths["LCD/1"]), `b. the map pane has the same width in every theme (${JSON.stringify(widths)})`);
         hook("test_section", "saved", 1); hook("test_section", "filters", 1); hook("test_section", "playback", 1);
-        if (THEMED) { hook("test_section", "options", 0); hook("test_theme", "LCD"); }
+        if (THEMED) { hook("test_section", "options", 0); hook("test_theme", "Live"); }
         sleep(500);
     }
 
-    // ---- b2. mirrors: hidden twin parameters, LOM parameter <-> mirror, both themes ----
+    // ---- b2. mirrors: hidden twin parameters, LOM parameter <-> mirror, all themes ----
     if (THEMED) {
         // LOM name -> mirror box id. The mirror is a hidden parameter (invisible 2, not in the LOM), so what it DISPLAYS is
         // fixed by the attributes Max applied (range, unit style, exponent, enum, steps) and its value: both are compared
@@ -357,8 +369,8 @@ try {
             }
         }
         for (const line of table) console.log("  " + line);
-        check(bad.length === 0, "b2. hidden twin parameters: same attributes (range / unit / exponent / enum) as the sources, same value and display, in sync both ways without a feedback loop, 10 controls x 2 themes" + (bad.length ? "\n   " + bad.join("\n   ") : ""));
-        hook("test_theme", "LCD");
+        check(bad.length === 0, "b2. hidden twin parameters: same attributes (range / unit / exponent / enum) as the sources, same value and display, in sync both ways without a feedback loop, 10 controls x 3 themes" + (bad.length ? "\n   " + bad.join("\n   ") : ""));
+        hook("test_theme", "Live");
         restore();
         sleep(300);
     }
