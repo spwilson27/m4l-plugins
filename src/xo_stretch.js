@@ -32,6 +32,8 @@
  */
 
 var XS_PI = Math.PI;
+var XS_TWO_PI = 2 * XS_PI;
+var XS_INV_TWO_PI = 1 / XS_TWO_PI;
 
 function xsClamp(v, lo, hi) {
   return v < lo ? lo : (v > hi ? hi : v);
@@ -39,7 +41,8 @@ function xsClamp(v, lo, hi) {
 
 /* ------------------------------------------------------------------ FFT */
 
-/** @type {Object<number, {cos: Float64Array, sin: Float64Array, rev: Uint32Array}>} */
+/** @typedef {{size: number, half: number, cos: Float64Array, sin: Float64Array}} XsFftStage */
+/** @type {Object<number, {cos: Float64Array, sin: Float64Array, rev: Uint32Array, stages: XsFftStage[]}>} */
 var xsFftPlans = {};
 
 /** @param {number} n power of two */
@@ -49,8 +52,8 @@ function xsFftPlan(n) {
   var cs = new Float64Array(n >> 1);
   var sn = new Float64Array(n >> 1);
   for (var i = 0; i < (n >> 1); i++) {
-    cs[i] = Math.cos(2 * XS_PI * i / n);
-    sn[i] = Math.sin(2 * XS_PI * i / n);
+    cs[i] = Math.cos(XS_TWO_PI * i / n);
+    sn[i] = Math.sin(XS_TWO_PI * i / n);
   }
   var rev = new Uint32Array(n);
   var bits = Math.round(Math.log2(n));
@@ -59,7 +62,21 @@ function xsFftPlan(n) {
     for (var b = 0; b < bits; b++) if (j & (1 << b)) r |= 1 << (bits - 1 - b);
     rev[j] = r;
   }
-  plan = { cos: cs, sin: sn, rev: rev };
+  // Per-stage twiddles so the butterfly indexes sequentially instead of striding through the full table.
+  /** @type {XsFftStage[]} */
+  var stages = [];
+  for (var size = 2; size <= n; size <<= 1) {
+    var half = size >> 1;
+    var step = n / size;
+    var stC = new Float64Array(half);
+    var stS = new Float64Array(half);
+    for (var k = 0, t = 0; k < half; k++, t += step) {
+      stC[k] = cs[t];
+      stS[k] = sn[t];
+    }
+    stages.push({ size: size, half: half, cos: stC, sin: stS });
+  }
+  plan = { cos: cs, sin: sn, rev: rev, stages: stages };
   xsFftPlans[n] = plan;
   return plan;
 }
@@ -82,13 +99,17 @@ function xsFft(re, im, n, inverse) {
     }
   }
   var sgn = inverse ? 1 : -1;
-  for (var size = 2; size <= n; size <<= 1) {
-    var half = size >> 1;
-    var step = n / size;
+  var stages = plan.stages;
+  for (var si = 0; si < stages.length; si++) {
+    var st = stages[si];
+    var half = st.half;
+    var size = st.size;
+    var stC = st.cos;
+    var stS = st.sin;
     for (var s = 0; s < n; s += size) {
-      for (var k = 0, t = 0; k < half; k++, t += step) {
-        var wr = plan.cos[t];
-        var wi = sgn * plan.sin[t];
+      for (var k = 0; k < half; k++) {
+        var wr = stC[k];
+        var wi = sgn * stS[k];
         var a = s + k;
         var b = a + half;
         var xr = re[b] * wr - im[b] * wi;
@@ -102,10 +123,16 @@ function xsFft(re, im, n, inverse) {
   }
 }
 
+/** Hann windows cached by length (4096, 8192, 16384, 32768, and grain sizes). @type {Object<number, Float64Array>} */
+var xsHannCache = {};
+
 /** @param {number} n */
 function xsHann(n) {
-  var w = new Float64Array(n);
-  for (var i = 0; i < n; i++) w[i] = 0.5 * (1 - Math.cos(2 * XS_PI * i / n));
+  var w = xsHannCache[n];
+  if (w) return w;
+  w = new Float64Array(n);
+  for (var i = 0; i < n; i++) w[i] = 0.5 * (1 - Math.cos(XS_TWO_PI * i / n));
+  xsHannCache[n] = w;
   return w;
 }
 
@@ -285,6 +312,7 @@ function xsGranularChannel(src, outFrames, sr, grainMs, pitchRatio, scanRate, pr
   var grainLen = Math.max(64, Math.round((grainMs / 1000.0) * sr));
   var hop = Math.max(16, Math.floor(grainLen / 4));
   var normGain = 0.5; // 4x Hann overlap sums to 2.0 -> * 0.5 = 1.0
+  var win = xsHann(grainLen);
   for (var g0 = -grainLen + hop; g0 < outFrames; g0 += hop) {
     var srcOrigin = Math.max(0, g0 * scanRate);
     for (var n = 0; n < grainLen; n++) {
@@ -297,8 +325,7 @@ function xsGranularChannel(src, outFrames, sr, grainMs, pitchRatio, scanRate, pr
       var s0 = src[idx0];
       var s1 = (idx0 + 1) < srcLen ? src[idx0 + 1] : s0;
       var samp = s0 + frac * (s1 - s0);
-      var w = 0.5 * (1.0 - Math.cos((2.0 * XS_PI * n) / grainLen));
-      grainBuf[outIdx] += samp * w * normGain;
+      grainBuf[outIdx] += samp * win[n] * normGain;
     }
   }
   // Preserve initial attack transient (first 10 ms) and crossfade into the granular body
@@ -527,7 +554,7 @@ function xsBuildTimeMap(lenIn, lenOut, onsets, N, sr) {
 
 /** @param {number} a */
 function xsWrap(a) {
-  return a - 2 * XS_PI * Math.round(a / (2 * XS_PI));
+  return a - XS_TWO_PI * Math.round(a * XS_INV_TWO_PI);
 }
 
 /**
@@ -559,6 +586,10 @@ function xsComplexStretch(chans, sr, lenOut, o) {
   var mag = new Float64Array(half + 1);
   var rotC = new Float64Array(half + 1), rotS = new Float64Array(half + 1);
   var peaks = new Int32Array(half + 1);
+  var pkRot = new Float64Array(half + 1); // reused across hops (no per-hop Float64Array)
+  var expectedAdv = new Float64Array(half + 1);
+  var invN = 1 / N;
+  for (var ek = 0; ek <= half; ek++) expectedAdv[ek] = XS_TWO_PI * ek * invN;
   var m0 = -3;
   var mEnd = Math.ceil((lenOut + half) / Hs) + 1;
   var anaEnergy = new Float64Array(mEnd - m0 + 1);
@@ -584,7 +615,7 @@ function xsComplexStretch(chans, sr, lenOut, o) {
     for (var k = 0; k <= half; k++) {
       var sr_ = 0, si_ = 0;
       for (var cc = 0; cc < C; cc++) { sr_ += specRe[cc][k]; si_ += specIm[cc][k]; }
-      mag[k] = Math.hypot(sr_, si_);
+      mag[k] = Math.sqrt(sr_ * sr_ + si_ * si_);
       ana[k] = Math.atan2(si_, sr_);
     }
     if (isHold || first) {
@@ -601,7 +632,7 @@ function xsComplexStretch(chans, sr, lenOut, o) {
       if (np === 0) {
         // plain per-bin propagation (also the fallback with no peaks)
         for (var k2 = 0; k2 <= half; k2++) {
-          var w0 = 2 * XS_PI * k2 / N;
+          var w0 = expectedAdv[k2];
           var dp = xsWrap(ana[k2] - prevAna[k2] - w0 * Ha);
           var syn = prevSyn[k2] + Hs * (w0 + dp / Ha);
           var rot = syn - ana[k2];
@@ -609,16 +640,14 @@ function xsComplexStretch(chans, sr, lenOut, o) {
           prevSyn[k2] = syn;
         }
       } else {
-        var pkRot = new Float64Array(np);
         for (var q = 0; q < np; q++) {
           var pkb = peaks[q];
-          var wk = 2 * XS_PI * pkb / N;
+          var wk = expectedAdv[pkb];
           var dphi = xsWrap(ana[pkb] - prevAna[pkb] - wk * Ha);
           var synPk = prevSyn[pkb] + Hs * (wk + dphi / Ha);
           pkRot[q] = synPk - ana[pkb];
         }
         var pi = 0;
-        var newSyn = new Float64Array(half + 1);
         var rc = Math.cos(pkRot[0]), rs = Math.sin(pkRot[0]);
         for (var k3 = 0; k3 <= half; k3++) {
           if (pi < np - 1 && k3 > ((peaks[pi] + peaks[pi + 1]) >> 1)) {
@@ -626,9 +655,8 @@ function xsComplexStretch(chans, sr, lenOut, o) {
             rc = Math.cos(pkRot[pi]); rs = Math.sin(pkRot[pi]);
           }
           rotC[k3] = rc; rotS[k3] = rs;
-          newSyn[k3] = ana[k3] + pkRot[pi];
+          prevSyn[k3] = ana[k3] + pkRot[pi];
         }
-        prevSyn.set(newSyn);
       }
     }
     prevAna.set(ana);
