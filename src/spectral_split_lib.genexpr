@@ -124,8 +124,9 @@ ss_frame(fx, ringL, ringR, st, win, n) {
 // Mid spectrum Xm = (XL + XR) / 2 from the packed X: Xm[k] = ((1 - j) X[k] + (1 + j) conj(X[N-k])) / 4.
 // ms channel 0 = |Xm| * 4 / n (amplitude of a stationary sine), channel 1 = arg(Xm). Bins 0..n/2.
 ss_mid(fx, ms, n) {
+	invN = 1 / n;
 	half = n * 0.5;
-	sc = 4 / n;
+	sc = 4 * invN;
 	for (k = 0; k <= half; k += 1) {
 		k2 = k == 0 ? 0 : n - k;
 		ar = fx.peek(k, 0);
@@ -187,13 +188,15 @@ ss_out(acc, st, n, slot) {
 }
 
 // Display columns: ncols log-spaced columns from fmin to fmax; each takes the max over its bins (at least one).
+// Bin edges are a geometric sequence (lo_{c+1} = lo_c * step, step = (fmax/fmin)^(1/ncols)), so a frame does one pow
+// instead of two per column. The integer bin indices match pow(ratio, c/ncols) for the sizes these devices use.
 ss_cols(ms, mch, mk, kch, cols, slot, n, sr, ncols, fmin, fmax) {
 	half = n * 0.5;
-	ratio = fmax / fmin;
 	bw = n / sr;
+	step = pow(fmax / fmin, 1 / ncols);
+	lo = fmin * bw;
 	for (c = 0; c < ncols; c += 1) {
-		lo = fmin * pow(ratio, c / ncols) * bw;
-		hi = fmin * pow(ratio, (c + 1) / ncols) * bw;
+		hi = lo * step;
 		b0 = clip(floor(lo + 0.5), 1, half - 1);
 		b1 = clip(max(floor(hi - 0.5), b0), b0, half - 1);
 		v = 0;
@@ -203,6 +206,7 @@ ss_cols(ms, mch, mk, kch, cols, slot, n, sr, ncols, fmin, fmax) {
 			v = max(v, a);
 		}
 		cols.poke(v, slot * ncols + c);
+		lo = hi;
 	}
 	return ncols;
 }

@@ -52,6 +52,7 @@ var lsBuf = null;
 var lsOwnBuf = null;
 var lsTask = null;
 var lsLastFrame = -1;
+var lsIdleDrawn = false;
 var lsDrag = null;
 var lsSolo = "";          // "hi" | "lo" while a solo dot is held
 var lsLink = null;
@@ -72,11 +73,12 @@ var lsLastAct = -1;
 // ---------------------------------------------------------------- state in
 function lsSetVal(key, v) {
     if (typeof v !== "number" || !isFinite(v)) return;     // a NaN / Infinity would poison every y mapping
+    var changed = lsVals[key] !== v;
     lsVals[key] = v;
     if (key === "output") lsEmitSel();
     if (key === "relative") lsEmitActive();
     if (lsLink && LS_LINKED_KEYS.indexOf(key) >= 0) lsLink.notify(key, v);
-    mgraphics.redraw();
+    if (changed) mgraphics.redraw();
 }
 
 function set_hithr(v) { lsSetVal("hithr", Number(v)); }
@@ -138,7 +140,7 @@ function init_link() {
         },
         onInfo: function (info) {
             lsInfo = info;
-            ssDspDry(!info.isInRack);
+            ssDspDry(0);
             lsEmitSel();
             mgraphics.redraw();
         }
@@ -231,6 +233,10 @@ function lsPoll() {
         var frame = h[0];
         var aw = h[3];
         if (frame === lsLastFrame && aw === lsScalars.awake) return;
+        if (aw < 0.5 && lsScalars.awake < 0.5 && lsIdleDrawn) {
+            lsLastFrame = frame;
+            return;
+        }
         var d = lsBuf.peek(1, 0, LS_SCOPE_SAMPS);
         if (!d || d.length < LS_SC_LMAX + 1) return;
         lsLastFrame = frame;
@@ -249,6 +255,7 @@ function lsPoll() {
         lsScalars.lmax = d[LS_SC_LMAX];
         if (aw > 0.5 && isFinite(lsScalars.lmax)) lsLmaxS = sptClamp(lsLmaxS + (lsScalars.lmax - lsLmaxS) * 0.5, -200, 100);
         lsPushSono();
+        lsIdleDrawn = aw < 0.5;
         mgraphics.redraw();
     } catch (err) {
         lsBuf = null;
@@ -328,14 +335,19 @@ function lsLv(v) {
     return !(t > 0) ? 0 : (t > 1 ? 1 : t);
 }
 
+var LS_LOG_SPAN = Math.log(LS_FMAX / LS_FMIN);
+var LS_COL_X = [];
+for (var lsColInit = 0; lsColInit < LS_NCOLS; lsColInit++) LS_COL_X.push(LS_PLOT.x + (lsColInit + 0.5) * LS_PLOT.w / LS_NCOLS);
+
 function lsColX(c) {
-    return LS_PLOT.x + (c + 0.5) * LS_PLOT.w / LS_NCOLS;
+    return LS_COL_X[c];
 }
 
 function lsFreqX(f) {
-    var t = Math.log(f / LS_FMIN) / Math.log(LS_FMAX / LS_FMIN);
+    var t = Math.log(f / LS_FMIN) / LS_LOG_SPAN;
     return LS_PLOT.x + t * LS_PLOT.w;
 }
+var LS_GRID_X = [lsFreqX(100), lsFreqX(1000), lsFreqX(10000)];
 
 // tilt weight (dB) at a plot x: the classified level is the signal level plus this
 function lsTiltAtX(x) {
@@ -353,7 +365,30 @@ function lsEffLo() {
     return Math.min(lo, lsEffHi());
 }
 
-// y of a threshold line at plot x
+// The tilt is log-frequency, so each threshold is a straight line in x. Endpoints are cached until Tilt
+// or either effective threshold changes; hit-testing interpolates them.
+var lsLineCache = null;
+function lsLineEnds() {
+    var hi = lsEffHi();
+    var lo = lsEffLo();
+    var tilt = lsVals.tilt;
+    if (lsLineCache && lsLineCache.hi === hi && lsLineCache.lo === lo && lsLineCache.tilt === tilt) return lsLineCache;
+    var x0 = LS_PLOT.x;
+    var x1 = x0 + LS_PLOT.w;
+    lsLineCache = {
+        hi: hi, lo: lo, tilt: tilt, x0: x0, x1: x1,
+        hi0: lsLineY(hi, x0), hi1: lsLineY(hi, x1),
+        lo0: lsLineY(lo, x0), lo1: lsLineY(lo, x1)
+    };
+    return lsLineCache;
+}
+function lsLineAt(which, x) {
+    var e = lsLineEnds();
+    var y0 = which === "hi" ? e.hi0 : e.lo0;
+    var y1 = which === "hi" ? e.hi1 : e.lo1;
+    return y0 + (y1 - y0) * ((x - e.x0) / (e.x1 - e.x0));
+}
+
 function lsLineY(eff, x) {
     return lsYdb(eff - lsTiltAtX(x));
 }
@@ -371,10 +406,10 @@ function lsToggleRects() {
 
 // y of both solo handles (kept clear of the buttons in the LCD's top-right corner, inside the plot, and never on top of each other)
 function lsDotYs() {
-    var xr = LS_PLOT.x + LS_PLOT.w;
+    var e = lsLineEnds();
     var maxY = LS_PLOT.y + LS_PLOT.h - 6;
-    var lo = sptClamp(lsLineY(lsEffLo(), xr), LS_DOT_MIN_Y + LS_DOT_GAP, maxY);
-    var hi = sptClamp(lsLineY(lsEffHi(), xr), LS_DOT_MIN_Y, maxY);
+    var lo = sptClamp(e.lo1, LS_DOT_MIN_Y + LS_DOT_GAP, maxY);
+    var hi = sptClamp(e.hi1, LS_DOT_MIN_Y, maxY);
     if (lo - hi < LS_DOT_GAP) hi = lo - LS_DOT_GAP;
     return { hi: hi, lo: lo };
 }
@@ -382,13 +417,14 @@ function lsDotYs() {
 // baseline y of both threshold labels: inside the plot, above the axis-label row, and not on top of each other
 function lsLabelYs() {
     var out = {};
+    var e = lsLineEnds();
     var top = LS_PLOT.y + 10;
     var bot = LS_PLOT.y + LS_PLOT.h - 11;            // axis labels (100 / 1k / 10k) sit on the row below
     var ws = ["hi", "lo"];
     for (var i = 0; i < 2; i++) {
         var hi = ws[i] === "hi";
         var kp = (hi ? lsVals.hiknee : lsVals.loknee) * 0.5 * LS_PLOT.h / (LS_DB_MAX - LS_DB_MIN);
-        out[ws[i]] = sptClamp(lsLineY(hi ? lsEffHi() : lsEffLo(), LS_PLOT.x) - kp - 3, top, bot);
+        out[ws[i]] = sptClamp((hi ? e.hi0 : e.lo0) - kp - 3, top, bot);
     }
     if (out.lo - out.hi < LS_LABEL_GAP) {
         out.lo = Math.min(bot, out.hi + LS_LABEL_GAP);
@@ -411,7 +447,7 @@ function lsKeys(which) {
 function paint() {
     var W = LS_VIZ_W;
     var drag = lsDrag && lsDrag.kind === "val" ? lsDrag.key : "";
-    var gx = [lsFreqX(100), lsFreqX(1000), lsFreqX(10000)];
+    var gx = LS_GRID_X;
     var gy = [];
     for (var d = -100; d <= -20; d += 20) gy.push(lsYdb(d));
     sptLcd(0, 0, W, LS_PLOT.h + 2, { xs: gx, ys: gy });
@@ -522,12 +558,12 @@ function lsPaintSono() {
 function lsPaintThreshold(which) {
     var hi = which === "hi";
     var col = sptColor("live_display_handle_one");
-    var eff = hi ? lsEffHi() : lsEffLo();
+    var e = lsLineEnds();
     var knee = hi ? lsVals.hiknee : lsVals.loknee;
-    var x0 = LS_PLOT.x;
-    var x1 = LS_PLOT.x + LS_PLOT.w;
-    var y0 = lsLineY(eff, x0);
-    var y1 = lsLineY(eff, x1);
+    var x0 = e.x0;
+    var x1 = e.x1;
+    var y0 = hi ? e.hi0 : e.lo0;
+    var y1 = hi ? e.hi1 : e.lo1;
     var kp = knee * 0.5 * LS_PLOT.h / (LS_DB_MAX - LS_DB_MIN);
     var dragging = lsDrag && lsDrag.which === which;
     if (kp > 0.3) {
@@ -573,13 +609,12 @@ function lsPick(x, y) {
     var which = ["hi", "lo"];
     for (var i = 0; i < 2; i++) {
         var w = which[i];
-        var eff = w === "hi" ? lsEffHi() : lsEffLo();
         var dyDot = lsDotYs()[w];
         if (Math.abs(x - LS_DOT_X) < 9 && Math.abs(y - dyDot) < 9) {
             var dd = Math.abs(y - dyDot);
             if (!best || dd < best.dist) best = { which: w, dot: true, dist: dd };
         } else if (x >= LS_PLOT.x - 2 && x <= LS_PLOT.x + LS_PLOT.w + 2) {
-            var dl = Math.abs(y - lsLineY(eff, Math.max(LS_PLOT.x, Math.min(LS_PLOT.x + LS_PLOT.w, x))));
+            var dl = Math.abs(y - lsLineAt(w, Math.max(LS_PLOT.x, Math.min(LS_PLOT.x + LS_PLOT.w, x))));
             if (dl < 6 && (!best || dl < best.dist)) best = { which: w, dot: false, dist: dl };
         }
     }

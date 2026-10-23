@@ -271,7 +271,7 @@ function prep(src) {
         const half = n / 2;
         const tab = new DataSim(4096, 3), win = new DataSim(4096), fx = new DataSim(4096, 2);
         const ringL = new DataSim(4096), ringR = new DataSim(4096), accL = new DataSim(4096), accR = new DataSim(4096);
-        const stt = new DataSim(8), ms = new DataSim(2049, 2), tsd = new DataSim(2049, 11), tw = new DataSim(2049, 2);
+        const stt = new DataSim(8), ms = new DataSim(2049, 2), tsd = new DataSim(2049, 11), tw = new DataSim(2049, 3);
         const cols = new DataSim(512), scope = new DataSim(800);
         const outL = new Float64Array(x.length), outR = new Float64Array(x.length);
         let age = 0;

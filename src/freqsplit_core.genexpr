@@ -35,9 +35,9 @@
 // GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements. No identifier e<digit>, phi, pi.
 // No user function call inside poke() arguments or if conditions, one return per function at function level.
 
-// Position x (0..1) of bin k on the log axis 20 Hz .. 20 kHz (bins below 20 Hz and above 20 kHz clamp to the edges).
-fs_xof(k, n, sr) {
-	return clip(log(max(k * sr / n, 20) * 0.05) * 0.14476482730108395, 0, 1);
+// Position x (0..1) of a bin centre on the log axis 20 Hz .. 20 kHz. `hz` is k * sr / n (the caller hoists sr / n).
+fs_xof(hz) {
+	return clip(log(max(hz, 20) * 0.05) * 0.14476482730108395, 0, 1);
 }
 
 // Channel base (before Nudge) of slot s: High s, Low s + 3 - F, Mid lower part from the bottom, upper part from the top.
@@ -103,10 +103,13 @@ fs_masks(fsd, pc, n, sr) {
 	qi = pc.peek(13);
 	ofs = pc.peek(14);
 	pmd = pc.peek(15);
+	bscale = sr / n;
+	invMm = 1 / mm;
+	inv1m = 1 / (1 - mm);
 	for (k = 0; k <= half; k += 1) {
-		x = fs_xof(k, n, sr);
+		x = fs_xof(k * bscale);
 		below = x < mm ? 1 : 0;
-		tq = below > 0.5 ? (mm - x) / mm : (x - mm) / (1 - mm);
+		tq = below > 0.5 ? (mm - x) * invMm : (x - mm) * inv1m;
 		t0 = pow(max(tq, 0), qi);
 		wv = below > 0.5 ? mm - mm * t0 : mm + (1 - mm) * t0;
 		pp = pow(max(wv, 0), gi);
@@ -166,8 +169,9 @@ fs_masks(fsd, pc, n, sr) {
 // Spectral Limiter. After the forward FFT: amplitude of each bin (max of the left and right spectrum, a full-scale sine reads
 // its amplitude) in fsd channel 10 and the limited masks in channels 5..9.
 fs_limit(fx, fsd, thr, n) {
+	invN = 1 / n;
 	half = n * 0.5;
-	sc = 4 / n;
+	sc = 4 * invN;
 	for (k = 0; k <= half; k += 1) {
 		k2 = k == 0 ? 0 : n - k;
 		ar = fx.peek(k, 0);
@@ -216,6 +220,7 @@ History bdH(0);
 History pnH(0);
 History loH(0);
 History thH(1);
+History ldH(-999);
 History nsU(-1);
 History sdU(-1);
 History xfU(-1);
@@ -236,7 +241,11 @@ spH = clip(spinamt, -0.5, 0.5);
 bdH = clip(bendamt, -1, 1);
 pnH = clip(pinchamt, -1, 1);
 loH = limon > 0.5 ? 1 : 0;
-thH = pow(10, clip(limdb, -120, 12) * 0.05);
+ldc = clip(limdb, -120, 12);
+if (ldc != ldH) {
+	ldH = ldc;
+	thH = pow(10, ldc * 0.05);
+}
 sumOneH = loH > 0.5 ? 0 : 1;
 //@endhook
 

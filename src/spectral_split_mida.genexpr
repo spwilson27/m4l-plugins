@@ -2,8 +2,9 @@
 // Same as ss_mid (src/spectral_split_lib.genexpr) without the atan2 per bin: ms row 1 (phase) is NOT written (stays 0). Included through the
 // device's libs (scripts/spectral_common.py gen_code_rack(libs=...)) only where used, because gen charges compile time for every function.
 ss_mida(fx, ms, n) {
+	invN = 1 / n;
 	half = n * 0.5;
-	sc = 4 / n;
+	sc = 4 * invN;
 	for (k = 0; k <= half; k += 1) {
 		k2 = k == 0 ? 0 : n - k;
 		ar = fx.peek(k, 0);
