@@ -15,7 +15,7 @@
 //   0      : Input peak (0..1)
 //   1      : Wet output peak (0..1)
 //   2..6   : Per-stage activity meter for BIT, SR, CODEC, TELE, FFT (0 when disabled)
-//   7      : Rolling frame counter
+//   7      : Rolling frame counter (increments every 64 samples EVEN in silence, so deferred DSP can see gen~ running)
 //   8..15  : 8-sample decimated wet waveform ring for real-time staircase/glitch trace
 //   16..27 : 12-band spectral energy / hole profile (0..1)
 //   28     : Effective bit depth (1..16)
@@ -320,6 +320,40 @@ History peakInHold(0);
 History peakOutHold(0);
 History idleSamples(999999);
 
+// Control-rate coefficient cache. Slewed values snap to the target on the first sample and stay
+// there while the parameter holds, so each pow / exp / sin / cos / dbtoa runs only when that
+// parameter or samplerate actually changes. Defaults match a transparent patch (16 bit, 0 dB,
+// wet 50% stored as the linear 0.5/0.5 gains, order 01234) so a steady default does no extra math.
+History cBitsLat(16);
+History cBitSteps(65536);
+History cBitRcp(0.0000152587890625);
+History cRateLat(-1);
+History cSrLat(-1);
+History cSrBaseInc(1);
+History cSrLp(0);
+History cCf0(0); History cCf1(0); History cCf2(0); History cCf3(0);
+History cCf4(0); History cCf5(0); History cCf6(0); History cCf7(0);
+History cCf8(0); History cCf9(0); History cCf10(0); History cCf11(0);
+History cFf0(0); History cFf1(0); History cFf2(0);
+History cFf3(0); History cFf4(0); History cFf5(0);
+History cTelLat(-1);
+History cHpCoef(0);
+History cLpCoef(0);
+History cTelCos(1);
+History cTelB0(0.5);
+History cTelR(0.72);
+History cTelQ(64);
+History cGainLat(0);
+History cOutLin(1);
+History cWetLat(0.5);
+History cDryG(0.5);
+History cWetG(0.5);
+History cOrd0(0);
+History cOrd1(1);
+History cOrd2(2);
+History cOrd3(3);
+History cOrd4(4);
+
 // Delay lines for Stage 2 (Codec Lookahead Pre-Echo) and Stage 4 (FFT Spectral Frame Buffer)
 Delay codecDL(8192);
 Delay codecDR(8192);
@@ -331,7 +365,6 @@ sr = max(samplerate, 1);
 // Smooth parameters via slew()
 wetSlew = slew(clip(wet, 0.0, 1.0), 0.998);
 outGainDbS = slew(clip(out_gain, -24.0, 12.0), 0.998);
-outGainSlew = pow(10.0, outGainDbS / 20.0);
 
 bitsVal = slew(clip(bits, 1.0, 16.0), 0.995);
 wrapVal = slew(clip(wrap_amt, 0.0, 1.0), 0.995);
@@ -352,26 +385,91 @@ fftModeVal = round(slew(clip(fft_mode, 0.0, 3.0), 0.2));
 fftGlitchVal = slew(clip(fft_glitch, 0.0, 1.0), 0.995);
 fftFrameMs = slew(clip(fft_frame, 5.0, 150.0), 0.995);
 
-// Latch order_code through History orderLatch so decoding runs inside sample loop
-orderLatch = round(order_code);
-rawCode = max(orderLatch, 0);
-dig4 = floor(rawCode % 10);
-r3 = floor(rawCode / 10);
-dig3 = floor(r3 % 10);
-r2 = floor(r3 / 10);
-dig2 = floor(r2 % 10);
-r1 = floor(r2 / 10);
-dig1 = floor(r1 % 10);
-dig0 = floor(floor(r1 / 10) % 10);
+// Control-rate caches. A held parameter keeps its slewed value bit-identical, so the body runs once per change.
+if (bitsVal != cBitsLat) {
+	cBitsLat = bitsVal;
+	cBitSteps = pow(2.0, bitsVal);
+	cBitRcp = 1.0 / max(cBitSteps, 2.0);
+}
+srChanged = (sr != cRateLat);
+if (srChanged) {
+	cRateLat = sr;
+	cCf0 = 2.0 * sin(3.14159265359 * 172.0 / sr);
+	cCf1 = 2.0 * sin(3.14159265359 * 265.0 / sr);
+	cCf2 = 2.0 * sin(3.14159265359 * 410.0 / sr);
+	cCf3 = 2.0 * sin(3.14159265359 * 620.0 / sr);
+	cCf4 = 2.0 * sin(3.14159265359 * 910.0 / sr);
+	cCf5 = 2.0 * sin(3.14159265359 * 1320.0 / sr);
+	cCf6 = 2.0 * sin(3.14159265359 * 1900.0 / sr);
+	cCf7 = 2.0 * sin(3.14159265359 * 2700.0 / sr);
+	cCf8 = 2.0 * sin(3.14159265359 * 3800.0 / sr);
+	cCf9 = 2.0 * sin(3.14159265359 * 5300.0 / sr);
+	cCf10 = 2.0 * sin(3.14159265359 * min(7300.0, sr * 0.42) / sr);
+	cCf11 = 2.0 * sin(3.14159265359 * min(9800.0, sr * 0.44) / sr);
+	cFf0 = 2.0 * sin(3.14159265359 * 220.0 / sr);
+	cFf1 = 2.0 * sin(3.14159265359 * 520.0 / sr);
+	cFf2 = 2.0 * sin(3.14159265359 * 1150.0 / sr);
+	cFf3 = 2.0 * sin(3.14159265359 * 2400.0 / sr);
+	cFf4 = 2.0 * sin(3.14159265359 * 4600.0 / sr);
+	cFf5 = 2.0 * sin(3.14159265359 * min(8200.0, sr * 0.42) / sr);
+}
+if ((srateVal != cSrLat) + srChanged) {
+	cSrLat = srateVal;
+	cSrBaseInc = clip(srateVal / sr, 100.0 / sr, 1.0);
+	cSrLp = exp(-6.28318530718 * min(srateVal * 0.45, sr * 0.45) / sr);
+}
+if ((teleLineVal != cTelLat) + srChanged) {
+	cTelLat = teleLineVal;
+	cHpCoef = exp(-6.28318530718 * (120.0 + teleLineVal * 260.0) / sr);
+	cLpCoef = exp(-6.28318530718 * (7000.0 - teleLineVal * 4200.0) / sr);
+	cTelR = 0.72 + teleLineVal * 0.20;
+	cTelB0 = (1.0 - cTelR * cTelR) * 0.5;
+	cTelCos = cos(6.28318530718 * 1050.0 / sr);
+	cTelQ = max(floor(64.0 - teleLineVal * 56.0 + 0.5), 4.0);
+}
+if (outGainDbS != cGainLat) {
+	cGainLat = outGainDbS;
+	cOutLin = dbtoa(outGainDbS);
+}
+outGainSlew = cOutLin;
+if (wetSlew != cWetLat) {
+	cWetLat = wetSlew;
+	wetPh = clip(wetSlew, 0.0, 1.0) * 1.5707963267948966;
+	csW = cos(wetPh);
+	snW = sin(wetPh);
+	nW = 1.0 / max(csW + snW, 0.0001);
+	cDryG = csW * nW;
+	cWetG = snW * nW;
+}
 
-dSum = dig0 + dig1 + dig2 + dig3 + dig4;
-dProd = (dig0 + 1) * (dig1 + 1) * (dig2 + 1) * (dig3 + 1) * (dig4 + 1);
-isPerm = (dSum == 10) * (dProd == 120);
-ord0 = isPerm ? dig0 : 0;
-ord1 = isPerm ? dig1 : 1;
-ord2 = isPerm ? dig2 : 2;
-ord3 = isPerm ? dig3 : 3;
-ord4 = isPerm ? dig4 : 4;
+// Decode order_code into the 5 slot ids only when it changes. History orderLatch starts at 1234,
+// which is the default permutation already stored in cOrd0..cOrd4.
+orderNow = round(order_code);
+if (orderNow != orderLatch) {
+	orderLatch = orderNow;
+	rawCode = max(orderNow, 0);
+	dig4 = floor(rawCode % 10);
+	r3 = floor(rawCode / 10);
+	dig3 = floor(r3 % 10);
+	r2 = floor(r3 / 10);
+	dig2 = floor(r2 % 10);
+	r1 = floor(r2 / 10);
+	dig1 = floor(r1 % 10);
+	dig0 = floor(floor(r1 / 10) % 10);
+	dSum = dig0 + dig1 + dig2 + dig3 + dig4;
+	dProd = (dig0 + 1) * (dig1 + 1) * (dig2 + 1) * (dig3 + 1) * (dig4 + 1);
+	isPerm = (dSum == 10) * (dProd == 120);
+	cOrd0 = isPerm ? dig0 : 0;
+	cOrd1 = isPerm ? dig1 : 1;
+	cOrd2 = isPerm ? dig2 : 2;
+	cOrd3 = isPerm ? dig3 : 3;
+	cOrd4 = isPerm ? dig4 : 4;
+}
+ord0 = cOrd0;
+ord1 = cOrd1;
+ord2 = cOrd2;
+ord3 = cOrd3;
+ord4 = cOrd4;
 
 // Audio-activity silence detector & active stage mask:
 // If input has been below -100 dB (1e-5) for >250 ms (after any delay/smear tail has decayed)
@@ -412,7 +510,8 @@ if (runDsp > 0) {
 	prngState = fract(sin(prngState * 269.5 + 183.3) * 43758.5453123);
 	noiseB = prngState * 2.0 - 1.0;
 
-// Execute the 5 stages in dynamic user order; disabled stages are completely skipped (0 CPU branch)
+// Single call site: one loop, so gen~ compiles BIT / SR / COD / TEL / FFT once each (not once per slot).
+// order_code is a permutation, so each stage's History is touched on at most one iteration.
 for (slot = 0; slot < 5; slot += 1) {
 	stId = (slot == 0) ? ord0 : ((slot == 1) ? ord1 : ((slot == 2) ? ord2 : ((slot == 3) ? ord3 : ord4)));
 
@@ -434,9 +533,8 @@ for (slot = 0; slot < 5; slot += 1) {
 		preL = int_wrap(inBitL, drive, wrapVal);
 		preR = int_wrap(inBitR, drive, wrapVal);
 
-		steps = pow(2.0, bitsVal);
-		safeSteps = max(steps, 2.0);
-		stepSize = 2.0 / safeSteps;
+		steps = cBitSteps;
+		stepSize = 2.0 * cBitRcp;
 		hpDithL = noiseA - prevNoiseL;
 		hpDithR = noiseB - prevNoiseR;
 		prevNoiseL = noiseA;
@@ -465,7 +563,7 @@ for (slot = 0; slot < 5; slot += 1) {
 		inSrL = sigL;
 		inSrR = sigR;
 
-		baseInc = clip(srateVal / sr, 100.0 / sr, 1.0);
+		baseInc = cSrBaseInc;
 		jitFactor = pow(2.0, srJitHold * jitterVal * 0.85);
 		effInc = clip(baseInc * jitFactor, 0.0005, 1.0);
 		srPh = srPh + effInc;
@@ -481,8 +579,7 @@ for (slot = 0; slot < 5; slot += 1) {
 
 		interpL = mix(srPrevL, srHoldL, srPh);
 		interpR = mix(srPrevR, srHoldR, srPh);
-		cutHz = min(srateVal * 0.45, sr * 0.45);
-		lpCoef = exp(-6.28318530718 * cutHz / sr);
+		lpCoef = cSrLp;
 		srFiltL = mix(interpL, srFiltL, lpCoef);
 		srFiltR = mix(interpR, srFiltR, lpCoef);
 
@@ -544,65 +641,63 @@ for (slot = 0; slot < 5; slot += 1) {
 		inNormL = anaL * svfDamp;
 		inNormR = anaR * svfDamp;
 
-		// Band 0: 172 Hz
-		cf0 = 2.0 * sin(3.14159265359 * 172.0 / sr);
+		// Band 0: 172 Hz (coefficient cached with samplerate)
+		cf0 = cCf0;
 		hp0L = inNormL - cLp0L - svfDamp * cBp0L; cBp0L = clip(cBp0L + cf0 * hp0L, -2.0, 2.0); cLp0L = clip(cLp0L + cf0 * cBp0L, -2.0, 2.0);
 		hp0R = inNormR - cLp0R - svfDamp * cBp0R; cBp0R = clip(cBp0R + cf0 * hp0R, -2.0, 2.0); cLp0R = clip(cLp0R + cf0 * cBp0R, -2.0, 2.0);
 
 		// Band 1: 265 Hz
-		cf1 = 2.0 * sin(3.14159265359 * 265.0 / sr);
+		cf1 = cCf1;
 		hp1L = inNormL - cLp1L - svfDamp * cBp1L; cBp1L = clip(cBp1L + cf1 * hp1L, -2.0, 2.0); cLp1L = clip(cLp1L + cf1 * cBp1L, -2.0, 2.0);
 		hp1R = inNormR - cLp1R - svfDamp * cBp1R; cBp1R = clip(cBp1R + cf1 * hp1R, -2.0, 2.0); cLp1R = clip(cLp1R + cf1 * cBp1R, -2.0, 2.0);
 
 		// Band 2: 410 Hz
-		cf2 = 2.0 * sin(3.14159265359 * 410.0 / sr);
+		cf2 = cCf2;
 		hp2L = inNormL - cLp2L - svfDamp * cBp2L; cBp2L = clip(cBp2L + cf2 * hp2L, -2.0, 2.0); cLp2L = clip(cLp2L + cf2 * cBp2L, -2.0, 2.0);
 		hp2R = inNormR - cLp2R - svfDamp * cBp2R; cBp2R = clip(cBp2R + cf2 * hp2R, -2.0, 2.0); cLp2R = clip(cLp2R + cf2 * cBp2R, -2.0, 2.0);
 
 		// Band 3: 620 Hz
-		cf3 = 2.0 * sin(3.14159265359 * 620.0 / sr);
+		cf3 = cCf3;
 		hp3L = inNormL - cLp3L - svfDamp * cBp3L; cBp3L = clip(cBp3L + cf3 * hp3L, -2.0, 2.0); cLp3L = clip(cLp3L + cf3 * cBp3L, -2.0, 2.0);
 		hp3R = inNormR - cLp3R - svfDamp * cBp3R; cBp3R = clip(cBp3R + cf3 * hp3R, -2.0, 2.0); cLp3R = clip(cLp3R + cf3 * cBp3R, -2.0, 2.0);
 
 		// Band 4: 910 Hz
-		cf4 = 2.0 * sin(3.14159265359 * 910.0 / sr);
+		cf4 = cCf4;
 		hp4L = inNormL - cLp4L - svfDamp * cBp4L; cBp4L = clip(cBp4L + cf4 * hp4L, -2.0, 2.0); cLp4L = clip(cLp4L + cf4 * cBp4L, -2.0, 2.0);
 		hp4R = inNormR - cLp4R - svfDamp * cBp4R; cBp4R = clip(cBp4R + cf4 * hp4R, -2.0, 2.0); cLp4R = clip(cLp4R + cf4 * cBp4R, -2.0, 2.0);
 
 		// Band 5: 1320 Hz
-		cf5 = 2.0 * sin(3.14159265359 * 1320.0 / sr);
+		cf5 = cCf5;
 		hp5L = inNormL - cLp5L - svfDamp * cBp5L; cBp5L = clip(cBp5L + cf5 * hp5L, -2.0, 2.0); cLp5L = clip(cLp5L + cf5 * cBp5L, -2.0, 2.0);
 		hp5R = inNormR - cLp5R - svfDamp * cBp5R; cBp5R = clip(cBp5R + cf5 * hp5R, -2.0, 2.0); cLp5R = clip(cLp5R + cf5 * cBp5R, -2.0, 2.0);
 
 		// Band 6: 1900 Hz
-		cf6 = 2.0 * sin(3.14159265359 * 1900.0 / sr);
+		cf6 = cCf6;
 		hp6L = inNormL - cLp6L - svfDamp * cBp6L; cBp6L = clip(cBp6L + cf6 * hp6L, -2.0, 2.0); cLp6L = clip(cLp6L + cf6 * cBp6L, -2.0, 2.0);
 		hp6R = inNormR - cLp6R - svfDamp * cBp6R; cBp6R = clip(cBp6R + cf6 * hp6R, -2.0, 2.0); cLp6R = clip(cLp6R + cf6 * cBp6R, -2.0, 2.0);
 
 		// Band 7: 2700 Hz
-		cf7 = 2.0 * sin(3.14159265359 * 2700.0 / sr);
+		cf7 = cCf7;
 		hp7L = inNormL - cLp7L - svfDamp * cBp7L; cBp7L = clip(cBp7L + cf7 * hp7L, -2.0, 2.0); cLp7L = clip(cLp7L + cf7 * cBp7L, -2.0, 2.0);
 		hp7R = inNormR - cLp7R - svfDamp * cBp7R; cBp7R = clip(cBp7R + cf7 * hp7R, -2.0, 2.0); cLp7R = clip(cLp7R + cf7 * cBp7R, -2.0, 2.0);
 
 		// Band 8: 3800 Hz
-		cf8 = 2.0 * sin(3.14159265359 * 3800.0 / sr);
+		cf8 = cCf8;
 		hp8L = inNormL - cLp8L - svfDamp * cBp8L; cBp8L = clip(cBp8L + cf8 * hp8L, -2.0, 2.0); cLp8L = clip(cLp8L + cf8 * cBp8L, -2.0, 2.0);
 		hp8R = inNormR - cLp8R - svfDamp * cBp8R; cBp8R = clip(cBp8R + cf8 * hp8R, -2.0, 2.0); cLp8R = clip(cLp8R + cf8 * cBp8R, -2.0, 2.0);
 
 		// Band 9: 5300 Hz
-		cf9 = 2.0 * sin(3.14159265359 * 5300.0 / sr);
+		cf9 = cCf9;
 		hp9L = inNormL - cLp9L - svfDamp * cBp9L; cBp9L = clip(cBp9L + cf9 * hp9L, -2.0, 2.0); cLp9L = clip(cLp9L + cf9 * cBp9L, -2.0, 2.0);
 		hp9R = inNormR - cLp9R - svfDamp * cBp9R; cBp9R = clip(cBp9R + cf9 * hp9R, -2.0, 2.0); cLp9R = clip(cLp9R + cf9 * cBp9R, -2.0, 2.0);
 
 		// Band 10: 7300 Hz
-		hz10 = min(7300.0, sr * 0.42);
-		cf10 = 2.0 * sin(3.14159265359 * hz10 / sr);
+		cf10 = cCf10;
 		hp10L = inNormL - cLp10L - svfDamp * cBp10L; cBp10L = clip(cBp10L + cf10 * hp10L, -2.0, 2.0); cLp10L = clip(cLp10L + cf10 * cBp10L, -2.0, 2.0);
 		hp10R = inNormR - cLp10R - svfDamp * cBp10R; cBp10R = clip(cBp10R + cf10 * hp10R, -2.0, 2.0); cLp10R = clip(cLp10R + cf10 * cBp10R, -2.0, 2.0);
 
 		// Band 11: 9800 Hz
-		hz11 = min(9800.0, sr * 0.44);
-		cf11 = 2.0 * sin(3.14159265359 * hz11 / sr);
+		cf11 = cCf11;
 		hp11L = inNormL - cLp11L - svfDamp * cBp11L; cBp11L = clip(cBp11L + cf11 * hp11L, -2.0, 2.0); cLp11L = clip(cLp11L + cf11 * cBp11L, -2.0, 2.0);
 		hp11R = inNormR - cLp11R - svfDamp * cBp11R; cBp11R = clip(cBp11R + cf11 * hp11R, -2.0, 2.0); cLp11R = clip(cLp11R + cf11 * cBp11R, -2.0, 2.0);
 
@@ -854,10 +949,8 @@ for (slot = 0; slot < 5; slot += 1) {
 		inTelL = sigL;
 		inTelR = sigR;
 
-		hpFreq = 120.0 + teleLineVal * 260.0;
-		lpFreq = 7000.0 - teleLineVal * 4200.0;
-		cHp = exp(-6.28318530718 * hpFreq / sr);
-		cLp = exp(-6.28318530718 * lpFreq / sr);
+		cHp = cHpCoef;
+		cLp = cLpCoef;
 
 		tHpL = mix(inTelL, tHpL, cHp);
 		tHpR = mix(inTelR, tHpR, cHp);
@@ -885,8 +978,7 @@ for (slot = 0; slot < 5; slot += 1) {
 		vL = mix(tLpL, tHoldL, 0.35 + teleLineVal * 0.65);
 		vR = mix(tLpR, tHoldR, 0.35 + teleLineVal * 0.65);
 
-		qStepsRaw = floor(64.0 - teleLineVal * 56.0 + 0.5);
-		qSteps = max(qStepsRaw, 4.0);
+		qSteps = cTelQ;
 		modeOutL = vL;
 		modeOutR = vR;
 
@@ -907,11 +999,8 @@ for (slot = 0; slot < 5; slot += 1) {
 				noiseAbs = abs(noiseA);
 				tGsmGain = (noiseAbs < dropThresh) ? 0.12 : (0.85 + 0.15 * noiseB);
 			}
-			wForm = 6.28318530718 * 1050.0 / sr;
-			rForm = 0.72 + teleLineVal * 0.20;
-			b0Form = (1.0 - rForm * rForm) * 0.5;
-			resL = b0Form * vL + 2.0 * rForm * cos(wForm) * tRes1L - (rForm * rForm) * tRes2L;
-			resR = b0Form * vR + 2.0 * rForm * cos(wForm) * tRes1R - (rForm * rForm) * tRes2R;
+			resL = cTelB0 * vL + 2.0 * cTelR * cTelCos * tRes1L - (cTelR * cTelR) * tRes2L;
+			resR = cTelB0 * vR + 2.0 * cTelR * cTelCos * tRes1R - (cTelR * cTelR) * tRes2R;
 			tRes2L = tRes1L;
 			tRes1L = clip(fixnan(resL), -2.0, 2.0);
 			tRes2R = tRes1R;
@@ -991,28 +1080,27 @@ for (slot = 0; slot < 5; slot += 1) {
 			fInL = inFftL * fDamp;
 			fInR = inFftR * fDamp;
 
-			ff0 = 2.0 * sin(3.14159265359 * 220.0 / sr);
+			ff0 = cFf0;
 			fhp0L = fInL - fLp0L - fDamp * fBp0L; fBp0L = clip(fBp0L + ff0 * fhp0L, -2.0, 2.0); fLp0L = clip(fLp0L + ff0 * fBp0L, -2.0, 2.0);
 			fhp0R = fInR - fLp0R - fDamp * fBp0R; fBp0R = clip(fBp0R + ff0 * fhp0R, -2.0, 2.0); fLp0R = clip(fLp0R + ff0 * fBp0R, -2.0, 2.0);
 
-			ff1 = 2.0 * sin(3.14159265359 * 520.0 / sr);
+			ff1 = cFf1;
 			fhp1L = fInL - fLp1L - fDamp * fBp1L; fBp1L = clip(fBp1L + ff1 * fhp1L, -2.0, 2.0); fLp1L = clip(fLp1L + ff1 * fBp1L, -2.0, 2.0);
 			fhp1R = fInR - fLp1R - fDamp * fBp1R; fBp1R = clip(fBp1R + ff1 * fhp1R, -2.0, 2.0); fLp1R = clip(fLp1R + ff1 * fBp1R, -2.0, 2.0);
 
-			ff2 = 2.0 * sin(3.14159265359 * 1150.0 / sr);
+			ff2 = cFf2;
 			fhp2L = fInL - fLp2L - fDamp * fBp2L; fBp2L = clip(fBp2L + ff2 * fhp2L, -2.0, 2.0); fLp2L = clip(fLp2L + ff2 * fBp2L, -2.0, 2.0);
 			fhp2R = fInR - fLp2R - fDamp * fBp2R; fBp2R = clip(fBp2R + ff2 * fhp2R, -2.0, 2.0); fLp2R = clip(fLp2R + ff2 * fBp2R, -2.0, 2.0);
 
-			ff3 = 2.0 * sin(3.14159265359 * 2400.0 / sr);
+			ff3 = cFf3;
 			fhp3L = fInL - fLp3L - fDamp * fBp3L; fBp3L = clip(fBp3L + ff3 * fhp3L, -2.0, 2.0); fLp3L = clip(fLp3L + ff3 * fBp3L, -2.0, 2.0);
 			fhp3R = fInR - fLp3R - fDamp * fBp3R; fBp3R = clip(fBp3R + ff3 * fhp3R, -2.0, 2.0); fLp3R = clip(fLp3R + ff3 * fBp3R, -2.0, 2.0);
 
-			ff4 = 2.0 * sin(3.14159265359 * 4600.0 / sr);
+			ff4 = cFf4;
 			fhp4L = fInL - fLp4L - fDamp * fBp4L; fBp4L = clip(fBp4L + ff4 * fhp4L, -2.0, 2.0); fLp4L = clip(fLp4L + ff4 * fBp4L, -2.0, 2.0);
 			fhp4R = fInR - fLp4R - fDamp * fBp4R; fBp4R = clip(fBp4R + ff4 * fhp4R, -2.0, 2.0); fLp4R = clip(fLp4R + ff4 * fBp4R, -2.0, 2.0);
 
-			fHz5 = min(8200.0, sr * 0.42);
-			ff5 = 2.0 * sin(3.14159265359 * fHz5 / sr);
+			ff5 = cFf5;
 			fhp5L = fInL - fLp5L - fDamp * fBp5L; fBp5L = clip(fBp5L + ff5 * fhp5L, -2.0, 2.0); fLp5L = clip(fLp5L + ff5 * fBp5L, -2.0, 2.0);
 			fhp5R = fInR - fLp5R - fDamp * fBp5R; fBp5R = clip(fBp5R + ff5 * fhp5R, -2.0, 2.0); fLp5R = clip(fLp5R + ff5 * fBp5R, -2.0, 2.0);
 
@@ -1138,10 +1226,11 @@ if (isAudioActive > 0) {
 	}
 }
 
-outL = mix(in1, wetOutL, wetSlew);
-outR = mix(in2, wetOutR, wetSlew);
+outL = in1 * cDryG + wetOutL * cWetG;
+outR = in2 * cDryG + wetOutR * cWetG;
 
-// Update `#0-degscope` telemetry buffer every 64 samples
+// Update `#0-degscope` every 64 samples. Slot 7 advances even when runDsp is 0 (silence), so
+// dspConfirm can tell that the deferred gen~ is in the DSP chain.
 outAbs1 = abs(outL);
 outAbs2 = abs(outR);
 outAbs = max(outAbs1, outAbs2);
