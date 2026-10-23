@@ -109,6 +109,13 @@ var fftCopied = 0;                 // spectrogram frames this instance took from
 var sentPrune = -1;
 var silentTicks = 0;
 var lastDrawSig = "";
+var LR_CURVE_STEPS = 96;
+var lrGeomKey = "";
+var lrSumGeom = "";
+var lrSumMask = -2;
+var lrBandCol = null;
+var lrBandStep = null;
+var lrSumStep = null;
 var gateNeedBits = 0;              // scope slot 28: bands the gen computes (bit 0..3) | prune (16)
 var gateAsleep = 0;                // scope slot 29: gen silence sleep
 
@@ -1203,9 +1210,10 @@ function loadbang() {
 function computeRawSpecColumns(samples8192, sampleRate) {
     var sr = Number(sampleRate) || 48000.0;
     var dbBins = computeFft8192DbBins(samples8192);
+    ensureSpecColumnBins(sr, SPEC_COLS);
     var raw = new Array(SPEC_COLS);
     for (var c = 0; c < SPEC_COLS; c++) {
-        var rawDb = sampleFft8192DbForPixel(specColFreqs[c], specColFreqs[c + 1], dbBins, sr);
+        var rawDb = sampleFft8192DbFromBins(colLo[c], colHi[c], dbBins);
         raw[c] = (rawDb === rawDb) ? clamp(rawDb, -200.0, 200.0) : -72.0;     // NaN / infinite telemetry must not poison the smoothing state
     }
     return raw;
@@ -1234,15 +1242,9 @@ function applyRawSpecColumns(raw, pushWaterfallRow) {
 }
 
 function updateSpectrogramFrom8192Samples(samples8192, sampleRate, pushWaterfallRow) {
-    var sr = Number(sampleRate) || 48000.0;
-    var dbBins = computeFft8192DbBins(samples8192);
-    var raw = new Array(SPEC_COLS);
-    for (var c = 0; c < SPEC_COLS; c++) {
-        var rawDb = sampleFft8192DbForPixel(specColFreqs[c], specColFreqs[c + 1], dbBins, sr);
-        raw[c] = (rawDb === rawDb) ? clamp(rawDb, -200.0, 200.0) : -72.0;
-    }
+    var raw = computeRawSpecColumns(samples8192, sampleRate);
     applyRawSpecColumns(raw, pushWaterfallRow);
-    return dbBins;
+    return null;
 }
 
 /**
@@ -1362,6 +1364,9 @@ function pullScope() {
     try {
         var fresh = updateFftRole(now, cachedAlivePeers);
         var buf = new Buffer(scopeBufName);
+        // Header only (slots 0..31, including the beat at 23 and the input peak at 20).
+        // The 8192-sample ring starts at index 32 and is not read once the track is silent
+        // and the waterfall has finished decaying.
         var hdr = buf.peek(1, 0, 32);
         if (!hdr || hdr.length < 24) return;
 
@@ -1389,7 +1394,10 @@ function pullScope() {
             updateDeviceLatency();
         }
 
-        if (inPeak > 1e-4) {
+        // Asleep, or under the noise floor: skip the ring read and the FFT. After 120 silent
+        // ticks the waterfall has settled, so a stable meter signature skips redraw as well.
+        var signalLive = (inPeak > 1e-4) && !(gateAsleep > 0.5);
+        if (signalLive) {
             silentTicks = 0;
             if (fftWantRing) {
                 // the ring only holds one 8192-sample window of the current input after it has refilled
@@ -1913,7 +1921,52 @@ function mbBandPath(fn) {
     }
 }
 
+// Linkwitz-Riley display curves. Rebuilt when F1/F2/F3, slope, band count, phase mode,
+// sample rate or the plot width changes — not on every scope frame. BandMode / CustomMask
+// only change the summed curve (activeMask).
+function ensureLrDisplayCache(activeMask) {
+    updatePlotBounds();
+    var geom = curF1 + "\t" + curF2 + "\t" + curF3 + "\t" + curSlope + "\t" + curNumBands + "\t" +
+        curPhaseMode + "\t" + scopeSampleRate + "\t" + PLOT_W + "\t" + PLOT_X + "\t" + curBandMode + "\t" + curCustomMask;
+    if (geom !== lrGeomKey || !lrBandCol) {
+        lrGeomKey = geom;
+        lrSumGeom = "";
+        if (!lrBandCol) {
+            lrBandCol = [null, null, null, null];
+            lrBandStep = [null, null, null, null];
+            for (var b = 0; b < 4; b++) {
+                lrBandCol[b] = new Float64Array(SPEC_COLS);
+                lrBandStep[b] = new Float64Array(LR_CURVE_STEPS + 1);
+            }
+            lrSumStep = new Float64Array(LR_CURVE_STEPS + 1);
+        }
+        var nb = curNumBands;
+        for (var i = 0; i < SPEC_COLS; i++) {
+            var resp = computeBandMagnitudesAtFreq(specColFreqs[i], curF1, curF2, curF3, nb, curSlope, activeMask, curPhaseMode, scopeSampleRate);
+            for (var bc = 0; bc < 4; bc++) lrBandCol[bc][i] = resp.bands[bc];
+        }
+        for (var s = 0; s <= LR_CURVE_STEPS; s++) {
+            var px = PLOT_X + (s / LR_CURVE_STEPS) * PLOT_W;
+            var respS = computeBandMagnitudesAtFreq(xToFreq(px), curF1, curF2, curF3, nb, curSlope, activeMask, curPhaseMode, scopeSampleRate);
+            for (var bs = 0; bs < 4; bs++) lrBandStep[bs][s] = respS.bands[bs];
+        }
+    }
+    if (lrSumGeom !== lrGeomKey || lrSumMask !== activeMask) {
+        lrSumGeom = lrGeomKey;
+        lrSumMask = activeMask;
+        for (var s2 = 0; s2 <= LR_CURVE_STEPS; s2++) {
+            var sum = 0.0;
+            if (activeMask & 1) sum += lrBandStep[0][s2];
+            if (activeMask & 2) sum += lrBandStep[1][s2];
+            if (activeMask & 4) sum += lrBandStep[2][s2];
+            if (activeMask & 8) sum += lrBandStep[3][s2];
+            lrSumStep[s2] = sum;
+        }
+    }
+}
+
 function drawSpectrogramAndCurves(activeMask, xoverCount) {
+    ensureLrDisplayCache(activeMask);
     var plotBottom = PLOT_Y + PLOT_H - 2;
     var innerW = PLOT_W - 2;
     var span = PLOT_H - 10;
@@ -1958,9 +2011,9 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
         if ((activeMask & (1 << bBand)) === 0) continue;
         var sCol = bandColor(bBand);
         var ys = [];
+        var bandCol = lrBandCol[bBand];
         for (var i = 0; i < SPEC_COLS; i++) {
-            var resp = computeBandMagnitudesAtFreq(specColFreqs[i], curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
-            var effDb = specColDb[i] + linToDb(Math.max(resp.bands[bBand], 1e-4));
+            var effDb = specColDb[i] + linToDb(Math.max(bandCol[i], 1e-4));
             ys.push(plotBottom - clamp((effDb + 56.0) / 54.0, 0.0, 1.0) * span);
         }
         sptRgba(sCol, 0.26);
@@ -1990,10 +2043,10 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
             var bCol2 = bandColor(bIdx);
             sptRgba(isBandActive ? sptMuted(bCol2, 0.95) : sptMuted(bCol2, 0.55), isBandActive ? 1.0 : 0.7);
             mgraphics.set_line_width(1);
+            var bandStep = lrBandStep[bIdx];
             for (var s2 = 0; s2 <= numSteps; s2++) {
                 var px2 = PLOT_X + (s2 / numSteps) * PLOT_W;
-                var resp2 = computeBandMagnitudesAtFreq(xToFreq(px2), curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
-                var py2 = magToY(resp2.bands[bIdx]);
+                var py2 = magToY(bandStep[s2]);
                 if (s2 === 0) mgraphics.move_to(px2, py2);
                 else mgraphics.line_to(px2, py2);
             }
@@ -2008,8 +2061,7 @@ function drawSpectrogramAndCurves(activeMask, xoverCount) {
         sptRgba(sptColor("live_control_fg"), 0.9);
         for (var sc = 0; sc <= numSteps; sc++) {
             var pxc = PLOT_X + (sc / numSteps) * PLOT_W;
-            var respc = computeBandMagnitudesAtFreq(xToFreq(pxc), curF1, curF2, curF3, curNumBands, curSlope, activeMask, curPhaseMode, scopeSampleRate);
-            var pyc = magToY(respc.activeSum);
+            var pyc = magToY(lrSumStep[sc]);
             if (sc === 0) mgraphics.move_to(pxc, pyc);
             else mgraphics.line_to(pxc, pyc);
         }

@@ -12,7 +12,12 @@
 //  - Dynamic Phase only needs stage 1 of the IIR tree (the FIR splits the high band); stages 2 and 3 are skipped.
 //  - ringon = 0 stops writing the 8192-sample FFT ring: the face of one instance per rack computes the spectrogram.
 //  - Silence sleep: input below 1e-5 for 16384 samples skips all filter work (exact zero output).
-//  - Filter coefficients are recomputed only when a smoothed crossover, the slope or the sample rate changes.
+//    The scope beat (slot 23) still advances every 64 samples, so a silent track reports DSP ready.
+//  - Crossover coefficients (tan), output gain (pow) and the band-mask / prune / phase / slope flags are
+//    cached in History. tan() runs only when a smoothed crossover, the slope or the rate moved, and only
+//    for a stage this mask still runs. pow() / the mask flags run only when gain, numbands, bandmask,
+//    phase, slope, prune or the sample rate changes. Dynamic Phase FIR work runs only while that mode
+//    is on or fading.
 
 slew_step(cur, target, coef) {
     return cur + (target - cur) * coef;
@@ -127,6 +132,17 @@ History ha1A_2(0.0), ha2A_2(0.0), ha3A_2(0.0), ha1B_2(0.0), ha2B_2(0.0), ha3B_2(
 History cF3(-1.0), hg_f3(0.0), hg1_f3(0.0);
 History ha1A_3(0.0), ha2A_3(0.0), ha3A_3(0.0), ha1B_3(0.0), ha2B_3(0.0), ha3B_3(0.0);
 History cSr(0.0), cSl(-1.0);
+// Gain pow(), smoothing exp(), and band-mask / slope flags. Dirty bits force a coefficient rebuild.
+History cSmoothSr(0.0), cSmooth(0.00694444), cFade(0.005208333);
+History cGainP(-999.0), cGainLin(1.0);
+History cNb(-1.0), cMask(-1.0), cPruneP(-1.0), cPhaseP(-1.0), cSlopeP(-1.0);
+History hNb(3.0), hSlope(1.0);
+History hEn1(1.0), hEn2(0.0), hEn3(0.0), hEn4(0.0);
+History hPr(0.0), hB1(1.0), hB2(1.0), hB3(1.0), hB4(0.0);
+History hPhaseSign(1.0);
+History hKA(1.4142135623730951), hKB(1.4142135623730951);
+History hTwoKA(2.8284271247461903), hTwoKB(2.8284271247461903);
+History dirty1(1.0), dirty2(1.0), dirty3(1.0);
 
 // Peak telemetry & 8192-sample FFT ring buffer histories
 History pkB1(0.0), pkB2(0.0), pkB3(0.0), pkB4(0.0);
@@ -145,8 +161,13 @@ qc = (inLevel < 0.00001) ? min(quietCnt + 1.0, 1000000.0) : 0.0;
 quietCnt = qc;
 asleep = (qc > 16384.0) ? 1.0 : 0.0;
 
-// Parameter smoothing (~3 ms)
-smoothCoef = 1.0 - exp(-1.0 / (0.003 * sr));
+// Parameter smoothing (~3 ms). exp() is cached on the sample rate.
+if (sr != cSmoothSr) {
+    cSmoothSr = sr;
+    cSmooth = 1.0 - exp(-1.0 / (0.003 * sr));
+    cFade = 1.0 / max(0.004 * sr, 1.0);
+}
+smoothCoef = cSmooth;
 targetF1 = clamp(f1, 20.0, sr * 0.48);
 targetF2 = clamp(max(f2, targetF1 * 1.1892), 24.0, sr * 0.48);
 targetF3 = clamp(max(f3, targetF2 * 1.1892), 28.0, sr * 0.48);
@@ -154,27 +175,60 @@ targetF3 = clamp(max(f3, targetF2 * 1.1892), 28.0, sr * 0.48);
 smF1 = slew_step(smF1, targetF1, smoothCoef);
 smF2 = slew_step(smF2, targetF2, smoothCoef);
 smF3 = slew_step(smF3, targetF3, smoothCoef);
+// Snap the exponential tail so a float64 slew does not keep tan() dirty after the cutoff has settled.
+if (abs(targetF1 - smF1) < 0.0001) smF1 = targetF1;
+if (abs(targetF2 - smF2) < 0.0001) smF2 = targetF2;
+if (abs(targetF3 - smF3) < 0.0001) smF3 = targetF3;
 
-targetGainLin = (gain <= -69.5) ? 0.0 : db_to_lin(clamp(gain, -70.0, 18.0));
-smGain = slew_step(smGain, targetGainLin, smoothCoef);
+// pow(10, gain * 0.05) only when the gain parameter changes; the slew toward it still runs every sample.
+if (gain != cGainP) {
+    cGainP = gain;
+    cGainLin = (gain <= -69.5) ? 0.0 : db_to_lin(clamp(gain, -70.0, 18.0));
+}
+smGain = slew_step(smGain, cGainLin, smoothCoef);
+if (abs(cGainLin - smGain) < 0.0000001) smGain = cGainLin;
 
-nb = clamp(round(numbands), 1.0, 4.0);
-slopeMode = clamp(round(slope), 0.0, 2.0);
-maskInt = clamp(round(bandmask), 0.0, 15.0);
-phaseSign = (phase > 0.5) ? -1.0 : 1.0;
-
-// Decode 4-bit bandmask
-en1 = (mod(floor(maskInt), 2.0) >= 0.5) ? 1.0 : 0.0;
-en2 = (mod(floor(maskInt * 0.5), 2.0) >= 0.5) ? 1.0 : 0.0;
-en3 = (mod(floor(maskInt * 0.25), 2.0) >= 0.5) ? 1.0 : 0.0;
-en4 = (mod(floor(maskInt * 0.125), 2.0) >= 0.5) ? 1.0 : 0.0;
-
-// Which bands are computed: with prune only the ones in the mask, otherwise every band up to numbands
-pr = (prune > 0.5) ? 1.0 : 0.0;
-b1 = (pr > 0.5) ? en1 : 1.0;
-b2 = ((pr > 0.5) ? en2 : 1.0) * ((nb > 1.5) ? 1.0 : 0.0);
-b3 = ((pr > 0.5) ? en3 : 1.0) * ((nb > 2.5) ? 1.0 : 0.0);
-b4 = ((pr > 0.5) ? en4 : 1.0) * ((nb > 3.5) ? 1.0 : 0.0);
+// Band masks, prune, phase sign and Butterworth damping: only when those parameters change.
+if ((numbands != cNb) || (bandmask != cMask) || (prune != cPruneP) || (phase != cPhaseP) || (slope != cSlopeP)) {
+    cNb = numbands;
+    cMask = bandmask;
+    cPruneP = prune;
+    cPhaseP = phase;
+    cSlopeP = slope;
+    hNb = clamp(round(numbands), 1.0, 4.0);
+    hSlope = clamp(round(slope), 0.0, 2.0);
+    maskInt = clamp(round(bandmask), 0.0, 15.0);
+    hPhaseSign = (phase > 0.5) ? -1.0 : 1.0;
+    hEn1 = (mod(floor(maskInt), 2.0) >= 0.5) ? 1.0 : 0.0;
+    hEn2 = (mod(floor(maskInt * 0.5), 2.0) >= 0.5) ? 1.0 : 0.0;
+    hEn3 = (mod(floor(maskInt * 0.25), 2.0) >= 0.5) ? 1.0 : 0.0;
+    hEn4 = (mod(floor(maskInt * 0.125), 2.0) >= 0.5) ? 1.0 : 0.0;
+    hPr = (prune > 0.5) ? 1.0 : 0.0;
+    hB1 = (hPr > 0.5) ? hEn1 : 1.0;
+    hB2 = ((hPr > 0.5) ? hEn2 : 1.0) * ((hNb > 1.5) ? 1.0 : 0.0);
+    hB3 = ((hPr > 0.5) ? hEn3 : 1.0) * ((hNb > 2.5) ? 1.0 : 0.0);
+    hB4 = ((hPr > 0.5) ? hEn4 : 1.0) * ((hNb > 3.5) ? 1.0 : 0.0);
+    hKA = (hSlope > 1.5) ? 1.8477590650225735 : 1.4142135623730951;
+    hKB = (hSlope > 1.5) ? 0.7653668647301796 : 1.4142135623730951;
+    hTwoKA = 2.0 * hKA;
+    hTwoKB = 2.0 * hKB;
+}
+nb = hNb;
+slopeMode = hSlope;
+en1 = hEn1;
+en2 = hEn2;
+en3 = hEn3;
+en4 = hEn4;
+pr = hPr;
+b1 = hB1;
+b2 = hB2;
+b3 = hB3;
+b4 = hB4;
+phaseSign = hPhaseSign;
+kStageA = hKA;
+kStageB = hKB;
+twoKA = hTwoKA;
+twoKB = hTwoKB;
 
 // IIR tree: stage 1 serves both phase modes, stages 2 / 3 only the all-IIR mode (Dynamic Phase uses the FIR instead).
 // Warm during the 4 ms fade from Dynamic Phase back to IIR (dynphase already 0, dynActive still 1).
@@ -191,22 +245,22 @@ needHP3 = s3on * b4;
 needAP3a = s3on * b1;
 needAP3b = s3on * b2;
 
-// Damping constants for Butterworth 2nd-order (LR4) and 4th-order (LR8)
-kButter2 = 1.4142135623730951;
-kButter4A = 1.8477590650225735;
-kButter4B = 0.7653668647301796;
-
-// Effective damping per SVF stage based on slopeMode (1 = LR4 uses kButter2; 2 = LR8 alternates A and B)
-kStageA = (slopeMode > 1.5) ? kButter4A : kButter2;
-kStageB = (slopeMode > 1.5) ? kButter4B : kButter2;
-
-// Coefficients are cached: recomputed only when a smoothed crossover moved, or the slope mode / rate changed
+// Coefficients are cached. tan() runs only when a smoothed crossover, the slope or the rate moved,
+// and only for a stage this band count / phase mode still runs. SVF steps multiply by a1/a2/a3.
 keyChg = ((slopeMode != cSl) || (sr != cSr)) ? 1.0 : 0.0;
+if (keyChg > 0.5) {
+    dirty1 = 1.0;
+    dirty2 = 1.0;
+    dirty3 = 1.0;
+}
+if (smF1 != cF1) dirty1 = 1.0;
+if (smF2 != cF2) dirty2 = 1.0;
+if (smF3 != cF3) dirty3 = 1.0;
 
 g_f1 = hg_f1; g1_f1 = hg1_f1;
 a1A_1 = ha1A_1; a2A_1 = ha2A_1; a3A_1 = ha3A_1;
 a1B_1 = ha1B_1; a2B_1 = ha2B_1; a3B_1 = ha3B_1;
-if (smF1 != cF1 || keyChg > 0.5) {
+if ((nb > 1.5) && (dirty1 > 0.5)) {
     g_f1 = calc_tan_g(smF1, sr);
     g1_f1 = g_f1 / (1.0 + g_f1);
     a1A_1 = 1.0 / (1.0 + g_f1 * (g_f1 + kStageA));
@@ -218,13 +272,14 @@ if (smF1 != cF1 || keyChg > 0.5) {
     hg_f1 = g_f1; hg1_f1 = g1_f1;
     ha1A_1 = a1A_1; ha2A_1 = a2A_1; ha3A_1 = a3A_1;
     ha1B_1 = a1B_1; ha2B_1 = a2B_1; ha3B_1 = a3B_1;
+    dirty1 = 0.0;
     cF1 = smF1;
 }
 
 g_f2 = hg_f2; g1_f2 = hg1_f2;
 a1A_2 = ha1A_2; a2A_2 = ha2A_2; a3A_2 = ha3A_2;
 a1B_2 = ha1B_2; a2B_2 = ha2B_2; a3B_2 = ha3B_2;
-if (smF2 != cF2 || keyChg > 0.5) {
+if ((s2on > 0.5) && (dirty2 > 0.5)) {
     g_f2 = calc_tan_g(smF2, sr);
     g1_f2 = g_f2 / (1.0 + g_f2);
     a1A_2 = 1.0 / (1.0 + g_f2 * (g_f2 + kStageA));
@@ -236,13 +291,14 @@ if (smF2 != cF2 || keyChg > 0.5) {
     hg_f2 = g_f2; hg1_f2 = g1_f2;
     ha1A_2 = a1A_2; ha2A_2 = a2A_2; ha3A_2 = a3A_2;
     ha1B_2 = a1B_2; ha2B_2 = a2B_2; ha3B_2 = a3B_2;
+    dirty2 = 0.0;
     cF2 = smF2;
 }
 
 g_f3 = hg_f3; g1_f3 = hg1_f3;
 a1A_3 = ha1A_3; a2A_3 = ha2A_3; a3A_3 = ha3A_3;
 a1B_3 = ha1B_3; a2B_3 = ha2B_3; a3B_3 = ha3B_3;
-if (smF3 != cF3 || keyChg > 0.5) {
+if ((s3on > 0.5) && (dirty3 > 0.5)) {
     g_f3 = calc_tan_g(smF3, sr);
     g1_f3 = g_f3 / (1.0 + g_f3);
     a1A_3 = 1.0 / (1.0 + g_f3 * (g_f3 + kStageA));
@@ -254,6 +310,7 @@ if (smF3 != cF3 || keyChg > 0.5) {
     hg_f3 = g_f3; hg1_f3 = g1_f3;
     ha1A_3 = a1A_3; ha2A_3 = a2A_3; ha3A_3 = a3A_3;
     ha1B_3 = a1B_3; ha2B_3 = a2B_3; ha3B_3 = a3B_3;
+    dirty3 = 0.0;
     cF3 = smF3;
 }
 
@@ -382,6 +439,7 @@ if (asleep < 0.5) {
     // =========================================================================
     // STAGE 2: crossover at smF2 (on the previous high band) + allpass(es) on the lower bands
     // =========================================================================
+    if (s2on > 0.5) {
     if (slopeMode < 0.5) {
         // 12 dB/oct (LR2)
         if (needLP2 > 0.5) {
@@ -495,30 +553,32 @@ if (asleep < 0.5) {
             if (slopeMode > 1.5) {
                 v3 = low1L - ap2_b1_1_ic2L; v1 = a1A_2 * ap2_b1_1_ic1L + a2A_2 * v3; v2 = ap2_b1_1_ic2L + a2A_2 * ap2_b1_1_ic1L + a3A_2 * v3;
                 ap2_b1_1_ic1L = 2.0 * v1 - ap2_b1_1_ic1L; ap2_b1_1_ic2L = 2.0 * v2 - ap2_b1_1_ic2L;
-                aps_ap2_b1L = low1L - 2.0 * kStageA * v1;
+                aps_ap2_b1L = low1L - twoKA * v1;
                 v3 = aps_ap2_b1L - ap2_b1_2_ic2L; v1 = a1B_2 * ap2_b1_2_ic1L + a2B_2 * v3; v2 = ap2_b1_2_ic2L + a2B_2 * ap2_b1_2_ic1L + a3B_2 * v3;
                 ap2_b1_2_ic1L = 2.0 * v1 - ap2_b1_2_ic1L; ap2_b1_2_ic2L = 2.0 * v2 - ap2_b1_2_ic2L;
-                b1_after2L = aps_ap2_b1L - 2.0 * kStageB * v1;
+                b1_after2L = aps_ap2_b1L - twoKB * v1;
                 v3 = low1R - ap2_b1_1_ic2R; v1 = a1A_2 * ap2_b1_1_ic1R + a2A_2 * v3; v2 = ap2_b1_1_ic2R + a2A_2 * ap2_b1_1_ic1R + a3A_2 * v3;
                 ap2_b1_1_ic1R = 2.0 * v1 - ap2_b1_1_ic1R; ap2_b1_1_ic2R = 2.0 * v2 - ap2_b1_1_ic2R;
-                aps_ap2_b1R = low1R - 2.0 * kStageA * v1;
+                aps_ap2_b1R = low1R - twoKA * v1;
                 v3 = aps_ap2_b1R - ap2_b1_2_ic2R; v1 = a1B_2 * ap2_b1_2_ic1R + a2B_2 * v3; v2 = ap2_b1_2_ic2R + a2B_2 * ap2_b1_2_ic1R + a3B_2 * v3;
                 ap2_b1_2_ic1R = 2.0 * v1 - ap2_b1_2_ic1R; ap2_b1_2_ic2R = 2.0 * v2 - ap2_b1_2_ic2R;
-                b1_after2R = aps_ap2_b1R - 2.0 * kStageB * v1;
+                b1_after2R = aps_ap2_b1R - twoKB * v1;
             } else {
                 v3 = low1L - ap2_b1_1_ic2L; v1 = a1A_2 * ap2_b1_1_ic1L + a2A_2 * v3; v2 = ap2_b1_1_ic2L + a2A_2 * ap2_b1_1_ic1L + a3A_2 * v3;
                 ap2_b1_1_ic1L = 2.0 * v1 - ap2_b1_1_ic1L; ap2_b1_1_ic2L = 2.0 * v2 - ap2_b1_1_ic2L;
-                b1_after2L = low1L - 2.0 * kStageA * v1;
+                b1_after2L = low1L - twoKA * v1;
                 v3 = low1R - ap2_b1_1_ic2R; v1 = a1A_2 * ap2_b1_1_ic1R + a2A_2 * v3; v2 = ap2_b1_1_ic2R + a2A_2 * ap2_b1_1_ic1R + a3A_2 * v3;
                 ap2_b1_1_ic1R = 2.0 * v1 - ap2_b1_1_ic1R; ap2_b1_1_ic2R = 2.0 * v2 - ap2_b1_1_ic2R;
-                b1_after2R = low1R - 2.0 * kStageA * v1;
+                b1_after2R = low1R - twoKA * v1;
             }
         }
+    }
     }
 
     // =========================================================================
     // STAGE 3: crossover at smF3 (on the previous high band) + allpass(es) on the lower bands
     // =========================================================================
+    if (s3on > 0.5) {
     if (slopeMode < 0.5) {
         // 12 dB/oct (LR2)
         if (needLP3 > 0.5) {
@@ -638,54 +698,62 @@ if (asleep < 0.5) {
             if (slopeMode > 1.5) {
                 v3 = b1_after2L - ap3_b1_1_ic2L; v1 = a1A_3 * ap3_b1_1_ic1L + a2A_3 * v3; v2 = ap3_b1_1_ic2L + a2A_3 * ap3_b1_1_ic1L + a3A_3 * v3;
                 ap3_b1_1_ic1L = 2.0 * v1 - ap3_b1_1_ic1L; ap3_b1_1_ic2L = 2.0 * v2 - ap3_b1_1_ic2L;
-                aps_ap3_b1L = b1_after2L - 2.0 * kStageA * v1;
+                aps_ap3_b1L = b1_after2L - twoKA * v1;
                 v3 = aps_ap3_b1L - ap3_b1_2_ic2L; v1 = a1B_3 * ap3_b1_2_ic1L + a2B_3 * v3; v2 = ap3_b1_2_ic2L + a2B_3 * ap3_b1_2_ic1L + a3B_3 * v3;
                 ap3_b1_2_ic1L = 2.0 * v1 - ap3_b1_2_ic1L; ap3_b1_2_ic2L = 2.0 * v2 - ap3_b1_2_ic2L;
-                b1_after3L = aps_ap3_b1L - 2.0 * kStageB * v1;
+                b1_after3L = aps_ap3_b1L - twoKB * v1;
                 v3 = b1_after2R - ap3_b1_1_ic2R; v1 = a1A_3 * ap3_b1_1_ic1R + a2A_3 * v3; v2 = ap3_b1_1_ic2R + a2A_3 * ap3_b1_1_ic1R + a3A_3 * v3;
                 ap3_b1_1_ic1R = 2.0 * v1 - ap3_b1_1_ic1R; ap3_b1_1_ic2R = 2.0 * v2 - ap3_b1_1_ic2R;
-                aps_ap3_b1R = b1_after2R - 2.0 * kStageA * v1;
+                aps_ap3_b1R = b1_after2R - twoKA * v1;
                 v3 = aps_ap3_b1R - ap3_b1_2_ic2R; v1 = a1B_3 * ap3_b1_2_ic1R + a2B_3 * v3; v2 = ap3_b1_2_ic2R + a2B_3 * ap3_b1_2_ic1R + a3B_3 * v3;
                 ap3_b1_2_ic1R = 2.0 * v1 - ap3_b1_2_ic1R; ap3_b1_2_ic2R = 2.0 * v2 - ap3_b1_2_ic2R;
-                b1_after3R = aps_ap3_b1R - 2.0 * kStageB * v1;
+                b1_after3R = aps_ap3_b1R - twoKB * v1;
             } else {
                 v3 = b1_after2L - ap3_b1_1_ic2L; v1 = a1A_3 * ap3_b1_1_ic1L + a2A_3 * v3; v2 = ap3_b1_1_ic2L + a2A_3 * ap3_b1_1_ic1L + a3A_3 * v3;
                 ap3_b1_1_ic1L = 2.0 * v1 - ap3_b1_1_ic1L; ap3_b1_1_ic2L = 2.0 * v2 - ap3_b1_1_ic2L;
-                b1_after3L = b1_after2L - 2.0 * kStageA * v1;
+                b1_after3L = b1_after2L - twoKA * v1;
                 v3 = b1_after2R - ap3_b1_1_ic2R; v1 = a1A_3 * ap3_b1_1_ic1R + a2A_3 * v3; v2 = ap3_b1_1_ic2R + a2A_3 * ap3_b1_1_ic1R + a3A_3 * v3;
                 ap3_b1_1_ic1R = 2.0 * v1 - ap3_b1_1_ic1R; ap3_b1_1_ic2R = 2.0 * v2 - ap3_b1_1_ic2R;
-                b1_after3R = b1_after2R - 2.0 * kStageA * v1;
+                b1_after3R = b1_after2R - twoKA * v1;
             }
         }
         if (needAP3b > 0.5) {
             if (slopeMode > 1.5) {
                 v3 = low2L - ap3_b2_1_ic2L; v1 = a1A_3 * ap3_b2_1_ic1L + a2A_3 * v3; v2 = ap3_b2_1_ic2L + a2A_3 * ap3_b2_1_ic1L + a3A_3 * v3;
                 ap3_b2_1_ic1L = 2.0 * v1 - ap3_b2_1_ic1L; ap3_b2_1_ic2L = 2.0 * v2 - ap3_b2_1_ic2L;
-                aps_ap3_b2L = low2L - 2.0 * kStageA * v1;
+                aps_ap3_b2L = low2L - twoKA * v1;
                 v3 = aps_ap3_b2L - ap3_b2_2_ic2L; v1 = a1B_3 * ap3_b2_2_ic1L + a2B_3 * v3; v2 = ap3_b2_2_ic2L + a2B_3 * ap3_b2_2_ic1L + a3B_3 * v3;
                 ap3_b2_2_ic1L = 2.0 * v1 - ap3_b2_2_ic1L; ap3_b2_2_ic2L = 2.0 * v2 - ap3_b2_2_ic2L;
-                b2_after3L = aps_ap3_b2L - 2.0 * kStageB * v1;
+                b2_after3L = aps_ap3_b2L - twoKB * v1;
                 v3 = low2R - ap3_b2_1_ic2R; v1 = a1A_3 * ap3_b2_1_ic1R + a2A_3 * v3; v2 = ap3_b2_1_ic2R + a2A_3 * ap3_b2_1_ic1R + a3A_3 * v3;
                 ap3_b2_1_ic1R = 2.0 * v1 - ap3_b2_1_ic1R; ap3_b2_1_ic2R = 2.0 * v2 - ap3_b2_1_ic2R;
-                aps_ap3_b2R = low2R - 2.0 * kStageA * v1;
+                aps_ap3_b2R = low2R - twoKA * v1;
                 v3 = aps_ap3_b2R - ap3_b2_2_ic2R; v1 = a1B_3 * ap3_b2_2_ic1R + a2B_3 * v3; v2 = ap3_b2_2_ic2R + a2B_3 * ap3_b2_2_ic1R + a3B_3 * v3;
                 ap3_b2_2_ic1R = 2.0 * v1 - ap3_b2_2_ic1R; ap3_b2_2_ic2R = 2.0 * v2 - ap3_b2_2_ic2R;
-                b2_after3R = aps_ap3_b2R - 2.0 * kStageB * v1;
+                b2_after3R = aps_ap3_b2R - twoKB * v1;
             } else {
                 v3 = low2L - ap3_b2_1_ic2L; v1 = a1A_3 * ap3_b2_1_ic1L + a2A_3 * v3; v2 = ap3_b2_1_ic2L + a2A_3 * ap3_b2_1_ic1L + a3A_3 * v3;
                 ap3_b2_1_ic1L = 2.0 * v1 - ap3_b2_1_ic1L; ap3_b2_1_ic2L = 2.0 * v2 - ap3_b2_1_ic2L;
-                b2_after3L = low2L - 2.0 * kStageA * v1;
+                b2_after3L = low2L - twoKA * v1;
                 v3 = low2R - ap3_b2_1_ic2R; v1 = a1A_3 * ap3_b2_1_ic1R + a2A_3 * v3; v2 = ap3_b2_1_ic2R + a2A_3 * ap3_b2_1_ic1R + a3A_3 * v3;
                 ap3_b2_1_ic1R = 2.0 * v1 - ap3_b2_1_ic1R; ap3_b2_1_ic2R = 2.0 * v2 - ap3_b2_1_ic2R;
-                b2_after3R = low2R - 2.0 * kStageA * v1;
+                b2_after3R = low2R - twoKA * v1;
             }
         }
+    }
     }
 }
 
 // =========================================================================
 // DYNAMIC PHASE: IIR F1 + COMPLEMENTARY LINEAR-PHASE FIR F2 / F3
 // =========================================================================
+// FIR window, kernels and the 6-channel ring run only while Dynamic Phase is on or fading.
+// The 4 ms fade fills the ring before the convolution starts, and keeps it through the fade back.
+dynWant = ((dynphase > 0.5) || (dynActive > 0.5)) ? 1.0 : 0.0;
+wp = firWp;
+needF2 = 0.0;
+needF3 = 0.0;
+if (dynWant > 0.5) {
 needF2 = ((nb > 2.5) ? 1.0 : 0.0) * max(b2, b3);
 needF3 = ((nb > 3.5) ? 1.0 : 0.0) * max(b3, b4);
 
@@ -755,7 +823,7 @@ if (kCnt >= 32.0 || (needF2 > 0.5 && kF2 < 0.0) || (needF3 > 0.5 && kF3 < 0.0)) 
     }
 }
 
-// Rings always run so a mode switch starts with valid history
+// Ring write uses the index captured above so the convolution reads the sample just stored.
 wp = firWp;
 poke(firRing, xL, wp, 0);
 poke(firRing, xR, wp, 1);
@@ -764,10 +832,11 @@ poke(firRing, low1R, wp, 3);
 poke(firRing, high1L, wp, 4);
 poke(firRing, high1R, wp, 5);
 firWp = (wp + 1.0 >= 2048.0) ? 0.0 : wp + 1.0;
+}
 
 // 4 ms fade out -> switch -> 4 ms fade in, so the latency jump never clicks
 dynTarget = (dynphase > 0.5) ? 1.0 : 0.0;
-fadeStep = 1.0 / max(0.004 * sr, 1.0);
+fadeStep = cFade;
 if (dynTarget != dynActive) {
     dynFade = max(dynFade - fadeStep, 0.0);
     if (dynFade <= 0.0) {
@@ -779,6 +848,7 @@ if (dynTarget != dynActive) {
 
 if (asleep < 0.5) {
 if (dynActive > 0.5) {
+    Dn = firD;
     iD = wp - Dn;
     iD = (iD < 0.0) ? iD + 2048.0 : iD;
     dxL = peek(firRing, iD, 0);
@@ -854,6 +924,8 @@ out2 = outR;
 
 // =========================================================================
 // TELEMETRY (poked to Buffer scope every 64 samples) + 8192-sample input ring for the face's FFT
+// This runs while asleep. Slot 23 (scopeBeat) advances every 64 samples so mbDspFrames()
+// sees the gen on a silent track; silence sleep only skips the filter block above.
 // =========================================================================
 monoIn = 0.5 * (xL + xR);
 envDecay = 0.9992;
