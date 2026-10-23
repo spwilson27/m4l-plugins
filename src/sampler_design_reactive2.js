@@ -26,9 +26,9 @@ var SECTIONS = [
     { id: "voice", name: "Voice / Out", w: 132, acc: "a_out" }
 ];
 var SB_X = 2, SB_W = 22;
-var VIEW = { x: 26, y: 0, w: 466, h: 106 };
-var STRIP = { x: 26, y: 108, w: 466, h: 59 };
-var SEC_X0 = 494, SEC_GAP = 2, WIN_PAD = 2, SEC_Y = 0, SEC_H = 167;
+var VIEW = { x: 26, y: 0, w: 466, h: 107 };
+var STRIP = { x: 26, y: 108, w: 466, h: 61 };
+var SEC_X0 = 493, SEC_GAP = 1, WIN_PAD = 1, SEC_Y = 0, SEC_H = 169;
 var DEFAULT_FOLD = 2;                       // Mod Sources open
 var foldMask = DEFAULT_FOLD;
 var hoverHdl = "";
@@ -128,8 +128,8 @@ function initTheme() {
     var surfLo = lumi(surf) >= lumi(desk) ? desk : surf;
     RC = {
         light: lumi(desk) > 0.5,
-        bg: surfFrame, panel: surfHi, divider: surfLo, raised: ctlBg, wave: lcd, line: frame,
-        wtBorder: surfFrame,
+        bg: frame, panel: surfHi, divider: surfLo, raised: ctlBg, wave: lcd, line: frame,
+        wtBorder: frame,
         textBg: liveCol("live_control_text_bg"),
         contrastFrame: liveCol("live_contrast_frame"),
         dialFg: liveCol("live_dial_fg"), dialFgOff: liveCol("live_dial_fg_zombie"),
@@ -239,7 +239,7 @@ function actZone(x, y, w, h, fn, extra) {
 }
 
 function panelBox(x, y, w, h) {
-    fillRR(x, y, w, h, 2.5, RC.panel);
+    fillRect(x, y, w, h, RC.panel, 1.0);
 }
 
 function secTitle(label, x, y, acc) {
@@ -613,7 +613,6 @@ function paintOscHeaderTabs(tx, ty) {
     var x = tx;
     for (var i = 0; i < tabs.length; i++) {
         var t = tabs[i], active = oscTab === t.idx;
-        fillRR(x, ty, t.w, 13, 2.5, active ? RC.wave : RC.raised, 1.0);
         if (active) line(x + 2, ty + 12.5, x + t.w - 2, ty + 12.5, RC.sel, 1.0, 1.3);
         if (t.enKey) {
             var sqX = x + 3.5, sqY = ty + 3.5, sqS = 6.0;
@@ -676,7 +675,7 @@ function paintOsc2SubControls(x, y, w, h, layoutMode) {
 
 function paintViewer() {
     var sx = VIEW.x, sy = VIEW.y, sw = VIEW.w, sh = VIEW.h;
-    panelBox(sx, sy, sw, sh);
+    fillRect(sx, sy, sw, sh, RC.wave, 1.0);
     var acc = RC.a_wave;
 
     //Header: folder / file name, voices, sample gain, ROOT note + ct; plus Oscillator Tabs
@@ -722,7 +721,6 @@ function paintViewer() {
 
     // Waveform (one view transform: vwx / vnorm; overlays are clipped to the waveform; zoom / pan are not persisted)
     var wx = viewWave[0], wy = viewWave[1], ww = viewWave[2], wh = viewWave[3];
-    fillRR(wx, wy, ww, wh, 3, RC.wave);
     var loopOn = curLoopMode > 0;
     var loopZones = null;
     var inW = function (x) { return x >= wx - 0.5 && x <= wx + ww + 0.5; };
@@ -1515,14 +1513,8 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
 function paintEnvSection(sx) {
     envX = sx;
     var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
-    fillRect(sx, 0, ENV_W, 169, RC.panel, 1.0);
-
-    var bx = sx + 1, by = 1, bw = ENV_W - 2, bh = 169;
+    var bx = sx, by = 0, bw = ENV_W, bh = 169;
     fillRect(bx, by, bw, bh, RC.wave, 1.0);
-    setc(RC.line, 1.0);
-    mgraphics.set_line_width(1.5);
-    mgraphics.rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1);
-    mgraphics.stroke();
 
     // Tab bar: Amp | Env 2 | Env 3 | LFO 1 | LFO 2
     var subNames = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
@@ -1535,7 +1527,7 @@ function paintEnvSection(sx) {
         if (sOn) line(sx0 + 1, by + 16.0, sx0 + sw - 1, by + 16.0, sCol, 1.0, 1.5);
         zone("button", sx0, by + 1, sw, 15.5, { action: "env_page", page: s });
     }
-    line(bx + 1, by + 16.5, bx + bw - 1, by + 16.5, RC.line, 1.0, 1.0);
+    line(bx, by + 16.5, bx + bw, by + 16.5, RC.line, 1.0, 1.0);
 
     if (envPage <= 2) paintEnvSubPage(sx, bx, by, bw, bh);
     else paintLfoSubPage(sx, bx, by, bw, bh);
@@ -1544,14 +1536,8 @@ function paintEnvSection(sx) {
 function paintMatrixSection(sx) {
     matX = sx;
     var cy1 = RC.cyan;
-    fillRect(sx, 0, MAT_W, 169, RC.panel, 1.0);
-
-    var bx = sx + 1, by = 1, bw = MAT_W - 2, bh = 169;
+    var bx = sx, by = 0, bw = MAT_W, bh = 169;
     fillRect(bx, by, bw, bh, RC.wave, 1.0);
-    setc(RC.line, 1.0);
-    mgraphics.set_line_width(1.5);
-    mgraphics.rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1);
-    mgraphics.stroke();
 
     // Same top tab bar style as Mod Sources: Matrix | MIDI | MPE
     var matNames = ["Matrix", "MIDI", "MPE"];
@@ -1563,7 +1549,7 @@ function paintMatrixSection(sx) {
         if (tOn) line(tx0 + 1, by + 16.0, tx0 + sw - 1, by + 16.0, cy1, 1.0, 1.5);
         (function (idx) { actZone(tx0, by + 1, sw, 15.5, function () { matTab = idx; }); })(t);
     }
-    line(bx + 1, by + 16.5, bx + bw - 1, by + 16.5, RC.line, 1.0, 1.0);
+    line(bx, by + 16.5, bx + bw, by + 16.5, RC.line, 1.0, 1.0);
 
     paintModTable(sx, bx, by, bw, bh, matTab + 1);
 }
@@ -1867,9 +1853,9 @@ function paintFilterSection(sx) {
     var route = Math.round(paramValue("filt_route"));
     var q1 = resToQ(res1), q2 = resToQ(res2);
 
-    // Wavetable section panel: sits inside RC.bg (live_macro_title) with 2 px gap/border on sides and bottom
-    panelBox(sx, SEC_Y, FILT_W, SEC_H);
-    fillTopRR(sx, SEC_Y, FILT_W, 95.5, 2.5, RC.wave, 1.0);
+    // Wavetable section panel: flush full height (y = 0..169) with only a 1 px separator between sections
+    fillRect(sx, 0, FILT_W, 169, RC.panel, 1.0);
+    fillRect(sx, 0, FILT_W, 95.5, RC.wave, 1.0);
 
     // Top control bar: Filter 1 strip | divider | Filter 2 strip
     paintFilterStrip(sx, 5.0, 1);
