@@ -5,6 +5,7 @@
     "src/types/delayplus.d.ts",
     "src/delayplus_config.js",
     "src/delayplus_link.js",
-    "src/delayplus_end_ui.js"
+    "src/delayplus_end_ui.js",
+    "src/delayplus_dsp.js"
   ]
 }
