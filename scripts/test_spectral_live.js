@@ -68,9 +68,9 @@ const CHAIN_COLOR_INDEX = {
 };
 const DEVICES = [
     { slug: "transplit", track: "Transient Split", pre: "TS", rack: true, channels: 2, num: ["Bias", 40], num2: ["Tilt", -35], en: ["Type", 1], frac: ["Decay", 12.5], blend: ["Blend", 80] },
-    { slug: "loudsplit", track: "Loud Split", pre: "LS", channels: 3, num: ["Higher", -40], num2: ["Hi Knee", 14], en: ["Relative", 1], frac: ["Rise", 3.75] },
-    { slug: "harmsplit", track: "Harmonic Split", pre: "HS", channels: 3, num: ["NH Sens", 70], num2: ["Threshold", -45], en: ["Pattern", 3], frac: ["Tilt", 2.5] },
-    { slug: "freqsplit", track: "Freq Split", pre: "FS", channels: 4, num: ["XFade", 60], num2: ["Pinch", 30], en: ["Limiter", 1], frac: ["Splits", 7.5], fracExp: { lo: 1, hi: 1024, exp: 3, key: "splits" } },
+    { slug: "loudsplit", rack: true, track: "Loud Split", pre: "LS", channels: 3, num: ["Higher", -40], num2: ["Hi Knee", 14], en: ["Relative", 1], frac: ["Rise", 3.75] },
+    { slug: "harmsplit", rack: true, track: "Harmonic Split", pre: "HS", channels: 3, num: ["NH Sens", 70], num2: ["Threshold", -45], en: ["Pattern", 3], frac: ["Tilt", 2.5] },
+    { slug: "freqsplit", rack: true, track: "Freq Split", pre: "FS", channels: 4, num: ["XFade", 60], num2: ["Pinch", 30], en: ["Limiter", 1], frac: ["Splits", 7.5], fracExp: { lo: 1, hi: 1024, exp: 3, key: "splits" } },
 ];
 
 const HELPERS = `
@@ -233,8 +233,9 @@ function runDevice(dev) {
     }
     check(meter > 0.02, `${tag} track output meter ${meter.toFixed(3)} > 0.02`);
 
+    let leaderIdx = 0;
     if (dev.rack) {
-        const RK = ["CMP", "FOL", "ALIGNED", "FB", "ROLE", "SERVE", "ALIVE", "LAG", "UNDER", "LATENCY"].map((k) => cfg[dev.pre + "_SC_" + k]);
+        const RK = ["CMP", "FOL", "ALIGNED", "FB", "ROLE", "SERVE", "ALIVE", "LAG", "UNDER", "LATENCY", "DOFF"].map((k) => cfg[dev.pre + "_SC_" + k]);
         check(RK.every((v) => typeof v === "number"), `${tag} rack telemetry constants present in the config`);
         let rk = [];
         for (let i = 0; i < 20; i++) {
@@ -244,15 +245,23 @@ function runDevice(dev) {
         }
         const leaders = rk.map((v, i) => (v[0] === 1 ? i : -1)).filter((i) => i >= 0);
         check(leaders.length === 1, `${tag} exactly one instance computes (the leader): chains [${leaders}]  (cmp [${rk.map((v) => v[0])}], role [${rk.map((v) => v[4])}])`);
+        const wantRole = peers.map((_, i) => (i === leaders[0] ? 1 : 2));
+        check(rk.every((v, i) => v[4] === wantRole[i]), `${tag} roles [leader 1, follower 2]: got [${rk.map((v) => v[4])}] want [${wantRole}]`);
+        leaderIdx = leaders.length === 1 ? leaders[0] : 0;
         check(rk.every((v, i) => i === leaders[0] || (v[1] === 1 && v[2] === 1 && v[3] === 0)), `${tag} every other instance follows, aligned by content, no fallback: follow [${rk.map((v) => v[1])}] aligned [${rk.map((v) => v[2])}] fb [${rk.map((v) => v[3])}]`);
-        check(leaders.length === 1 && rk[leaders[0]][5] >= Math.pow(2, dev.channels) - 1, `${tag} the leader serves every channel (serve mask ${leaders.length ? rk[leaders[0]][5] : "?"})`);
-        check(rk.every((v) => v[9] === cfg.TS_LATENCY), `${tag} every gen reports the latency ${cfg.TS_LATENCY}: [${rk.map((v) => v[9])}]`);
+        // instances of a rack start their gens in different host blocks, so the counter offset is a multiple of the block (measured 10240 .. 386560): content alignment handles it
+        console.log(`      ${tag} follower counter offsets to the leader (informational): [${rk.map((v) => v[10])}]`);
+        check(leaders.length === 1 && rk[leaders[0]][5] === Math.pow(2, dev.channels) - 1, `${tag} the leader serves every channel (serve mask ${leaders.length ? rk[leaders[0]][5] : "?"})`);
+        check(rk.every((v) => v[9] === cfg[dev.pre + "_LATENCY"]), `${tag} every gen reports the latency ${cfg[dev.pre + "_LATENCY"]}: [${rk.map((v) => v[9])}]`);
         sleep(1500);
         const rk2 = peers.map((p) => lom(`return scopeVals(${JSON.stringify(p.scope)}, ${JSON.stringify(RK)});`));
         check(rk2.every((v) => v[8] === 0), `${tag} no ring underrun: [${rk2.map((v) => v[8])}]  (follower lag to the leader's clock: [${rk2.map((v) => v[7])}] samples)`);
         const trace = lom(`var g = new Global("spectral_split_trace"); return g.text ? String(g.text) : "";`);
-        const ready = (trace.match(/ transplit dsp ready after (\d+) ms/g) || []).length;
-        check(ready >= N, `${tag} every instance's deferred gen~ reached ready (${ready} trace lines)`);
+        const readyRe = new RegExp(" " + dev.slug + " dsp ready after (\\d+) ms", "g");
+        const readyMs = (trace.match(readyRe) || []).map((s) => Number(s.match(/(\d+) ms/)[1]));
+        check(readyMs.length >= N, `${tag} every instance's deferred gen~ reached ready (${readyMs.length} trace lines; ready after [${readyMs.slice(-N)}] ms)`);
+        const rdy = trace.split("\n").filter((l) => l.indexOf(" " + dev.slug + " dsp ") >= 0).slice(-3 * N);
+        console.log("      " + dev.slug + " dsp lines: " + rdy.map((l) => l.replace(/ \[#.*$/, "")).join(" ; "));
         console.log("      load trace:\n      " + trace.split("\n").slice(-12).join("\n      "));
     }
 
@@ -291,14 +300,14 @@ function runDevice(dev) {
                     let f0s = [], last = [];
                     for (let i = 0; i < 30; i++) {
                         sleep(300);
-                        last = peers.map((p) => lom(`return scopeVals(${JSON.stringify(p.scope)}, ${JSON.stringify(IDXH)});`));
+                        last = [peers[leaderIdx]].map((p) => lom(`return scopeVals(${JSON.stringify(p.scope)}, ${JSON.stringify(IDXH)});`));   // followers hold no analysis telemetry: the leader's scope
                         f0s = last.map((v) => v[0]);
                         if (f0s.every((f) => Math.abs(f / want - 1) < 0.01)) break;
                     }
                     check(f0s.every((f) => Math.abs(f / want - 1) < 0.01),
-                        `${tag} ${w.label}: ${w.root ? "ROOT" : "f0"} telemetry on every chain within 1 % of ${want} Hz: [${f0s.map((f) => f.toFixed(2))}] (series [${last.map((v) => v[4].toFixed(2))}], root harmonic [${last.map((v) => v[5])}], odd-only [${last.map((v) => v[6])}], salience [${last.map((v) => v[1].toFixed(2))}], voiced [${last.map((v) => v[2].toFixed(2))}], gen sr ${last[0][3]})`);
+                        `${tag} ${w.label}: ${w.root ? "ROOT" : "f0"} telemetry (leader's scope) within 1 % of ${want} Hz: [${f0s.map((f) => f.toFixed(2))}] (series [${last.map((v) => v[4].toFixed(2))}], root harmonic [${last.map((v) => v[5])}], odd-only [${last.map((v) => v[6])}], salience [${last.map((v) => v[1].toFixed(2))}], voiced [${last.map((v) => v[2].toFixed(2))}], gen sr ${last[0][3]})`);
                     if (w.root) check(last.every((v) => Math.abs(v[4] / w.f0 - 1) < 0.01 && v[5] === w.rootH),
-                        `${tag} ${w.label}: series f0 ${w.f0} Hz and root harmonic ${w.rootH} on every chain: [${last.map((v) => v[4].toFixed(2) + "/h" + v[5])}]`);
+                        `${tag} ${w.label}: series f0 ${w.f0} Hz and root harmonic ${w.rootH}: [${last.map((v) => v[4].toFixed(2) + "/h" + v[5])}]`);
                 }
                 if (w.band) {
                     for (const name of Object.keys(w.band)) lom(`return setVal(${JSON.stringify(chain0)}, ${JSON.stringify(name)}, ${saved[name]});`);

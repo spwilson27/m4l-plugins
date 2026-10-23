@@ -6,6 +6,11 @@
                                                                           slope of (long - short) for 1 and 3 instances, per-instance = (s3 - s1) / 2
   scripts/vm_spectral.sh run measure_spectral.py split                    transplit only: cost of forward FFT + inverse FFT + OLA (F, I), the Mid analysis (A) and
                                                                           the mask computation, by switching parts of the core off (timing only, output is garbage)
+  scripts/vm_spectral.sh run measure_spectral.py derive [slug ...]        cost of ONE RACK (leader + followers) per Size with the shared-template savings on / off:
+                                                                          SS_NO_DERIVE=1 (every channel inverse-transformed) and SS_NO_MIDA=1 (Mid phase atan2 kept)
+  scripts/vm_spectral.sh run measure_spectral.py spike [slug ...]         `adstatus cpu` polled every 3 ms on the REAL-TIME driver (audio_device, machine-wide lock) with
+                                                                          racks of the device at Size 4k / 1k: mean / p90 / p99 / max, to see whether the once-per-hop
+                                                                          analysis is a per-vector CPU spike (candidate for time slicing)
   scripts/vm_spectral.sh run measure_spectral.py all
 
 NRT renders as fast as it can, so the ratio is a real-time factor of the WHOLE patch (stimulus + record + instances) on one core,
@@ -121,6 +126,83 @@ def do_rack(slugs=None):
         print(f"RACK Size {label}: shared / old = {res[True] / max(res[False], 1e-9):.2f}")
 
 
+def patch_rack_k(code, racks, n, k, ring_samps):
+    """`racks` racks of k chains, the first instance of a rack leads and serves every channel, the others follow."""
+    boxes = [mh.gen_box("obj-stim", STIM, 40, 100, numinlets=1, numoutlets=2)]
+    lines = []
+    for r in range(racks):
+        for c in range(k):
+            tag = f"{r}_{c}"
+            gid = f"obj-g{tag}"
+            role = 1 if c == 0 else 2
+            serve = (1 << k) - 1 if c == 0 else 0
+            boxes.append(mh.box(f"obj-ring{tag}", f"buffer~ #0-ring{tag} @samps {ring_samps}", 520, 100, 240, numoutlets=2, outlettype=["float", "bang"]))
+            boxes.append(mh.box(f"obj-sc{tag}", f"buffer~ #0-sc{tag} @samps 1024", 520, 100, 240, numoutlets=2, outlettype=["float", "bang"]))
+            boxes.append(mh.gen_box(gid, code, 200, 260))
+            boxes.append(mh.msg(f"obj-p{tag}", f"outsel {c + 1}, fftn {n}, ring #0-ring{tag}, lead #0-ring{r}_0, scope #0-sc{tag}, role {role}, serve {serve}, epoch 1", 200, 220, 300))
+            lines += [mh.line("obj-load", 0, f"obj-p{tag}", 0), mh.line(f"obj-p{tag}", 0, gid, 0),
+                      mh.line("obj-stim", 0, gid, 0), mh.line("obj-stim", 1, gid, 1), mh.line(gid, 0, "obj-mute-l", 0)]
+    lines.append(mh.line("obj-g0_0", 0, "obj-record", 0))
+    return boxes, lines
+
+
+def rack_cost(code, n, k, ring_samps, tag):
+    b1, l1 = patch_rack_k(code, 1, n, k, ring_samps)
+    bh, lh = patch_rack_k(code, N_HI // 2, n, k, ring_samps)
+    def sl(b, l, t):
+        ws = render(f"msd_{t}_s", b, l, SHORT_MS)
+        wl = render(f"msd_{t}_l", b, l, LONG_MS)
+        return (wl - ws) / ((LONG_MS - SHORT_MS) / 1000.0)
+    return (sl(bh, lh, tag + "h") - sl(b1, l1, tag + "1")) / (N_HI // 2 - 1)
+
+
+def do_derive(slugs, reps=1):
+    import importlib
+    for slug in slugs:
+        mod = importlib.import_module(f"build_{slug}")
+        k = {"transplit": 2, "loudsplit": 3, "harmsplit": 3, "freqsplit": 4}[slug]
+        variants = [("all savings", {}), ("no derive", {"SS_NO_DERIVE": "1"}), ("no derive, no mida", {"SS_NO_DERIVE": "1", "SS_NO_MIDA": "1"}),
+                    ("derive, no mida", {"SS_NO_MIDA": "1"})]
+        if slug in ("transplit", "harmsplit"):
+            variants = variants[:2]                  # these keep the phase
+        for label, n in SIZES:
+            if n not in (1024, 4096):          # two sizes keep the run short (VM shared)
+                continue
+            row = []
+            for vname, env in variants:
+                for key in ("SS_NO_DERIVE", "SS_NO_MIDA"):
+                    os.environ.pop(key, None)
+                os.environ.update(env)
+                code = mod.gen_code()
+                vtag = vname.replace(' ', '')[:4]
+                vals = [rack_cost(code, n, k, mod.RING_SAMPS, f"{slug}{label}{vtag}{i}") for i in range(reps)]
+                row.append((vname, vals))
+            for key in ("SS_NO_DERIVE", "SS_NO_MIDA"):
+                os.environ.pop(key, None)
+            print(f"DERIVE {slug} Size {label}: " + " | ".join(f"{v}: " + " ".join(f"{x * 100:.2f}" for x in vals) + f" (min {min(vals) * 100:.2f}) %" for v, vals in row))
+
+
+def do_spike(slugs, racks=6, dur=8000):
+    import importlib
+    probe = os.path.join(ROOT, "tests", "spectral_probe", "cpu_probe.js")
+    for slug in slugs:
+        mod = importlib.import_module(f"build_{slug}")
+        k = {"transplit": 2, "loudsplit": 3, "harmsplit": 3, "freqsplit": 4}[slug]
+        code = mod.gen_code()
+        for label, n in (("4k", 4096), ("1k", 1024)):
+            for nracks in (0, racks):
+                b, l = patch_rack_k(code, max(nracks, 1), n, k, mod.RING_SAMPS) if nracks else ([mh.gen_box("obj-stim", STIM, 40, 100, numinlets=1, numoutlets=2)], [])
+                if not nracks:
+                    l = [mh.line("obj-stim", 0, "obj-record", 0)]
+                b += [mh.box("dev-metro", "metro 3", 40, 480, 70, numinlets=2), mh.box("dev-adstatus", "adstatus cpu", 40, 510, 90, outlettype=["float"]),
+                      mh.box("dev-cpu-prep", "prepend cpu", 40, 540, 90)]
+                l += [mh.line("obj-load", 0, "dev-metro", 0), mh.line("dev-metro", 0, "dev-adstatus", 0), mh.line("dev-adstatus", 0, "dev-cpu-prep", 0),
+                      mh.line("dev-cpu-prep", 0, "obj-js", 0)]
+                r = mh.run_case(f"msp_{slug}_{label}_{nracks}", b, l, probe_js=probe, settle_ms=300, dur_ms=dur, mode="audio_device")
+                m = r.get("meta") or r
+                print(f"SPIKE {slug} Size {label} racks {nracks}: " + " ".join(f"{k2} {m.get(k2)}" for k2 in ("n", "mean", "p50", "p90", "p99", "max", "distinct")))
+
+
 def do_compile(slugs, runs=3):
     base = min(compile_case("ms_base", "out1 = in1; out2 = in2;") for _ in range(runs))
     print(f"baseline trivial gen: {base:.2f} s")
@@ -180,6 +262,10 @@ def main():
         do_split()
     if what in ("rack", "all"):
         do_rack()
+    if what == "spike":
+        do_spike(slugs)
+    if what in ("derive",):
+        do_derive(slugs)
 
 
 if __name__ == "__main__":

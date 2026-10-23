@@ -71,6 +71,21 @@ ss2_ola(acc, row, st, fy, win, n) {
 	return 0;
 }
 
+// Same as ss2_ola, but SUBTRACTS the inverse transform fy from acc rows row / row + 1 (derived channel: input minus the other channels).
+ss2_olas(acc, row, st, fy, win, n) {
+	wp = st.peek(0);
+	for (i = 0; i < n; i += 1) {
+		j = wp + i;
+		if (j >= n) {
+			j -= n;
+		}
+		w = win.peek(i) * 0.6666666666666666;
+		acc.poke(acc.peek(j, row) - fy.peek(i, 0) * w, j, row);
+		acc.poke(acc.peek(j, row + 1) - fy.peek(i, 1) * w, j, row + 1);
+	}
+	return 0;
+}
+
 // One finished output sample of acc row `row` (read and clear), at the framing write position st[0].
 ss2_out(acc, row, st) {
 	wp = st.peek(0);

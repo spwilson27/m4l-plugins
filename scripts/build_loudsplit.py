@@ -101,8 +101,8 @@ REL_KEYS = ["rhithr", "rlothr"]
 
 def gen_code():
     """The gen code of the device (what the face writes to the .gendsp file). Channel rows 2..4 (Loud, Mid, Quiet) of Data lsd, sum in row 5."""
-    subs = sc.rack_subs(3, "lsd", 2, 512, ZERO_COUNT)
-    return sc.gen_code_rack(os.path.join(SRC, "loudsplit_core.genexpr"), subs)
+    subs = sc.rack_subs(3, "lsd", 2, 512, ZERO_COUNT, midfn="ss_mida")
+    return sc.gen_code_rack(os.path.join(SRC, "loudsplit_core.genexpr"), subs, libs=[os.path.join(SRC, "spectral_split_mida.genexpr")])
 
 
 def face_code(gen):

@@ -138,4 +138,63 @@ console.log("[rack] silent / constant / impulse / different / periodic inputs be
     F.ss2_clear(acc, 4, n);
     for (let r = 0; r < 4; r++) for (let i = 0; i < n; i++) assert.strictEqual(acc.peek(i, r), 0);
 }
+
+// ---- derived channel: last = input - the other channels (ss2_olas), against computing every channel (the template's @@DERIVE@@ path)
+{
+    const prep = (s) => s.replace(/(?<![.\w])poke\((\w+),\s*/g, "$1.poke(").replace(/\batan2\(/g, "Math.atan2(");
+    const gx = load(prep(read("cepstrum_lib.genexpr")), prep(read("spectral_split_lib.genexpr")), prep(read("spectral_split_rack.genexpr")), prep(read("spectral_split_mida.genexpr")));
+    const K = 3, n = 1024, N = 20000;
+    const tab = new DataSim(4096, 3), win = new DataSim(4096), fx = new DataSim(4096, 2), fy = new DataSim(4096, 2), fz = new DataSim(4096, 2);
+    const ringL = new DataSim(4096), ringR = new DataSim(4096), stt = new DataSim(8), ms = new DataSim(2049, 2), msa = new DataSim(2049, 2), mk = new DataSim(2049, K + 1);
+    const accA = new DataSim(4096, 2 * (K + 1)), accB = new DataSim(4096, 2 * (K + 1));
+    const xs = [], ys = [];
+    const rnd = lcg(7);
+    for (let i = 0; i < N; i++) { xs.push(0.3 * Math.sin(i * 0.07) + 0.2 * rnd()); ys.push(0.2 * Math.sin(i * 0.013) + 0.2 * rnd()); }
+    const outA = [[], [], []], outB = [[], [], []];
+    let frames = 0, worst = 0;
+    for (let i = 0; i < N; i++) {
+        gx.fft_init(tab);
+        gx.stft_win(win, n);
+        const rdy = gx.ss_in(ringL, ringR, stt, xs[i], ys[i], n);
+        if (rdy > 0.5) {
+            frames++;
+            gx.ss_frame(fx, ringL, ringR, stt, win, n);
+            gx.ss2_copy(fx, fz, n);
+            gx.fft_run(fx, tab, n, 0);
+            gx.ss_mid(fx, ms, n);
+            gx.ss_mida(fx, msa, n);
+            for (let k = 0; k <= n / 2; k++) assert.strictEqual(ms.peek(k, 0), msa.peek(k, 0), "ss_mida amplitude equals ss_mid amplitude");
+            // masks that change every frame; the sum is 1, except in frames 20..24 where a gain breaks it (derive must be off there)
+            const sum1 = !(frames >= 20 && frames <= 24);
+            for (let k = 0; k <= n / 2; k++) {
+                const a = Math.abs(Math.sin(k * 0.01 + frames)), b = Math.abs(Math.cos(k * 0.02 - frames * 0.3));
+                const s = a + b + 1;
+                mk.poke(a / s, k, 0); mk.poke(b / s, k, 1); mk.poke(1 / s * (sum1 ? 1 : 0.5), k, 2);
+                mk.poke(sum1 ? 1 : (a + b + 0.5) / s, k, 3);
+            }
+            for (let c = 0; c <= K; c++) {
+                gx.ss2_copy(fx, fy, n);
+                gx.ss_apply(fy, mk, c, n);
+                gx.fft_run(fy, tab, n, 1);
+                gx.ss2_ola(accA, 2 * c, stt, fy, win, n);                // reference: every row from its own inverse transform
+                if (sum1) {
+                    if (c >= K - 1) gx.ss2_ola(accB, 2 * c, stt, fz, win, n);   // derived: last channel and the All row from the input frame
+                    else { gx.ss2_ola(accB, 2 * c, stt, fy, win, n); gx.ss2_olas(accB, 2 * (K - 1), stt, fy, win, n); }
+                } else {
+                    gx.ss2_ola(accB, 2 * c, stt, fy, win, n);
+                }
+            }
+        }
+        for (let c = 0; c < K; c++) {
+            const a = gx.ss2_out(accA, 2 * c, stt), b = gx.ss2_out(accB, 2 * c, stt);
+            gx.ss2_out(accA, 2 * c + 1, stt); gx.ss2_out(accB, 2 * c + 1, stt);
+            outA[c].push(a); outB[c].push(b);
+            worst = Math.max(worst, Math.abs(a - b));
+        }
+        gx.ss2_out(accA, 2 * K, stt); gx.ss2_out(accB, 2 * K, stt); gx.ss2_out(accA, 2 * K + 1, stt); gx.ss2_out(accB, 2 * K + 1, stt);
+    }
+    // note: ss2_out advances nothing itself; ss_in moved the write position, so the row outputs above are all at the same position
+    assert.ok(worst < 1e-12, `derived last channel equals the computed one, also across frames where the masks stop summing to 1 (max diff ${worst})`);
+    console.log("[rack] derived last channel (input - other channels, per frame) equals the inverse-transformed one: max diff " + worst.toExponential(2));
+}
 console.log("All spectral rack function tests passed");

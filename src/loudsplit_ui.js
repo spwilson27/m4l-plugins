@@ -198,8 +198,9 @@ function ssDevChanged() {
     mgraphics.redraw();
 }
 
-// Test hook (receive #0-sstest): restart the DSP of the instance in chain <c> (a late start: a new gen~ with a new sample counter).
-function dsp_restart(c) {
+// Test hook (receive #0-sstest): restart the DSP of the instance in chain <c> [of device <kind> = SS_PREFIX] (a late start: a new gen~ with a new sample counter).
+function dsp_restart(c, kind) {
+    if (kind !== undefined && String(kind) !== SS_PREFIX) return;   // optional device filter: several racks share one test set
     if (lsInfo.chainIndex === Number(c) || Number(c) < 0) ssDspRestart();
 }
 

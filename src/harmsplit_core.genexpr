@@ -628,6 +628,7 @@ tlH = clip(tiltamt, -12, 12);
 thH = clip(thrdb, -120, 0);
 loH = clip(flocut, 19.4, 19900);
 hiH = clip(fhicut, 19.4, 19900);
+sumOneH = 1;
 //@endhook
 
 //@hook frame

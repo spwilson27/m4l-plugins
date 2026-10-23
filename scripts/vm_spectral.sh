@@ -19,7 +19,7 @@
 #   scripts/vm_spectral.sh test [slug ...]            scripts/test_spectral_live.js on the host through an ssh tunnel (local 19880 -> VM 9877)
 #   scripts/vm_spectral.sh livetest [slug ...]        live + test under ONE hold of the Live lock
 #   scripts/vm_spectral.sh probelive | probe | probetest   the rack-processing probe (tests/spectral_probe, scripts/test_spectral_probe_live.js)
-#   scripts/vm_spectral.sh sumlive | sum | sumtest         the rack-sum check (Sum Probes around a Transient Split rack, scripts/test_spectral_sum_live.js)
+#   scripts/vm_spectral.sh sumlive | sum | sumtest         the rack-sum check (Sum Probes around the rack of each of the four devices, scripts/test_spectral_sum_live.js; `sumtest old` = old Transient Split only; extra args go to the test, e.g. --devices loudsplit --only baseline,size)
 #   scripts/vm_spectral.sh status                     VM ip and the Max / Live processes running there
 #   scripts/vm_spectral.sh shot                       screenshot of the VM screen, copied to /tmp/vm_spectral_shot.png
 set -u
@@ -53,7 +53,7 @@ case "${1:-}" in
   probetest)
     shift; "$0" probelive && "$0" probe "$@" ;;
   sumtest)
-    shift; if [ "${1:-}" = old ]; then shift; "$0" sumlive old && "$0" sum "$@"; else "$0" sumlive && "$0" sum "$@"; fi ;;
+    shift; if [ "${1:-}" = old ]; then shift; "$0" sumlive old && "$0" sum --devices transplit --only baseline,size,size_last,param,restart "$@"; else "$0" sumlive && "$0" sum "$@"; fi ;;
   live|probelive|sumlive)
     if [ "$1" = sumlive ] && [ "${2:-}" = old ]; then   # the rack-sum check against the device as committed (HEAD), to show the hop-phase bug
       mkdir -p "$ROOT/tests/spectral_probe/old"   # fixture: the pre-rack device (committed with the framework); extracted from HEAD only if it is missing
@@ -62,9 +62,9 @@ case "${1:-}" in
     sync_repo || exit 1
     if [ "$1" = sumlive ]; then
       if [ "${2:-}" = old ]; then
-        BUILD='/usr/bin/python3 scripts/build_spectral_probe.py >/dev/null && /usr/bin/python3 scripts/make_spectral_sum_set.py --devices tests/spectral_probe/old'
+        BUILD='/usr/bin/python3 scripts/build_spectral_probe.py >/dev/null && /usr/bin/python3 scripts/make_spectral_sum_set.py --only "Transient Split" --devices tests/spectral_probe/old'
       else
-        BUILD='/usr/bin/python3 scripts/build_spectral_probe.py >/dev/null && /usr/bin/python3 scripts/build_transplit.py >/dev/null && /usr/bin/python3 scripts/make_spectral_sum_set.py'
+        BUILD='/usr/bin/python3 scripts/build_spectral_probe.py >/dev/null && for s in transplit loudsplit harmsplit freqsplit; do /usr/bin/python3 scripts/build_$s.py >/dev/null || exit 1; done && /usr/bin/python3 scripts/make_spectral_sum_set.py'
       fi
       SETF=spectral_sum_test.als
     elif [ "$1" = probelive ]; then

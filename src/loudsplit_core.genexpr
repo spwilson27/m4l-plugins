@@ -133,6 +133,7 @@ klH = clip(kneelo, 1, 24);
 rsH = clip(risebl, 0.13, 125);
 flH = clip(fallbl, 0.13, 125);
 tlH = clip(tiltdb, -6, 6);
+sumOneH = 1;
 if ((cmpH > 0.5 || nChg > 0.5) && (lnN != n || lnSr != sr)) {
 	lnN = n;
 	lnSr = sr;

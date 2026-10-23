@@ -40,6 +40,9 @@
 // 9 ring age in samples (saturating). Slot i (counter mod RS): field 0 fingerprint, field 1 + 2c / 2 + 2c = output row c left / right
 // (c = 0..K-1 the channels, c = K the "All" mask row).
 //
+// DERIVED CHANNEL: a device whose masks sum to exactly 1 for the current settings sets `sumOneH = 1;` in its ctl hook (default 0 = compute every
+// channel). Transient Split: Tilt 0 and Blend 50 %; Loud / Harmonic Split: always; Freq Split: Limiter off.
+//
 // DEVICE CONTRACT (what a core must add; transplit_core.genexpr is the example):
 //   * functions first (device analysis), then `//@SS_DECL`, then its own Data / Param / History declarations (Buffer scope, the per-bin
 //     state, its Params and History), then its control-refresh statements?  NO: control refresh is a hook, see below. Then `//@SS_MAIN`.
@@ -62,6 +65,7 @@ Data tab(4096, 3);
 Data win(4096);
 Data fx(4096, 2);
 Data fy(4096, 2);
+Data fz(4096, 2);
 Data ringL(4096);
 Data ringR(4096);
 Data accD(4096, @@ACCROWS@@);
@@ -93,6 +97,8 @@ History mixH(1);
 History mixS(1);
 History mixInit(0);
 History sOwnH(1);
+History sAllCh(0);
+History sumOneH(0);
 History eserveH(1);
 History cmpH(0);
 History fbk(0);
@@ -158,11 +164,15 @@ if (sCtl >= 32 || nChg > 0.5 || sBoot < 0.5) {
 	ownBit = floor(serveH / sOwnH);
 	ownBit = ownBit - 2 * floor(ownBit / 2);
 	eserveH = serveH > 0.5 ? (ownBit > 0.5 ? serveH : serveH + sOwnH) : sOwnH;
+	allc = 0;
 	for (c = 0; c <= @@K@@; c += 1) {
 		fb2 = floor(eserveH / pow(2, c));
 		fb2 = fb2 - 2 * floor(fb2 / 2);
 		sFlag.poke(fb2, c);
+		allc += (c < @@K@@ && fb2 > 0.5) ? 1 : 0;
 	}
+	sAllCh = allc > @@K@@ - 0.5 ? 1 : 0;
+	sumOneH = 0;
 	//@hook ctl
 }
 
@@ -287,17 +297,31 @@ if (sCmp > 0.5) {
 	}
 	if (sRdy > 0.5 && awake > 0.5) {
 		ss_frame(fx, ringL, ringR, stt, win, n);
+		// Derived channel (@@DERIVE@@ = 1): when the device declares that its masks sum to exactly 1 (sumOneH, set in the ctl hook) and every channel is
+		// served, the LAST channel and the "All" row are not inverse-transformed: last = input - the other channels (all in the overlap-add domain,
+		// per frame, so a change of sumOneH between frames stays exact). Saves one inverse FFT per hop.
+		sDer = (@@DERIVE@@ > 0.5 && sumOneH > 0.5 && sAllCh > 0.5) ? 1 : 0;
+		if (sDer > 0.5) {
+			ss2_copy(fx, fz, n);
+		}
 		fft_run(fx, tab, n, 0);
-		ss_mid(fx, ms, n);
+		@@MIDFN@@(fx, ms, n);
 		//@hook frame
 		sAge = min(sAge + 1, 3);
 		for (c = 0; c <= @@K@@; c += 1) {
 			fl = sFlag.peek(c);
 			if (fl > 0.5) {
-				ss2_copy(fx, fy, n);
-				ss_apply(fy, @@MKD@@, @@MKB@@ + c, n);
-				fft_run(fy, tab, n, 1);
-				ss2_ola(accD, 2 * c, stt, fy, win, n);
+				if (sDer > 0.5 && c > @@K@@ - 1.5) {
+					ss2_ola(accD, 2 * c, stt, fz, win, n);
+				} else {
+					ss2_copy(fx, fy, n);
+					ss_apply(fy, @@MKD@@, @@MKB@@ + c, n);
+					fft_run(fy, tab, n, 1);
+					ss2_ola(accD, 2 * c, stt, fy, win, n);
+					if (sDer > 0.5) {
+						ss2_olas(accD, 2 * (@@K@@ - 1), stt, fy, win, n);
+					}
+				}
 			}
 		}
 		if (sTele > 0.5) {

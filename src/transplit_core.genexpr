@@ -203,6 +203,7 @@ tdH = clip(tdecay, 1, 125);
 tsH = clip(tsmooth, 1, 64);
 ttH = ttype > 0.5 ? 1 : 0;
 tmH = tmode > 0.5 ? 1 : 0;
+sumOneH = (abs(tlH) < 0.000001 && abs(blH - 0.5) < 0.000001) ? 1 : 0;
 if ((cmpH > 0.5 || nChg > 0.5) && (twN != n || twSr != sr)) {
 	twN = n;
 	twSr = sr;

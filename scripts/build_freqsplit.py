@@ -148,8 +148,8 @@ def lcd_numbox(key, x, y, w, h=15.0):
 
 def gen_code():
     """The gen code of the device (what the face writes to the .gendsp file)."""
-    subs = sc.rack_subs(4, "fsd", 5, SC_FRAME, ZERO_COUNT)
-    return sc.gen_code_rack(os.path.join(SRC, "freqsplit_core.genexpr"), subs)
+    subs = sc.rack_subs(4, "fsd", 5, SC_FRAME, ZERO_COUNT, midfn="ss_mida")
+    return sc.gen_code_rack(os.path.join(SRC, "freqsplit_core.genexpr"), subs, libs=[os.path.join(SRC, "spectral_split_mida.genexpr")])
 
 
 def face_code(gen):

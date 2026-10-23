@@ -13,12 +13,11 @@ const { makeRecorder, loadFace } = require("../tests/paint_bounds_lib");
 const SRC = path.join(__dirname, "..", "src");
 const read = (f) => fs.readFileSync(path.join(SRC, f), "utf8").trimEnd();
 const N = Number(process.argv[2]) || 400;
-const HEADER = 'var GEN_DSP_TEXT = "";\nvar GEN_DSP_HASH = "x";\nvar SS_PREFIX = "x";\n';
 const DEVICES = [
     { slug: "transplit", pre: "TS", poll: "tsPoll", files: ["transplit_config.js", "spectral_link.js", "spectral_theme.js", "spectral_dsp.js", "transplit_ui.js"], header: true, names: "setnames" },
-    { slug: "loudsplit", pre: "LS", poll: "lsPoll", files: ["loudsplit_config.js", "spectral_link.js", "spectral_theme.js", "loudsplit_ui.js"], names: "setbuffer" },
-    { slug: "harmsplit", pre: "HS", poll: "hsPoll", files: ["harmsplit_config.js", "spectral_link.js", "spectral_theme.js", "harmsplit_ui.js"], names: "setbuffer" },
-    { slug: "freqsplit", pre: "FS", poll: "fvPoll", files: ["freqsplit_config.js", "spectral_link.js", "spectral_theme.js", "freqsplit_ui.js"], names: "setbuffer" },
+    { slug: "loudsplit", pre: "LS", poll: "lsPoll", files: ["loudsplit_config.js", "spectral_link.js", "spectral_theme.js", "spectral_dsp.js", "loudsplit_ui.js"], header: true, names: "setbuffer" },
+    { slug: "harmsplit", pre: "HS", poll: "hsPoll", files: ["harmsplit_config.js", "spectral_link.js", "spectral_theme.js", "spectral_dsp.js", "harmsplit_ui.js"], header: true, names: "setbuffer" },
+    { slug: "freqsplit", pre: "FS", poll: "fvPoll", files: ["freqsplit_config.js", "spectral_link.js", "spectral_theme.js", "spectral_dsp.js", "freqsplit_ui.js"], header: true, names: "setbuffer" },
 ];
 function time(fn, n) {
     for (let i = 0; i < 20; i++) fn(i);
@@ -28,7 +27,7 @@ function time(fn, n) {
 }
 for (const d of DEVICES) {
     const rec = makeRecorder(444, 169);
-    const code = (d.header ? HEADER : "") + d.files.map((f) => read(f)).join("\n\n");
+    const code = (d.header ? `var GEN_DSP_TEXT = "";\nvar GEN_DSP_HASH = "x";\nvar SS_PREFIX = "${d.slug}";\n` : "") + d.files.map((f) => read(f)).join("\n\n");
     let counter = 0;
     let cfg;
     try { cfg = require(path.join(SRC, d.slug + "_config.js")); } catch (e) { cfg = {}; }

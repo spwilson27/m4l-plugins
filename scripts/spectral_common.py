@@ -240,15 +240,19 @@ RACK_LATENCY = 5120           # constant latency of a rack device: 4096 (largest
 RACK_VERSION = 1
 
 
-def rack_subs(channels, mk_data, mk_base, scope_base, zero_count, latency=RACK_LATENCY):
+def rack_subs(channels, mk_data, mk_base, scope_base, zero_count, latency=RACK_LATENCY, midfn="ss_mid"):
     """Placeholder values for src/spectral_split_rack_main.genexpr. channels = K output channels; the device keeps the final mask of channel c
     in row mk_base + c of Data mk_data (c = 0..K-1) and the sum of all channels in row mk_base + K; scope_base = first scope slot of the 18
-    common scalars (frame counter, sample rate, N, awake, input peak, -, latency, output selection, ... alive counter at +17)."""
+    common scalars (frame counter, sample rate, N, awake, input peak, -, latency, output selection, ... alive counter at +17).
+    midfn = the Mid analysis function: "ss_mid" (amplitude and phase) or "ss_mida" (amplitude only, src/spectral_split_mida.genexpr must be in the
+    device's libs: saves one atan2 per bin and hop for devices that never read the phase). SS_NO_DERIVE=1 in the environment builds without the
+    derived last channel and SS_NO_MIDA=1 without the amplitude-only Mid analysis (measurement only: scripts/measure_spectral.py derive)."""
     k = int(channels)
     return {
         "K": k, "ACCROWS": 2 * (k + 1), "STRIDE": 1 + 2 * (k + 1), "RS": RACK_RING_SLOTS, "HDR": RACK_HDR, "LAT": int(latency),
         "LAT1": int(latency) + 1, "GAPHEAD": 129, "SERVEMAX": (1 << (k + 1)) - 1, "KSHARE": repr(1.0 / k), "MKD": mk_data, "MKB": int(mk_base),
         "SCB": int(scope_base), "VERSION": RACK_VERSION, "ZEROCNT": int(zero_count),
+        "DERIVE": 0 if os.environ.get("SS_NO_DERIVE") == "1" else 1, "MIDFN": "ss_mid" if os.environ.get("SS_NO_MIDA") == "1" else midfn,
     }
 
 
