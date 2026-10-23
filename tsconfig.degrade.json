@@ -2,7 +2,9 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/types/degrade.d.ts",
     "src/degrade_config.js",
+    "src/degrade_dsp.js",
     "src/degrade_ui.js"
   ]
 }
