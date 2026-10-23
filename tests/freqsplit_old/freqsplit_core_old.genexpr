@@ -1,0 +1,384 @@
+// Freq Split core (appended after src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr at build time, so every
+// library function sits ahead of everything here). Reference of the maths: src/freqsplit_config.js (fsPattern, fsMaskAt).
+//
+// A spectral sorter (Bitwig Freq Split (Spectral)). The log-frequency axis 20 Hz .. 20 kHz is cut by `nsplit` (1..1024, continuous)
+// splits into many regions that are dealt to four channels (1 red, 2 blue, 3 yellow, 4 magenta) in rotation. Every instance in a rack
+// chain computes the identical masks from the identical (linked) parameters and outputs only its own channel; the four per-bin masks
+// sum to 1 (partition of unity), so the chains sum back to the input delayed by 4096 samples. There is NO signal analysis: the masks
+// only depend on the parameters, the FFT size and the sample rate.
+//
+// fs_pattern  parameters -> pc Data (pattern constants): K = floor(nsplit), f = fraction, F = K + 1 full regions of weight 1 plus one
+//             PARTIAL region of weight f inserted at the insertion point (High: at the end, Mid: in the middle, Low: at the start),
+//             total weight T = F + f; Bend / Pinch warp constants, Spin, crossfade, Nudge (integer part a + fraction phv).
+// fs_masks    pc -> per-bin masks fsd channels 0..3 (+ channel 4 = all ones), evaluated at the bin centres: axis position x (log
+//             frequency) -> inverse Bend / Pinch warp -> Spin shift with wrap -> slot of the pattern and its raised-cosine crossfade
+//             with the neighbouring slot -> channel (slot base + Nudge), the fractional Nudge crossfading to the next channel.
+// fs_limit    Spectral Limiter: per bin, g = min(1, thr / (mask * amp)), amp = max(|L|, |R|) amplitude of the bin; limited masks in
+//             fsd channels 5..8 (per channel) and 9 (All). Only used while the limiter is on (explicit gain, breaks the sum).
+//
+// Mix: out = mix * wet + (1 - mix) * dry / K with the dry signal delayed by the same 4096 samples, K = 4 while this instance outputs
+// one channel (the Audio Effect Rack sums four chains, so the rack sum is mix * wet + (1 - mix) * dry) and K = 1 for Output All.
+//
+// Data fsd(2049, 11): 0..3 channel masks, 4 ones, 5..8 limited channel masks, 9 limited All, 10 bin amplitude.
+// Data pc(32): 0 K, 1 f, 2 F, 3 T, 4 partial slot, 5 direction, 6 Lc, 7 crossfade, 8 nudge int, 9 nudge fraction, 10 spin, 11 bend
+//   midpoint, 12 1 / gamma, 13 1 / pinch exponent, 14 3 - F, 15 channel base of the partial slot (Mid).
+//
+// Telemetry buffer (bound on loadbang via `scope ---freqsplitscope`), FS_SCOPE_SAMPS floats:
+//   0..127 input (Mid) level per log column, 128..639 the four channels after the masks (and the limiter), 4 x 128, all 0..1 over
+//   -100..0 dB, 640 frame counter, 641 samplerate, 642 N, 643 awake, 644 input peak, 645 latency, 646 output selection, 647 limiter on.
+//
+// GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements. No identifier e<digit>, phi, pi.
+// No user function call inside poke() arguments or if conditions, one return per function at function level.
+
+// Position x (0..1) of bin k on the log axis 20 Hz .. 20 kHz (bins below 20 Hz and above 20 kHz clamp to the edges).
+fs_xof(k, n, sr) {
+	return clip(log(max(k * sr / n, 20) * 0.05) * 0.14476482730108395, 0, 1);
+}
+
+// Channel base (before Nudge) of slot s: High s, Low s + 3 - F, Mid lower part from the bottom, upper part from the top.
+fs_base(s, dd, lc, ofs, pmd) {
+	bHi = s;
+	bLo = s + ofs;
+	bMd = s < lc ? s : (s > lc ? s + ofs : pmd);
+	b = dd < 0.5 ? bHi : (dd > 1.5 ? bLo : bMd);
+	return b;
+}
+
+// Pattern constants from the parameters into pc.
+fs_pattern(pc, ns, dr, xfa, nudge, spin, bend, pinch) {
+	nn = clip(ns, 1, 1024);
+	kk = floor(nn);
+	ff = nn - kk;
+	nFull = kk + 1;
+	dd = clip(floor(dr + 0.5), 0, 2);
+	lc = floor((nFull + 1) * 0.5);
+	spp = dd < 0.5 ? nFull : (dd > 1.5 ? 0 : lc);
+	nd = nudge - 4 * floor(nudge * 0.25);
+	aa = floor(nd);
+	mm = 0.5 + 0.4 * clip(bend, -1, 1);
+	gam = log(mm) / log(0.5);
+	qq = exp(clip(pinch, -1, 1) * 1.0986122886681098);
+	evenF = nFull - 2 * floor(nFull * 0.5);
+	pmd = evenF < 0.5 ? lc : 3 - nFull + lc;
+	pc.poke(kk, 0);
+	pc.poke(ff, 1);
+	pc.poke(nFull, 2);
+	pc.poke(nFull + ff, 3);
+	pc.poke(spp, 4);
+	pc.poke(dd, 5);
+	pc.poke(lc, 6);
+	pc.poke(clip(xfa, 0, 1), 7);
+	pc.poke(aa, 8);
+	pc.poke(nd - aa, 9);
+	pc.poke(clip(spin, -0.5, 0.5), 10);
+	pc.poke(mm, 11);
+	pc.poke(1 / gam, 12);
+	pc.poke(1 / qq, 13);
+	pc.poke(3 - nFull, 14);
+	pc.poke(pmd, 15);
+	return nFull;
+}
+
+// Per-bin masks from the pattern constants (evaluated at the bin centres).
+fs_masks(fsd, pc, n, sr) {
+	half = n * 0.5;
+	ff = pc.peek(1);
+	nFull = pc.peek(2);
+	tT = pc.peek(3);
+	spp = pc.peek(4);
+	dd = pc.peek(5);
+	lc = pc.peek(6);
+	xfa = pc.peek(7);
+	aa = pc.peek(8);
+	phv = pc.peek(9);
+	spn = pc.peek(10);
+	mm = pc.peek(11);
+	gi = pc.peek(12);
+	qi = pc.peek(13);
+	ofs = pc.peek(14);
+	pmd = pc.peek(15);
+	for (k = 0; k <= half; k += 1) {
+		x = fs_xof(k, n, sr);
+		below = x < mm ? 1 : 0;
+		tq = below > 0.5 ? (mm - x) / mm : (x - mm) / (1 - mm);
+		t0 = pow(max(tq, 0), qi);
+		wv = below > 0.5 ? mm - mm * t0 : mm + (1 - mm) * t0;
+		pp = pow(max(wv, 0), gi);
+		q = pp - spn;
+		q = q < 0 ? q + 1 : (q > 1 ? q - 1 : q);
+		t = q * tT;
+		sA = floor(t);
+		sB = spp + 1 + floor(t - spp - ff);
+		s = t < spp ? sA : (t < spp + ff ? spp : sB);
+		s = max(0, min(s, nFull));
+		s = (s == spp && ff <= 0) ? s - 1 : s;
+		eg = s < spp ? s : (s == spp ? spp : s + ff - 1);
+		wd = s == spp ? ff : 1;
+		wl = (s - 1) == spp ? ff : 1;
+		wu = (s + 1) == spp ? ff : 1;
+		hl = s > 0 ? xfa * 0.5 * min(wl, wd) : 0;
+		hu = s < nFull ? xfa * 0.5 * min(wd, wu) : 0;
+		dl = t - eg;
+		du = eg + wd - t;
+		inl = dl < hl ? 1 : 0;
+		inu = (inl < 0.5 && du < hu) ? 1 : 0;
+		nb = inl > 0.5 ? s - 1 : (inu > 0.5 ? s + 1 : s);
+		tt = inl > 0.5 ? (dl + hl) / (2 * max(hl, 1e-12)) : (inu > 0.5 ? (hu - du) / (2 * max(hu, 1e-12)) : 0);
+		sw = 0.5 - 0.5 * cos(3.141592653589793 * tt);
+		ws = inl > 0.5 ? sw : (inu > 0.5 ? 1 - sw : 1);
+		wn = 1 - ws;
+		bs = fs_base(s, dd, lc, ofs, pmd);
+		bn = fs_base(nb, dd, lc, ofs, pmd);
+		cs = bs + aa;
+		cs = cs - 4 * floor(cs * 0.25);
+		cn = bn + aa;
+		cn = cn - 4 * floor(cn * 0.25);
+		cs1 = cs > 2.5 ? cs - 3 : cs + 1;
+		cn1 = cn > 2.5 ? cn - 3 : cn + 1;
+		a0 = (1 - phv) * ws;
+		a1 = (1 - phv) * wn;
+		a2 = phv * ws;
+		a3 = phv * wn;
+		fsd.poke((cs == 0 ? a0 : 0) + (cn == 0 ? a1 : 0) + (cs1 == 0 ? a2 : 0) + (cn1 == 0 ? a3 : 0), k, 0);
+		fsd.poke((cs == 1 ? a0 : 0) + (cn == 1 ? a1 : 0) + (cs1 == 1 ? a2 : 0) + (cn1 == 1 ? a3 : 0), k, 1);
+		fsd.poke((cs == 2 ? a0 : 0) + (cn == 2 ? a1 : 0) + (cs1 == 2 ? a2 : 0) + (cn1 == 2 ? a3 : 0), k, 2);
+		fsd.poke((cs == 3 ? a0 : 0) + (cn == 3 ? a1 : 0) + (cs1 == 3 ? a2 : 0) + (cn1 == 3 ? a3 : 0), k, 3);
+		fsd.poke(1, k, 4);
+	}
+	return half;
+}
+
+// Spectral Limiter. After the forward FFT: amplitude of each bin (max of the left and right spectrum, a full-scale sine reads
+// its amplitude) in fsd channel 10 and the limited masks in channels 5..9.
+fs_limit(fx, fsd, thr, n) {
+	half = n * 0.5;
+	sc = 4 / n;
+	for (k = 0; k <= half; k += 1) {
+		k2 = k == 0 ? 0 : n - k;
+		ar = fx.peek(k, 0);
+		ai = fx.peek(k, 1);
+		br = fx.peek(k2, 0);
+		bi = fx.peek(k2, 1);
+		lr = (ar + br) * 0.5;
+		li = (ai - bi) * 0.5;
+		rr = (ai + bi) * 0.5;
+		ri = (br - ar) * 0.5;
+		amp = sc * sqrt(max(lr * lr + li * li, rr * rr + ri * ri));
+		fsd.poke(amp, k, 10);
+		for (c = 0; c < 4; c += 1) {
+			mm = fsd.peek(k, c);
+			gg = min(1, thr / max(mm * amp, 1e-12));
+			fsd.poke(mm * gg, k, 5 + c);
+		}
+		fsd.poke(min(1, thr / max(amp, 1e-12)), k, 9);
+	}
+	return half;
+}
+
+// Zero the telemetry columns (device went to sleep).
+fs_zero(scope, cnt) {
+	for (c = 0; c < cnt; c += 1) {
+		poke(scope, 0, c, 0);
+	}
+	return cnt;
+}
+
+Buffer scope("freqsplitscope");
+
+Data tab(4096, 3);
+Data win(4096);
+Data fx(4096, 2);
+Data ringL(4096);
+Data ringR(4096);
+Data accL(4096);
+Data accR(4096);
+Data stt(8);
+Data ms(2049, 2);
+Data fsd(2049, 11);
+Data pc(32);
+Data cols(640);
+Delay padL(4096);
+Delay padR(4096);
+Delay dryL(4097);
+Delay dryR(4097);
+
+Param fftn(4096);
+Param nsplit(16);
+Param sdir(0);
+Param xfadeamt(0);
+Param nudgeamt(0);
+Param spinamt(0);
+Param bendamt(0);
+Param pinchamt(0);
+Param limon(0);
+Param limdb(0);
+Param mixamt(1);
+Param outsel(0);
+
+History nCur(0);
+History muteCnt(0);
+History gFade(1);
+History ctlCnt(0);
+History nCtl(0);
+History quietCnt(0);
+History levelPk(0);
+History teleAcc(0);
+History frameNo(0);
+History sleepNote(0);
+History nsH(16);
+History sdH(0);
+History xfH(0);
+History ndH(0);
+History spH(0);
+History bdH(0);
+History pnH(0);
+History loH(0);
+History thH(1);
+History selH(0);
+History mixH(1);
+History mixS(1);
+History nsU(-1);
+History sdU(-1);
+History xfU(-1);
+History ndU(-1);
+History spU(-1);
+History bdU(-1);
+History pnU(-1);
+History nU(0);
+History srU(0);
+
+sr = max(samplerate, 1);
+fft_init(tab);
+
+// --- Size: a change restarts the pipeline; the output stays muted until the new frames have filled the 4096 pad ---
+nReq = cep_n(fftn);
+if (nCur < 1) {
+	nCur = nReq;
+}
+if (nReq != nCur) {
+	nCur = nReq;
+	muteCnt = 4096 + nReq + 128;
+}
+n = nCur;
+stft_win(win, n);
+
+// --- Control values, refreshed every 32 samples (and at once when N changes) ---
+ctlCnt = ctlCnt + 1;
+if (ctlCnt >= 32 || n != nCtl) {
+	ctlCnt = 0;
+	nCtl = n;
+	nsH = clip(nsplit, 1, 1024);
+	sdH = clip(floor(sdir + 0.5), 0, 2);
+	xfH = clip(xfadeamt, 0, 1);
+	ndH = clip(nudgeamt, -64, 64);
+	spH = clip(spinamt, -0.5, 0.5);
+	bdH = clip(bendamt, -1, 1);
+	pnH = clip(pinchamt, -1, 1);
+	loH = limon > 0.5 ? 1 : 0;
+	thH = pow(10, clip(limdb, -120, 12) * 0.05);
+	selH = clip(floor(outsel + 0.5), 0, 4);
+	mixH = clip(mixamt, 0, 1);
+}
+
+// --- Input level and silence sleep ---
+inAbs = max(abs(in1), abs(in2));
+quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
+levelPk = max(inAbs, levelPk * 0.9995);
+awake = quietCnt < n ? 1 : 0;
+
+// --- Frame scheduling ---
+rdy = ss_in(ringL, ringR, stt, in1, in2, n);
+if (rdy > 0.5) {
+	teleAcc = teleAcc + n * 0.25;
+}
+teleNow = 0;
+if (rdy > 0.5 && teleAcc >= 1024) {
+	teleNow = awake > 0.5 ? 1 : 0;
+	teleAcc = 0;
+}
+if (rdy > 0.5 && awake > 0.5) {
+	ss_frame(fx, ringL, ringR, stt, win, n);
+	fft_run(fx, tab, n, 0);
+	if (teleNow > 0.5) {
+		ss_mid(fx, ms, n);
+	}
+	// the masks only change with the controls, the FFT size or the sample rate: refill them only then
+	chg = abs(nsH - nsU) + abs(sdH - sdU) + abs(xfH - xfU) + abs(ndH - ndU) + abs(spH - spU) + abs(bdH - bdU) + abs(pnH - pnU) + abs(n - nU) + abs(sr - srU);
+	if (chg > 0.000000001) {
+		fs_pattern(pc, nsH, sdH, xfH, ndH, spH, bdH, pnH);
+		fs_masks(fsd, pc, n, sr);
+		nsU = nsH;
+		sdU = sdH;
+		xfU = xfH;
+		ndU = ndH;
+		spU = spH;
+		bdU = bdH;
+		pnU = pnH;
+		nU = n;
+		srU = sr;
+	}
+	if (loH > 0.5) {
+		fs_limit(fx, fsd, thH, n);
+	}
+	applyCh = loH > 0.5 ? (selH < 0.5 ? 9 : 4 + selH) : (selH < 0.5 ? 4 : selH - 1);
+	ss_apply(fx, fsd, applyCh, n);
+	if (teleNow > 0.5) {
+		tch = loH > 0.5 ? 5 : 0;
+		ss_cols(ms, 0, fsd, -1, cols, 0, n, sr, 128, 20, 20000);
+		ss_cols(ms, 0, fsd, tch, cols, 1, n, sr, 128, 20, 20000);
+		ss_cols(ms, 0, fsd, tch + 1, cols, 2, n, sr, 128, 20, 20000);
+		ss_cols(ms, 0, fsd, tch + 2, cols, 3, n, sr, 128, 20, 20000);
+		ss_cols(ms, 0, fsd, tch + 3, cols, 4, n, sr, 128, 20, 20000);
+		ss_tele(cols, scope, 128, 5, 0);
+	}
+	fft_run(fx, tab, n, 1);
+	ss_ola(accL, accR, stt, fx, win, n);
+}
+yL = ss_out(accL, stt, n, 3);
+yR = ss_out(accR, stt, n, 4);
+
+// --- Telemetry scalars ---
+if (teleNow > 0.5) {
+	frameNo = wrap(frameNo + 1, 0, 100000);
+	poke(scope, frameNo, 640, 0);
+	poke(scope, sr, 641, 0);
+	poke(scope, n, 642, 0);
+	poke(scope, 1, 643, 0);
+	poke(scope, levelPk, 644, 0);
+	poke(scope, 4096, 645, 0);
+	poke(scope, selH, 646, 0);
+	poke(scope, loH, 647, 0);
+}
+if (awake < 0.5 && sleepNote < 0.5) {
+	fs_zero(scope, 640);
+	poke(scope, 0, 643, 0);
+	poke(scope, 0, 644, 0);
+	sleepNote = 1;
+}
+if (awake > 0.5) {
+	sleepNote = 0;
+}
+
+// --- Constant 4096 latency, mute while the pipeline refills after a Size change ---
+padL.write(yL);
+padR.write(yR);
+wetL = padL.read(4096 - (n - 1));
+wetR = padR.read(4096 - (n - 1));
+dryL.write(in1);
+dryR.write(in2);
+dL = dryL.read(4096);
+dR = dryR.read(4096);
+if (muteCnt > 0) {
+	muteCnt = muteCnt - 1;
+	gFade = 0;
+} else {
+	gFade = min(gFade + 1 / 512, 1);
+}
+// Mix: this instance's share of the dry signal is 1 / 4 while it outputs one channel (the rack sums four chains), 1 for All
+mixS = mixS + (mixH - mixS) * 0.002;
+dShare = selH < 0.5 ? 1 : 0.25;
+ov1 = fixnan(fixdenorm(mixS * wetL * gFade + (1 - mixS) * dShare * dL));
+ov2 = fixnan(fixdenorm(mixS * wetR * gFade + (1 - mixS) * dShare * dR));
+// fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
+out1 = abs(ov1) < 1e-30 ? 0 : ov1;
+out2 = abs(ov2) < 1e-30 ? 0 : ov2;

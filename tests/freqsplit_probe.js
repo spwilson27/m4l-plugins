@@ -1,8 +1,11 @@
 // Probe for scripts/run_freqsplit_audio_tests.py (classic js object inside the scripts/max_harness.py scaffold, ES5).
 // The harness sends `resultpath <file>` at load and `analyze <durMs>` once buffer~ rec holds the measured window.
 // Inlet 0: `setbuffer <telemetry buffer name>` and `freqs f1 f2 ...` (sent from loadbang), `analyze <durMs>`.
-// buffer~ rec holds 6 channels:
-//   1..4 channel 1..4 (left)   5 dry (the stimulus, delayed 4096 samples, or raw in the latency case)   6 All (left, Output = All)
+// buffer~ rec holds 7 channels:
+//   1..4 channel 1..4 (left)   5 dry (the stimulus, delayed by the latency, or raw in the latency case)   6 All (left, Output = All)
+//   7 channel 2 (left) of a SELF instance (role 0, computes alone): in rack cases the follower's channel 2 must equal it (delayed by the follower's input delay K)
+// probe args: "<stimulus> <K>" (K = delay in samples of the channel-2 follower's input, default 0)
+// Inlet 0 also takes `setbuffer2 <name>`: the channel-2 follower's telemetry buffer (rack scalars are read from both buffers).
 // Writes `key value` lines: energies, the sum null (nullE: four channels vs dry; nullA: Output All vs dry), per-channel amplitude at each stimulus frequency (Hann-windowed
 // correlation: amp_<channel>_<freq index>), impulse positions, telemetry scalars.
 
@@ -16,6 +19,9 @@ var armed = false;
 
 function resultpath(p) { resultPath = String(p); }
 function setbuffer(name) { scopeName = name ? String(name) : ""; }
+var scopeName2 = "";
+function setbuffer2(name) { scopeName2 = name ? String(name) : ""; }
+var inDelayK = (typeof jsarguments !== "undefined" && jsarguments.length > 2) ? parseInt(jsarguments[2], 10) || 0 : 0;
 function freqs() {
     freqList = [];
     for (var i = 0; i < arguments.length; i++) freqList.push(Number(arguments[i]));
@@ -81,16 +87,16 @@ function analyze(durMs) {
     var sr = rec.length() > 0 ? frames / (rec.length() / 1000.0) : 48000.0;
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000.0 + 0.5)));
     var C = [];
-    for (var c = 0; c < 6; c++) C.push(readChannel(rec, c + 1, n));
+    for (var c = 0; c < 7; c++) C.push(readChannel(rec, c + 1, n));
 
     var nan = 0;
-    var en = [0, 0, 0, 0, 0, 0];
+    var en = [0, 0, 0, 0, 0, 0, 0];
     var nullE = 0;
     var nullA = 0;
     for (var i = 0; i < n; i++) {
         var bad = false;
         var s = 0;
-        for (var c2 = 0; c2 < 6; c2++) {
+        for (var c2 = 0; c2 < 7; c2++) {
             var v = C[c2][i];
             if (isNaN(v) || !isFinite(v)) bad = true;
         }
@@ -98,14 +104,20 @@ function analyze(durMs) {
             nan++;
             continue;
         }
-        for (var c3 = 0; c3 < 6; c3++) en[c3] += C[c3][i] * C[c3][i];
+        for (var c3 = 0; c3 < 7; c3++) en[c3] += C[c3][i] * C[c3][i];
         s = C[0][i] + C[1][i] + C[2][i] + C[3][i] - C[4][i];
         nullE += s * s;
         var da = C[5][i] - C[4][i];
         nullA += da * da;
     }
     var peaks = [];
-    for (var c4 = 0; c4 < 6; c4++) peaks.push(peakIndex(C[c4]));
+    for (var c4 = 0; c4 < 7; c4++) peaks.push(peakIndex(C[c4]));
+    // follower channel 2 vs the SELF instance's channel 2 delayed by the follower's input delay
+    var qsErr = 0, qsRef = 0;
+    for (var m = inDelayK; m < n; m++) {
+        var dq = C[1][m] - C[6][m - inDelayK];
+        if (isFinite(dq)) { qsErr += dq * dq; qsRef += C[6][m - inDelayK] * C[6][m - inDelayK]; }
+    }
 
     var lines = "";
     for (var f = 0; f < freqList.length; f++) {
@@ -114,9 +126,10 @@ function analyze(durMs) {
     }
 
     var scopeFrame = 0, scopeN = 0, scopeAwake = 0, scopeLat = 0, scopeSel = 0, scopeLim = 0, preMax = 0, chMax = [0, 0, 0, 0], chSum = [0, 0, 0, 0];
+    var rackKeys = "";
     if (scopeName) {
         var vals = new Buffer(scopeName).peek(1, 0, 704);
-        if (vals && vals.length >= 648) {
+        if (vals && vals.length >= 659) {
             for (var k = 0; k < 128; k++) {
                 if (vals[k] > preMax) preMax = vals[k];
                 for (var q = 0; q < 4; q++) {
@@ -128,11 +141,21 @@ function analyze(durMs) {
             scopeFrame = vals[640];
             scopeN = vals[642];
             scopeAwake = vals[643];
-            scopeLat = vals[645];
-            scopeSel = vals[646];
-            scopeLim = vals[647];
+            scopeLat = vals[646];
+            scopeSel = vals[647];
+            scopeLim = vals[658];
         }
     }
+
+    function scalars(name, prefix) {
+        var out = "";
+        if (!name) return out;
+        var v = new Buffer(name).peek(1, 640, 19);
+        var keys = ["frame", "sr", "n", "awake", "level", "x5", "lat", "sel", "cmp", "fol", "aligned", "fb", "doff", "under", "lag", "serve", "role", "alive", "lim"];
+        for (var q = 0; q < keys.length; q++) out += prefix + keys[q] + " " + v[q] + "\n";
+        return out;
+    }
+    rackKeys = scalars(scopeName, "t_") + scalars(scopeName2, "q_");
 
     var report = new File(resultPath, "write", "TEXT");
     report.writestring(
@@ -143,7 +166,8 @@ function analyze(durMs) {
         "nullE " + nullE + "\n" +
         "nullA " + nullA + "\n" +
         "peak0 " + peaks[0].peak + "\npeak1 " + peaks[1].peak + "\npeak2 " + peaks[2].peak + "\npeak3 " + peaks[3].peak + "\n" +
-        "peakD " + peaks[4].peak + "\npeakA " + peaks[5].peak + "\n" +
+        "peakD " + peaks[4].peak + "\npeakA " + peaks[5].peak + "\n" + "peakS " + peaks[6].peak + "\n" +
+        "qsErr " + qsErr + "\nqsRef " + qsRef + "\nenergyS " + en[6] + "\n" + rackKeys +
         "idxA " + peaks[5].idx + "\nidxD " + peaks[4].idx + "\n" +
         lines +
         "scopeFrame " + scopeFrame + "\n" +

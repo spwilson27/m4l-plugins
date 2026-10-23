@@ -18,7 +18,9 @@ var FT_CELLS = [{ x: 0, w: 27 }, { x: 28, w: 27 }, { x: 56, w: 27 }];
 var ftThemeTask = sptThemeWatch(null);
 
 function set_dir(v) {
-    ftDir = Math.max(0, Math.min(2, Math.round(Number(v))));
+    var d = Math.max(0, Math.min(2, Math.round(Number(v))));
+    if (d === ftDir) return;      // the control echoes every click and rack peer value: redraw only when the arrow changed
+    ftDir = d;
     mgraphics.redraw();
 }
 

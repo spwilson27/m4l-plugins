@@ -12,7 +12,9 @@ const { makeRecorder, loadFace, checkRecording, grid } = require("./paint_bounds
 
 const SRC = path.join(__dirname, "..", "src");
 const rd = (f) => fs.readFileSync(path.join(SRC, f), "utf8");
-const faceCode = [rd("freqsplit_config.js").trimEnd(), rd("spectral_link.js").trimEnd(), rd("spectral_theme.js").trimEnd(), rd("freqsplit_ui.js")].join("\n\n");
+// same order as scripts/build_freqsplit.py
+const header = 'var GEN_DSP_TEXT = "";\nvar GEN_DSP_HASH = "test";\nvar SS_PREFIX = "freqsplit";\n';
+const faceCode = [header, rd("freqsplit_config.js").trimEnd(), rd("spectral_link.js").trimEnd(), rd("spectral_theme.js").trimEnd(), rd("spectral_dsp.js").trimEnd(), rd("freqsplit_ui.js")].join("\n\n");
 const topCode = [rd("spectral_theme.js").trimEnd(), rd("freqsplit_top_ui.js")].join("\n\n");
 
 function runMain() {
@@ -86,6 +88,19 @@ function runMain() {
         sb.fvInfo = infos[n % 2];
         paintOnce("extreme " + JSON.stringify(e));
     }
+    // 2b. the DSP pill (deferred gen~): loading, ready, failed with short and very long reasons, over every telemetry kind
+    for (const st of [{ ready: 0, error: "" }, { ready: 1, error: "" }, { ready: 0, error: "not running" }, { ready: 0, error: "cannot write /tmp/freqsplit_core_0123456789ab.gendsp (disk full)" }]) {
+        for (const tk of ["ramp", "nan", "silent", "short"]) {
+            sb.ssDsp.ready = st.ready;
+            sb.ssDsp.error = st.error;
+            for (const key of ["limon", "limthr", "bend", "pinch", "output", "dispost"]) sb["set_" + key](key === "limthr" ? -20 : 0);
+            apply(tk);
+            sb.fvInfo = infos[1];
+            paintOnce("dsp pill " + JSON.stringify(st) + " " + tk);
+        }
+    }
+    sb.ssDsp.ready = 1;
+    sb.ssDsp.error = "";
     // 3. an active limiter drag while the limiter is off, preview state
     sb.set_limon(0); sb.set_limthr(-120);
     sb.fvDrag = { kind: "limiter" };

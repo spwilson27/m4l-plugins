@@ -34,7 +34,7 @@ var FS_FMIN = 20.0;
 var FS_FMAX = 20000.0;
 var FS_LN_RATIO = Math.log(FS_FMAX / FS_FMIN);
 var FS_MAX_SPLITS = 1024;
-var FS_LATENCY = 4096;
+var FS_LATENCY = 5120;          // 4096 (largest STFT latency, padded) + 1024 margin for the host block: the rack machinery reads the leader's data that late
 var FS_CH_NAMES = ["Red", "Blue", "Yellow", "Magenta"];
 var FS_SIZES = [1024, 2048, 4096];
 var FS_SIZE_ENUM = ["1k", "2k", "4k"];
@@ -45,7 +45,8 @@ var FS_BEND_RANGE = 0.4;        // midpoint = 0.5 + 0.4 * Bend
 var FS_PINCH_BASE = 3.0;        // q = 3^Pinch
 var FS_SPIN_MAX = 0.5;          // Spin +-50 % of the axis
 
-// Telemetry buffer layout (---freqsplitscope, FS_SCOPE_SAMPS floats)
+// Telemetry buffer layout (---freqsplitscope, FS_SCOPE_SAMPS floats). Columns 0..639 are written by the instance that computes (the rack's leader or a lone
+// instance) only; the scalars FRAME + 0..17 come from the rack template (src/spectral_split_rack_main.genexpr) and are written by every instance.
 var FS_SC_PRE = 0;                     // 128 input (Mid) levels, 0..1 over -100..0 dB
 var FS_SC_CH = FS_NCOLS;               // 4 x 128 channel levels after the masks (and the limiter), same scale
 var FS_SC_FRAME = FS_NCOLS * 5;        // frame counter (telemetry frames)
@@ -53,10 +54,22 @@ var FS_SC_SR = FS_SC_FRAME + 1;
 var FS_SC_N = FS_SC_FRAME + 2;
 var FS_SC_AWAKE = FS_SC_FRAME + 3;
 var FS_SC_LEVEL = FS_SC_FRAME + 4;     // input peak (decaying)
-var FS_SC_LATENCY = FS_SC_FRAME + 5;
-var FS_SC_SEL = FS_SC_FRAME + 6;       // output selection the gen is running (0 all, 1..4 channel)
-var FS_SC_LIM = FS_SC_FRAME + 7;       // limiter on (0 / 1)
+var FS_SC_LATENCY = FS_SC_FRAME + 6;
+var FS_SC_SEL = FS_SC_FRAME + 7;       // output selection the gen is running (0 all, 1..4 channel)
+// Rack machinery scalars (template)
+var FS_SC_CMP = FS_SC_FRAME + 8;       // 1 = this instance runs the STFT pipeline (leader or alone), 0 = it follows
+var FS_SC_FOL = FS_SC_FRAME + 9;       // 1 = following a leader
+var FS_SC_ALIGNED = FS_SC_FRAME + 10;  // 1 = the offset to the leader's sample counter is known (content aligned)
+var FS_SC_FB = FS_SC_FRAME + 11;       // fallback: 0 none, 1 the input differs from the leader's, 2 the leader's data stopped, 3 ring underrun
+var FS_SC_DOFF = FS_SC_FRAME + 12;     // counter offset to the leader (modulo 2^22)
+var FS_SC_UNDER = FS_SC_FRAME + 13;    // underrun counter
+var FS_SC_LAG = FS_SC_FRAME + 14;      // leader's newest fingerprint counter minus this instance's own counter (samples)
+var FS_SC_SERVE = FS_SC_FRAME + 15;    // channel mask this instance computes
+var FS_SC_ROLE = FS_SC_FRAME + 16;     // role the face asked for (0 self, 1 leader, 2 follower)
+var FS_SC_ALIVE = FS_SC_FRAME + 17;    // counter that moves every 1024 samples while the gen runs, also in silence (DSP ready detection)
+var FS_SC_LIM = FS_SC_FRAME + 18;      // limiter on (0 / 1), written by the computing instance with its telemetry frame
 var FS_SCOPE_SAMPS = FS_SC_FRAME + 32;
+var FS_RACK_CHANNELS = 4;
 
 // key: [long name, short name, min, max, initial, ptype (0 float, 1 int), unitstyle]
 var FS_PARAMS = {
@@ -77,6 +90,11 @@ var FS_ENUMS = {
     size: ["Size", "Size", FS_SIZE_ENUM, 2],
     output: ["Output", "Output", FS_OUT_ENUM, 0],
     dispost: ["Spectrum Display", "Display", FS_DISPLAY_ENUM, 0]
+};
+// gen messages for the live.* parameters, key -> [message, scale] (size -> fftn = 1024 * 2^index); the face re-sends them until the deferred gen runs
+var FS_GEN_PARAMS = {
+    splits: ["nsplit", 1], dir: ["sdir", 1], xfade: ["xfadeamt", 0.01], nudge: ["nudgeamt", 1], spin: ["spinamt", 0.01], bend: ["bendamt", 0.01],
+    pinch: ["pinchamt", 0.01], limon: ["limon", 1], limthr: ["limdb", 1], mix: ["mixamt", 0.01]
 };
 // keys shared between all instances in a rack (everything except Output and the display choice)
 var FS_LINKED_KEYS = ["splits", "dir", "xfade", "nudge", "spin", "bend", "pinch", "limon", "limthr", "mix", "size"];
@@ -310,7 +328,9 @@ if (nodeModule && nodeModule.exports) {
         FS_SPIN_MAX: FS_SPIN_MAX,
         FS_SC_PRE: FS_SC_PRE, FS_SC_CH: FS_SC_CH, FS_SC_FRAME: FS_SC_FRAME, FS_SC_SR: FS_SC_SR, FS_SC_N: FS_SC_N,
         FS_SC_AWAKE: FS_SC_AWAKE, FS_SC_LEVEL: FS_SC_LEVEL, FS_SC_LATENCY: FS_SC_LATENCY, FS_SC_SEL: FS_SC_SEL,
-        FS_SC_LIM: FS_SC_LIM, FS_SCOPE_SAMPS: FS_SCOPE_SAMPS,
+        FS_SC_LIM: FS_SC_LIM, FS_SCOPE_SAMPS: FS_SCOPE_SAMPS, FS_SC_CMP: FS_SC_CMP, FS_SC_FOL: FS_SC_FOL, FS_SC_ALIGNED: FS_SC_ALIGNED,
+        FS_SC_FB: FS_SC_FB, FS_SC_DOFF: FS_SC_DOFF, FS_SC_UNDER: FS_SC_UNDER, FS_SC_LAG: FS_SC_LAG, FS_SC_SERVE: FS_SC_SERVE,
+        FS_SC_ROLE: FS_SC_ROLE, FS_SC_ALIVE: FS_SC_ALIVE, FS_RACK_CHANNELS: FS_RACK_CHANNELS, FS_GEN_PARAMS: FS_GEN_PARAMS,
         fsClip: fsClip, fsResolveSel: fsResolveSel, fsSelName: fsSelName, fsFormatDb: fsFormatDb, fsDbToLin: fsDbToLin,
         fsDryShare: fsDryShare, fsBinOf: fsBinOf, fsXOf: fsXOf, fsUToHz: fsUToHz, fsHzToU: fsHzToU, fsBendMid: fsBendMid,
         fsWarp: fsWarp, fsWarpInv: fsWarpInv, fsPattern: fsPattern, fsSlotBase: fsSlotBase, fsSlotWidth: fsSlotWidth,

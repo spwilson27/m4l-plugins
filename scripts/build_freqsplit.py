@@ -9,14 +9,18 @@ grows in, Crossfade overlaps neighbouring regions, Nudge (+-4, wrapping, fractio
 Audio Effect Rack, one chain per channel (the .adg preset does exactly that): the rack's chain volume / pan / activator / solo and
 the chain's devices are Bitwig's per-channel Gain / Pan / On / Solo / FX chain, devices before / after the rack are Pre FX / Post FX.
 Every instance computes the same pattern and per-bin masks from linked parameters and outputs only its own channel (Output =
-Auto: the chain index); the masks sum to 1, so the chains sum back to the input delayed by 4096 samples ("latency": 4096).
+Auto: the chain index); the masks sum to 1, so the chains sum back to the input delayed by the constant latency (5120 samples, "latency": 5120).
 Mix keeps that identity in a rack (out = mix * wet + (1 - mix) * dry / 4 per chain). No signal analysis: the masks depend on the
 parameters only.
 
-Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr + src/freqsplit_core.genexpr)
--> plugout~. The main v8ui face (src/freqsplit_config.js + src/spectral_link.js + src/freqsplit_ui.js) draws the channel regions,
-the XY dot, the limiter line and the spectrum, links the parameters with the other instances in the rack and sends the resolved
-output selection; the small header v8ui (src/freqsplit_top_ui.js) draws the direction arrows and the crossfade ramp.
+Signal path: plugin~ -> gen~ -> plugout~, where the gen~ is NOT in the saved device: the face creates it after load from the embedded gen
+patch (src/spectral_dsp.js, AGENTS.md 1d; gen code = cepstrum_lib + spectral_split_lib + spectral_split_rack + the expanded
+src/freqsplit_core.genexpr with the rack template src/spectral_split_rack_main.genexpr). Every gen-bound message goes into the ss_genin hub
+(gate 1 1). ONE instance per rack (the leader, elected by the face through src/spectral_link.js) frames the signal, runs the FFT once and
+computes all four channels; the other chains read their channel from its ring (latency 5120 = 4096 + the host block margin). The main v8ui
+face (src/freqsplit_config.js + src/spectral_link.js + src/spectral_theme.js + src/spectral_dsp.js + src/freqsplit_ui.js) draws the channel
+regions, the XY dot, the limiter line and the spectrum, links the parameters with the other instances in the rack and sends the gen its
+output selection, role and buffer names; the small header v8ui (src/freqsplit_top_ui.js) draws the direction arrows and the crossfade ramp.
 
 Layout (480 x 169, Live Reverb style, Live theme colours): left section "Splits" (x=4..340: Splits | Insert arrows | XFade row, the
 display canvas, Nudge | Spin | Bend | Pinch row), right sections "Spectrum" (Display Pre | Post, Limiter + threshold) and "Output"
@@ -36,7 +40,10 @@ SRC = os.path.join(ROOT, "src")
 OUT_AMXD = os.path.join(sc.DEVICES_DIR, "Freq Split.amxd")
 OUT_ADG = os.path.join(sc.DEVICES_DIR, "Freq Split.adg")
 WIDTH = 480.0
-LATENCY = 4096
+LATENCY = sc.RACK_LATENCY      # 5120: 4096 + the host block margin the leader / follower exchange needs
+RING_SAMPS = sc.rack_ring_samps(4)
+ZERO_COUNT = 640
+SC_FRAME = 640                 # first scope slot of the rack template's common scalars (FS_SC_FRAME)
 
 RED, BLU, YEL, MAG = sc.RED, sc.BLUE, sc.YELLOW, sc.MAGENTA
 ORG = sc.ORANGE
@@ -76,7 +83,7 @@ ENUM = {
 ENUM_HELP = {
     "dir": "Split Insertion Direction: where new splits are inserted in the spectrum: High (arrow <-, at the right / high end), Mid (arrow <->, in the middle) or Low (arrow ->, at the left / low end).",
     "limon": "Spectral Limiter: caps the magnitude of every frequency bin of the output at the Limiter Threshold, applied after the channel masks. Bins below it are unaffected. This is the one control that breaks the exact sum of the channels.",
-    "size": "Analysis block size: larger blocks resolve narrow splits more sharply at low frequencies. The latency stays 4096 samples at every size.",
+    "size": "Analysis block size: larger blocks resolve narrow splits more sharply at low frequencies. The latency stays 5120 samples at every size.",
     "output": "Output: Auto uses this chain's index in the parent Rack (1 red, 2 blue, 3 yellow, 4 magenta; outside a Rack the sum of all), or pick a channel, or All.",
     "dispost": "Spectrum Display: Pre shows the analysis data (good for tweaking the splits), Post shows the channel output after the masks and the limiter.",
 }
@@ -139,13 +146,26 @@ def lcd_numbox(key, x, y, w, h=15.0):
     return box
 
 
-def build_patcher():
-    gen = sc.gen_code(os.path.join(SRC, "cepstrum_lib.genexpr"), os.path.join(SRC, "spectral_split_lib.genexpr"),
-                      os.path.join(SRC, "freqsplit_core.genexpr"))
-    face = (sc.read(os.path.join(SRC, "freqsplit_config.js")).rstrip() + "\n\n"
+def gen_code():
+    """The gen code of the device (what the face writes to the .gendsp file)."""
+    subs = sc.rack_subs(4, "fsd", 5, SC_FRAME, ZERO_COUNT)
+    return sc.gen_code_rack(os.path.join(SRC, "freqsplit_core.genexpr"), subs)
+
+
+def face_code(gen):
+    """The v8ui script: deferred-DSP constants, config, link, theme, deferred DSP, face."""
+    header, _ = sc.deferred_header("freqsplit", gen)
+    return (header + "\n"
+            + sc.read(os.path.join(SRC, "freqsplit_config.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_link.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
+            + sc.read(os.path.join(SRC, "spectral_dsp.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "freqsplit_ui.js")))
+
+
+def build_patcher():
+    gen = gen_code()
+    face = face_code(gen)
     top = (sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
            + sc.read(os.path.join(SRC, "freqsplit_top_ui.js")))
 
@@ -181,7 +201,7 @@ def build_patcher():
     boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", RX, 98, 50))
     boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], CX, 97, CW, 15))
     boxes.append(make_dial("mix", RX, 116, 52, 46))
-    boxes.append(sc.make_theme_comment("obj-leg-lat", "Lat 4096 smp", 410, 134, 64, 14, size=8.5, name="live_display_scale_text"))
+    boxes.append(sc.make_theme_comment("obj-leg-lat", f"Lat {LATENCY} smp", 410, 134, 64, 14, size=8.5, name="live_display_scale_text"))
 
     p_spl, parts_spl = sc.make_section("spl", 4, 4, 336, 161, "Splits")
     p_spc, parts_spc = sc.make_section("spc", 344, 4, 132, 54, "Spectrum")
@@ -194,24 +214,29 @@ def build_patcher():
     boxes.append(sc.v8ui("obj-viz", face, [8.0, 38.0, 328.0, 100.0], (20.0, 80.0), 3, "FreqsplitView"))
 
     # ---- audio ----
+    # The device ships WITHOUT its gen~ (AGENTS.md 1d): plugin~ / plugout~ and the hub carry scripting names, the face creates the gen~ after
+    # load and wires hub -> gen, plugin~ -> gen -> plugout~ (src/spectral_dsp.js). Every cord that goes to the gen's inlet 0 goes into the hub.
+    def named(b, var):
+        b["box"]["varname"] = var
+        return b
+
     boxes += [
-        newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-        newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-        sc.gen_box("obj-gen", gen, "freqsplit"),
+        named(newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "ss_plugin"),
+        named(newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "ss_plugout"),
+        named(newobj("obj-genin", "gate 1 1", 120, 280, 60, numinlets=2, numoutlets=1), "ss_genin"),
         # `---` is unique per device instance in M4L (`#0` is not expanded in a top-level device in Live)
         newobj("obj-scope-buf", "buffer~ ---freqsplitscope @samps 704", 560, 250, 260, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-loadbang", "loadbang", 560, 285, 60, outlettype=["bang"]),
-        message("obj-msg-ui-buf", "setbuffer ---freqsplitscope", 560, 315, 190),
-        message("obj-msg-gen-buf", "scope ---freqsplitscope", 560, 345, 170),
+        newobj("obj-ring-buf", f"buffer~ ---ssring @samps {RING_SAMPS}", 560, 275, 280, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-loadbang", "loadbang", 560, 305, 60, outlettype=["bang"]),
+        message("obj-msg-ui-names", "setnames ---freqsplitscope ---ssring", 560, 335, 250),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init", "init_link", 780, 430, 70),
+        newobj("obj-r-sstest", "r #0-sstest", 780, 460, 90, numinlets=0, numoutlets=1),   # test hook (scripts/test_spectral_sum_live.js)
     ]
     lines += [
-        line("obj-plugin", 0, "obj-gen", 0), line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0), line("obj-gen", 1, "obj-plugout", 1),
-        line("obj-loadbang", 0, "obj-msg-ui-buf"), line("obj-loadbang", 0, "obj-msg-gen-buf"),
-        line("obj-msg-ui-buf", 0, "obj-viz"), line("obj-msg-gen-buf", 0, "obj-gen"),
+        line("obj-loadbang", 0, "obj-msg-ui-names"), line("obj-msg-ui-names", 0, "obj-viz"),
         line("obj-thisdevice", 0, "obj-msg-init"), line("obj-msg-init", 0, "obj-viz"),
+        line("obj-r-sstest", 0, "obj-viz"),
     ]
 
     # ---- parameter wiring: control -> gen, control -> face ----
@@ -245,8 +270,9 @@ def build_patcher():
         if key == "dir":
             lines.append(line("obj-route-link", i, "obj-top-prep-dir"))
 
-    # resolved output selection -> gen
+    # gen-bound messages of the face (outsel, buffer names, rack role, parameter re-sends) -> hub
     lines.append(line("obj-viz", 2, "obj-gen", 0))
+    sc.to_gen_hub(lines, "obj-genin", "obj-gen")
 
     # ---- background panels last: section panels, then the body (Max draws earlier boxes over later ones) ----
     boxes += [p_spl, p_spc, p_out, sc.make_body_panel(WIDTH)]

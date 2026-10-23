@@ -29,6 +29,19 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const LIB_SRC = read("src/cepstrum_lib.genexpr");
 const SS_SRC = read("src/spectral_split_lib.genexpr");
 const CORE_SRC = read("src/freqsplit_core.genexpr");
+const RACK_SRC = read("src/spectral_split_rack.genexpr");
+const RACK_MAIN = read("src/spectral_split_rack_main.genexpr");
+// The gen code the device really embeds (the face writes it to a .gendsp file): lib + ss lib + rack functions + the expanded core.
+function builtGenCode() {
+    const raw = fs.readFileSync(path.join(ROOT, "devices", "Freq Split.amxd"));
+    const p = JSON.parse(raw.slice(32).toString("utf8")).patcher;
+    const face = p.boxes.map((b) => b.box).find((b) => b.id === "obj-viz").textfile.text;
+    const m = /^var GEN_DSP_TEXT = (".*");$/m.exec(face);
+    assert.ok(m, "face carries GEN_DSP_TEXT");
+    const gendsp = JSON.parse(JSON.parse(m[1]));
+    return gendsp.patcher.boxes.find((b) => b.box.maxclass === "codebox").box.code;
+}
+const GEN_CODE = builtGenCode();
 
 const SR = 48000;
 const energy = (a, s, e) => {
@@ -353,10 +366,10 @@ function prep(src) {
                     masks = [0, 1, 2, 3, 4].map((c) => Array.from({ length: half + 1 }, (_, k) => fsd.peek(k, c)));
                 }
                 if (p.limon > 0.5) gx.fs_limit(fx, fsd, thr, n);
-                const applyCh = p.limon > 0.5 ? (sel < 0.5 ? 9 : 4 + sel) : (sel < 0.5 ? 4 : sel - 1);
+                const applyCh = sel < 0.5 ? 9 : 4 + sel;      // the template applies the FINAL mask rows 5 + c (c = 4 is the All row 9)
                 gx.ss_apply(fx, fsd, applyCh, n);
                 if (tele) {
-                    const tch = p.limon > 0.5 ? 5 : 0;
+                    const tch = 5;
                     gx.ss_cols(ms, 0, fsd, -1, cols, 0, n, SR, 128, 20, 20000);
                     for (let c = 0; c < 4; c++) gx.ss_cols(ms, 0, fsd, tch + c, cols, 1 + c, n, SR, 128, 20, 20000);
                     gx.ss_tele(cols, scope, 128, 5, 0);
@@ -397,6 +410,7 @@ function prep(src) {
                 cfg.fsMasksFill(cfg.fsPattern(lp), n, SR, mk);
                 for (let c = 0; c < 5; c++) for (let k = 0; k <= half; k++) {
                     maxd = Math.max(maxd, Math.abs(mk[c][k] - fsd.peek(k, c)));
+                    maxd = Math.max(maxd, Math.abs(mk[c][k] - fsd.peek(k, 5 + c)));      // the final-mask rows 5..9 start as copies of the raw masks
                     cnt++;
                 }
             }
@@ -570,21 +584,26 @@ function prep(src) {
 // 3. GenExpr lint, link module
 // ======================================================================
 {
-    const fnsLib = functionsOf(SS_SRC);
+    const fnsLib = functionsOf(SS_SRC).concat(functionsOf(RACK_SRC));
     const fnsCore = functionsOf(CORE_SRC);
     for (const fn of fnsLib.concat(fnsCore)) {
         const rets = fn.body.filter((l) => /^\s*return\b/.test(l));
         assert.strictEqual(rets.length, 1, `${fn.name}: exactly one return`);
         assert.ok(/^\treturn\b/.test(fn.body[fn.body.length - 1]), `${fn.name}: the return is the last statement, at function level`);
-        for (const l of fn.body) assert.ok(!/\bif\s*\(\s*[^)]*\b(ss|fs|stft|fft|cep)_\w+\(/.test(l), `${fn.name}: no function call inside an if condition`);
+        for (const l of fn.body) assert.ok(!/\bif\s*\(\s*[^)]*\b(ss2?|fs|stft|fft|cep)_\w+\(/.test(l), `${fn.name}: no function call inside an if condition`);
     }
-    for (const src of [SS_SRC, CORE_SRC]) {
+    for (const src of [SS_SRC, RACK_SRC, GEN_CODE]) {
         const code = src.replace(/\/\/.*$/gm, "");
-        assert.ok(!/\bpoke\([^;]*\b(ss|fs|stft|fft|cep)_\w+\(/.test(code), "no user function call inside poke() arguments (silent compile failure in Max)");
+        assert.ok(!/\bpoke\([^;]*\b(ss2?|fs|stft|fft|cep)_\w+\(/.test(code), "no user function call inside poke() arguments (silent compile failure in Max)");
         assert.ok(!/\be\d\b/.test(code), "no identifier e<digit>");
         assert.ok(!/\b(phi|pi)\s*=/.test(code), "no phi / pi assignments");
     }
-    const lines = CORE_SRC.split("\n");
+    // statements of the expanded core: no function call in an if condition either
+    for (const l of GEN_CODE.split("\n")) {
+        if (/^\s*(\}\s*else\s*)?if\s*\(/.test(l)) assert.ok(!/\b(ss2?|fs|stft|fft|cep)_\w+\(/.test(l.replace(/\/\/.*$/, "")), `no function call inside an if condition: ${l.trim()}`);
+    }
+    // ordering: all functions, then Buffer, Data, Param, History, Delay, then statements
+    const lines = GEN_CODE.split("\n");
     const firstDecl = lines.findIndex((l) => /^(Buffer|Data|Param|History|Delay)\b/.test(l));
     const lastFnHeader = lines.reduce((m, l, i) => (/^[A-Za-z_]\w*\([^)]*\) \{$/.test(l) ? i : m), -1);
     assert.ok(lastFnHeader > 0 && lastFnHeader < firstDecl, "every function sits before the first Buffer / Data / Param / History / Delay declaration");
@@ -592,19 +611,28 @@ function prep(src) {
     const firstStmt = lines.findIndex((l, i) => i > lastDecl && /^[a-zA-Z_]/.test(l));
     assert.ok(firstStmt > lastDecl, "statements follow the declarations");
     for (const l of lines.slice(firstDecl, lastDecl + 1)) assert.ok(l.trim() === "" || /^(Buffer|Data|Param|History|Delay)\b|^\/\//.test(l), `declaration block only holds declarations: ${l}`);
-    for (const name of ["fftn", "nsplit", "sdir", "xfadeamt", "nudgeamt", "spinamt", "bendamt", "pinchamt", "limon", "limdb", "mixamt", "outsel"]) assert.ok(new RegExp(`^Param ${name}\\(`, "m").test(CORE_SRC), `Param ${name}`);
+    for (const name of ["fftn", "nsplit", "sdir", "xfadeamt", "nudgeamt", "spinamt", "bendamt", "pinchamt", "limon", "limdb", "mixamt", "outsel", "role", "serve", "epoch"]) assert.ok(new RegExp(`^Param ${name}\\(`, "m").test(GEN_CODE), `Param ${name}`);
     assert.ok(/Buffer scope\("freqsplitscope"\)/.test(CORE_SRC), "Buffer bound by the GenExpr variable name `scope` (no set prefix)");
-    assert.ok(CORE_SRC.includes("dShare = selH < 0.5 ? 1 : 0.25"), "Mix: the dry share is 1 / 4 per chain (1 for Output All)");
-    assert.ok(CORE_SRC.includes("dL = dryL.read(4096)") && /Delay dryL\(4097\)/.test(CORE_SRC), "the dry signal is delayed by the same 4096 samples");
-    assert.ok(CORE_SRC.includes("if (chg > 0.000000001) {"), "masks are only refilled when a control, N or the sample rate changed");
-    // the scope layout matches the config constants
-    assert.ok(CORE_SRC.includes(`poke(scope, frameNo, ${cfg.FS_SC_FRAME}, 0)`), "telemetry frame counter slot");
-    assert.ok(CORE_SRC.includes(`poke(scope, sr, ${cfg.FS_SC_SR}, 0)`) && CORE_SRC.includes(`poke(scope, n, ${cfg.FS_SC_N}, 0)`), "sr / N slots");
-    assert.ok(CORE_SRC.includes(`poke(scope, 1, ${cfg.FS_SC_AWAKE}, 0)`) && CORE_SRC.includes(`poke(scope, 4096, ${cfg.FS_SC_LATENCY}, 0)`), "awake / latency slots");
-    assert.ok(CORE_SRC.includes(`poke(scope, selH, ${cfg.FS_SC_SEL}, 0)`) && CORE_SRC.includes(`poke(scope, loH, ${cfg.FS_SC_LIM}, 0)`), "selection / limiter slots");
-    assert.ok(CORE_SRC.includes(`fs_zero(scope, ${cfg.FS_SC_FRAME})`), "sleep clears the columns");
-    assert.ok(CORE_SRC.includes("ss_tele(cols, scope, 128, 5, 0)") && /Data cols\(640\)/.test(CORE_SRC), "five telemetry slots of 128 columns");
-    assert.ok(cfg.FS_SCOPE_SAMPS <= 704, "scope buffer big enough");
+    assert.ok(!/@@/.test(GEN_CODE) && !/\/\/@(hook|endhook|SS_)/.test(GEN_CODE), "the template is fully expanded");
+    // Mix: the dry share is 1 / 4 per chain (1 for Output All), the dry is delayed by the reported latency (template)
+    assert.ok(GEN_CODE.includes("kShare = selH > 0.5 ? 0.25 : 1;"), "Mix: the dry share is 1 / 4 per chain (1 for Output All)");
+    assert.ok(GEN_CODE.includes(`Delay dryL(${cfg.FS_LATENCY + 1})`) && GEN_CODE.includes(`dryL.read(${cfg.FS_LATENCY})`), "the dry signal is delayed by the reported latency");
+    assert.ok(GEN_CODE.includes("if (chg > 0.000000001) {") && GEN_CODE.includes("abs(loH - loU)"), "masks are only refilled when a control, N, the sample rate or the limiter switch changed");
+    // the template writes the common scalars at SCB + offset (SCB = FS_SC_FRAME): every offset is the config's
+    const scal = { 1: "FS_SC_SR", 2: "FS_SC_N", 3: "FS_SC_AWAKE", 4: "FS_SC_LEVEL", 6: "FS_SC_LATENCY", 7: "FS_SC_SEL", 8: "FS_SC_CMP", 9: "FS_SC_FOL", 10: "FS_SC_ALIGNED",
+        11: "FS_SC_FB", 12: "FS_SC_DOFF", 13: "FS_SC_UNDER", 14: "FS_SC_LAG", 15: "FS_SC_SERVE", 16: "FS_SC_ROLE", 17: "FS_SC_ALIVE" };
+    for (const [off, key] of Object.entries(scal)) {
+        assert.strictEqual(cfg.FS_SC_FRAME + Number(off), cfg[key], `${key} = FS_SC_FRAME + ${off}`);
+        assert.ok(GEN_CODE.includes(`, ${cfg.FS_SC_FRAME} + ${off}, 0);`), `gen writes scope slot ${key}`);
+    }
+    const m = GEN_CODE.match(/poke\(scope, frameNo, (\d+) \+ 0, 0\)|poke\(scope, frameNo, (\d+), 0\)/);
+    assert.strictEqual(Number(m[1] || m[2]), cfg.FS_SC_FRAME, "telemetry frame counter slot");
+    assert.ok(GEN_CODE.includes(`poke(scope, loH, ${cfg.FS_SC_LIM}, 0)`), "limiter slot");
+    assert.ok(GEN_CODE.includes(`ss2_zeroscope(scope, ${cfg.FS_SC_FRAME})`), "sleep clears the columns");
+    assert.ok(GEN_CODE.includes("ss_tele(cols, scope, 128, 4, 0)") && GEN_CODE.includes("ss_tele(cols, scope, 128, 1, 512)") && /Data cols\(512\)/.test(GEN_CODE),
+        "five telemetry slots of 128 columns through the template's four-slot cols");
+    assert.ok(cfg.FS_SC_LIM + 1 <= cfg.FS_SCOPE_SAMPS && cfg.FS_SCOPE_SAMPS <= 704, "scope buffer big enough");
+    assert.ok(RACK_MAIN.includes("@@SCB@@ + 17"), "template alive counter at SCB + 17");
 
     runLinkTests();
     console.log("[lint] genexpr lint and link module tests passed");
@@ -620,7 +648,7 @@ function prep(src) {
     assert.strictEqual(raw.slice(8, 12).toString(), "aaaa", "audio effect");
     assert.strictEqual(raw.readUInt32LE(28), raw.length - 32);
     const p = JSON.parse(raw.slice(32).toString("utf8")).patcher;
-    assert.strictEqual(p.latency, cfg.FS_LATENCY, "latency attribute 4096");
+    assert.strictEqual(p.latency, cfg.FS_LATENCY, "latency attribute = FS_LATENCY (5120)");
     assert.strictEqual(p.openrect[3], 169, "169 px high");
     assert.strictEqual(p.openrect[2], p.devicewidth);
     assert.strictEqual(p.openinpresentation, 1);
@@ -631,13 +659,28 @@ function prep(src) {
         byId[b.id] = b;
     }
     for (const l of p.lines) assert.ok(byId[l.patchline.source[0]] && byId[l.patchline.destination[0]], `line endpoints exist ${JSON.stringify(l.patchline)}`);
-    const gen = byId["obj-gen"];
-    assert.strictEqual(gen.code, [LIB_SRC, SS_SRC, CORE_SRC].map((s) => s.replace(/\s+$/, "") + "\n").join("\n"), "gen code = cepstrum_lib + spectral_split_lib + freqsplit_core");
-    assert.ok(gen.code.indexOf("fft_run(") < gen.code.indexOf("ss_in(") && gen.code.indexOf("ss_in(") < gen.code.indexOf("fs_pattern("), "library functions come first");
+    // deferred DSP (AGENTS.md 1d): no gen~ in the saved device, a gate 1 1 hub, scripting names, no static audio cords
+    assert.ok(!byId["obj-gen"], "the device ships without its gen~");
+    assert.strictEqual(byId["obj-genin"].text, "gate 1 1");
+    assert.deepStrictEqual([byId["obj-genin"].varname, byId["obj-plugin"].varname, byId["obj-plugout"].varname], ["ss_genin", "ss_plugin", "ss_plugout"]);
+    const allLines = p.lines.map((l) => l.patchline);
+    assert.ok(!allLines.some((l) => l.source[0] === "obj-plugin" || l.destination[0] === "obj-plugout"), "no static audio cord (the face wires plugin~ -> gen~ -> plugout~)");
+    assert.ok(allLines.every((l) => l.destination[0] !== "obj-gen"), "no cord into a gen~ that is not there");
+    assert.ok(allLines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 2 && l.destination[0] === "obj-genin" && l.destination[1] === 1), "face outlet 2 -> hub data inlet");
+    // the embedded gen = lib + ss lib + rack functions + the expanded core
+    assert.ok(GEN_CODE.indexOf("fft_run(") < GEN_CODE.indexOf("ss_in(") && GEN_CODE.indexOf("ss_in(") < GEN_CODE.indexOf("ss2_align(") && GEN_CODE.indexOf("ss2_align(") < GEN_CODE.indexOf("fs_pattern("), "library functions come first");
+    assert.ok(GEN_CODE.startsWith(LIB_SRC.replace(/\s+$/, "") + "\n"), "gen code starts with cepstrum_lib");
+    assert.ok(GEN_CODE.includes(SS_SRC.replace(/\s+$/, "") + "\n") && GEN_CODE.includes(RACK_SRC.replace(/\s+$/, "") + "\n"), "gen code contains spectral_split_lib and spectral_split_rack verbatim");
+    const faceTxt = byId["obj-viz"].textfile.text;
+    assert.ok(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(faceTxt) && /var SS_PREFIX = "freqsplit";/.test(faceTxt), "face carries the gen patch hash and prefix");
+    assert.ok(faceTxt.includes("function ssDspLoad") && faceTxt.includes("function ssDspRestart"), "face carries the deferred-DSP module");
     assert.ok(byId["obj-scope-buf"].text.startsWith("buffer~ ---freqsplitscope"), "per-instance buffer name");
     assert.ok(Number(byId["obj-scope-buf"].text.match(/@samps (\d+)/)[1]) >= cfg.FS_SCOPE_SAMPS, "scope buffer length");
-    for (const id of ["obj-msg-ui-buf", "obj-msg-gen-buf"]) assert.ok(byId[id].text.includes("---freqsplitscope"), `${id} uses the --- name`);
-    assert.ok(!boxes.some((b) => /#0/.test(b.text || "")), "no #0 names in a top-level device");
+    assert.ok(byId["obj-ring-buf"].text.startsWith("buffer~ ---ssring @samps "), "per-instance ring buffer");
+    assert.ok(Number(byId["obj-ring-buf"].text.match(/@samps (\d+)/)[1]) === 16 + 8192 * 11, "ring length = header + slots * stride (4 channels + the All row)");
+    assert.strictEqual(byId["obj-msg-ui-names"].text, "setnames ---freqsplitscope ---ssring", "the face learns both per-instance buffer names");
+    assert.ok(!boxes.some((b) => /#0/.test(b.text || "") && b.text !== "r #0-sstest"), "no #0 names in a top-level device (the test hook receive #0-sstest is the one deliberate shared name)");
+    assert.ok(allLines.some((l) => l.source[0] === "obj-r-sstest" && l.destination[0] === "obj-viz"), "test hook receive #0-sstest -> face");
     const firstPanel = boxes.findIndex((b) => b.maxclass === "panel");
     assert.ok(firstPanel > 0 && boxes.slice(firstPanel).every((b) => b.maxclass === "panel"), "panels are the last boxes");
     for (const b of boxes.slice(firstPanel)) assert.strictEqual(b.background, 1, `${b.id} background 1`);
@@ -689,7 +732,7 @@ function prep(src) {
     const GEN = { splits: "nsplit", dir: "sdir", xfade: "xfadeamt", nudge: "nudgeamt", spin: "spinamt", bend: "bendamt", pinch: "pinchamt", limon: "limon", limthr: "limdb", mix: "mixamt", size: "fftn" };
     for (const [key, msg] of Object.entries(GEN)) {
         assert.strictEqual(byId[`obj-prep-${key}`].text, `prepend ${msg}`);
-        assert.ok(from(`obj-prep-${key}`).includes("obj-gen"), `${key} -> gen`);
+        assert.ok(from(`obj-prep-${key}`).includes("obj-genin"), `${key} -> hub -> gen`);
         assert.ok(from(`obj-ui-${key}`).includes("obj-viz") && byId[`obj-ui-${key}`].text === `prepend set_${key}`, `${key} -> face`);
     }
     for (const key of ["xfade", "spin", "bend", "pinch", "mix"]) assert.strictEqual(byId[`obj-scale-${key}`].text, "* 0.01");
@@ -709,16 +752,16 @@ function prep(src) {
         assert.strictEqual(byId[`obj-lset-${key}`].text, "prepend set");
         assert.ok(from(`obj-lset-${key}`).includes(`obj-ctrl-${key}`), `${key}: prepend set -> control`);
         assert.ok(dests.length === (key === "dir" ? 3 : 2), `${key}: peer value also feeds the gen path`);
+        assert.ok(!dests.includes("obj-gen"), `${key}: only through the hub`);
     });
     const canvas = byId["obj-route-canvas"].text.split(" ").slice(1);
     for (const key of ["bend", "pinch", "limthr", "spin"]) {
         assert.ok(canvas.includes(key), `canvas can edit ${key}`);
         assert.ok(from("obj-route-canvas").includes(`obj-ctrl-${key}`));
     }
-    assert.ok(lines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 2 && l.destination[0] === "obj-gen"), "face outlet 2 -> gen (outsel)");
     assert.ok(lines.some((l) => l.source[0] === "obj-thisdevice" && l.destination[0] === "obj-msg-init") && byId["obj-msg-init"].text === "init_link", "init from live.thisdevice, not loadbang");
     const face = byId["obj-viz"].textfile.text;
-    assert.ok(face.includes("function splCreateLink") && face.includes("function fsPattern") && face.includes("function paint"), "face = config + link + ui");
+    assert.ok(face.includes("function splCreateLink") && face.includes("function fsPattern") && face.includes("function paint") && face.includes("function ssDspLoad"), "face = config + link + theme + deferred DSP + ui");
     const topFace = byId["obj-viz-top"].textfile.text;
     assert.ok(topFace.includes("function paint") && /mgraphics\.relative_coords\s*=\s*0/.test(topFace) && !/\bvar\s+(box|patcher|max|messagename|inlet|jsarguments)\b/.test(topFace), "header strip script");
     assert.ok(/mgraphics\.relative_coords\s*=\s*0/.test(face) && /mgraphics\.autofill\s*=\s*0/.test(face), "v8ui pixel coordinates");
@@ -736,5 +779,7 @@ function prep(src) {
 }
 
 console.log("All Freq Split tests passed");
+require("./test_spectral_rack.js");
+require("./test_spectral_dsp.js");
 
 require("./test_freqsplit_paint_bounds.js");

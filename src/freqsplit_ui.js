@@ -1,5 +1,5 @@
-// freqsplit_ui.js — Freq Split face (v8ui, one canvas) + spectral_link wiring. The build concatenates
-//   freqsplit_config.js, spectral_link.js, this file  into the v8ui script.
+// freqsplit_ui.js — Freq Split face (v8ui, one canvas) + spectral_link wiring + the deferred DSP. The build concatenates
+//   (deferred-DSP constants), freqsplit_config.js, spectral_link.js, spectral_theme.js, spectral_dsp.js, this file  into the v8ui script.
 //
 // Canvas (FV_W x FV_H): a HUD (resolved channel pill, chain chip) and a log-frequency plot (20 Hz..20 kHz) with
 //   - the channel regions: stacked, channel coloured mask columns (crossfades show as blends), from the same fsPattern / fsMaskAt as
@@ -12,10 +12,11 @@
 // the direction arrows and the crossfade ramp glyph live in the small header v8ui (src/freqsplit_top_ui.js).
 //
 // Messages in:  set_<key> <value> for splits dir xfade nudge spin bend pinch limon limthr mix size output dispost,
-//               setbuffer <name>, init_link (live.thisdevice), preview helpers.
+//               setnames <scope buffer> <ring buffer>, init_link (live.thisdevice), dsp_restart <chain> (test hook), preview helpers.
 // Outlets:      0 [key value]  edits made on the canvas (bend pinch limthr spin) -> route -> the live.* object (which then drives gen)
 //               1 [key value]  values applied from a rack peer -> route -> `prepend set` into the live.* object + gen
-//               2 outsel <0..4>  resolved output selection for the gen (0 = all channels summed)
+//               2 gen messages -> the ss_genin hub (gate 1 1; the gen~ is created after load, src/spectral_dsp.js): outsel <0..4> (0 = all
+//                 channels summed), scope / ring / lead <buffer name>, role, serve, epoch (rack sharing, src/spectral_link.js), parameters (re-sent)
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -44,8 +45,10 @@ var fvSegs = [];             // [{x0, x1, ch}] regions for the channel numbers
 var fvPre = [];
 var fvCh = [[], [], [], []];
 var fvScalars = { frame: 0, awake: 0, sr: 48000, n: 4096, level: 0 };
-var fvBufName = "";
+var fvNames = { scope: "", ring: "" };
+var fvBufName = "";            // the buffer the display is drawn from (the leader's scope while following)
 var fvBuf = null;
+var fvOwnBuf = null;
 var fvTask = null;
 var fvLastFrame = -1;
 var fvDrag = null;
@@ -128,6 +131,12 @@ function init_link() {
         kind: "freqsplit",
         keys: FS_LINKED_KEYS,
         channelCount: 4,
+        rack: {
+            channels: FS_RACK_CHANNELS,
+            ring: function () { return fvNames.ring; },
+            genState: function () { return { alive: fvGenValue(FS_SC_ALIVE), fb: Math.max(0, fvGenValue(FS_SC_FB)) }; },
+            send: function (name, value) { outlet(2, name, value); }
+        },
         getLocal: function (key) { return fvVals[key]; },
         apply: function (key, value) {
             fvVals[key] = value;
@@ -137,19 +146,69 @@ function init_link() {
         },
         onInfo: function (info) {
             fvInfo = info;
+            ssDspDry(!info.isInRack);
             fvEmitSel();
             mgraphics.redraw();
         }
     });
     fvLink.init();
     fvStartPolling();
+    ssDspSchedule(fvInfo.instanceId);
 }
 
-function setbuffer(name) {
-    splNoteScope(name);
-    fvBufName = name ? String(name) : "";
+function setnames(scopeName, ringName) {
+    fvNames.scope = scopeName ? String(scopeName) : "";
+    fvNames.ring = ringName ? String(ringName) : "";
+    splNoteScope(fvNames.scope);
     fvBuf = null;
+    fvOwnBuf = null;
     fvStartPolling();
+}
+
+// Kept for tools that only know the scope buffer.
+function setbuffer(name) {
+    setnames(name, fvNames.ring);
+}
+
+// ---------------------------------------------------------------- deferred DSP (src/spectral_dsp.js) and rack messages
+function fvGenValue(idx) {
+    if (!fvNames.scope) return -1;
+    try {
+        if (!fvOwnBuf) fvOwnBuf = new Buffer(fvNames.scope);
+        var v = fvOwnBuf.peek(1, idx, 1);
+        return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
+    } catch (err) {
+        fvOwnBuf = null;
+        return -1;
+    }
+}
+
+function ssGenAlive() {
+    return fvGenValue(FS_SC_ALIVE);
+}
+
+// Every gen-bound message from the values the face holds (a deferred gen~ drops messages until it runs).
+function ssDevResend() {
+    if (fvNames.scope) outlet(2, "scope", fvNames.scope);
+    if (fvNames.ring) outlet(2, "ring", fvNames.ring);
+    for (var key in FS_GEN_PARAMS) {
+        if (key in fvVals) outlet(2, FS_GEN_PARAMS[key][0], fvVals[key] * FS_GEN_PARAMS[key][1]);
+    }
+    outlet(2, "fftn", 1024 * Math.pow(2, fvVals.size));
+    outlet(2, "outsel", fvSel);
+    if (fvLink && fvLink.rack) {
+        var m = fvLink.rack.messages();
+        for (var i = 0; i < m.length; i++) outlet(2, m[i][0], m[i][1]);
+    }
+}
+
+function ssDevChanged() {
+    mgraphics.redraw();
+}
+
+// Test hook (receive #0-sstest): restart the DSP of the instance in chain <c> (a late start: a new gen~ with a new sample counter).
+function dsp_restart(c) {
+    if (fvInfo.chainIndex === Number(c) || Number(c) < 0) ssDspRestart();
 }
 
 function fvStartPolling() {
@@ -159,15 +218,28 @@ function fvStartPolling() {
     fvTask.repeat();
 }
 
+function fvDispName() {
+    var lead = fvLink && fvLink.rack ? fvLink.rack.displayScope() : "";
+    return lead || fvNames.scope;
+}
+
 function fvPoll() {
-    if (!fvBufName) return;
+    var name = fvDispName();
+    if (!name) return;
     try {
-        if (!fvBuf) fvBuf = new Buffer(fvBufName);
+        if (!fvBuf || name !== fvBufName) {
+            fvBuf = new Buffer(name);
+            fvBufName = name;
+            fvLastFrame = -1;
+        }
+        // header first (frame counter, awake): the other 670 floats are only read when a new telemetry frame exists
+        var h = fvBuf.peek(1, FS_SC_FRAME, 4);
+        if (!h || h.length < 4) return;
+        var frame = h[0];
+        var aw = h[3];
+        if (frame === fvLastFrame && aw === fvScalars.awake) return;
         var d = fvBuf.peek(1, 0, FS_SCOPE_SAMPS);
         if (!d || d.length < FS_SC_FRAME + 6) return;
-        var frame = d[FS_SC_FRAME];
-        var aw = d[FS_SC_AWAKE];
-        if (frame === fvLastFrame && aw === fvScalars.awake) return;
         fvLastFrame = frame;
         for (var c = 0; c < FS_NCOLS; c++) {
             fvPre[c] = d[FS_SC_PRE + c];
@@ -239,6 +311,8 @@ function paint() {
     if (fvVals.dispost) fvPaintPost();
     else fvPaintPre();
     if (fvScalars.awake < 0.5) sptText("no signal", FV_PLOT.x + FV_PLOT.w * 0.5, FV_PLOT.y + 40, sptColor("live_display_scale_text"), SPT_SIZE, 1);
+    var pill = ssDspPill();
+    if (pill) sptText(pill, FV_PLOT.x + FV_PLOT.w * 0.5, FV_PLOT.y + 26, sptColor(ssDsp.error ? "live_alert" : "live_control_selection"), SPT_SIZE_SMALL, 1);
 
     fvPaintSplits();
     fvPaintLimiter();
@@ -464,6 +538,7 @@ function onidleout() {}
 
 // ---------------------------------------------------------------- preview (scripts/render_preview.py calls preview() then paint())
 function preview() {
+    ssDsp.ready = 1;
     fvInfo = { instanceId: "p", isInRack: true, chainIndex: 1, chainCount: 4, peers: 4, linked: true, autoChannel: 1 };
     // demo state = the live.* parameter defaults (Splits 16, High, XFade 0 %, Nudge / Spin / Bend / Pinch 0, Limiter Off at 0 dB,
     // Mix 100 %, Display Pre), so the display never contradicts the controls shown next to it

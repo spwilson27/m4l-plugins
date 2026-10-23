@@ -1,31 +1,36 @@
-// Freq Split core (appended after src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr at build time, so every
-// library function sits ahead of everything here). Reference of the maths: src/freqsplit_config.js (fsPattern, fsMaskAt).
+// Freq Split core (appended after src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr + src/spectral_split_rack.genexpr at build time, so every
+// library function sits ahead of everything here; scripts/build_freqsplit.py expands the rack template src/spectral_split_rack_main.genexpr at the
+// two marker lines (SS_DECL, SS_MAIN) near the end of this file). Reference of the maths: src/freqsplit_config.js (fsPattern, fsMaskAt).
 //
 // A spectral sorter (Bitwig Freq Split (Spectral)). The log-frequency axis 20 Hz .. 20 kHz is cut by `nsplit` (1..1024, continuous)
-// splits into many regions that are dealt to four channels (1 red, 2 blue, 3 yellow, 4 magenta) in rotation. Every instance in a rack
-// chain computes the identical masks from the identical (linked) parameters and outputs only its own channel; the four per-bin masks
-// sum to 1 (partition of unity), so the chains sum back to the input delayed by 4096 samples. There is NO signal analysis: the masks
-// only depend on the parameters, the FFT size and the sample rate.
+// splits into many regions that are dealt to four channels (1 red, 2 blue, 3 yellow, 4 magenta) in rotation. The four per-bin masks
+// sum to 1 (partition of unity), so the chains of a rack sum back to the input delayed by the constant latency (5120 samples: 4096 + the host
+// block margin of the rack machinery). There is NO signal analysis: the masks only depend on the parameters, the FFT size and the sample rate.
+//
+// ONE COMPUTATION PER RACK (src/spectral_split_rack_main.genexpr, AGENTS.md sections 22 and 26): the instance that leads a rack frames the signal,
+// runs the forward FFT once, applies each served channel's mask, inverse-transforms and overlap-adds, and publishes the channel signals in its ring;
+// the other chains read their channel from it (their own gen runs no FFT at all). A lone instance computes only its own channel. Mix, the dry path
+// and the output stage are the template's: out = mix * wet + (1 - mix) * dry / K with K = 4 while the instance outputs one channel (the rack sums
+// four chains, so the rack sum is mix * wet + (1 - mix) * dry) and K = 1 for Output All.
 //
 // fs_pattern  parameters -> pc Data (pattern constants): K = floor(nsplit), f = fraction, F = K + 1 full regions of weight 1 plus one
 //             PARTIAL region of weight f inserted at the insertion point (High: at the end, Mid: in the middle, Low: at the start),
 //             total weight T = F + f; Bend / Pinch warp constants, Spin, crossfade, Nudge (integer part a + fraction phv).
-// fs_masks    pc -> per-bin masks fsd channels 0..3 (+ channel 4 = all ones), evaluated at the bin centres: axis position x (log
-//             frequency) -> inverse Bend / Pinch warp -> Spin shift with wrap -> slot of the pattern and its raised-cosine crossfade
-//             with the neighbouring slot -> channel (slot base + Nudge), the fractional Nudge crossfading to the next channel.
+// fs_masks    pc -> per-bin masks fsd channels 0..3 (+ channel 4 = all ones, and the same values again in 5..9 = the final masks), evaluated at the
+//             bin centres: axis position x (log frequency) -> inverse Bend / Pinch warp -> Spin shift with wrap -> slot of the pattern and its
+//             raised-cosine crossfade with the neighbouring slot -> channel (slot base + Nudge), the fractional Nudge crossfading to the next channel.
 // fs_limit    Spectral Limiter: per bin, g = min(1, thr / (mask * amp)), amp = max(|L|, |R|) amplitude of the bin; limited masks in
 //             fsd channels 5..8 (per channel) and 9 (All). Only used while the limiter is on (explicit gain, breaks the sum).
 //
-// Mix: out = mix * wet + (1 - mix) * dry / K with the dry signal delayed by the same 4096 samples, K = 4 while this instance outputs
-// one channel (the Audio Effect Rack sums four chains, so the rack sum is mix * wet + (1 - mix) * dry) and K = 1 for Output All.
-//
-// Data fsd(2049, 11): 0..3 channel masks, 4 ones, 5..8 limited channel masks, 9 limited All, 10 bin amplitude.
+// Data fsd(2049, 11): 0..3 raw channel masks, 4 ones, 5..8 final channel masks, 9 final All, 10 bin amplitude. The template applies row MKB + c = 5 + c.
 // Data pc(32): 0 K, 1 f, 2 F, 3 T, 4 partial slot, 5 direction, 6 Lc, 7 crossfade, 8 nudge int, 9 nudge fraction, 10 spin, 11 bend
 //   midpoint, 12 1 / gamma, 13 1 / pinch exponent, 14 3 - F, 15 channel base of the partial slot (Mid).
 //
-// Telemetry buffer (bound on loadbang via `scope ---freqsplitscope`), FS_SCOPE_SAMPS floats:
+// Telemetry buffer (bound by the face's `scope <name>` message, resent until the deferred gen~ runs), FS_SCOPE_SAMPS floats:
 //   0..127 input (Mid) level per log column, 128..639 the four channels after the masks (and the limiter), 4 x 128, all 0..1 over
-//   -100..0 dB, 640 frame counter, 641 samplerate, 642 N, 643 awake, 644 input peak, 645 latency, 646 output selection, 647 limiter on.
+//   -100..0 dB (written by the computing instance only), 640 frame counter, 641 samplerate, 642 N, 643 awake, 644 input peak, 646 latency,
+//   647 output selection, 648..657 rack scalars (template: computing, following, aligned, fallback, counter offset, underruns, lag, serve mask,
+//   role, alive counter), 658 limiter on.
 //
 // GenExpr rules: functions first, then Buffer / Data / Param / History / Delay, then statements. No identifier e<digit>, phi, pi.
 // No user function call inside poke() arguments or if conditions, one return per function at function level.
@@ -79,7 +84,8 @@ fs_pattern(pc, ns, dr, xfa, nudge, spin, bend, pinch) {
 	return nFull;
 }
 
-// Per-bin masks from the pattern constants (evaluated at the bin centres).
+// Per-bin masks from the pattern constants (evaluated at the bin centres). Channels 0..3 + 4 (ones) are the raw masks; channels 5..9 get the same
+// values here and are what the rack template applies (the FINAL masks: fs_limit overwrites them per frame while the limiter is on).
 fs_masks(fsd, pc, n, sr) {
 	half = n * 0.5;
 	ff = pc.peek(1);
@@ -139,11 +145,20 @@ fs_masks(fsd, pc, n, sr) {
 		a1 = (1 - phv) * wn;
 		a2 = phv * ws;
 		a3 = phv * wn;
-		fsd.poke((cs == 0 ? a0 : 0) + (cn == 0 ? a1 : 0) + (cs1 == 0 ? a2 : 0) + (cn1 == 0 ? a3 : 0), k, 0);
-		fsd.poke((cs == 1 ? a0 : 0) + (cn == 1 ? a1 : 0) + (cs1 == 1 ? a2 : 0) + (cn1 == 1 ? a3 : 0), k, 1);
-		fsd.poke((cs == 2 ? a0 : 0) + (cn == 2 ? a1 : 0) + (cs1 == 2 ? a2 : 0) + (cn1 == 2 ? a3 : 0), k, 2);
-		fsd.poke((cs == 3 ? a0 : 0) + (cn == 3 ? a1 : 0) + (cs1 == 3 ? a2 : 0) + (cn1 == 3 ? a3 : 0), k, 3);
+		m0 = (cs == 0 ? a0 : 0) + (cn == 0 ? a1 : 0) + (cs1 == 0 ? a2 : 0) + (cn1 == 0 ? a3 : 0);
+		m1 = (cs == 1 ? a0 : 0) + (cn == 1 ? a1 : 0) + (cs1 == 1 ? a2 : 0) + (cn1 == 1 ? a3 : 0);
+		m2 = (cs == 2 ? a0 : 0) + (cn == 2 ? a1 : 0) + (cs1 == 2 ? a2 : 0) + (cn1 == 2 ? a3 : 0);
+		m3 = (cs == 3 ? a0 : 0) + (cn == 3 ? a1 : 0) + (cs1 == 3 ? a2 : 0) + (cn1 == 3 ? a3 : 0);
+		fsd.poke(m0, k, 0);
+		fsd.poke(m1, k, 1);
+		fsd.poke(m2, k, 2);
+		fsd.poke(m3, k, 3);
 		fsd.poke(1, k, 4);
+		fsd.poke(m0, k, 5);
+		fsd.poke(m1, k, 6);
+		fsd.poke(m2, k, 7);
+		fsd.poke(m3, k, 8);
+		fsd.poke(1, k, 9);
 	}
 	return half;
 }
@@ -175,34 +190,13 @@ fs_limit(fx, fsd, thr, n) {
 	return half;
 }
 
-// Zero the telemetry columns (device went to sleep).
-fs_zero(scope, cnt) {
-	for (c = 0; c < cnt; c += 1) {
-		poke(scope, 0, c, 0);
-	}
-	return cnt;
-}
+//@SS_DECL
 
 Buffer scope("freqsplitscope");
 
-Data tab(4096, 3);
-Data win(4096);
-Data fx(4096, 2);
-Data ringL(4096);
-Data ringR(4096);
-Data accL(4096);
-Data accR(4096);
-Data stt(8);
-Data ms(2049, 2);
 Data fsd(2049, 11);
 Data pc(32);
-Data cols(640);
-Delay padL(4096);
-Delay padR(4096);
-Delay dryL(4097);
-Delay dryR(4097);
 
-Param fftn(4096);
 Param nsplit(16);
 Param sdir(0);
 Param xfadeamt(0);
@@ -212,19 +206,7 @@ Param bendamt(0);
 Param pinchamt(0);
 Param limon(0);
 Param limdb(0);
-Param mixamt(1);
-Param outsel(0);
 
-History nCur(0);
-History muteCnt(0);
-History gFade(1);
-History ctlCnt(0);
-History nCtl(0);
-History quietCnt(0);
-History levelPk(0);
-History teleAcc(0);
-History frameNo(0);
-History sleepNote(0);
 History nsH(16);
 History sdH(0);
 History xfH(0);
@@ -234,9 +216,6 @@ History bdH(0);
 History pnH(0);
 History loH(0);
 History thH(1);
-History selH(0);
-History mixH(1);
-History mixS(1);
 History nsU(-1);
 History sdU(-1);
 History xfU(-1);
@@ -244,141 +223,55 @@ History ndU(-1);
 History spU(-1);
 History bdU(-1);
 History pnU(-1);
+History loU(-1);
 History nU(0);
 History srU(0);
 
-sr = max(samplerate, 1);
-fft_init(tab);
+//@hook ctl
+nsH = clip(nsplit, 1, 1024);
+sdH = clip(floor(sdir + 0.5), 0, 2);
+xfH = clip(xfadeamt, 0, 1);
+ndH = clip(nudgeamt, -64, 64);
+spH = clip(spinamt, -0.5, 0.5);
+bdH = clip(bendamt, -1, 1);
+pnH = clip(pinchamt, -1, 1);
+loH = limon > 0.5 ? 1 : 0;
+thH = pow(10, clip(limdb, -120, 12) * 0.05);
+//@endhook
 
-// --- Size: a change restarts the pipeline; the output stays muted until the new frames have filled the 4096 pad ---
-nReq = cep_n(fftn);
-if (nCur < 1) {
-	nCur = nReq;
+// The masks only change with the controls, the FFT size or the sample rate (and the limiter switch: it decides which rows hold the final masks):
+// refill them only then. A follower never gets here; a follower that becomes the leader (or falls back) finds U != H and refills.
+//@hook frame
+chg = abs(nsH - nsU) + abs(sdH - sdU) + abs(xfH - xfU) + abs(ndH - ndU) + abs(spH - spU) + abs(bdH - bdU) + abs(pnH - pnU) + abs(loH - loU) + abs(n - nU) + abs(sr - srU);
+if (chg > 0.000000001) {
+fs_pattern(pc, nsH, sdH, xfH, ndH, spH, bdH, pnH);
+fs_masks(fsd, pc, n, sr);
+nsU = nsH;
+sdU = sdH;
+xfU = xfH;
+ndU = ndH;
+spU = spH;
+bdU = bdH;
+pnU = pnH;
+loU = loH;
+nU = n;
+srU = sr;
 }
-if (nReq != nCur) {
-	nCur = nReq;
-	muteCnt = 4096 + nReq + 128;
+if (loH > 0.5) {
+fs_limit(fx, fsd, thH, n);
 }
-n = nCur;
-stft_win(win, n);
+//@endhook
 
-// --- Control values, refreshed every 32 samples (and at once when N changes) ---
-ctlCnt = ctlCnt + 1;
-if (ctlCnt >= 32 || n != nCtl) {
-	ctlCnt = 0;
-	nCtl = n;
-	nsH = clip(nsplit, 1, 1024);
-	sdH = clip(floor(sdir + 0.5), 0, 2);
-	xfH = clip(xfadeamt, 0, 1);
-	ndH = clip(nudgeamt, -64, 64);
-	spH = clip(spinamt, -0.5, 0.5);
-	bdH = clip(bendamt, -1, 1);
-	pnH = clip(pinchamt, -1, 1);
-	loH = limon > 0.5 ? 1 : 0;
-	thH = pow(10, clip(limdb, -120, 12) * 0.05);
-	selH = clip(floor(outsel + 0.5), 0, 4);
-	mixH = clip(mixamt, 0, 1);
-}
+// cols holds 4 slots (the template's Data cols(512)): input + channels 1..3, then channel 4 through slot 0 again.
+//@hook tele
+ss_cols(ms, 0, fsd, -1, cols, 0, n, sr, 128, 20, 20000);
+ss_cols(ms, 0, fsd, 5, cols, 1, n, sr, 128, 20, 20000);
+ss_cols(ms, 0, fsd, 6, cols, 2, n, sr, 128, 20, 20000);
+ss_cols(ms, 0, fsd, 7, cols, 3, n, sr, 128, 20, 20000);
+ss_tele(cols, scope, 128, 4, 0);
+ss_cols(ms, 0, fsd, 8, cols, 0, n, sr, 128, 20, 20000);
+ss_tele(cols, scope, 128, 1, 512);
+poke(scope, loH, 658, 0);
+//@endhook
 
-// --- Input level and silence sleep ---
-inAbs = max(abs(in1), abs(in2));
-quietCnt = inAbs > 0.00001 ? 0 : min(quietCnt + 1, 100000000);
-levelPk = max(inAbs, levelPk * 0.9995);
-awake = quietCnt < n ? 1 : 0;
-
-// --- Frame scheduling ---
-rdy = ss_in(ringL, ringR, stt, in1, in2, n);
-if (rdy > 0.5) {
-	teleAcc = teleAcc + n * 0.25;
-}
-teleNow = 0;
-if (rdy > 0.5 && teleAcc >= 1024) {
-	teleNow = awake > 0.5 ? 1 : 0;
-	teleAcc = 0;
-}
-if (rdy > 0.5 && awake > 0.5) {
-	ss_frame(fx, ringL, ringR, stt, win, n);
-	fft_run(fx, tab, n, 0);
-	if (teleNow > 0.5) {
-		ss_mid(fx, ms, n);
-	}
-	// the masks only change with the controls, the FFT size or the sample rate: refill them only then
-	chg = abs(nsH - nsU) + abs(sdH - sdU) + abs(xfH - xfU) + abs(ndH - ndU) + abs(spH - spU) + abs(bdH - bdU) + abs(pnH - pnU) + abs(n - nU) + abs(sr - srU);
-	if (chg > 0.000000001) {
-		fs_pattern(pc, nsH, sdH, xfH, ndH, spH, bdH, pnH);
-		fs_masks(fsd, pc, n, sr);
-		nsU = nsH;
-		sdU = sdH;
-		xfU = xfH;
-		ndU = ndH;
-		spU = spH;
-		bdU = bdH;
-		pnU = pnH;
-		nU = n;
-		srU = sr;
-	}
-	if (loH > 0.5) {
-		fs_limit(fx, fsd, thH, n);
-	}
-	applyCh = loH > 0.5 ? (selH < 0.5 ? 9 : 4 + selH) : (selH < 0.5 ? 4 : selH - 1);
-	ss_apply(fx, fsd, applyCh, n);
-	if (teleNow > 0.5) {
-		tch = loH > 0.5 ? 5 : 0;
-		ss_cols(ms, 0, fsd, -1, cols, 0, n, sr, 128, 20, 20000);
-		ss_cols(ms, 0, fsd, tch, cols, 1, n, sr, 128, 20, 20000);
-		ss_cols(ms, 0, fsd, tch + 1, cols, 2, n, sr, 128, 20, 20000);
-		ss_cols(ms, 0, fsd, tch + 2, cols, 3, n, sr, 128, 20, 20000);
-		ss_cols(ms, 0, fsd, tch + 3, cols, 4, n, sr, 128, 20, 20000);
-		ss_tele(cols, scope, 128, 5, 0);
-	}
-	fft_run(fx, tab, n, 1);
-	ss_ola(accL, accR, stt, fx, win, n);
-}
-yL = ss_out(accL, stt, n, 3);
-yR = ss_out(accR, stt, n, 4);
-
-// --- Telemetry scalars ---
-if (teleNow > 0.5) {
-	frameNo = wrap(frameNo + 1, 0, 100000);
-	poke(scope, frameNo, 640, 0);
-	poke(scope, sr, 641, 0);
-	poke(scope, n, 642, 0);
-	poke(scope, 1, 643, 0);
-	poke(scope, levelPk, 644, 0);
-	poke(scope, 4096, 645, 0);
-	poke(scope, selH, 646, 0);
-	poke(scope, loH, 647, 0);
-}
-if (awake < 0.5 && sleepNote < 0.5) {
-	fs_zero(scope, 640);
-	poke(scope, 0, 643, 0);
-	poke(scope, 0, 644, 0);
-	sleepNote = 1;
-}
-if (awake > 0.5) {
-	sleepNote = 0;
-}
-
-// --- Constant 4096 latency, mute while the pipeline refills after a Size change ---
-padL.write(yL);
-padR.write(yR);
-wetL = padL.read(4096 - (n - 1));
-wetR = padR.read(4096 - (n - 1));
-dryL.write(in1);
-dryR.write(in2);
-dL = dryL.read(4096);
-dR = dryR.read(4096);
-if (muteCnt > 0) {
-	muteCnt = muteCnt - 1;
-	gFade = 0;
-} else {
-	gFade = min(gFade + 1 / 512, 1);
-}
-// Mix: this instance's share of the dry signal is 1 / 4 while it outputs one channel (the rack sums four chains), 1 for All
-mixS = mixS + (mixH - mixS) * 0.002;
-dShare = selH < 0.5 ? 1 : 0.25;
-ov1 = fixnan(fixdenorm(mixS * wetL * gFade + (1 - mixS) * dShare * dL));
-ov2 = fixnan(fixdenorm(mixS * wetR * gFade + (1 - mixS) * dShare * dR));
-// fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
-out1 = abs(ov1) < 1e-30 ? 0 : ov1;
-out2 = abs(ov2) < 1e-30 ? 0 : ov2;
+//@SS_MAIN
