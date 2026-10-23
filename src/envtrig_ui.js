@@ -31,8 +31,10 @@ var histFire = [];
 var flash = 0;
 var lastFires = -1;
 var lastVel = 0;
-var lastRoll = -1;
 var idleFrames = 0;
+var faceDirty = 0;
+var hoverZone = -1;
+var hoverSeen = -1;
 
 var scopeMin = [];
 var scopeMax = [];
@@ -98,6 +100,7 @@ function setbuffer(name) {
 
 function set_thr(db) {
     thrDb = clamp(Number(db), THR_MIN_DB, THR_MAX_DB);
+    faceDirty = 1;
     if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
@@ -105,19 +108,23 @@ function set_thr(db) {
 function set_view(v) {
     view = Number(v) > 0.5 ? 1 : 0;
     lastHead = -1; // re-read the ring on the next frame
+    faceDirty = 1;
     if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
 
 function set_note(n) {
     note = clamp(Math.round(Number(n) || 0), 0, 127);
+    faceDirty = 1;
     mgraphics.redraw();
 }
 
 // ---------- "MIDI To" routing (LOM DeviceIO) ----------
 
 // Must be triggered by live.thisdevice, not loadbang: the LOM is not ready before that.
+// The same bang schedules the deferred gen~ (init_dsp is the other entry).
 function init_routing() {
+    etDspSchedule();
     if (typeof LiveAPI === "undefined") return;
     lomTypes = new LiveAPI(onTypes, ROUTING_PATH);
     lomTypes.property = "available_routing_types";
@@ -182,13 +189,45 @@ function sampleAt(chunk, idx) {
     return (v === v && v > 0) ? v : 0;
 }
 
+// One buffer slot. Unlike sampleAt, 0 is a real value (the scope write head wraps through 0).
+function peekNum(off) {
+    var chunk = scopeBuf.peek(1, off, 1);
+    if (typeof chunk === "number") return chunk === chunk ? chunk : 0;
+    if (!chunk || !chunk.length) return 0;
+    var v = chunk[0];
+    return (typeof v === "number" && v === v) ? v : 0;
+}
+
+function numAt(chunk, idx) {
+    if (typeof chunk === "number") return idx === 0 && chunk === chunk ? chunk : 0;
+    if (!chunk || idx >= chunk.length) return 0;
+    var v = chunk[idx];
+    return (typeof v === "number" && v === v) ? v : 0;
+}
+
 function pullScope() {
     if (!scopeBuf) return false;
-    var chunk = scopeBuf.peek(1, 0, 6);
+    // Asleep in silence: read only the slots that can change the picture (fast env, fire
+    // counter, write head). The roll counter in slot 3 keeps moving on a silent track so the
+    // deferred gen can be confirmed; it is not a reason to redraw. Skip the ring copy and the
+    // history shift, and skip mgraphics.redraw(), unless a parameter, drag or hover changed.
+    if (idleFrames > SCOPE_COLS + 4 && flash === 0 && !dragging) {
+        var f0 = clamp(peekNum(0), 0, 1.5);
+        var fires0 = peekNum(2);
+        var head0 = Math.round(peekNum(6)) % SCOPE_BLOCKS;
+        var fired0 = lastFires >= 0 && fires0 !== lastFires;
+        if (f0 <= 0.0001 && !fired0 && head0 === lastHead) {
+            if (!faceDirty && hoverZone === hoverSeen) return false;
+            faceDirty = 0;
+            hoverSeen = hoverZone;
+            return true;
+        }
+    }
+    faceDirty = 0;
+    var chunk = scopeBuf.peek(1, 0, 7);
     var f = clamp(sampleAt(chunk, 0), 0, 1.5);
     var s = clamp(sampleAt(chunk, 1), 0, 1.5);
     var fires = sampleAt(chunk, 2);
-    var roll = sampleAt(chunk, 3);
     var fireVel = 0;
     if (lastFires >= 0 && fires !== lastFires) {
         fireVel = clamp(sampleAt(chunk, 5), 1, 127);
@@ -206,11 +245,12 @@ function pullScope() {
     histFire.shift();
     histFire.push(fireVel);
 
-    var head = pullRing();
+    var head = pullRing(Math.round(numAt(chunk, 6)) % SCOPE_BLOCKS);
 
-    var quiet = f <= 0.0001 && fireVel === 0 && flash === 0 && roll === lastRoll && head === lastHead;
+    // roll (slot 3) is intentionally not part of this: it advances in silence.
+    var quiet = f <= 0.0001 && fireVel === 0 && flash === 0 && head === lastHead;
     lastHead = head;
-    lastRoll = roll;
+    hoverSeen = hoverZone;
     if (quiet) {
         idleFrames++;
         // Once the whole history has scrolled flat, stop redrawing at 30 fps.
@@ -221,11 +261,10 @@ function pullScope() {
     return true;
 }
 
-// Reads the oscilloscope ring (oldest block first, starting at the write head). Only the head is
-// read in the envelope view; the 768-sample ring is copied only while the scope is showing.
-function pullRing() {
-    var hdr = scopeBuf.peek(1, 6, 1);
-    var head = Math.round(typeof hdr === "number" ? hdr : sampleAt(hdr, 0)) % SCOPE_BLOCKS;
+// Reads the oscilloscope ring (oldest block first, starting at the write head). The 7-sample
+// header already supplied `head`; the 768-sample ring is copied only while the scope is showing
+// and only when that head has moved.
+function pullRing(head) {
     if (head === lastHead || view !== 1) return head;
     var ring = scopeBuf.peek(1, SCOPE_RING_OFFSET, SCOPE_BLOCKS * 3);
     if (!ring || !ring.length) return head;
@@ -275,15 +314,17 @@ function viewButton() {
 function onclick(x, y) {
     var vb = viewButton();
     if (x >= vb.x && x <= vb.x + vb.w && y >= vb.y && y <= vb.y + vb.h + 1) {
-        view = x < vb.x + vb.w / 2 ? 0 : 1;
-        lastHead = -1;
-        outlet(0, ["view", view]);
+    view = x < vb.x + vb.w / 2 ? 0 : 1;
+    lastHead = -1;
+    faceDirty = 1;
+    outlet(0, ["view", view]);
         dragging = false;
         if (!scopeBuf) initHistory(true);
         mgraphics.redraw();
         return;
     }
     dragging = true;
+    faceDirty = 1;
     ondrag(x, y);
 }
 
@@ -303,8 +344,33 @@ function ondrag(x, y, but) {
         thrDb = Math.round(plot01ToDb(v01) * 10) / 10;
     }
     outlet(0, ["thr", thrDb]);
+    faceDirty = 1;
     if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
+}
+
+function zoneAt(x, y) {
+    var vb = viewButton();
+    if (x >= vb.x && x <= vb.x + vb.w && y >= vb.y && y <= vb.y + vb.h + 1) return 1;
+    return 0;
+}
+
+// Hover only marks the face dirty when the zone changes, so an asleep graph is not redrawn
+// on every mouse move.
+function onidle(x, y) {
+    var z = zoneAt(x, y);
+    if (z === hoverZone) return;
+    hoverZone = z;
+    faceDirty = 1;
+}
+
+function onidleout() {
+    if (hoverZone === 0 && !faceDirty) {
+        hoverZone = 0;
+        return;
+    }
+    hoverZone = 0;
+    faceDirty = 1;
 }
 
 // ---------- Drawing ----------
@@ -318,6 +384,17 @@ function labelPill(x, y, txt, col) {
     mgraphics.set_source_rgba(col[0], col[1], col[2], 0.95);
     mgraphics.move_to(x + 2, y + 8);
     mgraphics.show_text(txt);
+}
+
+// Shown only once DSP creation has started (or failed). A fresh paint — the static preview —
+// has createdAt 0 and no error, so it stays clear.
+function drawDspStatus(b) {
+    if (etDsp.ready || !(etDsp.createdAt > 0 || etDsp.error)) return;
+    var failed = !!etDsp.error;
+    var label = failed ? ("DSP failed: " + String(etDsp.error)) : "DSP loading...";
+    if (label.length > 28) label = label.substring(0, 27) + ".";
+    var col = failed ? [0.95, 0.38, 0.32] : AMBER;
+    labelPill(b.x + 2, b.y + b.ph - 12, label, col);
 }
 
 function drawEnvelope(b) {
@@ -507,6 +584,8 @@ function paint() {
     mgraphics.set_source_rgba(1.0, 0.86, 0.45, 0.92);
     mgraphics.move_to(b.w - 4 - info.length * 4.6, 10);
     mgraphics.show_text(info);
+
+    drawDspStatus(b);
 
     mgraphics.set_line_width(1);
     mgraphics.set_source_rgba(0.18, 0.22, 0.28, 1.0);

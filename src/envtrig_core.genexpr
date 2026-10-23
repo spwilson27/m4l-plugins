@@ -15,6 +15,8 @@
 //   every 64 samples:
 //     0: fast env peak   1: slow env   2: fire counter   3: rolling frame counter
 //     4: input peak      5: last fired velocity (1..127)
+//   Slot 3 (roll) advances on every 64-sample window, including after the silence-sleep
+//   window has stopped the other pokes, so a deferred gen~ is visible on a silent track.
 //   oscilloscope ring, one block per 32 samples (256 blocks ≈ 186 ms at 44.1 kHz):
 //     6: next block index (write head, 0..255)
 //     32 + 3 * block + 0/1/2: mono min, mono max, onset-in-block flag
@@ -53,23 +55,31 @@ History head(0);
 History cacheSr(0);
 History cacheThr(1);
 History cacheSens(-1);
+History cacheHold(-1);
+History cacheVelMin(-1);
+History cacheVelMax(-1);
 History thrLin(0);
+History thrDb(-24);
+History invNegThr(0.0416666666667);
 History ratio(1);
 History relC(0);
 History slowC(0);
+History holdSamps(0);
+History gateSamps(1);
+History capSamps(1);
+History velLo(40);
+History velHi(127);
+History velSpan(87);
 
 sr = max(samplerate, 1);
 
-holdSamps = floor(clip(holdms, 20, 1000) * sr / 1000);
-capSamps = max(floor(2.5 * sr / 1000), 1);
-velLo = clip(velmin, 1, 127);
-velHi = clip(max(velmax, velLo), 1, 127);
-thrDb = clip(thr, -60, 0);
-
-// pow/exp coefficients are recomputed only when their inputs change, not every sample.
+// pow/exp, sample-count and velocity-span math runs only when an input changes.
+// The hot path below uses the cached values and their reciprocals (no per-sample division).
 if (thr != cacheThr) {
 	cacheThr = thr;
+	thrDb = clip(thr, -60, 0);
 	thrLin = pow(10, thrDb / 20);
+	invNegThr = 1 / max(-thrDb, 1);
 }
 if (sens != cacheSens) {
 	cacheSens = sens;
@@ -79,10 +89,32 @@ if (sr != cacheSr) {
 	cacheSr = sr;
 	relC = exp(-1000 / (15 * sr));
 	slowC = exp(-1000 / (60 * sr));
+	capSamps = max(floor(2.5 * sr / 1000), 1);
+	holdSamps = floor(clip(holdms, 20, 1000) * sr / 1000);
+	gateSamps = max(floor(holdSamps * 0.5), 1);
+}
+if (holdms != cacheHold) {
+	cacheHold = holdms;
+	holdSamps = floor(clip(holdms, 20, 1000) * sr / 1000);
+	gateSamps = max(floor(holdSamps * 0.5), 1);
+}
+velDirty = 0;
+if (velmin != cacheVelMin) {
+	velDirty = 1;
+}
+if (velmax != cacheVelMax) {
+	velDirty = 1;
+}
+if (velDirty != 0) {
+	cacheVelMin = velmin;
+	cacheVelMax = velmax;
+	velLo = clip(velmin, 1, 127);
+	velHi = clip(max(velmax, velLo), 1, 127);
+	velSpan = velHi - velLo;
 }
 
 // 1. Envelopes on the mono sum.
-mono = 0.5 * (in1 + in2);
+mono = (in1 + in2) * 0.5;
 ax = abs(mono);
 nf = (ax > fast) ? ax : fast * relC;
 fast = (nf < 1e-12) ? 0 : nf;
@@ -99,9 +131,9 @@ if (cap > 0) {
 	cap = cap - 1;
 	if (cap <= 0) {
 		pkDb = 20 * log10(max(capPeak, 0.000001));
-		t = clip((pkDb - thrDb) / max(-thrDb, 1), 0, 1);
-		vel = clip(floor(velLo + t * (velHi - velLo) + 0.5), 1, 127);
-		gateLeft = max(floor(holdSamps * 0.5), 1);
+		t = clip((pkDb - thrDb) * invNegThr, 0, 1);
+		vel = clip(floor(velLo + t * velSpan + 0.5), 1, 127);
+		gateLeft = gateSamps;
 		lock = holdSamps;
 		fires = wrap(fires + 1, 0, 100000);
 	}
@@ -116,7 +148,7 @@ if (cap > 0) {
 
 gateOut = (gateLeft > 0) ? 1 : 0;
 
-// 3. Oscilloscope ring: min / max / onset flag per 32-sample block (onset, not the end of the
+// 3. Oscilloscope ring: min, max and onset flag per 32-sample block (onset, not the end of the
 //    velocity capture, so the tick lines up with the attack; every onset fires a note).
 blkMin = (blkCount == 0) ? mono : min(blkMin, mono);
 blkMax = (blkCount == 0) ? mono : max(blkMax, mono);
@@ -134,7 +166,9 @@ if (blkCount >= 32) {
 	}
 }
 
-// 4. Envelope telemetry every 64 samples, skipping buffer pokes once the device has settled in silence.
+// 4. Envelope telemetry every 64 samples. The ring and the envelope header stop once the device
+//    has settled in silence. The roll counter (slot 3) keeps advancing so dspConfirm can see the
+//    gen run on a track that is not playing.
 pkIn = max(pkIn, max(abs(in1), abs(in2)));
 pkFast = max(pkFast, fast);
 
@@ -142,12 +176,12 @@ tick = wrap(tick + 1, 0, 64);
 if (tick == 0) {
 	windowSilent = (pkIn < 1e-6 && pkFast < 1e-6);
 	idleTicks = windowSilent ? min(idleTicks + 1, 1000) : 0;
+	rollCounter = wrap(rollCounter + 1, 0, 100000);
+	poke(scope, rollCounter, 3, 0);
 	if (idleTicks <= 4) {
-		rollCounter = wrap(rollCounter + 1, 0, 100000);
 		poke(scope, clip(pkFast, 0, 1.5), 0, 0);
 		poke(scope, clip(slow, 0, 1.5), 1, 0);
 		poke(scope, fires, 2, 0);
-		poke(scope, rollCounter, 3, 0);
 		poke(scope, clip(pkIn, 0, 1.5), 4, 0);
 		poke(scope, vel, 5, 0);
 	}

@@ -7,7 +7,8 @@
  *     (including v8 Max Dict callbacks), "MIDI To" menu ranges, and device widths
  *  2. GenExpr ordering & lexer safety (Buffer -> Param -> History before expressions, no e<digit>)
  *  3. .amxd binary header ("aaaa" Audio Effect), presentation geometry, no overlaps, panel z-order
- *  4. #0- instance isolation and `scope #0-trigscope` loadbang binding
+ *  4. Deferred DSP: no static gen~, gate hub, 4-outlet GEN_DSP_TEXT, silence until gen~ is wired,
+ *     and `scope #0-trigscope` loadbang binding into the hub
  *  5. MIDI out graph: gate -> edge~ -> t b b -> snapshot~ velocity / note -> makenote -> pack
  *     -> midiformat -> midiout, plus channel & length inlets
  *  6. Native-style routing: hidden live.menus, live.thisdevice -> init_routing, settype / setchannel
@@ -19,6 +20,7 @@
  */
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
@@ -76,6 +78,23 @@ assert.ok(/^out4 = vel;/m.test(gen) && !/^out5/m.test(gen), "GenExpr must expose
 assert.ok(gen.includes("out1 = fixnan(in1);") && gen.includes("out2 = fixnan(in2);"), "Audio must pass through untouched");
 assert.ok(gen.includes("base = 32 + head * 3;") && gen.includes("poke(scope, head, 6, 0);") && gen.includes("head = wrap(head + 1, 0, 256);"), "GenExpr must write the 256-block oscilloscope ring and its head");
 assert.ok(gen.includes("blkFire = (blkCount == 0) ? onsetNow : max(blkFire, onsetNow);"), "Scope ticks are flagged at the onset");
+assert.ok(/History holdSamps\(/.test(gen) && /History gateSamps\(/.test(gen) && /History capSamps\(/.test(gen) && /History velSpan\(/.test(gen), "hold, gate, capture and velocity span must be History");
+assert.ok(/if \(holdms != cacheHold\)/.test(gen) && /if \(velmin != cacheVelMin\)/.test(gen) && /if \(velmax != cacheVelMax\)/.test(gen), "sample counts and velocity span recompute only when their parameters change");
+{
+    const hot = gen.slice(gen.indexOf("// 1. Envelopes"));
+    assert.ok(hot.length > 0, "hot path marker");
+    assert.ok(!/\bpow\(/.test(hot) && !/\bexp\(/.test(hot), "pow/exp stay in the parameter cache");
+    assert.ok(!/holdSamps\s*=/.test(hot) && !/capSamps\s*=/.test(hot) && !/gateSamps\s*=/.test(hot) && !/velSpan\s*=/.test(hot), "cached sample counts are not rewritten every sample");
+    const hotCode = hot.replace(/\/\/[^\n]*/g, "");
+    assert.ok(!/\//.test(hotCode), "the per-sample path must not divide");
+}
+{
+    const tickAt = gen.indexOf("if (tick == 0)");
+    const tickBlock = gen.slice(tickAt);
+    const rollPoke = tickBlock.indexOf("poke(scope, rollCounter, 3, 0)");
+    const idleGuard = tickBlock.indexOf("if (idleTicks <= 4)");
+    assert.ok(rollPoke >= 0 && idleGuard >= 0 && rollPoke < idleGuard, "scope[3] roll counter is poked even after silence sleep");
+}
 
 function rectsOverlap(a, b) {
     return !(a[0] + a[2] <= b[0] || b[0] + b[2] <= a[0] || a[1] + a[3] <= b[1] || b[1] + b[3] <= a[1]);
@@ -127,9 +146,19 @@ for (const l of lines) {
 assert.ok(!byId["obj-title"], "The device must not draw its own title");
 for (const gone of ["obj-mode", "obj-ctrl-thr1", "obj-ctrl-xlo", "obj-ctrl-note1"]) assert.ok(!byId[gone], `Band control ${gone} must be gone`);
 
-// 4. Core objects, buffer isolation & bindings
-assert.strictEqual(byId["obj-gen"].code, gen, "Embedded GenExpr mismatch");
-assert.strictEqual(byId["obj-gen"].numoutlets, 4, "gen.codebox~ needs 4 outlets");
+// 4. Deferred DSP: the device ships without gen~, every gen-bound message enters the open gate,
+//    and plugin~ stays unwired so the output is silent until the face creates the gen~.
+assert.ok(!byId["obj-gen"] && !boxes.some((b) => /^gen/.test(b.maxclass || "")), "The device must ship without a gen / gen~");
+assert.ok(byId["obj-gen-in"] && byId["obj-gen-in"].text === "gate 1 1" && byId["obj-gen-in"].varname === "et_genin", "Missing the open gate hub (varname et_genin)");
+assert.strictEqual(byId["obj-plugin"].varname, "et_plugin", "plugin~ scripting name");
+assert.strictEqual(byId["obj-plugout"].varname, "et_plugout", "plugout~ scripting name");
+assert.strictEqual(byId["obj-edge"].varname, "et_edge", "edge~ scripting name");
+assert.strictEqual(byId["obj-snap"].varname, "et_snap", "snapshot~ scripting name");
+assert.ok(!lines.some((l) => l.source[0] === "obj-plugin" && l.destination[0] === "obj-plugout"), "No plugin~ -> plugout~ bypass while the gen~ loads");
+assert.ok(!lines.some((l) => l.source[0] === "obj-plugin" || l.destination[0] === "obj-plugout"), "plugin~ and plugout~ are wired by the face, not in the file");
+for (const l of lines) {
+    if (l.destination[0] === "obj-gen-in") assert.strictEqual(l.destination[1], 1, "Every gen-bound cord must enter the hub's data inlet");
+}
 for (const b of boxes) {
     if (b.text && b.text.startsWith("buffer~")) assert.ok(b.text.includes("#0-"), `buffer~ must use #0- prefix: ${b.text}`);
 }
@@ -137,17 +166,50 @@ assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-trigscope");
 assert.strictEqual(byId["obj-scope"].text, `buffer~ #0-trigscope @samps ${cfg.SCOPE_BUFFER_SAMPS}`, "Scope buffer holds the header plus the 256-block oscilloscope ring");
 assert.ok(gen.includes(`base = ${cfg.SCOPE_RING_OFFSET} + head * 3;`) && gen.includes(`head = wrap(head + 1, 0, ${cfg.SCOPE_BLOCKS});`), "GenExpr ring layout must match envtrig_config.js");
 assert.ok(/if \(thr != cacheThr\)/.test(gen) && /if \(sens != cacheSens\)/.test(gen) && /if \(sr != cacheSr\)/.test(gen), "pow/exp coefficients must be cached, not recomputed every sample");
-assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen"), "Missing scope bind wiring");
+assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in", 0, 1), "Missing scope bind wiring into the hub");
 assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"), "Missing setbuffer wiring");
-assert.ok(hasLine("obj-plugin", "obj-gen", 0, 0) && hasLine("obj-plugin", "obj-gen", 1, 1), "plugin~ must feed gen");
-assert.ok(hasLine("obj-gen", "obj-plugout", 0, 0) && hasLine("obj-gen", "obj-plugout", 1, 1), "gen must feed plugout~");
+assert.ok(byId["obj-msg-init-dsp"] && byId["obj-msg-init-dsp"].text === "init_dsp" && hasLine("obj-thisdevice", "obj-msg-init-dsp") && hasLine("obj-msg-init-dsp", "obj-viz"), "live.thisdevice must send init_dsp");
+assert.ok(!hasLine("obj-loadbang", "obj-msg-init-dsp"), "DSP load starts from live.thisdevice, not loadbang");
+assert.strictEqual(byId["obj-dsp-fan"].text, "t b b b b b b");
+assert.ok(hasLine("obj-route-viz", "obj-dsp-fan", 2, 0), "dsp_resend falls out of route into the resend fan");
+assert.ok(hasLine("obj-dsp-fan", "obj-msg-gen-buf", 5, 0), "resend bangs the scope binding first");
+for (const [outlet, id] of [[4, "obj-ctrl-thr"], [3, "obj-ctrl-sens"], [2, "obj-ctrl-hold"], [1, "obj-ctrl-velmin"], [0, "obj-ctrl-velmax"]]) {
+    assert.ok(hasLine("obj-dsp-fan", id, outlet, 0), `resend must bang ${id}`);
+}
+
+const vizText = byId["obj-viz"].textfile.text;
+const genEmbed = vizText.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+assert.ok(genEmbed, "The face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
+const genText = JSON.parse(genEmbed[1]);
+assert.strictEqual(genEmbed[2], crypto.createHash("sha1").update(genText).digest("hex").slice(0, 12), "GEN_DSP_HASH must be the gen patch's sha1 prefix");
+const gp = JSON.parse(genText);
+assert.strictEqual(gp.patcher.classnamespace, "dsp.gen", "Embedded gen patch must be a dsp.gen patcher");
+const gBoxes = gp.patcher.boxes.map((b) => b.box);
+const codebox = gBoxes.find((b) => b.maxclass === "codebox");
+assert.ok(codebox, "gendsp needs a codebox");
+assert.strictEqual(codebox.numinlets, 2, "codebox has 2 inlets");
+assert.strictEqual(codebox.numoutlets, 4, "codebox has 4 outlets");
+assert.strictEqual(codebox.code, gen, "Embedded GenExpr must match src/envtrig_core.genexpr");
+const gText = Object.fromEntries(gBoxes.filter((b) => b.text).map((b) => [b.id, b.text]));
+assert.deepStrictEqual(
+    ["obj-in1", "obj-in2", "obj-out1", "obj-out2", "obj-out3", "obj-out4"].map((id) => gText[id]),
+    ["in 1", "in 2", "out 1", "out 2", "out 3", "out 4"],
+);
+assert.strictEqual(gp.patcher.lines.length, 6, "in 1 / in 2 -> codebox -> out 1..4");
+assert.ok(vizText.includes('new Global("envtrig_dspq")'), "instances create gen~ through the shared queue");
+assert.ok(vizText.includes('g.varname = "et_gen"'), "the created gen~ is named et_gen");
+assert.ok(vizText.includes("etHost.connect(hub, 0, g, 0)") && vizText.includes("etHost.connect(pin, 0, g, 0)") && vizText.includes("etHost.connect(pin, 1, g, 1)"), "hub and both plugin~ channels feed the gen~");
+assert.ok(vizText.includes("etHost.connect(g, 0, pout, 0)") && vizText.includes("etHost.connect(g, 1, pout, 1)"), "gen audio feeds plugout~");
+assert.ok(vizText.includes("etHost.connect(g, 2, edge, 0)") && vizText.includes("etHost.connect(g, 3, snap, 0)"), "gate and velocity feed edge~ and snapshot~");
+assert.ok(vizText.includes("schedule(30)") && vizText.includes("schedule(ET_DSP_CONFIRM_MS)") && vizText.includes("schedule(ET_DSP_SETTLE_MS)"), "create after 30 ms, confirm every 150 ms, resend 300 ms after ready");
+assert.strictEqual(vizText.includes("var ET_DSP_RETRIES = 2;") && vizText.includes("var ET_DSP_FIRST_TIMEOUT_MS = 3500;") && vizText.includes("var ET_DSP_TIMEOUT_MS = 6000;"), true, "retry at 3.5 s then 6 s, twice");
 
 const genParams = [["thr", false, "thr"], ["sens", true, "sens"], ["hold", false, "holdms"], ["velmin", false, "velmin"], ["velmax", false, "velmax"]];
 for (const [key, isPct, genName] of genParams) {
     const ctrl = byId[`obj-ctrl-${key}`];
     const prep = byId[`obj-prep-${key}`];
     assert.ok(ctrl && prep && prep.text === `prepend ${genName}`, `Missing control chain for ${key}`);
-    assert.ok(hasLine(prep.id, "obj-gen"), `${prep.id} not wired to gen`);
+    assert.ok(hasLine(prep.id, "obj-gen-in", 0, 1), `${prep.id} not wired to the gen hub`);
     if (isPct) assert.ok(hasLine(ctrl.id, `obj-scale-${key}`) && hasLine(`obj-scale-${key}`, prep.id), `${key} must scale by / 100.`);
     else assert.ok(hasLine(ctrl.id, prep.id), `${ctrl.id} not wired to ${prep.id}`);
 }
@@ -197,9 +259,8 @@ for (const pi of panelIdx) {
     assert.ok(pi > maxWidgetIdx, "Panels must appear after all widgets");
 }
 
-// 5. MIDI out graph
-assert.ok(hasLine("obj-gen", "obj-edge", 2, 0), "gen gate -> edge~");
-assert.ok(hasLine("obj-gen", "obj-snap", 3, 0), "gen velocity -> snapshot~");
+// 5. MIDI out graph. The gen's gate and velocity outlets are connected when the face creates gen~
+//    (asserted against the loader above). edge~ onward is static.
 assert.ok(hasLine("obj-edge", "obj-trig", 0, 0), "edge~ rising -> t b b");
 assert.ok(hasLine("obj-trig", "obj-snap", 1, 0), "t b b right (first) must sample velocity");
 assert.ok(hasLine("obj-trig", "obj-note", 0, 0), "t b b left (second) must output the note");
@@ -289,12 +350,67 @@ function Buffer() {
     this.peek = (ch, off, n) => scopeBufData.slice(off, off + n);
     this.poke = () => {};
 }
-function Task(fn) { this.fn = fn; this.repeat = () => {}; }
+const scheduled = [];
+function Task(fn, obj) {
+    this.fn = fn;
+    this.obj = obj;
+    this.repeat = () => {};
+    this.schedule = (ms) => { this.ms = ms; scheduled.push(this); };
+}
+const files = {};
+let fileWrites = 0;
+function File(path, mode) {
+    this.path = path;
+    this.isopen = true;
+    this.eof = Object.prototype.hasOwnProperty.call(files, path) ? files[path].length : 0;
+    this.close = () => {};
+    this.writestring = (t) => {
+        fileWrites++;
+        files[path] = (files[path] || "") + t;
+        this.eof = files[path].length;
+    };
+    if (mode === "write") {
+        files[path] = "";
+        this.eof = 0;
+    }
+}
+const globals = {};
+function Global(name) {
+    if (!globals[name]) globals[name] = { owner: 0, t: 0 };
+    return globals[name];
+}
+const created = [];
+const conns = [];
+const removed = [];
+const named = {
+    et_genin: { n: "hub" },
+    et_plugin: { n: "in" },
+    et_plugout: { n: "out" },
+    et_edge: { n: "edge" },
+    et_snap: { n: "snap" },
+};
+const hostPatcher = {
+    getnamed: (n) => named[n] || null,
+    newdefault: (...args) => {
+        const o = { n: "gen", args, _vn: "" };
+        Object.defineProperty(o, "varname", {
+            set(v) { o._vn = v; named[v] = o; },
+            get() { return o._vn; },
+        });
+        created.push(o);
+        return o;
+    },
+    connect: (a, ao, b, bi) => conns.push([a.n, ao, b.n, bi]),
+    remove: (obj) => {
+        removed.push(obj);
+        if (obj && obj._vn) delete named[obj._vn];
+    },
+};
 const mg = makeMg(vr[2], vr[3], drawOps);
 const ui = new Function(
-    "mgraphics", "Buffer", "Task", "outlet", "LiveAPI",
-    viz.textfile.text + "\nreturn { loadbang, setbuffer, set_thr, set_note, set_view, init_routing, settype, setchannel, onclick, ondrag, pullScope, paint, bounds, histFire: () => histFire, flash: () => flash, lastVel: () => lastVel, view: () => view, scopeMax: () => scopeMax, scopeFire: () => scopeFire };"
-)(mg, Buffer, Task, (o, m) => emitted[o].push(m), LiveAPI);
+    "mgraphics", "Buffer", "Task", "outlet", "LiveAPI", "File", "Global",
+    viz.textfile.text + "\nreturn { loadbang, setbuffer, set_thr, set_note, set_view, init_routing, init_dsp, settype, setchannel, onclick, ondrag, onidle, pullScope, paint, bounds, histFire: () => histFire, flash: () => flash, lastVel: () => lastVel, view: () => view, scopeMax: () => scopeMax, scopeFire: () => scopeFire, etDsp: () => etDsp, etDspLoad, etDspConfirm };"
+)(mg, Buffer, Task, (o, m) => emitted[o].push(m), LiveAPI, File, Global);
 assert.strictEqual(mg.relative_coords, 0, "v8ui must disable relative_coords");
 assert.strictEqual(mg.autofill, 0, "v8ui must disable autofill");
 
@@ -318,6 +434,7 @@ assert.strictEqual(emitted[0].length, before, "Mouse-up must end the threshold d
 ui.set_note(36);
 ui.paint();
 assert.ok(drawOps.includes("text:C1 103"), "HUD must show the note and last velocity");
+assert.ok(!drawOps.some((t) => String(t).includes("DSP")), "the static face does not draw a DSP pill before creation starts");
 
 ui.init_routing();
 assert.ok(lomObjects.every((o) => o.path === cfg.ROUTING_PATH), "Routing must target this_device midi_outputs 0");
@@ -374,14 +491,78 @@ assert.strictEqual(ui.view(), 1, "set_view restores the saved view");
 ui.set_view(0);
 
 setHeader([0, 0, 1, 7, 0, 103, 10]);
-for (let k = 0; k < 140; k++) ui.pullScope();
+for (let k = 0; k < 140; k++) {
+    scopeBufData[3] = 1000 + k; // roll keeps moving on a silent track
+    ui.pullScope();
+}
 assert.strictEqual(ui.pullScope(), false, "pullScope must stop redrawing once silent history settles");
 setHeader([0.3, 0, 1, 8, 0.3, 103, 10]);
 assert.strictEqual(ui.pullScope(), true, "pullScope must resume when audio arrives");
 setHeader([0, 0, 1, 8, 0, 103, 11]);
-for (let k = 0; k < 140; k++) ui.pullScope();
+for (let k = 0; k < 140; k++) {
+    scopeBufData[3] = 2000 + k;
+    ui.pullScope();
+}
 setHeader([0, 0, 1, 8, 0, 103, 12]);
 assert.strictEqual(ui.pullScope(), true, "A moving scope write head must keep redrawing");
+
+// Deferred DSP runtime: one Task tick, then gen~ with 4 outlets, confirmed by scope[3].
+assert.ok(scheduled.some((t) => t.ms === 30), "init_routing schedules DSP 30 ms after the device is ready");
+const dspTask = scheduled.find((t) => t.ms === 30);
+assert.strictEqual(created.length, 0, "gen~ is not created inside the ready bang");
+dspTask.fn.call({ patcher: hostPatcher });
+assert.strictEqual(created.length, 1, "one gen~ created");
+const dspPath = created[0].args[4];
+assert.ok(/^\/tmp\/envtrig_core_[0-9a-f]{12}\.gendsp$/.test(String(dspPath)), String(dspPath));
+assert.deepStrictEqual(created[0].args.slice(2), ["gen~", "@gen", dspPath], "gen~ @gen <file>");
+assert.strictEqual(created[0].varname, "et_gen");
+assert.strictEqual(files[dspPath], JSON.parse(genEmbed[1]), "the embedded gen patch was written in full");
+for (const c of [["hub", 0, "gen", 0], ["in", 0, "gen", 0], ["in", 1, "gen", 1], ["gen", 0, "out", 0], ["gen", 1, "out", 1], ["gen", 2, "edge", 0], ["gen", 3, "snap", 0]]) {
+    assert.ok(conns.some((x) => JSON.stringify(x) === JSON.stringify(c)), `connect ${c.join(" ")}`);
+}
+assert.strictEqual(ui.etDsp().ready, 0, "not ready until scope[3] moves");
+assert.ok(emitted[0].includes("dsp_resend"), "confirm re-sends the scope binding and gen parameters");
+drawOps.length = 0;
+ui.paint();
+assert.ok(drawOps.includes("text:DSP loading..."), "DSP loading pill while the gen is compiling");
+const confirm = scheduled.filter((t) => t.ms === 150).pop();
+assert.ok(confirm, "confirm polls every 150 ms");
+scopeBufData[3] = 4;
+const beforeReady = emitted[0].length;
+confirm.fn.call({ patcher: hostPatcher });
+assert.strictEqual(ui.etDsp().ready, 1, "ready once the roll counter advances, including from silence");
+assert.ok(emitted[0].slice(beforeReady).includes("dsp_resend"), "parameters are sent again when the gen starts");
+const settle = scheduled.filter((t) => t.ms === 300).pop();
+assert.ok(settle, "one more resend 300 ms after ready");
+settle.fn();
+assert.ok(emitted[0].slice(beforeReady).filter((m) => m === "dsp_resend").length >= 2, "settle resend");
+drawOps.length = 0;
+ui.paint();
+assert.ok(!drawOps.some((t) => String(t).includes("DSP")), "the pill is gone once DSP is ready");
+// a gen that never joins the DSP chain is rebuilt (the .gendsp file is reused), then reported failed
+const writesBefore = fileWrites;
+ui.etDsp().ready = 0;
+ui.etDsp().createdAt = Date.now() - 4000;
+ui.etDsp().retries = 0;
+ui.etDsp().counter0 = scopeBufData[3];
+ui.etDspConfirm.call({ patcher: hostPatcher });
+assert.strictEqual(fileWrites, writesBefore, "an existing identical .gendsp is not rewritten");
+assert.strictEqual(ui.etDsp().retries, 1, "first timeout rebuilds the gen~");
+assert.strictEqual(removed.length, 1, "the stalled gen~ is removed");
+assert.strictEqual(created.length, 2, "a replacement gen~ is created");
+ui.etDsp().ready = 0;
+ui.etDsp().createdAt = Date.now() - 7000;
+ui.etDsp().retries = 2;
+ui.etDsp().counter0 = scopeBufData[3];
+ui.etDsp().error = "";
+ui.etDspConfirm.call({ patcher: hostPatcher });
+assert.strictEqual(ui.etDsp().error, "not running", "giving up after two retries");
+drawOps.length = 0;
+ui.paint();
+assert.ok(drawOps.some((t) => String(t).startsWith("text:DSP failed:")), "failure pill");
+ui.etDsp().ready = 0;
+ui.etDsp().createdAt = 0;
+ui.etDsp().error = "";
 
 // Strip v8ui runtime
 const stripCode = fs.readFileSync(STRIP_PATH, "utf8");
