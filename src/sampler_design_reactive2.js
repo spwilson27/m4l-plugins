@@ -7,8 +7,8 @@
 //   "hdl"  a draggable graph handle (envelope breakpoints, filter cutoff / resonance point)
 //   "act"  a button with its own callback (sidebar toggles, drawer-less tabs)
 //
-// Layout (default 766 px = sidebar + viewer + the Mod Sources / Matrix section; everything open = 1244 px):
-//   x   3..25   sidebar: 4 icon toggles (Engine detail, Mod Sources / Matrix, Filter, Voice / Out)
+// Layout (default 766 px = sidebar + viewer + the Mod Sources section; everything open = 1496 px):
+//   x   3..25   sidebar: 5 icon toggles (Engine detail, Mod Sources, Filter, Mod Matrix, Voice / Out)
 //   x  29..495  sample viewer, 466 px wide (= Better Sampler's MAIN.sample width): header row, waveform, footer row (y 3..110)
 //               and, fixed directly under it (y 113..166), the engine strip: engine pills, character switch, the engine's
 //               knobs and Pitch / Speed / Pos (never folds away)
@@ -18,20 +18,21 @@
 
 var SECTIONS = [
     { id: "details", name: "Engine detail", w: 164, acc: "a_eng" },
-    { id: "env", name: "Mod Sources / Matrix", w: 264, acc: "a_amp" },
+    { id: "env", name: "Mod Sources", w: 264, acc: "a_amp" },
     { id: "filter", name: "Filter", w: 166, acc: "a_filt" },
+    { id: "matrix", name: "Mod Matrix", w: 252, acc: "a_lfo" },
     { id: "voice", name: "Voice / Out", w: 132, acc: "a_out" }
 ];
 var SB_X = 3, SB_W = 22;
 var VIEW = { x: 29, y: 3, w: 466, h: 102 };
 var STRIP = { x: 29, y: 108, w: 466, h: 58 };
 var SEC_X0 = 499, SEC_GAP = 4, WIN_PAD = 3, SEC_Y = 3, SEC_H = 163;
-var DEFAULT_FOLD = 2;                       // Mod Sources / Matrix open
+var DEFAULT_FOLD = 2;                       // Mod Sources open
 var foldMask = DEFAULT_FOLD;
 var hoverHdl = "";
 var hoverTip = null;
 var RC = null;
-var envX = SEC_X0, filtX = SEC_X0;          // x of the Mod / Filter section in the current layout (set by paint)
+var envX = SEC_X0, filtX = SEC_X0, matX = SEC_X0; // x of the Mod Sources / Filter / Matrix section in the current layout
 
 function sectionRects(mask) {
     var out = [], x = SEC_X0;
@@ -99,6 +100,8 @@ var LIVE_FALLBACK = {
 function liveCol(name) { return themeCol([name], LIVE_FALLBACK[name]); }
 
 function initTheme() {
+    faceFont = "Ableton Sans Medium";
+    faceFontBold = "Ableton Sans Bold";
     if (RC) return;
     var desk = liveCol("live_desktop"), surf = liveCol("live_surface_bg"), lcd = liveCol("live_lcd_bg"), frame = liveCol("live_lcd_frame");
     var ctlBg = liveCol("live_control_bg"), ctlFg = liveCol("live_control_fg"), sel = liveCol("live_control_selection");
@@ -347,6 +350,11 @@ function sbGlyph(i, cx, cy, c, a) {
     } else if (i === 2) {                         // filter: low-pass response
         mgraphics.move_to(cx - 7.5, cy - 2); mgraphics.line_to(cx - 1, cy - 2); mgraphics.line_to(cx + 1, cy - 5);
         mgraphics.line_to(cx + 3, cy - 1); mgraphics.line_to(cx + 7.5, cy + 5); mgraphics.stroke();
+    } else if (i === 3) {                         // mod matrix: 3x3 matrix grid
+        for (var r = 0; r < 3; r++) for (j = 0; j < 3; j++) {
+            var cellOn = (r === 0 && j === 1) || (r === 1 && j === 0) || (r === 2 && j === 2);
+            fillRect(cx - 6.5 + j * 4.8, cy - 6.0 + r * 4.5, 3.4, 3.0, c, cellOn ? a : a * 0.42);
+        }
     } else {                                      // voice / out: level bars
         var hs = [5, 9, 6.5];
         for (j = 0; j < 3; j++) fillRR(cx - 7 + j * 5.2, cy + 6 - hs[j] * 1.1, 3.6, hs[j] * 1.1, 1.2, c, a);
@@ -811,19 +819,22 @@ sample_loaded = function () {
 
 
 // ---------------------------------------------------------------------------
-// Envelope / Mod Section (Ableton Wavetable look):
-//   Top tab bar: [Mod Sources] [Matrix] [MIDI] [MPE]
-//   Mod Sources sub-tabs: [Amp] [Env 2] [Env 3] [LFO 1] [LFO 2]
-//   Envelope sub-tabs: Time | Slope | Value, None/Trigger/Loop dropdown, 4 orange hollow squares + 3 pink slope diamonds
-//   LFO sub-tabs: A attack ms, Hz / Sync note, R retrigger, 4-cycle orange wave, 5 shape icons, Rate / Amount / Shape / Offset
-//   Matrix / MIDI / MPE: 4 target rows (Amp, Pitch, Osc 1 Pos, Osc 1 Warp) with bipolar mod cells & green/cyan/orange bars
+// Mod Sources Section & Mod Matrix Section (Ableton Wavetable look):
+//   Mod Sources section ("env"):
+//     Top tab bar: [Amp] [Env 2] [Env 3] [LFO 1] [LFO 2]
+//     Envelope sub-tabs: Time | Slope | Value, None/Trigger/Loop dropdown, 4 orange hollow squares + 3 pink slope diamonds
+//     LFO sub-tabs: A attack ms, Hz / Sync note, R retrigger, 4-cycle orange wave, 5 shape icons, Rate / Amount / Shape / Offset
+//   Mod Matrix section ("matrix"):
+//     Top tab bar (same style as Mod Sources): [Matrix] [MIDI] [MPE]
+//     4 target rows (Amp, Pitch, Osc 1 Pos, Osc 1 Warp) with bipolar mod cells & green/cyan/orange bars + Global Time/Amount
 // ---------------------------------------------------------------------------
 
 var ENV_W = 264;
+var MAT_W = 252;
 var envDots = [];            // last painted: { v, x, y, stage, alpha, rank } for the page shown (newest first)
 var envPanelRect = [0, 0, 0, 0];
 var envTab = 0;              // 0 Time, 1 Slope, 2 Value (the envelope value row)
-var modTopTab = 0;           // 0 Mod Sources, 1 Matrix, 2 MIDI, 3 MPE
+var matTab = 0;              // 0 Matrix, 1 MIDI, 2 MPE (the Mod Matrix section tab)
 var ENV_MIN_SEG = 20;        // minimum width of a segment in px: handle zones are +-5, diamond zones +-4, so they never overlap
 
 // Auxiliary matrix cell values for cells not backed by direct gen parameters (seeded with Wavetable's defaults from screenshots)
@@ -864,7 +875,7 @@ function bendW(p, s) {
 
 function envGeom() {
     var k = envKeys(), sk = envSlopeKeys(), vk = envValKeys();
-    var gx = envX + 18, gw = ENV_W - 44, gy = 50.5, gb = 110.5;
+    var gx = envX + 18.5, gw = ENV_W - 44, gy = 38.5, gb = 109.5;
     var hold = Math.round(gw * 0.42);
     var segMax = (gw - hold) / 3;
     var sm = segMax - ENV_MIN_SEG;               // every segment is at least ENV_MIN_SEG wide, so its slope diamond stays visible
@@ -927,7 +938,7 @@ function strokeSeg(pts, c, a, wd) {
     mgraphics.stroke();
 }
 function cornerBrackets(x, y, w, h, c) {
-    var L = 8;
+    var L = 7.0;
     var xs = [x + 0.5, x + w - 0.5], ys = [y + 0.5, y + h - 0.5];
     for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) {
         var dx = i === 0 ? 1 : -1, dy = j === 0 ? 1 : -1;
@@ -944,7 +955,7 @@ function focusBrackets(x, y, w, h, c) {
 }
 function diamond(x, y, r, c, a) {
     setc(c, a === undefined ? 1.0 : a);
-    mgraphics.set_line_width(1.2);
+    mgraphics.set_line_width(1.1);
     mgraphics.move_to(x, y - r);
     mgraphics.line_to(x + r, y);
     mgraphics.line_to(x, y + r);
@@ -1043,20 +1054,20 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
     var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
     var modPage = envPage >= 1;
     var g = envGeom();
-    envPanelRect = [bx, by + 16, bw, 95];
+    envPanelRect = [bx, by + 17, bw, 118];
 
     // Loop mode dropdown in top-right ("None ▾" / "Trigger ▾" / "Loop ▾")
     var lk = envLoopKey();
     var lModes = ["None", "Trigger", "Loop"];
     var curL = Math.round(paramValue(lk));
-    var lbx = bx + bw - 43, lby = by + 19, lbw = 39, lbh = 12;
+    var lbx = bx + bw - 44, lby = by + 20, lbw = 39, lbh = 13;
     if (openMenu && openMenu.key === lk) focusBrackets(lbx, lby, lbw, lbh, cy1);
-    text(lModes[curL] || "None", lbx + 3, lby + 9, 8.5, cy1, false, 0);
-    polygon([[lbx + lbw - 7, lby + 4.5], [lbx + lbw - 2.5, lby + 4.5], [lbx + lbw - 4.75, lby + 7.2]], cy1);
+    text(lModes[curL] || "None", lbx + 2, lby + 9.5, 9.5, cy1, false, 0);
+    polygon([[lbx + lbw - 7.5, lby + 4.5], [lbx + lbw - 3.5, lby + 4.5], [lbx + lbw - 5.5, lby + 6.8]], cy1);
     zone("button", lbx, lby, lbw, lbh, { action: "menu", key: lk, w2: 41, below: true, wtEnvLoop: true, anchorX: lbx, anchorY: lby + lbh + 1 });
 
     // Corner brackets inside the envelope plot area
-    cornerBrackets(g.gx - 5.5, g.gy - 5.5, ENV_W - 25, g.gb - g.gy + 11, cy1);
+    cornerBrackets(g.gx - 5.5, g.gy - 5.5, ENV_W - 22, g.gb - g.gy + 11, cy1);
 
     // Envelope curve: thin cyan line from (gx, y0) -> (xA, yPeak) -> (xD, ys) -> (xS, ys) -> (xR, yFinal)
     var n = 18, j, pts = [[g.gx, g.y0]];
@@ -1064,7 +1075,7 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
     for (j = 1; j <= n; j++) { var td = j / n; pts.push([g.xA + (g.xD - g.xA) * td, envYDecay(g, td)]); }
     pts.push([g.xS, g.ys]);
     for (j = 1; j <= n; j++) { var tr = j / n; pts.push([g.xS + (g.xR - g.xS) * tr, envYRelease(g, tr, g.sus)]); }
-    strokeSeg(pts, cy1, 1.0, 1.4);
+    strokeSeg(pts, cy1, 1.0, 1.5);
 
     // Sounding voice dots riding the curve
     var order = soundingVoices(modPage);
@@ -1100,7 +1111,7 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
         { id: "Rs", x: g.xS + (g.xR - g.xS) * 0.5, y: envYRelease(g, 0.5, g.sus) }
     ];
     for (var q = 0; q < sl.length; q++) {
-        diamond(sl[q].x, sl[q].y, hv(sl[q].id) ? 3.2 : 2.4, RC.pink, 1.0);
+        diamond(sl[q].x, sl[q].y, hv(sl[q].id) ? 2.5 : 1.75, RC.pink, 1.0);
         zone("hdl", sl[q].x - 4, sl[q].y - 4, 8, 8, { id: "env:" + sl[q].id, cx: sl[q].x, cy: sl[q].y });
     }
 
@@ -1114,25 +1125,26 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
     for (var h = 0; h < hs.length; h++) {
         var isHot = hv(hs[h].id) || (envTab === 1 && hs[h].id === "A");
         var isWhiteBox = envTab === 2 && hs[h].id === "A" && !hv(hs[h].id);
-        var sqR = 2.0;
-        fillRect(hs[h].x - sqR, hs[h].y - sqR, sqR * 2, sqR * 2, isHot ? orange : RC.wave, 1.0);
-        hollowSquare(hs[h].x, hs[h].y, sqR, isWhiteBox ? RC.white : orange, 1.0);
+        var sqX = Math.round(hs[h].x), sqY = Math.round(hs[h].y), sqR = 2.0;
+        fillRect(sqX - sqR, sqY - sqR, sqR * 2, sqR * 2, isHot ? orange : RC.wave, 1.0);
+        hollowSquare(sqX, sqY, sqR, isWhiteBox ? RC.white : orange, 1.0);
         if (hs[h].zoneHdl) {
             zone("hdl", hs[h].x - 5, hs[h].y - 5, 10, 10, { id: "env:" + hs[h].id, cx: hs[h].x, cy: hs[h].y });
         }
     }
 
     // Centered Time | Slope | Value tabs at bottom of plot area, with white underline on active tab and horizontal divider
-    var subTabs = envPage >= 1 ? ["Time", "Slope", "Value"] : ["Time", "Slope", "Value"];
-    var tabXs = [bx + 94, bx + 119, bx + 144];
-    var tabWs = [23, 23, 24];
+    var subTabs = ["Time", "Slope", "Value"];
+    var tabXs = [bx + 92, bx + 116, bx + 141];
+    var tabWs = [22, 23, 24];
+    var divY = by + 135;
     for (var tb = 0; tb < 3; tb++) {
         var tx = tabXs[tb], tw = tabWs[tb], on3 = envTab === tb;
-        text(subTabs[tb], tx + tw * 0.5, by + 110, 8.2, on3 ? RC.white : RC.sub, on3, 1);
-        if (on3) line(tx, by + 114.5, tx + tw, by + 114.5, RC.white, 1.0, 1.5);
-        (function (idx) { actZone(tx - 2, by + 101, tw + 4, 14, function () { envTab = idx; }); })(tb);
+        text(subTabs[tb], tx + tw * 0.5, divY - 5.5, 9.5, on3 ? RC.white : RC.sub, false, 1);
+        if (on3) line(tx, divY - 0.5, tx + tw, divY - 0.5, RC.white, 1.0, 1.5);
+        (function (idx) { actZone(tx - 2, divY - 14, tw + 4, 14, function () { envTab = idx; }); })(tb);
     }
-    line(bx + 1, by + 115, bx + bw - 1, by + 115, RC.line, 1.0, 1.0);
+    line(bx + 1, divY, bx + bw - 1, divY, RC.line, 1.0, 1.0);
 
     // Bottom parameter row: 4 columns (A D S R for Time & Slope; Initial Peak S Final for Env 2/3 Value, Initial Peak S for Amp Value)
     var k4 = envKeys(), sk = envSlopeKeys(), vk = envValKeys();
@@ -1143,11 +1155,11 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
         var lx = colX[c];
         var key = envTab === 0 ? k4[c] : (envTab === 1 ? (c === 2 ? k4[2] : sk[c === 3 ? 2 : c]) : vk[c]);
         if (!key) continue;
-        text(labs[c], lx, by + 126.5, 8.2, RC.sub, false, 0);
+        text(labs[c], lx, divY + 11.5, 9.5, RC.sub, false, 0);
         var hot = hoverKey === key || (drag && drag.key === key);
         var vStr = (envTab === 1 && c === 2) ? (Math.round(paramValue(key)) + " %") : fmtEnvVal(key, paramValue(key));
-        text(vStr, lx, by + 138.0, 8.5, hot ? RC.white : cy1, hot, 0);
-        zone("value", lx - 2, by + 117, colW, 23, { key: key, norm: true });
+        text(vStr, lx, divY + 23.0, 9.5, hot ? RC.white : cy1, hot, 0);
+        zone("value", lx - 2, divY + 2, colW, 23, { key: key, norm: true });
     }
 }
 
@@ -1165,25 +1177,25 @@ function paintLfoSubPage(sx, bx, by, bw, bh) {
 
     // Top-right row inside LFO view: A 0.00 ms | Hz | metronome | [R]
     var atkV = paramValue(atkKey);
-    text("A", bx + 154, by + 27, 8.2, RC.sub, false, 0);
-    text(fmtTime(atkV), bx + 164, by + 27, 8.5, orange, false, 0);
-    zone("value", bx + 152, by + 18, 46, 12, { key: atkKey, norm: true });
+    text("A", bx + 154, by + 29, 9.5, RC.sub, false, 0);
+    text(fmtTime(atkV), bx + 164, by + 29, 9.5, orange, false, 0);
+    zone("value", bx + 152, by + 19, 46, 12, { key: atkKey, norm: true });
 
     var syncOn = Math.round(paramValue(synKey)) > 0;
-    text("Hz", bx + 205, by + 27, 8.2, !syncOn ? orange : RC.sub, false, 0);
-    zone("button", bx + 203, by + 18, 15, 12, { action: "menu_pick", key: synKey, value: 0 });
-    drawMetronomeIcon(bx + 221, by + 19.5, syncOn ? orange : RC.sub);
-    zone("button", bx + 219, by + 18, 13, 12, { action: "menu_pick", key: synKey, value: 1 });
+    text("Hz", bx + 205, by + 29, 9.5, !syncOn ? orange : RC.sub, false, 0);
+    zone("button", bx + 203, by + 19, 15, 12, { action: "menu_pick", key: synKey, value: 0 });
+    drawMetronomeIcon(bx + 221, by + 20.5, syncOn ? orange : RC.sub);
+    zone("button", bx + 219, by + 19, 13, 12, { action: "menu_pick", key: synKey, value: 1 });
 
     var retrigOn = Math.round(paramValue(retKey)) > 0;
     if (retrigOn) {
-        fillRect(bx + 235, by + 19, 9.5, 9.5, orange, 1.0);
-        text("R", bx + 239.8, by + 26.5, 7.5, RC.wave, true, 1);
+        fillRect(bx + 235, by + 20, 9.5, 9.5, orange, 1.0);
+        text("R", bx + 239.8, by + 27.5, 8.5, RC.wave, true, 1);
     } else {
-        hollowSquare(bx + 239.75, by + 23.75, 4.75, RC.sub, 1.0);
-        text("R", bx + 239.8, by + 26.5, 7.5, RC.sub, true, 1);
+        hollowSquare(bx + 239.75, by + 24.75, 4.75, RC.sub, 1.0);
+        text("R", bx + 239.8, by + 27.5, 8.5, RC.sub, true, 1);
     }
-    zone("button", bx + 234, by + 18, 12, 12, { action: "toggle", key: retKey });
+    zone("button", bx + 234, by + 19, 12, 12, { action: "toggle", key: retKey });
 
     // 4-cycle orange waveform across the plot area
     var shpRaw = Math.round(paramValue(shpKey));
@@ -1191,7 +1203,7 @@ function paintLfoSubPage(sx, bx, by, bw, bh) {
     var shaping = paramValue(shgKey);
     var offset = (paramValue(offKey) || 0) / 360.0;
     var atkNorm = toNorm(atkKey, atkV) * 0.45;
-    var wx0 = bx + 8, wx1 = bx + bw - 16, wyMid = by + 65.5, wyAmp = 27.0 * (0.15 + 0.85 * amount);
+    var wx0 = bx + 8, wx1 = bx + bw - 16, wyMid = by + 74.5, wyAmp = 32.0 * (0.15 + 0.85 * amount);
     var nSteps = 128;
     setc(orange, 1.0);
     mgraphics.set_line_width(1.4);
@@ -1205,15 +1217,16 @@ function paintLfoSubPage(sx, bx, by, bw, bh) {
     mgraphics.stroke();
 
     // 5 LFO shape selector icons at bottom of plot area: Sine (0), Tri (1), Saw (2), Square (enum 4), S&H (enum 3)
+    var divY = by + 135;
     var iconEnums = [0, 1, 2, 4, 3];
     for (var si = 0; si < 5; si++) {
         var enumVal = iconEnums[si];
-        var ix = bx + 78 + si * 20.5, iy = by + 102;
+        var ix = bx + 78 + si * 20.5, iy = divY - 13;
         var isSel = shpRaw === enumVal;
         drawWtLfoShapeIcon(si, ix, iy, 12, 8.5, isSel ? orange : RC.sub, 1.0);
         zone("button", ix - 3, iy - 2, 18, 13, { action: "menu_pick", key: shpKey, value: enumVal });
     }
-    line(bx + 1, by + 115, bx + bw - 1, by + 115, RC.line, 1.0, 1.0);
+    line(bx + 1, divY, bx + bw - 1, divY, RC.line, 1.0, 1.0);
 
     // Bottom parameter row: Rate | Amount | Shape | Offset
     var cols = [
@@ -1225,9 +1238,9 @@ function paintLfoSubPage(sx, bx, by, bw, bh) {
     for (var c = 0; c < 4; c++) {
         var cl = cols[c];
         var hot = hoverKey === cl.key || (drag && drag.key === cl.key);
-        text(cl.lab, cl.x, by + 126.5, 8.2, RC.sub, false, 0);
-        text(cl.fmt(paramValue(cl.key)), cl.x, by + 138.0, 8.5, hot ? RC.white : orange, hot, 0);
-        zone("value", cl.x - 2, by + 117, 36, 23, { key: cl.key, norm: true });
+        text(cl.lab, cl.x, divY + 11.5, 9.5, RC.sub, false, 0);
+        text(cl.fmt(paramValue(cl.key)), cl.x, divY + 23.0, 9.5, hot ? RC.white : orange, hot, 0);
+        zone("value", cl.x - 2, divY + 2, 36, 23, { key: cl.key, norm: true });
     }
 }
 
@@ -1237,8 +1250,9 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
     var cellBg = mixc(RC.wave, RC.line, 0.62);
     var activeBg = [0.05, 0.08, 0.09];
     var pillBg = mixc(RC.wave, RC.line, 0.45);
+    var ty = by + 17;
 
-    text("Target", bx + 6, by + 12.5, 8.5, RC.sub, false, 0);
+    text("Target", bx + 6, ty + 13.0, 9.5, RC.sub, false, 0);
 
     var colNames, colCols, nCols;
     if (mode === 1) {
@@ -1255,12 +1269,12 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
         nCols = 4;
     }
 
-    var gx0 = bx + 65, gxEnd = bx + 235;
+    var gx0 = bx + 65, gxEnd = bx + bw - 6;
     var cw = (gxEnd - gx0) / nCols;
     for (var c = 0; c < nCols; c++) {
         var cx = gx0 + c * cw;
-        text(colNames[c], cx + cw * 0.5, by + 12.5, 8.5, colCols[c], false, 1);
-        line(cx + 0.5, by + 15.5, cx + cw - 0.5, by + 15.5, colCols[c], 0.85, 1.2);
+        text(colNames[c], cx + cw * 0.5, ty + 13.0, 9.5, colCols[c], false, 1);
+        line(cx + 0.5, ty + 16.0, cx + cw - 0.5, ty + 16.0, colCols[c], 0.85, 1.2);
     }
 
     var rows = [
@@ -1270,10 +1284,10 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
         { name: "Osc 1 Warp", pillW: 47 }
     ];
     for (var r = 0; r < 4; r++) {
-        var ry = by + 17 + r * 15.5, rh = 14.5;
+        var ry = ty + 18.5 + r * 19.5, rh = 18.0;
         fillRect(bx + 5, ry, 59, rh, [0.07, 0.09, 0.11], 1.0);
         if (rows[r].pillW > 0) fillRect(bx + 5, ry, rows[r].pillW, rh, pillBg, 1.0);
-        text(rows[r].name, bx + 8, ry + 10.2, 8.5, RC.sub, false, 0);
+        text(rows[r].name, bx + 8, ry + 12.2, 9.5, RC.sub, false, 0);
 
         for (var col = 0; col < nCols; col++) {
             var clx = gx0 + col * cw + 0.5, clw = cw - 1.0;
@@ -1303,7 +1317,7 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
                 var bw0 = Math.max(1.5, Math.abs(val / 100) * (clw * 0.48));
                 fillRect(bx0, ry + rh - 2.2, bw0, 1.8, barCol, 1.0);
                 var vTxt = (Math.abs(val) < 10 && Math.abs(val - Math.round(val)) > 0.05) ? val.toFixed(1) : (val === 7 && r === 3 ? "7.0" : String(Math.round(val)));
-                text(vTxt, clx + clw * 0.5, ry + 9.8, 8.5, barCol, false, 1);
+                text(vTxt, clx + clw * 0.5, ry + 11.8, 9.5, barCol, false, 1);
             }
             if (pKey) {
                 zone("value", clx, ry, clw, rh, { key: pKey, norm: true });
@@ -1319,78 +1333,74 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
 
     if (mode === 1) {
         // Global row at bottom of Matrix view: Global | Time 0.0 % | Amount 100 %
-        text("Global", bx + 6, by + 136.5, 8.5, RC.sub, false, 0);
-        text("Time", bx + 118, by + 136.5, 8.5, RC.sub, false, 0);
+        var gyFoot = by + bh - 10.5;
+        text("Global", bx + 6, gyFoot, 9.5, RC.sub, false, 0);
+        text("Time", bx + 114, gyFoot, 9.5, RC.sub, false, 0);
         var gt = paramValue("mod_global_time");
-        text(gt.toFixed(1) + " %", bx + 144, by + 136.5, 8.5, RC.white, true, 0);
-        zone("value", bx + 116, by + 127, 56, 14, { key: "mod_global_time", norm: true });
+        text(gt.toFixed(1) + " %", bx + 140, gyFoot, 9.5, RC.white, true, 0);
+        zone("value", bx + 112, gyFoot - 10, 56, 14, { key: "mod_global_time", norm: true });
 
-        text("Amount", bx + 180, by + 136.5, 8.5, RC.sub, false, 0);
+        text("Amount", bx + 174, gyFoot, 9.5, RC.sub, false, 0);
         var ga = paramValue("mod_global_amt");
-        text(Math.round(ga) + " %", bx + 216, by + 136.5, 8.5, RC.white, true, 0);
-        zone("value", bx + 178, by + 127, 66, 14, { key: "mod_global_amt", norm: true });
+        text(Math.round(ga) + " %", bx + 210, gyFoot, 9.5, RC.white, true, 0);
+        zone("value", bx + 172, gyFoot - 10, 66, 14, { key: "mod_global_amt", norm: true });
     }
 }
 
 function paintEnvSection(sx) {
     envX = sx;
     var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
-    fillRR(sx, SEC_Y, ENV_W, SEC_H, 2, RC.panel);
+    fillRect(sx, 0, ENV_W, 169, RC.panel, 1.0);
 
-    // Top-level tab bar: [Mod Sources] [Matrix] [MIDI] [MPE]
-    var topTabs = [
-        { name: "Mod Sources", x: sx + 43, w: 61 },
-        { name: "Matrix", x: sx + 106, w: 37 },
-        { name: "MIDI", x: sx + 145, w: 29 },
-        { name: "MPE", x: sx + 176, w: 29 }
-    ];
-    var bx = sx + 2, by = 18, bw = ENV_W - 4, bh = 146;
-
-    // Draw inactive top tab pills first, then main LCD box, then connect active top tab into LCD box
-    for (var tt = 0; tt < 4; tt++) {
-        var tb = topTabs[tt];
-        var isOn = modTopTab === tt;
-        if (!isOn) {
-            fillRR(tb.x, 5, tb.w, 12, 2.5, mixc(RC.panel, RC.wave, 0.45), 1.0);
-            text(tb.name, tb.x + tb.w * 0.5, 13.8, 8.2, RC.text, false, 1);
-        }
-        (function (idx) { actZone(tb.x, 4, tb.w, 14, function () { modTopTab = idx; }); })(tt);
-    }
-
-    // Main dark LCD container
-    fillRR(bx, by, bw, bh, 2, RC.wave);
+    var bx = sx + 1, by = 1, bw = ENV_W - 2, bh = 169;
+    fillRect(bx, by, bw, bh, RC.wave, 1.0);
     setc(RC.line, 1.0);
-    mgraphics.set_line_width(1.0);
+    mgraphics.set_line_width(1.5);
     mgraphics.rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1);
     mgraphics.stroke();
 
-    // Active top tab connected to LCD container
-    var actT = topTabs[modTopTab] || topTabs[0];
-    fillRR(actT.x, 5, actT.w, 15, 2.5, RC.wave, 1.0);
-    fillRect(actT.x, 15, actT.w, 5, RC.wave, 1.0);
-    if (modTopTab > 0) focusBrackets(actT.x + 2, 6.5, actT.w - 4, 10, RC.sub);
-    text(actT.name, actT.x + actT.w * 0.5, 13.8, 8.2, RC.white, false, 1);
-
-    if (modTopTab === 0) {
-        // Sub-tab bar: Amp | Env 2 | Env 3 | LFO 1 | LFO 2
-        var subNames = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
-        var sw = bw / 5;
-        for (var s = 0; s < 5; s++) {
-            var sx0 = bx + s * sw;
-            var sOn = envPage === s;
-            var sCol = s >= 3 ? orange : cy1;
-            text(subNames[s], sx0 + sw * 0.5, by + 11.2, 8.5, sOn ? sCol : RC.sub, false, 1);
-            if (sOn) line(sx0 + 1, by + 15.5, sx0 + sw - 1, by + 15.5, sCol, 1.0, 1.5);
-            zone("button", sx0, by + 1, sw, 15, { action: "env_page", page: s });
-        }
-        line(bx + 1, by + 16, bx + bw - 1, by + 16, RC.line, 1.0, 1.0);
-
-        if (envPage <= 2) paintEnvSubPage(sx, bx, by, bw, bh);
-        else paintLfoSubPage(sx, bx, by, bw, bh);
-    } else {
-        envDots = [];
-        paintModTable(sx, bx, by, bw, bh, modTopTab);
+    // Tab bar: Amp | Env 2 | Env 3 | LFO 1 | LFO 2
+    var subNames = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
+    var sw = bw / 5;
+    for (var s = 0; s < 5; s++) {
+        var sx0 = bx + s * sw;
+        var sOn = envPage === s;
+        var sCol = s >= 3 ? orange : cy1;
+        text(subNames[s], sx0 + sw * 0.5, by + 11.2, 9.5, sOn ? sCol : RC.sub, false, 1);
+        if (sOn) line(sx0 + 1, by + 16.0, sx0 + sw - 1, by + 16.0, sCol, 1.0, 1.5);
+        zone("button", sx0, by + 1, sw, 15.5, { action: "env_page", page: s });
     }
+    line(bx + 1, by + 16.5, bx + bw - 1, by + 16.5, RC.line, 1.0, 1.0);
+
+    if (envPage <= 2) paintEnvSubPage(sx, bx, by, bw, bh);
+    else paintLfoSubPage(sx, bx, by, bw, bh);
+}
+
+function paintMatrixSection(sx) {
+    matX = sx;
+    var cy1 = RC.cyan;
+    fillRect(sx, 0, MAT_W, 169, RC.panel, 1.0);
+
+    var bx = sx + 1, by = 1, bw = MAT_W - 2, bh = 169;
+    fillRect(bx, by, bw, bh, RC.wave, 1.0);
+    setc(RC.line, 1.0);
+    mgraphics.set_line_width(1.5);
+    mgraphics.rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    mgraphics.stroke();
+
+    // Same top tab bar style as Mod Sources: Matrix | MIDI | MPE
+    var matNames = ["Matrix", "MIDI", "MPE"];
+    var sw = bw / 3;
+    for (var t = 0; t < 3; t++) {
+        var tx0 = bx + t * sw;
+        var tOn = matTab === t;
+        text(matNames[t], tx0 + sw * 0.5, by + 11.2, 9.5, tOn ? cy1 : RC.sub, false, 1);
+        if (tOn) line(tx0 + 1, by + 16.0, tx0 + sw - 1, by + 16.0, cy1, 1.0, 1.5);
+        (function (idx) { actZone(tx0, by + 1, sw, 15.5, function () { matTab = idx; }); })(t);
+    }
+    line(bx + 1, by + 16.5, bx + bw - 1, by + 16.5, RC.line, 1.0, 1.0);
+
+    paintModTable(sx, bx, by, bw, bh, matTab + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,7 +1703,7 @@ function paintDetailsSection(sx) {
 // ---------------------------------------------------------------------------
 
 function paintVoiceSection(sx) {
-    var w = SECTIONS[3].w, acc = RC.cyan;
+    var w = SECTIONS[4].w, acc = RC.cyan;
     panelBox(sx, SEC_Y, w, SEC_H);
     secTitle("VOICING", sx + 7, 15, RC.text);
     segCtl("mono_legato", sx + 7, 20, w - 14, 13, ["Poly", "Mono"], acc);
@@ -1765,6 +1775,7 @@ function paint() {
         if (id === "details") paintDetailsSection(sx);
         else if (id === "env") paintEnvSection(sx);
         else if (id === "filter") paintFilterSection(sx);
+        else if (id === "matrix") paintMatrixSection(sx);
         else paintVoiceSection(sx);
     }
     paintTip();
@@ -1798,17 +1809,18 @@ setvalueof = function () {
     sharedSetvalueof.apply(null, a);
 };
 
-// Debug messages via #0-bsdebug for automated Live UI verification of Reactive 2's Mod Sources / Matrix views:
-//   messnamed("#0-bsdebug", "dbg_r2_view", topTab, envPage, envTab, openLoopMenu)
-function dbg_r2_view(topTab, pg, tb, loopMenu) {
-    if (topTab !== undefined && topTab >= 0) modTopTab = Math.round(Number(topTab));
+// Debug messages via #0-bsdebug for automated Live UI verification of Reactive 2's Mod Sources & Mod Matrix views:
+//   messnamed("#0-bsdebug", "dbg_r2_view", matTab, envPage, envTab, openLoopMenu, foldMask)
+function dbg_r2_view(mTab, pg, tb, loopMenu, fold) {
+    if (fold !== undefined && fold >= 0) setFoldMask(Number(fold));
+    if (mTab !== undefined && mTab >= 0) matTab = Math.max(0, Math.min(2, Math.round(Number(mTab))));
     if (pg !== undefined && pg >= 0) envPage = Math.round(Number(pg));
     if (tb !== undefined && tb >= 0) envTab = Math.round(Number(tb));
     if (loopMenu !== undefined) {
         if (Number(loopMenu) > 0) {
             var lk = envLoopKey();
-            var bx = envX + 2, by = 18, bw = ENV_W - 4;
-            var lbx = bx + bw - 43, lby = by + 19, lbh = 12;
+            var bx = envX + 1, by = 1, bw = ENV_W - 2;
+            var lbx = bx + bw - 44, lby = by + 20, lbh = 13;
             openMenu = { key: lk, x: lbx, y: lby + lbh + 1, w: 41, rowH: 13.5, wtEnvLoop: true, anchorX: lbx, anchorY: lby + lbh + 1 };
         } else {
             openMenu = null;

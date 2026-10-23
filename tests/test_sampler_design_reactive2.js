@@ -115,10 +115,10 @@ sb.setFoldMask(sb.DEFAULT_FOLD);
 sb.paint();
 {
     const tg = zones("act").filter((z) => z.tip);
-    assert.deepStrictEqual(plain(tg.map((z) => z.index)), [0, 1, 2, 3], "4 sidebar toggles");
+    assert.deepStrictEqual(plain(tg.map((z) => z.index)), [0, 1, 2, 3, 4], "5 sidebar toggles");
     assert.ok(tg.every((z) => z.x < sb.VIEW.x && z.w >= 18), "toggles are in the left column");
     const names = tg.map((z) => z.tip);
-    assert.strictEqual(new Set(names).size, 4, "toggle names are distinct");
+    assert.strictEqual(new Set(names).size, 5, "toggle names are distinct");
     // several open at once, width follows
     for (const i of [0, 3]) { sb.paint(); const z = zones("act").filter((q) => q.tip)[i]; emitted.length = 0; sb.onclick(z.x + 2, z.y + 2, 1, 0, 0); }
     assert.strictEqual(sb.foldMask, 2 | 1 | 8, "toggles combine");
@@ -127,8 +127,8 @@ sb.paint();
     const z2 = zones("act").filter((q) => q.tip)[1]; emitted.length = 0; sb.onclick(z2.x + 2, z2.y + 2, 1, 0, 0);
     assert.strictEqual(sb.foldMask, 1 | 8, "toggle closes a section");
     // HUD tip on hover
-    sb.paint(); const z3 = zones("act").filter((q) => q.tip)[3];
-    sb.onidle(z3.x + 3, z3.y + 3); assert.ok(sb.hoverTip && sb.hoverTip.tip === "Voice / Out", "hover shows the section name");
+    sb.paint(); const z4 = zones("act").filter((q) => q.tip)[4];
+    sb.onidle(z4.x + 3, z4.y + 3); assert.ok(sb.hoverTip && sb.hoverTip.tip === "Voice / Out", "hover shows the section name");
     sb.onidleout(); assert.strictEqual(sb.hoverTip, null, "tip clears on leave");
 }
 
@@ -588,7 +588,7 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
     setVoices([]);
     // Time | Slope | Value row: times (S in dB on Amp), A / D / S / R slopes, and Initial / Peak / S / Final values
     sb.paint();
-    const tabs = zones("act").filter((z) => !z.tip && z.y > 105 && z.y < 135 && z.x > sb.sectionX("env"));
+    const tabs = zones("act").filter((z) => !z.tip && z.y > 105 && z.y < 140 && z.x > sb.sectionX("env"));
     assert.strictEqual(tabs.length, 3, "Time | Slope | Value tab trio");
     const vals = () => zones("value").filter((z) => z.x > sb.sectionX("env") && z.y > 125 && z.y < 160);
     assert.deepStrictEqual(plain(vals().map((z) => z.key)), ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"], "Time tab: A D S R");
@@ -679,13 +679,13 @@ for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 
     for (const k of ["rp_char", "sp_char", "cy_char"]) sb.setParamFromFace(k, Math.min(ch, FP[k].hi));
     sb.setParamFromFace("slice_at", ch % 2 ? 1 : 0);
     sb.setParamFromFace("loop_mode", 1);
-    sb.modTopTab = 0;
+    sb.matTab = 0;
     sb.envPage = page;
     for (const tb of [0, 1, 2]) { sb.envTab = tb; sb.paint(); collect(); }
     sb.envTab = 0;
 }
-for (const topTab of [1, 2, 3]) { sb.modTopTab = topTab; sb.paint(); collect(); }
-sb.modTopTab = 0; sb.envPage = 0;
+for (const mTab of [0, 1, 2]) { sb.matTab = mTab; sb.paint(); collect(); }
+sb.matTab = 0; sb.envPage = 0;
 for (const at of [2, 3, 4]) { sb.setParamFromFace("slice_at", at); sb.setParamFromFace("sliced", 1); sb.paint(); collect(); }
 const missing = Object.keys(FP).filter((k) => !reach.has(k));
 assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.join(", ")}`);
