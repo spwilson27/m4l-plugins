@@ -525,23 +525,37 @@ function createReferenceSplitterDsp(sampleRate) {
 // =========================================================================
 var MBSPLIT_FFT_SIZE = 8192;
 var MBSPLIT_FFT_BINS = 4096;
+var MBSPLIT_SPEC_COLS = 248;
 var _fftTablesReady = false;
 var _fftBitRev = null;
 var _fftHann = null;
 var _fftRe = null;
 var _fftIm = null;
 var _fftDbOut = null;
+var _fftTwRe = null;
+var _fftTwIm = null;
+var _fftTilt = null;
+var colLo = null;
+var colHi = null;
+var _colBinSr = 0;
+var _colBinN = 0;
 
 function _ensureFft8192Tables() {
     if (_fftTablesReady) return;
     var N = MBSPLIT_FFT_SIZE;
-    _fftBitRev = new Array(N);
-    _fftHann = new Array(N);
-    _fftRe = new Array(N);
-    _fftIm = new Array(N);
-    _fftDbOut = new Array(MBSPLIT_FFT_BINS);
+    var bins = MBSPLIT_FFT_BINS;
+    _fftBitRev = new Uint16Array(N);
+    _fftHann = new Float32Array(N);
+    _fftRe = new Float64Array(N);
+    _fftIm = new Float64Array(N);
+    _fftDbOut = new Float64Array(bins);
+    _fftTwRe = new Float64Array(13);
+    _fftTwIm = new Float64Array(13);
+    _fftTilt = new Float32Array(bins);
 
     var bits = 13; // 2^13 = 8192
+    var hannScale = 4.0 / N;
+    var twoPi = 2.0 * Math.PI;
     for (var i = 0; i < N; i++) {
         var rev = 0;
         var v = i;
@@ -551,12 +565,19 @@ function _ensureFft8192Tables() {
         }
         _fftBitRev[i] = rev;
         // Coherent-gain normalized Hann window (sum of window = N/2 -> scale by 4/N for peak-preserving amplitude)
-        var w = 0.5 * (1.0 - Math.cos((2.0 * Math.PI * i) / (N - 1)));
-        _fftHann[i] = w * (4.0 / N);
-        _fftRe[i] = 0.0;
-        _fftIm[i] = 0.0;
+        var w = 0.5 * (1.0 - Math.cos((twoPi * i) / (N - 1)));
+        _fftHann[i] = w * hannScale;
     }
-    for (var k = 0; k < MBSPLIT_FFT_BINS; k++) {
+    var stage = 0;
+    for (var size = 2; size <= N; size <<= 1) {
+        var theta = (-twoPi) / size;
+        _fftTwRe[stage] = Math.cos(theta);
+        _fftTwIm[stage] = Math.sin(theta);
+        stage++;
+    }
+    for (var k = 0; k < bins; k++) {
+        var freqApprox = (k * 48000.0) / N;
+        _fftTilt[k] = freqApprox > 60.0 ? (2.2 * Math.log(freqApprox / 250.0) / Math.LN2) : 0.0;
         _fftDbOut[k] = -72.0;
     }
     _fftTablesReady = true;
@@ -582,11 +603,12 @@ function computeFft8192DbBins(samples8192) {
         im[ri] = 0.0;
     }
 
-    for (var size = 2; size <= N; size <<= 1) {
+    var twRe = _fftTwRe;
+    var twIm = _fftTwIm;
+    for (var size = 2, stage = 0; size <= N; size <<= 1, stage++) {
         var half = size >> 1;
-        var theta = (-2.0 * Math.PI) / size;
-        var wStepRe = Math.cos(theta);
-        var wStepIm = Math.sin(theta);
+        var wStepRe = twRe[stage];
+        var wStepIm = twIm[stage];
 
         for (var start = 0; start < N; start += size) {
             var wr = 1.0;
@@ -610,15 +632,14 @@ function computeFft8192DbBins(samples8192) {
     }
 
     var out = _fftDbOut;
+    var tilt = _fftTilt;
     var halfN = MBSPLIT_FFT_BINS;
     for (var k = 0; k < halfN; k++) {
         var r = re[k];
         var m = im[k];
         var mag = Math.sqrt(r * r + m * m);
         // Slight +3 dB/oct pink tilt around 400 Hz so upper sawtooth harmonics remain bright and easy to read
-        var freqApprox = (k * 48000.0) / N;
-        var tiltDb = freqApprox > 60.0 ? (2.2 * Math.log(freqApprox / 250.0) / Math.LN2) : 0.0;
-        var db = 20.0 * Math.log10(Math.max(mag, 1e-6)) + tiltDb;
+        var db = 20.0 * Math.log10(Math.max(mag, 1e-6)) + tilt[k];
         out[k] = clamp(db, -72.0, 6.0);
     }
     return out;
@@ -632,12 +653,8 @@ function computeFft8192DbBins(samples8192) {
  * - When a pixel spans multiple FFT bins (high frequencies), uses max-peak pooling across
  *   all bins inside [fLo, fHi] so narrow harmonic spikes are never averaged away between pixels.
  */
-function sampleFft8192DbForPixel(fLo, fHi, dbBins, sampleRate) {
+function sampleFft8192DbFromBins(bLo, bHi, dbBins) {
     if (!dbBins || dbBins.length < MBSPLIT_FFT_BINS) return -72.0;
-    var sr = Math.max(8000.0, Number(sampleRate) || 48000.0);
-    var binScale = MBSPLIT_FFT_SIZE / sr;
-    var bLo = clamp(fLo * binScale, 1.0, MBSPLIT_FFT_BINS - 3.0);
-    var bHi = clamp(fHi * binScale, bLo, MBSPLIT_FFT_BINS - 2.0);
     var span = bHi - bLo;
 
     if (span <= 1.15) {
@@ -667,6 +684,52 @@ function sampleFft8192DbForPixel(fLo, fHi, dbBins, sampleRate) {
     }
     return clamp(maxDb, -72.0, 6.0);
 }
+
+function sampleFft8192DbForPixel(fLo, fHi, dbBins, sampleRate) {
+    if (!dbBins || dbBins.length < MBSPLIT_FFT_BINS) return -72.0;
+    var sr = Math.max(8000.0, Number(sampleRate) || 48000.0);
+    var binScale = MBSPLIT_FFT_SIZE / sr;
+    var bLo = clamp(fLo * binScale, 1.0, MBSPLIT_FFT_BINS - 3.0);
+    var bHi = clamp(fHi * binScale, bLo, MBSPLIT_FFT_BINS - 2.0);
+    return sampleFft8192DbFromBins(bLo, bHi, dbBins);
+}
+
+/**
+ * Log-frequency column edges for the 248-wide spectrogram, at one sample rate.
+ * Built once (and again only if the rate or the column count changes) so the
+ * per-frame pool does not call pow / log.
+ * @param {number} sampleRate
+ * @param {number} [cols]
+ */
+function ensureSpecColumnBins(sampleRate, cols) {
+    var sr = Math.max(8000.0, Number(sampleRate) || 48000.0);
+    var n = cols || MBSPLIT_SPEC_COLS;
+    if (colLo && _colBinSr === sr && _colBinN === n) return;
+    _colBinSr = sr;
+    _colBinN = n;
+    colLo = new Float64Array(n);
+    colHi = new Float64Array(n);
+    var binScale = MBSPLIT_FFT_SIZE / sr;
+    var binMaxLo = MBSPLIT_FFT_BINS - 3.0;
+    var binMaxHi = MBSPLIT_FFT_BINS - 2.0;
+    for (var c = 0; c < n; c++) {
+        var fLo = normToFreq(c / n);
+        var fHi = normToFreq((c + 1) / n);
+        var bLo = clamp(fLo * binScale, 1.0, binMaxLo);
+        colLo[c] = bLo;
+        colHi[c] = clamp(fHi * binScale, bLo, binMaxHi);
+    }
+}
+
+function sampleFft8192DbForColumn(col, dbBins, sampleRate) {
+    ensureSpecColumnBins(sampleRate, MBSPLIT_SPEC_COLS);
+    var c = col | 0;
+    if (c < 0 || c >= _colBinN) return -72.0;
+    return sampleFft8192DbFromBins(colLo[c], colHi[c], dbBins);
+}
+
+_ensureFft8192Tables();
+ensureSpecColumnBins(48000.0, MBSPLIT_SPEC_COLS);
 
 /**
  * Generates an 8192-sample band-limited sawtooth wave with rich harmonic series
@@ -708,6 +771,7 @@ if (nodeModule && nodeModule.exports) {
         MBSPLIT_BAND_COLORS: MBSPLIT_BAND_COLORS,
         MBSPLIT_FFT_SIZE: MBSPLIT_FFT_SIZE,
         MBSPLIT_FFT_BINS: MBSPLIT_FFT_BINS,
+        MBSPLIT_SPEC_COLS: MBSPLIT_SPEC_COLS,
         clamp: clamp,
         dbToLin: dbToLin,
         linToDb: linToDb,
@@ -729,6 +793,8 @@ if (nodeModule && nodeModule.exports) {
         createReferenceSplitterDsp: createReferenceSplitterDsp,
         computeFft8192DbBins: computeFft8192DbBins,
         sampleFft8192DbForPixel: sampleFft8192DbForPixel,
+        sampleFft8192DbForColumn: sampleFft8192DbForColumn,
+        ensureSpecColumnBins: ensureSpecColumnBins,
         synthesizeSawWave8192: synthesizeSawWave8192
     };
 }
