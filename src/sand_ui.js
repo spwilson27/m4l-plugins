@@ -6,7 +6,7 @@
 // Amount, Freq, and Out mode live in the automatable LCD strip directly above this canvas.
 
 inlets = 1;
-outlets = 1;
+outlets = 2;
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -32,8 +32,10 @@ var curOrder = 1;
 var curStages = 1;
 var curFType = 0;   // 0=LP, 1=BP, 2=HP
 var curFPos = 2;    // 0=Pre, 1=Diff, 2=Post
-var curOutMode = 1; // 0=Off, 1=Soft, 2=Hard, 3=Lim
+var curOutMode = 0; // 0=Off, 1=Hard, 2=Limit (matches the Out numbox)
 var curMixPct = 50.0;
+var waveName = "";
+var scopeDirty = true;
 
 // Smoothed audio-reactive telemetry
 var liveInPeak = 0.0;
@@ -105,65 +107,88 @@ function preview() {
 function setbuffer(name) {
     if (!name || typeof Buffer !== "function") return;
     isDemo = false;
-    waveBuf = new Buffer("" + name);
+    waveName = "" + name;
+    waveBuf = new Buffer(waveName);
+    scopeDirty = true;
     if (waveTask || typeof Task !== "function") return;
-    waveTask = new Task(function () {
-        pullWave();
-        mgraphics.redraw();
-    }, this);
+    waveTask = new Task(sandWaveTick, this);
     waveTask.interval = 33;
     waveTask.repeat();
+}
+
+// 30 fps scope poll. Skip the mgraphics pass while the buffer is silent, the
+// meters and sand grains have decayed, and nothing has asked for a redraw.
+function sandWaveTick() {
+    pullWave();
+    if (scopeDirty || sandScopeActive()) {
+        mgraphics.redraw();
+        scopeDirty = false;
+    }
+}
+
+function sandScopeActive() {
+    if (liveInPeak > 0.004 || liveWetPeak > 0.004 || liveOutPeak > 0.004) return true;
+    var p;
+    for (p = 0; p < particles.length; p++) {
+        if (particles[p].energy > 0.03) return true;
+    }
+    return false;
+}
+
+function requestRedraw() {
+    scopeDirty = false;
+    mgraphics.redraw();
 }
 
 function set_amount(v) {
     curAmountDb = clamp(Number(v) || 0, 0, 140);
     if (isDemo) initArrays(true);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_soft(v) {
     curSoftPct = clamp(Number(v) || 0, 0, 100);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_debrick(v) {
     curDebrickPct = clamp(Number(v) || 0, 0, 100);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_freq(v) {
     curFreqHz = clamp(Number(v) || 14000, 20, 18000);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_order(v) {
     curOrder = clamp(Math.round(Number(v) || 0), -1, 15);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_stages(v) {
     curStages = clamp(Math.round(Number(v) || 1), 1, 4);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_ftype(v) {
     curFType = clamp(Math.round(Number(v) || 0), 0, 2);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_fpos(v) {
     curFPos = clamp(Math.round(Number(v) || 0), 0, 2);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_outmode(v) {
     curOutMode = clamp(Math.round(Number(v) || 0), 0, 3);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function set_mix(v) {
     curMixPct = clamp(Number(v) || 0, 0, 100);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function sampleAt(chunk, index) {
@@ -214,6 +239,34 @@ function pullWave() {
         var drift = Math.sin(tickPhase + p * 0.9) * (0.15 + 0.85 * Math.min(1, liveWetPeak));
         pt.yOff = clamp(pt.yOff * 0.82 + (gritWave[wIdx] >= 0 ? 1 : -1) * (0.25 + localGrit * 0.75) + drift * 0.18, -1.15, 1.15);
     }
+}
+
+// Transfer-curve inset. 21 samples, rebuilt only when Amount, Stages, Soft, or Debrick change.
+var CURVE_STEPS = 20;
+var curveKey = "";
+/** @type {number[]} */
+var curvePts = [];
+
+function transferKey() {
+    return curAmountDb + ":" + curStages + ":" + curSoftPct + ":" + curDebrickPct;
+}
+
+function ensureTransferCurve() {
+    var k = transferKey();
+    if (k === curveKey && curvePts.length === CURVE_STEPS + 1) return;
+    curveKey = k;
+    curvePts = [];
+    var s;
+    for (s = 0; s <= CURVE_STEPS; s++) curvePts.push(compandEval(s / CURVE_STEPS));
+}
+
+function transferAt(u) {
+    ensureTransferCurve();
+    var x = clamp(u, 0, 1) * CURVE_STEPS;
+    var i = Math.floor(x);
+    if (i >= CURVE_STEPS) return curvePts[CURVE_STEPS];
+    var f = x - i;
+    return curvePts[i] + (curvePts[i + 1] - curvePts[i]) * f;
 }
 
 function compandEval(xNorm) {
@@ -300,7 +353,7 @@ function ondrag(x, y) {
         outlet(0, ["freq", curFreqHz]);
     }
     if (!waveBuf) initArrays(true);
-    mgraphics.redraw();
+    requestRedraw();
 }
 
 function paint() {
@@ -434,10 +487,11 @@ function paint() {
 
     mgraphics.set_line_width(1.4);
     mgraphics.set_source_rgba(0.28, 0.86, 0.98, 0.95);
-    var steps = 20;
+    ensureTransferCurve();
+    var steps = CURVE_STEPS;
     for (var s = 0; s <= steps; s++) {
         var u = s / steps;
-        var v = compandEval(u);
+        var v = curvePts[s];
         var tx = cx + 3 + u * (cw - 6);
         var ty = cy + ch - 3 - v * (ch - 6);
         if (s === 0) mgraphics.move_to(tx, ty);
@@ -446,7 +500,7 @@ function paint() {
     mgraphics.stroke();
 
     var opIn = clamp(liveInPeak > 0.01 ? liveInPeak : 0.32, 0, 1);
-    var opOut = compandEval(opIn);
+    var opOut = transferAt(opIn);
     var dotX = cx + 3 + opIn * (cw - 6);
     var dotY = cy + ch - 3 - opOut * (ch - 6);
     if (mgraphics.arc) {
@@ -478,8 +532,232 @@ function paint() {
 
     drawText(mx + 3, plotY + 9, "G", 7.0, 0.28, 0.84, 0.96, 0.92);
     drawText(mx + 12, plotY + 9, "O", 7.0, 0.98, 0.70, 0.26, 0.92);
+
+    // Only while a gen~ is being created or has failed. A static preview never
+    // calls init_dsp, so createdAt stays 0 and this pill is not drawn.
+    if (sandDspPillOn()) drawDspPill(plotX, plotY);
 }
 
 function loadbang() {
     mgraphics.redraw();
+}
+
+// --- Deferred DSP (AGENTS.md 1d) -------------------------------------------------
+// The device ships without gen~. live.thisdevice bangs init_dsp; one Task tick
+// later we write /tmp/sand_core_<hash>.gendsp and create gen~ through Global("sand_dspq")
+// so two instances never compile at once. Until that gen~ is wired, nothing connects
+// plugin~ to plugout~ (silence). The gen drops messages while it compiles, so each
+// confirm tick re-sends the buffer binding and every gen parameter from the JS
+// state on outlet 1 (into the gate's data inlet). live.text toggles are never banged.
+
+var sandHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
+var sandDsp = {
+    ready: 0,
+    error: "",
+    createdAt: 0,
+    counter0: -1,
+    retries: 0,
+    readyMs: 0,
+    armed: 0,
+    /** @type {Task | null} */
+    task: null,
+    /** @type {Task | null} */
+    confirmTask: null,
+    /** @type {Task | null} */
+    settleTask: null
+};
+var SAND_DSP_RETRIES = 2;
+var SAND_DSP_CLAIM_MS = 15000;
+var SAND_DSP_QUEUE_POLL_MS = 100;
+var SAND_DSP_CONFIRM_MS = 150;
+var SAND_DSP_SETTLE_MS = 300;
+var SAND_DSP_FIRST_TIMEOUT_MS = 3500;
+var SAND_DSP_TIMEOUT_MS = 6000;
+var sandDspToken = Math.random();
+
+function sandDspTimeout() {
+    return sandDsp.retries === 0 ? SAND_DSP_FIRST_TIMEOUT_MS : SAND_DSP_TIMEOUT_MS;
+}
+
+function sandDspPath() {
+    return "/tmp/sand_core_" + GEN_DSP_HASH + ".gendsp";
+}
+
+/** @param {string} path */
+function sandDspWriteFile(path) {
+    try {
+        var rf = new File(path, "read");
+        var have = rf.isopen && rf.eof === GEN_DSP_TEXT.length;
+        rf.close();
+        if (have) return true;
+    } catch (_) {}
+    var f = new File(path, "write", "TEXT");
+    if (!f.isopen) return false;
+    f.eof = 0;
+    for (var i = 0; i < GEN_DSP_TEXT.length; i += 16384) f.writestring(GEN_DSP_TEXT.substring(i, i + 16384));
+    f.close();
+    return true;
+}
+
+// wpos at frame 259 (gen channel 0). It advances every 32 samples, silence included.
+function sandDspFrames() {
+    if (typeof Buffer !== "function") return -1;
+    try {
+        var v = new Buffer(waveName || "#0-sandwave").peek(1, 259, 1);
+        var n = typeof v === "number" ? v : (v && v.length ? Number(v[0]) : NaN);
+        return n === n ? n : -1;
+    } catch (_) {
+        return -1;
+    }
+}
+
+/** @param {string} name */
+function sandNamed(name) {
+    if (!sandHost) return null;
+    var o = sandHost.getnamed(name);
+    if (!o || !o.valid) return null;
+    return o;
+}
+
+// Gen parameters from the values the face holds. Outlet 1 is patched to the
+// gate's data inlet. Do not bang live.text (a toggle would flip).
+function sandDspResend() {
+    if (typeof outlet !== "function") return;
+    outlet(1, ["wave", waveName || "#0-sandwave"]);
+    outlet(1, ["dorder", curOrder]);
+    outlet(1, ["stages", curStages]);
+    outlet(1, ["amount", curAmountDb]);
+    outlet(1, ["ffreq", curFreqHz]);
+    outlet(1, ["soft", curSoftPct]);
+    outlet(1, ["debrick", curDebrickPct]);
+    outlet(1, ["ftype", curFType]);
+    outlet(1, ["fpos", curFPos]);
+    outlet(1, ["mix", curMixPct]);
+    outlet(1, ["outmode", curOutMode]);
+}
+
+function sandDspClaim() {
+    var q = new Global("sand_dspq");
+    var now = Date.now();
+    if (q.owner && q.owner !== sandDspToken && now - Number(q.t) < SAND_DSP_CLAIM_MS) return false;
+    q.owner = sandDspToken;
+    q.t = now;
+    return true;
+}
+
+function sandDspRelease() {
+    try {
+        var q = new Global("sand_dspq");
+        if (q.owner === sandDspToken) q.owner = 0;
+    } catch (_) {}
+}
+
+function sandDspLoad() {
+    if (sandDsp.ready || sandDsp.createdAt || !sandHost || typeof GEN_DSP_TEXT === "undefined") return;
+    if (!sandDspClaim()) {
+        if (!sandDsp.task) sandDsp.task = new Task(sandDspLoad, this);
+        sandDsp.task.schedule(SAND_DSP_QUEUE_POLL_MS);
+        return;
+    }
+    var created = null;
+    try {
+        var g = sandNamed("sand_gen");
+        if (!g) {
+            var path = sandDspPath();
+            if (!sandDspWriteFile(path)) throw new Error("cannot write " + path);
+            g = sandHost.newdefault(120, 420, "gen~", "@gen", path);
+            if (!g) throw new Error("no gen~");
+            created = g;
+            g.varname = "sand_gen";
+            var hub = sandNamed("sand_genin");
+            var pin = sandNamed("sand_plugin");
+            var pout = sandNamed("sand_plugout");
+            if (!hub || !pin || !pout) throw new Error("missing hub / plugin~ / plugout~");
+            sandHost.connect(hub, 0, g, 0);
+            sandHost.connect(pin, 0, g, 0);
+            sandHost.connect(pin, 1, g, 1);
+            sandHost.connect(g, 0, pout, 0);
+            sandHost.connect(g, 1, pout, 1);
+        }
+        sandDsp.createdAt = Date.now();
+        sandDsp.counter0 = sandDspFrames();
+        sandDspConfirm();
+    } catch (err) {
+        if (created) {
+            try { sandHost.remove(created); } catch (_) {}
+        }
+        sandDsp.error = String(err && err.message ? err.message : err);
+        sandDspRelease();
+        post("Sand: DSP load failed: " + sandDsp.error + "\n");
+    }
+    sandDspChanged();
+}
+
+function sandDspConfirm() {
+    var c = sandDspFrames();
+    if (sandDsp.counter0 >= 0 && c >= 0 && c !== sandDsp.counter0) {
+        sandDsp.ready = 1;
+        sandDsp.error = "";
+        sandDsp.readyMs = Date.now() - sandDsp.createdAt;
+        sandDspRelease();
+        sandDspResend();
+        if (!sandDsp.settleTask) sandDsp.settleTask = new Task(sandDspResend, this);
+        sandDsp.settleTask.schedule(SAND_DSP_SETTLE_MS);
+        sandDspChanged();
+        return;
+    }
+    if (Date.now() - sandDsp.createdAt > sandDspTimeout() && sandDsp.retries < SAND_DSP_RETRIES) {
+        sandDsp.retries++;
+        try {
+            var old = sandNamed("sand_gen");
+            if (old) sandHost.remove(old);
+        } catch (_) {}
+        sandDsp.createdAt = 0;
+        sandDsp.counter0 = -1;
+        sandDspLoad();
+        return;
+    }
+    if (Date.now() - sandDsp.createdAt > sandDspTimeout()) {
+        sandDsp.error = "not running";
+        sandDspRelease();
+        sandDspChanged();
+        return;
+    }
+    sandDspResend();
+    if (sandDsp.counter0 < 0) sandDsp.counter0 = c;
+    if (!sandDsp.confirmTask) sandDsp.confirmTask = new Task(sandDspConfirm, this);
+    sandDsp.confirmTask.schedule(SAND_DSP_CONFIRM_MS);
+}
+
+// From live.thisdevice (`init_dsp`): let the face paint first, then build the DSP.
+function sandDspSchedule() {
+    if (sandDsp.ready || sandDsp.createdAt || sandDsp.armed) return;
+    if (!sandHost || typeof GEN_DSP_TEXT === "undefined" || typeof Task !== "function") return;
+    sandDsp.armed = 1;
+    if (!sandDsp.task) sandDsp.task = new Task(sandDspLoad, this);
+    sandDsp.task.schedule(30);
+}
+
+function init_dsp() {
+    sandDspSchedule();
+}
+
+function sandDspChanged() {
+    scopeDirty = false;
+    mgraphics.redraw();
+}
+
+function sandDspPillOn() {
+    return !sandDsp.ready && (sandDsp.createdAt > 0 || sandDsp.error);
+}
+
+function drawDspPill(plotX, plotY) {
+    var failed = !!sandDsp.error;
+    var label = failed
+        ? ("DSP failed: " + String(sandDsp.error).replace(/\s+/g, " ").substring(0, 18))
+        : "DSP loading...";
+    var tw = Math.min(150, label.length * 4.7 + 10);
+    drawRRect(plotX + 2, plotY + 2, tw, 12, 3, [0.04, 0.05, 0.07, 0.82], null, 0);
+    if (failed) drawText(plotX + 6, plotY + 11, label, 7.5, 0.96, 0.48, 0.44, 0.95);
+    else drawText(plotX + 6, plotY + 11, label, 7.5, 0.98, 0.74, 0.30, 0.92);
 }
