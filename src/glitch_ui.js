@@ -22,7 +22,7 @@
 // Messages in (inlet 0): setbuffer <slots> <scope> <debug receive name> (all three are `---` names expanded per instance by Live), set_<param> <v> (echo of a live.* object), device_ready, dbg_* / test_*
 //   (via receive ---glitchdebug), randomize [seed], mutate [amount 0..1], audition working|morph|seq, xy x y, save|recall|clearslot <1..8>,
 //   getvalueof / setvalueof (blob GlitchStateData).
-// Messages out (outlet 0): param <key> <value> | setwidth_cmd <px> | dsp_ready bang | dsp_on 2
+// Messages out (outlet 0): param <key> <value> | setwidth_cmd <px> | dsp_ready bang | dsp_on 0 (silence) | dsp_on 2 (tail)
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -442,8 +442,8 @@ function setvalueof() {
 // busy for the compile: 0.1 - 1.3 s per stage, the GUI repaints in between). A gen keeps starting after its code arrived and drops messages, so
 // dsp_ready (bindings, Mix, Output, bpm, ppq, playing) is sent right after each load and re-sent every 60 ms until each stage's own frame
 // counter (scope STAGE_FRAME + index) moves. A module stage that runs is switched in without a click: its selector~ moves to it while its Param
-// `go` is 0 (its wets are 0, so it passes the input), then `go 1` ramps the wets in. The chain (output off the dry path) goes on as soon as the
-// head and the tail run; the modules join as they compile. A stage a LATER glitch needs (Randomize, a slot, a morph corner, a sequencer step)
+// `go` is 0 (its wets are 0, so it passes the input), then `go 1` ramps the wets in. The output stays silent (selector~ 0) until the
+// head and the tail run, then dsp_on 2 selects the tail (Mix 0 is that tail's delayed dry). The modules join as they compile. A stage a LATER glitch needs (Randomize, a slot, a morph corner, a sequencer step)
 // is loaded when the engine buffer is pushed and joins the same way; its module is bypassed for the ~0.1 - 1.5 s that takes. dsp_retry puts
 // the shells back (tests).
 // ---------------------------------------------------------------------------------------------------------------
@@ -713,7 +713,7 @@ function stagesFailed() {
     return out;
 }
 function dsp_retry() {
-    // back to the shells (tests): every stage that has code gets its placeholder again, the selectors go back to the bypass, the output to dry
+    // back to the shells (tests): every stage that has code gets its placeholder again, the module selectors go back to the bypass, the output to silence
     try {
         var l = stageList();
         for (var i = 0; i < l.length; i++) {
@@ -725,7 +725,7 @@ function dsp_retry() {
         }
     } catch (_) {}
     dspReady = 0; dspError = ""; dspCreatedAt = 0; dspStages = {}; dspQueue = [];
-    outlet(0, "dsp_on", 1);
+    outlet(0, "dsp_on", 0);
     loadDsp();
 }
 function dsp_diag() {
@@ -774,29 +774,73 @@ function device_ready() {
 // ---------------------------------------------------------------------------------------------------------------
 var quietDrawn = false;
 var lastFrame = -1;
-function pullScope() {
-    decayFlashes();
-    if (!gScopeBuf || !dspReady) { if (gFlashLive()) mgraphics.redraw(); return; }
+var scopeHover = "";
+var scopeDragOn = false;
+// count 1 comes back as a number; a longer peek is an array. A failed peek returns null so the caller reads the whole buffer.
+function scopePeek(start, count) {
+    var v = null;
+    try { v = gScopeBuf.peek(1, start, count); } catch (_) { return null; }
+    if (count === 1) return [typeof v === "number" ? v : (v && v.length ? v[0] : 0)];
+    if (!v || !v.length) return null;
+    return v;
+}
+function pullScopeFull() {
     var arr = null;
     try { arr = gScopeBuf.peek(1, 0, GL_SCOPE.END); } catch (_) { arr = null; }
     if (!arr || !arr.length) return;
     var level = Math.max(arr[GL_SCOPE.IN_PEAK] || 0, arr[GL_SCOPE.OUT_PEAK] || 0);
     var quiet = level < 0.0003 && !(arr[GL_SCOPE.SPEC_RUN] > 0.5 && level > 0.00005);
-    if (arr[GL_SCOPE.FRAME] !== lastFrame) gHaveTele = true;
     lastFrame = arr[GL_SCOPE.FRAME];
+    gHaveTele = true;
     // Seq: the sounding blend follows the sequencer, so the tiles / pad are rebuilt when its slot or crossfade moves
     var seqLive = gState.audition === "seq" && arr[GL_SCOPE.SEQ_ON] > 0.5;
     if (seqLive) {
-        var sig = arr[GL_SCOPE.SEQ_SLOT] + "," + arr[GL_SCOPE.SEQ_PREV] + "," + Math.round(arr[GL_SCOPE.SEQ_GLIDE] * 10);
-        if (sig !== gSeqSig) { gSeqSig = sig; gModelDirty = true; quietDrawn = false; }
+        var sig = arr[GL_SCOPE.SEQ_SLOT] + "," + arr[GL_SCOPE.SEQ_PREV] + "," + Math.round((arr[GL_SCOPE.SEQ_GLIDE] || 0) * 10);
+        if (sig !== gSeqSig) { gSeqSig = sig; gModelDirty = true; }
     }
     var seqMoving = seqLive && arr[GL_SCOPE.SEQ_PLAY] > 0.5 && gState.ui.seq;
     var mvMoving = false;
     for (var mk = 0; mk < GL_NINST; mk++) if (arr[GL_SCOPE.MOVE_ON + mk] > 0.5) { mvMoving = true; break; }
-    if (quiet && quietDrawn && !gFlashLive() && !seqMoving && !mvMoving) return;
-    quietDrawn = quiet && !seqMoving && !mvMoving;
+    quietDrawn = quiet && !seqMoving && !mvMoving && !gModelDirty;
     gTele = arr;
     mgraphics.redraw();
+}
+function pullScope() {
+    decayFlashes();
+    if (!gScopeBuf || !dspReady) { if (gFlashLive()) mgraphics.redraw(); return; }
+    var uiMoved = gModelDirty || gHover !== scopeHover || (!!gDrag) !== scopeDragOn;
+    scopeHover = gHover;
+    scopeDragOn = !!gDrag;
+    var head = scopePeek(GL_SCOPE.FRAME, 1);
+    if (!head) { pullScopeFull(); return; }
+    var frame = head[0];
+    // The frame counter moves every control tick, including silence. A quiet idle face only needs the peaks, the
+    // sequencer header and the movement flags — not the whole scope buffer, and not a redraw.
+    if (frame === lastFrame && quietDrawn && !uiMoved && !gFlashLive()) return;
+    var peaks = scopePeek(GL_SCOPE.IN_PEAK, 3);
+    if (!peaks || peaks.length < 3) { pullScopeFull(); return; }
+    var level = Math.max(peaks[0] || 0, peaks[1] || 0);
+    var quiet = level < 0.0003 && !(peaks[2] > 0.5 && level > 0.00005);
+    var seqMoving = false;
+    var seqChanged = false;
+    if (gState.audition === "seq") {
+        var sq = scopePeek(GL_SCOPE.SEQ_ON, 6);
+        if (!sq || sq.length < 6) { pullScopeFull(); return; }
+        if (sq[0] > 0.5) {
+            seqMoving = sq[1] > 0.5 && gState.ui.seq ? true : false;
+            var sig = sq[3] + "," + sq[4] + "," + Math.round((sq[5] || 0) * 10);
+            if (sig !== gSeqSig) seqChanged = true;
+        }
+    }
+    var mv = scopePeek(GL_SCOPE.MOVE_ON, GL_NINST);
+    if (!mv || !mv.length) { pullScopeFull(); return; }
+    var mvMoving = false;
+    for (var mk = 0; mk < mv.length && mk < GL_NINST; mk++) if (mv[mk] > 0.5) { mvMoving = true; break; }
+    if (quiet && quietDrawn && !uiMoved && !gFlashLive() && !seqMoving && !mvMoving && !seqChanged) {
+        lastFrame = frame;
+        return;
+    }
+    pullScopeFull();
 }
 function gFlashLive() { return gFlash.dice > 0.02 || gFlash.mutate > 0.02 || gFlash.slotT > 0.02; }
 function decayFlashes() {
