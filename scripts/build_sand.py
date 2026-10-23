@@ -16,6 +16,7 @@ Compact Single-Column Edition (296 x 169 px):
     - Mix (%) radial dial at the bottom.
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -334,11 +335,62 @@ def newobj(obj_id, text, x, y, w):
     }
 
 
+def gendsp_json(gen_code):
+    """2-in / 2-out .gendsp JSON (in 1 / in 2 -> codebox -> out 1 / out 2).
+
+    The face writes it to /tmp/sand_core_<hash>.gendsp and creates `gen~ @gen <file>`
+    after the GUI has painted (src/sand_ui.js, AGENTS.md 1d).
+    """
+    def bx(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {
+            "id": i,
+            "maxclass": cls,
+            "numinlets": ni,
+            "numoutlets": no,
+            "outlettype": [""] * no,
+            "patching_rect": [float(x), float(y), 200.0, 22.0],
+        }
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+
+    patch = {
+        "patcher": {
+            "fileversion": 1,
+            "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+            "classnamespace": "dsp.gen",
+            "rect": [50.0, 50.0, 600.0, 450.0],
+            "boxes": [
+                bx("obj-in1", "in 1", 20, 20, 0, 1),
+                bx("obj-in2", "in 2", 120, 20, 0, 1),
+                bx("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+                bx("obj-out1", "out 1", 20, 400, 1, 0),
+                bx("obj-out2", "out 2", 120, 400, 1, 0),
+            ],
+            "lines": [
+                {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+                {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+                {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+                {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+            ],
+        }
+    }
+    return json.dumps(patch)
+
+
 def build():
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
+    gen_dsp_text = gendsp_json(gen_code)
+    gen_dsp_hash = hashlib.sha1(gen_dsp_text.encode("utf-8")).hexdigest()[:12]
+    ui_js = (
+        f"var GEN_DSP_TEXT = {json.dumps(gen_dsp_text)};\n"
+        f"var GEN_DSP_HASH = \"{gen_dsp_hash}\";\n"
+        + ui_js
+    )
 
     viz_rect = [10.0, 46.0, 192.0, 114.0]
 
@@ -413,8 +465,8 @@ def build():
                 "id": "obj-viz",
                 "maxclass": "v8ui",
                 "numinlets": 1,
-                "numoutlets": 1,
-                "outlettype": [""],
+                "numoutlets": 2,
+                "outlettype": ["", ""],
                 "patching_rect": [20.0, 80.0, viz_rect[2], viz_rect[3]],
                 "presentation": 1,
                 "presentation_rect": [float(v) for v in viz_rect],
@@ -438,6 +490,7 @@ def build():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [20.0, 240.0, 52.0, 20.0],
                 "text": "plugin~",
+                "varname": "sand_plugin",
             }
         },
         {
@@ -451,20 +504,49 @@ def build():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [20.0, 460.0, 58.0, 20.0],
                 "text": "plugout~",
+                "varname": "sand_plugout",
+            }
+        },
+        # No static gen~ and no plugin~ -> plugout~ cord: the device is silent until
+        # the face creates gen~ and wires sand_genin -> gen, sand_plugin -> gen -> sand_plugout.
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-gen-in",
+                "maxclass": "newobj",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [120.0, 280.0, 70.0, 20.0],
+                "text": "gate 1 1",
+                "varname": "sand_genin",
             }
         },
         {
             "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
+                "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
+                "id": "obj-thisdevice",
+                "maxclass": "newobj",
+                "numinlets": 1,
                 "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [120.0, 320.0, 420.0, 120.0],
-                "varname": "sand",
+                "outlettype": ["bang", "int"],
+                "patching_rect": [560.0, 140.0, 100.0, 20.0],
+                "text": "live.thisdevice",
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-initdsp",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [680.0, 140.0, 70.0, 20.0],
+                "text": "init_dsp",
             }
         },
         {
@@ -582,56 +664,57 @@ def build():
         return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
 
     lines = [
-        line("obj-plugin", 0, "obj-gen"),
-        line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout"),
-        line("obj-gen", 1, "obj-plugout", 1),
+        # Audio: plugin~ is not patched to plugout~. The face wires both through gen~ after load.
         line("obj-loadbang", 0, "obj-msg-genbufs"),
         line("obj-loadbang", 0, "obj-msg-uibufs"),
-        line("obj-msg-genbufs", 0, "obj-gen"),
+        line("obj-msg-genbufs", 0, "obj-gen-in", 1),
         line("obj-msg-uibufs", 0, "obj-viz"),
+        line("obj-thisdevice", 0, "obj-msg-initdsp"),
+        line("obj-msg-initdsp", 0, "obj-viz"),
+        # Face outlet 1 re-sends the buffer binding and every gen parameter into the hub.
+        line("obj-viz", 1, "obj-gen-in", 1),
         line("obj-order", 0, "obj-prep-order"),
-        line("obj-prep-order", 0, "obj-gen"),
+        line("obj-prep-order", 0, "obj-gen-in", 1),
         line("obj-order", 0, "obj-ui-order"),
         line("obj-ui-order", 0, "obj-viz"),
         line("obj-stages", 0, "obj-prep-stages"),
-        line("obj-prep-stages", 0, "obj-gen"),
+        line("obj-prep-stages", 0, "obj-gen-in", 1),
         line("obj-stages", 0, "obj-ui-stages"),
         line("obj-ui-stages", 0, "obj-viz"),
         line("obj-filt", 0, "obj-prep-filt"),
-        line("obj-prep-filt", 0, "obj-gen"),
+        line("obj-prep-filt", 0, "obj-gen-in", 1),
         line("obj-filt", 0, "obj-ui-filt"),
         line("obj-ui-filt", 0, "obj-viz"),
         line("obj-place", 0, "obj-prep-place"),
-        line("obj-prep-place", 0, "obj-gen"),
+        line("obj-prep-place", 0, "obj-gen-in", 1),
         line("obj-place", 0, "obj-ui-place"),
         line("obj-ui-place", 0, "obj-viz"),
         line("obj-out", 0, "obj-prep-out"),
-        line("obj-prep-out", 0, "obj-gen"),
+        line("obj-prep-out", 0, "obj-gen-in", 1),
         line("obj-out", 0, "obj-ui-out"),
         line("obj-ui-out", 0, "obj-viz"),
-        # Amount & Freq HUD value boxes -> gen + viz
+        # Amount & Freq HUD value boxes -> gen hub + viz
         line("obj-amount", 0, "obj-prep-amount"),
-        line("obj-prep-amount", 0, "obj-gen"),
+        line("obj-prep-amount", 0, "obj-gen-in", 1),
         line("obj-amount", 0, "obj-ui-amount"),
         line("obj-ui-amount", 0, "obj-viz"),
         line("obj-freq", 0, "obj-prep-freq"),
-        line("obj-prep-freq", 0, "obj-gen"),
+        line("obj-prep-freq", 0, "obj-gen-in", 1),
         line("obj-freq", 0, "obj-ui-freq"),
         line("obj-ui-freq", 0, "obj-viz"),
-        # Soft & Debrick horizontal value bars -> gen + viz
+        # Soft & Debrick horizontal value bars -> gen hub + viz
         line("obj-soft", 0, "obj-prep-soft"),
-        line("obj-prep-soft", 0, "obj-gen"),
+        line("obj-prep-soft", 0, "obj-gen-in", 1),
         line("obj-soft", 0, "obj-ui-soft"),
         line("obj-ui-soft", 0, "obj-viz"),
         line("obj-debrick", 0, "obj-prep-debrick"),
-        line("obj-prep-debrick", 0, "obj-gen"),
+        line("obj-prep-debrick", 0, "obj-gen-in", 1),
         line("obj-debrick", 0, "obj-ui-debrick"),
         line("obj-ui-debrick", 0, "obj-viz"),
         # Mix dial -> viz telemetry
         line("obj-dial-mix", 0, "obj-ui-mix"),
         line("obj-ui-mix", 0, "obj-viz"),
-        # Interactive scope drag -> gen + Amount/Freq value box display
+        # Interactive scope drag -> gen hub + Amount/Freq value box display
         line("obj-viz", 0, "obj-route-viz"),
         line("obj-route-viz", 0, "obj-prep-amount"),
         line("obj-route-viz", 0, "obj-set-amount"),
@@ -642,7 +725,7 @@ def build():
     ]
     for name in DIAL_SPECS:
         lines.append(line(f"obj-dial-{name}", 0, f"obj-prep-{name}"))
-        lines.append(line(f"obj-prep-{name}", 0, "obj-gen"))
+        lines.append(line(f"obj-prep-{name}", 0, "obj-gen-in", 1))
 
     parameters = {
         "obj-order": ["Order", "Order", 0],

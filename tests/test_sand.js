@@ -2,6 +2,7 @@
 "use strict";
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const ROOT = path.join(__dirname, "..");
@@ -23,6 +24,26 @@ const fnAt = gen.indexOf("\nslew(");
 const paramAt = gen.indexOf("\nParam ");
 const bufferAt = gen.indexOf("\nBuffer ");
 assert.ok(fnAt > 0 && fnAt < paramAt && fnAt < bufferAt, "GenExpr functions must precede Param and Buffer");
+// Two call sites keep per-channel History. exp/sin/cos stay outside channel.
+assert.ok(/^channel\(/m.test(gen), "channel is defined once at function scope");
+assert.ok(gen.includes("wetL = channel(") && gen.includes("wetR = channel("), "L and R are separate channel call sites");
+const integFn = gen.slice(gen.indexOf("\ninteg("), gen.indexOf("\ncompand("));
+const compFn = gen.slice(gen.indexOf("\ncompand("), gen.indexOf("\nfilt("));
+const filtFn = gen.slice(gen.indexOf("\nfilt("), gen.indexOf("\nlimit("));
+const chanFn = gen.slice(gen.indexOf("\nchannel("), gen.indexOf("\nBuffer "));
+assert.ok(!integFn.includes("exp("), "integrator coefficient is hoisted");
+assert.ok(!compFn.includes("exp("), "compander gain is hoisted");
+assert.ok(!filtFn.includes("exp("), "filter coefficient is hoisted");
+assert.ok(!chanFn.includes("exp(") && !chanFn.includes("sin(") && !chanFn.includes("cos("), "channel() does not recompute transcendentals");
+assert.ok(gen.includes("coefOk"), "coefficient cache sentinel");
+assert.ok(gen.includes("if (ord > 0.5)"), "unused differentiator stages are skipped");
+assert.ok(gen.includes("if (preOn > 0.5)"), "inactive pre filter is skipped");
+assert.ok(gen.includes("if (midOn > 0.5)"), "inactive mid filter is skipped");
+assert.ok(gen.includes("if (postOn > 0.5)"), "inactive post filter is skipped");
+assert.ok(gen.includes("poke(wave, out1, wpos, 0)"), "scope ring map unchanged");
+assert.ok(gen.includes("poke(wave, pkIn, 256, 0)"), "peak telemetry map unchanged");
+assert.ok(gen.includes("poke(wave, wpos, 259, 0)"), "wpos at frame 259 is the DSP-alive counter");
+assert.ok(gen.includes("wrap(hop + 1, 0, 32)"), "counter advances every 32 samples");
 
 const raw = fs.readFileSync(AMXD_PATH);
 assert.strictEqual(raw.slice(0, 8).toString("hex"), "616d706604000000", "Invalid ampf header");
@@ -41,8 +62,17 @@ const boxMap = new Map(p.boxes.map((b) => [b.box.id, b.box]));
 assert.ok(boxMap.get("obj-wave").text.includes("#0-sandwave"));
 assert.strictEqual(boxMap.get("obj-msg-genbufs").text, "wave #0-sandwave");
 assert.strictEqual(boxMap.get("obj-msg-uibufs").text, "setbuffer #0-sandwave");
-assert.strictEqual(boxMap.get("obj-gen").maxclass, "gen.codebox~");
-assert.strictEqual(boxMap.get("obj-gen").code, gen, "Embedded gen.codebox~ must exactly match src/sand_core.genexpr");
+assert.strictEqual(boxMap.get("obj-gen"), undefined, "Sand ships without a static gen~");
+assert.ok(![...boxMap.values()].some((b) => b.maxclass === "gen.codebox~" || b.maxclass === "gen~"), "no gen object in the patcher");
+const hub = boxMap.get("obj-gen-in");
+assert.ok(hub, "missing gen message hub");
+assert.strictEqual(hub.text, "gate 1 1");
+assert.strictEqual(hub.varname, "sand_genin");
+assert.strictEqual(hub.numinlets, 2);
+assert.strictEqual(boxMap.get("obj-plugin").varname, "sand_plugin");
+assert.strictEqual(boxMap.get("obj-plugout").varname, "sand_plugout");
+assert.strictEqual(boxMap.get("obj-msg-initdsp").text, "init_dsp");
+assert.strictEqual(boxMap.get("obj-thisdevice").text, "live.thisdevice");
 
 // Only Mix remains as a radial dial on the right column
 for (const name of ["Mix"]) {
@@ -137,25 +167,29 @@ const lineSet = new Set(
 );
 for (const expectedLine of [
     "obj-order:0->obj-prep-order:0",
-    "obj-prep-order:0->obj-gen:0",
+    "obj-prep-order:0->obj-gen-in:1",
     "obj-stages:0->obj-prep-stages:0",
-    "obj-prep-stages:0->obj-gen:0",
+    "obj-prep-stages:0->obj-gen-in:1",
     "obj-amount:0->obj-prep-amount:0",
-    "obj-prep-amount:0->obj-gen:0",
+    "obj-prep-amount:0->obj-gen-in:1",
     "obj-freq:0->obj-prep-freq:0",
-    "obj-prep-freq:0->obj-gen:0",
+    "obj-prep-freq:0->obj-gen-in:1",
     "obj-out:0->obj-prep-out:0",
-    "obj-prep-out:0->obj-gen:0",
+    "obj-prep-out:0->obj-gen-in:1",
     "obj-filt:0->obj-prep-filt:0",
-    "obj-prep-filt:0->obj-gen:0",
+    "obj-prep-filt:0->obj-gen-in:1",
     "obj-place:0->obj-prep-place:0",
-    "obj-prep-place:0->obj-gen:0",
+    "obj-prep-place:0->obj-gen-in:1",
     "obj-soft:0->obj-prep-soft:0",
-    "obj-prep-soft:0->obj-gen:0",
+    "obj-prep-soft:0->obj-gen-in:1",
     "obj-debrick:0->obj-prep-debrick:0",
-    "obj-prep-debrick:0->obj-gen:0",
+    "obj-prep-debrick:0->obj-gen-in:1",
     "obj-dial-mix:0->obj-prep-mix:0",
-    "obj-prep-mix:0->obj-gen:0",
+    "obj-prep-mix:0->obj-gen-in:1",
+    "obj-msg-genbufs:0->obj-gen-in:1",
+    "obj-thisdevice:0->obj-msg-initdsp:0",
+    "obj-msg-initdsp:0->obj-viz:0",
+    "obj-viz:1->obj-gen-in:1",
     "obj-viz:0->obj-route-viz:0",
     "obj-route-viz:0->obj-set-amount:0",
     "obj-set-amount:0->obj-amount:0",
@@ -163,6 +197,13 @@ for (const expectedLine of [
     "obj-set-freq:0->obj-freq:0",
 ]) {
     assert.ok(lineSet.has(expectedLine), `Missing patchline ${expectedLine}`);
+}
+assert.ok(![...lineSet].some((l) => l.includes("obj-plugout") && l.startsWith("obj-plugin:")), "plugin~ must not bypass to plugout~");
+assert.ok(![...lineSet].some((l) => l.includes("obj-gen:")), "no cord touches a static gen~");
+for (const l of p.lines) {
+    if (l.patchline.destination[0] === "obj-gen-in") {
+        assert.strictEqual(l.patchline.destination[1], 1, "gen-bound cords go into the hub data inlet");
+    }
 }
 
 const boxOrder = p.boxes.map((b) => b.box.id);
@@ -174,7 +215,28 @@ for (const panelId of ["obj-panel-hud", "obj-panel-viz", "obj-panel-dials"]) {
 
 const jsCode = boxMap.get("obj-viz").textfile.text;
 assert.ok(jsCode.includes("function paint"));
-assert.strictEqual(jsCode, fs.readFileSync(UI_PATH, "utf8"));
+const genHeader = jsCode.match(/^var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";\n/);
+assert.ok(genHeader, "face script must embed GEN_DSP_TEXT and GEN_DSP_HASH");
+const genDspText = JSON.parse(genHeader[1]);
+assert.strictEqual(genHeader[2], crypto.createHash("sha1").update(genDspText).digest("hex").slice(0, 12));
+const gendsp = JSON.parse(genDspText);
+const codeBox = gendsp.patcher.boxes.find((b) => b.box.id === "obj-code");
+assert.ok(codeBox && codeBox.box.maxclass === "codebox", "gendsp wraps a codebox");
+assert.strictEqual(codeBox.box.code, gen, "GEN_DSP_TEXT codebox must exactly match src/sand_core.genexpr");
+assert.strictEqual(codeBox.box.numinlets, 2);
+assert.strictEqual(codeBox.box.numoutlets, 2);
+const uiPart = jsCode.slice(genHeader[0].length);
+assert.strictEqual(uiPart, fs.readFileSync(UI_PATH, "utf8"));
+assert.ok(uiPart.includes('new Global("sand_dspq")'), "instances create gen~ one at a time");
+assert.ok(uiPart.includes("function sandDspPillOn"));
+assert.ok(uiPart.includes("!sandDsp.ready && (sandDsp.createdAt > 0 || sandDsp.error)"));
+assert.ok(uiPart.includes("DSP loading..."));
+assert.ok(uiPart.includes("DSP failed:"));
+assert.ok(uiPart.includes("ensureTransferCurve"));
+assert.ok(uiPart.includes("sandScopeActive"));
+assert.ok(uiPart.includes('outlet(1, ["wave", waveName || "#0-sandwave"])'), "resend binds the scope buffer from JS");
+assert.ok(uiPart.includes('outlet(1, ["outmode", curOutMode])'), "resend sends gen params from JS state");
+assert.ok(!/message\(\s*"bang"\s*\)/.test(uiPart), "resend must not bang controls (a live.text toggle would flip)");
 
 const mg = {
     size: [192, 114],
@@ -203,12 +265,13 @@ const fn = new Function(
     "inlets",
     "outlets",
     "outlet",
-    jsCode + "\nreturn { paint, onclick, ondrag, set_amount, set_soft, set_debrick, set_freq, set_order, set_stages, set_ftype, set_fpos, set_outmode, set_mix, compandEval, mgraphics };"
+    jsCode + "\nreturn { paint, onclick, ondrag, set_amount, set_soft, set_debrick, set_freq, set_order, set_stages, set_ftype, set_fpos, set_outmode, set_mix, compandEval, ensureTransferCurve, sandDspPillOn, mgraphics };"
 );
 const ui = fn(mg, 1, 1, mockOutlet);
 ui.paint();
 assert.strictEqual(mg.relative_coords, 0);
 assert.strictEqual(mg.autofill, 0);
+assert.ok(!ui.sandDspPillOn(), "static preview has no DSP pill");
 
 // Verify compander transfer curve responds to Amount and Debrick
 const lowLift = ui.compandEval(0.2);
