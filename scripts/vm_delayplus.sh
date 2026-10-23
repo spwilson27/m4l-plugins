@@ -6,10 +6,9 @@
 #   scripts/vm_delayplus.sh sync     rsync the repo to ~/ableton in the VM
 #   scripts/vm_delayplus.sh audio    sync, then run scripts/run_delayplus_audio_tests.py in the VM
 #   scripts/vm_delayplus.sh live     sync, rebuild in the VM (the test set must point at VM paths),
-#                                    (re)start Live in the VM with delayplus_test.als and wait for its
-#                                    MCP bridge. Live is the only instance there: no dialog, relaunch
-#                                    freely after every build (crash-recovery files are cleared after
-#                                    the quit, or Live stops at a "recover your work?" dialog).
+#                                    then reopen delayplus_test.als in the running Live and wait for its
+#                                    MCP bridge (scripts/vm_live_open.sh ensure --fresh: no relaunch;
+#                                    cold start only when Live or its loader is not up; DP_COLD=1 forces it)
 #   scripts/vm_delayplus.sh run      live + test under ONE hold of the Live lock (scripts/vm_live_lock.sh); live and
 #                                 test alone also take it. `scripts/vm_live_lock.sh status` shows the holder.
 #   scripts/vm_delayplus.sh test     run scripts/test_delayplus_live.js on the host through an ssh
@@ -41,12 +40,10 @@ case "${1:-}" in
     sync_repo && "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/run_delayplus_audio_tests.py' ;;
   live)
     sync_repo || exit 1
-    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_delayplus.py >/dev/null &&
-      pkill -f "MacOS/Live" ; for i in $(seq 1 40); do pgrep -f "MacOS/Live" >/dev/null || break; sleep 0.5; done;
-      rm -f "$HOME"/Library/Preferences/Ableton/Live\ */CrashRecoveryInfo.cfg "$HOME"/Library/Preferences/Ableton/Live\ */CrashDetection.cfg;
-      open -a "Ableton Live 12 Suite" "$HOME/ableton/delayplus_test.als" &&
-      for i in $(seq 1 90); do curl -s -m 1 http://127.0.0.1:9877/health >/dev/null && { echo "bridge up"; exit 0; }; sleep 2; done;
-      echo "bridge did not come up" >&2; exit 1' ;;
+    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_delayplus.py >/dev/null' || exit 1
+    # reopen the Set in the running Live (loads the rebuilt devices, ~3 s); DP_COLD=1 = kill + relaunch (~8-10 s)
+    if [ -n "${DP_COLD:-}" ]; then "$ROOT/scripts/vm_live_open.sh" cold '~/ableton/delayplus_test.als'
+    else "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/delayplus_test.als' --fresh; fi ;;
   test)
     "${SSH[@]}" -N -L "${LOCAL_PORT}:127.0.0.1:9877" &
     TUNNEL=$!

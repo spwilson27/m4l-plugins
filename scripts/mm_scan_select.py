@@ -8,7 +8,7 @@ and keep the points whose selection is a parameter whose LOM path starts with PR
   python3 scripts/mm_scan_select.py PREFIX [COUNT] [X0 X1 Y0 Y1 STEP]   prints a JSON list [{"x","y","id","path","name"}, ...]
 
 The window (`mm_os_input.window("Live")`) gives the default region: the Detail view's device strip (x from 240 pt right of the window's left edge, the lower
-~210 pt of the window; measured: Mega Modulator's v8ui sits at screen (255, 506) in the 1024 x 680 Live window).
+~210 pt of the window; measured: Mega Modulator's v8ui sits at screen (255, 506) in the old 1024 x 680 Live window; since 2026-10-23 the VM screen is 1920 x 1080 and Live's window 1920 x 971, the region follows the window).
 Clicks on a stock dial only select it; a toggle under the pointer toggles once (the scan is meant for scratch devices).
 A menu parameter (more than two items) opens a popup when clicked: it is closed with Escape.
 Env: MM_SCAN_NAMES="Balance,Stereo Width" keeps only hits with one of those parameter names (skips toggles such as Device On); MM_SCAN_SETTLE (s, default 0.1).
