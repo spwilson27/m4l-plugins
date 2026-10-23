@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Build devices/Mega Modulator.amxd (shared core + src/megamod_ui.js + scripts/megamod_layout.json).
 
+plugin~ and plugout~ are named mm_plugin / mm_plugout and are not corded together: the device outputs
+silence until src/megamod_dsp.js connects the pass-through, once the deferred engine gen~ is ready.
+
 Usage: python3 scripts/build_megamod.py
 """
 

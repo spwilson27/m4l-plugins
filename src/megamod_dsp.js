@@ -5,7 +5,9 @@
 //      (2 in, 32 out) is wired from plugin~ and from the `mm_genin` hub (`gate 1 1`, every engine message arrives there; a scripted connect from
 //      `t a` makes no cord); router r (32 in, 32 out) is wired from the engine's 32 outlets and to its 32 live.modulate~ AND 32 live.remote~
 //      pool objects (`mm_mod_k`, `mm_rem_k`: SAVED objects, a runtime-scripted live.* never attaches to a parameter, only gen / MSP objects are
-//      created here). One router per Task tick, so the face stays responsive; plugin~ -> plugout~ is never touched (audio passes throughout).
+//      created here). One router per Task tick, so the face stays responsive. plugin~ is NOT corded to plugout~ in the file, so the
+//      device outputs silence the whole time the engine is loading. Once the engine gen~ is confirmed ready, both channels are
+//      connected (mm_plugin -> mm_plugout): zero-latency pass-through from that moment on. A restart drops those cords again.
 //   2. HOT-LOAD: `setattr gen <file>` on each shell (the engine first; the 8 routers share ONE file, so Max compiles the router once; each router
 //      learns its first pool slot from `Param rbase` = 32 * r). Adding / removing a gen~ in a running device silences it for the compile, which a
 //      hot-load into an existing shell does not (Glitch measured 2 - 24 ms).
@@ -30,6 +32,7 @@ var MMD = {
     engBase: -1,
     hbBase: [],
     cords: 0,
+    audioOn: 0, // 1 once plugin~ -> plugout~ is connected (silence until the engine is confirmed ready)
     token: Math.random(),
 };
 var MMD_STEP_MS = 4;
@@ -174,9 +177,34 @@ function mmdNext(ms) {
     MMD.task.schedule(ms === undefined ? MMD_STEP_MS : ms);
 }
 
+// Silence while the deferred DSP loads; zero-latency stereo pass-through once the engine is confirmed ready.
+// A structural connect while the device is already running is the one cord added after the gens exist, and only then.
+function mmdAudioPass(on) {
+    var want = on ? 1 : 0;
+    if (want === (MMD.audioOn ? 1 : 0)) return;
+    var h = mmdHost();
+    var pin = mmdObj("mm_plugin"), pout = mmdObj("mm_plugout");
+    if (!h || !pin || !pout) {
+        if (want) throw new Error("missing plugin~ / plugout~");
+        return;
+    }
+    if (want) {
+        mmdConnect(pin, 0, pout, 0);
+        mmdConnect(pin, 1, pout, 1);
+        MMD.audioOn = 1;
+        mmdTrace("audio-pass", "plugin~ -> plugout~");
+    } else {
+        try { h.disconnect(pin, 0, pout, 0); } catch (e1) {}
+        try { h.disconnect(pin, 1, pout, 1); } catch (e2) {}
+        MMD.cords = Math.max(0, MMD.cords - 2);
+        MMD.audioOn = 0;
+    }
+}
+
 function mmdFail(err) {
     MMD.state = "error";
     MMD.error = String(err && err.message ? err.message : err);
+    mmdAudioPass(false);
     mmdRelease();
     mmdTrace("dsp-error", MMD.error);
     post("Mega Modulator: DSP load failed: " + MMD.error + "\n");
@@ -213,6 +241,7 @@ function mmdWireRouter(h, r) {
     }
 }
 function mmdTearDown(h) {
+    mmdAudioPass(false); // back to silence for the rebuild
     for (var r = 0; r < ROUTERS; r++) { var o = mmdObj("mm_router_" + r); if (o) { try { h.remove(o); } catch (e) {} } }
     var e = mmdObj("mm_engine");
     if (e) { try { h.remove(e); } catch (x) {} }
@@ -288,6 +317,7 @@ function mmdConfirm() {
         if (mmdRunning()) {
             MMD.state = "ready";
             MMD.error = "";
+            mmdAudioPass(true); // silence ends: plugin~ -> plugout~, zero latency
             mmdTrace("dsp-ready", "after " + (Date.now() - MMD.t0) + " ms (loaded " + (Date.now() - MMD.loadedAt) + " ms ago)");
             mmdRelease();
             mmdResendAll();
@@ -323,7 +353,7 @@ function mmdDiag() {
     var d = { state: MMD.state, error: MMD.error, retries: MMD.retries, cords: MMD.cords, engineFrames: mmdEngineFrames(), routers: [] };
     var e = mmdObj("mm_engine");
     d.engine = e ? { cls: e.maxclass } : null;
-    d.plug = { plugin: !!mmdObj("mm_plugin"), plugout: !!mmdObj("mm_plugout"), hub: !!mmdObj("mm_genin") };
+    d.plug = { plugin: !!mmdObj("mm_plugin"), plugout: !!mmdObj("mm_plugout"), hub: !!mmdObj("mm_genin"), pass: MMD.audioOn ? 1 : 0 };
     for (var r = 0; r < ROUTERS; r++) {
         var o = mmdObj("mm_router_" + r);
         d.routers.push({ present: !!o, hb: mmdHeartbeat(r), echo: mmdEcho(r) });

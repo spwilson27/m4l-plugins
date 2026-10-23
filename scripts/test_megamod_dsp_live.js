@@ -9,7 +9,7 @@
  *   2. an LFO runs at its rate (test_measure counts cycles of the engine's scope phase)
  *   3. queued writes: `dsp_restart` tears the graph down; while it is down the rate multiplier is set to 2 and an LFO's Rate parameter is moved (messages
  *      the mapper must hold); when the DSP is back the LFO runs at the NEW rate and 2x (the stored Params were flushed)
- *   4. pass-through: plugin~ -> plugout~ is untouched (the cord is in the device), checked through the patcher cord list
+ *   4. pass-through: plugin~ -> plugout~ is connected by the DSP build once the engine is ready (silence while it loads); dsp_diag.plug.pass
  * Prints PASS / FAIL lines; exit status non-zero on a failure.
  */
 const { execFileSync } = require("child_process");
@@ -60,7 +60,7 @@ check("the DSP is ready (deferred build finished)", waitDsp(30000) >= 0);
     const d = diag();
     check("dsp_diag: state ready, engine gen~ present", d && d.state === "ready" && d.engine && d.engine.cls === "gen~", JSON.stringify(d && { state: d.state, engine: d.engine, retries: d.retries, cords: d.cords }));
     check("dsp_diag: all 8 routers present, heartbeat moving, echo = 32 r + 1", d && d.routers.every((q, i) => q.present && q.hb > 0 && q.echo === 32 * i + 1), JSON.stringify(d && d.routers));
-    check("dsp_diag: the cords were scripted (3 + 8 x (32 + 64) = 771)", d && d.cords === 771, d && d.cords);
+    check("dsp_diag: the cords were scripted (771 gen cords + 2 pass-through = 773)", d && d.cords === 773, d && d.cords);
     const f0 = diag().engineFrames; sleep(400); const f1 = diag().engineFrames;
     check("the engine frame counter moves", f1 > f0, f0 + " -> " + f1);
     const tr = trace();
@@ -71,10 +71,10 @@ check("the DSP is ready (deferred build finished)", waitDsp(30000) >= 0);
     info("dsp-start -> dsp-ready " + (at("dsp-ready") - at("dsp-start")) + " ms, wiring " + (at("routers-wired") - at("dsp-start")) + " ms");
 }
 
-// 4. the audio path: plugin~ -> plugout~ is a saved cord that the DSP build never touches (the build only adds cords FROM plugin~ and the hub)
+// 4. the audio path: silence until the engine is ready, then plugin~ -> plugout~ (both channels) connected by the DSP build
 {
     const d = diag();
-    check("plugin~ / plugout~ / the hub exist (the pass-through is the saved plugin~ -> plugout~ cord)", d && d.plug && d.plug.plugin && d.plug.plugout && d.plug.hub, JSON.stringify(d && d.plug));
+    check("plugin~ -> plugout~ is connected once the DSP is ready (silence while it was loading)", d && d.state === "ready" && d.plug && d.plug.plugin && d.plug.plugout && d.plug.hub && d.plug.pass === 1, JSON.stringify(d && d.plug));
 }
 
 // 2. an LFO runs at its rate

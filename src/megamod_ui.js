@@ -2844,8 +2844,11 @@ function uiReady() {
     ubSyncWidth(true);
     ubFacesUpdate();
 }
-// Called by every telemetry poll (30 fps while anything moves): returns whether a repaint is needed. Nothing is drawn from a poll that saw no
-// visible change (idle suppression): the strips view follows every modulator, the LST view the selected one (and the depth cells of its rows),
+// Called by every telemetry poll (30 fps while anything moves): returns whether a repaint is needed. The poll peeks the
+// scope frame counter first and skips the 16-slot read when no modulator is enabled, or when nothing is moving and no UI
+// edit has happened since the last read (src/megamod_mapper.js). This function still ages a visible follower trace so it
+// can scroll out, then returns false and paint() does not run. Nothing is drawn from a poll that saw no visible change
+// (idle suppression): the strips view follows every modulator, the LST view the selected one (and the depth cells of its rows),
 // the Options view nothing; an armed LRN pulse and the note / pool-full pills animate; a follower's scrolling trace (UB_HIST samples) keeps
 // repainting until its history window is flat.
 const ubHistSame = []; // per modulator: how many of the latest history samples are identical
