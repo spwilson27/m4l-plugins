@@ -456,12 +456,42 @@ var grainPos = [];
 var grainAmp = [];
 for (var gi0 = 0; gi0 < GRAIN_SLOTS; gi0++) { grainPos.push(-1); grainAmp.push(0); }
 
+// Peak-hold meters decay toward 0 and never land on an exact zero. Below this they are invisible.
+var TELE_SILENT = 0.0005;
+// Set after a full read that was already idle, so the next ticks can skip the 128 + 80 peeks.
+var teleSettled = 0;
+
+function scopeProbeIdle(buf) {
+    var v = buf.peek(1, 32, 8);
+    if (!v || typeof v === "number" || v.length < 3) return false;
+    return Math.abs(v[0]) <= TELE_SILENT && Math.abs(v[1]) <= TELE_SILENT && Math.round(v[2]) === 0;
+}
+
+function teleStateIdle() {
+    if (liveActiveVoices !== 0) return false;
+    if (livePeakL > TELE_SILENT || livePeakR > TELE_SILENT) return false;
+    var g, i;
+    for (g = 0; g < GRAIN_SLOTS; g++) if (grainAmp[g] > TELE_SILENT || grainPos[g] >= 0) return false;
+    for (i = 0; i < 16; i++) {
+        if (voiceAmps[i] > 0.002) return false;
+        if (voiceAmpStg[i] > 0.5 || voiceModStg[i] > 0.5) return false;
+        if (voiceAmpLvl[i] > TELE_SILENT || voiceModLvl[i] > TELE_SILENT) return false;
+        if (voiceCutHz[i] > 10) return false;
+    }
+    return true;
+}
+
+// Returns false when the frame counter / voice count / meters say the device is still idle, so the
+// caller can skip mgraphics.redraw(). A note, a meter or a grain forces one full read before settling again.
 function pollTelemetryScope() {
-    if (!scopeBufName || typeof Buffer === "undefined") return;
+    if (!scopeBufName || typeof Buffer === "undefined") return false;
+    try {
+        if (teleSettled && scopeProbeIdle(new Buffer(scopeBufName))) return false;
+    } catch (_) {}
     try {
         var sb = new Buffer(scopeBufName);
         var data = sb.peek(1, 0, 128);
-        if (!data || data.length < 40) return;
+        if (!data || data.length < 40) return false;
         // Grains (Textures / Fragments): read position 64..95 (-1 = unused), level 96..127
         for (var g = 0; g < GRAIN_SLOTS; g++) {
             grainPos[g] = data.length >= 128 ? data[64 + g] : -1;
@@ -490,11 +520,12 @@ function pollTelemetryScope() {
             voiceCutHz[tv] = hasTv ? tvd[64 + tv] : 0;
         }
     } catch (_) {}
+    teleSettled = teleStateIdle() ? 1 : 0;
+    return true;
 }
 
 var scopeTask = (typeof Task !== "undefined") ? new Task(function() {
-    pollTelemetryScope();
-    mgraphics.redraw();
+    if (pollTelemetryScope()) mgraphics.redraw();
     if (scopeTask) scopeTask.schedule(45);
 }) : null;
 
@@ -606,6 +637,40 @@ var hostPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.p
 var dspReady = 0;
 var dspError = "";
 var dspTask = null;
+// One instance creates its gen~ at a time. The first gen~ a Live process creates is sometimes never
+// added to the DSP chain (same as Reverb+ / Multiband Split): rebuild it after 3.5 s, later attempts after 6 s.
+var dspToken = Math.random();
+var dspRetries = 0;
+var DSP_RETRIES = 2;
+var DSP_CLAIM_MS = 15000;
+var DSP_QUEUE_POLL_MS = 100;
+var DSP_FIRST_TIMEOUT_MS = 3500;
+
+function dspTimeoutMs() {
+    return dspRetries === 0 ? DSP_FIRST_TIMEOUT_MS : DSP_TIMEOUT_MS;
+}
+
+function dspClaim() {
+    try {
+        if (typeof Global === "undefined") return true;
+        var q = new Global("better_sampler_dspq");
+        var now = Date.now();
+        if (q.owner && q.owner !== dspToken && now - Number(q.t) < DSP_CLAIM_MS) return false;
+        q.owner = dspToken;
+        q.t = now;
+        return true;
+    } catch (_) {
+        return true;
+    }
+}
+
+function dspRelease() {
+    try {
+        if (typeof Global === "undefined") return;
+        var q = new Global("better_sampler_dspq");
+        if (q.owner === dspToken) q.owner = 0;
+    } catch (_) {}
+}
 
 function dspFilePath() {
     return "/tmp/better_sampler_core_" + GEN_DSP_HASH + ".gendsp";
@@ -628,7 +693,14 @@ function writeDspFile(path) {
 
 function loadDsp() {
     if (dspReady || dspCreatedAt || faceRegion !== "main" || typeof GEN_DSP_TEXT === "undefined" || !hostPatcher) return;
-    trace("dsp-start", "creating gen~");
+    if (!dspClaim()) {
+        if (typeof Task !== "undefined") {
+            if (!dspTask) dspTask = new Task(loadDsp);
+            dspTask.schedule(DSP_QUEUE_POLL_MS);
+        }
+        return;
+    }
+    trace("dsp-start", "creating gen~" + (dspRetries ? " (retry " + dspRetries + ")" : ""));
     try {
         var g = hostPatcher.getnamed("obj-gen");
         if (!g) {
@@ -651,6 +723,7 @@ function loadDsp() {
         dspConfirm();
     } catch (err) {
         dspError = String(err && err.message ? err.message : err);
+        dspRelease();
         trace("dsp-error", dspError);
         if (typeof post === "function") post("Better Sampler: DSP load failed: " + dspError + "\n");
     }
@@ -660,7 +733,7 @@ function loadDsp() {
 // Diagnostics, reachable from the Ableton MCP bridge with messnamed("#0-bsdebug", "dsp_diag")
 // (#0 is not substituted in a top-level device); results land in the load trace
 function dsp_diag() {
-    var info = ["ready=" + dspReady, "err=" + dspError, "createdAt=" + dspCreatedAt, "counter=" + scopeFrameCounter(), "scope=" + scopeBufName];
+    var info = ["ready=" + dspReady, "err=" + dspError, "createdAt=" + dspCreatedAt, "counter=" + scopeFrameCounter(), "scope=" + scopeBufName, "retries=" + dspRetries];
     try {
         var g = hostPatcher ? hostPatcher.getnamed("obj-gen") : null;
         info.push("gen=" + (g ? g.maxclass : "none"));
@@ -728,7 +801,8 @@ function dsp_retry() {
         var g = hostPatcher ? hostPatcher.getnamed("obj-gen") : null;
         if (g) hostPatcher.remove(g);
     } catch (_) {}
-    dspReady = 0; dspError = ""; dspCreatedAt = 0; dspCounter0 = -1;
+    dspReady = 0; dspError = ""; dspCreatedAt = 0; dspCounter0 = -1; dspRetries = 0;
+    dspRelease();
     loadDsp();
 }
 
@@ -738,7 +812,7 @@ var dspConfirmTask = null;
 var dspSettleTask = null;
 var DSP_SETTLE_MS = 300;
 var DSP_CONFIRM_MS = 150;
-var DSP_TIMEOUT_MS = 10000;
+var DSP_TIMEOUT_MS = 6000;
 
 function scopeFrameCounter() {
     if (!scopeBufName || typeof Buffer === "undefined") return -1;
@@ -756,6 +830,7 @@ function dspConfirm() {
         dspReady = 1;
         dspError = "";
         trace("dsp", "ready after " + (Date.now() - dspCreatedAt) + " ms");
+        dspRelease();
         // The last re-send went out while the gen was still compiling and was dropped; send every parameter once more
         // now that it runs, and once again after it has settled.
         sendSampleRate();
@@ -767,8 +842,21 @@ function dspConfirm() {
         mgraphics.redraw();
         return;
     }
-    if (Date.now() - dspCreatedAt > DSP_TIMEOUT_MS) {
-        dspError = "not running (counter " + dspCounter0 + "/" + scopeFrameCounter() + ")";
+    if (Date.now() - dspCreatedAt > dspTimeoutMs() && dspRetries < DSP_RETRIES) {
+        dspRetries++;
+        trace("dsp-retry", "gen~ frames stayed " + c);
+        try {
+            var old = hostPatcher ? hostPatcher.getnamed("obj-gen") : null;
+            if (old) hostPatcher.remove(old);
+        } catch (_) {}
+        dspCreatedAt = 0;
+        dspCounter0 = -1;
+        loadDsp();
+        return;
+    }
+    if (Date.now() - dspCreatedAt > dspTimeoutMs()) {
+        dspError = "not running (counter " + dspCounter0 + "/" + c + ")";
+        dspRelease();
         trace("dsp-error", dspError);
         mgraphics.redraw();
         return;

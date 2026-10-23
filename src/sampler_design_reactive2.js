@@ -1058,12 +1058,19 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
     // Corner brackets inside the envelope plot area
     cornerBrackets(g.gx - 5.5, g.gy - 5.5, ENV_W - 25, g.gb - g.gy + 11, cy1);
 
-    // Envelope curve: thin cyan line from (gx, y0) -> (xA, yPeak) -> (xD, ys) -> (xS, ys) -> (xR, yFinal)
-    var n = 18, j, pts = [[g.gx, g.y0]];
-    for (j = 1; j <= n; j++) { var ta = j / n; pts.push([g.gx + (g.xA - g.gx) * ta, envYAttack(g, ta)]); }
-    for (j = 1; j <= n; j++) { var td = j / n; pts.push([g.xA + (g.xD - g.xA) * td, envYDecay(g, td)]); }
-    pts.push([g.xS, g.ys]);
-    for (j = 1; j <= n; j++) { var tr = j / n; pts.push([g.xS + (g.xR - g.xS) * tr, envYRelease(g, tr, g.sus)]); }
+    // Envelope curve: thin cyan line from (gx, y0) -> (xA, yPeak) -> (xD, ys) -> (xS, ys) -> (xR, yFinal).
+    // The static curve depends only on the envelope parameters; voice dots are drawn on top of the cache.
+    var n = 18, j;
+    var envKey = [g.gx, g.xA, g.xD, g.xS, g.xR, g.y0, g.yPeak, g.ys, g.yFinal, g.sA, g.sD, g.sR, g.initL, g.peakL, g.sus, g.finalL, g.gb, g.gy].join("|");
+    var pts = curveGeomGet("r2-env", envKey);
+    if (!pts) {
+        pts = [[g.gx, g.y0]];
+        for (j = 1; j <= n; j++) { var ta = j / n; pts.push([g.gx + (g.xA - g.gx) * ta, envYAttack(g, ta)]); }
+        for (j = 1; j <= n; j++) { var td = j / n; pts.push([g.xA + (g.xD - g.xA) * td, envYDecay(g, td)]); }
+        pts.push([g.xS, g.ys]);
+        for (j = 1; j <= n; j++) { var tr = j / n; pts.push([g.xS + (g.xR - g.xS) * tr, envYRelease(g, tr, g.sus)]); }
+        curveGeomPut("r2-env", envKey, pts);
+    }
     strokeSeg(pts, cy1, 1.0, 1.4);
 
     // Sounding voice dots riding the curve
@@ -1435,6 +1442,32 @@ function responsePath(g, ft, hzCut, q) {
     }
     return top;
 }
+// Base curve (the knob) and each voice cutoff. The voice map is dropped when type, Q or the plot moves,
+// and capped so a sweeping cutoff cannot keep every historical curve.
+var r2FiltCache = { key: "", base: null, baseHz: 0, voices: {}, n: 0 };
+function responsePathCached(g, ft, hzCut, q) {
+    var key = ft + "|" + q + "|" + g.gx + "|" + g.gw + "|" + g.gy + "|" + g.gb;
+    if (r2FiltCache.key !== key) {
+        r2FiltCache.key = key;
+        r2FiltCache.base = null;
+        r2FiltCache.voices = {};
+        r2FiltCache.n = 0;
+    }
+    var hk = Math.round(hzCut);
+    if (r2FiltCache.base && r2FiltCache.baseHz === hk) return r2FiltCache.base;
+    var hit = r2FiltCache.voices[hk];
+    if (hit) return hit;
+    var path = responsePath(g, ft, hzCut, q);
+    if (r2FiltCache.base === null) {
+        r2FiltCache.base = path;
+        r2FiltCache.baseHz = hk;
+    } else {
+        if (r2FiltCache.n > 24) { r2FiltCache.voices = {}; r2FiltCache.n = 0; }
+        r2FiltCache.voices[hk] = path;
+        r2FiltCache.n++;
+    }
+    return path;
+}
 function strokePath(p, c, a, wd) {
     setc(c, a);
     mgraphics.set_line_width(wd);
@@ -1483,17 +1516,20 @@ function paintFilterSection(sx) {
         fillRect(x0, g.gy, Math.max(1, x1 - x0), g.gb - g.gy, RC.a_mod, 0.10);
     }
 
-    // base response (the knob setting): a thin line
-    var top = responsePath(g, ft, fc, q);
+    // base response (the knob setting): a thin line. Rebuilt only when type, cutoff, resonance or the plot changes.
+    var top = responsePathCached(g, ft, fc, q);
     strokePath(top, acc, al, 1.3);
 
-    // per voice: a ghost of the response at the voice's own effective cutoff, a dot on its peak, the newest voice's curve bright
+    // per voice: a ghost of the response at the voice's own effective cutoff, a dot on its peak, the newest voice's curve bright.
+    // No ghost when nothing is sounding, and no second copy of the base curve when a voice sits on the knob cutoff.
     filtDots = [];
     if (on) {
         var vs = filterVoices();
         var k;
-        for (k = vs.length - 1; k >= 1; k--) strokePath(responsePath(g, ft, voiceCutHz[vs[k]], q), RC.a_mod, Math.max(0.1, 0.22 - 0.02 * k), 1.0);
-        if (vs.length) strokePath(responsePath(g, ft, voiceCutHz[vs[0]], q), RC.a_mod, 1.0, 1.4);
+        for (k = vs.length - 1; k >= 1; k--) {
+            if (Math.abs(voiceCutHz[vs[k]] - fc) > 1) strokePath(responsePathCached(g, ft, voiceCutHz[vs[k]], q), RC.a_mod, Math.max(0.1, 0.22 - 0.02 * k), 1.0);
+        }
+        if (vs.length && Math.abs(voiceCutHz[vs[0]] - fc) > 1) strokePath(responsePathCached(g, ft, voiceCutHz[vs[0]], q), RC.a_mod, 1.0, 1.4);
         for (k = 0; k < vs.length; k++) {
             var hzv = voiceCutHz[vs[k]];
             var px = Math.min(g.gx + g.gw, fFx(g, hzv)), py = fFy(g, filterDb(ft, 1, q));
