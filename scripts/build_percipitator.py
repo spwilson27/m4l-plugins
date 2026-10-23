@@ -17,6 +17,7 @@ Build devices/Percipitator.amxd (408 x 169 px — Concept 3 Horizontal Value-Bar
       `Vol` (-36..+18 dB horizontal slider), `Mix` (0..100% horizontal slider)
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -24,6 +25,7 @@ import struct
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "percipitator_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "percipitator_ui.js")
+DSP_PATH = os.path.join(ROOT_DIR, "src", "percipitator_dsp.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "percipitator_core.genexpr")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Percipitator.amxd")
 
@@ -225,14 +227,63 @@ def make_panel(obj_id, x, y, w, h, bg=(0.10, 0.11, 0.13), border=(0.22, 0.26, 0.
     }
 
 
+def gendsp_json(gen_code):
+    """2-in / 2-out .gendsp wrapper around codebox. The face writes it to /tmp/percipitator_core_<hash>.gendsp
+    and creates `gen~ @gen <file>` after the GUI has loaded (src/percipitator_dsp.js, AGENTS.md 1d)."""
+    def bx(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {
+            "id": i,
+            "maxclass": cls,
+            "numinlets": ni,
+            "numoutlets": no,
+            "outlettype": [""] * no,
+            "patching_rect": [float(x), float(y), 200.0, 22.0],
+        }
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+
+    patch = {
+        "patcher": {
+            "fileversion": 1,
+            "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+            "classnamespace": "dsp.gen",
+            "rect": [50.0, 50.0, 600.0, 450.0],
+            "boxes": [
+                bx("obj-in1", "in 1", 20, 20, 0, 1),
+                bx("obj-in2", "in 2", 120, 20, 0, 1),
+                bx("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+                bx("obj-out1", "out 1", 20, 400, 1, 0),
+                bx("obj-out2", "out 2", 120, 400, 1, 0),
+            ],
+            "lines": [
+                {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+                {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+                {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+                {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+            ],
+        }
+    }
+    return json.dumps(patch)
+
+
 def build():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
+    with open(DSP_PATH, "r", encoding="utf-8") as f:
+        dsp_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
-    v8_code = config_js.rstrip() + "\n\n" + ui_js
+    gen_text = gendsp_json(gen_code)
+    gen_hash = hashlib.sha1(gen_text.encode("utf-8")).hexdigest()[:12]
+    gen_vars = (
+        f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+        f"var GEN_DSP_HASH = \"{gen_hash}\";\n"
+    )
+    v8_code = config_js.rstrip() + "\n\n" + gen_vars + "\n" + dsp_js.rstrip() + "\n\n" + ui_js
 
     viz_rect = [10.0, 26.0, 204.0, 134.0]
     cyan = (0.28, 0.84, 0.96)
@@ -339,6 +390,7 @@ def build():
                     "outlettype": ["signal", "signal"],
                     "patching_rect": [20.0, 240.0, 52.0, 20.0],
                     "text": "plugin~",
+                    "varname": "pcp_plugin",
                 }
             },
             {
@@ -352,20 +404,21 @@ def build():
                     "outlettype": ["signal", "signal"],
                     "patching_rect": [20.0, 460.0, 58.0, 20.0],
                     "text": "plugout~",
+                    "varname": "pcp_plugout",
                 }
             },
             {
                 "box": {
-                    "code": gen_code,
-                    "fontname": "<Monospaced>",
+                    "fontname": "Arial Bold",
                     "fontsize": 10.0,
-                    "id": "obj-gen",
-                    "maxclass": "gen.codebox~",
+                    "id": "obj-gen-in",
+                    "maxclass": "newobj",
                     "numinlets": 2,
-                    "numoutlets": 2,
-                    "outlettype": ["signal", "signal"],
-                    "patching_rect": [120.0, 300.0, 420.0, 140.0],
-                    "varname": "percipitator",
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [120.0, 280.0, 70.0, 20.0],
+                    "text": "gate 1 1",
+                    "varname": "pcp_genin",
                 }
             },
             {
@@ -405,6 +458,32 @@ def build():
                     "outlettype": ["bang"],
                     "patching_rect": [560.0, 315.0, 60.0, 20.0],
                     "text": "loadbang",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-thisdevice",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 2,
+                    "outlettype": ["bang", "int"],
+                    "patching_rect": [640.0, 315.0, 110.0, 20.0],
+                    "text": "live.thisdevice",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
+                    "id": "obj-msg-ui-dsp",
+                    "maxclass": "message",
+                    "numinlets": 2,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [760.0, 315.0, 70.0, 20.0],
+                    "text": "init_dsp",
                 }
             },
             {
@@ -632,6 +711,19 @@ def build():
                 "box": {
                     "fontname": "Arial Bold",
                     "fontsize": 10.0,
+                    "id": "obj-ui-mix",
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [680.0, 670.0, 105.0, 20.0],
+                    "text": "prepend set_mix",
+                }
+            },
+            {
+                "box": {
+                    "fontname": "Arial Bold",
+                    "fontsize": 10.0,
                     "id": "obj-route-viz",
                     "maxclass": "newobj",
                     "numinlets": 5,
@@ -736,23 +828,25 @@ def build():
     )
 
     lines = [
-        {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-gen", 0]}},
-        {"patchline": {"source": ["obj-plugin", 1], "destination": ["obj-gen", 1]}},
-        {"patchline": {"source": ["obj-gen", 0], "destination": ["obj-plugout", 0]}},
-        {"patchline": {"source": ["obj-gen", 1], "destination": ["obj-plugout", 1]}},
+        # plugin~ -> gen~ -> plugout~ is wired by the face when the deferred gen~ exists.
+        # Until then there is no cord: the device stays silent while the GUI is already up.
         {"patchline": {"source": ["obj-midiin", 0], "destination": ["obj-midiparse", 0]}},
         {"patchline": {"source": ["obj-midiparse", 0], "destination": ["obj-prep-midi", 0]}},
         {"patchline": {"source": ["obj-prep-midi", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-ui-buf", 0]}},
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-gen-buf", 0]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ui-buf", 0]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-gen-buf", 0]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ui-dsp", 0]}},
+        {"patchline": {"source": ["obj-msg-ui-dsp", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-msg-ui-buf", 0], "destination": ["obj-viz", 0]}},
-        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-wt-mode", 0], "destination": ["obj-prep-wtmode", 0]}},
-        {"patchline": {"source": ["obj-prep-wtmode", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-wtmode", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-wt-mode", 0], "destination": ["obj-ui-wtmode", 0]}},
         {"patchline": {"source": ["obj-ui-wtmode", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-sieve", 0], "destination": ["obj-prep-sieve", 0]}},
-        {"patchline": {"source": ["obj-prep-sieve", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-sieve", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-sieve", 0], "destination": ["obj-ui-sieve", 0]}},
         {"patchline": {"source": ["obj-ui-sieve", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-ctrl-wtpos", 0], "destination": ["obj-ui-wtpos", 0]}},
@@ -777,11 +871,14 @@ def build():
         {"patchline": {"source": ["obj-ui-attack", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-ctrl-resynthgain", 0], "destination": ["obj-ui-vol", 0]}},
         {"patchline": {"source": ["obj-ui-vol", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-ctrl-mix", 0], "destination": ["obj-ui-mix", 0]}},
+        {"patchline": {"source": ["obj-ui-mix", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-viz", 0], "destination": ["obj-route-viz", 0]}},
         {"patchline": {"source": ["obj-route-viz", 0], "destination": ["obj-prep-scalemask", 0]}},
-        {"patchline": {"source": ["obj-prep-scalemask", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-scalemask", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-route-viz", 1], "destination": ["obj-prep-gate", 0]}},
-        {"patchline": {"source": ["obj-prep-gate", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-gate", 0], "destination": ["obj-gen-in", 1]}},
+        {"patchline": {"source": ["obj-route-viz", 4], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-route-viz", 2], "destination": ["obj-scale-wtpos", 0]}},
         {"patchline": {"source": ["obj-route-viz", 2], "destination": ["obj-set-wtpos", 0]}},
         {"patchline": {"source": ["obj-set-wtpos", 0], "destination": ["obj-ctrl-wtpos", 0]}},
@@ -832,7 +929,7 @@ def build():
             }
         )
         lines.append({"patchline": {"source": [src_id, 0], "destination": [prep_id, 0]}})
-        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen", 0]}})
+        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen-in", 1]}})
 
     # Background panels MUST be last in boxes and have "background": 1
     boxes.extend(panels)

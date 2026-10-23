@@ -12,7 +12,7 @@
  *  4. Absence of Freeze button, Gate right-hand slider, Engine B blend, and Drop WT;
  *     presence of Blur where Gate used to be (Column 1 Row 5), horizontal Vol slider right above Mix (Column 2 Rows 6 & 7),
  *     bipolar center-fill sliders (`appearance: 3`) for Pitch/Shift/Warp/Tilt, pre-blended `activeslidercolor`,
- *     and adjustable Gate in the left graphic (`v8ui` outlet `["gate", db]` -> `prepend gate` -> `obj-gen`)
+ *     and adjustable Gate in the left graphic (`v8ui` outlet `["gate", db]` -> `prepend gate` -> `obj-gen-in`)
  *  5. Zero presentation_rect overlap between v8ui and live.* controls, panel z-order (`background: 1` last)
  *  6. v8ui evaluation, mgraphics.relative_coords === 0, wavetable poke, Gate drag, Wave Pill drag,
  *     12-Note Scale Strip click, Sidechain MIDI input, getvalueof/setvalueof round-trip, and
@@ -20,6 +20,7 @@
  */
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
@@ -106,11 +107,59 @@ const byId = Object.fromEntries(boxes.map((b) => [b.id, b]));
 
 assert.ok(byId["obj-plugin"] && byId["obj-plugin"].text === "plugin~", "Missing plugin~");
 assert.ok(byId["obj-plugout"] && byId["obj-plugout"].text === "plugout~", "Missing plugout~");
+assert.strictEqual(byId["obj-plugin"].varname, "pcp_plugin", "plugin~ scripting name");
+assert.strictEqual(byId["obj-plugout"].varname, "pcp_plugout", "plugout~ scripting name");
 assert.ok(byId["obj-midiin"] && byId["obj-midiin"].text === "midiin", "Missing midiin for sidechain MIDI");
 assert.ok(byId["obj-midiparse"] && byId["obj-midiparse"].text === "midiparse", "Missing midiparse for sidechain MIDI");
-assert.ok(byId["obj-gen"] && byId["obj-gen"].maxclass === "gen.codebox~", "Missing gen.codebox~");
-assert.strictEqual(byId["obj-gen"].code, gen, "Embedded GenExpr mismatch");
+assert.ok(!byId["obj-gen"], "Device must ship without a static gen~ / gen.codebox~ (deferred DSP)");
+assert.ok(!boxes.some((b) => b.maxclass === "gen.codebox~" || b.maxclass === "gen~"), "No static gen object");
+assert.ok(byId["obj-gen-in"] && byId["obj-gen-in"].text === "gate 1 1", "Missing open gate hub");
+assert.strictEqual(byId["obj-gen-in"].varname, "pcp_genin", "gen hub scripting name");
+assert.strictEqual(byId["obj-gen-in"].numinlets, 2, "gate hub has a data inlet");
+assert.strictEqual(byId["obj-msg-ui-dsp"].text, "init_dsp", "live.thisdevice must send init_dsp");
+assert.ok(byId["obj-thisdevice"] && byId["obj-thisdevice"].text === "live.thisdevice", "Missing live.thisdevice");
 assert.ok(gen.includes("* pos * 6.0"), "GenExpr tilt exponent must be doubled to 6.0");
+assert.ok(gen.includes("poke(scope, rollCount, 35, 0)"), "Frame counter must be written to scope slot 35");
+assert.ok(gen.includes("for (b = 0; b < 16; b += 1)"), "Bands must run in one loop");
+assert.strictEqual((gen.match(/\bband_track\(/g) || []).length, 2, "band_track must have one definition and one call site");
+assert.strictEqual((gen.match(/\bvoice_osc\(/g) || []).length, 2, "voice_osc must have one definition and one call site");
+assert.ok(gen.includes("Data svfF(16);"), "SVF coefficients must be cached");
+assert.strictEqual(byId["obj-scope-buf"].text, "buffer~ #0-percipscope @samps 64", "Scope buffer must cover slot 35");
+
+const lines = patcher.lines.map((l) => l.patchline);
+function hasLine(src, srcOut, dst, dstIn) {
+    return lines.some((l) => l.source[0] === src && l.source[1] === srcOut && l.destination[0] === dst && l.destination[1] === dstIn);
+}
+assert.ok(!lines.some((l) => l.source[0] === "obj-plugin" && l.destination[0] === "obj-plugout"), "plugin~ must not bypass to plugout~ while DSP is deferred");
+assert.ok(!lines.some((l) => l.source[0] === "obj-plugin" || l.destination[0] === "obj-gen"), "No static audio cord to a gen object");
+const intoHub = lines.filter((l) => l.destination[0] === "obj-gen-in");
+assert.ok(intoHub.length >= 8, "Gen-bound messages must feed the hub");
+for (const l of intoHub) {
+    assert.strictEqual(l.destination[1], 1, "Every gen-bound cord must enter the gate's data inlet");
+}
+assert.ok(hasLine("obj-msg-gen-buf", 0, "obj-gen-in", 1), "Buffer bind -> hub");
+assert.ok(hasLine("obj-prep-wtmode", 0, "obj-gen-in", 1), "wtmode -> hub");
+assert.ok(hasLine("obj-prep-sieve", 0, "obj-gen-in", 1), "sieve -> hub");
+assert.ok(hasLine("obj-prep-scalemask", 0, "obj-gen-in", 1), "scalemask -> hub");
+assert.ok(hasLine("obj-prep-gate", 0, "obj-gen-in", 1), "gate -> hub");
+assert.ok(hasLine("obj-prep-pitch", 0, "obj-gen-in", 1), "pitch -> hub");
+assert.ok(hasLine("obj-prep-mix", 0, "obj-gen-in", 1), "mix/wet -> hub");
+assert.ok(hasLine("obj-route-viz", 4, "obj-gen-in", 1), "Unmatched viz messages -> hub");
+assert.ok(hasLine("obj-thisdevice", 0, "obj-msg-ui-dsp", 0), "live.thisdevice -> init_dsp");
+assert.ok(hasLine("obj-msg-ui-dsp", 0, "obj-viz", 0), "init_dsp -> v8ui");
+
+const genDspMatch = byId["obj-viz"].textfile.text.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+assert.ok(genDspMatch, "Face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
+const genDspText = JSON.parse(genDspMatch[1]);
+const genDspHash = crypto.createHash("sha1").update(genDspText).digest("hex").slice(0, 12);
+assert.strictEqual(genDspMatch[2], genDspHash, "GEN_DSP_HASH must be the .gendsp sha1 prefix");
+const genPatch = JSON.parse(genDspText);
+const codebox = genPatch.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
+assert.ok(codebox, "Deferred .gendsp must contain a codebox");
+assert.strictEqual(codebox.code, gen, "Deferred codebox must embed percipitator_core.genexpr");
+assert.ok(byId["obj-viz"].textfile.text.includes("function init_dsp"), "v8ui must define init_dsp");
+assert.ok(byId["obj-viz"].textfile.text.includes('Global("percipitator_dspq")'), "DSP create must be serialized on percipitator_dspq");
+assert.ok(byId["obj-viz"].textfile.text.includes("/tmp/percipitator_core_"), "Deferred gen file path");
 assert.strictEqual(byId["obj-ctrl-pitch"].appearance, 3, "Pitch must use appearance 3 (Bipolar center fill)");
 assert.strictEqual(byId["obj-ctrl-fshift"].appearance, 3, "Shift must use appearance 3 (Bipolar center fill)");
 assert.strictEqual(byId["obj-ctrl-warp"].appearance, 3, "Warp must use appearance 3 (Bipolar center fill)");
@@ -207,7 +256,7 @@ const sandbox = {
         stroke() {},
         select_font_face() {},
         set_font_size() {},
-        show_text() {},
+        show_text(t) { this._text = (this._text || []).concat([String(t)]); },
     },
     Buffer: function (name) {
         this.name = name;
@@ -225,7 +274,7 @@ const sandbox = {
 
 const fn = new Function(
     "mgraphics", "Buffer", "Task", "outlet", "notifyclients",
-    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, set_pitch, set_fshift, set_stretch, set_snap, set_blur, set_decay, set_attack, set_sieve, set_vol, getvalueof, setvalueof, onclick, ondrag, pullScope, paint, layoutRegions, bandAmps, droplets: () => droplets, curWtPosPct, curWarpPct, displacedBandCenterX, volVisualScale };"
+    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, set_pitch, set_fshift, set_stretch, set_snap, set_blur, set_decay, set_attack, set_sieve, set_vol, set_wtpos, set_wtmode, set_warp, getvalueof, setvalueof, onclick, ondrag, pullScope, paint, layoutRegions, bandAmps, droplets: () => droplets, curWtPosPct, curWarpPct, displacedBandCenterX, volVisualScale, pcpDsp, pcpDspPillText, wavePillSamples };"
 );
 const ui = fn(sandbox.mgraphics, sandbox.Buffer, sandbox.Task, sandbox.outlet, sandbox.notifyclients);
 assert.strictEqual(sandbox.mgraphics.relative_coords, 0, "v8ui must disable relative_coords");
@@ -259,11 +308,22 @@ ui.set_decay(120);
 ui.set_attack(35);
 ui.set_attack(2.5);
 
+assert.strictEqual(ui.pcpDspPillText(), "", "DSP pill stays hidden until a load has started");
+const cachedWave = ui.wavePillSamples();
+assert.strictEqual(ui.wavePillSamples(), cachedWave, "Wave pill path is cached while Wave/Mode/Warp are unchanged");
+ui.set_wtpos(40);
+assert.notStrictEqual(ui.wavePillSamples(), cachedWave, "Wave change rebuilds the pill path");
+ui.set_wtpos(0);
+ui.set_wtmode(2);
+assert.notDeepStrictEqual(ui.wavePillSamples(), cachedWave, "Mode change rebuilds the pill path");
+ui.set_wtmode(0);
+
 ui.setbuffer("1001-percipwt", "1001-percipscope");
 assert.ok(pokedWt && pokedWt.length === cfg.WT_TOTAL_SAMPS, "setbuffer must poke 8192-sample Sin->Tri->Saw->Square wavetable");
 ui.loadbang();
 ui.pullScope();
 ui.paint();
+assert.ok(!(sandbox.mgraphics._text || []).some((t) => t.indexOf("DSP") === 0), "Static paint must not draw the DSP pill");
 assert.ok(ui.bandAmps[3] > 0.3, "pullScope must update bandAmps from #0-percipscope");
 
 // Verify balanced volume-independent droplets even when Vol is at -36 dB, and no tether lines to keyboard

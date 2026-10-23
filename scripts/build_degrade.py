@@ -17,6 +17,7 @@ Usage:
   python3 scripts/build_degrade.py hero      # sets devices/Degrade.amxd to Hero layout (560 px)
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -24,6 +25,7 @@ import sys
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "degrade_config.js")
+DSP_JS_PATH = os.path.join(ROOT_DIR, "src", "degrade_dsp.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "degrade_ui.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "degrade_core.genexpr")
 
@@ -559,19 +561,64 @@ def layout_hero():
     return dev_w, viz_rect, ui_boxes, panels
 
 
+def gendsp_json(gen_code):
+    """2-in, 2-out .gendsp wrapper around codebox. The face writes it and creates `gen~ @gen <file>`."""
+    def b(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {
+            "id": i,
+            "maxclass": cls,
+            "numinlets": ni,
+            "numoutlets": no,
+            "outlettype": [""] * no,
+            "patching_rect": [float(x), float(y), 200.0, 22.0],
+        }
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+
+    patch = {
+        "patcher": {
+            "fileversion": 1,
+            "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+            "classnamespace": "dsp.gen",
+            "rect": [50.0, 50.0, 600.0, 450.0],
+            "boxes": [
+                b("obj-in1", "in 1", 20, 20, 0, 1),
+                b("obj-in2", "in 2", 120, 20, 0, 1),
+                b("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+                b("obj-out1", "out 1", 20, 400, 1, 0),
+                b("obj-out2", "out 2", 120, 400, 1, 0),
+            ],
+            "lines": [
+                {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+                {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+                {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+                {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+            ],
+        }
+    }
+    return json.dumps(patch)
+
+
 def build_patcher():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
+    with open(DSP_JS_PATH, "r", encoding="utf-8") as f:
+        dsp_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
 
-    combined_ui_js = config_js + "\n\n" + ui_js
+    gen_dsp_text = gendsp_json(gen_code)
+    gen_dsp_hash = hashlib.sha1(gen_dsp_text.encode("utf-8")).hexdigest()[:12]
+    gen_prelude = f'var GEN_DSP_TEXT = {json.dumps(gen_dsp_text)};\nvar GEN_DSP_HASH = "{gen_dsp_hash}";\n'
+    combined_ui_js = config_js + "\n\n" + gen_prelude + "\n" + dsp_js + "\n\n" + ui_js
     dev_w, viz_rect, ui_boxes, panels = layout_compact()
 
     dsp_boxes = [
-        # Audio I/O
+        # Audio I/O. No cord to plugout~ until the face creates gen~ (silence while DSP loads).
         {
             "box": {
                 "id": "obj-plugin",
@@ -581,6 +628,7 @@ def build_patcher():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [40.0, 320.0, 52.0, 20.0],
                 "text": "plugin~",
+                "varname": "deg_plugin",
             }
         },
         {
@@ -591,20 +639,42 @@ def build_patcher():
                 "numoutlets": 0,
                 "patching_rect": [40.0, 490.0, 58.0, 20.0],
                 "text": "plugout~",
+                "varname": "deg_plugout",
             }
         },
-        # GenExpr core
+        # Message hub. gen~ is created after the GUI paints and connected to outlet 0.
         {
             "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
+                "id": "obj-gen-in",
+                "maxclass": "newobj",
                 "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [40.0, 390.0, 320.0, 75.0],
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [40.0, 390.0, 60.0, 20.0],
+                "text": "gate 1 1",
+                "varname": "deg_genin",
+            }
+        },
+        {
+            "box": {
+                "id": "obj-thisdevice",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": ["bang"],
+                "patching_rect": [220.0, 320.0, 90.0, 20.0],
+                "text": "live.thisdevice",
+            }
+        },
+        {
+            "box": {
+                "id": "obj-msg-init-dsp",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [220.0, 350.0, 70.0, 20.0],
+                "text": "init_dsp",
             }
         },
         # Instance-isolated telemetry buffer (#0-degscope)
@@ -692,10 +762,10 @@ def build_patcher():
                 "id": "obj-route-ui",
                 "maxclass": "newobj",
                 "numinlets": 5,
-                "numoutlets": 5,
-                "outlettype": ["", "", "", "", ""],
-                "patching_rect": [10.0, 530.0, 240.0, 20.0],
-                "text": "route order_code toggle macro focus",
+                "numoutlets": 6,
+                "outlettype": ["", "", "", "", "", ""],
+                "patching_rect": [10.0, 530.0, 310.0, 20.0],
+                "text": "route order_code toggle macro focus dsp_resend",
             }
         },
         {
@@ -723,17 +793,16 @@ def build_patcher():
     ]
 
     lines = [
-        {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-gen", 0]}},
-        {"patchline": {"source": ["obj-plugin", 1], "destination": ["obj-gen", 1]}},
-        {"patchline": {"source": ["obj-gen", 0], "destination": ["obj-plugout", 0]}},
-        {"patchline": {"source": ["obj-gen", 1], "destination": ["obj-plugout", 1]}},
+        # plugin~ stays disconnected from plugout~ until degDspLoad wires gen~ between them.
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-gen-buf", 0]}},
-        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-ui-buf", 0]}},
         {"patchline": {"source": ["obj-msg-ui-buf", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-init-dsp", 0]}},
+        {"patchline": {"source": ["obj-msg-init-dsp", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-viz", 0], "destination": ["obj-route-ui", 0]}},
         {"patchline": {"source": ["obj-route-ui", 0], "destination": ["obj-prep-order", 0]}},
-        {"patchline": {"source": ["obj-prep-order", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-order", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-route-ui", 1], "destination": ["obj-route-toggle", 0]}},
     ]
 
@@ -783,7 +852,7 @@ def build_patcher():
             }
         })
         lines.append({"patchline": {"source": [src_for_prep, 0], "destination": [prep_id, 0]}})
-        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen", 0]}})
+        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen-in", 1]}})
 
         if ui_setter:
             ui_prep_id = f"obj-uiprep-{key}"
@@ -821,7 +890,7 @@ def build_patcher():
             }
         })
         lines.append({"patchline": {"source": [ctrl_id, 0], "destination": [prep_id, 0]}})
-        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen", 0]}})
+        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen-in", 1]}})
 
         if ui_setter:
             ui_prep_id = f"obj-uiprep-{key}"
@@ -840,6 +909,25 @@ def build_patcher():
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz", 0]}})
 
         px += 90.0
+
+    # Bang the scope binding and every gen-bound live.* so a gen~ that appears after load still receives them.
+    resend_ids = ["obj-msg-gen-buf"]
+    resend_ids += [f"obj-ctrl-{key}" for key in PARAM_SPECS]
+    resend_ids += [f"obj-ctrl-{key}" for key in ENUM_SPECS]
+    dsp_boxes.append({
+        "box": {
+            "id": "obj-trig-resend",
+            "maxclass": "newobj",
+            "numinlets": 1,
+            "numoutlets": len(resend_ids),
+            "outlettype": ["bang"] * len(resend_ids),
+            "patching_rect": [10.0, 700.0, 48.0 + 12.0 * len(resend_ids), 20.0],
+            "text": "t " + " ".join(["b"] * len(resend_ids)),
+        }
+    })
+    lines.append({"patchline": {"source": ["obj-route-ui", 4], "destination": ["obj-trig-resend", 0]}})
+    for idx, target_id in enumerate(resend_ids):
+        lines.append({"patchline": {"source": ["obj-trig-resend", idx], "destination": [target_id, 0]}})
 
     # Decorative background panels MUST appear at the end of `boxes` with `"background": 1`
     all_boxes = dsp_boxes + ui_boxes + panels

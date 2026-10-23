@@ -85,6 +85,7 @@ def device(gen_code, case):
         mh.msg("dev-setbuf", "setbuffer #0-tsconfig #0-tsmeters", 200, 70, 220),
         mh.box("dev-cfg", "buffer~ #0-tsconfig @samps 128", 520, 100, 210, numoutlets=2,
                outlettype=["float", "bang"]),
+        # @samps 32 covers line envelopes 0..19 and the frame counter at slot 20.
         mh.box("dev-meters", "buffer~ #0-tsmeters @samps 32", 520, 130, 210, numoutlets=2,
                outlettype=["float", "bang"]),
     ]

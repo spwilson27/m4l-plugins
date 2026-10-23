@@ -229,9 +229,10 @@ function pullScope() {
     var inPk = clamp(sampleAt(chunk, 0), 0, 1.5);
     var outPk = clamp(sampleAt(chunk, 1), 0, 1.5);
 
-    // If audio is completely silent and UI meters have already settled, skip redrawing to save main-thread CPU
+    // Silent audio with no in-progress drag: skip the redraw once the meters have settled.
+    // Parameter setters and hover/drag call redraw themselves when something actually changes.
     var isSilent = (inPk < 0.0005 && outPk < 0.0005 && liveInPeak < 0.001 && liveOutPeak < 0.001);
-    if (isSilent && uiSettled) {
+    if (isSilent && uiSettled && dragMode === "") {
         return;
     }
 
@@ -275,32 +276,40 @@ if (typeof Task !== "undefined") {
     scopeTask.repeat();
 }
 
+// Redraw only when a mirrored parameter actually changes (a DSP-confirm bang repeats the same values).
+function commitParam(changed, rebuild) {
+    if (!changed) return;
+    uiSettled = false;
+    if (rebuild) initWaveHistory(true);
+    mgraphics.redraw();
+}
+
 // Parameter setters from Max patch
-function set_bit_on(v) { stageEnabled[0] = Number(v) > 0.5 ? 1 : 0; initWaveHistory(true); mgraphics.redraw(); }
-function set_sr_on(v) { stageEnabled[1] = Number(v) > 0.5 ? 1 : 0; initWaveHistory(true); mgraphics.redraw(); }
-function set_codec_on(v) { stageEnabled[2] = Number(v) > 0.5 ? 1 : 0; initWaveHistory(true); mgraphics.redraw(); }
-function set_tele_on(v) { stageEnabled[3] = Number(v) > 0.5 ? 1 : 0; initWaveHistory(true); mgraphics.redraw(); }
-function set_fft_on(v) { stageEnabled[4] = Number(v) > 0.5 ? 1 : 0; initWaveHistory(true); mgraphics.redraw(); }
+function set_bit_on(v) { var next = Number(v) > 0.5 ? 1 : 0; var changed = next !== stageEnabled[0]; stageEnabled[0] = next; commitParam(changed, true); }
+function set_sr_on(v) { var next = Number(v) > 0.5 ? 1 : 0; var changed = next !== stageEnabled[1]; stageEnabled[1] = next; commitParam(changed, true); }
+function set_codec_on(v) { var next = Number(v) > 0.5 ? 1 : 0; var changed = next !== stageEnabled[2]; stageEnabled[2] = next; commitParam(changed, true); }
+function set_tele_on(v) { var next = Number(v) > 0.5 ? 1 : 0; var changed = next !== stageEnabled[3]; stageEnabled[3] = next; commitParam(changed, true); }
+function set_fft_on(v) { var next = Number(v) > 0.5 ? 1 : 0; var changed = next !== stageEnabled[4]; stageEnabled[4] = next; commitParam(changed, true); }
 
-function set_bits(v) { curBits = clamp(Number(v) || 8, 1, 16); initWaveHistory(true); mgraphics.redraw(); }
-function set_wrap(v) { curWrap = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
-function set_dither(v) { curDither = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
+function set_bits(v) { var next = clamp(Number(v) || 8, 1, 16); var changed = next !== curBits; curBits = next; commitParam(changed, true); }
+function set_wrap(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curWrap; curWrap = next; commitParam(changed, true); }
+function set_dither(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curDither; curDither = next; commitParam(changed, true); }
 
-function set_srate(v) { curSrate = clamp(Number(v) || 12000, 100, 44100); initWaveHistory(true); mgraphics.redraw(); }
-function set_jitter(v) { curJitter = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
-function set_sr_mode(v) { curSrMode = Number(v) > 0.5 ? 1 : 0; initWaveHistory(true); mgraphics.redraw(); }
+function set_srate(v) { var next = clamp(Number(v) || 12000, 100, 44100); var changed = next !== curSrate; curSrate = next; commitParam(changed, true); }
+function set_jitter(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curJitter; curJitter = next; commitParam(changed, true); }
+function set_sr_mode(v) { var next = Number(v) > 0.5 ? 1 : 0; var changed = next !== curSrMode; curSrMode = next; commitParam(changed, true); }
 
-function set_codec_loss(v) { curCodecLoss = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
-function set_preecho(v) { curPreecho = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
-function set_birdies(v) { curBirdies = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
+function set_codec_loss(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curCodecLoss; curCodecLoss = next; commitParam(changed, true); }
+function set_preecho(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curPreecho; curPreecho = next; commitParam(changed, true); }
+function set_birdies(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curBirdies; curBirdies = next; commitParam(changed, true); }
 
-function set_tele_mode(v) { curTeleMode = clamp(Math.round(Number(v) || 0), 0, 3); initWaveHistory(true); mgraphics.redraw(); }
-function set_tele_line(v) { curTeleLine = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
+function set_tele_mode(v) { var next = clamp(Math.round(Number(v) || 0), 0, 3); var changed = next !== curTeleMode; curTeleMode = next; commitParam(changed, true); }
+function set_tele_line(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curTeleLine; curTeleLine = next; commitParam(changed, true); }
 
-function set_fft_mode(v) { curFftMode = clamp(Math.round(Number(v) || 0), 0, 3); initWaveHistory(true); mgraphics.redraw(); }
-function set_fft_glitch(v) { curFftGlitch = clamp((Number(v) || 0) / 100.0, 0, 1); initWaveHistory(true); mgraphics.redraw(); }
-function set_fft_frame(v) { curFftFrame = clamp(Number(v) || 45, 5, 150); initWaveHistory(true); mgraphics.redraw(); }
-function set_mix(v) { curWet = clamp((Number(v) || 100) / 100.0, 0, 1); mgraphics.redraw(); }
+function set_fft_mode(v) { var next = clamp(Math.round(Number(v) || 0), 0, 3); var changed = next !== curFftMode; curFftMode = next; commitParam(changed, true); }
+function set_fft_glitch(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curFftGlitch; curFftGlitch = next; commitParam(changed, true); }
+function set_fft_frame(v) { var next = clamp(Number(v) || 45, 5, 150); var changed = next !== curFftFrame; curFftFrame = next; commitParam(changed, true); }
+function set_mix(v) { var next = clamp((Number(v) || 100) / 100.0, 0, 1); var changed = next !== curWet; curWet = next; commitParam(changed, false); }
 
 function set_viz_mode(v) {
     vizMode = Number(v) ? 1 : 0;
@@ -507,6 +516,27 @@ function paint() {
     var statusText = hoverTooltip ? hoverTooltip : ((vizMode === 0 ? "TECH " : "ABST ") + chainStr);
     mgraphics.move_to(hudX, barY + 11.5);
     mgraphics.show_text(statusText);
+    drawDspPill(w, h);
+}
+
+// Shown only after DSP creation has started (or failed). A static preview never calls init_dsp, so the pill stays hidden.
+function drawDspPill(w, h) {
+    if (typeof degDsp === "undefined" || !degDsp) return;
+    if (degDsp.ready || !(degDsp.createdAt > 0 || degDsp.error)) return;
+    var label = degDsp.error ? ("DSP failed: " + String(degDsp.error).substring(0, 26)) : "DSP loading...";
+    var pw = Math.min(w - 8, 8 + label.length * 4.4);
+    var ph = 12;
+    var px = Math.max(4, w - pw - 4);
+    var py = Math.max(4, h - 34);
+    mgraphics.set_source_rgba(0.05, 0.06, 0.08, 0.88);
+    mgraphics.rectangle_rounded(px, py, pw, ph, 3, 3);
+    mgraphics.fill();
+    if (degDsp.error) mgraphics.set_source_rgba(0.95, 0.42, 0.38, 0.95);
+    else mgraphics.set_source_rgba(0.92, 0.72, 0.32, 0.95);
+    mgraphics.select_font_face("Arial");
+    mgraphics.set_font_size(8.0);
+    mgraphics.move_to(px + 4, py + 9);
+    mgraphics.show_text(label);
 }
 
 function drawTechnicalVisualizer(x, y, w, h) {

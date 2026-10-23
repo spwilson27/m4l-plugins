@@ -51,6 +51,7 @@ var fvBuf = null;
 var fvOwnBuf = null;
 var fvTask = null;
 var fvLastFrame = -1;
+var fvIdleDrawn = false;
 var fvDrag = null;
 var fvLink = null;
 var fvInfo = { instanceId: "", isInRack: false, chainIndex: 0, chainCount: 0, peers: 1, linked: false, autoChannel: -1 };
@@ -93,12 +94,13 @@ function fvRebuild() {
 function fvSetVal(key, v) {
     if (!isFinite(v)) return;
     var pr = FS_PARAMS[key];
-    if (pr) v = Math.max(pr[2], Math.min(pr[3], v));     // every drawn mapping then sees an in-range value
+    if (pr) v = Math.max(pr[2], Math.min(pr[3], v));
+    var changed = fvVals[key] !== v;
     fvVals[key] = v;
     if (key === "output") fvEmitSel();
-    else if (FV_PATTERN_KEYS.indexOf(key) >= 0) fvRebuild();
+    else if (changed && FV_PATTERN_KEYS.indexOf(key) >= 0) fvRebuild();
     if (fvLink && FS_LINKED_KEYS.indexOf(key) >= 0) fvLink.notify(key, v);
-    mgraphics.redraw();
+    if (changed) mgraphics.redraw();
 }
 
 function set_splits(v) { fvSetVal("splits", Number(v)); }
@@ -146,7 +148,7 @@ function init_link() {
         },
         onInfo: function (info) {
             fvInfo = info;
-            ssDspDry(!info.isInRack);
+            ssDspDry(0);
             fvEmitSel();
             mgraphics.redraw();
         }
@@ -239,6 +241,10 @@ function fvPoll() {
         var frame = h[0];
         var aw = h[3];
         if (frame === fvLastFrame && aw === fvScalars.awake) return;
+        if (aw < 0.5 && fvScalars.awake < 0.5 && fvIdleDrawn) {
+            fvLastFrame = frame;
+            return;
+        }
         var d = fvBuf.peek(1, 0, FS_SCOPE_SAMPS);
         if (!d || d.length < FS_SC_FRAME + 6) return;
         fvLastFrame = frame;
@@ -251,6 +257,7 @@ function fvPoll() {
         fvScalars.sr = d[FS_SC_SR];
         fvScalars.n = d[FS_SC_N];
         fvScalars.level = d[FS_SC_LEVEL];
+        fvIdleDrawn = aw < 0.5;
         mgraphics.redraw();
     } catch (err) {
         fvBuf = null;
@@ -273,8 +280,12 @@ function fvUX(u) {
     return FV_PLOT.x + u * FV_PLOT.w;
 }
 
+var FV_COL_X = [];
+for (var fvColInit = 0; fvColInit < FS_NCOLS; fvColInit++) FV_COL_X.push(FV_PLOT.x + (fvColInit + 0.5) * FV_PLOT.w / FS_NCOLS);
+var FV_GRID_X = [fvUX(fsHzToU(100)), fvUX(fsHzToU(1000)), fvUX(fsHzToU(10000))];
+
 function fvColX(c) {
-    return FV_PLOT.x + (c + 0.5) * FV_PLOT.w / FS_NCOLS;
+    return FV_COL_X[c];
 }
 
 function fvLimY() {
@@ -300,11 +311,9 @@ function fvPts(arr) {
 function paint() {
     var W = FV_W;
     var yb = FV_PLOT.y + FV_PLOT.h;
-    var gx = [];
+    var gx = FV_GRID_X;
     var gy = [FV_PLOT.y + FV_PLOT.h * 0.25, FV_PLOT.y + FV_PLOT.h * 0.5, FV_PLOT.y + FV_PLOT.h * 0.75];
-    var freqs = [100, 1000, 10000];
     var labels = ["100", "1k", "10k"];
-    for (var g = 0; g < freqs.length; g++) gx.push(fvUX(fsHzToU(freqs[g])));
     sptLcd(0, 0, W, FV_PLOT.h + 2, { xs: gx, ys: gy });
 
     fvPaintRegions();

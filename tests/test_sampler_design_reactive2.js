@@ -127,21 +127,21 @@ sb.paint();
     const z2 = zones("act").filter((q) => q.tip)[1]; emitted.length = 0; sb.onclick(z2.x + 2, z2.y + 2, 1, 0, 0);
     assert.strictEqual(sb.foldMask, 1 | 8, "toggle closes a section");
     // HUD tip on hover
-    sb.paint(); const z3 = zones("act").filter((q) => q.tip)[3];
-    sb.onidle(z3.x + 3, z3.y + 3); assert.ok(sb.hoverTip && sb.hoverTip.tip === "LFO / Mod", "hover shows the section name");
+    sb.paint(); const z4 = zones("act").filter((q) => q.tip)[4];
+    sb.onidle(z4.x + 3, z4.y + 3); assert.ok(sb.hoverTip && sb.hoverTip.tip === "Voice / Out", "hover shows the section name");
     sb.onidleout(); assert.strictEqual(sb.hoverTip, null, "tip clears on leave");
 }
 
 // --- persisted in the state blob; old blobs leave the folds alone ---
-sb.setFoldMask(0b10101);
+sb.setFoldMask(0b1011);
 {
     const blob = sb.getvalueof();
-    assert.strictEqual(blob[blob.length - 2], "R2"); assert.strictEqual(blob[blob.length - 1], 0b10101);
+    assert.strictEqual(blob[blob.length - 2], "R2"); assert.strictEqual(blob[blob.length - 1], 0b1011);
     sb.setFoldMask(0);
     emitted.length = 0;
     sb.setvalueof.apply(null, blob);
-    assert.strictEqual(sb.foldMask, 0b10101, "mask restored from the blob");
-    assert.strictEqual(lastWidth(), sb.foldWidth(0b10101), "width restored");
+    assert.strictEqual(sb.foldMask, 0b1011, "mask restored from the blob");
+    assert.strictEqual(lastWidth(), sb.foldWidth(0b1011), "width restored");
     const old = blob.slice(0, -2);
     sb.setFoldMask(0b10);
     sb.setvalueof.apply(null, old);
@@ -483,15 +483,25 @@ for (const [id, keys] of [["env:A", ["atk_ms"]], ["env:D", ["dec_ms", "sus_lvl"]
     dragHandle(id, 900, -900).forEach(inRange);
     dragHandle(id, -900, 900).forEach(inRange);
 }
-sb.onclick(sb.hitZones.find((z) => z.action === "env_page" && z.page === 1).x + 2, 14, 1, 0, 0);
+{ const zp1 = sb.hitZones.find((z) => z.action === "env_page" && z.page === 1); sb.onclick(zp1.x + 2, zp1.y + 2, 1, 0, 0); }
 sb.paint();
-for (const [id, key] of [["env:A", "matk_ms"], ["env:D", "mdec_ms"], ["env:D", "msus_lvl"], ["env:R", "mrel_ms"]]) {
-    const ps = dragHandle(id, 10, 6);
+for (const [id, key] of [["env:A", "matk_ms"], ["env:A", "env2_peak"], ["env:D", "mdec_ms"], ["env:D", "msus_lvl"], ["env:R", "mrel_ms"], ["env:R", "env2_final"]]) {
+    const ps = dragHandle(id, 10, id === "env:R" ? -12 : 6);
     ps.forEach(inRange);
     assert.ok(ps.some((p) => p.key === key), `mod ${id} writes ${key}`);
-    assert.ok(!ps.some((p) => ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"].includes(p.key)), "mod handles leave the amp envelope alone");
+    assert.ok(!ps.some((p) => ["atk_ms", "dec_ms", "sus_lvl", "rel_ms", "amp_peak", "amp_init"].includes(p.key)), "mod handles leave the amp envelope alone");
 }
-sb.onclick(sb.hitZones.find((z) => z.action === "env_page" && z.page === 0).x + 2, 14, 1, 0, 0);
+// Extra envelopes (Env 2 / Env 3): dragging R handle vertically adjusts Final release value (0..100%)
+sb.setParamFromFace("env2_final", 0); sb.paint();
+dragHandle("env:R", 0, -30);
+assert.ok(sb.paramValue("env2_final") > 40, "Env 2 R handle vertical drag raises Final release level");
+sb.setParamFromFace("env2_final", 0); sb.setParamFromFace("env2_peak", 100);
+{ const zp0 = sb.hitZones.find((z) => z.action === "env_page" && z.page === 0); sb.onclick(zp0.x + 2, zp0.y + 2, 1, 0, 0); }
+// Main Amp envelope: allow adjusting Peak below Sustain value (via A handle vertical drag or Value tab)
+sb.setParamFromFace("sus_lvl", 80); sb.setParamFromFace("amp_peak", 100); sb.paint();
+dragHandle("env:A", 0, 35);
+assert.ok(sb.paramValue("amp_peak") < sb.paramValue("sus_lvl"), `Amp Peak (${sb.paramValue("amp_peak").toFixed(1)}%) can be adjusted below Sustain (${sb.paramValue("sus_lvl")}%)`);
+sb.setParamFromFace("amp_peak", 100); sb.setParamFromFace("sus_lvl", 85);
 sb.setParamFromFace("atk_ms", 400); sb.paint();
 { const z = zones("hdl", "env:A")[0]; emitted.length = 0; sb.ondblclick(z.cx, z.cy); assert.strictEqual(sb.paramValue("atk_ms"), FP.atk_ms.init); }
 sb.setParamFromFace("dec_ms", 900); sb.setParamFromFace("sus_lvl", 20); sb.paint();
@@ -600,28 +610,28 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
     }
     for (const k of ["atk_slope", "dec_slope", "rel_slope"]) sb.setParamFromFace(k, 0);
     setVoices([]);
-    // Time | Slope value row: times (S in dB) and A / D / R slopes, draggable, double-click resets
+    // Time | Slope | Value row: times (S in dB on Amp), A / D / S / R slopes, and Initial / Peak / S / Final values
     sb.paint();
-    const tabs = zones("act").filter((z) => !z.tip && z.y > 105 && z.y < 125 && z.x > sb.sectionX("env"));
-    assert.strictEqual(tabs.length, 2, "Time | Slope tab pair");
-    const vals = () => zones("value").filter((z) => z.x > sb.sectionX("env") && z.y > 140 && z.y < 160);
+    const tabs = zones("act").filter((z) => !z.tip && z.y > 105 && z.y < 140 && z.x > sb.sectionX("env"));
+    assert.strictEqual(tabs.length, 3, "Time | Slope | Value tab trio");
+    const vals = () => zones("value").filter((z) => z.x > sb.sectionX("env") && z.y > 125 && z.y < 160);
     assert.deepStrictEqual(plain(vals().map((z) => z.key)), ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"], "Time tab: A D S R");
     assert.strictEqual(sb.fmtEnvVal("sus_lvl", 50), "-6.0 dB", "S in dB"); assert.strictEqual(sb.fmtEnvVal("sus_lvl", 100), "0.0 dB");
-    assert.strictEqual(sb.fmtEnvVal("atk_slope", 25), "+25 %");
+    assert.strictEqual(sb.fmtEnvVal("atk_slope", 25), "25 %");
     sb.onclick(tabs[1].x + 2, tabs[1].y + 2, 1, 0, 0); sb.paint();
     assert.strictEqual(sb.envTab, 1);
-    assert.deepStrictEqual(plain(vals().map((z) => z.key)), ["atk_slope", "dec_slope", "rel_slope"], "Slope tab: A D R slopes");
-    for (const z of vals()) {
+    assert.deepStrictEqual(plain(vals().map((z) => z.key)), ["atk_slope", "dec_slope", "sus_lvl", "rel_slope"], "Slope tab: A D S R");
+    for (const z of vals().filter((q) => /slope$/.test(q.key))) {
         sb.setParamFromFace(z.key, 0);
         sb.onclick(z.x + 2, z.y + 2, 1, 0, 0); sb.ondrag(z.x + 2, z.y - 20, 1, 0, 0); sb.ondrag(z.x + 2, z.y - 20, 0, 0, 0);
         assert.ok(sb.paramValue(z.key) > 5, `${z.key}: the value is draggable`);
         sb.ondblclick(z.x + 2, z.y + 2); assert.strictEqual(sb.paramValue(z.key), 0, `${z.key}: double-click resets`);
     }
     sb.envPage = 1; sb.paint();
-    assert.deepStrictEqual(plain(vals().map((z) => z.key)), ["matk_slope", "mdec_slope", "mrel_slope"], "MOD page slopes");
+    assert.deepStrictEqual(plain(vals().map((z) => z.key)), ["matk_slope", "mdec_slope", "msus_lvl", "mrel_slope"], "MOD page slopes");
     sb.envPage = 0; sb.envTab = 0;
     // Live's dials: label above, value below, no filled disc (nothing drawn at the centre), thin needle
-    sb.setFoldMask(sb.DEFAULT_FOLD | 4 | 8 | 16 | 1); sb.paint();
+    sb.setFoldMask(sb.DEFAULT_FOLD | 4 | 8 | 1); sb.paint();
     for (const z of sb.hitZones.filter((q) => q.kind === "knob")) assert.ok(z.h >= 30 && z.w >= 24, `dial ${z.key}: zone covers label, arc and value`);
     assert.ok(!/circle\(cx, cy, r, RC\.knob/.test(sb.rKnob.toString()), "no filled disc");
     sb.setFoldMask(sb.DEFAULT_FOLD);
@@ -683,21 +693,23 @@ function collect() {
     }
     if (zones("hdl", "filt").length) ["filt_cutoff", "filt_res"].forEach((k) => reach.add(k));
     for (const z of zones("hdl")) if (z.id.startsWith("env:")) {
-        const m = sb.envPage === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"];
+        const m = sb.envPage === 2 ? ["env3_atk_ms", "env3_dec_ms", "env3_sus_lvl", "env3_rel_ms"] : (sb.envPage === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"]);
         m.forEach((k) => reach.add(k));
     }
 }
 sb.setFoldMask(ALL);
-for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 0; ch < 3; ch++) for (let page = 0; page < 2; page++) {
+for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 0; ch < 3; ch++) for (let page = 0; page < 5; page++) {
     sb.setParamFromFace("mode", mode); sb.setParamFromFace("sliced", sliced);
     for (const k of ["rp_char", "sp_char", "cy_char"]) sb.setParamFromFace(k, Math.min(ch, FP[k].hi));
     sb.setParamFromFace("slice_at", ch % 2 ? 1 : 0);
     sb.setParamFromFace("loop_mode", 1);
+    sb.matTab = 0;
     sb.envPage = page;
-    sb.paint();
-    collect();
-    sb.envTab = 1; sb.paint(); collect(); sb.envTab = 0;
+    for (const tb of [0, 1, 2]) { sb.envTab = tb; sb.paint(); collect(); }
+    sb.envTab = 0;
 }
+for (const mTab of [0, 1, 2]) { sb.matTab = mTab; sb.paint(); collect(); }
+sb.matTab = 0; sb.envPage = 0;
 for (const at of [2, 3, 4]) { sb.setParamFromFace("slice_at", at); sb.setParamFromFace("sliced", 1); sb.paint(); collect(); }
 for (const ot of [1, 2, 0]) { sb.oscTab = ot; sb.paint(); collect(); }
 const missing = Object.keys(FP).filter((k) => !reach.has(k));

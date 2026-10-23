@@ -12,7 +12,8 @@ N - 1, N = 1024), the dry path is delayed identically (patcher attribute "latenc
 
 Deferred, staged, lazy DSP (AGENTS.md 1d): the device ships with NO gen~ and no stage code. The static part of the graph is saved here: the
 hubs (`gate 1 1`, varnames gl_genhead / gl_genmod / gl_gentail), the bypass selector~ per module stage (gl_bp<L|R>_<id>: input 1 = the
-signal before it) with delay~ 1023 as the spectral stand-in, and the dry/chain selectors (gl_selL / gl_selR). After live.thisdevice's ready
+signal before it) with delay~ 1023 as the spectral stand-in, and the output selectors (gl_selL / gl_selR, `selector~ 2 0`: silence until
+the head and the tail run). After live.thisdevice's ready
 bang the v8ui creates every stage's gen~ as a tiny file-backed SHELL (same ports, Params, Buffers; /tmp/glitch_shell_<role>_<in>_<out>.gendsp)
 and wires the whole graph once; from then on NOTHING is added or removed (adding a gen~ to a running device silences all of it while the
 gen~ compiles, measured 0.1 - 0.7 s). The real code (GEN_STAGES: id, ports, hash, .gendsp JSON text; /tmp/glitch_<id>_<hash>.gendsp) is
@@ -227,8 +228,8 @@ def ui_boxes(layout, width, stages_js, preview):
 # ----------------------------------------------------------------------------- engine (everything except the gen~)
 def engine_boxes(layout):
     """The static part of the signal graph (AGENTS.md 1d): plugin~ -> selector~ per module stage (input 1 = the signal before it) -> ... ->
-    delay~ 1023 -> selector~ (the spectral stand-in) -> ... (the v8ui wires the tail from the last selector) -> selector~ gl_selL / gl_selR (dry
-    until the chain is up) -> plugout~, the gen hubs, the buffers, their bindings and the transport. The gen~ stages themselves are created by
+    delay~ 1023 -> selector~ (the spectral stand-in) -> ... (the v8ui wires the tail from the last selector) -> selector~ gl_selL / gl_selR
+    (selection 0 = silence until the head and the tail run; selection 2 = the tail, whose Mix 0 is the delayed dry) -> plugout~, the gen hubs, the buffers, their bindings and the transport. The gen~ stages themselves are created by
     the v8ui right after load as tiny file-backed SHELLS (same ports, Params and Buffers, no work; identical shells share one compile) and wired
     completely at that moment: after that no object or cord is ever added or removed, because adding a gen~ to a running device silences all of
     it for as long as that gen~ takes to compile (measured in Live: 0.1 - 0.7 s). The real code of a stage is hot-loaded into its shell with
@@ -239,9 +240,10 @@ def engine_boxes(layout):
     boxes = [
         newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="gl_plugin"),
         newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="gl_plugout"),
-        # dry until the chain runs (input 1), the tail's output afterwards (input 2): the v8ui sends dsp_on 2
-        newobj("obj-selL", "selector~ 2 1", 20, 340, 80, numinlets=3, numoutlets=1, outlettype=["signal"], varname="gl_selL"),
-        newobj("obj-selR", "selector~ 2 1", 120, 340, 80, numinlets=3, numoutlets=1, outlettype=["signal"], varname="gl_selR"),
+        # silence (selection 0) until the head and the tail are running; the v8ui then sends dsp_on 2 (the tail). Inlet 1 stays
+        # wired to plugin~ but is not selected: Mix 0 dry is the tail's delayed dry, after dspReady.
+        newobj("obj-selL", "selector~ 2 0", 20, 340, 80, numinlets=3, numoutlets=1, outlettype=["signal"], varname="gl_selL"),
+        newobj("obj-selR", "selector~ 2 0", 120, 340, 80, numinlets=3, numoutlets=1, outlettype=["signal"], varname="gl_selR"),
         newobj("obj-gen-in-head", "gate 1 1", 240, 300, 60, numinlets=2, numoutlets=1, varname="gl_genhead"),
         newobj("obj-gen-in-mod", "gate 1 1", 320, 300, 60, numinlets=2, numoutlets=1, varname="gl_genmod"),
         newobj("obj-gen-tail-in", "gate 1 1", 400, 300, 60, numinlets=2, numoutlets=1, varname="gl_gentail"),
@@ -300,7 +302,7 @@ def engine_boxes(layout):
         line("obj-dsp-resend", 2, "obj-bpm-hold"),
         line("obj-dsp-resend", 1, "obj-ppq-hold"),
         line("obj-dsp-resend", 0, "obj-play-hold"),
-        # until a stage exists the signal is the dry input: plugin~ -> the bypass chain -> (the v8ui wires the tail) ; and dry for the output selectors
+        # plugin~ feeds the bypass chain and inlet 1 of the output selectors; selection stays 0 (silence) until dsp_on 2
         line("obj-plugin", 0, "obj-selL", 1),
         line("obj-plugin", 1, "obj-selR", 1),
         line("obj-selL", 0, "obj-plugout", 0),

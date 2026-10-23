@@ -185,7 +185,8 @@ assert.ok(gen.includes("Param unison_width(0.65, min=0, max=1);"), "unison_width
 assert.ok(gen.includes("Param glide_ms(0, min=0, max=1000);"), "glide_ms param");
 assert.ok(/isSlice\s*=/.test(gen), "gen derives isSlice");
 assert.ok(gen.includes("uCount = int(clip(round(unisonCount), 1, 8));"), "Unison count clamps to 1..8");
-assert.ok(gen.includes("for (u = 0; u < 8; u += 1)"), "Unison loop is bounded at 8");
+assert.ok(gen.includes("for (u = 0; u < uCount; u += 1)"), "Unison loops stop at the active sub-voice count");
+assert.strictEqual((gen.match(/= unison_spread\(/g) || []).length, 1, "unison_spread is inlined once");
 assert.ok(gen.includes("glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (glide_ms * srVal));"), "Glide coefficient");
 assert.ok((gen.match(/freezeOn > 0\.5/g) || []).length >= 3, "Freeze is handled in every engine");
 assert.ok(gen.includes("dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;"), "Reverse flips playback direction");
@@ -2864,10 +2865,56 @@ console.log("Lazy, chunked slicer mono copy ok");
     d2.loadDsp();
     assert.strictEqual(writes, 0, "an existing identical .gendsp is reused");
     assert.strictEqual(Object.keys(files).length, before);
+    // a gen that never advances its frame counter is rebuilt, then fails once both retries are spent
+    const rc = makeSandbox(mainViz);
+    const rt = rc.sb;
+    const removed = [];
+    let remade = 0;
+    rt.File = function () { this.isopen = true; this.eof = 0; this.writestring = () => {}; this.close = () => {}; };
+    rt.hostPatcher = {
+        getnamed: (n) => (n === "obj-gen" ? (rt._gone ? null : { n: "gen" }) : { n }),
+        remove: (o) => { removed.push(o.n); rt._gone = true; },
+        newdefault: () => { remade++; rt._gone = false; return { n: "gen" }; },
+        connect: () => {},
+    };
+    rt.dspCreatedAt = Date.now() - 4000;
+    rt.dspCounter0 = 5;
+    rt.scopeBufName = "";
+    rt.dspConfirm();
+    assert.strictEqual(rt.dspRetries, 1, "first timeout rebuilds the gen~");
+    assert.deepStrictEqual(removed, ["gen"], "the stalled gen~ is removed");
+    assert.strictEqual(remade, 1, "the retry creates one new gen~");
+    assert.strictEqual(rt.dspReady, 0);
+    assert.strictEqual(rt.dspError, "");
+    // two instances share one creation queue
+    const qa = makeSandbox(mainViz).sb;
+    const qb = makeSandbox(mainViz).sb;
+    const qstore = {};
+    function QGlobal(name) { if (!qstore[name]) qstore[name] = {}; return qstore[name]; }
+    qa.Global = QGlobal;
+    qb.Global = QGlobal;
+    const qMade = { a: 0, b: 0 };
+    function qHost(slot) {
+        return {
+            getnamed: (n) => (n === "obj-gen" ? null : { n }),
+            newdefault: () => { qMade[slot]++; return {}; },
+            connect: () => {},
+            remove: () => {},
+        };
+    }
+    qa.File = rt.File;
+    qb.File = rt.File;
+    qa.hostPatcher = qHost("a");
+    qb.hostPatcher = qHost("b");
+    qa.loadDsp();
+    qb.loadDsp();
+    assert.strictEqual(qMade.a, 1, "the queue owner creates its gen~");
+    assert.strictEqual(qMade.b, 0, "a second instance waits");
     // a gen that never starts times out with the failure pill
     const tc = makeSandbox(mainViz);
     const tt = tc.sb;
     tt.dspCreatedAt = Date.now() - 20000;
+    tt.dspRetries = 2;
     tt.dspConfirm();
     assert.ok(tt.dspError.length > 0 && tt.dspReady === 0, "timeout -> DSP failed");
     // failure path: no file can be written -> "DSP failed" pill, nothing created

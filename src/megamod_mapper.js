@@ -54,6 +54,9 @@ var MM = (function () {
     let telTask = null;
     let valTask = null;
     let notifyTask = null;
+    let telForce = false; // a UI change (fire) since the last full telemetry read
+    let telPrimed = false; // a full read has populated tel at least once
+    let telMoving = false; // the last full read saw a modulator output or effective value change
     let pidCache = {}; // mapId -> live id (number), runtime only
     let missing = {}; // mapId -> true
     let seenLive = {}; // mapId -> true once its target resolved in THIS session (only those can be auto-deleted when the target goes away)
@@ -80,6 +83,7 @@ var MM = (function () {
         if (typeof mgraphics !== "undefined" && mgraphics.redraw) mgraphics.redraw();
     }
     function fire(kind, mod, id) {
+        telForce = true; // the next poll reads the scope buffer (a parameter edit can move a modulator before the frame counter does)
         telWake();
         const ev = { kind, mod: mod === undefined ? -1 : mod, id: id === undefined ? 0 : id };
         for (const fn of listeners.change) { try { fn(ev); } catch (e) { post2("listener: " + e); } }
@@ -1800,9 +1804,37 @@ var MM = (function () {
     };
 
     // ---------------------------------------------------------------- telemetry
-    api.readTelemetry = function () {
+    function peekScope1(b, index) {
+        try {
+            const v = b.peek(1, index, 1);
+            return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : NaN);
+        } catch (e) { return NaN; }
+    }
+    function anyModEnabled() {
+        const mods = api.state.mods;
+        for (let i = 0; i < MAX_MODS; i++) if (mods[i] && mods[i].enabled) return true;
+        return false;
+    }
+    function telQuiet() {
+        tel.changed = false;
+        tel.depthDirty = false;
+        for (let i = 0; i < MAX_MODS; i++) { tel.mods[i].dirty = false; tel.eff[i].dirty = false; }
+    }
+    api.readTelemetry = function (mode) {
         const b = buf(BUF_SCOPE);
         if (!b) return tel;
+        // The poll peeks the frame counter first. With no modulator enabled, or with the frame unmoved since a quiet
+        // read and no UI edit since, the 16 outputs / effective values / depths are unchanged: skip the 640-float read.
+        if (mode === "poll" && telPrimed && !telForce) {
+            const frame = peekScope1(b, SCOPE_FRAME);
+            if (!anyModEnabled() || (frame === tel.frame && !telMoving)) {
+                if (frame === frame) tel.frame = frame;
+                telQuiet();
+                if (!anyModEnabled()) telMoving = false;
+                return tel;
+            }
+        }
+        telForce = false;
         let a = null;
         try { a = b.peek(1, 0, SCOPE_SAMPS); } catch (e) { a = null; }
         if (!a || !a.length) return tel;
@@ -1830,6 +1862,8 @@ var MM = (function () {
         for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) { const v = a.length > SCOPE_DEPTH + k ? a[SCOPE_DEPTH + k] : 1; if (v !== tel.depth[k]) { tel.depth[k] = v; dd = true; } }
         tel.depthDirty = dd;
         tel.changed = any || dd;
+        telPrimed = true;
+        telMoving = tel.changed;
         return tel;
     };
     // the cached telemetry (what the last poll read): painters use this, not a fresh read of the 640-float buffer per call
@@ -1843,7 +1877,7 @@ var MM = (function () {
         if (telTask && telTask.interval !== TEL_FAST_MS) telTask.interval = TEL_FAST_MS;
     }
     function pollTelemetry() {
-        const t = api.readTelemetry();
+        const t = api.readTelemetry("poll");
         for (const fn of listeners.telemetry) { try { fn(t); } catch (e) {} }
         let want = true;
         if (typeof uiTelemetry === "function") { try { want = uiTelemetry(t) !== false; } catch (e) {} }

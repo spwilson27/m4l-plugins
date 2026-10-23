@@ -546,6 +546,7 @@ def build_start(layout_name, out_dir=None):
     engine = (read("reverbplus_config.js").rstrip() + f"\n\nvar RP_ROLE = \"start\";\nvar RP_BUILD = \"{BUILD_STAMP}\";\n"
               + f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
               + f"var GEN_DSP_HASH = \"{hashlib.sha1(gen_text.encode()).hexdigest()[:12]}\";\n"
+              + "var RP_DSP_PREFIX = \"reverbplus_start\";\n"
               + f"var RP_GEN_PARAMS = {json.dumps(gen_params)};\n"
               + f"var RP_PANEL_THEME = {json.dumps(lay['panel_theme'])};\n"
               + f"var RP_VARNAMES = {json.dumps({k: P[k][0] for k in P if k != 'irfile'})};\n\n"
@@ -598,8 +599,7 @@ def build_start(layout_name, out_dir=None):
         newobj("obj-route-key", "route " + " ".join(k for k in P if k != "irfile"), 560, 310, 600, 1, len(P)),
     ]
     lines = [
-        # dry passes until the deferred gen~ is wired in (src/reverbplus_dsp.js removes these two)
-        line("obj-plugin", 0, "obj-plugout", 0), line("obj-plugin", 1, "obj-plugout", 1),
+        # silent until the deferred gen~ is wired (no plugin~ -> plugout~ cord)
         line("obj-loadbang", 0, "obj-msg-gen-bufs", 0), line("obj-msg-gen-bufs", 0, "obj-gen", 0),
         line("obj-loadbang", 0, "obj-msg-ui-names", 0), line("obj-msg-ui-names", 0, "obj-engine", 0),
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-engine", 0),
@@ -662,31 +662,47 @@ def build_start(layout_name, out_dir=None):
 
 
 def build_end():
-    code = (read("reverbplus_config.js").rstrip() + f"\n\nvar RP_ROLE = \"end\";\nvar RP_BUILD = \"{BUILD_STAMP}\";\n\n"
-            + read("reverbplus_link.js").rstrip() + "\n\n" + read("reverbplus_end_ui.js"))
+    # Deferred DSP, same as Start: no gen~ in the file and no plugin~ -> plugout~ cord (silence until
+    # the face creates gen~). GEN_DSP_TEXT / hash / prefix live in the End v8ui next to the shared loader.
+    gen_text = gendsp_json(read("reverbplus_end.genexpr"))
+    code = (read("reverbplus_config.js").rstrip() + f"\n\nvar RP_ROLE = \"end\";\nvar RP_BUILD = \"{BUILD_STAMP}\";\n"
+            + f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+            + f"var GEN_DSP_HASH = \"{hashlib.sha1(gen_text.encode()).hexdigest()[:12]}\";\n"
+            + "var RP_DSP_PREFIX = \"reverbplus_end\";\n"
+            + "var RP_GEN_PARAMS = {};\n\n"
+            + read("reverbplus_link.js").rstrip() + "\n\n" + read("reverbplus_dsp.js").rstrip() + "\n\n"
+            + read("reverbplus_end_ui.js"))
     boxes = [
         v8ui("obj-viz", code, [4.0, 4.0, END_W - 8.0, DEVICE_H - 8.0], (500.0, 20.0), 1),
-        newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]),
-        newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]),
-        gen_box(read("reverbplus_end.genexpr")),
+        named(newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]), "rp_plugin"),
+        named(newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]), "rp_plugout"),
+        # messages into the right inlet; the scripted gen~ connects to the outlet. gate 1 1, not t a.
+        named(newobj("obj-gen-in", "gate 1 1", 20, 100, 60, 2, 1), "rp_genin"),
         # Own buffers: used until the link layer binds gen to the Start's xfer / hdr.
         newobj("obj-buf-xfer", "buffer~ ---rpxferE @samps 64 @chans 5", 480, 300, 240, 1, 2, ["float", "bang"]),
         newobj("obj-buf-hdr", "buffer~ ---rphdrE @samps 64", 480, 330, 200, 1, 2, ["float", "bang"]),
         newobj("obj-buf-scope", f"buffer~ ---rpscopeE @samps {ESCOPE_SAMPS}", 480, 360, 220, 1, 2, ["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 480, 400, 60, 1, 1, ["bang"]),
-        msgbox("obj-msg-gen-bufs", "xfer ---rpxferE, hdr ---rphdrE, scope ---rpscopeE", 480, 430, 300),
+        msgbox("obj-msg-local", "scope ---rpscopeE, xfer ---rpxferE, hdr ---rphdrE", 480, 430, 320),
         msgbox("obj-msg-ui-names", "names ---rpxferE ---rphdrE ---rpscopeE", 480, 460, 260),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, 1, 2, ["bang", "int"]),
         msgbox("obj-msg-init", "init_link", 780, 430, 70),
+        # link layer sends `xfer <name>` / `hdr <name>`; route splits them and the prepends rebuild the gen messages
+        newobj("obj-route-bind", "route xfer hdr", 560, 140, 90, 1, 3, ["", "", ""]),
+        newobj("obj-prep-xfer", "prepend xfer", 560, 170, 90),
+        newobj("obj-prep-hdr", "prepend hdr", 680, 170, 90),
     ]
     lines = [
-        line("obj-plugin", 0, "obj-gen", 0), line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0), line("obj-gen", 1, "obj-plugout", 1),
-        line("obj-loadbang", 0, "obj-msg-gen-bufs", 0), line("obj-msg-gen-bufs", 0, "obj-gen", 0),
+        # silent until src/reverbplus_dsp.js wires plugin~ -> gen~ -> plugout~
+        line("obj-loadbang", 0, "obj-msg-local", 0), line("obj-msg-local", 0, "obj-gen", 0),
         line("obj-loadbang", 0, "obj-msg-ui-names", 0), line("obj-msg-ui-names", 0, "obj-viz", 0),
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-viz", 0),
-        line("obj-viz", 0, "obj-gen", 0),
+        line("obj-viz", 0, "obj-route-bind", 0),
+        line("obj-route-bind", 0, "obj-prep-xfer", 0), line("obj-prep-xfer", 0, "obj-gen", 0),
+        line("obj-route-bind", 1, "obj-prep-hdr", 0), line("obj-prep-hdr", 0, "obj-gen", 0),
+        line("obj-route-bind", 2, "obj-gen", 0),  # scope (and anything else) already carries its selector
     ]
+    lines = [to_gen_hub(l) for l in lines]
     doc = patcher(boxes, lines, END_W, "Mixes the Reverb+ wet after the devices between Reverb+ and Reverb+ End with the dry signal")
     write_amxd(os.path.join(OUT_DIR, END_NAME + ".amxd"), doc)
 

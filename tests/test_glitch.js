@@ -3393,12 +3393,15 @@ if (fs.existsSync(devicePath)) {
             assert.deepStrictEqual(into(`obj-bp-${g.id}L`, 1), [srcL]);
             prevL = `obj-bp-${g.id}L`;
         }
-        // dry until the output selectors are switched: plugin~ -> selector~ input 1 -> plugout~
+        // silence until head and tail run: selector~ starts at 0. Inlet 1 is still plugin~; dsp_on 2 selects the tail (Mix 0 = its delayed dry).
         assert.deepStrictEqual(into("obj-selL", 1), ["obj-plugin"]);
         assert.deepStrictEqual(into("obj-selR", 1), ["obj-plugin"]);
         assert.deepStrictEqual(into("obj-plugout", 0), ["obj-selL"]);
         assert.strictEqual(byId["obj-plugin"].varname, "gl_plugin");
-        assert.strictEqual(byId["obj-selL"].text, "selector~ 2 1");
+        assert.strictEqual(byId["obj-selL"].text, "selector~ 2 0");
+        assert.strictEqual(byId["obj-selR"].text, "selector~ 2 0");
+        assert.ok(script.includes('outlet(0, "dsp_on", 2)'), "dsp_on 2 selects the tail once the head and the tail are running");
+        assert.ok(script.includes('outlet(0, "dsp_on", 0)'), "restoring the shells returns the output to silence");
         assert.ok(cords.some((c) => c.source[0] === "obj-route-viz" && c.source[1] === 3 && c.destination[0] === "obj-selL"), "dsp_on switches the selectors");
         // dsp_ready re-sends the three bindings, Mix, Output, bpm, ppq, playing
         assert.strictEqual(byId["obj-route-viz"].text, "route param setwidth_cmd dsp_ready dsp_on");
@@ -3807,7 +3810,8 @@ ok("gen movement: one call site in one loop over the chain, evaluated at control
     assert.ok(/smpNow = d_clk\.peek\(0\) \+ 1;/.test(main) && !/History tickN/.test(CORE_RAW));
     // the code grew by a bounded amount: keep the gen small enough to compile fast
     assert.ok((CORE_FN.match(/\.poke\(/g) || []).length < 500, `pokes: ${(CORE_FN.match(/\.poke\(/g) || []).length}`);
-    assert.ok(CORE_FN.split("\n").length < 2900, "core line count");
+    // tick-constant coefficient caches (History per helper) add lines; stages still compile only what they call
+    assert.ok(CORE_FN.split("\n").length < 3200, "core line count");
 });
 
 ok("Randomize / Mutate assign movement: deterministic, more at higher Chaos, respects the allow-list and locks", () => {

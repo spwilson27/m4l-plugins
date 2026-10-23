@@ -24,7 +24,8 @@
 //   Output  outsel 0 = sum of both masks (All; identity at neutral), 1 = Transients, 2 = Tones.
 //
 // Data tsd(2049, 11) per-bin channels: 0 A, 1 H, 2 A_prev, 3 phi(t-1), 4 phi(t-2), 5 phase deviation, 6 tx, 7 qx (tone),
-//   8 final Transients mask, 9 final Tones mask, 10 their sum. tw(2049, 2): tilt weights (Standard, Contour).
+//   8 final Transients mask, 9 final Tones mask, 10 their sum. tw(2049, 3): tilt weights (0 Standard, 1 Contour)
+//   and the per-bin tilt gain (channel 2), rebuilt when Tilt, Tilt Mode, n or the weight at bin 1 changes.
 //
 // Telemetry buffer (bound by the face's `scope <name>` message, resent until the deferred gen~ runs), TS_SCOPE_SAMPS floats:
 //   0..127 input (Mid) level per log column, 128..255 Transients post, 256..383 Tones post (0..1 over -100..0 dB),
@@ -55,6 +56,10 @@ ts_tilttab(tw, n, sr) {
 // One analysis frame: ms (Mid amplitude / phase from ss_mid) -> final masks in tsd channels 8 / 9 / 10.
 // age = frames since the state was (re)started: 0 resets it, 1 has a valid history, 2 a valid second phase difference.
 ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) {
+	History cgTl(-9);
+	History cgMd(-9);
+	History cgN(-1);
+	History cgW(9);
 	half = n * 0.5;
 	hop = n * 0.25;
 	for (k = 0; k <= half; k += 1) {
@@ -75,6 +80,8 @@ ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) 
 	t1 = max(0.3 - 0.27 * bs, t0 + 0.02);
 	dk = exp(0 - 1 / clip(tdecay, 1, 125));
 	dtn = exp(0 - 1 / clip(tsmooth, 1, 64));
+	invD = 1 / (d1 - d0);
+	invTs = 1 / (t1 - t0);
 	nzMode = ttype > 0.5 ? 1 : 0;
 	for (k = 0; k <= half; k += 1) {
 		pd = ms.peek(k, 1) - 2 * tsd.peek(k, 3) + tsd.peek(k, 4);
@@ -85,12 +92,12 @@ ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) 
 		a = tsd.peek(k, 0);
 		hh = age < 0.5 ? a : tsd.peek(k, 1);
 		db = 8.685889638065035 * log((a + 1e-9) / (hh + 1e-9));
-		evp = age < 0.5 ? 0 : ts_sm((db - d0) / (d1 - d0));
+		evp = age < 0.5 ? 0 : ts_sm((db - d0) * invD);
 		tsd.poke(hh + (a - hh) * (a > hh ? rsK : flK), k, 1);
 		dl = tsd.peek(max(k - 1, 0), 5);
 		dr = tsd.peek(min(k + 1, half), 5);
 		dv = 0.25 * dl + 0.5 * tsd.peek(k, 5) + 0.25 * dr;
-		evn = age < 1.5 ? 0 : ts_sm((dv - t0) / (t1 - t0));
+		evn = age < 1.5 ? 0 : ts_sm((dv - t0) * invTs);
 		ev = nzMode > 0.5 ? evn : evp;
 		txp = age < 0.5 ? 0 : tsd.peek(k, 6);
 		qxp = age < 0.5 ? 1 : tsd.peek(k, 7);
@@ -110,9 +117,22 @@ ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) 
 	bl = clip(bld, 0, 1);
 	gbT = min(1, 2 * bl);
 	gbQ = min(1, 2 * (1 - bl));
+	md = tmode > 0.5 ? 1 : 0;
+	wChk = tw.peek(1, md);
+	rebuild = (cgTl != tl || cgMd != md || cgN != n || cgW != wChk) ? 1 : 0;
+	if (rebuild > 0.5) {
+		cgTl = tl;
+		cgMd = md;
+		cgN = n;
+		cgW = wChk;
+		for (k = 0; k <= half; k += 1) {
+			w = md > 0.5 ? tw.peek(k, 1) : tw.peek(k, 0);
+			gv = tl == 0 ? 1 : exp(tl * 12 * w * 0.11512925464970229);
+			tw.poke(gv, k, 2);
+		}
+	}
 	for (k = 0; k <= half; k += 1) {
-		w = tmode > 0.5 ? tw.peek(k, 1) : tw.peek(k, 0);
-		g = exp(tl * 12 * w * 0.11512925464970229);
+		g = tw.peek(k, 2);
 		q0 = tsd.peek(k, 7);
 		mt = (1 - q0) * g * gbT;
 		mq = q0 / g * gbQ;
@@ -175,7 +195,7 @@ ts_wave(ms, tsd, scope, n, slot) {
 Buffer scope("transplitscope");
 
 Data tsd(2049, 11);
-Data tw(2049, 2);
+Data tw(2049, 3);
 
 Param ttype(0);
 Param anbias(0);

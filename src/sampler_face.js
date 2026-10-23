@@ -201,6 +201,19 @@ function polygon(pts, c, a) {
     mgraphics.fill();
 }
 
+// One cached polyline per id. `key` must include every parameter the points depend on (cutoff, resonance,
+// envelope times, slopes). A hit means the filter response or ADSR curve is not rebuilt this paint.
+var curveGeomCache = {};
+function curveGeomGet(id, key) {
+    var slot = curveGeomCache[id];
+    if (slot && slot.key === key) return slot.pts;
+    return null;
+}
+function curveGeomPut(id, key, pts) {
+    curveGeomCache[id] = { key: key, pts: pts };
+    return pts;
+}
+
 function zone(kind, x, y, w, h, props) {
     var z = props || {};
     z.kind = kind; z.x = x; z.y = y; z.w = w; z.h = h;
@@ -1077,7 +1090,10 @@ function doAction(z) {
         case "browse": outlet(0, "browse", "bang"); break;
         case "inspector": setParamFromFace("show_inspector", showInspector ? 0 : 1); break;
         case "menu":
-            if (z.below) {
+            if (z.wtEnvLoop) {
+                if (openMenu && openMenu.key === z.key) openMenu = null;
+                else openMenu = { key: z.key, x: z.anchorX, y: z.anchorY, w: z.w2 || 41, rowH: 13.5, wtEnvLoop: true, anchorX: z.anchorX, anchorY: z.anchorY };
+            } else if (z.below) {
                 var items = menuItems(z.key).names.length * Math.min(15, Math.floor((mgraphics.size[1] - 10) / menuItems(z.key).names.length)) + 6;
                 toggleMenu(z.key, z.x + z.w - (z.w2 || z.w || 90), z.y + z.h + items + 2, z.w2 || 90);
             } else {

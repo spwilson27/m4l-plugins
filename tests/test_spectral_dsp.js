@@ -3,7 +3,7 @@
 /**
  * Unit tests of the deferred DSP loader (src/spectral_dsp.js) with a mocked patcher / Task / File / Global: creation order and wiring, the
  * message re-sends until the gen's alive counter moves, the settle re-send, the first-gen~ retry, the creation queue shared between instances,
- * the dry pass-through only outside a rack, the pill text and the restart hook.
+ * silence until the gen is wired (inside a rack and outside one), the pill text and the restart hook.
  */
 const fs = require("fs");
 const path = require("path");
@@ -143,15 +143,16 @@ function makeInstance(world, id) {
     assert.ok(/dsp-retry/.test(w.globals.spectral_split_trace.text) && /dsp-error/.test(w.globals.spectral_split_trace.text), "trace lines");
 }
 
-// ---- dry pass-through outside a rack only, removed when the gen is wired
+// ---- silence during deferral, inside a rack and outside one: never a direct plugin~ -> plugout~ cord
 {
     const w = makeWorld();
     const I = makeInstance(w, "A");
     I.sb.ssDspDry(true);
-    assert.deepStrictEqual([...I.lines].sort(), ["ss_plugin:0>ss_plugout:0", "ss_plugin:1>ss_plugout:1"]);
+    assert.strictEqual(I.lines.size, 0, "outside a rack stays silent during deferral");
     I.sb.ssDspSchedule("A");
     w.advance(60);
-    assert.ok(!I.lines.has("ss_plugin:0>ss_plugout:0"), "the dry cord goes away when the gen is wired");
+    assert.ok(!I.lines.has("ss_plugin:0>ss_plugout:0") && !I.lines.has("ss_plugin:1>ss_plugout:1"), "no dry cord after the gen is wired");
+    assert.ok(I.lines.has("ss_plugin:0>ss_gen:0") && I.lines.has("ss_gen:0>ss_plugout:0"), "audio goes plugin~ -> gen -> plugout~");
     const J = makeInstance(w, "B");
     J.sb.ssDspDry(false);
     assert.strictEqual(J.lines.size, 0, "inside a rack nothing passes before the gen runs");

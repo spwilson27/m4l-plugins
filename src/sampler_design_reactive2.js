@@ -7,8 +7,8 @@
 //   "hdl"  a draggable graph handle (envelope breakpoints, filter cutoff / resonance point)
 //   "act"  a button with its own callback (sidebar toggles, drawer-less tabs)
 //
-// Layout (default 678 px = sidebar + viewer + the Envelope section; everything open = 1306 px):
-//   x   3..25   sidebar: 5 icon toggles (Engine detail, Envelope, Filter, LFO / Mod, Voice / Out)
+// Layout (default 766 px = sidebar + viewer + the Mod Sources section; everything open = 1496 px):
+//   x   3..25   sidebar: 5 icon toggles (Engine detail, Mod Sources, Filter, Mod Matrix, Voice / Out)
 //   x  29..495  sample viewer, 466 px wide (= Better Sampler's MAIN.sample width): header row, waveform, footer row (y 3..110)
 //               and, fixed directly under it (y 113..166), the engine strip: engine pills, character switch, the engine's
 //               knobs and Pitch / Speed / Pos (never folds away)
@@ -20,22 +20,21 @@ var oscTab = 0;                             // 0 = Osc 1, 1 = Osc 2, 2 = Sub
 
 var SECTIONS = [
     { id: "details", name: "Engine detail", w: 164, acc: "a_eng" },
-    { id: "env", name: "Envelope", w: 176, acc: "a_amp" },
+    { id: "env", name: "Mod Sources", w: 264, acc: "a_amp" },
     { id: "filter", name: "Filter", w: 235, acc: "a_filt" },
-    { id: "lfo", name: "LFO / Mod", w: 150, acc: "a_lfo" },
+    { id: "matrix", name: "Mod Matrix", w: 252, acc: "a_lfo" },
     { id: "voice", name: "Voice / Out", w: 132, acc: "a_out" }
 ];
-
 var SB_X = 2, SB_W = 22;
 var VIEW = { x: 26, y: 0, w: 466, h: 106 };
 var STRIP = { x: 26, y: 108, w: 466, h: 59 };
 var SEC_X0 = 494, SEC_GAP = 2, WIN_PAD = 2, SEC_Y = 0, SEC_H = 167;
-var DEFAULT_FOLD = 2;                       // Envelope open
+var DEFAULT_FOLD = 2;                       // Mod Sources open
 var foldMask = DEFAULT_FOLD;
 var hoverHdl = "";
 var hoverTip = null;
 var RC = null;
-var envX = SEC_X0, filtX = SEC_X0;          // x of the Envelope / Filter section in the current layout (set by paint)
+var envX = SEC_X0, filtX = SEC_X0, matX = SEC_X0; // x of the Mod Sources / Filter / Matrix section in the current layout
 
 function sectionRects(mask) {
     var out = [], x = SEC_X0;
@@ -370,29 +369,20 @@ function sbGlyph(i, cx, cy, c, a) {
             line(cx - 7, ly, cx + 7, ly, c, a * 0.7, 1.1);
             circle(cx - 3 + ((j * 5) % 9) , ly, 1.9, c, a);
         }
-    } else if (i === 1) {                         // envelope: ADSR outline
+    } else if (i === 1) {                         // mod sources / envelope: ADSR outline
         mgraphics.move_to(cx - 7.5, cy + 5); mgraphics.line_to(cx - 3.5, cy - 5.5); mgraphics.line_to(cx, cy - 1);
         mgraphics.line_to(cx + 3.5, cy - 1); mgraphics.line_to(cx + 7.5, cy + 5); mgraphics.stroke();
     } else if (i === 2) {                         // filter: low-pass response
         mgraphics.move_to(cx - 7.5, cy - 2); mgraphics.line_to(cx - 1, cy - 2); mgraphics.line_to(cx + 1, cy - 5);
         mgraphics.line_to(cx + 3, cy - 1); mgraphics.line_to(cx + 7.5, cy + 5); mgraphics.stroke();
-    } else if (i === 3) {                         // LFO: sine
-        for (j = 0; j <= 14; j++) {
-            var px = cx - 7.5 + j, py = cy - Math.sin(j / 14 * 6.2832) * 4.5;
-            if (j === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
+    } else if (i === 3) {                         // mod matrix: 3x3 matrix grid
+        for (var r = 0; r < 3; r++) for (j = 0; j < 3; j++) {
+            var cellOn = (r === 0 && j === 1) || (r === 1 && j === 0) || (r === 2 && j === 2);
+            fillRect(cx - 6.5 + j * 4.8, cy - 6.0 + r * 4.5, 3.4, 3.0, c, cellOn ? a : a * 0.42);
         }
-        mgraphics.stroke();
-    } else if (i === 4) {                         // voice / out: level bars
+    } else {                                      // voice / out: level bars
         var hs = [5, 9, 6.5];
         for (j = 0; j < 3; j++) fillRR(cx - 7 + j * 5.2, cy + 6 - hs[j] * 1.1, 3.6, hs[j] * 1.1, 1.2, c, a);
-    } else {                                      // osc 2 / sub: stacked wave + sawtooth glyph
-        for (j = 0; j <= 12; j++) {
-            var ox = cx - 6 + j, oy = cy - 3 - Math.sin(j / 12 * 6.2832) * 2.5;
-            if (j === 0) mgraphics.move_to(ox, oy); else mgraphics.line_to(ox, oy);
-        }
-        mgraphics.stroke();
-        mgraphics.move_to(cx - 6, cy + 5); mgraphics.line_to(cx, cy + 1); mgraphics.line_to(cx, cy + 5);
-        mgraphics.line_to(cx + 6, cy + 1); mgraphics.line_to(cx + 6, cy + 5); mgraphics.stroke();
     }
 }
 
@@ -987,22 +977,46 @@ sample_loaded = function () {
 
 
 // ---------------------------------------------------------------------------
-// Envelope section (Live look): thin cyan curve in a dark display with corner brackets, orange hollow A / R handles, a white
-// filled D handle (x = decay, y = sustain), pink diamond slope handles on the A / D / R segments, a Time | Slope tab pair and an
-// A D S R value row; one white dot per sounding voice rides the curve (newest brightest)
+// Mod Sources Section & Mod Matrix Section (Ableton Wavetable look):
+//   Mod Sources section ("env"):
+//     Top tab bar: [Amp] [Env 2] [Env 3] [LFO 1] [LFO 2]
+//     Envelope sub-tabs: Time | Slope | Value, None/Trigger/Loop dropdown, 4 orange hollow squares + 3 pink slope diamonds
+//     LFO sub-tabs: A attack ms, Hz / Sync note, R retrigger, 4-cycle orange wave, 5 shape icons, Rate / Amount / Shape / Offset
+//   Mod Matrix section ("matrix"):
+//     Top tab bar (same style as Mod Sources): [Matrix] [MIDI] [MPE]
+//     4 target rows (Amp, Pitch, Osc 1 Pos, Osc 1 Warp) with bipolar mod cells & green/cyan/orange bars + Global Time/Amount
 // ---------------------------------------------------------------------------
 
-var ENV_W = 176;
+var ENV_W = 264;
+var MAT_W = 252;
 var envDots = [];            // last painted: { v, x, y, stage, alpha, rank } for the page shown (newest first)
 var envPanelRect = [0, 0, 0, 0];
-var envTab = 0;              // 0 Time, 1 Slope (the value row)
-var ENV_MIN_SEG = 18;        // minimum width of a segment in px: handle zones are +-5, diamond zones +-4, so they never overlap
+var envTab = 0;              // 0 Time, 1 Slope, 2 Value (the envelope value row)
+var matTab = 0;              // 0 Matrix, 1 MIDI, 2 MPE (the Mod Matrix section tab)
+var ENV_MIN_SEG = 20;        // minimum width of a segment in px: handle zones are +-5, diamond zones +-4, so they never overlap
+
+// Auxiliary matrix cell values for cells not backed by direct gen parameters (seeded with Wavetable's defaults from screenshots)
+var wtModCells = {
+    "midi:0:0": 50, "midi:1:2": 2, "midi:2:4": 100, "midi:3:3": 7,
+    "mpe:0:0": 50, "mpe:1:1": 48, "mpe:2:2": 33, "mpe:3:3": 7
+};
 
 function envKeys() {
+    if (envPage === 2) return ["env3_atk_ms", "env3_dec_ms", "env3_sus_lvl", "env3_rel_ms"];
     return envPage === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"];
 }
 function envSlopeKeys() {
+    if (envPage === 2) return ["env3_atk_slope", "env3_dec_slope", "env3_rel_slope"];
     return envPage === 1 ? ["matk_slope", "mdec_slope", "mrel_slope"] : ["atk_slope", "dec_slope", "rel_slope"];
+}
+function envValKeys() {
+    if (envPage === 2) return ["env3_init", "env3_peak", "env3_sus_lvl", "env3_final"];
+    if (envPage === 1) return ["env2_init", "env2_peak", "msus_lvl", "env2_final"];
+    return ["amp_init", "amp_peak", "sus_lvl", null];
+}
+function envLoopKey() {
+    if (envPage === 2) return "env3_loop_mode";
+    return envPage === 1 ? "env2_loop_mode" : "amp_loop_mode";
 }
 
 // bend(p, s): the gen's slope shape, p in 0..1, s in -1..1 (s > 0 bows the curve up); exactly p at s = 0
@@ -1018,16 +1032,22 @@ function bendW(p, s) {
 }
 
 function envGeom() {
-    var k = envKeys(), sk = envSlopeKeys();
-    var gx = envX + 13, gw = ENV_W - 26, gy = 36, gb = 102;
-    var hold = gw * 0.16;
-    var segMax = (gw - hold - 4) / 3;
+    var k = envKeys(), sk = envSlopeKeys(), vk = envValKeys();
+    var gx = envX + 18.5, gw = ENV_W - 44, gy = 38.5, gb = 109.5;
+    var hold = Math.round(gw * 0.42);
+    var segMax = (gw - hold) / 3;
     var sm = segMax - ENV_MIN_SEG;               // every segment is at least ENV_MIN_SEG wide, so its slope diamond stays visible
     var an = toNorm(k[0], paramValue(k[0])), dn = toNorm(k[1], paramValue(k[1])), rn = toNorm(k[3], paramValue(k[3]));
     var sus = clamp01(paramValue(k[2]) * 0.01);
+    var initL = vk[0] ? clamp01(paramValue(vk[0]) * 0.01) : 0.0;
+    var peakL = vk[1] ? clamp01(paramValue(vk[1]) * 0.01) : 1.0;
+    var finalL = vk[3] ? clamp01(paramValue(vk[3]) * 0.01) : 0.0;
     var xA = gx + ENV_MIN_SEG + an * sm, xD = xA + ENV_MIN_SEG + dn * sm, xS = xD + hold, xR = xS + ENV_MIN_SEG + rn * sm;
-    return { keys: k, slopeKeys: sk, gx: gx, gw: gw, gy: gy, gb: gb, hold: hold, segMax: segMax, minSeg: ENV_MIN_SEG, sm: sm,
-        xA: xA, xD: xD, xS: xS, xR: xR, ys: gb - sus * (gb - gy), sus: sus, an: an, dn: dn, rn: rn,
+    var spanY = gb - gy;
+    return { keys: k, slopeKeys: sk, valKeys: vk, gx: gx, gw: gw, gy: gy, gb: gb, hold: hold, segMax: segMax, minSeg: ENV_MIN_SEG, sm: sm,
+        xA: xA, xD: xD, xS: xS, xR: xR,
+        y0: gb - initL * spanY, yPeak: gb - peakL * spanY, ys: gb - sus * spanY, yFinal: gb - finalL * spanY,
+        initL: initL, peakL: peakL, sus: sus, finalL: finalL, an: an, dn: dn, rn: rn,
         sA: clamp01((paramValue(sk[0]) + 100) / 200) * 2 - 1, sD: clamp01((paramValue(sk[1]) + 100) / 200) * 2 - 1, sR: clamp01((paramValue(sk[2]) + 100) / 200) * 2 - 1 };
 }
 
@@ -1038,9 +1058,19 @@ function envCurveY(t) { return Math.pow(1 - t, ENV_POW); }
 function envT(f) { return 1 - Math.pow(1 - clamp01(f), 1 / ENV_POW); }
 
 // screen y of the curve in each segment (t 0..1 through the segment), slope included
-function envYAttack(g, t) { return g.gb - bendP(t, g.sA) * (g.gb - g.gy); }
-function envYDecay(g, t) { return g.gb - (g.sus + (1 - g.sus) * bendW(envCurveY(t), g.sD)) * (g.gb - g.gy); }
-function envYRelease(g, t, relLevel) { return g.gb - relLevel * bendW(envCurveY(t), g.sR) * (g.gb - g.gy); }
+function envYAttack(g, t) {
+    var lv = g.initL + (g.peakL - g.initL) * bendP(t, g.sA);
+    return g.gb - lv * (g.gb - g.gy);
+}
+function envYDecay(g, t) {
+    var lv = g.sus + (g.peakL - g.sus) * bendW(envCurveY(t), g.sD);
+    return g.gb - lv * (g.gb - g.gy);
+}
+function envYRelease(g, t, relLevel) {
+    var r0 = relLevel === undefined ? g.sus : relLevel;
+    var lv = g.finalL + (r0 - g.finalL) * bendW(envCurveY(t), g.sR);
+    return g.gb - lv * (g.gb - g.gy);
+}
 
 // Where a voice sits on the curve. enc = stage + fraction (telemetry: slope-independent), lvl = the voice's output level (0..1).
 function envDotAt(g, enc, lvl) {
@@ -1052,7 +1082,7 @@ function envDotAt(g, enc, lvl) {
     if (st === 4) {
         var tr = envT(f);
         var b = bendW(1 - f, g.sR);
-        var rel = (f < 0.999 && b > 1e-4) ? clamp01(lvl / b) : g.sus;      // the level the voice had when its release began
+        var rel = (f < 0.999 && b > 1e-4) ? clamp01(g.finalL + (lvl - g.finalL) / b) : g.sus;      // the level the voice had when its release began
         return { x: g.xS + (g.xR - g.xS) * tr, y: y, stage: 4, relStart: rel };
     }
     return null;
@@ -1066,15 +1096,31 @@ function strokeSeg(pts, c, a, wd) {
     mgraphics.stroke();
 }
 function cornerBrackets(x, y, w, h, c) {
-    var L = 7;
-    var xs = [x + 1, x + w - 1], ys = [y + 1, y + h - 1];
+    var L = 7.0;
+    var xs = [x + 0.5, x + w - 0.5], ys = [y + 0.5, y + h - 0.5];
     for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) {
         var dx = i === 0 ? 1 : -1, dy = j === 0 ? 1 : -1;
-        line(xs[i], ys[j], xs[i] + dx * L, ys[j], c, 1.0, 1.3);
-        line(xs[i], ys[j], xs[i], ys[j] + dy * L, c, 1.0, 1.3);
+        line(xs[i], ys[j], xs[i] + dx * L, ys[j], c, 1.0, 1.0);
+        line(xs[i], ys[j], xs[i], ys[j] + dy * L, c, 1.0, 1.0);
     }
 }
-function diamond(x, y, r, c, a) { polygon([[x, y - r], [x + r, y], [x, y + r], [x - r, y]], c, a); }
+function focusBrackets(x, y, w, h, c) {
+    var L = 2.5;
+    line(x, y, x + L, y, c, 1.0, 1.0); line(x, y, x, y + L, c, 1.0, 1.0);
+    line(x + w, y, x + w - L, y, c, 1.0, 1.0); line(x + w, y, x + w, y + L, c, 1.0, 1.0);
+    line(x, y + h, x + L, y + h, c, 1.0, 1.0); line(x, y + h, x, y + h - L, c, 1.0, 1.0);
+    line(x + w, y + h, x + w - L, y + h, c, 1.0, 1.0); line(x + w, y + h, x + w, y + h - L, c, 1.0, 1.0);
+}
+function diamond(x, y, r, c, a) {
+    setc(c, a === undefined ? 1.0 : a);
+    mgraphics.set_line_width(1.1);
+    mgraphics.move_to(x, y - r);
+    mgraphics.line_to(x + r, y);
+    mgraphics.line_to(x, y + r);
+    mgraphics.line_to(x - r, y);
+    mgraphics.close_path();
+    mgraphics.stroke();
+}
 function hollowSquare(x, y, r, c, w) {
     setc(c, 1.0);
     mgraphics.set_line_width(w);
@@ -1082,41 +1128,121 @@ function hollowSquare(x, y, r, c, w) {
     mgraphics.stroke();
 }
 
-// S shown in dB, times as ms / s, slopes as %
+// Wavetable value formatting: Amp S in dB (or % for Env 2/3), times as ms / s, slopes as %,Initial/Peak/Final as %
 function fmtEnvVal(key, v) {
-    if (key === "sus_lvl" || key === "msus_lvl") return v <= 0.05 ? "-inf dB" : (20 * Math.log(v / 100) / Math.LN10).toFixed(1) + " dB";
-    if (/slope$/.test(key)) return (v > 0 ? "+" : "") + Math.round(v) + " %";
+    if (key === "sus_lvl" && envTab === 0 && envPage === 0) return v <= 0.05 ? "-inf dB" : (20 * Math.log(v / 100) / Math.LN10).toFixed(1) + " dB";
+    if (key === "sus_lvl" || key === "msus_lvl" || key === "env3_sus_lvl") return Math.round(v) + " %";
+    if (/init$|peak$|final$/.test(key)) return (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + " %";
+    if (/slope$/.test(key)) return (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + " %";
     return fmtTime(v);
 }
 
-function paintEnvSection(sx) {
-    envX = sx;
-    var cy1 = RC.cyan;
-    var modPage = envPage === 1;
-    panelBox(sx, SEC_Y, ENV_W, SEC_H);
-    var tabs = ["AMP", "MOD"];
-    for (var t = 0; t < 2; t++) {
-        var on2 = envPage === t || (envPage > 1 && t === 0);
-        fillRR(sx + 7 + t * 43, 7, 40, 15, 3, on2 ? RC.sel : RC.raised, 1);
-        text(tabs[t], sx + 7 + t * 43 + 20, 17.5, 8.5, on2 ? RC.dark : RC.sub, on2, 1);
-        zone("button", sx + 7 + t * 43, 7, 40, 15, { action: "env_page", page: t });
+// Shape LFO waveform (-1..+1) with shaping (-1..+1) and phase offset
+function wtLfoEval(shape, p, shaping) {
+    p = p - Math.floor(p);
+    var sh = clamp01((shaping + 100) / 200) * 2 - 1;
+    if (sh !== 0 && shape !== 3) {
+        p = Math.pow(p, Math.pow(3.0, -sh));
     }
-    text("ENVELOPE", sx + ENV_W - 8, 17.5, 7.0, RC.dim, false, 2);
+    if (shape === 0) return Math.sin(6.28318530718 * p);
+    if (shape === 1) return 1.0 - 4.0 * Math.abs((p + 0.25 - Math.floor(p + 0.25)) - 0.5);
+    if (shape === 2) return 1.0 - 2.0 * p;     // Wavetable descending sawtooth
+    if (shape === 4) return p < 0.5 ? 1.0 : -1.0;
+    var step = Math.min(15, Math.floor(p * 16));
+    var shTab = [0.65, -0.45, 0.85, -0.15, -0.75, 0.35, -0.55, 0.90, -0.25, 0.50, -0.85, 0.15, 0.70, -0.60, 0.25, -0.35];
+    return shTab[step];
+}
 
+// Wavetable 5 LFO shape icons: 0 Sine, 1 Triangle, 2 Sawtooth (falling), 3 Square, 4 S&H stepped
+function drawWtLfoShapeIcon(idx, x, y, w, h, c, a) {
+    setc(c, a === undefined ? 1.0 : a);
+    mgraphics.set_line_width(1.2);
+    var cy = y + h * 0.5, ay = h * 0.42;
+    if (idx === 0) {
+        for (var i = 0; i <= 16; i++) {
+            var t = i / 16;
+            var px = x + t * w, py = cy - Math.sin(t * 6.2831853) * ay;
+            if (i === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
+        }
+        mgraphics.stroke();
+    } else if (idx === 1) {
+        mgraphics.move_to(x, cy + ay * 0.8);
+        mgraphics.line_to(x + w * 0.5, cy - ay * 0.8);
+        mgraphics.line_to(x + w, cy + ay * 0.8);
+        mgraphics.stroke();
+    } else if (idx === 2) {
+        mgraphics.move_to(x, cy + ay * 0.8);
+        mgraphics.line_to(x, cy - ay * 0.8);
+        mgraphics.line_to(x + w, cy + ay * 0.8);
+        mgraphics.stroke();
+    } else if (idx === 3) {
+        mgraphics.move_to(x, cy + ay * 0.8);
+        mgraphics.line_to(x, cy - ay * 0.8);
+        mgraphics.line_to(x + w * 0.5, cy - ay * 0.8);
+        mgraphics.line_to(x + w * 0.5, cy + ay * 0.8);
+        mgraphics.line_to(x + w, cy + ay * 0.8);
+        mgraphics.line_to(x + w, cy - ay * 0.8);
+        mgraphics.stroke();
+    } else {
+        var st = [0.2, 0.85, -0.7, 0.45, -0.3, 0.0, 0.6];
+        for (var s = 0; s < 6; s++) {
+            var sx0 = x + (s / 6) * w, sx1 = x + ((s + 1) / 6) * w;
+            var sy0 = cy - st[s] * ay, sy1 = cy - st[s + 1] * ay;
+            if (s === 0) mgraphics.move_to(sx0, sy0);
+            mgraphics.line_to(sx1, sy0);
+            if (s < 5) mgraphics.line_to(sx1, sy1);
+        }
+        mgraphics.stroke();
+    }
+}
+
+function drawMetronomeIcon(x, y, c) {
+    setc(c, 1.0);
+    mgraphics.set_line_width(1.1);
+    mgraphics.move_to(x + 1, y + 7.5);
+    mgraphics.line_to(x + 3, y + 1);
+    mgraphics.line_to(x + 6, y + 1);
+    mgraphics.line_to(x + 8, y + 7.5);
+    mgraphics.close_path();
+    mgraphics.stroke();
+    line(x + 4.5, y + 6.5, x + 7.5, y + 1.5, c, 1.0, 1.1);
+}
+
+function paintEnvSubPage(sx, bx, by, bw, bh) {
+    var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
+    var modPage = envPage >= 1;
     var g = envGeom();
-    envPanelRect = [sx + 5, 27, ENV_W - 10, 84];
-    fillRR(envPanelRect[0], envPanelRect[1], envPanelRect[2], envPanelRect[3], 2, RC.wave);
-    cornerBrackets(envPanelRect[0], envPanelRect[1], envPanelRect[2], envPanelRect[3], cy1);
+    envPanelRect = [bx, by + 17, bw, 118];
 
-    // curve: a thin line, no fill
-    var n = 18, j, pts = [[g.gx, g.gb]];
-    for (j = 1; j <= n; j++) { var ta = j / n; pts.push([g.gx + (g.xA - g.gx) * ta, envYAttack(g, ta)]); }
-    for (j = 1; j <= n; j++) { var td = j / n; pts.push([g.xA + (g.xD - g.xA) * td, envYDecay(g, td)]); }
-    pts.push([g.xS, g.ys]);
-    for (j = 1; j <= n; j++) { var tr = j / n; pts.push([g.xS + (g.xR - g.xS) * tr, envYRelease(g, tr, g.sus)]); }
-    strokeSeg(pts, cy1, 1.0, 1.3);
+    // Loop mode dropdown in top-right ("None ▾" / "Trigger ▾" / "Loop ▾")
+    var lk = envLoopKey();
+    var lModes = ["None", "Trigger", "Loop"];
+    var curL = Math.round(paramValue(lk));
+    var lbx = bx + bw - 44, lby = by + 20, lbw = 39, lbh = 13;
+    if (openMenu && openMenu.key === lk) focusBrackets(lbx, lby, lbw, lbh, cy1);
+    text(lModes[curL] || "None", lbx + 2, lby + 9.5, 9.5, cy1, false, 0);
+    polygon([[lbx + lbw - 7.5, lby + 4.5], [lbx + lbw - 3.5, lby + 4.5], [lbx + lbw - 5.5, lby + 6.8]], cy1);
+    zone("button", lbx, lby, lbw, lbh, { action: "menu", key: lk, w2: 41, below: true, wtEnvLoop: true, anchorX: lbx, anchorY: lby + lbh + 1 });
 
-    // voices: ghost release path of a voice that did not release from the sustain level, then the dots (oldest first)
+    // Corner brackets inside the envelope plot area
+    cornerBrackets(g.gx - 5.5, g.gy - 5.5, ENV_W - 22, g.gb - g.gy + 11, cy1);
+
+    // Envelope curve: thin cyan line from (gx, y0) -> (xA, yPeak) -> (xD, ys) -> (xS, ys) -> (xR, yFinal).
+    // The static curve depends only on the envelope parameters; voice dots are drawn on top of the cache.
+    var n = 18, j;
+    var envKey = [g.gx, g.xA, g.xD, g.xS, g.xR, g.y0, g.yPeak, g.ys, g.yFinal, g.sA, g.sD, g.sR, g.initL, g.peakL, g.sus, g.finalL, g.gb, g.gy].join("|");
+    var pts = curveGeomGet("r2-env", envKey);
+    if (!pts) {
+        pts = [[g.gx, g.y0]];
+        for (j = 1; j <= n; j++) { var ta = j / n; pts.push([g.gx + (g.xA - g.gx) * ta, envYAttack(g, ta)]); }
+        for (j = 1; j <= n; j++) { var td = j / n; pts.push([g.xA + (g.xD - g.xA) * td, envYDecay(g, td)]); }
+        pts.push([g.xS, g.ys]);
+        for (j = 1; j <= n; j++) { var tr = j / n; pts.push([g.xS + (g.xR - g.xS) * tr, envYRelease(g, tr, g.sus)]); }
+        curveGeomPut("r2-env", envKey, pts);
+    }
+    strokeSeg(pts, cy1, 1.0, 1.5);
+
+    // Sounding voice dots riding the curve
     var order = soundingVoices(modPage);
     envDots = [];
     var k;
@@ -1142,52 +1268,304 @@ function paintEnvSection(sx) {
         circle(e.x, e.y, r, [1, 1, 1], e.alpha);
     }
 
-    // handles (Live): orange hollow squares at the attack peak and the release end, a white filled square at the decay / sustain
-    // breakpoint, pink diamonds on the middle of the attack, decay and release segments (the slope handles)
+    // Slope diamonds (pink hollow diamonds on the A / D / R segments)
     var hv = function (id) { return hoverHdl === "env:" + id || (drag && drag.hdl === "env:" + id); };
-    var hs = [
-        { id: "A", x: g.xA, y: g.gy },
-        { id: "D", x: g.xD, y: g.ys },            // x = decay, y = sustain
-        { id: "R", x: g.xR, y: g.gb }
-    ];
-    for (var h = 0; h < hs.length; h++) {
-        var big = hv(hs[h].id) ? 4.2 : 3.2;
-        if (hs[h].id === "D") { fillRect(hs[h].x - big, hs[h].y - big, big * 2, big * 2, [1, 1, 1], 1.0); }
-        else hollowSquare(hs[h].x, hs[h].y, big, liveCol("live_display_handle_one"), 1.3);
-        zone("hdl", hs[h].x - 5, hs[h].y - 5, 10, 10, { id: "env:" + hs[h].id, cx: hs[h].x, cy: hs[h].y });
-    }
     var sl = [
         { id: "As", x: g.gx + (g.xA - g.gx) * 0.5, y: envYAttack(g, 0.5) },
         { id: "Ds", x: g.xA + (g.xD - g.xA) * 0.5, y: envYDecay(g, 0.5) },
         { id: "Rs", x: g.xS + (g.xR - g.xS) * 0.5, y: envYRelease(g, 0.5, g.sus) }
     ];
     for (var q = 0; q < sl.length; q++) {
-        diamond(sl[q].x, sl[q].y, hv(sl[q].id) ? 4.4 : 3.4, RC.pink, 1.0);
+        diamond(sl[q].x, sl[q].y, hv(sl[q].id) ? 2.5 : 1.75, RC.pink, 1.0);
         zone("hdl", sl[q].x - 4, sl[q].y - 4, 8, 8, { id: "env:" + sl[q].id, cx: sl[q].x, cy: sl[q].y });
     }
 
-    // Time | Slope tabs, then the A D S R labels and values (draggable; S in dB; Slope shows A, D and R)
-    for (var tb = 0; tb < 2; tb++) {
-        var tx = sx + 9 + tb * 38, on3 = envTab === tb;
-        text(tb === 0 ? "Time" : "Slope", tx, 125, 8.0, on3 ? RC.white : RC.sub, on3, 0);
-        if (on3) line(tx, 128, tx + textW(tb === 0 ? "Time" : "Slope", 8.0), 128, RC.white, 1.0, 1.4);
-        (function (idx) { actZone(tx - 3, 114, 36, 17, function () { envTab = idx; }); })(tb);
-    }
-    var k4 = envKeys(), sk = envSlopeKeys();
-    var labs = ["A", "D", "S", "R"];
-    var cw = (ENV_W - 12) / 4;
-    for (var c = 0; c < 4; c++) {
-        var cx = sx + 6 + cw * (c + 0.5);
-        var key = envTab === 0 ? k4[c] : (c === 2 ? null : sk[c === 3 ? 2 : c]);
-        text(labs[c], cx, 142, 7.5, RC.sub, false, 1);
-        if (key) {
-            var hot = hoverKey === key || (drag && drag.key === key);
-            text(fmtEnvVal(key, paramValue(key)), cx, 154, 8.0, hot ? RC.white : cy1, hot, 1);
-            zone("value", cx - cw * 0.5, 144, cw, 13, { key: key, norm: true });
-        } else {
-            text("—", cx, 154, 8.0, RC.dim, false, 1);
+    // Breakpoint handles (Wavetable: 4 orange squares at Initial, Attack Peak, Decay/Sustain, Release End; active/hovered fills orange)
+    var hs = [
+        { id: "I", x: g.gx, y: g.y0, zoneHdl: envTab === 2 },
+        { id: "A", x: g.xA, y: g.yPeak, zoneHdl: true },
+        { id: "D", x: g.xD, y: g.ys, zoneHdl: true },
+        { id: "R", x: g.xR, y: g.yFinal, zoneHdl: true }
+    ];
+    for (var h = 0; h < hs.length; h++) {
+        var isHot = hv(hs[h].id) || (envTab === 1 && hs[h].id === "A");
+        var isWhiteBox = envTab === 2 && hs[h].id === "A" && !hv(hs[h].id);
+        var sqX = Math.round(hs[h].x), sqY = Math.round(hs[h].y), sqR = 2.0;
+        fillRect(sqX - sqR, sqY - sqR, sqR * 2, sqR * 2, isHot ? orange : RC.wave, 1.0);
+        hollowSquare(sqX, sqY, sqR, isWhiteBox ? RC.white : orange, 1.0);
+        if (hs[h].zoneHdl) {
+            zone("hdl", hs[h].x - 5, hs[h].y - 5, 10, 10, { id: "env:" + hs[h].id, cx: hs[h].x, cy: hs[h].y });
         }
     }
+
+    // Centered Time | Slope | Value tabs at bottom of plot area, with white underline on active tab and horizontal divider
+    var subTabs = ["Time", "Slope", "Value"];
+    var tabXs = [bx + 92, bx + 116, bx + 141];
+    var tabWs = [22, 23, 24];
+    var divY = by + 135;
+    for (var tb = 0; tb < 3; tb++) {
+        var tx = tabXs[tb], tw = tabWs[tb], on3 = envTab === tb;
+        text(subTabs[tb], tx + tw * 0.5, divY - 5.5, 9.5, on3 ? RC.white : RC.sub, false, 1);
+        if (on3) line(tx, divY - 0.5, tx + tw, divY - 0.5, RC.white, 1.0, 1.5);
+        (function (idx) { actZone(tx - 2, divY - 14, tw + 4, 14, function () { envTab = idx; }); })(tb);
+    }
+    line(bx + 1, divY, bx + bw - 1, divY, RC.line, 1.0, 1.0);
+
+    // Bottom parameter row: 4 columns (A D S R for Time & Slope; Initial Peak S Final for Env 2/3 Value, Initial Peak S for Amp Value)
+    var k4 = envKeys(), sk = envSlopeKeys(), vk = envValKeys();
+    var labs = envTab === 2 ? ["Initial", "Peak", "S", "Final"] : ["A", "D", "S", "R"];
+    var colX = [bx + 56, bx + 93, bx + 130, bx + 167];
+    var colW = 36;
+    for (var c = 0; c < 4; c++) {
+        var lx = colX[c];
+        var key = envTab === 0 ? k4[c] : (envTab === 1 ? (c === 2 ? k4[2] : sk[c === 3 ? 2 : c]) : vk[c]);
+        if (!key) continue;
+        text(labs[c], lx, divY + 11.5, 9.5, RC.sub, false, 0);
+        var hot = hoverKey === key || (drag && drag.key === key);
+        var vStr = (envTab === 1 && c === 2) ? (Math.round(paramValue(key)) + " %") : fmtEnvVal(key, paramValue(key));
+        text(vStr, lx, divY + 23.0, 9.5, hot ? RC.white : cy1, hot, 0);
+        zone("value", lx - 2, divY + 2, colW, 23, { key: key, norm: true });
+    }
+}
+
+function paintLfoSubPage(sx, bx, by, bw, bh) {
+    var orange = liveCol("live_display_handle_one");
+    var isLfo2 = envPage === 4;
+    var rateKey = isLfo2 ? "lfo2_rate" : "lfo_rate";
+    var shpKey = isLfo2 ? "lfo2_shape" : "lfo_shape";
+    var atkKey = isLfo2 ? "lfo2_atk_ms" : "lfo1_atk_ms";
+    var amtKey = isLfo2 ? "lfo2_amount" : "lfo1_amount";
+    var shgKey = isLfo2 ? "lfo2_shaping" : "lfo1_shaping";
+    var offKey = isLfo2 ? "lfo2_offset" : "lfo1_offset";
+    var synKey = isLfo2 ? "lfo2_sync" : "lfo1_sync";
+    var retKey = isLfo2 ? "lfo2_retrig" : "lfo1_retrig";
+
+    // Top-right row inside LFO view: A 0.00 ms | Hz | metronome | [R]
+    var atkV = paramValue(atkKey);
+    text("A", bx + 154, by + 29, 9.5, RC.sub, false, 0);
+    text(fmtTime(atkV), bx + 164, by + 29, 9.5, orange, false, 0);
+    zone("value", bx + 152, by + 19, 46, 12, { key: atkKey, norm: true });
+
+    var syncOn = Math.round(paramValue(synKey)) > 0;
+    text("Hz", bx + 205, by + 29, 9.5, !syncOn ? orange : RC.sub, false, 0);
+    zone("button", bx + 203, by + 19, 15, 12, { action: "menu_pick", key: synKey, value: 0 });
+    drawMetronomeIcon(bx + 221, by + 20.5, syncOn ? orange : RC.sub);
+    zone("button", bx + 219, by + 19, 13, 12, { action: "menu_pick", key: synKey, value: 1 });
+
+    var retrigOn = Math.round(paramValue(retKey)) > 0;
+    if (retrigOn) {
+        fillRect(bx + 235, by + 20, 9.5, 9.5, orange, 1.0);
+        text("R", bx + 239.8, by + 27.5, 8.5, RC.wave, true, 1);
+    } else {
+        hollowSquare(bx + 239.75, by + 24.75, 4.75, RC.sub, 1.0);
+        text("R", bx + 239.8, by + 27.5, 8.5, RC.sub, true, 1);
+    }
+    zone("button", bx + 234, by + 19, 12, 12, { action: "toggle", key: retKey });
+
+    // 4-cycle orange waveform across the plot area
+    var shpRaw = Math.round(paramValue(shpKey));
+    var amount = clamp01(paramValue(amtKey) * 0.01);
+    var shaping = paramValue(shgKey);
+    var offset = (paramValue(offKey) || 0) / 360.0;
+    var atkNorm = toNorm(atkKey, atkV) * 0.45;
+    var wx0 = bx + 8, wx1 = bx + bw - 16, wyMid = by + 74.5, wyAmp = 32.0 * (0.15 + 0.85 * amount);
+    var nSteps = 128;
+    setc(orange, 1.0);
+    mgraphics.set_line_width(1.4);
+    for (var i = 0; i <= nSteps; i++) {
+        var t = i / nSteps;
+        var env = atkNorm > 0.005 ? Math.min(1.0, t / atkNorm) : 1.0;
+        var yVal = wtLfoEval(shpRaw, t * 4.0 + offset, shaping) * env;
+        var px = wx0 + t * (wx1 - wx0), py = wyMid - yVal * wyAmp;
+        if (i === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
+    }
+    mgraphics.stroke();
+
+    // 5 LFO shape selector icons at bottom of plot area: Sine (0), Tri (1), Saw (2), Square (enum 4), S&H (enum 3)
+    var divY = by + 135;
+    var iconEnums = [0, 1, 2, 4, 3];
+    for (var si = 0; si < 5; si++) {
+        var enumVal = iconEnums[si];
+        var ix = bx + 78 + si * 20.5, iy = divY - 13;
+        var isSel = shpRaw === enumVal;
+        drawWtLfoShapeIcon(si, ix, iy, 12, 8.5, isSel ? orange : RC.sub, 1.0);
+        zone("button", ix - 3, iy - 2, 18, 13, { action: "menu_pick", key: shpKey, value: enumVal });
+    }
+    line(bx + 1, divY, bx + bw - 1, divY, RC.line, 1.0, 1.0);
+
+    // Bottom parameter row: Rate | Amount | Shape | Offset
+    var cols = [
+        { lab: "Rate", key: rateKey, x: bx + 52, fmt: function (v) { return v >= 10 ? v.toFixed(1) + " Hz" : v.toFixed(2) + " Hz"; } },
+        { lab: "Amount", key: amtKey, x: bx + 90, fmt: function (v) { return (Math.abs(v) < 10 && v !== 0 ? v.toFixed(1) : Math.round(v)) + " %"; } },
+        { lab: "Shape", key: shgKey, x: bx + 128, fmt: function (v) { return v.toFixed(1) + " %"; } },
+        { lab: "Offset", key: offKey, x: bx + 165, fmt: function (v) { return Math.round(v) + ".0°"; } }
+    ];
+    for (var c = 0; c < 4; c++) {
+        var cl = cols[c];
+        var hot = hoverKey === cl.key || (drag && drag.key === cl.key);
+        text(cl.lab, cl.x, divY + 11.5, 9.5, RC.sub, false, 0);
+        text(cl.fmt(paramValue(cl.key)), cl.x, divY + 23.0, 9.5, hot ? RC.white : orange, hot, 0);
+        zone("value", cl.x - 2, divY + 2, 36, 23, { key: cl.key, norm: true });
+    }
+}
+
+function paintModTable(sx, bx, by, bw, bh, mode) {
+    var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
+    var green = [0.46, 0.96, 0.30], greenDim = [0.22, 0.50, 0.16];
+    var cellBg = mixc(RC.wave, RC.line, 0.62);
+    var activeBg = [0.05, 0.08, 0.09];
+    var pillBg = mixc(RC.wave, RC.line, 0.45);
+    var ty = by + 17;
+
+    text("Target", bx + 6, ty + 13.0, 9.5, RC.sub, false, 0);
+
+    var colNames, colCols, nCols;
+    if (mode === 1) {
+        colNames = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
+        colCols = [cy1, cy1, cy1, orange, orange];
+        nCols = 5;
+    } else if (mode === 2) {
+        colNames = ["Vel", "Key", "PB", "Press", "Mod", "Rand"];
+        colCols = [green, green, green, green, green, green];
+        nCols = 6;
+    } else {
+        colNames = ["Vel", "Note PB", "Slide", "Press"];
+        colCols = [green, green, green, green];
+        nCols = 4;
+    }
+
+    var gx0 = bx + 65, gxEnd = bx + bw - 6;
+    var cw = (gxEnd - gx0) / nCols;
+    for (var c = 0; c < nCols; c++) {
+        var cx = gx0 + c * cw;
+        text(colNames[c], cx + cw * 0.5, ty + 13.0, 9.5, colCols[c], false, 1);
+        line(cx + 0.5, ty + 16.0, cx + cw - 0.5, ty + 16.0, colCols[c], 0.85, 1.2);
+    }
+
+    var rows = [
+        { name: "Amp", pillW: 44 },
+        { name: "Pitch", pillW: 31 },
+        { name: "Osc 1 Pos", pillW: 0 },
+        { name: "Osc 1 Warp", pillW: 47 }
+    ];
+    for (var r = 0; r < 4; r++) {
+        var ry = ty + 18.5 + r * 19.5, rh = 18.0;
+        fillRect(bx + 5, ry, 59, rh, [0.07, 0.09, 0.11], 1.0);
+        if (rows[r].pillW > 0) fillRect(bx + 5, ry, rows[r].pillW, rh, pillBg, 1.0);
+        text(rows[r].name, bx + 8, ry + 12.2, 9.5, RC.sub, false, 0);
+
+        for (var col = 0; col < nCols; col++) {
+            var clx = gx0 + col * cw + 0.5, clw = cw - 1.0;
+            // Map to real Better Sampler parameter where applicable, else auxiliary cell state
+            var pKey = null;
+            if (mode === 1) {
+                if (col === 1 && r === 1) pKey = "menv_pitch";
+                else if (col === 1 && r === 2) pKey = "menv_pos";
+                else if (col === 1 && r === 3) pKey = "filt_env_amt";
+                else if (col === 3 && r === 1) pKey = "lfo_pitch";
+                else if (col === 3 && r === 2) pKey = "lfo_pos";
+                else if (col === 3 && r === 3) pKey = "lfo_filt";
+            } else if (mode === 2 && col === 0 && r === 0) {
+                pKey = "vel_sens";
+            }
+            var cellId = (mode === 1 ? "mat:" : (mode === 2 ? "midi:" : "mpe:")) + r + ":" + col;
+            var val = wtModCells[cellId] !== undefined ? wtModCells[cellId] : (pKey ? paramValue(pKey) : 0);
+            if (mode === 1 && pKey && wtModCells[cellId] === undefined) val = 0;
+            var hasVal = Math.abs(val) > 0.05;
+            fillRect(clx, ry, clw, rh, hasVal ? activeBg : cellBg, 1.0);
+            if (hasVal) {
+                var barCol = colCols[col];
+                var barTrack = mode === 1 ? mixc(activeBg, barCol, 0.25) : greenDim;
+                fillRect(clx + 0.5, ry + rh - 2.2, clw - 1.0, 1.8, barTrack, 1.0);
+                var mid = clx + clw * 0.5;
+                var bx0 = val >= 0 ? mid : mid + (val / 100) * (clw * 0.48);
+                var bw0 = Math.max(1.5, Math.abs(val / 100) * (clw * 0.48));
+                fillRect(bx0, ry + rh - 2.2, bw0, 1.8, barCol, 1.0);
+                var vTxt = (Math.abs(val) < 10 && Math.abs(val - Math.round(val)) > 0.05) ? val.toFixed(1) : (val === 7 && r === 3 ? "7.0" : String(Math.round(val)));
+                text(vTxt, clx + clw * 0.5, ry + 11.8, 9.5, barCol, false, 1);
+            }
+            if (pKey) {
+                zone("value", clx, ry, clw, rh, { key: pKey, norm: true });
+            } else {
+                (function (cid) {
+                    actZone(clx, ry, clw, rh, function () {
+                        wtModCells[cid] = wtModCells[cid] ? 0 : 50;
+                    });
+                })(cellId);
+            }
+        }
+    }
+
+    if (mode === 1) {
+        // Global row at bottom of Matrix view: Global | Time 0.0 % | Amount 100 %
+        var gyFoot = by + bh - 10.5;
+        text("Global", bx + 6, gyFoot, 9.5, RC.sub, false, 0);
+        text("Time", bx + 114, gyFoot, 9.5, RC.sub, false, 0);
+        var gt = paramValue("mod_global_time");
+        text(gt.toFixed(1) + " %", bx + 140, gyFoot, 9.5, RC.white, true, 0);
+        zone("value", bx + 112, gyFoot - 10, 56, 14, { key: "mod_global_time", norm: true });
+
+        text("Amount", bx + 174, gyFoot, 9.5, RC.sub, false, 0);
+        var ga = paramValue("mod_global_amt");
+        text(Math.round(ga) + " %", bx + 210, gyFoot, 9.5, RC.white, true, 0);
+        zone("value", bx + 172, gyFoot - 10, 66, 14, { key: "mod_global_amt", norm: true });
+    }
+}
+
+function paintEnvSection(sx) {
+    envX = sx;
+    var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
+    fillRect(sx, 0, ENV_W, 169, RC.panel, 1.0);
+
+    var bx = sx + 1, by = 1, bw = ENV_W - 2, bh = 169;
+    fillRect(bx, by, bw, bh, RC.wave, 1.0);
+    setc(RC.line, 1.0);
+    mgraphics.set_line_width(1.5);
+    mgraphics.rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    mgraphics.stroke();
+
+    // Tab bar: Amp | Env 2 | Env 3 | LFO 1 | LFO 2
+    var subNames = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
+    var sw = bw / 5;
+    for (var s = 0; s < 5; s++) {
+        var sx0 = bx + s * sw;
+        var sOn = envPage === s;
+        var sCol = s >= 3 ? orange : cy1;
+        text(subNames[s], sx0 + sw * 0.5, by + 11.2, 9.5, sOn ? sCol : RC.sub, false, 1);
+        if (sOn) line(sx0 + 1, by + 16.0, sx0 + sw - 1, by + 16.0, sCol, 1.0, 1.5);
+        zone("button", sx0, by + 1, sw, 15.5, { action: "env_page", page: s });
+    }
+    line(bx + 1, by + 16.5, bx + bw - 1, by + 16.5, RC.line, 1.0, 1.0);
+
+    if (envPage <= 2) paintEnvSubPage(sx, bx, by, bw, bh);
+    else paintLfoSubPage(sx, bx, by, bw, bh);
+}
+
+function paintMatrixSection(sx) {
+    matX = sx;
+    var cy1 = RC.cyan;
+    fillRect(sx, 0, MAT_W, 169, RC.panel, 1.0);
+
+    var bx = sx + 1, by = 1, bw = MAT_W - 2, bh = 169;
+    fillRect(bx, by, bw, bh, RC.wave, 1.0);
+    setc(RC.line, 1.0);
+    mgraphics.set_line_width(1.5);
+    mgraphics.rectangle(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+    mgraphics.stroke();
+
+    // Same top tab bar style as Mod Sources: Matrix | MIDI | MPE
+    var matNames = ["Matrix", "MIDI", "MPE"];
+    var sw = bw / 3;
+    for (var t = 0; t < 3; t++) {
+        var tx0 = bx + t * sw;
+        var tOn = matTab === t;
+        text(matNames[t], tx0 + sw * 0.5, by + 11.2, 9.5, tOn ? cy1 : RC.sub, false, 1);
+        if (tOn) line(tx0 + 1, by + 16.0, tx0 + sw - 1, by + 16.0, cy1, 1.0, 1.5);
+        (function (idx) { actZone(tx0, by + 1, sw, 15.5, function () { matTab = idx; }); })(t);
+    }
+    line(bx + 1, by + 16.5, bx + bw - 1, by + 16.5, RC.line, 1.0, 1.0);
+
+    paintModTable(sx, bx, by, bw, bh, matTab + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1247,7 +1625,6 @@ function responsePath(g, ft, hzCut, q) {
     }
     return top;
 }
-
 function combinedFilterDb(hz, f1On, ft1, fc1, q1, m1, sl1, f2On, ft2, fc2, q2, m2, sl2, route) {
     var d1 = f1On ? filterDb(ft1, hz / fc1, q1, m1, sl1) : 0;
     var d2 = f2On ? filterDb(ft2, hz / fc2, q2, m2, sl2) : 0;
@@ -1790,77 +2167,6 @@ function paintDetailsSection(sx) {
 }
 
 // ---------------------------------------------------------------------------
-// LFO / Mod section: LFO scope, its destinations, the Mod envelope's destinations
-// ---------------------------------------------------------------------------
-
-function lfoGlyph(shape, x, y, w, h, c, a) {
-    setc(c, a);
-    mgraphics.set_line_width(1.3);
-    var n = 16;
-    for (var i = 0; i <= n; i++) {
-        var p = i / n;
-        var v = shape === 3 ? [0.7, -0.4, 0.2, -0.8][Math.min(3, Math.floor(p * 4))] : lfoShapeAt(shape, p);
-        var px = x + p * w, py = y + h * 0.5 - v * h * 0.45;
-        if (i === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
-    }
-    mgraphics.stroke();
-}
-
-
-function paintLfoSection(sx) {
-    var w = SECTIONS[3].w, acc = RC.cyan;
-    panelBox(sx, SEC_Y, w, SEC_H);
-    secTitle("LFO", sx + 7, 15, RC.text);
-    var shp = Math.round(paramValue("lfo_shape"));
-    for (var s = 0; s < 4; s++) {
-        var gx = sx + 32 + s * 17;
-        var on = shp === s;
-        fillRR(gx, 7, 15, 11, 2.5, on ? RC.sel : RC.raised, 1);
-        lfoGlyph(s, gx + 2.5, 8.5, 10, 8, on ? RC.dark : RC.sub, 1.0);
-        zone("button", gx, 7, 15, 11, { action: "menu_pick", key: "lfo_shape", value: s });
-    }
-    var bx = sx + 6, by = 22, bw = 90, bh = 34;
-    fillRR(bx, by, bw, bh, 2, RC.wave);
-    cornerBrackets(bx, by, bw, bh, acc);
-    var cy = by + bh * 0.5;
-    line(bx + 2, cy, bx + bw - 2, cy, RC.line, 1.0, 1.0);
-    var dest = Math.abs(paramValue("lfo_pitch")) + Math.abs(paramValue("lfo_filt")) + Math.abs(paramValue("lfo_pos"));
-    var al = dest > 0.5 ? 1.0 : 0.55;
-    var amp = bh * 0.4;
-    if (shp < 3) {
-        setc(acc, 0.6 * al);
-        mgraphics.set_line_width(1.2);
-        for (var i = 0; i <= 40; i++) {
-            var p = i / 40;
-            var px = bx + 4 + p * (bw - 8), py = cy - lfoShapeAt(shp, p) * amp;
-            if (i === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
-        }
-        mgraphics.stroke();
-        var dx = bx + 4 + lfoPhaseEst * (bw - 8), dy = cy - clamp01((liveLfoVal + 1) * 0.5) * 2 * amp + amp;
-        line(dx, by + 3, dx, by + bh - 3, acc, 0.3, 1.0);
-        circle(dx, dy, 2.4, [1, 1, 1], 1.0);
-    } else {
-        setc(acc, 0.9 * al);
-        mgraphics.set_line_width(1.2);
-        var m = lfoHist.length, prevY = 0;
-        for (var h = 0; h < m; h++) {
-            var hx = bx + 4 + (h / 39) * (bw - 8), hy = cy - lfoHist[h] * amp;
-            if (h === 0) mgraphics.move_to(hx, hy); else { mgraphics.line_to(hx, prevY); mgraphics.line_to(hx, hy); }
-            prevY = hy;
-        }
-        mgraphics.stroke();
-        if (m > 0) circle(bx + 4 + ((m - 1) / 39) * (bw - 8), cy - lfoHist[m - 1] * amp, 2.4, [1, 1, 1], 1.0);
-    }
-    rKnob("lfo_rate", sx + 122, 44, 7, "Rate", acc, {});
-    var dd = [["lfo_pitch", "Pitch"], ["lfo_filt", "Filter"], ["lfo_pos", "Pos"]];
-    for (var d = 0; d < 3; d++) rKnob(dd[d][0], sx + 6 + (w - 12) * (d + 0.5) / 3, 89, 7, dd[d][1], acc, { live: { val: liveLfoVal, acc: [1, 1, 1] } });
-    line(sx + 7, 112, sx + w - 7, 112, RC.line, 1.0, 1.0);
-    secTitle("MOD ENV  →", sx + 7, 123, RC.text);
-    var md = [["menv_pitch", "Pitch"], ["filt_env_amt", "Filter"], ["menv_pos", "Pos"]];
-    for (var j = 0; j < 3; j++) rKnob(md[j][0], sx + 6 + (w - 12) * (j + 0.5) / 3, 148, 7, md[j][1], acc, { live: { val: clamp01(liveModEnvVal) * 2 - 1, acc: [1, 1, 1] } });
-}
-
-// ---------------------------------------------------------------------------
 // Voice / Out section
 // ---------------------------------------------------------------------------
 
@@ -1904,7 +2210,7 @@ function paint() {
         if (id === "details") paintDetailsSection(sx);
         else if (id === "env") paintEnvSection(sx);
         else if (id === "filter") paintFilterSection(sx);
-        else if (id === "lfo") paintLfoSection(sx);
+        else if (id === "matrix") paintMatrixSection(sx);
         else paintVoiceSection(sx);
     }
     paintTip();
@@ -1938,6 +2244,26 @@ setvalueof = function () {
     sharedSetvalueof.apply(null, a);
 };
 
+// Debug messages via #0-bsdebug for automated Live UI verification of Reactive 2's Mod Sources & Mod Matrix views:
+//   messnamed("#0-bsdebug", "dbg_r2_view", matTab, envPage, envTab, openLoopMenu, foldMask)
+function dbg_r2_view(mTab, pg, tb, loopMenu, fold) {
+    if (fold !== undefined && fold >= 0) setFoldMask(Number(fold));
+    if (mTab !== undefined && mTab >= 0) matTab = Math.max(0, Math.min(2, Math.round(Number(mTab))));
+    if (pg !== undefined && pg >= 0) envPage = Math.round(Number(pg));
+    if (tb !== undefined && tb >= 0) envTab = Math.round(Number(tb));
+    if (loopMenu !== undefined) {
+        if (Number(loopMenu) > 0) {
+            var lk = envLoopKey();
+            var bx = envX + 1, by = 1, bw = ENV_W - 2;
+            var lbx = bx + bw - 44, lby = by + 20, lbh = 13;
+            openMenu = { key: lk, x: lbx, y: lby + lbh + 1, w: 41, rowH: 13.5, wtEnvLoop: true, anchorX: lbx, anchorY: lby + lbh + 1 };
+        } else {
+            openMenu = null;
+        }
+    }
+    mgraphics.redraw();
+}
+
 // ---------------------------------------------------------------------------
 // Mouse: graph handles and callbacks, everything else falls back to the shared handlers
 // ---------------------------------------------------------------------------
@@ -1967,6 +2293,29 @@ function slopeFromMid(level, base) {
 var sharedPaintMenu = paintMenu;
 paintMenu = function () {
     if (!openMenu) return;
+    if (openMenu.wtEnvLoop) {
+        var m = openMenu;
+        var items = ["None", "Trigger", "Loop"];
+        var cur0 = Math.round(paramValue(m.key));
+        var rowH0 = 13.5, h0 = items.length * rowH0 + 2;
+        var mx0 = m.anchorX !== undefined ? m.anchorX : m.x;
+        var my0 = m.anchorY !== undefined ? m.anchorY : m.y;
+        var mw0 = m.w || 41;
+        var cy1 = RC.cyan;
+        fillRect(mx0, my0, mw0, h0, RC.wave, 1.0);
+        setc(cy1, 1.0);
+        mgraphics.set_line_width(1.0);
+        mgraphics.rectangle(mx0 + 0.5, my0 + 0.5, mw0 - 1, h0 - 1);
+        mgraphics.stroke();
+        for (var i0 = 0; i0 < items.length; i0++) {
+            var ry0 = my0 + 1 + i0 * rowH0;
+            var on0 = i0 === cur0;
+            if (on0) fillRect(mx0 + 1, ry0, mw0 - 2, rowH0, cy1, 1.0);
+            text(items[i0], mx0 + 4, ry0 + 9.8, 8.5, on0 ? RC.wave : cy1, false, 0);
+            zone("button", mx0, ry0, mw0, rowH0, { action: "menu_pick", key: m.key, value: i0 });
+        }
+        return;
+    }
     var k = openMenu.key;
     if (k === "filt_type" || k === "filt2_type" || k === "filt_circuit" || k === "filt2_circuit" || k === "filt_route") {
         var isType = (k === "filt_type" || k === "filt2_type");
@@ -2043,18 +2392,33 @@ function hdlMove(id, x, y) {
         setIfChanged(isF1 ? "filt_res" : "filt2_res", resPct);
         return;
     }
-    var e = envGeom(), k = e.keys;
+    var e = envGeom(), k = e.keys, vk = e.valKeys;
     var which = id.substring(4);
     var lvl = clamp01((e.gb - gy) / (e.gb - e.gy));
-    if (which === "A") setIfChanged(k[0], fromNorm(k[0], (gx - e.gx - e.minSeg) / e.sm));
-    else if (which === "D") {
+    if (which === "I") {
+        if (vk[0]) setIfChanged(vk[0], lvl * 100);
+    } else if (which === "A") {
+        setIfChanged(k[0], fromNorm(k[0], (gx - e.gx - e.minSeg) / e.sm));
+        if (vk[1] && Math.abs(y - drag.y0) > 0.5) setIfChanged(vk[1], lvl * 100);
+    } else if (which === "D") {
         setIfChanged(k[1], fromNorm(k[1], (gx - e.xA - e.minSeg) / e.sm));
         setIfChanged(k[2], lvl * 100);
+    } else if (which === "R") {
+        setIfChanged(k[3], fromNorm(k[3], (gx - e.xS - e.minSeg) / e.sm));
+        if (vk[3] && envPage >= 1 && Math.abs(y - drag.y0) > 0.5) setIfChanged(vk[3], lvl * 100);
+    } else if (which === "As") {
+        var spanA = e.peakL - e.initL;
+        var normA = Math.abs(spanA) > 0.05 ? (lvl - e.initL) / spanA : lvl;
+        setIfChanged(e.slopeKeys[0], slopeFromMid(normA, 0.5) * 100);
+    } else if (which === "Ds") {
+        var spanD = e.peakL - e.sus;
+        var normD = Math.abs(spanD) > 0.05 ? (lvl - e.sus) / spanD : (lvl - e.sus) / Math.max(0.12, 1 - e.sus);
+        setIfChanged(e.slopeKeys[1], slopeFromMid(normD, Math.pow(0.5, ENV_POW)) * 100);
+    } else if (which === "Rs") {
+        var spanR = e.sus - e.finalL;
+        var normR = Math.abs(spanR) > 0.05 ? (lvl - e.finalL) / spanR : lvl / Math.max(0.12, e.sus);
+        setIfChanged(e.slopeKeys[2], slopeFromMid(normR, Math.pow(0.5, ENV_POW)) * 100);
     }
-    else if (which === "R") setIfChanged(k[3], fromNorm(k[3], (gx - e.xS - e.minSeg) / e.sm));
-    else if (which === "As") setIfChanged(e.slopeKeys[0], slopeFromMid(lvl, 0.5) * 100);
-    else if (which === "Ds") setIfChanged(e.slopeKeys[1], slopeFromMid((lvl - e.sus) / Math.max(0.12, 1 - e.sus), Math.pow(0.5, ENV_POW)) * 100);
-    else if (which === "Rs") setIfChanged(e.slopeKeys[2], slopeFromMid(lvl / Math.max(0.12, e.sus), Math.pow(0.5, ENV_POW)) * 100);
 }
 
 // Right-click: Max 9's v8ui passes a PointerEvent as the 9th argument (buttons & 2); ctrl-click (8th argument) is the fallback
@@ -2085,7 +2449,7 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
         drag = null;
         if (z.kind === "act") { z.fn(); mgraphics.redraw(); return; }
         if (z.num) filtFocus = z.num;
-        drag = { hdl: z.id, ox: z.cx - x, oy: z.cy - y };
+        drag = { hdl: z.id, ox: z.cx - x, oy: z.cy - y, x0: x, y0: y };
         hoverHdl = z.id;
         mgraphics.redraw();
         return;
@@ -2129,10 +2493,15 @@ ondblclick = function (x, y) {
         else {
             var w4 = z.id.substring(4);
             if (w4 === "As" || w4 === "Ds" || w4 === "Rs") { var sk2 = envSlopeKeys(), si = { As: 0, Ds: 1, Rs: 2 }[w4]; setParamFromFace(sk2[si], 0); }
-            else {
-                var k = envKeys(), idx = { A: 0, D: 1, R: 3 }[w4];
+            else if (w4 === "I") {
+                var vk0 = envValKeys();
+                if (vk0[0]) setParamFromFace(vk0[0], paramSpec(vk0[0]).init);
+            } else {
+                var k = envKeys(), vk = envValKeys(), idx = { A: 0, D: 1, R: 3 }[w4];
                 setParamFromFace(k[idx], paramSpec(k[idx]).init);
+                if (idx === 0 && vk[1]) setParamFromFace(vk[1], paramSpec(vk[1]).init);
                 if (idx === 1) setParamFromFace(k[2], paramSpec(k[2]).init);   // the D handle also carries sustain
+                if (idx === 3 && vk[3]) setParamFromFace(vk[3], paramSpec(vk[3]).init);
             }
         }
         drag = null;
@@ -2246,8 +2615,9 @@ function preview() {
         voicePlayheads[1] = 0.34; voiceAmps[1] = 0.5;
     }
     for (var g = 0; g < 9; g++) { grainPos[g] = 0.28 + g * 0.018; grainAmp[g] = 0.3 + 0.07 * g; }
-    envPage = o.env || 0;
+    envPage = o.env === undefined ? 1 : o.env;
     envTab = o.tab || 0;
+    modTopTab = o.topTab || 0;
     if (o.zoom) { viewZoom = o.zoom; viewX0 = o.x0 || 0; clampView(); }
     foldMask = o.fold === undefined ? DEFAULT_FOLD : o.fold;
     showInspector = foldMask ? 1 : 0;

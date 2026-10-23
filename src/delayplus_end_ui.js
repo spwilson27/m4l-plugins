@@ -1,6 +1,7 @@
 // Delay+ End face: link status, the chain latency in use (from Live's LOM) and the wet /
-// duck meters. Build order: delayplus_config.js + `var DP_ROLE = "end"` + delayplus_link.js +
-// this file. Outlet 0 -> gen (`xfer <name>`, `hdr <name>` from the link layer).
+// duck meters. Build order: delayplus_config.js + `var DP_ROLE = "end"` + the embedded gen +
+// delayplus_link.js + this file + delayplus_dsp.js. Outlet 0 -> the gen hub (`xfer <name>`,
+// `hdr <name>` from the link layer, plus scope on DSP resend).
 
 inlets = 1;
 outlets = 1;
@@ -112,6 +113,12 @@ function paint() {
     mgraphics.set_line_width(1);
     mgraphics.rectangle_rounded(0.5, 0.5, w - 1, h - 1, 6, 6);
     mgraphics.stroke();
+    // Only once creation has started. The static preview never sets createdAt, so it stays put.
+    if (typeof dpDsp !== "undefined" && !dpDsp.ready && (dpDsp.createdAt > 0 || dpDsp.error)) {
+        var alert = !!dpDsp.error;
+        var label = alert ? ("DSP FAILED: " + String(dpDsp.error).toUpperCase()) : "DSP LOADING…";
+        esText(label, 8, h - 6, 8, alert ? EC.coral : EC.amber, true);
+    }
 }
 
 // scripts/render_preview.py: representative state (linked).

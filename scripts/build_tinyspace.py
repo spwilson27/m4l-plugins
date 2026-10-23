@@ -9,6 +9,7 @@ ROOM, PLATE, TANK, BOX, SPRING, BOUNCE).
 Presentation height is fixed at 169 px. The v8ui string field never overlaps a live.* control.
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -224,6 +225,45 @@ def make_character_selector(x, y, w=50.0, h=15.0):
     }
 
 
+def gendsp_json(gen_code):
+    """2-in / 2-out .gendsp wrapper around the codebox. The face writes it to
+    /tmp/tinyspace_core_<hash>.gendsp and creates `gen~ @gen <file>` after the GUI loads."""
+    def bx(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {
+            "id": i,
+            "maxclass": cls,
+            "numinlets": ni,
+            "numoutlets": no,
+            "outlettype": [""] * no,
+            "patching_rect": [float(x), float(y), 200.0, 22.0],
+        }
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+
+    patch = {"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen",
+        "rect": [50.0, 50.0, 600.0, 450.0],
+        "boxes": [
+            bx("obj-in1", "in 1", 20, 20, 0, 1),
+            bx("obj-in2", "in 2", 120, 20, 0, 1),
+            bx("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+            bx("obj-out1", "out 1", 20, 400, 1, 0),
+            bx("obj-out2", "out 2", 120, 400, 1, 0),
+        ],
+        "lines": [
+            {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+            {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+            {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+            {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+        ],
+    }}
+    return json.dumps(patch)
+
+
 def build_patcher():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
@@ -231,7 +271,13 @@ def build_patcher():
         ui_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
-    v8_code = config_js.rstrip() + "\n\n" + ui_js
+    gen_text = gendsp_json(gen_code)
+    gen_hash = hashlib.sha1(gen_text.encode("utf-8")).hexdigest()[:12]
+    gen_vars = (
+        f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+        f"var GEN_DSP_HASH = \"{gen_hash}\";\n"
+    )
+    v8_code = config_js.rstrip() + "\n\n" + gen_vars + "\n" + ui_js
 
     viz_rect = [70.0, 26.0, 152.0, 74.0]
 
@@ -340,6 +386,7 @@ def build_patcher():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [20.0, 240.0, 52.0, 20.0],
                 "text": "plugin~",
+                "varname": "ts_plugin",
             }
         },
         {
@@ -353,20 +400,21 @@ def build_patcher():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [20.0, 460.0, 58.0, 20.0],
                 "text": "plugout~",
+                "varname": "ts_plugout",
             }
         },
         {
             "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
+                "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
+                "id": "obj-gen-in",
+                "maxclass": "newobj",
                 "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [120.0, 300.0, 420.0, 140.0],
-                "varname": "tinyspace",
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [120.0, 300.0, 70.0, 20.0],
+                "text": "gate 1 1",
+                "varname": "ts_genin",
             }
         },
         {
@@ -412,6 +460,46 @@ def build_patcher():
             "box": {
                 "fontname": "Arial Bold",
                 "fontsize": 10.0,
+                "id": "obj-thisdevice",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["bang", "int"],
+                "patching_rect": [560.0, 150.0, 100.0, 20.0],
+                "text": "live.thisdevice",
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-dsp",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [680.0, 150.0, 70.0, 20.0],
+                "text": "init_dsp",
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-duck1",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [400.0, 140.0, 55.0, 20.0],
+                "text": "duck 1",
+                "varname": "ts_duck1",
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
                 "id": "obj-msg-genbufs",
                 "maxclass": "message",
                 "numinlets": 2,
@@ -419,6 +507,7 @@ def build_patcher():
                 "outlettype": [""],
                 "patching_rect": [640.0, 180.0, 280.0, 20.0],
                 "text": "cfg #0-tsconfig, meters #0-tsmeters",
+                "varname": "ts_genbufs",
             }
         },
         {
@@ -536,15 +625,16 @@ def build_patcher():
     # Panels must be last and flagged background so they sit behind the controls.
     boxes.extend(panels)
 
+    # plugin~ is not wired to plugout~. The face connects both through gen~ after load,
+    # so the device outputs silence while DSP is deferred.
     lines = [
-        {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-gen", 0]}},
-        {"patchline": {"source": ["obj-plugin", 1], "destination": ["obj-gen", 1]}},
-        {"patchline": {"source": ["obj-gen", 0], "destination": ["obj-plugout", 0]}},
-        {"patchline": {"source": ["obj-gen", 1], "destination": ["obj-plugout", 1]}},
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-genbufs", 0]}},
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-uibufs", 0]}},
-        {"patchline": {"source": ["obj-msg-genbufs", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-msg-genbufs", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-msg-uibufs", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-dsp", 0]}},
+        {"patchline": {"source": ["obj-msg-dsp", 0], "destination": ["obj-viz", 0]}},
+        {"patchline": {"source": ["obj-msg-duck1", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-seed", 0], "destination": ["obj-prep-seed", 0]}},
         {"patchline": {"source": ["obj-prep-seed", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-char", 0], "destination": ["obj-prep-char", 0]}},
@@ -552,7 +642,7 @@ def build_patcher():
         {"patchline": {"source": ["obj-viz", 0], "destination": ["obj-duck-msg", 0]}},
         {"patchline": {"source": ["obj-duck-msg", 0], "destination": ["obj-duck-line", 0]}},
         {"patchline": {"source": ["obj-duck-line", 0], "destination": ["obj-prep-duck", 0]}},
-        {"patchline": {"source": ["obj-prep-duck", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-duck", 0], "destination": ["obj-gen-in", 1]}},
     ]
     for key, spec in PARAM_SPECS.items():
         is_pct = spec[8]
@@ -561,7 +651,7 @@ def build_patcher():
             lines.append({"patchline": {"source": [f"obj-scale-{key}", 0], "destination": [f"obj-prep-{key}", 0]}})
         else:
             lines.append({"patchline": {"source": [f"obj-dial-{key}", 0], "destination": [f"obj-prep-{key}", 0]}})
-        lines.append({"patchline": {"source": [f"obj-prep-{key}", 0], "destination": ["obj-gen", 0]}})
+        lines.append({"patchline": {"source": [f"obj-prep-{key}", 0], "destination": ["obj-gen-in", 1]}})
 
     parameters = {
         "obj-seed": ["Seed", "Seed", 0],

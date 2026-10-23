@@ -11,6 +11,13 @@
 //     is completely closed), skips `pow(env, -amount)` and `tanh()` waveshaping.
 //   - Fast reciprocal path at the default `Amount = 100%` (`1.0 / safeEnv` instead
 //     of transcendental `pow()`).
+//   - Control-rate coefficient cache: HP/LP, attack/release, gate/ceiling (and
+//     invCeil), lookahead samples, equal-power dry/wet, and the ceiling scale are
+//     recomputed only when that Param or samplerate changes.
+//   - Soft-clip uses the cached reciprocal `invCeil` (one multiply per channel)
+//     instead of dividing by the ceiling on L and R every sample.
+//   - `log10` for the gain telemetry runs once per 64-sample scope write, not
+//     once per sample.
 //
 // Scope telemetry buffer (buffer~ #0-recipscope, bound via `scope #0-recipscope`):
 //   0: input peak (0..1)
@@ -20,18 +27,10 @@
 //   4: wet output peak (0..1)
 //   5: current gate threshold linear (0..1)
 //   6: current ceiling linear (0..1)
-//   7: rolling frame counter
+//   7: rolling frame counter (increments every 64 samples, including silence)
 //
 // GenExpr requires all functions before Buffer/Param/History/Delay declarations,
 // and all declarations before expression statements. No variable is named e<digit>.
-
-slew(target, coef) {
-	History s(0);
-	History init(0);
-	s = (init == 0) ? target : mix(target, s, coef);
-	init = 1;
-	return s;
-}
 
 onepole_lp(x, coef) {
 	History s(0);
@@ -93,7 +92,8 @@ gate_smooth(envVal, gateLin, relCoef, revMode) {
 //   1 = Hard (`clip` to [-ceilLin, +ceilLin])
 //   2 = Lim  (Instant-attack, smooth-release peak limiter to ceilLin, preserving waveform shape)
 // Skips `tanh()` when the signal is silent or when Hard/Limiter mode is selected.
-limit_out(x, ceilLin, outMode) {
+// `invCeil` is `1 / max(ceilLin, 0.05)`, computed when Ceiling changes.
+limit_out(x, ceilLin, invCeil, outMode) {
 	History limEnv(0);
 	c = max(ceilLin, 0.05);
 	ax = abs(x);
@@ -103,7 +103,7 @@ limit_out(x, ceilLin, outMode) {
 	if (ax < 1e-9) {
 		res = 0;
 	} else if (outMode < 0.5) {
-		res = c * tanh(x / c);
+		res = c * tanh(x * invCeil);
 	} else if (outMode < 1.5) {
 		res = clip(x, -c, c);
 	} else {
@@ -146,59 +146,133 @@ History rollCounter(0);
 History peakInHold(0);
 History peakEnvHold(0);
 History peakOutHold(0);
-History idleTicks(0);
+
+// Last Param / samplerate that produced each cached coefficient. Sentinels force
+// a compute on the first sample. Writes happen only inside the change checks.
+History srHold(0);
+History hpHzHold(-999);
+History lpHzHold(-999);
+History atkHold(-999);
+History relHold(-999);
+History gateDbHold(999);
+History ceilDbHold(999);
+History lookMsHold(-999);
+History wetHold(-999);
+History amtHold(-999);
+History hpCoefH(0);
+History lpCoefH(0);
+History atkCoefH(0);
+History relCoefH(0);
+History gateLinH(0.01);
+History ceilLinH(0.891250938);
+History invCeilH(1.122018454);
+History lookSampsH(0);
+History dryGH(0);
+History wetGH(1);
+History scaleH(1);
 
 Delay lookL(1024);
 Delay lookR(1024);
 
 sr = max(samplerate, 1);
+srChg = (sr != srHold) ? 1 : 0;
+srHold = sr;
 
-amountS = slew(clip(amount, 0, 1.5), 0.999);
-gateDbS = slew(clip(gate, -72, -6), 0.999);
-atkMsS = slew(clip(attack, 0.05, 250), 0.999);
-relMsS = slew(clip(release, 0.5, 1500), 0.999);
-wetS = slew(clip(wet, 0, 1), 0.999);
-ceilDbS = slew(clip(ceiling, -18, 0), 0.999);
-lookMsS = slew(clip(lookahead, 0, 10), 0.999);
-detectS = slew(clip(detect, 0, 1), 0.999);
-hpHzS = slew(clip(schp, 20, 2000), 0.999);
-lpHzS = slew(clip(sclp, 400, 18000), 0.999);
+amtNow = clip(amount, 0, 1.5);
+gateDb = clip(gate, -72, -6);
+atkMs = clip(attack, 0.05, 250);
+relMs = clip(release, 0.5, 1500);
+wetNow = clip(wet, 0, 1);
+ceilDb = clip(ceiling, -18, 0);
+lookMs = clip(lookahead, 0, 10);
+detNow = clip(detect, 0, 1);
+hpHz = clip(schp, 20, 2000);
+lpHz = clip(sclp, 400, 18000);
 outMode = clip(outmode, 0, 2);
 revMode = clip(revgate, 0, 1);
 
+// Control-rate coefficients. The expensive exp / pow / cos / sin run only when
+// the matching Param (or samplerate) changes; the History keeps the last value.
+if ((hpHz != hpHzHold) || (srChg > 0.5)) {
+	hpCoefH = exp(-6.28318530718 * hpHz / sr);
+	hpHzHold = hpHz;
+}
+if ((lpHz != lpHzHold) || (srChg > 0.5)) {
+	lpCoefH = exp(-6.28318530718 * lpHz / sr);
+	lpHzHold = lpHz;
+}
+if ((atkMs != atkHold) || (srChg > 0.5)) {
+	atkCoefH = exp(-1.0 / (atkMs * 0.001 * sr));
+	atkHold = atkMs;
+}
+if ((relMs != relHold) || (srChg > 0.5)) {
+	relCoefH = exp(-1.0 / (relMs * 0.001 * sr));
+	relHold = relMs;
+}
+if (gateDb != gateDbHold) {
+	gateLinH = pow(10, gateDb / 20);
+	gateDbHold = gateDb;
+}
+ceilChanged = (ceilDb != ceilDbHold) ? 1 : 0;
+if (ceilChanged > 0.5) {
+	ceilLinH = pow(10, ceilDb / 20);
+	invCeilH = 1.0 / max(ceilLinH, 0.05);
+	ceilDbHold = ceilDb;
+}
+if ((lookMs != lookMsHold) || (srChg > 0.5)) {
+	lookSampsH = clip(lookMs * 0.001 * sr, 0, 960);
+	lookMsHold = lookMs;
+}
+if (wetNow != wetHold) {
+	ang = wetNow * 1.57079632679;
+	dryGH = cos(ang);
+	wetGH = sin(ang);
+	wetHold = wetNow;
+}
+amtChanged = (amtNow != amtHold) ? 1 : 0;
+if ((amtChanged > 0.5) || (ceilChanged > 0.5)) {
+	overAmt = max(amtNow - 1.0, 0);
+	scaleH = pow(ceilLinH, min(amtNow, 1.0)) * ((overAmt > 0.0005) ? pow(0.05, overAmt) : 1.0);
+	amtHold = amtNow;
+}
+
+hpCoef = hpCoefH;
+lpCoef = lpCoefH;
+atkCoef = atkCoefH;
+relCoef = relCoefH;
+gateLin = gateLinH;
+ceilLin = ceilLinH;
+invCeil = invCeilH;
+lookSamps = lookSampsH;
+dryG = dryGH;
+wetG = wetGH;
+targetScale = scaleH;
+
 // 1. Write raw stereo input into lookahead delay lines (used for both wet VCA and phase-aligned dry).
-lookSamps = clip(lookMsS * sr / 1000, 0, 960);
 lookL.write(in1);
 lookR.write(in2);
 delInL = lookL.read(lookSamps, interp="linear");
 delInR = lookR.read(lookSamps, interp="linear");
 
 // 2. Sidechain filter conditioning on the undelayed input so detection leads the delayed audio.
-hpCoef = exp(-6.28318530718 * hpHzS / sr);
-lpCoef = exp(-6.28318530718 * lpHzS / sr);
 scL = onepole_lp(onepole_hp(in1, hpCoef), lpCoef);
 scR = onepole_lp(onepole_hp(in2, hpCoef), lpCoef);
 
 // 3. Envelope detection with sub-millisecond to 1.5 s ballistics.
-atkCoef = exp(-1000 / (max(atkMsS, 0.05) * sr));
-relCoef = exp(-1000 / (max(relMsS, 0.5) * sr));
-detL = env_detect(scL, atkCoef, relCoef, detectS);
-detR = env_detect(scR, atkCoef, relCoef, detectS);
+detL = env_detect(scL, atkCoef, relCoef, detNow);
+detR = env_detect(scR, atkCoef, relCoef, detNow);
 
 linkedEnv = max(detL, detR);
-linkAmt = 0.35 + 0.65 * detectS;
+linkAmt = 0.35 + 0.65 * detNow;
 envL = mix(detL, linkedEnv, linkAmt);
 envR = mix(detR, linkedEnv, linkAmt);
 envMax = max(envL, envR);
 
 // 4. Gate & Reciprocal gain calculation (with fast-path skip when gate is closed or input is silent).
-gateLin = pow(10, gateDbS / 20);
-ceilLin = pow(10, ceilDbS / 20);
-
 gateL = gate_smooth(envL, gateLin, relCoef, revMode);
 gateR = gate_smooth(envR, gateLin, relCoef, revMode);
 
-gateMix = (revMode > 0.5) ? 1.0 : clip(amountS * 4.0, 0, 1);
+gateMix = (revMode > 0.5) ? 1.0 : clip(amtNow * 4.0, 0, 1);
 effGateL = mix(1.0, gateL, gateMix);
 effGateR = mix(1.0, gateR, gateMix);
 
@@ -211,10 +285,8 @@ if (isSilent == 0) {
 	floorEnv = (revMode > 0.5) ? 0.00005 : max(gateLin * 0.5, 0.00001);
 	safeL = max(envL, floorEnv);
 	safeR = max(envR, floorEnv);
-	overAmt = max(amountS - 1.0, 0.0);
-	targetScale = pow(ceilLin, min(amountS, 1.0)) * ((overAmt > 0.0005) ? pow(0.05, overAmt) : 1.0);
-	rawGainL = min(recip_pow(safeL, amountS) * targetScale, 1000.0);
-	rawGainR = min(recip_pow(safeR, amountS) * targetScale, 1000.0);
+	rawGainL = min(recip_pow(safeL, amtNow) * targetScale, 1000.0);
+	rawGainR = min(recip_pow(safeR, amtNow) * targetScale, 1000.0);
 	gainL = rawGainL * effGateL;
 	gainR = rawGainR * effGateR;
 }
@@ -222,17 +294,16 @@ if (isSilent == 0) {
 // 5. Multiply lookahead-delayed signal by reciprocal gain and apply Soft / Hard / Limiter ceiling.
 vcaL = delInL * gainL;
 vcaR = delInR * gainR;
-wetL = limit_out(vcaL, ceilLin, outMode);
-wetR = limit_out(vcaR, ceilLin, outMode);
+wetL = limit_out(vcaL, ceilLin, invCeil, outMode);
+wetR = limit_out(vcaR, ceilLin, invCeil, outMode);
 
 // 6. Equal-power dry/wet mix (using lookahead-aligned dry signal so parallel blend never comb-filters).
-ang = wetS * 1.57079632679;
-dryG = cos(ang);
-wetG = sin(ang);
 outL = delInL * dryG + wetL * wetG;
 outR = delInR * dryG + wetR * wetG;
 
-// 7. Update scope telemetry buffer every 64 samples, skipping buffer pokes once the device has settled in silence.
+// 7. Scope telemetry every 64 samples. The frame head (slot 7) increments even in
+//    silence so a deferred gen~ can be confirmed from the buffer. log10 runs here
+//    only, not on the per-sample path. Slots 0..6 stay live so the UI can wake.
 outAbs = max(abs(wetL), abs(wetR));
 peakInHold = max(peakInHold, inAbs);
 peakEnvHold = max(peakEnvHold, envMax);
@@ -240,21 +311,18 @@ peakOutHold = max(peakOutHold, outAbs);
 
 tick = wrap(tick + 1, 0, 64);
 if (tick == 0) {
-	windowSilent = (peakInHold < 1e-6 && peakEnvHold < 1e-6 && peakOutHold < 1e-6);
-	idleTicks = windowSilent ? min(idleTicks + 1, 1000) : 0;
-	if (idleTicks <= 4) {
-		gainAvg = 0.5 * (gainL + gainR);
-		gainDbNorm = clip((20 * log10(max(gainAvg, 0.001)) + 20) / 80, 0, 1);
-		rollCounter = wrap(rollCounter + 1, 0, 100000);
-		poke(scope, clip(peakInHold, 0, 1.5), 0, 0);
-		poke(scope, clip(peakEnvHold, 0, 1.5), 1, 0);
-		poke(scope, clip(max(gateL, gateR), 0, 1), 2, 0);
-		poke(scope, gainDbNorm, 3, 0);
-		poke(scope, clip(peakOutHold, 0, 1.5), 4, 0);
-		poke(scope, clip(gateLin, 0, 1), 5, 0);
-		poke(scope, clip(ceilLin, 0, 1), 6, 0);
-		poke(scope, rollCounter, 7, 0);
-	}
+	gainAvg = 0.5 * (gainL + gainR);
+	gainDbNorm = clip((20 * log10(max(gainAvg, 0.001)) + 20) / 80, 0, 1);
+	rollCounter = wrap(rollCounter + 1, 0, 100000);
+	poke(scope, clip(peakInHold, 0, 1.5), 0, 0);
+	poke(scope, clip(peakEnvHold, 0, 1.5), 1, 0);
+	poke(scope, clip(max(gateL, gateR), 0, 1), 2, 0);
+	poke(scope, gainDbNorm, 3, 0);
+	poke(scope, clip(peakOutHold, 0, 1.5), 4, 0);
+	poke(scope, clip(gateLin, 0, 1), 5, 0);
+	poke(scope, clip(ceilLin, 0, 1), 6, 0);
+	// Frame head moves every 64 samples even in silence (deferred-DSP confirm).
+	poke(scope, rollCounter, 7, 0);
 	peakInHold = 0;
 	peakEnvHold = 0;
 	peakOutHold = 0;

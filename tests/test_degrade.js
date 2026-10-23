@@ -21,6 +21,7 @@
  */
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -110,6 +111,21 @@ assert.ok(gen.includes("(stId == 2) * (codec_on > 0.5)"), "Stage 2 (CODEC) must 
 assert.ok(gen.includes("(stId == 3) * (tele_on > 0.5)"), "Stage 3 (TELE) must be gated by tele_on > 0.5");
 assert.ok(gen.includes("(stId == 4) * (fft_on > 0.5)"), "Stage 4 (FFT) must be gated by fft_on > 0.5");
 
+// One loop, one call site per stage (gen~ compiles each stage once, not once per slot).
+assert.strictEqual((gen.match(/for \(slot = 0; slot < 5; slot \+= 1\)/g) || []).length, 1, "Stages must share a single slot loop");
+for (const gate of ["(stId == 0)", "(stId == 1)", "(stId == 2)", "(stId == 3)", "(stId == 4)"]) {
+    assert.strictEqual((gen.split(gate).length - 1), 1, `${gate} must appear once`);
+}
+assert.ok(gen.includes("cBitSteps") && gen.includes("cBitRcp"), "Bit quantizer step and reciprocal must be cached");
+assert.ok(gen.includes("cSrBaseInc") && gen.includes("cCf0") && gen.includes("cFf0"), "SR ratio and SVF coefficients must be cached");
+assert.ok(gen.includes("cHpCoef") && gen.includes("cTelCos") && gen.includes("cTelQ"), "Telecom bandpass and compander constants must be cached");
+assert.ok(gen.includes("dbtoa(outGainDbS)"), "Output gain must use cached dbtoa");
+assert.ok(gen.includes("cDryG") && gen.includes("cWetG"), "Wet/dry cos/sin gains must be cached");
+assert.ok(gen.includes("cOrd0") && gen.includes("orderNow != orderLatch"), "Slot permutation must be decoded only when order_code changes");
+const dspEnd = gen.indexOf("end if (runDsp");
+const framePoke = gen.indexOf("poke(scope, rollCounter, 7, 0)");
+assert.ok(dspEnd > 0 && framePoke > dspEnd, "Frame counter in slot 7 must advance even when runDsp is 0");
+
 // ============================================================================
 // 3. Verify All 4 Generated .amxd Files & Presentation Layouts
 // ============================================================================
@@ -153,16 +169,31 @@ function verifyAmxd(amxdFile, expectedWidth) {
     }
 
     assert.ok(byId["obj-plugin"] && byId["obj-plugin"].text === "plugin~", `${amxdFile}: Missing plugin~`);
+    assert.strictEqual(byId["obj-plugin"].varname, "deg_plugin", `${amxdFile}: plugin~ scripting name`);
     assert.ok(byId["obj-plugout"] && byId["obj-plugout"].text === "plugout~", `${amxdFile}: Missing plugout~`);
-    assert.ok(byId["obj-gen"] && byId["obj-gen"].maxclass === "gen.codebox~", `${amxdFile}: Missing gen.codebox~`);
-    assert.strictEqual(byId["obj-gen"].code, gen, `${amxdFile}: Embedded GenExpr mismatch`);
+    assert.strictEqual(byId["obj-plugout"].varname, "deg_plugout", `${amxdFile}: plugout~ scripting name`);
+    assert.ok(!byId["obj-gen"], `${amxdFile}: static gen.codebox~ must not ship (deferred gen~)`);
+    assert.ok(!boxes.some((b) => b.maxclass === "gen.codebox~" || (b.text && String(b.text).startsWith("gen~"))), `${amxdFile}: no static gen~`);
+    assert.strictEqual(byId["obj-gen-in"].text, "gate 1 1", `${amxdFile}: gen hub must be an open gate`);
+    assert.strictEqual(byId["obj-gen-in"].varname, "deg_genin", `${amxdFile}: gen hub scripting name`);
+    assert.ok(byId["obj-thisdevice"] && byId["obj-thisdevice"].text === "live.thisdevice", `${amxdFile}: Missing live.thisdevice`);
+    assert.strictEqual(byId["obj-msg-init-dsp"].text, "init_dsp", `${amxdFile}: Missing init_dsp message`);
+    assert.ok(!lines.some((l) => l.source[0] === "obj-plugin" && l.destination[0] === "obj-plugout"), `${amxdFile}: plugin~ must not bypass to plugout~`);
+    assert.ok(!lines.some((l) => l.destination[0] === "obj-gen"), `${amxdFile}: nothing may target a static obj-gen`);
+    for (const l of lines) {
+        if (l.destination[0] === "obj-gen-in") {
+            assert.strictEqual(l.destination[1], 1, `${amxdFile}: gen-bound messages go to the gate's data inlet`);
+        }
+    }
 
     // Instance isolation (#0- prefix) and loadbang buffer binding
     assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-degscope", `${amxdFile}: Buffer bind message mismatch`);
     assert.strictEqual(byId["obj-msg-ui-buf"].text, "setbuffer #0-degscope", `${amxdFile}: UI buffer message mismatch`);
-    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen"));
+    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in"));
     assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"));
-    assert.ok(hasLine("obj-viz", "obj-route-ui") && hasLine("obj-route-ui", "obj-prep-order") && hasLine("obj-prep-order", "obj-gen"));
+    assert.ok(hasLine("obj-thisdevice", "obj-msg-init-dsp") && hasLine("obj-msg-init-dsp", "obj-viz"));
+    assert.ok(hasLine("obj-viz", "obj-route-ui") && hasLine("obj-route-ui", "obj-prep-order") && hasLine("obj-prep-order", "obj-gen-in"));
+    assert.ok(hasLine("obj-route-ui", "obj-trig-resend"), `${amxdFile}: dsp_resend must bang the parameter retrigger`);
 
     for (const b of boxes) {
         if (b.text && b.text.startsWith("buffer~")) {
@@ -199,7 +230,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
         const prepId = `obj-prep-${key}`;
         assert.ok(byId[ctrlId], `${amxdFile}: Missing control ${ctrlId}`);
         assert.ok(byId[prepId], `${amxdFile}: Missing prepend ${prepId}`);
-        assert.ok(hasLine(prepId, "obj-gen"), `${amxdFile}: ${prepId} must connect to obj-gen`);
+        assert.ok(hasLine(prepId, "obj-gen-in"), `${amxdFile}: ${prepId} must connect to the gen hub`);
         const initVal = byId[ctrlId].saved_attribute_attributes.valueof.parameter_initial[0];
         assert.strictEqual(initVal, expectedDefaults[key], `${amxdFile}: Expected default ${expectedDefaults[key]} for ${key}, got ${initVal}`);
     }
@@ -252,6 +283,32 @@ function verifyAmxd(amxdFile, expectedWidth) {
 }
 
 const uiCode = verifyAmxd("Degrade.amxd", 480.0);
+
+function extractJsString(script, key) {
+    const at = script.indexOf(key);
+    assert.ok(at >= 0, `missing ${key}`);
+    const start = at + key.length;
+    assert.strictEqual(script[start], '"');
+    let j = start + 1;
+    while (j < script.length) {
+        if (script[j] === "\\") { j += 2; continue; }
+        if (script[j] === '"') break;
+        j++;
+    }
+    return { value: JSON.parse(script.slice(start, j + 1)), end: j + 1 };
+}
+const embedded = extractJsString(uiCode, "var GEN_DSP_TEXT = ");
+const hashPart = uiCode.slice(embedded.end);
+const hashMatch = /^;\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/.exec(hashPart);
+assert.ok(hashMatch, "face must declare GEN_DSP_HASH");
+assert.strictEqual(crypto.createHash("sha1").update(embedded.value).digest("hex").slice(0, 12), hashMatch[1], "GEN_DSP_HASH must match the embedded patch");
+const gendsp = JSON.parse(embedded.value);
+const codebox = gendsp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
+assert.ok(codebox, "gendsp must wrap a codebox");
+assert.strictEqual(codebox.code, gen, "GEN_DSP_TEXT codebox must be src/degrade_core.genexpr");
+assert.ok(uiCode.includes('function init_dsp') && uiCode.includes('Global("degrade_dspq")'), "face must load DSP through the degrade_dspq queue");
+assert.ok(uiCode.includes("DSP loading...") && uiCode.includes("DSP failed:"), "face must be able to draw the DSP pill");
+
 assert.ok(!fs.existsSync(path.join(ROOT, "devices", "Degrade Strip.amxd")), "Extra variant Degrade Strip.amxd should be removed");
 assert.ok(!fs.existsSync(path.join(ROOT, "devices", "Degrade Compact.amxd")), "Extra variant Degrade Compact.amxd should be removed");
 assert.ok(!fs.existsSync(path.join(ROOT, "devices", "Degrade Hero.amxd")), "Extra variant Degrade Hero.amxd should be removed");
@@ -347,5 +404,24 @@ drawCmds.length = 0;
 sandbox.set_viz_mode(1);
 sandbox.paint();
 assert.ok(drawCmds.some((c) => c.op === "text" && c.txt === "PHASE GLITCH FIELD"), "Abstract mode must render PHASE GLITCH FIELD");
+assert.ok(!drawCmds.some((c) => c.op === "text" && String(c.txt).indexOf("DSP loading") >= 0), "Static paint must not show the DSP pill");
+
+// Silent, settled scope polls must not redraw. A real parameter change still does.
+sandbox.setbuffer("#0-degscope");
+sandbox.scopeBuf.peek = () => new Array(32).fill(0);
+sandbox.liveInPeak = 0;
+sandbox.liveOutPeak = 0;
+sandbox.uiSettled = true;
+sandbox.dragMode = "";
+let redraws = 0;
+sandbox.mgraphics.redraw = () => { redraws++; };
+sandbox.pullScope();
+sandbox.pullScope();
+assert.strictEqual(redraws, 0, "silent settled polls must skip mgraphics.redraw()");
+sandbox.set_bits(3);
+assert.ok(redraws > 0, "a changed parameter must still redraw");
+redraws = 0;
+sandbox.set_bits(3);
+assert.strictEqual(redraws, 0, "repeating the same parameter must not redraw");
 
 console.log("All Degrade unit, GenExpr, layout, patchline, and v8ui tests passed!");

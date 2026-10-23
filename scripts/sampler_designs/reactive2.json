@@ -2,13 +2,14 @@
   "title": "Better Sampler Reactive 2",
   "device": "Better Sampler Reactive 2.amxd",
   "face": "src/sampler_design_reactive2.js",
-  "width": 672,
-  "max_width": 1361,
+  "width": 760,
+  "max_width": 1551,
   "drop": [30, 17, 458, 74],
   "folds": 5,
   "osc2_ui": "tabs",
   "sample_gain": true,
   "env_slopes": true,
+  "wavetable_env_mod": true,
   "wavetable_filter": true,
-  "description": "Reactive with a left sidebar of folding sections (Engine detail, Envelope, Filter, LFO / Mod, Voice / Out) beside a sample viewer as wide as Better Sampler's with the engine strip fixed under it, Bitwig-style traced envelopes with one dot per sounding voice, and a Wavetable-style dual filter section."
+  "description": "Reactive with a left sidebar of folding sections (Engine detail, Mod Sources, Filter, Mod Matrix, Voice / Out) beside a sample viewer as wide as Better Sampler's with the engine strip fixed under it, Ableton Wavetable-style Mod Sources (Envelopes & LFOs), Mod Matrix (Matrix / MIDI / MPE), and Dual Filter + Oscillator 2 / Sub."
 }

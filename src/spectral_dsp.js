@@ -3,9 +3,10 @@
 // embedded gen patch (GEN_DSP_TEXT, injected by the build together with GEN_DSP_HASH and SS_PREFIX) to /tmp/<prefix>_core_<hash>.gendsp, creates
 // `gen~ @gen <file>` (named ss_gen) and wires it: the ss_genin hub (gate 1 1, every gen-bound message goes into its data inlet) -> gen,
 // ss_plugin -> gen -> ss_plugout. File-backed identical gen~ objects share ONE compile (AGENTS.md 1d), so a rack of K instances compiles once.
-// Until the gen runs: an instance inside a rack outputs SILENCE (the chains of a rack sum, so K copies of the dry signal would be K times too
-// loud and the audio would jump when the delayed wet arrives); an instance outside a rack passes the dry signal (ss_plugin -> ss_plugout cord,
-// removed when the gen is wired). The header pill shows `DSP loading...` / `DSP failed: <reason>` meanwhile (ssDsp.ready / ssDsp.error).
+// Until the gen runs the device outputs SILENCE in every situation (no ss_plugin -> ss_plugout cord). A dry pass-through would make a rack of
+// K chains K times too loud and the audio would jump when the delayed wet arrives; a lone instance stays silent for the same reason the user
+// asked for: nothing is heard until ss_plugin -> gen -> ss_plugout is wired. The header pill shows `DSP loading...` / `DSP failed: <reason>`
+// meanwhile (ssDsp.ready / ssDsp.error).
 //
 // The gen drops messages while it compiles, so the face re-sends the buffer bindings and every gen parameter every 150 ms until the gen's alive
 // counter moves, then once more at once and again 300 ms later. The device supplies:
@@ -19,7 +20,7 @@
 // Test hook: ssDspRestart() (message dsp_restart <chain>) removes the gen~ and creates it again, a late start with a new sample counter.
 
 var ssHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
-var ssDsp = { ready: 0, error: "", createdAt: 0, counter0: -1, task: null, confirmTask: null, settleTask: null, retries: 0, restarts: 0, dryOn: false };
+var ssDsp = { ready: 0, error: "", createdAt: 0, counter0: -1, task: null, confirmTask: null, settleTask: null, retries: 0, restarts: 0 };
 var SS_DSP_RETRIES = 2;
 var SS_DSP_CLAIM_MS = 15000;
 var SS_DSP_QUEUE_POLL_MS = 100;
@@ -81,23 +82,9 @@ function ssDspNotify() {
     if (typeof ssDevChanged === "function") ssDevChanged();
 }
 
-// The dry signal of an instance outside a rack passes through until its gen runs; inside a rack there is no cord (silence).
-function ssDspDry(on) {
-    if (!ssHost || ssDsp.ready || on === ssDsp.dryOn) return;
-    try {
-        var pin = ssHost.getnamed("ss_plugin");
-        var pout = ssHost.getnamed("ss_plugout");
-        if (!pin || !pout) return;
-        if (on) {
-            ssHost.connect(pin, 0, pout, 0);
-            ssHost.connect(pin, 1, pout, 1);
-        } else {
-            ssHost.disconnect(pin, 0, pout, 0);
-            ssHost.disconnect(pin, 1, pout, 1);
-        }
-        ssDsp.dryOn = on;
-    } catch (_) {}
-}
+// Kept so faces can call it from onInfo. It never connects ss_plugin to ss_plugout: deferral is silence
+// inside a rack and outside one, until ssDspLoad wires ss_plugin -> gen -> ss_plugout.
+function ssDspDry(on) {}
 
 function ssDspLoad() {
     if (ssDsp.ready || ssDsp.createdAt || !ssHost || typeof GEN_DSP_TEXT === "undefined") return;
@@ -124,11 +111,6 @@ function ssDspLoad() {
             ssHost.connect(pin, 1, g, 1);
             ssHost.connect(g, 0, pout, 0);
             ssHost.connect(g, 1, pout, 1);
-            if (ssDsp.dryOn) {
-                ssHost.disconnect(pin, 0, pout, 0);
-                ssHost.disconnect(pin, 1, pout, 1);
-                ssDsp.dryOn = false;
-            }
         }
         ssDsp.createdAt = Date.now();
         ssDsp.counter0 = ssGenAlive();

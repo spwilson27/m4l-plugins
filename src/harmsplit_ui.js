@@ -49,6 +49,7 @@ var hsBuf = null;
 var hsOwnBuf = null;
 var hsTask = null;
 var hsLastFrame = -1;
+var hsIdleDrawn = false;
 var hsDrag = null;
 var hsLink = null;
 var hsInfo = { instanceId: "", isInRack: false, chainIndex: 0, chainCount: 0, peers: 1, linked: false, autoChannel: -1 };
@@ -66,10 +67,11 @@ var hsLastSel = -1;
 
 // ---------------------------------------------------------------- state in
 function hsSetVal(key, v) {
+    var changed = hsVals[key] !== v;
     hsVals[key] = v;
     if (key === "output") hsEmitSel();
     if (hsLink && HS_LINKED_KEYS.indexOf(key) >= 0) hsLink.notify(key, v);
-    mgraphics.redraw();
+    if (changed) mgraphics.redraw();
 }
 
 function set_pattern(v) { hsSetVal("pattern", Number(v)); }
@@ -114,7 +116,7 @@ function init_link() {
         },
         onInfo: function (info) {
             hsInfo = info;
-            ssDspDry(!info.isInRack);
+            ssDspDry(0);
             hsEmitSel();
             mgraphics.redraw();
         }
@@ -205,6 +207,10 @@ function hsPoll() {
         var frame = h[0];
         var aw = h[3];
         if (frame === hsLastFrame && aw === hsScalars.awake) return;
+        if (aw < 0.5 && hsScalars.awake < 0.5 && hsIdleDrawn) {
+            hsLastFrame = frame;
+            return;
+        }
         var d = hsBuf.peek(1, 0, HS_SCOPE_SAMPS);
         if (!d || d.length < HS_SC_ODD + 1) return;
         hsLastFrame = frame;
@@ -230,6 +236,7 @@ function hsPoll() {
         hsScalars.lvl = live ? d[HS_SC_LVL] : -100;
         hsScalars.nact = live ? d[HS_SC_NACT] : 0;
         hsScalars.threff = live ? d[HS_SC_THREFF] : HS_THR_MIN;
+        hsIdleDrawn = aw < 0.5;
         mgraphics.redraw();
     } catch (err) {
         hsBuf = null;
@@ -278,14 +285,32 @@ function hsLin(v) {
     return Math.pow(10, (v * 100 - 100) / 20);
 }
 
+var HS_LOG_SPAN = Math.log(HS_FMAX / HS_FMIN);
+var HS_COL_X = [];
+for (var hsColInit = 0; hsColInit < HS_NCOLS; hsColInit++) HS_COL_X.push(HS_PLOT.x + (hsColInit + 0.5) * HS_PLOT.w / HS_NCOLS);
+var HS_EDGE_CACHE = { lo: NaN, hi: NaN, xlo: 0, xhi: 0 };
+
 function hsColX(c) {
-    return HS_PLOT.x + (c + 0.5) * HS_PLOT.w / HS_NCOLS;
+    return HS_COL_X[c];
 }
 
 function hsFreqX(f) {
-    var t = Math.log(f / HS_FMIN) / Math.log(HS_FMAX / HS_FMIN);
+    var t = Math.log(f / HS_FMIN) / HS_LOG_SPAN;
     t = !(t > 0) ? 0 : (t > 1 ? 1 : t);      // NaN / below FMIN -> left edge
     return HS_PLOT.x + t * HS_PLOT.w;
+}
+var HS_GRID_X = [hsFreqX(100), hsFreqX(1000), hsFreqX(10000)];
+
+function hsEdges() {
+    var lo = hsVals.lowcut;
+    var hi = hsVals.highcut;
+    if (HS_EDGE_CACHE.lo !== lo || HS_EDGE_CACHE.hi !== hi) {
+        HS_EDGE_CACHE.lo = lo;
+        HS_EDGE_CACHE.hi = hi;
+        HS_EDGE_CACHE.xlo = hsFreqX(lo);
+        HS_EDGE_CACHE.xhi = hsFreqX(hi);
+    }
+    return HS_EDGE_CACHE;
 }
 
 function hsXFreq(x) {
@@ -323,7 +348,7 @@ function paint() {
     var yb = hsBase() - HS_ZONE;
 
     // display: near-black LCD with a faint grid (100 Hz / 1 kHz / 10 kHz, -20 .. -80 dB)
-    var gx = [hsFreqX(100), hsFreqX(1000), hsFreqX(10000)];
+    var gx = HS_GRID_X;
     var gy = [hsYOfDb(-20), hsYOfDb(-40), hsYOfDb(-60), hsYOfDb(-80), yb];
     sptLcd(0, 0, W, HS_PLOT.h + 2, { xs: gx, ys: gy });
     var labels = ["100", "1k", "10k"];
@@ -427,7 +452,8 @@ function hsPaintAnalysis() {
     var hc = sptColor("live_display_handle_one");
     // outside the detection band (fundamental search range) the plot is dimmed; an empty band (Low >= High) dims all of it
     var dimH = HS_PLOT.h - HS_ZONE - 12;
-    var xlo = hsFreqX(hsVals.lowcut), xhi = hsFreqX(hsVals.highcut);
+    var edge = hsEdges();
+    var xlo = edge.xlo, xhi = edge.xhi;
     var px0 = HS_PLOT.x, px1 = HS_PLOT.x + HS_PLOT.w;
     sptRgba(sptColor("live_lcd_bg"), 0.6);
     if (hsVals.lowcut >= hsVals.highcut) {
@@ -506,7 +532,7 @@ function hsPaintHarmonics() {
     // fundamental: hollow circle on the pre spectrum, faint crosshairs through it
     var fg = sptColor("live_control_fg");
     var cx = hsFreqX(f0);
-    var cidx = Math.round(Math.log(f0 / HS_FMIN) / Math.log(HS_FMAX / HS_FMIN) * HS_NCOLS - 0.5);
+    var cidx = Math.round(Math.log(f0 / HS_FMIN) / HS_LOG_SPAN * HS_NCOLS - 0.5);
     cidx = cidx < 0 ? 0 : (cidx > HS_NCOLS - 1 ? HS_NCOLS - 1 : cidx);
     var cy = yb - hsLvH(hsPre[cidx]);
     cy = Math.max(top + 16, Math.min(yb - 3, cy));
@@ -582,8 +608,8 @@ function hsHandleDown(x, y, dbl) {
     }
     if (x < HS_PLOT.x || x > HS_PLOT.x + HS_PLOT.w || y < HS_PLOT.y || y > HS_PLOT.y + HS_PLOT.h) return;
     var ty = hsYOfDb(hsVals.thr);
-    var xl = hsFreqX(hsVals.lowcut);
-    var xh = hsFreqX(hsVals.highcut);
+    var xl = hsEdges().xlo;
+    var xh = hsEdges().xhi;
     var dT = Math.abs(y - ty);
     var dL = Math.abs(x - xl);
     var dH = Math.abs(x - xh);

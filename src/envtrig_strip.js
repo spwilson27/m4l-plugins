@@ -11,13 +11,19 @@ inlets = 1;
 outlets = 1;
 
 var LABEL = "MIDI TO";
+var OPEN_COL = [0.96, 0.66, 0.25, 1.0];
+var IDLE_COL = [0.82, 0.86, 0.90, 1.0];
+var PI2 = Math.PI * 2;
+var HALF_TURN = -Math.PI / 2;
 var open = 0;
 var lastWidth = -1;
 // Scripting names of the panel widgets; build_envtrig.py prepends `var PANEL_NAMES = [...]`.
 if (typeof PANEL_NAMES === "undefined") var PANEL_NAMES = /** @type {string[]} */ ([]);
 
 function set_open(v) {
-    open = Number(v) > 0.5 ? 1 : 0;
+    var next = Number(v) > 0.5 ? 1 : 0;
+    if (next === open) return;
+    open = next;
     mgraphics.redraw();
 }
 
@@ -78,8 +84,8 @@ function paint() {
     mgraphics.fill();
 
     // Round button with an arrow: right when collapsed (panel opens to the right), left when open.
-    mgraphics.set_source_rgba(open ? 0.96 : 0.82, open ? 0.66 : 0.86, open ? 0.25 : 0.90, 1.0);
-    mgraphics.arc(cx, cy, 6, 0, Math.PI * 2);
+    mgraphics.set_source_rgba(open ? OPEN_COL[0] : IDLE_COL[0], open ? OPEN_COL[1] : IDLE_COL[1], open ? OPEN_COL[2] : IDLE_COL[2], 1.0);
+    mgraphics.arc(cx, cy, 6, 0, PI2);
     mgraphics.fill();
     mgraphics.set_source_rgba(0.06, 0.07, 0.09, 1.0);
     var dir = open ? -1 : 1;
@@ -92,10 +98,10 @@ function paint() {
     // Vertical label reading bottom-to-top, anchored near the bottom like Live's native strips.
     mgraphics.select_font_face("Arial Bold");
     mgraphics.set_font_size(8.5);
-    mgraphics.set_source_rgba(open ? 0.96 : 0.70, open ? 0.66 : 0.76, open ? 0.25 : 0.82, 1.0);
+    mgraphics.set_source_rgba(open ? OPEN_COL[0] : 0.70, open ? OPEN_COL[1] : 0.76, open ? OPEN_COL[2] : 0.82, 1.0);
     mgraphics.save();
     mgraphics.translate(cx + 3, h - 6);
-    mgraphics.rotate(-Math.PI / 2);
+    mgraphics.rotate(HALF_TURN);
     mgraphics.move_to(0, 0);
     mgraphics.show_text(LABEL);
     mgraphics.restore();

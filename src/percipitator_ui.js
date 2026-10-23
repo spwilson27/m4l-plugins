@@ -19,6 +19,8 @@ outlets = 1;
 
 var wtBuf = null;
 var scopeBuf = null;
+var wtBufName = "#0-percipwt";
+var scopeBufName = "#0-percipscope";
 var uiTask = null;
 
 var localWt = generateStandardWavetable();
@@ -55,6 +57,11 @@ var curWarpPct = 50.0;
 var curSieve = 0;
 var curTiltPct = 0.0;
 var curVolDb = 0.0;
+var curMixPct = 100.0;
+
+// Wave pill polyline, recomputed only when Wave, Mode or Warp changes.
+var wavePillCacheKey = "";
+var wavePillCache = null;
 
 // Sidechain MIDI state
 var heldMidiNotes = {};
@@ -114,14 +121,75 @@ function pokeWavetableBuffer() {
     wtBuf.poke(1, 0, localWt);
 }
 
-function setbuffer(wtBufName, scopeBufName) {
-    if (wtBufName) {
-        wtBuf = new Buffer("" + wtBufName);
+function setbuffer(wtName, scopeName) {
+    if (wtName) {
+        wtBufName = "" + wtName;
+        wtBuf = new Buffer(wtBufName);
         pokeWavetableBuffer();
     }
-    if (scopeBufName) {
-        scopeBuf = new Buffer("" + scopeBufName);
+    if (scopeName) {
+        scopeBufName = "" + scopeName;
+        scopeBuf = new Buffer(scopeBufName);
     }
+}
+
+// Scope slot 35 is the gen's frame counter. It advances every 64 samples, including silence.
+function pcpDspFrames() {
+    if (!scopeBufName || typeof Buffer === "undefined") return -1;
+    try {
+        var v = new Buffer(scopeBufName).peek(1, 35, 1);
+        return (typeof v === "number") ? v : (v && v.length ? Number(v[0]) : -1);
+    } catch (err) {
+        return -1;
+    }
+}
+
+// Buffer bindings, wavetable poke, and every gen parameter. wtpos/warp/gate/scalemask go out in the
+// form `route` already expects (it scales wtpos/warp). Everything else is already in gen units and
+// leaves through the route's unmatched outlet into the gen hub.
+function pcpDspResend() {
+    pokeWavetableBuffer();
+    outlet(0, ["wt", wtBufName]);
+    outlet(0, ["scope", scopeBufName]);
+    outlet(0, ["pitch", curPitchSt]);
+    outlet(0, ["fshift", curShiftHz]);
+    outlet(0, ["stretch", curStretchPct / 100.0]);
+    outlet(0, ["snap", curSnapPct / 100.0]);
+    outlet(0, ["blur", curBlurPct / 100.0]);
+    outlet(0, ["decay", curDecayMs]);
+    outlet(0, ["attack", curAttackMs]);
+    outlet(0, ["tilt", curTiltPct / 100.0]);
+    outlet(0, ["resynthgain", curVolDb]);
+    outlet(0, ["wet", curMixPct / 100.0]);
+    outlet(0, ["wtmode", curWtMode]);
+    outlet(0, ["sieve", curSieve]);
+    outlet(0, ["freeze", 0]);
+    outlet(0, ["scalemask", effectiveScaleMask()]);
+    outlet(0, ["gate", curGateDb]);
+    outlet(0, ["wtpos", curWtPosPct]);
+    outlet(0, ["warp", curWarpPct]);
+}
+
+function pcpDspPillText() {
+    if (!pcpDsp || pcpDsp.ready) return "";
+    if (!(pcpDsp.createdAt > 0 || pcpDsp.error)) return "";
+    if (pcpDsp.error) return "DSP failed: " + String(pcpDsp.error).substring(0, 24);
+    return "DSP loading...";
+}
+
+function wavePillSamples() {
+    var key = curWtPosPct + "|" + curWtMode + "|" + curWarpPct;
+    if (wavePillCache && wavePillCacheKey === key) return wavePillCache;
+    var wtPos01 = clamp(curWtPosPct / 100.0, 0, 1);
+    var warp01 = clamp(curWarpPct / 100.0, 0, 1);
+    var steps = 28;
+    var pts = [];
+    for (var k = 0; k <= steps; k++) {
+        pts.push(evalWavetableSample(localWt, k / steps, wtPos01, curWtMode, warp01));
+    }
+    wavePillCache = pts;
+    wavePillCacheKey = key;
+    return pts;
 }
 
 function syncMaskToGen() {
@@ -229,6 +297,10 @@ function set_tilt(pct) {
 function set_vol(db) {
     curVolDb = clamp(Number(db) || 0.0, -36.0, 18.0);
     mgraphics.redraw();
+}
+
+function set_mix(pct) {
+    curMixPct = clamp(Number(pct) || 0.0, 0.0, 100.0);
 }
 
 function set_scalemask(mask) {
@@ -339,7 +411,8 @@ function loadbang() {
     outlet(0, ["gate", curGateDb]);
     if (typeof Task === "function") {
         uiTask = new Task(function () {
-            if (pullScope()) {
+            // Silence with settled bands, droplets and no gesture: skip the redraw.
+            if (pullScope() || dragState) {
                 mgraphics.redraw();
             }
         }, this);
@@ -659,22 +732,37 @@ function paint() {
     mgraphics.rectangle_rounded(r.pillX, r.pillY, r.pillW, r.pillH, 3, 3);
     mgraphics.stroke();
 
-    var wtPos01 = clamp(curWtPosPct / 100.0, 0, 1);
-    var warp01 = clamp(curWarpPct / 100.0, 0, 1);
-    var wSteps = 28;
+    var wPts = wavePillSamples();
+    var wSteps = wPts.length - 1;
     var wCenterY = r.pillY + r.pillH * 0.52;
     var wAmp = r.pillH * 0.36;
     mgraphics.set_line_width(1.4);
     mgraphics.set_source_rgba(0.96, 0.66, 0.25, 0.96);
     for (var k = 0; k <= wSteps; k++) {
         var phk = k / wSteps;
-        var vNow = evalWavetableSample(localWt, phk, wtPos01, curWtMode, warp01);
+        var vNow = wPts[k];
         var wx = r.pillX + 4 + phk * (r.pillW - 8);
         var wy = clamp(wCenterY - vNow * wAmp, r.pillY + 2, r.pillY + r.pillH - 2);
         if (k === 0) mgraphics.move_to(wx, wy);
         else mgraphics.line_to(wx, wy);
     }
     mgraphics.stroke();
+
+    var dspLabel = pcpDspPillText();
+    if (dspLabel) {
+        mgraphics.set_font_size(7.5);
+        var dspW = Math.min(r.specW - 8, dspLabel.length * 4.4 + 10);
+        var dspX = r.specX + (r.specW - dspW) * 0.5;
+        var dspY = r.specY + 3;
+        var dspAlert = pcpDsp.error ? 1 : 0;
+        mgraphics.set_source_rgba(0.05, 0.06, 0.08, 0.88);
+        mgraphics.rectangle_rounded(dspX, dspY, dspW, 11, 2, 2);
+        mgraphics.fill();
+        if (dspAlert) mgraphics.set_source_rgba(0.98, 0.45, 0.42, 0.95);
+        else mgraphics.set_source_rgba(0.96, 0.72, 0.35, 0.92);
+        mgraphics.move_to(dspX + 5, dspY + 8.5);
+        mgraphics.show_text(dspLabel);
+    }
 
     // --- BOTTOM STRIP: Interactive 12-Note Scale / Sidechain MIDI Selector ---
     mgraphics.set_font_size(7.5);

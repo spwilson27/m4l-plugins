@@ -509,6 +509,7 @@ def build_start(variant, out_dir=None):
     code = (read("delayplus_config.js").rstrip() + f"\n\nvar DP_ROLE = \"start\";\nvar DP_BUILD = \"{BUILD_STAMP}\";\n"
             + f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
             + f"var GEN_DSP_HASH = \"{hashlib.sha1(gen_text.encode()).hexdigest()[:12]}\";\n"
+            + "var DP_DSP_PREFIX = \"delayplus_start\";\n"
             + f"var DP_GEN_PARAMS = {json.dumps(gen_params)};\n\n"
             + read("delayplus_link.js").rstrip() + "\n\n" + read("delayplus_ui.js").rstrip() + "\n\n"
             + read(cfg["viz"]).rstrip() + "\n\n" + read("delayplus_dsp.js"))
@@ -542,8 +543,7 @@ def build_start(variant, out_dir=None):
             box["box"]["hidden"] = 1
         boxes.append(box)
     lines = [
-        # dry passes until the deferred gen~ is wired in (src/delayplus_dsp.js removes these two)
-        line("obj-plugin", 0, "obj-plugout", 0), line("obj-plugin", 1, "obj-plugout", 1),
+        # Silence until the face wires plugin~ -> gen~ -> plugout~ (no dry cord during deferral).
         line("obj-loadbang", 0, "obj-msg-gen-bufs", 0), line("obj-msg-gen-bufs", 0, "obj-gen", 0),
         line("obj-loadbang", 0, "obj-msg-ui-names", 0), line("obj-msg-ui-names", 0, "obj-viz", 0),
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-viz", 0),
@@ -583,31 +583,47 @@ def build_start(variant, out_dir=None):
 
 
 def build_end():
-    code = (read("delayplus_config.js").rstrip() + f"\n\nvar DP_ROLE = \"end\";\nvar DP_BUILD = \"{BUILD_STAMP}\";\n\n"
-            + read("delayplus_link.js").rstrip() + "\n\n" + read("delayplus_end_ui.js"))
+    # Same deferred load as Start (src/delayplus_dsp.js): no gen~ in the file, no dry cord, silence
+    # until the face wires plugin~ -> gen~ -> plugout~. Local buffer binds and the link layer's
+    # xfer / hdr messages go through the hub's data inlet.
+    gen_text = gendsp_json(read("delayplus_end.genexpr"))
+    code = (read("delayplus_config.js").rstrip() + f"\n\nvar DP_ROLE = \"end\";\nvar DP_BUILD = \"{BUILD_STAMP}\";\n"
+            + f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+            + f"var GEN_DSP_HASH = \"{hashlib.sha1(gen_text.encode()).hexdigest()[:12]}\";\n"
+            + "var DP_DSP_PREFIX = \"delayplus_end\";\n"
+            + "var DP_GEN_PARAMS = {};\n\n"
+            + read("delayplus_link.js").rstrip() + "\n\n" + read("delayplus_end_ui.js").rstrip() + "\n\n"
+            + read("delayplus_dsp.js"))
     boxes = [
         v8ui("obj-viz", code, [4.0, 4.0, END_W - 8.0, DEVICE_H - 8.0], (500.0, 20.0), 1),
-        newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]),
-        newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]),
-        gen_box(read("delayplus_end.genexpr")),
+        named(newobj("obj-plugin", "plugin~", 20, 60, 60, 2, 2, ["signal", "signal"]), "dp_plugin"),
+        named(newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]), "dp_plugout"),
+        named(newobj("obj-gen-in", "gate 1 1", 20, 100, 60, 2, 1), "dp_genin"),
         # Own buffers: used until the link layer binds gen to the Start's xfer / hdr.
         newobj("obj-buf-xfer", "buffer~ ---dpxferE @samps 64 @chans 5", 480, 300, 240, 1, 2, ["float", "bang"]),
         newobj("obj-buf-hdr", "buffer~ ---dphdrE @samps 64", 480, 330, 200, 1, 2, ["float", "bang"]),
         newobj("obj-buf-scope", f"buffer~ ---dpscopeE @samps {ESCOPE_SAMPS}", 480, 360, 220, 1, 2, ["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 480, 400, 60, 1, 1, ["bang"]),
-        msgbox("obj-msg-gen-bufs", "xfer ---dpxferE, hdr ---dphdrE, scope ---dpscopeE", 480, 430, 300),
+        msgbox("obj-msg-local", "scope ---dpscopeE, xfer ---dpxferE, hdr ---dphdrE", 480, 430, 340),
         msgbox("obj-msg-ui-names", "names ---dpxferE ---dphdrE ---dpscopeE", 480, 460, 260),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, 1, 2, ["bang", "int"]),
         msgbox("obj-msg-init", "init_link", 780, 430, 70),
+        # viz sends `xfer <name>` / `hdr <name>` (and `scope <name>` on resend). route strips the
+        # selector; the prepends put it back on the way into the hub. Unmatched (scope) passes through.
+        newobj("obj-route-bind", "route xfer hdr", 200, 160, 90, 1, 3),
+        newobj("obj-prep-xfer", "prepend xfer", 200, 190, 90),
+        newobj("obj-prep-hdr", "prepend hdr", 200, 220, 90),
     ]
     lines = [
-        line("obj-plugin", 0, "obj-gen", 0), line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0), line("obj-gen", 1, "obj-plugout", 1),
-        line("obj-loadbang", 0, "obj-msg-gen-bufs", 0), line("obj-msg-gen-bufs", 0, "obj-gen", 0),
+        line("obj-loadbang", 0, "obj-msg-local", 0), line("obj-msg-local", 0, "obj-gen", 0),
         line("obj-loadbang", 0, "obj-msg-ui-names", 0), line("obj-msg-ui-names", 0, "obj-viz", 0),
         line("obj-thisdevice", 0, "obj-msg-init", 0), line("obj-msg-init", 0, "obj-viz", 0),
-        line("obj-viz", 0, "obj-gen", 0),
+        line("obj-viz", 0, "obj-route-bind", 0),
+        line("obj-route-bind", 0, "obj-prep-xfer", 0), line("obj-prep-xfer", 0, "obj-gen", 0),
+        line("obj-route-bind", 1, "obj-prep-hdr", 0), line("obj-prep-hdr", 0, "obj-gen", 0),
+        line("obj-route-bind", 2, "obj-gen", 0),
     ]
+    lines = [to_gen_hub(l) for l in lines]
     doc = patcher(boxes, lines, END_W, "Closes the Delay+ feedback loop and mixes dry/wet")
     write_amxd(os.path.join(OUT_DIR, END_NAME + ".amxd"), doc)
 

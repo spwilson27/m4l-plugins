@@ -2,14 +2,18 @@
 """
 Build devices/Cepstra.amxd (256 x 169 px) — a true cepstral formant shifter.
 
-Signal path: plugin~ -> gen.codebox~ (STFT overlap-add, own radix-2 FFT, Mid/Side cepstral lifter) -> plugout~.
+Signal path: plugin~ is not connected until the face has loaded. One Task tick after live.thisdevice the
+display v8ui writes the gen patch (.gendsp) and creates `gen~`, then wires
+cep_plugin -> gen~ -> cep_plugout, with every gen message through the cep_genin hub (`gate 1 1`).
+Until that gen exists the device outputs silence.
 Face: normal, visible Ableton-native live.* controls on top (y = 5..73) and the dot-matrix cepstrum display
 (`v8ui`, x = 6..350, y = 76..164, the only v8ui) under them across the full width:
   - top row: Auto / MIDI toggles, Lock toggle, Gate Mode and Quality `live.tab`
   - dial row: Res, Mid, Side (adjacent), Gate, Mix (right-most)
 The Mid/Side Lock follower and the exclusive Auto / MIDI logic live in the display script; they report back through
-`route` -> `prepend set` (silent) into the live objects and gen, so nothing feeds back.
+`route` -> `prepend set` (silent) into the live objects and the gen hub, so nothing feeds back.
 """
+import hashlib
 import json
 import os
 import struct
@@ -291,15 +295,15 @@ def line(src, outlet, dst, inlet=0):
 
 
 
-def v8ui_box(obj_id, rect, code, varname, ignoreclick):
+def v8ui_box(obj_id, rect, code, varname, ignoreclick, numoutlets=1):
     b = {
         "border": 0,
         "filename": "none",
         "id": obj_id,
         "maxclass": "v8ui",
         "numinlets": 1,
-        "numoutlets": 1,
-        "outlettype": [""],
+        "numoutlets": numoutlets,
+        "outlettype": [""] * numoutlets,
         "patching_rect": [20.0, 110.0, rect[2], rect[3]],
         "presentation": 1,
         "presentation_rect": [float(v) for v in rect],
@@ -309,6 +313,36 @@ def v8ui_box(obj_id, rect, code, varname, ignoreclick):
     if ignoreclick:
         b["ignoreclick"] = 1
     return {"box": b}
+
+
+def gendsp_json(gen_code):
+    """2-in / 2-out gen patch (in -> codebox -> out) as .gendsp JSON. The face writes it to
+    /tmp/cepstra_core_<hash>.gendsp and creates `gen~ @gen <file>` after the GUI is up."""
+    def bx(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
+               "patching_rect": [float(x), float(y), 200.0, 22.0]}
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+    patch = {"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen",
+        "rect": [50.0, 50.0, 600.0, 450.0],
+        "boxes": [
+            bx("obj-in1", "in 1", 20, 20, 0, 1), bx("obj-in2", "in 2", 120, 20, 0, 1),
+            bx("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+            bx("obj-out1", "out 1", 20, 400, 1, 0), bx("obj-out2", "out 2", 120, 400, 1, 0),
+        ],
+        "lines": [
+            {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+            {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+            {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+            {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+        ],
+    }}
+    return json.dumps(patch)
 
 
 # Route: face (Lock follower, AUTO/MIDI exclusivity) and display (Res bar drag) -> live objects (silent `set`) + gen
@@ -322,14 +356,18 @@ def build():
         display_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
-    display_code = config_js.rstrip() + "\n\n" + display_js
+    gen_text = gendsp_json(gen_code)
+    gen_hash = hashlib.sha1(gen_text.encode()).hexdigest()[:12]
+    gen_vars = (f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+                f"var GEN_DSP_HASH = \"{gen_hash}\";\n")
+    display_code = config_js.rstrip() + "\n\n" + gen_vars + "\n" + display_js
 
     GREEN = (0.30, 0.86, 0.52)
     NEUTRAL = (0.78, 0.82, 0.88)
     
     boxes = [
         # Display: the only v8ui (interactive cutoff-bar drag); nothing overlaps it.
-        v8ui_box("obj-viz-disp", [6.0, 76.0, 244.0, 88.0], display_code, "CepstraDisplay", False),
+        v8ui_box("obj-viz-disp", [6.0, 76.0, 244.0, 88.0], display_code, "CepstraDisplay", False, numoutlets=2),
         # Dials (order = existing parameter order: Res, Mid, Mix, Side, Gate); Mid + Side adjacent, Mix at the right edge
         make_dial("res", 6, 26, 46, 46, ORANGE),
         make_dial("midshift", 56, 26, 46, 46, ORANGE),
@@ -359,20 +397,9 @@ def build():
         [
             newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
             newobj("obj-plugout", "plugout~", 20, 460, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-            {
-                "box": {
-                    "code": gen_code,
-                    "fontname": "<Monospaced>",
-                    "fontsize": 10.0,
-                    "id": "obj-gen",
-                    "maxclass": "gen.codebox~",
-                    "numinlets": 2,
-                    "numoutlets": 2,
-                    "outlettype": ["signal", "signal"],
-                    "patching_rect": [120.0, 300.0, 420.0, 140.0],
-                    "varname": "cepstra",
-                }
-            },
+            # Message hub for the deferred gen~ (data into inlet 1; outlet 0 is wired to gen~ after load).
+            # plugin~ is left unconnected so the device stays silent until that gen~ is created.
+            newobj("obj-gen-in", "gate 1 1", 120, 300, 70, numinlets=2, numoutlets=1, outlettype=[""]),
             newobj("obj-scope-buf", "buffer~ #0-cepscope @samps 272", 560, 250, 220, numoutlets=2, outlettype=["float", "bang"]),
             newobj("obj-loadbang", "loadbang", 560, 315, 60, outlettype=["bang"]),
             message("obj-msg-ui-buf", "setbuffer #0-cepscope", 560, 345, 160),
@@ -389,14 +416,13 @@ def build():
     )
 
     lines = [
-        line("obj-plugin", 0, "obj-gen", 0),
-        line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0),
-        line("obj-gen", 1, "obj-plugout", 1),
+        # No plugin~ -> plugout~ cord: silence until cepDspLoad wires the gen~.
         line("obj-loadbang", 0, "obj-msg-ui-buf"),
         line("obj-loadbang", 0, "obj-msg-gen-buf"),
         line("obj-msg-ui-buf", 0, "obj-viz-disp"),
-        line("obj-msg-gen-buf", 0, "obj-gen"),
+        line("obj-msg-gen-buf", 0, "obj-gen-in", 1),
+        # Resend outlet (buffer bind + stored parameters) lands on the hub, not on a live.text toggle.
+        line("obj-viz-disp", 1, "obj-gen-in", 1),
         # MIDI: the last note-on wins; note-offs close the gate so the last note is kept.
         line("obj-midiin", 0, "obj-midiparse"),
         line("obj-midiparse", 0, "obj-midi-unpack"),
@@ -405,7 +431,7 @@ def build():
         line("obj-midi-unpack", 0, "obj-midi-gate", 1),
         line("obj-midi-gate", 0, "obj-prep-midinote"),
         line("obj-midi-gate", 0, "obj-prep-midi-ui"),
-        line("obj-prep-midinote", 0, "obj-gen"),
+        line("obj-prep-midinote", 0, "obj-gen-in", 1),
         line("obj-prep-midi-ui", 0, "obj-viz-disp"),
         # Both v8ui halves report into one router
         line("obj-viz-disp", 0, "obj-route-viz"),
@@ -420,7 +446,7 @@ def build():
     boxes.append(newobj("obj-set-resmode", "prepend set", 700, 440, 75))
     lines += [
         line("obj-resmode", 0, "obj-prep-resmode"),
-        line("obj-prep-resmode", 0, "obj-gen"),
+        line("obj-prep-resmode", 0, "obj-gen-in", 1),
         line("obj-resmode", 0, "obj-ui-resmode"),
         line("obj-ui-resmode", 0, "obj-viz-disp"),
         line("obj-route-viz", rport("resmode"), "obj-set-resmode"),
@@ -443,7 +469,7 @@ def build():
     boxes.append(newobj("obj-ui-quality", "prepend set_quality", 680, 530, 130))
     lines += [
         line("obj-quality", 0, "obj-prep-quality"),
-        line("obj-prep-quality", 0, "obj-gen"),
+        line("obj-prep-quality", 0, "obj-gen-in", 1),
         line("obj-quality", 0, "obj-ui-quality"),
         line("obj-ui-quality", 0, "obj-viz-disp"),
     ]
@@ -452,7 +478,7 @@ def build():
     boxes.append(newobj("obj-ui-gmode", "prepend set_gmode", 680, 590, 130))
     lines += [
         line("obj-gmode", 0, "obj-prep-gatemode"),
-        line("obj-prep-gatemode", 0, "obj-gen"),
+        line("obj-prep-gatemode", 0, "obj-gen-in", 1),
         line("obj-gmode", 0, "obj-ui-gmode"),
         line("obj-ui-gmode", 0, "obj-viz-disp"),
     ]
@@ -475,8 +501,8 @@ def build():
             src_id = ctrl_id
         boxes.append(newobj(prep_id, f"prepend {gen_msg}", 424, row_y, 120))
         lines.append(line(src_id, 0, prep_id))
-        lines.append(line(prep_id, 0, "obj-gen"))
-        if key in ("res", "midshift", "sideshift", "gate"):
+        lines.append(line(prep_id, 0, "obj-gen-in", 1))
+        if key in ("res", "midshift", "sideshift", "gate", "mix"):
             # the display holds the Lock / cutoff-bar state, so it needs these values
             boxes.append(newobj(ui_id, f"prepend {ui_msg}", 550, row_y, 120))
             lines.append(line(ctrl_id, 0, ui_id))
@@ -489,6 +515,22 @@ def build():
             lines.append(line("obj-route-viz", rport(route_key), set_id))
             lines.append(line(set_id, 0, ctrl_id))
             lines.append(line("obj-route-viz", rport(route_key), src_id if scale_factor != 1.0 else prep_id))
+
+    # live.thisdevice ready bang -> init_dsp on the display (deferred gen~, after the face can paint).
+    boxes.append(newobj("obj-thisdevice", "live.thisdevice", 420, 200, 100, numinlets=1, numoutlets=2, outlettype=["bang", "int"]))
+    boxes.append(message("obj-msg-init-dsp", "init_dsp", 420, 230, 70))
+    lines += [
+        line("obj-thisdevice", 0, "obj-msg-init-dsp"),
+        line("obj-msg-init-dsp", 0, "obj-viz-disp"),
+    ]
+    for bx in boxes:
+        vid = bx["box"].get("id")
+        if vid == "obj-gen-in":
+            bx["box"]["varname"] = "cep_genin"
+        elif vid == "obj-plugin":
+            bx["box"]["varname"] = "cep_plugin"
+        elif vid == "obj-plugout":
+            bx["box"]["varname"] = "cep_plugout"
 
     # Background panel MUST be last in boxes and have "background": 1
 

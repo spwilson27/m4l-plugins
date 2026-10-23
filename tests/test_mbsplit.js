@@ -188,6 +188,14 @@ const cfg = require(CONFIG_PATH);
             `8192-FFT harmonic #${h} (${harmHz} Hz) must stand > 25 dB above midpoint trough (${troughHz} Hz): peak=${peakDb.toFixed(1)} dB, trough=${troughDb.toFixed(1)} dB`
         );
     }
+    cfg.ensureSpecColumnBins(sr, cfg.MBSPLIT_SPEC_COLS);
+    for (let c = 0; c < cfg.MBSPLIT_SPEC_COLS; c += 17) {
+        const fLo = cfg.normToFreq(c / cfg.MBSPLIT_SPEC_COLS);
+        const fHi = cfg.normToFreq((c + 1) / cfg.MBSPLIT_SPEC_COLS);
+        const viaPixel = cfg.sampleFft8192DbForPixel(fLo, fHi, dbBins, sr);
+        const viaCol = cfg.sampleFft8192DbForColumn(c, dbBins, sr);
+        assert.ok(Math.abs(viaPixel - viaCol) < 1e-6, `column ${c} bin table must match the per-pixel sampler`);
+    }
 }
 
 // =========================================================================
@@ -233,6 +241,18 @@ const exprAt = gen.indexOf("\nsr = max(samplerate, 1.0);");
 assert.ok(fnAt >= 0 && fnAt < bufAt, "Helper functions must precede Buffer in GenExpr");
 assert.ok(bufAt < paramAt && paramAt < histAt && histAt < exprAt, "GenExpr must follow Buffer -> Param -> History -> expressions order");
 assert.ok(gen.includes("poke(scope, monoIn, 32.0 + ringPos"), "GenExpr must write monoIn into 8192-sample circular ring buffer");
+assert.ok(gen.includes("poke(scope, scopeBeat, 23, 0, 0);"), "GenExpr must publish the telemetry beat at scope[23]");
+{
+    // The counter itself is unconditional. The poke sits in the every-64-samples block, which must
+    // not be nested inside silence sleep, or a silent track would never report DSP ready.
+    const tickAt = gen.indexOf("scopeCnt = scopeCnt + 1.0;");
+    let depth = 0;
+    for (let i = 0; i < tickAt; i++) {
+        if (gen[i] === "{") depth++;
+        else if (gen[i] === "}") depth--;
+    }
+    assert.strictEqual(depth, 0, "scope beat must advance outside the silence-sleep block so a silent track still reports DSP ready");
+}
 
 // =========================================================================
 // 5. AMXD BINARY HEADER, UI 2 LAYOUT, REMOVED BUTTONS & ZERO WIDGET OVERLAP

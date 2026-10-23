@@ -545,6 +545,60 @@ function ensureGroups() {
   return groupCache;
 }
 
+// k-NN segments and per-colour dot coordinates. Rebuilt only when the group cache, selection, or neighbour list changes,
+// so a playhead redraw does not reclip lines or rebucket dots.
+/** @type {{key: string, segs: number[], dimDots: number[], bucketKeys: number[], buckets: Map<number, number[]>}} */
+let mapDrawCache = { key: "", segs: [], dimDots: [], bucketKeys: [], buckets: new Map() };
+
+function mapDrawKey(gc) {
+  const nbr = (selectedMeta && selectedMeta.neighbors) || [];
+  let nkey = selectedIndex + ":" + (selectedMeta ? selectedMeta.nbrFor : -1) + ":";
+  for (let i = 0; i < nbr.length; i++) nkey += nbr[i] + ",";
+  return gc.key + "|" + nkey;
+}
+
+/** @param {ReturnType<typeof ensureGroups>} gc */
+function ensureMapDrawCache(lay, gc) {
+  const key = mapDrawKey(gc);
+  if (key === mapDrawCache.key) return mapDrawCache;
+  const nbr = (selectedMeta && selectedMeta.neighbors) || [];
+  /** @type {number[]} */
+  const segs = [];
+  if (selectedMeta && selectedMeta.nbrFor === selectedIndex && selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
+    const [sx, sy] = dotPosOf(selectedIndex, lay);
+    for (let i = 0; i < nbr.length; i++) {
+      const nIdx = nbr[i];
+      if (nIdx >= 0 && nIdx < points.length && isPointVisible(points[nIdx])) {
+        const pos = dotPosOf(nIdx, lay);
+        const seg = clipSegmentToPlot(sx, sy, pos[0], pos[1], lay);
+        if (seg) segs.push(seg[0], seg[1], seg[2], seg[3]);
+      }
+    }
+  }
+  const nbrGroups = new Set();
+  for (let i = 0; i < nbr.length; i++) {
+    const n = nbr[i];
+    if (n >= 0 && n < gc.groupOf.length && gc.groupOf[n] >= 0) nbrGroups.add(gc.groupOf[n]);
+  }
+  const ptRadius = mapDotRadius();
+  /** @type {number[]} */
+  const dimDots = [];
+  /** @type {Map<number, number[]>} */
+  const buckets = new Map();
+  /** @type {number[]} */
+  const bucketKeys = [];
+  for (let gi = 0; gi < gc.groups.length; gi++) {
+    const g = gc.groups[gi];
+    if (!g.vis) { dimDots.push(g.x, g.y); continue; }
+    const cat = points[g.leader].catIdx;
+    let b = buckets.get(cat);
+    if (!b) { b = []; buckets.set(cat, b); bucketKeys.push(cat); }
+    b.push(g.x, g.y, nbrGroups.has(gi) ? ptRadius + 0.5 : ptRadius);
+  }
+  mapDrawCache = { key, segs, dimDots, bucketKeys, buckets };
+  return mapDrawCache;
+}
+
 /** Screen position of the dot that represents point `idx` (its group's dot; the point's own position when ungrouped / culled). */
 function dotPosOf(idx, lay) {
   const gc = ensureGroups();
@@ -1101,6 +1155,21 @@ let playDoneAfterMs = -1; // test_report: ms from the audition start to the end 
 /** Ignores a done-bang this soon after an audition started (the halt bang of the file it replaced). */
 const PLAY_DONE_GUARD_MS = 150;
 
+const WAVE_X = 122;
+
+function waveformSpan(lay) {
+  const waveX = WAVE_X;
+  const waveW = lay.mapW - waveX - 5;
+  return { waveX, waveW };
+}
+
+/** Nearest pixel column of the waveform playhead, or -1 when the line is hidden. */
+function playheadPixelCol(frac) {
+  if (!(frac >= 0 && frac <= 1)) return -1;
+  const span = waveformSpan(getLayout());
+  return Math.round(span.waveX + frac * span.waveW);
+}
+
 /** play_pos <ms>: the playing file's position, from snapshot~. @param {any} ms */
 function play_pos(ms) {
   if (!playActive || !playMap) { playPosIdle++; return; }
@@ -1113,10 +1182,10 @@ function play_pos(ms) {
     finishPlayback();
     return;
   }
-  if (Math.abs(f - playheadPos) >= 0.0004) {
-    playheadPos = f;
-    mgraphics.redraw();
-  }
+  const prevCol = playheadPixelCol(playheadPos);
+  const nextCol = playheadPixelCol(f);
+  playheadPos = f;
+  if (nextCol !== prevCol) mgraphics.redraw();
 }
 
 /** Playback ended by itself (file end, Trim/Dec cut): the line stays where it stopped. */
@@ -2568,8 +2637,9 @@ function paint() {
 
   // Waveform Viewer with Scanning Playhead Line (x = 122..mapW-5)
   const peaks = selectedMeta.peaks || [];
-  const waveX = 122;
-  const waveW = mapW - waveX - 5;
+  const waveGeom = waveformSpan(lay);
+  const waveX = waveGeom.waveX;
+  const waveW = waveGeom.waveW;
   xoSrc(0.04, 0.05, 0.07, 1.0);
   mgraphics.rectangle_rounded(waveX - 2, 2, waveW + 4, topBarH - 4, 2, 2);
   mgraphics.fill();
@@ -2639,21 +2709,17 @@ function paint() {
   mgraphics.arc(cx, cy, Math.min(plotW, plotH) * 0.44, 0, Math.PI * 2);
   mgraphics.stroke();
 
-  // 4. Draw k-NN neighbor constellation lines from selected point
-  const nbrSet = new Set(selectedMeta.neighbors || []);
-  if (selectedMeta.nbrFor === selectedIndex && selectedIndex >= 0 && selectedIndex < points.length && isPointVisible(points[selectedIndex])) {
-    const [sx, sy] = dotPosOf(selectedIndex, lay); // a grouped member is drawn at its group's dot
+  // 4. Draw k-NN neighbor constellation lines from selected point (segments cached with the dot buckets)
+  const gcEarly = ensureGroups();
+  const draw = ensureMapDrawCache(lay, gcEarly);
+  if (draw.segs.length) {
     xoSrc(0.22, 0.74, 0.97, 0.35);
     mgraphics.set_line_width(1.0);
-    for (const nIdx of nbrSet) {
-      if (nIdx >= 0 && nIdx < points.length && isPointVisible(points[nIdx])) {
-        const [nx, ny] = dotPosOf(nIdx, lay);
-        const seg = clipSegmentToPlot(sx, sy, nx, ny, lay);
-        if (!seg) continue;
-        mgraphics.move_to(seg[0], seg[1]);
-        mgraphics.line_to(seg[2], seg[3]);
-        mgraphics.stroke();
-      }
+    const segs = draw.segs;
+    for (let si = 0; si < segs.length; si += 4) {
+      mgraphics.move_to(segs[si], segs[si + 1]);
+      mgraphics.line_to(segs[si + 2], segs[si + 3]);
+      mgraphics.stroke();
     }
   }
 
@@ -2672,34 +2738,18 @@ function paint() {
   // that member's category colour (stable, no per-paint counting). A merged dot looks exactly like a single one (user
   // request: a ring on groups made dense areas look odd).
   const ptRadius = mapDotRadius();
-  const gc = ensureGroups();
-  const nbrGroups = new Set();
-  for (const n of nbrSet) if (n >= 0 && n < gc.groupOf.length && gc.groupOf[n] >= 0) nbrGroups.add(gc.groupOf[n]);
-  // One path and one fill per colour (Options > Map Samples allows up to 5000 points: a fill per dot would be a draw call each).
-  /** @type {Map<number, number[]>} */
-  const dotBuckets = new Map();
-  /** @type {number[]} */
-  const dimDots = [];
-  const bucketKeys = [];
-  for (let gi = 0; gi < gc.groups.length; gi++) {
-    const g = gc.groups[gi];
-    if (!g.vis) { dimDots.push(g.x, g.y); continue; }
-    const key = points[g.leader].catIdx;
-    let b = dotBuckets.get(key);
-    if (!b) { b = []; dotBuckets.set(key, b); bucketKeys.push(key); }
-    b.push(g.x, g.y, nbrGroups.has(gi) ? ptRadius + 0.5 : ptRadius);
-  }
+  const gc = gcEarly;
   lastDrawnDots = gc.groups.length;
-  if (dimDots.length) {
+  if (draw.dimDots.length) {
     xoSrc(0.25, 0.30, 0.38, 0.22);
-    for (let k = 0; k < dimDots.length; k += 2) {
-      mgraphics.move_to(dimDots[k] + 1.2, dimDots[k + 1]);
-      mgraphics.arc(dimDots[k], dimDots[k + 1], 1.2, 0, Math.PI * 2);
+    for (let k = 0; k < draw.dimDots.length; k += 2) {
+      mgraphics.move_to(draw.dimDots[k] + 1.2, draw.dimDots[k + 1]);
+      mgraphics.arc(draw.dimDots[k], draw.dimDots[k + 1], 1.2, 0, Math.PI * 2);
     }
     mgraphics.fill();
   }
-  for (const key of bucketKeys) {
-    const b = /** @type {number[]} */ (dotBuckets.get(key));
+  for (const key of draw.bucketKeys) {
+    const b = /** @type {number[]} */ (draw.buckets.get(key));
     const col = getCategoryColor(key);
     xoSrcRaw(col[0], col[1], col[2], 0.92);
     for (let k = 0; k < b.length; k += 3) {

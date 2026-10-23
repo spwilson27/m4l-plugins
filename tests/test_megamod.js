@@ -90,10 +90,10 @@ for (const v of variants) {
     for (const n of ["---megamodcfg @samps 512", "---megamodmseg @samps 16384", "---megamodsteps @samps 512", "---megamodscope @samps 640", "---mmcurve @samps 65536", "---megamodroute @samps 1048", "---megamodint @samps 512", "---megamodicurve @samps 16384"]) {
         ok(boxes.some((b) => b.text === `buffer~ ${n}`), `${v}: buffer ${n}`);
     }
-    // wiring: plugin~ -> plugout~ pass-through, width route, plugsync~ params
+    // wiring: no plugin~ -> plugout~ until the deferred DSP is ready (silence while it loads); width route; plugsync~ params
     const lines = p.lines.map((l) => l.patchline);
     const has = (s, so, d, di) => lines.some((l) => l.source[0] === s && l.source[1] === so && l.destination[0] === d && l.destination[1] === di);
-    ok(has("obj-plugin", 0, "obj-plugout", 0) && has("obj-plugin", 1, "obj-plugout", 1), `${v}: zero-latency pass-through`);
+    ok(!has("obj-plugin", 0, "obj-plugout", 0) && !has("obj-plugin", 1, "obj-plugout", 1), `${v}: silent until the engine is ready (no saved plugin~ -> plugout~ cord)`);
     ok(has("obj-route", 0, "obj-prep-setwidth", 0) && has("obj-prep-setwidth", 0, "obj-thisdevice", 0), `${v}: width -> live.thisdevice setwidth`);
     ok(has("obj-thisdevice", 0, "obj-msg-init-lom", 0), `${v}: live.thisdevice -> init_lom (not loadbang)`);
     ok(has("obj-sync", 6, "obj-ppq-prep", 0) && has("obj-ppq-prep", 0, "obj-genin", 1), `${v}: plugsync~ ppq -> engine hub`);
@@ -742,7 +742,7 @@ function checkPool(v, p, boxes, byId, lines) {
     eq(C.smoothText(50), "50 ms", "smoothing text");
     // engine: Param ratemul used in every rate path
     ok(/Param ratemul\(1\);/.test(GEN), "engine has Param ratemul (default 1)");
-    ok(GEN.includes("accFree = accFree + rate * rmul / sr;"), "free-running phase increment uses ratemul");
+    ok(GEN.includes("poke(ck, rate * rmul / sr, sb + 19);") && GEN.includes("accFree = accFree + peek(ck, sb + 19);"), "free-running phase increment uses the cached ratemul step");
     ok(GEN.includes("(beat - anchored) / divBeats * rmul + syncOff"), "synced phase uses ratemul with a continuity offset");
     ok(GEN.includes("syncOff = syncOff + (beat - anchored) / divBeats * (prevMul - rmul);"), "ratemul change keeps the synced phase continuous");
     ok(/History prevMul\(1\);/.test(GEN) && GEN.includes("prevMul = rmul;"), "previous multiplier tracked");
@@ -3059,8 +3059,16 @@ function p0Width() { return 588; }
             let worst = 0, stagesOk = true;
             for (const sc of scen) {
                 const ref = C.adsrInit();
+                const aAtkInc = 1 / Math.max(sc.p.attack * sr / 1000, 1);
+                const aDecInc = 1 / Math.max(sc.p.decay * sr / 1000, 1);
+                const aRelInc = 1 / Math.max(sc.p.release * sr / 1000, 1);
+                const ck = new Float64Array(32);
+                ck[7] = Math.exp(-5 * aDecInc);
+                ck[8] = Math.exp(-5 * aRelInc);
                 const S = { aTrig: 0, aOff: 0, aVel: 1, aLvl: 0, aPeak: 1, aStage: 0, aSeg: 0, aProg: 0, aTgt: 0, aSus: sc.p.sustain, aAtk: sc.p.attack, aDec: sc.p.decay, aRel: sc.p.release,
-                    retrigOn: sc.p.retrig, oneshot: sc.p.oneshot, sr, max: Math.max, clip: (x, lo, hi) => Math.min(Math.max(x, lo), hi), pow: Math.pow, exp: Math.exp };
+                    aAtkInc, aDecInc, aRelInc, aEntered: 0, aRun: 0, ctlTick: 0, ck, sb: 0,
+                    retrigOn: sc.p.retrig, oneshot: sc.p.oneshot, sr, max: Math.max, clip: (x, lo, hi) => Math.min(Math.max(x, lo), hi), pow: Math.pow, exp: Math.exp,
+                    peek: (a, i) => a[i], poke: (a, v, i) => { a[i] = v; } };
                 for (let i = 0; i < sc.n; i++) {
                     const e = sc.evs[i];
                     S.aTrig = e === "t" ? 1 : 0; S.aOff = e === "o" ? 1 : 0; S.aVel = sc.vel === undefined ? 1 : sc.vel;
@@ -3149,6 +3157,11 @@ function p0Width() { return 588; }
     ok(g.includes("if (sr != cSr) {") && g.includes("fastRel = cFastRel;"), "the ADSR detector coefficients are recomputed only when the sample rate changes");
     ok(/if \(shape < 0\.5 \|\| shape > 4\.5\) \{\s*r = 0\.5 \+ 0\.5 \* sin\(twopi \* ph\);/.test(g), "the LFO sine is evaluated only for the sine shape");
     ok(g.includes("if (slwMs >= 0.05) {"), "the XY / Buttons slew exponential is evaluated only with a slew");
+    ok(g.includes("Data ck(512);") && g.includes("ctlTick = (sampleCount - 32 * floor(sampleCount / 32) < 0.5) ? 1 : 0;"), "per-slot coefficients live in Data ck and resync on a 32-sample control tick");
+    ok(g.includes("Data rk(512);") && g.includes("log(max(draw, dlo) / dlo)") && g.includes("dlo * exp(nr * log(dhi / dlo))"), "self-mod log/exp range math is cached per route and recomputed when its inputs change");
+    ok(GEN.includes("enabled < 0.5") && /active = \(typ > 0\.5 && peek\(cm, cb \+ 1\) > 0\.5\)/.test(g), "a disabled slot (enabled < 0.5) skips every modulator and outputs 0");
+    ok(g.includes("peek(ck, sb + 19)") && g.includes("rate * rmul / sr"), "the free-running phase increment is cached");
+    ok(g.includes("exp(-5 * aDecInc)") && g.includes("exp(-5 * aProg)"), "ADSR stage steps are cached; the closed form resyncs on the control tick");
     ok(!/hash01\(/.test(GEN.slice(GEN.indexOf("// 4. Evaluate the slots")).replace(/\/\/.*$/gm, "")), "no helper-function call to hash01 in the slot loop (the Random cache inlines it; a call inside those nested if blocks broke the gen compile in Max 9: see section 21)");
     // the Random hash cache, run as JS against the plain hash over random (index, seed) sequences: exactly equal
     {
@@ -3184,6 +3197,8 @@ function p0Width() { return 588; }
         ok(!/else if \(\s*(peek|poke)\(/.test(R) && !/else if \(\s*(peek|poke)\(/.test(GEN), "no `else if (peek(...))` in the engine or the router (it silently broke the router's gen compile in Max 9: use a nested if on a variable)");
         ok(R.includes("if (awake < 0.5) {") && /poke\(ys, 0, j\);/.test(R) && /poke\(yo, 0, j\);/.test(R), "a router that goes to sleep clears its smoothing and output state once");
         ok(R.indexOf("if (awake > 0.5) {") > R.indexOf("poke(route, rbase + 1"), "the wake scan and the heartbeat run before the slot loop, every 32 samples, awake or not");
+        const selAt = R.indexOf("if (sel > 0.5) {");
+        ok(R.includes("sel <= 0") && selAt > 0 && R.indexOf("peek(curve, kk *") > selAt && R.indexOf("} else {", selAt) > R.indexOf("peek(curve, kk *"), "an unmapped slot (sel <= 0) skips the curve table and outputs 0");
     }
 }
 
@@ -3212,6 +3227,7 @@ function p0Width() { return 588; }
         p.getnamed = (n) => (named[n] !== undefined ? named[n] : oldGet(n));
         p.newdefault = (x, y, cls, ...args) => { const o = mk("new" + created.length, cls); o.args = args; created.push(o); return o; };
         p.connect = (a, ao, b, bi) => { cords.push([a.name, ao, b.name, bi]); };
+        p.disconnect = (a, ao, b, bi) => { const i = cords.findIndex((c) => c[0] === a.name && c[1] === ao && c[2] === b.name && c[3] === bi); if (i >= 0) cords.splice(i, 1); };
         p.remove = (o) => { removed.push(o.name); if (o._vn) delete named[o._vn]; };
         const run = (c) => vm.runInContext(c, ctx);
         // outlets: record gen messages
@@ -3301,7 +3317,7 @@ function p0Width() { return 588; }
             }
         }
         ok(!d.sets.length, "nothing is hot-loaded before every shell is wired");
-        ok(!d.cords.some((c) => c[2] === "mm_plugout" || c[0] === "mm_plugout"), "plugin~ -> plugout~ is never touched (audio passes throughout)");
+        ok(!d.cords.some((c) => c[2] === "mm_plugout" || c[0] === "mm_plugout"), "plugin~ is not connected to plugout~ while the graph is built (silence until the engine is ready)");
         ok(d.removed.length === 0, "no object is removed while building");
         d.runTasks(1); // hot-load the engine
         eq(d.sets.length, 1, "the engine is hot-loaded (setattr gen)");
@@ -3320,6 +3336,7 @@ function p0Width() { return 588; }
         ok(d.gen().some((m) => m[0] === "ratemul" && m[1] === 2), "the held rate multiplier is re-sent while confirming");
         for (let i = 0; i < 4; i++) d.advance(1);
         ok(d.run("MM.dspInfo().ready") === true, "ready once the engine counter and every router heartbeat move and echo 32 r + 1");
+        ok(d.cords.filter((c) => c[0] === "mm_plugin" && c[2] === "mm_plugout").length === 2, "once the engine is ready, plugin~ -> plugout~ is connected (both channels)");
         ok(d.run("MM.dspInfo().flushes") >= 1, "the queued writes were flushed on the transition");
         const tr = shared["megamod_load_trace"] ? shared["megamod_load_trace"].text : "";
         ok(/dsp-start/.test(tr) && /engine-wired/.test(tr) && /routers-wired/.test(tr) && /engine-loaded/.test(tr) && /dsp-ready/.test(tr), "the load trace has every step: " + tr.split("\n").map((l) => l.split(" ")[0]).join(","));
@@ -3378,6 +3395,7 @@ function p0Width() { return 588; }
         ok(d.run("MM.dspInfo().ready"), "built");
         d.ctx.dsp_restart();
         ok(!d.run("MM.dspInfo().ready") && d.removed.length === 9, "dsp_restart removes the graph and marks the DSP down");
+        ok(!d.cords.some((c) => c[2] === "mm_plugout"), "dsp_restart drops the pass-through, so the rebuild is silent");
         d.e.log.outlets.length = 0;
         d.run("MM.setSettings({ rateMul: 4 })");
         eq(d.gen().length, 0, "...writes made meanwhile are queued");
