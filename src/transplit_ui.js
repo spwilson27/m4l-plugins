@@ -51,6 +51,7 @@ var tsBuf = null;
 var tsOwnBuf = null;
 var tsTask = null;
 var tsLastFrame = -1;
+var tsIdleDrawn = false;
 var tsDrag = null;
 var tsLink = null;
 var tsInfo = { instanceId: "", isInRack: false, chainIndex: 0, chainCount: 0, peers: 1, linked: false, autoChannel: -1 };
@@ -68,10 +69,11 @@ var tsLastSel = -1;
 
 // ---------------------------------------------------------------- state in
 function tsSetVal(key, v) {
+    var changed = tsVals[key] !== v;
     tsVals[key] = v;
     if (key === "output") tsEmitSel();
     if (tsLink && TS_LINKED_KEYS.indexOf(key) >= 0) tsLink.notify(key, v);
-    mgraphics.redraw();
+    if (changed) mgraphics.redraw();
 }
 
 function set_ttype(v) { tsSetVal("ttype", Number(v)); }
@@ -117,7 +119,7 @@ function init_link() {
         },
         onInfo: function (info) {
             tsInfo = info;
-            ssDspDry(!info.isInRack);
+            ssDspDry(0);
             tsEmitSel();
             mgraphics.redraw();
         }
@@ -215,6 +217,10 @@ function tsPoll() {
         var frame = h[0];
         var aw = h[3];
         if (frame === tsLastFrame && aw === tsScalars.awake) return;
+        if (aw < 0.5 && tsScalars.awake < 0.5 && tsIdleDrawn) {
+            tsLastFrame = frame;
+            return;
+        }
         var d = tsBuf.peek(1, 0, TS_SCOPE_SAMPS);
         if (!d || d.length < TS_SC_WAVE + 4) return;
         // new waveform ring entries since the last poll (the ring holds TS_WAVE_FRAMES frames)
@@ -243,6 +249,7 @@ function tsPoll() {
         tsScalars.level = d[TS_SC_LEVEL];
         tsScalars.mean = d[TS_SC_TRMEAN];
         tsPushSono();
+        tsIdleDrawn = aw < 0.5;
         mgraphics.redraw();
     } catch (err) {
         tsBuf = null;
@@ -286,8 +293,9 @@ function tsAmp(v) {
     return t < 0 ? 0 : (t > 1 ? 1 : t);
 }
 
+var TS_LOG_SPAN = Math.log(TS_FMAX / TS_FMIN);
 function tsFreqX(f) {
-    var t = Math.log(f / TS_FMIN) / Math.log(TS_FMAX / TS_FMIN);
+    var t = Math.log(f / TS_FMIN) / TS_LOG_SPAN;
     return TS_PLOT.x + t * TS_PLOT.w;
 }
 

@@ -93,6 +93,10 @@ hs_prep(ms, hsd, hst, hcf, n, sr, flo, fhi, tl) {
 	df = sr / n;
 	dbmx = -200;
 	lvl = -200;
+	inv45 = 1 / 45;
+	inv9 = 1 / 9;
+	invFhi = 1 / fhi;
+	attK = -4.342944819032518;
 	// the tilt weight (hcf 0) and the cut-filter attenuation (hcf 1) of every bin depend only on n, sr, Low-cut, High-cut and Tilt: they are
 	// rebuilt only when one of those changed since the last hop (hst 25..29 hold the values they were built for, 0 after hs_reset), which
 	// removes three of the four log() per bin from every hop of a steady device
@@ -101,9 +105,9 @@ hs_prep(ms, hsd, hst, hcf, n, sr, flo, fhi, tl) {
 		for (k = 0; k <= half; k += 1) {
 			f = max(k, 0.5) * df;
 			ar = flo / f;
-			lr = f / fhi;
+			lr = f * invFhi;
 			hcf.poke(tl * log(f * 0.001) * 0.4342944819032518, k, 0);
-			hcf.poke(-4.342944819032518 * (log(1 + ar * ar * ar * ar) + log(1 + lr * lr * lr * lr)), k, 1);
+			hcf.poke(attK * (log(1 + ar * ar * ar * ar) + log(1 + lr * lr * lr * lr)), k, 1);
 		}
 		hst.poke(n, 25);
 		hst.poke(sr, 26);
@@ -125,7 +129,7 @@ hs_prep(ms, hsd, hst, hcf, n, sr, flo, fhi, tl) {
 		}
 	}
 	for (k = 0; k <= half; k += 1) {
-		hsd.poke(clip((hsd.peek(k, 4) - (dbmx - 45)) / 45, 0, 1), k, 5);
+		hsd.poke(clip((hsd.peek(k, 4) - (dbmx - 45)) * inv45, 0, 1), k, 5);
 	}
 	hsd.poke(0, 0, 5);
 	hsd.poke(0, half, 5);
@@ -141,7 +145,7 @@ hs_prep(ms, hsd, hst, hcf, n, sr, flo, fhi, tl) {
 		hsd.poke(hsd.peek(k, 5) - (hsd.peek(a1, 9) - pre) / (a1 - a0 + 1), k, 8);
 	}
 	for (k = 0; k <= half; k += 1) {
-		hsd.poke(clip((hsd.peek(k, 7) + 12) / 9, 0, 1), k, 9);
+		hsd.poke(clip((hsd.peek(k, 7) + 12) * inv9, 0, 1), k, 9);
 	}
 	hst.poke(dbmx, 8);
 	hst.poke(lvl, 9);
@@ -161,6 +165,8 @@ hs_prep(ms, hsd, hst, hcf, n, sr, flo, fhi, tl) {
 hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
 	half = n * 0.5;
 	df = sr / n;
+	invDf = 1 / df;
+	twoPiDf = 6.283185307179586 * df;
 	ftop = sr * 0.45;
 	for (i = 0; i < 710; i += 1) {
 		sal.poke(0, i, 0);
@@ -188,17 +194,18 @@ hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
 	}
 	cosOk = (flo < fhi && kst >= 0 && sw >= 8) ? 1 : 0;
 	sq = sqrt(sw);
+	angBase = 6.283185307179586 * kst * df;
 	// ripple correlation r of the detrended spectrum (hsd 8, weights hsd 9) with cos(2 pi f / S), bins kst..kend (cos by recurrence),
 	// three sub-offsets of every spacing S = 19.4 * 2^(i / 64) with 2.2 <= S / df < 4.5; ch 2 = max r, ch 3 = max -r over the offsets
 	for (idx = 0; idx < 706; idx += 1) {
 		ss = 19.4 * pow(2, idx / 64);
-		pers = ss / df;
+		pers = ss * invDf;
 		doit = (cosOk > 0.5 && pers >= 2.2 && pers < 4.5) ? 1 : 0;
 		if (doit > 0.5) {
 			for (o = 0; o < 3; o += 1) {
 				sq1 = ss * (1 + (o - 1) * 0.0038);
-				da = 6.283185307179586 * df / sq1;
-				ang = 6.283185307179586 * kst * df / sq1;
+				da = twoPiDf / sq1;
+				ang = angBase / sq1;
 				cc = cos(ang);
 				sn = sin(ang);
 				cd = cos(da);
@@ -225,8 +232,8 @@ hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
 	for (i = 0; i < 642; i += 1) {
 		g = 19.4 * pow(2, i / 64);
 		act = (flo < fhi && g >= gmin && g <= fhi * 1.4142 && g <= ftop) ? 1 : 0;
-		perf = g / df;
-		pero = 2 * g / df;
+		perf = g * invDf;
+		pero = 2 * g * invDf;
 		svf = 0;
 		svo = 0;
 		h0 = max(1, 0 - floor(0 - 0.51 * flo / g));
@@ -241,20 +248,20 @@ hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
 			for (j = 0; j < 10; j += 1) {
 				hh = h0 + j;
 				fp = hh * g;
-				kc = clip(floor(fp / df + 0.5), 1, half - 1);
+				kc = clip(floor(fp * invDf + 0.5), 1, half - 1);
 				bwp = (pvOn > 0.5 && fp <= ftop) ? hsd.peek(kc, 9) : 0;
 				if (bwp > 0) {
 					pk = max(hsd.peek(kc - 1, 5), max(hsd.peek(kc, 5), hsd.peek(kc + 1, 5)));
-					kv = clip(floor((hh - 0.5) * g / df + 0.5), 1, half - 1);
-					ku = clip(floor((hh + 0.5) * g / df + 0.5), 1, half - 1);
+					kv = clip(floor((hh - 0.5) * g * invDf + 0.5), 1, half - 1);
+					ku = clip(floor((hh + 0.5) * g * invDf + 0.5), 1, half - 1);
 					term = max(pk - max(hsd.peek(kv, 5), hsd.peek(ku, 5)), 0);
 					w = bwp / (1 + 0.12 * j);
 					ssum += w * term;
 					wt += w;
 					cn += 1;
 					isod = (j <= 6 && (hh - 2 * floor(hh / 2)) > 0.5) ? 1 : 0;
-					kv2 = clip(floor((fp - vodd) / df + 0.5), 1, half - 1);
-					ku2 = clip(floor((fp + vodd) / df + 0.5), 1, half - 1);
+					kv2 = clip(floor((fp - vodd) * invDf + 0.5), 1, half - 1);
+					ku2 = clip(floor((fp + vodd) * invDf + 0.5), 1, half - 1);
 					term2 = max(pk - max(hsd.peek(kv2, 5), hsd.peek(ku2, 5)), 0);
 					osum += isod * w * term2;
 					owt += isod * w;
@@ -288,14 +295,14 @@ hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
 	g0 = fnd > 0.5 ? 19.4 * pow(2, (bi - 1 + dl) / 64) : 0;
 	conf0 = fnd > 0.5 ? sb : 0;
 	flag0 = fnd > 0.5 ? sal.peek(bi, 1) : 0;
-	perw = g0 * (flag0 > 0.5 ? 2 : 1) / df;
+	perw = g0 * (flag0 > 0.5 ? 2 : 1) * invDf;
 	dofine = (fnd > 0.5 && cosOk > 0.5 && perw >= 2.2 && perw < 4.5) ? 1 : 0;
 	s0 = g0 * (flag0 > 0.5 ? 2 : 1);
 	sgn = flag0 > 0.5 ? -1 : 1;
 	for (m = 0; m < 11; m += 1) {
 		sq2 = s0 * (1 + (m - 5) * 0.002);
-		da = 6.283185307179586 * df / sq2;
-		ang = 6.283185307179586 * kst * df / sq2;
+		da = twoPiDf / sq2;
+		ang = angBase / sq2;
 		cc = cos(ang);
 		sn = sin(ang);
 		cd = cos(da);
@@ -327,7 +334,7 @@ hs_sal(hsd, sal, hst, n, sr, flo, fhi) {
 	dl3 = (bm > 0 && bm < 10 && dd3 < -1e-12) ? clip(0.5 * (ra - rb) / dd3, -0.5, 0.5) : 0;
 	g0 = dofine > 0.5 ? s0 * (1 + (bm - 5 + dl3) * 0.002) / (flag0 > 0.5 ? 2 : 1) : g0;
 	conf0 = dofine > 0.5 ? max(conf0, max(0.056 * bvr * sq, 0)) : conf0;
-	flag0 = (flag0 > 0.5 && g0 / df < 4.5) ? 1 : 0;
+	flag0 = (flag0 > 0.5 && g0 * invDf < 4.5) ? 1 : 0;
 	hst.poke(g0, 10);
 	hst.poke(conf0, 11);
 	hst.poke(flag0, 22);
@@ -415,15 +422,19 @@ hs_decide(hst, thr, c0, dec) {
 hs_harm(hsd, hp, hst, n, sr) {
 	half = n * 0.5;
 	df = sr / n;
+	invDf = 1 / df;
 	gs = hst.peek(13);
 	hodd = hst.peek(23);
-	seff = gs * (hodd > 0.5 ? 2 : 1) / df;
+	seff = gs * (hodd > 0.5 ? 2 : 1) * invDf;
 	narrow = (gs > 0 && seff < 4.5) ? 1 : 0;
 	hst.poke(seff, 24);
 	gest = gs;
 	num = 0.5 * gs;
 	den = 0.5;
 	nfd = 0;
+	hs2 = 0.5 * seff * df;
+	fLim = (half - 3) * df;
+	df2 = 2 * df;
 	for (h = 1; h <= 404; h += 1) {
 		fp = h * gest;
 		cen = fp;
@@ -436,20 +447,19 @@ hs_harm(hsd, hp, hst, n, sr) {
 		bv = -200;
 		okp = 0;
 		skip = (hodd > 0.5 && (h - 2 * floor(h / 2)) < 0.5) ? 1 : 0;
-		hs2 = 0.5 * seff * df;
-		if (gs > 0 && fp < (half - 3) * df && skip < 0.5) {
+		if (gs > 0 && fp < fLim && skip < 0.5) {
 			if (narrow > 0.5) {
-				kk = clip(floor(fp / df), 1, half - 2);
+				kk = clip(floor(fp * invDf), 1, half - 2);
 				pkd = max(hsd.peek(kk, 6), hsd.peek(kk + 1, 6));
-				vl3 = hsd.peek(clip(floor((fp - hs2) / df + 0.5), 1, half - 1), 6);
-				vr3 = hsd.peek(clip(floor((fp + hs2) / df + 0.5), 1, half - 1), 6);
+				vl3 = hsd.peek(clip(floor((fp - hs2) * invDf + 0.5), 1, half - 1), 6);
+				vr3 = hsd.peek(clip(floor((fp + hs2) * invDf + 0.5), 1, half - 1), 6);
 				prom = pkd - 0.5 * (vl3 + vr3);
 				prs = prom >= 4 ? 1 : 0;
 			} else {
-				wn = max(2 * df, 0.15 * gest);
+				wn = max(df2, 0.15 * gest);
 				wn = max(df, min(wn, 0.45 * seff * df));
-				k0 = max(floor((fp - wn) / df), 2);
-				k1 = min(floor((fp + wn) / df) + 1, half - 2);
+				k0 = max(floor((fp - wn) * invDf), 2);
+				k1 = min(floor((fp + wn) * invDf) + 1, half - 2);
 				kp = k0;
 				bv = hsd.peek(k0, 6);
 				for (k = k0 + 1; k <= k1; k += 1) {
@@ -464,8 +474,8 @@ hs_harm(hsd, hp, hst, n, sr) {
 				okp = (bv >= pa && bv >= pc && kp > k0 && kp < k1) ? 1 : 0;
 				dd = pa - 2 * bv + pc;
 				dl = dd < -1e-9 ? clip(0.5 * (pa - pc) / dd, -0.5, 0.5) : 0;
-				vl = hsd.peek(clip(floor((fp - hs2) / df + 0.5), 1, half - 1), 6);
-				vr = hsd.peek(clip(floor((fp + hs2) / df + 0.5), 1, half - 1), 6);
+				vl = hsd.peek(clip(floor((fp - hs2) * invDf + 0.5), 1, half - 1), 6);
+				vr = hsd.peek(clip(floor((fp + hs2) * invDf + 0.5), 1, half - 1), 6);
 				prom = okp > 0.5 ? bv - 0.5 * (vl + vr) : 0;
 				cen = okp > 0.5 ? (kp + dl) * df : fp;
 				prs = (okp > 0.5 && prom >= 10) ? 1 : 0;
@@ -520,6 +530,7 @@ hs_post(hst) {
 hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx, flo, fhi) {
 	half = n * 0.5;
 	df = sr / n;
+	invDf = 1 / df;
 	gs = hst.peek(13);
 	gu = gs > 0 ? hst.peek(12) : hst.peek(5);
 	hodd = hst.peek(23);
@@ -531,6 +542,7 @@ hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx, flo, fhi) {
 	rf = clip((seff - 2) / 4, 0, 1);
 	pme = narrow > 0.5 ? pmin * rf : pmin;
 	wd = narrow > 0.5 ? 1 + 5 * rf : 6;
+	invWd = 1 / wd;
 	pat = max(hpat, 1);
 	pr3 = narrow > 0.5 ? 2.5 : 7;
 	hnew = 0;
@@ -551,7 +563,7 @@ hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx, flo, fhi) {
 		cen = hp.peek(h, 0);
 		prom = hp.peek(h, 1);
 		hpn = h - hr + 1;
-		tw = (gs > 0 && hr > 0 && h >= hr && hpn <= hmx && cen > 0) ? hs_sm((prom - pme) / wd) * v : 0;
+		tw = (gs > 0 && hr > 0 && h >= hr && hpn <= hmx && cen > 0) ? hs_sm((prom - pme) * invWd) * v : 0;
 		prev = hp.peek(h, 2);
 		cur = prev + (tw - prev) * (tw > prev ? 0.7 : 0.4);
 		isA = pat < 1.5 ? (hpn < 1.5 ? 1 : 0) : (((hpn - 1) - pat * floor((hpn - 1) / pat)) < 0.5 ? 1 : 0);
@@ -559,18 +571,19 @@ hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx, flo, fhi) {
 		hp.poke(isA > 0.5 ? cur : 0, h, 3);
 		nact += cur > 0.5 ? 1 : 0;
 	}
-	spe = max(gu * (hodd > 0.5 ? 2 : 1) / df, 0.001);
+	spe = max(gu * (hodd > 0.5 ? 2 : 1) * invDf, 0.001);
 	frl = 0.35 + 0.15 * clip((5 - spe) / 2.2, 0, 1);
 	w1c = max(frl * spe, 0.6);
 	w1 = min(0.7 + 1.3 * sens + 0.7 + 0.5 * sens, w1c);
 	w0 = min(0.7 + 1.3 * sens, w1 - 0.3);
+	invLobe = 1 / (w1 - w0);
 	for (k = 0; k <= half; k += 1) {
 		hsd.poke(0, k, 1);
 		hsd.poke(0, k, 2);
 	}
 	for (h = 1; h <= 404; h += 1) {
 		cur2 = hp.peek(h, 2);
-		cb = hp.peek(h, 0) / df;
+		cb = hp.peek(h, 0) * invDf;
 		paint = (cur2 > 0 && cb > 0 && gu > 0) ? 1 : 0;
 		wa = hp.peek(h, 3);
 		wb = cur2 - wa;
@@ -578,7 +591,7 @@ hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx, flo, fhi) {
 		kh = paint > 0.5 ? min(0 - floor(0 - cb - w1), half) : 0;
 		for (k = kl; k <= kh; k += 1) {
 			dist = abs(k - cb);
-			m = dist <= w0 ? 1 : (dist >= w1 ? 0 : 0.5 * (1 + cos(3.141592653589793 * (dist - w0) / (w1 - w0))));
+			m = dist <= w0 ? 1 : (dist >= w1 ? 0 : 0.5 * (1 + cos(3.141592653589793 * (dist - w0) * invLobe)));
 			hsd.poke(max(hsd.peek(k, 1), m * wa), k, 1);
 			hsd.poke(max(hsd.peek(k, 2), m * wb), k, 2);
 		}

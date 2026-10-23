@@ -62,16 +62,18 @@ ls_masks(ms, lsd, n, sr, relm, thi, tlo, khi, klo, riseb, fallb, tlt, age) {
 	lo = min(tlo, thi);
 	kdh = max(khi, 0.01);
 	kdl = max(klo, 0.01);
-	rk = 1 - exp(0 - 1 / clip(riseb, 0.13, 125));
-	fk = 1 - exp(0 - 1 / clip(fallb, 0.13, 125));
+	riseK = 1 - exp(0 - 1 / clip(riseb, 0.13, 125));
+	fallK = 1 - exp(0 - 1 / clip(fallb, 0.13, 125));
+	invKneeHi = 1 / kdh;
+	invKneeLo = 1 / kdl;
 	for (k = 0; k <= half; k += 1) {
 		lev = relm > 0.5 ? lsd.peek(k, 0) - lmax : lsd.peek(k, 0);
 		lev = max(lev, -150);
 		prev = age < 0.5 ? lev : lsd.peek(k, 1);
-		ls = prev + (lev - prev) * (lev > prev ? rk : fk);
+		ls = prev + (lev - prev) * (lev > prev ? riseK : fallK);
 		lsd.poke(ls, k, 1);
-		sh = khi > 0.01 ? ls_sm((ls - (thi - khi * 0.5)) / kdh) : (ls >= thi ? 1 : 0);
-		sl = klo > 0.01 ? ls_sm((ls - (lo - klo * 0.5)) / kdl) : (ls >= lo ? 1 : 0);
+		sh = khi > 0.01 ? ls_sm((ls - (thi - khi * 0.5)) * invKneeHi) : (ls >= thi ? 1 : 0);
+		sl = klo > 0.01 ? ls_sm((ls - (lo - klo * 0.5)) * invKneeLo) : (ls >= lo ? 1 : 0);
 		sh = min(sh, sl);
 		mq = 1 - sl;
 		mm = sl - sh;
