@@ -300,6 +300,70 @@ function evalSegmentT(t, curve, sCurve) {
     }
 }
 
+// One segment's geometry and curve constants. Built once per segment, then every sample on it is a multiply.
+function prepareSegment(p0, p1) {
+    let dx = p1.x - p0.x;
+    let curve = p0.curve || 0.0;
+    let absC = curve < 0.0 ? -curve : curve;
+    return {
+        x0: p0.x,
+        y0: p0.y,
+        y1: p1.y,
+        dy: p1.y - p0.y,
+        invDx: dx > 1e-9 ? 1 / dx : 0,
+        curve: curve,
+        sCurve: p0.sCurve ? 1 : 0,
+        flat: absC < 0.001,
+        pow: absC < 0.001 ? 1.0 : Math.pow(2.0, absC * 3.6)
+    };
+}
+
+function evalPreparedT(t, seg) {
+    if (t <= 0.0) return 0.0;
+    if (t >= 1.0) return 1.0;
+    if (seg.flat) return t;
+    let p = seg.pow;
+    let curve = seg.curve;
+    if (seg.sCurve) {
+        if (t < 0.5) {
+            let u = t * 2.0;
+            let shaped = (curve > 0.0) ? (1.0 - Math.pow(1.0 - u, p)) : Math.pow(u, p);
+            return 0.5 * shaped;
+        }
+        let u2 = (t - 0.5) * 2.0;
+        let shaped2 = (curve > 0.0) ? Math.pow(u2, p) : (1.0 - Math.pow(1.0 - u2, p));
+        return 0.5 + 0.5 * shaped2;
+    }
+    if (curve > 0.0) return 1.0 - Math.pow(1.0 - t, p);
+    return Math.pow(t, p);
+}
+
+function segmentY(nx, seg) {
+    if (seg.invDx === 0) return seg.y1;
+    return seg.y0 + seg.dy * evalPreparedT((nx - seg.x0) * seg.invDx, seg);
+}
+
+// Monotonic walker: segIdx only advances as nx crosses the next point. Do not call it with a decreasing x.
+function makeCurveWalker() {
+    let n = points.length;
+    let segIdx = 0;
+    let seg = n > 1 ? prepareSegment(points[0], points[1]) : null;
+    let x0 = n > 0 ? points[0].x : 0;
+    let y0 = n > 0 ? points[0].y : 0;
+    let xLast = n > 0 ? points[n - 1].x : 1;
+    let yLast = n > 0 ? points[n - 1].y : 0;
+    return function (nx) {
+        if (n === 0) return 0.0;
+        if (nx <= x0) return y0;
+        if (nx >= xLast) return yLast;
+        while (seg && segIdx < n - 2 && nx > points[segIdx + 1].x) {
+            segIdx++;
+            seg = prepareSegment(points[segIdx], points[segIdx + 1]);
+        }
+        return seg ? segmentY(nx, seg) : yLast;
+    };
+}
+
 // Evaluate MSEG Y at normalized X in [0, 1]
 function evalCurveAt(nx) {
     if (points.length === 0) return 0.0;
@@ -308,19 +372,46 @@ function evalCurveAt(nx) {
     if (nx >= last.x) return last.y;
 
     for (let i = 0; i < points.length - 1; i++) {
-        let p0 = points[i];
-        let p1 = points[i + 1];
-        if (nx >= p0.x && nx <= p1.x) {
-            let dx = p1.x - p0.x;
-            if (dx <= 0.00001) {
-                return p1.y;
-            }
-            let t = (nx - p0.x) / dx;
-            let u = evalSegmentT(t, p0.curve || 0.0, p0.sCurve ? 1 : 0);
-            return p0.y + (p1.y - p0.y) * u;
-        }
+        if (nx <= points[i + 1].x) return segmentY(nx, prepareSegment(points[i], points[i + 1]));
     }
     return last.y;
+}
+
+// Screen-space curve polyline. Reused by paint while the playhead moves and the shape is unchanged.
+/** @type {{ stamp: string, steps: number, sx: Float64Array | null, sy: Float64Array | null }} */
+var curvePoly = { stamp: "", steps: 0, sx: null, sy: null };
+
+function curveStamp(lay, steps) {
+    let s = lay.w + "x" + lay.h + ":" + lay.plotX + ":" + lay.plotY + ":" + lay.plotW + ":" + lay.plotH + ":" + steps + ":" + loopStart + ":" + loopEnd + ":" + points.length;
+    for (let i = 0; i < points.length; i++) {
+        let p = points[i];
+        s += "|" + p.x + "," + p.y + "," + (p.curve || 0) + "," + (p.sCurve ? 1 : 0);
+    }
+    return s;
+}
+
+function ensureCurvePoly(lay) {
+    let steps = Math.max(120, Math.floor(lay.plotW));
+    let stamp = curveStamp(lay, steps);
+    if (curvePoly.stamp === stamp && curvePoly.sx && curvePoly.sy) return curvePoly;
+    let sx = new Float64Array(steps + 1);
+    let sy = new Float64Array(steps + 1);
+    let yAt = makeCurveWalker();
+    let plotX = lay.plotX;
+    let plotY = lay.plotY;
+    let plotW = lay.plotW;
+    let plotH = lay.plotH;
+    for (let i = 0; i <= steps; i++) {
+        let nx = i / steps;
+        let ny = yAt(nx);
+        sx[i] = plotX + nx * plotW;
+        sy[i] = plotY + (1.0 - ny) * plotH;
+    }
+    curvePoly.stamp = stamp;
+    curvePoly.steps = steps;
+    curvePoly.sx = sx;
+    curvePoly.sy = sy;
+    return curvePoly;
 }
 
 function sortAndSanitizePoints() {
@@ -358,8 +449,9 @@ function updateBufferAndNotify(notify) {
     if (bufObj) {
         let samples = new Array(TABLE_SIZE);
         let denom = TABLE_SIZE - 1;
+        let yAt = makeCurveWalker();
         for (let i = 0; i < TABLE_SIZE; i++) {
-            samples[i] = evalCurveAt(i / denom);
+            samples[i] = yAt(i / denom);
         }
         try {
             bufObj.poke(1, 0, samples);
@@ -594,11 +686,40 @@ function selectAllPoints() {
     mgraphics.redraw();
 }
 
+// First load paints the curve immediately and writes the 4096-sample table on the next scheduler tick.
+// Until that poke the buffer~ is still zeros, so the shaper stays silent while the GUI comes up.
+let initialBufferDone = false;
+let initialBufferTask = null;
+
+function finishInitialBuffer() {
+    initialBufferTask = null;
+    if (!bufName) return;
+    initialBufferDone = true;
+    updateBufferAndNotify(false);
+}
+
+function deferInitialBufferWrite() {
+    if (initialBufferTask) return;
+    if (initialBufferDone) {
+        updateBufferAndNotify(false);
+        return;
+    }
+    sortAndSanitizePoints();
+    mgraphics.redraw();
+    if (typeof Task !== "undefined") {
+        initialBufferTask = new Task(finishInitialBuffer, this);
+        initialBufferTask.schedule(0);
+        return;
+    }
+    initialBufferDone = true;
+    updateBufferAndNotify(false);
+}
+
 // Max Message Handlers
 function loadbang() {
     updateLoopOutput();
     updateRateOutput();
-    updateBufferAndNotify(false);
+    deferInitialBufferWrite();
 }
 
 function setbuffer(name) {
@@ -608,7 +729,7 @@ function setbuffer(name) {
     } catch (e) {
         bufObj = null;
     }
-    updateBufferAndNotify(false);
+    deferInitialBufferWrite();
 }
 
 function setphase(p) {
@@ -2112,14 +2233,16 @@ function paint() {
         mgraphics.stroke();
     }
 
-    // 4. Filled Shaded Area under MSEG Curve
-    let steps = Math.max(120, Math.floor(lay.plotW));
+    // 4. Filled Shaded Area under MSEG Curve (polyline cached across playhead redraws)
+    let poly = ensureCurvePoly(lay);
+    let psx = poly.sx;
+    let psy = poly.sy;
+    let steps = poly.steps;
     mgraphics.move_to(lay.plotX, lay.plotY + lay.plotH);
-    for (let s = 0; s <= steps; s++) {
-        let nx = s / steps;
-        let ny = evalCurveAt(nx);
-        let sc = normToScreen(nx, ny, lay);
-        mgraphics.line_to(sc[0], sc[1]);
+    if (psx && psy) {
+        for (let s = 0; s <= steps; s++) {
+            mgraphics.line_to(psx[s], psy[s]);
+        }
     }
     mgraphics.line_to(lay.plotX + lay.plotW, lay.plotY + lay.plotH);
     mgraphics.close_path();
@@ -2144,15 +2267,14 @@ function paint() {
     mgraphics.arc(phScreen[0], phScreen[1], 2.6, 0, Math.PI * 2);
     mgraphics.fill();
 
-    // 6. Main MSEG Curve Stroke
+    // 6. Main MSEG Curve Stroke (same cached polyline as the fill)
     mgraphics.set_line_width(1.85);
     mgraphics.set_source_rgba(1.0, 0.694, 0.18, 1.0);
-    for (let s = 0; s <= steps; s++) {
-        let nx = s / steps;
-        let ny = evalCurveAt(nx);
-        let sc = normToScreen(nx, ny, lay);
-        if (s === 0) mgraphics.move_to(sc[0], sc[1]);
-        else mgraphics.line_to(sc[0], sc[1]);
+    if (psx && psy) {
+        for (let s = 0; s <= steps; s++) {
+            if (s === 0) mgraphics.move_to(psx[s], psy[s]);
+            else mgraphics.line_to(psx[s], psy[s]);
+        }
     }
     mgraphics.stroke();
 
