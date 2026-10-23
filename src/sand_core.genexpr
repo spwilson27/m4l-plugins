@@ -8,18 +8,16 @@
 //
 // Transcendentals (exp, sin, cos) are cached in History and recomputed only
 // when a slewed parameter or samplerate actually moves. Order, stages, filter
-// mode, placement, and out mode are integer selects: they gate work, they do
-// not enter the cache. L and R stay two separate call sites of channel so p1..p15 and
-// q1..q15 (and each filter / compander / integrator History) stay per channel.
-// A for-loop around one call site would share that History.
+// mode, placement, and out mode are integer selects. L and R stay two separate
+// call sites of channel so p1..p15 and q1..q15 (and each filter / compander /
+// integrator History) stay per channel.
 //
 // Maintenance invariants for future contributors:
 // 1. GenExpr requires every function before Buffer, Param, and assignments.
 // 2. Do not name a variable "e" followed by digits: the lexer reads that as Euler's constant.
 // 3. Keep p1..p15 and q1..q15 unrolled inside channel() so each derivative stage
 //    gets its own independent History state per channel() call site (L/R), and
-//    q1..q15 suppress the sample-0 startup impulse. Stages with ord <= 0 or
-//    ord < k are not stepped (their History stays put until that order is used).
+//    q1..q15 suppress the sample-0 startup impulse.
 // 4. Buffer wave("sandwave") memory map (2 channels, bound via `wave #0-sandwave`):
 //    - frames 0..127:   ch 0 = out1 (L), ch 1 = out2 (R) circular ring buffer
 //    - frames 128..255: ch 0 = mono dry input, ch 1 = mono wet grit
@@ -41,16 +39,20 @@ integ(x, coef) {
 	return clip(ig, -8, 8);
 }
 
-compand(x, maxG, atk, rel, knee, soft01, brick01, mildGain) {
+compand(x, maxG, soft01, brick01) {
 	History en(0);
 	ax = abs(x);
+	soft = clip(soft01, 0, 1);
+	atk = mix(0.15, 0.7, soft);
+	rel = mix(0.98, 0.9997, soft);
 	en = mix(ax, en, (ax > en) ? atk : rel);
+	knee = mix(0.03, 0.45, soft);
 	quiet = knee / max(knee + en, 1e-8);
 	g = 1 + (maxG - 1) * quiet;
 	y = x * g;
 	hard = clip(y, -1.2, 1.2);
-	shaped = mix(hard, tanh(y), soft01);
-	mild = tanh(x * mildGain);
+	shaped = mix(hard, tanh(y), soft);
+	mild = tanh(x * mix(8, 1.5, soft));
 	return mix(shaped, mild, clip(brick01, 0, 1));
 }
 
@@ -74,9 +76,10 @@ limit(x) {
 }
 
 // fpos 0 filters the input, 1 filters the derivative, 2 filters the companded wet.
-// Only the active placement runs filt(), and only derivative / compander stages
-// at or below the current order / stage count are stepped.
-channel(x, ord, stg, maxG, atk, rel, knee, soft01, brick01, mildGain, coef, coefI, ftype, fpos) {
+// Each placement (pre / mid / post) has its own filt() call site so its History stays independent,
+// and only the active placement executes filt(). Each compander stage (c1..c4) has its own call site
+// and only stages <= stg execute compand().
+channel(x, ord, stg, maxG, soft01, brick01, coef, coefI, ftype, fpos) {
 	History p1(0); History q1(0);
 	History p2(0); History q2(0);
 	History p3(0); History q3(0);
@@ -97,123 +100,97 @@ channel(x, ord, stg, maxG, atk, rel, knee, soft01, brick01, mildGain, coef, coef
 	if (preOn > 0.5) {
 		src = filt(x, coef, ftype);
 	}
-	d = src;
+	d0 = src;
 	nrm = 0.5;
-	nxt = d;
+	d1 = 0; d2 = 0; d3 = 0; d4 = 0; d5 = 0;
+	d6 = 0; d7 = 0; d8 = 0; d9 = 0; d10 = 0;
+	d11 = 0; d12 = 0; d13 = 0; d14 = 0; d15 = 0;
 	if (ord > 0.5) {
-		nxt = (q1 == 0) ? 0 : clip((d - p1) * nrm, -8, 8);
-		p1 = d;
-		q1 = 1;
-		d = nxt;
+		d1 = (q1 == 0) ? 0 : clip((d0 - p1) * nrm, -8, 8); p1 = d0; q1 = 1;
 	}
 	if (ord > 1.5) {
-		nxt = (q2 == 0) ? 0 : clip((d - p2) * nrm, -8, 8);
-		p2 = d;
-		q2 = 1;
-		d = nxt;
+		d2 = (q2 == 0) ? 0 : clip((d1 - p2) * nrm, -8, 8); p2 = d1; q2 = 1;
 	}
 	if (ord > 2.5) {
-		nxt = (q3 == 0) ? 0 : clip((d - p3) * nrm, -8, 8);
-		p3 = d;
-		q3 = 1;
-		d = nxt;
+		d3 = (q3 == 0) ? 0 : clip((d2 - p3) * nrm, -8, 8); p3 = d2; q3 = 1;
 	}
 	if (ord > 3.5) {
-		nxt = (q4 == 0) ? 0 : clip((d - p4) * nrm, -8, 8);
-		p4 = d;
-		q4 = 1;
-		d = nxt;
+		d4 = (q4 == 0) ? 0 : clip((d3 - p4) * nrm, -8, 8); p4 = d3; q4 = 1;
 	}
 	if (ord > 4.5) {
-		nxt = (q5 == 0) ? 0 : clip((d - p5) * nrm, -8, 8);
-		p5 = d;
-		q5 = 1;
-		d = nxt;
+		d5 = (q5 == 0) ? 0 : clip((d4 - p5) * nrm, -8, 8); p5 = d4; q5 = 1;
 	}
 	if (ord > 5.5) {
-		nxt = (q6 == 0) ? 0 : clip((d - p6) * nrm, -8, 8);
-		p6 = d;
-		q6 = 1;
-		d = nxt;
+		d6 = (q6 == 0) ? 0 : clip((d5 - p6) * nrm, -8, 8); p6 = d5; q6 = 1;
 	}
 	if (ord > 6.5) {
-		nxt = (q7 == 0) ? 0 : clip((d - p7) * nrm, -8, 8);
-		p7 = d;
-		q7 = 1;
-		d = nxt;
+		d7 = (q7 == 0) ? 0 : clip((d6 - p7) * nrm, -8, 8); p7 = d6; q7 = 1;
 	}
 	if (ord > 7.5) {
-		nxt = (q8 == 0) ? 0 : clip((d - p8) * nrm, -8, 8);
-		p8 = d;
-		q8 = 1;
-		d = nxt;
+		d8 = (q8 == 0) ? 0 : clip((d7 - p8) * nrm, -8, 8); p8 = d7; q8 = 1;
 	}
 	if (ord > 8.5) {
-		nxt = (q9 == 0) ? 0 : clip((d - p9) * nrm, -8, 8);
-		p9 = d;
-		q9 = 1;
-		d = nxt;
+		d9 = (q9 == 0) ? 0 : clip((d8 - p9) * nrm, -8, 8); p9 = d8; q9 = 1;
 	}
 	if (ord > 9.5) {
-		nxt = (q10 == 0) ? 0 : clip((d - p10) * nrm, -8, 8);
-		p10 = d;
-		q10 = 1;
-		d = nxt;
+		d10 = (q10 == 0) ? 0 : clip((d9 - p10) * nrm, -8, 8); p10 = d9; q10 = 1;
 	}
 	if (ord > 10.5) {
-		nxt = (q11 == 0) ? 0 : clip((d - p11) * nrm, -8, 8);
-		p11 = d;
-		q11 = 1;
-		d = nxt;
+		d11 = (q11 == 0) ? 0 : clip((d10 - p11) * nrm, -8, 8); p11 = d10; q11 = 1;
 	}
 	if (ord > 11.5) {
-		nxt = (q12 == 0) ? 0 : clip((d - p12) * nrm, -8, 8);
-		p12 = d;
-		q12 = 1;
-		d = nxt;
+		d12 = (q12 == 0) ? 0 : clip((d11 - p12) * nrm, -8, 8); p12 = d11; q12 = 1;
 	}
 	if (ord > 12.5) {
-		nxt = (q13 == 0) ? 0 : clip((d - p13) * nrm, -8, 8);
-		p13 = d;
-		q13 = 1;
-		d = nxt;
+		d13 = (q13 == 0) ? 0 : clip((d12 - p13) * nrm, -8, 8); p13 = d12; q13 = 1;
 	}
 	if (ord > 13.5) {
-		nxt = (q14 == 0) ? 0 : clip((d - p14) * nrm, -8, 8);
-		p14 = d;
-		q14 = 1;
-		d = nxt;
+		d14 = (q14 == 0) ? 0 : clip((d13 - p14) * nrm, -8, 8); p14 = d13; q14 = 1;
 	}
 	if (ord > 14.5) {
-		nxt = (q15 == 0) ? 0 : clip((d - p15) * nrm, -8, 8);
-		p15 = d;
-		q15 = 1;
-		d = nxt;
+		d15 = (q15 == 0) ? 0 : clip((d14 - p15) * nrm, -8, 8); p15 = d14; q15 = 1;
 	}
-	body = d;
-	if (ord < -0.5) {
-		body = integ(src, coefI);
-	}
+	body = (ord < -0.5) ? integ(src, coefI) : d0;
+	body = (ord > 0.5) ? d1 : body;
+	body = (ord > 1.5) ? d2 : body;
+	body = (ord > 2.5) ? d3 : body;
+	body = (ord > 3.5) ? d4 : body;
+	body = (ord > 4.5) ? d5 : body;
+	body = (ord > 5.5) ? d6 : body;
+	body = (ord > 6.5) ? d7 : body;
+	body = (ord > 7.5) ? d8 : body;
+	body = (ord > 8.5) ? d9 : body;
+	body = (ord > 9.5) ? d10 : body;
+	body = (ord > 10.5) ? d11 : body;
+	body = (ord > 11.5) ? d12 : body;
+	body = (ord > 12.5) ? d13 : body;
+	body = (ord > 13.5) ? d14 : body;
+	body = (ord > 14.5) ? d15 : body;
 	midOn = (fpos > 0.5) ? ((fpos < 1.5) ? 1 : 0) : 0;
 	mid = body;
 	if (midOn > 0.5) {
 		mid = filt(body, coef, ftype);
 	}
-	wet = compand(mid, maxG, atk, rel, knee, soft01, brick01, mildGain);
+	c1 = compand(mid, maxG, soft01, brick01);
+	c2 = c1;
 	if (stg > 1.5) {
-		wet = compand(wet, maxG, atk, rel, knee, soft01, brick01, mildGain);
+		c2 = compand(c1, maxG, soft01, brick01);
 	}
+	c3 = c2;
 	if (stg > 2.5) {
-		wet = compand(wet, maxG, atk, rel, knee, soft01, brick01, mildGain);
+		c3 = compand(c2, maxG, soft01, brick01);
 	}
+	c4 = c3;
 	if (stg > 3.5) {
-		wet = compand(wet, maxG, atk, rel, knee, soft01, brick01, mildGain);
+		c4 = compand(c3, maxG, soft01, brick01);
 	}
+	wet = c4;
 	postOn = (fpos > 1.5) ? 1 : 0;
+	outWet = wet;
 	if (postOn > 0.5) {
-		wet = filt(wet, coef, ftype);
+		outWet = filt(wet, coef, ftype);
 	}
-	return wet;
+	return outWet;
 }
 
 Buffer wave("sandwave");
@@ -234,7 +211,6 @@ History wpos(0);
 History pkIn(0);
 History pkWet(0);
 History pkOut(0);
-// Coefficient cache. coefOk stays 0 until the first sample fills it.
 History coefOk(0);
 History cAmt(-1);
 History cSoft(-1);
@@ -266,44 +242,18 @@ freqN = clip(freqS, 20, 18000);
 typeN = clip(ftype, 0, 2);
 posN = clip(fpos, 0, 2);
 
-// Recompute exp / sin / cos only when a slewed knob or the sample rate moved.
-// Thresholds sit under the slew (a held knob is bit-exact after sample 0, because
-// slew() returns the target on its first sample and stays there).
-refresh = (coefOk < 0.5) ? 1 : 0;
-if (abs(amountS - cAmt) > 0.01) refresh = 1;
-if (abs(softS - cSoft) > 0.01) refresh = 1;
-if (abs(freqS - cFreq) > 0.05) refresh = 1;
-if (abs(mixS - cMix) > 0.01) refresh = 1;
-if (samplerate != cSr) refresh = 1;
-maxG = cMaxG;
-atkC = cAtk;
-relC = cRel;
-kneeC = cKnee;
-mildC = cMild;
-filtC = cFilt;
-integC = cInteg;
-dryG = cDry;
-wetG = cWet;
+refresh = ((coefOk < 0.5) || (amountS != cAmt) || (softS != cSoft) || (freqS != cFreq) || (mixS != cMix) || (samplerate != cSr)) ? 1 : 0;
 if (refresh > 0.5) {
-	integC = exp(-6.28318530718 * 8 / samplerate);
-	filtC = exp(-6.28318530718 * freqN / samplerate);
-	maxG = exp(clip(amt01, 0, 1) * 16.11809565095832);
-	atkC = mix(0.15, 0.7, soft01);
-	relC = mix(0.98, 0.9997, soft01);
-	kneeC = mix(0.03, 0.45, soft01);
-	mildC = mix(8, 1.5, soft01);
+	cInteg = exp(-6.28318530718 * 8 / samplerate);
+	cFilt = exp(-6.28318530718 * freqN / samplerate);
+	cMaxG = exp(clip(amt01, 0, 1) * 16.11809565095832);
+	cAtk = mix(0.15, 0.7, soft01);
+	cRel = mix(0.98, 0.9997, soft01);
+	cKnee = mix(0.03, 0.45, soft01);
+	cMild = mix(8, 1.5, soft01);
 	ang = clip(mixS, 0, 100) / 100 * 1.57079632679;
-	dryG = cos(ang);
-	wetG = sin(ang);
-	cMaxG = maxG;
-	cAtk = atkC;
-	cRel = relC;
-	cKnee = kneeC;
-	cMild = mildC;
-	cFilt = filtC;
-	cInteg = integC;
-	cDry = dryG;
-	cWet = wetG;
+	cDry = cos(ang);
+	cWet = sin(ang);
 	cAmt = amountS;
 	cSoft = softS;
 	cFreq = freqS;
@@ -311,14 +261,22 @@ if (refresh > 0.5) {
 	cSr = samplerate;
 	coefOk = 1;
 }
+maxG = refresh > 0.5 ? exp(clip(amt01, 0, 1) * 16.11809565095832) : cMaxG;
+atkC = refresh > 0.5 ? mix(0.15, 0.7, soft01) : cAtk;
+relC = refresh > 0.5 ? mix(0.98, 0.9997, soft01) : cRel;
+kneeC = refresh > 0.5 ? mix(0.03, 0.45, soft01) : cKnee;
+mildC = refresh > 0.5 ? mix(8, 1.5, soft01) : cMild;
+filtC = refresh > 0.5 ? exp(-6.28318530718 * freqN / samplerate) : cFilt;
+integC = refresh > 0.5 ? exp(-6.28318530718 * 8 / samplerate) : cInteg;
+dryG = refresh > 0.5 ? cos(clip(mixS, 0, 100) / 100 * 1.57079632679) : cDry;
+wetG = refresh > 0.5 ? sin(clip(mixS, 0, 100) / 100 * 1.57079632679) : cWet;
 
-wetL = channel(in1, ordN, stgN, maxG, atkC, relC, kneeC, soft01, brick01, mildC, filtC, integC, typeN, posN);
-wetR = channel(in2, ordN, stgN, maxG, atkC, relC, kneeC, soft01, brick01, mildC, filtC, integC, typeN, posN);
+wetL = channel(in1, ordN, stgN, maxG, soft01, brick01, filtC, integC, typeN, posN);
+wetR = channel(in2, ordN, stgN, maxG, soft01, brick01, filtC, integC, typeN, posN);
 
 mixL = in1 * dryG + wetL * wetG;
 mixR = in2 * dryG + wetR * wetG;
 
-// Limiter History always runs, including when Out is Off or Hard.
 limL = limit(mixL);
 limR = limit(mixR);
 mode = clip(outmode, 0, 2);
@@ -334,7 +292,6 @@ pkIn = max(inAbs, pkIn * 0.996);
 pkWet = max(wetAbs, pkWet * 0.996);
 pkOut = max(outAbs, pkOut * 0.996);
 
-// Unconditional: wpos at frame 259 advances every 32 samples in silence too.
 hop = wrap(hop + 1, 0, 32);
 if (hop == 0) {
 	poke(wave, out1, wpos, 0);

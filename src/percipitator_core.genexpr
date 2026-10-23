@@ -15,8 +15,7 @@
 //   band_track and voice_osc each have one call site, inside `for (b = 0; b < 16; b += 1)`.
 //   Per-band filter and oscillator state lives in Data (a call site's History is shared across
 //   loop iterations). SVF coefficients are cached when samplerate changes. Attack, decay, gate,
-//   tilt, sieve, bend and wet/dry gains update every 32 samples. The scale quantizer runs when a
-//   band crosses zero, every 32 samples, or on the first active sample — not on every sample.
+//   tilt, sieve, bend and wet/dry gains update every 16 samples.
 //   Silent input with every band asleep skips the band loop; the frame counter still advances.
 //
 // GenExpr rules strictly enforced:
@@ -125,8 +124,7 @@ warp_phase(ph, mode, warpAmt, bendExp) {
 // Chamberlin SVF bandpass + zero-crossing pitch tracker + freeze latch.
 // State in bandSt, stride 10:
 //   0 lp, 1 bp, 2 env, 3 prevSign, 4 periodSamps, 5 sampCount, 6 targetMidi, 7 midiHold, 8 frozenAmp, 9 frozenMidi
-// Third result packs flags: bit 0 = valid zero crossing, bit 1 = band still awake.
-// centerHz is the cached band center (bhz), not recomputed here.
+// Third result is 1 while the band is awake, 0 when asleep.
 band_track(bandSt, band, x, fCoef, centerHz, dampVal, atkC, relC, gLin, freezeOn, srVal) {
 	base = band * 10;
 	lpState = bandSt.peek(base);
@@ -145,7 +143,6 @@ band_track(bandSt, band, x, fCoef, centerHz, dampVal, atkC, relC, gLin, freezeOn
 	outMidi = frozenMidi;
 	activity = abs(x) + abs(bpState) + abs(lpState) + envState;
 	asleep = (activity < 0.0000005);
-	validCross = 0;
 	alive = 1;
 
 	if (isFrz) {
@@ -171,8 +168,8 @@ band_track(bandSt, band, x, fCoef, centerHz, dampVal, atkC, relC, gLin, freezeOn
 			sampCount = sampCount + 1;
 			curSign = (bpState >= 0) ? 1 : -1;
 			crossed = (curSign > 0) && (prevSign < 0);
-			validCross = (crossed && (sampCount > 4) && (sampCount < srVal * 0.03)) ? 1 : 0;
-			if (validCross > 0.5) {
+			validCross = crossed && (sampCount > 4) && (sampCount < srVal * 0.03);
+			if (validCross) {
 				periodSamps = mix(sampCount, periodSamps, 0.65);
 				estHz = clip(srVal / max(periodSamps, 4), centerHz * 0.72, centerHz * 1.38);
 				targetMidi = 69 + 12 * log2(max(estHz, 20) / 440);
@@ -209,13 +206,13 @@ band_track(bandSt, band, x, fCoef, centerHz, dampVal, atkC, relC, gLin, freezeOn
 	bandSt.poke(midiHold, base + 7);
 	bandSt.poke(frozenAmp, base + 8);
 	bandSt.poke(frozenMidi, base + 9);
-	return outAmp, outMidi, validCross + alive * 2;
+	return outAmp, outMidi, alive;
 }
 
 // Wavetable voice. Oscillator state in oscSt, stride 6: 0 phase, 1 tick, 2 init, 3 weight, 4 midi, 5 freq.
-// Skips the oscillator when the band is gated. Re-quantizes on a zero crossing, every 32 samples,
-// or the first active sample — pitch, stretch, shift, snap and the scale mask are read then.
-voice_osc(wtBuf, oscSt, wgt, scBits, bandIdx, rawAmp, rawMidi, crossed, pitchSt, stretchVal, fshiftHz, snapAmt, maskInt, wtPos01, warpMode, warpAmt, bendExp, srVal) {
+// Skips the oscillator when the band is gated. Re-quantizes every 16 samples or on the first active sample
+// (matching the original 16-sample control rate!).
+voice_osc(wtBuf, oscSt, wgt, scBits, bandIdx, rawAmp, rawMidi, pitchSt, stretchVal, fshiftHz, snapAmt, maskInt, wtPos01, warpMode, warpAmt, bendExp, srVal) {
 	base = bandIdx * 6;
 	ph = oscSt.peek(base);
 	cTick = oscSt.peek(base + 1);
@@ -227,14 +224,13 @@ voice_osc(wtBuf, oscSt, wgt, scBits, bandIdx, rawAmp, rawMidi, crossed, pitchSt,
 	outSig = 0;
 	outAmp = 0;
 	if (!((rawAmp <= 0.00001) && (cInit > 0))) {
-		heldWeight = wgt.peek(bandIdx);
-		doQ = (cTick == 0) || (cInit == 0) || (crossed > 0.5);
-		if (doQ) {
+		if ((cTick == 0) || (cInit == 0)) {
+			heldWeight = wgt.peek(bandIdx);
 			heldQm = quant_midi(69 + (rawMidi - 69) * stretchVal + pitchSt, scBits, snapAmt, maskInt);
 			heldFreq = clip(440 * pow(2, (heldQm - 69) / 12) + fshiftHz, 20, 18000);
 			cInit = 1;
 		}
-		cTick = wrap(cTick + 1, 0, 32);
+		cTick = wrap(cTick + 1, 0, 16);
 
 		amp = rawAmp * heldWeight;
 		if (amp > 0.00001) {
@@ -252,10 +248,10 @@ voice_osc(wtBuf, oscSt, wgt, scBits, bandIdx, rawAmp, rawMidi, crossed, pitchSt,
 			i1 = wrap(i0 + 1, 0, 2048);
 			iFrac = idx - i0;
 
-			s00 = peek(wtBuf, f0 * 2048 + i0, 0);
-			s01 = peek(wtBuf, f0 * 2048 + i1, 0);
-			s10 = peek(wtBuf, f1 * 2048 + i0, 0);
-			s11 = peek(wtBuf, f1 * 2048 + i1, 0);
+			s00 = peek(wtBuf, f0 * 2048 + i0);
+			s01 = peek(wtBuf, f0 * 2048 + i1);
+			s10 = peek(wtBuf, f1 * 2048 + i0);
+			s11 = peek(wtBuf, f1 * 2048 + i1);
 			wt0 = mix(s00, s01, iFrac);
 			wt1 = mix(s10, s11, iFrac);
 			sig = mix(wt0, wt1, fFrac);
@@ -285,17 +281,12 @@ voice_osc(wtBuf, oscSt, wgt, scBits, bandIdx, rawAmp, rawMidi, crossed, pitchSt,
 Buffer wt("percipwt");
 Buffer scope("percipscope");
 
-// Per-band filter state (16 * 10) and oscillator state (16 * 6). See band_track / voice_osc.
 Data bst(160);
 Data ost(96);
-// SVF f coefficients and band centers (Hz). Rebuilt only when samplerate changes.
 Data svfF(16);
 Data bhz(16);
-// Sieve * tilt gain, one per band. Rebuilt every 32 samples with the other control-rate curves.
 Data bwgt(16);
-// Scale-mask pitch-class bits 0..11. Rebuilt when scalemask changes.
 Data scbit(12);
-// Latest per-band amplitude (0..15) and quantized MIDI (16..31), for the 64-sample scope write.
 Data vout(32);
 
 Param pitch(0.0);
@@ -335,7 +326,6 @@ History awakeLatch(0);
 
 sr = max(samplerate, 1);
 
-// Non-zero Data defaults (prevSign 1, period 100 samples, MIDI 60, osc weight 1 / freq 440). Once.
 if (boot == 0) {
 	for (b = 0; b < 16; b += 1) {
 		base = b * 10;
@@ -352,12 +342,12 @@ if (boot == 0) {
 	boot = 1;
 }
 
-// SVF coefficients depend only on samplerate (band centers are constant).
 if ((coefInit == 0) || (srHeld != sr)) {
 	for (b = 0; b < 16; b += 1) {
 		fc = band_hz(b);
 		bhz.poke(fc, b);
-		svfF.poke(svf_coef(fc, sr), b);
+		sf = svf_coef(fc, sr);
+		svfF.poke(sf, b);
 	}
 	srHeld = sr;
 	coefInit = 1;
@@ -381,17 +371,16 @@ sieveNow = round(clip(sieve, 0, 4));
 freezeNow = (freeze > 0.5) ? 1 : 0;
 maskNow = round(clip(scalemask, 0, 4095));
 
-// Pitch-class bits. pow() runs 12 times on a mask change, not inside the per-band search.
 if ((bitInit == 0) || (maskHeld != maskNow)) {
 	for (pc = 0; pc < 12; pc += 1) {
-		scbit.poke(mask_bit(maskNow, pc), pc);
+		mb = mask_bit(maskNow, pc);
+		scbit.poke(mb, pc);
 	}
 	maskHeld = maskNow;
 	bitInit = 1;
 }
 
-// Control-rate curves and per-band sieve/tilt weights. Not every sample, and not 16 times per sample.
-if ((ctrlInit == 0) || (tick % 32 == 0)) {
+if ((ctrlInit == 0) || (tick % 16 == 0)) {
 	gateLin = pow(10, gateDbS / 20);
 	resGainLin = pow(10, resGainDbS / 20);
 	effAtkMs = atkMsS + blurS * 45.0;
@@ -403,7 +392,9 @@ if ((ctrlInit == 0) || (tick % 32 == 0)) {
 	dryG = cos(ang);
 	wetG = sin(ang);
 	for (b = 0; b < 16; b += 1) {
-		bwgt.poke(sieve_one(b, sieveNow) * tilt_one(b, tiltS), b);
+		sv1 = sieve_one(b, sieveNow);
+		tl1 = tilt_one(b, tiltS);
+		bwgt.poke(sv1 * tl1, b);
 	}
 	ctrlInit = 1;
 }
@@ -415,15 +406,14 @@ evenSum = 0;
 oddSum = 0;
 wetL = 0;
 wetR = 0;
-// Asleep and silent: skip all 16 bands. Freeze and any ringing band keep the loop alive.
 runBands = (freezeNow > 0.5) || (abs(monoIn) > 0.0000005) || (awakeLatch > 0.5);
 if (runBands) {
 	anyLive = 0;
 	for (b = 0; b < 16; b += 1) {
-		rawA, rawM, flag = band_track(bst, b, monoIn, svfF.peek(b), bhz.peek(b), dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
-		crossed = flag % 2;
-		alive = (flag >= 2) ? 1 : 0;
-		sig, amp, qm = voice_osc(wt, ost, bwgt, scbit, b, rawA, rawM, crossed, pitchS, stretchS, fshiftS, snapS, maskNow, wtPosS, modeNow, warpS, bendExp, sr);
+		sfB = svfF.peek(b);
+		hzB = bhz.peek(b);
+		rawA, rawM, alive = band_track(bst, b, monoIn, sfB, hzB, dampBand, atkCoef, relCoef, gateLin, freezeNow, sr);
+		sig, amp, qm = voice_osc(wt, ost, bwgt, scbit, b, rawA, rawM, pitchS, stretchS, fshiftS, snapS, maskNow, wtPosS, modeNow, warpS, bendExp, sr);
 		vout.poke(amp, b);
 		vout.poke(qm, 16 + b);
 		if ((b % 2) == 0) {
@@ -442,8 +432,6 @@ if (runBands) {
 outL = in1 * dryG + wetL * wetG;
 outR = in2 * dryG + wetR * wetG;
 
-// Scope telemetry every 64 samples. The frame counter advances even while runBands is false,
-// so a silent device still proves the deferred gen~ is in the DSP chain.
 tick = wrap(tick + 1, 0, 64);
 if (tick == 0) {
 	rollCount = wrap(rollCount + 1, 0, 100000);

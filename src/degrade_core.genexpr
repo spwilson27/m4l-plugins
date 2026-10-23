@@ -434,12 +434,8 @@ if (outGainDbS != cGainLat) {
 outGainSlew = cOutLin;
 if (wetSlew != cWetLat) {
 	cWetLat = wetSlew;
-	wetPh = clip(wetSlew, 0.0, 1.0) * 1.5707963267948966;
-	csW = cos(wetPh);
-	snW = sin(wetPh);
-	nW = 1.0 / max(csW + snW, 0.0001);
-	cDryG = csW * nW;
-	cWetG = snW * nW;
+	cWetG = clip(wetSlew, 0.0, 1.0);
+	cDryG = 1.0 - cWetG;
 }
 
 // Decode order_code into the 5 slot ids only when it changes. History orderLatch starts at 1234,

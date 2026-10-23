@@ -310,7 +310,7 @@ function prepareSegment(p0, p1) {
         y0: p0.y,
         y1: p1.y,
         dy: p1.y - p0.y,
-        invDx: dx > 1e-9 ? 1 / dx : 0,
+        invDx: dx > 0.00001 ? 1 / dx : 0,
         curve: curve,
         sCurve: p0.sCurve ? 1 : 0,
         flat: absC < 0.001,

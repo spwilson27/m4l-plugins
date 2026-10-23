@@ -2,27 +2,12 @@
 // Config buffer (buffer~ #0-tsconfig), indices match src/tinyspace_config.js:
 //   0 activeCount, 1 character,
 //   2..5 allpass lengths (ms), 6..9 allpass gains,
-//   10..29 nominal delay (ms), 30..49 damp offset, 50..69 mod Hz.
+//   10..29 nominal delay (ms), 30..49 damp offset, 50..69 mod Hz, 70 model.
 // Meter buffer (buffer~ #0-tsmeters): slots 0..19 are line envelopes, slot 20 is a
 // frame counter that increments every 32 samples even when the input is silent.
 // Filter, crossfeed, wet/dry, RT60, loop-gain and damping coefficients are cached
 // and recomputed only when size, fbk, damp, hp, lp, xfeed, wet, samplerate or the
-// seed config (cfg[0], cfg[1], plus model and delay-length sentinels) changes.
-// After input and tank energy stay under 1e-7 for more than 32768 samples the
-// 20-line loop is skipped and the output is exact zero; a new input or a
-// parameter / seed change wakes it on that sample.
-// GenExpr rejects the old delay operator. Each line is declared with Delay, then written
-// and read as a tap. Tank taps never exceed 16000 samples, so each tank line is
-// 16384 samples and stays in cache. Predelay can be 250 ms, so those two lines
-// stay at 65536. Only the selected room model is mixed, modulation sines run
-// only while Mod is up, and a silent input with a dead tank skips the network.
-// Full feedback holds a line to about -60 dB in 27.5 seconds (see ringGain).
-// Short combs stay bright: delay taps are whole samples, and Damp 0 does not
-// lowpass the loop, so a small Size rings as a metallic tone instead of a thud.
-// The coefficient depends on that line's delay so short combs do not die
-// in a fraction of a second. It is clipped just under 1, so the tail ends.
-// Every room mix is orthogonal and keeps the all-ones mode at magnitude 1,
-// and crossfeed is a rotation, so neither one shortens that tail.
+// seed config changes.
 // GenExpr requires every function to appear before Buffer, Param, and assignments.
 
 slew(target, coef) {
@@ -54,7 +39,6 @@ hp(x, coef) {
 
 // Schroeder allpass. Delay holds the samples; History holds the previous tap
 // so the feedback coefficient is applied to a delayed sample.
-// g near 0 (comb seeds) is a short delay of about t samples.
 allpass(x, t, g) {
 	Delay line(4096);
 	History mem(0);
@@ -64,13 +48,13 @@ allpass(x, t, g) {
 	return y;
 }
 
-// Unmodulated whole-sample tap. srScale is samplerate * 0.001 (cached).
-// Modulation is added at the read so this stays valid until size or sr changes.
-// Whole-sample taps: linear interpolation would shave a little high end off
+// Whole-sample taps. Linear interpolation would shave a little high end off
 // every pass, and a 1 ms comb passes often enough that the tone dies.
-lineTime(lenMs, sizeNow, srScale) {
+lineTime(lenMs, lfoVal, sizeNow, modNow) {
 	sc = 0.22 + clip(sizeNow, 0, 1) * 1.93;
-	return round(clip(lenMs * sc * srScale, 1, 16000));
+	base = clip(lenMs * sc * samplerate / 1000, 1, 16000);
+	depth = min(base * 0.28, samplerate * 0.0012) * clip(modNow, 0, 1);
+	return round(clip(base + lfoVal * depth, 1, 16000));
 }
 
 follow(x) {
@@ -81,7 +65,6 @@ follow(x) {
 }
 
 // Delay-style RT60. 50% is a short slap (~0.7 s); 100% is about 27.5 s to -60 dB.
-// rt = 2.90663 k^2 - 0.81561 k^4 + 7.05921 k^6 - 1.60268 k^10 + 19.9526 k^16
 // Matches feedbackRt60() in tinyspace_config.js. fbk 0 returns 0 (no recirculation).
 feedbackRt(fbkNow) {
 	k = clip(fbkNow, 0, 1);
@@ -95,23 +78,17 @@ feedbackRt(fbkNow) {
 }
 
 // Per-line loop gain from an RT60 already computed by feedbackRt.
-// invRt is 1/rt, or 0 when feedback is off (no recirculation). invSr is
-// 1/samplerate. Both are cached. The ceiling sits just under 1 so a 1-sample
-// comb still ends.
-ringGain(delaySamps, invSr, invRt) {
-	secs = max(delaySamps, 1) * invSr;
-	g = exp(-6.90775527898 * secs * invRt);
-	quiet = (invRt > 0) ? g : 0;
+ringGain(delaySamps, rt) {
+	secs = max(delaySamps, 1) / samplerate;
+	safe = (rt > 0.00001) ? rt : 1;
+	g = exp(-6.90775527898 * secs / safe);
+	quiet = (rt > 0.00001) ? g : 0;
 	return clip(quiet, 0, 0.9999995);
 }
 
 // One-pole lowpass coefficient. Damp 0 is a bypass (pole 0), so a bright comb
-// stays metallic. Above that, the knob is a cutoff: about 5 kHz at 20%,
-// about 1.8 kHz at 50%, and a few hundred hertz at 100% on an 8 ms line.
-// Short lines get a higher cutoff so a 1 ms comb is not filtered 20 times
-// harder than a 20 ms room line. Matches dampPole() in tinyspace_config.js.
-// invSr is the cached 1/samplerate. pow/exp run only from the coefficient refresh.
-dampCoef(delaySamps, dampNow, offset, invSr) {
+// stays metallic. Matches dampPole() in tinyspace_config.js.
+dampCoef(delaySamps, dampNow, offset) {
 	amtIn = clip(dampNow, 0, 1);
 	pole = 0;
 	if (amtIn >= 0.001) {
@@ -120,19 +97,15 @@ dampCoef(delaySamps, dampNow, offset, invSr) {
 		amtPow = pow(max(amt, 0.00001), 0.75);
 		fcBase = 16000 * pow(0.015, amtPow);
 		span = max(delaySamps, 1);
-		scale = pow(0.008 / (span * invSr), 0.45);
+		scale = pow(0.008 * samplerate / span, 0.45);
 		scale = clip(scale, 0.6, 3.2);
 		fcNow = fcBase * scale;
-		pole = exp(-6.28318530718 * fcNow * invSr);
+		pole = exp(-6.28318530718 * fcNow / samplerate);
 	}
 	return clip(pole, 0, 0.995);
 }
 
 // Rotate three samples inside the plane orthogonal to (1, 1, 1).
-// Eigenvalue of the all-ones vector is +1, and the map is orthogonal
-// for every angle (c, s) = (cos theta, sin theta). A plain 2x2 rotation
-// of two lines is orthogonal too, but its common-mode gain is only cos(theta),
-// which would silence the output sum. Mirrors spin3() in tinyspace_config.js.
 spin3(x0, x1, x2, c, s) {
 	u0 = 0.7071067811865476;
 	u1 = -0.7071067811865476;
@@ -152,20 +125,7 @@ tap(i, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9) {
 	return (i < 0.5) ? a0 : ((i < 1.5) ? a1 : ((i < 2.5) ? a2 : ((i < 3.5) ? a3 : ((i < 4.5) ? a4 : ((i < 5.5) ? a5 : ((i < 6.5) ? a6 : ((i < 7.5) ? a7 : ((i < 8.5) ? a8 : a9))))))));
 }
 
-// Eight orthogonal room topologies. Each one satisfies M^T M = I and sends
-// the all-ones vector to ± itself, so the normalized output sum decays only
-// through ringGain. Mirrors fdnMix() in tinyspace_config.js.
-//   0 COMB    identity (parallel combs)
-//   1 HYBRID  character-scaled rotation in the plane orthogonal to all-ones
-//   2 ROOM    Householder reflection
-//   3 PLATE   Householder, then a sign-flipping cycle
-//   4 TANK    sign-flipping cycle (figure-8 ring)
-//   5 BOX     Householder, then pairwise wall swaps
-//   6 SPRING  overlapping sum-preserving rotations (dispersion lattice)
-//   7 BOUNCE  sign-flipping reversal
-// hc, hs are cos/sin of character * pi, refreshed with the other slow coefficients.
-// Only the selected model runs. Spring's angle is the constant pair cos(1.15), sin(1.15).
-// kk is 2/n, precomputed (n > 0). Passing it avoids a per-sample division.
+// Eight orthogonal room topologies (2 ROOM = Householder reflection).
 house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs, kk) {
 	z0 = (0 < n) ? o0 : 0;
 	z1 = (1 < n) ? o1 : 0;
@@ -216,8 +176,6 @@ house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs, kk) {
 		m8 = (8 < n) ? (z8 - sum * kk) : 0;
 		m9 = (9 < n) ? (z9 - sum * kk) : 0;
 	} else if (model == 3) {
-		// PLATE: Householder, then a sign-flipping cycle. Every sign is negative
-		// so an even-length ring still maps all-ones to ±all-ones.
 		sum = z0 + z1 + z2 + z3 + z4 + z5 + z6 + z7 + z8 + z9;
 		hh0 = (0 < n) ? (z0 - sum * kk) : 0;
 		hh1 = (1 < n) ? (z1 - sum * kk) : 0;
@@ -274,7 +232,6 @@ house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs, kk) {
 		m8 = (9 < n) ? -hh9 : ((8 < n) ? -hh8 : 0);
 		m9 = (9 < n) ? -hh8 : 0;
 	} else if (model == 6) {
-		// cos(1.15), sin(1.15). A constant angle, not an audio-rate call.
 		sc = 0.40848744088415739;
 		ss = 0.91276394026052099;
 		u0 = z0;
@@ -348,7 +305,7 @@ Buffer cfg("tsconfig");
 Buffer meters("tsmeters");
 Data gLine(20);
 Data cLine(20);
-Data bLine(20);
+Data tLine(20);
 
 Param size(0.45);
 Param damp(0.2);
@@ -361,6 +318,7 @@ Param xfeed(0.25);
 Param hp(40);
 Param lp(14000);
 Param duck(1);
+
 History tick(0);
 History o0(0);
 History o1(0);
@@ -383,11 +341,12 @@ History o17(0);
 History o18(0);
 History o19(0);
 History awake(1);
+History idleCount(0);
 History tankE(0);
 History initDone(0);
 History activeCount(0);
 History frame(0);
-History silentSamps(0);
+
 History cSize(-1);
 History cFbk(-1);
 History cDamp(-1);
@@ -424,24 +383,7 @@ History apG0(0);
 History apG1(0);
 History apG2(0);
 History apG3(0);
-History cSrScale(48);
-History cDepMax(57.6);
-History pSize(-1);
-History pFbk(-1);
-History pDamp(-1);
-History pHp(-1);
-History pLp(-1);
-History pXfeed(-1);
-History pWet(-1);
-History pMod(-1);
-History pWidth(-1);
-History pPredly(-1);
-History pSr(-1);
-History pCfg0(-1);
-History pCfg1(-1);
-History pModel(-1);
-History pLen0(-1);
-History pAp0(-1);
+
 Delay preDL(65536);
 Delay preDR(65536);
 Delay del0(16384);
@@ -477,49 +419,12 @@ hpS = slew(hp, 0.9992);
 lpS = slew(lp, 0.9992);
 duckG = clip(duck, 0, 1);
 sr = max(samplerate, 1);
-cfg0 = peek(cfg, 0);
-cfg1 = peek(cfg, 1);
-cfgM = peek(cfg, 70);
-cfgL = peek(cfg, 10);
-cfgA = peek(cfg, 2);
-wakeNow = 0;
-if (abs(size - pSize) > 0.000001) wakeNow = 1;
-if (abs(fbk - pFbk) > 0.000001) wakeNow = 1;
-if (abs(damp - pDamp) > 0.000001) wakeNow = 1;
-if (abs(hp - pHp) > 0.000001) wakeNow = 1;
-if (abs(lp - pLp) > 0.000001) wakeNow = 1;
-if (abs(xfeed - pXfeed) > 0.000001) wakeNow = 1;
-if (abs(wet - pWet) > 0.000001) wakeNow = 1;
-if (abs(modamt - pMod) > 0.000001) wakeNow = 1;
-if (abs(width - pWidth) > 0.000001) wakeNow = 1;
-if (abs(predly - pPredly) > 0.000001) wakeNow = 1;
-if (abs(sr - pSr) > 0.1) wakeNow = 1;
-if (cfg0 != pCfg0) wakeNow = 1;
-if (abs(cfg1 - pCfg1) > 0.0000001) wakeNow = 1;
-if (cfgM != pModel) wakeNow = 1;
-if (abs(cfgL - pLen0) > 0.000001) wakeNow = 1;
-if (abs(cfgA - pAp0) > 0.000001) wakeNow = 1;
-pSize = size;
-pFbk = fbk;
-pDamp = damp;
-pHp = hp;
-pLp = lp;
-pXfeed = xfeed;
-pWet = wet;
-pMod = modamt;
-pWidth = width;
-pPredly = predly;
-pSr = sr;
-pCfg0 = cfg0;
-pCfg1 = cfg1;
-pModel = cfgM;
-pLen0 = cfgL;
-pAp0 = cfgA;
 inAbs = abs(in1) + abs(in2);
-if ((inAbs > 1e-7) || (wakeNow > 0.5)) {
-	awake = 1;
-	silentSamps = 0;
-}
+awake = (inAbs > 1e-7) ? 1 : awake;
+idleCount = (inAbs > 1e-7) ? 0 : (idleCount + 1);
+
+preDL.write(in1);
+preDR.write(in2);
 
 wetL = 0;
 wetR = 0;
@@ -546,77 +451,11 @@ env18 = 0;
 env19 = 0;
 
 if (awake > 0.5) {
-	doCoef = (initDone == 0) ? 1 : 0;
-	if (abs(sizeS - cSize) > 0.00005) doCoef = 1;
-	if (abs(fbkS - cFbk) > 0.00005) doCoef = 1;
-	if (abs(dampS - cDamp) > 0.00005) doCoef = 1;
-	if (abs(hpS - cHp) > 0.00005) doCoef = 1;
-	if (abs(lpS - cLp) > 0.00005) doCoef = 1;
-	if (abs(xfeedS - cXfeed) > 0.00005) doCoef = 1;
-	if (abs(wetS - cWet) > 0.00005) doCoef = 1;
-	if (abs(sr - cSr) > 0.1) doCoef = 1;
-	if (cfg0 != cCfg0) doCoef = 1;
-	if (abs(cfg1 - cCfg1) > 0.0000001) doCoef = 1;
-	if (cfgM != cModel) doCoef = 1;
-	if (abs(cfgL - cLen0) > 0.000001) doCoef = 1;
-	if (abs(cfgA - cAp0) > 0.000001) doCoef = 1;
-	if ((doCoef > 0.5) && ((tick == 0) || (wakeNow > 0.5) || (initDone == 0))) {
-		initDone = 1;
-		cSize = sizeS;
-		cFbk = fbkS;
-		cDamp = dampS;
-		cHp = hpS;
-		cLp = lpS;
-		cXfeed = xfeedS;
-		cWet = wetS;
-		cSr = sr;
-		cCfg0 = cfg0;
-		cCfg1 = cfg1;
-		cModel = cfgM;
-		cLen0 = cfgL;
-		cAp0 = cfgA;
-		activeCount = cfg0;
-		invSr = 1 / sr;
-		srScale = sr * 0.001;
-		cSrScale = srScale;
-		cDepMax = sr * 0.0012;
-		lpCoef = exp(-6.28318530718 * clip(lpS, 400, 18000) * invSr);
-		hpCoef = exp(-6.28318530718 * clip(hpS, 20, 4000) * invSr);
-		nLines = activeCount * 0.5;
-		nL = nLines;
-		nR = nLines;
-		invL = (nLines > 0.5) ? (1 / sqrt(nLines)) : 1;
-		invR = invL;
-		kkL = 2 * invL * invL;
-		kkR = kkL;
-		chClip = clip(cfg1, 0, 1);
-		hc = cos(chClip * 3.141592653589793);
-		hs = sin(chClip * 3.141592653589793);
-		xf = clip(xfeedS, 0, 1);
-		cth = cos(xf * 1.5707963267948966);
-		sth = sin(xf * 1.5707963267948966);
-		ang = clip(wetS, 0, 1) * 1.5707963267948966;
-		dryG = cos(ang);
-		wetG = sin(ang);
-		rtNow = feedbackRt(fbkS);
-		invRt = (rtNow > 0.00001) ? (1 / rtNow) : 0;
-		apT0 = clip(peek(cfg, 2) * srScale, 1, sr * 0.02);
-		apT1 = clip(peek(cfg, 3) * srScale, 1, sr * 0.02);
-		apT2 = clip(peek(cfg, 4) * srScale, 1, sr * 0.02);
-		apT3 = clip(peek(cfg, 5) * srScale, 1, sr * 0.02);
-		apG0 = clip(peek(cfg, 6), 0, 0.7);
-		apG1 = clip(peek(cfg, 7), 0, 0.7);
-		apG2 = clip(peek(cfg, 8), 0, 0.7);
-		apG3 = clip(peek(cfg, 9), 0, 0.7);
-		modelI = round(clip(cfgM, 0, 7));
-		for (li = 0; li < 20; li += 1) {
-			lenMs = peek(cfg, 10 + li);
-			base = lineTime(lenMs, sizeS, srScale);
-			poke(bLine, base, li);
-			poke(gLine, ringGain(base, invSr, invRt), li);
-			poke(cLine, dampCoef(base, dampS, peek(cfg, 30 + li), invSr), li);
-		}
-	}
+	cfg0 = peek(cfg, 0);
+	cfg1 = peek(cfg, 1);
+	cfgM = peek(cfg, 70);
+	cfgL = peek(cfg, 10);
+	cfgA = peek(cfg, 2);
 	modNow = clip(modS, 0, 1);
 	l0 = 0;
 	l1 = 0;
@@ -660,86 +499,87 @@ if (awake > 0.5) {
 		l18 = lfo(peek(cfg, 68), 1);
 		l19 = lfo(peek(cfg, 69), 1);
 	}
-	b0 = peek(bLine, 0);
-	b1 = peek(bLine, 1);
-	b2 = peek(bLine, 2);
-	b3 = peek(bLine, 3);
-	b4 = peek(bLine, 4);
-	b5 = peek(bLine, 5);
-	b6 = peek(bLine, 6);
-	b7 = peek(bLine, 7);
-	b8 = peek(bLine, 8);
-	b9 = peek(bLine, 9);
-	b10 = peek(bLine, 10);
-	b11 = peek(bLine, 11);
-	b12 = peek(bLine, 12);
-	b13 = peek(bLine, 13);
-	b14 = peek(bLine, 14);
-	b15 = peek(bLine, 15);
-	b16 = peek(bLine, 16);
-	b17 = peek(bLine, 17);
-	b18 = peek(bLine, 18);
-	b19 = peek(bLine, 19);
-	t0 = round(clip(b0 + l0 * min(b0 * 0.28, cDepMax) * modNow, 1, 16000));
-	t1 = round(clip(b1 + l1 * min(b1 * 0.28, cDepMax) * modNow, 1, 16000));
-	t2 = round(clip(b2 + l2 * min(b2 * 0.28, cDepMax) * modNow, 1, 16000));
-	t3 = round(clip(b3 + l3 * min(b3 * 0.28, cDepMax) * modNow, 1, 16000));
-	t4 = round(clip(b4 + l4 * min(b4 * 0.28, cDepMax) * modNow, 1, 16000));
-	t5 = round(clip(b5 + l5 * min(b5 * 0.28, cDepMax) * modNow, 1, 16000));
-	t6 = round(clip(b6 + l6 * min(b6 * 0.28, cDepMax) * modNow, 1, 16000));
-	t7 = round(clip(b7 + l7 * min(b7 * 0.28, cDepMax) * modNow, 1, 16000));
-	t8 = round(clip(b8 + l8 * min(b8 * 0.28, cDepMax) * modNow, 1, 16000));
-	t9 = round(clip(b9 + l9 * min(b9 * 0.28, cDepMax) * modNow, 1, 16000));
-	t10 = round(clip(b10 + l10 * min(b10 * 0.28, cDepMax) * modNow, 1, 16000));
-	t11 = round(clip(b11 + l11 * min(b11 * 0.28, cDepMax) * modNow, 1, 16000));
-	t12 = round(clip(b12 + l12 * min(b12 * 0.28, cDepMax) * modNow, 1, 16000));
-	t13 = round(clip(b13 + l13 * min(b13 * 0.28, cDepMax) * modNow, 1, 16000));
-	t14 = round(clip(b14 + l14 * min(b14 * 0.28, cDepMax) * modNow, 1, 16000));
-	t15 = round(clip(b15 + l15 * min(b15 * 0.28, cDepMax) * modNow, 1, 16000));
-	t16 = round(clip(b16 + l16 * min(b16 * 0.28, cDepMax) * modNow, 1, 16000));
-	t17 = round(clip(b17 + l17 * min(b17 * 0.28, cDepMax) * modNow, 1, 16000));
-	t18 = round(clip(b18 + l18 * min(b18 * 0.28, cDepMax) * modNow, 1, 16000));
-	t19 = round(clip(b19 + l19 * min(b19 * 0.28, cDepMax) * modNow, 1, 16000));
-	g0 = peek(gLine, 0);
-	g1 = peek(gLine, 1);
-	g2 = peek(gLine, 2);
-	g3 = peek(gLine, 3);
-	g4 = peek(gLine, 4);
-	g5 = peek(gLine, 5);
-	g6 = peek(gLine, 6);
-	g7 = peek(gLine, 7);
-	g8 = peek(gLine, 8);
-	g9 = peek(gLine, 9);
-	g10 = peek(gLine, 10);
-	g11 = peek(gLine, 11);
-	g12 = peek(gLine, 12);
-	g13 = peek(gLine, 13);
-	g14 = peek(gLine, 14);
-	g15 = peek(gLine, 15);
-	g16 = peek(gLine, 16);
-	g17 = peek(gLine, 17);
-	g18 = peek(gLine, 18);
-	g19 = peek(gLine, 19);
-	c0 = peek(cLine, 0);
-	c1 = peek(cLine, 1);
-	c2 = peek(cLine, 2);
-	c3 = peek(cLine, 3);
-	c4 = peek(cLine, 4);
-	c5 = peek(cLine, 5);
-	c6 = peek(cLine, 6);
-	c7 = peek(cLine, 7);
-	c8 = peek(cLine, 8);
-	c9 = peek(cLine, 9);
-	c10 = peek(cLine, 10);
-	c11 = peek(cLine, 11);
-	c12 = peek(cLine, 12);
-	c13 = peek(cLine, 13);
-	c14 = peek(cLine, 14);
-	c15 = peek(cLine, 15);
-	c16 = peek(cLine, 16);
-	c17 = peek(cLine, 17);
-	c18 = peek(cLine, 18);
-	c19 = peek(cLine, 19);
+	t0 = lineTime(peek(cfg, 10), l0, sizeS, modS);
+	t1 = lineTime(peek(cfg, 11), l1, sizeS, modS);
+	t2 = lineTime(peek(cfg, 12), l2, sizeS, modS);
+	t3 = lineTime(peek(cfg, 13), l3, sizeS, modS);
+	t4 = lineTime(peek(cfg, 14), l4, sizeS, modS);
+	t5 = lineTime(peek(cfg, 15), l5, sizeS, modS);
+	t6 = lineTime(peek(cfg, 16), l6, sizeS, modS);
+	t7 = lineTime(peek(cfg, 17), l7, sizeS, modS);
+	t8 = lineTime(peek(cfg, 18), l8, sizeS, modS);
+	t9 = lineTime(peek(cfg, 19), l9, sizeS, modS);
+	t10 = lineTime(peek(cfg, 20), l10, sizeS, modS);
+	t11 = lineTime(peek(cfg, 21), l11, sizeS, modS);
+	t12 = lineTime(peek(cfg, 22), l12, sizeS, modS);
+	t13 = lineTime(peek(cfg, 23), l13, sizeS, modS);
+	t14 = lineTime(peek(cfg, 24), l14, sizeS, modS);
+	t15 = lineTime(peek(cfg, 25), l15, sizeS, modS);
+	t16 = lineTime(peek(cfg, 26), l16, sizeS, modS);
+	t17 = lineTime(peek(cfg, 27), l17, sizeS, modS);
+	t18 = lineTime(peek(cfg, 28), l18, sizeS, modS);
+	t19 = lineTime(peek(cfg, 29), l19, sizeS, modS);
+
+	doCoef = ((initDone == 0) || (sizeS != cSize) || (fbkS != cFbk) || (dampS != cDamp) || (hpS != cHp) || (lpS != cLp) || (xfeedS != cXfeed) || (sr != cSr) || (cfg0 != cCfg0) || (cfg1 != cCfg1) || (cfgM != cModel) || (cfgL != cLen0) || (cfgA != cAp0) || (modNow > 0.001)) ? 1 : 0;
+	if (doCoef > 0.5) {
+		initDone = 1;
+		cSize = sizeS;
+		cFbk = fbkS;
+		cDamp = dampS;
+		cHp = hpS;
+		cLp = lpS;
+		cXfeed = xfeedS;
+		cSr = sr;
+		cCfg0 = cfg0;
+		cCfg1 = cfg1;
+		cModel = cfgM;
+		cLen0 = cfgL;
+		cAp0 = cfgA;
+		activeCount = cfg0;
+		lpCoef = exp(-6.28318530718 * clip(lpS, 400, 18000) / sr);
+		hpCoef = exp(-6.28318530718 * clip(hpS, 20, 4000) / sr);
+		nL = activeCount * 0.5;
+		nR = nL;
+		invL = 1 / sqrt(max(nL, 1));
+		invR = 1 / sqrt(max(nR, 1));
+		kkL = 2 / max(nL, 1);
+		kkR = 2 / max(nR, 1);
+		chClip = clip(cfg1, 0, 1);
+		hc = cos(chClip * 3.141592653589793);
+		hs = sin(chClip * 3.141592653589793);
+		xf = clip(xfeedS, 0, 1);
+		cth = cos(xf * 1.5707963267948966);
+		sth = sin(xf * 1.5707963267948966);
+		rtNow = feedbackRt(fbkS);
+		apT0 = clip(peek(cfg, 2) * sr / 1000, 1, sr * 0.02);
+		apT1 = clip(peek(cfg, 3) * sr / 1000, 1, sr * 0.02);
+		apT2 = clip(peek(cfg, 4) * sr / 1000, 1, sr * 0.02);
+		apT3 = clip(peek(cfg, 5) * sr / 1000, 1, sr * 0.02);
+		apG0 = clip(peek(cfg, 6), 0, 0.7);
+		apG1 = clip(peek(cfg, 7), 0, 0.7);
+		apG2 = clip(peek(cfg, 8), 0, 0.7);
+		apG3 = clip(peek(cfg, 9), 0, 0.7);
+		modelI = round(clip(cfgM, 0, 7));
+		poke(tLine, t0, 0); poke(tLine, t1, 1); poke(tLine, t2, 2); poke(tLine, t3, 3); poke(tLine, t4, 4);
+		poke(tLine, t5, 5); poke(tLine, t6, 6); poke(tLine, t7, 7); poke(tLine, t8, 8); poke(tLine, t9, 9);
+		poke(tLine, t10, 10); poke(tLine, t11, 11); poke(tLine, t12, 12); poke(tLine, t13, 13); poke(tLine, t14, 14);
+		poke(tLine, t15, 15); poke(tLine, t16, 16); poke(tLine, t17, 17); poke(tLine, t18, 18); poke(tLine, t19, 19);
+		for (li = 0; li < 20; li += 1) {
+			tl = peek(tLine, li);
+			rg = ringGain(tl, rtNow);
+			dc = dampCoef(tl, dampS, peek(cfg, 30 + li));
+			poke(gLine, rg, li);
+			poke(cLine, dc, li);
+		}
+	}
+	g0 = peek(gLine, 0); g1 = peek(gLine, 1); g2 = peek(gLine, 2); g3 = peek(gLine, 3); g4 = peek(gLine, 4);
+	g5 = peek(gLine, 5); g6 = peek(gLine, 6); g7 = peek(gLine, 7); g8 = peek(gLine, 8); g9 = peek(gLine, 9);
+	g10 = peek(gLine, 10); g11 = peek(gLine, 11); g12 = peek(gLine, 12); g13 = peek(gLine, 13); g14 = peek(gLine, 14);
+	g15 = peek(gLine, 15); g16 = peek(gLine, 16); g17 = peek(gLine, 17); g18 = peek(gLine, 18); g19 = peek(gLine, 19);
+	c0 = peek(cLine, 0); c1 = peek(cLine, 1); c2 = peek(cLine, 2); c3 = peek(cLine, 3); c4 = peek(cLine, 4);
+	c5 = peek(cLine, 5); c6 = peek(cLine, 6); c7 = peek(cLine, 7); c8 = peek(cLine, 8); c9 = peek(cLine, 9);
+	c10 = peek(cLine, 10); c11 = peek(cLine, 11); c12 = peek(cLine, 12); c13 = peek(cLine, 13); c14 = peek(cLine, 14);
+	c15 = peek(cLine, 15); c16 = peek(cLine, 16); c17 = peek(cLine, 17); c18 = peek(cLine, 18); c19 = peek(cLine, 19);
 	a0 = (0 < nL) ? 1 : 0;
 	a1 = (1 < nL) ? 1 : 0;
 	a2 = (2 < nL) ? 1 : 0;
@@ -761,10 +601,8 @@ if (awake > 0.5) {
 	a18 = (8 < nR) ? 1 : 0;
 	a19 = (9 < nR) ? 1 : 0;
 
-	preSamps = clip(predlyS, 0, 250) * cSrScale;
+	preSamps = clip(predlyS, 0, 250) * sr / 1000;
 	preSamps = clip(preSamps, 0, 48000);
-	preDL.write(in1);
-	preDR.write(in2);
 	preL = preDL.read(preSamps, interp="linear");
 	preR = preDR.read(preSamps, interp="linear");
 	toneL = hp(lp(preL, lpCoef), hpCoef);
@@ -888,17 +726,41 @@ if (awake > 0.5) {
 	side = (sumL - sumR) * 0.5 * clip(widthS, 0, 1);
 	wetL = (mid + side) * duckG;
 	wetR = (mid - side) * duckG;
-	out1 = fixnan(in1 * dryG + wetL * wetG);
-	out2 = fixnan(in2 * dryG + wetR * wetG);
 } else {
-	out1 = 0;
-	out2 = 0;
+	o0 = 0;
+	o1 = 0;
+	o2 = 0;
+	o3 = 0;
+	o4 = 0;
+	o5 = 0;
+	o6 = 0;
+	o7 = 0;
+	o8 = 0;
+	o9 = 0;
+	o10 = 0;
+	o11 = 0;
+	o12 = 0;
+	o13 = 0;
+	o14 = 0;
+	o15 = 0;
+	o16 = 0;
+	o17 = 0;
+	o18 = 0;
+	o19 = 0;
 }
-quiet = (inAbs < 1e-7) && (tankE < 1e-7) && (wakeNow < 0.5);
-silentSamps = quiet ? (silentSamps + 1) : 0;
-awake = ((inAbs >= 1e-7) || (wakeNow > 0.5) || (tankE >= 1e-7)) ? 1 : ((silentSamps > 32768) ? 0 : awake);
+if (wetS != cWet) {
+	cWet = wetS;
+	ang = clip(wetS, 0, 1) * 1.57079632679;
+	dryG = cos(ang);
+	wetG = sin(ang);
+}
+out1 = fixnan(in1 * dryG + wetL * wetG);
+out2 = fixnan(in2 * dryG + wetR * wetG);
+
 tick = wrap(tick + 1, 0, 32);
 if (tick == 0) {
+	idleCount = ((inAbs > 1e-7) || (tankE > 1e-7)) ? 0 : idleCount;
+	awake = ((inAbs > 1e-7) || (tankE > 1e-7)) ? 1 : ((idleCount > 32768) ? 0 : awake);
 	frame = wrap(frame + 1, 0, 1024);
 	poke(meters, frame, 20, 0);
 	poke(meters, env0, 0, 0);

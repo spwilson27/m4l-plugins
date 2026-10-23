@@ -1336,8 +1336,7 @@ voice_proc(
 	extPos,
 	pitchBuf,
 	gtel,
-	telTick,
-	usp
+	telTick
 ) {
 	stB = vIdx * 256;
 	// Grain telemetry: on a telemetry tick every voice rewrites its 32 grain slots (position -1 = unused, level 0).
@@ -1662,19 +1661,22 @@ voice_proc(
 
 	// One unison_spread call site (it inlines pow + sin). Sub-voice pan gains are the same formula for
 	// Repitch, Cycles and Textures; Fragments adds its own motion on top of uFrac / detRatio.
-	if ((modeId < 2.5) || (modeId > 3.5)) {
-		for (u = 0; u < uCount; u += 1) {
+	for (u = 0; u < 8; u += 1) {
+		if (u < uCount) {
 			uf0, dr0 = unison_spread(u, uCount, unisonDetune, driftPhs, vSeed);
-			poke(usp, uf0, u);
-			poke(usp, dr0, 8 + u);
+			poke(vhist, uf0, stB + 160 + u);
+			poke(vhist, dr0, stB + 168 + u);
 			if (modeId < 2.5) {
 				pan0 = clip(uf0 * unisonWidth + vPanSeed * 0.15, -1, 1);
-				poke(usp, sqrt(0.5 * (1.0 - pan0)), 16 + u);
-				poke(usp, sqrt(0.5 * (1.0 + pan0)), 24 + u);
+				gl0 = sqrt(0.5 * (1.0 - pan0));
+				gr0 = sqrt(0.5 * (1.0 + pan0));
+				poke(vhist, gl0, stB + 176 + u);
+				poke(vhist, gr0, stB + 184 + u);
 			}
 			if ((modeId < 0.5) || ((modeId > 1.5) && (modeId < 2.5))) {
 				chPh = driftPhs * 1.37 + u * 0.125 + vSeed;
-				poke(usp, sin(6.28318530718 * (chPh - floor(chPh))), 32 + u);
+				chS = sin(6.28318530718 * (chPh - floor(chPh)));
+				poke(vhist, chS, stB + 192 + u);
 			}
 		}
 	}
@@ -1758,10 +1760,10 @@ voice_proc(
 			}
 			pNext = pCur;
 			if (u < uCount) {
-				detRatio = peek(usp, 8 + u);
-				gL = peek(usp, 16 + u);
-				gR = peek(usp, 24 + u);
-				uChorus = peek(usp, 32 + u) * unisonDetune * 12.0;
+				detRatio = peek(vhist, stB + 168 + u);
+				gL = peek(vhist, stB + 176 + u);
+				gR = peek(vhist, stB + 184 + u);
+				uChorus = peek(vhist, stB + 192 + u) * unisonDetune * 12.0;
 				readPos = pCur;
 
 				if (frzOn > 0.5) {
@@ -1893,9 +1895,9 @@ voice_proc(
 			pCur = fract(pCur);
 			pNext = pCur;
 			if (u < uCount) {
-				detRatio = peek(usp, 8 + u);
-				gL = peek(usp, 16 + u);
-				gR = peek(usp, 24 + u);
+				detRatio = peek(vhist, stB + 168 + u);
+				gL = peek(vhist, stB + 176 + u);
+				gR = peek(vhist, stB + 184 + u);
 				phsInc = clip((baseHz * detRatio) / max(srVal, 1), 0, 0.45);
 				pNext = fract(pCur + phsInc);
 				// Overlap-add: the current cycle fades in over its first q while the previous one, still reading the source past
@@ -2036,10 +2038,10 @@ voice_proc(
 
 		for (u = 0; u < uCount; u += 1) {
 			if (u < uCount) {
-				detRatio = peek(usp, 8 + u);
-				gL = peek(usp, 16 + u);
-				gR = peek(usp, 24 + u);
-				uChorus = peek(usp, 32 + u) * unisonDetune * 18.0;
+				detRatio = peek(vhist, stB + 168 + u);
+				gL = peek(vhist, stB + 176 + u);
+				gR = peek(vhist, stB + 184 + u);
+				uChorus = peek(vhist, stB + 192 + u) * unisonDetune * 18.0;
 				sprA = (fract(rndA + u * 0.173 + vSeed * 0.31) - 0.5) * spraySpanF;
 				sprB = (fract(rndB + u * 0.271 + vSeed * 0.47) - 0.5) * spraySpanF;
 				travelA = (grainPhs - 0.5) * gLenSamps * srRat * dirSign * detRatio;
@@ -2116,8 +2118,8 @@ voice_proc(
 						altFlip = 0.0 - altFlip;
 						dsel = (frDirMode < 0.5) ? dirSign : ((frDirMode < 1.5) ? scanDir : ((frDirMode < 2.5) ? ((rC < 0.5) ? -1.0 : 1.0) : altFlip));
 						uIdx = spawnCnt % uCount;
-						uFrac = peek(usp, uIdx);
-						detRatio = peek(usp, 8 + uIdx);
+						uFrac = peek(vhist, stB + 160 + uIdx);
+						detRatio = peek(vhist, stB + 168 + uIdx);
 						pan = clip(uFrac * unisonWidth + vPanSeed * 0.15 + (rB - 0.5) * 2.0 * clip(frMot, 0, 1), -1, 1);
 						jitterP = (rA - 0.5) * 2.0 * frMot * frLenS * abs(stepRatio);
 						pStart = baseP + jitterP;
@@ -2340,7 +2342,6 @@ Data twr(2049);
 Data twi(2049);
 Data brv(4096);
 Data prm(84);
-Data usp(40);
 Data vst(6400);
 Data gtel(1024);
 Data gtout(72);
@@ -2622,50 +2623,48 @@ rootDynOn = ((root_dyn > 0.5) && (dim(pitch) >= 2)) ? 1 : 0;
 poke(prm, rootDynOn, 53);
 srRatio = (samp_rate > 1000) ? clip(samp_rate / srVal, 0.05, 20.0) : 1.0;
 poke(prm, srRatio, 54);
-// Sample-rate constants (filter slew, freeze-head slew, sample-gain slew). They do not depend on a knob.
-// Names first assigned inside an if are invisible after it, so seed them here.
-cutNow = 0;
-filtNow = 0;
-frzNow = 0;
-sgNow = 0;
+// Sample-rate constants (filter slew, freeze-head slew, sample-gain slew).
 if (srCoefs < 0.5) {
-	cutNow = exp(-1.0 / (0.002 * srVal));
-	filtNow = exp(-1.0 / (0.006 * srVal));
-	frzNow = 1.0 - exp(-1.0 / (0.018 * srVal));
-	sgNow = exp(-1.0 / (0.01 * srVal));
-	hCutC = cutNow + 0.0;
-	hFiltC = filtNow + 0.0;
-	hFrzS = frzNow + 0.0;
-	hSgC = sgNow + 0.0;
+	hCutC = exp(-1.0 / (0.002 * srVal));
+	hFiltC = exp(-1.0 / (0.006 * srVal));
+	hFrzS = 1.0 - exp(-1.0 / (0.018 * srVal));
+	hSgC = exp(-1.0 / (0.01 * srVal));
 	srCoefs = 1;
-} else {
-	cutNow = hCutC + 0.0;
-	filtNow = hFiltC + 0.0;
-	frzNow = hFrzS + 0.0;
-	sgNow = hSgC + 0.0;
 }
+cutNow = (srCoefs < 0.5) ? exp(-1.0 / (0.002 * srVal)) : hCutC;
+filtNow = (srCoefs < 0.5) ? exp(-1.0 / (0.006 * srVal)) : hFiltC;
+frzNow = (srCoefs < 0.5) ? (1.0 - exp(-1.0 / (0.018 * srVal))) : hFrzS;
+sgNow = (srCoefs < 0.5) ? exp(-1.0 / (0.01 * srVal)) : hSgC;
 // Sample gain, smoothed (10 ms); read by voice_proc as prm 55 (exactly 1.0 at 0 dB)
 sampGainLin = slew_val(pow(10.0, clip(samp_gain, -48, 24) / 20.0), sgNow);
 poke(prm, sampGainLin, 55);
 uCountG = int(clip(round(unison_voices), 1, 8));
-poke(prm, pow(2.0, clip(formant, -24, 24) / 12.0), 13);
-poke(prm, sampGainLin / sqrt(max(uCountG, 1)), 15);
-poke(prm, frzNow, 16);
-poke(prm, pow(4.0, 0.0 - clip(atk_slope, -1, 1)), 17);
-poke(prm, pow(4.0, 0.0 - clip(dec_slope, -1, 1)), 18);
-poke(prm, pow(4.0, 0.0 - clip(rel_slope, -1, 1)), 19);
-poke(prm, pow(4.0, 0.0 - clip(matk_slope, -1, 1)), 32);
-poke(prm, pow(4.0, 0.0 - clip(mdec_slope, -1, 1)), 33);
-poke(prm, pow(4.0, 0.0 - clip(mrel_slope, -1, 1)), 34);
+fmRatG = pow(2.0, clip(formant, -24, 24) / 12.0);
+uNormG = sampGainLin / sqrt(max(uCountG, 1));
+slpAG = pow(4.0, 0.0 - clip(atk_slope, -1, 1));
+slpDG = pow(4.0, 0.0 - clip(dec_slope, -1, 1));
+slpRG = pow(4.0, 0.0 - clip(rel_slope, -1, 1));
+slpMAG = pow(4.0, 0.0 - clip(matk_slope, -1, 1));
+slpMDG = pow(4.0, 0.0 - clip(mdec_slope, -1, 1));
+slpMRG = pow(4.0, 0.0 - clip(mrel_slope, -1, 1));
 qIdxG = round(clip(sp_quality, 0, 2));
-poke(prm, 1024 * pow2n(qIdxG), 35);
-poke(prm, (sp_char > 0.5) ? pow(2.0, clip(sp_bend, -24, 24) / 12.0) : 1.0, 36);
-poke(prm, pow(2.0, clip(formant * sp_shift, -48, 48) / 12.0), 37);
-frLenG = max(grain_size * 0.001 * srVal, 16.0);
+nWantG = 1024 * pow2n(qIdxG);
+bendRG = (sp_char > 0.5) ? pow(2.0, clip(sp_bend, -24, 24) / 12.0) : 1.0;
+fmtEffG = pow(2.0, clip(formant * sp_shift, -48, 48) / 12.0);
 beatMsG = 60000.0 / clip(tempo, 20, 999);
-if (fr_sync > 0.5) {
-	frLenG = max(beatMsG * pow(2.0, round(log2(max(grain_size, 1.0) / beatMsG))) * 0.001 * srVal, 16.0);
-}
+frLenG = (fr_sync > 0.5) ? max(beatMsG * pow(2.0, round(log2(max(grain_size, 1.0) / beatMsG))) * 0.001 * srVal, 16.0) : max(grain_size * 0.001 * srVal, 16.0);
+poke(prm, fmRatG, 13);
+poke(prm, uNormG, 15);
+poke(prm, frzNow, 16);
+poke(prm, slpAG, 17);
+poke(prm, slpDG, 18);
+poke(prm, slpRG, 19);
+poke(prm, slpMAG, 32);
+poke(prm, slpMDG, 33);
+poke(prm, slpMRG, 34);
+poke(prm, nWantG, 35);
+poke(prm, bendRG, 36);
+poke(prm, fmtEffG, 37);
 poke(prm, frLenG, 38);
 poke(prm, clip(atk_slope, -1, 1), 56);
 poke(prm, clip(dec_slope, -1, 1), 57);
@@ -2759,7 +2758,7 @@ for (vox = 0; vox < 16; vox += 1) {
 		}
 	}
 	if (voIdle < 0.5) {
-		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick, usp);
+		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick);
 		osc2SumL = osc2SumL + peek(vhist, vhOff + 52);
 		osc2SumR = osc2SumR + peek(vhist, vhOff + 53);
 		subSum = subSum + peek(vhist, vhOff + 54);
@@ -2831,6 +2830,8 @@ bpR = v1 * k;
 hpR = drivenR - k * v1 - v2;
 
 fType = round(clip(filt_type, 0, 4));
+wetL = lpL;
+wetR = lpR;
 if (fType < 2.5) {
 	wetL = (fType == 0) ? lpL : ((fType == 1) ? bpL : hpL);
 	wetR = (fType == 0) ? lpR : ((fType == 1) ? bpR : hpR);
