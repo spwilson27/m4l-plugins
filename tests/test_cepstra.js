@@ -122,6 +122,11 @@ ok(cfg.resToAxis01(0, 0.5, 44100, 2048, 0) < 0.5 * 0.5, "Res mapping stays logar
     eq(rows[0][0], 0, "First display column starts at telemetry column 0");
     eq(cfg.columnRange(42, 43)[1], 192, "Last display column ends at the last telemetry column");
     for (let j = 0; j < 42; j++) eq(cfg.columnRange(j, 43)[1], cfg.columnRange(j + 1, 43)[0], "Display columns tile the telemetry");
+    const bounds = cfg.columnBounds(43, 882, 2048);
+    eq(bounds, cfg.columnBounds(43, 882, 2048), "Column bounds are cached while qmax and N stay put");
+    eq(bounds[0][0], 0, "Cached first column starts at 0");
+    eq(bounds[42][1], cfg.columnRange(42, 43)[1], "Cached last column matches columnRange");
+    ok(cfg.columnBounds(43, 960, 4096) !== bounds, "A qmax or N change rebuilds the column bounds");
     const pooled = cfg.poolSigned([0.1, -0.7, 0.3, 9999], 0, 4);
     eq(pooled.v, -0.7, "Pooling keeps the value with the largest |c| and its sign (pitch peaks survive)");
     ok(pooled.valid && !cfg.poolSigned([9999, 9999], 0, 2).valid, "Sentinel columns are invalid (beyond N/2)");
@@ -320,6 +325,8 @@ for (const [nm, sz] of dataSizes) {
 }
 ok(gen.includes("Param gatemode(0);") && gen.includes("job_cgate(wre, stat, nCur, (gatemode > 0.5) ? clip(gate, 0, 1) : 0, sr);") && !gen.includes("cgate_gain(") && gen.includes("tv = 3.5 * pow(7, gate01);") && gen.includes("omv = clip(epm + hm + vg, -21, 12);") && gen.includes("jobCount = 5 * llog + 11;"), "Gate Mode: Ceps = voicing-keyed gate (job_cgate, stereo-linked log gain vg in job_spec); Spec gate bypassed in Ceps mode");
 ok(gen.includes("quietCount < nCur"), "Silence sleep gate: skip FFT frames after one silent frame");
+ok(gen.includes("poke(scope, alive, 264, 0)"), "Alive counter (scope 264) advances on silent hops; slots 0..263 stay the frame contract");
+ok(gen.includes("wetLast") && gen.includes("dryG = cos(ang)") && gen.includes("invRatM"), "Mix gains and shift ratios are cached instead of recomputed per sample / per bin");
 {
     // GenExpr falls through a `return` inside an `if` / loop block (it does not leave the function), which once let the
     // Ceps voicing gate run in Spec mode. Every return must sit at function level.
@@ -359,11 +366,25 @@ eq(patcher.devicewidth, 256.0, "devicewidth must be 256");
 const boxes = patcher.boxes.map((b) => b.box);
 const byId = Object.fromEntries(boxes.map((b) => [b.id, b]));
 eq(byId["obj-plugin"].text, "plugin~", "Missing plugin~");
+eq(byId["obj-plugin"].varname, "cep_plugin", "plugin~ scripting name");
 eq(byId["obj-plugout"].text, "plugout~", "Missing plugout~");
+eq(byId["obj-plugout"].varname, "cep_plugout", "plugout~ scripting name");
+eq(byId["obj-gen-in"].text, "gate 1 1", "Deferred DSP hub is gate 1 1");
+eq(byId["obj-gen-in"].varname, "cep_genin", "Hub scripting name");
+ok(!byId["obj-gen"] && !boxes.some((b) => b.maxclass === "gen.codebox~" || b.maxclass === "gen~"), "Device ships without a static gen~ / gen.codebox~");
+{
+    const face = byId["obj-viz-disp"].textfile.text;
+    const m = face.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+    ok(m, "Face script embeds GEN_DSP_TEXT / GEN_DSP_HASH");
+    const gendsp = JSON.parse(JSON.parse(m[1]));
+    const codebox = gendsp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
+    eq(codebox.code, gen, "GEN_DSP_TEXT codebox is src/cepstra_core.genexpr");
+    eq(gendsp.patcher.boxes.length, 5, "gendsp is 2-in, codebox, 2-out");
+    ok(face.includes('Global("cepstra_dspq")') && face.includes("function init_dsp"), "Deferred load uses the cepstra_dspq queue");
+    ok(face.includes("DSP loading...") && face.includes("cepDsp.createdAt > 0 || cepDsp.error"), "DSP pill is gated so a static preview stays clean");
+}
 eq(byId["obj-midiin"].text, "midiin", "Missing midiin");
 eq(byId["obj-midiparse"].text, "midiparse", "Missing midiparse");
-eq(byId["obj-gen"].maxclass, "gen.codebox~", "Missing gen.codebox~");
-eq(byId["obj-gen"].code, gen, "Embedded GenExpr mismatch");
 eq(byId["obj-msg-gen-buf"].text, "scope #0-cepscope", "Gen buffer bind message mismatch");
 eq(byId["obj-msg-ui-buf"].text, "setbuffer #0-cepscope", "v8ui buffer message mismatch");
 eq(byId["obj-scope-buf"].text, "buffer~ #0-cepscope @samps 272", "Scope buffer must be 272 samples");
@@ -512,7 +533,10 @@ for (const pi of panelIdx) {
 const lines = patcher.lines.map((l) => l.patchline);
 function connected(src, dst) { return lines.some((l) => l.source[0] === src && l.destination[0] === dst); }
 function connectedPort(src, outlet, dst) { return lines.some((l) => l.source[0] === src && l.source[1] === outlet && l.destination[0] === dst); }
-ok(connected("obj-plugin", "obj-gen") && connected("obj-gen", "obj-plugout"), "plugin~ -> gen -> plugout~");
+function intoHub(src) { return lines.some((l) => l.source[0] === src && l.destination[0] === "obj-gen-in" && l.destination[1] === 1); }
+ok(!connected("obj-plugin", "obj-plugout") && !connected("obj-plugin", "obj-gen-in"), "plugin~ stays unwired until the gen~ is created (silence while loading)");
+ok(intoHub("obj-msg-gen-buf") && intoHub("obj-viz-disp") && lines.some((l) => l.source[0] === "obj-viz-disp" && l.source[1] === 1 && l.destination[0] === "obj-gen-in"), "buffer bind and the resend outlet enter the hub's right inlet");
+ok(connected("obj-thisdevice", "obj-msg-init-dsp") && byId["obj-msg-init-dsp"].text === "init_dsp" && connected("obj-msg-init-dsp", "obj-viz-disp"), "live.thisdevice -> init_dsp -> display");
 eq(byId["obj-route-viz"].text, "route res mid side resmode auto midi", "router for display-script messages");
 ok(connected("obj-viz-disp", "obj-route-viz"), "display -> route");
 const routeKeys = byId["obj-route-viz"].text.split(" ").slice(1);
@@ -536,7 +560,7 @@ const toGen = {
 };
 for (const [ctrl, [scale, msg]] of Object.entries(toGen)) {
     const prep = boxes.find((b) => b.text === msg);
-    ok(!!prep && connected(prep.id, "obj-gen"), `${msg} -> gen`);
+    ok(!!prep && intoHub(prep.id), `${msg} -> gen hub`);
     if (scale) ok(connected(ctrl, scale) && connected(scale, prep.id), `${ctrl} -> ${scale} -> ${msg}`);
     else ok(connected(ctrl, prep.id), `${ctrl} -> ${msg}`);
 }
@@ -557,7 +581,7 @@ for (const b of boxes) {
         for (const l of lines) if (l.source[0] === b.id) ok(/^obj-(ctrl|resmode|quality|lock|auto|midi)/.test(l.destination[0]), "prepend set may only drive live objects (no feedback)");
     }
 }
-ok(connected("obj-midiin", "obj-midiparse") && connected("obj-midiparse", "obj-midi-unpack") && connected("obj-midi-gate", "obj-prep-midinote") && connected("obj-prep-midinote", "obj-gen"), "midiin -> midiparse -> last held note -> gen midinote");
+ok(connected("obj-midiin", "obj-midiparse") && connected("obj-midiparse", "obj-midi-unpack") && connected("obj-midi-gate", "obj-prep-midinote") && intoHub("obj-prep-midinote"), "midiin -> midiparse -> last held note -> gen hub midinote");
 
 // ---------------------------------------------------------------------------------------------
 // 5. Display script evaluation (the only v8ui)
@@ -593,7 +617,7 @@ const hasCol = (sb, r, g, b, a) => sb.rgba.some((c) => Math.abs(c[0] - r) < 1e-6
 const dsb = makeSandbox(disp.presentation_rect, scopeMock);
 const fnDisp = new Function(
     "mgraphics", "Buffer", "Task", "outlet", "notifyclients",
-    disp.textfile.text + "\nreturn { set_mid, set_side, set_lock, set_auto, set_midi, vals: () => ({ mid: curMid, side: curSide }), mode: () => curMode, lock: () => curLock, set_gate, set_gmode, loadbang, setbuffer, set_res, set_mode, set_quality, midi_note, pullScope, paint, preview, onclick, ondrag, ondblclick, layoutRegions, barAxis01, res: () => curRes };"
+    disp.textfile.text + "\nreturn { set_mid, set_side, set_lock, set_auto, set_midi, vals: () => ({ mid: curMid, side: curSide }), mode: () => curMode, lock: () => curLock, set_gate, set_gmode, set_mix, loadbang, setbuffer, set_res, set_mode, set_quality, midi_note, pullScope, paint, preview, onclick, ondrag, ondblclick, layoutRegions, barAxis01, res: () => curRes, init_dsp, cepDsp, cepDspResend };"
 );
 const dui = fnDisp(dsb.mgraphics, dsb.Buffer, dsb.Task, dsb.outlet, () => {});
 eq(dsb.mgraphics.relative_coords, 0, "display: relative_coords 0");
@@ -679,6 +703,7 @@ ok(dsb.fills > 200, "display: dot matrix draws many dots");
     // Ceps gate: faint +/- threshold lines across the blue region only, gated-out stems dimmed; Spec mode shows none
     scopeMock[258] = 0.4;
     scopeMock[263] = 0.12;
+    scopeMock[259] += 1; // telemetry (including the gate threshold) lands with a new frame
     for (let i = 0; i < 20; i++) dui.pullScope();
     const faintBlue = (r) => isBl(r.c) && Math.abs(r.w - 1.6) < 1e-9 && Math.abs(r.c[3] - 0.5) < 1e-9;
     dui.set_gmode(0); dui.set_gate(50);
@@ -698,6 +723,7 @@ ok(dsb.fills > 200, "display: dot matrix draws many dots");
     ok(!dsb.rects.some(faintBlue), "Gate 0: no threshold lines");
     dui.set_gate(0); dui.set_gmode(0);
     scopeMock[263] = 0;
+    scopeMock[259] += 1;
     // silence: a flat dotted line at the vertical centre, orange left / blue right of the cutoff
     scopeMock[258] = 0;
     for (let i = 0; i < 80; i++) dui.pullScope();
@@ -768,5 +794,47 @@ dui.paint();
 dui.set_mode(1);
 dui.set_quality(2);
 dui.paint();
+
+dsb.texts.length = 0;
+dui.paint();
+ok(!dsb.texts.some((t) => /DSP loading|DSP failed/.test(t)), "Static paint draws no DSP pill");
+dui.cepDsp.createdAt = 1;
+dsb.texts.length = 0;
+dui.paint();
+ok(dsb.texts.some((t) => String(t).indexOf("DSP loading") === 0), "DSP pill appears once gen creation has started");
+dui.cepDsp.ready = 1;
+dsb.texts.length = 0;
+dui.paint();
+ok(!dsb.texts.some((t) => /DSP loading|DSP failed/.test(t)), "DSP pill hides once the gen is ready");
+dui.cepDsp.ready = 0;
+dui.cepDsp.createdAt = 0;
+dui.cepDsp.error = "not running";
+dsb.texts.length = 0;
+dui.paint();
+ok(dsb.texts.some((t) => String(t).indexOf("DSP failed:") === 0), "DSP failure pill names the reason");
+dui.cepDsp.error = "";
+dui.cepDsp.createdAt = 0;
+dsb.emitted.length = 0;
+dui.set_mode(0);
+dui.set_quality(1);
+dui.set_res(57);
+dui.set_mid(0);
+dui.set_side(0);
+dui.set_gate(0);
+dui.set_gmode(0);
+dui.set_mix(40);
+dui.midi_note(-1);
+dui.setbuffer("#0-cepscope");
+dsb.emitted.length = 0;
+dui.cepDspResend();
+assert.deepStrictEqual(dsb.emitted.map((m) => m[0]), ["scope", "res", "midshift", "sideshift", "gate", "wet", "quality", "resmode", "gatemode", "midinote"]);
+checks++;
+eq(dsb.emitted[0][1], "#0-cepscope", "Resend binds scope #0-cepscope");
+near(dsb.emitted[1][1], 0.57, 1e-9, "Resend sends the stored Res, scaled");
+near(dsb.emitted[5][1], 0.4, 1e-9, "Resend sends Mix as wet from stored UI state");
+ok(!dsb.emitted.some((m) => m[0] === "auto" || m[0] === "midi" || m[0] === "bang"), "Resend never bangs the Auto / MIDI toggles");
+dsb.tasks.length = 0;
+dui.init_dsp();
+ok(dsb.tasks.length === 1, "init_dsp waits one Task tick before creating the gen");
 
 console.log(`test_cepstra: ok (${checks} checks, 256x169, visible live.* controls + display v8ui)`);

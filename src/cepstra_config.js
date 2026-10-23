@@ -188,6 +188,21 @@ function columnRange(j, cols) {
     return [Math.floor((j * NUM_QUEF) / cols), Math.max(Math.floor(((j + 1) * NUM_QUEF) / cols), Math.floor((j * NUM_QUEF) / cols) + 1)];
 }
 
+// Display-column bounds, rebuilt only when the column count, quefrency span or FFT size changes.
+// The numeric edges follow columnRange (the 192 telemetry columns); qmax and n are part of the cache key
+// so a sample-rate or quality change does not keep a stale table.
+var cepColKey = "";
+var cepColTable = [];
+function columnBounds(cols, qmax, n) {
+    var key = cols + ":" + qmax + ":" + n;
+    if (key === cepColKey && cepColTable.length === cols) return cepColTable;
+    var out = new Array(cols);
+    for (var j = 0; j < cols; j++) out[j] = columnRange(j, cols);
+    cepColKey = key;
+    cepColTable = out;
+    return out;
+}
+
 // Signed value with the largest |c| over telemetry columns [i0, i1); valid = at least one real (non-sentinel) column.
 function poolSigned(values, i0, i1) {
     let best = 0;
@@ -338,5 +353,6 @@ if (nodeModule && nodeModule.exports) {
         midiPeriodSamples, lifterLagSamples, resFromLag, lagToMs, binFreq, freqToBinPos,
         gateRangeNepers, specPeakEnvelope, gateFineStructure, applyLock,
         fftInPlace, hannWindow, lifterWeight, cepstralSplit, interpEnv, shiftedLogMag,
+        columnBounds,
     };
 }
