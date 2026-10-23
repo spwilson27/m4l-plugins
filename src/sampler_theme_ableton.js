@@ -235,16 +235,21 @@ function abPaintAdsrRegion() {
     var g = abAdsrGeom(lx, ly, lw, lh, keys);
     abLcd(lx, ly, lw, lh);
     line(lx + 3, g.bot, lx + lw - 3, g.bot, AB.frame, 1.0, 1.0);
-    var pts = [[g.x0, g.bot], [g.xA, g.top]];
-    var i, t;
-    for (i = 1; i <= 10; i++) {
-        t = i / 10;
-        pts.push([g.xA + (g.xD - g.xA) * t, g.yS + (g.top - g.yS) * (1 - t) * (1 - t)]);
-    }
-    pts.push([g.xS, g.yS]);
-    for (i = 1; i <= 10; i++) {
-        t = i / 10;
-        pts.push([g.xS + (g.xR - g.xS) * t, g.bot - (g.bot - g.yS) * (1 - t) * (1 - t)]);
+    var adsrKey = [envPage, g.x0, g.xA, g.xD, g.xS, g.xR, g.top, g.bot, g.yS].join("|");
+    var pts = curveGeomGet("ab-adsr", adsrKey);
+    if (!pts) {
+        pts = [[g.x0, g.bot], [g.xA, g.top]];
+        var i, t;
+        for (i = 1; i <= 10; i++) {
+            t = i / 10;
+            pts.push([g.xA + (g.xD - g.xA) * t, g.yS + (g.top - g.yS) * (1 - t) * (1 - t)]);
+        }
+        pts.push([g.xS, g.yS]);
+        for (i = 1; i <= 10; i++) {
+            t = i / 10;
+            pts.push([g.xS + (g.xR - g.xS) * t, g.bot - (g.bot - g.yS) * (1 - t) * (1 - t)]);
+        }
+        curveGeomPut("ab-adsr", adsrKey, pts);
     }
     polygon(pts, AB.line1, 0.22);
     abPolyline(pts, AB.line1, 1.0, 1.1);
@@ -306,11 +311,17 @@ function abPaintFilterRegion() {
     var fc = Math.max(20, paramValue("filt_cutoff"));
     var resN = clamp01(paramValue("filt_res") / 100);
     var q = Math.pow(10, AB_FILT_DB * resN / 20);
-    var pts = [], cols = Math.floor(g.W / 2);
-    for (var c = 0; c <= cols; c++) {
-        var hz = 20 * Math.pow(1000, c / cols);
-        var db = Math.max(-40, Math.min(AB_FILT_DB + 3, abFiltDb(ft, hz, fc, q)));
-        pts.push([g.x0 + g.W * c / cols, Math.max(g.top, Math.min(g.bot, g.y0 - db * g.k))]);
+    var filtKey = [ft, fc, q, g.x0, g.W, g.top, g.bot, g.y0, g.k].join("|");
+    var pts = curveGeomGet("ab-filt", filtKey);
+    if (!pts) {
+        pts = [];
+        var cols = Math.floor(g.W / 2);
+        for (var c = 0; c <= cols; c++) {
+            var hz = 20 * Math.pow(1000, c / cols);
+            var db = Math.max(-40, Math.min(AB_FILT_DB + 3, abFiltDb(ft, hz, fc, q)));
+            pts.push([g.x0 + g.W * c / cols, Math.max(g.top, Math.min(g.bot, g.y0 - db * g.k))]);
+        }
+        curveGeomPut("ab-filt", filtKey, pts);
     }
     polygon(pts.concat([[g.x0 + g.W, g.bot], [g.x0, g.bot]]), AB.line1, 0.20 * al);
     abPolyline(pts, AB.line1, al, 1.1);

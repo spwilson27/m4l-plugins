@@ -670,9 +670,19 @@ fr_win(t, pk) {
 //   25 numFrames, 26 stride, 27 OLA start, 28 OLA first index, 29 stretch (1 / speed)
 // ---------------------------------------------------------------------------------------------
 
+// 2^n for a small integer n (0..12). A doubling loop stays exact; pow(2, n) is a real pow.
+pow2n(n) {
+	p2n = 1;
+	n2 = clip(floor(n + 0.5), 0, 12);
+	for (k2 = 0; k2 < n2; k2 += 1) {
+		p2n = p2n * 2;
+	}
+	return p2n;
+}
+
 // In-place radix-2 DIT pass `s` (1..log2 n) over bit-reversed input. sgn = +1 forward, -1 inverse (unscaled).
 fft_pass(sdat, sb, twr, twi, n, s, sgn) {
-	hlf = pow(2, s - 1);
+	hlf = pow2n(s - 1);
 	blk = hlf * 2;
 	tstep = 4096 / blk;
 	nb = n * 0.5;
@@ -873,6 +883,7 @@ job_map(sdat, sb, ch) {
 	off = ch * 2049;
 	tau = 6.28318530718;
 	scaleMask = (scaleV < 0.5) ? 2741 : 1453;
+	qDiv = qAmt * (1.0 / 12.0);
 	// Shadow phases (sdat 221568 + 4098 per voice, per channel and source bin): the phase a bend-free, quantise-free mapping gives
 	// each source bin (analysis phase at a lock, then advanced by the true frequency times the pitch ratio times the synthesis hop).
 	// Bend / Quantize / dispersion offset the synthesis phases from it. While the mapping is neutral the synthesis phases are pulled back
@@ -912,7 +923,7 @@ job_map(sdat, sb, ch) {
 						bestD = 99.0;
 						bestM = 0.0;
 						for (mm = 0; mm <= 12; mm += 1) {
-							okm = floor(scaleMask / pow(2, mm % 12)) % 2;
+							okm = floor(scaleMask / pow2n(mm - 12 * floor(mm / 12))) % 2;
 							dd = abs(xo - mm);
 							if ((okm > 0.5) && (dd < bestD)) {
 								bestD = dd;
@@ -921,7 +932,7 @@ job_map(sdat, sb, ch) {
 						}
 						tgt = (baseO + bestM + keyV) - (midiAbs - rel);
 					}
-					rk = rk * pow(2.0, (tgt - rel) * qAmt / 12.0);
+					rk = rk * pow(2.0, (tgt - rel) * qDiv);
 				}
 			}
 			j = k + round(wk * (rk - 1.0) * n / tau);
@@ -1054,7 +1065,7 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 	isNewTrig = ((vTrig != prevTrig) && (vGate > 0.5)) ? 1 : 0;
 	prevTrig = vTrig;
 	qIdx = round(clip(peek(prm, 50), 0, 2));
-	nWant = 1024 * pow(2, qIdx);
+	nWant = peek(prm, 35);
 	dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;
 	posMod = lfoSig * lfoPosAmt * 0.45 + modEnvPrev * menvPosAmt * 0.45;
 	speedUse = clip(speedIn, 0, 2);
@@ -1072,10 +1083,9 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 	noteSemi = ((slicedFlag > 0.5) ? rootMidi : curNote) + pSemis;
 	fNote = 440.0 * pow(2.0, (noteSemi - 69.0) / 12.0);
 	rootHz = 440.0 * pow(2.0, (rootHere - 69.0) / 12.0);
-	fmtSemi = formantSt * peek(prm, 41);
-	fEff = pow(2.0, clip(fmtSemi, -48, 48) / 12.0) * ((peek(prm, 52) > 0.5) ? pr : 1.0);
+	fEff = peek(prm, 37) * ((peek(prm, 52) > 0.5) ? pr : 1.0);
 	reharm = (peek(prm, 40) > 0.5) ? 1 : 0;
-	bendR = (reharm > 0.5) ? pow(2.0, clip(peek(prm, 42), -24, 24) / 12.0) : 1.0;
+	bendR = peek(prm, 36);
 
 	// Playhead behaviour: slice_play (Sliced) or the loop mode (Single).
 	slicePlayId = round(clip(slicePlay, 0, 3));
@@ -1326,7 +1336,8 @@ voice_proc(
 	extPos,
 	pitchBuf,
 	gtel,
-	telTick
+	telTick,
+	usp
 ) {
 	stB = vIdx * 256;
 	// Grain telemetry: on a telemetry tick every voice rewrites its 32 grain slots (position -1 = unused, level 0).
@@ -1487,7 +1498,7 @@ voice_proc(
 	// Decay / release bends blend back to the unbent progress over the last 2 % (smoothstep end-window), so every segment ends
 	// exactly where the internal envelope does (sus / final) and the idle cutoff never sees a step.
 	if (envStage == 1) {
-		esB = (slA != 0) ? pow(ampEnv, pow(4.0, -slA)) : ampEnv;
+		esB = (slA != 0) ? pow(ampEnv, peek(prm, 17)) : ampEnv;
 		aOut = aInit + (aPeak - aInit) * esB;
 	} else if (envStage == 2) {
 		esP = clip((ampEnv - susLevel) / max(1.0 - susLevel, 0.000001), 0, 1);
@@ -1495,7 +1506,7 @@ voice_proc(
 		if (slD != 0) {
 			esT = clip(esP / 0.02, 0, 1);
 			esW = esT * esT * (3.0 - 2.0 * esT);
-			esB = esP + (pow(esP, pow(4.0, -slD)) - esP) * esW;
+			esB = esP + (pow(esP, peek(prm, 18)) - esP) * esW;
 		}
 		aOut = susLevel + (aPeak - susLevel) * esB;
 	} else if (ampEnv > 0.00002) {
@@ -1504,12 +1515,12 @@ voice_proc(
 		if (slR != 0) {
 			esT = clip(esP / 0.02, 0, 1);
 			esW = esT * esT * (3.0 - 2.0 * esT);
-			esB = esP + (pow(esP, pow(4.0, -slR)) - esP) * esW;
+			esB = esP + (pow(esP, peek(prm, 19)) - esP) * esW;
 		}
 		aOut = relOutA * esB;
 	}
 	if (modStage == 1) {
-		emB = (slMA != 0) ? pow(modEnv, pow(4.0, -slMA)) : modEnv;
+		emB = (slMA != 0) ? pow(modEnv, peek(prm, 32)) : modEnv;
 		mOut = mInit + (mPeak - mInit) * emB;
 	} else if (modStage == 2) {
 		emP = clip((modEnv - msusLevel) / max(1.0 - msusLevel, 0.000001), 0, 1);
@@ -1517,7 +1528,7 @@ voice_proc(
 		if (slMD != 0) {
 			emT = clip(emP / 0.02, 0, 1);
 			emW = emT * emT * (3.0 - 2.0 * emT);
-			emB = emP + (pow(emP, pow(4.0, -slMD)) - emP) * emW;
+			emB = emP + (pow(emP, peek(prm, 33)) - emP) * emW;
 		}
 		mOut = msusLevel + (mPeak - msusLevel) * emB;
 	} else if (modEnv > 0.00002) {
@@ -1526,7 +1537,7 @@ voice_proc(
 		if (slMR != 0) {
 			emT = clip(emP / 0.02, 0, 1);
 			emW = emT * emT * (3.0 - 2.0 * emT);
-			emB = emP + (pow(emP, pow(4.0, -slMR)) - emP) * emW;
+			emB = emP + (pow(emP, peek(prm, 34)) - emP) * emW;
 		}
 		mOut = mFin + (relOutM - mFin) * emB;
 	}
@@ -1545,11 +1556,11 @@ voice_proc(
 
 	uCount = int(clip(round(unisonCount), 1, 8));
 	sampG = peek(prm, 55);
-	uNormGain = sampG / sqrt(max(uCount, 1));
+	uNormGain = peek(prm, 15);
 	dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;
 	driftPhs = fract(driftPhs + (0.22 + vSeed * 0.18) / max(srVal, 1));
 
-	formTarget = pow(2.0, clip(formantSt, -24, 24) / 12.0);
+	formTarget = peek(prm, 13);
 	needInit = isNewTrig || (lastMode != modeId);
 	if (needInit) {
 		scanDir = (dirSign < 0.0) ? -1.0 : 1.0;
@@ -1649,6 +1660,25 @@ voice_proc(
 	sigR = 0;
 	aliveCnt = 0;
 
+	// One unison_spread call site (it inlines pow + sin). Sub-voice pan gains are the same formula for
+	// Repitch, Cycles and Textures; Fragments adds its own motion on top of uFrac / detRatio.
+	if ((modeId < 2.5) || (modeId > 3.5)) {
+		for (u = 0; u < uCount; u += 1) {
+			uf0, dr0 = unison_spread(u, uCount, unisonDetune, driftPhs, vSeed);
+			poke(usp, uf0, u);
+			poke(usp, dr0, 8 + u);
+			if (modeId < 2.5) {
+				pan0 = clip(uf0 * unisonWidth + vPanSeed * 0.15, -1, 1);
+				poke(usp, sqrt(0.5 * (1.0 - pan0)), 16 + u);
+				poke(usp, sqrt(0.5 * (1.0 + pan0)), 24 + u);
+			}
+			if ((modeId < 0.5) || ((modeId > 1.5) && (modeId < 2.5))) {
+				chPh = driftPhs * 1.37 + u * 0.125 + vSeed;
+				poke(usp, sin(6.28318530718 * (chPh - floor(chPh))), 32 + u);
+			}
+		}
+	}
+
 	if (modeId < 0.5) {
 		// ---------------- REPITCH ----------------
 		spanF = max(effLEnd - effLStart, 4);
@@ -1674,7 +1704,7 @@ voice_proc(
 		fzPer = 4.0;
 		if (frzOn > 0.5) {
 			tgtF = clip(effStartNorm + playPosNorm * spanNorm + posMod, effStartNorm, effEndNorm) * numFrames;
-			slewC = 1.0 - exp(-1.0 / (0.018 * srVal));
+			slewC = peek(prm, 16);
 			headMid = peek(vhist, stB + 42);
 			if (needInit || (frzPrev < 0.5)) {
 				headMid = playFrames;
@@ -1711,7 +1741,7 @@ voice_proc(
 		frzWinS = fzLS;
 		playheadNorm = playFrames / max(numFrames, 1);
 
-		for (u = 0; u < 8; u += 1) {
+		for (u = 0; u < uCount; u += 1) {
 			pCur = (u == 0) ? cycPhs0 : ((u == 1) ? cycPhs1 : ((u == 2) ? cycPhs2 : ((u == 3) ? cycPhs3 : ((u == 4) ? cycPhs4 : ((u == 5) ? cycPhs5 : ((u == 6) ? cycPhs6 : cycPhs7))))));
 			if (frzOn > 0.5) {
 				// window-relative loop phase; entering the freeze starts it at the head of the loop
@@ -1728,11 +1758,10 @@ voice_proc(
 			}
 			pNext = pCur;
 			if (u < uCount) {
-				uFrac, detRatio = unison_spread(u, uCount, unisonDetune, driftPhs, vSeed);
-				pan = clip(uFrac * unisonWidth + vPanSeed * 0.15, -1, 1);
-				gL = sqrt(0.5 * (1.0 - pan));
-				gR = sqrt(0.5 * (1.0 + pan));
-				uChorus = sin(6.28318530718 * fract(driftPhs * 1.37 + u * 0.125 + vSeed)) * unisonDetune * 12.0;
+				detRatio = peek(usp, 8 + u);
+				gL = peek(usp, 16 + u);
+				gR = peek(usp, 24 + u);
+				uChorus = peek(usp, 32 + u) * unisonDetune * 12.0;
 				readPos = pCur;
 
 				if (frzOn > 0.5) {
@@ -1847,7 +1876,7 @@ voice_proc(
 		maxIdxC = max(numFrames - 1, 1);
 		ovQ = (cyXf > 0.5) ? 0.6 : 0.5;
 
-		for (u = 0; u < 8; u += 1) {
+		for (u = 0; u < uCount; u += 1) {
 			pCur = (u == 0) ? cycPhs0 : ((u == 1) ? cycPhs1 : ((u == 2) ? cycPhs2 : ((u == 3) ? cycPhs3 : ((u == 4) ? cycPhs4 : ((u == 5) ? cycPhs5 : ((u == 6) ? cycPhs6 : cycPhs7))))));
 			if (needInit) {
 				pCur = (u == 0) ? 0.0 : ((u == 1) ? 0.02 : ((u == 2) ? 0.05 : ((u == 3) ? 0.09 : ((u == 4) ? 0.14 : ((u == 5) ? 0.20 : ((u == 6) ? 0.27 : 0.35))))));
@@ -1864,10 +1893,9 @@ voice_proc(
 			pCur = fract(pCur);
 			pNext = pCur;
 			if (u < uCount) {
-				uFrac, detRatio = unison_spread(u, uCount, unisonDetune, driftPhs, vSeed);
-				pan = clip(uFrac * unisonWidth + vPanSeed * 0.15, -1, 1);
-				gL = sqrt(0.5 * (1.0 - pan));
-				gR = sqrt(0.5 * (1.0 + pan));
+				detRatio = peek(usp, 8 + u);
+				gL = peek(usp, 16 + u);
+				gR = peek(usp, 24 + u);
 				phsInc = clip((baseHz * detRatio) / max(srVal, 1), 0, 0.45);
 				pNext = fract(pCur + phsInc);
 				// Overlap-add: the current cycle fades in over its first q while the previous one, still reading the source past
@@ -2006,13 +2034,12 @@ voice_proc(
 		spraySpanF = grainSpray * 0.65 * max(endF - startF, 0);
 		maxIdxG = max(numFrames - 1, 1);
 
-		for (u = 0; u < 8; u += 1) {
+		for (u = 0; u < uCount; u += 1) {
 			if (u < uCount) {
-				uFrac, detRatio = unison_spread(u, uCount, unisonDetune, driftPhs, vSeed);
-				pan = clip(uFrac * unisonWidth + vPanSeed * 0.15, -1, 1);
-				gL = sqrt(0.5 * (1.0 - pan));
-				gR = sqrt(0.5 * (1.0 + pan));
-				uChorus = sin(6.28318530718 * fract(driftPhs * 1.37 + u * 0.125 + vSeed)) * unisonDetune * 18.0;
+				detRatio = peek(usp, 8 + u);
+				gL = peek(usp, 16 + u);
+				gR = peek(usp, 24 + u);
+				uChorus = peek(usp, 32 + u) * unisonDetune * 18.0;
 				sprA = (fract(rndA + u * 0.173 + vSeed * 0.31) - 0.5) * spraySpanF;
 				sprB = (fract(rndB + u * 0.271 + vSeed * 0.47) - 0.5) * spraySpanF;
 				travelA = (grainPhs - 0.5) * gLenSamps * srRat * dirSign * detRatio;
@@ -2040,12 +2067,7 @@ voice_proc(
 		sigR = extR * sampG;
 	} else {
 		// ---------------- FRAGMENTS ----------------
-		frLenS = max(grainSizeMs * 0.001 * srVal, 16.0);
-		if (peek(prm, 26) > 0.5) {
-			// Sync: snap the grain size to a power-of-two fraction / multiple of a beat.
-			beatMs = 60000.0 / clip(peek(prm, 31), 20, 999);
-			frLenS = max(beatMs * pow(2.0, round(log2(max(grainSizeMs, 1.0) / beatMs))) * 0.001 * srVal, 16.0);
-		}
+		frLenS = peek(prm, 38);
 		frDens = (peek(prm, 23) > 0.5) ? clip(peek(prm, 22), 0.1, 100) : 1.0;
 		frRep = floor(clip(peek(prm, 21), 1, 16) + 0.5);
 		frMaxGr = floor(clip(peek(prm, 25), 1, 32) + 0.5);
@@ -2081,7 +2103,7 @@ voice_proc(
 			}
 			baseP = playheadNorm * numFrames + ((freezeOn > 0.5) ? 0.0 : posMod * numFrames);
 			gScale = 1.0 / sqrt(max(1.0, 0.5 * min(frDens * frRep, frMaxGr)));
-			for (rp = 0; rp < 16; rp += 1) {
+			for (rp = 0; rp < frRep; rp += 1) {
 				if (rp < frRep - 0.5) {
 					// Round-robin pool: when it is full the oldest grain is replaced.
 					slot = floor(allocIdx - frMaxGr * floor(allocIdx / frMaxGr));
@@ -2094,7 +2116,8 @@ voice_proc(
 						altFlip = 0.0 - altFlip;
 						dsel = (frDirMode < 0.5) ? dirSign : ((frDirMode < 1.5) ? scanDir : ((frDirMode < 2.5) ? ((rC < 0.5) ? -1.0 : 1.0) : altFlip));
 						uIdx = spawnCnt % uCount;
-						uFrac, detRatio = unison_spread(uIdx, uCount, unisonDetune, driftPhs, vSeed);
+						uFrac = peek(usp, uIdx);
+						detRatio = peek(usp, 8 + uIdx);
 						pan = clip(uFrac * unisonWidth + vPanSeed * 0.15 + (rB - 0.5) * 2.0 * clip(frMot, 0, 1), -1, 1);
 						jitterP = (rA - 0.5) * 2.0 * frMot * frLenS * abs(stepRatio);
 						pStart = baseP + jitterP;
@@ -2244,6 +2267,7 @@ Data twr(2049);
 Data twi(2049);
 Data brv(4096);
 Data prm(72);
+Data usp(40);
 Data vst(6400);
 Data gtel(1024);
 Data gtout(72);
@@ -2395,6 +2419,11 @@ History scopeCount(0);
 History scopeFrame(0);
 History peakHoldL(0);
 History peakHoldR(0);
+History hCutC(0);
+History hFiltC(0);
+History hFrzS(0);
+History hSgC(0);
+History srCoefs(0);
 
 if (initDone == 0) {
 	init_tables(twr, twi, brv);
@@ -2452,6 +2481,8 @@ numFrames = max(dim(samp), 1);
 //   47 sp_onsets, 48 sp_formant_on, 49 sp_dispersion, 50 sp_quality, 51 sp_live, 52 sp_rel_formant,
 //   53 effective Analyzed Root Key flag (root_dyn on and #0-bspitch bound)
 //   54 file rate / DSP rate (samp_rate): source frames per output sample at pitch ratio 1
+//   13 formant ratio, 15 unison norm gain, 16 freeze-head slew, 17..19 / 32..34 slope exponents pow(4,-s),
+//   35 spectral FFT size, 36 bend ratio, 37 formant pow, 38 fragments grain length (samples)
 poke(prm, sliced, 0);
 poke(prm, rp_char, 1);
 poke(prm, rp_dist, 2);
@@ -2495,9 +2526,51 @@ rootDynOn = ((root_dyn > 0.5) && (dim(pitch) >= 2)) ? 1 : 0;
 poke(prm, rootDynOn, 53);
 srRatio = (samp_rate > 1000) ? clip(samp_rate / srVal, 0.05, 20.0) : 1.0;
 poke(prm, srRatio, 54);
+// Sample-rate constants (filter slew, freeze-head slew, sample-gain slew). They do not depend on a knob.
+// Names first assigned inside an if are invisible after it, so seed them here.
+cutNow = 0;
+filtNow = 0;
+frzNow = 0;
+sgNow = 0;
+if (srCoefs < 0.5) {
+	cutNow = exp(-1.0 / (0.002 * srVal));
+	filtNow = exp(-1.0 / (0.006 * srVal));
+	frzNow = 1.0 - exp(-1.0 / (0.018 * srVal));
+	sgNow = exp(-1.0 / (0.01 * srVal));
+	hCutC = cutNow + 0.0;
+	hFiltC = filtNow + 0.0;
+	hFrzS = frzNow + 0.0;
+	hSgC = sgNow + 0.0;
+	srCoefs = 1;
+} else {
+	cutNow = hCutC + 0.0;
+	filtNow = hFiltC + 0.0;
+	frzNow = hFrzS + 0.0;
+	sgNow = hSgC + 0.0;
+}
 // Sample gain, smoothed (10 ms); read by voice_proc as prm 55 (exactly 1.0 at 0 dB)
-sampGainLin = slew_val(pow(10.0, clip(samp_gain, -48, 24) / 20.0), exp(-1.0 / (0.01 * srVal)));
+sampGainLin = slew_val(pow(10.0, clip(samp_gain, -48, 24) / 20.0), sgNow);
 poke(prm, sampGainLin, 55);
+uCountG = int(clip(round(unison_voices), 1, 8));
+poke(prm, pow(2.0, clip(formant, -24, 24) / 12.0), 13);
+poke(prm, sampGainLin / sqrt(max(uCountG, 1)), 15);
+poke(prm, frzNow, 16);
+poke(prm, pow(4.0, 0.0 - clip(atk_slope, -1, 1)), 17);
+poke(prm, pow(4.0, 0.0 - clip(dec_slope, -1, 1)), 18);
+poke(prm, pow(4.0, 0.0 - clip(rel_slope, -1, 1)), 19);
+poke(prm, pow(4.0, 0.0 - clip(matk_slope, -1, 1)), 32);
+poke(prm, pow(4.0, 0.0 - clip(mdec_slope, -1, 1)), 33);
+poke(prm, pow(4.0, 0.0 - clip(mrel_slope, -1, 1)), 34);
+qIdxG = round(clip(sp_quality, 0, 2));
+poke(prm, 1024 * pow2n(qIdxG), 35);
+poke(prm, (sp_char > 0.5) ? pow(2.0, clip(sp_bend, -24, 24) / 12.0) : 1.0, 36);
+poke(prm, pow(2.0, clip(formant * sp_shift, -48, 48) / 12.0), 37);
+frLenG = max(grain_size * 0.001 * srVal, 16.0);
+beatMsG = 60000.0 / clip(tempo, 20, 999);
+if (fr_sync > 0.5) {
+	frLenG = max(beatMsG * pow(2.0, round(log2(max(grain_size, 1.0) / beatMsG))) * 0.001 * srVal, 16.0);
+}
+poke(prm, frLenG, 38);
 poke(prm, clip(atk_slope, -1, 1), 56);
 poke(prm, clip(dec_slope, -1, 1), 57);
 poke(prm, clip(rel_slope, -1, 1), 58);
@@ -2577,7 +2650,7 @@ for (vox = 0; vox < 16; vox += 1) {
 		}
 	}
 	if (voIdle < 0.5) {
-		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick);
+		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick, usp);
 	}
 	sumL = sumL + voL;
 	sumR = sumR + voR;
@@ -2592,9 +2665,9 @@ for (vox = 0; vox < 16; vox += 1) {
 // k falls from 2 (no resonance) toward 0 as filt_res rises, and stays positive.
 targetCut = filt_cutoff * pow(2.0, clip(filt_env_amt * maxModEnv * 5.0 + lfoSig * lfo_filt * 3.5, -6, 6));
 targetCut = clip(targetCut, 20.0, srVal * 0.45);
-cutCoef = exp(-1.0 / (0.002 * srVal));
+cutCoef = cutNow;
 effCutHz = clip(slew_val(targetCut, cutCoef), 20.0, srVal * 0.44);
-filtCoef = exp(-1.0 / (0.006 * srVal));
+filtCoef = filtNow;
 filtMix = clip(slew_val((filt_on > 0.5) ? 1.0 : 0.0, filtCoef), 0, 1);
 
 driveAmt = clip(filt_drive, 0, 1);

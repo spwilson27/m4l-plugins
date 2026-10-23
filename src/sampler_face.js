@@ -201,6 +201,19 @@ function polygon(pts, c, a) {
     mgraphics.fill();
 }
 
+// One cached polyline per id. `key` must include every parameter the points depend on (cutoff, resonance,
+// envelope times, slopes). A hit means the filter response or ADSR curve is not rebuilt this paint.
+var curveGeomCache = {};
+function curveGeomGet(id, key) {
+    var slot = curveGeomCache[id];
+    if (slot && slot.key === key) return slot.pts;
+    return null;
+}
+function curveGeomPut(id, key, pts) {
+    curveGeomCache[id] = { key: key, pts: pts };
+    return pts;
+}
+
 function zone(kind, x, y, w, h, props) {
     var z = props || {};
     z.kind = kind; z.x = x; z.y = y; z.w = w; z.h = h;
