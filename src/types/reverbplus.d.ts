@@ -4,8 +4,12 @@ declare var RP_ROLE: "start" | "end";
 declare var RP_BUILD: string;
 declare var GEN_DSP_TEXT: string;
 declare var GEN_DSP_HASH: string;
-/** parameter key -> [gen message, divisor] */
+/** file prefix for the deferred gen patch: "reverbplus_start" or "reverbplus_end" */
+declare var RP_DSP_PREFIX: string;
+/** parameter key -> [gen message, divisor]; empty on End */
 declare var RP_GEN_PARAMS: { [key: string]: [string, number] };
+/** raw parameter values held by the Start engine (absent until that script runs) */
+declare var rpRaw: { [key: string]: number };
 /** [box id, Live theme colour name, fallback rgba] */
 declare var RP_PANEL_THEME: Array<[string, string, number[]]>;
 /** parameter key -> varname (the long name) of its live.* object */

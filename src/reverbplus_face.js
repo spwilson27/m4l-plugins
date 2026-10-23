@@ -382,7 +382,7 @@ function rbDrawTone(L, w) {
     var p = rbParams();
     var bassOn = rpActive("bassmult");
     var T = RBT;
-    var i, f;
+    var i;
     // grid: decades, 0 dB and +-12 dB
     var fl = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
     for (i = 0; i < fl.length; i++) {
@@ -403,29 +403,23 @@ function rbDrawTone(L, w) {
     }
     var tk = [[100, "100"], [1000, "1k"], [10000, "10k"]];
     for (i = 0; i < tk.length; i++) rpText(tk[i][1], rbToneX(tk[i][0]) - 5, 100, 7, RPC.dim);
-    // decay profile (amber): area to the zero line, then the line
-    var step = 2;
-    var zy = rbToneY(0);
-    mgraphics.move_to(T.x0, zy);
-    for (f = T.x0; f <= T.x1; f += step) mgraphics.line_to(f, rbToneY(rbDecayDb(rbToneF(f), bassOn ? p.bassmult : 1, p.xover, p.damp)));
+    // decay profile (amber): area to the zero line, then the line. Curves are cached while the parameters hold.
+    var cv = rbToneCurves(p, bassOn);
+    var zy = cv.zy;
+    mgraphics.move_to(cv.xs[0], zy);
+    for (i = 0; i < cv.n; i++) mgraphics.line_to(cv.xs[i], cv.decay[i]);
     mgraphics.line_to(T.x1, zy);
     mgraphics.close_path();
     rpColor(RPC.amber, 0.12);
     mgraphics.fill();
-    for (f = T.x0; f <= T.x1; f += step) {
-        var ya = rbToneY(rbDecayDb(rbToneF(f), bassOn ? p.bassmult : 1, p.xover, p.damp));
-        if (f === T.x0) mgraphics.move_to(f, ya);
-        else mgraphics.line_to(f, ya);
-    }
+    mgraphics.move_to(cv.xs[0], cv.decay[0]);
+    for (i = 1; i < cv.n; i++) mgraphics.line_to(cv.xs[i], cv.decay[i]);
     rpColor(RPC.amber, 0.95);
     mgraphics.set_line_width(1.2);
     mgraphics.stroke();
     // output filter (cyan)
-    for (f = T.x0; f <= T.x1; f += step) {
-        var yc = rbToneY(rbFilterDb(rbToneF(f), p.lowcut, p.highcut));
-        if (f === T.x0) mgraphics.move_to(f, yc);
-        else mgraphics.line_to(f, yc);
-    }
+    mgraphics.move_to(cv.xs[0], cv.filt[0]);
+    for (i = 1; i < cv.n; i++) mgraphics.line_to(cv.xs[i], cv.filt[i]);
     rpColor(RPC.cyan, 1);
     mgraphics.set_line_width(1.6);
     mgraphics.stroke();
