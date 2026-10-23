@@ -8,7 +8,7 @@ Themes (Options section > Theme, Live parameter `Theme`, default LCD):
 
 How the switch works (details: AGENTS.md section 4):
   * Geometry is `computeXoLayout(theme, saved, filters, playback, options)` in src/xo_layouts/default.js; this file holds
-    its Python mirror (`layout_boxes`, used for the saved / default state; tests/test_xo_variants.js compares the two for
+    its Python mirror (`layout_boxes`, used for the saved / default state; tests/test_xo_layout.js compares the two for
     every theme x section combination), the per-theme colours / fonts / texts (`THEME_STYLE`, injected into the v8ui as
     XO_THEME_STYLE and applied with setattr when the theme changes), and the presentation-only extras.
   * Each themed parameter has ONE parameter object (a live.numbox: automation, mapping and presets work on it) plus a
@@ -30,7 +30,7 @@ DEFAULT_THEME = "Live"                  # the Theme parameter's initial value fo
 DEFAULT_SECTIONS = (1, 0, 0, 0)          # a NEW instance starts with the toolbar, map and Saved list only (Filters / Playback / Options closed)
 DEVICE_WIDTH = 414.0                     # DEFAULT_THEME, DEFAULT_SECTIONS; must equal computeXoLayout("Live", 1, 0, 0, 0).deviceWidth
 # obj-expr-width: device width from pak (saved filters playback options theme) = $i1 .. $i5 (theme 0 = LCD, 1 = Focus, 2 = Live).
-# Must equal computeXoLayout(...).deviceWidth for every theme x 16 section combinations (tests/test_xo_variants.js).
+# Must equal computeXoLayout(...).deviceWidth for every theme x 16 section combinations (tests/test_xo_layout.js).
 WIDTH_EXPR = ("expr 278 + $i1 * 136 + $i4 * 196 + $i2 * 214 + $i3 * (170 - 12 * ($i5 > 0))")
 # (no if(): a comma inside an expr box has to be escaped in Max; Playback is 12 px narrower in Focus and Live,
 #  `($i5 > 0)` is 0 for LCD and 1 for Focus / Live; Filters are 208 px in every theme)

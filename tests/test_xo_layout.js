@@ -1,28 +1,20 @@
 #!/usr/bin/env node
 /**
- * XO Sample Map: structural / layout checks for the default device and every layout variant.
- * Variants are the scripts/xo_layouts/<name>.py modules ("default", "A", "B", ...), built into
- * devices/XO Sample Map[ <name>].amxd with `python3 scripts/build_xo_map.py --all`.
+ * XO Sample Map: structural / layout checks of the built device (devices/XO Sample Map.amxd).
  *
- *   node tests/test_xo_variants.js            all variants present
- *   node tests/test_xo_variants.js C          only variant C (the per-variant gate)
- *   node tests/test_xo_variants.js default
+ *   node tests/test_xo_layout.js
  *
- * Every variant must: expose the same parameter table as the default; lay out all 8 Saved / Filters /
- * Playback combinations without overlap or overflow; keep the toolbar (three icon toggles) visible; agree
- * with its own computeXoLayout (src/xo_layouts/<name>.js); keep varnames and XO_LAYOUT_NAMES consistent;
- * be 169 px high; end the box list with background panels; never overlap a live.* with an interactive v8ui.
+ * The device must: lay out all 2 themes x 16 Saved / Filters / Playback / Options combinations without overlap or
+ * overflow; keep the toolbar (icon toggles) visible; agree with computeXoLayout (src/xo_layouts/default.js) and its Python
+ * mirror; keep varnames and XO_LAYOUT_NAMES consistent; be 169 px high; end the box list with background panels; never
+ * overlap a live.* with an interactive v8ui.
  */
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
 
 const ROOT = path.dirname(__dirname);
-const allNames = ["default", ...fs.readdirSync(path.join(ROOT, "scripts", "xo_layouts"))
-  .filter((f) => /\.py$/.test(f) && !f.startsWith("_") && f !== "default.py").map((f) => f.slice(0, -3)).sort()];
-const wanted = process.argv.slice(2);
-const names = wanted.length ? wanted : allNames;
-for (const n of names) assert(allNames.includes(n), `unknown variant ${n} (have ${allNames.join(", ")})`);
+const names = ["default"];
 
 const deviceFile = (name) => path.join(ROOT, "devices", name === "default" ? "XO Sample Map.amxd" : `XO Sample Map ${name}.amxd`);
 const readDevice = (name) => {
@@ -38,21 +30,6 @@ const layoutModule = (name) => {
   return require(file);
 };
 
-/** Parameter table: everything that must be identical across variants (presets / automation stay portable). */
-function paramTable(p) {
-  const rows = {};
-  for (const { box } of p.boxes) {
-    const vo = box.saved_attribute_attributes && box.saved_attribute_attributes.valueof;
-    if (!vo || !vo.parameter_longname) continue;
-    if (vo.parameter_invisible === 2 && /View$/.test(vo.parameter_longname)) continue;   // hidden Focus mirrors (default layout only)
-    const keep = {};
-    for (const k of Object.keys(vo).sort()) keep[k] = vo[k];
-    rows[vo.parameter_longname] = { varname: box.varname, valueof: keep };
-  }
-  return { rows, order: Object.keys(p.parameters).filter((k) => !k.endsWith("-mir")), banks: p.parameters.parameterbanks };
-}
-
-const baseTable = paramTable(readDevice("default"));
 const overlap = (a, b) => a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
 const contains = (o, i) => i[0] >= o[0] && i[1] >= o[1] && i[0] + i[2] <= o[0] + o[2] && i[1] + i[3] <= o[1] + o[3];
 const TOGGLES = ["obj-toggle-saved-btn", "obj-toggle-filters-btn", "obj-toggle-playback-btn"];
@@ -68,9 +45,8 @@ for (const name of names) {
     boxMap.set(box.id, box);
   }
 
-  // The default device is THEMED (computeXoLayout(theme, saved, filters, playback, options), themes LCD / Focus); the
-  // variant devices keep the three-argument layout.
-  const themed = Array.isArray(lay.XO_THEMES);
+  // The device is THEMED: computeXoLayout(theme, saved, filters, playback, options).
+  const themed = true;
   const callLayout = (cfg) => (themed ? lay.computeXoLayout(cfg.theme, cfg.s, cfg.f, cfg.p, cfg.o) : lay.computeXoLayout(cfg.s, cfg.f, cfg.p));
   /** every (theme x) section combination to check */
   const configs = [];
@@ -78,25 +54,13 @@ for (const name of names) {
     configs.push({ theme, s: n & 1, f: (n >> 1) & 1, p: (n >> 2) & 1, o: (n >> 3) & 1 });
   }
   // Height, width, title.
-  // saved / default state: the default device starts with Saved only; the variants keep all sections shown
+  // saved / default state: a new instance starts with Saved only
   const all = callLayout(themed ? { theme: "Live", s: 1, f: 0, p: 0, o: 0 } : { theme: null, s: 1, f: 1, p: 1, o: 0 });
   assert.strictEqual(p.devicewidth, all.deviceWidth, `${tag} devicewidth must equal the saved-state layout's deviceWidth`);
   assert.deepStrictEqual(p.openrect, [0, 0, all.deviceWidth, 169], `${tag} openrect (presentation height 169)`);
   assert.strictEqual(p.openinpresentation, 1, `${tag} openinpresentation`);
   assert.strictEqual(lay.XO_DEVICE_H, 169, `${tag} XO_DEVICE_H`);
   assert.strictEqual(p.title, name === "default" ? "XO Sample Map" : `XO Sample Map ${name}`, `${tag} title`);
-
-  // Identical parameter set, long names, ranges, defaults, order.
-  const table = paramTable(p);
-  assert.deepStrictEqual(table.order, baseTable.order, `${tag} parameter order must equal the default's`);
-  assert.deepStrictEqual(table.banks, baseTable.banks, `${tag} parameter banks must equal the default's`);
-  assert.deepStrictEqual(Object.keys(table.rows), Object.keys(baseTable.rows), `${tag} parameter set must equal the default's`);
-  for (const [long, row] of Object.entries(table.rows)) {
-    // the default device starts with Filters and Playback closed (a new instance); the variants keep them shown
-    const strip = (v) => (themed || !/^Show(Filters|Playback)Section$/.test(long)) ? v : Object.assign({}, v, { parameter_initial: baseTable.rows[long].valueof.parameter_initial });
-    assert.deepStrictEqual(strip(row.valueof), baseTable.rows[long].valueof, `${tag} parameter ${long}: name / range / default / type must equal the default's`);
-    assert.strictEqual(row.varname, baseTable.rows[long].varname, `${tag} parameter ${long}: varname`);
-  }
 
   // Built presentation rects equal the variant's own all-shown layout; every laid-out box exists.
   for (const [id, spec] of Object.entries(all.boxes)) {
@@ -198,5 +162,5 @@ for (const name of names) {
       }
     }
   }
-  console.log(`OK: variant ${name} (${p.devicewidth} x 169, ${Object.keys(table.rows).length} parameters, ${configs.length} layout combinations)`);
+  console.log(`OK: device (${p.devicewidth} x 169, ${configs.length} layout combinations)`);
 }

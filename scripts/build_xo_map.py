@@ -27,18 +27,12 @@ PALETTE_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_palette.js")
 LAYOUTS_DIR = os.path.join(ROOT_DIR, "scripts", "xo_layouts")
 
 
-def list_variants():
-    """Variant names with a scripts/xo_layouts/<name>.py module (default first, then A, B, ...)."""
-    names = sorted(f[:-3] for f in os.listdir(LAYOUTS_DIR) if f.endswith(".py") and not f.startswith("_") and f[:-3] != "default")
-    return ["default"] + names
-
-
-def load_layout(variant):
-    """Import scripts/xo_layouts/<variant>.py (a layout module: see scripts/xo_layouts/README.md)."""
+def load_layout(variant="default"):
+    """Import scripts/xo_layouts/default.py (the layout module: see scripts/xo_layouts/README.md)."""
     import importlib.util
     path = os.path.join(LAYOUTS_DIR, variant + ".py")
     if not os.path.isfile(path):
-        raise SystemExit("unknown variant %r (no %s)" % (variant, path))
+        raise SystemExit("missing layout module %s" % path)
     spec = importlib.util.spec_from_file_location("xo_layout_" + variant, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -1935,7 +1929,7 @@ def build(variant="default"):
                 "text": "apply_layout"
             }
         },
-        # --- Options toolbar toggle + Theme selector (parameters appended after every existing one; in the variant
+        # --- Options toolbar toggle + Theme selector (parameters appended after every existing one; in the default
         #     devices, which have no Options section, they stay as off-face parameters: presentation 0) ---
         {
             "box": {
@@ -2597,7 +2591,7 @@ def build(variant="default"):
     with open(LAYOUT_JS_PATH, "r", encoding="utf-8") as f:
         layout_js_code = f.read()
     themed = bool(getattr(layout, "THEMED", False))
-    # Variants list their ids as literals; the themed layout builds some ids in loops, so tests/test_xo_variants.js
+    # The themed layout builds some ids in loops, so tests/test_xo_layout.js
     # compares its ids (and rects, all 32 theme x section combinations) with RECTS / layout_boxes instead.
     layout_ids = set(layout.RECTS) if themed else set(re.findall(r'"(obj-[a-z0-9-]+)": \{ rect:', layout_js_code))
     # Options toggle, Theme selector and their wiring exist in every device; only a themed layout presents them.
@@ -2794,9 +2788,7 @@ def build(variant="default"):
 
 if __name__ == "__main__":
     import argparse
-    ap = argparse.ArgumentParser(description="Build devices/XO Sample Map[ <V>].amxd")
-    ap.add_argument("--variant", default="default", help="layout module scripts/xo_layouts/<name>.py (default: default)")
-    ap.add_argument("--all", action="store_true", help="build default plus every variant module present")
-    a = ap.parse_args()
-    for v in (list_variants() if a.all else [a.variant]):
-        build(v)
+    ap = argparse.ArgumentParser(description="Build devices/XO Sample Map.amxd")
+    ap.add_argument("--all", action="store_true", help="accepted for old commands; there are no variants, same as no flag")
+    ap.parse_args()
+    build()

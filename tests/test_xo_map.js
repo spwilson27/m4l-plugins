@@ -1777,7 +1777,7 @@ assert.strictEqual(getLayout().savedW, 136, "When Saved List is shown, savedW mu
   const attr = (id, a) => (fakeLayoutPatcher.attrs[builtLayoutNames[id]] || {})[a];
   assert.strictEqual(getXoThemeName(), "Live", "default theme is Live");
   assert.strictEqual(getShowOptions(), 0, "Options section starts closed");
-  assert.strictEqual(xoPaletteName, "Live", "the default theme's palette is active before any set_theme (the variant devices stay on \"default\")");
+  assert.strictEqual(xoPaletteName, "Live", "the default theme's palette is active before any set_theme");
   set_show_options(1);
   assert.strictEqual(hid("obj-panel-options"), 0);
   assert.strictEqual(hid("obj-theme-tab"), 0, "Options shows the Theme selector");
@@ -3309,5 +3309,5 @@ setTimeout(() => {
 }
 console.log("SUCCESS: All mono/stereo audio routing, M4L runtime 's' hotkey, native Cocoa OS file drag-out, scrollable/reorderable/deletable saved list, and Infinite MaxLen filter tests passed!");
 
-// Every layout variant (default, A..E): structural / layout checks (tests/test_xo_variants.js).
-require("child_process").execFileSync(process.execPath, [path.join(__dirname, "test_xo_variants.js")], { stdio: "inherit" });
+// Structural / layout checks of the built device (tests/test_xo_layout.js).
+require("child_process").execFileSync(process.execPath, [path.join(__dirname, "test_xo_layout.js")], { stdio: "inherit" });

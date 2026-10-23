@@ -37,8 +37,7 @@
  *      the Re-Seed tooltip shows the number, 1500 brings the full map back
  *   a2 a new instance starts with Saved only (Filters, Playback, Options closed): device width 414
  *
- *   node scripts/test_xo_live.js [--port 19879] [--ssh admin@192.168.64.4] [--variant C]
- *   (--variant picks src/xo_layouts/<V>.js; the set must hold devices/XO Sample Map <V>.amxd: scripts/vm_xo.sh run C)
+ *   node scripts/test_xo_live.js [--port 19879] [--ssh admin@192.168.64.4]
  */
 
 const { execFileSync } = require("child_process");
@@ -46,13 +45,11 @@ const path = require("path");
 
 const SERVER = path.join(__dirname, "ableton_mcp_server.js");
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i > 0 ? process.argv[i + 1] : d; };
-const VARIANT = arg("--variant", "default");  // layout variant under test: src/xo_layouts/<VARIANT>.js (default, A..E)
-const layoutModule = require(`../src/xo_layouts/${VARIANT}.js`);
+const layoutModule = require("../src/xo_layouts/default.js");
 const { XO_MAP_PANE_W } = layoutModule;
-// The default device is themed (LCD / Focus, plus an Options section); the variant devices keep 3 section toggles.
-const THEMED = Array.isArray(layoutModule.XO_THEMES);
-const THEMES = THEMED ? layoutModule.XO_THEMES : [null];
-const computeXoLayout = (theme, s, f, p, o) => (THEMED ? layoutModule.computeXoLayout(theme, s, f, p, o) : layoutModule.computeXoLayout(s, f, p));
+const THEMED = true;  // the device is themed (LCD / Focus / Live, plus an Options section)
+const THEMES = layoutModule.XO_THEMES;
+const computeXoLayout = (theme, s, f, p, o) => layoutModule.computeXoLayout(theme, s, f, p, o);
 const PORT = arg("--port", null);
 const SSH = arg("--ssh", null);
 

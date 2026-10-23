@@ -9,7 +9,7 @@
  * (src/xo_strip_ui.js), which applies it to the patcher (getnamed + presentation_rect / hidden), and required by
  * the tests. Keep it a global script (no top-level module.exports, AGENTS.md 1c). Contract:
  * scripts/xo_layouts/README.md. The Python mirror of this geometry is scripts/xo_layouts/default.py
- * (`layout_boxes`); tests/test_xo_variants.js compares them for every theme x section combination.
+ * (`layout_boxes`); tests/test_xo_layout.js compares them for every theme x section combination.
  *
  *   computeXoLayout(theme, saved, filters, playback, options) -> {theme, showSaved, showFilters, showPlayback,
  *     showOptions, toolbarW, optionsX, leftX, leftPanelW, minimapW, filtersX, playbackX, deviceWidth,
