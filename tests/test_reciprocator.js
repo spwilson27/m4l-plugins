@@ -10,13 +10,16 @@
  *  4. #0- instance isolation, `scope #0-recipscope` loadbang binding, and 4-panel z-order
  *  5. 3-stage signal-flow headers (`1. DETECT`, `2. 1 / ENV`, `3. OUTPUT`), `Output Mode` selection box
  *     placed directly above `Ceiling`, `Rev Gate` button under `Gate`, and zero widget overlap
- *  6. Complete patchline graph verification (controls -> `/ 100.` -> `prepend <param>` -> `obj-gen`,
- *     plus bidirectional `v8ui` drag -> `route gate ceiling` -> `obj-gen` & `prepend set`)
- *  7. `v8ui` runtime execution: pixel-coordinate mode (`relative_coords === 0`), live scope buffer
+ *  6. Complete patchline graph verification (controls -> `/ 100.` -> `prepend <param>` -> `obj-gen-in`,
+ *     plus bidirectional `v8ui` drag -> `route gate ceiling` -> gen hub & `prepend set`)
+ *  7. Deferred DSP: no static gen~, no plugin~ -> plugout~ bypass, GEN_DSP_TEXT / GEN_DSP_HASH,
+ *     gate hub, and live.thisdevice -> init_dsp
+ *  8. `v8ui` runtime execution: pixel-coordinate mode (`relative_coords === 0`), live scope buffer
  *     polling (`pullScope`), parameter setters (`set_revgate`, `set_outmode`), and Gate + Ceiling drag gestures
  */
 
 const assert = require("assert");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
@@ -67,7 +70,7 @@ assert.strictEqual(cfg.applyCeiling(0.4, 0.8, 2, 0.8), 0.4, "Limiter must stay l
 const gen = fs.readFileSync(GEN_PATH, "utf8");
 assert.ok(!gen.match(/\be\d/), "Never use e0..e9 identifiers in GenExpr (parsed as Euler's constant)");
 assert.ok(!gen.includes("delay("), "GenExpr must use Delay.read / Delay.write instead of delay()");
-const fnAt = gen.indexOf("slew(target, coef)");
+const fnAt = gen.indexOf("onepole_lp(x, coef)");
 const bufAt = gen.indexOf("\nBuffer ");
 const paramAt = gen.indexOf("\nParam ");
 const histAt = gen.indexOf("\nHistory ");
@@ -80,6 +83,22 @@ assert.strictEqual((gen.match(/^Delay /gm) || []).length, 2, "Expected 2 lookahe
 assert.ok(gen.includes("Param outmode(0.0);") && gen.includes("Param revgate(0.0);"), "GenExpr must declare outmode and revgate Params");
 assert.ok(gen.includes("isSilent") && gen.includes("recip_pow"), "GenExpr must include silence fast-path and recip_pow optimization");
 assert.ok(gen.includes("fixnan(outL)") && gen.includes("fixnan(outR)"), "Outputs must be protected with fixnan()");
+assert.ok(gen.includes("invCeilH = 1.0 / max(ceilLinH, 0.05)"), "Ceiling reciprocal must be cached");
+assert.ok(gen.includes("hpCoefH") && gen.includes("atkCoefH") && gen.includes("gateLinH") && gen.includes("lookSampsH") && gen.includes("dryGH"), "Param coefficients must be cached in History");
+assert.strictEqual((gen.match(/log10\(/g) || []).length, 1, "log10 belongs only in the telemetry write");
+assert.ok(gen.indexOf("log10(") > gen.indexOf("if (tick == 0)"), "log10 must run inside the 64-sample telemetry block");
+assert.ok(gen.includes("poke(scope, rollCounter, 7, 0)"), "Scope slot 7 is the frame head");
+{
+    const tickAt = gen.indexOf("if (tick == 0)");
+    const headAt = gen.indexOf("Frame head moves every 64 samples");
+    assert.ok(tickAt >= 0 && headAt > tickAt, "Frame head comment must sit in the telemetry block");
+    let depth = 0;
+    for (const ch of gen.slice(tickAt, headAt)) {
+        if (ch === "{") depth++;
+        else if (ch === "}") depth--;
+    }
+    assert.strictEqual(depth, 1, "Frame head poke stays in the 64-sample block, not a nested silence skip");
+}
 
 function rectsOverlap(a, b) {
     return !(a[0] + a[2] <= b[0] || b[0] + b[2] <= a[0] || a[1] + a[3] <= b[1] || b[1] + b[3] <= a[1]);
@@ -110,11 +129,28 @@ function verifyAmxd(amxdFile, expectedWidth) {
 
     assert.ok(byId["obj-plugin"] && byId["obj-plugin"].text === "plugin~", `${amxdFile}: Missing plugin~`);
     assert.ok(byId["obj-plugout"] && byId["obj-plugout"].text === "plugout~", `${amxdFile}: Missing plugout~`);
-    assert.ok(byId["obj-gen"] && byId["obj-gen"].maxclass === "gen.codebox~", `${amxdFile}: Missing gen.codebox~`);
-    assert.strictEqual(byId["obj-gen"].code, gen, `${amxdFile}: Embedded GenExpr mismatch`);
+    assert.strictEqual(byId["obj-plugin"].varname, "rcp_plugin", "plugin~ scripting name");
+    assert.strictEqual(byId["obj-plugout"].varname, "rcp_plugout", "plugout~ scripting name");
+    assert.ok(!byId["obj-gen"], `${amxdFile}: static gen.codebox~ must be gone (deferred gen~)`);
+    assert.ok(!boxes.some((b) => b.maxclass === "gen.codebox~" || b.maxclass === "gen~"), `${amxdFile}: device must ship without a gen~`);
+    assert.ok(!lines.some((l) => l.source[0] === "obj-plugin"), "plugin~ stays unconnected until the face wires the gen~");
+    assert.ok(!lines.some((l) => l.destination[0] === "obj-plugout"), "plugout~ stays unconnected until the face wires the gen~");
+    assert.ok(!lines.some((l) => l.source[0] === "obj-plugin" && l.destination[0] === "obj-plugout"), "No plugin~ -> plugout~ bypass");
+    const hub = byId["obj-gen-in"];
+    assert.ok(hub && hub.text === "gate 1 1" && hub.varname === "rcp_genin", "Missing open gate hub rcp_genin");
+    assert.ok(lines.some((l) => l.destination[0] === "obj-gen-in"), "Gen hub has no incoming cords");
+    for (const l of lines) {
+        if (l.destination[0] === "obj-gen-in") {
+            assert.strictEqual(l.destination[1], 1, "Every gen-bound cord must use the hub's data inlet");
+        }
+    }
     assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-recipscope", `${amxdFile}: Buffer bind message mismatch`);
-    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen"), "Missing loadbang -> scope #0-recipscope -> gen wiring");
+    assert.strictEqual(byId["obj-msg-gen-buf"].varname, "rcp_scopebind", "Scope bind message needs a scripting name");
+    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in"), "Missing loadbang -> scope #0-recipscope -> gen hub");
     assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"), "Missing loadbang -> setbuffer #0-recipscope -> viz wiring");
+    assert.strictEqual(byId["obj-thisdevice"].text, "live.thisdevice", "Missing live.thisdevice");
+    assert.strictEqual(byId["obj-msg-ui-dsp"].text, "init_dsp", "Missing init_dsp message");
+    assert.ok(hasLine("obj-thisdevice", "obj-msg-ui-dsp") && hasLine("obj-msg-ui-dsp", "obj-viz"), "live.thisdevice must bang init_dsp into the face");
 
     // Verify 3-stage signal flow headers
     assert.strictEqual(byId["obj-hdr-det"].text, "1. DETECT", "Missing 1. DETECT stage header");
@@ -145,7 +181,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
         assert.ok(ctrl && ctrl.varname === varname, `${amxdFile}: Missing control obj-ctrl-${key} (${varname})`);
         const prep = byId[`obj-prep-${key}`];
         assert.ok(prep && prep.text === `prepend ${genParam}`, `${amxdFile}: Missing prepend ${genParam}`);
-        assert.ok(hasLine(prep.id, "obj-gen"), `${amxdFile}: ${prep.id} not wired to obj-gen`);
+        assert.ok(hasLine(prep.id, "obj-gen-in"), `${amxdFile}: ${prep.id} not wired to the gen hub`);
         if (isPct) {
             const scale = byId[`obj-scale-${key}`];
             assert.ok(scale && scale.text === "/ 100.", `${amxdFile}: Percent param ${key} must scale by / 100.`);
@@ -158,7 +194,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
     // Verify Reverse Gate button (`obj-revgate`) and Output Mode selection box (`obj-outmode`) above Ceiling
     const revBtn = byId["obj-revgate"];
     assert.ok(revBtn && revBtn.maxclass === "live.text" && revBtn.varname === "Reverse Gate", "Missing Reverse Gate button");
-    assert.ok(hasLine("obj-revgate", "obj-prep-revgate") && hasLine("obj-prep-revgate", "obj-gen"), "Reverse Gate not wired to gen");
+    assert.ok(hasLine("obj-revgate", "obj-prep-revgate") && hasLine("obj-prep-revgate", "obj-gen-in"), "Reverse Gate not wired to gen hub");
     assert.ok(hasLine("obj-revgate", "obj-ui-revgate") && hasLine("obj-ui-revgate", "obj-viz"), "Reverse Gate not wired to viz");
 
     const outMenu = byId["obj-outmode"];
@@ -173,7 +209,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
         outMenu.presentation_rect[1] + outMenu.presentation_rect[3] <= ceilDial.presentation_rect[1],
         "Output Mode selection box must be positioned directly above the Ceiling dial"
     );
-    assert.ok(hasLine("obj-outmode", "obj-prep-outmode") && hasLine("obj-prep-outmode", "obj-gen"), "Output Mode not wired to gen");
+    assert.ok(hasLine("obj-outmode", "obj-prep-outmode") && hasLine("obj-prep-outmode", "obj-gen-in"), "Output Mode not wired to gen hub");
     assert.ok(hasLine("obj-outmode", "obj-ui-outmode") && hasLine("obj-ui-outmode", "obj-viz"), "Output Mode not wired to viz");
 
     // Verify bidirectional scope drag routing (obj-viz -> route gate ceiling -> gen & controls)
@@ -184,6 +220,23 @@ function verifyAmxd(amxdFile, expectedWidth) {
     const viz = byId["obj-viz"];
     assert.strictEqual(viz.maxclass, "v8ui");
     const vr = viz.presentation_rect;
+    const embedded = viz.textfile.text.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+    assert.ok(embedded, "The face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
+    const gendspText = JSON.parse(embedded[1]);
+    assert.strictEqual(embedded[2], crypto.createHash("sha1").update(gendspText).digest("hex").slice(0, 12), "GEN_DSP_HASH must match the .gendsp text");
+    const gendsp = JSON.parse(gendspText);
+    const gBoxes = Object.fromEntries(gendsp.patcher.boxes.map((b) => [b.box.id, b.box]));
+    assert.strictEqual(gBoxes["obj-in1"].text, "in 1");
+    assert.strictEqual(gBoxes["obj-in2"].text, "in 2");
+    assert.strictEqual(gBoxes["obj-out1"].text, "out 1");
+    assert.strictEqual(gBoxes["obj-out2"].text, "out 2");
+    assert.strictEqual(gBoxes["obj-code"].code, gen, "GEN_DSP_TEXT codebox must carry reciprocator_core.genexpr");
+    assert.ok(viz.textfile.text.includes('Global("reciprocator_dspq")'), "DSP create queue");
+    assert.ok(viz.textfile.text.includes("/tmp/reciprocator_core_"), "Deferred gen file path");
+    assert.ok(viz.textfile.text.includes('g.varname = "rcp_gen"'), "Created gen~ scripting name");
+    assert.ok(viz.textfile.text.includes("DSP loading..."), "Loading pill copy");
+    assert.ok(viz.textfile.text.includes("DSP failed:"), "Failure pill copy");
+    assert.ok(viz.textfile.text.includes("function init_dsp"), "init_dsp handler");
 
     const interactive = boxes.filter(
         (b) => b.presentation === 1 && b.id !== "obj-viz" && b.maxclass && b.maxclass.startsWith("live.") && b.maxclass !== "live.comment"
@@ -217,6 +270,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
 
     // Evaluate v8ui script and verify pixel-coordinate mode, live scope updates, setters, and drag gestures
     let scopeSamples = [0.22, 0.18, 1.0, 0.65, 0.78, 0.008, 0.89, 12];
+    let fullPeeks = 0;
     const drawOps = [];
     const emitted = [];
     const sandbox = {
@@ -237,7 +291,12 @@ function verifyAmxd(amxdFile, expectedWidth) {
             show_text(t) { drawOps.push("text:" + t); },
         },
         Buffer: function () {
-            this.peek = () => scopeSamples.slice();
+            this.peek = (_ch, start, count) => {
+                const n = count || scopeSamples.length;
+                const from = start || 0;
+                if (n > 1) fullPeeks++;
+                return scopeSamples.slice(from, from + n);
+            };
             this.poke = () => {};
         },
         Task: function (fn) {
@@ -276,14 +335,18 @@ function verifyAmxd(amxdFile, expectedWidth) {
     ui.ondrag(40, 28);
     assert.ok(emitted.some((m) => m[0] === "ceiling" && m[1] <= 0 && m[1] >= -18), "Dragging upper scope must emit ceiling dB");
 
-    // Verify idle-redraw suppression when audio is silent
+    // Verify idle-redraw suppression when audio is silent. A frozen frame head
+    // skips the 8-sample read; a moving head of real silence still settles.
     scopeSamples = [0, 0, 0, 0.25, 0, 0.008, 0.89, 55];
+    const peeksAtSilence = fullPeeks;
     for (let k = 0; k < 130; k++) {
         ui.pullScope();
     }
-    assert.strictEqual(ui.pullScope(), false, "pullScope() must return false and skip redraw once silent history settles");
+    assert.strictEqual(ui.pullScope(), false, "pullScope() must return false and skip redraw once the frame head is frozen");
+    assert.ok(fullPeeks - peeksAtSilence <= 2, "A frozen frame head must skip full scope reads");
     scopeSamples = [0.3, 0.25, 1.0, 0.6, 0.8, 0.008, 0.89, 56];
     assert.strictEqual(ui.pullScope(), true, "pullScope() must immediately resume redrawing when audio arrives");
+    assert.ok(!drawOps.some((op) => op.startsWith("text:DSP ")), "Static paint must not draw the DSP pill");
 }
 
 {

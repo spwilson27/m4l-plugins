@@ -11,6 +11,7 @@ Compact 3-Stage Signal-Flow layout (448 x 169 px):
     above the `Ceiling` dial, followed by the `Mix` dial.
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -258,6 +259,47 @@ def make_panel(obj_id, x, y, w, h, bg=(0.10, 0.11, 0.13), border=(0.22, 0.26, 0.
     }
 
 
+def gendsp_json(gen_code):
+    """2-in / 2-out .gendsp wrapper around codebox. The face writes it to
+    /tmp/reciprocator_core_<hash>.gendsp and creates `gen~ @gen <file>` after the GUI loads."""
+    def bx(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {
+            "id": i,
+            "maxclass": cls,
+            "numinlets": ni,
+            "numoutlets": no,
+            "outlettype": [""] * no,
+            "patching_rect": [float(x), float(y), 200.0, 22.0],
+        }
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+
+    patch = {
+        "patcher": {
+            "fileversion": 1,
+            "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+            "classnamespace": "dsp.gen",
+            "rect": [50.0, 50.0, 600.0, 450.0],
+            "boxes": [
+                bx("obj-in1", "in 1", 20, 20, 0, 1),
+                bx("obj-in2", "in 2", 120, 20, 0, 1),
+                bx("obj-code", "", 20, 60, 2, 2, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+                bx("obj-out1", "out 1", 20, 400, 1, 0),
+                bx("obj-out2", "out 2", 120, 400, 1, 0),
+            ],
+            "lines": [
+                {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+                {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+                {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+                {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+            ],
+        }
+    }
+    return json.dumps(patch)
+
+
 def build():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
@@ -265,7 +307,10 @@ def build():
         ui_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
-    v8_code = config_js.rstrip() + "\n\n" + ui_js
+    gen_text = gendsp_json(gen_code)
+    gen_hash = hashlib.sha1(gen_text.encode("utf-8")).hexdigest()[:12]
+    gen_vars = f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\nvar GEN_DSP_HASH = \"{gen_hash}\";\n"
+    v8_code = config_js.rstrip() + "\n\n" + gen_vars + "\n" + ui_js
 
     viz_rect = [10.0, 28.0, 162.0, 132.0]
     cyan = (0.28, 0.84, 0.96)
@@ -329,6 +374,7 @@ def build():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [20.0, 240.0, 52.0, 20.0],
                 "text": "plugin~",
+                "varname": "rcp_plugin",
             }
         },
         {
@@ -342,20 +388,21 @@ def build():
                 "outlettype": ["signal", "signal"],
                 "patching_rect": [20.0, 460.0, 58.0, 20.0],
                 "text": "plugout~",
+                "varname": "rcp_plugout",
             }
         },
         {
             "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
+                "fontname": "Arial Bold",
                 "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
+                "id": "obj-gen-in",
+                "maxclass": "newobj",
                 "numinlets": 2,
-                "numoutlets": 2,
-                "outlettype": ["signal", "signal"],
-                "patching_rect": [120.0, 300.0, 420.0, 140.0],
-                "varname": "reciprocator",
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [120.0, 300.0, 70.0, 20.0],
+                "text": "gate 1 1",
+                "varname": "rcp_genin",
             }
         },
         {
@@ -408,6 +455,33 @@ def build():
                 "outlettype": [""],
                 "patching_rect": [560.0, 360.0, 180.0, 20.0],
                 "text": "scope #0-recipscope",
+                "varname": "rcp_scopebind",
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-thisdevice",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["bang", "int"],
+                "patching_rect": [760.0, 300.0, 100.0, 20.0],
+                "text": "live.thisdevice",
+            }
+        },
+        {
+            "box": {
+                "fontname": "Arial Bold",
+                "fontsize": 10.0,
+                "id": "obj-msg-ui-dsp",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [760.0, 330.0, 70.0, 20.0],
+                "text": "init_dsp",
             }
         },
         {
@@ -543,20 +617,20 @@ def build():
     ]
 
     lines = [
-        {"patchline": {"source": ["obj-plugin", 0], "destination": ["obj-gen", 0]}},
-        {"patchline": {"source": ["obj-plugin", 1], "destination": ["obj-gen", 1]}},
-        {"patchline": {"source": ["obj-gen", 0], "destination": ["obj-plugout", 0]}},
-        {"patchline": {"source": ["obj-gen", 1], "destination": ["obj-plugout", 1]}},
+        # plugin~ stays unconnected until the face creates gen~ and wires
+        # rcp_plugin -> gen -> rcp_plugout. No dry bypass: output is silence while DSP loads.
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-ui-buf", 0]}},
         {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-gen-buf", 0]}},
         {"patchline": {"source": ["obj-msg-ui-buf", 0], "destination": ["obj-viz", 0]}},
-        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-msg-gen-buf", 0], "destination": ["obj-gen-in", 1]}},
+        {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ui-dsp", 0]}},
+        {"patchline": {"source": ["obj-msg-ui-dsp", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-outmode", 0], "destination": ["obj-prep-outmode", 0]}},
-        {"patchline": {"source": ["obj-prep-outmode", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-outmode", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-outmode", 0], "destination": ["obj-ui-outmode", 0]}},
         {"patchline": {"source": ["obj-ui-outmode", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-revgate", 0], "destination": ["obj-prep-revgate", 0]}},
-        {"patchline": {"source": ["obj-prep-revgate", 0], "destination": ["obj-gen", 0]}},
+        {"patchline": {"source": ["obj-prep-revgate", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-revgate", 0], "destination": ["obj-ui-revgate", 0]}},
         {"patchline": {"source": ["obj-ui-revgate", 0], "destination": ["obj-viz", 0]}},
         {"patchline": {"source": ["obj-ctrl-gate", 0], "destination": ["obj-ui-gate", 0]}},
@@ -573,6 +647,8 @@ def build():
         {"patchline": {"source": ["obj-route-viz", 1], "destination": ["obj-prep-ceiling", 0]}},
         {"patchline": {"source": ["obj-route-viz", 1], "destination": ["obj-set-ceil", 0]}},
         {"patchline": {"source": ["obj-set-ceil", 0], "destination": ["obj-ctrl-ceiling", 0]}},
+        # Unmatched viz messages (scope bind, revgate value) go to the gen hub's data inlet.
+        {"patchline": {"source": ["obj-route-viz", 2], "destination": ["obj-gen-in", 1]}},
     ]
 
     for i, (key, spec) in enumerate(PARAM_SPECS.items()):
@@ -617,7 +693,7 @@ def build():
             }
         )
         lines.append({"patchline": {"source": [src_id, 0], "destination": [prep_id, 0]}})
-        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen", 0]}})
+        lines.append({"patchline": {"source": [prep_id, 0], "destination": ["obj-gen-in", 1]}})
 
     # Background panels MUST be last in boxes and have "background": 1
     boxes.extend(

@@ -11,6 +11,7 @@ inlets = 1;
 outlets = 1;
 
 var scopeBuf = null;
+var scopeBufName = "";
 var scopeTask = null;
 
 var histIn = [];
@@ -78,7 +79,8 @@ function preview() {
 
 function setbuffer(name) {
     if (!name) return;
-    scopeBuf = new Buffer("" + name);
+    scopeBufName = "" + name;
+    scopeBuf = new Buffer(scopeBufName);
 }
 
 function set_gate(db) {
@@ -118,17 +120,40 @@ function sampleAt(chunk, idx) {
     return (v === v && v > 0) ? v : 0;
 }
 
+// peek(channel, start, count) is one sample in Max and sometimes the whole buffer in tests.
+function peekAt(buf, idx) {
+    var chunk = buf.peek(1, idx, 1);
+    if (typeof chunk === "number") return (chunk === chunk) ? chunk : 0;
+    if (!chunk || !chunk.length) return 0;
+    var v = chunk.length === 1 ? chunk[0] : chunk[idx];
+    if (typeof v !== "number" || v !== v) return 0;
+    return v;
+}
+
 function pullScope() {
     if (!scopeBuf) return false;
+    // Frame head first. A frozen head means the gen wrote nothing new.
+    var roll = peekAt(scopeBuf, 7);
+    if (roll === lastRollCounter) return false;
+
+    // Already scrolled out on silence: don't read the whole buffer or redraw
+    // until the input or output peak leaves the floor.
+    if (idleFrames > SCOPE_COLS + 4) {
+        var wakeIn = peekAt(scopeBuf, 0);
+        var wakeOut = peekAt(scopeBuf, 4);
+        lastRollCounter = roll;
+        if (wakeIn < 0.0001 && wakeOut < 0.0001) return false;
+        idleFrames = 0;
+    }
+
     var chunk = scopeBuf.peek(1, 0, 8);
     var inPk = clamp(sampleAt(chunk, 0), 0, 1);
     var envPk = clamp(sampleAt(chunk, 1), 0, 1);
     var gateOpen = clamp(sampleAt(chunk, 2), 0, 1);
     var gainNorm = clamp(sampleAt(chunk, 3), 0, 1);
     var outPk = clamp(sampleAt(chunk, 4), 0, 1);
-    var roll = sampleAt(chunk, 7);
 
-    var isQuiet = (inPk < 0.0001 && envPk < 0.0001 && outPk < 0.0001 && gateOpen < 0.001 && roll === lastRollCounter);
+    var isQuiet = (inPk < 0.0001 && envPk < 0.0001 && outPk < 0.0001 && gateOpen < 0.001);
     lastRollCounter = roll;
 
     if (isQuiet) {
@@ -168,6 +193,201 @@ function loadbang() {
         scopeTask.repeat();
     }
     mgraphics.redraw();
+}
+
+// Deferred DSP (AGENTS.md 1d). The device ships without gen~; one Task tick after
+// live.thisdevice (`init_dsp`) this face writes GEN_DSP_TEXT to
+// /tmp/reciprocator_core_<hash>.gendsp, creates `gen~ @gen <path>` (varname rcp_gen)
+// and wires rcp_genin -> gen, rcp_plugin -> gen -> rcp_plugout. Until that cord
+// exists the device is silent (plugin~ is not tied to plugout~). Messages the gen
+// drops while it compiles are sent again every 150 ms until scope slot 7 moves,
+// then once more 300 ms later. A gen~ that never joins the DSP chain is rebuilt
+// at 3.5 s and again at 6 s (two retries). Instances create one at a time.
+var rcpHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
+var rcpDsp = { ready: 0, error: "", createdAt: 0, counter0: -1, task: null, confirmTask: null, settleTask: null, retries: 0, scheduled: 0 };
+var RCP_DSP_RETRIES = 2;
+var RCP_DSP_CLAIM_MS = 15000;
+var RCP_DSP_QUEUE_POLL_MS = 100;
+var RCP_DSP_CONFIRM_MS = 150;
+var RCP_DSP_SETTLE_MS = 300;
+var RCP_DSP_FIRST_TIMEOUT_MS = 3500;
+var RCP_DSP_TIMEOUT_MS = 6000;
+var rcpDspToken = Math.random();
+// Non-toggle live objects. A bang outputs the current value. Reverse Gate is a
+// live.text toggle: banging it flips the parameter, so its value is sent instead.
+var RCP_REBANG = ["Amount", "Gate", "Attack", "Release", "Mix", "Ceiling", "Lookahead", "Detect", "SC HP", "SC LP", "Output Mode"];
+
+function rcpDspTimeout() {
+    return rcpDsp.retries === 0 ? RCP_DSP_FIRST_TIMEOUT_MS : RCP_DSP_TIMEOUT_MS;
+}
+
+function rcpDspPath() {
+    return "/tmp/reciprocator_core_" + GEN_DSP_HASH + ".gendsp";
+}
+
+/** @param {string} path */
+function rcpDspWriteFile(path) {
+    try {
+        var rf = new File(path, "read");
+        var have = rf.isopen && rf.eof === GEN_DSP_TEXT.length;
+        rf.close();
+        if (have) return true;
+    } catch (_) {}
+    var f = new File(path, "write", "TEXT");
+    if (!f.isopen) return false;
+    f.eof = 0;
+    for (var i = 0; i < GEN_DSP_TEXT.length; i += 16384) f.writestring(GEN_DSP_TEXT.substring(i, i + 16384));
+    f.close();
+    return true;
+}
+
+function rcpDspFrames() {
+    if (!scopeBuf || typeof Buffer === "undefined") return -1;
+    try {
+        return peekAt(scopeBuf, 7);
+    } catch (_) {
+        return -1;
+    }
+}
+
+function rcpDspChanged() {
+    if (typeof mgraphics !== "undefined" && mgraphics.redraw) mgraphics.redraw();
+}
+
+/** @param {string} varname @param {number} fallback */
+function rcpParamNumber(varname, fallback) {
+    if (!rcpHost) return fallback;
+    try {
+        var o = rcpHost.getnamed(varname);
+        if (!o || !o.valid) return fallback;
+        var v = o.getvalueof();
+        if (typeof v === "number") return v;
+        if (v && typeof v.length === "number" && v.length) return Number(v[0]);
+        var n = Number(v);
+        return n === n ? n : fallback;
+    } catch (_) {
+        return fallback;
+    }
+}
+
+// Buffer binding plus every gen parameter. Never bang the Reverse Gate toggle.
+function rcpDspResend() {
+    try {
+        if (rcpHost) {
+            var bind = rcpHost.getnamed("rcp_scopebind");
+            if (bind && bind.valid) bind.message("bang");
+        }
+    } catch (_) {}
+    if (scopeBufName) outlet(0, ["scope", scopeBufName]);
+    var i;
+    for (i = 0; i < RCP_REBANG.length; i++) {
+        try {
+            if (!rcpHost) break;
+            var o = rcpHost.getnamed(RCP_REBANG[i]);
+            if (o && o.valid) o.message("bang");
+        } catch (_) {}
+    }
+    var rv = rcpParamNumber("Reverse Gate", curRevGate);
+    curRevGate = rv > 0.5 ? 1 : 0;
+    outlet(0, ["revgate", curRevGate]);
+}
+
+function rcpDspClaim() {
+    var q = new Global("reciprocator_dspq");
+    var now = Date.now();
+    if (q.owner && q.owner !== rcpDspToken && now - Number(q.t) < RCP_DSP_CLAIM_MS) return false;
+    q.owner = rcpDspToken;
+    q.t = now;
+    return true;
+}
+
+function rcpDspRelease() {
+    try {
+        var q = new Global("reciprocator_dspq");
+        if (q.owner === rcpDspToken) q.owner = 0;
+    } catch (_) {}
+}
+
+function rcpDspLoad() {
+    if (rcpDsp.ready || rcpDsp.createdAt || !rcpHost || typeof GEN_DSP_TEXT === "undefined") return;
+    if (!rcpDspClaim()) {
+        if (!rcpDsp.task) rcpDsp.task = new Task(rcpDspLoad, this);
+        rcpDsp.task.schedule(RCP_DSP_QUEUE_POLL_MS);
+        return;
+    }
+    try {
+        var g = rcpHost.getnamed("rcp_gen");
+        if (!g || !g.valid) {
+            var path = rcpDspPath();
+            if (!rcpDspWriteFile(path)) throw new Error("cannot write " + path);
+            g = rcpHost.newdefault(40, 340, "gen~", "@gen", path);
+            if (!g) throw new Error("no gen~");
+            g.varname = "rcp_gen";
+            var hub = rcpHost.getnamed("rcp_genin");
+            var pin = rcpHost.getnamed("rcp_plugin");
+            var pout = rcpHost.getnamed("rcp_plugout");
+            if (!hub || !hub.valid || !pin || !pin.valid || !pout || !pout.valid) throw new Error("missing hub / plugin~ / plugout~");
+            rcpHost.connect(hub, 0, g, 0);
+            rcpHost.connect(pin, 0, g, 0);
+            rcpHost.connect(pin, 1, g, 1);
+            rcpHost.connect(g, 0, pout, 0);
+            rcpHost.connect(g, 1, pout, 1);
+        }
+        rcpDsp.createdAt = Date.now();
+        rcpDsp.counter0 = rcpDspFrames();
+        rcpDspConfirm();
+    } catch (err) {
+        rcpDsp.error = String(err && err.message ? err.message : err);
+        rcpDspRelease();
+        if (typeof post === "function") post("Reciprocator: DSP load failed: " + rcpDsp.error + "\n");
+    }
+    rcpDspChanged();
+}
+
+function rcpDspConfirm() {
+    var c = rcpDspFrames();
+    if (rcpDsp.counter0 >= 0 && c >= 0 && c !== rcpDsp.counter0) {
+        rcpDsp.ready = 1;
+        rcpDsp.error = "";
+        rcpDspRelease();
+        rcpDspResend();
+        if (typeof Task !== "undefined") {
+            if (!rcpDsp.settleTask) rcpDsp.settleTask = new Task(rcpDspResend, this);
+            rcpDsp.settleTask.schedule(RCP_DSP_SETTLE_MS);
+        }
+        rcpDspChanged();
+        return;
+    }
+    if (Date.now() - rcpDsp.createdAt > rcpDspTimeout() && rcpDsp.retries < RCP_DSP_RETRIES) {
+        rcpDsp.retries++;
+        try {
+            var old = rcpHost.getnamed("rcp_gen");
+            if (old && old.valid) rcpHost.remove(old);
+        } catch (_) {}
+        rcpDsp.createdAt = 0;
+        rcpDsp.counter0 = -1;
+        rcpDspLoad();
+        return;
+    }
+    if (Date.now() - rcpDsp.createdAt > rcpDspTimeout()) {
+        rcpDsp.error = "not running";
+        rcpDspRelease();
+        rcpDspChanged();
+        return;
+    }
+    rcpDspResend();
+    if (rcpDsp.counter0 < 0) rcpDsp.counter0 = c;
+    if (typeof Task === "undefined") return;
+    if (!rcpDsp.confirmTask) rcpDsp.confirmTask = new Task(rcpDspConfirm, this);
+    rcpDsp.confirmTask.schedule(RCP_DSP_CONFIRM_MS);
+}
+
+function init_dsp() {
+    if (rcpDsp.ready || rcpDsp.createdAt || rcpDsp.scheduled) return;
+    rcpDsp.scheduled = 1;
+    if (typeof Task === "undefined") return;
+    if (!rcpDsp.task) rcpDsp.task = new Task(rcpDspLoad, this);
+    rcpDsp.task.schedule(30);
 }
 
 function canvasSize() {
@@ -384,4 +604,20 @@ function paint() {
     mgraphics.set_source_rgba(0.18, 0.22, 0.28, 1.0);
     mgraphics.rectangle(0.5, 0.5, w - 1, h - 1);
     mgraphics.stroke();
+
+    // Only after a real load attempt. The static preview never calls init_dsp.
+    if (!rcpDsp.ready && (rcpDsp.createdAt > 0 || rcpDsp.error)) {
+        var dspLabel = rcpDsp.error ? ("DSP failed: " + String(rcpDsp.error).substring(0, 22)) : "DSP loading...";
+        var dspW = rcpDsp.error ? 128 : 78;
+        var dspX = Math.max(4, (w - dspW) * 0.5);
+        var dspY = h - 16;
+        mgraphics.set_source_rgba(0.05, 0.06, 0.08, 0.84);
+        mgraphics.rectangle(dspX, dspY, dspW, 12);
+        mgraphics.fill();
+        mgraphics.set_font_size(8);
+        if (rcpDsp.error) mgraphics.set_source_rgba(0.96, 0.48, 0.42, 0.95);
+        else mgraphics.set_source_rgba(0.96, 0.74, 0.42, 0.92);
+        mgraphics.move_to(dspX + 5, dspY + 9);
+        mgraphics.show_text(dspLabel);
+    }
 }
