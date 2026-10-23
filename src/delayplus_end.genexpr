@@ -65,6 +65,25 @@ History tick(0);
 History frames(0);
 History pkW(0);
 History pkD(0);
+// Mix-stage caches. History written this sample reads back its old value, so the fresh result is
+// a temp used the same sample. hdr[42] is already linear (Start caches dbtoa of Output).
+History cSrE(0);
+History smC(0);
+History atkC(0);
+History duckAtkC(0);
+History cDuckRel(-999);
+History relEnvC(1);
+History relDgC(0);
+History cDuckThr(-999);
+History thrC(1);
+History cOutRaw(-999);
+History outLinC(1);
+History cWet(-999);
+History wetSinC(0);
+History wetCosC(1);
+History duckReady(0);
+History duckRMax(1);
+History duckGMin(1);
 
 age = 0;
 j = 0;
@@ -73,6 +92,7 @@ av = 0;
 best = 0;
 bestV = 0;
 second = 0;
+take = 0;
 norm = 0;
 cand = 0;
 M = 4194304;
@@ -173,14 +193,14 @@ if (cN >= 8192) {
 	bestV = -1;
 	for (j = 0; j < 128; j += 1) {
 		av = abs(peek(acc, j));
-		if (av > bestV) {
-			bestV = av;
-			best = j;
-		}
+		take = av > bestV;
+		bestV = take * av + (1 - take) * bestV;
+		best = take * j + (1 - take) * best;
 	}
 	second = 0;
 	for (j = 0; j < 128; j += 1) {
-		if (abs(j - best) > 2) second = max(second, abs(peek(acc, j)));
+		av = abs(peek(acc, j));
+		second = max(second, av * (abs(j - best) > 2));
 	}
 	norm = bestV / sqrt(cEx * cEt + 1e-30);
 	if (cEx > 1e-7 && cEt > 1e-7 && norm > 0.4 && bestV > 1.5 * second && best > 0 && best < 127) {
@@ -215,29 +235,90 @@ poke(xfer, in2, wi, 3);
 // Mix stage. Equal-power Dry/Wet: wet = sin(90 deg x Dry/Wet), dry = cos(...), so the wet keeps
 // rising all the way to 100% (50% = both at -3 dB). The earlier Echo-style law (both at unity up to
 // 50%) stopped changing the wet above 50%, which Freeze made obvious.
+// sin/cos, exp and the output gain refresh only when wet, hdr[40..42] or the sample rate changes.
 wet = peek(hdr, 5);
 duckOn = peek(hdr, 6) > 0.5;
 duckThr = peek(hdr, 40);
 duckRel = max(peek(hdr, 41), 1);
-outG = peek(hdr, 42);
+outRaw = peek(hdr, 42);
 width = peek(hdr, 7);
-sm = 1 / (0.02 * sr);
-gw = gw + (sin(clip(wet, 0, 1) * pi * 0.5) - gw) * sm;
-gd = gd + (cos(clip(wet, 0, 1) * pi * 0.5) - gd) * sm;
-ws = ws + (width - ws) * sm;
+srChg = sr != cSrE;
+smNow = smC;
+atkNow = atkC;
+duckAtkNow = duckAtkC;
+if (srChg) {
+	smNow = 1 / (0.02 * sr);
+	atkNow = 1 - exp(-1 / (0.002 * sr));
+	duckAtkNow = 1 / (0.003 * sr);
+	smC = smNow;
+	atkC = atkNow;
+	duckAtkC = duckAtkNow;
+}
+relEnvNow = relEnvC;
+relDgNow = relDgC;
+if (srChg || duckRel != cDuckRel) {
+	relEnvNow = exp(-1 / (duckRel * 0.001 * sr));
+	relDgNow = 1 / (duckRel * 0.001 * sr);
+	cDuckRel = duckRel;
+	relEnvC = relEnvNow;
+	relDgC = relDgNow;
+}
+thrNow = thrC;
+if (duckThr != cDuckThr) {
+	thrNow = dbtoa(duckThr);
+	cDuckThr = duckThr;
+	thrC = thrNow;
+}
+outNow = outLinC;
+if (outRaw != cOutRaw) {
+	// hdr[42] is pow(10, outDb * 0.05), cached in the Start before it is poked
+	outNow = outRaw;
+	cOutRaw = outRaw;
+	outLinC = outNow;
+}
+wetNow = clip(wet, 0, 1);
+sinNow = wetSinC;
+cosNow = wetCosC;
+if (wetNow != cWet) {
+	sinNow = sin(wetNow * pi * 0.5);
+	cosNow = cos(wetNow * pi * 0.5);
+	cWet = wetNow;
+	wetSinC = sinNow;
+	wetCosC = cosNow;
+}
+rMaxNow = duckRMax;
+gMinNow = duckGMin;
+if (duckReady < 0.5) {
+	// 12 dB over threshold -> 24 dB of reduction: r = 10^0.6, gain = 10^-1.2 = 1/r^2
+	rMaxNow = pow(10, 0.6);
+	gMinNow = pow(10, -1.2);
+	duckRMax = rMaxNow;
+	duckGMin = gMinNow;
+	duckReady = 1;
+}
+if (srChg) cSrE = sr;
+gw = gw + (sinNow - gw) * smNow;
+gd = gd + (cosNow - gd) * smNow;
+ws = ws + (width - ws) * smNow;
 
 lvl = max(abs(dryL), abs(dryR));
 // Ducking (Echo): while the dry signal is above the threshold the echoes are pushed down, by up
 // to 24 dB the further it goes over; they come back with the release time.
-env = lvl > env ? env + (lvl - env) * (1 - exp(-1 / (0.002 * sr))) : env * exp(-1 / (duckRel * 0.001 * sr));
-envDb = 20 * log10(max(env, 0.00001));
-dgT = duckOn ? dbtoa(-clip((envDb - duckThr) * 2, 0, 24)) : 1;
-dg = dgT < dg ? dg + (dgT - dg) * (1 / (0.003 * sr)) : dg + (dgT - dg) * (1 / (duckRel * 0.001 * sr));
+// gain = 1 below the threshold, 1/r^2 up to 12 dB over, then 10^-1.2. Same curve as
+// dbtoa(-clip((envDb - duckThr) * 2, 0, 24)), with the envelope left linear.
+env = lvl > env ? env + (lvl - env) * atkNow : env * relEnvNow;
+envUse = max(env, 0.00001);
+duckR = thrNow > 0 ? envUse / thrNow : 0;
+hi = duckR >= rMaxNow;
+mid = (duckR > 1) * (1 - hi);
+dgLin = hi * gMinNow + mid / (duckR * duckR + (1 - mid)) + (1 - hi) * (1 - mid);
+dgT = duckOn * dgLin + (1 - duckOn);
+dg = dgT < dg ? dg + (dgT - dg) * duckAtkNow : dg + (dgT - dg) * relDgNow;
 
 mid = (in1 + in2) * 0.5;
 side = (in1 - in2) * 0.5 * ws;
-wL = (mid + side) * dg * outG;
-wR = (mid - side) * dg * outG;
+wL = (mid + side) * dg * outNow;
+wR = (mid - side) * dg * outNow;
 
 link = link + (alive ? 1 : -1) * (1 / 512);
 link = clip(link, 0, 1);
@@ -251,6 +332,8 @@ pkD = max(pkD, max(abs(dryL), abs(dryR)));
 tick = tick + 1;
 if (tick >= 64) {
 	tick = 0;
+	// Alive counter: one step every 64 samples, silence included. The face watches
+	// DP_ESCOPE.FRAMES (slot 7) to learn the deferred gen~ is in the DSP chain.
 	frames = wrap(frames + 1, 0, 1000000);
 	poke(hdr, pkW, 12);
 	poke(hdr, dg, 16);

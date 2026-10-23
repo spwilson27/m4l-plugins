@@ -115,6 +115,7 @@ function dpSetDiv(key, v) {
 }
 
 // Raw parameter values as they arrived (the deferred DSP re-sends the gen-bound ones).
+/** @type {{ [key: string]: number }} */
 var dpRaw = {};
 
 function dpSet(key, v) {

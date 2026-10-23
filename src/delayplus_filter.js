@@ -37,6 +37,13 @@ var fdLayers = [
 ];
 var fdFrame = new Array(DP_FFT_N);
 var fdLastHead = -1;
+// Response curve, rebuilt only when the cutoffs, resonances, filter enable or the pixel size change.
+var fdCurveKey = "";
+var fdCurvePts = null;
+
+function fdShown() {
+    return !!(filtdisp && fdPage === 0);
+}
 
 function fdSpecCols(w) {
     var n = Math.max(2, Math.floor(w));
@@ -76,7 +83,7 @@ function fdLayerFrame(L, head, peak) {
 }
 
 function fdSpecFrame() {
-    if (!filtdisp || fdPage !== 0) return; // only while the Filter Display is open on the Echo page
+    if (!fdShown()) return; // hidden, or not the Echo page: no FFT and no redraw
     if (!fdSpecBuf && fdSpecName) {
         try { fdSpecBuf = new Buffer(fdSpecName); } catch (e) { fdSpecBuf = null; }
     }
@@ -158,6 +165,20 @@ function fdClamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function fdFx(f, w) { return Math.log(f / FMIN) / LOGR * w; }
 function fdDbY(db, h) { return (DBHI - fdClamp(db, DBLO - 6, DBHI + 6)) / (DBHI - DBLO) * h; }
 
+function fdCurve(w, h) {
+    var n = Math.max(2, Math.floor(w));
+    var key = hp + "|" + hpres + "|" + lp + "|" + lpres + "|" + filton + "|" + n + "|" + h;
+    if (fdCurvePts && fdCurveKey === key) return fdCurvePts;
+    var pts = new Array(n + 1);
+    for (var i = 0; i <= n; i++) {
+        var f = FMIN * Math.exp(LOGR * i / n);
+        pts[i] = [i / n * w, fdDbY(fdMag(f), h)];
+    }
+    fdCurveKey = key;
+    fdCurvePts = pts;
+    return pts;
+}
+
 function fdMag(f) {
     var kh = 1.4142 * (1 - 0.95 * hpres), kl = 1.4142 * (1 - 0.95 * lpres);
     var wh = f / hp, wl = f / lp;
@@ -211,12 +232,8 @@ function paint() {
         mg.line_to(w, gy);
         mg.stroke();
     }
-    // curve
-    var pts = [], n = Math.max(2, Math.floor(w));
-    for (i = 0; i <= n; i++) {
-        f = FMIN * Math.exp(LOGR * i / n);
-        pts.push([i / n * w, fdDbY(fdMag(f), h)]);
-    }
+    // curve (cached while hp / resonance / filter enable / size are unchanged)
+    var pts = fdCurve(w, h);
     var cr = dim ? 0.5 : fdPal.line[0], cg = dim ? 0.5 : fdPal.line[1], cb = dim ? 0.5 : fdPal.line[2];
     mg.set_source_rgba(cr, cg, cb, 0.14);
     mg.move_to(0, h);
@@ -357,6 +374,10 @@ function ondrag(x, y, but, cmd, shift) {
 function onidle() {}
 function onidleout() {}
 
+function fdSnap() {
+    return [hp, hpres, lp, lpres, filton, filtdisp, fdPage, fdLayers[0].on, fdLayers[1].on].join("|");
+}
+
 function anything() {
     var m = messagename;
     if (m === "names") {
@@ -366,6 +387,8 @@ function anything() {
         return;
     }
     if (m.indexOf("set_") !== 0) return;
+    var shownBefore = fdShown();
+    var snap = fdSnap();
     var v = Number(arguments[0]);
     var k = m.substring(4);
     if (k === "hp") hp = fdClamp(v, FMIN, FMAX);
@@ -378,7 +401,9 @@ function anything() {
     else if (k === "page") fdPage = v;
     else if (k === "specwet") fdLayers[0].on = v ? 1 : 0;
     else if (k === "specdry") fdLayers[1].on = v ? 1 : 0;
-    mgraphics.redraw();
+    // Hidden, or the knobs and the spectrum toggles did not move: skip the redraw.
+    if (!fdShown()) return;
+    if (!shownBefore || snap !== fdSnap()) mgraphics.redraw();
 }
 
 // scripts/render_preview.py: dry = a 98 Hz sawtooth (Multiband Split's preview signal), wet = the

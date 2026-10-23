@@ -54,6 +54,8 @@ function anything() {
     else if (k === "lfohz") lfohz = v;
     else if (k === "lfodiv") lfodiv = v;
     else if (k === "page") page = v;
+    // Live dots and the waveform redraw on the Modulation page. Opening that page paints once.
+    if (page !== 1) return;
     mgraphics.redraw();
 }
 

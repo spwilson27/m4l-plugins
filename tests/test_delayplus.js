@@ -379,34 +379,91 @@ function embeddedGen(faceCode) {
     return patch.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox").code;
 }
 
-test("Delay+: deferred DSP (no gen~ in the file; hub, scripting names, dry passthrough, embedded gen)", () => {
-    const p = loadAmxd("Delay+");
+test("ducking gain matches the dB law without a per-sample log10", () => {
+    // End: 2 dB of reduction per 1 dB over the threshold, clipped at 24 dB.
+    const oldG = (env, thrDb) => {
+        const envDb = 20 * Math.log10(Math.max(env, 1e-5));
+        const over = Math.min(24, Math.max(0, (envDb - thrDb) * 2));
+        return Math.pow(10, -over / 20);
+    };
+    const newG = (env, thrDb) => {
+        const thr = Math.pow(10, thrDb / 20);
+        const r = Math.max(env, 1e-5) / thr;
+        const rMax = Math.pow(10, 0.6);
+        const gMin = Math.pow(10, -1.2);
+        if (r >= rMax) return gMin;
+        if (r > 1) return 1 / (r * r);
+        return 1;
+    };
+    for (const thr of [-60, -24, -12, 0]) {
+        for (let i = 0; i < 200; i++) {
+            const env = Math.pow(10, (-80 + i * 0.5) / 20);
+            near(newG(env, thr), oldG(env, thr), 1e-9, `thr ${thr} env ${env}`);
+        }
+    }
+});
+
+function assertDeferred(name, genFile, prefix) {
+    const p = loadAmxd(name);
     const boxes = p.boxes.map((b) => b.box);
     const byId = (id) => boxes.find((b) => b.id === id);
-    assert(!byId("obj-gen"), "the Start must not ship a gen~");
-    assert(!boxes.some((b) => /gen/.test(b.maxclass || "") && b.maxclass !== "v8ui"), "no gen object at all");
+    assert(!byId("obj-gen"), name + " must not ship a gen~");
+    assert(!boxes.some((b) => /gen/.test(b.maxclass || "") && b.maxclass !== "v8ui"), name + ": no gen object at all");
     assert.strictEqual(byId("obj-gen-in").text, "gate 1 1");
     assert.strictEqual(byId("obj-gen-in").varname, "dp_genin");
     assert.strictEqual(byId("obj-plugin").varname, "dp_plugin");
     assert.strictEqual(byId("obj-plugout").varname, "dp_plugout");
     const cord = (s, so, d, di) => p.lines.some((l) => l.patchline.source[0] === s && l.patchline.source[1] === so
         && l.patchline.destination[0] === d && l.patchline.destination[1] === di);
-    assert(cord("obj-plugin", 0, "obj-plugout", 0) && cord("obj-plugin", 1, "obj-plugout", 1), "dry passthrough until the gen loads");
+    assert(!p.lines.some((l) => l.patchline.source[0] === "obj-plugin" || l.patchline.destination[0] === "obj-plugout"),
+        name + ": silence during deferral (no static plugin~ / plugout~ cord)");
+    assert(!p.lines.some((l) => l.patchline.destination[0] === "obj-gen"), name + ": no cord to a gen that is not there");
     assert(!p.lines.some((l) => l.patchline.destination[0] === "obj-gen-in" && l.patchline.destination[1] === 0),
-        "nothing may close the hub (left inlet)");
+        name + ": nothing may close the hub (left inlet)");
     const code = byId("obj-viz").textfile.text;
-    const src = fs.readFileSync(path.join(ROOT, "src", "delayplus_start.genexpr"), "utf8");
-    assert.strictEqual(embeddedGen(code), src, "embedded gen = src/delayplus_start.genexpr");
+    const src = fs.readFileSync(path.join(ROOT, "src", genFile), "utf8");
+    assert.strictEqual(embeddedGen(code), src, "embedded gen = src/" + genFile);
     assert(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(code));
+    assert(code.includes('var DP_DSP_PREFIX = "' + prefix + '";'), prefix);
+    assert(/function dpDspLoad\(/.test(code) && /dpDspSchedule\(\)/.test(code));
+    assert(code.includes('Global("delayplus_dspq")'), name + " shares the gen~ creation queue");
+    return { p, boxes, byId, cord, code };
+}
+
+test("Delay+ and Delay+ End: deferred gen~, hub, silence while it loads", () => {
+    const start = assertDeferred("Delay+", "delayplus_start.genexpr", "delayplus_start");
     // every prepend into the hub is a parameter the face re-sends (DP_GEN_PARAMS)
-    const gp = JSON.parse(code.match(/^var DP_GEN_PARAMS = (.*);$/m)[1]);
-    const into = boxes.filter((b) => /^prepend /.test(b.text || "") && p.lines.some((l) => l.patchline.source[0] === b.id
+    const gp = JSON.parse(start.code.match(/^var DP_GEN_PARAMS = (.*);$/m)[1]);
+    const into = start.boxes.filter((b) => /^prepend /.test(b.text || "") && start.p.lines.some((l) => l.patchline.source[0] === b.id
         && l.patchline.destination[0] === "obj-gen-in")).map((b) => b.text.split(" ")[1]);
     const sent = new Set(Object.values(gp).map((v) => v[0]));
     for (const m of into) assert(sent.has(m), m + " not re-sent after the gen loads");
-    assert(/function dpDspLoad\(/.test(code) && /dpDspSchedule\(\)/.test(code));
-    // the End keeps its (small, ~0.1 s) gen
-    assert(loadAmxd("Delay+ End").boxes.some((b) => b.box.id === "obj-gen"));
+    assert(/dpTrace\(readyTag, "ready after "/.test(start.code));
+    assert(start.code.includes('? "end-dsp" : "dsp"'), "End's ready line must not match the Start count");
+
+    const end = assertDeferred("Delay+ End", "delayplus_end.genexpr", "delayplus_end");
+    for (const id of ["obj-msg-local", "obj-prep-xfer", "obj-prep-hdr"]) {
+        assert(end.cord(id, 0, "obj-gen-in", 1), id + " -> hub data inlet");
+    }
+    assert.strictEqual(end.byId("obj-msg-local").text, "scope ---dpscopeE, xfer ---dpxferE, hdr ---dphdrE");
+    assert.strictEqual(end.byId("obj-prep-xfer").text, "prepend xfer");
+    assert.strictEqual(end.byId("obj-prep-hdr").text, "prepend hdr");
+    assert(end.code.includes("DP_ESCOPE.FRAMES"), "End confirm watches the End scope frame counter");
+    const endGen = fs.readFileSync(path.join(ROOT, "src", "delayplus_end.genexpr"), "utf8");
+    assert(/poke\(scope, frames, 7\)/.test(endGen), "End frame counter is scope slot 7");
+    assert(!/log10/.test(endGen), "End ducking no longer takes log10 per sample");
+    const tickAt = endGen.indexOf("if (tick >= 64)");
+    const framesAt = endGen.indexOf("frames = wrap(frames + 1");
+    assert(framesAt > tickAt, "frame counter steps on the 64-sample tick, including silence");
+    const startGen = fs.readFileSync(path.join(ROOT, "src", "delayplus_start.genexpr"), "utf8");
+    const clipAt = startGen.indexOf("atodb(max(clipHold");
+    assert(clipAt > startGen.indexOf("if (tick >= 64)"), "CLIP_DB log stays on the telemetry tick");
+    assert(startGen.includes("History ingC") && startGen.includes("History slewC") && startGen.includes("History clipInvC"));
+    assert(endGen.includes("History relEnvC") && endGen.includes("History wetSinC"));
+    // End draws the loading pill only after creation has started (preview leaves createdAt at 0).
+    const endUi = fs.readFileSync(path.join(ROOT, "src", "delayplus_end_ui.js"), "utf8");
+    assert(endUi.includes("dpDsp.createdAt > 0 || dpDsp.error"));
+    assert(endUi.includes("DSP LOADING"));
 });
 
 function loadAmxd(name) {

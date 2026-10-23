@@ -60,7 +60,9 @@ herm(dat, chn, pos, size) {
 }
 
 lfoshape_val(shp, p, nz) {
-	v = sin(p * twopi);
+	v = 0;
+	// sine only for the sine shape; the other five replace v entirely
+	if (shp == 0) v = sin(p * twopi);
 	if (shp == 1) v = 1 - 4 * abs(p - 0.5);
 	if (shp == 2) v = 2 * p - 1;
 	if (shp == 3) v = 1 - 2 * p;
@@ -221,6 +223,39 @@ History hTL(0);
 History hTR(0);
 History hHead(0);
 History ptap(0);
+// Knob / sample-rate caches. A History written this sample reads back its old value, so the fresh
+// result is kept in a temp and used the same sample; the next sample reads the History.
+History cInDb(-999);
+History ingC(1);
+History cGateThr(-999);
+History gateThrC(0.001);
+History cGateRel(-999);
+History gateRelC(0);
+History gateAtkC(0);
+History envRelC(1);
+History gateEnvRelC(1);
+History cClipDb(-999);
+History clipLinC(1);
+History clipInvC(1);
+History cOutDb(-999);
+History outLinC(1);
+History cSrCoef(0);
+History k50C(0);
+History igC(0);
+History cRepSm(-999);
+History slewC(0);
+History wowKC(0);
+History flutKC(0);
+History wowNC(1);
+History flutNC(1);
+History cWobOn(-1);
+History cWobAmt(-1);
+History wobSC(0);
+History cNzAmt(-1);
+History cNzMorph(-1);
+History nzThrC(1);
+History nzHissC(0);
+History nzCrkC(0);
 
 tmp = 0;
 gOpen = 0;
@@ -235,6 +270,100 @@ M = 4194304;
 RING = 65536;
 TANK = 524288;
 sr = max(samplerate, 1);
+
+// pow / exp / the 50 ms one-pole, only when the knob or the sample rate changed.
+srChg = sr != cSrCoef;
+ingNow = ingC;
+if (inputdb != cInDb) {
+	ingNow = dbtoa(clip(inputdb, -36, 12));
+	cInDb = inputdb;
+	ingC = ingNow;
+}
+thrNow = gateThrC;
+if (gatethr != cGateThr) {
+	thrNow = dbtoa(clip(gatethr, -60, 0));
+	cGateThr = gatethr;
+	gateThrC = thrNow;
+}
+outNow = outLinC;
+if (outdb != cOutDb) {
+	outNow = dbtoa(clip(outdb, -36, 12));
+	cOutDb = outdb;
+	outLinC = outNow;
+}
+cTnow = clipLinC;
+clipInvNow = clipInvC;
+if (cliplevel != cClipDb) {
+	cTnow = dbtoa(clip(cliplevel, -18, 6));
+	clipInvNow = 1 / cTnow;
+	cClipDb = cliplevel;
+	clipLinC = cTnow;
+	clipInvC = clipInvNow;
+}
+envRelNow = envRelC;
+gateEnvRelNow = gateEnvRelC;
+gateAtkNow = gateAtkC;
+k50Now = k50C;
+igNow = igC;
+wowKNow = wowKC;
+flutKNow = flutKC;
+wowNNow = wowNC;
+flutNNow = flutNC;
+if (srChg) {
+	envRelNow = exp(-1 / (0.15 * sr));
+	gateEnvRelNow = exp(-1 / (0.01 * sr));
+	gateAtkNow = 1 / (0.001 * sr);
+	k50Now = 1 / (0.05 * sr);
+	igNow = 1 / (0.01 * sr);
+	wowKNow = 1 / (0.25 * sr);
+	flutKNow = 1 / (0.012 * sr);
+	wowNNow = floor(sr * 0.35);
+	flutNNow = floor(sr * 0.045);
+	envRelC = envRelNow;
+	gateEnvRelC = gateEnvRelNow;
+	gateAtkC = gateAtkNow;
+	k50C = k50Now;
+	igC = igNow;
+	wowKC = wowKNow;
+	flutKC = flutKNow;
+	wowNC = wowNNow;
+	flutNC = flutNNow;
+}
+gateRelNow = gateRelC;
+if (srChg || gaterel != cGateRel) {
+	gateRelNow = exp(-1 / (clip(gaterel, 1, 2000) * 0.001 * sr));
+	cGateRel = gaterel;
+	gateRelC = gateRelNow;
+}
+slewNow = slewC;
+if (srChg || repsmooth != cRepSm) {
+	slewNow = 1 - exp(-1 / (max(repsmooth, 1) * 0.001 * sr));
+	cRepSm = repsmooth;
+	slewC = slewNow;
+}
+wobNow = wobSC;
+if (srChg || wobon != cWobOn || wobamt != cWobAmt) {
+	wobNow = (wobon > 0.5) * clip(wobamt, 0, 1) * 0.003 * sr;
+	cWobOn = wobon;
+	cWobAmt = wobamt;
+	wobSC = wobNow;
+}
+nmNow = clip(noisemorph, 0, 1);
+nzThrNow = nzThrC;
+nzHissNow = nzHissC;
+nzCrkNow = nzCrkC;
+if (noiseamt != cNzAmt || noisemorph != cNzMorph) {
+	nzG = clip(noiseamt, 0, 1) * 0.06;
+	nzThrNow = 1 - 0.0004 * (0.2 + nmNow);
+	nzHissNow = 0.25 * (1 - nmNow) * nzG;
+	nzCrkNow = nmNow * nzG;
+	cNzAmt = noiseamt;
+	cNzMorph = noisemorph;
+	nzThrC = nzThrNow;
+	nzHissC = nzHissNow;
+	nzCrkC = nzCrkNow;
+}
+if (srChg) cSrCoef = sr;
 
 // ---- counters / link -------------------------------------------------------------------------
 cn = wrap(cnt + 1, 0, M);
@@ -308,7 +437,7 @@ poke(hdr, duckon > 0.5, 6);
 poke(hdr, clip(width, 0, 2), 7);
 poke(hdr, clip(duckthr, -60, 0), 40);
 poke(hdr, clip(duckrel, 1, 2000), 41);
-poke(hdr, dbtoa(clip(outdb, -36, 12)), 42);
+poke(hdr, outNow, 42);
 poke(hdr, freeze > 0.5, 13);
 
 // ---- dry into the ring ---------------------------------------------------------------------
@@ -351,7 +480,7 @@ fL0 = fL;
 fR0 = fR;
 dAmt = clip(diffuse, 0, 1);
 dTgt = (0.1 + 0.9 * clip(dsize, 0, 1)) * min(1, dAmt * 5) * sr / 48000;
-dScale = dScale + (dTgt - dScale) * (1 / (0.05 * sr));
+dScale = dScale + (dTgt - dScale) * k50Now;
 dScale = dScale < 0.00001 && dTgt == 0 ? 0 : dScale;
 dTot = floor(1788 * dScale + 0.5);
 dg = 0.7 * dAmt;
@@ -399,22 +528,22 @@ fL = dTot > 0 ? fixdenorm(aR4 - dg * aW4) : fL0;
 fR = dTot > 0 ? fixdenorm(bR4 - dg * bW4) : fR0;
 
 // ---- tank write: input at the head, return at its original emit position ---------------------
-ig = ig + (frz ? 0 - ig : 1 - ig) * (1 / (0.01 * sr));
+ig = ig + (frz ? 0 - ig : 1 - ig) * igNow;
 // Input gain and Echo's "D" (soft clip), then the gate (opens above its threshold, closes after
 // its release), all on the signal that enters the tank only; the dry path stays untouched.
-ing = dbtoa(clip(inputdb, -36, 12));
-xL = in1 * ing;
-xR = in2 * ing;
+xL = in1 * ingNow;
+xR = in2 * ingNow;
 if (clipdry > 0.5) {
 	xL = tanh(xL);
 	xR = tanh(xR);
 }
 lvl = max(abs(in1), abs(in2));
-envIn = lvl > envIn ? lvl : envIn * exp(-1 / (0.15 * sr));
-gateEnv = lvl > gateEnv ? lvl : gateEnv * exp(-1 / (0.01 * sr));
+envIn = lvl > envIn ? lvl : envIn * envRelNow;
+gateEnv = lvl > gateEnv ? lvl : gateEnv * gateEnvRelNow;
 if (gateon > 0.5) {
-	gOpen = atodb(max(gateEnv, 0.000001)) > clip(gatethr, -60, 0);
-	gateG = gOpen ? gateG + (1 - gateG) * (1 / (0.001 * sr)) : gateG * exp(-1 / (clip(gaterel, 1, 2000) * 0.001 * sr));
+	// gateEnv > dbtoa(threshold) == atodb(gateEnv) > threshold, and the threshold is never below -60 dB
+	gOpen = gateEnv > thrNow;
+	gateG = gOpen ? gateG + (1 - gateG) * gateAtkNow : gateG * gateRelNow;
 } else {
 	gateG = 1;
 }
@@ -452,7 +581,7 @@ fi = wrap(cn - bb - ll - dTot, 0, TANK);
 // (inlined: the same expressions as a helper function with locals broke compilation, see AGENTS.md)
 sumL = peek(tank, fi, 0) + fL;
 sumR = peek(tank, fi, 1) + fR;
-cT = dbtoa(clip(cliplevel, -18, 6));
+cT = cTnow;
 cK = 0.8 * cT;
 amL = max(abs(sumL), cK);
 amR = max(abs(sumR), cK);
@@ -460,7 +589,7 @@ sfL = sumL * (cK + (cT - cK) * tanh((amL - cK) / (cT - cK))) / amL;
 sfR = sumR * (cK + (cT - cK) * tanh((amR - cK) / (cT - cK))) / amR;
 pkS = max(abs(sumL), abs(sumR));
 limT = pkS > cT ? cT / pkS : 1;
-limG = limT < limG ? limT : limG + (limT - limG) * (1 / (0.05 * sr));
+limG = limT < limG ? limT : limG + (limT - limG) * k50Now;
 cm = floor(clip(clipmode, 0, 2) + 0.5);
 cOutL = cm == 1 ? clip(sumL, 0 - cT, cT) : (cm == 2 ? sumL * limG : sfL);
 cOutR = cm == 1 ? clip(sumR, 0 - cT, cT) : (cm == 2 ? sumR * limG : sfR);
@@ -479,7 +608,7 @@ tmsHR = peek(hdr, 28);
 tgL = clip(tmsHL > 0 ? tmsHL : tmsL, 1, 8000) * sr / 1000;
 tgR = clip(tmsHR > 0 ? tmsHR : tmsR, 1, 8000) * sr / 1000;
 modS = clip(moddelay, 0, 1) * 0.008 * (x4 > 0.5 ? 4 : 1) * sr;
-wobS = (wobon > 0.5) * clip(wobamt, 0, 1) * 0.003 * sr;
+wobS = wobNow;
 tmin = bb + ll + dTot + modS + wobS + 4;
 tmax = TANK - 8;
 clamped = (tgL < tmin) || (tgR < tmin);
@@ -506,24 +635,24 @@ mR = modS * (0.5 + 0.5 * lR);
 // Wobble: slow random wow and fast flutter of the read head, `wobmorph` blends wow -> flutter.
 rng = wrap(rng * 16807, 0, 2147483647);
 wowC = wowC + 1;
-if (wowC >= floor(sr * 0.35)) {
+if (wowC >= wowNNow) {
 	wowC = 0;
 	wowT = noise();
 }
-wowS = wowS + (wowT - wowS) * (1 / (0.25 * sr));
+wowS = wowS + (wowT - wowS) * wowKNow;
 flutC = flutC + 1;
-if (flutC >= floor(sr * 0.045)) {
+if (flutC >= flutNNow) {
 	flutC = 0;
 	flutT = noise();
 }
-flutS = flutS + (flutT - flutS) * (1 / (0.012 * sr));
+flutS = flutS + (flutT - flutS) * flutKNow;
 wm = clip(wobmorph, 0, 1);
-wob = wobS * (0.5 + 0.5 * (wowS * (1 - wm) + flutS * wm));
+wob = wobNow * (0.5 + 0.5 * (wowS * (1 - wm) + flutS * wm));
 mL = mL + wob;
 mR = mR + wob;
 
-slew = 1 - exp(-1 / (max(repsmooth, 1) * 0.001 * sr));
-xfRate = 1 / (0.05 * sr);
+slew = slewNow;
+xfRate = k50Now;
 if (repitch > 0.5) {
 	// Repitch (tape): the read head glides to the new time (pitch bends while it moves).
 	tsL = tsL + (tgL - tsL) * slew;
@@ -639,14 +768,13 @@ if (filton < 0.5) {
 	zL = tapL;
 	zR = tapR;
 }
-// Noise in the loop: hiss (morph 0) .. vinyl-style crackle (morph 1).
+// Noise in the loop: hiss (morph 0) .. vinyl-style crackle (morph 1). Coefficients are cached;
+// noise() itself stays per sample (two draws, L and R).
 if (noiseon > 0.5 && noiseamt > 0) {
-	nm = clip(noisemorph, 0, 1);
 	crackle = crackle * 0.6;
-	if (abs(noise()) > 1 - 0.0004 * (0.2 + nm)) crackle = noise();
-	nz = (noise() * 0.25 * (1 - nm) + crackle * nm) * clip(noiseamt, 0, 1) * 0.06;
-	zL = zL + nz;
-	zR = zR + (noise() * 0.25 * (1 - nm) + crackle * nm) * clip(noiseamt, 0, 1) * 0.06;
+	if (abs(noise()) > nzThrNow) crackle = noise();
+	zL = zL + noise() * nzHissNow + crackle * nzCrkNow;
+	zR = zR + noise() * nzHissNow + crackle * nzCrkNow;
 }
 hpL1 = fixdenorm(hpL1);
 hpL2 = fixdenorm(hpL2);
@@ -734,6 +862,8 @@ if (tick >= 64) {
 	clipAge = clipAge + 1;
 	clipHold = (clipR <= clipHold || clipAge >= 32) ? clipR : clipHold;
 	clipAge = clipR <= clipHold ? 0 : clipAge;
+	// CLIP_DB: the only telemetry log. Not per sample (the envelope follower's atodb above tracks
+	// the signal, so it cannot move onto this tick).
 	poke(scope, atodb(max(clipHold, 0.000001)), 28);
 	clipR = 1;
 	poke(spec, wrap(cn + 1, 0, 8192), 0);
