@@ -680,7 +680,7 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
 // --- every parameter reachable from some zone ---
 const reach = new Set();
 const regionKeys = { samp_start: ["samp_start"], samp_end: ["samp_end"], loop_start: ["loop_start"], loop_end: ["loop_end"], loop_xfade: ["loop_xfade"] };
-const actionKeys = { sliced_set: ["sliced"], engine: ["mode"], reverse: ["reverse"], freeze: ["freeze"], filt_on: ["filt_on"], voicing: ["mono_legato"] };
+const actionKeys = { sliced_set: ["sliced"], engine: ["mode", "osc2_mode", "osc1_type", "osc2_type"], engine_wt: ["osc1_type", "osc2_type"], reverse: ["reverse"], freeze: ["freeze"], filt_on: ["filt_on"], voicing: ["mono_legato"] };
 function collect() {
     for (const z of sb.hitZones) {
         if (z.key) reach.add(z.key);
@@ -711,7 +711,16 @@ for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 
 for (const mTab of [0, 1, 2]) { sb.matTab = mTab; sb.paint(); collect(); }
 sb.matTab = 0; sb.envPage = 0;
 for (const at of [2, 3, 4]) { sb.setParamFromFace("slice_at", at); sb.setParamFromFace("sliced", 1); sb.paint(); collect(); }
-for (const ot of [1, 2, 0]) { sb.oscTab = ot; sb.paint(); collect(); }
+for (const ot of [1, 2, 0]) {
+    sb.oscTab = ot;
+    for (const wt of [0, 1]) {
+        sb.setParamFromFace("osc1_type", wt);
+        sb.setParamFromFace("osc2_type", wt);
+        sb.paint();
+        collect();
+    }
+}
+sb.setParamFromFace("osc1_type", 0); sb.setParamFromFace("osc2_type", 0); sb.oscTab = 0;
 const missing = Object.keys(FP).filter((k) => !reach.has(k));
 assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.join(", ")}`);
 

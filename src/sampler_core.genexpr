@@ -103,6 +103,55 @@ op_coef(fc, sr) {
 	return 1.0 - exp(-6.28318530718 * clip(fc, 5, sr * 0.45) / sr);
 }
 
+// Wavetable 4-frame morph (Sine -> Triangle -> Saw -> Square)
+wt_base(ph, pos01) {
+	p = fract(ph);
+	wSin = sin(6.28318530718 * p);
+	wTri = 1.0 - 4.0 * abs(fract(p + 0.25) - 0.5);
+	wSaw = 2.0 * p - 1.0;
+	wSqr = (p < 0.5) ? 1.0 : -1.0;
+	m = clip(pos01, 0, 1) * 3.0;
+	outV = wSin;
+	if (m <= 1.0) {
+		outV = wSin + (wTri - wSin) * m;
+	} else if (m <= 2.0) {
+		outV = wTri + (wSaw - wTri) * (m - 1.0);
+	} else {
+		outV = wSaw + (wSqr - wSaw) * (m - 2.0);
+	}
+	return outV;
+}
+
+// Wavetable oscillator with native Wavetable wave effects:
+//   fxMode: 0 = None, 1 = Fm (Tune / Amt), 2 = Classic (PW / Sync), 3 = Modern (Warp / Fold)
+wt_osc_eval(ph, pos01, fxMode, fx1, fx2) {
+	p = fract(ph);
+	effP = p;
+	m = round(clip(fxMode, 0, 3));
+	if (m == 1) {
+		modRatio = pow(2.0, clip(fx1, -1, 1) * 2.0);
+		effP = fract(p + clip(fx2, 0, 1) * 0.65 * sin(6.28318530718 * fract(p * modRatio)));
+	} else if (m == 2) {
+		duty = clip(0.5 + 0.45 * clip(fx1, -1, 1), 0.05, 0.95);
+		pPw = (p < duty) ? (0.5 * p / duty) : (0.5 + 0.5 * (p - duty) / (1.0 - duty));
+		syncR = 1.0 + clip(fx2, 0, 1) * 7.0;
+		effP = fract(pPw * syncR);
+	} else if (m == 3) {
+		warpAmt = clip(fx1, -1, 1);
+		if (abs(warpAmt) > 0.0005) {
+			effP = pow(clip(p, 0.0, 1.0), pow(3.0, 0.0 - warpAmt));
+		}
+	}
+	val = wt_base(effP, pos01);
+	if (m == 3) {
+		foldAmt = clip(fx2, 0, 1);
+		if (foldAmt > 0.0005) {
+			val = sin(1.57079632679 * val * (1.0 + foldAmt * 5.0));
+		}
+	}
+	return val;
+}
+
 // Analyzed Root Key: the MIDI root at normalised sample position `pos`. With the curve on (dynOn 1: root_dyn on and
 // #0-bspitch bound, set in the main section) it is the linearly interpolated 4096-point pitch curve; otherwise, or
 // where the curve holds no pitch (an unfilled buffer reads 0), the static root_note.
@@ -2188,6 +2237,27 @@ voice_proc(
 	lastSigL = sigL;
 	lastSigR = sigR;
 
+	// Osc 1 Wavetable mode override (when osc1_type > 0.5) and Osc 1 enable (osc1_on)
+	if (peek(prm, 80) > 0.5) {
+		wt1Pos = clip(playPosNorm + posMod, 0, 1);
+		wt1Fx = peek(prm, 67);
+		wt1A = peek(prm, 68);
+		wt1B = peek(prm, 69);
+		wt1Phs = peek(vhist, stB + 55);
+		if (needInit) {
+			wt1Phs = 0.0;
+		}
+		wt1Phs = fract(wt1Phs + clip(baseHz / max(srVal, 1), 0.00001, 0.48));
+		poke(vhist, wt1Phs, stB + 55);
+		wt1Val = wt_osc_eval(wt1Phs, wt1Pos, wt1Fx, wt1A, wt1B) * 0.55 * sampG;
+		sigL = wt1Val;
+		sigR = wt1Val;
+	}
+	if (peek(prm, 84) < 0.5) {
+		sigL = 0;
+		sigR = 0;
+	}
+
 	// Sliced one-shots end: fade out once the playhead has reached the end (Fragments let their grains finish).
 	doneG = doneG + (((headDone > 0.5) ? 0.0 : 1.0) - doneG) * 0.01;
 	endGain = (modeId > 3.5) ? 1.0 : doneG;
@@ -2237,22 +2307,10 @@ voice_proc(
 			osc2SigL = s2L * o2Gain;
 			osc2SigR = s2R * o2Gain;
 		} else {
-			// Osc 2 Type 1: Wavetable oscillator (Sine -> Triangle -> Saw -> Square morph along o2Pos)
+			// Osc 2 Type 1: Wavetable oscillator with Fm / Classic / Modern wave effects
 			o2Hz = 440.0 * pow(2.0, ((isSlice ? rootMidi : curNote) - 69.0 + o2Semi) / 12.0);
 			o2Phs = fract(o2Phs + clip(o2Hz / max(srVal, 1), 0.00001, 0.48));
-			wtSine = sin(6.28318530718 * o2Phs);
-			wtTri = 1.0 - 4.0 * abs(fract(o2Phs + 0.25) - 0.5);
-			wtSaw = 2.0 * o2Phs - 1.0;
-			wtSqr = (o2Phs < 0.5) ? 1.0 : -1.0;
-			wtM = o2Pos * 3.0;
-			wtVal = wtSine;
-			if (wtM <= 1.0) {
-				wtVal = wtSine + (wtTri - wtSine) * wtM;
-			} else if (wtM <= 2.0) {
-				wtVal = wtTri + (wtSaw - wtTri) * (wtM - 1.0);
-			} else {
-				wtVal = wtSaw + (wtSqr - wtSaw) * (wtM - 2.0);
-			}
+			wtVal = wt_osc_eval(o2Phs, o2Pos, peek(prm, 81), peek(prm, 82), peek(prm, 83));
 			osc2SigL = wtVal * 0.55 * o2Gain;
 			osc2SigR = osc2SigL;
 		}
@@ -2341,7 +2399,7 @@ Buffer pitch("bspitch");
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
-Data prm(84);
+Data prm(88);
 Data vst(6400);
 Data gtel(1024);
 Data gtout(72);
@@ -2463,8 +2521,17 @@ Param filt2_res(0.15, min=0, max=0.95);
 Param filt2_drive(0.0, min=0, max=1);
 Param filt2_morph(0.0, min=0, max=1);
 Param filt_route(0, min=0, max=2);
+Param osc1_on(1, min=0, max=1);
+Param osc1_type(0, min=0, max=1);
+Param wt1_fx(3, min=0, max=3);
+Param wt1_fx1(0, min=-1, max=1);
+Param wt1_fx2(0, min=0, max=1);
 Param osc2_on(0, min=0, max=1);
 Param osc2_type(0, min=0, max=1);
+Param osc2_mode(0, min=0, max=4);
+Param wt2_fx(3, min=0, max=3);
+Param wt2_fx1(0, min=-1, max=1);
+Param wt2_fx2(0, min=0, max=1);
 Param osc2_pitch(0, min=-36, max=36);
 Param osc2_detune(0, min=-100, max=100);
 Param osc2_pos(0, min=0, max=1);
@@ -2677,6 +2744,9 @@ poke(prm, clip(amp_peak, 0, 1), 63);
 poke(prm, clip(env2_init, 0, 1), 64);
 poke(prm, clip(env2_peak, 0, 1), 65);
 poke(prm, clip(env2_final, 0, 1), 66);
+poke(prm, wt1_fx, 67);
+poke(prm, clip(wt1_fx1, -1, 1), 68);
+poke(prm, clip(wt1_fx2, 0, 1), 69);
 poke(prm, osc2_on, 70);
 poke(prm, osc2_type, 71);
 poke(prm, osc2_pitch, 72);
@@ -2687,6 +2757,12 @@ poke(prm, sub_on, 76);
 poke(prm, sub_oct, 77);
 poke(prm, sub_tone, 78);
 poke(prm, sub_gain, 79);
+poke(prm, osc1_type, 80);
+poke(prm, wt2_fx, 81);
+poke(prm, clip(wt2_fx1, -1, 1), 82);
+poke(prm, clip(wt2_fx2, 0, 1), 83);
+poke(prm, osc1_on, 84);
+poke(prm, osc2_mode, 85);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H (or 3=Sq, 4=S&H when 5-shape enum is used)
 prevLfoPhs = lfoPhs;

@@ -567,12 +567,67 @@ function paintPitchCurveZ(wx, wy, ww, wh) {
     mgraphics.stroke();
 }
 
-// Helper: draw 3D-stacked wavetable curves (Sine -> Tri -> Saw -> Square) with active position highlighted in orange
-function paintWavetableStack(wx, wy, ww, wh, pos01, on) {
-    var rows = 4, cols = 64;
+// Active oscillator descriptor for Osc 1 (oscTab === 0) and Osc 2 (oscTab === 1)
+function activeOsc() {
+    var is2 = oscTab === 1;
+    return {
+        is2: is2,
+        onKey: is2 ? "osc2_on" : "osc1_on",
+        typeKey: is2 ? "osc2_type" : "osc1_type",
+        modeKey: is2 ? "osc2_mode" : "mode",
+        pitchKey: is2 ? "osc2_pitch" : "pitch_st",
+        detKey: is2 ? "osc2_detune" : "fine_cents",
+        posKey: is2 ? "osc2_pos" : "play_pos",
+        gainKey: is2 ? "osc2_gain" : "samp_gain",
+        fxKey: is2 ? "wt2_fx" : "wt1_fx",
+        fx1Key: is2 ? "wt2_fx1" : "wt1_fx1",
+        fx2Key: is2 ? "wt2_fx2" : "wt1_fx2"
+    };
+}
+
+// Evaluate Wavetable sample with Fm / Classic / Modern wave effects (matches wt_osc_eval in sampler_core.genexpr)
+function evalWtWave(ph, pos01, fxMode, fx1, fx2) {
+    var p = ph - Math.floor(ph);
+    var effP = p;
+    var m = Math.round(Math.max(0, Math.min(3, fxMode || 0)));
+    if (m === 1) {
+        var modRatio = Math.pow(2.0, Math.max(-1, Math.min(1, fx1)) * 2.0);
+        var mp = (p * modRatio) - Math.floor(p * modRatio);
+        effP = p + Math.max(0, Math.min(1, fx2)) * 0.65 * Math.sin(6.28318530718 * mp);
+        effP = effP - Math.floor(effP);
+    } else if (m === 2) {
+        var duty = Math.max(0.05, Math.min(0.95, 0.5 + 0.45 * Math.max(-1, Math.min(1, fx1))));
+        var pPw = (p < duty) ? (0.5 * p / duty) : (0.5 + 0.5 * (p - duty) / (1.0 - duty));
+        var syncR = 1.0 + Math.max(0, Math.min(1, fx2)) * 7.0;
+        effP = (pPw * syncR) - Math.floor(pPw * syncR);
+    } else if (m === 3) {
+        var warpAmt = Math.max(-1, Math.min(1, fx1));
+        if (Math.abs(warpAmt) > 0.0005) {
+            effP = Math.pow(Math.max(0, Math.min(1, p)), Math.pow(3.0, -warpAmt));
+        }
+    }
+    var s2 = Math.sin(6.28318530718 * effP);
+    var tr2 = 1.0 - 4.0 * Math.abs(((effP + 0.25) - Math.floor(effP + 0.25)) - 0.5);
+    var sw2 = 2.0 * effP - 1.0;
+    var sq2 = effP < 0.5 ? 1.0 : -1.0;
+    var posM = clamp01(pos01) * 3.0;
+    var val = posM <= 1 ? s2 + (tr2 - s2) * posM : (posM <= 2 ? tr2 + (sw2 - tr2) * (posM - 1) : sw2 + (sq2 - sw2) * (posM - 2));
+    if (m === 3) {
+        var foldAmt = Math.max(0, Math.min(1, fx2));
+        if (foldAmt > 0.0005) {
+            val = Math.sin(1.57079632679 * val * (1.0 + foldAmt * 5.0));
+        }
+    }
+    return val;
+}
+
+// Helper: draw 3D-stacked wavetable curves (Sine -> Tri -> Saw -> Square) with active position & wave effects in orange
+function paintWavetableStack(wx, wy, ww, wh, pos01, on, fxMode, fx1, fx2) {
+    var rows = 4, cols = 80;
+    var xL = wx + 28, xW = ww - 56;
     for (var r = 0; r < rows; r++) {
         var rFrac = r / (rows - 1);
-        var yBase = wy + wh - 10 - rFrac * (wh - 22);
+        var yBase = wy + wh - 12 - rFrac * (wh - 26);
         var pts = [];
         for (var c = 0; c <= cols; c++) {
             var p = c / cols;
@@ -581,96 +636,53 @@ function paintWavetableStack(wx, wy, ww, wh, pos01, on) {
             var sw = 2.0 * p - 1.0;
             var sq = p < 0.5 ? 1.0 : -1.0;
             var v = r === 0 ? s : (r === 1 ? tr : (r === 2 ? sw : sq));
-            pts.push([wx + 8 + p * (ww - 16), yBase - v * (wh * 0.13)]);
+            pts.push([xL + p * xW, yBase - v * (wh * 0.11)]);
         }
-        strokePath(pts, RC.lcdText, on ? 0.28 : 0.14, 1.0);
+        strokePath(pts, RC.lcdText, on ? 0.24 : 0.12, 1.0);
     }
-    // Active morphed wave at pos01
-    var m = clamp01(pos01) * 3.0;
-    var yAct = wy + wh - 10 - clamp01(pos01) * (wh - 22);
+    // Active morphed + wave-effected wave at pos01
+    var yAct = wy + wh - 12 - clamp01(pos01) * (wh - 26);
     var actPts = [];
     for (var k = 0; k <= cols; k++) {
         var pk = k / cols;
-        var s2 = Math.sin(6.2831853 * pk);
-        var tr2 = 1.0 - 4.0 * Math.abs(((pk + 0.25) - Math.floor(pk + 0.25)) - 0.5);
-        var sw2 = 2.0 * pk - 1.0;
-        var sq2 = pk < 0.5 ? 1.0 : -1.0;
-        var val = m <= 1 ? s2 + (tr2 - s2) * m : (m <= 2 ? tr2 + (sw2 - tr2) * (m - 1) : sw2 + (sq2 - sw2) * (m - 2));
-        actPts.push([wx + 8 + pk * (ww - 16), yAct - val * (wh * 0.15)]);
+        var val = evalWtWave(pk, pos01, fxMode || 0, fx1 || 0, fx2 || 0);
+        actPts.push([xL + pk * xW, yAct - val * (wh * 0.15)]);
     }
-    strokePath(actPts, on ? RC.sel : RC.lcdDim, on ? 1.0 : 0.45, 1.6);
+    strokePath(actPts, on ? RC.sel : RC.lcdDim, on ? 1.0 : 0.45, 1.65);
 }
 
-// Helper: draw Oscillator Header Tabs ([Osc 1] [■ Osc 2] [■ Sub]) for the "tabs" UI variant
+// Helper: draw Oscillator Header Tabs ([■ Osc 1] [■ Osc 2] [■ Sub])
 function paintOscHeaderTabs(tx, ty) {
+    var o1On = Math.round(paramValue("osc1_on")) > 0;
     var o2On = Math.round(paramValue("osc2_on")) > 0;
     var subOn = Math.round(paramValue("sub_on")) > 0;
     var tabs = [
-        { label: "Osc 1", idx: 0, enKey: null, on: true, w: 32 },
-        { label: "Osc 2", idx: 1, enKey: "osc2_on", on: o2On, w: 40 },
-        { label: "Sub",   idx: 2, enKey: "sub_on",  on: subOn, w: 34 }
+        { label: "Osc 1", idx: 0, enKey: "osc1_on", on: o1On, w: 38 },
+        { label: "Osc 2", idx: 1, enKey: "osc2_on", on: o2On, w: 38 },
+        { label: "Sub",   idx: 2, enKey: "sub_on",  on: subOn, w: 32 }
     ];
     var x = tx;
     for (var i = 0; i < tabs.length; i++) {
         var t = tabs[i], active = oscTab === t.idx;
         if (active) line(x + 2, ty + 12.5, x + t.w - 2, ty + 12.5, RC.sel, 1.0, 1.3);
-        if (t.enKey) {
-            var sqX = x + 3.5, sqY = ty + 3.5, sqS = 6.0;
-            if (t.on) fillRect(sqX, sqY, sqS, sqS, RC.sel, 1.0);
-            else { setc(RC.sel, 0.85); mgraphics.set_line_width(1.0); mgraphics.rectangle(sqX + 0.5, sqY + 0.5, sqS - 1, sqS - 1); mgraphics.stroke(); }
-            zone("button", sqX - 1, ty, 9, 13, { action: "osc_toggle", key: t.enKey, tab: t.idx });
-            text(t.label, x + 11.5, ty + 9.8, 8.2, active ? RC.sel : (t.on ? RC.lcdText : RC.sub), active, 0);
-            zone("button", x + 9, ty, t.w - 9, 13, { action: "osc_tab", tab: t.idx });
-        } else {
-            text(t.label, x + t.w * 0.5, ty + 9.8, 8.2, active ? RC.sel : RC.lcdText, active, 1);
-            zone("button", x, ty, t.w, 13, { action: "osc_tab", tab: t.idx });
-        }
+        var sqX = x + 3.0, sqY = ty + 3.5, sqS = 6.0;
+        if (t.on) fillRect(sqX, sqY, sqS, sqS, RC.sel, 1.0);
+        else { setc(RC.sel, 0.85); mgraphics.set_line_width(1.0); mgraphics.rectangle(sqX + 0.5, sqY + 0.5, sqS - 1, sqS - 1); mgraphics.stroke(); }
+        zone("button", sqX - 1, ty, 8.5, 13, { action: "osc_toggle", key: t.enKey, tab: t.idx });
+        text(t.label, x + 10.5, ty + 9.8, 8.2, active ? RC.sel : (t.on ? RC.lcdText : RC.sub), active, 0);
+        zone("button", x + 8, ty, t.w - 8, 13, { action: "osc_tab", tab: t.idx });
         x += t.w + 2;
     }
 }
 
-// Helper: paint Osc 2 + Sub controls inside a given rectangle (used by "tabs", "split", and "drawer" UI variants)
-function paintOsc2SubControls(x, y, w, h, layoutMode) {
-    var o2On = Math.round(paramValue("osc2_on")) > 0;
-    var o2Type = Math.round(paramValue("osc2_type"));
+// Helper: paint Sub Oscillator controls in the bottom strip when oscTab === 2
+function paintSubStrip(x, y, w, h) {
     var subOn = Math.round(paramValue("sub_on")) > 0;
-    var acc = RC.sel;
-    if (layoutMode === "strip_osc2") {
-        // Full strip dedicated to Oscillator 2 ("tabs" mode when oscTab === 1)
-        segCtl("osc2_type", x + 8, y + 3, 118, 13, ["Sampler", "Wavetable"], acc, !o2On);
-        var ky = y + 39;
-        rKnob("osc2_pitch", x + 48, ky, 7, "Pitch", acc, { dim: !o2On });
-        rKnob("osc2_detune", x + 114, ky, 7, "Detune", acc, { dim: !o2On });
-        rKnob("osc2_pos", x + 180, ky, 7, o2Type === 1 ? "Wave Pos" : "Start Pos", acc, { dim: !o2On });
-        rKnob("osc2_gain", x + 246, ky, 7, "Level", acc, { dim: !o2On });
-        line(x + 288, y + 6, x + 288, y + h - 5, RC.divider, 1.0, 1.0);
-        // Right side of strip: Sub quick controls so all osc2/sub params stay reachable in one view
-        var sx0 = x + 296;
-        var sqS = 7.5;
-        if (subOn) fillRect(sx0, y + 4.5, sqS, sqS, acc, 1.0);
-        else { setc(acc, 0.85); mgraphics.set_line_width(1.0); mgraphics.rectangle(sx0 + 0.5, y + 5.0, sqS - 1, sqS - 1); mgraphics.stroke(); }
-        actZone(sx0 - 2, y + 2, 34, 13, function () { setParamFromFace("sub_on", subOn ? 0 : 1); }, { key: "sub_on" });
-        text("Sub", sx0 + 11, y + 12, 8.5, subOn ? acc : RC.sub, true, 0);
-        segCtl("sub_oct", sx0 + 38, y + 3, 64, 12, ["0", "-1", "-2"], RC.cyan, !subOn);
-        rKnob("sub_tone", sx0 + 46, ky, 7, "Tone", RC.cyan, { dim: !subOn });
-        rKnob("sub_gain", sx0 + 112, ky, 7, "Sub Gain", RC.cyan, { dim: !subOn });
-    } else if (layoutMode === "strip_sub") {
-        // Full strip dedicated to Sub Oscillator ("tabs" mode when oscTab === 2)
-        text("Sub Octave", x + 10, y + 13, 8.5, RC.text, false, 0);
-        segCtl("sub_oct", x + 68, y + 3, 90, 13, ["0", "-1", "-2"], RC.cyan, !subOn);
-        var ky2 = y + 39;
-        rKnob("sub_tone", x + 64, ky2, 7, "Tone", RC.cyan, { dim: !subOn });
-        rKnob("sub_gain", x + 144, ky2, 7, "Gain", RC.cyan, { dim: !subOn });
-        line(x + 210, y + 6, x + 210, y + h - 5, RC.divider, 1.0, 1.0);
-        // Right side: Osc 2 quick summary
-        var ox0 = x + 220;
-        text("Osc 2 (" + (o2Type === 1 ? "Wavetable" : "Sampler") + ")", ox0, y + 13, 8.5, o2On ? acc : RC.sub, false, 0);
-        segCtl("osc2_type", ox0 + 108, y + 3, 108, 12, ["Sampler", "Wavetable"], acc, !o2On);
-        rKnob("osc2_pitch", ox0 + 34, ky2, 7, "Pitch", acc, { dim: !o2On });
-        rKnob("osc2_detune", ox0 + 92, ky2, 7, "Det", acc, { dim: !o2On });
-        rKnob("osc2_pos", ox0 + 150, ky2, 7, "Pos", acc, { dim: !o2On });
-        rKnob("osc2_gain", ox0 + 208, ky2, 7, "Level", acc, { dim: !o2On });
-    }
+    text("Sub Octave", x + 10, y + 13, 8.5, RC.text, false, 0);
+    segCtl("sub_oct", x + 68, y + 3, 90, 13, ["0", "-1", "-2"], RC.cyan, !subOn);
+    var ky2 = y + 39;
+    rKnob("sub_tone", x + 64, ky2, 7, "Tone", RC.cyan, { dim: !subOn });
+    rKnob("sub_gain", x + 144, ky2, 7, "Gain", RC.cyan, { dim: !subOn });
 }
 
 function paintViewer() {
@@ -790,17 +802,37 @@ function paintViewer() {
     if (rootDyn && pitchCurve && hasLoadedSample) paintPitchCurveZ(wx, wy, ww, wh);
     if (!hasLoadedSample) text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 7, 9.5, RC.sub, false, 1);
 
-    // Oscillator 2 / Sub waveform overlays
-    var o2On = Math.round(paramValue("osc2_on")) > 0;
-    var o2Type = Math.round(paramValue("osc2_type"));
-    var o2Pos = paramValue("osc2_pos") * 0.01;
+    // Oscillator 1 / Oscillator 2 Wavetable mode or Sub waveform overlays
+    var osc = activeOsc();
+    var oscOn = Math.round(paramValue(osc.onKey)) > 0;
+    var isWt = (oscTab === 0 || oscTab === 1) && Math.round(paramValue(osc.typeKey)) > 0;
+    var wtPos = paramValue(osc.posKey) * 0.01;
+    var wtFx = Math.round(paramValue(osc.fxKey));
+    var wtFx1 = paramValue(osc.fx1Key) * 0.01;
+    var wtFx2 = paramValue(osc.fx2Key) * 0.01;
     var subOn = Math.round(paramValue("sub_on")) > 0;
-    if (oscTab === 1 && o2Type === 1) {
-        fillRR(wx, wy, ww, wh, 3, RC.wave, 0.90);
-        paintWavetableStack(wx, wy, ww, wh, o2Pos, o2On);
-        text("WAVETABLE  POS " + Math.round(paramValue("osc2_pos")) + "%", wx + 8, wy + 12, 8.0, o2On ? RC.sel : RC.sub, true, 0);
+    if (isWt) {
+        fillRect(wx, wy, ww, wh, RC.wave, 1.0);
+        paintWavetableStack(wx, wy, ww, wh, wtPos, oscOn, wtFx, wtFx1, wtFx2);
+        // Left vertical Gain slider (like native Wavetable)
+        var gxS = wx + 10, gyTop = wy + 12, gyBot = wy + wh - 14;
+        text("C", gxS, gyTop - 3, 7.5, RC.sel, false, 1);
+        line(gxS, gyTop, gxS, gyBot, RC.sel, oscOn ? 0.85 : 0.35, 1.4);
+        var gVal = paramValue(osc.gainKey);
+        text(gVal.toFixed(1) + " dB", gxS + 4, wy + wh - 3, 8.0, oscOn ? RC.sel : RC.sub, false, 1);
+        zone("value", wx + 2, wy + 4, 24, wh - 6, { key: osc.gainKey, norm: true });
+        // Right vertical Wave Position slider + readout
+        var pxS = wx + ww - 12;
+        line(pxS, gyTop - 4, pxS, gyBot, RC.line, 0.9, 1.0);
+        var pyThumb = gyBot - clamp01(wtPos) * (gyBot - (gyTop - 4));
+        setc(oscOn ? RC.sel : RC.sub, 1.0);
+        mgraphics.set_line_width(1.1);
+        mgraphics.rectangle(pxS - 2.5, pyThumb - 2.5, 5.0, 5.0);
+        mgraphics.stroke();
+        text((wtPos * 100).toFixed(1) + " %", pxS - 2, wy + wh - 3, 8.0, oscOn ? RC.sel : RC.sub, false, 1);
+        zone("value", wx + ww - 26, wy + 4, 24, wh - 6, { key: osc.posKey, norm: true });
     } else if (oscTab === 2) {
-        fillRR(wx, wy, ww, wh, 3, RC.wave, 0.88);
+        fillRect(wx, wy, ww, wh, RC.wave, 0.92);
         var subOct = Math.round(paramValue("sub_oct"));
         var subTone = paramValue("sub_tone") * 0.01;
         var subPts = [];
@@ -816,34 +848,68 @@ function paintViewer() {
     }
 
     var stX = vwx(curStart), enX = vwx(curEnd);
-    if (curSliced) {
-        if (inW(enX)) { line(enX, wy, enX, wy + wh, acc, 0.95, 1.0); fillRect(enX - 7, wy + wh - 7, 7, 7, acc); }
-        if (inW(stX)) fillRect(stX, wy + wh - 7, 7, 7, acc);
-    } else {
-        if (inW(stX)) { line(stX, wy, stX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(stX, wy, 6, 6, RC.yellow); }
-        if (inW(enX)) { line(enX, wy, enX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(enX - 6, wy, 6, 6, RC.yellow); }
+    if (!isWt) {
+        if (curSliced) {
+            if (inW(enX)) { line(enX, wy, enX, wy + wh, acc, 0.95, 1.0); fillRect(enX - 7, wy + wh - 7, 7, 7, acc); }
+            if (inW(stX)) fillRect(stX, wy + wh - 7, 7, 7, acc);
+        } else {
+            if (inW(stX)) { line(stX, wy, stX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(stX, wy, 6, 6, RC.yellow); }
+            if (inW(enX)) { line(enX, wy, enX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(enX - 6, wy, 6, 6, RC.yellow); }
+        }
     }
     zone("wave", wx, wy, ww, wh, {});
-    if (loopOn && !curSliced && loopZones) {
+    if (!isWt && loopOn && !curSliced && loopZones) {
         if (loopZones.xf) zone("xfade", loopZones.xf[0], loopZones.xf[1], loopZones.xf[2], loopZones.xf[3], {});
         if (loopZones.mv) zone("loop_move", loopZones.mv[0], loopZones.mv[1], loopZones.mv[2], loopZones.mv[3], {});
     }
-    if (curSliced) {
+    if (!isWt && curSliced) {
         for (var fi = 0; fi < sliceMarkers.length; fi++) {
             var fm = sliceMarkers[fi];
             var fx = vwx(fm) - 2;
             if (fm > curStart + 0.002 && fm < curEnd - 0.002 && fx >= wx && fx + 10 <= wx + ww) zone("flag", fx, wy, 10, 9, { index: fi });
         }
     }
-    if (viewZoom > 1.0005) {
+    if (!isWt && viewZoom > 1.0005) {
         var pr = zoomPillRect();
         fillRR(pr[0], pr[1], pr[2], pr[3], 5, RC.dark, 0.85);
         text(zoomLabel(), pr[0] + pr[2] * 0.5, pr[1] + 8.5, 7.5, RC.text, true, 1);
         actZone(pr[0], pr[1], pr[2], pr[3], function () { resetView(); });
     }
 
-    // Footer (the default face's layout)
+    // Footer: Wavetable wave-effects bar when in Wavetable mode, else Sample PLAY / LOOP footer
     var fy = sy + sh - 4;
+    if (isWt) {
+        var fxNames = ["None", "Fm", "Classic", "Modern"];
+        var fxName = fxNames[wtFx] || "Modern";
+        var fxOpen = openMenu && openMenu.key === osc.fxKey;
+        if (fxOpen) focusBrackets(sx + 4, fy - 10, 48, 12, RC.sel);
+        text(fxName, sx + 6, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
+        wtCaret(sx + 44, fy - 5.5, oscOn ? RC.sel : RC.sub);
+        zone("button", sx + 4, fy - 11, 48, 14, { action: "menu", key: osc.fxKey, w2: 48, wtMenu: "wt_fx", anchorX: sx + 4, anchorY: fy - 12 });
+
+        var fxLabs = wtFx === 1 ? ["Tune", "Amt"] : (wtFx === 2 ? ["PW", "Sync"] : ["Warp", "Fold"]);
+        var fxDim = !oscOn || wtFx === 0;
+        var f1v = paramValue(osc.fx1Key), f2v = paramValue(osc.fx2Key);
+        text(fxLabs[0], sx + 58, fy, 9.0, RC.sub, false, 0);
+        text(f1v.toFixed(1) + " %", sx + 86, fy, 9.0, fxDim ? RC.sub : RC.sel, false, 0);
+        zone("value", sx + 56, fy - 11, 66, 14, { key: osc.fx1Key, norm: true });
+
+        text(fxLabs[1], sx + 128, fy, 9.0, RC.sub, false, 0);
+        text(f2v.toFixed(1) + " %", sx + 154, fy, 9.0, fxDim ? RC.sub : RC.sel, false, 0);
+        zone("value", sx + 126, fy - 11, 66, 14, { key: osc.fx2Key, norm: true });
+
+        line(sx + 198, fy - 9, sx + 198, fy + 1, RC.line, 1.0, 1.0);
+        var semiV = Math.round(paramValue(osc.pitchKey));
+        text("Semi", sx + 205, fy, 9.0, RC.sub, false, 0);
+        text(semiV + " st", sx + 231, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
+        zone("value", sx + 203, fy - 11, 54, 14, { key: osc.pitchKey, norm: true });
+
+        var detV = Math.round(paramValue(osc.detKey));
+        text("Det", sx + 264, fy, 9.0, RC.sub, false, 0);
+        text(detV + " ct", sx + 283, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
+        zone("value", sx + 262, fy - 11, 52, 14, { key: osc.detKey, norm: true });
+        return;
+    }
     if (curSliced) {
         paintSlicedFooter(sx, sw, fy);
         return;
@@ -1998,16 +2064,30 @@ function paintFilterSection(sx) {
 // Engine section: engine pills, character, the engine's knobs, Pitch / Speed / Pos
 // ---------------------------------------------------------------------------
 
-function engineLayout() {
+function engineLayout(modeOverride, isWtOverride) {
     // returns { head: {key, labels} | null, knobs: [{key,label,opts} | {menu:true}] }
+    var osc = activeOsc();
+    var isWt = isWtOverride !== undefined ? isWtOverride : (Math.round(paramValue(osc.typeKey)) > 0);
+    if (isWt) {
+        var fx = Math.round(paramValue(osc.fxKey));
+        var fxLabs = fx === 1 ? ["Tune", "Amt"] : (fx === 2 ? ["PW", "Sync"] : ["Warp", "Fold"]);
+        return {
+            head: { key: osc.fxKey, labels: ["None", "Fm", "Classic", "Modern"] },
+            knobs: [
+                { key: osc.fx1Key, label: fxLabs[0], opts: { dim: fx === 0 } },
+                { key: osc.fx2Key, label: fxLabs[1], opts: { dim: fx === 0 } }
+            ]
+        };
+    }
+    var m = modeOverride !== undefined ? modeOverride : Math.round(paramValue(osc.modeKey));
     var ch;
-    if (curMode === 0) {
+    if (m === 0) {
         ch = Math.round(paramValue("rp_char"));
         var labs = ch === 1 ? ["Crunch", "Tape"] : (ch === 2 ? ["Bits", "Color"] : ["Dist", "Color"]);
         return { head: { key: "rp_char", labels: ["Clean", "Analog", "Digital"] },
             knobs: [{ key: "rp_dist", label: labs[0], opts: { dim: ch === 0 } }, { key: "rp_color", label: labs[1], opts: { dim: ch === 0 } }] };
     }
-    if (curMode === 3) {
+    if (m === 3) {
         ch = Math.round(paramValue("sp_char"));
         if (ch === 0) return { head: { key: "sp_char", labels: ["Pure", "Reharm"] },
             knobs: [{ key: "formant", label: "Formant" }, { key: "sp_shift", label: "Shift" }] };
@@ -2015,59 +2095,71 @@ function engineLayout() {
         return { head: { key: "sp_char", labels: ["Pure", "Reharm"] },
             knobs: [{ key: "sp_bend", label: "Bend" }, { menu: true }, { key: "sp_quant_amt", label: "Amt", opts: { dim: q === 0 } }] };
     }
-    if (curMode === 1) {
+    if (m === 1) {
         ch = Math.round(paramValue("cy_char"));
         var head = { key: "cy_char", labels: ["Pulse", "Partials", "Phase"] };
         if (ch === 0) return { head: head, knobs: [{ key: "formant", label: "Formant" }, { key: "cy_width", label: "Width" }] };
         if (ch === 1) return { head: head, knobs: [{ key: "formant", label: "Formant" }, { key: "cy_split", label: "Split" }, { key: "cy_fund", label: "Fund." }] };
         return { head: head, knobs: [{ key: "formant", label: "Formant" }, { key: "cy_mod", label: "Mod" }, { key: "cy_harm", label: "Harm." }] };
     }
-    if (curMode === 2) return { head: null, title: "Granular cloud", knobs: [{ key: "grain_size", label: "Size" }, { key: "grain_spray", label: "Spray" }] };
+    if (m === 2) return { head: null, title: "Granular cloud", knobs: [{ key: "grain_size", label: "Size" }, { key: "grain_spray", label: "Spray" }] };
     return { head: null, title: "Grain pool", knobs: [{ key: "grain_size", label: "Size" },
         { key: "fr_density", label: "Density", opts: { dim: Math.round(paramValue("fr_use_density")) === 0 } },
         { key: "fr_motion", label: "Motion" }] };
 }
 
 
-var PILL_W = { 0: 40, 3: 42, 1: 36, 2: 42, 4: 46 };
+var PILL_W = { 0: 33, 3: 35, 1: 30, 2: 35, 4: 39 };
 
 function paintEngineStrip() {
     var x = STRIP.x, y = STRIP.y, w = STRIP.w, acc = RC.cyan;
     panelBox(x, y, w, STRIP.h);
-    if (oscTab === 1) {
-        paintOsc2SubControls(x, y, w, STRIP.h, "strip_osc2");
-        return;
-    }
     if (oscTab === 2) {
-        paintOsc2SubControls(x, y, w, STRIP.h, "strip_sub");
+        paintSubStrip(x, y, w, STRIP.h);
         return;
     }
-    // left: the engine selector above Pitch / Speed / Pos (+ Freeze)
-    var px = x + 6;
+    var osc = activeOsc();
+    var isWt = Math.round(paramValue(osc.typeKey)) > 0;
+    var actMode = Math.round(paramValue(osc.modeKey));
+
+    // left: the 5 sampler engine pills + distinct vertical separator + Wavetable pill, above Pitch / Speed / Pos (+ Freeze)
+    var px = x + 4;
     for (var e = 0; e < ENGINE_ORDER.length; e++) {
-        var m = ENGINE_ORDER[e], pw = PILL_W[m], on = curMode === m;
+        var m = ENGINE_ORDER[e], pw = PILL_W[m], on = !isWt && actMode === m;
         fillRR(px, y + 2, pw, 12, 3, on ? RC.sel : RC.raised, 1);
-        text(MODE_NAMES[m], px + pw * 0.5, y + 11, 7.5, on ? RC.dark : RC.sub, on, 1);
+        text(MODE_NAMES[m], px + pw * 0.5, y + 11, 7.2, on ? RC.dark : RC.sub, on, 1);
         zone("button", px, y + 2, pw, 12, { action: "engine", engine: m });
-        px += pw + 3;
+        px += pw + 2;
     }
+    // Distinct vertical separator with 5 px padding on each side between Fragments and Wavetable
+    line(px + 3.5, y + 2.0, px + 3.5, y + 14.0, RC.sub, 0.75, 1.2);
+    px += 9.0;
+    var wtW = 44;
+    fillRR(px, y + 2, wtW, 12, 3, isWt ? RC.sel : RC.raised, 1);
+    text("Wavetable", px + wtW * 0.5, y + 11, 7.2, isWt ? RC.dark : RC.sub, isWt, 1);
+    zone("button", px, y + 2, wtW, 12, { action: "engine_wt" });
+
     var ky = y + 39;
-    var scanOn = curMode !== 0;
-    var ks = [["pitch_st", "Pitch", {}], ["grain_motion", "Speed", { dim: !scanOn }], ["play_pos", "Pos", { dim: !curFreeze }]];
-    for (var p = 0; p < 3; p++) rKnob(ks[p][0], x + 6 + 36 + p * 72, ky, 7, ks[p][1], acc, ks[p][2]);
+    var scanOn = !isWt && actMode !== 0;
+    var ks = [
+        [osc.pitchKey, "Pitch", {}],
+        [isWt ? osc.detKey : "grain_motion", isWt ? "Detune" : "Speed", { dim: !isWt && !scanOn }],
+        [osc.posKey, "Pos", { dim: !isWt && !curFreeze }]
+    ];
+    for (var p = 0; p < 3; p++) rKnob(ks[p][0], x + 6 + 36 + p * 72, ky, 7, ks[p][1], isWt ? RC.sel : acc, ks[p][2]);
     // Freeze (Pos follows the frozen playhead)
     fillRR(x + 224, y + 22, 22, 18, 3, curFreeze ? RC.sel : RC.raised, 1);
     iconSnow(x + 235, y + 31, curFreeze ? RC.dark : RC.sub, 1.0);
     zone("button", x + 224, y + 22, 22, 18, { action: "freeze" });
     line(x + 250, y + 6, x + 250, y + STRIP.h - 5, RC.line, 1.0, 1.0);
 
-    // right: the character switch directly above the knobs it controls
+    // right: the character / wave-effect switch directly above the knobs it controls
     var rx0 = x + 256;
-    var L = engineLayout();
+    var L = engineLayout(actMode, isWt);
     var nk = L.knobs.length;
     if (L.head) {
-        var hw = Math.min(nk * 68 - 14, L.head.labels.length * 48);
-        segCtl(L.head.key, rx0 + 12, y + 2, hw, 12, L.head.labels, acc);
+        var hw = isWt ? 168 : Math.min(nk * 68 - 14, L.head.labels.length * 48);
+        segCtl(L.head.key, rx0 + 12, y + 2, hw, 12, L.head.labels, isWt ? RC.sel : acc);
     } else {
         text(L.title, rx0 + 2, y + 14, 8.5, RC.text, false, 0);
     }
@@ -2082,7 +2174,7 @@ function paintEngineStrip() {
             caret(cx + 9, ky - 2, RC.sub);
             zone("button", cx - 15, ky - 7, 30, 14, { action: "menu", key: "sp_quant", mw: 80 });
         } else {
-            rKnob(k.key, cx, ky, 7, k.label, acc, k.opts || {});
+            rKnob(k.key, cx, ky, 7, k.label, isWt ? RC.sel : acc, k.opts || {});
         }
     }
 }
@@ -2303,6 +2395,26 @@ paintMenu = function () {
         return;
     }
     var k = openMenu.key;
+    if (k === "wt1_fx" || k === "wt2_fx") {
+        // Wavetable wave-effect popup menu above the [Modern▾] selector at the bottom of the viewer (matches Screenshot 2.18.11)
+        var curW = Math.round(paramValue(k));
+        var fxItems = ["None", "Fm", "Classic", "Modern"];
+        var mwW = 48.0, rhW = 13.0, mhW = fxItems.length * rhW + 2.0;
+        var mxW = openMenu.x || (VIEW.x + 4), myW = (openMenu.y || (VIEW.y + VIEW.h - 16)) - mhW;
+        fillRect(mxW, myW, mwW, mhW, RC.wave, 1.0);
+        setc(RC.sel, 1.0);
+        mgraphics.set_line_width(1.1);
+        mgraphics.rectangle(mxW + 0.5, myW + 0.5, mwW - 1, mhW - 1);
+        mgraphics.stroke();
+        for (var wi = 0; wi < fxItems.length; wi++) {
+            var wry = myW + 1.0 + wi * rhW;
+            var wsel = curW === wi;
+            if (wsel) fillRect(mxW + 1, wry, mwW - 2, rhW, RC.sel, 1.0);
+            text(fxItems[wi], mxW + 4.5, wry + rhW * 0.5 + 3.2, 9.2, wsel ? RC.wave : RC.sel, false, 0);
+            zone("button", mxW, wry, mwW, rhW, { action: "menu_pick", key: k, value: wi });
+        }
+        return;
+    }
     if (k === "filt_type" || k === "filt2_type" || k === "filt_circuit" || k === "filt2_circuit" || k === "filt_route") {
         var isType = (k === "filt_type" || k === "filt2_type");
         var isRoute = (k === "filt_route");
@@ -2352,6 +2464,19 @@ doAction = function (z) {
     if (z.action === "osc_toggle") {
         if (z.tab !== undefined) oscTab = z.tab;
         setParamFromFace(z.key, Math.round(paramValue(z.key)) > 0 ? 0 : 1);
+        mgraphics.redraw();
+        return;
+    }
+    if (z.action === "engine") {
+        var oscE = activeOsc();
+        setParamFromFace(oscE.typeKey, 0);
+        setParamFromFace(oscE.modeKey, z.engine);
+        mgraphics.redraw();
+        return;
+    }
+    if (z.action === "engine_wt") {
+        var oscW = activeOsc();
+        setParamFromFace(oscW.typeKey, 1);
         mgraphics.redraw();
         return;
     }

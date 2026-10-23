@@ -312,6 +312,10 @@ for _k, _spec in (
         ("osc2_detune", ("Osc 2 Detune", "Osc2Det", -100.0, 100.0, 0.0, 0, 1.0, "osc2_detune", 1.0, "set_osc2_detune", "Oscillator 2 fine detune in cents (-100 to +100 ct).")),
         ("osc2_pos", ("Osc 2 Position", "Osc2Pos", 0.0, 100.0, 0.0, 5, 1.0, "osc2_pos", 0.01, "set_osc2_pos", "Oscillator 2 wavetable morph or sample start position (0 to 100%).")),
         ("osc2_gain", ("Osc 2 Gain", "Osc2Gain", -48.0, 24.0, 0.0, 4, 1.0, "osc2_gain", 1.0, "set_osc2_gain", "Oscillator 2 output level in dB (-48 to +24 dB).")),
+        ("wt1_fx1", ("Osc 1 Effect 1", "Wt1Fx1", -100.0, 100.0, 0.0, 5, 1.0, "wt1_fx1", 0.01, "set_wt1_fx1", "Oscillator 1 Wavetable Effect 1 (Fm Tune, Classic PW, or Modern Warp, -100% to +100%).")),
+        ("wt1_fx2", ("Osc 1 Effect 2", "Wt1Fx2", 0.0, 100.0, 0.0, 5, 1.0, "wt1_fx2", 0.01, "set_wt1_fx2", "Oscillator 1 Wavetable Effect 2 (Fm Amt, Classic Sync, or Modern Fold, 0% to 100%).")),
+        ("wt2_fx1", ("Osc 2 Effect 1", "Wt2Fx1", -100.0, 100.0, 0.0, 5, 1.0, "wt2_fx1", 0.01, "set_wt2_fx1", "Oscillator 2 Wavetable Effect 1 (Fm Tune, Classic PW, or Modern Warp, -100% to +100%).")),
+        ("wt2_fx2", ("Osc 2 Effect 2", "Wt2Fx2", 0.0, 100.0, 0.0, 5, 1.0, "wt2_fx2", 0.01, "set_wt2_fx2", "Oscillator 2 Wavetable Effect 2 (Fm Amt, Classic Sync, or Modern Fold, 0% to 100%).")),
         ("sub_tone", ("Sub Tone", "SubTone", 0.0, 100.0, 0.0, 5, 1.0, "sub_tone", 0.01, "set_sub_tone", "Sub oscillator harmonic saturation tone (0 to 100%).")),
         ("sub_gain", ("Sub Gain", "SubGain", -48.0, 24.0, -6.0, 4, 1.0, "sub_gain", 1.0, "set_sub_gain", "Sub oscillator output level in dB (-48 to +24 dB)."))):
     OPTIONAL_SPECS[_k] = _spec
@@ -334,8 +338,13 @@ _FILT_ENUMS = {
     "filt2_slope": ("Filter 2 Slope", "Slope2", ["12", "24"], 0, "filt2_slope", "set_filt2_slope", "Filter 2 slope (12 or 24 dB/oct)."),
     "filt2_circuit": ("Filter 2 Circuit", "Circ2", ["Clean", "OSR", "MS2", "SMP", "PRD"], 0, "filt2_circuit", "set_filt2_circuit", "Filter 2 circuit model."),
     "filt_route": ("Filter Routing", "FRoute", ["Serial", "Parallel", "Split"], 0, "filt_route", "set_filt_route", "Filter routing: Serial, Parallel, or Split."),
+    "osc1_on": ("Osc 1 Enable", "Osc1On", ["Off", "On"], 1, "osc1_on", "set_osc1_on", "Enables Oscillator 1."),
+    "osc1_type": ("Osc 1 Type", "Osc1Type", ["Sampler", "Wavetable"], 0, "osc1_type", "set_osc1_type", "Oscillator 1 engine type: Sampler or Wavetable."),
+    "wt1_fx": ("Osc 1 Wave Effect", "Wt1Fx", ["None", "Fm", "Classic", "Modern"], 3, "wt1_fx", "set_wt1_fx", "Oscillator 1 Wavetable effect mode: None, Fm, Classic, or Modern."),
     "osc2_on": ("Osc 2 Enable", "Osc2On", ["Off", "On"], 0, "osc2_on", "set_osc2_on", "Enables Oscillator 2."),
     "osc2_type": ("Osc 2 Type", "Osc2Type", ["Sampler", "Wavetable"], 0, "osc2_type", "set_osc2_type", "Oscillator 2 engine type: Sampler slot or Wavetable."),
+    "osc2_mode": ("Osc 2 Playback Mode", "Osc2Mode", ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"], 0, "osc2_mode", "set_osc2_mode", "Oscillator 2 sampler playback mode."),
+    "wt2_fx": ("Osc 2 Wave Effect", "Wt2Fx", ["None", "Fm", "Classic", "Modern"], 3, "wt2_fx", "set_wt2_fx", "Oscillator 2 Wavetable effect mode: None, Fm, Classic, or Modern."),
     "sub_on": ("Sub Enable", "SubOn", ["Off", "On"], 0, "sub_on", "set_sub_on", "Enables the Sub oscillator."),
     "sub_oct": ("Sub Octave", "SubOct", ["0", "-1", "-2"], 1, "sub_oct", "set_sub_oct", "Sub oscillator octave offset (0, -1, or -2 octaves)."),
 }

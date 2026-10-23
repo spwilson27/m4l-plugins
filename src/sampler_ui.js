@@ -1163,8 +1163,17 @@ function set_filt2_res(v) { storeParam("filt2_res", v); }
 function set_filt2_drive(v) { storeParam("filt2_drive", v); }
 function set_filt2_morph(v) { storeParam("filt2_morph", v); }
 function set_filt_route(v) { storeParam("filt_route", v); }
+function set_osc1_on(v) { storeParam("osc1_on", v); }
+function set_osc1_type(v) { storeParam("osc1_type", v); }
+function set_wt1_fx(v) { storeParam("wt1_fx", v); }
+function set_wt1_fx1(v) { storeParam("wt1_fx1", v); }
+function set_wt1_fx2(v) { storeParam("wt1_fx2", v); }
 function set_osc2_on(v) { storeParam("osc2_on", v); }
 function set_osc2_type(v) { storeParam("osc2_type", v); }
+function set_osc2_mode(v) { storeParam("osc2_mode", v); }
+function set_wt2_fx(v) { storeParam("wt2_fx", v); }
+function set_wt2_fx1(v) { storeParam("wt2_fx1", v); }
+function set_wt2_fx2(v) { storeParam("wt2_fx2", v); }
 function set_osc2_pitch(v) { storeParam("osc2_pitch", v); }
 function set_osc2_detune(v) { storeParam("osc2_detune", v); }
 function set_osc2_pos(v) { storeParam("osc2_pos", v); }
