@@ -506,12 +506,13 @@ test("telemetry / header slots written by the cores are slots of RP_SCOPE / RP_H
 test("anydrop (a file dropped anywhere on the face): every algorithm, audio files only, switches to Convolution, also stored in the IR File parameter", () => {
     const src = fs.readFileSync(path.join(ROOT, "src", "reverbplus_engine.js"), "utf8");
     const grab = (from, to) => { const a = src.indexOf(from), b = src.indexOf(to, a); assert(a >= 0 && b > a, from); return src.slice(a, b); };
-    const code = grab("function rpIrPathFromArgs", "var rpLastDropped") + grab("var RP_AUDIO_EXT", "function browsed");
+    const code = grab("function rpIrPathFromArgs", "var rpLastDropped") + grab("var RP_DROP_DEFER_MS", "function browsed");
     const calls = [];
-    const ctx = { RP_ALGO: { CONV: 5 }, rpRaw: { algo: 5 }, outlet: (...a) => calls.push(["outlet", ...a]), rpIrLoad: (p) => calls.push(["load", p]), Array, String, RegExp };
+    const tasks = []; // Task stub: the drop is deferred, run it by hand
+    const ctx = { RP_ALGO: { CONV: 5 }, rpRaw: { algo: 5 }, Task: function (fn) { this.schedule = (ms) => { assert(ms > 0, "deferred"); tasks.push(fn); }; }, outlet: (...a) => calls.push(["outlet", ...a]), rpIrLoad: (p) => calls.push(["load", p]), Array, String, RegExp };
     vm.createContext(ctx);
     vm.runInContext(code, ctx);
-    const drop = (algo, ...args) => { calls.length = 0; ctx.rpRaw.algo = algo; vm.runInContext("anydrop", ctx).apply(null, args); return calls.slice(); };
+    const drop = (algo, ...args) => { calls.length = 0; ctx.rpRaw.algo = algo; vm.runInContext("anydrop", ctx).apply(null, args); assert.strictEqual(calls.length, 0, "nothing happens inside the drop callback"); while (tasks.length) tasks.shift()(); return calls.slice(); };
     assert.deepStrictEqual(drop(5, "Macintosh HD:/tmp/My", "IR.WAV"), [["outlet", 4, "Macintosh HD:/tmp/My IR.WAV"], ["load", "Macintosh HD:/tmp/My IR.WAV"]], "in Convolution: loads, stores in the parameter, rejoins a split path, no switch");
     for (let a = 0; a < 5; a++) assert.deepStrictEqual(drop(a, "/x/ir.wav"), [["outlet", 5, "algo", 5], ["outlet", 4, "/x/ir.wav"], ["load", "/x/ir.wav"]], "algorithm " + a + " switches to Convolution, then loads");
     for (const ext of ["wav", "aif", "aiff", "flac", "mp3", "m4a", "caf"]) assert.strictEqual(drop(5, "/x/ir." + ext).length, 2, ext);
@@ -611,7 +612,8 @@ function checkDevice(name, doc, lay) {
         for (const b of boxes) if (b.presentation === 1 && b.maxclass !== "panel" && b.id !== df.id) assert(ids.indexOf(b.id) < di, `${b.id} is behind the drop target`);
         const hasL = (a, ao, c, ci) => lines.some((l) => l.source[0] === a && l.source[1] === ao && l.destination[0] === c && l.destination[1] === ci);
         const prep = boxes.find((b) => b.text === "prepend anydrop");
-        assert(prep && hasL(df.id, 0, prep.id, 0) && hasL(prep.id, 0, "obj-engine", 0), "dropfile -> prepend anydrop -> engine");
+        const dfr = boxes.find((b) => b.text === "defer");
+        assert(dfr && prep && hasL(df.id, 0, dfr.id, 0) && hasL(dfr.id, 0, prep.id, 0) && hasL(prep.id, 0, "obj-engine", 0), "dropfile -> defer -> prepend anydrop -> engine (nothing runs inside the drag callback)");
         assert(hasL("obj-engine", 5, "obj-route-key", 0), "engine outlet 5 -> route-key (switches the real Algorithm object)");
         assert(!df.hidden, "the drop target exists in every algorithm");
     }
@@ -752,6 +754,23 @@ test("built devices/Reverb+ End.amxd: static gen, link layer, 124 px wide", () =
     assert(gen && gen.code.includes("Buffer xfer(\"rpxferE\")"));
     assert(boxes.some((b) => b.text === "buffer~ ---rpxferE @samps 64 @chans 5"));
     assert.strictEqual(boxes.filter((b) => b.maxclass === "v8ui").length, 1);
+});
+
+test("no Reverb+ script redeclares Max's reserved v8ui / js globals", () => {
+    // Delay+: `var box = ...` crashed Live on the first mouse drag (Max reads its own `box` accessor in pointer events).
+    // inlets / outlets are meant to be assigned (a js script sets its own counts), so they are only checked as declarations.
+    const reserved = ["box", "patcher", "max", "messagename", "inlet", "jsarguments", "outlet", "inlets", "outlets", "arguments"];
+    const files = fs.readdirSync(path.join(ROOT, "src")).filter((n) => /^reverbplus_.*\.js$/.test(n));
+    assert(files.length >= 8, "found " + files.join(", "));
+    for (const f of files) {
+        const code = fs.readFileSync(path.join(ROOT, "src", f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+        for (const r of reserved) {
+            assert(!new RegExp("(^|[^.\\w$])(var|let|const|function|class)\\s+" + r + "\\b").test(code), `${f} declares ${r}`);
+            // a function parameter or catch binding with that name shadows the built-in too
+            for (const m of code.matchAll(/function\s*[\w$]*\s*\(([^)]*)\)/g)) assert(!m[1].split(",").map((x) => x.trim().replace(/=.*/, "").trim()).includes(r), `${f} has a parameter named ${r}`);
+            if (!["inlets", "outlets"].includes(r)) assert(!new RegExp("(^|[^.\\w$])" + r + "\\s*=[^=]").test(code), `${f} assigns ${r}`);
+        }
+    }
 });
 
 test("devices/Reverb+.adg: [Reverb+] [empty nested 'Reverb+ FX' rack, one empty chain] [Reverb+ End folded]", () => {

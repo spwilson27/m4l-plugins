@@ -202,8 +202,12 @@ def layout(h):
               h.line("obj-lay-tall-on", 0, "obj-lay-viz", 0)]
 
     # whole-face drop target (Convolution IR), in front of everything but the background panels, ignoreclick
-    extra += [h.dropany(0.0, 0.0, W, 169.0), h.newobj("obj-lay-prep-anydrop", "prepend anydrop", 1300.0, 340.0, 110)]
-    lines += [h.line("obj-dropany", 0, "obj-lay-prep-anydrop", 0), h.line("obj-lay-prep-anydrop", 0, "obj-engine", 0)]
+    # `defer`: the dropfile outputs from inside Cocoa's drag-destination callback; the engine must not run (and Live must not be
+    # touched) in there, so the message is moved to the low-priority queue first (AGENTS.md section 27, Live heap corruption).
+    extra += [h.dropany(0.0, 0.0, W, 169.0), h.newobj("obj-lay-defer-drop", "defer", 1300.0, 320.0, 50),
+              h.newobj("obj-lay-prep-anydrop", "prepend anydrop", 1300.0, 340.0, 110)]
+    lines += [h.line("obj-dropany", 0, "obj-lay-defer-drop", 0), h.line("obj-lay-defer-drop", 0, "obj-lay-prep-anydrop", 0),
+              h.line("obj-lay-prep-anydrop", 0, "obj-engine", 0)]
 
     panels = [
         h.panel("obj-lay-left", 4.0, 4.0, 54.0, 161.0),

@@ -107,6 +107,8 @@ if (!pairs.length) {
 const LOOP = process.env.REVERBPLUS_LOOP || "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Core Library/Samples/Loops/Drums/Full/Hip Hop Doubled 145 bpm.wav";
 const IR_FILE = process.env.REVERBPLUS_IR || "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Core Library/Samples/Loops/Tonal/Keys/Dirty Herbie Chords 73 bpm.wav";
 
+const FACE_LOOPS = Math.max(1, Number(process.env.REVERBPLUS_FACE_LOOPS) || 1);
+const FACE_STAGE = process.env.REVERBPLUS_FACE_STAGE || "all";
 let failures = 0;
 function check(ok, msg) {
     console.log((ok ? "PASS " : "FAIL ") + msg);
@@ -194,35 +196,38 @@ function faceSection(pair, setP, getP, trackPath) {
     const wins = () => JSON.parse(os("cgwindows", "Live"));
     const dev = (n) => n;
     void dev;
-    // 1. clicks reach the widgets behind the drop target
-    check(page() === 0, `${tag} starts on the Reverb tab`);
-    os("click", ...at(222, 13));
-    check(page() === 1, `${tag} a real click on the Tone tab changes the tab (page ${page()})`);
-    os("click", ...at(160, 13));
-    check(page() === 0, `${tag} a real click on the Reverb tab changes it back`);
-    const dw0 = getP("Dry/Wet");
-    os("drag", ...at(413, 123), 0, -30);
-    const dw1 = getP("Dry/Wet");
-    check(dw1 > dw0 + 5, `${tag} a real drag turns the Dry/Wet dial (${dw0.toFixed(1)} -> ${dw1.toFixed(1)})`);
-    setP("Dry/Wet", dw0);
-    const fz0 = getP("Freeze");
-    os("click", ...at(413, 65));
-    const fz1 = getP("Freeze");
-    check(fz1 !== fz0, `${tag} a real click toggles Freeze (${fz0} -> ${fz1})`);
-    os("click", ...at(413, 65));
-    check(getP("Freeze") === fz0, `${tag} and back (${getP("Freeze")})`);
-    note(`new Global("reverbplus_test").click = null; return 1;`);
-    os("click", ...at(200, 60));
-    const ck = note(`return new Global("reverbplus_test").click;`);
-    check(!!ck && JSON.parse(ck).but === 1, `${tag} a real click on the display reaches the display (${ck})`);
-    const w0 = wins();
-    os("rclick", ...at(413, 123));
-    const w1 = wins();
-    const fresh = w1.filter((w) => !w0.some((o) => o[6] === w[6]));
-    check(fresh.length > 0, `${tag} a real right click on the Dry/Wet dial still opens Live's native menu window (${JSON.stringify(fresh)})`);
-    os("key", "escape");
-    sleep(500);
+    if (FACE_STAGE !== "drops") {
+        // 1. clicks reach the widgets behind the drop target
+        check(page() === 0, `${tag} starts on the Reverb tab`);
+        os("click", ...at(222, 13));
+        check(page() === 1, `${tag} a real click on the Tone tab changes the tab (page ${page()})`);
+        os("click", ...at(160, 13));
+        check(page() === 0, `${tag} a real click on the Reverb tab changes it back`);
+        const dw0 = getP("Dry/Wet");
+        os("drag", ...at(413, 123), 0, -30);
+        const dw1 = getP("Dry/Wet");
+        check(dw1 > dw0 + 5, `${tag} a real drag turns the Dry/Wet dial (${dw0.toFixed(1)} -> ${dw1.toFixed(1)})`);
+        setP("Dry/Wet", dw0);
+        const fz0 = getP("Freeze");
+        os("click", ...at(413, 65));
+        const fz1 = getP("Freeze");
+        check(fz1 !== fz0, `${tag} a real click toggles Freeze (${fz0} -> ${fz1})`);
+        os("click", ...at(413, 65));
+        check(getP("Freeze") === fz0, `${tag} and back (${getP("Freeze")})`);
+        note(`new Global("reverbplus_test").click = null; return 1;`);
+        os("click", ...at(200, 60));
+        const ck = note(`return new Global("reverbplus_test").click;`);
+        check(!!ck && JSON.parse(ck).but === 1, `${tag} a real click on the display reaches the display (${ck})`);
+        const w0 = wins();
+        os("rclick", ...at(413, 123));
+        const w1 = wins();
+        const fresh = w1.filter((w) => !w0.some((o) => o[6] === w[6]));
+        check(fresh.length > 0, `${tag} a real right click on the Dry/Wet dial still opens Live's native menu window (${JSON.stringify(fresh)})`);
+        os("key", "escape");
+        sleep(500);
 
+    }
+    if (FACE_STAGE === "clicks") { note(`new Global("reverbplus_test").hoverOn = 0; return 1;`); return; }
     // 2. a real file drag dropped on the face
     const algo0 = getP("Algorithm");
     const irState = () => {
@@ -244,11 +249,19 @@ function faceSection(pair, setP, getP, trackPath) {
         const st = irState();
         return { out, st, f };
     };
+    if (FACE_STAGE === "outside") {
+        // control for crash hunting: real file drags dropped outside the device (Live's own drop handling only)
+        for (let k = 0; k < 12; k++) { const r2 = drop("outside", win.x + 600, win.y + 250); console.log(`INFO outside drop ${k + 1}: ${r2.out.trim().split("\n").pop()}`); }
+        note(`new Global("reverbplus_test").hoverOn = 0; return 1;`);
+        return;
+    }
     setP("Algorithm", 5);
     sleep(1500);
     const spots = { "Dry/Wet dial": [413, 123], "Pre-Delay dial": [31, 30], "Width dial": [413, 29], "display": [200, 60], "Tone tab": [222, 13],
         "Freeze button": [413, 65], "Algorithm menu": [100, 150], "LCD numbox": [270, 150], "IR box": [175, 150], "corner": [5, 5] };
+    const onlySpots = (process.env.REVERBPLUS_FACE_SPOTS || "").split(",").filter(Boolean);
     for (const [label, [lx, ly]] of Object.entries(spots)) {
+        if (onlySpots.length && !onlySpots.includes(label)) continue;
         const r = drop(label, ...at(lx, ly));
         const want = r.f.split("/").pop();
         check(/END [1-7]/.test(r.out) && r.st && r.st.name === want && r.st.status === "ready" && !!r.st.param && r.st.param.endsWith(want),
@@ -308,7 +321,12 @@ for (const pair of pairs) {
     check(before.algo !== null, `${tag} parameters reachable through the LOM (Algorithm ${before.algo}, Dry/Wet ${before.drywet})`);
 
     // real OS input first, on the freshly loaded device (after the Shifter / clip work below Live's device view no longer reports the pointer)
-    if (pair === pairs[0]) faceSection(pair, setP, getP, trackPath);
+    if (pair === pairs[0]) {
+        // REVERBPLUS_FACE_LOOPS=n repeats the real-input section n times (crash hunting); REVERBPLUS_FACE_STAGE=clicks stops it after the click part, =drops skips it;
+        // REVERBPLUS_FACE_ONLY=1 ends the run after it
+        for (let it = 0; it < FACE_LOOPS; it++) { if (FACE_LOOPS > 1) console.log(`INFO face loop ${it + 1}/${FACE_LOOPS}`); faceSection(pair, setP, getP, trackPath); }
+        if (process.env.REVERBPLUS_FACE_ONLY) { console.log(failures ? `${failures} FAILED` : "face only: done"); process.exit(failures ? 1 : 0); }
+    }
 
     // audio: a drum loop through the chain at Dry/Wet 100 %
     setP("Dry/Wet", 100);

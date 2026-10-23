@@ -124,6 +124,7 @@ function dropfile() {
 // Convolution it first switches Algorithm to Convolution through the real parameter object (outlet 5 -> route-key -> obj-ctrl-algo,
 // the path the face's own controls take: Live sees it, it is undoable, the groups update), then loads like the IR box; the path is
 // also stored in the IR File parameter (outlet 4) so Live saves it.
+var RP_DROP_DEFER_MS = 60;
 var RP_AUDIO_EXT = ["wav", "wave", "aif", "aiff", "aifc", "flac", "mp3", "m4a", "mp4", "caf", "au", "ogg", "oga", "opus", "sd2"];
 
 function rpIsAudioPath(p) {
@@ -131,9 +132,25 @@ function rpIsAudioPath(p) {
     return !!m && RP_AUDIO_EXT.indexOf(m[1].toLowerCase()) >= 0;
 }
 
+// Everything a drop causes (the Algorithm and IR File parameter changes, the buffer~ load, the state broadcasts) runs from a Task,
+// NOT inside the dropfile callback: Max calls us from inside Cocoa's drag-destination callback, and Live changes (parameters, undo
+// postings, redraws) made there corrupted Live's heap (libmalloc "memory corruption of free block" in Live's own code, within
+// seconds of repeated real file drops; see AGENTS.md section 27).
+var rpDropPending = "";
+var rpDropTask = null;
+
 function anydrop() {
     var p = rpIrPathFromArgs(arguments);
     if (!p || !rpIsAudioPath(p)) return;
+    rpDropPending = p;
+    if (!rpDropTask) rpDropTask = new Task(rpDropRun, this);
+    rpDropTask.schedule(RP_DROP_DEFER_MS);
+}
+
+function rpDropRun() {
+    var p = rpDropPending;
+    rpDropPending = "";
+    if (!p) return;
     if (rpRaw.algo !== RP_ALGO.CONV) outlet(5, "algo", RP_ALGO.CONV);
     outlet(4, p);
     rpIrLoad(p);
