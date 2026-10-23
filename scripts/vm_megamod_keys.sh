@@ -6,6 +6,7 @@
 #                                     (no --delete), rebuild the device there
 #   scripts/vm_megamod_keys.sh max    sync, then scripts/run_megamod_key_tests.py in the VM (standalone Max)
 #   scripts/vm_megamod_keys.sh audio [case ...]  sync, then scripts/run_megamod_audio_tests.py in the VM (standalone Max)
+#   scripts/vm_megamod_keys.sh py <script.py> [args]  sync, then run any scripts/<script.py> in the VM (standalone Max, e.g. measure_megamod_cpu.py)
 #   scripts/vm_megamod_keys.sh live   sync, write megamod_keys_test.als in the VM and (re)start Live on it.
 #                                     Refuses when a Live with another set is running (another session may be
 #                                     using it); FORCE=1 overrides. Waits for the MCP bridge.
@@ -20,7 +21,8 @@
 set -u
 VM=macos-1
 LOCAL_PORT=19880
-VMDIR='$HOME/Software/ableton-mmnames'
+VMREL="${MM_VM_DIR:-Software/ableton-mmnames}"   # the VM checkout (relative to the VM home); MM_VM_DIR lets a second run use its own
+VMDIR="\$HOME/$VMREL"
 export SSHPASS=admin
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IP="$(tart ip $VM 2>/dev/null || tart ip --resolver=arp $VM 2>/dev/null)"
@@ -49,7 +51,7 @@ tunnel() {
 sync_repo() {
   (cd "$ROOT" && node scripts/megamod_key_seed.js >/dev/null) || return 1
   rsync -az --exclude .git --exclude node_modules --exclude previews --exclude __pycache__ --exclude vendor \
-    -e "sshpass -e ssh" "$ROOT/scripts" "$ROOT/src" "$ROOT/tests" "$ROOT/devices" "admin@${IP}:Software/ableton-mmnames/" || return 1
+    -e "sshpass -e ssh" "$ROOT/scripts" "$ROOT/src" "$ROOT/tests" "$ROOT/devices" "admin@${IP}:${VMREL}/" || return 1
   "${SSH[@]}" "cd $VMDIR && /usr/bin/python3 scripts/build_megamod.py >/dev/null"
 }
 
@@ -61,6 +63,10 @@ case "${1:-}" in
   audio)
     # engine / router audio checks in standalone Max (scripts/run_megamod_audio_tests.py [case ...], harness: AGENTS.md 1b)
     shift; sync_repo && "${SSH[@]}" "cd $VMDIR && /usr/bin/python3 scripts/run_megamod_audio_tests.py $*" ;;
+  py)
+    # py <script.py> [args ...]: any standalone-Max script of this device in the VM (harness lock only, no Live)
+    # (MM_PYENV="MM_ROUTERS=0 MM_STATES=s16" passes environment variables to the script)
+    shift; sc="$1"; shift; sync_repo && "${SSH[@]}" "cd $VMDIR && PYTHONUNBUFFERED=1 ${MM_PYENV:-} /usr/bin/python3 scripts/$sc $*" ;;
   live)
     BUSY="$("${SSH[@]}" 'pgrep -f "MacOS/Live$" >/dev/null || exit 0;
       osascript -e "tell application \"System Events\" to get name of every window of process \"Live\""' 2>/dev/null)"
@@ -78,11 +84,12 @@ case "${1:-}" in
   test)
     tunnel || exit 1
     trap 'kill $TUNNEL 2>/dev/null' EXIT   # (not inside tunnel(): zsh runs a function's EXIT trap when the function returns)
+    node "$ROOT/scripts/mm_wait_dsp.js" --port "$LOCAL_PORT" >&2 || { echo "the deferred DSP did not come up" >&2; exit 1; }   # the face is up long before the engine / routers run
     node "$ROOT/scripts/test_megamod_keys_live.js" --port "$LOCAL_PORT" --ssh "admin@${IP}" ;;
   measure)
     # usage: measure [device.amxd] -- syncs, optionally swaps in another build of the device, times the load (3 runs) in the VM
     sync_repo || exit 1
-    if [ -n "${2:-}" ]; then sshpass -e scp "$2" "admin@${IP}:Software/ableton-mmnames/devices/Mega Modulator.amxd" || exit 1; fi
+    if [ -n "${2:-}" ]; then sshpass -e scp "$2" "admin@${IP}:${VMREL}/devices/Mega Modulator.amxd" || exit 1; fi
     "${SSH[@]}" "cd $VMDIR && /usr/bin/python3 scripts/make_megamod_keys_set.py --out $VMDIR/megamod_keys_test.als >/dev/null && /usr/bin/python3 scripts/measure_megamod_load.py --runs ${RUNS:-3}" ;;
   reload)
     # load order in real Live (run after `live`): prepare a device (LFO, parameters moved through the LOM, a mapping with a Depth), then
@@ -90,24 +97,29 @@ case "${1:-}" in
     # (Saving a Set through the UI was not automatable: the File > Save menu click wrote nothing.)
     tunnel || exit 1
     trap 'kill $TUNNEL 2>/dev/null' EXIT   # (not inside tunnel(): zsh runs a function's EXIT trap when the function returns)
+    node "$ROOT/scripts/mm_wait_dsp.js" --port "$LOCAL_PORT" >&2 || { echo "the deferred DSP did not come up" >&2; exit 1; }   # the face is up long before the engine / routers run
     node "$ROOT/scripts/test_megamod_reload_live.js" --port "$LOCAL_PORT" ;;
   probe)
     tunnel || exit 1
     trap 'kill $TUNNEL 2>/dev/null' EXIT   # (not inside tunnel(): zsh runs a function's EXIT trap when the function returns)
+    node "$ROOT/scripts/mm_wait_dsp.js" --port "$LOCAL_PORT" >&2 || { echo "the deferred DSP did not come up" >&2; exit 1; }   # the face is up long before the engine / routers run
     node "$ROOT/scripts/probe_megamod_rename_live.js" --port "$LOCAL_PORT" ;;
   auto)
     tunnel || exit 1
     trap 'kill $TUNNEL 2>/dev/null' EXIT   # (not inside tunnel(): zsh runs a function's EXIT trap when the function returns)
+    node "$ROOT/scripts/mm_wait_dsp.js" --port "$LOCAL_PORT" >&2 || { echo "the deferred DSP did not come up" >&2; exit 1; }   # the face is up long before the engine / routers run
     node "$ROOT/scripts/test_megamod_auto_live.js" --port "$LOCAL_PORT" ;;
   run)
     # run <script.js> [args]: any bridge script of this device on the host through the tunnel (gets --port and --ssh)
     tunnel || exit 1
     trap 'kill $TUNNEL 2>/dev/null' EXIT   # (not inside tunnel(): zsh runs a function's EXIT trap when the function returns)
+    node "$ROOT/scripts/mm_wait_dsp.js" --port "$LOCAL_PORT" >&2 || { echo "the deferred DSP did not come up" >&2; exit 1; }   # the face is up long before the engine / routers run
     sc="$2"; shift 2; node "$sc" --port "$LOCAL_PORT" --ssh "admin@${IP}" "$@" ;;
   faces)
     # parameter faces in real Live (run after `live`): scripts/test_megamod_faces_live.js (real left drag / right click in the VM)
     tunnel || exit 1
     trap 'kill $TUNNEL 2>/dev/null' EXIT   # (not inside tunnel(): zsh runs a function's EXIT trap when the function returns)
+    node "$ROOT/scripts/mm_wait_dsp.js" --port "$LOCAL_PORT" >&2 || { echo "the deferred DSP did not come up" >&2; exit 1; }   # the face is up long before the engine / routers run
     node "$ROOT/scripts/test_megamod_faces_live.js" --port "$LOCAL_PORT" --ssh "admin@${IP}" ;;
   *)
     sed -n '2,19p' "$0"; exit 1 ;;

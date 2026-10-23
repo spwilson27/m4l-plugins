@@ -224,7 +224,7 @@ assert.strictEqual(byId.size, boxes.length, "box ids are unique");
 // --- buffers, loadbang message, gen core ---
 assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ #0-bsamp 1000 2", "empty user sample buffer");
 assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ #0-bsvoices @samps 128");
-assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 128", "telemetry incl. 32 grain slots (64..127)");
+assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 256", "telemetry incl. 32 grain slots (64..127) and per-voice env/filter (128..207)");
 assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch");
 assert.strictEqual(byId.get("obj-buf-pitch").text, "buffer~ #0-bspitch @samps 4096", "Analyzed Root Key curve buffer");
 assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch");
@@ -279,7 +279,8 @@ for (const b of panels) assert.strictEqual(b.background, 1, `panel ${b.id} backg
 const liveBoxes = boxes.filter((b) => /^live\./.test(b.maxclass));
 for (const b of liveBoxes) {
     if (b.id === "obj-drop-wave") continue;
-    assert.ok(b.presentation !== 1, `${b.id} (${b.maxclass}) must not be in presentation`);
+    // Ableton theme widgets are saved in presentation but hidden (the saved file is the Bitwig state)
+    assert.ok(b.presentation !== 1 || b.hidden === 1, `${b.id} (${b.maxclass}) must not be visible in presentation`);
 }
 assert.ok(!byId.has("obj-drop"), "one drop zone only: two would each replay a different saved path on load");
 // The waveform drop target is the one allowed overlap: an invisible live.drop above obj-viz that
@@ -326,7 +327,7 @@ const ctrlKeys = ctrlBoxes.map((b) => b.id.replace(/^obj-ctrl-/, ""));
 assert.ok(ctrlKeys.length >= 40, `expected the full parameter set, got ${ctrlKeys.length}`);
 for (const b of ctrlBoxes) {
     assert.ok(/^live\./.test(b.maxclass), `${b.id} is a live.* object`);
-    assert.strictEqual(b.presentation, 0, `${b.id} presentation 0`);
+    assert.ok(b.presentation === 0 || b.hidden === 1, `${b.id} presentation 0 or hidden`);
     const vof = valueOf(b);
     assert.ok(vof, `${b.id} has parameter data`);
     if (typeof vof.parameter_mmax === "number" && vof.parameter_mmax > 255) {
@@ -449,7 +450,7 @@ for (const key of routeKeys) {
 }
 if (missingSetters.length) console.warn(`WARNING known bug: no set_<key> wiring to the faces for: ${missingSetters.join(", ")}`);
 assert.deepStrictEqual(noGenKeys.sort(),
-    ["mono_legato", "poly_voices", "show_inspector", "slice_at", "slice_beat", "slice_div", "slice_from", "slice_sens"],
+    ["env_page", "face_theme", "mono_legato", "poly_voices", "show_inspector", "slice_at", "slice_beat", "slice_div", "slice_from", "slice_sens"],
     "legato, poly cap, slicing and the inspector toggle are face / voice-allocator settings, not Gen params");
 // every new parameter family is routed to its hidden control and reaches Gen (except the face-only ones above)
 for (const key of ["sliced", "rp_char", "rp_dist", "rp_color", "rp_vsr", "rp_imaging", "sp_char", "sp_shift", "sp_bend",
@@ -974,7 +975,8 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
         click(mainCtx, actionZone(mainCtx, "env_page", { page }));
         assert.strictEqual(sb.envPage, page, `env tab ${page}`);
         assert.ok(mainCtx.notified > 0, "env page change notifies Live so the blob is saved");
-        assert.strictEqual(emitted.length, 0, "env tab emits nothing to the device");
+        // the page is mirrored to the hidden env_page parameter (the Ableton theme's live.tab follows it); nothing else goes out
+        assert.deepStrictEqual(emitted.map((a) => a.slice(0, 4)), [[0, "param", "env_page", page]], "env tab only mirrors env_page");
         assert.strictEqual(sb.undoStack.length, depth, "env tab is not an undo step");
         sb.paint();
         assert.deepStrictEqual(envKnobs(), expectKeys[page], `page ${page} draws its own knobs`);

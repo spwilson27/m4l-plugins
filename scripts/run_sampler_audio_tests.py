@@ -13,6 +13,10 @@ Environment:
   SAMPLER_NEW_ONLY=1      with SAMPLER_CASE='^(cr_|spf_|rpf_|tel_)': the Cycles crunch (cr_), Spectral Formant / Shift % (spf_),
                           Repitch Freeze (rpf_) and grain telemetry (tel_) cases and checks; or one group with SAMPLER_CRUNCH_ONLY /
                           SAMPLER_SPF_ONLY / SAMPLER_RPF_ONLY / SAMPLER_TEL_ONLY
+  SAMPLER_SG_ONLY=1       with SAMPLER_CASE='^sg_': the Sample Gain (samp_gain) cases and checks
+  SAMPLER_ES_ONLY=1       with SAMPLER_CASE='^es_': envelope slope (atk_slope ... mrel_slope) cases and checks; es_null prints
+                          "ES_NULL chk=.. rms=.. peak=.." (run it with SAMPLER_GEN=<old core> to compare: bit-identical at slope 0)
+  SAMPLER_TV_ONLY=1       with SAMPLER_CASE='^tv_': per-voice envelope / filter telemetry cases (scope 128..207)
   SAMPLER_REHARM_ONLY=1   with SAMPLER_CASE='^rh_': Spectral controls returned to neutral null against a never-moved reference
   SAMPLER_CPU=0         skip the CPU (real-time factor) measurement
   SAMPLER_CPU_ENGINES=<regex>  measure only the matching CPU_ENGINES labels
@@ -83,7 +87,7 @@ def device_patch(case, gen_code):
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-voices", "buffer~ #0-bsvoices @samps 128", 540, 100, 220,
                numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("obj-scope", "buffer~ #0-bsscope @samps 128", 540, 130, 210,
+        mh.box("obj-scope", "buffer~ #0-bsscope @samps 256", 540, 130, 210,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-pitchbuf", "buffer~ #0-bspitch @samps 4096", 540, 160, 220,
                numoutlets=2, outlettype=["float", "bang"]),
@@ -120,6 +124,8 @@ def run_case(gen_code, case):
     opts = case.get("opts", "")
     for sn in case.get("snaps", []):
         events.append((SETTLE_MS + sn, "obj-js", 3, f"snap t{sn}"))
+    for ev_ms, ev_msg in case.get("extra_events", []):
+        events.append((SETTLE_MS + ev_ms, "obj-js", 3, ev_msg))
     seq = case.get("seq")
     if seq:
         # keys=[...], step ms between key-ons, hold ms each key is held; snap slightly before the key-off
@@ -131,7 +137,7 @@ def run_case(gen_code, case):
             events.append((SETTLE_MS + i * step + hold, "obj-js", 3, f"noteoff {k}"))
     return mh.run_case(
         case["name"], boxes, lines,
-        probe_js=seq_probe_path() if seq else PROBE_JS, probe_args=f"{case['name']} {case.get('cut_ms', 0)} {opts}".strip(),
+        probe_js=seq_probe_path() if (seq or case.get("seq_probe")) else PROBE_JS, probe_args=f"{case['name']} {case.get('cut_ms', 0)} {opts}".strip(),
         settle_ms=SETTLE_MS, dur_ms=case["dur"], channels=2,
         mode=case.get("harness_mode", "stepped"), events=events, keep_dir=bool(case.get("keep")),
     )
@@ -907,6 +913,77 @@ for _n, _shape in (("lfo_sh", 3), ("lfo_saw", 2)):
         snaps=LFO_SNAPS, opts=S48)
 
 
+# ---------------------------------------------------------------------------------------------
+# Sample Gain: a smoothed linear gain on the sample signal (every engine), before the character / drive and the filter.
+# The master stage is a tanh (peak 0.48 at 0 dB already compresses by about 0.5 dB at -12 and 1.2 dB at +6), so the exact
+# 12 dB / 6 dB steps are measured in the linear region (-36 / -24 / -18 dB); the 0 dB comparisons carry the tanh tolerance.
+# ---------------------------------------------------------------------------------------------
+SG_CASES = ["sg_0", "sg_m12", "sg_p6", "sg_m24", "sg_m18", "sg_m36"]
+add("sg_0", P(RPB), 500, opts=S48)
+add("sg_m12", P(RPB + ", samp_gain -12"), 500, opts=S48)
+add("sg_p6", P(RPB + ", samp_gain 6"), 500, opts=S48)
+add("sg_m24", P(RPB + ", samp_gain -24"), 500, opts=S48)
+add("sg_m18", P(RPB + ", samp_gain -18"), 500, opts=S48)
+add("sg_m36", P(RPB + ", samp_gain -36"), 500, opts=S48)
+
+
+# ---------------------------------------------------------------------------------------------
+# Per-voice envelope / filter telemetry: #0-bsscope 128..143 amp stage+fraction, 144..159 amp level, 160..175 mod stage+fraction,
+# 176..191 mod level, 192..207 effective cutoff in Hz (0 for an idle voice). Stage 0 off, 1 attack, 2 decay, 3 sustain, 4 release.
+# ---------------------------------------------------------------------------------------------
+TV_CASES = []
+TV_BASE = "mode 0, loop_mode 1, loop_start 0.05, loop_end 0.95"
+TV_ENV = "atk_ms 20, dec_ms 60, sus_lvl 0.4, rel_ms 100"
+TV1_SNAPS = [10, 25, 40, 55, 80, 120, 170, 230, 300, 380, 430, 470, 500, 550, 600, 700, 800, 900]
+add("tv_env", P(TV_BASE + ", " + TV_ENV), 1000, snaps=TV1_SNAPS, release_ms=450, opts=S48 + "tv=1 ")
+TV_CASES.append("tv_env")
+# two overlapping voices: A (note 57) is in sustain when B (note 60) starts at 400 ms
+TV2_SNAPS = [380, 405, 415, 430, 450, 520]
+add("tv_two", P(TV_BASE + ", " + TV_ENV + ", rel_ms 300"), 700, no_trigger=True, seq_probe=True, snaps=TV2_SNAPS,
+    extra_events=[(0, "noteon 57 100"), (400, "noteon 60 100"), (600, "noteoff 57"), (620, "noteoff 60")],
+    opts=S48 + "tv=1 ")
+TV_CASES.append("tv_two")
+TV3_SNAPS = list(range(10, 530, 20))
+TV_CUT = "filt_on 1, filt_cutoff 2000, sus_lvl 1, msus_lvl 0.4, matk_ms 20, mdec_ms 60, mrel_ms 100"
+add("tv_cut0", P(TV_BASE + ", " + TV_CUT + ", filt_env_amt 0, lfo_filt 0"), 560, snaps=TV3_SNAPS, opts=S48 + "tv=1 ")
+add("tv_cut_env", P(TV_BASE + ", " + TV_CUT + ", filt_env_amt 0.5, lfo_filt 0"), 560, snaps=TV3_SNAPS, opts=S48 + "tv=1 ")
+add("tv_cut_lfo", P(TV_BASE + ", " + TV_CUT + ", filt_env_amt 0, lfo_filt 1.0, lfo_shape 0, lfo_rate 5"), 560, snaps=TV3_SNAPS, opts=S48 + "tv=1 ")
+TV_CASES += ["tv_cut0", "tv_cut_env", "tv_cut_lfo"]
+
+
+# ---------------------------------------------------------------------------------------------
+# Envelope slopes (atk/dec/rel/matk/mdec/mrel_slope, gen -1..1): the per-voice telemetry fraction comes from the INTERNAL envelope
+# (slope independent), the published level from the bent OUTPUT: bend(p, s) = p ** 4 ** -s, so the level can be checked against the
+# telemetry fraction exactly. Stage codes: 1 + level (attack), 2 + (1 - q) (decay), 3 sustain, 4 + (1 - int / int at release start).
+# ---------------------------------------------------------------------------------------------
+ES_CASES = []
+ES_BASE = TV_BASE + ", sus_lvl 1, rel_ms 100"
+ES_ATK_SNAPS = [50, 100, 150, 200, 250, 300, 350, 450, 500]
+ES_DEC_SNAPS = [20, 40, 60, 80, 100, 130, 160, 200, 300, 500, 650, 750]
+ES_REL_SNAPS = [580, 598, 603, 610, 625, 650, 700, 760, 900, 1800]
+ES_ATK = "atk_ms 400"
+ES_DEC = "atk_ms 5, dec_ms 100, sus_lvl 0.2"
+ES_REL = "atk_ms 5, dec_ms 5, sus_lvl 0.6, rel_ms 100"
+ES_MOD = "filt_on 1, filt_cutoff 2000, filt_env_amt 0.5, lfo_filt 0, sus_lvl 1, rel_ms 100"
+ES_SL = {"m": -1, "0": 0, "p": 1}
+for k, v in ES_SL.items():
+    add(f"es_atk_{k}", P(TV_BASE + ", " + ES_ATK + ", sus_lvl 1, rel_ms 100, atk_slope %d" % v), 700, snaps=ES_ATK_SNAPS, release_ms=600, opts=S48 + "tv=1 ")
+    add(f"es_dec_{k}", P(TV_BASE + ", rel_ms 100, " + ES_DEC + ", dec_slope %d" % v), 850, snaps=ES_DEC_SNAPS, release_ms=800, opts=S48 + "tv=1 ")
+    add(f"es_rel_{k}", P(TV_BASE + ", " + ES_REL + ", rel_slope %d" % v), 1900, snaps=ES_REL_SNAPS, release_ms=600, keep=True, opts=S48 + "tv=1 raw=700-1800 ")
+    ES_CASES += [f"es_atk_{k}", f"es_dec_{k}", f"es_rel_{k}"]
+for k in ("m", "p"):
+    v = ES_SL[k]
+    add(f"es_matk_{k}", P(TV_BASE + ", " + ES_MOD + ", matk_ms 400, matk_slope %d" % v), 700, snaps=ES_ATK_SNAPS, release_ms=600, opts=S48 + "tv=1 ")
+    add(f"es_mdec_{k}", P(TV_BASE + ", " + ES_MOD + ", matk_ms 5, mdec_ms 100, msus_lvl 0.2, mdec_slope %d" % v), 850, snaps=ES_DEC_SNAPS, release_ms=800, opts=S48 + "tv=1 ")
+    add(f"es_mrel_{k}", P(TV_BASE + ", " + ES_MOD + ", matk_ms 5, mdec_ms 5, msus_lvl 0.6, mrel_ms 100, mrel_slope %d" % v), 1900, snaps=ES_REL_SNAPS, release_ms=600, opts=S48 + "tv=1 ")
+    ES_CASES += [f"es_matk_{k}", f"es_mdec_{k}", f"es_mrel_{k}"]
+# bit-identity case: every slope 0, all stages and the filter envelope in play (compare with the old core through SAMPLER_GEN)
+add("es_null", P(TV_BASE + ", atk_ms 40, dec_ms 120, sus_lvl 0.4, rel_ms 200, filt_on 1, filt_cutoff 1500, filt_env_amt 0.5, lfo_filt 0, "
+                 "matk_ms 30, mdec_ms 150, msus_lvl 0.3, mrel_ms 250, menv_pitch 0.1, menv_pos 0.1"),
+    1000, release_ms=450, opts=S48)
+ES_CASES.append("es_null")
+
+
 def run_with_retry(gen_code, case):
     """One render per case. The harness serialises Max machine-wide, and a missing or invalid result is a
     real failure, not a reason to retry."""
@@ -1020,6 +1097,30 @@ def main():
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
             raise SystemExit(1)
         print("LFO checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_SG_ONLY"):
+        # SAMPLER_CASE='^sg_' SAMPLER_SG_ONLY=1: just the Sample Gain cases and checks
+        run_sg_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Sample Gain checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_ES_ONLY"):
+        # SAMPLER_CASE='^es_' SAMPLER_ES_ONLY=1: just the envelope slope cases and checks
+        run_es_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Envelope slope checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_TV_ONLY"):
+        # SAMPLER_CASE='^tv_' SAMPLER_TV_ONLY=1: just the per-voice envelope / filter telemetry cases and checks
+        run_tv_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Per-voice telemetry checks passed.")
         return
     if only and os.environ.get("SAMPLER_TEL_ONLY"):
         # SAMPLER_CASE='^tel_' SAMPLER_TEL_ONLY=1: just the grain telemetry cases and their checks
@@ -1162,6 +1263,8 @@ def run_checks(results):
     run_reharm_checks(results)
     run_rpf_checks(results)
     run_tel_checks(results)
+    run_tv_checks(results)
+    run_sg_checks(results)
     run_lfo_checks(results)
 
 
@@ -1486,6 +1589,225 @@ def run_rpf_checks(R):
     check(abs(r["segHz1"] - 220.0) < 3.0 and r["segHarm1"] > 0.97,
           f"rpf_step: after the glide the loop must be stable at 220 Hz ({r['segHz1']:.1f} Hz, harmonic fraction {r['segHarm1']:.3f})")
     check(r["clkJump"] < 0.3, f"rpf_step: the glide must not jump (largest step / peak {r['clkJump']:.3f})")
+
+
+def run_sg_checks(R):
+    """Sample Gain: -12 dB lowers the output by 12 dB (+-0.3) and +6 dB raises it by 6 dB (+-0.3), measured in the linear region
+    (below the master tanh); against 0 dB the steps carry the tanh compression (-12: within 1 dB, +6: within 1.5 dB)."""
+    import math
+    def db(a, b):
+        return 20.0 * math.log10(R[a]["rms"] / R[b]["rms"])
+    if not all(n in R for n in SG_CASES):
+        return
+    check(R["sg_0"]["rms"] > 0.01, f"sg_0: must sound (rms {R['sg_0']['rms']:.4f})")
+    d12 = db("sg_m36", "sg_m24")
+    d6 = db("sg_m18", "sg_m24")
+    d12abs = db("sg_m12", "sg_0")
+    d6abs = db("sg_p6", "sg_0")
+    print(f"  samp_gain: -12 dB (-36 vs -24) -> {d12:+.2f} dB, +6 dB (-18 vs -24) -> {d6:+.2f} dB; vs 0 dB: -12 -> {d12abs:+.2f}, +6 -> {d6abs:+.2f} (tanh)")
+    check(abs(d12 + 12.0) <= 0.3, f"-12 dB step: output must drop by 12 dB +-0.3 (got {d12:+.2f})")
+    check(abs(d6 - 6.0) <= 0.3, f"+6 dB step: output must rise by 6 dB +-0.3 (got {d6:+.2f})")
+    check(abs(d12abs + 12.0) <= 1.0, f"sg_m12 vs sg_0: about -12 dB (got {d12abs:+.2f})")
+    check(abs(d6abs - 6.0) <= 1.5 and d6abs > 3.0, f"sg_p6 vs sg_0: about +6 dB (got {d6abs:+.2f})")
+
+
+def run_tv_checks(R):
+    """Per-voice envelope / filter telemetry (scope 128..207), see the block above the tv_ cases."""
+    if not all(n in R for n in TV_CASES):
+        return
+
+    def ser(name, snaps, voice, field):
+        r = R[name]
+        return [(ms, r[f"tv{ms}_{voice}{field}"]) for ms in snaps if f"tv{ms}_{voice}{field}" in r]
+
+    # (1) one held note: attack -> decay -> sustain -> release
+    ac = ser("tv_env", TV1_SNAPS, 0, "a")
+    al = dict(ser("tv_env", TV1_SNAPS, 0, "al"))
+    check(len(ac) >= 16, f"tv_env: snapshots missing ({len(ac)})")
+    print("  tv_env amp code/level", [(ms, round(c, 3), round(al[ms], 3)) for ms, c in ac])
+    stages = [int(c) for _, c in ac]
+    check(stages == sorted(stages), f"tv_env: stages must be monotone in order ({stages})")
+    check(all(st in stages for st in (1, 2, 3, 4)), f"tv_env: attack, decay, sustain and release must all be seen ({stages})")
+    sus = [al[ms] for ms, c in ac if int(c) == 3]
+    check(sus and all(abs(v - 0.4) < 0.05 for v in sus), f"tv_env: sustain level must be about 0.4 ({sus})")
+    rel = [(ms, c - 4.0, al[ms]) for ms, c in ac if int(c) == 4]
+    fr = [f for _, f, _ in rel]
+    check(len(rel) >= 4 and all(b >= a - 1e-6 for a, b in zip(fr, fr[1:])) and fr[0] < 0.4 and fr[-1] > 0.9,
+          f"tv_env: release fraction must rise 0 -> 1 ({[round(f, 3) for f in fr]})")
+    lv0 = max(al[ms] for ms, c in ac if int(c) == 3) if sus else 0.4
+    check(all(l <= lv0 + 0.02 for _, _, l in rel), "tv_env: level in release must not exceed the level at release start")
+    atk = [(ms, c) for ms, c in ac if int(c) == 1]
+    check(atk and all(abs((c - 1.0) - al[ms]) < 0.01 for ms, c in atk), "tv_env: attack fraction must equal the level")
+    # the mod envelope of the same voice (matk 0.2 ms default / mdec / msus defaults): stage code present and sane
+    mc = ser("tv_env", TV1_SNAPS, 0, "m")
+    check(all(0 <= c < 5 for _, c in mc), "tv_env: mod code range")
+
+    # (2) two voices at once
+    both = []
+    for ms in TV2_SNAPS:
+        r = R["tv_two"]
+        codes = [r.get(f"tv{ms}_{v}a", 0.0) for v in range(4)]
+        both.append((ms, [round(c, 3) for c in codes]))
+    print("  tv_two amp codes (voices 0..3)", both)
+    mix = [ms for ms, codes in both if any(int(c) == 3 for c in codes) and any(int(c) == 1 for c in codes)]
+    check(len(mix) >= 1, f"tv_two: one voice in sustain (3) and one in attack (1) at the same time must be seen ({both})")
+    check(any(int(c) == 3 for c in both[0][1]) and sum(1 for c in both[0][1] if c > 0) == 1,
+          "tv_two: before the second note exactly one voice sounds, in sustain")
+
+    # (3) per-voice cutoff
+    def cuts(name):
+        return [(ms, R[name][f"tv{ms}_0c"]) for ms in TV3_SNAPS if f"tv{ms}_0c" in R[name]]
+    c0 = cuts("tv_cut0")
+    print("  tv_cut0", [(ms, round(c)) for ms, c in c0][:8])
+    check(len(c0) >= 20 and all(abs(c - 2000.0) / 2000.0 < 0.02 for _, c in c0), "tv_cut0: cutoff must equal filt_cutoff within 2%")
+    ce = cuts("tv_cut_env")
+    print("  tv_cut_env", [(ms, round(c)) for ms, c in ce])
+    check(max(c for _, c in ce) > 3000.0, f"tv_cut_env: cutoff must rise above 1.5x filt_cutoff in the attack (max {max(c for _, c in ce):.0f})")
+    target = 2000.0 * 2 ** (5 * 0.5 * 0.4)
+    check(abs(ce[-1][1] - target) / target < 0.05, f"tv_cut_env: cutoff must settle at {target:.0f} Hz ({ce[-1][1]:.0f})")
+    mst = [int(R["tv_cut_env"][f"tv{ms}_0m"]) for ms in TV3_SNAPS]
+    check(mst == sorted(mst) and 1 in mst and 2 in mst and 3 in mst, f"tv_cut_env: mod stage 1 -> 2 -> 3 expected ({mst})")
+    ml = [R["tv_cut_env"][f"tv{ms}_0ml"] for ms in TV3_SNAPS]
+    check(abs(ml[-1] - 0.4) < 0.05, f"tv_cut_env: mod sustain level about 0.4 ({ml[-1]:.3f})")
+    cl = cuts("tv_cut_lfo")
+    print("  tv_cut_lfo", [(ms, round(c)) for ms, c in cl])
+    pos = [c for _, c in cl if c > 0]
+    check(pos and max(pos) / min(pos) > 2.0, f"tv_cut_lfo: cutoff must vary over the LFO cycle (ratio {max(pos) / min(pos):.2f})")
+    for n in ("tv_cut0", "tv_cut_env", "tv_cut_lfo", "tv_env"):
+        r = R[n]
+        bad = [ms for ms in (TV3_SNAPS if n.startswith("tv_cut") else TV1_SNAPS) if r.get(f"tv{ms}x", 0) != 0 or r.get(f"tv{ms}_1c", 0) != 0]
+        check(not bad, f"{n}: idle voices must report 0 (non-zero at {bad[:5]})")
+
+
+def run_es_checks(R):
+    """Envelope slopes: level == bend(telemetry fraction), ordering at mid-segment, endpoints, continuity at note-off."""
+    import math
+    if "es_null" in R:
+        r = R["es_null"]
+        line = f"ES_NULL chk={r['chk']!r} rms={r['rms']!r} peak={r['peak']!r}"
+        print("  " + line)
+        ref = os.environ.get("SAMPLER_ES_NULL_REF")
+        if ref:
+            check(ref == line, f"es_null must be bit-identical to the reference: {line} vs {ref}")
+    bend = lambda p, s: p ** (4.0 ** -s)
+
+    def bendw(p, s):
+        """Decay / release bend with the 2 % smoothstep end-window (the gen blends back to p as p -> 0)."""
+        if s == 0:
+            return p
+        t = min(max(p / 0.02, 0.0), 1.0)
+        return p + (bend(p, s) - p) * t * t * (3.0 - 2.0 * t)
+
+    def sers(name, snaps, c, l):
+        r = R[name]
+        return [(ms, r[f"tv{ms}_0{c}"], r[f"tv{ms}_0{l}"]) for ms in snaps if f"tv{ms}_0{c}" in r]
+
+    def stage_pts(name, snaps, c, l, st):
+        return [(ms, code - st, lv) for ms, code, lv in sers(name, snaps, c, l) if int(code) == st]
+
+    def group(prefix, snaps, c, l, st, sus, relsus=None):
+        """prefix e.g. 'es_atk': checks the three slopes of one segment. st = stage code of the segment."""
+        mids = {}
+        for k, sl in ES_SL.items():
+            n = f"{prefix}_{k}" if f"{prefix}_{k}" in R else None
+            if n is None:
+                continue
+            pts = stage_pts(n, snaps, c, l, st)
+            check(len(pts) >= 3, f"{n}: stage {st} must be seen at several snaps ({[ms for ms, _, _ in pts]})")
+            for ms, frac, lv in pts:
+                if st == 1:
+                    exp = bend(frac, sl)
+                elif st == 2:
+                    exp = sus + (1 - sus) * bendw(1 - frac, sl)
+                else:
+                    exp = relsus * bendw(1 - frac, sl)
+                check(abs(lv - exp) < (0.02 if st != 4 else 0.03), f"{n} @{ms} ms: level {lv:.4f} must equal the bent fraction {exp:.4f} (frac {frac:.3f}, slope {sl})")
+            mids[k] = pts
+        return mids
+
+    def mid_order(prefix, mids, st, sus=0.0):
+        # compare at the snap where the internal fraction is closest to 0.5 in the slope-0 run, at the same time in the other runs
+        if "0" not in mids or "m" not in mids or "p" not in mids:
+            return
+        ms0 = min(mids["0"], key=lambda t: abs(t[1] - 0.5))[0]
+        v = {k: dict((ms, lv) for ms, _, lv in mids[k]).get(ms0) for k in mids}
+        print(f"  {prefix}: level at {ms0} ms (internal fraction ~0.5): -1 {v['m']}, 0 {v['0']}, +1 {v['p']}")
+        check(None not in v.values() and v["m"] < v["0"] < v["p"], f"{prefix}: levels must be ordered (-1) < 0 < (+1) at {ms0} ms ({v})")
+
+    # ATTACK
+    m = group("es_atk", ES_ATK_SNAPS, "a", "al", 1, 1.0)
+    mid_order("es_atk", m, 1)
+    for ms, frac, lv in m.get("0", []):
+        check(abs(lv - frac) < 1e-5, f"es_atk_0 @{ms}: slope 0 must publish the internal level ({lv} vs {frac})")
+    # DECAY (sus 0.2): level -> sus at the end of the decay for every slope; sustain stage reached
+    m = group("es_dec", ES_DEC_SNAPS, "a", "al", 2, 0.2)
+    mid_order("es_dec", m, 2)
+    for k in ES_SL:
+        sus = [lv for _, c, lv in sers(f"es_dec_{k}", ES_DEC_SNAPS, "a", "al") if int(c) == 3]
+        # the first sustain snap can still sit inside the 2 % end-window of a bent segment
+        check(sus and abs(sus[-1] - 0.2) < 0.02 and all(abs(v - 0.2) < 0.1 for v in sus), f"es_dec_{k}: sustain must reach 0.2 ({sus})")
+        n0 = len([1 for _, c, _ in sers("es_dec_0", ES_DEC_SNAPS, "a", "al") if int(c) == 3])
+        check(len(sus) == n0, f"es_dec_{k}: sustain must be reached as soon as with slope 0 ({len(sus)} vs {n0} sustain snaps)")
+    # RELEASE (sustain 0.6): continuity at note-off, formula, endpoint
+    m = group("es_rel", ES_REL_SNAPS, "a", "al", 4, None, relsus=0.6)
+    mid_order("es_rel", m, 4)
+    for k in ES_SL:
+        pts = sers(f"es_rel_{k}", ES_REL_SNAPS, "a", "al")
+        susp = [lv for _, c, lv in pts if int(c) == 3]
+        rel = [(ms, lv) for ms, c, lv in pts if int(c) == 4]
+        check(susp and abs(susp[-1] - 0.6) < 0.02, f"es_rel_{k}: sustain must be 0.6 ({susp})")
+        check(rel and abs(rel[0][1] - 0.6) < 0.12, f"es_rel_{k}: release must start continuous with the sustain level (first release snap {rel[:1]})")
+        print(f"  es_rel_{k}: release levels {[(ms, round(lv, 3)) for ms, lv in rel]}; last snap level {pts[-1][2]:.5f}")
+        check(pts[-1][2] < 0.01 and int(pts[-1][1]) == 0, f"es_rel_{k}: the release must end at 0 ({pts[-1]})")
+        # audio-rate tail: sliding peak of the output over one period (218 samples); no step between consecutive samples
+        x = R[f"es_rel_{k}"].get("raw") or []
+        check(len(x) > 40000, f"es_rel_{k}: raw output window missing ({len(x)})")
+        if len(x) > 40000:
+            from collections import deque
+            W = 219
+            dq, env = deque(), []
+            for i, v in enumerate(x):
+                av = abs(v)
+                while dq and dq[-1][1] <= av:
+                    dq.pop()
+                dq.append((i, av))
+                if dq[0][0] <= i - W:
+                    dq.popleft()
+                if i >= W:
+                    env.append(dq[0][1])
+            steps = [abs(b - a) for a, b in zip(env, env[1:])]
+            mx = max(steps)
+            at = steps.index(mx)
+            tail = steps[len(steps) // 2:]
+            print(f"  es_rel_{k}: max envelope step {mx:.6f} at {700 + (at + W) / 48.0:.1f} ms; tail (second half) max step {max(tail):.6f}; final peak {env[-1]:.2e}")
+            # the sliding one-period peak drops by one period of plain decay (up to ~0.004 for +1, identical with and without the
+            # end-window) so the whole-window bound is 0.006; the tail (second half, where the old +1 release was cut) is held to 0.002
+            check(mx <= 0.006, f"es_rel_{k}: no envelope step larger than 0.006 ({mx:.5f})")
+            check(max(tail) <= 0.002, f"es_rel_{k}: no step larger than 0.002 in the tail ({max(tail):.5f})")
+            check(env[-1] < 1e-4, f"es_rel_{k}: the tail must end at 0 ({env[-1]:.2e})")
+    # MOD envelope: modulated cutoff follows 2000 * 2 ** (5 * 0.5 * level) and the level follows the bent fraction
+    def cutcheck(n):
+        for ms in (ES_ATK_SNAPS + ES_DEC_SNAPS + ES_REL_SNAPS):
+            r = R[n]
+            if f"tv{ms}_0c" in r and r[f"tv{ms}_0c"] > 0:
+                exp = 2000.0 * 2 ** (5 * 0.5 * r[f"tv{ms}_0ml"])
+                check(abs(r[f"tv{ms}_0c"] - exp) / exp < 0.03, f"{n} @{ms}: cutoff {r[f'tv{ms}_0c']:.0f} must follow the mod output level ({exp:.0f})")
+    for n, snaps, st, sus, sl in (("es_matk_m", ES_ATK_SNAPS, 1, 1.0, -1), ("es_matk_p", ES_ATK_SNAPS, 1, 1.0, 1),
+                                  ("es_mdec_m", ES_DEC_SNAPS, 2, 0.2, -1), ("es_mdec_p", ES_DEC_SNAPS, 2, 0.2, 1),
+                                  ("es_mrel_m", ES_REL_SNAPS, 4, None, -1), ("es_mrel_p", ES_REL_SNAPS, 4, None, 1)):
+        if n not in R:
+            continue
+        pts = stage_pts(n, snaps, "m", "ml", st)
+        check(len(pts) >= 3, f"{n}: mod stage {st} must be seen ({[ms for ms, _, _ in pts]})")
+        for ms, frac, lv in pts:
+            exp = bend(frac, sl) if st == 1 else (sus + (1 - sus) * bendw(1 - frac, sl) if st == 2 else 0.6 * bendw(1 - frac, sl))
+            check(abs(lv - exp) < 0.03, f"{n} @{ms}: mod level {lv:.4f} must equal the bent fraction {exp:.4f}")
+        cutcheck(n)
+    if "es_mdec_m" in R and "es_mdec_p" in R:
+        for ms in (60, 80, 100):
+            cm, cp = R["es_mdec_m"].get(f"tv{ms}_0c", 0), R["es_mdec_p"].get(f"tv{ms}_0c", 0)
+            print(f"  es_mdec cutoff @{ms} ms: -1 {cm:.0f} Hz, +1 {cp:.0f} Hz")
+            check(cp > cm * 1.05, f"es_mdec @{ms}: a +1 mod decay slope must give a higher cutoff than -1 ({cp:.0f} vs {cm:.0f})")
 
 
 def run_lfo_checks(R):

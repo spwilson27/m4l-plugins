@@ -24,8 +24,20 @@ var COL = {
     red:    [0.93, 0.36, 0.36],
     knob:   [0.31, 0.31, 0.31],
     knobHi: [0.90, 0.90, 0.90],
-    track:  [0.34, 0.34, 0.34]
+    track:  [0.34, 0.34, 0.34],
+    // Used by the sample panel / menus / toggles; the Ableton theme (src/sampler_theme_ableton.js) swaps them
+    waveOut:  [0.42, 0.42, 0.42],
+    waveIn:   [0.94, 0.94, 0.94],
+    loopFill: [0.30, 0.85, 0.68],
+    loopLine: [0.85, 1.00, 0.95],
+    buttonOn: [0.42, 0.42, 0.42],
+    menuEdge: [0.36, 0.36, 0.36],
+    menuBg:   [0.20, 0.20, 0.20],
+    menuSel:  [0.36, 0.36, 0.36]
 };
+// Font faces (the Ableton theme swaps them while it paints)
+var faceFont = "Arial";
+var faceFontBold = "Arial Bold";
 
 // Engines by `mode` index, and Bitwig's list order (Repitch, Spectral, Cycles, Textures, Fragments)
 var MODE_NAMES = ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"];
@@ -128,7 +140,7 @@ function line(x0, y0, x1, y1, c, a, lw) {
 }
 
 function font(size, bold) {
-    mgraphics.select_font_face(bold ? "Arial Bold" : "Arial");
+    mgraphics.select_font_face(bold ? faceFontBold : faceFont);
     mgraphics.set_font_size(size);
 }
 
@@ -330,16 +342,24 @@ function menuItems(key) {
     return { names: names, descs: descs, icon: icon };
 }
 
+// The canvas in zone coordinates [x, y, w, h]: the whole v8ui, except in the Ableton theme where canvases keep
+// device coordinates (see sampler_theme_ableton.js)
+function canvasBounds() {
+    var sz = mgraphics.size;
+    if (curFaceTheme === 1) { var o = abOrigin(); return [o[0], o[1], sz[0], sz[1]]; }
+    return [0, 0, sz[0], sz[1]];
+}
+
 // Opens `key`'s menu next to (ax, ay); it stays inside the canvas and opens upward from the footer
 function toggleMenu(key, ax, ay, w) {
     if (openMenu && openMenu.key === key) { openMenu = null; return; }
     var items = menuItems(key);
-    var sz = mgraphics.size;
+    var cb = canvasBounds();
     // Long lists (e.g. 12 keys) shrink their rows to fit the canvas
-    var rowH = Math.min(15, Math.floor((sz[1] - 10) / Math.max(1, items.names.length)));
+    var rowH = Math.min(15, Math.floor((cb[3] - 10) / Math.max(1, items.names.length)));
     var h = items.names.length * rowH + 6;
-    var x = Math.max(2, Math.min(sz[0] - w - 2, ax));
-    var y = Math.max(2, Math.min(sz[1] - h - 2, ay - h - 2));
+    var x = Math.max(cb[0] + 2, Math.min(cb[0] + cb[2] - w - 2, ax));
+    var y = Math.max(cb[1] + 2, Math.min(cb[1] + cb[3] - h - 2, ay - h - 2));
     openMenu = { key: key, x: x, y: y, w: w, rowH: rowH };
 }
 
@@ -349,11 +369,11 @@ function paintMenu() {
     var items = menuItems(m.key);
     var cur = Math.round(paramValue(m.key));
     var h = items.names.length * m.rowH + 6;
-    fillRR(m.x - 1, m.y - 1, m.w + 2, h + 2, 3, [0.36, 0.36, 0.36]);
-    fillRR(m.x, m.y, m.w, h, 3, [0.20, 0.20, 0.20]);
+    fillRR(m.x - 1, m.y - 1, m.w + 2, h + 2, 3, COL.menuEdge);
+    fillRR(m.x, m.y, m.w, h, 3, COL.menuBg);
     for (var i = 0; i < items.names.length; i++) {
         var ry = m.y + 3 + i * m.rowH;
-        if (i === cur) fillRect(m.x + 3, ry, m.w - 6, m.rowH, [0.36, 0.36, 0.36]);
+        if (i === cur) fillRect(m.x + 3, ry, m.w - 6, m.rowH, COL.menuSel);
         var tx = m.x + 8;
         if (items.icon) { items.icon(m.x + 8, ry + m.rowH * 0.5 - 4, i, COL.text); tx = m.x + 28; }
         var nw = text(items.names[i], tx, ry + m.rowH * 0.5 + 3.5, 9.0, i === cur ? COL.label : COL.text, false, 0);
@@ -369,7 +389,7 @@ function caret(x, y, c) {
 // Small square toggle with a glyph (Bitwig's mode-panel icon buttons)
 function iconToggle(x, y, key, glyph) {
     var on = Math.round(paramValue(key)) > 0;
-    fillRR(x, y, 14, 12, 2, on ? [0.42, 0.42, 0.42] : COL.button);
+    fillRR(x, y, 14, 12, 2, on ? COL.buttonOn : COL.button);
     glyph(x + 7, y + 6, on ? COL.text : COL.label);
     zone("button", x, y, 14, 12, { action: "toggle", key: key });
 }
@@ -499,8 +519,8 @@ function paintSamplePanel() {
     var loopOn = curLoopMode > 0;
     var loopZones = null;
     if (hasLoadedSample) {
-        wavePolygon(wx, wy, ww, wh, 0, 1, [0.42, 0.42, 0.42], 1.0);
-        wavePolygon(wx, wy, ww, wh, curStart, curEnd, [0.94, 0.94, 0.94], 1.0);
+        wavePolygon(wx, wy, ww, wh, 0, 1, COL.waveOut, 1.0);
+        wavePolygon(wx, wy, ww, wh, curStart, curEnd, COL.waveIn, 1.0);
     } else {
         line(wx, wy + wh * 0.5, wx + ww, wy + wh * 0.5, COL.dim, 1.0, 1.0);
         text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 6, 10.0, COL.label, false, 1);
@@ -511,17 +531,17 @@ function paintSamplePanel() {
         // loop handles at the bottom and a move handle in the middle
         var lsX = wx + curLoopStart * ww, leX = wx + curLoopEnd * ww;
         var xfW = curXfade * (leX - lsX);
-        var LOOPC = [0.30, 0.85, 0.68];
+        var LOOPC = COL.loopFill;
         var strips = 14;
         for (var gi = 0; gi < strips && xfW > 1; gi++) {
             var gx0 = lsX - xfW + xfW * gi / strips;
             fillRect(gx0, wy, xfW / strips + 0.5, wh, LOOPC, 0.42 * (gi + 1) / strips);
         }
         fillRect(lsX, wy, leX - lsX, wh, LOOPC, 0.42);
-        line(lsX, wy, lsX, wy + wh, [0.85, 1, 0.95], 0.9, 1.0);
-        line(leX, wy, leX, wy + wh, [0.85, 1, 0.95], 0.9, 1.0);
+        line(lsX, wy, lsX, wy + wh, COL.loopLine, 0.9, 1.0);
+        line(leX, wy, leX, wy + wh, COL.loopLine, 0.9, 1.0);
         var midX = (lsX + leX) * 0.5;
-        line(midX, wy, midX, wy + wh, [0.85, 1, 0.95], 0.5, 1.0);
+        line(midX, wy, midX, wy + wh, COL.loopLine, 0.5, 1.0);
         fillRect(lsX, wy + wh - 7, 7, 7, LOOPC);
         fillRect(leX - 7, wy + wh - 7, 7, 7, LOOPC);
         fillRect(midX - 3.5, wy + wh * 0.5 - 3.5, 7, 7, LOOPC);
@@ -935,9 +955,24 @@ function inspMenu(key, y, W, w) {
     zone("button", W - 66, y + 1, 58, 13, { action: "menu", key: key, w2: w || 90, below: true });
 }
 
+// "Theme" row at the top of the inspector: Bitwig | Ableton (emits face_theme)
+function inspThemeRow(y, W) {
+    if (curFaceTheme === 1) { abInspThemeRow(y, W); return; }
+    text("Theme", 8, y + 11, 9.0, COL.text, false, 0);
+    var names = paramSpec("face_theme").enums || ["Bitwig", "Ableton"];
+    var cw = 48, cx0 = W - 8 - cw * 2;
+    for (var i = 0; i < 2; i++) {
+        var on = curFaceTheme === i;
+        fillRR(cx0 + i * cw, y, cw - 1, 14, 2, on ? COL.buttonOn : COL.button);
+        text(names[i], cx0 + i * cw + (cw - 1) * 0.5, y + 10.5, 8.5, on ? COL.text : COL.label, true, 1);
+        zone("button", cx0 + i * cw, y, cw - 1, 14, { action: "face_theme", value: i });
+    }
+}
+
 function paintInspector(W, H) {
     fillRR(0, 3, W - 3, H - 6, 3, COL.panel);
-    var y = 7;
+    inspThemeRow(6, W);
+    var y = 27;
     text("Note Glide", 8, y + 11, 9.0, COL.text, false, 0);
     var leg = curMonoLegato === 1;
     fillRR(W - 76, y + 1, 13, 13, 2, leg ? COL.text : [0.30, 0.30, 0.30]);
@@ -975,6 +1010,7 @@ function paint() {
     var sz = mgraphics.size;
     var W = sz[0], H = sz[1];
     hitZones = [];
+    if (curFaceTheme === 1) { paintAbleton(W, H); return; }
     fillRect(0, 0, W, H, COL.gap);
     if (faceRegion === "side") {
         paintSide(W, H);
@@ -1030,8 +1066,14 @@ function doAction(z) {
         case "freeze": setParamFromFace("freeze", curFreeze ? 0 : 1); break;
         case "filt_on": setParamFromFace("filt_on", curFiltOn ? 0 : 1); break;
         case "filt_type": stepParam("filt_type", 1); break;
+        case "set_enum": setParamFromFace(z.key, z.value); break;
+        case "face_theme": setParamFromFace("face_theme", z.value); break;
         case "voicing": setParamFromFace("mono_legato", z.value); break;
-        case "env_page": envPage = z.page; notifyclients(); break;
+        case "env_page":
+            envPage = z.page;
+            if (typeof FACE_PARAMS !== "undefined" && FACE_PARAMS.env_page) setParamFromFace("env_page", z.page);
+            notifyclients();
+            break;
         case "browse": outlet(0, "browse", "bang"); break;
         case "inspector": setParamFromFace("show_inspector", showInspector ? 0 : 1); break;
         case "menu":
@@ -1073,6 +1115,7 @@ function waveNorm(x) {
 }
 
 function onclick(x, y, but, cmd, shift) {
+    if (curFaceTheme === 1) { var o = abOrigin(); x += o[0]; y += o[1]; }
     var z = zoneAt(x, y);
     // An open dropdown takes the next click: pick an item, re-click its button, or click away to close
     if (openMenu && !(z && (z.action === "menu_pick" || (z.action === "menu" && z.key === openMenu.key)))) {
@@ -1084,6 +1127,11 @@ function onclick(x, y, but, cmd, shift) {
     drag = null;
     if (!z) return;
     if (z.kind === "button") { doAction(z); return; }
+    if (z.kind === "env_pt" || z.kind === "filt_pt") {
+        drag = { pt: z };
+        mgraphics.redraw();
+        return;
+    }
     if (z.kind === "knob") {
         // The knob owns the mouse until release: cursor hidden, hover frozen, value readout shown
         drag = { key: z.key, y0: y, n0: toNorm(z.key, paramValue(z.key)), fine: !!shift, captured: true };
@@ -1155,6 +1203,7 @@ function onclick(x, y, but, cmd, shift) {
 }
 
 function ondrag(x, y, but, cmd, shift) {
+    if (curFaceTheme === 1) { var o = abOrigin(); x += o[0]; y += o[1]; }
     if (!drag) return;
     if (but === 0) {
         if (drag.wave === "slice_audition") midi_note(drag.note, 0);
@@ -1165,6 +1214,11 @@ function ondrag(x, y, but, cmd, shift) {
             hoverKey = (zr && zr.kind === "knob") ? zr.key : "";
         }
         drag = null;
+        mgraphics.redraw();
+        return;
+    }
+    if (drag.pt) {
+        abDragPoint(drag.pt, x, y);
         mgraphics.redraw();
         return;
     }
@@ -1205,9 +1259,12 @@ function ondrag(x, y, but, cmd, shift) {
 }
 
 function ondblclick(x, y) {
+    if (curFaceTheme === 1) { var o = abOrigin(); x += o[0]; y += o[1]; }
     var z = zoneAt(x, y);
     if (!z) return;
-    if (z.kind === "knob" || (z.kind === "value" && z.key)) {
+    if (z.kind === "env_pt" || z.kind === "filt_pt") {
+        abResetPoint(z);
+    } else if (z.kind === "knob" || (z.kind === "value" && z.key)) {
         setParamFromFace(z.key, paramSpec(z.key).init);
     } else if (z.kind === "value" && z.region) {
         pushUndoState();
@@ -1239,6 +1296,7 @@ function ondblclick(x, y) {
 }
 
 function onidle(x, y) {
+    if (curFaceTheme === 1) { var o = abOrigin(); x += o[0]; y += o[1]; }
     if (drag && drag.captured) return;
     var z = zoneAt(x, y);
     var k = (z && z.kind === "knob") ? z.key : "";

@@ -4,7 +4,7 @@
 Run:  python3 scripts/run_megamod_audio_tests.py [case ...]
 Every run goes through scripts/max_harness.py (NonRealTime driver, machine-wide instance cap).
 
-Each run: engine gen.codebox~ (16 signal outlets) + audio-rate source gen (device audio input) ->
+Each run: engine gen.codebox~ (32 signal outlets = 16 slots x outputs A / B) + audio-rate source gen (device audio input) ->
 `record~` (two chosen engine outlets). The harness records from DSP start, trims `settle`, and hands the
 probe exactly `dur` ms. tests/megamod_probe.js pokes the cfg / mseg / steps buffers (at loadbang, before
 DSP) from src/megamod_config.js, analyses the recording against the JS reference and writes the report.
@@ -26,7 +26,7 @@ GEN_PATH = os.environ.get("MEGAMOD_GEN") or os.path.join(ROOT, "src", "megamod_e
 CONFIG_JS = os.path.join(ROOT, "src", "megamod_config.js")
 PROBE_JS = os.path.join(ROOT, "tests", "megamod_probe.js")
 
-MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG = 1, 2, 3, 4, 5
+MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG, MOD_ADSR, MOD_XY, MOD_BTN = 1, 2, 3, 4, 5, 6, 7, 8
 SETTLE_MS = 300
 
 # Audio-rate sine burst source (device audio input of the engine); counts samples from DSP start.
@@ -36,6 +36,7 @@ Param amp(0.5);
 Param freq(1000);
 Param t0ms(200);
 Param lenms(200);
+Param periodms(0);
 
 History cnt(0);
 History ph(0);
@@ -43,7 +44,9 @@ History ph(0);
 cnt = (go > 0.5) ? cnt + 1 : 0;
 tms = cnt * 1000 / samplerate;
 ph = wrap(ph + freq / samplerate, 0, 1);
+rel = tms - t0ms;
 gate = (tms >= t0ms && tms < t0ms + lenms) ? 1 : 0;
+gate = (periodms > 0) ? ((rel >= 0 && rel - periodms * floor(rel / periodms) < lenms) ? 1 : 0) : gate;
 out1 = (go > 0.5) ? sin(twopi * ph) * amp * gate : 0;
 """
 
@@ -63,7 +66,7 @@ def device(gen_code, run):
         mh.msg("dev-params", run["params"], 40, 590, 400),
         mh.msg("dev-setbuf", SETBUF, 40, 620, 560),
         mh.msg("dev-srcparams", run.get("source", "amp 0") + ", go 1", 700, 560, 380),
-        mh.box("dev-b-cfg", "buffer~ ---megamodcfg @samps 384", 800, 40, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-b-cfg", f"buffer~ ---megamodcfg @samps {mc.CFG_FLOATS}", 800, 40, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-mseg", "buffer~ ---megamodmseg @samps 16384", 800, 70, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-steps", "buffer~ ---megamodsteps @samps 512", 800, 100, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-scope", f"buffer~ ---megamodscope @samps {mc.SCOPE_SAMPS}", 800, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
@@ -71,7 +74,7 @@ def device(gen_code, run):
         mh.box("dev-b-icurve", f"buffer~ ---megamodicurve @samps {mc.ICURVE_SAMPS}", 800, 280, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-curve", f"buffer~ ---mmcurve @samps {mc.CURVE_SAMPS}", 800, 160, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-b-route", f"buffer~ ---megamodroute @samps {mc.ROUTE_SAMPS}", 800, 190, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.gen_box("dev-gen", gen_code, 200, 220, numinlets=2, numoutlets=16),
+        mh.gen_box("dev-gen", gen_code, 200, 220, numinlets=2, numoutlets=mc.ENGINE_OUTS),
         mh.gen_box("dev-src", SOURCE_GEN, 700, 280, numinlets=1, numoutlets=1),
     ]
     lines = [
@@ -90,8 +93,11 @@ def device(gen_code, run):
     ]
     if any(str(o).startswith("rt") for o in run["outs"]):
         # the real generated router (scripts/megamod_common.py router_gen_code), fed by the 16 engine outlets
-        boxes.append(mh.msg("dev-rbind", ROUTER_BIND, 40, 650, 400))
-        boxes.append(mh.gen_box("dev-router", mc.router_gen_code(run.get("router_idx", ROUTER)), 400, 380, numinlets=16, numoutlets=32))
+        # (one router text for all 8 routers: Param rbase = 32 * router index, what the face sends after loading the router)
+        # (late_rbase: the router starts with rbase 0 and learns its slots from an event mid-run, like a router that was still compiling when the face's first send arrived)
+        boxes.append(mh.msg("dev-rbind", ROUTER_BIND + ("" if run.get("late_rbase") else ", rbase %d" % (run.get("router_idx", ROUTER) * mc.ROUTER_SLOTS)), 40, 650, 400))
+        rcode = open(os.environ["MEGAMOD_ROUTER"], encoding="utf-8").read() if os.environ.get("MEGAMOD_ROUTER") else mc.router_gen_code()  # (MEGAMOD_ROUTER: test another router text)
+        boxes.append(mh.gen_box("dev-router", rcode, 400, 380, numinlets=mc.ENGINE_OUTS, numoutlets=32))
         lines.append(mh.line("obj-load", 0, "dev-rbind", 0))
         lines.append(mh.line("dev-rbind", 0, "dev-router", 0))
         if run.get("rparams"):
@@ -99,15 +105,19 @@ def device(gen_code, run):
             boxes.append(mh.msg("dev-rparams", run["rparams"], 40, 680, 300))
             lines.append(mh.line("obj-load", 0, "dev-rparams", 0))
             lines.append(mh.line("dev-rparams", 0, "dev-router", 0))
-        for i in range(16):
+        for i in range(mc.ENGINE_OUTS):
             lines.append(mh.line("dev-gen", i, "dev-router", i))
     for inlet, spec in enumerate(run["outs"]):
         if spec == "src":
             lines.append(mh.line("dev-src", 0, "obj-record", inlet))
         elif str(spec).startswith("rt"):
             lines.append(mh.line("dev-router", int(spec[2:]), "obj-record", inlet))
+        elif str(spec).startswith("b"):
+            # "b<n>": output B of modulator n (1-based) = engine outlet 2 * (n - 1) + 1 (XY: Y, Buttons: button 2)
+            lines.append(mh.line("dev-gen", 2 * (int(str(spec)[1:]) - 1) + 1, "obj-record", inlet))
         else:
-            lines.append(mh.line("dev-gen", int(spec) - 1, "obj-record", inlet))
+            # <n>: output A of modulator n (1-based) = engine outlet 2 * (n - 1) (each slot has two engine outputs)
+            lines.append(mh.line("dev-gen", 2 * (int(spec) - 1), "obj-record", inlet))
     return boxes, lines
 
 
@@ -141,6 +151,35 @@ def lfo(slot, shape=0, rate=2.0, bipolar=1, depth=1.0, **kw):
     p = {"sync": 0, "rate": rate, "shape": shape, "bipolar": bipolar, "depth": depth}
     p.update(kw)
     return {"slot": slot, "type": MOD_LFO, "p": p}
+
+
+def mc_cf(name):
+    """A CF_* field index of src/megamod_config.js (the python side has no copy)."""
+    import re
+    m = re.search(r"const %s = (\d+);" % name, open(CONFIG_JS, encoding="utf-8").read())
+    return int(m.group(1))
+
+
+def adsr(slot, attack=50, decay=100, sustain=0.5, release=200, thresh=-24, **kw):
+    """An ADSR in Threshold mode (Trig = sync 1), unipolar, depth 1, Vel off; `kw` overrides any parameter (retrig, depth, ...)."""
+    p = {"attack": attack, "decay": decay, "sustain": sustain, "release": release, "thresh": thresh, "sync": 1, "bipolar": 0, "depth": 1.0,
+         "retrig": 0, "oneshot": 0}
+    p.update(kw)
+    return {"slot": slot, "type": MOD_ADSR, "p": p}
+
+
+def xy(slot, x, y, depth=1.0, slew=0.0):
+    return {"slot": slot, "type": MOD_XY, "p": {"x": x, "y": y, "depth": depth, "slew": slew}}
+
+
+def buttons(slot, b1, b2, depth=1.0, slew=0.0):
+    """Buttons: button 1 = the sync field, button 2 = the bipolar field."""
+    return {"slot": slot, "type": MOD_BTN, "p": {"sync": b1, "bipolar": b2, "depth": depth, "slew": slew}}
+
+
+def two_out_router(src, base=ROUTER * mc.ROUTER_SLOTS):
+    """Router slots base (output A) and base + 1 (output B) of modulator `src`, identity mapping (Mod +-, range 1, linear: the router output equals the engine output)."""
+    return {"base": base, "slots": [{"slot": base, "src": src, "out": 0, "map": MAPPING_ID}, {"slot": base + 1, "src": src, "out": 1, "map": MAPPING_ID}]}
 
 
 def steps_pad(vals):
@@ -281,9 +320,42 @@ def cases():
             {"slot": 3, "type": MOD_MSEG, "points": MSEG_POINTS,
              "p": {"sync": 0, "rate": 1.0, "bipolar": 0, "depth": 1}},
         ], (4, 1), dur=2300, an="mseg")],
-        "env_follow": [R("env_follow", [
+        "follower": [R("follower", [
             {"slot": 0, "type": MOD_ENV, "p": {"attack": 5, "release": 120, "gain": 0, "bipolar": 0, "depth": 1}},
         ], (1, "src"), dur=800, an="env", source="amp 0.5, freq 1000, t0ms 500, lenms 200")],
+        # ADSR, Trig = Threshold (the Envelope Trigger onset detector inside the engine): the output follows adsrRunThreshold() on the recorded input; the stage
+        # times are measured on the first burst (FIXED-duration segments with the new curves: a mild concave attack of 50 ms, an exponential decay of 100 ms to sustain 0.5, an exponential release of 200 ms).
+        "adsr_threshold": [
+            R("times", [adsr(0)], (1, "src"), dur=1800, an="adsr", source="amp 0.5, freq 1000, t0ms 400, lenms 700"),
+            R("bursts", [adsr(0, attack=10, decay=30, sustain=0.6, release=50)], (1, "src"), dur=2400, an="adsr",
+              source="amp 0.5, freq 1000, t0ms 400, lenms 120, periodms 500"),
+            R("thresh_hi", [adsr(0, attack=10, decay=30, sustain=0.6, release=50, thresh=-6)], (1, "src"), dur=1500, an="adsr",
+              source="amp 0.25, freq 1000, t0ms 400, lenms 200"),  # peak 0.25 stays below -6 dB (0.5): no trigger
+            R("velocity_off", [adsr(0, oneshot=1)], (1, "src"), dur=1200, an="adsr", sp={"peak": 1.0},
+              source="amp 0.5, freq 1000, t0ms 400, lenms 400"),  # Vel on in Threshold mode: the velocity is 1
+        ],
+        # Retrig: a new trigger during the release attacks from the CURRENT level (Retrig off) or from 0 (Retrig on)
+        "adsr_retrig": [
+            R("retrig", [adsr(0, attack=50, decay=100, sustain=0.5, release=5000), adsr(1, attack=50, decay=100, sustain=0.5, release=5000, retrig=1)],
+              (1, 2), dur=1600, an="adsrretrig", source="amp 0.5, freq 1000, t0ms 400, lenms 100, periodms 400",
+              sp={"t2_ms": 400 + 400 - SETTLE_MS}),
+        ],
+        # XY: out A = X, out B = Y (unipolar, scaled by Depth), directly and through the 32-input router (two router slots, identity mappings)
+        "xy_outputs": [
+            R("direct", [xy(0, 0.2, 0.8)], (1, "b1"), dur=300),
+            R("router", [xy(0, 0.2, 0.8)], ("rt0", "rt1"), dur=300, router=two_out_router(0)),
+            R("router_depth", [xy(0, 0.9, 0.1, depth=0.5), xy(5, 0.3, 0.6)], ("rt0", "rt1"), dur=300, router=two_out_router(0)),
+            R("router_slot5", [xy(0, 0.9, 0.1, depth=0.5), xy(5, 0.3, 0.6)], ("rt0", "rt1"), dur=300, router=two_out_router(5)),
+        ],
+        # Buttons: out A = button 1, out B = button 2 (0 / 1 -> -1 / +1 unipolar), independent, with an optional slew (one-pole, tau = 2000 * slew^2 ms)
+        "buttons_outputs": [
+            R("direct", [buttons(0, 1, 0)], (1, "b1"), dur=300),
+            R("router", [buttons(0, 0, 1)], ("rt0", "rt1"), dur=300, router=two_out_router(0)),
+            R("slew", [buttons(0, 0, 0, slew=0.15)], (1, "b1"), dur=1200, an="btnslew", sp={"t_ms": 400},
+              events=[(400, "cfgset 0 %d 1" % mc_cf("CF_SYNC"), "obj-js")]),
+        ],
+        # a single-output type mirrors output A on output B (here an LFO)
+        "outputs_mirror": [R("mirror", [lfo(0, 0, 3.0)], (1, "b1"), dur=800, an="mirror")],
         "sync": [
             R("tempo", [lfo(0, 0, 1.0, 1, 1.0, sync=1, syncDiv=9)], (1, 2), dur=3800, an="sync",
               params="hbpm 120, hppq 0, hplay 0", events=[(1200, "hbpm 60")]),
@@ -368,6 +440,29 @@ def cases():
         ],
         # Router gen (src: scripts/megamod_common.py router_gen_code): slots 96 / 97 route from two different
         # modulators with two different tables, slot 98 is off. Router outlet j = slot 96 + j.
+        # Skip logic (the deferred-DSP / skip-computation pass): a router whose route cells are all off sleeps (exact zeros) and wakes within ~32 samples when a cell
+        # becomes active; its heartbeat / echo cells tell the face it runs; an engine slot that is disabled outputs exact zeros and comes back when re-enabled.
+        "router_sleep": [
+            # the mapper's way (activity count, then the cell): the sleeping router wakes on the next sample, so a Remote target is never forced to 0 for a vector
+            R("wake", [lfo(0, 0, 3.0)], ("rt0", 1), dur=1500, an="routesleep", router=dict(ROUTER_ID, off=True),
+              events=[(700, "routeset %d 0" % (ROUTER * mc.ROUTER_SLOTS), "obj-js")], sp={"event_ms": 700, "max_wake": 100}),
+            # only the cell is written: the router's own 32-sample scan finds it
+            R("scan", [lfo(0, 0, 3.0)], ("rt0", 1), dur=1500, an="routesleep", router=dict(ROUTER_ID, off=True),
+              events=[(700, "routecell %d 0" % (ROUTER * mc.ROUTER_SLOTS), "obj-js")], sp={"event_ms": 700, "max_wake": 200}),
+        ],
+        "router_late_rbase": [
+            R("late", [lfo(0, 0, 3.0)], ("rt0", 1), dur=1500, an="routesleep", router=ROUTER_ID, late_rbase=True,
+              events=[(700, "rbase %d" % (ROUTER * mc.ROUTER_SLOTS), "dev-router")], sp={"event_ms": 700}),
+        ],
+        "router_heartbeat": [
+            R("hb", [lfo(0, 0, 3.0)], ("rt0", 1), dur=600, an="routehb", router=ROUTER_ID, sp={"router_idx": ROUTER, "total_ms": 600 + SETTLE_MS}),
+            R("hb0", [lfo(0, 0, 3.0)], ("rt0", 1), dur=600, an="routehb", router=dict(ROUTER_ID, base=0, slots=[{"slot": 0, "src": 0, "map": MAPPING_ID}]), router_idx=0,
+              sp={"router_idx": 0, "total_ms": 600 + SETTLE_MS}),
+        ],
+        "slot_off": [
+            R("off", [lfo(0, 0, 5.0)], (1,), dur=1400, an="slotoff", events=[(400, "cfgset 0 %d 0" % mc_cf("CF_ENABLED"), "obj-js"), (900, "cfgset 0 %d 1" % mc_cf("CF_ENABLED"), "obj-js")],
+              sp={"off_ms": 400, "on_ms": 900}),
+        ],
         "lookup_chain": [
             R("slotA", [lfo(0, 0, 3.0), lfo(1, 1, 2.0)], (1, "rt0"), dur=1000, an="lookup", chk=0, router=ROUTER_CASE),
             R("slotB", [lfo(0, 0, 3.0), lfo(1, 1, 2.0)], (2, "rt1"), dur=1000, an="lookup", chk=1, router=ROUTER_CASE),
@@ -504,7 +599,7 @@ def check(case, runs, metas, errors, notes):
                      f"{m['mseg_fit_meanerr']:.5f})")
         if m["mseg_maxerr"] > 0.01:
             err(f"mseg max error {m['mseg_maxerr']}")
-    elif case == "env_follow":
+    elif case == "follower":
         m = ms[0]
         notes.append(f"max err vs envelopeFollow {m['env_maxerr']:.5f}; peak out {m['env_peak_out']:.4f} ref "
                      f"{m['env_peak_ref']:.4f}; quiet max {m['env_quiet_max']:.4f}; tail {m['env_tail']:.4f}; "
@@ -736,6 +831,82 @@ def check(case, runs, metas, errors, notes):
             err(f"the effective depth went below 0 ({d['dr_min']}): a depth route never inverts the mapping")
         if d["dr_min"] > 0.1:
             err("the depth should reach ~0 (B at its minimum)")
+    elif case == "adsr_threshold":
+        for r, d in zip(runs, ms):
+            nm = r["name"]
+            notes.append(f"{nm}: max err vs adsrRunThreshold {d['adsr_err']:.5f}; onset {d['adsr_onset_ms']:.2f} ms, attack {d['adsr_attack_ms']:.2f} ms, decay {d['adsr_decay_ms']:.2f} ms, "
+                         f"sustain {d['adsr_sustain']:.4f}, release {d['adsr_release_ms']:.2f} ms, peak {d['adsr_peak']:.4f}, triggers {d['adsr_triggers']:.0f} (reference {d['adsr_ref_triggers']:.0f})")
+            if nm == "thresh_hi":
+                if d["c1_max"] > -0.999:
+                    err(f"{nm}: the input stays below the threshold, the ADSR must not fire (max out {d['c1_max']})")
+                continue
+            if not d["adsr_err"] <= 0.002:
+                err(f"{nm}: output differs from the reference by {d['adsr_err']} (> 0.002)")
+            if abs(d["adsr_triggers"] - d["adsr_ref_triggers"]) > 0.5 or d["adsr_triggers"] < 1:
+                err(f"{nm}: {d['adsr_triggers']} triggers, reference {d['adsr_ref_triggers']}")
+            if nm == "times":
+                if not near(d["adsr_attack_ms"], 50.0, 2.0):
+                    err(f"attack {d['adsr_attack_ms']} ms != 50 +-2")
+                if not near(d["adsr_decay_ms"], 100.0, 2.0):
+                    err(f"decay {d['adsr_decay_ms']} ms != 100 +-2")
+                if not near(d["adsr_sustain"], 0.5, 0.005):
+                    err(f"sustain {d['adsr_sustain']} != 0.5 +-0.005")
+                if not near(d["adsr_release_ms"], 200.0, 3.0):
+                    err(f"release {d['adsr_release_ms']} ms != 200 +-3")
+                if not near(d["adsr_onset_ms"], 400.0 - SETTLE_MS, 2.0):
+                    err(f"onset {d['adsr_onset_ms']} ms != burst start {400 - SETTLE_MS} +-2")
+            if nm == "bursts" and d["adsr_triggers"] < 3.5:
+                err(f"the bursts must trigger at least 4 times (got {d['adsr_triggers']})")
+            if nm == "velocity_off" and not near(d["adsr_peak"], 1.0, 0.002):
+                err(f"Vel on without MIDI velocity must still peak at 1 (got {d['adsr_peak']})")
+    elif case == "adsr_retrig":
+        d = ms[0]
+        notes.append(f"second burst: Retrig off u {d['rt_a_before']:.3f} -> {d['rt_a_after']:.3f} (min {d['rt_a_min']:.3f}); Retrig on u {d['rt_b_before']:.3f} -> {d['rt_b_after']:.3f} (min {d['rt_b_min']:.3f}); "
+                     f"identical before the retrigger within {d['rt_same_before']:.2e}")
+        if d["rt_same_before"] > 1e-4:
+            err("both ADSRs must be identical until the second trigger")
+        if d["rt_a_before"] < 0.2:
+            err(f"the first envelope must still be in its release at the second burst (u {d['rt_a_before']})")
+        if d["rt_a_min"] < d["rt_a_before"] - 0.01:
+            err(f"Retrig off must attack from the current level (dipped to {d['rt_a_min']} from {d['rt_a_before']})")
+        if d["rt_b_min"] > 0.05 or d["rt_b_after"] > 0.1:
+            err(f"Retrig on must restart from 0 (min {d['rt_b_min']}, 1 ms after the onset {d['rt_b_after']})")
+    elif case == "xy_outputs":
+        want = {"direct": (-0.6, 0.6), "router": (-0.6, 0.6), "router_depth": (-0.1, -0.9), "router_slot5": (-0.4, 0.2)}
+        for r, d in zip(runs, ms):
+            a, b = want[r["name"]]
+            notes.append(f"{r['name']}: out A {d['c1_mean']:.4f} (want {a}), out B {d['c2_mean']:.4f} (want {b}); ripple {d['c1_max'] - d['c1_min']:.1e} / {d['c2_max'] - d['c2_min']:.1e}")
+            if not (near(d["c1_mean"], a, 0.005) and near(d["c2_mean"], b, 0.005)):
+                err(f"{r['name']}: X / Y levels {d['c1_mean']} / {d['c2_mean']} != {a} / {b}")
+            if d["c1_max"] - d["c1_min"] > 1e-4 or d["c2_max"] - d["c2_min"] > 1e-4:
+                err(f"{r['name']}: the outputs must be constant")
+            if abs(d["c1_mean"] - d["c2_mean"]) < 0.1:
+                err(f"{r['name']}: X and Y came out equal")
+    elif case == "buttons_outputs":
+        for r, d in zip(runs, ms):
+            nm = r["name"]
+            if nm == "slew":
+                notes.append(f"slew: tau {d['bs_tau_ms']:.2f} ms (want 45), start {d['bs_start_ms']:.2f} ms, max step {d['bs_max_step']:.4f}, end {d['bs_end']:.4f}; button 2 stays {d['bs_b_min']:.4f}..{d['bs_b_max']:.4f}")
+                if not near(d["bs_tau_ms"], 45.0, 4.0):
+                    err(f"slew time constant {d['bs_tau_ms']} ms != 45 +-4")
+                if d["bs_max_step"] > 0.05:
+                    err(f"the slewed toggle steps by {d['bs_max_step']} per sample (not smooth)")
+                if d["bs_end"] < 0.95:
+                    err(f"the slewed button 1 must reach on (end {d['bs_end']})")
+                if d["bs_b_max"] - d["bs_b_min"] > 1e-6 or d["bs_b_max"] > -0.999:
+                    err("button 2 must stay off and untouched while button 1 toggles")
+                continue
+            want = (1.0, -1.0) if nm == "direct" else (-1.0, 1.0)
+            notes.append(f"{nm}: out A {d['c1_mean']:.4f} (want {want[0]}), out B {d['c2_mean']:.4f} (want {want[1]})")
+            if not (near(d["c1_mean"], want[0], 1e-3) and near(d["c2_mean"], want[1], 1e-3)):
+                err(f"{nm}: button outputs {d['c1_mean']} / {d['c2_mean']} != {want}")
+            if d["c1_max"] - d["c1_min"] > 1e-4 or d["c2_max"] - d["c2_min"] > 1e-4:
+                err(f"{nm}: the outputs must be constant")
+    elif case == "outputs_mirror":
+        d = ms[0]
+        notes.append(f"LFO: |A - B| max {d['mirror_maxdiff']:.2e}")
+        if d["mirror_maxdiff"] > 1e-7:
+            err("a single-output type must mirror output A on output B")
     elif case == "selfmod_toggle":
         t = ms[0]
         notes.append(f"Bipolar toggled by LFO 1 > 0.5: {t['stoggle_windows']:.0f} windows ({t['stoggle_on']:.0f} bipolar, {t['stoggle_off']:.0f} unipolar), "
@@ -744,6 +915,40 @@ def check(case, runs, metas, errors, notes):
             err("the toggle should switch between bipolar and unipolar")
         if t["stoggle_mismatch"] > 1:
             err(f"{t['stoggle_mismatch']} windows disagree with 'bipolar while LFO 1 > 0.5'")
+    elif case == "router_sleep":
+        for m, r in zip(ms, runs):
+            notes.append(f"{r['name']}: asleep max|y| {m['rs_pre_max']:.2e}; woke {m['rs_wake_samples']:.0f} samples after the route cell was written; follows the source within {m['rs_follow_err']:.4f} ({m['rs_follow_n']:.0f} samples)")
+            if m["rs_pre_max"] != 0:
+                err(f"{r['name']}: a router with every route cell off must output exact zeros (got {m['rs_pre_max']})")
+            if m["rs_wake_samples"] < 0 or m["rs_wake_samples"] > r["sp"]["max_wake"]:
+                err(f"{r['name']}: the router must wake within {r['sp']['max_wake']} samples of a route cell becoming active (took {m['rs_wake_samples']})")
+            if m["rs_follow_err"] > 0.02:
+                err(f"{r['name']}: after waking the router output must follow the source (err {m['rs_follow_err']})")
+    elif case == "router_late_rbase":
+        m = ms[0]
+        notes.append(f"before `rbase`: max|y| {m['rs_pre_max']:.2e}; the slots followed {m['rs_wake_samples']:.0f} samples after it, within {m['rs_follow_err']:.4f}")
+        if m["rs_pre_max"] != 0:
+            err(f"a router without its rbase reads slots 0..31 (all off): exact zeros expected (got {m['rs_pre_max']})")
+        if m["rs_wake_samples"] < 0 or m["rs_wake_samples"] > 200:
+            err(f"the router must serve its slots right after `rbase` (took {m['rs_wake_samples']} samples)")
+        if m["rs_follow_err"] > 0.02:
+            err(f"after rbase the router output must follow the source (err {m['rs_follow_err']})")
+    elif case == "router_heartbeat":
+        for m, r in zip(ms, runs):
+            idx = r["sp"]["router_idx"]
+            notes.append(f"router {idx}: heartbeat {m['hb_count']:.0f} (at least {0.8 * m['hb_expected']:.0f} expected), echo {m['hb_echo']:.0f} (want {idx * mc.ROUTER_SLOTS + 1})")
+            # (a lower bound only: the NonRealTime render keeps running until the probe's message is handled, so the counter can be many times the window)
+            if m["hb_count"] < 0.8 * m["hb_expected"]:
+                err(f"router {idx}: the heartbeat should advance every 32 samples (got {m['hb_count']}, at least {0.8 * m['hb_expected']:.0f} expected)")
+            if m["hb_echo"] != idx * mc.ROUTER_SLOTS + 1:
+                err(f"router {idx}: the echo of rbase + 1 should be {idx * mc.ROUTER_SLOTS + 1} (got {m['hb_echo']})")
+    elif case == "slot_off":
+        m = ms[0]
+        notes.append(f"before {m['so_before_max']:.3f}, disabled {m['so_off_max']:.2e}, re-enabled {m['so_after_max']:.3f}")
+        if m["so_before_max"] < 0.9 or m["so_after_max"] < 0.9:
+            err("the LFO must run before the slot is disabled and again after it is re-enabled")
+        if m["so_off_max"] != 0:
+            err(f"a disabled engine slot must output exact zeros (got {m['so_off_max']})")
     elif case == "lookup_chain":
         for tag, m in zip(("slot A (src mod 0, mod-mode S curve)", "slot B (src mod 1, remote exp, min 0.85 > max 0.15 inverted)"), ms[:2]):
             notes.append(f"{tag}: max err vs mappingOutput {m['lookup_err']:.5f}; decoy-region err {m['lookup_err_decoy']:.3f}; "

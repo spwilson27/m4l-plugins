@@ -61,6 +61,7 @@ var curSliceFrom = 36;    // key that plays the first slice (C1)
 var sliceMono = null;     // mono copy of the sample for the onset / pitch slicers
 var sampleRateHz = 44100;
 var showInspector = 0;
+var curFaceTheme = 0;     // 0 = Bitwig look (default), 1 = Ableton look (src/sampler_theme_ableton.js)
 var DEVICE_W = 600;
 var INSPECTOR_W = 160;
 
@@ -85,6 +86,16 @@ var liveActiveVoices = 0;
 var liveLfoVal = 0.0;
 var liveModEnvVal = 0.0;
 var liveEffCutHz = 18000.0;
+// Per-voice envelope / filter telemetry (#0-bsscope 128..207, see AGENTS.md section 14): stage + fraction encoded as
+// stage + frac (0 off, 1 attack, 2 decay, 3 sustain, 4 release), level 0..1, effective cutoff in Hz (0 = voice idle)
+var voiceAmpStg = new Array(16);
+var voiceAmpLvl = new Array(16);
+var voiceModStg = new Array(16);
+var voiceModLvl = new Array(16);
+var voiceCutHz = new Array(16);
+for (var vj = 0; vj < 16; vj++) {
+    voiceAmpStg[vj] = 0; voiceAmpLvl[vj] = 0; voiceModStg[vj] = 0; voiceModLvl[vj] = 0; voiceCutHz[vj] = 0;
+}
 
 // Voice allocator instance
 var voiceAlloc = createVoiceAllocator(16);
@@ -467,6 +478,18 @@ function pollTelemetryScope() {
         liveModEnvVal = data[36];
         liveEffCutHz = data[37] > 10 ? data[37] : curFiltCutoff;
     } catch (_) {}
+    try {
+        var sb2 = new Buffer(scopeBufName);
+        var tvd = sb2.peek(1, 128, 80);            // per-voice envelope / filter slots 128..207
+        var hasTv = !!tvd && tvd.length >= 80;
+        for (var tv = 0; tv < 16; tv++) {
+            voiceAmpStg[tv] = hasTv ? tvd[tv] : 0;
+            voiceAmpLvl[tv] = hasTv ? tvd[16 + tv] : 0;
+            voiceModStg[tv] = hasTv ? tvd[32 + tv] : 0;
+            voiceModLvl[tv] = hasTv ? tvd[48 + tv] : 0;
+            voiceCutHz[tv] = hasTv ? tvd[64 + tv] : 0;
+        }
+    } catch (_) {}
 }
 
 var scopeTask = (typeof Task !== "undefined") ? new Task(function() {
@@ -760,6 +783,7 @@ function dspConfirm() {
 
 function device_ready() {
     applyDeviceWidth();
+    if (typeof abApplyLayout === "function") abApplyLayout();
     // Let the GUI paint first, then build the DSP
     if (faceRegion === "main" && !dspReady && typeof Task !== "undefined") {
         if (!dspTask) dspTask = new Task(loadDsp);
@@ -882,6 +906,8 @@ function storeParam(key, v, fromFace) {
             refreshHeldSlices();
             break;
         case "slice_at": case "slice_div": case "slice_beat": case "slice_sens": recomputeSlices(); break;
+        case "env_page": envPage = clampInt(n, 0, 3); break;
+        case "face_theme": curFaceTheme = (n > 0.5 && typeof FACE_PARAMS !== "undefined" && FACE_PARAMS.face_theme) ? 1 : 0; break;
         case "show_inspector": showInspector = n > 0.5 ? 1 : 0; applyDeviceWidth(); break;
         case "root_dyn": rootDyn = n > 0.5 ? 1 : 0; if (rootDyn) ensurePitchCurve(); break;
         case "freeze": curFreeze = n > 0.5 ? 1 : 0; break;
@@ -899,6 +925,7 @@ function storeParam(key, v, fromFace) {
         case "filt_on": curFiltOn = n > 0.5 ? 1 : 0; break;
         case "filt_cutoff": curFiltCutoff = n; break;
     }
+    if (typeof abOnParam === "function") abOnParam(key);
     mgraphics.redraw();
 }
 
@@ -952,6 +979,8 @@ function set_fr_survive(v) { storeParam("fr_survive", v); }
 function set_slice_at(v) { storeParam("slice_at", v); }
 function set_slice_beat(v) { storeParam("slice_beat", v); }
 function set_show_inspector(v) { storeParam("show_inspector", v); }
+function set_face_theme(v) { storeParam("face_theme", v); }
+function set_env_page(v) { storeParam("env_page", v); }
 function set_samp_start(v) { storeParam("samp_start", v); }
 function set_samp_end(v) { storeParam("samp_end", v); }
 function set_loop_start(v) { storeParam("loop_start", v); }
@@ -993,6 +1022,13 @@ function set_lfo_pos(v) { storeParam("lfo_pos", v); }
 function set_menv_pitch(v) { storeParam("menv_pitch", v); }
 function set_menv_pos(v) { storeParam("menv_pos", v); }
 function set_vel_sens(v) { storeParam("vel_sens", v); }
+function set_samp_gain(v) { storeParam("samp_gain", v); }
+function set_atk_slope(v) { storeParam("atk_slope", v); }
+function set_dec_slope(v) { storeParam("dec_slope", v); }
+function set_rel_slope(v) { storeParam("rel_slope", v); }
+function set_matk_slope(v) { storeParam("matk_slope", v); }
+function set_mdec_slope(v) { storeParam("mdec_slope", v); }
+function set_mrel_slope(v) { storeParam("mrel_slope", v); }
 function set_out_gain(v) { storeParam("out_gain", v); }
 
 // Demo state for screenshots (render_preview.py calls preview())
@@ -1075,6 +1111,7 @@ function setvalueof() {
         curXfade = Math.max(0, Math.min(0.45, a[7] / 10000.0));
         curPlayPos = Math.max(0, Math.min(1.0, a[8] / 10000.0));
         envPage = Math.max(0, Math.min(3, Math.round(a[9])));
+        if (typeof abOnParam === "function") abOnParam("env_page");
         var sCount = Math.max(1, Math.min(32, Math.round(a[10])));
         if (a.length >= 11 + sCount) {
             var restored = [];

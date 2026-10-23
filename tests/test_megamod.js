@@ -27,6 +27,9 @@ const deq = (a, b, m) => { assert.deepStrictEqual(a, b, m); passed++; };
 function near(a, b, tol, msg) { assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b}`); passed++; }
 
 // ---------------------------------------------------------------- 1. build output
+function routerCode() {
+    return execFileSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.router_gen_code())"], { cwd: ROOT }).toString("utf8");
+}
 function readAmxd(file) {
     const raw = fs.readFileSync(file);
     return { raw, doc: JSON.parse(raw.slice(32).toString("utf8")) };
@@ -66,9 +69,11 @@ for (const v of variants) {
     }
     // Live expands `---` per device but leaves `#0` literal in a device's own patcher (shared across instances)
     ok(!JSON.stringify(p.boxes).includes("#0"), `${v}: no #0 names (not expanded by Live in a device patcher)`);
-    ok(byId["obj-engine"] && byId["obj-engine"].numoutlets === 16 && byId["obj-engine"].maxclass === "gen.codebox~", `${v}: 16-outlet gen`);
-    eq(byId["obj-engine"].varname, "megamod_engine", `${v}: engine varname used by the mapper`);
-    eq(byId["obj-engine"].code, GEN, `${v}: embedded engine is current`);
+    // deferred DSP (AGENTS.md 1d): the device ships WITHOUT any gen~ / gen.codebox~; the face creates them after load
+    ok(!boxes.some((b) => /^gen/.test(String(b.maxclass)) || /^gen~/.test(String(b.text || ""))), `${v}: no gen~ / gen.codebox~ in the device file (deferred DSP)`);
+    ok(byId["obj-genin"] && byId["obj-genin"].text === "gate 1 1" && byId["obj-genin"].varname === "mm_genin", `${v}: engine message hub (gate 1 1, mm_genin)`);
+    eq(byId["obj-plugin"].varname, "mm_plugin", `${v}: plugin~ varname for the scripted engine inputs`);
+    eq(byId["obj-plugout"].varname, "mm_plugout", `${v}: plugout~ varname`);
     const viz = byId["obj-viz"];
     eq(viz.maxclass, "v8ui", `${v}: main v8ui`);
     eq(viz.saved_attribute_attributes.valueof.parameter_type, 3, `${v}: blob parameter`);
@@ -79,10 +84,10 @@ for (const v of variants) {
     ok(!code.includes("require("), `${v}: no Node-only requires`);
     // bindings
     const msgs = boxes.filter((b) => b.maxclass === "message").map((b) => b.text);
-    ok(msgs.some((t) => t === "cfg ---megamodcfg, mseg ---megamodmseg, steps ---megamodsteps, scope ---megamodscope, ibuf ---megamodint, icurve ---megamodicurve, route ---megamodroute"), `${v}: gen binding message`);
     ok(msgs.some((t) => t.startsWith("setnames ---megamodcfg") && t.endsWith("---mmcurve ---megamodroute ---megamodint ---megamodicurve")), `${v}: setnames message`);
-    ok(msgs.some((t) => t === "route ---megamodroute, curve ---mmcurve"), `${v}: router binding message`);
-    for (const n of ["---megamodcfg @samps 384", "---megamodmseg @samps 16384", "---megamodsteps @samps 512", "---megamodscope @samps 640", "---mmcurve @samps 65536", "---megamodroute @samps 1024", "---megamodint @samps 512", "---megamodicurve @samps 16384"]) {
+    ok(!msgs.some((t) => /^cfg /.test(t) || /^route ---/.test(t)), `${v}: the gens' buffer binding is sent by the face (names from setnames) after the deferred DSP loads, not by a static message`);
+    ok(msgs.includes("init_lom, init_dsp"), `${v}: live.thisdevice -> init_lom + init_dsp`);
+    for (const n of ["---megamodcfg @samps 512", "---megamodmseg @samps 16384", "---megamodsteps @samps 512", "---megamodscope @samps 640", "---mmcurve @samps 65536", "---megamodroute @samps 1048", "---megamodint @samps 512", "---megamodicurve @samps 16384"]) {
         ok(boxes.some((b) => b.text === `buffer~ ${n}`), `${v}: buffer ${n}`);
     }
     // wiring: plugin~ -> plugout~ pass-through, width route, plugsync~ params
@@ -91,7 +96,11 @@ for (const v of variants) {
     ok(has("obj-plugin", 0, "obj-plugout", 0) && has("obj-plugin", 1, "obj-plugout", 1), `${v}: zero-latency pass-through`);
     ok(has("obj-route", 0, "obj-prep-setwidth", 0) && has("obj-prep-setwidth", 0, "obj-thisdevice", 0), `${v}: width -> live.thisdevice setwidth`);
     ok(has("obj-thisdevice", 0, "obj-msg-init-lom", 0), `${v}: live.thisdevice -> init_lom (not loadbang)`);
-    ok(has("obj-sync", 6, "obj-ppq-prep", 0) && has("obj-ppq-prep", 0, "obj-engine", 0), `${v}: plugsync~ ppq -> engine`);
+    ok(has("obj-sync", 6, "obj-ppq-prep", 0) && has("obj-ppq-prep", 0, "obj-genin", 1), `${v}: plugsync~ ppq -> engine hub`);
+    ok(has("obj-sync", 0, "obj-play-chg", 0) && has("obj-play-chg", 0, "obj-play-store", 0) && has("obj-play-store", 0, "obj-play-prep", 0) && has("obj-play-prep", 0, "obj-genin", 1), `${v}: play state -> change -> store -> hub`);
+    ok(has("obj-sync", 5, "obj-bpm-chg", 0) && has("obj-bpm-chg", 0, "obj-bpm-store", 0) && has("obj-bpm-store", 0, "obj-bpm-prep", 0) && has("obj-bpm-prep", 0, "obj-genin", 1), `${v}: tempo -> change -> store -> hub`);
+    ok(byId["obj-route"].text === "route width gen transport" && has("obj-route", 1, "obj-genin", 1) && has("obj-route", 2, "obj-play-store", 0) && has("obj-route", 2, "obj-bpm-store", 0), `${v}: gen -> hub, transport bang -> stores`);
+    ok(!lines.some((l) => l.destination[0] === "obj-engine" || l.source[0] === "obj-engine" || /^obj-router-/.test(l.source[0]) || /^obj-router-/.test(l.destination[0])), `${v}: no cord to or from a gen (they are created by the face)`);
     // panels last with background
     const lastNonPanel = boxes.map((b) => b.maxclass).lastIndexOf(boxes.find((b) => b.maxclass !== "panel").maxclass);
     const firstPanel = boxes.findIndex((b) => b.maxclass === "panel");
@@ -128,39 +137,53 @@ function checkPool(v, p, boxes, byId, lines) {
     }
     const idx = {};
     lines.forEach((l) => { (idx[l.source[0] + ":" + l.source[1]] = idx[l.source[0] + ":" + l.source[1]] || []).push(l.destination.join(":")); });
-    const routers = boxes.filter((b) => b.maxclass === "gen.codebox~" && /^obj-router-/.test(b.id));
-    eq(routers.length, 8, `${v}: 8 routers`);
-    ok(boxes.indexOf(byId["obj-engine"]) < boxes.indexOf(routers[0]), `${v}: routers after engine`);
-    for (let r = 0; r < 8; r++) {
-        const rb = byId[`obj-router-${r}`];
-        eq(rb.numinlets, 16, `${v}: router ${r} 16 inlets`);
-        eq(rb.numoutlets, 32, `${v}: router ${r} 32 outlets`);
-        for (let i = 0; i < 16; i++) ok((idx[`obj-engine:${i}`] || []).includes(`obj-router-${r}:${i}`), `${v}: engine out ${i} -> router ${r}`);
-        ok((idx["obj-msg-router-bind:0"] || []).includes(`obj-router-${r}:0`), `${v}: router ${r} bind message`);
-        const code = rb.code;
-        ok(code.indexOf('Buffer route("megamodroute");') >= 0 && code.indexOf('Buffer curve("mmcurve");') >= 0, `${v}: router ${r} buffers`);
-        ok(code.indexOf("Buffer curve") < code.indexOf("sel0 ="), `${v}: router ${r} Buffers before statements`);
-        ok(!/\be\d/.test(code), `${v}: router ${r} has no e<digit> identifier`);
-        ok(code.includes("Param smooth(0);"), `${v}: router ${r} has Param smooth (default 0)`);
-        ok(code.includes("smCoef = (smooth > 0.0001) ? exp(-1000 / (smooth * smSr)) : 0;"), `${v}: router ${r} one-pole coefficient from smooth ms at the sample rate, bypass at 0`);
-        ok(code.indexOf("Param smooth") < code.indexOf("smCoef =") && code.lastIndexOf("History ys") < code.indexOf("smSr ="), `${v}: router ${r} declarations before statements`);
-        ok((idx["obj-route:2"] || []).includes(`obj-router-${r}:0`), `${v}: smooth route outlet -> router ${r}`);
-        for (let j = 0; j < 32; j++) {
-            const k = r * 32 + j;
-            ok(code.includes(`sel${j} = peek(route, ${2 * k}) + 1;`), `${v}: router ${r} slot ${k} route index`);
-            ok(code.includes(`peek(curve, ${k * 256} + ia${j})`) && code.includes(`peek(curve, ${k * 256} + ib${j})`), `${v}: router ${r} slot ${k} table base`);
-            ok(new RegExp(`xv${j} = selector\\(sel${j}, in1, in2, in3, in4, in5, in6, in7, in8, in9, in10, in11, in12, in13, in14, in15, in16\\);`).test(code), `${v}: slot ${k} selector`);
-            ok(code.includes(`ys${j} = yv${j} + (ys${j} - yv${j}) * smCoef;`) && code.includes(`out${j + 1} = ys${j};`), `${v}: slot ${k} output goes through the smoothing one-pole`);
-            ok(code.includes(`History ys${j}(0);`), `${v}: slot ${k} smoothing history`);
-            const dests = idx[`obj-router-${r}:${j}`] || [];
-            ok(dests.includes(`obj-mm-mod-${k}:0`) && dests.includes(`obj-mm-rem-${k}:0`), `${v}: slot ${k} router -> both live.* inlet 0`);
-            eq(byId[`obj-mm-mod-${k}`].varname, `mm_mod_${k}`, `${v}: mm_mod_${k}`);
-            eq(byId[`obj-mm-rem-${k}`].varname, `mm_rem_${k}`, `${v}: mm_rem_${k}`);
-            eq(byId[`obj-mm-pmid-${k}`].varname, `mm_mid_${k}`, `${v}: mm_mid_${k}`);
-            eq(byId[`obj-mm-prid-${k}`].varname, `mm_rid_${k}`, `${v}: mm_rid_${k}`);
-            ok((idx[`obj-mm-pmid-${k}:0`] || []).join() === `obj-mm-mod-${k}:1`, `${v}: mm_mid_${k} -> live.modulate~ inlet 1`);
-            ok((idx[`obj-mm-prid-${k}:0`] || []).join() === `obj-mm-rem-${k}:1`, `${v}: mm_rid_${k} -> live.remote~ inlet 1`);
-        }
+    ok(!boxes.some((b) => /^obj-router-/.test(b.id)), `${v}: no router box in the file (created by the face, see section 9e)`);
+    for (let k = 0; k < 256; k++) {
+        ok(!lines.some((l) => l.destination[0] === `obj-mm-mod-${k}` && l.destination[1] === 0) && !lines.some((l) => l.destination[0] === `obj-mm-rem-${k}` && l.destination[1] === 0), `${v}: slot ${k}: the signal cords from its router are scripted (none saved)`);
+        eq(byId[`obj-mm-mod-${k}`].varname, `mm_mod_${k}`, `${v}: mm_mod_${k}`);
+        eq(byId[`obj-mm-rem-${k}`].varname, `mm_rem_${k}`, `${v}: mm_rem_${k}`);
+        eq(byId[`obj-mm-pmid-${k}`].varname, `mm_mid_${k}`, `${v}: mm_mid_${k}`);
+        eq(byId[`obj-mm-prid-${k}`].varname, `mm_rid_${k}`, `${v}: mm_rid_${k}`);
+        ok((idx[`obj-mm-pmid-${k}:0`] || []).join() === `obj-mm-mod-${k}:1`, `${v}: mm_mid_${k} -> live.modulate~ inlet 1`);
+        ok((idx[`obj-mm-prid-${k}:0`] || []).join() === `obj-mm-rem-${k}:1`, `${v}: mm_rid_${k} -> live.remote~ inlet 1`);
+    }
+    // the router text (one for all 8 routers, `Param rbase` = 32 * router index)
+    {
+        const code = routerCode();
+        ok(code.indexOf('Buffer route("megamodroute");') >= 0 && code.indexOf('Buffer curve("mmcurve");') >= 0, `${v}: router buffers`);
+        ok(code.indexOf("Buffer curve") < code.indexOf("smSr ="), `${v}: router Buffers before statements`);
+        ok(!/\be\d/.test(code), `${v}: router has no e<digit> identifier`);
+        ok(code.includes("Param smooth(0);") && code.includes("Param rbase(0);"), `${v}: router has Param smooth (default 0) and Param rbase`);
+        ok(code.includes("smCoefH = (smooth > 0.0001) ? exp(-1000 / (smooth * smSr)) : 0;") && code.includes("if (smooth != smKey || smSr != smSrKey) {"), `${v}: one-pole coefficient from smooth ms at the sample rate, bypass at 0, cached`);
+        ok(code.indexOf("Param smooth") < code.indexOf("smSr =") && code.lastIndexOf("History ") < code.indexOf("smSr ="), `${v}: router declarations before statements`);
+        ok(code.includes("kk = rbase + j;") && code.includes("sel = peek(route, 2 * kk, 0) + 1;"), `${v}: slot k = rbase + j reads route[2k]`);
+        ok(code.includes("va = peek(curve, kk * 256 + ia, 0);") && code.includes("vb = peek(curve, kk * 256 + ib, 0);"), `${v}: table base k * 256`);
+        ok(code.includes("xv = peek(sg, sel - 1);"), `${v}: a slot reads its source from the per-sample input store (32 inputs = 16 slots x 2 outputs)`);
+        ok(code.includes("ysv = yv + (peek(ys, j) - yv) * smCoef;") && code.includes("poke(yo, ysv, j);"), `${v}: output goes through the smoothing one-pole`);
+        for (let j = 0; j < 32; j++) ok(code.includes(`out${j + 1} = peek(yo, ${j});`), `${v}: router outlet ${j + 1}`);
+        ok(!code.includes("out33") && !code.includes("in33"), `${v}: 32 outlets / 32 inlets`);
+        ok(code.includes("Data sg(32);") && Array.from({ length: 32 }, (_, q) => code.includes(`poke(sg, in${q + 1}, ${q});`)).every(Boolean) && !code.includes("selector("), `${v}: the 32 inputs are poked into Data sg once per sample (no 32-way selector)`);
+        ok(code.includes("rm = peek(route, 768 + kk, 0);") && code.includes("dk = peek(route, 2 * kk + 1, 0);"), `${v}: every slot applies its Depth (route[2k+1]) and Remote centre (route[768+k])`);
+        // sleep + heartbeat
+        ok(code.includes("if (cnt > 31.5) {") && code.includes("awake = (act > 0.5) ? 1 : 0;") && code.includes("if (awake > 0.5) {"), `${v}: the router sleeps when no slot is active (scan every 32 samples)`);
+        ok(code.includes("rIdx = floor(rbase / 32);") && code.includes("hbi = 1024 + rIdx;") && code.includes("poke(route, rbase + 1, hbi + 8, 0);"), `${v}: heartbeat route[1024 + r] and echo route[1032 + r] = rbase + 1`);
+        ok(code.includes("if (peek(route, 1040 + rIdx, 0) > 0.5) {") && code.indexOf("if (peek(route, 1040 + rIdx, 0) > 0.5) {") > code.indexOf("if (cnt > 31.5) {") && code.indexOf("if (peek(route, 1040 + rIdx, 0) > 0.5) {") < code.indexOf("if (awake > 0.5) {"), `${v}: the mapper's per-router activity count (route[1040 + r]) wakes a sleeping router on the next sample (after the scan, before the slot loop)`);
+        eq(C.ROUTE_ACT_AT, 1040, `${v}: ROUTE_ACT_AT`);
+        eq(C.ROUTE_HB_AT, 1024, `${v}: ROUTE_HB_AT`); eq(C.ROUTE_HB_ECHO_AT, 1032, `${v}: ROUTE_HB_ECHO_AT`); eq(C.ROUTE_SAMPS, 1048, `${v}: ROUTE_SAMPS`);
+        // the gendsp files the deferred DSP loads
+        const gen = JSON.parse(execFileSync("python3", ["-c", "import sys, json; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(json.dumps(m.gen_files()))"], { cwd: ROOT }).toString("utf8"));
+        const gp = (k) => JSON.parse(gen[k].text).patcher;
+        eq(gp("engine").boxes.find((b) => b.box.id === "obj-code").box.code, GEN, `${v}: gendsp engine holds the current engine code`);
+        eq(gp("router").boxes.find((b) => b.box.id === "obj-code").box.code, code, `${v}: gendsp router holds the router code`);
+        eq(gp("engine").boxes.filter((b) => /^in /.test(b.box.text || "")).length, 2, `${v}: engine gendsp 2 inlets`);
+        eq(gp("engine").boxes.filter((b) => /^out /.test(b.box.text || "")).length, 32, `${v}: engine gendsp 32 outlets`);
+        eq(gp("router").boxes.filter((b) => /^in /.test(b.box.text || "")).length, 32, `${v}: router gendsp 32 inlets`);
+        eq(gp("router").boxes.filter((b) => /^out /.test(b.box.text || "")).length, 32, `${v}: router gendsp 32 outlets`);
+        eq(gp("shellEngine").boxes.filter((b) => /^in /.test(b.box.text || "")).length, 2, `${v}: engine shell has the engine's ports`);
+        eq(gp("shellRouter").boxes.filter((b) => /^out /.test(b.box.text || "")).length, 32, `${v}: router shell has the router's ports`);
+        ok(gp("shellRouter").boxes.find((b) => b.box.id === "obj-code").box.code.length < 800, `${v}: the shells are tiny`);
+        ok(new Set(["engine", "router", "shellEngine", "shellRouter"].map((k) => gen[k].hash)).size === 4, `${v}: four distinct hashes`);
+        ok(JSON.stringify(boxes).length < 1.7e6, `${v}: the device file stays small without its gens`);
     }
     eq(byId["obj-mm-mod-0"].saved_object_attributes.smoothing, 1, `${v}: live.modulate~ smoothing 1`);
     eq(byId["obj-mm-rem-0"].saved_object_attributes.normalized, 1, `${v}: live.remote~ normalized 1`);
@@ -206,7 +229,7 @@ function checkPool(v, p, boxes, byId, lines) {
     eq(C.deserializeState([]), null, "empty rejected");
     // sanitizing
     const dirty = C.normalizeState({ mods: [{ type: 99, p: { rate: -5, steps: 500, syncDiv: 77 } }], mappings: [{ id: 1, mod: 0, amount: 9, curve: 12 }, { id: 1, mod: 0 }, { id: 2, mod: 7 }] });
-    eq(dirty.mods[0].type, 5, "type clamped");
+    eq(dirty.mods[0].type, C.MOD_TYPE_MAX, "type clamped");
     eq(dirty.mods[0].p.rate, 0.01, "rate clamped");
     eq(dirty.mods[0].p.steps, 32, "steps clamped");
     eq(dirty.mods[0].p.syncDiv, 15, "syncDiv clamped");
@@ -247,8 +270,8 @@ function checkPool(v, p, boxes, byId, lines) {
     }
     near(C.shapeCurve(0.5, C.CURVE_EXP, 0.5, 4), 0.0625, 1e-9, "exp amt 0.5 -> power 4");
     // ---- mapping shape (MSEG transfer curve) ----
-    eq(C.MEGAMOD_VERSION, 10, "schema version 10 (depth routes)");
-    eq(C.defaultState().schema, 10, "new states are schema 10");
+    eq(C.MEGAMOD_VERSION, 11, "schema version 10 (depth routes)");
+    eq(C.defaultState().schema, 11, "new states are schema 10");
     {
         const d = C.defaultMapping(1, 0, {});
         eq(JSON.stringify([d.polarity, d.range, d.amount, d.invert, d.bipolar, d.min, d.max]), JSON.stringify([0, 0.5, null, null, null, 0, 1]), "default mapping: ± , range 0.5, no amount, min 0, max 1, no legacy invert / bipolar");
@@ -353,7 +376,7 @@ function checkPool(v, p, boxes, byId, lines) {
                         const old = { id: 1, mod: 0, mode: "mod", polarity: pol, range, amount, shape, target: { path: "p" } };
                         const st = C.normalizeState({ schema, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [old], nextMapId: 2 });
                         const m = st.mappings[0];
-                        eq(st.schema, 10, "migrated state is schema 10");
+                        eq(st.schema, 11, "migrated state is schema 10");
                         eq(m.amount, undefined, "amount dropped");
                         near(m.range, Math.abs(amount) * range, 1e-12, `schema ${schema} pol ${pol} a ${amount} r ${range}: range'`);
                         eq(m.polarity, amount < 0 && pol !== 0 ? -pol : pol, `schema ${schema} pol ${pol} a ${amount}: polarity swap`);
@@ -505,7 +528,7 @@ function checkPool(v, p, boxes, byId, lines) {
         ok(worst < 0.02, `migrated tables match the old formula (max error ${worst.toFixed(4)} < 0.02)`);
         const v1 = { schema: 1, mods: [C.makeModSlot(C.MOD_LFO, 0)], mappings: [{ id: 3, mod: 0, curve: C.CURVE_STEPPED, curveSteps: 3, amount: 1, target: { path: "p" } }], nextMapId: 4 };
         const st = C.normalizeState(v1);
-        eq(st.schema, 10, "migrated state is the current schema");
+        eq(st.schema, 11, "migrated state is the current schema");
         eq(st.mappings[0].shape.length, 6, "stepped(3) = 3 hard steps = 6 points");
         eq(st.mappings[0].shape.map((p) => p.y).join(), "0,0,0.5,0.5,1,1", "stepped levels 0, 0.5, 1");
         near(C.mappingTable(st.mappings[0])[128], 0.0, 1e-9, "stepped middle step is flat");
@@ -521,7 +544,7 @@ function checkPool(v, p, boxes, byId, lines) {
         s2.mappings.push(m2); s2.nextMapId = 2;
         const back = C.deserializeState(C.serializeState(s2));
         eq(JSON.stringify(back.mappings[0].shape), JSON.stringify(m2.shape), "shape round trip");
-        eq(back.schema, 10, "current schema stays");
+        eq(back.schema, 11, "current schema stays");
         // a legacy-field mapping handed straight to the table helpers still resolves (audio-test fixtures)
         const legacy = { mode: "mod", amount: 0.8, bipolar: 1, invert: 0, curve: C.CURVE_S, curveAmt: 0.6, curveSteps: 4 };
         near(C.mappingOutput(legacy, 0.3), C.mappingOutput(Object.assign({}, legacy, { shape: C.curveToShape(C.CURVE_S, 0.6, 4) }), 0.3), 1e-12, "legacy fields fall back to the converted shape");
@@ -635,7 +658,7 @@ function checkPool(v, p, boxes, byId, lines) {
     ok(GEN.includes(`poke(scope, frameCount, ${C.SCOPE_FRAME}, 0)`) && GEN.includes(`poke(scope, sr, ${C.SCOPE_SR}, 0)`) &&
        GEN.includes(`poke(scope, beat, ${C.SCOPE_BEAT}, 0)`) && GEN.includes(`poke(scope, hbpm, ${C.SCOPE_BPM}, 0)`) &&
        GEN.includes(`, ${C.SCOPE_PLAYING}, 0)`), "scope header indices");
-    ok(GEN.includes("sl * 4"), "scope slot stride 4");
+    ok(GEN.includes("poke(scope, outSlot, i * 4, 0);") && GEN.includes("poke(scope, auxSlot, i * 4 + 3, 0);"), "scope slot stride 4 (written inside the slot loop on the publishing sample)");
     eq(C.SCOPE_STRIDE, 4, "scope stride");
     ok(C.SCOPE_HEADER + 5 <= C.SCOPE_SAMPS && C.MAX_MODS * C.SCOPE_STRIDE <= C.SCOPE_HEADER, "scope fits");
     ok(C.CF_LOOPEND < C.CFG_STRIDE, "cfg fields fit the stride");
@@ -657,9 +680,9 @@ function checkPool(v, p, boxes, byId, lines) {
 
 // ---------------------------------------------------------------- 5b. settings (schema 7), engine ratemul
 {
-    eq(C.MEGAMOD_VERSION, 10, "schema 10");
+    eq(C.MEGAMOD_VERSION, 11, "schema 10");
     const d = C.defaultState();
-    eq(d.schema, 10, "default state is schema 10");
+    eq(d.schema, 11, "default state is schema 10");
     assert.deepStrictEqual(d.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }); passed++;
     // sanitize: clamps, bad values -> defaults
     assert.deepStrictEqual(C.sanitizeSettings({ defaultMode: "remote", smoothMs: 9999, rateMul: 100 }), { defaultMode: "remote", smoothMs: 500, rateMul: 4, selfMod: "internal" }); passed++;
@@ -681,7 +704,7 @@ function checkPool(v, p, boxes, byId, lines) {
     s.settings = { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, selfMod: "internal" };
     const back = C.deserializeState(C.serializeState(s));
     assert.deepStrictEqual(back.settings, { defaultMode: "remote", smoothMs: 47.5, rateMul: 1.5, selfMod: "internal" }); passed++;
-    eq(back.schema, 10, "round trip is schema 10");
+    eq(back.schema, 11, "round trip is schema 10");
     // old states (schema 1..6, no settings) get the defaults and keep everything else
     for (const sc of [1, 2, 3, 4, 5, 6]) {
         const old = JSON.parse(C.stateToJson(s));
@@ -689,7 +712,7 @@ function checkPool(v, p, boxes, byId, lines) {
         old.schema = sc;
         const n = C.normalizeState(old);
         assert.deepStrictEqual(n.settings, { defaultMode: "mod", smoothMs: 0, rateMul: 1, selfMod: "internal" }); passed++;
-        eq(n.schema, 10, `schema ${sc} state normalizes to 10`);
+        eq(n.schema, 11, `schema ${sc} state normalizes to 11`);
         ok(!!n.mods[0], `schema ${sc}: modulators kept`);
     }
     // default mapping per mode
@@ -764,6 +787,7 @@ function mockLom() {
             return d && d.params[m[4]] !== undefined && d.params[m[4]] !== null ? { name: d.params[m[4]], children: {} } : null;
         }
         if (p === "this_device") return node("live_set master_track devices 0") && { name: "Mega Modulator", path: "live_set master_track devices 0", children: {} };
+        if (p === "this_device midi_inputs 0" && tree.midiInputs) return tree.midiInputs;
         return null;
     }
     return {
@@ -784,7 +808,7 @@ function makeEnv(lom) {
     const log = { outlets: [], notify: 0, seq: [], posts: [] };
     const bufs = {};
     class Buffer {
-        constructor(name) { this.name = name; if (!bufs[name]) bufs[name] = { data: new Float64Array(name.endsWith("mmcurve") ? 65536 : name.endsWith("route") ? 1024 : name.endsWith("scope") ? 640 : name.endsWith("megamodint") ? 512 : name.endsWith("icurve") ? 16384 : 1 << 15) }; this.b = bufs[name]; }
+        constructor(name) { this.name = name; if (!bufs[name]) bufs[name] = { data: new Float64Array(name.endsWith("mmcurve") ? 65536 : name.endsWith("route") ? 1048 : name.endsWith("scope") ? 640 : name.endsWith("megamodint") ? 512 : name.endsWith("icurve") ? 16384 : 1 << 15) }; this.b = bufs[name]; }
         poke(ch, off, arr) { const a = Array.isArray(arr) ? arr : [arr]; for (let i = 0; i < a.length; i++) this.b.data[off + i] = a[i]; }
         peek(ch, off, n) { return Array.from(this.b.data.slice(off, off + n)); }
         framecount() { return this.b.data.length; }
@@ -810,7 +834,8 @@ function makeEnv(lom) {
             this.path = '"' + this.unquotedpath + '"';
         }
         goto(p) { this.p = p; this._set(); }
-        get(k) { return k === "name" && this.n ? [this.n.name] : []; }
+        get(k) { if (k === "name" && this.n) return [this.n.name]; if (this.n && this.n.props && k in this.n.props) return [this.n.props[k]]; return []; }
+        set(k, v) { if (this.n && this.n.props) { this.n.props[k] = v; (this.n.setLog = this.n.setLog || []).push([k, v]); } }
         getcount(c) { return (this.n && this.n.children[c]) || 0; }
         set property(v) { this._prop = v; }
     }
@@ -894,6 +919,7 @@ function loadScript(variant, env) {
         "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.ui_script())"],
         { cwd: ROOT, maxBuffer: 1 << 26 }).toString("utf8");
     vm.runInContext(out, env.ctx, { filename: "megamod_ui.js" });
+    if (!env.dspDown) vm.runInContext("mmdRouterMsg = function (k, v) { outlet(0, k, v); }; MM.dspSetState(true);", env.ctx); // the DSP is "up" except in the deferred-DSP tests (section 10)
     return out;
 }
 
@@ -952,6 +978,7 @@ for (const v of variants) {
     const nonzero = (n) => !!env.pool[n] && env.pool[n].messages.some((a) => a[1] !== 0);
     eq(run(`MM.mappingSlot(${m1.id})`), 0, `${v}: first mapping takes slot 0`);
     eq(route[0], 0, `${v}: route[0] = source modulator index`);
+    eq(route[C.ROUTE_ACT_AT] + "," + route[C.ROUTE_ACT_AT + 1], "1,0", `${v}: router 0 has 1 active slot (the sleeping router's immediate-wake count), router 1 none`);
     eq(route[2], -1, `${v}: free slot route is off (-1)`);
     eq(route[2 * 255], -1, `${v}: last slot route is off`);
     assert.deepStrictEqual(lastMsg("mm_mid_0"), ["int", pid(P_FREQ)]); passed++;
@@ -1000,9 +1027,10 @@ for (const v of variants) {
     run("MM.setParam(0, 'enabled', 0)");
     const slot0 = run(`MM.mappingSlot(${mapsOf0[0]})`);
     eq(route[2 * slot0], -1, `${v}: disabled modulator -> route off`);
+    eq(route[C.ROUTE_ACT_AT], run("MM.allMappings().filter(function (m) { return !m.target.internal && MM.mappingStatus(m.id) === 'ok'; }).length"), `${v}: the activity count follows the active mappings (a disabled modulator's mappings are off)`);
     eq(lastMsg((run(`MM.getMapping(${mapsOf0[0]})`).mode === "mod" ? "mm_mid_" : "mm_rid_") + slot0)[1], 0, `${v}: disabled modulator -> id released`);
     const other = run("MM.mappingsFor(1)")[0];
-    eq(route[2 * run(`MM.mappingSlot(${other.id})`)], 1, `${v}: other modulator's mapping keeps its route`);
+    eq(route[2 * run(`MM.mappingSlot(${other.id})`)], 2, `${v}: other modulator's mapping keeps its route`);
     eq(run(`MM.mappingStatus(${mapsOf0[0]})`), "disabled", `${v}: status disabled`);
     run("MM.setParam(0, 'enabled', 1)");
     eq(run(`MM.mappingStatus(${mapsOf0[0]})`), "ok", `${v}: status ok again`);
@@ -1025,7 +1053,7 @@ for (const v of variants) {
     eq(route[2 * delSlot], -1, `${v}: delete -> route off`);
     const reuse = run("MM.addMapping(1, {path: 'live_set tracks 0 devices 0 parameters 0', paramName: 'Dry/Wet', id: " + pid("live_set tracks 0 devices 0 parameters 0") + "})");
     eq(run(`MM.mappingSlot(${reuse.id})`), delSlot, `${v}: freed slot is reused`);
-    eq(route[2 * delSlot], 1, `${v}: reused slot routed from its modulator`);
+    eq(route[2 * delSlot], 2, `${v}: reused slot routed from its modulator (source index = modulator * 2 + out)`);
     // width + aux
     env.log.outlets.length = 0;
     run("MM.requestWidth(5)");
@@ -1068,7 +1096,7 @@ for (const v of variants) {
     for (const m2 of maps2) {
         const sl = vm.runInContext(`MM.mappingSlot(${m2.id})`, env2.ctx);
         ok(sl >= 0 && sl < C.MAX_MAPPINGS, `${v}: restored mapping ${m2.id} has a pool slot`);
-        eq(env2.bufs["---megamodroute"].data[2 * sl], m2.mod, `${v}: restored mapping ${m2.id} routed`);
+        eq(env2.bufs["---megamodroute"].data[2 * sl], C.srcIndex(m2.mod, m2.out), `${v}: restored mapping ${m2.id} routed`);
     }
     eq(env2.bufs["---megamodcfg"].data[C.CF_TYPE], 1, `${v}: engine buffers rewritten on load`);
     // stable pool slots: deleting a mapping never moves the others, and a reload gives every mapping its saved slot
@@ -1216,7 +1244,7 @@ for (const v of variants) {
         const r2 = rU("MM.undo()");
         eq(r2.slot, 3, `${v}: undo restores into the next free slot when the old one is taken`);
         eq(rU(`MM.getMapping(${a}).mod`), 3, `${v}: restored mappings follow the modulator`);
-        eq(routeU[2 * rU(`MM.mappingSlot(${a})`)], 3, `${v}: restored mapping routed from its new slot`);
+        eq(routeU[2 * rU(`MM.mappingSlot(${a})`)], 6, `${v}: restored mapping routed from its new slot`);
         // the stack keeps 16 entries
         for (let k = 0; k < 20; k++) { const m = rU(`MM.addMapping(2, {path: 'live_set tracks 3 devices 0 parameters ${k}', paramName: 'q${k}', id: ${900 + k}})`); rU(`MM.deleteMapping(${m.id})`); }
         eq(rU("MM.undoInfo().undo"), 16, `${v}: undo stack is capped at 16`);
@@ -1519,7 +1547,7 @@ function p0Width() { return 588; }
             { id: 1, mod: 0, mode: "mod", polarity: 1, range: 0.5, depth: 1, target: { path: "live_set tracks 0 devices 0 parameters 3", name: "X", paramName: "X" } },
             { id: 2, mod: 1, mode: "mod", polarity: 0, range: 0.5, depth: 1, target: { internal: true, kind: "depth", mapId: 1 } },
             { id: 3, mod: 0, mode: "mod", polarity: -1, range: 0.8, depth: 1, target: { internal: true, kind: "depth", mapId: 1 } }] });
-        eq(st.schema, C.MEGAMOD_VERSION, "schema version unchanged (no bump)"); eq(C.MEGAMOD_VERSION, 10, "still schema 10");
+        eq(st.schema, C.MEGAMOD_VERSION, "schema version unchanged (no bump)"); eq(C.MEGAMOD_VERSION, 11, "still schema 10");
         const rs = st.mappings.filter((m) => C.isDepthRoute(m));
         eq(rs.length, 2, "both old depth routes survive");
         deq(rs.map((m) => m.polarity), [0, -1], "the stored polarity field is kept (and ignored)");
@@ -1562,7 +1590,7 @@ function p0Width() { return 588; }
         near(tb[255], 0.8 * 0.25, 1e-12, "table end value scaled");
         // migration: a schema 7 mapping without depth loads at 100%
         const old = C.normalizeState({ schema: 7, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, mode: "mod", polarity: 1, range: 0.6, shape: sh, target: {} }], nextMapId: 2 });
-        eq(old.schema, 10, "schema 7 -> 10");
+        eq(old.schema, 11, "schema 7 -> 10");
         eq(old.mappings[0].depth, 1, "migrated mapping depth defaults to 1");
         near(C.mappingOutput(old.mappings[0], 1), 0.6, 1e-12, "migrated output unchanged");
         const withD = C.normalizeState({ schema: 8, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, depth: 0.37, target: {} }, { id: 2, mod: 0, depth: 7, target: {} }, { id: 3, mod: 0, depth: "x", target: {} }] });
@@ -1974,30 +2002,24 @@ function p0Width() { return 588; }
             ok(g.includes("rt * 4 + 1") && g.includes("peek(ibuf, rt * 4, 0)"), "route stride 4: [src + 1, dest]");
             ok(g.includes(`peek(icurve, rt * ${C.CURVE_REGION} + ia, 0)`), "route table stride 256 (router convention)");
             ok(g.includes(`rt < ${C.INT_ROUTES}; rt += 1`), "64 routes");
-            ok(g.includes(`264 + (peek(cf, msl * 24) * 5 + mjj) * 5`) && C.INT_DESC_AT === 264, "control descriptors at 264 + (type * 5 + j) * 5");
-            ok(g.includes(`peek(ibuf, 414 + mtt, 0)`) && g.includes(`peek(ibuf, 420 + mtt, 0)`) && C.INT_SW_AT === 414, "switch descriptors at 414 / 420");
+            ok(g.includes(`264 + (peek(cf, msl * ${C.CFG_STRIDE}) * 5 + mjj) * 5`) && C.INT_DESC_AT === 264, "control descriptors at 264 + (type * 5 + j) * 5");
+            ok(g.includes(`peek(ibuf, ${C.INT_SW_AT} + mtt, 0)`) && g.includes(`peek(ibuf, ${C.INT_SW_AT + 6} + mtt, 0)`) && C.INT_SW_AT === 490, "switch descriptors at 490 / 496 (moved from 414 for the types 6..8)");
             ok(g.includes("if (dst < 96)") && g.includes("} else if (dst < 192) {") && C.DEST_SW === 96 && C.DEST_DEPTH === 192, "dest code ranges 0..95 / 96..191 / 192..255");
             ok(g.includes(`${C.ROUTE_DEPTH_BASE} + dk`) && g.includes(`${C.ROUTE_DEPTH_BASE} + dkk`) && g.includes("2 * dk + 1") && g.includes("2 * dkk + 1"), "engine writes the effective depth at route[2k + 1] from the base at [512 + k]");
             ok(g.includes(`128 + sl * ${C.SCOPE_EFF_STRIDE}`) && C.SCOPE_EFF === 128 && g.includes(`${C.SCOPE_DEPTH} + ts`) && C.SCOPE_DEPTH === 320, "effective-value telemetry layout");
             ok(C.SCOPE_EFF + C.MAX_MODS * C.SCOPE_EFF_STRIDE <= C.SCOPE_DEPTH && C.SCOPE_DEPTH + C.AUTO_DEPTH_SLOTS <= C.SCOPE_SAMPS, "telemetry regions do not overlap and fit");
-            ok(/poke\(cf, peek\(cfg, rs \* 24 \+ k, 0\), rs \* 24 \+ k\);\s*poke\(cm,/.test(g), "cm is refreshed together with cf, then modulated");
+            ok(new RegExp(`poke\\(cf, peek\\(cfg, rs \\* ${C.CFG_STRIDE} \\+ k, 0\\), rs \\* ${C.CFG_STRIDE} \\+ k\\);\\s*poke\\(cm,`).test(g) && g.includes("if (peek(cfg, rs * 32, 0) > 0.5) {"), "cm is refreshed together with cf, then modulated (an empty slot refreshes only type / enabled)");
             ok(GEN.indexOf("3c. Internal") > GEN.indexOf("3. Refresh"), "the matrix runs after the config refresh");
             ok(GEN.indexOf("3c. Internal") < GEN.indexOf("4. Evaluate the slots"), "...and before the slots are evaluated (previous-sample sources)");
             ok(g.includes("nHi > 0.5"), "the matrix is skipped when no route is active");
             ok(!/\bnormOf\(|\bvalOf\(/.test(g), "no helper function called with those argument shapes (it silently broke the gen compile in Max 9)");
             ok(/peek\(outv, sidx - 1\)/.test(g), "sources are read from outv before the slots of this sample run");
             ok(!/\be[0-9]\b/.test(g), "no e<digit> identifiers");
-            // routers: EVERY pool slot (schema 10) applies the depth per sample (the depth multiplier covers slots >= 64)
-            let covered = 0, baseOk = true;
-            for (let r = 0; r < 8; r++) {
-                const R = mcPy.router(r);
-                for (let jx = 0; jx < 32; jx++) {
-                    const k = r * 32 + jx;
-                    if (!R.includes(`dk${jx} = peek(route, ${2 * k + 1});`) || !R.includes(`rm${jx} = peek(route, ${C.ROUTE_DEPTH_MIN + k});`) || !R.includes(`yv${jx} = (rm${jx} < -0.5) ? yv${jx} * dk${jx} : rm${jx} + (yv${jx} - rm${jx}) * dk${jx};`)) baseOk = false;
-                    covered++;
-                }
+            // routers: EVERY pool slot (schema 10) applies the depth per sample (one looped text for all 8 routers: slot k = rbase + j, k up to 255)
+            {
+                const R = routerCode();
+                ok(R.includes("dk = peek(route, 2 * kk + 1, 0);") && R.includes(`rm = peek(route, ${C.ROUTE_DEPTH_MIN} + kk, 0);`) && R.includes("yv = (rm < -0.5) ? yv * dk : rm + (yv - rm) * dk;"), "the router (all 8: rbase 0..224) reads dk = route[2k+1] and rm = route[768 + k] for each of its 32 slots (256 pool slots)");
             }
-            ok(baseOk && covered === 256, "all 8 routers read dk = route[2k+1] and rm = route[768 + k] for each of their 32 slots (256 pool slots)");
             ok(C.ROUTE_DEPTH_BASE === 512 && C.ROUTE_DEPTH_MIN === 768 && C.ROUTE_DEPTH_MIN + 256 <= C.ROUTE_SAMPS && C.ROUTE_DEPTH_BASE + 256 <= C.ROUTE_DEPTH_MIN && 2 * 256 <= C.ROUTE_DEPTH_BASE, "route buffer layout: [0..511] source/effective, [512..767] base, [768..1023] Remote centre");
             ok(/Data dsum\(512\);/.test(g) && /Data dcl\(512\);/.test(g) && /Data dprd\(512\);/.test(g), "the destination accumulators (sum, count, product) hold 448 depth / control cells");
             ok(g.includes("dk = sampleCount - 256 * floor(sampleCount / 256);"), "the base -> effective depth refresh walks all 256 slots");
@@ -2010,7 +2032,7 @@ function p0Width() { return 588; }
             eq(C.sanitizeSettings({ selfMod: "live" }).selfMod, "live", "live accepted"); eq(C.sanitizeSettings({ selfMod: "bogus" }).selfMod, "internal", "anything else = internal");
             eq(C.sanitizeSettings({}).selfMod, "internal", "missing = internal");
             const old = C.normalizeState({ schema: 8, mods: [{ type: 1 }], mappings: [{ id: 1, mod: 0, target: { path: "live_set tracks 0 devices 0 parameters 1", paramName: "x" } }], settings: { defaultMode: "remote", smoothMs: 10 } });
-            eq(old.schema, 10, "schema 8 -> 10"); eq(old.settings.selfMod, "internal", "migration defaults to internal"); eq(old.settings.defaultMode, "remote", "...and keeps the other settings");
+            eq(old.schema, 11, "schema 8 -> 10"); eq(old.settings.selfMod, "internal", "migration defaults to internal"); eq(old.settings.defaultMode, "remote", "...and keeps the other settings");
             eq(old.mappings.length, 1, "...and the mappings"); ok(!old.mappings[0].target.internal && old.mappings[0].target.selfDest === undefined, "an old mapping is not a self-mapping");
             const t = C.sanitizeTarget(C.makeInternalTarget(6));
             ok(t.internal === true && t.selfDest === 6 && t.kind === "ctl" && t.slot === 1 && t.ctl === 0 && t.path === "" && t.paramName === "M2 A", "internal target keeps its code and derived fields");
@@ -2327,7 +2349,7 @@ function p0Width() { return 588; }
                 eq(r.mode, "mod", "a depth route is Mod only"); eq(e.run("MM.mappingCapacity().used"), 1, "no pool slot is used by the route");
                 eq(e.run("MM.internalCapacity().used"), 1, "one internal route is used"); eq(e.run(`MM.mappingSlot(${r.id})`), -1, "no Live pool slot");
                 eq(e.run(`MM.mappingStatus(${r.id})`), "ok", "status ok"); ok(!C.isSelfMapping(r), "a depth route is not a self-mapping (the selector never converts it)");
-                deq(route(e, 0), [2, 192 + slotOfId(e, m.id)], "matrix route = [source + 1, 192 + the pool slot of the mapping]");
+                deq(route(e, 0), [3, 192 + slotOfId(e, m.id)], "matrix route = [source + 1, 192 + the pool slot of the mapping]");
                 eq(e.run(`MM.depthRoutesFor(${m.id})`).length, 1, "depthRoutesFor"); eq(e.run(`MM.depthRouteLabel(MM.getMapping(${r.id}))`), "P0 Depth", "labelled by the mapped parameter");
                 near(ic(e, 0, 255), 0.5, 1e-12, "the route's table is its unipolar depth FACTOR m = range * y (0.5 at x = +1)"); near(ic(e, 0, 0), 0, 1e-12, "...and 0 at x = -1 (never negative)");
                 eq(e.run(`MM.addDepthRoute(1, ${m.id})`), null, "the same source twice on one mapping is a duplicate");
@@ -2354,7 +2376,7 @@ function p0Width() { return 588; }
                 for (let k = 0; k < 70; k++) addMap(e, 0, k);
                 const m69 = e.run("MM.allMappings()[69]"); eq(slotOfId(e, m69.id), 69, "mapping 70 sits in slot 69");
                 const r = e.run(`MM.addDepthRoute(1, ${m69.id})`); ok(r, "a route onto a slot >= 64 mapping");
-                deq(route(e, 0), [2, 192 + 69], "destination 192 + 69 = 261");
+                deq(route(e, 0), [3, 192 + 69], "destination 192 + 69 = 261");
                 e.run(`MM.updateMapping(${m69.id}, { depth: 0.6 })`);
                 near(e.bufs["---megamodroute"].data[C.ROUTE_DEPTH_BASE + 69], 0.6, 1e-6, "the base depth cell of slot 69 follows the mapping");
                 e.run("MM.readTelemetry()"); const sc = e.bufs["---megamodscope"].data; sc[C.SCOPE_DEPTH + 69] = 0.33;
@@ -2379,7 +2401,7 @@ function p0Width() { return 588; }
                     near(e.bufs["---mmcurve"].data[k * C.CURVE_REGION + 255], 1, 1e-9, `${tag}: the table is baked at depth 1 (linear 0..1)`);
                     const r = e.run(`MM.addDepthRoute(1, ${m.id})`);
                     e.run(`MM.updateMapping(${r.id}, { polarity: 0, range: 0.15 })`);
-                    deq(route(e, 0), [2, 192 + k], `${tag}: matrix route [LFO 2, 192 + slot]`);
+                    deq(route(e, 0), [3, 192 + k], `${tag}: matrix route [LFO 2 (output A = engine signal 2), 192 + slot]`);
                     near(ic(e, 0, 255), 0.15, 1e-9, `${tag}: the route's factor table ends at 0.15 (unipolar, range 15 %: m = 0.15 y)`); near(ic(e, 0, 0), 0, 1e-9, `${tag}: ...and starts at 0 (never negative)`);
                     deq(cells(e, k), [0, 1, 1, 0.5], `${tag}: adding the route leaves source / base / Remote centre alone (the engine writes the effective depth)`);
                     // the engine's math on these cells (JS reference of the router + matrix): Remote out = c + (lookup - c) * clip(base * prod m), c = the centre cell
@@ -2472,7 +2494,7 @@ function p0Width() { return 588; }
                 const other = C.defaultMapping(5, 1, C.makeInternalTarget(6), "mod"); other.slot = 5;
                 s.mappings = [pm, old, dead, via, other]; s.nextMapId = 6;
                 const n = C.normalizeState(JSON.parse(JSON.stringify(s)));
-                eq(n.schema, 10, "migrated state is schema 10");
+                eq(n.schema, 11, "migrated state is schema 10");
                 const mr = n.mappings.find((m) => m.id === 2);
                 ok(mr && C.isDepthRoute(mr) && mr.target.mapId === 1 && mr.range === 0.4 && mr.polarity === -1 && mr.mod === 1, "the internal `Depth 8` self-mapping became a depth route on the mapping in slot 7 (range / polarity / source kept)");
                 ok(!n.mappings.some((m) => m.id === 3), "an internal Depth route on an EMPTY slot is dead and dropped");
@@ -2737,6 +2759,646 @@ function p0Width() { return 588; }
         }
     }
 
+}
+
+// ---------------------------------------------------------------- 9. ADSR / XY / Buttons, schema 11 (mapping `out`), two engine outputs, MIDI input
+{
+    const boot9 = () => {
+        const lom = mockLom();
+        const env = makeEnv(lom);
+        loadScript("", env);
+        const run = (c) => vm.runInContext(c, env.ctx);
+        env.ctx.setnames(...NAMES);
+        env.ctx.init_lom();
+        const sel = (p) => { const o = env.observers.find((x) => x._prop === "selected_parameter"); o.cb(["selected_parameter", "id", p ? lom.idOf(p) : 0]); };
+        return { lom, env, run, bufs: env.bufs, sel, outlets: env.log.outlets };
+    };
+    const P_A = "live_set tracks 1 devices 1 parameters 0";
+    const P_B = "live_set tracks 1 devices 1 parameters 1";
+    const tgt = (p, nm) => `{ path: '${p}', paramName: '${nm}', trackName: 'Bass', deviceName: 'Auto Filter', id: ${p === P_A ? 4001 : 4002} }`;
+
+    // ---- 9a. types, names, the Follower rename
+    {
+        eq(C.MOD_ENV, 2, "the Follower keeps the internal type id 2 (saved sets load unchanged)");
+        eq(C.MOD_TYPE_NAMES[C.MOD_ENV], "Follower", "the envelope follower is named Follower");
+        deq(C.MOD_TYPE_NAMES, ["None", "LFO", "Follower", "Random", "Steps", "MSEG", "ADSR", "XY", "Buttons"], "type names");
+        deq([C.MOD_ADSR, C.MOD_XY, C.MOD_BTN, C.MOD_TYPE_MAX], [6, 7, 8, 8], "new type ids");
+        eq(C.MOD_TYPE_SHORT[C.MOD_ENV], "FLW", "short name");
+        eq(C.makeModSlot(C.MOD_ENV, 0).name, "Follower 1", "a new Follower is named Follower N");
+        eq(C.makeModSlot(C.MOD_XY, 1).name, "XY 2", "XY 2"); eq(C.makeModSlot(C.MOD_BTN, 2).name, "Btn 3", "Btn 3"); eq(C.makeModSlot(C.MOD_ADSR, 3).name, "ADSR 4", "ADSR 4");
+        const old = C.normalizeState({ mods: [{ type: 2, name: "Envelope 3", p: {} }, { type: 1, name: "Envelope 4", p: {} }] });
+        eq(old.mods[0].name, "Follower 3", "an old default name 'Envelope N' of a Follower is renamed on load");
+        eq(old.mods[1].name, "Envelope 4", "...only for the Follower type");
+        eq(old.mods[0].type, 2, "type id unchanged");
+        deq([C.modOutputs(1), C.modOutputs(2), C.modOutputs(6), C.modOutputs(7), C.modOutputs(8)], [1, 1, 1, 2, 2], "XY and Buttons have two outputs");
+        deq([C.srcIndex(3, 0), C.srcIndex(3, 1), C.srcIndex(15, 1)], [6, 7, 31], "engine signal = slot * 2 + out");
+        deq([C.outTag(7, 0), C.outTag(7, 1), C.outTag(8, 0), C.outTag(8, 1), C.outTag(1, 0)], ["X", "Y", "A", "B", ""], "output tags");
+    }
+
+    // ---- 9b. param tables, cfg layout, descriptors for the new types
+    {
+        deq(C.AUTO_KEYS[6], ["attack", "decay", "depth", "sustain", "release"], "ADSR A..E");
+        deq(C.AUTO_KEYS[7], ["x", "y", "depth", "slew", null], "XY A..E (X, Y, Depth = C, Slew)");
+        deq(C.AUTO_KEYS[8], ["slew", null, "depth", null, null], "Buttons A..E (Slew, Depth = C)");
+        for (const t of [1, 2, 3, 4, 5, 6, 7, 8]) eq(C.AUTO_KEYS[t][2], "depth", `type ${t}: Depth stays the third generic control`);
+        deq(C.AUTO_SW_USED[6], ["sync", "bipolar", "retrig", "oneshot"], "ADSR switches (Trig, Bipolar, Retrig, Vel)");
+        deq(C.AUTO_SW_USED[7], [], "XY has no switch"); deq(C.AUTO_SW_USED[8], ["sync", "bipolar"], "Buttons: button 1 = Sync, button 2 = Bipolar");
+        eq(C.autoSwLabel(6, 1), "Trig", "ADSR sync = Trig"); eq(C.autoSwLabel(6, 4), "Vel", "ADSR oneshot = Vel"); eq(C.autoSwLabel(8, 1), "Button 1", "Buttons sync = Button 1"); eq(C.autoSwLabel(8, 2), "Button 2", "Buttons bipolar = Button 2"); eq(C.autoSwLabel(1, 1), "Sync", "LFO unchanged");
+        eq(C.autoLiveName(C.MOD_BTN, 2, "sync"), "M3 Sync", "the Live names of the switches stay fixed"); eq(C.autoLiveName(C.MOD_XY, 0, "y"), "M1 B", "XY Y = M1 B"); eq(C.autoLiveName(C.MOD_ADSR, 0, "sustain"), "M1 D", "ADSR sustain = D");
+        eq(C.autoLiveName(C.MOD_ADSR, 0, "thresh"), "", "the ADSR threshold has no Live parameter");
+        for (const k of ["decay", "sustain", "thresh", "x", "y", "slew"]) { ok(C.MOD_PARAM_KEYS.includes(k) && C.MOD_PARAM_RANGE[k] && C.KEY_CF[k] > 20 && C.KEY_CF[k] < C.CFG_STRIDE, `key ${k}: in the tables, cfg field ${C.KEY_CF[k]} inside the stride`); }
+        deq([C.CF_DECAY, C.CF_SUSTAIN, C.CF_THRESH, C.CF_X, C.CF_Y, C.CF_SLEW], [21, 22, 23, 24, 25, 26], "cfg fields of the new controls");
+        const fields = { CF_DECAY: "cb + 21", CF_SUSTAIN: "cb + 22", CF_THRESH: "cb + 23", CF_X: "cb + 24", CF_Y: "cb + 25", CF_SLEW: "cb + 26" };
+        for (const [k, expr] of Object.entries(fields)) { ok(GEN.includes(`peek(cm, ${expr})`), `engine reads ${k} (modulated copy) at ${expr}`); eq(expr, `cb + ${C[k]}`, `${k} matches the genexpr offset`); }
+        eq(C.CFG_STRIDE, 32, "cfg stride 32"); eq(C.INT_SW_AT, 490, "switch descriptors moved to 490 (the descriptors of types 0..8 end at 488)");
+        ok(C.INT_DESC_AT + (C.MOD_TYPE_MAX * C.AUTO_PARAMS + C.AUTO_PARAMS) * 5 <= C.INT_SW_AT, "type descriptors do not reach the switch table");
+        ok(C.INT_SW_AT + 12 <= C.INT_SAMPS, "switch table fits megamodint");
+        const dsc = C.intDescriptorFloats();
+        for (let t = 1; t <= 8; t++) {
+            for (let j = 0; j < 5; j++) {
+                const key = C.AUTO_KEYS[t][j], o = (t * 5 + j) * 5;
+                if (!key) { eq(dsc[o], 0, `type ${t} control ${j}: no descriptor`); continue; }
+                const r = C.MOD_PARAM_RANGE[key];
+                deq(dsc.slice(o, o + 5), [C.KEY_CF[key] + 1, r[0], r[1], C.AUTO_LOG[key] ? 1 : 0, r[2] ? 1 : 0], `type ${t} control ${j} (${key}) descriptor`);
+            }
+        }
+        near(C.autoValue("decay", C.autoNorm("decay", 250)), 250, 1e-6, "decay log curve round trip"); near(C.autoValue("sustain", 0.5), 0.5, 1e-12, "sustain linear");
+        near(C.autoNorm("decay", 1), 0, 1e-12, "decay min"); near(C.autoNorm("decay", 5000), 1, 1e-12, "decay max");
+        near(C.slewMs(1), 2000, 1e-9, "slew 1 = 2000 ms"); near(C.slewMs(0.5), 500, 1e-9, "slew 0.5 = 500 ms (squared)"); eq(C.slewMs(0), 0, "slew 0 = off");
+        const d6 = C.defaultParams(6), d7 = C.defaultParams(7), d8 = C.defaultParams(8);
+        deq([d6.sync, d6.retrig, d6.oneshot, d6.bipolar], [1, 0, 0, 0], "ADSR defaults: Threshold trigger, Retrig off (from the current level), Vel off, unipolar");
+        deq([d7.x, d7.y, d7.slew, d7.bipolar, d7.sync], [0.5, 0.5, 0, 0, 0], "XY defaults: centre, no slew"); deq([d8.sync, d8.bipolar, d8.slew], [0, 0, 0], "Buttons defaults: both off");
+        const adsr = C.makeModSlot(6, 0); adsr.p.decay = 321; adsr.p.sustain = 0.3; adsr.p.thresh = -12; adsr.p.attack = 7; adsr.p.release = 99;
+        const f = C.slotConfigFloats(adsr);
+        deq([f[C.CF_TYPE], f[C.CF_ATTACK], f[C.CF_DECAY], f[C.CF_SUSTAIN], f[C.CF_RELEASE], f[C.CF_THRESH], f[C.CF_SYNC]], [6, 7, 321, 0.3, 99, -12, 1], "ADSR cfg floats");
+        const xyM = C.makeModSlot(7, 0); xyM.p.x = 0.25; xyM.p.y = 0.75; xyM.p.slew = 0.4;
+        const fx = C.slotConfigFloats(xyM); deq([fx[C.CF_TYPE], fx[C.CF_X], fx[C.CF_Y], fx[C.CF_SLEW]], [7, 0.25, 0.75, 0.4], "XY cfg floats");
+        const bt = C.makeModSlot(8, 0); bt.p.sync = 1; bt.p.bipolar = 1;
+        const fb = C.slotConfigFloats(bt); deq([fb[C.CF_TYPE], fb[C.CF_SYNC], fb[C.CF_BIPOLAR]], [8, 1, 1], "Buttons cfg floats (button 1 = sync, button 2 = bipolar)");
+        eq(C.cfgBufferFloats(C.defaultState()).length, 16 * 32, "cfg buffer 16 x 32");
+        eq(C.clampParam("sustain", 7), 1, "sustain clamps"); eq(C.clampParam("thresh", -99), -60, "thresh clamps"); eq(C.clampParam("decay", 0), 1, "decay clamps");
+        const dirty = C.normalizeState({ mods: [{ type: 6, p: { decay: 99999, sustain: -4, thresh: 5, x: 3, y: -3, slew: 9 } }] }).mods[0].p;
+        deq([dirty.decay, dirty.sustain, dirty.thresh, dirty.x, dirty.y, dirty.slew], [5000, 0, 0, 1, 0, 1], "sanitize clamps the new keys");
+        const st = C.normalizeState({ mods: [C.makeModSlot(8, 0), C.makeModSlot(6, 1), C.makeModSlot(7, 2)] });
+        st.mods[0].name = "Btn 1"; st.mods[1].name = "ADSR 2"; st.mods[2].name = "XY 3";
+        eq(C.selfDestLabel(C.selfDestFor("sw", 0, 1), st), "Btn 1 Button 1", "Buttons switch label"); eq(C.selfDestLabel(C.selfDestFor("sw", 1, 4), st), "ADSR 2 Vel", "ADSR Vel label");
+        eq(C.selfDestLabel(C.selfDestFor("ctl", 2, 1), st), "XY 3 Y", "XY Y label"); eq(C.selfDestLabel(C.selfDestFor("ctl", 1, 3), st), "ADSR 2 Sust", "ADSR sustain label");
+        ok(C.selfDestExists(C.selfDestFor("ctl", 2, 1), st) && !C.selfDestExists(C.selfDestFor("ctl", 2, 4), st), "XY has A..D only");
+        ok(C.selfDestExists(C.selfDestFor("sw", 0, 1), st) && !C.selfDestExists(C.selfDestFor("sw", 2, 1), st), "XY has no sync switch; Buttons do");
+        for (const [t, j] of [[6, 0], [6, 1], [6, 3], [6, 4], [7, 0], [7, 1], [7, 3], [8, 0]]) for (const off of [-0.3, 0, 0.2, 0.9]) {
+            const key = C.AUTO_KEYS[t][j], r = C.MOD_PARAM_RANGE[key];
+            for (const base of [r[0], (r[0] + r[1]) / 2, r[1]]) {
+                const n = C.AUTO_LOG[key] ? Math.log(Math.max(base, r[0]) / r[0]) / Math.log(r[1] / r[0]) : (base - r[0]) / (r[1] - r[0]);
+                const nn = Math.min(1, Math.max(0, Math.min(1, Math.max(0, n)) + off));
+                let v = C.AUTO_LOG[key] ? r[0] * Math.exp(nn * Math.log(r[1] / r[0])) : r[0] + (r[1] - r[0]) * nn;
+                if (r[2]) v = Math.floor(v + 0.5);
+                near(C.selfCtlValue(t, j, base, off), v, 1e-9, `selfCtlValue type ${t} control ${j} base ${base} offset ${off}`);
+            }
+        }
+    }
+
+    // ---- 9c. engine and builder contract: 32 outputs, routers with 32 inputs, MIDI params
+    {
+        for (let i = 0; i < 32; i++) ok(GEN.includes(`out${i + 1} = peek(outv, ${i});`), `engine outlet ${i + 1}`);
+        ok(!GEN.includes("out33 =") && /Data outv\(32\)/.test(GEN) && !/Data tl2?\(/.test(GEN), "32 engine signals, outv(32); the per-slot telemetry copies are gone (written directly on the publishing sample)");
+        ok(GEN.includes("poke(outv, fixnan(outSlot), 2 * i);") && GEN.includes("poke(outv, fixnan(outSlotB), 2 * i + 1);") && GEN.includes("if (active > 0.5 || peek(st, sb + 4) > 0.5) {"), "slot i writes outv[2i] (A) and outv[2i + 1] (B) while active and once when it goes inactive");
+        ok(GEN.includes("outSlotB = (hasB > 0.5) ? 2 * depth * uB - 1 : outSlot;"), "a single-output type mirrors A on B");
+        ok(GEN.includes(`poke(scope, outSlotB, ${C.SCOPE_OUTB} + i, 0)`) && C.SCOPE_OUTB === 576 && C.SCOPE_OUTB + 16 <= C.SCOPE_SAMPS, "output B telemetry at 576 + slot");
+        for (const pr of ["mgate", "mtrig", "mvel"]) ok(new RegExp(`^Param ${pr}\\(`, "m").test(GEN), `Param ${pr} (ADSR MIDI state)`);
+        ok(GEN.includes("typ < 6.5") && GEN.includes("typ < 7.5"), "type chain: ADSR < 6.5, XY / Buttons < 7.5 / else");
+        ok(!/\be[0-9]\b/.test(GEN.replace(/\/\/.*$/gm, "")), "no e<digit> identifiers");
+        ok(!/Param hold/.test(GEN), "no Param named hold");
+        const { doc } = readAmxd(path.join(ROOT, "devices", "Mega Modulator.amxd"));
+        const boxes = doc.patcher.boxes.map((b) => b.box), lines = doc.patcher.lines.map((l) => l.patchline);
+        {
+            const rc = routerCode();
+            ok(rc.includes("Data sg(32);") && Array.from({ length: 32 }, (_, q) => rc.includes(`poke(sg, in${q + 1}, ${q});`)).every(Boolean) && !rc.includes("selector("), "the router's 32 inputs are poked into Data sg once per sample (no 32-way selector)");
+            ok(!rc.includes("in33"), "no 33rd router input");
+        }
+        // the Buttons' faces are live.text toggles (Sync / Bipolar switch parameters of every slot are live.text; only the LFO shape is a live.tab)
+        for (let slot = 0; slot < 16; slot++) for (const t of [1, 2, 3, 4, 5]) { const b = boxes.find((x) => x.varname === `at_${slot * 6 + t}`); if (b.maxclass !== "live.text" || b.mode !== 1) ok(false, `switch at_${slot * 6 + t} must be a Toggle live.text`); }
+        ok(true, "switch parameters 1..5 of every slot are Toggle live.text objects (the Buttons faces)");
+        const bufCfg = boxes.find((b) => b.text && b.text.startsWith("buffer~ ---megamodcfg"));
+        ok(bufCfg.text.includes("@samps 512"), "cfg buffer 512 samples");
+        ok(boxes.some((b) => b.id === "obj-midiin" && b.text === "midiin") && boxes.some((b) => b.id === "obj-midiparse") && lines.some((l) => l.source[0] === "obj-midi-note-prep" && l.destination[0] === "obj-viz"), "midiin -> midiparse -> midi_note -> the v8ui is in the patch");
+    }
+
+    // ---- 9d. schema 11: mapping `out`
+    {
+        eq(C.MEGAMOD_VERSION, 11, "schema 11"); eq(C.defaultMapping(1, 0, { path: "p" }).out, 0, "default out 0");
+        eq(C.sanitizeMapping({ id: 1, mod: 0, out: 1, target: { path: "p" } }, 11).out, 1, "out 1 kept"); eq(C.sanitizeMapping({ id: 1, mod: 0, out: 7, target: { path: "p" } }, 11).out, 0, "bad out -> 0");
+        eq(C.sanitizeMapping({ id: 1, mod: 0, target: { path: "p" } }, 10).out, 0, "schema 10 mappings have no out: 0");
+        const mk = (extra) => C.normalizeState({ schema: 10, mods: [C.makeModSlot(7, 0), C.makeModSlot(1, 1)], mappings: [Object.assign({ id: 1, mod: 0, polarity: 0, range: 0.5, depth: 1, target: { path: "p" } }, extra)], nextMapId: 2 });
+        const old = mk({});
+        eq(old.schema, 11, "a schema 10 state normalizes to 11"); eq(old.mappings[0].out, 0, "...its mappings read output A"); eq(old.mods[0].type, 7, "...XY survives");
+        const withOut = mk({ out: 1 });
+        eq(C.deserializeState(C.serializeState(withOut)).mappings[0].out, 1, "out round trips through the blob");
+        eq(JSON.parse(C.stateToJson(withOut)).mappings[0].out, 1, "out is in the JSON");
+        const ms = [C.defaultMapping(1, 0, { path: "a" })];
+        ok(C.findDuplicateMapping(ms, 0, { path: "a" }, undefined, 0), "same mod + out + target is a duplicate");
+        eq(C.findDuplicateMapping(ms, 0, { path: "a" }, undefined, 1), null, "the other output is not");
+        const st = C.normalizeState({ mods: [C.makeModSlot(7, 0), C.makeModSlot(1, 1)], mappings: [
+            { id: 1, mod: 1, target: { path: "x" } },
+            { id: 2, mod: 0, out: 0, target: { internal: true, kind: "depth", mapId: 1 } }, { id: 3, mod: 0, out: 1, target: { internal: true, kind: "depth", mapId: 1 } },
+            { id: 4, mod: 0, out: 1, target: { internal: true, kind: "depth", mapId: 1 } }] });
+        deq(st.mappings.map((m) => m.id), [1, 2, 3], "depth routes: X and Y of one modulator are two routes, a repeat of the same output is dropped");
+    }
+
+    // ---- 9e. the mapper: mappings read an output, routes, internal routes, learn source
+    {
+        const e = boot9();
+        const { run, bufs, sel } = e;
+        run("MM.addModulator(MOD_XY)"); run("MM.addModulator(MOD_LFO)"); run("MM.addModulator(MOD_BTN)");
+        const route = () => bufs["---megamodroute"].data;
+        const mA = run(`MM.addMapping(0, ${tgt(P_A, "Freq")}, 0)`), mB = run(`MM.addMapping(0, ${tgt(P_A, "Freq")}, 1)`);
+        ok(mA && mB && mA.out === 0 && mB.out === 1, "the same target can be mapped from X and from Y");
+        eq(run(`MM.addMapping(0, ${tgt(P_A, "Freq")}, 1)`), null, "the same target twice from Y is a duplicate");
+        eq(route()[2 * run(`MM.mappingSlot(${mA.id})`)], 0, "route of an X mapping = signal 0"); eq(route()[2 * run(`MM.mappingSlot(${mB.id})`)], 1, "route of a Y mapping = signal 1");
+        const lf = run(`MM.addMapping(1, ${tgt(P_B, "Res")}, 1)`);
+        eq(lf.out, 0, "a single-output modulator only has output A"); eq(route()[2 * run(`MM.mappingSlot(${lf.id})`)], 2, "LFO in slot 1: signal 2");
+        const bt = run(`MM.addMapping(2, ${tgt(P_B, "Res")}, 1)`);
+        eq(bt.out, 1, "Buttons: output B = button 2"); eq(route()[2 * run(`MM.mappingSlot(${bt.id})`)], 5, "Buttons in slot 2, output B: signal 5");
+        eq(run(`MM.mappingsForOut(0, 1).length`), 1, "mappingsForOut"); eq(run(`MM.mappingsForOut(0, 0).length`), 1, "mappingsForOut A");
+        run(`MM.updateMapping(${mA.id}, { out: 1 })`); eq(route()[2 * run(`MM.mappingSlot(${mA.id})`)], 1, "updateMapping({out}) re-routes"); run(`MM.updateMapping(${mA.id}, { out: 0 })`);
+        const selfDest = C.selfDestFor("ctl", 1, 0);
+        const sm = run(`MM.addSelfMapping(0, ${selfDest}, 'internal', undefined, 1)`);
+        ok(sm && sm.out === 1, "an internal self-mapping can read output Y");
+        const ib = (off, n) => Array.from(bufs["---megamodint"].data.slice(off, off + n));
+        eq(ib(4 * run(`MM._test.islot(${sm.id})`), 1)[0], 2, "internal route source = signal 1 + 1");
+        eq(run(`MM.addSelfMapping(0, ${selfDest}, 'internal', undefined, 1)`), null, "the same internal route twice is refused");
+        ok(run(`MM.addSelfMapping(0, ${selfDest}, 'internal', undefined, 0)`), "...but output X may drive the same destination");
+        const dr = run(`MM.addDepthRoute(0, ${mA.id}, 1)`);
+        ok(dr && dr.out === 1, "a depth route can be driven by Y"); eq(ib(4 * run(`MM._test.islot(${dr.id})`), 1)[0], 2, "depth route source = signal 1 + 1");
+        run("MM.disarmLearn()");
+        run("MM.armLearn(0, false, 1)"); eq(run("MM.learn.out"), 1, "armLearn(i, multi, out)");
+        sel(P_B);
+        const learned = run("MM.mappingsFor(0)").filter((m) => m.target.path === P_B);
+        eq(learned.length, 1, "learn adds a mapping"); eq(learned[0].out, 1, "...from the selected output (Y)");
+        ok(!run("MM.learn.armed"), "single-shot disarms");
+        run("MM.armLearn(0, true, 0)"); run("MM.setLearnOut(1)"); eq(run("MM.learn.out"), 1, "setLearnOut while armed");
+        run("MM.setLearnOut(0)"); eq(run("MM.learn.out"), 0, "...back to X");
+        run("MM.disarmLearn()"); eq(run("MM.learn.out"), 0, "disarm resets");
+        run("MM.armLearn(1, false, 1)"); eq(run("MM.learn.out"), 0, "a single-output modulator always learns output A");
+        run("MM.disarmLearn()");
+        run("MM.setModType(0, MOD_LFO)"); eq(run(`MM.getMapping(${mB.id}).out`), 1, "the mapping keeps out 1 across a type change"); run("MM.setModType(0, MOD_XY)");
+        // undo of a modulator delete restores every mapping with its `out` and re-routes it
+        const outsBefore = run("MM.mappingsFor(0)").map((m) => m.id + ":" + m.out).sort().join(",");
+        run("MM.removeModulator(0)");
+        eq(run("MM.mappingsFor(0).length"), 0, "deleting the XY deletes its mappings");
+        run("MM.undo()");
+        eq(run("MM.mappingsFor(0)").map((m) => m.id + ":" + m.out).sort().join(","), outsBefore, "undo restores every mapping of the XY with its out");
+        eq(route()[2 * run(`MM.mappingSlot(${mB.id})`)], 1, "...and re-routes the Y mapping from signal 1");
+        // a mapping deleted on its own and undone keeps its output
+        run(`MM.deleteMapping(${mB.id})`); run("MM.undo()");
+        eq(run(`MM.getMapping(${mB.id}).out`), 1, "undo of a mapping delete keeps its out");
+        const blob = run("MM.save()");
+        const e2 = boot9();
+        e2.run("MM.addModulator(MOD_LFO)");
+        e2.env.ctx.setvalueof(blob);
+        const mm2 = e2.run("MM.allMappings()");
+        ok(mm2.some((m) => m.out === 1 && m.mod === 0), "out survives save / load");
+        const sl = e2.run(`MM.mappingSlot(${mm2.find((m) => m.out === 1 && m.mod === 0 && !m.target.internal).id})`);
+        eq(e2.bufs["---megamodroute"].data[2 * sl], 1, "...and the reload routes it from signal 1");
+        e.run("MM.readTelemetry()");
+        const sc = bufs["---megamodscope"].data;
+        sc[0] = -0.5; sc[C.SCOPE_OUTB] = 0.25; sc[C.SCOPE_OUTB + 2] = -0.75;
+        const tl = e.run("MM.readTelemetry()");
+        near(tl.mods[0].out, -0.5, 1e-9, "telemetry out A"); near(tl.mods[0].outB, 0.25, 1e-9, "telemetry out B"); near(tl.mods[2].outB, -0.75, 1e-9, "telemetry out B of slot 2");
+    }
+
+    // ---- 9f. UI params: XY / Buttons / ADSR controls reach cfg and the Live parameters
+    {
+        const e = boot9();
+        const { run, bufs, env } = e;
+        run("MM.addModulator(MOD_ADSR)"); run("MM.addModulator(MOD_XY)"); run("MM.addModulator(MOD_BTN)");
+        const cfg = bufs["---megamodcfg"].data;
+        run("MM.setParam(1, 'x', 0.3)"); run("MM.setParam(1, 'y', 0.9)"); run("MM.setParam(1, 'slew', 0.25)");
+        deq([cfg[32 + C.CF_X], cfg[32 + C.CF_Y], cfg[32 + C.CF_SLEW]], [0.3, 0.9, 0.25], "XY x / y / slew reach the cfg buffer");
+        near(env.live.ap_6.value, 30, 1e-9, "XY X -> M2 A = 30 %"); near(env.live.ap_7.value, 90, 1e-9, "XY Y -> M2 B = 90 %"); near(env.live.ap_9.value, 100 * C.autoNorm("slew", 0.25), 1e-9, "XY slew -> M2 D");
+        run("MM.setParam(2, 'sync', 1)"); run("MM.setParam(2, 'bipolar', 1)");
+        deq([cfg[64 + C.CF_SYNC], cfg[64 + C.CF_BIPOLAR]], [1, 1], "Buttons 1 / 2 reach the cfg buffer");
+        eq(env.live.at_13.value, 1, "Buttons button 1 -> the M3 Sync switch parameter"); eq(env.live.at_14.value, 1, "Buttons button 2 -> the M3 Bipolar switch parameter");
+        run("MM.setParam(0, 'sustain', 0.4)"); run("MM.setParam(0, 'decay', 150)"); run("MM.setParam(0, 'thresh', -18)");
+        deq([cfg[C.CF_SUSTAIN], cfg[C.CF_DECAY], cfg[C.CF_THRESH]], [0.4, 150, -18], "ADSR sustain / decay / threshold reach the cfg buffer");
+        near(env.live.ap_3.value, 40, 1e-9, "ADSR sustain -> M1 D"); near(env.live.ap_1.value, 100 * C.autoNorm("decay", 150), 1e-9, "ADSR decay -> M1 B");
+        run("MM.setParam(0, 'sync', 0)"); eq(env.live.at_1.value, 0, "ADSR Trig -> M1 Sync switch parameter");
+        run("MM.setParam(0, 'oneshot', 1)"); eq(env.live.at_4.value, 1, "ADSR Vel -> M1 1Shot switch parameter");
+        env.ctx.autop(7, 20);
+        near(cfg[32 + C.CF_Y], 0.2, 1e-9, "Live moves XY Y (M2 B)");
+        env.ctx.autot(13, 0);
+        eq(cfg[64 + C.CF_SYNC], 0, "Live toggles Buttons button 1");
+        env.ctx.autot(2, 1);
+        eq(cfg[C.CF_BIPOLAR], 1, "Live toggles the ADSR Bipolar switch");
+        env.ctx.autot(6 + 1, 1);
+        eq(cfg[32 + C.CF_SYNC], 0, "XY ignores a sync switch");
+    }
+
+    // ---- 9g. ADSR references (the engine mirrors them; the real-Max cases compare the two)
+    {
+        const sr = 48000;
+        const p = { attack: 50, decay: 100, sustain: 0.5, release: 200, retrig: 0, oneshot: 0, thresh: -24 };
+        const burst = (n0, n1, amp, f) => (i) => (i >= n0 && i < n1 ? amp * Math.sin((2 * Math.PI * f * i) / sr) : 0);
+        const sig = Array.from({ length: sr * 2 }, (_, i) => burst(0.2 * sr, 0.9 * sr, 0.5, 1000)(i));
+        const u = C.adsrRunThreshold(sig, sr, p);
+        const first = (fn, from = 0) => { for (let i = from; i < u.length; i++) if (fn(u[i])) return i; return -1; };
+        const on = first((v) => v > 0), pk = first((v) => v >= 1 - 1e-9, on), sus = first((v) => v <= 0.5 + 1e-9, pk);
+        near((pk - on) * 1000 / sr, 50, 0.05, "attack = 50 ms (fixed duration, mild curve)"); near((sus - pk) * 1000 / sr, 100, 0.05, "decay 1 -> 0.5 takes 100 ms");
+        near(u[sus + sr * 0.1], 0.5, 1e-9, "sustain holds 0.5");
+        const rs = first((v) => v < 0.5 - 1e-9, sus + 100), re = first((v) => v <= 1e-9, rs);
+        near((re - rs) * 1000 / sr, 200, 0.1, "release 0.5 -> 0 takes 200 ms (fixed duration, exponential)");
+        ok(rs / sr > 0.9, "the release starts after the input falls below half the threshold, i.e. after the burst");
+        ok(rs / sr - 0.9 < 0.06, "...within ~41 ms of the burst end (15 ms envelope release, -6 dB hysteresis)");
+        eq(u.filter((v, i) => i > 0 && u[i - 1] < 0.9 && v >= 0.9).length, 1, "one burst, one trigger");
+        const s2 = Array.from({ length: sr * 2 }, (_, i) => burst(0.2 * sr, 0.3 * sr, 0.5, 1000)(i) + burst(0.6 * sr, 0.7 * sr, 0.5, 1000)(i));
+        const pa = { attack: 50, decay: 100, sustain: 0.5, release: 5000, retrig: 0, oneshot: 0, thresh: -24 };
+        const ua = C.adsrRunThreshold(s2, sr, pa), ub = C.adsrRunThreshold(s2, sr, Object.assign({}, pa, { retrig: 1 }));
+        const t2 = Math.floor(0.6 * sr);
+        ok(ua[t2 - 1] > 0.3, "the first envelope is in its release when the second burst arrives");
+        ok(Math.min(...ua.slice(t2 - 3, t2 + 960)) >= ua[t2 - 3] - 1e-4, "Retrig off: the new attack starts from the current level (no dip)");
+        ok(ub[t2 + 48] < 0.05, "Retrig on: the new attack starts from 0");
+        const ev = [{ n: 1000, on: true, note: 60, vel: 127 }, { n: 20000, on: true, note: 64, vel: 30 }, { n: 30000, on: false, note: 60 }, { n: 40000, on: false, note: 64 }];
+        const pm = { attack: 10, decay: 20, sustain: 0.5, release: 50, retrig: 0, oneshot: 0 };
+        const um = C.adsrRunMidi(ev, 100000, sr, pm);
+        near(Math.max(...um.slice(0, 20000)), 1, 1e-9, "MIDI note on: attack to the peak");
+        near(um[35000], 0.5, 1e-9, "sustaining while a note is still held (the first note-off does not release)");
+        ok(um[20000 + 100] === 0.5, "legato note-on (a note already held) does not retrigger: still at sustain");
+        ok(um[40000 + 3000] < 0.5 && um[99999] === 0, "all notes off: release to 0");
+        near(Math.max(...C.adsrRunMidi(ev, 100000, sr, Object.assign({}, pm, { oneshot: 1 }))), 1, 1e-9, "Vel on: velocity 127 -> peak 1");
+        const ev2 = [{ n: 1000, on: true, note: 60, vel: 64 }, { n: 30000, on: false, note: 60 }];
+        const uv2 = C.adsrRunMidi(ev2, 60000, sr, Object.assign({}, pm, { oneshot: 1 }));
+        near(Math.max(...uv2), 64 / 127, 1e-9, "Vel on: velocity 64 scales the peak"); near(uv2[20000], 0.5 * 64 / 127, 1e-9, "...and the sustain level");
+        near(Math.max(...C.adsrRunMidi(ev2, 60000, sr, pm)), 1, 1e-9, "Vel off: the peak is 1 whatever the velocity");
+        deq(C.xyOutputs({ x: 0.2, y: 0.8, depth: 1 }).map((v) => Math.round(v * 1e6) / 1e6), [-0.6, 0.6], "XY outputs unipolar: 2x - 1, 2y - 1");
+        deq(C.xyOutputs({ x: 0.9, y: 0.1, depth: 0.5 }).map((v) => Math.round(v * 1e6) / 1e6), [-0.1, -0.9], "XY outputs scale with Depth");
+        deq(C.buttonOutputs({ sync: 1, bipolar: 0, depth: 1 }), [1, -1], "Buttons: on = +1, off = -1");
+        near(C.slewCoef(0.15, 48000), Math.exp(-1000 / (45 * 48000)), 1e-12, "slew 0.15 = 45 ms time constant"); eq(C.slewCoef(0, 48000), 0, "no slew");
+
+        // ---- curves: shapes, and the JS reference against the engine's own ADSR block (run as JS with mocked gen builtins)
+        {
+            near(C.adsrExpShape(0), 1, 1e-12, "exp shape starts at 1"); near(C.adsrExpShape(1), 0, 1e-15, "exp shape ends at exactly 0 (reaches the target in its time)");
+            near(C.adsrAttackShape(0), 0, 1e-15, "attack shape starts at 0"); near(C.adsrAttackShape(1), 1, 1e-15, "attack shape ends at 1");
+            let mono = true, concave = true, prevE = 2, prevA = -1;
+            for (let i = 0; i <= 200; i++) { const x = i / 200, e = C.adsrExpShape(x), a = C.adsrAttackShape(x); if (e > prevE || a < prevA) mono = false; if (a < x - 1e-12) concave = false; prevE = e; prevA = a; }
+            ok(mono, "both shapes are monotonic"); ok(concave, "the attack is mildly concave (above the straight line)"); ok(C.adsrAttackShape(0.5) < 0.7, "...but mild (0.5 -> < 0.7)");
+            near(C.adsrExpShape(0.5), (Math.exp(-2.5) - Math.exp(-5)) / (1 - Math.exp(-5)), 1e-15, "exp shape formula (e^-Ks - e^-K) / (1 - e^-K), K = 5");
+            eq(C.ADSR_EXP_K, 5, "K = 5"); eq(C.ADSR_ATK_POW, 1.6, "attack power 1.6");
+            ok(GEN.includes(String(Math.exp(-5))) && GEN.includes(String(1 - Math.exp(-5))) && GEN.includes("exp(-5 * aProg)"), "the engine uses e^-5 and 1 - e^-5 for K = 5");
+            ok(GEN.includes("1 - pow(1 - aProg, 1.6)"), "the engine attack is 1 - (1 - s)^1.6");
+            const a0 = GEN.indexOf("\t\t\tif (aTrig > 0.5) {"), a1 = GEN.indexOf("\t\t\tpoke(st, aFast, sb + 8);");
+            ok(a0 > 0 && a1 > a0, "the engine ADSR block is found");
+            const run = new Function("S", "with (S) {" + GEN.slice(a0, a1) + "}");
+            const sr = 48000;
+            const mkp = (o) => Object.assign({ attack: 5, decay: 8, sustain: 0.4, release: 10, retrig: 0, oneshot: 0 }, o);
+            const scen = [
+                { n: 1500, evs: { 10: "t", 700: "o" }, p: mkp({}) },
+                { n: 1500, evs: { 10: "t", 100: "o", 400: "t", 900: "o" }, p: mkp({}) }, // released during the attack, retriggered in the release
+                { n: 1500, evs: { 10: "t", 100: "o", 400: "t", 900: "o" }, p: mkp({ retrig: 1 }) },
+                { n: 1500, evs: { 10: "t", 200: "o" }, p: mkp({ oneshot: 1, sustain: 0.7 }), vel: 0.6 }, // released during the decay
+                { n: 3000, evs: { 10: "t", 1200: "o" }, p: mkp({ attack: 20, decay: 30, release: 25, sustain: 0.25 }) },
+            ];
+            let worst = 0, stagesOk = true;
+            for (const sc of scen) {
+                const ref = C.adsrInit();
+                const S = { aTrig: 0, aOff: 0, aVel: 1, aLvl: 0, aPeak: 1, aStage: 0, aSeg: 0, aProg: 0, aTgt: 0, aSus: sc.p.sustain, aAtk: sc.p.attack, aDec: sc.p.decay, aRel: sc.p.release,
+                    retrigOn: sc.p.retrig, oneshot: sc.p.oneshot, sr, max: Math.max, clip: (x, lo, hi) => Math.min(Math.max(x, lo), hi), pow: Math.pow, exp: Math.exp };
+                for (let i = 0; i < sc.n; i++) {
+                    const e = sc.evs[i];
+                    S.aTrig = e === "t" ? 1 : 0; S.aOff = e === "o" ? 1 : 0; S.aVel = sc.vel === undefined ? 1 : sc.vel;
+                    run(S);
+                    const u = C.adsrStep(ref, sc.p, sr, { trig: e === "t", gateOff: e === "o", vel: S.aVel });
+                    worst = Math.max(worst, Math.abs(u - S.aLvl));
+                    if (ref.stage !== S.aStage || Math.abs(ref.prog - S.aProg) > 1e-9) stagesOk = false;
+                }
+            }
+            ok(worst < 1e-12, `JS reference == engine ADSR block, max difference ${worst}`); ok(stagesOk, "stage and progress agree every sample");
+            // every stage reaches its target within its time
+            const q = mkp({ attack: 10, decay: 20, sustain: 0.5, release: 30 });
+            const st = C.adsrInit(), out = [];
+            for (let i = 0; i < 6000; i++) out.push(C.adsrStep(st, q, sr, { trig: i === 0, gateOff: i === 3000 }));
+            ok(out[Math.round(0.010 * sr) - 1] === 1 || out[Math.round(0.010 * sr)] === 1, "attack reaches the peak in its time (within a sample)");
+            near(out[Math.round(0.010 * sr) + 2], 0.5 + 0.5 * C.adsrExpShape(2 / (0.020 * sr)), 1e-4, "the decay starts from the peak along the exponential");
+            near(out[Math.round(0.030 * sr) + 3], 0.5, 1e-12, "decay reaches the sustain in its time (within a sample)"); near(out[2999], 0.5, 0, "the sustain holds");
+            near(out[3000 + Math.round(0.030 * sr) + 3], 0, 1e-15, "release reaches 0 in its time (within a sample)");
+        }
+    }
+
+    // ---- 9h. MIDI input in the mapper: held-note state, legato, panic, routing through the LOM DeviceIO
+    {
+        const e = boot9();
+        const { outlets } = e;
+        const last = (k) => { const l = outlets.filter((o) => o[1] === "gen" && o[2] === k); return l.length ? l[l.length - 1][3] : null; };
+        outlets.length = 0;
+        e.env.ctx.midi_note(60, 100);
+        eq(last("mgate"), 1, "a note-on opens the gate"); eq(last("mtrig"), 1, "...and counts a trigger"); near(last("mvel"), 100 / 127, 1e-9, "...with its velocity");
+        e.env.ctx.midi_note(64, 40);
+        eq(last("mgate"), 1, "legato note: the gate stays open"); eq(last("mtrig"), 1, "...no retrigger (the counter did not move)"); near(last("mvel"), 100 / 127, 1e-9, "...and the velocity stays that of the trigger note");
+        e.env.ctx.midi_note(60, 0);
+        eq(last("mgate"), 1, "one note still held: gate stays open");
+        e.env.ctx.midi_note(64, 0);
+        eq(last("mgate"), 0, "all notes off: gate closes");
+        e.env.ctx.midi_note(62, 90);
+        eq(last("mtrig"), 2, "a note after the gate closed retriggers"); eq(last("mgate"), 1, "gate open");
+        e.env.ctx.midi_note(62, 90); eq(e.run("MM.midiState().count"), 1, "a repeated note-on of a held note is one held note");
+        e.env.ctx.midi_note(61, 0); eq(e.run("MM.midiState().count"), 1, "a note-off of a note that is not held is ignored");
+        e.env.ctx.midi_cc(0, 123);
+        eq(last("mgate"), 0, "CC 123 (all notes off) releases every held note"); eq(e.run("MM.midiState().held.length"), 0, "...and clears the held set");
+        e.env.ctx.midi_note(60, 100); e.env.ctx.midi_note(64, 100); e.env.ctx.midi_note(67, 100);
+        eq(e.run("MM.midiState().count"), 3, "a chord = three held notes (the held set, not a lossy message)");
+        e.env.ctx.midi_cc(123, 0); eq(last("mgate"), 0, "CC 123 in the other argument order too");
+        ok(!e.run("MM.midiInfo().supported"), "without a midi_inputs DeviceIO the device reports MIDI input as unsupported");
+        eq(e.run("MM.midiSetType(0)"), false, "...and cannot route");
+        const lom = mockLom();
+        lom.tree.midiInputs = { name: "midi_in", children: {}, props: {
+            available_routing_types: JSON.stringify({ available_routing_types: [{ display_name: "No Input", identifier: 1 }, { display_name: "Track 1", identifier: 2 }, { display_name: "Ext. In", identifier: 3 }] }),
+            routing_type: JSON.stringify({ routing_type: { display_name: "No Input", identifier: 1 } }) } };
+        const env2 = makeEnv(lom);
+        loadScript("", env2);
+        const run2 = (c) => vm.runInContext(c, env2.ctx);
+        env2.ctx.setnames(...NAMES);
+        env2.ctx.init_lom();
+        const info = run2("MM.midiInfo()");
+        ok(info.supported, "with a midi_inputs DeviceIO the device supports MIDI input"); deq(JSON.parse(JSON.stringify(info.types)), ["No Input", "Track 1", "Ext. In"], "available routing types"); eq(info.name, "No Input", "current routing type");
+        ok(run2("MM.midiSetType(1)"), "midiSetType routes");
+        const set = lom.tree.midiInputs.setLog;
+        ok(set && set[set.length - 1][0] === "routing_type" && set[set.length - 1][1].display_name === "Track 1", "the DeviceIO's routing_type is set to the chosen entry");
+        eq(run2("MM.midiSetType(9)"), false, "an unknown entry is refused");
+    }
+}
+
+
+// ---------------------------------------------------------------- 9z. skip logic and caches in the engine / router (the performance pass): static contract + the cache blocks run as JS
+{
+    const g = GEN.replace(/\/\/.*$/gm, "");
+    // an empty slot refreshes only its type / enabled cells; every other slot refreshes all 32
+    ok(g.includes("if (peek(cfg, rs * 32, 0) > 0.5) {") && /poke\(cf, peek\(cfg, rs \* 32 \+ 1, 0\), rs \* 32 \+ 1\);/.test(g), "an empty slot (type 0) copies only cells 0 and 1 of its config");
+    // an inactive slot writes its outputs once (when it goes inactive) and publishes telemetry only on its own sample
+    ok(g.includes("if (active > 0.5 || peek(st, sb + 4) > 0.5) {") && g.includes("poke(st, active, sb + 4);"), "an inactive slot that was inactive on the previous sample is not written");
+    ok(g.includes("if (pubOn > 0.5 && i == pubSl) {") && g.includes("pubOn = (ts - 4 * floor(ts / 4) < 0.5) ? 1 : 0;"), "a slot's telemetry is written only on the sample that publishes it");
+    ok(!/poke\(tl/.test(g) && !/Data tl/.test(g), "no per-sample telemetry staging arrays");
+    // the per-slot state cells: every `st` cell used by a block, no overlaps between the blocks
+    const used = {};
+    for (const m of g.matchAll(/(?:peek|poke)\(st, [^;]*?sb( \+ (\d+))?\)/g)) used[m[2] || "0"] = true;
+    const cells = Object.keys(used).map(Number).sort((a, b) => a - b);
+    ok(cells.every((c) => c < 32) && /Data st\(512\);/.test(g) && /sb = i \* 32;/.test(g), `every st cell is inside the 32-cell slot stride (${cells.join(",")})`);
+    const blocks = { follower: [16, 22], random: [23, 27], adsrThr: [28, 29] };
+    for (const [name, [lo, hi]] of Object.entries(blocks)) for (let c = lo; c <= hi; c++) ok(cells.includes(c), `${name} cache cell ${c} is used`);
+    ok(!cells.includes(6) && !cells.includes(7) && !cells.includes(30) && !cells.includes(31), "the spare cells stay free");
+    // caches keyed on their inputs
+    ok(g.includes("if (peek(st, sb + 16) != atk || peek(st, sb + 17) != rel || peek(st, sb + 18) != gdbK || peek(st, sb + 22) != sr) {"), "follower coefficients recomputed only when attack / release / gain / sample rate change");
+    ok(g.includes("if (peek(st, sb + 28) != thrK) {"), "the ADSR threshold power is cached");
+    ok(g.includes("if (sr != cSr) {") && g.includes("fastRel = cFastRel;"), "the ADSR detector coefficients are recomputed only when the sample rate changes");
+    ok(/if \(shape < 0\.5 \|\| shape > 4\.5\) \{\s*r = 0\.5 \+ 0\.5 \* sin\(twopi \* ph\);/.test(g), "the LFO sine is evaluated only for the sine shape");
+    ok(g.includes("if (slwMs >= 0.05) {"), "the XY / Buttons slew exponential is evaluated only with a slew");
+    ok(!/hash01\(/.test(GEN.slice(GEN.indexOf("// 4. Evaluate the slots")).replace(/\/\/.*$/gm, "")), "no helper-function call to hash01 in the slot loop (the Random cache inlines it; a call inside those nested if blocks broke the gen compile in Max 9: see section 21)");
+    // the Random hash cache, run as JS against the plain hash over random (index, seed) sequences: exactly equal
+    {
+        const a0 = GEN.indexOf("\t\t\thCur = peek(st, sb + 25);"), a1 = GEN.indexOf("\t\t\tu = glideVal(hPrev, hCur, fr, sm);");
+        ok(a0 > 0 && a1 > a0, "the Random cache block is found");
+        const run = new Function("S", "with (S) {" + GEN.slice(a0, a1) + "}");
+        const hash01 = (seed, idx) => { const x = Math.sin(idx * 12.9898 + seed * 78.233 + 1.2345) * 43758.5453; return x - Math.floor(x); };
+        const st = new Float64Array(32);
+        const S = { st, sb: 0, idxr: 0, seed: 0, hCur: 0, hPrev: 0, hv: 0, peek: (a, i) => a[i], poke: (a, v, i) => { a[i] = v; }, sin: Math.sin, floor: Math.floor };
+        let calls = 0, worst = 0, n = 0;
+        const origSin = Math.sin;
+        S.sin = (x) => { calls++; return origSin(x); };
+        let idx = 0, seed = 0;
+        const rnd = (() => { let q = 12345; return () => { q = (q * 16807) % 2147483647; return q / 2147483647; }; })();
+        for (let i = 0; i < 20000; i++) {
+            const r = rnd();
+            if (r < 0.01) seed = Math.floor(rnd() * 1000);          // a seed change
+            if (r > 0.995) idx = Math.floor(rnd() * 5000) - 100;    // a restart / jump
+            else if (r > 0.3) idx += 0;                             // the step holds for many samples
+            if (r > 0.97 && r < 0.995) idx += 1;                    // the next step
+            if (rnd() < 0.002) idx -= 3;                            // a jump back
+            S.idxr = idx; S.seed = seed;
+            run(S);
+            worst = Math.max(worst, Math.abs(S.hCur - hash01(seed, idx)), Math.abs(S.hPrev - hash01(seed, idx - 1)));
+            n++;
+        }
+        eq(worst, 0, "the cached Random hashes equal hash01 exactly over 20000 samples with steps, jumps and seed changes");
+        ok(calls < 2 * 20000 * 0.1, `...with far fewer sin() calls than 2 per sample (${calls} for ${n} samples)`);
+    }
+    // the router: sleeps / wakes
+    {
+        const R = routerCode();
+        ok(!/else if \(\s*(peek|poke)\(/.test(R) && !/else if \(\s*(peek|poke)\(/.test(GEN), "no `else if (peek(...))` in the engine or the router (it silently broke the router's gen compile in Max 9: use a nested if on a variable)");
+        ok(R.includes("if (awake < 0.5) {") && /poke\(ys, 0, j\);/.test(R) && /poke\(yo, 0, j\);/.test(R), "a router that goes to sleep clears its smoothing and output state once");
+        ok(R.indexOf("if (awake > 0.5) {") > R.indexOf("poke(route, rbase + 1"), "the wake scan and the heartbeat run before the slot loop, every 32 samples, awake or not");
+    }
+}
+
+// ---------------------------------------------------------------- 10. deferred DSP: the state machine (src/megamod_dsp.js + the message layer in the mapper)
+{
+    const files = {};
+    const shared = {}; // Global store
+    function dspEnv(opts) {
+        opts = opts || {};
+        const e = makeEnv(mockLom());
+        e.dspDown = true;
+        loadScript("", e);
+        const ctx = e.ctx;
+        const created = [], cords = [], removed = [], sets = [], msgs = [];
+        const named = {};
+        // controllable Task: schedule() queues, runTasks() runs them in order
+        const queue = [];
+        ctx.Task = class { constructor(fn) { this.fn = fn; this.interval = 0; this.pending = false; } repeat() {} schedule(ms) { if (!/^mmd/.test(this.fn.name)) return; this.pending = true; queue.push(this); } cancel() { this.pending = false; const i = queue.indexOf(this); if (i >= 0) queue.splice(i, 1); } };
+        ctx.File = class { constructor(path, mode) { this.path = path; this.mode = mode; this.isopen = true; this.eof = files[path] ? files[path].length : 0; this._w = ""; } writestring(t) { this._w += t; } close() { if (this.mode === "write") files[this.path] = this._w; } };
+        ctx.Global = class { constructor(name) { if (!shared[name]) shared[name] = {}; return shared[name]; } };
+        const mk = (name, cls) => ({ name, maxclass: cls, messages: [], setattrs: [], message(...a) { this.messages.push(a); }, setattr(k, v) { this.setattrs.push([k, v]); sets.push([this._vn || this.name, k, v]); }, set varname(v) { named[v] = this; this._vn = v; } });
+        for (const v of ["mm_genin", "mm_plugin", "mm_plugout"]) named[v] = mk(v, "newobj");
+        for (let k = 0; k < 256; k++) { named["mm_mod_" + k] = mk("mm_mod_" + k, "live.modulate~"); named["mm_rem_" + k] = mk("mm_rem_" + k, "live.remote~"); }
+        const p = e.patcher;
+        const oldGet = p.getnamed;
+        p.getnamed = (n) => (named[n] !== undefined ? named[n] : oldGet(n));
+        p.newdefault = (x, y, cls, ...args) => { const o = mk("new" + created.length, cls); o.args = args; created.push(o); return o; };
+        p.connect = (a, ao, b, bi) => { cords.push([a.name, ao, b.name, bi]); };
+        p.remove = (o) => { removed.push(o.name); if (o._vn) delete named[o._vn]; };
+        const run = (c) => vm.runInContext(c, ctx);
+        // outlets: record gen messages
+        const gen = () => e.log.outlets.filter((o) => o[1] === "gen").map((o) => o.slice(2));
+        const engineRuns = { on: !opts.engineStuck };
+        const runTasks = (max) => { let n = 0; while (queue.length && n < (max || 200)) { const t = queue.shift(); t.pending = false; t.fn.call(ctx); n++; } return n; };
+        // the "audio": the engine counts frames in scope[64], router r bumps route[1024 + r] and writes route[1032 + r] = rbase + 1 (only once it got its rbase)
+        const scopeBuf = () => e.bufs["---megamodscope"].data, routeBuf = () => e.bufs["---megamodroute"].data;
+        const tickAudio = () => {
+            if (!engineRuns.on) return;
+            if (sets.some((s) => s[0] === "mm_engine" && s[1] === "gen")) scopeBuf()[64] += 1;
+            for (let r = 0; r < 8; r++) {
+                const rt = named["mm_router_" + r];
+                if (!rt || !rt.setattrs.some((q) => q[0] === "gen")) continue;
+                routeBuf()[1024 + r] += 1;
+                const rb = rt.messages.filter((m) => m[0] === "rbase").pop();
+                if (rb) routeBuf()[1032 + r] = rb[1] + 1;
+            }
+        };
+        const advance = (ticks) => { for (let i = 0; i < ticks; i++) { runTasks(1); tickAudio(); } };
+        return { e, ctx, run, created, cords, removed, sets, named, gen, runTasks, advance, queue, tickAudio, engineRuns, routeBuf, scopeBuf };
+    }
+    const boot = (d) => { d.ctx.setnames(...NAMES); d.ctx.init_lom(); };
+
+    // ---- queued writes before the DSP is up
+    {
+        const d = dspEnv();
+        boot(d);
+        ok(!d.run("MM.dspInfo().ready") && d.run("MM.dspInfo().error") === "", "the DSP starts down, no error");
+        const n0 = d.e.log.outlets.length;
+        d.run("MM.setSettings({ rateMul: 2, smoothMs: 50 })");
+        d.run("MM.midiNote(60, 100)");
+        d.run("MM.retrigger(3)");
+        eq(d.gen().length, 0, "no gen message is sent while the DSP is down (the mapper holds them)");
+        eq(d.run("MM.dspInfo().dropped"), 1, "a retrigger EVENT is dropped, not queued");
+        const held = d.run("MM.dspParams()");
+        const hv = Object.fromEntries(held);
+        ok(hv.ratemul === 2 && hv.smooth === 50 && hv.mgate === 1 && hv.mvel > 0.7 && hv.mtrig === 1, "the latest value of every Param is held: " + JSON.stringify(hv));
+        d.run("MM.setSettings({ rateMul: 3 })");
+        eq(Object.fromEntries(d.run("MM.dspParams()")).ratemul, 3, "only the LAST value of a Param is kept");
+        d.run("MM.midiAllOff()");
+        ok(!d.run("MM.dspParams()").some((kv) => kv[0] === "mtrig"), "a MIDI trigger counter is not replayed when no note is held (it would fire a trigger that already happened)");
+        d.run("MM.midiNote(62, 90)");
+        ok(d.run("MM.dspParams()").some((kv) => kv[0] === "mtrig"), "...but is while a note is held");
+        d.run("MM.midiAllOff()");
+        // the DSP comes up: everything held is sent once
+        d.e.log.outlets.length = 0;
+        d.run("MM.dspSetState(true)");
+        const g = Object.fromEntries(d.gen().map((m) => [m[0], m[1]]));
+        eq(g.ratemul, 3, "flush: the held rate multiplier is sent when the DSP is ready");
+        ok(g.mgate === 0 && !("rtrg" in g), "flush: the gate state, never the retrigger event");
+        ok(d.run("MM.dspInfo().ready") && d.run("MM.dspInfo().flushes") === 1, "ready after dspSetState(true), one flush");
+        d.e.log.outlets.length = 0;
+        d.run("MM.setSettings({ rateMul: 1.5 })");
+        eq(d.gen().length, 1, "once ready a Param goes straight out");
+        d.run("MM.retrigger(2)");
+        ok(d.gen().some((m) => m[0] === "rtrg"), "...and so does a retrigger event");
+        void n0;
+    }
+
+    // ---- the build: shells, wiring, hot-load, confirm
+    {
+        const d = dspEnv();
+        boot(d);
+        d.run("MM.setSettings({ rateMul: 2, smoothMs: 25 })");
+        d.ctx.init_dsp();
+        eq(d.created.length, 0, "init_dsp only schedules: nothing is created in the same tick (the face paints first)");
+        ok(d.queue.length === 1, "one task scheduled (30 ms)");
+        d.runTasks(1); // claim
+        d.runTasks(1); // engine shell
+        eq(d.created.length, 1, "the engine shell is created first");
+        const eng = d.named["mm_engine"];
+        ok(eng && eng.maxclass === "gen~" && eng.args[0] === "@gen" && /megamod_shellEngine_[0-9a-f]{12}\.gendsp$/.test(eng.args[1]), "the engine is a file-backed SHELL (@gen /tmp/megamod_shellEngine_<hash>.gendsp)");
+        eq(d.cords.map((c) => c.join(":")).join(","), "mm_genin:0:new0:0,mm_plugin:0:new0:0,mm_plugin:1:new0:1", "engine wired from the hub and plugin~ (both channels)");
+        for (let r = 0; r < 8; r++) d.runTasks(1);
+        eq(d.created.length, 9, "8 router shells");
+        eq(d.cords.length, 3 + 8 * (32 + 64), "771 cords in total");
+        for (let r = 0; r < 8; r++) {
+            const rt = d.named["mm_router_" + r];
+            ok(rt && /megamod_shellRouter_[0-9a-f]{12}\.gendsp$/.test(rt.args[1]), `router ${r} is a shell (one shared file)`);
+            const mine = d.cords.filter((c) => c[2] === rt.name || c[0] === rt.name);
+            eq(mine.filter((c) => c[2] === rt.name).length, 32, `router ${r}: 32 inputs from the engine`);
+            ok(mine.filter((c) => c[2] === rt.name).every((c) => c[0] === "new0" && c[1] === c[3]), `router ${r}: engine outlet i -> router inlet i`);
+            for (let j = 0; j < 32; j++) {
+                const k = r * 32 + j;
+                ok(d.cords.some((c) => c[0] === rt.name && c[1] === j && c[2] === "mm_mod_" + k && c[3] === 0) && d.cords.some((c) => c[0] === rt.name && c[1] === j && c[2] === "mm_rem_" + k && c[3] === 0), `router ${r} outlet ${j} -> mm_mod_${k} and mm_rem_${k}, inlet 0`);
+            }
+        }
+        ok(!d.sets.length, "nothing is hot-loaded before every shell is wired");
+        ok(!d.cords.some((c) => c[2] === "mm_plugout" || c[0] === "mm_plugout"), "plugin~ -> plugout~ is never touched (audio passes throughout)");
+        ok(d.removed.length === 0, "no object is removed while building");
+        d.runTasks(1); // hot-load the engine
+        eq(d.sets.length, 1, "the engine is hot-loaded (setattr gen)");
+        ok(d.sets[0][0] === "mm_engine" && /megamod_engine_[0-9a-f]{12}\.gendsp$/.test(d.sets[0][2]), "with the real engine file");
+        for (let r = 0; r < 8; r++) d.runTasks(1);
+        eq(d.sets.length, 9, "then each router");
+        ok(d.sets.slice(1).every((s) => /megamod_router_[0-9a-f]{12}\.gendsp$/.test(s[2]) && s[2] === d.sets[1][2]), "all routers share ONE file (one compile)");
+        const eFile = d.sets[0][2];
+        ok(files[eFile] && JSON.parse(files[eFile]).patcher.boxes.find((b) => b.box.id === "obj-code").box.code.length > 20000, "the engine gendsp was written to /tmp");
+        ok(!d.run("MM.dspInfo().ready"), "loaded is not ready: a gen drops messages while it compiles");
+        // confirm loop: the bind / Params / transport are re-sent until the gens answer
+        ok(d.gen().some((m) => m[0] === "cfg" && m[1] === NAMES[0]) && d.gen().some((m) => m[0] === "scope") && d.gen().some((m) => m[0] === "route"), "the buffer binding goes to the engine as `gen cfg / scope / route ...`");
+        ok(d.e.log.outlets.some((o) => o[1] === "transport" && o[2] === "bang"), "the transport state is re-requested (`transport bang` -> the stores)");
+        const r3 = d.named["mm_router_3"].messages.map((m) => m.join(" "));
+        ok(r3.includes("route " + NAMES[5]) && r3.includes("curve " + NAMES[4]) && r3.includes("rbase 96") && r3.includes("smooth 25"), "router 3 got route / curve names, rbase 96 and the held smoothing: " + r3.join(" | "));
+        ok(d.gen().some((m) => m[0] === "ratemul" && m[1] === 2), "the held rate multiplier is re-sent while confirming");
+        for (let i = 0; i < 4; i++) d.advance(1);
+        ok(d.run("MM.dspInfo().ready") === true, "ready once the engine counter and every router heartbeat move and echo 32 r + 1");
+        ok(d.run("MM.dspInfo().flushes") >= 1, "the queued writes were flushed on the transition");
+        const tr = shared["megamod_load_trace"] ? shared["megamod_load_trace"].text : "";
+        ok(/dsp-start/.test(tr) && /engine-wired/.test(tr) && /routers-wired/.test(tr) && /engine-loaded/.test(tr) && /dsp-ready/.test(tr), "the load trace has every step: " + tr.split("\n").map((l) => l.split(" ")[0]).join(","));
+        ok(shared["megamod_dspq"].owner === 0, "the build token is released");
+        // a pill: loading until ready (painted by the UI)
+        const e2 = dspEnv(); boot(e2);
+        ok(e2.e.log.texts === undefined || true, "(pill is checked in tests/test_megamod_ui.js)");
+    }
+
+    // ---- not running: retry, then fail with a message
+    {
+        const d = dspEnv({ engineStuck: true });
+        boot(d);
+        let now = 1e12;
+        const CtxDate = vm.runInContext("Date", d.ctx);
+        const realNow = CtxDate.now;
+        CtxDate.now = () => now;
+        try {
+            d.ctx.init_dsp();
+            for (let i = 0; i < 400; i++) { d.runTasks(1); d.tickAudio(); now += 1000; if (d.run("MM.dspInfo().error")) break; }
+            ok(d.removed.length >= 9 * 2, `a graph that never runs is torn down (engine + 8 routers) and built again, twice (${d.removed.length} removed)`);
+            ok(/not running/.test(d.run("MM.dspInfo().error")), "then it fails with a reason: " + d.run("MM.dspInfo().error"));
+            ok(!d.run("MM.dspInfo().ready"), "never ready");
+            ok(/dsp-retry/.test(shared["megamod_load_trace"].text) && /dsp-error/.test(shared["megamod_load_trace"].text), "the trace shows the retries and the error");
+            ok(shared["megamod_dspq"].owner === 0, "the token is released after a failure");
+        } finally { CtxDate.now = realNow; }
+    }
+
+    // ---- one instance builds at a time (the shared token)
+    {
+        shared["megamod_dspq"] = { owner: 0.123, t: Date.now() }; // another instance is building
+        const d = dspEnv();
+        boot(d);
+        d.ctx.init_dsp();
+        for (let i = 0; i < 5; i++) d.runTasks(1);
+        eq(d.created.length, 0, "while another instance holds the build token nothing is created (it polls)");
+        shared["megamod_dspq"].owner = 0;
+        for (let i = 0; i < 4; i++) d.runTasks(1);
+        ok(d.created.length >= 1, "...and it builds as soon as the token is free");
+        // a stale claim is ignored
+        shared["megamod_dspq"] = { owner: 0.5, t: Date.now() - 60000 };
+        const d2 = dspEnv();
+        boot(d2);
+        d2.ctx.init_dsp();
+        for (let i = 0; i < 3; i++) d2.runTasks(1);
+        ok(d2.created.length >= 1, "a claim older than 20 s is stale");
+        shared["megamod_dspq"] = { owner: 0, t: 0 };
+    }
+
+    // ---- restart (test hook): tear down, queue, rebuild
+    {
+        const d = dspEnv();
+        boot(d);
+        d.ctx.init_dsp();
+        for (let i = 0; i < 40; i++) d.advance(1);
+        ok(d.run("MM.dspInfo().ready"), "built");
+        d.ctx.dsp_restart();
+        ok(!d.run("MM.dspInfo().ready") && d.removed.length === 9, "dsp_restart removes the graph and marks the DSP down");
+        d.e.log.outlets.length = 0;
+        d.run("MM.setSettings({ rateMul: 4 })");
+        eq(d.gen().length, 0, "...writes made meanwhile are queued");
+        d.engineRuns.on = true;
+        d.scopeBuf()[64] = 0;
+        for (let r = 0; r < 8; r++) d.routeBuf()[1024 + r] = 0;
+        for (let i = 0; i < 80; i++) d.advance(1);
+        ok(d.run("MM.dspInfo().ready"), "rebuilt and ready");
+        ok(d.gen().some((m) => m[0] === "ratemul" && m[1] === 4), "...and the queued rate multiplier reached the new engine");
+    }
+
+    // ---- the message layer never throws without a patcher / gens
+    {
+        const e = makeEnv(mockLom());
+        e.dspDown = true;
+        loadScript("", e);
+        e.ctx.setnames(...NAMES); e.ctx.init_lom();
+        let threw = false;
+        try { vm.runInContext("MM.setSettings({ smoothMs: 10 }); MM.dspSetState(true); MM.setSettings({ smoothMs: 20 }); mmdRouterMsg('smooth', 5);", e.ctx); } catch (x) { threw = true; }
+        ok(!threw, "router messages with no router objects are a no-op");
+    }
 }
 
 console.log(`megamod tests passed (${passed} checks)`);

@@ -1,22 +1,28 @@
-// Mega Modulator engine — 16 audio-rate modulators in one gen.codebox~ (hidden; audio is NOT routed through it).
+// Mega Modulator engine — 16 audio-rate modulators (LFO, Follower, Random, Steps, MSEG, ADSR, XY, Buttons) in one gen.codebox~ (hidden; audio is NOT routed through it).
 //
 // Inputs : in1/in2 = device audio (mono sum feeds the envelope followers). Transport arrives as Params
 //          (hbpm, hppq, hplay) sent from plugsync~, and `rtrg` retrigger events.
-// Outputs: out1..out16 = one signal per slot, normalized -1..1.
+// Cost notes (deferred-DSP / skip pass): an EMPTY slot (type 0) refreshes only its type / enabled cells; an inactive slot writes its outputs and telemetry only on the
+//          sample it goes inactive; coefficients (exp / pow) are cached per slot and recomputed only when their inputs change; the Random hash is cached per step;
+//          telemetry of a slot is written only on the sample that publishes it (one slot every 4 samples). Results are bit-identical to the previous engine.
+// Outputs: out1..out32 = two signals per slot (out(2 * slot + o + 1), o = 0 output A, 1 output B), normalized -1..1. Only XY (A = X, B = Y) and Buttons (A = button 1,
+//          B = button 2) make B different; every other type mirrors A on B.
 //   Output convention: every generator yields u in 0..1.
 //     bipolar  : out = depth * (2u - 1)
 //     unipolar : out = 2 * depth * u - 1        (rests at -1, spans the full table range)
 //   A disabled / empty slot outputs 0.
 //
 // buffer~ layouts (contract with src/megamod_config.js — tests/test_megamod.js parses the constants below):
-//   cfg   (megamodcfg, 16 x CFG_STRIDE floats): per slot
-//     0 type (1 LFO, 2 Env, 3 Random, 4 Steps, 5 MSEG)  1 enabled  2 rate Hz  3 sync  4 syncdiv  5 shape
+//   cfg   (megamodcfg, 16 x CFG_STRIDE (32) floats): per slot
+//     0 type (1 LFO, 2 Follower, 3 Random, 4 Steps, 5 MSEG, 6 ADSR, 7 XY, 8 Buttons)  1 enabled  2 rate Hz  3 sync  4 syncdiv  5 shape
 //     6 phase  7 retrig  8 bipolar  9 depth  10 attack ms  11 release ms  12 gain dB  13 smooth  14 steps
-//     15 glide  16 oneshot  17 seed  18 loopon  19 loopstart  20 loopend
+//     15 glide  16 oneshot  17 seed  18 loopon  19 loopstart  20 loopend  21 decay ms  22 sustain  23 threshold dB  24 x  25 y  26 slew
+//     ADSR: attack 10, decay 21, sustain 22, release 11, thresh 23, sync 3 = Trig (1 Threshold, 0 MIDI), retrig 7 (1 = restart from 0), oneshot 16 = Vel, bipolar 8.
+//     XY: x 24, y 25, slew 26 (tau ms = 2000 * slew^2). Buttons: button 1 = sync (3), button 2 = bipolar (8), slew 26. XY / Buttons are always unipolar: 2 * depth * u - 1.
 //   mseg  (megamodmseg, 16 x 1024): MSEG lookup tables, values 0..1
 //   steps (megamodsteps, 16 x 32): step values 0..1
 //   (Param ratemul = global rate multiplier, default 1)
-//   scope (megamodscope, SCOPE_SAMPS = 512): per slot s at 4*s: [out, phase, u, aux]; header from 64:
+//   scope (megamodscope, SCOPE_SAMPS = 640): per slot s at 4*s: [out, phase, u, aux] (ADSR: aux = stage + 10 * gate, phase = progress in the stage, u = level); output B of slot s at 576 + s; header from 64:
 //     64 frame counter, 65 sample rate, 66 beat, 67 bpm, 68 playing
 //     128 + 12*s + [0..4] effective (modulated) normalized value of the slot's generic controls A..E (0 when the type has no such control),
 //     128 + 12*s + 5 effective On, 128 + 12*s + 6 + t effective switch t (shape 0..4, toggles 0/1)    (SCOPE_EFF)
@@ -41,6 +47,7 @@
 // depth is written per sample to route[2k+1] (the routers read it at their own block: a router sees the engine's last sample of a vector).
 //
 // Retrigger: Param rtrg = counter * 16 + slot. A changed value restarts that slot.
+// MIDI (ADSR Trig = MIDI): Param mgate (any note held, 0 / 1), mtrig (a counter that changes on a note-on with no note held), mvel (that note's velocity 0..1); the v8ui keeps the held-note set.
 // GenExpr ordering: helper functions, then Buffer / Param / History / Data, then expressions.
 // No identifier is named e<digit>.
 
@@ -55,7 +62,10 @@ hash01(seed, idx) {
 lfoShape(shape, ph) {
 	tri = (ph < 0.25) ? 0.5 + 2 * ph : ((ph < 0.75) ? 1.5 - 2 * ph : 2 * ph - 1.5);
 	sq = (ph < 0.5) ? 1 : 0;
-	r = 0.5 + 0.5 * sin(twopi * ph);
+	r = 0;
+	if (shape < 0.5 || shape > 4.5) {
+		r = 0.5 + 0.5 * sin(twopi * ph);
+	}
 	r = (shape == 1) ? tri : r;
 	r = (shape == 2) ? ph : r;
 	r = (shape == 3) ? 1 - ph : r;
@@ -104,22 +114,29 @@ Param hppq(0);
 Param hplay(0);
 Param rtrg(0);
 Param ratemul(1);
+Param mgate(0);
+Param mtrig(0);
+Param mvel(1);
 
-Data cf(384);
-Data cm(384);
+Data cf(512);
+Data cm(512);
 Data dsum(512);
 Data dcl(512);
 Data dprd(512);
-Data st(128);
-Data outv(16);
-Data tl(64);
+Data st(512);
+Data outv(32);
 
 History beat(0);
 History lastPpq(-1);
 History lastPlay(0);
 History lastRtrg(0);
+History lastMtrig(0);
+History lastMgate(0);
 History prevMul(1);
 History tick(0);
+History cSr(0);
+History cFastRel(0);
+History cSlowCoef(0);
 History frameCount(0);
 History sampleCount(0);
 
@@ -148,6 +165,21 @@ rtEv = (rtrg != lastRtrg) ? 1 : 0;
 rtSlot = rtrg - 16 * floor(rtrg / 16);
 lastRtrg = rtrg;
 
+// 2b. MIDI state from the v8ui (ADSR Trig = MIDI): mgate = any note held, mtrig = trigger counter (a note-on with no note held), mvel = that note's velocity 0..1.
+mTrigEv = (mtrig != lastMtrig) ? 1 : 0;
+lastMtrig = mtrig;
+mOffEv = (mgate < 0.5 && lastMgate > 0.5) ? 1 : 0;
+lastMgate = (mgate > 0.5) ? 1 : 0;
+// ADSR threshold detector coefficients (shared by every ADSR slot): fast envelope release 15 ms, slow baseline 60 ms.
+// (cached: recomputed only when the sample rate changes)
+if (sr != cSr) {
+	cSr = sr;
+	cFastRel = exp(-1000 / (15 * sr));
+	cSlowCoef = 1 - exp(-1000 / (60 * sr));
+}
+fastRel = cFastRel;
+slowCoef = cSlowCoef;
+
 // Global rate multiplier (Options panel): scales every LFO / Random / Steps / MSEG rate, free and synced; the follower ignores it.
 // Free: the per-sample phase increment is rate * rmul / sr (the accumulator is continuous). Synced: phase = (beat - anchor) * rmul / div + off;
 // when rmul changes, off absorbs the difference so the phase does not jump.
@@ -155,10 +187,18 @@ rmul = clip(ratemul, 0.05, 20);
 mulChg = (abs(rmul - prevMul) > 0.0000001) ? 1 : 0;
 
 // 3. Refresh one slot of the config cache per sample (full refresh every 16 samples).
+// An EMPTY slot (type 0) only needs its type / enabled cells (every other field is unused until a type is set, and the type itself is refreshed here).
 rs = sampleCount - 16 * floor(sampleCount / 16);
-for (k = 0; k < 24; k += 1) {
-	poke(cf, peek(cfg, rs * 24 + k, 0), rs * 24 + k);
-	poke(cm, peek(cfg, rs * 24 + k, 0), rs * 24 + k);
+if (peek(cfg, rs * 32, 0) > 0.5) {
+	for (k = 0; k < 32; k += 1) {
+		poke(cf, peek(cfg, rs * 32 + k, 0), rs * 32 + k);
+		poke(cm, peek(cfg, rs * 32 + k, 0), rs * 32 + k);
+	}
+} else {
+	poke(cf, peek(cfg, rs * 32, 0), rs * 32);
+	poke(cm, peek(cfg, rs * 32, 0), rs * 32);
+	poke(cf, peek(cfg, rs * 32 + 1, 0), rs * 32 + 1);
+	poke(cm, peek(cfg, rs * 32 + 1, 0), rs * 32 + 1);
 }
 sampleCount = sampleCount + 1;
 
@@ -204,31 +244,31 @@ if (nHi > 0.5) {
 					msl = floor(dst / 6);
 					mjj = dst - msl * 6;
 					if (mjj > 4.5) {
-						poke(cm, (clip(peek(cf, msl * 24 + 1) + dsm, 0, 1) > 0.5) ? 1 : 0, msl * 24 + 1);
+						poke(cm, (clip(peek(cf, msl * 32 + 1) + dsm, 0, 1) > 0.5) ? 1 : 0, msl * 32 + 1);
 					} else {
-						dpos = 264 + (peek(cf, msl * 24) * 5 + mjj) * 5;
+						dpos = 264 + (peek(cf, msl * 32) * 5 + mjj) * 5;
 						fld = peek(ibuf, dpos, 0) - 1;
 						if (fld > -0.5) {
 							dlo = peek(ibuf, dpos + 1, 0);
 							dhi = peek(ibuf, dpos + 2, 0);
 							dlg = peek(ibuf, dpos + 3, 0);
 							dit = peek(ibuf, dpos + 4, 0);
-							draw = peek(cf, msl * 24 + fld);
+							draw = peek(cf, msl * 32 + fld);
 							nr = (dlg > 0.5) ? log(max(draw, dlo) / dlo) / log(dhi / dlo) : (draw - dlo) / (dhi - dlo);
 							nr = clip(clip(nr, 0, 1) + dsm, 0, 1);
 							dvv = (dlg > 0.5) ? dlo * exp(nr * log(dhi / dlo)) : dlo + (dhi - dlo) * nr;
 							dvv = (dit > 0.5) ? floor(dvv + 0.5) : dvv;
-							poke(cm, dvv, msl * 24 + fld);
+							poke(cm, dvv, msl * 32 + fld);
 						}
 					}
 				} else if (dst < 192) {
 					mt2 = dst - 96;
 					msl = floor(mt2 / 6);
 					mtt = mt2 - msl * 6;
-					fld = peek(ibuf, 414 + mtt, 0) - 1;
-					mxv = peek(ibuf, 420 + mtt, 0);
-					nr = clip(peek(cf, msl * 24 + fld) / mxv + dsm, 0, 1);
-					poke(cm, (mtt < 0.5) ? floor(nr * mxv + 0.5) : ((nr > 0.5) ? 1 : 0), msl * 24 + fld);
+					fld = peek(ibuf, 490 + mtt, 0) - 1;
+					mxv = peek(ibuf, 496 + mtt, 0);
+					nr = clip(peek(cf, msl * 32 + fld) / mxv + dsm, 0, 1);
+					poke(cm, (mtt < 0.5) ? floor(nr * mxv + 0.5) : ((nr > 0.5) ? 1 : 0), msl * 32 + fld);
 				} else {
 					dkk = dst - 192;
 					poke(route, clip(peek(route, 512 + dkk, 0) * peek(dprd, dst), 0, 1), 2 * dkk + 1, 0);
@@ -238,13 +278,18 @@ if (nHi > 0.5) {
 	}
 }
 
-// 4. Evaluate the slots.
+// 4. Evaluate the slots. Telemetry timing: this sample publishes slot pubSl when pubOn (one slot every 4 samples, each slot every 64); its values are written inside the loop.
+tickN = tick + 1;
+ts = tickN - 64 * floor(tickN / 64);
+pubSl = floor(ts / 4);
+pubOn = (ts - 4 * floor(ts / 4) < 0.5) ? 1 : 0;
 for (i = 0; i < 16; i += 1) {
-	cb = i * 24;
-	sb = i * 8;
+	cb = i * 32;
+	sb = i * 32;
 	typ = peek(cf, cb);
 	active = (typ > 0.5 && peek(cm, cb + 1) > 0.5) ? 1 : 0;
 	outSlot = 0;
+	outSlotB = 0;
 	uSlot = 0;
 	phSlot = 0;
 	auxSlot = 0;
@@ -281,18 +326,30 @@ for (i = 0; i < 16; i += 1) {
 		poke(st, t0, sb + 1);
 
 		u = 0;
+		hasB = 0;
+		uB = 0;
 		if (typ < 1.5) {
 			ph = frac01(accv + phaseOff);
 			ph = (oneshot > 0.5 && accv >= 1) ? 0.999999999 : ph;
 			u = lfoShape(floor(shape + 0.5), ph);
 			phSlot = ph;
 		} else if (typ < 2.5) {
+			// attack / release coefficients and the gain are cached in st[sb + 16 .. 22] (keys, then values) and recomputed only when their inputs or the sample rate change
 			atk = max(peek(cm, cb + 10), 0.05);
 			rel = max(peek(cm, cb + 11), 0.5);
-			gainLin = pow(10, peek(cm, cb + 12) / 20);
-			xin = abs(mono) * gainLin;
+			gdbK = peek(cm, cb + 12) + 1000;
+			if (peek(st, sb + 16) != atk || peek(st, sb + 17) != rel || peek(st, sb + 18) != gdbK || peek(st, sb + 22) != sr) {
+				poke(st, atk, sb + 16);
+				poke(st, rel, sb + 17);
+				poke(st, gdbK, sb + 18);
+				poke(st, sr, sb + 22);
+				poke(st, exp(-1000 / (atk * sr)), sb + 19);
+				poke(st, exp(-1000 / (rel * sr)), sb + 20);
+				poke(st, pow(10, (gdbK - 1000) / 20), sb + 21);
+			}
+			xin = abs(mono) * peek(st, sb + 21);
 			envPrev = peek(st, sb + 2);
-			coef = (xin > envPrev) ? exp(-1000 / (atk * sr)) : exp(-1000 / (rel * sr));
+			coef = (xin > envPrev) ? peek(st, sb + 19) : peek(st, sb + 20);
 			envNow = xin + (envPrev - xin) * coef;
 			envNow = (envNow < 1e-9) ? 0 : envNow;
 			poke(st, envNow, sb + 2);
@@ -304,7 +361,26 @@ for (i = 0; i < 16; i += 1) {
 			xr = accv + phaseOff;
 			idxr = floor(xr);
 			fr = xr - idxr;
-			u = glideVal(hash01(seed, idxr - 1), hash01(seed, idxr), fr, sm);
+			// the two hashes (a sin each) are cached per step in st[sb + 23 .. 27] (index, seed, current, previous, valid): hash01(seed, index) is a pure function of them.
+			// (inlined, with no function call inside the if blocks: a call there silently broke the gen compile in Max 9)
+			hCur = peek(st, sb + 25);
+			hPrev = peek(st, sb + 26);
+			if (peek(st, sb + 27) < 0.5 || peek(st, sb + 23) != idxr || peek(st, sb + 24) != seed) {
+				if (peek(st, sb + 27) > 0.5 && peek(st, sb + 24) == seed && peek(st, sb + 23) == idxr - 1) {
+					hPrev = hCur;
+				} else {
+					hv = sin((idxr - 1) * 12.9898 + seed * 78.233 + 1.2345) * 43758.5453;
+					hPrev = hv - floor(hv);
+				}
+				hv = sin(idxr * 12.9898 + seed * 78.233 + 1.2345) * 43758.5453;
+				hCur = hv - floor(hv);
+				poke(st, hCur, sb + 25);
+				poke(st, hPrev, sb + 26);
+				poke(st, idxr, sb + 23);
+				poke(st, seed, sb + 24);
+				poke(st, 1, sb + 27);
+			}
+			u = glideVal(hPrev, hCur, fr, sm);
 			phSlot = fr;
 			auxSlot = idxr;
 		} else if (typ < 4.5) {
@@ -321,7 +397,7 @@ for (i = 0; i < 16; i += 1) {
 			u = glideVal(prevV, curV, fr, gl);
 			phSlot = (idxs + fr) / nSteps;
 			auxSlot = idxs;
-		} else {
+		} else if (typ < 5.5) {
 			phm = (oneshot > 0.5) ? clip(accv, 0, 1) : frac01(accv + phaseOff);
 			loopOn = peek(cm, cb + 18);
 			ls = (loopOn > 0.5) ? peek(cm, cb + 19) : 0;
@@ -334,30 +410,156 @@ for (i = 0; i < 16; i += 1) {
 			v1 = peek(mseg, i * 1024 + i1, 0);
 			u = v0 + (v1 - v0) * (fi - i0);
 			phSlot = phm;
+		} else if (typ < 6.5) {
+			// ADSR: fixed-duration segments (attack / decay / release ms) with a mild concave attack and exponential decay / release, see src/megamod_config.js adsrStep (K = 5, attack power 1.6). Trigger = threshold onset on the
+			// device input (Trig on) or the MIDI state (Trig off). Per-slot state: st[sb + 8..15] detector + envelope, st[sb + 5] release start level.
+			aAtk = max(peek(cm, cb + 10), 0.05);
+			aDec = max(peek(cm, cb + 21), 1);
+			aSus = clip(peek(cm, cb + 22), 0, 1);
+			aRel = max(peek(cm, cb + 11), 0.5);
+			thrK = peek(cm, cb + 23) + 1000;
+			if (peek(st, sb + 28) != thrK) {
+				poke(st, thrK, sb + 28);
+				poke(st, pow(10, peek(cm, cb + 23) / 20), sb + 29);
+			}
+			aThr = peek(st, sb + 29);
+			aFast = peek(st, sb + 8);
+			aSlow = peek(st, sb + 9);
+			aArmed = peek(st, sb + 10);
+			aGate = peek(st, sb + 11);
+			aStage = peek(st, sb + 12);
+			aLvl = peek(st, sb + 13);
+			aProg = peek(st, sb + 14);
+			aPeak = peek(st, sb + 15);
+			aSeg = peek(st, sb + 5);
+			aTrig = 0;
+			aOff = 0;
+			aVel = 1;
+			if (syncOn > 0.5) {
+				axx = abs(mono);
+				aFast = (axx > aFast) ? axx : axx + (aFast - axx) * fastRel;
+				aSlow = aSlow + (aFast - aSlow) * slowCoef;
+				if (aArmed > 0.5 && aFast > aThr && aFast > aSlow * 2) {
+					aTrig = 1;
+					aArmed = 0;
+					aGate = 1;
+				} else if (aArmed < 0.5 && (aFast < aThr * 0.7 || aFast < aSlow * 1.2)) {
+					aArmed = 1;
+				}
+				if (aGate > 0.5 && aFast < aThr * 0.5) {
+					aGate = 0;
+					aOff = 1;
+				}
+			} else {
+				aTrig = mTrigEv;
+				aOff = mOffEv;
+				aVel = mvel;
+				aGate = (mgate > 0.5) ? 1 : 0;
+				aArmed = 1;
+			}
+			if (aTrig > 0.5) {
+				aLvl = (retrigOn > 0.5) ? 0 : aLvl;
+				aPeak = max((oneshot > 0.5) ? clip(aVel, 0, 1) : 1, 0.000001);
+				aStage = 1;
+				aSeg = aLvl;
+				aProg = 0;
+			} else if (aOff > 0.5 && aStage > 0.5 && aStage < 3.5) {
+				aStage = 4;
+				aSeg = max(aLvl, 0.000000001);
+				aProg = 0;
+			}
+			if (aStage > 0.5 && aStage < 1.5) {
+				aProg = aProg + 1 / max(aAtk * sr / 1000, 1);
+				if (aProg >= 1) {
+					aLvl = aPeak;
+					aStage = 2;
+					aProg = 0;
+				} else {
+					aLvl = aSeg + (aPeak - aSeg) * (1 - pow(1 - aProg, 1.6));
+				}
+			} else if (aStage > 1.5 && aStage < 2.5) {
+				aTgt = aSus * aPeak;
+				aProg = aProg + 1 / max(aDec * sr / 1000, 1);
+				if (aProg >= 1) {
+					aLvl = aTgt;
+					aStage = 3;
+					aProg = 0;
+				} else {
+					aLvl = aTgt + (aPeak - aTgt) * ((exp(-5 * aProg) - 0.006737946999085467) / 0.9932620530009145);
+				}
+			} else if (aStage > 2.5 && aStage < 3.5) {
+				aLvl = aSus * aPeak;
+			} else if (aStage > 3.5) {
+				aProg = aProg + 1 / max(aRel * sr / 1000, 1);
+				if (aProg >= 1) {
+					aLvl = 0;
+					aStage = 0;
+					aProg = 0;
+				} else {
+					aLvl = aSeg * ((exp(-5 * aProg) - 0.006737946999085467) / 0.9932620530009145);
+				}
+			}
+			poke(st, aFast, sb + 8);
+			poke(st, aSlow, sb + 9);
+			poke(st, aArmed, sb + 10);
+			poke(st, aGate, sb + 11);
+			poke(st, aStage, sb + 12);
+			poke(st, aLvl, sb + 13);
+			poke(st, aProg, sb + 14);
+			poke(st, aPeak, sb + 15);
+			poke(st, aSeg, sb + 5);
+			u = clip(aLvl, 0, 1);
+			phSlot = ((aStage < 0.5) || (aStage > 2.5 && aStage < 3.5)) ? 0 : clip(aProg, 0, 1);
+			auxSlot = aStage + 10 * aGate;
+		} else {
+			// XY (type 7: out A = X, out B = Y) and Buttons (type 8: A = button 1 = Sync, B = button 2 = Bipolar field). One-pole slew, time constant 2000 * slew^2 ms.
+			slw = clip(peek(cm, cb + 26), 0, 1);
+			slwMs = slw * slw * 2000;
+			slwC = 0;
+			if (slwMs >= 0.05) {
+				slwC = exp(-1000 / (slwMs * sr));
+			}
+			tgtA = (typ < 7.5) ? clip(peek(cm, cb + 24), 0, 1) : ((syncOn > 0.5) ? 1 : 0);
+			tgtB = (typ < 7.5) ? clip(peek(cm, cb + 25), 0, 1) : ((peek(cm, cb + 8) > 0.5) ? 1 : 0);
+			xyA = peek(st, sb + 8);
+			xyB = peek(st, sb + 9);
+			xyA = tgtA + (xyA - tgtA) * slwC;
+			xyB = tgtB + (xyB - tgtB) * slwC;
+			poke(st, xyA, sb + 8);
+			poke(st, xyB, sb + 9);
+			u = xyA;
+			uB = xyB;
+			hasB = 1;
+			phSlot = xyB;
 		}
 		uSlot = u;
-		outSlot = (bipolar > 0.5) ? depth * (2 * u - 1) : 2 * depth * u - 1;
+		bipEff = (typ > 6.5) ? 0 : bipolar;
+		outSlot = (bipEff > 0.5) ? depth * (2 * u - 1) : 2 * depth * u - 1;
+		outSlotB = (hasB > 0.5) ? 2 * depth * uB - 1 : outSlot;
 	}
-	poke(outv, fixnan(outSlot), i);
-	poke(tl, outSlot, i * 4);
-	poke(tl, phSlot, i * 4 + 1);
-	poke(tl, uSlot, i * 4 + 2);
-	poke(tl, auxSlot, i * 4 + 3);
+	// An inactive slot that was inactive on the previous sample leaves its outputs (zeros) alone; the sample it goes inactive writes the zeros once.
+	if (active > 0.5 || peek(st, sb + 4) > 0.5) {
+		poke(outv, fixnan(outSlot), 2 * i);
+		poke(outv, fixnan(outSlotB), 2 * i + 1);
+		poke(st, active, sb + 4);
+	}
+	if (pubOn > 0.5 && i == pubSl) {
+		poke(scope, outSlot, i * 4, 0);
+		poke(scope, phSlot, i * 4 + 1, 0);
+		poke(scope, uSlot, i * 4 + 2, 0);
+		poke(scope, auxSlot, i * 4 + 3, 0);
+		poke(scope, outSlotB, 576 + i, 0);
+	}
 }
 
 prevMul = rmul;
 
 // 5. Telemetry: one slot every 4 samples (each slot refreshed every 64), header once per 64 samples.
-tick = tick + 1;
-ts = tick - 64 * floor(tick / 64);
-if (ts - 4 * floor(ts / 4) < 0.5) {
-	sl = floor(ts / 4);
-	poke(scope, peek(tl, sl * 4), sl * 4, 0);
-	poke(scope, peek(tl, sl * 4 + 1), sl * 4 + 1, 0);
-	poke(scope, peek(tl, sl * 4 + 2), sl * 4 + 2, 0);
-	poke(scope, peek(tl, sl * 4 + 3), sl * 4 + 3, 0);
+tick = tickN;
+if (pubOn > 0.5) {
+	sl = pubSl;
 	// effective (modulated) control values for the UI rings: normalized A..E, On, switches
-	etyp = peek(cf, sl * 24);
+	etyp = peek(cf, sl * 32);
 	for (ej = 0; ej < 5; ej += 1) {
 		edp = 264 + (etyp * 5 + ej) * 5;
 		efp = peek(ibuf, edp, 0);
@@ -365,16 +567,16 @@ if (ts - 4 * floor(ts / 4) < 0.5) {
 		if (efp > 0.5) {
 			elo = peek(ibuf, edp + 1, 0);
 			ehi = peek(ibuf, edp + 2, 0);
-			eraw = peek(cm, sl * 24 + efp - 1);
+			eraw = peek(cm, sl * 32 + efp - 1);
 			effv = (peek(ibuf, edp + 3, 0) > 0.5) ? log(max(eraw, elo) / elo) / log(ehi / elo) : (eraw - elo) / (ehi - elo);
 			effv = clip(effv, 0, 1);
 		}
 		poke(scope, effv, 128 + sl * 12 + ej, 0);
 	}
-	poke(scope, peek(cm, sl * 24 + 1), 128 + sl * 12 + 5, 0);
+	poke(scope, peek(cm, sl * 32 + 1), 128 + sl * 12 + 5, 0);
 	for (et = 0; et < 6; et += 1) {
-		eswp = peek(ibuf, 414 + et, 0);
-		poke(scope, (eswp > 0.5) ? peek(cm, sl * 24 + eswp - 1) : 0, 128 + sl * 12 + 6 + et, 0);
+		eswp = peek(ibuf, 490 + et, 0);
+		poke(scope, (eswp > 0.5) ? peek(cm, sl * 32 + eswp - 1) : 0, 128 + sl * 12 + 6 + et, 0);
 	}
 }
 poke(scope, peek(route, 2 * ts + 1, 0), 320 + ts, 0);
@@ -406,3 +608,19 @@ out13 = peek(outv, 12);
 out14 = peek(outv, 13);
 out15 = peek(outv, 14);
 out16 = peek(outv, 15);
+out17 = peek(outv, 16);
+out18 = peek(outv, 17);
+out19 = peek(outv, 18);
+out20 = peek(outv, 19);
+out21 = peek(outv, 20);
+out22 = peek(outv, 21);
+out23 = peek(outv, 22);
+out24 = peek(outv, 23);
+out25 = peek(outv, 24);
+out26 = peek(outv, 25);
+out27 = peek(outv, 26);
+out28 = peek(outv, 27);
+out29 = peek(outv, 28);
+out30 = peek(outv, 29);
+out31 = peek(outv, 30);
+out32 = peek(outv, 31);

@@ -291,14 +291,18 @@ function cleanup() {
     mm = mapInfo(map.id);
     info(`B. before the reload: effDepth ${mm.effDepth} cells ${JSON.stringify(mm.cells)}`);
     const before = dev.id;
-    evalLom(`new LiveAPI("live_set").call("duplicate_track", ${trk}); return 1;`);
-    sleep(5000);
-    evalLom(`new LiveAPI("live_set").call("delete_track", ${trk}); return 1;`);
-    sleep(2500);
+    // the original is deleted at once, before the clone's init_lom (the deferred-DSP build loads the face in about 0.7 s: with the old 5 s wait the clone resolved its target
+    // (a path into the ORIGINAL track) to the original's Delay and lost it when that track was deleted; the old build only worked because its gen compile blocked the load for 4 s)
+    evalLom(`var s = new LiveAPI("live_set"); s.call("duplicate_track", ${trk}); s.call("delete_track", ${trk}); return 1;`);
+    sleep(7500);
     const clone = findDevice();
     check("B. the clone is a different Mega Modulator", !!clone && clone.id !== before, clone ? clone.id : "none");
     if (!clone) { console.log(`FAILED (${failed})`); process.exit(1); }
     dev = clone;
+    // the clone builds its own deferred DSP after the face (src/megamod_dsp.js): modulation starts when it runs
+    for (let w = 0; w < 60; w++) { const q = report(); if (q && q.dsp && q.dsp.ready) break; sleep(500); }
+    info("B. clone DSP: " + JSON.stringify((report() || {}).dsp));
+    { const q = report(); info("B. clone mapping targets: " + JSON.stringify(q.mappings.map((m) => ({ path: m.path, status: m.status, pid: m.pid, mode: m.mode }))) + " lomReady " + q.lomReady + " self " + q.self); }
     sleep(3000);
     lt = delayParam(`live_set tracks ${dev.track} devices 1`, "L Time");
     const rr = report();

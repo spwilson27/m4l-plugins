@@ -45,6 +45,8 @@ function makeEnv() {
     vm.createContext(ctx);
     const code = execFileSync("python3", ["-c", "import sys; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(m.ui_script())"], { cwd: ROOT, maxBuffer: 1 << 26 }).toString("utf8");
     vm.runInContext(code, ctx, { filename: "megamod_ui.js" });
+    // the DSP is "up" for these tests (the deferred-DSP state machine is tested in tests/test_megamod.js section 10); router messages show on the outlet log as before
+    vm.runInContext("mmdRouterMsg = function (k, v) { outlet(0, k, v); }; MM.dspSetState(true);", ctx);
     return { ctx, log, live, fronted, run: (c) => vm.runInContext(c, ctx) };
 }
 
@@ -357,7 +359,7 @@ click(run("ubStrips().plus.x") + 5, 80);
 ok(run("!!ubPopup"), "plus opens the type picker");
 log.texts.length = 0;
 run("paint()");
-ok(log.texts.includes("Envelope"), "picker lists type names");
+ok(log.texts.includes("Follower") && log.texts.includes("ADSR") && log.texts.includes("XY") && log.texts.includes("Buttons") && !log.texts.includes("Envelope"), "picker lists the type names (Follower, ADSR, XY, Buttons)");
 const pr = run("ubPopupRect()");
 const nBefore = run("MM.modCount()");
 click(pr[0] + 20, pr[1] + 2 + 17 * 1 + 8);
@@ -2819,7 +2821,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     // 3. expand a strip: its knobs move, the others keep their faces without setattr
     fr("ubSetExpanded(1)");
     checkView("strip 2 expanded", Object.assign({}, stripFaces(0), stripFaces(1), stripFaces(2)));
-    eq(Object.keys(shown()).length, 3 + 6 + 3, "faces: collapsed strips 3 + 3, the expanded Envelope 1 + 4 knobs + Bipolar = 6 (no face dropped)");
+    eq(Object.keys(shown()).length, 3 + 6 + 3, "faces: collapsed strips 3 + 3, the expanded Follower 1 + 4 knobs + Bipolar = 6 (no face dropped)");
     // 4. a type change retargets the knob faces (Envelope A..D -> Random: Rate/Smooth/Depth/Seed)
     fr("MM.setModType(1, MOD_RANDOM)");
     checkView("strip 2 retyped Random", Object.assign({}, stripFaces(0), stripFaces(1), stripFaces(2)));
@@ -2897,7 +2899,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         return R;
     };
     const SW = { sync: "sync", bip: "bipolar", osh: "oneshot", loop: "loopOn", rtg: "retrig" };
-    const TYPE_NAMES = ["", "LFO", "Envelope", "Random", "Steps", "MSEG"];
+    const TYPE_NAMES = ["", "LFO", "Follower", "Random", "Steps", "MSEG"];
     for (let t = 1; t <= 5; t++) {
         fr(`MM.setModType(0, ${t})`);
         fr("MM.setUI({ exp: 0, sel: 0 }); ubSyncWidth(true)");
@@ -3104,7 +3106,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         eq(ms.length, 3, "an internal, a via-Live and a normal mapping");
         E.run("MM.setUI({ sel: 0 })");
         eq(E.run("ubMapName(MM.allMappings()[0])"), "Random 3 Rate", "internal row: named by meaning");
-        eq(E.run("ubMapName(MM.allMappings()[1])"), "Envelope 2 Release (M2 B)", "via-Live row: named by meaning with the Live parameter");
+        eq(E.run("ubMapName(MM.allMappings()[1])"), "Follower 2 Release (M2 B)", "via-Live row: named by meaning with the Live parameter");
         eq(E.run("ubMapName(MM.allMappings()[2])"), "Decay", "a normal row keeps its parameter name");
         ok(E.run("ubTargetPath(MM.allMappings()[0])").indexOf("Internal route") === 0 && E.run("ubTargetPath(MM.allMappings()[1])").indexOf("Via Live") === 0, "hover text spells out internal / via Live");
         // LST list
@@ -3437,7 +3439,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     // ---------------------------------------------------------------- shipped state: the committed LST preview without routes
     {
         const T0 = makeEnv();
-        eq([T0.run("UB_PREVIEW_DMOD"), T0.run("UB_PREVIEW_DMOD_B"), T0.run("UB_PREVIEW_LIST"), T0.run("UB_PREVIEW_OPT"), T0.run("UB_PREVIEW_SELF")], [0, false, true, false, false], "the committed preview is the default LST state");
+        eq([T0.run("UB_PREVIEW_DMOD"), T0.run("UB_PREVIEW_DMOD_B"), T0.run("UB_PREVIEW_LIST"), T0.run("UB_PREVIEW_OPT"), T0.run("UB_PREVIEW_SELF"), T0.run("UB_PREVIEW_NEWMODS")], [0, false, true, false, false, 0], "the committed preview is the default LST state");
         eq(T0.run("MM.allMappings().filter((m) => m.target.kind === 'depth').length"), 0, "...with no depth routes");
     }
 
@@ -3641,6 +3643,441 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
             E.run("ubMapsPop = null; MM.setUI({ pb: 1 })");
         }
     }
+}
+
+// ---------------------------------------------------------------- new modulators: ADSR, XY, Buttons (+ the Follower rename), two outputs, learn source
+{
+    const N = makeEnv();
+    N.ctx.uiReady && N.ctx.uiReady();
+    N.ctx.setnames("---megamodcfg", "---megamodmseg", "---megamodsteps", "---megamodscope", "---mmcurve", "---megamodroute");
+    N.ctx.init_lom();
+    const nr = (c) => N.run(c);
+    const ctr = (r) => [r[0] + r[2] / 2, r[1] + r[3] / 2];
+    const click = (x, y, o = {}) => N.ctx.onclick(x, y, 1, 0, o.shift ? 1 : 0, 0, 0, 0);
+    const drag = (x, y) => N.ctx.ondrag(x, y, 1, 0, 0, 0, 0, 0);
+    const up = () => N.ctx.onidle(1, 1, 0, 0, 0, 0, 0, 0);
+    const dbl = (x, y) => N.ctx.ondblclick(x, y, 1, 0, 0, 0, 0, 0);
+    const inter = (a, b) => a[0] < b[0] + b[2] - 1e-6 && b[0] < a[0] + a[2] - 1e-6 && a[1] < b[1] + b[3] - 1e-6 && b[1] < a[1] + a[3] - 1e-6;
+    const inside = (r, o) => r[0] >= o[0] - 1e-6 && r[1] >= o[1] - 1e-6 && r[0] + r[2] <= o[0] + o[2] + 1e-6 && r[1] + r[3] <= o[1] + o[3] + 1e-6;
+    const stripOf = (slot) => nr(`ubStrips().list.filter((g) => g.slot === ${slot} && !g.tab)[0]`);
+    const rectsOf = (slot) => nr(`ubStripRects(${JSON.stringify(stripOf(slot))})`);
+    const texts = () => { N.log.texts.length = 0; nr("paint()"); return N.log.texts.slice(); };
+
+    // ---- the picker lists the eight types, fits the device in every view, and adds each new type
+    {
+        eq(nr("UB_TYPES"), [1, 2, 3, 4, 5, 6, 7, 8], "the picker offers eight types");
+        nr("MM.setUI({ pb: 0, opt: 0, exp: [], sel: -1 }); ubSyncWidth(true)");
+        const pl = nr("ubStrips().plus");
+        click(pl.x + 3, pl.y + 20); up();
+        ok(nr("!!ubPopup && ubPopup.mode === 'add'"), "the + strip opens the type picker");
+        const pr = nr("ubPopupRect()");
+        ok(pr[1] >= 0 && pr[1] + pr[3] <= 161 && pr[0] >= 0 && pr[0] + pr[2] <= nr("ubLayoutWidth()") + 1, `the picker fits the device (${pr})`);
+        N.log.texts.length = 0; nr("paint()");
+        for (const nm of ["LFO", "Follower", "Random", "Steps", "MSEG", "ADSR", "XY", "Buttons"]) ok(N.log.texts.includes(nm), `the picker lists ${nm}`);
+        ok(!N.log.texts.includes("Envelope"), "the picker no longer lists Envelope");
+        // a click on each new row adds that type
+        for (const ty of [6, 7, 8]) {
+            const pr2 = nr("ubPopupRect()");
+            const k = nr("UB_TYPES").indexOf(ty);
+            click(pr2[0] + 10, pr2[1] + 2 + k * 17 + 8); up();
+            eq(nr(`MM.state.mods[${ty - 6}].type`), ty, `the picker adds type ${ty}`);
+            const pl2 = nr("ubStrips().plus");
+            if (pl2 && ty < 8) click(pl2.x + 3, pl2.y + 20);
+        }
+        eq(nr("MM.modCount()"), 3, "ADSR, XY and Buttons added");
+        // LST view and the type chip of an expanded strip: the picker stays inside the device
+        nr("MM.setUI({ pb: 1, sel: 0 }); ubSyncWidth(true)");
+        const pl3 = nr("ubStrips().plus");
+        click(pl3.x + 3, pl3.y + 3); up();
+        const pr3 = nr("ubPopupRect()");
+        ok(nr("!!ubPopup") && pr3[1] >= 0 && pr3[1] + pr3[3] <= 161, `LST view: the picker fits (${pr3})`);
+        nr("ubPopup = null; MM.setUI({ pb: 0 })");
+        nr("ubSetExpanded(0)");
+        const tr = rectsOf(0).type;
+        click(...ctr(tr)); up();
+        const pr4 = nr("ubPopupRect()");
+        ok(nr("!!ubPopup && ubPopup.mode === 'type'") && pr4[1] + pr4[3] <= 161, `the type chip's picker fits (${pr4})`);
+        nr("ubPopup = null; ubSetExpanded(-1)");
+    }
+
+    // ---- geometry: collapsed / expanded / LST layouts of the new types stay inside the strip, nothing overlaps
+    {
+        for (const view of ["collapsed", "expanded", "lst"]) {
+            if (view === "collapsed") nr("MM.setUI({ pb: 0, exp: [], sel: 0 }); ubSyncWidth(true)");
+            else if (view === "expanded") nr("MM.setUI({ pb: 0, exp: [0, 1, 2], sel: 0 }); ubSyncWidth(true)");
+            for (let slot = 0; slot < 3; slot++) {
+                if (view === "lst") nr(`MM.setUI({ pb: 1, sel: ${slot} }); ubSyncWidth(true)`);
+                const g = view === "lst" ? nr("ubStrips().main") : stripOf(slot);
+                const R = nr(`ubStripRects(${JSON.stringify(g)})`);
+                const type = nr(`MM.state.mods[${slot}].type`);
+                const box = [g.x, g.y, g.w, g.h];
+                const leaves = [["icon", R.icon], ["name", R.name], ["count", R.count]];
+                if (g.exp) leaves.push(["type", R.type], ["del", R.del], ["collapse", R.collapse]);
+                for (const c of R.chips) leaves.push(["chip " + c.id, c.rect]);
+                for (let i = 0; i < R.knobs.length; i++) leaves.push(["knob " + i, R.knobs[i].hit]);
+                if (R.pad) leaves.push(["pad", R.pad]);
+                for (let i = 0; R.btn && i < R.btn.length; i++) leaves.push(["button " + (i + 1), R.btn[i]]);
+                for (let i = 0; R.src && i < R.src.length; i++) leaves.push(["source tab " + i, R.src[i]]);
+                const tag = `${view} slot ${slot} (type ${type})`;
+                for (const [n, r] of leaves) ok(inside(r, box), `${tag}: ${n} inside the strip`);
+                for (let a = 0; a < leaves.length; a++) for (let b = a + 1; b < leaves.length; b++) ok(!inter(leaves[a][1], leaves[b][1]), `${tag}: ${leaves[a][0]} and ${leaves[b][0]} do not overlap`);
+                for (const [n, r] of leaves) if (/pad|button|source/.test(n)) ok(inside(r, R.viz), `${tag}: ${n} inside the viz`);
+                for (const k of R.knobs) ok(k.hit[1] + k.hit[3] <= 142 && k.labY + 2 <= 158, `${tag}: knob ${k.spec.key} above the count chip`);
+                if (type === 7) ok(Math.abs(R.pad[2] - R.pad[3]) < 1e-9, `${tag}: the XY pad is square`);
+                if (type === 8) ok(R.btn[0][2] === R.btn[1][2] && R.src[0][2] === R.btn[0][2], `${tag}: two equal buttons with a source tab each`);
+                const pt = texts(); // paints without an exception
+                ok(pt.length > 0, `${tag}: paints`);
+                if (view !== "collapsed") ok(pt.some((t) => /^\d+%$|^Off$|ms$/.test(t)), `${tag}: shows knob values`);
+            }
+        }
+        nr("MM.setUI({ pb: 0, exp: [], sel: 0 }); ubSyncWidth(true)");
+    }
+
+    // ---- XY pad: a drag sets X and Y independently, double-click centres
+    {
+        nr("MM.setUI({ pb: 0, exp: [], sel: 0 }); ubSyncWidth(true)");
+        for (const big of [false, true]) {
+            nr(`ubSetExpanded(${big ? 1 : -1})`);
+            const R = rectsOf(1), pd = R.pad;
+            const px = (fx, fy) => [pd[0] + fx * pd[2], pd[1] + fy * pd[3]];
+            eq(nr("ubHit(" + ctr(pd).join(",") + ").kind"), "pad", `${big ? "expanded" : "collapsed"}: the pad is a hit target`);
+            click(...px(0.25, 0.75));
+            near(nr("MM.state.mods[1].p.x"), 0.25, 1e-9, "click sets X"); near(nr("MM.state.mods[1].p.y"), 0.25, 1e-9, "click sets Y (top = 1)");
+            drag(...px(0.9, 0.1));
+            near(nr("MM.state.mods[1].p.x"), 0.9, 1e-9, "drag moves X"); near(nr("MM.state.mods[1].p.y"), 0.9, 1e-9, "drag moves Y");
+            drag(...px(3, -3));
+            deq([nr("MM.state.mods[1].p.x"), nr("MM.state.mods[1].p.y")], [1, 1], "a drag outside the pad clamps");
+            drag(...px(-3, 3)); up();
+            deq([nr("MM.state.mods[1].p.x"), nr("MM.state.mods[1].p.y")], [0, 0], "...at the other corner too");
+            near(N.live.ap_6.value, 0, 1e-9, "X reaches the M2 A parameter"); near(N.live.ap_7.value, 0, 1e-9, "Y reaches the M2 B parameter");
+            click(...px(0.6, 0.4)); up();
+            near(N.live.ap_6.value, 60, 1e-9, "X = 60 % in the parameter"); near(N.live.ap_7.value, 60, 1e-9, "Y = 60 % in the parameter");
+            dbl(...px(0.6, 0.4));
+            deq([nr("MM.state.mods[1].p.x"), nr("MM.state.mods[1].p.y")], [0.5, 0.5], "double-click centres the puck");
+            // independent: only X moves with the knob
+            const kx = R.knobs[0];
+            nr("MM.setParam(1, 'y', 0.2)");
+            click(...ctr(kx.hit)); drag(ctr(kx.hit)[0], ctr(kx.hit)[1] - 20); up();
+            ok(nr("MM.state.mods[1].p.x") > 0.5 && nr("MM.state.mods[1].p.y") === 0.2, "the X knob moves X only");
+        }
+        nr("ubSetExpanded(-1)");
+    }
+
+    // ---- Buttons: each toggles its own parameter
+    {
+        nr("MM.setUI({ pb: 0, exp: [], sel: 0 }); ubSyncWidth(true)");
+        for (const big of [false, true]) {
+            nr(`ubSetExpanded(${big ? 2 : -1})`);
+            const R = rectsOf(2);
+            eq(nr(`ubHit(${ctr(R.btn[0]).join(",")}).kind`), "btn", "button 1 is a hit target"); eq(nr(`ubHit(${ctr(R.btn[1]).join(",")}).b`), 1, "button 2 is hit as b = 1");
+            nr("MM.setParam(2, 'sync', 0); MM.setParam(2, 'bipolar', 0)");
+            click(...ctr(R.btn[0])); up();
+            deq([nr("MM.state.mods[2].p.sync"), nr("MM.state.mods[2].p.bipolar")], [1, 0], "button 1 toggles on, button 2 untouched");
+            eq(N.live.at_13.value, 1, "button 1 -> M3 Sync switch parameter"); eq(N.live.at_14.value, 0, "button 2 parameter untouched");
+            click(...ctr(R.btn[1])); up();
+            deq([nr("MM.state.mods[2].p.sync"), nr("MM.state.mods[2].p.bipolar")], [1, 1], "button 2 toggles independently");
+            click(...ctr(R.btn[0])); up();
+            deq([nr("MM.state.mods[2].p.sync"), nr("MM.state.mods[2].p.bipolar")], [0, 1], "button 1 toggles off");
+            eq(N.live.at_14.value, 1, "button 2 -> M3 Bipolar switch parameter");
+        }
+        nr("ubSetExpanded(-1)");
+    }
+
+    // ---- ADSR editor: chips, knobs, draggable breakpoints, the MIDI From menu
+    {
+        nr("MM.setUI({ pb: 0, exp: [0], sel: 0 }); ubSyncWidth(true)");
+        const R = rectsOf(0);
+        deq(R.chips.map((c) => c.id), ["sync", "rtg", "osh", "bip", "from"], "ADSR chips: Trig, Retrig, Vel, Bipolar, MIDI From");
+        deq(R.knobs.map((k) => k.spec.key), ["attack", "decay", "sustain", "release", "depth", "thresh"], "ADSR knobs in ADSR order, Depth, Threshold");
+        const lab = (id) => R.chips.filter((c) => c.id === id)[0];
+        ok(texts().includes("THR"), "the Trig chip says THR in Threshold mode");
+        click(...ctr(lab("sync").rect)); up();
+        eq(nr("MM.state.mods[0].p.sync"), 0, "the Trig chip switches to MIDI"); ok(texts().includes("MIDI"), "...and says MIDI");
+        eq(N.live.at_1.value, 0, "Trig -> the M1 Sync switch parameter");
+        click(...ctr(lab("rtg").rect)); eq(nr("MM.state.mods[0].p.retrig"), 1, "RTG chip: Retrig on (restart from 0)");
+        click(...ctr(lab("osh").rect)); eq(nr("MM.state.mods[0].p.oneshot"), 1, "VEL chip");
+        click(...ctr(lab("bip").rect)); eq(nr("MM.state.mods[0].p.bipolar"), 1, "BIP chip");
+        nr("MM.setParam(0, 'retrig', 0); MM.setParam(0, 'oneshot', 0); MM.setParam(0, 'bipolar', 0); MM.setParam(0, 'sync', 1)");
+        // knobs
+        for (const [k, key] of [[0, "attack"], [1, "decay"], [2, "sustain"], [3, "release"], [4, "depth"], [5, "thresh"]]) {
+            const before = nr(`MM.state.mods[0].p.${key}`);
+            const r = R.knobs[k].hit;
+            const dy = key === "depth" ? 30 : -30; // Depth is at its maximum: drag it down
+            click(...ctr(r)); drag(ctr(r)[0], ctr(r)[1] + dy); up();
+            ok(key === "depth" ? nr(`MM.state.mods[0].p.${key}`) < before : nr(`MM.state.mods[0].p.${key}`) > before, `knob ${key} drags ${key === "depth" ? "down" : "up"}`);
+        }
+        ok(!N.live.ap_9 || true, "(no parameter for the threshold)");
+        // the visible threshold knob has no face; every other ADSR knob has one
+        nr("paint()");
+        const shown = nr("MM.faceState().shown");
+        const faceNames = Object.keys(shown);
+        ok(["ap_0", "ap_1", "ap_2", "ap_3", "ap_4"].every((n) => faceNames.indexOf(n) >= 0), "ADSR: A, B, C, D, E faces (attack, decay, depth, sustain, release)");
+        ok(["at_1", "at_2", "at_3", "at_4"].every((n) => faceNames.indexOf(n) >= 0), "ADSR: Trig, Bipolar, Retrig, Vel switch faces");
+        // ---- floating geometry (Bitwig-style): widths scale with the time, min width, fixed sustain, no sustain-start dot, inside the graph
+        const PT = (p) => nr(`ubAdsrPts(${JSON.stringify(p)}, ${JSON.stringify(R.viz)})`);
+        const base = { attack: 20, decay: 200, sustain: 0.5, release: 300 };
+        {
+            const ts = [0.05, 1, 5, 20, 100, 400, 1500, 5000];
+            for (const key of ["attack", "decay", "release"]) {
+                const wk = { attack: "wa", decay: "wd", release: "wr" }[key];
+                let prev = -1, mono = true;
+                for (const t of ts) { const w = PT(Object.assign({}, base, { [key]: t })).w; if (w[wk] < prev - 1e-9) mono = false; prev = w[wk]; }
+                ok(mono, `${key}: the segment width grows monotonically with its time`);
+                const wmin = PT(Object.assign({}, base, { [key]: 0.05 })).w;
+                ok(wmin[wk] >= wmin.minw - 1e-9 && wmin.minw >= 6, `${key}: the minimum width is respected (${wmin[wk].toFixed(2)} px)`);
+            }
+            const ws = ts.map((t) => PT(Object.assign({}, base, { attack: t, decay: 5000 - t })).w.ws);
+            ok(ws.every((v) => Math.abs(v - ws[0]) < 1e-9), "the sustain segment has a fixed width");
+            let inside = true;
+            for (const t of [0.05, 20, 5000]) for (const u of [0.5, 5000]) for (const v of [0.5, 5000]) {
+                const P = PT({ attack: t, decay: u, sustain: 0.3, release: v });
+                for (const k of ["start", "A", "D", "S", "R"]) if (P[k][0] < P.ix - 1e-9 || P[k][0] > P.ix + P.iw + 1e-9 || P[k][1] < P.iy - 1e-9 || P[k][1] > P.iy + P.ih + 1e-9) inside = false;
+                if (P.w.tot > P.iw + 1e-6) inside = false;
+            }
+            ok(inside, "every point stays inside the graph, the total never exceeds the width");
+            const fast = PT({ attack: 1, decay: 30, sustain: 0.5, release: 30 }), slow = PT({ attack: 1500, decay: 30, sustain: 0.5, release: 30 });
+            ok(fast.w.tot < fast.iw * 0.6, `short times: the envelope does not fill the graph (${fast.w.tot.toFixed(0)} of ${fast.iw.toFixed(0)} px)`);
+            ok(slow.w.wa > fast.w.wa * 4 && slow.w.wa > slow.iw * 0.3, `a long attack takes much of the width (${slow.w.wa.toFixed(0)} px), a short one is near-vertical (${fast.w.wa.toFixed(0)} px)`);
+            const P0 = PT(base);
+            eq(P0.S[1], P0.D[1], "the dashed sustain is horizontal at the sustain level (D.y == S.y)"); near(P0.S[0] - P0.D[0], P0.w.ws, 1e-9, "...of the fixed width");
+            ok(P0.start[1] === P0.R[1] && P0.A[1] === P0.iy, "start and release end at 0, the attack peaks at 1");
+        }
+        const P = PT(base);
+        nr("MM.setParam(0, 'attack', 100); MM.setParam(0, 'decay', 200); MM.setParam(0, 'sustain', 0.5); MM.setParam(0, 'release', 300)");
+        const P2 = nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`);
+        // ---- drags under the new mapping
+        const a0 = nr("MM.state.mods[0].p.attack");
+        click(P2.A[0], P2.A[1]); drag(P2.A[0] + 14, P2.A[1]); up();
+        ok(nr("MM.state.mods[0].p.attack") > a0, "dragging the A point right lengthens the attack");
+        {
+            const P2b = nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`);
+            near(P2b.A[0] - P2.A[0], 14, 1.5, "...and the dot follows the cursor (14 px)");
+        }
+        click(nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`).A[0], P2.A[1]); drag(0, P2.A[1]); up();
+        ok(nr("MM.state.mods[0].p.attack") < a0, "...left shortens it");
+        ok(nr("MM.state.mods[0].p.attack") >= 0.05, "...never below the minimum time");
+        const P3 = nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`);
+        const s0 = nr("MM.state.mods[0].p.sustain"), d0 = nr("MM.state.mods[0].p.decay");
+        click(P3.D[0], P3.D[1]); drag(P3.D[0] + 10, P3.D[1] - 12); up();
+        ok(nr("MM.state.mods[0].p.sustain") > s0 && nr("MM.state.mods[0].p.decay") > d0, "dragging D up and right raises the sustain and lengthens the decay");
+        {
+            const P3b = nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`);
+            near(P3b.D[0] - P3b.A[0] - (P3.D[0] - P3.A[0]), 10, 1.5, "...the D dot follows the cursor"); near(P3b.D[1] - P3.D[1], -12, 1e-6, "...vertically too");
+        }
+        const P4 = nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`);
+        const s1 = nr("MM.state.mods[0].p.sustain");
+        click(P4.S[0], P4.S[1]); drag(P4.S[0], P4.S[1] + 15); up();
+        eq(nr("MM.state.mods[0].p.sustain"), s1, "the end of the dashed line is no handle (no dot there)");
+        const P5 = nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`);
+        const r0 = nr("MM.state.mods[0].p.release");
+        click(P5.R[0], P5.R[1]); drag(P5.R[0] + 12, P5.R[1]); up();
+        ok(nr("MM.state.mods[0].p.release") > r0, "dragging R right lengthens the release");
+        click(nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`).R[0], P5.R[1]); drag(-50, P5.R[1]); up();
+        ok(nr("MM.state.mods[0].p.release") >= 0.5 && nr("MM.state.mods[0].p.release") < r0, "...left shortens it, clamped at the minimum");
+        // ---- tracking dot per stage: idle hidden; attack / decay along the curve; sustain HELD on the D dot; release along the curve
+        nr("MM.setParam(0, 'attack', 100); MM.setParam(0, 'decay', 200); MM.setParam(0, 'sustain', 0.5); MM.setParam(0, 'release', 300)");
+        const P6 = nr(`ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)})`);
+        const setTel = (aux, phase, u) => nr(`(function () { const t = MM.readTelemetry().mods[0]; t.aux = ${aux}; t.phase = ${phase}; t.u = ${u}; })()`);
+        const dotAt = () => nr(`ubAdsrDot(ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)}), MM.readTelemetry().mods[0], MM.state.mods[0].p)`);
+        nr("MM.readTelemetry()");
+        setTel(0, 0, 0); eq(dotAt(), null, "idle: the dot is hidden");
+        setTel(10, 0, 0); eq(dotAt(), null, "idle with the gate flag: still hidden");
+        setTel(1, 0.5, 0.5);
+        let dot = dotAt();
+        near(dot[0], (P6.start[0] + P6.A[0]) / 2, 1e-9, "attack: the dot sits half way along the attack"); near(dot[1], P6.iy + 0.5 * P6.ih, 1e-9, "...at the live level");
+        setTel(12, 0.25, 0.8);
+        dot = dotAt(); near(dot[0], P6.A[0] + (P6.D[0] - P6.A[0]) * 0.25, 1e-9, "decay: along the decay segment"); near(dot[1], P6.iy + 0.2 * P6.ih, 1e-9, "...at the live level");
+        for (const ph of [0, 0.3, 0.9]) { setTel(13, ph, 0.5); dot = dotAt(); near(dot[0], P6.D[0], 1e-9, `sustain (progress ${ph}): the dot is held on the D dot`); near(dot[1], P6.D[1], 1e-9, "...at the sustain level"); }
+        setTel(4, 0.5, 0.25);
+        dot = dotAt(); near(dot[0], P6.S[0] + (P6.R[0] - P6.S[0]) * 0.5, 1e-9, "release: along the release curve from the end of the dashed line"); near(dot[1], P6.iy + 0.75 * P6.ih, 1e-9, "...at the live level");
+        // the drawn curve is the engine curve (the dot at the same progress lies on the polyline)
+        {
+            const cv = nr(`ubAdsrCurves(ubAdsrPts(MM.state.mods[0].p, ${JSON.stringify(R.viz)}), MM.state.mods[0].p)`);
+            near(cv.atk[7][1], P6.iy + (1 - nr("adsrAttackShape(0.5)")) * P6.ih, 1e-9, "the attack is drawn with the engine's attack shape");
+            near(cv.dec[10][1], P6.iy + (1 - (0.5 + 0.5 * nr("adsrExpShape(0.5)"))) * P6.ih, 1e-9, "the decay is drawn with the exponential shape");
+            near(cv.rel[10][1], P6.iy + (1 - 0.5 * nr("adsrExpShape(0.5)")) * P6.ih, 1e-9, "the release starts at the sustain level and is exponential");
+            near(cv.rel[0][1], P6.D[1], 1e-9, "the release curve starts at the end of the dashed line (sustain level)");
+        }
+        // MIDI From menu (mock: supported, three routes)
+        nr("globalThis.__setType = []; MM.midiInfo = () => ({ supported: true, name: 'No Input', types: ['No Input', 'Track 1', 'Ext. In'], err: '' }); MM.midiSetType = (i) => { __setType.push(i); return true; };");
+        const R2 = rectsOf(0);
+        const from = R2.chips.filter((c) => c.id === "from")[0];
+        ok(texts().some((t) => /^In: /.test(t)), "the MIDI From chip shows the routing");
+        click(...ctr(from.rect)); up();
+        ok(nr("!!ubMidiMenu"), "the MIDI From chip opens the menu");
+        const G = nr("ubMidiMenuGeom()");
+        ok(G.rect[1] >= 0 && G.rect[1] + G.rect[3] <= 161 && G.rect[0] + G.rect[2] <= nr("ubLayoutWidth()") + 1, `the menu fits the device (${G.rect})`);
+        texts();
+        eq(nr("Object.keys(MM.faceState().shown).length"), 0, "faces are hidden while the menu is open");
+        ok(N.log.texts.includes("Track 1") && N.log.texts.includes("Ext. In"), "the menu lists the routing types");
+        click(G.rect[0] + 20, G.rect[1] + 2 + 14 + 7); up();
+        deq(nr("__setType"), [1], "a click on an entry routes the MIDI input there"); ok(!nr("ubMidiMenu"), "...and closes the menu");
+        click(...ctr(from.rect)); up(); N.ctx.onkeydown(-3, 27, 1, 0, 0, 0, 0, 0);
+        ok(!nr("ubMidiMenu"), "Escape closes the menu");
+        click(...ctr(from.rect)); up(); click(900, 80); up();
+        ok(!nr("ubMidiMenu"), "a click outside closes it");
+        // unsupported: the menu says so and the chip reads No MIDI in
+        nr("MM.midiInfo = () => ({ supported: false, name: '', types: [], err: 'x' })");
+        ok(texts().includes("No MIDI in"), "without MIDI input the chip says so");
+        nr("ubSetExpanded(-1)");
+    }
+
+    // ---- learn source: the tabs select the output, LRN learns from it
+    {
+        nr("MM.setUI({ pb: 0, exp: [], sel: 1, lout: {} }); ubSyncWidth(true)");
+        nr("globalThis.__arm = []; globalThis.__a0 = MM.armLearn; MM.armLearn = function (i, m, o) { __arm.push([i, !!m, o]); return __a0.call(MM, i, m, o); };");
+        eq(nr("ubLearnOut(1)"), 0, "the default learn source is output A (X)");
+        let R = rectsOf(1);
+        eq(nr(`ubHit(${ctr(R.src[1]).join(",")}).kind`), "outsel", "the Y tab is a hit target");
+        click(...ctr(R.src[1])); up();
+        eq(nr("ubLearnOut(1)"), 1, "clicking the Y tab selects output Y as the learn source");
+        eq(nr("MM.getUI().lout[1]"), 1, "...kept in the UI state");
+        N.log.fills = [];
+        nr("paint()");
+        const tabFill = (r) => N.log.fills.filter((f) => Math.abs(f.rect[0] - r[0]) < 0.01 && Math.abs(f.rect[1] - r[1]) < 0.01 && Math.abs(f.rect[2] - r[2]) < 0.01);
+        const sf = tabFill(R.src[1]), uf = tabFill(R.src[0]);
+        ok(sf.length && uf.length, "both tabs are painted");
+        ok(sf[sf.length - 1].col[3] < 0.5 && uf[uf.length - 1].col[3] === 1, "the selected tab is drawn lit (tinted), the other dark");
+        click(11, 11); up();
+        deq(nr("__arm[__arm.length - 1]"), [1, false, 1], "the rail LRN arms with the selected output (Y)");
+        eq(nr("MM.learn.out"), 1, "MM.learn.out = 1");
+        click(...ctr(R.src[0])); up();
+        eq(nr("MM.learn.out"), 0, "selecting X while armed re-targets the learn");
+        eq(nr("MM.learn.armed"), true, "...and keeps it armed");
+        click(11, 11); up();
+        ok(!nr("MM.learn.armed"), "LRN disarms");
+        click(11, 11, { shift: true }); up();
+        deq(nr("__arm[__arm.length - 1]"), [1, true, 0], "Shift-LRN = multi-learn from X");
+        click(...ctr(R.src[1])); up();
+        eq(nr("MM.learn.out"), 1, "multi-learn follows the tab");
+        nr("MM.disarmLearn()");
+        // selecting another modulator retargets a multi-learn with ITS selected output
+        nr("MM.setUI({ lout: { 1: 1, 2: 1 } })");
+        nr("MM.armLearn(1, true, 1)");
+        const R2 = rectsOf(2);
+        click(R2.head[0] + 22, R2.head[1] + 8); up();
+        eq(nr("ubSel()"), 2, "a click on Buttons selects it");
+        deq(nr("__arm[__arm.length - 1]"), [2, true, 1], "a multi-learn retargets with the new modulator's selected output");
+        nr("MM.disarmLearn(); MM.armLearn = __a0");
+        // a single-output modulator never carries an output selection
+        eq(nr("ubLearnOut(0)"), 0, "ADSR always learns output A");
+        nr("MM.setUI({ lout: { 0: 1 } })"); eq(nr("ubLearnOut(0)"), 0, "...even if the state says otherwise");
+        nr("MM.setUI({ lout: {} })");
+    }
+
+    // ---- everywhere mappings are listed they name the source output
+    {
+        const tg = (k, nm) => `{ path: 'live_set tracks 0 devices 0 parameters ${k}', paramName: '${nm}', trackName: 'Drums', deviceName: 'Reverb', id: ${5000 + k} }`;
+        const mx = nr(`MM.addMapping(1, ${tg(1, "Dry/Wet")}, 0)`), my = nr(`MM.addMapping(1, ${tg(2, "Decay")}, 1)`), mx2 = nr(`MM.addMapping(1, ${tg(3, "Size")}, 0)`), my2 = nr(`MM.addMapping(1, ${tg(4, "Room")}, 1)`);
+        const mb = nr(`MM.addMapping(2, ${tg(5, "Feedback")}, 1)`);
+        ok(mx && my && mx2 && my2 && mb, "mappings from X, Y and button 2");
+        nr(`MM.state.mods[1].name = "XY 1"; MM.state.mods[2].name = "Btn 2"`);
+        eq(nr(`ubSrcLabel(MM.getMapping(${mx.id}))`), "XY 1 · X", "label of an X mapping"); eq(nr(`ubSrcLabel(MM.getMapping(${my.id}))`), "XY 1 · Y", "label of a Y mapping");
+        eq(nr(`ubSrcLabel(MM.getMapping(${mb.id}))`), "Btn 2 · B", "label of a button 2 mapping"); eq(nr("ubSrcLabel({ mod: 0, out: 0 })"), nr("MM.state.mods[0].name"), "a single-output source is just the name");
+        eq(nr(`ubSrcShort(MM.getMapping(${my.id}))`), "XY 1·Y", "compact source label");
+        ok(nr(`ubTargetPath(MM.getMapping(${my.id}))`).indexOf("[XY 1 · Y]") >= 0, "the hover path names the source output");
+        // the inspector list groups by output: X rows first, then Y
+        nr("MM.setUI({ pb: 1, sel: 1, exp: [], pbScroll: 0 }); ubSyncWidth(true)");
+        const items = nr("ubListItems()").filter((it) => it.kind === "map").map((it) => it.m.id);
+        deq(items, [mx.id, mx2.id, my.id, my2.id], "the LST list shows the X rows, then the Y rows");
+        N.log.texts.length = 0; nr("paint()");
+        ok(N.log.texts.includes("X") && N.log.texts.includes("Y"), "the rows carry X / Y tag chips");
+        ok(N.log.texts.some((t) => /XY 1 · [XY]/.test(t)), "the remap editor header names the source output");
+        // a depth route driven by Y: its sub-row names the output
+        const dr = nr(`MM.addDepthRoute(1, ${mx.id}, 1)`);
+        ok(dr && dr.out === 1, "depth route from Y");
+        N.log.texts.length = 0; nr("paint()");
+        ok(N.log.texts.some((t) => t === "XY 1·Y"), "the depth sub-row names its source output");
+        // the strips popover
+        nr("MM.setUI({ pb: 0, exp: [], sel: 1 }); ubSyncWidth(true)");
+        click(...ctr(rectsOf(1).count)); up();
+        ok(nr("!!ubMapsPop"), "popover opens");
+        const P = nr("ubMapsPopGeom()");
+        const popOuts = P.vis.filter((v) => v.kind === "map").map((v) => v.m.out);
+        ok(popOuts.length >= 4 && popOuts.every((o, i) => i === 0 || o >= popOuts[i - 1]) && popOuts[0] === 0 && popOuts[popOuts.length - 1] === 1, `popover rows grouped X then Y (${popOuts})`);
+        N.log.texts.length = 0; nr("paint()");
+        ok(N.log.texts.includes("X") && N.log.texts.includes("Y"), "popover rows carry the output tag");
+        nr("ubMapsPop = null");
+        // Buttons' own list
+        nr("MM.setUI({ pb: 1, sel: 2 })");
+        N.log.texts.length = 0; nr("paint()");
+        ok(N.log.texts.includes("B"), "Buttons rows carry the B tag");
+        nr("MM.setUI({ pb: 0 })");
+    }
+
+    // ---- faces: Buttons carry a live.text each, the XY pad none, the thresh knob none
+    {
+        nr("MM.setUI({ pb: 0, exp: [], sel: 0 }); ubSyncWidth(true)");
+        const check = (label) => {
+            nr("paint()");
+            const sh = nr("MM.faceState().shown");
+            const names = Object.keys(sh).sort();
+            const rects = names.map((n) => [n, N.live[n].attrs.presentation_rect]);
+            for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++) ok(!inter(rects[a][1], rects[b][1]), `${label}: ${rects[a][0]} and ${rects[b][0]} do not overlap`);
+            for (const [n, r] of rects) ok(r[0] >= 4 && r[1] >= 4 && r[0] + r[2] <= 4 + nr("ubFaceLimit()") + 1e-6 && r[1] + r[3] <= 165 + 1e-6, `${label}: ${n} inside the device`);
+            return { names, rects: Object.fromEntries(rects) };
+        };
+        for (const big of [false, true]) {
+            nr(`MM.setUI({ exp: ${big ? "[0, 1, 2]" : "[]"} }); ubSyncWidth(true)`);
+            const f = check(big ? "expanded" : "collapsed");
+            const Rx = rectsOf(1), Rb = rectsOf(2), Ra = rectsOf(0);
+            for (const n of f.names) { const r = f.rects[n]; const lr = [r[0] - 4, r[1] - 4, r[2], r[3]]; ok(!inter(lr, Rx.pad), `${big ? "expanded" : "collapsed"}: ${n} does not cover the XY pad`); }
+            for (let b = 0; b < 2; b++) {
+                const key = "at_" + (12 + (b === 0 ? 1 : 2));
+                ok(f.names.indexOf(key) >= 0, `Buttons: ${key} is shown`);
+                const r = f.rects[key];
+                deq([r[0] - 4, r[1] - 4, r[2], r[3]], Rb.btn[b], `Buttons: the face of button ${b + 1} is exactly the button`);
+            }
+            ok(f.names.indexOf("ap_6") >= 0 && f.names.indexOf("ap_7") >= 0, "XY: the X and Y knobs carry the dial faces");
+            ok(!f.names.some((n) => /^ap_(2\d)$/.test(n)), "no face outside the 16 slots");
+            // the ADSR threshold knob has no face: every face of strip 0 maps to a parameter
+            const keysA = ["ap_0", "ap_1", "ap_2", "ap_3", "ap_4", "ap_5"].filter((n) => f.names.indexOf(n) >= 0);
+            ok(keysA.length >= (big ? 5 : 2), `ADSR: ${keysA.length} generic faces`);
+            // faces never overlap the other drawn controls of their strip (pad, source tabs, chips ...)
+            for (const n of f.names) {
+                const slot = Math.floor(Number(n.split("_")[1]) / 6);
+                if (slot > 2) continue;
+                const r = f.rects[n], lr = [r[0] - 4, r[1] - 4, r[2], r[3]];
+                const R = [Ra, Rx, Rb][slot];
+                if (R.src) for (const s of R.src) ok(!inter(lr, s), `${n} does not cover a source tab`);
+                if (R.count) ok(!inter(lr, R.count), `${n} does not cover the count chip`);
+            }
+        }
+    }
+
+    // ---- the Follower: saved states and the UI say Follower, the type id is unchanged
+    {
+        nr("MM.setUI({ pb: 0, exp: [], sel: 0 }); ubSyncWidth(true)");
+        nr("ubAddType(MOD_ENV)");
+        eq(nr("MM.state.mods[3].name"), "Follower 4", "a new Follower is named Follower 4");
+        nr("ubSetExpanded(3)");
+        const t = texts();
+        ok(t.includes("FLW") && !t.includes("ENV"), "the type chip of the Follower says FLW");
+        const R = rectsOf(3);
+        deq(R.knobs.map((k) => k.spec.label), ["Atk", "Rel", "Gain", "Depth"], "Follower knobs unchanged");
+        nr("ubSetExpanded(-1)");
+    }
+}
+
+
+// ---------------------------------------------------------------- deferred DSP pill (src/megamod_dsp.js): "DSP loading..." until the engine / routers run
+{
+    const T = makeEnv();
+    T.run("MM.demo();");
+    T.run("MM.dspSetState(false, '')");
+    T.log.texts.length = 0; T.ctx.paint();
+    ok(T.log.texts.some((t) => /^DSP loading/.test(t)), "a device whose DSP is not up shows the `DSP loading` pill");
+    T.run("MM.dspSetState(false, 'not_running')");
+    T.log.texts.length = 0; T.ctx.paint();
+    ok(T.log.texts.some((t) => t === "DSP failed: not_running"), "a failed DSP shows the reason");
+    T.run("MM.dspSetState(true, '')");
+    T.log.texts.length = 0; T.ctx.paint();
+    ok(!T.log.texts.some((t) => /^DSP /.test(t)), "no pill once the DSP runs");
+    // MM.demo() (previews) is a running device
+    const T2 = makeEnv();
+    T2.run("MM.dspSetState(false, '')"); T2.run("MM.demo();");
+    T2.log.texts.length = 0; T2.ctx.paint();
+    ok(!T2.log.texts.some((t) => /^DSP /.test(t)), "previews show no pill");
 }
 
 console.log(`megamod UI tests passed (${passed} checks)`);

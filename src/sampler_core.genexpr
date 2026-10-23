@@ -1348,6 +1348,11 @@ voice_proc(
 	rndA = peek(vhist, stB + 8);
 	rndB = peek(vhist, stB + 9);
 	cycPhs0 = peek(vhist, stB + 10);
+	// Envelope slopes: relInt/relOut = internal level and output level at the start of the release (amp 44/45, mod 48/49).
+	relIntA = peek(vhist, stB + 44);
+	relOutA = peek(vhist, stB + 45);
+	relIntM = peek(vhist, stB + 48);
+	relOutM = peek(vhist, stB + 49);
 	cycPhs1 = peek(vhist, stB + 11);
 	cycPhs2 = peek(vhist, stB + 12);
 	cycPhs3 = peek(vhist, stB + 13);
@@ -1421,6 +1426,14 @@ voice_proc(
 	}
 
 	if (vGate < 0.5) {
+		if (envStage != 0) {
+			relIntA = ampEnv;
+			relOutA = peek(vhist, stB + 46);
+		}
+		if (modStage != 0) {
+			relIntM = modEnv;
+			relOutM = peek(vhist, stB + 47);
+		}
 		envStage = 0;
 		modStage = 0;
 	}
@@ -1456,12 +1469,63 @@ voice_proc(
 	}
 	modEnv = clip(modEnv, 0, 1);
 
+	// Slope-shaped OUTPUT levels (ampEnv / modEnv stay the internal progress state). bend(p, s) = p ^ 4^-s; a slope of
+	// exactly 0 leaves the output equal to the internal level.
+	slA = peek(prm, 56);
+	slD = peek(prm, 57);
+	slR = peek(prm, 58);
+	slMA = peek(prm, 59);
+	slMD = peek(prm, 60);
+	slMR = peek(prm, 61);
+	aOut = ampEnv;
+	mOut = modEnv;
+	// Decay / release bends blend back to the unbent progress over the last 2 % (smoothstep end-window), so every segment ends
+	// exactly where the internal envelope does (sus / 0) and the idle cutoff never sees a step.
+	if (envStage == 1) {
+		if (slA != 0) {
+			aOut = pow(ampEnv, pow(4.0, -slA));
+		}
+	} else if (envStage == 2) {
+		if (slD != 0) {
+			esP = clip((ampEnv - susLevel) / max(1.0 - susLevel, 0.000001), 0, 1);
+			esT = clip(esP / 0.02, 0, 1);
+			esW = esT * esT * (3.0 - 2.0 * esT);
+			aOut = susLevel + (1.0 - susLevel) * (esP + (pow(esP, pow(4.0, -slD)) - esP) * esW);
+		}
+	} else {
+		if (slR != 0) {
+			esP = clip(ampEnv / max(relIntA, 0.000001), 0, 1);
+			esT = clip(esP / 0.02, 0, 1);
+			esW = esT * esT * (3.0 - 2.0 * esT);
+			aOut = relOutA * (esP + (pow(esP, pow(4.0, -slR)) - esP) * esW);
+		}
+	}
+	if (modStage == 1) {
+		if (slMA != 0) {
+			mOut = pow(modEnv, pow(4.0, -slMA));
+		}
+	} else if (modStage == 2) {
+		if (slMD != 0) {
+			emP = clip((modEnv - msusLevel) / max(1.0 - msusLevel, 0.000001), 0, 1);
+			emT = clip(emP / 0.02, 0, 1);
+			emW = emT * emT * (3.0 - 2.0 * emT);
+			mOut = msusLevel + (1.0 - msusLevel) * (emP + (pow(emP, pow(4.0, -slMD)) - emP) * emW);
+		}
+	} else {
+		if (slMR != 0) {
+			emP = clip(modEnv / max(relIntM, 0.000001), 0, 1);
+			emT = clip(emP / 0.02, 0, 1);
+			emW = emT * emT * (3.0 - 2.0 * emT);
+			mOut = relOutM * (emP + (pow(emP, pow(4.0, -slMR)) - emP) * emW);
+		}
+	}
+
 	curNote = mix(vNote, curNote, glideCoef);
 	// Sliced: the MIDI note picks the slice, so the pitch tracks the root key.
 	hzNote = isSlice ? rootMidi : curNote;
-	baseHz = 440.0 * pow(2.0, (hzNote - 69.0 + pitchSt + fineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + modEnv * menvPitchAmt * 24.0) / 12.0);
+	baseHz = 440.0 * pow(2.0, (hzNote - 69.0 + pitchSt + fineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mOut * menvPitchAmt * 24.0) / 12.0);
 
-	posMod = lfoSig * lfoPosAmt * 0.45 + modEnv * menvPosAmt * 0.45;
+	posMod = lfoSig * lfoPosAmt * 0.45 + mOut * menvPosAmt * 0.45;
 	startF = effStartNorm * numFrames;
 	endF = effEndNorm * numFrames;
 	spanNorm = max(effEndNorm - effStartNorm, 0.002);
@@ -1469,7 +1533,8 @@ voice_proc(
 	lEndF = clip(loopEndNorm, loopStartNorm + 0.002, effEndNorm) * numFrames;
 
 	uCount = int(clip(round(unisonCount), 1, 8));
-	uNormGain = 1.0 / sqrt(max(uCount, 1));
+	sampG = peek(prm, 55);
+	uNormGain = sampG / sqrt(max(uCount, 1));
 	dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;
 	driftPhs = fract(driftPhs + (0.22 + vSeed * 0.18) / max(srVal, 1));
 
@@ -1562,7 +1627,7 @@ voice_proc(
 		+ pitchSt
 		+ fineCents * 0.01
 		+ lfoSig * lfoPitchAmt * 24.0
-		+ modEnv * menvPitchAmt * 24.0;
+		+ mOut * menvPitchAmt * 24.0;
 	baseRatio = pow(2.0, clip(pitchSemiOffset, -48, 48) / 12.0);
 	// Source frames per output sample: a file at another rate than the DSP advances by its rate ratio too.
 	srRat = peek(prm, 54);
@@ -1960,8 +2025,8 @@ voice_proc(
 	} else if (modeId < 3.5) {
 		// ---------------- SPECTRAL (audio computed by spec_voice) ----------------
 		playheadNorm = extPos;
-		sigL = extL;
-		sigR = extR;
+		sigL = extL * sampG;
+		sigR = extR * sampG;
 	} else {
 		// ---------------- FRAGMENTS ----------------
 		frLenS = max(grainSizeMs * 0.001 * srVal, 16.0);
@@ -2059,8 +2124,8 @@ voice_proc(
 						rpos = peek(vst, gB + b + 3) + rateG * ageG;
 						if ((rpos >= startF) && (rpos <= endF)) {
 							gl, gr = peek_lr(sampBuf, rpos, maxIdxF);
-							sigL = sigL + gl * wG * peek(vst, gB + b + 5);
-							sigR = sigR + gr * wG * peek(vst, gB + b + 6);
+							sigL = sigL + gl * wG * peek(vst, gB + b + 5) * sampG;
+							sigR = sigR + gr * wG * peek(vst, gB + b + 6) * sampG;
 							if (telTick > 0.5) {
 								poke(gtel, clip(rpos / max(numFrames, 1), 0, 1), gtB + gi);
 								poke(gtel, wG, gtB + 32 + gi);
@@ -2094,11 +2159,11 @@ voice_proc(
 	velGain = mix(1.0, vVel, clip(velSens, 0, 1));
 	// Fragments "survive": the grains in flight keep the level the voice had at release.
 	if ((vGate > 0.5) || (modeId < 3.5) || (peek(prm, 30) < 0.5)) {
-		survG = ampEnv;
+		survG = aOut;
 	} else if (survTimer <= 0) {
 		survG = 0;
 	}
-	envOut = ((modeId > 3.5) && (peek(prm, 30) > 0.5)) ? max(ampEnv, survG) : ampEnv;
+	envOut = ((modeId > 3.5) && (peek(prm, 30) > 0.5)) ? max(aOut, survG) : aOut;
 	finalGain = envOut * velGain * endGain;
 	if (telTick > 0.5) {
 		for (gx = 0; gx < 32; gx += 1) {
@@ -2113,6 +2178,12 @@ voice_proc(
 	poke(vhist, ampEnv, stB + 2);
 	poke(vhist, modStage, stB + 3);
 	poke(vhist, modEnv, stB + 4);
+	poke(vhist, relIntA, stB + 44);
+	poke(vhist, relOutA, stB + 45);
+	poke(vhist, aOut, stB + 46);
+	poke(vhist, mOut, stB + 47);
+	poke(vhist, relIntM, stB + 48);
+	poke(vhist, relOutM, stB + 49);
 	poke(vhist, curNote, stB + 5);
 	poke(vhist, playheadNorm, stB + 6);
 	poke(vhist, grainPhs, stB + 7);
@@ -2148,7 +2219,7 @@ voice_proc(
 	poke(vhist, survTimer, stB + 37);
 	poke(vhist, (freezeOn > 0.5) ? 1 : 0, stB + 40);
 	poke(vhist, frzWinS, stB + 41);
-	return fixnan(sigL * finalGain), fixnan(sigR * finalGain), outPosNorm, ampEnv, modEnv, spawnCnt;
+	return fixnan(sigL * finalGain), fixnan(sigR * finalGain), outPosNorm, aOut, mOut, spawnCnt;
 }
 
 // Buffers
@@ -2171,6 +2242,7 @@ Data vres(48);
 Data tbuf(131072);
 Data sdat(237960);
 Data senv(16448);
+Data tvrel(32);
 
 // Parameters
 Param mode(0, min=0, max=4);
@@ -2281,6 +2353,17 @@ Param menv_pos(0.0, min=-1, max=1);
 
 // Master Output
 Param out_gain(0.0, min=-36, max=18);
+
+// Sample gain (dB): a smoothed linear gain on every engine's sample signal, before the character / drive and the filter
+Param samp_gain(0.0, min=-48, max=24);
+
+// Envelope slopes (-1..1): bend the amp / mod envelope segments (read by voice_proc as prm 56..61; 0 = exact old shape)
+Param atk_slope(0.0, min=-1, max=1);
+Param dec_slope(0.0, min=-1, max=1);
+Param rel_slope(0.0, min=-1, max=1);
+Param matk_slope(0.0, min=-1, max=1);
+Param mdec_slope(0.0, min=-1, max=1);
+Param mrel_slope(0.0, min=-1, max=1);
 
 // Global state histories
 History initDone(0);
@@ -2394,6 +2477,15 @@ rootDynOn = ((root_dyn > 0.5) && (dim(pitch) >= 2)) ? 1 : 0;
 poke(prm, rootDynOn, 53);
 srRatio = (samp_rate > 1000) ? clip(samp_rate / srVal, 0.05, 20.0) : 1.0;
 poke(prm, srRatio, 54);
+// Sample gain, smoothed (10 ms); read by voice_proc as prm 55 (exactly 1.0 at 0 dB)
+sampGainLin = slew_val(pow(10.0, clip(samp_gain, -48, 24) / 20.0), exp(-1.0 / (0.01 * srVal)));
+poke(prm, sampGainLin, 55);
+poke(prm, clip(atk_slope, -1, 1), 56);
+poke(prm, clip(dec_slope, -1, 1), 57);
+poke(prm, clip(rel_slope, -1, 1), 58);
+poke(prm, clip(matk_slope, -1, 1), 59);
+poke(prm, clip(mdec_slope, -1, 1), 60);
+poke(prm, clip(mrel_slope, -1, 1), 61);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H
 prevLfoPhs = lfoPhs;
@@ -2585,6 +2677,56 @@ if (scopeCount >= 64) {
 	for (gs = 0; gs < 32; gs += 1) {
 		poke(scope, peek(gtout, gs), 64 + gs);
 		poke(scope, peek(gtout, 32 + gs), 96 + gs);
+	}
+	// Per-voice envelope / filter telemetry (128..207). Stage + fraction as one float: 0 off, 1 attack (frac = level),
+	// 2 decay (frac = (1 - level) / (1 - sus)), 3 sustain (frac 0), 4 release (frac = 1 - level / level at release start).
+	// 128..143 amp code, 144..159 amp level, 160..175 mod code, 176..191 mod level, 192..207 per-voice cutoff in Hz.
+	for (tvi = 0; tvi < 16; tvi += 1) {
+		tvB = tvi * 256;
+		tvAS = peek(vhist, tvB + 1);
+		tvAL = peek(vhist, tvB + 2);
+		tvMS = peek(vhist, tvB + 3);
+		tvML = peek(vhist, tvB + 4);
+		tvSa = peek(tvrel, tvi);
+		tvSm = peek(tvrel, 16 + tvi);
+		tvRelA = peek(vhist, tvB + 44);
+		tvRelM = peek(vhist, tvB + 48);
+		tvOutA = peek(vhist, tvB + 46);
+		tvOutM = peek(vhist, tvB + 47);
+		tvRa = (tvAS < 0.5) * (tvAL > 0.00002);
+		tvRm = (tvMS < 0.5) * (tvML > 0.00002);
+		tvSa = tvRa > 0.5 ? max(tvRelA, 0.000001) : 0;
+		tvSm = tvRm > 0.5 ? max(tvRelM, 0.000001) : 0;
+		poke(tvrel, tvSa, tvi);
+		poke(tvrel, tvSm, 16 + tvi);
+		tvFa = (sus_lvl >= 0.999) ? 1 : clip((1 - tvAL) / max(1 - sus_lvl, 0.001), 0, 1);
+		tvFm = (msus_lvl >= 0.999) ? 1 : clip((1 - tvML) / max(1 - msus_lvl, 0.001), 0, 1);
+		tvSusA = (tvAS > 1.5) * (abs(tvAL - sus_lvl) < 0.01 * (1 - sus_lvl) + 0.001);
+		tvSusM = (tvMS > 1.5) * (abs(tvML - msus_lvl) < 0.01 * (1 - msus_lvl) + 0.001);
+		tvCa = 0;
+		tvCm = 0;
+		if (tvAS < 0.5) {
+			tvCa = tvRa * (4 + min(clip(1 - tvAL / max(tvSa, 0.000001), 0, 1), 0.999));
+		} else if (tvAS < 1.5) {
+			tvCa = 1 + min(clip(tvAL, 0, 1), 0.999);
+		} else {
+			tvCa = tvSusA > 0.5 ? 3 : (2 + min(tvFa, 0.999));
+		}
+		if (tvMS < 0.5) {
+			tvCm = tvRm * (4 + min(clip(1 - tvML / max(tvSm, 0.000001), 0, 1), 0.999));
+		} else if (tvMS < 1.5) {
+			tvCm = 1 + min(clip(tvML, 0, 1), 0.999);
+		} else {
+			tvCm = tvSusM > 0.5 ? 3 : (2 + min(tvFm, 0.999));
+		}
+		tvOn = (tvCa > 0.5) || (tvAL > 0.00002);
+		tvCut = filt_cutoff * pow(2.0, clip(filt_env_amt * tvOutM * 5.0 + lfoSig * lfo_filt * 3.5, -6, 6));
+		tvCut = clip(tvCut, 20.0, srVal * 0.44);
+		poke(scope, tvCa, 128 + tvi);
+		poke(scope, tvOutA, 144 + tvi);
+		poke(scope, tvCm, 160 + tvi);
+		poke(scope, tvOutM, 176 + tvi);
+		poke(scope, tvOn > 0.5 ? tvCut : 0, 192 + tvi);
 	}
 	poke(scope, spawnSum, 48);
 	poke(scope, rootDynOn, 49);

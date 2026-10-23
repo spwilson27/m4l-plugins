@@ -8,7 +8,7 @@
 
 const MM_THIS = this;
 const MM_UI_VARNAME = "MegaModState";
-const MM_ENGINE_VARNAME = "megamod_engine";
+const MM_ENGINE_VARNAME = "mm_engine"; // the engine gen~ the deferred DSP creates (src/megamod_dsp.js)
 // Debug trace of learn/mapping. Off by default; set MM_DEBUG_LOG to an absolute path to also mirror it to a file.
 // (`let`, so the test hook `test_debug <path>` can switch the trace on at runtime inside Live.)
 let MM_DEBUG = false;
@@ -60,12 +60,14 @@ var MM = (function () {
     let lostPid = {}; // mapId -> the Live id a mapping lost (probed again while it is missing)
     let missPolls = {}; // mapId -> consecutive validate polls the target was unresolvable (auto-delete needs AUTO_DELETE_POLLS)
     // eff[slot] = {ctl: [5 normalized A..E after internal modulation], on, sw: [6 effective switch values]}; depth[k] = effective Depth 0..1 of pool slot k
-    const tel = { frame: 0, bpm: 120, beat: 0, playing: 0, mods: [], eff: [], depth: [] };
-    for (let i = 0; i < MAX_MODS; i++) { tel.mods.push({ out: 0, phase: 0, u: 0, aux: 0 }); tel.eff.push({ ctl: [0, 0, 0, 0, 0], on: 1, sw: [0, 0, 0, 0, 0, 0] }); }
+    // `dirty` (per modulator: its out / outB / phase / u / aux changed; `eff[i].dirty`: an effective control value changed; `depthDirty`: an effective depth
+    // changed) is what the last readTelemetry() saw change against the one before: the UI repaints on it (idle suppression), the beat / frame counters never count
+    const tel = { frame: 0, bpm: 120, beat: 0, playing: 0, mods: [], eff: [], depth: [], depthDirty: false, changed: false };
+    for (let i = 0; i < MAX_MODS; i++) { tel.mods.push({ out: 0, outB: 0, phase: 0, u: 0, aux: 0, dirty: false }); tel.eff.push({ ctl: [0, 0, 0, 0, 0], on: 1, sw: [0, 0, 0, 0, 0, 0], dirty: false }); }
     for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) tel.depth.push(1);
 
     api.state = defaultState();
-    api.learn = { armed: false, mod: -1, multi: false };
+    api.learn = { armed: false, mod: -1, multi: false, out: 0 };
 
     // ---------------------------------------------------------------- plumbing
     function patcher() {
@@ -78,6 +80,7 @@ var MM = (function () {
         if (typeof mgraphics !== "undefined" && mgraphics.redraw) mgraphics.redraw();
     }
     function fire(kind, mod, id) {
+        telWake();
         const ev = { kind, mod: mod === undefined ? -1 : mod, id: id === undefined ? 0 : id };
         for (const fn of listeners.change) { try { fn(ev); } catch (e) { post2("listener: " + e); } }
         if (typeof uiChanged === "function") { try { uiChanged(ev); } catch (e) { post2("uiChanged: " + e); } }
@@ -93,10 +96,33 @@ var MM = (function () {
         }
         return bufs[key];
     }
+    // Buffer writes. `poke` always writes; `pokeC` skips a chunk whose values equal what this script last wrote there (a cfg slot, an MSEG / steps table,
+    // a mapping table, a route cell: most UI events leave most of them unchanged). Only this script writes those cells (the engine writes route[2k+1]
+    // and the router heartbeat, which are never cached), and every plain `poke` over a cached range drops the entry, so a full flush (flushEngine /
+    // flushRoute / a load) and a direct float poke can never leave a stale cache behind.
+    const pokeCache = {}; // key -> {offset: array}
+    function pokeDrop(key, offset, len) {
+        const c = pokeCache[key];
+        if (!c) return;
+        for (const o of Object.keys(c)) { const n = Number(o); if (n < offset + len && n + c[o].length > offset) delete c[o]; }
+    }
     function poke(key, offset, arr) {
+        pokeDrop(key, offset, arr.length);
         const b = buf(key);
         if (!b) return false;
         try { b.poke(1, offset, arr); return true; } catch (e) { return false; }
+    }
+    function pokeC(key, offset, arr) {
+        const c = pokeCache[key] || (pokeCache[key] = {});
+        const old = c[offset];
+        if (old && old.length === arr.length) {
+            let same = true;
+            for (let i = 0; i < arr.length; i++) if (old[i] !== arr[i]) { same = false; break; }
+            if (same) return true;
+        }
+        const ok = poke(key, offset, arr);
+        if (ok) c[offset] = Array.prototype.slice.call(arr);
+        return ok;
     }
     function markDirty() {
         if (typeof Task === "undefined") { api.commit(); return; }
@@ -110,18 +136,59 @@ var MM = (function () {
         if (typeof notifyclients === "function") notifyclients();
     };
 
+    // ---------------------------------------------------------------- deferred DSP: the message layer (AGENTS.md 1d, src/megamod_dsp.js)
+    // The engine and the routers (gen~) are created after the face is up, so a message for them can arrive while they do not exist. The buffers
+    // (cfg, mseg, steps, curve, route, ...) are saved objects and are written at any time, so only the gen MESSAGES need care: the engine's Params
+    // (`gen <key> <v>`) and the routers' `smooth`. `genLast` holds the latest value per key (a Param keeps state, so only the last matters);
+    // nothing is sent while the DSP is down; when it comes up (`dspSetState(true)`) every stored value is sent once (and again by the DSP
+    // module's confirm loop until the gens answer). Events (`rtrg`) are dropped while down: a retrigger of a modulator that is not running is
+    // moot, and replaying a stale counter would restart a slot.
+    const dsp = { ready: false, error: "", flushes: 0, dropped: 0 };
+    const genLast = {};
+    function emitGen(key, v) {
+        if (key === "smooth") { if (typeof mmdRouterMsg === "function") mmdRouterMsg("smooth", v); return; }
+        if (typeof outlet === "function") outlet(0, "gen", key, v);
+    }
+    function genMsg(key, v) {
+        genLast[key] = v;
+        if (dsp.ready) emitGen(key, v);
+    }
+    function genEvent(key, v) {
+        if (dsp.ready) emitGen(key, v); else dsp.dropped++;
+    }
+    // the values to (re)send to a gen that has just been created: every stored Param, but a MIDI trigger counter only while a note is held (replaying a
+    // counter against a fresh gen would fire a trigger that already happened)
+    api.dspParams = function () {
+        const out = [];
+        for (const k of Object.keys(genLast)) {
+            if (k === "mtrig" && midi.count <= 0) continue;
+            out.push([k, genLast[k]]);
+        }
+        return out;
+    };
+    api.dspResend = function () { for (const kv of api.dspParams()) emitGen(kv[0], kv[1]); };
+    api.dspInfo = function () { return { ready: dsp.ready, error: dsp.error, flushes: dsp.flushes, dropped: dsp.dropped }; };
+    api.dspSetState = function (ready, error) {
+        const was = dsp.ready;
+        dsp.ready = !!ready;
+        dsp.error = error || "";
+        if (dsp.ready && !was) { dsp.flushes++; api.dspResend(); }
+        fire("dsp");
+    };
+    api.bufferNames = function () { return names; };
+
     // ---------------------------------------------------------------- engine buffers
     function writeCfgSlot(i) {
-        poke(BUF_CFG, i * CFG_STRIDE, slotConfigFloats(api.state.mods[i]));
+        pokeC(BUF_CFG, i * CFG_STRIDE, slotConfigFloats(api.state.mods[i]));
         reapplyVia(i); // a control that live.modulate~ is modulating keeps its modulated engine value
     }
     function writeMsegSlot(i) {
         const m = api.state.mods[i];
-        poke(BUF_MSEG, i * MSEG_TABLE, m ? msegTable(m.points) : new Array(MSEG_TABLE).fill(0));
+        pokeC(BUF_MSEG, i * MSEG_TABLE, m ? msegTable(m.points) : new Array(MSEG_TABLE).fill(0));
     }
     function writeStepsSlot(i) {
         const m = api.state.mods[i];
-        poke(BUF_STEPS, i * STEPS_MAX, m ? m.stepVals.slice(0, STEPS_MAX) : new Array(STEPS_MAX).fill(0));
+        pokeC(BUF_STEPS, i * STEPS_MAX, m ? m.stepVals.slice(0, STEPS_MAX) : new Array(STEPS_MAX).fill(0));
     }
     function flushEngine() {
         if (!names) return;
@@ -181,22 +248,37 @@ var MM = (function () {
         if (!bound[slot]) bound[slot] = { mod: 0, rem: 0 };
         return bound[slot];
     }
+    // The route cell of a slot (source index or ROUTE_OFF). The mapper also keeps, per router, how many of its 32 slots have a source and writes it to
+    // route[ROUTE_ACT_AT + r]: a sleeping router (src/megamod_common.py router_gen_code) checks that one cell every sample and wakes at once, so a Remote
+    // target is never forced to 0 for the first vector after its mapping is bound. The count is written BEFORE the cell.
+    const routeSrc = new Array(MAX_MAPPINGS).fill(ROUTE_OFF);
+    const routeAct = new Array(ROUTERS).fill(0);
     function writeRoute(slot, v) {
-        poke(BUF_ROUTE, 2 * slot, [v]);
+        const r = Math.floor(slot / ROUTER_SLOTS);
+        const was = routeSrc[slot] !== ROUTE_OFF, now = v !== ROUTE_OFF;
+        routeSrc[slot] = v;
+        if (was !== now) {
+            routeAct[r] += now ? 1 : -1;
+            pokeC(BUF_ROUTE, ROUTE_ACT_AT + r, [routeAct[r]]);
+        }
+        pokeC(BUF_ROUTE, 2 * slot, [v]);
     }
     function flushRoute() {
-        const a = new Array(ROUTE_SAMPS).fill(0);
+        const a = new Array(ROUTE_CELLS).fill(0); // (the router heartbeat cells above ROUTE_CELLS belong to the router gens)
         for (let k = 0; k < MAX_MAPPINGS; k++) a[2 * k] = ROUTE_OFF;
         for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) { a[2 * k + 1] = 1; a[ROUTE_DEPTH_BASE + k] = 1; a[ROUTE_DEPTH_MIN + k] = -1; }
         poke(BUF_ROUTE, 0, a);
+        routeSrc.fill(ROUTE_OFF);
+        routeAct.fill(0);
+        poke(BUF_ROUTE, ROUTE_ACT_AT, routeAct);
     }
     // EVERY pool slot (schema 10) applies the Depth in the ROUTER (per sample, so a Depth lane / depth modulation is smooth): its curve
     // table is baked at depth 1 and the base depth (+ the Remote centre (min + max) / 2, or -1 for Mod) lives in the route buffer. The engine copies base
     // -> effective and adds the summed depth-modulation routes. Only the first AUTO_DEPTH_SLOTS slots also have a `Depth k` Live parameter.
     function writeDepthCells(m, slot) {
         if (slot >= ROUTER_DEPTH_SLOTS) return;
-        poke(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [clamp(m.depth, 0, 1)]);
-        poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [m.mode === "remote" ? remoteCentre(m) : -1]);
+        pokeC(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [clamp(m.depth, 0, 1)]);
+        pokeC(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [m.mode === "remote" ? remoteCentre(m) : -1]);
     }
     function unbindSlot(slot) {
         const b = boundOf(slot);
@@ -217,7 +299,7 @@ var MM = (function () {
     function writeMappingTable(m) {
         const slot = slotOf[m.id];
         if (slot === undefined) return;
-        poke(BUF_CURVE, slot * CURVE_REGION, mappingTable(Object.assign({}, m, { depth: 1 })));
+        pokeC(BUF_CURVE, slot * CURVE_REGION, mappingTable(Object.assign({}, m, { depth: 1 })));
         writeDepthCells(m, slot);
     }
     // Bring one mapping's slot in line with the model: table, route, ids. Cheap when nothing changed.
@@ -241,7 +323,7 @@ var MM = (function () {
         const active = mappingActive(m);
         writeMappingTable(m);
         if (active) {
-            writeRoute(slot, m.mod);
+            writeRoute(slot, srcIndex(m.mod, m.out));
             bindSlot(slot, m.mode, lomPid(m));
         } else {
             bindSlot(slot, m.mode, 0);
@@ -320,7 +402,7 @@ var MM = (function () {
             const ts = slotOf[m.target.mapId];
             if (ts === undefined) { off = true; dest = DEST_DEPTH; } else dest = depthRouteDest(ts);
         }
-        poke(BUF_INT, 4 * r, [off ? 0 : m.mod + 1, dest, 0, 0]);
+        poke(BUF_INT, 4 * r, [off ? 0 : srcIndex(m.mod, m.out) + 1, dest, 0, 0]);
     }
     // depth routes (schema 10) aimed at mapping `mapId`: rewrite their engine destination (the target's pool slot may have changed)
     function syncDepthRoutesFor(mapId) {
@@ -335,7 +417,7 @@ var MM = (function () {
         m.slot = islotOf[m.id];
         const r = islotOf[m.id];
         if (!names) return;
-        poke(BUF_ICURVE, r * CURVE_REGION, isDepthRoute(m) ? depthFactorTable(m) : mappingTable(m)); // a depth route bakes its unipolar FACTOR m = range * dep * y, 0..range (the engine multiplies them, clips 0..1)
+        pokeC(BUF_ICURVE, r * CURVE_REGION, isDepthRoute(m) ? depthFactorTable(m) : mappingTable(m)); // a depth route bakes its unipolar FACTOR m = range * dep * y, 0..range (the engine multiplies them, clips 0..1)
         writeInternalRoute(m, !mappingActive(m));
         writeInternalCount();
     }
@@ -1014,7 +1096,7 @@ var MM = (function () {
             // the device's own parameter: a modulator control / On / switch / mapping Depth becomes a self-mapping of the selected kind
             const c = classifySelfParam(info.paramName, api.learn.mod, api.state);
             if (!c.ok) { dlog("ignored: own parameter", info.path, info.paramName, c.reason); return; }
-            const sm = api.addSelfMapping(api.learn.mod, c.dest, undefined, info);
+            const sm = api.addSelfMapping(api.learn.mod, c.dest, undefined, info, api.learn.out);
             dlog("addSelfMapping ->", sm ? { id: sm.id, mod: sm.mod, internal: isInternal(sm), dest: c.dest } : "NULL (duplicate / full)");
             if (!api.learn.multi) api.disarmLearn();
             return;
@@ -1025,7 +1107,7 @@ var MM = (function () {
             if (!api.learn.multi) api.disarmLearn();
             return;
         }
-        const mapping = api.addMapping(api.learn.mod, info);
+        const mapping = api.addMapping(api.learn.mod, info, api.learn.out);
         dlog("addMapping ->", mapping ? { id: mapping.id, mod: mapping.mod, mode: mapping.mode, target: mapping.target } : "NULL (duplicate/self/no mod)");
         if (mapping) {
             pidCache[mapping.id] = info.id;
@@ -1036,15 +1118,98 @@ var MM = (function () {
         }
         if (!api.learn.multi) api.disarmLearn();
     }
-    api.armLearn = function (i, multi) {
-        dlog("armLearn", i, "multi", !!multi, "modExists", !!api.state.mods[i]);
+    // out = which output of a two-output modulator (XY: 0 X / 1 Y, Buttons: 0 button 1 / 1 button 2) the learned mappings read (default 0)
+
+    // ---------------------------------------------------------------- MIDI input for the ADSR (Trig = MIDI)
+    // The device is an Audio Effect, so the notes arrive through a `midiin` in the patch (-> midiparse -> `midi_note pitch vel`) once a MIDI source is routed
+    // to it: the LOM DeviceIO `this_device midi_inputs 0` (`routing_type` / `available_routing_types`, the mirror of Envelope Trigger's `midi_outputs 0`).
+    // The v8 side keeps the held-note set (a lost / merged message cannot hang the gate) and sends the STATE to the engine: Param mgate (any note held),
+    // mtrig (a counter that increments on a note-on with no note held, i.e. legato notes do not retrigger) and mvel (that note's velocity 0..1).
+    const midi = { held: {}, count: 0, trig: 0, vel: 1, last: -1 };
+    function sendMidiState(withTrig) {
+        genMsg("mvel", midi.vel);
+        genMsg("mgate", midi.count > 0 ? 1 : 0);
+        if (withTrig) genMsg("mtrig", midi.trig);
+    }
+    api.midiNote = function (pitch, vel) {
+        const p = clamp(Math.round(num(pitch, 0)), 0, 127);
+        const v = clamp(num(vel, 0), 0, 127);
+        midi.last = p;
+        if (v > 0) {
+            if (!midi.held[p]) {
+                midi.held[p] = 1;
+                midi.count++;
+                if (midi.count === 1) { midi.trig = (midi.trig % 1000000) + 1; midi.vel = v / 127; sendMidiState(true); return; }
+            }
+            sendMidiState(false);
+        } else if (midi.held[p]) {
+            delete midi.held[p];
+            midi.count = Math.max(0, midi.count - 1);
+            sendMidiState(false);
+        }
+    };
+    api.midiAllOff = function () {
+        midi.held = {};
+        midi.count = 0;
+        sendMidiState(false);
+    };
+    api.midiState = function () { return { count: midi.count, trig: midi.trig, vel: midi.vel, last: midi.last, held: Object.keys(midi.held).map(Number) }; };
+    // LiveAPI hands dictionary properties back as ["{json}"], or [property, <Max Dict handle>] in an observer callback
+    function mmLomValue(raw, key) {
+        let v = raw;
+        if (Array.isArray(v)) v = v.length > 1 ? v[1] : v[0];
+        if (v && typeof v === "object" && typeof v.stringify === "function") v = v.stringify();
+        if (typeof v === "string") { try { v = JSON.parse(v); } catch (e) { return null; } }
+        if (v && typeof v === "object" && key in v) return v[key];
+        return null;
+    }
+    const MIDI_IN_PATH = "this_device midi_inputs 0";
+    const midiRt = { checked: false, supported: false, types: [], name: "", obsT: null, obsN: null, api: null, err: "" };
+    function initMidiRouting() {
+        if (typeof LiveAPI === "undefined" || midiRt.checked) return;
+        midiRt.checked = true;
+        try {
+            midiRt.api = new LiveAPI(function () {}, MIDI_IN_PATH);
+            midiRt.supported = !!midiRt.api && Number(midiRt.api.id) > 0;
+            if (!midiRt.supported) { midiRt.err = "no midi_inputs DeviceIO"; return; }
+            midiRt.obsT = new LiveAPI(function (a) { const t = mmLomValue(a, "available_routing_types"); if (t) { midiRt.types = t; fire("midi"); } }, MIDI_IN_PATH);
+            midiRt.obsT.property = "available_routing_types";
+            midiRt.obsN = new LiveAPI(function (a) { const t = mmLomValue(a, "routing_type"); if (t) { midiRt.name = String(t.display_name); fire("midi"); } }, MIDI_IN_PATH);
+            midiRt.obsN.property = "routing_type";
+            const t0 = mmLomValue(midiRt.api.get("available_routing_types"), "available_routing_types");
+            if (t0) midiRt.types = t0;
+            const n0 = mmLomValue(midiRt.api.get("routing_type"), "routing_type");
+            if (n0) midiRt.name = String(n0.display_name);
+        } catch (e) { midiRt.supported = false; midiRt.err = String(e); }
+        dlog("midi routing", midiRt.supported, midiRt.name, midiRt.types.length, midiRt.err);
+    }
+    // {supported, name (current routing_type), types: [display names], err}
+    api.midiInfo = function () {
+        return { supported: midiRt.supported, name: midiRt.name, types: midiRt.types.map((t) => String(t.display_name)), err: midiRt.err };
+    };
+    api.midiSetType = function (idx) {
+        if (!midiRt.supported || !midiRt.api) return false;
+        const t = midiRt.types[Math.round(num(idx, 0))];
+        if (!t) return false;
+        try { midiRt.api.set("routing_type", t); return true; } catch (e) { midiRt.err = String(e); return false; }
+    };
+
+    api.armLearn = function (i, multi, out) {
+        dlog("armLearn", i, "multi", !!multi, "out", out, "modExists", !!api.state.mods[i]);
         if (!api.state.mods[i]) return;
-        api.learn = { armed: true, mod: i, multi: !!multi };
+        api.learn = { armed: true, mod: i, multi: !!multi, out: out === 1 && modOutputs(api.state.mods[i].type) > 1 ? 1 : 0 };
         fire("learn", i);
+    };
+    // changes the learn source of an armed learn (the user clicked the other output of an XY / Buttons strip)
+    api.setLearnOut = function (out) {
+        if (!api.learn.armed) return;
+        const mod = api.state.mods[api.learn.mod];
+        api.learn.out = out === 1 && mod && modOutputs(mod.type) > 1 ? 1 : 0;
+        fire("learn", api.learn.mod);
     };
     api.disarmLearn = function () {
         dlog("disarmLearn");
-        api.learn = { armed: false, mod: -1, multi: false };
+        api.learn = { armed: false, mod: -1, multi: false, out: 0 };
         fire("learn");
     };
 
@@ -1058,7 +1223,7 @@ var MM = (function () {
     api.addModulator = function (type, slot) {
         const s = slot === undefined ? api.freeSlot() : slot;
         if (s < 0 || s >= MAX_MODS || api.state.mods[s]) return -1;
-        api.state.mods[s] = makeModSlot(clamp(Math.round(type), 1, 5), s);
+        api.state.mods[s] = makeModSlot(clamp(Math.round(type), 1, MOD_TYPE_MAX), s);
         writeCfgSlot(s); writeMsegSlot(s); writeStepsSlot(s);
         autoPushSlot(s);
         fire("mods", s);
@@ -1091,7 +1256,7 @@ var MM = (function () {
         const m = api.state.mods[i];
         if (!m) return;
         const keep = { name: m.name, color: m.color, enabled: m.enabled };
-        const fresh = makeModSlot(clamp(Math.round(type), 1, 5), i);
+        const fresh = makeModSlot(clamp(Math.round(type), 1, MOD_TYPE_MAX), i);
         fresh.name = keep.name; fresh.color = keep.color; fresh.enabled = keep.enabled;
         api.state.mods[i] = fresh;
         writeCfgSlot(i); writeMsegSlot(i); writeStepsSlot(i);
@@ -1154,31 +1319,35 @@ var MM = (function () {
     };
     api.retrigger = function (i) {
         rtrgCounter = (rtrgCounter % 100000) + 1;
-        if (typeof outlet === "function") outlet(0, "gen", "rtrg", rtrgCounter * 16 + clamp(Math.round(i), 0, 15));
+        genEvent("rtrg", rtrgCounter * 16 + clamp(Math.round(i), 0, 15)); // an event, not state: dropped while the DSP is not up
     };
 
     // ---------------------------------------------------------------- mappings
     api.allMappings = function () { return api.state.mappings; };
     api.mappingsFor = function (i) { return api.state.mappings.filter((m) => m.mod === i); };
+    // the mappings of one output of a modulator (XY: X / Y, Buttons: button 1 / 2)
+    api.mappingsForOut = function (i, out) { return api.state.mappings.filter((m) => m.mod === i && (m.out === 1 ? 1 : 0) === (out === 1 ? 1 : 0)); };
     api.getMapping = function (id) {
         for (const m of api.state.mappings) if (m.id === id) return m;
         return null;
     };
-    api.addMapping = function (i, target) {
+    api.addMapping = function (i, target, out) {
         if (!api.state.mods[i]) return null;
+        const outIx = out === 1 && modOutputs(api.state.mods[i].type) > 1 ? 1 : 0;
         const t = sanitizeTarget(target);
         if (target && target.id) t.id = target.id;
         if (isInternal({ target: t })) return null; // internal routes go through addSelfMapping
         // a duplicate is the same modulator on the same LIVE target. A STALE mapping (its target is gone, so it is missing or its Live id is another object than
         // the new one) can share the old path with the new target (a device after it slid into the deleted one's position): that is no duplicate.
         const newId = target && target.id ? Number(target.id) : 0;
-        if (findDuplicateMapping(api.state.mappings, i, t, (x) => !isInternal(x) && (!!missing[x.id] || (newId > 0 && lomPid(x) > 0 && lomPid(x) !== newId)))) return null;
+        if (findDuplicateMapping(api.state.mappings, i, t, (x) => !isInternal(x) && (!!missing[x.id] || (newId > 0 && lomPid(x) > 0 && lomPid(x) !== newId)), outIx)) return null;
         if (t.selfDest !== undefined) {
             const c = classifySelfParam(selfDestName(t.selfDest), i, api.state);
             if (!c.ok || isInternal({ target: t })) return null;
         } else if (selfPath && isSelfTarget(t.path, selfPath)) return null; // an own parameter only through addSelfMapping / learn
         if (allocSlot() < 0) { dlog("addMapping refused: pool full", MAX_MAPPINGS); fire("full", i); return null; }
         const m = defaultMapping(api.state.nextMapId++, i, t, api.state.settings.defaultMode);
+        m.out = outIx;
         api.state.mappings.push(m);
         if (target && target.id) { pidCache[m.id] = Number(target.id); missing[m.id] = false; seenLive[m.id] = true; }
         syncMapping(m);
@@ -1223,22 +1392,24 @@ var MM = (function () {
     }
     // kind: "internal" | "live" (default settings.selfMod). info = describeParameter() of the learned own parameter (via Live).
     // Returns the mapping, or null (duplicate, rejected target, the chosen pool is full: change kind "full", id -1 = the internal matrix).
-    api.addSelfMapping = function (i, dest, kind, info) {
+    api.addSelfMapping = function (i, dest, kind, info, out) {
         if (!api.state.mods[i]) return null;
+        const outIx = out === 1 && modOutputs(api.state.mods[i].type) > 1 ? 1 : 0;
         const c = classifySelfParam(selfDestName(dest), i, api.state);
         if (!c.ok) return null;
         const k = kind === "live" || kind === "internal" ? kind : api.state.settings.selfMod;
-        if (api.state.mappings.some((x) => x.mod === i && selfDestOf(x) === dest)) return null;
+        if (api.state.mappings.some((x) => x.mod === i && (x.out === 1 ? 1 : 0) === outIx && selfDestOf(x) === dest)) return null;
         const di = selfDestInfo(dest);
         if (k === "internal" && di && di.kind === "depth") {
             // INTERNAL + `Depth k` (learn on a Depth parameter) is a depth route on the mapping that owns pool slot k (schema 10)
             const owner = api.state.mappings.find((x) => !isInternal(x) && slotOf[x.id] === di.ctl);
-            return owner ? api.addDepthRoute(i, owner.id) : null;
+            return owner ? api.addDepthRoute(i, owner.id, outIx) : null;
         }
         let m;
         if (k === "internal") {
             if (allocInternal() < 0) { dlog("addSelfMapping: internal matrix full", INT_ROUTES); fire("full", i, -1); return null; }
             m = defaultMapping(api.state.nextMapId++, i, makeInternalTarget(dest), "mod");
+            m.out = outIx;
             api.state.mappings.push(m);
             syncInternal(m);
         } else {
@@ -1246,6 +1417,7 @@ var MM = (function () {
             const t = ownTarget(dest, info);
             m = defaultMapping(api.state.nextMapId++, i, t, api.state.settings.defaultMode);
             m.target.selfDest = dest;
+            m.out = outIx;
             api.state.mappings.push(m);
             if (info && info.id) { pidCache[m.id] = Number(info.id); missing[m.id] = false; } else bindOwnPid(m);
             syncMapping(m);
@@ -1259,13 +1431,15 @@ var MM = (function () {
     // Allowed: any source (also the target mapping's own modulator: tremolo of self, no feedback loop), several routes per mapping (they sum).
     // Refused (null): unknown modulator / mapping, an INTERNAL or depth-route target (no router stage), the same source twice on one mapping,
     // a full internal matrix (change kind "full", id -1; the 64-route cap is shared with the self-mod routes).
-    api.addDepthRoute = function (i, mapId) {
+    api.addDepthRoute = function (i, mapId, out) {
         if (!api.state.mods[i]) return null;
+        const outIx = out === 1 && modOutputs(api.state.mods[i].type) > 1 ? 1 : 0;
         const tm = api.getMapping(mapId);
         if (!tm || isInternal(tm)) return null;
-        if (findDuplicateMapping(api.state.mappings, i, makeDepthTarget(mapId))) return null;
+        if (findDuplicateMapping(api.state.mappings, i, makeDepthTarget(mapId), undefined, outIx)) return null;
         if (allocInternal() < 0) { dlog("addDepthRoute: internal matrix full", INT_ROUTES); fire("full", i, -1); return null; }
         const m = defaultMapping(api.state.nextMapId++, i, makeDepthTarget(mapId), "mod");
+        m.out = outIx;
         api.state.mappings.push(m);
         syncInternal(m);
         fire("mapping", i, m.id);
@@ -1387,7 +1561,7 @@ var MM = (function () {
         if (!m || !patch) return;
         const merged = sanitizeMapping(Object.assign({}, m, patch, { id: m.id, target: m.target }));
         const oldMod = m.mod;
-        for (const k of ["mod", "enabled", "mode", "polarity", "range", "depth", "min", "max", "shape"]) m[k] = merged[k];
+        for (const k of ["mod", "out", "enabled", "mode", "polarity", "range", "depth", "min", "max", "shape"]) m[k] = merged[k];
         if (!api.state.mods[m.mod]) m.mod = oldMod;
         syncMapping(m);
         fire("mapping", m.mod, m.id);
@@ -1576,18 +1750,15 @@ var MM = (function () {
     // smoothMs -> `smooth <ms>` to every router (patch: route width gen smooth), rateMul -> `gen ratemul <x>` to the engine.
     api.getSettings = function () { return api.state.settings; };
     api.sendSettings = function () {
-        if (typeof outlet !== "function") return;
-        outlet(0, "smooth", api.state.settings.smoothMs);
-        outlet(0, "gen", "ratemul", api.state.settings.rateMul);
+        genMsg("smooth", api.state.settings.smoothMs);
+        genMsg("ratemul", api.state.settings.rateMul);
     };
     api.setSettings = function (patch) {
         const next = sanitizeSettings(Object.assign({}, api.state.settings, patch || {}));
         const old = api.state.settings;
         api.state.settings = next;
-        if (typeof outlet === "function") {
-            if (next.smoothMs !== old.smoothMs) outlet(0, "smooth", next.smoothMs);
-            if (next.rateMul !== old.rateMul) outlet(0, "gen", "ratemul", next.rateMul);
-        }
+        if (next.smoothMs !== old.smoothMs) genMsg("smooth", next.smoothMs);
+        if (next.rateMul !== old.rateMul) genMsg("ratemul", next.rateMul);
         fire("settings");
         markDirty();
     };
@@ -1639,23 +1810,46 @@ var MM = (function () {
         tel.bpm = a[SCOPE_BPM];
         tel.beat = a[SCOPE_BEAT];
         tel.playing = a[SCOPE_PLAYING];
+        let any = false;
         for (let i = 0; i < MAX_MODS; i++) {
             const t = tel.mods[i];
-            t.out = a[i * SCOPE_STRIDE]; t.phase = a[i * SCOPE_STRIDE + 1];
-            t.u = a[i * SCOPE_STRIDE + 2]; t.aux = a[i * SCOPE_STRIDE + 3];
+            const out = a[i * SCOPE_STRIDE], phase = a[i * SCOPE_STRIDE + 1], u = a[i * SCOPE_STRIDE + 2], aux = a[i * SCOPE_STRIDE + 3];
+            const outB = a.length > SCOPE_OUTB + i ? a[SCOPE_OUTB + i] : out;
+            t.dirty = out !== t.out || phase !== t.phase || u !== t.u || aux !== t.aux || outB !== t.outB;
+            t.out = out; t.phase = phase; t.u = u; t.aux = aux; t.outB = outB;
             const e = tel.eff[i], o = SCOPE_EFF + i * SCOPE_EFF_STRIDE;
-            for (let j = 0; j < AUTO_PARAMS; j++) e.ctl[j] = a[o + j] || 0;
-            e.on = a[o + AUTO_PARAMS] || 0;
-            for (let t2 = 0; t2 < AUTO_SW_PER_SLOT; t2++) e.sw[t2] = a[o + AUTO_PARAMS + 1 + t2] || 0;
+            let ed = false;
+            for (let j = 0; j < AUTO_PARAMS; j++) { const v = a[o + j] || 0; if (v !== e.ctl[j]) { e.ctl[j] = v; ed = true; } }
+            const on = a[o + AUTO_PARAMS] || 0;
+            if (on !== e.on) { e.on = on; ed = true; }
+            for (let t2 = 0; t2 < AUTO_SW_PER_SLOT; t2++) { const v = a[o + AUTO_PARAMS + 1 + t2] || 0; if (v !== e.sw[t2]) { e.sw[t2] = v; ed = true; } }
+            e.dirty = ed;
+            if (t.dirty || ed) any = true;
         }
-        for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) tel.depth[k] = a.length > SCOPE_DEPTH + k ? a[SCOPE_DEPTH + k] : 1;
+        let dd = false;
+        for (let k = 0; k < ROUTER_DEPTH_SLOTS; k++) { const v = a.length > SCOPE_DEPTH + k ? a[SCOPE_DEPTH + k] : 1; if (v !== tel.depth[k]) { tel.depth[k] = v; dd = true; } }
+        tel.depthDirty = dd;
+        tel.changed = any || dd;
         return tel;
     };
+    // the cached telemetry (what the last poll read): painters use this, not a fresh read of the 640-float buffer per call
+    api.tel = function () { return tel; };
+    // Idle suppression: the poll runs at 30 fps (33 ms) while anything is moving or animating, and at 10 fps once nothing has changed for 30 polls
+    // (a model change, `fire`, brings it back at once). uiTelemetry(tel) answers whether a repaint is needed (false = nothing visible changed).
+    let telIdle = 0;
+    const TEL_FAST_MS = 33, TEL_SLOW_MS = 100, TEL_IDLE_POLLS = 30;
+    function telWake() {
+        telIdle = 0;
+        if (telTask && telTask.interval !== TEL_FAST_MS) telTask.interval = TEL_FAST_MS;
+    }
     function pollTelemetry() {
         const t = api.readTelemetry();
         for (const fn of listeners.telemetry) { try { fn(t); } catch (e) {} }
-        if (typeof uiTelemetry === "function") { try { uiTelemetry(t); } catch (e) {} }
-        redraw();
+        let want = true;
+        if (typeof uiTelemetry === "function") { try { want = uiTelemetry(t) !== false; } catch (e) {} }
+        if (t.changed || want) telWake();
+        else if (++telIdle > TEL_IDLE_POLLS && telTask && telTask.interval !== TEL_SLOW_MS) telTask.interval = TEL_SLOW_MS;
+        if (want) redraw();
     }
     function startTasks() {
         if (typeof Task === "undefined") return;
@@ -1667,6 +1861,7 @@ var MM = (function () {
     function fireReady() {
         if (readyFired || !names || !lomReady) return;
         readyFired = true;
+        if (typeof mmdTrace === "function") mmdTrace("face-ready");
         autoInit();
         redraw(); // the faces appear once the pool is live
         for (const fn of listeners.ready) { try { fn(); } catch (e) {} }
@@ -1683,6 +1878,7 @@ var MM = (function () {
         if (icurve) names[BUF_ICURVE] = icurve;
         dlog("setnames", names);
         bufs = {};
+        for (const k of Object.keys(pokeCache)) delete pokeCache[k]; // (new buffers: nothing written yet)
         flushEngine();
         flushRoute();
         api.sendSettings();
@@ -1702,6 +1898,7 @@ var MM = (function () {
             } catch (e) { post2("selected_parameter observer failed: " + e); }
         }
         lomReady = true;
+        initMidiRouting();
         dlog("init_lom selfPath", selfPath, "mappings", api.state.mappings.length);
         resolveMappingTargets();
         if (names) rebuildAllSlots();
@@ -1715,7 +1912,7 @@ var MM = (function () {
         api.state = s;
         undoStack = [];
         redoStack = [];
-        if (api.learn.armed) api.learn = { armed: false, mod: -1, multi: false };
+        if (api.learn.armed) api.learn = { armed: false, mod: -1, multi: false, out: 0 };
         pidCache = {};
         missing = {};
         seenLive = {};
@@ -1737,6 +1934,7 @@ var MM = (function () {
         return serializeState(api.state);
     };
     api.demo = function () {
+        dsp.ready = true; // (previews / screenshots show a running device: no `DSP loading` pill)
         const s = defaultState();
         const types = [MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG];
         for (let i = 0; i < types.length; i++) s.mods[i] = makeModSlot(types[i], i);
@@ -1779,6 +1977,11 @@ var MM = (function () {
     return api;
 })();
 
+// ---- MIDI input (patch: midiin -> midiparse -> prepend midi_note / midi_cc): the ADSR's Trig = MIDI source ----
+function midi_note(pitch, vel) { MM.midiNote(Number(pitch), Number(vel)); }
+// midiparse's control outlet: [value, controller] or [controller, value]; CC 123 (all notes off) with value 0 releases every held note
+function midi_cc(a, b) { if ((Number(a) === 123 && Number(b) === 0) || (Number(b) === 123 && Number(a) === 0)) MM.midiAllOff(); }
+
 // ---- Max entry points owned by the mapper ----
 function getvalueof() {
     return MM.save();
@@ -1795,6 +1998,26 @@ function setnames(cfg, mseg, steps, scope, curve, route, ibuf, icurve) {
 function init_lom() {
     MM._initLom();
 }
+// live.thisdevice bang, right after init_lom: let the face paint, then build the DSP (src/megamod_dsp.js, AGENTS.md 1d)
+function init_dsp() {
+    mmdSchedule();
+}
+// test hook (`test_paintcost`): paints Live asked for and the script time they took (ms, summed) -> Global("megamod_test").paint_<device id>
+function test_paintcost() {
+    if (typeof Global === "undefined") return;
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    new Global("megamod_test")["paint_" + devId] = JSON.stringify({ paints: ubPaintCount, ms: ubPaintMs });
+}
+// test hook (`dsp_restart`): tear the DSP graph down and build it again (messages sent meanwhile are queued, then flushed)
+function dsp_restart() { mmdRestart(); }
+// test hook (`receive megamod-test` -> `dsp_diag`): the deferred-DSP graph as JSON in Global("megamod_test").dsp_<device id>
+function dsp_diag() {
+    if (typeof Global === "undefined") return;
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    try { new Global("megamod_test")["dsp_" + devId] = JSON.stringify(Object.assign(mmdDiag(), { mm: MM.dspInfo() })); } catch (e) { post("dsp_diag: " + e + "\n"); }
+}
 
 // ---- automatable parameter pool: every saved live.* object outputs through a `prepend` into these (see MM._autoParamIn) ----
 function autop(idx, v) { MM._autoParamIn(Number(idx), Number(v)); } // modulator control / On (idx = slot * 6 + j)
@@ -1806,8 +2029,8 @@ function autom(v) { MM._autoMarkerIn(Number(v)); } // "Live has stored the param
 //   test_learn <mod> <param id>  simulates a single-shot learn of that Live parameter
 //   test_report                  writes this instance's mapping state to Global("megamod_test") as
 //                                `report_<LOM device id>` and `last` (JSON string)
-function test_learn(mod, pid) {
-    MM.armLearn(Number(mod), false);
+function test_learn(mod, pid, out) {
+    MM.armLearn(Number(mod), false, out === undefined ? 0 : Number(out));
     MM._selectionChanged(Number(pid));
 }
 // test_poke <mapping id> <value>: send a float straight to the mapping's active live.* object (bypasses the signal path)
@@ -1840,7 +2063,7 @@ function test_report() {
         modP: MM.state.mods.map((m) => (m ? Object.assign({ enabled: m.enabled }, m.p) : null)),
         auto: MM.autoInfo().on,
         learn: MM.learn, bound: (function () { const o = {}; for (const k of Object.keys(bnd)) if (bnd[k] && (bnd[k].mod || bnd[k].rem)) o[k] = [bnd[k].mod, bnd[k].rem]; return o; })(),
-        undoInfo: MM.undoInfo(), settings: MM.getSettings(), eff: MM.readTelemetry().eff.slice(0, 4), cache: MM.autoInfo().cache, internalCap: MM.internalCapacity(),
+        dsp: MM.dspInfo(), undoInfo: MM.undoInfo(), settings: MM.getSettings(), eff: MM.readTelemetry().eff.slice(0, 4), cache: MM.autoInfo().cache, internalCap: MM.internalCapacity(),
         ui: MM.getUI(),
         hover: typeof ubHover !== "undefined" && ubHover ? [ubHover.x, ubHover.y] : null, // last mouse position over the v8ui (real-mouse calibration)
         engine: (function () { try { const e = MM_THIS.patcher.getnamed(MM_ENGINE_VARNAME); return e ? { cls: e.maxclass, cords: cordsOf(e) } : null; } catch (x) { return "err " + x; } })(),
@@ -1850,7 +2073,7 @@ function test_report() {
             const mid = slot >= 0 ? box("mm_mid_" + slot) : null, rid = slot >= 0 ? box("mm_rid_" + slot) : null;
             const lm = slot >= 0 ? box("mm_mod_" + slot) : null, lr = slot >= 0 ? box("mm_rem_" + slot) : null;
             return {
-                id: m.id, mod: m.mod, mode: m.mode, depth: m.depth, path: m.target.path, status: MM.mappingStatus(m.id), pid: t.pid(m.id),
+                id: m.id, mod: m.mod, out: m.out === 1 ? 1 : 0, mode: m.mode, depth: m.depth, path: m.target.path, status: MM.mappingStatus(m.id), pid: t.pid(m.id),
                 internal: !!m.target.internal, selfDest: m.target.selfDest === undefined ? -1 : m.target.selfDest, islot: t.islot(m.id), label: MM.selfLabel(m),
                 depthRoute: isDepthRoute(m) ? m.target.mapId : 0, nRoutes: m.target.internal ? 0 : MM.depthRoutesFor(m.id).length, effDepth: slot >= 0 ? MM.readTelemetry().depth[slot] : null,
                 slot, route: slot >= 0 ? t.route(slot) : null, cells: slot >= 0 ? t.cells(slot) : null, idMod: b.mod, idRem: b.rem,
@@ -1885,7 +2108,19 @@ function test_dmodgeom() {
 // test_dmodroute <source mod> <mapping id>: MM.addDepthRoute (the model path)
 function test_dmodroute(mod, id) { MM.addDepthRoute(Number(mod), Number(id)); }
 
-//   test_add <type>              add a modulator of that type (MOD_LFO..MOD_MSEG) in the first free slot
+// test_midi: the MIDI input state (MM.midiInfo / MM.midiState) plus the telemetry of every modulator -> Global("megamod_test").midi_<device id>
+function test_midi() {
+    if (typeof Global === "undefined") return;
+    const tl = MM.readTelemetry();
+    let devId = "0";
+    try { devId = String(new LiveAPI(function () {}, "this_device").id); } catch (e) {}
+    new Global("megamod_test")["midi_" + devId] = JSON.stringify({ info: MM.midiInfo(), state: MM.midiState(), mods: tl.mods.slice(0, 4).map((m) => ({ out: m.out, outB: m.outB, u: m.u, phase: m.phase, aux: m.aux })), frame: tl.frame });
+}
+// test_midinote <pitch> <vel>: feed a note straight into the MIDI input path (what midiin -> midiparse -> midi_note does)
+function test_midinote(pitch, vel) { MM.midiNote(Number(pitch), Number(vel)); }
+// test_midiroute <index>: MM.midiSetType (the "MIDI From" menu item index)
+function test_midiroute(i) { MM.midiSetType(Number(i)); }
+//   test_add <type>              add a modulator of that type (MOD_LFO..MOD_BTN) in the first free slot
 //   test_settype <slot> <type>   change a modulator's type
 //   test_remove <slot> / test_undo   delete a modulator (with its mappings) / undo the last delete
 //   test_setparam <slot> <key> <v>  MM.setParam (UI path: pushes into the live.* object)
@@ -1933,6 +2168,8 @@ function test_measure(slot, ms) {
 }
 // test_mapupd <mapping id> <key> <value>: MM.updateMapping(id, {key: value}) (value JSON-parsed when it is not a plain string)
 function test_delmap(id) { MM.deleteMapping(Number(id)); }
+// test_setsettings <json>: MM.setSettings(patch) (Options panel values)
+function test_setsettings(json) { MM.setSettings(JSON.parse(String(json))); }
 function test_mapupd(id, key, v) {
     let val = v;
     try { val = JSON.parse(String(v)); } catch (e) { val = v; }

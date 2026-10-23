@@ -77,7 +77,7 @@
 // STATE MODEL (persisted in blob param "MegaModState")
 // =====================================================================================
 // state = {
-//   schema: 10,                 // 10 = depth-modulation routes (target {internal: true, kind: "depth", mapId}; internal self-mappings that targeted `Depth k` are migrated to them); 9 = settings.selfMod + self-mappings (target.internal / target.selfDest; older states get selfMod "internal" and have none); 8 = per-mapping `depth` (older states get 1); 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
+//   schema: 11,                 // 11 = every mapping has `out` (0 | 1: the modulator output it reads; older states get 0; types ADSR / XY / Buttons are new, XY and Buttons have two outputs); 10 = depth-modulation routes (target {internal: true, kind: "depth", mapId}; internal self-mappings that targeted `Depth k` are migrated to them); 9 = settings.selfMod + self-mappings (target.internal / target.selfDest; older states get selfMod "internal" and have none); 8 = per-mapping `depth` (older states get 1); 7 = device-global `settings` (older states get the defaults); 1 = per-mapping curve fields (migrated to `shape`); < 4 = invert / bipolar / min / max baked into `shape` + polarity; 4 = remote polarity / range / amount (-> min / max in 5); < 6 = amount folded into range (see MIGRATION)
 //   mods: [ModSlot|null] x MAX_MODS,
 //   mappings: [Mapping],
 //   nextMapId: int,
@@ -118,7 +118,7 @@
 //   Remote: y' = min + (max-min)*(invert ? 1-y : y), polarity 1, range 1, amount 1 (so v = y').
 // =====================================================================================
 
-const MEGAMOD_VERSION = 10; // schema version of the JSON state
+const MEGAMOD_VERSION = 11; // schema version of the JSON state (11 = mapping `out`: which of a modulator's two outputs a mapping reads)
 const MAX_MODS = 16;
 
 
@@ -143,24 +143,38 @@ const AUTO_DEPTH_SLOTS = 64; // mapping pool slots 0..63 have an automatable Dep
 const AUTO_KEYS = [
     null,
     ["rate", "syncDiv", "depth", "phase", null], // LFO (the shape is a switch parameter)
-    ["attack", "release", "depth", "gain", null], // Envelope follower
+    ["attack", "release", "depth", "gain", null], // Follower (the envelope follower; internal type id 2 = MOD_ENV)
     ["rate", "syncDiv", "depth", "smooth", "seed"], // Random
     ["rate", "syncDiv", "depth", "steps", "glide"], // Steps
     ["rate", "syncDiv", "depth", "loopStart", "loopEnd"], // MSEG
+    ["attack", "decay", "depth", "sustain", "release"], // ADSR (the threshold is a plain model control with no Live parameter)
+    ["x", "y", "depth", "slew", null], // XY pad (A = X, B = Y)
+    ["slew", null, "depth", null, null], // Buttons (the two buttons are the Sync / Bipolar switch parameters)
 ];
 const AUTO_SW_USED = [
     [],
     ["shape", "sync", "bipolar", "retrig"], // LFO
-    ["bipolar"], // Envelope follower
+    ["bipolar"], // Follower
     ["sync", "bipolar", "retrig"], // Random
     ["sync", "bipolar", "oneshot", "retrig"], // Steps
     ["sync", "bipolar", "oneshot", "loopOn", "retrig"], // MSEG
+    ["sync", "bipolar", "retrig", "oneshot"], // ADSR: sync = Trig (off MIDI, on Threshold), bipolar, retrig = restart from 0, oneshot = Vel (velocity scales the peak)
+    [], // XY
+    ["sync", "bipolar"], // Buttons: sync = button 1, bipolar = button 2
 ];
+// A switch parameter keeps its FIXED Live name ("M3 Sync", ...) for every type, but a new type can give it its own meaning: AUTO_SW_TYPE_LABELS[type][key] is what the UI and the lists call it.
+const AUTO_SW_TYPE_LABELS = { 6: { sync: "Trig", retrig: "Retrig", oneshot: "Vel", bipolar: "Bipolar" }, 8: { sync: "Button 1", bipolar: "Button 2" } };
+function autoSwLabel(type, t) {
+    const key = AUTO_SW_KEYS[t];
+    const o = AUTO_SW_TYPE_LABELS[type];
+    return o && o[key] ? o[key] : AUTO_SW_NAMES[t];
+}
 const AUTO_LABELS = {
     rate: "Rate", syncDiv: "Div", depth: "Depth", phase: "Phase", shape: "Shape", attack: "Attack", release: "Release",
     gain: "Gain", smooth: "Smooth", seed: "Seed", steps: "Steps", glide: "Glide", loopStart: "Start", loopEnd: "End",
+    decay: "Decay", sustain: "Sust", thresh: "Thresh", x: "X", y: "Y", slew: "Slew",
 };
-const AUTO_LOG = { rate: true, attack: true, release: true };
+const AUTO_LOG = { rate: true, attack: true, release: true, decay: true };
 // control value <-> normalized 0..1 (the UI knob curve: log for rate / attack / release, linear otherwise)
 function autoNorm(key, v) {
     const r = MOD_PARAM_RANGE[key];
@@ -225,7 +239,7 @@ function autoLiveName(type, slot, key) {
 const INT_ROUTES = 64; // capacity of the internal matrix
 const INT_COUNT_AT = 256; // megamodint[256] = highest used route index + 1
 const INT_DESC_AT = 264; // megamodint[264 + (type * 5 + j) * 5 + {0 field+1, 1 lo, 2 hi, 3 log, 4 int}]
-const INT_SW_AT = 414; // megamodint[414 + t] = CF field + 1 of switch t, [420 + t] = its max value
+const INT_SW_AT = 490; // megamodint[490 + t] = CF field + 1 of switch t, [496 + t] = its max value (moved from 414 when the descriptors grew to the types 0..8)
 const INT_SAMPS = 512;
 const ICURVE_SAMPS = INT_ROUTES * 256;
 const DEST_CTL = 0;
@@ -235,7 +249,7 @@ const DEST_COUNT = 256;
 const SELF_MODES = ["internal", "live"];
 const SELF_MODE_LABELS = ["INTERNAL", "VIA LIVE"];
 // the CF_* field a model key lives in (cfg buffer layout below)
-const KEY_CF = { rate: 2, sync: 3, syncDiv: 4, shape: 5, phase: 6, retrig: 7, bipolar: 8, depth: 9, attack: 10, release: 11, gain: 12, smooth: 13, steps: 14, glide: 15, oneshot: 16, seed: 17, loopOn: 18, loopStart: 19, loopEnd: 20 };
+const KEY_CF = { decay: 21, sustain: 22, thresh: 23, x: 24, y: 25, slew: 26, rate: 2, sync: 3, syncDiv: 4, shape: 5, phase: 6, retrig: 7, bipolar: 8, depth: 9, attack: 10, release: 11, gain: 12, smooth: 13, steps: 14, glide: 15, oneshot: 16, seed: 17, loopOn: 18, loopStart: 19, loopEnd: 20 };
 // dest code <-> {kind: "ctl"|"on"|"sw"|"depth", slot, ctl}. For "depth": slot = -1 and ctl = the pool slot k.
 function selfDestFor(kind, slot, ctl) {
     if (kind === "depth") return DEST_DEPTH + clamp(Math.round(num(ctl, 0)), 0, AUTO_DEPTH_SLOTS - 1);
@@ -296,7 +310,7 @@ function selfDestLabel(code, state, depthOwner) {
     const mod = state && state.mods ? state.mods[d.slot] : null;
     const base = mod ? mod.name : "M" + (d.slot + 1);
     if (d.kind === "on") return base + " On";
-    if (d.kind === "sw") return base + " " + AUTO_SW_NAMES[d.ctl];
+    if (d.kind === "sw") return base + " " + autoSwLabel(mod ? mod.type : 0, d.ctl);
     const lab = mod ? autoControlLabel(mod.type, d.ctl) : "";
     return base + " " + (lab || AUTO_LETTERS[d.ctl]);
 }
@@ -364,7 +378,7 @@ function migrateDepthRoutes(mappings) {
         }
         if (isDepthRoute(m)) {
             if (!pool.some((x) => x.id === m.target.mapId)) continue;
-            const key = m.mod + ":" + m.target.mapId;
+            const key = m.mod + ":" + (m.out === 1 ? 1 : 0) + ":" + m.target.mapId;
             if (seen[key]) continue;
             seen[key] = 1;
         }
@@ -388,7 +402,7 @@ function classifySelfParam(name, srcMod, state) {
 // control descriptors for the engine ([field + 1, lo, hi, log, int] per type / generic position)
 function intDescriptorFloats() {
     const a = new Array(INT_SAMPS - INT_DESC_AT).fill(0);
-    for (let t = 1; t <= 5; t++) {
+    for (let t = 1; t <= MOD_TYPE_MAX; t++) {
         for (let j = 0; j < AUTO_PARAMS; j++) {
             const key = AUTO_KEYS[t][j];
             if (!key) continue;
@@ -412,8 +426,8 @@ function selfCtlValue(type, j, base, off) {
 }
 
 // ---- engine buffer layouts (contract with src/megamod_engine.genexpr; tests parse the genexpr) ----
-const CFG_STRIDE = 24; // floats per slot in buffer~ ---megamodcfg
-const CF_TYPE = 0; // 0 none, 1 LFO, 2 Env, 3 Random, 4 Steps, 5 MSEG
+const CFG_STRIDE = 32; // floats per slot in buffer~ ---megamodcfg (24 until the ADSR / XY / Buttons types needed fields 21..26)
+const CF_TYPE = 0; // 0 none, 1 LFO, 2 Follower (Env), 3 Random, 4 Steps, 5 MSEG, 6 ADSR, 7 XY, 8 Buttons
 const CF_ENABLED = 1;
 const CF_RATE = 2; // Hz (free) — cycles/s; Steps: steps/s
 const CF_SYNC = 3; // 1 = tempo synced
@@ -434,6 +448,14 @@ const CF_SEED = 17;
 const CF_LOOPON = 18; // MSEG window on
 const CF_LOOPSTART = 19;
 const CF_LOOPEND = 20;
+const CF_DECAY = 21; // ADSR decay ms
+const CF_SUSTAIN = 22; // ADSR sustain level 0..1
+const CF_THRESH = 23; // ADSR threshold-trigger level in dB (-60..0)
+const CF_X = 24; // XY pad X 0..1
+const CF_Y = 25; // XY pad Y 0..1
+const CF_SLEW = 26; // XY / Buttons slew 0..1 (time constant = SLEW_MAX_MS * slew^2)
+// The switch-type keys keep their cfg field across types; a type only gives them another meaning: ADSR sync = Trig (0 MIDI, 1 Threshold),
+// oneshot = Vel (velocity scales the peak), retrig = restart from 0; Buttons sync = button 1, bipolar = button 2 (the bipolar field is not a polarity there).
 const CFG_FLOATS = MAX_MODS * CFG_STRIDE;
 
 const MSEG_TABLE = 1024; // samples per slot in buffer~ ---megamodmseg
@@ -452,18 +474,24 @@ const SCOPE_PLAYING = 68;
 const SCOPE_EFF = 128; // 12 floats per slot: [0..4] effective normalized A..E, [5] effective On, [6..11] effective switches (shape 0..4, toggles 0/1)
 const SCOPE_EFF_STRIDE = 12;
 const SCOPE_DEPTH = 320; // 256 floats: effective Depth 0..1 of the mapping in pool slot k (every pool slot, schema 10)
+const SCOPE_OUTB = 576; // 16 floats: output B of slot s (XY Y / Buttons button 2; a single-output type mirrors output A)
 const SCOPE_SAMPS = 640;
 
 const MAX_MAPPINGS = 256; // saved mapping-slot pool: 256 live.modulate~ + 256 live.remote~ in the device file
 const CURVE_REGION = 256; // samples per mapping transfer table in buffer~ ---mmcurve (FIXED: MAX_MAPPINGS x 256 samples)
 const CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION;
-const ROUTE_SAMPS = 1024; // buffer~ ---megamodroute, for EVERY pool slot k 0..255 (schema 10): [2k] = source modulator index or -1 (off), [2k+1] = effective depth, 0..1 (the engine writes it), [ROUTE_DEPTH_BASE + k] = base depth, [ROUTE_DEPTH_MIN + k] = Remote CENTRE (min + max) / 2 or -1 (Mod; the name is historical); the router applies the depth per sample
+const ROUTE_CELLS = 1024; // the mapper-owned cells of the route buffer (below)
+const ROUTE_HB_AT = 1024; // [ROUTE_HB_AT + r] = router r's heartbeat counter (bumped every 32 samples by the router gen; the face's deferred-DSP readiness check)
+const ROUTE_HB_ECHO_AT = 1032; // [ROUTE_HB_ECHO_AT + r] = router r's `rbase + 1` (what it was told: 32 * r + 1 once the face has sent it)
+const ROUTE_ACT_AT = 1040; // [ROUTE_ACT_AT + r] = how many slots of router r have a source (the MAPPER writes it, so a sleeping router wakes on the very next sample; the router also scans its 32 cells itself)
+const ROUTE_SAMPS = 1048; // buffer~ ---megamodroute (ROUTE_CELLS mapper cells + 16 router heartbeat / echo cells + 8 router activity counts), for EVERY pool slot k 0..255 (schema 10): [2k] = source modulator index or -1 (off), [2k+1] = effective depth, 0..1 (the engine writes it), [ROUTE_DEPTH_BASE + k] = base depth, [ROUTE_DEPTH_MIN + k] = Remote CENTRE (min + max) / 2 or -1 (Mod; the name is historical); the router applies the depth per sample
 const ROUTE_DEPTH_BASE = 512;
 const ROUTE_DEPTH_MIN = 768;
 const ROUTER_DEPTH_SLOTS = 256; // pool slots whose router applies the Depth (all of them since schema 10; Live parameters `Depth k` exist for the first AUTO_DEPTH_SLOTS only)
 const ROUTE_OFF = -1;
-const ROUTERS = 8; // router gen.codebox~ boxes (16 signal inlets, 32 outlets each): slot k = router floor(k/32), outlet k%32
+const ROUTERS = 8; // router gen.codebox~ boxes (32 signal inlets = 16 slots x 2 outputs, 32 outlets each): slot k = router floor(k/32), outlet k%32
 const ROUTER_SLOTS = MAX_MAPPINGS / ROUTERS;
+const ENGINE_OUTS = 32; // engine signal outlets = 16 slots x 2 outputs (also the inlets of every router)
 
 const BUF_CFG = "megamodcfg";
 const BUF_MSEG = "megamodmseg";
@@ -480,8 +508,28 @@ const MOD_ENV = 2;
 const MOD_RANDOM = 3;
 const MOD_STEPS = 4;
 const MOD_MSEG = 5;
-const MOD_TYPE_NAMES = ["None", "LFO", "Envelope", "Random", "Steps", "MSEG"];
-const MOD_TYPE_SHORT = ["--", "LFO", "ENV", "RND", "STP", "MSG"];
+const MOD_ADSR = 6;
+const MOD_XY = 7;
+const MOD_BTN = 8;
+const MOD_TYPE_MAX = 8;
+// MOD_ENV (type id 2, kept so saved sets load unchanged) is shown as "Follower": the envelope follower.
+const MOD_TYPE_NAMES = ["None", "LFO", "Follower", "Random", "Steps", "MSEG", "ADSR", "XY", "Buttons"];
+const MOD_TYPE_SHORT = ["--", "LFO", "FLW", "RND", "STP", "MSG", "ADSR", "XY", "BTN"];
+const MOD_DEFAULT_NAMES = ["None", "LFO", "Follower", "Random", "Steps", "MSEG", "ADSR", "XY", "Btn"]; // base of a new modulator's name ("XY 2", "Btn 3")
+// Every slot has TWO engine outputs: A (the usual one) and B. Only XY (A = X, B = Y) and Buttons (A = button 1, B = button 2) produce two
+// different signals; every other type mirrors A on B. The engine signal index of (slot, out) is slot * 2 + out (0..31).
+const MOD_OUT_COUNT = 2;
+const MOD_OUT_TAGS = { 7: ["X", "Y"], 8: ["A", "B"] }; // how the lists name the output of a two-output modulator ("XY 1 \u00b7 X", "Btn 2 \u00b7 B")
+function modOutputs(type) {
+    return type === MOD_XY || type === MOD_BTN ? 2 : 1;
+}
+function srcIndex(mod, out) {
+    return mod * MOD_OUT_COUNT + (out === 1 ? 1 : 0);
+}
+function outTag(type, out) {
+    const t = MOD_OUT_TAGS[type];
+    return t ? t[out === 1 ? 1 : 0] : "";
+}
 
 const LFO_SHAPES = ["Sine", "Triangle", "Saw Up", "Saw Down", "Square"];
 
@@ -511,6 +559,7 @@ const MOD_COLORS = [
 const MOD_PARAM_KEYS = [
     "enabled", "rate", "sync", "syncDiv", "shape", "phase", "retrig", "bipolar", "depth", "attack", "release",
     "gain", "smooth", "steps", "glide", "oneshot", "seed", "loopOn", "loopStart", "loopEnd",
+    "decay", "sustain", "thresh", "x", "y", "slew",
 ];
 // key -> [lo, hi, integer?]
 const MOD_PARAM_RANGE = {
@@ -519,7 +568,13 @@ const MOD_PARAM_RANGE = {
     depth: [0, 1, false], attack: [0.05, 2000, false], release: [0.5, 5000, false], gain: [-24, 36, false],
     smooth: [0, 1, false], steps: [1, 32, true], glide: [0, 1, false], oneshot: [0, 1, true],
     seed: [0, 1000, true], loopOn: [0, 1, true], loopStart: [0, 0.95, false], loopEnd: [0.05, 1, false],
+    decay: [1, 5000, false], sustain: [0, 1, false], thresh: [-60, 0, false], x: [0, 1, false], y: [0, 1, false], slew: [0, 1, false],
 };
+const SLEW_MAX_MS = 2000; // XY / Buttons slew: time constant ms = SLEW_MAX_MS * slew^2
+function slewMs(v) {
+    const s = clamp(num(v, 0), 0, 1);
+    return SLEW_MAX_MS * s * s;
+}
 
 const MIN_WIDTH = 120;
 const MAX_WIDTH = 1600;
@@ -618,8 +673,12 @@ function defaultParams(type) {
         rate: 1, sync: 1, syncDiv: 9, shape: 0, phase: 0, retrig: 0, bipolar: 1, depth: 1,
         attack: 5, release: 120, gain: 0, smooth: 0, steps: 8, glide: 0, oneshot: 0, seed: 1,
         loopOn: 0, loopStart: 0, loopEnd: 1,
+        decay: 200, sustain: 0.6, thresh: -24, x: 0.5, y: 0.5, slew: 0,
     };
     if (type === MOD_ENV) { p.bipolar = 0; }
+    if (type === MOD_ADSR) { p.bipolar = 0; p.sync = 1; p.retrig = 0; p.oneshot = 0; p.attack = 20; p.release = 400; }
+    if (type === MOD_XY) { p.bipolar = 0; p.sync = 0; }
+    if (type === MOD_BTN) { p.bipolar = 0; p.sync = 0; p.slew = 0; }
     if (type === MOD_RANDOM) { p.rate = 2; p.syncDiv = 6; p.bipolar = 1; }
     if (type === MOD_STEPS) { p.rate = 4; p.syncDiv = 3; p.bipolar = 1; p.sync = 1; }
     if (type === MOD_MSEG) { p.bipolar = 0; p.syncDiv = 12; p.rate = 0.5; }
@@ -636,7 +695,7 @@ function makeModSlot(type, slot) {
     const idx = slot || 0;
     return {
         type,
-        name: MOD_TYPE_NAMES[type] + " " + (idx + 1),
+        name: MOD_DEFAULT_NAMES[type] + " " + (idx + 1),
         color: idx % MOD_COLORS.length,
         enabled: 1,
         p: defaultParams(type),
@@ -802,7 +861,7 @@ function mappingShape(m) {
 
 function defaultMapping(id, mod, target, mode) {
     return {
-        id, mod, enabled: 1, mode: mode === "remote" ? "remote" : "mod", polarity: 0, range: 0.5, depth: 1, min: 0, max: 1,
+        id, mod, out: 0, enabled: 1, mode: mode === "remote" ? "remote" : "mod", polarity: 0, range: 0.5, depth: 1, min: 0, max: 1,
         shape: linearShape(), target: sanitizeTarget(target),
     };
 }
@@ -848,6 +907,7 @@ function sanitizeMapping(m, schema) {
         derive = m.mode === "remote";
     }
     const d = defaultMapping(Math.max(1, Math.round(num(m && m.id, 1))), clamp(Math.round(num(m && m.mod, 0)), 0, MAX_MODS - 1), m && m.target);
+    d.out = m && Math.round(num(m.out, 0)) === 1 ? 1 : 0; // schema < 11 has none: output A
     d.enabled = m && (m.enabled === 0 || m.enabled === false) ? 0 : 1;
     d.mode = m && m.mode === "remote" ? "remote" : "mod";
     if (d.target.internal) d.mode = "mod"; // internal routes are offsets in normalized knob space: Mod only
@@ -881,9 +941,10 @@ function sanitizeMapping(m, schema) {
 
 function sanitizeMod(m, slot) {
     if (!m || typeof m !== "object") return null;
-    const type = clamp(Math.round(num(m.type, 0)), 1, 5);
+    const type = clamp(Math.round(num(m.type, 0)), 1, MOD_TYPE_MAX);
     const base = makeModSlot(type, slot);
     base.name = typeof m.name === "string" && m.name ? m.name.slice(0, 32) : base.name;
+    if (type === MOD_ENV && /^Envelope( \d+)?$/.test(base.name)) base.name = base.name.replace("Envelope", "Follower"); // the envelope follower was renamed (names are not editable, so these are defaults)
     base.color = clamp(Math.round(num(m.color, base.color)), 0, MOD_COLORS.length - 1);
     base.enabled = m.enabled === 0 ? 0 : 1;
     const src = m.p || {};
@@ -1044,6 +1105,12 @@ function slotConfigFloats(mod) {
     f[CF_LOOPON] = p.loopOn;
     f[CF_LOOPSTART] = p.loopStart;
     f[CF_LOOPEND] = p.loopEnd;
+    f[CF_DECAY] = p.decay;
+    f[CF_SUSTAIN] = p.sustain;
+    f[CF_THRESH] = p.thresh;
+    f[CF_X] = p.x;
+    f[CF_Y] = p.y;
+    f[CF_SLEW] = p.slew;
     return f;
 }
 
@@ -1149,6 +1216,128 @@ function envelopeFollow(samples, sr, p) {
     return { u, out };
 }
 
+
+// ---- ADSR / XY / Buttons references (mirror src/megamod_engine.genexpr) ------------------------------------------------------------
+// ADSR: a per-sample state machine, FIXED-DURATION segments with Bitwig-style curves. Stage 0 idle, 1 attack, 2 decay, 3 sustain, 4 release. Each timed
+// stage keeps a progress s = n / (ms * sr / 1000) (0 -> 1; the stage ends when s >= 1 and snaps to its target, so "A / D / R ms" = the time to reach the target).
+//   attack  : lvl = seg + (peak - seg) * adsrAttackShape(s),  adsrAttackShape(s) = 1 - (1 - s)^ADSR_ATK_POW   (ADSR_ATK_POW 1.6: mild, concave: fast start)
+//   decay   : lvl = tgt + (peak - tgt) * adsrExpShape(s), tgt = sustain * peak (live, so the Sustain control moves the curve's end)
+//   release : lvl = seg * adsrExpShape(s)
+//   adsrExpShape(s) = (exp(-K s) - exp(-K)) / (1 - exp(-K)), K = ADSR_EXP_K = 5: 1 at s = 0, EXACTLY 0 at s = 1 (an exponential, one-pole-like fall that is
+//   within e^-5 = 0.7 % of the span after the full time, then snapped to the target).
+//   seg = the level at the start of the attack (the current level with Retrig off, 0 with Retrig on) or at gate off (release, from whatever stage).
+//   trigger event : attack from `seg` to the peak; the peak is 1, or the note velocity (0..1) when Vel is on; then decay to sustain * peak; then sustain.
+//   gate off      : release from the current level to 0, from stage 1..3; a gate off in release / idle is ignored; a trigger in release continues from the level
+//                   (Retrig off) or from 0 (Retrig on).
+// u = level (0..1); output = outputFromU(u, bipolar, depth). Telemetry phase = s inside stages 1, 2 and 4 (0 otherwise).
+// TRIGGER SOURCES: Trig = Threshold: the device input's fast envelope (instant attack, 15 ms release) against a slow 60 ms baseline, like Envelope Trigger:
+//   onset (the trigger event) while armed when fast > thr and fast > 2 * slow (6 dB over the baseline); the gate is on from the onset until fast < 0.5 * thr (a
+//   6 dB hysteresis: the ADSR sustains while the input stays above half the threshold level, then releases); re-arm when fast < 0.7 * thr or fast < 1.2 * slow
+//   (so a new hit retriggers while the gate is still up). Trig = MIDI: gate = any held note, a note-on with no note held is the trigger (legato notes do not
+//   retrigger), the velocity is that note-on's (velocity / 127).
+const ADSR_FAST_REL_MS = 15;
+const ADSR_SLOW_MS = 60;
+const ADSR_ONSET_RATIO = 2;
+const ADSR_GATE_OFF = 0.5;
+const ADSR_REARM = 0.7;
+const ADSR_REARM_BASE = 1.2;
+const ADSR_EXP_K = 5;
+const ADSR_ATK_POW = 1.6;
+function adsrAttackShape(s) { return 1 - Math.pow(1 - clamp(s, 0, 1), ADSR_ATK_POW); }
+function adsrExpShape(s) { const e = Math.exp(-ADSR_EXP_K); return (Math.exp(-ADSR_EXP_K * clamp(s, 0, 1)) - e) / (1 - e); }
+function adsrInit() {
+    return { stage: 0, lvl: 0, prog: 0, peak: 1, seg: 0, fast: 0, slow: 0, armed: 1, gate: 0 };
+}
+// advance the envelope by one sample. ev = {trig, gateOff, vel}; p = {attack, decay, sustain, release, retrig, oneshot (velocity on)}
+function adsrStep(s, p, sr, ev) {
+    const peakNew = p.oneshot ? clamp(num(ev && ev.vel, 1), 0, 1) : 1;
+    if (ev && ev.trig) {
+        s.lvl = p.retrig ? 0 : s.lvl;
+        s.peak = Math.max(peakNew, 1e-6);
+        s.stage = 1;
+        s.seg = s.lvl;
+        s.prog = 0;
+    } else if (ev && ev.gateOff && s.stage !== 0 && s.stage !== 4) {
+        s.stage = 4;
+        s.seg = Math.max(s.lvl, 1e-9);
+        s.prog = 0;
+    }
+    if (s.stage === 1) {
+        s.prog += 1 / Math.max(p.attack * sr / 1000, 1);
+        if (s.prog >= 1) { s.lvl = s.peak; s.stage = 2; s.prog = 0; } else s.lvl = s.seg + (s.peak - s.seg) * adsrAttackShape(s.prog);
+    } else if (s.stage === 2) {
+        const tgt = p.sustain * s.peak;
+        s.prog += 1 / Math.max(p.decay * sr / 1000, 1);
+        if (s.prog >= 1) { s.lvl = tgt; s.stage = 3; s.prog = 0; } else s.lvl = tgt + (s.peak - tgt) * adsrExpShape(s.prog);
+    } else if (s.stage === 3) {
+        s.lvl = p.sustain * s.peak;
+    } else if (s.stage === 4) {
+        s.prog += 1 / Math.max(p.release * sr / 1000, 1);
+        if (s.prog >= 1) { s.lvl = 0; s.stage = 0; s.prog = 0; } else s.lvl = s.seg * adsrExpShape(s.prog);
+    }
+    return s.lvl;
+}
+// Threshold detector, one sample (mutates s). Returns {trig, gateOff}.
+function adsrDetect(s, x, p, sr) {
+    const thr = Math.pow(10, p.thresh / 20);
+    const ax = Math.abs(x);
+    const relC = Math.exp(-1000 / (ADSR_FAST_REL_MS * sr));
+    s.fast = ax > s.fast ? ax : ax + (s.fast - ax) * relC;
+    s.slow = s.slow + (s.fast - s.slow) * (1 - Math.exp(-1000 / (ADSR_SLOW_MS * sr)));
+    let trig = false;
+    let gateOff = false;
+    if (s.armed && s.fast > thr && s.fast > s.slow * ADSR_ONSET_RATIO) { trig = true; s.armed = 0; s.gate = 1; }
+    else if (!s.armed && (s.fast < thr * ADSR_REARM || s.fast < s.slow * ADSR_REARM_BASE)) s.armed = 1;
+    if (s.gate && s.fast < thr * ADSR_GATE_OFF) { s.gate = 0; gateOff = true; }
+    return { trig, gateOff };
+}
+// Whole-run references. Threshold: mono input array -> u[]. MIDI: events [{n: sample, on: bool, note, vel (0..127)}] -> u[] of length `len`.
+function adsrRunThreshold(samples, sr, p) {
+    const s = adsrInit();
+    const u = new Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+        const ev = adsrDetect(s, samples[i], p, sr);
+        u[i] = adsrStep(s, p, sr, { trig: ev.trig, gateOff: ev.gateOff, vel: 1 });
+    }
+    return u;
+}
+function adsrRunMidi(events, len, sr, p) {
+    const s = adsrInit();
+    const held = {};
+    let count = 0;
+    let vel = 1;
+    const u = new Array(len);
+    const byN = {};
+    for (const e of events) (byN[e.n] = byN[e.n] || []).push(e);
+    for (let i = 0; i < len; i++) {
+        let trig = false;
+        let gateOff = false;
+        for (const e of byN[i] || []) {
+            if (e.on) {
+                if (!held[e.note]) { held[e.note] = 1; count++; if (count === 1) { trig = true; vel = clamp(e.vel / 127, 0, 1); } }
+            } else if (held[e.note]) {
+                held[e.note] = 0; count--;
+                if (count === 0) gateOff = true;
+            }
+        }
+        u[i] = adsrStep(s, p, sr, { trig, gateOff, vel });
+    }
+    return u;
+}
+// XY: out A = X, out B = Y (unipolar: outputFromU(u, 0, depth)); Buttons: out A = button 1, out B = button 2 (0 / 1). Both optionally slewed
+// (one-pole, time constant slewMs(slew)). Returns [outA, outB] for steady values.
+function xyOutputs(p) {
+    return [outputFromU(clamp(p.x, 0, 1), 0, p.depth), outputFromU(clamp(p.y, 0, 1), 0, p.depth)];
+}
+function buttonOutputs(p) {
+    return [outputFromU(p.sync ? 1 : 0, 0, p.depth), outputFromU(p.bipolar ? 1 : 0, 0, p.depth)];
+}
+// the outputs [A, B] of any modulator type at rest (steady parameters; single-output types mirror A on B)
+function slewCoef(slew, sr) {
+    const ms = slewMs(slew);
+    return ms < 0.05 ? 0 : Math.exp(-1000 / (ms * sr));
+}
+
 // ------------------------------------------------------------------------------------
 // Mapping transfer tables
 // ------------------------------------------------------------------------------------
@@ -1239,9 +1428,10 @@ function isSelfTarget(path, ownDevicePath) {
     const own = String(ownDevicePath).replace(/"/g, "");
     return p === own || p.indexOf(own + " ") === 0;
 }
-function findDuplicateMapping(mappings, modIndex, target, ignore) {
+function findDuplicateMapping(mappings, modIndex, target, ignore, out) {
     const k = targetKey(target);
-    for (const m of mappings) if (m.mod === modIndex && targetKey(m.target) === k && !(ignore && ignore(m))) return m;
+    const o = out === 1 ? 1 : 0;
+    for (const m of mappings) if (m.mod === modIndex && (m.out === 1 ? 1 : 0) === o && targetKey(m.target) === k && !(ignore && ignore(m))) return m;
     return null;
 }
 // lom = {exists(path)->bool, name(path)->string, count(path, child)->int}
@@ -1306,10 +1496,11 @@ if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
         MEGAMOD_VERSION, MAX_MODS, CFG_STRIDE, CF_TYPE, CF_ENABLED, CF_RATE, CF_SYNC, CF_SYNCDIV, CF_SHAPE, CF_PHASE,
         CF_RETRIG, CF_BIPOLAR, CF_DEPTH, CF_ATTACK, CF_RELEASE, CF_GAIN, CF_SMOOTH, CF_STEPS, CF_GLIDE, CF_ONESHOT,
-        CF_SEED, CF_LOOPON, CF_LOOPSTART, CF_LOOPEND, CFG_FLOATS, MSEG_TABLE, MSEG_FLOATS, STEPS_MAX, STEPS_FLOATS,
+        CF_SEED, CF_LOOPON, CF_LOOPSTART, CF_LOOPEND, CF_DECAY, CF_SUSTAIN, CF_THRESH, CF_X, CF_Y, CF_SLEW, CFG_FLOATS, MSEG_TABLE, MSEG_FLOATS, STEPS_MAX, STEPS_FLOATS,
         SCOPE_STRIDE, SCOPE_HEADER, SCOPE_FRAME, SCOPE_SR, SCOPE_BEAT, SCOPE_BPM, SCOPE_PLAYING, SCOPE_SAMPS,
-        MAX_MAPPINGS, CURVE_REGION, CURVE_SAMPS, ROUTE_SAMPS, ROUTE_DEPTH_BASE, ROUTE_DEPTH_MIN, ROUTER_DEPTH_SLOTS, INT_DEST_COUNT, depthRouteDest, makeDepthTarget, isDepthTarget, isDepthRoute, depthRoutesOf, effectiveDepth, migrateDepthRoutes, SCOPE_EFF, SCOPE_EFF_STRIDE, SCOPE_DEPTH, BUF_INT, BUF_ICURVE, INT_ROUTES, INT_COUNT_AT, INT_DESC_AT, INT_SW_AT, INT_SAMPS, ICURVE_SAMPS, DEST_CTL, DEST_SW, DEST_DEPTH, DEST_COUNT, SELF_MODES, SELF_MODE_LABELS, KEY_CF, selfDestFor, selfDestInfo, selfDestName, selfDestFromName, selfDestExists, selfDestLabel, isInternalTarget, isSelfMapping, selfDestOf, makeInternalTarget, classifySelfParam, intDescriptorFloats, selfCtlValue, ROUTE_OFF, ROUTERS, ROUTER_SLOTS, BUF_CFG, BUF_MSEG, BUF_STEPS, BUF_SCOPE, BUF_CURVE, BUF_ROUTE,
-        MOD_NONE, MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG, MOD_TYPE_NAMES, MOD_TYPE_SHORT, LFO_SHAPES,
+        MAX_MAPPINGS, CURVE_REGION, CURVE_SAMPS, ROUTE_SAMPS, ROUTE_CELLS, ROUTE_HB_AT, ROUTE_HB_ECHO_AT, ROUTE_ACT_AT, ROUTE_DEPTH_BASE, ROUTE_DEPTH_MIN, ROUTER_DEPTH_SLOTS, INT_DEST_COUNT, depthRouteDest, makeDepthTarget, isDepthTarget, isDepthRoute, depthRoutesOf, effectiveDepth, migrateDepthRoutes, SCOPE_EFF, SCOPE_EFF_STRIDE, SCOPE_DEPTH, SCOPE_OUTB, BUF_INT, BUF_ICURVE, INT_ROUTES, INT_COUNT_AT, INT_DESC_AT, INT_SW_AT, INT_SAMPS, ICURVE_SAMPS, DEST_CTL, DEST_SW, DEST_DEPTH, DEST_COUNT, SELF_MODES, SELF_MODE_LABELS, KEY_CF, selfDestFor, selfDestInfo, selfDestName, selfDestFromName, selfDestExists, selfDestLabel, isInternalTarget, isSelfMapping, selfDestOf, makeInternalTarget, classifySelfParam, intDescriptorFloats, selfCtlValue, ROUTE_OFF, ROUTERS, ROUTER_SLOTS, ENGINE_OUTS, BUF_CFG, BUF_MSEG, BUF_STEPS, BUF_SCOPE, BUF_CURVE, BUF_ROUTE,
+        MOD_NONE, MOD_LFO, MOD_ENV, MOD_RANDOM, MOD_STEPS, MOD_MSEG, MOD_ADSR, MOD_XY, MOD_BTN, MOD_TYPE_MAX, MOD_TYPE_NAMES, MOD_TYPE_SHORT, MOD_DEFAULT_NAMES, MOD_OUT_COUNT, MOD_OUT_TAGS, modOutputs, srcIndex, outTag, LFO_SHAPES,
+        SLEW_MAX_MS, slewMs, slewCoef, AUTO_SW_TYPE_LABELS, autoSwLabel, ADSR_FAST_REL_MS, ADSR_SLOW_MS, ADSR_ONSET_RATIO, ADSR_GATE_OFF, ADSR_REARM, ADSR_REARM_BASE, ADSR_EXP_K, ADSR_ATK_POW, adsrAttackShape, adsrExpShape, adsrInit, adsrStep, adsrDetect, adsrRunThreshold, adsrRunMidi, xyOutputs, buttonOutputs,
         CURVE_LINEAR, CURVE_EXP, CURVE_LOG, CURVE_S, CURVE_STEPPED, CURVE_NAMES, SYNC_BEATS, SYNC_LABELS, MOD_COLORS,
         MOD_PARAM_KEYS, MOD_PARAM_RANGE, MIN_WIDTH, MAX_WIDTH, BLOB_CHUNK,
         AUTO_PARAMS, AUTO_PER_SLOT, AUTO_COUNT, AUTO_SW_KEYS, AUTO_SW_NAMES, AUTO_SW_PER_SLOT, AUTO_SW_COUNT, AUTO_SW_USED, autoSwitchName, autoSwitchIndex, AUTO_DEPTH_SLOTS, AUTO_KEYS, AUTO_LABELS, AUTO_LOG, AUTO_LETTERS, autoNorm, autoValue, autoSlotNames, autoDepthName, autoControlLabel, autoLiveName,

@@ -16,12 +16,15 @@ import hashlib
 import json
 import os
 import struct
+import subprocess
 import sys
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "sampler_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "sampler_ui.js")
 FACE_PATH = os.path.join(ROOT_DIR, "src", "sampler_face.js")
+THEME_PATH = os.path.join(ROOT_DIR, "src", "sampler_theme_ableton.js")
+LAYOUT_PATH = os.path.join(ROOT_DIR, "src", "sampler_layout_ableton.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "sampler_core.genexpr")
 
 DEVICE_H = 169.0
@@ -250,6 +253,26 @@ PARAM_SPECS = {
                    "Sliced: MIDI key that plays the first slice."),
 }
 
+# Optional float parameters: only a design whose spec says "sample_gain": true gets the live.* object, route slot, FACE_PARAMS
+# entry and gen wiring (the default device and the other designs have no such parameter; the gen's own Param stays at 0 dB).
+# Their object / route slot comes right before face_theme, so the existing parameter order never changes.
+OPTIONAL_SPECS = {
+    "samp_gain": ("Sample Gain", "SampGain", -48.0, 24.0, 0.0, 4, 1.0, "samp_gain", 1.0, "set_samp_gain",
+                  "Gain of the sample signal in dB (-48 to +24 dB), applied before the character / drive and the filter."),
+}
+# Spec flag -> the optional keys it enables ("env_slopes": envelope slope bends, -100..+100 %).
+OPTIONAL_GROUPS = {"sample_gain": ("samp_gain",), "env_slopes": ()}
+for _k, _nm, _sn, _hp in (
+        ("atk_slope", "Attack Slope", "AtkSlope", "Amp envelope attack curve: negative bows down (slow start), positive bows up."),
+        ("dec_slope", "Decay Slope", "DecSlope", "Amp envelope decay curve: negative bows down, positive bows up."),
+        ("rel_slope", "Release Slope", "RelSlope", "Amp envelope release curve: negative bows down, positive bows up."),
+        ("matk_slope", "Mod Attack Slope", "MAtkSlope", "Mod envelope attack curve."),
+        ("mdec_slope", "Mod Decay Slope", "MDecSlope", "Mod envelope decay curve."),
+        ("mrel_slope", "Mod Release Slope", "MRelSlope", "Mod envelope release curve.")):
+    OPTIONAL_SPECS[_k] = (_nm, _sn, -100.0, 100.0, 0.0, 5, 1.0, _k, 0.01, "set_" + _k, _hp)
+    OPTIONAL_GROUPS["env_slopes"] += (_k,)
+TAIL_PARAMS = tuple(OPTIONAL_SPECS)
+
 # Discrete enum / toggle parameters:
 # key: (long_name, short_name, enums, initial, gen_param, ui_setter, help_text)
 ENUM_SPECS = {
@@ -341,10 +364,24 @@ ENUM_SPECS = {
         "Mono Legato", "Legato", ["Poly", "Legato"], 0, None, "set_mono_legato",
         "Switches between polyphonic voicing and monophonic single-trigger legato.",
     ),
+    # UI state kept as a real parameter so the hidden live.tab (the Ableton theme's page tabs) and every canvas follow it
+    "env_page": (
+        "Envelope Page", "EnvPage", ["AMP", "MOD", "LFO", "UNI"], 0, None, "set_env_page",
+        "Page of the envelope panel: amp envelope, mod envelope, LFO or unison.",
+    ),
+    # Appended LAST: the face look (stored UI state, see UI_STATE_ENUMS)
+    "face_theme": (
+        "Face Theme", "Theme", ["Bitwig", "Ableton"], 0, None, "set_face_theme",
+        "Look of the device face: Bitwig (default) or Ableton (Live's own flat device look).",
+    ),
 }
+
+# Enum parameters that are UI state only: stored with the Set and presets, hidden from automation / mapping
+UI_STATE_ENUMS = ("env_page", "face_theme")
 
 
 # Every parameter the face can set through ["param", key, value]
+# order: the floats, the enums, the optional floats, then face_theme (which stays the very last parameter); rebuilt per device
 FACE_KEYS = list(PARAM_SPECS) + list(ENUM_SPECS)
 
 
@@ -369,7 +406,7 @@ def valueof_dict(key):
 
 def enum_valueof_dict(key):
     long_name, short, enums, initial, _gen, _ui, _help = ENUM_SPECS[key]
-    return {
+    v = {
         "parameter_annotation_name": long_name,
         "parameter_enum": enums,
         "parameter_initial": [initial],
@@ -380,6 +417,9 @@ def enum_valueof_dict(key):
         "parameter_shortname": short,
         "parameter_type": 2,
     }
+    if key in UI_STATE_ENUMS:
+        v["parameter_invisible"] = 1
+    return v
 
 
 def make_dial(key, x, y, w=40.0, h=44.0, color_rgb=COL_PLAY):
@@ -651,6 +691,119 @@ def make_drop_zone(x, y, w=68.0, h=14.0):
 # Bitwig-style face layout
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# Ableton theme: the parameters' own live.* objects are shown in the Ableton look (Live's theme colours, no colour
+# attributes), moved into place at runtime by src/sampler_layout_ableton.js. Saved state = Bitwig: every one of them
+# is `presentation 1`, `hidden 1` at a parked rect. Classes only differ from the Bitwig-only build where the Ableton
+# look needs another widget; the parameter definition (valueof) is identical.
+# ---------------------------------------------------------------------------
+
+AB_PARK = [598.0, 0.0, 1.0, 1.0]
+AB_DIAL_KEYS = [
+    "rp_dist", "rp_color", "formant", "sp_shift", "sp_bend", "sp_quant_amt", "cy_width", "cy_split", "cy_fund", "cy_mod",
+    "cy_harm", "grain_size", "grain_spray", "fr_env", "fr_density", "fr_motion", "pitch_st", "grain_motion", "play_pos",
+    "lfo_rate", "lfo_pitch", "lfo_filt", "lfo_pos", "unison_voices", "unison_detune", "poly_voices", "unison_width",
+    "glide_ms", "vel_sens", "out_gain",
+]
+AB_NUMBOX_KEYS = ["fr_repeats", "filt_drive", "filt_env_amt", "menv_pitch", "menv_pos"]
+AB_TOGGLE_TEXT = {
+    "rp_imaging": "Img", "rp_vsr": "VSR", "sp_onsets": "Onsets", "sp_formant_on": "Fmt", "cy_xfade": "Xfade",
+    "fr_sync": "Sync", "fr_use_density": "Density", "freeze": "Freeze", "filt_on": "On", "show_inspector": "Inspector",
+}
+AB_MENU_KEYS = ["rp_char", "sp_char", "cy_char", "sp_quant", "lfo_shape"]
+AB_TAB_ROWS = {"sliced": 2, "mode": 5, "filt_type": 1, "mono_legato": 1, "env_page": 1}
+AB_PARAM_KEYS = AB_DIAL_KEYS + AB_NUMBOX_KEYS + list(AB_TOGGLE_TEXT) + AB_MENU_KEYS + list(AB_TAB_ROWS)
+# layout keys that are not parameters: key -> scripting name
+AB_OTHER_BOXES = {
+    "pnl_body": "ab_pnl_body", "pnl_lcd": "ab_pnl_lcd", "pnl_left": "ab_pnl_left", "pnl_engine": "ab_pnl_engine",
+    "pnl_play": "ab_pnl_play", "pnl_filter": "ab_pnl_filter", "pnl_env": "ab_pnl_env", "pnl_side": "ab_pnl_side",
+    "pnl_bg": "obj-pnl-bg", "v_main": "SamplerStateData", "v_side": "obj-viz-side", "v_adsr": "obj-viz-adsr",
+    "v_filt": "obj-viz-filt",
+}
+# panel key -> (theme colour, static fallback rgb)
+AB_PANEL_THEME = {
+    "pnl_lcd": ("live_lcd_bg", (0.094, 0.094, 0.094)),
+    "pnl_left": ("live_desktop", (0.165, 0.165, 0.165)),
+    "pnl_side": ("live_desktop", (0.165, 0.165, 0.165)),
+    "pnl_engine": ("live_desktop", (0.165, 0.165, 0.165)),
+    "pnl_play": ("live_desktop", (0.165, 0.165, 0.165)),
+    "pnl_filter": ("live_desktop", (0.165, 0.165, 0.165)),
+    "pnl_env": ("live_desktop", (0.165, 0.165, 0.165)),
+    "pnl_body": ("live_surface_bg", (0.212, 0.212, 0.212)),
+}
+
+
+def ab_boxnames():
+    """Layout key -> scripting (varname) of the box, injected into the faces as AB_BOXNAMES."""
+    names = {key: ENUM_SPECS[key][0] if key in ENUM_SPECS else PARAM_SPECS[key][0] for key in AB_PARAM_KEYS}
+    names.update(AB_OTHER_BOXES)
+    return names
+
+
+def strip_colors(box):
+    """No colour attributes: Live's theme colours the widget (as Delay+ does)."""
+    for k in list(box):
+        if k.endswith("color") or k in ("fontface", "fontsize"):
+            box.pop(k)
+    return box
+
+
+def park(b):
+    """Saved state = Bitwig theme: shown in presentation but hidden, at a rect outside every canvas."""
+    box = b["box"]
+    box["presentation"] = 1
+    box["hidden"] = 1
+    box["presentation_rect"] = list(AB_PARK)
+    return b
+
+
+def make_native(key):
+    """The parameter's own live.* object in the Ableton look (identical parameter definition)."""
+    if key in AB_DIAL_KEYS:
+        b = make_dial(key, 0, 0, 33.0, 42.0)
+        strip_colors(b["box"])
+        b["box"]["showname"] = 1
+        b["box"]["shownumber"] = 1
+    elif key in AB_NUMBOX_KEYS:
+        b = make_numbox(key, 0, 0, 46.0, 15.0, appearance=0)
+        strip_colors(b["box"])
+    elif key in AB_TOGGLE_TEXT:
+        long_name, _short, _enums, _init, _gen, _ui, help_text = ENUM_SPECS[key]
+        b = {"box": {
+            "annotation": help_text, "annotation_name": long_name, "id": f"obj-ctrl-{key}", "maxclass": "live.text",
+            "mode": 1, "numinlets": 1, "numoutlets": 2, "outlettype": ["", ""], "parameter_enable": 1,
+            "patching_rect": [0.0, 185.0, 40.0, 14.0], "presentation": 1, "presentation_rect": [0.0, 0.0, 40.0, 14.0],
+            "saved_attribute_attributes": {"valueof": enum_valueof_dict(key)},
+            "text": AB_TOGGLE_TEXT[key], "texton": AB_TOGGLE_TEXT[key], "varname": long_name,
+        }}
+    elif key in AB_MENU_KEYS:
+        long_name, _short, _enums, _init, _gen, _ui, help_text = ENUM_SPECS[key]
+        b = {"box": {
+            "annotation": help_text, "annotation_name": long_name, "id": f"obj-ctrl-{key}", "maxclass": "live.menu",
+            "numinlets": 1, "numoutlets": 3, "outlettype": ["", "", "float"], "parameter_enable": 1,
+            "patching_rect": [0.0, 205.0, 60.0, 14.0], "presentation": 1, "presentation_rect": [0.0, 0.0, 60.0, 14.0],
+            "saved_attribute_attributes": {"valueof": enum_valueof_dict(key)}, "varname": long_name,
+        }}
+    else:
+        rows = AB_TAB_ROWS[key]
+        b = make_tab(key, 0, 0, 53.0, 14.0, num_rows=rows)
+        strip_colors(b["box"])
+    return park(b)
+
+
+def make_theme_panel(key):
+    colour, rgb = AB_PANEL_THEME[key]
+    return {"box": {
+        "background": 1, "bgcolor": [rgb[0], rgb[1], rgb[2], 1.0], "bgfillcolor": [rgb[0], rgb[1], rgb[2], 1.0], "border": 0, "hidden": 1,
+        "id": f"obj-{key.replace('_', '-')}", "maxclass": "panel", "mode": 0, "numinlets": 1, "numoutlets": 0,
+        "patching_rect": [0.0, 10.0, 20.0, 20.0], "presentation": 1, "presentation_rect": list(AB_PARK),
+        "rounded": 0,
+        # follows Live's theme and hue (Delay+'s theme(): bind bgfillcolor, the static value stays as the fallback)
+        "saved_attribute_attributes": {"bgfillcolor": {"expression": f"themecolor.{colour}"}},
+        "varname": AB_OTHER_BOXES[key],
+    }}
+
+
 def hide_from_face(b, px, py):
     """Keep a live.* parameter off the presentation face (the v8ui face draws and drives it)."""
     box = b["box"]
@@ -660,30 +813,50 @@ def hide_from_face(b, px, py):
     return b
 
 
-def build_face_layout():
-    """Returns (ui_boxes, panels): hidden live.* parameters, the drop zone, and the device background."""
+def build_face_layout(themed=True):
+    """Returns (ui_boxes, panels): hidden live.* parameters, the drop zone, and the device background.
+
+    themed: the Ableton theme's objects (native widgets, theme panels) are saved too, hidden (not in design builds)."""
     ui_boxes = []
     col = 0
     for key in PARAM_SPECS:
-        ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
+        if key in TAIL_PARAMS:
+            continue
+        if themed and key in AB_PARAM_KEYS:
+            ui_boxes.append(make_native(key))
+        else:
+            ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         col += 1
-    for key in ENUM_SPECS:
-        ui_boxes.append(hide_from_face(make_tab(key, 0, 0, 64.0, 15.0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
+    for key in [k for k in ENUM_SPECS if k != "face_theme"] + [k for k in TAIL_PARAMS if k in PARAM_SPECS] + ["face_theme"]:
+        if key in TAIL_PARAMS:
+            ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
+        elif themed and key in AB_PARAM_KEYS:
+            ui_boxes.append(make_native(key))
+        else:
+            ui_boxes.append(hide_from_face(make_tab(key, 0, 0, 64.0, 15.0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         col += 1
 
-    panels = [
-        make_panel("obj-pnl-bg", 0, 0, DEVICE_W + INSPECTOR_W, DEVICE_H, bg=(0.255, 0.255, 0.255), border=(0.255, 0.255, 0.255), rounded=0),
-    ]
-    return ui_boxes, panels
+    bg = make_panel("obj-pnl-bg", 0, 0, DEVICE_W + INSPECTOR_W, DEVICE_H, bg=(0.255, 0.255, 0.255), border=(0.255, 0.255, 0.255), rounded=0)
+    bg["box"]["varname"] = "obj-pnl-bg"
+    # Ableton theme panels (hidden here) go before the Bitwig background, which stays the last box. Among background
+    # panels an earlier box draws over a later one: LCD and sections first, then the body.
+    theme_panels = [make_theme_panel(k) for k in AB_PANEL_THEME] if themed else []
+    return ui_boxes, theme_panels + [bg]
 
 
-def face_params_json():
-    """Ranges the face needs to map knob travel to parameter values (Live's exponent mapping)."""
+def face_params_json(design=False):
+    """Ranges the face needs to map knob travel to parameter values (Live's exponent mapping).
+
+    Design variants have their own look and no theme switch: they do not get face_theme, which also keeps the
+    Ableton theme code off in them (storeParam only honours face_theme when the face knows the parameter).
+    """
     out = {}
     for key, spec in PARAM_SPECS.items():
         _long, _short, lo, hi, init, unit, exp, *_rest = spec
         out[key] = {"lo": lo, "hi": hi, "init": init, "exp": exp, "unit": unit}
     for key, spec in ENUM_SPECS.items():
+        if design and key in UI_STATE_ENUMS:
+            continue
         _long, _short, enums, init, *_rest = spec
         out[key] = {"lo": 0, "hi": len(enums) - 1, "init": init, "exp": 1.0, "unit": 9, "enums": enums}
     return json.dumps(out)
@@ -738,18 +911,60 @@ def make_viz(obj_id, rect, script, region, py):
     return {"box": b}
 
 
-def build_patcher():
+DESIGNS_DIR = os.path.join(ROOT_DIR, "scripts", "sampler_designs")
+
+
+def load_designs():
+    """Alternative faces: scripts/sampler_designs/<slug>.json, each built into its own device.
+
+    Spec keys: title, device (file name in devices/), face (JS file, appended after the shared face so it can
+    override paint / onclick / ...), width (device width), max_width (with every fold open), drop ([x, y, w, h]
+    of the waveform drop zone), optional description.
+    """
+    designs = []
+    if os.path.isdir(DESIGNS_DIR):
+        for name in sorted(os.listdir(DESIGNS_DIR)):
+            if name.endswith(".json"):
+                with open(os.path.join(DESIGNS_DIR, name), "r", encoding="utf-8") as f:
+                    spec = json.load(f)
+                spec["slug"] = name[:-5]
+                designs.append(spec)
+    return designs
+
+
+def build_patcher(design=None):
+    global FACE_KEYS
+    for k in OPTIONAL_SPECS:
+        PARAM_SPECS.pop(k, None)
+    for flag, keys in OPTIONAL_GROUPS.items():
+        if design and design.get(flag):
+            PARAM_SPECS.update({k: OPTIONAL_SPECS[k] for k in keys})
+    FACE_KEYS = ([k for k in PARAM_SPECS if k not in TAIL_PARAMS] + [k for k in ENUM_SPECS if k != "face_theme"]
+                 + [k for k in TAIL_PARAMS if k in PARAM_SPECS] + ["face_theme"])
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
     with open(FACE_PATH, "r", encoding="utf-8") as f:
         face_js = f.read()
+    with open(THEME_PATH, "r", encoding="utf-8") as f:
+        theme_js = f.read()
+    with open(LAYOUT_PATH, "r", encoding="utf-8") as f:
+        theme_js += "\n" + f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
 
-    ui_boxes, panels = build_face_layout()
+    ui_boxes, panels = build_face_layout(themed=not design)
     dev_w = DEVICE_W
+    design_js = ""
+    if design:
+        with open(os.path.join(ROOT_DIR, design["face"]), "r", encoding="utf-8") as f:
+            design_js = f.read()
+        dev_w = float(design["width"])
+        max_w = float(design.get("max_width", design["width"]))
+        for pan in panels:
+            if pan["box"]["id"] == "obj-pnl-bg":
+                pan["box"]["presentation_rect"] = [0.0, 0.0, max_w, DEVICE_H]
 
     gen_dsp_text = gendsp_json(gen_code)
     gen_dsp_hash = hashlib.sha1(gen_dsp_text.encode("utf-8")).hexdigest()[:12]
@@ -758,17 +973,34 @@ def build_patcher():
         dsp = ""
         if region == "main":
             dsp = f"var GEN_DSP_TEXT = {json.dumps(gen_dsp_text)};\nvar GEN_DSP_HASH = \"{gen_dsp_hash}\";\n"
+        design_vars = ""
+        if design:
+            design_vars = (
+                f"\n// Design variant: {design['title']}\n"
+                f"var FACE_DESIGN = {json.dumps(design['slug'])};\n"
+                f"DEVICE_W = {float(design['width'])};\n"
+                f"var DESIGN_WIDTH = {float(design['width'])};\n"
+                f"var DESIGN_MAX_WIDTH = {float(design.get('max_width', design['width']))};\n"
+            )
         return (
             config_js
             + f'\n\nvar FACE_REGION = "{region}";\n'
-            + f"var FACE_PARAMS = {face_params_json()};\n"
+            + f"var FACE_PARAMS = {face_params_json(bool(design))};\n"
+            + f"var AB_BOXNAMES = {json.dumps(ab_boxnames())};\n"
             + dsp
             + ui_js
             + "\n"
             + face_js
+            + "\n"
+            + theme_js
+            + design_vars
+            + ("\n" + design_js if design else "")
         )
 
-    main_viz = make_viz("obj-viz", MAIN_VIZ_RECT, face_script("main"), "main", 45.0)
+    main_rect = MAIN_VIZ_RECT
+    if design:
+        main_rect = [0.0, 0.0, float(design.get("max_width", design["width"])), DEVICE_H]
+    main_viz = make_viz("obj-viz", main_rect, face_script("main"), "main", 45.0)
     # The main face owns the saved editor state (regions, slices, sample path, envelope page)
     main_viz["box"]["parameter_enable"] = 1
     main_viz["box"]["saved_attribute_attributes"] = {
@@ -790,7 +1022,7 @@ def build_patcher():
     # In Live a live.drop only outputs in parameter mode (File type 4, as in Max's live.drop help).
     # Live then saves the path and replays it on load; the face ignores a replay of the sample it is
     # already restoring from SamplerStateData.
-    wave_drop = make_drop_zone(*WAVE_DROP_RECT)
+    wave_drop = make_drop_zone(*(design["drop"] if design else WAVE_DROP_RECT))
     wave_drop["box"].update({
         "id": "obj-drop-wave",
         "legend": "",
@@ -812,7 +1044,22 @@ def build_patcher():
         "varname": "Sample File",
     })
     insp_viz = make_viz("obj-viz-insp", INSPECTOR_VIZ_RECT, face_script("inspector"), "inspector", 420.0)
+    if design:
+        # A design draws everything in its one main canvas; the side / inspector canvases stay in the patch
+        # (same wiring) but off the face
+        for v in (side_viz, insp_viz):
+            v["box"]["presentation"] = 0
+            v["box"].pop("presentation_rect", None)
     ui_boxes = ui_boxes + [main_viz, side_viz, insp_viz, wave_drop]
+    extra_vizes = []
+    if not design:
+        # Ableton theme: the ADSR and filter-curve displays are small canvases of their own (parked and hidden in Bitwig)
+        for vid, region, py in (("obj-viz-adsr", "adsr", 560.0), ("obj-viz-filt", "filt", 700.0)):
+            v = make_viz(vid, AB_PARK, face_script(region), region, py)
+            v["box"]["hidden"] = 1
+            extra_vizes.append(v)
+        ui_boxes = ui_boxes + extra_vizes
+        # the main canvas keeps the saved-state scripting name; its Ableton rect is applied at runtime
 
     dsp_boxes = [
         # Audio I/O (pass-through + synth output sum so device works in Instrument or Audio track chains)
@@ -934,7 +1181,7 @@ def build_patcher():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [420.0, 386.0, 220.0, 20.0],
-                "text": "buffer~ #0-bsscope @samps 128",
+                "text": "buffer~ #0-bsscope @samps 256",
             }
         },
         # Analyzed root key: the sample's pitch (MIDI) at 4096 evenly spaced positions, written by the face
@@ -1182,10 +1429,15 @@ def build_patcher():
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz", 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-side", 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-insp", 0]}})
+            for ev in extra_vizes:
+                lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": [ev["box"]["id"], 0]}})
 
         px += 85.0
 
     # Wire every enum / toggle parameter into obj-gen and obj-viz
+    for ev in extra_vizes:
+        lines.append({"patchline": {"source": [ev["box"]["id"], 0], "destination": ["obj-route-viz", 0]}})
+
     for key, spec in ENUM_SPECS.items():
         _long, _short, _enums, _init, gen_param, ui_setter, _help = spec
         ctrl_id = f"obj-ctrl-{key}"
@@ -1223,6 +1475,8 @@ def build_patcher():
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz", 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-side", 0]}})
             lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": ["obj-viz-insp", 0]}})
+            for ev in extra_vizes:
+                lines.append({"patchline": {"source": [ui_prep_id, 0], "destination": [ev["box"]["id"], 0]}})
 
         px += 85.0
 
@@ -1273,9 +1527,69 @@ def write_amxd(patcher_dict, out_path):
     print(f"Built {out_path} ({w}x{h} px, {len(payload)} bytes JSON)")
 
 
+def apply_ab_preview(patcher_dict, spec):
+    """Scratch preview build (SAMPLER_AB_PREVIEW=<json>): saves the Ableton layout of one state instead of the Bitwig
+    state, because scripts/render_preview.py ignores runtime `hidden` / rect changes. Never used for the device.
+
+    spec: {"state": layout inputs, "params": {key: value} set by the faces' preview(), "inspector": 0 / 1}.
+    The layout itself comes from src/sampler_layout_ableton.js (run with node, so Python holds no second copy)."""
+    state = dict(spec["state"])
+    state["inspector"] = int(spec.get("inspector", 0))
+    out = subprocess.run(
+        ["node", "-e", "const L=require(process.argv[1]);console.log(JSON.stringify(L.abComputeLayout(1,JSON.parse(process.argv[2]))))",
+         LAYOUT_PATH, json.dumps(state)], check=True, capture_output=True, text=True).stdout
+    layout = json.loads(out)
+    pt = patcher_dict["patcher"]
+    by_var = {b["box"].get("varname"): b["box"] for b in pt["boxes"]}
+    for key, name in ab_boxnames().items():
+        box = by_var[name]
+        rect = layout[key]
+        if rect:
+            box["presentation_rect"] = [float(v) for v in rect]
+            box["presentation"] = 1
+            box.pop("hidden", None)
+        else:
+            box["presentation"] = 0
+            box["hidden"] = 1
+    # the renderer paints panels in list order (Max draws earlier background panels on top): body first for the picture
+    body = next(b for b in pt["boxes"] if b["box"].get("varname") == "ab_pnl_body")
+    pt["boxes"].remove(body)
+    pt["boxes"].insert(next(i for i, b in enumerate(pt["boxes"]) if b["box"].get("maxclass") == "panel"), body)
+    params = dict(spec.get("params", {}))
+    params["face_theme"] = 1
+    # the preview renderer ignores translate() for rounded rects (Max does not): undo the canvas origin for those
+    fix = ("var __o = abOrigin(), __rr = mgraphics.rectangle_rounded; mgraphics.rectangle_rounded = function (x, y, w, h, a, b) "
+           "{ return __rr.call(mgraphics, x - __o[0], y - __o[1], w, h, a, b); }; ")
+    js = "\nvar __pv = preview; preview = function () { __pv(); " + fix + " ".join(
+        f"storeParam({json.dumps(k)}, {v}, true);" for k, v in params.items()) + " };\n"
+    for b in pt["boxes"]:
+        box = b["box"]
+        if box.get("maxclass") == "v8ui":
+            box["textfile"]["text"] += js
+            if box["id"] == "obj-viz-insp" and state["inspector"]:
+                box["presentation"] = 1
+    if state["inspector"]:
+        pt["devicewidth"] = 760.0
+        pt["openrect"] = [0.0, 0.0, 760.0, DEVICE_H]
+    return patcher_dict
+
+
 def main():
     devices_dir = os.path.join(ROOT_DIR, "devices")
+    preview_spec = os.environ.get("SAMPLER_AB_PREVIEW")
+    if preview_spec:
+        out = os.environ["SAMPLER_AB_OUT"]
+        write_amxd(apply_ab_preview(build_patcher(), json.loads(preview_spec)), out)
+        return
     write_amxd(build_patcher(), os.path.join(devices_dir, "Better Sampler.amxd"))
+    only = sys.argv[1] if len(sys.argv) > 1 else None
+    for design in load_designs():
+        if only and design["slug"] != only:
+            continue
+        if not os.path.exists(os.path.join(ROOT_DIR, design["face"])):
+            print(f"skip design {design['slug']}: {design['face']} missing")
+            continue
+        write_amxd(build_patcher(design), os.path.join(devices_dir, design["device"]))
 
 
 if __name__ == "__main__":

@@ -95,7 +95,7 @@ function configure() {
         for (i = 0; i < ic.length; i++) ic[i] = 0;
         var rts = CASE.selfmod.routes;
         for (var r = 0; r < rts.length; r++) {
-            hdr[4 * r] = rts[r].src + 1;
+            hdr[4 * r] = srcIndex(rts[r].src, rts[r].out) + 1;
             hdr[4 * r + 1] = rts[r].dest;
             var it = rts[r].dest >= DEST_DEPTH ? depthFactorTable(rts[r].map) : mappingTable(rts[r].map); // a depth route bakes its unipolar factor m = range * dep * y
             for (i = 0; i < CURVE_REGION; i++) ic[r * CURVE_REGION + i] = it[i];
@@ -115,7 +115,7 @@ function configure() {
         for (i = 0; i < curveFloats.length; i++) curveFloats[i] = 0.9;
         for (var q = 0; q < CASE.router.slots.length; q++) {
             var sd = CASE.router.slots[q];
-            route[2 * sd.slot] = sd.src;
+            if (!CASE.router.off) { route[2 * sd.slot] = srcIndex(sd.src, sd.out); route[ROUTE_ACT_AT + Math.floor(sd.slot / ROUTER_SLOTS)] += 1; } // (`off`: the route cell stays off until a `routeset` event; the count is what the mapper keeps per router)
             // every pool slot (schema 10) applies the Depth in the router: the table is baked at depth 1, base depth (+ Remote min) in the route buffer
             var mp = sd.map;
             if (sd.slot < ROUTER_DEPTH_SLOTS) {
@@ -142,6 +142,22 @@ function configure() {
 function autorate(n) {
     var slot = (CASE.mods && CASE.mods.length ? CASE.mods[0].slot : 0);
     new Buffer(names.cfg).poke(1, slot * CFG_STRIDE + CF_RATE, [autoValue("rate", Number(n))]);
+}
+
+// `routeset <slot> <src> [out]`: write one route cell mid-run (what the mapper does when a mapping becomes active); src -1 = off
+// (the mapper's way: the router's activity count first, then the cell; `routecell` writes only the cell: the router's own 32-sample scan has to find it)
+function routeset(slot, src, out) {
+    var b = new Buffer(names.route);
+    b.poke(1, ROUTE_ACT_AT + Math.floor(Number(slot) / ROUTER_SLOTS), [Number(src) < 0 ? 0 : 1]);
+    b.poke(1, 2 * Number(slot), [Number(src) < 0 ? ROUTE_OFF : srcIndex(Number(src), out === undefined ? 0 : Number(out))]);
+}
+function routecell(slot, src, out) {
+    new Buffer(names.route).poke(1, 2 * Number(slot), [Number(src) < 0 ? ROUTE_OFF : srcIndex(Number(src), out === undefined ? 0 : Number(out))]);
+}
+
+// `cfgset <slot> <field> <value>`: poke one cfg float mid-run (what the device does when a control / switch parameter moves: a Buttons toggle, ...)
+function cfgset(slot, field, value) {
+    new Buffer(names.cfg).poke(1, Number(slot) * CFG_STRIDE + Number(field), [Number(value)]);
 }
 
 // Per-mapping Depth: a = router slot with depth 1, b = router slot with depth CASE.dep (same source, same table otherwise).
@@ -473,6 +489,46 @@ function analyzeLookup(rep, a, b, sr) {
     rep.push("lookup_samples " + cnt);
 }
 
+// Router sleep: a = router output (its route cell is OFF until the event `routeset` at CASE.sp.event_ms into the window), b = the engine source (an LFO).
+// off_max = max |a| before the event (a sleeping router outputs exact zeros); wake_samples = samples from the event to the first |a| > 1e-4 (the router scans its route
+// cells every 32 samples, so <= ~40 + the event's own latency of one vector); after the wake the output follows the source through the identity mapping.
+function analyzeRouteSleep(rep, a, b, sr) {
+    var ev = Math.floor(CASE.sp.event_ms * sr / 1000), pre = 0, i;
+    for (i = 0; i < ev - 64 && i < a.length; i++) pre = Math.max(pre, Math.abs(a[i]));
+    var first = -1;
+    for (i = ev; i < a.length; i++) if (Math.abs(a[i]) > 0.000001) { first = i; break; }
+    var err = 0, cnt = 0;
+    for (i = (first < 0 ? a.length : first + 64); i < a.length; i++) { err = Math.max(err, Math.abs(a[i] - b[i])); cnt++; }
+    rep.push("rs_pre_max " + pre);
+    rep.push("rs_wake_samples " + (first < 0 ? -1 : first - ev));
+    rep.push("rs_follow_err " + err);
+    rep.push("rs_follow_n " + cnt);
+}
+// Engine slot off: a = engine output of slot 1 (an LFO). cfgset events (CASE.sp.off_ms -> enabled 0, CASE.sp.on_ms -> enabled 1): while disabled the output is EXACT zero
+// (a slot that went inactive writes its zeros once, then is left alone), before and after it is the running LFO.
+function analyzeSlotOff(rep, a, sr) {
+    var off = Math.floor(CASE.sp.off_ms * sr / 1000), on = Math.floor(CASE.sp.on_ms * sr / 1000), i;
+    var mid = 0, before = 0, after = 0, guard = 64;
+    for (i = 0; i < a.length; i++) {
+        var v = Math.abs(a[i]);
+        if (i < off - guard) before = Math.max(before, v);
+        else if (i > off + guard && i < on - guard) mid = Math.max(mid, v);
+        else if (i > on + guard) after = Math.max(after, v);
+    }
+    rep.push("so_before_max " + before);
+    rep.push("so_off_max " + mid);
+    rep.push("so_after_max " + after);
+}
+// Router heartbeat / echo (deferred-DSP readiness, src/megamod_dsp.js): route[1024 + r] counts every 32 samples, route[1032 + r] = rbase + 1.
+function analyzeRouteHeartbeat(rep, sr) {
+    var r = CASE.sp.router_idx;
+    var b = new Buffer(names.route);
+    var hb = b.peek(1, ROUTE_HB_AT + r, 1), echo = b.peek(1, ROUTE_HB_ECHO_AT + r, 1);
+    hb = typeof hb === "number" ? hb : hb[0]; echo = typeof echo === "number" ? echo : echo[0];
+    rep.push("hb_count " + hb);
+    rep.push("hb_echo " + echo);
+    rep.push("hb_expected " + Math.floor(CASE.sp.total_ms * sr / 1000 / 32));
+}
 function analyzeRouteOff(rep, off, on) {
     var mo = 0, mn = 0;
     for (var i = 0; i < off.length; i++) { mo = Math.max(mo, Math.abs(off[i])); mn = Math.max(mn, Math.abs(on[i])); }
@@ -696,6 +752,84 @@ function analyzeSelfFeedback(rep, x, y, sr) {
     rep.push("sfb_fmin " + (fmin > 1e8 ? 0 : fmin));
 }
 
+// ---------------------------------------------------------------- ADSR / XY / Buttons
+function upCrossings(u, level) {
+    var o = [];
+    for (var i = 1; i < u.length; i++) if (u[i - 1] < level && u[i] >= level) o.push(i);
+    return o;
+}
+// ADSR with the THRESHOLD trigger: c1 = the ADSR output, c2 = the burst source (the device input). The reference is adsrRunThreshold() (src/megamod_config.js) on
+// that very input; the stage times are measured on the first cycle (u = (out + 1) / (2 * depth) for the unipolar output).
+function analyzeAdsr(rep, x, src, sr) {
+    var p = fullMod(CASE.mods[0]).p;
+    var ref = adsrRunThreshold(src, sr, p);
+    var err = 0, i, u = [], dep = Math.max(p.depth, 1e-6);
+    for (i = 0; i < x.length; i++) {
+        err = Math.max(err, Math.abs(x[i] - outputFromU(ref[i], p.bipolar, p.depth)));
+        u.push(p.bipolar ? (x[i] / dep + 1) / 2 : (x[i] + 1) / (2 * dep));
+    }
+    var on = -1, ip = -1, id = -1, ir = -1, ie = -1, pk = 0;
+    for (i = 0; i < u.length && on < 0; i++) if (u[i] > 0.0005) on = i;
+    for (i = Math.max(on, 0); i < u.length && ip < 0; i++) if (u[i] >= 0.99998 * (CASE.sp && CASE.sp.peak ? CASE.sp.peak : 1)) ip = i; // the attack ends exactly at the peak (a concave curve, so a tight threshold)
+    if (ip >= 0) pk = u[ip];
+    for (i = Math.max(ip, 0); i < u.length && id < 0; i++) if (u[i] <= p.sustain * pk + 0.00002) id = i; // the exponential decay ends exactly at the sustain level
+    var sus = 0, sn = 0;
+    if (id >= 0) for (i = id + Math.floor(0.02 * sr); i < Math.min(u.length, id + Math.floor(0.1 * sr)); i++) { sus += u[i]; sn++; }
+    if (id >= 0) for (i = id + Math.floor(0.02 * sr); i < u.length && ir < 0; i++) if (u[i] < p.sustain * pk - 1e-4) ir = i;
+    if (ir >= 0) for (i = ir; i < u.length && ie < 0; i++) if (u[i] <= 0.00002) ie = i; // the exponential release ends exactly at 0
+    rep.push("adsr_err " + err);
+    rep.push("adsr_onset_ms " + (on * 1000 / sr));
+    rep.push("adsr_attack_ms " + (on >= 0 && ip >= 0 ? (ip - on) * 1000 / sr : -1));
+    rep.push("adsr_decay_ms " + (ip >= 0 && id >= 0 ? (id - ip) * 1000 / sr : -1));
+    rep.push("adsr_sustain " + (sn ? sus / sn : -1));
+    rep.push("adsr_release_ms " + (ir >= 0 && ie >= 0 ? (ie - ir) * 1000 / sr : -1));
+    rep.push("adsr_peak " + pk);
+    rep.push("adsr_triggers " + upCrossings(u, 0.9 * (CASE.sp && CASE.sp.peak ? CASE.sp.peak : 1)).length);
+    var rt = upCrossings(ref, 0.9);
+    rep.push("adsr_ref_triggers " + rt.length);
+}
+// two ADSRs on the same input: c1 = Retrig off (a new trigger attacks from the CURRENT level), c2 = Retrig on (from 0). sp.t2_ms = when the second burst starts in the window.
+function analyzeAdsrRetrig(rep, a, b, sr) {
+    var t2 = Math.floor(CASE.sp.t2_ms * sr / 1000), i;
+    var ua = function (v) { return (v + 1) / 2; };
+    rep.push("rt_a_before " + ua(a[t2 - Math.floor(0.002 * sr)]));
+    rep.push("rt_a_after " + ua(a[t2 + Math.floor(0.001 * sr)]));
+    rep.push("rt_b_before " + ua(b[t2 - Math.floor(0.002 * sr)]));
+    rep.push("rt_b_after " + ua(b[t2 + Math.floor(0.001 * sr)]));
+    var dipA = 9, dipB = 9;
+    for (i = t2 - Math.floor(0.002 * sr); i < t2 + Math.floor(0.02 * sr); i++) { dipA = Math.min(dipA, ua(a[i])); dipB = Math.min(dipB, ua(b[i])); }
+    rep.push("rt_a_min " + dipA);
+    rep.push("rt_b_min " + dipB);
+    var same = 0;
+    for (i = Math.floor(0.2 * sr); i < t2 - Math.floor(0.01 * sr); i++) same = Math.max(same, Math.abs(a[i] - b[i]));
+    rep.push("rt_same_before " + same);
+}
+// Buttons slew: c1 = button 1 (toggled on at sp.t_ms), c2 = button 2 (never touched). One-pole: out = 2u - 1, u = 1 - exp(-(t - t0) / tau).
+function analyzeBtnSlew(rep, a, b, sr) {
+    var t0 = Math.floor(CASE.sp.t_ms * sr / 1000), i;
+    var target = 2 * (1 - Math.exp(-1)) - 1; // one time constant after the toggle
+    var hit = -1;
+    for (i = t0; i < a.length && hit < 0; i++) if (a[i] >= target) hit = i;
+    var first = -1;
+    for (i = t0; i < a.length && first < 0; i++) if (a[i] > -0.999) first = i;
+    var maxStep = 0;
+    for (i = t0; i < a.length - 1; i++) maxStep = Math.max(maxStep, Math.abs(a[i + 1] - a[i]));
+    rep.push("bs_tau_ms " + (hit >= 0 ? (hit - t0) * 1000 / sr : -1));
+    rep.push("bs_start_ms " + (first >= 0 ? (first - t0) * 1000 / sr : -1));
+    rep.push("bs_max_step " + maxStep);
+    rep.push("bs_end " + a[a.length - 1]);
+    var bmin = 9, bmax = -9;
+    for (i = 0; i < b.length; i++) { bmin = Math.min(bmin, b[i]); bmax = Math.max(bmax, b[i]); }
+    rep.push("bs_b_min " + bmin);
+    rep.push("bs_b_max " + bmax);
+}
+// output B mirrors output A for a single-output type
+function analyzeMirror(rep, a, b) {
+    var d = 0;
+    for (var i = 0; i < a.length; i++) d = Math.max(d, Math.abs(a[i] - b[i]));
+    rep.push("mirror_maxdiff " + d);
+}
+
 // ---------------------------------------------------------------- entry
 function analyze(durMs) {
     if (armed) return;
@@ -747,6 +881,13 @@ function analyzeInner(durMs) {
     else if (an === "remoteroutes") analyzeRemoteRoutes(rep, c1, c2, sr);
     else if (an === "selftoggle") analyzeSelfToggle(rep, c1, c2, sr);
     else if (an === "selffb") analyzeSelfFeedback(rep, c1, c2, sr);
+    else if (an === "adsr") analyzeAdsr(rep, c1, c2, sr);
+    else if (an === "adsrretrig") analyzeAdsrRetrig(rep, c1, c2, sr);
+    else if (an === "btnslew") analyzeBtnSlew(rep, c1, c2, sr);
+    else if (an === "mirror") analyzeMirror(rep, c1, c2);
+    else if (an === "routesleep") analyzeRouteSleep(rep, c1, c2, sr);
+    else if (an === "slotoff") analyzeSlotOff(rep, c1, sr);
+    else if (an === "routehb") analyzeRouteHeartbeat(rep, sr);
 
     if (CASE.tele) analyzeTelemetry(rep, sr);
     for (var q = 0; q < rep.length; q++) {

@@ -1,0 +1,9 @@
+{
+  "title": "Better Sampler Reactive",
+  "device": "Better Sampler Reactive.amxd",
+  "face": "src/sampler_design_reactive.js",
+  "width": 560,
+  "max_width": 780,
+  "drop": [7, 37, 254, 52],
+  "description": "Graph-first face: draggable envelope and filter curves, animated LFO, modulation rings on the knobs, and a side drawer (Engine / Mod / Voice / Sample) that widens the device."
+}

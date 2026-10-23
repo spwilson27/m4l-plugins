@@ -4,7 +4,9 @@ device's parameters, and until its script reports ready (test_report -> lomReady
 measure) has synced the device and holds the Live lock.
 
   python3 scripts/measure_megamod_load.py [--runs 3]
-Prints one line per run and a median:  bridge-up / params-visible / ready (seconds since open)."""
+Prints one line per run and a median:  bridge-up / params-visible / ready (seconds since open).
+With the deferred DSP (src/megamod_dsp.js) it also reads Global("megamod_load_trace") (epoch ms of `face-ready` = names bound + LOM ready = the face is
+live, and `dsp-ready` = engine and routers run) and reports both relative to `open`; a build without the trace (the old one) has face = DSP = script ready."""
 import argparse
 import json
 import os
@@ -59,6 +61,25 @@ return g.last ? JSON.parse(String(g.last)).lomReady === true : false;
 """
 
 
+CODE_TRACE = """
+var g = new Global("megamod_load_trace");
+return g.text ? String(g.text) : "";
+"""
+
+
+def parse_trace(text, t0):
+    """{tag: seconds since t0} of the first line of each tag (epoch ms in `t=`)."""
+    out = {}
+    for ln in (text or "").split("\n"):
+        parts = ln.split()
+        if len(parts) < 2 or not parts[1].startswith("t="):
+            continue
+        tag = parts[0]
+        if tag not in out:
+            out[tag] = int(parts[1][2:]) / 1000.0 - t0
+    return out
+
+
 def once():
     subprocess.call(["pkill", "-x", "Live"])
     for _ in range(80):
@@ -74,6 +95,7 @@ def once():
     zombie = "(Live)" in subprocess.run(["ps", "-axo", "command"], capture_output=True, text=True).stdout.split("\n")
     subprocess.Popen(["open"] + (["-n"] if zombie else []) + ["-a", "Ableton Live 12 Suite", SET])
     up = vis = ready = n = None
+    trace = {}
     while time.time() - t0 < 240:
         try:
             if up is None:
@@ -91,11 +113,14 @@ def once():
                 r = rpc("eval_js", {"code": CODE_READY})
                 if unwrap(r) is True:
                     ready = time.time() - t0
+            if ready is not None:
+                trace = parse_trace(unwrap(rpc("eval_js", {"code": CODE_TRACE})), t0)
+                if "dsp-ready" in trace or "dsp-error" in trace or time.time() - t0 > ready + 40:
                     break
         except Exception:
             pass
         time.sleep(0.25)
-    return up, vis, ready, n
+    return up, vis, ready, n, trace
 
 
 def main():
@@ -103,13 +128,16 @@ def main():
     ap.add_argument("--runs", type=int, default=3)
     a = ap.parse_args()
     rows = []
+    f = lambda v: "none" if v is None else "%.1f" % v
     for r in range(a.runs):
-        up, vis, ready, n = once()
-        rows.append((up, vis, ready))
-        f = lambda v: "none" if v is None else "%.1f" % v
-        print("run %d: bridge up %s s, device params visible %s s (%s params), script ready %s s" % (r + 1, f(up), f(vis), n, f(ready)))
+        up, vis, ready, n, trace = once()
+        face = trace.get("face-ready", ready)
+        dsp = trace.get("dsp-ready", ready if "dsp-start" not in trace else None)
+        rows.append((up, vis, ready, face, dsp))
+        extra = " ".join("%s %.2f" % (k, v) for k, v in sorted(trace.items(), key=lambda kv: kv[1]))
+        print("run %d: bridge up %s s, device params visible %s s (%s params), script ready %s s, face ready %s s, DSP ready %s s | %s" % (r + 1, f(up), f(vis), n, f(ready), f(face), f(dsp), extra))
         sys.stdout.flush()
-    for k, label in enumerate(["bridge up", "params visible", "script ready"]):
+    for k, label in enumerate(["bridge up", "params visible", "script ready", "face ready", "DSP ready"]):
         v = sorted(x[k] for x in rows if x[k] is not None)
         if v:
             print("median %s: %.1f s" % (label, v[len(v) // 2]))

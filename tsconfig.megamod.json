@@ -2,8 +2,11 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/types/megamod.d.ts",
     "src/megamod_config.js",
     "src/megamod_mapper.js",
-    "src/megamod_ui.js"
+    "src/megamod_dsp.js",
+    "src/megamod_ui.js",
+    "src/megamod_ui_newmods.js"
   ]
 }

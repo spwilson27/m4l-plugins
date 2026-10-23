@@ -461,6 +461,7 @@ function snap(label) {
     var best = -1, bestA = 0.0005;
     for (var i = 0; i < 16; i++) if (chunk[16 + i] > bestA) { bestA = chunk[16 + i]; best = i; }
     snaps[String(label)] = { voice: best, pos: best >= 0 ? chunk[best] : -1, amp: bestA, lfo: chunk[35], frame: chunk[39] };
+    if (opt.tv) { try { snaps[String(label)].tv = new Buffer(scopeName).peek(1, 128, 80); } catch (terr) { } }
     if (opt.gt) { try { gtSnaps.push(new Buffer(scopeName).peek(1, 64, 64)); } catch (gerr) { } }
 }
 
@@ -804,6 +805,16 @@ function seqReport(left, right, sr) {
 function snapReport() {
     var txt = "";
     for (var key in snaps) {
+        if (snaps[key].tv) {
+            // Per-voice envelope / filter telemetry (scope 128..207): tv<ms>_<voice>a/al/m/ml/c = amp code, amp level, mod code, mod level,
+            // cutoff Hz for voices 0..3; tv<ms>x = how many of voices 4..15 are not idle (any code / level / cutoff != 0).
+            var tvc = snaps[key].tv, ms = key.substring(1), extra = 0;
+            for (var tvv = 0; tvv < 16; tvv++) {
+                if (tvv < 4) txt += "tv" + ms + "_" + tvv + "a " + tvc[tvv] + "\ntv" + ms + "_" + tvv + "al " + tvc[16 + tvv] + "\ntv" + ms + "_" + tvv + "m " + tvc[32 + tvv] + "\ntv" + ms + "_" + tvv + "ml " + tvc[48 + tvv] + "\ntv" + ms + "_" + tvv + "c " + tvc[64 + tvv] + "\n";
+                else if (tvc[tvv] !== 0 || tvc[16 + tvv] !== 0 || tvc[32 + tvv] !== 0 || tvc[48 + tvv] !== 0 || tvc[64 + tvv] !== 0) extra++;
+            }
+            txt += "tv" + ms + "x " + extra + "\n";
+        }
         if (key.charAt(0) !== "t") continue;
         txt += "snp" + key.substring(1) + "Pos " + snaps[key].pos + "\n" + "snp" + key.substring(1) + "Amp " + snaps[key].amp + "\n" + "snp" + key.substring(1) + "Lfo " + snaps[key].lfo + "\n" + "snp" + key.substring(1) + "Frame " + snaps[key].frame + "\n";
     }

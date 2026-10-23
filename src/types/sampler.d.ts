@@ -10,8 +10,10 @@ interface FaceParamSpec {
     enums?: string[];
 }
 
-/** "main", "side" or "inspector": which v8ui canvas this copy of the face draws. */
-declare var FACE_REGION: "main" | "side" | "inspector";
+/** "main", "side", "inspector", "adsr" or "filt": which v8ui canvas this copy of the face draws. */
+declare var FACE_REGION: "main" | "side" | "inspector" | "adsr" | "filt";
+/** Layout key -> scripting name of the box (src/sampler_layout_ableton.js; injected by the build). */
+declare var AB_BOXNAMES: { [key: string]: string };
 declare var FACE_PARAMS: { [key: string]: FaceParamSpec };
 /** Main face only: the gen patch as .gendsp JSON and its content hash (deferred DSP, see loadDsp). */
 declare var GEN_DSP_TEXT: string;

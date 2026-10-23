@@ -5,6 +5,8 @@
     "src/types/sampler.d.ts",
     "src/sampler_config.js",
     "src/sampler_ui.js",
-    "src/sampler_face.js"
+    "src/sampler_face.js",
+    "src/sampler_theme_ableton.js",
+    "src/sampler_layout_ableton.js"
   ]
 }
