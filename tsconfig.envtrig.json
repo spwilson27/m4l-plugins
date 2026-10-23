@@ -4,6 +4,7 @@
     "src/types/max-extras.d.ts",
     "src/types/envtrig.d.ts",
     "src/envtrig_config.js",
+    "src/envtrig_dsp.js",
     "src/envtrig_ui.js"
   ]
 }

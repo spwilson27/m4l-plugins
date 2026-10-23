@@ -19,6 +19,7 @@ Layout (169 px tall, 228 px collapsed / 342 px with the MIDI To panel open):
     MIDI Ch, Length, Vel Lo, Vel Hi.
 """
 
+import hashlib
 import json
 import os
 import struct
@@ -26,6 +27,7 @@ import struct
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "envtrig_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "envtrig_ui.js")
+DSP_PATH = os.path.join(ROOT_DIR, "src", "envtrig_dsp.js")
 STRIP_PATH = os.path.join(ROOT_DIR, "src", "envtrig_strip.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "envtrig_core.genexpr")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Envelope Trigger.amxd")
@@ -313,16 +315,71 @@ def line(src, outlet, dst, inlet):
     return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
 
 
+def gendsp_json(gen_code):
+    """The gen patch (in 1 / in 2 -> codebox -> out 1..4) as .gendsp JSON text.
+
+    Envelope Trigger's core has two audio inlets and four outlets: audio L, audio R, the gate
+    into edge~, and the held velocity into snapshot~. The face writes this text to
+    /tmp/envtrig_core_<hash>.gendsp and creates `gen~ @gen <file>` (src/envtrig_dsp.js).
+    """
+    def bx(i, text, x, y, ni, no, cls="newobj", **kw):
+        box = {
+            "id": i,
+            "maxclass": cls,
+            "numinlets": ni,
+            "numoutlets": no,
+            "outlettype": [""] * no,
+            "patching_rect": [float(x), float(y), 200.0, 22.0],
+        }
+        if cls == "newobj":
+            box["text"] = text
+        box.update(kw)
+        return {"box": box}
+
+    patch = {"patcher": {
+        "fileversion": 1,
+        "appversion": {"major": 9, "minor": 1, "revision": 0, "architecture": "x64", "modernui": 1},
+        "classnamespace": "dsp.gen",
+        "rect": [50.0, 50.0, 700.0, 480.0],
+        "boxes": [
+            bx("obj-in1", "in 1", 20, 20, 0, 1),
+            bx("obj-in2", "in 2", 140, 20, 0, 1),
+            bx("obj-code", "", 20, 70, 2, 4, cls="codebox", code=gen_code, fontname="<Monospaced>", fontsize=12.0),
+            bx("obj-out1", "out 1", 20, 420, 1, 0),
+            bx("obj-out2", "out 2", 140, 420, 1, 0),
+            bx("obj-out3", "out 3", 260, 420, 1, 0),
+            bx("obj-out4", "out 4", 380, 420, 1, 0),
+        ],
+        "lines": [
+            {"patchline": {"source": ["obj-in1", 0], "destination": ["obj-code", 0]}},
+            {"patchline": {"source": ["obj-in2", 0], "destination": ["obj-code", 1]}},
+            {"patchline": {"source": ["obj-code", 0], "destination": ["obj-out1", 0]}},
+            {"patchline": {"source": ["obj-code", 1], "destination": ["obj-out2", 0]}},
+            {"patchline": {"source": ["obj-code", 2], "destination": ["obj-out3", 0]}},
+            {"patchline": {"source": ["obj-code", 3], "destination": ["obj-out4", 0]}},
+        ],
+    }}
+    return json.dumps(patch)
+
+
 def build():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
+    with open(DSP_PATH, "r", encoding="utf-8") as f:
+        dsp_js = f.read()
     with open(STRIP_PATH, "r", encoding="utf-8") as f:
         strip_js = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
-    v8_code = config_js.rstrip() + "\n\n" + ui_js
+    gen_text = gendsp_json(gen_code)
+    gen_hash = hashlib.sha1(gen_text.encode("utf-8")).hexdigest()[:12]
+    gen_vars = (
+        f"var GEN_DSP_TEXT = {json.dumps(gen_text)};\n"
+        f"var GEN_DSP_HASH = \"{gen_hash}\";\n"
+    )
+    v8_code = config_js.rstrip() + "\n\n" + gen_vars + "\n" + dsp_js.rstrip() + "\n\n" + ui_js
 
     boxes = [
         make_v8ui("obj-viz", v8_code, [8.0, 8.0, 192.0, 104.0], (20.0, 80.0), 3),
@@ -353,20 +410,10 @@ def build():
     boxes.extend([
         newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
         newobj("obj-plugout", "plugout~", 20, 460, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-        {
-            "box": {
-                "code": gen_code,
-                "fontname": "<Monospaced>",
-                "fontsize": 10.0,
-                "id": "obj-gen",
-                "maxclass": "gen.codebox~",
-                "numinlets": 2,
-                "numoutlets": 4,
-                "outlettype": ["signal"] * 4,
-                "patching_rect": [120.0, 300.0, 420.0, 140.0],
-                "varname": "envtrig",
-            }
-        },
+        # Pass-through hub. The face creates gen~ after the GUI paints and connects this outlet
+        # to it. Data goes in the right inlet (inlet 1); inlet 0 stays open (`gate 1 1`).
+        # plugin~ is not wired to plugout~ here: the device stays silent until that gen~ runs.
+        newobj("obj-gen-in", "gate 1 1", 120, 300, 60, numinlets=2, numoutlets=1, outlettype=[""]),
         newobj("obj-scope", f"buffer~ #0-trigscope @samps {SCOPE_BUFFER_SAMPS}", 560, 240, 210, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 560, 300, 60, outlettype=["bang"]),
         message("obj-msg-ui-buf", "setbuffer #0-trigscope", 560, 330, 180),
@@ -374,6 +421,7 @@ def build():
         # live.thisdevice: init routing, restore the panel state, and receive setwidth
         newobj("obj-thisdevice", "live.thisdevice", 700, 10, 85, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init-routing", "init_routing", 800, 40, 80),
+        message("obj-msg-init-dsp", "init_dsp", 800, 70, 70),
         message("obj-msg-settype", "settype $1", 820, 100, 80),
         message("obj-msg-setchan", "setchannel $1", 820, 130, 90),
         # Panel toggle -> strip face, device width, widget visibility. The toggle feeds `t i` and an
@@ -387,6 +435,9 @@ def build():
         newobj("obj-prep-hidden", "prepend hidden", 1080, 100, 90),
         # Threshold drag from the graph -> gen + dial
         newobj("obj-route-viz", "route thr view", 20, 215, 90, numinlets=3, numoutlets=3),
+        # Unmatched viz messages (`dsp_resend`) bang the scope bind and every gen-bound dial.
+        # Trigger fires right to left, so outlet 5 (scope) lands before the parameters.
+        newobj("obj-dsp-fan", "t b b b b b b", 20, 250, 90, numinlets=1, numoutlets=6, outlettype=["bang"] * 6),
         # Graph view toggle (envelope / scope), re-applied on load like the panel state
         newobj("obj-view-store", "i 0", 860, 190, 40, numinlets=2, numoutlets=1, outlettype=["int"]),
         newobj("obj-ui-view", "prepend set_view", 940, 190, 100),
@@ -405,16 +456,22 @@ def build():
     ])
 
     lines = [
-        line("obj-plugin", 0, "obj-gen", 0),
-        line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0),
-        line("obj-gen", 1, "obj-plugout", 1),
+        # No plugin~ -> plugout~ cord: silence until the face wires gen~.
         line("obj-loadbang", 0, "obj-msg-ui-buf", 0),
         line("obj-loadbang", 0, "obj-msg-gen-buf", 0),
         line("obj-msg-ui-buf", 0, "obj-viz", 0),
-        line("obj-msg-gen-buf", 0, "obj-gen", 0),
+        line("obj-msg-gen-buf", 0, "obj-gen-in", 1),
         line("obj-thisdevice", 0, "obj-msg-init-routing", 0),
         line("obj-msg-init-routing", 0, "obj-viz", 0),
+        line("obj-thisdevice", 0, "obj-msg-init-dsp", 0),
+        line("obj-msg-init-dsp", 0, "obj-viz", 0),
+        line("obj-route-viz", 2, "obj-dsp-fan", 0),
+        line("obj-dsp-fan", 5, "obj-msg-gen-buf", 0),
+        line("obj-dsp-fan", 4, "obj-ctrl-thr", 0),
+        line("obj-dsp-fan", 3, "obj-ctrl-sens", 0),
+        line("obj-dsp-fan", 2, "obj-ctrl-hold", 0),
+        line("obj-dsp-fan", 1, "obj-ctrl-velmin", 0),
+        line("obj-dsp-fan", 0, "obj-ctrl-velmax", 0),
         line("obj-thisdevice", 0, "obj-open-store", 0),
         line("obj-panel-toggle", 0, "obj-open-store", 1),
         line("obj-panel-toggle", 0, "obj-open-fan", 0),
@@ -448,8 +505,7 @@ def build():
         line("obj-ctrl-note", 0, "obj-note", 1),
         line("obj-ctrl-note", 0, "obj-ui-note", 0),
         line("obj-ui-note", 0, "obj-viz", 0),
-        line("obj-gen", 2, "obj-edge", 0),
-        line("obj-gen", 3, "obj-snap", 0),
+        # gate (gen outlet 2) and velocity (gen outlet 3) are connected when the face creates gen~.
         line("obj-edge", 0, "obj-trig", 0),
         line("obj-trig", 1, "obj-snap", 0),
         line("obj-trig", 0, "obj-note", 0),
@@ -492,7 +548,7 @@ def build():
             src_id = scale_id
         boxes.append(newobj(prep_id, f"prepend {gen_param}", 424, row_y, 110))
         lines.append(line(src_id, 0, prep_id, 0))
-        lines.append(line(prep_id, 0, "obj-gen", 0))
+        lines.append(line(prep_id, 0, "obj-gen-in", 1))
 
     # Background panels MUST be last in boxes and have "background": 1
     boxes.extend([
@@ -501,6 +557,14 @@ def build():
     ])
 
     by_id = {b["box"]["id"]: b["box"] for b in boxes}
+    for bid, name in {
+        "obj-gen-in": "et_genin",
+        "obj-plugin": "et_plugin",
+        "obj-plugout": "et_plugout",
+        "obj-edge": "et_edge",
+        "obj-snap": "et_snap",
+    }.items():
+        by_id[bid]["varname"] = name
     panel_names = [by_id[pid]["varname"] for pid in PANEL_IDS]
     by_id["obj-strip"]["textfile"]["text"] = f"var PANEL_NAMES = {json.dumps(panel_names)};\n\n" + strip_js
 
