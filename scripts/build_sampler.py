@@ -260,8 +260,9 @@ OPTIONAL_SPECS = {
     "samp_gain": ("Sample Gain", "SampGain", -48.0, 24.0, 0.0, 4, 1.0, "samp_gain", 1.0, "set_samp_gain",
                   "Gain of the sample signal in dB (-48 to +24 dB), applied before the character / drive and the filter."),
 }
-# Spec flag -> the optional keys it enables ("env_slopes": envelope slope bends, -100..+100 %).
-OPTIONAL_GROUPS = {"sample_gain": ("samp_gain",), "env_slopes": ()}
+# Spec flag -> the optional keys it enables ("env_slopes": envelope slope bends, -100..+100 %;
+# "wavetable_filter": Wavetable-style dual filter parameters).
+OPTIONAL_GROUPS = {"sample_gain": ("samp_gain",), "env_slopes": (), "wavetable_filter": ()}
 for _k, _nm, _sn, _hp in (
         ("atk_slope", "Attack Slope", "AtkSlope", "Amp envelope attack curve: negative bows down (slow start), positive bows up."),
         ("dec_slope", "Decay Slope", "DecSlope", "Amp envelope decay curve: negative bows down, positive bows up."),
@@ -271,7 +272,36 @@ for _k, _nm, _sn, _hp in (
         ("mrel_slope", "Mod Release Slope", "MRelSlope", "Mod envelope release curve.")):
     OPTIONAL_SPECS[_k] = (_nm, _sn, -100.0, 100.0, 0.0, 5, 1.0, _k, 0.01, "set_" + _k, _hp)
     OPTIONAL_GROUPS["env_slopes"] += (_k,)
+for _k, _spec in (
+        ("filt_morph", ("Filter 1 Morph", "Morph1", 0.0, 100.0, 0.0, 5, 1.0, "filt_morph", 0.01, "set_filt_morph", "Filter 1 morph position (LP -> BP -> HP -> Notch -> LP).")),
+        ("filt2_cutoff", ("Filter 2 Cutoff", "Cutoff2", 20.0, 20000.0, 18000.0, 3, 2.6, "filt2_cutoff", 1.0, "set_filt2_cutoff", "Filter 2 cutoff frequency (20 Hz to 20 kHz).")),
+        ("filt2_res", ("Filter 2 Resonance", "Res2", 0.0, 100.0, 15.0, 5, 1.0, "filt2_res", 0.0095, "set_filt2_res", "Filter 2 resonance (0 to 100%).")),
+        ("filt2_drive", ("Filter 2 Drive", "Drive2", 0.0, 100.0, 0.0, 5, 1.0, "filt2_drive", 0.01, "set_filt2_drive", "Filter 2 pre-filter drive (0 to 100%).")),
+        ("filt2_morph", ("Filter 2 Morph", "Morph2", 0.0, 100.0, 0.0, 5, 1.0, "filt2_morph", 0.01, "set_filt2_morph", "Filter 2 morph position (LP -> BP -> HP -> Notch -> LP).")),
+        ("osc2_pitch", ("Osc 2 Transpose", "Osc2Semi", -36.0, 36.0, 0.0, 7, 1.0, "osc2_pitch", 1.0, "set_osc2_pitch", "Oscillator 2 pitch transposition in semitones (-36 to +36 st).")),
+        ("osc2_detune", ("Osc 2 Detune", "Osc2Det", -100.0, 100.0, 0.0, 0, 1.0, "osc2_detune", 1.0, "set_osc2_detune", "Oscillator 2 fine detune in cents (-100 to +100 ct).")),
+        ("osc2_pos", ("Osc 2 Position", "Osc2Pos", 0.0, 100.0, 0.0, 5, 1.0, "osc2_pos", 0.01, "set_osc2_pos", "Oscillator 2 wavetable morph or sample start position (0 to 100%).")),
+        ("osc2_gain", ("Osc 2 Gain", "Osc2Gain", -48.0, 24.0, 0.0, 4, 1.0, "osc2_gain", 1.0, "set_osc2_gain", "Oscillator 2 output level in dB (-48 to +24 dB).")),
+        ("sub_tone", ("Sub Tone", "SubTone", 0.0, 100.0, 0.0, 5, 1.0, "sub_tone", 0.01, "set_sub_tone", "Sub oscillator harmonic saturation tone (0 to 100%).")),
+        ("sub_gain", ("Sub Gain", "SubGain", -48.0, 24.0, -6.0, 4, 1.0, "sub_gain", 1.0, "set_sub_gain", "Sub oscillator output level in dB (-48 to +24 dB)."))):
+    OPTIONAL_SPECS[_k] = _spec
+    OPTIONAL_GROUPS["wavetable_filter"] += (_k,)
+OPTIONAL_ENUM_SPECS = {
+    "filt_slope": ("Filter 1 Slope", "Slope1", ["12", "24"], 0, "filt_slope", "set_filt_slope", "Filter 1 slope (12 or 24 dB/oct)."),
+    "filt_circuit": ("Filter 1 Circuit", "Circ1", ["Clean", "OSR", "MS2", "SMP", "PRD"], 0, "filt_circuit", "set_filt_circuit", "Filter 1 circuit model."),
+    "filt2_on": ("Filter 2 Enable", "Filt2On", ["Off", "On"], 0, "filt2_on", "set_filt2_on", "Enables Filter 2."),
+    "filt2_type": ("Filter 2 Type", "FType2", ["LP", "HP", "BP", "Notch", "Morph"], 0, "filt2_type", "set_filt2_type", "Filter 2 response type."),
+    "filt2_slope": ("Filter 2 Slope", "Slope2", ["12", "24"], 0, "filt2_slope", "set_filt2_slope", "Filter 2 slope (12 or 24 dB/oct)."),
+    "filt2_circuit": ("Filter 2 Circuit", "Circ2", ["Clean", "OSR", "MS2", "SMP", "PRD"], 0, "filt2_circuit", "set_filt2_circuit", "Filter 2 circuit model."),
+    "filt_route": ("Filter Routing", "FRoute", ["Serial", "Parallel", "Split"], 0, "filt_route", "set_filt_route", "Filter routing: Serial, Parallel, or Split."),
+    "osc2_on": ("Osc 2 Enable", "Osc2On", ["Off", "On"], 0, "osc2_on", "set_osc2_on", "Enables Oscillator 2."),
+    "osc2_type": ("Osc 2 Type", "Osc2Type", ["Sampler", "Wavetable"], 0, "osc2_type", "set_osc2_type", "Oscillator 2 engine type: Sampler slot or Wavetable."),
+    "sub_on": ("Sub Enable", "SubOn", ["Off", "On"], 0, "sub_on", "set_sub_on", "Enables the Sub oscillator."),
+    "sub_oct": ("Sub Octave", "SubOct", ["0", "-1", "-2"], 1, "sub_oct", "set_sub_oct", "Sub oscillator octave offset (0, -1, or -2 octaves)."),
+}
+OPTIONAL_ENUM_GROUPS = {"wavetable_filter": tuple(OPTIONAL_ENUM_SPECS)}
 TAIL_PARAMS = tuple(OPTIONAL_SPECS)
+TAIL_ENUMS = tuple(OPTIONAL_ENUM_SPECS)
 
 # Discrete enum / toggle parameters:
 # key: (long_name, short_name, enums, initial, gen_param, ui_setter, help_text)
@@ -827,7 +857,10 @@ def build_face_layout(themed=True):
         else:
             ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         col += 1
-    for key in [k for k in ENUM_SPECS if k != "face_theme"] + [k for k in TAIL_PARAMS if k in PARAM_SPECS] + ["face_theme"]:
+    for key in ([k for k in ENUM_SPECS if k != "face_theme" and k not in TAIL_ENUMS]
+                + [k for k in TAIL_PARAMS if k in PARAM_SPECS]
+                + [k for k in TAIL_ENUMS if k in ENUM_SPECS]
+                + ["face_theme"]):
         if key in TAIL_PARAMS:
             ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         elif themed and key in AB_PARAM_KEYS:
@@ -936,11 +969,25 @@ def build_patcher(design=None):
     global FACE_KEYS
     for k in OPTIONAL_SPECS:
         PARAM_SPECS.pop(k, None)
+    for k in OPTIONAL_ENUM_SPECS:
+        ENUM_SPECS.pop(k, None)
+    ENUM_SPECS["filt_type"] = (
+        "Filter Type", "FType",
+        ["LP", "BP", "HP", "Notch", "Morph"] if (design and design.get("wavetable_filter")) else ["LP", "BP", "HP"],
+        0, "filt_type", "set_filt_type",
+        "Selects Low-Pass (LP), Band-Pass (BP), High-Pass (HP), Notch, or Morph SVF response.",
+    )
     for flag, keys in OPTIONAL_GROUPS.items():
         if design and design.get(flag):
             PARAM_SPECS.update({k: OPTIONAL_SPECS[k] for k in keys})
-    FACE_KEYS = ([k for k in PARAM_SPECS if k not in TAIL_PARAMS] + [k for k in ENUM_SPECS if k != "face_theme"]
-                 + [k for k in TAIL_PARAMS if k in PARAM_SPECS] + ["face_theme"])
+    for flag, keys in OPTIONAL_ENUM_GROUPS.items():
+        if design and design.get(flag):
+            ENUM_SPECS.update({k: OPTIONAL_ENUM_SPECS[k] for k in keys})
+    FACE_KEYS = ([k for k in PARAM_SPECS if k not in TAIL_PARAMS]
+                 + [k for k in ENUM_SPECS if k != "face_theme" and k not in TAIL_ENUMS]
+                 + [k for k in TAIL_PARAMS if k in PARAM_SPECS]
+                 + [k for k in TAIL_ENUMS if k in ENUM_SPECS]
+                 + ["face_theme"])
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
@@ -978,6 +1025,7 @@ def build_patcher(design=None):
             design_vars = (
                 f"\n// Design variant: {design['title']}\n"
                 f"var FACE_DESIGN = {json.dumps(design['slug'])};\n"
+                f"var OSC2_UI_STYLE = {json.dumps(design.get('osc2_ui', 'tabs'))};\n"
                 f"DEVICE_W = {float(design['width'])};\n"
                 f"var DESIGN_WIDTH = {float(design['width'])};\n"
                 f"var DESIGN_MAX_WIDTH = {float(design.get('max_width', design['width']))};\n"

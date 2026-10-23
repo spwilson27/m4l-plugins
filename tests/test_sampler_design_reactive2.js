@@ -510,6 +510,30 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
     dragHandle("filt", -900, 900).forEach(inRange);
     sb.paint(); const z = zones("hdl", "filt")[0]; sb.ondblclick(z.cx, z.cy);
     assert.strictEqual(sb.paramValue("filt_cutoff"), FP.filt_cutoff.init);
+    // Filter 2 handle, dropdowns, slope toggle, circuit and routing
+    sb.setParamFromFace("filt2_on", 1); sb.setParamFromFace("filt2_cutoff", 500); sb.setParamFromFace("filt2_res", 30);
+    sb.paint();
+    const ps2 = dragHandle("filt2", 25, -8);
+    ps2.forEach(inRange);
+    assert.ok(sb.paramValue("filt2_cutoff") > 500, "filt2 handle right raises Filter 2 cutoff");
+    assert.ok(sb.paramValue("filt2_res") > 30, "filt2 handle up raises Filter 2 resonance");
+    assert.strictEqual(sb.filtFocus, 2, "dragging filt2 focuses Filter 2");
+    sb.paint(); const zf2 = zones("hdl", "filt2")[0]; sb.ondblclick(zf2.cx, zf2.cy);
+    assert.strictEqual(sb.paramValue("filt2_cutoff"), FP.filt2_cutoff.init);
+    for (const [mKey, pickVal] of [["filt_type", 3], ["filt_circuit", 2], ["filt2_type", 2], ["filt2_circuit", 4], ["filt_route", 1]]) {
+        sb.paint();
+        const btn = sb.hitZones.find((q) => q.action === "menu" && q.key === mKey);
+        assert.ok(btn, `menu button for ${mKey}`);
+        sb.onclick(btn.x + 2, btn.y + 2, 1, 0, 0);
+        assert.ok(sb.openMenu && sb.openMenu.key === mKey, `${mKey} menu opens`);
+        sb.paint();
+        const item = sb.hitZones.find((q) => q.action === "menu_pick" && q.key === mKey && q.value === pickVal);
+        assert.ok(item, `${mKey} menu item ${pickVal}`);
+        sb.onclick(item.x + 2, item.y + 2, 1, 0, 0);
+        assert.strictEqual(sb.openMenu, null, `${mKey} menu closes on pick`);
+        assert.strictEqual(sb.paramValue(mKey), pickVal, `${mKey} updated to ${pickVal}`);
+    }
+    sb.setParamFromFace("filt_type", 0); sb.setParamFromFace("filt_circuit", 0); sb.setParamFromFace("filt2_on", 0); sb.setParamFromFace("filt_route", 0);
 }
 
 
@@ -675,6 +699,7 @@ for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 
     sb.envTab = 1; sb.paint(); collect(); sb.envTab = 0;
 }
 for (const at of [2, 3, 4]) { sb.setParamFromFace("slice_at", at); sb.setParamFromFace("sliced", 1); sb.paint(); collect(); }
+for (const ot of [1, 2, 0]) { sb.oscTab = ot; sb.paint(); collect(); }
 const missing = Object.keys(FP).filter((k) => !reach.has(k));
 assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.join(", ")}`);
 

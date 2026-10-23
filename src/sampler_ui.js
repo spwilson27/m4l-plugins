@@ -1029,6 +1029,28 @@ function set_rel_slope(v) { storeParam("rel_slope", v); }
 function set_matk_slope(v) { storeParam("matk_slope", v); }
 function set_mdec_slope(v) { storeParam("mdec_slope", v); }
 function set_mrel_slope(v) { storeParam("mrel_slope", v); }
+function set_filt_slope(v) { storeParam("filt_slope", v); }
+function set_filt_circuit(v) { storeParam("filt_circuit", v); }
+function set_filt_morph(v) { storeParam("filt_morph", v); }
+function set_filt2_on(v) { storeParam("filt2_on", v); }
+function set_filt2_type(v) { storeParam("filt2_type", v); }
+function set_filt2_slope(v) { storeParam("filt2_slope", v); }
+function set_filt2_circuit(v) { storeParam("filt2_circuit", v); }
+function set_filt2_cutoff(v) { storeParam("filt2_cutoff", v); }
+function set_filt2_res(v) { storeParam("filt2_res", v); }
+function set_filt2_drive(v) { storeParam("filt2_drive", v); }
+function set_filt2_morph(v) { storeParam("filt2_morph", v); }
+function set_filt_route(v) { storeParam("filt_route", v); }
+function set_osc2_on(v) { storeParam("osc2_on", v); }
+function set_osc2_type(v) { storeParam("osc2_type", v); }
+function set_osc2_pitch(v) { storeParam("osc2_pitch", v); }
+function set_osc2_detune(v) { storeParam("osc2_detune", v); }
+function set_osc2_pos(v) { storeParam("osc2_pos", v); }
+function set_osc2_gain(v) { storeParam("osc2_gain", v); }
+function set_sub_on(v) { storeParam("sub_on", v); }
+function set_sub_oct(v) { storeParam("sub_oct", v); }
+function set_sub_tone(v) { storeParam("sub_tone", v); }
+function set_sub_gain(v) { storeParam("sub_gain", v); }
 function set_out_gain(v) { storeParam("out_gain", v); }
 
 // Demo state for screenshots (render_preview.py calls preview())

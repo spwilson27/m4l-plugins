@@ -2170,6 +2170,79 @@ voice_proc(
 			poke(gtel, peek(gtel, gtB + 32 + gx) * finalGain, gtB + 32 + gx);
 		}
 	}
+	// Additional Oscillator 2 (Sampler slot or Wavetable) + Sub Oscillator
+	osc2SigL = 0;
+	osc2SigR = 0;
+	subSig = 0;
+	o2On = peek(prm, 62);
+	if (o2On > 0.5) {
+		o2Type = round(clip(peek(prm, 63), 0, 1));
+		o2Semi = peek(prm, 64) + peek(prm, 65) * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mOut * menvPitchAmt * 24.0;
+		o2Pos = clip(peek(prm, 66) + posMod, 0, 1);
+		o2Gain = pow(10.0, clip(peek(prm, 67), -48, 24) / 20.0);
+		o2Phs = peek(vhist, stB + 50);
+		if (needInit) {
+			o2Phs = (o2Type < 0.5) ? (o2Pos * numFrames) : 0.0;
+		}
+		if (o2Type < 0.5) {
+			// Osc 2 Type 0: Sampler slot (varispeed playback from loaded sample with forward loop)
+			o2Ratio = pow(2.0, clip(((isSlice ? rootMidi : curNote) - rootNow) + o2Semi, -48, 48) / 12.0) * srRat;
+			o2Phs = o2Phs + dirSign * o2Ratio;
+			if (effLoopMode > 0.5) {
+				if ((dirSign > 0.0) && (o2Phs >= effLEnd)) {
+					o2Phs = effLStart + wrap(o2Phs - effLEnd, 0, max(effLEnd - effLStart, 4));
+				} else if ((dirSign < 0.0) && (o2Phs < effLStart)) {
+					o2Phs = effLStart + wrap(o2Phs - effLStart, 0, max(effLEnd - effLStart, 4));
+				}
+			} else {
+				o2Phs = clip(o2Phs, startF, endF);
+			}
+			s2L, s2R = peek_lr(sampBuf, o2Phs, max(numFrames - 1, 1));
+			osc2SigL = s2L * o2Gain;
+			osc2SigR = s2R * o2Gain;
+		} else {
+			// Osc 2 Type 1: Wavetable oscillator (Sine -> Triangle -> Saw -> Square morph along o2Pos)
+			o2Hz = 440.0 * pow(2.0, ((isSlice ? rootMidi : curNote) - 69.0 + o2Semi) / 12.0);
+			o2Phs = fract(o2Phs + clip(o2Hz / max(srVal, 1), 0.00001, 0.48));
+			wtSine = sin(6.28318530718 * o2Phs);
+			wtTri = 1.0 - 4.0 * abs(fract(o2Phs + 0.25) - 0.5);
+			wtSaw = 2.0 * o2Phs - 1.0;
+			wtSqr = (o2Phs < 0.5) ? 1.0 : -1.0;
+			wtM = o2Pos * 3.0;
+			wtVal = wtSine;
+			if (wtM <= 1.0) {
+				wtVal = wtSine + (wtTri - wtSine) * wtM;
+			} else if (wtM <= 2.0) {
+				wtVal = wtTri + (wtSaw - wtTri) * (wtM - 1.0);
+			} else {
+				wtVal = wtSaw + (wtSqr - wtSaw) * (wtM - 2.0);
+			}
+			osc2SigL = wtVal * 0.55 * o2Gain;
+			osc2SigR = osc2SigL;
+		}
+		poke(vhist, o2Phs, stB + 50);
+	}
+	subOnVal = peek(prm, 68);
+	if (subOnVal > 0.5) {
+		subOctVal = round(clip(peek(prm, 69), 0, 2));
+		subToneVal = clip(peek(prm, 70), 0, 1);
+		subGainVal = pow(10.0, clip(peek(prm, 71), -48, 24) / 20.0);
+		subPhs = peek(vhist, stB + 51);
+		if (needInit) {
+			subPhs = 0.0;
+		}
+		subDiv = (subOctVal < 0.5) ? 1.0 : ((subOctVal < 1.5) ? 0.5 : 0.25);
+		subHz = baseHz * subDiv;
+		subPhs = fract(subPhs + clip(subHz / max(srVal, 1), 0.00001, 0.48));
+		poke(vhist, subPhs, stB + 51);
+		subS = sin(6.28318530718 * subPhs);
+		subRich = tanh(subS * (1.0 + subToneVal * 4.5));
+		subSig = (subS + (subRich - subS) * subToneVal) * 0.55 * subGainVal;
+	}
+	poke(vhist, fixnan(osc2SigL * finalGain), stB + 52);
+	poke(vhist, fixnan(osc2SigR * finalGain), stB + 53);
+	poke(vhist, fixnan(subSig * finalGain), stB + 54);
+
 	// Ping-pong slices keep an unfolded phase; report the folded position.
 	ppTele = isSlice && (modeId < 0.5) && (effLoopMode > 1.5) && (freezeOn < 0.5);
 	outPosNorm = clip(ppTele ? (pp_pos(playheadNorm * numFrames, startF, endF) / max(numFrames, 1)) : playheadNorm, 0, 1);
@@ -2232,7 +2305,7 @@ Buffer pitch("bspitch");
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
-Data prm(64);
+Data prm(80);
 Data vst(6400);
 Data gtel(1024);
 Data gtout(72);
@@ -2243,6 +2316,7 @@ Data tbuf(131072);
 Data sdat(237960);
 Data senv(16448);
 Data tvrel(32);
+Data fstate(16);
 
 // Parameters
 Param mode(0, min=0, max=4);
@@ -2336,11 +2410,33 @@ Param mrel_ms(220, min=1, max=10000);
 
 // Multimode SVF Filter + Drive
 Param filt_on(1, min=0, max=1);
-Param filt_type(0, min=0, max=2);
+Param filt_type(0, min=0, max=4);
 Param filt_cutoff(18000, min=20, max=20000);
 Param filt_res(0.15, min=0, max=0.95);
 Param filt_drive(0.0, min=0, max=1);
 Param filt_env_amt(0.0, min=-1, max=1);
+Param filt_slope(0, min=0, max=1);
+Param filt_circuit(0, min=0, max=4);
+Param filt_morph(0.0, min=0, max=1);
+Param filt2_on(0, min=0, max=1);
+Param filt2_type(0, min=0, max=4);
+Param filt2_slope(0, min=0, max=1);
+Param filt2_circuit(0, min=0, max=4);
+Param filt2_cutoff(18000, min=20, max=20000);
+Param filt2_res(0.15, min=0, max=0.95);
+Param filt2_drive(0.0, min=0, max=1);
+Param filt2_morph(0.0, min=0, max=1);
+Param filt_route(0, min=0, max=2);
+Param osc2_on(0, min=0, max=1);
+Param osc2_type(0, min=0, max=1);
+Param osc2_pitch(0, min=-36, max=36);
+Param osc2_detune(0, min=-100, max=100);
+Param osc2_pos(0, min=0, max=1);
+Param osc2_gain(0, min=-48, max=24);
+Param sub_on(0, min=0, max=1);
+Param sub_oct(0, min=0, max=2);
+Param sub_tone(0, min=0, max=1);
+Param sub_gain(-6, min=-48, max=24);
 
 // Internal LFO & Mod Matrix
 Param lfo_rate(2.0, min=0.05, max=30);
@@ -2486,6 +2582,16 @@ poke(prm, clip(rel_slope, -1, 1), 58);
 poke(prm, clip(matk_slope, -1, 1), 59);
 poke(prm, clip(mdec_slope, -1, 1), 60);
 poke(prm, clip(mrel_slope, -1, 1), 61);
+poke(prm, osc2_on, 62);
+poke(prm, osc2_type, 63);
+poke(prm, osc2_pitch, 64);
+poke(prm, osc2_detune, 65);
+poke(prm, osc2_pos, 66);
+poke(prm, osc2_gain, 67);
+poke(prm, sub_on, 68);
+poke(prm, sub_oct, 69);
+poke(prm, sub_tone, 70);
+poke(prm, sub_gain, 71);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H
 prevLfoPhs = lfoPhs;
@@ -2523,6 +2629,9 @@ for (svx = 0; svx < 4; svx += 1) {
 // lives in the vhist table (voice_proc) and per-voice results in vres (P, A, M at 3 * voice).
 sumL = 0;
 sumR = 0;
+osc2SumL = 0;
+osc2SumR = 0;
+subSum = 0;
 spawnSum = 0;
 maxModEnv = 0;
 telTick = (scopeCount >= 63) ? 1 : 0;
@@ -2554,6 +2663,9 @@ for (vox = 0; vox < 16; vox += 1) {
 	}
 	if (voIdle < 0.5) {
 		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick);
+		osc2SumL = osc2SumL + peek(vhist, vhOff + 52);
+		osc2SumR = osc2SumR + peek(vhist, vhOff + 53);
+		subSum = subSum + peek(vhist, vhOff + 54);
 	}
 	sumL = sumL + voL;
 	sumR = sumR + voR;
@@ -2562,6 +2674,21 @@ for (vox = 0; vox < 16; vox += 1) {
 	poke(vres, voP, vox * 3);
 	poke(vres, voA, vox * 3 + 1);
 	poke(vres, voM, vox * 3 + 2);
+}
+
+// Wavetable Filter Routing:
+//   Serial (0)  : all oscillators (Osc 1 + Osc 2 + Sub) -> Filter 1 -> Filter 2
+//   Parallel (1): all oscillators (Osc 1 + Osc 2 + Sub) -> Filter 1 & Filter 2 -> 0.5 * (F1 + F2)
+//   Split (2)   : Osc 1 + 0.5 * Sub -> Filter 1; Osc 2 + 0.5 * Sub -> Filter 2; output = F1 + F2
+fRouteMode = round(clip(filt_route, 0, 2));
+if ((osc2_on > 0.5) || (sub_on > 0.5)) {
+	if (fRouteMode < 1.5) {
+		sumL = sumL + osc2SumL + subSum;
+		sumR = sumR + osc2SumR + subSum;
+	} else {
+		sumL = sumL + 0.5 * subSum;
+		sumR = sumR + 0.5 * subSum;
+	}
 }
 
 // Cytomic / Andrew Simper trapezoidal SVF. g = tan(pi * fc / sr).
@@ -2606,13 +2733,188 @@ lpR = v2;
 bpR = v1 * k;
 hpR = drivenR - k * v1 - v2;
 
-fType = round(clip(filt_type, 0, 2));
-wetL = (fType == 0) ? lpL : ((fType == 1) ? bpL : hpL);
-wetR = (fType == 0) ? lpR : ((fType == 1) ? bpR : hpR);
+fType = round(clip(filt_type, 0, 4));
+if (fType < 2.5) {
+	wetL = (fType == 0) ? lpL : ((fType == 1) ? bpL : hpL);
+	wetR = (fType == 0) ? lpR : ((fType == 1) ? bpR : hpR);
+} else if (fType < 3.5) {
+	wetL = lpL + hpL;
+	wetR = lpR + hpR;
+} else {
+	mph = clip(filt_morph, 0, 1) * 4.0;
+	if (mph <= 1.0) {
+		wetL = lpL + (bpL - lpL) * mph;
+		wetR = lpR + (bpR - lpR) * mph;
+	} else if (mph <= 2.0) {
+		wetL = bpL + (hpL - bpL) * (mph - 1.0);
+		wetR = bpR + (hpR - bpR) * (mph - 1.0);
+	} else if (mph <= 3.0) {
+		wetL = hpL + (lpL + hpL - hpL) * (mph - 2.0);
+		wetR = hpR + (lpR + hpR - hpR) * (mph - 2.0);
+	} else {
+		wetL = (lpL + hpL) + (lpL - (lpL + hpL)) * (mph - 3.0);
+		wetR = (lpR + hpR) + (lpR - (lpR + hpR)) * (mph - 3.0);
+	}
+}
+if ((filt_slope > 0.5) || (filt_circuit > 0.5)) {
+	f1c = round(clip(filt_circuit, 0, 4));
+	if (f1c > 0.5) {
+		cBoost = (f1c == 1) ? 1.35 : ((f1c == 2) ? 1.65 : ((f1c == 3) ? 1.45 : 1.55));
+		wetL = tanh(wetL * cBoost) / tanh(cBoost);
+		wetR = tanh(wetR * cBoost) / tanh(cBoost);
+	}
+	if (filt_slope > 0.5) {
+		s1bL = peek(fstate, 0);
+		s1pL = peek(fstate, 1);
+		s1bR = peek(fstate, 2);
+		s1pR = peek(fstate, 3);
+		u3L = wetL - s1pL;
+		u1L = a1 * s1bL + a2 * u3L;
+		u2L = s1pL + a2 * s1bL + a3 * u3L;
+		s1bL = fixnan(2.0 * u1L - s1bL);
+		s1pL = fixnan(2.0 * u2L - s1pL);
+		uHpL = wetL - k * u1L - u2L;
+		u3R = wetR - s1pR;
+		u1R = a1 * s1bR + a2 * u3R;
+		u2R = s1pR + a2 * s1bR + a3 * u3R;
+		s1bR = fixnan(2.0 * u1R - s1bR);
+		s1pR = fixnan(2.0 * u2R - s1pR);
+		uHpR = wetR - k * u1R - u2R;
+		poke(fstate, s1bL, 0);
+		poke(fstate, s1pL, 1);
+		poke(fstate, s1bR, 2);
+		poke(fstate, s1pR, 3);
+		if (fType < 2.5) {
+			wetL = (fType == 0) ? u2L : ((fType == 1) ? (u1L * k) : uHpL);
+			wetR = (fType == 0) ? u2R : ((fType == 1) ? (u1R * k) : uHpR);
+		} else {
+			wetL = u2L + uHpL;
+			wetR = u2R + uHpR;
+		}
+	}
+}
 wetL = fixnan(wetL);
 wetR = fixnan(wetR);
-sumL = sumL + (wetL - sumL) * filtMix;
-sumR = sumR + (wetR - sumR) * filtMix;
+f1OutL = sumL + (wetL - sumL) * filtMix;
+f1OutR = sumR + (wetR - sumR) * filtMix;
+if ((filt2_on > 0.5) || (fRouteMode > 1.5)) {
+	fRoute = fRouteMode;
+	in2L = (fRoute == 0) ? f1OutL : ((fRoute == 1) ? sumL : (osc2SumL + 0.5 * subSum));
+	in2R = (fRoute == 0) ? f1OutR : ((fRoute == 1) ? sumR : (osc2SumR + 0.5 * subSum));
+	drv2 = clip(filt2_drive, 0, 1);
+	if (drv2 > 0.0001) {
+		dg2 = 1.0 + drv2 * 5.0;
+		in2L = in2L + (tanh(in2L * dg2) - in2L) * drv2;
+		in2R = in2R + (tanh(in2R * dg2) - in2R) * drv2;
+	}
+	tc2 = clip(filt2_cutoff * pow(2.0, clip(filt_env_amt * maxModEnv * 5.0 + lfoSig * lfo_filt * 3.5, -6, 6)), 20.0, srVal * 0.44);
+	g2 = clip(tan(3.141592653589793 * tc2 / srVal), 0.0001, 80.0);
+	k2 = max(2.0 - 1.92 * pow(clip(filt2_res, 0, 0.96), 0.7), 0.05);
+	b1 = 1.0 / (1.0 + g2 * (g2 + k2));
+	b2 = g2 * b1;
+	b3 = g2 * b2;
+	s2bL = peek(fstate, 4);
+	s2pL = peek(fstate, 5);
+	s2bR = peek(fstate, 6);
+	s2pR = peek(fstate, 7);
+	w3L = in2L - s2pL;
+	w1L = b1 * s2bL + b2 * w3L;
+	w2L = s2pL + b2 * s2bL + b3 * w3L;
+	s2bL = fixnan(2.0 * w1L - s2bL);
+	s2pL = fixnan(2.0 * w2L - s2pL);
+	wHpL = in2L - k2 * w1L - w2L;
+	wBpL = w1L * k2;
+	w3R = in2R - s2pR;
+	w1R = b1 * s2bR + b2 * w3R;
+	w2R = s2pR + b2 * s2bR + b3 * w3R;
+	s2bR = fixnan(2.0 * w1R - s2bR);
+	s2pR = fixnan(2.0 * w2R - s2pR);
+	wHpR = in2R - k2 * w1R - w2R;
+	wBpR = w1R * k2;
+	poke(fstate, s2bL, 4);
+	poke(fstate, s2pL, 5);
+	poke(fstate, s2bR, 6);
+	poke(fstate, s2pR, 7);
+	f2Type = round(clip(filt2_type, 0, 4));
+	w2OutL = w2L;
+	w2OutR = w2R;
+	if (f2Type < 2.5) {
+		w2OutL = (f2Type == 0) ? w2L : ((f2Type == 1) ? wBpL : wHpL);
+		w2OutR = (f2Type == 0) ? w2R : ((f2Type == 1) ? wBpR : wHpR);
+	} else if (f2Type < 3.5) {
+		w2OutL = w2L + wHpL;
+		w2OutR = w2R + wHpR;
+	} else {
+		mph2 = clip(filt2_morph, 0, 1) * 4.0;
+		if (mph2 <= 1.0) {
+			w2OutL = w2L + (wBpL - w2L) * mph2;
+			w2OutR = w2R + (wBpR - w2R) * mph2;
+		} else if (mph2 <= 2.0) {
+			w2OutL = wBpL + (wHpL - wBpL) * (mph2 - 1.0);
+			w2OutR = wBpR + (wHpR - wBpR) * (mph2 - 1.0);
+		} else if (mph2 <= 3.0) {
+			w2OutL = wHpL + (w2L + wHpL - wHpL) * (mph2 - 2.0);
+			w2OutR = wHpR + (w2R + wHpR - wHpR) * (mph2 - 2.0);
+		} else {
+			w2OutL = (w2L + wHpL) + (w2L - (w2L + wHpL)) * (mph2 - 3.0);
+			w2OutR = (w2R + wHpR) + (w2R - (w2R + wHpR)) * (mph2 - 3.0);
+		}
+	}
+	if ((filt2_slope > 0.5) || (filt2_circuit > 0.5)) {
+		f2c = round(clip(filt2_circuit, 0, 4));
+		if (f2c > 0.5) {
+			cBoost2 = (f2c == 1) ? 1.35 : ((f2c == 2) ? 1.65 : ((f2c == 3) ? 1.45 : 1.55));
+			w2OutL = tanh(w2OutL * cBoost2) / tanh(cBoost2);
+			w2OutR = tanh(w2OutR * cBoost2) / tanh(cBoost2);
+		}
+		if (filt2_slope > 0.5) {
+			s2b2L = peek(fstate, 8);
+			s2p2L = peek(fstate, 9);
+			s2b2R = peek(fstate, 10);
+			s2p2R = peek(fstate, 11);
+			z3L = w2OutL - s2p2L;
+			z1L = b1 * s2b2L + b2 * z3L;
+			z2L = s2p2L + b2 * s2b2L + b3 * z3L;
+			s2b2L = fixnan(2.0 * z1L - s2b2L);
+			s2p2L = fixnan(2.0 * z2L - s2p2L);
+			zHpL = w2OutL - k2 * z1L - z2L;
+			z3R = w2OutR - s2p2R;
+			z1R = b1 * s2b2R + b2 * z3R;
+			z2R = s2p2R + b2 * s2b2R + b3 * z3R;
+			s2b2R = fixnan(2.0 * z1R - s2b2R);
+			s2p2R = fixnan(2.0 * z2R - s2p2R);
+			zHpR = w2OutR - k2 * z1R - z2R;
+			poke(fstate, s2b2L, 8);
+			poke(fstate, s2p2L, 9);
+			poke(fstate, s2b2R, 10);
+			poke(fstate, s2p2R, 11);
+			if (f2Type < 2.5) {
+				w2OutL = (f2Type == 0) ? z2L : ((f2Type == 1) ? (z1L * k2) : zHpL);
+				w2OutR = (f2Type == 0) ? z2R : ((f2Type == 1) ? (z1R * k2) : zHpR);
+			} else {
+				w2OutL = z2L + zHpL;
+				w2OutR = z2R + zHpR;
+			}
+		}
+	}
+	w2OutL = fixnan(w2OutL);
+	w2OutR = fixnan(w2OutR);
+	f2FinalL = (filt2_on > 0.5) ? w2OutL : in2L;
+	f2FinalR = (filt2_on > 0.5) ? w2OutR : in2R;
+	if (fRoute == 0) {
+		sumL = f2FinalL;
+		sumR = f2FinalR;
+	} else if (fRoute == 1) {
+		sumL = 0.5 * (f1OutL + f2FinalL);
+		sumR = 0.5 * (f1OutR + f2FinalR);
+	} else {
+		sumL = f1OutL + f2FinalL;
+		sumR = f1OutR + f2FinalR;
+	}
+} else {
+	sumL = f1OutL;
+	sumR = f1OutR;
+}
 
 // Master Output Gain + Soft Ceiling
 masterGain = pow(10.0, clip(out_gain, -36, 18) / 20.0);

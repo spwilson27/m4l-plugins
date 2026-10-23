@@ -16,17 +16,20 @@
 // Which sections are open is a bit mask (bit i = SECTIONS[i]); it is saved in the SamplerStateData blob as a trailing
 // "R2", <mask> pair and sets the device width with outlet(0, "setwidth_cmd", w). show_inspector mirrors "anything open".
 
+var oscTab = 0;                             // 0 = Osc 1, 1 = Osc 2, 2 = Sub
+
 var SECTIONS = [
     { id: "details", name: "Engine detail", w: 164, acc: "a_eng" },
     { id: "env", name: "Envelope", w: 176, acc: "a_amp" },
-    { id: "filter", name: "Filter", w: 166, acc: "a_filt" },
+    { id: "filter", name: "Filter", w: 235, acc: "a_filt" },
     { id: "lfo", name: "LFO / Mod", w: 150, acc: "a_lfo" },
     { id: "voice", name: "Voice / Out", w: 132, acc: "a_out" }
 ];
-var SB_X = 3, SB_W = 22;
-var VIEW = { x: 29, y: 3, w: 466, h: 102 };
-var STRIP = { x: 29, y: 108, w: 466, h: 58 };
-var SEC_X0 = 499, SEC_GAP = 4, WIN_PAD = 3, SEC_Y = 3, SEC_H = 163;
+
+var SB_X = 2, SB_W = 22;
+var VIEW = { x: 26, y: 0, w: 466, h: 106 };
+var STRIP = { x: 26, y: 108, w: 466, h: 59 };
+var SEC_X0 = 494, SEC_GAP = 2, WIN_PAD = 2, SEC_Y = 0, SEC_H = 167;
 var DEFAULT_FOLD = 2;                       // Envelope open
 var foldMask = DEFAULT_FOLD;
 var hoverHdl = "";
@@ -63,6 +66,14 @@ function setFoldMask(m) {
     mgraphics.redraw();
 }
 function toggleSection(i) { setFoldMask(foldMask ^ (1 << i)); }
+function dbg_fold(m) { setFoldMask(Number(m)); }
+function dbg_osctab(t) { oscTab = Number(t) || 0; mgraphics.redraw(); }
+function dbg_menu(key, ax, ay, w) {
+    if (!key || key === "none") openMenu = null;
+    else openMenu = { key: String(key), x: Number(ax) || 0, y: Number(ay) || 15, w: Number(w) || 30, rowH: 12 };
+    mgraphics.redraw();
+}
+function dbg_focus(n) { filtFocus = Number(n); mgraphics.redraw(); }
 
 // The open sections set the device width (function declaration: replaces the shared one; device_ready calls it)
 function applyDeviceWidth() {
@@ -90,8 +101,15 @@ function lumi(c) { return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]; }
 
 // Live's own colours (max.getcolor) with the measured Live 12 default dark theme as fallback (see sampler_theme_ableton.js)
 var LIVE_FALLBACK = {
-    live_desktop: [0.165, 0.165, 0.165], live_surface_bg: [0.212, 0.212, 0.212], live_lcd_bg: [0.094, 0.094, 0.094],
-    live_lcd_frame: [0.243, 0.243, 0.243], live_control_bg: [0.118, 0.118, 0.118], live_control_fg: [0.71, 0.71, 0.71],
+    live_desktop: [0.165, 0.165, 0.165], live_surface_bg: [0.212, 0.212, 0.212], live_surface_frame: [0.141, 0.141, 0.141],
+    live_macro_title: [0.263, 0.271, 0.314],
+    live_lcd_bg: [0.094, 0.094, 0.094], live_lcd_frame: [0.243, 0.243, 0.243], live_lcd_title: [0.71, 0.71, 0.71],
+    live_lcd_control_fg_zombie: [0.525, 0.525, 0.525],
+    live_control_bg: [0.118, 0.118, 0.118], live_control_fg: [0.71, 0.71, 0.71], live_control_text_bg: [0.133, 0.141, 0.176],
+    live_contrast_frame: [0.059, 0.067, 0.090],
+    live_dial_fg: [0.059, 0.067, 0.090], live_dial_fg_zombie: [0.165, 0.165, 0.165],
+    live_dial_needle: [0.094, 0.094, 0.094], live_dial_needle_zombie: [0.165, 0.165, 0.165],
+    live_control_fg_zombie: [0.459, 0.459, 0.459],
     live_control_selection: [1.0, 0.678, 0.337], live_control_zombie: [0.459, 0.459, 0.459],
     live_display_line_one: [1.0, 0.678, 0.337], live_display_line_two: [0.012, 0.765, 0.835],
     live_display_handle_one: [1.0, 0.678, 0.337], live_display_handle_two: [1.0, 0.412, 0.498],
@@ -100,17 +118,27 @@ var LIVE_FALLBACK = {
 function liveCol(name) { return themeCol([name], LIVE_FALLBACK[name]); }
 
 function initTheme() {
+    faceFont = "Ableton Sans Medium";
+    faceFontBold = "Ableton Sans Bold";
     if (RC) return;
-    var desk = liveCol("live_desktop"), surf = liveCol("live_surface_bg"), lcd = liveCol("live_lcd_bg"), frame = liveCol("live_lcd_frame");
+    var desk = liveCol("live_desktop"), surf = liveCol("live_surface_bg"), surfFrame = liveCol("live_macro_title"), lcd = liveCol("live_lcd_bg"), frame = liveCol("live_lcd_frame");
     var ctlBg = liveCol("live_control_bg"), ctlFg = liveCol("live_control_fg"), sel = liveCol("live_control_selection");
     var cyan = liveCol("live_display_line_two"), orange = liveCol("live_display_handle_one"), pink = liveCol("live_display_handle_two");
-    var scale = liveCol("live_display_scale_text"), zombie = liveCol("live_control_zombie");
-    // Like Echo: the sections hold the lighter of the two Live surface colours, the gaps behind them the darker one, the displays
-    // stay the near-black LCD colour (the names differ between Live themes, so the choice is by luminance)
+    var scale = liveCol("live_display_scale_text"), zombie = liveCol("live_control_zombie"), lcdTitle = liveCol("live_lcd_title");
+    var surfHi = lumi(surf) >= lumi(desk) ? surf : desk;
+    var surfLo = lumi(surf) >= lumi(desk) ? desk : surf;
     RC = {
         light: lumi(desk) > 0.5,
-        bg: lumi(surf) >= lumi(desk) ? desk : surf, panel: lumi(surf) >= lumi(desk) ? surf : desk, raised: ctlBg, wave: lcd, line: frame, track: mixc(frame, ctlFg, 0.3),
-        text: ctlFg, sub: scale, dim: zombie, knob: ctlBg, dark: mixc(lcd, [0, 0, 0], 0.4),
+        bg: surfFrame, panel: surfHi, divider: surfLo, raised: ctlBg, wave: lcd, line: frame,
+        wtBorder: surfFrame,
+        textBg: liveCol("live_control_text_bg"),
+        contrastFrame: liveCol("live_contrast_frame"),
+        dialFg: liveCol("live_dial_fg"), dialFgOff: liveCol("live_dial_fg_zombie"),
+        dialNeedle: liveCol("live_dial_needle"), dialNeedleOff: liveCol("live_dial_needle_zombie"),
+        arcOff: liveCol("live_control_fg_zombie"),
+        lcdDim: liveCol("live_lcd_control_fg_zombie"),
+        track: mixc(frame, ctlFg, 0.3),
+        text: ctlFg, lcdText: lcdTitle, sub: scale, dim: zombie, knob: ctlBg, dark: mixc(lcd, [0, 0, 0], 0.4),
         sel: sel, cyan: cyan, pink: pink, white: [1, 1, 1],
         a_wave: cyan, a_eng: cyan, a_amp: cyan, a_mod: orange, a_filt: cyan, a_lfo: cyan, a_out: cyan,
         yellow: orange, green: cyan, orange: liveCol("live_alert")
@@ -212,7 +240,7 @@ function actZone(x, y, w, h, fn, extra) {
 }
 
 function panelBox(x, y, w, h) {
-    fillRR(x, y, w, h, 6, RC.panel);
+    fillRR(x, y, w, h, 2.5, RC.panel);
 }
 
 function secTitle(label, x, y, acc) {
@@ -330,7 +358,7 @@ function fmtMsShort(ms) {
 // Sidebar: one icon toggle per section (vector glyphs; the name shows as a HUD tip while hovering)
 // ---------------------------------------------------------------------------
 
-var SB_BTN = { h: 22, pitch: 28, y0: 8 };
+var SB_BTN = { h: 20, pitch: 25, y0: 6 };
 
 function sbGlyph(i, cx, cy, c, a) {
     setc(c, a);
@@ -354,9 +382,17 @@ function sbGlyph(i, cx, cy, c, a) {
             if (j === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
         }
         mgraphics.stroke();
-    } else {                                      // voice / out: level bars
+    } else if (i === 4) {                         // voice / out: level bars
         var hs = [5, 9, 6.5];
         for (j = 0; j < 3; j++) fillRR(cx - 7 + j * 5.2, cy + 6 - hs[j] * 1.1, 3.6, hs[j] * 1.1, 1.2, c, a);
+    } else {                                      // osc 2 / sub: stacked wave + sawtooth glyph
+        for (j = 0; j <= 12; j++) {
+            var ox = cx - 6 + j, oy = cy - 3 - Math.sin(j / 12 * 6.2832) * 2.5;
+            if (j === 0) mgraphics.move_to(ox, oy); else mgraphics.line_to(ox, oy);
+        }
+        mgraphics.stroke();
+        mgraphics.move_to(cx - 6, cy + 5); mgraphics.line_to(cx, cy + 1); mgraphics.line_to(cx, cy + 5);
+        mgraphics.line_to(cx + 6, cy + 1); mgraphics.line_to(cx + 6, cy + 5); mgraphics.stroke();
     }
 }
 
@@ -541,15 +577,123 @@ function paintPitchCurveZ(wx, wy, ww, wh) {
     mgraphics.stroke();
 }
 
+// Helper: draw 3D-stacked wavetable curves (Sine -> Tri -> Saw -> Square) with active position highlighted in orange
+function paintWavetableStack(wx, wy, ww, wh, pos01, on) {
+    var rows = 4, cols = 64;
+    for (var r = 0; r < rows; r++) {
+        var rFrac = r / (rows - 1);
+        var yBase = wy + wh - 10 - rFrac * (wh - 22);
+        var pts = [];
+        for (var c = 0; c <= cols; c++) {
+            var p = c / cols;
+            var s = Math.sin(6.2831853 * p);
+            var tr = 1.0 - 4.0 * Math.abs(((p + 0.25) - Math.floor(p + 0.25)) - 0.5);
+            var sw = 2.0 * p - 1.0;
+            var sq = p < 0.5 ? 1.0 : -1.0;
+            var v = r === 0 ? s : (r === 1 ? tr : (r === 2 ? sw : sq));
+            pts.push([wx + 8 + p * (ww - 16), yBase - v * (wh * 0.13)]);
+        }
+        strokePath(pts, RC.lcdText, on ? 0.28 : 0.14, 1.0);
+    }
+    // Active morphed wave at pos01
+    var m = clamp01(pos01) * 3.0;
+    var yAct = wy + wh - 10 - clamp01(pos01) * (wh - 22);
+    var actPts = [];
+    for (var k = 0; k <= cols; k++) {
+        var pk = k / cols;
+        var s2 = Math.sin(6.2831853 * pk);
+        var tr2 = 1.0 - 4.0 * Math.abs(((pk + 0.25) - Math.floor(pk + 0.25)) - 0.5);
+        var sw2 = 2.0 * pk - 1.0;
+        var sq2 = pk < 0.5 ? 1.0 : -1.0;
+        var val = m <= 1 ? s2 + (tr2 - s2) * m : (m <= 2 ? tr2 + (sw2 - tr2) * (m - 1) : sw2 + (sq2 - sw2) * (m - 2));
+        actPts.push([wx + 8 + pk * (ww - 16), yAct - val * (wh * 0.15)]);
+    }
+    strokePath(actPts, on ? RC.sel : RC.lcdDim, on ? 1.0 : 0.45, 1.6);
+}
+
+// Helper: draw Oscillator Header Tabs ([Osc 1] [■ Osc 2] [■ Sub]) for the "tabs" UI variant
+function paintOscHeaderTabs(tx, ty) {
+    var o2On = Math.round(paramValue("osc2_on")) > 0;
+    var subOn = Math.round(paramValue("sub_on")) > 0;
+    var tabs = [
+        { label: "Osc 1", idx: 0, enKey: null, on: true, w: 32 },
+        { label: "Osc 2", idx: 1, enKey: "osc2_on", on: o2On, w: 40 },
+        { label: "Sub",   idx: 2, enKey: "sub_on",  on: subOn, w: 34 }
+    ];
+    var x = tx;
+    for (var i = 0; i < tabs.length; i++) {
+        var t = tabs[i], active = oscTab === t.idx;
+        fillRR(x, ty, t.w, 13, 2.5, active ? RC.wave : RC.raised, 1.0);
+        if (active) line(x + 2, ty + 12.5, x + t.w - 2, ty + 12.5, RC.sel, 1.0, 1.3);
+        if (t.enKey) {
+            var sqX = x + 3.5, sqY = ty + 3.5, sqS = 6.0;
+            if (t.on) fillRect(sqX, sqY, sqS, sqS, RC.sel, 1.0);
+            else { setc(RC.sel, 0.85); mgraphics.set_line_width(1.0); mgraphics.rectangle(sqX + 0.5, sqY + 0.5, sqS - 1, sqS - 1); mgraphics.stroke(); }
+            zone("button", sqX - 1, ty, 9, 13, { action: "osc_toggle", key: t.enKey, tab: t.idx });
+            text(t.label, x + 11.5, ty + 9.8, 8.2, active ? RC.sel : (t.on ? RC.lcdText : RC.sub), active, 0);
+            zone("button", x + 9, ty, t.w - 9, 13, { action: "osc_tab", tab: t.idx });
+        } else {
+            text(t.label, x + t.w * 0.5, ty + 9.8, 8.2, active ? RC.sel : RC.lcdText, active, 1);
+            zone("button", x, ty, t.w, 13, { action: "osc_tab", tab: t.idx });
+        }
+        x += t.w + 2;
+    }
+}
+
+// Helper: paint Osc 2 + Sub controls inside a given rectangle (used by "tabs", "split", and "drawer" UI variants)
+function paintOsc2SubControls(x, y, w, h, layoutMode) {
+    var o2On = Math.round(paramValue("osc2_on")) > 0;
+    var o2Type = Math.round(paramValue("osc2_type"));
+    var subOn = Math.round(paramValue("sub_on")) > 0;
+    var acc = RC.sel;
+    if (layoutMode === "strip_osc2") {
+        // Full strip dedicated to Oscillator 2 ("tabs" mode when oscTab === 1)
+        segCtl("osc2_type", x + 8, y + 3, 118, 13, ["Sampler", "Wavetable"], acc, !o2On);
+        var ky = y + 39;
+        rKnob("osc2_pitch", x + 48, ky, 7, "Pitch", acc, { dim: !o2On });
+        rKnob("osc2_detune", x + 114, ky, 7, "Detune", acc, { dim: !o2On });
+        rKnob("osc2_pos", x + 180, ky, 7, o2Type === 1 ? "Wave Pos" : "Start Pos", acc, { dim: !o2On });
+        rKnob("osc2_gain", x + 246, ky, 7, "Level", acc, { dim: !o2On });
+        line(x + 288, y + 6, x + 288, y + h - 5, RC.divider, 1.0, 1.0);
+        // Right side of strip: Sub quick controls so all osc2/sub params stay reachable in one view
+        var sx0 = x + 296;
+        var sqS = 7.5;
+        if (subOn) fillRect(sx0, y + 4.5, sqS, sqS, acc, 1.0);
+        else { setc(acc, 0.85); mgraphics.set_line_width(1.0); mgraphics.rectangle(sx0 + 0.5, y + 5.0, sqS - 1, sqS - 1); mgraphics.stroke(); }
+        actZone(sx0 - 2, y + 2, 34, 13, function () { setParamFromFace("sub_on", subOn ? 0 : 1); }, { key: "sub_on" });
+        text("Sub", sx0 + 11, y + 12, 8.5, subOn ? acc : RC.sub, true, 0);
+        segCtl("sub_oct", sx0 + 38, y + 3, 64, 12, ["0", "-1", "-2"], RC.cyan, !subOn);
+        rKnob("sub_tone", sx0 + 46, ky, 7, "Tone", RC.cyan, { dim: !subOn });
+        rKnob("sub_gain", sx0 + 112, ky, 7, "Sub Gain", RC.cyan, { dim: !subOn });
+    } else if (layoutMode === "strip_sub") {
+        // Full strip dedicated to Sub Oscillator ("tabs" mode when oscTab === 2)
+        text("Sub Octave", x + 10, y + 13, 8.5, RC.text, false, 0);
+        segCtl("sub_oct", x + 68, y + 3, 90, 13, ["0", "-1", "-2"], RC.cyan, !subOn);
+        var ky2 = y + 39;
+        rKnob("sub_tone", x + 64, ky2, 7, "Tone", RC.cyan, { dim: !subOn });
+        rKnob("sub_gain", x + 144, ky2, 7, "Gain", RC.cyan, { dim: !subOn });
+        line(x + 210, y + 6, x + 210, y + h - 5, RC.divider, 1.0, 1.0);
+        // Right side: Osc 2 quick summary
+        var ox0 = x + 220;
+        text("Osc 2 (" + (o2Type === 1 ? "Wavetable" : "Sampler") + ")", ox0, y + 13, 8.5, o2On ? acc : RC.sub, false, 0);
+        segCtl("osc2_type", ox0 + 108, y + 3, 108, 12, ["Sampler", "Wavetable"], acc, !o2On);
+        rKnob("osc2_pitch", ox0 + 34, ky2, 7, "Pitch", acc, { dim: !o2On });
+        rKnob("osc2_detune", ox0 + 92, ky2, 7, "Det", acc, { dim: !o2On });
+        rKnob("osc2_pos", ox0 + 150, ky2, 7, "Pos", acc, { dim: !o2On });
+        rKnob("osc2_gain", ox0 + 208, ky2, 7, "Level", acc, { dim: !o2On });
+    }
+}
+
 function paintViewer() {
     var sx = VIEW.x, sy = VIEW.y, sw = VIEW.w, sh = VIEW.h;
     panelBox(sx, sy, sw, sh);
     var acc = RC.a_wave;
 
-    // Header (the default face's layout): folder / file name, voices, sample gain, ROOT note + ct; Single / Sliced top right
+    //Header: folder / file name, voices, sample gain, ROOT note + ct; plus Oscillator Tabs
     iconFolder(sx + 7, sy + 5, acc, 0.9);
-    var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 170, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? acc : RC.sub, false, 0);
+    var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 88, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? acc : RC.sub, false, 0);
     zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
+    paintOscHeaderTabs(sx + 112, sy + 2);
     var vx = sx + 228;
     if (!dspReady) {
         var failed = dspError.length > 0;
@@ -657,6 +801,31 @@ function paintViewer() {
     }
     if (rootDyn && pitchCurve && hasLoadedSample) paintPitchCurveZ(wx, wy, ww, wh);
     if (!hasLoadedSample) text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 7, 9.5, RC.sub, false, 1);
+
+    // Oscillator 2 / Sub waveform overlays
+    var o2On = Math.round(paramValue("osc2_on")) > 0;
+    var o2Type = Math.round(paramValue("osc2_type"));
+    var o2Pos = paramValue("osc2_pos") * 0.01;
+    var subOn = Math.round(paramValue("sub_on")) > 0;
+    if (oscTab === 1 && o2Type === 1) {
+        fillRR(wx, wy, ww, wh, 3, RC.wave, 0.90);
+        paintWavetableStack(wx, wy, ww, wh, o2Pos, o2On);
+        text("WAVETABLE  POS " + Math.round(paramValue("osc2_pos")) + "%", wx + 8, wy + 12, 8.0, o2On ? RC.sel : RC.sub, true, 0);
+    } else if (oscTab === 2) {
+        fillRR(wx, wy, ww, wh, 3, RC.wave, 0.88);
+        var subOct = Math.round(paramValue("sub_oct"));
+        var subTone = paramValue("sub_tone") * 0.01;
+        var subPts = [];
+        for (var sc = 0; sc <= 80; sc++) {
+            var sp = sc / 80;
+            var sv = Math.sin(6.2831853 * sp * (subOct === 0 ? 4 : (subOct === 1 ? 2 : 1)));
+            var sr = Math.tanh(sv * (1.0 + subTone * 4.5));
+            var syv = sv + (sr - sv) * subTone;
+            subPts.push([wx + 8 + sp * (ww - 16), wy + wh * 0.5 - syv * (wh * 0.34)]);
+        }
+        strokePath(subPts, subOn ? RC.cyan : RC.lcdDim, subOn ? 1.0 : 0.45, 1.6);
+        text("SUB  OCT " + ["0", "-1", "-2"][subOct] + "   TONE " + Math.round(paramValue("sub_tone")) + "%", wx + 8, wy + 12, 8.0, subOn ? RC.cyan : RC.sub, true, 0);
+    }
 
     var stX = vwx(curStart), enX = vwx(curEnd);
     if (curSliced) {
@@ -1022,30 +1191,45 @@ function paintEnvSection(sx) {
 }
 
 // ---------------------------------------------------------------------------
-// Filter section: response curve with a cutoff / resonance point and the modulation actually applied while notes play
+// Filter section: Ableton Wavetable dual filter section (Filter 1 + Filter 2, Serial / Parallel / Split)
 // ---------------------------------------------------------------------------
 
-var FILT_W = 166;
-var F_DB_LO = -36, F_DB_HI = 24;
+var FILT_W = 235;
+var F_DB_LO = -26, F_DB_HI = 14;
 var filtDots = [];           // last painted: { v, x, y, hz, alpha, rank } (newest first)
+var filtFocus = 2;           // 1 = Filter 1 selected, 2 = Filter 2 selected
 
 function filterGeom() {
-    var gx = filtX + 12, gw = FILT_W - 24, gy = 34, gb = 94;
-    return { gx: gx, gw: gw, gy: gy, gb: gb };
+    var gx = filtX + 7, gw = FILT_W - 14, gy = 18, gb = 79.0, y0 = 49.0;
+    return { gx: gx, gw: gw, gy: gy, gb: gb, y0: y0 };
 }
-function fFx(g, hz) { return g.gx + (Math.log(Math.max(20, hz) / 20) / Math.log(1000)) * g.gw; }
+function fFx(g, hz) { return g.gx + (Math.log(Math.max(20, Math.min(20000, hz)) / 20) / Math.log(1000)) * g.gw; }
 function fHz(g, x) { return 20 * Math.pow(1000, clamp01((x - g.gx) / g.gw)); }
-function fFy(g, db) { return g.gb - (Math.max(F_DB_LO, Math.min(F_DB_HI, db)) - F_DB_LO) / (F_DB_HI - F_DB_LO) * (g.gb - g.gy); }
-function resToQ(res) { return 0.7 + res * 0.08; }
-function qToRes(q) { return Math.max(0, Math.min(100, (q - 0.7) / 0.08)); }
+function fFy(g, db) { return Math.max(g.gy, Math.min(g.gb + 1, g.y0 - db * 1.35)); }
+function fDbFromY(g, y) { return (g.y0 - y) / 1.35; }
+function resToQ(res) { return Math.pow(10, clamp01(res / 100) * 18.0 / 20.0) * 0.92; }
+function qToRes(q) { return clamp01(20.0 * Math.log(Math.max(0.92, q) / 0.92) / Math.LN10 / 18.0) * 100; }
 
-// 2-pole magnitude in dB: LP, BP and HP all peak at Q (in linear gain) at the cutoff
-function filterDb(type, w, q) {
-    var den = Math.sqrt((1 - w * w) * (1 - w * w) + (w / q) * (w / q));
-    var h = type === 0 ? 1 / den : (type === 1 ? w / den : w * w / den);
+// 2-pole magnitude in dB: LP (0), BP (1), HP (2), Notch (3), Morph (4)
+function filterDb(type, w, q, morph, slope24) {
+    var w2 = w * w;
+    var den = Math.sqrt((1 - w2) * (1 - w2) + (w / q) * (w / q));
+    var lp = 1 / den, bp = (w / q) * q / den, hp = w2 / den, notch = Math.abs(1 - w2) / den;
+    var h;
+    if (type === 0) h = lp;
+    else if (type === 1) h = bp;
+    else if (type === 2) h = hp;
+    else if (type === 3) h = notch;
+    else {
+        var m = clamp01(morph === undefined ? 0 : morph) * 4;
+        if (m <= 1) h = lp + (bp - lp) * m;
+        else if (m <= 2) h = bp + (hp - bp) * (m - 1);
+        else if (m <= 3) h = hp + (notch - hp) * (m - 2);
+        else h = notch + (lp - notch) * (m - 3);
+    }
+    if (slope24) h = h * h;
     return 20 * Math.log(Math.max(1e-5, h)) / Math.LN10;
 }
-
 
 // Voices whose effective cutoff is reported (idle voices report 0), newest first
 function filterVoices() {
@@ -1056,13 +1240,27 @@ function filterVoices() {
 }
 
 function responsePath(g, ft, hzCut, q) {
-    var cols = 56, top = [];
+    var cols = 96, top = [];
     for (var i = 0; i <= cols; i++) {
         var hz = 20 * Math.pow(1000, i / cols);
         top.push([g.gx + g.gw * i / cols, fFy(g, filterDb(ft, hz / hzCut, q))]);
     }
     return top;
 }
+
+function combinedFilterDb(hz, f1On, ft1, fc1, q1, m1, sl1, f2On, ft2, fc2, q2, m2, sl2, route) {
+    var d1 = f1On ? filterDb(ft1, hz / fc1, q1, m1, sl1) : 0;
+    var d2 = f2On ? filterDb(ft2, hz / fc2, q2, m2, sl2) : 0;
+    if (f1On && f2On) {
+        if (route === 0) return d1 + d2;
+        var g1 = Math.pow(10, d1 / 20), g2 = Math.pow(10, d2 / 20);
+        return 20 * Math.log(Math.max(1e-5, 0.5 * (g1 + g2))) / Math.LN10;
+    }
+    if (f1On) return d1;
+    if (f2On) return d2;
+    return 0;
+}
+
 function strokePath(p, c, a, wd) {
     setc(c, a);
     mgraphics.set_line_width(wd);
@@ -1071,100 +1269,367 @@ function strokePath(p, c, a, wd) {
     mgraphics.stroke();
 }
 
-function paintFilterSection(sx) {
-    filtX = sx;
-    var acc = RC.cyan;
-    panelBox(sx, SEC_Y, FILT_W, SEC_H);
-    var on = curFiltOn;
-    var al = on ? 1.0 : 0.4;
-
-    // header: power, type
-    fillRR(sx + 5, 6, 90, 17, 3, RC.raised);
-    iconPower(sx + 15, 14.5, on ? RC.sel : RC.dim, 1.0);
-    zone("button", sx + 6, 6, 18, 17, { action: "filt_on" });
-    var ft = Math.round(paramValue("filt_type"));
-    var names = ["LP", "BP", "HP"];
-    for (var i = 0; i < 3; i++) {
-        var tx = sx + 27 + i * 22;
-        var son = ft === i;
-        if (son) fillRR(tx, 8.5, 21, 12, 2.5, RC.sel, on ? 0.95 : 0.4);
-        text(names[i], tx + 10.5, 17.5, 7.5, son ? RC.dark : RC.sub, son, 1);
-        zone("button", tx, 7, 21, 15, { action: "menu_pick", key: "filt_type", value: i });
-    }
-    text("FILTER", sx + FILT_W - 8, 17.5, 7.0, RC.dim, false, 2);
-
-    var g = filterGeom();
-    fillRR(sx + 5, 27, FILT_W - 10, 76, 2, RC.wave);
-    cornerBrackets(sx + 5, 27, FILT_W - 10, 76, acc);
-    var fc = paramValue("filt_cutoff"), res = paramValue("filt_res");
-    var q = resToQ(res);
-
-    var dec = [100, 1000, 10000];
-    for (var d = 0; d < dec.length; d++) line(fFx(g, dec[d]), g.gy, fFx(g, dec[d]), g.gb, RC.line, 0.7, 0.8);
-    line(g.gx, fFy(g, 0), g.gx + g.gw, fFy(g, 0), RC.line, 0.9, 0.8);
-    line(g.gx, g.gb, g.gx + g.gw, g.gb, RC.line, 1.0, 1.0);
-
-    // modulation reach around the cutoff (LFO + Mod env)
-    var ext = 3.5 * Math.abs(paramValue("lfo_filt")) * 0.01 + 5 * Math.abs(paramValue("filt_env_amt")) * 0.01;
-    if (ext > 0.02 && on) {
-        var x0 = fFx(g, Math.max(20, fc * Math.pow(2, -ext))), x1 = fFx(g, Math.min(20000, fc * Math.pow(2, ext)));
-        fillRect(x0, g.gy, Math.max(1, x1 - x0), g.gb - g.gy, RC.a_mod, 0.10);
-    }
-
-    // base response (the knob setting): a thin line
-    var top = responsePath(g, ft, fc, q);
-    strokePath(top, acc, al, 1.3);
-
-    // per voice: a ghost of the response at the voice's own effective cutoff, a dot on its peak, the newest voice's curve bright
-    filtDots = [];
-    if (on) {
-        var vs = filterVoices();
-        var k;
-        for (k = vs.length - 1; k >= 1; k--) strokePath(responsePath(g, ft, voiceCutHz[vs[k]], q), RC.a_mod, Math.max(0.1, 0.22 - 0.02 * k), 1.0);
-        if (vs.length) strokePath(responsePath(g, ft, voiceCutHz[vs[0]], q), RC.a_mod, 1.0, 1.4);
-        for (k = 0; k < vs.length; k++) {
-            var hzv = voiceCutHz[vs[k]];
-            var px = Math.min(g.gx + g.gw, fFx(g, hzv)), py = fFy(g, filterDb(ft, 1, q));
-            var a2 = k === 0 ? 1.0 : Math.max(0.3, 0.72 - 0.11 * k);
-            filtDots.push({ v: vs[k], x: px, y: py, hz: hzv, alpha: a2, rank: k });
-        }
-        for (k = filtDots.length - 1; k >= 0; k--) {
-            var fd = filtDots[k];
-            var r = fd.rank === 0 ? 2.8 : 2.2;
-            circle(fd.x, fd.y, r + 1.2, RC.dark, 0.7 * fd.alpha);
-            circle(fd.x, fd.y, r, [1, 1, 1], fd.alpha);
-        }
-        // the cutoff the shared filter is actually running with (driven by the loudest mod envelope)
-        if (liveActiveVoices > 0 && Math.abs(Math.log(liveEffCutHz / fc)) > 0.03) {
-            var lx = fFx(g, liveEffCutHz);
-            line(lx, g.gy, lx, g.gb, [1, 1, 1], 0.3, 1.0);
+function strokePathClipped(p, yMax, c, a, wd) {
+    setc(c, a);
+    mgraphics.set_line_width(wd);
+    var down = false;
+    for (var j = 0; j < p.length; j++) {
+        var x = p[j][0], y = p[j][1];
+        if (y <= yMax) {
+            if (!down) { mgraphics.move_to(x, y); down = true; }
+            else mgraphics.line_to(x, y);
+        } else if (down && j > 0) {
+            var x0 = p[j - 1][0], y0 = p[j - 1][1];
+            var t = (yMax - y0) / Math.max(1e-6, y - y0);
+            mgraphics.line_to(x0 + (x - x0) * t, yMax);
+            mgraphics.stroke();
+            down = false;
         }
     }
+    if (down) mgraphics.stroke();
+}
 
-    // the point
-    var hx = fFx(g, fc), hy = fFy(g, filterDb(ft, 1, q));
-    var hv = hoverHdl === "filt" || (drag && drag.hdl === "filt");
-    hollowSquare(hx, hy, hv ? 4.2 : 3.2, liveCol("live_display_handle_one"), 1.3);
-    zone("hdl", hx - 7, hy - 7, 14, 14, { id: "filt", cx: hx, cy: hy });
+// Wavetable filter type glyph: 0=LP, 1=BP, 2=HP, 3=Notch, 4=Morph
+function drawWtFilterIcon(x, y, type, c, a) {
+    setc(c, a === undefined ? 1.0 : a);
+    mgraphics.set_line_width(1.45);
+    if (type === 0) { // LP: flat top left, smooth curve down on right
+        mgraphics.move_to(x, y + 1.5);
+        mgraphics.line_to(x + 10.0, y + 1.5);
+        mgraphics.curve_to(x + 13.0, y + 1.5, x + 14.0, y + 4.0, x + 14.0, y + 7.5);
+        mgraphics.stroke();
+    } else if (type === 2) { // HP: smooth curve up on left, flat top right
+        mgraphics.move_to(x, y + 7.5);
+        mgraphics.curve_to(x, y + 4.0, x + 1.0, y + 1.5, x + 4.0, y + 1.5);
+        mgraphics.line_to(x + 14.0, y + 1.5);
+        mgraphics.stroke();
+    } else if (type === 1) { // BP: rounded arch
+        mgraphics.move_to(x, y + 7.5);
+        mgraphics.curve_to(x, y + 2.8, x + 1.8, y + 1.5, x + 4.5, y + 1.5);
+        mgraphics.line_to(x + 9.5, y + 1.5);
+        mgraphics.curve_to(x + 12.2, y + 1.5, x + 14.0, y + 2.8, x + 14.0, y + 7.5);
+        mgraphics.stroke();
+    } else if (type === 3) { // Notch: two arms dipping into a V/U notch in the middle
+        mgraphics.move_to(x, y + 1.5);
+        mgraphics.curve_to(x + 4.0, y + 1.5, x + 5.8, y + 3.2, x + 6.1, y + 7.5);
+        mgraphics.stroke();
+        mgraphics.move_to(x + 14.0, y + 1.5);
+        mgraphics.curve_to(x + 10.0, y + 1.5, x + 8.2, y + 3.2, x + 7.9, y + 7.5);
+        mgraphics.stroke();
+    } else { // Morph: HP solid curve + dotted LP/BP hints
+        mgraphics.move_to(x + 3.5, y + 7.5);
+        mgraphics.curve_to(x + 3.5, y + 4.0, x + 4.5, y + 1.5, x + 7.5, y + 1.5);
+        mgraphics.line_to(x + 14.0, y + 1.5);
+        mgraphics.stroke();
+        for (var d = 0; d < 3; d++) fillRect(x + d * 2.0, y + 1.0, 1.1, 1.1, c, a === undefined ? 1.0 : a);
+        for (var v = 0; v < 3; v++) fillRect(x + 8.5, y + 3.0 + v * 1.8, 1.1, 1.1, c, a === undefined ? 1.0 : a);
+    }
+}
 
-    text("20", g.gx + 1, g.gb - 2.5, 6.0, RC.dim, false, 0);
-    text("1k", fFx(g, 1000) + 2, g.gb - 2.5, 6.0, RC.dim, false, 0);
-    text("20k", g.gx + g.gw - 1, g.gb - 2.5, 6.0, RC.dim, false, 2);
+function drawWtRoutingIcon(x, y, route, c) {
+    setc(c, 1.0);
+    mgraphics.set_line_width(1.2);
+    if (route === 0) { // Serial: -[]-[]-
+        line(x, y + 3.0, x + 2.8, y + 3.0, c, 1.0, 1.2);
+        mgraphics.rectangle(x + 2.8, y + 0.8, 3.8, 4.4); mgraphics.stroke();
+        line(x + 6.6, y + 3.0, x + 9.2, y + 3.0, c, 1.0, 1.2);
+        mgraphics.rectangle(x + 9.2, y + 0.8, 3.8, 4.4); mgraphics.stroke();
+        line(x + 13.0, y + 3.0, x + 15.8, y + 3.0, c, 1.0, 1.2);
+    } else if (route === 1) { // Parallel: single input splits to two stacked boxes, merges to single output
+        line(x, y + 3.0, x + 2.8, y + 3.0, c, 1.0, 1.2);
+        line(x + 2.8, y + 0.2, x + 2.8, y + 5.8, c, 1.0, 1.2);
+        line(x + 2.8, y + 0.2, x + 5.5, y + 0.2, c, 1.0, 1.2);
+        line(x + 2.8, y + 5.8, x + 5.5, y + 5.8, c, 1.0, 1.2);
+        mgraphics.rectangle(x + 5.5, y - 1.5, 4.0, 3.4); mgraphics.stroke();
+        mgraphics.rectangle(x + 5.5, y + 4.1, 4.0, 3.4); mgraphics.stroke();
+        line(x + 9.5, y + 0.2, x + 12.2, y + 0.2, c, 1.0, 1.2);
+        line(x + 9.5, y + 5.8, x + 12.2, y + 5.8, c, 1.0, 1.2);
+        line(x + 12.2, y + 0.2, x + 12.2, y + 5.8, c, 1.0, 1.2);
+        line(x + 12.2, y + 3.0, x + 15.4, y + 3.0, c, 1.0, 1.2);
+    } else { // Split: two separate horizontal input lines into two stacked boxes, merging to single output
+        line(x, y + 0.2, x + 5.5, y + 0.2, c, 1.0, 1.2);
+        line(x, y + 5.8, x + 5.5, y + 5.8, c, 1.0, 1.2);
+        mgraphics.rectangle(x + 5.5, y - 1.5, 4.0, 3.4); mgraphics.stroke();
+        mgraphics.rectangle(x + 5.5, y + 4.1, 4.0, 3.4); mgraphics.stroke();
+        line(x + 9.5, y + 0.2, x + 12.2, y + 0.2, c, 1.0, 1.2);
+        line(x + 9.5, y + 5.8, x + 12.2, y + 5.8, c, 1.0, 1.2);
+        line(x + 12.2, y + 0.2, x + 12.2, y + 5.8, c, 1.0, 1.2);
+        line(x + 12.2, y + 3.0, x + 15.4, y + 3.0, c, 1.0, 1.2);
+    }
+}
 
-    var hot = hv || hoverKey === "filt_cutoff";
-    text("Cut", sx + 9, 115, 7.5, RC.sub, false, 0);
-    text(fmtParam("filt_cutoff", fc), sx + 25, 115, 7.5, hot ? RC.white : acc, hot, 0);
-    text("Res", sx + 74, 115, 7.5, RC.sub, false, 0);
-    text(Math.round(res) + "%", sx + 90, 115, 7.5, hot ? RC.white : acc, hot, 0);
-    var fe = Math.round(paramValue("filt_env_amt"));
-    text("Env " + (fe > 0 ? "+" : "") + fe, sx + FILT_W - 8, 115, 7.5, RC.sub, false, 2);
+function focusBrackets(x, y, w, h, c) {
+    var L = 2.8;
+    line(x, y, x + L, y, c, 1.0, 1.0); line(x, y, x, y + L, c, 1.0, 1.0);
+    line(x + w, y, x + w - L, y, c, 1.0, 1.0); line(x + w, y, x + w, y + L, c, 1.0, 1.0);
+    line(x, y + h, x + L, y + h, c, 1.0, 1.0); line(x, y + h, x, y + h - L, c, 1.0, 1.0);
+    line(x + w, y + h, x + w - L, y + h, c, 1.0, 1.0); line(x + w, y + h, x + w, y + h - L, c, 1.0, 1.0);
+}
 
-    rKnob("filt_drive", sx + 34, 142, 8, "Drive", acc, { mod: null });
-    if (on && filtDots.length) text(filtDots.length + (filtDots.length > 1 ? " voices" : " voice") + " · " + fmtHz(filtDots[0].hz), sx + FILT_W - 8, 146, 7.5, RC.a_mod, false, 2);
-    else text(on ? "no notes playing" : "filter off", sx + FILT_W - 8, 146, 7.5, RC.dim, false, 2);
+function wtCaret(x, y, c) {
+    polygon([[x, y], [x + 5.4, y], [x + 2.7, y + 3.0]], c);
+}
+
+// Wavetable dial: large (Frequency, r=17.8, value centered below) or small (Res, r=9.2, value to the bottom-right)
+function wtDial(key, cx, cy, r, label, acc, on, isRes) {
+    var v = paramValue(key);
+    var n = (key === "filt_cutoff" || key === "filt2_cutoff") ? (Math.log(Math.max(20, Math.min(20000, v)) / 20) / Math.log(1000)) : toNorm(key, v);
+    var a0 = isRes ? Math.PI * 0.50 : Math.PI * 0.75;
+    var a1 = isRes ? Math.PI * 1.98 : Math.PI * 2.25;
+    var ang = a0 + n * (a1 - a0);
+    var trackCol = on ? RC.dialFg : RC.dialFgOff;
+    var arcCol = on ? acc : RC.arcOff;
+    var needleCol = on ? RC.dialNeedle : RC.dialNeedleOff;
+    var lw = isRes ? 2.4 : 2.6;
+    strokeArc(cx, cy, r, a0, a1, trackCol, 1.0, lw);
+    var from = BIPOLAR_KEYS[key] ? (a0 + a1) * 0.5 : a0;
+    var lo = Math.min(from, ang), hi = Math.max(from, ang);
+    if (hi - lo > 0.012) strokeArc(cx, cy, r, lo, hi, arcCol, 1.0, lw);
+
+    var md = knobMod(key);
+    if (md && on) {
+        var mr = r + 2.4;
+        strokeArc(cx, cy, mr, a0 + clamp01(n - md.ext) * (a1 - a0), a0 + clamp01(n + md.ext) * (a1 - a0), RC.a_mod, 0.55, 1.4);
+    }
+    line(cx, cy, cx + Math.cos(ang) * (r - 0.5), cy + Math.sin(ang) * (r - 0.5), needleCol, 1.0, isRes ? 1.7 : 2.0);
+
+    var hot = (hoverKey === key) || (drag && drag.key === key);
+    var txtCol = hot ? RC.white : RC.text;
+    if (isRes) {
+        text(label, cx - r + 0.5, cy - r - 4.8, 10.0, RC.text, false, 0);
+        var resStr = (v < 0.05 ? "0.0" : (v < 10 && Math.abs(v - Math.round(v)) > 0.05 ? v.toFixed(1) : Math.round(v))) + " %";
+        text(resStr, cx + r - 5.0, cy + r + 2.2, 10.0, txtCol, hot, 0);
+        zone("knob", cx - r - 3, cy - r - 13, r * 2 + 26, r * 2 + 18, { key: key });
+    } else {
+        text(label, cx, cy - r - 4.8, 10.0, RC.text, false, 1);
+        var valStr = v >= 1000 ? (v / 1000).toFixed(2) + " kHz" : (v >= 100 ? Math.round(v) + " Hz" : v.toFixed(1) + " Hz");
+        text(valStr, cx, cy + r + 11.8, 10.0, txtCol, hot, 1);
+        zone("knob", cx - r - 8, cy - r - 13, r * 2 + 16, r * 2 + 28, { key: key });
+    }
 }
 
 function fmtHz(hz) { return hz >= 1000 ? (hz / 1000).toFixed(1) + "k" : Math.round(hz) + "Hz"; }
+
+function paintFilterStrip(sx, xOff, num) {
+    var isF1 = num === 1;
+    var onKey = isF1 ? "filt_on" : "filt2_on";
+    var typeKey = isF1 ? "filt_type" : "filt2_type";
+    var slopeKey = isF1 ? "filt_slope" : "filt2_slope";
+    var circKey = isF1 ? "filt_circuit" : "filt2_circuit";
+    var on = Math.round(paramValue(onKey)) > 0;
+    var ft = Math.round(paramValue(typeKey));
+    var sl = Math.round(paramValue(slopeKey));
+    var cir = Math.round(paramValue(circKey));
+    var bx = sx + xOff;
+    var orange = RC.sel, cyan = RC.cyan, offCol = RC.lcdDim;
+
+    // 1. Enable square button (9.0 x 9.0 at y = 5.5)
+    var sqX = bx + 1.0, sqY = 5.5, sqS = 9.0;
+    if (on) {
+        fillRect(sqX, sqY, sqS, sqS, orange, 1.0);
+    } else {
+        setc(orange, 1.0);
+        mgraphics.set_line_width(1.1);
+        mgraphics.rectangle(sqX + 0.5, sqY + 0.5, sqS - 1, sqS - 1);
+        mgraphics.stroke();
+    }
+    actZone(sqX - 2, 3, 13, 14, function () {
+        filtFocus = num;
+        setParamFromFace(onKey, on ? 0 : 1);
+    }, { key: onKey });
+
+    // 2. Filter type icon + caret dropdown
+    var tyX = bx + 17.5;
+    if (openMenu && openMenu.key === typeKey) focusBrackets(tyX - 3.0, 4.5, 27.0, 11.0, orange);
+    drawWtFilterIcon(tyX, 5.5, ft, on ? orange : offCol, 1.0);
+    wtCaret(tyX + 16.0, 9.0, on ? orange : offCol);
+    zone("button", tyX - 3, 3, 28, 14, { action: "menu", key: typeKey, w2: 28.0, below: true, wtMenu: "type", anchorX: tyX - 3.0, anchorY: 16.0 });
+
+    // 3. Slope badge [12] / [24]
+    var slX = bx + 46.5, slY = 4.8, slW = 14.5, slH = 10.6;
+    fillRR(slX, slY, slW, slH, 1.3, on ? cyan : offCol, 1.0);
+    text(sl ? "24" : "12", slX + slW * 0.5, slY + 8.3, 9.2, RC.wave, true, 1);
+    actZone(slX - 1, 3, slW + 2, 14, function () {
+        filtFocus = num;
+        setParamFromFace(slopeKey, sl ? 0 : 1);
+    }, { key: slopeKey });
+
+    // 4. Circuit selector (Clean / OSR / MS2 / SMP / PRD)
+    var crX = bx + 68.0;
+    var cirNames = ["Clean", "OSR", "MS2", "SMP", "PRD"];
+    if (openMenu && openMenu.key === circKey) focusBrackets(crX - 3.0, 4.5, 38.5, 11.0, orange);
+    text(cirNames[cir] || "Clean", crX, 13.0, 10.0, on ? orange : offCol, false, 0);
+    wtCaret(crX + 28.0, 9.0, on ? orange : offCol);
+    zone("button", crX - 3, 3, 40, 14, { action: "menu", key: circKey, w2: 44.0, below: true, wtMenu: "circuit", anchorX: crX - 3.0, anchorY: 16.0 });
+}
+
+// Rounded rectangle with rounded top corners and flat bottom corners (for the Wavetable black LCD face)
+function fillTopRR(x, y, w, h, r, c, a) {
+    setc(c, a);
+    var d = Math.min(r, w * 0.5, h * 0.5);
+    mgraphics.move_to(x, y + h);
+    mgraphics.line_to(x, y + d);
+    mgraphics.arc(x + d, y + d, d, Math.PI, Math.PI * 1.5);
+    mgraphics.line_to(x + w - d, y);
+    mgraphics.arc(x + w - d, y + d, d, Math.PI * 1.5, Math.PI * 2.0);
+    mgraphics.line_to(x + w, y + h);
+    mgraphics.close_path();
+    mgraphics.fill();
+}
+
+function paintFilterSection(sx) {
+    filtX = sx;
+    var acc = RC.cyan, orange = RC.sel, grey = RC.sub;
+    var on1 = curFiltOn > 0, on2 = Math.round(paramValue("filt2_on")) > 0;
+    var osc2On = Math.round(paramValue("osc2_on")) > 0, subOn = Math.round(paramValue("sub_on")) > 0;
+    var ft1 = Math.round(paramValue("filt_type")), ft2 = Math.round(paramValue("filt2_type"));
+    var sl1 = Math.round(paramValue("filt_slope")), sl2 = Math.round(paramValue("filt2_slope"));
+    var cir1 = Math.round(paramValue("filt_circuit")), cir2 = Math.round(paramValue("filt2_circuit"));
+    var fc1 = paramValue("filt_cutoff"), res1 = paramValue("filt_res"), m1 = paramValue("filt_morph") * 0.01;
+    var fc2 = paramValue("filt2_cutoff"), res2 = paramValue("filt2_res"), m2 = paramValue("filt2_morph") * 0.01;
+    var route = Math.round(paramValue("filt_route"));
+    var q1 = resToQ(res1), q2 = resToQ(res2);
+
+    // Wavetable section panel: sits inside RC.bg (live_macro_title) with 2 px gap/border on sides and bottom
+    panelBox(sx, SEC_Y, FILT_W, SEC_H);
+    fillTopRR(sx, SEC_Y, FILT_W, 95.5, 2.5, RC.wave, 1.0);
+
+    // Top control bar: Filter 1 strip | divider | Filter 2 strip
+    paintFilterStrip(sx, 5.0, 1);
+    line(sx + 116.5, 5.2, sx + 116.5, 14.8, RC.line, 1.0, 1.0);
+    paintFilterStrip(sx, 123.5, 2);
+
+    // Filter response graph (y = 18..79.0)
+    // In Split mode (route === 2), Filter 2 is live & colored (orange) when Oscillator 2 or Sub is enabled!
+    var splitF2Live = on2 && (route === 1 || (route === 2 && (osc2On || subOn)));
+    var g = filterGeom();
+    var cols = 140, c;
+    if (route === 0) {
+        // Serial: one combined cyan curve
+        var top = [];
+        for (c = 0; c <= cols; c++) {
+            var hz = 20 * Math.pow(1000, c / cols);
+            var db = combinedFilterDb(hz, on1, ft1, fc1, q1, m1, sl1, on2, ft2, fc2, q2, m2, sl2, route);
+            top.push([g.gx + g.gw * (c / cols), fFy(g, db)]);
+        }
+        var anyOn = on1 || on2;
+        strokePathClipped(top, 78.6, acc, anyOn ? 1.0 : 0.38, 1.65);
+    } else {
+        // Parallel (route === 1) or Split (route === 2): two separate curves (Filter 2 drawn first, Filter 1 on top)
+        var top1 = [], top2 = [];
+        for (c = 0; c <= cols; c++) {
+            var hz2 = 20 * Math.pow(1000, c / cols);
+            var db1 = on1 ? filterDb(ft1, hz2 / fc1, q1, m1, sl1) : 0;
+            var db2 = on2 ? filterDb(ft2, hz2 / fc2, q2, m2, sl2) : 0;
+            var xx = g.gx + g.gw * (c / cols);
+            top1.push([xx, fFy(g, db1)]);
+            top2.push([xx, fFy(g, db2)]);
+        }
+        var c2Col = on2 ? (splitF2Live ? orange : RC.lcdText) : RC.lcdDim;
+        var c1Col = on1 ? acc : RC.lcdDim;
+        strokePathClipped(top2, 78.6, c2Col, on2 ? 1.0 : 0.38, 1.65);
+        strokePathClipped(top1, 78.6, c1Col, on1 ? 1.0 : 0.38, 1.65);
+    }
+
+    // Per-voice cutoff telemetry (kept for reactive voice tracking while notes play)
+    filtDots = [];
+    if (on1) {
+        var vs = filterVoices();
+        var k;
+        for (k = vs.length - 1; k >= 1; k--) strokePathClipped(responsePath(g, ft1, voiceCutHz[vs[k]], q1), 78.6, acc, Math.max(0.08, 0.18 - 0.02 * k), 0.9);
+        for (k = 0; k < vs.length; k++) {
+            var hzv = voiceCutHz[vs[k]];
+            var px = Math.min(g.gx + g.gw, fFx(g, hzv)), py = fFy(g, filterDb(ft1, 1, q1, m1, sl1));
+            var a2 = k === 0 ? 1.0 : Math.max(0.3, 0.72 - 0.11 * k);
+            filtDots.push({ v: vs[k], x: px, y: py, hz: hzv, alpha: a2, rank: k });
+        }
+    }
+
+    // Numbered circular handles (1 and 2)
+    var h1x = fFx(g, fc1), h1y = 73.0 - clamp01(res1 / 100) * 44.0;
+    var h2x = fFx(g, fc2), h2y = 73.0 - clamp01(res2 / 100) * 44.0;
+    var hOrder = filtFocus === 1 ? [2, 1] : [1, 2];
+    for (var hi = 0; hi < 2; hi++) {
+        var hn = hOrder[hi];
+        var hx = hn === 1 ? h1x : h2x;
+        var hy = hn === 1 ? h1y : h2y;
+        var hon = hn === 1 ? on1 : on2;
+        var hcol;
+        if (!hon) hcol = RC.lcdDim;
+        else if (route === 0) hcol = orange;
+        else if (hn === 1) hcol = acc;
+        else hcol = splitF2Live ? orange : RC.lcdText;
+        var hr = 6.0;
+        var isSolid = (!hon) || (route > 0 && ((hn === 1 && filtFocus === 1 && splitF2Live) || (hn === 2 && (filtFocus === 2 || !splitF2Live))));
+        if (isSolid) {
+            circle(hx, hy, hr, hcol, 1.0);
+            text(String(hn), hx, hy + 3.1, 8.5, RC.wave, true, 1);
+        } else {
+            circle(hx, hy, hr, RC.wave, 1.0);
+            strokeArc(hx, hy, hr - 0.5, 0, Math.PI * 2, hcol, 1.0, 1.35);
+            text(String(hn), hx, hy + 3.1, 8.5, hcol, true, 1);
+        }
+        zone("hdl", hx - 7.5, hy - 7.5, 15, 15, { id: hn === 1 ? "filt" : "filt2", cx: hx, cy: hy, num: hn });
+    }
+
+    // Routing strip (y = 79.0..95.5)
+    line(sx, 79.0, sx + FILT_W, 79.0, RC.line, 1.0, 1.1);
+    var routeNames = ["Serial", "Parallel", "Split"];
+    drawWtRoutingIcon(sx + 8.5, 84.5, route, RC.sub);
+    var rName = routeNames[route] || "Serial";
+    var rCaretX = route === 1 ? sx + 66.0 : (route === 2 ? sx + 55.0 : sx + 62.0);
+    if (openMenu && openMenu.key === "filt_route") focusBrackets(sx + 27.5, 81.2, rCaretX - (sx + 27.5) + 8.0, 12.2, RC.lcdText);
+    text(rName, sx + 30.0, 90.5, 10.0, RC.lcdText, false, 0);
+    wtCaret(rCaretX, 86.2, RC.lcdText);
+    zone("button", sx + 6, 79.5, 70, 15.5, { action: "menu", key: "filt_route", w2: 64, below: true, wtMenu: "route", anchorX: sx + 27.5, anchorY: 95.5 });
+
+    // Bottom parameter area (y = 95.5..167): Left half (Filter 1) | vertical divider | Right half (Filter 2)
+    line(sx + 116.5, 101.5, sx + 116.5, 163.5, RC.divider, 1.0, 1.1);
+
+    // Filter 1 controls: Res (small dial at top-left), Frequency (large dial on right), Drive / Morph box below Res
+    wtDial("filt_res", sx + 19.0, 121.0, 9.2, "Res", acc, on1, true);
+    wtDial("filt_cutoff", sx + 79.5, 128.5, 17.8, "Frequency", acc, on1, false);
+
+    // Filter 1 Drive (or Morph when Morph type is active)
+    var f1SubKey = (ft1 === 4 && cir1 === 0) ? "filt_morph" : "filt_drive";
+    var f1SubLab = f1SubKey === "filt_morph" ? "Morph" : "Drive";
+    text(f1SubLab, sx + 11.0, 144.8, 10.0, RC.text, false, 0);
+    var dbX1 = sx + 9.0, dbY1 = 149.2, dbW1 = 42.5, dbH1 = 13.0;
+    fillRect(dbX1, dbY1, dbW1, dbH1, on1 ? RC.textBg : mixc(RC.panel, RC.textBg, 0.45), 1.0);
+    setc(RC.contrastFrame, on1 ? 0.95 : 0.45);
+    mgraphics.set_line_width(1.0);
+    mgraphics.rectangle(dbX1 + 0.5, dbY1 + 0.5, dbW1 - 1, dbH1 - 1);
+    mgraphics.stroke();
+    var drv1 = paramValue(f1SubKey);
+    var drv1Str = f1SubKey === "filt_morph" ? Math.round(drv1) + " %" : (drv1 * 0.24).toFixed(2) + " dB";
+    text(drv1Str, dbX1 + dbW1 * 0.5, dbY1 + 9.8, 9.5, on1 ? RC.text : RC.arcOff, false, 1);
+    zone("value", dbX1, dbY1, dbW1, dbH1, { key: f1SubKey, norm: true });
+    zone("value", sx + 54, 157, 48, 9, { key: f1SubKey === "filt_morph" ? "filt_drive" : "filt_morph", norm: true });
+
+    // Filter 2 controls: Frequency (large dial on left), Res (small dial at top-right), Drive / Morph when active
+    wtDial("filt2_cutoff", sx + 155.5, 128.5, 17.8, "Frequency", acc, on2, false);
+    wtDial("filt2_res", sx + 198.0, 121.0, 9.2, "Res", acc, on2, true);
+    var showDrv2 = (cir2 > 0 || paramValue("filt2_drive") > 0.01);
+    var showMph2 = (ft2 === 4);
+    var dbX2 = sx + 185.0, dbY2 = 149.2, dbW2 = 42.5, dbH2 = 13.0;
+    if (showDrv2 || showMph2) {
+        var f2SubKey = (showMph2 && !showDrv2) ? "filt2_morph" : "filt2_drive";
+        var f2SubLab = f2SubKey === "filt2_morph" ? "Morph" : "Drive";
+        text(f2SubLab, sx + 187.0, 144.8, 10.0, RC.text, false, 0);
+        fillRect(dbX2, dbY2, dbW2, dbH2, on2 ? RC.textBg : mixc(RC.panel, RC.textBg, 0.45), 1.0);
+        setc(RC.contrastFrame, on2 ? 0.95 : 0.45);
+        mgraphics.set_line_width(1.0);
+        mgraphics.rectangle(dbX2 + 0.5, dbY2 + 0.5, dbW2 - 1, dbH2 - 1);
+        mgraphics.stroke();
+        var drv2 = paramValue(f2SubKey);
+        var drv2Str = f2SubKey === "filt2_morph" ? Math.round(drv2) + " %" : (drv2 * 0.24).toFixed(2) + " dB";
+        text(drv2Str, dbX2 + dbW2 * 0.5, dbY2 + 9.8, 9.5, on2 ? RC.text : RC.arcOff, false, 1);
+        zone("value", dbX2, dbY2, dbW2, dbH2, { key: f2SubKey, norm: true });
+    } else {
+        zone("value", dbX2, dbY2, dbW2, dbH2, { key: "filt2_drive", norm: true });
+    }
+    zone("value", sx + 124, 157, 48, 9, { key: "filt2_morph", norm: true });
+}
 
 // ---------------------------------------------------------------------------
 // Engine section: engine pills, character, the engine's knobs, Pitch / Speed / Pos
@@ -1206,6 +1671,14 @@ var PILL_W = { 0: 40, 3: 42, 1: 36, 2: 42, 4: 46 };
 function paintEngineStrip() {
     var x = STRIP.x, y = STRIP.y, w = STRIP.w, acc = RC.cyan;
     panelBox(x, y, w, STRIP.h);
+    if (oscTab === 1) {
+        paintOsc2SubControls(x, y, w, STRIP.h, "strip_osc2");
+        return;
+    }
+    if (oscTab === 2) {
+        paintOsc2SubControls(x, y, w, STRIP.h, "strip_sub");
+        return;
+    }
     // left: the engine selector above Pitch / Speed / Pos (+ Freeze)
     var px = x + 6;
     for (var e = 0; e < ENGINE_ORDER.length; e++) {
@@ -1491,13 +1964,83 @@ function slopeFromMid(level, base) {
     return Math.max(-1, Math.min(1, -Math.log(g) / Math.log(4)));
 }
 
+var sharedPaintMenu = paintMenu;
+paintMenu = function () {
+    if (!openMenu) return;
+    var k = openMenu.key;
+    if (k === "filt_type" || k === "filt2_type" || k === "filt_circuit" || k === "filt2_circuit" || k === "filt_route") {
+        var isType = (k === "filt_type" || k === "filt2_type");
+        var isRoute = (k === "filt_route");
+        var cur = Math.round(paramValue(k));
+        var mx = openMenu.x, my = 16.5, mw = isType ? 28.0 : (isRoute ? 64.0 : 44.0), mh = isRoute ? 44.0 : 72.0;
+        if (isRoute) { mx = filtX + 6; my = 94.5; }
+        fillRect(mx, my, mw, mh, RC.wave, 1.0);
+        setc(RC.sel, 1.0);
+        mgraphics.set_line_width(1.1);
+        mgraphics.rectangle(mx + 0.5, my + 0.5, mw - 1, mh - 1);
+        mgraphics.stroke();
+        if (isType) {
+            // Wavetable visual order in the dropdown: LP (0), HP (2), BP (1), Notch (3), Morph (4)
+            var typeOrder = [0, 2, 1, 3, 4];
+            var rowH = 13.8;
+            for (var r = 0; r < 5; r++) {
+                var val = typeOrder[r];
+                var ry = my + 1.5 + r * rowH;
+                var sel = cur === val;
+                if (sel) fillRect(mx + 1, ry, mw - 2, rowH, RC.sel, 1.0);
+                drawWtFilterIcon(mx + 6.5, ry + 2.5, val, sel ? RC.wave : RC.sel, 1.0);
+                zone("button", mx, ry, mw, rowH, { action: "menu_pick", key: k, value: val });
+            }
+        } else {
+            var names = isRoute ? ["Serial", "Parallel", "Split"] : ["Clean", "OSR", "MS2", "SMP", "PRD"];
+            var rh = (mh - 2) / names.length;
+            for (var i = 0; i < names.length; i++) {
+                var ry2 = my + 1 + i * rh;
+                var sel2 = cur === i;
+                if (sel2) fillRect(mx + 1, ry2, mw - 2, rh, RC.sel, 1.0);
+                text(names[i], mx + 4.5, ry2 + rh * 0.5 + 3.2, 9.2, sel2 ? RC.wave : RC.sel, false, 0);
+                zone("button", mx, ry2, mw, rh, { action: "menu_pick", key: k, value: i });
+            }
+        }
+        return;
+    }
+    sharedPaintMenu();
+};
+
+var sharedDoAction = doAction;
+doAction = function (z) {
+    if (z.action === "osc_tab") {
+        oscTab = z.tab || 0;
+        mgraphics.redraw();
+        return;
+    }
+    if (z.action === "osc_toggle") {
+        if (z.tab !== undefined) oscTab = z.tab;
+        setParamFromFace(z.key, Math.round(paramValue(z.key)) > 0 ? 0 : 1);
+        mgraphics.redraw();
+        return;
+    }
+    if (z.action === "menu" && z.wtMenu) {
+        filtFocus = /^filt2/.test(z.key) ? 2 : 1;
+        if (openMenu && openMenu.key === z.key) { openMenu = null; mgraphics.redraw(); return; }
+        openMenu = { key: z.key, x: z.anchorX, y: z.anchorY, w: z.w2, rowH: 12 };
+        mgraphics.redraw();
+        return;
+    }
+    if (z.action === "menu_pick" && /^filt/.test(z.key)) {
+        filtFocus = /^filt2/.test(z.key) ? 2 : 1;
+    }
+    sharedDoAction(z);
+};
+
 function hdlMove(id, x, y) {
     var gx = x + drag.ox, gy = y + drag.oy;
-    if (id === "filt") {
+    if (id === "filt" || id === "filt2") {
         var g = filterGeom();
-        setIfChanged("filt_cutoff", fHz(g, gx));
-        var db = F_DB_LO + (g.gb - gy) / (g.gb - g.gy) * (F_DB_HI - F_DB_LO);
-        setIfChanged("filt_res", qToRes(Math.pow(10, db / 20)));
+        var isF1 = id === "filt";
+        setIfChanged(isF1 ? "filt_cutoff" : "filt2_cutoff", fHz(g, gx));
+        var resPct = clamp01((73.0 - gy) / 44.0) * 100;
+        setIfChanged(isF1 ? "filt_res" : "filt2_res", resPct);
         return;
     }
     var e = envGeom(), k = e.keys;
@@ -1541,6 +2084,7 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
         if (drag && drag.captured) setCursorHidden(false);
         drag = null;
         if (z.kind === "act") { z.fn(); mgraphics.redraw(); return; }
+        if (z.num) filtFocus = z.num;
         drag = { hdl: z.id, ox: z.cx - x, oy: z.cy - y };
         hoverHdl = z.id;
         mgraphics.redraw();
@@ -1581,6 +2125,7 @@ ondblclick = function (x, y) {
     if (z && z.kind === "wave" && viewZoom > 1.0005) { resetView(); return; }     // empty waveform space resets the view
     if (z && z.kind === "hdl") {
         if (z.id === "filt") { setParamFromFace("filt_cutoff", paramSpec("filt_cutoff").init); setParamFromFace("filt_res", paramSpec("filt_res").init); }
+        else if (z.id === "filt2") { setParamFromFace("filt2_cutoff", paramSpec("filt2_cutoff").init); setParamFromFace("filt2_res", paramSpec("filt2_res").init); }
         else {
             var w4 = z.id.substring(4);
             if (w4 === "As" || w4 === "Ds" || w4 === "Rs") { var sk2 = envSlopeKeys(), si = { As: 0, Ds: 1, Rs: 2 }[w4]; setParamFromFace(sk2[si], 0); }
@@ -1647,8 +2192,13 @@ function preview() {
     storeParam("lfo_filt", 35, true);
     storeParam("menv_pitch", 20, true);
     storeParam("filt_env_amt", 30, true);
-    storeParam("filt_cutoff", 2400, true);
-    storeParam("filt_res", 45, true);
+    storeParam("filt_cutoff", 762, true);
+    storeParam("filt_res", 44, true);
+    storeParam("filt_circuit", 1, true);
+    storeParam("filt2_on", 1, true);
+    storeParam("filt2_type", 2, true);
+    storeParam("filt2_cutoff", 73.2, true);
+    storeParam("filt2_res", 47, true);
     storeParam("lfo_rate", 1.4, true);
     storeParam("atk_ms", 18, true);
     storeParam("dec_ms", 900, true);
@@ -1702,4 +2252,5 @@ function preview() {
     foldMask = o.fold === undefined ? DEFAULT_FOLD : o.fold;
     showInspector = foldMask ? 1 : 0;
     if (o.hover) hoverKey = o.hover;
+    if (o.menu) openMenu = o.menu;
 }

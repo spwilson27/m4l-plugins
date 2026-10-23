@@ -18,3 +18,5 @@ declare var FACE_PARAMS: { [key: string]: FaceParamSpec };
 /** Main face only: the gen patch as .gendsp JSON and its content hash (deferred DSP, see loadDsp). */
 declare var GEN_DSP_TEXT: string;
 declare var GEN_DSP_HASH: string;
+declare var FACE_DESIGN: string | undefined;
+declare var OSC2_UI_STYLE: string | undefined;
