@@ -141,10 +141,10 @@ function timePaint(e, label, budgetMs, n = 200) {
     e.run("MM.setParam(0, 'enabled', 1); MM.setUI({ pb: true, sel: 0 })");
     still(e); for (let i = 0; i < 300; i++) poll();
     e.log.redraws = 0;
-    for (let i = 0; i < 30; i++) { t += 0.033; e.scope[4 * 5 + 1] = (t * 3) % 1; e.scope[4 * 5] = Math.sin(t); poll(); }
+    for (let i = 0; i < 30; i++) { t += 0.033; e.scope[C.SCOPE_FRAME] = (e.scope[C.SCOPE_FRAME] || 0) + 1; e.scope[4 * 5 + 1] = (t * 3) % 1; e.scope[4 * 5] = Math.sin(t); poll(); }
     eq(e.log.redraws, 0, "LST: the unselected modulator 5 moving requests no repaint");
     e.log.redraws = 0;
-    for (let i = 0; i < 30; i++) { t += 0.033; e.scope[1] = (t * 3) % 1; e.scope[0] = Math.sin(t); poll(); }
+    for (let i = 0; i < 30; i++) { t += 0.033; e.scope[C.SCOPE_FRAME] = (e.scope[C.SCOPE_FRAME] || 0) + 1; e.scope[1] = (t * 3) % 1; e.scope[0] = Math.sin(t); poll(); }
     ok(e.log.redraws >= 30, "LST: the selected modulator moving repaints every poll");
     e.run("MM.setUI({ pb: false })");
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Builder for devices/Mega Modulator.amxd.
 
-The UI is `src/megamod_ui.js`, laid out by `scripts/megamod_layout.json`. The patch adds pass-through audio,
+The UI is `src/megamod_ui.js`, laid out by `scripts/megamod_layout.json`. The patch leaves plugin~ unconnected
+until the deferred DSP is ready (silence while the gens load; src/megamod_dsp.js then connects the pass-through),
 the hidden gen engine and routers, buffers, transport sync, the 256-slot mapping pool and live.thisdevice
 width/LOM init wiring.
 
@@ -256,6 +257,7 @@ def router_gen_code(r=None):
         "\t\t\tpoke(ys, ysv, j);",
         "\t\t\tpoke(yo, ysv, j);",
         "\t\t} else {",
+        "\t\t\t// sel <= 0 (unmapped or disabled): output 0 directly, no curve-table lookup.",
         "\t\t\t// an off slot only decays what the smoothing left (y = 0): nothing to write once it has reached 0",
         "\t\t\t// (a nested if on a variable: an else-if whose condition is a peek() call silently broke the gen compile in Max 9)",
         "\t\t\typ = peek(ys, j);",
@@ -584,7 +586,8 @@ def build_patcher():
         boxes.append(b)
 
     boxes.extend([
-        # plugin~ -> plugout~ is the audio path and is never touched (the engine / routers only read the signal); varnames for the deferred DSP
+        # No plugin~ -> plugout~ cord in the file: the output stays silent while the deferred DSP loads.
+        # src/megamod_dsp.js connects mm_plugin -> mm_plugout (both channels) once the engine gen~ is confirmed ready.
         named(newobj("obj-plugin", "plugin~", 20, 460, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "mm_plugin"),
         named(newobj("obj-plugout", "plugout~", 20, 640, 58, numinlets=2, numoutlets=0, outlettype=[]), "mm_plugout"),
         # Every engine message (`gen <key> <v>` from the v8ui, the transport, the plugsync~ values) goes into this hub's data inlet; the face creates the
@@ -634,8 +637,7 @@ def build_patcher():
     ])
 
     lines = [
-        line("obj-plugin", 0, "obj-plugout", 0),
-        line("obj-plugin", 1, "obj-plugout", 1),
+        # plugin~ -> plugout~ is added by src/megamod_dsp.js when the engine is ready (silence until then)
         line("obj-loadbang", 0, "obj-msg-names", 0),
         line("obj-msg-names", 0, "obj-viz", 0),
         line("obj-thisdevice", 0, "obj-msg-init-lom", 0),
