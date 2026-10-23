@@ -767,7 +767,7 @@ function mockLom() {
         return null;
     }
     return {
-        tree, idOf,
+        tree, idOf, ids,
         pathOfId: (id) => Object.keys(ids).find((k) => ids[k] === id),
         node,
         iface() {
@@ -1436,6 +1436,97 @@ function p0Width() { return 588; }
         }
     }
 
+    // ---- 7b2. UNIPOLAR depth-route factor m = range * dep * y (y = the route's shape at u = (B + 1) / 2, 0..1; NO polarity choice); eff = clamp(base * prod m, 0, 1)
+    {
+        const sh = C.linearShape();
+        // `pol` is the STORED polarity of an old route: it must be ignored (the field is kept)
+        const rt = (pol, range, depth) => ({ id: 1, mod: 0, mode: "mod", polarity: pol, range, depth: depth === undefined ? 1 : depth, min: 0, max: 1, shape: sh, target: C.makeDepthTarget(3) });
+        for (const pol of [1, 0, -1]) for (const range of [0, 0.15, 0.5, 1]) for (const b of [-1, -0.5, 0, 0.5, 1]) {
+            const y = (b + 1) / 2;  // the route's shape is linear, y = B's normalized output
+            near(C.depthFactor(rt(pol, range), b), range * y, 1e-12, `m = range * y (stored pol ${pol}, range ${range}, B ${b})`);
+            ok(C.depthFactor(rt(pol, range), b) >= 0, "m never negative");
+            near(C.mappingOutput(rt(pol, range), b), range * y, 1e-12, "mappingOutput of a depth route is unipolar too");
+            const tb = C.depthFactorTable(rt(pol, range)); near(tb[255], C.depthFactor(rt(pol, range), 1), 1e-12, "factor table end"); near(tb[0], C.depthFactor(rt(pol, range), -1), 1e-12, "factor table start");
+            ok(tb.every((v) => v >= 0 && v <= range + 1e-12), "factor table within 0..range");
+        }
+        // an object without a depth target is still turned unipolar by depthFactor itself
+        { const plain = Object.assign(rt(0, 0.5), { target: {} }); near(C.depthFactor(plain, -1), 0, 1e-12, "depthFactor ignores polarity even without a target (B min -> 0)"); near(C.depthFactor(plain, 1), 0.5, 1e-12, "...and B max -> range (a stored +- is not read as +-)"); near(C.depthFactor(plain, 0), 0.25, 1e-12, "...B = 0 -> range / 2"); }
+        // B at its minimum -> 0, B at its maximum -> range
+        for (const range of [0, 0.25, 0.5, 1]) { near(C.depthFactor(rt(1, range), -1), 0, 1e-12, "B min -> m = 0"); near(C.depthFactor(rt(1, range), 1), range, 1e-12, "B max -> m = range"); }
+        // the route's own depth scales m (0 zeroes it)
+        for (const b of [-1, 0, 1]) near(C.depthFactor(rt(1, 1, 0), b), 0, 1e-12, "route depth 0: m = 0");
+        near(C.depthFactor(rt(1, 1, 0.5), 1), 0.5, 1e-12, "route depth 0.5: m = 0.5 range y");
+        // eff: product, clamp, never negative
+        near(C.effectiveDepth(1, []), 1, 1e-12, "no route: eff = base"); near(C.effectiveDepth(0.8, []), 0.8, 1e-12, "no route: eff = base 0.8");
+        near(C.effectiveDepth(1, [C.depthFactor(rt(1, 1), -1)]), 0, 1e-12, "B min on a full-range route: eff = 0 (it does NOT invert)");
+        near(C.effectiveDepth(1, [C.depthFactor(rt(1, 1), 1)]), 1, 1e-12, "B max on a full-range route: eff = 1");
+        near(C.effectiveDepth(0.5, [C.depthFactor(rt(1, 1), 0.2)]), 0.5 * 0.6, 1e-12, "base 0.5 * m 0.6");
+        near(C.effectiveDepth(0.5, [C.depthFactor(rt(1, 0.5), 1), C.depthFactor(rt(1, 1), -0.2)]), 0.5 * 0.5 * 0.4, 1e-12, "two routes multiply");
+        near(C.effectiveDepth(0.5, [C.depthFactor(rt(1, 0.5), -1), C.depthFactor(rt(1, 1), 0.4)]), 0, 1e-12, "...and one factor at 0 zeroes it");
+        near(C.effectiveDepth(1, [4, 3]), 1, 1e-12, "clamps at 1"); near(C.effectiveDepth(1, [-0.5, 2]), 0, 1e-12, "a stray negative factor is floored at 0 (never inverts)");
+        near(C.effectiveDepth(1, [-3, -2]), 0, 1e-12, "two negative factors do not make a positive one");
+        // end-to-end with a Mod mapping: o = range * eff * (...) with eff from the route (always >= 0)
+        const modMap = { id: 2, mod: 0, mode: "mod", polarity: 0, range: 1, depth: 1, min: 0, max: 1, shape: sh };
+        for (const b of [-1, 0, 0.5, 1]) near(C.mappingOutput(modMap, 0.7, C.effectiveDepth(1, [C.depthFactor(rt(1, 1), b)])), 0.7 * (b + 1) / 2, 1e-12, `Mod mapping value 0.7 with B = ${b}`);
+        // THE USER'S CASES, re-derived (A = Remote mapping, B modulates A's depth; "range" = the depth route's range). A = c + (lookup - c) * eff.
+        const remA = (min, max) => ({ id: 3, mod: 1, mode: "remote", polarity: 1, range: 0.5, depth: 1, min, max, shape: sh });
+        const outA = (A, route, bOut, x) => C.mappingOutput(A, x, C.effectiveDepth(A.depth, [C.depthFactor(route, bOut)]));
+        for (const x of [-1, -0.5, 0, 0.5, 1]) for (const bOut of [-1, -0.5, 0, 0.5, 1]) for (const pol of [1, 0, -1]) {
+            near(outA(remA(0, 1), rt(pol, 0), bOut, x), 0.5, 1e-12, `case 1: A 0..100, route range 0: always 50 (x ${x}, B ${bOut}, stored pol ${pol})`);
+            near(outA(remA(0.25, 1), rt(pol, 0), bOut, x), 0.625, 1e-12, `case 2: A 25..100, route range 0: always 62.5 (x ${x}, B ${bOut}, stored pol ${pol})`);
+            const v = outA(remA(0, 1), rt(pol, 0.5), bOut, x);
+            ok(v >= 0.25 - 1e-12 && v <= 0.75 + 1e-12, `case 3: A 0..100, route range 50, B swept: within 25..75 (x ${x}, B ${bOut}: ${v})`);
+        }
+        // case 3 in detail: B at its PEAK reaches both ends (25 / 75), B at its MINIMUM is centred (50 for every x)
+        near(outA(remA(0, 1), rt(1, 0.5), 1, 1), 0.75, 1e-12, "case 3: A at its top, B at its peak: 75"); near(outA(remA(0, 1), rt(1, 0.5), 1, -1), 0.25, 1e-12, "case 3: A at its bottom, B at its peak: 25");
+        for (const x of [-1, -0.3, 0, 0.6, 1]) near(outA(remA(0, 1), rt(0, 0.5), -1, x), 0.5, 1e-12, `case 3: B at its minimum: centred (50), x ${x}`);
+        // a bipolar B swept over its full range: mid-point 0 is the half range
+        near(outA(remA(0, 1), rt(1, 0.5), 0, 1), 0.5 + 0.5 * 0.25, 1e-12, "case 3: B at 0 -> eff 0.25 -> 62.5 at x = 1");
+        // Mod mode equivalents: range 0 -> A's offset 0; range 0.5 -> A's offset scaled by 0.5 * (B + 1) / 2 (never inverted)
+        const modA = { id: 4, mod: 1, mode: "mod", polarity: 0, range: 1, depth: 1, min: 0, max: 1, shape: sh };
+        for (const bOut of [-1, 0, 1]) { near(outA(modA, rt(1, 0), bOut, 1), 0, 1e-12, "Mod A, route range 0: offset 0"); near(outA(modA, rt(1, 0.5), bOut, 1), 0.5 * (bOut + 1) / 2, 1e-12, "Mod A, route range 0.5: 0.5 * (B+1)/2"); }
+        // two routes multiply: 0.5 y1 * 0.5 y2
+        near(C.effectiveDepth(1, [C.depthFactor(rt(1, 0.5), 1), C.depthFactor(rt(1, 0.5), 1)]), 0.25, 1e-12, "two range-0.5 routes at B = 1: eff 0.25");
+        // FUZZ: random configurations (several routes, any stored polarity, any mode / bounds / shape): eff in 0..1 always, Remote stays inside its bounds
+        {
+            let seed = 12345;
+            const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+            const shapes = [C.linearShape(), C.curveToShape(C.CURVE_EXP, 0.5, 4), C.curveToShape(C.CURVE_LOG, 0.5, 4), C.curveToShape(C.CURVE_S, 0.5, 4), C.curveToShape(C.CURVE_STEPPED, 0.5, 4)];
+            let nNeg = 0, nChecked = 0;
+            for (let it = 0; it < 600; it++) {
+                const nr = 1 + Math.floor(rnd() * 4);
+                const routes = [];
+                for (let r = 0; r < nr; r++) routes.push({ id: 10 + r, mod: 0, mode: "mod", polarity: [1, 0, -1][Math.floor(rnd() * 3)], range: rnd(), depth: rnd() < 0.2 ? 1 : rnd(), min: 0, max: 1, shape: shapes[Math.floor(rnd() * shapes.length)], target: C.makeDepthTarget(3) });
+                const base = rnd() < 0.3 ? 1 : rnd();
+                const bs = routes.map(() => rnd() * 2 - 1);
+                const eff = C.effectiveDepth(base, routes.map((rr, i) => C.depthFactor(rr, bs[i])));
+                if (!(eff >= 0 && eff <= 1)) nNeg++;
+                ok(eff >= 0 && eff <= 1 && eff <= base + 1e-12, `fuzz ${it}: eff in 0..1 and never above base (${eff})`);
+                const lo = rnd() * 0.5, hi = 0.5 + rnd() * 0.5;
+                const A = { id: 3, mod: 1, mode: rnd() < 0.5 ? "remote" : "mod", polarity: [1, 0, -1][Math.floor(rnd() * 3)], range: rnd(), depth: base, min: lo, max: hi, shape: shapes[Math.floor(rnd() * shapes.length)] };
+                const x = rnd() * 2 - 1;
+                const v = C.mappingOutput(A, x, eff);
+                if (A.mode === "remote") ok(v >= lo - 1e-9 && v <= hi + 1e-9, `fuzz ${it}: Remote stays inside its bounds (${v})`);
+                else ok(Math.abs(v) <= A.range * eff + 1e-9, `fuzz ${it}: Mod offset scaled by eff (never beyond range * eff)`);
+                nChecked++;
+            }
+            eq(nNeg, 0, "fuzz: no effective depth ever outside 0..1 over " + nChecked + " random configurations");
+        }
+    }
+    // schema 10 stays: a saved depth route with polarity "+-" / "-" loads as it was (the field is kept) and behaves unipolar
+    {
+        const st = C.normalizeState({ schema: 10, mods: [{ type: 1 }, { type: 1 }], nextMapId: 4, mappings: [
+            { id: 1, mod: 0, mode: "mod", polarity: 1, range: 0.5, depth: 1, target: { path: "live_set tracks 0 devices 0 parameters 3", name: "X", paramName: "X" } },
+            { id: 2, mod: 1, mode: "mod", polarity: 0, range: 0.5, depth: 1, target: { internal: true, kind: "depth", mapId: 1 } },
+            { id: 3, mod: 0, mode: "mod", polarity: -1, range: 0.8, depth: 1, target: { internal: true, kind: "depth", mapId: 1 } }] });
+        eq(st.schema, C.MEGAMOD_VERSION, "schema version unchanged (no bump)"); eq(C.MEGAMOD_VERSION, 10, "still schema 10");
+        const rs = st.mappings.filter((m) => C.isDepthRoute(m));
+        eq(rs.length, 2, "both old depth routes survive");
+        deq(rs.map((m) => m.polarity), [0, -1], "the stored polarity field is kept (and ignored)");
+        for (const r of rs) for (const b of [-1, -0.5, 0, 0.5, 1]) ok(C.depthFactor(r, b) >= 0 && Math.abs(C.depthFactor(r, b) - r.range * (b + 1) / 2) < 1e-12, "old +- / - depth route is now unipolar: m = range * (B+1)/2");
+        for (const r of rs) { const tb = C.depthFactorTable(r); ok(tb.every((v) => v >= 0), "baked table of an old route has no negative cell"); }
+    }
+
     // ---- 7c. depth in the model: output, migration, save / load
     {
         const sh = C.linearShape();
@@ -1445,14 +1536,27 @@ function p0Width() { return 588; }
             near(C.mappingOutput(modM(0.5, pol), x), 0.5 * C.mappingOutput(modM(1, pol), x), 1e-12, `Mod depth 0.5 halves the output (pol ${pol}, x ${x})`);
             near(C.mappingOutput(modM(0, pol), x), 0, 1e-12, "Mod depth 0 = no modulation");
         }
-        const remM = (depth) => ({ id: 1, mod: 0, mode: "remote", polarity: 0, range: 1, depth, min: 0.2, max: 0.8, shape: sh });
+        const remM = (depth, mn = 0.2, mx = 0.8) => ({ id: 1, mod: 0, mode: "remote", polarity: 0, range: 1, depth, min: mn, max: mx, shape: sh });
         for (const x of [-1, -0.5, 0, 0.5, 1]) {
             const y = (x + 1) / 2;
             near(C.mappingOutput(remM(1), x), 0.2 + 0.6 * y, 1e-12, "Remote depth 1 is 1:1");
-            near(C.mappingOutput(remM(0.5), x), 0.2 + 0.6 * y * 0.5, 1e-12, "Remote depth 0.5 shrinks the span toward min");
-            near(C.mappingOutput(remM(0), x), 0.2, 1e-12, "Remote depth 0 sits at min");
+            near(C.mappingOutput(remM(0.5), x), 0.5 + (0.2 + 0.6 * y - 0.5) * 0.5, 1e-12, "Remote depth 0.5 shrinks the span toward the CENTRE");
+            near(C.mappingOutput(remM(0), x), 0.5, 1e-12, "Remote depth 0 sits at the centre (min + max) / 2");
         }
-        near(C.mappingOutput({ id: 1, mod: 0, mode: "remote", polarity: 0, range: 1, depth: 0.5, min: 0.8, max: 0.2, shape: sh }, 1), 0.5, 1e-12, "Remote inverted span (min > max) shrinks toward min");
+        // Remote depth scales AROUND THE CENTRE of the bounds: depth 0 -> c (0.5 for 0..1, 0.625 for 0.25..1), depth 0.5 on 0..1 spans 0.25..0.75
+        for (const x of [-1, -0.2, 0, 0.7, 1]) {
+            near(C.mappingOutput(remM(0, 0, 1), x), 0.5, 1e-12, "Remote 0..1 depth 0 = 0.5");
+            near(C.mappingOutput(remM(0, 0.25, 1), x), 0.625, 1e-12, "Remote 0.25..1 depth 0 = 0.625");
+            near(C.mappingOutput(remM(0.5, 0, 1), x), 0.25 + 0.5 * (x + 1) / 2, 1e-12, "Remote 0..1 depth 0.5 spans 0.25..0.75");
+            near(C.mappingOutput(remM(1, 0.25, 1), x), 0.25 + 0.75 * (x + 1) / 2, 1e-12, "Remote depth 1 unchanged");
+            near(C.mappingOutput(remM(1, 0, 1), x, -1), 0.5, 1e-12, "an effective depth below 0 is floored at 0: centre, never a mirrored sweep");
+            near(C.mappingOutput(remM(1, 0, 1), x, 0), 0.5, 1e-12, "effective depth override 0 = centre");
+        }
+        near(C.remoteCentre({ min: 0.25, max: 1 }), 0.625, 1e-12, "remoteCentre");
+        near(C.remoteCentre({ min: 0.8, max: 0.2 }), 0.5, 1e-12, "remoteCentre of an inverted span");
+        near(C.mappingOutput({ id: 1, mod: 0, mode: "remote", polarity: 0, range: 1, depth: 0.5, min: 0.8, max: 0.2, shape: sh }, 1), 0.5 + (0.2 - 0.5) * 0.5, 1e-12, "Remote inverted span (min > max) shrinks toward the centre");
+        // Mod keeps its semantics (o *= depth), also with an effective-depth override (0..1)
+        near(C.mappingOutput(modM(1, 0), 1, -0.5), 0, 1e-12, "Mod with an effective depth of -0.5: floored at 0 (never inverts)"); near(C.mappingOutput(modM(1, 0), 1, 0.5), 0.5 * 0.8, 1e-12, "Mod with an effective depth of 0.5");
         // tables follow
         const tb = C.mappingTable(modM(0.25, 1));
         near(tb[255], 0.8 * 0.25, 1e-12, "table end value scaled");
@@ -1894,10 +1998,10 @@ function p0Width() { return 588; }
                 }
             }
             ok(baseOk && covered === 256, "all 8 routers read dk = route[2k+1] and rm = route[768 + k] for each of their 32 slots (256 pool slots)");
-            ok(C.ROUTE_DEPTH_BASE === 512 && C.ROUTE_DEPTH_MIN === 768 && C.ROUTE_DEPTH_MIN + 256 <= C.ROUTE_SAMPS && C.ROUTE_DEPTH_BASE + 256 <= C.ROUTE_DEPTH_MIN && 2 * 256 <= C.ROUTE_DEPTH_BASE, "route buffer layout: [0..511] source/effective, [512..767] base, [768..1023] Remote min");
-            ok(/Data dsum\(512\);/.test(g) && /Data dcl\(512\);/.test(g), "the destination accumulators hold 448 depth / control cells");
+            ok(C.ROUTE_DEPTH_BASE === 512 && C.ROUTE_DEPTH_MIN === 768 && C.ROUTE_DEPTH_MIN + 256 <= C.ROUTE_SAMPS && C.ROUTE_DEPTH_BASE + 256 <= C.ROUTE_DEPTH_MIN && 2 * 256 <= C.ROUTE_DEPTH_BASE, "route buffer layout: [0..511] source/effective, [512..767] base, [768..1023] Remote centre");
+            ok(/Data dsum\(512\);/.test(g) && /Data dcl\(512\);/.test(g) && /Data dprd\(512\);/.test(g), "the destination accumulators (sum, count, product) hold 448 depth / control cells");
             ok(g.includes("dk = sampleCount - 256 * floor(sampleCount / 256);"), "the base -> effective depth refresh walks all 256 slots");
-            ok(g.includes("poke(route, clip(peek(route, 512 + dkk, 0) + dsm, 0, 1), 2 * dkk + 1, 0);") && g.includes("dkk = dst - 192;"), "a depth destination 192 + k (k up to 255) writes the summed effective depth of pool slot k");
+            ok(g.includes("poke(route, clip(peek(route, 512 + dkk, 0) * peek(dprd, dst), 0, 1), 2 * dkk + 1, 0);") && g.includes("dkk = dst - 192;") && g.includes("poke(dprd, peek(dprd, dst) * (va + (vb - va) * (fi - ia)), dst);") && g.includes("poke(dprd, 1, dz);"), "a depth destination 192 + k (k up to 255) writes base * the PRODUCT of the routes' unipolar factors (clipped 0..1) as the effective depth of pool slot k");
             ok(g.includes("poke(scope, peek(route, 2 * (ts + 192) + 1, 0), 512 + ts, 0);") && C.SCOPE_DEPTH + C.ROUTER_DEPTH_SLOTS <= C.SCOPE_SAMPS, "telemetry carries the effective depth of all 256 slots");
         }
         // ---- model: schema 9, selector, targets, serialization
@@ -2225,7 +2329,7 @@ function p0Width() { return 588; }
                 eq(e.run(`MM.mappingStatus(${r.id})`), "ok", "status ok"); ok(!C.isSelfMapping(r), "a depth route is not a self-mapping (the selector never converts it)");
                 deq(route(e, 0), [2, 192 + slotOfId(e, m.id)], "matrix route = [source + 1, 192 + the pool slot of the mapping]");
                 eq(e.run(`MM.depthRoutesFor(${m.id})`).length, 1, "depthRoutesFor"); eq(e.run(`MM.depthRouteLabel(MM.getMapping(${r.id}))`), "P0 Depth", "labelled by the mapped parameter");
-                near(ic(e, 0, 255), 0.5, 1e-12, "the route's table is the usual transfer table (+- 0.5)");
+                near(ic(e, 0, 255), 0.5, 1e-12, "the route's table is its unipolar depth FACTOR m = range * y (0.5 at x = +1)"); near(ic(e, 0, 0), 0, 1e-12, "...and 0 at x = -1 (never negative)");
                 eq(e.run(`MM.addDepthRoute(1, ${m.id})`), null, "the same source twice on one mapping is a duplicate");
                 eq(e.run(`MM.addDepthRoute(7, ${m.id})`), null, "an empty modulator slot cannot source a route");
                 eq(e.run("MM.addDepthRoute(1, 9999)"), null, "an unknown mapping is refused");
@@ -2237,12 +2341,12 @@ function p0Width() { return 588; }
                 const r3 = e.run(`MM.addDepthRoute(2, ${m.id})`);
                 ok(r3, "a third source"); const d = [0, 1, 2].map((q) => route(e, q)[1]);
                 ok(d[0] === d[1] && d[1] === d[2], "three routes, one destination (they sum in the engine)");
-                near(C.effectiveDepth(1, [0.3, 0.4]), 1, 1e-12, "effective depth clamps at 1"); near(C.effectiveDepth(0.5, [-0.4, -0.4]), 0, 1e-12, "...and at 0");
-                near(C.effectiveDepth(0.5, [0.2, -0.1, 0.15]), 0.75, 1e-12, "sum of the offsets");
+                near(C.effectiveDepth(1, [3, 0.5]), 1, 1e-12, "effective depth clamps at +1"); near(C.effectiveDepth(0.5, [-4, 1]), 0, 1e-12, "...and never below 0 (no inversion)");
+                near(C.effectiveDepth(0.5, [0.2, 0.1, 0.5]), 0.5 * 0.2 * 0.1 * 0.5, 1e-12, "the factors MULTIPLY");
                 // editing a route edits the usual fields
                 e.run(`MM.updateMapping(${r.id}, { polarity: -1, range: 0.4, enabled: 0 })`);
                 deq(route(e, 0), [0, d[0]], "a disabled route is off"); e.run(`MM.updateMapping(${r.id}, { enabled: 1, polarity: -1, range: 0.4 })`);
-                near(ic(e, 0, 255), -0.4, 1e-12, "polarity - / range 0.4: the table's end is -0.4"); eq(e.run(`MM.getMapping(${r.id}).mode`), "mod", "stays Mod");
+                near(ic(e, 0, 255), 0.4, 1e-12, "stored polarity - is ignored: range 0.4 -> the factor table's end is +0.4, never negative"); near(ic(e, 0, 0), 0, 1e-12, "...and its start 0"); eq(e.run(`MM.getMapping(${r.id}).mode`), "mod", "stays Mod");
             }
             // -- it works for pool slots >= 64 (the depth multiplier covers every slot)
             {
@@ -2256,6 +2360,55 @@ function p0Width() { return 588; }
                 e.run("MM.readTelemetry()"); const sc = e.bufs["---megamodscope"].data; sc[C.SCOPE_DEPTH + 69] = 0.33;
                 near(e.run(`MM.readTelemetry().depth[69]`), 0.33, 1e-6, "telemetry reads the effective depth of slot 69"); eq(e.run("MM.readTelemetry().depth.length"), 256, "telemetry holds 256 depths");
                 near(e.run(`MM.effectiveDepth(${m69.id})`), 0.33, 1e-6, "MM.effectiveDepth reads it for a modulated mapping");
+            }
+            // -- REMOTE mapping + depth route (reported in Live: Remote 0..1 + a +-15 % depth route looked pinned at min): the router cells of the
+            // mapping's slot ([2k] source, [2k+1] effective, [512+k] base, [768+k] Remote centre = (min + max) / 2) for slots < 64 and >= 64, with the route, with a
+            // changed base depth, and after a reload from the saved blob
+            {
+                const REAL = "{ path: 'live_set tracks 1 devices 1 parameters 0', paramName: 'Freq', trackName: 'Bass', deviceName: 'Auto Filter', id: 4000 }";
+                const cells = (e, k) => { const d = e.bufs["---megamodroute"].data; return [d[2 * k], d[2 * k + 1], d[C.ROUTE_DEPTH_BASE + k], d[C.ROUTE_DEPTH_MIN + k]].map((v) => Math.round(v * 1e6) / 1e6); };
+                for (const pad of [0, 70]) {
+                    const tag = `Remote + route, ${pad ? "slot >= 64" : "slot < 64"}`;
+                    const e = bootS(); e.addLfos(2);
+                    for (let k = 0; k < pad; k++) addMap(e, 0, 100 + k);
+                    const m = e.run(`MM.addMapping(0, ${REAL})`);
+                    e.run(`MM.updateMapping(${m.id}, { mode: 'remote', min: 0, max: 1, depth: 1 })`);
+                    const k = slotOfId(e, m.id);
+                    eq(k, pad, `${tag}: pool slot ${pad}`);
+                    deq(cells(e, k), [0, 1, 1, 0.5], `${tag}: cells [source 0, effective 1, base 1, Remote centre 0.5]`);
+                    near(e.bufs["---mmcurve"].data[k * C.CURVE_REGION + 255], 1, 1e-9, `${tag}: the table is baked at depth 1 (linear 0..1)`);
+                    const r = e.run(`MM.addDepthRoute(1, ${m.id})`);
+                    e.run(`MM.updateMapping(${r.id}, { polarity: 0, range: 0.15 })`);
+                    deq(route(e, 0), [2, 192 + k], `${tag}: matrix route [LFO 2, 192 + slot]`);
+                    near(ic(e, 0, 255), 0.15, 1e-9, `${tag}: the route's factor table ends at 0.15 (unipolar, range 15 %: m = 0.15 y)`); near(ic(e, 0, 0), 0, 1e-9, `${tag}: ...and starts at 0 (never negative)`);
+                    deq(cells(e, k), [0, 1, 1, 0.5], `${tag}: adding the route leaves source / base / Remote centre alone (the engine writes the effective depth)`);
+                    // the engine's math on these cells (JS reference of the router + matrix): Remote out = c + (lookup - c) * clip(base * prod m), c = the centre cell
+                    const outAt = (x, xb, rt) => { const c = cells(e, k); const y = C.mappingOutput(Object.assign({}, m, { mode: "remote", min: 0, max: 1, depth: 1 }), x); const d = C.effectiveDepth(c[2], [C.depthFactor(rt, xb)]); return c[3] < -0.5 ? y * d : c[3] + (y - c[3]) * d; };
+                    near(outAt(1, 1, r), 0.575, 1e-9, `${tag}: Remote top at x = +1 with the route at its top (m = 0.15)`); near(outAt(1, -1, r), 0.5, 1e-9, `${tag}: ...back to the centre 0.5 at the route's bottom (m = 0, never inverted)`); near(outAt(0, -1, r), 0.5, 1e-9, `${tag}: the centre (x = 0) stays at 0.5`);
+                    // a full-range route (m = (B+1)/2): B at its minimum -> depth 0 -> the output sits at the centre 0.5; B at its maximum -> the full sweep; never inverted
+                    e.run(`MM.updateMapping(${r.id}, { polarity: 1, range: 1 })`);
+                    const full = e.run(`MM.getMapping(${r.id})`);
+                    for (const x of [-1, -0.4, 0, 0.8, 1]) {
+                        near(outAt(x, 0, full), 0.5 + ((x + 1) / 2 - 0.5) * 0.5, 1e-9, `${tag}: full-range route, B = 0: half depth (x ${x})`);
+                        near(outAt(x, 1, full), (x + 1) / 2, 1e-9, `${tag}: B = +1: the full sweep (x ${x})`);
+                        near(outAt(x, -1, full), 0.5, 1e-9, `${tag}: B at its minimum: depth 0, centred, NOT inverted (x ${x})`);
+                    }
+                    near(ic(e, 0, 255), 1, 1e-9, `${tag}: full-range route factor table ends at +1`); near(ic(e, 0, 0), 0, 1e-9, `${tag}: ...starts at 0`); near(ic(e, 0, 128), 0.5, 1e-2, `${tag}: ...and is 0.5 at B = 0`);
+                    e.run(`MM.updateMapping(${r.id}, { polarity: 0, range: 0.15 })`);
+                    e.run(`MM.updateMapping(${m.id}, { depth: 0.8 })`);
+                    deq(cells(e, k), [0, 1, 0.8, 0.5], `${tag}: base depth 0.8 reaches the base cell, the centre stays 0.5`);
+                    e.run(`MM.updateMapping(${m.id}, { min: 0.2, max: 0.9 })`);
+                    near(cells(e, k)[3], 0.55, 1e-6, `${tag}: the Remote centre cell follows the mapping's (min + max) / 2`);
+                    e.run(`MM.updateMapping(${m.id}, { min: 0, max: 1, depth: 1 })`);
+                    // reload from the saved blob
+                    const blob = e.run("MM.save()");
+                    const e2 = bootS(); e2.addLfos(2); e2.ctx.setvalueof(blob);
+                    const k2 = e2.run(`MM.mappingSlot(${m.id})`);
+                    eq(k2, k, `${tag}: reload keeps the slot`); eq(e2.run(`MM.mappingStatus(${m.id})`), "ok", `${tag}: reload resolves the target`);
+                    deq(cells(e2, k2), [0, 1, 1, 0.5], `${tag}: after a reload the cells are source 0, effective 1, base 1, centre 0.5`);
+                    ok(ib(e2, 0, 40).some((v, i) => i % 4 === 1 && v === 192 + k2), `${tag}: after a reload the route aims at 192 + the slot`);
+                    near(e2.bufs["---mmcurve"].data[k2 * C.CURVE_REGION + 255], 1, 1e-9, `${tag}: after a reload the table is still baked at depth 1`);
+                }
             }
             // -- refusals: internal targets; deleting the target / the source modulator
             {
@@ -2345,6 +2498,242 @@ function p0Width() { return 588; }
                 e.run('MM.setSelfMod("internal")');
                 eq(routes(e).length, 1, "converting the VIA LIVE `Depth k` mapping to INTERNAL: the source already routes this mapping, so it is left as it was (duplicate)");
             }
+        }
+    }
+
+    // ---- 7z. a mapped target is deleted: learn keeps working, mappings of a deleted device / track are removed (AGENTS.md section 21, "Target deleted")
+    {
+        const deq = (a, b, m) => { assert.strictEqual(JSON.stringify(a), JSON.stringify(b), m); passed++; };
+        const P = (t, d, q) => `live_set tracks ${t} devices ${d} parameters ${q}`;
+        const mapAt = (e, mod, t, d, q) => e.run(`MM.addMapping(${mod}, { path: '${P(t, d, q)}', paramName: '${e.lom.tree.tracks[t].devices[d].params[q]}', trackName: '${e.lom.tree.tracks[t].name}', deviceName: '${e.lom.tree.tracks[t].devices[d].name}', id: ${e.lom.idOf(P(t, d, q))} })`);
+        const mapsNow = (e) => e.run("MM.allMappings()").map((m) => ({ id: m.id, path: m.target.path, st: e.run(`MM.mappingStatus(${m.id})`) }));
+        const idBox = (e, slot) => { const g = (n) => { const o = e.pool[n]; return o && o.messages.length ? o.messages[o.messages.length - 1][1] : 0; }; return [g("mm_mid_" + slot), g("mm_rid_" + slot)]; };
+        const poll = (e, n) => { for (let i = 0; i < (n === undefined ? 1 : n); i++) e.run("MM._test.validate()"); };
+        // two devices in a row on track 1 (Bass): Reverb (0) and Auto Filter (1); deleting the first slides the second into index 0
+        const fresh = () => { const e = boot(); e.run("MM.addModulator(MOD_LFO)"); e.run("MM.addModulator(MOD_LFO)"); return e; };
+        // an Auto Filter on track 0 as another real target
+        const delDevice = (e, t, d) => { const dev = e.lom.tree.tracks[t].devices[d]; for (let q = 0; q < dev.params.length; q++) delete e.lom.ids[P(t, d, q)]; e.lom.tree.tracks[t].devices.splice(d, 1); };
+
+        // ---- the user's bug: map X, delete the device, learn onto another device's parameter
+        {
+            const e = fresh();
+            e.lom.tree.tracks[0].devices.push({ name: "Auto Filter", params: ["Freq", "Res"] }); // Drums: Reverb (0), Auto Filter (1)
+            const a = mapAt(e, 0, 1, 1, 0); // X -> Bass / Auto Filter / Freq
+            ok(a && e.run(`MM._test.pid(${a.id})`) > 0, "7z: X mapped");
+            const slot = e.run(`MM.mappingSlot(${a.id})`);
+            deq(idBox(e, slot)[0] > 0, true, "7z: slot bound before the delete");
+            // the mapped parameter is the one Live has selected; the device is deleted
+            e.sel(P(1, 1, 0));
+            delDevice(e, 1, 1);
+            poll(e); // poll 1: unresolved, marked missing, nothing deleted yet
+            eq(e.run(`MM.mappingStatus(${a.id})`), "missing", "7z: poll 1: the mapping is missing");
+            eq(e.run("MM.allMappings().length"), 1, "7z: poll 1: ...but kept (two polls needed)");
+            poll(e); // poll 2: confirmed -> deleted
+            eq(e.run("MM.allMappings().length"), 0, "7z: poll 2: the mapping is auto-deleted");
+            deq(idBox(e, slot), [0, 0], "7z: its pool slot is unbound (id 0 on both boxes)");
+            eq(e.run("MM.mappingSlot(" + a.id + ")"), -1, "7z: and the slot is freed");
+            eq(e.run("MM.undoInfo().undo"), 1, "7z: ONE undo entry");
+            // learn onto a parameter of another device works (also onto the SAME path a sliding device now has)
+            e.run("MM.armLearn(0, false)"); e.sel(P(0, 1, 1));
+            eq(e.run("MM.allMappings().length"), 1, "7z: learn after the delete creates a mapping");
+            ok(!e.run("MM.learn.armed"), "7z: single-shot learn disarms");
+            const b = e.run("MM.allMappings()")[0];
+            eq(b.target.path, P(0, 1, 1), "7z: ...on the new target");
+            ok(idBox(e, e.run(`MM.mappingSlot(${b.id})`))[0] === e.lom.idOf(P(0, 1, 1)), "7z: ...bound to its Live id");
+        }
+        // ---- the device after the deleted one has the SAME name and slides into its place: the mapping must not jump onto it
+        {
+            const e = fresh();
+            e.lom.tree.tracks[1].devices = [{ name: "Utility", params: ["Device On", "Balance"] }, { name: "Utility", params: ["Device On", "Balance"] }];
+            const a = mapAt(e, 0, 1, 0, 1); // X -> first Utility / Balance
+            const idB = e.lom.idOf(P(1, 1, 1));
+            delDevice(e, 1, 0);
+            e.lom.ids[P(1, 0, 1)] = idB; delete e.lom.ids[P(1, 1, 1)]; // the 2nd Utility keeps its Live ids and slides to index 0
+            poll(e);
+            eq(e.run(`MM.mappingStatus(${a.id})`), "missing", "7z: same-name neighbour slides in: the mapping does NOT follow it (missing)");
+            eq(e.run(`MM._test.pid(${a.id})`), 0, "7z: ...its Live id is dropped");
+            poll(e);
+            eq(e.run("MM.allMappings().length"), 0, "7z: ...and it is auto-deleted on poll 2");
+            e.run("MM.armLearn(0, false)"); e.sel(P(1, 0, 1));
+            eq(e.run("MM.allMappings().length"), 1, "7z: learn onto the neighbour (the same path) works");
+            eq(e.run(`MM._test.pid(${e.run("MM.allMappings()")[0].id})`), idB, "7z: ...bound to its own id");
+        }
+        // ---- learn with a dead mapping in the pool: a stale path is no duplicate, a throwing LiveAPI never aborts or half-arms the learn
+        {
+            const e = fresh();
+            const a = mapAt(e, 0, 1, 0, 0); // X -> Bass / Reverb / Dry/Wet (index 0 of track 1)
+            // Reverb is deleted, the Auto Filter slides to index 0 (its parameter 0 is "Freq": same path, other device)
+            const staleId = e.lom.idOf(P(1, 0, 0));
+            delete e.lom.ids[P(1, 0, 0)]; delete e.lom.ids[P(1, 0, 1)];
+            e.lom.tree.tracks[1].devices.shift(); delete e.lom.ids[P(1, 1, 0)]; delete e.lom.ids[P(1, 1, 1)];
+            const newId = e.lom.idOf(P(1, 0, 0));
+            ok(newId !== staleId, "7z: the slid-in parameter is another Live object");
+            // (with the old rule the stale path P(1,0,0) made this learn a "duplicate")
+            e.run("MM.armLearn(0, false)"); e.sel(P(1, 0, 0));
+            ok(e.run("MM.allMappings().length") >= 1 && !e.run("MM.learn.armed"), "7z: the learn is not blocked by the dead mapping with the same stale path");
+            ok(e.run("MM.allMappings()").some((m) => m.target.path === P(1, 0, 0) && e.run(`MM._test.pid(${m.id})`) === newId), "7z: a mapping is bound to the new parameter id");
+        }
+        {
+            const e = fresh();
+            const a = mapAt(e, 0, 0, 0, 0);
+            // a LiveAPI whose "id N" lookups throw for dead ids (like a stale handle) must not stop the poll, the learn or other mappings
+            const LA = e.ctx.LiveAPI;
+            const deadIds = new Set([e.lom.idOf(P(0, 0, 0))]);
+            const origGoto = LA.prototype.goto;
+            LA.prototype.goto = function (p) { const m = /^id (\d+)$/.exec(p || ""); if (m && deadIds.has(Number(m[1]))) throw new Error("dead id " + m[1]); return origGoto.call(this, p); };
+            const b = mapAt(e, 0, 1, 1, 1);
+            delDevice(e, 0, 0);
+            poll(e, 3);
+            eq(e.run("MM.allMappings().length"), 1, "7z: a throwing LiveAPI on the dead id: the dead mapping is deleted, the other one is untouched");
+            eq(e.run(`MM.mappingStatus(${b.id})`), "ok", "7z: ...and still ok");
+            e.run("MM.armLearn(1, false)"); e.sel(P(1, 1, 0));
+            eq(e.run("MM.mappingsFor(1).length"), 1, "7z: learn after it works");
+            // a selection that cannot be described (LiveAPI throws on the id) leaves learn armed and consistent; the next different selection works
+            const origNew = e.ctx.LiveAPI;
+            e.run("MM.armLearn(1, false)");
+            e.ctx.LiveAPI = function (cb, p) { if (/^id /.test(String(p))) throw new Error("boom"); return new origNew(cb, p); };
+            e.sel(P(1, 1, 1));
+            ok(e.run("MM.learn.armed") && e.run("MM.learn.mod") === 1, "7z: an undescribable selection leaves the learn armed");
+            e.ctx.LiveAPI = origNew;
+            e.sel(P(1, 0, 1));
+            eq(e.run("MM.mappingsFor(1).length"), 2, "7z: ...and the next selection works");
+            ok(!e.run("MM.learn.armed"), "7z: ...and disarms (single-shot)");
+            // an exception inside the learn (addMapping throws) never leaves a single-shot learn armed, a multi-learn stays armed
+            const realAdd = e.ctx.MM.addMapping;
+            e.ctx.MM.addMapping = function () { throw new Error("boom"); };
+            e.run("MM.armLearn(1, false)"); e.sel(P(1, 1, 0));
+            ok(!e.run("MM.learn.armed"), "7z: an exception in the learn handler: single-shot is disarmed, not half armed");
+            e.run("MM.armLearn(1, true)"); e.sel(P(1, 1, 1));
+            ok(e.run("MM.learn.armed"), "7z: ...a multi-learn stays armed");
+            e.ctx.MM.addMapping = realAdd;
+            e.sel(P(1, 0, 0));
+            ok(e.run("MM.mappingsFor(1).length") >= 3, "7z: ...and works again afterwards (one bad selection never blocks the next)");
+            e.run("MM.disarmLearn()");
+        }
+        // ---- a MOVED device keeps its mapping (same Live id, new path; also onto a track with another name)
+        {
+            const e = fresh();
+            const a = mapAt(e, 0, 1, 1, 0); // Bass / Auto Filter / Freq
+            const idF = e.lom.idOf(P(1, 1, 0));
+            const dev = e.lom.tree.tracks[1].devices.splice(1, 1)[0];
+            e.lom.tree.tracks[0].devices.push(dev); // moved onto Drums, index 1
+            for (let q = 0; q < dev.params.length; q++) { const old = P(1, 1, q), nw = P(0, 1, q); e.lom.ids[nw] = e.lom.ids[old]; delete e.lom.ids[old]; }
+            poll(e, 4);
+            eq(e.run("MM.allMappings().length"), 1, "7z: a moved device keeps its mapping");
+            eq(e.run(`MM.mappingStatus(${a.id})`), "ok", "7z: ...status ok");
+            eq(e.run("MM.allMappings()[0].target.path"), P(0, 1, 0), "7z: ...re-pointed at the new path");
+            eq(e.run("MM.allMappings()[0].target.trackName"), "Drums", "7z: ...and the new track name");
+            eq(e.run(`MM._test.pid(${a.id})`), idF, "7z: ...same Live id");
+            // moved AND the id changed (found by name): kept too
+            const e2 = fresh();
+            const a2 = mapAt(e2, 0, 1, 1, 0);
+            const d2 = e2.lom.tree.tracks[1].devices.splice(1, 1)[0];
+            e2.lom.tree.tracks[1].devices.unshift(d2); // reordered within its track: path changes, the old id is gone
+            for (let q = 0; q < 2; q++) delete e2.lom.ids[P(1, 1, q)];
+            delete e2.lom.ids[P(1, 0, 0)]; delete e2.lom.ids[P(1, 0, 1)];
+            poll(e2, 4);
+            eq(e2.run("MM.allMappings().length"), 1, "7z: a reordered device (new id) is found by name and keeps its mapping");
+            eq(e2.run(`MM.mappingStatus(${a2.id})`), "ok", "7z: ...status ok");
+        }
+        // ---- nothing is deleted while the LOM is not healthy / not ready, or for a temporary glitch
+        {
+            const e = fresh();
+            const a = mapAt(e, 0, 1, 1, 0);
+            const saved = e.lom.tree.tracks[1].devices.splice(1, 1)[0];
+            poll(e); eq(e.run("MM.allMappings().length"), 1, "7z: one unresolved poll deletes nothing");
+            e.lom.tree.tracks[1].devices.push(saved); // the device is back
+            poll(e, 2);
+            eq(e.run(`MM.mappingStatus(${a.id})`), "ok", "7z: a temporary glitch: revived, kept");
+            poll(e); e.lom.tree.tracks[1].devices.splice(1, 1); poll(e); poll(e, 0); e.lom.tree.tracks[1].devices.push(saved); poll(e, 1);
+            eq(e.run("MM.allMappings().length"), 1, "7z: the miss counter restarts after a revive (non-consecutive misses never delete)");
+            // the LOM unhealthy (master track gone, as while a Set loads): many unresolved polls delete nothing
+            const m0 = e.lom.tree.master;
+            e.lom.tree.tracks[1].devices.splice(1, 1);
+            e.lom.tree.master = { name: "x", devices: [] };
+            const keepNode = e.lom.node;
+            e.ctx.LiveAPI.prototype._set = function () { this.cur = this.p; this.n = null; this.id = "0"; this.unquotedpath = ""; this.path = ""; };
+            poll(e, 5);
+            eq(e.run("MM.allMappings().length"), 1, "7z: an unhealthy LOM (nothing resolves, no master track) never deletes");
+        }
+        // ---- a mapping already missing at load is kept (marked missing), however many polls pass; it revives when the device comes back
+        {
+            const lom = mockLom();
+            const e1 = makeEnv(lom); loadScript("", e1);
+            const run1 = (c) => vm.runInContext(c, e1.ctx);
+            e1.ctx.setnames(...NAMES); e1.ctx.init_lom();
+            run1("MM.addModulator(MOD_LFO)");
+            run1(`MM.addMapping(0, { path: '${P(1, 1, 0)}', paramName: 'Freq', trackName: 'Bass', deviceName: 'Auto Filter', id: ${lom.idOf(P(1, 1, 0))} })`);
+            const saved = e1.ctx.getvalueof();
+            const lom2 = mockLom();
+            const dev = lom2.tree.tracks[1].devices.splice(1, 1)[0]; // removed while Mega Modulator was not running
+            const e2 = makeEnv(lom2); loadScript("", e2);
+            e2.ctx.setvalueof(saved); e2.ctx.setnames(...NAMES); e2.ctx.init_lom();
+            const run2 = (c) => vm.runInContext(c, e2.ctx);
+            const id0 = run2("MM.allMappings()[0].id");
+            for (let i = 0; i < 6; i++) run2("MM._test.validate()");
+            eq(run2("MM.allMappings().length"), 1, "7z: a mapping missing at load is NOT auto-deleted (polls: 6)");
+            eq(run2(`MM.mappingStatus(${id0})`), "missing", "7z: ...it stays marked missing");
+            lom2.tree.tracks[1].devices.push(dev);
+            run2("MM._test.validate()");
+            eq(run2(`MM.mappingStatus(${id0})`), "ok", "7z: ...and revives when the device comes back");
+            // now it has been seen live in this session: a later delete IS auto-deleted
+            lom2.tree.tracks[1].devices.pop();
+            for (let i = 0; i < 3; i++) run2("MM._test.validate()");
+            eq(run2("MM.allMappings().length"), 0, "7z: after it was seen live, a later deletion is auto-deleted");
+        }
+        // ---- a deleted TRACK removes all its mappings as ONE undo step; undo restores them and re-resolves
+        {
+            const e = fresh();
+            const a = mapAt(e, 0, 1, 0, 0), b = mapAt(e, 1, 1, 0, 1), c = mapAt(e, 0, 1, 1, 0), keep = mapAt(e, 1, 0, 0, 0);
+            e.run(`MM.addDepthRoute(1, ${a.id})`); // a depth route on a mapping that goes away
+            const nBefore = e.run("MM.allMappings().length");
+            eq(nBefore, 5, "7z: 4 pool mappings + 1 depth route");
+            const slots = [a, b, c].map((m) => e.run(`MM.mappingSlot(${m.id})`));
+            const snapTree = JSON.stringify(e.lom.tree.tracks[1]);
+            const idsBefore = {}; for (let d = 0; d < 2; d++) for (let q = 0; q < 2; q++) idsBefore[P(1, d, q)] = e.lom.ids[P(1, d, q)];
+            const track = e.lom.tree.tracks.splice(1, 1)[0]; // Bass is deleted (nothing is left at index 1)
+            for (const k of Object.keys(idsBefore)) delete e.lom.ids[k];
+            poll(e, 2);
+            const left = e.run("MM.allMappings()");
+            eq(left.length, 1, "7z: all of the deleted track's mappings (and the depth route) are gone, the other track's mapping stays");
+            eq(left[0].id, keep.id, "7z: ...the survivor is the other one");
+            ok(slots.every((s) => idBox(e, s)[0] === 0 && idBox(e, s)[1] === 0), "7z: every slot of theirs is unbound");
+            eq(e.run("MM.undoInfo().undo"), 1, "7z: ONE undo entry for the whole batch");
+            // Live's own Undo brought the track back (new Live ids): Mega Modulator's undo restores and rebinds to the restored device
+            e.lom.tree.tracks.splice(1, 0, track);
+            const r = e.run("MM.undo()");
+            ok(r && r.kind === "tdel", "7z: undo of the auto-delete");
+            eq(e.run("MM.allMappings().length"), nBefore, "7z: undo restores all mappings (with the depth route)");
+            const am = e.run("MM.allMappings()").filter((m) => !m.target.internal);
+            ok(am.every((m) => e.run(`MM.mappingStatus(${m.id})`) === "ok"), "7z: undo re-resolved every target (device is back): status ok");
+            ok(am.filter((m) => m.id !== keep.id).every((m) => idBox(e, e.run(`MM.mappingSlot(${m.id})`)).some((x) => x > 0)), "7z: ...and rebound the pool slots to the new ids");
+            // redo deletes again
+            const rr = e.run("MM.redo()");
+            ok(rr && e.run("MM.allMappings().length") === 1, "7z: redo deletes the batch again");
+            // undo while the device is still gone: restored, marked missing, NOT deleted again
+            e.lom.tree.tracks.splice(1, 1);
+            e.run("MM.undo()");
+            eq(e.run("MM.allMappings().length"), nBefore, "7z: undo with the target still gone restores the mappings");
+            const am2 = e.run("MM.allMappings()").filter((m) => !m.target.internal && m.id !== keep.id);
+            ok(am2.every((m) => e.run(`MM.mappingStatus(${m.id})`) === "missing"), "7z: ...marked missing");
+            poll(e, 6);
+            eq(e.run("MM.allMappings().length"), nBefore, "7z: ...and not auto-deleted again (never seen live since the restore)");
+            e.lom.tree.tracks.splice(1, 0, track);
+            poll(e);
+            ok(e.run("MM.allMappings()").filter((m) => !m.target.internal).every((m) => e.run(`MM.mappingStatus(${m.id})`) === "ok"), "7z: they revive when the device returns");
+        }
+        // ---- self mappings and depth routes are never touched; one batch with two targets is one undo entry
+        {
+            const e = fresh();
+            const ms = [mapAt(e, 0, 1, 0, 0), mapAt(e, 0, 1, 1, 0), mapAt(e, 1, 0, 0, 1)];
+            const st = e.run("MM.addSelfMapping(0, " + C.selfDestFor("ctl", 1, 0) + ", 'internal')");
+            ok(st && st.target.internal, "7z: an internal self-mapping exists");
+            delete e.lom.ids[P(1, 0, 0)]; delete e.lom.ids[P(1, 0, 1)]; delete e.lom.ids[P(1, 1, 0)]; delete e.lom.ids[P(1, 1, 1)];
+            e.lom.tree.tracks[1].devices.length = 0;
+            poll(e, 3);
+            const ids = e.run("MM.allMappings()").map((m) => m.id);
+            deq(ids.sort(), [ms[2].id, st.id].sort(), "7z: both mappings of the emptied track are deleted in one poll; the internal self-mapping and the other track's mapping stay");
+            eq(e.run("MM.undoInfo().undo"), 1, "7z: one undo entry for both");
         }
     }
 

@@ -10,11 +10,13 @@ const MM_THIS = this;
 const MM_UI_VARNAME = "MegaModState";
 const MM_ENGINE_VARNAME = "megamod_engine";
 // Debug trace of learn/mapping. Off by default; set MM_DEBUG_LOG to an absolute path to also mirror it to a file.
-const MM_DEBUG = false;
-const MM_DEBUG_LOG = "";
+// (`let`, so the test hook `test_debug <path>` can switch the trace on at runtime inside Live.)
+let MM_DEBUG = false;
+let MM_DEBUG_LOG = "";
 const mmLogLines = [];
 /** @param {...unknown} args */
 function dlog(...args) {
+    if (!MM_DEBUG) return;
     const parts = args.map((a) => {
         if (typeof a === "string") return a;
         try { return JSON.stringify(a); } catch (e) { return String(a); }
@@ -54,6 +56,9 @@ var MM = (function () {
     let notifyTask = null;
     let pidCache = {}; // mapId -> live id (number), runtime only
     let missing = {}; // mapId -> true
+    let seenLive = {}; // mapId -> true once its target resolved in THIS session (only those can be auto-deleted when the target goes away)
+    let lostPid = {}; // mapId -> the Live id a mapping lost (probed again while it is missing)
+    let missPolls = {}; // mapId -> consecutive validate polls the target was unresolvable (auto-delete needs AUTO_DELETE_POLLS)
     // eff[slot] = {ctl: [5 normalized A..E after internal modulation], on, sw: [6 effective switch values]}; depth[k] = effective Depth 0..1 of pool slot k
     const tel = { frame: 0, bpm: 120, beat: 0, playing: 0, mods: [], eff: [], depth: [] };
     for (let i = 0; i < MAX_MODS; i++) { tel.mods.push({ out: 0, phase: 0, u: 0, aux: 0 }); tel.eff.push({ ctl: [0, 0, 0, 0, 0], on: 1, sw: [0, 0, 0, 0, 0, 0] }); }
@@ -186,12 +191,12 @@ var MM = (function () {
         poke(BUF_ROUTE, 0, a);
     }
     // EVERY pool slot (schema 10) applies the Depth in the ROUTER (per sample, so a Depth lane / depth modulation is smooth): its curve
-    // table is baked at depth 1 and the base depth (+ the Remote min, or -1 for Mod) lives in the route buffer. The engine copies base
+    // table is baked at depth 1 and the base depth (+ the Remote centre (min + max) / 2, or -1 for Mod) lives in the route buffer. The engine copies base
     // -> effective and adds the summed depth-modulation routes. Only the first AUTO_DEPTH_SLOTS slots also have a `Depth k` Live parameter.
     function writeDepthCells(m, slot) {
         if (slot >= ROUTER_DEPTH_SLOTS) return;
         poke(BUF_ROUTE, ROUTE_DEPTH_BASE + slot, [clamp(m.depth, 0, 1)]);
-        poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [m.mode === "remote" ? clamp(m.min, 0, 1) : -1]);
+        poke(BUF_ROUTE, ROUTE_DEPTH_MIN + slot, [m.mode === "remote" ? remoteCentre(m) : -1]);
     }
     function unbindSlot(slot) {
         const b = boundOf(slot);
@@ -199,14 +204,15 @@ var MM = (function () {
         if (b.rem !== 0) { sendId("mm_rid_", slot, 0); b.rem = 0; }
     }
     // Drive one slot's ids: release first (mode/target change, or inactive), then bind the active mode's box only.
+    // A write that fails (sendId false) is not recorded as bound, so the validate poll's self-heal binds it again.
     function bindSlot(slot, mode, pid) {
         const b = boundOf(slot);
         const wantMod = mode === "mod" ? pid : 0;
         const wantRem = mode === "remote" ? pid : 0;
         if (b.mod !== 0 && b.mod !== wantMod) { sendId("mm_mid_", slot, 0); b.mod = 0; }
         if (b.rem !== 0 && b.rem !== wantRem) { sendId("mm_rid_", slot, 0); b.rem = 0; }
-        if (wantMod !== 0 && b.mod !== wantMod) { sendId("mm_mid_", slot, wantMod); b.mod = wantMod; }
-        if (wantRem !== 0 && b.rem !== wantRem) { sendId("mm_rid_", slot, wantRem); b.rem = wantRem; }
+        if (wantMod !== 0 && b.mod !== wantMod) { if (sendId("mm_mid_", slot, wantMod)) b.mod = wantMod; }
+        if (wantRem !== 0 && b.rem !== wantRem) { if (sendId("mm_rid_", slot, wantRem)) b.rem = wantRem; }
     }
     function writeMappingTable(m) {
         const slot = slotOf[m.id];
@@ -329,7 +335,7 @@ var MM = (function () {
         m.slot = islotOf[m.id];
         const r = islotOf[m.id];
         if (!names) return;
-        poke(BUF_ICURVE, r * CURVE_REGION, mappingTable(m));
+        poke(BUF_ICURVE, r * CURVE_REGION, isDepthRoute(m) ? depthFactorTable(m) : mappingTable(m)); // a depth route bakes its unipolar FACTOR m = range * dep * y, 0..range (the engine multiplies them, clips 0..1)
         writeInternalRoute(m, !mappingActive(m));
         writeInternalCount();
     }
@@ -834,40 +840,137 @@ var MM = (function () {
                 const a = scratchApi();
                 try { a.goto(r.path); pidCache[m.id] = Number(a.id) || 0; } catch (e) { pidCache[m.id] = 0; }
                 missing[m.id] = pidCache[m.id] > 0 ? false : true;
+                if (!missing[m.id]) seenLive[m.id] = true;
             } else {
                 pidCache[m.id] = 0;
                 missing[m.id] = true;
             }
         }
     }
-    // Slow poll: detect deleted / moved targets, and revive missing ones when they come back.
+    // Slow poll (1.5 s): detect moved / deleted targets, revive missing ones when they come back, and AUTO-DELETE the mappings whose target went away.
+    // Auto-delete (decided, see AGENTS.md section 21 "Target deleted"): only a mapping whose target resolved earlier in THIS session (`seenLive`; a mapping that
+    // was already missing when the Set loaded is kept, marked missing, in case the user is about to restore the device), unresolvable (path, then name)
+    // on AUTO_DELETE_POLLS consecutive polls, while the LOM looks healthy (the Set has its master track and this device itself resolves; a Set load / reload
+    // never deletes). A MOVED device keeps its Live id (its path changes, the id still resolves) or is found again by name, so it is never unresolved.
+    // Everything confirmed in one poll is deleted as ONE undo entry. Every mapping is handled on its own: an exception on one never blocks the others.
+    const AUTO_DELETE_POLLS = 2;
+    function lomHealthy(lom) {
+        try {
+            if (!lom.exists("live_set master_track")) return false;
+            if (selfPath && !lom.exists(selfPath)) return false;
+            return true;
+        } catch (e) { return false; }
+    }
     function validateTargets() {
+        try { validateTargetsBody(); } catch (e) { dlog("validateTargets threw", String(e)); }
+    }
+    function validateTargetsBody() {
         if (!lomReady || !api.state.mappings.some((m) => !isInternal(m))) return;
         const a = scratchApi();
         if (!a) return;
         const lom = lomIface();
+        const healthy = lomHealthy(lom);
         let changed = false;
-        for (const m of api.state.mappings) {
+        const dead = [];
+        for (const m of api.state.mappings.slice()) {
             if (isInternal(m)) continue;
-            const pid = lomPid(m);
-            let ok = false;
-            if (pid > 0) {
-                try { a.goto("id " + pid); ok = Number(a.id) === pid && stripQuotes(a.unquotedpath || a.path) === m.target.path; } catch (e) { ok = false; }
-            }
-            if (ok) continue;
-            const r = resolveTarget(m.target, lom);
-            let newPid = 0;
-            if (r.ok) { try { a.goto(r.path); newPid = Number(a.id) || 0; } catch (e) { newPid = 0; } }
-            const nowMissing = newPid <= 0;
-            if (newPid !== pid || nowMissing !== !!missing[m.id]) {
-                if (r.ok) m.target.path = r.path;
-                pidCache[m.id] = newPid;
-                missing[m.id] = nowMissing;
-                syncMapping(m);
-                changed = true;
-            }
+            try {
+                const pid = lomPid(m);
+                // the id to probe: the bound one, or (while the mapping is missing) the one it just lost: a temporary glitch brings the SAME Live object back
+                const probe = pid > 0 ? pid : (lostPid[m.id] || 0);
+                let ok = false;
+                let moved = false;
+                let idDead = false;
+                if (probe > 0) {
+                    try {
+                        // a FRESH LiveAPI per probe: a goto("id N") on the shared scratch API returns nothing once it has been pointed at a dead id (AGENTS.md "Lookup")
+                        const ia = new LiveAPI(function () {}, "id " + probe);
+                        idDead = Number(ia.id) !== probe;
+                        if (!idDead) {
+                            const np = stripQuotes(ia.unquotedpath || ia.path);
+                            if (np === m.target.path) ok = true;
+                            else if (np) { // the same Live object under a new path: the device was moved; follow it
+                                ok = true; moved = true;
+                                m.target.path = np;
+                                const pp = pathParts(np);
+                                const tm = /^live_set (?:tracks \d+|return_tracks \d+|master_track)/.exec(np);
+                                if (tm) { const tn = lom.name(tm[0]); if (tn) m.target.trackName = tn; }
+                                const dn = lom.name(np.replace(/ parameters \d+$/, ""));
+                                if (dn) m.target.deviceName = dn;
+                                changed = true;
+                            }
+                        }
+                    } catch (e) { ok = false; idDead = true; }
+                }
+                dlog("validate map", m.id, "pid", pid, "probe", probe, "ok", ok, "idDead", idDead, "path", m.target.path);
+                if (ok) {
+                    missPolls[m.id] = 0;
+                    seenLive[m.id] = true;
+                    if (pid <= 0) { pidCache[m.id] = probe; missing[m.id] = false; delete lostPid[m.id]; syncMapping(m); changed = true; }
+                    else if (moved) { syncMapping(m); }
+                    else {
+                        // self-heal: a live target whose pool slot is not bound to its id (a failed slot write) is bound again
+                        const sl = slotOf[m.id];
+                        if (sl !== undefined && mappingActive(m)) {
+                            const b = boundOf(sl);
+                            if (b.mod !== (m.mode === "mod" ? pid : 0) || b.rem !== (m.mode === "remote" ? pid : 0)) syncMapping(m);
+                        }
+                    }
+                    continue;
+                }
+                let r = resolveTarget(m.target, lom);
+                // The Live id of a target we saw alive is gone. A device that was MOVED keeps its id (followed above), so a same-named parameter that sits at the
+                // OLD path is another device (the next one slid into the deleted one's place): the target is deleted. Found by NAME elsewhere = moved, kept.
+                if (seenLive[m.id] && (probe > 0 || missPolls[m.id] > 0) && r.ok && r.how === "path") r = { ok: false, path: m.target.path, how: "stale" };
+                let newPid = 0;
+                if (r.ok) { try { a.goto(r.path); newPid = Number(a.id) || 0; } catch (e) { newPid = 0; } }
+                const nowMissing = newPid <= 0;
+                if (!nowMissing) { missPolls[m.id] = 0; seenLive[m.id] = true; delete lostPid[m.id]; }
+                else if (pid > 0) lostPid[m.id] = pid;
+                if (nowMissing && healthy) missPolls[m.id] = (missPolls[m.id] || 0) + 1;
+                else if (nowMissing) missPolls[m.id] = 0; // an unhealthy LOM (loading) proves nothing
+                if (newPid !== pid || nowMissing !== !!missing[m.id]) {
+                    if (r.ok) m.target.path = r.path;
+                    pidCache[m.id] = newPid;
+                    missing[m.id] = nowMissing;
+                    syncMapping(m);
+                    changed = true;
+                }
+                if (nowMissing && seenLive[m.id] && missPolls[m.id] >= AUTO_DELETE_POLLS && !(m.target.selfDest !== undefined || isSelfTarget(m.target.path, selfPath))) dead.push(m);
+            } catch (e) { dlog("validate: mapping", m.id, "threw", String(e)); }
         }
+        if (dead.length && healthy) { autoDeleteMappings(dead); changed = true; }
         if (changed) fire("targets");
+    }
+    // Delete mappings whose target is gone (with their depth routes, as one undo entry; their pool slots are unbound and freed)
+    function autoDeleteMappings(list) {
+        const all = [];
+        const add = (x) => { if (all.indexOf(x) < 0) all.push(x); };
+        for (const m of list) { add(m); for (const d of depthRoutesOf(api.state.mappings, m.id)) add(d); }
+        const entry = { kind: "tdel", maps: all.map(snapMapping), label: list.length > 1 ? list.length + " mappings (target deleted)" : mappingLabel(list[0]) + " (target deleted)" };
+        for (const m of all) { try { removeMappingInternal(m); } catch (e) { dlog("autoDelete: remove", m.id, "threw", String(e)); } delete seenLive[m.id]; delete missPolls[m.id]; }
+        pushUndo(entry);
+        dlog("autoDeleteMappings", list.map((m) => m.id));
+        fire("mapping", list[0].mod, list[0].id);
+        api.commit();
+    }
+    // after an undo of an auto-delete (Live's own Undo may have restored the device): resolve again, rebind when it resolves, else leave it missing
+    function reresolveRestored(ms) {
+        const a = scratchApi();
+        if (!a) return;
+        const lom = lomIface();
+        for (const m of ms) {
+            if (isInternal(m)) continue;
+            try {
+                const r = resolveTarget(m.target, lom);
+                let np = 0;
+                if (r.ok) { try { a.goto(r.path); np = Number(a.id) || 0; } catch (e) { np = 0; } }
+                if (np > 0) { m.target.path = r.path; pidCache[m.id] = np; missing[m.id] = false; seenLive[m.id] = true; }
+                else { pidCache[m.id] = 0; missing[m.id] = true; delete seenLive[m.id]; }
+                missPolls[m.id] = 0;
+                syncMapping(m);
+            } catch (e) { dlog("reresolveRestored threw", m.id, String(e)); }
+        }
     }
 
     // ---------------------------------------------------------------- learn
@@ -888,12 +991,23 @@ var MM = (function () {
             api._selectionChanged(id);
         }
     }
+    // The deferred learn handler. Every step is guarded: an exception (a dead id, a throwing LiveAPI, a failing slot write) is logged, a single-shot learn
+    // is disarmed (never left half armed), and a multi-learn stays armed for the next parameter. `lastSelectedId` is updated first, so one bad selection
+    // never blocks the next different one.
     api._selectionChanged = function (id) {
+        try { selectionChangedBody(id); }
+        catch (e) {
+            dlog("selectionChanged threw", String(e));
+            try { if (api.learn.armed && !api.learn.multi) api.disarmLearn(); } catch (e2) {}
+        }
+    };
+    function selectionChangedBody(id) {
         dlog("selectionChanged id", id, "last", lastSelectedId, "learn", api.learn);
         if (id === lastSelectedId) return;
         lastSelectedId = id;
         if (!api.learn.armed || !id) return;
-        const info = describeParameter(id);
+        let info = null;
+        try { info = describeParameter(id); } catch (e) { dlog("describeParameter threw", String(e)); }
         dlog("describeParameter", info);
         if (!info) return;
         if (isSelfTarget(info.path, selfPath)) {
@@ -916,11 +1030,12 @@ var MM = (function () {
         if (mapping) {
             pidCache[mapping.id] = info.id;
             missing[mapping.id] = false;
-            syncMapping(mapping);
+            seenLive[mapping.id] = true;
+            try { syncMapping(mapping); } catch (e) { dlog("learn: syncMapping threw", String(e)); }
             fire("mapping", mapping.mod, mapping.id);
         }
         if (!api.learn.multi) api.disarmLearn();
-    };
+    }
     api.armLearn = function (i, multi) {
         dlog("armLearn", i, "multi", !!multi, "modExists", !!api.state.mods[i]);
         if (!api.state.mods[i]) return;
@@ -1054,7 +1169,10 @@ var MM = (function () {
         const t = sanitizeTarget(target);
         if (target && target.id) t.id = target.id;
         if (isInternal({ target: t })) return null; // internal routes go through addSelfMapping
-        if (findDuplicateMapping(api.state.mappings, i, t)) return null;
+        // a duplicate is the same modulator on the same LIVE target. A STALE mapping (its target is gone, so it is missing or its Live id is another object than
+        // the new one) can share the old path with the new target (a device after it slid into the deleted one's position): that is no duplicate.
+        const newId = target && target.id ? Number(target.id) : 0;
+        if (findDuplicateMapping(api.state.mappings, i, t, (x) => !isInternal(x) && (!!missing[x.id] || (newId > 0 && lomPid(x) > 0 && lomPid(x) !== newId)))) return null;
         if (t.selfDest !== undefined) {
             const c = classifySelfParam(selfDestName(t.selfDest), i, api.state);
             if (!c.ok || isInternal({ target: t })) return null;
@@ -1062,7 +1180,7 @@ var MM = (function () {
         if (allocSlot() < 0) { dlog("addMapping refused: pool full", MAX_MAPPINGS); fire("full", i); return null; }
         const m = defaultMapping(api.state.nextMapId++, i, t, api.state.settings.defaultMode);
         api.state.mappings.push(m);
-        if (target && target.id) { pidCache[m.id] = Number(target.id); missing[m.id] = false; }
+        if (target && target.id) { pidCache[m.id] = Number(target.id); missing[m.id] = false; seenLive[m.id] = true; }
         syncMapping(m);
         fire("mapping", i, m.id);
         api.commit();
@@ -1169,7 +1287,7 @@ var MM = (function () {
         const m = api.getMapping(mapId);
         if (!m) return 1;
         const k = slotOf[mapId];
-        return k !== undefined && tel.depth[k] !== undefined && depthRoutesOf(api.state.mappings, mapId).length ? tel.depth[k] : m.depth;
+        return k !== undefined && tel.depth[k] !== undefined && depthRoutesOf(api.state.mappings, mapId).length ? clamp(tel.depth[k], 0, 1) : m.depth;
     };
     api.selfMappingsOfKind = function (kind) {
         return api.state.mappings.filter((m) => isSelfMapping(m) && (kind === "internal") === isInternal(m));
@@ -1281,6 +1399,9 @@ var MM = (function () {
         if (i >= 0) api.state.mappings.splice(i, 1);
         delete pidCache[m.id];
         delete missing[m.id];
+        delete seenLive[m.id];
+        delete missPolls[m.id];
+        delete lostPid[m.id];
         rebuildViaDests();
     }
     api.deleteMapping = function (id, opts) {
@@ -1336,6 +1457,7 @@ var MM = (function () {
             }
             if (sn.pid) pidCache[m.id] = sn.pid;
             missing[m.id] = sn.missing;
+            if (!sn.missing && sn.pid) seenLive[m.id] = true;
             let k = sn.slot;
             if (k < 0 || used[k]) k = allocSlot();
             if (k >= 0) { slotOf[m.id] = k; used[k] = true; }
@@ -1365,6 +1487,14 @@ var MM = (function () {
             restoreMappings(e.maps, s, e.orig);
             if (s !== e.orig) e.orig = s; // the entry now describes the new slot
             fire("mods", s);
+        } else if (e.kind === "tdel") {
+            // an auto-delete (target deleted): bring back the mappings whose modulator still exists, then resolve their targets again
+            const maps = e.maps.filter((sn) => api.state.mods[sn.m.mod] || isDepthRoute(sn.m));
+            if (!maps.length) return false;
+            const r = restoreMappings(maps);
+            reresolveRestored(r);
+            fire("mapping", r.length ? r[0].mod : -1, r.length ? r[0].id : 0);
+            fire("targets");
         } else if (e.kind === "conv") {
             // put every converted mapping back exactly as it was (the current object is released and replaced by its snapshot)
             for (const it of e.items) {
@@ -1389,6 +1519,14 @@ var MM = (function () {
             e.maps = mappingsTouching(e.slot).map(snapMapping);
             e.orig = e.slot;
             api.removeModulator(e.slot, { noUndo: true });
+        } else if (e.kind === "tdel") {
+            const ms = e.maps.map((sn) => api.getMapping(sn.m.id)).filter(Boolean);
+            if (!ms.length) return false;
+            e.maps = ms.map(snapMapping);
+            for (const m of ms) removeMappingInternal(m);
+            fire("mapping", ms[0].mod, ms[0].id);
+            fire("targets");
+            api.commit();
         } else if (e.kind === "conv") {
             const ms = e.items.map((it) => api.getMapping(it.m.id)).filter(Boolean);
             if (!ms.length) return false;
@@ -1580,6 +1718,9 @@ var MM = (function () {
         if (api.learn.armed) api.learn = { armed: false, mod: -1, multi: false };
         pidCache = {};
         missing = {};
+        seenLive = {};
+        missPolls = {};
+        lostPid = {};
         slotOf = {};
         islotOf = {};
         ownParamIdx = null;
@@ -1619,6 +1760,8 @@ var MM = (function () {
         islot: function (id) { return islotOf[id] === undefined ? -1 : islotOf[id]; },
         intBuf: function (off, n) { const b = buf(BUF_INT); if (!b) return null; try { return b.peek(1, off, n); } catch (e) { return null; } },
         bound: function () { return bound; },
+        // the four router cells of a pool slot: [source or -1, effective depth, base depth, Remote centre or -1] (the engine writes the effective one)
+        cells: function (slot) { const b = buf(BUF_ROUTE); if (!b) return null; try { const g = (i) => { const v = b.peek(1, i, 1); return Array.isArray(v) ? v[0] : v; }; return [g(2 * slot), g(2 * slot + 1), g(ROUTE_DEPTH_BASE + slot), g(ROUTE_DEPTH_MIN + slot)]; } catch (e) { return null; } },
         route: function (slot) { const b = buf(BUF_ROUTE); if (!b) return null; try { const v = b.peek(1, 2 * slot, 1); return Array.isArray(v) ? v[0] : v; } catch (e) { return null; } },
         pid: function (id) { return pidCache[id]; },
         missing: function (id) { return !!missing[id]; },
@@ -1696,7 +1839,8 @@ function test_report() {
         mods: MM.state.mods.map((m) => (m ? m.type : null)),
         modP: MM.state.mods.map((m) => (m ? Object.assign({ enabled: m.enabled }, m.p) : null)),
         auto: MM.autoInfo().on,
-        learn: MM.learn, settings: MM.getSettings(), eff: MM.readTelemetry().eff.slice(0, 4), cache: MM.autoInfo().cache, internalCap: MM.internalCapacity(),
+        learn: MM.learn, bound: (function () { const o = {}; for (const k of Object.keys(bnd)) if (bnd[k] && (bnd[k].mod || bnd[k].rem)) o[k] = [bnd[k].mod, bnd[k].rem]; return o; })(),
+        undoInfo: MM.undoInfo(), settings: MM.getSettings(), eff: MM.readTelemetry().eff.slice(0, 4), cache: MM.autoInfo().cache, internalCap: MM.internalCapacity(),
         ui: MM.getUI(),
         hover: typeof ubHover !== "undefined" && ubHover ? [ubHover.x, ubHover.y] : null, // last mouse position over the v8ui (real-mouse calibration)
         engine: (function () { try { const e = MM_THIS.patcher.getnamed(MM_ENGINE_VARNAME); return e ? { cls: e.maxclass, cords: cordsOf(e) } : null; } catch (x) { return "err " + x; } })(),
@@ -1709,7 +1853,7 @@ function test_report() {
                 id: m.id, mod: m.mod, mode: m.mode, depth: m.depth, path: m.target.path, status: MM.mappingStatus(m.id), pid: t.pid(m.id),
                 internal: !!m.target.internal, selfDest: m.target.selfDest === undefined ? -1 : m.target.selfDest, islot: t.islot(m.id), label: MM.selfLabel(m),
                 depthRoute: isDepthRoute(m) ? m.target.mapId : 0, nRoutes: m.target.internal ? 0 : MM.depthRoutesFor(m.id).length, effDepth: slot >= 0 ? MM.readTelemetry().depth[slot] : null,
-                slot, route: slot >= 0 ? t.route(slot) : null, idMod: b.mod, idRem: b.rem,
+                slot, route: slot >= 0 ? t.route(slot) : null, cells: slot >= 0 ? t.cells(slot) : null, idMod: b.mod, idRem: b.rem,
                 boxes: { mid: !!mid, rid: !!rid, mod: lm ? lm.maxclass : null, rem: lr ? lr.maxclass : null },
                 modCords: lm ? cordsOf(lm) : null, remCords: lr ? cordsOf(lr) : null,
             };
@@ -1758,6 +1902,8 @@ function test_selflearn(mod, dest, kind) { MM.addSelfMapping(Number(mod), Number
 // test_selfmod <internal|live>: the Options selector (converts existing self-mappings of the other kind)
 function test_selfmod(kind) { MM.setSelfMod(String(kind)); }
 function test_undo() { MM.undo(); }
+// test_debug <absolute log path>: switch the dlog trace on (mirrored to that file; "off" switches it off)
+function test_debug(path) { MM_DEBUG = String(path) !== "off"; MM_DEBUG_LOG = MM_DEBUG ? String(path) : ""; dlog("debug on"); }
 // test_selui <slot>: select a modulator (the UI state `sel`); the faces tests use it to detect where a real click lands
 function test_selui(slot) { MM.setUI({ sel: Number(slot) }); }
 // test_expand <slot>: expand that strip in place (-1 collapses all); the faces tests use it to reach the expanded editor

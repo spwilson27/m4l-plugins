@@ -848,6 +848,30 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
     E3.run(`MM.updateMapping(${mm.id}, { range: 0.4 })`);
     E3.ctx.ondblclick(cx, yUp(0.3), 1, 0, 0, 0, 0, 0);
     eq(rangeOf(), 1, "double-click resets the range to 1");
+    // Remote output bar: depth scales around the CENTRE (min + max) / 2, so the live fill runs from the centre to the live value
+    {
+        E3.run(`MM.updateMapping(${mm.id}, { mode: "remote", min: 0.25, max: 1, depth: 1 })`);
+        const fill = (out) => E3.run(`(function () { const oR = ubRect, oT = ubTel; let f = null;
+            ubRect = function (x, y, w, h, c, a) { if (a === 0.6) f = [x, y, w, h]; return oR.apply(null, arguments); };
+            ubTel = function () { return { out: ${out}, phase: 0, u: 0, aux: 0 }; };
+            try { ubPaintAbsMeter(${JSON.stringify(mr)}, ubPbSelMapping(), MM.state.mods[ubPbSelMapping().mod]); } finally { ubRect = oR; ubTel = oT; } return f; })()`);
+        const g = E3.run(`ubMeterGeom(${JSON.stringify(mr)})`);
+        const yOf = (v) => g.iy + g.ih * (1 - v);
+        const wasOn = E3.run(`MM.state.mods[ubPbSelMapping().mod].enabled`); const modIx = E3.run(`ubPbSelMapping().mod`);
+        E3.run(`MM.state.mods[${modIx}].enabled = 1`);
+        const f1 = fill(1);
+        near(f1[1], yOf(1), 1e-6, "Remote bar: depth 1, x = +1: the fill's top is the max (1)"); near(f1[1] + f1[3], yOf(0.625), 1e-6, "...and its bottom is the centre 0.625");
+        const f0 = fill(-1);
+        near(f0[1], yOf(0.625), 1e-6, "Remote bar: depth 1, x = -1: the fill starts at the centre"); near(f0[1] + f0[3], yOf(0.25), 1e-6, "...and ends at min 0.25");
+        E3.run(`MM.updateMapping(${mm.id}, { depth: 0 })`);
+        const fz = fill(1);
+        near(fz[3], 1, 1e-6, "Remote bar: depth 0 -> the live value is the centre (a 1 px marker, no fill)"); near(fz[1], yOf(0.625), 1e-6, "...at 0.625");
+        E3.run(`MM.updateMapping(${mm.id}, { depth: 0.5 })`);
+        const fh = fill(1);
+        near(fh[1], yOf(0.625 + (1 - 0.625) * 0.5), 1e-6, "Remote bar: depth 0.5, x = +1: 0.8125");
+        E3.run(`MM.state.mods[${modIx}].enabled = ${wasOn}`);
+        E3.run(`MM.updateMapping(${mm.id}, { mode: "mod", min: 0, max: 1, depth: 1 })`);
+    }
     // list-row value text carries the polarity glyph and the range
     for (const [p, t] of [[1, "+50%"], [0, "\u00b150%"], [-1, "\u221250%"]]) {
         setPol(p);
@@ -3428,10 +3452,8 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         ok(E.log.texts.includes("D") && E.log.texts.some((t) => /Frequency Depth/.test(t)), "route row: violet D marker + '<parameter> Depth' name (not a normal mapping)");
         eq(E.run("ubPbSelMapping().id"), r.id, "the remap editor edits the route like any internal mapping");
         const dr = E.run(`ubDetailRects(ubListGeom(), MM.getMapping(${r.id}))`);
-        ok(dr.some((d) => d.id === "dback") && dr.some((d) => d.id === "pol1") && dr.some((d) => d.id === "mseg"), "route editor: back link, polarity, MSEG");
-        const pol = dr.filter((d) => d.id === "pol-1")[0];
-        E.click(...ctr(pol.rect)); E.idle(1, 1);
-        eq(E.run(`MM.getMapping(${r.id}).polarity`), -1, "route editor: polarity edits the route");
+        ok(dr.some((d) => d.id === "dback") && dr.some((d) => d.id === "mseg"), "route editor: back link, MSEG");
+        ok(!dr.some((d) => d.id.indexOf("pol") === 0), "route editor: NO polarity control (a depth route is unipolar)");
         const rem = dr.filter((d) => d.id === "tabrem")[0];
         E.click(...ctr(rem.rect)); E.idle(1, 1);
         eq(E.run(`MM.getMapping(${r.id}).mode`), "mod", "route editor: Remote is inert (Mod only)");
@@ -3478,7 +3500,7 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         const hb = E.run(`ubHit(${ctr(S.bar)})`);
         eq(hb.kind, "ds_bar", "bar hit"); eq(E.run(`ubHit(${ctr(S.tog)}).kind`), "ds_tog", "toggle hit"); eq(E.run(`ubHit(${ctr(S.del)}).kind`), "ds_del", "x hit");
         E.click(S.bar[0] + S.bar[2] * 0.8, S.bar[1] + 3); E.drag(S.bar[0] + S.bar[2] * 0.9, S.bar[1] + 3); E.idle(1, 1);
-        near(E.run(`MM.getMapping(${rs[0].id}).range`), (0.9 - 0.5) / 0.5, 0.06, "dragging the sub-row bar edits the route's range");
+        near(E.run(`MM.getMapping(${rs[0].id}).range`), 0.9, 0.06, "dragging the sub-row bar edits the route's range (a unipolar bar: 0 at the left edge, 100 % at the right)");
         E.click(...ctr(S.tog)); E.idle(1, 1);
         eq(E.run(`MM.getMapping(${rs[0].id}).enabled`), 0, "the sub-row toggle disables the route");
         E.click(...ctr(S.tog)); E.idle(1, 1);
@@ -3546,6 +3568,78 @@ ok(E3.log.texts.includes("Swell"), "strips state still paints the expanded MSEG 
         ok(E.log.texts.length > 5, `the LST view paints`);
         // 16 modulators: still fits
         E.run("MM.setUI({ sel: 2, pb: 1, pbSel: 0 })");
+    }
+
+    // ---------------------------------------------------------------- UNIPOLAR depth routes: no polarity control anywhere, readouts without a sign, bars 0..100
+    {
+        const E = mk();
+        const r = E.run(`MM.addDepthRoute(0, ${E.A.id})`);
+        const polRe = /^[+±−-]\d+%$/;
+        E.run("var __polN = 0; ubPolGlyph = (function (o) { return function () { __polN++; return o.apply(this, arguments); }; })(ubPolGlyph);");
+        for (const pol of [1, 0, -1]) {
+            E.run(`MM.updateMapping(${r.id}, { polarity: ${pol}, range: 0.4 })`);
+            eq(E.run(`MM.getMapping(${r.id}).polarity`), pol, `the stored polarity ${pol} is kept`);
+            eq(E.run(`ubValueText(MM.getMapping(${r.id}))`), "40%", `readout of a depth route with stored polarity ${pol}: "40%", no sign`);
+            eq(E.run(`ubPol(MM.getMapping(${r.id}))`), 2, "the UI treats it as unipolar");
+        }
+        ok(polRe.test(E.run(`ubValueText(Object.assign({}, MM.getMapping(${E.A.id}), { mode: "mod", polarity: 0, range: 0.5 }))`)), "a normal Mod mapping keeps its signed readout");
+        // remap editor: no pol cells for the route, still there for a normal mapping
+        E.run(`MM.setUI({ sel: 0, pbSel: ${r.id} })`);
+        const dr = E.run(`ubDetailRects(ubListGeom(), MM.getMapping(${r.id}))`);
+        eq(dr.filter((d) => d.id.indexOf("pol") === 0).length, 0, "remap editor of a depth route: no polarity cells");
+        const nm = E.run(`ubDetailRects(ubListGeom(), MM.getMapping(${E.A.id}))`);
+        eq(nm.filter((d) => d.id.indexOf("pol") === 0).length, 3, "remap editor of a normal Mod mapping: 3 polarity cells");
+        // a forced polarity click on a depth route changes nothing
+        const polRect = nm.filter((d) => d.id === "pol-1")[0].rect;
+        E.run(`ubDetailClick({ id: "pol-1", pol: -1, rect: [${polRect}] }, 0, 0)`);
+        E.run(`MM.updateMapping(${r.id}, { polarity: 1 })`);
+        // value readout painted in the editor / list rows
+        E.paint();
+        ok(E.log.texts.includes("40%"), "the editor readout and the list row of the route read \"40%\"");
+        ok(!E.log.texts.some((t) => polRe.test(t) && E.run(`MM.getMapping(${r.id}).range`) === 0.4 && /^[+±−-]40%$/.test(t)), "...with no ± / + / − in front of it");
+        eq(E.run("__polN"), 0, "painting a depth-route editor never draws a polarity glyph");
+        // the bars of a depth route: the range bar fills from 0 (left / bottom) to range
+        const rect = [10, 10, 82, 11];
+        eq(E.run(`ubHBarModValue([10, 10, 82, 11], 2, 10 + 1)`), 0, "depth route bar: left edge = 0");
+        eq(E.run(`ubHBarModValue([10, 10, 82, 11], 2, 10 + 81)`), 1, "depth route bar: right edge = 100 %");
+        near(E.run(`ubHBarModValue([10, 10, 82, 11], 2, 10 + 41)`), 0.5, 1e-9, "depth route bar: the middle is 50 %");
+        eq(E.run(`ubHBarModValue([10, 10, 82, 11], 2, 0)`), 0, "depth route bar: left of the bar clamps at 0 (no inversion)");
+        const mr = E.run(`ubMeterGeom(ubDetailRects(ubListGeom(), MM.getMapping(${r.id})).filter((d) => d.id === "meter")[0].rect)`);
+        ok(mr.iy + mr.ih > mr.cy, "vertical range bar geometry");
+        eq(E.run(`ubRangeValue(ubDetailRects(ubListGeom(), MM.getMapping(${r.id})).filter((d) => d.id === "meter")[0].rect, 2, ${mr.iy + mr.ih})`), 0, "vertical depth bar: bottom = 0");
+        eq(E.run(`ubRangeValue(ubDetailRects(ubListGeom(), MM.getMapping(${r.id})).filter((d) => d.id === "meter")[0].rect, 2, ${mr.iy})`), 1, "vertical depth bar: top = 100 %");
+        eq(E.run(`ubRangeValue(ubDetailRects(ubListGeom(), MM.getMapping(${r.id})).filter((d) => d.id === "meter")[0].rect, 2, ${mr.iy + mr.ih + 30})`), 0, "vertical depth bar: below the bottom clamps at 0");
+        // sub-row under the mapping's row: shows "40%" and no sign; no polarity part exists
+        E.run(`MM.updateMapping(${r.id}, { polarity: -1, range: 0.4 })`);
+        E.run(`MM.setUI({ sel: ${E.A.mod}, pb: 1, pbSel: ${E.A.id} })`);
+        const items = E.run("ubListItems()");
+        ok(items.some((it) => it.kind === "dsub" && it.m.id === r.id), "the sub-row exists");
+        E.paint();
+        ok(E.log.texts.includes("40%"), "the sub-row value reads \"40%\"");
+        ok(!E.log.texts.some((t) => /^[+±−-]40%$/.test(t)), "...and no sub-row text carries a sign");
+        const srow = E.run("ubListVisible()").rows.filter((q) => q.item.kind === "dsub")[0];
+        eq(Object.keys(E.run(`ubSubParts(${srow.y})`)).filter((k) => /pol/.test(k)).length, 0, "sub-row parts: no polarity");
+        // popover of the TARGET's modulator (sub-rows) and of the SOURCE modulator (the route as its own row)
+        for (const slot of [E.A.mod, 0]) {
+            E.run(`MM.setUI({ pb: 0, sel: ${slot}, exp: -1 }); ubSyncWidth(true)`);
+            const cr = E.run(`ubStripRects(ubStrips().list.filter((g) => g.slot === ${slot})[0]).count`);
+            E.click(...ctr(cr)); E.idle(1, 1);
+            ok(E.run("!!ubMapsPop"), `popover of slot ${slot} opens`);
+            const P = E.run("ubMapsPopGeom()");
+            const rv = P.vis.filter((v) => v.m.id === r.id);
+            ok(rv.length === 1, `slot ${slot}: the route is shown in the popover (${rv.length ? rv[0].kind : "-"})`);
+            if (rv[0].kind === "map") {
+                const hit = E.run(`ubHit(${ctr(rv[0].parts.pol)})`);
+                ok(hit.kind !== "mp_pol", "popover row of a depth route: the old polarity cell is not a control");
+                E.click(...ctr(rv[0].parts.pol)); E.idle(1, 1);
+                eq(E.run(`MM.getMapping(${r.id}).polarity`), -1, "...clicking it does nothing");
+            }
+            const normal = P.vis.filter((v) => v.kind === "map" && v.m.id !== r.id && v.m.mode !== "remote" && !v.m.target.internal)[0];
+            E.run("__polN = 0"); E.paint();
+            if (normal) { ok(E.run("__polN") >= 1, "a normal Mod row of the popover still draws its polarity glyph"); ok(E.run(`ubHit(${ctr(normal.parts.pol)}).kind`) === "mp_pol", "...and its polarity cell is hit"); }
+            E.run("__polN = 0"); E.paint();
+            E.run("ubMapsPop = null; MM.setUI({ pb: 1 })");
+        }
     }
 }
 

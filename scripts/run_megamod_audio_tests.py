@@ -113,7 +113,7 @@ def device(gen_code, run):
 
 def make_probe(run, tag):
     """Temp probe file: CASE data + src/megamod_config.js + tests/megamod_probe.js (unique per run)."""
-    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele", "smooth_ms", "dep", "remote", "dmin", "selfmod", "sp") if k in run}
+    case_obj = {k: run[k] for k in ("mods", "an", "bpm", "jumpTo", "router", "chk", "tele", "smooth_ms", "dep", "remote", "dctr", "selfmod", "sp") if k in run}
     fd, path = tempfile.mkstemp(prefix=f"megamod_probe_{tag}_", suffix=".js")
     with os.fdopen(fd, "w", encoding="utf-8") as out:
         out.write("var CASE = " + json.dumps(case_obj) + ";\n")
@@ -201,12 +201,65 @@ DEST_RATE_0 = 0 * 6 + 0
 DEST_BIPOLAR_1 = 96 + 1 * 6 + 2
 DEST_DEPTH_0 = 192 + 0
 DEPTH_SLOT_HI = 96            # a pool slot >= 64 (router 3, outlet 0): depth routes work on all 256 slots (schema 10); dest = 192 + slot
-ROUTER_DEPTH_HI = {"base": DEPTH_SLOT_HI, "slots": [{"slot": DEPTH_SLOT_HI, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 0.5}}]}
-ROUTER_DEPTH = {"base": 0, "slots": [{"slot": 0, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 0.5}}]}
+ROUTER_DEPTH_HI = {"base": DEPTH_SLOT_HI, "slots": [{"slot": DEPTH_SLOT_HI, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 0.8}}]}
+ROUTER_DEPTH_SUM = {"base": DEPTH_SLOT_HI, "slots": [{"slot": DEPTH_SLOT_HI, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 1.0}}]}
+ROUTER_DEPTH = {"base": 0, "slots": [{"slot": 0, "src": 1, "map": {"mode": "mod", "polarity": 0, "range": 1.0, "depth": 1.0}}]}
+
+
+def remote_router(slot, mn=0.0, mx=1.0, dep=1.0, mode="remote", src=1):
+    """One router slot `slot` (source modulator `src`) with a Remote (min..max, linear) or Mod (+-, range 1) mapping at base depth `dep`."""
+    m = ({"mode": "remote", "min": mn, "max": mx, "polarity": 0, "range": 1.0, "depth": dep} if mode == "remote"
+         else {"mode": "mod", "polarity": 0, "range": 1.0, "depth": dep})
+    return {"base": slot, "slots": [{"slot": slot, "src": src, "map": m}]}
+
+
+def remote_case(name, slot, mode="remote", dep=1.0, routes=(), mn=0.0, mx=1.0, src_rate=2.0):
+    """LFO 1 (slot 0, 1 Hz) and LFO 3 (slot 2, 1.7 Hz) are the depth-route sources (sines), LFO 2 (slot 1, `src_rate` Hz sine) is the mapping's source.
+    A route is {src, range, pol}: a UNIPOLAR depth route whose factor is m = range * dep * y (0..range; y = B's normalized output (B + 1) / 2). `pol` is the STORED polarity
+    of an old route and is ignored (default 0). Range 0 -> depth 0 -> the Remote output sits at the centre; range 1.0 is the VCA setup (B at its minimum -> depth 0, at its
+    maximum -> 1); range 0.5 spans only the middle half."""
+    router_idx = slot // mc.ROUTER_SLOTS
+    outlet = slot - router_idx * mc.ROUTER_SLOTS
+    mods = [lfo(0, 0, 1.0), lfo(1, 0, src_rate), lfo(2, 0, 1.7)]
+    sm = {"routes": [{"src": rt["src"], "dest": 192 + slot, "map": selfmap(range=rt["range"], polarity=rt.get("pol", 0))} for rt in routes]}
+    run = R(name, mods, ("rt%d" % outlet, 2), dur=3000, an="remoteroutes", router_idx=router_idx,
+            router=remote_router(slot, mn, mx, dep, mode),
+            sp={"settle_ms": SETTLE_MS, "base": dep, "mode": mode, "min": mn, "max": mx,
+                "routes": [{"f": 1.0 if rt["src"] == 0 else 1.7, "range": rt["range"], "pol": rt.get("pol", 0)} for rt in routes]})
+    if routes:
+        run["selfmod"] = sm
+    return run
 
 
 def cases():
     return {
+        # Remote / Mod mapping with depth routes. Remote depth scales AROUND THE CENTRE c = (min + max) / 2: out = c + (lookup - c) * eff, and the
+        # route factor is the unipolar m = range * y (multiplicative, never negative). The user's three cases are cases 1..3 below. The earlier scenario: A = LFO 2 (3 Hz sine) with Remote 0..1, B = LFO 1 (1 Hz sine)
+        # modulating A's depth through a full-range route: the output is 0.5 whenever B is at its minimum and swings fully only when B is at its peak.
+        # Slots below and above 64 (routers 0 / 2 / 3).
+        "remote_depth": [
+            remote_case("user_B_full_lo", 5, "remote", 1.0, [{"src": 0, "range": 1.0}], src_rate=3.0),
+            remote_case("user_B_full_hi", 96, "remote", 1.0, [{"src": 0, "range": 1.0}], src_rate=3.0),
+            remote_case("user_B_full_hi70", 70, "remote", 1.0, [{"src": 0, "range": 1.0}], src_rate=3.0),
+            remote_case("bounds_25_100_B_full", 5, "remote", 1.0, [{"src": 0, "range": 1.0}], mn=0.25, mx=1.0, src_rate=3.0),
+            remote_case("remote_route15_lo", 5, "remote", 1.0, [{"src": 0, "range": 0.15}]),
+            remote_case("remote_route15_hi", 96, "remote", 1.0, [{"src": 0, "range": 0.15}]),
+            remote_case("remote_old_minus_route", 5, "remote", 1.0, [{"src": 0, "range": 1.0, "pol": -1}]),  # a stored "-" polarity is ignored
+            remote_case("remote_two_routes", 96, "remote", 1.0, [{"src": 0, "range": 0.7}, {"src": 2, "range": 0.7}], mn=0.2, mx=0.9),
+            remote_case("remote_noroute", 5, "remote", 1.0, []),
+            remote_case("remote_base0", 5, "remote", 0.0, []),
+            remote_case("remote_base0_bounds25", 96, "remote", 0.0, [], mn=0.25, mx=1.0),
+            remote_case("remote_base05", 5, "remote", 0.5, []),
+            remote_case("remote_base05_hi", 96, "remote", 0.5, []),
+            remote_case("remote_base08_route", 96, "remote", 0.8, [{"src": 0, "range": 0.15}], mn=0.2, mx=0.9),
+            remote_case("mod_route_lo", 5, "mod", 1.0, [{"src": 0, "range": 0.15}]),
+            remote_case("mod_route_hi", 96, "mod", 1.0, [{"src": 0, "range": 0.15}]),
+            remote_case("mod_B_full", 96, "mod", 1.0, [{"src": 0, "range": 1.0}], src_rate=3.0),
+            # the user's three cases (A Remote, B a 1 Hz sine through a depth route; "range" = the route's range)
+            remote_case("case1_A0_100_range0", 5, "remote", 1.0, [{"src": 0, "range": 0.0}], src_rate=3.1),
+            remote_case("case2_A25_100_range0", 96, "remote", 1.0, [{"src": 0, "range": 0.0}], mn=0.25, mx=1.0, src_rate=3.1),
+            remote_case("case3_A0_100_range50", 96, "remote", 1.0, [{"src": 0, "range": 0.5}], src_rate=3.1),
+        ],
         "lfo_sine_2hz": [R("lfo_sine_2hz", [lfo(0, 0, 2.0)], (1, 2), dur=2000)],
         "lfo_unipolar": [
             R("A", [lfo(0, 0, 4.0, 0, 1.0), lfo(1, 0, 4.0, 0, 0.5)], (1, 2), dur=1200),
@@ -261,10 +314,10 @@ def cases():
             R("smooth50", [lfo(0, 4, 1.0)], (1, "rt0"), dur=2500, an="smooth", router=ROUTER_ID, rparams="smooth 50", smooth_ms=50),
             R("smooth0", [lfo(0, 4, 1.0)], (1, "rt0"), dur=2500, an="smooth", router=ROUTER_ID, rparams="smooth 0", smooth_ms=0),
         ],
-        # Per-mapping Depth (schema 8, baked into the mapping table): Mod depth 0.5 halves the output, Remote shrinks the span toward min.
+        # Per-mapping Depth (schema 8, baked into the mapping table): Mod depth 0.5 halves the output, Remote shrinks the span toward the CENTRE (min + max) / 2.
         "mapping_depth": [
             R("mod", [lfo(0, 0, 3.0)], ("rt0", "rt1"), dur=1000, an="depth", dep=0.5, router=depth_router(0.5, "mod")),
-            R("remote", [lfo(0, 0, 3.0)], ("rt0", "rt1"), dur=1000, an="depth", dep=0.5, remote=1, dmin=0.2,
+            R("remote", [lfo(0, 0, 3.0)], ("rt0", "rt1"), dur=1000, an="depth", dep=0.5, remote=1, dctr=0.5,
               router=depth_router(0.5, "remote")),
             R("zero", [lfo(0, 0, 3.0)], ("rt0", "rt1"), dur=1000, an="depth", dep=0.0, router=depth_router(0.0, "mod")),
         ],
@@ -285,25 +338,27 @@ def cases():
               selfmod={"routes": [{"src": 0, "dest": DEST_RATE_1, "map": selfmap(range=0.3)},
                                   {"src": 1, "dest": DEST_RATE_0, "map": selfmap(range=0.3)}]}),
         ],
-        # LFO 1 (1 Hz) modulates the Depth of mapping X (router slot 0, source LFO 2 at 8 Hz, base depth 0.5, +-0.5): amplitude modulation
+        # LFO 1 (1 Hz) modulates the Depth of mapping X (router slot 0, source LFO 2 at 8 Hz, route range 0.5: eff = 0.5 (sin + 1) / 2 = 0..0.5): amplitude modulation
         "selfmod_depth": [
             R("depth", [lfo(0, 0, 1.0), lfo(1, 0, 8.0)], ("rt0", 2), dur=2200, an="selfdepth", router_idx=0, router=ROUTER_DEPTH,
               selfmod={"routes": [{"src": 0, "dest": DEST_DEPTH_0, "map": selfmap(range=0.5)}]},
-              sp={"settle_ms": SETTLE_MS, "f1": 1.0, "dbase": 0.5, "range": 0.5}),
+              sp={"settle_ms": SETTLE_MS, "f1": 1.0, "dbase": 1.0, "range": 0.5}),
         ],
-        # Depth-modulation routes onto a mapping in pool slot 96 (>= 64; the mapping's source is LFO 2, an 8 Hz sine, base depth 0.5):
-        # LFO 1 (1 Hz, +-0.5) -> the per-cycle peak of the router output follows LFO 1 (amplitude modulation)
+        # Depth-modulation routes are MULTIPLICATIVE (VCA-like) and UNIPOLAR: eff = clip(base * prod m_k, 0, 1), m = range * y.
+        # Onto a mapping in pool slot 96 (>= 64; the mapping's source is LFO 2, an 8 Hz sine, base depth 0.8): LFO 1 (1 Hz) through a route of
+        # range 1.0 gives m = (sin + 1) / 2 = 0..1, eff = 0..0.8 (never inverting): the per-cycle peak of the router output follows it
         "depthmod_hi": [
             R("one", [lfo(0, 0, 1.0), lfo(1, 0, 8.0)], ("rt0", 2), dur=2400, an="depthroutes", router_idx=3, router=ROUTER_DEPTH_HI,
-              selfmod={"routes": [{"src": 0, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=0.5)}]},
-              sp={"settle_ms": SETTLE_MS, "base": 0.5, "routes": [{"f": 1.0, "range": 0.5}]}),
+              selfmod={"routes": [{"src": 0, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=1.0)}]},
+              sp={"settle_ms": SETTLE_MS, "base": 0.8, "routes": [{"f": 1.0, "range": 1.0}]}),
         ],
-        # two routes onto one mapping sum (and clamp at 0..1): LFO 1 (1 Hz, +-0.35) + LFO 3 (1.7 Hz, +-0.35) on base depth 0.5
+        # two routes onto one mapping MULTIPLY: base 1, LFO 1 (1 Hz, range 1: m = (sin + 1) / 2) x LFO 3 (1.7 Hz,
+        # range 1: m = (sin + 1) / 2): eff = the product (0..1), 0 whenever either factor is 0
         "depthmod_sum": [
-            R("two", [lfo(0, 0, 1.0), lfo(1, 0, 8.0), lfo(2, 0, 1.7)], ("rt0", 2), dur=3000, an="depthroutes", router_idx=3, router=ROUTER_DEPTH_HI,
-              selfmod={"routes": [{"src": 0, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=0.35)},
-                                  {"src": 2, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=0.35)}]},
-              sp={"settle_ms": SETTLE_MS, "base": 0.5, "routes": [{"f": 1.0, "range": 0.35}, {"f": 1.7, "range": 0.35}]}),
+            R("two", [lfo(0, 0, 1.0), lfo(1, 0, 8.0), lfo(2, 0, 1.7)], ("rt0", 2), dur=3000, an="depthroutes", router_idx=3, router=ROUTER_DEPTH_SUM,
+              selfmod={"routes": [{"src": 0, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=1.0)},
+                                  {"src": 2, "dest": 192 + DEPTH_SLOT_HI, "map": selfmap(range=1.0)}]},
+              sp={"settle_ms": SETTLE_MS, "base": 1.0, "routes": [{"f": 1.0, "range": 1.0}, {"f": 1.7, "range": 1.0}]}),
         ],
         # LFO 1 (2 Hz) modulates the Bipolar switch of slot 1 (40 Hz sine, depth 0.5, base off): bipolar (-0.5..0.5) while LFO 1 > 0.5, else unipolar (-1..0)
         "selfmod_toggle": [
@@ -548,7 +603,7 @@ def check(case, runs, metas, errors, notes):
     elif case == "mapping_depth":
         mod, rem, zero = ms
         notes.append(f"Mod depth 0.5: peak {mod['depth_peak_full']:.3f} -> {mod['depth_peak_scaled']:.3f}, max err vs 0.5 x full {mod['depth_err']:.2e}; "
-                     f"Remote depth 0.5 (min 0.2): err vs min + 0.5 (full - min) {rem['depth_err']:.2e}, peak {rem['depth_peak_full']:.3f} -> "
+                     f"Remote depth 0.5 (0.2..0.8, centre 0.5): err vs c + 0.5 (full - c) {rem['depth_err']:.2e}, peak {rem['depth_peak_full']:.3f} -> "
                      f"{rem['depth_peak_scaled']:.3f}; Mod depth 0 peak {zero['depth_peak_scaled']:.2e}")
         if mod["depth_peak_full"] < 0.7:
             err(f"Mod depth 1 should modulate (peak {mod['depth_peak_full']})")
@@ -557,7 +612,7 @@ def check(case, runs, metas, errors, notes):
         if not mod["depth_err"] <= 0.002:  # (written so that a NaN fails)
             err(f"Mod depth 0.5: router output is not 0.5 x the full-depth output (err {mod['depth_err']})")
         if not rem["depth_err"] <= 0.002:
-            err(f"Remote depth 0.5: output is not min + 0.5 x (full - min) (err {rem['depth_err']})")
+            err(f"Remote depth 0.5: output is not c + 0.5 x (full - c) (err {rem['depth_err']})")
         if rem["depth_peak_scaled"] >= rem["depth_peak_full"] - 0.1:
             err("Remote depth 0.5 should shrink the span")
         if not zero["depth_err"] <= 0.002 or zero["depth_peak_scaled"] > 1e-6:
@@ -612,20 +667,59 @@ def check(case, runs, metas, errors, notes):
             err("feedback: output out of -1..1")
     elif case == "selfmod_depth":
         d = ms[0]
-        notes.append(f"effective depth = out / LFO 2: max err vs clip(0.5 + 0.5 sin(2 pi t), 0, 1) {d['sdepth_err']:.4f} over {d['sdepth_n']:.0f} samples, "
+        notes.append(f"effective depth = out / LFO 2: max err vs 0.5 (sin(2 pi t) + 1) / 2 {d['sdepth_err']:.4f} over {d['sdepth_n']:.0f} samples, "
                      f"range {d['sdepth_min']:.3f}..{d['sdepth_max']:.3f}; per-cycle peak of the output {d['sdepth_peak_min']:.3f}..{d['sdepth_peak_max']:.3f}")
         if d["sdepth_n"] < 200:
             err("too few samples to measure the depth")
         if not d["sdepth_err"] <= 0.04:
             err(f"Depth modulation error {d['sdepth_err']} (> 0.04)")
-        if d["sdepth_min"] > 0.1 or d["sdepth_max"] < 0.9:
-            err("the Depth should sweep 0..1")
-        if d["sdepth_peak_min"] > 0.35 or d["sdepth_peak_max"] < 0.9:
+        if d["sdepth_min"] < -0.03:
+            err(f"the effective Depth went below 0 ({d['sdepth_min']}): a depth route must never invert")
+        if d["sdepth_min"] > 0.06 or d["sdepth_max"] < 0.45 or d["sdepth_max"] > 0.53:
+            err("the Depth should sweep 0..0.5 (m = range * (sin + 1) / 2)")
+        if d["sdepth_peak_max"] - d["sdepth_peak_min"] < 0.15 or d["sdepth_peak_max"] < 0.45:
             err("the slot output is not amplitude modulated")
+    elif case == "remote_depth":
+        for r, d in zip(runs, ms):
+            sp = r["sp"]
+            c = (sp["min"] + sp["max"]) / 2 if sp["mode"] == "remote" else 0.0
+            line = (f"{r['name']}: {sp['mode']} {sp['min']}..{sp['max']} (c {c:.3f}) base {sp['base']} routes {len(sp['routes'])}: "
+                    f"depth {d['rr_dmin']:.3f}..{d['rr_dmax']:.3f}, depth err {d['rr_err']:.4f} over {d['rr_n']:.0f} samples, "
+                    f"out err {d['rr_dir_err']:.4f}, out {d['rr_out_min']:.3f}..{d['rr_out_max']:.3f}, max |out - c| {d['rr_dev_max']:.3f}, "
+                    f"at depth ~0 ({d['rr_zero_n']:.0f} samples) |out - c| <= {d['rr_zero_dev']:.4f}")
+            notes.append(line)
+            if d["rr_n"] < 200:
+                err(f"{r['name']}: too few samples to measure the depth")
+            if d["rr_dmin"] < -0.03 or (sp["mode"] == "remote" and (d["rr_out_min"] < min(sp["min"], sp["max"]) - 0.02 or d["rr_out_max"] > max(sp["min"], sp["max"]) + 0.02)):
+                err(f"{r['name']}: the effective depth went below 0 / the output left its bounds (depth min {d['rr_dmin']}, out {d['rr_out_min']}..{d['rr_out_max']})")
+            if not d["rr_err"] <= 0.05:
+                err(f"{r['name']}: effective depth error {d['rr_err']} (> 0.05)")
+            if not d["rr_dir_err"] <= 0.03:
+                err(f"{r['name']}: output differs from c + (lookup - c) * depth by {d['rr_dir_err']} (> 0.03)")
+            if d["rr_zero_n"] > 0 and not d["rr_zero_dev"] <= 0.03:
+                err(f"{r['name']}: output is not at the centre {c} while the depth is ~0 (|out - c| {d['rr_zero_dev']})")
+            if r["name"].startswith(("user_B_full", "bounds_25_100")):
+                if d["rr_zero_n"] < 100:
+                    err(f"{r['name']}: too few samples with B ~ 0")
+                if not d["rr_dev_max"] >= 0.9 * (sp["max"] - sp["min"]) / 2:
+                    err(f"{r['name']}: the output never swings widely when |B| ~ 1 (max |out - c| {d['rr_dev_max']})")
+            if r["name"].startswith("case1") or r["name"].startswith("case2"):
+                want = 0.5 if r["name"].startswith("case1") else 0.625
+                if not (d["rr_out_max"] - d["rr_out_min"] <= 0.01 and abs(d["rr_out_max"] - want) <= 0.01):
+                    err(f"{r['name']}: route range 0 must hold {want} constant (out {d['rr_out_min']}..{d['rr_out_max']})")
+            if r["name"].startswith("case3"):
+                if not (abs(d["rr_out_min"] - 0.25) <= 0.03 and abs(d["rr_out_max"] - 0.75) <= 0.03 and d["rr_out_min"] >= 0.24 and d["rr_out_max"] <= 0.76):
+                    err(f"{r['name']}: route range 0.5 must span 0.25..0.75 (out {d['rr_out_min']}..{d['rr_out_max']})")
+            if r["name"] in ("remote_base0", "remote_base0_bounds25"):
+                if not (d["rr_out_max"] - d["rr_out_min"] <= 0.01 and abs(d["rr_out_max"] - c) <= 0.01):
+                    err(f"{r['name']}: base depth 0 must hold the centre {c} (out {d['rr_out_min']}..{d['rr_out_max']})")
+            if r["name"].startswith("remote_base05") and not (abs(d["rr_out_min"] - 0.25) < 0.02 and abs(d["rr_out_max"] - 0.75) < 0.02):
+                err(f"{r['name']}: depth 0.5 on 0..1 must span 0.25..0.75 (out {d['rr_out_min']}..{d['rr_out_max']})")
     elif case in ("depthmod_hi", "depthmod_sum"):
         d = ms[0]
-        notes.append(f"pool slot {DEPTH_SLOT_HI}: out / src vs clip(base + sum of the routes): max err {d['dr_err']:.4f} over {d['dr_n']:.0f} samples, depth {d['dr_min']:.3f}..{d['dr_max']:.3f}; "
-                     f"per-cycle peak {d['dr_peak_min']:.3f}..{d['dr_peak_max']:.3f} over {d['dr_cycles']:.0f} cycles, max err {d['dr_peak_err']:.4f}, correlation {d['dr_corr']:.4f}")
+        notes.append(f"pool slot {DEPTH_SLOT_HI}: out / src vs clip(base * prod m_k, 0, 1): max err {d['dr_err']:.4f} over {d['dr_n']:.0f} samples, depth {d['dr_min']:.3f}..{d['dr_max']:.3f} "
+                     f"(expected {d['dr_exp_min']:.3f}..{d['dr_exp_max']:.3f}); "
+                     f"per-cycle |peak| {d['dr_peak_min']:.3f}..{d['dr_peak_max']:.3f} over {d['dr_cycles']:.0f} cycles, max err {d['dr_peak_err']:.4f}, correlation {d['dr_corr']:.4f}")
         if d["dr_n"] < 200 or d["dr_cycles"] < 10:
             err("too few samples / cycles to measure the depth")
         if not d["dr_err"] <= 0.05:
@@ -634,10 +728,14 @@ def check(case, runs, metas, errors, notes):
             err(f"per-cycle peak error {d['dr_peak_err']} (> 0.05)")
         if not d["dr_corr"] >= 0.98:
             err(f"the per-cycle peaks do not follow the modulators (correlation {d['dr_corr']})")
-        if d["dr_peak_min"] > 0.3 or d["dr_peak_max"] < 0.9:
-            err("the slot output is not amplitude modulated over 0.3..0.9")
-        if case == "depthmod_sum" and not d["dr_min"] <= 0.05:
-            err("the summed depth should clamp down to 0 (two routes pulling the same way)")
+        if not (abs(d["dr_min"] - d["dr_exp_min"]) <= 0.06 and abs(d["dr_max"] - d["dr_exp_max"]) <= 0.06):
+            err("the measured depth range differs from the product of the routes' factors")
+        if d["dr_peak_max"] - d["dr_peak_min"] < 0.3 or d["dr_peak_max"] < 0.7:
+            err("the slot output is not amplitude modulated (per-cycle peak spread < 0.3 or max < 0.7)")
+        if d["dr_min"] < -0.03:
+            err(f"the effective depth went below 0 ({d['dr_min']}): a depth route never inverts the mapping")
+        if d["dr_min"] > 0.1:
+            err("the depth should reach ~0 (B at its minimum)")
     elif case == "selfmod_toggle":
         t = ms[0]
         notes.append(f"Bipolar toggled by LFO 1 > 0.5: {t['stoggle_windows']:.0f} windows ({t['stoggle_on']:.0f} bipolar, {t['stoggle_off']:.0f} unipolar), "

@@ -46,7 +46,7 @@ ICURVE_SAMPS = 64 * 256     # buffer~ ---megamodicurve: 64 internal route transf
 MAX_MAPPINGS = 256          # saved mapping-slot pool (contract with src/megamod_config.js MAX_MAPPINGS)
 CURVE_REGION = 256
 CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION
-ROUTE_SAMPS = 1024          # every pool slot k 0..255: [2k] = source mod index or -1, [2k+1] effective depth (engine), [512+k] base depth, [768+k] Remote min or -1
+ROUTE_SAMPS = 1024          # every pool slot k 0..255: [2k] = source mod index or -1, [2k+1] effective depth (engine), [512+k] base depth, [768+k] Remote centre (min+max)/2 or -1
 ROUTERS = 8                 # router gen.codebox~ boxes
 ROUTER_SLOTS = MAX_MAPPINGS // ROUTERS  # 32 outlets each
 
@@ -172,7 +172,7 @@ def router_gen_code(r):
     ]
     out += [f"History ys{j}(0);" for j in range(ROUTER_SLOTS)]
     out += ["", "// Every pool slot applies its Depth here (per sample): the table is baked at depth 1, route[2k+1] = the effective depth the engine writes",
-            "// (base + the summed depth-modulation routes), route[768+k] = Remote min or -1 for Mod: Mod y * d, Remote min + (y - min) * d."]
+            "// (base * the product of the depth-modulation routes' unipolar factors, clipped 0..1), route[768+k] = Remote centre (min + max) / 2 or -1 for Mod: Mod y * d, Remote c + (y - c) * d."]
     out += [
         "",
         "smSr = max(samplerate, 1);",

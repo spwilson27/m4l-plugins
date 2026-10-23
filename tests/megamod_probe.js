@@ -97,7 +97,7 @@ function configure() {
         for (var r = 0; r < rts.length; r++) {
             hdr[4 * r] = rts[r].src + 1;
             hdr[4 * r + 1] = rts[r].dest;
-            var it = mappingTable(rts[r].map);
+            var it = rts[r].dest >= DEST_DEPTH ? depthFactorTable(rts[r].map) : mappingTable(rts[r].map); // a depth route bakes its unipolar factor m = range * dep * y
             for (i = 0; i < CURVE_REGION; i++) ic[r * CURVE_REGION + i] = it[i];
         }
         hdr[INT_COUNT_AT] = rts.length;
@@ -122,7 +122,7 @@ function configure() {
                 var dp = mp.depth === undefined ? 1 : mp.depth;
                 route[ROUTE_DEPTH_BASE + sd.slot] = dp;
                 route[2 * sd.slot + 1] = dp;
-                route[ROUTE_DEPTH_MIN + sd.slot] = mp.mode === "remote" ? mp.min : -1;
+                route[ROUTE_DEPTH_MIN + sd.slot] = mp.mode === "remote" ? remoteCentre(mp) : -1;
                 mp = JSON.parse(JSON.stringify(mp)); mp.depth = 1;
             }
             var tb = mappingTable(mp);
@@ -145,11 +145,11 @@ function autorate(n) {
 }
 
 // Per-mapping Depth: a = router slot with depth 1, b = router slot with depth CASE.dep (same source, same table otherwise).
-// Mod: b must be dep * a; Remote (CASE.dmin = the mapping's min): b = min + dep * (a - min).
+// Mod: b must be dep * a; Remote (CASE.dctr = the centre (min + max) / 2 of the mapping's bounds): b = c + dep * (a - c).
 function analyzeDepth(rep, a, b, sr) {
     var err = 0, ma = 0, mb = 0, i, exp;
     for (i = 0; i < a.length; i++) {
-        exp = CASE.remote ? CASE.dmin + CASE.dep * (a[i] - CASE.dmin) : CASE.dep * a[i];
+        exp = CASE.remote ? CASE.dctr + CASE.dep * (a[i] - CASE.dctr) : CASE.dep * a[i];
         err = Math.max(err, Math.abs(b[i] - exp));
         ma = Math.max(ma, Math.abs(a[i]));
         mb = Math.max(mb, Math.abs(b[i]));
@@ -553,13 +553,13 @@ function analyzeSelfRate(rep, x, lfo1, sr) {
     rep.push("self_lfo1_peak_t " + (pk / sr + t0));
 }
 // mapping X (router slot 0, source = LFO 2 slot 1) with its Depth modulated by LFO 1 (slot 0, f1 Hz) through the internal matrix.
-// c1 = router output, c2 = LFO 2 output: where |c2| is large, c1 / c2 is the effective depth = clip(base + range * sin(2 pi f1 t), 0, 1).
+// c1 = router output, c2 = LFO 2 output: where |c2| is large, c1 / c2 is the effective depth = clip(base * range * (sin(2 pi f1 t) + 1) / 2, 0, 1) (multiplicative, UNIPOLAR: m = range * y, y = B's normalized output).
 function analyzeSelfDepth(rep, out, src, sr) {
     var sp = CASE.sp, t0 = sp.settle_ms / 1000, err = 0, cnt = 0, dmin = 9, dmax = -9, i;
     for (i = 0; i < out.length; i++) {
         if (Math.abs(src[i]) < 0.6) continue;
         var d = out[i] / src[i];
-        var exp = Math.max(0, Math.min(1, sp.dbase + sp.range * Math.sin(2 * Math.PI * sp.f1 * (t0 + i / sr))));
+        var exp = Math.max(0, Math.min(1, sp.dbase * (sp.range * (Math.sin(2 * Math.PI * sp.f1 * (t0 + i / sr)) + 1) / 2)));
         err = Math.max(err, Math.abs(d - exp));
         dmin = Math.min(dmin, d); dmax = Math.max(dmax, d);
         cnt++;
@@ -580,28 +580,34 @@ function analyzeSelfDepth(rep, out, src, sr) {
     rep.push("sdepth_peak_max " + pmax);
 }
 // Depth-modulation routes (schema 10) onto a mapping in a pool slot >= 64 (router 3): c1 = the router output, c2 = the mapping's source (a
-// bipolar sine). The effective depth = clip(base + sum of each route's range * sin(2 pi f t), 0, 1) (the routes' sources are free-running sines
+// bipolar sine). The effective depth = clip(base * product of each route's UNIPOLAR factor m = range * (sin(2 pi f t) + 1) / 2, 0, 1) (the routes' sources are free-running sines
 // from phase 0). dr_err = max |out / src - expected| where |src| is large; dr_peak_* = the per-cycle peak of |out| against the expected depth
 // at that peak (the amplitude of every cycle of the mapping's signal must follow the modulators), dr_corr = their correlation.
+function routeFactorAt(rt, t) {  // the route's depth factor m = range * (sin + 1) / 2 (0..range) for a sine source of frequency rt.f; a stored polarity (rt.pol) is ignored
+    var x = Math.sin(2 * Math.PI * rt.f * t);
+    return rt.range * (x + 1) / 2;
+}
+function expectedDepthAt(sp, t) {  // eff = clip(base * product of the routes' factors, 0, 1)
+    var d = sp.base, k;
+    for (k = 0; k < sp.routes.length; k++) d *= routeFactorAt(sp.routes[k], t);
+    return Math.max(0, Math.min(1, d));
+}
 function analyzeDepthRoutes(rep, out, src, sr) {
-    var sp = CASE.sp, t0 = sp.settle_ms / 1000, err = 0, cnt = 0, dmin = 9, dmax = -9, i, k;
-    var expAt = function (t) {
-        var d = sp.base;
-        for (k = 0; k < sp.routes.length; k++) d += sp.routes[k].range * Math.sin(2 * Math.PI * sp.routes[k].f * t);
-        return Math.max(0, Math.min(1, d));
-    };
+    var sp = CASE.sp, t0 = sp.settle_ms / 1000, err = 0, cnt = 0, dmin = 9, dmax = -9, emin = 9, emax = -9, i;
+    var expAt = function (t) { return expectedDepthAt(sp, t); };
     for (i = 0; i < out.length; i++) {
         if (Math.abs(src[i]) < 0.6) continue;
         var d1 = out[i] / src[i];
         err = Math.max(err, Math.abs(d1 - expAt(t0 + i / sr)));
         dmin = Math.min(dmin, d1); dmax = Math.max(dmax, d1);
+        emin = Math.min(emin, expAt(t0 + i / sr)); emax = Math.max(emax, expAt(t0 + i / sr));
         cnt++;
     }
     var peaks = [], exps = [], cur = 0, curI = 0;
     for (i = 1; i < out.length; i++) {
         if (Math.abs(out[i]) > cur) { cur = Math.abs(out[i]); curI = i; }
         if (src[i - 1] < 0 && src[i] >= 0) {
-            if (cur > 0 || peaks.length) { peaks.push(cur / Math.max(0.2, Math.abs(src[curI]))); exps.push(expAt(t0 + curI / sr)); }
+            if (cur > 0 || peaks.length) { peaks.push(cur / Math.max(0.2, Math.abs(src[curI]))); exps.push(Math.abs(expAt(t0 + curI / sr))); }
             cur = 0;
         }
     }
@@ -615,12 +621,50 @@ function analyzeDepthRoutes(rep, out, src, sr) {
     rep.push("dr_err " + err);
     rep.push("dr_min " + dmin);
     rep.push("dr_max " + dmax);
+    rep.push("dr_exp_min " + emin);
+    rep.push("dr_exp_max " + emax);
     rep.push("dr_n " + cnt);
     rep.push("dr_cycles " + n);
     rep.push("dr_peak_err " + pe);
     rep.push("dr_peak_min " + pmin);
     rep.push("dr_peak_max " + pmax);
     rep.push("dr_corr " + corr);
+}
+// Depth routes onto a REMOTE (or Mod) mapping in any router: c1 = router output, c2 = the mapping's source x (a sine). Remote out =
+// c + (lookup - c) * d with lookup = min + (max - min) * (x + 1) / 2 and c = (min + max) / 2 (the depth scales around the CENTRE); Mod (+-, range 1)
+// out = x * d; d = clip(base * product of the routes' unipolar factors m = range * y, 0, 1) (multiplicative, VCA-like, never negative).
+// rr_err = max |recovered d - expected d| where the recovery is well conditioned (|x| > 0.6), rr_dir_err = max |out - expected out| over every
+// sample, rr_zero_* = the output's deviation from c where the expected depth is ~0 (a full-range route with its source at its minimum), rr_dev_max =
+// max |out - c| overall, rr_out_* = the output's range.
+// (The user's cases: route range 0 -> depth 0 -> out == c; range 0.5 -> depth 0..0.5 -> out within c +- 0.5 * (max - min) / 2, centred at B's minimum.)
+function analyzeRemoteRoutes(rep, out, src, sr) {
+    var sp = CASE.sp, t0 = sp.settle_ms / 1000, err = 0, dir = 0, cnt = 0, dmin = 9, dmax = -9, omin = 9, omax = -9, i;
+    var zdev = 0, zn = 0, devMax = 0;
+    var remote = sp.mode === "remote";
+    var ctr = remote ? (sp.min + sp.max) / 2 : 0;
+    for (i = 0; i < out.length; i++) {
+        omin = Math.min(omin, out[i]); omax = Math.max(omax, out[i]);
+        var look = remote ? sp.min + (sp.max - sp.min) * (src[i] + 1) / 2 : src[i];
+        var ed = expectedDepthAt(sp, t0 + i / sr);
+        dir = Math.max(dir, Math.abs(out[i] - (ctr + (look - ctr) * ed)));
+        devMax = Math.max(devMax, Math.abs(out[i] - ctr));
+        if (Math.abs(ed) < 0.02) { zdev = Math.max(zdev, Math.abs(out[i] - ctr)); zn++; }
+        if (Math.abs(src[i]) < 0.6) continue;
+        var d1 = (out[i] - ctr) / (look - ctr);
+        err = Math.max(err, Math.abs(d1 - ed));
+        dmin = Math.min(dmin, d1); dmax = Math.max(dmax, d1);
+        cnt++;
+    }
+    rep.push("rr_err " + err);
+    rep.push("rr_dir_err " + dir);
+    rep.push("rr_zero_dev " + zdev);
+    rep.push("rr_zero_n " + zn);
+    rep.push("rr_dev_max " + devMax);
+    rep.push("rr_dmin " + dmin);
+    rep.push("rr_dmax " + dmax);
+    rep.push("rr_n " + cnt);
+    rep.push("rr_out_min " + omin);
+    rep.push("rr_out_max " + omax);
 }
 // LFO 1 (slot 0, f1 Hz sine) modulates the BIPOLAR switch of slot 1 (a `fast` Hz sine with depth 0.5): bipolar on = -0.5..0.5, off (unipolar) = -1..0.
 // Base bipolar 0, range 1, +-: the toggle is on while the LFO 1 value is above 0.5. c1 = slot 1, c2 = LFO 1. Per window of one LFO 2 period.
@@ -700,6 +744,7 @@ function analyzeInner(durMs) {
     else if (an === "selfrate") analyzeSelfRate(rep, c1, c2, sr);
     else if (an === "selfdepth") analyzeSelfDepth(rep, c1, c2, sr);
     else if (an === "depthroutes") analyzeDepthRoutes(rep, c1, c2, sr);
+    else if (an === "remoteroutes") analyzeRemoteRoutes(rep, c1, c2, sr);
     else if (an === "selftoggle") analyzeSelfToggle(rep, c1, c2, sr);
     else if (an === "selffb") analyzeSelfFeedback(rep, c1, c2, sr);
 

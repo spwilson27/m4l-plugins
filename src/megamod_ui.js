@@ -513,8 +513,14 @@ function ubPbSelMapping() {
 function ubValueText(m) {
     // Remote: the absolute window "20\u201380%" (min \u2013 max of the target parameter)
     if (m.mode === "remote") return Math.round(m.min * 100) + "\u2013" + Math.round(m.max * 100) + "%";
+    // a depth route is unipolar: no sign, "40%" (0..100)
+    if (isDepthRoute(m)) return Math.round(m.range * 100) + "%";
     // Mod: polarity glyph + range: "+50%", "\u00b150%", "\u221250%"
     return (m.polarity > 0 ? "+" : m.polarity < 0 ? "\u2212" : "\u00b1") + Math.round(m.range * 100) + "%";
+}
+// polarity as the UI draws / edits it: a depth route is always unipolar (2 = a bar from 0 up to range), its stored polarity is ignored
+function ubPol(m) {
+    return isDepthRoute(m) ? 2 : m.polarity;
 }
 function ubTargetPath(m) {
     if (isDepthRoute(m)) return "Depth route: " + (MM.state.mods[m.mod] ? MM.state.mods[m.mod].name : "?") + " > " + MM.depthRouteLabel(m);
@@ -646,7 +652,7 @@ function ubDetailRects(gm, m) {
     const pbw = (w - ubReadoutW() - 3 - (UB_PRESETS - 1) * 2) / UB_PRESETS;
     const pstep = pbw + 2;
     for (let k = 0; k < UB_PRESETS; k++) out.push({ id: "preset" + k, rect: [x + k * pstep, py, pbw, 13], curve: k });
-    if (!rem) {
+    if (!rem && !isDepthRoute(m)) { // a depth route is unipolar: no polarity control
         const px = x + w - 3 * UB_POL_W;
         [1, 0, -1].forEach((p, k) => out.push({ id: "pol" + p, rect: [px + k * UB_POL_W, ty, UB_POL_W, 12], pol: p }));
     }
@@ -1299,10 +1305,10 @@ function ubDetailClick(h, x, y) {
     else if (id === "tabmod" || id === "tabrem") { if (!(m.target.internal && h.mode === "remote")) MM.updateMapping(m.id, { mode: h.mode }); }
     else if (id === "meter") {
         // the visible marker(s) follow the polarity: a press on the hidden zero side (+ below / \u2212 above the centre) is ignored
-        if (!ubRangeSideOk(m.polarity, h.rect, y)) return;
+        if (!ubRangeSideOk(ubPol(m), h.rect, y)) return;
         ubDrag = { kind: "range", rect: h.rect, mapId: m.id, dirty: true };
         ubApplyRange(ubDrag, y);
-    } else if (id.indexOf("pol") === 0) MM.updateMapping(m.id, { polarity: h.pol });
+    } else if (id.indexOf("pol") === 0) { if (!isDepthRoute(m)) MM.updateMapping(m.id, { polarity: h.pol }); }
 }
 
 // ------------------------------------------------------------------ delete / undo (UI side; the stack lives in MM)
@@ -1466,6 +1472,7 @@ function ubHBarFromX(r, x) {
     return clamp((x - (r[0] + 1)) / (r[2] - 2), 0, 1);
 }
 function ubHBarModValue(r, pol, x) {
+    if (pol === 2) return clamp((x - (r[0] + 1)) / (r[2] - 2), 0, 1); // depth route: 0 at the left edge, 1 at the right
     const cx = r[0] + r[2] / 2;
     const d = pol === 0 ? Math.abs(x - cx) : pol > 0 ? x - cx : cx - x;
     return clamp(d / ((r[2] - 2) / 2), 0, 1);
@@ -1479,7 +1486,7 @@ function ubHBarApply(d, x) {
     const m = MM.getMapping(d.mapId);
     if (!m) return;
     if (m.mode === "remote") MM.updateMapping(m.id, ubLimitPatch(d.which === "max" ? "max" : "min", ubHBarFromX(d.rect, x)));
-    else MM.updateMapping(m.id, { range: ubHBarModValue(d.rect, m.polarity, x) });
+    else MM.updateMapping(m.id, { range: ubHBarModValue(d.rect, ubPol(m), x) });
 }
 function ubHBarReset(m, rect, x) {
     if (m.mode !== "remote") MM.updateMapping(m.id, { range: 1 });
@@ -1558,7 +1565,7 @@ function ubHitMapsPop(x, y) {
         }
         if (ubIn(pr.tog, x, y)) return Object.assign({ kind: "mp_tog" }, base);
         if (ubIn(pr.mode, x, y)) return Object.assign({ kind: "mp_mode" }, base);
-        if (v.m.mode !== "remote" && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol" }, base);
+        if (v.m.mode !== "remote" && !isDepthRoute(v.m) && ubIn(pr.pol, x, y)) return Object.assign({ kind: "mp_pol" }, base);
         if (ubIn(pr.bar, x, y)) return Object.assign({ kind: "mp_bar", rect: pr.bar }, base);
         return Object.assign({ kind: "mp_row" }, base);
     }
@@ -1584,7 +1591,7 @@ function ubMapsPopClick(h, x, y) {
         }
         case "mp_pol": {
             const m = MM.getMapping(h.m.id);
-            if (m) { ubMapSelBy[m.mod] = m.id; MM.updateMapping(m.id, { polarity: UB_POL_CYCLE[m.polarity] }); }
+            if (m && !isDepthRoute(m)) { ubMapSelBy[m.mod] = m.id; MM.updateMapping(m.id, { polarity: UB_POL_CYCLE[m.polarity] }); }
             break;
         }
         case "mp_bar": { const m = MM.getMapping(h.m.id); if (m) ubHBarStart(m, h.rect, x, true); break; }
@@ -2083,6 +2090,13 @@ function ubPaintHBar(r, m, mod) {
         mgraphics.rectangle(hx(m.min) - th / 2 - 0.5, r[1] + 0.5, th + 1, r[3] - 1);
         mgraphics.stroke();
     } else {
+        if (isDepthRoute(m)) { // unipolar: fills from the left edge (0) to range (100 % = the full bar)
+            const len = w * m.range;
+            ubRect(x0, y0, len, h, ac, 0.5);
+            const mw = r[3] >= 16 ? 4 : 2;
+            ubRect(clamp(x0 + len - mw / 2, x0, x0 + w - mw), r[1], mw, r[3], d ? [1, 1, 1] : ac, 1);
+            return;
+        }
         const cx = r[0] + r[2] / 2;
         const half = w / 2;
         const len = half * m.range;
@@ -2159,7 +2173,7 @@ function ubPaintPopRow(P, v, sel) {
     ubMapToggle(pr.tog, !!m.enabled, col, ubPopHot("mp_tog", m));
     ubPaintPopName(m, pr.name, 8, a, miss);
     ubPopModeChip(pr.mode, m, 7);
-    if (m.mode !== "remote") ubPopPolButton(pr.pol, m, 3);
+    if (m.mode !== "remote" && !isDepthRoute(m)) ubPopPolButton(pr.pol, m, 3);
     ubPaintHBar(pr.bar, m, P.mod);
     ubPopValueText(pr.val, m, 7.5, off, false);
 }
@@ -2222,15 +2236,29 @@ function ubPaintOutMeter(r, m, mod) {
     const g = ubMeterGeom(r);
     const live = mod.enabled && m.enabled;
     const c = live ? ubModCol(mod) : UB_OFF_GREY;
-    const pol = m.polarity;
+    const pol = ubPol(m);
     ubRR(g.tx, r[1], g.tw, r[3], 3, [0.075, 0.085, 0.1], 1);
+    if (pol === 2) { // depth route: unipolar, a bar from 0 (bottom) up to range
+        const yb = g.iy + g.ih;
+        const yTop = yb - g.ih * m.range;
+        ubRect(g.tx + 1, yTop, g.tw - 2, Math.max(0, yb - yTop), c, 0.16);
+        if (live) {
+            const o = clamp(depthFactor(m, ubTel(m.mod).out), 0, 1);
+            const ty = yb - g.ih * o;
+            ubRect(g.tx + 2, ty, g.tw - 4, Math.max(0, yb - ty), c, 0.6);
+            ubRect(g.tx + 1, ty - 0.75, g.tw - 2, 1.5, [1, 1, 1], 0.95);
+        }
+        ubLine(g.tx, yb, g.tx + g.tw, yb, [0.62, 0.64, 0.7], 1, 1);
+        ubRangeMarker(r[0], yTop, ubDrag && ubDrag.kind === "range" && ubDrag.mapId === m.id ? [1, 1, 1] : [0.78, 0.8, 0.85]);
+        return;
+    }
     const yHi = g.cy - g.hh * m.range;
     const yLo = g.cy + g.hh * m.range;
     // limit band: centre..limit ("+" up, "\u2212" down) or both sides ("\u00b1")
     if (pol >= 0) ubRect(g.tx + 1, yHi, g.tw - 2, Math.max(0, g.cy - yHi), c, 0.16);
     if (pol <= 0) ubRect(g.tx + 1, g.cy, g.tw - 2, Math.max(0, yLo - g.cy), c, 0.16);
     if (live) {
-        const o = clamp(mappingOutput(Object.assign({}, m, { mode: "mod" }), ubTel(m.mod).out), -1, 1);
+        const o = clamp(mappingOutput(Object.assign({}, m, { mode: "mod" }), ubTel(m.mod).out, MM.effectiveDepth(m.id)), -1, 1);
         const ty = g.cy - g.hh * o;
         ubRect(g.tx + 2, Math.min(ty, g.cy), g.tw - 4, Math.abs(g.cy - ty), c, 0.6);
         ubRect(g.tx + 1, ty - 0.75, g.tw - 2, 1.5, [1, 1, 1], 0.95);
@@ -2252,18 +2280,19 @@ function ubRangeMarker(x, y, c) {
 // A press is only accepted on a visible marker's side of the centre: "+" above it, "\u2212" below it, "\u00b1" anywhere.
 function ubRangeSideOk(pol, rect, y) {
     const g = ubMeterGeom(rect);
-    return pol === 0 || (pol > 0 ? y <= g.cy : y >= g.cy);
+    return pol === 0 || pol === 2 || (pol > 0 ? y <= g.cy : y >= g.cy);
 }
 // range 0..1 from a y position (during a drag the hidden side just pins to 0)
 function ubRangeValue(rect, pol, y) {
     const g = ubMeterGeom(rect);
+    if (pol === 2) return clamp((g.iy + g.ih - y) / g.ih, 0, 1); // depth route: 0 at the bottom, 1 at the top
     const d = pol === 0 ? Math.abs(y - g.cy) : pol > 0 ? g.cy - y : y - g.cy;
     return clamp(d / g.hh, 0, 1);
 }
 function ubApplyRange(d, y) {
     const m = MM.getMapping(d.mapId);
     if (!m) return;
-    MM.updateMapping(m.id, { range: ubRangeValue(d.rect, m.polarity, y) });
+    MM.updateMapping(m.id, { range: ubRangeValue(d.rect, ubPol(m), y) });
 }
 function ubPaintShapeEditor(r, m, mod) {
     // a bypassed modulator greys the editor and hides its scan line; editing still works
@@ -2314,7 +2343,7 @@ function ubPaintShapeEditor(r, m, mod) {
     }
 }
 // Remote output bar: absolute 0..1 of the target parameter, no centre line. The min..max band is shaded, the fill runs from
-// min to the live value, and two independent triangles mark the limits (max filled, min outlined).
+// the centre (min + max) / 2 to the live value, and two independent triangles mark the limits (max filled, min outlined).
 function ubPaintAbsMeter(r, m, mod) {
     const g = ubMeterGeom(r);
     const live = mod.enabled && m.enabled;
@@ -2325,8 +2354,10 @@ function ubPaintAbsMeter(r, m, mod) {
     const y1 = yOf(m.max);
     ubRect(g.tx + 1, Math.min(y0, y1), g.tw - 2, Math.abs(y1 - y0), c, 0.18);
     if (live) {
-        const yv = yOf(clamp(mappingOutput(m, ubTel(m.mod).out), 0, 1));
-        ubRect(g.tx + 2, Math.min(y0, yv), g.tw - 4, Math.max(1, Math.abs(yv - y0)), c, 0.6);
+        // the live value (depth scales around the CENTRE of min..max, with the effective, modulated depth): the fill runs from the centre to it
+        const yv = yOf(clamp(mappingOutput(m, ubTel(m.mod).out, MM.effectiveDepth(m.id)), 0, 1));
+        const yc = yOf(remoteCentre(m));
+        ubRect(g.tx + 2, Math.min(yc, yv), g.tw - 4, Math.max(1, Math.abs(yv - yc)), c, 0.6);
         ubRect(g.tx + 1, yv - 0.75, g.tw - 2, 1.5, [1, 1, 1], 0.95);
     }
     const hot = ubDrag && ubDrag.kind === "limit" && ubDrag.mapId === m.id ? ubDrag.which : "";

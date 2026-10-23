@@ -29,12 +29,12 @@
 //   Dest codes (448): 0..95 = slot*6 + j (j 0..4 generic control A..E, j 5 = On), 96..191 = 96 + slot*6 + t (switch t), 192..447 = 192 + k (Depth of pool slot k, k 0..255:
 //     a depth-modulation route, schema 10; the mapper aims it at the pool slot of its target mapping).
 //   route (megamodroute, 1024): the router's buffer. [2k] source (routers), for EVERY pool slot k 0..255 (all 8 routers apply the Depth per sample):
-//     [2k+1] = EFFECTIVE depth (this engine writes it: base + the summed Depth modulation, clipped 0..1), [512 + k] = base depth (mapper),
-//     [768 + k] = Remote min of that mapping, or -1 for a Mod mapping (the router then computes min + (T - min) * d instead of T * d).
+//     [2k+1] = EFFECTIVE depth (this engine writes it: base * the PRODUCT of the depth routes' factors m = range * dep * y (unipolar, the mapper bakes the table), clipped 0..1), [512 + k] = base depth (mapper),
+//     [768 + k] = Remote CENTRE (min + max) / 2 of that mapping, or -1 for a Mod mapping (the router then computes c + (T - c) * d instead of T * d).
 //
 // INTERNAL MODULATION (self-mod): per sample, each active route reads its source's PREVIOUS-sample output (the matrix runs before the slots,
 // so loops between modulators are stable with one sample of delay), maps it through the route's table (o in -1..1 = the Mod offset in
-// normalized knob space) and the offsets of all routes into one destination are SUMMED. Numeric controls: normalized = curve(real value) (log
+// normalized knob space) and the offsets of all routes into one destination are SUMMED (a DEPTH destination 192+ instead MULTIPLIES the routes' baked unipolar factors m = range * dep * y (0..range) into the base depth, VCA-like). Numeric controls: normalized = curve(real value) (log
 // for rate / attack / release, linear otherwise, the same curves as the UI knob), + offset, clipped 0..1, back to the real value
 // (integer controls rounded) -> `cm`, the modulated copy of the config cache that the slots read. Toggles and On: on when the clipped
 // normalized value + offset is above 0.5. Shape (enum): round(normalized * 4). All of these are evaluated PER SAMPLE. Depth: the effective
@@ -109,6 +109,7 @@ Data cf(384);
 Data cm(384);
 Data dsum(512);
 Data dcl(512);
+Data dprd(512);
 Data st(128);
 Data outv(16);
 Data tl(64);
@@ -173,6 +174,7 @@ if (nHi > 0.5) {
 			dz = peek(ibuf, rt * 4 + 1, 0);
 			poke(dsum, 0, dz);
 			poke(dcl, 0, dz);
+			poke(dprd, 1, dz);
 		}
 	}
 	for (rt = 0; rt < 64; rt += 1) {
@@ -187,6 +189,7 @@ if (nHi > 0.5) {
 				va = peek(icurve, rt * 256 + ia, 0);
 				vb = peek(icurve, rt * 256 + ib, 0);
 				poke(dsum, peek(dsum, dst) + va + (vb - va) * (fi - ia), dst);
+				poke(dprd, peek(dprd, dst) * (va + (vb - va) * (fi - ia)), dst);
 				poke(dcl, peek(dcl, dst) + 1, dst);
 			}
 		}
@@ -228,7 +231,7 @@ if (nHi > 0.5) {
 					poke(cm, (mtt < 0.5) ? floor(nr * mxv + 0.5) : ((nr > 0.5) ? 1 : 0), msl * 24 + fld);
 				} else {
 					dkk = dst - 192;
-					poke(route, clip(peek(route, 512 + dkk, 0) + dsm, 0, 1), 2 * dkk + 1, 0);
+					poke(route, clip(peek(route, 512 + dkk, 0) * peek(dprd, dst), 0, 1), 2 * dkk + 1, 0);
 				}
 			}
 		}

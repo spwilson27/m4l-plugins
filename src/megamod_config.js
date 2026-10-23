@@ -50,7 +50,7 @@
 //                                   mod (retarget slot)
 //   MM.deleteMapping(id)            (also deletes the depth routes aimed at that mapping; one undo step)
 //   MM.addDepthRoute(i, mapId)      schema 10: modulator i modulates the DEPTH of the pool mapping mapId -> the route (an internal mapping, target {internal, kind: "depth", mapId}) | null
-//   MM.depthRoutesFor(mapId) / MM.depthTargetOf(route) / MM.depthRouteLabel(route) / MM.effectiveDepth(mapId)   (several routes onto one mapping sum, clamped 0..1)
+//   MM.depthRoutesFor(mapId) / MM.depthTargetOf(route) / MM.depthRouteLabel(route) / MM.effectiveDepth(mapId)   (several routes onto one mapping MULTIPLY: eff = clamp(base * prod m_k, 0, 1), m = range * dep * y, unipolar: a depth route has no polarity)
 //   MM.undo() / MM.redo()           undo / redo the last modulator or mapping delete (stack of 16, exact snapshots: slots, settings,
 //                                   mapping ids / targets / shapes, Live ids and pool slots are restored and re-bound);
 //                                   -> {kind: "mod"|"map", slot, ids} or null. MM.undoInfo() -> {undo, redo, max, label, kind}
@@ -88,7 +88,7 @@
 //            attack,release,gain,smooth,steps,glide,oneshot,seed,loopOn,loopStart,loopEnd},
 //            points:[{x,y,curve,sCurve}], stepVals:[32 x 0..1]}
 // Mapping = {id, mod, enabled, mode:"mod"|"remote", polarity(1 "+" | 0 "±" | -1 "−"), range(0..1, default 0.5; the Mod depth, there is no separate amount),
-//            depth(0..1, default 1 = 100%; schema 8: scales the output, Mod: o *= depth, Remote: min + (max - min) * y * depth, i.e. the span shrinks toward `min`; 1:1 at 1),
+//            depth(0..1, default 1 = 100%; schema 8: scales the output, Mod: o *= depth, Remote: c + (lookup - c) * depth with c = (min + max) / 2, i.e. the span shrinks toward the CENTRE of the bounds; 1:1 at 1),
 //            min(0..1), max(0..1) (Remote only: independent absolute limits of the target parameter, min > max inverts; defaults 0 / 1; polarity / range are ignored in Remote but kept),
 //            shape:[{x,y,curve,sCurve}] (editable MSEG transfer curve, x = modulator 0..1, y = output 0..1), target:{path,name,trackName,deviceName,paramName}}   (runtime-only: slot, pid, missing)
 //
@@ -105,7 +105,8 @@
 //   Mapping lookup input x in -1..1 -> mod value m = (x+1)/2 in 0..1 ->
 //   y = evalMseg(shape, u);  signed modulation  o = range * (polarity === 0 ? 2y - 1 : polarity * y)  (-1..1).
 //   Mod:    mappingOutput = o  (the offset live.modulate~ gets).
-//   Remote (schema 5): live.remote~ @normalized gets an ABSOLUTE 0..1 value  clamp(min + (max - min) * y, 0, 1)  (min / max independent, min > max inverts).
+//   Remote (schema 5): live.remote~ @normalized gets an ABSOLUTE 0..1 value  clamp(min + (max - min) * y, 0, 1)  (min / max independent, min > max inverts);
+//           with a Depth d: v = c + (min + (max - min) * y - c) * d, c = (min + max) / 2 (depth scales around the centre; 0 -> c).
 //           Schema 4 remote mappings migrate exactly (a = amount, r = range): "+": min 0, max a*r;  "−": min 1, max 1 - a*r;
 //           "±": min 0.5 - a*r/2, max 0.5 + a*r/2  (each clamped to 0..1; a clamp changes the response, e.g. a*r > 1 or a < 0 on "+").
 //   MIGRATION (schema < 6, Mod and Remote alike): amount is folded into range, range' = clamp(|amount| * range, 0, 1); amount < 0 swaps "+" <-> "−"
@@ -320,7 +321,7 @@ function makeInternalTarget(code) {
 // An internal route whose target is {internal: true, kind: "depth", mapId}: it follows the mapping by id (not by pool slot), is Mod only, uses
 // no pool slot / live.* object / Live id, and lives in the engine's internal matrix like every internal route (shared cap INT_ROUTES). The engine
 // destination is 192 + the pool slot of the target mapping (0..255, INT_DEST_COUNT = 448 destination cells); the mapper rewrites the route whenever
-// the target mapping's slot changes. Several routes onto one mapping sum; the effective depth = clamp(mapping.depth + sum of the routes, 0, 1).
+// the target mapping's slot changes. Several routes onto one mapping MULTIPLY (VCA-like); the effective depth = clamp(mapping.depth * prod of the routes' factors m = range * dep * y (unipolar, 0..range), 0, 1).
 // A route whose source is the target mapping's OWN modulator is allowed (tremolo of self): the depth only scales the router output, which never
 // feeds the engine, so it is not a feedback loop. The target must be a pool mapping (a normal or a VIA LIVE one): an INTERNAL route has no router
 // stage (its depth is baked in its table), and a depth route has no depth of its own.
@@ -337,11 +338,12 @@ function isDepthRoute(m) {
 function makeDepthTarget(mapId) {
     return { internal: true, kind: "depth", mapId: Math.round(num(mapId, 0)), path: "", name: "Depth", paramName: "Depth", trackName: "", deviceName: "" };
 }
-// JS reference of the engine: the effective depth of a pool mapping = clamp(base + the SUM of its routes' offsets, 0, 1) (offsets: mappingOutput of each route)
-function effectiveDepth(base, offsets) {
-    let sum = clamp(num(base, 1), 0, 1);
-    for (const o of offsets || []) sum += num(o, 0);
-    return clamp(sum, 0, 1);
+// JS reference of the engine: the effective depth of a pool mapping = clamp(base * PRODUCT of its routes' factors, 0, 1) (factors: depthFactor of each route).
+// Multiplicative like a VCA and UNIPOLAR: every factor m_k is 0..range (never negative), so the depth can shrink to 0 but never inverts the mapping's modulation.
+function effectiveDepth(base, factors) {
+    let p = clamp(num(base, 1), 0, 1);
+    for (const f of factors || []) p *= Math.max(0, num(f, 1));
+    return clamp(p, 0, 1);
 }
 function depthRoutesOf(mappings, mapId) {
     return mappings.filter((m) => isDepthRoute(m) && m.target.mapId === mapId);
@@ -455,7 +457,7 @@ const SCOPE_SAMPS = 640;
 const MAX_MAPPINGS = 256; // saved mapping-slot pool: 256 live.modulate~ + 256 live.remote~ in the device file
 const CURVE_REGION = 256; // samples per mapping transfer table in buffer~ ---mmcurve (FIXED: MAX_MAPPINGS x 256 samples)
 const CURVE_SAMPS = MAX_MAPPINGS * CURVE_REGION;
-const ROUTE_SAMPS = 1024; // buffer~ ---megamodroute, for EVERY pool slot k 0..255 (schema 10): [2k] = source modulator index or -1 (off), [2k+1] = effective depth (the engine writes it), [ROUTE_DEPTH_BASE + k] = base depth, [ROUTE_DEPTH_MIN + k] = Remote min or -1 (Mod); the router applies the depth per sample
+const ROUTE_SAMPS = 1024; // buffer~ ---megamodroute, for EVERY pool slot k 0..255 (schema 10): [2k] = source modulator index or -1 (off), [2k+1] = effective depth, 0..1 (the engine writes it), [ROUTE_DEPTH_BASE + k] = base depth, [ROUTE_DEPTH_MIN + k] = Remote CENTRE (min + max) / 2 or -1 (Mod; the name is historical); the router applies the depth per sample
 const ROUTE_DEPTH_BASE = 512;
 const ROUTE_DEPTH_MIN = 768;
 const ROUTER_DEPTH_SLOTS = 256; // pool slots whose router applies the Depth (all of them since schema 10; Live parameters `Depth k` exist for the first AUTO_DEPTH_SLOTS only)
@@ -1167,9 +1169,11 @@ function shapeCurve(u, type, amt, steps) {
     }
 }
 
-// Mapping output for engine value x in -1..1 (Mod: signed offset o = depth * range * (...); Remote: absolute 0..1, min + (max - min) * y * depth).
-// Raw objects without `polarity` (hand-written / pre-schema-4) use the legacy invert / bipolar / min / max formula.
-function mappingOutput(m, x) {
+// Mapping output for engine value x in -1..1 (Mod: signed offset o = depth * range * (...); Remote: absolute 0..1, c + (lookup - c) * depth with
+// lookup = min + (max - min) * y and c = (min + max) / 2, i.e. the depth scales AROUND THE CENTRE of the bounds: depth 0 parks the target at c,
+// depth 1 is the plain lookup; a depth never goes below 0). `depOverride` (optional, 0..1) replaces m.depth
+// (the effective, modulated depth, for UI readouts). Raw objects without `polarity` (hand-written / pre-schema-4) use the legacy formula.
+function mappingOutput(m, x, depOverride) {
     const u = clamp((x + 1) / 2, 0, 1);
     let c = evalMseg(m.shape && m.shape.length >= 2 ? m.shape : mappingShape(m), u);
     if (m.polarity === undefined) {
@@ -1178,14 +1182,36 @@ function mappingOutput(m, x) {
         if (m.mode === "remote") return clamp(c, 0, 1);
         return m.amount * (m.bipolar ? 2 * c - 1 : c);
     }
-    const dep = clamp(num(m.depth, 1), 0, 1); // per-mapping Depth (schema 8): Mod o *= depth, Remote span shrinks toward min
+    const dep = depOverride === undefined ? clamp(num(m.depth, 1), 0, 1) : clamp(num(depOverride, 1), 0, 1); // per-mapping Depth (schema 8)
     if (m.mode === "remote") {
         const lo = clamp(num(m.min, 0), 0, 1);
         const hi = clamp(num(m.max, 1), 0, 1);
-        return clamp(lo + (hi - lo) * c * dep, 0, 1);
+        const ctr = (lo + hi) / 2;
+        return clamp(ctr + (lo + (hi - lo) * c - ctr) * dep, 0, 1);
     }
-    const pol = m.polarity === 0 ? 0 : m.polarity < 0 ? -1 : 1;
+    // a depth route is ALWAYS unipolar: its stored polarity (an old "+-" / "-" route) is ignored, so m = range * dep * y in 0..range
+    const pol = isDepthRoute(m) ? 1 : m.polarity === 0 ? 0 : m.polarity < 0 ? -1 : 1;
     return num(m.range, 0.5) * dep * (pol === 0 ? 2 * c - 1 : pol * c);
+}
+// The centre of a Remote mapping's bounds (what the router's [768 + k] cell holds, -1 for Mod): the value at depth 0.
+function remoteCentre(m) {
+    return (clamp(num(m.min, 0), 0, 1) + clamp(num(m.max, 1), 0, 1)) / 2;
+}
+// DEPTH-ROUTE FACTOR (VCA-like, multiplicative, UNIPOLAR): m = range * dep * y, y = the route's shape at B's normalized output u = (x + 1) / 2 (0..1),
+// dep = the route's own depth (1 by default). So m is in 0..range: B at its minimum gives 0, B at its maximum gives `range`. The route has no polarity
+// choice (a stored "+-" / "-" is ignored, the field is kept). Range 0 -> m = 0 (A's depth 0: Remote sits at the centre of its bounds, Mod at 0).
+// Range 0.5 with B sweeping its full range -> m 0..0.5, so a Remote A 0..100 % stays within 25..75 % (centre at B's minimum, both ends at B's peak).
+function depthFactor(route, x) {
+    return Math.max(0, mappingOutput(Object.assign({}, route, { polarity: 1 }), x)); // polarity forced to "+" (unipolar), whether or not `route` carries the depth target
+}
+// table of depthFactor over the lookup domain (what the engine matrix gets for a depth route: it MULTIPLIES these)
+function depthFactorTable(route) {
+    const t = new Array(CURVE_REGION);
+    for (let j = 0; j < CURVE_REGION; j++) {
+        const u = j === CURVE_REGION - 1 ? 1 : j / CURVE_REGION;
+        t[j] = depthFactor(route, -1 + 2 * u);
+    }
+    return t;
 }
 
 function mappingTable(m) {
@@ -1213,9 +1239,9 @@ function isSelfTarget(path, ownDevicePath) {
     const own = String(ownDevicePath).replace(/"/g, "");
     return p === own || p.indexOf(own + " ") === 0;
 }
-function findDuplicateMapping(mappings, modIndex, target) {
+function findDuplicateMapping(mappings, modIndex, target, ignore) {
     const k = targetKey(target);
-    for (const m of mappings) if (m.mod === modIndex && targetKey(m.target) === k) return m;
+    for (const m of mappings) if (m.mod === modIndex && targetKey(m.target) === k && !(ignore && ignore(m))) return m;
     return null;
 }
 // lom = {exists(path)->bool, name(path)->string, count(path, child)->int}
@@ -1293,7 +1319,7 @@ if (nodeModule && nodeModule.exports) {
         smoothFromPos, smoothToPos, rateToPos, rateFromPos, rateSnap, rateText, smoothText, sanitizeTarget, defaultMapping,
         sanitizeMapping, migrateLegacyMapping, remoteLimitsFromV4, sanitizeMod, normalizeState, stateToJson, base64Encode, base64Decode, serializeState,
         deserializeState, slotConfigFloats, cfgBufferFloats, lfoShape, randHash01, glideValue, outputFromU,
-        cycleAccumulator, evalModulator, envelopeFollow, shapeCurve, mappingOutput, mappingTable, targetKey,
+        cycleAccumulator, evalModulator, envelopeFollow, shapeCurve, mappingOutput, mappingTable, remoteCentre, depthFactor, depthFactorTable, targetKey,
         isSelfTarget, findDuplicateMapping, pathParts, resolveTarget, clampWidth, gridLayout,
     };
 }
