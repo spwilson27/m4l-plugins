@@ -1,12 +1,15 @@
 // Probe for scripts/run_harmsplit_audio_tests.py (classic js object inside the scripts/max_harness.py scaffold, ES5).
 // The harness sends `resultpath <file>` at load and `analyze <durMs>` once buffer~ rec holds the measured window.
 // Inlet 0: `setbuffer <telemetry buffer name>` (sent from loadbang), `analyze <durMs>`.
-// buffer~ rec holds 6 channels:
+// Inlet 0 also takes `setbuffer2 <name>`: the follower's (Harmonics A) telemetry buffer (rack scalars are read from both buffers).
+// buffer~ rec holds 7 channels:
 //   1 Nonharmonics (left)   2 Harmonics A (left)   3 Harmonics B (left)   4 dry (the stimulus, delayed 4096 samples, or raw in the
 //   latency case)   5 All (left, Output = All)   6 Harmonics A (right; the stimulus' right channel is half the left)
+//   7 Harmonics A (left) of a SELF instance (role 0, computes alone): in rack cases the follower's A must equal it (delayed by K, the follower's input delay)
 // Writes `key value` lines: energies, the sum null, per-harmonic energies (Goertzel at 220 * h, h = 1..12) and at the points half
 // way between harmonics (220 * (h + 0.5), h = 1..6) for the three channels, impulse positions, telemetry scalars (f0 = ROOT, series,
-// root harmonic number, odd-only flag). jsarguments: stimulus name, base frequency F0 for the Goertzel set (default 220), extra harmonics list.
+// root harmonic number, odd-only flag), rack scalars of both telemetry buffers (t_ = leader / first, q_ = follower).
+// jsarguments: stimulus name, base frequency F0 for the Goertzel set (default 220), extra harmonics list, K (follower input delay, samples).
 
 inlets = 1;
 outlets = 1;
@@ -24,6 +27,9 @@ if (jsarguments.length > 3) {
 
 function resultpath(p) { resultPath = String(p); }
 function setbuffer(name) { scopeName = name ? String(name) : ""; }
+var scopeName2 = "";
+function setbuffer2(name) { scopeName2 = name ? String(name) : ""; }
+var inDelayK = (typeof jsarguments !== "undefined" && jsarguments.length > 4) ? parseInt(jsarguments[4], 10) || 0 : 0;
 
 function readChannel(buf, channel, n) {
     var out = [];
@@ -81,6 +87,7 @@ function analyze(durMs) {
     var D = readChannel(rec, 4, n);
     var ALL = readChannel(rec, 5, n);
     var AR = readChannel(rec, 6, n);
+    var S7 = readChannel(rec, 7, n);
 
     var nan = 0;
     var eN = 0, eA = 0, eB = 0, eD = 0, eAll = 0, eAR = 0, nullE = 0, nullAll = 0;
@@ -101,6 +108,12 @@ function analyze(durMs) {
         var s2 = t - d;
         nullAll += s2 * s2;
     }
+    // follower A vs the SELF instance's A delayed by the follower's input delay
+    var qsErr = 0, qsRef = 0;
+    for (var m0 = inDelayK; m0 < n; m0++) {
+        var dq = A[m0] - S7[m0 - inDelayK];
+        if (isFinite(dq)) { qsErr += dq * dq; qsRef += S7[m0 - inDelayK] * S7[m0 - inDelayK]; }
+    }
     var pn = peakIndex(N), pa = peakIndex(A), pb = peakIndex(B), pall = peakIndex(ALL), pd = peakIndex(D);
 
     var lines = "";
@@ -120,30 +133,40 @@ function analyze(durMs) {
     var scopeFrame = 0, scopeN = 0, scopeAwake = 0, scopeLat = 0, scopeSel = 0, preMax = 0, nhMax = 0, aMax = 0, bMax = 0;
     var f0 = 0, conf = 0, voiced = 0, lvl = 0, nact = 0, threff = 0, series = 0, rootH = 0, oddFlag = 0;
     if (scopeName) {
-        var vals = new Buffer(scopeName).peek(1, 0, 544);
-        if (vals && vals.length >= 524) {
+        var vals = new Buffer(scopeName).peek(1, 0, 560);
+        if (vals && vals.length >= 546) {
             for (var q = 0; q < 128; q++) {
                 if (vals[q] > preMax) preMax = vals[q];
                 if (vals[128 + q] > nhMax) nhMax = vals[128 + q];
                 if (vals[256 + q] > aMax) aMax = vals[256 + q];
                 if (vals[384 + q] > bMax) bMax = vals[384 + q];
             }
-            scopeFrame = vals[512];
-            scopeN = vals[514];
-            scopeAwake = vals[515];
-            f0 = vals[517];
-            conf = vals[518];
-            voiced = vals[519];
-            lvl = vals[520];
-            scopeLat = vals[521];
-            scopeSel = vals[522];
-            nact = vals[523];
-            threff = vals[524];
-            series = vals[525];
-            rootH = vals[526];
-            oddFlag = vals[527];
+            scopeFrame = vals[528];
+            scopeN = vals[530];
+            scopeAwake = vals[531];
+            f0 = vals[512];
+            conf = vals[513];
+            voiced = vals[514];
+            lvl = vals[515];
+            nact = vals[516];
+            threff = vals[517];
+            series = vals[518];
+            rootH = vals[519];
+            oddFlag = vals[520];
+            scopeLat = vals[534];
+            scopeSel = vals[535];
         }
     }
+
+    function scalars(name, prefix) {
+        var out = "";
+        if (!name) return out;
+        var v = new Buffer(name).peek(1, 528, 18);
+        var keys = ["frame", "sr", "n", "awake", "level", "f0", "lat", "sel", "cmp", "fol", "aligned", "fb", "doff", "under", "lag", "serve", "role", "alive"];
+        for (var q2 = 0; q2 < keys.length; q2++) out += prefix + keys[q2] + " " + v[q2] + "\n";
+        return out;
+    }
+    var rackKeys = scalars(scopeName, "t_") + scalars(scopeName2, "q_");
 
     var report = new File(resultPath, "write", "TEXT");
     report.writestring(
@@ -183,6 +206,7 @@ function analyze(durMs) {
         "scopeSeries " + series + "\n" +
         "scopeRootH " + rootH + "\n" +
         "scopeOdd " + oddFlag + "\n" +
+        "qsErr " + qsErr + "\nqsRef " + qsRef + "\n" + rackKeys +
         lines
     );
     report.close();

@@ -5,17 +5,19 @@
     scripts/vm_spectral.sh audio harmsplit [case ...]      (from the host)
     /usr/bin/python3 scripts/run_harmsplit_audio_tests.py [case ...]      (inside the VM)
 
-Every case patches four instances of the REAL core (src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr +
-src/harmsplit_core.genexpr, exactly what the device embeds), fed by one stimulus gen: outsel 1 (Nonharmonics), 2 (Harmonics A),
-3 (Harmonics B) and 0 (All = the sum of the masks). The stimulus has a left channel x and a right channel 0.5 x. The probe
-(tests/harmsplit_probe.js) records the three channels (left), the stimulus delayed by 4096 samples, All (left) and A (right), and
-measures the energy at 220 Hz * h (h = 1..12) and half way between the harmonics with a Goertzel filter per channel.
+Every case patches five instances of the REAL gen code (build_harmsplit.gen_code(): cepstrum_lib + spectral_split_lib + spectral_split_rack +
+harmsplit_core with the rack template expanded, exactly what the device embeds), fed by one stimulus gen: outsel 1 (Nonharmonics), 2
+(Harmonics A), 3 (Harmonics B), 0 (All = the sum of the masks) and a SELF reference (outsel 2, role 0, computes alone). The stimulus has a
+left channel x and a right channel 0.5 x. The probe (tests/harmsplit_probe.js) records the three channels (left), the stimulus delayed by
+5120 samples, All (left), A (right) and the SELF A, and measures the energy at 220 Hz * h (h = 1..12) and half way between the harmonics
+with a Goertzel filter per channel. Plain cases run every instance alone (role 0, the pre-rack behaviour); rack_* cases make the
+Nonharmonics instance the leader (role 1, serves all channels) and the other three follow its ring (role 2), exactly what the face sets up.
 
 Stimuli: saw = band-limited 220 Hz sawtooth (additive, amplitude 0.25), sawnoise = saw 0.15 + white noise 0.02, noise = white
 noise 0.3, nofund = the sawtooth without its fundamental, quiet = saw at -70 dB, impulse = one impulse, silent.
 
 Cases:
-  sum_<n>_saw / sum_2048_sawnoise / sum_2048_noise / sum_2048_pat4   the three channels null against the input delayed 4096 samples
+  sum_<n>_saw / sum_2048_sawnoise / sum_2048_noise / sum_2048_pat4   the three channels null against the input delayed 5120 samples
                                   (< -90 dB) at Size 1k / 2k / 4k and at other settings
   saw_p2                          odd harmonics of the sawtooth in A, even in B (>= 98 % each), Nonharmonics < 3 %, f0 within 1 %
   saw_p4 / saw_p1                 Pattern 4: harmonics 1, 5, 9 in A, the rest in B; Pattern 1: only the fundamental in A
@@ -40,7 +42,15 @@ Cases:
                                   telemetry follows the running level - 40 dB (floor -100 dB)
   stereo                          the right channel of A is half the left (stereo image kept), telemetry is live
   silence                         silent input gives exact zeros on every channel and telemetry awake = 0
-  latency_<n>                     an impulse comes out of Output = All exactly 4096 samples later at every Size
+  latency_<n>                     an impulse comes out of Output = All exactly 5120 samples later at every Size
+  rack_sum_<n>                    leader + two followers: the three channels null against the delayed input (< -90 dB), the follower's A equals the
+                                  SELF instance's A, roles / alignment / no underrun as the face sets them up
+  rack_noise / rack_silence / rack_mix_50 / rack_mix_0 / rack_c1 / rack_impulse   noise, silence (alive counter moves), Mix identities, the user's
+                                  C1 square root (leader telemetry), the 5120 latency through a follower
+  rack_lead_b / rack_lead_all     the Harmonics B instance / the All instance leads: the sum identity holds for any leader
+  rack_delay_<k> / rack_delay_far   a follower whose input is k samples later (its sample clock differs): found by content, output = the SELF A
+                                  delayed by k; beyond the +-2048 search span it computes alone
+  rack_pending / rack_fallback    no role message yet: silence, nobody computes; a follower with a different input falls back to computing alone
 """
 
 import math
@@ -49,26 +59,25 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import max_harness as mh
+import spectral_common as sc
 
 ROOT = mh.ROOT
 SRC = os.path.join(ROOT, "src")
 PROBE_JS = os.path.join(ROOT, "tests", "harmsplit_probe.js")
 SR = mh.DEFAULT_SR
-LATENCY = 4096
+LATENCY = sc.RACK_LATENCY       # 5120: the rack machinery adds a 1024-sample margin to the largest STFT latency (4096)
 F0 = 220.0
 
 
 def gen_source():
-    parts = []
-    for name in ("cepstrum_lib.genexpr", "spectral_split_lib.genexpr", "harmsplit_core.genexpr"):
-        with open(os.path.join(SRC, name), "r", encoding="utf-8") as f:
-            parts.append(f.read().rstrip() + "\n")
-    return "\n".join(parts)
+    """Exactly the gen code the device embeds (build_harmsplit.py)."""
+    import build_harmsplit
+    return build_harmsplit.gen_code()
 
 
 def stim_code(kind, delay_dry, f0=F0, sr=SR):
-    """Stimulus gen: out1 = x (left), out2 = x delayed 4096 (or raw), out3 unused."""
-    head = ["History n(0);", "Delay dlyX(4097);"]
+    """Stimulus gen: out1 = x (left), out2 = x delayed 5120 (or raw), out3 unused."""
+    head = ["History n(0);", f"Delay dlyX({LATENCY + 1});"]
     body = ["dummy = in1 * 0;", "n = n + 1;", "k = n - 1;",
             f"ph = k * {f0} / {sr};", "ph = ph - floor(ph);",
             "r = noise();",
@@ -123,31 +132,62 @@ def stim_code(kind, delay_dry, f0=F0, sr=SR):
     else:
         body.append("x = 0;")
     body.append("out1 = x;")
-    body += ["dlyX.write(x);", "out2 = dlyX.read(4096);" if delay_dry else "out2 = x;", "out3 = 0;"]
+    body += ["dlyX.write(x);", f"out2 = dlyX.read({LATENCY});" if delay_dry else "out2 = x;", "out3 = 0;"]
     return "\n".join(head + body) + "\n"
 
 
 def build_device(code, case):
+    """Five instances of the real core: outsel 1 (Nonharmonics), 2 (A), 3 (B), 0 (All) and s = a SELF reference (outsel 2, role 0). case["rack"] =
+    False: all compute alone (role 0, the pre-rack behaviour); True: the Nonharmonics instance leads (role 1, serves every channel) and the
+    others follow its ring (role 2, lead = its ring), exactly what the face sets up in a rack. case["in_delay"] = {tag: samples}: that
+    instance's input is delayed (its sample clock then differs from the leader's, which the content alignment must find); case["in_gain"] =
+    {tag: g}: that instance gets a slightly different input (it must fall back to computing alone); case["no_role"]: no role message."""
     boxes = [
         mh.gen_box("obj-stim", stim_code(case["stim"], case.get("delay", True), case.get("f0", F0), case.get("sr", SR)), 40, 120, numinlets=1, numoutlets=3),
         mh.box("obj-half", "*~ 0.5", 40, 160, 45, numinlets=2, outlettype=["signal"]),
-        mh.box("obj-scope", "buffer~ #0-harmsplitscope @samps 544", 520, 100, 260, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-scope", "buffer~ #0-harmsplitscope @samps 560", 520, 100, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.msg("obj-setbuf", "setbuffer #0-harmsplitscope", 520, 130, 220),
+        mh.box("obj-scopeq", "buffer~ #0-harmsplitscopeq @samps 560", 520, 100, 260, numoutlets=2, outlettype=["float", "bang"]),
+        mh.msg("obj-setbuf2", "setbuffer2 #0-harmsplitscopeq", 520, 70, 240),
     ]
     lines = [mh.line("obj-load", 0, "obj-setbuf", 0), mh.line("obj-setbuf", 0, "obj-js", 0),
-             mh.line("obj-stim", 0, "obj-half", 0)]
-    for tag, sel in (("n", 1), ("a", 2), ("b", 3), ("all", 0)):
+             mh.line("obj-stim", 0, "obj-half", 0),
+             mh.line("obj-load", 0, "obj-setbuf2", 0), mh.line("obj-setbuf2", 0, "obj-js", 0)]
+    rack = case.get("rack", False)
+    for tag, sel in (("n", 1), ("a", 2), ("b", 3), ("all", 0), ("s", 2)):
         gid = f"obj-gen-{tag}"
+        leader = case.get("leader", "n")        # which instance leads in a rack case: n (chain 1), b (chain 3) or all
+        if rack and tag != "s":
+            role, lead_tag = (1, leader) if tag == leader else (2, leader)
+        else:
+            role, lead_tag = 0, tag
+        serve = 7 if (rack and tag == leader) else 0
         params = (f"outsel {sel}, fftn {case['n']}, hpat {case['pat']}, hmaxp {case['maxh']}, sensamt {case['sens']}, tiltamt 0, "
-                  f"thrdb {case['thr']}, flocut {case['lo']}, fhicut {case['hi']}, wetamt {case['mix']}")
-        x = 200 + 240 * sel
+                  f"thrdb {case['thr']}, flocut {case['lo']}, fhicut {case['hi']}, mixamt {case['mix']}, "
+                  f"ring #0-ssring{tag}, lead #0-ssring{lead_tag}, serve {serve}, epoch 1"
+                  + ("" if case.get("no_role") else f", role {role}"))
+        if tag == leader:
+            params += ", scope #0-harmsplitscope"          # the leader's buffer holds the analysis telemetry (the probe's t_ scalars, f0, ...)
+        if tag == ("a" if leader != "a" else "n"):
+            params += ", scope #0-harmsplitscopeq"          # the follower under test (a)
+        x = 200 + 240 * (sel % 4) + (60 if tag == "s" else 0)
+        boxes.append(mh.box(f"obj-ring-{tag}", f"buffer~ #0-ssring{tag} @samps {sc.rack_ring_samps(3)}", 520, 160 + 30 * (sel + (4 if tag == "s" else 0)), 280, numoutlets=2, outlettype=["float", "bang"]))
         boxes.append(mh.gen_box(gid, code, x, 260))
         boxes.append(mh.msg(f"obj-params-{tag}", params, x, 220, 330))
-        lines += [mh.line("obj-load", 0, f"obj-params-{tag}", 0), mh.line(f"obj-params-{tag}", 0, gid, 0),
-                  mh.line("obj-stim", 0, gid, 0), mh.line("obj-half", 0, gid, 1)]
-        if tag == "n":
-            boxes.append(mh.msg("obj-bind", "scope #0-harmsplitscope", 200, 190, 200))
-            lines += [mh.line("obj-load", 0, "obj-bind", 0), mh.line("obj-bind", 0, gid, 0)]
+        lines += [mh.line("obj-load", 0, f"obj-params-{tag}", 0), mh.line(f"obj-params-{tag}", 0, gid, 0)]
+        src0, src1 = ("obj-stim", 0), ("obj-half", 0)
+        d = case.get("in_delay", {}).get(tag, 0)
+        g = case.get("in_gain", {}).get(tag, 1.0)
+        if d or g != 1.0:
+            for ch, (sid, so) in enumerate((src0, src1)):
+                nid = f"obj-in-{tag}{ch}"
+                if d:
+                    boxes.append(mh.box(nid, f"delay~ {max(d, 1)} {d}", 40 + 60 * ch, 190, 90, numinlets=2, outlettype=["signal"]))
+                else:
+                    boxes.append(mh.box(nid, f"*~ {g}", 40 + 60 * ch, 190, 60, numinlets=2, outlettype=["signal"]))
+                lines.append(mh.line(sid, so, nid, 0))
+            src0, src1 = (f"obj-in-{tag}0", 0), (f"obj-in-{tag}1", 0)
+        lines += [mh.line(src0[0], src0[1], gid, 0), mh.line(src1[0], src1[1], gid, 1)]
     lines += [
         mh.line("obj-gen-n", 0, "obj-record", 0),
         mh.line("obj-gen-a", 0, "obj-record", 1),
@@ -155,6 +195,7 @@ def build_device(code, case):
         mh.line("obj-stim", 1, "obj-record", 3),
         mh.line("obj-gen-all", 0, "obj-record", 4),
         mh.line("obj-gen-a", 1, "obj-record", 5),
+        mh.line("obj-gen-s", 0, "obj-record", 6),
         mh.line("obj-gen-n", 0, "obj-mute-l", 0),
         mh.line("obj-gen-a", 0, "obj-mute-r", 0),
     ]
@@ -216,6 +257,25 @@ def cases():
     c("silence", stim="silent", dur=1000)
     for n in (1024, 2048, 4096):
         c(f"latency_{n}", stim="impulse", n=n, settle=0, dur=400, delay=False)
+    # ---- rack sharing: the Nonharmonics instance leads (role 1), A / B / All follow its ring (role 2); s = a SELF instance computing alone
+    for n in (1024, 2048, 4096):
+        c(f"rack_sum_{n}_saw", n=n, rack=True)
+    c("rack_noise", stim="sawnoise", rack=True)
+    c("rack_silence", stim="silent", rack=True, dur=1000)
+    c("rack_mix_50", mix=0.5, rack=True)
+    c("rack_mix_0", mix=0.0, rack=True)
+    c("rack_c1", stim="square", rack=True, **U)
+    # any instance may lead (the election picks the lowest ready chain, so chain 1 leaving makes chain 2 the leader): the sum identity holds
+    c("rack_lead_b", stim="sawnoise", rack=True, leader="b")
+    c("rack_lead_all", stim="sawnoise", rack=True, leader="all")
+    for k in (37, 300, 1301):
+        c(f"rack_delay_{k}", rack=True, in_delay={"a": k}, dur=2000)
+    # beyond the +-2048 search span: the follower computes alone (a noisy stimulus: the plain saw is exactly periodic every 2400 samples, so a
+    # 2500-sample delay matches 100 samples away, which is a correct alignment too)
+    c("rack_delay_far", stim="sawnoise", rack=True, in_delay={"a": 2500}, dur=2500)
+    c("rack_pending", rack=True, no_role=True, dur=800)                 # no role message yet: silence, no computing
+    c("rack_fallback", rack=True, in_gain={"a": 0.97}, dur=2500)
+    c("rack_impulse", stim="impulse", rack=True, settle=0, dur=400, delay=False)
     return out
 
 
@@ -226,9 +286,10 @@ def db(x):
 def run_case(code, case):
     boxes, lines = build_device(code, case)
     xs = ",".join(str(h) for h in case.get("xh", []))
-    args = f"{case['stim']} {case.get('f0', F0)}" + (f" {xs}" if xs else "")
+    d = case.get("in_delay", {}).get("a", 0)
+    args = f"{case['stim']} {case.get('f0', F0)} {xs or 0} {d}"       # probe arguments: stimulus, F0, extra harmonics (0 = none), follower input delay
     return mh.run_case(f"harmsplit_{case['name']}", boxes, lines, probe_js=PROBE_JS, probe_args=args,
-                       settle_ms=case["settle"], dur_ms=case["dur"], channels=6, sr=case.get("sr", SR))
+                       settle_ms=case["settle"], dur_ms=case["dur"], channels=7, sr=case.get("sr", SR))
 
 
 def share(r, h, ch, mid=False):
@@ -256,6 +317,9 @@ def check(case, r, errors):
         err(f"NaN / inf samples ({r.get('nan')})")
     if r.get("harness_sr") and abs(r["harness_sr"] - case.get("sr", SR)) > 1:
         err(f"sample rate {r['harness_sr']}")
+    if name.startswith("rack_"):
+        check_rack(case, r, errors)
+        return
     eN, eA, eB = r["energyN"], r["energyA"], r["energyB"]
     tot = max(eN + eA + eB, 1e-300)
     f0 = r["scopeF0"]
@@ -265,7 +329,7 @@ def check(case, r, errors):
         if r["energyD"] < 1.0:
             err("stimulus silent")
         if not null < -90.0:
-            err(f"Nonharmonics + A + B must null against the input delayed 4096 (got {null:.1f} dB)")
+            err(f"Nonharmonics + A + B must null against the input delayed 5120 (got {null:.1f} dB)")
         if name != "sum_2048_noise" and (eA <= 0 or eB <= 0):
             err("A and B must carry signal")
     elif name in ("saw_p2", "saw_p4", "saw_p1"):
@@ -461,6 +525,86 @@ def check(case, r, errors):
             err(f"latency must be exactly {LATENCY} samples (got {lat})")
         if abs(r["peakAll"] - 0.5) > 0.002:
             err(f"impulse must come out at unity (peak {r['peakAll']:.4f})")
+
+
+def check_rack(case, r, errors):
+    name = case["name"]
+
+    def err(msg):
+        errors.append(f"{name}: {msg}")
+
+    eN, eA, eB = r["energyN"], r["energyA"], r["energyB"]
+    tot = max(eN + eA + eB, 1e-300)
+    flags = (f"leader cmp={int(r['t_cmp'])} role={int(r['t_role'])} serve={int(r['t_serve'])} | follower cmp={int(r['q_cmp'])} fol={int(r['q_fol'])} "
+             f"aligned={int(r['q_aligned'])} fb={int(r['q_fb'])} doff={int(r['q_doff'])} lag={int(r['q_lag'])} under={r['q_under']:.1f} role={int(r['q_role'])}")
+    rel = r["qsErr"] / max(r["qsRef"], 1e-300)
+    null = db(r["nullE"] / max(r["energyD"], 1e-300))
+    healthy = (r["t_cmp"] == 1 and r["t_role"] == 1 and r["q_cmp"] == 0 and r["q_fol"] == 1 and r["q_aligned"] == 1 and r["q_fb"] == 0)
+    if name.startswith("rack_sum_") or name in ("rack_noise", "rack_mix_50", "rack_mix_0", "rack_c1", "rack_lead_b", "rack_lead_all"):
+        print(f"[{name}] N + A + B vs input delayed: null={null:.1f} dB; follower A vs the SELF instance: err {db(rel):.1f} dB; f0={r['scopeF0']:.2f}; {flags}")
+        if r["energyD"] < 1.0:
+            err("stimulus silent")
+        if not null < -90.0:
+            err(f"Nonharmonics + A + B must null against the input delayed {LATENCY} (got {null:.1f} dB)")
+        if not rel < 1e-10:
+            err(f"the follower's A must equal the SELF instance's A (relative error energy {rel:.3g})")
+        if not healthy:
+            err(f"roles / alignment wrong ({flags})")
+        if r["q_doff"] != 0 or r["q_under"] != 0:
+            err(f"identical inputs must align with offset 0 and no underrun ({flags})")
+        if r["t_serve"] < 7:
+            err(f"the leader must serve every channel (serve mask {int(r['t_serve'])})")
+        if name == "rack_mix_0":
+            ratio = eA / max(r["energyD"], 1e-300)
+            if abs(ratio * 9 - 1) > 0.01:
+                err(f"Mix 0: the follower's A carries a third of the delayed dry input, A energy / dry energy = 1/9 (got {ratio:.5f})")
+        if name == "rack_c1":
+            if abs(r["scopeF0"] / 163.5 - 1) > 0.01 or int(r["scopeRootH"]) != 5 or abs(r["scopeSeries"] / 32.7 - 1) > 0.01:
+                err(f"the leader's telemetry must keep the C1 root detection: root 163.5, series 32.7, h 5 (got {r['scopeF0']:.2f}, {r['scopeSeries']:.2f}, {int(r['scopeRootH'])})")
+            a_share = [share_x(r, h, "a") for h in (5, 13, 21)]
+            if not min(a_share) > 0.85:
+                err(f"C1 square, Every 8th: series partials 5, 13, 21 in the follower's A (shares {a_share})")
+    elif name.startswith("rack_delay_") and name != "rack_delay_far":
+        k = case["in_delay"]["a"]
+        print(f"[{name}] follower input delayed by {k}: follower A vs SELF delayed: err {db(rel):.1f} dB; {flags}")
+        if not (r["q_fol"] == 1 and r["q_aligned"] == 1 and r["q_fb"] == 0):
+            err(f"the follower must align by content ({flags})")
+        if r["q_doff"] != -k:
+            err(f"counter offset must be -{k}, got {int(r['q_doff'])}")
+        if not rel < 1e-10:
+            err(f"follower output must equal the SELF A delayed by {k} (relative error energy {rel:.3g})")
+    elif name == "rack_delay_far":
+        print(f"[{name}] follower input delayed beyond the search span: {flags}")
+        if not (r["q_fb"] == 1 and r["q_cmp"] == 1):
+            err(f"a follower that cannot be aligned must compute alone ({flags})")
+        if not r["energyA"] > 1.0:
+            err("the fallback must still produce its channel")
+    elif name == "rack_pending":
+        print(f"[{name}] before any role message: peaks N {r['peakN']} A {r['peakA']} B {r['peakB']}; {flags}")
+        if r["peakN"] != 0 or r["peakA"] != 0 or r["peakB"] != 0:
+            err("an instance that has not been told its role must be silent")
+        if not (r["t_role"] == -1 and r["t_cmp"] == 0 and r["q_cmp"] == 0 and r["q_fol"] == 0):
+            err(f"pending instances neither compute nor follow ({flags})")
+    elif name == "rack_fallback":
+        eq, es = eA, r["qsRef"]
+        print(f"[{name}] follower with a different input: {flags}; energyA/energySelf {eq / max(es, 1e-300):.4f}")
+        if not (r["q_fb"] == 1 and r["q_cmp"] == 1):
+            err(f"a follower whose input differs must fall back to computing alone ({flags})")
+        if not 0.85 < eq / max(es, 1e-300) < 0.97:
+            err(f"fallback output must be the split of its own (0.97x) input, not the leader's (energy ratio {eq / max(es, 1e-300):.4f})")
+    elif name == "rack_silence":
+        print(f"[{name}] peaks N {r['peakN']} A {r['peakA']} B {r['peakB']}; {flags}; alive {r['q_alive']:.0f}; telemetry awake {int(r['scopeAwake'])}")
+        if r["peakN"] != 0 or r["peakA"] != 0 or r["peakB"] != 0:
+            err("silence in must give exact zeros on every channel")
+        if r["q_alive"] <= 0:
+            err("the follower's alive counter must move in silence")
+        if r["scopeAwake"] != 0 or r["scopeF0"] != 0:
+            err("the leader's telemetry must report the device asleep")
+    elif name == "rack_impulse":
+        lat = r["idxAll"] - r["idxD"]
+        print(f"[{name}] All follower: impulse in at {int(r['idxD'])}, out at {int(r['idxAll'])}: latency {int(lat)}, peak {r['peakAll']:.4f}; {flags}")
+        if lat != LATENCY or abs(r["peakAll"] - 0.5) > 0.002:
+            err(f"impulse must come out of the All follower exactly {LATENCY} samples later at unity (latency {lat}, peak {r['peakAll']:.4f})")
 
 
 def main():

@@ -11,10 +11,11 @@
 // Sensitivity, Max Harm, Mix, Size and Output are real widgets in the sections beside / under it.
 //
 // Messages in:  set_<key> <value> for pattern maxh sens tilt thr lowcut highcut mix size output dispost,
-//               setbuffer <name>, init_link (live.thisdevice), preview helpers.
+//               setnames <scope buffer> <ring buffer>, init_link (live.thisdevice), dsp_restart <chain> (test hook), preview helpers.
 // Outlets:      0 [key value]  edits made on the canvas -> route -> the live.* object (which then drives gen as usual)
 //               1 [key value]  values applied from a rack peer -> route -> `prepend set` into the live.* object + gen
-//               2 outsel <0..3>  resolved output selection for the gen (0 = all channels summed)
+//               2 gen messages -> the ss_genin hub (gate 1 1; the gen~ is created after load, src/spectral_dsp.js): outsel <0..3> (0 = all
+//                 channels summed), scope / ring / lead <buffer name>, role, serve, epoch (rack sharing, src/spectral_link.js), parameters (re-sent)
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -42,8 +43,10 @@ var hsNh = [];
 var hsA = [];
 var hsB = [];
 var hsScalars = { frame: 0, awake: 0, sr: 48000, n: 2048, level: 0, f0: 0, series: 0, rootH: 0, odd: 0, conf: 0, voiced: 0, lvl: -100, nact: 0, threff: -120 };
-var hsBufName = "";
+var hsNames = { scope: "", ring: "" };
+var hsBufName = "";            // the buffer the display is drawn from (the leader's scope while following)
 var hsBuf = null;
+var hsOwnBuf = null;
 var hsTask = null;
 var hsLastFrame = -1;
 var hsDrag = null;
@@ -97,6 +100,12 @@ function init_link() {
         kind: "harmsplit",
         keys: HS_LINKED_KEYS,
         channelCount: 3,
+        rack: {
+            channels: HS_RACK_CHANNELS,
+            ring: function () { return hsNames.ring; },
+            genState: function () { return { alive: hsGenValue(HS_SC_ALIVE), fb: Math.max(0, hsGenValue(HS_SC_FB)) }; },
+            send: function (name, value) { outlet(2, name, value); }
+        },
         getLocal: function (key) { return hsVals[key]; },
         apply: function (key, value) {
             hsVals[key] = value;
@@ -105,19 +114,67 @@ function init_link() {
         },
         onInfo: function (info) {
             hsInfo = info;
+            ssDspDry(!info.isInRack);
             hsEmitSel();
             mgraphics.redraw();
         }
     });
     hsLink.init();
     hsStartPolling();
+    ssDspSchedule(hsInfo.instanceId);
 }
 
-function setbuffer(name) {
-    splNoteScope(name);
-    hsBufName = name ? String(name) : "";
+function setnames(scopeName, ringName) {
+    hsNames.scope = scopeName ? String(scopeName) : "";
+    hsNames.ring = ringName ? String(ringName) : "";
+    splNoteScope(hsNames.scope);
     hsBuf = null;
+    hsOwnBuf = null;
     hsStartPolling();
+}
+
+// Kept for tools that only know the scope buffer.
+function setbuffer(name) {
+    setnames(name, hsNames.ring);
+}
+
+// ---------------------------------------------------------------- deferred DSP (src/spectral_dsp.js) and rack messages
+function hsGenValue(idx) {
+    if (!hsNames.scope) return -1;
+    try {
+        if (!hsOwnBuf) hsOwnBuf = new Buffer(hsNames.scope);
+        var v = hsOwnBuf.peek(1, idx, 1);
+        return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
+    } catch (err) {
+        hsOwnBuf = null;
+        return -1;
+    }
+}
+
+function ssGenAlive() {
+    return hsGenValue(HS_SC_ALIVE);
+}
+
+// Every gen-bound message from the values the face holds (a deferred gen~ drops messages until it runs).
+function ssDevResend() {
+    if (hsNames.scope) outlet(2, "scope", hsNames.scope);
+    if (hsNames.ring) outlet(2, "ring", hsNames.ring);
+    var m = hsGenMessages(hsVals);
+    for (var i = 0; i < m.length; i++) outlet(2, m[i][0], m[i][1]);
+    outlet(2, "outsel", hsSel);
+    if (hsLink && hsLink.rack) {
+        var rm = hsLink.rack.messages();
+        for (var j = 0; j < rm.length; j++) outlet(2, rm[j][0], rm[j][1]);
+    }
+}
+
+function ssDevChanged() {
+    mgraphics.redraw();
+}
+
+// Test hook (receive #0-sstest): restart the DSP of the instance in chain <c> (a late start: a new gen~ with a new sample counter).
+function dsp_restart(c) {
+    if (hsInfo.chainIndex === Number(c) || Number(c) < 0) ssDspRestart();
 }
 
 function hsStartPolling() {
@@ -127,15 +184,28 @@ function hsStartPolling() {
     hsTask.repeat();
 }
 
+function hsDispName() {
+    var lead = hsLink && hsLink.rack ? hsLink.rack.displayScope() : "";
+    return lead || hsNames.scope;
+}
+
 function hsPoll() {
-    if (!hsBufName) return;
+    var name = hsDispName();
+    if (!name) return;
     try {
-        if (!hsBuf) hsBuf = new Buffer(hsBufName);
-        var d = hsBuf.peek(1, 0, HS_SCOPE_SAMPS);
-        if (!d || d.length < HS_SC_FRAME + 13) return;
-        var frame = d[HS_SC_FRAME];
-        var aw = d[HS_SC_AWAKE];
+        if (!hsBuf || name !== hsBufName) {
+            hsBuf = new Buffer(name);
+            hsBufName = name;
+            hsLastFrame = -1;
+        }
+        // header first (frame counter, awake): the other 540 floats are only read when a new telemetry frame exists
+        var h = hsBuf.peek(1, HS_SC_FRAME, 4);
+        if (!h || h.length < 4) return;
+        var frame = h[0];
+        var aw = h[3];
         if (frame === hsLastFrame && aw === hsScalars.awake) return;
+        var d = hsBuf.peek(1, 0, HS_SCOPE_SAMPS);
+        if (!d || d.length < HS_SC_ODD + 1) return;
         hsLastFrame = frame;
         for (var c = 0; c < HS_NCOLS; c++) {
             hsPre[c] = d[HS_SC_PRE + c];
@@ -148,15 +218,17 @@ function hsPoll() {
         hsScalars.sr = d[HS_SC_SR];
         hsScalars.n = d[HS_SC_N];
         hsScalars.level = d[HS_SC_LEVEL];
-        hsScalars.f0 = d[HS_SC_F0];
-        hsScalars.series = d[HS_SC_SERIES];
-        hsScalars.rootH = d[HS_SC_ROOTH];
-        hsScalars.odd = d[HS_SC_ODD];
-        hsScalars.conf = d[HS_SC_CONF];
-        hsScalars.voiced = d[HS_SC_VOICED];
-        hsScalars.lvl = d[HS_SC_LVL];
-        hsScalars.nact = d[HS_SC_NACT];
-        hsScalars.threff = d[HS_SC_THREFF];
+        // the computing instance leaves its last analysis in the buffer when it falls asleep: show it as empty
+        var live = aw > 0.5;
+        hsScalars.f0 = live ? d[HS_SC_F0] : 0;
+        hsScalars.series = live ? d[HS_SC_SERIES] : 0;
+        hsScalars.rootH = live ? d[HS_SC_ROOTH] : 0;
+        hsScalars.odd = live ? d[HS_SC_ODD] : 0;
+        hsScalars.conf = live ? d[HS_SC_CONF] : 0;
+        hsScalars.voiced = live ? d[HS_SC_VOICED] : 0;
+        hsScalars.lvl = live ? d[HS_SC_LVL] : -100;
+        hsScalars.nact = live ? d[HS_SC_NACT] : 0;
+        hsScalars.threff = live ? d[HS_SC_THREFF] : HS_THR_MIN;
         mgraphics.redraw();
     } catch (err) {
         hsBuf = null;
@@ -261,6 +333,8 @@ function paint() {
     hsPaintHarmonics();
     hsPaintAnalysis();
     if (hsScalars.awake < 0.5) sptText("no signal", HS_PLOT.x + HS_PLOT.w * 0.5, HS_PLOT.y + 40, sptColor("live_display_scale_text"), SPT_SIZE, 1);
+    var pill = ssDspPill();
+    if (pill) sptText(pill, HS_PLOT.x + 4, HS_PLOT.y + 11, sptColor(ssDsp.error ? "live_alert" : "live_control_selection"), SPT_SIZE_SMALL, 0);
 
     // display / post toggle (top right of the LCD)
     var t = hsToggleRect();
@@ -561,6 +635,7 @@ function onidleout() {}
 
 // ---------------------------------------------------------------- preview (scripts/render_preview.py calls preview() then paint())
 function preview() {
+    ssDsp.ready = 1;
     hsInfo = { instanceId: "p", isInRack: true, chainIndex: 1, chainCount: 3, peers: 3, linked: true, autoChannel: 1 };
     hsVals.dispost = 1;
     // demo state = the live.* parameter defaults (Low 80 Hz, High 1.5 kHz, Tilt 0, Threshold Automatic, Pattern Every 2nd, Max Harm Off, Sens 50 %)

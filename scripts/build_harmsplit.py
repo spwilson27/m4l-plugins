@@ -6,12 +6,15 @@ Three channels: 1 Nonharmonics (grey), 2 Harmonics A (orange), 3 Harmonics B (tu
 EVERY chain of an Audio Effect Rack, one chain per channel (the .adg preset does exactly that). Every instance runs the same
 mask-STFT analysis (fundamental tracking + harmonic lobes) on the same input with linked parameters and outputs only its own
 channel (Output = Auto: the chain index); the per-bin masks sum to exactly 1, so the chains sum back to the input delayed by
-4096 samples ("latency": 4096).
+5120 samples ("latency": 5120).
 
-Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr + src/harmsplit_core.genexpr)
--> plugout~. The v8ui face (src/harmsplit_config.js + src/spectral_link.js + src/harmsplit_ui.js) draws the spectrum, the tracked
-fundamental and harmonics, hosts the draggable Low-cut / High-cut / Threshold handles and the Sensitivity slider, links the
-parameters with the other instances in the rack and sends the resolved output selection.
+Signal path: plugin~ -> gen~ -> plugout~, where the gen~ is NOT in the saved device: the face creates it after load from the embedded
+gen patch (src/spectral_dsp.js, AGENTS.md 1d; gen code = cepstrum_lib + spectral_split_lib + spectral_split_rack + the expanded
+src/harmsplit_core.genexpr with the rack template src/spectral_split_rack_main.genexpr). Every gen-bound message goes into the ss_genin
+hub (gate 1 1). The v8ui face (src/harmsplit_config.js + src/spectral_link.js + src/spectral_theme.js + src/spectral_dsp.js + src/harmsplit_ui.js)
+draws the spectrum, the tracked fundamental and harmonics, hosts the draggable Low-cut / High-cut / Threshold handles and the Sensitivity
+slider, links the parameters with the other instances in the rack, elects the rack's leader (one instance analyses, the others read their
+channel from its ring) and sends the gen its output selection, role and buffer names.
 
 Layout (440 x 169, Ableton-native, Reverb-like flat titled sections on the Live theme): `Detection` section (x=4..292) with the v8ui
 canvas x=8..288, y=20..161 (LCD spectrum with faint grid, thin 1 px lines, hollow L / H / Threshold handles, channel legend, Low /
@@ -34,8 +37,10 @@ SRC = os.path.join(ROOT, "src")
 OUT_AMXD = os.path.join(sc.DEVICES_DIR, "Harmonic Split.amxd")
 OUT_ADG = os.path.join(sc.DEVICES_DIR, "Harmonic Split.adg")
 WIDTH = 440.0
-LATENCY = 4096
-SCOPE_SAMPS = 544
+LATENCY = sc.RACK_LATENCY      # 5120: 4096 + the host block margin the leader / follower exchange needs
+RING_SAMPS = sc.rack_ring_samps(3)
+ZERO_COUNT = 528               # sleep zeroes the arrays and the device slots (telemetry 0..527); the rack scalars start at 528
+SCOPE_SAMPS = 560
 
 ORG = sc.ORANGE
 TQ = sc.TURQUOISE
@@ -72,7 +77,7 @@ ENUM = {
 }
 ENUM_HELP = {
     "pattern": "Harmonics Pattern (1..24): which harmonics go to Harmonics A. Every 2nd sends harmonics 1, 3, 5... to A and 2, 4, 6... to B; Every Nth sends 1, N+1, 2N+1... to A. 1st only is special: just the fundamental goes to A, all other harmonics to B.",
-    "size": "Analysis block size: larger sizes separate close harmonics better but smear time. The latency stays 4096 samples at every size.",
+    "size": "Analysis block size: larger sizes separate close harmonics better but smear time. The latency stays 5120 samples at every size.",
     "output": "Output: Auto uses this chain's index in the parent Rack (1 Nonharmonics, 2 Harmonics A, 3 Harmonics B; outside a Rack the sum of all), or pick a channel, or All.",
 }
 # key: (gen message, scale)
@@ -84,7 +89,7 @@ GEN_MSG = {
     "thr": ("thrdb", 1.0),
     "lowcut": ("flocut", 1.0),
     "highcut": ("fhicut", 1.0),
-    "mix": ("wetamt", 0.01),
+    "mix": ("mixamt", 0.01),
     "size": ("fftn", None),
     "output": (None, 1.0),
 }
@@ -99,13 +104,26 @@ UI_KEYS = ["pattern", "maxh", "sens", "tilt", "thr", "lowcut", "highcut", "mix",
 HIDDEN_KEYS = ["lowcut", "highcut", "tilt", "thr"]                   # drawn and edited by the canvas, no widget on the face
 
 
-def build_patcher():
-    gen = sc.gen_code(os.path.join(SRC, "cepstrum_lib.genexpr"), os.path.join(SRC, "spectral_split_lib.genexpr"),
-                      os.path.join(SRC, "harmsplit_core.genexpr"))
-    face = (sc.read(os.path.join(SRC, "harmsplit_config.js")).rstrip() + "\n\n"
+def gen_code():
+    """The gen code of the device (what the face writes to the .gendsp file)."""
+    subs = sc.rack_subs(3, "hsd", 0, 528, ZERO_COUNT)
+    return sc.gen_code_rack(os.path.join(SRC, "harmsplit_core.genexpr"), subs)
+
+
+def face_code(gen):
+    """The v8ui script: deferred-DSP constants, config, link, theme, deferred DSP, face."""
+    header, _ = sc.deferred_header("harmsplit", gen)
+    return (header + "\n"
+            + sc.read(os.path.join(SRC, "harmsplit_config.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_link.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
+            + sc.read(os.path.join(SRC, "spectral_dsp.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "harmsplit_ui.js")))
+
+
+def build_patcher():
+    gen = gen_code()
+    face = face_code(gen)
 
     boxes = []
     lines = []
@@ -133,7 +151,7 @@ def build_patcher():
     boxes.append(sc.make_theme_menu("output", ENUM["output"], ENUM_HELP["output"], CX, 118, CW, 15))
     boxes.append(sc.make_theme_comment("obj-lbl-size", "Size", RX, 136, 56))
     boxes.append(sc.make_theme_tab("size", ENUM["size"], ENUM_HELP["size"], CX, 135, CW, 15))
-    boxes.append(sc.make_theme_comment("obj-leg-lat", "Latency 4096 smp", RX, 152, 124, 12, size=8.5, name="live_display_scale_text"))
+    boxes.append(sc.make_theme_comment("obj-leg-lat", f"Latency {LATENCY} smp", RX, 152, 124, 12, size=8.5, name="live_display_scale_text"))
 
     # section titles + hairlines (the section panels themselves go last)
     p_det, parts_det = sc.make_section("det", 4, 4, 288, 161, "Detection")
@@ -146,24 +164,29 @@ def build_patcher():
     boxes.append(sc.v8ui("obj-viz", face, [8.0, 20.0, 280.0, 141.0], (20.0, 80.0), 3, "HarmsplitView"))
 
     # ---- audio ----
+    # The device ships WITHOUT its gen~ (AGENTS.md 1d): plugin~ / plugout~ and the hub carry scripting names, the face creates the gen~ after
+    # load and wires hub -> gen, plugin~ -> gen -> plugout~ (src/spectral_dsp.js). Every cord that goes to the gen's inlet 0 goes into the hub.
+    def named(b, var):
+        b["box"]["varname"] = var
+        return b
+
     boxes += [
-        newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-        newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-        sc.gen_box("obj-gen", gen, "harmsplit"),
+        named(newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "ss_plugin"),
+        named(newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "ss_plugout"),
+        named(newobj("obj-genin", "gate 1 1", 120, 280, 60, numinlets=2, numoutlets=1), "ss_genin"),
         # `---` is unique per device instance in M4L (`#0` is not expanded in a top-level device in Live)
         newobj("obj-scope-buf", f"buffer~ ---harmsplitscope @samps {SCOPE_SAMPS}", 560, 250, 260, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-loadbang", "loadbang", 560, 285, 60, outlettype=["bang"]),
-        message("obj-msg-ui-buf", "setbuffer ---harmsplitscope", 560, 315, 190),
-        message("obj-msg-gen-buf", "scope ---harmsplitscope", 560, 345, 170),
+        newobj("obj-ring-buf", f"buffer~ ---ssring @samps {RING_SAMPS}", 560, 275, 280, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-loadbang", "loadbang", 560, 305, 60, outlettype=["bang"]),
+        message("obj-msg-ui-names", "setnames ---harmsplitscope ---ssring", 560, 335, 250),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init", "init_link", 780, 430, 70),
+        newobj("obj-r-sstest", "r #0-sstest", 780, 460, 90, numinlets=0, numoutlets=1),   # test hook (scripts/test_spectral_sum_live.js)
     ]
     lines += [
-        line("obj-plugin", 0, "obj-gen", 0), line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0), line("obj-gen", 1, "obj-plugout", 1),
-        line("obj-loadbang", 0, "obj-msg-ui-buf"), line("obj-loadbang", 0, "obj-msg-gen-buf"),
-        line("obj-msg-ui-buf", 0, "obj-viz"), line("obj-msg-gen-buf", 0, "obj-gen"),
+        line("obj-loadbang", 0, "obj-msg-ui-names"), line("obj-msg-ui-names", 0, "obj-viz"),
         line("obj-thisdevice", 0, "obj-msg-init"), line("obj-msg-init", 0, "obj-viz"),
+        line("obj-r-sstest", 0, "obj-viz"),
     ]
 
     # ---- hidden UI-state toggle (saved with the Set) ----
@@ -196,8 +219,9 @@ def build_patcher():
         lines.append(line(lset, 0, f"obj-ctrl-{key}"))
         lines.append(line("obj-route-link", i, gen_head[key]))
 
-    # resolved output selection -> gen
+    # gen-bound messages of the face (outsel, buffer names, rack role, parameter re-sends) -> hub
     lines.append(line("obj-viz", 2, "obj-gen", 0))
+    sc.to_gen_hub(lines, "obj-genin", "obj-gen")
 
     # ---- background panels last: section panels, then the body (Max draws earlier boxes over later ones) ----
     boxes += [p_det, p_harm, p_out, sc.make_body_panel(WIDTH)]

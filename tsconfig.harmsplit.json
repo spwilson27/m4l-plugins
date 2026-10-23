@@ -6,6 +6,7 @@
     "src/harmsplit_config.js",
     "src/spectral_link.js",
     "src/spectral_theme.js",
+    "src/spectral_dsp.js",
     "src/harmsplit_ui.js"
   ]
 }

@@ -19,7 +19,7 @@
 var HS_NCOLS = 128;          // display columns (log frequency)
 var HS_FMIN = 30.0;
 var HS_FMAX = 20000.0;
-var HS_LATENCY = 4096;
+var HS_LATENCY = 5120;       // 4096 (largest STFT latency, padded) + 1024 margin for the host block: the rack machinery reads the leader's data that late
 var HS_CH_NAMES = ["Nonharmonics", "Harmonics A", "Harmonics B"];
 var HS_SIZES = [1024, 2048, 4096];
 var HS_SIZE_ENUM = ["1k", "2k", "4k"];
@@ -30,23 +30,43 @@ var HS_SC_PRE = 0;                     // 128 input (Mid) levels, 0..1 over -100
 var HS_SC_NH = HS_NCOLS;               // 128 Nonharmonics channel (mask applied), same scale
 var HS_SC_A = HS_NCOLS * 2;            // 128 Harmonics A
 var HS_SC_B = HS_NCOLS * 3;            // 128 Harmonics B
-var HS_SC_FRAME = HS_NCOLS * 4;        // frame counter (telemetry frames)
+// Device slots (written by the computing instance only; the face draws a follower from the leader's buffer). They sit before the rack
+// scalars so that the one zeroing of the telemetry (the device fell asleep, template: ss2_zeroscope(scope, HS_SC_FRAME)) clears them too.
+var HS_SC_F0 = HS_NCOLS * 4;           // ROOT in Hz (lowest present partial of the tracked series inside the band), 0 = none
+var HS_SC_CONF = HS_SC_F0 + 1;         // salience of the best candidate
+var HS_SC_VOICED = HS_SC_F0 + 2;       // voiced amount 0..1
+var HS_SC_LVL = HS_SC_F0 + 3;          // loudest spectral peak of the tracking area, dBFS
+var HS_SC_NACT = HS_SC_F0 + 4;         // harmonics with weight > 0.5
+var HS_SC_THREFF = HS_SC_F0 + 5;       // effective detection threshold, dB (the automatic one when Threshold = -120)
+var HS_SC_SERIES = HS_SC_F0 + 6;       // series fundamental in Hz (may lie below the band; HS_SC_F0 is the ROOT), 0 = none
+var HS_SC_ROOTH = HS_SC_F0 + 7;        // series harmonic number of the root (1 = the fundamental itself)
+var HS_SC_ODD = HS_SC_F0 + 8;          // 1 = the tracked series is odd-only (square, triangle, clarinet-like)
+// Common scalars (written by the template src/spectral_split_rack_main.genexpr every 1024 samples, by EVERY instance)
+var HS_SC_FRAME = HS_NCOLS * 4 + 16;   // frame counter (telemetry frames)
 var HS_SC_SR = HS_SC_FRAME + 1;
 var HS_SC_N = HS_SC_FRAME + 2;
 var HS_SC_AWAKE = HS_SC_FRAME + 3;
 var HS_SC_LEVEL = HS_SC_FRAME + 4;     // input peak (decaying)
-var HS_SC_F0 = HS_SC_FRAME + 5;        // ROOT in Hz (lowest present partial of the tracked series inside the band), 0 = none
-var HS_SC_CONF = HS_SC_FRAME + 6;      // salience of the best candidate
-var HS_SC_VOICED = HS_SC_FRAME + 7;    // voiced amount 0..1
-var HS_SC_LVL = HS_SC_FRAME + 8;       // loudest spectral peak of the tracking area, dBFS
-var HS_SC_LATENCY = HS_SC_FRAME + 9;
-var HS_SC_SEL = HS_SC_FRAME + 10;      // output selection the gen is running (0 all, 1 NH, 2 A, 3 B)
-var HS_SC_NACT = HS_SC_FRAME + 11;     // harmonics with weight > 0.5
-var HS_SC_THREFF = HS_SC_FRAME + 12;   // effective detection threshold, dB (the automatic one when Threshold = -120)
-var HS_SC_SERIES = HS_SC_FRAME + 13;   // series fundamental in Hz (may lie below the band; HS_SC_F0 is the ROOT), 0 = none
-var HS_SC_ROOTH = HS_SC_FRAME + 14;    // series harmonic number of the root (1 = the fundamental itself)
-var HS_SC_ODD = HS_SC_FRAME + 15;      // 1 = the tracked series is odd-only (square, triangle, clarinet-like)
-var HS_SCOPE_SAMPS = HS_SC_FRAME + 32;
+var HS_SC_LATENCY = HS_SC_FRAME + 6;
+var HS_SC_SEL = HS_SC_FRAME + 7;       // output selection the gen is running (0 all, 1 NH, 2 A, 3 B)
+var HS_SC_CMP = HS_SC_FRAME + 8;       // 1 = this instance runs the STFT pipeline (leader or alone), 0 = it follows
+var HS_SC_FOL = HS_SC_FRAME + 9;       // 1 = following a leader
+var HS_SC_ALIGNED = HS_SC_FRAME + 10;  // 1 = the offset to the leader's sample counter is known (content aligned)
+var HS_SC_FB = HS_SC_FRAME + 11;       // fallback: 0 none, 1 the input differs from the leader's, 2 the leader's data stopped, 3 ring underrun
+var HS_SC_DOFF = HS_SC_FRAME + 12;     // counter offset to the leader (modulo 2^22)
+var HS_SC_UNDER = HS_SC_FRAME + 13;    // underrun counter
+var HS_SC_LAG = HS_SC_FRAME + 14;      // leader's newest fingerprint counter minus this instance's own counter (samples)
+var HS_SC_SERVE = HS_SC_FRAME + 15;    // channel mask this instance computes
+var HS_SC_ROLE = HS_SC_FRAME + 16;     // role the face asked for (0 self, 1 leader, 2 follower)
+var HS_SC_ALIVE = HS_SC_FRAME + 17;    // counter that moves every 1024 samples while the gen runs, also in silence (DSP ready detection)
+var HS_RACK_CHANNELS = 3;
+var HS_SCOPE_SAMPS = HS_SC_FRAME + 32;     // 560
+// gen messages for the live.* parameters, from the control values (the same conversions as the patcher's expr boxes: pattern index + 1,
+// (sens - 1) / 99, Mix / 100, 1024 * 2^size); the face re-sends them until the deferred gen runs
+function hsGenMessages(v) {
+    return [["hpat", Math.round(v.pattern) + 1], ["hmaxp", v.maxh], ["sensamt", (v.sens - 1) / 99], ["tiltamt", v.tilt], ["thrdb", v.thr],
+            ["flocut", v.lowcut], ["fhicut", v.highcut], ["mixamt", v.mix * 0.01], ["fftn", 1024 * Math.pow(2, v.size)]];
+}
 
 // Analysis constants (mirrored in the core)
 var HS_NCAND = 642;
@@ -604,6 +624,8 @@ if (nodeModule && nodeModule.exports) {
         HS_SC_SR: HS_SC_SR, HS_SC_N: HS_SC_N, HS_SC_AWAKE: HS_SC_AWAKE, HS_SC_LEVEL: HS_SC_LEVEL, HS_SC_F0: HS_SC_F0,
         HS_SC_CONF: HS_SC_CONF, HS_SC_VOICED: HS_SC_VOICED, HS_SC_LVL: HS_SC_LVL, HS_SC_LATENCY: HS_SC_LATENCY,
         HS_SC_SEL: HS_SC_SEL, HS_SC_NACT: HS_SC_NACT, HS_SCOPE_SAMPS: HS_SCOPE_SAMPS,
+        HS_SC_CMP: HS_SC_CMP, HS_SC_FOL: HS_SC_FOL, HS_SC_ALIGNED: HS_SC_ALIGNED, HS_SC_FB: HS_SC_FB, HS_SC_DOFF: HS_SC_DOFF, HS_SC_UNDER: HS_SC_UNDER, HS_SC_LAG: HS_SC_LAG,
+        HS_SC_SERVE: HS_SC_SERVE, HS_SC_ROLE: HS_SC_ROLE, HS_SC_ALIVE: HS_SC_ALIVE, HS_RACK_CHANNELS: HS_RACK_CHANNELS, hsGenMessages: hsGenMessages,
         HS_NCAND: HS_NCAND, HS_ACCEPT: HS_ACCEPT, HS_MAXH: HS_MAXH,
         HS_REG0: HS_REG0, HS_REGX: HS_REGX, HS_JPOS: HS_JPOS, HS_PWIDE: HS_PWIDE, HS_PMIN: HS_PMIN, HS_COS_K: HS_COS_K, HS_COS_BINS: HS_COS_BINS,
         HS_COS_SUBOFF: HS_COS_SUBOFF, HS_DETREND: HS_DETREND, HS_PRES_WIDE: HS_PRES_WIDE, HS_PRES_NARROW: HS_PRES_NARROW,

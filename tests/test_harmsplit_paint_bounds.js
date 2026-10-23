@@ -14,7 +14,8 @@ const { makeRecorder, loadFace, checkRecording, grid } = require("./paint_bounds
 const SRC = path.join(__dirname, "..", "src");
 const read = (f) => fs.readFileSync(path.join(SRC, f), "utf8").trimEnd();
 // same order as scripts/build_harmsplit.py
-const code = [read("harmsplit_config.js"), read("spectral_link.js"), read("spectral_theme.js"), fs.readFileSync(path.join(SRC, "harmsplit_ui.js"), "utf8")].join("\n\n");
+const header = 'var GEN_DSP_TEXT = "";\nvar GEN_DSP_HASH = "test";\nvar SS_PREFIX = "harmsplit";\n';
+const code = [header, read("harmsplit_config.js"), read("spectral_link.js"), read("spectral_theme.js"), read("spectral_dsp.js"), fs.readFileSync(path.join(SRC, "harmsplit_ui.js"), "utf8")].join("\n\n");
 
 const W = 280, H = 141;
 const rec = makeRecorder(W, H);
@@ -53,6 +54,23 @@ function check(label) {
     rec.bad.length = 0;
     n++;
 }
+
+// the DSP pill (deferred gen~): loading, failed with short and very long reasons, over every telemetry kind (no signal: f0 0)
+for (const st of [{ ready: 0, error: "" }, { ready: 1, error: "" }, { ready: 0, error: "not running" }, { ready: 0, error: "cannot write /tmp/harmsplit_core_0123456789ab.gendsp (disk full)" }]) {
+    for (const tk of ["mid", "nan"]) {
+        sb.ssDsp.ready = st.ready;
+        sb.ssDsp.error = st.error;
+        fillTelemetry(tk);
+        Object.assign(sb.hsVals, { lowcut: 80, highcut: 1500, thr: -120, dispost: tk === "nan" ? 1 : 0, maxh: 0, tilt: 0, pattern: 1 });
+        sb.hsScalars = { frame: 5, awake: 0, sr: 48000, n: 2048, level: 0, f0: 0, series: 0, rootH: 0, odd: 0, conf: 0, voiced: 0, lvl: -100, nact: 0, threff: -120 };
+        sb.hsSel = 1;
+        sb.hsInfo = { instanceId: "t", isInRack: true, chainIndex: 0, chainCount: 3, peers: 3, linked: true, autoChannel: 0 };
+        sb.hsDrag = null;
+        check(`dsp pill ${JSON.stringify(st)} ${tk}`);
+    }
+}
+sb.ssDsp.ready = 1;
+sb.ssDsp.error = "";
 
 const lows = [19.4, 80, 19900, NaN];
 const highs = [19.4, 1500, 19900, NaN];
