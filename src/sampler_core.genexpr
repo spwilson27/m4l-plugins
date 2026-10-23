@@ -1469,55 +1469,66 @@ voice_proc(
 	}
 	modEnv = clip(modEnv, 0, 1);
 
-	// Slope-shaped OUTPUT levels (ampEnv / modEnv stay the internal progress state). bend(p, s) = p ^ 4^-s; a slope of
-	// exactly 0 leaves the output equal to the internal level.
+	// Slope-shaped and Initial / Peak / Final-scaled OUTPUT levels (ampEnv / modEnv stay the internal progress state).
+	// bend(p, s) = p ^ 4^-s; with default init=0, peak=1, final=0 and slope=0 the output equals the internal level.
 	slA = peek(prm, 56);
 	slD = peek(prm, 57);
 	slR = peek(prm, 58);
 	slMA = peek(prm, 59);
 	slMD = peek(prm, 60);
 	slMR = peek(prm, 61);
-	aOut = ampEnv;
-	mOut = modEnv;
+	aInit = peek(prm, 62);
+	aPeak = peek(prm, 63);
+	mInit = peek(prm, 64);
+	mPeak = peek(prm, 65);
+	mFin = peek(prm, 66);
+	aOut = 0;
+	mOut = 0;
 	// Decay / release bends blend back to the unbent progress over the last 2 % (smoothstep end-window), so every segment ends
-	// exactly where the internal envelope does (sus / 0) and the idle cutoff never sees a step.
+	// exactly where the internal envelope does (sus / final) and the idle cutoff never sees a step.
 	if (envStage == 1) {
-		if (slA != 0) {
-			aOut = pow(ampEnv, pow(4.0, -slA));
-		}
+		esB = (slA != 0) ? pow(ampEnv, pow(4.0, -slA)) : ampEnv;
+		aOut = aInit + (aPeak - aInit) * esB;
 	} else if (envStage == 2) {
+		esP = clip((ampEnv - susLevel) / max(1.0 - susLevel, 0.000001), 0, 1);
+		esB = esP;
 		if (slD != 0) {
-			esP = clip((ampEnv - susLevel) / max(1.0 - susLevel, 0.000001), 0, 1);
 			esT = clip(esP / 0.02, 0, 1);
 			esW = esT * esT * (3.0 - 2.0 * esT);
-			aOut = susLevel + (1.0 - susLevel) * (esP + (pow(esP, pow(4.0, -slD)) - esP) * esW);
+			esB = esP + (pow(esP, pow(4.0, -slD)) - esP) * esW;
 		}
-	} else {
+		aOut = susLevel + (aPeak - susLevel) * esB;
+	} else if (ampEnv > 0.00002) {
+		esP = clip(ampEnv / max(relIntA, 0.000001), 0, 1);
+		esB = esP;
 		if (slR != 0) {
-			esP = clip(ampEnv / max(relIntA, 0.000001), 0, 1);
 			esT = clip(esP / 0.02, 0, 1);
 			esW = esT * esT * (3.0 - 2.0 * esT);
-			aOut = relOutA * (esP + (pow(esP, pow(4.0, -slR)) - esP) * esW);
+			esB = esP + (pow(esP, pow(4.0, -slR)) - esP) * esW;
 		}
+		aOut = relOutA * esB;
 	}
 	if (modStage == 1) {
-		if (slMA != 0) {
-			mOut = pow(modEnv, pow(4.0, -slMA));
-		}
+		emB = (slMA != 0) ? pow(modEnv, pow(4.0, -slMA)) : modEnv;
+		mOut = mInit + (mPeak - mInit) * emB;
 	} else if (modStage == 2) {
+		emP = clip((modEnv - msusLevel) / max(1.0 - msusLevel, 0.000001), 0, 1);
+		emB = emP;
 		if (slMD != 0) {
-			emP = clip((modEnv - msusLevel) / max(1.0 - msusLevel, 0.000001), 0, 1);
 			emT = clip(emP / 0.02, 0, 1);
 			emW = emT * emT * (3.0 - 2.0 * emT);
-			mOut = msusLevel + (1.0 - msusLevel) * (emP + (pow(emP, pow(4.0, -slMD)) - emP) * emW);
+			emB = emP + (pow(emP, pow(4.0, -slMD)) - emP) * emW;
 		}
-	} else {
+		mOut = msusLevel + (mPeak - msusLevel) * emB;
+	} else if (modEnv > 0.00002) {
+		emP = clip(modEnv / max(relIntM, 0.000001), 0, 1);
+		emB = emP;
 		if (slMR != 0) {
-			emP = clip(modEnv / max(relIntM, 0.000001), 0, 1);
 			emT = clip(emP / 0.02, 0, 1);
 			emW = emT * emT * (3.0 - 2.0 * emT);
-			mOut = relOutM * (emP + (pow(emP, pow(4.0, -slMR)) - emP) * emW);
+			emB = emP + (pow(emP, pow(4.0, -slMR)) - emP) * emW;
 		}
+		mOut = mFin + (relOutM - mFin) * emB;
 	}
 
 	curNote = mix(vNote, curNote, glideCoef);
@@ -2232,7 +2243,7 @@ Buffer pitch("bspitch");
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
-Data prm(64);
+Data prm(72);
 Data vst(6400);
 Data gtel(1024);
 Data gtout(72);
@@ -2365,6 +2376,13 @@ Param matk_slope(0.0, min=-1, max=1);
 Param mdec_slope(0.0, min=-1, max=1);
 Param mrel_slope(0.0, min=-1, max=1);
 
+// Envelope Value stage levels (0..1): Initial and Peak for Amp (prm 62..63); Initial, Peak, and Final for Env 2 (prm 64..66)
+Param amp_init(0.0, min=0, max=1);
+Param amp_peak(1.0, min=0, max=1);
+Param env2_init(0.0, min=0, max=1);
+Param env2_peak(1.0, min=0, max=1);
+Param env2_final(0.0, min=0, max=1);
+
 // Global state histories
 History initDone(0);
 History lfoPhs(0);
@@ -2486,8 +2504,13 @@ poke(prm, clip(rel_slope, -1, 1), 58);
 poke(prm, clip(matk_slope, -1, 1), 59);
 poke(prm, clip(mdec_slope, -1, 1), 60);
 poke(prm, clip(mrel_slope, -1, 1), 61);
+poke(prm, clip(amp_init, 0, 1), 62);
+poke(prm, clip(amp_peak, 0, 1), 63);
+poke(prm, clip(env2_init, 0, 1), 64);
+poke(prm, clip(env2_peak, 0, 1), 65);
+poke(prm, clip(env2_final, 0, 1), 66);
 
-// Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H
+// Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H (or 3=Sq, 4=S&H when 5-shape enum is used)
 prevLfoPhs = lfoPhs;
 lfoPhs = fract(lfoPhs + clip(lfo_rate, 0.02, 40) / srVal);
 if (lfoPhs < prevLfoPhs) {
@@ -2497,8 +2520,9 @@ if (lfoPhs < prevLfoPhs) {
 lfoSin = sin(6.28318530718 * lfoPhs);
 lfoTri = 1.0 - 4.0 * abs(fract(lfoPhs + 0.25) - 0.5);
 lfoSaw = 2.0 * lfoPhs - 1.0;
-shIdx = round(clip(lfo_shape, 0, 3));
-lfoSig = (shIdx == 0) ? lfoSin : ((shIdx == 1) ? lfoTri : ((shIdx == 2) ? lfoSaw : lfoSH));
+lfoSq = (lfoPhs < 0.5) ? 1.0 : -1.0;
+shIdx = round(clip(lfo_shape, 0, 4));
+lfoSig = (shIdx == 0) ? lfoSin : ((shIdx == 1) ? lfoTri : ((shIdx == 2) ? lfoSaw : ((shIdx == 4) ? lfoSq : lfoSH)));
 
 // Envelope & Glide coefficients
 atkCoef = exp(-1000.0 / (max(atk_ms, 0.2) * srVal));

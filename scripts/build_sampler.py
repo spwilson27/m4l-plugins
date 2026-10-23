@@ -260,8 +260,9 @@ OPTIONAL_SPECS = {
     "samp_gain": ("Sample Gain", "SampGain", -48.0, 24.0, 0.0, 4, 1.0, "samp_gain", 1.0, "set_samp_gain",
                   "Gain of the sample signal in dB (-48 to +24 dB), applied before the character / drive and the filter."),
 }
-# Spec flag -> the optional keys it enables ("env_slopes": envelope slope bends, -100..+100 %).
-OPTIONAL_GROUPS = {"sample_gain": ("samp_gain",), "env_slopes": ()}
+# Spec flag -> the optional keys it enables ("env_slopes": envelope slope bends, -100..+100 %;
+# "wavetable_env_mod": Wavetable-style Env 2/3, LFO 1/2, and Global Time/Amount parameters).
+OPTIONAL_GROUPS = {"sample_gain": ("samp_gain",), "env_slopes": (), "wavetable_env_mod": ()}
 for _k, _nm, _sn, _hp in (
         ("atk_slope", "Attack Slope", "AtkSlope", "Amp envelope attack curve: negative bows down (slow start), positive bows up."),
         ("dec_slope", "Decay Slope", "DecSlope", "Amp envelope decay curve: negative bows down, positive bows up."),
@@ -271,7 +272,48 @@ for _k, _nm, _sn, _hp in (
         ("mrel_slope", "Mod Release Slope", "MRelSlope", "Mod envelope release curve.")):
     OPTIONAL_SPECS[_k] = (_nm, _sn, -100.0, 100.0, 0.0, 5, 1.0, _k, 0.01, "set_" + _k, _hp)
     OPTIONAL_GROUPS["env_slopes"] += (_k,)
+for _k, _spec in (
+        ("amp_init", ("Amp Initial", "AmpInit", 0.0, 100.0, 0.0, 5, 1.0, "amp_init", 0.01, "set_amp_init", "Amp envelope initial level (0 to 100%).")),
+        ("amp_peak", ("Amp Peak", "AmpPeak", 0.0, 100.0, 100.0, 5, 1.0, "amp_peak", 0.01, "set_amp_peak", "Amp envelope peak level (0 to 100%); can be set below sustain.")),
+        ("env2_init", ("Env 2 Initial", "E2Init", 0.0, 100.0, 0.0, 5, 1.0, "env2_init", 0.01, "set_env2_init", "Envelope 2 initial value (0 to 100%).")),
+        ("env2_peak", ("Env 2 Peak", "E2Peak", 0.0, 100.0, 100.0, 5, 1.0, "env2_peak", 0.01, "set_env2_peak", "Envelope 2 peak value (0 to 100%).")),
+        ("env2_final", ("Env 2 Final", "E2Fin", 0.0, 100.0, 0.0, 5, 1.0, "env2_final", 0.01, "set_env2_final", "Envelope 2 final release value (0 to 100%).")),
+        ("env3_atk_ms", ("Env 3 Attack", "E3Atk", 0.2, 5000.0, 44.7, 2, 2.6, None, 1.0, "set_env3_atk_ms", "Envelope 3 attack time (0.2 ms to 5 s).")),
+        ("env3_dec_ms", ("Env 3 Decay", "E3Dec", 1.0, 10000.0, 1610.0, 2, 2.6, None, 1.0, "set_env3_dec_ms", "Envelope 3 decay time (1 ms to 10 s).")),
+        ("env3_sus_lvl", ("Env 3 Sustain", "E3Sus", 0.0, 100.0, 51.0, 5, 1.0, None, 1.0, "set_env3_sus_lvl", "Envelope 3 sustain level (0 to 100%).")),
+        ("env3_rel_ms", ("Env 3 Release", "E3Rel", 1.0, 10000.0, 600.0, 2, 2.6, None, 1.0, "set_env3_rel_ms", "Envelope 3 release time (1 ms to 10 s).")),
+        ("env3_atk_slope", ("Env 3 Attack Slope", "E3ASlp", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_env3_atk_slope", "Envelope 3 attack slope (-100% to +100%).")),
+        ("env3_dec_slope", ("Env 3 Decay Slope", "E3DSlp", -100.0, 100.0, 50.0, 5, 1.0, None, 1.0, "set_env3_dec_slope", "Envelope 3 decay slope (-100% to +100%).")),
+        ("env3_rel_slope", ("Env 3 Release Slope", "E3RSlp", -100.0, 100.0, 50.0, 5, 1.0, None, 1.0, "set_env3_rel_slope", "Envelope 3 release slope (-100% to +100%).")),
+        ("env3_init", ("Env 3 Initial", "E3Init", 0.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_env3_init", "Envelope 3 initial value (0 to 100%).")),
+        ("env3_peak", ("Env 3 Peak", "E3Peak", 0.0, 100.0, 100.0, 5, 1.0, None, 1.0, "set_env3_peak", "Envelope 3 peak value (0 to 100%).")),
+        ("env3_final", ("Env 3 Final", "E3Fin", 0.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_env3_final", "Envelope 3 final value (0 to 100%).")),
+        ("lfo1_atk_ms", ("LFO 1 Attack", "L1Atk", 0.0, 5000.0, 0.0, 2, 2.6, None, 1.0, "set_lfo1_atk_ms", "LFO 1 fade-in attack time (0 to 5000 ms).")),
+        ("lfo1_amount", ("LFO 1 Amount", "L1Amt", 0.0, 100.0, 100.0, 5, 1.0, None, 1.0, "set_lfo1_amount", "LFO 1 amplitude amount (0 to 100%).")),
+        ("lfo1_shaping", ("LFO 1 Shaping", "L1Shp", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_lfo1_shaping", "LFO 1 waveform shaping (-100% to +100%).")),
+        ("lfo1_offset", ("LFO 1 Phase Offset", "L1Off", 0.0, 360.0, 0.0, 1, 1.0, None, 1.0, "set_lfo1_offset", "LFO 1 phase offset in degrees (0 to 360 deg).")),
+        ("lfo2_rate", ("LFO 2 Rate", "L2Rate", 0.05, 30.0, 1.0, 3, 2.0, None, 1.0, "set_lfo2_rate", "LFO 2 frequency in Hz (0.05 to 30 Hz).")),
+        ("lfo2_atk_ms", ("LFO 2 Attack", "L2Atk", 0.0, 5000.0, 0.0, 2, 2.6, None, 1.0, "set_lfo2_atk_ms", "LFO 2 fade-in attack time (0 to 5000 ms).")),
+        ("lfo2_amount", ("LFO 2 Amount", "L2Amt", 0.0, 100.0, 100.0, 5, 1.0, None, 1.0, "set_lfo2_amount", "LFO 2 amplitude amount (0 to 100%).")),
+        ("lfo2_shaping", ("LFO 2 Shaping", "L2Shp", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_lfo2_shaping", "LFO 2 waveform shaping (-100% to +100%).")),
+        ("lfo2_offset", ("LFO 2 Phase Offset", "L2Off", 0.0, 360.0, 0.0, 1, 1.0, None, 1.0, "set_lfo2_offset", "LFO 2 phase offset in degrees (0 to 360 deg).")),
+        ("mod_global_time", ("Global Mod Time", "GlbTime", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_mod_global_time", "Global envelope and LFO time scaling (-100% to +100%).")),
+        ("mod_global_amt", ("Global Mod Amount", "GlbAmt", 0.0, 200.0, 100.0, 5, 1.0, None, 1.0, "set_mod_global_amt", "Global modulation matrix amount scaling (0 to 200%)."))):
+    OPTIONAL_SPECS[_k] = _spec
+    OPTIONAL_GROUPS["wavetable_env_mod"] += (_k,)
+OPTIONAL_ENUM_SPECS = {
+    "amp_loop_mode": ("Amp Loop Mode", "AmpLoop", ["None", "Trigger", "Loop"], 0, None, "set_amp_loop_mode", "Amp envelope loop mode."),
+    "env2_loop_mode": ("Env 2 Loop Mode", "E2Loop", ["None", "Trigger", "Loop"], 0, None, "set_env2_loop_mode", "Envelope 2 loop mode."),
+    "env3_loop_mode": ("Env 3 Loop Mode", "E3Loop", ["None", "Trigger", "Loop"], 0, None, "set_env3_loop_mode", "Envelope 3 loop mode."),
+    "lfo1_sync": ("LFO 1 Rate Mode", "L1Sync", ["Hz", "Sync"], 0, None, "set_lfo1_sync", "LFO 1 free Hz or tempo-synced rate."),
+    "lfo1_retrig": ("LFO 1 Retrigger", "L1Retrig", ["Off", "On"], 1, None, "set_lfo1_retrig", "LFO 1 note-on phase retrigger."),
+    "lfo2_shape": ("LFO 2 Shape", "L2Shape", ["Sin", "Tri", "Saw", "S&H", "Sq"], 0, None, "set_lfo2_shape", "LFO 2 waveform shape."),
+    "lfo2_sync": ("LFO 2 Rate Mode", "L2Sync", ["Hz", "Sync"], 0, None, "set_lfo2_sync", "LFO 2 free Hz or tempo-synced rate."),
+    "lfo2_retrig": ("LFO 2 Retrigger", "L2Retrig", ["Off", "On"], 1, None, "set_lfo2_retrig", "LFO 2 note-on phase retrigger."),
+}
+OPTIONAL_ENUM_GROUPS = {"wavetable_env_mod": tuple(OPTIONAL_ENUM_SPECS)}
 TAIL_PARAMS = tuple(OPTIONAL_SPECS)
+TAIL_ENUMS = tuple(OPTIONAL_ENUM_SPECS)
 
 # Discrete enum / toggle parameters:
 # key: (long_name, short_name, enums, initial, gen_param, ui_setter, help_text)
@@ -827,7 +869,10 @@ def build_face_layout(themed=True):
         else:
             ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         col += 1
-    for key in [k for k in ENUM_SPECS if k != "face_theme"] + [k for k in TAIL_PARAMS if k in PARAM_SPECS] + ["face_theme"]:
+    for key in ([k for k in ENUM_SPECS if k != "face_theme" and k not in TAIL_ENUMS]
+                + [k for k in TAIL_PARAMS if k in PARAM_SPECS]
+                + [k for k in TAIL_ENUMS if k in ENUM_SPECS]
+                + ["face_theme"]):
         if key in TAIL_PARAMS:
             ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         elif themed and key in AB_PARAM_KEYS:
@@ -936,11 +981,25 @@ def build_patcher(design=None):
     global FACE_KEYS
     for k in OPTIONAL_SPECS:
         PARAM_SPECS.pop(k, None)
+    for k in OPTIONAL_ENUM_SPECS:
+        ENUM_SPECS.pop(k, None)
+    ENUM_SPECS["lfo_shape"] = (
+        "LFO Shape", "Shape",
+        ["Sin", "Tri", "Saw", "S&H", "Sq"] if (design and design.get("wavetable_env_mod")) else ["Sin", "Tri", "Saw", "S&H"],
+        0, "lfo_shape", "set_lfo_shape",
+        "Selects Sine, Triangle, Sawtooth, Sample-and-Hold, or Square LFO waveform.",
+    )
     for flag, keys in OPTIONAL_GROUPS.items():
         if design and design.get(flag):
             PARAM_SPECS.update({k: OPTIONAL_SPECS[k] for k in keys})
-    FACE_KEYS = ([k for k in PARAM_SPECS if k not in TAIL_PARAMS] + [k for k in ENUM_SPECS if k != "face_theme"]
-                 + [k for k in TAIL_PARAMS if k in PARAM_SPECS] + ["face_theme"])
+    for flag, keys in OPTIONAL_ENUM_GROUPS.items():
+        if design and design.get(flag):
+            ENUM_SPECS.update({k: OPTIONAL_ENUM_SPECS[k] for k in keys})
+    FACE_KEYS = ([k for k in PARAM_SPECS if k not in TAIL_PARAMS]
+                 + [k for k in ENUM_SPECS if k != "face_theme" and k not in TAIL_ENUMS]
+                 + [k for k in TAIL_PARAMS if k in PARAM_SPECS]
+                 + [k for k in TAIL_ENUMS if k in ENUM_SPECS]
+                 + ["face_theme"])
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:

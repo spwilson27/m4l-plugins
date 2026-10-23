@@ -1077,7 +1077,10 @@ function doAction(z) {
         case "browse": outlet(0, "browse", "bang"); break;
         case "inspector": setParamFromFace("show_inspector", showInspector ? 0 : 1); break;
         case "menu":
-            if (z.below) {
+            if (z.wtEnvLoop) {
+                if (openMenu && openMenu.key === z.key) openMenu = null;
+                else openMenu = { key: z.key, x: z.anchorX, y: z.anchorY, w: z.w2 || 41, rowH: 13.5, wtEnvLoop: true, anchorX: z.anchorX, anchorY: z.anchorY };
+            } else if (z.below) {
                 var items = menuItems(z.key).names.length * Math.min(15, Math.floor((mgraphics.size[1] - 10) / menuItems(z.key).names.length)) + 6;
                 toggleMenu(z.key, z.x + z.w - (z.w2 || z.w || 90), z.y + z.h + items + 2, z.w2 || 90);
             } else {

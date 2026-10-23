@@ -906,7 +906,7 @@ function storeParam(key, v, fromFace) {
             refreshHeldSlices();
             break;
         case "slice_at": case "slice_div": case "slice_beat": case "slice_sens": recomputeSlices(); break;
-        case "env_page": envPage = clampInt(n, 0, 3); break;
+        case "env_page": envPage = clampInt(n, 0, 4); break;
         case "face_theme": curFaceTheme = (n > 0.5 && typeof FACE_PARAMS !== "undefined" && FACE_PARAMS.face_theme) ? 1 : 0; break;
         case "show_inspector": showInspector = n > 0.5 ? 1 : 0; applyDeviceWidth(); break;
         case "root_dyn": rootDyn = n > 0.5 ? 1 : 0; if (rootDyn) ensurePitchCurve(); break;
@@ -1029,6 +1029,40 @@ function set_rel_slope(v) { storeParam("rel_slope", v); }
 function set_matk_slope(v) { storeParam("matk_slope", v); }
 function set_mdec_slope(v) { storeParam("mdec_slope", v); }
 function set_mrel_slope(v) { storeParam("mrel_slope", v); }
+function set_amp_init(v) { storeParam("amp_init", v); }
+function set_amp_peak(v) { storeParam("amp_peak", v); }
+function set_env2_init(v) { storeParam("env2_init", v); }
+function set_env2_peak(v) { storeParam("env2_peak", v); }
+function set_env2_final(v) { storeParam("env2_final", v); }
+function set_env3_atk_ms(v) { storeParam("env3_atk_ms", v); }
+function set_env3_dec_ms(v) { storeParam("env3_dec_ms", v); }
+function set_env3_sus_lvl(v) { storeParam("env3_sus_lvl", v); }
+function set_env3_rel_ms(v) { storeParam("env3_rel_ms", v); }
+function set_env3_atk_slope(v) { storeParam("env3_atk_slope", v); }
+function set_env3_dec_slope(v) { storeParam("env3_dec_slope", v); }
+function set_env3_rel_slope(v) { storeParam("env3_rel_slope", v); }
+function set_env3_init(v) { storeParam("env3_init", v); }
+function set_env3_peak(v) { storeParam("env3_peak", v); }
+function set_env3_final(v) { storeParam("env3_final", v); }
+function set_lfo1_atk_ms(v) { storeParam("lfo1_atk_ms", v); }
+function set_lfo1_amount(v) { storeParam("lfo1_amount", v); }
+function set_lfo1_shaping(v) { storeParam("lfo1_shaping", v); }
+function set_lfo1_offset(v) { storeParam("lfo1_offset", v); }
+function set_lfo2_rate(v) { storeParam("lfo2_rate", v); }
+function set_lfo2_atk_ms(v) { storeParam("lfo2_atk_ms", v); }
+function set_lfo2_amount(v) { storeParam("lfo2_amount", v); }
+function set_lfo2_shaping(v) { storeParam("lfo2_shaping", v); }
+function set_lfo2_offset(v) { storeParam("lfo2_offset", v); }
+function set_mod_global_time(v) { storeParam("mod_global_time", v); }
+function set_mod_global_amt(v) { storeParam("mod_global_amt", v); }
+function set_amp_loop_mode(v) { storeParam("amp_loop_mode", v); }
+function set_env2_loop_mode(v) { storeParam("env2_loop_mode", v); }
+function set_env3_loop_mode(v) { storeParam("env3_loop_mode", v); }
+function set_lfo1_sync(v) { storeParam("lfo1_sync", v); }
+function set_lfo1_retrig(v) { storeParam("lfo1_retrig", v); }
+function set_lfo2_shape(v) { storeParam("lfo2_shape", v); }
+function set_lfo2_sync(v) { storeParam("lfo2_sync", v); }
+function set_lfo2_retrig(v) { storeParam("lfo2_retrig", v); }
 function set_out_gain(v) { storeParam("out_gain", v); }
 
 // Demo state for screenshots (render_preview.py calls preview())
