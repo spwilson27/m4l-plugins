@@ -251,7 +251,7 @@ def cases():
         c("silence", stim="silent", dur=1500, slots=[vec({
             "drvA": {"wet": 1, "drive": 24}, "filt": {"wet": 1}, "crush": {"wet": 1, "bits": 3}, "ring": {"wet": 1, "mode": 1, "freq": 300},
             "stut": {"wet": 1}, "time": {"wet": 1}, "chop": {"wet": 1}, "spec": {"wet": 1, "smr_amt": 1, "cc_amt": 1, "cc_coeffs": 0.2, "sc_amt": 1},
-            "drvB": {"wet": 1}, "dly": {"wet": 1, "fb": 0.8}, "rev": {"wet": 1, "void": 1}, "wid": {"wet": 1, "gain": 6}})]),
+            "drvB": {"wet": 1}, "dly": {"wet": 1, "fb": 0.8}, "rev": {"wet": 1, "void": 1}})]),
         one("drive", {"drvA": {"wet": 1, "mode": 0, "drive": 24, "tone": 20000}}, stim="sine"),
         one("drive_b", {"drvB": {"wet": 1, "mode": 1, "drive": 18, "tone": 20000}}, stim="sine"),
         one("filter_lp", {"filt": {"wet": 1, "type": 0, "cutoff": 500, "res": 0.2}}, stim="noise"),
@@ -285,8 +285,7 @@ def cases():
         one("delay_pp", {"dly": {"wet": 1, "div": 4, "fb": 0.6, "pp": 1, "damp": 8000}}, stim="burst", dur=3000),
         one("reverb", {"rev": {"wet": 1, "size": 0.6, "decay": 0.6, "damp": 8000, "void": 0}}, stim="burst", dur=3000),
         one("reverb_void", {"rev": {"wet": 1, "size": 1, "decay": 1, "damp": 12000, "void": 1}}, stim="burst", dur=3000),
-        one("width_gain", {"wid": {"wet": 1, "width": 1, "gain": 6}}, stim="mix", dur=2200),
-        one("limiter", {"wid": {"wet": 1, "width": 1, "gain": 6}, "drvA": {"wet": 1, "mode": 2, "drive": 30, "tone": 20000}}, stim="noise", dur=2200),
+        one("limiter", {"drvA": {"wet": 1, "mode": 2, "drive": 30, "tone": 20000}}, stim="noise", dur=2200),
     ]
     # morph between two filter slots by ramping the weights
     a = vec({"filt": {"wet": 1, "type": 0, "cutoff": 800, "res": 0.3}})
@@ -349,15 +348,17 @@ def cases():
             toks.append(xc_token(f"shuf{sp}_{k}", w0 + k * 6000 + LAG + 300, w0 - SPAN + src * 6000 + 300, 5400, False))
     out.append(one("shuffle", {"shuf": {"wet": 1, "slices": 1, "span": 0, "chance": 1, "seed": 0}}, stim="noise", arm=ARM, dur=2800, probe=toks))
 
-    # ---- sequencer: slot A = unity gain, slot B = -12 dB (post-spectral width/gain, so the level steps at the output time = gen time) ----
-    sa = vec({"wid": {"wet": 1, "width": 1, "gain": 0}})
-    sb = vec({"wid": {"wet": 1, "width": 1, "gain": -12}})
-    sq = dict(stim="noise", arm=ARM, dur=3000, probe=["dump:128"], slots=[sa, sb])
+    # ---- sequencer: slot A = Drive A hard clip at +24 dB, slot B = Drive A at 0 dB; on the quiet noise_lo / sine_lo stimulus nothing clips, so the
+    # drive is a pure gain (0.75 x the drive in dB, the drive stage's own compensation) and the level steps from A to B by 18 dB ----
+    GAINA = {"wet": 1, "mode": 2, "tone": 20000}
+    sa = vec({"drvA": dict(GAINA, drive=24)})
+    sb = vec({"drvA": dict(GAINA, drive=0)})
+    sq = dict(stim="noise_lo", arm=ARM, dur=3000, probe=["dump:128"], slots=[sa, sb])
     out.append(c("seq_steps", seq=seq_msg(2, 4, 4, 0, 0, [0, 1, 0, 1]), **sq))
     out.append(c("seq_hold", seq=seq_msg(2, 4, 4, 0, 0, [0, -1, 1, -1]), **sq))
     out.append(c("seq_stop", seq=seq_msg(2, 4, 4, 0, 0, [0, 1, 0, 1]), events=[(1100, "playing 0", "obj-gen")], **sq))
     out.append(c("seq_ppq", seq=seq_msg(2, 4, 4, 0, 0, [0, 1, 0, 1]), events=[(1100, "ppq 100.5", "obj-gen")], **sq))
-    out.append(c("seq_glide", seq=seq_msg(2, 2, 4, 1.0, 0, [0, 1]), stim="sine", arm=ARM, dur=3000, probe=["dump:256"], slots=[sa, sb]))
+    out.append(c("seq_glide", seq=seq_msg(2, 2, 4, 1.0, 0, [0, 1]), stim="sine_lo", arm=ARM, dur=3000, probe=["dump:256"], slots=[sa, sb]))
     out.append(c("seq_empty", seq=seq_msg(2, 8, 4, 0, 0, []), stim="mix", dur=2200, slots=[sa, sb]))
 
     # ---- phase 3: per-module movement (blk 1024 = 21 ms envelope blocks, 128 for the step edges) ----
@@ -379,16 +380,17 @@ def cases():
     # the module (and its movement) switches on at 900 ms, after the rate parameter has glided from its default: the synced LFO must still sit on the
     # host grid (phase = beat * cycles per beat, no offset left over from the smoothing glide)
     out.append(c("mv_late_on", slots=[vec({}), vec({"filt": dict(lp, **mv("filt", 1, "cutoff", 0.3, div=8))})], weights=[1, 0], events=[(900, weights_msg([0, 1]))], **mvc))
-    # Steps on a gain: 4 distinct levels on 1/8 note boundaries (12000 samples); gain -12..+6 dB, depth 0.5 around 0 dB (norm 0.667)
+    # Steps on a gain: distinct levels on 1/8 note boundaries (12000 samples). The gain is Drive A (hard clip) on the quiet noise_lo stimulus: no clipping,
+    # so the level follows 0.75 x the drive in dB; drive 0..36 dB, base 24 dB (norm 0.667), depth 0.5
     stp = [1, -1, 0.5, -0.5, 1, -1, 0.5, -0.5]
-    out.append(c("mv_steps", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": 0, **mv("wid", 2, "gain", 0.5, div=5, steps=stp)}})], stim="noise", arm=ARMM, dur=3200, probe=["dump:128"]))
+    out.append(c("mv_steps", slots=[vec({"drvA": dict(GAINA, drive=24, **mv("drvA", 2, "drive", 0.5, div=5, steps=stp))})], stim="noise_lo", arm=ARMM, dur=3200, probe=["dump:128"]))
     # Steps with glide: the same pattern ramps instead of jumping
-    out.append(c("mv_steps_glide", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": 0, **mv("wid", 2, "gain", 0.5, div=5, steps=stp, glide=1.0)}})], stim="noise", arm=ARMM, dur=3200, probe=["dump:128"]))
+    out.append(c("mv_steps_glide", slots=[vec({"drvA": dict(GAINA, drive=24, **mv("drvA", 2, "drive", 0.5, div=5, steps=stp, glide=1.0))})], stim="noise_lo", arm=ARMM, dur=3200, probe=["dump:128"]))
     # Envelope follower on the gain: loud / quiet noise (x10), positive depth widens the contrast, negative narrows it
-    envm = dict(stim="levels", arm=ARMM, dur=3000, probe=["dump:1024"])
-    out.append(c("mv_env_pos", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": -12, **mv("wid", 3, "gain", 1.0, atk=5, rel=50)}})], **envm))
-    out.append(c("mv_env_neg", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": 6, **mv("wid", 3, "gain", -1.0, atk=5, rel=50)}})], **envm))
-    out.append(c("mv_env_off", slots=[vec({"wid": {"wet": 1, "width": 1, "gain": -3}})], **envm))
+    envm = dict(stim="levels_lo", arm=ARMM, dur=3000, probe=["dump:1024"])
+    out.append(c("mv_env_pos", slots=[vec({"drvA": dict(GAINA, drive=0, **mv("drvA", 3, "drive", 1.0, atk=5, rel=50))})], **envm))
+    out.append(c("mv_env_neg", slots=[vec({"drvA": dict(GAINA, drive=24, **mv("drvA", 3, "drive", -1.0, atk=5, rel=50))})], **envm))
+    out.append(c("mv_env_off", slots=[vec({"drvA": dict(GAINA, drive=12)})], **envm))
     # morph between slots with different movement, and between a moving and a still slot: no clicks
     la = vec({"filt": dict(lp, cutoff=2000, **mv("filt", 1, "cutoff", 0.3, div=8))})
     lb = vec({"filt": dict(lp, cutoff=2000, **mv("filt", 2, "cutoff", 0.4, div=5, steps=stp, glide=0.3))})
@@ -449,7 +451,7 @@ def cases():
                "dec_amt": 0.5, "dec_k": 3, "dec_boost": 6, "nsf_amt": 0.5, "nsf_depth": 9, "nsf_grain": 2, "clp_amt": 0.5, "clp_mode": 0, "clp_db": -9,
                "psw_amt": 0.5, "psw_w": 128, "rph_amt": 0.5, "rph_mode": 1, "rph_rand": 0.6}
     out.append(one("stress_p4", {"spec": allspec, "ratc": {"wet": 0.7, "div": 5, "count": 8, "accel": 0.6, "pitch": 5, "decay": 0.3, "prob": 1},
-                                 "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}, "wid": {"wet": 1, "width": 1.2, "gain": 3}}, stim="mix", dur=3200))
+                                 "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}}, stim="mix", dur=3200))
     out.append(one("cpu_spec_all", {"spec": allspec}, stim="mix", dur=2500, cpu=True, stages="needed"))  # all 19 spectral sub-ops on (the single STFT)
     out.append(one("cpu_p4_modules", {"ratc": {"wet": 0.7, "div": 5, "count": 8, "accel": 0.6, "pitch": 5, "decay": 0.3, "prob": 1}, "scrb": {"wet": 0.6, "size": 5, "shape": 2, "rate": 3, "depth": 0.7}}, stim="mix", dur=2500, cpu=True, stages="needed"))
     # a Ratchet / Scratch morph: no clicks while the weights move
@@ -472,7 +474,6 @@ def cases():
                  "sct_amt": 0.5, "sct_w": 6, "sct_rate": 4, "mir_amt": 0.5, "mir_pivot": 1200, "bsh_amt": 0.5, "bsh_bins": -7, "sgl_amt": 0.5, "sgl_mode": 0, "sgl_k": 24, "sgl_step": 9},
         "drvB": {"wet": 0.5, "mode": 3, "drive": 10, "tone": 9000}, "dly": {"wet": 0.5, "div": 4, "fb": 0.6, "pp": 0.7, "damp": 5000},
         "slap": {"wet": 0.5, "time": 100, "tone": 6000, "offset": 0.6}, "rev": {"wet": 0.4, "size": 0.7, "decay": 0.7, "damp": 6000, "void": 0.3},
-        "wid": {"wet": 1, "width": 1.5, "gain": 3},
     }
     out.append(one("stress_all", allmods, stim="mix", dur=3000))
     typical_new = {k: allmods[k] for k in ("form", "phas", "rect", "gpit", "shuf", "slap")}
@@ -947,7 +948,7 @@ def mv_checks(name, r):
         check(r["peak"] > 0.01, "mv_many: sounds")
         for inst in ("drvA", "filt", "crush", "stut", "spec", "dly", "rev"):
             check(r[f"scMvOn{POS[inst]}"] == 1, f"mv_many: {inst} movement runs (telemetry)")
-        check(r[f"scMvOn{POS['wid']}"] == 0, "mv_many: a module without movement reports none")
+        check(r[f"scMvOn{POS['slap']}"] == 0, "mv_many: a module without movement reports none")
         return
     check(len(e) > 20, f"{name}: envelope dump")
     if name == "mv_static":
@@ -1013,7 +1014,7 @@ def mv_checks(name, r):
         return
     if name in ("mv_steps", "mv_steps_glide"):
         stp = [1, -1, 0.5, -0.5, 1, -1, 0.5, -0.5]
-        gain = lambda sv: -12 + 18 * min(max(2.0 / 3.0 + 0.5 * sv, 0.0), 1.0)
+        gain = lambda sv: 0.75 * 36 * min(max(2.0 / 3.0 + 0.5 * sv, 0.0), 1.0)  # Drive A: 0.75 dB of level per dB of drive, drive 0..36
         # window starts on step boundary x = 3 (beat 1.5 at 1/8 steps of 0.5 beat)
         nsteps = min(11, len(e) * blk // SL - 1)
         levels = []
@@ -1054,10 +1055,10 @@ def mv_checks(name, r):
         quiet = seg(1.5, 2.25)
         con = 20 * math.log10(loud / max(quiet, 1e-9))
         print(f"  {name}: loud / quiet contrast {con:.1f} dB")
-        want = {"mv_env_off": 20.0, "mv_env_pos": 26.2, "mv_env_neg": 13.8}[name]
+        want = {"mv_env_off": 20.0, "mv_env_pos": 29.3, "mv_env_neg": 10.7}[name]  # +-0.75 x 36 dB x 0.344 (the follower swing of the 20 dB contrast)
         check(abs(con - want) < 2.0, f"{name}: contrast {con:.1f} dB, want {want:.1f} (the follower moves the gain with the input level)")
         if name != "mv_env_off":
-            check(r[f"scMvOn{POS['wid']}"] == 1, f"{name}: telemetry reports the follower")
+            check(r[f"scMvOn{POS['drvA']}"] == 1, f"{name}: telemetry reports the follower")
         return
 
 

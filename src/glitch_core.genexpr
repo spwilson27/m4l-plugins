@@ -3,7 +3,7 @@
 //
 // Fixed chain, one call site per position (stereo handled INSIDE each module through the 2-slot Data d_io):
 //   drvA -> filt -> form -> comb -> phas -> crush -> rect -> fm -> corr -> ring -> stut -> ratc -> time -> scrb -> gpit -> gstr -> rvs -> shuf
-//   -> chop -> SPECTRAL (one STFT, N=1024) -> drvB -> dly -> slap -> rev -> wid -> master soft limiter (identity below 0.8)
+//   -> chop -> SPECTRAL (one STFT, N=1024) -> drvB -> dly -> slap -> rev -> master soft limiter (identity below 0.8)
 //   -> Mix -> Output.   (Granular Pitch / Stretch are one loop of two over a single gl_grain call site.)
 // A module with smoothed wet <= 0.0005 is skipped (the time-group rings keep recording). The STFT only runs while the
 // spectral wet and at least one sub-op (Freeze, Smear, Scatter, Mirror, Shift, Glitch Freeze, Stretch, Bubbler, MP3ify, Duststorm, Thinner,
@@ -32,7 +32,7 @@
 // are computed here from the host beat (gl_seq) instead of read from the buffer. Mix, Output, bpm, ppq and playing are gen
 // Params of the stages that use them.
 //
-// Movement (phase 3): after the blend, one loop over the 25 instances calls gl_move once per instance (a single call site): a module that
+// Movement (phase 3): after the blend, one loop over the 24 instances calls gl_move once per instance (a single call site): a module that
 // is on and has a source (LFO / Steps / Envelope follower, contract in glitch_config.js) adds depth * source to its blended target in
 // normalized space, BEFORE gl_smooth, so the modulation rides on the per-param smoothing (one pole, about 3.3 ms: a square LFO on a
 // cutoff gets 3 ms edges, which is fine up to about 100 Hz). The slot vectors and the layout constants are re-read only when the pack
@@ -573,21 +573,6 @@ gl_clear(rb, n, ch2) {
 		}
 	}
 	return n;
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// Width / Gain (mid-side).
-// ---------------------------------------------------------------------------------------------------------------
-gl_wid(io, pv, b, w) {
-	wd = pv.peek(b + 1);
-	gn = pow(10, pv.peek(b + 2) * 0.05);
-	l = io.peek(0);
-	r = io.peek(1);
-	m = (l + r) * 0.5;
-	s = (l - r) * 0.5 * wd;
-	io.poke(l + ((m + s) * gn - l) * w, 0);
-	io.poke(r + ((m - s) * gn - r) * w, 1);
-	return gn;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -2718,12 +2703,6 @@ if (revAct > 0.5) {
 	gl_lvl(d_io, d_lv, @P_rev@);
 } else {
 	d_sRev.poke(0, 10);
-}
-//@endmod
-//@mod wid
-if (d_wS.peek(@P_wid@) > 0.0005) {
-	gl_wid(d_io, d_pv, @B_wid@, d_wS.peek(@P_wid@));
-	gl_lvl(d_io, d_lv, @P_wid@);
 }
 //@endmod
 

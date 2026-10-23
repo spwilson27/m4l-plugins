@@ -44,7 +44,7 @@ var COL_CYAN = [0.30, 0.82, 0.88];
 var SLOT_COL = [[1.0, 0.42, 0.42], [1.0, 0.64, 0.26], [0.96, 0.84, 0.30], [0.50, 0.86, 0.46], [0.30, 0.82, 0.88], [0.40, 0.58, 0.98], [0.68, 0.48, 0.96], [0.96, 0.48, 0.78]];
 var SEQ_COL = [0.74, 0.56, 1.0];
 var COL_MV = GL_MV_COL; // motion (movement sources): magenta, used by the tiles, the param bars and the Motion panel
-var CAT_COL = { Distort: [1.0, 0.52, 0.36], Filter: [0.30, 0.82, 0.88], Pitch: [0.74, 0.56, 1.0], Time: [1.0, 0.77, 0.30], Spectral: [0.46, 0.86, 0.56], Space: [0.44, 0.62, 1.0], Utility: [0.64, 0.70, 0.78], Movement: GL_MV_COL };
+var CAT_COL = { Distort: [1.0, 0.52, 0.36], Filter: [0.30, 0.82, 0.88], Pitch: [0.74, 0.56, 1.0], Time: [1.0, 0.77, 0.30], Spectral: [0.46, 0.86, 0.56], Space: [0.44, 0.62, 1.0], Movement: GL_MV_COL };
 
 // ---------------------------------------------------------------------------------------------------------------
 // state
@@ -80,7 +80,7 @@ var gSeqSig = "";
 var gDemoBeat = 0; // preview only: the beat the demo sequencer sits at
 var hostPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 
-function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+function clamp(v, lo, hi) { return v !== v ? lo : (v < lo ? lo : (v > hi ? hi : v)); } // NaN -> lo
 // Per-instance key: the expanded name of this instance's `---glitchdebug` receive (the patcher passes it in with `setbuffer`; Live expands `---`
 // per device instance, v8ui script strings are NOT expanded). Trace and test-report Globals carry it, so two instances never share them.
 var gInstKey = "";
@@ -869,13 +869,70 @@ function demoTele() {
 // drawing helpers
 // ---------------------------------------------------------------------------------------------------------------
 function rgba(c, a) { mgraphics.set_source_rgba(c[0], c[1], c[2], a === undefined ? 1 : a); }
-function frect(x, y, w, h, c, a) { if (w <= 0 || h <= 0) return; rgba(c, a); mgraphics.rectangle(x, y, w, h); mgraphics.fill(); }
-function rrect(x, y, w, h, r, c, a) { if (w <= 0 || h <= 0) return; rgba(c, a); mgraphics.rectangle_rounded(x, y, w, h, r, r); mgraphics.fill(); }
-function rsrect(x, y, w, h, r, c, a, lw) { if (w <= 0 || h <= 0) return; rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.rectangle_rounded(x, y, w, h, r, r); mgraphics.stroke(); }
-function hline(x0, x1, y, c, a, lw) { rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.move_to(x0, y); mgraphics.line_to(x1, y); mgraphics.stroke(); }
-function vline(x, y0, y1, c, a, lw) { rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.move_to(x, y0); mgraphics.line_to(x, y1); mgraphics.stroke(); }
-function disc(x, y, r, c, a) { rgba(c, a); mgraphics.arc(x, y, r, 0, 6.2832); mgraphics.fill(); }
-function ring(x, y, r, c, a, lw) { rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.arc(x, y, r, 0, 6.2832); mgraphics.stroke(); }
+// ---- glyph clip: while gClip = [x0, y0, x1, y1] is set (a tile's body, a tile, the pad), every primitive below clamps its coordinates into it,
+// so no glyph can draw outside its own panel whatever the telemetry or the parameters are (mgraphics clipping is not used: not every host
+// build and the preview renderer support it). Line primitives keep half their stroke width inside as well. Not finite -> the low edge.
+var gClip = null;
+function clipSet(x, y, w, h) { var prev = gClip; gClip = [x, y, x + w, y + h]; return prev; }
+function clipBack(prev) { gClip = prev; }
+function clipX(x, inset) {
+    if (!gClip) return x;
+    var lo = gClip[0] + inset, hi = gClip[2] - inset;
+    if (hi < lo) return (gClip[0] + gClip[2]) / 2;
+    return x !== x ? lo : (x < lo ? lo : (x > hi ? hi : x));
+}
+function clipY(y, inset) {
+    if (!gClip) return y;
+    var lo = gClip[1] + inset, hi = gClip[3] - inset;
+    if (hi < lo) return (gClip[1] + gClip[3]) / 2;
+    return y !== y ? lo : (y < lo ? lo : (y > hi ? hi : y));
+}
+// the part of a rect inside the clip: [x, y, w, h] or null when nothing is left
+function clipRect(x, y, w, h) {
+    if (!gClip) return [x, y, w, h];
+    var x0 = Math.max(x, gClip[0]), y0 = Math.max(y, gClip[1]), x1 = Math.min(x + w, gClip[2]), y1 = Math.min(y + h, gClip[3]);
+    if (!(x1 > x0) || !(y1 > y0)) return null;
+    return [x0, y0, x1 - x0, y1 - y0];
+}
+function frect(x, y, w, h, c, a) { if (!(w > 0) || !(h > 0)) return; var q = clipRect(x, y, w, h); if (!q) return; rgba(c, a); mgraphics.rectangle(q[0], q[1], q[2], q[3]); mgraphics.fill(); }
+function rrect(x, y, w, h, r, c, a) { if (!(w > 0) || !(h > 0)) return; var q = clipRect(x, y, w, h); if (!q) return; rgba(c, a); mgraphics.rectangle_rounded(q[0], q[1], q[2], q[3], r, r); mgraphics.fill(); }
+function rsrect(x, y, w, h, r, c, a, lw) {
+    if (!(w > 0) || !(h > 0)) return;
+    var q = clipRect(x, y, w, h); if (!q) return;
+    rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.rectangle_rounded(q[0], q[1], q[2], q[3], r, r); mgraphics.stroke();
+}
+function hline(x0, x1, y, c, a, lw) { var ins = (lw || 1) / 2; rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.move_to(clipX(x0, ins), clipY(y, ins)); mgraphics.line_to(clipX(x1, ins), clipY(y, ins)); mgraphics.stroke(); }
+function vline(x, y0, y1, c, a, lw) { var ins = (lw || 1) / 2; rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.move_to(clipX(x, ins), clipY(y0, ins)); mgraphics.line_to(clipX(x, ins), clipY(y1, ins)); mgraphics.stroke(); }
+// a circle that stays inside the clip as a whole: the radius shrinks to what fits, the centre moves in
+function clipCircle(x, y, r, ins) {
+    if (!gClip) return [x, y, r];
+    var rr = Math.max(0, Math.min(r !== r ? 0 : r, (gClip[2] - gClip[0]) / 2 - ins, (gClip[3] - gClip[1]) / 2 - ins));
+    return [clipX(x, rr + ins), clipY(y, rr + ins), rr];
+}
+function disc(x, y, r, c, a) { var q = clipCircle(x, y, r, 0); rgba(c, a); mgraphics.arc(q[0], q[1], q[2], 0, 6.2832); mgraphics.fill(); }
+// a soft glow: a circle drawn as a 40-gon whose corners are clamped into the clip, so it is cut off at the panel edge like a clipped circle
+function glow(x, y, r, c, a) {
+    if (!gClip) { disc(x, y, r, c, a); return; }
+    if (!(r > 0)) return;
+    rgba(c, a);
+    for (var i = 0; i < 40; i++) {
+        var an = i / 40 * 6.2832, px = clipX(x + Math.cos(an) * r, 0), py = clipY(y + Math.sin(an) * r, 0);
+        if (i === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
+    }
+    mgraphics.close_path();
+    mgraphics.fill();
+}
+function ring(x, y, r, c, a, lw) { var q = clipCircle(x, y, r, (lw || 1) / 2); rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.arc(q[0], q[1], q[2], 0, 6.2832); mgraphics.stroke(); }
+// a stroked arc (the circle it belongs to stays inside the clip)
+function arcStroke(x, y, r, a0, a1, c, a, lw) { var q = clipCircle(x, y, r, (lw || 1) / 2); rgba(c, a); mgraphics.set_line_width(lw || 1); mgraphics.arc(q[0], q[1], q[2], a0, a1); mgraphics.stroke(); }
+// a stroked cubic curve: the control points are clamped, and a Bezier curve stays inside the hull of its control points
+function curveStroke(x0, y0, x1, y1, x2, y2, x3, y3, c, a, lw) {
+    var ins = (lw || 1) / 2;
+    rgba(c, a); mgraphics.set_line_width(lw || 1);
+    mgraphics.move_to(clipX(x0, ins), clipY(y0, ins));
+    mgraphics.curve_to(clipX(x1, ins), clipY(y1, ins), clipX(x2, ins), clipY(y2, ins), clipX(x3, ins), clipY(y3, ins));
+    mgraphics.stroke();
+}
 // text width estimate for Arial: capitals are wide, lower case narrow
 function tw(str, size) {
     str = "" + str;
@@ -889,9 +946,16 @@ function tw(str, size) {
 // align: 0 left, 1 centre, 2 right
 function label(str, x, y, size, c, a, align) {
     str = "" + str;
+    if (gClip && tw(str, size) > gClip[2] - gClip[0]) str = fit(str, gClip[2] - gClip[0], size);
     var xx = x;
     if (align === 1) xx = x - tw(str, size) * 0.5;
     else if (align === 2) xx = x - tw(str, size);
+    if (gClip) {
+        // the whole text box (width from tw, ascent 0.8 size, descent 0.2 size) stays inside the clip
+        xx = clipX(xx, 0); var wt = tw(str, size);
+        if (xx + wt > gClip[2]) xx = Math.max(gClip[0], gClip[2] - wt);
+        y = clamp(y !== y ? 0 : y, gClip[1] + 0.8 * size, Math.max(gClip[1] + 0.8 * size, gClip[3] - 0.2 * size));
+    }
     rgba(c, a === undefined ? 1 : a);
     mgraphics.select_font_face("Arial");
     mgraphics.set_font_size(size);
@@ -915,6 +979,7 @@ function paint() {
     var L = gLayout;
     refreshModel();
     rrect(2, 2, L.width - 4, 165, 7, COL_CARD, 1);
+    paintRail(L);
     paintHeader(L);
     if (L.options) paintOptions(L.options);
     else {
@@ -941,10 +1006,49 @@ function chip(r, text, on, c) {
 
 function hoverIs(id) { return gHover === id; }
 
+// The left rail: the section toggles (EDIT / SLOTS / SEQ) as vertical buttons with a vector glyph and a label rotated to read upwards,
+// and the Options gear pinned at the bottom. Same style as the Mega Modulator rail.
+function railLabel(text, cx, y1, y2, size, c, a) {
+    // text centred between y1 and y2 on a vertical baseline just right of cx, reading bottom to top
+    mgraphics.save();
+    mgraphics.translate(cx + size * 0.36, (y1 + y2) / 2);
+    mgraphics.rotate(-1.5707963267948966);
+    label(text, 0, 0, size, c, a, 1);
+    mgraphics.restore();
+}
+function railGlyph(kind, cx, cy, c, a) {
+    if (kind === "editor") { // three little sliders
+        for (var i = 0; i < 3; i++) {
+            var gx = cx - 3.5 + i * 3.5;
+            vline(gx, cy - 4.5, cy + 4.5, c, 0.6 * a, 1);
+            frect(gx - 1.5, cy - 3 + [3, 0, 5][i], 3, 2, c, a);
+        }
+    } else if (kind === "slots") { // 2 x 2 pads
+        for (var q = 0; q < 4; q++) frect(cx - 4.5 + (q % 2) * 5, cy - 4.5 + Math.floor(q / 2) * 5, 4, 4, c, a);
+    } else { // sequence: four steps of different heights
+        var hs = [3, 6, 4, 8];
+        for (var b = 0; b < 4; b++) frect(cx - 5.5 + b * 3, cy + 4.5 - hs[b], 2, hs[b], c, a);
+    }
+}
+function paintRail(L) {
+    var R = L.rail;
+    rrect(R.x, R.y, R.w, R.h, 5, COL_BG, 1);
+    var defs = [["editor", L.toggles.editor, "EDIT", COL_AMBER, "tg_editor"], ["slots", L.toggles.slots, "SLOTS", COL_CYAN, "tg_slots"], ["seq", L.toggles.seq, "SEQ", SEQ_COL, "tg_seq"]];
+    for (var i = 0; i < defs.length; i++) {
+        var k = defs[i][0], r = defs[i][1], col = defs[i][3], on = !!L.ui[k], hv = hoverIs(defs[i][4]);
+        rrect(r.x, r.y, r.w, r.h, 4, on ? col : COL_ROW, on ? 0.95 : 1);
+        rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 4, on ? col : (hv ? col : COL_LINE), 1, 1);
+        var fg = on ? COL_BG : (hv ? COL_TEXT : COL_DIM);
+        railGlyph(k, r.x + r.w / 2, r.y + 9, fg, 1);
+        railLabel(defs[i][2], r.x + r.w / 2, r.y + 16, r.y + r.h - 2, 6.5, fg, 1);
+    }
+    var o = L.railOpt, oon = !!L.ui.options;
+    rrect(o.x, o.y, o.w, o.h, 4, oon ? COL_CYAN : COL_ROW, oon ? 0.95 : 1);
+    rsrect(o.x + 0.5, o.y + 0.5, o.w - 1, o.h - 1, 4, COL_CYAN, oon || hoverIs("act_opt") ? 1 : 0.55, 1);
+    paintCog(o.x + o.w / 2, o.y + o.h / 2, 6.5, oon ? COL_BG : COL_CYAN);
+}
+
 function paintHeader(L) {
-    chip(L.toggles.editor, L.ui.editor ? "EDIT <" : "EDIT >", !!L.ui.editor, COL_AMBER);
-    chip(L.toggles.slots, L.ui.slots ? "SLOTS <" : "SLOTS >", !!L.ui.slots, COL_CYAN);
-    chip(L.toggles.seq, L.ui.seq ? "SEQ <" : "SEQ >", !!L.ui.seq, SEQ_COL);
     var h = L.hint;
     var cy = h.y + h.h / 2;
     var pill = null;
@@ -990,7 +1094,7 @@ function paintHeader(L) {
             text = "WORKING  " + gTiles.length + (gTiles.length === 1 ? " module" : " modules");
         }
     } else c = COL_TEXT;
-    label(fit(text, h.w - 4, 8), h.x + h.w - 2, cy + 3, 8, c, 1, 2);
+    label(fit(text, h.w - 4, 8), h.x + 2, cy + 3, 8, c, 1, 0);
 }
 
 function weightedColor(cw) {
@@ -1013,6 +1117,10 @@ function seqCornerWeights(sw) {
     return cw;
 }
 function paintPad(r, L) {
+    var prevClip = clipSet(r.x, r.y, r.w, r.h); // the corner glows, the puck and the lines stay inside the pad
+    try { paintPadRaw(r, L); } finally { clipBack(prevClip); }
+}
+function paintPadRaw(r, L) {
     var seq = gState.audition === "seq";
     var morph = gState.audition === "morph" || seq; // "live": the pad shows the blend that is sounding
     var sw = morph ? soundingWeights(gState, gHaveTele ? gTele : null, gDemo && !gHaveTele ? gDemoBeat : 0) : null;
@@ -1041,7 +1149,7 @@ function paintPad(r, L) {
         var sc = SLOT_COL[gState.corners[c]];
         var filled = !!gState.slots[gState.corners[c]];
         var wgt = cw[c];
-        disc(cx[c] + (c % 2 ? -8 : 8), cy[c] + (c < 2 ? 8 : -8), 12 + 34 * wgt, sc, (filled ? 0.07 : 0.03) + (morph ? 0.26 : 0.1) * wgt);
+        glow(cx[c] + (c % 2 ? -8 : 8), cy[c] + (c < 2 ? 8 : -8), 12 + 34 * clamp(wgt, 0, 1), sc, (filled ? 0.07 : 0.03) + (morph ? 0.26 : 0.1) * clamp(wgt, 0, 1));
     }
     var pxy = gState.xy;
     if (seq) {
@@ -1084,17 +1192,18 @@ function hash2(a, b) { var x = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; ret
 function tileBeat() { var t = T(); return t ? (t[GL_SCOPE.BEAT] || 0) : 0; }
 function poly(pts, c, a, lw) {
     if (pts.length < 2) return;
+    var ins = (lw || 1) / 2;
     rgba(c, a); mgraphics.set_line_width(lw || 1);
-    mgraphics.move_to(pts[0][0], pts[0][1]);
-    for (var i = 1; i < pts.length; i++) mgraphics.line_to(pts[i][0], pts[i][1]);
+    mgraphics.move_to(clipX(pts[0][0], ins), clipY(pts[0][1], ins));
+    for (var i = 1; i < pts.length; i++) mgraphics.line_to(clipX(pts[i][0], ins), clipY(pts[i][1], ins));
     mgraphics.stroke();
 }
 function polyArea(pts, baseY, c, a) {
     if (pts.length < 2) return;
     rgba(c, a);
-    mgraphics.move_to(pts[0][0], baseY);
-    for (var i = 0; i < pts.length; i++) mgraphics.line_to(pts[i][0], pts[i][1]);
-    mgraphics.line_to(pts[pts.length - 1][0], baseY);
+    mgraphics.move_to(clipX(pts[0][0], 0), clipY(baseY, 0));
+    for (var i = 0; i < pts.length; i++) mgraphics.line_to(clipX(pts[i][0], 0), clipY(pts[i][1], 0));
+    mgraphics.line_to(clipX(pts[pts.length - 1][0], 0), clipY(baseY, 0));
     mgraphics.close_path();
     mgraphics.fill();
 }
@@ -1126,7 +1235,6 @@ function tilePrimary(tile) {
         case "dly": return pick(spec("div"), g("dly", "div")) + " fb " + Math.round(g("dly", "fb") * 100);
         case "slap": return Math.round(g("slap", "time")) + "ms";
         case "rev": return "size " + Math.round(g("rev", "size") * 100) + "%";
-        case "wid": return "W " + Math.round(g("wid", "width") * 100) + "% " + g("wid", "gain").toFixed(0) + "dB";
         case "freeze": return pick(spec("frz_rate"), g("spec", "frz_rate"));
         case "smear": return "blur " + Math.round(g("spec", "smr_blur") * 100) + "%";
         case "ccrush": return "K " + Math.round(g("spec", "cc_coeffs") * 100) + "% " + Math.round(g("spec", "cc_bits")) + "b";
@@ -1159,7 +1267,31 @@ function specCols(t, off, nb) {
     return out;
 }
 
+// Cepstrum glyph scaling. cepRef: the 95th percentile of |c| over bins >= 2 of the input cepstrum (c[0] / c[1] are the level and the
+// spectral tilt and would flatten everything else), smoothed with a fast attack and a slow release; cepHeight: signed, -1..1.
+var gCepRef = 1e-3;
+function cepRef(t) {
+    if (!t) return gCepRef;
+    var a = [];
+    for (var i = 2; i < GL_CEP_BINS; i++) { var v = Math.abs(t[GL_SCOPE.CEP_IN + i]); a.push(v === v && v < 1e30 ? v : 0); }
+    a.sort(function (p, q) { return p - q; });
+    var tgt = Math.max(a[Math.min(a.length - 1, Math.floor(a.length * 0.95))] || 0, 1e-6);
+    gCepRef = tgt > gCepRef ? gCepRef + (tgt - gCepRef) * 0.6 : gCepRef + (tgt - gCepRef) * 0.03;
+    return Math.max(gCepRef, 1e-6);
+}
+function cepHeight(v, ref) {
+    v = Number(v);
+    if (!isFinite(v)) return 0;
+    var m = Math.min(1, Math.asinh(20 * Math.abs(v) / ref) / Math.asinh(20) * 0.85);
+    return v < 0 ? -m : m;
+}
+// every glyph draws inside its body rect: the primitives clamp to gClip (see clipSet)
 function paintTileBody(tile, x, y, w, h, c, act) {
+    if (!(h >= 8) || !(w >= 8)) return;
+    var prev = clipSet(x, y, w, h);
+    try { paintTileBodyRaw(tile, x, y, w, h, c, act); } finally { clipBack(prev); }
+}
+function paintTileBodyRaw(tile, x, y, w, h, c, act) {
     var t = T();
     var S = GL_SCOPE;
     if (h < 8 || w < 8) return;
@@ -1174,8 +1306,7 @@ function paintTileBody(tile, x, y, w, h, c, act) {
             var ph = t ? t[S.STUT_PHASE] || 0 : 0;
             var eng = t ? t[S.STUT_ENGAGED] || 0 : 0;
             if (eng > 0.05) {
-                mgraphics.set_line_width(2); rgba(c, 0.9);
-                mgraphics.arc(cxs, cys, rs, -1.5708, -1.5708 + ph * 6.2832); mgraphics.stroke();
+                arcStroke(cxs, cys, rs, -1.5708, -1.5708 + clamp(ph, 0, 1) * 6.2832, c, 0.9, 2);
             }
             break;
         }
@@ -1206,12 +1337,15 @@ function paintTileBody(tile, x, y, w, h, c, act) {
             break;
         }
         case "ccrush": case "scramble": {
+            // the REAL cepstrum c[1..64] of the input / output (raw values: a pitch peak can be 50x a formant bump), so the glyph auto-gains:
+            // |c| -> asinh(20 |c| / ref) / asinh(20) * 0.85 against a slow 95th-percentile reference (the Cepstra display's scaling), signed, clipped to +-1
             var nc = Math.max(8, Math.floor(w / 3));
             hline(x, x + w, y + h / 2, COL_DIM, 0.35, 1);
+            var cref = cepRef(t);
             for (k = 0; k < nc; k++) {
                 var ki = Math.floor(k * GL_CEP_BINS / nc);
-                var co = t ? t[S.CEP_IN + ki] || 0 : 0;
-                var cn = t ? t[S.CEP_OUT + ki] || 0 : 0;
+                var co = cepHeight(t ? t[S.CEP_IN + ki] : 0, cref);
+                var cn = cepHeight(t ? t[S.CEP_OUT + ki] : 0, cref);
                 var bw = w / nc;
                 frect(x + k * bw, y + h / 2 - (co > 0 ? co * h / 2 : 0), bw - 1, Math.abs(co) * h / 2, COL_DIM, 0.3);
                 frect(x + k * bw, y + h / 2 - (cn > 0 ? cn * h / 2 : 0), bw - 1, Math.abs(cn) * h / 2, c, 0.85);
@@ -1532,8 +1666,7 @@ function paintTileBody(tile, x, y, w, h, c, act) {
             var pbw = w / pw;
             for (i = 0; i < pw; i++) {
                 var pa0 = x + i * pbw + 2, pa1 = x + (i + 1) * pbw - 2;
-                mgraphics.set_line_width(1.2); rgba(c, 0.55 + 0.4 * amp);
-                mgraphics.move_to(pa0, y + h - 2); mgraphics.curve_to(pa0, y + 1, pa1, y + 1, pa1, y + h - 2); mgraphics.stroke();
+                curveStroke(pa0, y + h - 2, pa0, y + 1, pa1, y + 1, pa1, y + h - 2, c, 0.55 + 0.4 * amp, 1.2);
                 disc(pa0, y + h - 2, 1.6, c, 1);
                 disc(pa1, y + h - 2, 1.6, COL_TEXT, 0.9);
             }
@@ -1596,6 +1729,7 @@ function paintView(r) {
         var sel = gState.ui.sel === tile.key;
         var compact = V.compact;
         var small = q.h < 34;
+        var prevClip = clipSet(q.x, q.y, q.w, q.h); // the whole tile (title, badges, motion pill, readout, body) stays inside its rect
         rrect(q.x, q.y, q.w, q.h, 4, mix3(COL_BG, c, 0.1 + 0.2 * act), 1);
         rsrect(q.x + 0.5, q.y + 0.5, q.w - 1, q.h - 1, 4, sel ? COL_TEXT : c, sel ? 1 : 0.55, sel ? 1.6 : 1);
         var fs = compact ? 6 : 7.5;
@@ -1615,10 +1749,11 @@ function paintView(r) {
         var bodyH = (small || compact) ? Math.max(0, by - top - 2) : Math.max(0, by - top - (q.h > 44 ? 12 : 2));
         paintTileBody(tile, q.x + 4, top, q.w - 8, bodyH, c, act);
         if (!compact && !small && q.h > 44) label(fit(tilePrimary(tile), q.w - 6, 6.5), q.x + q.w / 2, q.y + q.h - 8, 6.5, COL_TEXT, 0.8, 1);
+        clipBack(prevClip);
     }
     paintRibbon(V, tiles, r);
 }
-// The chain ribbon under the tiles: 25 ticks, one per chain position; a tick is lit (category colour) where a tile sits, bright
+// The chain ribbon under the tiles: 24 ticks, one per chain position; a tick is lit (category colour) where a tile sits, bright
 // for the tiles of this page. With more than 12 tiles the pager (prev / next, "page/pages +hidden") sits at the right.
 function paintRibbon(V, tiles, view) {
     var R = V.ribbon;
@@ -1725,10 +1860,6 @@ function paintActions(L) {
     if (cf > 1) rrect(c.x + 4, c.y + 14, cf, 6, 3, COL_CORAL, 0.9);
     label("CHAOS", c.x + 6, c.y + 10, 7, COL_DIM, 1, 0);
     label(Math.round(gState.chaos * 100) + "%", c.x + c.w - 5, c.y + 10, 7.5, COL_TEXT, 1, 2);
-    var o = A.opt;
-    rrect(o.x, o.y, o.w, o.h, 5, COL_ROW, 1);
-    rsrect(o.x + 0.5, o.y + 0.5, o.w - 1, o.h - 1, 5, COL_CYAN, hoverIs("act_opt") ? 1 : 0.55, 1);
-    paintCog(o.x + o.w / 2, o.y + o.h / 2, 7, COL_CYAN);
     var ab = A.ab;
     var mi = engineMode(gState);
     rrect(ab.x, ab.y, ab.w, ab.h, 5, COL_ROW, 1);
@@ -1738,7 +1869,7 @@ function paintActions(L) {
     for (var mm = 0; mm < 3; mm++) {
         var cx3 = ab.x + 2 + mm * cw3;
         if (mm === mi) rrect(cx3, ab.y + 2, cw3, ab.h - 4, 4, mcols[mm], 0.95);
-        label(mnames[mm], cx3 + cw3 / 2, ab.y + ab.h / 2 + 3, 6.2, mm === mi ? COL_BG : COL_DIM, 1, 1);
+        label(mnames[mm], cx3 + cw3 / 2, ab.y + ab.h / 2 + 3, 7, mm === mi ? COL_BG : COL_DIM, 1, 1);
     }
 }
 function paintDice(x, y, s, c) {
@@ -1816,7 +1947,7 @@ function moveLive(instId) {
     var t = T();
     var k = chainPosOf(instId);
     if (!t || k < 0 || !(t[GL_SCOPE.MOVE_ON + k] > 0.5)) return null;
-    return { on: 1, ofs: t[GL_SCOPE.MOVE_OFS + k] || 0, pos: t[GL_SCOPE.MOVE_POS + k] || 0, ph: t[GL_SCOPE.MOVE_PH + k] || 0 };
+    return { on: 1, ofs: clamp(t[GL_SCOPE.MOVE_OFS + k] || 0, -1, 1), pos: clamp(t[GL_SCOPE.MOVE_POS + k] || 0, 0, 1), ph: clamp(t[GL_SCOPE.MOVE_PH + k] || 0, 0, 1) };
 }
 // glyphs of the movement types: Off (a dash), LFO (a sine), Steps (stairs), Env (attack / decay)
 function mvTypeGlyph(ty, x, y, w, h, c, a) {
@@ -1966,6 +2097,10 @@ function paintMotion(ed, key, info, c, morph) {
     if (live) label((live.ofs >= 0 ? "+" : "") + Math.round(live.ofs * 100) + "%", A.x + A.w - 4, A.y + 10, 7, COL_MV, 1, 2);
 }
 function paintEditor(ed) {
+    var prevClip = clipSet(ed.x, ed.y, ed.w, ed.h); // nothing the editor draws can leave its panel
+    try { paintEditorRaw(ed); } finally { clipBack(prevClip); }
+}
+function paintEditorRaw(ed) {
     rrect(ed.x, ed.y, ed.w, ed.h, 5, COL_PANEL, 1);
     var key = editorTarget();
     var morph = gState.audition !== "working"; // Morph or Seq: values are the sounding blend; an edit copies it to Working
@@ -2022,7 +2157,7 @@ function paintEditor(ed) {
         if (spec.kind !== "disc") {
             var n = glParamToNorm(spec, v);
             if (row.id === "wet" || spec.kind === "wet") n = clamp(v, 0, 1);
-            frect(r.x + 1, r.y + 1, (r.w - 2) * n, r.h - 2, c, 0.4 * dim);
+            frect(r.x + 1, r.y + 1, n > 0.0005 ? Math.max(2, (r.w - 2) * n) : 0, r.h - 2, c, 0.4 * dim); // a tiny value still shows a sliver
             if (isTarget) {
                 // the movement's target: the live modulated position as a band from the set value plus a moving marker
                 if (mvLive) {
@@ -2033,7 +2168,7 @@ function paintEditor(ed) {
             }
         } else rsrect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1, 3, c, 0.35 * dim, 1);
         label(fit(row.name, r.w * 0.55, 7), r.x + 4, r.y + 9, 7, COL_TEXT, dim, 0);
-        label(fit(glitchFormatValue(spec, v), r.w * 0.45, 7), r.x + r.w - 4, r.y + 9, 7, isTarget ? COL_MV : c, dim, 2);
+        label(fit(glitchFormatValue(spec, v), r.w * 0.45, 7), r.x + r.w - 4, r.y + 9, 7, isTarget ? COL_MV : mix3(c, [1, 1, 1], 0.3), dim, 2);
     }
     if (morph) label(gState.audition === "seq" ? "SEQ is playing: an edit copies it to WORKING" : "MORPH is playing: an edit copies it to WORKING", ed.x + ed.w / 2, ed.y + ed.h - 5, 6.5, COL_AMBER, 0.95, 1);
     else label(locked ? "locked: kept by Randomize / Mutate" : "drag = set  ·  dbl-click = reset", ed.x + ed.w / 2, ed.y + ed.h - 5, 7, COL_DIM, 0.9, 1);
@@ -2411,7 +2546,7 @@ function onclick(x, y, but, cmd, shift, caps, opt) {
     }
     if (id === "act_dice") { doRandomize(null); return; }
     if (id === "act_mutate") { doMutate(); return; }
-    if (id === "act_opt") { setOptions(1); return; }
+    if (id === "act_opt") { setOptions(gState.ui.options ? 0 : 1); return; }
     if (id === "act_ab") {
         var abr = gLayout.action.ab;
         var third = clamp(Math.floor((x - abr.x - 2) / ((abr.w - 4) / 3)), 0, 2);
@@ -2645,7 +2780,7 @@ function onidle(x, y) {
         else if (/^tile/.test(id)) hint = "click: edit this module";
         else if (id === "act_dice") hint = "roll a new glitch (Chaos shapes it)";
         else if (id === "act_mutate") hint = "nudge the working glitch";
-        else if (id === "act_opt") hint = "which module types Randomize may use";
+        else if (id === "act_opt") hint = gState.ui.options ? "close Options" : "Options: which module types Randomize may use";
         else if (id === "act_ab") hint = "what you hear: working glitch, morph or sequence";
         else if (id === "act_chaos") hint = "Chaos: how wild Randomize / Mutate go";
         else if (/^slot\d$/.test(id)) hint = "click: recall · shift: save · alt: clear · drag to a corner";
@@ -2668,6 +2803,8 @@ function onidle(x, y) {
         else if (/^optcat_sel/.test(id)) hint = "show this category's module types";
         else if (id === "opt_prev" || id === "opt_next") hint = "more types of this category";
         else if (id === "tg_seq") hint = "the 16-step slot sequencer";
+        else if (id === "tg_editor") hint = "the module editor: parameters and motion";
+        else if (id === "tg_slots") hint = "the 8 glitch slots";
         else if (id === "seq_on") hint = "play the sequencer (Mode = Seq)";
         else if (id === "seq_lane") hint = "drag: sequence length";
         else if (/^seq_step/.test(id)) hint = "click: cycle slot / hold  ·  shift: back  ·  alt: hold  ·  then click a slot";
@@ -2698,7 +2835,7 @@ function onkeydown(keycode, textcharacter, down, cmd, shift) {
 // test / debug entry points (messnamed(<this instance's expanded ---glitchdebug>, ...), found through Global("glitch_hooks"); scripts/test_glitch_live.js)
 // ---------------------------------------------------------------------------------------------------------------
 function test_fill() {
-    // deterministic slots: 0 = loud drive, 1 = a 60 Hz low pass (almost silent), 2 = width, 3 = delay; corners 0, 1, 0, 1
+    // deterministic slots: 0 = loud drive, 1 = a 60 Hz low pass (almost silent); corners 0, 1, 0, 1
     undoPush();
     var a = defaultGlitch();
     glitchSetValue(a, "drvA", "wet", 1); glitchSetValue(a, "drvA", "drive", 24);
@@ -2740,17 +2877,18 @@ function test_report() {
     if (typeof Global !== "undefined") new Global("glitch_test_" + gInstKey).text = JSON.stringify(rep);
     return rep;
 }
-// A working glitch whose only module is Width / Gain (-3 dB) with a synced sine LFO on the gain: 1/4 note cycle (one beat), depth 0.5 =
-// +-9 dB around -3 dB. scripts/test_glitch_live.js uses it to check that movement is audible and locked to the host beat.
+// A working glitch whose only module is a low pass Filter (1 kHz) with a synced sine LFO on the cutoff: 1/4 note cycle (one beat), depth 0.5 =
+// +-0.5 of the cutoff range (log). scripts/test_glitch_live.js uses it to check that movement is audible and locked to the host beat.
 function test_move() {
     var g = defaultGlitch();
-    glitchSetValue(g, "wid", "wet", 1);
-    glitchSetValue(g, "wid", "gain", -3);
-    glitchSetMoveType(g, "wid", 1);
-    glitchSetMove(g, "wid", "target", "gain");
-    glitchSetMove(g, "wid", "depth", 0.5);
-    glitchSetMove(g, "wid", "div", 8);
-    glitchSetMove(g, "wid", "sync", 1);
+    glitchSetValue(g, "filt", "wet", 1);
+    glitchSetValue(g, "filt", "type", 0);
+    glitchSetValue(g, "filt", "cutoff", 1000);
+    glitchSetMoveType(g, "filt", 1);
+    glitchSetMove(g, "filt", "target", "cutoff");
+    glitchSetMove(g, "filt", "depth", 0.5);
+    glitchSetMove(g, "filt", "div", 8);
+    glitchSetMove(g, "filt", "sync", 1);
     gState.working = g;
     gState.audition = "working";
     sendParam("mode", 0);
@@ -2789,11 +2927,11 @@ function test_spec(kind) {
 }
 function test_load(kind) {
     // load-time probe: the working glitch a restored device would have, then the whole stage load again (dsp_retry): "empty", "typical" (6 modules in
-    // 5 groups: filter, crush, stutter, shuffle, delay, width), "spectral" (typical + a transparent smear), "all" (every module on)
+    // 5 groups: filter, crush, stutter, shuffle, delay, slapback), "spectral" (typical + a transparent smear), "all" (every module on)
     var g = defaultGlitch();
     kind = String(kind);
     if (kind === "typical" || kind === "spectral" || kind === "all") {
-        var ids = ["filt", "crush", "stut", "shuf", "dly", "wid"];
+        var ids = ["filt", "crush", "stut", "shuf", "dly", "slap"];
         for (var i = 0; i < ids.length; i++) glitchSetValue(g, ids[i], "wet", 0.8);
     }
     if (kind === "spectral" || kind === "all") { glitchSetValue(g, "smear", "wet", 1); glitchSetValue(g, "smear", "smr_amt", 0.001); }
@@ -2899,7 +3037,16 @@ function preview() {
         gModelDirty = true;
         gLayout = glitchFaceLayout(gState.ui);
         refreshModel();
-        if (pv === "specedit") { gState.ui.editor = 1; gState.ui.sel = "duststorm"; }
+        if (pv === "specedit") {
+            // the editor of Bin Shift: the Amount bar (a sub-op's own amount), the Shift bar and the shared Spectral Mix bar, all with label, fill and value
+            glitchSetValue(nw, "binshift", "wet", 0.9);
+            glitchSetValue(nw, "binshift", "bsh_amt", 0.35);
+            glitchSetValue(nw, "binshift", "bsh_bins", -12);
+            gModelDirty = true;
+            refreshModel();
+            gState.ui.editor = 1;
+            gState.ui.sel = "binshift";
+        }
         else gState.ui.sel = "mp3ify";
     } else if (pv === "options2") {
         gState.ui.options = 1;
@@ -2908,7 +3055,7 @@ function preview() {
         gState.allow.noisify = false;
         gState.allow.thinner = false;
     } else if (pv === "many" || pv === "many2") {
-        // every module on: 24 instances + 19 spectral sub-ops = 43 tiles: "many" = page 1 of the glitch view, "many2" = page 2
+        // every module on: 23 instances + 19 spectral sub-ops = 42 tiles: "many" = page 1 of the glitch view, "many2" = page 2
         var big = defaultGlitch();
         for (var ii = 0; ii < GL_INSTANCES.length; ii++) glitchSetValue(big, GL_INSTANCES[ii].id, "wet", 0.4 + 0.5 * ((ii * 7) % 10) / 10);
         for (var tt = 0; tt < GL_TYPES.length; tt++) if (GL_TYPES[tt].amountKey) glitchSetValue(big, GL_TYPES[tt].id, GL_TYPES[tt].amountKey, 0.5 + 0.05 * tt);

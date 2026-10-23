@@ -48,8 +48,8 @@ const CORE_FN = CORE_RAW.replace(/@([A-Za-z0-9_]+)@/g, (m, n) => (n === "INIT" ?
 
 // ----------------------------------------------------------------------------- registry / layout
 ok("registry", () => {
-    assert.strictEqual(G.GL_INSTANCES.length, 25);
-    assert.strictEqual(G.GL_NINST, 25);
+    assert.strictEqual(G.GL_INSTANCES.length, 24);
+    assert.strictEqual(G.GL_NINST, 24);
     const ids = new Set();
     for (const inst of G.GL_INSTANCES) {
         assert.ok(!ids.has(inst.id));
@@ -84,14 +84,14 @@ ok("registry", () => {
         if (t.amountKey) assert.ok(G.glInstance("spec").params.some((p) => p.key === t.amountKey && p.kind === "wet"));
     }
     for (const i of ids) assert.ok(covered.has(i), `instance ${i} belongs to a type`);
-    assert.strictEqual(G.GL_TYPES.length, 42);
+    assert.strictEqual(G.GL_TYPES.length, 41);
 });
 
 ok("layout has no overlaps and matches the buffer", () => {
     const modParams = G.GL_INSTANCES.reduce((a, i) => a + i.params.length, 0);
     assert.strictEqual(L.mvBase, modParams, "the module params come first, the movement blocks after them");
-    assert.strictEqual(L.mvBase, 113 + 7 + 5 + 35, "phase 3 had 113 module params; phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params");
-    assert.strictEqual(L.np, L.mvBase + 25 * L.mvN);
+    assert.strictEqual(L.mvBase, 110 + 7 + 5 + 35, "phase 3 had 113 module params (110 without Width / Gain); phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params");
+    assert.strictEqual(L.np, L.mvBase + 24 * L.mvN);
     assert.strictEqual(L.mvN, 13 + 16);
     const seen = new Set();
     L.params.forEach((p, i) => {
@@ -108,7 +108,7 @@ ok("layout has no overlaps and matches the buffer", () => {
     assert.strictEqual(L.seqOffset, L.weightsOffset + 8);
     assert.ok(L.seqOffset + G.GL_SEQ_HDR + G.GL_SEQ_MAX <= G.GL_SLOTS_BUF_SAMPS, "sequencer block fits the engine buffer");
     assert.ok(L.endOffset <= G.GL_SLOTS_BUF_SAMPS, `constants end at ${L.endOffset}, buffer ${G.GL_SLOTS_BUF_SAMPS}`);
-    assert.strictEqual(G.GL_SLOTS_BUF_SAMPS, 10752);
+    assert.strictEqual(G.GL_SLOTS_BUF_SAMPS, 10496);
     // spectral param order that the core's main body hard-codes (B_spec + n)
     const keys = G.glInstance("spec").params.map((p) => p.key);
     assert.deepStrictEqual(keys, ["wet", "frz_amt", "frz_rate", "smr_amt", "smr_blur", "cc_amt", "cc_coeffs", "cc_bits", "sc_amt", "sc_mode", "sct_amt", "sct_w", "sct_rate", "mir_amt", "mir_pivot", "bsh_amt", "bsh_bins", "sgl_amt", "sgl_mode", "sgl_k", "sgl_step",
@@ -116,13 +116,13 @@ ok("layout has no overlaps and matches the buffer", () => {
         "dst_amt", "dst_kbps", "dst_mode", "dst_depth", "dst_rate", "thn_amt", "thn_n", "thn_soft", "dec_amt", "dec_k", "dec_boost", "nsf_amt", "nsf_depth", "nsf_grain",
         "clp_amt", "clp_mode", "clp_db", "psw_amt", "psw_w", "rph_amt", "rph_mode", "rph_rand"]);
     // module param order the core's functions read (b + n)
-    const want = { drvA: ["wet", "mode", "drive", "tone"], drvB: ["wet", "mode", "drive", "tone"], filt: ["wet", "type", "cutoff", "res"], crush: ["wet", "bits", "rate", "jitter"], ring: ["wet", "mode", "freq"], stut: ["wet", "div", "prob", "decay"], time: ["wet", "mode", "amt", "div"], chop: ["wet", "pattern", "div", "smooth"], dly: ["wet", "div", "fb", "pp", "damp"], rev: ["wet", "size", "decay", "damp", "void"], wid: ["wet", "width", "gain"],
+    const want = { drvA: ["wet", "mode", "drive", "tone"], drvB: ["wet", "mode", "drive", "tone"], filt: ["wet", "type", "cutoff", "res"], crush: ["wet", "bits", "rate", "jitter"], ring: ["wet", "mode", "freq"], stut: ["wet", "div", "prob", "decay"], time: ["wet", "mode", "amt", "div"], chop: ["wet", "pattern", "div", "smooth"], dly: ["wet", "div", "fb", "pp", "damp"], rev: ["wet", "size", "decay", "damp", "void"],
         form: ["wet", "vowel", "shift", "res"], comb: ["wet", "freq", "fb", "damp"], phas: ["wet", "stages", "sync", "hz", "div", "depth", "fb"], rect: ["wet", "mode", "blend"],
         fm: ["wet", "mode", "ratio", "index"], corr: ["wet", "div", "chance", "flips", "wrap", "drop"], gpit: ["wet", "pitch", "size", "jitter"], gstr: ["wet", "speed", "size", "spread"],
         ratc: ["wet", "div", "count", "accel", "pitch", "decay", "prob"], scrb: ["wet", "size", "shape", "rate", "depth"],
         rvs: ["wet", "div", "chance"], shuf: ["wet", "slices", "span", "chance", "seed"], slap: ["wet", "time", "tone", "offset"] };
     for (const [id, k] of Object.entries(want)) assert.deepStrictEqual(G.glInstance(id).params.map((p) => p.key), k, id);
-    assert.deepStrictEqual(L.instances.map((i) => i.id), ["drvA", "filt", "form", "comb", "phas", "crush", "rect", "fm", "corr", "ring", "stut", "ratc", "time", "scrb", "gpit", "gstr", "rvs", "shuf", "chop", "spec", "drvB", "dly", "slap", "rev", "wid"]);
+    assert.deepStrictEqual(L.instances.map((i) => i.id), ["drvA", "filt", "form", "comb", "phas", "crush", "rect", "fm", "corr", "ring", "stut", "ratc", "time", "scrb", "gpit", "gstr", "rvs", "shuf", "chop", "spec", "drvB", "dly", "slap", "rev"]);
     assert.strictEqual(L.index["gstr.wet"] - L.index["gpit.wet"], G.glInstance("gpit").params.length, "gpit / gstr are neighbours in the chain (one gen loop)");
     assert.strictEqual(G.glInstance("gpit").params.length, G.glInstance("gstr").params.length);
     // scope offsets do not overlap
@@ -656,7 +656,7 @@ ok("allow-list covers every new module: only that type is rolled, and it is roll
     const old = G.GL_TYPES.map((t) => t.id).filter((id) => !["formant", "comb", "phaser", "rectify", "fm", "corrupt", "gpitch", "gstretch", "revslice", "shuffle", "slapback", "scatter", "mirror", "binshift", "specgate", "ratchet", "scratch", "gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"].includes(id));
     for (let seed = 1; seed <= 60; seed++) {
         const g = G.randomizeGlitch(seed, 0.9, old);
-        for (const id of Object.keys(g.modules)) assert.ok(["drvA", "filt", "crush", "ring", "stut", "time", "chop", "spec", "drvB", "dly", "rev", "wid"].includes(id), id);
+        for (const id of Object.keys(g.modules)) assert.ok(["drvA", "filt", "crush", "ring", "stut", "time", "chop", "spec", "drvB", "dly", "rev"].includes(id), id);
         const sp = g.modules.spec;
         if (sp) for (const k of ["sct_amt", "mir_amt", "bsh_amt", "sgl_amt"]) assert.ok(!(sp.params[k] > 0), k);
     }
@@ -666,7 +666,40 @@ ok("allow-list covers every new module: only that type is rolled, and it is roll
     for (const id of ["form", "comb", "phas", "rect", "fm", "corr", "gpit", "gstr", "rvs", "shuf", "slap"]) assert.ok(hit.has(id), `${id} is rolled by Randomize`);
 });
 
-ok("state migration v2 -> v5: new modules absent, sequence empty, no movement, old values map to the grown vector", () => {
+ok("Width / Gain is gone from the gen core, the stage list and the built device", () => {
+    assert.ok(!/gl_wid|@mod wid|@P_wid|@B_wid/.test(CORE_RAW), "no wid code in the gen core");
+    assert.ok(!G.glitchStages().some((st) => st.id === "wid" || st.insts.includes("wid")), "no wid stage");
+    assert.strictEqual(G.GL_STAGE_DEFS.length, 2 + G.GL_INSTANCES.length - 1, "head + one stage per instance (gstr shares gpit's) + tail");
+    assert.strictEqual(L.np, 853);
+    assert.strictEqual(L.endOffset, 10292);
+    const dev = fs.readFileSync(path.join(ROOT, "devices", "Glitch.amxd"), "latin1");
+    assert.ok(!/gl_wid|id: \\"wid\\"|"Width \/ Gain\\", category/.test(dev), "the built device has no Width / Gain module");
+});
+
+ok("state migration v5 -> v6: the Width / Gain module (wid) is dropped from slots, working glitch, locks, ui and allow-list", () => {
+    const withWid = { version: 1, name: "w", seed: 3, locks: { wid: true, filt: true }, modules: {
+        filt: { wet: 1, params: { type: 1, cutoff: 300, res: 0.2 }, move: null },
+        wid: { wet: 1, params: { width: 1.5, gain: 3 }, move: { type: 1, target: "gain", depth: 0.5 } } }, movement: {} };
+    const v5 = { version: 5, slots: [withWid, null, null, null, null, null, null, null], corners: [0, 1, 2, 3], allow: { drive: true, width: false, filter: false },
+        chaos: 0.5, xy: [0.5, 0.5], working: withWid, audition: "working", seed: 1, ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "wid", optCat: 7 } };
+    const t = G.stateFromBlob([5, JSON.stringify(v5)]);
+    assert.strictEqual(t.version, 6);
+    for (const g of [t.slots[0], t.working]) {
+        assert.ok(!("wid" in g.modules), "wid dropped");
+        assert.strictEqual(g.modules.filt.params.cutoff, 300, "other modules keep their values");
+        assert.ok(!g.locks || !g.locks.wid, "the wid lock is dropped");
+        assert.ok(g.locks && g.locks.filt, "other locks stay");
+    }
+    assert.strictEqual(t.ui.sel, "", "a selection on the removed tile is cleared");
+    assert.ok(t.ui.optCat >= 0 && t.ui.optCat < G.glitchOptionCategories().length);
+    assert.ok(!("width" in t.allow) && t.allow.filter === false && Object.keys(t.allow).length === G.GL_ALLOW_ITEMS.length);
+    assert.strictEqual(G.glitchToVector(t.slots[0]).length, L.np);
+    assert.ok(G.GL_INSTANCES.every((i) => i.id !== "wid") && G.GL_TYPES.every((x) => x.id !== "width" && x.category !== "Utility"));
+    // a state saved today round-trips
+    assert.deepStrictEqual(G.stateFromBlob(G.stateToBlob(t)).working.modules, t.working.modules);
+});
+
+ok("state migration v2 -> v6: new modules absent, sequence empty, no movement, old values map to the grown vector", () => {
     const oldSlot = {
         version: 1, name: "old", seed: 3,
         modules: {
@@ -681,7 +714,7 @@ ok("state migration v2 -> v5: new modules absent, sequence empty, no movement, o
         chaos: 0.7, xy: [0.2, 0.9], working: oldSlot, audition: "morph", seed: 9, ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" },
     };
     const t = G.stateFromBlob([2, JSON.stringify(v2)]);
-    assert.strictEqual(t.version, 5);
+    assert.strictEqual(t.version, 6);
     assert.deepStrictEqual(t.seq, G.defaultSeq());
     assert.ok(t.seq.steps.every((x) => x === -1), "the sequence is empty");
     assert.strictEqual(t.audition, "morph");
@@ -1766,7 +1799,7 @@ ok("GenExpr lint", () => {
     for (const decl of ["\nBuffer ", "\nData ", "\nParam ", "\nHistory ", "\nDelay "]) assert.ok(CORE_RAW.indexOf(decl) > lastFn, `functions must precede ${decl.trim()}`);
     // the gen module functions and the one-call-site rule: each module function is called exactly once in the main body
     const main = CORE_RAW.slice(CORE_RAW.indexOf("\nBuffer slots"));
-    for (const f of ["gl_drive", "gl_filter", "gl_crush", "gl_ring", "gl_stut", "gl_time", "gl_chop", "gl_dly", "gl_rev", "gl_wid", "gl_spec_frame", "gl_blend", "gl_ratchet", "gl_scratch"]) {
+    for (const f of ["gl_drive", "gl_filter", "gl_crush", "gl_ring", "gl_stut", "gl_time", "gl_chop", "gl_dly", "gl_rev", "gl_spec_frame", "gl_blend", "gl_ratchet", "gl_scratch"]) {
         const calls = (main.match(new RegExp(`\\b${f}\\(`, "g")) || []).length;
         assert.strictEqual(calls, f === "gl_drive" ? 2 : 1, `${f} call sites`);
     }
@@ -1876,7 +1909,7 @@ ok("stages: each stage's gen holds only its own code (functions, state, Params),
         gl_drive: "drvA", gl_filter: "filt", gl_form: "form", gl_comb: "comb", gl_phas: "phas", gl_crush: "crush", gl_rect: "rect", gl_fm: "fm", gl_corr: "corr", gl_ring: "ring",
         gl_stut: "stut", gl_ratchet: "ratc", gl_time: "time", gl_scratch: "scrb", gl_grain: "gpit", gl_rvs: "rvs", gl_shuf: "shuf", gl_chop: "chop",
         gl_spec_frame: "spec", fft_run: "spec", stft_frame: "spec", gl_mapfx: "spec", gl_magfx: "spec", gl_phasefx: "spec", gl_cproc: "spec",
-        gl_dly: "dly", gl_slap: "slap", gl_rev: "rev", gl_wid: "wid" };
+        gl_dly: "dly", gl_slap: "slap", gl_rev: "rev" };
     for (const [fn, sid] of Object.entries(fnOwner)) {
         for (const s of STAGES) {
             const has = new RegExp(`^${fn}\\(.*\\) \\{$`, "m").test(STAGE_SRC[s.id]);
@@ -1906,7 +1939,7 @@ ok("stages: each stage's gen holds only its own code (functions, state, Params),
         const code = body.split("\n").filter((l) => !/^(Buffer|Data|Delay|Param|History) /.test(l)).join("\n");
         for (const d of decls) { const nm = /^\w+ (\w+)/.exec(d)[1]; assert.ok(new RegExp(`\\b${nm}\\b`).test(code), `stage ${s.id}: ${nm} is declared but unused`); }
         // one call site per big helper inside a stage
-        for (const f of ["gl_drive", "gl_filter", "gl_stut", "gl_time", "gl_chop", "gl_dly", "gl_rev", "gl_wid", "gl_spec_frame", "gl_blend", "gl_smooth", "gl_move", "gl_ratchet", "gl_scratch", "gl_grain", "gl_seq"]) {
+        for (const f of ["gl_drive", "gl_filter", "gl_stut", "gl_time", "gl_chop", "gl_dly", "gl_rev", "gl_spec_frame", "gl_blend", "gl_smooth", "gl_move", "gl_ratchet", "gl_scratch", "gl_grain", "gl_seq"]) {
             assert.ok((code.match(new RegExp(`\\b${f}\\(`, "g")) || []).length <= 1, `stage ${s.id}: ${f} has more than one call site`);
         }
         // ports: only the inlets / outlets the stage has, and all of its outlets are written
@@ -1945,8 +1978,8 @@ ok("stages: compile budget (what makes loading fast) and the head / group / tail
     const h = STAGE_SRC.h;
     assert.ok(h.includes("d_tk.poke(tkv, 0);") && h.includes("out1 = d_tk.peek(0);") && h.includes("out2 = floor(beat);") && h.includes("out3 = beat - floor(beat);"));
     assert.ok(h.includes("out4 = (quietCnt >= n) ? 1 : 0;"));
-    assert.ok(h.includes("gl_blend(d_sv, d_wv, d_meta, d_tgt, 885, 0, 885);") && h.includes("gl_smooth(d_pv, d_tgt, d_meta, 0, 885, snapK);"), "blend and smoothing cover the whole vector");
-    assert.ok(h.includes("poke(ctl, d_pv.peek(i), rsl + i, 0);") && h.includes("for (i = 0; i < 160; i += 1) {"), "the head publishes the module params of each tick");
+    assert.ok(h.includes("gl_blend(d_sv, d_wv, d_meta, d_tgt, 853, 0, 853);") && h.includes("gl_smooth(d_pv, d_tgt, d_meta, 0, 853, snapK);"), "blend and smoothing cover the whole vector");
+    assert.ok(h.includes("poke(ctl, d_pv.peek(i), rsl + i, 0);") && h.includes("for (i = 0; i < 157; i += 1) {"), "the head publishes the module params of each tick");
     // groups read the ring slot of the head's tick, their own param range only, and smooth their own wets (gated by go)
     for (const g of GROUPS) {
         const src = STAGE_SRC[g.id];
@@ -2015,8 +2048,8 @@ for (const editor of [0, 1]) for (const slots of [0, 1]) for (const seq of [0, 1
 const DEVICE_W = (ui) => G.glitchFaceLayout(ui).width;
 
 ok("layout: width math and every collapse state (EDIT x SLOTS x SEQ)", () => {
-    const base = FACE.MARGIN + (FACE.PAD_W + FACE.GAP + FACE.VIEW_W) + FACE.GAP + FACE.SIDE_W + FACE.MARGIN;
-    assert.strictEqual(base, 374);
+    const base = FACE.MARGIN + FACE.RAIL_W + FACE.GAP + (FACE.PAD_W + FACE.GAP + FACE.VIEW_W) + FACE.GAP + FACE.SIDE_W + FACE.MARGIN;
+    assert.strictEqual(base, 398, "6 + rail 20 + 4 + core 312 + 4 + side 46 + 6");
     const expected = {};
     for (const editor of [0, 1]) for (const slots of [0, 1]) for (const seq of [0, 1]) {
         expected[`${editor}${slots}${seq}`] = base + (editor ? FACE.GAP + FACE.EDITOR_W : 0) + (slots ? FACE.GAP + FACE.SLOTS_W : 0) + (seq ? FACE.GAP + FACE.SEQ_W : 0);
@@ -2025,12 +2058,13 @@ ok("layout: width math and every collapse state (EDIT x SLOTS x SEQ)", () => {
         assert.strictEqual(DEVICE_W({ editor, slots, seq }), expected[`${editor}${slots}${seq}`], `editor ${editor} slots ${slots} seq ${seq}`);
         assert.strictEqual(DEVICE_W({ editor, slots, seq, options: 1 }), expected[`${editor}${slots}${seq}`], "the Options view never changes the width");
     }
-    assert.deepStrictEqual([374, 462, 568, 656, 590, 678, 784, 872],
+    assert.deepStrictEqual([398, 486, 592, 680, 614, 702, 808, 896],
         [DEVICE_W({ slots: 0 }), DEVICE_W({}), DEVICE_W({ editor: 1, slots: 0 }), DEVICE_W({ editor: 1 }), DEVICE_W({ slots: 0, seq: 1 }), DEVICE_W({ seq: 1 }), DEVICE_W({ editor: 1, slots: 0, seq: 1 }), DEVICE_W({ editor: 1, seq: 1 })]);
-    assert.strictEqual(DEVICE_W(undefined), 462);
+    assert.strictEqual(DEVICE_W(undefined), 486);
     for (const ui of UI_COMBOS) assert.strictEqual(G.glitchFaceLayout(ui).height, 169);
-    // sections, left to right: core | EDIT | SLOTS | SEQ | side
+    // sections, left to right: rail | core | EDIT | SLOTS | SEQ | side
     const Lo = G.glitchFaceLayout({ editor: 1, slots: 1, seq: 1 });
+    assert.ok(Lo.rail.x + Lo.rail.w <= Lo.core.x && Lo.rail.x === FACE.MARGIN, "the rail is the left-most section");
     assert.ok(Lo.core.x + Lo.core.w <= Lo.editor.x && Lo.editor.x + Lo.editor.w <= Lo.slots.rect.x && Lo.slots.rect.x + Lo.slots.rect.w <= Lo.seq.rect.x && Lo.seq.rect.x + Lo.seq.rect.w <= Lo.side.rect.x);
 });
 
@@ -2065,14 +2099,20 @@ ok("layout: every interactive rect is inside its panel, nothing overlaps (all 16
             }
             for (const c of map.filter((m) => m.layer === 1)) assert.ok(map.some((m) => m.layer === 0 && G.glInside(c.r, m.r)), `${c.id} has a base rect`);
         }
-        const panels = [Lo.core, Lo.editor, Lo.slots && Lo.slots.rect, Lo.seq && Lo.seq.rect, Lo.side.rect].filter(Boolean);
+        const panels = [Lo.rail, Lo.core, Lo.editor, Lo.slots && Lo.slots.rect, Lo.seq && Lo.seq.rect, Lo.side.rect].filter(Boolean);
         for (let i = 0; i < panels.length; i++) for (let j = i + 1; j < panels.length; j++) assert.ok(!G.glOverlap(panels[i], panels[j]), "sections overlap");
         assert.ok(panels.every((pn) => G.glInside(pn, whole)));
         assert.ok(Math.abs(Lo.side.rect.x + Lo.side.rect.w + FACE.MARGIN - Lo.width) < 1e-9, "right margin");
         // the action bar's cells and the header toggles fit the core panel
         for (const k in Lo.action) assert.ok(G.glInside(Lo.action[k], Lo.core), "action " + k);
-        for (const k in Lo.toggles) assert.ok(G.glInside(Lo.toggles[k], Lo.core), "toggle " + k);
-        assert.ok(G.glInside(Lo.hint, Lo.core) && !G.glOverlap(Lo.hint, Lo.toggles.seq), "hint beside the toggles");
+        // the rail: the three section toggles stacked from the top, the Options gear at the bottom, all inside the rail and the device height
+        const tgs = [Lo.toggles.editor, Lo.toggles.slots, Lo.toggles.seq];
+        for (const k in Lo.toggles) assert.ok(G.glInside(Lo.toggles[k], Lo.rail), "toggle " + k + " inside the rail");
+        assert.ok(G.glInside(Lo.railOpt, Lo.rail) && Lo.rail.h === FACE.BOTTOM - FACE.TOP && Lo.rail.y === FACE.TOP && Lo.rail.x + Lo.rail.w <= Lo.core.x);
+        for (let i = 1; i < 3; i++) assert.ok(tgs[i].y >= tgs[i - 1].y + tgs[i - 1].h, "toggles stacked");
+        assert.ok(Lo.railOpt.y >= tgs[2].y + tgs[2].h && Lo.railOpt.y + Lo.railOpt.h <= FACE.BOTTOM, "the Options gear is pinned below the toggles, at the bottom");
+        assert.ok(!Lo.action.opt && Lo.action.ab.x + Lo.action.ab.w === Lo.core.x + Lo.core.w, "the Mode selector keeps the action bar's full width after the gear moved");
+        assert.ok(G.glInside(Lo.hint, Lo.core) && Lo.hint.y + Lo.hint.h <= Lo.pad.y && Lo.hint.w === Lo.core.w, "the header row is all hint now");
     }
 });
 
@@ -2094,11 +2134,11 @@ ok("layout: the sequencer section: 16 steps in a row, the length lane above, con
 
 ok("layout: Options has a category list and one toggle per type; every page of a category fits its 8 slots (Spectral pages)", () => {
     const closed = new Set(G.glitchHitMap({ options: 0 }, 4, 0).map((m) => m.id));
-    for (const id of ["pad", "tile0", "act_dice", "act_mutate", "act_chaos", "act_opt", "act_ab"]) assert.ok(closed.has(id), id);
+    for (const id of ["pad", "tile0", "act_dice", "act_mutate", "act_chaos", "act_opt", "act_ab", "tg_editor", "tg_slots", "tg_seq"]) assert.ok(closed.has(id), id);
     const cats = G.glitchOptionCategories();
-    assert.deepStrictEqual(cats.map((c) => c.name), ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility", "Movement"]);
+    assert.deepStrictEqual(cats.map((c) => c.name), ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Movement"]);
     assert.strictEqual(cats.reduce((n, c) => n + c.types.length, 0), G.GL_ALLOW_ITEMS.length, "every type (and movement kind) is in exactly one category");
-    assert.deepStrictEqual(cats[7].types.map((i) => G.GL_ALLOW_ITEMS[i].id), ["mv_lfo", "mv_steps", "mv_env"]);
+    assert.deepStrictEqual(cats[6].types.map((i) => G.GL_ALLOW_ITEMS[i].id), ["mv_lfo", "mv_steps", "mv_env"]);
     assert.ok(cats.every((c) => c.types.length >= 1));
     assert.ok(cats.filter((c) => c.types.length > FACE.OPT_PAGE).map((c) => c.name).join() === "Spectral", "only Spectral needs pages");
     assert.strictEqual(cats[3].types.length, 8, "Time holds exactly 8 types (Ratchet and Scratch included)");
@@ -2112,7 +2152,8 @@ ok("layout: Options has a category list and one toggle per type; every page of a
         const open = G.glitchHitMap({ options: 1, optCat: cat, optPage: page }, 4, 0).map((m) => m.id);
         const pgItems = G.glitchOptionPage(cat, page).items;
         assert.strictEqual(open.includes("opt_next"), npg > 1);
-        for (const id of ["pad", "tile0", "act_dice", "act_mutate", "act_chaos", "act_opt", "act_ab"]) assert.ok(!open.includes(id), `${id} is replaced by Options`);
+        for (const id of ["pad", "tile0", "act_dice", "act_mutate", "act_chaos", "act_ab"]) assert.ok(!open.includes(id), `${id} is replaced by Options`);
+        for (const id of ["act_opt", "tg_editor", "tg_slots", "tg_seq"]) assert.ok(open.includes(id), `${id} (the rail) stays while Options is open`);
         for (const ti of pgItems) { assert.ok(open.includes("opt_" + ti), `category ${cat} page ${page} lists type ${ti}`); seenTypes.add(ti); }
         for (const o of open.filter((i) => /^opt_\d+$/.test(i))) assert.ok(pgItems.includes(Number(o.slice(4))), "only this page's types");
         for (let c = 0; c < cats.length; c++) assert.ok(open.includes("optcat_tg" + c) && open.includes("optcat_sel" + c));
@@ -2120,8 +2161,8 @@ ok("layout: Options has a category list and one toggle per type; every page of a
       }
     }
     assert.strictEqual(seenTypes.size, G.GL_ALLOW_ITEMS.length);
-    const O = G.glitchOptionsLayout(FACE.MARGIN);
-    assert.ok(G.glInside(O.note, O.panel) && O.cats.length === 8 && O.slots.length === 8);
+    const O = G.glitchOptionsLayout(G.glitchFaceLayout({}).core.x);
+    assert.ok(G.glInside(O.note, O.panel) && O.cats.length === 7 && O.slots.length === 8);
     for (const r of [O.prev, O.next, O.pageText]) assert.ok(G.glInside(r, O.panel) && !G.glOverlap(r, O.note) && r.y + r.h <= O.panel.y + O.panel.h, "pager inside the panel, clear of the note line");
     assert.ok(!G.glOverlap(O.prev, O.pageText) && !G.glOverlap(O.pageText, O.next));
     assert.ok(O.slots.every((r) => !G.glOverlap(r, O.prev) && !G.glOverlap(r, O.next)));
@@ -2140,7 +2181,7 @@ ok("layout: Options has a category list and one toggle per type; every page of a
     assert.strictEqual(G.glitchCategoryState(st, 4), 1);
     // optCat survives normalizeUi and is clamped
     assert.strictEqual(G.normalizeUi({ optCat: 5 }).optCat, 5);
-    assert.strictEqual(G.normalizeUi({ optCat: 99 }).optCat, 7);
+    assert.strictEqual(G.normalizeUi({ optCat: 99 }).optCat, 6);
     assert.strictEqual(G.normalizeUi({ optCat: -3 }).optCat, 0);
 });
 
@@ -2330,14 +2371,14 @@ ok("allow-list: toggles gate Randomize and Mutate", () => {
 });
 
 ok("state versioning: v3 carries ui and seq, v1 and damaged blobs still load", () => {
-    assert.strictEqual(G.GL_STATE_VERSION, 5);
+    assert.strictEqual(G.GL_STATE_VERSION, 6);
     const s = G.defaultState();
     s.ui.editor = 1; s.ui.slots = 0; s.ui.options = 1; s.ui.seq = 1;
     s.working = G.randomizeGlitch(4, 0.5);
     s.ui.sel = G.glitchTiles(G.glitchToVector(s.working))[0].key;
     G.glitchToggleLock(s.working, s.ui.sel);
     const blob = G.stateToBlob(s);
-    assert.strictEqual(blob[0], 5);
+    assert.strictEqual(blob[0], 6);
     const back = G.stateFromBlob(blob);
     assert.strictEqual(back.ui.editor, 1); assert.strictEqual(back.ui.slots, 0); assert.strictEqual(back.ui.options, 1);
     assert.strictEqual(back.ui.seq, 1, "the sequencer section flag round-trips (the sequencer section opens again)");
@@ -2394,7 +2435,7 @@ function makeUi(extra) {
     const pokes = [];
     const calls = { notify: 0 };
     const drawLog = [];
-    const gm = { size: [462, 169], init() {}, redraw() {}, text_measure(t) { return [String(t).length * 6, 8]; } };
+    const gm = { size: [486, 169], init() {}, redraw() {}, text_measure(t) { return [String(t).length * 6, 8]; } };
     for (const fn of ["set_source_rgba", "set_line_width", "rectangle", "rectangle_rounded", "move_to", "line_to", "curve_to", "close_path", "arc", "ellipse", "fill", "fill_preserve", "stroke", "select_font_face", "set_font_size", "show_text", "save", "restore", "translate", "rotate"]) {
         gm[fn] = (...a) => { drawLog.push(fn + ":" + a.map((x) => (typeof x === "number" ? Math.round(x * 100) / 100 : x)).join(",")); };
     }
@@ -2418,7 +2459,7 @@ const center = (r) => [r.x + r.w / 2, r.y + r.h / 2];
 ok("v8ui: Randomize, tiles, the editor section grows the device", () => {
     const u = makeUi();
     u.run("setbuffer('---glitchslots', '---glitchscope'); device_ready()");
-    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 462]);
+    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 486]);
     const A = G.glitchFaceLayout({}).action;
     const [dx, dy] = center(A.dice);
     u.run(`onclick(${dx}, ${dy}, 1, 0, 0, 0, 0); ondrag(${dx}, ${dy}, 0)`);
@@ -2432,17 +2473,17 @@ ok("v8ui: Randomize, tiles, the editor section grows the device", () => {
     const [tx, ty] = center(tile0);
     u.run(`onclick(${tx}, ${ty}, 1, 0, 0, 0, 0); ondrag(${tx}, ${ty}, 0)`);
     assert.strictEqual(u.run("gState.ui.editor"), 1);
-    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 656]);
+    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 680]);
     assert.strictEqual(u.run("gState.ui.sel"), u.run("gTiles[0].key"));
     u.run("paint()");
     // the same tile again collapses it
     u.run(`onclick(${tx}, ${ty}, 1, 0, 0, 0, 0); ondrag(${tx}, ${ty}, 0)`);
     assert.strictEqual(u.run("gState.ui.editor"), 0);
-    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 462]);
+    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 486]);
     // the section chips toggle too
     const T = G.glitchFaceLayout({}).toggles;
     u.run(`onclick(${T.slots.x + 5}, ${T.slots.y + 5}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
-    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 374]);
+    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 398]);
     assert.strictEqual(u.run("gState.ui.slots"), 0);
 });
 
@@ -2564,10 +2605,19 @@ ok("v8ui: slots save / recall / clear / drag to a corner, Options toggles", () =
     u.run(`onclick(${c0[0]}, ${c0[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
     assert.strictEqual(u.run("gState.corners[0]"), 1);
     // Options view: toggles
-    click(L.action.opt);
+    click(L.railOpt);
     assert.strictEqual(u.run("gState.ui.options"), 1);
+    click(L.railOpt); // the gear is a toggle: it closes Options again
+    assert.strictEqual(u.run("gState.ui.options"), 0);
+    click(L.railOpt);
+    assert.strictEqual(u.run("gState.ui.options"), 1);
+    // the rail's section buttons work while Options is open (EDIT closes it: the editor takes the stage)
+    click(L.toggles.slots);
+    assert.strictEqual(u.run("gState.ui.slots"), 0);
+    click(G.glitchFaceLayout({ slots: 0, options: 1 }).toggles.slots);
+    assert.strictEqual(u.run("gState.ui.slots"), 1);
     u.run("paint()");
-    const O = G.glitchOptionsLayout(FACE.MARGIN);
+    const O = G.glitchOptionsLayout(L.core.x);
     click(O.cats[0].select); // Filter category: its types are listed
     assert.strictEqual(u.run("gState.ui.optCat"), 0);
     const ft = G.glitchOptionCategories()[0].types;
@@ -2625,7 +2675,7 @@ ok("v8ui: SEQ section: toggle, width follows, steps cycle hold -> filled slots -
     const T = G.glitchFaceLayout({}).toggles;
     clickR(u, T.seq);
     assert.strictEqual(u.run("gState.ui.seq"), 1);
-    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 678]);
+    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 702]);
     const Q = G.glitchFaceLayout({ seq: 1 }).seq;
     const steps = () => u.run("gState.seq.steps.slice()");
     const undo0 = u.run("gUndo.length"), notify0 = u.calls.notify;
@@ -2694,7 +2744,7 @@ ok("v8ui: SEQ section: toggle, width follows, steps cycle hold -> filled slots -
     // collapse: back to the narrow device, and the arm is dropped
     u.run("gSeqArm = 3");
     clickR(u, G.glitchFaceLayout({ seq: 1 }).toggles.seq);
-    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 462]);
+    assert.deepStrictEqual(u.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 486]);
     assert.strictEqual(u.run("gSeqArm"), -1);
     // the blob keeps the steps, and a v2 blob loads with an empty sequence
     const back = G.stateFromBlob(JSON.parse(JSON.stringify(u.run("getvalueof()"))));
@@ -2872,16 +2922,16 @@ ok("v8ui: editing a module while Seq or Morph plays copies the sounding blend in
     assert.ok(!u2.run("gTiles.some(function (t) { return t.key === 'filt'; })"), "removed from what plays");
 });
 
-ok("v8ui: tile overflow: 43 tiles page, +N shows what is hidden, tiles on page 2 are clickable, the page clamps", () => {
+ok("v8ui: tile overflow: 42 tiles page, +N shows what is hidden, tiles on page 2 are clickable, the page clamps", () => {
     const u = makeUi();
     u.run("device_ready();" +
         "var big = defaultGlitch(); for (var i = 0; i < GL_INSTANCES.length; i++) glitchSetValue(big, GL_INSTANCES[i].id, 'wet', 0.8);" +
         "for (var t = 0; t < GL_TYPES.length; t++) if (GL_TYPES[t].amountKey) glitchSetValue(big, GL_TYPES[t].id, GL_TYPES[t].amountKey, 0.7);" +
         "gState.working = big; gModelDirty = true; refreshModel(); paint();");
-    assert.strictEqual(u.run("gTiles.length"), 43, "24 instances (spectral expands) + 19 sub-ops");
+    assert.strictEqual(u.run("gTiles.length"), 42, "23 instances (spectral expands) + 19 sub-ops");
     assert.strictEqual(u.run("gTiles[0].key"), "drvA");
     assert.deepStrictEqual(u.run("gTiles.map(function (t) { return t.chain; })").every((c, i, a) => i === 0 || c >= a[i - 1]), true, "chain order");
-    const V = () => G.glitchViewLayout(43, G.glitchFaceLayout({}).view, u.run("gTilePage"));
+    const V = () => G.glitchViewLayout(42, G.glitchFaceLayout({}).view, u.run("gTilePage"));
     assert.strictEqual(V().rects.length, 12);
     clickR(u, V().next);
     assert.strictEqual(u.run("gTilePage"), 1);
@@ -2896,7 +2946,7 @@ ok("v8ui: tile overflow: 43 tiles page, +N shows what is hidden, tiles on page 2
     clickR(u, V().next);
     clickR(u, V().next);
     assert.strictEqual(u.run("gTilePage"), 3, "the last page");
-    assert.strictEqual(V().rects.length, 7);
+    assert.strictEqual(V().rects.length, 6);
     clickR(u, V().prev);
     clickR(u, V().prev);
     clickR(u, V().prev);
@@ -2912,9 +2962,9 @@ ok("v8ui: tile overflow: 43 tiles page, +N shows what is hidden, tiles on page 2
     }
 });
 
-ok("v8ui: every tile has its own audio-reactive glyph and readout (all 24 instances and 19 spectral sub-ops)", () => {
+ok("v8ui: every tile has its own audio-reactive glyph and readout (all 23 instances and 19 spectral sub-ops)", () => {
     const keys = G.GL_INSTANCES.filter((i) => i.id !== "spec").map((i) => i.id).concat(SPEC_TYPES);
-    assert.strictEqual(keys.length, 43);
+    assert.strictEqual(keys.length, 42);
     const loud = (u) => {
         u.run("gHaveTele = true; gTele = new Array(GL_SCOPE.END).fill(0); for (var i = 0; i < GL_SCOPE.END; i++) gTele[i] = 0.2 + 0.7 * Math.abs(Math.sin(i * 1.3));" +
             "gTele[GL_SCOPE.BEAT] = 3.7; gTele[GL_SCOPE.STUT_ENGAGED] = 1; gTele[GL_SCOPE.CHOP_STEP] = 5;");
@@ -2942,7 +2992,7 @@ ok("v8ui: every tile has its own audio-reactive glyph and readout (all 24 instan
     // every phase 2 tile (15 modules / sub-ops) has a drawing of its own: different from every other tile and from the generic level bars (drive A / B, filter, crush, ring, delay, reverb, width)
     const NEW_TILES = ["form", "comb", "phas", "rect", "fm", "corr", "gpit", "gstr", "rvs", "shuf", "slap", "scatter", "mirror", "binshift", "specgate",
         "ratc", "scrb", "gfreeze", "stretch", "bubbler", "mp3ify", "duststorm", "thinner", "decap", "noisify", "clipper", "pswap", "rphase"];
-    const generics = new Set(["drvA", "drvB", "filt", "crush", "ring", "dly", "rev", "wid"].map((k) => glyph.get(k)));
+    const generics = new Set(["drvA", "drvB", "filt", "crush", "ring", "dly", "rev"].map((k) => glyph.get(k)));
     const seenNew = new Set();
     for (const k of NEW_TILES) {
         assert.ok(!generics.has(glyph.get(k)), `${k} has its own glyph`);
@@ -2973,7 +3023,7 @@ ok("v8ui: blob round trip restores the sections and the device width", () => {
     const u2 = makeUi();
     u2.run(`setvalueof(${JSON.stringify(blob[0])}, ${JSON.stringify(blob[1])})`);
     u2.run("device_ready()");
-    assert.deepStrictEqual(u2.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 568]);
+    assert.deepStrictEqual(u2.sent.filter((m) => m[0] === "setwidth_cmd").pop(), ["setwidth_cmd", 592]);
     assert.strictEqual(u2.run("gState.ui.sel"), u.run("gState.ui.sel"));
     assert.ok(u2.params().some((m) => m[1] === "morphx"), "morph / chaos / mode are pushed into the live objects at ready");
 });
@@ -3416,7 +3466,7 @@ ok("gen movement (gl_lfo, gl_stepv, gl_move) equals the JS mirror, tick by tick"
     const rd = () => Math.abs(rnd());
     const meta = new DataSim(L.np, 5);
     G.glitchMeta().forEach((m, i) => m.forEach((x, c) => (meta.a[c * L.np + i] = x)));
-    const insts = ["filt", "phas", "gpit", "spec", "wid", "dly", "ring"];
+    const insts = ["filt", "phas", "gpit", "spec", "slap", "dly", "ring"];
     for (let trial = 0; trial < 60; trial++) {
         const instId = insts[trial % insts.length];
         const k = L.instances.findIndex((i) => i.id === instId);
@@ -3585,7 +3635,7 @@ ok("state migration v3 -> v4: old slots have no movement, the blob round-trips m
     const v3 = { version: 3, slots: [old, null, old, null, null, null, null, null], corners: [0, 1, 2, 3], allow: { drive: false }, chaos: 0.3, xy: [0.5, 0.5], working: old, audition: "working", seed: 4,
         ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" }, seq: G.defaultSeq() };
     const t = G.stateFromBlob([3, JSON.stringify(v3)]);
-    assert.strictEqual(t.version, 5);
+    assert.strictEqual(t.version, 6);
     assert.strictEqual(t.allow.drive, false);
     assert.strictEqual(t.allow.mv_lfo, true);
     assert.strictEqual(t.ui.edTab, 0);
@@ -3653,8 +3703,8 @@ ok("layout: the Motion panel fits the editor for every movement type, controls d
     assert.ok(rowsMap.includes("ed_tab0") && rowsMap.includes("ed_tab1") && rowsMap.includes("ed_row0") && !rowsMap.includes("mv_type1"));
     const mvMap = G.glitchHitMap({ editor: 1, edTab: 1 }, 4, 5, 0, 1).map((m) => m.id);
     assert.ok(mvMap.includes("ed_tab1") && mvMap.includes("mv_type0") && mvMap.includes("mv_depth") && mvMap.includes("mv_shape6") && !mvMap.includes("ed_row0"));
-    // the 8 collapse states keep their widths (374 + 194 EDIT + 88 SLOTS + 216 SEQ)
-    for (const editor of [0, 1]) for (const slots of [0, 1]) for (const seq of [0, 1]) assert.strictEqual(G.glitchFaceLayout({ editor, slots, seq }).width, 374 + 194 * editor + 88 * slots + 216 * seq, JSON.stringify({ editor, slots, seq }));
+    // the 8 collapse states keep their widths (398 + 194 EDIT + 88 SLOTS + 216 SEQ)
+    for (const editor of [0, 1]) for (const slots of [0, 1]) for (const seq of [0, 1]) assert.strictEqual(G.glitchFaceLayout({ editor, slots, seq }).width, 398 + 194 * editor + 88 * slots + 216 * seq, JSON.stringify({ editor, slots, seq }));
     assert.strictEqual(G.glitchFaceLayout({ editor: 1, slots: 1, seq: 1, edTab: 1 }).width, G.glitchFaceLayout({ editor: 1, slots: 1, seq: 1 }).width, "the Motion tab does not change the width");
 });
 
@@ -3776,17 +3826,17 @@ ok("v8ui Motion: live telemetry draws the marker, the indicator and the panel; t
     u.run("gState.ui.edTab = 1; gLayout = glitchFaceLayout(gState.ui);");
     assert.doesNotThrow(() => u.run("paint()"));
     // Options: the Movement category lists the three kinds and toggling them changes the allow-list (one undo step)
-    u.run("setOptions(1); gState.ui.optCat = 7; gLayout = glitchFaceLayout(gState.ui);");
+    u.run("setOptions(1); gState.ui.optCat = 6; gLayout = glitchFaceLayout(gState.ui);");
     const O = u.run("gLayout.options");
     const d0 = u.run("gUndo.length");
     const cats = G.glitchOptionCategories();
-    const first = cats[7].types[0];
+    const first = cats[6].types[0];
     u.run(`onclick(${center(O.slots[0])[0]}, ${center(O.slots[0])[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
     assert.strictEqual(u.run("gState.allow.mv_lfo"), false);
     assert.strictEqual(u.run("gUndo.length"), d0 + 1);
-    u.run(`onclick(${center(O.cats[7].toggle)[0]}, ${center(O.cats[7].toggle)[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    u.run(`onclick(${center(O.cats[6].toggle)[0]}, ${center(O.cats[6].toggle)[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
     assert.ok(u.run("gState.allow.mv_lfo && gState.allow.mv_steps && gState.allow.mv_env"), "the category toggle switches all three on");
-    u.run(`onclick(${center(O.cats[7].toggle)[0]}, ${center(O.cats[7].toggle)[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    u.run(`onclick(${center(O.cats[6].toggle)[0]}, ${center(O.cats[6].toggle)[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
     assert.ok(u.run("!gState.allow.mv_lfo && !gState.allow.mv_steps && !gState.allow.mv_env"));
     assert.doesNotThrow(() => u.run("paint()"));
     // preview helpers: the demo telemetry carries movement for the tiles
@@ -3794,6 +3844,11 @@ ok("v8ui Motion: live telemetry draws the marker, the indicator and the panel; t
     assert.doesNotThrow(() => { pv.run("preview(); paint();"); });
     assert.ok(pv.run("gTiles.some(function (t) { return t.mv; })"), "the preview shows motion on at least one tile");
     assert.strictEqual(pv.run("gState.ui.edTab"), 1);
+});
+
+ok("paint bounds: every tile glyph, tile, the pad, the editor and the rail stay inside their rect (tests/test_glitch_paint_bounds.js)", () => {
+    const out = cp.execFileSync(process.execPath, [path.join(__dirname, "test_glitch_paint_bounds.js")], { encoding: "utf8" });
+    assert.ok(/stays inside its rect/.test(out), out);
 });
 
 console.log(`test_glitch: ${passed} groups passed`);

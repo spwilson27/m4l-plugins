@@ -81,6 +81,9 @@ function fill() {
     else if (stimMode === "mix") for (i = 0; i < n; i++) x[i] = 0.2 * (rnd() * 2 - 1) + 0.3 * Math.sin(2 * Math.PI * 440 * i / sr);
     else if (stimMode === "noise") for (i = 0; i < n; i++) x[i] = 0.4 * (rnd() * 2 - 1);
     else if (stimMode === "levels") for (i = 0; i < n; i++) x[i] = ((Math.floor(i / sr * 4 / PERIOD) % 2) ? 0.5 : 0.05) * (rnd() * 2 - 1); // noise, loud / quiet every 0.75 s
+    else if (stimMode === "noise_lo") for (i = 0; i < n; i++) x[i] = 0.01 * (rnd() * 2 - 1); // quiet: Drive A at +36 dB still does not clip
+    else if (stimMode === "sine_lo") for (i = 0; i < n; i++) x[i] = 0.02 * Math.sin(2 * Math.PI * 440 * i / sr);
+    else if (stimMode === "levels_lo") for (i = 0; i < n; i++) x[i] = ((Math.floor(i / sr * 4 / PERIOD) % 2) ? 0.04 : 0.004) * (rnd() * 2 - 1);
     else if (stimMode === "burst") for (i = 0; i < Math.floor(0.15 * sr); i++) x[i] = 0.5 * (rnd() * 2 - 1);
     else if (stimMode === "sweep2") for (i = 0; i < n; i++) x[i] = 0.4 * Math.sin(2 * Math.PI * (i < n / 2 ? 440 : 1320) * i / sr);
     else if (stimMode === "ramp") for (i = 0; i < n; i++) x[i] = -0.6 + 1.2 * i / n; // one slow linear ramp per stimulus period (phase 4: Scratch direction / continuity)

@@ -16,8 +16,8 @@
  *             is on Live's own scale, agrees in direction), X = 50 lies between
  *   seq       Mode = Seq through the LOM: the step advances while the transport plays; Seq Rate / Glide / Seq Length set through the
  *             LOM reach the gen (its reported step length, step = counter mod length, crossfade = fraction / glide)
- *   movement  (phase 3) Randomize assigns movement (tiles with an indicator, gen telemetry MOVE_ON); a Width / Gain module with a synced
- *             LFO on its gain (test_move) audibly varies the output over time while the transport plays, its phase equals the host beat
+ *   movement  (phase 3) Randomize assigns movement (tiles with an indicator, gen telemetry MOVE_ON); a low pass Filter with a synced
+ *             LFO on its cutoff (test_move) audibly varies the output over time while the transport plays, its phase equals the host beat
  *             x cycles-per-beat (locked), and stopping the transport holds the synced phase
  *   phase4    (phase 4) test_p4: Ratchet + Scratch (roll and lag telemetry move), the 11 new spectral sub-ops (STFT runs, spectra alive), both at
  *             once: gen keeps running, telemetry finite, output bounded
@@ -351,11 +351,31 @@ check(report().seed === seedBefore + 2 && getP("Mutate") === 0, "Mutate paramete
     debug("test_click", ...mid(tile));
     sleep(500);
     const r2 = report();
-    check(r2.ui.editor === 1 && r2.ui.sel === rep.tiles[0] && r2.width === 656, `click on a tile opens the editor (sel ${r2.ui.sel}, width ${r2.width})`);
+    check(r2.ui.editor === 1 && r2.ui.sel === rep.tiles[0] && r2.width === 680, `click on a tile opens the editor (sel ${r2.ui.sel}, width ${r2.width})`);
     debug("test_click", ...mid(tile));
     sleep(500);
     const r3 = report();
-    check(r3.ui.editor === 0 && r3.width === 462, `a second click collapses it (width ${r3.width})`);
+    check(r3.ui.editor === 0 && r3.width === 486, `a second click collapses it (width ${r3.width})`);
+    // the left rail: SLOTS collapses and returns (398 / 486), the gear opens and closes Options, EDIT opens the editor again
+    debug("test_click", ...mid(Lh.toggles.slots));
+    sleep(500);
+    const rr1 = report();
+    check(rr1.ui.slots === 0 && rr1.width === 398, `the rail's SLOTS button collapses the section (width ${rr1.width})`);
+    debug("test_click", ...mid(Lh.toggles.slots));
+    sleep(500);
+    check(report().ui.slots === 1 && report().width === 486, `... and brings it back (width ${report().width})`);
+    debug("test_click", ...mid(Lh.railOpt));
+    sleep(500);
+    check(report().ui.options === 1, "the rail's gear opens Options");
+    debug("test_click", ...mid(Lh.railOpt));
+    sleep(500);
+    check(report().ui.options === 0, "... and closes it again");
+    debug("test_click", ...mid(Lh.toggles.editor));
+    sleep(500);
+    check(report().ui.editor === 1 && report().width === 680, `the rail's EDIT button opens the editor (width ${report().width})`);
+    debug("test_click", ...mid(Lh.toggles.editor));
+    sleep(500);
+    check(report().ui.editor === 0 && report().width === 486, "... and closes it");
 }
 
 // morph: slot 1 = hard drive (loud), slot 2 = 60 Hz low pass (quiet); corners are slots 1 2 1 2, so X moves between them
@@ -476,22 +496,22 @@ setP("Mode", 0);
 sleep(500);
 
 
-// movement (phase 3): one Width / Gain module with a synced sine LFO on its gain, 1/4 note cycle (one beat), +-9 dB. The scope is read
+// movement (phase 3): one Filter module with a synced sine LFO on its cutoff, 1/4 note cycle (one beat), +-0.5 of the (log) range. The scope is read
 // straight from the buffer (no 300 ms report round trip): slot layout from src/glitch_config.js GL_SCOPE.
 {
     const SC = GS.GL_SCOPE;
-    const kW = GS.GL_INSTANCES.findIndex((i) => i.id === "wid");
+    const kW = GS.GL_INSTANCES.findIndex((i) => i.id === "filt");
     const readScope = () => evalLom(`return new Buffer(${JSON.stringify(scope)}).peek(1, 0, ${SC.END});`);
     setP("Mode", 0);
     debug("test_move");
     sleep(1200);
-    check(report().moves.includes("wid"), "test_move: the Width / Gain tile carries a movement");
+    check(report().moves.includes("filt"), "test_move: the Filter tile carries a movement");
     // make sure the transport plays (the clip launched it earlier; the sequencer test left it running)
     if (!isPlaying()) { evalLom('new LiveAPI("live_set").call("start_playing"); return 1;'); sleep(800); }
     const circ = (a, b) => { const d = Math.abs((a - b) % 1); return Math.min(d, 1 - d); };
     const samples = [];
     for (let i = 0; i < 26; i++) { const a = readScope(); samples.push({ on: a[SC.MOVE_ON + kW], ofs: a[SC.MOVE_OFS + kW], pos: a[SC.MOVE_POS + kW], ph: a[SC.MOVE_PH + kW], beat: a[SC.BEAT], out: a[SC.OUT_PEAK], inp: a[SC.IN_PEAK], play: a[SC.SEQ_PLAY] }); sleep(40); }
-    check(samples.every((x) => x.on === 1), "movement telemetry on for the Width / Gain module");
+    check(samples.every((x) => x.on === 1), "movement telemetry on for the Filter module");
     const ofs = samples.map((x) => x.ofs);
     check(Math.max(...ofs) > 0.25 && Math.min(...ofs) < -0.25 && Math.max(...ofs.map(Math.abs)) <= 0.5001, `the offset swings +-0.5 over time (${Math.min(...ofs).toFixed(2)} .. ${Math.max(...ofs).toFixed(2)})`);
     const outDb = samples.filter((x) => x.inp > 0.05).map((x) => db(x.out) - db(x.inp));
@@ -618,13 +638,13 @@ if (found.length >= 2 && INST === 0) {
     const pkDryA = bufPeaks(scA, 600), pkDryB = bufPeaks(scB, 600);
     check(Math.abs(pkDryA.db) < 2.5 && Math.abs(pkDryB.db) < 2.5, `Mix 0 on both: out = in (A ${pkDryA.db.toFixed(1)} dB, B ${pkDryB.db.toFixed(1)} dB)`);
 
-    // different glitches: A = loud drive (no spectral code), B = Width / Gain with a synced LFO (no spectral code either)
+    // different glitches: A = loud drive (no spectral code), B = Filter with a synced LFO on the cutoff (no spectral code either)
     A.debug("test_fill"); B.debug("test_move");
     sleep(2500);
     const rA0 = A.report(), rB0 = B.report();
     check(rA0.tiles.join() !== rB0.tiles.join(), `different glitches: A tiles ${rA0.tiles.join(",")} vs B tiles ${rB0.tiles.join(",")}`);
     check(rB0.stages.spec === "none" && !B.trace().split("\n").some((l) => /stage-lazy spec/.test(l)), `B has no spectral code yet (A\'s spec stage is "${rA0.stages.spec}": the checks above loaded it there)`);
-    check(rA0.stages.drvA === "on" && rB0.stages.drvA !== "on" && rB0.stages.wid === "on", `stages follow each instance's own glitch (A drvA ${rA0.stages.drvA}, B drvA ${rB0.stages.drvA} / wid ${rB0.stages.wid})`);
+    check(rA0.stages.drvA === "on" && rB0.stages.drvA !== "on" && rB0.stages.filt === "on", `stages follow each instance's own glitch (A drvA ${rA0.stages.drvA}, B drvA ${rB0.stages.drvA} / filt ${rB0.stages.filt})`);
 
     // hot-load the spectral stage in B while watching A: A's stages, counter, trace and level must not notice
     const aStagesBefore = JSON.stringify(rA0.stages);

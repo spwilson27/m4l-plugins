@@ -9,13 +9,13 @@
 //   Morph    the 8 saved slots, weights = bilinear XY over the 4 corner slots               (UI writes both)
 //   Seq      the 8 saved slots, weights computed IN GEN from the host beat by the 16-step slot sequencer
 //
-//   Chain (GL_INSTANCES, in this order, `pos` = index; GL_NINST = 25):
+//   Chain (GL_INSTANCES, in this order, `pos` = index; GL_NINST = 24):
 //     drvA -> filt -> form -> comb -> phas -> crush -> rect -> fm -> corr -> ring -> stut -> ratc -> time -> scrb -> gpit -> gstr
-//     -> rvs -> shuf -> chop -> spec(STFT N=1024) -> drvB -> dly -> slap -> rev -> wid
+//     -> rvs -> shuf -> chop -> spec(STFT N=1024) -> drvB -> dly -> slap -> rev
 //     then master soft limiter -> Mix -> Output (Mix / Output are Live parameters, not part of the glitch)
 //   Module TYPES (GL_TYPES, what the user sees and what the allow-list is about): drive (= drvA and drvB), filter, formant,
 //     comb, phaser, crush, rectify, fm, corrupt, ring, stutter, ratchet, time, scratch, gpitch, gstretch, revslice, shuffle, chopper,
-//     the 19 sub-ops of the single `spec` instance, delay, slapback, reverb, width.
+//     the 19 sub-ops of the single `spec` instance, delay, slapback, reverb.
 //   SPECTRAL SUB-OPS (phase 4: 11 new), in the order they run inside the one STFT pass (GL_TYPES lists them in this order, so the tiles do too):
 //     freeze, smear | scatter, mirror, binshift | gfreeze (Glitch Freeze), stretch, bubbler | mp3ify, duststorm, thinner, decap (Decapitate),
 //     noisify, clipper | specgate | ccrush, scramble | pswap (Phase Swap), rphase (Robot / Whisper)
@@ -23,9 +23,9 @@
 //     gl_binmap, gl_mapfx (loop of 3), gl_magfx (loop of 6), gl_sgate, gl_cproc, gl_phasefx (loop of 2); each helper has ONE call site.
 //     Randomize / Mutate roll at most glitchSpectralCap(chaos) of them: about 1 at Chaos 0 .. 4 at Chaos 1 (interpolated, rounded).
 //
-// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 885: 258 module
+// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 853: 157 module
 //   params (phase 3: 113; phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params), then one 29-float MOVEMENT block per chain
-//   instance, 25 x 29, see MOVEMENT below).
+//   instance, 24 x 29, see MOVEMENT below).
 //   Per instance the first param is its `wet` (amount, 0 = bypassed). The `spec` instance has one extra amount per sub-op
 //   (frz_amt, smr_amt, cc_amt, sc_amt, sct_amt, mir_amt, bsh_amt, sgl_amt and the phase 4 gfz_amt, str_amt, bub_amt, mp3_amt, dst_amt,
 //   thn_amt, dec_amt, nsf_amt, clp_amt, psw_amt, rph_amt); the sub-op's other params belong to that
@@ -34,11 +34,11 @@
 //   (discrete: mode / division / pattern). A param spec carries: kind, min, max, def, unit, rand [lo0,hi0,lo1,hi1] (the
 //   range rolled by Randomize at Chaos 0 and Chaos 1), calm / wild value lists for "disc", choices (names), group.
 //
-// ENGINE BUFFER `buffer~ ---glitchslots` (GL_SLOTS_BUF_SAMPS = 10752 floats, bound in gen as `slots ---glitchslots`):
-//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 885 -> 0..7079)
+// ENGINE BUFFER `buffer~ ---glitchslots` (GL_SLOTS_BUF_SAMPS = 10496 floats, bound in gen as `slots ---glitchslots`):
+//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 853 -> 0..6823)
 //   [WOFF = 8*NP .. +8)         8 weights used in modes Working / Morph (any non-negative numbers, gen normalizes by
-//                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (7080..7087)
-//   [SEQ = WOFF+8 .. +24)       the sequencer block, SEQ = glitchLayout().seqOffset = 7088:
+//                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (6824..6831)
+//   [SEQ = WOFF+8 .. +24)       the sequencer block, SEQ = glitchLayout().seqOffset = 6832:
 //        SEQ+0  mode     0 Working, 1 Morph, 2 Seq (gen uses the sequencer weights only when this is 2)
 //        SEQ+1  length   1..16 steps
 //        SEQ+2  rate     index into GL_SEQ_RATES (0..9: 1/32, 1/16T, 1/16, 1/8T, 1/8, 1/4T, 1/4, 1/2T, 1/2, 1 bar)
@@ -53,7 +53,7 @@
 //   [META = SEQ+24 .. +NP)      per param: kind + 4 * (index of its group's amount param)   (kind 0 wet, 1 lin, 2 log, 3 disc)
 //   [DEFS = META+NP .. +NP)     per param: its default value
 //   [WBI = DEFS+NP .. +NINST)   per chain position: index of that instance's wet param
-//   [MINS .. +NP) [MAXS .. +NP) per param: its minimum and maximum (the movement needs the range of its target)       (ends at endOffset 10677)
+//   [MINS .. +NP) [MAXS .. +NP) per param: its minimum and maximum (the movement needs the range of its target)       (ends at endOffset 10292)
 //   META / DEFS / WBI / MINS / MAXS are constants of the layout (glitchEngineConstants()); they ride in the buffer instead of being poked by
 //   gen's init code because 565 init statements cost gen about 3 s of compile time (measured 2026-10-21: 5.3 ms per statement).
 //   The UI writes everything with packEngineBuffer(state) via Buffer.poke(1, 0, array); a harness must write the constants too.
@@ -92,7 +92,9 @@
 //     ui: { editor, slots, seq, options: 0|1 section flags, sel: selected tile key, optCat, edTab: 0 PARAMS | 1 MOTION tab of the editor },
 //     seq: { steps: [16 x (-1 hold | 0..7)], length 1..16, rate 0..9, glide 0..1, curve 0|1 } }
 //   Versions: 1 (no ui), 2 (+ ui), 3 (+ seq; new modules), 4 (+ per-module movement, ui.edTab, the Movement allow-list kinds
-//   mv_lfo / mv_steps / mv_env), 5 (phase 4: Ratchet, Scratch and the 11 spectral sub-ops; ui.optPage = page of a long Options category).
+//   mv_lfo / mv_steps / mv_env), 5 (phase 4: Ratchet, Scratch and the 11 spectral sub-ops; ui.optPage = page of a long Options category),
+//   6 (the Width / Gain module `wid` is gone: slots, working glitch, locks, allow-list and the Utility category drop it on load, the stereo
+//   width / gain it applied is simply not applied any more; NP 853, 24 chain instances).
 //   A v1..v4 blob loads with every phase 4 module and sub-op absent (wet 0 / amount 0; their params are not saved, so they take the
 //   defaults) and their allow-list kinds switched ON. A v1 / v2 blob loads with the sequence EMPTY (all steps -1, length 8, rate 1/8, glide 0) and every
 //   new module absent (wet 0, the new spectral sub-op amounts 0) in all slots; a v1..v3 blob has no movement anywhere (`move: null`).
@@ -131,13 +133,13 @@
 //   glitchEditorRows(key), glitchSetValue / glitchRemoveTile / glitchToggleLock, rerollWorking / mutateWorking (honour locks),
 //   GL_PARAMS (the Live parameters), glitchHitMap(ui, nTiles, nRows) (every interactive rect, used by the tests).
 
-var GL_STATE_VERSION = 5;
+var GL_STATE_VERSION = 6;
 var GL_GLITCH_VERSION = 1;
 var GL_NSLOT = 8;
 var GL_FFT_N = 1024;
 var GL_LATENCY = 1023; // STFT path N - 1; everything else is aligned to it
 var GL_ACTIVE_EPS = 0.0005;
-var GL_SLOTS_BUF_SAMPS = 10752; // 8 slot vectors of NP floats + weights + sequencer block + the constants block (see glitchLayout().endOffset)
+var GL_SLOTS_BUF_SAMPS = 10496; // 8 slot vectors of NP floats + weights + sequencer block + the constants block (see glitchLayout().endOffset)
 var GL_SCOPE_SAMPS = 640;
 var GL_HOP_CTL = 32; // gen re-blends the weights every 32 samples
 var GL_SEQ_MAX = 16;
@@ -404,11 +406,6 @@ var GL_INSTANCES = [
         glP("damp", "Damping", "log", 800, 16000, 5000, { unit: "Hz", rand: [2000, 10000, 800, 16000] }),
         glP("void", "Void", "lin", 0, 1, 0, { rand: [0, 0.2, 0, 1] }),
     ] },
-    { id: "wid", type: "width", name: "Width / Gain", category: "Utility", params: [
-        glWet([0.8, 1, 0.5, 1]),
-        glP("width", "Width", "lin", 0, 2, 1, { rand: [0.7, 1.4, 0, 2] }),
-        glP("gain", "Gain", "lin", -12, 6, 0, { unit: "dB", rand: [-3, 2, -9, 6] }),
-    ] },
 ];
 var GL_NINST = GL_INSTANCES.length;
 
@@ -416,7 +413,7 @@ var GL_NINST = GL_INSTANCES.length;
 // (One per instance; a spectral sub-op has its own, GL_MAIN_SUB. Freeze and Scramble have no continuous param.)
 var GL_MAIN_PARAM = { drvA: "drive", filt: "cutoff", form: "vowel", comb: "freq", phas: "depth", crush: "bits", rect: "blend", fm: "index", corr: "chance",
     ring: "freq", stut: "decay", ratc: "accel", time: "amt", scrb: "depth", gpit: "pitch", gstr: "speed", rvs: "chance", shuf: "chance", chop: "smooth", spec: "smr_blur", drvB: "drive",
-    dly: "fb", slap: "tone", rev: "decay", wid: "width" };
+    dly: "fb", slap: "tone", rev: "decay" };
 var GL_MAIN_SUB = { smear: "smr_blur", ccrush: "cc_coeffs", scatter: "sct_w", mirror: "mir_pivot", binshift: "bsh_bins", specgate: "sgl_k",
     gfreeze: "gfz_dens", stretch: "str_st", bubbler: "bub_spread", mp3ify: "mp3_kbps", duststorm: "dst_depth", thinner: "thn_soft", decap: "dec_boost",
     noisify: "nsf_depth", clipper: "clp_db", pswap: "psw_w", rphase: "rph_rand" };
@@ -498,7 +495,6 @@ var GL_TYPES = [
     { id: "delay", name: "Delay", category: "Space", instances: ["dly"], weight: 1.1 },
     { id: "slapback", name: "Slapback", category: "Space", instances: ["slap"], weight: 0.7 },
     { id: "reverb", name: "Reverb", category: "Space", instances: ["rev"], weight: 1 },
-    { id: "width", name: "Width / Gain", category: "Utility", instances: ["wid"], weight: 0.5 },
 ];
 
 // Movement kinds in the Options allow-list (category "Movement"). mvType = the movement type they enable.
@@ -1494,7 +1490,7 @@ function normalizeGlitch(g) {
     return out;
 }
 /** Sanitize any (possibly older or damaged) state object into the current schema. Version history: 1 = slots / morph,
- *  2 = + ui, 3 = + seq and the phase 2 modules. Anything older loads with the sequence empty and the new modules absent. */
+ *  2 = + ui, 3 = + seq and the phase 2 modules, 6 = `wid` removed (normalizeGlitch skips instance ids that are not in the registry, normalizeState only keeps allow-list kinds that exist). Anything older loads with the sequence empty and the new modules absent. */
 function normalizeState(o) {
     var s = defaultState();
     if (!o || typeof o !== "object") return s;
@@ -1754,22 +1750,24 @@ var GL_PARAM_KEYS = ["morphx", "morphy", "chaos", "mix", "out", "randomize", "mu
 
 var GL_SHORT = { drvA: "DRIVE A", filt: "FILTER", form: "FORMANT", comb: "COMB", phas: "PHASER", crush: "CRUSH", rect: "RECTIFY", fm: "FM",
     corr: "CORRUPT", ring: "RING", stut: "STUTTER", time: "TAPE", gpit: "G-PITCH", gstr: "G-STRETCH", rvs: "REVERSE", shuf: "SHUFFLE", chop: "CHOP",
-    drvB: "DRIVE B", dly: "DELAY", slap: "SLAPBACK", rev: "REVERB", wid: "WIDTH", spec: "SPECTRAL", freeze: "FREEZE", smear: "SMEAR",
+    drvB: "DRIVE B", dly: "DELAY", slap: "SLAPBACK", rev: "REVERB", spec: "SPECTRAL", freeze: "FREEZE", smear: "SMEAR",
     ccrush: "C-CRUSH", scramble: "SCRAMBLE", scatter: "SCATTER", mirror: "MIRROR", binshift: "BIN SHIFT", specgate: "SPEC GATE",
     ratc: "RATCHET", scrb: "SCRATCH", gfreeze: "GL FREEZE", stretch: "STRETCH", bubbler: "BUBBLER", mp3ify: "MP3IFY", duststorm: "DUSTSTORM", thinner: "THINNER",
     decap: "DECAPITATE", noisify: "NOISIFY", clipper: "CLIPPER", pswap: "PHASE SWAP", rphase: "ROBOT" };
 // short names for the compact tiles (more than 4 modules in the glitch view)
 var GL_TINY = { drvA: "DRV A", drvB: "DRV B", form: "FORMNT", phas: "PHASER", crush: "CRUSH", rect: "RECT", corr: "CORR", stut: "STUT", gpit: "G-PIT", gstr: "G-STR",
-    rvs: "REV SL", shuf: "SHUF", slap: "SLAP", rev: "REVERB", wid: "WIDTH", ccrush: "C-CRSH", scramble: "SCRAM", scatter: "SCATR", binshift: "BINSH", specgate: "S-GATE",
+    rvs: "REV SL", shuf: "SHUF", slap: "SLAP", rev: "REVERB", ccrush: "C-CRSH", scramble: "SCRAM", scatter: "SCATR", binshift: "BINSH", specgate: "S-GATE",
     ratc: "RATCH", scrb: "SCRUB", gfreeze: "G-FRZ", stretch: "STRTCH", bubbler: "BUBBL", mp3ify: "MP3", duststorm: "DUST", thinner: "THIN",
     decap: "DECAP", noisify: "NOISE", clipper: "CLIP", pswap: "PH-SW", rphase: "ROBOT" };
 
-var GL_FACE = { MARGIN: 6, GAP: 4, TOP: 4, BOTTOM: 165, HEADER_H: 16, BODY_Y: 23, BODY_H: 114, ACTION_Y: 140, ACTION_H: 25,
+var GL_FACE = { MARGIN: 6, GAP: 4, TOP: 4, BOTTOM: 165, HEADER_H: 13, BODY_Y: 23, BODY_H: 114, PAD_Y: 19, PAD_H: 118, ACTION_Y: 140, ACTION_H: 25,
+    // left rail (the section toggles EDIT / SLOTS / SEQ as vertical buttons, the Options gear pinned at the bottom)
+    RAIL_W: 20, RAIL_BTN_H: 42, RAIL_BTN_GAP: 2, RAIL_PAD: 3, RAIL_OPT_H: 20,
     PAD_W: 112, VIEW_W: 196, EDITOR_W: 190, SLOTS_W: 84, SEQ_W: 212, SIDE_W: 46, DEVICE_H: 169, ROW_H: 12, ROW_GAP: 1, MAX_ROWS: 9, TAB_H: 12, MAX_TILES: 44, OPT_PAGE: 8,
     // glitch view paging: up to 4 big tiles, up to 8 compact (4 x 2), up to 12 small (4 x 3) per page, then pages of 12
     PAGE_CAP: 12, STRIP_H: 12, SEQ_PITCH: 12.5 };
 // Options categories, in display order (the master list of the Options view)
-var GL_OPT_CATS = ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Utility", "Movement"];
+var GL_OPT_CATS = ["Filter", "Distort", "Pitch", "Time", "Spectral", "Space", "Movement"];
 
 function defaultUi() { return { editor: 0, slots: 1, seq: 0, options: 0, sel: "", optCat: 0, edTab: 0, optPage: 0 }; }
 function normalizeUi(u) {
@@ -1788,23 +1786,31 @@ function normalizeUi(u) {
 function glRect(x, y, w, h) { return { x: x, y: y, w: w, h: h }; }
 
 /** Every rect of the face for a UI state, in device pixels (the v8ui covers the whole device, 0,0..width,169).
- *  Sections, left to right: core | EDIT | SLOTS | SEQ | side. Widths: 374 base, +194 EDIT, +88 SLOTS, +216 SEQ. */
+ *  Sections, left to right: rail | core | EDIT | SLOTS | SEQ | side. Widths: 398 base (6 + rail 20 + 4 + core 312 + 4 + side 46 + 6), +194 EDIT, +88 SLOTS, +216 SEQ. */
 function glitchFaceLayout(ui) {
     ui = normalizeUi(ui);
     var F = GL_FACE;
     var x = F.MARGIN;
     var L = { ui: ui };
+    // left rail: EDIT / SLOTS / SEQ stacked from the top, the Options gear pinned at the bottom
+    var rh = F.BOTTOM - F.TOP;
+    L.rail = glRect(x, F.TOP, F.RAIL_W, rh);
+    var by = F.TOP + F.RAIL_PAD;
+    var bx = x + 2, bw = F.RAIL_W - 4; // buttons sit 2 px inside the rail panel
+    L.toggles = { editor: glRect(bx, by, bw, F.RAIL_BTN_H), slots: glRect(bx, by + F.RAIL_BTN_H + F.RAIL_BTN_GAP, bw, F.RAIL_BTN_H),
+        seq: glRect(bx, by + 2 * (F.RAIL_BTN_H + F.RAIL_BTN_GAP), bw, F.RAIL_BTN_H) };
+    L.railOpt = glRect(bx, F.BOTTOM - F.RAIL_PAD - F.RAIL_OPT_H, bw, F.RAIL_OPT_H);
+    x += F.RAIL_W + F.GAP;
     L.core = glRect(x, F.TOP, F.PAD_W + F.GAP + F.VIEW_W, F.BOTTOM - F.TOP);
-    L.toggles = { editor: glRect(x, F.TOP, 40, F.HEADER_H), slots: glRect(x + 44, F.TOP, 40, F.HEADER_H), seq: glRect(x + 88, F.TOP, 40, F.HEADER_H) };
-    L.hint = glRect(x + 132, F.TOP, L.core.w - 132, F.HEADER_H);
-    L.pad = glRect(x, F.BODY_Y, F.PAD_W, F.BODY_H);
-    L.view = glRect(x + F.PAD_W + F.GAP, F.BODY_Y, F.VIEW_W, F.BODY_H);
+    L.hint = glRect(x, F.TOP, L.core.w, F.HEADER_H);
+    L.pad = glRect(x, F.PAD_Y, F.PAD_W, F.PAD_H);
+    L.view = glRect(x + F.PAD_W + F.GAP, F.PAD_Y, F.VIEW_W, F.PAD_H);
+    // action bar: Randomize, Mutate, Chaos, then the 3-way Mode selector takes the rest of the row (the Options gear moved to the rail)
     L.action = {
         dice: glRect(x, F.ACTION_Y, 70, F.ACTION_H),
         mutate: glRect(x + 74, F.ACTION_Y, 52, F.ACTION_H),
         chaos: glRect(x + 130, F.ACTION_Y, 62, F.ACTION_H),
-        opt: glRect(x + 196, F.ACTION_Y, 24, F.ACTION_H),
-        ab: glRect(x + 224, F.ACTION_Y, 88, F.ACTION_H),
+        ab: glRect(x + 196, F.ACTION_Y, L.core.w - 196, F.ACTION_H),
     };
     L.options = ui.options ? glitchOptionsLayout(L.core.x) : null;
     x += L.core.w;
@@ -1855,7 +1861,7 @@ function glitchSeqLayout(x0) {
  *  on the right (a category holds at most 8 types), the "all" chip in the header and the note line at the bottom. */
 function glitchOptionsLayout(x0) {
     var F = GL_FACE;
-    var panel = glRect(x0, F.BODY_Y, F.PAD_W + F.GAP + F.VIEW_W, F.BOTTOM - F.BODY_Y);
+    var panel = glRect(x0, F.PAD_Y, F.PAD_W + F.GAP + F.VIEW_W, F.BOTTOM - F.PAD_Y);
     var close = glRect(panel.x + panel.w - 44, panel.y + 4, 40, 14);
     var all = glRect(panel.x + panel.w - 44 - 4 - 56, panel.y + 4, 56, 14);
     var cats = [];
@@ -1980,9 +1986,10 @@ function glitchHitMap(ui, nTiles, nRows, page, mvType) {
     var L = glitchFaceLayout(ui);
     var out = [];
     function add(id, r, panel, layer) { out.push({ id: id, r: r, panel: panel, layer: layer || 0 }); }
-    add("tg_editor", L.toggles.editor, L.core);
-    add("tg_slots", L.toggles.slots, L.core);
-    add("tg_seq", L.toggles.seq, L.core);
+    add("tg_editor", L.toggles.editor, L.rail);
+    add("tg_slots", L.toggles.slots, L.rail);
+    add("tg_seq", L.toggles.seq, L.rail);
+    add("act_opt", L.railOpt, L.rail); // the Options gear: opens the Options view, closes it when it is open
     if (L.options) {
         var O = L.options;
         add("opt_close", O.close, O.panel);

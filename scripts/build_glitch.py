@@ -22,11 +22,11 @@ by moving its selector~ while its Param `go` is 0, then `go 1` ramps its wets in
 bpm, ppq and playing.
 
 Engine contract:
-  buffer~ ---glitchslots @samps 9472  UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
+  buffer~ ---glitchslots @samps 10496 UI -> gen. 8 slot vectors of NP floats + 8 weights at GL weightsOffset + the 24-float
                                       sequencer block at seqOffset (mode header, pack version, 16 steps) + the layout constants block (meta, defaults,
                                       wet indices, minimums, maximums; see src/glitch_config.js).
   buffer~ ---glitchscope @samps 640   gen -> UI telemetry (layout GL_SCOPE in src/glitch_config.js).
-  buffer~ ---glitchctl @samps 40960   head -> module stages: a ring of 256 control ticks, each the 160 smoothed module params (glitchCtlLayout()).
+  buffer~ ---glitchctl @samps 40192   head -> module stages: a ring of 256 control ticks, each the 157 smoothed module params (glitchCtlLayout()).
   loadbang sends the buffer bindings through the hubs (head: slots, scope, ctl; module stages: scope, ctl; tail: scope) and to the v8ui (`setbuffer ...`).
   plugsync~ feeds the gen Params `bpm`, `ppq` and `playing` (outlet 0, the transport state: the sequencer clock holds while 0). Mix -> Param `wet` (0..1), Output -> Param `outdb` (dB).
   The v8ui keeps the whole state in the blob parameter GlitchStateData ([version, json]).
