@@ -28,6 +28,18 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const LIB_SRC = read("src/cepstrum_lib.genexpr");
 const SS_SRC = read("src/spectral_split_lib.genexpr");
 const CORE_SRC = read("src/loudsplit_core.genexpr");
+const RACK_SRC = read("src/spectral_split_rack.genexpr");
+// The gen code the device really embeds (the face writes it to a .gendsp file): lib + ss lib + rack functions + the expanded core.
+function builtGenCode() {
+    const raw = fs.readFileSync(path.join(ROOT, "devices", "Loud Split.amxd"));
+    const p = JSON.parse(raw.slice(32).toString("utf8")).patcher;
+    const face = p.boxes.map((b) => b.box).find((b) => b.id === "obj-viz").textfile.text;
+    const m = /^var GEN_DSP_TEXT = (".*");$/m.exec(face);
+    assert.ok(m, "face carries GEN_DSP_TEXT");
+    const gendsp = JSON.parse(JSON.parse(m[1]));
+    return gendsp.patcher.boxes.find((b) => b.box.maxclass === "codebox").box.code;
+}
+const GEN_CODE = builtGenCode();
 
 function rng(seed) {
     let s = seed >>> 0;
@@ -300,7 +312,7 @@ function prep(src) {
         .replace(/\batan2\(/g, "Math.atan2(");
 }
 {
-    const loadGx = () => load(prep(LIB_SRC), prep(SS_SRC), prep(CORE_SRC.split("\nBuffer scope(")[0]));
+    const loadGx = () => load(prep(LIB_SRC), prep(SS_SRC), prep(CORE_SRC.split("//@SS_DECL")[0]));
     const run = (n, sel, p, x, y, frames) => {
         const gx = loadGx();      // fresh History state (fft_init / stft_win remember their tables) for every run
         const half = n / 2;
@@ -310,6 +322,7 @@ function prep(src) {
         const cols = new DataSim(512), scope = new DataSim(544);
         const outL = new Float64Array(x.length), outR = new Float64Array(x.length);
         let age = 0;
+        gx.ls_tilttab(lsd, n, SR);
         const masks = [];
         const rel = p.relative > 0.5;
         const thi = rel ? p.rhithr : p.hithr, tlo = rel ? p.rlothr : p.lothr;
@@ -325,13 +338,13 @@ function prep(src) {
                 age = Math.min(age + 1, 3);
                 if (masks.length < frames) {
                     masks.push({ mag: Array.from({ length: half + 1 }, (_, k) => ms.peek(k, 0)),
-                        m: [2, 3, 4].map((ch) => Array.from({ length: half + 1 }, (_, k) => lsd.peek(k, ch))),
+                        m: [4, 3, 2].map((ch) => Array.from({ length: half + 1 }, (_, k) => lsd.peek(k, ch))),
                         sum: Array.from({ length: half + 1 }, (_, k) => lsd.peek(k, 5)) });
                 }
-                gx.ss_apply(fx, lsd, sel === 0 ? 5 : 5 - sel, n);   // outsel 1 Loud = lsd ch 4, 2 Mid = 3, 3 Quiet = 2
+                gx.ss_apply(fx, lsd, sel === 0 ? 5 : sel + 1, n);   // outsel 1 Loud = lsd ch 2, 2 Mid = 3, 3 Quiet = 4
                 if (i % 4096 < 256) {
                     gx.ss_cols(ms, 0, lsd, -1, cols, 0, n, SR, 128, 30, 20000);
-                    for (let c = 1; c <= 3; c++) gx.ss_cols(ms, 0, lsd, c + 1, cols, c, n, SR, 128, 30, 20000);
+                    for (let c = 1; c <= 3; c++) gx.ss_cols(ms, 0, lsd, 5 - c, cols, c, n, SR, 128, 30, 20000);
                     gx.ss_tele(cols, scope, 128, 4, 0);
                     gx.ls_mean(ms, lsd, n);
                 }
@@ -422,23 +435,27 @@ function prep(src) {
 // 3. GenExpr lint, link module
 // ======================================================================
 {
-    const fnsLib = functionsOf(SS_SRC);
+    const fnsLib = functionsOf(SS_SRC).concat(functionsOf(RACK_SRC));
     const fnsCore = functionsOf(CORE_SRC);
     for (const fn of fnsLib.concat(fnsCore)) {
         const rets = fn.body.filter((l) => /^\s*return\b/.test(l));
         assert.strictEqual(rets.length, 1, `${fn.name}: exactly one return`);
         assert.ok(/^\treturn\b/.test(fn.body[fn.body.length - 1]), `${fn.name}: the return is the last statement, at function level`);
-        for (const l of fn.body) assert.ok(!/\bif\s*\(\s*[^)]*\b(ss|ls|stft|fft|cep)_\w+\(/.test(l), `${fn.name}: no function call inside an if condition`);
+        for (const l of fn.body) assert.ok(!/\bif\s*\(\s*[^)]*\b(ss2?|ls|stft|fft|cep)_\w+\(/.test(l), `${fn.name}: no function call inside an if condition`);
     }
-    for (const src of [SS_SRC, CORE_SRC]) {
+    for (const src of [SS_SRC, RACK_SRC, GEN_CODE]) {
         const code = src.replace(/\/\/.*$/gm, "");
-        assert.ok(!/\bpoke\([^;]*\b(ss|ls|stft|fft|cep)_\w+\(/.test(code), "no user function call inside poke() arguments (silent compile failure in Max)");
+        assert.ok(!/\bpoke\([^;]*\b(ss2?|ls|stft|fft|cep)_\w+\(/.test(code), "no user function call inside poke() arguments (silent compile failure in Max)");
         assert.ok(!/\be\d\b/.test(code), "no identifier e<digit>");
         assert.ok(!/\b(phi|pi)\s*=/.test(code), "no phi / pi assignments");
         assert.ok(!/\b(rise|fall|noise|bias)\s*[=,)]/.test(code.replace(/Param \w+\(/g, "")), "no operator-named identifiers (rise, fall, noise, bias)");
     }
+    // statements of the expanded core: no function call in an if condition either
+    for (const l of GEN_CODE.split("\n")) {
+        if (/^\s*(\}\s*else\s*)?if\s*\(/.test(l)) assert.ok(!/\b(ss2?|ls|stft|fft|cep)_\w+\(/.test(l.replace(/\/\/.*$/, "")), `no function call inside an if condition: ${l.trim()}`);
+    }
     // ordering: all functions, then Buffer, Data, Param, History, Delay, then statements
-    const lines = CORE_SRC.split("\n");
+    const lines = GEN_CODE.split("\n");
     const firstDecl = lines.findIndex((l) => /^(Buffer|Data|Param|History|Delay)\b/.test(l));
     const lastFnHeader = lines.reduce((m, l, i) => (/^[A-Za-z_]\w*\([^)]*\) \{$/.test(l) ? i : m), -1);
     assert.ok(lastFnHeader > 0 && lastFnHeader < firstDecl, "every function sits before the first Buffer / Data / Param / History / Delay declaration");
@@ -446,17 +463,30 @@ function prep(src) {
     const firstStmt = lines.findIndex((l, i) => i > lastDecl && /^[a-zA-Z_]/.test(l));
     assert.ok(firstStmt > lastDecl, "statements follow the declarations");
     for (const l of lines.slice(firstDecl, lastDecl + 1)) assert.ok(l.trim() === "" || /^(Buffer|Data|Param|History|Delay)\b|^\/\//.test(l), `declaration block only holds declarations: ${l}`);
-    for (const name of ["fftn", "thrhi", "thrlo", "rthrhi", "rthrlo", "kneehi", "kneelo", "relmode", "risebl", "fallbl", "tiltdb", "outsel"]) assert.ok(new RegExp(`^Param ${name}\\(`, "m").test(CORE_SRC), `Param ${name}`);
+    for (const name of ["fftn", "thrhi", "thrlo", "rthrhi", "rthrlo", "kneehi", "kneelo", "relmode", "risebl", "fallbl", "tiltdb", "outsel", "mixamt", "role", "serve", "epoch"]) assert.ok(new RegExp(`^Param ${name}\\(`, "m").test(GEN_CODE), `Param ${name}`);
     assert.ok(/Buffer scope\("loudsplitscope"\)/.test(CORE_SRC), "Buffer bound by the GenExpr variable name `scope` (no set prefix)");
     // the scope layout matches the config constants
-    const m = CORE_SRC.match(/poke\(scope, frameNo, (\d+), 0\)/);
+    const m = GEN_CODE.match(/poke\(scope, frameNo, (\d+), 0\)/);
     assert.strictEqual(Number(m[1]), cfg.LS_SC_FRAME, "telemetry frame counter slot");
-    assert.ok(CORE_SRC.includes(`poke(scope, lmean, ${cfg.LS_SC_LOUDMEAN}, 0)`) && CORE_SRC.includes("lmean = ls_mean(ms, lsd, n);"), "mean slot");
-    assert.ok(CORE_SRC.includes(`poke(scope, selH, ${cfg.LS_SC_SEL}, 0)`), "selection slot");
-    assert.ok(CORE_SRC.includes(`poke(scope, thEff, ${cfg.LS_SC_THI}, 0)`) && CORE_SRC.includes(`poke(scope, tlEff, ${cfg.LS_SC_TLO}, 0)`) && CORE_SRC.includes(`poke(scope, lmx, ${cfg.LS_SC_LMAX}, 0)`), "threshold / loudest-bin slots");
-    assert.ok(CORE_SRC.includes("ss_tele(cols, scope, 128, 4, 0)"), "four telemetry slots (pre + 3 channels)");
+    assert.ok(GEN_CODE.includes(`poke(scope, lmean, ${cfg.LS_SC_LOUDMEAN}, 0)`) && GEN_CODE.includes("lmean = ls_mean(ms, lsd, n);"), "mean slot");
+    // the rack template writes the common scalars at SCB + offset (SCB = LS_SC_FRAME): every offset is the config's
+    const scal = { 1: "LS_SC_SR", 2: "LS_SC_N", 3: "LS_SC_AWAKE", 4: "LS_SC_LEVEL", 6: "LS_SC_LATENCY", 7: "LS_SC_SEL", 8: "LS_SC_CMP", 9: "LS_SC_FOL", 10: "LS_SC_ALIGNED",
+        11: "LS_SC_FB", 12: "LS_SC_DOFF", 13: "LS_SC_UNDER", 14: "LS_SC_LAG", 15: "LS_SC_SERVE", 16: "LS_SC_ROLE", 17: "LS_SC_ALIVE" };
+    for (const [off, key] of Object.entries(scal)) {
+        assert.strictEqual(cfg.LS_SC_FRAME + Number(off), cfg[key], `${key} = LS_SC_FRAME + ${off}`);
+        assert.ok(GEN_CODE.includes(`, ${cfg.LS_SC_FRAME} + ${off}, 0);`), `gen writes scope slot ${key}`);
+    }
+    assert.ok(cfg.LS_SC_THI >= cfg.LS_SC_FRAME + 18 && cfg.LS_SC_LMAX < cfg.LS_SCOPE_SAMPS, "the device's threshold slots sit above the rack scalars");
+    assert.ok(GEN_CODE.includes(`poke(scope, thEff, ${cfg.LS_SC_THI}, 0)`) && GEN_CODE.includes(`poke(scope, tlEff, ${cfg.LS_SC_TLO}, 0)`) && GEN_CODE.includes(`poke(scope, lmx, ${cfg.LS_SC_LMAX}, 0)`), "threshold / loudest-bin slots");
+    assert.ok(GEN_CODE.includes("ss_tele(cols, scope, 128, 4, 0)"), "four telemetry slots (pre + 3 channels)");
     assert.ok(cfg.LS_SC_QUIET === 128 && cfg.LS_SC_MID === 256 && cfg.LS_SC_LOUD === 384, "column blocks");
     assert.ok(cfg.LS_SCOPE_SAMPS <= 544, "scope buffer big enough");
+    assert.ok(GEN_CODE.includes("ss2_zeroscope(scope, 512)"), "sleep zeroes the 512 telemetry columns");
+    assert.ok(!/@@/.test(GEN_CODE) && !/\/\/@(hook|endhook|SS_)/.test(GEN_CODE), "the template is fully expanded");
+    assert.ok(GEN_CODE.includes(`Delay dryL(${cfg.LS_LATENCY + 1})`) && GEN_CODE.includes(`dryL.read(${cfg.LS_LATENCY})`), "dry delay = the reported latency");
+    // channel rows of the mask Data: Loud 2, Mid 3, Quiet 4 (template MKB = 2, K = 3), their sum in row 5
+    assert.ok(GEN_CODE.includes("ss_apply(fy, lsd, 2 + c, n)"), "the template applies mask rows MKB + c of lsd");
+    assert.ok(/lsd\.poke\(sh, k, 2\);\s*lsd\.poke\(mm, k, 3\);\s*lsd\.poke\(mq, k, 4\);\s*lsd\.poke\(mq \+ mm \+ sh, k, 5\);/.test(CORE_SRC), "Loud / Mid / Quiet / sum rows");
 
     runLinkTests();
     // lsResolveSel / names
@@ -484,7 +514,8 @@ function prep(src) {
     assert.strictEqual(raw.slice(8, 12).toString(), "aaaa", "audio effect");
     assert.strictEqual(raw.readUInt32LE(28), raw.length - 32);
     const p = JSON.parse(raw.slice(32).toString("utf8")).patcher;
-    assert.strictEqual(p.latency, cfg.LS_LATENCY, "latency attribute 4096");
+    assert.strictEqual(p.latency, cfg.LS_LATENCY, "latency attribute = LS_LATENCY (5120)");
+    assert.strictEqual(cfg.LS_LATENCY, 5120);
     assert.strictEqual(p.openrect[3], 169, "169 px high");
     assert.strictEqual(p.openrect[2], p.devicewidth);
     assert.strictEqual(p.openinpresentation, 1);
@@ -495,13 +526,27 @@ function prep(src) {
         byId[b.id] = b;
     }
     for (const l of p.lines) assert.ok(byId[l.patchline.source[0]] && byId[l.patchline.destination[0]], `line endpoints exist ${JSON.stringify(l.patchline)}`);
-    const gen = byId["obj-gen"];
-    assert.strictEqual(gen.code, [LIB_SRC, SS_SRC, CORE_SRC].map((s) => s.replace(/\s+$/, "") + "\n").join("\n"), "gen code = cepstrum_lib + spectral_split_lib + loudsplit_core");
-    assert.ok(gen.code.indexOf("fft_run(") < gen.code.indexOf("ss_in(") && gen.code.indexOf("ss_in(") < gen.code.indexOf("ls_masks("), "library functions come first");
+    // deferred DSP (AGENTS.md 1d): no gen~ in the saved device, a gate 1 1 hub, scripting names, no static audio cord
+    assert.ok(!byId["obj-gen"], "the device ships without its gen~");
+    assert.strictEqual(byId["obj-genin"].text, "gate 1 1");
+    assert.deepStrictEqual([byId["obj-genin"].varname, byId["obj-plugin"].varname, byId["obj-plugout"].varname], ["ss_genin", "ss_plugin", "ss_plugout"]);
+    const allLines = p.lines.map((l) => l.patchline);
+    assert.ok(!allLines.some((l) => l.source[0] === "obj-plugin" || l.destination[0] === "obj-plugout"), "no static audio cord (the face wires plugin~ -> gen~ -> plugout~)");
+    assert.ok(allLines.every((l) => l.destination[0] !== "obj-gen"), "no cord into a gen~ that is not there");
+    assert.ok(allLines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 2 && l.destination[0] === "obj-genin" && l.destination[1] === 1), "face outlet 2 -> hub data inlet");
+    // the embedded gen = lib + ss lib + rack functions + the expanded core
+    assert.ok(GEN_CODE.indexOf("fft_run(") < GEN_CODE.indexOf("ss_in(") && GEN_CODE.indexOf("ss_in(") < GEN_CODE.indexOf("ss2_align(") && GEN_CODE.indexOf("ss2_align(") < GEN_CODE.indexOf("ls_masks("), "library functions come first");
+    assert.ok(GEN_CODE.startsWith(LIB_SRC.replace(/\s+$/, "") + "\n"), "gen code starts with cepstrum_lib");
+    assert.ok(GEN_CODE.includes(SS_SRC.replace(/\s+$/, "") + "\n") && GEN_CODE.includes(RACK_SRC.replace(/\s+$/, "") + "\n"), "gen code contains spectral_split_lib and spectral_split_rack verbatim");
+    const faceTxt = byId["obj-viz"].textfile.text;
+    assert.ok(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(faceTxt) && /var SS_PREFIX = "loudsplit";/.test(faceTxt), "face carries the gen patch hash and prefix");
+    assert.ok(faceTxt.includes("function ssDspLoad") && faceTxt.includes("function ssDspRestart"), "face carries the deferred-DSP module");
     assert.ok(byId["obj-scope-buf"].text.startsWith("buffer~ ---loudsplitscope"), "per-instance buffer name");
     assert.ok(Number(byId["obj-scope-buf"].text.match(/@samps (\d+)/)[1]) >= cfg.LS_SCOPE_SAMPS, "scope buffer length");
-    for (const id of ["obj-msg-ui-buf", "obj-msg-gen-buf"]) assert.ok(byId[id].text.includes("---loudsplitscope"), `${id} uses the --- name`);
-    assert.ok(!boxes.some((b) => /#0/.test(b.text || "")), "no #0 names in a top-level device");
+    assert.ok(byId["obj-ring-buf"].text.startsWith("buffer~ ---ssring @samps "), "per-instance ring buffer");
+    assert.ok(Number(byId["obj-ring-buf"].text.match(/@samps (\d+)/)[1]) === 16 + 8192 * 9, "ring length = header + slots * stride (3 channels + All row)");
+    assert.strictEqual(byId["obj-msg-ui-names"].text, "setnames ---loudsplitscope ---ssring", "the face learns both per-instance buffer names");
+    assert.ok(!boxes.some((b) => /#0/.test(b.text || "") && b.text !== "r #0-sstest"), "no #0 names in a top-level device (the test hook receive #0-sstest is the one deliberate shared name)");
     const firstPanel = boxes.findIndex((b) => b.maxclass === "panel");
     assert.ok(firstPanel > 0 && boxes.slice(firstPanel).every((b) => b.maxclass === "panel"), "panels are the last boxes");
     for (const b of boxes.slice(firstPanel)) assert.strictEqual(b.background, 1, `${b.id} background 1`);
@@ -553,7 +598,7 @@ function prep(src) {
     const GEN = { hithr: "thrhi", lothr: "thrlo", rhithr: "rthrhi", rlothr: "rthrlo", hiknee: "kneehi", loknee: "kneelo", relative: "relmode", rise: "risebl", fall: "fallbl", tilt: "tiltdb", size: "fftn" };
     for (const [key, msg] of Object.entries(GEN)) {
         assert.strictEqual(byId[`obj-prep-${key}`].text, `prepend ${msg}`);
-        assert.ok(from(`obj-prep-${key}`).includes("obj-gen"), `${key} -> gen`);
+        assert.ok(from(`obj-prep-${key}`).includes("obj-genin"), `${key} -> hub -> gen`);
         assert.ok(from(`obj-ui-${key}`).includes("obj-viz") && byId[`obj-ui-${key}`].text === `prepend set_${key}`, `${key} -> face`);
     }
     assert.ok(byId["obj-expr-size"].text.startsWith("expr 1024 * pow(2"), "Size -> 1024 * 2^i");
@@ -567,6 +612,7 @@ function prep(src) {
         assert.strictEqual(byId[`obj-lset-${key}`].text, "prepend set");
         assert.ok(from(`obj-lset-${key}`).includes(`obj-ctrl-${key}`), `${key}: prepend set -> control`);
         assert.ok(dests.length === 2, `${key}: peer value also feeds the gen path`);
+        assert.ok(!dests.includes("obj-gen"), `${key}: only through the hub`);
     });
     // canvas edits reach the controls
     const canvas = byId["obj-route-canvas"].text.split(" ").slice(1);
@@ -579,7 +625,7 @@ function prep(src) {
     assert.ok(lines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 3 && l.destination[0] === "obj-route-active"), "face outlet 3 -> active route");
     for (const key of ["hithr", "lothr"]) assert.ok(lines.some((l) => l.source[0] === "obj-act-abs" && l.destination[0] === `obj-ctrl-${key}`), `${key} greyed in Relative mode`);
     for (const key of ["rhithr", "rlothr"]) assert.ok(lines.some((l) => l.source[0] === "obj-act-rel" && l.destination[0] === `obj-ctrl-${key}`), `${key} greyed in Absolute mode`);
-    assert.ok(lines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 2 && l.destination[0] === "obj-gen"), "face outlet 2 -> gen (outsel)");
+    assert.ok(lines.some((l) => l.source[0] === "obj-r-sstest" && l.destination[0] === "obj-viz"), "test hook receive #0-sstest -> face");
     assert.ok(lines.some((l) => l.source[0] === "obj-thisdevice" && l.destination[0] === "obj-msg-init") && byId["obj-msg-init"].text === "init_link", "init from live.thisdevice, not loadbang");
     // the face script
     const face = byId["obj-viz"].textfile.text;
@@ -648,10 +694,12 @@ function prep(src) {
     for (const b of dev.patcher.boxes) bx[b.box.id] = b.box;
     assert.ok(bx["obj-ctrl-mix"].presentation === 1, "Mix is on the face");
     for (const k of ["rise", "fall", "tilt", "relative"]) assert.ok(bx[`obj-ctrl-${k}`] && bx[`obj-ctrl-${k}`].presentation !== 1 && bx[`obj-ctrl-${k}`].parameter_enable === 1, `${k} is a real parameter drawn in the display`);
-    assert.ok(dev.patcher.lines.some((l) => l.patchline.source[0] === "obj-prep-mix" && l.patchline.destination[0] === "obj-gen"), "Mix -> gen");
-    assert.ok(bx["obj-scale-mix"] && /0\.01/.test(bx["obj-scale-mix"].text) && bx["obj-prep-mix"].text === "prepend wetamt", "Mix % -> wetamt 0..1");
+    assert.ok(dev.patcher.lines.some((l) => l.patchline.source[0] === "obj-prep-mix" && l.patchline.destination[0] === "obj-genin"), "Mix -> hub -> gen");
+    assert.ok(bx["obj-scale-mix"] && /0\.01/.test(bx["obj-scale-mix"].text) && bx["obj-prep-mix"].text === "prepend mixamt", "Mix % -> mixamt 0..1");
     console.log("[bitwig] ranges, defaults, fractional Rise / Fall and Mix tests passed");
 }
 
 console.log("All Loud Split tests passed");
+require("./test_spectral_rack.js");
+require("./test_spectral_dsp.js");
 require("./test_loudsplit_paint_bounds.js");

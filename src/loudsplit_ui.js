@@ -11,10 +11,12 @@
 // this instance outputs that threshold's outer band (Higher: Loud, Lower: Quiet). Double-click a line resets the threshold.
 //
 // Messages in:  set_<key> <value> for hithr lothr rhithr rlothr hiknee loknee relative rise fall tilt size output dispost disstyle,
-//               setbuffer <name>, init_link (live.thisdevice), preview helpers.
+//               setnames <scope buffer> <ring buffer>, init_link (live.thisdevice), dsp_restart <chain> (test hook), preview helpers.
 // Outlets:      0 [key value]  edits made on the canvas -> route -> the live.* object (which then drives gen as usual)
 //               1 [key value]  values applied from a rack peer -> route -> `prepend set` into the live.* object + gen
-//               2 outsel <0..3>  resolved output selection for the gen (0 = all channels summed), including a held solo
+//               2 gen messages -> the ss_genin hub (gate 1 1; the gen~ is created after load, src/spectral_dsp.js): outsel <0..3> (0 = all
+//                 channels summed, including a held solo), scope / ring / lead <buffer name>, role, serve, epoch (rack sharing, src/spectral_link.js),
+//                 parameters (re-sent)
 //               3 act_abs|act_rel <0|1>  greys out the unused threshold pair (route -> prepend active)
 
 mgraphics.init();
@@ -44,8 +46,10 @@ var lsL = [];
 var lsSono = [];          // rows of {lv: [...64], w: [[q, m, l] ...]}, newest last
 var lsScalars = { frame: 0, awake: 0, sr: 48000, n: 2048, level: 0, mean: 0, lmax: -20 };
 var lsLmaxS = -20;        // smoothed loudest-bin level (Relative mode lines)
-var lsBufName = "";
+var lsNames = { scope: "", ring: "" };
+var lsBufName = "";            // the buffer the display is drawn from (the leader's scope while following)
 var lsBuf = null;
+var lsOwnBuf = null;
 var lsTask = null;
 var lsLastFrame = -1;
 var lsDrag = null;
@@ -119,6 +123,12 @@ function init_link() {
         kind: "loudsplit",
         keys: LS_LINKED_KEYS,
         channelCount: 3,
+        rack: {
+            channels: LS_RACK_CHANNELS,
+            ring: function () { return lsNames.ring; },
+            genState: function () { return { alive: lsGenValue(LS_SC_ALIVE), fb: Math.max(0, lsGenValue(LS_SC_FB)) }; },
+            send: function (name, value) { outlet(2, name, value); }
+        },
         getLocal: function (key) { return lsVals[key]; },
         apply: function (key, value) {
             lsVals[key] = value;
@@ -128,19 +138,74 @@ function init_link() {
         },
         onInfo: function (info) {
             lsInfo = info;
+            ssDspDry(!info.isInRack);
             lsEmitSel();
             mgraphics.redraw();
         }
     });
     lsLink.init();
     lsStartPolling();
+    ssDspSchedule(lsInfo.instanceId);
 }
 
-function setbuffer(name) {
-    splNoteScope(name);
-    lsBufName = name ? String(name) : "";
+function setnames(scopeName, ringName) {
+    lsNames.scope = scopeName ? String(scopeName) : "";
+    lsNames.ring = ringName ? String(ringName) : "";
+    splNoteScope(lsNames.scope);
     lsBuf = null;
+    lsOwnBuf = null;
     lsStartPolling();
+}
+
+// Kept for tools that only know the scope buffer.
+function setbuffer(name) {
+    setnames(name, lsNames.ring);
+}
+
+// ---------------------------------------------------------------- deferred DSP (src/spectral_dsp.js) and rack messages
+function lsGenValue(idx) {
+    if (!lsNames.scope) return -1;
+    try {
+        if (!lsOwnBuf) lsOwnBuf = new Buffer(lsNames.scope);
+        var v = lsOwnBuf.peek(1, idx, 1);
+        return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
+    } catch (err) {
+        lsOwnBuf = null;
+        return -1;
+    }
+}
+
+function ssGenAlive() {
+    return lsGenValue(LS_SC_ALIVE);
+}
+
+// Every gen-bound message from the values the face holds (a deferred gen~ drops messages until it runs).
+function ssDevResend() {
+    if (lsNames.scope) outlet(2, "scope", lsNames.scope);
+    if (lsNames.ring) outlet(2, "ring", lsNames.ring);
+    for (var key in LS_GEN_PARAMS) {
+        if (key in lsVals) outlet(2, LS_GEN_PARAMS[key][0], lsVals[key] * LS_GEN_PARAMS[key][1]);
+    }
+    outlet(2, "fftn", 1024 * Math.pow(2, lsVals.size));
+    outlet(2, "outsel", lsSel);
+    if (lsLink && lsLink.rack) {
+        var m = lsLink.rack.messages();
+        for (var i = 0; i < m.length; i++) outlet(2, m[i][0], m[i][1]);
+    }
+}
+
+function ssDevChanged() {
+    mgraphics.redraw();
+}
+
+// Test hook (receive #0-sstest): restart the DSP of the instance in chain <c> (a late start: a new gen~ with a new sample counter).
+function dsp_restart(c) {
+    if (lsInfo.chainIndex === Number(c) || Number(c) < 0) ssDspRestart();
+}
+
+function lsDispName() {
+    var lead = lsLink && lsLink.rack ? lsLink.rack.displayScope() : "";
+    return lead || lsNames.scope;
 }
 
 function lsStartPolling() {
@@ -151,14 +216,22 @@ function lsStartPolling() {
 }
 
 function lsPoll() {
-    if (!lsBufName) return;
+    var name = lsDispName();
+    if (!name) return;
     try {
-        if (!lsBuf) lsBuf = new Buffer(lsBufName);
+        if (!lsBuf || name !== lsBufName) {
+            lsBuf = new Buffer(name);
+            lsBufName = name;
+            lsLastFrame = -1;
+        }
+        // header first (frame counter, awake): the other floats are only read when a new telemetry frame exists
+        var h = lsBuf.peek(1, LS_SC_FRAME, 4);
+        if (!h || h.length < 4) return;
+        var frame = h[0];
+        var aw = h[3];
+        if (frame === lsLastFrame && aw === lsScalars.awake) return;
         var d = lsBuf.peek(1, 0, LS_SCOPE_SAMPS);
         if (!d || d.length < LS_SC_LMAX + 1) return;
-        var frame = d[LS_SC_FRAME];
-        var aw = d[LS_SC_AWAKE];
-        if (frame === lsLastFrame && aw === lsScalars.awake) return;
         lsLastFrame = frame;
         for (var c = 0; c < LS_NCOLS; c++) {
             lsPre[c] = d[LS_SC_PRE + c];
@@ -372,7 +445,9 @@ function paint() {
     }
     var chip = lsSolo ? ("Solo " + lsSelName(lsSel)) : (lsInfo.isInRack ? ("Chain " + (lsInfo.chainIndex + 1) + "/" + Math.max(lsInfo.chainCount, 1)
         + (lsInfo.linked ? ", linked" : "")) : "No rack");
-    sptText(chip, W - 2, ly, scale, SPT_SIZE_SMALL, 2);
+    var pill = ssDspPill();     // DSP loading... / DSP failed: ... takes the place of the chain chip until the gen runs
+    if (pill) sptText(pill, W - 2, ly, sptColor(ssDsp.error ? "live_alert" : "live_control_selection"), SPT_SIZE_SMALL, 2);
+    else sptText(chip, W - 2, ly, scale, SPT_SIZE_SMALL, 2);
 
     // value rows: Rise / Fall, Tilt and the Relative Loudness Mode toggle
     sptLabelValue("Rise", lsVals.rise.toFixed(2), t.rise.x, t.rise.y + 11, 0, drag === "rise", 32);
@@ -608,6 +683,7 @@ function onidleout() {}
 
 // ---------------------------------------------------------------- preview (scripts/render_preview.py calls preview() then paint())
 function preview() {
+    ssDsp.ready = 1;
     lsInfo = { instanceId: "p", isInRack: true, chainIndex: 0, chainCount: 3, peers: 3, linked: true, autoChannel: 0 };
     // demo state = the live.* parameter defaults (Higher -30, Lower -85, knees 6 dB, Rise 2, Fall 8, Tilt 0)
     lsVals.hithr = -30;

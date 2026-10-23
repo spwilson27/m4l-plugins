@@ -9,7 +9,7 @@
 var LS_NCOLS = 128;          // display columns (log frequency)
 var LS_FMIN = 30.0;
 var LS_FMAX = 20000.0;
-var LS_LATENCY = 4096;
+var LS_LATENCY = 5120;       // 4096 (largest STFT latency, padded) + 1024 margin for the host block: the rack machinery reads the leader's data that late
 var LS_CH_NAMES = ["Loud", "Mid", "Quiet"];
 var LS_SIZES = [1024, 2048, 4096];
 var LS_SIZE_ENUM = ["1k", "2k", "4k"];
@@ -37,10 +37,22 @@ var LS_SC_LEVEL = LS_SC_FRAME + 4;     // input peak (decaying)
 var LS_SC_LOUDMEAN = LS_SC_FRAME + 5;  // amplitude-weighted mean Loud mask
 var LS_SC_LATENCY = LS_SC_FRAME + 6;
 var LS_SC_SEL = LS_SC_FRAME + 7;       // output selection the gen is running (0 sum, 1 Loud, 2 Mid, 3 Quiet; the spectrum slots above stay by channel name, not by number)
-var LS_SC_THI = LS_SC_FRAME + 8;       // effective Higher Threshold, dB at 1 kHz (relative mode: frame max + relative value)
-var LS_SC_TLO = LS_SC_FRAME + 9;       // effective Lower Threshold (clamped to <= Higher)
-var LS_SC_LMAX = LS_SC_FRAME + 10;     // loudest (tilted) bin level of the frame, dB
-var LS_SCOPE_SAMPS = LS_SC_FRAME + 16;
+// Rack machinery scalars (written by the template src/spectral_split_rack_main.genexpr every 1024 samples, by every instance)
+var LS_SC_CMP = LS_SC_FRAME + 8;       // 1 = this instance runs the STFT pipeline (leader or alone), 0 = it follows
+var LS_SC_FOL = LS_SC_FRAME + 9;       // 1 = following a leader
+var LS_SC_ALIGNED = LS_SC_FRAME + 10;  // 1 = the offset to the leader's sample counter is known (content aligned)
+var LS_SC_FB = LS_SC_FRAME + 11;       // fallback: 0 none, 1 the input differs from the leader's, 2 the leader's data stopped, 3 ring underrun
+var LS_SC_DOFF = LS_SC_FRAME + 12;     // counter offset to the leader (modulo 2^22)
+var LS_SC_UNDER = LS_SC_FRAME + 13;    // underrun counter
+var LS_SC_LAG = LS_SC_FRAME + 14;      // leader's newest fingerprint counter minus this instance's own counter (samples)
+var LS_SC_SERVE = LS_SC_FRAME + 15;    // channel mask this instance computes
+var LS_SC_ROLE = LS_SC_FRAME + 16;     // role the face asked for (0 self, 1 leader, 2 follower)
+var LS_SC_ALIVE = LS_SC_FRAME + 17;    // counter that moves every 1024 samples while the gen runs, also in silence (DSP ready detection)
+var LS_RACK_CHANNELS = 3;
+var LS_SC_THI = LS_SC_FRAME + 18;      // effective Higher Threshold, dB at 1 kHz (relative mode: frame max + relative value)
+var LS_SC_TLO = LS_SC_FRAME + 19;      // effective Lower Threshold (clamped to <= Higher)
+var LS_SC_LMAX = LS_SC_FRAME + 20;     // loudest (tilted) bin level of the frame, dB
+var LS_SCOPE_SAMPS = LS_SC_FRAME + 24;
 
 // key: [long name, short name, min, max, initial, ptype (0 float, 1 int), unitstyle, unit text]
 var LS_PARAMS = {
@@ -60,6 +72,11 @@ var LS_ENUMS = {
     relative: ["Relative Loudness Mode", "Relative", ["Absolute", "Relative"], 0],
     size: ["Size", "Size", LS_SIZE_ENUM, 1],
     output: ["Output", "Output", LS_OUT_ENUM, 0]
+};
+// gen messages for the live.* parameters, key -> [message, scale] (size -> fftn = 1024 * 2^index); the face re-sends them until the deferred gen runs
+var LS_GEN_PARAMS = {
+    hithr: ["thrhi", 1], lothr: ["thrlo", 1], rhithr: ["rthrhi", 1], rlothr: ["rthrlo", 1], hiknee: ["kneehi", 1], loknee: ["kneelo", 1],
+    relative: ["relmode", 1], rise: ["risebl", 1], fall: ["fallbl", 1], tilt: ["tiltdb", 1], mix: ["mixamt", 0.01]
 };
 // keys shared between all instances in a rack (everything except Output and the display toggles)
 var LS_LINKED_KEYS = ["hithr", "lothr", "rhithr", "rlothr", "hiknee", "loknee", "relative", "rise", "fall", "tilt", "mix", "size"];
@@ -184,6 +201,7 @@ if (nodeModule && nodeModule.exports) {
         LS_SC_PRE: LS_SC_PRE, LS_SC_QUIET: LS_SC_QUIET, LS_SC_MID: LS_SC_MID, LS_SC_LOUD: LS_SC_LOUD,
         LS_SC_FRAME: LS_SC_FRAME, LS_SC_SR: LS_SC_SR, LS_SC_N: LS_SC_N, LS_SC_AWAKE: LS_SC_AWAKE,
         LS_SC_LEVEL: LS_SC_LEVEL, LS_SC_LOUDMEAN: LS_SC_LOUDMEAN, LS_SC_LATENCY: LS_SC_LATENCY, LS_SC_SEL: LS_SC_SEL,
+        LS_SC_CMP: LS_SC_CMP, LS_SC_FOL: LS_SC_FOL, LS_SC_ALIGNED: LS_SC_ALIGNED, LS_SC_FB: LS_SC_FB, LS_SC_DOFF: LS_SC_DOFF, LS_SC_UNDER: LS_SC_UNDER, LS_SC_LAG: LS_SC_LAG, LS_SC_SERVE: LS_SC_SERVE, LS_SC_ROLE: LS_SC_ROLE, LS_SC_ALIVE: LS_SC_ALIVE, LS_RACK_CHANNELS: LS_RACK_CHANNELS, LS_GEN_PARAMS: LS_GEN_PARAMS,
         LS_SC_THI: LS_SC_THI, LS_SC_TLO: LS_SC_TLO, LS_SC_LMAX: LS_SC_LMAX, LS_SCOPE_SAMPS: LS_SCOPE_SAMPS,
         lsClip: lsClip, lsSmooth01: lsSmooth01, lsResolveSel: lsResolveSel, lsSelName: lsSelName, lsTiltDb: lsTiltDb,
         lsColBin: lsColBin, lsNewState: lsNewState, lsBandMasks: lsBandMasks, lsMasks: lsMasks

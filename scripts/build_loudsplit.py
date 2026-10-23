@@ -5,12 +5,15 @@ Build devices/Loud Split.amxd and devices/Loud Split.adg (Bitwig Spectral Suite 
 Three channels: 1 Loud (red), 2 Mid (yellow), 3 Quiet (green). Use the device as the FIRST device of EVERY chain of an Audio
 Effect Rack, one chain per channel (the .adg preset does exactly that). Every instance runs the same mask-STFT analysis on the
 same input with linked parameters and outputs only its own channel (Output = Auto: the chain index); the per-bin masks sum to
-exactly 1, so the chains sum back to the input delayed by 4096 samples ("latency": 4096).
+exactly 1, so the chains sum back to the input delayed by 5120 samples ("latency": 5120 = 4096 + the host block margin).
 
-Signal path: plugin~ -> gen.codebox~ (src/cepstrum_lib.genexpr + src/spectral_split_lib.genexpr + src/loudsplit_core.genexpr)
--> plugout~. The v8ui face (src/loudsplit_config.js + src/spectral_link.js + src/loudsplit_ui.js) draws the spectrum and the two
-threshold lines (drag = threshold, Alt/Shift-drag = knee, dot = momentary band solo), links the parameters with the other
-instances in the rack and sends the resolved output selection.
+Signal path: plugin~ -> gen~ -> plugout~, where the gen~ is NOT in the saved device: the face creates it after load from the embedded
+gen patch (src/spectral_dsp.js, AGENTS.md 1d; gen code = cepstrum_lib + spectral_split_lib + spectral_split_rack + the expanded
+src/loudsplit_core.genexpr with the rack template src/spectral_split_rack_main.genexpr). Every gen-bound message goes into the ss_genin
+hub (gate 1 1). The v8ui face (src/loudsplit_config.js + src/spectral_link.js + src/spectral_theme.js + src/spectral_dsp.js + src/loudsplit_ui.js)
+draws the spectrum and the two threshold lines (drag = threshold, Alt/Shift-drag = knee, dot = momentary band solo), links the
+parameters with the other instances in the rack, elects the rack's leader (one instance computes, the others read their channel from
+its ring) and sends the gen its output selection, role and buffer names.
 
 Layout (480 x 169, Ableton-native: Reverb-like flat titled sections on the Live theme): `Detection` section (x=4..296) with the v8ui canvas
 x=8..292, y=20..161 (LCD spectrum, threshold lines, legend, Rise / Fall / Tilt values, Relative button drawn inside it); `Thresholds`
@@ -31,7 +34,9 @@ SRC = os.path.join(ROOT, "src")
 OUT_AMXD = os.path.join(sc.DEVICES_DIR, "Loud Split.amxd")
 OUT_ADG = os.path.join(sc.DEVICES_DIR, "Loud Split.adg")
 WIDTH = 480.0
-LATENCY = 4096
+LATENCY = sc.RACK_LATENCY      # 5120: 4096 + the host block margin the leader / follower exchange needs
+RING_SAMPS = sc.rack_ring_samps(3)
+ZERO_COUNT = 512
 
 # key: (long name, short name, min, max, initial, ptype, unitstyle[, units])
 NUM = {
@@ -55,7 +60,7 @@ NUM_HELP = {
     "loknee": "Lower Knee: width in dB of the crossfade between Quiet and Mid around the Lower Threshold (0 = hard switch).",
     "rise": "Rise Time (0.13..125 blocks): blocks before quieter signals cross into louder channels, a kind of resistance (a block is one analysis hop, Size / 4 samples).",
     "fall": "Fall Time (0.13..125 blocks): blocks before louder signals cross into quieter channels, a kind of release.",
-    "mix": "Mix: this chain outputs Mix x its channel + (1 - Mix) x its share (1/3) of the dry input, so the rack sum is Mix x wet + (1 - Mix) x dry (dry delayed by the same 4096 samples; the dry share passes through each chain's devices). Outside a rack: ordinary dry/wet.",
+    "mix": "Mix: this chain outputs Mix x its channel + (1 - Mix) x its share (1/3) of the dry input, so the rack sum is Mix x wet + (1 - Mix) x dry (dry delayed by the same 5120 samples; the dry share passes through each chain's devices). Outside a rack: ordinary dry/wet.",
     "tilt": "Tilt (+-6 dB/oct): weights the analysed level by dB per octave around 1 kHz (positive favours highs, negative lows) before it is classified. The output level is not changed.",
 }
 NUM_UNITS = {"hithr": "%.1f dB", "lothr": "%.1f dB", "rhithr": "%.1f dB", "rlothr": "%.1f dB", "hiknee": "%.1f dB", "loknee": "%.1f dB", "rise": "%.2f", "fall": "%.2f", "tilt": "%.1f dB/oct", "mix": "%.0f %"}
@@ -67,7 +72,7 @@ ENUM = {
 }
 ENUM_HELP = {
     "relative": "Relative Loudness Mode: classify against the Relative thresholds, measured from the loudest bin of the current block (0 dB), instead of absolute levels.",
-    "size": "Analysis block size: 1k favours time resolution, 4k frequency resolution. The latency stays 4096 samples at every size.",
+    "size": "Analysis block size: 1k favours time resolution, 4k frequency resolution. The latency stays 5120 samples at every size.",
     "output": "Output: Auto uses this chain's index in the parent Rack (1 Loud, 2 Mid, 3 Quiet; outside a Rack the sum of all), or pick a channel, or All.",
 }
 # key: (gen message, scale)
@@ -82,7 +87,7 @@ GEN_MSG = {
     "rise": ("risebl", 1.0),
     "fall": ("fallbl", 1.0),
     "tilt": ("tiltdb", 1.0),
-    "mix": ("wetamt", 0.01),
+    "mix": ("mixamt", 0.01),
     "size": ("fftn", None),
     "output": (None, 1.0),
 }
@@ -94,13 +99,26 @@ ABS_KEYS = ["hithr", "lothr"]
 REL_KEYS = ["rhithr", "rlothr"]
 
 
-def build_patcher():
-    gen = sc.gen_code(os.path.join(SRC, "cepstrum_lib.genexpr"), os.path.join(SRC, "spectral_split_lib.genexpr"),
-                      os.path.join(SRC, "loudsplit_core.genexpr"))
-    face = (sc.read(os.path.join(SRC, "loudsplit_config.js")).rstrip() + "\n\n"
+def gen_code():
+    """The gen code of the device (what the face writes to the .gendsp file). Channel rows 2..4 (Loud, Mid, Quiet) of Data lsd, sum in row 5."""
+    subs = sc.rack_subs(3, "lsd", 2, 512, ZERO_COUNT)
+    return sc.gen_code_rack(os.path.join(SRC, "loudsplit_core.genexpr"), subs)
+
+
+def face_code(gen):
+    """The v8ui script: deferred-DSP constants, config, link, theme, deferred DSP, face."""
+    header, _ = sc.deferred_header("loudsplit", gen)
+    return (header + "\n"
+            + sc.read(os.path.join(SRC, "loudsplit_config.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_link.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
+            + sc.read(os.path.join(SRC, "spectral_dsp.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "loudsplit_ui.js")))
+
+
+def build_patcher():
+    gen = gen_code()
+    face = face_code(gen)
 
     boxes = []
     lines = []
@@ -146,24 +164,29 @@ def build_patcher():
     boxes.append(sc.v8ui("obj-viz", face, [8.0, 20.0, 284.0, 141.0], (20.0, 80.0), 4, "LoudsplitView"))
 
     # ---- audio ----
+    # The device ships WITHOUT its gen~ (AGENTS.md 1d): plugin~ / plugout~ and the hub carry scripting names, the face creates the gen~ after
+    # load and wires hub -> gen, plugin~ -> gen -> plugout~ (src/spectral_dsp.js). Every cord that goes to the gen's inlet 0 goes into the hub.
+    def named(b, var):
+        b["box"]["varname"] = var
+        return b
+
     boxes += [
-        newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-        newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]),
-        sc.gen_box("obj-gen", gen, "loudsplit"),
+        named(newobj("obj-plugin", "plugin~", 20, 240, 52, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "ss_plugin"),
+        named(newobj("obj-plugout", "plugout~", 20, 520, 58, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "ss_plugout"),
+        named(newobj("obj-genin", "gate 1 1", 120, 280, 60, numinlets=2, numoutlets=1), "ss_genin"),
         # `---` is unique per device instance in M4L (`#0` is not expanded in a top-level device in Live)
         newobj("obj-scope-buf", "buffer~ ---loudsplitscope @samps 544", 560, 250, 260, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-loadbang", "loadbang", 560, 285, 60, outlettype=["bang"]),
-        message("obj-msg-ui-buf", "setbuffer ---loudsplitscope", 560, 315, 190),
-        message("obj-msg-gen-buf", "scope ---loudsplitscope", 560, 345, 170),
+        newobj("obj-ring-buf", f"buffer~ ---ssring @samps {RING_SAMPS}", 560, 275, 280, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-loadbang", "loadbang", 560, 305, 60, outlettype=["bang"]),
+        message("obj-msg-ui-names", "setnames ---loudsplitscope ---ssring", 560, 335, 250),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init", "init_link", 780, 430, 70),
+        newobj("obj-r-sstest", "r #0-sstest", 780, 460, 90, numinlets=0, numoutlets=1),   # test hook (scripts/test_spectral_sum_live.js)
     ]
     lines += [
-        line("obj-plugin", 0, "obj-gen", 0), line("obj-plugin", 1, "obj-gen", 1),
-        line("obj-gen", 0, "obj-plugout", 0), line("obj-gen", 1, "obj-plugout", 1),
-        line("obj-loadbang", 0, "obj-msg-ui-buf"), line("obj-loadbang", 0, "obj-msg-gen-buf"),
-        line("obj-msg-ui-buf", 0, "obj-viz"), line("obj-msg-gen-buf", 0, "obj-gen"),
+        line("obj-loadbang", 0, "obj-msg-ui-names"), line("obj-msg-ui-names", 0, "obj-viz"),
         line("obj-thisdevice", 0, "obj-msg-init"), line("obj-msg-init", 0, "obj-viz"),
+        line("obj-r-sstest", 0, "obj-viz"),
     ]
 
     # ---- hidden UI-state toggles (saved with the Set) ----
@@ -198,8 +221,9 @@ def build_patcher():
         lines.append(line(lset, 0, f"obj-ctrl-{key}"))
         lines.append(line("obj-route-link", i, gen_head[key]))
 
-    # resolved output selection -> gen
+    # gen-bound messages of the face (outsel, buffer names, rack role, parameter re-sends) -> hub
     lines.append(line("obj-viz", 2, "obj-gen", 0))
+    sc.to_gen_hub(lines, "obj-genin", "obj-gen")
 
     # Relative mode greys out the unused threshold pair: face outlet 3 -> route -> prepend active -> the bars
     boxes.append(newobj("obj-route-active", "route act_abs act_rel", 20, 620, 160, numoutlets=3))

@@ -15,7 +15,8 @@ const { makeRecorder, loadFace, checkRecording, grid } = require("./paint_bounds
 const SRC = path.join(__dirname, "..", "src");
 const read = (f) => fs.readFileSync(path.join(SRC, f), "utf8").trimEnd();
 // same order as scripts/build_loudsplit.py
-const code = [read("loudsplit_config.js"), read("spectral_link.js"), read("spectral_theme.js"), fs.readFileSync(path.join(SRC, "loudsplit_ui.js"), "utf8")].join("\n\n");
+const header = 'var GEN_DSP_TEXT = "";\nvar GEN_DSP_HASH = "test";\nvar SS_PREFIX = "loudsplit";\n';
+const code = [header, read("loudsplit_config.js"), read("spectral_link.js"), read("spectral_theme.js"), read("spectral_dsp.js"), fs.readFileSync(path.join(SRC, "loudsplit_ui.js"), "utf8")].join("\n\n");
 
 const W = 284, H = 141;
 const rec = makeRecorder(W, H);
@@ -98,6 +99,19 @@ for (const tel of ["zero", "half", "one", "nan", "huge", "neg"]) {
         }
     }
 }
+// the DSP pill (deferred gen~): loading, ready, failed with short and very long reasons, with the thresholds at the plot extremes
+sb.lsInfo = { instanceId: "t", isInRack: true, chainIndex: 0, chainCount: 3, peers: 3, linked: true, autoChannel: 0 };
+sb.lsSolo = ""; sb.lsDrag = null; sb.lsVals.relative = 0; sb.lsVals.dispost = 0; sb.lsVals.disstyle = 0;
+for (const st of [{ ready: 0, error: "" }, { ready: 1, error: "" }, { ready: 0, error: "not running" }, { ready: 0, error: "cannot write /tmp/loudsplit_core_0123456789ab.gendsp (disk full)" }]) {
+    for (const [hi, lo] of [[-30, -85], [0, -110], [-5, -10], [-110, -110]]) {
+        sb.ssDsp.ready = st.ready;
+        sb.ssDsp.error = st.error;
+        sb.set_hithr(hi); sb.set_lothr(lo); sb.lsLmaxS = -20; fillTelemetry("mid");
+        check(`dsp pill ${JSON.stringify(st)} hi=${hi} lo=${lo}`);
+    }
+}
+sb.ssDsp.ready = 1;
+sb.ssDsp.error = "";
 // a dragged knee label, a rack with no chain
 sb.lsInfo = { instanceId: "t", isInRack: false, chainIndex: 0, chainCount: 0, peers: 1, linked: false, autoChannel: -1 };
 for (const which of ["hi", "lo"]) {

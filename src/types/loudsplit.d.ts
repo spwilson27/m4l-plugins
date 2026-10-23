@@ -1,1 +1,4 @@
-// Loud Split face: no build-injected globals (loudsplit_config.js, spectral_link.js and loudsplit_ui.js are concatenated as they are).
+// Loud Split face: globals that scripts/build_loudsplit.py injects in front of the concatenated scripts (deferred DSP, src/spectral_dsp.js).
+declare var GEN_DSP_TEXT: string;
+declare var GEN_DSP_HASH: string;
+declare var SS_PREFIX: string;
