@@ -36,9 +36,9 @@ rpc_mod(x, m) {
 // inv = 1 uses the conjugate kernel and does NOT scale (the caller multiplies by 1 / n).
 rpc_pass(x, tab, n, pass, inv) {
 	if (pass < 0.5) {
-		rdiv = 4096 / n;
+		invDiv = n * 0.000244140625;
 		for (i = 0; i < n; i += 1) {
-			j = tab.peek(i, 2) / rdiv;
+			j = tab.peek(i, 2) * invDiv;
 			if (j > i) {
 				tr = x.peek(i, 0);
 				ti = x.peek(i, 1);
@@ -204,37 +204,33 @@ rpc_tick(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, ach, cout)
 		if (kt >= 15 && kt <= 47) {
 			k0 = (kt - 15) * 64;
 			cntb = min(64, 2049 - k0);
-			for (i = 0; i < cntb * 4; i += 1) {
-				ach.poke(0, i);
-			}
-			if (loaded > 0.5) {
-				for (q = 0; q < nt; q += 1) {
-					sl = rpc_mod(mt - q, 142);
-					xo = (sl * 2049 + k0) * 4;
-					ho = base + 16512 + (q * 2049 + k0) * 4;
-					for (kk = 0; kk < cntb; kk += 1) {
-						j4 = kk * 4;
-						xlr = fdt.peek(xo + j4);
-						xli = fdt.peek(xo + j4 + 1);
-						xrr = fdt.peek(xo + j4 + 2);
-						xri = fdt.peek(xo + j4 + 3);
-						hlr = irs.peek(ho + j4);
-						hli = irs.peek(ho + j4 + 1);
-						hrr = irs.peek(ho + j4 + 2);
-						hri = irs.peek(ho + j4 + 3);
-						ach.poke(ach.peek(j4) + xlr * hlr - xli * hli, j4);
-						ach.poke(ach.peek(j4 + 1) + xlr * hli + xli * hlr, j4 + 1);
-						ach.poke(ach.peek(j4 + 2) + xrr * hrr - xri * hri, j4 + 2);
-						ach.poke(ach.peek(j4 + 3) + xrr * hri + xri * hrr, j4 + 3);
+			// One bin at a time, summed over partitions in registers (no ach peek/poke in the inner loop).
+			// ach stays in the signature so callers are unchanged; this job does not use it.
+			for (kk = 0; kk < cntb; kk += 1) {
+				ylr = 0;
+				yli = 0;
+				yrr = 0;
+				yri = 0;
+				j4 = kk * 4;
+				if (loaded > 0.5) {
+					for (q = 0; q < nt; q += 1) {
+						sl = rpc_mod(mt - q, 142);
+						xo = (sl * 2049 + k0) * 4 + j4;
+						ho = base + 16512 + (q * 2049 + k0) * 4 + j4;
+						xlr = fdt.peek(xo);
+						xli = fdt.peek(xo + 1);
+						xrr = fdt.peek(xo + 2);
+						xri = fdt.peek(xo + 3);
+						hlr = irs.peek(ho);
+						hli = irs.peek(ho + 1);
+						hrr = irs.peek(ho + 2);
+						hri = irs.peek(ho + 3);
+						ylr += xlr * hlr - xli * hli;
+						yli += xlr * hli + xli * hlr;
+						yrr += xrr * hrr - xri * hri;
+						yri += xrr * hri + xri * hrr;
 					}
 				}
-			}
-			for (kk = 0; kk < cntb; kk += 1) {
-				j4 = kk * 4;
-				ylr = ach.peek(j4);
-				yli = ach.peek(j4 + 1);
-				yrr = ach.peek(j4 + 2);
-				yri = ach.peek(j4 + 3);
 				bk = k0 + kk;
 				cxt.poke(ylr - yri, bk, 0);
 				cxt.poke(yli + yrr, bk, 1);

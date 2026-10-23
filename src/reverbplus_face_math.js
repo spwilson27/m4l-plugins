@@ -80,6 +80,8 @@ function rcLevel01(db) {
 
 // ---- RT60 per band ----------------------------------------------------------------------------------
 
+var rcRt60Cache = { key: "", curve: null };
+
 /**
  * Expected RT60 (s) of each of the 32 bands. Tank algorithms: the telemetry's low / mid values (bass
  * multiplier below the crossover) times the HF damping shelf (what the tank does above HF Damping).
@@ -90,6 +92,8 @@ function rcLevel01(db) {
  * @returns {Float32Array}
  */
 function rcRt60Curve(t, p, sr) {
+    var key = t.lo + "|" + t.mid + "|" + t.hi + "|" + (p.conv ? 1 : 0) + "|" + p.damp + "|" + p.xover + "|" + sr;
+    if (rcRt60Cache.key === key && rcRt60Cache.curve) return rcRt60Cache.curve;
     var out = new Float32Array(RC.BANDS);
     var mid = Math.max(t.mid, 0.05);
     var g = rpClamp(t.lo / mid, 0.2, 5);
@@ -112,6 +116,8 @@ function rcRt60Curve(t, p, sr) {
         }
         out[b] = rpClamp(v, 0.05, 60);
     }
+    rcRt60Cache.key = key;
+    rcRt60Cache.curve = out;
     return out;
 }
 
@@ -281,6 +287,34 @@ function rbDecayDb(f, bass, xover, damp) {
     var wl = 1 / (1 + Math.pow(f / xover, 4));
     var v = (1 + (bass - 1) * wl) * Math.min(1, ratio(f) / ratio(1000));
     return 20 * Math.log10(Math.max(v, 1e-3));
+}
+
+var rbToneCurveCache = { key: "", n: 0, xs: null, decay: null, filt: null, zy: 0 };
+
+/**
+ * Pixel polylines of the Tone tab (decay y, filter y), reused while the parameters are unchanged.
+ * @param {{lowcut: number, highcut: number, damp: number, bassmult: number, xover: number}} p
+ * @param {boolean} bassOn
+ */
+function rbToneCurves(p, bassOn) {
+    var bass = bassOn ? p.bassmult : 1;
+    var key = (bassOn ? 1 : 0) + "|" + p.lowcut + "|" + p.highcut + "|" + p.damp + "|" + bass + "|" + p.xover;
+    if (rbToneCurveCache.key === key && rbToneCurveCache.xs) return rbToneCurveCache;
+    var step = 2;
+    var n = Math.floor((RBT.x1 - RBT.x0) / step) + 1;
+    var xs = new Float64Array(n);
+    var decay = new Float64Array(n);
+    var filt = new Float64Array(n);
+    var i = 0;
+    for (var f = RBT.x0; f <= RBT.x1; f += step) {
+        var hz = rbToneF(f);
+        xs[i] = f;
+        decay[i] = rbToneY(rbDecayDb(hz, bass, p.xover, p.damp));
+        filt[i] = rbToneY(rbFilterDb(hz, p.lowcut, p.highcut));
+        i++;
+    }
+    rbToneCurveCache = { key: key, n: i, xs: xs, decay: decay, filt: filt, zy: rbToneY(0) };
+    return rbToneCurveCache;
 }
 
 /**

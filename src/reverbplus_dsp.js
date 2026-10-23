@@ -1,12 +1,14 @@
-// Reverb+ (Start) deferred DSP: the device ships without its gen~, so Live shows the face at once
-// (AGENTS.md 1d). One Task tick after live.thisdevice (init_link) the face writes the embedded gen
-// patch (GEN_DSP_TEXT, injected by scripts/build_reverbplus.py) to a .gendsp file named by its hash,
-// creates `gen~ @gen <file>` and wires it: the rp_genin hub (gate 1 1, every gen-bound message) ->
-// gen, dp_plugin -> gen -> dp_plugout. Until then plugin~ goes straight to plugout~ (dry passes, so
-// the chain keeps sounding while the gen loads); those two cords are removed once the gen is wired.
-// The gen drops messages while it compiles, so the face re-sends the buffer binding and every gen
-// parameter (from the values it holds, RP_GEN_PARAMS) every 150 ms until the gen's frame counter
-// (scope FRAMES) moves, then twice more. The header shows "DSP loading…" / "DSP failed" meanwhile.
+// Reverb+ deferred DSP, shared by Start and End (AGENTS.md 1d). The device ships without its gen~,
+// so Live shows the face at once. One Task tick after live.thisdevice (init_link) this script writes
+// the embedded gen patch (GEN_DSP_TEXT, injected by scripts/build_reverbplus.py) to
+// /tmp/<RP_DSP_PREFIX>_<hash>.gendsp, creates `gen~ @gen <file>` and wires it:
+// rp_genin (gate 1 1, every gen-bound message) -> gen, rp_plugin -> gen -> rp_plugout.
+// There is no plugin~ -> plugout~ cord: the device stays silent until the gen~ is running.
+// The gen drops messages while it compiles, so the script re-sends buffer bindings (and, on Start,
+// every gen parameter) every 150 ms until the scope frame counter moves, then once more 300 ms later.
+// Start and End instances share Global("reverbplus_dspq") and create one gen~ at a time.
+// Trace lines go to Global("reverbplus_trace"): Start logs "dsp ready", End logs "end-dsp ready"
+// (the live test matches " dsp ready " for Starts only).
 
 var rpHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 var rpDsp = { ready: 0, error: "", createdAt: 0, counter0: -1, task: null, confirmTask: null, settleTask: null, retries: 0 };
@@ -25,6 +27,15 @@ function rpDspTimeout() {
     return rpDsp.retries === 0 ? RP_DSP_FIRST_TIMEOUT_MS : RP_DSP_TIMEOUT_MS;
 }
 
+function rpDspIsEnd() {
+    return typeof RP_ROLE !== "undefined" && RP_ROLE === "end";
+}
+
+// End's ready line is "end-dsp ready", which does not match the Start test's " dsp ready ".
+function rpDspTag(tag) {
+    return rpDspIsEnd() ? "end-" + tag : tag;
+}
+
 // Load trace for scripts/test_reverbplus_live.js: Global("reverbplus_trace").text, one line per event,
 // stamped with ms since the script loaded.
 var rpTraceT0 = Date.now();
@@ -38,7 +49,8 @@ function rpTrace(tag, msg) {
 }
 
 function rpDspPath() {
-    return "/tmp/reverbplus_start_" + GEN_DSP_HASH + ".gendsp";
+    var pre = (typeof RP_DSP_PREFIX !== "undefined" && RP_DSP_PREFIX) ? RP_DSP_PREFIX : "reverbplus_start";
+    return "/tmp/" + pre + "_" + GEN_DSP_HASH + ".gendsp";
 }
 
 /** @param {string} path */
@@ -57,24 +69,50 @@ function rpDspWriteFile(path) {
     return true;
 }
 
+// Start writes FRAMES at scope[0]. End writes its counter at scope[7] (RP_ESCOPE.FRAMES) and that
+// slot advances every 64 samples even in silence; scope[0] on End is the link flag and can sit still.
+function rpDspFrameIndex() {
+    return rpDspIsEnd() ? RP_ESCOPE.FRAMES : RP_SCOPE.FRAMES;
+}
+function rpDspScopeName() {
+    if (rpOwnNames.scope) return rpOwnNames.scope;
+    return rpDspIsEnd() ? "---rpscopeE" : "";
+}
 function rpDspFrames() {
-    if (!rpOwnNames.scope) return -1;
+    var name = rpDspScopeName();
+    if (!name) return -1;
     try {
-        var v = new Buffer(rpOwnNames.scope).peek(1, RP_SCOPE.FRAMES, 1);
+        var v = new Buffer(name).peek(1, rpDspFrameIndex(), 1);
         return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
     } catch (_) {
         return -1;
     }
 }
 
-// Buffer binding and every gen parameter, from the values the face holds (rpRaw: the raw parameter
-// values as they arrived through set_<key>).
+// Start: own buffer binding and every gen parameter (rpRaw holds the raw values from set_<key>).
+// End: own scope / xfer / hdr, then the Start partner's xfer / hdr when the link is already up
+// (those messages are lost while the gen is still compiling).
 function rpDspResend() {
+    if (rpDspIsEnd()) {
+        var scope = rpDspScopeName();
+        var xfer = rpOwnNames.xfer || "---rpxferE";
+        var hdr = rpOwnNames.hdr || "---rphdrE";
+        if (scope) outlet(0, "scope", scope);
+        if (xfer) outlet(0, "xfer", xfer);
+        if (hdr) outlet(0, "hdr", hdr);
+        if (rpLink.paired && rpLink.boundTo && rpLink.boundTo !== "own") {
+            var parts = String(rpLink.boundTo).split("|");
+            if (parts[0]) outlet(0, "xfer", parts[0]);
+            if (parts[1]) outlet(0, "hdr", parts[1]);
+        }
+        return;
+    }
     if (rpOwnNames.xfer) outlet(0, "xfer", rpOwnNames.xfer);
     if (rpOwnNames.hdr) outlet(0, "hdr", rpOwnNames.hdr);
     if (rpOwnNames.scope) outlet(0, "scope", rpOwnNames.scope);
     if (rpOwnNames.spec) outlet(0, "spec", rpOwnNames.spec);
     if (rpOwnNames.irspec) outlet(0, "irs", rpOwnNames.irspec);
+    if (typeof RP_GEN_PARAMS === "undefined" || typeof rpRaw === "undefined") return;
     for (var key in RP_GEN_PARAMS) {
         if (!(key in rpRaw)) continue;
         var g = RP_GEN_PARAMS[key];
@@ -82,11 +120,10 @@ function rpDspResend() {
     }
 }
 
-// Only one instance creates its gen~ at a time. Measured in Live (3 pairs in one set): when several
-// Starts create their gen~ within a second of each other, one of them is never added to the DSP chain
-// (its frame counter stays 0 for good, with a valid .gendsp and a wired gen~); one pair in three, a
-// different one from run to run. The Global holds the token of the instance that is creating; it is
-// released when that gen~ runs (or has failed for good), a claim older than RP_DSP_CLAIM_MS is stale.
+// Only one instance creates its gen~ at a time (Start and End share the queue). Measured in Live
+// (3 pairs in one set): when several gens are created within a second, one of them is never added
+// to the DSP chain. The Global holds the token of the instance that is creating; it is released
+// when that gen~ runs (or has failed for good). A claim older than RP_DSP_CLAIM_MS is stale.
 function rpDspClaim() {
     var q = new Global("reverbplus_dspq");
     var now = Date.now();
@@ -107,7 +144,7 @@ function rpDspLoad() {
         rpDsp.task.schedule(RP_DSP_QUEUE_POLL_MS);
         return;
     }
-    rpTrace("dsp-start", "creating gen~" + (rpDsp.retries ? " (retry " + rpDsp.retries + ")" : ""));
+    rpTrace(rpDspTag("dsp-start"), "creating gen~" + (rpDsp.retries ? " (retry " + rpDsp.retries + ")" : ""));
     try {
         var g = rpHost.getnamed("rp_gen");
         if (!g) {
@@ -125,18 +162,16 @@ function rpDspLoad() {
             rpHost.connect(pin, 1, g, 1);
             rpHost.connect(g, 0, pout, 0);
             rpHost.connect(g, 1, pout, 1);
-            rpHost.disconnect(pin, 0, pout, 0);
-            rpHost.disconnect(pin, 1, pout, 1);
         }
         rpDsp.createdAt = Date.now();
         rpDsp.counter0 = rpDspFrames();
-        rpTrace("dsp-created", "frames " + rpDsp.counter0);
+        rpTrace(rpDspTag("dsp-created"), "frames " + rpDsp.counter0);
         rpDspConfirm();
     } catch (err) {
         rpDsp.error = String(err && err.message ? err.message : err);
         rpDspRelease();
-        rpTrace("dsp-error", rpDsp.error);
-        post("Reverb+: DSP load failed: " + rpDsp.error + "\n");
+        rpTrace(rpDspTag("dsp-error"), rpDsp.error);
+        post((rpDspIsEnd() ? "Reverb+ End" : "Reverb+") + ": DSP load failed: " + rpDsp.error + "\n");
     }
     rpBroadcastDsp();
 }
@@ -146,10 +181,10 @@ function rpDspConfirm() {
     if (rpDsp.counter0 >= 0 && c >= 0 && c !== rpDsp.counter0) {
         rpDsp.ready = 1;
         rpDsp.error = "";
-        rpTrace("dsp", "ready after " + (Date.now() - rpDsp.createdAt) + " ms");
+        rpTrace(rpDspTag("dsp"), "ready after " + (Date.now() - rpDsp.createdAt) + " ms");
         rpDspRelease();
         // the last re-send may have reached the gen while it was still compiling: once more now, and
-        // again when it has settled
+        // again when it has settled (300 ms)
         rpDspResend();
         if (!rpDsp.settleTask) rpDsp.settleTask = new Task(rpDspResend, this);
         rpDsp.settleTask.schedule(RP_DSP_SETTLE_MS);
@@ -159,7 +194,7 @@ function rpDspConfirm() {
     if (Date.now() - rpDsp.createdAt > rpDspTimeout() && rpDsp.retries < RP_DSP_RETRIES) {
         // the gen~ was never added to the DSP chain: build a new one
         rpDsp.retries++;
-        rpTrace("dsp-retry", "gen~ frames stayed " + c);
+        rpTrace(rpDspTag("dsp-retry"), "gen~ frames stayed " + c);
         try {
             var old = rpHost.getnamed("rp_gen");
             if (old) rpHost.remove(old);
@@ -172,7 +207,7 @@ function rpDspConfirm() {
     if (Date.now() - rpDsp.createdAt > rpDspTimeout()) {
         rpDsp.error = "not running";
         rpDspRelease();
-        rpTrace("dsp-error", rpDsp.error + " (frames " + rpDsp.counter0 + " / " + c + ")");
+        rpTrace(rpDspTag("dsp-error"), rpDsp.error + " (frames " + rpDsp.counter0 + " / " + c + ")");
         rpBroadcastDsp();
         return;
     }
@@ -189,7 +224,11 @@ function rpDspSchedule() {
     rpDsp.task.schedule(30);
 }
 
-// Faces show the pill: `state dsp <ready 0|1> <error text or ->` on the state bus (outlet 1).
+// Start faces show the pill via the state bus. End draws it itself from rpDsp (one outlet, the gen hub).
 function rpBroadcastDsp() {
+    if (rpDspIsEnd()) {
+        if (typeof mgraphics !== "undefined") mgraphics.redraw();
+        return;
+    }
     outlet(1, "state", "dsp", rpDsp.ready ? 1 : 0, rpDsp.error ? rpDsp.error.replace(/\s+/g, "_") : "-");
 }

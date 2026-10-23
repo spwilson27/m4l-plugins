@@ -618,11 +618,12 @@ function checkDevice(name, doc, lay) {
         assert(!df.hidden, "the drop target exists in every algorithm");
     }
     assert(!lines.some((l) => l.source[0] === "obj-gen"), "nothing reads the deferred gen's outlets");
-    assert(!ids.includes("obj-gen"), "the Start ships without gen~");
+    assert(!ids.includes("obj-gen") && !boxes.some((b) => /^gen/.test(String(b.maxclass || "")) || /^gen~/.test(String(b.text || ""))), "the Start ships without gen~");
     const hub = boxes.find((b) => b.id === "obj-gen-in");
     assert(hub && hub.text === "gate 1 1" && hub.varname === "rp_genin");
     assert.strictEqual(boxes.find((b) => b.id === "obj-plugin").varname, "rp_plugin");
     assert.strictEqual(boxes.find((b) => b.id === "obj-plugout").varname, "rp_plugout");
+    assert(!lines.some((l) => l.source[0] === "obj-plugin" || l.destination[0] === "obj-plugout"), "silence during deferral: no static plugin~ / plugout~ cord");
     // wiring: every parameter -> prepend set_<key> -> engine; the face keys also reach their v8ui
     const eng = boxes.find((b) => b.id === "obj-engine");
     assert(eng && eng.maxclass === "v8ui" && eng.numoutlets === 6 && !eng.presentation, "engine v8ui, not in presentation");
@@ -665,7 +666,7 @@ function checkDevice(name, doc, lay) {
             const mgr = ["box", "patcher", "max", "messagename", "inlet", "jsarguments"];
             for (const r of mgr) assert(!new RegExp("(^|\\n)\\s*(var|let|const)\\s+" + r + "\\b").test(code), "engine declares " + r);
             new vm.Script(code); // syntax
-            assert(code.includes("var GEN_DSP_TEXT") && code.includes("var RP_GEN_PARAMS") && code.includes("var RP_PANEL_THEME"));
+            assert(code.includes("var GEN_DSP_TEXT") && code.includes("var RP_GEN_PARAMS") && code.includes("var RP_PANEL_THEME") && code.includes('var RP_DSP_PREFIX = "reverbplus_start"'));
         }
         assert(Buffer.byteLength(code) < 16 * 1024 * 1024);
     }
@@ -746,14 +747,35 @@ test("built devices/Reverb+.amxd: gen patch embedded for the deferred DSP, IR sp
     assert(!("irstretch" in params), "IR controls are the engine's, not the gen's");
 });
 
-test("built devices/Reverb+ End.amxd: static gen, link layer, 124 px wide", () => {
+test("built devices/Reverb+ End.amxd: deferred gen~, silence during deferral, link layer, 124 px wide", () => {
     const doc = readAmxd(path.join(ROOT, "devices", "Reverb+ End.amxd"));
     assert.strictEqual(doc.patcher.devicewidth, 124);
     const boxes = doc.patcher.boxes.map((b) => b.box);
-    const gen = boxes.find((b) => b.id === "obj-gen");
-    assert(gen && gen.code.includes("Buffer xfer(\"rpxferE\")"));
+    const lines = doc.patcher.lines.map((l) => l.patchline);
+    const ids = boxes.map((b) => b.id);
+    assert(!ids.includes("obj-gen") && !boxes.some((b) => /^gen/.test(String(b.maxclass || "")) || /^gen~/.test(String(b.text || ""))), "End ships without gen~");
+    const hub = boxes.find((b) => b.id === "obj-gen-in");
+    assert(hub && hub.text === "gate 1 1" && hub.varname === "rp_genin");
+    assert.strictEqual(boxes.find((b) => b.id === "obj-plugin").varname, "rp_plugin");
+    assert.strictEqual(boxes.find((b) => b.id === "obj-plugout").varname, "rp_plugout");
+    assert(!lines.some((l) => l.source[0] === "obj-plugin" || l.destination[0] === "obj-plugout"), "silence during deferral: no static audio cord");
+    assert(!lines.some((l) => l.source[0] === "obj-gen"), "nothing reads a gen that is not in the file");
+    for (const id of ["obj-msg-local", "obj-prep-xfer", "obj-prep-hdr"]) {
+        assert(lines.some((l) => l.source[0] === id && l.destination[0] === "obj-gen-in" && l.destination[1] === 1), id + " -> hub data inlet");
+    }
     assert(boxes.some((b) => b.text === "buffer~ ---rpxferE @samps 64 @chans 5"));
     assert.strictEqual(boxes.filter((b) => b.maxclass === "v8ui").length, 1);
+    const viz = boxes.find((b) => b.id === "obj-viz").textfile.text;
+    assert(viz.includes('var RP_DSP_PREFIX = "reverbplus_end"') && viz.includes("var GEN_DSP_TEXT") && viz.includes("function rpDspLoad"), "End face carries the deferred loader");
+    const gen = JSON.parse(JSON.parse(/var GEN_DSP_TEXT = (".*");/.exec(viz)[1]));
+    const code = gen.patcher.boxes.find((b) => b.box.id === "obj-code").box.code;
+    assert(code.includes('Buffer scope("rpscopeE")') && code.includes("poke(scope, frames, 7)"), "End scope frame counter is in the embedded gen");
+    assert.strictEqual(gen.patcher.classnamespace, "dsp.gen");
+    const { ctx } = runFace(viz, 116, 161);
+    ctx.preview();
+    ctx.paint();
+    assert.strictEqual(ctx.rpDsp.ready, 0);
+    assert.strictEqual(ctx.rpDsp.createdAt, 0);
 });
 
 test("no Reverb+ script redeclares Max's reserved v8ui / js globals", () => {

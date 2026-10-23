@@ -1,6 +1,7 @@
 // Reverb+ End face: link status, the chain latency in use (from Live's LOM) and the wet /
-// duck meters. Build order: reverbplus_config.js + `var RP_ROLE = "end"` + reverbplus_link.js +
-// this file. Outlet 0 -> gen (`xfer <name>`, `hdr <name>` from the link layer).
+// duck meters. Build order: reverbplus_config.js + role / GEN_DSP_* / RP_DSP_PREFIX +
+// reverbplus_link.js + reverbplus_dsp.js + this file. Outlet 0 -> the gen hub
+// (`xfer <name>`, `hdr <name>`, `scope <name>`).
 
 inlets = 1;
 outlets = 1;
@@ -112,6 +113,11 @@ function paint() {
     mgraphics.set_line_width(1);
     mgraphics.rectangle_rounded(0.5, 0.5, w - 1, h - 1, 6, 6);
     mgraphics.stroke();
+
+    // Absent until the deferred gen~ is actually being created, so the static preview is unchanged.
+    if (typeof rpDsp !== "undefined" && !rpDsp.ready && (rpDsp.createdAt > 0 || rpDsp.error)) {
+        esText(rpDsp.error ? "DSP FAILED" : "DSP LOADING…", 8, 78, 8, rpDsp.error ? EC.coral : EC.amber, true);
+    }
 }
 
 // scripts/render_preview.py: representative state (linked).

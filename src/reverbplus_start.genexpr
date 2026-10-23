@@ -233,6 +233,31 @@ History hpA1(0);
 History lpA1(0);
 History hpByp(0);
 History lpByp(0);
+// control-rate caches (pow / exp / sin / cos). Refreshed on the 64-sample tick only when the
+// parameter or the sample rate changed. Initials match the Param defaults at 48 kHz so the
+// samples before the first tick (the tick itself runs on sample 0, after the early uses) are exact.
+History inGt(1);
+History inDbH(1e9);
+History outLin(1);
+History outDbH(1e9);
+History erGt(1);
+History laGt(1);
+History erDbH(1e9);
+History laDbH(1e9);
+History cLin(1);
+History cInv(1);
+History cKnee(5);
+History cDbH(1e9);
+History dryC(1);
+History wetC(0);
+History wetH(1e9);
+History sm01(0.00208333333333);
+History sm04(0.00052083333333);
+History sm05(0.00041666666667);
+History sm025(0.00083333333333);
+History srH(0);
+History adF(1e9);
+History axF(1e9);
 // telemetry accumulators
 History quietCnt(0);
 History asleep(0);
@@ -338,7 +363,7 @@ lkS = lkS + ((paired ? 1 : 0) - lkS) * (1 / 512);
 poke(hdr, clip(wetmix, 0, 1), 5);
 poke(hdr, clip(duckamt, 0, 1), 6);
 poke(hdr, clip(duckrel, 10, 2000), 40);
-poke(hdr, dbtoa(clip(outdb, -36, 12)), 41);
+poke(hdr, outLin, 41);
 frz = freeze > 0.5;
 poke(hdr, frz, 13);
 
@@ -348,7 +373,7 @@ poke(xfer, in1, ri, 0);
 poke(xfer, in2, ri, 1);
 
 // ---- freeze fade, algorithm request ----------------------------------------------------------
-ig = ig + ((frz ? 0 : 1) - ig) * (1 / (0.01 * sr));
+ig = ig + ((frz ? 0 : 1) - ig) * sm01;
 fz = 1 - ig;
 algoReq = floor(clip(algo, 0, 5) + 0.5);
 
@@ -402,22 +427,21 @@ lgs = lgs + (lgT * ig - lgs) * 0.002;
 scs = scs + ((1 + lkS * (sqrt(max(1 - lgT * lgT, 0)) - 1)) - scs) * 0.002;
 jL = ayL * lgs;
 jR = ayR * lgs;
-cT = dbtoa(clip(cliplevel, -18, 6));
-cK = 0.8 * cT;
+cK = 0.8 * cLin;
 amL = max(abs(jL), cK);
 amR = max(abs(jR), cK);
-sfL = jL * (cK + (cT - cK) * tanh((amL - cK) / (cT - cK))) / amL;
-sfR = jR * (cK + (cT - cK) * tanh((amR - cK) / (cT - cK))) / amR;
+sfL = jL * (cK + (cLin - cK) * tanh((amL - cK) * cKnee)) / amL;
+sfR = jR * (cK + (cLin - cK) * tanh((amR - cK) * cKnee)) / amR;
 pkS = max(abs(jL), abs(jR));
-limT = pkS > cT ? cT / pkS : 1;
-limG = limT < limG ? limT : limG + (limT - limG) * (1 / (0.05 * sr));
+limT = pkS > cLin ? cLin / pkS : 1;
+limG = limT < limG ? limT : limG + (limT - limG) * sm05;
 cm = floor(clip(clipmode, 0, 2) + 0.5);
-cjL = cm == 1 ? clip(jL, 0 - cT, cT) : (cm == 2 ? jL * limG : sfL);
-cjR = cm == 1 ? clip(jR, 0 - cT, cT) : (cm == 2 ? jR * limG : sfR);
+cjL = cm == 1 ? clip(jL, 0 - cLin, cLin) : (cm == 2 ? jL * limG : sfL);
+cjR = cm == 1 ? clip(jR, 0 - cLin, cLin) : (cm == 2 ? jR * limG : sfR);
 pkC = max(abs(cjL), abs(cjR));
 clipR = min(clipR, pkS > 0.000001 ? min(1, pkC / pkS) : 1);
 // the tank is fed from the input only (the chain loop does not pass through it)
-inS = inS + (dbtoa(clip(indb, -36, 12)) - inS) * (1 / (0.01 * sr));
+inS = inS + (inGt - inS) * sm01;
 tL = xL * ig * inS;
 tR = xR * ig * inS;
 pkIn = max(pkIn, max(abs(in1), abs(in2)));
@@ -438,7 +462,7 @@ if (asState == 0 && algoReq != algoCur) {
 	asState = 1;
 }
 if (asState == 1) {
-	agS = max(agS - 1 / (0.04 * sr), 0);
+	agS = max(agS - sm04, 0);
 	if (agS <= 0) {
 		asState = 2;
 		clrPos = 0;
@@ -491,7 +515,7 @@ if (asState == 3) {
 	if (algoReq != algoCur) {
 		asState = 1;
 	} else {
-		agS = min(agS + 1 / (0.04 * sr), 1);
+		agS = min(agS + sm04, 1);
 		if (agS >= 1) {
 			asState = 0;
 		}
@@ -625,12 +649,63 @@ doTick = tick >= 64;
 if (doTick) {
 	tick = 0;
 	frames = wrap(frames + 1, 0, 1000000);
+	// Gains, poles and equal-power coefficients. Transcendentals run here, and only when the
+	// parameter or the sample rate actually changed (never on the per-sample path).
+	inDb = clip(indb, -36, 12);
+	if (inDb != inDbH) {
+		inGt = pow(10, inDb * 0.05);
+		inDbH = inDb;
+	}
+	oDb = clip(outdb, -36, 12);
+	if (oDb != outDbH) {
+		outLin = pow(10, oDb * 0.05);
+		outDbH = oDb;
+	}
+	erDb = clip(erlvl, -70, 6);
+	if (erDb != erDbH) {
+		erGt = erDb <= -69.9 ? 0 : pow(10, erDb * 0.05);
+		erDbH = erDb;
+	}
+	laDb = clip(latelvl, -70, 6);
+	if (laDb != laDbH) {
+		laGt = laDb <= -69.9 ? 0 : pow(10, laDb * 0.05);
+		laDbH = laDb;
+	}
+	cDb = clip(cliplevel, -18, 6);
+	if (cDb != cDbH) {
+		cLin = pow(10, cDb * 0.05);
+		cInv = 1 / cLin;
+		cKnee = cInv * 5;
+		cDbH = cDb;
+	}
+	wmx = clip(wetmix, 0, 1);
+	if (wmx != wetH) {
+		dryC = cos(wmx * pi * 0.5);
+		wetC = sin(wmx * pi * 0.5);
+		wetH = wmx;
+	}
+	dfc = clip(dampf, 1000, 20000);
+	xfc = clip(xoverf, 100, 1000);
+	srCh = sr != srH;
+	if (dfc != adF || srCh) {
+		ad = 1 - exp(-6.283185307179586 * dfc / sr);
+		adF = dfc;
+	}
+	if (xfc != axF || srCh) {
+		ax = 1 - exp(-6.283185307179586 * xfc / sr);
+		axF = xfc;
+	}
+	if (srCh) {
+		sm01 = 1 / (0.01 * sr);
+		sm04 = 1 / (0.04 * sr);
+		sm05 = 1 / (0.05 * sr);
+		sm025 = 1 / (0.025 * sr);
+		srH = sr;
+	}
 	szS = 0.4 + 1.2 * clip(szp, 0, 1);
 	rt = clip(dcy, 0.1, 60);
 	// the chain loop carries the long tail while an End is paired: the tank runs at 0.3 x Decay (not for Convolution)
 	rtT = rt * (1 - 0.7 * lkS * (algoCur == 5 ? 0 : 1));
-	ax = 1 - exp(-6.283185307179586 * clip(xoverf, 100, 1000) / sr);
-	ad = 1 - exp(-6.283185307179586 * clip(dampf, 1000, 20000) / sr);
 	// target lengths of every line
 	for (i = 0; i < 64; i += 1) {
 		if (lc.peek(i, 2) > 0) {
@@ -1027,7 +1102,7 @@ if (running && algoCur == 4) {
 // -- Convolution
 // the IR bank is swapped only while the output is faded out (25 ms), so a new IR never clicks
 verNow = peek(hdr, 32);
-cg = cg + ((verNow != verCur ? 0 : 1) - cg) * (1 / (0.025 * sr));
+cg = cg + ((verNow != verCur ? 0 : 1) - cg) * sm025;
 if (verNow != verCur && cg <= 0.002) {
 	cp.poke(peek(hdr, 33), 0);
 	cp.poke(peek(hdr, 34), 1);
@@ -1042,12 +1117,8 @@ if (running && algoCur == 5) {
 }
 
 // ---- levels, post filters, width, fades -----------------------------------------------------------
-erT = dbtoa(clip(erlvl, -70, 6));
-laT = dbtoa(clip(latelvl, -70, 6));
-erT = erlvl <= -69.9 ? 0 : erT;
-laT = latelvl <= -69.9 ? 0 : laT;
-erS = erS + (erT - erS) * 0.002;
-lateS = lateS + (laT - lateS) * 0.002;
+erS = erS + (erGt - erS) * 0.002;
+lateS = lateS + (laGt - lateS) * 0.002;
 wL = erL * erS + lateL * lateS;
 wR = erR * erS + lateR * lateS;
 // Low Cut / High Cut
@@ -1107,9 +1178,7 @@ poke(xfer, tapM - ptap, ri, 4);
 ptap = tapM;
 
 // Paired: only the wet goes into the chain. Unpaired: a plain reverb (equal-power Dry/Wet, Output).
-og = dbtoa(clip(outdb, -36, 12));
-wmx = clip(wetmix, 0, 1);
-solL = in1 * cos(wmx * pi * 0.5) + wetL * sin(wmx * pi * 0.5) * og;
-solR = in2 * cos(wmx * pi * 0.5) + wetR * sin(wmx * pi * 0.5) * og;
+solL = in1 * dryC + wetL * wetC * outLin;
+solR = in2 * dryC + wetR * wetC * outLin;
 out1 = fixnan(cL * gLink * lkS + solL * (1 - lkS));
 out2 = fixnan(cR * gLink * lkS + solR * (1 - lkS));

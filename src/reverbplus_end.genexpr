@@ -66,6 +66,20 @@ History pkW(0);
 History pkD(0);
 History pkOL(0);
 History pkOR(0);
+// Mix coefficients. exp / sin / cos run only when hdr[40..43], Dry/Wet or the sample rate changes.
+// hdr[41] is already the linear output gain (Start writes dbtoa); outGc holds that value.
+History relH(-1);
+History relK(0.999);
+History atkK(0.01);
+History relSm(0.001);
+History atkSm(0.01);
+History smMix(0.001);
+History srEh(0);
+History ogH(-1);
+History outGc(1);
+History wetEh(-1);
+History wetSin(0.5224985647159488);
+History wetCos(0.8525245220595057);
 
 age = 0;
 j = 0;
@@ -215,23 +229,41 @@ poke(xfer, in2, wi, 3);
 
 // Mix stage. Equal-power Dry/Wet: wet = sin(90 deg x Dry/Wet), dry = cos(...). Ducking pushes the wet
 // down by up to 24 dB x Ducking while the dry signal is loud (level -40..0 dBFS maps onto 0..1); the
-// wet comes back with the release time.
-wet = peek(hdr, 5);
+// wet comes back with the release time. The exp / sin / cos below recompute only when the header
+// slots or the sample rate change (hdr[41] is already linear gain).
+relMs = max(peek(hdr, 40), 1);
+gLin = peek(hdr, 41);
+wMix = clip(peek(hdr, 5), 0, 1);
+if (relMs != relH || sr != srEh) {
+	relK = exp(-1 / (relMs * 0.001 * sr));
+	atkK = 1 - exp(-1 / (0.002 * sr));
+	relSm = 1 / (relMs * 0.001 * sr);
+	atkSm = 1 / (0.003 * sr);
+	smMix = 1 / (0.02 * sr);
+	relH = relMs;
+	srEh = sr;
+}
+if (gLin != ogH) {
+	outGc = gLin;
+	ogH = gLin;
+}
+if (wMix != wetEh) {
+	wetSin = sin(wMix * pi * 0.5);
+	wetCos = cos(wMix * pi * 0.5);
+	wetEh = wMix;
+}
 duckAmt = peek(hdr, 6);
-duckRel = max(peek(hdr, 40), 1);
-outG = peek(hdr, 41);
-sm = 1 / (0.02 * sr);
-gw = gw + (sin(clip(wet, 0, 1) * pi * 0.5) - gw) * sm;
-gd = gd + (cos(clip(wet, 0, 1) * pi * 0.5) - gd) * sm;
+gw = gw + (wetSin - gw) * smMix;
+gd = gd + (wetCos - gd) * smMix;
 
 lvl = max(abs(dryL), abs(dryR));
-env = lvl > env ? env + (lvl - env) * (1 - exp(-1 / (0.002 * sr))) : env * exp(-1 / (duckRel * 0.001 * sr));
+env = lvl > env ? env + (lvl - env) * atkK : env * relK;
 envDb = 20 * log10(max(env, 0.00001));
 dgT = dbtoa(-24 * clip(duckAmt, 0, 1) * clip((envDb + 40) / 40, 0, 1));
-dg = dgT < dg ? dg + (dgT - dg) * (1 / (0.003 * sr)) : dg + (dgT - dg) * (1 / (duckRel * 0.001 * sr));
+dg = dgT < dg ? dg + (dgT - dg) * atkSm : dg + (dgT - dg) * relSm;
 
-wL = in1 * dg * outG;
-wR = in2 * dg * outG;
+wL = in1 * dg * outGc;
+wR = in2 * dg * outGc;
 
 link = link + (alive ? 1 : -1) * (1 / 512);
 link = clip(link, 0, 1);
@@ -247,6 +279,7 @@ pkD = max(pkD, max(abs(dryL), abs(dryR)));
 tick = tick + 1;
 if (tick >= 64) {
 	tick = 0;
+	// Frame counter for deferred DSP: advances every 64 samples even in silence (scope slot 7).
 	frames = wrap(frames + 1, 0, 1000000);
 	poke(hdr, pkW, 12);
 	poke(hdr, dg, 16);

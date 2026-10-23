@@ -5,6 +5,7 @@
     "src/types/reverbplus.d.ts",
     "src/reverbplus_config.js",
     "src/reverbplus_link.js",
+    "src/reverbplus_dsp.js",
     "src/reverbplus_end_ui.js"
   ]
 }
