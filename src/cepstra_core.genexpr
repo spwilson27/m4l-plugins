@@ -10,6 +10,8 @@
 //   261      : voiced flag
 //   262      : resmode in use
 //   263      : Ceps-gate threshold for Mid in |c| units (0 when the cepstral gate is inactive)
+//   264      : alive counter. Slots 0..263 are unchanged. This one increments every hop, including silence sleep,
+//              so a deferred gen~ on a quiet track still shows that it is running.
 //
 // Frame work (about 71 jobs per frame at 4k) is time-sliced across the first half of each hop, so no single
 // sample runs more than one FFT pass. Packed-FFT trick: Mid + j*Side share one complex FFT, and because
@@ -26,8 +28,9 @@ fft_pass(re, im, twr, twi, n, s, sgn) {
 	blk = hlf * 2;
 	tstep = 4096 / blk;
 	nb = n * 0.5;
+	invHlf = 1 / hlf;
 	for (b = 0; b < nb; b += 1) {
-		grp = floor(b / hlf);
+		grp = floor(b * invHlf);
 		j = b - grp * hlf;
 		i0 = grp * blk + j;
 		i1 = i0 + hlf;
@@ -95,6 +98,7 @@ job_logmag(xre, xim, lre, lim, wre, wim, brv, n, stride, part, nparts) {
 	nh = n * 0.5;
 	k0 = floor((nh + 1) * part / nparts);
 	k1 = floor((nh + 1) * (part + 1) / nparts);
+	invStride = 1 / stride;
 	for (k = k0; k < k1; k += 1) {
 		kk = (n - k) % n;
 		ar = peek(xre, k);
@@ -111,8 +115,8 @@ job_logmag(xre, xim, lre, lim, wre, wim, brv, n, stride, part, nparts) {
 		poke(lre, lm, kk);
 		poke(lim, ls, k);
 		poke(lim, ls, kk);
-		r1 = floor(peek(brv, k) / stride);
-		r2 = floor(peek(brv, kk) / stride);
+		r1 = floor(peek(brv, k) * invStride);
+		r2 = floor(peek(brv, kk) * invStride);
 		poke(wre, lm, r1);
 		poke(wre, lm, r2);
 		poke(wim, ls, r1);
@@ -181,16 +185,20 @@ job_lift(wre, wim, ere, eim, brv, stat, n, stride, srVal, modeNow, res01, midiNo
 	poke(stat, voiced, 2);
 
 	tw = clip(lc * 0.25, 2, 6);
+	invTw = 1 / tw;
+	piInvTw = 3.14159265359 * invTw;
+	lcEdge = lc - tw;
+	invStride = 1 / stride;
 	for (i = 0; i < n; i += 1) {
 		q2 = (i <= nh) ? i : (n - i);
 		wgt = 0;
 		if (q2 < lc) {
 			wgt = 1;
-			if (q2 > lc - tw) {
-				wgt = 0.5 + 0.5 * cos(3.14159265359 * (q2 - (lc - tw)) / tw);
+			if (q2 > lcEdge) {
+				wgt = 0.5 + 0.5 * cos(piInvTw * (q2 - lcEdge));
 			}
 		}
-		r = floor(peek(brv, i) / stride);
+		r = floor(peek(brv, i) * invStride);
 		poke(ere, wgt * peek(wre, i) * invN, r);
 		poke(eim, wgt * peek(wim, i) * invN, r);
 	}
@@ -206,17 +214,13 @@ interp_env(arr, kf, nh) {
 	return mix(peek(arr, i0), peek(arr, i1), fr);
 }
 
-// Harmonic gate on the fine structure h (nepers above the envelope). gate01 = 0 is a bypass.
-gate_h(h, p, gate01) {
-	// Spec gate: cut fine-structure bins more than `range` below the local partial peak p (peak envelope of H).
-	// range = 8 + 40 * (1 - g)^3 dB: 48 dB (barely acts) at 0+, ~17 dB at 40%, 8 dB at 100%.
-	// No early return: GenExpr falls through a `return` inside an `if` block. Gate 0 gives depth 0 = bypass.
-	om = 1 - gate01;
-	rng = (8 + 40 * om * om * om) / 8.685889638;
-	kn = 0.6;
-	t = clip((h - p + rng + kn) / (2 * kn), 0, 1);
+// Harmonic gate on the fine structure h (nepers above the envelope).
+// bias = range + 0.6 and invK = 1 / 1.2 are constant for a Gate value (filled when Gate changes, not per bin).
+// range = 8 + 40 * (1 - g)^3 dB: 48 dB (barely acts) at 0+, ~17 dB at 40%, 8 dB at 100%.
+// depth 0 is the bypass. No early return: GenExpr falls through a `return` inside an `if` block.
+gate_h(h, p, bias, invK, depth) {
+	t = clip((h - p + bias) * invK, 0, 1);
 	g = t * t * (3 - 2 * t);
-	depth = (gate01 > 0.0005) ? 6.9 * clip(gate01 * 10, 0, 1) : 0;
 	return h - (1 - g) * depth;
 }
 
@@ -248,12 +252,14 @@ job_cgate(wre, stat, n, gate01, srVal) {
 		ss = 0;
 		cnt = 0;
 		for (i = qlo; i <= qhi; i += 1) {
-			cv = peek(wre, i) * invN;
+			cv = peek(wre, i);
 			pk = max(pk, cv);
 			ss = ss + cv * cv;
 			cnt = cnt + 1;
 		}
-		rms = sqrt(ss / max(cnt, 1) + 0.00000000000000000001);
+		invCnt = 1 / max(cnt, 1);
+		pk = pk * invN;
+		rms = sqrt(ss * invN * invN * invCnt + 0.00000000000000000001);
 		vv = pk / rms;
 		tv = 3.5 * pow(7, gate01);
 		t = clip((vv - tv + 1) / 2, 0, 1);
@@ -268,9 +274,21 @@ job_cgate(wre, stat, n, gate01, srVal) {
 }
 
 // Job: formant shift + harmonic gate, original phase, written bit-reversed for the synthesis IFFT.
-job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, n, stride, part, nparts, ratM, ratS, gate01) {
+// ratM / ratS / the spec-gate knee live in History (recomputed only when those knobs change).
+job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, n, stride, part, nparts, gate01) {
 	cg = peek(stat, 5);
 	nh = n * 0.5;
+	iRM = invRatM;
+	iRS = invRatS;
+	bias = specBias;
+	invK = specInv;
+	depth = specDepth;
+	idM = (midshift == 0);
+	idS = (sideshift == 0);
+	// Shift 0: k / 2^(0/12) is the integer bin, and interp_env of an integer is that bin. Spec gate off:
+	// gate_h returns its input. Using the bin itself is the same magnitude the full path would produce.
+	plain = idM && idS && (gate01 <= 0.0005) && (cg < 0.5);
+	invStride = 1 / stride;
 	// Part 0, Spec gate: peak envelope P[k] = max_j (H[j] - d |k - j|) of the fine structure (two O(N) passes),
 	// d = 1 neper per half harmonic spacing implied by the lifter (W = N / 2L). Stored in hre (Mid) / him (Side),
 	// which only the Ceps gate uses otherwise.
@@ -317,10 +335,17 @@ job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, n, stride,
 		ls = peek(lim, k);
 		emv = peek(ere, k);
 		esv = peek(eim, k);
-		epm = interp_env(ere, k / ratM, nh);
-		eps = interp_env(eim, k / ratS, nh);
-		hm = (cg > 0.5) ? peek(hre, k) : gate_h(lm - emv, peek(hre, k), gate01);
-		hs = (cg > 0.5) ? peek(him, k) : gate_h(ls - esv, peek(him, k), gate01);
+		if (plain) {
+			epm = emv;
+			eps = esv;
+			hm = lm - emv;
+			hs = ls - esv;
+		} else {
+			epm = idM ? emv : interp_env(ere, k * iRM, nh);
+			eps = idS ? esv : interp_env(eim, k * iRS, nh);
+			hm = (cg > 0.5) ? peek(hre, k) : ((gate01 > 0.0005) ? gate_h(lm - emv, peek(hre, k), bias, invK, depth) : (lm - emv));
+			hs = (cg > 0.5) ? peek(him, k) : ((gate01 > 0.0005) ? gate_h(ls - esv, peek(him, k), bias, invK, depth) : (ls - esv));
+		}
 		omv = clip(epm + hm + vg, -21, 12);
 		osv = clip(eps + hs + vg, -21, 12);
 		magM = exp(omv);
@@ -333,8 +358,8 @@ job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, n, stride,
 			ymi = 0;
 			ysi = 0;
 		}
-		r1 = floor(peek(brv, k) / stride);
-		r2 = floor(peek(brv, kk) / stride);
+		r1 = floor(peek(brv, k) * invStride);
+		r2 = floor(peek(brv, kk) * invStride);
 		poke(ore, ymr - ysi, r1);
 		poke(oim, ymi + ysr, r1);
 		poke(ore, ymr + ysi, r2);
@@ -350,9 +375,10 @@ job_tele(wre, scope, stat, n, srVal, levelIn, frameNo, modeNow) {
 	nh = n * 0.5;
 	invN = 1.0 / n;
 	qmax = 0.02 * srVal;
+	qScale = qmax / 192;
 	for (b = 0; b < 192; b += 1) {
-		qlo = b * qmax / 192;
-		qhi = (b + 1) * qmax / 192;
+		qlo = b * qScale;
+		qhi = qlo + qScale;
 		k0 = floor(qlo);
 		k1 = max(k0, ceil(qhi) - 1);
 		v = 9999;
@@ -360,12 +386,12 @@ job_tele(wre, scope, stat, n, srVal, levelIn, frameNo, modeNow) {
 			best = 0;
 			k1c = min(k1, nh - 2);
 			for (k = k0; k <= k1c; k += 1) {
-				cv = peek(wre, k) * invN;
+				cv = peek(wre, k);
 				if (abs(cv) > abs(best)) {
 					best = cv;
 				}
 			}
-			v = best;
+			v = best * invN;
 		}
 		poke(scope, v, b, 0);
 	}
@@ -453,6 +479,20 @@ History tick(0);
 History dryG(0.0);
 History wetG(1.0);
 History wetSm(1.0);
+History wetLast(1);
+History ratM(1);
+History ratS(1);
+History invRatM(1);
+History invRatS(1);
+History gateSpec(0);
+History specBias(0);
+History specInv(0.833333333333);
+History specDepth(0);
+History midHeld(0);
+History sideHeld(0);
+History gateHeld(0);
+History gmodeHeld(0);
+History alive(0);
 
 sr = max(samplerate, 1);
 
@@ -483,14 +523,43 @@ if (nWant != nCur) {
 	muteCnt = ltot + 3 * hopN + 256;
 }
 
-// Control-rate mix coefficients
-if (tick % 16 == 0) {
-	wetSm = wetSm + 0.05 * (clip(wet, 0, 1) - wetSm);
-	ang = wetSm * 1.57079632679;
-	dryG = cos(ang);
-	wetG = sin(ang);
+// Shift ratios and the spec-gate knee depend only on the knobs. pow / the 8+40*(1-g)^3 range run when they change.
+if ((midshift != midHeld) || (sideshift != sideHeld) || (gate != gateHeld) || (gatemode != gmodeHeld)) {
+	midHeld = midshift;
+	sideHeld = sideshift;
+	gateHeld = gate;
+	gmodeHeld = gatemode;
+	ratM = pow(2, midshift / 12);
+	ratS = pow(2, sideshift / 12);
+	invRatM = 1 / ratM;
+	invRatS = 1 / ratS;
+	gateSpec = (gatemode > 0.5) ? 0 : clip(gate, 0, 1);
+	om = 1 - gateSpec;
+	specRng = (8 + 40 * om * om * om) / 8.685889638;
+	specKn = 0.6;
+	specBias = specRng + specKn;
+	specInv = 1 / (2 * specKn);
+	specDepth = (gateSpec > 0.0005) ? 6.9 * clip(gateSpec * 10, 0, 1) : 0;
 }
-tick = wrap(tick + 1, 0, 16);
+
+// Equal-power dry/wet. cos/sin only while Mix is still moving; a parked Mix keeps the cached gains.
+wetNow = clip(wet, 0, 1);
+if (wetNow != wetLast) {
+	wetLast = wetNow;
+	tick = 0;
+}
+if (abs(wetNow - wetSm) > 0.0000001) {
+	if (tick == 0) {
+		wetSm = wetSm + 0.05 * (wetNow - wetSm);
+		if (abs(wetNow - wetSm) <= 0.0000001) {
+			wetSm = wetNow;
+		}
+		ang = wetSm * 1.57079632679;
+		dryG = cos(ang);
+		wetG = sin(ang);
+	}
+	tick = wrap(tick + 1, 0, 16);
+}
 
 // Read the finished output sample, then record the new input.
 yM = peek(oM, wp);
@@ -514,6 +583,8 @@ levelPk = max(inAbs, levelPk * 0.9995);
 hopCtr = hopCtr + 1;
 if (hopCtr >= hopN) {
 	hopCtr = 0;
+	alive = wrap(alive + 1, 0, 16777216);
+	poke(scope, alive, 264, 0);
 	if (quietCount < nCur) {
 		if (jobId >= jobCount) {
 			jobId = 0;
@@ -555,7 +626,7 @@ if (jobId < jobCount) {
 				fft_pass(hre, him, twr, twi, nCur, j - 3 * llog - 4, 1);
 			}
 		} else if (j <= 4 * llog + 8) {
-			job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, nCur, stride, j - 4 * llog - 5, 4, pow(2, midshift / 12), pow(2, sideshift / 12), (gatemode > 0.5) ? 0 : clip(gate, 0, 1));
+			job_spec(xre, xim, lre, lim, ere, eim, hre, him, ore, oim, brv, stat, nCur, stride, j - 4 * llog - 5, 4, gateSpec);
 		} else if (j == 4 * llog + 9) {
 			job_tele(wre, scope, stat, nCur, sr, levelPk, frameNo, resmode);
 		} else if (j <= 5 * llog + 9) {
