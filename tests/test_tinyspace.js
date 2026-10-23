@@ -287,6 +287,10 @@ const bufferAt = gen.indexOf("\nBuffer ");
 assert.ok(fnAt > 0 && fnAt < paramAt && fnAt < bufferAt, "GenExpr functions must precede Param and Buffer");
 assert.ok(gen.indexOf("peek(cfg, 0)") > bufferAt, "config peeks must follow the Buffer declaration");
 assert.ok(gen.includes("clip(x0, -2, 2)"), "feedback path clips only when it would overload");
+assert.ok(gen.includes("1e-7"), "silence threshold stays under the ring-tail floor");
+assert.ok(gen.includes("32768"), "silence sleep waits more than 32768 samples");
+assert.ok(gen.includes("poke(meters, frame, 20, 0)"), "frame counter is written even while the tank sleeps");
+assert.ok(gen.includes("for (li = 0; li < 20; li += 1)"), "per-line coefficients refresh in one loop");
 assert.ok(gen.includes("lp(del0.read"), "damping filters the delay tap, including the first reflection");
 assert.ok(gen.includes("16000"), "damp cutoff should match dampPole");
 assert.ok(!gen.includes("d0 = lp("), "damping is not applied only on the feedback write");
@@ -325,14 +329,49 @@ assert.strictEqual(p.openinpresentation, 1);
 const boxMap = validatePatcherBoxesAndLines(p, "Tiny Space.amxd");
 assert.ok(boxMap.get("obj-cfg").text.includes("#0-tsconfig"));
 assert.ok(boxMap.get("obj-meters").text.includes("#0-tsmeters"));
+assert.ok(
+    /@samps (2[4-9]|[3-9]\d|\d{3,})/.test(boxMap.get("obj-meters").text),
+    "meter buffer must hold envelopes 0..19 and the frame counter at slot 20"
+);
 assert.strictEqual(
     boxMap.get("obj-msg-genbufs").text,
     "cfg #0-tsconfig, meters #0-tsmeters",
     "gen binds Buffer variables cfg and meters to the #0 buffers"
 );
-assert.strictEqual(boxMap.get("obj-gen").maxclass, "gen.codebox~");
-assert.ok(boxMap.get("obj-gen").code.includes("Buffer cfg"), "genexpr embedded");
-assert.ok(boxMap.get("obj-gen").code.includes(gen.slice(0, 80)));
+assert.strictEqual(boxMap.get("obj-msg-genbufs").varname, "ts_genbufs");
+assert.ok(!boxMap.has("obj-gen"), "device ships without a static gen~ / gen.codebox~");
+const hub = boxMap.get("obj-gen-in");
+assert.ok(hub, "missing obj-gen-in hub");
+assert.strictEqual(hub.text, "gate 1 1");
+assert.strictEqual(hub.varname, "ts_genin");
+assert.strictEqual(hub.numinlets, 2);
+assert.strictEqual(boxMap.get("obj-plugin").varname, "ts_plugin");
+assert.strictEqual(boxMap.get("obj-plugout").varname, "ts_plugout");
+assert.strictEqual(boxMap.get("obj-thisdevice").text, "live.thisdevice");
+assert.strictEqual(boxMap.get("obj-msg-dsp").text, "init_dsp");
+assert.strictEqual(boxMap.get("obj-msg-duck1").text, "duck 1");
+assert.strictEqual(boxMap.get("obj-msg-duck1").varname, "ts_duck1");
+function wired(src, dst, inlet) {
+    return p.lines.some((l) => {
+        const pl = l.patchline;
+        return pl.source[0] === src && pl.destination[0] === dst && (inlet === undefined || pl.destination[1] === inlet);
+    });
+}
+assert.ok(!wired("obj-plugin", "obj-plugout"), "no static plugin~ -> plugout~ bypass");
+assert.ok(!p.lines.some((l) => l.patchline.source[0] === "obj-plugin" || l.patchline.destination[0] === "obj-plugout"),
+    "plugin~ and plugout~ stay unconnected until gen~ is created");
+assert.ok(wired("obj-msg-genbufs", "obj-gen-in", 1));
+assert.ok(wired("obj-prep-duck", "obj-gen-in", 1));
+assert.ok(wired("obj-msg-duck1", "obj-gen-in", 1));
+assert.ok(wired("obj-thisdevice", "obj-msg-dsp", 0));
+assert.ok(wired("obj-msg-dsp", "obj-viz", 0));
+for (const key of ["size", "damp", "width", "mix", "feedback", "predly", "mod", "xfeed", "hp", "lp"]) {
+    assert.ok(wired(`obj-prep-${key}`, "obj-gen-in", 1), `${key} must enter the hub's right inlet`);
+}
+for (const l of p.lines) {
+    const [dst, inlet] = l.patchline.destination;
+    if (dst === "obj-gen-in") assert.strictEqual(inlet, 1, "gen messages use gate inlet 1");
+}
 
 const expectedControls = ["Size", "Damp", "Width", "Mix", "Feedback", "PreDly", "Mod", "XFeed", "HP", "LP"];
 for (const name of expectedControls) {
@@ -383,6 +422,20 @@ for (const [id, box] of boxMap.entries()) {
 const jsCode = boxMap.get("obj-viz").textfile.text;
 assert.ok(jsCode.includes("function buildConfig"));
 assert.ok(jsCode.includes("function paint"));
+assert.ok(jsCode.includes("function init_dsp"));
+assert.ok(jsCode.includes('Global("tinyspace_dspq")'));
+const genDsp = jsCode.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+assert.ok(genDsp, "face script must embed GEN_DSP_TEXT and GEN_DSP_HASH");
+const genPatch = JSON.parse(JSON.parse(genDsp[1]));
+const codebox = genPatch.patcher.boxes.find((b) => b.box.id === "obj-code");
+assert.ok(codebox, "gendsp wrapper must contain the codebox");
+assert.strictEqual(codebox.box.code, gen, "embedded genexpr must match src/tinyspace_core.genexpr");
+assert.strictEqual(codebox.box.numinlets, 2);
+assert.strictEqual(codebox.box.numoutlets, 2);
+const genIns = genPatch.patcher.boxes.filter((b) => String(b.box.text || "").startsWith("in "));
+const genOuts = genPatch.patcher.boxes.filter((b) => String(b.box.text || "").startsWith("out "));
+assert.strictEqual(genIns.length, 2);
+assert.strictEqual(genOuts.length, 2);
 
 const shownTexts = [];
 const mg = {

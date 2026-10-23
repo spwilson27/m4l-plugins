@@ -3,7 +3,14 @@
 //   0 activeCount, 1 character,
 //   2..5 allpass lengths (ms), 6..9 allpass gains,
 //   10..29 nominal delay (ms), 30..49 damp offset, 50..69 mod Hz.
-// Meter buffer (buffer~ #0-tsmeters) is one envelope per line.
+// Meter buffer (buffer~ #0-tsmeters): slots 0..19 are line envelopes, slot 20 is a
+// frame counter that increments every 32 samples even when the input is silent.
+// Filter, crossfeed, wet/dry, RT60, loop-gain and damping coefficients are cached
+// and recomputed only when size, fbk, damp, hp, lp, xfeed, wet, samplerate or the
+// seed config (cfg[0], cfg[1], plus model and delay-length sentinels) changes.
+// After input and tank energy stay under 1e-7 for more than 32768 samples the
+// 20-line loop is skipped and the output is exact zero; a new input or a
+// parameter / seed change wakes it on that sample.
 // GenExpr rejects the old delay operator. Each line is declared with Delay, then written
 // and read as a tap. Tank taps never exceed 16000 samples, so each tank line is
 // 16384 samples and stays in cache. Predelay can be 250 ms, so those two lines
@@ -57,13 +64,13 @@ allpass(x, t, g) {
 	return y;
 }
 
-lineTime(lenMs, lfoVal, sizeNow, modNow) {
+// Unmodulated whole-sample tap. srScale is samplerate * 0.001 (cached).
+// Modulation is added at the read so this stays valid until size or sr changes.
+// Whole-sample taps: linear interpolation would shave a little high end off
+// every pass, and a 1 ms comb passes often enough that the tone dies.
+lineTime(lenMs, sizeNow, srScale) {
 	sc = 0.22 + clip(sizeNow, 0, 1) * 1.93;
-	base = clip(lenMs * sc * samplerate / 1000, 1, 16000);
-	depth = min(base * 0.28, samplerate * 0.0012) * clip(modNow, 0, 1);
-	// Whole-sample taps. Linear interpolation would shave a little high end
-	// off every pass, and a 1 ms comb passes often enough that the tone dies.
-	return round(clip(base + lfoVal * depth, 1, 16000));
+	return round(clip(lenMs * sc * srScale, 1, 16000));
 }
 
 follow(x) {
@@ -87,13 +94,14 @@ feedbackRt(fbkNow) {
 	return (k < 0.001) ? 0 : rtRaw;
 }
 
-// Per-line loop gain from an RT60 already computed by feedbackRt. rt 0 does not
-// recirculate. The ceiling sits just under 1 so a 1-sample comb still ends.
-ringGain(delaySamps, rt) {
-	secs = max(delaySamps, 1) / samplerate;
-	safe = (rt > 0.00001) ? rt : 1;
-	g = exp(-6.90775527898 * secs / safe);
-	quiet = (rt > 0.00001) ? g : 0;
+// Per-line loop gain from an RT60 already computed by feedbackRt.
+// invRt is 1/rt, or 0 when feedback is off (no recirculation). invSr is
+// 1/samplerate. Both are cached. The ceiling sits just under 1 so a 1-sample
+// comb still ends.
+ringGain(delaySamps, invSr, invRt) {
+	secs = max(delaySamps, 1) * invSr;
+	g = exp(-6.90775527898 * secs * invRt);
+	quiet = (invRt > 0) ? g : 0;
 	return clip(quiet, 0, 0.9999995);
 }
 
@@ -102,7 +110,8 @@ ringGain(delaySamps, rt) {
 // about 1.8 kHz at 50%, and a few hundred hertz at 100% on an 8 ms line.
 // Short lines get a higher cutoff so a 1 ms comb is not filtered 20 times
 // harder than a 20 ms room line. Matches dampPole() in tinyspace_config.js.
-dampCoef(delaySamps, dampNow, offset) {
+// invSr is the cached 1/samplerate. pow/exp run only from the coefficient refresh.
+dampCoef(delaySamps, dampNow, offset, invSr) {
 	amtIn = clip(dampNow, 0, 1);
 	pole = 0;
 	if (amtIn >= 0.001) {
@@ -111,10 +120,10 @@ dampCoef(delaySamps, dampNow, offset) {
 		amtPow = pow(max(amt, 0.00001), 0.75);
 		fcBase = 16000 * pow(0.015, amtPow);
 		span = max(delaySamps, 1);
-		scale = pow(0.008 * samplerate / span, 0.45);
+		scale = pow(0.008 / (span * invSr), 0.45);
 		scale = clip(scale, 0.6, 3.2);
 		fcNow = fcBase * scale;
-		pole = exp(-6.28318530718 * fcNow / samplerate);
+		pole = exp(-6.28318530718 * fcNow * invSr);
 	}
 	return clip(pole, 0, 0.995);
 }
@@ -156,7 +165,8 @@ tap(i, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9) {
 //   7 BOUNCE  sign-flipping reversal
 // hc, hs are cos/sin of character * pi, refreshed with the other slow coefficients.
 // Only the selected model runs. Spring's angle is the constant pair cos(1.15), sin(1.15).
-house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs) {
+// kk is 2/n, precomputed (n > 0). Passing it avoids a per-sample division.
+house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs, kk) {
 	z0 = (0 < n) ? o0 : 0;
 	z1 = (1 < n) ? o1 : 0;
 	z2 = (2 < n) ? o2 : 0;
@@ -195,7 +205,6 @@ house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs) {
 		m8 = (8 < n) ? q2 : z8;
 	} else if (model == 2) {
 		sum = z0 + z1 + z2 + z3 + z4 + z5 + z6 + z7 + z8 + z9;
-		kk = 2 / max(n, 1);
 		m0 = (0 < n) ? (z0 - sum * kk) : 0;
 		m1 = (1 < n) ? (z1 - sum * kk) : 0;
 		m2 = (2 < n) ? (z2 - sum * kk) : 0;
@@ -210,7 +219,6 @@ house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs) {
 		// PLATE: Householder, then a sign-flipping cycle. Every sign is negative
 		// so an even-length ring still maps all-ones to ±all-ones.
 		sum = z0 + z1 + z2 + z3 + z4 + z5 + z6 + z7 + z8 + z9;
-		kk = 2 / max(n, 1);
 		hh0 = (0 < n) ? (z0 - sum * kk) : 0;
 		hh1 = (1 < n) ? (z1 - sum * kk) : 0;
 		hh2 = (2 < n) ? (z2 - sum * kk) : 0;
@@ -245,7 +253,6 @@ house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs) {
 		m9 = (9 < n) ? -z8 : 0;
 	} else if (model == 5) {
 		sum = z0 + z1 + z2 + z3 + z4 + z5 + z6 + z7 + z8 + z9;
-		kk = 2 / max(n, 1);
 		hh0 = (0 < n) ? (z0 - sum * kk) : 0;
 		hh1 = (1 < n) ? (z1 - sum * kk) : 0;
 		hh2 = (2 < n) ? (z2 - sum * kk) : 0;
@@ -339,6 +346,9 @@ house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, n, model, hc, hs) {
 
 Buffer cfg("tsconfig");
 Buffer meters("tsmeters");
+Data gLine(20);
+Data cLine(20);
+Data bLine(20);
 
 Param size(0.45);
 Param damp(0.2);
@@ -373,10 +383,65 @@ History o17(0);
 History o18(0);
 History o19(0);
 History awake(1);
-History idleCount(0);
 History tankE(0);
 History initDone(0);
 History activeCount(0);
+History frame(0);
+History silentSamps(0);
+History cSize(-1);
+History cFbk(-1);
+History cDamp(-1);
+History cHp(-1);
+History cLp(-1);
+History cXfeed(-1);
+History cWet(-1);
+History cSr(-1);
+History cCfg0(-1);
+History cCfg1(-1);
+History cModel(-1);
+History cLen0(-1);
+History cAp0(-1);
+History lpCoef(0);
+History hpCoef(0);
+History hc(1);
+History hs(0);
+History cth(1);
+History sth(0);
+History dryG(1);
+History wetG(0);
+History invL(1);
+History invR(1);
+History kkL(2);
+History kkR(2);
+History nL(0);
+History nR(0);
+History modelI(0);
+History apT0(1);
+History apT1(1);
+History apT2(1);
+History apT3(1);
+History apG0(0);
+History apG1(0);
+History apG2(0);
+History apG3(0);
+History cSrScale(48);
+History cDepMax(57.6);
+History pSize(-1);
+History pFbk(-1);
+History pDamp(-1);
+History pHp(-1);
+History pLp(-1);
+History pXfeed(-1);
+History pWet(-1);
+History pMod(-1);
+History pWidth(-1);
+History pPredly(-1);
+History pSr(-1);
+History pCfg0(-1);
+History pCfg1(-1);
+History pModel(-1);
+History pLen0(-1);
+History pAp0(-1);
 Delay preDL(65536);
 Delay preDR(65536);
 Delay del0(16384);
@@ -412,13 +477,49 @@ hpS = slew(hp, 0.9992);
 lpS = slew(lp, 0.9992);
 duckG = clip(duck, 0, 1);
 sr = max(samplerate, 1);
+cfg0 = peek(cfg, 0);
+cfg1 = peek(cfg, 1);
+cfgM = peek(cfg, 70);
+cfgL = peek(cfg, 10);
+cfgA = peek(cfg, 2);
+wakeNow = 0;
+if (abs(size - pSize) > 0.000001) wakeNow = 1;
+if (abs(fbk - pFbk) > 0.000001) wakeNow = 1;
+if (abs(damp - pDamp) > 0.000001) wakeNow = 1;
+if (abs(hp - pHp) > 0.000001) wakeNow = 1;
+if (abs(lp - pLp) > 0.000001) wakeNow = 1;
+if (abs(xfeed - pXfeed) > 0.000001) wakeNow = 1;
+if (abs(wet - pWet) > 0.000001) wakeNow = 1;
+if (abs(modamt - pMod) > 0.000001) wakeNow = 1;
+if (abs(width - pWidth) > 0.000001) wakeNow = 1;
+if (abs(predly - pPredly) > 0.000001) wakeNow = 1;
+if (abs(sr - pSr) > 0.1) wakeNow = 1;
+if (cfg0 != pCfg0) wakeNow = 1;
+if (abs(cfg1 - pCfg1) > 0.0000001) wakeNow = 1;
+if (cfgM != pModel) wakeNow = 1;
+if (abs(cfgL - pLen0) > 0.000001) wakeNow = 1;
+if (abs(cfgA - pAp0) > 0.000001) wakeNow = 1;
+pSize = size;
+pFbk = fbk;
+pDamp = damp;
+pHp = hp;
+pLp = lp;
+pXfeed = xfeed;
+pWet = wet;
+pMod = modamt;
+pWidth = width;
+pPredly = predly;
+pSr = sr;
+pCfg0 = cfg0;
+pCfg1 = cfg1;
+pModel = cfgM;
+pLen0 = cfgL;
+pAp0 = cfgA;
 inAbs = abs(in1) + abs(in2);
-// -100 dB. DAW dither and denormals sit quieter than this and must not wake the tank.
-awake = (inAbs > 0.00001) ? 1 : awake;
-idleCount = (inAbs > 0.00001) ? 0 : idleCount;
-
-preDL.write(in1);
-preDR.write(in2);
+if ((inAbs > 1e-7) || (wakeNow > 0.5)) {
+	awake = 1;
+	silentSamps = 0;
+}
 
 wetL = 0;
 wetR = 0;
@@ -445,138 +546,200 @@ env18 = 0;
 env19 = 0;
 
 if (awake > 0.5) {
-	cfgCount = peek(cfg, 0);
-	refresh = ((initDone == 0) || (tick == 0) || (cfgCount != activeCount)) ? 1 : 0;
-	if (refresh > 0.5) {
+	doCoef = (initDone == 0) ? 1 : 0;
+	if (abs(sizeS - cSize) > 0.00005) doCoef = 1;
+	if (abs(fbkS - cFbk) > 0.00005) doCoef = 1;
+	if (abs(dampS - cDamp) > 0.00005) doCoef = 1;
+	if (abs(hpS - cHp) > 0.00005) doCoef = 1;
+	if (abs(lpS - cLp) > 0.00005) doCoef = 1;
+	if (abs(xfeedS - cXfeed) > 0.00005) doCoef = 1;
+	if (abs(wetS - cWet) > 0.00005) doCoef = 1;
+	if (abs(sr - cSr) > 0.1) doCoef = 1;
+	if (cfg0 != cCfg0) doCoef = 1;
+	if (abs(cfg1 - cCfg1) > 0.0000001) doCoef = 1;
+	if (cfgM != cModel) doCoef = 1;
+	if (abs(cfgL - cLen0) > 0.000001) doCoef = 1;
+	if (abs(cfgA - cAp0) > 0.000001) doCoef = 1;
+	if ((doCoef > 0.5) && ((tick == 0) || (wakeNow > 0.5) || (initDone == 0))) {
 		initDone = 1;
-		activeCount = cfgCount;
-	}
-	character = clip(peek(cfg, 1), 0, 1);
-		model = round(clip(peek(cfg, 70), 0, 7));
-		nL = activeCount * 0.5;
-		nR = nL;
-		invL = 1 / sqrt(max(nL, 1));
-		invR = 1 / sqrt(max(nR, 1));
-		chClip = clip(character, 0, 1);
+		cSize = sizeS;
+		cFbk = fbkS;
+		cDamp = dampS;
+		cHp = hpS;
+		cLp = lpS;
+		cXfeed = xfeedS;
+		cWet = wetS;
+		cSr = sr;
+		cCfg0 = cfg0;
+		cCfg1 = cfg1;
+		cModel = cfgM;
+		cLen0 = cfgL;
+		cAp0 = cfgA;
+		activeCount = cfg0;
+		invSr = 1 / sr;
+		srScale = sr * 0.001;
+		cSrScale = srScale;
+		cDepMax = sr * 0.0012;
+		lpCoef = exp(-6.28318530718 * clip(lpS, 400, 18000) * invSr);
+		hpCoef = exp(-6.28318530718 * clip(hpS, 20, 4000) * invSr);
+		nLines = activeCount * 0.5;
+		nL = nLines;
+		nR = nLines;
+		invL = (nLines > 0.5) ? (1 / sqrt(nLines)) : 1;
+		invR = invL;
+		kkL = 2 * invL * invL;
+		kkR = kkL;
+		chClip = clip(cfg1, 0, 1);
 		hc = cos(chClip * 3.141592653589793);
 		hs = sin(chClip * 3.141592653589793);
-		lpCoef = exp(-6.28318530718 * clip(lpS, 400, 18000) / sr);
-		hpCoef = exp(-6.28318530718 * clip(hpS, 20, 4000) / sr);
-		apT0 = clip(peek(cfg, 2) * sr / 1000, 1, sr * 0.02);
-		apT1 = clip(peek(cfg, 3) * sr / 1000, 1, sr * 0.02);
-		apT2 = clip(peek(cfg, 4) * sr / 1000, 1, sr * 0.02);
-		apT3 = clip(peek(cfg, 5) * sr / 1000, 1, sr * 0.02);
+		xf = clip(xfeedS, 0, 1);
+		cth = cos(xf * 1.5707963267948966);
+		sth = sin(xf * 1.5707963267948966);
+		ang = clip(wetS, 0, 1) * 1.5707963267948966;
+		dryG = cos(ang);
+		wetG = sin(ang);
+		rtNow = feedbackRt(fbkS);
+		invRt = (rtNow > 0.00001) ? (1 / rtNow) : 0;
+		apT0 = clip(peek(cfg, 2) * srScale, 1, sr * 0.02);
+		apT1 = clip(peek(cfg, 3) * srScale, 1, sr * 0.02);
+		apT2 = clip(peek(cfg, 4) * srScale, 1, sr * 0.02);
+		apT3 = clip(peek(cfg, 5) * srScale, 1, sr * 0.02);
 		apG0 = clip(peek(cfg, 6), 0, 0.7);
 		apG1 = clip(peek(cfg, 7), 0, 0.7);
 		apG2 = clip(peek(cfg, 8), 0, 0.7);
-	apG3 = clip(peek(cfg, 9), 0, 0.7);
+		apG3 = clip(peek(cfg, 9), 0, 0.7);
+		modelI = round(clip(cfgM, 0, 7));
+		for (li = 0; li < 20; li += 1) {
+			lenMs = peek(cfg, 10 + li);
+			base = lineTime(lenMs, sizeS, srScale);
+			poke(bLine, base, li);
+			poke(gLine, ringGain(base, invSr, invRt), li);
+			poke(cLine, dampCoef(base, dampS, peek(cfg, 30 + li), invSr), li);
+		}
+	}
 	modNow = clip(modS, 0, 1);
-			l0 = 0;
-			l1 = 0;
-			l2 = 0;
-			l3 = 0;
-			l4 = 0;
-			l5 = 0;
-			l6 = 0;
-			l7 = 0;
-			l8 = 0;
-			l9 = 0;
-			l10 = 0;
-			l11 = 0;
-			l12 = 0;
-			l13 = 0;
-			l14 = 0;
-			l15 = 0;
-			l16 = 0;
-			l17 = 0;
-			l18 = 0;
-			l19 = 0;
-			if (modNow > 0.001) {
-				l0 = lfo(peek(cfg, 50), 1);
-				l1 = lfo(peek(cfg, 51), 1);
-				l2 = lfo(peek(cfg, 52), 1);
-				l3 = lfo(peek(cfg, 53), 1);
-				l4 = lfo(peek(cfg, 54), 1);
-				l5 = lfo(peek(cfg, 55), 1);
-				l6 = lfo(peek(cfg, 56), 1);
-				l7 = lfo(peek(cfg, 57), 1);
-				l8 = lfo(peek(cfg, 58), 1);
-				l9 = lfo(peek(cfg, 59), 1);
-				l10 = lfo(peek(cfg, 60), 1);
-				l11 = lfo(peek(cfg, 61), 1);
-				l12 = lfo(peek(cfg, 62), 1);
-				l13 = lfo(peek(cfg, 63), 1);
-				l14 = lfo(peek(cfg, 64), 1);
-				l15 = lfo(peek(cfg, 65), 1);
-				l16 = lfo(peek(cfg, 66), 1);
-				l17 = lfo(peek(cfg, 67), 1);
-				l18 = lfo(peek(cfg, 68), 1);
-				l19 = lfo(peek(cfg, 69), 1);
-			}
-			t0 = lineTime(peek(cfg, 10), l0, sizeS, modS);
-			t1 = lineTime(peek(cfg, 11), l1, sizeS, modS);
-			t2 = lineTime(peek(cfg, 12), l2, sizeS, modS);
-			t3 = lineTime(peek(cfg, 13), l3, sizeS, modS);
-			t4 = lineTime(peek(cfg, 14), l4, sizeS, modS);
-			t5 = lineTime(peek(cfg, 15), l5, sizeS, modS);
-			t6 = lineTime(peek(cfg, 16), l6, sizeS, modS);
-			t7 = lineTime(peek(cfg, 17), l7, sizeS, modS);
-			t8 = lineTime(peek(cfg, 18), l8, sizeS, modS);
-			t9 = lineTime(peek(cfg, 19), l9, sizeS, modS);
-			t10 = lineTime(peek(cfg, 20), l10, sizeS, modS);
-			t11 = lineTime(peek(cfg, 21), l11, sizeS, modS);
-			t12 = lineTime(peek(cfg, 22), l12, sizeS, modS);
-			t13 = lineTime(peek(cfg, 23), l13, sizeS, modS);
-			t14 = lineTime(peek(cfg, 24), l14, sizeS, modS);
-			t15 = lineTime(peek(cfg, 25), l15, sizeS, modS);
-			t16 = lineTime(peek(cfg, 26), l16, sizeS, modS);
-			t17 = lineTime(peek(cfg, 27), l17, sizeS, modS);
-			t18 = lineTime(peek(cfg, 28), l18, sizeS, modS);
-			t19 = lineTime(peek(cfg, 29), l19, sizeS, modS);
-			c0 = dampCoef(t0, dampS, peek(cfg, 30));
-			c1 = dampCoef(t1, dampS, peek(cfg, 31));
-			c2 = dampCoef(t2, dampS, peek(cfg, 32));
-			c3 = dampCoef(t3, dampS, peek(cfg, 33));
-			c4 = dampCoef(t4, dampS, peek(cfg, 34));
-			c5 = dampCoef(t5, dampS, peek(cfg, 35));
-			c6 = dampCoef(t6, dampS, peek(cfg, 36));
-			c7 = dampCoef(t7, dampS, peek(cfg, 37));
-			c8 = dampCoef(t8, dampS, peek(cfg, 38));
-			c9 = dampCoef(t9, dampS, peek(cfg, 39));
-			c10 = dampCoef(t10, dampS, peek(cfg, 40));
-			c11 = dampCoef(t11, dampS, peek(cfg, 41));
-			c12 = dampCoef(t12, dampS, peek(cfg, 42));
-			c13 = dampCoef(t13, dampS, peek(cfg, 43));
-			c14 = dampCoef(t14, dampS, peek(cfg, 44));
-			c15 = dampCoef(t15, dampS, peek(cfg, 45));
-			c16 = dampCoef(t16, dampS, peek(cfg, 46));
-			c17 = dampCoef(t17, dampS, peek(cfg, 47));
-			c18 = dampCoef(t18, dampS, peek(cfg, 48));
-			c19 = dampCoef(t19, dampS, peek(cfg, 49));
-			rtNow = feedbackRt(fbkS);
-			g0 = ringGain(t0, rtNow);
-			g1 = ringGain(t1, rtNow);
-			g2 = ringGain(t2, rtNow);
-			g3 = ringGain(t3, rtNow);
-			g4 = ringGain(t4, rtNow);
-			g5 = ringGain(t5, rtNow);
-			g6 = ringGain(t6, rtNow);
-			g7 = ringGain(t7, rtNow);
-			g8 = ringGain(t8, rtNow);
-			g9 = ringGain(t9, rtNow);
-			g10 = ringGain(t10, rtNow);
-			g11 = ringGain(t11, rtNow);
-			g12 = ringGain(t12, rtNow);
-			g13 = ringGain(t13, rtNow);
-			g14 = ringGain(t14, rtNow);
-			g15 = ringGain(t15, rtNow);
-			g16 = ringGain(t16, rtNow);
-			g17 = ringGain(t17, rtNow);
-			g18 = ringGain(t18, rtNow);
-			g19 = ringGain(t19, rtNow);
-	xf = clip(xfeedS, 0, 1);
-	cth = cos(xf * 1.5707963267948966);
-	sth = sin(xf * 1.5707963267948966);
+	l0 = 0;
+	l1 = 0;
+	l2 = 0;
+	l3 = 0;
+	l4 = 0;
+	l5 = 0;
+	l6 = 0;
+	l7 = 0;
+	l8 = 0;
+	l9 = 0;
+	l10 = 0;
+	l11 = 0;
+	l12 = 0;
+	l13 = 0;
+	l14 = 0;
+	l15 = 0;
+	l16 = 0;
+	l17 = 0;
+	l18 = 0;
+	l19 = 0;
+	if (modNow > 0.001) {
+		l0 = lfo(peek(cfg, 50), 1);
+		l1 = lfo(peek(cfg, 51), 1);
+		l2 = lfo(peek(cfg, 52), 1);
+		l3 = lfo(peek(cfg, 53), 1);
+		l4 = lfo(peek(cfg, 54), 1);
+		l5 = lfo(peek(cfg, 55), 1);
+		l6 = lfo(peek(cfg, 56), 1);
+		l7 = lfo(peek(cfg, 57), 1);
+		l8 = lfo(peek(cfg, 58), 1);
+		l9 = lfo(peek(cfg, 59), 1);
+		l10 = lfo(peek(cfg, 60), 1);
+		l11 = lfo(peek(cfg, 61), 1);
+		l12 = lfo(peek(cfg, 62), 1);
+		l13 = lfo(peek(cfg, 63), 1);
+		l14 = lfo(peek(cfg, 64), 1);
+		l15 = lfo(peek(cfg, 65), 1);
+		l16 = lfo(peek(cfg, 66), 1);
+		l17 = lfo(peek(cfg, 67), 1);
+		l18 = lfo(peek(cfg, 68), 1);
+		l19 = lfo(peek(cfg, 69), 1);
+	}
+	b0 = peek(bLine, 0);
+	b1 = peek(bLine, 1);
+	b2 = peek(bLine, 2);
+	b3 = peek(bLine, 3);
+	b4 = peek(bLine, 4);
+	b5 = peek(bLine, 5);
+	b6 = peek(bLine, 6);
+	b7 = peek(bLine, 7);
+	b8 = peek(bLine, 8);
+	b9 = peek(bLine, 9);
+	b10 = peek(bLine, 10);
+	b11 = peek(bLine, 11);
+	b12 = peek(bLine, 12);
+	b13 = peek(bLine, 13);
+	b14 = peek(bLine, 14);
+	b15 = peek(bLine, 15);
+	b16 = peek(bLine, 16);
+	b17 = peek(bLine, 17);
+	b18 = peek(bLine, 18);
+	b19 = peek(bLine, 19);
+	t0 = round(clip(b0 + l0 * min(b0 * 0.28, cDepMax) * modNow, 1, 16000));
+	t1 = round(clip(b1 + l1 * min(b1 * 0.28, cDepMax) * modNow, 1, 16000));
+	t2 = round(clip(b2 + l2 * min(b2 * 0.28, cDepMax) * modNow, 1, 16000));
+	t3 = round(clip(b3 + l3 * min(b3 * 0.28, cDepMax) * modNow, 1, 16000));
+	t4 = round(clip(b4 + l4 * min(b4 * 0.28, cDepMax) * modNow, 1, 16000));
+	t5 = round(clip(b5 + l5 * min(b5 * 0.28, cDepMax) * modNow, 1, 16000));
+	t6 = round(clip(b6 + l6 * min(b6 * 0.28, cDepMax) * modNow, 1, 16000));
+	t7 = round(clip(b7 + l7 * min(b7 * 0.28, cDepMax) * modNow, 1, 16000));
+	t8 = round(clip(b8 + l8 * min(b8 * 0.28, cDepMax) * modNow, 1, 16000));
+	t9 = round(clip(b9 + l9 * min(b9 * 0.28, cDepMax) * modNow, 1, 16000));
+	t10 = round(clip(b10 + l10 * min(b10 * 0.28, cDepMax) * modNow, 1, 16000));
+	t11 = round(clip(b11 + l11 * min(b11 * 0.28, cDepMax) * modNow, 1, 16000));
+	t12 = round(clip(b12 + l12 * min(b12 * 0.28, cDepMax) * modNow, 1, 16000));
+	t13 = round(clip(b13 + l13 * min(b13 * 0.28, cDepMax) * modNow, 1, 16000));
+	t14 = round(clip(b14 + l14 * min(b14 * 0.28, cDepMax) * modNow, 1, 16000));
+	t15 = round(clip(b15 + l15 * min(b15 * 0.28, cDepMax) * modNow, 1, 16000));
+	t16 = round(clip(b16 + l16 * min(b16 * 0.28, cDepMax) * modNow, 1, 16000));
+	t17 = round(clip(b17 + l17 * min(b17 * 0.28, cDepMax) * modNow, 1, 16000));
+	t18 = round(clip(b18 + l18 * min(b18 * 0.28, cDepMax) * modNow, 1, 16000));
+	t19 = round(clip(b19 + l19 * min(b19 * 0.28, cDepMax) * modNow, 1, 16000));
+	g0 = peek(gLine, 0);
+	g1 = peek(gLine, 1);
+	g2 = peek(gLine, 2);
+	g3 = peek(gLine, 3);
+	g4 = peek(gLine, 4);
+	g5 = peek(gLine, 5);
+	g6 = peek(gLine, 6);
+	g7 = peek(gLine, 7);
+	g8 = peek(gLine, 8);
+	g9 = peek(gLine, 9);
+	g10 = peek(gLine, 10);
+	g11 = peek(gLine, 11);
+	g12 = peek(gLine, 12);
+	g13 = peek(gLine, 13);
+	g14 = peek(gLine, 14);
+	g15 = peek(gLine, 15);
+	g16 = peek(gLine, 16);
+	g17 = peek(gLine, 17);
+	g18 = peek(gLine, 18);
+	g19 = peek(gLine, 19);
+	c0 = peek(cLine, 0);
+	c1 = peek(cLine, 1);
+	c2 = peek(cLine, 2);
+	c3 = peek(cLine, 3);
+	c4 = peek(cLine, 4);
+	c5 = peek(cLine, 5);
+	c6 = peek(cLine, 6);
+	c7 = peek(cLine, 7);
+	c8 = peek(cLine, 8);
+	c9 = peek(cLine, 9);
+	c10 = peek(cLine, 10);
+	c11 = peek(cLine, 11);
+	c12 = peek(cLine, 12);
+	c13 = peek(cLine, 13);
+	c14 = peek(cLine, 14);
+	c15 = peek(cLine, 15);
+	c16 = peek(cLine, 16);
+	c17 = peek(cLine, 17);
+	c18 = peek(cLine, 18);
+	c19 = peek(cLine, 19);
 	a0 = (0 < nL) ? 1 : 0;
 	a1 = (1 < nL) ? 1 : 0;
 	a2 = (2 < nL) ? 1 : 0;
@@ -598,8 +761,10 @@ if (awake > 0.5) {
 	a18 = (8 < nR) ? 1 : 0;
 	a19 = (9 < nR) ? 1 : 0;
 
-	preSamps = clip(predlyS, 0, 250) * sr / 1000;
+	preSamps = clip(predlyS, 0, 250) * cSrScale;
 	preSamps = clip(preSamps, 0, 48000);
+	preDL.write(in1);
+	preDR.write(in2);
 	preL = preDL.read(preSamps, interp="linear");
 	preR = preDR.read(preSamps, interp="linear");
 	toneL = hp(lp(preL, lpCoef), hpCoef);
@@ -614,9 +779,8 @@ if (awake > 0.5) {
 	aR = allpass(aR, apT3, apG3);
 	injL = aL * invL;
 	injR = aR * invR;
-
-	m0, m1, m2, m3, m4, m5, m6, m7, m8, m9 = house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, nL, model, hc, hs);
-	m10, m11, m12, m13, m14, m15, m16, m17, m18, m19 = house(o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, nR, model, hc, hs);
+	m0, m1, m2, m3, m4, m5, m6, m7, m8, m9 = house(o0, o1, o2, o3, o4, o5, o6, o7, o8, o9, nL, modelI, hc, hs, kkL);
+	m10, m11, m12, m13, m14, m15, m16, m17, m18, m19 = house(o10, o11, o12, o13, o14, o15, o16, o17, o18, o19, nR, modelI, hc, hs, kkR);
 	x0 = cth * m0 + sth * m10;
 	x1 = cth * m1 + sth * m11;
 	x2 = cth * m2 + sth * m12;
@@ -637,7 +801,6 @@ if (awake > 0.5) {
 	x17 = -sth * m7 + cth * m17;
 	x18 = -sth * m8 + cth * m18;
 	x19 = -sth * m9 + cth * m19;
-
 	z0 = a0 * (clip(x0, -2, 2) * g0 * duckG + injL);
 	z1 = a1 * (clip(x1, -2, 2) * g1 * duckG + injL);
 	z2 = a2 * (clip(x2, -2, 2) * g2 * duckG + injL);
@@ -725,38 +888,19 @@ if (awake > 0.5) {
 	side = (sumL - sumR) * 0.5 * clip(widthS, 0, 1);
 	wetL = (mid + side) * duckG;
 	wetR = (mid - side) * duckG;
+	out1 = fixnan(in1 * dryG + wetL * wetG);
+	out2 = fixnan(in2 * dryG + wetR * wetG);
 } else {
-	o0 = 0;
-	o1 = 0;
-	o2 = 0;
-	o3 = 0;
-	o4 = 0;
-	o5 = 0;
-	o6 = 0;
-	o7 = 0;
-	o8 = 0;
-	o9 = 0;
-	o10 = 0;
-	o11 = 0;
-	o12 = 0;
-	o13 = 0;
-	o14 = 0;
-	o15 = 0;
-	o16 = 0;
-	o17 = 0;
-	o18 = 0;
-	o19 = 0;
+	out1 = 0;
+	out2 = 0;
 }
-ang = clip(wetS, 0, 1) * 1.57079632679;
-dryG = cos(ang);
-wetG = sin(ang);
-out1 = fixnan(in1 * dryG + wetL * wetG);
-out2 = fixnan(in2 * dryG + wetR * wetG);
-
+quiet = (inAbs < 1e-7) && (tankE < 1e-7) && (wakeNow < 0.5);
+silentSamps = quiet ? (silentSamps + 1) : 0;
+awake = ((inAbs >= 1e-7) || (wakeNow > 0.5) || (tankE >= 1e-7)) ? 1 : ((silentSamps > 32768) ? 0 : awake);
 tick = wrap(tick + 1, 0, 32);
 if (tick == 0) {
-	idleCount = ((inAbs > 0.00001) || (tankE > 0.00001)) ? 0 : (idleCount + 1);
-	awake = ((inAbs > 0.00001) || (tankE > 0.00001)) ? 1 : ((idleCount > 200) ? 0 : awake);
+	frame = wrap(frame + 1, 0, 1024);
+	poke(meters, frame, 20, 0);
 	poke(meters, env0, 0, 0);
 	poke(meters, env1, 1, 0);
 	poke(meters, env2, 2, 0);

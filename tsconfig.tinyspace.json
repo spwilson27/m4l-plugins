@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/types/tinyspace.d.ts",
     "src/tinyspace_config.js",
     "src/tinyspace_ui.js"
   ]
