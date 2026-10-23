@@ -37,6 +37,9 @@ def build_device(gen_code, case):
         mh.msg("dev-bind", "wt #0-percipwt, scope #0-percipscope", 200, 100, 250),
         mh.box("dev-wt", "buffer~ #0-percipwt @samps 8192", 520, 100, 220, numoutlets=2,
                outlettype=["float", "bang"]),
+        # @samps 64 covers telemetry slots 0..35. Slot 35 is the frame counter, which the gen
+        # increments every 64 samples even while the input is silent (deferred-DSP confirm).
+        # This harness compiles the genexpr directly; the device itself creates gen~ after load.
         mh.box("dev-scope", "buffer~ #0-percipscope @samps 64", 520, 130, 220, numoutlets=2,
                outlettype=["float", "bang"]),
         mh.gen_box("dev-gen", gen_code, 200, 200),

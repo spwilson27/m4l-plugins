@@ -2,7 +2,9 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/types/percipitator.d.ts",
     "src/percipitator_config.js",
+    "src/percipitator_dsp.js",
     "src/percipitator_ui.js"
   ]
 }
