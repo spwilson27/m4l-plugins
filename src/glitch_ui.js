@@ -1221,7 +1221,7 @@ function tilePrimary(tile) {
         case "comb": return pick(spec("freq"), g("comb", "freq")) + "Hz fb " + Math.round(g("comb", "fb") * 100);
         case "phas": return pick(spec("stages"), g("phas", "stages")) + "st " + (g("phas", "sync") > 0.5 ? pick(spec("div"), g("phas", "div")) : g("phas", "hz").toFixed(1) + "Hz");
         case "crush": return Math.round(g("crush", "bits")) + "b " + g("crush", "rate").toFixed(1) + "x";
-        case "rect": return pick(spec("mode"), g("rect", "mode")) + " " + Math.round(g("rect", "blend") * 100) + "%";
+        case "rect": return pick(spec("mode"), g("rect", "mode"));
         case "fm": return pick(spec("mode"), g("fm", "mode")) + " x" + g("fm", "ratio").toFixed(1);
         case "corr": return pick(spec("div"), g("corr", "div")) + " " + Math.round(g("corr", "chance") * 100) + "%";
         case "ring": return pick(spec("mode"), g("ring", "mode")) + " " + Math.round(g("ring", "freq")) + "Hz";
@@ -1400,7 +1400,7 @@ function paintTileBodyRaw(tile, x, y, w, h, c, act) {
             break;
         }
         case "rect": { // one sine cycle and what the rectifier makes of it
-            var rmode = Math.round(gv("rect", "mode")), rbl = gv("rect", "blend");
+            var rmode = Math.round(gv("rect", "mode")), rbl = 1;
             var rmid = y + h / 2, rh = (h / 2 - 1) * amp;
             var p0 = [], p1 = [];
             for (i = 0; i <= 40; i++) {

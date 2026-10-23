@@ -90,7 +90,7 @@ ok("registry", () => {
 ok("layout has no overlaps and matches the buffer", () => {
     const modParams = G.GL_INSTANCES.reduce((a, i) => a + i.params.length, 0);
     assert.strictEqual(L.mvBase, modParams, "the module params come first, the movement blocks after them");
-    assert.strictEqual(L.mvBase, 110 + 7 + 5 + 35, "phase 3 had 113 module params (110 without Width / Gain); phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params");
+    assert.strictEqual(L.mvBase, 109 + 7 + 5 + 35, "phase 3 had 113 module params (110 without Width / Gain); phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params");
     assert.strictEqual(L.np, L.mvBase + 24 * L.mvN);
     assert.strictEqual(L.mvN, 13 + 16);
     const seen = new Set();
@@ -117,7 +117,7 @@ ok("layout has no overlaps and matches the buffer", () => {
         "clp_amt", "clp_mode", "clp_db", "psw_amt", "psw_w", "rph_amt", "rph_mode", "rph_rand"]);
     // module param order the core's functions read (b + n)
     const want = { drvA: ["wet", "mode", "drive", "tone"], drvB: ["wet", "mode", "drive", "tone"], filt: ["wet", "type", "cutoff", "res"], crush: ["wet", "bits", "rate", "jitter"], ring: ["wet", "mode", "freq"], stut: ["wet", "div", "prob", "decay"], time: ["wet", "mode", "amt", "div"], chop: ["wet", "pattern", "div", "smooth"], dly: ["wet", "div", "fb", "pp", "damp"], rev: ["wet", "size", "decay", "damp", "void"],
-        form: ["wet", "vowel", "shift", "res"], comb: ["wet", "freq", "fb", "damp"], phas: ["wet", "stages", "sync", "hz", "div", "depth", "fb"], rect: ["wet", "mode", "blend"],
+        form: ["wet", "vowel", "shift", "res"], comb: ["wet", "freq", "fb", "damp"], phas: ["wet", "stages", "sync", "hz", "div", "depth", "fb"], rect: ["wet", "mode"],
         fm: ["wet", "mode", "ratio", "index"], corr: ["wet", "div", "chance", "flips", "wrap", "drop"], gpit: ["wet", "pitch", "size", "jitter"], gstr: ["wet", "speed", "size", "spread"],
         ratc: ["wet", "div", "count", "accel", "pitch", "decay", "prob"], scrb: ["wet", "size", "shape", "rate", "depth"],
         rvs: ["wet", "div", "chance"], shuf: ["wet", "slices", "span", "chance", "seed"], slap: ["wet", "time", "tone", "offset"] };
@@ -602,7 +602,7 @@ ok("smear keeps sounding after the input stops (random phase, Hermitian)", () =>
 
 // ----------------------------------------------------------------------------- phase 2: registry, migration, allow-list
 ok("phase 2 registry: every module has a wet, ranges per Chaos level, discrete flags and log curves", () => {
-    const want = { form: 4, comb: 4, phas: 7, rect: 3, fm: 4, corr: 6, gpit: 4, gstr: 4, rvs: 3, shuf: 5, slap: 4 };
+    const want = { form: 4, comb: 4, phas: 7, rect: 2, fm: 4, corr: 6, gpit: 4, gstr: 4, rvs: 3, shuf: 5, slap: 4 };
     for (const [id, n] of Object.entries(want)) {
         const inst = G.glInstance(id);
         assert.strictEqual(inst.params.length, n, id);
@@ -670,8 +670,8 @@ ok("Width / Gain is gone from the gen core, the stage list and the built device"
     assert.ok(!/gl_wid|@mod wid|@P_wid|@B_wid/.test(CORE_RAW), "no wid code in the gen core");
     assert.ok(!G.glitchStages().some((st) => st.id === "wid" || st.insts.includes("wid")), "no wid stage");
     assert.strictEqual(G.GL_STAGE_DEFS.length, 2 + G.GL_INSTANCES.length - 1, "head + one stage per instance (gstr shares gpit's) + tail");
-    assert.strictEqual(L.np, 853);
-    assert.strictEqual(L.endOffset, 10292);
+    assert.strictEqual(L.np, 852);
+    assert.strictEqual(L.endOffset, 10280);
     const dev = fs.readFileSync(path.join(ROOT, "devices", "Glitch.amxd"), "latin1");
     assert.ok(!/gl_wid|id: \\"wid\\"|"Width \/ Gain\\", category/.test(dev), "the built device has no Width / Gain module");
 });
@@ -683,7 +683,7 @@ ok("state migration v5 -> v6: the Width / Gain module (wid) is dropped from slot
     const v5 = { version: 5, slots: [withWid, null, null, null, null, null, null, null], corners: [0, 1, 2, 3], allow: { drive: true, width: false, filter: false },
         chaos: 0.5, xy: [0.5, 0.5], working: withWid, audition: "working", seed: 1, ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "wid", optCat: 7 } };
     const t = G.stateFromBlob([5, JSON.stringify(v5)]);
-    assert.strictEqual(t.version, 6);
+    assert.strictEqual(t.version, G.GL_STATE_VERSION);
     for (const g of [t.slots[0], t.working]) {
         assert.ok(!("wid" in g.modules), "wid dropped");
         assert.strictEqual(g.modules.filt.params.cutoff, 300, "other modules keep their values");
@@ -714,7 +714,7 @@ ok("state migration v2 -> v6: new modules absent, sequence empty, no movement, o
         chaos: 0.7, xy: [0.2, 0.9], working: oldSlot, audition: "morph", seed: 9, ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" },
     };
     const t = G.stateFromBlob([2, JSON.stringify(v2)]);
-    assert.strictEqual(t.version, 6);
+    assert.strictEqual(t.version, G.GL_STATE_VERSION);
     assert.deepStrictEqual(t.seq, G.defaultSeq());
     assert.ok(t.seq.steps.every((x) => x === -1), "the sequence is empty");
     assert.strictEqual(t.audition, "morph");
@@ -1005,7 +1005,7 @@ ok("gen formant / comb / phaser / rectify / fm equal their mirrors", () => {
         cmpModule("phaser " + JSON.stringify(vals), 0, () => maxd);
     }
     // rectify
-    for (const vals of [{ mode: 0, blend: 1 }, { mode: 1, blend: 1 }, { mode: 2, blend: 0.6 }, { mode: 1, blend: 0 }]) {
+    for (const vals of [{ mode: 0 }, { mode: 1 }, { mode: 2 }]) {
         const pv = pvFor(Object.fromEntries(Object.entries(vals).map(([k, v]) => ["rect." + k, v])));
         const st = new DataSim(4), io = new DataSim(2), m = new R.Rectify();
         let maxd = 0;
@@ -1718,9 +1718,9 @@ ok("phase 4 allow-list, main params, labels and layout", () => {
         const mp = G.GL_MAIN_SUB[t.id];
         const spec = G.glInstance("spec").params.find((p) => p.key === mp);
         assert.ok(spec && spec.group === t.amountKey && (spec.kind === "lin" || spec.kind === "log"), `${t.id}: main param ${mp} is a continuous param of its group`);
-        // editor rows: amount, the sub-op's params, the shared Spectral Mix; movement candidates include the main param
+        // editor rows: the sub-op's one Mix (its amount), then its params; no shared Spectral Mix row; movement candidates include the main param
         const rows = G.glitchEditorRows(t.id);
-        assert.ok(rows.length >= 3 && rows.length <= G.GL_FACE.MAX_ROWS && rows[0].id === t.amountKey && rows[rows.length - 1].id === "wet", `${t.id} editor rows ${rows.map((r) => r.id)}`);
+        assert.ok(rows.length >= 2 && rows.length <= G.GL_FACE.MAX_ROWS && rows[0].id === t.amountKey && !rows.some((r) => r.id === "wet"), `${t.id} editor rows ${rows.map((r) => r.id)}`);
         assert.ok(G.glitchMoveCandidates(t.id).some((c) => c.id === mp), `${t.id} movement targets include ${mp}`);
         assert.strictEqual(G.glitchMainParam(t.id), mp);
     }
@@ -1768,6 +1768,40 @@ ok("phase 4 allow-list, main params, labels and layout", () => {
 });
 
 // ----------------------------------------------------------------------------- lint
+ok("gen delay: ping-pong alternates the echoes between the channels for a mono input; pp 0 keeps them identical", () => {
+    const D = 12000; // div 4 = 1/8 note at 120 bpm, 48 kHz
+    function run(pp, fb, nEcho, input) {
+        const pv = pvFor({ "dly.div": 4, "dly.fb": fb, "dly.pp": pp, "dly.damp": 16000 });
+        const st = new DataSim(8), rb = new DataSim(262144, 2), io = new DataSim(2);
+        const outL = [], outR = [];
+        for (let n = 0; n < D * (nEcho + 1) + 400; n++) {
+            const x = n === 0 ? input : [0, 0];
+            io.a[0] = x[0]; io.a[1] = x[1];
+            GEN.gl_dly(io, pv, L.base.dly, 1, st, rb, 120, 48000);
+            outL.push(io.a[0]); outR.push(io.a[1]);
+        }
+        const pk = (v, k) => { let m = 0; for (let i = k * D - 40; i <= k * D + 400; i++) m = Math.max(m, Math.abs(v[i] || 0)); return m; };
+        return { l: (k) => pk(outL, k), r: (k) => pk(outR, k), outL, outR };
+    }
+    const mono = run(1, 0.7, 5, [0.5, 0.5]);
+    for (let k = 1; k <= 5; k++) {
+        const on = k % 2 === 1 ? mono.l(k) : mono.r(k), off = k % 2 === 1 ? mono.r(k) : mono.l(k);
+        assert.ok(on > 0.5 * mono.l(1) * Math.pow(0.7, k - 1), `echo ${k} sounds on ${k % 2 ? "L" : "R"} (${on})`);
+        assert.ok(off < on * 0.02, `echo ${k} is silent on the other channel (${off} vs ${on})`);
+    }
+    const flat = run(0, 0.7, 4, [0.5, 0.5]);
+    for (let i = 0; i < flat.outL.length; i++) assert.ok(Math.abs(flat.outL[i] - flat.outR[i]) < 1e-12, "pp 0: both channels identical");
+    for (let k = 1; k <= 4; k++) assert.ok(flat.l(k) > 0.5 * flat.l(1) * Math.pow(0.7, k - 1), `pp 0 echo ${k} on both channels`);
+    // half way: both channels hear the first echo, and the crossing grows in the later ones
+    const half = run(0.5, 0.7, 3, [0.5, 0.5]);
+    assert.ok(half.l(1) > 0.05 && half.r(1) > 0.05, "pp 0.5 first echo on both channels");
+    // a hard-left input at pp 1 still ping-pongs (the mono sum goes in the left line); a right-only input ping-pongs too
+    const hl = run(1, 0.7, 3, [0.5, 0]);
+    assert.ok(hl.l(1) > 0.1 && hl.r(1) < hl.l(1) * 0.02 && hl.r(2) > 0.05, "left-only input: L, R, ...");
+    // the feedback and the level are untouched: echo 2 / echo 1 = feedback, with and without ping-pong
+    assert.ok(Math.abs(mono.r(2) / mono.l(1) - 0.7) < 0.2 && Math.abs(flat.l(2) / flat.l(1) - 0.7) < 0.2, `echo ratio ${mono.r(2) / mono.l(1)} ${flat.l(2) / flat.l(1)}`);
+});
+
 ok("GenExpr lint", () => {
     const code = CORE_RAW.replace(/\/\/.*$/gm, "");
     assert.ok(!/\b(?:phi|pi)\b/.test(code), "phi / pi are constants");
@@ -1860,6 +1894,245 @@ const BODY_OF = (src) => src.slice(src.indexOf("\nBuffer "));
 const STAGES = G.glitchStages();
 const GROUPS = STAGES.filter((x) => x.role === "group" || x.role === "spec");
 const stage = (id) => STAGES.find((x) => x.id === id);
+
+// ----------------------------------------------------------------------------- param wiring audit (static)
+// For every registry param of every module and spectral sub-op: registry -> flat vector index -> head blend / smoothing -> ring slot ->
+// the module stage's read -> actual use in that stage's DSP code (after glitch_common.py pruning). A param that the registry offers but the
+// gen never reads (or reads from another index, or reads and drops) is a dead control.
+function fnTexts(src) {
+    const out = {};
+    const re = /^([a-z_0-9]+)\(([^)]*)\) \{$/gm;
+    let m;
+    while ((m = re.exec(src))) {
+        const end = src.indexOf("\n}\n", m.index);
+        out[m[1]] = { args: m[2].split(",").map((x) => x.trim()), body: src.slice(m.index + m[0].length, end) };
+    }
+    return out;
+}
+const ownerStage = (instId) => STAGES.find((x) => (x.role === "group" || x.role === "spec") && x.insts.includes(instId));
+// helper function and base token of each module instance, found in its own stage's code
+function moduleCall(instId) {
+    const st = ownerStage(instId), src = STAGE_SRC[st.id], base = L.base[instId];
+    const ms = Array.from(src.matchAll(/(gl_[a-z_]+)\(d_io, d_pv, ([^,]+), /g));
+    if (instId === "gpit" || instId === "gstr") {
+        const gm = src.match(/grB = gk < 0\.5 \? (\d+) : (\d+);/);
+        return { fn: "gl_grain", bases: [Number(gm[1]), Number(gm[2])], st };
+    }
+    const hit = ms.find((x) => Number(x[2]) === base);
+    return { fn: hit ? hit[1] : null, bases: hit ? [Number(hit[2])] : [], st };
+}
+// the offsets b + N a helper reads, with the clip bounds it applies (null when none)
+function readsOf(fnBody) {
+    const reads = {};
+    for (const m of fnBody.matchAll(/pv\.peek\(b(?: \+ (\d+))?\)/g)) {
+        const k = m[1] === undefined ? 0 : Number(m[1]);
+        reads[k] = reads[k] || { n: 0, bounds: [] };
+        reads[k].n++;
+    }
+    for (const m of fnBody.matchAll(/(clip|max|min)\(pv\.peek\(b \+ (\d+)\),? ?([-\d.e]+)?,? ?([-\d.e]+)?\)/g)) {
+        const k = Number(m[2]);
+        if (m[1] === "clip") reads[k].bounds.push([Number(m[3]), Number(m[4])]);
+    }
+    return reads;
+}
+ok("param wiring: every module param is read by its stage's helper at the right offset, used, in range", () => {
+    for (const inst of G.GL_INSTANCES) {
+        if (inst.id === "spec") continue;
+        const call = moduleCall(inst.id);
+        assert.ok(call.fn, `${inst.id}: the stage calls its helper with the instance's base index`);
+        const b = L.base[inst.id];
+        assert.ok(call.bases.includes(b), `${inst.id}: helper called with base ${b} (got ${call.bases})`);
+        const fns = fnTexts(STAGE_SRC[call.st.id]);
+        const f = fns[call.fn];
+        assert.ok(f, `${inst.id}: ${call.fn} survives pruning in stage ${call.st.id}`);
+        assert.ok(L.index[inst.id + "." + inst.params[0].key] === b, `${inst.id}: wet is the first param`);
+        // the stage reads the ring slot range that holds this instance's params
+        assert.ok(call.st.plo <= b && b + inst.params.length <= call.st.phi, `${inst.id}: params ${b}..${b + inst.params.length - 1} inside the stage's ring range ${call.st.plo}..${call.st.phi}`);
+        const reads = readsOf(f.body);
+        const wi = f.args.indexOf("w");
+        assert.ok(wi >= 0 && new RegExp("\\bw\\b").test(f.body), `${inst.id}: the module Mix (wet) is applied`);
+        for (let j = 1; j < inst.params.length; j++) {
+            const p = inst.params[j];
+            if (inst.id === "gstr" || inst.id === "gpit") { assert.ok(reads[j], `${inst.id}.${p.key}: gl_grain reads b + ${j}`); }
+            else assert.ok(reads[j], `${inst.id}.${p.key} (b + ${j}) is never read by ${call.fn}`);
+            for (const bd of reads[j].bounds) assert.ok(p.min >= bd[0] - 1e-9 && p.max <= bd[1] + 1e-9, `${inst.id}.${p.key}: registry ${p.min}..${p.max} is outside the gen's clip ${bd}`);
+        }
+        for (const k of Object.keys(reads)) assert.ok(Number(k) < inst.params.length, `${inst.id}: ${call.fn} reads b + ${k} but the instance has ${inst.params.length} params`);
+        // a value read into a local that nothing uses
+        for (const m of f.body.matchAll(/^\s*([a-z][a-zA-Z0-9]*) = pv\.peek\(b(?: \+ \d+)?\);$/gm)) {
+            const uses = f.body.match(new RegExp("\\b" + m[1] + "\\b", "g")).length;
+            assert.ok(uses >= 2, `${inst.id}: ${m[1]} is read from the vector and never used in ${call.fn}`);
+        }
+    }
+});
+
+ok("param wiring: head blend / smoothing / ring publish cover every module param; discrete params snap, log params have min > 0", () => {
+    const head = STAGE_SRC.h;
+    assert.ok(head.includes(`gl_blend(d_sv, d_wv, d_meta, d_tgt, ${L.np}, 0, ${L.np});`) && head.includes(`gl_smooth(d_pv, d_tgt, d_meta, 0, ${L.np}, snapK);`));
+    assert.ok(head.includes(`for (i = 0; i < ${L.mvBase}; i += 1) {`) && head.includes("poke(ctl, d_pv.peek(i), rsl + i, 0);"), "the head publishes every module param (ring stride = mvBase)");
+    const meta = G.glitchMeta();
+    for (let i = 0; i < L.mvBase; i++) {
+        const p = L.params[i];
+        assert.strictEqual(meta[i][0], G.glitchLayout().params[i].kindCode, `${p.inst}.${p.key} blend kind`);
+        if (p.kind === "log") assert.ok(p.min > 0, `${p.inst}.${p.key}: a log param needs min > 0`);
+        if (p.kind === "disc") assert.ok(Number.isInteger(p.min) && Number.isInteger(p.max), `${p.inst}.${p.key} discrete range is integers`);
+        const spec = p.spec;
+        if (spec.kind === "disc" && spec.choices) assert.strictEqual(spec.choices.length, spec.max - spec.min + 1, `${p.inst}.${p.key}: one label per value`);
+        assert.ok(spec.def >= spec.min && spec.def <= spec.max, `${p.inst}.${p.key} default in range`);
+    }
+    // every stage reads only indices inside its own ring range (a read outside would see stale zeros)
+    for (const st of GROUPS) {
+        const src = STAGE_SRC[st.id];
+        for (const m of src.matchAll(/d_pv\.peek\((\d+)(?: \+ (\d+))?\)/g)) {
+            const idx = Number(m[1]) + (m[2] ? Number(m[2]) : 0);
+            assert.ok(idx >= st.plo && idx < st.phi, `stage ${st.id} reads vector index ${idx} outside ${st.plo}..${st.phi}`);
+        }
+    }
+    // discrete params and the gen's branch tables
+    const D = G.GL_DIV_BEATS;
+    for (let i = 0; i < 8; i++) assert.strictEqual(GEN.gl_div(i), D[i], `gl_div(${i})`);
+    for (const [k, n] of [["drvA.mode", 4], ["drvB.mode", 4], ["filt.type", 4], ["rect.mode", 3], ["fm.mode", 2], ["ring.mode", 2], ["time.mode", 3], ["phas.stages", 4], ["phas.sync", 2], ["scrb.shape", 3], ["shuf.slices", 4], ["shuf.span", 3], ["spec.sgl_mode", 2], ["spec.str_mode", 2], ["spec.dst_mode", 2], ["spec.clp_mode", 2], ["spec.rph_mode", 2], ["spec.frz_rate", 4]]) {
+        const p = L.params[L.index[k]];
+        assert.strictEqual(p.min, 0, k);
+        assert.strictEqual(p.max, n - 1, `${k}: registry values match the gen's ${n} branches`);
+    }
+    assert.deepStrictEqual(G.GL_SLICE_COUNTS, [2, 4, 8, 16]);
+    assert.deepStrictEqual(G.GL_SHUF_SPANS, [1, 2, 4]);
+    assert.strictEqual(L.params[L.index["spec.sc_mode"]].min, 1);
+    assert.strictEqual(L.params[L.index["spec.sc_mode"]].max, 3);
+    for (const [k, n] of [["dly.div", 8], ["stut.div", 8], ["ratc.div", 8], ["time.div", 8], ["scrb.size", 8], ["scrb.rate", 8], ["rvs.div", 8], ["chop.div", 8], ["corr.div", 8], ["spec.sct_rate", 8], ["spec.gfz_rate", 8], ["spec.dst_rate", 8]]) {
+        const p = L.params[L.index[k]];
+        assert.strictEqual(p.max, n - 1, k);
+        assert.deepStrictEqual(p.spec.choices, G.GL_DIV_NAMES, `${k} labels = the gl_div table`);
+    }
+    assert.deepStrictEqual(L.params[L.index["phas.div"]].spec.choices, G.GL_LFO_NAMES);
+});
+
+// the spectral stage: every sub-op param is read from the vector (head block or gl_spec_frame) and passed on to code that uses it
+ok("param wiring: every spectral sub-op param reaches the STFT code and is used", () => {
+    const src = STAGE_SRC[GROUPS.find((x) => x.role === "spec").id], fns = fnTexts(src), spec = Object.assign({}, G.glInstance("spec"), { base: L.base.spec });
+    const read = new Set();
+    for (const m of src.matchAll(/d_pv\.peek\((\d+)(?: \+ (\d+))?\)/g)) read.add(Number(m[1]) + (m[2] ? Number(m[2]) : 0));
+    // gl_spec_frame reads pv.peek(base + k) through the loop variables mb / gb / pb2 (ternaries of base indices)
+    const frame = fns.gl_spec_frame.body;
+    for (const v of ["mb", "gb", "pb2"]) {
+        const tern = frame.match(new RegExp("\\b" + v + " = ([^;]+);"))[1];
+        const bases = Array.from(tern.matchAll(/(?<![\d.])(\d{2,})(?![\d.])/g)).map((x) => Number(x[1]));
+        assert.ok(bases.length >= 2, v);
+        for (const m of frame.matchAll(new RegExp("pv\\.peek\\(" + v + "(?: \\+ (\\d+))?\\)", "g"))) for (const bs of bases) read.add(bs + (m[1] ? Number(m[1]) : 0));
+    }
+    const missing = [];
+    for (let j = 0; j < spec.params.length; j++) if (!read.has(spec.base + j)) missing.push(spec.params[j].key);
+    assert.deepStrictEqual(missing, [], "spec params the stage never reads");
+    for (const i of read) assert.ok(i >= spec.base && i < spec.base + spec.params.length, `spec stage reads index ${i} outside its params`);
+    // the sub-op params are passed positionally (q1..q4 = the amount's next params): the registry order must be what the gen's functions document
+    const order = {
+        frz_amt: ["frz_rate"], smr_amt: ["smr_blur"], cc_amt: ["cc_coeffs", "cc_bits"], sc_amt: ["sc_mode"], sct_amt: ["sct_w", "sct_rate"], mir_amt: ["mir_pivot"], bsh_amt: ["bsh_bins"],
+        sgl_amt: ["sgl_mode", "sgl_k", "sgl_step"], gfz_amt: ["gfz_dens", "gfz_rate"], str_amt: ["str_mode", "str_st", "str_inh"], bub_amt: ["bub_spread", "bub_dens"],
+        mp3_amt: ["mp3_kbps", "mp3_mask"], dst_amt: ["dst_kbps", "dst_mode", "dst_depth", "dst_rate"], thn_amt: ["thn_n", "thn_soft"], dec_amt: ["dec_k", "dec_boost"],
+        nsf_amt: ["nsf_depth", "nsf_grain"], clp_amt: ["clp_mode", "clp_db"], psw_amt: ["psw_w"], rph_amt: ["rph_mode", "rph_rand"] };
+    for (const [amt, rest] of Object.entries(order)) {
+        const i0 = spec.params.findIndex((p) => p.key === amt);
+        assert.deepStrictEqual(spec.params.slice(i0 + 1, i0 + 1 + rest.length).map((p) => p.key), rest, `${amt}: the params after it`);
+        assert.ok(i0 + 1 + rest.length === spec.params.length || spec.params[i0 + 1 + rest.length].kind === "wet", `${amt}: no extra params`);
+    }
+    // every argument of the spectral helpers is used in the helper's body
+    for (const fnName of ["gl_mapfx", "gl_magfx", "gl_phasefx", "gl_binmap", "gl_sgate", "gl_magops"]) {
+        const f = fns[fnName];
+        assert.ok(f, fnName);
+        for (const a of f.args) {
+            if (!/^(p[1-4]|amt|op|mode|kk|sdb|nb)$/.test(a)) continue; // the parameter-carrying arguments (sr / beat / scratch Data are plumbing)
+            const used = (f.body.match(new RegExp("\\b" + a + "\\b", "g")) || []).length;
+            assert.ok(used >= 1, `${fnName}: argument ${a} is passed in but never used`);
+        }
+    }
+    // the sub-op argument that carries a param: units the helper documents
+    const ranges = { thn_n: [1, 16], dec_k: [1, 32], nsf_grain: [1, 16], bub_spread: [1, 8], psw_w: [8, 512], sct_w: [2, 32], sgl_k: [1, 256] };
+    for (const [k, [lo, hi]] of Object.entries(ranges)) {
+        const p = L.params[L.index["spec." + k]];
+        assert.ok(p.min >= lo && p.max <= hi, `${k}: registry ${p.min}..${p.max} inside the gen's clip ${lo}..${hi}`);
+    }
+    // mirror pivot: the gen clips the pivot to bins 4..508 (sr / 1024 each): the registry minimum must be reachable
+    const mp = L.params[L.index["spec.mir_pivot"]];
+    assert.ok(mp.min * 1024 / 48000 >= 4, `mir_pivot minimum ${mp.min} Hz is below bin 4 at 48 kHz: part of the range is dead`);
+});
+
+ok("UI cross-check: every editor row has a unit-correct value text over its whole range, and discrete labels follow the gen's enum order", () => {
+    const units = { Hz: /Hz$/, ms: / ms$/, dB: / dB$/, st: / st$/, bins: / bins$/, kbps: / kbps$/, x: /x$/ };
+    for (const t of G.GL_TYPES) {
+        for (const row of G.glitchEditorRows(t.id)) {
+            const sp = row.spec;
+            for (const v of [sp.min, sp.def, sp.max]) {
+                const txt = G.glitchFormatValue(sp, v);
+                assert.ok(txt.length > 0 && !/NaN|undefined|Infinity/.test(txt), `${t.id}.${row.id}: value text "${txt}" for ${v}`);
+                if (sp.unit && units[sp.unit]) assert.ok(units[sp.unit].test(txt), `${t.id}.${row.id}: "${txt}" shows its unit ${sp.unit}`);
+            }
+            if (sp.kind === "wet") assert.strictEqual(G.glitchFormatValue(sp, 0.5), "50%");
+            if (sp.kind === "disc" && sp.choices) for (let v = sp.min; v <= sp.max; v++) assert.strictEqual(G.glitchFormatValue(sp, v), String(sp.choices[v - sp.min]));
+        }
+    }
+    // labels that name numbers must equal what the gen computes from the index
+    const ch = (k) => L.params[L.index[k]].spec.choices;
+    assert.deepStrictEqual(ch("phas.stages"), [0, 1, 2, 3].map((i) => String(2 * (i + 1))), "phaser stages: 2 + 2 * index");
+    assert.deepStrictEqual(ch("shuf.slices"), G.GL_SLICE_COUNTS.map(String));
+    assert.deepStrictEqual(ch("shuf.span").map((x) => x.split(" ")[0]), ["1", "2", "1"], "span labels (1 beat, 2 beats, 1 bar = 4 beats)");
+    assert.deepStrictEqual([0, 1, 2].map((i) => Math.pow(2, i)), [1, 2, 4].slice(0, 3));
+    assert.deepStrictEqual(ch("spec.frz_rate"), ["Once", "4 beats", "2 beats", "1 beat"]);
+    assert.deepStrictEqual(ch("drvA.mode"), ["Soft", "Fold", "Hard", "Asym"]);
+    assert.deepStrictEqual(ch("filt.type"), ["LP", "BP", "HP", "Notch"]);
+    assert.deepStrictEqual(ch("dly.div"), G.GL_DIV_NAMES);
+});
+
+ok("no param duplicates a dry/wet blend: nothing named Amount/Blend/Depth only crossfades against the unprocessed signal on top of Mix", () => {
+    // v7: Rectify's Blend, the spectral instance's own Mix and the editor's "Amount" rows are gone
+    const names = [];
+    for (const inst of G.GL_INSTANCES) for (const p of inst.params) names.push(inst.id + "." + p.key + ":" + p.name);
+    assert.ok(!names.some((n) => /^rect\./.test(n) && /blend/i.test(n)), "Rectify has no Blend");
+    assert.ok(G.GL_INSTANCES.every((i) => i.params.every((p) => !/^(amount|blend)$/i.test(p.name))), "no param is called Amount or Blend");
+    // the one internal param (spectral wet) is never offered by an editor, a movement target or Randomize as a user control
+    const hidden = G.GL_INSTANCES.flatMap((i) => i.params.filter((p) => p.internal).map((p) => i.id + "." + p.key));
+    assert.deepStrictEqual(hidden, ["spec.wet"]);
+    for (const t of G.GL_TYPES) for (const r of G.glitchEditorRows(t.id)) assert.ok(!r.spec.internal, `${t.id}: editor row ${r.id} is internal`);
+    for (const inst of G.GL_INSTANCES) {
+        const rows = inst.params.filter((p) => !p.internal).map((p) => p.name);
+        assert.strictEqual(rows.filter((n) => n === "Mix").length, inst.id === "spec" ? 0 : 1, `${inst.id}: exactly one Mix`);
+    }
+    for (const t of G.GL_TYPES.filter((x) => x.amountKey)) {
+        const rows = G.glitchEditorRows(t.id);
+        assert.strictEqual(rows.filter((r) => r.name === "Mix" || r.name === "Length").length, 1, `${t.id}: exactly one mix-like control`);
+    }
+    // behaviour: for each sub-op the one Mix is a dry/wet strength: Mix 0 gives the (delayed) dry signal, so no second blend is needed
+    for (const inst of G.GL_INSTANCES) for (const p of inst.params) if (!p.internal && p.kind === "wet" && p.key !== "wet") assert.ok(p.group === p.key, `${p.key} is the group's amount`);
+    // the vector derives the spectral wet from the sub-op mixes
+    const g = G.defaultGlitch();
+    g.modules.spec = { wet: 0, params: {}, move: null };
+    G.glitchSetValue(g, "scatter", "sct_amt", 0.7);
+    assert.strictEqual(G.glitchToVector(g)[L.base.spec], 1, "any sub-op on = spectral stage on");
+    G.glitchSetValue(g, "scatter", "sct_amt", 0);
+    assert.strictEqual(G.glitchToVector(g)[L.base.spec], 0);
+});
+
+ok("state migration v6 -> v7: Rectify Blend folds into Mix, every spectral sub-op amount folds the old spectral Mix", () => {
+    const g6 = { version: 1, name: "", seed: 1, modules: {
+        rect: { wet: 0.8, params: { mode: 2, blend: 0.5 }, move: null },
+        spec: { wet: 0.5, params: { sct_amt: 0.8, sct_w: 6, smr_amt: 0.4, smr_blur: 0.7, sgl_amt: 0, mp3_amt: 1, mp3_kbps: 96 }, move: { type: 1, target: "sct_w", depth: 0.3 } } }, movement: {} };
+    const st6 = { version: 6, slots: [g6, null, null, null, null, null, null, null], corners: [0, 1, 2, 3], allow: {}, chaos: 0.5, xy: [0.5, 0.5], working: g6, audition: "working", seed: 1 };
+    const t = G.stateFromBlob([6, JSON.stringify(st6)]);
+    for (const g of [t.working, t.slots[0]]) {
+        const r = g.modules.rect, sp = g.modules.spec;
+        assert.ok(Math.abs(r.wet - 0.4) < 1e-12 && r.params.blend === undefined && r.params.mode === 2, "rect: wet' = wet * blend");
+        assert.ok(Math.abs(sp.params.sct_amt - 0.4) < 1e-12 && Math.abs(sp.params.smr_amt - 0.2) < 1e-12 && Math.abs(sp.params.mp3_amt - 0.5) < 1e-12 && sp.params.sgl_amt === 0, "spec: amt' = amt * spectral wet");
+        assert.strictEqual(sp.params.sct_w, 6, "other params stay");
+        assert.strictEqual(sp.wet, 1, "the internal spectral wet is derived");
+        assert.ok(sp.move && sp.move.target === "sct_w", "movement stays");
+    }
+    // a v7 blob is not migrated again
+    const again = G.stateFromBlob(G.stateToBlob(t));
+    assert.deepStrictEqual(again.working.modules, t.working.modules);
+    // the vector: the old and the new state differ only in the folded values (indexes are by key)
+    assert.strictEqual(G.glitchToVector(t.working).length, L.np);
+});
+
 
 ok("stages: roles, contiguous cover of the chain, ports, parameter ranges, ring layout", () => {
     // one stage per chain instance (granular pitch + stretch share one call site), the head first, the tail last
@@ -1978,8 +2251,8 @@ ok("stages: compile budget (what makes loading fast) and the head / group / tail
     const h = STAGE_SRC.h;
     assert.ok(h.includes("d_tk.poke(tkv, 0);") && h.includes("out1 = d_tk.peek(0);") && h.includes("out2 = floor(beat);") && h.includes("out3 = beat - floor(beat);"));
     assert.ok(h.includes("out4 = (quietCnt >= n) ? 1 : 0;"));
-    assert.ok(h.includes("gl_blend(d_sv, d_wv, d_meta, d_tgt, 853, 0, 853);") && h.includes("gl_smooth(d_pv, d_tgt, d_meta, 0, 853, snapK);"), "blend and smoothing cover the whole vector");
-    assert.ok(h.includes("poke(ctl, d_pv.peek(i), rsl + i, 0);") && h.includes("for (i = 0; i < 157; i += 1) {"), "the head publishes the module params of each tick");
+    assert.ok(h.includes("gl_blend(d_sv, d_wv, d_meta, d_tgt, 852, 0, 852);") && h.includes("gl_smooth(d_pv, d_tgt, d_meta, 0, 852, snapK);"), "blend and smoothing cover the whole vector");
+    assert.ok(h.includes("poke(ctl, d_pv.peek(i), rsl + i, 0);") && h.includes("for (i = 0; i < 156; i += 1) {"), "the head publishes the module params of each tick");
     // groups read the ring slot of the head's tick, their own param range only, and smooth their own wets (gated by go)
     for (const g of GROUPS) {
         const src = STAGE_SRC[g.id];
@@ -2262,12 +2535,13 @@ ok("editor rows: every tile key has editable rows that round-trip", () => {
         // the rows are all the editable params of the tile
         if (!SPEC_TYPES.includes(key)) assert.strictEqual(rows.length, G.glInstance(key).params.length);
     }
-    assert.ok(G.glitchEditorRows("smear").some((r) => r.shared && r.id === "wet"));
-    assert.deepStrictEqual(G.glitchEditorRows("freeze").map((r) => r.id), ["frz_amt", "frz_rate", "wet"]);
+    assert.ok(!G.glitchEditorRows("smear").some((r) => r.id === "wet"), "no shared Spectral Mix row"); assert.strictEqual(G.glitchEditorRows("smear")[0].name, "Length"); assert.strictEqual(G.glitchEditorRows("scatter")[0].name, "Mix");
+    assert.deepStrictEqual(G.glitchEditorRows("freeze").map((r) => r.id), ["frz_amt", "frz_rate"]);
     assert.deepStrictEqual(G.glitchEditorRows("nothing"), []);
     // editing leaves the glitch inside the contract: normalize is a no-op
     const g3 = G.randomizeGlitch(5, 0.6);
-    G.glitchSetValue(g3, G.glitchTiles(G.glitchToVector(g3))[0].key, "wet", 0.33);
+    const t0 = G.glitchTiles(G.glitchToVector(g3)).find((t) => !t.sub);
+    G.glitchSetValue(g3, t0.key, "wet", 0.33);
     assert.deepStrictEqual(G.normalizeGlitch(g3), g3);
 });
 
@@ -2371,14 +2645,14 @@ ok("allow-list: toggles gate Randomize and Mutate", () => {
 });
 
 ok("state versioning: v3 carries ui and seq, v1 and damaged blobs still load", () => {
-    assert.strictEqual(G.GL_STATE_VERSION, 6);
+    assert.strictEqual(G.GL_STATE_VERSION, 7);
     const s = G.defaultState();
     s.ui.editor = 1; s.ui.slots = 0; s.ui.options = 1; s.ui.seq = 1;
     s.working = G.randomizeGlitch(4, 0.5);
     s.ui.sel = G.glitchTiles(G.glitchToVector(s.working))[0].key;
     G.glitchToggleLock(s.working, s.ui.sel);
     const blob = G.stateToBlob(s);
-    assert.strictEqual(blob[0], 6);
+    assert.strictEqual(blob[0], 7);
     const back = G.stateFromBlob(blob);
     assert.strictEqual(back.ui.editor, 1); assert.strictEqual(back.ui.slots, 0); assert.strictEqual(back.ui.options, 1);
     assert.strictEqual(back.ui.seq, 1, "the sequencer section flag round-trips (the sequencer section opens again)");
@@ -3233,6 +3507,7 @@ function mvParams(over) {
 ok("movement registry: one main param per module, continuous, and the targets of every tile", () => {
     for (const inst of G.GL_INSTANCES) {
         const mains = inst.params.filter((p) => p.main);
+        if (inst.id === "rect") { assert.strictEqual(mains.length, 0, "Rectify has no continuous param (its Blend was a duplicate of Mix)"); assert.strictEqual(G.glitchMainParam("rect"), null); continue; }
         assert.strictEqual(mains.length, 1, `${inst.id} has one main param`);
         assert.ok(mains[0].kind === "lin" || mains[0].kind === "log", `${inst.id}.${mains[0].key} is continuous`);
         assert.strictEqual(G.GL_MAIN_PARAM[inst.id], mains[0].key);
@@ -3258,7 +3533,7 @@ ok("movement registry: one main param per module, continuous, and the targets of
         assert.strictEqual(L2.params[inst.mv + L2.mv.depth].group, inst.wet, "depth blends over the slots where the module is on");
         assert.strictEqual(L2.params[inst.mv + L2.mv.type].group, inst.mv, "type blends over the slots with movement");
         const mainPos = G.glInstance(inst.id).params.findIndex((p) => p.main);
-        assert.strictEqual(L2.params[inst.mv + L2.mv.target].def, mainPos, "the default target is the main param");
+        assert.strictEqual(L2.params[inst.mv + L2.mv.target].def, Math.max(mainPos, 0), "the default target is the main param");
     }
     assert.strictEqual(G.GL_MV_DIV_BEATS.length, 16);
     assert.deepStrictEqual(G.GL_MV_DIV_BEATS.slice().sort((a, b) => a - b), G.GL_MV_DIV_BEATS, "divisions are sorted, shortest first");
@@ -3635,7 +3910,7 @@ ok("state migration v3 -> v4: old slots have no movement, the blob round-trips m
     const v3 = { version: 3, slots: [old, null, old, null, null, null, null, null], corners: [0, 1, 2, 3], allow: { drive: false }, chaos: 0.3, xy: [0.5, 0.5], working: old, audition: "working", seed: 4,
         ui: { editor: 1, slots: 1, seq: 0, options: 0, sel: "filt" }, seq: G.defaultSeq() };
     const t = G.stateFromBlob([3, JSON.stringify(v3)]);
-    assert.strictEqual(t.version, 6);
+    assert.strictEqual(t.version, G.GL_STATE_VERSION);
     assert.strictEqual(t.allow.drive, false);
     assert.strictEqual(t.allow.mv_lfo, true);
     assert.strictEqual(t.ui.edTab, 0);

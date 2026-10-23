@@ -197,7 +197,7 @@ class Rectify {
         for (let c = 0; c < 2; c++) {
             const x = xs[c];
             const r = p.mode < 0.5 ? Math.max(x, 0) : (p.mode < 1.5 ? Math.abs(x) : (x > 0 ? x : -0.4 * x));
-            const y = x + (r - x) * p.blend;
+            const y = r;
             const hp = y - this.x1[c] + 0.995 * this.y1[c];
             this.x1[c] = y;
             this.y1[c] = hp;

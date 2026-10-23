@@ -23,7 +23,7 @@
 //     gl_binmap, gl_mapfx (loop of 3), gl_magfx (loop of 6), gl_sgate, gl_cproc, gl_phasefx (loop of 2); each helper has ONE call site.
 //     Randomize / Mutate roll at most glitchSpectralCap(chaos) of them: about 1 at Chaos 0 .. 4 at Chaos 1 (interpolated, rounded).
 //
-// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 853: 157 module
+// Param vector: every instance param has a fixed index in a flat Float vector of length GL_NP (glitchLayout().np = 852: 156 module
 //   params (phase 3: 113; phase 4 adds Ratchet 7, Scratch 5 and 35 spectral params), then one 29-float MOVEMENT block per chain
 //   instance, 24 x 29, see MOVEMENT below).
 //   Per instance the first param is its `wet` (amount, 0 = bypassed). The `spec` instance has one extra amount per sub-op
@@ -35,7 +35,7 @@
 //   range rolled by Randomize at Chaos 0 and Chaos 1), calm / wild value lists for "disc", choices (names), group.
 //
 // ENGINE BUFFER `buffer~ ---glitchslots` (GL_SLOTS_BUF_SAMPS = 10496 floats, bound in gen as `slots ---glitchslots`):
-//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 853 -> 0..6823)
+//   [0 .. 8*NP)                 the 8 slot vectors, slot s at s*NP                                   (NP = 852 -> 0..6815)
 //   [WOFF = 8*NP .. +8)         8 weights used in modes Working / Morph (any non-negative numbers, gen normalizes by
 //                               their sum; all 0 = defaults = silent FX). IGNORED in Seq mode.         (6824..6831)
 //   [SEQ = WOFF+8 .. +24)       the sequencer block, SEQ = glitchLayout().seqOffset = 6832:
@@ -93,6 +93,8 @@
 //     seq: { steps: [16 x (-1 hold | 0..7)], length 1..16, rate 0..9, glide 0..1, curve 0|1 } }
 //   Versions: 1 (no ui), 2 (+ ui), 3 (+ seq; new modules), 4 (+ per-module movement, ui.edTab, the Movement allow-list kinds
 //   mv_lfo / mv_steps / mv_env), 5 (phase 4: Ratchet, Scratch and the 11 spectral sub-ops; ui.optPage = page of a long Options category),
+//   7 (duplicate dry/wet params removed: Rectify Blend folds into its Mix (wet' = wet * blend), every spectral sub-op amount folds the old
+//   spectral Mix (amt' = amt * wet); the spec instance wet is internal/derived; NP 852),
 //   6 (the Width / Gain module `wid` is gone: slots, working glitch, locks, allow-list and the Utility category drop it on load, the stereo
 //   width / gain it applied is simply not applied any more; NP 853, 24 chain instances).
 //   A v1..v4 blob loads with every phase 4 module and sub-op absent (wet 0 / amount 0; their params are not saved, so they take the
@@ -133,7 +135,7 @@
 //   glitchEditorRows(key), glitchSetValue / glitchRemoveTile / glitchToggleLock, rerollWorking / mutateWorking (honour locks),
 //   GL_PARAMS (the Live parameters), glitchHitMap(ui, nTiles, nRows) (every interactive rect, used by the tests).
 
-var GL_STATE_VERSION = 6;
+var GL_STATE_VERSION = 7;
 var GL_GLITCH_VERSION = 1;
 var GL_NSLOT = 8;
 var GL_FFT_N = 1024;
@@ -185,7 +187,7 @@ function glP(key, name, kind, min, max, def, extra) {
     if (extra) for (var k in extra) o[k] = extra[k];
     return o;
 }
-function glWet(rand) { return glP("wet", "Amount", "wet", 0, 1, 0, { rand: rand || [0.6, 1, 0.35, 1] }); }
+function glWet(rand) { return glP("wet", "Mix", "wet", 0, 1, 0, { rand: rand || [0.6, 1, 0.35, 1] }); }
 function glDriveParams() {
     return [
         glWet(),
@@ -233,11 +235,11 @@ var GL_INSTANCES = [
         glP("rate", "Downsample", "log", 1, 64, 4, { unit: "x", rand: [1.5, 6, 1.5, 48] }),
         glP("jitter", "Jitter", "lin", 0, 1, 0, { rand: [0, 0.2, 0, 0.8] }),
     ] },
-    // half / full / asymmetric rectifier with a blend, DC blocked. gen: gl_rect.
+    // half / full / asymmetric rectifier, DC blocked. gen: gl_rect. (State v7: the old Blend param only crossfaded rectified against
+    // input on top of Mix and is gone; Mix does that.)
     { id: "rect", type: "rectify", name: "Rectify", category: "Distort", params: [
         glWet(),
         glP("mode", "Mode", "disc", 0, 2, 1, { choices: ["Half", "Full", "Asym"], calm: [0, 1, 2], wild: [0, 1, 2] }),
-        glP("blend", "Blend", "lin", 0, 1, 1, { rand: [0.5, 1, 0.2, 1] }),
     ] },
     // delay-line FM: an oscillator (ratio x 110 Hz) or the input itself modulates a short delay, through zero. gen: gl_fm.
     { id: "fm", type: "fm", name: "FM", category: "Distort", params: [
@@ -270,7 +272,7 @@ var GL_INSTANCES = [
     { id: "ratc", type: "ratchet", name: "Ratchet / Roll", category: "Time", params: [
         glWet(),
         glP("div", "Span", "disc", 0, 7, 6, { choices: GL_DIV_NAMES, calm: [4, 6, 7], wild: [3, 4, 5, 6, 7] }),
-        glP("count", "Repeats", "lin", 2, 16, 6, { rand: [3, 8, 2, 16] }),
+        glP("count", "Repeats", "lin", 2, 16, 6, { round: true, rand: [3, 8, 2, 16] }),
         glP("accel", "Accel", "lin", -1, 1, 0.6, { rand: [0.3, 0.9, -1, 1] }),
         glP("pitch", "Pitch Ramp", "lin", -12, 12, 0, { unit: "st", rand: [-2, 2, -12, 12] }),
         glP("decay", "Decay", "lin", 0, 1, 0.2, { rand: [0, 0.4, 0, 0.8] }),
@@ -279,7 +281,7 @@ var GL_INSTANCES = [
     { id: "time", type: "time", name: "Tape / Reverse", category: "Time", params: [
         glWet(),
         glP("mode", "Mode", "disc", 0, 2, 2, { choices: ["Stop", "Vari", "Rev"], calm: [0, 1, 2], wild: [0, 1, 2] }),
-        glP("amt", "Amount", "lin", 0, 1, 0.6, { rand: [0.4, 0.8, 0.2, 1] }),
+        glP("amt", "Tape Depth", "lin", 0, 1, 0.6, { rand: [0.4, 0.8, 0.2, 1] }),
         glP("div", "Length", "disc", 0, 7, 4, { choices: GL_DIV_NAMES, calm: [4, 5, 6], wild: [2, 3, 4, 5, 6, 7] }),
     ] },
     // phase 4: turntable-style back-and-forth playback of a short recent buffer; the read lag follows a beat-locked shape. gen: gl_scratch.
@@ -324,8 +326,10 @@ var GL_INSTANCES = [
         glP("div", "Step", "disc", 0, 7, 2, { choices: GL_DIV_NAMES, calm: [2, 4], wild: [1, 2, 3, 4, 5, 6] }),
         glP("smooth", "Smooth", "lin", 0, 1, 0.2, { rand: [0.1, 0.5, 0, 1] }),
     ] },
+    // The spec `wet` is INTERNAL (state v7): it is derived (1 while any sub-op is on; gen: smooth, from the sub-op mixes) and never shown.
+    // Every sub-op's amount is its one Mix control (Smear's is its Length).
     { id: "spec", type: "spectral", name: "Spectral", category: "Spectral", params: [
-        glWet([0.8, 1, 0.5, 1]),
+        glP("wet", "Mix", "wet", 0, 1, 0, { rand: [0.8, 1, 0.5, 1], internal: true }),
         glP("frz_amt", "Freeze", "wet", 0, 1, 0, { rand: [0.5, 1, 0.3, 1], group: "frz_amt" }),
         glP("frz_rate", "Freeze Refresh", "disc", 0, 3, 0, { choices: ["Once", "4 beats", "2 beats", "1 beat"], calm: [0, 1], wild: [0, 1, 2, 3], group: "frz_amt" }),
         glP("smr_amt", "Smear", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.2, 1], group: "smr_amt" }),
@@ -340,12 +344,12 @@ var GL_INSTANCES = [
         glP("sct_w", "Scatter Width", "lin", 2, 32, 8, { unit: "bins", rand: [4, 16, 2, 32], group: "sct_amt" }),
         glP("sct_rate", "Scatter Re-roll", "disc", 0, 7, 5, { choices: GL_DIV_NAMES, calm: [4, 5, 6], wild: [2, 3, 4, 5, 6, 7], group: "sct_amt" }),
         glP("mir_amt", "Mirror", "wet", 0, 1, 0, { rand: [0.3, 0.8, 0.2, 1], group: "mir_amt" }),
-        glP("mir_pivot", "Mirror Pivot", "log", 100, 8000, 1500, { unit: "Hz", rand: [400, 3000, 150, 7000], group: "mir_amt" }),
+        glP("mir_pivot", "Mirror Pivot", "log", 200, 8000, 1500, { unit: "Hz", rand: [400, 3000, 200, 7000], group: "mir_amt" }),
         glP("bsh_amt", "Bin Shift", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "bsh_amt" }),
         glP("bsh_bins", "Shift", "lin", -64, 64, 8, { unit: "bins", rand: [3, 16, 2, 48], group: "bsh_amt" }),
         glP("sgl_amt", "Spec Gate", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "sgl_amt" }),
         glP("sgl_mode", "Gate Mode", "disc", 0, 1, 0, { choices: ["Top-K", "Lofi"], calm: [0, 1], wild: [0, 1], group: "sgl_amt" }),
-        glP("sgl_k", "Keep Bins", "log", 1, 256, 32, { rand: [16, 96, 2, 64], group: "sgl_amt" }),
+        glP("sgl_k", "Keep Bins", "log", 1, 256, 32, { round: true, rand: [16, 96, 2, 64], group: "sgl_amt" }),
         glP("sgl_step", "Lofi Step", "lin", 1, 24, 6, { unit: "dB", rand: [3, 12, 6, 24], group: "sgl_amt" }),
         // phase 4 sub-ops (appended; each with its own amount). Processing order: see GL_SPEC_ORDER.
         glP("gfz_amt", "Glitch Freeze", "wet", 0, 1, 0, { rand: [0.4, 0.9, 0.3, 1], group: "gfz_amt" }),
@@ -411,9 +415,11 @@ var GL_NINST = GL_INSTANCES.length;
 
 // The "main" continuous param of every module: the default movement target and the first param Randomize picks to move.
 // (One per instance; a spectral sub-op has its own, GL_MAIN_SUB. Freeze and Scramble have no continuous param.)
-var GL_MAIN_PARAM = { drvA: "drive", filt: "cutoff", form: "vowel", comb: "freq", phas: "depth", crush: "bits", rect: "blend", fm: "index", corr: "chance",
+var GL_MAIN_PARAM = { drvA: "drive", filt: "cutoff", form: "vowel", comb: "freq", phas: "depth", crush: "bits", fm: "index", corr: "chance",
     ring: "freq", stut: "decay", ratc: "accel", time: "amt", scrb: "depth", gpit: "pitch", gstr: "speed", rvs: "chance", shuf: "chance", chop: "smooth", spec: "smr_blur", drvB: "drive",
     dly: "fb", slap: "tone", rev: "decay" };
+// The one control every spectral sub-op has (its amount, on/off and strength) reads "Mix", except where it is not a dry/wet blend.
+var GL_SUB_MIX_NAME = { smear: "Length" };
 var GL_MAIN_SUB = { smear: "smr_blur", ccrush: "cc_coeffs", scatter: "sct_w", mirror: "mir_pivot", binshift: "bsh_bins", specgate: "sgl_k",
     gfreeze: "gfz_dens", stretch: "str_st", bubbler: "bub_spread", mp3ify: "mp3_kbps", duststorm: "dst_depth", thinner: "thn_soft", decap: "dec_boost",
     noisify: "nsf_depth", clipper: "clp_db", pswap: "psw_w", rphase: "rph_rand" };
@@ -860,7 +866,7 @@ function rollType(g, type, chaos, rnd) {
         for (var pi = 0; pi < inst.params.length; pi++) {
             var ps = inst.params[pi];
             if (onlyGroup) {
-                if (ps.key === "wet") { mod.wet = randValue(ps, Math.max(chaos, 0.5), rnd); continue; }
+                if (ps.key === "wet") { randValue(ps, Math.max(chaos, 0.5), rnd); mod.wet = 1; continue; } // internal: on while a sub-op is
                 if (ps.key !== onlyGroup && ps.group !== onlyGroup) continue;
                 if (ps.kind === "wet") { mod.params[ps.key] = randValue(ps, chaos, rnd); continue; }
                 mod.params[ps.key] = randValue(ps, chaos, rnd);
@@ -882,7 +888,7 @@ function glitchSpectralCap(chaos) {
 /** Number of spectral sub-ops that are on in a glitch. */
 function glitchSpectralCount(g) {
     var mod = g && g.modules ? g.modules.spec : null;
-    if (!mod || !(mod.wet > GL_ACTIVE_EPS)) return 0;
+    if (!mod) return 0;
     var n = 0;
     for (var i = 0; i < GL_TYPES.length; i++) if (GL_TYPES[i].amountKey && (Number(mod.params[GL_TYPES[i].amountKey]) || 0) > GL_ACTIVE_EPS) n++;
     return n;
@@ -1378,6 +1384,10 @@ function glitchToVector(g) {
         if (!isFinite(val)) val = p.def;
         v[i] = glClamp(val, p.min, p.max);
     }
+    // the spectral stage's own wet is internal: on while any sub-op is
+    var anySub = 0;
+    for (var ti = 0; ti < GL_TYPES.length; ti++) if (GL_TYPES[ti].amountKey && v[L.index["spec." + GL_TYPES[ti].amountKey]] > GL_ACTIVE_EPS) anySub = 1;
+    v[L.base.spec] = anySub;
     return v;
 }
 function vectorToGlitch(v) {
@@ -1462,7 +1472,7 @@ function defaultState() {
     for (var i = 0; i < GL_NSLOT; i++) slots.push(null);
     return { version: GL_STATE_VERSION, slots: slots, corners: [0, 1, 2, 3], allow: defaultAllow(), chaos: 0.5, xy: [0.5, 0.5], working: defaultGlitch(), audition: "working", seed: 1, ui: defaultUi(), seq: defaultSeq() };
 }
-function normalizeGlitch(g) {
+function normalizeGlitch(g, ver) {
     var out = defaultGlitch();
     if (!g || typeof g !== "object") return out;
     out.name = typeof g.name === "string" ? g.name : "";
@@ -1479,11 +1489,29 @@ function normalizeGlitch(g) {
         if (!inst || !mods[id] || typeof mods[id] !== "object") continue;
         var m = { wet: glClamp(Number(mods[id].wet) || 0, 0, 1), params: defaultParams(inst), move: normalizeMove(mods[id].move, id) };
         var src = mods[id].params || {};
+        if (ver !== undefined && ver < 7) {
+            // v7 migration: the duplicate blends are gone and their value is folded into the module's one Mix, so old sets sound the same:
+            //   spec: every sub-op amount x the old spectral Mix (the spec wet is internal now); rect: Mix x the old Blend
+            src = glCopy(src);
+            if (id === "spec") {
+                var sw = m.wet;
+                for (var mt = 0; mt < GL_TYPES.length; mt++) {
+                    var ak = GL_TYPES[mt].amountKey;
+                    if (ak && src[ak] !== undefined) src[ak] = (Number(src[ak]) || 0) * sw;
+                }
+            } else if (id === "rect") {
+                m.wet = glClamp(m.wet * (src.blend === undefined ? 1 : glClamp(Number(src.blend) || 0, 0, 1)), 0, 1);
+            }
+        }
         for (var pi = 0; pi < inst.params.length; pi++) {
             var ps = inst.params[pi];
             if (ps.key === "wet" || src[ps.key] === undefined) continue;
             var val = Number(src[ps.key]);
             if (isFinite(val)) m.params[ps.key] = glClamp(val, ps.min, ps.max);
+        }
+        if (id === "spec") { // the spectral wet is internal: on while any sub-op is
+            m.wet = 0;
+            for (var st2 = 0; st2 < GL_TYPES.length; st2++) if (GL_TYPES[st2].amountKey && m.params[GL_TYPES[st2].amountKey] > GL_ACTIVE_EPS) m.wet = 1;
         }
         out.modules[id] = m;
     }
@@ -1491,15 +1519,16 @@ function normalizeGlitch(g) {
 }
 /** Sanitize any (possibly older or damaged) state object into the current schema. Version history: 1 = slots / morph,
  *  2 = + ui, 3 = + seq and the phase 2 modules, 6 = `wid` removed (normalizeGlitch skips instance ids that are not in the registry, normalizeState only keeps allow-list kinds that exist). Anything older loads with the sequence empty and the new modules absent. */
-function normalizeState(o) {
+function normalizeState(o, ver) {
     var s = defaultState();
     if (!o || typeof o !== "object") return s;
-    for (var i = 0; i < GL_NSLOT; i++) s.slots[i] = o.slots && o.slots[i] ? normalizeGlitch(o.slots[i]) : null;
+    if (ver === undefined) ver = o.version === undefined ? GL_STATE_VERSION : Number(o.version) || 1;
+    for (var i = 0; i < GL_NSLOT; i++) s.slots[i] = o.slots && o.slots[i] ? normalizeGlitch(o.slots[i], ver) : null;
     if (Array.isArray(o.corners) && o.corners.length === 4) for (var c = 0; c < 4; c++) s.corners[c] = glClamp(Math.floor(Number(o.corners[c])) || 0, 0, GL_NSLOT - 1);
     if (o.allow && typeof o.allow === "object") for (var t in s.allow) if (o.allow[t] !== undefined) s.allow[t] = !!o.allow[t];
     s.chaos = glClamp(o.chaos === undefined ? 0.5 : Number(o.chaos) || 0, 0, 1);
     if (Array.isArray(o.xy) && o.xy.length === 2) s.xy = [glClamp(Number(o.xy[0]) || 0, 0, 1), glClamp(Number(o.xy[1]) || 0, 0, 1)];
-    s.working = normalizeGlitch(o.working);
+    s.working = normalizeGlitch(o.working, ver);
     s.audition = o.audition === "morph" ? "morph" : (o.audition === "seq" ? "seq" : "working");
     s.seed = Math.max(1, Math.floor(Number(o.seed)) || 1);
     s.ui = normalizeUi(o.ui);
@@ -1514,7 +1543,7 @@ function stateFromBlob(arr) {
         if (!(ver >= 1)) return defaultState();
         // v1 / v2 need no field migration: normalizeState fills `seq` (empty) and the new modules are simply absent;
         // unknown newer versions are read as the latest known
-        return normalizeState(JSON.parse(String(arr[1])));
+        return normalizeState(JSON.parse(String(arr[1])), ver);
     } catch (e) {
         return defaultState();
     }
@@ -2083,18 +2112,17 @@ function glitchEditorRows(key) {
     var inst = glInstance(info.inst);
     var rows = [];
     if (!info.sub) {
-        for (var i = 0; i < inst.params.length; i++) rows.push({ id: inst.params[i].key, name: inst.params[i].key === "wet" ? "Amount" : inst.params[i].name, spec: inst.params[i], shared: false });
+        for (var i = 0; i < inst.params.length; i++) if (!inst.params[i].internal) rows.push({ id: inst.params[i].key, name: inst.params[i].name, spec: inst.params[i], shared: false });
         return rows;
     }
     for (var j = 0; j < inst.params.length; j++) {
         var ps = inst.params[j];
-        if (ps.key === info.sub) rows.push({ id: ps.key, name: "Amount", spec: ps, shared: false });
+        if (ps.key === info.sub) rows.push({ id: ps.key, name: GL_SUB_MIX_NAME[info.type] || "Mix", spec: ps, shared: false });
     }
     for (var j2 = 0; j2 < inst.params.length; j2++) {
         var p2 = inst.params[j2];
         if (p2.group === info.sub && p2.key !== info.sub) rows.push({ id: p2.key, name: p2.name, spec: p2, shared: false });
     }
-    rows.push({ id: "wet", name: "Spectral Mix", spec: inst.params[0], shared: true });
     return rows;
 }
 function glitchGetValue(g, key, id) {
@@ -2194,7 +2222,7 @@ function assignCorner(state, c, slot) { if (c >= 0 && c < 4 && slot >= 0 && slot
 /** Which of the 12 instances a glitch uses (for the slot pad glyph). */
 function glitchSignature(g) {
     var out = [];
-    for (var i = 0; i < GL_INSTANCES.length; i++) out.push(!!(g && g.modules && g.modules[GL_INSTANCES[i].id] && g.modules[GL_INSTANCES[i].id].wet > GL_ACTIVE_EPS));
+    for (var i = 0; i < GL_INSTANCES.length; i++) out.push(GL_INSTANCES[i].id === "spec" ? glitchSpectralCount(g) > 0 : !!(g && g.modules && g.modules[GL_INSTANCES[i].id] && g.modules[GL_INSTANCES[i].id].wet > GL_ACTIVE_EPS));
     return out;
 }
 /** The vector that is audible: the blend of the engine slots by the engine weights. */
@@ -2228,9 +2256,14 @@ function glitchFormatValue(spec, v) {
     if (spec.patterns) { var n = 0; for (var b = 0; b < 16; b++) if ((Math.floor(v) >> b) & 1) n++; return n + "/16"; }
     if (spec.kind === "disc") return spec.choices ? String(spec.choices[glClamp(Math.round(v) - spec.min, 0, spec.choices.length - 1)]) : String(Math.round(v));
     if (spec.kind === "wet" || (spec.unit === "" && spec.max <= 1.0001 && spec.min >= 0)) return Math.round(v * 100) + "%";
-    if (spec.unit === "Hz") return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 1 : 2) + "k" : Math.round(v) + "";
+    if (spec.unit === "Hz") return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 1 : 2) + " kHz" : Math.round(v) + " Hz";
     if (spec.unit === "dB") return (v >= 0 ? "+" : "") + v.toFixed(1) + " dB";
     if (spec.unit === "x") return v.toFixed(1) + "x";
+    if (spec.unit === "ms") return (v >= 100 ? Math.round(v) + "" : v.toFixed(1)) + " ms";
+    if (spec.unit === "st") return (v > 0 ? "+" : "") + v.toFixed(1) + " st";
+    if (spec.unit === "bins") return (spec.min < 0 && v > 0 ? "+" : "") + Math.round(v) + " bins";
+    if (spec.unit === "kbps") return Math.round(v) + " kbps";
+    if (spec.round) return String(Math.round(v));
     if (spec.max - spec.min <= 3) return v.toFixed(2);
     return v.toFixed(1);
 }

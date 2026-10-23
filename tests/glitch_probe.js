@@ -21,6 +21,9 @@ var SC = {};
 var DUMP = 0;
 var DIPS = 0; // "dips:N": block rms with N-sample blocks; report the centres of the dips (>= 2 blocks below 0.5 x the median or one below 0.3 x) as dip0, dip1, ...
 var XC = [];
+var PERIOD = 3.0; // stimulus period in seconds ("period:S" token)
+var SWEEP = null;
+var ECHO = {};
 var METAOFF = 936;
 for (var ja = 5; ja < jsarguments.length; ja++) {
     var tok = String(jsarguments[ja]);
@@ -29,11 +32,13 @@ for (var ja = 5; ja < jsarguments.length; ja++) {
     else if (tok.indexOf("dips:") === 0) DIPS = Number(tok.substring(5));
     else if (tok.indexOf("meta:") === 0) METAOFF = Number(tok.substring(5));
     else if (tok.indexOf("xc:") === 0) XC.push(tok.substring(3).split(":"));
+    else if (tok.indexOf("period:") === 0) PERIOD = Number(tok.substring(7));
+    else if (tok.indexOf("sweep:") === 0) SWEEP = tok.substring(6).split(":").map(Number); // N variants : cycle ms : window start ms : window end ms : record start (arm) ms
+    else if (tok.indexOf("echo:") === 0) { var ep = tok.substring(5).split(":"); ECHO[Number(ep[0])] = { ofs: ep[1].split(",").map(Number), width: Number(ep[2]) }; } // variant : offsets ms (re the pulse onset) : window width ms
     else LAGS.push(Number(tok));
 }
 var reportPath = "/tmp/glitch_audio.txt";
 function resultpath(p) { reportPath = String(p); }
-var PERIOD = 3.0;
 var armed = false;
 var cpuMax = 0, cpuSum = 0, cpuCount = 0;
 
@@ -88,6 +93,7 @@ function fill() {
     else if (stimMode === "sweep2") for (i = 0; i < n; i++) x[i] = 0.4 * Math.sin(2 * Math.PI * (i < n / 2 ? 440 : 1320) * i / sr);
     else if (stimMode === "ramp") for (i = 0; i < n; i++) x[i] = -0.6 + 1.2 * i / n; // one slow linear ramp per stimulus period (phase 4: Scratch direction / continuity)
     else if (stimMode === "clicks") for (i = 0; i < n; i += Math.floor(0.25 * sr)) x[i] = 0.8;
+    else if (stimMode === "burst1") for (i = Math.floor(0.4 * sr); i < Math.floor(0.43 * sr); i++) x[i] = 0.5 * (rnd() * 2 - 1); // one 30 ms noise burst at 0.4 s of the period (sweeps measure echoes of it)
     else if (stimMode === "vowel") x = vowel(n, sr, 700, 1220, 2600);
     // silent: zeros
     buf.poke(1, 0, x);
@@ -204,6 +210,7 @@ function analyze(durMs) {
 }
 
 function analyzeImpl(durMs) {
+    if (SWEEP) { analyzeSweep(durMs); return; }
     var rec = new Buffer("rec");
     var frames = rec.framecount();
     var sr = frames / (rec.length() / 1000);
@@ -419,5 +426,208 @@ function analyzeImpl(durMs) {
     report.writestring(text);
     report.close();
     post("GLITCH_DONE lag " + R.lag + " errdb " + R.errdb + " nan " + nan + "\n");
+    outlet(0, "bang");
+}
+
+
+// ------------------------------------------------------------------------------------------------------------------------------
+// Parameter sweeps (scripts/run_glitch_audio_tests.py "sweep"): N variants render one after the other, each in its own cycle of C ms
+// (the stimulus period equals C, and at 120 bpm C = 4 beats, so every variant sees the same input at the same beat phase). Variant k's
+// measured window is [k*C + W0, k*C + W1) of DSP time; the record starts ARM ms after DSP start. Per variant the probe reduces the output
+// to a few numbers (v<k>_<name>) and reports the level difference between every two variants (pair_<i>_<j>, dB, waveform based).
+function analyzeSweep(durMs) {
+    var N = SWEEP[0], C = SWEEP[1], W0 = SWEEP[2], W1 = SWEEP[3], ARM = SWEEP[4];
+    var rec = new Buffer("rec");
+    var frames = rec.framecount();
+    var sr = frames / (rec.length() / 1000);
+    var n = Math.min(frames, Math.floor(sr * durMs / 1000));
+    var outL = readChannel(rec, 1, n), inL = readChannel(rec, 2, n), outR = readChannel(rec, 3, n);
+    var R = { sr: sr, frames: n, N: N }, k, i;
+    var wins = [];
+    for (k = 0; k < N; k++) wins.push([Math.round((k * C + W0 - ARM) * sr / 1000), Math.round((k * C + W1 - ARM) * sr / 1000)]);
+    var SEG2 = 4096, HOP = 2048;
+    function spec(x, a, b, size, hop) {
+        var acc = new Array(size / 2), q, cnt = 0;
+        for (q = 0; q < size / 2; q++) acc[q] = 0;
+        for (var s = a; s + size <= b; s += hop) {
+            var re = new Array(size), im = new Array(size);
+            for (q = 0; q < size; q++) { re[q] = (x[s + q] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * q / size)); im[q] = 0; }
+            fft(re, im);
+            for (q = 0; q < size / 2; q++) acc[q] += re[q] * re[q] + im[q] * im[q];
+            cnt++;
+        }
+        for (q = 0; q < size / 2; q++) acc[q] /= Math.max(cnt, 1);
+        return acc;
+    }
+    function centroid(p, size, lo, hi) {
+        var num = 0, den = 1e-30;
+        for (var q = Math.max(1, Math.floor(lo * size / sr)); q < Math.min(p.length, Math.floor(hi * size / sr)); q++) { num += q * sr / size * p[q]; den += p[q]; }
+        return num / den;
+    }
+    function periodOf(seq, minLag, maxLag) {
+        // normalized autocorrelation peak (mean removed): [lag, value]
+        var m = 0, q, l;
+        for (q = 0; q < seq.length; q++) m += seq[q];
+        m /= Math.max(seq.length, 1);
+        var e0 = 1e-30;
+        for (q = 0; q < seq.length; q++) e0 += (seq[q] - m) * (seq[q] - m);
+        var best = 0, bl = 0;
+        for (l = minLag; l <= Math.min(maxLag, seq.length - 4); l++) {
+            var d = 0;
+            for (q = 0; q + l < seq.length; q++) d += (seq[q] - m) * (seq[q + l] - m);
+            d = d / e0 * seq.length / Math.max(seq.length - l, 1);
+            if (d > best) { best = d; bl = l; }
+        }
+        // a periodic sequence peaks at every multiple of its period: take the FIRST local maximum within 15 % of the best
+        for (l = minLag; l < bl; l++) {
+            var dv = 0;
+            for (q = 0; q + l < seq.length; q++) dv += (seq[q] - m) * (seq[q + l] - m);
+            dv = dv / e0 * seq.length / Math.max(seq.length - l, 1);
+            if (dv >= 0.85 * best) {
+                var dp = 0, dn = 0;
+                for (q = 0; q + l - 1 < seq.length; q++) dp += (seq[q] - m) * (seq[q + l - 1] - m);
+                for (q = 0; q + l + 1 < seq.length; q++) dn += (seq[q] - m) * (seq[q + l + 1] - m);
+                dp = dp / e0 * seq.length / Math.max(seq.length - l + 1, 1); dn = dn / e0 * seq.length / Math.max(seq.length - l - 1, 1);
+                if (dv >= dp && dv >= dn) { best = dv; bl = l; break; }
+            }
+        }
+        return [bl, best];
+    }
+    function acfFFT(x, a, len, minLag, maxLag) {
+        // autocorrelation by FFT of the window x[a .. a+len): [lag, normalized value at the best lag in minLag..maxLag]
+        var size = 1; while (size < 2 * len) size <<= 1;
+        var re = new Array(size), im = new Array(size), q;
+        var mean = 0;
+        for (q = 0; q < len; q++) mean += (x[a + q] || 0);
+        mean /= len;
+        for (q = 0; q < size; q++) { re[q] = q < len ? ((x[a + q] || 0) - mean) : 0; im[q] = 0; }
+        fft(re, im);
+        for (q = 0; q < size; q++) { re[q] = re[q] * re[q] + im[q] * im[q]; im[q] = 0; }
+        fft(re, im); // real symmetric: the forward transform equals the inverse up to a factor
+        var r0 = re[0] + 1e-30, best = -2, bl = 0, l, v;
+        for (l = minLag; l <= Math.min(maxLag, len - 1); l++) {
+            v = re[l] / r0 * len / (len - l);
+            if (v > best) { best = v; bl = l; }
+        }
+        // a periodic signal peaks at every multiple of its period: report the FIRST lag within 10 % of the best peak, at its local maximum
+        for (l = minLag; l <= bl; l++) {
+            v = re[l] / r0 * len / (len - l);
+            if (v >= 0.9 * best && v >= re[l - 1] / r0 * len / (len - l + 1) && v >= re[l + 1] / r0 * len / (len - l - 1)) { bl = l; best = v; break; }
+        }
+        return [bl, best];
+    }
+    var LAGx = LAG;
+    var vecs = [];
+    for (k = 0; k < N; k++) {
+        var a = wins[k][0], b = Math.min(wins[k][1], n), len = b - a;
+        var L = outL.slice(a, b), Rr = outR.slice(a, b), X = inL.slice(a - LAGx, b - LAGx);
+        vecs.push([L, Rr]);
+        var sl = 1e-30, sr2 = 1e-30, sx = 1e-30, el = 0, er = 0, elr = 0, nan = 0, pk = 0;
+        for (i = 0; i < len; i++) {
+            var l = L[i], r = Rr[i], x = X[i] || 0;
+            if (l !== l || r !== r || Math.abs(l) === Infinity || Math.abs(r) === Infinity) { nan++; continue; }
+            sl += l * l; sr2 += r * r; sx += x * x;
+            el += (l - x) * (l - x); er += (r - x) * (r - x); elr += (l - r) * (l - r);
+            pk = Math.max(pk, Math.abs(l), Math.abs(r));
+        }
+        var P = "v" + k + "_";
+        R[P + "nan"] = nan; R[P + "peak"] = pk;
+        R[P + "rmsL"] = Math.sqrt(sl / len); R[P + "rmsR"] = Math.sqrt(sr2 / len); R[P + "rmsX"] = Math.sqrt(sx / len);
+        R[P + "difL"] = db(el / sx); R[P + "difR"] = db(er / sx); R[P + "lr"] = elr / (sl + sr2);
+        R[P + "gain"] = db(sl / sx);
+        var pw = spec(L, 0, len, SEG2, HOP);
+        R[P + "cent"] = centroid(pw, SEG2, 50, 20000);
+        var kk0 = Math.floor(100 * SEG2 / sr), kk1 = Math.floor(16000 * SEG2 / sr), lg = 0, ar = 0, cn = 0;
+        for (i = kk0; i < kk1; i++) { lg += Math.log(pw[i] + 1e-30); ar += pw[i]; cn++; }
+        R[P + "flat"] = 10 * (lg / cn - Math.log(ar / cn + 1e-30)) / Math.LN10;
+        var eh = 1e-30, elw = 1e-30;
+        for (i = Math.floor(4000 * SEG2 / sr); i < Math.floor(16000 * SEG2 / sr); i++) eh += pw[i];
+        for (i = Math.floor(60 * SEG2 / sr); i < Math.floor(1000 * SEG2 / sr); i++) elw += pw[i];
+        R[P + "hf"] = db(eh) - db(elw);
+        var pbk = 1, pbv = 0;
+        for (i = 4; i < SEG2 / 2; i++) if (pw[i] > pbv) { pbv = pw[i]; pbk = i; }
+        R[P + "peakhz"] = pbk * sr / SEG2;
+        var tot = 1e-30, near = 0;
+        for (i = 1; i < SEG2 / 2; i++) { tot += pw[i]; if (Math.abs(i - pbk) * sr / SEG2 < 60) near += pw[i]; }
+        R[P + "nonfund"] = db((tot - near) / tot);
+        // zero crossings of L
+        var zc = 0;
+        for (i = 1; i < len; i++) if ((L[i - 1] < 0) !== (L[i] < 0)) zc++;
+        R[P + "zcr"] = zc * sr / len / 2;
+        // short-term autocorrelation pitch (comb / pitch): 8192 samples from the middle
+        var ac = acfFFT(L, Math.floor(len / 2) - 4096, 8192, 24, 2400);
+        R[P + "acLag"] = ac[0]; R[P + "acPk"] = ac[1];
+        var acl = acfFFT(L, 2000, Math.min(len - 2000, 49152), 800, 30000);
+        R[P + "acLong"] = acl[0]; R[P + "acLongPk"] = acl[1];
+        // block rms (128): modulation depth and period
+        var BL = [], bs = 128, mu = 0, q2;
+        for (i = 0; i + bs <= len; i += bs) { var s2 = 0; for (q2 = 0; q2 < bs; q2++) s2 += L[i + q2] * L[i + q2]; BL.push(Math.sqrt(s2 / bs)); mu += BL[BL.length - 1]; }
+        mu /= Math.max(BL.length, 1);
+        var vr = 0;
+        for (i = 0; i < BL.length; i++) vr += (BL[i] - mu) * (BL[i] - mu);
+        R[P + "modd"] = Math.sqrt(vr / Math.max(BL.length, 1)) / Math.max(mu, 1e-30);
+        var pr = periodOf(BL, 8, Math.floor(BL.length / 2));
+        R[P + "perMs"] = pr[0] * bs / sr * 1000; R[P + "perPk"] = pr[1];
+        var t1 = 0, t3 = 0, th = Math.floor(BL.length / 3);
+        for (i = 0; i < th; i++) { t1 += BL[i] * BL[i]; t3 += BL[BL.length - 1 - i] * BL[BL.length - 1 - i]; }
+        R[P + "trend"] = db(t3 / Math.max(t1, 1e-30));
+        // largest second difference (click measure) relative to the rms
+        var d2m = 0;
+        for (i = 2; i < len; i++) d2m = Math.max(d2m, Math.abs(L[i] - 2 * L[i - 1] + L[i - 2]));
+        R[P + "maxd2"] = d2m;
+        // centroid of 2048-sample frames: its spread and period (phaser sweeps)
+        var CS = [], fr = 2048, hp = 512, cm = 0;
+        for (var s0 = 0; s0 + fr <= len; s0 += hp) { var pf = spec(L, s0, s0 + fr, fr, fr); CS.push(centroid(pf, fr, 100, 16000)); cm += CS[CS.length - 1]; }
+        cm /= Math.max(CS.length, 1);
+        var cv = 0;
+        for (i = 0; i < CS.length; i++) cv += (CS[i] - cm) * (CS[i] - cm);
+        R[P + "centStd"] = Math.sqrt(cv / Math.max(CS.length, 1)) / Math.max(cm, 1);
+        var BS = [], bm = 0;
+        for (var s1 = 0; s1 + fr <= len; s1 += hp) {
+            var pf2 = spec(L, s1, s1 + fr, fr, fr), be = 1e-30;
+            for (q2 = Math.floor(500 * fr / sr); q2 < Math.floor(3000 * fr / sr); q2++) be += pf2[q2];
+            BS.push(db(be)); bm += BS[BS.length - 1];
+        }
+        bm /= Math.max(BS.length, 1);
+        var bv = 0;
+        for (i = 0; i < BS.length; i++) bv += (BS[i] - bm) * (BS[i] - bm);
+        R[P + "bandStd"] = Math.sqrt(bv / Math.max(BS.length, 1));
+        var bp = periodOf(BS, 3, Math.floor(BS.length / 2));
+        R[P + "bandPer"] = bp[0] * hp / sr * 1000; R[P + "bandPerPk"] = bp[1];
+        var cp = periodOf(CS, 3, Math.floor(CS.length / 2));
+        R[P + "centPer"] = cp[0] * hp / sr * 1000; R[P + "centPerPk"] = cp[1];
+        // echoes of the pulse (burst1): energy windows at offsets from the pulse onset
+        if (ECHO[k]) {
+            var onset = -1, w = Math.round(ECHO[k].width * sr / 1000), eo = ECHO[k].ofs;
+            for (i = a - LAGx; i < b - LAGx; i++) if (Math.abs(inL[i]) > 0.05) { onset = i; break; }
+            R[P + "onset"] = onset >= 0 ? (onset - a) * 1000 / sr : -1;
+            if (onset >= 0) {
+                var e0b = 1e-30, jj;
+                for (jj = 0; jj < eo.length; jj++) {
+                    var st = onset + LAGx + Math.round(eo[jj] * sr / 1000), el2 = 1e-30, er2 = 1e-30;
+                    for (q2 = 0; q2 < w; q2++) { el2 += Math.pow(outL[st + q2] || 0, 2); er2 += Math.pow(outR[st + q2] || 0, 2); }
+                    R[P + "eL" + jj] = db(el2 / w); R[P + "eR" + jj] = db(er2 / w);
+                }
+                var ref = 1e-30;
+                for (q2 = 0; q2 < w; q2++) ref += Math.pow(inL[onset + q2] || 0, 2);
+                R[P + "eRef"] = db(ref / w);
+            }
+        }
+    }
+    // pairwise waveform differences (dB re the mean energy of the two), L and R together
+    for (i = 0; i < N; i++) for (var j = i + 1; j < N; j++) {
+        var dd = 1e-30, ee = 1e-30, m2 = Math.min(vecs[i][0].length, vecs[j][0].length), t;
+        for (t = 0; t < m2; t++) {
+            dd += Math.pow(vecs[i][0][t] - vecs[j][0][t], 2) + Math.pow(vecs[i][1][t] - vecs[j][1][t], 2);
+            ee += 0.5 * (Math.pow(vecs[i][0][t], 2) + Math.pow(vecs[j][0][t], 2) + Math.pow(vecs[i][1][t], 2) + Math.pow(vecs[j][1][t], 2));
+        }
+        R["pair_" + i + "_" + j] = db(dd / ee);
+    }
+    var report = new File(reportPath, "write", "TEXT");
+    var text = "";
+    for (var key in R) text += key + " " + R[key] + "\n";
+    report.writestring(text);
+    report.close();
+    post("GLITCH_DONE sweep " + N + "\n");
     outlet(0, "bang");
 }

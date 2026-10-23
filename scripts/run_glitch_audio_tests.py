@@ -112,8 +112,8 @@ def build_device(stages, case):
         mh.box("obj-slots-buf", f"buffer~ glitchslots @samps {LAYOUT['slotsBufSamps']}", 520, 70, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-scope-buf", f"buffer~ glitchscope @samps {LAYOUT['scopeSamps']}", 520, 100, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-ctl-buf", f"buffer~ glitchctl @samps {LAYOUT['ctl']['samps']}", 520, 160, 260, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("obj-stim", f"buffer~ stim @samps {3 * SR} @chans 1", 520, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("obj-phasor", "phasor~ 0.3333333333", 700, 200, 80, numinlets=2, outlettype=["signal"]),
+        mh.box("obj-stim", f"buffer~ stim @samps {int(case.get('period', 3.0) * SR)} @chans 1", 520, 130, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-phasor", "phasor~ %.10g" % (1.0 / case.get("period", 3.0)), 700, 200, 80, numinlets=2, outlettype=["signal"]),
         mh.box("obj-wave", "wave~ stim", 700, 240, 90, numinlets=3, numoutlets=2, outlettype=["signal", "signal"]),
     ]
     lines = [
@@ -308,8 +308,8 @@ def cases():
         one("formant_i", {"form": {"wet": 1, "vowel": 2, "shift": 0, "res": 0.8}}, stim="noise"),
         one("comb", {"comb": {"wet": 1, "freq": 480, "fb": 0.85, "damp": 16000}}, stim="noise"),
         one("phaser", {"phas": {"wet": 1, "stages": 3, "sync": 0, "hz": 2, "depth": 1, "fb": 0.6}}, stim="noise", dur=3000),
-        one("rectify_full", {"rect": {"wet": 1, "mode": 1, "blend": 1}}, stim="sine"),
-        one("rectify_half", {"rect": {"wet": 1, "mode": 0, "blend": 1}}, stim="sine"),
+        one("rectify_full", {"rect": {"wet": 1, "mode": 1}}, stim="sine"),
+        one("rectify_half", {"rect": {"wet": 1, "mode": 0}}, stim="sine"),
         one("fm_osc", {"fm": {"wet": 1, "mode": 0, "ratio": 4, "index": 0.6}}, stim="sine"),
         one("fm_self", {"fm": {"wet": 1, "mode": 1, "ratio": 8, "index": 0.8}}, stim="sine"),
         one("corrupt", {"corr": {"wet": 1, "div": 2, "chance": 1, "flips": 1, "wrap": 0.5, "drop": 0.6}}, stim="sine"),
@@ -464,7 +464,7 @@ def cases():
         "drvA": {"wet": 0.6, "mode": 1, "drive": 12, "tone": 12000}, "filt": {"wet": 0.6, "type": 1, "cutoff": 1500, "res": 0.6},
         "form": {"wet": 0.6, "vowel": 1.5, "shift": 3, "res": 0.7}, "comb": {"wet": 0.5, "freq": 330, "fb": 0.7, "damp": 8000},
         "phas": {"wet": 0.7, "stages": 3, "sync": 1, "hz": 2, "div": 2, "depth": 1, "fb": 0.5}, "crush": {"wet": 0.5, "bits": 6, "rate": 4, "jitter": 0.5},
-        "rect": {"wet": 0.5, "mode": 2, "blend": 0.7}, "fm": {"wet": 0.5, "mode": 0, "ratio": 3, "index": 0.5},
+        "rect": {"wet": 0.5, "mode": 2}, "fm": {"wet": 0.5, "mode": 0, "ratio": 3, "index": 0.5},
         "corr": {"wet": 0.6, "div": 2, "chance": 0.8, "flips": 0.7, "wrap": 0.4, "drop": 0.3}, "ring": {"wet": 0.4, "mode": 1, "freq": 150},
         "stut": {"wet": 0.6, "div": 3, "prob": 0.7, "decay": 0.3}, "time": {"wet": 0.5, "mode": 2, "amt": 0.5, "div": 4},
         "gpit": {"wet": 0.6, "pitch": 7, "size": 60, "jitter": 0.5}, "gstr": {"wet": 0.6, "speed": 0.3, "size": 150, "spread": 0.5},
@@ -1083,8 +1083,116 @@ def compile_time():
     return walls
 
 
+# --------------------------------------------------------------------------- parameter sensitivity sweeps (scripts/glitch_sweeps.py)
+SWEEP_CYCLE = 2000  # ms: one variant per cycle; the stimulus period equals it and at 120 bpm it is 4 beats, so every variant sees the same input at the same beat phase
+SWEEP_GAP = 250     # ms of "all weights 0" (every module off, tails reset) at the start of each cycle
+SWEEP_METRICS = ("difL", "cent", "flat", "peakhz", "nonfund", "acLag", "perMs", "centPer", "modd", "trend", "rmsL")
+
+
+def onehot(k):
+    return weights_msg([1.0 if i == k else 0.0 for i in range(8)])
+
+
+def sweep_case(sw):
+    """The harness case of a sweep: slot k = variant k; the weights are all 0 for SWEEP_GAP ms (modules off), then one-hot for variant k."""
+    import glitch_sweeps as gs
+    n = len(sw["variants"])
+    assert 1 <= n <= 8, sw["id"]
+    labels = [v[0] for v in sw["variants"]]
+    slots = [vec(gs.merge(sw["base"], v[1])) for v in sw["variants"]]
+    cyc = sw.get("cyc", SWEEP_CYCLE)
+    events = []
+    for k in range(n):
+        if k > 0:
+            events.append((k * cyc, weights_msg([0] * 8)))
+        events.append((k * cyc + SWEEP_GAP, onehot(k)))
+    w0, w1 = sw["win"]
+    probe = ["period:%g" % (cyc / 1000.0), "sweep:%d:%d:%d:%d:%d" % (n, cyc, w0, w1, SWEEP_GAP)]
+    for k, lab in enumerate(labels):
+        if lab in sw["echo"]:
+            probe.append("echo:%d:%s:%g" % (k, ",".join(str(o) for o in sw["echo"][lab]), sw["echo_w"]))
+    return {"name": "sweep_" + sw["id"], "stim": sw["stim"], "arm": SWEEP_GAP, "dur": n * cyc - SWEEP_GAP, "lags": [], "events": events, "slots": slots,
+            "weights": [0] * 8, "probe": probe, "period": cyc / 1000.0, "stages": "needed"}, labels
+
+
+def movement_sweeps():
+    """One movement spot check per module group: the module's main continuous param moved by a synced LFO must change the output compared with the
+    same module standing still (4 modules per launch)."""
+    import glitch_sweeps as gs
+    main = {"drvA": "drive", "filt": "cutoff", "form": "vowel", "comb": "freq", "phas": "depth", "crush": "bits", "fm": "index", "corr": "chance", "ring": "freq", "stut": "decay",
+            "ratc": "accel", "time": "amt", "scrb": "depth", "gpit": "pitch", "gstr": "speed", "rvs": "chance", "shuf": "chance", "chop": "smooth", "drvB": "drive", "dly": "fb",
+            "slap": "tone", "rev": "decay", "spec": "sct_w"}
+    bases = {}
+    for sw in gs.SWEEPS:
+        for inst, vals in sw["base"].items():
+            bases.setdefault(inst, (vals, sw["stim"]))
+    bases["spec"] = ({"wet": 1, "sct_amt": 1.0, "sct_w": 8, "sct_rate": 5}, "noise")
+    mids = {"corr": {"chance": 0.5, "flips": 1.0, "wrap": 0.5, "drop": 0.5}, "stut": {"decay": 0.5}, "ratc": {"accel": 0.0, "div": 5}, "time": {"amt": 0.5}, "gpit": {"pitch": 7}, "gstr": {"speed": 0.5},
+            "rvs": {"chance": 0.5}, "shuf": {"chance": 0.5}, "chop": {"smooth": 0.5}, "dly": {"fb": 0.5, "pp": 0.5}, "crush": {"bits": 8, "rate": 4}, "phas": {"depth": 0.5}, "scrb": {"depth": 0.5}}
+    mods = [m for m in main]
+    out = []
+    for i in range(0, len(mods), 4):
+        grp = mods[i:i + 4]
+        variants, checks_for = [], []
+        for inst in grp:
+            base = dict(bases[inst][0])
+            base.update(mids.get(inst, {}))
+            moving = dict(base)
+            moving.update(mv(inst, 1, main[inst], 0.9, div=8, sync=1))
+            variants += [(inst + "_s", {inst: base}), (inst + "_m", {inst: moving})]
+            checks_for.append(inst)
+
+        def chk(R, insts=tuple(checks_for)):
+            c = gs.Chk(R)
+            for inst in insts:
+                c.differ(inst + "_s", inst + "_m", "movement on %s.%s" % (inst, main[inst]), -25)
+            return c.out
+        out.append({"id": "move_" + "_".join(grp), "stim": "noise", "base": {}, "variants": variants, "checks": chk, "win": (700, 2000), "echo": {}, "echo_w": 10, "label": "movement " + ",".join(grp)})
+    return out
+
+
+def run_sweeps(want):
+    import glitch_sweeps as gs
+    allsw = gs.SWEEPS + movement_sweeps()
+    ids = [w.split(":", 1)[1] for w in want if w.startswith("sweep:")]
+    todo = [s for s in allsw if not ids or s["id"] in ids]
+    n_checks = 0
+    for sw in todo:
+        case, labels = sweep_case(sw)
+        try:
+            r = run_case(GEN, case)
+        except RuntimeError as e:
+            check(False, f"sweep {sw['id']}: {e}")
+            continue
+        check(r.get("error", 0) == 0, f"sweep {sw['id']}: probe error")
+        R = gs.Res(labels, r)
+        for k in range(len(labels)):
+            check(r.get(f"v{k}_nan", 1) == 0 and r.get(f"v{k}_peak", 9) <= 1.0 + 1e-6, f"sweep {sw['id']}: {labels[k]} finite and within 1.0 (peak {r.get(f'v{k}_peak', 9):.3f})")
+        print(f"--- sweep {sw['id']} ({r.get('harness_wall_s', 0):.1f}s) ---")
+        for k, lab in enumerate(labels):
+            print("  %-8s " % lab + " ".join("%s %.4g" % (m, r.get(f"v{k}_{m}", float('nan'))) for m in SWEEP_METRICS))
+        try:
+            results = sw["checks"](R)
+        except KeyError as e:
+            results = [(False, f"missing result {e}")]
+        for ok, msg in results:
+            n_checks += 1
+            if not ok:
+                check(False, f"sweep {sw['id']}: {msg}")
+    print(f"sweeps: {len(todo)} launches, {n_checks} checks")
+
+
 def main():
     want = sys.argv[1:]
+    if any(w == "sweep" or w.startswith("sweep:") for w in want):
+        run_sweeps(want)
+        if FAILS:
+            print(f"\n{len(FAILS)} FAILED:")
+            for f in FAILS:
+                print("  " + f)
+            sys.exit(1)
+        print("\nall glitch sweep checks passed")
+        return
     allc = cases()
     if want and "compile" not in want:
         allc = [c for c in allc if c["name"] in want]

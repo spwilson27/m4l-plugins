@@ -488,7 +488,7 @@ gl_chop(io, pv, b, w, st, beat, sr) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // Delay: tempo-synced stereo delay with ping-pong crossfeed and damping in the feedback loop; send style (dry + wet*echo).
-// params at b: wet, div, feedback, ping-pong, damp Hz. st: 0 write pos, 1 smoothed delay (samples), 2..3 damping state.
+// params at b: wet, div, feedback, ping-pong (0 stereo, 1 input to the left line + crossed feedback: echoes alternate L / R), damp Hz. st: 0 write pos, 1 smoothed delay (samples), 2..3 damping state.
 // ---------------------------------------------------------------------------------------------------------------
 gl_dly(io, pv, b, w, st, rb, bpm, sr) {
 	dt = clip(gl_div(pv.peek(b + 1)) * 60 / bpm * sr, 16, 262000);
@@ -509,8 +509,14 @@ gl_dly(io, pv, b, w, st, rb, bpm, sr) {
 	xr = io.peek(1);
 	fl = ll + (lr - ll) * pp;
 	fr = lr + (ll - lr) * pp;
-	rb.poke(clip(xl + fb * fl, -8, 8), wp, 0);
-	rb.poke(clip(xr + fb * fr, -8, 8), wp, 1);
+	// Ping-pong: the feedback crosses over (fl / fr) AND the input is sent to the left line only (mono sum, crossfaded by pp). Crossing the
+	// feedback alone does nothing for a centred / mono input, whose left and right lines hold the same signal (the old bug): with the
+	// input in one line the echoes alternate L, R, L, R...
+	mi = (xl + xr) * 0.5;
+	inl = xl + (mi - xl) * pp;
+	inr = xr * (1 - pp);
+	rb.poke(clip(inl + fb * fl, -8, 8), wp, 0);
+	rb.poke(clip(inr + fb * fr, -8, 8), wp, 1);
 	wp = wp + 1;
 	wp = wp >= 262144 ? 0 : wp;
 	st.poke(wp, 0);
@@ -694,16 +700,14 @@ gl_phas(io, pv, b, w, st, beat, sr) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Rectify: half / full / asymmetric rectifier crossfaded by Blend, DC blocked (0.995 one-pole high-pass).
-// params at b: wet, mode (0 half, 1 full, 2 asym), blend. st: per channel x1, y1.
+// Rectify: half / full / asymmetric rectifier, DC blocked (0.995 one-pole high-pass).
+// params at b: wet, mode (0 half, 1 full, 2 asym). st: per channel x1, y1.
 // ---------------------------------------------------------------------------------------------------------------
 gl_rect(io, pv, b, w, st) {
 	md = pv.peek(b + 1);
-	bl = pv.peek(b + 2);
 	for (c = 0; c < 2; c += 1) {
 		x = io.peek(c);
-		r = md < 0.5 ? max(x, 0) : (md < 1.5 ? abs(x) : (x > 0 ? x : 0 - 0.4 * x));
-		y = x + (r - x) * bl;
+		y = md < 0.5 ? max(x, 0) : (md < 1.5 ? abs(x) : (x > 0 ? x : 0 - 0.4 * x));
 		o = c * 2;
 		hp = y - st.peek(o) + 0.995 * st.peek(o + 1);
 		st.poke(y, o);
@@ -2262,6 +2266,29 @@ if (ctlCnt >= 32 || chg > 0.5) {
 	snapK = firstTick > 0.5 ? 1 : 0.15;
 	firstTick = 0;
 	gl_smooth(d_pv, d_tgt, d_meta, 0, @NP@, snapK);
+	// the spectral stage's own wet is internal (state v7): on in proportion to the strongest sub-op mix, so the stage is in (a transparent STFT is
+	// the delayed dry) exactly while some sub-op is on
+	smx = 0;
+	smx = max(smx, d_pv.peek(@I_spec_frz_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_smr_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_cc_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_sc_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_sct_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_mir_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_bsh_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_sgl_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_gfz_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_str_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_bub_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_mp3_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_dst_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_thn_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_dec_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_nsf_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_clp_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_psw_amt@));
+	smx = max(smx, d_pv.peek(@I_spec_rph_amt@));
+	d_pv.poke(clip(smx * 20, 0, 1), @B_spec@);
 	// publish this tick's smoothed module params: ring slot = tick counter mod the ring length; the tick counter wraps at a multiple of it
 	// (the counter lives in Data: a History would hand the groups last sample's value, one sample late)
 	tkv = d_tk.peek(0) + 1;
