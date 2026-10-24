@@ -583,7 +583,7 @@ sb.setFoldMask(0b1011);
 
 // --- envelope dots, in every stage, several voices ---
 function setVoices(list) {
-    for (let v = 0; v < 16; v++) { sb.voiceAmpStg[v] = 0; sb.voiceAmpLvl[v] = 0; sb.voiceModStg[v] = 0; sb.voiceModLvl[v] = 0; sb.voiceCutHz[v] = 0; sb.voiceBorn[v] = 0; sb.prevAmpStage[v] = 0; }
+    for (let v = 0; v < 16; v++) { sb.voiceAmpStg[v] = 0; sb.voiceAmpLvl[v] = 0; sb.voiceModStg[v] = 0; sb.voiceModLvl[v] = 0; sb.voiceCutHz[v] = 0; sb.voiceBorn[v] = 0; sb.prevAmpStage[v] = 0; if (sb.susPin) sb.susPin[v] = 0; }
     list.forEach((o, v) => { sb.voiceAmpStg[v] = o.amp || 0; sb.voiceAmpLvl[v] = o.al || 0; sb.voiceModStg[v] = o.mod || 0; sb.voiceModLvl[v] = o.ml || 0; sb.voiceCutHz[v] = o.cut || 0; sb.voiceBorn[v] = o.born || 0; });
 }
 sb.setFoldMask(ALL);
@@ -636,7 +636,25 @@ assert.deepStrictEqual(plain(sb.envDots), [], "no dots without voices");
     assert.strictEqual(sb.envDots[0].stage, 4);
     // sustain-level extremes
     for (const sus of [0, 100]) { sb.setParamFromFace("sus_lvl", sus); setVoices([{ amp: 2.6, al: 0.5, born: 1 }, { amp: 4.4, al: 0.3, born: 2 }]); sb.paint(); for (const q of sb.envDots) assert.ok(isFinite(q.x) && isFinite(q.y)); }
-    sb.setParamFromFace("sus_lvl", 50);
+    // Held at sustain 0: the decay fraction (1 - level) keeps walking the tail, so one voice used to
+    // jump between points. Once the output is at the floor it stays on the sustain hold.
+    sb.setParamFromFace("sus_lvl", 0); sb.setParamFromFace("amp_peak", 100);
+    setVoices([{ amp: 2.35, al: 0.62, born: 1 }]); sb.paint();
+    const g0 = sb.envGeom(), hold = sb.sustainDot(g0);
+    assert.ok(sb.envDots[0].x < g0.xD - 1, "a voice still decaying is not pulled onto the hold");
+    const tail = [[2.96, 0.03], [2.40, 0.11], [2.15, 0.06], [3.0, 0.0], [2.80, 0.16], [2.55, 0.04]];
+    for (const [amp, al] of tail) {
+        sb.voiceAmpStg[0] = amp; sb.voiceAmpLvl[0] = al; sb.paint();
+        near(sb.envDots[0].x, hold.x, 0.01, `sustain 0 held x @ ${amp}`);
+        near(sb.envDots[0].y, hold.y, 0.01, `sustain 0 held y @ ${amp}`);
+        assert.ok(sb.envDots[0].x >= g0.xD && sb.envDots[0].x <= g0.xS, "held dot stays on the sustain segment");
+    }
+    sb.voiceAmpStg[0] = 2.5; sb.voiceAmpLvl[0] = 0.55; sb.paint();
+    assert.ok(sb.envDots[0].x < g0.xD - 1, "leaving the floor puts the dot back on the decay");
+    sb.voiceAmpStg[0] = 4.4; sb.voiceAmpLvl[0] = 0.02; sb.paint();
+    assert.strictEqual(sb.envDots[0].stage, 4, "a release at the floor stays a release");
+    assert.ok(sb.envDots[0].x > g0.xS, "a release is not pulled back onto the hold");
+    sb.setParamFromFace("sus_lvl", 50); sb.setParamFromFace("amp_peak", 100);
     // no horizontal level line / level bar any more
     assert.ok(!/live level bar|lvl > 0\.004/.test(box.textfile.text), "old level bar is gone");
 }

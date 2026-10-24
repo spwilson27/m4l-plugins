@@ -2635,12 +2635,30 @@ function envYRelease(g, t, relLevel) {
 }
 
 // Where a voice sits on the curve. enc = stage + fraction (telemetry: slope-independent), lvl = the voice's output level (0..1).
+function sustainDot(g) {
+    return { x: g.xD + g.hold * 0.5, y: g.ys, stage: 3 };
+}
+// Once a held voice's output is at the sustain level, keep the dot on the hold. With sustain at 0 the
+// decay fraction (1 - level) / (1 - sus) keeps moving through the tail, so the same voice jumps between
+// points on the decay segment instead of sitting still.
+var susPin = [];
+for (var sp0 = 0; sp0 < 16; sp0++) susPin.push(0);
+function heldAtSustain(v, g, st, lvl) {
+    if (st !== 2 && st !== 3) { susPin[v] = 0; return false; }
+    var span = Math.abs(g.peakL - g.sus);
+    var dist = Math.abs(clamp01(lvl) - g.sus);
+    var enter = Math.max(0.02, 0.08 * span);
+    var exit = Math.max(0.05, 0.2 * span);
+    if (st === 3 || dist <= enter || (susPin[v] && dist <= exit)) susPin[v] = 1;
+    else susPin[v] = 0;
+    return st === 2 && susPin[v] === 1;
+}
 function envDotAt(g, enc, lvl) {
     var st = stageOf(enc), f = clamp01(enc - st);
     var y = g.gb - clamp01(lvl) * (g.gb - g.gy);
     if (st === 1) { var ta = clamp01(f); return { x: g.gx + (g.xA - g.gx) * ta, y: envYAttack(g, ta), stage: 1 }; }
     if (st === 2) { var td = envT(f); return { x: g.xA + (g.xD - g.xA) * td, y: envYDecay(g, td), stage: 2 }; }
-    if (st === 3) return { x: g.xD + g.hold * 0.5, y: g.ys, stage: 3 };
+    if (st === 3) return sustainDot(g);
     if (st === 4) {
         var tr = envT(f);
         return { x: g.xS + (g.xR - g.xS) * tr, y: y, stage: 4 };
@@ -2818,6 +2836,7 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
         var enc = modPage ? voiceModStg[v] : voiceAmpStg[v];
         var lv = modPage ? voiceModLvl[v] : voiceAmpLvl[v];
         var d = envDotAt(g, enc, lv);
+        if (d && heldAtSustain(v, g, d.stage, lv)) d = sustainDot(g);
         if (!d) continue;
         var rank = envDots.length;
         var al = rank === 0 ? 1.0 : Math.max(0.28, 0.72 - 0.11 * rank);
