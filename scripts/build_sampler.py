@@ -348,7 +348,10 @@ for _k, _spec in (
         ("sub_detune", ("Sub Harmonic Detune", "SubDet", 0.0, 100.0, 0.0, 5, 1.0, "sub_detune", 0.01, "set_sub_detune", "Upper harmonic detuning amount (0 to 100%).")),
         ("sub_mod", ("Sub Harmonic Mod", "SubMod", 0.0, 100.0, 0.0, 5, 1.0, "sub_mod", 0.01, "set_sub_mod", "Frequency-tracked LFO modulation of upper harmonic detuning (0 to 100%).")),
         ("sub_width", ("Sub Harmonic Width", "SubWid", 0.0, 100.0, 0.0, 5, 1.0, "sub_width", 0.01, "set_sub_width", "Stereo width of the upper harmonics (0% mono to 100% stereo).")),
-        ("sub_spectra", ("Sub Spectra", "SubSpec", -100.0, 100.0, 0.0, 5, 1.0, "sub_spectra", 0.01, "set_sub_spectra", "Additive spectrum effect amount (-100% to +100%).")),
+        ("sub_odd", ("Sub Odd Harmonics", "SubOdd", -100.0, 100.0, 0.0, 5, 1.0, "sub_odd", 0.01, "set_sub_odd", "Gain adjustment for odd upper harmonics (-100% cut to +100% boost).")),
+        ("sub_even", ("Sub Even Harmonics", "SubEven", -100.0, 100.0, 0.0, 5, 1.0, "sub_even", 0.01, "set_sub_even", "Gain adjustment for even harmonics (-100% cut to +100% boost).")),
+        ("sub_tilt", ("Sub Spectral Tilt", "SubTilt", -100.0, 100.0, 0.0, 5, 1.0, "sub_tilt", 0.01, "set_sub_tilt", "Spectral tilt across harmonics (-100% dark to +100% bright).")),
+        ("sub_lp", ("Sub Spectral Low Pass", "SubLP", 0.0, 100.0, 100.0, 5, 1.0, "sub_lp", 0.01, "set_sub_lp", "Additive low-pass rolloff across harmonics (0% closed to 100% open).")),
         ("sub_knock", ("Sub Knock Amount", "SubKnk", 0.0, 100.0, 0.0, 5, 1.0, "sub_knock", 0.01, "set_sub_knock", "Pitch envelope punch/knock amount for kicks and 808s (0 to 100%).")),
         ("sub_decay", ("Sub Knock Decay", "SubKDec", 5.0, 1000.0, 120.0, 2, 2.2, "sub_decay", 1.0, "set_sub_decay", "Pitch envelope knock decay time in ms (5 to 1000 ms).")),
         ("sub_drive", ("Sub Drive Amount", "SubDrv", 0.0, 100.0, 0.0, 5, 1.0, "sub_drive", 0.01, "set_sub_drive", "Sub-tuned distortion drive amount (0 to 100%).")),
@@ -391,8 +394,7 @@ _FILT_ENUMS = {
     "sub_tuning": ("Sub Tuning Mode", "SubTune", ["Key", "Fixed", "Ratio"], 0, "sub_tuning", "set_sub_tuning", "Sub oscillator tuning mode: Key tracking, Fixed note, or Ratio."),
     "sub_mono": ("Sub Monophonic", "SubMono", ["Off", "On"], 0, "sub_mono", "set_sub_mono", "Forces the sub oscillator into monophonic mode even when playing chords."),
     "sub_direct": ("Sub Direct Out", "SubDir", ["Off", "On"], 0, "sub_direct", "set_sub_direct", "Routes the sub oscillator directly to the output, bypassing the filters."),
-    "sub_spec_mode": ("Sub Spectra Mode", "SubSpMd", ["Tilt", "Low Pass", "Comb", "Odd/Even", "Stretch"], 0, "sub_spec_mode", "set_sub_spec_mode", "Additive spectrum effect mode."),
-    "sub_drv_type": ("Sub Drive Type", "SubDrTp", ["Soft", "Hard", "Tube", "Fold"], 0, "sub_drv_type", "set_sub_drv_type", "Sub-bass distortion type."),
+    "sub_drv_type": ("Sub Drive Type", "SubDrTp", ["Soft", "Hard", "Tube", "Fold", "Sine", "Pinch", "Noise"], 0, "sub_drv_type", "set_sub_drv_type", "Sub-bass distortion type: Soft, Hard, Tube, Fold, Sine, Pinch, or Noise."),
 }
 OPTIONAL_ENUM_SPECS = {**_ENV_MOD_ENUMS, **_FILT_ENUMS}
 OPTIONAL_ENUM_GROUPS = {"wavetable_env_mod": tuple(_ENV_MOD_ENUMS), "wavetable_filter": tuple(_FILT_ENUMS)}

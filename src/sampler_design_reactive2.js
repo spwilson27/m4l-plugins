@@ -753,10 +753,12 @@ function paintOscHeaderTabs(tx, ty) {
 var SUB_H_KEYS = ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"];
 var SUB_WAVE_NAMES = ["Custom", "Sine", "Saw", "Square", "Triangle", "Odd", "Warm"];
 var SUB_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+var SUB_DRV_NAMES = ["Soft", "Hard", "Tube", "Fold", "Sine", "Pinch", "Noise"];
 var SUB_ENUMS = {
     sub_wave: SUB_WAVE_NAMES,
     sub_lock_note: SUB_NOTE_NAMES,
-    sub_tuning: ["Key", "Fixed", "Ratio"]
+    sub_tuning: ["Key", "Fixed", "Ratio"],
+    sub_drv_type: SUB_DRV_NAMES
 };
 
 function quantHarmNibble(val01) {
@@ -817,29 +819,29 @@ function subPartials() {
     return n > 16 ? 16 : n;
 }
 
-// Spectra gain relative to the drawn level. 0 on sub_spectra is unity in every mode.
-// Gain may rise above 1 (a tilt / stretch can lift a partial) and is capped at 2.
+// Series spectra gain relative to the drawn level: 1. Odd -> 2. Even -> 3. Tilt -> 4. Low Pass.
+// Neutral settings (Odd 0%, Even 0%, Tilt 0%, Low Pass 100%) evaluate to 1.0 on every partial.
 function subSpectraGain(idx) {
-    var s = paramValue("sub_spectra") / 100;
-    if (!isFinite(s)) s = 0;
-    s = Math.max(-1, Math.min(1, s));
-    var mode = Math.round(paramValue("sub_spec_mode"));
-    if (!isFinite(mode) || mode < 0) mode = 0;
-    var t = idx / 15;
-    var g = 1;
-    if (mode === 1) {                            // Low Pass: negative closes the filter, positive stays open
-        g = s >= 0 ? 1 : (1 + s * t);
-    } else if (mode === 2) {                     // Comb: bipolar flips which teeth are notched
-        var tooth = 0.5 + 0.5 * Math.cos(Math.PI * idx);
-        g = 1 - Math.abs(s) * (s >= 0 ? (1 - tooth) : tooth);
-    } else if (mode === 3) {                     // Odd/Even: positive keeps odd harmonics (idx 0, 2, 4...)
-        var oddH = (idx % 2) === 0;
-        g = s >= 0 ? (oddH ? 1 : (1 - s)) : (oddH ? (1 + s) : 1);
-    } else if (mode === 4) {                     // Stretch: positive lifts highs, negative ducks them
-        g = 1 + s * t;
-    } else {                                     // Tilt
-        g = 1 + s * (2 * t - 1);
-    }
+    var oddV = paramValue("sub_odd") / 100;
+    var evenV = paramValue("sub_even") / 100;
+    var tiltV = paramValue("sub_tilt") / 100;
+    var lpV = paramValue("sub_lp") / 100;
+    if (!isFinite(oddV)) oddV = 0;
+    if (!isFinite(evenV)) evenV = 0;
+    if (!isFinite(tiltV)) tiltV = 0;
+    if (!isFinite(lpV)) lpV = 1;
+    oddV = Math.max(-1, Math.min(1, oddV));
+    evenV = Math.max(-1, Math.min(1, evenV));
+    tiltV = Math.max(-1, Math.min(1, tiltV));
+    lpV = clamp01(lpV);
+    var num = idx + 1;
+    var isOdd = (idx % 2) === 0;
+    var mulOdd = (idx > 0 && isOdd) ? Math.max(0, 1 + oddV) : 1;
+    var mulEven = (!isOdd) ? Math.max(0, 1 + evenV) : 1;
+    var mulTilt = Math.pow(num, tiltV * 1.2);
+    var cut = 1 + lpV * 16;
+    var mulLp = lpV >= 0.995 ? 1 : (1 / (1 + Math.exp(Math.max(-12, Math.min(12, 1.6 * (num - cut))))));
+    var g = mulOdd * mulEven * mulTilt * mulLp;
     if (g < 0) g = 0;
     return g > 2 ? 2 : g;
 }
@@ -853,16 +855,40 @@ function effSubHarmonic(idx) {
     return clamp01(getSubHarmonic(idx) * subSpectraGain(idx) * lvl);
 }
 
-function subShapeDrive(x, amt, kind) {
+function subShapeDrive(x, amt, kind, phase01) {
     if (!(amt > 0.0005)) return Math.max(-1, Math.min(1, x));
-    var y = x * (1 + amt * 6);
-    if (kind === 1) return Math.max(-1, Math.min(1, y));
-    if (kind === 2) {
-        var tube = Math.tanh(y);
-        return Math.max(-1, Math.min(1, tube + amt * 0.2 * tube * tube));
+    if (kind === 1) {                            // Hard
+        var yH = x * (1 + amt * 8);
+        return x + (Math.max(-1, Math.min(1, yH)) - x) * amt;
     }
-    if (kind === 3) return Math.sin(y * (1 + amt * 2) * 1.57079632679);
-    return Math.tanh(y);
+    if (kind === 2) {                            // Tube
+        var yT = x * (1 + amt * 5);
+        var tb = Math.tanh(yT + 0.35 * yT * yT);
+        return x + (tb - x) * amt;
+    }
+    if (kind === 3) {                            // Fold
+        var yF = x * (1 + amt * 4);
+        var fd = Math.sin(Math.max(-8, Math.min(8, yF)));
+        return x + (fd - x) * amt;
+    }
+    if (kind === 4) {                            // Sine
+        var yS = x * (1 + amt * 3);
+        var sn = Math.sin(Math.max(-4, Math.min(4, yS)) * 1.57079632679);
+        return x + (sn - x) * amt;
+    }
+    if (kind === 5) {                            // Pinch (pinches the crest/trough inward with sharp ears near zero-crossings)
+        var pk = amt * 2.15;
+        var pn = x * (1 - pk * Math.abs(x) + (pk * 0.72) * x * x);
+        return Math.max(-1, Math.min(1, pn));
+    }
+    if (kind === 6) {                            // Noise
+        var nh = Math.sin((phase01 || 0) * 129.898 + 78.233) * 43758.5453;
+        var nv = (nh - Math.floor(nh)) * 2 - 1;
+        var yN = Math.tanh(x * (1 + amt * 3.5) + nv * amt * (0.15 + 0.85 * Math.abs(x)));
+        return x + (yN - x) * amt;
+    }
+    var y0 = Math.tanh(x * (1 + amt * 6));       // Soft
+    return x + (y0 - x) * amt;
 }
 
 // One cycle of the additive sub, channel 0 = left, 1 = right.
@@ -891,7 +917,7 @@ function subWaveSample(phase01, channel) {
     }
     if (energy < 1e-6) return 0;
     sum /= Math.sqrt(energy);
-    return subShapeDrive(sum, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")));
+    return subShapeDrive(sum, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")), phase01);
 }
 
 // Plot geometry for oscTab === 2. The waveform rect is 458 x 73: 300 px of harmonic
@@ -1084,26 +1110,38 @@ function paintSubEnumMenu() {
 }
 
 // Bottom strip when oscTab === 2. Same 5A columns as the engine strip:
-// left 276 px (spectra / drive / knock), right 168 px (upper harmonics + tuning).
+// left 276 px (series spectra bars: Odd, Even, Tilt, Low Pass + Drive dropdown, Octave & Drive/Knock/Decay bars),
+// right 168 px (upper harmonics + tuning).
 function paintSubStrip(x, y, w, h) {
     var subOn = Math.round(paramValue("sub_on")) > 0;
     var acc = RC.cyan;
     var dim = !subOn;
     var leftW = 276;
-    segCtl("sub_spec_mode", x + 4, y + 3, leftW, 14, ["Tilt", "Low Pass", "Comb", "Odd/Even", "Stretch"], acc, dim, 7.0);
-    segCtl("sub_drv_type", x + 4, y + 20, 200, 14, ["Soft", "Hard", "Tube", "Fold"], acc, dim, 7.2);
-    segCtl("sub_oct", x + 208, y + 20, 72, 14, ["0", "-1", "-2"], acc, dim, 7.2);
     var gap = 4;
-    var bw = Math.floor((leftW - 3 * gap) / 4);             // 66 px, same slot as Design 5A
-    var row3 = [
-        ["sub_spectra", "Spectra"],
-        ["sub_drive", "Drive"],
-        ["sub_knock", "Knock"],
-        ["sub_decay", "Decay"]
+    var bw = Math.floor((leftW - 3 * gap) / 4);             // 66 px, same 4-slot width as Design 5A
+
+    // Row 1 (y+3): 4 series Spectra parameters in order: Odd, Even, Tilt, Low Pass
+    var specRow = [
+        ["sub_odd", "Odd"],
+        ["sub_even", "Even"],
+        ["sub_tilt", "Tilt"],
+        ["sub_lp", "Low Pass"]
     ];
-    for (var i = 0; i < row3.length; i++) {
-        hValueBar(row3[i][0], x + 4 + i * (bw + gap), y + 38, bw, 16, row3[i][1], acc, dim);
+    for (var s = 0; s < 4; s++) {
+        hValueBar(specRow[s][0], x + 4 + s * (bw + gap), y + 3, bw, 14, specRow[s][1], acc, dim);
     }
+
+    // Row 2 (y+20): Octave [0 | -1 | -2] on left + Knock / Decay on right
+    segCtl("sub_oct", x + 4, y + 20, 136, 14, ["0", "-1", "-2"], acc, dim, 7.2);
+    hValueBar("sub_knock", x + 4 + 2 * (bw + gap), y + 20, bw, 14, "Knock", acc, dim);
+    hValueBar("sub_decay", x + 4 + 3 * (bw + gap), y + 20, bw, 14, "Decay", acc, dim);
+
+    // Row 3 (y+38): Distortion Mode dropdown + Drive amount bar + Tone bar
+    var drvIdx = Math.round(paramValue("sub_drv_type"));
+    subMenuBtn("sub_drv_type", x + 4, y + 38, bw, SUB_DRV_NAMES[drvIdx] || "Soft", dim);
+    hValueBar("sub_drive", x + 4 + (bw + gap), y + 38, bw * 2 + gap, 16, "Drive", acc, dim);
+    hValueBar("sub_tone", x + 4 + 3 * (bw + gap), y + 38, bw, 16, "Tone", acc, dim);
+
     line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1, 1);
     var rx = x + 292;
     hValueBar("sub_detune", rx, y + 3, 54, 14, "Detune", acc, dim);
@@ -1111,8 +1149,7 @@ function paintSubStrip(x, y, w, h) {
     hValueBar("sub_width", rx + 115, y + 3, 53, 14, "Width", acc, dim);
     hValueBar("sub_semi", rx, y + 20, 82, 15, "Semi", acc, dim);
     hValueBar("sub_fine", rx + 86, y + 20, 82, 15, "Fine", acc, dim);
-    hValueBar("sub_tone", rx, y + 38, 82, 16, "Tone", acc, dim);
-    hValueBar("sub_gain", rx + 86, y + 38, 82, 16, "Level", acc, dim);
+    hValueBar("sub_gain", rx, y + 38, 168, 16, "Level", acc, dim);
 }
 
 function paintViewer() {

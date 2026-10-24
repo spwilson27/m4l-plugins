@@ -2408,15 +2408,13 @@ voice_proc(
 		subDet = clip(peek(prm, 110), 0, 1);
 		subModAmt = clip(peek(prm, 111), 0, 1);
 		subWid = clip(peek(prm, 112), 0, 1);
-		subSpecV = clip(peek(prm, 113), -1, 1);
 		subKnockAmt = clip(peek(prm, 114), 0, 1);
 		subKnockDec = max(peek(prm, 115), 5.0);
 		subDrive = clip(peek(prm, 116), 0, 1);
 		subLockOn = peek(prm, 117);
 		subLockNt = round(clip(peek(prm, 118), 0, 11));
 		subTuneMd = round(clip(peek(prm, 119), 0, 2));
-		subDrvTy = round(clip(peek(prm, 120), 0, 3));
-		subSpecMd = round(clip(peek(prm, 121), 0, 4));
+		subDrvTy = round(clip(peek(prm, 120), 0, 6));
 		subPhs = peek(vhist, stB + 51);
 		knockEnv = peek(vhist, stB + 60);
 		subModPhs = peek(vhist, stB + 61);
@@ -2474,7 +2472,7 @@ voice_proc(
 		subGR = 1;
 		for (subSh = 1; subSh < 16; subSh += 1) {
 			subAmp = peek(subh, subSh);
-			subHRat = (subSpecMd > 3.5) ? pow(subSh + 1.0, 1.0 + subSpecV * 0.25) : (subSh + 1.0);
+			subHRat = subSh + 1.0;
 			subDetSgn = ((subSh - 2.0 * floor(subSh * 0.5)) < 0.5) ? -1.0 : 1.0;
 			subMLfo = sin(6.28318530718 * fract(subModPhs + subSh * 0.07));
 			subCents = subDet * subSh * 18.0 * subDetSgn * (1.0 + subModAmt * subMLfo);
@@ -2502,28 +2500,64 @@ voice_proc(
 		subDR = subPreR;
 		subTbL = 0;
 		subTbR = 0;
+		subPcK = 1;
+		subNsH = 0;
+		subNsV = 0;
 		if (subDrive > 0.0001) {
 			if (subDrvTy < 0.5) {
+				// 0: Soft (tanh)
 				subDrvG = 1.0 + subDrive * 6.0;
 				subDL = tanh(subPreL * subDrvG);
 				subDR = tanh(subPreR * subDrvG);
+				subPreL = subPreL + (subDL - subPreL) * subDrive;
+				subPreR = subPreR + (subDR - subPreR) * subDrive;
 			} else if (subDrvTy < 1.5) {
+				// 1: Hard (hard clip)
 				subDrvG = 1.0 + subDrive * 8.0;
 				subDL = clip(subPreL * subDrvG, -1.0, 1.0);
 				subDR = clip(subPreR * subDrvG, -1.0, 1.0);
+				subPreL = subPreL + (subDL - subPreL) * subDrive;
+				subPreR = subPreR + (subDR - subPreR) * subDrive;
 			} else if (subDrvTy < 2.5) {
+				// 2: Tube (asymmetric warm saturation)
 				subDrvG = 1.0 + subDrive * 5.0;
 				subTbL = subPreL * subDrvG;
 				subTbR = subPreR * subDrvG;
 				subDL = tanh(subTbL + 0.35 * subTbL * subTbL);
 				subDR = tanh(subTbR + 0.35 * subTbR * subTbR);
-			} else {
+				subPreL = subPreL + (subDL - subPreL) * subDrive;
+				subPreR = subPreR + (subDR - subPreR) * subDrive;
+			} else if (subDrvTy < 3.5) {
+				// 3: Fold (multi-stage wavefolder)
 				subDrvG = 1.0 + subDrive * 4.0;
 				subDL = sin(clip(subPreL * subDrvG, -8.0, 8.0));
 				subDR = sin(clip(subPreR * subDrvG, -8.0, 8.0));
+				subPreL = subPreL + (subDL - subPreL) * subDrive;
+				subPreR = subPreR + (subDR - subPreR) * subDrive;
+			} else if (subDrvTy < 4.5) {
+				// 4: Sine (sine shaper: sin(pi/2 * x * drive))
+				subDrvG = 1.0 + subDrive * 3.0;
+				subDL = sin(clip(subPreL * subDrvG, -4.0, 4.0) * 1.57079632679);
+				subDR = sin(clip(subPreR * subDrvG, -4.0, 4.0) * 1.57079632679);
+				subPreL = subPreL + (subDL - subPreL) * subDrive;
+				subPreR = subPreR + (subDR - subPreR) * subDrive;
+			} else if (subDrvTy < 5.5) {
+				// 5: Pinch (pinches the crest/trough inward while forming sharp ears near the zero-crossings)
+				subPcK = subDrive * 2.15;
+				subDL = subPreL * (1.0 - subPcK * abs(subPreL) + (subPcK * 0.72) * subPreL * subPreL);
+				subDR = subPreR * (1.0 - subPcK * abs(subPreR) + (subPcK * 0.72) * subPreR * subPreR);
+				subPreL = clip(subDL, -1.0, 1.0);
+				subPreR = clip(subDR, -1.0, 1.0);
+			} else {
+				// 6: Noise (signal-correlated sub-bass noise erosion / fuzz)
+				subNsH = sin(subPhs * 12989.8 + subModPhs * 7823.3 + vSeed * 4375.8) * 43758.5453;
+				subNsV = (subNsH - floor(subNsH)) * 2.0 - 1.0;
+				subDrvG = 1.0 + subDrive * 3.5;
+				subDL = tanh(subPreL * subDrvG + subNsV * subDrive * (0.15 + 0.85 * abs(subPreL)));
+				subDR = tanh(subPreR * subDrvG + subNsV * subDrive * (0.15 + 0.85 * abs(subPreR)));
+				subPreL = subPreL + (subDL - subPreL) * subDrive;
+				subPreR = subPreR + (subDR - subPreR) * subDrive;
 			}
-			subPreL = subPreL + (subDL - subPreL) * subDrive;
-			subPreR = subPreR + (subDR - subPreR) * subDrive;
 		}
 		subSigL = subPreL * 0.55 * subGainVal;
 		subSigR = subPreR * 0.55 * subGainVal;
@@ -2784,7 +2818,10 @@ Param sub_harm_level(0.75, min=0, max=1);
 Param sub_detune(0, min=0, max=1);
 Param sub_mod(0, min=0, max=1);
 Param sub_width(0, min=0, max=1);
-Param sub_spectra(0, min=-1, max=1);
+Param sub_odd(0, min=-1, max=1);
+Param sub_even(0, min=-1, max=1);
+Param sub_tilt(0, min=-1, max=1);
+Param sub_lp(1, min=0, max=1);
 Param sub_knock(0, min=0, max=1);
 Param sub_decay(120, min=5, max=1000);
 Param sub_drive(0, min=0, max=1);
@@ -2798,8 +2835,7 @@ Param sub_lock_note(0, min=0, max=11);
 Param sub_tuning(0, min=0, max=2);
 Param sub_mono(0, min=0, max=1);
 Param sub_direct(0, min=0, max=1);
-Param sub_spec_mode(0, min=0, max=4);
-Param sub_drv_type(0, min=0, max=3);
+Param sub_drv_type(0, min=0, max=6);
 
 // Oscillator Cross-Synthesis Matrix parameters
 Param xs_fm_21(0, min=-1, max=1);
@@ -3074,7 +3110,6 @@ poke(prm, clip(sub_harm_level, 0, 1), 109);
 poke(prm, clip(sub_detune, 0, 1), 110);
 poke(prm, clip(sub_mod, 0, 1), 111);
 poke(prm, clip(sub_width, 0, 1), 112);
-poke(prm, clip(sub_spectra, -1, 1), 113);
 poke(prm, clip(sub_knock, 0, 1), 114);
 poke(prm, clip(sub_decay, 5, 1000), 115);
 poke(prm, clip(sub_drive, 0, 1), 116);
@@ -3082,7 +3117,6 @@ poke(prm, sub_lock, 117);
 poke(prm, sub_lock_note, 118);
 poke(prm, sub_tuning, 119);
 poke(prm, sub_drv_type, 120);
-poke(prm, sub_spec_mode, 121);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H (or 3=Sq, 4=S&H when 5-shape enum is used)
 prevLfoPhs = lfoPhs;
@@ -3118,10 +3152,12 @@ for (svx = 0; svx < 4; svx += 1) {
 
 
 // Additive sub spectrum, once per sample. sub_wave 0/6 read drawn nibbles; 1..5 are Sine/Saw/Square/Triangle/Odd.
-// Stretch (spec mode 4) does not change amplitudes; voice_proc shifts the partial ratios.
+// All 4 spectral controls (Odd, Even, Tilt, Low Pass) are applied in series to every harmonic.
 sbWave = round(clip(sub_wave, 0, 6));
-sbSpecMd = round(clip(sub_spec_mode, 0, 4));
-sbSpec = clip(sub_spectra, -1, 1);
+sbOddV = clip(sub_odd, -1, 1);
+sbEvenV = clip(sub_even, -1, 1);
+sbTiltV = clip(sub_tilt, -1, 1);
+sbLpV = clip(sub_lp, 0, 1);
 sbPart = round(clip(sub_partials, 1, 16));
 sbFundG = clip(sub_level, 0, 1);
 sbHarmG = clip(sub_harm_level, 0, 1) * (1.0 + clip(sub_tone, 0, 1));
@@ -3140,11 +3176,14 @@ sbDrawn = 0;
 sbNum = 1;
 sbOdd = 0;
 sbAmp = 0;
-sbMul = 1;
-sbCut = 9;
-sbAbs = 0;
+sbMulOdd = 1;
+sbMulEven = 1;
+sbMulTilt = 1;
+sbMulLp = 1;
+sbCut = 17;
 if (sub_on > 0.5) {
 	sbUse = ((sbWave < 0.5) || (sbWave > 5.5)) ? 1 : 0;
+	sbCut = 1.0 + sbLpV * 16.0;
 	for (sbHk = 0; sbHk < 16; sbHk += 1) {
 		sbIdx = floor(sbHk * 0.25);
 		sbNibK = sbHk - sbIdx * 4.0;
@@ -3171,27 +3210,12 @@ if (sub_on > 0.5) {
 		if (sbNum > sbPart) {
 			sbAmp = 0.0;
 		}
-		sbMul = 1.0;
-		if (sbSpecMd < 0.5) {
-			sbMul = pow(sbNum, sbSpec * 1.5);
-		} else if (sbSpecMd < 1.5) {
-			sbCut = 9.0 + sbSpec * 8.0;
-			sbMul = 1.0 / (1.0 + exp(clip(1.35 * (sbNum - sbCut), -12.0, 12.0)));
-		} else if (sbSpecMd < 2.5) {
-			sbMul = 0.5 + 0.5 * cos(sbNum * (sbSpec + 1.0) * 1.5707963);
-		} else if (sbSpecMd < 3.5) {
-			sbAbs = abs(sbSpec);
-			if (sbHk < 0.5) {
-				sbMul = 1.0;
-			} else if (sbSpec < 0.0) {
-				sbMul = (sbOdd > 0.5) ? (1.0 + sbAbs) : max(0.0, 1.0 - sbAbs);
-			} else {
-				sbMul = (sbOdd > 0.5) ? max(0.0, 1.0 - sbAbs) : (1.0 + sbAbs);
-			}
-		} else {
-			sbMul = 1.0;
-		}
-		sbAmp = sbAmp * sbMul;
+		// Series spectral chain: 1. Odd -> 2. Even -> 3. Tilt -> 4. Low Pass
+		sbMulOdd = ((sbHk > 0.5) && (sbOdd > 0.5)) ? max(0.0, 1.0 + sbOddV) : 1.0;
+		sbMulEven = (sbOdd < 0.5) ? max(0.0, 1.0 + sbEvenV) : 1.0;
+		sbMulTilt = pow(sbNum, sbTiltV * 1.2);
+		sbMulLp = (sbLpV >= 0.995) ? 1.0 : (1.0 / (1.0 + exp(clip(1.6 * (sbNum - sbCut), -12.0, 12.0))));
+		sbAmp = sbAmp * sbMulOdd * sbMulEven * sbMulTilt * sbMulLp;
 		if (sbHk < 0.5) {
 			sbAmp = sbAmp * sbFundG;
 		} else {
