@@ -17,6 +17,7 @@ import os
 import struct
 
 from minify_embed import minify_patcher
+from minify_gen import minify_gen
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "eqplus_config.js")
@@ -183,6 +184,7 @@ def line(src, outlet, dst, inlet=0):
 
 def gendsp_json(gen_code):
     """2-in / 2-out gen patch as .gendsp JSON. The face writes it and creates gen~ after load."""
+    gen_code = minify_gen(gen_code)
     def bx(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {
             "id": i,

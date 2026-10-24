@@ -42,7 +42,7 @@ BUILTINS = KEYWORDS | {
     "fftfullspect", "ffthop", "fftinfo", "fftoffset", "fftsize", "fixdenorm", "fixnan", "float",
     "floor", "fmod", "fold", "fract", "ftom", "gate", "gen", "group", "gt", "gte", "gtep", "gtp",
     "history", "hypot", "i", "in", "index", "inf", "int", "interp", "isdenorm", "isnan", "latch",
-    "ln", "log", "log10", "log2", "lookup", "lt", "lte", "ltep", "ltp", "maximum", "mean", "min",
+    "ln", "log", "log10", "log2", "lookup", "lt", "lte", "ltep", "ltp", "max", "maximum", "mean", "min",
     "minimum", "mix", "mod", "mstosamps", "mtof", "mul", "nearest", "neg", "neq", "neqp", "noise",
     "not", "or", "out", "param", "pass", "peek", "phasor", "phasewrap", "pi", "pinknoise", "poke",
     "poltocar", "pow", "qconj", "qmul", "qrot", "r", "radians", "radtodeg", "random", "rate",

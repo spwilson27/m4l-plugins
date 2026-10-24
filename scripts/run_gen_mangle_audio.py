@@ -59,9 +59,11 @@ def sources():
         "src/tinyspace_core.genexpr",
         "src/delayplus_start.genexpr",
         "src/delayplus_end.genexpr",
+        "src/reverbplus_end.genexpr",
         "src/cepstra_core.genexpr",
         "src/percipitator_core.genexpr",
         "src/sampler_core.genexpr",
+        "src/eqplus_core.genexpr",
     ]
     out = []
     tiny = (
@@ -79,6 +81,11 @@ def sources():
         "poke(wave, out1, 0, 0);\n"
     )
     out.append(("tiny", tiny))
+    reverb_start = "\n".join(
+        open(os.path.join(ROOT, "src", name), encoding="utf-8").read()
+        for name in ("cepstrum_lib.genexpr", "reverbplus_conv.genexpr", "reverbplus_start.genexpr")
+    )
+    out.append(("reverbplus_start", reverb_start))
     for rel in files:
         with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
             out.append((os.path.splitext(os.path.basename(rel))[0], f.read()))

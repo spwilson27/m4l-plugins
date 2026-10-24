@@ -16,6 +16,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const AMXD_PATH = path.join(ROOT, "devices", "EQ+.amxd");
@@ -428,7 +429,7 @@ function extractAssignedString(src, name) {
     const gboxes = gendsp.patcher.boxes.map((b) => b.box);
     eq(gboxes.length, 5, "gendsp is 2-in, codebox, 2-out");
     const codebox = gboxes.find((b) => b.maxclass === "codebox");
-    eq(codebox.code, gen, "embedded codebox is eqplus_core.genexpr");
+    eq(codebox.code, minifyGen(gen), "embedded codebox is the mangled eqplus core");
     for (const text of ["in 1", "in 2", "out 1", "out 2"]) ok(gboxes.some((b) => b.text === text), `gendsp ${text}`);
 }
 
