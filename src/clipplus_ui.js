@@ -21,8 +21,9 @@ mgraphics.relative_coords = 0;
 mgraphics.autofill = 0;
 
 var CS_ROLE = (typeof FACE_ROLE === "string") ? FACE_ROLE : "viz";
-var csMidW = 240;
+var csMidW = 180;
 var CS_H = 157;
+var CS_TAB_W = 20;
 var CS_FILT_W = 120;
 var CS_FW = 112;
 var CS_FH = 66;
@@ -81,7 +82,7 @@ var cpSpec = [];
 
 var CP_METER_BOXES = ["obj-panel-meters", "obj-title-meters", "obj-rule-meters", "obj-meters", "obj-reset"];
 var CP_FILT_BOXES = [
-    "obj-panel-filt", "obj-title-filt", "obj-rule-filt", "obj-filt-viz",
+    "obj-title-filt", "obj-rule-filt", "obj-filt-viz",
     "obj-ctrl-filton", "obj-ctrl-filttype",
     "obj-lbl-filtfreq", "obj-ctrl-filtfreq",
     "obj-lbl-filtgain", "obj-ctrl-filtgain",
@@ -121,7 +122,7 @@ function csPlotRect() {
 }
 
 function csDeviceWidth() {
-    var closed = csMidW + 178 + (cpShowFilt ? CS_FILT_W : 0);
+    var closed = CS_TAB_W + csMidW + 206 + (cpShowFilt ? CS_FILT_W : 0);
     return cpMeters ? (closed + 140) : closed;
 }
 
@@ -133,7 +134,7 @@ function csMoveBox(id, x, y, w, h) {
     } catch (_) {}
 }
 
-// Dynamically repositions the left Filter popout, middle section, right OUTPUT column, Options panel, and Meters panel
+// Dynamically repositions the left Filter fold/drawer, middle section, right OUTPUT column, Options panel, and Meters panel
 function csApplyLayout() {
     if (CS_ROLE !== "viz") return;
     outlet(0, csDeviceWidth());
@@ -147,12 +148,16 @@ function csApplyLayout() {
         o = cpHost.getnamed(CP_METER_BOXES[i]);
         if (o) o.setattr("hidden", cpMeters ? 0 : 1);
     }
-    var dx = cpShowFilt ? CS_FILT_W : 0;
+    var filtPanW = cpShowFilt ? (CS_TAB_W + CS_FILT_W - 4) : (CS_TAB_W - 2);
+    csMoveBox("obj-panel-filt", 4, 4, filtPanW, 161);
+
+    var dx = CS_TAB_W + (cpShowFilt ? CS_FILT_W : 0);
     var w = csMidW;
     var inX = 6 + dx;
     var vizX = 56 + dx;
     var outX = 58 + dx + w;
-    var clipPanelW = 54 + w + 54;
+    var outW = 82;
+    var clipPanelW = 54 + w + outW;
     var optsX = 4 + dx + clipPanelW + 6;
     var metX = optsX + 60;
     var openW = metX + 140;
@@ -162,25 +167,22 @@ function csApplyLayout() {
 
     csMoveBox("cp_face", vizX, 6, w, CS_H);
 
-    csMoveBox("Output", outX, 6, 26, 15);
-    csMoveBox("obj-lbl-out-auto", outX, 7, 26, 14);
-    csMoveBox("Auto", outX + 26, 6, 28, 15);
-    csMoveBox("cp_out_meter", outX, 24, 54, 139);
+    csMoveBox("Output", outX, 6, 42, 15);
+    csMoveBox("Auto", outX + 44, 6, 38, 15);
+    csMoveBox("cp_out_meter", outX, 24, outW, 139);
     csMoveBox("obj-panel-clip", 4 + dx, 4, clipPanelW, 161);
 
     var optX = optsX + 4;
     csMoveBox("obj-title-opts", optX, 4, 44, 12);
     csMoveBox("obj-rule-opts", optX + 44, 9, 4, 2);
-    csMoveBox("View", optX, 17, 48, 13);
-    csMoveBox("Mid Size", optX, 32, 48, 13);
-    csMoveBox("Stereo Mode", optX, 47, 23, 13);
-    csMoveBox("Channel Mode", optX + 25, 47, 23, 13);
-    csMoveBox("Show Filter", optX, 62, 48, 13);
-    csMoveBox("Delta", optX, 77, 48, 13);
-    csMoveBox("DC", optX, 92, 48, 13);
-    csMoveBox("Oversample", optX, 107, 48, 13);
-    csMoveBox("Hard Limit", optX, 122, 48, 13);
-    csMoveBox("Show Meters", optX, 145, 48, 14);
+    csMoveBox("View", optX, 18, 48, 15);
+    csMoveBox("Stereo Mode", optX, 36, 48, 15);
+    csMoveBox("Channel Mode", optX, 54, 48, 15);
+    csMoveBox("Delta", optX, 74, 48, 15);
+    csMoveBox("DC", optX, 91, 48, 15);
+    csMoveBox("Oversample", optX, 108, 48, 15);
+    csMoveBox("Hard Limit", optX, 125, 48, 15);
+    csMoveBox("Show Meters", optX, 145, 48, 15);
     csMoveBox("obj-panel-opts", optsX, 4, 56, 161);
 
     csMoveBox("obj-title-meters", metX + 4, 4, 42, 12);
@@ -193,14 +195,6 @@ function csApplyLayout() {
 
 function setbuffer(name) {
     if (name) cpBufName = String(name);
-}
-
-function set_midw(v) {
-    var nw = Math.round(sptClamp(Number(v) || 240, 160, 360));
-    if (nw === csMidW) return;
-    csMidW = nw;
-    csApplyLayout();
-    mgraphics.redraw();
 }
 
 function set_ingain(v) { cpIn = Number(v) || 0; mgraphics.redraw(); }
@@ -217,7 +211,25 @@ function set_oson(v) { cpOs = Number(v) ? 1 : 0; mgraphics.redraw(); }
 function set_hlim(v) { cpHlim = Number(v) ? 1 : 0; mgraphics.redraw(); }
 function set_tpeak(v) { cpTp = Number(v) ? 1 : 0; mgraphics.redraw(); }
 function set_view(v) { cpView = Number(v) ? 1 : 0; mgraphics.redraw(); }
-function set_msmode(v) { cpMsMode = Number(v) ? 1 : 0; mgraphics.redraw(); }
+function cpUpdateChannelEnum() {
+    if (CS_ROLE !== "viz" || !cpHost || !cpHost.getnamed) return;
+    try {
+        var chMenu = cpHost.getnamed("Channel Mode");
+        if (chMenu && chMenu.setattr) {
+            if (cpMsMode) {
+                chMenu.setattr("_parameter_range", "Both", "M", "S");
+            } else {
+                chMenu.setattr("_parameter_range", "Both", "L", "R");
+            }
+        }
+    } catch (_) {}
+}
+
+function set_msmode(v) {
+    cpMsMode = Number(v) ? 1 : 0;
+    cpUpdateChannelEnum();
+    mgraphics.redraw();
+}
 function set_chmode(v) { cpChMode = Math.round(sptClamp(Number(v) || 0, 0, 2)); mgraphics.redraw(); }
 function set_filton(v) { cpFiltOn = Number(v) ? 1 : 0; mgraphics.redraw(); }
 function set_filttype(v) { cpFiltType = Number(v) ? 1 : 0; mgraphics.redraw(); }
@@ -235,9 +247,7 @@ function cpApplyAutoUi() {
     if (CS_ROLE !== "viz" || !cpHost || !cpHost.getnamed) return;
     try {
         var outBox = cpHost.getnamed("Output");
-        var autoLbl = cpHost.getnamed("obj-lbl-out-auto");
         if (outBox) outBox.setattr("hidden", cpAuto ? 1 : 0);
-        if (autoLbl) autoLbl.setattr("hidden", cpAuto ? 0 : 1);
     } catch (_) {}
 }
 
@@ -269,6 +279,7 @@ function cpResend() {
         }
     } catch (_) {}
     cpApplyAutoUi();
+    cpUpdateChannelEnum();
     csApplyLayout();
     outlet(1, "ingain", cpIn);
     outlet(1, "drive", cpDrive);
@@ -310,6 +321,7 @@ function cpReadScope() {
         cpScope.outMs = cpNum(head[3]);
         cpScope.clip = cpNum(head[4]);
         cpScope.gr = cpNum(head[5]);
+        if (cpScope.gr > 60 || !(cpScope.gr > 0)) cpScope.gr = 0;
         if (cpScope.gr > cpMaxGr) cpMaxGr = cpScope.gr;
         cpScope.drvPk = cpNum(head[11]);
         cpScope.wetPk = cpNum(head[12]);
@@ -406,8 +418,7 @@ function csBipolarCurve(x, driveDb, shapePct, symPct, ceilLin) {
     var au = Math.abs(u);
     var sgn = u >= 0 ? 1 : -1;
     var sUse = u >= 0 ? sp : sn;
-    var asymGain = u >= 0 ? (1 + 0.18 * sy) : (1 - 0.18 * sy);
-    var hardMag = Math.min(c, c * au * asymGain);
+    var hardMag = Math.min(c, c * au);
     if (sUse >= 0.999) {
         return sgn * hardMag;
     }
@@ -416,7 +427,7 @@ function csBipolarCurve(x, driveDb, shapePct, symPct, ceilLin) {
     var aUse = Math.exp(lnA0 + sUse * (lnA1 - lnA0));
     var pw = au > 1e-20 ? Math.exp(aUse * Math.log(au)) : 0;
     var den = Math.exp(Math.log(1 + pw) / aUse);
-    var softMag = Math.min(c, c * (au / den) * asymGain);
+    var softMag = Math.min(c, c * (au / den));
     var hardBlend = sptClamp((sUse - 0.85) / 0.15, 0, 1);
     return sgn * (softMag + hardBlend * (hardMag - softMag));
 }
@@ -448,8 +459,11 @@ function paintInMeter() {
     var H = 139;
     var rect = { x: 0, y: 0, w: W, h: H };
     sptLcd(0, 0, W, H);
-    var pkTxt = cpFmtDbShort(cpScope.inPk);
-    var rmsLin = cpScope.inMs > 0 ? Math.sqrt(cpScope.inMs * 0.5) : 0;
+    // Show driven input peak & RMS (inPk * driveGain) so the Input meter directly reflects how close the signal is to the Ceiling!
+    var g = cpDriveGain(cpDrive);
+    var drvPkShow = cpScope.drvPk > 0 ? cpScope.drvPk : (cpScope.inPk * g);
+    var pkTxt = cpFmtDbShort(drvPkShow);
+    var rmsLin = (cpScope.inMs > 0 ? Math.sqrt(cpScope.inMs * 0.5) : 0) * g;
     var rmsTxt = cpFmtDbShort(rmsLin);
     sptTextIn("Pk " + pkTxt, 3, 9, sptColor("live_lcd_title"), 6.5, 0, rect);
     sptTextIn("RMS " + rmsTxt, 3, 18, sptColor("live_display_scale_text"), 6.0, 0, rect);
@@ -461,10 +475,8 @@ function paintInMeter() {
     var inTR = cpDbUnit(cpLinToDb(cpScope.drvPkR > 0 ? cpScope.drvPkR : cpScope.inPkR));
     var hot = cpScope.clip > 0.01;
     var inCol = sptMuted(sptColor(hot ? "live_alert" : "live_display_line_one"), 0.85);
-    var ch0Active = cpChMode !== 2;
-    var ch1Active = cpChMode !== 1;
-    cpVMeter(barX, barY, 8, barH, inTL, ch0Active ? inCol : sptColor("live_display_scale_text"), false);
-    cpVMeter(barX + 9, barY, 8, barH, inTR, ch1Active ? inCol : sptColor("live_display_scale_text"), false);
+    cpVMeter(barX, barY, 8, barH, inTL, inCol, false);
+    cpVMeter(barX + 9, barY, 8, barH, inTR, inCol, false);
     sptTextIn(cpMsMode ? "M   S" : "L   R", barX + 8.5, H - 1.5, sptColor("live_lcd_title"), 6.0, 1, rect);
 
     var marks = [0, -6, -12, -24, -36];
@@ -479,9 +491,9 @@ function paintInMeter() {
     }
 }
 
-// Right tall OUTPUT + GR VU column (54 x 139) with GR bar + independent L and R OUT VU bars
+// Right tall OUTPUT + GR VU column (82 x 139) with GR bar + independent L and R OUT VU bars
 function paintOutMeter() {
-    var W = 54;
+    var W = 82;
     var H = 139;
     var rect = { x: 0, y: 0, w: W, h: H };
     sptLcd(0, 0, W, H);
@@ -489,11 +501,11 @@ function paintOutMeter() {
     var grTxt = holdGr > 0.05 ? ("-" + (holdGr >= 10 ? holdGr.toFixed(0) : holdGr.toFixed(1))) : "0.0";
     var pkTxt = cpFmtDbShort(cpScope.outPk);
     var grColTxt = holdGr > 0.4 ? sptColor("live_alert") : sptColor("live_lcd_control_fg_alt");
-    sptTextIn("GR " + grTxt, 3, 9, grColTxt, 6.5, 0, rect);
-    sptTextIn("Pk " + pkTxt, 3, 18, sptColor("live_lcd_title"), 6.0, 0, rect);
+    sptTextIn("GR " + grTxt, 4, 9, grColTxt, 6.5, 0, rect);
+    sptTextIn("Pk " + pkTxt, 4, 18, sptColor("live_lcd_title"), 6.0, 0, rect);
 
-    var grX = 4;
-    var outX = 14;
+    var grX = 8;
+    var outX = 24;
     var barY = 22;
     var barH = 107;
     var grT = sptClamp(cpScope.gr / 18, 0, 1);
@@ -501,17 +513,17 @@ function paintOutMeter() {
     var outTR = cpDbUnit(cpLinToDb(cpScope.outPkR > 0 ? cpScope.outPkR : cpScope.wetPkR));
     var grCol = sptMuted(sptColor(cpScope.gr > 0.4 ? "live_alert" : "live_display_scale_text"), 0.85);
     var outCol = sptMuted(sptColor("live_lcd_control_fg_alt"), 0.85);
-    cpVMeter(grX, barY, 7, barH, grT, grCol, true);
+    cpVMeter(grX, barY, 10, barH, grT, grCol, true);
     if (holdGr > 0.05) {
         var holdY = sptClamp(barY + 1 + (barH - 2) * sptClamp(holdGr / 18, 0, 1), barY + 1, barY + barH - 2);
         sptRgba(sptColor("live_alert"));
-        mgraphics.rectangle(grX, holdY, 7, 1);
+        mgraphics.rectangle(grX, holdY, 10, 1);
         mgraphics.fill();
     }
-    cpVMeter(outX, barY, 7, barH, outTL, outCol, false);
-    cpVMeter(outX + 8, barY, 7, barH, outTR, outCol, false);
-    sptTextIn("G", grX + 3.5, H - 1.5, sptColor("live_lcd_title"), 6.0, 1, rect);
-    sptTextIn(cpMsMode ? "M  S" : "L  R", outX + 7.5, H - 1.5, sptColor("live_lcd_title"), 6.0, 1, rect);
+    cpVMeter(outX, barY, 10, barH, outTL, outCol, false);
+    cpVMeter(outX + 12, barY, 10, barH, outTR, outCol, false);
+    sptTextIn("G", grX + 5.0, H - 1.5, sptColor("live_lcd_title"), 6.0, 1, rect);
+    sptTextIn(cpMsMode ? "M    S" : "L    R", outX + 11.0, H - 1.5, sptColor("live_lcd_title"), 6.0, 1, rect);
 
     var marks = [0, -6, -12, -24, -36];
     for (var i = 0; i < marks.length; i++) {
@@ -519,10 +531,73 @@ function paintOutMeter() {
         var y = Math.round(barY + barH * (1 - cpDbUnit(db)));
         y = sptClamp(y, barY, barY + barH - 1);
         sptRgba(sptColor("live_lcd_frame"));
-        mgraphics.rectangle(outX + 16, y, 2, 1);
+        mgraphics.rectangle(outX + 24, y, 2, 1);
         mgraphics.fill();
-        sptTextIn(String(db), W - 2, y + 2.2, sptColor("live_display_scale_text"), 6.5, 2, rect);
+        sptTextIn(String(db), W - 4, y + 2.2, sptColor("live_display_scale_text"), 6.5, 2, rect);
     }
+}
+
+// Left-hand vertical Bass Filter fold tab (18 x 161 px, EQ+ Sidechain-tab style)
+function paintFiltTab() {
+    var W = 18;
+    var H = 161;
+    var open = cpShowFilt === 1;
+    var on = cpFiltOn === 1;
+    sptRgba(sptColor("live_desktop"));
+    mgraphics.rectangle(0, 0, W, H);
+    mgraphics.fill();
+
+    // Right separator hairline
+    sptRgba(sptColor("live_lcd_frame"));
+    mgraphics.rectangle(W - 1, 0, 1, H);
+    mgraphics.fill();
+
+    // Top square arrow toggle button (2, 4, 14, 14)
+    sptRgba(sptColor("live_control_bg"));
+    mgraphics.rectangle_rounded(2, 4, 14, 14, 2, 2);
+    mgraphics.fill();
+
+    var acx = 9.0;
+    var acy = 11.0;
+    sptRgba(sptColor("live_control_fg"));
+    if (open) {
+        mgraphics.move_to(acx - 3.4, acy + 1.4);
+        mgraphics.line_to(acx + 3.4, acy + 1.4);
+        mgraphics.line_to(acx, acy - 2.2);
+    } else {
+        mgraphics.move_to(acx - 3.4, acy - 1.4);
+        mgraphics.line_to(acx + 3.4, acy - 1.4);
+        mgraphics.line_to(acx, acy + 2.2);
+    }
+    mgraphics.close_path();
+    mgraphics.fill();
+
+    // Vertical rotated "Bass Filter" label
+    if (typeof mgraphics.save === "function" && typeof mgraphics.rotate === "function") {
+        mgraphics.save();
+        mgraphics.translate(9.5, 86);
+        mgraphics.rotate(-Math.PI / 2);
+        mgraphics.select_font_face(SPT_FONT, "normal", "normal");
+        mgraphics.set_font_size(8.5);
+        sptRgba(sptColor("live_lcd_title"));
+        var m = mgraphics.text_measure("Bass Filter");
+        var tw = (m && m.length) ? m[0] : 44;
+        mgraphics.move_to(-tw * 0.5, 3.0);
+        mgraphics.show_text("Bass Filter");
+        mgraphics.restore();
+    } else {
+        var chars = ["B", "a", "s", "s", " ", "F", "i", "l", "t"];
+        for (var ci = 0; ci < chars.length; ci++) {
+            if (chars[ci] !== " ") {
+                sptTextIn(chars[ci], 9, 44 + ci * 9.5, sptColor("live_lcd_title"), 7.0, 1, { x: 0, y: 0, w: W, h: H });
+            }
+        }
+    }
+
+    // Bottom status LED dot (click to toggle Filter On/Off, or glows orange when active)
+    mgraphics.arc(9.0, H - 11, 2.2, 0, Math.PI * 2);
+    sptRgba(on ? sptColor("live_control_selection") : sptColor("live_control_zombie"));
+    mgraphics.fill();
 }
 
 // Pre-emphasis filter response curve in the left Filter popout canvas (112 x 66)
@@ -752,29 +827,29 @@ function paintViz() {
         }
     } else {
         var basePts = [];
+        var g = cpDriveGain(cpDrive);
         var k, u, yVal;
         for (k = 0; k <= 96; k++) {
             u = -CS_SPAN + (2 * CS_SPAN) * k / 96;
-            yVal = csBipolarCurve(u, cpDrive, cpShape, cpSym, ceilLin);
+            yVal = csBipolarCurve(u / (g > 1e-8 ? g : 1), cpDrive, cpShape, cpSym, ceilLin);
             basePts.push([csXPix(u, plot), csYPix(yVal, plot)]);
         }
         sptCurveIn(basePts, sptMuted(sptColor("live_control_fg"), 0.65), 0.9, plot);
 
-        // Highlight the active region where the signal is hitting the gain curve!
-        var g = cpDriveGain(cpDrive);
-        var inSpan = cpScope.inPk > 1e-5 ? cpScope.inPk : (cpScope.drvPk / (g > 1e-8 ? g : 1));
-        var negSpan = inSpan;
-        var posSpan = inSpan;
+        // Highlight the active region where the DRIVEN signal (xs * driveGain) is hitting the gain curve!
+        var drvSpan = cpScope.drvPk > 1e-5 ? cpScope.drvPk : (cpScope.inPk * g);
+        var negSpan = drvSpan;
+        var posSpan = drvSpan;
         if (cpWave.length > 0) {
             var lastW = cpWave[cpWave.length - 1];
-            var wNeg = Math.abs(lastW[0]) / (g > 1e-8 ? g : 1);
-            var wPos = Math.abs(lastW[1]) / (g > 1e-8 ? g : 1);
+            var wNeg = Math.abs(lastW[0]);
+            var wPos = Math.abs(lastW[1]);
             if (wNeg > 1e-4 || wPos > 1e-4) {
-                negSpan = Math.max(inSpan * 0.75, wNeg);
-                posSpan = Math.max(inSpan * 0.75, wPos);
+                negSpan = Math.max(drvSpan * 0.75, wNeg);
+                posSpan = Math.max(drvSpan * 0.75, wPos);
             }
         }
-        if (inSpan > 1e-4) {
+        if (drvSpan > 1e-4) {
             var loU = Math.max(-CS_SPAN, -negSpan);
             var hiU = Math.min(CS_SPAN, posSpan);
             var activePts = [];
@@ -785,7 +860,8 @@ function paintViz() {
             var cThresh = ceilLin * 0.985;
             for (k = 0; k <= 64; k++) {
                 u = loU + (hiU - loU) * k / 64;
-                yVal = csBipolarCurve(u, cpDrive, cpShape, cpSym, ceilLin);
+                // Evaluate the curve at `u / g` because `u` is already in driven units!
+                yVal = csBipolarCurve(u / (g > 1e-8 ? g : 1), cpDrive, cpShape, cpSym, ceilLin);
                 var pt = [csXPix(u, plot), csYPix(yVal, plot)];
                 activePts.push(pt);
                 if (u >= 0) posPoly.push(pt);
@@ -803,8 +879,8 @@ function paintViz() {
             if (clipNegPts.length > 1) sptCurveIn(clipNegPts, alertCol, 1, plot);
 
             for (i = 0; i < cpDots.length; i++) {
-                var dx = cpDots[i][0];
-                var dy = csBipolarCurve(dx, cpDrive, cpShape, cpSym, ceilLin);
+                var dx = cpDots[i][0] * g;
+                var dy = csBipolarCurve(cpDots[i][0], cpDrive, cpShape, cpSym, ceilLin);
                 var px = csXPix(dx, plot);
                 var py = csYPix(dy, plot);
                 if (px < plot.x + 2 || px > plot.x + plot.w - 2) continue;
@@ -816,9 +892,9 @@ function paintViz() {
             }
 
             var pkPosX = sptClamp(csXPix(hiU, plot), plot.x + 5, plot.x + plot.w - 5);
-            var pkPosY = sptClamp(csYPix(csBipolarCurve(hiU, cpDrive, cpShape, cpSym, ceilLin), plot), plot.y + 5, plot.y + plot.h - 5);
+            var pkPosY = sptClamp(csYPix(csBipolarCurve(hiU / (g > 1e-8 ? g : 1), cpDrive, cpShape, cpSym, ceilLin), plot), plot.y + 5, plot.y + plot.h - 5);
             var pkNegX = sptClamp(csXPix(loU, plot), plot.x + 5, plot.x + plot.w - 5);
-            var pkNegY = sptClamp(csYPix(csBipolarCurve(loU, cpDrive, cpShape, cpSym, ceilLin), plot), plot.y + 5, plot.y + plot.h - 5);
+            var pkNegY = sptClamp(csYPix(csBipolarCurve(loU / (g > 1e-8 ? g : 1), cpDrive, cpShape, cpSym, ceilLin), plot), plot.y + 5, plot.y + plot.h - 5);
             sptHandle(pkNegX, pkNegY, hot ? alertCol : hitCol, "", 3.0);
             sptHandle(pkPosX, pkPosY, hot ? alertCol : sptColor("live_display_handle_one"), "", 3.5);
         }
@@ -830,7 +906,9 @@ function paintViz() {
 }
 
 function paint() {
-    if (CS_ROLE === "filt_viz") {
+    if (CS_ROLE === "filt_tab") {
+        paintFiltTab();
+    } else if (CS_ROLE === "filt_viz") {
         paintFiltViz();
     } else if (CS_ROLE === "in_meter") {
         paintInMeter();
@@ -886,6 +964,19 @@ function cpApplyDrag(drive, ceil) {
 }
 
 function onclick(x, y) {
+    if (CS_ROLE === "filt_tab") {
+        if (y >= 140) {
+            var nextOn = cpFiltOn ? 0 : 1;
+            cpFiltOn = nextOn;
+            cpWriteCtrl("obj-ctrl-filton", nextOn);
+        } else {
+            var nextShow = cpShowFilt ? 0 : 1;
+            cpShowFilt = nextShow;
+            cpWriteCtrl("Show Filter", nextShow);
+        }
+        mgraphics.redraw();
+        return;
+    }
     if (CS_ROLE === "filt_viz") {
         cpDragOn = 1;
         cpDragX = x;

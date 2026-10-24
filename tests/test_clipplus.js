@@ -230,7 +230,7 @@ function maxDiff(fn) {
     const text = buf.slice(32, 32 + n).toString("utf8");
     assert.ok(!/NEWFANGLED/i.test(text), "No branding text in Clip+.amxd");
     const patcher = JSON.parse(text).patcher;
-    assert.deepStrictEqual(patcher.openrect, [0, 0, 418, 169]);
+    assert.deepStrictEqual(patcher.openrect, [0, 0, 406, 169]);
     assert.strictEqual(patcher.openinpresentation, 1);
     assert.strictEqual(patcher.latency, 1047);
     const boxes = patcher.boxes.map((b) => b.box);
@@ -269,7 +269,7 @@ function maxDiff(fn) {
         const tb = boxes.find((b) => b.id === "obj-ctrl-" + id);
         assert.strictEqual(tb.saved_attribute_attributes.bgoncolor.expression, "themecolor.live_control_selection");
         assert.strictEqual(tb.saved_attribute_attributes.bgcolor.expression, "themecolor.live_control_bg");
-        assert.ok(tb.presentation_rect[0] >= 358, id + " is in the right-hand Options panel");
+        assert.ok(tb.presentation_rect[0] >= 298, id + " is in the right-hand Options panel");
     }
     const menus = boxes.filter((b) => b.maxclass === "live.menu");
     assert.ok(menus.length >= 4, "Clip+ uses live.menu popup selection boxes");
@@ -277,27 +277,33 @@ function maxDiff(fn) {
     const autoMenu = boxes.find((b) => b.id === "obj-ctrl-auto");
     assert.strictEqual(autoMenu.maxclass, "live.menu", "Auto is a live.menu popup selector");
     assert.deepStrictEqual(autoMenu.tricolor, [0, 0, 0, 0], "Auto live.menu hides the dropdown triangle via tricolor alpha 0");
-    assert.deepStrictEqual(autoMenu.saved_attribute_attributes.valueof.parameter_enum, ["Manual", "Auto"]);
+    assert.deepStrictEqual(autoMenu.saved_attribute_attributes.valueof.parameter_enum, ["Man", "Auto"]);
     const viewMenu = boxes.find((b) => b.id === "obj-ctrl-view");
     assert.strictEqual(viewMenu.maxclass, "live.menu", "Meter View is a live.menu selection box");
     assert.deepStrictEqual(viewMenu.tricolor, [0, 0, 0, 0]);
-    assert.ok(viewMenu.presentation_rect[0] >= 358, "Meter View selection box is in the right-hand Options panel");
-    const midw = boxes.find((b) => b.id === "obj-ctrl-midw");
-    assert.ok(midw && midw.presentation === 1, "Mid Size control exists in Options panel");
-    assert.strictEqual(midw.saved_attribute_attributes.valueof.parameter_mmin, 160);
-    assert.strictEqual(midw.saved_attribute_attributes.valueof.parameter_mmax, 360);
+    assert.ok(viewMenu.presentation_rect[0] >= 298, "Meter View selection box is in the right-hand Options panel");
+    assert.ok(!boxes.some((b) => b.id === "obj-ctrl-midw"), "Mid Size control is removed");
+    const vizBox = boxes.find((b) => b.id === "obj-viz");
+    assert.strictEqual(vizBox.presentation_rect[2], 180, "Central display width is fixed to 180 px");
     const msMenu = boxes.find((b) => b.id === "obj-ctrl-msmode");
     assert.strictEqual(msMenu.maxclass, "live.menu", "Stereo Mode (L/R vs M/S) is a live.menu");
     assert.deepStrictEqual(msMenu.tricolor, [0, 0, 0, 0], "Stereo Mode hides the dropdown triangle");
     assert.deepStrictEqual(msMenu.saved_attribute_attributes.valueof.parameter_enum, ["L/R", "M/S"]);
     const chMenu = boxes.find((b) => b.id === "obj-ctrl-chmode");
-    assert.strictEqual(chMenu.maxclass, "live.menu", "Channel Mode (All / L/M / R/S) is a live.menu");
+    assert.strictEqual(chMenu.maxclass, "live.menu", "Channel Mode (Both / L / R) is a live.menu");
     assert.deepStrictEqual(chMenu.tricolor, [0, 0, 0, 0], "Channel Mode hides the dropdown triangle");
-    assert.deepStrictEqual(chMenu.saved_attribute_attributes.valueof.parameter_enum, ["All", "L/M", "R/S"]);
+    assert.deepStrictEqual(chMenu.saved_attribute_attributes.valueof.parameter_enum, ["Both", "L", "R"]);
+    assert.strictEqual(msMenu.presentation_rect[0], chMenu.presentation_rect[0], "Stereo Mode and Channel Mode sit on separate rows at the same x");
+    assert.ok(chMenu.presentation_rect[1] >= msMenu.presentation_rect[1] + msMenu.presentation_rect[3], "Channel Mode row is below Stereo Mode row");
+    const filtTab = boxes.find((b) => b.id === "obj-filt-tab");
+    assert.ok(filtTab && filtTab.presentation === 1 && !filtTab.hidden, "Left Bass Filter fold tab is always visible on the left side");
+    assert.deepStrictEqual(filtTab.presentation_rect, [4, 4, 18, 161]);
+    const showFiltBtn = boxes.find((b) => b.id === "obj-ctrl-showfilt");
+    assert.strictEqual(showFiltBtn.presentation, 0, "Old Filter toggle button in Options is removed from presentation");
     const filtPanel = boxes.find((b) => b.id === "obj-panel-filt");
     const filtViz = boxes.find((b) => b.id === "obj-filt-viz");
-    assert.ok(filtPanel && filtPanel.hidden === 1 && filtViz && filtViz.hidden === 1, "Left Filter popout starts hidden");
-    assert.strictEqual(filtPanel.presentation_rect[0], 4, "Filter popout sits on the left of the device");
+    assert.ok(filtPanel && !filtPanel.hidden && filtViz && filtViz.hidden === 1, "Left Bass Filter fold starts collapsed with tab panel visible");
+    assert.strictEqual(filtPanel.presentation_rect[0], 4, "Filter fold sits on the left of the device");
     const filtType = boxes.find((b) => b.id === "obj-ctrl-filttype");
     assert.strictEqual(filtType.maxclass, "live.tab", "Filter Type uses a live.tab with SVG images");
     assert.strictEqual(filtType.usepicture, 1, "Filter Type uses pictures");
@@ -343,7 +349,7 @@ function maxDiff(fn) {
         assert.deepStrictEqual(bad, [], bad.join("\n"));
         return { face, rec };
     }
-    const viz = run('var FACE_ROLE = "viz";\n' + faceCode, 240, 157, "viz", (f) => f.preview());
+    const viz = run('var FACE_ROLE = "viz";\n' + faceCode, 180, 157, "viz", (f) => f.preview());
     assert.ok(viz.face.csBipolarCurve(-0.5, 10, 50, 0, 1) < 0, "Gain curve is bipolar (negative for negative input)");
     assert.ok(viz.face.csBipolarCurve(0.5, 10, 50, 0, 1) > 0, "Gain curve is bipolar (positive for positive input)");
     // Verify at Shape 100% and Sym 0, curve is a hard clip at ceiling
@@ -351,10 +357,8 @@ function maxDiff(fn) {
     assert.ok(Math.abs(viz.face.csBipolarCurve(ceilLin, 0, 100, 0, ceilLin) - ceilLin) < 1e-9, "At Shape 100%, curve is a hard clip at ceiling");
     assert.ok(Math.abs(viz.face.csBipolarCurve(ceilLin * 0.5, 0, 100, 0, ceilLin) - ceilLin * 0.5) < 1e-9, "At Shape 100%, curve is linear below ceiling");
 
-    run('var FACE_ROLE = "viz";\n' + faceCode, 160, 157, "viz-160", (f) => { f.preview(); f.set_midw(160); });
-    run('var FACE_ROLE = "viz";\n' + faceCode, 360, 157, "viz-360", (f) => { f.preview(); f.set_midw(360); });
-    run('var FACE_ROLE = "viz";\n' + faceCode, 240, 157, "viz-wave", (f) => { f.preview(); f.set_view(1); });
-    run('var FACE_ROLE = "viz";\n' + faceCode, 240, 157, "viz-extremes", (face) => {
+    run('var FACE_ROLE = "viz";\n' + faceCode, 180, 157, "viz-wave", (f) => { f.preview(); f.set_view(1); });
+    run('var FACE_ROLE = "viz";\n' + faceCode, 180, 157, "viz-extremes", (face) => {
         face.set_drive(24);
         face.set_shape(100);
         face.set_sym(-100);
@@ -373,7 +377,7 @@ function maxDiff(fn) {
         face.cpWave = cols;
     });
     run('var FACE_ROLE = "in_meter";\n' + faceCode, 46, 139, "in-meter", (f) => f.preview());
-    const outM = run('var FACE_ROLE = "out_meter";\n' + faceCode, 54, 139, "out-meter", (f) => {
+    const outM = run('var FACE_ROLE = "out_meter";\n' + faceCode, 82, 139, "out-meter", (f) => {
         f.preview();
         f.cpMaxGr = 5.4;
         f.cpScope.gr = 1.2;
@@ -383,6 +387,17 @@ function maxDiff(fn) {
     outM.face.onclick(10, 8);
     assert.strictEqual(outM.face.cpMaxGr, 0, "Clicking GR readout clears cpMaxGr");
 
+    {
+        const rec = makeRecorder(18, 161);
+        rec.mgraphics.rotate = undefined;
+        const face = loadFace('var FACE_ROLE = "filt_tab";\n' + faceCode, rec);
+        rec.begin("filt-tab");
+        face.preview();
+        face.paint();
+        rec.end();
+        const bad = checkRecording(rec, { regions: [{ x: 0, y: 0, w: 18, h: 161 }] });
+        assert.deepStrictEqual(bad, [], bad.join("\n"));
+    }
     run('var FACE_ROLE = "filt_viz";\n' + faceCode, 112, 66, "filt-viz", (f) => f.preview());
     // Verify dragging up/down in the XY filter panel in Low-Cut mode (filttype = 1) increases/decreases Q
     {

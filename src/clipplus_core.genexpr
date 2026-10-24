@@ -498,6 +498,7 @@ History drvMax(0);
 History wetMin(0);
 History wetMax(0);
 History tpHold(0);
+History lpByDL(0);
 Delay osDL(128);
 Delay osDR(128);
 Delay alDL(2048);
@@ -508,8 +509,10 @@ Delay dryDL(2048);
 Delay dryDR(2048);
 Delay chByDL(2048);
 Delay chByDR(2048);
-Delay lpByDL(2048);
-Delay lpByDR(2048);
+Delay drvByDL(2048);
+Delay drvByDR(2048);
+Delay lpEmpDL(2048);
+Delay lpEmpDR(2048);
 
 srate = samplerate;
 if (srate < 1) {
@@ -580,10 +583,18 @@ ch1By = chByDR.read(1047, interp="linear");
 // 3. Pre-emphasis filter (Low Shelf fork or Low Cut highpass with Q)
 xsL = cp_pre_emp(ch0In, empst, 0, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
 xsR = cp_pre_emp(ch1In, empst, 1, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
-lpByDL.write(empst.peek(4, 0));
-lpByDR.write(empst.peek(4, 1));
-lpDel0 = lpByDL.read(1047, interp="linear");
-lpDel1 = lpByDR.read(1047, interp="linear");
+lpEmpDL.write(empst.peek(4, 0));
+lpEmpDR.write(empst.peek(4, 1));
+lpDel0 = lpEmpDL.read(1047, interp="linear");
+lpDel1 = lpEmpDR.read(1047, interp="linear");
+
+// Latency-aligned unclipped driven signal for accurate sample-by-sample Gain Reduction
+drvNow0 = xsL * gg;
+drvNow1 = xsR * gg;
+drvByDL.write(drvNow0);
+drvByDR.write(drvNow1);
+drvDel0 = drvByDL.read(1047, interp="linear");
+drvDel1 = drvByDR.read(1047, interp="linear");
 
 curveL = cp_curve(xsL, smDrv, smShp, smSym, cLin);
 curveR = cp_curve(xsR, smDrv, smShp, smSym, cLin);
@@ -693,8 +704,8 @@ sigR = wetR + smDlt * (dryR - wetR - wetR);
 outL = sigL + (1 - smOn) * (dryL - sigL);
 outR = sigR + (1 - smOn) * (dryR - sigR);
 
-drvL = xsL * gg;
-drvR = xsR * gg;
+drvL = drvDel0;
+drvR = drvDel1;
 cHit = cLin * 0.99426007387;
 hit = 0;
 if (chmode < 1.5 && abs(pre0) >= cHit) {
@@ -727,14 +738,19 @@ if (blk < 0.5) {
 	wetMin = pre0;
 	wetMax = pre0;
 }
-inPkL = max(inPkL, abs(trimL));
-inPkR = max(inPkR, abs(trimR));
+// Input VU meters always show both channels (L & R in L/R mode, M & S in M/S mode)
+inPkL = max(inPkL, abs(ch0In));
+inPkR = max(inPkR, abs(ch1In));
 inPk = max(inPkL, inPkR);
-outPkL = max(outPkL, abs(outL));
-outPkR = max(outPkR, abs(outR));
+// Output VU meters always show both channels (L & R in L/R mode, M & S in M/S mode)
+outCh0 = useMs > 0.5 ? (preL * mk) : outL;
+outCh1 = useMs > 0.5 ? (preR * mk) : outR;
+outPkL = max(outPkL, abs(outCh0));
+outPkR = max(outPkR, abs(outCh1));
 outPk = max(outPkL, outPkR);
-drvPkL = max(drvPkL, abs(drvL));
-drvPkR = max(drvPkR, abs(drvR));
+// Driven and pre-makeup peaks compare latency-aligned drvDel0/1 with pre0/1
+drvPkL = max(drvPkL, abs(drvDel0));
+drvPkR = max(drvPkR, abs(drvDel1));
 drvPk = chmode > 1.5 ? drvPkR : ((chmode > 0.5 && chmode < 1.5) ? drvPkL : max(drvPkL, drvPkR));
 wetPkL = max(wetPkL, abs(pre0));
 wetPkR = max(wetPkR, abs(pre1));
@@ -749,7 +765,7 @@ wetMax = max(wetMax, pre0);
 scat = blk - floor(blk / 16) * 16;
 if (scat < 0.5) {
 	sk = floor(blk / 16);
-	poke(scope, xsL, 288 + sk * 2, 0);
+	poke(scope, drvDel0 / max(gg, 1e-6), 288 + sk * 2, 0);
 	poke(scope, wetL, 289 + sk * 2, 0);
 }
 
@@ -774,10 +790,15 @@ if (blk >= 256) {
 	kMsIn = kInSq / 256;
 	kMsOut = kOutSq / 256;
 	gr = 0;
-	if (drvPk > 1e-8) {
-		gr = 20 * log10(drvPk / max(wetPk, 1e-8));
-		if (gr < 0) {
+	// Only compute gain reduction once the latency-aligned driven signal exceeds -60 dBFS (1e-3)
+	// and is actually attenuated below the driven peak (ignore tiny STFT windowing ripple < 0.08 dB).
+	if (drvPk > 1e-3 && wetPk > 1e-5 && drvPk > wetPk * 1.009) {
+		gr = 20 * log10(drvPk / wetPk);
+		if (gr < 0.08) {
 			gr = 0;
+		}
+		if (gr > 60) {
+			gr = 60;
 		}
 	}
 	wslot = frame - floor(frame / 64) * 64;

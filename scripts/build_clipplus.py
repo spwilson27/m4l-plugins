@@ -27,11 +27,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 OUT = os.path.join(ROOT, "devices", "Clip+.amxd")
 
+TAB_W = 20.0
 FILT_W = 120.0
-MID_W = 240.0
-CLOSED_W = MID_W + 178.0                  # 418.0
-OPEN_W = CLOSED_W + 140.0                 # 558.0
-MAX_W = 360.0 + 178.0 + 140.0 + FILT_W    # 798.0
+MID_W = 180.0
+OUT_W = 82.0
+CLOSED_W = TAB_W + MID_W + 206.0          # 406.0
+OPEN_W = CLOSED_W + 140.0                 # 546.0
+MAX_W = OPEN_W + FILT_W                   # 666.0
 LATENCY = 1047
 
 # (key, long, short, lo, hi, init, type, unit, gen message, ui message, help)
@@ -164,11 +166,12 @@ def place(box, rect):
 
 
 def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x, ch_y, y_wire, extra_targets=()):
-    """Adds the left-hand Filter popout panel controls + M/S & single-channel routing selectors."""
-    boxes.append(hide(sc.v8ui("obj-filt-viz", filt_viz_code, [8, 40, 112, 66], (20, 20), 1, varname="obj-filt-viz")))
+    """Adds the left-hand Bass Filter fold/drawer controls + M/S & single-channel routing selectors."""
+    fx0 = 8.0 + TAB_W   # 28.0
+    boxes.append(hide(sc.v8ui("obj-filt-viz", filt_viz_code, [fx0, 40, 112, 66], (20, 20), 1, varname="obj-filt-viz")))
 
     filt_on = hide(with_name(make_toggle(
-        "filton", "Filter On", "Filt On", "On", 8, 20, 28, 15, 0,
+        "filton", "Filter On", "Filt On", "On", fx0, 20, 28, 15, 0,
         "Enable the gain-compensated pre-emphasis filter and inverse post-emphasis filter.", False,
     ), "obj-ctrl-filton"))
     boxes.append(filt_on)
@@ -180,7 +183,7 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
         "filttype",
         ("Filter Type", "Filt Type", ["Shelf", "Low Cut"], 0),
         "Low Shelf (fork icon) applies a low-cut / high-boost shelf before clipping and inverts it after. Low Cut (low-cut icon) applies a resonant highpass before clipping and restores the lows after.",
-        40, 20, 80, 15,
+        fx0 + 32, 20, 80, 15,
     )
     filt_type["box"]["pictures"] = ["lowshelf.svg", "lowcut.svg"]
     filt_type["box"]["usepicture"] = 1
@@ -192,11 +195,11 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
     boxes.append(sc.newobj("obj-ui-filttype", "prepend set_filttype", 360, y_wire, 130))
     y_wire += 18
 
-    lbl_ff = hide(with_name(sc.make_theme_comment("obj-lbl-filtfreq", "Freq", 8, 110, 52, 11, size=8.0, name="live_control_fg"), "obj-lbl-filtfreq"))
+    lbl_ff = hide(with_name(sc.make_theme_comment("obj-lbl-filtfreq", "Freq", fx0, 110, 52, 11, size=8.0, name="live_control_fg"), "obj-lbl-filtfreq"))
     ctrl_ff = hide(with_name(sc.make_lcd_numbox(
         "filtfreq", ("Filter Freq", "Freq", 20.0, 12000.0, 250.0, 0, 3),
         "Cutoff / corner frequency of the pre-emphasis and post-inversion filter.",
-        8, 121, 52, 14,
+        fx0, 121, 52, 14,
     ), "obj-ctrl-filtfreq"))
     ctrl_ff["box"]["saved_attribute_attributes"]["valueof"]["parameter_exponent"] = 3.0
     boxes.extend([lbl_ff, ctrl_ff])
@@ -204,11 +207,11 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
     boxes.append(sc.newobj("obj-ui-filtfreq", "prepend set_filtfreq", 360, y_wire, 130))
     y_wire += 18
 
-    lbl_fq = hide(with_name(sc.make_theme_comment("obj-lbl-filtq", "Q", 66, 110, 54, 11, size=8.0, name="live_control_fg"), "obj-lbl-filtq"))
+    lbl_fq = hide(with_name(sc.make_theme_comment("obj-lbl-filtq", "Q", fx0 + 58, 110, 54, 11, size=8.0, name="live_control_fg"), "obj-lbl-filtq"))
     ctrl_fq = hide(with_name(sc.make_lcd_numbox(
         "filtq", ("Filter Q", "Q", 0.1, 10.0, 0.71, 0, 1),
         "Resonance / Q of the pre-emphasis filter (0.10..10.00). Dragging up/down in the XY panel in Low Cut mode adjusts Q.",
-        66, 121, 54, 14, unit_text="%.2f",
+        fx0 + 58, 121, 54, 14, unit_text="%.2f",
     ), "obj-ctrl-filtq"))
     ctrl_fq["box"]["saved_attribute_attributes"]["valueof"]["parameter_exponent"] = 2.0
     boxes.extend([lbl_fq, ctrl_fq])
@@ -216,11 +219,11 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
     boxes.append(sc.newobj("obj-ui-filtq", "prepend set_filtq", 360, y_wire, 130))
     y_wire += 18
 
-    lbl_fg = hide(with_name(sc.make_theme_comment("obj-lbl-filtgain", "Emphasis", 8, 138, 56, 11, size=8.0, name="live_control_fg"), "obj-lbl-filtgain"))
+    lbl_fg = hide(with_name(sc.make_theme_comment("obj-lbl-filtgain", "Emphasis", fx0, 138, 56, 11, size=8.0, name="live_control_fg"), "obj-lbl-filtgain"))
     ctrl_fg = hide(with_name(sc.make_lcd_numbox(
         "filtgain", ("Filter Gain", "Emphasis", 0.0, 24.0, 6.0, 0, 4),
         "Pre-emphasis amount (0..24 dB): attenuates lows and boosts highs before clipping, then inverts after clipping.",
-        66, 137, 54, 14,
+        fx0 + 58, 137, 54, 14,
     ), "obj-ctrl-filtgain"))
     boxes.extend([lbl_fg, ctrl_fg])
     boxes.append(sc.newobj("obj-prep-filtgain", "prepend filtgain", 200, y_wire, 110))
@@ -231,7 +234,7 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
         "msmode",
         ("Stereo Mode", "Stereo", ["L/R", "M/S"], 0),
         "Clip in Left/Right stereo or Mid/Side.",
-        ms_x, ms_y, 23, 14, fontsize=7.5,
+        ms_x, ms_y, 48, 15, fontsize=8.0,
     )
     boxes.append(ms_menu)
     boxes.append(sc.newobj("obj-prep-msmode", "prepend msmode", 200, y_wire, 110))
@@ -240,9 +243,9 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
 
     ch_menu = make_text_menu(
         "chmode",
-        ("Channel Mode", "Chan", ["All", "L/M", "R/S"], 0),
-        "Clip both channels (All), only channel 1 (L or Mid), or only channel 2 (R or Side).",
-        ch_x, ch_y, 23, 14, fontsize=7.5,
+        ("Channel Mode", "Chan", ["Both", "L", "R"], 0),
+        "Select which channel is fed into the clipper: Both, L (or M in M/S mode), or R (or S in M/S mode). Both channels are always output.",
+        ch_x, ch_y, 48, 15, fontsize=8.0,
     )
     boxes.append(ch_menu)
     boxes.append(sc.newobj("obj-prep-chmode", "prepend chmode", 200, y_wire, 110))
@@ -268,34 +271,48 @@ def build():
     ui_in = face_source(header, "in_meter")
     ui_out = face_source(header, "out_meter")
     ui_filt = face_source(header, "filt_viz")
+    ui_ftab = face_source(header, "filt_tab")
     meters = meter_source()
 
-    out_x = 58.0 + MID_W             # 298.0
-    clip_panel_w = out_x + 54.0      # 352.0
-    opts_x = clip_panel_w + 6.0      # 358.0
-    opt_btn_x = opts_x + 4.0         # 362.0
-    met_x = opts_x + 60.0            # 418.0
+    dx = TAB_W                       # 20.0
+    in_x = 6.0 + dx                  # 26.0
+    viz_x = 56.0 + dx                # 76.0
+    out_x = 58.0 + dx + MID_W        # 258.0
+    clip_panel_w = 54.0 + MID_W + OUT_W  # 316.0
+    opts_x = 4.0 + dx + clip_panel_w + 6.0  # 346.0
+    opt_btn_x = opts_x + 4.0         # 350.0
+    met_x = opts_x + 60.0            # 406.0
 
     boxes = [
-        sc.v8ui("obj-in-meter", ui_in, [6, 24, 46, 139], (20, 40), 1, varname="cp_in_meter"),
-        sc.v8ui("obj-viz", ui_viz, [56, 6, MID_W, 157], (20, 80), 2, varname="cp_face"),
-        sc.v8ui("obj-out-meter", ui_out, [out_x, 24, 54, 139], (20, 120), 1, varname="cp_out_meter"),
+        sc.v8ui("obj-filt-tab", ui_ftab, [4, 4, 18, 161], (20, 5), 1, varname="cp_filt_tab"),
+        sc.v8ui("obj-in-meter", ui_in, [in_x, 24, 46, 139], (20, 40), 1, varname="cp_in_meter"),
+        sc.v8ui("obj-viz", ui_viz, [viz_x, 6, MID_W, 157], (20, 80), 2, varname="cp_face"),
+        sc.v8ui("obj-out-meter", ui_out, [out_x, 24, OUT_W, 139], (20, 120), 1, varname="cp_out_meter"),
         hide(sc.v8ui("obj-meters", meters, [met_x + 4, 20, 128, 122], (700, 80), 1, varname="obj-meters")),
     ]
     lines = []
 
+    # Stored-only Show Filter parameter kept off presentation (controlled by clicking the left Bass Filter tab)
+    showfilt_box = make_toggle(
+        "showfilt", "Show Filter", "Filter", "Filter", 20, 360, 48, 15, 0,
+        "Open or close the Bass Filter fold on the left side of the device.", True,
+    )
+    showfilt_box["box"]["presentation"] = 0
+    showfilt_box["box"].pop("presentation_rect", None)
+    boxes.append(showfilt_box)
+    boxes.append(sc.newobj("obj-ui-showfilt", "prepend set_showfilt", 360, 22, 130))
+
     toggles = [
-        ("showfilt", "Show Filter", "Filter", "Filter", opt_btn_x, 62, 48, 0, None, "set_showfilt", True, "Open the pre/post emphasis filter popout panel on the left."),
-        ("dlt", "Delta", "Delta", "Delta", opt_btn_x, 77, 48, 0, "dlt", "set_dlt", False, "Delayed input minus the processed output."),
-        ("dc", "DC", "DC", "DC", opt_btn_x, 92, 48, 0, "dcon", "set_dcon", False, "15 Hz highpass in front of the drive."),
-        ("os", "Oversample", "4x", "4x", opt_btn_x, 107, 48, 0, "oson", "set_oson", False, "4x oversampling on the waveshaper."),
-        ("hlim", "Hard Limit", "Peak", "Peak", opt_btn_x, 122, 48, 1, "hlim", "set_hlim", False, "Brickwall sample clip at the ceiling, after the detail crossfade."),
+        ("dlt", "Delta", "Delta", "Delta", opt_btn_x, 74, 48, 0, "dlt", "set_dlt", False, "Delayed input minus the processed output."),
+        ("dc", "DC", "DC", "DC", opt_btn_x, 91, 48, 0, "dcon", "set_dcon", False, "15 Hz highpass in front of the drive."),
+        ("os", "Oversample", "4x", "4x", opt_btn_x, 108, 48, 0, "oson", "set_oson", False, "4x oversampling on the waveshaper."),
+        ("hlim", "Hard Limit", "Peak", "Peak", opt_btn_x, 125, 48, 1, "hlim", "set_hlim", False, "Brickwall sample clip at the ceiling, after the detail crossfade."),
         ("meters", "Show Meters", "Meters", "Meters", opt_btn_x, 145, 48, 0, None, "set_meters", True, "Open the LUFS, RMS and peak meters."),
     ]
 
     y_wire = 40.0
     for key, long_name, short, text, x, y, w, initial, gen_msg, ui_msg, stored, help_text in toggles:
-        h = 13 if key != "meters" else 14
+        h = 15
         boxes.append(make_toggle(key, long_name, short, text, x, y, w, h, initial, help_text, stored))
         if gen_msg:
             boxes.append(sc.newobj(f"obj-prep-{key}", f"prepend {gen_msg}", 200, y_wire, 110))
@@ -305,9 +322,9 @@ def build():
     # Text-only popup Output Mode selector (`live.menu` with hidden triangle) next to Output above the right OUT VU column
     auto_menu = make_text_menu(
         "auto",
-        ("Auto", "Out Mode", ["Manual", "Auto"], 1),
-        "Manual sets Output dB directly. Auto trims by -Input gain so Drive is an independent increase.",
-        out_x + 26, 6, 28, 15,
+        ("Auto", "Out Mode", ["Man", "Auto"], 1),
+        "Man sets Output dB directly. Auto trims by -Input gain so Drive is an independent increase.",
+        out_x + 44, 6, 38, 15,
         fontsize=8.0,
     )
     boxes.append(auto_menu)
@@ -320,7 +337,7 @@ def build():
         "view",
         ("View", "View", ["Curve", "Wave"], 0),
         "Curve shows the bipolar transfer curve and where the signal hits it. Wave shows the waveform and shaved overs.",
-        opt_btn_x, 17, 48, 13,
+        opt_btn_x, 18, 48, 15,
         fontsize=8.0,
         stored_only=True,
     )
@@ -328,40 +345,23 @@ def build():
     boxes.append(sc.newobj("obj-ui-view", "prepend set_view", 520, y_wire, 120))
     y_wire += 18
 
-    # Mid Size control (`obj-ctrl-midw`, 160..360 px, default 240 px) in the Options panel to tune the middle section width
-    midw_box = value_bar(
-        "midw",
-        ("Mid Size", "Width", 160.0, 360.0, MID_W, 0, 0),
-        "Adjusts the width in pixels (160..360) of the middle section (Drive..Ceil controls and main display).",
-        opt_btn_x, 32, 48, 13, 2, "live_lcd_control_fg_alt",
-    )
-    midw_box["box"]["saved_attribute_attributes"]["valueof"]["parameter_invisible"] = 1
-    boxes.append(midw_box)
-    boxes.append(sc.newobj("obj-ui-midw", "prepend set_midw", 520, y_wire, 120))
-    y_wire += 18
-
     y_wire = add_filter_popout_and_routing(
-        boxes, lines, ui_filt, opt_btn_x, 47, opt_btn_x + 25, 47, y_wire,
-        extra_targets=("obj-in-meter", "obj-out-meter"),
+        boxes, lines, ui_filt, opt_btn_x, 36, opt_btn_x, 54, y_wire,
+        extra_targets=("obj-in-meter", "obj-out-meter", "obj-filt-tab"),
     )
 
     by_key = {spec[0]: spec for spec in NUMS}
 
     # Left column: Input value box directly above obj-in-meter (no top label)
     in_spec = by_key["in"]
-    boxes.append(value_bar("in", in_spec[1:8], in_spec[10], 6, 6, 46, 15, 3, "live_lcd_control_fg_alt"))
+    boxes.append(value_bar("in", in_spec[1:8], in_spec[10], in_x, 6, 46, 15, 3, "live_lcd_control_fg_alt"))
     boxes.append(sc.newobj("obj-prep-in", "prepend ingain", 200, 380, 120))
     boxes.append(sc.newobj("obj-ui-in", "prepend set_ingain", 360, 380, 130))
 
-    # Right column: Output value box / AUTO pill + text-only selector directly above obj-out-meter (no top label)
+    # Right column: Output value box (hidden when Auto is selected) + Auto/Man selector directly above obj-out-meter
     out_spec = by_key["out"]
-    out_box = hide(value_bar("out", out_spec[1:8], out_spec[10], out_x, 6, 26, 15, 3, "live_lcd_control_fg_alt"))
+    out_box = hide(value_bar("out", out_spec[1:8], out_spec[10], out_x, 6, 42, 15, 3, "live_lcd_control_fg_alt"))
     boxes.append(out_box)
-    auto_lbl = with_name(
-        sc.make_theme_comment("obj-lbl-out-auto", "AUTO", out_x, 7, 26, 14, size=8.0, name="live_lcd_control_fg_alt", align=1),
-        "obj-lbl-out-auto",
-    )
-    boxes.append(auto_lbl)
     boxes.append(sc.newobj("obj-prep-out", "prepend outgain", 200, 398, 120))
     boxes.append(sc.newobj("obj-ui-out", "prepend set_outgain", 360, 398, 130))
 
@@ -394,10 +394,10 @@ def build():
         sc.newobj("obj-prep-width", "prepend setwidth", 700, 250, 110),
     ])
 
-    filt_panel, filt_parts = sc.make_section("filt", 4, 4, 116, 161, "Filter", title_w=34)
-    with_name(place(filt_parts[0], [8, 4, 36, 12]), "obj-title-filt")
-    with_name(place(filt_parts[1], [46, 9, 68, 2]), "obj-rule-filt")
-    clip_panel = sc.make_theme_panel("obj-panel-clip", 4, 4, clip_panel_w - 2, 161, "live_desktop")
+    filt_panel, filt_parts = sc.make_section("filt", 4, 4, TAB_W - 2, 161, "Bass Filter", title_w=54)
+    with_name(place(filt_parts[0], [28, 4, 58, 12]), "obj-title-filt")
+    with_name(place(filt_parts[1], [88, 9, 52, 2]), "obj-rule-filt")
+    clip_panel = sc.make_theme_panel("obj-panel-clip", 4 + dx, 4, clip_panel_w, 161, "live_desktop")
     opts_panel, opts_parts = sc.make_section("opts", opts_x, 4, 56, 161, "Options", title_w=42)
     with_name(place(opts_parts[0], [opt_btn_x, 4, 44, 12]), "obj-title-opts")
     with_name(place(opts_parts[1], [opt_btn_x + 44, 9, 4, 2]), "obj-rule-opts")
@@ -408,7 +408,7 @@ def build():
     boxes.extend(hide(p) for p in filt_parts)
     boxes.extend(opts_parts)
     boxes.extend(hide(p) for p in meter_parts)
-    boxes.append(hide(filt_panel))
+    boxes.append(filt_panel)
     boxes.append(clip_panel)
     boxes.append(opts_panel)
     boxes.append(hide(meter_panel))
@@ -430,8 +430,9 @@ def build():
         sc.line("obj-viz", 1, "obj-gen-in", 1),
         sc.line("obj-ctrl-view", 0, "obj-ui-view"),
         sc.line("obj-ui-view", 0, "obj-viz"),
-        sc.line("obj-ctrl-midw", 0, "obj-ui-midw"),
-        sc.line("obj-ui-midw", 0, "obj-viz"),
+        sc.line("obj-ctrl-showfilt", 0, "obj-ui-showfilt"),
+        sc.line("obj-ui-showfilt", 0, "obj-viz"),
+        sc.line("obj-ui-showfilt", 0, "obj-filt-tab"),
         sc.line("obj-ctrl-auto", 0, "obj-prep-auto"),
         sc.line("obj-prep-auto", 0, "obj-gen-in", 1),
         sc.line("obj-ctrl-auto", 0, "obj-ui-auto"),

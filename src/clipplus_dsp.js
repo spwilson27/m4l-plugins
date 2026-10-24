@@ -6,13 +6,13 @@
 
 var cpHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 var cpDsp = { ready: 0, error: "", createdAt: 0, counter0: -1, task: null, confirmTask: null, settleTask: null, retries: 0 };
-var CP_DSP_RETRIES = 2;
+var CP_DSP_RETRIES = 3;
 var CP_DSP_CLAIM_MS = 15000;
 var CP_DSP_QUEUE_POLL_MS = 100;
 var CP_DSP_CONFIRM_MS = 150;
 var CP_DSP_SETTLE_MS = 300;
-var CP_DSP_FIRST_TIMEOUT_MS = 3500;
-var CP_DSP_TIMEOUT_MS = 6000;
+var CP_DSP_FIRST_TIMEOUT_MS = 8000;
+var CP_DSP_TIMEOUT_MS = 12000;
 var cpDspToken = Math.random();
 var cpBufName = "#0-clipscope";
 
