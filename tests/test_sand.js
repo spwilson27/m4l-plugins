@@ -5,10 +5,10 @@ const assert = require("assert");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 const ROOT = path.join(__dirname, "..");
 const AMXD_PATH = path.join(ROOT, "devices", "Sand.amxd");
 const GEN_PATH = path.join(ROOT, "src", "sand_core.genexpr");
-const UI_PATH = path.join(ROOT, "src", "sand_ui.js");
 
 const gen = fs.readFileSync(GEN_PATH, "utf8");
 assert.ok(gen.includes("channel("), "wet path is the differential compander");
@@ -215,27 +215,26 @@ for (const panelId of ["obj-panel-hud", "obj-panel-viz", "obj-panel-dials"]) {
 
 const jsCode = boxMap.get("obj-viz").textfile.text;
 assert.ok(jsCode.includes("function paint"));
-const genHeader = jsCode.match(/^var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";\n/);
+const genHeader = jsCode.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
 assert.ok(genHeader, "face script must embed GEN_DSP_TEXT and GEN_DSP_HASH");
 const genDspText = JSON.parse(genHeader[1]);
 assert.strictEqual(genHeader[2], crypto.createHash("sha1").update(genDspText).digest("hex").slice(0, 12));
 const gendsp = JSON.parse(genDspText);
 const codeBox = gendsp.patcher.boxes.find((b) => b.box.id === "obj-code");
 assert.ok(codeBox && codeBox.box.maxclass === "codebox", "gendsp wraps a codebox");
-assert.strictEqual(codeBox.box.code, gen, "GEN_DSP_TEXT codebox must exactly match src/sand_core.genexpr");
+assert.strictEqual(codeBox.box.code, minifyGen(gen), "GEN_DSP_TEXT codebox is the mangled src/sand_core.genexpr");
 assert.strictEqual(codeBox.box.numinlets, 2);
 assert.strictEqual(codeBox.box.numoutlets, 2);
 const uiPart = jsCode.slice(genHeader[0].length);
-assert.strictEqual(uiPart, fs.readFileSync(UI_PATH, "utf8"));
 assert.ok(uiPart.includes('new Global("sand_dspq")'), "instances create gen~ one at a time");
 assert.ok(uiPart.includes("function sandDspPillOn"));
-assert.ok(uiPart.includes("!sandDsp.ready && (sandDsp.createdAt > 0 || sandDsp.error)"));
+assert.ok(/sandDsp\.createdAt\s*>\s*0\s*\|\|\s*sandDsp\.error/.test(uiPart));
 assert.ok(uiPart.includes("DSP loading..."));
 assert.ok(uiPart.includes("DSP failed:"));
 assert.ok(uiPart.includes("ensureTransferCurve"));
 assert.ok(uiPart.includes("sandScopeActive"));
-assert.ok(uiPart.includes('outlet(1, ["wave", waveName || "#0-sandwave"])'), "resend binds the scope buffer from JS");
-assert.ok(uiPart.includes('outlet(1, ["outmode", curOutMode])'), "resend sends gen params from JS state");
+assert.ok(uiPart.includes('["wave"') && uiPart.includes('"#0-sandwave"'), "resend binds the scope buffer from JS");
+assert.ok(uiPart.includes('["outmode"'), "resend sends gen params from JS state");
 assert.ok(!/message\(\s*"bang"\s*\)/.test(uiPart), "resend must not bang controls (a live.text toggle would flip)");
 
 const mg = {

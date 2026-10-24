@@ -19,6 +19,8 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_PATH = os.path.join(ROOT_DIR, "src", "mseg_editor.js")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Better Shaper.amxd")
@@ -2535,6 +2537,7 @@ def build():
     import theme_common as tc
     tc.inject_theme_support(patcher_doc, "better_shaper")
 
+    minify_patcher(patcher_doc)
     json_bytes = json.dumps(patcher_doc, indent="\t").encode("utf-8") + b"\n"
 
     header = (

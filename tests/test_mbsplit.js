@@ -17,6 +17,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 const vm = require("vm");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -333,12 +334,12 @@ function rectsOverlap(a, b) {
     {
         // the embedded gen patch is the core, with the build's hash
         const vizText = byId["obj-viz"].textfile.text;
-        const m = vizText.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+        const m = vizText.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
         assert.ok(m, "The face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
         const gp = JSON.parse(JSON.parse(m[1]));
         assert.strictEqual(gp.patcher.classnamespace, "dsp.gen", "Embedded gen patch must be a dsp.gen patcher");
         const codebox = gp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
-        assert.strictEqual(codebox.code, gen, "Embedded gen patch code mismatch");
+        assert.strictEqual(codebox.code, minifyGen(gen), "Embedded gen patch is the mangled core");
         assert.ok(gp.patcher.lines.length === 4, "gen patch: in 1 / in 2 -> codebox -> out 1 / out 2");
     }
 

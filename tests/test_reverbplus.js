@@ -23,7 +23,9 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const vm = require("vm");
+const { minifyGen } = require("./minify_gen.js");
 const { execFileSync, spawnSync } = require("child_process");
+const { readJsLiteral } = require("./js_literal.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const C = require(path.join(ROOT, "src", "reverbplus_config.js"));
@@ -655,7 +657,7 @@ function checkDevice(name, doc, lay) {
     for (const u of boxes.filter((b) => b.maxclass === "v8ui")) {
         const code = u.textfile.text;
         if (u.id !== "obj-engine") {
-            assert(/mgraphics\.init\(\);\s*mgraphics\.relative_coords = 0;\s*mgraphics\.autofill = 0;/.test(code), u.id + ": mgraphics init lines");
+            assert(/mgraphics\.init\(\);\s*mgraphics\.relative_coords\s*=\s*0;\s*mgraphics\.autofill\s*=\s*0;/.test(code), u.id + ": mgraphics init lines");
             const r = u.presentation_rect;
             const { ctx, mg } = runFace(code, r[2], r[3]);
             if (typeof ctx.preview === "function") ctx.preview();
@@ -666,7 +668,7 @@ function checkDevice(name, doc, lay) {
             const mgr = ["box", "patcher", "max", "messagename", "inlet", "jsarguments"];
             for (const r of mgr) assert(!new RegExp("(^|\\n)\\s*(var|let|const)\\s+" + r + "\\b").test(code), "engine declares " + r);
             new vm.Script(code); // syntax
-            assert(code.includes("var GEN_DSP_TEXT") && code.includes("var RP_GEN_PARAMS") && code.includes("var RP_PANEL_THEME") && code.includes('var RP_DSP_PREFIX = "reverbplus_start"'));
+            assert(code.includes("var GEN_DSP_TEXT") && code.includes("var RP_GEN_PARAMS") && code.includes("var RP_PANEL_THEME") && /var RP_DSP_PREFIX\s*=\s*"reverbplus_start"/.test(code));
         }
         assert(Buffer.byteLength(code) < 16 * 1024 * 1024);
     }
@@ -731,11 +733,13 @@ test("Input parameter: -36..+12 dB, default 0, unique short name, appended last,
 test("built devices/Reverb+.amxd: gen patch embedded for the deferred DSP, IR spectra buffer sized for two banks", () => {
     const doc = readAmxd(path.join(ROOT, "devices", "Reverb+.amxd"));
     const eng = doc.patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-engine").textfile.text;
-    const gen = JSON.parse(JSON.parse(/var GEN_DSP_TEXT = (".*");/.exec(eng)[1]));
+    const gen = JSON.parse(JSON.parse(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;/.exec(eng)[1]));
     const code = gen.patcher.boxes.find((b) => b.box.id === "obj-code").box.code;
-    assert(code.includes("rpc_tick(") && code.includes("fft_init") && code.includes("Buffer irs(\"rpirspec\")"));
+    const startSrc = ["cepstrum_lib.genexpr", "reverbplus_conv.genexpr", "reverbplus_start.genexpr"].map((f) => read("src/" + f)).join("\n");
+    assert(startSrc.includes("rpc_tick(") && startSrc.includes("fft_init") && startSrc.includes("Buffer irs(\"rpirspec\")"));
+    assert.strictEqual(code, minifyGen(startSrc), "embedded gen is the mangled start core");
     assert.strictEqual(gen.patcher.classnamespace, "dsp.gen");
-    const params = JSON.parse(/var RP_GEN_PARAMS = (\{.*\});/.exec(eng)[1]);
+    const params = readJsLiteral(eng, "RP_GEN_PARAMS");
     for (const [key, [msg, div]] of Object.entries(params)) {
         assert(new RegExp("^Param " + msg + "\\(", "m").test(code), `gen Param ${msg} for ${key}`);
         assert(div >= 1);
@@ -766,10 +770,13 @@ test("built devices/Reverb+ End.amxd: deferred gen~, silence during deferral, li
     assert(boxes.some((b) => b.text === "buffer~ ---rpxferE @samps 64 @chans 5"));
     assert.strictEqual(boxes.filter((b) => b.maxclass === "v8ui").length, 1);
     const viz = boxes.find((b) => b.id === "obj-viz").textfile.text;
-    assert(viz.includes('var RP_DSP_PREFIX = "reverbplus_end"') && viz.includes("var GEN_DSP_TEXT") && viz.includes("function rpDspLoad"), "End face carries the deferred loader");
-    const gen = JSON.parse(JSON.parse(/var GEN_DSP_TEXT = (".*");/.exec(viz)[1]));
+    assert(viz.includes('var RP_DSP_PREFIX="reverbplus_end"') || viz.includes('var RP_DSP_PREFIX = "reverbplus_end"'), "End face carries the deferred loader");
+    assert(viz.includes("var GEN_DSP_TEXT") && viz.includes("function rpDspLoad"), "End face carries the deferred loader");
+    const gen = JSON.parse(JSON.parse(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;/.exec(viz)[1]));
     const code = gen.patcher.boxes.find((b) => b.box.id === "obj-code").box.code;
-    assert(code.includes('Buffer scope("rpscopeE")') && code.includes("poke(scope, frames, 7)"), "End scope frame counter is in the embedded gen");
+    const endSrc = read("src/reverbplus_end.genexpr");
+    assert(endSrc.includes('Buffer scope("rpscopeE")') && /poke\(scope, frames, 7\)/.test(endSrc), "End scope frame counter is in the gen source");
+    assert.strictEqual(code, minifyGen(endSrc), "embedded gen is the mangled end core");
     assert.strictEqual(gen.patcher.classnamespace, "dsp.gen");
     const { ctx } = runFace(viz, 116, 161);
     ctx.preview();

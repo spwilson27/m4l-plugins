@@ -6,6 +6,8 @@ const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
 const C = require("../src/delayplus_config.js");
+const { readJsLiteral } = require("./js_literal.js");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.join(__dirname, "..");
 let failures = 0;
@@ -373,7 +375,7 @@ test("echo tap model", () => {
 // ---- built devices -----------------------------------------------------------------------------
 // The gen code embedded in the Start face for the deferred DSP (GEN_DSP_TEXT = .gendsp JSON).
 function embeddedGen(faceCode) {
-    const m = faceCode.match(/^var GEN_DSP_TEXT = (".*");$/m);
+    const m = faceCode.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;/);
     assert(m, "GEN_DSP_TEXT missing");
     const patch = JSON.parse(JSON.parse(m[1]));
     return patch.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox").code;
@@ -422,9 +424,9 @@ function assertDeferred(name, genFile, prefix) {
         name + ": nothing may close the hub (left inlet)");
     const code = byId("obj-viz").textfile.text;
     const src = fs.readFileSync(path.join(ROOT, "src", genFile), "utf8");
-    assert.strictEqual(embeddedGen(code), src, "embedded gen = src/" + genFile);
-    assert(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(code));
-    assert(code.includes('var DP_DSP_PREFIX = "' + prefix + '";'), prefix);
+    assert.strictEqual(embeddedGen(code), minifyGen(src), "embedded gen is the mangled src/" + genFile);
+    assert(/var GEN_DSP_HASH\s*=\s*"[0-9a-f]{12}"\s*;/.test(code));
+    assert(code.includes('var DP_DSP_PREFIX="' + prefix + '";') || code.includes('var DP_DSP_PREFIX = "' + prefix + '";'), prefix);
     assert(/function dpDspLoad\(/.test(code) && /dpDspSchedule\(\)/.test(code));
     assert(code.includes('Global("delayplus_dspq")'), name + " shares the gen~ creation queue");
     return { p, boxes, byId, cord, code };
@@ -433,13 +435,13 @@ function assertDeferred(name, genFile, prefix) {
 test("Delay+ and Delay+ End: deferred gen~, hub, silence while it loads", () => {
     const start = assertDeferred("Delay+", "delayplus_start.genexpr", "delayplus_start");
     // every prepend into the hub is a parameter the face re-sends (DP_GEN_PARAMS)
-    const gp = JSON.parse(start.code.match(/^var DP_GEN_PARAMS = (.*);$/m)[1]);
+    const gp = readJsLiteral(start.code, "DP_GEN_PARAMS");
     const into = start.boxes.filter((b) => /^prepend /.test(b.text || "") && start.p.lines.some((l) => l.patchline.source[0] === b.id
         && l.patchline.destination[0] === "obj-gen-in")).map((b) => b.text.split(" ")[1]);
     const sent = new Set(Object.values(gp).map((v) => v[0]));
     for (const m of into) assert(sent.has(m), m + " not re-sent after the gen loads");
-    assert(/dpTrace\(readyTag, "ready after "/.test(start.code));
-    assert(start.code.includes('? "end-dsp" : "dsp"'), "End's ready line must not match the Start count");
+    assert(/"ready after "/.test(start.code));
+    assert(/\?\s*"end-dsp"\s*:\s*"dsp"/.test(start.code), "End's ready line must not match the Start count");
 
     const end = assertDeferred("Delay+ End", "delayplus_end.genexpr", "delayplus_end");
     for (const id of ["obj-msg-local", "obj-prep-xfer", "obj-prep-hdr"]) {
@@ -538,7 +540,7 @@ for (const name of devices) {
             if (/#0-/.test(b.text || "")) assert.fail("#0- name in " + b.id + ": " + b.text);
         }
         const code = uis[0].textfile.text;
-        assert(/mgraphics\.relative_coords = 0/.test(code));
+        assert(/mgraphics\.relative_coords\s*=\s*0/.test(code));
         assert(/function init_link/.test(code));
         assert(/function names/.test(code));
     });

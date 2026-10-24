@@ -12,6 +12,7 @@
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
+const { readJsLiteral } = require("./js_literal.js");
 
 const ROOT = path.dirname(__dirname);
 const names = ["default"];
@@ -81,16 +82,15 @@ for (const name of names) {
   }
 
   // Scripting names: unique varnames, XO_LAYOUT_NAMES matches them.
-  const names_ = /var XO_LAYOUT_NAMES = (\{[^\n]*\});/.exec(boxMap.get("obj-minimap").textfile.text);
-  assert(names_, `${tag} mini-map script must start with XO_LAYOUT_NAMES`);
-  const layoutNames = JSON.parse(names_[1]);
+  const layoutNames = readJsLiteral(boxMap.get("obj-minimap").textfile.text, "XO_LAYOUT_NAMES");
+  assert(layoutNames, `${tag} mini-map script must start with XO_LAYOUT_NAMES`);
   assert.deepStrictEqual(Object.keys(layoutNames).sort(), Object.keys(all.boxes).sort(), `${tag} XO_LAYOUT_NAMES ids must be the layout's ids`);
   const varnames = p.boxes.map((b) => b.box.varname).filter(Boolean);
   for (const [id, vn] of Object.entries(layoutNames)) {
     assert.strictEqual(boxMap.get(id).varname, vn, `${tag} XO_LAYOUT_NAMES[${id}] must equal the varname`);
     assert.strictEqual(varnames.filter((v) => v === vn).length, 1, `${tag} scripting name ${vn} must be unique`);
   }
-  assert(boxMap.get("obj-minimap").textfile.text.includes(fs.readFileSync(path.join(ROOT, "src", "xo_layouts", name + ".js"), "utf8").split("\n")[0]), `${tag} mini-map script must embed src/xo_layouts/${name}.js`);
+  assert(boxMap.get("obj-minimap").textfile.text.includes("function computeXoLayout"), `${tag} mini-map script must embed src/xo_layouts/${name}.js`);
 
   // Background panels are last (node box included), all with background 1; no foreground box after the first.
   const firstBg = p.boxes.findIndex((b) => b.box.background === 1);

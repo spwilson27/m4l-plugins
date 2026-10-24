@@ -15,6 +15,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const GEN_PATH = path.join(ROOT, "src", "sampler_core.genexpr");
@@ -242,12 +243,12 @@ assert.strictEqual(byId.get("obj-plugout").varname, "bs_plugout");
 assert.strictEqual(byId.get("obj-dsp-resend").text, "t b b");
 assertLink(lines, "obj-dsp-resend", 1, "obj-msg-gen-buf", 0, "dsp_ready re-binds the buffers");
 const mainTextForGen = byId.get("obj-viz").textfile.text;
-const genDspMatch = mainTextForGen.match(/var GEN_DSP_TEXT = (".*?");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/s);
+const genDspMatch = mainTextForGen.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
 assert.ok(genDspMatch, "main face embeds the gen patch and its hash");
 const genDsp = JSON.parse(JSON.parse(genDspMatch[1]));
 assert.strictEqual(genDsp.patcher.classnamespace, "dsp.gen");
 const codeBox = genDsp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
-assert.strictEqual(codeBox.code.trim(), gen.trim(), "embeds the current GenExpr core");
+assert.strictEqual(codeBox.code.trim(), minifyGen(gen).trim(), "embeds the mangled GenExpr core");
 assert.ok(!byId.get("obj-viz-side").textfile.text.includes("var GEN_DSP_TEXT"), "only the main face carries the gen patch");
 for (const b of boxes) {
     const t = String(b.text || "");
@@ -489,11 +490,11 @@ assert.ok(!valueOf(sideViz), "side face stores no state");
 const mainText = mainViz.textfile.text;
 const sideText = sideViz.textfile.text;
 const inspText = inspViz.textfile.text;
-assert.ok(mainText.includes('var FACE_REGION = "main";'));
-assert.ok(sideText.includes('var FACE_REGION = "side";'));
-assert.ok(inspText.includes('var FACE_REGION = "inspector";'));
+assert.ok(/var FACE_REGION\s*=\s*"main";/.test(mainText));
+assert.ok(/var FACE_REGION\s*=\s*"side";/.test(sideText));
+assert.ok(/var FACE_REGION\s*=\s*"inspector";/.test(inspText));
 for (const t of [mainText, sideText, inspText]) {
-    assert.ok(t.includes("var FACE_PARAMS = {"), "FACE_PARAMS embedded");
+    assert.ok(/var FACE_PARAMS\s*=\s*\{/.test(t), "FACE_PARAMS embedded");
     assert.ok(t.includes("function storeParam") && t.includes("function paint") && t.includes("function onclick"));
     assert.ok(!/multisample|keyzone/i.test(t), "UI has no multisample zones");
     assert.ok(t.indexOf("var FACE_REGION") < t.indexOf("function storeParam"), "config -> FACE_* -> ui -> face order");

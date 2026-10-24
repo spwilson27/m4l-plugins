@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
+    "src/types/eqplus.d.ts",
+    "src/eqplus_config.js",
+    "src/eqplus_ui.js"
+  ]
+}

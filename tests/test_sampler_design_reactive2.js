@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Better Sampler "reactive2" design: sidebar folds, tall viewer, traced envelope dots, per-voice filter display,
- * ADSR handle drags and that every parameter is reachable.
+ * ADSR handle drags, the additive sub oscillator, and that every parameter is reachable.
  * Run after `python3 scripts/build_sampler.py reactive2`.
  */
 "use strict";
@@ -98,13 +98,15 @@ assert.strictEqual(sb.foldWidth(ALL), spec.max_width, "everything open = max_wid
 assert.strictEqual(sb.foldWidth(sb.DEFAULT_FOLD), spec.width, "default fold = spec width");
 sb.storeParam("mode", 0, true); sb.storeParam("sliced", 0, true);
 
-// --- the engine strip is fixed: selector, character and knobs are there with every fold, none of them in the sidebar ---
+// --- the engine strip is fixed: selector, character and value bars are there with every fold, none of them in the sidebar ---
 for (const m of [0, ALL]) {
     sb.setFoldMask(m); sb.storeParam("mode", 3, true); sb.paint();
     const inStrip = sb.hitZones.filter((z) => z.y >= sb.STRIP.y && z.x < sb.STRIP.x + sb.STRIP.w);
     assert.strictEqual(inStrip.filter((z) => z.action === "engine").length, 5, "5 engine selectors in the strip");
     assert.ok(inStrip.some((z) => z.key === "sp_char"), "character switch in the strip");
-    assert.ok(inStrip.filter((z) => z.kind === "knob").length >= 5, "engine knobs + Pitch / Speed / Pos in the strip");
+    assert.ok(inStrip.filter((z) => z.kind === "value" || z.kind === "knob").length >= 5, "engine value bars + Pitch / Speed / Pos / Gain in the strip");
+    const modeBars = inStrip.filter((z) => z.kind === "value" && z.x < sb.STRIP.x + 286);
+    assert.ok(modeBars.length >= 2 && modeBars.every((z) => z.w === 66), "mode setting sliders below the modes are consistently 66 px wide (fits 4 params)");
     for (const z of inStrip) assert.ok(z.y + z.h <= 166.5 && z.y >= sb.STRIP.y - 0.5, `strip zone ${z.kind} ${z.key || z.action} inside the strip`);
     for (const z of sb.hitZones) if (z.kind === "wave") assert.ok(z.y + z.h <= sb.STRIP.y, "waveform ends above the strip");
 }
@@ -146,6 +148,30 @@ sb.setFoldMask(0b1011);
     sb.setFoldMask(0b10);
     sb.setvalueof.apply(null, old);
     assert.strictEqual(sb.foldMask, 0b10, "a blob without R2 keeps the folds");
+}
+
+// --- dragging sidebar items reorders both the toolbar icons and the open panels, and persists in the blob ---
+{
+    sb.setSectionOrder([0, 1, 2, 3, 4]);
+    sb.setFoldMask(2 | 4 | 8); // Mod Sources (1), Filter (2), Mod Matrix (3) open
+    sb.paint();
+    assert.deepStrictEqual(plain(sb.sectionRects(sb.foldMask).map((r) => r.id)), ["env", "filter", "matrix"], "default panel order");
+    // Drag Filter (slot 2) up to slot 0 (above Mod Sources)
+    const zFilt = zones("act").filter((q) => q.tip).find((q) => q.secIdx === 2);
+    const cx = zFilt.x + zFilt.w * 0.5, cy = zFilt.y + zFilt.h * 0.5;
+    sb.onclick(cx, cy, 1, 0, 0);
+    sb.ondrag(cx, cy - 50, 1, 0, 0);
+    assert.strictEqual(sb.foldMask, 2 | 4 | 8, "dragging a sidebar item preserves its open/closed foldMask");
+    assert.deepStrictEqual(plain(sb.sectionOrder), [2, 0, 1, 3, 4], "Filter moved to slot 0 in sectionOrder");
+    assert.deepStrictEqual(plain(sb.sectionRects(sb.foldMask).map((r) => r.id)), ["filter", "env", "matrix"], "Filter panel now appears before Mod Sources");
+    sb.ondrag(cx, cy - 50, 0, 0, 0);
+    // Persisted in getvalueof / setvalueof
+    const blobReord = sb.getvalueof();
+    assert.strictEqual(blobReord[blobReord.length - 4], "R2O", "custom section order tag saved in blob");
+    sb.setSectionOrder([0, 1, 2, 3, 4]);
+    sb.setvalueof.apply(null, blobReord);
+    assert.deepStrictEqual(plain(sb.sectionOrder), [2, 0, 1, 3, 4], "reordered sectionOrder restored from blob");
+    sb.setSectionOrder([0, 1, 2, 3, 4]);
 }
 
 
@@ -273,27 +299,58 @@ sb.setFoldMask(0b1011);
     assert.strictEqual(sb.detail, null, "1x drops the detail");
 }
 
-// --- character switch directly above the knobs it controls ---
+// --- character switch directly below the mode pills and above its value bars (consistent 4-slot 66px width) ---
 {
     sb.setFoldMask(0);
     for (const [mode, key, ch] of [[0, "rp_char", 1], [3, "sp_char", 0], [3, "sp_char", 1], [1, "cy_char", 0], [1, "cy_char", 2]]) {
         sb.storeParam("mode", mode, true); sb.storeParam(key, ch, true); sb.paint();
         const S = sb.STRIP;
+        const pills = sb.hitZones.filter((z) => z.action === "engine");
+        assert.ok(pills.length === 5 && pills.every((z) => z.x < S.x + 286), "engine selector on the left");
         const seg = sb.hitZones.filter((z) => z.action === "menu_pick" && z.key === key);
         assert.ok(seg.length >= 2, `${key}: switch present`);
-        const left = Math.min(...seg.map((z) => z.x)), bottom = Math.max(...seg.map((z) => z.y + z.h));
-        const knobs = sb.hitZones.filter((z) => z.kind === "knob" && z.y >= S.y && z.x >= S.x + 250).sort((a, b) => a.x - b.x);
-        assert.ok(knobs.length >= 2, `${key}: engine knobs`);
-        assert.ok(bottom <= Math.min(...knobs.map((z) => z.y)) + 0.01, `${key}: switch sits above its knobs`);
-        assert.ok(Math.abs(left - knobs[0].x) <= 6, `${key}: switch aligned with the first knob (${left} vs ${knobs[0].x})`);
-        for (const z of seg) assert.ok(z.x + z.w <= knobs[knobs.length - 1].x + knobs[knobs.length - 1].w + 70, `${key}: switch spans its knobs`);
-        assert.ok(seg.every((z) => z.x >= S.x + 250), `${key}: on the right`);
-        const pills = sb.hitZones.filter((z) => z.action === "engine");
-        assert.ok(pills.length === 5 && pills.every((z) => z.x < S.x + 250), "engine selector on the left");
-        const pitch = sb.hitZones.find((z) => z.kind === "knob" && z.key === "pitch_st");
-        assert.ok(pitch.x < S.x + 250 && pitch.y > pills[0].y, "Pitch under the engine selector");
+        const left = Math.min(...seg.map((z) => z.x)), top = Math.min(...seg.map((z) => z.y)), bottom = Math.max(...seg.map((z) => z.y + z.h));
+        assert.ok(top >= pills[0].y + pills[0].h, `${key}: switch sits below the mode pills`);
+        assert.ok(seg.every((z) => z.x < S.x + 286), `${key}: switch sits in the left column under the mode pills`);
+        const bars = sb.hitZones.filter((z) => (z.kind === "value" || (z.action === "menu" && z.key === "sp_quant")) && z.y >= S.y && z.x < S.x + 286).sort((a, b) => a.x - b.x);
+        assert.ok(bars.length >= 2, `${key}: engine setting bars`);
+        assert.ok(bottom <= Math.min(...bars.map((z) => z.y)) + 0.01, `${key}: switch sits above its setting bars`);
+        assert.ok(Math.abs(left - bars[0].x) <= 6, `${key}: switch aligned with the first setting bar (${left} vs ${bars[0].x})`);
+        assert.ok(bars.every((z) => z.w === 66), `${key}: every setting bar is 66 px wide (fits 4 params)`);
+        const pitch = sb.hitZones.find((z) => z.kind === "value" && z.key === "pitch_st");
+        const pos = sb.hitZones.find((z) => z.kind === "value" && z.key === "play_pos");
+        const frz = sb.hitZones.find((z) => z.action === "freeze");
+        assert.ok(pitch && pitch.x >= S.x + 286, "Pitch bar on the right");
+        assert.ok(pos && frz && Math.abs(frz.x - (pos.x + pos.w)) <= 6 && Math.abs(frz.y - pos.y) <= 2, "Freeze button sits immediately beside the Pos control");
     }
     sb.storeParam("mode", 0, true); sb.storeParam("rp_char", 0, true);
+}
+
+// --- Mod Matrix target label static fill and live modulation sum bar ---
+{
+    sb.setFoldMask(8); sb.matTab = 0;
+    // Static fill: min (-48 dB) -> 0 (empty/black), max (+24 dB) -> 1 (full 59 px)
+    sb.setParamFromFace("samp_gain", -48); sb.paint();
+    assert.strictEqual(sb.toNorm("samp_gain", sb.paramValue("samp_gain")), 0, "samp_gain at -48 dB gives 0 static fill");
+    sb.setParamFromFace("samp_gain", 24); sb.paint();
+    assert.strictEqual(sb.toNorm("samp_gain", sb.paramValue("samp_gain")), 1, "samp_gain at +24 dB gives full static fill");
+    sb.setParamFromFace("samp_gain", 0);
+    near(sb.toNorm("samp_gain", sb.paramValue("samp_gain")), 48 / 72, 1e-6, "samp_gain at 0 dB gives 66.7% static fill");
+    // When no voice is playing, activeVoiceLevel() === 0 and modSourceSignal() === 0 for every column
+    for (let v = 0; v < 16; v++) sb.voiceAmpLvl[v] = 0;
+    assert.strictEqual(sb.activeVoiceLevel(), 0, "no voice playing -> activeVoiceLevel is 0");
+    for (let c = 0; c < 5; c++) {
+        assert.strictEqual(sb.modSourceSignal(1, c), 0, `no voice playing -> source ${c} signal is 0`);
+    }
+    // When a voice is playing, modSourceSignal returns bounded live values in [-1..+1]
+    sb.voiceAmpLvl[0] = 0.8; sb.liveModEnvVal = 0.5; sb.liveLfoVal = 0.6; sb.lfoPhaseEst = 0.2;
+    assert.strictEqual(sb.activeVoiceLevel(), 0.8, "voice playing -> activeVoiceLevel is 0.8");
+    for (let c = 0; c < 5; c++) {
+        const sig = sb.modSourceSignal(1, c);
+        assert.ok(sig >= -1 && sig <= 1 && Math.abs(sig) > 0, `voice playing -> source ${c} signal ${sig} active`);
+    }
+    sb.voiceAmpLvl[0] = 0;
+    sb.setFoldMask(sb.DEFAULT_FOLD);
 }
 
 // --- sample gain: drag, reset, normalize (right-click and ctrl-click) ---
@@ -638,11 +695,22 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
 }
 
 
-// --- all three slope diamonds stay visible and grabbable at the shortest times, without touching the A / D / R handles ---
+// --- Attack = 0 ms lands on the left wall (gx), Release = 60 s lands on the right wall (gx + gw), and slope diamonds stay grabbable ---
 {
     sb.setFoldMask(sb.DEFAULT_FOLD); sb.envTab = 0;
     const ov = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-    for (const page of [0, 1]) for (const sus of [0, 35, 100]) for (const t of [[0.2, 1, 1], [0.2, 1, 1000], [4000, 4000, 4000], [5, 40, 900]]) {
+    for (const page of [0, 1]) {
+        sb.envPage = page;
+        const k = page === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"];
+        assert.strictEqual(FP[k[0]].lo, 0, `${k[0]} minimum is 0 ms`);
+        assert.strictEqual(FP[k[3]].hi, 60000, `${k[3]} maximum is 60000 ms (60 s)`);
+        sb.setParamFromFace(k[0], 0); sb.setParamFromFace(k[1], 20000); sb.setParamFromFace(k[2], 100); sb.setParamFromFace(k[3], 60000);
+        sb.paint();
+        const gWall = sb.envGeom();
+        near(gWall.xA, gWall.gx, 1e-6, `${k[0]}=0 ms lands on the left wall (gx)`);
+        near(gWall.xR, gWall.gx + gWall.gw, 1e-6, `${k[3]}=60 s lands on the right wall (gx + gw)`);
+    }
+    for (const page of [0, 1]) for (const sus of [0, 35, 100]) for (const t of [[0, 1, 1], [0.2, 1, 1000], [4000, 4000, 4000], [5, 40, 900]]) {
         sb.envPage = page;
         const k = page === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"];
         sb.setParamFromFace(k[0], t[0]); sb.setParamFromFace(k[1], t[1]); sb.setParamFromFace(k[2], sus); sb.setParamFromFace(k[3], t[2]);
@@ -654,11 +722,11 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
         for (const dz of d) for (const hz of h) assert.ok(!ov(dz, hz), `${label}: diamond ${dz.id} does not overlap handle ${hz.id}`);
         for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) assert.ok(!ov(d[i], d[j]), `${label}: diamonds do not overlap each other`);
         const g = sb.envGeom();
-        assert.ok(g.xA - g.gx >= 18 - 1e-9 && g.xD - g.xA >= 18 - 1e-9 && g.xR - g.xS >= 18 - 1e-9, `${label}: every segment is at least 18 px wide`);
+        assert.ok(g.xA >= g.gx - 1e-9 && g.xD - g.xA >= 18 - 1e-9 && g.xR - g.xS >= 18 - 1e-9, `${label}: D and R segments are at least 18 px wide and A >= gx`);
         for (const z of [...h, ...d]) assert.ok(z.x >= g.gx - 6 && z.x + z.w <= g.gx + g.gw + 8, `${label}: ${z.id} inside the display`);
-        // handles still map back to the same value at the minimum width (drag to the far left sets the minimum time)
+        // handles still map back to the same value at the minimum width (drag to the far left sets 0 ms)
         const hz = h[0]; emitted.length = 0; sb.onclick(hz.cx, hz.cy, 1, 0, 0); sb.ondrag(hz.cx - 500, hz.cy, 1, 0, 0); sb.ondrag(hz.cx - 500, hz.cy, 0, 0, 0);
-        assert.ok(sb.paramValue(k[0]) <= FP[k[0]].lo + 1e-6 + 0.01 * FP[k[0]].hi, `${label}: dragging A left reaches the shortest time`);
+        assert.strictEqual(sb.paramValue(k[0]), 0, `${label}: dragging A left reaches 0 ms`);
     }
     sb.envPage = 0;
     for (const [k, v] of [["atk_ms", 18], ["dec_ms", 900], ["sus_lvl", 35], ["rel_ms", 1200]]) sb.setParamFromFace(k, v);
@@ -686,6 +754,7 @@ function collect() {
         if (z.key) reach.add(z.key);
         if (z.region) regionKeys[z.region].forEach((k) => reach.add(k));
         if (actionKeys[z.action]) actionKeys[z.action].forEach((k) => reach.add(k));
+        if (z.kind === "sub_harm") ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"].forEach((k) => reach.add(k));
         if (z.kind === "wave") ["samp_start", "samp_end", "loop_start", "loop_end", "play_pos"].forEach((k) => reach.add(k));
         if (z.kind === "xfade") reach.add("loop_xfade");
         if (z.kind === "flag") reach.add("slice_at");
@@ -708,7 +777,7 @@ for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 
     for (const tb of [0, 1, 2]) { sb.envTab = tb; sb.paint(); collect(); }
     sb.envTab = 0;
 }
-for (const mTab of [0, 1, 2]) { sb.matTab = mTab; sb.paint(); collect(); }
+for (const mTab of [0, 1, 2, 3]) { sb.matTab = mTab; sb.paint(); collect(); }
 sb.matTab = 0; sb.envPage = 0;
 for (const at of [2, 3, 4]) { sb.setParamFromFace("slice_at", at); sb.setParamFromFace("sliced", 1); sb.paint(); collect(); }
 for (const ot of [1, 2, 0]) {
@@ -724,6 +793,37 @@ sb.setParamFromFace("osc1_type", 0); sb.setParamFromFace("osc2_type", 0); sb.osc
 const missing = Object.keys(FP).filter((k) => !reach.has(k));
 assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.join(", ")}`);
 
+// Ranges for the additive sub. The build supplies these on FACE_PARAMS; fill any gap so a drag
+// during the zone sweep stays inside the real parameter (the sweep paints the Sub tab).
+const SUB_SPECS = {
+    sub_semi: { lo: -24, hi: 24, init: 0, exp: 1, unit: 7 },
+    sub_fine: { lo: -100, hi: 100, init: 0, exp: 1, unit: 0 },
+    sub_partials: { lo: 1, hi: 16, init: 8, exp: 1, unit: 0 },
+    sub_phase: { lo: 0, hi: 360, init: 0, exp: 1, unit: 1 },
+    sub_level: { lo: 0, hi: 100, init: 100, exp: 1, unit: 5 },
+    sub_harm_level: { lo: 0, hi: 100, init: 75, exp: 1, unit: 5 },
+    sub_detune: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_mod: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_width: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_spectra: { lo: -100, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_knock: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_decay: { lo: 5, hi: 1000, init: 120, exp: 1, unit: 2 },
+    sub_drive: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_h1_4: { lo: 0, hi: 65535, init: 51000, exp: 1, unit: 0 },
+    sub_h5_8: { lo: 0, hi: 65535, init: 13107, exp: 1, unit: 0 },
+    sub_h9_12: { lo: 0, hi: 65535, init: 0, exp: 1, unit: 0 },
+    sub_h13_16: { lo: 0, hi: 65535, init: 0, exp: 1, unit: 0 },
+    sub_wave: { lo: 0, hi: 6, init: 6, exp: 1, unit: 0, enums: ["Custom", "Sine", "Saw", "Square", "Triangle", "Odd", "Warm"] },
+    sub_lock: { lo: 0, hi: 1, init: 0, exp: 1, unit: 0, enums: ["Off", "On"] },
+    sub_lock_note: { lo: 0, hi: 11, init: 0, exp: 1, unit: 0, enums: ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] },
+    sub_tuning: { lo: 0, hi: 2, init: 0, exp: 1, unit: 0, enums: ["Key", "Fixed", "Ratio"] },
+    sub_mono: { lo: 0, hi: 1, init: 0, exp: 1, unit: 0, enums: ["Off", "On"] },
+    sub_direct: { lo: 0, hi: 1, init: 0, exp: 1, unit: 0, enums: ["Off", "On"] },
+    sub_spec_mode: { lo: 0, hi: 4, init: 0, exp: 1, unit: 0, enums: ["Tilt", "Low Pass", "Comb", "Odd/Even", "Stretch"] },
+    sub_drv_type: { lo: 0, hi: 3, init: 0, exp: 1, unit: 0, enums: ["Soft", "Hard", "Tube", "Fold"] }
+};
+for (const [k, spec] of Object.entries(SUB_SPECS)) if (!FP[k]) FP[k] = spec;
+
 // --- every zone of every section is clickable / draggable without a bad value ---
 for (const mode of [0, 1, 3, 4]) {
     sb.setParamFromFace("mode", mode); sb.setParamFromFace("sliced", 0); sb.setFoldMask(ALL); sb.paint();
@@ -737,4 +837,217 @@ for (const mode of [0, 1, 3, 4]) {
         if (sb.openMenu) sb.onclick(1, 1, 1, 0, 0);
     }
 }
-console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles and parameter reach ok");
+
+// --- additive sub oscillator (Operator harmonic bars + Current spectra strip) ---
+for (const k of ["sub_semi", "sub_fine", "sub_spectra"]) assert.ok(sb.BIPOLAR_KEYS[k], `${k} is bipolar`);
+assert.strictEqual(typeof sb.getSubHarmonic, "function");
+assert.strictEqual(typeof sb.applySubWavePreset, "function");
+assert.strictEqual(typeof sb.effSubHarmonic, "function");
+
+sb.setFoldMask(0);
+sb.oscTab = 2;
+sb.setParamFromFace("sub_on", 1);
+sb.paint();
+{
+    const L = sb.subHarmLayout();
+    near(L.ww, 458, 0.1, "sub plot width");
+    near(L.wh, 73, 0.1, "sub plot height");
+    assert.strictEqual(L.editorW, 300, "harmonic editor is 300 px");
+    assert.strictEqual(L.scopeW, 150, "waveform scope is 150 px");
+    const harm = sb.hitZones.find((z) => z.kind === "sub_harm");
+    const par = sb.hitZones.find((z) => z.key === "sub_partials");
+    assert.ok(harm && par, "harmonic field and Partials control");
+    assert.ok(harm.y + harm.h <= par.y + 0.5, "harmonic field sits above the footer");
+    const slotW = 66;
+    for (const k of ["sub_spectra", "sub_drive", "sub_knock", "sub_decay"]) {
+        const z = sb.hitZones.find((q) => q.kind === "value" && q.key === k);
+        assert.ok(z && z.w === slotW, `${k} is a 66 px Design 5A bar`);
+    }
+    const det = sb.hitZones.find((q) => q.key === "sub_detune");
+    const specBar = sb.hitZones.find((q) => q.key === "sub_spectra");
+    assert.ok(det.x >= specBar.x + specBar.w, "upper-harmonic column sits to the right of Spectra");
+    const reached = new Set();
+    for (const z of sb.hitZones) {
+        if (z.key) reached.add(z.key);
+        if (z.kind === "sub_harm") ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"].forEach((k) => reached.add(k));
+    }
+    const need = ["sub_on", "sub_oct", "sub_tone", "sub_gain", ...Object.keys(SUB_SPECS)];
+    const absent = need.filter((k) => !reached.has(k));
+    assert.deepStrictEqual(absent, [], `sub tab leaves unreachable: ${absent.join(", ")}`);
+    const swept = Object.keys(SUB_SPECS).filter((k) => !reach.has(k));
+    assert.deepStrictEqual(swept, [], `parameter sweep missed ${swept.join(", ")}`);
+    const dw = sb.foldWidth(0);
+    for (const z of sb.hitZones) {
+        assert.ok(z.x >= -1 && z.y >= -1 && z.x + z.w <= dw + 1 && z.y + z.h <= 170, `sub zone ${z.kind} ${z.key || ""} inside the device`);
+    }
+}
+
+// Drawing across the harmonic bars writes the packed nibbles and switches the preset to Custom.
+sb.applySubWavePreset(1);
+assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 1, "Sine preset");
+assert.strictEqual(Math.round(sb.paramValue("sub_h1_4")), 15, "sine fundamental nibble");
+assert.strictEqual(Math.round(sb.paramValue("sub_h5_8")), 0);
+assert.strictEqual(Math.round(sb.paramValue("sub_h9_12")), 0);
+assert.strictEqual(Math.round(sb.paramValue("sub_h13_16")), 0);
+assert.strictEqual(sb.getSubHarmonic(0), 1);
+assert.strictEqual(sb.getSubHarmonic(1), 0);
+sb.setSubHarmonic(3, 0.5);
+near(sb.getSubHarmonic(3), 8 / 15, 1e-9, "nibble quantizes 0.5 to 8/15");
+sb.applySubWavePreset(0);
+assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 0, "Custom does not wipe drawn partials");
+assert.strictEqual(sb.getSubHarmonic(0), 1);
+for (const waveIdx of [2, 3, 4, 5, 6]) {
+    sb.applySubWavePreset(waveIdx);
+    assert.strictEqual(Math.round(sb.paramValue("sub_wave")), waveIdx);
+    const amps = sb.subPresetAmps(waveIdx);
+    for (let i = 0; i < 16; i++) near(sb.getSubHarmonic(i), Math.round(amps[i] * 15) / 15, 1e-9, `preset ${waveIdx} partial ${i}`);
+    for (const k of ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"]) {
+        const v = sb.paramValue(k);
+        assert.ok(v >= 0 && v <= 65535 && v === Math.round(v), `${k} packed in range`);
+    }
+}
+sb.applySubWavePreset(3);
+assert.strictEqual(sb.getSubHarmonic(1), 0, "square has no 2nd harmonic");
+sb.applySubWavePreset(5);
+assert.ok(sb.getSubHarmonic(2) > sb.subPresetAmps(3)[2], "Odd keeps more of the 3rd than Square");
+
+sb.applySubWavePreset(1);
+sb.paint();
+{
+    const L = sb.subHarmLayout();
+    const barX = (i) => L.barsX + i * (L.bw + L.barGap) + L.bw * 0.5;
+    emitted.length = 0;
+    sb.onclick(barX(0), L.top + 0.5, 1, 0, 0);
+    assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 0, "drawing switches to Custom");
+    assert.ok(sb.getSubHarmonic(0) > 0.9, "click at the top of bar 1 sets the fundamental");
+    sb.ondrag(barX(5), L.bot - 0.5, 1, 0, 0);
+    sb.ondrag(barX(5), L.bot - 0.5, 0, 0, 0);
+    assert.ok(sb.getSubHarmonic(5) < 0.08, "drag to the bottom of bar 6 clears it");
+    assert.ok(sb.getSubHarmonic(0) > sb.getSubHarmonic(2) && sb.getSubHarmonic(2) > sb.getSubHarmonic(4), "bars between the gesture are interpolated");
+    assert.notStrictEqual(Math.round(sb.paramValue("sub_h5_8")), 0, "the drag wrote partials 5..8");
+    sb.onclick(barX(2), L.bot - 0.5, 1, 0, 0);
+    assert.ok(sb.getSubHarmonic(2) < 0.08, "a later click can lower a single bar");
+    sb.ondrag(barX(2), L.top + 0.5, 1, 0, 0);
+    sb.ondrag(barX(2), L.top + 0.5, 0, 0, 0);
+    assert.ok(sb.getSubHarmonic(2) > 0.9, "dragging the same bar upward raises it");
+    assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 0, "editing one bar stays on Custom");
+    params().forEach(inRange);
+}
+
+// Wave / lock / note menus, tuning, mono, direct, spectra mode and drive type.
+function clickZone(pred) {
+    sb.paint();
+    const z = sb.hitZones.find(pred);
+    assert.ok(z, "expected zone");
+    sb.onclick(z.x + Math.min(3, z.w / 2), z.y + z.h / 2, 1, 0, 0);
+    return z;
+}
+clickZone((z) => z.key === "sub_wave" && z.action === "menu");
+assert.strictEqual(sb.openMenu && sb.openMenu.key, "sub_wave");
+sb.paint();
+clickZone((z) => z.key === "sub_wave" && z.action === "menu_pick" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 2, "Saw from the wave menu");
+assert.ok(sb.getSubHarmonic(1) > 0.4, "Saw preset filled the 2nd harmonic");
+assert.strictEqual(sb.openMenu, null);
+
+sb.setParamFromFace("sub_lock", 0);
+clickZone((z) => z.key === "sub_lock" && z.action === "toggle");
+assert.strictEqual(Math.round(sb.paramValue("sub_lock")), 1);
+clickZone((z) => z.key === "sub_lock_note" && z.action === "menu");
+sb.paint();
+clickZone((z) => z.key === "sub_lock_note" && z.action === "menu_pick" && z.value === 9);
+assert.strictEqual(Math.round(sb.paramValue("sub_lock_note")), 9, "lock note A");
+clickZone((z) => z.key === "sub_tuning" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_tuning")), 2, "Ratio tuning");
+sb.setParamFromFace("sub_mono", 0);
+clickZone((z) => z.key === "sub_mono" && z.action === "toggle");
+assert.strictEqual(Math.round(sb.paramValue("sub_mono")), 1);
+sb.setParamFromFace("sub_direct", 0);
+clickZone((z) => z.key === "sub_direct" && z.action === "toggle");
+assert.strictEqual(Math.round(sb.paramValue("sub_direct")), 1);
+clickZone((z) => z.key === "sub_spec_mode" && z.value === 3);
+assert.strictEqual(Math.round(sb.paramValue("sub_spec_mode")), 3, "Odd/Even spectra");
+clickZone((z) => z.key === "sub_drv_type" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_drv_type")), 2, "Tube drive");
+clickZone((z) => z.key === "sub_oct" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_oct")), 2);
+
+function dragUp(key, from) {
+    sb.setParamFromFace(key, from);
+    sb.paint();
+    const z = sb.hitZones.find((q) => q.kind === "value" && q.key === key);
+    assert.ok(z, `value zone ${key}`);
+    const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
+    emitted.length = 0;
+    sb.onclick(cx, cy, 1, 0, 0);
+    sb.ondrag(cx, cy - 90, 1, 0, 0);
+    sb.ondrag(cx, cy - 90, 0, 0, 0);
+    params().forEach(inRange);
+    assert.ok(sb.paramValue(key) > from, `${key} rises when dragged up (${sb.paramValue(key)} from ${from})`);
+    sb.ondblclick(cx, cy);
+    assert.strictEqual(sb.paramValue(key), FP[key].init, `${key} double-click resets`);
+}
+for (const [k, from] of [["sub_detune", 0], ["sub_mod", 0], ["sub_width", 0], ["sub_spectra", 0], ["sub_knock", 0], ["sub_decay", 5], ["sub_drive", 0], ["sub_semi", 0], ["sub_fine", 0], ["sub_tone", 0], ["sub_level", 10], ["sub_harm_level", 10], ["sub_partials", 1], ["sub_phase", 0]]) {
+    dragUp(k, from);
+}
+sb.setParamFromFace("sub_gain", -20);
+dragUp("sub_gain", -20);
+
+// Effective level: partial count, fundamental vs upper level, and the spectra curve.
+sb.applySubWavePreset(2);
+sb.setParamFromFace("sub_partials", 4);
+sb.setParamFromFace("sub_level", 50);
+sb.setParamFromFace("sub_harm_level", 100);
+sb.setParamFromFace("sub_spectra", 0);
+sb.setParamFromFace("sub_spec_mode", 0);
+near(sb.effSubHarmonic(0), sb.getSubHarmonic(0) * 0.5, 1e-9, "bar 1 follows Sub level");
+near(sb.effSubHarmonic(1), sb.getSubHarmonic(1), 1e-9, "upper bars follow Harm level");
+assert.strictEqual(sb.effSubHarmonic(4), 0, "partials beyond sub_partials are silent");
+for (let mode = 0; mode < 5; mode++) {
+    sb.setParamFromFace("sub_spec_mode", mode);
+    sb.setParamFromFace("sub_spectra", 0);
+    for (let i = 0; i < 16; i++) assert.strictEqual(sb.subSpectraGain(i), 1, `spectra 0 is unity (mode ${mode})`);
+}
+sb.setParamFromFace("sub_spec_mode", 3);
+sb.setParamFromFace("sub_spectra", 100);
+assert.ok(sb.effSubHarmonic(1) < 1e-6, "+100 Odd/Even mutes the 2nd harmonic");
+assert.ok(sb.effSubHarmonic(2) > 0.2, "the 3rd harmonic stays");
+sb.setParamFromFace("sub_spec_mode", 0);
+sb.setParamFromFace("sub_spectra", -100);
+assert.ok(sb.subSpectraGain(0) > sb.subSpectraGain(15), "negative tilt favors the fundamental");
+
+// The scope hears Drive, Detune and Width.
+sb.applySubWavePreset(1);
+sb.setParamFromFace("sub_partials", 1);
+sb.setParamFromFace("sub_level", 100);
+sb.setParamFromFace("sub_harm_level", 0);
+sb.setParamFromFace("sub_phase", 0);
+sb.setParamFromFace("sub_detune", 0);
+sb.setParamFromFace("sub_mod", 0);
+sb.setParamFromFace("sub_width", 0);
+sb.setParamFromFace("sub_drive", 0);
+sb.setParamFromFace("sub_spectra", 0);
+const dry = sb.subWaveSample(0.03, 0);
+near(sb.subWaveSample(0.03, 1), dry, 1e-9, "no width and one partial is mono");
+sb.setParamFromFace("sub_drive", 100);
+sb.setParamFromFace("sub_drv_type", 1);
+assert.ok(Math.abs(sb.subWaveSample(0.03, 0)) > Math.abs(dry) + 0.05, "hard drive raises a quiet sample");
+sb.applySubWavePreset(2);
+sb.setParamFromFace("sub_partials", 8);
+sb.setParamFromFace("sub_harm_level", 100);
+sb.setParamFromFace("sub_level", 100);
+sb.setParamFromFace("sub_drive", 0);
+sb.setParamFromFace("sub_width", 0);
+sb.setParamFromFace("sub_detune", 0);
+const undetuned = sb.subWaveSample(0.22, 0);
+near(sb.subWaveSample(0.22, 1), undetuned, 1e-9, "width 0 keeps L and R together");
+sb.setParamFromFace("sub_width", 100);
+assert.ok(Math.abs(sb.subWaveSample(0.22, 0) - sb.subWaveSample(0.22, 1)) > 0.01, "width spreads the upper harmonics");
+sb.setParamFromFace("sub_width", 0);
+sb.setParamFromFace("sub_detune", 100);
+assert.ok(Math.abs(sb.subWaveSample(0.22, 0) - undetuned) > 1e-3, "detune moves the waveform");
+
+sb.oscTab = 0;
+sb.openMenu = null;
+sb.setFoldMask(sb.DEFAULT_FOLD);
+console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles, sub oscillator and parameter reach ok");

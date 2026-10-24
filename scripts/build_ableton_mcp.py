@@ -13,6 +13,8 @@ import json
 import struct
 from pathlib import Path
 
+from minify_embed import minify_patcher
+
 ROOT = Path(__file__).resolve().parent.parent
 LOM_JS_PATH = ROOT / "src" / "ableton_mcp_lom.js"
 NODE_JS_PATH = ROOT / "src" / "ableton_mcp_node.js"
@@ -239,6 +241,7 @@ def write_amxd(patcher_dict, out_path: Path):
     _sys.path.insert(0, str(ROOT / "scripts"))
     import theme_common as tc
     tc.inject_theme_support(patcher_dict, "ableton_mcp_bridge")
+    minify_patcher(patcher_dict)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     json_bytes = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")
     header = (
