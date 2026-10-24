@@ -887,23 +887,28 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             bg = rgba_tuple(w.get("activebgcolor", [0.06, 0.075, 0.095, 1.0]))
             bd = rgba_tuple(w.get("bordercolor", [0.22, 0.28, 0.36, 1.0]))
             tc = rgba_tuple(w.get("textcolor", [0.95, 0.62, 0.22, 1.0]))
+            tri_col = w.get("tricolor")
+            show_tri = not (isinstance(tri_col, list) and len(tri_col) >= 4 and tri_col[3] == 0)
             vof = w.get("saved_attribute_attributes", {}).get("valueof", {})
             enums = vof.get("parameter_enum", ["COMB", "HYBRID", "ROOM"])
             init_idx = max(0, min(len(enums) - 1, int(round(vof.get("parameter_initial", [0])[0]))))
             val_str = str(enums[init_idx])
             draw.rounded_rectangle([rx, ry, rx + rw, ry + rh], radius=2 * SCALE, fill=bg, outline=bd, width=1)
-            # Dropdown caret triangle on the right
-            cx = rx + rw - 6.5 * SCALE
-            cy = ry + rh * 0.52
-            draw.polygon([
-                (cx - 2.6 * SCALE, cy - 1.4 * SCALE),
-                (cx + 2.6 * SCALE, cy - 1.4 * SCALE),
-                (cx, cy + 2.0 * SCALE),
-            ], fill=tc)
             fnt = get_font(8.5 * SCALE, bold=W_BOLD)
             bbox = draw.textbbox((0, 0), val_str, font=fnt)
             tw = bbox[2] - bbox[0]
-            draw.text((rx + (rw - 10 * SCALE - tw) * 0.5 + 1 * SCALE, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
+            if show_tri:
+                # Dropdown caret triangle on the right
+                cx = rx + rw - 6.5 * SCALE
+                cy = ry + rh * 0.52
+                draw.polygon([
+                    (cx - 2.6 * SCALE, cy - 1.4 * SCALE),
+                    (cx + 2.6 * SCALE, cy - 1.4 * SCALE),
+                    (cx, cy + 2.0 * SCALE),
+                ], fill=tc)
+                draw.text((rx + (rw - 10 * SCALE - tw) * 0.5 + 1 * SCALE, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
+            else:
+                draw.text((rx + (rw - tw) * 0.5, ry + 1.5 * SCALE), val_str, font=fnt, fill=tc)
 
         elif mc == "live.numbox":
             app = w.get("appearance", 0)
@@ -1083,12 +1088,13 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                     tc = (12, 17, 22, 255) if is_on else (218, 224, 232, 255)
                     draw.rectangle([cx0, ry, cx0 + cell_w, ry + rh], fill=bg, outline=(10, 14, 18, 255), width=max(1, SCALE // 2))
                     pic_name = pics[idx] if (use_svg and idx < len(pics)) else ""
-                    if pic_name in ("highcut.svg", "bandpass.svg", "lowcut.svg"):
-                        # Render built-in M4L filter response curves (LP / BP / HP)
+                    if pic_name in ("highcut.svg", "bandpass.svg", "lowcut.svg", "lowshelf.svg"):
+                        # Render built-in M4L filter response curves (LP / BP / HP / Low-Shelf Fork)
                         x_l = cx0 + 4.0 * SCALE
                         x_r = cx0 + cell_w - 4.0 * SCALE
                         y_top = ry + 3.5 * SCALE
                         y_bot = ry + rh - 3.2 * SCALE
+                        y_mid = (y_top + y_bot) * 0.5
                         lw = max(1, int(1.4 * SCALE))
                         if pic_name == "highcut.svg":
                             # Low-pass: flat passband on left, smooth roll-off down on right
@@ -1113,6 +1119,12 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
                                 (x_r, y_bot),
                             ]
                             draw.line(pts, fill=tc, width=lw, joint="curve")
+                        elif pic_name == "lowshelf.svg":
+                            # Low-shelf fork: upper boost branch + lower cut branch splitting left from flat right passband
+                            x_k1 = x_l + (x_r - x_l) * 0.32
+                            x_k2 = x_l + (x_r - x_l) * 0.65
+                            draw.line([(x_l, y_top), (x_k1, y_top), (x_k2, y_mid), (x_r, y_mid)], fill=tc, width=lw, joint="curve")
+                            draw.line([(x_l, y_bot), (x_k1, y_bot), (x_k2, y_mid)], fill=tc, width=lw, joint="curve")
                         else:
                             # High-pass (lowcut.svg): rises from bottom-left, flat passband on right
                             x_k = x_l + (x_r - x_l) * 0.38

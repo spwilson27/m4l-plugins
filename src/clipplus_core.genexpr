@@ -1,0 +1,824 @@
+// Clip+ gen core. The build prepends cepstrum_lib.genexpr, so fft_init / fft_run /
+// stft_* already exist and every function here stays above the declarations.
+//
+// Latency is fixed at 1047 samples: STFT N-1 (1023) plus the true-peak FIR (24).
+// The 4x oversampler's own 24-sample delay is absorbed by a shorter align delay
+// (999 = 1023 - 24), so toggling oversampling does not move the output.
+// Oversampling, true-peak, M/S routing, single-channel bypass, and the pre/post
+// gain-compensated emphasis filter (with Q resonance) all stay in the 1047-sample delay budget.
+//
+// Scope buffer "clipscope" (bind message: scope #0-clipscope), 1280 samples:
+//   0 inPeak   post-trim linear peak, both channels
+//   1 outPeak  final output peak
+//   2 inMs     post-trim mean square, L+R
+//   3 outMs    final output mean square, L+R
+//   4 clipFrac fraction of block samples sitting on the ceiling
+//   5 grDb     20*log10(drivenPeak / preMakeupPeak)
+//   6 kMsIn    K-weighted mean square, post-trim, L+R
+//   7 kMsOut   K-weighted mean square, final output, L+R
+//   8 frame    block counter, moves even in silence
+//   9 rate     sample rate
+//   10 latency 1047
+//   11 drvPeak driven peak (post-trim * drive gain)
+//   12 wetPeak pre-makeup peak
+//   13 inPkL   post-trim linear peak, channel L (or M)
+//   14 inPkR   post-trim linear peak, channel R (or S)
+//   15 outPkL  final output peak, channel L
+//   16 outPkR  final output peak, channel R
+//   17 drvPkL  driven peak, channel 0
+//   18 drvPkR  driven peak, channel 1
+//   19 wetPkL  pre-makeup peak, channel 0
+//   20 wetPkR  pre-makeup peak, channel 1
+//   32 + (frame % 64) * 4   driven min/max, pre-makeup min/max (left)
+//   288 + k * 2             16 pairs (post-trim left, post-makeup left)
+//   320 + b                 64 log-spaced spectrum bins (0..1 over -90..0 dB) for the XY filter spectrogram
+//   400 + (frame % 128) * 6 kMsIn, kMsOut, inMs, outMs, inPeak, outPeak
+// Block length is 256 samples.
+
+// s(u) = u / (1 + |u|^a)^(1/a). The first 12 dB of drive is the small-signal
+// gain; above that the same curve is overdriven. Below half a dB the result
+// blends to a hard ceiling clamp, so drive 0 ignores shape.
+cp_curve(x, driveDb, shapePct, symPct, ceilLin) {
+	drv = clip(driveDb, 0, 24);
+	tn = clip(drv / 0.5, 0, 1);
+	knee = tn * tn * (3 - 2 * tn);
+	curveDb = drv < 12 ? drv : 12;
+	overDb = drv > 12 ? drv - 12 : 0;
+	gg = pow(10, curveDb / 20);
+	ov = pow(10, overDb / 20);
+	uGain = ov * gg;
+	c = ceilLin > 1e-6 ? ceilLin : 1e-6;
+	hard = clip(uGain * x, -c, c);
+	shp = clip(shapePct / 100, 0, 1);
+	sy = clip(symPct / 100, -1, 1);
+	sp = clip(shp + sy, 0, 1);
+	sn = clip(shp - sy, 0, 1);
+	lnA0 = log(1.2);
+	lnA1 = log(32);
+	aP = exp(lnA0 + sp * (lnA1 - lnA0));
+	aN = exp(lnA0 + sn * (lnA1 - lnA0));
+	u = uGain * x / c;
+	au = abs(u);
+	aUse = u >= 0 ? aP : aN;
+	pw = au > 1e-20 ? exp(aUse * log(au)) : 0;
+	den = exp(log(1 + pw) / aUse);
+	soft = c * (u / den);
+	return (1 - knee) * hard + knee * soft;
+}
+
+// Smoothstep of bin amplitude from T/4 to T. 0 keeps the bin, 1 clips it.
+cp_body(amp, thresh) {
+	lo = thresh * 0.25;
+	hi = thresh > lo + 1e-12 ? thresh : lo + 1e-12;
+	tn = clip((amp - lo) / (hi - lo), 0, 1);
+	return tn * tn * (3 - 2 * tn);
+}
+
+// 97-tap 4x Blackman sinc, cutoff 0.125 cycles per high-rate sample.
+cp_fir_raw(idx) {
+	fc = 0.125;
+	x = idx - 48;
+	sinc = 2 * fc;
+	if (x != 0) {
+		sinc = sin(6.283185307179586 * fc * x) / (3.141592653589793 * x);
+	}
+	ww = 0.42 - 0.5 * cos(6.283185307179586 * idx / 96) + 0.08 * cos(12.566370614359172 * idx / 96);
+	return sinc * ww;
+}
+
+cp_fir_coef(idx) {
+	sum = 0;
+	for (kk = 0; kk < 97; kk += 1) {
+		sum += cp_fir_raw(kk);
+	}
+	if (sum <= 0) {
+		sum = 1;
+	}
+	coef = cp_fir_raw(idx) / sum;
+	return coef;
+}
+
+// One-pole highpass at 15 Hz, crossfaded by amt so the off position is the input.
+cp_dc(x, st, ch, rate, amt) {
+	pole = exp(-6.283185307179586 * 15 / rate);
+	x1 = st.peek(0, ch);
+	y1 = st.peek(1, ch);
+	yy = x - x1 + pole * y1;
+	st.poke(x, 0, ch);
+	st.poke(yy, 1, ch);
+	return x + amt * (yy - x);
+}
+
+// 2nd-order Cytomic TPT SVF pre/post emphasis filter with Q resonance (0.1..10.0).
+// mode 0 = Low Shelf (`lowshelf.svg` fork): cuts lows by -G dB, boosts highs by +G/2 dB, with Q shaping the shelf corner;
+//          post-emphasis applies the exact reciprocal shelf so the unclipped signal is unity.
+// mode 1 = Low Cut (`lowcut.svg`): 2nd-order resonant highpass (Q controls resonance peak at fc) before the clipper,
+//          storing the complement `(x - hp)` in slot 4 so post-emphasis restores the unclipped low-band `(x - hp)` delayed by 1047 samples!
+cp_pre_emp(x, st, ch, rate, freq, gainDb, qval, fmode, fon) {
+	fCl = clip(freq, 20, 12000);
+	qCl = clip(qval, 0.1, 10.0);
+	gAmt = clip(gainDb, 0, 24);
+	// For Low Shelf: g = tan(pi*fc/sr) / sqrt(A_lo), where A_lo = 10^(-gAmt/40) < 1 (cut), A_hi = 10^(gAmt/80)
+	aLo = fmode > 0.5 ? 1.0 : pow(10, -gAmt / 40);
+	aHi = fmode > 0.5 ? 1.0 : pow(10, gAmt / 80);
+	gTan = tan(3.141592653589793 * fCl / max(rate, 8000)) / sqrt(max(aLo, 1e-4));
+	kDamp = 1 / qCl;
+	a1 = 1 / (1 + gTan * (gTan + kDamp));
+	a2 = gTan * a1;
+	a3 = gTan * a2;
+	ic1 = st.peek(0, ch);
+	ic2 = st.peek(1, ch);
+	v3 = x - ic2;
+	v1 = a1 * ic1 + a2 * v3;
+	v2 = ic2 + a2 * ic1 + a3 * v3;
+	st.poke(2 * v1 - ic1, 0, ch);
+	st.poke(2 * v2 - ic2, 1, ch);
+	lp = v2;
+	bp = v1;
+	hp = x - kDamp * bp - lp;
+	shelfOut = (aLo * aLo) * lp + (kDamp * aLo * aHi) * bp + (aHi * aHi) * hp;
+	rawY = fmode > 0.5 ? hp : shelfOut;
+	y = x + fon * (rawY - x);
+	// Store the complement `(x - y)` in slot 4 so Low Cut post-stage can add the delayed lows back
+	st.poke(x - y, 4, ch);
+	return y;
+}
+
+// Inverse post-emphasis filter:
+// mode 0 (Low Shelf): reciprocal 2nd-order SVF shelf (+G dB lows, -G/2 dB highs, same Q).
+// mode 1 (Low Cut): adds back the latency-aligned complement `lpDel = (x - hp)` so `hp + (x - hp) = x` at every Q!
+cp_post_emp(yClip, lpDel, st, ch, rate, freq, gainDb, qval, fmode, fon) {
+	fCl = clip(freq, 20, 12000);
+	qCl = clip(qval, 0.1, 10.0);
+	gAmt = clip(gainDb, 0, 24);
+	aLo = pow(10, gAmt / 40);
+	aHi = pow(10, -gAmt / 80);
+	gTan = tan(3.141592653589793 * fCl / max(rate, 8000)) / sqrt(max(aLo, 1e-4));
+	kDamp = 1 / qCl;
+	a1 = 1 / (1 + gTan * (gTan + kDamp));
+	a2 = gTan * a1;
+	a3 = gTan * a2;
+	ic1 = st.peek(2, ch);
+	ic2 = st.peek(3, ch);
+	v3 = yClip - ic2;
+	v1 = a1 * ic1 + a2 * v3;
+	v2 = ic2 + a2 * ic1 + a3 * v3;
+	st.poke(2 * v1 - ic1, 2, ch);
+	st.poke(2 * v2 - ic2, 3, ch);
+	lp = v2;
+	bp = v1;
+	hp = yClip - kDamp * bp - lp;
+	shelfInv = (aLo * aLo) * lp + (kDamp * aLo * aHi) * bp + (aHi * aHi) * hp;
+	lcInv = yClip + lpDel;
+	res = fmode > 0.5 ? lcInv : shelfInv;
+	return yClip + fon * (res - yClip);
+}
+
+cp_shift(hist, ch, v) {
+	for (idx = 96; idx >= 1; idx -= 1) {
+		prev = hist.peek(idx - 1, ch);
+		hist.poke(prev, idx, ch);
+	}
+	hist.poke(v, 0, ch);
+	return 0;
+}
+
+cp_dot(hist, ch, coef) {
+	acc = 0;
+	for (idx = 0; idx < 97; idx += 1) {
+		acc += hist.peek(idx, ch) * coef.peek(idx);
+	}
+	return acc;
+}
+
+// Peak across the 4 phases of one upsample. The true-peak stage scales the
+// delayed signal by ceiling / peak, which holds an intersample over on the ceiling.
+cp_tp_store(ch, src, dst, up, coef) {
+	x = src.peek(ch);
+	peak = 0;
+	for (ph = 0; ph < 4; ph += 1) {
+		ins = ph < 0.5 ? x * 4 : 0;
+		cp_shift(up, ch, ins);
+		y = abs(cp_dot(up, ch, coef));
+		if (y > peak) {
+			peak = y;
+		}
+	}
+	dst.poke(peak, ch);
+	return 0;
+}
+
+// 4x zero-stuff, lowpass, nonlinearity, lowpass, keep phase 0.
+cp_os_store(ch, src, dst, up, dn, coef, drive, shape, sym, ceil) {
+	x = src.peek(ch);
+	outv = 0;
+	for (ph = 0; ph < 4; ph += 1) {
+		ins = ph < 0.5 ? x * 4 : 0;
+		cp_shift(up, ch, ins);
+		upY = cp_dot(up, ch, coef);
+		sh = cp_curve(upY, drive, shape, sym, ceil);
+		cp_shift(dn, ch, sh);
+		dnY = cp_dot(dn, ch, coef);
+		if (ph < 0.5) {
+			outv = dnY;
+		}
+	}
+	dst.poke(outv, ch);
+	return 0;
+}
+
+// Direct form I. State at base: x1, x2, y1, y2. Coefs at coff: b0 b1 b2 a1 a2.
+cp_bq(x, st, base, coef, coff) {
+	b0 = coef.peek(coff);
+	b1 = coef.peek(coff + 1);
+	b2 = coef.peek(coff + 2);
+	a1 = coef.peek(coff + 3);
+	a2 = coef.peek(coff + 4);
+	x1 = st.peek(base);
+	x2 = st.peek(base + 1);
+	y1 = st.peek(base + 2);
+	y2 = st.peek(base + 3);
+	yy = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+	st.poke(x, base);
+	st.poke(x1, base + 1);
+	st.poke(yy, base + 2);
+	st.poke(y1, base + 3);
+	return yy;
+}
+
+// ITU-R BS.1770 K-weight: high shelf then highpass. Four streams, 8 states each.
+cp_kw(x, st, stream, coef) {
+	base = stream * 8;
+	mid = cp_bq(x, st, base, coef, 0);
+	yy = cp_bq(mid, st, base + 4, coef, 5);
+	return yy;
+}
+
+cp_kw_store(ch, src, dst, st, coef) {
+	yy = cp_kw(src.peek(ch), st, ch, coef);
+	dst.poke(yy, ch);
+	return 0;
+}
+
+// Shelf +4 dB at 1682 Hz, then the 38 Hz highpass. Poked as b0,b1,b2,a1,a2.
+cp_kw_init(coef, rate) {
+	db = 3.999843853973347;
+	f0 = 1681.974450955533;
+	qq = 0.7071752369554196;
+	aa = pow(10, db / 40);
+	w0 = 6.283185307179586 * f0 / rate;
+	cw = cos(w0);
+	alpha = sin(w0) / (2 * qq);
+	sa = sqrt(aa);
+	b0 = aa * ((aa + 1) + (aa - 1) * cw + 2 * sa * alpha);
+	b1 = -2 * aa * ((aa - 1) + (aa + 1) * cw);
+	b2 = aa * ((aa + 1) + (aa - 1) * cw - 2 * sa * alpha);
+	a0 = (aa + 1) - (aa - 1) * cw + 2 * sa * alpha;
+	a1 = 2 * ((aa - 1) - (aa + 1) * cw);
+	a2 = (aa + 1) - (aa - 1) * cw - 2 * sa * alpha;
+	coef.poke(b0 / a0, 0);
+	coef.poke(b1 / a0, 1);
+	coef.poke(b2 / a0, 2);
+	coef.poke(a1 / a0, 3);
+	coef.poke(a2 / a0, 4);
+	f1 = 38.13547087602444;
+	qh = 0.50053065135177;
+	w1 = 6.283185307179586 * f1 / rate;
+	chp = cos(w1);
+	ah = sin(w1) / (2 * qh);
+	hb0 = (1 + chp) * 0.5;
+	hb1 = -(1 + chp);
+	hb2 = (1 + chp) * 0.5;
+	ha0 = 1 + ah;
+	ha1 = -2 * chp;
+	ha2 = 1 - ah;
+	coef.poke(hb0 / ha0, 5);
+	coef.poke(hb1 / ha0, 6);
+	coef.poke(hb2 / ha0, 7);
+	coef.poke(ha1 / ha0, 8);
+	coef.poke(ha2 / ha0, 9);
+	return 0;
+}
+
+cp_save(dst, fx, ch, nn) {
+	for (idx = 0; idx < nn; idx += 1) {
+		dst.poke(fx.peek(idx, 0), idx, ch);
+	}
+	return 0;
+}
+
+// stage 0/1: copy that channel's windowed frame into fx for the forward FFT.
+// stage 2/3: weight the saved spectrum (the body) for the inverse FFT.
+cp_fft_prep(stage, fx, frm, spec, wgt, nn) {
+	if (stage < 1.5) {
+		ch = stage < 0.5 ? 0 : 1;
+		for (idx = 0; idx < nn; idx += 1) {
+			fx.poke(frm.peek(idx, ch), idx, 0);
+			fx.poke(0, idx, 1);
+		}
+	} else {
+		ch = stage < 2.5 ? 0 : 1;
+		for (idx = 0; idx < nn; idx += 1) {
+			re = spec.peek(idx, ch * 2);
+			im = spec.peek(idx, ch * 2 + 1);
+			ww = wgt.peek(idx, ch);
+			fx.poke(re * ww, idx, 0);
+			fx.poke(im * ww, idx, 1);
+		}
+	}
+	return 0;
+}
+
+// stage 0/1: keep the spectrum and the per-bin body weight.
+// stage 2/3: y = shape(body) + driveGain * (frame - body).
+cp_fft_post(stage, fx, frm, spec, wgt, nn, thresh, drive, shape, sym, ceil, gg) {
+	if (stage < 1.5) {
+		ch = stage < 0.5 ? 0 : 1;
+		for (idx = 0; idx < nn; idx += 1) {
+			re = fx.peek(idx, 0);
+			im = fx.peek(idx, 1);
+			spec.poke(re, idx, ch * 2);
+			spec.poke(im, idx, ch * 2 + 1);
+			mag = sqrt(re * re + im * im);
+			amp = mag * 4 / nn;
+			bw = cp_body(amp, thresh);
+			wgt.poke(bw, idx, ch);
+		}
+	} else {
+		ch = stage < 2.5 ? 0 : 1;
+		for (idx = 0; idx < nn; idx += 1) {
+			body = fx.peek(idx, 0);
+			det = frm.peek(idx, ch) - body;
+			yy = cp_curve(body, drive, shape, sym, ceil) + gg * det;
+			fx.poke(yy, idx, 0);
+			fx.poke(0, idx, 1);
+		}
+	}
+	return 0;
+}
+
+// Write 64 log-spaced spectrum columns (20 Hz .. 12 kHz) into sbuf from the forward FFT in spec.
+cp_spec_bins(spec, sbuf, nn, rate) {
+	for (b = 0; b < 64; b += 1) {
+		freq = 20 * pow(600, b / 63);
+		kf = freq * nn / max(rate, 8000);
+		k0 = clip(floor(kf), 1, nn * 0.5 - 2);
+		k1 = k0 + 1;
+		frac = clip(kf - k0, 0, 1);
+		re0L = spec.peek(k0, 0);
+		im0L = spec.peek(k0, 1);
+		re0R = spec.peek(k0, 2);
+		im0R = spec.peek(k0, 3);
+		m0 = sqrt(0.5 * (re0L * re0L + im0L * im0L + re0R * re0R + im0R * im0R)) * 4 / nn;
+		re1L = spec.peek(k1, 0);
+		im1L = spec.peek(k1, 1);
+		re1R = spec.peek(k1, 2);
+		im1R = spec.peek(k1, 3);
+		m1 = sqrt(0.5 * (re1L * re1L + im1L * im1L + re1R * re1R + im1R * im1R)) * 4 / nn;
+		amp = m0 + frac * (m1 - m0);
+		db = 20 * log(max(amp, 1e-6)) / 2.302585092994046;
+		u = clip((db + 90) / 90, 0, 1);
+		prev = sbuf.peek(b);
+		smoothed = u > prev ? (prev + 0.55 * (u - prev)) : (prev * 0.86 + u * 0.14);
+		sbuf.poke(smoothed, b);
+	}
+	return 0;
+}
+
+cp_ola_stage(stage, accL, accR, stL, stR, fx, win, nn) {
+	if (stage > 1.5) {
+		if (stage < 2.5) {
+			stft_ola(accL, stL, fx, win, nn);
+		}
+	}
+	if (stage > 2.5) {
+		stft_ola(accR, stR, fx, win, nn);
+	}
+	return 0;
+}
+
+cp_silence(fx, accL, accR, stL, stR, win, nn) {
+	for (idx = 0; idx < nn; idx += 1) {
+		fx.poke(0, idx, 0);
+		fx.poke(0, idx, 1);
+	}
+	stft_ola(accL, stL, fx, win, nn);
+	stft_ola(accR, stR, fx, win, nn);
+	return 0;
+}
+
+Buffer scope("clipscope");
+Data tab(4096, 3);
+Data win(1024);
+Data fx(1024, 2);
+Data frm(1024, 2);
+Data spec(1024, 4);
+Data wgt(1024, 2);
+Data sbuf(64);
+Data ringL(1024);
+Data ringR(1024);
+Data accL(1024);
+Data accR(1024);
+Data stL(4);
+Data stR(4);
+Data fir(97);
+Data osUp(97, 2);
+Data osDn(97, 2);
+Data tpUp(97, 2);
+Data kw(32);
+Data kwc(10);
+Data dcst(2, 2);
+Data empst(6, 2);
+Data tmpIn(4);
+Data tmpOut(4);
+Param ingain(0);
+Param drive(0);
+Param detail(100);
+Param shape(0);
+Param sym(0);
+Param ceiling(0);
+Param outgain(0);
+Param on(1);
+Param dlt(0);
+Param dcon(0);
+Param oson(0);
+Param hlim(1);
+Param tpeak(0);
+Param autog(1);
+Param msmode(0);
+Param chmode(0);
+Param filton(0);
+Param filttype(0);
+Param filtfreq(250);
+Param filtgain(6);
+Param filtq(0.707);
+History primed(0);
+History smIn(0);
+History smDrv(0);
+History smDet(100);
+History smShp(0);
+History smSym(0);
+History smCeil(0);
+History smOut(0);
+History smOn(1);
+History smDlt(0);
+History smDc(0);
+History smOs(0);
+History smHlim(1);
+History smTp(0);
+History smAuto(1);
+History smFiltOn(0);
+History smFiltFreq(250);
+History smFiltGain(6);
+History smFiltQ(0.707);
+History firDone(0);
+History rateSeen(0);
+History pkHop(0);
+History blk(0);
+History frame(0);
+History inPk(0);
+History outPk(0);
+History inPkL(0);
+History inPkR(0);
+History outPkL(0);
+History outPkR(0);
+History drvPk(0);
+History wetPk(0);
+History drvPkL(0);
+History drvPkR(0);
+History wetPkL(0);
+History wetPkR(0);
+History inSq(0);
+History outSq(0);
+History kInSq(0);
+History kOutSq(0);
+History clipN(0);
+History drvMin(0);
+History drvMax(0);
+History wetMin(0);
+History wetMax(0);
+History tpHold(0);
+Delay osDL(128);
+Delay osDR(128);
+Delay alDL(2048);
+Delay alDR(2048);
+Delay tpDL(128);
+Delay tpDR(128);
+Delay dryDL(2048);
+Delay dryDR(2048);
+Delay chByDL(2048);
+Delay chByDR(2048);
+Delay lpByDL(2048);
+Delay lpByDR(2048);
+
+srate = samplerate;
+if (srate < 1) {
+	srate = 48000;
+}
+slew = 1 - exp(-1 / (0.01 * srate));
+if (primed < 0.5) {
+	slew = 1;
+}
+primed = 1;
+smIn = smIn + (ingain - smIn) * slew;
+smDrv = smDrv + (drive - smDrv) * slew;
+smDet = smDet + (detail - smDet) * slew;
+smShp = smShp + (shape - smShp) * slew;
+smSym = smSym + (sym - smSym) * slew;
+smCeil = smCeil + (ceiling - smCeil) * slew;
+smOut = smOut + (outgain - smOut) * slew;
+smOn = smOn + (on - smOn) * slew;
+smDlt = smDlt + (dlt - smDlt) * slew;
+smDc = smDc + (dcon - smDc) * slew;
+smOs = smOs + (oson - smOs) * slew;
+smHlim = smHlim + (hlim - smHlim) * slew;
+smTp = smTp + (tpeak - smTp) * slew;
+smAuto = smAuto + (autog - smAuto) * slew;
+smFiltOn = smFiltOn + (filton - smFiltOn) * slew;
+smFiltFreq = smFiltFreq + (filtfreq - smFiltFreq) * slew;
+smFiltGain = smFiltGain + (filtgain - smFiltGain) * slew;
+smFiltQ = smFiltQ + (filtq - smFiltQ) * slew;
+
+inG = pow(10, smIn / 20);
+outG = pow(10, smOut / 20);
+cLin = pow(10, smCeil / 20);
+if (cLin < 1e-6) {
+	cLin = 1e-6;
+}
+drvCl = clip(smDrv, 0, 24);
+gg = pow(10, drvCl / 20);
+detAmt = clip(smDet / 100, 0, 1);
+mk = outG + smAuto * (1 / max(inG, 1e-6) - outG);
+
+if (rateSeen != srate) {
+	cp_kw_init(kwc, srate);
+	rateSeen = srate;
+}
+if (firDone < 0.5) {
+	for (idx = 0; idx < 97; idx += 1) {
+		coef = cp_fir_coef(idx);
+		fir.poke(coef, idx);
+	}
+	firDone = 1;
+}
+fft_init(tab);
+stft_win(win, 1024);
+
+// 1. DC filter + Input gain
+trimL = cp_dc(in1, dcst, 0, srate, smDc) * inG;
+trimR = cp_dc(in2, dcst, 1, srate, smDc) * inG;
+
+// 2. Optional M/S encode
+useMs = msmode > 0.5 ? 1 : 0;
+ch0In = useMs > 0.5 ? (trimL + trimR) * 0.7071067811865475 : trimL;
+ch1In = useMs > 0.5 ? (trimL - trimR) * 0.7071067811865475 : trimR;
+chByDL.write(ch0In);
+chByDR.write(ch1In);
+ch0By = chByDL.read(1047, interp="linear");
+ch1By = chByDR.read(1047, interp="linear");
+
+// 3. Pre-emphasis filter (Low Shelf fork or Low Cut highpass with Q)
+xsL = cp_pre_emp(ch0In, empst, 0, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
+xsR = cp_pre_emp(ch1In, empst, 1, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
+lpByDL.write(empst.peek(4, 0));
+lpByDR.write(empst.peek(4, 1));
+lpDel0 = lpByDL.read(1047, interp="linear");
+lpDel1 = lpByDR.read(1047, interp="linear");
+
+curveL = cp_curve(xsL, smDrv, smShp, smSym, cLin);
+curveR = cp_curve(xsR, smDrv, smShp, smSym, cLin);
+
+wave4L = 0;
+wave4R = 0;
+if (smOs > 0.001) {
+	tmpIn.poke(xsL, 0);
+	tmpIn.poke(xsR, 1);
+	for (ch = 0; ch < 2; ch += 1) {
+		cp_os_store(ch, tmpIn, tmpOut, osUp, osDn, fir, smDrv, smShp, smSym, cLin);
+	}
+	wave4L = tmpOut.peek(0);
+	wave4R = tmpOut.peek(1);
+}
+osDL.write(curveL);
+osDR.write(curveR);
+osDelL = osDL.read(24, interp="linear");
+osDelR = osDR.read(24, interp="linear");
+waveL = osDelL + smOs * (wave4L - osDelL);
+waveR = osDelR + smOs * (wave4R - osDelR);
+
+alDL.write(waveL);
+alDR.write(waveR);
+waveAlL = alDL.read(999, interp="linear");
+waveAlR = alDR.read(999, interp="linear");
+
+pkHop = max(pkHop, abs(xsL));
+pkHop = max(pkHop, abs(xsR));
+rdyL = stft_in(ringL, stL, xsL, 1024);
+rdyR = stft_in(ringR, stR, xsR, 1024);
+if (rdyL > 0.5) {
+	if (pkHop < 1e-5) {
+		cp_silence(fx, accL, accR, stL, stR, win, 1024);
+		for (sb = 0; sb < 64; sb += 1) {
+			sbuf.poke(sbuf.peek(sb) * 0.75, sb);
+		}
+	} else {
+		stft_frame(fx, ringL, stL, win, 1024);
+		cp_save(frm, fx, 0, 1024);
+		stft_frame(fx, ringR, stR, win, 1024);
+		cp_save(frm, fx, 1, 1024);
+		thresh = cLin / gg;
+		for (stage = 0; stage < 4; stage += 1) {
+			cp_fft_prep(stage, fx, frm, spec, wgt, 1024);
+			fft_run(fx, tab, 1024, stage >= 2);
+			cp_fft_post(stage, fx, frm, spec, wgt, 1024, thresh, smDrv, smShp, smSym, cLin, gg);
+			if (stage > 0.5 && stage < 1.5) {
+				cp_spec_bins(spec, sbuf, 1024, srate);
+			}
+			cp_ola_stage(stage, accL, accR, stL, stR, fx, win, 1024);
+		}
+	}
+	pkHop = 0;
+}
+specL = stft_out(accL, stL, 1024);
+specR = stft_out(accR, stR, 1024);
+
+mixedL = waveAlL * (1 - detAmt) + specL * detAmt;
+mixedR = waveAlR * (1 - detAmt) + specR * detAmt;
+clL = clip(mixedL, -cLin, cLin);
+clR = clip(mixedR, -cLin, cLin);
+postL = mixedL + smHlim * (clL - mixedL);
+postR = mixedR + smHlim * (clR - mixedR);
+
+gTp = 1;
+if (smTp > 0.001) {
+	tmpIn.poke(postL, 0);
+	tmpIn.poke(postR, 1);
+	for (ch = 0; ch < 2; ch += 1) {
+		cp_tp_store(ch, tmpIn, tmpOut, tpUp, fir);
+	}
+	pkTp = max(tmpOut.peek(0), tmpOut.peek(1));
+	tpHold = max(pkTp, tpHold * exp(-1 / (0.02 * srate)));
+	if (tpHold > cLin) {
+		gTp = cLin / tpHold;
+	}
+}
+tpDL.write(postL);
+tpDR.write(postR);
+tpDelL = tpDL.read(24, interp="linear");
+tpDelR = tpDR.read(24, interp="linear");
+pre0 = tpDelL * (1 + smTp * (gTp - 1));
+pre1 = tpDelR * (1 + smTp * (gTp - 1));
+
+// 4. Gain-inverted post-emphasis filter
+deEmp0 = cp_post_emp(pre0, lpDel0, empst, 0, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
+deEmp1 = cp_post_emp(pre1, lpDel1, empst, 1, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
+
+// 5. Single-channel clip selection (0 = Both, 1 = Ch 0 only, 2 = Ch 1 only)
+preL = chmode > 1.5 ? ch0By : deEmp0;
+preR = (chmode > 0.5 && chmode < 1.5) ? ch1By : deEmp1;
+
+// 6. Optional M/S decode back to L/R
+decL = useMs > 0.5 ? (preL + preR) * 0.7071067811865475 : preL;
+decR = useMs > 0.5 ? (preL - preR) * 0.7071067811865475 : preR;
+
+wetL = decL * mk;
+wetR = decR * mk;
+
+dryDL.write(in1);
+dryDR.write(in2);
+dryL = dryDL.read(1047, interp="linear");
+dryR = dryDR.read(1047, interp="linear");
+sigL = wetL + smDlt * (dryL - wetL - wetL);
+sigR = wetR + smDlt * (dryR - wetR - wetR);
+outL = sigL + (1 - smOn) * (dryL - sigL);
+outR = sigR + (1 - smOn) * (dryR - sigR);
+
+drvL = xsL * gg;
+drvR = xsR * gg;
+cHit = cLin * 0.99426007387;
+hit = 0;
+if (chmode < 1.5 && abs(pre0) >= cHit) {
+	hit = 1;
+}
+if (chmode != 1 && abs(pre1) >= cHit) {
+	hit = 1;
+}
+
+if (blk < 0.5) {
+	inPk = 0;
+	outPk = 0;
+	inPkL = 0;
+	inPkR = 0;
+	outPkL = 0;
+	outPkR = 0;
+	drvPk = 0;
+	wetPk = 0;
+	drvPkL = 0;
+	drvPkR = 0;
+	wetPkL = 0;
+	wetPkR = 0;
+	inSq = 0;
+	outSq = 0;
+	kInSq = 0;
+	kOutSq = 0;
+	clipN = 0;
+	drvMin = drvL;
+	drvMax = drvL;
+	wetMin = pre0;
+	wetMax = pre0;
+}
+inPkL = max(inPkL, abs(trimL));
+inPkR = max(inPkR, abs(trimR));
+inPk = max(inPkL, inPkR);
+outPkL = max(outPkL, abs(outL));
+outPkR = max(outPkR, abs(outR));
+outPk = max(outPkL, outPkR);
+drvPkL = max(drvPkL, abs(drvL));
+drvPkR = max(drvPkR, abs(drvR));
+drvPk = chmode > 1.5 ? drvPkR : ((chmode > 0.5 && chmode < 1.5) ? drvPkL : max(drvPkL, drvPkR));
+wetPkL = max(wetPkL, abs(pre0));
+wetPkR = max(wetPkR, abs(pre1));
+wetPk = chmode > 1.5 ? wetPkR : ((chmode > 0.5 && chmode < 1.5) ? wetPkL : max(wetPkL, wetPkR));
+inSq = inSq + trimL * trimL + trimR * trimR;
+outSq = outSq + outL * outL + outR * outR;
+clipN = clipN + hit;
+drvMin = min(drvMin, drvL);
+drvMax = max(drvMax, drvL);
+wetMin = min(wetMin, pre0);
+wetMax = max(wetMax, pre0);
+scat = blk - floor(blk / 16) * 16;
+if (scat < 0.5) {
+	sk = floor(blk / 16);
+	poke(scope, xsL, 288 + sk * 2, 0);
+	poke(scope, wetL, 289 + sk * 2, 0);
+}
+
+tmpIn.poke(trimL, 0);
+tmpIn.poke(trimR, 1);
+tmpIn.poke(outL, 2);
+tmpIn.poke(outR, 3);
+for (ch = 0; ch < 4; ch += 1) {
+	cp_kw_store(ch, tmpIn, tmpOut, kw, kwc);
+}
+kL = tmpOut.peek(0);
+kR = tmpOut.peek(1);
+kLo = tmpOut.peek(2);
+kRo = tmpOut.peek(3);
+kInSq = kInSq + kL * kL + kR * kR;
+kOutSq = kOutSq + kLo * kLo + kRo * kRo;
+
+blk = blk + 1;
+if (blk >= 256) {
+	inMs = inSq / 256;
+	outMs = outSq / 256;
+	kMsIn = kInSq / 256;
+	kMsOut = kOutSq / 256;
+	gr = 0;
+	if (drvPk > 1e-8) {
+		gr = 20 * log10(drvPk / max(wetPk, 1e-8));
+		if (gr < 0) {
+			gr = 0;
+		}
+	}
+	wslot = frame - floor(frame / 64) * 64;
+	mslot = frame - floor(frame / 128) * 128;
+	poke(scope, inPk, 0, 0);
+	poke(scope, outPk, 1, 0);
+	poke(scope, inMs, 2, 0);
+	poke(scope, outMs, 3, 0);
+	poke(scope, clipN / 256, 4, 0);
+	poke(scope, gr, 5, 0);
+	poke(scope, kMsIn, 6, 0);
+	poke(scope, kMsOut, 7, 0);
+	poke(scope, frame + 1, 8, 0);
+	poke(scope, srate, 9, 0);
+	poke(scope, 1047, 10, 0);
+	poke(scope, drvPk, 11, 0);
+	poke(scope, wetPk, 12, 0);
+	poke(scope, inPkL, 13, 0);
+	poke(scope, inPkR, 14, 0);
+	poke(scope, outPkL, 15, 0);
+	poke(scope, outPkR, 16, 0);
+	poke(scope, drvPkL, 17, 0);
+	poke(scope, drvPkR, 18, 0);
+	poke(scope, wetPkL, 19, 0);
+	poke(scope, wetPkR, 20, 0);
+	poke(scope, drvMin, 32 + wslot * 4, 0);
+	poke(scope, drvMax, 33 + wslot * 4, 0);
+	poke(scope, wetMin, 34 + wslot * 4, 0);
+	poke(scope, wetMax, 35 + wslot * 4, 0);
+	for (sb = 0; sb < 64; sb += 1) {
+		poke(scope, sbuf.peek(sb), 320 + sb, 0);
+	}
+	poke(scope, kMsIn, 400 + mslot * 6, 0);
+	poke(scope, kMsOut, 401 + mslot * 6, 0);
+	poke(scope, inMs, 402 + mslot * 6, 0);
+	poke(scope, outMs, 403 + mslot * 6, 0);
+	poke(scope, inPk, 404 + mslot * 6, 0);
+	poke(scope, outPk, 405 + mslot * 6, 0);
+	frame = frame + 1;
+	blk = 0;
+}
+
+out1 = fixnan(fixdenorm(outL));
+out2 = fixnan(fixdenorm(outR));

@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/types/clipplus.d.ts",
+    "src/spectral_theme.js",
+    "src/clipplus_curve.js",
+    "src/clipplus_meters.js"
+  ]
+}
