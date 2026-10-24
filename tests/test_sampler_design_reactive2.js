@@ -105,7 +105,7 @@ for (const m of [0, ALL]) {
     assert.strictEqual(inStrip.filter((z) => z.action === "engine").length, 5, "5 engine selectors in the strip");
     assert.ok(inStrip.some((z) => z.key === "sp_char"), "character switch in the strip");
     assert.ok(inStrip.filter((z) => z.kind === "value" || z.kind === "knob").length >= 5, "engine value bars + Pitch / Speed / Pos / Gain in the strip");
-    const modeBars = inStrip.filter((z) => z.kind === "value" && z.x < sb.STRIP.x + 286);
+    const modeBars = inStrip.filter((z) => z.kind === "value" && z.x < sb.STRIP.x + 286 && z.key !== "grain_motion" && z.key !== "play_pos");
     assert.ok(modeBars.length >= 2 && modeBars.every((z) => z.w === 66), "mode setting sliders below the modes are consistently 66 px wide (fits 4 params)");
     for (const z of inStrip) assert.ok(z.y + z.h <= 166.5 && z.y >= sb.STRIP.y - 0.5, `strip zone ${z.kind} ${z.key || z.action} inside the strip`);
     for (const z of sb.hitZones) if (z.kind === "wave") assert.ok(z.y + z.h <= sb.STRIP.y, "waveform ends above the strip");
@@ -313,11 +313,13 @@ sb.setFoldMask(0b1011);
         const left = Math.min(...seg.map((z) => z.x)), top = Math.min(...seg.map((z) => z.y)), bottom = Math.max(...seg.map((z) => z.y + z.h));
         assert.ok(top >= pills[0].y + pills[0].h, `${key}: switch sits below the mode pills`);
         assert.ok(seg.every((z) => z.x < S.x + 286), `${key}: switch sits in the left column under the mode pills`);
-        const bars = sb.hitZones.filter((z) => (z.kind === "value" || (z.action === "menu" && z.key === "sp_quant")) && z.y >= S.y && z.x < S.x + 286).sort((a, b) => a.x - b.x);
+        const bars = sb.hitZones.filter((z) => (z.kind === "value" || (z.action === "menu" && z.key === "sp_quant")) && z.y >= S.y + 30 && z.x < S.x + 286 && z.key !== "grain_motion" && z.key !== "play_pos").sort((a, b) => a.x - b.x);
         assert.ok(bars.length >= 2, `${key}: engine setting bars`);
         assert.ok(bottom <= Math.min(...bars.map((z) => z.y)) + 0.01, `${key}: switch sits above its setting bars`);
         assert.ok(Math.abs(left - bars[0].x) <= 6, `${key}: switch aligned with the first setting bar (${left} vs ${bars[0].x})`);
-        assert.ok(bars.every((z) => z.w === 66), `${key}: every setting bar is 66 px wide (fits 4 params)`);
+        const play = sb.hitZones.find((z) => z.kind === "value" && z.key === "grain_motion");
+        if (bars.length <= 2) assert.ok(bars.every((z) => z.w === 66), `${key}: two setting bars stay 66 px`);
+        else assert.ok(bars.every((z) => z.w === bars[0].w && z.w < 66) && bars[bars.length - 1].x + bars[bars.length - 1].w <= play.x, `${key}: three setting bars share the space left of Speed`);
         const pitch = sb.hitZones.find((z) => z.kind === "value" && z.key === "pitch_st");
         const pos = sb.hitZones.find((z) => z.kind === "value" && z.key === "play_pos");
         const frz = sb.hitZones.find((z) => z.action === "freeze");
@@ -325,6 +327,33 @@ sb.setFoldMask(0b1011);
         assert.ok(pos && frz && Math.abs(frz.x - (pos.x + pos.w)) <= 6 && Math.abs(frz.y - pos.y) <= 2, "Freeze button sits immediately beside the Pos control");
     }
     sb.storeParam("mode", 0, true); sb.storeParam("rp_char", 0, true);
+}
+
+// Speed, Pos and Freeze are a column in the sample section. Gain stays in the tuning column.
+{
+    const S = sb.STRIP;
+    sb.oscTab = 0;
+    sb.setParamFromFace("osc1_type", 0);
+    for (const [mode, chKey, ch] of [[0, "rp_char", 0], [1, "cy_char", 2]]) {
+        sb.setParamFromFace("mode", mode);
+        sb.setParamFromFace(chKey, ch);
+        sb.paint();
+        const speed = sb.hitZones.find((z) => z.kind === "value" && z.key === "grain_motion");
+        const pos = sb.hitZones.find((z) => z.kind === "value" && z.key === "play_pos");
+        const frz = sb.hitZones.find((z) => z.action === "freeze");
+        const gain = sb.hitZones.find((z) => z.kind === "value" && z.key === "samp_gain" && z.y >= S.y);
+        assert.ok(speed && pos && frz, `mode ${mode}: Speed, Pos and Freeze are drawn`);
+        assert.ok(speed.x < S.x + 286 && pos.x < S.x + 286 && frz.x < S.x + 286, "playhead stays in the sampler column");
+        assert.ok(speed.y < pos.y && speed.x >= pos.x - 1, "Speed sits above Pos");
+        assert.ok(Math.abs(frz.x - (pos.x + pos.w)) <= 6 && Math.abs(frz.y - pos.y) <= 1, "Freeze sits beside Pos");
+        assert.ok(gain && gain.w === 50 && gain.h === 16 && gain.x === S.x + 410, "Gain stays 50 px");
+    }
+    sb.oscTab = 2;
+    sb.paint();
+    const subGain = sb.hitZones.find((z) => z.kind === "value" && z.key === "sub_gain");
+    assert.ok(subGain && subGain.w === 50 && subGain.h === 16 && subGain.x === S.x + 410, "sub Level matches Gain");
+    sb.oscTab = 0;
+    sb.setParamFromFace("mode", 0);
 }
 
 // --- Mod Matrix target label static fill and live modulation sum bar ---

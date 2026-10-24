@@ -3351,15 +3351,10 @@ function paintSettingBarItem(kItem, bx, by, bw, bh, acc) {
     }
 }
 
-// Helper: Pos value bar paired with its adjacent Freeze snowflake button
-function paintPosAndFreeze(osc, bx, by, bw, bh, acc, isWt) {
-    var fw = bh;
-    var pw = bw - fw - 2;
-    hValueBar(osc.posKey, bx, by, pw, bh, "Pos", acc, !isWt && !curFreeze);
-    var fx = bx + pw + 2;
-    fillRR(fx, by, fw, bh, 2.5, curFreeze ? RC.sel : RC.raised, 1);
-    iconSnow(fx + fw * 0.5, by + bh * 0.5, curFreeze ? RC.dark : RC.sub, 0.85);
-    zone("button", fx, by, fw, bh, { action: "freeze" });
+function paintFreezeBtn(x, y, s) {
+    fillRR(x, y, s, s, 2.5, curFreeze ? RC.sel : RC.raised, 1);
+    iconSnow(x + s * 0.5, y + s * 0.5, curFreeze ? RC.dark : RC.sub, 0.85);
+    zone("button", x, y, s, s, { action: "freeze" });
 }
 
 function paintEngineStrip() {
@@ -3377,41 +3372,41 @@ function paintEngineStrip() {
     var L = engineLayout(actMode, isWt);
     var nk = L.knobs.length;
 
-    // Left Column (x+4 .. x+280, w = 276):
-    // Row 1 (y+3): Mode Select ([Repitch][Spectral][Cycles][Textures][Fragments] | [Wavetable])
-    var leftW = 276;
-    paintModePillsRow(x + 4, y + 3, isWt, actMode);
-    // Row 2 (y+20): Mode Settings directly below Mode Select (e.g. Clean | Analog | Digital)
+    // Left column (x+4 .. x+280). Sample mode keeps Speed, Pos and Freeze in their own column.
+    // Wavetable leaves that column out and gives the mode controls the full width.
+    var leftX = x + 4, leftW = 276;
+    var modeW = isWt ? leftW : leftW - 98;
+    var knobW = 66, knobGap = 4;
+    if (!isWt && nk >= 3) knobW = Math.floor((modeW - knobGap * (nk - 1)) / nk);
+    paintModePillsRow(leftX, y + 3, isWt, actMode);
     if (L.head) {
-        segCtl(L.head.key, x + 4, y + 20, leftW, 13, L.head.labels, acc);
+        segCtl(L.head.key, leftX, y + 20, modeW, 13, L.head.labels, acc);
     } else if (actMode === 4) {
-        segCtl("fr_use_density", x + 4, y + 20, leftW, 13, ["Step Grid", "Density"], acc);
+        segCtl("fr_use_density", leftX, y + 20, modeW, 13, ["Step Grid", "Density"], acc);
     } else {
-        fillRR(x + 4, y + 20, leftW, 13, 2.5, RC.raised, 0.7);
-        text(L.title, x + 4 + leftW * 0.5, y + 29.5, 7.8, RC.sub, true, 1);
+        fillRR(leftX, y + 20, modeW, 13, 2.5, RC.raised, 0.7);
+        text(L.title, leftX + modeW * 0.5, y + 29.5, 7.8, RC.sub, true, 1);
     }
-    // Row 3 (y+38): Mode Settings Bars consistently sized to fit 4 params across the 276 px row (66 px each, 4 px gap)
-    var maxSlots = 4;
-    var gap5a = 4;
-    var bw5a = Math.floor((leftW - (maxSlots - 1) * gap5a) / maxSlots); // 66 px
     for (var i5a = 0; i5a < nk; i5a++) {
-        var bx5a = x + 4 + i5a * (bw5a + gap5a);
-        paintSettingBarItem(L.knobs[i5a], bx5a, y + 38, bw5a, 16, acc);
+        paintSettingBarItem(L.knobs[i5a], leftX + i5a * (knobW + knobGap), y + 38, knobW, 16, acc);
+    }
+    if (!isWt) {
+        var colX = leftX + modeW + 6;
+        line(colX - 4, y + 18, colX - 4, y + h - 6, RC.divider, 0.7, 1);
+        hValueBar("grain_motion", colX, y + 20, 92, 15, "Speed", acc, !scanOn);
+        hValueBar(osc.posKey, colX, y + 38, 73, 16, "Pos", acc, !curFreeze);
+        paintFreezeBtn(colX + 76, y + 38, 16);
     }
 
     line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1.0, 1.0);
 
-    // Right Column (x+292 .. x+460, w = 168): Tuning (Pitch / Fine / Ratio) & Playhead (Speed / Pos+Freeze / Gain)
-    text("TUNING & PLAYHEAD", x + 292, y + 12, 7.5, RC.sub, true, 0);
+    // Right column stays the shared tuning row. Gain keeps its 50 px box.
+    text("TUNING", x + 292, y + 12, 7.5, RC.sub, true, 0);
     valuePill(x + 412, y + 3, 22, Math.round(paramValue("unison_voices")) + "v", { key: "unison_voices", pxPerUnit: 6 }, RC.sel, false);
     valuePill(x + 436, y + 3, 24, Math.round(paramValue("unison_detune")) + "%", { key: "unison_detune" }, RC.sel, Math.round(paramValue("unison_voices")) <= 1);
     hValueBar(osc.pitchKey, x + 292, y + 20, 54, 15, "Pitch", acc, false);
     hValueBar(osc.detKey, x + 350, y + 20, 53, 15, "Fine", acc, false);
     hValueBar(osc.ratioKey, x + 407, y + 20, 53, 15, "Ratio", acc, false);
-    if (!isWt) {
-        hValueBar("grain_motion", x + 292, y + 38, 49, 16, "Speed", acc, !scanOn);
-        paintPosAndFreeze(osc, x + 344, y + 38, 63, 16, acc, false);
-    }
     hValueBar(osc.gainKey, x + 410, y + 38, 50, 16, "Gain", acc, false);
 }
 
