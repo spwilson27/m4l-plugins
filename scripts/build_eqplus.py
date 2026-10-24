@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
-Build devices/EQ+.amxd (360 x 169 px) — a drawable eight-band EQ (Bitwig EQ+).
+Build devices/EQ+.amxd (378 x 169 px) — a drawable eight-band EQ (Bitwig EQ+).
+The extra 18 px is the always-visible sidechain tab on the left.
 
 The face is one interactive v8ui (`obj-viz`). Every automatable control is a hidden
 `live.*` parameter (presentation off) so Live can automate, map, and show it in the
-Inspector without covering the canvas. The v8ui reports changes as `param <name> <value>`
-on outlet 0; `route` turns those into a silent `set` of the live object so nothing feeds
-back. Outlet 1 sends `outgain` straight to the gen hub.
+Inspector without covering the canvas. Outlet 0 sends `param <name> <value>` and
+`setwidth_cmd <px>`. `route param setwidth_cmd` turns `param` into a silent `set` of
+the live object (no feedback) and `setwidth_cmd` into `setwidth` on `live.thisdevice`.
+The filters and analyzer shelves are stored-only toggles, as is the sidechain fold.
+Reference enable and reference gain are automatable. Outlet 1 sends `outgain`
+straight to the gen hub.
 
-plugin~ stays unwired until the face creates `gen~` (AGENTS.md 1d). Messages for that
-gen go through `eq_genin` (`gate 1 1`, data into the right inlet).
+`plugin~ 1 2 3 4` stays unwired until the face creates `gen~` (AGENTS.md 1d). Outlets
+1–2 are the main stereo input and 3–4 are the sidechain input. Messages for that gen
+go through `eq_genin` (`gate 1 1`, data into the right inlet). The spectrum buffer's
+fourth channel is the sidechain reference ring.
 """
 import hashlib
 import json
@@ -23,9 +29,10 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "eqplus_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "eqplus_ui.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "eqplus_core.genexpr")
+FFT_PATH = os.path.join(ROOT_DIR, "src", "cepstrum_lib.genexpr")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "EQ+.amxd")
 
-DEVICE_W = 360.0
+DEVICE_W = 378.0
 DEVICE_H = 169.0
 
 MODES = [
@@ -45,11 +52,11 @@ MODES = [
 ]
 DEFAULT_FREQS = [60.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0]
 TILT_ENUM = ["0.0 dB/oct", "3.0 dB/oct", "4.5 dB/oct", "6.0 dB/oct"]
-RANGE_ENUM = ["\u00b110", "\u00b120", "\u00b130"]
+RANGE_ENUM = ["\u00b112", "\u00b124", "\u00b136"]
 ON_OFF = ["Off", "On"]
 
 
-def float_valueof(long_name, short_name, lo, hi, initial, unit, exponent=None):
+def float_valueof(long_name, short_name, lo, hi, initial, unit, exponent=None, units=None):
     valueof = {
         "parameter_annotation_name": long_name,
         "parameter_initial": [initial],
@@ -64,6 +71,8 @@ def float_valueof(long_name, short_name, lo, hi, initial, unit, exponent=None):
     }
     if exponent is not None:
         valueof["parameter_exponent"] = exponent
+    if units:
+        valueof["parameter_units"] = units
     return valueof
 
 
@@ -100,10 +109,10 @@ def hidden(obj_id, maxclass, x, y, w, h, valueof, varname, help_text):
     }
 
 
-def make_num(obj_id, long_name, short_name, lo, hi, initial, unit, x, y, w, help_text, exponent=None):
+def make_num(obj_id, long_name, short_name, lo, hi, initial, unit, x, y, w, help_text, exponent=None, units=None):
     box = hidden(
         obj_id, "live.numbox", x, y, w, 18.0,
-        float_valueof(long_name, short_name, lo, hi, initial, unit, exponent),
+        float_valueof(long_name, short_name, lo, hi, initial, unit, exponent, units),
         long_name, help_text,
     )
     box["numoutlets"] = 2
@@ -276,7 +285,7 @@ def control_specs():
             "enums": RANGE_ENUM,
             "init": 0,
             "w": 90,
-            "help": "Vertical display range of the curve: \u00b110, \u00b120, or \u00b130 dB.",
+            "help": "Vertical display range of the curve: \u00b112, \u00b124, or \u00b136 dB.",
         },
         {
             "id": "obj-ctrl-pre",
@@ -386,12 +395,12 @@ def control_specs():
                 "kind": "num",
                 "long": f"Band {n} Gain",
                 "short": f"B{n} Gain",
-                "lo": -30.0,
-                "hi": 30.0,
+                "lo": -36.0,
+                "hi": 36.0,
                 "init": 0.0,
                 "unit": 4,
                 "w": 64,
-                "help": f"Gain of band {n}, in dB. Cuts and notches ignore it.",
+                "help": f"Gain of band {n} for shelves and bells, in dB (-36 to +36). Cuts and notches ignore it.",
             },
             {
                 "id": f"{base}-q",
@@ -409,33 +418,130 @@ def control_specs():
                 "help": f"Q of band {n} (0.1 to 40).",
             },
         ])
+    # Appended so existing parameter order is unchanged. Shelves and the sidechain
+    # fold are stored only; reference enable and gain stay automatable.
+    specs.extend([
+        {
+            "id": "obj-ctrl-filters-shelf",
+            "key": "filters_shelf",
+            "ui": "set_filters_shelf",
+            "kind": "toggle",
+            "long": "Show Filters Shelf",
+            "short": "FiltShf",
+            "init": 0,
+            "w": 90,
+            "invisible": 1,
+            "help": "Show the filters shelf. Stored with the Live Set.",
+        },
+        {
+            "id": "obj-ctrl-analyzer-shelf",
+            "key": "analyzer_shelf",
+            "ui": "set_analyzer_shelf",
+            "kind": "toggle",
+            "long": "Show Analyzer Shelf",
+            "short": "AnaShf",
+            "init": 0,
+            "w": 90,
+            "invisible": 1,
+            "help": "Show the analyzer shelf. Stored with the Live Set.",
+        },
+        {
+            "id": "obj-ctrl-sidechain-fold",
+            "key": "sidechain_fold",
+            "ui": "set_sidechain_fold",
+            "kind": "toggle",
+            "long": "Show Sidechain Fold",
+            "short": "SCFold",
+            "init": 0,
+            "w": 80,
+            "invisible": 1,
+            "help": "Show the sidechain fold. Stored with the Live Set.",
+        },
+        {
+            "id": "obj-ctrl-ref-enable",
+            "key": "ref_enable",
+            "ui": "set_ref_enable",
+            "kind": "toggle",
+            "long": "Reference Enable",
+            "short": "RefOn",
+            "init": 0,
+            "w": 70,
+            "help": "Draw the sidechain reference on the analyzer.",
+        },
+        {
+            "id": "obj-ctrl-ref-gain",
+            "key": "ref_gain",
+            "ui": "set_ref_gain",
+            "kind": "num",
+            "long": "Reference Gain",
+            "short": "RefGain",
+            "lo": -24.0,
+            "hi": 24.0,
+            "init": 0.0,
+            "unit": 4,
+            "w": 70,
+            "help": "Gain applied to the sidechain reference, in dB (-24 to +24).",
+        },
+        {
+            "id": "obj-ctrl-tilt-eq",
+            "key": "tilt_eq",
+            "ui": "set_tilt_eq",
+            "kind": "num",
+            "long": "Tilt Filter",
+            "short": "TiltEQ",
+            "lo": -24.0,
+            "hi": 24.0,
+            "init": 0.0,
+            "unit": 4,
+            "w": 70,
+            "help": "Flat tilt in dB per decade around 1 kHz. +12 is about +12 dB at 10 kHz and -12 dB at 100 Hz.",
+        },
+        {
+            "id": "obj-ctrl-phase-mode",
+            "key": "phase_mode",
+            "ui": "set_phase_mode",
+            "kind": "menu",
+            "long": "Processing Mode",
+            "short": "Phase",
+            "enums": ["Zero Latency", "Natural Phase", "Linear Phase"],
+            "init": 0,
+            "w": 120,
+            "help": "Zero Latency is the biquad EQ. Natural Phase matches analog magnitude and phase with about 7.3 ms of latency. Linear Phase keeps that magnitude with a flat phase (Pro-Q Low, 3072 samples).",
+        },
+    ])
     return specs
 
 
 def make_control(spec, x, y):
     kind = spec["kind"]
     if kind == "num":
-        return make_num(
+        made = make_num(
             spec["id"], spec["long"], spec["short"], spec["lo"], spec["hi"], spec["init"],
-            spec["unit"], x, y, spec["w"], spec["help"], spec.get("exponent"),
+            spec["unit"], x, y, spec["w"], spec["help"], spec.get("exponent"), spec.get("units"),
         )
-    if kind == "toggle":
-        return make_toggle(spec["id"], spec["long"], spec["short"], spec["init"], x, y, spec["w"], spec["help"])
-    if kind == "tab":
-        return make_tab(spec["id"], spec["long"], spec["short"], spec["enums"], spec["init"], x, y, spec["w"], spec["help"])
-    if kind == "menu":
-        return make_menu(spec["id"], spec["long"], spec["short"], spec["enums"], spec["init"], x, y, spec["w"], spec["help"])
-    raise ValueError(kind)
+    elif kind == "toggle":
+        made = make_toggle(spec["id"], spec["long"], spec["short"], spec["init"], x, y, spec["w"], spec["help"])
+    elif kind == "tab":
+        made = make_tab(spec["id"], spec["long"], spec["short"], spec["enums"], spec["init"], x, y, spec["w"], spec["help"])
+    elif kind == "menu":
+        made = make_menu(spec["id"], spec["long"], spec["short"], spec["enums"], spec["init"], x, y, spec["w"], spec["help"])
+    else:
+        raise ValueError(kind)
+    if spec.get("invisible"):
+        # 1 = stored with the Set, not automatable and not listed in the parameter chooser.
+        made["box"]["saved_attribute_attributes"]["valueof"]["parameter_invisible"] = 1
+    return made
 
 
 def make_panel():
-    c = round(30 / 255.0, 6)
-    bg = [c, c, c, 1.0]
+    # Live default-dark surface. bgfillcolor is what a panel paints; the binding follows the user's theme.
+    bg = [0.212, 0.212, 0.212, 1.0]
     return {
         "box": {
             "angle": 0.0,
             "background": 1,
             "bgcolor": bg,
+            "bgfillcolor": {"type": "color", "color": bg, "angle": 270.0, "proportion": 0.39},
             "border": 0,
             "bordercolor": bg,
             "grad1": bg,
@@ -448,8 +554,12 @@ def make_panel():
             "patching_rect": [760.0, 40.0, DEVICE_W, DEVICE_H],
             "presentation": 1,
             "presentation_rect": [0.0, 0.0, DEVICE_W, DEVICE_H],
-            "proportion": 0.5,
+            "proportion": 0.39,
             "rounded": 0,
+            "saved_attribute_attributes": {
+                "bgfillcolor": {"expression": "themecolor.live_surface_bg"},
+            },
+            "varname": "obj-panel-bg",
         }
     }
 
@@ -459,8 +569,10 @@ def build():
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
+    with open(FFT_PATH, "r", encoding="utf-8") as f:
+        fft_code = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
-        gen_code = f.read()
+        gen_code = fft_code.rstrip() + "\n" + f.read()
     gen_text = gendsp_json(gen_code)
     gen_hash = hashlib.sha1(gen_text.encode("utf-8")).hexdigest()[:12]
     # GEN_DSP_TEXT / GEN_DSP_HASH, then the shared math, then the face. Top-level names stay
@@ -472,7 +584,7 @@ def build():
         + "\n\n"
         + ui_js
     )
-    viz_rect = [4.0, 4.0, 352.0, 161.0]
+    viz_rect = [4.0, 4.0, DEVICE_W - 8.0, 161.0]
     specs = control_specs()
     route_keys = [s["key"] for s in specs]
 
@@ -516,31 +628,42 @@ def build():
                 "embed": 1,
                 "autowatch": 1,
             },
-            "varname": "EQPlusViz",
+            "varname": "obj-viz",
         }
     })
 
     boxes.extend([
-        newobj("obj-plugin", "plugin~", 20, 420, 60, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="eq_plugin"),
+        newobj("obj-plugin", "plugin~ 1 2 3 4", 20, 420, 120, numinlets=2, numoutlets=4, outlettype=["signal", "signal", "signal", "signal"], varname="eq_plugin"),
         newobj("obj-plugout", "plugout~", 20, 620, 70, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="eq_plugout"),
         # Open gate: messages enter the right inlet. The face connects its outlet to gen~ after load.
         newobj("obj-gen-in", "gate 1 1", 120, 480, 70, numinlets=2, numoutlets=1, outlettype=[""], varname="eq_genin"),
         newobj("obj-buf-cfg", "buffer~ #0-eqpluscfg @samps 64", 420, 420, 230, numoutlets=2, outlettype=["float", "bang"]),
-        newobj("obj-buf-spec", "buffer~ #0-eqplusspec 200 2 @samps 8200", 420, 450, 280, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-buf-spec", "buffer~ #0-eqplusspec 200 4 @samps 8200", 420, 450, 280, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-buf-ir", "buffer~ #0-eqplusir 4096 3", 420, 480, 220, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-thisdevice", "live.thisdevice", 420, 490, 100, numoutlets=2, outlettype=["bang", "int"]),
         newobj("obj-trig-init", "t b b", 420, 520, 50, numoutlets=2, outlettype=["bang", "bang"]),
         message("obj-msg-init", "init_dsp", 540, 490, 70),
-        message("obj-msg-setbuf", "setbuffers #0-eqpluscfg #0-eqplusspec", 540, 520, 250),
-        message("obj-msg-gen-buf", "eqcfg #0-eqpluscfg, spec #0-eqplusspec", 540, 550, 250),
+        message("obj-msg-init-selection", "init_selection", 540, 460, 110),
+        newobj("obj-key", "key", 700, 420, 46, numinlets=0, numoutlets=1, outlettype=["int"]),
+        newobj("obj-sel-key", "sel 127 8 30 31 28 29", 700, 448, 180, numinlets=1, numoutlets=7, outlettype=["bang"] * 6 + [""]),
+        message("obj-msg-hotkey-disable", "hotkey_disable", 700, 476, 110),
+        message("obj-msg-hotkey-gain-up", "hotkey_gain 1", 820, 476, 100),
+        message("obj-msg-hotkey-gain-down", "hotkey_gain -1", 930, 476, 110),
+        message("obj-msg-hotkey-freq-left", "hotkey_freq -1", 700, 504, 110),
+        message("obj-msg-hotkey-freq-right", "hotkey_freq 1", 820, 504, 110),
+        message("obj-msg-setbuf", "setbuffers #0-eqpluscfg #0-eqplusspec #0-eqplusir", 540, 520, 320),
+        message("obj-msg-gen-buf", "eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir", 540, 550, 360),
         newobj("obj-metro", "qmetro 33 @active 1", 420, 590, 140, outlettype=["bang"]),
-        newobj("obj-route-param", "route param", 20, 680, 90, numoutlets=2, outlettype=["", ""]),
+        # Outlet 0 is param <key> <value>; outlet 1 is setwidth_cmd <px>.
+        newobj("obj-route-viz", "route param setwidth_cmd", 20, 680, 200, numoutlets=3, outlettype=["", "", ""]),
         newobj(
-            "obj-route-names",
+            "obj-route-param",
             "route " + " ".join(route_keys),
-            20, 710, 720,
+            20, 710, 860,
             numoutlets=len(route_keys) + 1,
             outlettype=[""] * (len(route_keys) + 1),
         ),
+        newobj("obj-prep-setwidth", "prepend setwidth", 240, 680, 110),
     ])
 
     # Right outlet of `t b b` fires first: buffer names, then the gen bind. Left outlet fires
@@ -550,12 +673,28 @@ def build():
         line("obj-trig-init", 1, "obj-msg-setbuf"),
         line("obj-trig-init", 1, "obj-msg-gen-buf"),
         line("obj-trig-init", 0, "obj-msg-init"),
+        line("obj-trig-init", 0, "obj-msg-init-selection"),
         line("obj-msg-setbuf", 0, "obj-viz"),
         line("obj-msg-gen-buf", 0, "obj-gen-in", 1),
         line("obj-msg-init", 0, "obj-viz"),
+        line("obj-msg-init-selection", 0, "obj-viz"),
+        line("obj-key", 0, "obj-sel-key"),
+        line("obj-sel-key", 0, "obj-msg-hotkey-disable"),
+        line("obj-sel-key", 1, "obj-msg-hotkey-disable"),
+        line("obj-sel-key", 2, "obj-msg-hotkey-gain-up"),
+        line("obj-sel-key", 3, "obj-msg-hotkey-gain-down"),
+        line("obj-sel-key", 4, "obj-msg-hotkey-freq-left"),
+        line("obj-sel-key", 5, "obj-msg-hotkey-freq-right"),
+        line("obj-msg-hotkey-disable", 0, "obj-viz"),
+        line("obj-msg-hotkey-gain-up", 0, "obj-viz"),
+        line("obj-msg-hotkey-gain-down", 0, "obj-viz"),
+        line("obj-msg-hotkey-freq-left", 0, "obj-viz"),
+        line("obj-msg-hotkey-freq-right", 0, "obj-viz"),
         line("obj-metro", 0, "obj-viz"),
-        line("obj-viz", 0, "obj-route-param"),
-        line("obj-route-param", 0, "obj-route-names"),
+        line("obj-viz", 0, "obj-route-viz"),
+        line("obj-route-viz", 0, "obj-route-param"),
+        line("obj-route-viz", 1, "obj-prep-setwidth"),
+        line("obj-prep-setwidth", 0, "obj-thisdevice"),
         line("obj-viz", 1, "obj-gen-in", 1),
     ])
 
@@ -566,7 +705,7 @@ def build():
         col = 20.0 + (i // 20) * 360.0
         boxes.append(newobj(set_id, "prepend set", col, row_y, 80))
         boxes.append(newobj(ui_id, "prepend " + spec["ui"], col + 90, row_y, 180))
-        lines.append(line("obj-route-names", i, set_id))
+        lines.append(line("obj-route-param", i, set_id))
         lines.append(line(set_id, 0, spec["id"]))
         lines.append(line(spec["id"], 0, ui_id))
         lines.append(line(ui_id, 0, "obj-viz"))

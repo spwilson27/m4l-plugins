@@ -29,6 +29,7 @@ import max_harness as mh
 
 ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "eqplus_core.genexpr")
+FFT_PATH = os.path.join(ROOT, "src", "cepstrum_lib.genexpr")
 CONFIG_PATH = os.path.join(ROOT, "src", "eqplus_config.js")
 SR = mh.DEFAULT_SR
 AMP = 0.2
@@ -270,7 +271,11 @@ def require_spec(name, meta, errors, post_loud):
     idx = meta.get("writeIdx", -1)
     if tick < 32:
         errors.append("%s: spectrum frameTick did not advance (%s)" % (name, tick))
-    if not (0 < idx < 8192):
+    # writeIdx is stored only on the 64-sample heartbeat, and it is 0 whenever the
+    # render length wraps the 8192-sample ring. A live frameTick means the gen ran.
+    if tick >= 32 and not (0 <= idx < 8192):
+        errors.append("%s: writeIdx out of range (%s)" % (name, idx))
+    elif tick < 32 and not (0 < idx < 8192):
         errors.append("%s: writeIdx did not advance (%s)" % (name, idx))
     if meta.get("prePeak", 0) < 0.04:
         errors.append("%s: pre spectrum is silent (%s)" % (name, meta.get("prePeak")))
@@ -321,6 +326,9 @@ def main():
     only = set(args)
     with open(gen_path, encoding="utf-8") as f:
         gen_code = f.read()
+    if os.path.abspath(gen_path) == os.path.abspath(GEN_PATH):
+        with open(FFT_PATH, encoding="utf-8") as f:
+            gen_code = f.read().rstrip() + "\n" + gen_code
     probe_js = write_probe()
     errors = []
     for case in cases():

@@ -192,6 +192,11 @@ assert.ok(gen.includes("glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (gli
 assert.ok((gen.match(/freezeOn > 0\.5/g) || []).length >= 3, "Freeze is handled in every engine");
 assert.ok(gen.includes("dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;"), "Reverse flips playback direction");
 assert.ok(gen.includes("REPITCH") && gen.includes("CYCLES") && gen.includes("TEXTURES"));
+assert.ok(gen.includes("sbHarmG = clip(sub_harm_level, 0, 1);"), "upper harmonics follow Harm level only");
+assert.ok(!gen.includes("clip(sub_tone, 0, 1)"), "sub tone no longer scales the harmonic level");
+assert.ok(gen.includes("subTn = clip(peek(prm, 78), 0, 1);"), "sub tone is read into the drive block");
+assert.ok(gen.includes("1.0 / sqrt(1.0 + pow(sbNum / sbCut, 4.0))"), "sub low pass is a 12 dB/octave rolloff");
+assert.ok(!gen.includes("1.6 * (sbNum - sbCut)"), "sub low pass is not the steep logistic");
 
 
 // ============================================================================
@@ -227,7 +232,7 @@ assert.strictEqual(byId.size, boxes.length, "box ids are unique");
 assert.strictEqual(byId.get("obj-buf-samp").text, "buffer~ #0-bsamp 1000 2", "empty user sample buffer");
 assert.strictEqual(byId.get("obj-buf-voices").text, "buffer~ #0-bsvoices @samps 128");
 assert.strictEqual(byId.get("obj-buf-scope").text, "buffer~ #0-bsscope @samps 256", "telemetry incl. 32 grain slots (64..127) and per-voice env/filter (128..207)");
-assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch");
+assert.strictEqual(byId.get("obj-msg-gen-buf").text, "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2");
 assert.strictEqual(byId.get("obj-buf-pitch").text, "buffer~ #0-bspitch @samps 4096", "Analyzed Root Key curve buffer");
 assert.strictEqual(byId.get("obj-msg-ui-buf").text, "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch");
 assertLink(lines, "obj-loadbang", 0, "obj-msg-gen-buf", 0, "loadbang -> gen buffers");
@@ -390,7 +395,7 @@ assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, "midi");
 assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, "midi -> main face");
 
 // --- face -> route -> hidden control wiring ---
-assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate");
+assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate wt_msg");
 assertLink(lines, "obj-route-viz", 2, "obj-opendialog", 0, "browse -> file dialog");
 assertLink(lines, "obj-viz", 0, "obj-route-viz", 0, "main face outlet");
 assertLink(lines, "obj-viz-side", 0, "obj-route-viz", 0, "side face outlet");
@@ -403,10 +408,11 @@ assertLink(lines, "obj-route-viz", 4, "obj-prep-setwidth", 0, "setwidth_cmd -> p
 assertLink(lines, "obj-prep-setwidth", 0, "obj-thisdevice", 0, "prepend setwidth -> live.thisdevice");
 assertLink(lines, "obj-thisdevice", 0, "obj-msg-ready", 0, "thisdevice ready -> device_ready");
 assertLink(lines, "obj-msg-ready", 0, "obj-viz", 0, "device_ready -> main face");
-assert.strictEqual(byId.get("obj-route-viz").numoutlets, 9, "route-viz: 8 selectors + reject");
+assert.strictEqual(byId.get("obj-route-viz").numoutlets, 10, "route-viz: 9 selectors + reject");
 assert.strictEqual(byId.get("obj-prep-samprate").text, "prepend samp_rate");
 assertLink(lines, "obj-route-viz", 7, "obj-prep-samprate", 0, "samp_rate -> prepend");
 assertLink(lines, "obj-prep-samprate", 0, "obj-gen-in", 1, "samp_rate -> gen hub");
+assertLink(lines, "obj-route-viz", 8, "obj-gen-in", 1, "wt_msg -> gen hub");
 assertLink(lines, "obj-route-viz", 0, "obj-route-param", 0, "param route");
 assertLink(lines, "obj-route-viz", 1, "obj-prep-replace", 0, "load_sample route");
 const routeKeys = byId.get("obj-route-param").text.split(/\s+/).slice(1);

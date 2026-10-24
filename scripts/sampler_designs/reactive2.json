@@ -4,7 +4,7 @@
   "face": "src/sampler_design_reactive2.js",
   "width": 758,
   "max_width": 1545,
-  "drop": [30, 17, 458, 74],
+  "drop": [26, 0, 466, 107],
   "folds": 5,
   "osc2_ui": "tabs",
   "sample_gain": true,

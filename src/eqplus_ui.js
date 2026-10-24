@@ -15,22 +15,49 @@ outlets = 2;
 // #0-eqpluscfg ch 1: 8 bands * EQP_CFG_STRIDE
 //   (sections, b0, b1, b2, a1, a2). Disabled / Off bands are all zeros.
 
-var COL_CHROME = [0x23 / 255, 0x23 / 255, 0x23 / 255, 1];
-var COL_BEZEL = [0x2b / 255, 0x2b / 255, 0x2b / 255, 1];
-var COL_PLOT = [0x14 / 255, 0x14 / 255, 0x14 / 255, 1];
-var COL_LABEL = [0xb8 / 255, 0xb8 / 255, 0xb8 / 255, 1];
-var COL_ORANGE = [1, 0x99 / 255, 0x22 / 255, 1];
-var COL_DIM = [0x9a / 255, 0x9a / 255, 0x9a / 255, 1];
-var COL_AXIS = [0x77 / 255, 0x77 / 255, 0x77 / 255, 1];
-var COL_AQ_OFF = [0x78 / 255, 0x78 / 255, 0x78 / 255, 1];
-var COL_BTN = [0x36 / 255, 0x36 / 255, 0x36 / 255, 1];
-var COL_BTN_TEXT = [0xb0 / 255, 0xb0 / 255, 0xb0 / 255, 1];
-var COL_BTN_ON_TEXT = [0x18 / 255, 0x18 / 255, 0x18 / 255, 1];
-var COL_DROP = [0x3c / 255, 0x3c / 255, 0x3c / 255, 1];
-var COL_DROP_EDGE = [0x52 / 255, 0x52 / 255, 0x52 / 255, 1];
-var COL_CARET = [0xcc / 255, 0xcc / 255, 0xcc / 255, 1];
-var COL_WHITE = [1, 1, 1, 1];
-var COL_INK = [0.10, 0.07, 0.03, 1];
+// Live 12 default dark, the same measured values as spectral_theme.js. paint() refreshes these
+// from max.getcolor so the face follows the user's Live theme.
+var EQP_LIVE = {
+    live_desktop: [0.165, 0.165, 0.165, 1],
+    live_surface_bg: [0.212, 0.212, 0.212, 1],
+    live_lcd_bg: [0.094, 0.094, 0.094, 1],
+    live_lcd_frame: [0.243, 0.243, 0.243, 1],
+    live_lcd_title: [0.71, 0.71, 0.71, 1],
+    live_lcd_control_fg: [1, 0.678, 0.337, 1],
+    live_lcd_control_fg_alt: [0.012, 0.765, 0.835, 1],
+    live_display_line_one: [1, 0.678, 0.337, 1],
+    live_display_line_two: [0.012, 0.765, 0.835, 1],
+    live_display_handle_two: [1, 0.412, 0.498, 1],
+    live_display_scale_text: [0.525, 0.525, 0.525, 1],
+    live_control_bg: [0.118, 0.118, 0.118, 1],
+    live_control_fg: [0.71, 0.71, 0.71, 1],
+    live_control_selection: [1, 0.678, 0.337, 1],
+    live_control_zombie: [0.459, 0.459, 0.459, 1],
+    live_alert: [0.906, 0.412, 0.259, 1]
+};
+var COL_CHROME = EQP_LIVE.live_surface_bg;
+var COL_BEZEL = EQP_LIVE.live_desktop;
+var COL_PLOT = EQP_LIVE.live_lcd_bg;
+var COL_LABEL = EQP_LIVE.live_lcd_title;
+var COL_ORANGE = EQP_LIVE.live_control_selection;
+var COL_VALUE = EQP_LIVE.live_lcd_control_fg;
+var COL_CURVE = EQP_LIVE.live_display_line_one;
+var COL_FOCUS = EQP_LIVE.live_lcd_control_fg_alt;
+var COL_SPEC = EQP_LIVE.live_display_line_two;
+var COL_REF = EQP_LIVE.live_display_handle_two;
+var COL_DIM = EQP_LIVE.live_control_zombie;
+var COL_AXIS = EQP_LIVE.live_display_scale_text;
+var COL_GRID = EQP_LIVE.live_lcd_frame;
+var COL_AQ_OFF = EQP_LIVE.live_control_zombie;
+var COL_BTN = EQP_LIVE.live_control_bg;
+var COL_BTN_TEXT = EQP_LIVE.live_control_fg;
+var COL_BTN_ON_TEXT = EQP_LIVE.live_lcd_bg;
+var COL_DROP = EQP_LIVE.live_control_bg;
+var COL_DROP_EDGE = EQP_LIVE.live_lcd_frame;
+var COL_CARET = EQP_LIVE.live_control_fg;
+var COL_WHITE = EQP_LIVE.live_control_fg;
+var COL_INK = EQP_LIVE.live_lcd_bg;
+var COL_ALERT = EQP_LIVE.live_alert;
 
 var MODE_NAMES = [
     "Off",
@@ -38,13 +65,19 @@ var MODE_NAMES = [
     "Low-Shelf", "Bell", "Notch", "High-Shelf",
     "High-Cut 1", "High-Cut 2", "High-Cut 4", "High-Cut 8"
 ];
-var MODE_SHORT = [
-    "Off", "LC1", "LC2", "LC4", "LC8", "LSh", "Bell", "Nch", "HSh", "HC1", "HC2", "HC4", "HC8"
+var MODE_FACE = [
+    "Off",
+    "Low-cut 1\u1d56", "Low-cut 2\u1d56", "Low-cut 4\u1d56", "Low-cut 8\u1d56",
+    "Low-shelf", "Bell", "Notch", "High-shelf",
+    "High-cut 1\u1d56", "High-cut 2\u1d56", "High-cut 4\u1d56", "High-cut 8\u1d56"
 ];
 
 var COLS = 140;
 var EQP_STATE_VERSION = 1;
-var HIT_R = 11;
+var HIT_R = 8.25;
+var NODE_R = 5.25;
+var QH_R = 4.875;
+var QH_GAP = 13.5;
 
 var cfgBufName = "#0-eqpluscfg";
 var specBufName = "#0-eqplusspec";
@@ -52,6 +85,11 @@ var currentSr = 48000;
 
 var shiftSt = 0;
 var outGainDb = 0;
+var tiltEqDb = 0;
+var phaseMode = 0;
+var irBufName = "#0-eqplusir";
+var irSerial = 0;
+var eqpReportedLatency = -1;
 var rangeIdx = 0;
 var adaptiveQ = 1;
 var analyzerPre = 1;
@@ -61,8 +99,20 @@ var speedIdx = 0;
 var tiltIdx = 2;
 var rangeMinDb = -100;
 var rangeMaxDb = 0;
-var selectedBand = -1;
+var selectedBand = 0;
+var bottomAnalyzer = 0;
+var soloBand = -1;
+var showFiltersShelf = 0;
+var showAnalyzerShelf = 0;
+var EQP_SC_TAB_W = 18;
+var EQP_SIDECHAIN_FOLD_W = 128;
+var showSidechainFold = 0;
+var refEnabled = 0;
+var refGainDb = 0;
+var scRoutingName = "Ext. In";
+var scChannelName = "1/2";
 var inspectorMode = 0;
+var selectedBands = [0];
 
 var bands = [];
 var normUp = true;
@@ -86,12 +136,15 @@ var hoverKey = "";
 var hoverBand = -1;
 var hoverPop = -1;
 var pointerIn = false;
+var cursorHidden = false;
+var currentHoverMode = 6;
 
 var popup = null;
 var lastGeo = null;
 
 var specPre = [];
 var specPost = [];
+var specRef = [];
 var specHoldPreview = false;
 var specHasSignal = 0;
 var specTask = null;
@@ -162,6 +215,8 @@ function allocSpec() {
         specPre[i] = rangeMinDb;
         specPost[i] = rangeMinDb;
     }
+    specRef = new Array(COLS);
+    for (var r = 0; r < COLS; r++) specRef[r] = -120;
 }
 
 resetBands();
@@ -195,6 +250,34 @@ function firstActive() {
     return -1;
 }
 
+function isBandSelected(i) {
+    return i === selectedBand || selectedBands.indexOf(i) >= 0;
+}
+function setSingleSelection(i) {
+    selectedBand = i;
+    selectedBands = i >= 0 ? [i] : [];
+}
+function toggleBandSelection(i) {
+    var at = selectedBands.indexOf(i);
+    if (at >= 0) {
+        selectedBands.splice(at, 1);
+        if (selectedBand === i) selectedBand = selectedBands.length ? selectedBands[0] : -1;
+    } else {
+        selectedBands.push(i);
+        selectedBand = i;
+    }
+}
+function getSelectedBands() {
+    return selectedBands.slice();
+}
+function panelX() {
+    return showSidechainFold ? EQP_SIDECHAIN_FOLD_W : EQP_SC_TAB_W;
+}
+function deviceWidthPx() {
+    try { return eqpComputeDeviceWidth(showFiltersShelf, showAnalyzerShelf, showSidechainFold); }
+    catch (e) { return 360 + (showSidechainFold ? EQP_SIDECHAIN_FOLD_W : EQP_SC_TAB_W); }
+}
+
 function toScreenFreq(stored) {
     var f = eqpEffectiveFreq(stored, shiftSt);
     if (!(f > 0)) f = stored;
@@ -212,21 +295,19 @@ function toStoredFreq(screenF) {
     }
     return clamp(Math.sqrt(lo * hi), EQP_FREQ_MIN, EQP_FREQ_MAX);
 }
+function fromScreenFreq(screenF) {
+    return toStoredFreq(screenF);
+}
 
 function geo() {
-    var w = 352, h = 161;
-    try {
-        var s = mgraphics.size;
-        if (s && s.length >= 2 && s[0] >= 16 && s[1] >= 16) {
-            w = s[0];
-            h = s[1];
-        }
-    } catch (e) {}
-    var g = { w: w, h: h, sx: w / 352, sy: h / 161 };
-    g.plotX = 2 * g.sx;
-    g.plotY = 23 * g.sy;
-    g.plotW = 348 * g.sx;
-    g.plotH = 115 * g.sy;
+    var full = deviceWidthPx() - 8;
+    if (!(full >= 352)) full = 352;
+    var ox = panelX();
+    var g = { w: full, h: 161, sx: 1, sy: 1, mainX: ox, mainW: 352, fullW: full };
+    g.plotX = ox + 2;
+    g.plotY = 23;
+    g.plotW = 348;
+    g.plotH = 115;
     lastGeo = g;
     return g;
 }
@@ -242,35 +323,87 @@ function insidePlot(g, x, y) {
 function fs(g, px) { return px * Math.min(g.sx, g.sy); }
 
 function uiLayout(g) {
+    var ox = g.mainX || 0;
     var L = {
-        shift: sc(g, 8, 2, 84, 19),
-        gain: sc(g, 96, 2, 76, 19),
-        range: [sc(g, 214, 4, 28, 16), sc(g, 244, 4, 28, 16), sc(g, 276, 4, 28, 16)],
-        aq: sc(g, 316, 3, 30, 17),
-        icon: sc(g, 6, 141, 28, 17),
-        pre: sc(g, 95, 141, 28, 16),
-        post: sc(g, 127, 141, 32, 16),
-        res: sc(g, 217, 141, 48, 16),
-        speed: sc(g, 303, 141, 44, 16)
+        shift: sc(g, ox + 8, 2, 84, 19),
+        gain: sc(g, ox + 96, 2, 76, 19),
+        tilt: sc(g, ox + 174, 2, 54, 19),
+        range: sc(g, ox + 268, 3, 44, 16),
+        aq: sc(g, ox + 316, 3, 30, 17),
+        bandSel: sc(g, ox + 6, 141, 22, 16),
+        solo: sc(g, ox + 30, 141, 16, 16),
+        power: sc(g, ox + 49, 141, 16, 16),
+        mode: sc(g, ox + 68, 141, 78, 16),
+        freq: sc(g, ox + 186, 141, 54, 16),
+        bandGain: sc(g, ox + 244, 141, 46, 16),
+        q: sc(g, ox + 292, 141, 30, 16),
+        filtersToggle: sc(g, ox + 324, 141, 12, 16),
+        analyzerToggle: sc(g, ox + 338, 141, 12, 16),
+        pre: sc(g, ox + 36, 141, 28, 16),
+        post: sc(g, ox + 68, 141, 32, 16),
+        res: sc(g, ox + 158, 141, 52, 16),
+        speed: sc(g, ox + 248, 141, 48, 16)
     };
-    var y = 141 * g.sy;
-    var h = 16 * g.sy;
-    var x = 36 * g.sx;
-    var pw = 12 * g.sx;
-    var gap = 1 * g.sx;
-    L.pills = [];
-    for (var i = 0; i < EQP_NUM_BANDS; i++) {
-        L.pills.push({ x: x, y: y, w: pw, h: h, i: i });
-        x += pw + gap;
-    }
-    x = 142 * g.sx;
-    L.power = { x: x, y: y, w: 14 * g.sx, h: h };
-    L.mode = { x: 158 * g.sx, y: y, w: 48 * g.sx, h: h };
-    L.freq = { x: 208 * g.sx, y: y, w: 36 * g.sx, h: h };
-    L.bandGain = { x: 246 * g.sx, y: y, w: 32 * g.sx, h: h };
-    L.q = { x: 280 * g.sx, y: y, w: 28 * g.sx, h: h };
-    L.tilt = { x: 310 * g.sx, y: y, w: 38 * g.sx, h: h };
+    L.icon = L.bandSel;
+    L.cards = filterCards();
+    L.az = analyzerShelf();
+    L.sc = sidechainFoldLayout();
     return L;
+}
+function filterCards() {
+    var cards = [];
+    if (!showFiltersShelf) return cards;
+    var x0 = panelX() + 352 + 4;
+    for (var i = 0; i < EQP_NUM_BANDS; i++) {
+        var col = i < 4 ? 0 : 1;
+        var row = i % 4;
+        var x = x0 + col * (118 + 3);
+        var y = 2 + row * (37 + 3);
+        cards.push({
+            i: i, x: x, y: y, w: 118, h: 37,
+            power: { x: x + 4, y: y + 3, w: 14, h: 14 },
+            mode: { x: x + 20, y: y + 2, w: 94, h: 16 },
+            freq: { x: x + 4, y: y + 19, w: 44, h: 15 },
+            gain: { x: x + 48, y: y + 19, w: 38, h: 15 },
+            q: { x: x + 86, y: y + 19, w: 28, h: 15 }
+        });
+    }
+    return cards;
+}
+function analyzerShelf() {
+    if (!showAnalyzerShelf) return null;
+    var x = panelX() + 352 + (showFiltersShelf ? EQP_FILTERS_SHELF_W : 0);
+    return {
+        x: x, y: 4, w: EQP_ANALYZER_SHELF_W - 8, h: 153,
+        pre: { x: x + 70, y: 34, w: 30, h: 16 },
+        post: { x: x + 104, y: 34, w: 34, h: 16 },
+        res: { x: x + 68, y: 58, w: 70, h: 16 },
+        speed: { x: x + 68, y: 82, w: 70, h: 16 },
+        tilt: { x: x + 68, y: 106, w: 70, h: 16 },
+        rmin: { x: x + 72, y: 130, w: 32, h: 16 },
+        rmax: { x: x + 108, y: 130, w: 28, h: 16 },
+        ref: { x: x + 58, y: 136, w: 78, h: 16 },
+        phase: { x: x + 50, y: 6, w: 86, h: 15 }
+    };
+}
+function sidechainFoldLayout() {
+    var tab = {
+        x: 0, y: 0, w: EQP_SC_TAB_W, h: 161,
+        arrow: { x: 2, y: 4, w: 14, h: 14 },
+        label: { x: 0, y: 20, w: EQP_SC_TAB_W, h: 124 }
+    };
+    var lay = { tab: tab, open: showSidechainFold ? 1 : 0 };
+    if (!showSidechainFold) return lay;
+    var x = EQP_SC_TAB_W + 8;
+    lay.x = EQP_SC_TAB_W;
+    lay.y = 0;
+    lay.w = EQP_SIDECHAIN_FOLD_W - EQP_SC_TAB_W;
+    lay.h = 161;
+    lay.route = { x: x, y: 28, w: 96, h: 16 };
+    lay.chan = { x: x, y: 50, w: 96, h: 16 };
+    lay.gain = { x: x + 46, y: 80, w: 50, h: 16 };
+    lay.meter = { x: x, y: 112, w: 96, h: 6 };
+    return lay;
 }
 
 function xToNorm(g, x) {
@@ -300,6 +433,42 @@ function normToY(g, n) {
 function eqY(g, db) {
     return normToY(g, eqpDbToNorm(db, rangeDb()));
 }
+function eqYFree(g, db) {
+    var r = rangeDb();
+    if (!(r > 0) || !isFinite(r)) r = 12;
+    var x = Number(db);
+    if (!isFinite(x)) x = 0;
+    var n = (x + r) / (2 * r);
+    var t = normUp ? (1 - n) : n;
+    return g.plotY + t * g.plotH;
+}
+function clipYSeg(x0, y0, x1, y1, top, bot) {
+    var s0 = y0 < top ? -1 : (y0 > bot ? 1 : 0);
+    var s1 = y1 < top ? -1 : (y1 > bot ? 1 : 0);
+    if (s0 && s0 === s1) return null;
+    var ax = x0, ay = y0, bx = x1, by = y1;
+    var dy = y1 - y0;
+    if (s0) {
+        var edge0 = s0 < 0 ? top : bot;
+        var t0 = (edge0 - y0) / dy;
+        ax = x0 + (x1 - x0) * t0;
+        ay = edge0;
+    }
+    if (s1) {
+        var edge1 = s1 < 0 ? top : bot;
+        var t1 = (edge1 - y0) / dy;
+        bx = x0 + (x1 - x0) * t1;
+        by = edge1;
+    }
+    return [ax, ay, bx, by];
+}
+function strokeClipped(x0, y0, x1, y1, g) {
+    var seg = clipYSeg(x0, y0, x1, y1, g.plotY, g.plotY + g.plotH);
+    if (!seg) return;
+    mgraphics.move_to(seg[0], seg[1]);
+    mgraphics.line_to(seg[2], seg[3]);
+    mgraphics.stroke();
+}
 function zeroY(g) { return eqY(g, 0); }
 function specY(g, db) {
     var lo = rangeMinDb, hi = rangeMaxDb;
@@ -310,7 +479,7 @@ function specY(g, db) {
 
 function responseDb(f) {
     var db = 0;
-    try { db = eqpTotalResponseDb(bands, f, currentSr, shiftSt, adaptiveQ, outGainDb); }
+    try { db = eqpTotalResponseDb(bands, f, currentSr, shiftSt, adaptiveQ, 0, tiltEqDb); }
     catch (e) { db = 0; }
     return finite(db, 0);
 }
@@ -319,10 +488,6 @@ function bandDb(b, f) {
     try { db = eqpBandResponseDb(b, f, currentSr, shiftSt, adaptiveQ); }
     catch (e) { db = 0; }
     return finite(db, 0);
-}
-function curveNormAt(nx) {
-    var n = eqpDbToNorm(responseDb(eqpNormToFreq(nx)), rangeDb());
-    return finite(n, 0.5);
 }
 function colFreq(i) {
     return Math.sqrt(colEdge[i] * colEdge[i + 1]);
@@ -394,11 +559,6 @@ function hintForMode(mode) {
     if (mode >= 9 && mode <= 12) return "High-Cut";
     return "Bell";
 }
-function modeName(mode) {
-    mode = clamp(mode | 0, 0, 12);
-    return MODE_NAMES[mode];
-}
-
 function fmtSt(v) {
     if (Math.abs(v) < 0.005) v = 0;
     return v.toFixed(2) + " st";
@@ -451,6 +611,63 @@ function rainbow(nx) {
 }
 function lum(c) { return 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]; }
 
+function eqpColor(name) {
+    var fb = EQP_LIVE[name] || [0.5, 0.5, 0.5, 1];
+    if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+        return m4lColor(name, fb);
+    }
+    try {
+        if (typeof max !== "undefined" && max.getcolor) {
+            var c = max.getcolor(name);
+            if (c && c.length >= 3 && !(c.length > 3 && c[3] === 0 && c[0] === 0 && c[1] === 0 && c[2] === 0)) {
+                return [c[0], c[1], c[2], c.length > 3 ? c[3] : 1];
+            }
+        }
+    } catch (e) {}
+    return [fb[0], fb[1], fb[2], fb.length > 3 ? fb[3] : 1];
+}
+function eqpApplyTheme() {
+    COL_CHROME = eqpColor("live_surface_bg");
+    COL_BEZEL = eqpColor("live_desktop");
+    COL_PLOT = eqpColor("live_lcd_bg");
+    COL_LABEL = eqpColor("live_lcd_title");
+    COL_ORANGE = eqpColor("live_control_selection");
+    COL_VALUE = eqpColor("live_lcd_control_fg");
+    COL_CURVE = eqpColor("live_display_line_one");
+    COL_FOCUS = eqpColor("live_lcd_control_fg_alt");
+    COL_SPEC = eqpColor("live_display_line_two");
+    COL_REF = eqpColor("live_display_handle_two");
+    COL_DIM = eqpColor("live_control_zombie");
+    COL_AXIS = eqpColor("live_display_scale_text");
+    COL_GRID = eqpColor("live_lcd_frame");
+    COL_AQ_OFF = eqpColor("live_control_zombie");
+    COL_BTN = eqpColor("live_control_bg");
+    COL_BTN_TEXT = eqpColor("live_control_fg");
+    COL_BTN_ON_TEXT = eqpColor("live_lcd_bg");
+    COL_DROP = eqpColor("live_control_bg");
+    COL_DROP_EDGE = eqpColor("live_lcd_frame");
+    COL_CARET = eqpColor("live_control_fg");
+    COL_WHITE = eqpColor("live_control_fg");
+    COL_INK = eqpColor("live_lcd_bg");
+    COL_ALERT = eqpColor("live_alert");
+}
+var eqpThemeKey = "";
+var eqpThemeTask = null;
+function eqpThemeWatch() {
+    if (eqpThemeTask || typeof Task !== "function") return;
+    var t = new Task(function () {
+        var names = ["live_lcd_bg", "live_control_selection", "live_display_line_one", "live_display_line_two", "live_surface_bg"];
+        var k = "";
+        for (var i = 0; i < names.length; i++) k += String(eqpColor(names[i]));
+        if (k !== eqpThemeKey) {
+            eqpThemeKey = k;
+            mgraphics.redraw();
+        }
+    }, this);
+    t.interval = 1000;
+    t.repeat();
+    eqpThemeTask = t;
+}
 function setRgb(c, a) {
     mgraphics.set_source_rgba(c[0], c[1], c[2], a === undefined ? c[3] : a);
 }
@@ -525,7 +742,47 @@ function coeffRow(c) {
     return row;
 }
 
+function updateDeviceLatency() {
+    var want = 0;
+    if (phaseMode === 1) want = eqpNaturalLatency(currentSr);
+    else if (phaseMode === 2) want = EQP_LINEAR_LATENCY;
+    if (want === eqpReportedLatency) return;
+    eqpReportedLatency = want;
+    var host = hostPatcher();
+    if (!host || typeof host.setattr !== "function") return;
+    try { host.setattr("latency", want); }
+    catch (e) {}
+}
+function updatePhaseKernel() {
+    outlet(1, ["phaseMode", phaseMode]);
+    updateDeviceLatency();
+    if (phaseMode === 0 || typeof Buffer === "undefined") return;
+    try {
+        var designed = eqpDesignPhase(bands, currentSr, shiftSt, adaptiveQ, tiltEqDb);
+        var buf = new Buffer(irBufName);
+        buf.poke(1, 0, designed.linear);
+        buf.poke(2, 0, designed.fir);
+        irSerial = (irSerial + 1) % 100000;
+        if (irSerial === 0) irSerial = 1;
+        outlet(1, ["irGen", irSerial]);
+    } catch (e) {}
+}
+function emitTilt() {
+    var c;
+    try { c = eqpTiltCoeffs(tiltEqDb, currentSr); }
+    catch (e) { return; }
+    var secs = c.sections || [];
+    outlet(1, ["tGain", finite(c.gain, 1)]);
+    for (var i = 0; i < secs.length; i++) {
+        var s = secs[i];
+        outlet(1, ["t" + i + "b0", finite(s.b0, 1)]);
+        outlet(1, ["t" + i + "b1", finite(s.b1, 0)]);
+        outlet(1, ["t" + i + "a1", finite(s.a1, 0)]);
+    }
+    outlet(1, ["tiltOn", c.on]);
+}
 function updateCoeffBuffer() {
+    emitTilt();
     if (typeof Buffer === "undefined") return;
     try {
         var buf = new Buffer(cfgBufName);
@@ -545,6 +802,7 @@ function updateCoeffBuffer() {
         }
         buf.poke(1, 0, all);
     } catch (e) {}
+    updatePhaseKernel();
 }
 
 function emitParam(name, value) {
@@ -573,6 +831,10 @@ function emitAll() {
     emitParam("resolution", resIdx);
     emitParam("speed", speedIdx);
     emitParam("tilt", tiltIdx);
+    emitParam("tilt_eq", tiltEqDb);
+    emitParam("filters_shelf", showFiltersShelf ? 1 : 0);
+    emitParam("analyzer_shelf", showAnalyzerShelf ? 1 : 0);
+    emitParam("ref_enable", refEnabled ? 1 : 0);
     for (var i = 0; i < EQP_NUM_BANDS; i++) emitBand(i);
 }
 
@@ -587,6 +849,8 @@ function getvalueof() {
         var b = bands[i];
         out.push(b.enabled ? 1 : 0, b.mode, b.freq, b.gain, b.q);
     }
+    out.push(showFiltersShelf ? 1 : 0, showAnalyzerShelf ? 1 : 0);
+    out.push(showSidechainFold ? 1 : 0, refEnabled ? 1 : 0, refGainDb, tiltEqDb, phaseMode);
     return out;
 }
 
@@ -617,11 +881,66 @@ function applyStateArray(args) {
         if (args.length > o + 4) b.q = clamp(finite(args[o + 4], EQP_Q_DEFAULT), EQP_Q_MIN, EQP_Q_MAX);
         if (b.mode === 0) b.enabled = 0;
     }
+    var shelfAt = 12 + EQP_NUM_BANDS * 5;
+    if (args.length > shelfAt) showFiltersShelf = finite(args[shelfAt], 0) > 0.5 ? 1 : 0;
+    if (args.length > shelfAt + 1) showAnalyzerShelf = finite(args[shelfAt + 1], 0) > 0.5 ? 1 : 0;
+    if (args.length > shelfAt + 2) showSidechainFold = finite(args[shelfAt + 2], 0) > 0.5 ? 1 : 0;
+    if (args.length > shelfAt + 3) refEnabled = finite(args[shelfAt + 3], 0) > 0.5 ? 1 : 0;
+    if (args.length > shelfAt + 4) refGainDb = clamp(finite(args[shelfAt + 4], 0), -24, 24);
+    if (args.length > shelfAt + 5) tiltEqDb = clamp(finite(args[shelfAt + 5], 0), -24, 24);
+    if (args.length > shelfAt + 6) {
+        var rawPhase = finite(args[shelfAt + 6], 0);
+        var pm = Math.round(rawPhase);
+        if ((pm === 0 || pm === 1 || pm === 2) && Math.abs(rawPhase - pm) < 1e-4) phaseMode = pm;
+        else phaseMode = 0;
+    }
     updateCoeffBuffer();
+    resizeDeviceBoxes();
     emitAll();
+    updateSoloState();
     mgraphics.redraw();
 }
 
+function resizeDeviceBoxes() {
+    var devW = deviceWidthPx();
+    var vizW = devW - 8;
+    outlet(0, "setwidth_cmd", devW);
+    var host = hostPatcher();
+    if (!host || typeof host.getnamed !== "function") return;
+    try {
+        var ui = host.getnamed("obj-viz");
+        if (ui && typeof ui.setattr === "function") ui.setattr("presentation_rect", 4, 4, vizW, 161);
+        var panel = host.getnamed("obj-panel-bg");
+        if (panel && typeof panel.setattr === "function") panel.setattr("presentation_rect", 0, 0, devW, 169);
+    } catch (e2) {}
+}
+function applyDeviceWidth() {
+    resizeDeviceBoxes();
+    emitParam("filters_shelf", showFiltersShelf ? 1 : 0);
+    emitParam("analyzer_shelf", showAnalyzerShelf ? 1 : 0);
+    mgraphics.redraw();
+}
+function updateSoloState() {
+    if (soloBand < 0 || soloBand >= EQP_NUM_BANDS || !bands[soloBand]) {
+        outlet(1, ["soloBand", -1]);
+        return;
+    }
+    var b = bands[soloBand];
+    var q = b.q;
+    try { q = eqpEffectiveQ(b.q, b.gain, adaptiveQ, b.mode); }
+    catch (e) { q = b.q; }
+    var sc = eqpSoloBandCoeffs(toScreenFreq(b.freq), q, currentSr);
+    outlet(1, ["soloB0", sc.b0]);
+    outlet(1, ["soloB1", sc.b1]);
+    outlet(1, ["soloB2", sc.b2]);
+    outlet(1, ["soloA1", sc.a1]);
+    outlet(1, ["soloA2", sc.a2]);
+    outlet(1, ["soloBand", soloBand]);
+}
+function noteSolo(i) {
+    if (soloBand < 0) return;
+    if (i === undefined || i === soloBand) updateSoloState();
+}
 function setvalueof() {
     var args = Array.prototype.slice.call(arguments);
     if (args.length === 1 && args[0] && typeof args[0].length === "number" && typeof args[0] !== "string") args = args[0];
@@ -668,6 +987,101 @@ function discreteEdit(fn) {
     fn();
     if (typeof notifyclients === "function") notifyclients();
     mgraphics.redraw();
+}
+
+// Delete disables the selection. Up / down move bell and shelf gain by 0.5 dB.
+// Left / right move every selected filter by one semitone. The patcher's `key`
+// object and a focused onkeydown can both deliver one press, so the same
+// action inside KEY_DEDUP_MS is ignored. Key repeat is slower than that.
+var KEY_DEDUP_MS = 20;
+var lastKeyAt = { disable: 0, gain: 0, freq: 0 };
+function keyOnce(action) {
+    var now = Date.now();
+    if (now - (lastKeyAt[action] || 0) < KEY_DEDUP_MS) return false;
+    lastKeyAt[action] = now;
+    return true;
+}
+function eachSelected(fn) {
+    var changed = false;
+    for (var i = 0; i < EQP_NUM_BANDS; i++) {
+        if (!isBandSelected(i) || !bands[i]) continue;
+        if (fn(i, bands[i])) {
+            changed = true;
+            emitBand(i);
+            noteSolo(i);
+        }
+    }
+    return changed;
+}
+function commitHotkey(action, mutate) {
+    if (!keyOnce(action)) return;
+    if (gesture.kind) finishGesture();
+    var snapshot = getvalueof();
+    if (!mutate()) return;
+    undoStack.push(snapshot);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+    updateCoeffBuffer();
+    if (typeof notifyclients === "function") notifyclients();
+    mgraphics.redraw();
+}
+function disableSelectedFilters() {
+    commitHotkey("disable", function () {
+        return eachSelected(function (i, b) {
+            if (!b.enabled) return false;
+            b.enabled = 0;
+            return true;
+        });
+    });
+}
+function nudgeSelectedGain(dir) {
+    var step = dir < 0 ? -0.5 : 0.5;
+    commitHotkey("gain", function () {
+        return eachSelected(function (i, b) {
+            if (!usesGain(b.mode)) return false;
+            var n = clamp(roundTo(b.gain + step, 0.1), EQP_GAIN_MIN, EQP_GAIN_MAX);
+            if (n === b.gain) return false;
+            b.gain = n;
+            return true;
+        });
+    });
+}
+function nudgeSelectedFreq(dir) {
+    var ratio = Math.pow(2, (dir < 0 ? -1 : 1) / 12);
+    commitHotkey("freq", function () {
+        return eachSelected(function (i, b) {
+            var n = clamp(b.freq * ratio, EQP_FREQ_MIN, EQP_FREQ_MAX);
+            if (n === b.freq) return false;
+            b.freq = n;
+            return true;
+        });
+    });
+}
+function hotkey_disable() {
+    if (!hotkeyAllowed()) return;
+    disableSelectedFilters();
+}
+function hotkey_gain(dir) {
+    if (!hotkeyAllowed()) return;
+    nudgeSelectedGain(dir);
+}
+function hotkey_freq(dir) {
+    if (!hotkeyAllowed()) return;
+    nudgeSelectedFreq(dir);
+}
+function onkeydown(keycode, textcharacter, down) {
+    if (down === 0) return;
+    var code = Number(keycode);
+    var ch = Number(textcharacter);
+    var name = String(keycode == null ? "" : keycode);
+    if (code === 127 || code === 8 || code === -5 || ch === 127 || ch === 8) {
+        disableSelectedFilters();
+        return;
+    }
+    if (code === 30 || name === "ArrowUp" || name === "up") nudgeSelectedGain(1);
+    else if (code === 31 || name === "ArrowDown" || name === "down") nudgeSelectedGain(-1);
+    else if (code === 28 || name === "ArrowLeft" || name === "left") nudgeSelectedFreq(-1);
+    else if (code === 29 || name === "ArrowRight" || name === "right") nudgeSelectedFreq(1);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -759,7 +1173,7 @@ function columnDb(dbBins, n, sr, i) {
         for (var b = i0; b <= i1; b++) if (dbBins[b] > db) db = dbBins[b];
     }
     var tilt = EQP_TILTS[tiltIdx] || 0;
-    if (tilt) {
+    if (tilt && !(tilt > 0 && db <= -108)) {
         var fc = colFreq(i);
         db += tilt * (Math.log(fc / 1000) / Math.LN2);
     }
@@ -848,7 +1262,7 @@ function fitFftN(want, have) {
 
 function pullSpectrum() {
     if (speedIdx === 3) return;
-    if (!analyzerPre && !analyzerPost) return;
+    if (!analyzerPre && !analyzerPost && !refEnabled) return;
     if (typeof Buffer === "undefined") return;
     var n = EQP_FFT_SIZES[resIdx] || 8192;
     var moved = false;
@@ -867,8 +1281,9 @@ function pullSpectrum() {
             }
         }
         var raw = new Array(COLS);
-        function eat(channel, dst) {
-            var ring = peekMany(buf, channel, 0, EQP_SPEC_RING);
+        function eat(channel, dst, extraDb) {
+            var ring = peekMany(buf, channel, 8, EQP_SPEC_RING);
+            if (!ring || ring.length < 256) ring = peekMany(buf, channel, 0, EQP_SPEC_RING);
             if (!ring || ring.length < 16) return false;
             var fn = fitFftN(n, ring.length);
             if (!fn) return false;
@@ -877,13 +1292,14 @@ function pullSpectrum() {
             if (specHoldPreview) specHoldPreview = false;
             specHasSignal = 1;
             var bins = fftDbBins(frame, frame.length, currentSr);
-            for (var c = 0; c < COLS; c++) raw[c] = columnDb(bins, frame.length, currentSr, c);
+            for (var c = 0; c < COLS; c++) raw[c] = columnDb(bins, frame.length, currentSr, c) + (extraDb || 0);
             if (smoothInto(dst, raw)) moved = true;
             return true;
         }
         var got = false;
-        if (analyzerPre) got = eat(1, specPre) || got;
-        if (analyzerPost) got = eat(2, specPost) || got;
+        if (analyzerPre) got = eat(1, specPre, 0) || got;
+        if (analyzerPost) got = eat(2, specPost, 0) || got;
+        if (refEnabled && chans >= 4) got = eat(4, specRef, refGainDb) || got;
         if (!got) {
             if (specHoldPreview) return;
             var floor = rangeMinDb;
@@ -894,6 +1310,10 @@ function pullSpectrum() {
                 }
                 if (analyzerPost && specPost[i] > floor + 0.4) {
                     specPost[i] += (floor - specPost[i]) * 0.18;
+                    moved = true;
+                }
+                if (refEnabled && specRef[i] > floor + 0.4) {
+                    specRef[i] += (floor - specRef[i]) * 0.18;
                     moved = true;
                 }
             }
@@ -950,6 +1370,7 @@ function eqpDspWriteFile(path) {
 function eqpDspResend() {
     outlet(1, ["eqcfg", cfgBufName]);
     outlet(1, ["spec", specBufName]);
+    outlet(1, ["irspec", irBufName]);
     outlet(1, ["outgain", outGainDb]);
     updateCoeffBuffer();
 }
@@ -1046,6 +1467,109 @@ function eqpDspConfirm() {
     if (!eqpDsp.confirmTask) eqpDsp.confirmTask = new Task(eqpDspConfirm, this);
     eqpDsp.confirmTask.schedule(EQP_DSP_CONFIRM_MS);
 }
+// The patcher's `key` object hears every keystroke in Live. Hotkeys from that
+// path run only when this device is the selected device. A focused onkeydown
+// is not gated. Unknown Live state means not selected.
+var eqpSelfApi = null;
+var eqpSelfId = "";
+var eqpSelTrackObs = null;
+var eqpSelDevObs = null;
+var eqpSelGen = 0;
+var eqpIsSelected = false;
+var eqpSelForced = null;
+var eqpSelTasks = [];
+function hotkeyAllowed() {
+    if (eqpSelForced !== null) return eqpSelForced === 1;
+    if (typeof LiveAPI !== "function") return true;
+    return eqpIsSelected;
+}
+function eqpIdStr(v) {
+    var n = Number(v);
+    return (isFinite(n) && n > 0) ? String(Math.round(n)) : "";
+}
+function eqpLomId(raw) {
+    var flat = [];
+    var walk = function (a) {
+        if (a && typeof a === "object" && typeof a.length === "number") {
+            for (var i = 0; i < a.length; i++) walk(a[i]);
+        } else if (typeof a === "string" && /^id\s+\d+$/.test(a)) {
+            flat.push("id");
+            flat.push(Number(a.slice(3)));
+        } else flat.push(a);
+    };
+    walk(raw);
+    for (var j = 0; j < flat.length - 1; j++) if (flat[j] === "id") return eqpIdStr(flat[j + 1]);
+    return "";
+}
+function eqpIsNotify(raw, prop) {
+    var head = (raw[0] && typeof raw[0] === "object" && typeof raw[0].length === "number") ? raw[0][0] : raw[0];
+    return head === prop;
+}
+function eqpDefer(fn) {
+    if (typeof Task !== "function") {
+        try { fn(); } catch (e) { eqpIsSelected = false; }
+        return;
+    }
+    var t = new Task(function () {
+        var at = eqpSelTasks.indexOf(t);
+        if (at >= 0) eqpSelTasks.splice(at, 1);
+        try { fn(); } catch (e2) { eqpIsSelected = false; }
+    }, this);
+    eqpSelTasks.push(t);
+    t.schedule(0);
+}
+function eqpSetSelectedDevice(devId) {
+    var sel = !!devId && !!eqpSelfId && devId === eqpSelfId;
+    if (!sel && devId && eqpSelfApi && typeof LiveAPI === "function") {
+        try {
+            var mine = String(eqpSelfApi.unquotedpath || "");
+            var theirs = String(new LiveAPI("id " + devId).unquotedpath || "");
+            sel = !!mine && mine === theirs;
+        } catch (e) {}
+    }
+    eqpIsSelected = sel;
+}
+function eqpRefreshTrack(trackId) {
+    eqpSelGen++;
+    var gen = eqpSelGen;
+    if (eqpSelDevObs) {
+        try { eqpSelDevObs.property = ""; } catch (e) {}
+        eqpSelDevObs = null;
+    }
+    if (!trackId) { eqpSetSelectedDevice(""); return; }
+    var trackApi = new LiveAPI("id " + trackId);
+    var viewId = "";
+    try { viewId = eqpLomId(trackApi.get("view")); } catch (e2) {}
+    var viewPath = viewId ? ("id " + viewId) : (String(trackApi.unquotedpath || "") + " view");
+    var onDev = function () {
+        var raw = Array.prototype.slice.call(arguments);
+        if (!eqpIsNotify(raw, "selected_device")) return;
+        var id = eqpLomId(raw);
+        eqpDefer(function () { if (gen === eqpSelGen) eqpSetSelectedDevice(id); });
+    };
+    eqpSelDevObs = new LiveAPI(onDev, viewPath);
+    eqpSelDevObs.property = "selected_device";
+    eqpSetSelectedDevice(eqpLomId(eqpSelDevObs.get("selected_device")));
+}
+function init_selection() {
+    if (eqpSelTrackObs || typeof LiveAPI !== "function") return;
+    try {
+        eqpSelfApi = new LiveAPI("this_device");
+        eqpSelfId = eqpIdStr(eqpSelfApi.id);
+        var onTrack = function () {
+            var raw = Array.prototype.slice.call(arguments);
+            if (!eqpIsNotify(raw, "selected_track")) return;
+            var id = eqpLomId(raw);
+            eqpDefer(function () { eqpRefreshTrack(id); });
+        };
+        eqpSelTrackObs = new LiveAPI(onTrack, "live_set view");
+        eqpSelTrackObs.property = "selected_track";
+        eqpRefreshTrack(eqpLomId(eqpSelTrackObs.get("selected_track")));
+    } catch (e) {
+        eqpIsSelected = false;
+    }
+}
+
 function init_dsp() {
     specHoldPreview = false;
     specHasSignal = 0;
@@ -1091,7 +1615,10 @@ function openPopup(kind, anchor, items, selected, band) {
     var rowH = 14 * g.sy;
     var cols = items.length > 8 ? 2 : 1;
     var rowsN = Math.ceil(items.length / cols);
-    var colW = Math.max(anchor.w, (kind === "bandmode" ? 92 : 78) * g.sx);
+    var colPick = 78;
+    if (kind === "bandmode") colPick = 92;
+    if (kind === "phase") colPick = 124;
+    var colW = Math.max(anchor.w, colPick * g.sx);
     var w = colW * cols + 4 * g.sx;
     var h = rowsN * rowH + 4 * g.sy;
     var x = anchor.x;
@@ -1153,10 +1680,11 @@ function cycleBandMode(i, dir) {
 }
 function enterInspector(bandIdx) {
     inspectorMode = 1;
-    if (bandIdx >= 0) selectedBand = bandIdx;
+    bottomAnalyzer = 0;
+    if (bandIdx >= 0) setSingleSelection(bandIdx);
     else if (selectedBand < 0) {
         var a = firstActive();
-        selectedBand = a >= 0 ? a : 0;
+        setSingleSelection(a >= 0 ? a : 0);
     }
 }
 
@@ -1168,12 +1696,14 @@ function placeBand(i, mode, x, y, g) {
     b.freq = toStoredFreq(xToFreq(g, x));
     if (usesGain(mode)) b.gain = clamp(eqpNormToDb(ny, rangeDb()), EQP_GAIN_MIN, EQP_GAIN_MAX);
     else b.q = clamp(eqpNormToQ(ny), EQP_Q_MIN, EQP_Q_MAX);
-    selectedBand = i;
+    setSingleSelection(i);
 }
 function deactivateBand(i) {
     bands[i].enabled = 0;
     bands[i].mode = 0;
-    if (selectedBand === i) selectedBand = -1;
+    var at = selectedBands.indexOf(i);
+    if (at >= 0) selectedBands.splice(at, 1);
+    if (selectedBand === i) selectedBand = selectedBands.length ? selectedBands[0] : -1;
     if (recentCreate.band === i) recentCreate.band = -1;
     emitBand(i);
     updateCoeffBuffer();
@@ -1184,7 +1714,7 @@ function beginCreate(g, x, y, opt) {
     if (idx < 0) return false;
     var nx = xToNorm(g, x);
     var ny = yToNorm(g, y);
-    var mode = resolveGestureMode(nx, ny, curveNormAt(nx));
+    var mode = resolveGestureMode(nx, ny, 0.5);
     markDirty();
     placeBand(idx, mode, x, y, g);
     recentCreate.band = idx;
@@ -1201,8 +1731,60 @@ function beginCreate(g, x, y, opt) {
     updateCoeffBuffer();
     return true;
 }
+function armReadout(kind, i, y) {
+    gesture.kind = kind;
+    gesture.band = i;
+    gesture.y0 = y;
+    gesture.freq0 = bands[i].freq;
+    gesture.bandGain0 = bands[i].gain;
+    gesture.q0 = bands[i].q;
+}
+function toggleBandPower(i) {
+    discreteEdit(function () {
+        var b = bands[i];
+        if (bandLive(b)) b.enabled = 0;
+        else {
+            b.enabled = 1;
+            if (b.mode === 0) b.mode = 6;
+        }
+        emitBand(i);
+        updateCoeffBuffer();
+        noteSolo(i);
+    });
+}
+function qHandlePos(g, i) {
+    var p = bandXY(g, bands[i]);
+    var y = p.y - QH_GAP;
+    if (y - QH_R < g.plotY) y = p.y + QH_GAP;
+    return { x: p.x, y: y };
+}
+function hitQHandle(g, x, y) {
+    var focus = hoverBand >= 0 ? hoverBand : selectedBand;
+    if (focus < 0 || !bands[focus] || !bandLive(bands[focus])) return -1;
+    var p = qHandlePos(g, focus);
+    var dx = x - p.x;
+    var dy = y - p.y;
+    if (dx * dx + dy * dy <= 41) return focus;
+    return -1;
+}
+function dragQHandle(g, x, y) {
+    var b = bands[gesture.band];
+    if (!b) return;
+    var dx = (x - gesture.x0) / Math.max(0.001, g.sx);
+    var dy = (gesture.y0 - y) / Math.max(0.001, g.sy);
+    var d = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
+    var n0 = eqpQToNorm(gesture.q0);
+    var nq = clamp(eqpNormToQ(clamp01(n0 + d / 140)), EQP_Q_MIN, EQP_Q_MAX);
+    if (nq === b.q) return;
+    markDirty();
+    b.q = nq;
+    emitBand(gesture.band);
+    updateCoeffBuffer();
+    noteSolo(gesture.band);
+}
 function beginDragBand(i, x, y, opt) {
-    selectedBand = i;
+    bottomAnalyzer = 0;
+    var g = lastGeo || geo();
     gesture.kind = "band";
     gesture.band = i;
     gesture.qOnly = !!opt;
@@ -1211,8 +1793,53 @@ function beginDragBand(i, x, y, opt) {
     gesture.freq0 = bands[i].freq;
     gesture.bandGain0 = bands[i].gain;
     gesture.q0 = bands[i].q;
+    gesture.multiSnap = [];
+    gesture.startNormX = xToNorm(g, x);
+    gesture.startNormY = yToNorm(g, y);
+    for (var s = 0; s < selectedBands.length; s++) {
+        var idx = selectedBands[s];
+        var sb = bands[idx];
+        if (!sb || !bandLive(sb)) continue;
+        gesture.multiSnap.push({
+            idx: idx,
+            freqNorm: eqpFreqToNorm(toScreenFreq(sb.freq)),
+            gain: sb.gain,
+            qNorm: eqpQToNorm(sb.q),
+            q: sb.q
+        });
+    }
 }
 function dragBand(g, x, y) {
+    if (gesture.multiSnap && gesture.multiSnap.length > 1) {
+        var dNormX = xToNorm(g, x) - gesture.startNormX;
+        var dNormY = yToNorm(g, y) - gesture.startNormY;
+        var dGain = dNormY * 2 * rangeDb();
+        var changed = false;
+        for (var s = 0; s < gesture.multiSnap.length; s++) {
+            var snap = gesture.multiSnap[s];
+            var mb = bands[snap.idx];
+            if (!mb) continue;
+            var pf = mb.freq, pg = mb.gain, pq = mb.q;
+            if (gesture.qOnly) {
+                mb.q = clamp(snap.q * Math.exp(dNormY * 3.0), EQP_Q_MIN, EQP_Q_MAX);
+            } else {
+                mb.freq = fromScreenFreq(eqpNormToFreq(clamp01(snap.freqNorm + dNormX)));
+                if (usesGain(mb.mode)) mb.gain = clamp(snap.gain + dGain, -rangeDb(), rangeDb());
+                else mb.q = eqpNormToQ(clamp01(snap.qNorm + dNormY));
+            }
+            if (mb.freq !== pf || mb.gain !== pg || mb.q !== pq) {
+                changed = true;
+                emitBand(snap.idx);
+            }
+        }
+        if (changed) {
+            markDirty();
+            updateCoeffBuffer();
+            noteSolo();
+            mgraphics.redraw();
+        }
+        return;
+    }
     var b = bands[gesture.band];
     if (!b) return;
     var pf = b.freq, pg = b.gain, pq = b.q;
@@ -1233,6 +1860,7 @@ function dragBand(g, x, y) {
         markDirty();
         emitBand(gesture.band);
         updateCoeffBuffer();
+        noteSolo(gesture.band);
     }
 }
 function dragShift(g, y) {
@@ -1244,6 +1872,7 @@ function dragShift(g, y) {
     shiftSt = v;
     emitParam("shift", shiftSt);
     updateCoeffBuffer();
+    noteSolo();
 }
 function dragOutGain(g, y) {
     var dy = (gesture.y0 - y) / Math.max(0.001, g.sy);
@@ -1254,6 +1883,16 @@ function dragOutGain(g, y) {
     outGainDb = v;
     emitParam("gain", outGainDb);
     emitOutGain();
+}
+function dragTiltEq(g, y) {
+    var dy = (gesture.y0 - y) / Math.max(0.001, g.sy);
+    var sens = gesture.fine ? 0.04 : 0.15;
+    var v = clamp(roundTo(gesture.gain0 + dy * sens, 0.1), -24, 24);
+    if (v === tiltEqDb) return;
+    markDirty();
+    tiltEqDb = v;
+    emitParam("tilt_eq", tiltEqDb);
+    emitTilt();
 }
 function dragReadout(g, y) {
     var b = bands[gesture.band];
@@ -1272,6 +1911,7 @@ function dragReadout(g, y) {
         markDirty();
         emitBand(gesture.band);
         updateCoeffBuffer();
+        noteSolo(gesture.band);
     }
 }
 
@@ -1288,6 +1928,7 @@ function adjustQ(i, dy) {
     b.q = roundTo(b.q, 0.001);
     emitBand(i);
     updateCoeffBuffer();
+    noteSolo(i);
     if (typeof notifyclients === "function") notifyclients();
     mgraphics.redraw();
 }
@@ -1324,13 +1965,17 @@ function makeBellAt(i, g, x, y) {
 
 function decodeRange(v) {
     var n = Number(v);
-    if (n === 10 || n === 20 || n === 30) {
-        for (var i = 0; i < EQP_RANGES.length; i++) if (EQP_RANGES[i] === n) return i;
+    if (n === 12 || n === 24 || n === 36 || n === 10 || n === 20 || n === 30) {
+        var mapped = n;
+        if (n === 10) mapped = 12;
+        else if (n === 20) mapped = 24;
+        else if (n === 30) mapped = 36;
+        for (var i = 0; i < EQP_RANGES.length; i++) if (EQP_RANGES[i] === mapped) return i;
     }
     if (typeof v === "string") {
-        if (v.indexOf("30") >= 0) return 2;
-        if (v.indexOf("20") >= 0) return 1;
-        if (v.indexOf("10") >= 0) return 0;
+        if (v.indexOf("36") >= 0 || v.indexOf("30") >= 0) return 2;
+        if (v.indexOf("24") >= 0 || v.indexOf("20") >= 0) return 1;
+        if (v.indexOf("12") >= 0 || v.indexOf("10") >= 0) return 0;
     }
     return clamp(Math.round(finite(n, 0)), 0, EQP_RANGES.length - 1);
 }
@@ -1345,22 +1990,47 @@ function hoverTarget(g, x, y) {
     var L = uiLayout(g);
     if (hit(L.shift, x, y)) return "shift";
     if (hit(L.gain, x, y)) return "gain";
-    for (var i = 0; i < L.range.length; i++) if (hit(L.range[i], x, y)) return "range" + i;
+    if (hit(L.tilt, x, y)) return "tilteq";
+    if (hit(L.range, x, y)) return "range";
     if (hit(L.aq, x, y)) return "aq";
-    if (hit(L.icon, x, y)) return "icon";
-    if (!inspectorMode) {
+    if (hit(L.bandSel, x, y)) return "bandsel";
+    if (hit(L.filtersToggle, x, y)) return "toggle_filters_shelf";
+    if (hit(L.analyzerToggle, x, y)) return "toggle_analyzer_shelf";
+    if (bottomAnalyzer) {
         if (hit(L.pre, x, y)) return "pre";
         if (hit(L.post, x, y)) return "post";
         if (hit(L.res, x, y)) return "res";
         if (hit(L.speed, x, y)) return "speed";
     } else {
-        for (var p = 0; p < L.pills.length; p++) if (hit(L.pills[p], x, y)) return "pill" + p;
+        if (hit(L.solo, x, y)) return "solo";
         if (hit(L.power, x, y)) return "power";
         if (hit(L.mode, x, y)) return "mode";
         if (hit(L.freq, x, y)) return "freq";
         if (hit(L.bandGain, x, y)) return "bandgain";
         if (hit(L.q, x, y)) return "q";
-        if (hit(L.tilt, x, y)) return "tilt";
+    }
+    if (L.az) {
+        if (hit(L.az.phase, x, y)) return "phase";
+        if (hit(L.az.pre, x, y)) return "pre";
+        if (hit(L.az.post, x, y)) return "post";
+        if (hit(L.az.res, x, y)) return "res";
+        if (hit(L.az.speed, x, y)) return "speed";
+        if (hit(L.az.tilt, x, y)) return "tilt";
+        if (hit(L.az.rmin, x, y)) return "rmin";
+        if (hit(L.az.rmax, x, y)) return "rmax";
+        if (hit(L.az.ref, x, y)) return "ref";
+    }
+    if (L.sc && L.sc.tab) {
+        if (hit(L.sc.tab.arrow, x, y) || hit(L.sc.tab.label, x, y)) return "scfold";
+        if (L.sc.open) {
+            if (hit(L.sc.route, x, y)) return "scroute";
+            if (hit(L.sc.chan, x, y)) return "scchan";
+            if (hit(L.sc.gain, x, y)) return "scgain";
+        }
+    }
+    for (var c = 0; c < L.cards.length; c++) {
+        var card = L.cards[c];
+        if (hit(card, x, y)) return "card" + card.i;
     }
     if (insidePlot(g, x, y)) return "plot";
     return "";
@@ -1381,12 +2051,78 @@ function applyPopupItem(item) {
         } else if (kind === "tilt") {
             tiltIdx = item.value;
             emitParam("tilt", tiltIdx);
+        } else if (kind === "range") {
+            rangeIdx = item.value;
+            emitParam("range", rangeIdx);
+        } else if (kind === "phase") {
+            phaseMode = item.value;
+            emitParam("phase_mode", phaseMode);
+            updatePhaseKernel();
         } else if (kind === "bandmode") {
             setBandMode(band, item.value);
+        } else if (kind === "bandsel") {
+            if (item.value < 0) bottomAnalyzer = 1;
+            else {
+                bottomAnalyzer = 0;
+                setSingleSelection(item.value);
+            }
+        } else if (kind === "scroute") {
+            scRoutingName = item.label;
+        } else if (kind === "scchan") {
+            scChannelName = item.label;
         }
     });
 }
 
+function toggleSidechainFold() {
+    showSidechainFold = showSidechainFold ? 0 : 1;
+    emitParam("sidechain_fold", showSidechainFold);
+    applyDeviceWidth();
+}
+function handleSidechainPointer(g, L, x, y, right) {
+    var scp = L.sc;
+    if (!scp || !scp.tab) return false;
+    if (hit(scp.tab.arrow, x, y) || hit(scp.tab.label, x, y)) {
+        toggleSidechainFold();
+        return true;
+    }
+    if (!scp.open || x >= g.plotX) return false;
+    if (hit(scp.route, x, y)) {
+        var routes = ["Ext. In", "No Input", "Track In"];
+        if (right) {
+            var ri = 0;
+            for (var r = 0; r < routes.length; r++) if (routes[r] === scRoutingName) ri = r;
+            scRoutingName = routes[(ri + 1) % routes.length];
+            mgraphics.redraw();
+        } else {
+            var ritems = [];
+            for (var r2 = 0; r2 < routes.length; r2++) ritems.push({ label: routes[r2], value: r2 });
+            openPopup("scroute", scp.route, ritems, 0, -1);
+        }
+        return true;
+    }
+    if (hit(scp.chan, x, y)) {
+        var chans = ["1/2", "3/4", "1", "2"];
+        if (right) {
+            var ci0 = 0;
+            for (var c = 0; c < chans.length; c++) if (chans[c] === scChannelName) ci0 = c;
+            scChannelName = chans[(ci0 + 1) % chans.length];
+            mgraphics.redraw();
+        } else {
+            var citems = [];
+            for (var c2 = 0; c2 < chans.length; c2++) citems.push({ label: chans[c2], value: c2 });
+            openPopup("scchan", scp.chan, citems, 0, -1);
+        }
+        return true;
+    }
+    if (hit(scp.gain, x, y)) {
+        gesture.kind = "refgain";
+        gesture.y0 = y;
+        gesture.gain0 = refGainDb;
+        return true;
+    }
+    return true;
+}
 function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
     if (gesture.kind) finishGesture();
     var g = geo();
@@ -1402,7 +2138,9 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         closePopup();
         var key0 = hoverTarget(g, x, y);
         var same = (was === "res" && key0 === "res") || (was === "speed" && key0 === "speed")
-            || (was === "tilt" && key0 === "tilt") || (was === "bandmode" && key0 === "mode");
+            || (was === "tilt" && key0 === "tilt") || (was === "range" && key0 === "range")
+            || (was === "bandmode" && (key0 === "mode" || key0.indexOf("card") === 0))
+            || (was === "bandsel" && key0 === "bandsel");
         if (same || popupContains(x, y)) return;
     }
     var L = uiLayout(g);
@@ -1418,16 +2156,24 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         gesture.gain0 = outGainDb;
         return;
     }
-    for (var ri = 0; ri < L.range.length; ri++) {
-        if (hit(L.range[ri], x, y)) {
-            if (rangeIdx !== ri) {
-                discreteEdit(function () {
-                    rangeIdx = ri;
-                    emitParam("range", rangeIdx);
-                });
-            }
-            return;
+    if (hit(L.tilt, x, y)) {
+        gesture.kind = "tilteq";
+        gesture.y0 = y;
+        gesture.gain0 = tiltEqDb;
+        return;
+    }
+    if (hit(L.range, x, y)) {
+        if (right) {
+            discreteEdit(function () {
+                rangeIdx = (rangeIdx + 1) % EQP_RANGES.length;
+                emitParam("range", rangeIdx);
+            });
+        } else {
+            var ritems = [];
+            for (var ri = 0; ri < EQP_RANGES.length; ri++) ritems.push({ label: "\u00b1" + EQP_RANGES[ri], value: ri });
+            openPopup("range", L.range, ritems, rangeIdx, -1);
         }
+        return;
     }
     if (hit(L.aq, x, y)) {
         discreteEdit(function () {
@@ -1437,13 +2183,26 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         });
         return;
     }
-    if (hit(L.icon, x, y)) {
-        if (inspectorMode) inspectorMode = 0;
-        else enterInspector(-1);
-        mgraphics.redraw();
+    if (handleSidechainPointer(g, L, x, y, right)) return;
+    if (hit(L.bandSel, x, y)) {
+        var menu = [];
+        for (var bi = 0; bi < EQP_NUM_BANDS; bi++) menu.push({ label: String(bi + 1), value: bi });
+        menu.push({ label: "Analyzer (|.|.)", value: -1 });
+        var selVal = bottomAnalyzer ? -1 : selectedBand;
+        openPopup("bandsel", L.bandSel, menu, selVal, -1);
         return;
     }
-    if (!inspectorMode) {
+    if (hit(L.filtersToggle, x, y)) {
+        showFiltersShelf = showFiltersShelf ? 0 : 1;
+        applyDeviceWidth();
+        return;
+    }
+    if (hit(L.analyzerToggle, x, y)) {
+        showAnalyzerShelf = showAnalyzerShelf ? 0 : 1;
+        applyDeviceWidth();
+        return;
+    }
+    if (bottomAnalyzer) {
         if (hit(L.pre, x, y)) {
             discreteEdit(function () {
                 analyzerPre = analyzerPre ? 0 : 1;
@@ -1464,9 +2223,7 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
                     resIdx = (resIdx + 1) % EQP_RESOLUTIONS.length;
                     emitParam("resolution", resIdx);
                 });
-            } else {
-                openPopup("res", L.res, itemsFrom(EQP_RESOLUTIONS), resIdx, -1);
-            }
+            } else openPopup("res", L.res, itemsFrom(EQP_RESOLUTIONS), resIdx, -1);
             return;
         }
         if (hit(L.speed, x, y)) {
@@ -1475,101 +2232,205 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
                     speedIdx = (speedIdx + 1) % EQP_SPEEDS.length;
                     emitParam("speed", speedIdx);
                 });
-            } else {
-                openPopup("speed", L.speed, itemsFrom(EQP_SPEEDS), speedIdx, -1);
-            }
+            } else openPopup("speed", L.speed, itemsFrom(EQP_SPEEDS), speedIdx, -1);
             return;
         }
-    } else {
-        for (var p = 0; p < L.pills.length; p++) {
-            if (hit(L.pills[p], x, y)) {
-                selectedBand = p;
-                mgraphics.redraw();
-                return;
-            }
-        }
+    } else if (selectedBand >= 0) {
         var sb = selectedBand;
-        if (sb < 0 && (hit(L.power, x, y) || hit(L.mode, x, y) || hit(L.freq, x, y) || hit(L.bandGain, x, y) || hit(L.q, x, y))) {
-            sb = firstActive();
-            if (sb < 0) sb = 0;
-            selectedBand = sb;
+        if (hit(L.solo, x, y)) {
+            soloBand = (soloBand === sb) ? -1 : sb;
+            updateSoloState();
+            mgraphics.redraw();
+            return;
         }
-        if (sb >= 0 && hit(L.power, x, y)) {
+        if (hit(L.power, x, y)) {
+            toggleBandPower(sb);
+            return;
+        }
+        if (hit(L.mode, x, y)) {
+            if (right) discreteEdit(function () { cycleBandMode(sb, 1); });
+            else openPopup("bandmode", L.mode, modeItems(), bands[sb].mode, sb);
+            return;
+        }
+        if (hit(L.freq, x, y)) { armReadout("freq", sb, y); return; }
+        if (hit(L.bandGain, x, y)) { armReadout("bandgain", sb, y); return; }
+        if (hit(L.q, x, y)) { armReadout("qread", sb, y); return; }
+    }
+    if (L.az) {
+        if (hit(L.az.phase, x, y)) {
+            if (right) {
+                discreteEdit(function () {
+                    phaseMode = (phaseMode + 1) % EQP_PHASE_MODES.length;
+                    emitParam("phase_mode", phaseMode);
+                    updatePhaseKernel();
+                });
+            } else openPopup("phase", L.az.phase, itemsFrom(EQP_PHASE_MODES), phaseMode, -1);
+            return;
+        }
+        if (hit(L.az.pre, x, y)) {
             discreteEdit(function () {
-                var b = bands[sb];
-                if (bandLive(b)) {
-                    b.enabled = 0;
-                } else {
-                    b.enabled = 1;
-                    if (b.mode === 0) b.mode = 6;
-                }
-                emitBand(sb);
-                updateCoeffBuffer();
+                analyzerPre = analyzerPre ? 0 : 1;
+                emitParam("pre", analyzerPre);
             });
             return;
         }
-        if (sb >= 0 && hit(L.mode, x, y)) {
+        if (hit(L.az.post, x, y)) {
+            discreteEdit(function () {
+                analyzerPost = analyzerPost ? 0 : 1;
+                emitParam("post", analyzerPost);
+            });
+            return;
+        }
+        if (hit(L.az.res, x, y)) {
             if (right) {
-                discreteEdit(function () { cycleBandMode(sb, 1); });
-            } else {
-                openPopup("bandmode", L.mode, modeItems(), bands[sb].mode, sb);
-            }
+                discreteEdit(function () {
+                    resIdx = (resIdx + 1) % EQP_RESOLUTIONS.length;
+                    emitParam("resolution", resIdx);
+                });
+            } else openPopup("res", L.az.res, itemsFrom(EQP_RESOLUTIONS), resIdx, -1);
             return;
         }
-        if (sb >= 0 && hit(L.freq, x, y)) {
-            gesture.kind = "freq";
-            gesture.band = sb;
-            gesture.y0 = y;
-            gesture.freq0 = bands[sb].freq;
+        if (hit(L.az.speed, x, y)) {
+            if (right) {
+                discreteEdit(function () {
+                    speedIdx = (speedIdx + 1) % EQP_SPEEDS.length;
+                    emitParam("speed", speedIdx);
+                });
+            } else openPopup("speed", L.az.speed, itemsFrom(EQP_SPEEDS), speedIdx, -1);
             return;
         }
-        if (sb >= 0 && hit(L.bandGain, x, y)) {
-            gesture.kind = "bandgain";
-            gesture.band = sb;
-            gesture.y0 = y;
-            gesture.bandGain0 = bands[sb].gain;
-            return;
-        }
-        if (sb >= 0 && hit(L.q, x, y)) {
-            gesture.kind = "qread";
-            gesture.band = sb;
-            gesture.y0 = y;
-            gesture.q0 = bands[sb].q;
-            return;
-        }
-        if (hit(L.tilt, x, y)) {
+        if (hit(L.az.tilt, x, y)) {
             if (right) {
                 discreteEdit(function () {
                     tiltIdx = (tiltIdx + 1) % EQP_TILTS.length;
                     emitParam("tilt", tiltIdx);
                 });
-            } else {
-                openPopup("tilt", L.tilt, tiltItems(), tiltIdx, -1);
+            } else openPopup("tilt", L.az.tilt, tiltItems(), tiltIdx, -1);
+            return;
+        }
+        if (hit(L.az.rmin, x, y)) { gesture.kind = "rmin"; gesture.y0 = y; gesture.gain0 = rangeMinDb; return; }
+        if (hit(L.az.rmax, x, y)) { gesture.kind = "rmax"; gesture.y0 = y; gesture.gain0 = rangeMaxDb; return; }
+        if (hit(L.az.ref, x, y)) {
+            var nextRef = refEnabled ? 0 : 1;
+            set_ref(nextRef);
+            if (nextRef && !showSidechainFold) {
+                showSidechainFold = 1;
+                emitParam("sidechain_fold", 1);
             }
+            applyDeviceWidth();
             return;
         }
     }
+    for (var ci = 0; ci < L.cards.length; ci++) {
+        var card = L.cards[ci];
+        if (!hit(card, x, y)) continue;
+        setSingleSelection(card.i);
+        bottomAnalyzer = 0;
+        if (hit(card.power, x, y)) { toggleBandPower(card.i); return; }
+        if (!bandLive(bands[card.i]) || hit(card.mode, x, y)) {
+            if (right) discreteEdit(function () { cycleBandMode(card.i, 1); });
+            else openPopup("bandmode", card.mode, modeItems(), bands[card.i].mode, card.i);
+            return;
+        }
+        if (hit(card.freq, x, y)) { armReadout("freq", card.i, y); return; }
+        if (hit(card.gain, x, y)) { armReadout("bandgain", card.i, y); return; }
+        if (hit(card.q, x, y)) { armReadout("qread", card.i, y); return; }
+        mgraphics.redraw();
+        return;
+    }
     if (!insidePlot(g, x, y)) return;
+    var qh = hitQHandle(g, x, y);
+    if (qh >= 0 && !right) {
+        setSingleSelection(qh);
+        bottomAnalyzer = 0;
+        gesture.kind = "qhandle";
+        gesture.band = qh;
+        gesture.x0 = x;
+        gesture.y0 = y;
+        gesture.q0 = bands[qh].q;
+        mgraphics.redraw();
+        return;
+    }
     var hb = hitBand(g, x, y);
     if (hb >= 0) {
         if (right) {
             enterInspector(hb);
+            setSingleSelection(hb);
             var pxy = bandXY(g, bands[hb]);
             openPopup("bandmode", { x: pxy.x - 8, y: pxy.y, w: 16, h: 16 }, modeItems(), bands[hb].mode, hb);
             mgraphics.redraw();
             return;
         }
+        if (shift) {
+            toggleBandSelection(hb);
+            mgraphics.redraw();
+            return;
+        }
+        if (isBandSelected(hb) && selectedBands.length > 1) selectedBand = hb;
+        else setSingleSelection(hb);
         beginDragBand(hb, x, y, option);
         mgraphics.redraw();
         return;
     }
-    beginCreate(g, x, y, option);
+    if (!anyLive()) {
+        beginCreate(g, x, y, option);
+        mgraphics.redraw();
+        return;
+    }
+    gesture.kind = "marquee";
+    gesture.startX = x;
+    gesture.startY = y;
+    gesture.curX = x;
+    gesture.curY = y;
+    gesture.moved = false;
+    gesture.shift = !!shift;
+    gesture.initialSel = selectedBands.slice();
     mgraphics.redraw();
 }
 
+function applyMarquee(g, x, y) {
+    var x0 = Math.min(gesture.startX, x);
+    var y0 = Math.min(gesture.startY, y);
+    var x1 = Math.max(gesture.startX, x);
+    var y1 = Math.max(gesture.startY, y);
+    var hits = [];
+    for (var i = 0; i < bands.length; i++) {
+        if (!bandLive(bands[i])) continue;
+        var p = bandXY(g, bands[i]);
+        if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) hits.push(i);
+    }
+    if (gesture.shift && gesture.initialSel) {
+        for (var s = 0; s < gesture.initialSel.length; s++) {
+            if (hits.indexOf(gesture.initialSel[s]) < 0) hits.push(gesture.initialSel[s]);
+        }
+    }
+    selectedBands = hits;
+    selectedBand = hits.length ? hits[0] : -1;
+}
 function ondrag(x, y, but, cmd, shift, capslock, option, ctrl) {
     var g = geo();
     gesture.fine = !!shift;
+    if (gesture.kind === "marquee") {
+        if (but === 0) {
+            if (!gesture.moved) {
+                if (selectedBands.length > 1) {
+                    setSingleSelection(selectedBand >= 0 ? selectedBand : selectedBands[0]);
+                } else {
+                    beginCreate(g, gesture.startX, gesture.startY, false);
+                }
+            }
+            finishGesture();
+            return;
+        }
+        gesture.curX = x;
+        gesture.curY = y;
+        if (Math.abs(x - gesture.startX) > 4 || Math.abs(y - gesture.startY) > 4) {
+            gesture.moved = true;
+            applyMarquee(g, x, y);
+        }
+        mgraphics.redraw();
+        return;
+    }
     if (but === 0) {
         finishGesture();
         return;
@@ -1577,9 +2438,27 @@ function ondrag(x, y, but, cmd, shift, capslock, option, ctrl) {
     hoverX = x;
     hoverY = y;
     if (gesture.kind === "shift") dragShift(g, y);
-    else if (gesture.kind === "gain") dragOutGain(g, y);
+    else if (gesture.kind === "gain" || gesture.kind === "refgain") {
+        if (gesture.kind === "refgain") {
+            var dyG = (gesture.y0 - y) / Math.max(0.001, g.sy);
+            var sensG = gesture.fine ? 0.04 : 0.15;
+            var gv = clamp(roundTo(gesture.gain0 + dyG * sensG, 0.1), -24, 24);
+            if (gv !== refGainDb) {
+                markDirty();
+                refGainDb = gv;
+            }
+        } else dragOutGain(g, y);
+    }
+    else if (gesture.kind === "tilteq") dragTiltEq(g, y);
     else if (gesture.kind === "band") dragBand(g, x, y);
     else if (gesture.kind === "freq" || gesture.kind === "bandgain" || gesture.kind === "qread") dragReadout(g, y);
+    else if (gesture.kind === "qhandle") dragQHandle(g, x, y);
+    else if (gesture.kind === "rmin" || gesture.kind === "rmax") {
+        var dyR = (gesture.y0 - y) / Math.max(0.001, g.sy);
+        if (gesture.kind === "rmin") rangeMinDb = clamp(Math.round(gesture.gain0 + dyR * 0.6), -144, -21);
+        else rangeMaxDb = clamp(Math.round(gesture.gain0 + dyR * 0.6), -120, 30);
+        markDirty();
+    }
     else return;
     mgraphics.redraw();
 }
@@ -1615,16 +2494,58 @@ function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         mgraphics.redraw();
         return;
     }
-    if (inspectorMode && selectedBand >= 0) {
+    if (hit(L.tilt, x, y)) {
+        if (Math.abs(tiltEqDb) > 0.05) {
+            if (!undoArmed) pushUndoState();
+            tiltEqDb = 0;
+            emitParam("tilt_eq", tiltEqDb);
+            emitTilt();
+            if (typeof notifyclients === "function") notifyclients();
+        }
+        undoArmed = false;
+        gesture.dirty = false;
+        mgraphics.redraw();
+        return;
+    }
+    if (L.sc && hit(L.sc.gain, x, y)) {
+        if (Math.abs(refGainDb) > 0.05) {
+            if (!undoArmed) pushUndoState();
+            refGainDb = 0;
+            if (typeof notifyclients === "function") notifyclients();
+        }
+        undoArmed = false;
+        gesture.dirty = false;
+        mgraphics.redraw();
+        return;
+    }
+    if (selectedBand >= 0) {
         var sb = selectedBand;
-        if (hit(L.freq, x, y) || hit(L.bandGain, x, y) || hit(L.q, x, y)) {
+        var reset = hit(L.freq, x, y) || hit(L.bandGain, x, y) || hit(L.q, x, y);
+        var card = null;
+        for (var ci = 0; ci < L.cards.length; ci++) if (L.cards[ci].i === sb && hit(L.cards[ci], x, y)) card = L.cards[ci];
+        if (card && !bandLive(bands[sb])) {
             discreteEdit(function () {
-                var b = bands[sb];
-                if (hit(L.freq, x, y)) b.freq = EQP_DEFAULT_BAND_FREQS[sb];
-                if (hit(L.bandGain, x, y)) b.gain = 0;
-                if (hit(L.q, x, y)) b.q = EQP_Q_DEFAULT;
+                bands[sb].enabled = 1;
+                bands[sb].mode = 6;
+                if (!(bands[sb].q > 0)) bands[sb].q = EQP_Q_DEFAULT;
                 emitBand(sb);
                 updateCoeffBuffer();
+            });
+            undoArmed = false;
+            return;
+        }
+        if (card) {
+            if (hit(card.freq, x, y) || hit(card.gain, x, y) || hit(card.q, x, y)) reset = true;
+        }
+        if (reset) {
+            discreteEdit(function () {
+                var b = bands[sb];
+                if (hit(L.freq, x, y) || (card && hit(card.freq, x, y))) b.freq = EQP_DEFAULT_BAND_FREQS[sb];
+                if (hit(L.bandGain, x, y) || (card && hit(card.gain, x, y))) b.gain = 0;
+                if (hit(L.q, x, y) || (card && hit(card.q, x, y))) b.q = EQP_Q_DEFAULT;
+                emitBand(sb);
+                updateCoeffBuffer();
+                noteSolo(sb);
             });
             undoArmed = false;
             return;
@@ -1711,27 +2632,28 @@ function onwheel(x, y, inc_x, inc_y) {
 
 function onidle(x, y) {
     pointerIn = true;
+    var g = geo();
+    var moved = x !== hoverX || y !== hoverY;
     hoverX = x;
     hoverY = y;
-    var g = geo();
     var key = hoverTarget(g, x, y);
     var band = insidePlot(g, x, y) ? hitBand(g, x, y) : -1;
     var pop = hitPopup(x, y);
-    if (key !== hoverKey || band !== hoverBand || pop !== hoverPop) {
-        hoverKey = key;
-        hoverBand = band;
-        hoverPop = pop;
-        mgraphics.redraw();
-    }
+    var changed = key !== hoverKey || band !== hoverBand || pop !== hoverPop;
+    hoverKey = key;
+    hoverBand = band;
+    hoverPop = pop;
+    syncHoverCursor(g);
+    if (changed || (insidePlot(g, x, y) && moved)) mgraphics.redraw();
 }
 function onidleout() {
     pointerIn = false;
-    if (hoverKey || hoverBand >= 0 || hoverPop >= 0) {
-        hoverKey = "";
-        hoverBand = -1;
-        hoverPop = -1;
-        mgraphics.redraw();
-    }
+    var was = cursorHidden || !!hoverKey || hoverBand >= 0 || hoverPop >= 0;
+    hoverKey = "";
+    hoverBand = -1;
+    hoverPop = -1;
+    setCursorHidden(false);
+    if (was) mgraphics.redraw();
 }
 function onresize() { mgraphics.redraw(); }
 
@@ -1747,14 +2669,14 @@ function paintGrid(g) {
     for (d = 2; d <= 9; d++) minors.push(1000 * d);
     minors.push(20000);
     mgraphics.set_line_width(1);
-    setRgb([1, 1, 1], 0.035);
+    setRgb(COL_GRID, 0.45);
     for (var m = 0; m < minors.length; m++) {
         var x = freqToX(g, minors[m]);
         mgraphics.move_to(x, g.plotY);
         mgraphics.line_to(x, g.plotY + g.plotH);
         mgraphics.stroke();
     }
-    setRgb([1, 1, 1], 0.08);
+    setRgb(COL_GRID, 0.85);
     for (var a = 0; a < majors.length; a++) {
         var mx = freqToX(g, majors[a][0]);
         mgraphics.move_to(mx, g.plotY);
@@ -1763,19 +2685,19 @@ function paintGrid(g) {
     }
     var zy = zeroY(g);
     var mid = g.plotY + g.plotH * 0.5;
-    setRgb([1, 1, 1], 0.05);
+    setRgb(COL_GRID, 0.55);
     mgraphics.move_to(g.plotX, g.plotY + g.plotH * 0.25);
     mgraphics.line_to(g.plotX + g.plotW, g.plotY + g.plotH * 0.25);
     mgraphics.stroke();
     mgraphics.move_to(g.plotX, g.plotY + g.plotH * 0.75);
     mgraphics.line_to(g.plotX + g.plotW, g.plotY + g.plotH * 0.75);
     mgraphics.stroke();
-    setRgb([1, 1, 1], 0.20);
+    setRgb(COL_AXIS, 0.9);
     mgraphics.move_to(g.plotX, zy);
     mgraphics.line_to(g.plotX + g.plotW, zy);
     mgraphics.stroke();
     if (Math.abs(zy - mid) > 1.5) {
-        setRgb([1, 1, 1], 0.06);
+        setRgb(COL_GRID, 0.4);
         mgraphics.move_to(g.plotX, mid);
         mgraphics.line_to(g.plotX + g.plotW, mid);
         mgraphics.stroke();
@@ -1800,34 +2722,58 @@ function paintGrid(g) {
 
 function paintSpectrum(g) {
     if (!specHasSignal) return;
-    if (!analyzerPre && !analyzerPost) return;
+    if (!analyzerPre && !analyzerPost && !refEnabled) return;
+    var floorGate = rangeMinDb + 1.0;
+    var bottom = g.plotY + g.plotH;
     function traceTop(series) {
         var started = false;
         for (var i = 0; i < COLS; i++) {
+            if (!(series[i] > floorGate)) {
+                started = false;
+                continue;
+            }
             var x = freqToX(g, colFreq(i));
             var y = specY(g, series[i]);
             if (!started) { mgraphics.move_to(x, y); started = true; }
             else mgraphics.line_to(x, y);
         }
     }
-    if (analyzerPre) {
-        mgraphics.move_to(freqToX(g, colFreq(0)), g.plotY + g.plotH);
-        for (var i = 0; i < COLS; i++) {
-            mgraphics.line_to(freqToX(g, colFreq(i)), specY(g, specPre[i]));
+    function fillSpans(series) {
+        var i = 0;
+        while (i < COLS) {
+            while (i < COLS && !(series[i] > floorGate)) i++;
+            if (i >= COLS) break;
+            var i0 = i;
+            while (i < COLS && series[i] > floorGate) i++;
+            var i1 = i - 1;
+            mgraphics.move_to(freqToX(g, colFreq(i0)), bottom);
+            for (var k = i0; k <= i1; k++) mgraphics.line_to(freqToX(g, colFreq(k)), specY(g, series[k]));
+            mgraphics.line_to(freqToX(g, colFreq(i1)), bottom);
+            mgraphics.close_path();
         }
-        mgraphics.line_to(freqToX(g, colFreq(COLS - 1)), g.plotY + g.plotH);
-        mgraphics.close_path();
-        mgraphics.set_source_rgba(155 / 255, 165 / 255, 180 / 255, 0.16);
+    }
+    if (analyzerPre) {
+        fillSpans(specPre);
+        setRgb(COL_LABEL, 0.16);
         mgraphics.fill();
         traceTop(specPre);
-        mgraphics.set_source_rgba(185 / 255, 195 / 255, 210 / 255, 0.35);
+        setRgb(COL_LABEL, 0.4);
         mgraphics.set_line_width(1);
         mgraphics.stroke();
     }
     if (analyzerPost) {
         traceTop(specPost);
-        mgraphics.set_source_rgba(215 / 255, 225 / 255, 240 / 255, 0.62);
+        setRgb(COL_SPEC, 0.85);
         mgraphics.set_line_width(1.25);
+        mgraphics.stroke();
+    }
+    if (refEnabled) {
+        fillSpans(specRef);
+        setRgb(COL_REF, 0.14);
+        mgraphics.fill();
+        traceTop(specRef);
+        setRgb(COL_REF, 0.9);
+        mgraphics.set_line_width(1.35);
         mgraphics.stroke();
     }
 }
@@ -1839,155 +2785,249 @@ function sampleCurve() {
     for (var i = 0; i < COLS; i++) {
         var f = colFreq(i);
         xs[i] = freqToX(g, f);
-        ys[i] = eqY(g, responseDb(f));
+        ys[i] = eqYFree(g, responseDb(f));
     }
     return { xs: xs, ys: ys };
 }
 
+function focusIndex() {
+    if ((gesture.kind === "band" || gesture.kind === "qhandle") && gesture.band >= 0) return gesture.band;
+    if (hoverBand >= 0 && bands[hoverBand] && bandLive(bands[hoverBand])) return hoverBand;
+    return selectedBand;
+}
 function paintCurve(g) {
     var c = sampleCurve();
-    var focus = hoverBand >= 0 ? hoverBand : (gesture.kind === "band" ? gesture.band : selectedBand);
-    var showFill = anyLive() || hoverBand >= 0;
-    var z = zeroY(g);
-    if (showFill) {
-        for (var i = 0; i < COLS - 1; i++) {
-            var nx = (i + 0.5) / (COLS - 1);
-            var col = rainbow(nx);
-            mgraphics.move_to(c.xs[i], c.ys[i]);
-            mgraphics.line_to(c.xs[i + 1], c.ys[i + 1]);
-            mgraphics.line_to(c.xs[i + 1], z);
-            mgraphics.line_to(c.xs[i], z);
-            mgraphics.close_path();
-            mgraphics.set_source_rgba(col[0], col[1], col[2], 0.14);
-            mgraphics.fill();
-        }
-    }
-    if (focus >= 0 && focus < bands.length && (bandLive(bands[focus]) || focus === hoverBand)) {
-        var b = bands[focus];
-        if (bandLive(b)) {
-            var colB = rainbow(eqpFreqToNorm(toScreenFreq(b.freq)));
-            var started = false;
-            for (var k = 0; k < COLS; k++) {
-                var x = c.xs[k];
-                var y = eqY(g, bandDb(b, colFreq(k)));
-                if (!started) { mgraphics.move_to(x, y); started = true; }
-                else mgraphics.line_to(x, y);
+    var focus = focusIndex();
+    if (focus >= 0 && focus < bands.length && bandLive(bands[focus])) {
+        for (var si = 0; si < bands.length; si++) {
+            if (si === focus || !bandLive(bands[si]) || !isBandSelected(si)) continue;
+            setRgb(COL_LABEL, 0.4);
+            mgraphics.set_line_width(1);
+            for (var ks = 0; ks < COLS - 1; ks++) {
+                strokeClipped(c.xs[ks], eqYFree(g, bandDb(bands[si], colFreq(ks))), c.xs[ks + 1], eqYFree(g, bandDb(bands[si], colFreq(ks + 1))), g);
             }
-            mgraphics.set_source_rgba(colB[0], colB[1], colB[2], 0.38);
-            mgraphics.set_line_width(1.5);
-            mgraphics.stroke();
+        }
+        var b = bands[focus];
+        setRgb(COL_FOCUS, 0.95);
+        mgraphics.set_line_width(1.2);
+        for (var k = 0; k < COLS - 1; k++) {
+            strokeClipped(c.xs[k], eqYFree(g, bandDb(b, colFreq(k))), c.xs[k + 1], eqYFree(g, bandDb(b, colFreq(k + 1))), g);
         }
     }
     if (mgraphics.set_line_cap) mgraphics.set_line_cap("round");
     if (mgraphics.set_line_join) mgraphics.set_line_join("round");
-    // ~70 colored segments across the 140-column sample (two columns per stroke).
-    mgraphics.set_line_width(4);
+    mgraphics.set_line_width(3);
+    setRgb(COL_CURVE, 0.22);
     for (var s = 0; s < COLS - 1; s += 2) {
         var j = Math.min(COLS - 1, s + 2);
-        var colG = rainbow((s + 0.5) / (COLS - 1));
-        mgraphics.move_to(c.xs[s], c.ys[s]);
-        mgraphics.line_to(c.xs[j], c.ys[j]);
-        mgraphics.set_source_rgba(colG[0], colG[1], colG[2], 0.22);
-        mgraphics.stroke();
+        strokeClipped(c.xs[s], c.ys[s], c.xs[j], c.ys[j], g);
     }
-    mgraphics.set_line_width(2);
+    mgraphics.set_line_width(1.5);
+    setRgb(COL_CURVE, 1);
     for (var s2 = 0; s2 < COLS - 1; s2 += 2) {
         var j2 = Math.min(COLS - 1, s2 + 2);
-        var colC = rainbow((s2 + 0.5) / (COLS - 1));
-        mgraphics.move_to(c.xs[s2], c.ys[s2]);
-        mgraphics.line_to(c.xs[j2], c.ys[j2]);
-        mgraphics.set_source_rgba(colC[0], colC[1], colC[2], 1);
-        mgraphics.stroke();
+        strokeClipped(c.xs[s2], c.ys[s2], c.xs[j2], c.ys[j2], g);
     }
 }
 
+function paintMarquee(g) {
+    if (gesture.kind !== "marquee" || !gesture.moved) return;
+    var x0 = Math.min(gesture.startX, gesture.curX);
+    var y0 = Math.min(gesture.startY, gesture.curY);
+    var w = Math.abs(gesture.curX - gesture.startX);
+    var h = Math.abs(gesture.curY - gesture.startY);
+    mgraphics.rectangle(x0, y0, w, h);
+    setRgb(COL_LABEL, 0.12);
+    mgraphics.fill();
+    mgraphics.rectangle(x0, y0, w, h);
+    setRgb(COL_LABEL, 0.55);
+    mgraphics.set_line_width(1);
+    mgraphics.stroke();
+}
 function paintHandles(g) {
-    var r = 7.5 * Math.min(g.sx, g.sy);
-    var order = [];
-    for (var i = 0; i < bands.length; i++) if (bandLive(bands[i])) order.push(i);
-    order.sort(function (a, b) {
-        var as = (a === selectedBand) ? 1 : 0;
-        var bs = (b === selectedBand) ? 1 : 0;
-        return as - bs;
-    });
-    for (var n = 0; n < order.length; n++) {
-        var idx = order[n];
-        var p = bandXY(g, bands[idx]);
-        var col = rainbow(eqpFreqToNorm(toScreenFreq(bands[idx].freq)));
-        var sel = idx === selectedBand;
-        var hov = idx === hoverBand;
-        if (sel || hov) {
-            var ring = sel ? COL_ORANGE : COL_WHITE;
-            mgraphics.ellipse(p.x - r - 1.6, p.y - r - 1.6, (r + 1.6) * 2, (r + 1.6) * 2);
-            setRgb(ring, sel ? 1 : 0.9);
-            mgraphics.set_line_width(1.6);
+    var focus = focusIndex();
+    if (focus >= 0 && bands[focus] && bandLive(bands[focus])) {
+        var fp = bandXY(g, bands[focus]);
+        mgraphics.move_to(fp.x, g.plotY);
+        mgraphics.line_to(fp.x, g.plotY + g.plotH);
+        setRgb(COL_LABEL, 0.75);
+        mgraphics.set_line_width(1);
+        mgraphics.stroke();
+    }
+    var r = NODE_R;
+    var ink = COL_INK;
+    for (var i = 0; i < bands.length; i++) {
+        if (!bandLive(bands[i])) continue;
+        var p = bandXY(g, bands[i]);
+        var ring = (i === selectedBand) || (selectedBands.length > 1 && selectedBands.indexOf(i) >= 0);
+        if (ring) {
+            mgraphics.ellipse(p.x - r - 1.65, p.y - r - 1.65, (r + 1.65) * 2, (r + 1.65) * 2);
+            setRgb(COL_ORANGE, 1);
+            mgraphics.set_line_width(1.05);
             mgraphics.stroke();
         }
         mgraphics.ellipse(p.x - r, p.y - r, r * 2, r * 2);
-        setRgb(col, 1);
+        mgraphics.set_source_rgba(1, 1, 1, 1);
         mgraphics.fill();
-        mgraphics.ellipse(p.x - r, p.y - r, r * 2, r * 2);
-        mgraphics.set_source_rgba(0, 0, 0, 0.35);
-        mgraphics.set_line_width(1);
-        mgraphics.stroke();
-        var ink = lum(col) > 0.62 ? [0.08, 0.08, 0.08, 1] : [1, 1, 1, 0.96];
-        drawText(String(idx + 1), p.x, p.y + fs(g, 3.1), fs(g, 8), ink, "center", true);
+        drawText(String(i + 1), p.x, p.y + fs(g, 2.3), fs(g, 6), ink, "center", true);
+    }
+    if (focus >= 0 && bands[focus] && bandLive(bands[focus])) {
+        var qp = qHandlePos(g, focus);
+        var qr = QH_R;
+        mgraphics.ellipse(qp.x - qr, qp.y - qr, qr * 2, qr * 2);
+        mgraphics.set_source_rgba(1, 1, 1, 1);
+        mgraphics.fill();
+        drawHArrow(qp.x, qp.y);
     }
 }
+function drawHArrow(x, y) {
+    var s = 0.75;
+    setRgb(COL_INK, 1);
+    mgraphics.set_line_width(1.15 * s);
+    mgraphics.move_to(x - 4.2 * s, y);
+    mgraphics.line_to(x + 4.2 * s, y);
+    mgraphics.stroke();
+    mgraphics.move_to(x - 4.2 * s, y);
+    mgraphics.line_to(x - 2.1 * s, y - 1.8 * s);
+    mgraphics.move_to(x - 4.2 * s, y);
+    mgraphics.line_to(x - 2.1 * s, y + 1.8 * s);
+    mgraphics.stroke();
+    mgraphics.move_to(x + 4.2 * s, y);
+    mgraphics.line_to(x + 2.1 * s, y - 1.8 * s);
+    mgraphics.move_to(x + 4.2 * s, y);
+    mgraphics.line_to(x + 2.1 * s, y + 1.8 * s);
+    mgraphics.stroke();
+}
 
-function paintGhost(g) {
+function setCursorHidden(hide) {
+    hide = !!hide;
+    if (hide === cursorHidden) return;
+    cursorHidden = hide;
+    try {
+        if (typeof max !== "undefined" && max) {
+            if (hide && typeof max.hidecursor === "function") max.hidecursor();
+            if (!hide && typeof max.showcursor === "function") max.showcursor();
+        }
+    } catch (e) {}
+}
+function syncHoverCursor(g) {
+    if (!g) g = geo();
+    var inPlot = pointerIn && insidePlot(g, hoverX, hoverY);
+    var overQ = inPlot && hitQHandle(g, hoverX, hoverY) >= 0;
+    if (inPlot) {
+        var nx = xToNorm(g, hoverX);
+        var ny = yToNorm(g, hoverY);
+        currentHoverMode = resolveGestureMode(nx, ny, 0.5);
+    }
+    var shapeCursor = currentHoverMode !== 6;
+    var hide = inPlot && !popup && !gesture.kind && hoverBand < 0 && !overQ && shapeCursor;
+    setCursorHidden(hide);
+}
+function getHoverCursorState() {
+    return {
+        hidden: cursorHidden,
+        mode: currentHoverMode,
+        name: hintForMode(currentHoverMode),
+        x: hoverX,
+        y: hoverY
+    };
+}
+
+function cursorPt(px, py, ox, oy, s) {
+    return [ox + px * s, oy + py * s];
+}
+function traceFilterShape(mode, up, ox, oy, s) {
+    function M(px, py) {
+        var p = cursorPt(px, py, ox, oy, s);
+        mgraphics.move_to(p[0], p[1]);
+    }
+    function L(px, py) {
+        var p = cursorPt(px, py, ox, oy, s);
+        mgraphics.line_to(p[0], p[1]);
+    }
+    function C(x1, y1, x2, y2, x3, y3) {
+        var a = cursorPt(x1, y1, ox, oy, s);
+        var b = cursorPt(x2, y2, ox, oy, s);
+        var c = cursorPt(x3, y3, ox, oy, s);
+        mgraphics.curve_to(a[0], a[1], b[0], b[1], c[0], c[1]);
+    }
+    function bell(down) {
+        var wing = down ? 2.0 : 8.4;
+        var peak = down ? 9.6 : 1.2;
+        M(0.2, wing);
+        L(3.8, wing);
+        C(5.6, wing, 6.6, peak, 8, peak);
+        C(9.4, peak, 10.4, wing, 12.2, wing);
+        L(15.8, wing);
+    }
+    if (mode === 7) {
+        M(0.2, 1.6);
+        L(5.4, 1.6);
+        L(8, 10.4);
+        L(10.6, 1.6);
+        L(15.8, 1.6);
+        return;
+    }
+    if (mode === 5 || mode === 8) {
+        // Sideways tuning fork: handle, then tines splitting up and down.
+        M(0.6, 5.5);
+        L(4.6, 5.5);
+        C(6.4, 5.5, 7.0, 2.0, 8.8, 2.0);
+        L(15.2, 2.0);
+        M(4.6, 5.5);
+        C(6.4, 5.5, 7.0, 9.0, 8.8, 9.0);
+        L(15.2, 9.0);
+        return;
+    }
+    if (mode >= 1 && mode <= 4) {
+        M(0.4, 10.2);
+        C(2.8, 10.0, 4.2, 2.0, 7.0, 1.8);
+        L(15.8, 1.8);
+        return;
+    }
+    if (mode >= 9 && mode <= 12) {
+        M(0.2, 1.8);
+        L(9.0, 1.8);
+        C(11.6, 2.0, 13.0, 10.0, 15.6, 10.2);
+        return;
+    }
+    bell(!up);
+}
+function drawFilterCursor(g, x, y, mode, ny) {
+    var s = Math.min(g.sx, g.sy);
+    var up = ny >= 0.5;
+    if (mode === 7) {
+        var halo = 3.2 * s;
+        var ay = zeroY(g);
+        mgraphics.ellipse(x - halo, ay - halo, halo * 2, halo * 2);
+        mgraphics.set_source_rgba(0, 0, 0, 0.55);
+        mgraphics.fill();
+        var r = 2.5 * s;
+        mgraphics.ellipse(x - r, ay - r, r * 2, r * 2);
+        mgraphics.set_source_rgba(1, 1, 1, 0.96);
+        mgraphics.fill();
+    }
+    var ox = x - 8 * s;
+    var oy = y - 5.5 * s;
+    if (mgraphics.set_line_cap) mgraphics.set_line_cap("round");
+    if (mgraphics.set_line_join) mgraphics.set_line_join("round");
+    traceFilterShape(mode, up, ox, oy, s);
+    mgraphics.set_line_width(3.2 * s);
+    mgraphics.set_source_rgba(0, 0, 0, 0.88);
+    mgraphics.stroke();
+    traceFilterShape(mode, up, ox, oy, s);
+    mgraphics.set_line_width(1.6 * s);
+    mgraphics.set_source_rgba(1, 1, 1, 0.98);
+    mgraphics.stroke();
+}
+
+function paintFilterCursor(g) {
     if (!pointerIn || gesture.kind || popup) return;
     if (!insidePlot(g, hoverX, hoverY) || hoverBand >= 0) return;
-    var nx = xToNorm(g, hoverX);
+    if (hitQHandle(g, hoverX, hoverY) >= 0) return;
+    if (currentHoverMode === 6) return;
     var ny = yToNorm(g, hoverY);
-    var mode = resolveGestureMode(nx, ny, curveNormAt(nx));
-    var col = rainbow(nx);
-    var r = 7 * Math.min(g.sx, g.sy);
-    mgraphics.ellipse(hoverX - r, hoverY - r, r * 2, r * 2);
-    mgraphics.set_source_rgba(col[0], col[1], col[2], 0.16);
-    mgraphics.fill();
-    mgraphics.ellipse(hoverX - r, hoverY - r, r * 2, r * 2);
-    mgraphics.set_source_rgba(col[0], col[1], col[2], 0.7);
-    mgraphics.set_line_width(1.25);
-    mgraphics.stroke();
-    var label = hintForMode(mode);
-    var tx = hoverX + r + 5 * g.sx;
-    var ty = hoverY + fs(g, 3);
-    if (tx + textW(label, fs(g, 8), false) > g.plotX + g.plotW - 4) tx = hoverX - r - 5 * g.sx - textW(label, fs(g, 8), false);
-    drawText(label, tx, ty, fs(g, 8), [0.78, 0.78, 0.78, 0.9], "left", false);
-}
-
-function hudText(i) {
-    var b = bands[i];
-    var parts = ["Band " + (i + 1), modeName(b.mode), fmtFreq(toScreenFreq(b.freq))];
-    if (usesGain(b.mode)) parts.push(fmtSignedDb(b.gain));
-    parts.push(fmtQ(b.q));
-    return parts.join(" · ");
-}
-function paintHud(g) {
-    var i = -1;
-    if (gesture.kind === "band" || gesture.kind === "freq" || gesture.kind === "bandgain" || gesture.kind === "qread") i = gesture.band;
-    else if (hoverBand >= 0) i = hoverBand;
-    if (i < 0 || !bands[i] || (!bandLive(bands[i]) && gesture.band !== i)) return;
-    if (!bandLive(bands[i])) return;
-    var label = hudText(i);
-    var size = fs(g, 8.5);
-    var tw = textW(label, size, false);
-    var pad = 6 * g.sx;
-    var w = tw + pad * 2;
-    var h = 15 * g.sy;
-    var p = bandXY(g, bands[i]);
-    var x = p.x - w * 0.5;
-    var y = p.y - 7.5 * g.sy - h - 6 * g.sy;
-    if (y < g.plotY + 2) y = p.y + 7.5 * g.sy + 6 * g.sy;
-    if (x < g.plotX + 2) x = g.plotX + 2;
-    if (x + w > g.plotX + g.plotW - 2) x = g.plotX + g.plotW - 2 - w;
-    fillRound(x, y, w, h, 3 * g.sx, [0.08, 0.08, 0.08], 0.92);
-    rrect(x, y, w, h, 3 * g.sx);
-    mgraphics.set_source_rgba(1, 1, 1, 0.12);
-    mgraphics.set_line_width(1);
-    mgraphics.stroke();
-    drawText(label, x + pad, y + h - 4 * g.sy, size, [0.93, 0.93, 0.93, 1], "left", false);
+    drawFilterCursor(g, hoverX, hoverY, currentHoverMode, ny);
 }
 
 function drawBellIcon(r, on) {
@@ -2036,16 +3076,17 @@ function drawSpecIcon(r) {
     var x0 = r.x + 3 * (r.w / 28);
     var base = r.y + r.h - 4 * (r.h / 17);
     var maxH = r.h - 8 * (r.h / 17);
-    setRgb([0.82, 0.82, 0.82], 1);
+    setRgb(COL_BTN_TEXT, 1);
     for (var i = 0; i < bars.length; i++) {
         var bh = Math.max(1, maxH * bars[i]);
         mgraphics.rectangle(x0 + i * (bw + gap), base - bh, bw, bh);
         mgraphics.fill();
     }
-    caret(r.x + r.w - 9 * (r.w / 28), r.y + r.h * 0.58, Math.max(4, 5 * (r.w / 28)), [0.82, 0.82, 0.82, 1]);
+    caret(r.x + r.w - 9 * (r.w / 28), r.y + r.h * 0.58, Math.max(4, 5 * (r.w / 28)), COL_CARET);
 }
-function drawPower(r, on) {
-    var c = on ? COL_ORANGE : [0.45, 0.45, 0.45, 1];
+function drawPower(r, on, col) {
+    var c = col || (on ? COL_ORANGE : COL_AQ_OFF);
+    if (!on) c = COL_AQ_OFF;
     var cx = r.x + r.w * 0.5;
     var cy = r.y + r.h * 0.52;
     var rad = Math.min(r.w, r.h) * 0.32;
@@ -2056,6 +3097,130 @@ function drawPower(r, on) {
     mgraphics.move_to(cx, cy - rad * 0.95);
     mgraphics.line_to(cx, cy + rad * 0.15);
     mgraphics.stroke();
+}
+function drawModeGlyph(mode, x, y, col) {
+    setRgb(col, 1);
+    mgraphics.set_line_width(1.1);
+    if (mode === 6) {
+        mgraphics.move_to(x, y - 4);
+        mgraphics.curve_to(x + 3.2, y - 3.2, x + 4.2, y - 1, x + 4.2, y);
+        mgraphics.curve_to(x + 4.2, y + 1, x + 3.2, y + 3.2, x, y + 4);
+        mgraphics.curve_to(x - 3.2, y + 3.2, x - 4.2, y + 1, x - 4.2, y);
+        mgraphics.curve_to(x - 4.2, y - 1, x - 3.2, y - 3.2, x, y - 4);
+        mgraphics.stroke();
+    } else if (mode === 7) {
+        mgraphics.move_to(x - 4, y - 3);
+        mgraphics.line_to(x, y + 4);
+        mgraphics.line_to(x + 4, y - 3);
+        mgraphics.stroke();
+    } else if (mode >= 1 && mode <= 4) {
+        mgraphics.move_to(x - 5, y + 3);
+        mgraphics.line_to(x - 1, y - 3);
+        mgraphics.line_to(x + 5, y - 3);
+        mgraphics.stroke();
+    } else if (mode >= 9) {
+        mgraphics.move_to(x - 5, y - 3);
+        mgraphics.line_to(x + 1, y - 3);
+        mgraphics.line_to(x + 5, y + 3);
+        mgraphics.stroke();
+    } else if (mode === 5 || mode === 8) {
+        var flip = mode === 8 ? -1 : 1;
+        mgraphics.move_to(x - 5, y + 3 * flip);
+        mgraphics.line_to(x - 1, y + 3 * flip);
+        mgraphics.line_to(x + 1, y - 3 * flip);
+        mgraphics.line_to(x + 5, y - 3 * flip);
+        mgraphics.stroke();
+    }
+}
+function drawSpeaker(r, on) {
+    var col = on ? COL_ORANGE : COL_LABEL;
+    var x = r.x + 2.5;
+    var y = r.y + 4.5;
+    setRgb(col, 1);
+    mgraphics.move_to(x, y + 2);
+    mgraphics.line_to(x + 2.6, y + 2);
+    mgraphics.line_to(x + 6.2, y - 1);
+    mgraphics.line_to(x + 6.2, y + 7);
+    mgraphics.line_to(x + 2.6, y + 4);
+    mgraphics.line_to(x, y + 4);
+    mgraphics.close_path();
+    mgraphics.fill();
+    if (on) {
+        mgraphics.set_line_width(1);
+        mgraphics.arc(x + 7.2, y + 3, 2.6, -0.8, 0.8);
+        mgraphics.stroke();
+        mgraphics.arc(x + 7.2, y + 3, 4.4, -0.7, 0.7);
+        mgraphics.stroke();
+    }
+}
+function drawListIcon(r, on) {
+    var col = on ? COL_ORANGE : COL_DIM;
+    setRgb(col, 1);
+    for (var i = 0; i < 3; i++) {
+        var y = r.y + 3.5 + i * 3.4;
+        mgraphics.rectangle(r.x + 1, y, 6.5, 1.15);
+        mgraphics.fill();
+        mgraphics.ellipse(r.x + 8.4, y - 0.4, 2.1, 2.1);
+        mgraphics.fill();
+    }
+}
+function drawBarsIcon(r, on) {
+    var col = on ? COL_ORANGE : COL_DIM;
+    var bars = [0.45, 0.85, 0.55, 1];
+    setRgb(col, 1);
+    for (var i = 0; i < bars.length; i++) {
+        var h = 2 + bars[i] * 8;
+        mgraphics.rectangle(r.x + 1 + i * 2.7, r.y + r.h - 3 - h, 1.5, h);
+        mgraphics.fill();
+    }
+}
+function bandInk(b) {
+    if (!bandLive(b)) return COL_AQ_OFF;
+    return COL_ORANGE;
+}
+function paintBottom(g) {
+    var L = uiLayout(g);
+    var ox = g.mainX || 0;
+    var base = 153;
+    if (bottomAnalyzer) {
+        drawSpecIcon(L.bandSel);
+        drawText("Analyzer", ox + 32, base, fs(g, 8), COL_LABEL, "left", false);
+        drawPillButton(L.pre, "Pre", analyzerPre === 1, g);
+        drawPillButton(L.post, "Post", analyzerPost === 1, g);
+        drawText("Res", ox + 118, base, fs(g, 8), COL_LABEL, "left", false);
+        drawDropdown(L.res, EQP_RESOLUTIONS[resIdx] || "Huge", g);
+        drawText("Spd", ox + 218, base, fs(g, 8), COL_LABEL, "left", false);
+        drawDropdown(L.speed, EQP_SPEEDS[speedIdx] || "Fast", g);
+    } else {
+        var sb = selectedBand;
+        if (sb < 0 || sb >= bands.length) sb = 0;
+        var b = bands[sb];
+        var live = bandLive(b);
+        var col = bandInk(b);
+        var grey = COL_BTN_TEXT;
+        drawText(String(sb + 1), L.bandSel.x + 6, base, fs(g, 10), COL_WHITE, "center", true);
+        caret(L.bandSel.x + L.bandSel.w - 6, L.bandSel.y + 9, 4, COL_DIM);
+        drawSpeaker(L.solo, soloBand === sb);
+        drawPower(L.power, live, col);
+        if (live) {
+            drawModeGlyph(b.mode, L.mode.x + 7, L.mode.y + 8, col);
+            drawText(MODE_FACE[b.mode] || "Bell", L.mode.x + 14, base, fs(g, 9), col, "left", false);
+            caret(L.mode.x + L.mode.w - 6, L.mode.y + 9, 4, col);
+            drawText(fmtFreq(b.freq), L.freq.x + L.freq.w - 2, base, fs(g, 9), col, "right", false);
+            var gtxt = fmtSignedDb(b.gain);
+            var gcol = usesGain(b.mode) ? col : [col[0], col[1], col[2], 0.35];
+            drawText(gtxt, L.bandGain.x + L.bandGain.w - 2, base, fs(g, 9), gcol, "right", false);
+            drawText(b.q.toFixed(2), L.q.x + L.q.w - 1, base, fs(g, 9), col, "right", false);
+        } else {
+            drawText("\u2014 Off", L.mode.x + 2, base, fs(g, 9), grey, "left", false);
+            caret(L.mode.x + L.mode.w - 6, L.mode.y + 9, 4, grey);
+            drawText(fmtFreq(b.freq), L.freq.x + L.freq.w - 2, base, fs(g, 9), COL_DIM, "right", false);
+            drawText(fmtSignedDb(b.gain), L.bandGain.x + L.bandGain.w - 2, base, fs(g, 9), COL_DIM, "right", false);
+            drawText(b.q.toFixed(2), L.q.x + L.q.w - 1, base, fs(g, 9), COL_DIM, "right", false);
+        }
+    }
+    drawListIcon(L.filtersToggle, showFiltersShelf === 1);
+    drawBarsIcon(L.analyzerToggle, showAnalyzerShelf === 1);
 }
 function drawDropdown(r, label, g) {
     var rad = 2.5 * Math.min(g.sx, g.sy);
@@ -2076,97 +3241,202 @@ function drawPillButton(r, label, on, g) {
     drawText(label, r.x + r.w * 0.5, r.y + r.h - 4 * g.sy, fs(g, 9), on ? COL_BTN_ON_TEXT : COL_BTN_TEXT, "center", false);
 }
 
+function drawSideways(str, cx, cy, size, c) {
+    mgraphics.save();
+    mgraphics.translate(cx, cy);
+    mgraphics.rotate(-Math.PI / 2);
+    drawText(str, 0, size * 0.35, size, c, "center", false);
+    mgraphics.restore();
+}
+function sidechainPeakDb() {
+    var peak = -144;
+    if (specRef && specRef.length) {
+        for (var i = 0; i < specRef.length; i++) if (specRef[i] > peak) peak = specRef[i];
+    }
+    return peak;
+}
+function paintSidechainTab(g, tab) {
+    var open = showSidechainFold === 1;
+    var on = refEnabled === 1;
+    var a = tab.arrow;
+    fillRound(a.x, a.y, a.w, a.h, 2, COL_BTN, 1);
+    var acx = a.x + a.w * 0.5;
+    var acy = a.y + a.h * 0.5;
+    setRgb(COL_BTN_TEXT, 1);
+    if (open) {
+        mgraphics.move_to(acx - 3.4, acy + 1.4);
+        mgraphics.line_to(acx + 3.4, acy + 1.4);
+        mgraphics.line_to(acx, acy - 2.2);
+    } else {
+        mgraphics.move_to(acx - 3.4, acy - 1.4);
+        mgraphics.line_to(acx + 3.4, acy - 1.4);
+        mgraphics.line_to(acx, acy + 2.2);
+    }
+    mgraphics.close_path();
+    mgraphics.fill();
+    drawSideways("Sidechain", tab.w * 0.5 + 0.5, 86, fs(g, 9), COL_LABEL);
+    var hot = on && sidechainPeakDb() > rangeMinDb + 8;
+    mgraphics.arc(tab.w * 0.5, g.h - 11, 2.05, 0, Math.PI * 2);
+    setRgb(hot ? COL_ORANGE : COL_DIM, 1);
+    mgraphics.fill();
+}
+function paintSidechain(g) {
+    var L = uiLayout(g);
+    var scp = L.sc;
+    if (!scp || !scp.tab) return;
+    var tab = scp.tab;
+    setRgb(COL_BEZEL, 1);
+    mgraphics.rectangle(0, 0, tab.w, g.h);
+    mgraphics.fill();
+    setRgb(COL_GRID, 1);
+    mgraphics.rectangle(tab.w - 1, 0, 1, g.h);
+    mgraphics.fill();
+    paintSidechainTab(g, tab);
+    if (!scp.open) return;
+    var split = g.mainX || EQP_SIDECHAIN_FOLD_W;
+    setRgb(COL_GRID, 1);
+    mgraphics.rectangle(split - 1, 0, 1, g.h);
+    mgraphics.fill();
+    drawText("Audio From", scp.route.x, scp.route.y - 6, fs(g, 8), COL_LABEL, "left", false);
+    drawShelfDrop(scp.route, scRoutingName, g);
+    drawShelfDrop(scp.chan, scChannelName, g);
+    drawText("Gain", scp.route.x, scp.gain.y + scp.gain.h - 4, fs(g, 8), COL_LABEL, "left", false);
+    drawText(fmtSignedDb(refGainDb), scp.gain.x + scp.gain.w, scp.gain.y + scp.gain.h - 4, fs(g, 9), COL_REF, "right", false);
+    var meter = scp.meter;
+    fillRound(meter.x, meter.y, meter.w, meter.h, 2, COL_PLOT, 1);
+    var frac = clamp01((sidechainPeakDb() - rangeMinDb) / Math.max(1, rangeMaxDb - rangeMinDb));
+    if (refEnabled && frac > 0.02) {
+        mgraphics.rectangle(meter.x, meter.y, Math.max(2, meter.w * frac), meter.h);
+        setRgb(COL_REF, 0.9);
+        mgraphics.fill();
+    }
+}
+function init_routing() {
+    try {
+        if (typeof LiveAPI !== "function") return;
+        var api = new LiveAPI(function (args) {
+            if (!args) return;
+            var name = "";
+            for (var i = 0; i < args.length; i++) {
+                var token = args[i];
+                if (typeof token !== "string") continue;
+                if (token === "id" || token === "audio_inputs" || token === "audio_input") continue;
+                if (token.length) name = token;
+            }
+            if (name) {
+                scRoutingName = name;
+                mgraphics.redraw();
+            }
+        }, "this_device");
+        if (api && api.id) api.property = "audio_inputs";
+    } catch (e) {}
+}
 function paintTop(g) {
     var L = uiLayout(g);
+    var ox = g.mainX || 0;
     var size = fs(g, 10);
     var base = 16 * g.sy;
-    var val = hoverKey === "shift" || gesture.kind === "shift" ? [1, 0.68, 0.25, 1] : COL_ORANGE;
-    drawText("Shift", 10 * g.sx, base, size, COL_LABEL, "left", false);
-    drawText(fmtSt(shiftSt), 44 * g.sx, base, size, val, "left", true);
-    var gv = hoverKey === "gain" || gesture.kind === "gain" ? [1, 0.68, 0.25, 1] : COL_ORANGE;
-    drawText("Gain", 98 * g.sx, base, size, COL_LABEL, "left", false);
-    drawText(fmtOut(outGainDb), 130 * g.sx, base, size, gv, "left", true);
-    drawText("Range", 178 * g.sx, base, size, COL_LABEL, "left", false);
-    for (var i = 0; i < 3; i++) {
-        var r = L.range[i];
-        var on = rangeIdx === i;
-        var label = "±" + EQP_RANGES[i];
-        var col = on ? COL_WHITE : (hoverKey === "range" + i ? [0.78, 0.78, 0.78, 1] : COL_DIM);
-        drawText(label, r.x + r.w * 0.5, r.y + r.h - 3 * g.sy, size, col, "center", on);
-        if (on) {
-            var tw = textW(label, size, true);
-            mgraphics.rectangle(r.x + (r.w - tw) * 0.5, r.y + r.h - 1.5 * g.sy, tw, 2 * g.sy);
-            setRgb(COL_ORANGE, 1);
-            mgraphics.fill();
-        }
-    }
+    var val = COL_VALUE;
+    drawText("Shift", ox + 10 * g.sx, base, size, COL_LABEL, "left", false);
+    drawText(fmtSt(shiftSt), ox + 44 * g.sx, base, size, val, "left", true);
+    var gv = COL_VALUE;
+    drawText("Gain", ox + 98 * g.sx, base, size, COL_LABEL, "left", false);
+    drawText(fmtOut(outGainDb), ox + 130 * g.sx, base, size, gv, "left", true);
+    var tv = COL_VALUE;
+    drawText("Tilt", L.tilt.x, base, size, COL_LABEL, "left", false);
+    drawText(fmtSignedDb(tiltEqDb).replace(" dB", ""), L.tilt.x + L.tilt.w, base, size, tv, "right", true);
+    drawText("Range", L.range.x - 36 * g.sx, base, fs(g, 8), COL_LABEL, "left", false);
+    drawDropdown(L.range, "\u00b1" + EQP_RANGES[rangeIdx], g);
     drawBellIcon(L.aq, adaptiveQ === 1);
 }
 
-function paintBottom(g) {
+function paintShelves(g) {
     var L = uiLayout(g);
-    var base = 153 * g.sy;
-    var size = fs(g, 9);
-    if (inspectorMode && selectedBand >= 0) {
-        drawText("B" + (selectedBand + 1), L.icon.x + L.icon.w * 0.5, L.icon.y + L.icon.h - 4 * g.sy, fs(g, 9), COL_ORANGE, "center", true);
-    } else {
-        drawSpecIcon(L.icon);
-    }
-    if (!inspectorMode) {
-        drawText("Analyzer", 50 * g.sx, base, fs(g, 8), COL_LABEL, "left", false);
-        drawPillButton(L.pre, "Pre", analyzerPre === 1, g);
-        drawPillButton(L.post, "Post", analyzerPost === 1, g);
-        drawText("Resolution", 166 * g.sx, base, fs(g, 8), COL_LABEL, "left", false);
-        drawDropdown(L.res, EQP_RESOLUTIONS[resIdx] || "Huge", g);
-        drawText("Speed", 271 * g.sx, base, size, COL_LABEL, "left", false);
-        drawDropdown(L.speed, EQP_SPEEDS[speedIdx] || "Fast", g);
+    for (var i = 0; i < L.cards.length; i++) paintFilterCard(g, L.cards[i]);
+    if (L.az) paintAnalyzerShelf(g, L.az);
+}
+function paintFilterCard(g, card) {
+    var b = bands[card.i];
+    var live = bandLive(b);
+    var sel = card.i === selectedBand;
+    var bg = (live || sel) ? COL_BTN : COL_PLOT;
+    fillRound(card.x, card.y, card.w, card.h, 3, bg, 1);
+    rrect(card.x, card.y, card.w, card.h, 3);
+    var edge = sel ? COL_ORANGE : COL_GRID;
+    setRgb(edge, 1);
+    mgraphics.set_line_width(1);
+    mgraphics.stroke();
+    var y1 = card.y + 14;
+    var y2 = card.y + 32;
+    if (!live) {
+        var off = COL_DIM;
+        drawText("\u2014 Off", card.x + 8, y1 + 8, fs(g, 9), off, "left", false);
+        caret(card.x + card.w - 10, card.y + 10, 4, off);
         return;
     }
-    for (var i = 0; i < L.pills.length; i++) {
-        var pill = L.pills[i];
-        var on = i === selectedBand;
-        var live = bandLive(bands[i]);
-        var bg = on ? COL_ORANGE : (live ? [0.23, 0.23, 0.23, 1] : [0.16, 0.16, 0.16, 1]);
-        fillRound(pill.x, pill.y, pill.w, pill.h, 2 * g.sx, bg, 1);
-        var fg = on ? COL_INK : (live ? COL_WHITE : COL_DIM);
-        drawText(String(i + 1), pill.x + pill.w * 0.5, pill.y + pill.h - 4 * g.sy, fs(g, 8), fg, "center", true);
-        if (live && !on) {
-            var rc = rainbow(eqpFreqToNorm(toScreenFreq(bands[i].freq)));
-            mgraphics.rectangle(pill.x + 2, pill.y + pill.h - 2 * g.sy, pill.w - 4, 1.5 * g.sy);
-            setRgb(rc, 0.9);
-            mgraphics.fill();
-        }
-    }
-    var sb = selectedBand;
-    if (sb < 0) sb = 0;
-    var b = bands[sb];
-    drawPower(L.power, bandLive(b));
-    drawDropdown(L.mode, MODE_SHORT[b.mode] || "Off", g);
-    var fcol = (hoverKey === "freq" || gesture.kind === "freq") ? [1, 0.72, 0.3, 1] : COL_ORANGE;
-    var gcol = (hoverKey === "bandgain" || gesture.kind === "bandgain") ? [1, 0.72, 0.3, 1] : COL_ORANGE;
-    var qcol = (hoverKey === "q" || gesture.kind === "qread") ? [1, 0.72, 0.3, 1] : COL_ORANGE;
-    drawText(fmtFreqShort(b.freq), L.freq.x + L.freq.w * 0.5, L.freq.y + L.freq.h - 4 * g.sy, fs(g, 8), fcol, "center", true);
-    var gtxt = usesGain(b.mode) ? (Math.abs(b.gain) < 0.05 ? "0.0" : ((b.gain > 0 ? "+" : "") + b.gain.toFixed(1))) : "—";
-    drawText(gtxt, L.bandGain.x + L.bandGain.w * 0.5, L.bandGain.y + L.bandGain.h - 4 * g.sy, fs(g, 8), usesGain(b.mode) ? gcol : COL_DIM, "center", true);
-    drawText(b.q >= 10 ? b.q.toFixed(1) : b.q.toFixed(2), L.q.x + L.q.w * 0.5, L.q.y + L.q.h - 4 * g.sy, fs(g, 8), qcol, "center", true);
+    var col = sel ? bandInk(b) : COL_LABEL;
+    drawPower(card.power, true, col);
+    drawModeGlyph(b.mode, card.mode.x + 7, card.mode.y + 8, col);
+    drawText(MODE_FACE[b.mode] || "Bell", card.mode.x + 14, y1, fs(g, 8), col, "left", false);
+    caret(card.x + card.w - 10, card.y + 10, 4, col);
+    drawText(fmtFreq(b.freq), card.freq.x, y2, fs(g, 8), col, "left", false);
+    var gcol = usesGain(b.mode) ? col : [col[0], col[1], col[2], 0.35];
+    drawText(fmtSignedDb(b.gain), card.gain.x + card.gain.w, y2, fs(g, 8), gcol, "right", false);
+    drawText(b.q.toFixed(2), card.q.x + card.q.w, y2, fs(g, 8), col, "right", false);
+}
+function paintAnalyzerShelf(g, az) {
+    fillRound(az.x, az.y, az.w, az.h, 4, COL_BEZEL, 1);
+    fillRound(az.x + 4, az.y + 22, az.w - 8, az.h - 28, 3, COL_PLOT, 1);
+    var label = COL_LABEL;
+    drawText("Phase", az.x + 8, az.phase.y + az.phase.h - 3, fs(g, 8), label, "left", false);
+    drawShelfDrop(az.phase, EQP_PHASE_SHORT[phaseMode] || "Zero", g);
+    drawText("Enable", az.x + 8, az.pre.y + 12, fs(g, 8), label, "left", false);
+    drawPillButton(az.pre, "Pre", analyzerPre === 1, g);
+    drawPillButton(az.post, "Post", analyzerPost === 1, g);
+    drawText("Resolution", az.x + 8, az.res.y + 12, fs(g, 8), label, "left", false);
+    drawShelfDrop(az.res, EQP_RESOLUTIONS[resIdx] || "Huge", g);
+    drawText("Speed", az.x + 8, az.speed.y + 12, fs(g, 8), label, "left", false);
+    drawShelfDrop(az.speed, EQP_SPEEDS[speedIdx] || "Fast", g);
     var tv = EQP_TILTS[tiltIdx];
-    drawDropdown(L.tilt, (tv === 0 ? "0 dB" : tv.toFixed(1) + " dB"), g);
+    drawText("Tilt", az.x + 8, az.tilt.y + 12, fs(g, 8), label, "left", false);
+    drawShelfDrop(az.tilt, (tv === 0 ? "0" : tv.toFixed(1)) + " dB/oct", g);
+    drawText("Range (dB)", az.x + 8, az.rmin.y + 12, fs(g, 8), label, "left", false);
+    drawValueBox(az.rmin, String(Math.round(rangeMinDb)), g);
+    drawValueBox(az.rmax, String(Math.round(rangeMaxDb)), g);
+    var ref = refEnabled ? "Sidechain" : "\u00d7 None";
+    drawText("Reference", az.x + 8, az.y + az.h - 6, fs(g, 8), COL_LABEL, "left", false);
+    drawText(ref, az.ref.x, az.y + az.h - 6, fs(g, 8), refEnabled ? COL_REF : COL_DIM, "left", false);
+}
+function drawShelfDrop(r, label, g) {
+    fillRound(r.x, r.y, r.w, r.h, 3, COL_DROP, 1);
+    var size = fs(g, 8);
+    while (size > 6.5 && textW(label, size, false) > r.w - 12) size -= 0.5;
+    drawText(label, r.x + 4, r.y + r.h - 4, size, COL_WHITE, "left", false);
+    caret(r.x + r.w - 8, r.y + r.h * 0.58, 4, COL_CARET);
+}
+function drawValueBox(r, label, g) {
+    fillRound(r.x, r.y, r.w, r.h, 2, COL_PLOT, 1);
+    rrect(r.x, r.y, r.w, r.h, 2);
+    setRgb(COL_DROP_EDGE, 1);
+    mgraphics.set_line_width(1);
+    mgraphics.stroke();
+    drawText(label, r.x + r.w * 0.5, r.y + r.h - 4, fs(g, 8), COL_VALUE, "center", false);
 }
 
 function paintPopup(g) {
     if (!popup) return;
-    fillRound(popup.x, popup.y, popup.w, popup.h, 4 * g.sx, [0.12, 0.12, 0.12, 0.98], 1);
+    fillRound(popup.x, popup.y, popup.w, popup.h, 4 * g.sx, COL_PLOT, 0.98);
     rrect(popup.x, popup.y, popup.w, popup.h, 4 * g.sx);
-    mgraphics.set_source_rgba(1, 1, 1, 0.14);
+    setRgb(COL_GRID, 1);
     mgraphics.set_line_width(1);
     mgraphics.stroke();
     for (var i = 0; i < popup.rects.length; i++) {
         var r = popup.rects[i];
         var sel = popup.selected === r.item.value;
         if (i === hoverPop) {
-            fillRound(r.x, r.y, r.w, r.h, 2, [1, 1, 1], 0.06);
+            fillRound(r.x, r.y, r.w, r.h, 2, COL_LABEL, 0.12);
         }
-        var col = sel ? COL_ORANGE : [0.88, 0.88, 0.88, 1];
+        var col = sel ? COL_ORANGE : COL_LABEL;
         drawText(r.item.label, r.x + 4 * g.sx, r.y + r.h - 3 * g.sy, fs(g, 8.5), col, "left", sel);
     }
 }
@@ -2174,13 +3444,15 @@ function paintPopup(g) {
 function paintDsp(g) {
     if (!eqpDsp.started || eqpDsp.ready) return;
     var msg = eqpDsp.error ? ("DSP failed: " + eqpDsp.error) : "DSP loading…";
-    var col = eqpDsp.error ? [0.95, 0.42, 0.32, 1] : COL_ORANGE;
+    var col = eqpDsp.error ? COL_ALERT : COL_ORANGE;
     drawText(msg, g.plotX + 6 * g.sx, g.plotY + g.plotH - 6 * g.sy, fs(g, 8), col, "left", false);
 }
 
 function paint() {
     try {
+        eqpApplyTheme();
         var g = geo();
+        syncHoverCursor(g);
         setRgb(COL_CHROME, 1);
         mgraphics.rectangle(0, 0, g.w, g.h);
         mgraphics.fill();
@@ -2191,23 +3463,30 @@ function paint() {
         paintSpectrum(g);
         paintCurve(g);
         paintHandles(g);
-        paintGhost(g);
+        paintMarquee(g);
+        var ox = g.mainX || 0;
+        var mainW = g.mainW || 352;
         setRgb(COL_CHROME, 1);
-        mgraphics.rectangle(0, 0, g.w, g.plotY);
+        mgraphics.rectangle(ox, 0, mainW, g.plotY);
         mgraphics.fill();
-        mgraphics.rectangle(0, g.plotY + g.plotH, g.w, g.h - (g.plotY + g.plotH));
+        mgraphics.rectangle(ox, g.plotY + g.plotH, mainW, g.h - (g.plotY + g.plotH));
         mgraphics.fill();
-        if (g.plotX > 0.5) {
-            mgraphics.rectangle(0, 0, g.plotX, g.h);
-            mgraphics.fill();
-            mgraphics.rectangle(g.plotX + g.plotW, 0, g.w - g.plotX - g.plotW, g.h);
+        if (g.plotX > ox + 0.5) {
+            mgraphics.rectangle(ox, 0, g.plotX - ox, g.h);
             mgraphics.fill();
         }
+        var rightSliver = ox + mainW - (g.plotX + g.plotW);
+        if (rightSliver > 0.5) {
+            mgraphics.rectangle(g.plotX + g.plotW, 0, rightSliver, g.h);
+            mgraphics.fill();
+        }
+        paintSidechain(g);
         paintTop(g);
         paintBottom(g);
-        paintHud(g);
+        paintShelves(g);
+        paintFilterCursor(g);
         paintDsp(g);
-        rrect(0.5, 0.5, g.w - 1, g.h - 1, 5 * Math.min(g.sx, g.sy));
+        rrect(0.5, 0.5, ox + mainW - 1, g.h - 1, 5);
         setRgb(COL_BEZEL, 1);
         mgraphics.set_line_width(1);
         mgraphics.stroke();
@@ -2227,6 +3506,7 @@ function set_shift(v) {
     if (n === shiftSt) return;
     shiftSt = n;
     updateCoeffBuffer();
+    noteSolo();
     mgraphics.redraw();
 }
 function set_gain(v) {
@@ -2235,6 +3515,22 @@ function set_gain(v) {
     if (n === outGainDb) return;
     outGainDb = n;
     emitOutGain();
+    mgraphics.redraw();
+}
+function set_phase_mode(v) {
+    var m = Math.round(finite(v, phaseMode));
+    if (m !== 0 && m !== 1 && m !== 2) m = 0;
+    if (m === phaseMode) return;
+    phaseMode = m;
+    updatePhaseKernel();
+    mgraphics.redraw();
+}
+function set_tilt_eq(v) {
+    if (gesture.kind === "tilteq") return;
+    var n = clamp(roundTo(finite(v, tiltEqDb), 0.1), -24, 24);
+    if (n === tiltEqDb) return;
+    tiltEqDb = n;
+    emitTilt();
     mgraphics.redraw();
 }
 function set_outgain(v) { set_gain(v); }
@@ -2249,6 +3545,7 @@ function set_adaptiveq(v) {
     if (n === adaptiveQ) return;
     adaptiveQ = n;
     updateCoeffBuffer();
+    noteSolo();
     mgraphics.redraw();
 }
 function set_pre(v) {
@@ -2290,6 +3587,41 @@ function set_tilt(v) {
     }
     mgraphics.redraw();
 }
+function set_filters_shelf(v) {
+    var n = finite(v, showFiltersShelf) > 0.5 ? 1 : 0;
+    if (n === showFiltersShelf) return;
+    showFiltersShelf = n;
+    resizeDeviceBoxes();
+    mgraphics.redraw();
+}
+function set_analyzer_shelf(v) {
+    var n = finite(v, showAnalyzerShelf) > 0.5 ? 1 : 0;
+    if (n === showAnalyzerShelf) return;
+    showAnalyzerShelf = n;
+    resizeDeviceBoxes();
+    mgraphics.redraw();
+}
+function set_sidechain_fold(v) {
+    var n = finite(v, showSidechainFold) > 0.5 ? 1 : 0;
+    if (n === showSidechainFold) return;
+    showSidechainFold = n;
+    resizeDeviceBoxes();
+    mgraphics.redraw();
+}
+function set_ref(v) {
+    var n = finite(v, refEnabled) > 0.5 ? 1 : 0;
+    if (n === refEnabled) return;
+    refEnabled = n;
+    emitParam("ref_enable", refEnabled);
+    mgraphics.redraw();
+}
+function set_ref_enable(v) { set_ref(v); }
+function set_ref_gain(v) {
+    var n = clamp(roundTo(finite(v, refGainDb), 0.1), -24, 24);
+    if (n === refGainDb) return;
+    refGainDb = n;
+    mgraphics.redraw();
+}
 function set_rangemin(v) {
     rangeMinDb = clamp(finite(v, rangeMinDb), -144, -21);
     mgraphics.redraw();
@@ -2319,6 +3651,7 @@ function set_band_mode(idx, v) {
     b.mode = mode;
     if (b.enabled && !(b.q > 0)) b.q = EQP_Q_DEFAULT;
     updateCoeffBuffer();
+    noteSolo(i);
     mgraphics.redraw();
 }
 function set_band_freq(idx, v) {
@@ -2330,6 +3663,7 @@ function set_band_freq(idx, v) {
     if (n === b.freq) return;
     b.freq = n;
     updateCoeffBuffer();
+    noteSolo(i);
     mgraphics.redraw();
 }
 function set_band_gain(idx, v) {
@@ -2341,6 +3675,7 @@ function set_band_gain(idx, v) {
     if (n === b.gain) return;
     b.gain = n;
     updateCoeffBuffer();
+    noteSolo(i);
     mgraphics.redraw();
 }
 function set_band_q(idx, v) {
@@ -2352,6 +3687,7 @@ function set_band_q(idx, v) {
     if (n === b.q) return;
     b.q = n;
     updateCoeffBuffer();
+    noteSolo(i);
     mgraphics.redraw();
 }
 function set_band(i, en, mode, freq, gain, q) {
@@ -2366,10 +3702,11 @@ function set_band(i, en, mode, freq, gain, q) {
     if (q !== undefined) b.q = clamp(finite(q, b.q), EQP_Q_MIN, EQP_Q_MAX);
     if (b.mode === 0) b.enabled = 0;
     updateCoeffBuffer();
+    noteSolo(i);
     mgraphics.redraw();
 }
 function set_selected(i) {
-    selectedBand = clamp(Math.round(finite(i, -1)), -1, EQP_NUM_BANDS - 1);
+    setSingleSelection(clamp(Math.round(finite(i, -1)), -1, EQP_NUM_BANDS - 1));
     mgraphics.redraw();
 }
 function sr(v) {
@@ -2389,9 +3726,10 @@ function cfgbuf(name) {
     cfgBufName = String(name);
     updateCoeffBuffer();
 }
-function setbuffers(cfgName, specName) {
+function setbuffers(cfgName, specName, irName) {
     if (cfgName) cfgBufName = String(cfgName);
     if (specName) specBufName = String(specName);
+    if (irName) irBufName = String(irName);
     updateCoeffBuffer();
 }
 function bang() { mgraphics.redraw(); }
@@ -2408,6 +3746,8 @@ function anything() {
     else if (name === "Resolution") set_resolution(a0);
     else if (name === "Speed") set_speed(a0);
     else if (name === "Tilt") set_tilt(a0);
+    else if (name === "TiltEQ" || name === "TiltFilter") set_tilt_eq(a0);
+    else if (name === "PhaseMode" || name === "Phase" || name === "Processing") set_phase_mode(a0);
     else if (name === "RangeMin") set_rangemin(a0);
     else if (name === "RangeMax") set_rangemax(a0);
     else if (name === "sr" || name === "samplerate") sr(a0);
@@ -2417,6 +3757,7 @@ function anything() {
 function loadbang() {
     updateCoeffBuffer();
     eqpDspResend();
+    eqpThemeWatch();
     if (typeof Task === "function") {
         specTask = new Task(pullSpectrum, this);
         specTask.interval = 70;
@@ -2435,10 +3776,19 @@ function resetPreviewChrome() {
     resIdx = 3;
     speedIdx = 0;
     tiltIdx = 2;
+    tiltEqDb = 0;
+    phaseMode = 0;
     rangeMinDb = -100;
     rangeMaxDb = 0;
     inspectorMode = 0;
-    selectedBand = -1;
+    setSingleSelection(0);
+    bottomAnalyzer = 0;
+    soloBand = -1;
+    showFiltersShelf = 0;
+    showAnalyzerShelf = 0;
+    showSidechainFold = 0;
+    refEnabled = 0;
+    refGainDb = 0;
     popup = null;
     gesture.kind = "";
     gesture.dirty = false;
@@ -2449,16 +3799,35 @@ function resetPreviewChrome() {
     hoverBand = -1;
     hoverPop = -1;
     pointerIn = false;
+    setCursorHidden(false);
     recentCreate.band = -1;
 }
 function preview() {
     resetPreviewChrome();
     resetBands();
+    bands[0].enabled = 1;
+    bands[0].mode = 10;
+    bands[0].freq = 11100;
+    bands[0].gain = 0;
+    bands[0].q = 2.13;
+    bands[1].enabled = 1;
+    bands[1].mode = 6;
+    bands[1].freq = 1450;
+    bands[1].gain = 4.2;
+    bands[1].q = 0.90;
+    setSingleSelection(1);
     specHasSignal = 0;
     specHoldPreview = false;
     allocSpec();
     updateCoeffBuffer();
+    resizeDeviceBoxes();
     mgraphics.redraw();
+}
+function preview_shelves() {
+    preview();
+    showFiltersShelf = 1;
+    showAnalyzerShelf = 1;
+    applyDeviceWidth();
 }
 function preview_active() {
     resetPreviewChrome();

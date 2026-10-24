@@ -645,12 +645,260 @@ function activeOsc() {
         modeKey: is2 ? "osc2_mode" : "mode",
         pitchKey: is2 ? "osc2_pitch" : "pitch_st",
         detKey: is2 ? "osc2_detune" : "fine_cents",
+        ratioKey: is2 ? "osc2_ratio" : "osc1_ratio",
         posKey: is2 ? "osc2_pos" : "play_pos",
         gainKey: is2 ? "osc2_gain" : "samp_gain",
         fxKey: is2 ? "wt2_fx" : "wt1_fx",
         fx1Key: is2 ? "wt2_fx1" : "wt1_fx1",
         fx2Key: is2 ? "wt2_fx2" : "wt1_fx2"
     };
+}
+
+var sharedFmtParam = fmtParam;
+fmtParam = function (key, v) {
+    if (key === "fine_cents" || key === "osc2_detune" || key === "sub_fine") {
+        var rng = Math.max(1.0, Math.min(96.0, Number(paramValue("fine_range")) || 1.0));
+        var scaled = (Number(v) * 0.01) * rng;
+        var sign = scaled > 0.005 ? "+" : "";
+        return sign + (Math.abs(scaled) < 10 ? scaled.toFixed(2) : scaled.toFixed(1));
+    }
+    if (key === "osc1_ratio" || key === "osc2_ratio" || key === "sub_ratio") {
+        var rv = Number(v) || 1.0;
+        return (Math.abs(rv - Math.round(rv)) < 0.005 ? rv.toFixed(1) : rv.toFixed(2)) + "x";
+    }
+    if (key === "fine_range") {
+        var fr = Math.max(1.0, Math.min(96.0, Number(v) || 1.0));
+        return "\u00b1" + fr.toFixed(1);
+    }
+    return sharedFmtParam(key, v);
+};
+
+
+// Factory wavetables share Ableton Wavetable's categories and names (Live's Vector sprite waves,
+// 1024 samples per frame). User is the loaded sample, and sample mode reads that same buffer.
+var WT_FRAME = 1024;
+var WT_CATS = ["Basics", "Collection", "Complex", "Distortion", "Filter", "Formant", "Harmonics", "Instrument", "Noise", "Retro", "Vintage", "User"];
+var WT_TABLES = {
+    "Basics": ["Basic Shapes","Harmonic Series","Sub 1","Sub 2","Sub 3","Saw Dual 1","Saw Dual 2","Saw Dual 3","Saw Harmonics","Saw PW Bass","Saw PW Detune","Quad Saw","Beating 1","Beating 2","Beating 3","Beating 4","Beating 5","Pulse PW","Pulse Dual","5th Brutal","Sync Additive","Sync Digital","Galactica","FM Feedback","FM Fold","FM Harmonics","No Primes","Primes","White Noise"],
+    "Collection": ["Amber","Aureolin","Beige","Charcoal","Cobalt","Copper","Graphite","Olive","Pearl","Ruby","Rust","Sapphire","Slate","Squash","Violet"],
+    "Complex": ["Bit Ring","Bitkart","Bitten Filter","Bitten Sync","Dubstep Organ","Kicked","Menace","Noise Manipulator","Octa Phase","Plastic Shimmer","Ring Mod","Ripped Sync","Transformations","Verbed","Void","Xmod Drive"],
+    "Distortion": ["Brutal Metal","Clipped Sweep","DP Fold","Freak","JN60 Bitter","Malice","Phased","Westcost Fold","Wow"],
+    "Filter": ["Acid Pulse","Acid Saw","Bit Sweep","Dark Throaty","Frequency FM","JUP Sweep","Modern Sweep 1","Modern Sweep 2","Nasal","Super Phased","Sweep 1","Sweep 2","Sweep 3","Sweep 4"],
+    "Formant": ["AEIOU","AhOhOoh","Aligned Form","Crispy Form","Digital Ah","FOF","Gremlin","Harsh Vowel","Real Voice","Riser","Sparkle Form","Stepped Vowels","Tuvan","Unaligned Form","VOSM","Voice Harmonics","Yahie"],
+    "Harmonics": ["Biharmonic Steps","Buzz Bell","Crispy Sines","Crystal Shifter","Shrinking Saws","Sines 1","Sines 2","Sines 3","Sines 4","Sines 5","Sines Bunch","Spectral 1","Spectral 2","Spectral 3","Squarrely","Strong Seventh","Synced Sines","Transistor Saw","Transistor Square","Vocal Sines"],
+    "Instrument": ["Afrobeat","Beauty Vox","Bell","Digi Piano","Finger Off","Harmonica","Jazz Buzz","Marimba","Nylon Bass","Nylon Guitar","Oboe","Organ","Piano","Sarod","Sitar","Strings 1","Strings 2","Strings 3","Trombone"],
+    "Noise": ["Applause","Bad Bits","Bitter","Broken Filter","Brown Noise","Crash","Dizzy","Formula 1","HP Noise","Helicopter","Junk 1","Junk 2","Modulated Kodiak","Pink Noise","Pouring Rain","Radio 1","Radio 2","Redux Noise","Swepdustry","Swept Noise","Vintage Noise","Vinyl Dirt Constant","Vinyl Dirt Soft"],
+    "Retro": ["Echoes","Harmonics 1","Harmonics 2","Harmonics 3","Harmonics 4","Percusive Organ","Polated","Resonant 1","Resonant 2","Robotic","Sweep Pulse","Sweep Random","Sweep Saw 1","Sweep Saw 2","Wind Synth"],
+    "Vintage": ["BS Sync","Brds Dual Saw","JN6 Double Saws","JUN Square Stack","JUP Double Pulse","JUP SawPulse","JX10 Sync","Logue Saw Dist","Logue Saw","MG Memo","Minifilter","Miniwaves","OB6 Shapes","Sloppy Saw","Sloppy Square","Sub3 Shapes","Sys8 Comb"],
+    "User": []
+};
+
+var WT_USER = WT_CATS.length - 1;
+var WT_DIRS = [
+    "/Applications/Ableton Live 12 Suite.app/Contents/App-Resources/Builtin/Samples/Vector/Sprites",
+    "/Applications/Ableton Live 12 Beta.app/Contents/App-Resources/Builtin/Samples/Vector/Sprites",
+    "/Applications/.Ableton Live 12 Suite_updated.app/Contents/App-Resources/Builtin/Samples/Vector/Sprites"
+];
+var wtSel = [{ cat: 0, idx: 0 }, { cat: 0, idx: 0 }];
+var wtFrames = [0, 0];
+var wtPreviewFrames = 0;
+var wtUserFlag = [0, 0];
+var wtLoadedPath = ["", ""];
+var wtSendKey = "";
+var wtWasReady = 0;
+var wtSpriteRoot = "";
+
+function wtTableNames(cat) {
+    if (cat === WT_USER) return [hasLoadedSample ? sampleFileName : "Drop Sample"];
+    var names = WT_TABLES[WT_CATS[cat]] || [];
+    return names.length ? names : ["Empty"];
+}
+
+function wtCatLabel(i) { return WT_CATS[wtSel[i].cat] || "Basics"; }
+
+function wtTableLabel(i) {
+    var names = wtTableNames(wtSel[i].cat);
+    var idx = Math.max(0, Math.min(names.length - 1, wtSel[i].idx | 0));
+    return names[idx];
+}
+
+function wtSpriteDir() {
+    if (wtSpriteRoot) return wtSpriteRoot;
+    if (typeof Folder === "function") {
+        for (var d = 0; d < WT_DIRS.length; d++) {
+            try {
+                var folder = new Folder(WT_DIRS[d]);
+                var ok = folder && folder.end === false;
+                if (folder && typeof folder.close === "function") folder.close();
+                if (ok) { wtSpriteRoot = WT_DIRS[d]; return wtSpriteRoot; }
+            } catch (eDir) {}
+        }
+        wtSpriteRoot = WT_DIRS[0];
+        return wtSpriteRoot;
+    }
+    wtSpriteRoot = WT_DIRS[0];
+    return wtSpriteRoot;
+}
+
+function wtFilePath(cat, idx) {
+    if (cat === WT_USER) return "";
+    var dir = wtSpriteDir();
+    var name = (WT_TABLES[WT_CATS[cat]] || [])[idx];
+    if (!dir || !name) return "";
+    return dir + "/Vector_Sprite_" + WT_CATS[cat] + " " + name + ".wav";
+}
+
+function wtUserFrames() {
+    var n = 0;
+    if (sampBufName && typeof Buffer !== "undefined") {
+        try { n = new Buffer(sampBufName).framecount() || 0; } catch (eUf) { n = 0; }
+    }
+    if (!n && sampleFrames) n = sampleFrames;
+    return Math.max(0, Math.floor(n / WT_FRAME));
+}
+
+function wtProcedural(ph, pos01) {
+    var p = ph - Math.floor(ph);
+    var s2 = Math.sin(6.28318530718 * p);
+    var tr2 = 1.0 - 4.0 * Math.abs(((p + 0.25) - Math.floor(p + 0.25)) - 0.5);
+    var sw2 = 2.0 * p - 1.0;
+    var sq2 = p < 0.5 ? 1.0 : -1.0;
+    var posM = clamp01(pos01) * 3.0;
+    if (posM <= 1) return s2 + (tr2 - s2) * posM;
+    if (posM <= 2) return tr2 + (sw2 - tr2) * (posM - 1);
+    return sw2 + (sq2 - sw2) * (posM - 2);
+}
+
+function wtPeekAt(buf, frame, phase) {
+    var p = phase - Math.floor(phase);
+    var idx = p * WT_FRAME;
+    var i0 = Math.floor(idx);
+    var frac = idx - i0;
+    var i1 = i0 >= WT_FRAME - 1 ? 0 : i0 + 1;
+    var base = frame * WT_FRAME;
+    var a = buf.peek(1, base + i0, 1);
+    var c = buf.peek(1, base + i1, 1);
+    var av = (typeof a === "number") ? a : (a && a.length ? a[0] : 0);
+    var cv = (typeof c === "number") ? c : (c && c.length ? c[0] : 0);
+    return av + (cv - av) * frac;
+}
+
+function wtPeekCycle(bufName, ph, pos01, frames) {
+    if (!bufName || typeof Buffer === "undefined" || !(frames >= 1)) return null;
+    try {
+        var b = new Buffer(bufName);
+        var nF = Math.max(1, frames | 0);
+        var fPos = clamp01(pos01) * Math.max(0, nF - 1);
+        var f0 = Math.floor(fPos);
+        var fr = fPos - f0;
+        var f1 = Math.min(nF - 1, f0 + 1);
+        var s0 = wtPeekAt(b, f0, ph);
+        var s1 = wtPeekAt(b, f1, ph);
+        return s0 + (s1 - s0) * fr;
+    } catch (ePk) { return null; }
+}
+
+function wtDisplaySample(ph, pos01) {
+    var i = oscTab === 1 ? 1 : 0;
+    var user = wtSel[i].cat === WT_USER;
+    var frames = user ? wtUserFrames() : wtFrames[i];
+    var bufName = user ? sampBufName : (i ? "#0-bswt2" : "#0-bswt1");
+    if (frames >= 1 && bufName) {
+        var s = wtPeekCycle(bufName, ph, pos01, frames);
+        if (s !== null && isFinite(s)) return s;
+    }
+    return wtProcedural(ph, pos01);
+}
+
+function wtSendAll() {
+    var key = wtFrames[0] + ":" + wtUserFlag[0] + ":" + wtFrames[1] + ":" + wtUserFlag[1];
+    if (key === wtSendKey) return;
+    wtSendKey = key;
+    if (typeof outlet !== "function") return;
+    outlet(0, "wt_msg", "wt1_frames", wtFrames[0]);
+    outlet(0, "wt_msg", "wt1_user", wtUserFlag[0]);
+    outlet(0, "wt_msg", "wt2_frames", wtFrames[1]);
+    outlet(0, "wt_msg", "wt2_user", wtUserFlag[1]);
+}
+
+function wtMaybeSend() {
+    if (typeof dspReady !== "undefined" && dspReady && !wtWasReady) {
+        wtWasReady = 1;
+        wtSendKey = "";
+        wtSendAll();
+    }
+    if (typeof dspReady !== "undefined" && !dspReady) wtWasReady = 0;
+}
+
+function wtPoll(i, n) {
+    var name = i ? "#0-bswt2" : "#0-bswt1";
+    var frames = 0;
+    try { frames = Math.floor((new Buffer(name).framecount() || 0) / WT_FRAME); } catch (ePo) { frames = 0; }
+    if (frames > 0 && wtLoadedPath[i]) {
+        wtFrames[i] = frames;
+        wtSendKey = "";
+        wtSendAll();
+        if (typeof mgraphics !== "undefined") mgraphics.redraw();
+        return;
+    }
+    if (n > 25 || typeof Task !== "function") return;
+    var task = new Task(function () { wtPoll(i, n + 1); });
+    task.schedule(80);
+}
+
+function wtApplyOsc(i) {
+    var sel = wtSel[i];
+    if (sel.cat < 0) sel.cat = 0;
+    if (sel.cat > WT_USER) sel.cat = WT_USER;
+    var names = wtTableNames(sel.cat);
+    if (sel.idx < 0 || sel.idx > names.length - 1) sel.idx = 0;
+    if (sel.cat === WT_USER) {
+        wtUserFlag[i] = 1;
+        wtFrames[i] = 0;
+        wtLoadedPath[i] = "";
+    } else {
+        wtUserFlag[i] = 0;
+        var path = wtFilePath(sel.cat, sel.idx);
+        if (path && path !== wtLoadedPath[i] && typeof hostPatcher !== "undefined" && hostPatcher) {
+            var box = hostPatcher.getnamed(i ? "obj-buf-wt2" : "obj-buf-wt1");
+            if (box && box.message) box.message("replace", path);
+            wtLoadedPath[i] = path;
+            wtFrames[i] = 0;
+            wtPoll(i, 0);
+        } else if (!path) {
+            wtFrames[i] = 0;
+            wtLoadedPath[i] = "";
+        }
+    }
+    wtSendKey = "";
+    wtSendAll();
+}
+
+function wtSelect(i, cat, idx) {
+    wtSel[i].cat = cat;
+    wtSel[i].idx = idx;
+    wtApplyOsc(i);
+    if (typeof notifyclients === "function") notifyclients();
+}
+
+function wtSelectUser(i) { wtSelect(i, WT_USER, 0); }
+
+function wtSync() {
+    wtMaybeSend();
+    for (var i = 0; i < 2; i++) {
+        var typeKey = i ? "osc2_type" : "osc1_type";
+        var wtOn = Math.round(paramValue(typeKey)) > 0;
+        if (!wtOn) continue;
+        if (wtSel[i].cat === WT_USER) {
+            if (!wtUserFlag[i]) wtApplyOsc(i);
+        } else if (!wtLoadedPath[i] && typeof hostPatcher !== "undefined" && hostPatcher) {
+            wtApplyOsc(i);
+        }
+    }
+}
+
+function wtPosFromY(y, top, h) {
+    return clamp01(1 - (y - top) / Math.max(1, h)) * 100;
 }
 
 // Evaluate Wavetable sample with Fm / Classic / Modern wave effects (matches wt_osc_eval in sampler_core.genexpr)
@@ -674,12 +922,7 @@ function evalWtWave(ph, pos01, fxMode, fx1, fx2) {
             effP = Math.pow(Math.max(0, Math.min(1, p)), Math.pow(3.0, -warpAmt));
         }
     }
-    var s2 = Math.sin(6.28318530718 * effP);
-    var tr2 = 1.0 - 4.0 * Math.abs(((effP + 0.25) - Math.floor(effP + 0.25)) - 0.5);
-    var sw2 = 2.0 * effP - 1.0;
-    var sq2 = effP < 0.5 ? 1.0 : -1.0;
-    var posM = clamp01(pos01) * 3.0;
-    var val = posM <= 1 ? s2 + (tr2 - s2) * posM : (posM <= 2 ? tr2 + (sw2 - tr2) * (posM - 1) : sw2 + (sq2 - sw2) * (posM - 2));
+    var val = wtDisplaySample(effP, pos01);
     if (m === 3) {
         var foldAmt = Math.max(0, Math.min(1, fx2));
         if (foldAmt > 0.0005) {
@@ -689,34 +932,71 @@ function evalWtWave(ph, pos01, fxMode, fx1, fx2) {
     return val;
 }
 
-// Helper: draw 3D-stacked wavetable curves (Sine -> Tri -> Saw -> Square) with active position & wave effects in orange
-function paintWavetableStack(wx, wy, ww, wh, pos01, on, fxMode, fx1, fx2) {
-    var rows = 4, cols = 80;
-    var xL = wx + 28, xW = ww - 56;
-    for (var r = 0; r < rows; r++) {
-        var rFrac = r / (rows - 1);
-        var yBase = wy + wh - 12 - rFrac * (wh - 26);
-        var pts = [];
-        for (var c = 0; c <= cols; c++) {
-            var p = c / cols;
-            var s = Math.sin(6.2831853 * p);
-            var tr = 1.0 - 4.0 * Math.abs(((p + 0.25) - Math.floor(p + 0.25)) - 0.5);
-            var sw = 2.0 * p - 1.0;
-            var sq = p < 0.5 ? 1.0 : -1.0;
-            var v = r === 0 ? s : (r === 1 ? tr : (r === 2 ? sw : sq));
-            pts.push([xL + p * xW, yBase - v * (wh * 0.11)]);
+// First 64 harmonic magnitudes of one wavetable cycle. A unit sine is 1. This is a view of
+// evalWtWave (position and the Fm / Classic / Modern effect), not an editor.
+function wtHarmAmps(pos01, fxMode, fx1, fx2) {
+    var N = 128, H = 64, amps = [], h, i;
+    for (h = 1; h <= H; h++) {
+        var re = 0, im = 0;
+        for (i = 0; i < N; i++) {
+            var p = i / N;
+            var s = evalWtWave(p, pos01, fxMode, fx1, fx2);
+            var ang = 6.28318530718 * h * p;
+            re += s * Math.cos(ang);
+            im += s * Math.sin(ang);
         }
-        strokePath(pts, RC.lcdText, on ? 0.24 : 0.12, 1.0);
+        amps.push(Math.sqrt(re * re + im * im) * 2 / N);
     }
-    // Active morphed + wave-effected wave at pos01
-    var yAct = wy + wh - 12 - clamp01(pos01) * (wh - 26);
-    var actPts = [];
-    for (var k = 0; k <= cols; k++) {
-        var pk = k / cols;
-        var val = evalWtWave(pk, pos01, fxMode || 0, fx1 || 0, fx2 || 0);
-        actPts.push([xL + pk * xW, yAct - val * (wh * 0.15)]);
+    return amps;
+}
+
+// How many frames the stack draws. A loaded table uses its real count; otherwise the
+// procedural morph is the same four frames as wt_base (sine, triangle, saw, square).
+function wtViewFrameCount() {
+    if (wtPreviewFrames >= 2) return wtPreviewFrames | 0;
+    var i = oscTab === 1 ? 1 : 0;
+    var n = wtSel[i].cat === WT_USER ? wtUserFrames() : wtFrames[i];
+    if (n >= 1) return n | 0;
+    return 4;
+}
+
+// 64 harmonic bars, then a position slider, the wave, and the stereo scope.
+function wtViewLayout() {
+    var wx = viewWave[0], wy = viewWave[1], ww = viewWave[2], wh = viewWave[3];
+    var harmW = 228, slideW = 26, gap = 4, barGap = 1;
+    var barsX = wx + 2;
+    var barsW = harmW - 4;
+    var top = wy + 11, bot = wy + wh - 3;
+    var slideX = wx + harmW + gap;
+    var panelX = slideX + slideW + gap;
+    var panelW = wx + ww - panelX;
+    return {
+        wx: wx, wy: wy, ww: ww, wh: wh,
+        editorW: harmW,
+        barsX: barsX, barsW: barsW, bw: (barsW - barGap * 63) / 64, barGap: barGap,
+        top: top, bot: bot,
+        slideX: slideX, slideW: slideW,
+        panelX: panelX, panelW: panelW,
+        scopeX: panelX, scopeW: panelW
+    };
+}
+
+function paintWtHarmonics(L, on, amps) {
+    var bh = L.bot - L.top;
+    text("HARM", L.barsX, L.top - 2, 6.5, RC.sub, true, 0);
+    for (var i = 0; i < 64; i++) {
+        var bx = L.barsX + i * (L.bw + L.barGap);
+        var mag = Math.max(0, Math.min(1, amps[i] || 0));
+        var col = i === 0 ? RC.sel : RC.cyan;
+        if (!on) col = RC.lcdDim;
+        fillRect(bx, L.top, Math.max(1, L.bw), bh, RC.raised, on ? 0.45 : 0.18);
+        var hgt = mag * bh;
+        var bw = Math.max(0.8, L.bw - 0.6);
+        if (hgt > 0.8) {
+            fillRect(bx + 0.3, L.bot - hgt, bw, hgt, col, on ? 0.95 : 0.28);
+            line(bx, L.bot - hgt, bx + L.bw, L.bot - hgt, i === 0 ? RC.sel : RC.white, on ? 0.85 : 0.28, 1);
+        }
     }
-    strokePath(actPts, on ? RC.sel : RC.lcdDim, on ? 1.0 : 0.45, 1.65);
 }
 
 // Helper: draw Oscillator Header Tabs ([■ Osc 1] [■ Osc 2] [■ Sub])
@@ -757,7 +1037,6 @@ var SUB_DRV_NAMES = ["Soft", "Hard", "Tube", "Fold", "Sine", "Pinch", "Noise"];
 var SUB_ENUMS = {
     sub_wave: SUB_WAVE_NAMES,
     sub_lock_note: SUB_NOTE_NAMES,
-    sub_tuning: ["Key", "Fixed", "Ratio"],
     sub_drv_type: SUB_DRV_NAMES
 };
 
@@ -819,7 +1098,7 @@ function subPartials() {
     return n > 16 ? 16 : n;
 }
 
-// Series spectra gain relative to the drawn level: 1. Odd -> 2. Even -> 3. Tilt -> 4. Low Pass.
+// Series spectra gain relative to the drawn level: 1. Odd -> 2. Even -> 3. Tilt -> 4. Low Pass (Low Pass applies only to harmonics idx >= 1, never the sub fundamental idx === 0).
 // Neutral settings (Odd 0%, Even 0%, Tilt 0%, Low Pass 100%) evaluate to 1.0 on every partial.
 function subSpectraGain(idx) {
     var oddV = paramValue("sub_odd") / 100;
@@ -839,8 +1118,9 @@ function subSpectraGain(idx) {
     var mulOdd = (idx > 0 && isOdd) ? Math.max(0, 1 + oddV) : 1;
     var mulEven = (!isOdd) ? Math.max(0, 1 + evenV) : 1;
     var mulTilt = Math.pow(num, tiltV * 1.2);
-    var cut = 1 + lpV * 16;
-    var mulLp = lpV >= 0.995 ? 1 : (1 / (1 + Math.exp(Math.max(-12, Math.min(12, 1.6 * (num - cut))))));
+    var cut = 1.5 + lpV * 15.5;
+    // 2-pole Butterworth on harmonic number: -3 dB at the cutoff partial, then about 12 dB per octave.
+    var mulLp = idx === 0 ? 1 : (lpV <= 0.005 ? 0 : (lpV >= 0.995 ? 1 : (1 / Math.sqrt(1 + Math.pow(num / cut, 4)))));
     var g = mulOdd * mulEven * mulTilt * mulLp;
     if (g < 0) g = 0;
     return g > 2 ? 2 : g;
@@ -855,44 +1135,83 @@ function effSubHarmonic(idx) {
     return clamp01(getSubHarmonic(idx) * subSpectraGain(idx) * lvl);
 }
 
-function subShapeDrive(x, amt, kind, phase01) {
+// Waveshaper for the scope. tone is 0..1. At 0 every mode matches the plain curve.
+// Keep this in step with the sub drive block in sampler_core.genexpr.
+function subShapeDrive(x, amt, kind, phase01, tone) {
+    var tn = (typeof tone === "number" && isFinite(tone)) ? tone : 0;
+    if (tn < 0) tn = 0;
+    if (tn > 1) tn = 1;
     if (!(amt > 0.0005)) return Math.max(-1, Math.min(1, x));
-    if (kind === 1) {                            // Hard
+    var ax, sgn, an, y0, y1, t, kn, x0, p, w, env;
+    if (kind === 1) {                            // Hard: cubic fillet on the clip shoulder
         var yH = x * (1 + amt * 8);
-        return x + (Math.max(-1, Math.min(1, yH)) - x) * amt;
+        an = Math.abs(yH);
+        sgn = yH >= 0 ? 1 : -1;
+        y0 = Math.min(an, 1);
+        kn = tn * 0.7;
+        x0 = 1 - kn;
+        if (kn > 0.0001 && an > x0 && an < 1) {
+            t = (an - x0) / kn;
+            y0 = x0 + kn * (t + t * t - t * t * t);
+        }
+        return x + (sgn * y0 - x) * amt;
     }
-    if (kind === 2) {                            // Tube
+    if (kind === 2) {                            // Tube: even-harmonic coefficient 0.35 .. 1.15
         var yT = x * (1 + amt * 5);
-        var tb = Math.tanh(yT + 0.35 * yT * yT);
+        var asym = 0.35 + tn * 0.80;
+        var tb = Math.tanh(yT + asym * yT * yT);
         return x + (tb - x) * amt;
     }
-    if (kind === 3) {                            // Fold
-        var yF = x * (1 + amt * 4);
-        var fd = Math.sin(Math.max(-8, Math.min(8, yF)));
+    if (kind === 3) {                            // Fold: bias into the folder, DC of a zero input removed
+        var bias = tn * 0.6;
+        var yF = x * (1 + amt * 4) + bias;
+        var fd = Math.sin(Math.max(-8, Math.min(8, yF))) - Math.sin(bias);
         return x + (fd - x) * amt;
     }
-    if (kind === 4) {                            // Sine
-        var yS = x * (1 + amt * 3);
+    if (kind === 4) {                            // Sine: input warp |x|^p, p from 1 down to 0.35
+        p = 1 - tn * 0.65;
+        ax = Math.abs(x);
+        sgn = x >= 0 ? 1 : -1;
+        w = ax > 1e-7 ? sgn * Math.pow(ax, p) : 0;
+        var yS = w * (1 + amt * 3);
         var sn = Math.sin(Math.max(-4, Math.min(4, yS)) * 1.57079632679);
         return x + (sn - x) * amt;
     }
-    if (kind === 5) {                            // Pinch (pinches the crest/trough inward with sharp ears near zero-crossings)
-        var pk = amt * 2.15;
-        var pn = x * (1 - pk * Math.abs(x) + (pk * 0.72) * x * x);
-        return Math.max(-1, Math.min(1, pn));
+    if (kind === 5) {                            // Pinch: taller narrower ear, deeper valley, crest held
+        ax = Math.abs(x);
+        sgn = x >= 0 ? 1 : -1;
+        var earK = 11.0 + tn * 17.0;
+        var earD = 8.5 + tn * 7.5;
+        var bodyS = 0.14 + tn * 0.14;
+        var bodyE = 1.45 + tn * 0.95;
+        var bodyDen = 0.86 - tn * 0.14;
+        var ear = earK * ax * Math.exp(-earD * ax);
+        var body = 0.78 * Math.pow(Math.max(0, ax - bodyS) / bodyDen, bodyE);
+        var pn = sgn * (ear + body);
+        return Math.max(-1, Math.min(1, x + (pn - x) * amt));
     }
-    if (kind === 6) {                            // Noise
+    if (kind === 6) {                            // Noise: grit walks from the peaks onto the zero crossings
         var nh = Math.sin((phase01 || 0) * 129.898 + 78.233) * 43758.5453;
         var nv = (nh - Math.floor(nh)) * 2 - 1;
-        var yN = Math.tanh(x * (1 + amt * 3.5) + nv * amt * (0.15 + 0.85 * Math.abs(x)));
+        an = Math.abs(x);
+        env = (0.15 + 0.85 * an) + ((0.15 + 0.85 * (1 - Math.min(an, 1))) - (0.15 + 0.85 * an)) * tn;
+        var yN = Math.tanh(x * (1 + amt * 3.5) + nv * amt * env);
         return x + (yN - x) * amt;
     }
-    var y0 = Math.tanh(x * (1 + amt * 6));       // Soft
-    return x + (y0 - x) * amt;
+    // Soft: tanh blended toward an order-8 knee
+    ax = x * (1 + amt * 6);
+    an = Math.min(Math.abs(ax), 4);
+    sgn = ax >= 0 ? 1 : -1;
+    var an2 = an * an;
+    var an8 = an2 * an2;
+    an8 = an8 * an8;
+    y1 = sgn * an / Math.pow(1 + an8, 0.125);
+    y0 = Math.tanh(ax);
+    return x + ((y0 + (y1 - y0) * tn) - x) * amt;
 }
 
 // One cycle of the additive sub, channel 0 = left, 1 = right.
-// Upper harmonics take Detune, Mod and Width; Drive shapes the sum.
+// Upper harmonics take Detune, Mod and Width; Drive shapes the sum and Tone retunes that shaper.
 function subWaveSample(phase01, channel) {
     var det = paramValue("sub_detune") / 100;
     var mod = paramValue("sub_mod") / 100;
@@ -903,6 +1222,8 @@ function subWaveSample(phase01, channel) {
     if (!isFinite(wid)) wid = 0;
     if (!isFinite(ph0)) ph0 = 0;
     var sum = 0, energy = 0, i;
+    var dispStages = clamp01(paramValue("sub_disp_amt") / 100) * 32.0;
+    var dispCut = Math.max(20, Math.min(2000, Number(paramValue("sub_disp_freq")) || 160));
     for (i = 0; i < 16; i++) {
         var amp = effSubHarmonic(i);
         if (amp < 1e-6) continue;
@@ -911,13 +1232,32 @@ function subWaveSample(phase01, channel) {
         var wob = i === 0 ? 0 : mod * 0.035 * n * Math.sin(6.28318530718 * phase01);
         var stereo = i === 0 ? 0 : wid * 0.08 * n * (channel ? 1 : -1);
         var ph = (phase01 + ph0) * n * (1 + spread + wob) + stereo;
-        var drvG = 1 + clamp01(paramValue("sub_drive") / 100) * Math.max(0.2, 1.6 - i * 0.08);
+        var drvG = 1 + (Math.round(paramValue("sub_drv_type")) === 5 ? 0 : clamp01(paramValue("sub_drive") / 100) * Math.max(0.2, 1.6 - i * 0.08));
         sum += Math.sin(6.28318530718 * ph) * amp * drvG;
         energy += amp;
     }
     if (energy < 1e-6) return 0;
     sum /= Math.sqrt(energy);
-    return subShapeDrive(sum, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")), phase01);
+    var subTone01 = clamp01(paramValue("sub_tone") / 100);
+    var driven = subShapeDrive(sum, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")), phase01, subTone01);
+    if (dispStages > 0.05) {
+        // Apply post-drive biquad all-pass phase dispersion in the scope preview
+        var fRatio = 55.0 / dispCut;
+        var rot = dispStages * 0.35 * Math.atan(fRatio);
+        var pShift = (phase01 + rot * 0.1591549) - Math.floor(phase01 + rot * 0.1591549);
+        var sum2 = 0;
+        for (i = 0; i < 16; i++) {
+            var amp2 = effSubHarmonic(i);
+            if (amp2 < 1e-6) continue;
+            var n2 = i + 1;
+            var stagePh = dispStages * 2.0 * Math.atan2(n2 * 55.0 / dispCut, 1.0 - (n2 * 55.0 / dispCut) * (n2 * 55.0 / dispCut));
+            var ph2 = (phase01 + ph0) * n2 * 6.28318530718 - stagePh;
+            sum2 += Math.sin(ph2) * amp2;
+        }
+        sum2 /= Math.sqrt(energy);
+        return 0.55 * driven + 0.45 * subShapeDrive(sum2, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")), pShift, subTone01);
+    }
+    return driven;
 }
 
 // Plot geometry for oscTab === 2. The waveform rect is 458 x 73: 300 px of harmonic
@@ -981,7 +1321,8 @@ function paintSubFader(key, x, y, w, h, label, acc, dim) {
     zone("value", x, y, w, h, { key: key, norm: true });
 }
 
-function paintSubScope(x, y, w, h, subOn) {
+// Wave on the left of the scope pane, Lissajous on the right. sampleAt(phase, channel) is the cycle.
+function paintCycleScope(x, y, w, h, on, sampleAt) {
     fillRR(x, y, w, h, 3, RC.dark, 0.85);
     var waveW = w - 48;
     var mid = y + h * 0.58, amp = h * 0.32;
@@ -990,23 +1331,184 @@ function paintSubScope(x, y, w, h, subOn) {
     for (c = 0; c <= cols; c++) {
         var p = c / cols;
         var px = x + 4 + p * (waveW - 8);
-        left.push([px, mid - subWaveSample(p, 0) * amp]);
-        right.push([px, mid - subWaveSample(p, 1) * amp]);
+        left.push([px, mid - sampleAt(p, 0) * amp]);
+        right.push([px, mid - sampleAt(p, 1) * amp]);
     }
     line(x + 4, mid, x + waveW - 4, mid, RC.line, 0.7, 1);
-    strokePath(right, RC.cyan, subOn ? 0.55 : 0.25, 1.1);
-    strokePath(left, subOn ? RC.sel : RC.lcdDim, subOn ? 1 : 0.4, 1.45);
+    strokePath(right, RC.cyan, on ? 0.55 : 0.25, 1.1);
+    strokePath(left, on ? RC.sel : RC.lcdDim, on ? 1 : 0.4, 1.45);
     text("WAVE", x + 5, y + 9, 6.5, RC.sub, true, 0);
-    // Stereo phase scope: upper-harmonic width opens the Lissajous
     var lx = x + waveW + 2, ly = y + 8, ls = h - 16;
     line(lx + ls * 0.5, ly, lx + ls * 0.5, ly + ls, RC.line, 0.45, 1);
     line(lx, ly + ls * 0.5, lx + ls, ly + ls * 0.5, RC.line, 0.45, 1);
     var xy = [];
     for (c = 0; c <= 48; c++) {
         var ph = c / 48;
-        xy.push([lx + ls * 0.5 + subWaveSample(ph, 0) * ls * 0.42, ly + ls * 0.5 - subWaveSample(ph, 1) * ls * 0.42]);
+        xy.push([lx + ls * 0.5 + sampleAt(ph, 0) * ls * 0.42, ly + ls * 0.5 - sampleAt(ph, 1) * ls * 0.42]);
     }
-    strokePath(xy, subOn ? RC.cyan : RC.lcdDim, subOn ? 0.9 : 0.35, 1.1);
+    strokePath(xy, on ? RC.cyan : RC.lcdDim, on ? 0.9 : 0.35, 1.1);
+}
+
+function paintSubScope(x, y, w, h, subOn) {
+    paintCycleScope(x, y, w, h, subOn, subWaveSample);
+}
+
+// Native Wavetable position: a hairline, a hollow square, and the percent under the line.
+function paintWtPosSlider(L, pos, on, osc) {
+    var x = L.slideX + L.slideW * 0.5;
+    var y0 = L.top + 1;
+    var y1 = L.bot - 13;
+    var track = [0.20, 0.27, 0.33];
+    line(x, y0, x, y1, track, on ? 1 : 0.45, 1);
+    var t = clamp01(pos);
+    var hy = y1 - t * (y1 - y0);
+    var s = 3.5;
+    setc(on ? RC.sel : RC.lcdDim, 1);
+    mgraphics.set_line_width(1);
+    mgraphics.rectangle(Math.round(x - s) + 0.5, Math.round(hy - s) + 0.5, s * 2, s * 2);
+    mgraphics.stroke();
+    text((t * 100).toFixed(1) + "%", x, L.bot - 1, 8.0, on ? RC.sel : RC.sub, true, 1);
+    zone("wt_pos", L.slideX, y0, L.slideW, y1 - y0, { key: osc.posKey, top: y0, h: Math.max(1, y1 - y0) });
+}
+
+// Every frame of the table, frame 0 at the bottom. The current position is the orange trace.
+function paintWtFrameStack(x, y, w, h, on, pos01, fxMode, fx1, fx2) {
+    var n = Math.max(1, wtViewFrameCount());
+    var few = n <= 8;
+    // Few frames stay apart, the way Basic Shapes reads. A long table packs until the
+    // traces overlap and the current frame stays the thick orange line.
+    var amp = few ? Math.min(5.5, h * 0.11) : Math.min(h * 0.16, 10);
+    var room = Math.max(1, h - 8 - amp * 2);
+    var apart = amp * 2 + 3.5;
+    var gap = n <= 1 ? 0 : (few ? Math.min(room / (n - 1), apart) : room / (n - 1));
+    var stack = gap * Math.max(0, n - 1);
+    var yBot = y + h - 4 - amp;
+    var yAt = function (t) { return yBot - clamp01(t) * stack; };
+    var cols = 72;
+    var cap = few ? n : 48;
+    var shown = n <= cap ? n : cap;
+    var k, fi, c, pts, px, p, framePos;
+    var ghost = [0.34, 0.36, 0.39];
+    var sampleAt = function (phase, frameT) { return evalWtWave(phase, frameT, fxMode, fx1, fx2); };
+    for (k = shown - 1; k >= 0; k--) {
+        fi = n <= cap ? k : Math.round(k * (n - 1) / (cap - 1));
+        framePos = n <= 1 ? 0 : fi / (n - 1);
+        pts = [];
+        for (c = 0; c <= cols; c++) {
+            p = c / cols;
+            px = x + 3 + p * (w - 6);
+            pts.push([px, yAt(framePos) - sampleAt(p, framePos) * amp]);
+        }
+        strokePath(pts, ghost, on ? 1 : 0.35, 1);
+    }
+    pts = [];
+    var cur = clamp01(pos01);
+    for (c = 0; c <= cols; c++) {
+        p = c / cols;
+        px = x + 3 + p * (w - 6);
+        pts.push([px, yAt(cur) - sampleAt(p, cur) * amp]);
+    }
+    strokePath(pts, on ? RC.sel : RC.lcdDim, on ? 1 : 0.45, 1.75);
+}
+
+function paintWtScopePanel(x, y, w, h, on, pos01, fxMode, fx1, fx2) {
+    fillRR(x, y, w, h, 3, RC.dark, 0.85);
+    var waveW = Math.max(8, w - 48);
+    paintWtFrameStack(x, y + 2, waveW, h - 4, on, pos01, fxMode, fx1, fx2);
+    var sampleAt = function (p) { return evalWtWave(p, pos01, fxMode, fx1, fx2); };
+    var lx = x + waveW + 2, ly = y + 8, ls = h - 16;
+    line(lx + ls * 0.5, ly, lx + ls * 0.5, ly + ls, RC.line, 0.45, 1);
+    line(lx, ly + ls * 0.5, lx + ls, ly + ls * 0.5, RC.line, 0.45, 1);
+    var xy = [], c, ph;
+    for (c = 0; c <= 48; c++) {
+        ph = c / 48;
+        xy.push([lx + ls * 0.5 + sampleAt(ph) * ls * 0.42, ly + ls * 0.5 - sampleAt(ph) * ls * 0.42]);
+    }
+    strokePath(xy, on ? RC.cyan : RC.lcdDim, on ? 0.9 : 0.35, 1.1);
+}
+
+function paintWtViewer(wx, wy, ww, wh, pos01, on, fxMode, fx1, fx2) {
+    wtSync();
+    var L = wtViewLayout();
+    var osc = activeOsc();
+    fillRect(wx, wy, ww, wh, RC.wave, 1);
+    paintWtHarmonics(L, on, wtHarmAmps(pos01, fxMode, fx1, fx2));
+    paintWtPosSlider(L, pos01, on, osc);
+    paintWtScopePanel(L.panelX, wy + 3, L.panelW, wh - 6, on, pos01, fxMode, fx1, fx2);
+    var waveW = Math.max(8, L.panelW - 48);
+    zone("wt_pos", L.panelX, wy + 3, waveW, wh - 6, { key: osc.posKey, top: wy + 3, h: wh - 6 });
+    var oi = osc.is2 ? 1 : 0;
+    if (wtSel[oi].cat === WT_USER && !hasLoadedSample) {
+        text("Drop Sample Here", L.panelX + waveW * 0.5, wy + wh * 0.48, 8.0, RC.sub, false, 1);
+    }
+}
+
+function paintWtFooter(sx, fy, osc, oscOn, wtFx) {
+    var fxNames = ["None", "Fm", "Classic", "Modern"];
+    var fxName = fxNames[wtFx] || "Modern";
+    var fxOpen = openMenu && openMenu.key === osc.fxKey;
+    if (fxOpen) focusBrackets(sx + 4, fy - 10, 48, 12, RC.sel);
+    text(fxName, sx + 6, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
+    wtCaret(sx + 44, fy - 5.5, oscOn ? RC.sel : RC.sub);
+    zone("button", sx + 4, fy - 11, 48, 14, { action: "menu", key: osc.fxKey, w2: 48, wtMenu: "wt_fx", anchorX: sx + 4, anchorY: fy - 12 });
+
+    var fxLabs = wtFx === 1 ? ["Tune", "Amt"] : (wtFx === 2 ? ["PW", "Sync"] : ["Warp", "Fold"]);
+    var fxDim = !oscOn || wtFx === 0;
+    var f1v = paramValue(osc.fx1Key), f2v = paramValue(osc.fx2Key);
+    text(fxLabs[0], sx + 58, fy, 9.0, RC.sub, false, 0);
+    text(f1v.toFixed(1) + " %", sx + 86, fy, 9.0, fxDim ? RC.sub : RC.sel, false, 0);
+    zone("value", sx + 56, fy - 11, 66, 14, { key: osc.fx1Key, norm: true });
+
+    text(fxLabs[1], sx + 128, fy, 9.0, RC.sub, false, 0);
+    text(f2v.toFixed(1) + " %", sx + 154, fy, 9.0, fxDim ? RC.sub : RC.sel, false, 0);
+    zone("value", sx + 126, fy - 11, 66, 14, { key: osc.fx2Key, norm: true });
+
+    var oi = osc.is2 ? 1 : 0;
+    var L = wtViewLayout();
+    var yb = fy - 11;
+    var catW = 68;
+    var tblW = Math.max(56, L.panelW - catW - 4);
+    var catKey = oi ? "wt2_cat" : "wt1_cat";
+    var tblKey = oi ? "wt2_tbl" : "wt1_tbl";
+    fillRR(L.panelX, yb, catW, 13, 3, RC.raised, oscOn ? 1 : 0.55);
+    text(fitText(wtCatLabel(oi), catW - 14, 8.0), L.panelX + 4, yb + 9.5, 8.0, oscOn ? RC.sel : RC.sub, false, 0);
+    wtCaret(L.panelX + catW - 9, yb + 5, RC.sub);
+    zone("button", L.panelX, yb, catW, 13, { action: "menu", key: catKey, wtList: 1, which: "cat", osc: oi, anchorX: L.panelX, anchorY: yb, w2: Math.max(catW, 108) });
+    var tx = L.panelX + catW + 4;
+    fillRR(tx, yb, tblW, 13, 3, RC.raised, oscOn ? 1 : 0.55);
+    text(fitText(wtTableLabel(oi), tblW - 14, 8.0), tx + 4, yb + 9.5, 8.0, oscOn ? RC.sel : RC.sub, false, 0);
+    wtCaret(tx + tblW - 9, yb + 5, RC.sub);
+    zone("button", tx, yb, tblW, 13, { action: "menu", key: tblKey, wtList: 1, which: "tbl", osc: oi, anchorX: tx, anchorY: yb, w2: Math.max(tblW, 132) });
+}
+
+function paintWtListMenu() {
+    var m = openMenu;
+    var names = m.names || [];
+    var rowH = 12;
+    var vis = Math.min(names.length, 12);
+    if (vis < 1) return;
+    var mh = vis * rowH + 2;
+    var mx = m.anchorX !== undefined ? m.anchorX : m.x;
+    var my = (m.anchorY !== undefined ? m.anchorY : m.y) - mh;
+    if (my < 2) my = 2;
+    var mw = Math.max(m.w || 120, 108);
+    var maxScroll = Math.max(0, names.length - vis);
+    var scroll = Math.max(0, Math.min(maxScroll, m.scroll || 0));
+    m.scroll = scroll;
+    m.menuRect = [mx, my, mw, mh];
+    fillRect(mx, my, mw, mh, RC.wave, 1);
+    setc(RC.sel, 1);
+    mgraphics.set_line_width(1.1);
+    mgraphics.rectangle(mx + 0.5, my + 0.5, mw - 1, mh - 1);
+    mgraphics.stroke();
+    for (var i = 0; i < vis; i++) {
+        var idx = i + scroll;
+        var ry = my + 1 + i * rowH;
+        var sel = m.cur === idx;
+        if (sel) fillRect(mx + 1, ry, mw - 2, rowH, RC.sel, 1);
+        text(fitText(names[idx], mw - 10, 8.0), mx + 5, ry + rowH * 0.5 + 3, 8.0, sel ? RC.wave : RC.sel, false, 0);
+        zone("button", mx, ry, mw, rowH, { action: "wt_pick", which: m.which, osc: m.osc, value: idx });
+    }
 }
 
 function paintSubOscViewer(wx, wy, ww, wh) {
@@ -1065,23 +1567,21 @@ function paintSubFooter(sx, fy) {
     var y = fy - 10;
     var x = sx + 4;
     var wave = Math.round(paramValue("sub_wave"));
-    subMenuBtn("sub_wave", x, y, 62, SUB_WAVE_NAMES[wave] || "Custom", !subOn);
-    x += 65;
-    subValueReadout("sub_partials", x, y, 68, "Partials", String(Math.round(paramValue("sub_partials"))), !subOn);
-    x += 71;
-    subToggle("sub_lock", x, y, 32, "Lock", !subOn);
-    x += 35;
+    subMenuBtn("sub_wave", x, y, 68, SUB_WAVE_NAMES[wave] || "Custom", !subOn);
+    x += 74;
+    subValueReadout("sub_partials", x, y, 76, "Partials", String(Math.round(paramValue("sub_partials"))), !subOn);
+    x += 82;
+    subToggle("sub_lock", x, y, 38, "Lock", !subOn);
+    x += 42;
     var note = Math.round(paramValue("sub_lock_note"));
     var lockOn = Math.round(paramValue("sub_lock")) > 0;
-    subMenuBtn("sub_lock_note", x, y, 34, SUB_NOTE_NAMES[note] || "C", !subOn || !lockOn);
-    x += 37;
-    segCtl("sub_tuning", x, y, 96, 13, ["Key", "Fixed", "Ratio"], RC.cyan, !subOn, 7.2);
-    x += 99;
-    subValueReadout("sub_phase", x, y, 50, "Ph", Math.round(paramValue("sub_phase")) + "\u00b0", !subOn);
-    x += 53;
-    subToggle("sub_mono", x, y, 34, "Mono", !subOn);
-    x += 37;
-    subToggle("sub_direct", x, y, 42, "Direct", !subOn);
+    subMenuBtn("sub_lock_note", x, y, 38, SUB_NOTE_NAMES[note] || "C", !subOn || !lockOn);
+    x += 44;
+    subValueReadout("sub_phase", x, y, 64, "Phase", Math.round(paramValue("sub_phase")) + "\u00b0", !subOn);
+    x += 70;
+    subToggle("sub_mono", x, y, 42, "Mono", !subOn);
+    x += 46;
+    subToggle("sub_direct", x, y, 48, "Direct", !subOn);
 }
 
 function paintSubEnumMenu() {
@@ -1109,8 +1609,74 @@ function paintSubEnumMenu() {
     }
 }
 
+// 2-row Pitch-Envelope Knock widget (to the right of Tone, occupying the 4th column across Rows 2 & 3):
+//   - Top text readout: draggable decay time ("120 ms", 1..250 ms)
+//   - Left triangle/curve area: draggable up/down for pitch-envelope slope (sub_knock_slope, -100..+100%)
+//   - Right vertical bar with orange top cap: draggable up/down for knock amount (sub_knock, 0..+96 st)
+function paintSubKnockWidget(x, y, w, h, dim) {
+    var al = dim ? 0.45 : 1.0;
+    var orange = RC.sel;
+    fillRR(x, y, w, h, 3, RC.textBg, al);
+    strokeRR(x + 0.5, y + 0.5, w - 1, h - 1, 2.5, RC.contrastFrame, al, 1.0);
+
+    var decMs = paramValue("sub_decay");
+    var slopePct = paramValue("sub_knock_slope");
+    var amtSt = paramValue("sub_knock");
+    var decNorm = toNorm("sub_decay", decMs);
+    var amtNorm = clamp01(amtSt / 96.0);
+    var sNorm = Math.max(-1, Math.min(1, slopePct / 100.0));
+    var expP = Math.pow(3.5, -sNorm);
+
+    // Top time readout ("120 ms", draggable for sub_decay 1..250 ms)
+    var msTxt = decMs < 10 ? decMs.toFixed(1) + " ms" : Math.round(decMs) + " ms";
+    text(msTxt, x + 4.5, y + 9.8, 7.6, orange, false, 0, al);
+    if (amtSt > 0.05) {
+        text("+" + Math.round(amtSt), x + w - 3.5, y + 9.4, 6.8, RC.sub, false, 2, al * 0.9);
+    }
+    zone("value", x + 1, y + 1, w - 16, 11, { key: "sub_decay", norm: true });
+
+    // Plot geometry inside the widget
+    var gx0 = x + 4.0, gyTop = y + 12.5, gyBot = y + h - 3.0;
+    var gh = gyBot - gyTop;
+    var curveMaxW = w - 22.0;
+    var curveW = Math.max(12.0, (0.38 + 0.62 * decNorm) * curveMaxW);
+
+    // Baseline
+    line(gx0, gyBot, x + w - 3.5, gyBot, RC.line, al * 0.75, 1.0);
+
+    // Filled decay curve polygon & bright orange top stroke
+    var nPts = 16;
+    var polyPts = [[gx0, gyBot]];
+    var strokePts = [];
+    for (var i = 0; i <= nPts; i++) {
+        var t = i / nPts;
+        var envY = Math.pow(1.0 - t, expP);
+        var px = gx0 + t * curveW;
+        var py = gyBot - envY * gh;
+        polyPts.push([px, py]);
+        strokePts.push([px, py]);
+    }
+    polygon(polyPts, mixc(RC.textBg, orange, 0.42), al);
+    strokePath(strokePts, orange, al, 1.35);
+
+    // Draggable slope zone over the curve area
+    zone("value", x + 1, y + 12, w - 17, h - 13, { key: "sub_knock_slope", norm: true });
+
+    // Right vertical amount bar (0..96 st) with bright orange top cap
+    var barW = 9.5;
+    var barX = x + w - barW - 4.0;
+    fillRect(barX, gyTop, barW, gh, RC.raised, al * 0.55);
+    var barH = Math.max(1.5, amtNorm * gh);
+    var barTopY = gyBot - barH;
+    if (amtNorm > 0.005) {
+        fillRect(barX, barTopY, barW, barH, mixc(RC.textBg, orange, 0.45), al);
+    }
+    line(barX, barTopY, barX + barW, barTopY, orange, al, 1.6);
+    zone("value", barX - 3, y + 1, barW + 6, h - 2, { key: "sub_knock", norm: true });
+}
+
 // Bottom strip when oscTab === 2. Same 5A columns as the engine strip:
-// left 276 px (series spectra bars: Odd, Even, Tilt, Low Pass + Drive dropdown, Octave & Drive/Knock/Decay bars),
+// left 276 px (Row 1: Odd, Even, Tilt, Low Pass; Row 2: Disp Freq, Disp Amt; Row 3: Drive Mode, Drive, Tone; Col 4 Rows 2-3: 2-row Knock widget),
 // right 168 px (upper harmonics + tuning).
 function paintSubStrip(x, y, w, h) {
     var subOn = Math.round(paramValue("sub_on")) > 0;
@@ -1131,25 +1697,29 @@ function paintSubStrip(x, y, w, h) {
         hValueBar(specRow[s][0], x + 4 + s * (bw + gap), y + 3, bw, 14, specRow[s][1], acc, dim);
     }
 
-    // Row 2 (y+20): Octave [0 | -1 | -2] on left + Knock / Decay on right
-    segCtl("sub_oct", x + 4, y + 20, 136, 14, ["0", "-1", "-2"], acc, dim, 7.2);
-    hValueBar("sub_knock", x + 4 + 2 * (bw + gap), y + 20, bw, 14, "Knock", acc, dim);
-    hValueBar("sub_decay", x + 4 + 3 * (bw + gap), y + 20, bw, 14, "Decay", acc, dim);
-
-    // Row 3 (y+38): Distortion Mode dropdown + Drive amount bar + Tone bar
+    // Row 2 (y+20, cols 1..3): Distortion Mode dropdown + Drive amount bar + Tone bar
     var drvIdx = Math.round(paramValue("sub_drv_type"));
-    subMenuBtn("sub_drv_type", x + 4, y + 38, bw, SUB_DRV_NAMES[drvIdx] || "Soft", dim);
-    hValueBar("sub_drive", x + 4 + (bw + gap), y + 38, bw * 2 + gap, 16, "Drive", acc, dim);
-    hValueBar("sub_tone", x + 4 + 3 * (bw + gap), y + 38, bw, 16, "Tone", acc, dim);
+    subMenuBtn("sub_drv_type", x + 4, y + 20, bw, SUB_DRV_NAMES[drvIdx] || "Soft", dim);
+    hValueBar("sub_drive", x + 4 + (bw + gap), y + 20, bw, 15, "Drive", acc, dim);
+    hValueBar("sub_tone", x + 4 + 2 * (bw + gap), y + 20, bw, 15, "Tone", acc, dim);
+
+    // Row 3 (y+38, cols 1..3): Disperser Cutoff & Disperser Amount
+    var dispFreqW = bw * 2 + gap;                           // 136 px
+    hValueBar("sub_disp_freq", x + 4, y + 38, dispFreqW, 16, "Disp Freq", acc, dim);
+    hValueBar("sub_disp_amt", x + 4 + dispFreqW + gap, y + 38, bw, 16, "Disp Amt", acc, dim);
+
+    // Col 4 across Rows 2 & 3 (to the right of Tone / Disp Amt): 2-row Pitch-Envelope Knock widget
+    paintSubKnockWidget(x + 4 + 3 * (bw + gap), y + 20, bw, 34, dim);
 
     line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1, 1);
     var rx = x + 292;
     hValueBar("sub_detune", rx, y + 3, 54, 14, "Detune", acc, dim);
     hValueBar("sub_mod", rx + 58, y + 3, 53, 14, "Mod", acc, dim);
     hValueBar("sub_width", rx + 115, y + 3, 53, 14, "Width", acc, dim);
-    hValueBar("sub_semi", rx, y + 20, 82, 15, "Semi", acc, dim);
-    hValueBar("sub_fine", rx + 86, y + 20, 82, 15, "Fine", acc, dim);
-    hValueBar("sub_gain", rx, y + 38, 168, 16, "Level", acc, dim);
+    hValueBar("sub_semi", rx, y + 20, 54, 15, "Semi", acc, dim);
+    hValueBar("sub_fine", rx + 58, y + 20, 53, 15, "Fine", acc, dim);
+    hValueBar("sub_ratio", rx + 115, y + 20, 53, 15, "Ratio", acc, dim);
+    hValueBar("sub_gain", x + 410, y + 38, 50, 16, "Level", acc, dim);
 }
 
 function paintViewer() {
@@ -1157,50 +1727,67 @@ function paintViewer() {
     fillRect(sx, sy, sw, sh, RC.wave, 1.0);
     var acc = RC.a_wave;
 
-    //Header: folder / file name, voices, sample gain, ROOT note + ct; plus Oscillator Tabs
-    iconFolder(sx + 7, sy + 5, acc, 0.9);
-    var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 88, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? acc : RC.sub, false, 0);
-    zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
-    paintOscHeaderTabs(sx + 112, sy + 2);
-    var vx = sx + 228;
+    // Header: folder / file name, sample gain, ROOT note + ct, sample/slice; plus oscillator tabs.
+    // The tabs stay put in every engine. Sub and Wavetable keep the gain pill and drop the sample folder, root, and sample/slice switch.
+    var headOsc = activeOsc();
+    var slimHead = oscTab === 2 || ((oscTab === 0 || oscTab === 1) && Math.round(paramValue(headOsc.typeKey)) > 0);
+    if (!slimHead) {
+        iconFolder(sx + 7, sy + 5, acc, 0.9);
+        var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 88, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? acc : RC.sub, false, 0);
+        zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
+    }
+    // One position in every engine: the viewer centre, held short of the gain pill.
+    var tabW = 112;
+    var tabX = sx + Math.round((sw - tabW) / 2);
+    var gainX = sx + 276;
+    if (tabX + tabW > gainX - 8) tabX = gainX - 8 - tabW;
+    paintOscHeaderTabs(tabX, sy + 2);
     if (!dspReady) {
+        var vx = sx + 228;
         var failed = dspError.length > 0;
         var pl = failed ? "DSP failed: " + dspError : "DSP loading…";
         var pw = textW(pl, 8.0) + 12;
         fillRR(vx - 4, sy + 3, pw, 12, 6, failed ? RC.orange : RC.a_filt, 0.9);
         text(pl, vx - 4 + pw * 0.5, sy + 12, 8.0, RC.dark, true, 1);
-    } else {
-        for (var b = 0; b < 4; b++) line(vx + b * 2.5, sy + 6, vx + b * 2.5, sy + 13, acc, 0.9, 1.4);
-        text(liveActiveVoices + " / " + curPolyVoices, vx + 14, sy + 13, 9.0, acc, false, 0);
     }
     paintGainPill(sx + 276, sy + 2);
-    var rx = sx + 330;
-    var rc = rootDyn ? acc : RC.sub;
-    strokeArc(rx + 4, sy + 9, 3.6, 0, Math.PI * 2, rc, 1.0, 1.2);
-    line(rx + 1, sy + 9, rx + 7, sy + 9, rc, 1.0, 1.0);
-    text("ROOT", rx + 11, sy + 13, 8.5, RC.sub, true, 0);
-    zone("button", rx - 2, sy + 1, 44, 15, { action: "toggle", key: "root_dyn" });
-    if (rootDyn) {
-        text(pitchCurve ? "Dynamic" : "Dynamic…", rx + 46, sy + 13, 9.0, RC.sub, false, 0);
-    } else {
-        var noteW = text(midiToNoteName(curRootNote), rx + 46, sy + 13, 9.0, acc, false, 0);
-        zone("value", rx + 44, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
-        var fine = Math.round(paramValue("fine_cents"));
-        var fineW = text(fine + " ct", rx + 62, sy + 13, 9.0, acc, false, 0);
-        zone("value", rx + 60, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
-    }
-    for (var i = 0; i < 2; i++) {
-        var bx = sx + sw - 46 + i * 22;
-        var on = (curSliced ? 1 : 0) === i;
-        fillRR(bx, sy + 2, 21, 13, 3, on ? acc : RC.raised, on ? 0.9 : 1);
-        var cc = on ? RC.dark : RC.sub;
-        if (i === 0) iconWave(bx + 4.5, sy + 5, cc, 1.0); else iconKnife(bx + 5, sy + 5, cc, 1.0);
-        zone("button", bx, sy + 2, 21, 13, { action: "sliced_set", value: i });
+    if (!slimHead) {
+        var rx = sx + 330;
+        var rc = rootDyn ? acc : RC.sub;
+        strokeArc(rx + 4, sy + 9, 3.6, 0, Math.PI * 2, rc, 1.0, 1.2);
+        line(rx + 1, sy + 9, rx + 7, sy + 9, rc, 1.0, 1.0);
+        text("ROOT", rx + 11, sy + 13, 8.5, RC.sub, true, 0);
+        zone("button", rx - 2, sy + 1, 44, 15, { action: "toggle", key: "root_dyn" });
+        if (rootDyn) {
+            text(pitchCurve ? "Dynamic" : "Dynamic…", rx + 46, sy + 13, 9.0, RC.sub, false, 0);
+        } else {
+            var noteW = text(midiToNoteName(curRootNote), rx + 46, sy + 13, 9.0, acc, false, 0);
+            zone("value", rx + 44, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
+            var fine = Math.round(paramValue("fine_cents"));
+            var fineW = text(fine + " ct", rx + 62, sy + 13, 9.0, acc, false, 0);
+            zone("value", rx + 60, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
+        }
+        for (var i = 0; i < 2; i++) {
+            var bx = sx + sw - 46 + i * 22;
+            var on = (curSliced ? 1 : 0) === i;
+            fillRR(bx, sy + 2, 21, 13, 3, on ? acc : RC.raised, on ? 0.9 : 1);
+            var cc = on ? RC.dark : RC.sub;
+            if (i === 0) iconWave(bx + 4.5, sy + 5, cc, 1.0); else iconKnife(bx + 5, sy + 5, cc, 1.0);
+            zone("button", bx, sy + 2, 21, 13, { action: "sliced_set", value: i });
+        }
     }
 
     if (oscTab === 2) {
         paintSubOscViewer(viewWave[0], viewWave[1], viewWave[2], viewWave[3]);
         paintSubFooter(sx, sy + sh - 4);
+        return;
+    }
+    var osc = activeOsc();
+    var oscOn = Math.round(paramValue(osc.onKey)) > 0;
+    var isWt = (oscTab === 0 || oscTab === 1) && Math.round(paramValue(osc.typeKey)) > 0;
+    if (isWt) {
+        paintWtViewer(viewWave[0], viewWave[1], viewWave[2], viewWave[3], clamp01(paramValue(osc.posKey) * 0.01), oscOn, Math.round(paramValue(osc.fxKey)), paramValue(osc.fx1Key) * 0.01, paramValue(osc.fx2Key) * 0.01);
+        paintWtFooter(sx, sy + sh - 4, osc, oscOn, Math.round(paramValue(osc.fxKey)));
         return;
     }
 
@@ -1275,112 +1862,47 @@ function paintViewer() {
     if (rootDyn && pitchCurve && hasLoadedSample) paintPitchCurveZ(wx, wy, ww, wh);
     if (!hasLoadedSample) text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 7, 9.5, RC.sub, false, 1);
 
-    // Oscillator 1 / Oscillator 2 Wavetable mode or Sub waveform overlays
-    var osc = activeOsc();
-    var oscOn = Math.round(paramValue(osc.onKey)) > 0;
-    var isWt = (oscTab === 0 || oscTab === 1) && Math.round(paramValue(osc.typeKey)) > 0;
-    var wtPos = paramValue(osc.posKey) * 0.01;
-    var wtFx = Math.round(paramValue(osc.fxKey));
-    var wtFx1 = paramValue(osc.fx1Key) * 0.01;
-    var wtFx2 = paramValue(osc.fx2Key) * 0.01;
-    if (isWt) {
-        fillRect(wx, wy, ww, wh, RC.wave, 1.0);
-        paintWavetableStack(wx, wy, ww, wh, wtPos, oscOn, wtFx, wtFx1, wtFx2);
-        // Left vertical Gain slider (like native Wavetable)
-        var gxS = wx + 10, gyTop = wy + 12, gyBot = wy + wh - 14;
-        text("C", gxS, gyTop - 3, 7.5, RC.sel, false, 1);
-        line(gxS, gyTop, gxS, gyBot, RC.sel, oscOn ? 0.85 : 0.35, 1.4);
-        var gVal = paramValue(osc.gainKey);
-        text(gVal.toFixed(1) + " dB", gxS + 4, wy + wh - 3, 8.0, oscOn ? RC.sel : RC.sub, false, 1);
-        zone("value", wx + 2, wy + 4, 24, wh - 6, { key: osc.gainKey, norm: true });
-        // Right vertical Wave Position slider + readout
-        var pxS = wx + ww - 12;
-        line(pxS, gyTop - 4, pxS, gyBot, RC.line, 0.9, 1.0);
-        var pyThumb = gyBot - clamp01(wtPos) * (gyBot - (gyTop - 4));
-        setc(oscOn ? RC.sel : RC.sub, 1.0);
-        mgraphics.set_line_width(1.1);
-        mgraphics.rectangle(pxS - 2.5, pyThumb - 2.5, 5.0, 5.0);
-        mgraphics.stroke();
-        text((wtPos * 100).toFixed(1) + " %", pxS - 2, wy + wh - 3, 8.0, oscOn ? RC.sel : RC.sub, false, 1);
-        zone("value", wx + ww - 26, wy + 4, 24, wh - 6, { key: osc.posKey, norm: true });
-    }
-
     var stX = vwx(curStart), enX = vwx(curEnd);
-    if (!isWt) {
-        if (curSliced) {
-            if (inW(enX)) { line(enX, wy, enX, wy + wh, acc, 0.95, 1.0); fillRect(enX - 7, wy + wh - 7, 7, 7, acc); }
-            if (inW(stX)) fillRect(stX, wy + wh - 7, 7, 7, acc);
-        } else {
-            if (inW(stX)) { line(stX, wy, stX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(stX, wy, 6, 6, RC.yellow); }
-            if (inW(enX)) { line(enX, wy, enX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(enX - 6, wy, 6, 6, RC.yellow); }
-        }
+    if (curSliced) {
+        if (inW(enX)) { line(enX, wy, enX, wy + wh, acc, 0.95, 1.0); fillRect(enX - 7, wy + wh - 7, 7, 7, acc); }
+        if (inW(stX)) fillRect(stX, wy + wh - 7, 7, 7, acc);
+    } else {
+        if (inW(stX)) { line(stX, wy, stX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(stX, wy, 6, 6, RC.yellow); }
+        if (inW(enX)) { line(enX, wy, enX, wy + wh, RC.yellow, 0.95, 1.0); fillRect(enX - 6, wy, 6, 6, RC.yellow); }
     }
     zone("wave", wx, wy, ww, wh, {});
-    if (!isWt && loopOn && !curSliced && loopZones) {
+    if (loopOn && !curSliced && loopZones) {
         if (loopZones.xf) zone("xfade", loopZones.xf[0], loopZones.xf[1], loopZones.xf[2], loopZones.xf[3], {});
         if (loopZones.mv) zone("loop_move", loopZones.mv[0], loopZones.mv[1], loopZones.mv[2], loopZones.mv[3], {});
     }
-    if (!isWt && curSliced) {
+    if (curSliced) {
         for (var fi = 0; fi < sliceMarkers.length; fi++) {
             var fm = sliceMarkers[fi];
             var fx = vwx(fm) - 2;
             if (fm > curStart + 0.002 && fm < curEnd - 0.002 && fx >= wx && fx + 10 <= wx + ww) zone("flag", fx, wy, 10, 9, { index: fi });
         }
     }
-    if (!isWt && viewZoom > 1.0005) {
+    if (viewZoom > 1.0005) {
         var pr = zoomPillRect();
         fillRR(pr[0], pr[1], pr[2], pr[3], 5, RC.dark, 0.85);
         text(zoomLabel(), pr[0] + pr[2] * 0.5, pr[1] + 8.5, 7.5, RC.text, true, 1);
         actZone(pr[0], pr[1], pr[2], pr[3], function () { resetView(); });
     }
 
-    // Footer: Wavetable wave-effects bar when in Wavetable mode, else Sample PLAY / LOOP footer
+    // Footer: sample start / loop row. Wavetable and Sub return above with their own footers.
     var fy = sy + sh - 4;
-    if (isWt) {
-        var fxNames = ["None", "Fm", "Classic", "Modern"];
-        var fxName = fxNames[wtFx] || "Modern";
-        var fxOpen = openMenu && openMenu.key === osc.fxKey;
-        if (fxOpen) focusBrackets(sx + 4, fy - 10, 48, 12, RC.sel);
-        text(fxName, sx + 6, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
-        wtCaret(sx + 44, fy - 5.5, oscOn ? RC.sel : RC.sub);
-        zone("button", sx + 4, fy - 11, 48, 14, { action: "menu", key: osc.fxKey, w2: 48, wtMenu: "wt_fx", anchorX: sx + 4, anchorY: fy - 12 });
-
-        var fxLabs = wtFx === 1 ? ["Tune", "Amt"] : (wtFx === 2 ? ["PW", "Sync"] : ["Warp", "Fold"]);
-        var fxDim = !oscOn || wtFx === 0;
-        var f1v = paramValue(osc.fx1Key), f2v = paramValue(osc.fx2Key);
-        text(fxLabs[0], sx + 58, fy, 9.0, RC.sub, false, 0);
-        text(f1v.toFixed(1) + " %", sx + 86, fy, 9.0, fxDim ? RC.sub : RC.sel, false, 0);
-        zone("value", sx + 56, fy - 11, 66, 14, { key: osc.fx1Key, norm: true });
-
-        text(fxLabs[1], sx + 128, fy, 9.0, RC.sub, false, 0);
-        text(f2v.toFixed(1) + " %", sx + 154, fy, 9.0, fxDim ? RC.sub : RC.sel, false, 0);
-        zone("value", sx + 126, fy - 11, 66, 14, { key: osc.fx2Key, norm: true });
-
-        line(sx + 198, fy - 9, sx + 198, fy + 1, RC.line, 1.0, 1.0);
-        var semiV = Math.round(paramValue(osc.pitchKey));
-        text("Semi", sx + 205, fy, 9.0, RC.sub, false, 0);
-        text(semiV + " st", sx + 231, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
-        zone("value", sx + 203, fy - 11, 54, 14, { key: osc.pitchKey, norm: true });
-
-        var detV = Math.round(paramValue(osc.detKey));
-        text("Det", sx + 264, fy, 9.0, RC.sub, false, 0);
-        text(detV + " ct", sx + 283, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
-        zone("value", sx + 262, fy - 11, 52, 14, { key: osc.detKey, norm: true });
-        return;
-    }
     if (curSliced) {
         paintSlicedFooter(sx, sw, fy);
         return;
     }
-    text("PLAY", sx + 6, fy, 8.5, RC.sub, true, 0);
-    iconReverse(sx + 36, fy - 9, curReverse);
-    zone("button", sx + 33, fy - 11, 16, 14, { action: "reverse" });
-    iconFlag(sx + 58, fy - 9, RC.yellow, false);
-    var stW = text(fmtPos(curStart), sx + 66, fy, 9.0, RC.yellow, false, 0);
-    zone("value", sx + 64, fy - 11, stW + 4, 14, { region: "samp_start" });
-    iconFlag(sx + 132, fy - 9, RC.yellow, true);
-    var enW = text(fmtPos(curEnd), sx + 136, fy, 9.0, RC.yellow, false, 0);
-    zone("value", sx + 134, fy - 11, enW + 4, 14, { region: "samp_end" });
+    iconReverse(sx + 6, fy - 9, curReverse);
+    zone("button", sx + 3, fy - 11, 16, 14, { action: "reverse" });
+    iconFlag(sx + 28, fy - 9, RC.yellow, false);
+    var stW = text(fmtPos(curStart), sx + 36, fy, 9.0, RC.yellow, false, 0);
+    zone("value", sx + 34, fy - 11, stW + 4, 14, { region: "samp_start" });
+    iconFlag(sx + 102, fy - 9, RC.yellow, true);
+    var enW = text(fmtPos(curEnd), sx + 106, fy, 9.0, RC.yellow, false, 0);
+    zone("value", sx + 104, fy - 11, enW + 4, 14, { region: "samp_end" });
     var lx = sx + 240;
     var lc = loopOn ? RC.green : RC.dim;
     text("LOOP", lx, fy, 8.5, RC.sub, true, 0);
@@ -2829,15 +3351,10 @@ function paintSettingBarItem(kItem, bx, by, bw, bh, acc) {
     }
 }
 
-// Helper: Pos value bar paired with its adjacent Freeze snowflake button
-function paintPosAndFreeze(osc, bx, by, bw, bh, acc, isWt) {
-    var fw = bh + 2;
-    var pw = bw - fw - 3;
-    hValueBar(osc.posKey, bx, by, pw, bh, "Pos", acc, !isWt && !curFreeze);
-    var fx = bx + pw + 3;
-    fillRR(fx, by, fw, bh, 2.5, curFreeze ? RC.sel : RC.raised, 1);
-    iconSnow(fx + fw * 0.5, by + bh * 0.5, curFreeze ? RC.dark : RC.sub, 0.9);
-    zone("button", fx, by, fw, bh, { action: "freeze" });
+function paintFreezeBtn(x, y, s) {
+    fillRR(x, y, s, s, 2.5, curFreeze ? RC.sel : RC.raised, 1);
+    iconSnow(x + s * 0.5, y + s * 0.5, curFreeze ? RC.dark : RC.sub, 0.85);
+    zone("button", x, y, s, s, { action: "freeze" });
 }
 
 function paintEngineStrip() {
@@ -2855,38 +3372,42 @@ function paintEngineStrip() {
     var L = engineLayout(actMode, isWt);
     var nk = L.knobs.length;
 
-    // Left Column (x+4 .. x+280, w = 276):
-    // Row 1 (y+3): Mode Select ([Repitch][Spectral][Cycles][Textures][Fragments] | [Wavetable])
-    var leftW = 276;
-    paintModePillsRow(x + 4, y + 3, isWt, actMode);
-    // Row 2 (y+20): Mode Settings directly below Mode Select (e.g. Clean | Analog | Digital)
+    // Left column (x+4 .. x+280). Sample mode keeps Speed, Pos and Freeze in their own column.
+    // Wavetable leaves that column out and gives the mode controls the full width.
+    var leftX = x + 4, leftW = 276;
+    var modeW = isWt ? leftW : leftW - 98;
+    var knobW = 66, knobGap = 4;
+    if (!isWt && nk >= 3) knobW = Math.floor((modeW - knobGap * (nk - 1)) / nk);
+    paintModePillsRow(leftX, y + 3, isWt, actMode);
     if (L.head) {
-        segCtl(L.head.key, x + 4, y + 20, leftW, 13, L.head.labels, acc);
+        segCtl(L.head.key, leftX, y + 20, modeW, 13, L.head.labels, acc);
     } else if (actMode === 4) {
-        segCtl("fr_use_density", x + 4, y + 20, leftW, 13, ["Step Grid", "Density"], acc);
+        segCtl("fr_use_density", leftX, y + 20, modeW, 13, ["Step Grid", "Density"], acc);
     } else {
-        fillRR(x + 4, y + 20, leftW, 13, 2.5, RC.raised, 0.7);
-        text(L.title, x + 4 + leftW * 0.5, y + 29.5, 7.8, RC.sub, true, 1);
+        fillRR(leftX, y + 20, modeW, 13, 2.5, RC.raised, 0.7);
+        text(L.title, leftX + modeW * 0.5, y + 29.5, 7.8, RC.sub, true, 1);
     }
-    // Row 3 (y+38): Mode Settings Bars consistently sized to fit 4 params across the 276 px row (66 px each, 4 px gap)
-    var maxSlots = 4;
-    var gap5a = 4;
-    var bw5a = Math.floor((leftW - (maxSlots - 1) * gap5a) / maxSlots); // 66 px
     for (var i5a = 0; i5a < nk; i5a++) {
-        var bx5a = x + 4 + i5a * (bw5a + gap5a);
-        paintSettingBarItem(L.knobs[i5a], bx5a, y + 38, bw5a, 16, acc);
+        paintSettingBarItem(L.knobs[i5a], leftX + i5a * (knobW + knobGap), y + 38, knobW, 16, acc);
+    }
+    if (!isWt) {
+        var colX = leftX + modeW + 6;
+        line(colX - 4, y + 18, colX - 4, y + h - 6, RC.divider, 0.7, 1);
+        hValueBar("grain_motion", colX, y + 20, 92, 15, "Speed", acc, !scanOn);
+        hValueBar(osc.posKey, colX, y + 38, 73, 16, "Pos", acc, !curFreeze);
+        paintFreezeBtn(colX + 76, y + 38, 16);
     }
 
     line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1.0, 1.0);
 
-    // Right Column (x+292 .. x+460, w = 168): 2x2 Transport & Gain Bars with Freeze right beside Pos
-    text("TUNING & PLAYHEAD", x + 292, y + 12, 7.5, RC.sub, true, 0);
+    // Right column stays the shared tuning row. Gain keeps its 50 px box.
+    text("TUNING", x + 292, y + 12, 7.5, RC.sub, true, 0);
     valuePill(x + 412, y + 3, 22, Math.round(paramValue("unison_voices")) + "v", { key: "unison_voices", pxPerUnit: 6 }, RC.sel, false);
     valuePill(x + 436, y + 3, 24, Math.round(paramValue("unison_detune")) + "%", { key: "unison_detune" }, RC.sel, Math.round(paramValue("unison_voices")) <= 1);
-    hValueBar(osc.pitchKey, x + 292, y + 20, 82, 15, "Pitch", acc, false);
-    hValueBar(isWt ? osc.detKey : "grain_motion", x + 378, y + 20, 82, 15, isWt ? "Detune" : "Speed", acc, !isWt && !scanOn);
-    paintPosAndFreeze(osc, x + 292, y + 38, 82, 16, acc, isWt);
-    hValueBar(osc.gainKey, x + 378, y + 38, 82, 16, "Gain", acc, false);
+    hValueBar(osc.pitchKey, x + 292, y + 20, 54, 15, "Pitch", acc, false);
+    hValueBar(osc.detKey, x + 350, y + 20, 53, 15, "Fine", acc, false);
+    hValueBar(osc.ratioKey, x + 407, y + 20, 53, 15, "Ratio", acc, false);
+    hValueBar(osc.gainKey, x + 410, y + 38, 50, 16, "Gain", acc, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -2961,22 +3482,23 @@ function paintDetailsSection(sx) {
 function paintVoiceSection(sx) {
     var w = SECTIONS[4].w, acc = RC.cyan;
     panelBox(sx, SEC_Y, w, SEC_H);
-    secTitle("VOICING", sx + 7, 15, RC.text);
-    segCtl("mono_legato", sx + 7, 20, w - 14, 13, ["Poly", "Mono"], acc);
+    secTitle("VOICING", sx + 7, 14, RC.text);
+    segCtl("mono_legato", sx + 7, 18, w - 14, 12, ["Poly", "Mono"], acc);
     var ks1 = [["poly_voices", "Poly"], ["unison_voices", "Unison"], ["unison_detune", "Detune"]];
     var ks2 = [["unison_width", "Width"], ["glide_ms", "Glide"], ["vel_sens", "Vel"]];
-    for (var i = 0; i < 3; i++) rKnob(ks1[i][0], sx + 6 + (w - 12) * (i + 0.5) / 3, 58, 7, ks1[i][1], acc, {});
-    for (var j = 0; j < 3; j++) rKnob(ks2[j][0], sx + 6 + (w - 12) * (j + 0.5) / 3, 100, 7, ks2[j][1], acc, {});
-    line(sx + 7, 120, sx + w - 7, 120, RC.line, 1.0, 1.0);
-    secTitle("OUT", sx + 7, 130, RC.text);
-    rKnob("out_gain", sx + 34, 146, 7, "", acc, {});
-    var my = 126;
+    for (var i = 0; i < 3; i++) rKnob(ks1[i][0], sx + 6 + (w - 12) * (i + 0.5) / 3, 52, 6.8, ks1[i][1], acc, {});
+    for (var j = 0; j < 3; j++) rKnob(ks2[j][0], sx + 6 + (w - 12) * (j + 0.5) / 3, 89, 6.8, ks2[j][1], acc, {});
+    hValueBar("fine_range", sx + 7, 108, w - 14, 14, "Fine Range", acc, false);
+    line(sx + 7, 125, sx + w - 7, 125, RC.line, 1.0, 1.0);
+    secTitle("OUT", sx + 7, 134, RC.text);
+    rKnob("out_gain", sx + 34, 148, 7, "", acc, {});
+    var my = 129;
     var L = [livePeakL, livePeakR];
     for (var m = 0; m < 2; m++) {
         var mx = sx + w - 38 + m * 9;
-        fillRR(mx, my, 6, 36, 1.5, RC.track);
-        var hh = clamp01(L[m]) * 36;
-        if (hh > 0.5) fillRR(mx, my + 36 - hh, 6, hh, 1.5, L[m] > 0.9 ? RC.orange : acc, 0.95);
+        fillRR(mx, my, 6, 34, 1.5, RC.track);
+        var hh = clamp01(L[m]) * 34;
+        if (hh > 0.5) fillRR(mx, my + 34 - hh, 6, hh, 1.5, L[m] > 0.9 ? RC.orange : acc, 0.95);
     }
 }
 
@@ -3014,6 +3536,7 @@ var sharedSetvalueof = setvalueof;
 
 getvalueof = function () {
     var out = sharedGetvalueof();
+    out.push("WT", wtSel[0].cat, wtSel[0].idx, wtSel[1].cat, wtSel[1].idx);
     if (!isDefaultSectionOrder()) {
         out.push("R2O");
         out.push(encodeSectionOrder());
@@ -3041,8 +3564,29 @@ setvalueof = function () {
     } else if (hasR2) {
         sectionOrder = [0, 1, 2, 3, 4];
     }
+    if (a && a.length >= 5 && String(a[a.length - 5]) === "WT") {
+        wtSel[0].cat = Math.max(0, Math.min(WT_USER, Math.round(Number(a[a.length - 4]) || 0)));
+        wtSel[0].idx = Math.max(0, Math.round(Number(a[a.length - 3]) || 0));
+        wtSel[1].cat = Math.max(0, Math.min(WT_USER, Math.round(Number(a[a.length - 2]) || 0)));
+        wtSel[1].idx = Math.max(0, Math.round(Number(a[a.length - 1]) || 0));
+        a = a.slice(0, a.length - 5);
+        wtLoadedPath[0] = "";
+        wtLoadedPath[1] = "";
+        wtApplyOsc(0);
+        wtApplyOsc(1);
+    }
     if (hasR2) applyDeviceWidth();
     sharedSetvalueof.apply(null, a);
+};
+
+var sharedDropfile = dropfile;
+dropfile = function () {
+    var dropped = pathFromArgs(arguments);
+    sharedDropfile.apply(null, arguments);
+    if (!dropped || dropped === "none") return;
+    if ((oscTab === 0 || oscTab === 1) && Math.round(paramValue(activeOsc().typeKey)) > 0) {
+        wtSelectUser(oscTab === 1 ? 1 : 0);
+    }
 };
 
 // Debug messages via #0-bsdebug for automated Live UI verification of Reactive 2's Mod Sources & Mod Matrix views:
@@ -3098,6 +3642,7 @@ function slopeFromMid(level, base) {
 var sharedPaintMenu = paintMenu;
 paintMenu = function () {
     if (!openMenu) return;
+    if (openMenu.wtList) { paintWtListMenu(); return; }
     if (openMenu.subMenu) { paintSubEnumMenu(); return; }
     if (openMenu.wtEnvLoop) {
         var m = openMenu;
@@ -3184,6 +3729,24 @@ paintMenu = function () {
 
 var sharedDoAction = doAction;
 doAction = function (z) {
+    if (z.action === "menu" && z.wtList) {
+        if (openMenu && openMenu.key === z.key) { openMenu = null; mgraphics.redraw(); return; }
+        var names = z.which === "cat" ? WT_CATS.slice() : wtTableNames(wtSel[z.osc].cat);
+        openMenu = {
+            key: z.key, wtList: true, which: z.which, osc: z.osc, names: names,
+            cur: z.which === "cat" ? wtSel[z.osc].cat : wtSel[z.osc].idx,
+            anchorX: z.anchorX, anchorY: z.anchorY, scroll: 0, w: z.w2 || 120
+        };
+        mgraphics.redraw();
+        return;
+    }
+    if (z.action === "wt_pick") {
+        if (z.which === "cat") wtSelect(z.osc, z.value, 0);
+        else wtSelect(z.osc, wtSel[z.osc].cat, z.value);
+        openMenu = null;
+        mgraphics.redraw();
+        return;
+    }
     if (z.action === "menu" && z.subMenu) {
         if (openMenu && openMenu.key === z.key) { openMenu = null; mgraphics.redraw(); return; }
         openMenu = { key: z.key, x: z.anchorX, y: z.anchorY, w: z.w2, rowH: 13, subMenu: true, anchorX: z.anchorX, anchorY: z.anchorY };
@@ -3294,6 +3857,13 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
         normalizeSample();
         return;
     }
+    if (z && z.kind === "wt_pos") {
+        if (openMenu) openMenu = null;
+        drag = { wtPos: true, key: z.key, top: z.top, h: z.h };
+        setIfChanged(z.key, wtPosFromY(y, z.top, z.h));
+        mgraphics.redraw();
+        return;
+    }
     if (z && z.kind === "sub_harm") {
         if (openMenu) openMenu = null;
         if (drag && drag.captured) setCursorHidden(false);
@@ -3342,6 +3912,16 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
 
 function onwheel(x, y) {
     var d = parseWheelDelta(Array.prototype.slice.call(arguments));
+    if (openMenu && openMenu.wtList && openMenu.menuRect && d[1] !== 0) {
+        var r = openMenu.menuRect;
+        if (x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]) {
+            var vis = Math.min((openMenu.names || []).length, 12);
+            var maxScroll = Math.max(0, (openMenu.names || []).length - vis);
+            openMenu.scroll = Math.max(0, Math.min(maxScroll, (openMenu.scroll || 0) + (d[1] > 0 ? -1 : 1)));
+            mgraphics.redraw();
+            return;
+        }
+    }
     if (d[1] !== 0 && inWaveRect(x, y)) zoomViewAt(x, wheelZoomFactor(d[1]));
 }
 
@@ -3377,6 +3957,12 @@ ondrag = function (x, y, but, cmd, shift) {
         panViewBy(x - panState.x);
         return;
     }
+    if (drag && drag.wtPos) {
+        if (but === 0) { drag = null; mgraphics.redraw(); return; }
+        setIfChanged(drag.key, wtPosFromY(y, drag.top, drag.h));
+        mgraphics.redraw();
+        return;
+    }
     if (drag && drag.subHarm) {
         if (but === 0) { drag = null; mgraphics.redraw(); return; }
         drawSubHarmonicsAt(x, y);
@@ -3394,6 +3980,7 @@ ondrag = function (x, y, but, cmd, shift) {
 
 ondblclick = function (x, y) {
     var z = zoneAt(x, y);
+    if (z && z.kind === "wt_pos") { setParamFromFace(z.key, 0); mgraphics.redraw(); return; }
     if (z && z.kind === "wave" && viewZoom > 1.0005) { resetView(); return; }     // empty waveform space resets the view
     if (z && z.kind === "hdl") {
         if (z.id === "filt") { setParamFromFace("filt_cutoff", paramSpec("filt_cutoff").init); setParamFromFace("filt_res", paramSpec("filt_res").init); }
@@ -3536,5 +4123,6 @@ function preview() {
     if (o.order) setSectionOrder(o.order);
     if (o.hover) hoverKey = o.hover;
     if (o.oscTab !== undefined) oscTab = Math.max(0, Math.min(2, Math.round(Number(o.oscTab) || 0)));
+    if (o.wtFrames) wtPreviewFrames = Math.max(2, Math.round(Number(o.wtFrames) || 0));
     if (o.menu) openMenu = o.menu;
 }

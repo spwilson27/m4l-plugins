@@ -319,7 +319,7 @@ for _k, _spec in (
         ("wt1_fx2", ("Osc 1 Effect 2", "Wt1Fx2", 0.0, 100.0, 0.0, 5, 1.0, "wt1_fx2", 0.01, "set_wt1_fx2", "Oscillator 1 Wavetable Effect 2 (Fm Amt, Classic Sync, or Modern Fold, 0% to 100%).")),
         ("wt2_fx1", ("Osc 2 Effect 1", "Wt2Fx1", -100.0, 100.0, 0.0, 5, 1.0, "wt2_fx1", 0.01, "set_wt2_fx1", "Oscillator 2 Wavetable Effect 1 (Fm Tune, Classic PW, or Modern Warp, -100% to +100%).")),
         ("wt2_fx2", ("Osc 2 Effect 2", "Wt2Fx2", 0.0, 100.0, 0.0, 5, 1.0, "wt2_fx2", 0.01, "set_wt2_fx2", "Oscillator 2 Wavetable Effect 2 (Fm Amt, Classic Sync, or Modern Fold, 0% to 100%).")),
-        ("sub_tone", ("Sub Tone", "SubTone", 0.0, 100.0, 0.0, 5, 1.0, "sub_tone", 0.01, "set_sub_tone", "Sub oscillator harmonic saturation tone (0 to 100%).")),
+        ("sub_tone", ("Sub Tone", "SubTone", 0.0, 100.0, 0.0, 5, 1.0, "sub_tone", 0.01, "set_sub_tone", "Sub distortion tone (0 to 100%). 0% leaves the selected waveshaper unchanged. Soft hardens the knee, Hard rounds the clip corners, Tube adds asymmetry, Fold offsets the folds, Sine pinches the zero crossing, Pinch sharpens the ear and deepens the valley, Noise moves the grit from the peaks onto the zero crossings.")),
         ("sub_gain", ("Sub Gain", "SubGain", -48.0, 24.0, -6.0, 4, 1.0, "sub_gain", 1.0, "set_sub_gain", "Sub oscillator output level in dB (-48 to +24 dB).")),
         ("xs_fm_21", ("Cross FM 2->1", "XFM21", -100.0, 100.0, 0.0, 5, 1.0, "xs_fm_21", 0.01, "set_xs_fm_21", "Audio-rate FM from Oscillator 2 to Oscillator 1 (-100% to +100%).")),
         ("xs_fm_12", ("Cross FM 1->2", "XFM12", -100.0, 100.0, 0.0, 5, 1.0, "xs_fm_12", 0.01, "set_xs_fm_12", "Audio-rate FM from Oscillator 1 to Oscillator 2 (-100% to +100%).")),
@@ -351,14 +351,21 @@ for _k, _spec in (
         ("sub_odd", ("Sub Odd Harmonics", "SubOdd", -100.0, 100.0, 0.0, 5, 1.0, "sub_odd", 0.01, "set_sub_odd", "Gain adjustment for odd upper harmonics (-100% cut to +100% boost).")),
         ("sub_even", ("Sub Even Harmonics", "SubEven", -100.0, 100.0, 0.0, 5, 1.0, "sub_even", 0.01, "set_sub_even", "Gain adjustment for even harmonics (-100% cut to +100% boost).")),
         ("sub_tilt", ("Sub Spectral Tilt", "SubTilt", -100.0, 100.0, 0.0, 5, 1.0, "sub_tilt", 0.01, "set_sub_tilt", "Spectral tilt across harmonics (-100% dark to +100% bright).")),
-        ("sub_lp", ("Sub Spectral Low Pass", "SubLP", 0.0, 100.0, 100.0, 5, 1.0, "sub_lp", 0.01, "set_sub_lp", "Additive low-pass rolloff across harmonics (0% closed to 100% open).")),
-        ("sub_knock", ("Sub Knock Amount", "SubKnk", 0.0, 100.0, 0.0, 5, 1.0, "sub_knock", 0.01, "set_sub_knock", "Pitch envelope punch/knock amount for kicks and 808s (0 to 100%).")),
-        ("sub_decay", ("Sub Knock Decay", "SubKDec", 5.0, 1000.0, 120.0, 2, 2.2, "sub_decay", 1.0, "set_sub_decay", "Pitch envelope knock decay time in ms (5 to 1000 ms).")),
+        ("sub_lp", ("Sub Spectral Low Pass", "SubLP", 0.0, 100.0, 100.0, 5, 1.0, "sub_lp", 0.01, "set_sub_lp", "12 dB/octave low-pass across the upper harmonics (0% closed to 100% open). The fundamental is left alone.")),
+        ("sub_knock", ("Sub Knock Amount", "SubKnk", 0.0, 96.0, 0.0, 7, 1.0, "sub_knock", 1.0, "set_sub_knock", "Pitch envelope punch/knock amount in semitones (0 to +96 st).")),
+        ("sub_decay", ("Sub Knock Decay", "SubKDec", 1.0, 250.0, 120.0, 2, 2.2, "sub_decay", 1.0, "set_sub_decay", "Pitch envelope knock decay time in ms (1 to 250 ms).")),
+        ("sub_knock_slope", ("Sub Knock Slope", "SubKSlp", -100.0, 100.0, 0.0, 5, 1.0, "sub_knock_slope", 0.01, "set_sub_knock_slope", "Pitch envelope knock curve slope (-100% concave to +100% convex).")),
+        ("sub_disp_freq", ("Sub Disperser Cutoff", "SubDFrq", 20.0, 2000.0, 160.0, 3, 2.2, "sub_disp_freq", 1.0, "set_sub_disp_freq", "Sub oscillator all-pass phase disperser cutoff frequency (20 to 2000 Hz).")),
+        ("sub_disp_amt", ("Sub Disperser Amount", "SubDAmt", 0.0, 100.0, 0.0, 5, 1.0, "sub_disp_amt", 0.01, "set_sub_disp_amt", "Sub oscillator all-pass phase disperser amount (0 to 100%).")),
         ("sub_drive", ("Sub Drive Amount", "SubDrv", 0.0, 100.0, 0.0, 5, 1.0, "sub_drive", 0.01, "set_sub_drive", "Sub-tuned distortion drive amount (0 to 100%).")),
         ("sub_h1_4", ("Sub Harmonics 1-4", "SubH14", 0.0, 65535.0, 51000.0, 0, 1.0, "sub_h1_4", 1.0, "set_sub_h1_4", "Packed 4x4-bit drawn harmonic levels for partials 1..4.")),
         ("sub_h5_8", ("Sub Harmonics 5-8", "SubH58", 0.0, 65535.0, 13107.0, 0, 1.0, "sub_h5_8", 1.0, "set_sub_h5_8", "Packed 4x4-bit drawn harmonic levels for partials 5..8.")),
         ("sub_h9_12", ("Sub Harmonics 9-12", "SubH912", 0.0, 65535.0, 0.0, 0, 1.0, "sub_h9_12", 1.0, "set_sub_h9_12", "Packed 4x4-bit drawn harmonic levels for partials 9..12.")),
-        ("sub_h13_16", ("Sub Harmonics 13-16", "SubH1316", 0.0, 65535.0, 0.0, 0, 1.0, "sub_h13_16", 1.0, "set_sub_h13_16", "Packed 4x4-bit drawn harmonic levels for partials 13..16."))):
+        ("sub_h13_16", ("Sub Harmonics 13-16", "SubH1316", 0.0, 65535.0, 0.0, 0, 1.0, "sub_h13_16", 1.0, "set_sub_h13_16", "Packed 4x4-bit drawn harmonic levels for partials 13..16.")),
+        ("osc1_ratio", ("Osc 1 Tuning Ratio", "Osc1Rat", 0.125, 16.0, 1.0, 1, 1.0, "osc1_ratio", 1.0, "set_osc1_ratio", "Oscillator 1 frequency ratio multiplier (0.125x to 16x).")),
+        ("osc2_ratio", ("Osc 2 Tuning Ratio", "Osc2Rat", 0.125, 16.0, 1.0, 1, 1.0, "osc2_ratio", 1.0, "set_osc2_ratio", "Oscillator 2 frequency ratio multiplier (0.125x to 16x).")),
+        ("sub_ratio", ("Sub Tuning Ratio", "SubRat", 0.125, 16.0, 1.0, 1, 1.0, "sub_ratio", 1.0, "set_sub_ratio", "Sub oscillator frequency ratio multiplier (0.125x to 16x).")),
+        ("fine_range", ("Fine Tuning Range", "FineRng", 1.0, 96.0, 1.0, 1, 1.0, "fine_range", 1.0, "set_fine_range", "Maximum range of the Fine tuning control (+/-1.0 to +/-96.0)."))) :
     OPTIONAL_SPECS[_k] = _spec
     OPTIONAL_GROUPS["wavetable_filter"] += (_k,)
 _ENV_MOD_ENUMS = {
@@ -387,11 +394,9 @@ _FILT_ENUMS = {
     "osc2_mode": ("Osc 2 Playback Mode", "Osc2Mode", ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"], 0, "osc2_mode", "set_osc2_mode", "Oscillator 2 sampler playback mode."),
     "wt2_fx": ("Osc 2 Wave Effect", "Wt2Fx", ["None", "Fm", "Classic", "Modern"], 3, "wt2_fx", "set_wt2_fx", "Oscillator 2 Wavetable effect mode: None, Fm, Classic, or Modern."),
     "sub_on": ("Sub Enable", "SubOn", ["Off", "On"], 0, "sub_on", "set_sub_on", "Enables the Sub oscillator."),
-    "sub_oct": ("Sub Octave", "SubOct", ["0", "-1", "-2"], 1, "sub_oct", "set_sub_oct", "Sub oscillator octave offset (0, -1, or -2 octaves)."),
     "sub_wave": ("Sub Waveform", "SubWave", ["Custom", "Sine", "Saw", "Square", "Triangle", "Odd", "Warm"], 6, "sub_wave", "set_sub_wave", "Additive sub oscillator waveform preset or Custom drawn bars."),
     "sub_lock": ("Sub Lock", "SubLock", ["Off", "On"], 0, "sub_lock", "set_sub_lock", "Forces the sub oscillator to play within a single 1-octave bass range."),
     "sub_lock_note": ("Sub Lock Note", "SubLkNt", ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"], 0, "sub_lock_note", "set_sub_lock_note", "Lowest note of the 1-octave Sub Lock range."),
-    "sub_tuning": ("Sub Tuning Mode", "SubTune", ["Key", "Fixed", "Ratio"], 0, "sub_tuning", "set_sub_tuning", "Sub oscillator tuning mode: Key tracking, Fixed note, or Ratio."),
     "sub_mono": ("Sub Monophonic", "SubMono", ["Off", "On"], 0, "sub_mono", "set_sub_mono", "Forces the sub oscillator into monophonic mode even when playing chords."),
     "sub_direct": ("Sub Direct Out", "SubDir", ["Off", "On"], 0, "sub_direct", "set_sub_direct", "Routes the sub oscillator directly to the output, bypassing the filters."),
     "sub_drv_type": ("Sub Drive Type", "SubDrTp", ["Soft", "Hard", "Tube", "Fold", "Sine", "Pinch", "Noise"], 0, "sub_drv_type", "set_sub_drv_type", "Sub-bass distortion type: Soft, Hard, Tube, Fold, Sine, Pinch, or Noise."),
@@ -1374,6 +1379,31 @@ def build_patcher(design=None):
                 "text": "buffer~ #0-bspitch @samps 4096",
             }
         },
+        # Factory wavetables (1024 samples per frame). The user table is the sample buffer itself.
+        {
+            "box": {
+                "id": "obj-buf-wt1",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["float", "bang"],
+                "patching_rect": [420.0, 442.0, 200.0, 20.0],
+                "text": "buffer~ #0-bswt1",
+                "varname": "obj-buf-wt1",
+            }
+        },
+        {
+            "box": {
+                "id": "obj-buf-wt2",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["float", "bang"],
+                "patching_rect": [640.0, 442.0, 200.0, 20.0],
+                "text": "buffer~ #0-bswt2",
+                "varname": "obj-buf-wt2",
+            }
+        },
         # Sample file loader wiring (live.drop -> prepend replace -> buffer~ #0-bsamp -> bang -> v8ui)
         {
             "box": {
@@ -1451,8 +1481,8 @@ def build_patcher(design=None):
                 "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [420.0, 450.0, 310.0, 20.0],
-                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch",
+                "patching_rect": [420.0, 450.0, 520.0, 20.0],
+                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2",
             }
         },
         {
@@ -1471,11 +1501,11 @@ def build_patcher(design=None):
             "box": {
                 "id": "obj-route-viz",
                 "maxclass": "newobj",
-                "numinlets": 9,
-                "numoutlets": 9,
-                "outlettype": ["", "", "", "", "", "", "", "", ""],
-                "patching_rect": [160.0, 555.0, 310.0, 20.0],
-                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate",
+                "numinlets": 10,
+                "numoutlets": 10,
+                "outlettype": ["", "", "", "", "", "", "", "", "", ""],
+                "patching_rect": [160.0, 555.0, 360.0, 20.0],
+                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate wt_msg",
             }
         },
         {
@@ -1521,6 +1551,7 @@ def build_patcher(design=None):
         {"patchline": {"source": ["obj-prep-tempo", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-route-viz", 7], "destination": ["obj-prep-samprate", 0]}},
         {"patchline": {"source": ["obj-prep-samprate", 0], "destination": ["obj-gen-in", 1]}},
+        {"patchline": {"source": ["obj-route-viz", 8], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
         {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ready", 0]}},
         {"patchline": {"source": ["obj-msg-ready", 0], "destination": ["obj-viz", 0]}},
