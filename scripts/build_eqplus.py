@@ -29,6 +29,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "eqplus_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "eqplus_ui.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "eqplus_core.genexpr")
+FFT_PATH = os.path.join(ROOT_DIR, "src", "cepstrum_lib.genexpr")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "EQ+.amxd")
 
 DEVICE_W = 378.0
@@ -495,6 +496,18 @@ def control_specs():
             "w": 70,
             "help": "Flat tilt in dB per decade around 1 kHz. +12 is about +12 dB at 10 kHz and -12 dB at 100 Hz.",
         },
+        {
+            "id": "obj-ctrl-phase-mode",
+            "key": "phase_mode",
+            "ui": "set_phase_mode",
+            "kind": "menu",
+            "long": "Processing Mode",
+            "short": "Phase",
+            "enums": ["Zero Latency", "Natural Phase", "Linear Phase"],
+            "init": 0,
+            "w": 120,
+            "help": "Zero Latency is the biquad EQ. Natural Phase matches analog magnitude and phase with about 7.3 ms of latency. Linear Phase keeps that magnitude with a flat phase (Pro-Q Low, 3072 samples).",
+        },
     ])
     return specs
 
@@ -521,13 +534,14 @@ def make_control(spec, x, y):
 
 
 def make_panel():
-    c = round(30 / 255.0, 6)
-    bg = [c, c, c, 1.0]
+    # Live default-dark surface. bgfillcolor is what a panel paints; the binding follows the user's theme.
+    bg = [0.212, 0.212, 0.212, 1.0]
     return {
         "box": {
             "angle": 0.0,
             "background": 1,
             "bgcolor": bg,
+            "bgfillcolor": {"type": "color", "color": bg, "angle": 270.0, "proportion": 0.39},
             "border": 0,
             "bordercolor": bg,
             "grad1": bg,
@@ -540,8 +554,11 @@ def make_panel():
             "patching_rect": [760.0, 40.0, DEVICE_W, DEVICE_H],
             "presentation": 1,
             "presentation_rect": [0.0, 0.0, DEVICE_W, DEVICE_H],
-            "proportion": 0.5,
+            "proportion": 0.39,
             "rounded": 0,
+            "saved_attribute_attributes": {
+                "bgfillcolor": {"expression": "themecolor.live_surface_bg"},
+            },
             "varname": "obj-panel-bg",
         }
     }
@@ -552,8 +569,10 @@ def build():
         config_js = f.read()
     with open(UI_PATH, "r", encoding="utf-8") as f:
         ui_js = f.read()
+    with open(FFT_PATH, "r", encoding="utf-8") as f:
+        fft_code = f.read()
     with open(GEN_PATH, "r", encoding="utf-8") as f:
-        gen_code = f.read()
+        gen_code = fft_code.rstrip() + "\n" + f.read()
     gen_text = gendsp_json(gen_code)
     gen_hash = hashlib.sha1(gen_text.encode("utf-8")).hexdigest()[:12]
     # GEN_DSP_TEXT / GEN_DSP_HASH, then the shared math, then the face. Top-level names stay
@@ -620,6 +639,7 @@ def build():
         newobj("obj-gen-in", "gate 1 1", 120, 480, 70, numinlets=2, numoutlets=1, outlettype=[""], varname="eq_genin"),
         newobj("obj-buf-cfg", "buffer~ #0-eqpluscfg @samps 64", 420, 420, 230, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-buf-spec", "buffer~ #0-eqplusspec 200 4 @samps 8200", 420, 450, 280, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-buf-ir", "buffer~ #0-eqplusir 4096 3", 420, 480, 220, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-thisdevice", "live.thisdevice", 420, 490, 100, numoutlets=2, outlettype=["bang", "int"]),
         newobj("obj-trig-init", "t b b", 420, 520, 50, numoutlets=2, outlettype=["bang", "bang"]),
         message("obj-msg-init", "init_dsp", 540, 490, 70),
@@ -631,8 +651,8 @@ def build():
         message("obj-msg-hotkey-gain-down", "hotkey_gain -1", 930, 476, 110),
         message("obj-msg-hotkey-freq-left", "hotkey_freq -1", 700, 504, 110),
         message("obj-msg-hotkey-freq-right", "hotkey_freq 1", 820, 504, 110),
-        message("obj-msg-setbuf", "setbuffers #0-eqpluscfg #0-eqplusspec", 540, 520, 250),
-        message("obj-msg-gen-buf", "eqcfg #0-eqpluscfg, spec #0-eqplusspec", 540, 550, 250),
+        message("obj-msg-setbuf", "setbuffers #0-eqpluscfg #0-eqplusspec #0-eqplusir", 540, 520, 320),
+        message("obj-msg-gen-buf", "eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir", 540, 550, 360),
         newobj("obj-metro", "qmetro 33 @active 1", 420, 590, 140, outlettype=["bang"]),
         # Outlet 0 is param <key> <value>; outlet 1 is setwidth_cmd <px>.
         newobj("obj-route-viz", "route param setwidth_cmd", 20, 680, 200, numoutlets=3, outlettype=["", "", ""]),

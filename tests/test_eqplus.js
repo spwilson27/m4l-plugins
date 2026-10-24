@@ -215,6 +215,30 @@ near(cfg.eqpTiltResponseDb(-12, 100, SR), 12, 0.8, "negative tilt boosts 100 Hz 
     near(lowOct, 12 * Math.log10(2), 0.5, "flat tilt rises about 12 dB per decade");
     eq(cfg.eqpTiltCoeffs(12, SR).sections.length, 9, "flat tilt is nine first-order shelves");
 }
+eq(cfg.EQP_LINEAR_LATENCY, 3072, "linear phase latency is Pro-Q Low at 44.1 kHz");
+eq(cfg.eqpNaturalLatency(44100), 322, "natural phase is 322 samples at 44.1 kHz");
+eq(cfg.eqpNaturalLatency(48000), 350, "natural phase scales to 350 samples at 48 kHz");
+eq(cfg.eqpMeasureLinearLatency(), cfg.EQP_LINEAR_LATENCY, "overlap-add peak lands on the reported latency");
+{
+    const bell = [{ enabled: 1, mode: 6, freq: 1000, gain: 6, q: 1 }];
+    const designed = cfg.eqpDesignPhase(bell, SR, 0, 0, 0);
+    for (const f of [100, 1000, 10000]) {
+        const curve = cfg.eqpTotalResponseDb(bell, f, SR, 0, 0, 0, 0);
+        near(cfg.eqpIrDb(designed.linear, f, SR), curve, 0.2, `linear IR matches the curve at ${f} Hz`);
+        const H = cfg.eqpPhaseH(bell, f, SR, 0, 0, 0);
+        const analog = cfg.eqpMagDb(H.analog.re, H.analog.im);
+        const natural = cfg.eqpMagDb(H.digital.re, H.digital.im) + cfg.eqpIrDb(designed.fir, f, SR);
+        near(natural, analog, 0.25, `natural phase matches analog at ${f} Hz`);
+    }
+    const cut = [{ enabled: 1, mode: 10, freq: 8000, gain: 0, q: 0.707 }];
+    const cutIr = cfg.eqpDesignPhase(cut, SR, 0, 0, 0);
+    const cutH = cfg.eqpPhaseH(cut, 12000, SR, 0, 0, 0);
+    const cutNat = cfg.eqpMagDb(cutH.digital.re, cutH.digital.im) + cfg.eqpIrDb(cutIr.fir, 12000, SR);
+    near(cutNat, cfg.eqpMagDb(cutH.analog.re, cutH.analog.im), 0.4, "natural phase pulls an 8 kHz cut toward analog at 12 kHz");
+    const flat = cfg.eqpDesignPhase([], SR, 0, 0, 0);
+    near(flat.fir[0], 1, 0.01, "natural correction is an impulse when nothing is on");
+    ok(flat.fir.reduce((s, x) => s + x * x, 0) < 1.02, "flat natural FIR has no extra energy");
+}
 {
     const bands = cfg.EQP_DEFAULT_BAND_FREQS.map((freq) => ({ enabled: 0, mode: 0, freq, gain: 0, q: cfg.EQP_Q_DEFAULT }));
     near(cfg.eqpTotalResponseDb(bands, 1000, SR, 0, 0, -3), -3, 1e-6, "output gain argument still offsets the sum");
@@ -320,6 +344,12 @@ ok(gen.includes("Param tiltOn"), "tilt filter reaches the gen");
 ok(gen.includes("Data tiltZ(18);") && gen.includes("Data tiltC(28);"), "flat tilt state is nine sections");
 ok(gen.includes("for (s = 0; s < 9; s += 1)"), "flat tilt runs nine sections");
 ok(!gen.includes("tLb0"), "the two-shelf tilt coefficients are gone");
+ok(gen.includes('Buffer irspec("eqplusir")'), "phase IR buffer");
+ok(gen.includes("Param phaseMode"), "processing mode reaches the gen");
+ok(gen.includes("fft_run(fx, tab, 4096, 0)"), "linear phase uses the shared FFT");
+ok(gen.includes("floor(322 * samplerate / 44100 + 0.5)"), "natural phase delay is 7.3 ms");
+ok(gen.includes("dryDL.read(3072"), "linear phase delay is 3072 samples");
+ok(fs.readFileSync(path.join(ROOT, "scripts", "build_eqplus.py"), "utf8").includes("cepstrum_lib.genexpr"), "build prepends the FFT");
 ok(gen.includes("Data cstate(64);"), "Data cstate(64)");
 ok(/Param outgain\(0/.test(gen), "Param outgain");
 ok(/Param bypass\(0/.test(gen), "Param bypass");
@@ -396,8 +426,8 @@ eq(byId["obj-thisdevice"].text, "live.thisdevice", "live.thisdevice");
 eq(byId["obj-trig-init"].text, "t b b", "init trigger");
 ok(connected("obj-thisdevice", "obj-trig-init"), "thisdevice bangs the trigger");
 eq(byId["obj-msg-init"].text, "init_dsp", "init_dsp message");
-eq(byId["obj-msg-setbuf"].text, "setbuffers #0-eqpluscfg #0-eqplusspec", "UI buffer message");
-eq(byId["obj-msg-gen-buf"].text, "eqcfg #0-eqpluscfg, spec #0-eqplusspec", "gen buffer bind");
+eq(byId["obj-msg-setbuf"].text, "setbuffers #0-eqpluscfg #0-eqplusspec #0-eqplusir", "UI buffer message");
+eq(byId["obj-msg-gen-buf"].text, "eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir", "gen buffer bind");
 ok(connectedPort("obj-trig-init", 1, "obj-msg-setbuf") && connected("obj-msg-setbuf", "obj-viz"), "setbuffers reaches the canvas first");
 ok(connectedPort("obj-trig-init", 1, "obj-msg-gen-buf") && intoHub("obj-msg-gen-buf"), "gen bind enters the hub");
 ok(connectedPort("obj-trig-init", 0, "obj-msg-init") && connected("obj-msg-init", "obj-viz"), "init_dsp is the later bang");
@@ -470,7 +500,8 @@ function extractAssignedString(src, name) {
     const gboxes = gendsp.patcher.boxes.map((b) => b.box);
     eq(gboxes.length, 5, "gendsp is 2-in, codebox, 2-out");
     const codebox = gboxes.find((b) => b.maxclass === "codebox");
-    eq(codebox.code, minifyGen(gen), "embedded codebox is the mangled eqplus core");
+    const fftSrc = fs.readFileSync(path.join(ROOT, "src", "cepstrum_lib.genexpr"), "utf8").replace(/\s+$/, "");
+    eq(codebox.code, minifyGen(fftSrc + "\n" + gen), "embedded codebox is the FFT plus the mangled eqplus core");
     for (const text of ["in 1", "in 2", "out 1", "out 2"]) ok(gboxes.some((b) => b.text === text), `gendsp ${text}`);
 }
 
@@ -486,9 +517,10 @@ eq(boxes[boxes.length - 1].maxclass, "panel", "last box is a panel");
 eq(boxes[boxes.length - 1].background, 1, "panel background flag");
 eq(boxes[boxes.length - 1].presentation, 1, "panel is presented");
 deep(boxes[boxes.length - 1].presentation_rect, [0, 0, 378, 169], "panel covers the device");
-near(boxes[boxes.length - 1].bgcolor[0], 30 / 255, 0.002, "panel red");
-near(boxes[boxes.length - 1].bgcolor[1], 30 / 255, 0.002, "panel green");
-near(boxes[boxes.length - 1].bgcolor[2], 30 / 255, 0.002, "panel blue");
+near(boxes[boxes.length - 1].bgcolor[0], 0.212, 0.002, "panel red");
+near(boxes[boxes.length - 1].bgcolor[1], 0.212, 0.002, "panel green");
+near(boxes[boxes.length - 1].bgcolor[2], 0.212, 0.002, "panel blue");
+eq(boxes[boxes.length - 1].saved_attribute_attributes.bgfillcolor.expression, "themecolor.live_surface_bg", "panel follows Live's surface colour");
 
 function vof(id) { return byId[id].saved_attribute_attributes.valueof; }
 function expectFloat(id, longName, shortName, lo, hi, initial, unit, exponent) {
@@ -543,6 +575,7 @@ expectEnum("obj-ctrl-sidechain-fold", "live.text", "Show Sidechain Fold", "SCFol
 expectEnum("obj-ctrl-ref-enable", "live.text", "Reference Enable", "RefOn", ["Off", "On"], 0);
 expectFloat("obj-ctrl-ref-gain", "Reference Gain", "RefGain", -24, 24, 0, 4, null);
 expectFloat("obj-ctrl-tilt-eq", "Tilt Filter", "TiltEQ", -24, 24, 0, 4, null);
+expectEnum("obj-ctrl-phase-mode", "live.menu", "Processing Mode", "Phase", ["Zero Latency", "Natural Phase", "Linear Phase"], 0);
 eq(vof("obj-ctrl-sidechain-fold").parameter_invisible, 1, "sidechain fold is stored only");
 eq(byId["obj-ctrl-sidechain-fold"].hidden, 1, "sidechain fold is hidden");
 ok(vof("obj-ctrl-ref-enable").parameter_invisible == null, "reference enable stays automatable");
@@ -566,9 +599,9 @@ for (let i = 1; i <= 8; i++) {
         routeUi.push(`prepend set_band_${part} ${i - 1}`);
     }
 }
-routeKeys.push("filters_shelf", "analyzer_shelf", "sidechain_fold", "ref_enable", "ref_gain", "tilt_eq");
-routeIds.push("obj-ctrl-filters-shelf", "obj-ctrl-analyzer-shelf", "obj-ctrl-sidechain-fold", "obj-ctrl-ref-enable", "obj-ctrl-ref-gain", "obj-ctrl-tilt-eq");
-routeUi.push("prepend set_filters_shelf", "prepend set_analyzer_shelf", "prepend set_sidechain_fold", "prepend set_ref_enable", "prepend set_ref_gain", "prepend set_tilt_eq");
+routeKeys.push("filters_shelf", "analyzer_shelf", "sidechain_fold", "ref_enable", "ref_gain", "tilt_eq", "phase_mode");
+routeIds.push("obj-ctrl-filters-shelf", "obj-ctrl-analyzer-shelf", "obj-ctrl-sidechain-fold", "obj-ctrl-ref-enable", "obj-ctrl-ref-gain", "obj-ctrl-tilt-eq", "obj-ctrl-phase-mode");
+routeUi.push("prepend set_filters_shelf", "prepend set_analyzer_shelf", "prepend set_sidechain_fold", "prepend set_ref_enable", "prepend set_ref_gain", "prepend set_tilt_eq", "prepend set_phase_mode");
 eq(byId["obj-route-viz"].text, "route param setwidth_cmd", "viz router");
 eq(byId["obj-route-viz"].numoutlets, 3, "viz router has param, setwidth_cmd, and unmatched");
 eq(byId["obj-route-param"].text, "route " + routeKeys.join(" "), "name router");
@@ -644,6 +677,7 @@ function loadFace() {
         "obj-panel-bg": presentationBox([0, 0, 378, 169]),
     };
     sandbox.named = named;
+    sandbox.latencySets = [];
     sandbox.patcher = {
         newdefault() {
             return { message() {}, getattr() { return 0; } };
@@ -651,6 +685,7 @@ function loadFace() {
         connect() {},
         getnamed(name) { return named[name] || null; },
         message() {},
+        setattr(name, value) { sandbox.latencySets.push([String(name), value]); },
     };
     function Buffer(name) {
         const rec = { name: String(name) };
@@ -802,11 +837,23 @@ function runFace() {
     }
     const base = take();
     eq(base[0], 1, "state version");
-    eq(base.length, 58, "state length (version, globals, bands, shelves, sidechain, tilt)");
+    eq(base.length, 59, "state length (version, globals, bands, shelves, sidechain, tilt, phase)");
     near(base[1], 0, 1e-6, "preview shift");
     near(base[2], 0, 1e-6, "preview gain");
     eq(base[3], 0, "preview range \u00b112");
     near(base[57], 0, 1e-6, "preview tilt filter is 0");
+    eq(base[58], 0, "preview processing mode is Zero Latency");
+    const edged = base.slice();
+    edged[58] = 6.5;
+    put(edged);
+    eq(ui.phaseMode, 0, "a saved Edge value stays Zero Latency");
+    const linear = base.slice();
+    linear[58] = 2;
+    put(linear);
+    eq(ui.phaseMode, 2, "phase mode 2 reloads as Linear");
+    eq(ui.latencySets[ui.latencySets.length - 1][1], cfg.EQP_LINEAR_LATENCY, "Linear reports its latency");
+    put(base);
+    eq(ui.phaseMode, 0, "restoring the preview blob clears the phase mode");
     eq(base[4], 1, "preview Adaptive-Q");
     eq(base[5], 1, "preview pre");
     eq(base[6], 1, "preview post");
@@ -1144,6 +1191,23 @@ function runFace() {
     openAnalyzerShelf();
     rightClick(450, 90);
     ok(take()[8] !== 0, "Speed click leaves Fast");
+    put(base);
+    openAnalyzerShelf();
+    {
+        const az = ui.analyzerShelf();
+        const px = az.phase.x + az.phase.w * 0.5;
+        const py = az.phase.y + az.phase.h * 0.5;
+        rightClick(px, py);
+        eq(ui.phaseMode, 1, "Phase right-click selects Natural");
+        eq(take()[58], 1, "state stores Natural Phase");
+        eq(ui.latencySets[ui.latencySets.length - 1][0], "latency", "phase mode writes the patcher latency");
+        eq(ui.latencySets[ui.latencySets.length - 1][1], cfg.eqpNaturalLatency(ui.currentSr), "Natural reports 7.3 ms");
+        rightClick(px, py);
+        eq(ui.phaseMode, 2, "Phase right-click selects Linear");
+        rightClick(px, py);
+        eq(ui.phaseMode, 0, "Phase right-click returns to Zero Latency");
+        eq(ui.latencySets[ui.latencySets.length - 1][1], 0, "Zero Latency reports no delay");
+    }
 
     put(base);
     ui.ondrag(0, 0, 0, 0, 0, 0, 0, 0);
@@ -1696,15 +1760,15 @@ function runFace() {
         ok(ui.mgOps.some(function (op, i) {
             if (op.op !== "set_source_rgba") return false;
             const a = op.args;
-            if (Math.abs(Number(a[0]) - 180 / 255) > 0.03) return false;
-            if (Math.abs(Number(a[1]) - 108 / 255) > 0.03) return false;
-            if (Math.abs(Number(a[2]) - 1) > 0.03) return false;
+            if (Math.abs(Number(a[0]) - 1) > 0.03) return false;
+            if (Math.abs(Number(a[1]) - 0.412) > 0.03) return false;
+            if (Math.abs(Number(a[2]) - 0.498) > 0.03) return false;
             if (Number(a[3]) < 0.5) return false;
             const before = ui.mgOps.slice(Math.max(0, i - 6), i);
             const after = ui.mgOps.slice(i, i + 5);
             return before.some(function (n) { return n.op === "move_to" || n.op === "line_to"; })
                 && after.some(function (n) { return n.op === "stroke"; });
-        }), "paint draws the purple reference spectrum curve");
+        }), "paint draws the reference spectrum in Live's second handle colour");
         ui.specSidechain = null;
 
         ui.preview();

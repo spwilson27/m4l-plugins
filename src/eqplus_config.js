@@ -642,6 +642,429 @@ function eqpSoloBandCoeffs(freqHz, q, sr) {
     return eqpNormalizeBiquad(alpha, 0, -alpha, 1 + alpha, -2 * Math.cos(w0), 1 - alpha, 1);
 }
 
+// Processing mode, matching FabFilter Pro-Q 3:
+//   0 Zero Latency — the biquad cascade, no delay
+//   1 Natural Phase — the same cascade plus a short minimum-phase correction
+//     toward the analog prototype, then a pure delay of 7.3 ms (322 samples
+//     at 44.1 kHz). Pro-Q's middle mode. Not a per-band dynamic EQ.
+//   2 Linear Phase — FFT overlap-add of a symmetric IR. Hop 2048, peak at
+//     sample 1025, so the peak leaves the convolver at sample 3072. That is
+//     Pro-Q 3 Linear Phase Low at 44.1 kHz. Medium and above need a longer
+//     transform than the 4096-point FFT.
+var EQP_PHASE_MODES = ["Zero Latency", "Natural Phase", "Linear Phase"];
+var EQP_PHASE_SHORT = ["Zero", "Natural", "Linear"];
+var EQP_PHASE_FFT = 4096;
+var EQP_PHASE_HOP = 2048;
+var EQP_PHASE_IR = 2048;
+var EQP_PHASE_PEAK = 1025;
+var EQP_LINEAR_LATENCY = (EQP_PHASE_HOP - 1) + EQP_PHASE_PEAK;
+var EQP_PHASE_FIR = 128;
+var EQP_NATURAL_AT_44K = 322;
+
+/**
+ * Natural Phase latency in samples. 322 at 44.1 kHz (about 7.3 ms), scaled
+ * with the sample rate the way Pro-Q's measured figure scales.
+ * @param {number} sr
+ * @returns {number}
+ */
+function eqpNaturalLatency(sr) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    return Math.round(EQP_NATURAL_AT_44K * srN / 44100);
+}
+
+/**
+ * In-place radix-2 FFT. Inverse divides by n. Used to design the IRs; the
+ * gen convolves with its own fft_run of the same time-domain taps.
+ * @param {Float64Array} re
+ * @param {Float64Array} im
+ * @param {boolean} inverse
+ */
+function eqpFft(re, im, inverse) {
+    var n = re.length;
+    var i, j, k, len, half, ang, wRe, wIm, wlenRe, wlenIm, uRe, uIm, vRe, vIm, nwRe;
+    j = 0;
+    for (i = 1; i < n; i++) {
+        half = n >> 1;
+        while (j & half) {
+            j ^= half;
+            half >>= 1;
+        }
+        j ^= half;
+        if (i < j) {
+            uRe = re[i]; re[i] = re[j]; re[j] = uRe;
+            uIm = im[i]; im[i] = im[j]; im[j] = uIm;
+        }
+    }
+    for (len = 2; len <= n; len <<= 1) {
+        ang = (inverse ? 2 : -2) * Math.PI / len;
+        wlenRe = Math.cos(ang);
+        wlenIm = Math.sin(ang);
+        half = len >> 1;
+        for (i = 0; i < n; i += len) {
+            wRe = 1;
+            wIm = 0;
+            for (k = 0; k < half; k++) {
+                vRe = re[i + k + half] * wRe - im[i + k + half] * wIm;
+                vIm = re[i + k + half] * wIm + im[i + k + half] * wRe;
+                uRe = re[i + k];
+                uIm = im[i + k];
+                re[i + k] = uRe + vRe;
+                im[i + k] = uIm + vIm;
+                re[i + k + half] = uRe - vRe;
+                im[i + k + half] = uIm - vIm;
+                nwRe = wRe * wlenRe - wIm * wlenIm;
+                wIm = wRe * wlenIm + wIm * wlenRe;
+                wRe = nwRe;
+            }
+        }
+    }
+    if (inverse) {
+        for (i = 0; i < n; i++) {
+            re[i] /= n;
+            im[i] /= n;
+        }
+    }
+}
+
+function eqpCmul(ar, ai, br, bi) {
+    return { re: ar * br - ai * bi, im: ar * bi + ai * br };
+}
+function eqpCdiv(nr, ni, dr, di) {
+    var m = dr * dr + di * di;
+    if (!(m > 1e-24)) return { re: 0, im: 0 };
+    return { re: (nr * dr + ni * di) / m, im: (ni * dr - nr * di) / m };
+}
+function eqpCpow(re, im, n) {
+    var r = 1, i = 0, k, m;
+    var p = n | 0;
+    for (k = 0; k < p; k++) {
+        m = eqpCmul(r, i, re, im);
+        r = m.re;
+        i = m.im;
+    }
+    return { re: r, im: i };
+}
+function eqpBiquadH(c, w) {
+    var c1 = Math.cos(w), s1 = Math.sin(w);
+    var c2 = Math.cos(2 * w), s2 = Math.sin(2 * w);
+    var nr = c.b0 + c.b1 * c1 + c.b2 * c2;
+    var ni = -c.b1 * s1 - c.b2 * s2;
+    var dr = 1 + c.a1 * c1 + c.a2 * c2;
+    var di = -c.a1 * s1 - c.a2 * s2;
+    return eqpCdiv(nr, ni, dr, di);
+}
+
+/**
+ * One analog RBJ section at radian frequency w (not prewarped).
+ * @returns {{re: number, im: number}}
+ */
+function eqpAnalogSection(mode, freq, gainDb, q, f) {
+    var m = mode | 0;
+    var w0 = 2 * Math.PI * freq;
+    var w = 2 * Math.PI * Math.max(0, f);
+    var A = Math.pow(10, (Number(gainDb) || 0) / 40);
+    var qq = q > 1e-6 ? q : 1e-6;
+    var sqA = Math.sqrt(A);
+    if (m === 1) return eqpCdiv(0, w, w0, w);
+    if (m === 9) return eqpCdiv(w0, 0, w0, w);
+    var n2 = 1, n1 = w0 / qq, n0 = w0 * w0;
+    var d2 = 1, d1 = w0 / qq, d0 = w0 * w0;
+    if (m === 2 || m === 3 || m === 4) {
+        n2 = 1; n1 = 0; n0 = 0;
+    } else if (m === 10 || m === 11 || m === 12) {
+        n2 = 0; n1 = 0; n0 = w0 * w0;
+    } else if (m === 7) {
+        n2 = 1; n1 = 0; n0 = w0 * w0;
+    } else if (m === 6) {
+        n1 = (A / qq) * w0;
+        d1 = (1 / (A * qq)) * w0;
+    } else if (m === 5) {
+        n2 = 1; n1 = (sqA / qq) * w0; n0 = A * w0 * w0;
+        d2 = A; d1 = (sqA / qq) * w0; d0 = w0 * w0;
+    } else if (m === 8) {
+        n2 = A; n1 = (sqA / qq) * w0; n0 = w0 * w0;
+        d2 = 1; d1 = (sqA / qq) * w0; d0 = A * w0 * w0;
+    }
+    var nr = n2 * (-w * w) + n0;
+    var ni = n1 * w;
+    var dr = d2 * (-w * w) + d0;
+    var di = d1 * w;
+    var h = eqpCdiv(nr, ni, dr, di);
+    if (m === 5 || m === 8) h = eqpCmul(h.re, h.im, A, 0);
+    return h;
+}
+
+function eqpCollectPhaseBands(bands, sr, shiftSt, adaptiveQ) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var out = [];
+    var list = bands || [];
+    var n = list.length < EQP_NUM_BANDS ? list.length : EQP_NUM_BANDS;
+    var i;
+    for (i = 0; i < n; i++) {
+        var b = list[i];
+        if (!b || !b.enabled || (b.mode | 0) === 0) continue;
+        var freq = eqpEffectiveFreq(b.freq, shiftSt);
+        var q = eqpEffectiveQ(b.q, b.gain, adaptiveQ, b.mode);
+        var c = eqpBiquadCoeffs(b.mode, freq, b.gain, q, srN);
+        if (!c || !c.sections) continue;
+        out.push({
+            mode: b.mode | 0,
+            freq: freq,
+            gain: Number(b.gain) || 0,
+            q: q,
+            c: c,
+            sections: c.sections | 0
+        });
+    }
+    return out;
+}
+
+function eqpTiltH(tiltDb, f, sr) {
+    var c = eqpTiltCoeffs(tiltDb, sr);
+    if (!c.on) return { re: 1, im: 0 };
+    var srN = Number(sr);
+    var w = 2 * Math.PI * Math.max(0, f) / srN;
+    var r = c.gain, im = 0, i, h, m;
+    for (i = 0; i < c.sections.length; i++) {
+        h = eqpBiquadH(c.sections[i], w);
+        m = eqpCmul(r, im, h.re, h.im);
+        r = m.re;
+        im = m.im;
+    }
+    return { re: r, im: im };
+}
+
+/**
+ * Complex digital (biquad) and analog responses at f Hz, both including the tilt.
+ * @returns {{digital: {re: number, im: number}, analog: {re: number, im: number}}}
+ */
+function eqpPhaseH(bands, f, sr, shiftSt, adaptiveQ, tiltDb) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var ff = Number(f);
+    if (!isFinite(ff) || ff < 0) ff = 0;
+    var w = 2 * Math.PI * ff / srN;
+    var parts = eqpCollectPhaseBands(bands, srN, shiftSt, adaptiveQ);
+    var dr = 1, di = 0, ar = 1, ai = 0, i, p, h, ah, m;
+    for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        h = eqpBiquadH(p.c, w);
+        h = eqpCpow(h.re, h.im, p.sections);
+        m = eqpCmul(dr, di, h.re, h.im);
+        dr = m.re;
+        di = m.im;
+        ah = eqpAnalogSection(p.mode, p.freq, p.gain, p.q, ff);
+        ah = eqpCpow(ah.re, ah.im, p.sections);
+        m = eqpCmul(ar, ai, ah.re, ah.im);
+        ar = m.re;
+        ai = m.im;
+    }
+    h = eqpTiltH(tiltDb, ff, srN);
+    m = eqpCmul(dr, di, h.re, h.im);
+    dr = m.re;
+    di = m.im;
+    m = eqpCmul(ar, ai, h.re, h.im);
+    ar = m.re;
+    ai = m.im;
+    return { digital: { re: dr, im: di }, analog: { re: ar, im: ai } };
+}
+
+function eqpMagDb(re, im) {
+    var m = Math.sqrt(re * re + im * im);
+    if (!(m > 1e-12)) m = 1e-12;
+    return 20 * Math.log10(m);
+}
+
+/**
+ * dB of a real FIR at f Hz.
+ * @param {Array<number>|Float64Array} ir
+ * @param {number} f
+ * @param {number} sr
+ * @returns {number}
+ */
+function eqpIrDb(ir, f, sr) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var w = 2 * Math.PI * Math.max(0, Number(f) || 0) / srN;
+    var re = 0, im = 0, n;
+    for (n = 0; n < ir.length; n++) {
+        var s = ir[n] || 0;
+        re += s * Math.cos(w * n);
+        im += -s * Math.sin(w * n);
+    }
+    return eqpMagDb(re, im);
+}
+
+function eqpFadeEdges(ir, fade) {
+    var n = ir.length;
+    var i, w;
+    var f = fade | 0;
+    if (f < 2 || f * 2 >= n) return;
+    for (i = 0; i < f; i++) {
+        w = 0.5 * (1 - Math.cos(Math.PI * i / f));
+        ir[i] *= w;
+        ir[n - 1 - i] *= w;
+    }
+}
+
+/**
+ * Time-domain kernels for Natural and Linear. `linear` is 2048 samples with
+ * the zero-phase center at EQP_PHASE_PEAK. `fir` is the 128-tap minimum-phase
+ * correction the natural mode runs after the biquads (an impulse when the
+ * biquads already match the analog magnitude).
+ * @param {Array} bands
+ * @param {number} sr
+ * @param {number} shiftSt
+ * @param {number|boolean} adaptiveQ
+ * @param {number} tiltDb
+ * @returns {{linear: Array<number>, fir: Array<number>}}
+ */
+function eqpDesignPhase(bands, sr, shiftSt, adaptiveQ, tiltDb) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var N = EQP_PHASE_FFT;
+    var parts = eqpCollectPhaseBands(bands, srN, shiftSt, adaptiveQ);
+    var tilt = eqpTiltCoeffs(tiltDb, srN);
+    var magD = new Float64Array(N);
+    var magC = new Float64Array(N);
+    var k, f, w, dr, di, ar, ai, i, p, h, ah, m, md, ma;
+    for (k = 0; k <= N / 2; k++) {
+        f = k * srN / N;
+        w = 2 * Math.PI * f / srN;
+        dr = 1; di = 0; ar = 1; ai = 0;
+        for (i = 0; i < parts.length; i++) {
+            p = parts[i];
+            h = eqpBiquadH(p.c, w);
+            h = eqpCpow(h.re, h.im, p.sections);
+            m = eqpCmul(dr, di, h.re, h.im);
+            dr = m.re; di = m.im;
+            ah = eqpAnalogSection(p.mode, p.freq, p.gain, p.q, f);
+            ah = eqpCpow(ah.re, ah.im, p.sections);
+            m = eqpCmul(ar, ai, ah.re, ah.im);
+            ar = m.re; ai = m.im;
+        }
+        if (tilt.on) {
+            h = eqpTiltH(tiltDb, f, srN);
+            m = eqpCmul(dr, di, h.re, h.im);
+            dr = m.re; di = m.im;
+            m = eqpCmul(ar, ai, h.re, h.im);
+            ar = m.re; ai = m.im;
+        }
+        md = Math.sqrt(dr * dr + di * di);
+        ma = Math.sqrt(ar * ar + ai * ai);
+        if (!(md > 1e-8)) md = 1e-8;
+        if (!(ma > 1e-8)) ma = 1e-8;
+        magD[k] = md;
+        // The analog/digital ratio only matters where the filter still
+        // passes signal. Deep in a cut both are quiet and the ratio becomes
+        // a huge Nyquist boost the short FIR cannot hold, so blend it back
+        // to 1 as the digital magnitude falls through -12..-36 dB, and cap
+        // the remaining correction at ±12 dB.
+        var ratio = ma / md;
+        if (!(ratio > 0) || !isFinite(ratio)) ratio = 1;
+        if (ratio > 4) ratio = 4;
+        if (ratio < 0.25) ratio = 0.25;
+        var digDb = 20 * Math.log10(md);
+        var blend = (digDb + 36) / 24;
+        if (blend < 0) blend = 0;
+        if (blend > 1) blend = 1;
+        magC[k] = 1 + blend * (ratio - 1);
+        if (k > 0 && k < N / 2) {
+            magD[N - k] = magD[k];
+            magC[N - k] = magC[k];
+        }
+    }
+    var re = new Float64Array(N);
+    var im = new Float64Array(N);
+    for (k = 0; k < N; k++) re[k] = magD[k];
+    eqpFft(re, im, true);
+    var linear = [];
+    var peak = EQP_PHASE_PEAK;
+    for (i = 0; i < EQP_PHASE_IR; i++) {
+        var src = (i - peak + N) % N;
+        linear.push(re[src]);
+    }
+    eqpFadeEdges(linear, 48);
+
+    for (k = 0; k < N; k++) {
+        re[k] = Math.log(magC[k] > 1e-8 ? magC[k] : 1e-8);
+        im[k] = 0;
+    }
+    eqpFft(re, im, true);
+    var half = N >> 1;
+    for (k = 1; k < half; k++) re[k] *= 2;
+    for (k = half + 1; k < N; k++) re[k] = 0;
+    for (k = 0; k < N; k++) im[k] = 0;
+    eqpFft(re, im, false);
+    for (k = 0; k < N; k++) {
+        var mm = Math.exp(re[k]);
+        var ph = im[k];
+        re[k] = mm * Math.cos(ph);
+        im[k] = mm * Math.sin(ph);
+    }
+    eqpFft(re, im, true);
+    var fir = [];
+    for (i = 0; i < EQP_PHASE_FIR; i++) fir.push(re[i]);
+    var fadeN = 24;
+    for (i = 0; i < fadeN; i++) {
+        var ww = 0.5 * (1 - Math.cos(Math.PI * (fadeN - i) / fadeN));
+        fir[EQP_PHASE_FIR - 1 - i] *= ww;
+    }
+    return { linear: linear, fir: fir };
+}
+
+/**
+ * Sample index of an impulse placed at EQP_PHASE_PEAK after the linear-phase
+ * overlap-add. This is the latency the gen reports for Linear Phase.
+ * @returns {number}
+ */
+function eqpMeasureLinearLatency() {
+    var N = EQP_PHASE_FFT;
+    var HOP = EQP_PHASE_HOP;
+    var RING = 8192;
+    var re = new Float64Array(N);
+    var im = new Float64Array(N);
+    re[EQP_PHASE_PEAK] = 1;
+    eqpFft(re, im, false);
+    var Hre = new Float64Array(re);
+    var Him = new Float64Array(im);
+    var inL = new Float64Array(RING);
+    var acc = new Float64Array(RING);
+    var peakT = -1;
+    var peakV = 0;
+    var t, i, k, frm, a, b;
+    for (t = 0; t < 5000; t++) {
+        inL[t % RING] = t === 0 ? 1 : 0;
+        if (t >= HOP - 1 && (t % HOP) === HOP - 1) {
+            frm = t - (HOP - 1);
+            var xr = new Float64Array(N);
+            var xi = new Float64Array(N);
+            for (i = 0; i < HOP; i++) xr[i] = inL[(frm + i) % RING];
+            eqpFft(xr, xi, false);
+            for (k = 0; k < N; k++) {
+                a = xr[k];
+                b = xi[k];
+                xr[k] = a * Hre[k] - b * Him[k];
+                xi[k] = a * Him[k] + b * Hre[k];
+            }
+            eqpFft(xr, xi, true);
+            for (i = 0; i < N; i++) acc[(frm + i) % RING] += xr[i];
+        }
+        if (t >= HOP - 1) {
+            var ri = (t - (HOP - 1)) % RING;
+            var y = acc[ri];
+            acc[ri] = 0;
+            if (y > peakV) {
+                peakV = y;
+                peakT = t;
+            }
+        }
+    }
+    return peakT;
+}
+
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
@@ -707,6 +1130,21 @@ if (nodeModule && nodeModule.exports) {
         eqpRainbowColor: eqpRainbowColor,
         eqpClassifyGestureZone: eqpClassifyGestureZone,
         eqpComputeDeviceWidth: eqpComputeDeviceWidth,
-        eqpSoloBandCoeffs: eqpSoloBandCoeffs
+        eqpSoloBandCoeffs: eqpSoloBandCoeffs,
+        EQP_PHASE_MODES: EQP_PHASE_MODES,
+        EQP_PHASE_SHORT: EQP_PHASE_SHORT,
+        EQP_PHASE_FFT: EQP_PHASE_FFT,
+        EQP_PHASE_HOP: EQP_PHASE_HOP,
+        EQP_PHASE_IR: EQP_PHASE_IR,
+        EQP_PHASE_PEAK: EQP_PHASE_PEAK,
+        EQP_LINEAR_LATENCY: EQP_LINEAR_LATENCY,
+        EQP_PHASE_FIR: EQP_PHASE_FIR,
+        EQP_NATURAL_AT_44K: EQP_NATURAL_AT_44K,
+        eqpNaturalLatency: eqpNaturalLatency,
+        eqpDesignPhase: eqpDesignPhase,
+        eqpIrDb: eqpIrDb,
+        eqpPhaseH: eqpPhaseH,
+        eqpMagDb: eqpMagDb,
+        eqpMeasureLinearLatency: eqpMeasureLinearLatency
     };
 }

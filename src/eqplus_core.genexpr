@@ -6,7 +6,18 @@
 // repeated `sections` times (1, 2 or 4).
 //
 // Bind on loadbang with the GenExpr names (no `set` prefix):
-//   eqcfg #0-eqpluscfg, spec #0-eqplusspec
+//   eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir
+//
+// Processing mode (Param phaseMode): 0 zero latency, 1 natural phase,
+// 2 linear phase. Natural phase is the biquad cascade, a 128-tap
+// minimum-phase correction (irspec channel 1), then
+// floor(322 * samplerate / 44100 + 0.5) samples of delay (7.3 ms).
+// Linear phase overlap-adds a 2048-tap IR (irspec channel 0, peak at
+// sample 1025) with a 4096-point FFT and a hop of 2048. The peak
+// reaches the output at sample 3072, Pro-Q 3's Linear Phase Low figure
+// at 44.1 kHz. Bypass and solo use that same delay so PDC matches.
+// irGen bumps when the face pokes a new IR. fft_init / fft_run come
+// from cepstrum_lib, prepended by the build.
 //
 // eqcfg ("eqpluscfg"), 64 floats, band b at base = b * 8:
 //   +0 sections (0 = bypass, else 1 / 2 / 4 identical biquads)
@@ -48,12 +59,25 @@
 
 Buffer eqcfg("eqpluscfg");
 Buffer spec("eqplusspec");
+Buffer irspec("eqplusir");
 
 Data zstate(128);
 Data cstate(64);
 Data soloZ(4);
 Data tiltZ(18);
 Data tiltC(28);
+Data tab(4096, 3);
+Data fx(4096, 2);
+Data latRingL(8192);
+Data latRingR(8192);
+Data accL(8192);
+Data accR(8192);
+Data hre(4096);
+Data him(4096);
+Data htRe(4096);
+Data htIm(4096);
+Data nfirL(128);
+Data nfirR(128);
 
 Param outgain(0, min=-24, max=24);
 Param tiltOn(0, min=0, max=1);
@@ -92,6 +116,8 @@ Param soloB1(0, min=-4, max=4);
 Param soloB2(0, min=-4, max=4);
 Param soloA1(0, min=-4, max=4);
 Param soloA2(0, min=-4, max=4);
+Param phaseMode(0, min=0, max=2);
+Param irGen(0, min=0, max=1000000);
 
 History initDone(0);
 History writeIdx(0);
@@ -104,6 +130,20 @@ History soloSb2(0);
 History soloSa1(0);
 History soloSa2(0);
 History tiltWas(0);
+History hopT(0);
+History nfirPos(0);
+History irSeen(-1);
+History irHave(0);
+History g0(1);
+History g1(0);
+History g2(0);
+
+Delay natDL(4096);
+Delay natDR(4096);
+Delay dryDL(8192);
+Delay dryDR(8192);
+Delay audDL(8192);
+Delay audDR(8192);
 
 xL = in1;
 xR = in2;
@@ -125,6 +165,23 @@ if (initDone < 0.5) {
 	}
 	for (i = 0; i < 28; i += 1) {
 		poke(tiltC, 0, i);
+	}
+	for (i = 0; i < 128; i += 1) {
+		poke(nfirL, 0, i);
+		poke(nfirR, 0, i);
+	}
+	for (i = 0; i < 4096; i += 1) {
+		poke(fx, 0, i, 0);
+		poke(fx, 0, i, 1);
+	}
+	poke(fx, 1, 1025, 0);
+	fft_init(tab);
+	fft_run(fx, tab, 4096, 0);
+	for (i = 0; i < 4096; i += 1) {
+		poke(hre, peek(fx, i, 0), i);
+		poke(him, peek(fx, i, 1), i);
+		poke(htRe, peek(fx, i, 0), i);
+		poke(htIm, peek(fx, i, 1), i);
 	}
 	soloWas = 0;
 	tiltWas = 0;
@@ -309,6 +366,9 @@ if (tiltOn > 0.5) {
 	}
 }
 
+eqL = yL;
+eqR = yR;
+
 if (soloBand > -0.5) {
 	ub0 = fixnan(soloB0);
 	ub1 = fixnan(soloB1);
@@ -357,13 +417,173 @@ if (soloBand > -0.5) {
 	}
 }
 
-if (bypass > 0.5) {
-	yL = xL;
-	yR = xR;
-} else {
-	yL = yL * linGain;
-	yR = yR * linGain;
+audL = yL;
+audR = yR;
+soloOn = soloBand > -0.5;
+
+fft_init(tab);
+if (abs(irGen - irSeen) > 0.5 && irGen > 0.5) {
+	for (i = 0; i < 4096; i += 1) {
+		poke(fx, 0, i, 0);
+		poke(fx, 0, i, 1);
+	}
+	for (i = 0; i < 2048; i += 1) {
+		poke(fx, peek(irspec, i, 0), i, 0);
+	}
+	fft_run(fx, tab, 4096, 0);
+	for (i = 0; i < 4096; i += 1) {
+		poke(htRe, peek(fx, i, 0), i);
+		poke(htIm, peek(fx, i, 1), i);
+	}
+	if (irHave < 0.5) {
+		for (i = 0; i < 4096; i += 1) {
+			poke(hre, peek(htRe, i), i);
+			poke(him, peek(htIm, i), i);
+		}
+		irHave = 1;
+	}
+	irSeen = irGen;
 }
+
+nfirPos = mod(nfirPos + 1, 128);
+poke(nfirL, eqL, nfirPos);
+poke(nfirR, eqR, nfirPos);
+firL = eqL;
+firR = eqR;
+runFir = 0;
+if (phaseMode > 0.5 && phaseMode < 1.5) {
+	runFir = 1;
+}
+if (g1 > 0.001) {
+	runFir = 1;
+}
+if (runFir > 0.5 && irHave > 0.5) {
+	firL = 0;
+	firR = 0;
+	for (i = 0; i < 128; i += 1) {
+		tap = peek(irspec, i, 1);
+		idx = nfirPos - i;
+		if (idx < 0) {
+			idx = idx + 128;
+		}
+		firL = firL + tap * peek(nfirL, idx);
+		firR = firR + tap * peek(nfirR, idx);
+	}
+}
+
+ringAt = mod(hopT, 8192);
+poke(latRingL, xL, ringAt);
+poke(latRingR, xR, ringAt);
+if (hopT >= 2047 && mod(hopT, 2048) == 2047) {
+	if (irHave > 0.5) {
+		for (k = 0; k < 4096; k += 1) {
+			poke(hre, peek(hre, k) * 0.5 + peek(htRe, k) * 0.5, k);
+			poke(him, peek(him, k) * 0.5 + peek(htIm, k) * 0.5, k);
+		}
+	}
+	frm = hopT - 2047;
+	for (i = 0; i < 4096; i += 1) {
+		poke(fx, 0, i, 0);
+		poke(fx, 0, i, 1);
+	}
+	for (i = 0; i < 2048; i += 1) {
+		poke(fx, peek(latRingL, mod(frm + i, 8192)), i, 0);
+	}
+	fft_run(fx, tab, 4096, 0);
+	for (k = 0; k < 4096; k += 1) {
+		reBin = peek(fx, k, 0);
+		imBin = peek(fx, k, 1);
+		reIr = peek(hre, k);
+		imIr = peek(him, k);
+		poke(fx, reBin * reIr - imBin * imIr, k, 0);
+		poke(fx, reBin * imIr + imBin * reIr, k, 1);
+	}
+	fft_run(fx, tab, 4096, 1);
+	for (i = 0; i < 4096; i += 1) {
+		accAt = mod(frm + i, 8192);
+		poke(accL, peek(accL, accAt) + peek(fx, i, 0), accAt);
+	}
+	for (i = 0; i < 4096; i += 1) {
+		poke(fx, 0, i, 0);
+		poke(fx, 0, i, 1);
+	}
+	for (i = 0; i < 2048; i += 1) {
+		poke(fx, peek(latRingR, mod(frm + i, 8192)), i, 0);
+	}
+	fft_run(fx, tab, 4096, 0);
+	for (k = 0; k < 4096; k += 1) {
+		reBin = peek(fx, k, 0);
+		imBin = peek(fx, k, 1);
+		reIr = peek(hre, k);
+		imIr = peek(him, k);
+		poke(fx, reBin * reIr - imBin * imIr, k, 0);
+		poke(fx, reBin * imIr + imBin * reIr, k, 1);
+	}
+	fft_run(fx, tab, 4096, 1);
+	for (i = 0; i < 4096; i += 1) {
+		accAt = mod(frm + i, 8192);
+		poke(accR, peek(accR, accAt) + peek(fx, i, 0), accAt);
+	}
+}
+olaL = 0;
+olaR = 0;
+if (hopT >= 2047) {
+	outAt = mod(hopT - 2047, 8192);
+	olaL = peek(accL, outAt);
+	olaR = peek(accR, outAt);
+	poke(accL, 0, outAt);
+	poke(accR, 0, outAt);
+}
+hopT = hopT + 1;
+
+natSamps = floor(322 * samplerate / 44100 + 0.5);
+if (natSamps < 1) {
+	natSamps = 1;
+}
+if (natSamps > 4000) {
+	natSamps = 4000;
+}
+nFeedL = firL;
+nFeedR = firR;
+if (soloOn > 0.5) {
+	nFeedL = audL;
+	nFeedR = audR;
+}
+if (bypass > 0.5) {
+	nFeedL = xL;
+	nFeedR = xR;
+}
+natDL.write(nFeedL);
+natDR.write(nFeedR);
+nDelL = natDL.read(natSamps, interp="linear");
+nDelR = natDR.read(natSamps, interp="linear");
+dryDL.write(xL);
+dryDR.write(xR);
+dryLatL = dryDL.read(3072, interp="linear");
+dryLatR = dryDR.read(3072, interp="linear");
+audDL.write(audL);
+audDR.write(audR);
+audLatL = audDL.read(3072, interp="linear");
+audLatR = audDR.read(3072, interp="linear");
+
+want0 = phaseMode < 0.5;
+want1 = (phaseMode >= 0.5) * (phaseMode < 1.5);
+want2 = phaseMode >= 1.5;
+g0 = g0 + (want0 - g0) * 0.08;
+g1 = g1 + (want1 - g1) * 0.08;
+g2 = g2 + (want2 - g2) * 0.08;
+// Branch-free mix. An if/else that multiplies the three paths does not compile
+// in Max 9 (clang: assignment to const inlets in1/in2).
+wet = bypass < 0.5;
+solo = wet * (soloOn > 0.5);
+zL = (1 - wet) * xL + wet * audL * linGain;
+zR = (1 - wet) * xR + wet * audR * linGain;
+nL = (1 - wet) * nDelL + wet * nDelL * linGain;
+nR = (1 - wet) * nDelR + wet * nDelR * linGain;
+lL = (1 - wet) * dryLatL + wet * linGain * (solo * audLatL + (1 - solo) * olaL);
+lR = (1 - wet) * dryLatR + wet * linGain * (solo * audLatR + (1 - solo) * olaR);
+yL = g0 * zL + g1 * nL + g2 * lL;
+yR = g0 * zR + g1 * nR + g2 * lR;
 yL = fixnan(fixdenorm(yL));
 yR = fixnan(fixdenorm(yR));
 
