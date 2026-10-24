@@ -53,7 +53,8 @@ const FP = sb.FACE_PARAMS;
     }
     const node = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-drag-node");
     assert.ok(node && node.maxclass === "node.codebox" && node.ignoreclick === 1, "reactive2 embeds the file-drag node");
-    assert.ok(String(node.code).includes("xo_drag_helper_v6_bin") && String(node.code).includes("selected_raw"), "drag node reuses XO's helper");
+    assert.ok(String(node.code).includes("bs_drag_helper_v1_bin") && String(node.code).includes("selected_raw"), "drag node embeds the sampler file-drag helper");
+    assert.ok(String(node.code).includes("mouseDragged") && !String(node.code).includes("trackEventsMatchingMask"), "a file drag starts from mouseDragged");
     const vizRoute = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-route-viz").text.split(/\s+/).slice(1);
     assert.deepStrictEqual(vizRoute.slice(-2), ["arm_drag", "disarm_drag"], "drag messages are appended to the viz route");
     const linked = (a, ao, b, bo) => patcher.lines.some((l) => l.patchline.source[0] === a && l.patchline.source[1] === ao && l.patchline.destination[0] === b && l.patchline.destination[1] === bo);
@@ -445,7 +446,7 @@ sb.setFoldMask(0b1011);
     sb.setFoldMask(foldWas);
 }
 
-// Sample name: middle ellipsis, file drag of the showing oscillator, double-click reveals in Live's browser.
+// Sample name: middle ellipsis, file drag of the showing oscillator, a click opens the file dialog.
 {
     sb.setFoldMask(0);
     sb.oscTab = 0;
@@ -467,9 +468,11 @@ sb.setFoldMask(0b1011);
     const mark = emitted.length;
     sb.onidle(name.x + 4, name.y + 4);
     const arm = emitted.slice(mark).find((a) => a[1] === "arm_drag");
-    assert.ok(arm && arm[2] === sb.sampleFilePath, "hovering the name arms a drag of osc 1's file");
+    assert.ok(arm && arm[4] === sb.sampleFilePath && arm[2] === Math.round(name.w) && arm[3] === Math.round(name.h), "hovering the name arms a drag of osc 1's file over the label");
     sb.onidleout();
-    assert.ok(emitted.slice(mark).some((a) => a[1] === "disarm_drag"), "leaving the name disarms the drag");
+    assert.ok(!emitted.slice(mark).some((a) => a[1] === "disarm_drag"), "the overlay taking the pointer does not disarm the drag");
+    sb.onidle(name.x + name.w + 40, name.y + 40);
+    assert.ok(emitted.slice(mark).some((a) => a[1] === "disarm_drag"), "moving onto another control disarms the drag");
     sb.oscTab = 1;
     sb.osc2Loaded = 1;
     sb.osc2FileName = "Osc2 Hat.wav";
@@ -480,36 +483,15 @@ sb.setFoldMask(0b1011);
     const mark2 = emitted.length;
     sb.onidle(name2.x + 4, name2.y + 4);
     const arm2 = emitted.slice(mark2).find((a) => a[1] === "arm_drag");
-    assert.ok(arm2 && arm2[2] === "/Users/test/Drums/Osc2 Hat.wav", "osc 2's name drags osc 2's file");
+    assert.ok(arm2 && arm2[4] === "/Users/test/Drums/Osc2 Hat.wav", "osc 2's name drags osc 2's file");
     sb.onidleout();
     sb.oscTab = 0;
     sb.paint();
-    const calls = [];
-    sb.LiveAPI = function (path) {
-        this.path = path;
-        this.get = (prop) => {
-            if (path === "live_app browser") return prop === "current_project" ? ["id", 10] : ["id", 0];
-            if (path === "id 10") return prop === "children" ? ["id", 11] : [""];
-            if (path === "id 11") {
-                if (prop === "uri") return ["file:///Users/test/Drums/Granular Pad Texture Example.wav"];
-                if (prop === "name") return ["Granular Pad Texture Example.wav"];
-                return [];
-            }
-            return [];
-        };
-        this.call = (...args) => { calls.push([path, args]); };
-        this.set = (k, v) => { calls.push([path, ["set", k, v]]); };
-    };
-    const Task0 = sb.Task;
-    sb.Task = function (fn) { this.schedule = () => {}; this.cancel = () => {}; this._fn = fn; };
     const browsed = emitted.length;
     sb.nameClick();
-    sb.nameClick();
-    assert.ok(calls.some((c) => c[0] === "live_app view" && c[1][0] === "show_view" && c[1][1] === "Browser"), "double-click opens Live's browser");
-    assert.ok(calls.some((c) => c[1][0] === "set" && c[1][1] === "filter_type" && c[1][2] === 6), "browser is filtered to samples");
-    assert.ok(calls.some((c) => c[1][0] === "preview_item" && c[1][1] === "id" && c[1][2] === 11), "the file's browser item is previewed");
-    assert.ok(!emitted.slice(browsed).some((a) => a[1] === "browse"), "double-click does not open the file dialog");
-    sb.Task = Task0;
+    assert.ok(emitted.slice(browsed).some((a) => a[1] === "browse"), "a click on the name opens the file dialog");
+    sb.ondblclick(name.x + 4, name.y + 4);
+    assert.ok(!emitted.slice(browsed).some((a) => a[1] === "show_view"), "a double-click does not try to reveal the file in the browser");
     sb.sampleFileName = "Pad.wav";
     sb.sampleFilePath = "/Users/test/Pad.wav";
     sb.osc2Loaded = 0;
@@ -533,7 +515,7 @@ sb.setFoldMask(0b1011);
         assert.strictEqual(sb.modSourceSignal(1, c), 0, `no voice playing -> source ${c} signal is 0`);
     }
     // When a voice is playing, modSourceSignal returns bounded live values in [-1..+1]
-    sb.voiceAmpLvl[0] = 0.8; sb.liveModEnvVal = 0.5; sb.liveLfoVal = 0.6; sb.lfoPhaseEst = 0.2;
+    sb.voiceAmpLvl[0] = 0.8; sb.liveModEnvVal = 0.5; sb.liveLfoVal = 0.6; sb.liveLfo2Val = 0.45; sb.lfoPhaseEst = 0.2;
     assert.strictEqual(sb.activeVoiceLevel(), 0.8, "voice playing -> activeVoiceLevel is 0.8");
     for (let c = 0; c < 5; c++) {
         const sig = sb.modSourceSignal(1, c);
@@ -1933,5 +1915,19 @@ sb.setFoldMask(sb.DEFAULT_FOLD);
     sb.redrawQueued = 0;
     sb.Task = Task0;
     sb.mgraphics.redraw = redraw0;
+}
+{
+    sb.setFoldMask(sb.DEFAULT_FOLD);
+    sb.envPage = 3;
+    sb.liveLfoPh = 0.5;
+    sb.paint();
+    assert.ok(sb.lfoDot, "LFO 1 draws a playhead");
+    near(sb.lfoDot.ph, 0.5, 1e-6, "the playhead is the generator phase");
+    const xAtHalf = sb.lfoDot.x;
+    sb.liveLfoPh = 0;
+    sb.paint();
+    assert.ok(sb.lfoDot.x < xAtHalf, "phase 0 sits left of mid-cycle");
+    sb.envPage = 1;
+    sb.liveLfoPh = 0;
 }
 console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles, sub oscillator and parameter reach ok");

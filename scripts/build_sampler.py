@@ -15,7 +15,6 @@ Features:
 import hashlib
 import json
 import os
-import re
 import struct
 import subprocess
 import sys
@@ -31,7 +30,6 @@ THEME_PATH = os.path.join(ROOT_DIR, "src", "sampler_theme_ableton.js")
 LAYOUT_PATH = os.path.join(ROOT_DIR, "src", "sampler_layout_ableton.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "sampler_core.genexpr")
 DRAG_NODE_PATH = os.path.join(ROOT_DIR, "src", "sampler_drag_node.js")
-XO_NODE_PATH = os.path.join(ROOT_DIR, "src", "xo_node_engine.js")
 
 DEVICE_H = 169.0
 DEVICE_W = 600.0
@@ -1079,15 +1077,13 @@ def load_designs():
 
 
 def drag_node_source():
-    """XO's helper source, compiled to the same binary the XO device already uses."""
-    with open(XO_NODE_PATH, "r", encoding="utf-8") as f:
-        xo = f.read()
-    m = re.search(r"const OBJC_DRAG_HELPER_SOURCE = `([\s\S]*?)`;\n", xo)
-    if not m:
-        raise RuntimeError("OBJC_DRAG_HELPER_SOURCE not found in src/xo_node_engine.js")
+    """Sampler's own helper (scripts/bs_drag_helper.m). A drag starts in mouseDragged so Live accepts it."""
+    helper_path = os.path.join(ROOT_DIR, "scripts", "bs_drag_helper.m")
+    with open(helper_path, "r", encoding="utf-8") as f:
+        objc = f.read()
     with open(DRAG_NODE_PATH, "r", encoding="utf-8") as f:
         body = f.read()
-    return "const DRAG_HELPER_SOURCE = " + json.dumps(m.group(1)) + ";\n" + body
+    return "const DRAG_HELPER_SOURCE = " + json.dumps(objc) + ";\n" + body
 
 
 def build_patcher(design=None):

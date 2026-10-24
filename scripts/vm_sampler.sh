@@ -12,6 +12,7 @@
 #   scripts/vm_sampler.sh test     make a 1.5 s 220 Hz WAV in the VM, then run scripts/test_sampler_live.js
 #                                  on the host through an ssh tunnel (local 19877 -> VM 9877)
 #   scripts/vm_sampler.sh audio    sync, then run scripts/run_sampler_audio_tests.py in the VM
+#   scripts/vm_sampler.sh drag     sync, then drag a sample onto a drop target and onto Live
 # Workflow: python3 scripts/build_sampler.py && node tests/test_sampler.js, then `live`, then `test`.
 set -u
 VM=macos-1
@@ -31,7 +32,7 @@ sync_repo() {
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
 # calls see M4L_LIVE_LOCK_HELD=1 and run directly). `run` = lock -> live -> test -> release.
-case "${1:-}" in live|test|run) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=sampler_test.als exec "$ROOT/scripts/vm_live_lock.sh" sampler -- "$0" "$@" ;; esac
+case "${1:-}" in live|test|run|drag) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=sampler_test.als exec "$ROOT/scripts/vm_live_lock.sh" sampler -- "$0" "$@" ;; esac
 
 case "${1:-}" in
   run)
@@ -41,6 +42,10 @@ case "${1:-}" in
   audio)
     # SAMPLER_CASE / SAMPLER_PAN_ONLY on the host are forwarded. Unset runs the full suite.
     sync_repo && "${SSH[@]}" "cd ~/ableton && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
+  drag)
+    # The helper is an AppKit window. ssh is a background session and NSPanel init never returns there,
+    # so the test runs as the console user (Aqua), same password as the VM login.
+    sync_repo && "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_DRAG_VM=1 /usr/bin/python3 \$HOME/ableton/scripts/run_sampler_drag_test.py" ;;
   live)
     sync_repo || exit 1
     "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_sampler.py >/dev/null &&

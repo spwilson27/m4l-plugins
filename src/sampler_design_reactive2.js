@@ -253,13 +253,16 @@ pollTelemetryScope = function () {
         if ((st === 1 && pv !== 1) || (st > 1 && pv === 0)) voiceBorn[v] = ++bornSeq;
         prevAmpStage[v] = st;
     }
-    var sig = liveActiveVoices * 1009 + Math.round(liveLfoVal * 400) * 7 + Math.round(liveModEnvVal * 200) * 13
-        + Math.round(livePeakL * 120) * 17 + Math.round(livePeakR * 120) * 19 + Math.round(Math.log(Math.max(20, liveEffCutHz)) * 40) * 23;
+    var sig = liveActiveVoices * 1009 + Math.round(liveLfoVal * 800) * 7 + Math.round(liveLfoPh * 240) * 11
+        + Math.round(liveLfo2Val * 800) * 3 + Math.round(liveLfo2Ph * 240) * 5
+        + Math.round(liveModEnvVal * 400) * 13
+        + Math.round(livePeakL * 120) * 17 + Math.round(livePeakR * 120) * 19 + Math.round(Math.log(Math.max(20, liveEffCutHz)) * 120) * 23;
     for (var u = 0; u < 16; u++) {
         if (voiceAmps[u] > 0.02) sig += Math.round(voicePlayheads[u] * 400) * (29 + u) + Math.round(voiceAmps[u] * 60);
-        sig += Math.round(voiceAmpStg[u] * 160) * (37 + u) + Math.round(voiceAmpLvl[u] * 100) * (41 + u)
-            + Math.round(voiceModStg[u] * 160) * (43 + u) + Math.round(voiceModLvl[u] * 100) * (47 + u)
-            + Math.round(Math.log(Math.max(1, voiceCutHz[u])) * 60) * (53 + u);
+        sig += Math.round(voiceAmpStg[u] * 240) * (37 + u) + Math.round(voiceAmpLvl[u] * 400) * (41 + u)
+            + Math.round(voiceModStg[u] * 240) * (43 + u) + Math.round(voiceModLvl[u] * 400) * (47 + u)
+            + Math.round(Math.log(Math.max(1, voiceCutHz[u])) * 180) * (53 + u);
+        if (msegVoicePh[u] >= 0) sig += Math.round(msegVoicePh[u] * 240) * (61 + u);
     }
     for (var q = 0; q < GRAIN_SLOTS; q++) if (grainAmp[q] > 0.02) sig += Math.round(grainPos[q] * 400) * (31 + q);
     var d = liveLfoVal - lfoPrevVal;
@@ -271,10 +274,21 @@ pollTelemetryScope = function () {
     if (sig !== telSig) { telSig = sig; telChanged = true; }
 };
 
+var modHold = 0;
+var holdLfo = 0;
+var holdPh = 0;
 scopeTask = (typeof Task !== "undefined") ? new Task(function () {
     pollTelemetryScope();
-    if (telChanged) { telChanged = false; requestRedraw(); }
-    if (scopeTask) scopeTask.schedule((liveActiveVoices > 0 || livePeakL > 0.001) ? 45 : 80);
+    if (telChanged) { telChanged = false; requestRedraw(true); }
+    var moving = liveActiveVoices > 0 || livePeakL > 0.001
+        || Math.abs(liveLfoVal - holdLfo) > 0.004 || Math.abs(liveLfoPh - holdPh) > 0.002
+        || Math.abs(liveLfo2Val) > 0.004;
+    holdLfo = liveLfoVal;
+    holdPh = liveLfoPh;
+    if (moving) modHold = 8;
+    var fast = modHold > 0;
+    if (modHold > 0) modHold--;
+    if (scopeTask) scopeTask.schedule(fast ? 16 : 80);
 }) : null;
 
 // ---------------------------------------------------------------------------
@@ -2235,6 +2249,7 @@ var msegSyncMul = [1, 1, 1, 1, 1];
 var msegDepth = [100, 100, 100, 100, 100];
 var msegKeyOn = 0;
 var msegDots = [];
+var lfoDot = null;
 var msegSmooth = [0, 0, 0, 0, 0];
 var msegPhase = [0, 0, 0, 0, 0];
 var MSEG_SYNC = [
@@ -2628,9 +2643,7 @@ function envDotAt(g, enc, lvl) {
     if (st === 3) return { x: g.xD + g.hold * 0.5, y: g.ys, stage: 3 };
     if (st === 4) {
         var tr = envT(f);
-        var b = bendW(1 - f, g.sR);
-        var rel = (f < 0.999 && b > 1e-4) ? clamp01(g.finalL + (lvl - g.finalL) / b) : g.sus;      // the level the voice had when its release began
-        return { x: g.xS + (g.xR - g.xS) * tr, y: y, stage: 4, relStart: rel };
+        return { x: g.xS + (g.xR - g.xS) * tr, y: y, stage: 4 };
     }
     return null;
 }
@@ -2808,11 +2821,6 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
         if (!d) continue;
         var rank = envDots.length;
         var al = rank === 0 ? 1.0 : Math.max(0.28, 0.72 - 0.11 * rank);
-        if (d.stage === 4 && Math.abs(d.relStart - g.sus) > 0.03) {
-            var gp = [[g.xS, envYRelease(g, 0, d.relStart)]];
-            for (j = 1; j <= n; j++) { var tq = j / n; gp.push([g.xS + (g.xR - g.xS) * tq, envYRelease(g, tq, d.relStart)]); }
-            strokeSeg(gp, [1, 1, 1], 0.22 * al, 1.0);
-        }
         envDots.push({ v: v, x: d.x, y: d.y, stage: d.stage, alpha: al, rank: rank });
     }
     for (k = envDots.length - 1; k >= 0; k--) {
@@ -2935,6 +2943,23 @@ function paintLfoSubPage(sx, bx, by, bw, bh) {
         if (i === 0) mgraphics.move_to(px, py); else mgraphics.line_to(px, py);
     }
     mgraphics.stroke();
+
+    // Playhead on the first of the four drawn cycles, at the generator phase.
+    lfoDot = null;
+    if (!lfoUsesSlot()) {
+        var ph = isLfo2 ? liveLfo2Ph : liveLfoPh;
+        if (isFinite(ph)) {
+            ph = ph - Math.floor(ph);
+            var tdot = ph / 4;
+            var envd = atkNorm > 0.005 ? Math.min(1, tdot / atkNorm) : 1;
+            var yv = wtLfoEval(shpRaw, ph + offset, shaping) * envd;
+            var dx = wx0 + tdot * (wx1 - wx0);
+            var dy = wyMid - yv * wyAmp;
+            circle(dx, dy, 3.6, RC.dark, 0.75);
+            circle(dx, dy, 2.4, [1, 1, 1], 1);
+            lfoDot = { x: dx, y: dy, ph: ph };
+        }
+    }
 
     // 5 LFO shape selector icons at bottom of plot area: Sine (0), Tri (1), Saw (2), Square (enum 4), S&H (enum 3)
     var divY = by + 135;
@@ -3094,10 +3119,7 @@ function modSourceSignal(mode, col) {
         if (col === 1) return clamp01(liveModEnvVal);
         if (col === 2) return clamp01(liveModEnvVal);
         if (col === 3) return Math.max(-1, Math.min(1, liveLfoVal * (paramValue("lfo1_amount") * 0.01)));
-        if (col === 4) {
-            var ph2 = (lfoPhaseEst * 1.37 + paramValue("lfo2_offset") / 360.0) % 1.0;
-            return Math.max(-1, Math.min(1, Math.sin(6.2831853 * ph2) * (paramValue("lfo2_amount") * 0.01)));
-        }
+        if (col === 4) return Math.max(-1, Math.min(1, liveLfo2Val * (paramValue("lfo2_amount") * 0.01)));
     }
     return 0;
 }
@@ -4552,6 +4574,7 @@ function paintVoiceSection(sx) {
 // ---------------------------------------------------------------------------
 
 function paint() {
+    fontKey = ""; // mgraphics resets the font at the start of every paint
     initTheme();
     var sz = mgraphics.size;
     hitZones = [];
@@ -4845,120 +4868,14 @@ function showingSamplePath() {
     return hasLoadedSample ? String(sampleFilePath || "") : "";
 }
 
-// Click vs double-click on the name. A second click inside 350 ms reveals the file in Live's browser.
-// One click still opens the file dialog (the existing browse). The drag helper's REPLAY_CLICK arrives
-// as name_click and uses the same timer, because that window eats the mouse while it is armed.
-var nameClickAt = 0;
-var nameBrowseGen = 0;
+// A click on the name opens the file dialog. Live's browser has no call that selects a file
+// (BrowserItem.is_selected is read-only, and load_item would put it on a track), so a double-click
+// does not try to reveal it. The drag helper's REPLAY_CLICK arrives as name_click.
 function nameClick() {
-    var now = Date.now();
-    if (nameClickAt && (now - nameClickAt) < 350) {
-        nameClickAt = 0;
-        nameBrowseGen++;
-        revealLoadedSample();
-        return;
-    }
-    nameClickAt = now;
-    var gen = ++nameBrowseGen;
     browseSlot = (oscTab === 1) ? 1 : 0;
-    var wait = new Task(function () {
-        if (gen !== nameBrowseGen) return;
-        nameClickAt = 0;
-        outlet(0, "browse", "bang");
-    }, this);
-    wait.schedule(320);
+    outlet(0, "browse", "bang");
 }
 function name_click() { nameClick(); }
-
-// Live's browser has no "select this file" call (BrowserItem.is_selected is read-only; load_item would
-// load the item onto a track). show_view opens the browser, filter_type 6 is the samples filter, and
-// preview_item is the only call that takes a BrowserItem without loading it. stop_preview runs just
-// after, so a double-click does not keep the preview playing. Whether the browser stays scrolled to
-// that item after stop_preview was not verified in Live. A file that is not under Places, the User
-// Library, the current project, or Samples cannot be pointed at; the browser still opens.
-var revealWalk = null;
-function lomIds(v) {
-    var ids = [];
-    if (!v || !v.length) return ids;
-    for (var i = 0; i < v.length; i++) {
-        if (String(v[i]) === "id" && i + 1 < v.length) {
-            var n = Number(v[i + 1]);
-            if (n) ids.push(n);
-            i++;
-        }
-    }
-    return ids;
-}
-function lomStr(v) {
-    if (v == null) return "";
-    if (typeof v === "string" || typeof v === "number") return String(v);
-    var parts = [];
-    for (var i = 0; i < v.length; i++) parts.push(String(v[i]));
-    return parts.join(" ");
-}
-function browserUriMatches(uri, name, filePath) {
-    var p = String(filePath || "").replace(/\\/g, "/");
-    if (!p) return false;
-    var bits = p.split("/");
-    var base = bits[bits.length - 1];
-    var parent = bits.length >= 2 ? bits[bits.length - 2] : "";
-    var u = String(uri || "");
-    var decoded = u;
-    try { decoded = decodeURIComponent(u.replace(/^file:\/\//, "")); } catch (e) { decoded = u.replace(/^file:\/\//, ""); }
-    if (decoded === p || u === p) return true;
-    if (!base || !parent) return false;
-    var tail = decoded.slice(-base.length) === base || u.slice(-base.length) === base || name === base;
-    return tail && (decoded.indexOf(parent) >= 0 || u.indexOf(parent) >= 0);
-}
-function revealLoadedSample() {
-    var filePath = showingSamplePath();
-    if (!filePath || typeof LiveAPI !== "function") return;
-    var view = null, browser = null;
-    try { view = new LiveAPI("live_app view"); view.call("show_view", "Browser"); } catch (e1) { return; }
-    try { browser = new LiveAPI("live_app browser"); } catch (e2) { return; }
-    try { browser.set("filter_type", 6); } catch (e3) {}
-    var queue = [];
-    var props = ["current_project", "user_library", "samples", "user_folders"];
-    for (var r = 0; r < props.length; r++) {
-        try {
-            var roots = lomIds(browser.get(props[r]));
-            for (var k = 0; k < roots.length; k++) queue.push(roots[k]);
-        } catch (e4) {}
-    }
-    var steps = 0;
-    var found = 0;
-    if (revealWalk) { try { revealWalk.cancel(); } catch (e5) {} revealWalk = null; }
-    function step() {
-        var n = 0;
-        while (queue.length && n < 40 && steps < 2000 && !found) {
-            var id = queue.shift();
-            steps++;
-            n++;
-            var item = null;
-            try { item = new LiveAPI("id " + id); } catch (e6) { continue; }
-            var uri = "", nm = "";
-            try { uri = lomStr(item.get("uri")); } catch (e7) {}
-            try { nm = lomStr(item.get("name")); } catch (e8) {}
-            if (browserUriMatches(uri, nm, filePath)) { found = id; break; }
-            try {
-                var kids = lomIds(item.get("children"));
-                for (var c = 0; c < kids.length; c++) queue.push(kids[c]);
-            } catch (e9) {}
-        }
-        if (found) {
-            try { browser.call("preview_item", "id", found); } catch (e10) {}
-            var stop = new Task(function () { try { browser.call("stop_preview"); } catch (e11) {} }, this);
-            stop.schedule(180);
-            revealWalk = null;
-            return;
-        }
-        if (queue.length && steps < 2000) {
-            revealWalk = new Task(step, this);
-            revealWalk.schedule(1);
-        }
-    }
-    step();
-}
 
 var dragArmOn = 0;
 var dragArmAt = 0;
@@ -4970,7 +4887,7 @@ function armSampleDragAt(x, y) {
     if (dragArmOn && (now - dragArmAt) < 40) return;
     dragArmOn = 1;
     dragArmAt = now;
-    outlet(0, "arm_drag", filePath);
+    outlet(0, "arm_drag", Math.round(z.w), Math.round(z.h), filePath);
 }
 function disarmSampleDrag() {
     if (!dragArmOn) return;
@@ -5539,12 +5456,6 @@ ondrag = function (x, y, but, cmd, shift) {
 ondblclick = function (x, y) {
     var z = zoneAt(x, y);
     matSuppressTouch = zoneInOpenMatrix(z) ? 1 : 0;
-    if (z && z.action === "browse" && showingSamplePath()) {
-        nameClickAt = 0;
-        nameBrowseGen++;
-        revealLoadedSample();
-        return;
-    }
     if (z && z.kind === "msegplot") {
         var g = msegGeom;
         if (g) {
@@ -5629,7 +5540,8 @@ onidleout = function () {
     if (gainHover) { gainHover = false; mgraphics.redraw(); }
     if ((hoverHdl && !(drag && drag.hdl)) || hoverTip) { hoverHdl = ""; hoverTip = null; mgraphics.redraw(); }
     sharedOnidleout();
-    disarmSampleDrag();
+    // The drag window sits on top of the name and takes the pointer, which fires idleout.
+    // Disarming here would hide that window before the mouse-down, so the file drag never starts.
 };
 
 function onkeydown(keycode, textcharacter, down) {
@@ -5713,7 +5625,7 @@ function preview() {
         for (var j = 0; j < PITCH_POINTS; j++) { pitchCurve[j] = 66 + 3 * Math.sin(j / 400) + (j > 2500 ? -2 : 0); pitchVoiced[j] = j % 900 < 760 ? 1 : 0; }
     }
     livePeakL = 0.55; livePeakR = 0.48;
-    liveLfoVal = Math.sin(6.28318 * 0.62); lfoPhaseEst = 0.62;
+    liveLfoVal = Math.sin(6.28318 * 0.62); lfoPhaseEst = 0.62; liveLfoPh = 0.62; liveLfo2Ph = 0.28; liveLfo2Val = 0.4;
     liveModEnvVal = 0.55;
     liveEffCutHz = 3100;
     if (o.playing) {

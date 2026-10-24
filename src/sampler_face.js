@@ -1062,6 +1062,7 @@ function paintInspector(W, H) {
 // ---------------------------------------------------------------------------
 
 function paint() {
+    fontKey = ""; // mgraphics resets the font at the start of every paint
     var sz = mgraphics.size;
     var W = sz[0], H = sz[1];
     hitZones = [];

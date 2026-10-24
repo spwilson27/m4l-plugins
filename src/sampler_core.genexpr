@@ -68,6 +68,9 @@
 //              (test telemetry: proves the device's parameter messages reached the gen)
 //     48     : Fragments grains started (all voices, cumulative; test telemetry)
 //     49     : Analyzed Root Key active (root_dyn on and the pitch buffer bound; test telemetry)
+//     50     : LFO 1 phase (0..1, before offset)
+//     51     : LFO 2 phase (0..1, before offset)
+//     52     : LFO 2 value (-1..+1, before amount)
 //     64..95 : grain lines: read position (0..1 of the whole sample, -1 = unused slot) of the up to 32 loudest grains of all
 //              voices (Textures and Fragments)
 //     96..127: their window level times the voice gain (0..1)
@@ -4774,6 +4777,9 @@ if (scopeCount >= 64) {
 	}
 	poke(scope, spawnSum, 48);
 	poke(scope, rootDynOn, 49);
+	poke(scope, lfoPhs, 50);
+	poke(scope, lfo2Phs, 51);
+	poke(scope, lfo2Sig, 52);
 	// The parameter values the gen is actually running with (40..47), so a test or the bridge can tell whether the
 	// device's messages reached it: sliced, loop_mode, slice_play, mode, freeze, reverse, root_note, loop_start.
 	poke(scope, sliced, 40);

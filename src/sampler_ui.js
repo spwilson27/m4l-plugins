@@ -84,6 +84,9 @@ var livePeakL = 0.0;
 var livePeakR = 0.0;
 var liveActiveVoices = 0;
 var liveLfoVal = 0.0;
+var liveLfoPh = 0.0;
+var liveLfo2Ph = 0.0;
+var liveLfo2Val = 0.0;
 var liveModEnvVal = 0.0;
 var liveEffCutHz = 18000.0;
 // Per-voice envelope / filter telemetry (#0-bsscope 128..207, see AGENTS.md section 14): stage + fraction encoded as
@@ -509,6 +512,11 @@ function pollTelemetryScope() {
         liveActiveVoices = Math.round(data[34]);
         liveLfoVal = data[35];
         liveModEnvVal = data[36];
+        if (data.length > 52) {
+            liveLfoPh = data[50];
+            liveLfo2Ph = data[51];
+            liveLfo2Val = data[52];
+        }
         liveEffCutHz = data[37] > 10 ? data[37] : curFiltCutoff;
     } catch (_) {}
     try {
