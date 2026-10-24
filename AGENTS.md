@@ -1875,15 +1875,14 @@ Max audio (`python3 scripts/run_analyzer_audio_tests.py`: 1 kHz −20 dBFS, inve
 ### `devices/Oscilloscope.amxd` (`460 x 169` px — Dedicated Stereo & Mid/Side Single/Multi-Cycle Oscilloscope)
 Built by `scripts/build_oscilloscope.py` from `src/oscilloscope_config.js`, `src/spectral_theme.js`, `src/analyzer_dsp.js`, and `src/oscilloscope_ui.js` (`tsconfig.oscilloscope.json`, `tests/test_oscilloscope.js`), sharing the same pass-through `plugin~ -> plugout~` wiring and deferred `analyzer_core.genexpr` tap (`#0-analyzerscope`):
 - **Top Control Bar (`y = 6..21`)**:
-  - **EQ-Eight Style `Mode` Selection Box (`Stereo`, `L / R`, `M / S`) + `Ch` Toggle Button**:
-    - `Stereo`: Shows both `L` (orange `live_display_line_one`) and `R` (cyan `live_display_line_two`).
-    - `L / R`: `Ch` toggle switches between `L` (Slot 1: orange, top lane in Split) and `R` (Slot 2: cyan, bottom lane in Split, and cyan in Overlay).
-    - `M / S`: `Ch` toggle cycles between `M / S` (both Mid & Side), `M` (Mid only, Slot 1 orange), and `S` (Side only, Slot 2 cyan).
+  - **EQ-Eight Style `Mode` Selection Box (`Stereo`, `M / S`) + Tristate `Ch` Toggle Button**:
+    - `Stereo`: Tristate `Ch` button cycles between `L / R` (both `L` orange `live_display_line_one` and `R` cyan `live_display_line_two`), `L` (Slot 1: Left only, orange, top lane in Split), and `R` (Slot 2: Right only, cyan, bottom lane in Split and cyan in Overlay).
+    - `M / S`: Tristate `Ch` button cycles between `M / S` (both Mid & Side), `M` (Mid only, Slot 1 orange), and `S` (Side only, Slot 2 cyan).
   - **Single `Layout` Toggle Button**: Toggles between `Overlay` (shared graticule) and `Split` (dual stacked lanes: Slot 1 top, Slot 2 bottom).
-  - **`Window` Selection Box**: Dropdown selecting pitch-tracked `1 Cyc`, `2 Cyc`, `4 Cyc`, `8 Cyc` or fixed timebase `5 ms`, `20 ms`, `50 ms`.
-  - **`Auto` / `Fall` / `Free` Trigger Pills + `Freeze` Button**: Rising/falling zero-crossing trigger (with vertical drag inside the plot to set trigger threshold and double-click to reset) and `Freeze` hold.
+  - **`Window` Selection Box**: Dropdown selecting pitch-tracked `1 Cyc`, `2 Cyc`, `4 Cyc`, `8 Cyc` or fixed timebase `5 ms`, `20 ms`, `50 ms`. Always uses Auto rising zero-crossing trigger (vertical drag inside the plot adjusts trigger threshold level; double-click resets to `0`).
+  - **`Freeze` Button**: Holds the captured waveform display.
 - **Stabilized Pitch Tracker (`oscCreatePitchState` / `oscEstimatePeriod`)**: 4096-sample DC-removed, 3-tap smoothed NSDF autocorrelation with negative-lobe gating (`< -0.10`), McLeod peak-picking, harmonic continuity lock, and 36-frame (~1.2 s) dropout hold.
-- **Right Sidebar (`x = 346..452`)**: Channel `Pk / RMS` dB readouts, tracked frequency + musical note + period (`220.0 Hz · A3`, `4.55 ms`), stereo correlation meter, continuous **`Refresh Rate` value slider (`10..60 Hz`)**, and continuous **`Gain Scale` value slider (`-18..+24 dB`)** with an **`Auto` normalize toggle button** (normalizes the waveform peak first with `OSC_AMP_HEADROOM = 0.78` headroom and instant ceiling clamping so 0 dB never clips, then applies the `Gain Scale` dB multiplier).
+- **Right Sidebar (`x = 346..452`)**: Channel `Pk / RMS` dB readouts, tracked frequency + musical note + period (`220.0 Hz · A3`, `4.55 ms`), stereo correlation meter, continuous **`Refresh Rate` value slider (`1..60 Hz`)**, and continuous **`Gain Scale` value slider (`-18..+24 dB`)** with an **`Auto` normalize toggle button** (normalizes the waveform peak first with `OSC_AMP_HEADROOM = 0.78` headroom and instant ceiling clamping so 0 dB never clips, then applies the `Gain Scale` dB multiplier).
 
 ---
 

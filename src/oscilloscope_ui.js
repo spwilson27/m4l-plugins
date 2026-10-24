@@ -18,7 +18,6 @@ var oscEditSub = oscInit.editSub;
 var oscChMode = oscInit.chMode;
 var oscViewMode = oscInit.viewMode;
 var oscCycleMode = oscInit.cycleMode;
-var oscTrigMode = oscInit.trigMode;
 var oscRateHz = oscInit.rateHz;
 var oscGainDb = oscInit.gainDb;
 var oscAutoGain = oscInit.autoGain;
@@ -180,7 +179,6 @@ function oscRefreshFrame() {
     oscFrame = oscComputeFrame(oscRawL, oscRawR, oscSr, {
         chMode: oscChMode,
         cycleMode: oscCycleMode,
-        trigMode: oscTrigMode,
         trigLevel: oscTrigLevel,
         points: OSC_POINTS,
         pitchState: oscPitchState
@@ -885,18 +883,15 @@ function oscPaintGainSlider(rect) {
 }
 
 function oscPaintChrome(g) {
-    var rt = oscResolveRouting(oscRoutingMode, oscEditSub);
     var title = sptColor("live_lcd_title");
     sptText("Mode", 8, 17, title, 7.5, 0);
     oscSelectBox(g.modeBox, OSC_MODE_NAMES[oscRoutingMode] || "Stereo", oscOpenMenu === "mode", oscHot("mode_box", 0));
-    sptText("Ch", 95, 17, rt.editActive ? title : sptMuted(title, 0.55), 7.5, 0);
+    sptText("Ch", 95, 17, title, 7.5, 0);
     oscPaintEditBtn(g.editBtn);
-    sptText("Layout", 156, 17, title, 7.5, 0);
+    sptText("Layout", 160, 17, title, 7.5, 0);
     oscPill(g.splitBtn, oscViewMode === 1 ? "Split" : "Overlay", oscViewMode === 1, oscHot("split_btn", 0));
-    sptText("Window", 234, 17, title, 7.5, 0);
+    sptText("Window", 238, 17, title, 7.5, 0);
     oscSelectBox(g.winBox, OSC_CYCLE_NAMES[oscCycleMode] || "2 Cyc", oscOpenMenu === "window", oscHot("win_box", 0));
-    var i;
-    for (i = 0; i < g.trigPills.length; i++) oscPill(g.trigPills[i], OSC_TRIG_NAMES[i], oscTrigMode === i, oscHot("trig", i));
     oscPill(g.freeze, "Freeze", oscFrozen === 1, oscHot("freeze", 0));
 }
 
@@ -948,20 +943,14 @@ function oscApplyHit(hit) {
         oscOpenMenu = oscOpenMenu === "mode" ? "" : "mode";
         save = false;
     } else if (hit.kind === "mode_item") {
-        oscRoutingMode = oscClamp(hit.index, 0, 2) | 0;
+        oscRoutingMode = oscClamp(hit.index, 0, 1) | 0;
         oscEditSub = 0;
         oscOpenMenu = "";
         oscApplyRouting();
         refresh = true;
     } else if (hit.kind === "edit_btn") {
-        if (oscRoutingMode === 0) {
-            oscRoutingMode = 1;
-            oscEditSub = 0;
-        } else if (oscRoutingMode === 1) {
-            oscEditSub = (oscEditSub + 1) % 2;
-        } else {
-            oscEditSub = (oscEditSub + 1) % 3;
-        }
+        // Tristate cycle in both Stereo (0: L/R, 1: L, 2: R) and M/S (0: M/S, 1: M, 2: S)
+        oscEditSub = (oscEditSub + 1) % 3;
         oscOpenMenu = "";
         oscApplyRouting();
         refresh = true;
@@ -973,10 +962,6 @@ function oscApplyHit(hit) {
         save = false;
     } else if (hit.kind === "win_item") {
         oscCycleMode = oscClamp(hit.index, 0, 6) | 0;
-        oscOpenMenu = "";
-        refresh = true;
-    } else if (hit.kind === "trig") {
-        oscTrigMode = oscClamp(hit.index, 0, 2) | 0;
         oscOpenMenu = "";
         refresh = true;
     } else if (hit.kind === "freeze") {
@@ -1090,7 +1075,6 @@ function getvalueof() {
         chMode: oscChMode,
         viewMode: oscViewMode,
         cycleMode: oscCycleMode,
-        trigMode: oscTrigMode,
         rateHz: oscRateHz,
         gainDb: oscGainDb,
         autoGain: oscAutoGain
@@ -1104,7 +1088,6 @@ function setvalueof() {
     oscChMode = saved.chMode;
     oscViewMode = saved.viewMode;
     oscCycleMode = saved.cycleMode;
-    oscTrigMode = saved.trigMode;
     oscRateHz = saved.rateHz;
     oscGainDb = saved.gainDb;
     oscAutoGain = saved.autoGain;

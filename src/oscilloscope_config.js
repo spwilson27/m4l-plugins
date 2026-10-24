@@ -11,7 +11,7 @@
 //   1568..5663 scope L ring (4096 samples)
 //   5664..9759 scope R ring (4096 samples)
 
-var OSC_VERSION = 3;
+var OSC_VERSION = 4;
 var OSC_W = 460;
 var OSC_H = 169;
 
@@ -28,12 +28,10 @@ var OSC_SCOPE_R = OSC_SCOPE_L + OSC_RING_N;                       // 5664
 var OSC_FFT_N = 8192;
 var OSC_BUF_SAMPS = OSC_SCOPE_R + OSC_RING_N + OSC_FFT_N;         // 17952
 
-// EQ-Eight Style Mode Selection Box (`routingMode` 0..2) + Channel Toggle Button (`editSub` 0..1):
-//   - routingMode 0: "Stereo" — dual L & R (orange L, cyan R); Channel button is dimmed ("L/R")
-//   - routingMode 1: "L / R"  — single-channel Left or Right selected by toggle button ("L" vs "R")
-//   - routingMode 2: "M / S"  — Mid/Side mode; toggle button switches between "M/S" (both), "M" (Mid only), "S" (Side only)
-//     (or 0 = Both M & S, 1 = Mid only, 2 = Side only; in L/R mode 0 = L, 1 = R; in Stereo mode 0 = L & R)
-var OSC_MODE_NAMES = ["Stereo", "L / R", "M / S"];
+// EQ-Eight Style Mode Selection Box (`routingMode` 0..1) + Tristate Channel Toggle Button (`editSub` 0..2):
+//   - routingMode 0: "Stereo" — Tristate Ch button cycles: 0 = "L / R" (both), 1 = "L" (Left only), 2 = "R" (Right only)
+//   - routingMode 1: "M / S"  — Tristate Ch button cycles: 0 = "M / S" (both), 1 = "M" (Mid only),  2 = "S" (Side only)
+var OSC_MODE_NAMES = ["Stereo", "M / S"];
 
 // Legacy 6-channel names kept for compatibility with existing callers
 var OSC_CH_NAMES = ["L / R", "M / S", "Left", "Right", "Mid", "Side"];
@@ -41,7 +39,6 @@ var OSC_CH_NAMES = ["L / R", "M / S", "Left", "Right", "Mid", "Side"];
 // Display Layout Toggle (`splitMode` 0..1):
 //   0: "Overlay" — Both active channels superimposed on a single full-height calibrated graticule
 //   1: "Split"   — Dual stacked oscilloscope lanes (Top: Ch 1 L/Mid, Bottom: Ch 2 R/Side)
-// (Vectorscope X/Y has been removed per user request)
 var OSC_VIEW_NAMES = ["Overlay", "Split"];
 
 // Window Size Selection Box (`cycleMode` 0..6):
@@ -56,14 +53,8 @@ var OSC_CYCLE_NAMES = ["1 Cyc", "2 Cyc", "4 Cyc", "8 Cyc", "5 ms", "20 ms", "50 
 var OSC_CYCLE_COUNTS = [1, 2, 4, 8, 0, 0, 0];
 var OSC_FIXED_MS = [0, 0, 0, 0, 5, 20, 50];
 
-// Trigger Modes (`trigMode` 0..2):
-//   0: "Auto"    — Rising zero-crossing trigger (falls back to free-running when no crossing exists)
-//   1: "Fall"    — Falling zero-crossing trigger
-//   2: "Free"    — Un-triggered rolling window
-var OSC_TRIG_NAMES = ["Auto", "Fall", "Free"];
-
-// Continuous Refresh Rate Slider range (`rateHz` in 10..60 Hz, default 30 Hz)
-var OSC_RATE_MIN = 10;
+// Continuous Refresh Rate Slider range (`rateHz` in 1..60 Hz, default 30 Hz)
+var OSC_RATE_MIN = 1;
 var OSC_RATE_MAX = 60;
 var OSC_RATE_DEFAULT = 30;
 // Legacy arrays kept for compatibility
@@ -106,7 +97,7 @@ function oscInside(r, x, y) {
 }
 
 /**
- * Converts `rateHz` (10..60 Hz) to a Task interval in milliseconds.
+ * Converts `rateHz` (1..60 Hz) to a Task interval in milliseconds.
  * @param {number} rateHz
  * @returns {number}
  */
@@ -126,14 +117,13 @@ function oscDbToLin(gainDb) {
 }
 
 /**
- * Maps EQ-Eight style `(routingMode, editSub)` to internal `chMode` (`0..5`) and button label:
+ * Maps `(routingMode, editSub)` to internal `chMode` (`0..5`) and tristate button label:
  *   - `routingMode === 0` ("Stereo"):
- *       `editSub === 0`: dual L & R (`chMode = 0`, button `"L/R"`)
- *   - `routingMode === 1` ("L / R"):
- *       `editSub === 0`: Left only  (`chMode = 2`, button `"L"`)
- *       `editSub === 1`: Right only (`chMode = 3`, button `"R"`)
- *   - `routingMode === 2` ("M / S"):
- *       `editSub === 0`: Dual M & S (`chMode = 1`, button `"M/S"`)
+ *       `editSub === 0`: Dual L & R (`chMode = 0`, button `"L / R"`)
+ *       `editSub === 1`: Left only  (`chMode = 2`, button `"L"`)
+ *       `editSub === 2`: Right only (`chMode = 3`, button `"R"`)
+ *   - `routingMode === 1` ("M / S"):
+ *       `editSub === 0`: Dual M & S (`chMode = 1`, button `"M / S"`)
  *       `editSub === 1`: Mid only   (`chMode = 4`, button `"M"`)
  *       `editSub === 2`: Side only  (`chMode = 5`, button `"S"`)
  * @param {number} routingMode
@@ -141,34 +131,31 @@ function oscDbToLin(gainDb) {
  * @returns {{ chMode: number, editLabel: string, editActive: boolean }}
  */
 function oscResolveRouting(routingMode, editSub) {
-    var m = oscClamp(Math.round(Number(routingMode) || 0), 0, 2);
-    var s = Math.max(0, Math.round(Number(editSub) || 0));
+    var m = oscClamp(Math.round(Number(routingMode) || 0), 0, 1);
+    var s = ((Math.round(Number(editSub) || 0) % 3) + 3) % 3;
     if (m === 0) {
-        return { chMode: 0, editLabel: "L / R", editActive: false };
+        if (s === 1) return { chMode: 2, editLabel: "L", editActive: true };
+        if (s === 2) return { chMode: 3, editLabel: "R", editActive: true };
+        return { chMode: 0, editLabel: "L / R", editActive: true };
     }
-    if (m === 1) {
-        var isR = (s % 2) === 1;
-        return { chMode: isR ? 3 : 2, editLabel: isR ? "R" : "L", editActive: true };
-    }
-    var msIdx = s % 3;
-    if (msIdx === 1) return { chMode: 4, editLabel: "M", editActive: true };
-    if (msIdx === 2) return { chMode: 5, editLabel: "S", editActive: true };
+    if (s === 1) return { chMode: 4, editLabel: "M", editActive: true };
+    if (s === 2) return { chMode: 5, editLabel: "S", editActive: true };
     return { chMode: 1, editLabel: "M / S", editActive: true };
 }
 
 /**
- * Converts legacy `chMode` (`0..5`) back into `{ routingMode, editSub }`.
+ * Converts `chMode` (`0..5`) back into `{ routingMode, editSub }`.
  * @param {number} chMode
  * @returns {{ routingMode: number, editSub: number }}
  */
 function oscRoutingFromChMode(chMode) {
     var c = oscClamp(Math.round(Number(chMode) || 0), 0, 5);
     if (c === 0) return { routingMode: 0, editSub: 0 };
-    if (c === 1) return { routingMode: 2, editSub: 0 };
-    if (c === 2) return { routingMode: 1, editSub: 0 };
-    if (c === 3) return { routingMode: 1, editSub: 1 };
-    if (c === 4) return { routingMode: 2, editSub: 1 };
-    return { routingMode: 2, editSub: 2 };
+    if (c === 2) return { routingMode: 0, editSub: 1 };
+    if (c === 3) return { routingMode: 0, editSub: 2 };
+    if (c === 1) return { routingMode: 1, editSub: 0 };
+    if (c === 4) return { routingMode: 1, editSub: 1 };
+    return { routingMode: 1, editSub: 2 };
 }
 
 /**
@@ -238,14 +225,16 @@ function oscExtractChannels(l, r, chMode) {
 /**
  * Creates a persistent pitch tracker state with temporal hysteresis, octave-jump protection,
  * and hold frames so pitch readouts and single-cycle locks stay rock-solid on real music.
- * @returns {{ period: number, freq: number, confidence: number, holdFrames: number }}
+ * @returns {{ period: number, freq: number, confidence: number, holdFrames: number, lockPhase: number, lockPeriod: number }}
  */
 function oscCreatePitchState() {
     return {
         period: 0,
         freq: 0,
         confidence: 0,
-        holdFrames: 0
+        holdFrames: 0,
+        lockPhase: -1,
+        lockPeriod: 0
     };
 }
 
@@ -257,7 +246,7 @@ function oscCreatePitchState() {
  * @param {number[]} sig
  * @param {number} sr
  * @param {{ period: number, freq: number, confidence: number, holdFrames: number }} [trackerState]
- * @returns {{ period: number, freq: number, confidence: number }}
+ * @returns {{ period: number, freq: number, confidence: number, held: boolean }}
  */
 function oscEstimatePeriod(sig, sr, trackerState) {
     var rate = sr > 1000 ? sr : 48000;
@@ -271,7 +260,8 @@ function oscEstimatePeriod(sig, sr, trackerState) {
             return {
                 period: trackerState.period,
                 freq: trackerState.freq,
-                confidence: decayConf
+                confidence: decayConf,
+                held: true
             };
         }
         if (trackerState) {
@@ -279,7 +269,7 @@ function oscEstimatePeriod(sig, sr, trackerState) {
             trackerState.freq = 0;
             trackerState.confidence = 0;
         }
-        return { period: 0, freq: 0, confidence: 0 };
+        return { period: 0, freq: 0, confidence: 0, held: false };
     }
 
     if (!sig || sig.length < 128) return fallbackOrHold();
@@ -446,11 +436,297 @@ function oscEstimatePeriod(sig, sr, trackerState) {
     }
 
     var freq = rawPeriod > 0 ? rate / rawPeriod : 0;
-    return { period: rawPeriod, freq: freq, confidence: conf };
+    return { period: rawPeriod, freq: freq, confidence: conf, held: false };
+}
+
+/**
+ * DC-removed copy of `sig` plus its peak amplitude.
+ * @param {number[]} sig
+ * @returns {{ ac: Float64Array, peak: number }}
+ */
+function oscMeanPeak(sig) {
+    var n = sig ? sig.length : 0;
+    var ac = new Float64Array(n);
+    if (n < 1) return { ac: ac, peak: 0 };
+    var mean = 0;
+    var i;
+    for (i = 0; i < n; i++) mean += Number(sig[i]) || 0;
+    mean /= n;
+    var peak = 0;
+    for (i = 0; i < n; i++) {
+        var v = (Number(sig[i]) || 0) - mean;
+        ac[i] = v;
+        var a = Math.abs(v);
+        if (a > peak) peak = a;
+    }
+    return { ac: ac, peak: peak };
+}
+
+/**
+ * Centered moving average. `win` samples, no group delay, so zero crossings stay
+ * aligned with the fundamental instead of sliding forward.
+ * @param {Float64Array | number[]} src
+ * @param {number} win
+ * @returns {Float64Array}
+ */
+function oscBoxSmooth(src, win) {
+    var n = src ? src.length : 0;
+    var w = Math.max(1, win | 0);
+    var out = new Float64Array(n);
+    if (n < 1 || w <= 1) {
+        var c;
+        for (c = 0; c < n; c++) out[c] = src[c];
+        return out;
+    }
+    var prefix = new Float64Array(n + 1);
+    var i;
+    for (i = 0; i < n; i++) prefix[i + 1] = prefix[i] + src[i];
+    var half = w >> 1;
+    for (i = 0; i < n; i++) {
+        var a = i - half;
+        var b = a + w;
+        if (a < 0) a = 0;
+        if (b > n) b = n;
+        var den = b - a;
+        out[i] = den > 0 ? (prefix[b] - prefix[a]) / den : 0;
+    }
+    return out;
+}
+
+/**
+ * Fractional rising-edge positions. With `hyst > 0`, an edge is armed only after
+ * the signal has fallen to `-hyst`, so one-sample dips and harmonic ripples do not
+ * each count as a new cycle.
+ * @param {Float64Array | number[]} sig
+ * @param {number} hyst
+ * @param {number} minIndex
+ * @returns {number[]}
+ */
+function oscRisingEdges(sig, hyst, minIndex) {
+    /** @type {number[]} */
+    var edges = [];
+    var n = sig ? sig.length : 0;
+    var armed = !(hyst > 0);
+    var i;
+    for (i = Math.max(1, minIndex | 0); i < n; i++) {
+        var s1 = sig[i];
+        var s0 = sig[i - 1];
+        if (hyst > 0 && s1 <= -hyst) armed = true;
+        if (armed && s0 <= 0 && s1 > 0) {
+            var den = s1 - s0;
+            var frac = den > 1e-9 ? oscClamp(-s0 / den, 0, 1) : 0;
+            edges.push((i - 1) + frac);
+            if (hyst > 0) armed = false;
+        }
+    }
+    return edges;
+}
+
+/**
+ * Rising-zero count of `sig` inside `[start, start + span]`.
+ * @param {number[]} sig
+ * @param {number} start
+ * @param {number} span
+ * @returns {number}
+ */
+function oscRisingCountSpan(sig, start, span) {
+    var n = sig ? sig.length : 0;
+    var a = Math.max(1, Math.floor(start));
+    var b = Math.min(n - 1, Math.ceil(start + span));
+    var count = 0;
+    var i;
+    for (i = a; i <= b; i++) {
+        if ((Number(sig[i - 1]) || 0) <= 0 && (Number(sig[i]) || 0) > 0) count++;
+    }
+    return count;
+}
+
+/**
+ * Median spacing of rising edges.
+ * @param {number[]} edges
+ * @returns {number}
+ */
+function oscMedianInterval(edges) {
+    /** @type {number[]} */
+    var iv = [];
+    var i;
+    for (i = 1; i < edges.length; i++) {
+        var d = edges[i] - edges[i - 1];
+        if (d >= 3) iv.push(d);
+    }
+    if (!iv.length) return 0;
+    iv.sort(function (a, b) { return a - b; });
+    return iv[iv.length >> 1];
+}
+
+/**
+ * Energy-weighted period of the loud swings. A short click does not outvote a kick
+ * body, and a hat's bright ticks outvote a fake low lock.
+ * @param {number[]} sig
+ * @returns {number}
+ */
+function oscEnergyPeriod(sig) {
+    var info = oscMeanPeak(sig);
+    if (!(info.peak > 1e-5)) return 0;
+    var hyst = Math.max(info.peak * 0.08, 1e-5);
+    var edges = oscRisingEdges(info.ac, hyst, 1);
+    /** @type {{ d: number, e: number }[]} */
+    var iv = [];
+    var i;
+    for (i = 1; i < edges.length; i++) {
+        var d = edges[i] - edges[i - 1];
+        if (d < 4 || d > sig.length * 0.55) continue;
+        var a = Math.max(0, Math.floor(edges[i - 1]));
+        var b = Math.min(info.ac.length, Math.floor(edges[i]));
+        var energy = 0;
+        var k;
+        for (k = a; k < b; k++) energy += info.ac[k] * info.ac[k];
+        iv.push({ d: d, e: energy > 1e-12 ? energy : 1e-12 });
+    }
+    if (iv.length < 2) return 0;
+    iv.sort(function (p, q) { return p.d - q.d; });
+    var tot = 0;
+    for (i = 0; i < iv.length; i++) tot += iv[i].e;
+    var acc = 0;
+    var med = iv[0].d;
+    for (i = 0; i < iv.length; i++) {
+        acc += iv[i].e;
+        if (acc >= tot * 0.5) {
+            med = iv[i].d;
+            break;
+        }
+    }
+    return med;
+}
+
+/**
+ * If `period` still holds several visible repetitions, shrink to one of them.
+ * A kick or a sine already has one rise and is left alone. A snare rattle, a hat,
+ * or a folded wave with a stack of lobes is cut down to a single hump.
+ * @param {number[]} sig
+ * @param {number} period
+ * @returns {number}
+ */
+function oscShrinkToVisible(sig, period) {
+    var span = period;
+    var guard = 0;
+    while (guard < 3 && span > 4) {
+        var trig = oscFindTrigger(sig, span, 0, 0);
+        var start = trig.index + trig.frac;
+        if (oscRisingCountSpan(sig, start, span) <= 2) return span;
+        var a = Math.max(0, Math.floor(start));
+        var b = Math.min(sig.length, Math.ceil(start + span));
+        /** @type {number[]} */
+        var slice = [];
+        var i;
+        for (i = a; i < b; i++) slice.push(Number(sig[i]) || 0);
+        var inner = oscMedianInterval(oscRisingEdges(oscMeanPeak(slice).ac, 0, 1));
+        if (!(inner >= 3) || inner > span * 0.85) return span;
+        span = inner;
+        guard++;
+    }
+    return span;
+}
+
+/**
+ * One-cycle length to display. A confident pitch is kept when that window is already
+ * a single rise (sine, saw, kick). Anything that still draws a stack of cycles is
+ * shortened to one visible repetition, which is what 1 Cyc has to show on drums.
+ * @param {number[]} sig
+ * @param {{ period: number, confidence: number, held?: boolean }} pitch
+ * @returns {number}
+ */
+function oscChooseCyclePeriod(sig, pitch) {
+    if (!sig || sig.length < 128) return pitch && pitch.period > 4 ? pitch.period : 48;
+    var pitched = pitch && !pitch.held && pitch.period > 8 && pitch.confidence >= 0.45;
+    if (pitched) return oscShrinkToVisible(sig, pitch.period);
+    var vis = oscEnergyPeriod(sig);
+    if (vis > 4) return oscShrinkToVisible(sig, vis);
+    if (pitch && pitch.period > 4) return oscShrinkToVisible(sig, pitch.period);
+    return 48;
+}
+
+/**
+ * Latest edge at or before `maxStart`. When `prevPhase` is set, keep the edge whose
+ * position inside the period matches the previous frame, so the drawing does not hop
+ * between harmonic ripples.
+ * @param {number[]} edges
+ * @param {number} maxStart
+ * @param {number} period
+ * @param {number} prevPhase
+ * @returns {number}
+ */
+function oscPickEdge(edges, maxStart, period, prevPhase) {
+    var matchPhase = prevPhase >= 0 && period > 8;
+    var minEdge = matchPhase ? Math.max(1, maxStart - period * 1.35) : 1;
+    var best = -1;
+    var bestScore = 1e9;
+    var i;
+    for (i = edges.length - 1; i >= 0; i--) {
+        var e = edges[i];
+        if (e < minEdge || e > maxStart) continue;
+        if (!matchPhase) return e;
+        var phase = e - Math.floor(e / period) * period;
+        var d = Math.abs(phase - prevPhase);
+        if (d > period * 0.5) d = period - d;
+        var score = d + (maxStart - e) * 0.015;
+        if (score < bestScore) {
+            bestScore = score;
+            best = e;
+        }
+    }
+    if (best >= 0) return best;
+    for (i = edges.length - 1; i >= 0; i--) {
+        if (edges[i] >= 1 && edges[i] <= maxStart) return edges[i];
+    }
+    return -1;
+}
+
+/**
+ * Snaps `edge` to the nearest raw rising zero within `radius`, so the drawn sample
+ * sits on the graticule zero even when the fundamental smoother is a little off.
+ * @param {number[]} rawEdges
+ * @param {number} edge
+ * @param {number} maxStart
+ * @param {number} radius
+ * @returns {number}
+ */
+function oscSnapZero(rawEdges, edge, maxStart, radius) {
+    var best = -1;
+    var bestD = radius;
+    var i;
+    for (i = rawEdges.length - 1; i >= 0; i--) {
+        var e = rawEdges[i];
+        if (e < 1 || e > maxStart) continue;
+        var d = Math.abs(e - edge);
+        if (d <= bestD) {
+            bestD = d;
+            best = e;
+        }
+    }
+    return best >= 0 ? best : edge;
+}
+
+/**
+ * Splits a fractional sample position into an index plus a fraction in `[0, 1)`.
+ * @param {number} edge
+ * @returns {{ index: number, frac: number, locked: boolean }}
+ */
+function oscEdgeToTrigger(edge) {
+    var index = Math.floor(edge);
+    var frac = edge - index;
+    if (frac >= 0.999) {
+        index += 1;
+        frac = 0;
+    }
+    return { index: index, frac: frac, locked: true };
 }
 
 /**
  * Finds a sub-sample trigger index in `sig` so that `[trigIdx, trigIdx + span]` lies inside `[0, sig.length - 1]`.
+ * Any rising (or falling) crossing counts. A monotonic-neighbour test rejected the
+ * gritty, folded, and noisy crossings a real synth actually produces, so 1 Cyc
+ * free-ran and the trace never sat on the centre line.
  * @param {number[]} sig
  * @param {number} span
  * @param {number} trigMode
@@ -465,26 +741,67 @@ function oscFindTrigger(sig, span, trigMode, trigLevel) {
     }
     var lvl = typeof trigLevel === "number" && isFinite(trigLevel) ? trigLevel : 0;
     var maxStart = n - need;
-    var minStart = Math.max(2, maxStart - Math.max(need * 2, 1024));
     var falling = trigMode === 1;
     var i;
-    for (i = maxStart; i >= minStart; i--) {
+    for (i = maxStart; i >= 2; i--) {
         var s0 = sig[i - 1] - lvl;
         var s1 = sig[i] - lvl;
-        var sPrev = sig[i - 2] - lvl;
         if (!falling) {
-            if (s0 <= 0 && s1 > 0 && sPrev <= s0 + 1e-4) {
-                var frac = (s1 - s0) > 1e-9 ? oscClamp(-s0 / (s1 - s0), 0, 1) : 0;
+            if (s0 <= 0 && s1 > 0) {
+                var den = s1 - s0;
+                var frac = den > 1e-9 ? oscClamp(-s0 / den, 0, 1) : 0;
                 return { index: i - 1, frac: frac, locked: true };
             }
-        } else {
-            if (s0 >= 0 && s1 < 0 && sPrev >= s0 - 1e-4) {
-                var fracF = (s0 - s1) > 1e-9 ? oscClamp(s0 / (s0 - s1), 0, 1) : 0;
-                return { index: i - 1, frac: fracF, locked: true };
-            }
+        } else if (s0 >= 0 && s1 < 0) {
+            var denF = s0 - s1;
+            var fracF = denF > 1e-9 ? oscClamp(s0 / denF, 0, 1) : 0;
+            return { index: i - 1, frac: fracF, locked: true };
         }
     }
     return { index: maxStart, frac: 0, locked: false };
+}
+
+/**
+ * Phase-locks a cycle window to the fundamental's rising zero, then snaps onto the
+ * nearest raw zero so the trace starts on the centre line and holds still across frames.
+ * @param {number[]} sig
+ * @param {number} span
+ * @param {number} basePeriod
+ * @param {{ lockPhase: number, lockPeriod: number }} [tracker]
+ * @returns {{ index: number, frac: number, locked: boolean }}
+ */
+function oscPhaseLock(sig, span, basePeriod, tracker) {
+    var n = sig ? sig.length : 0;
+    var need = Math.max(4, Math.ceil(span) + 2);
+    var maxStart = n - need;
+    if (n < need + 2 || maxStart < 2) {
+        return { index: Math.max(0, n - need), frac: 0, locked: false };
+    }
+    var period = basePeriod > 8 ? basePeriod : span;
+    var prevPhase = -1;
+    if (tracker && tracker.lockPhase >= 0 && tracker.lockPeriod > 8 &&
+        Math.abs(period - tracker.lockPeriod) <= tracker.lockPeriod * 0.12) {
+        prevPhase = tracker.lockPhase;
+    }
+    var info = oscMeanPeak(sig);
+    var win = Math.max(3, Math.round(Math.min(period, span) / 4));
+    var smooth = oscBoxSmooth(info.ac, win);
+    var smoothEdges = oscRisingEdges(smooth, 0, win);
+    var edge = oscPickEdge(smoothEdges, maxStart, period, prevPhase);
+    var rawEdges = oscRisingEdges(info.ac, 0, 1);
+    var lockedEdge = -1;
+    if (edge >= 0) lockedEdge = oscSnapZero(rawEdges, edge, maxStart, Math.max(4, period * 0.22));
+    if (!(lockedEdge >= 0)) {
+        var hyst = Math.max(info.peak * 0.12, 1e-5);
+        lockedEdge = oscPickEdge(oscRisingEdges(info.ac, hyst, 1), maxStart, period, prevPhase);
+    }
+    if (!(lockedEdge >= 0)) lockedEdge = oscPickEdge(rawEdges, maxStart, period, -1);
+    if (!(lockedEdge >= 0)) return { index: maxStart, frac: 0, locked: false };
+    if (tracker) {
+        tracker.lockPeriod = period;
+        tracker.lockPhase = lockedEdge - Math.floor(lockedEdge / period) * period;
+    }
+    return oscEdgeToTrigger(lockedEdge);
 }
 
 /**
@@ -557,14 +874,14 @@ function oscComputeEffectiveGain(peak, gainDb, autoGain) {
  * @param {number[]} rawL
  * @param {number[]} rawR
  * @param {number} sr
- * @param {{ chMode: number, cycleMode: number, trigMode: number, trigLevel?: number, points?: number, pitchState?: any }} opts
+ * @param {{ chMode: number, cycleMode: number, trigMode?: number, trigLevel?: number, points?: number, pitchState?: any }} [opts]
  */
 function oscComputeFrame(rawL, rawR, sr, opts) {
     var rate = sr > 1000 ? sr : 48000;
-    var o = opts || { chMode: 0, cycleMode: 0, trigMode: 0 };
+    /** @type {{ chMode: number, cycleMode: number, trigMode?: number, trigLevel?: number, points?: number, pitchState?: any }} */
+    var o = opts || { chMode: 0, cycleMode: 0 };
     var ch = oscExtractChannels(rawL, rawR, o.chMode);
     var cycIdx = oscClamp(Math.round(Number(o.cycleMode) || 0), 0, OSC_CYCLE_NAMES.length - 1);
-    var trigMode = oscClamp(Math.round(Number(o.trigMode) || 0), 0, 2);
     var outPoints = o.points || 280;
 
     var st1 = oscStats(ch.ch1);
@@ -594,16 +911,34 @@ function oscComputeFrame(rawL, rawR, sr, opts) {
     var numCycles = OSC_CYCLE_COUNTS[cycIdx];
     var spanSamples = 0;
     var isSingleCycleMode = numCycles > 0;
+    var basePeriod = pitch.period > 0 ? pitch.period : 0;
 
+    var trig;
     if (isSingleCycleMode) {
-        var basePeriod = pitch.period > 0 ? pitch.period : (rate / 100);
-        spanSamples = oscClamp(basePeriod * numCycles, 16, Math.floor(ch.ch1.length * 0.90));
+        basePeriod = oscChooseCyclePeriod(refSig, pitch);
+        // A bright hat can be only a few samples long. Stretching that out to 10 ms
+        // draws dozens of cycles and labels them as one.
+        if (!(basePeriod >= 3)) basePeriod = Math.max(3, Math.round(rate / 2000));
+        // The first estimate is checked at one trigger. Phase lock can land on a
+        // busier part of the same buffer, so measure the window that will be drawn
+        // and shorten it until that window is a single rise.
+        var shrinkPass = 0;
+        while (shrinkPass < 3) {
+            spanSamples = oscClamp(basePeriod * numCycles, 3, Math.floor(ch.ch1.length * 0.90));
+            trig = oscPhaseLock(refSig, spanSamples, basePeriod, o.pitchState);
+            var oneSpan = Math.min(basePeriod, spanSamples);
+            if (oscRisingCountSpan(refSig, trig.index + trig.frac, oneSpan) <= 2) break;
+            var cut = oscMedianInterval(oscRisingEdges(
+                oscMeanPeak(refSig.slice(trig.index, Math.min(refSig.length, trig.index + Math.ceil(oneSpan)))).ac, 0, 1));
+            if (!(cut >= 3) || cut > basePeriod * 0.85) break;
+            basePeriod = cut;
+            shrinkPass++;
+        }
     } else {
         var ms = OSC_FIXED_MS[cycIdx] || 20;
         spanSamples = oscClamp((rate * ms) / 1000, 32, Math.floor(ch.ch1.length * 0.90));
+        trig = oscFindTrigger(refSig, spanSamples, 0, o.trigLevel || 0);
     }
-
-    var trig = oscFindTrigger(refSig, spanSamples, trigMode, o.trigLevel || 0);
     var startPos = trig.index + trig.frac;
 
     var w1 = ch.show1 ? oscResampleWindow(ch.ch1, startPos, spanSamples, outPoints) : [];
@@ -629,8 +964,8 @@ function oscComputeFrame(rawL, rawR, sr, opts) {
         cycles: numCycles,
         spanSamples: spanSamples,
         windowMs: (spanSamples * 1000) / rate,
-        freq: pitch.freq,
-        note: oscFreqToNote(pitch.freq),
+        freq: isSingleCycleMode && basePeriod >= 3 ? (rate / basePeriod) : pitch.freq,
+        note: oscFreqToNote(isSingleCycleMode && basePeriod >= 3 ? (rate / basePeriod) : pitch.freq),
         confidence: pitch.confidence,
         trigLocked: trig.locked,
         stats1: st1,
@@ -702,29 +1037,23 @@ function oscCorrelation(l, r) {
 // ---------------------------------------------------------------------------------------------
 function oscGeom() {
     // Top Header Bar (`y = 6..21`):
-    //   - EQ-Eight style `Mode` selection box (`Stereo`, `L / R`, `M / S`) + `Edit` / `Ch` toggle button (`L`, `R`, `M/S`, `M`, `S`)
-    //   - `View` single toggle button (`Overlay` / `Split`)
+    //   - `Mode` selection box (`Stereo`, `M / S`) + tristate `Ch` toggle button (`L / R`, `L`, `R` or `M / S`, `M`, `S`)
+    //   - `Layout` single toggle button (`Overlay` / `Split`)
     //   - `Window` selection box (`1 Cyc`, `2 Cyc`, `4 Cyc`, `8 Cyc`, `5 ms`, `20 ms`, `50 ms`)
-    //   - `Trigger` pills (`Auto`, `Fall`, `Free`)
     //   - `Freeze` toggle button on far right
     var modeBox = [36, 6, 54, 15];
-    var editBtn = [118, 6, 34, 15];
-    var splitBtn = [180, 6, 48, 15];
-    var winBox = [272, 6, 54, 15];
-    var trigPills = [
-        [332, 6, 24, 15],
-        [358, 6, 22, 15],
-        [382, 6, 24, 15]
-    ];
-    var freezeBtn = [410, 6, 42, 15];
+    var editBtn = [118, 6, 36, 15];
+    var splitBtn = [184, 6, 48, 15];
+    var winBox = [276, 6, 56, 15];
+    var freezeBtn = [408, 6, 44, 15];
 
-    // Main Oscilloscope Viewport (`x = 8..340, y = 25..162`, height expanded to 137 px!)
+    // Main Oscilloscope Viewport (`x = 8..340, y = 25..162`, height 137 px)
     var lcd = [8, 25, 332, 137];
     var plot = [lcd[0] + 22, lcd[1] + 4, lcd[2] - 26, lcd[3] - 8];
 
     // Dropdown Popup Menus (when open, rendered on top of LCD):
-    //   - `modeMenuItems`: 3 rows of `[36, 22 + i * 15, 54, 15]`
-    //   - `winMenuItems`:  7 rows of `[272, 22 + i * 15, 54, 15]`
+    //   - `modeMenuItems`: 2 rows (`Stereo`, `M / S`)
+    //   - `winMenuItems`:  7 rows (`1 Cyc` .. `50 ms`)
     var modeMenuItems = [];
     var i;
     for (i = 0; i < OSC_MODE_NAMES.length; i++) {
@@ -737,7 +1066,7 @@ function oscGeom() {
 
     // Right Telemetry & Sliders Sidebar (`x = 346..452, y = 25..162`, height 137 px)
     var side = [346, 25, 106, 137];
-    // Refresh Rate value slider (`10..60 Hz`)
+    // Refresh Rate value slider (`1..60 Hz`)
     var rateSlider = [352, 113, 94, 14];
     // Gain Scale value slider (`-18..+24 dB`) + Auto Normalize toggle button (`Auto`)
     var autoBtn = [418, 131, 28, 12];
@@ -748,7 +1077,6 @@ function oscGeom() {
         editBtn: editBtn,
         splitBtn: splitBtn,
         winBox: winBox,
-        trigPills: trigPills,
         freeze: freezeBtn,
         lcd: lcd,
         plot: plot,
@@ -778,9 +1106,6 @@ function oscHits(openMenu) {
     hits.push({ kind: "edit_btn", index: 0, rect: g.editBtn });
     hits.push({ kind: "split_btn", index: 0, rect: g.splitBtn });
     hits.push({ kind: "win_box", index: 0, rect: g.winBox });
-    for (i = 0; i < g.trigPills.length; i++) {
-        hits.push({ kind: "trig", index: i, rect: g.trigPills[i] });
-    }
     hits.push({ kind: "freeze", index: 0, rect: g.freeze });
     hits.push({ kind: "rate_slider", index: 0, rect: g.rateSlider });
     hits.push({ kind: "auto_btn", index: 0, rect: g.autoBtn });
@@ -804,17 +1129,16 @@ function oscHitAt(x, y, openMenu) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// State Blob Serialization (v3, backward-compatible with v1 and v2 blobs)
+// State Blob Serialization (v4, backward-compatible with v1, v2, and v3 blobs)
 // ---------------------------------------------------------------------------------------------
 function oscDefaultState() {
     return {
-        routingMode: 0, // 0 = Stereo, 1 = L / R, 2 = M / S
-        editSub: 0,     // 0 = L/R or M/S or L, 1 = R or M, 2 = S
+        routingMode: 0, // 0 = Stereo, 1 = M / S
+        editSub: 0,     // 0 = L/R or M/S (both), 1 = L or M, 2 = R or S
         chMode: 0,      // derived 0..5
         viewMode: 0,    // 0 = Overlay, 1 = Split
         cycleMode: 1,   // 0 = 1 Cyc, 1 = 2 Cyc, 2 = 4 Cyc, 3 = 8 Cyc, 4 = 5 ms, 5 = 20 ms, 6 = 50 ms
-        trigMode: 0,    // 0 = Auto, 1 = Fall, 2 = Free
-        rateHz: OSC_RATE_DEFAULT,     // 10..60 Hz
+        rateHz: OSC_RATE_DEFAULT,     // 1..60 Hz
         gainDb: OSC_GAIN_DEFAULT_DB,  // -18..+24 dB
         autoGain: 0     // 0 = Off, 1 = Auto Normalize On
     };
@@ -826,11 +1150,10 @@ function oscBlob(st) {
     var eSub = s.editSub !== undefined ? s.editSub : oscRoutingFromChMode(s.chMode).editSub;
     return [
         OSC_VERSION,
-        oscClamp(rMode, 0, 2) | 0,
+        oscClamp(rMode, 0, 1) | 0,
         oscClamp(eSub, 0, 2) | 0,
         oscClamp(s.viewMode, 0, 1) | 0,
         oscClamp(s.cycleMode, 0, 6) | 0,
-        oscClamp(s.trigMode, 0, 2) | 0,
         Math.round(oscClamp(s.rateHz !== undefined ? s.rateHz : OSC_RATE_DEFAULT, OSC_RATE_MIN, OSC_RATE_MAX)),
         Math.round(oscClamp(s.gainDb !== undefined ? s.gainDb : OSC_GAIN_DEFAULT_DB, OSC_GAIN_MIN_DB, OSC_GAIN_MAX_DB) * 10) / 10,
         s.autoGain ? 1 : 0
@@ -841,13 +1164,34 @@ function oscFromBlob(arr) {
     var d = oscDefaultState();
     if (!arr || !arr.length) return d;
     var ver = Number(arr[0]);
-    if (ver === OSC_VERSION && arr.length >= 9) {
-        d.routingMode = oscClamp(arr[1], 0, 2) | 0;
+    if (ver === OSC_VERSION && arr.length >= 8) {
+        d.routingMode = oscClamp(arr[1], 0, 1) | 0;
         d.editSub = oscClamp(arr[2], 0, 2) | 0;
         d.chMode = oscResolveRouting(d.routingMode, d.editSub).chMode;
         d.viewMode = oscClamp(arr[3], 0, 1) | 0;
         d.cycleMode = oscClamp(arr[4], 0, 6) | 0;
-        d.trigMode = oscClamp(arr[5], 0, 2) | 0;
+        d.rateHz = oscClamp(arr[5], OSC_RATE_MIN, OSC_RATE_MAX);
+        d.gainDb = oscClamp(arr[6], OSC_GAIN_MIN_DB, OSC_GAIN_MAX_DB);
+        d.autoGain = arr[7] ? 1 : 0;
+        return d;
+    }
+    if (ver === 3 && arr.length >= 9) {
+        // v3 had routingMode 0=Stereo, 1=L/R (editSub 0=L, 1=R), 2=M/S (editSub 0=M/S, 1=M, 2=S)
+        var oldR = oscClamp(arr[1], 0, 2) | 0;
+        var oldSub = oscClamp(arr[2], 0, 2) | 0;
+        if (oldR === 0) {
+            d.routingMode = 0;
+            d.editSub = 0;
+        } else if (oldR === 1) {
+            d.routingMode = 0;
+            d.editSub = (oldSub % 2) === 1 ? 2 : 1; // L -> 1, R -> 2
+        } else {
+            d.routingMode = 1;
+            d.editSub = oldSub;
+        }
+        d.chMode = oscResolveRouting(d.routingMode, d.editSub).chMode;
+        d.viewMode = oscClamp(arr[3], 0, 1) | 0;
+        d.cycleMode = oscClamp(arr[4], 0, 6) | 0;
         d.rateHz = oscClamp(arr[6], OSC_RATE_MIN, OSC_RATE_MAX);
         d.gainDb = oscClamp(arr[7], OSC_GAIN_MIN_DB, OSC_GAIN_MAX_DB);
         d.autoGain = arr[8] ? 1 : 0;
@@ -861,7 +1205,6 @@ function oscFromBlob(arr) {
         d.chMode = ch;
         d.viewMode = oscClamp(arr[2], 0, 1) | 0;
         d.cycleMode = oscClamp(arr[3], 0, 6) | 0;
-        d.trigMode = oscClamp(arr[4], 0, 2) | 0;
         var rIdx = oscClamp(arr[5], 0, 3) | 0;
         var gIdx = oscClamp(arr[6], 0, 3) | 0;
         d.rateHz = OSC_RATE_HZ[rIdx] || OSC_RATE_DEFAULT;
@@ -872,10 +1215,10 @@ function oscFromBlob(arr) {
     if (ver === 1 && arr.length >= 7) {
         var oldMode = oscClamp(arr[4], 0, 3) | 0;
         if (oldMode === 1) {
-            d.routingMode = 2;
+            d.routingMode = 1;
             d.editSub = 1;
         } else if (oldMode === 2) {
-            d.routingMode = 2;
+            d.routingMode = 1;
             d.editSub = 2;
         } else {
             d.routingMode = 0;
@@ -885,7 +1228,6 @@ function oscFromBlob(arr) {
         d.viewMode = 0;
         var oldTime = oscClamp(arr[5], 0, 2) | 0;
         d.cycleMode = 4 + oldTime;
-        d.trigMode = arr[6] ? 2 : 0;
         return d;
     }
     return d;
@@ -910,7 +1252,6 @@ if (_oscNodeModule && _oscNodeModule.exports) {
         OSC_CYCLE_NAMES: OSC_CYCLE_NAMES,
         OSC_CYCLE_COUNTS: OSC_CYCLE_COUNTS,
         OSC_FIXED_MS: OSC_FIXED_MS,
-        OSC_TRIG_NAMES: OSC_TRIG_NAMES,
         OSC_RATE_MIN: OSC_RATE_MIN,
         OSC_RATE_MAX: OSC_RATE_MAX,
         OSC_RATE_DEFAULT: OSC_RATE_DEFAULT,

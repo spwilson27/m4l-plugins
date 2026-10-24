@@ -40,7 +40,7 @@ ok(inside(g.side, 0, 0, osc.OSC_W, osc.OSC_H), "Sidebar inside device");
 ok(!overlaps(g.lcd, g.side), "LCD and Sidebar do not overlap");
 
 const baseHits = osc.oscHits("");
-ok(baseHits.length === 11, "11 top-level interactive controls registered when no menu is open");
+ok(baseHits.length === 8, "8 top-level interactive controls registered when no menu is open (Auto/Fall/Free trigger pills removed)");
 for (let i = 0; i < baseHits.length; i++) {
     const r = baseHits[i].rect;
     ok(inside(r, 0, 0, osc.OSC_W, osc.OSC_H), "Control " + baseHits[i].kind + " inside 460x169");
@@ -53,7 +53,8 @@ for (let i = 0; i < baseHits.length; i++) {
     }
 }
 
-// Verify Mode dropdown items and Window dropdown items
+// Verify Mode dropdown items (Stereo, M / S) and Window dropdown items
+ok(osc.OSC_MODE_NAMES.length === 2 && osc.OSC_MODE_NAMES[0] === "Stereo" && osc.OSC_MODE_NAMES[1] === "M / S", "Mode select has 2 options: Stereo and M / S");
 for (let i = 0; i < g.modeMenuItems.length; i++) {
     const r = g.modeMenuItems[i];
     const hit = osc.oscHitAt(r[0] + 5, r[1] + 5, "mode");
@@ -66,20 +67,25 @@ for (let i = 0; i < g.winMenuItems.length; i++) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 2. EQ-Eight Style Mode Selection Box + Channel Toggle (`oscResolveRouting`)
+// 2. Mode Selection Box ("Stereo", "M / S") + Tristate Channel Toggle (`oscResolveRouting`)
 // ---------------------------------------------------------------------------------------------
 const rStereo = osc.oscResolveRouting(0, 0);
-ok(rStereo.chMode === 0 && rStereo.editLabel === "L / R" && rStereo.editActive === false, "Stereo mode -> dual L/R");
-const rLeft = osc.oscResolveRouting(1, 0);
-ok(rLeft.chMode === 2 && rLeft.editLabel === "L" && rLeft.editActive === true, "L/R mode sub 0 -> Left only (L)");
-const rRight = osc.oscResolveRouting(1, 1);
-ok(rRight.chMode === 3 && rRight.editLabel === "R" && rRight.editActive === true, "L/R mode sub 1 -> Right only (R)");
-const rMS = osc.oscResolveRouting(2, 0);
+ok(rStereo.chMode === 0 && rStereo.editLabel === "L / R" && rStereo.editActive === true, "Stereo mode sub 0 -> dual L/R");
+const rLeft = osc.oscResolveRouting(0, 1);
+ok(rLeft.chMode === 2 && rLeft.editLabel === "L" && rLeft.editActive === true, "Stereo mode sub 1 -> Left only (L)");
+const rRight = osc.oscResolveRouting(0, 2);
+ok(rRight.chMode === 3 && rRight.editLabel === "R" && rRight.editActive === true, "Stereo mode sub 2 -> Right only (R)");
+const rMS = osc.oscResolveRouting(1, 0);
 ok(rMS.chMode === 1 && rMS.editLabel === "M / S" && rMS.editActive === true, "M/S mode sub 0 -> Dual M/S");
-const rMid = osc.oscResolveRouting(2, 1);
+const rMid = osc.oscResolveRouting(1, 1);
 ok(rMid.chMode === 4 && rMid.editLabel === "M" && rMid.editActive === true, "M/S mode sub 1 -> Mid only (M)");
-const rSide = osc.oscResolveRouting(2, 2);
+const rSide = osc.oscResolveRouting(1, 2);
 ok(rSide.chMode === 5 && rSide.editLabel === "S" && rSide.editActive === true, "M/S mode sub 2 -> Side only (S)");
+
+// Verify Refresh Rate range is 1 Hz to 60 Hz
+ok(osc.OSC_RATE_MIN === 1 && osc.OSC_RATE_MAX === 60, "Refresh rate range is 1 Hz to 60 Hz");
+near(osc.oscRateToMs(1), 1000, 1e-6, "1 Hz refresh rate is 1000 ms interval");
+near(osc.oscRateToMs(60), 17, 1, "60 Hz refresh rate is ~17 ms interval");
 
 // ---------------------------------------------------------------------------------------------
 // 3. Stabilized Pitch Period Detection (Hysteresis, Harmonic Lock, and Dropout Hold)
@@ -107,7 +113,129 @@ for (const testFreq of [32.6, 55, 110, 220, 440, 880]) {
         const held = osc.oscEstimatePeriod(silent, sr, pState);
         near(held.freq, testFreq, testFreq * 0.02, "Pitch holds steady across dropout frame " + f + " at " + testFreq + " Hz");
         ok(held.confidence >= 0.14, "Held pitch confidence stays above voiced threshold on frame " + f);
+        ok(held.held === true, "Dropout frame " + f + " is marked held");
     }
+}
+
+// 1 Cyc must start on a rising zero and stay there. A monotonic-neighbour test used to
+// reject every crossing of a gritty or folded wave, so the window free-ran (left edge
+// far from the centre line) and the trace scrolled inside a single frozen period.
+function oscFrameOf(samples, cycleMode, state) {
+    return osc.oscComputeFrame(samples, samples, sr, {
+        chMode: 0,
+        cycleMode: cycleMode,
+        points: 336,
+        pitchState: state || osc.oscCreatePitchState()
+    });
+}
+function oscRisingCount(wave) {
+    let c = 0;
+    for (let i = 1; i < wave.length; i++) if (wave[i - 1] <= 0 && wave[i] > 0) c++;
+    return c;
+}
+
+{
+    const n = 4096;
+    const sine = new Array(n);
+    for (let i = 0; i < n; i++) sine[i] = Math.sin((2 * Math.PI * 220 * i) / sr);
+    const one = oscFrameOf(sine, 0);
+    ok(one.trigLocked, "1 Cyc sine trigger locks");
+    near(one.freq, 220, 220 * 0.015, "1 Cyc sine frequency");
+    near(one.wave1[0], 0, 0.05, "1 Cyc sine starts on the centre line");
+    near(one.wave1[one.wave1.length - 1], 0, 0.05, "1 Cyc sine closes on the centre line");
+    ok(oscRisingCount(one.wave1) <= 1, "1 Cyc sine shows a single rising edge");
+
+    const two = oscFrameOf(sine, 1);
+    near(two.windowMs, 2000 / 220, 0.2, "2 Cyc window is two periods");
+    near(two.wave1[0], 0, 0.05, "2 Cyc starts on the centre line");
+
+    // Same note, buffer advanced by 180 samples: the drawing must not hop phase.
+    const long = new Array(9000);
+    for (let i = 0; i < long.length; i++) long[i] = 0.7 * Math.sin((2 * Math.PI * 220 * i) / sr);
+    const stick = osc.oscCreatePitchState();
+    const a = osc.oscComputeFrame(long.slice(0, 4096), long.slice(0, 4096), sr, { chMode: 0, cycleMode: 0, points: 336, pitchState: stick });
+    const b = osc.oscComputeFrame(long.slice(180, 4276), long.slice(180, 4276), sr, { chMode: 0, cycleMode: 0, points: 336, pitchState: stick });
+    let hop = 0;
+    for (let i = 0; i < a.wave1.length; i++) hop = Math.max(hop, Math.abs(a.wave1[i] - b.wave1[i]));
+    ok(hop < 0.02, "1 Cyc holds phase when the ring advances (hop " + hop.toFixed(4) + ")");
+}
+
+{
+    // Wavefolded B0: many lobes inside one real period. The window is still that
+    // period, and both ends sit on the centre line.
+    const n = 4096;
+    const f0 = 30.87;
+    const folded = new Array(n);
+    for (let i = 0; i < n; i++) {
+        let x = Math.sin((2 * Math.PI * f0 * i) / sr);
+        for (let k = 0; k < 3; k++) x = Math.sin(x * 3.2);
+        folded[i] = x;
+    }
+    const frame = oscFrameOf(folded, 0);
+    ok(frame.trigLocked, "Folded bass trigger locks");
+    ok(frame.freq > f0 * 3, "Folded bass shows one lobe, not the whole stack (" + frame.freq.toFixed(1) + " Hz)");
+    ok(oscRisingCount(frame.wave1) <= 2, "Folded bass window has a single rise");
+    near(frame.wave1[0], 0, 0.08, "Folded bass starts on the centre line");
+}
+
+{
+    // Low saw stays one full cycle. The lobe-shrink must not chop a real fundamental.
+    const n = 4096;
+    const saw = new Array(n);
+    const f0 = 30.87;
+    for (let i = 0; i < n; i++) {
+        let s = 0;
+        const harms = Math.min(24, Math.floor(sr / 2 / f0) - 1);
+        for (let h = 1; h <= harms; h++) s += Math.sin((2 * Math.PI * f0 * h * i) / sr) / h;
+        saw[i] = s;
+    }
+    const frame = oscFrameOf(saw, 0);
+    near(frame.freq, f0, f0 * 0.03, "Low saw stays on the fundamental");
+    ok(oscRisingCount(frame.wave1) <= 2, "Low saw is one cycle");
+}
+
+{
+    // Noise plus a sine. The old trigger found zero usable crossings (y0 around -0.7).
+    let rng = 1;
+    const n = 4096;
+    const noisy = new Array(n);
+    for (let i = 0; i < n; i++) {
+        rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0;
+        const noise = (rng / 4294967296) * 2 - 1;
+        noisy[i] = noise * 0.45 + 0.5 * Math.sin((2 * Math.PI * 220 * i) / sr);
+    }
+    const frame = oscFrameOf(noisy, 0);
+    ok(frame.trigLocked, "Noisy sine trigger locks");
+    ok(oscRisingCount(frame.wave1) <= 3, "Noisy sine shows one visible cycle, not a stack");
+    near(frame.wave1[0], 0, 0.12, "Noisy sine starts on the centre line");
+}
+
+{
+    // Drum-like signals. A kick is one low cycle. A snare and a hat must not be drawn
+    // as one long "pitch" full of rattles.
+    const n = 4096;
+    const kick = new Array(n);
+    const snare = new Array(n);
+    const hat = new Array(n);
+    let rng = 9;
+    for (let i = 0; i < n; i++) {
+        const env = Math.exp(-i / (sr * 0.12));
+        kick[i] = env * Math.sin((2 * Math.PI * 49 * i) / sr);
+        rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0;
+        const noise = ((rng / 4294967296) * 2 - 1);
+        const body = 0.35 * Math.sin((2 * Math.PI * 190 * i) / sr);
+        snare[i] = (body + 0.85 * noise) * Math.exp(-i / (sr * 0.08));
+        hat[i] = noise * (0.4 + 0.6 * Math.abs(Math.sin((2 * Math.PI * 40 * i) / sr)));
+    }
+    const kickFrame = oscFrameOf(kick, 0);
+    near(kickFrame.freq, 49, 8, "Kick 1 Cyc stays on the body pitch");
+    ok(oscRisingCount(kickFrame.wave1) <= 2, "Kick 1 Cyc is a single rise");
+    const snareFrame = oscFrameOf(snare, 0);
+    ok(oscRisingCount(snareFrame.wave1) <= 3, "Snare 1 Cyc does not stack rattles (" + oscRisingCount(snareFrame.wave1) + ")");
+    ok(snareFrame.windowMs < 2.5, "Snare window is one rattle, not the body period (" + snareFrame.windowMs.toFixed(2) + " ms)");
+    const hatFrame = oscFrameOf(hat, 0);
+    ok(oscRisingCount(hatFrame.wave1) <= 3, "Hat 1 Cyc does not fill the screen with noise (" + oscRisingCount(hatFrame.wave1) + ")");
+    ok(hatFrame.windowMs < 1.2, "Hat window is short (" + hatFrame.windowMs.toFixed(2) + " ms)");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -129,24 +257,26 @@ const gAutoPlus6 = osc.oscComputeEffectiveGain(0.25, 6.0, 1);
 near(gAutoPlus6.totalGain, 4.0 * Math.pow(10, 6 / 20), 1e-6, "Auto ON normalizes first (4x) and then applies +6 dB Gain Scale");
 
 // ---------------------------------------------------------------------------------------------
-// 5. Blob v3 Serialization & Backward Compatibility
+// 5. Blob v4 Serialization & Backward Compatibility (v3, v2, v1)
 // ---------------------------------------------------------------------------------------------
-const blob3 = osc.oscBlob({
-    routingMode: 2,
+const blob4 = osc.oscBlob({
+    routingMode: 1,
     editSub: 1,
     viewMode: 1,
     cycleMode: 0,
-    trigMode: 1,
-    rateHz: 48,
+    rateHz: 1,
     gainDb: -4.5,
     autoGain: 1
 });
-ok(blob3[0] === 3 && blob3.length === 9, "v3 blob has 9 elements");
-const from3 = osc.oscFromBlob(blob3);
-ok(from3.routingMode === 2 && from3.editSub === 1 && from3.chMode === 4 && from3.viewMode === 1 && from3.cycleMode === 0 && from3.trigMode === 1 && from3.rateHz === 48 && Math.abs(from3.gainDb - (-4.5)) < 1e-6 && from3.autoGain === 1, "v3 blob round-trip");
+ok(blob4[0] === 4 && blob4.length === 8, "v4 blob has 8 elements");
+const from4 = osc.oscFromBlob(blob4);
+ok(from4.routingMode === 1 && from4.editSub === 1 && from4.chMode === 4 && from4.viewMode === 1 && from4.cycleMode === 0 && from4.rateHz === 1 && Math.abs(from4.gainDb - (-4.5)) < 1e-6 && from4.autoGain === 1, "v4 blob round-trip");
+
+const from3 = osc.oscFromBlob([3, 1, 1, 1, 0, 1, 48, -4.5, 1]);
+ok(from3.routingMode === 0 && from3.editSub === 2 && from3.chMode === 3 && from3.viewMode === 1 && from3.rateHz === 48, "v3 blob backward compatibility (L/R sub 1 -> Stereo sub 2 R)");
 
 const from2 = osc.oscFromBlob([2, 3, 1, 2, 0, 3, 2]);
-ok(from2.routingMode === 1 && from2.editSub === 1 && from2.chMode === 3 && from2.viewMode === 1 && from2.rateHz === 60 && from2.gainDb === 6, "v2 blob backward compatibility");
+ok(from2.routingMode === 0 && from2.editSub === 2 && from2.chMode === 3 && from2.viewMode === 1 && from2.rateHz === 60 && from2.gainDb === 6, "v2 blob backward compatibility");
 
 // ---------------------------------------------------------------------------------------------
 // 6. Built Device (`devices/Oscilloscope.amxd`) & Full Paint / Interaction Sandbox Verification
@@ -226,14 +356,14 @@ vm.runInContext(viz.textfile.text, ctx);
 ctx.loadbang();
 ctx.oscEnsureDemo();
 
-// Sweep every routingMode (0..2), editSub (0..2), viewMode (0..1), cycleMode (0..6), autoGain (0..1)
-for (let rMode = 0; rMode < 3; rMode++) {
+// Sweep every routingMode (0..1), editSub (0..2), viewMode (0..1), cycleMode (0..6), autoGain (0..1)
+for (let rMode = 0; rMode < 2; rMode++) {
     for (let eSub = 0; eSub < 3; eSub++) {
         for (let vMode = 0; vMode < 2; vMode++) {
             for (let cMode = 0; cMode < 7; cMode++) {
                 for (let autoG = 0; autoG < 2; autoG++) {
                     cmds.length = 0;
-                    ctx.setvalueof(3, rMode, eSub, vMode, cMode, 0, 30, 3.0, autoG);
+                    ctx.setvalueof(4, rMode, eSub, vMode, cMode, 30, 3.0, autoG);
                     ctx.paint();
                     ok(cmds.length > 20, "Paints state");
                     for (const c of cmds) {
@@ -249,13 +379,23 @@ for (let rMode = 0; rMode < 3; rMode++) {
     }
 }
 
-// Test Mode dropdown selection box + Edit/Ch toggle button interaction
+// Test Stereo tristate Ch toggle button (L / R -> L -> R -> L / R)
+ctx.setvalueof(4, 0, 0, 0, 1, 30, 0.0, 0);
+ok(ctx.oscRoutingMode === 0 && ctx.oscEditSub === 0 && ctx.oscChMode === 0, "Starts in Stereo L/R (chMode=0)");
+ctx.onclick(g.editBtn[0] + 5, g.editBtn[1] + 5);
+ok(ctx.oscEditSub === 1 && ctx.oscChMode === 2, "First click on Ch toggle in Stereo selects Left (L, chMode=2)");
+ctx.onclick(g.editBtn[0] + 5, g.editBtn[1] + 5);
+ok(ctx.oscEditSub === 2 && ctx.oscChMode === 3, "Second click on Ch toggle in Stereo selects Right (R, chMode=3)");
+ctx.onclick(g.editBtn[0] + 5, g.editBtn[1] + 5);
+ok(ctx.oscEditSub === 0 && ctx.oscChMode === 0, "Third click on Ch toggle in Stereo returns to L / R (chMode=0)");
+
+// Test Mode dropdown selection box + M/S tristate Ch toggle button interaction
 ctx.onclick(g.modeBox[0] + 5, g.modeBox[1] + 5);
 ok(ctx.oscOpenMenu === "mode", "Clicking Mode box opens Mode dropdown menu");
 ctx.paint();
-// Click "M / S" (item 2) in Mode dropdown
-ctx.onclick(g.modeMenuItems[2][0] + 5, g.modeMenuItems[2][1] + 5);
-ok(ctx.oscRoutingMode === 2 && ctx.oscOpenMenu === "", "Selecting M/S in Mode menu sets oscRoutingMode=2 and closes menu");
+// Click "M / S" (item 1) in Mode dropdown
+ctx.onclick(g.modeMenuItems[1][0] + 5, g.modeMenuItems[1][1] + 5);
+ok(ctx.oscRoutingMode === 1 && ctx.oscOpenMenu === "", "Selecting M/S in Mode menu sets oscRoutingMode=1 and closes menu");
 ok(ctx.oscChMode === 1, "M/S initial sub 0 is dual M/S (chMode=1)");
 // Click Edit/Ch toggle button to cycle M/S -> M -> S -> M/S
 ctx.onclick(g.editBtn[0] + 5, g.editBtn[1] + 5);
@@ -277,11 +417,12 @@ const prevView = ctx.oscViewMode;
 ctx.onclick(g.splitBtn[0] + 5, g.splitBtn[1] + 5);
 ok(ctx.oscViewMode === (prevView ? 0 : 1), "Clicking Split/Overlay button toggles oscViewMode");
 
-// Test Refresh Rate slider drag + double-click reset
-ctx.onclick(g.rateSlider[0] + 2, g.rateSlider[1] + 5);
-ctx.ondrag(g.rateSlider[0] + g.rateSlider[2] - 2, g.rateSlider[1] + 5, 1);
-ok(ctx.oscRateHz >= 55, "Dragging Refresh Rate slider to right edge sets ~60 Hz");
-ctx.ondrag(g.rateSlider[0] + g.rateSlider[2] - 2, g.rateSlider[1] + 5, 0);
+// Test Refresh Rate slider drag (1 Hz to 60 Hz) + double-click reset
+ctx.onclick(g.rateSlider[0], g.rateSlider[1] + 5);
+near(ctx.oscRateHz, 1, 1e-6, "Clicking left edge of Refresh Rate slider sets 1 Hz");
+ctx.ondrag(g.rateSlider[0] + g.rateSlider[2], g.rateSlider[1] + 5, 1);
+near(ctx.oscRateHz, 60, 1e-6, "Dragging Refresh Rate slider to right edge sets 60 Hz");
+ctx.ondrag(g.rateSlider[0] + g.rateSlider[2], g.rateSlider[1] + 5, 0);
 ctx.ondblclick(g.rateSlider[0] + 10, g.rateSlider[1] + 5);
 near(ctx.oscRateHz, 30, 1e-6, "Double-clicking Refresh Rate slider resets to 30 Hz");
 
@@ -302,7 +443,7 @@ near(ctx.oscGainDb, 0, 1e-6, "Double-clicking Gain Scale slider resets to 0.0 dB
 
 // Regression 1: Auto-Normalize at 0.0 dB never clips visually, even immediately after oscSmoothGain was 64.0
 ctx.oscSmoothGain = 64.0;
-ctx.setvalueof(3, 0, 0, 1, 0, 0, 60, 0.0, 1); // Stereo, Split, 1 Cyc, Auto Gain ON, 0.0 dB
+ctx.setvalueof(4, 0, 0, 1, 0, 60, 0.0, 1); // Stereo, Split, 1 Cyc, Auto Gain ON, 0.0 dB
 ctx.paint();
 const splitLanes = ctx.oscSplitGeom(g.plot);
 const ptsTop = ctx.oscChannelPts(ctx.oscFrame.wave1, splitLanes.top);
@@ -314,13 +455,12 @@ for (const p of ptsBot) {
     ok(p[1] >= splitLanes.bot[1] + 2 && p[1] <= splitLanes.bot[1] + splitLanes.bot[3] - 2, "Auto-Normalized 0 dB bottom lane has headroom and never touches border (got y=" + p[1] + ")");
 }
 
-// Regression 2: R solo (routingMode=1, editSub=1) uses Slot 2 (show1=false, show2=true),
+// Regression 2: R solo (routingMode=0 Stereo, editSub=2 R) uses Slot 2 (show1=false, show2=true),
 // draws in the bottom lane in Split mode in Blue/Cyan, and draws in Blue/Cyan in Overlay mode
-ctx.setvalueof(3, 1, 1, 1, 0, 0, 60, 0.0, 1); // Mode: L/R, Ch: R, Layout: Split
+ctx.setvalueof(4, 0, 2, 1, 0, 60, 0.0, 1); // Mode: Stereo, Ch: R (sub 2), Layout: Split
 ok(ctx.oscFrame.show1 === false && ctx.oscFrame.show2 === true, "R solo sets show1=false, show2=true");
 cmds.length = 0;
 ctx.paint();
-// Check that the 1.25px waveform stroke in R solo Split mode is in the bottom lane (y >= splitLanes.bot[1]) and uses cyan (b > 0.7)
 let curColor = [0, 0, 0, 1];
 let curLw = 1;
 let pathYs = [];
@@ -342,7 +482,7 @@ ok(rSplitWaveStrokes[0].color[2] > 0.7 && rSplitWaveStrokes[0].color[0] < 0.2, "
 ok(rSplitWaveStrokes[0].ys.every((y) => y >= splitLanes.bot[1] - 0.5), "R solo in Split mode is drawn in the bottom lane");
 
 // Now check R solo in Overlay mode (viewMode=0)
-ctx.setvalueof(3, 1, 1, 0, 0, 0, 60, 0.0, 1); // Mode: L/R, Ch: R, Layout: Overlay
+ctx.setvalueof(4, 0, 2, 0, 0, 60, 0.0, 1); // Mode: Stereo, Ch: R (sub 2), Layout: Overlay
 cmds.length = 0;
 strokeRecords = [];
 pathYs = [];
@@ -363,7 +503,7 @@ ok(rOverlayWaveStrokes.length === 1, "R solo in Overlay mode draws 1 waveform tr
 ok(rOverlayWaveStrokes[0].color[2] > 0.7 && rOverlayWaveStrokes[0].color[0] < 0.2, "R solo in Overlay mode is also Blue/Cyan");
 
 // Regression 3: Clipped top lane in M/S Split mode (+24 dB gain) NEVER leaks blue onto the top lane
-ctx.setvalueof(3, 2, 0, 1, 0, 0, 60, 24.0, 0); // M/S, Split, +24 dB gain so Mid clips at top
+ctx.setvalueof(4, 1, 0, 1, 0, 60, 24.0, 0); // M/S, Split, +24 dB gain so Mid clips at top
 cmds.length = 0;
 strokeRecords = [];
 pathYs = [];
