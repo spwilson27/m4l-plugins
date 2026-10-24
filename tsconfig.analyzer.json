@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/types/analyzer.d.ts",
+    "src/analyzer_config.js",
+    "src/spectral_theme.js",
+    "src/analyzer_dsp.js",
+    "src/analyzer_ui.js"
+  ]
+}

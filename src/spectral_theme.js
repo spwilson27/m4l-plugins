@@ -70,17 +70,25 @@ var SPT_FALLBACK = {
 };
 
 function sptColor(name, fallback) {
-    if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
-        return m4lColor(name, SPT_FALLBACK[name] || fallback || [0.5, 0.5, 0.5, 1]);
-    }
     try {
-        if (typeof max !== "undefined" && max.getcolor) {
+        if (typeof max !== "undefined" && max && typeof max.getcolor === "function") {
             var c = max.getcolor(name);
             if (c && c.length >= 3 && !(c.length > 3 && c[3] === 0 && c[0] === 0 && c[1] === 0 && c[2] === 0)) {
-                return [c[0], c[1], c[2], c.length > 3 ? c[3] : 1];
+                var liveCol = [Number(c[0]), Number(c[1]), Number(c[2]), c.length > 3 ? Number(c[3]) : 1];
+                if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+                    var eff = typeof m4lEffectiveConfig === "function" ? m4lEffectiveConfig() : null;
+                    if (!eff || eff.preset === "Default" || eff.preset === "Ableton Live") {
+                        return liveCol;
+                    }
+                    return m4lColor(name, liveCol);
+                }
+                return liveCol;
             }
         }
     } catch (e) {}
+    if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+        return m4lColor(name, SPT_FALLBACK[name] || fallback || [0.5, 0.5, 0.5, 1]);
+    }
     var f = SPT_FALLBACK[name] || fallback || [0.5, 0.5, 0.5, 1];
     return [f[0], f[1], f[2], f.length > 3 ? f[3] : 1];
 }

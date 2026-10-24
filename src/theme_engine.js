@@ -3444,7 +3444,14 @@ function m4lGetThemeState() {
             if (bus && typeof bus.stateJson === "string" && bus.stateJson.length > 2) {
                 var bver = Number(bus.version) || 1;
                 if (!_m4lLocalState || bver !== _m4lSeenBusVer) {
-                    _m4lLocalState = JSON.parse(bus.stateJson);
+                    var parsed = JSON.parse(bus.stateJson);
+                    if (typeof max !== "undefined" && max && typeof max.getcolor === "function" && (!parsed.preset || parsed.preset === "Default" || parsed.preset === "Ableton Live")) {
+                        if (parsed.abletonUi) parsed.abletonUi.enabled = false;
+                        if (parsed.macros && parsed.preset === "Default") {
+                            parsed.macros = { hueShift: 0, satScale: 1.0, contrast: 1.0, brightness: 0.0 };
+                        }
+                    }
+                    _m4lLocalState = parsed;
                     _m4lSeenBusVer = bver;
                     _m4lResolvedCache = null;
                     _m4lIssuedRgbKeys = {};
@@ -3620,23 +3627,26 @@ function m4lApplyMacros(col, macros) {
 
 /**
  * Reads a Live theme color from `max.getcolor(name)` when available, else returns null.
+ * In Ableton Live / Max runtime, `max.getcolor(name)` is ALWAYS authoritative so the device
+ * matches Live's real native colors; the simulated `st.abletonUi` model is only used in offline
+ * preview / WebUI environments where `max.getcolor` does not exist.
  * @param {string} name
  * @returns {number[] | null}
  */
 function m4lHostLiveColor(name) {
-    try {
-        var st = m4lGetThemeState();
-        if (st && st.abletonUi && st.abletonUi.enabled) {
-            var sim = m4lComputeAbletonUiTokens(st.abletonUi);
-            if (sim[name]) return sim[name];
-        }
-    } catch (e) {}
     try {
         if (typeof max !== "undefined" && max && typeof max.getcolor === "function") {
             var c = max.getcolor(name);
             if (c && c.length >= 3 && !(c.length > 3 && c[3] === 0 && c[0] === 0 && c[1] === 0 && c[2] === 0)) {
                 return [Number(c[0]), Number(c[1]), Number(c[2]), c.length > 3 ? Number(c[3]) : 1.0];
             }
+        }
+    } catch (e) {}
+    try {
+        var st = m4lGetThemeState();
+        if (st && st.abletonUi && st.abletonUi.enabled) {
+            var sim = m4lComputeAbletonUiTokens(st.abletonUi);
+            if (sim[name]) return sim[name];
         }
     } catch (e) {}
     return null;

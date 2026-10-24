@@ -72,6 +72,10 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Reverb+ (one build writes Reverb+, Reverb+ End, the .adg and reverbplus_test.als; tests/test_reverbplus.js = DSP / build, tests/test_reverbplus_face.js = the face; look at previews/reverb.png and reverb_end.png)
      npm run -s typecheck && python3 scripts/build_reverbplus.py && node tests/test_reverbplus.js && node tests/test_reverbplus_face.js && for v in "Reverb+" "Reverb+ End"; do python3 scripts/render_preview.py "devices/$v.amxd"; done
      scripts/vm_reverbplus.sh audio && M4L_LIVE_LOCK_WAIT=7200 scripts/vm_reverbplus.sh run   # full Max audio suite, then Live (live + test under the Live lock), in the VM (section 1a)
+
+ # Analyzer & Oscilloscope (section 28). Max audio only in the VM: python3 scripts/run_analyzer_audio_tests.py
+ npm run -s typecheck && python3 scripts/build_analyzer.py && node tests/test_analyzer.js && python3 scripts/render_preview.py "devices/Analyzer.amxd"
+ npm run -s typecheck && python3 scripts/build_oscilloscope.py && node tests/test_oscilloscope.js && python3 scripts/render_preview.py "devices/Oscilloscope.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -1840,3 +1844,40 @@ Chosen from prototypes (the others were deleted); modelled on Ableton's Hybrid R
 - The wet spectrum comes from a 4096-sample FFT of `---rpspec` every 150 ms (wet and dry), a few tenths of a millisecond in v8.
 - **The chain loop is flat, not tank-coloured**: the long tail is the allpass-diffused recirculation of the chain's output, so the algorithm's character is the first pass (tank at 0.3 x Decay), the loop's damping / bass shelf and its time; the late tail of Plate / Hall / Room / Chamber / Spring sounds alike. With a chain that adds gain G > 1 / g the loop saturates at the clip and sustains (by design, as in Delay+); Soft / Hard / Limit and Clip Level bound it, RT60 then follows the chain gain. The tank no longer receives the return, so FX are heard in the tail but do not feed the tank's modes.
 - The constants of the chain loop (`TANK_FRAC` 0.3, `AP` = 1.5 x the allpass lengths, the K table) are fits to Max renders at 48 kHz and a Hall-like reference model; at other rates only the lengths scale.
+
+## 28. Architecture of `devices/Analyzer.amxd`
+
+Pass-through audio effect (`plugin~` wired straight to `plugout~`). The gen is only a tap: the face creates it after the first paint from the embedded `.gendsp` (`src/analyzer_dsp.js`, hub `gate 1 1`, `Global("analyzer_dspq")`), same deferred path as Multiband Split, and never connects the gen to `plugout~`. A header pill reads `DSP loading…` until the packet frame counter (scope slot 0) moves.
+
+Fixed height 169. Ableton-native colours from `src/spectral_theme.js`. No device title. A 22 px rail (`x = 3..25`) toggles four panels that pack left to right in rail order and widen the device (`anFoldWidth`). Dragging a rail glyph reorders the rail and the panels. Cells are `mgraphics` glyphs; the full name is a HUD tooltip. Sidebar order top to bottom is panel order left to right.
+
+- **Spectrogram** 360 px. Header pills Heat (scrolling log-frequency heatmap, newest on the right), Fall (last 24 spectra as stacked traces), Bars (31 ISO 1/3-octave bands, peak hold). The 8192 Hann FFT runs in the face only while this panel is open.
+- **Oscilloscope** 250 px. L/R, Mid, Side, XY; 5 / 20 / 50 ms; Auto (rising zero-cross) or Free.
+- **Stereo** 280 px. Four bands, default crossovers 150 Hz / 1 kHz / 6 kHz (draggable, kept at least 1.4× apart). Each row is correlation, width and L/R balance, plus a goniometer.
+- **Loudness** 200 px. Integrated, short-term and momentary LUFS, RMS, true peak (held until Reset, red above −1 dBTP) and LRA, with a short-term sparkline. K-weighting, true peak and the band filters stay in the gen, so they keep running while the panel is closed. The face consumes every new packet, so integrated loudness does not depend on the paint rate.
+
+Default is spectrogram only (392 px). All four open is 1134 px. All closed leaves the rail (28 px). **Freeze** (rail, under the four toggles) holds the drawings and the momentary numbers. Integrated LUFS keeps running. Freeze starts off and is not saved.
+
+`buffer~ #0-analyzerscope` (`AN_BUF_SAMPS` 17952), layout in `src/analyzer_config.js`: header, 64 packets of 24 floats (480 samples each), stereo scope ring (4096) and a mono 8192-sample FFT ring. `AnalyzerState` blob version 1 on the face (`parameter_type` 3, stored only): fold mask, section order, spectrogram type, scope mode and time base, trigger, crossover frequencies. Integrated loudness is session state.
+
+No automatable analysis parameters. Tuner, key / chromagram and a 3D mesh are not in this version.
+
+```bash
+npm run -s typecheck && python3 scripts/build_analyzer.py && node tests/test_analyzer.js && python3 scripts/render_preview.py "devices/Analyzer.amxd"
+npm run -s typecheck && python3 scripts/build_oscilloscope.py && node tests/test_oscilloscope.js && python3 scripts/render_preview.py "devices/Oscilloscope.amxd"
+```
+
+Max audio (`python3 scripts/run_analyzer_audio_tests.py`: 1 kHz −20 dBFS, inverted channel, an intersample peak, a 40 Hz low band) runs in the `macos-01` VM only. A 40 Hz tone is the low-band check: the complementary one-poles at 150 Hz still put an 80 Hz tone mostly in the next band. A Live load check (width follows the open panels, meters move on a tone) waits until just before a commit, under the Live lock. `var AN_PREVIEW` in `src/analyzer_ui.js` stays `0`; a non-zero value is only for an all-panels still, and the tests reject anything else.
+
+### `devices/Oscilloscope.amxd` (`460 x 169` px — Dedicated Stereo & Mid/Side Single/Multi-Cycle Oscilloscope)
+Built by `scripts/build_oscilloscope.py` from `src/oscilloscope_config.js`, `src/spectral_theme.js`, `src/analyzer_dsp.js`, and `src/oscilloscope_ui.js` (`tsconfig.oscilloscope.json`, `tests/test_oscilloscope.js`), sharing the same pass-through `plugin~ -> plugout~` wiring and deferred `analyzer_core.genexpr` tap (`#0-analyzerscope`):
+- **Top Control Bar (`y = 6..21`)**:
+  - **EQ-Eight Style `Mode` Selection Box (`Stereo`, `L / R`, `M / S`) + `Ch` Toggle Button**:
+    - `Stereo`: Shows both `L` (orange `live_display_line_one`) and `R` (cyan `live_display_line_two`).
+    - `L / R`: `Ch` toggle switches between `L` (Slot 1: orange, top lane in Split) and `R` (Slot 2: cyan, bottom lane in Split, and cyan in Overlay).
+    - `M / S`: `Ch` toggle cycles between `M / S` (both Mid & Side), `M` (Mid only, Slot 1 orange), and `S` (Side only, Slot 2 cyan).
+  - **Single `Layout` Toggle Button**: Toggles between `Overlay` (shared graticule) and `Split` (dual stacked lanes: Slot 1 top, Slot 2 bottom).
+  - **`Window` Selection Box**: Dropdown selecting pitch-tracked `1 Cyc`, `2 Cyc`, `4 Cyc`, `8 Cyc` or fixed timebase `5 ms`, `20 ms`, `50 ms`.
+  - **`Auto` / `Fall` / `Free` Trigger Pills + `Freeze` Button**: Rising/falling zero-crossing trigger (with vertical drag inside the plot to set trigger threshold and double-click to reset) and `Freeze` hold.
+- **Stabilized Pitch Tracker (`oscCreatePitchState` / `oscEstimatePeriod`)**: 4096-sample DC-removed, 3-tap smoothed NSDF autocorrelation with negative-lobe gating (`< -0.10`), McLeod peak-picking, harmonic continuity lock, and 36-frame (~1.2 s) dropout hold.
+- **Right Sidebar (`x = 346..452`)**: Channel `Pk / RMS` dB readouts, tracked frequency + musical note + period (`220.0 Hz · A3`, `4.55 ms`), stereo correlation meter, continuous **`Refresh Rate` value slider (`10..60 Hz`)**, and continuous **`Gain Scale` value slider (`-18..+24 dB`)** with an **`Auto` normalize toggle button** (normalizes the waveform peak first with `OSC_AMP_HEADROOM = 0.78` headroom and instant ceiling clamping so 0 dB never clips, then applies the `Gain Scale` dB multiplier).

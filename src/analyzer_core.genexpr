@@ -1,0 +1,324 @@
+// Analyzer tap. Audio is copied to out1 / out2 (the device itself wires plugin~ straight to
+// plugout~ and does not use these outlets). Everything else is telemetry in Buffer scope
+// ("analyzerscope"), layout in src/analyzer_config.js:
+//   header 0 frame, 1 sr, 2 scope head, 3 fft head, 4 packet head, 5 480, 6 f1, 7 f2, 8 f3
+//   packets at 32, stride 24, 64 slots
+//   scope L 1568, scope R 5664, 4096 each; mono FFT ring 9760, 8192 samples (buffer is 17952)
+// K-weight is the BS.1770 shelf + RLB high-pass (a0-normalized). True peak is a 4x 8-tap
+// Hann-sinc. Four bands are cascaded one-pole pairs (12 dB/oct) with complementary subtract.
+
+op_g(fc, fsHz) {
+    gg = 1.0 - exp(-6.283185307179586 * fc / fsHz);
+    return gg;
+}
+
+Buffer scope("analyzerscope");
+
+Data tpCoef(32);
+Data tpHistL(8);
+Data tpHistR(8);
+
+Param f1(150.0);
+Param f2(1000.0);
+Param f3(6000.0);
+
+History coefDone(0.0);
+History cRate(0.0);
+History cF1(-1.0);
+History cF2(-1.0);
+History cF3(-1.0);
+History gLo(0.02);
+History gLm(0.1);
+History gHm(0.4);
+History pb0(1.0);
+History pb1(0.0);
+History pb2(0.0);
+History pa1(0.0);
+History pa2(0.0);
+History rb0(1.0);
+History rb1(0.0);
+History rb2(0.0);
+History ra1(0.0);
+History ra2(0.0);
+History pz1L(0.0);
+History pz2L(0.0);
+History rz1L(0.0);
+History rz2L(0.0);
+History pz1R(0.0);
+History pz2R(0.0);
+History rz1R(0.0);
+History rz2R(0.0);
+History s1aL(0.0);
+History s1bL(0.0);
+History s2aL(0.0);
+History s2bL(0.0);
+History s3aL(0.0);
+History s3bL(0.0);
+History s1aR(0.0);
+History s1bR(0.0);
+History s2aR(0.0);
+History s2bR(0.0);
+History s3aR(0.0);
+History s3bR(0.0);
+History kSumL(0.0);
+History kSumR(0.0);
+History rawSumL(0.0);
+History rawSumR(0.0);
+History tpHoldL(0.0);
+History tpHoldR(0.0);
+History pkHoldL(0.0);
+History pkHoldR(0.0);
+History ll0(0.0);
+History rr0(0.0);
+History lr0(0.0);
+History ll1(0.0);
+History rr1(0.0);
+History lr1(0.0);
+History ll2(0.0);
+History rr2(0.0);
+History lr2(0.0);
+History ll3(0.0);
+History rr3(0.0);
+History lr3(0.0);
+History pktN(0.0);
+History pktIx(0.0);
+History scopeIx(0.0);
+History fftIx(0.0);
+History frameN(0.0);
+History subN(0.0);
+History tpIxL(0.0);
+History tpIxR(0.0);
+
+// 4 phases x 8 taps, phase-major. Hann-windowed sinc, cutoff pi/4, DC gain 4 on the full filter.
+if (coefDone < 0.5) {
+    poke(tpCoef, -0.0000000000, 0);
+    poke(tpCoef, 0.0065797295, 1);
+    poke(tpCoef, -0.0340796993, 2);
+    poke(tpCoef, 0.1222467630, 3);
+    poke(tpCoef, 0.9706077254, 4);
+    poke(tpCoef, -0.0871526049, 5);
+    poke(tpCoef, 0.0242867377, 6);
+    poke(tpCoef, -0.0034883165, 7);
+    poke(tpCoef, -0.0008291366, 8);
+    poke(tpCoef, 0.0263475218, 9);
+    poke(tpCoef, -0.1130051644, 10);
+    poke(tpCoef, 0.4403366959, 11);
+    poke(tpCoef, 0.7651370492, 12);
+    poke(tpCoef, -0.1538132120, 13);
+    poke(tpCoef, 0.0403516682, 14);
+    poke(tpCoef, -0.0035257570, 15);
+    poke(tpCoef, -0.0035257570, 16);
+    poke(tpCoef, 0.0403516682, 17);
+    poke(tpCoef, -0.1538132120, 18);
+    poke(tpCoef, 0.7651370492, 19);
+    poke(tpCoef, 0.4403366959, 20);
+    poke(tpCoef, -0.1130051644, 21);
+    poke(tpCoef, 0.0263475218, 22);
+    poke(tpCoef, -0.0008291366, 23);
+    poke(tpCoef, -0.0034883165, 24);
+    poke(tpCoef, 0.0242867377, 25);
+    poke(tpCoef, -0.0871526049, 26);
+    poke(tpCoef, 0.9706077254, 27);
+    poke(tpCoef, 0.1222467630, 28);
+    poke(tpCoef, -0.0340796993, 29);
+    poke(tpCoef, 0.0065797295, 30);
+    poke(tpCoef, -0.0000000000, 31);
+    coefDone = 1.0;
+}
+
+fsHz = max(samplerate, 1.0);
+inL = in1;
+inR = in2;
+
+if ((fsHz != cRate) || (f1 != cF1) || (f2 != cF2) || (f3 != cF3)) {
+    cRate = fsHz;
+    cF1 = f1;
+    cF2 = f2;
+    cF3 = f3;
+    fc1 = clip(f1, 20.0, fsHz * 0.45);
+    fc2 = clip(f2, 40.0, fsHz * 0.45);
+    fc3 = clip(f3, 80.0, fsHz * 0.45);
+    gLo = op_g(fc1, fsHz);
+    gLm = op_g(fc2, fsHz);
+    gHm = op_g(fc3, fsHz);
+
+    fShelf = 1681.974450955533;
+    gDb = 3.999843853973347;
+    qShelf = 0.7071752369554196;
+    kk = tan(3.141592653589793 * fShelf / fsHz);
+    vh = pow(10.0, gDb / 20.0);
+    vb = pow(vh, 0.4996667741545416);
+    a0 = 1.0 + kk / qShelf + kk * kk;
+    pb0 = (vh + vb * kk / qShelf + kk * kk) / a0;
+    pb1 = 2.0 * (kk * kk - vh) / a0;
+    pb2 = (vh - vb * kk / qShelf + kk * kk) / a0;
+    pa1 = 2.0 * (kk * kk - 1.0) / a0;
+    pa2 = (1.0 - kk / qShelf + kk * kk) / a0;
+
+    fHp = 38.13547087602444;
+    qHp = 0.5003270373238773;
+    kk = tan(3.141592653589793 * fHp / fsHz);
+    a0 = 1.0 + kk / qHp + kk * kk;
+    rb0 = 1.0 / a0;
+    rb1 = -2.0 / a0;
+    rb2 = 1.0 / a0;
+    ra1 = 2.0 * (kk * kk - 1.0) / a0;
+    ra2 = (1.0 - kk / qHp + kk * kk) / a0;
+}
+
+yL = pb0 * inL + pz1L;
+nzL = pb1 * inL - pa1 * yL + pz2L;
+pz2L = fixdenorm(pb2 * inL - pa2 * yL);
+pz1L = fixdenorm(nzL);
+kwL = rb0 * yL + rz1L;
+nzL = rb1 * yL - ra1 * kwL + rz2L;
+rz2L = fixdenorm(rb2 * yL - ra2 * kwL);
+rz1L = fixdenorm(nzL);
+
+yR = pb0 * inR + pz1R;
+nzR = pb1 * inR - pa1 * yR + pz2R;
+pz2R = fixdenorm(pb2 * inR - pa2 * yR);
+pz1R = fixdenorm(nzR);
+kwR = rb0 * yR + rz1R;
+nzR = rb1 * yR - ra1 * kwR + rz2R;
+rz2R = fixdenorm(rb2 * yR - ra2 * kwR);
+rz1R = fixdenorm(nzR);
+
+kSumL = kSumL + kwL * kwL;
+kSumR = kSumR + kwR * kwR;
+rawSumL = rawSumL + inL * inL;
+rawSumR = rawSumR + inR * inR;
+pkHoldL = max(pkHoldL, abs(inL));
+pkHoldR = max(pkHoldR, abs(inR));
+
+s1aL = fixdenorm(s1aL + gLo * (inL - s1aL));
+s1bL = fixdenorm(s1bL + gLo * (s1aL - s1bL));
+lowL = s1bL;
+restL = inL - lowL;
+s2aL = fixdenorm(s2aL + gLm * (restL - s2aL));
+s2bL = fixdenorm(s2bL + gLm * (s2aL - s2bL));
+midL = s2bL;
+rest2L = restL - midL;
+s3aL = fixdenorm(s3aL + gHm * (rest2L - s3aL));
+s3bL = fixdenorm(s3bL + gHm * (s3aL - s3bL));
+hmL = s3bL;
+hiL = rest2L - hmL;
+
+s1aR = fixdenorm(s1aR + gLo * (inR - s1aR));
+s1bR = fixdenorm(s1bR + gLo * (s1aR - s1bR));
+lowR = s1bR;
+restR = inR - lowR;
+s2aR = fixdenorm(s2aR + gLm * (restR - s2aR));
+s2bR = fixdenorm(s2bR + gLm * (s2aR - s2bR));
+midR = s2bR;
+rest2R = restR - midR;
+s3aR = fixdenorm(s3aR + gHm * (rest2R - s3aR));
+s3bR = fixdenorm(s3bR + gHm * (s3aR - s3bR));
+hmR = s3bR;
+hiR = rest2R - hmR;
+
+ll0 = ll0 + lowL * lowL;
+rr0 = rr0 + lowR * lowR;
+lr0 = lr0 + lowL * lowR;
+ll1 = ll1 + midL * midL;
+rr1 = rr1 + midR * midR;
+lr1 = lr1 + midL * midR;
+ll2 = ll2 + hmL * hmL;
+rr2 = rr2 + hmR * hmR;
+lr2 = lr2 + hmL * hmR;
+ll3 = ll3 + hiL * hiL;
+rr3 = rr3 + hiR * hiR;
+lr3 = lr3 + hiL * hiR;
+
+poke(tpHistL, inL, tpIxL);
+poke(tpHistR, inR, tpIxR);
+tpL = 0.0;
+tpR = 0.0;
+for (ph = 0; ph < 4; ph += 1) {
+    accL = 0.0;
+    accR = 0.0;
+    for (kk = 0; kk < 8; kk += 1) {
+        accL = accL + peek(tpHistL, wrap(tpIxL - kk, 0, 8)) * peek(tpCoef, ph * 8 + kk);
+        accR = accR + peek(tpHistR, wrap(tpIxR - kk, 0, 8)) * peek(tpCoef, ph * 8 + kk);
+    }
+    tpL = max(tpL, abs(accL));
+    tpR = max(tpR, abs(accR));
+}
+tpHoldL = max(tpHoldL, tpL);
+tpHoldR = max(tpHoldR, tpR);
+tpIxL = wrap(tpIxL + 1, 0, 8);
+tpIxR = wrap(tpIxR + 1, 0, 8);
+
+poke(scope, inL, 1568.0 + scopeIx, 0, 0);
+poke(scope, inR, 5664.0 + scopeIx, 0, 0);
+poke(scope, (inL + inR) * 0.5, 9760.0 + fftIx, 0, 0);
+scopeIx = wrap(scopeIx + 1, 0, 4096);
+fftIx = wrap(fftIx + 1, 0, 8192);
+
+pktN = pktN + 1.0;
+subN = subN + 1.0;
+if (subN >= 64.0) {
+    subN = 0.0;
+    poke(scope, scopeIx, 2, 0, 0);
+    poke(scope, fftIx, 3, 0, 0);
+    poke(scope, fsHz, 1, 0, 0);
+}
+if (pktN >= 480.0) {
+    base = 32.0 + pktIx * 24.0;
+    poke(scope, kSumL, base, 0, 0);
+    poke(scope, kSumR, base + 1.0, 0, 0);
+    poke(scope, rawSumL, base + 2.0, 0, 0);
+    poke(scope, rawSumR, base + 3.0, 0, 0);
+    poke(scope, tpHoldL, base + 4.0, 0, 0);
+    poke(scope, tpHoldR, base + 5.0, 0, 0);
+    poke(scope, pkHoldL, base + 6.0, 0, 0);
+    poke(scope, pkHoldR, base + 7.0, 0, 0);
+    poke(scope, 480.0, base + 8.0, 0, 0);
+    poke(scope, ll0, base + 9.0, 0, 0);
+    poke(scope, rr0, base + 10.0, 0, 0);
+    poke(scope, lr0, base + 11.0, 0, 0);
+    poke(scope, ll1, base + 12.0, 0, 0);
+    poke(scope, rr1, base + 13.0, 0, 0);
+    poke(scope, lr1, base + 14.0, 0, 0);
+    poke(scope, ll2, base + 15.0, 0, 0);
+    poke(scope, rr2, base + 16.0, 0, 0);
+    poke(scope, lr2, base + 17.0, 0, 0);
+    poke(scope, ll3, base + 18.0, 0, 0);
+    poke(scope, rr3, base + 19.0, 0, 0);
+    poke(scope, lr3, base + 20.0, 0, 0);
+    pktIx = wrap(pktIx + 1, 0, 64);
+    frameN = frameN + 1.0;
+    poke(scope, frameN, 0, 0, 0);
+    poke(scope, pktIx, 4, 0, 0);
+    poke(scope, 480.0, 5, 0, 0);
+    poke(scope, f1, 6, 0, 0);
+    poke(scope, f2, 7, 0, 0);
+    poke(scope, f3, 8, 0, 0);
+    poke(scope, scopeIx, 2, 0, 0);
+    poke(scope, fftIx, 3, 0, 0);
+    poke(scope, fsHz, 1, 0, 0);
+    pktN = 0.0;
+    kSumL = 0.0;
+    kSumR = 0.0;
+    rawSumL = 0.0;
+    rawSumR = 0.0;
+    tpHoldL = 0.0;
+    tpHoldR = 0.0;
+    pkHoldL = 0.0;
+    pkHoldR = 0.0;
+    ll0 = 0.0;
+    rr0 = 0.0;
+    lr0 = 0.0;
+    ll1 = 0.0;
+    rr1 = 0.0;
+    lr1 = 0.0;
+    ll2 = 0.0;
+    rr2 = 0.0;
+    lr2 = 0.0;
+    ll3 = 0.0;
+    rr3 = 0.0;
+    lr3 = 0.0;
+}
+
+out1 = in1;
+out2 = in2;

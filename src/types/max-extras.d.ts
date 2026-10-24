@@ -13,6 +13,9 @@ interface MGraphics {
 declare var M4L_DEVICE_SLUG: string | undefined;
 declare var M4L_PATCHER_THEME_MAP: { [varname: string]: { cls: string; role?: string; attrs: { [attr: string]: number[] } } } | undefined;
 declare var __M4L_THEME_STATE__: any;
+declare function m4lColor(name: string, fallback?: Array<number>): Array<number>;
+declare function m4lIsActive(slug?: string): boolean;
+declare function m4lEffectiveConfig(slug?: string): { preset: string; macros: any; tokens: any };
 
 
 // Not fixable here: @types/maxmsp declares LiveAPI.call(func, args): void, and a merged overload never
