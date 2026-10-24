@@ -273,7 +273,7 @@ pollTelemetryScope = function () {
 
 scopeTask = (typeof Task !== "undefined") ? new Task(function () {
     pollTelemetryScope();
-    if (telChanged) { telChanged = false; mgraphics.redraw(); }
+    if (telChanged) { telChanged = false; requestRedraw(); }
     if (scopeTask) scopeTask.schedule((liveActiveVoices > 0 || livePeakL > 0.001) ? 45 : 80);
 }) : null;
 
@@ -661,7 +661,7 @@ function requestDetail() {
     job.task = new Task(function () {
         if (detail !== job) return;
         if (!detailStep(job)) job.task.schedule(1);
-        mgraphics.redraw();
+        requestRedraw();
     });
     job.task.schedule(1);
 }
@@ -686,8 +686,9 @@ function detailStep(job) {
     return true;
 }
 // amplitude at screen column px: the detail when this column has been read, else the overview
-function colAmp(px) {
-    if (detail && detail.key === detailKey()) {
+function colAmp(px, useDetail) {
+    if (useDetail === undefined) useDetail = detail && detail.key === detailKey();
+    if (useDetail) {
         var col = Math.round(px - viewWave[0]);
         if (col >= 0 && col < detail.cols && detail.got[col]) return Math.min(1, detail.amp[col]);
     }
@@ -698,10 +699,11 @@ function zoomWavePolygon(wx, wy, ww, wh, t0, t1, c, a) {
     var x0 = Math.max(wx, vwx(t0)), x1 = Math.min(wx + ww, vwx(t1));
     if (x1 <= x0) return;
     var cols = Math.max(2, Math.round(x1 - x0));
+    var useDetail = detail && detail.key === detailKey();
     var top = [], bot = [];
     for (var i = 0; i <= cols; i++) {
         var px = x0 + (x1 - x0) * (i / cols);
-        var amp = Math.max(0.004, colAmp(px)) * half;
+        var amp = Math.max(0.004, colAmp(px, useDetail)) * half;
         top.push([px, cy - amp]);
         bot.push([px, cy + amp]);
     }
@@ -2119,7 +2121,7 @@ function normalizeSample() {
     job.task = new Task(function () {
         if (peakJob !== job) return;
         if (!peakStep()) job.task.schedule(1);
-        mgraphics.redraw();
+        requestRedraw();
     });
     job.task.schedule(1);
 }

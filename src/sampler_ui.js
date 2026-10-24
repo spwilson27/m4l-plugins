@@ -534,7 +534,7 @@ function pollTelemetryScope() {
 }
 
 var scopeTask = (typeof Task !== "undefined") ? new Task(function() {
-    if (pollTelemetryScope()) mgraphics.redraw();
+    if (pollTelemetryScope()) requestRedraw();
     if (scopeTask) scopeTask.schedule(45);
 }) : null;
 
@@ -1060,11 +1060,36 @@ function isStaleEcho(key, n) {
     return false;  // not ours: automation or another control, apply it
 }
 
+// Live streams every automated parameter, often with the same value, and each echo used to redraw the
+// whole face. Identical values are dropped. A burst shares one paint a frame later; a face edit paints now.
+var redrawQueued = 0;
+var redrawTask = null;
+
+function flushRedraw() {
+    redrawQueued = 0;
+    if (typeof mgraphics !== "undefined") mgraphics.redraw();
+}
+
+function requestRedraw(now) {
+    if (typeof mgraphics === "undefined") return;
+    if (now || typeof Task === "undefined") {
+        redrawQueued = 0;
+        if (redrawTask && redrawTask.cancel) redrawTask.cancel();
+        mgraphics.redraw();
+        return;
+    }
+    if (redrawQueued) return;
+    redrawQueued = 1;
+    if (!redrawTask) redrawTask = new Task(flushRedraw);
+    redrawTask.schedule(16);
+}
+
 // Single entry point for live.* echoes and face edits; mirrors the values the voice logic needs
 function storeParam(key, v, fromFace) {
     var n = Number(v);
     if (!isFinite(n)) return;
     if (!fromFace && isStaleEcho(key, n)) return;
+    if (Object.prototype.hasOwnProperty.call(paramVals, key) && Math.abs(paramVals[key] - n) <= 1e-4 * Math.max(1, Math.abs(n))) return;
     paramVals[key] = n;
     switch (key) {
         case "mode": curMode = clampInt(n, 0, 4); voiceAlloc.setMaxVoices(voiceCap()); break;
@@ -1095,7 +1120,7 @@ function storeParam(key, v, fromFace) {
         case "filt_cutoff": curFiltCutoff = n; break;
     }
     if (typeof abOnParam === "function") abOnParam(key);
-    mgraphics.redraw();
+    requestRedraw(!!fromFace);
 }
 
 // Parameter setters from the hidden live.* widgets

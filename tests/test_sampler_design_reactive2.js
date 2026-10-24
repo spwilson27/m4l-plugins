@@ -1894,4 +1894,44 @@ sb.setFoldMask(sb.DEFAULT_FOLD);
     sb.matRows = sb.modDefaultRows();
     sb.matPackedSig = "";
 }
+
+// Automation echoes share one paint. A face edit still paints immediately.
+{
+    const cut = sb.paramValue("filt_cutoff");
+    const res = sb.paramValue("filt_res");
+    const Task0 = sb.Task;
+    const redraw0 = sb.mgraphics.redraw;
+    let paints = 0;
+    let queued = 0;
+    const tasks = [];
+    sb.mgraphics.redraw = () => { paints++; };
+    sb.Task = function (fn) {
+        this.fn = fn;
+        this.schedule = (ms) => { this.ms = ms; queued++; };
+        this.cancel = () => { this.cancelled = true; };
+        tasks.push(this);
+    };
+    sb.redrawTask = null;
+    sb.redrawQueued = 0;
+    sb.set_filt_cutoff(400);
+    sb.set_filt_cutoff(800);
+    sb.set_filt_res(20);
+    assert.strictEqual(paints, 0, "automation echoes do not paint immediately");
+    assert.strictEqual(queued, 1, "a burst of automation schedules one paint");
+    assert.strictEqual(tasks[0].ms, 16, "the shared paint waits one frame");
+    tasks[0].fn();
+    assert.strictEqual(paints, 1, "the scheduled paint runs once");
+    queued = 0;
+    sb.set_filt_cutoff(800);
+    assert.strictEqual(queued, 0, "an unchanged automated value does not repaint");
+    paints = 0;
+    sb.storeParam("filt_cutoff", 900, true);
+    assert.strictEqual(paints, 1, "a face edit still paints immediately");
+    sb.storeParam("filt_cutoff", cut, true);
+    sb.storeParam("filt_res", res, true);
+    sb.redrawTask = null;
+    sb.redrawQueued = 0;
+    sb.Task = Task0;
+    sb.mgraphics.redraw = redraw0;
+}
 console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles, sub oscillator and parameter reach ok");

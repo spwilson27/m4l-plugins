@@ -154,7 +154,11 @@ function line(x0, y0, x1, y1, c, a, lw) {
     mgraphics.stroke();
 }
 
+var fontKey = "";
 function font(size, bold) {
+    var key = (bold ? faceFontBold : faceFont) + "\n" + size;
+    if (key === fontKey) return;
+    fontKey = key;
     mgraphics.select_font_face(bold ? faceFontBold : faceFont);
     mgraphics.set_font_size(size);
 }
