@@ -80,7 +80,7 @@ var cpWave = [];
 /** @type {Array<number>} */
 var cpSpec = [];
 
-var CP_METER_BOXES = ["obj-panel-meters", "obj-title-meters", "obj-rule-meters", "obj-meters", "obj-reset"];
+var CP_METER_BOXES = ["obj-panel-meters", "obj-meters"];
 var CP_FILT_BOXES = [
     "obj-title-filt", "obj-rule-filt", "obj-filt-viz",
     "obj-ctrl-filton", "obj-ctrl-filttype",
@@ -97,20 +97,28 @@ var CP_PANELS = [
 ];
 
 // Compute the 5 compact Better-Sampler-style inline horizontal value bars across `csMidW`
+// Row 1: Drive, Detail, Ceil (3 columns)
+// Row 2: Shape, Sym, plus the Curve/Wave button in column 3 (`csViewBtnRect()`)
 function csBars() {
     var w = csMidW;
     var gap = 4;
     var w3 = Math.floor((w - gap * 2) / 3);
     var w3Last = w - (w3 + gap) * 2;
-    var w2 = Math.floor((w - gap) * 0.42);
-    var x20 = Math.round((w - (w2 * 2 + gap)) * 0.5);
     return [
         { key: "drive", ctrl: "Drive", label: "Drive", x: 0, y: 0, w: w3, h: 15, lo: 0, hi: 24, init: 0, bip: false },
         { key: "detail", ctrl: "Detail", label: "Detail", x: w3 + gap, y: 0, w: w3, h: 15, lo: 0, hi: 100, init: 100, bip: false },
         { key: "ceiling", ctrl: "Ceiling", label: "Ceil", x: (w3 + gap) * 2, y: 0, w: w3Last, h: 15, lo: -12, hi: 0, init: 0, bip: false },
-        { key: "shape", ctrl: "Shape", label: "Shape", x: x20, y: 18, w: w2, h: 15, lo: 0, hi: 100, init: 0, bip: false },
-        { key: "sym", ctrl: "Symmetry", label: "Sym", x: x20 + w2 + gap, y: 18, w: w2, h: 15, lo: -100, hi: 100, init: 0, bip: true }
+        { key: "shape", ctrl: "Shape", label: "Shape", x: 0, y: 18, w: w3, h: 15, lo: 0, hi: 100, init: 0, bip: false },
+        { key: "sym", ctrl: "Symmetry", label: "Sym", x: w3 + gap, y: 18, w: w3, h: 15, lo: -100, hi: 100, init: 0, bip: true }
     ];
+}
+
+function csViewBtnRect() {
+    var w = csMidW;
+    var gap = 4;
+    var w3 = Math.floor((w - gap * 2) / 3);
+    var w3Last = w - (w3 + gap) * 2;
+    return { x: (w3 + gap) * 2, y: 18, w: w3Last, h: 15 };
 }
 
 function csLcdRect() {
@@ -123,7 +131,7 @@ function csPlotRect() {
 
 function csDeviceWidth() {
     var closed = CS_TAB_W + csMidW + 206 + (cpShowFilt ? CS_FILT_W : 0);
-    return cpMeters ? (closed + 140) : closed;
+    return cpMeters ? (closed + 188) : closed;
 }
 
 function csMoveBox(id, x, y, w, h) {
@@ -160,7 +168,7 @@ function csApplyLayout() {
     var clipPanelW = 54 + w + outW;
     var optsX = 4 + dx + clipPanelW + 6;
     var metX = optsX + 60;
-    var openW = metX + 140;
+    var openW = metX + 188;
 
     csMoveBox("Input", inX, 6, 46, 15);
     csMoveBox("cp_in_meter", inX, 24, 46, 139);
@@ -175,21 +183,17 @@ function csApplyLayout() {
     var optX = optsX + 4;
     csMoveBox("obj-title-opts", optX, 4, 44, 12);
     csMoveBox("obj-rule-opts", optX + 44, 9, 4, 2);
-    csMoveBox("View", optX, 18, 48, 15);
-    csMoveBox("Stereo Mode", optX, 36, 48, 15);
-    csMoveBox("Channel Mode", optX, 54, 48, 15);
-    csMoveBox("Delta", optX, 74, 48, 15);
-    csMoveBox("DC", optX, 91, 48, 15);
-    csMoveBox("Oversample", optX, 108, 48, 15);
-    csMoveBox("Hard Limit", optX, 125, 48, 15);
-    csMoveBox("Show Meters", optX, 145, 48, 15);
+    csMoveBox("Stereo Mode", optX, 20, 48, 16);
+    csMoveBox("Channel Mode", optX, 39, 48, 16);
+    csMoveBox("Delta", optX, 62, 48, 16);
+    csMoveBox("DC", optX, 81, 48, 16);
+    csMoveBox("Oversample", optX, 100, 48, 16);
+    csMoveBox("Hard Limit", optX, 119, 48, 16);
+    csMoveBox("Show Meters", optX, 143, 48, 16);
     csMoveBox("obj-panel-opts", optsX, 4, 56, 161);
 
-    csMoveBox("obj-title-meters", metX + 4, 4, 42, 12);
-    csMoveBox("obj-rule-meters", metX + 49, 9, 80, 2);
-    csMoveBox("obj-meters", metX + 4, 20, 128, 122);
-    csMoveBox("obj-reset", metX + 4, 146, 56, 15);
-    csMoveBox("obj-panel-meters", metX, 4, 136, 161);
+    csMoveBox("obj-meters", metX + 4, 6, 176, 157);
+    csMoveBox("obj-panel-meters", metX, 4, 184, 161);
     csMoveBox("obj-panel-body", 0, 0, openW, 169);
 }
 
@@ -750,6 +754,22 @@ function csDrawValueBar(b) {
     sptTextIn(csFmtVal(b.key, v), b.x + b.w - 3.0, b.y + b.h - 3.5, acc, fs, 2, rect);
 }
 
+function csDrawViewBtn() {
+    var b = csViewBtnRect();
+    var bg = sptColor("live_control_bg");
+    var frame = sptColor("live_lcd_frame");
+    var txtCol = sptColor("live_control_fg");
+    sptRgba(bg);
+    mgraphics.rectangle(b.x, b.y, b.w, b.h);
+    mgraphics.fill();
+    sptRgba(frame);
+    mgraphics.set_line_width(1);
+    mgraphics.rectangle(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+    mgraphics.stroke();
+    var lbl = cpView ? "Wave" : "Curve";
+    sptTextIn(lbl, b.x + b.w * 0.5, b.y + b.h - 3.5, txtCol, 8.0, 1, b);
+}
+
 function csXPix(v, plot) {
     return plot.x + (v + CS_SPAN) / (2 * CS_SPAN) * plot.w;
 }
@@ -764,6 +784,7 @@ function paintViz() {
     for (i = 0; i < bars.length; i++) {
         csDrawValueBar(bars[i]);
     }
+    csDrawViewBtn();
 
     var lcd = csLcdRect();
     var plot = csPlotRect();
@@ -995,6 +1016,14 @@ function onclick(x, y) {
         return;
     }
     if (CS_ROLE !== "viz") return;
+    var vb = csViewBtnRect();
+    if (x >= vb.x && x <= vb.x + vb.w && y >= vb.y && y <= vb.y + vb.h) {
+        cpView = cpView ? 0 : 1;
+        cpWriteCtrl("View", cpView);
+        cpDragOn = 0;
+        mgraphics.redraw();
+        return;
+    }
     var b = csHitBar(x, y);
     if (b) {
         cpDragOn = 2;

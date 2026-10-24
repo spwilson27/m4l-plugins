@@ -254,9 +254,9 @@ function maxDiff(fn) {
     }
     for (const c of canvases) for (const w of live) assert.ok(!overlaps(c, w), `${c.id} overlaps ${w.id}`);
     const meters = boxes.find((b) => b.id === "obj-meters");
-    const reset = boxes.find((b) => b.id === "obj-reset");
-    assert.ok(meters && meters.hidden === 1 && reset && reset.hidden === 1, "meters start hidden");
-    assert.ok(!overlaps(meters, reset), "meter canvas clears the Reset button");
+    assert.ok(meters && meters.hidden === 1, "meters start hidden");
+    assert.deepStrictEqual(meters.presentation_rect.slice(2), [176, 157], "meters black box is enlarged to 176x157");
+    assert.ok(!boxes.some((b) => b.id === "obj-title-meters" || b.id === "obj-reset"), "Meters label and Reset button are moved inside the black box");
     const show = boxes.find((b) => b.id === "obj-ctrl-meters");
     assert.strictEqual(show.saved_attribute_attributes.valueof.parameter_invisible, 1);
     assert.strictEqual(show.saved_attribute_attributes.valueof.parameter_initial[0], 0);
@@ -280,8 +280,7 @@ function maxDiff(fn) {
     assert.deepStrictEqual(autoMenu.saved_attribute_attributes.valueof.parameter_enum, ["Man", "Auto"]);
     const viewMenu = boxes.find((b) => b.id === "obj-ctrl-view");
     assert.strictEqual(viewMenu.maxclass, "live.menu", "Meter View is a live.menu selection box");
-    assert.deepStrictEqual(viewMenu.tricolor, [0, 0, 0, 0]);
-    assert.ok(viewMenu.presentation_rect[0] >= 298, "Meter View selection box is in the right-hand Options panel");
+    assert.strictEqual(viewMenu.presentation, 0, "Curve button is drawn next to Sym slider inside obj-viz rather than in Options");
     assert.ok(!boxes.some((b) => b.id === "obj-ctrl-midw"), "Mid Size control is removed");
     const vizBox = boxes.find((b) => b.id === "obj-viz");
     assert.strictEqual(vizBox.presentation_rect[2], 180, "Central display width is fixed to 180 px");
@@ -413,11 +412,15 @@ function maxDiff(fn) {
         face.ondrag(56, 50, 1); // drag downward -> decreases Q
         assert.ok(face.cpFiltQ < 1.0, "Dragging downward in Low-Cut XY panel decreases Q, got " + face.cpFiltQ);
     }
-    run(meterCode, 128, 122, "meters");
-    run(meterCode, 128, 122, "meters-preview", (face) => {
+    run(meterCode, 176, 157, "meters");
+    const mPrev = run(meterCode, 176, 157, "meters-preview", (face) => {
         face.preview();
     });
-    run(meterCode, 128, 122, "meters-full", (face) => {
+    const mTxts = mPrev.rec.shapes.filter((s) => s.kind === "text").map((s) => String(s.text));
+    assert.ok(mTxts.includes("Meters") && mTxts.includes("Reset"), "Meters black box draws both Meters label and Reset button inside the top row");
+    mPrev.face.onclick(68, 12);
+    assert.strictEqual(mPrev.face.cpMeter.momentary()[0], -120, "Clicking Reset inside the top of the black box resets the meters");
+    run(meterCode, 176, 157, "meters-full", (face) => {
         const m = face.cpMeter;
         for (let i = 0; i < 80; i++) m.push(0.01, 0.008, 0.012, 0.009, 0.4, 0.3);
     });

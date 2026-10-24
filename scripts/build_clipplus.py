@@ -32,8 +32,8 @@ FILT_W = 120.0
 MID_W = 180.0
 OUT_W = 82.0
 CLOSED_W = TAB_W + MID_W + 206.0          # 406.0
-OPEN_W = CLOSED_W + 140.0                 # 546.0
-MAX_W = OPEN_W + FILT_W                   # 666.0
+OPEN_W = CLOSED_W + 188.0                 # 594.0
+MAX_W = OPEN_W + FILT_W                   # 714.0
 LATENCY = 1047
 
 # (key, long, short, lo, hi, init, type, unit, gen message, ui message, help)
@@ -288,7 +288,7 @@ def build():
         sc.v8ui("obj-in-meter", ui_in, [in_x, 24, 46, 139], (20, 40), 1, varname="cp_in_meter"),
         sc.v8ui("obj-viz", ui_viz, [viz_x, 6, MID_W, 157], (20, 80), 2, varname="cp_face"),
         sc.v8ui("obj-out-meter", ui_out, [out_x, 24, OUT_W, 139], (20, 120), 1, varname="cp_out_meter"),
-        hide(sc.v8ui("obj-meters", meters, [met_x + 4, 20, 128, 122], (700, 80), 1, varname="obj-meters")),
+        hide(sc.v8ui("obj-meters", meters, [met_x + 4, 6, 176, 157], (700, 80), 1, varname="obj-meters")),
     ]
     lines = []
 
@@ -303,16 +303,16 @@ def build():
     boxes.append(sc.newobj("obj-ui-showfilt", "prepend set_showfilt", 360, 22, 130))
 
     toggles = [
-        ("dlt", "Delta", "Delta", "Delta", opt_btn_x, 74, 48, 0, "dlt", "set_dlt", False, "Delayed input minus the processed output."),
-        ("dc", "DC", "DC", "DC", opt_btn_x, 91, 48, 0, "dcon", "set_dcon", False, "15 Hz highpass in front of the drive."),
-        ("os", "Oversample", "4x", "4x", opt_btn_x, 108, 48, 0, "oson", "set_oson", False, "4x oversampling on the waveshaper."),
-        ("hlim", "Hard Limit", "Peak", "Peak", opt_btn_x, 125, 48, 1, "hlim", "set_hlim", False, "Brickwall sample clip at the ceiling, after the detail crossfade."),
-        ("meters", "Show Meters", "Meters", "Meters", opt_btn_x, 145, 48, 0, None, "set_meters", True, "Open the LUFS, RMS and peak meters."),
+        ("dlt", "Delta", "Delta", "Delta", opt_btn_x, 62, 48, 0, "dlt", "set_dlt", False, "Delayed input minus the processed output."),
+        ("dc", "DC", "DC", "DC", opt_btn_x, 81, 48, 0, "dcon", "set_dcon", False, "15 Hz highpass in front of the drive."),
+        ("os", "Oversample", "4x", "4x", opt_btn_x, 100, 48, 0, "oson", "set_oson", False, "4x oversampling on the waveshaper."),
+        ("hlim", "Hard Limit", "Peak", "Peak", opt_btn_x, 119, 48, 1, "hlim", "set_hlim", False, "Brickwall sample clip at the ceiling, after the detail crossfade."),
+        ("meters", "Show Meters", "Meters", "Meters", opt_btn_x, 143, 48, 0, None, "set_meters", True, "Open the LUFS, RMS and peak meters."),
     ]
 
     y_wire = 40.0
     for key, long_name, short, text, x, y, w, initial, gen_msg, ui_msg, stored, help_text in toggles:
-        h = 15
+        h = 16
         boxes.append(make_toggle(key, long_name, short, text, x, y, w, h, initial, help_text, stored))
         if gen_msg:
             boxes.append(sc.newobj(f"obj-prep-{key}", f"prepend {gen_msg}", 200, y_wire, 110))
@@ -332,21 +332,23 @@ def build():
     boxes.append(sc.newobj("obj-ui-auto", "prepend set_autog", 360, y_wire, 130))
     y_wire += 18
 
-    # Text-only popup Meter Type selection box (`live.menu` with hidden triangle) in the right-hand Options panel
+    # View parameter (`Curve` / `Wave`, drawn next to Sym slider inside `obj-viz`, kept off presentation)
     view = make_text_menu(
         "view",
         ("View", "View", ["Curve", "Wave"], 0),
         "Curve shows the bipolar transfer curve and where the signal hits it. Wave shows the waveform and shaved overs.",
-        opt_btn_x, 18, 48, 15,
+        20, 390, 48, 15,
         fontsize=8.0,
         stored_only=True,
     )
+    view["box"]["presentation"] = 0
+    view["box"].pop("presentation_rect", None)
     boxes.append(view)
     boxes.append(sc.newobj("obj-ui-view", "prepend set_view", 520, y_wire, 120))
     y_wire += 18
 
     y_wire = add_filter_popout_and_routing(
-        boxes, lines, ui_filt, opt_btn_x, 36, opt_btn_x, 54, y_wire,
+        boxes, lines, ui_filt, opt_btn_x, 20, opt_btn_x, 39, y_wire,
         extra_targets=("obj-in-meter", "obj-out-meter", "obj-filt-tab"),
     )
 
@@ -377,10 +379,6 @@ def build():
         boxes.append(sc.newobj(f"obj-prep-{key}", f"prepend {gen_msg}", 200, 416 + idx * 18, 120))
         boxes.append(sc.newobj(f"obj-ui-{key}", f"prepend {ui_msg}", 360, 416 + idx * 18, 130))
 
-    reset = sc.make_theme_text("obj-reset", "Reset", met_x + 4, 146, 56, 15, toggle=False)
-    boxes.append(hide(reset))
-    boxes.append(sc.newobj("obj-prep-reset", "prepend reset_meters", 520, 460, 140))
-
     boxes.extend([
         with_name(sc.newobj("obj-plugin", "plugin~", 20, 240, 60, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "cp_plugin"),
         with_name(sc.newobj("obj-plugout", "plugout~", 20, 520, 70, numinlets=2, numoutlets=2, outlettype=["signal", "signal"]), "cp_plugout"),
@@ -401,13 +399,10 @@ def build():
     opts_panel, opts_parts = sc.make_section("opts", opts_x, 4, 56, 161, "Options", title_w=42)
     with_name(place(opts_parts[0], [opt_btn_x, 4, 44, 12]), "obj-title-opts")
     with_name(place(opts_parts[1], [opt_btn_x + 44, 9, 4, 2]), "obj-rule-opts")
-    meter_panel, meter_parts = sc.make_section("meters", met_x, 4, 136, 161, "Meters", title_w=42)
-    with_name(meter_parts[0], "obj-title-meters")
-    with_name(meter_parts[1], "obj-rule-meters")
+    meter_panel = sc.make_theme_panel("obj-panel-meters", met_x, 4, 184, 161, "live_desktop")
 
     boxes.extend(hide(p) for p in filt_parts)
     boxes.extend(opts_parts)
-    boxes.extend(hide(p) for p in meter_parts)
     boxes.append(filt_panel)
     boxes.append(clip_panel)
     boxes.append(opts_panel)
@@ -438,8 +433,6 @@ def build():
         sc.line("obj-ctrl-auto", 0, "obj-ui-auto"),
         sc.line("obj-ui-auto", 0, "obj-viz"),
         sc.line("obj-ui-auto", 0, "obj-out-meter"),
-        sc.line("obj-reset", 0, "obj-prep-reset"),
-        sc.line("obj-prep-reset", 0, "obj-meters"),
     ])
 
     for key, _long, _short, _text, _x, _y, _w, _initial, gen_msg, _ui, _stored, _help in toggles:
