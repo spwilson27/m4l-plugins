@@ -303,16 +303,16 @@ def build():
     boxes.append(sc.newobj("obj-ui-showfilt", "prepend set_showfilt", 360, 22, 130))
 
     toggles = [
-        ("dlt", "Delta", "Delta", "Delta", opt_btn_x, 62, 48, 0, "dlt", "set_dlt", False, "Delayed input minus the processed output."),
-        ("dc", "DC", "DC", "DC", opt_btn_x, 81, 48, 0, "dcon", "set_dcon", False, "15 Hz highpass in front of the drive."),
-        ("os", "Oversample", "4x", "4x", opt_btn_x, 100, 48, 0, "oson", "set_oson", False, "4x oversampling on the waveshaper."),
-        ("hlim", "Hard Limit", "Peak", "Peak", opt_btn_x, 119, 48, 1, "hlim", "set_hlim", False, "Brickwall sample clip at the ceiling, after the detail crossfade."),
-        ("meters", "Show Meters", "Meters", "Meters", opt_btn_x, 143, 48, 0, None, "set_meters", True, "Open the LUFS, RMS and peak meters."),
+        ("dlt", "Delta", "Delta", "Delta", opt_btn_x, 60, 48, 0, "dlt", "set_dlt", False, "Delayed input minus the processed output."),
+        ("dc", "DC", "DC", "DC", opt_btn_x, 78, 48, 0, "dcon", "set_dcon", False, "15 Hz highpass in front of the drive."),
+        ("os", "Oversample", "4x", "4x", opt_btn_x, 96, 48, 0, "oson", "set_oson", False, "4x oversampling on the waveshaper."),
+        ("hlim", "Hard Limit", "Peak", "Peak", opt_btn_x, 114, 48, 1, "hlim", "set_hlim", False, "Brickwall sample clip at the ceiling, after the detail crossfade."),
+        ("meters", "Show Meters", "Meters", "Meters", opt_btn_x, 144, 48, 0, None, "set_meters", True, "Open the LUFS, RMS and peak meters."),
     ]
 
     y_wire = 40.0
     for key, long_name, short, text, x, y, w, initial, gen_msg, ui_msg, stored, help_text in toggles:
-        h = 16
+        h = 15
         boxes.append(make_toggle(key, long_name, short, text, x, y, w, h, initial, help_text, stored))
         if gen_msg:
             boxes.append(sc.newobj(f"obj-prep-{key}", f"prepend {gen_msg}", 200, y_wire, 110))
@@ -348,7 +348,7 @@ def build():
     y_wire += 18
 
     y_wire = add_filter_popout_and_routing(
-        boxes, lines, ui_filt, opt_btn_x, 20, opt_btn_x, 39, y_wire,
+        boxes, lines, ui_filt, opt_btn_x, 20, opt_btn_x, 38, y_wire,
         extra_targets=("obj-in-meter", "obj-out-meter", "obj-filt-tab"),
     )
 

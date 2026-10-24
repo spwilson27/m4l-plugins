@@ -183,13 +183,13 @@ function csApplyLayout() {
     var optX = optsX + 4;
     csMoveBox("obj-title-opts", optX, 4, 44, 12);
     csMoveBox("obj-rule-opts", optX + 44, 9, 4, 2);
-    csMoveBox("Stereo Mode", optX, 20, 48, 16);
-    csMoveBox("Channel Mode", optX, 39, 48, 16);
-    csMoveBox("Delta", optX, 62, 48, 16);
-    csMoveBox("DC", optX, 81, 48, 16);
-    csMoveBox("Oversample", optX, 100, 48, 16);
-    csMoveBox("Hard Limit", optX, 119, 48, 16);
-    csMoveBox("Show Meters", optX, 143, 48, 16);
+    csMoveBox("Stereo Mode", optX, 20, 48, 15);
+    csMoveBox("Channel Mode", optX, 38, 48, 15);
+    csMoveBox("Delta", optX, 60, 48, 15);
+    csMoveBox("DC", optX, 78, 48, 15);
+    csMoveBox("Oversample", optX, 96, 48, 15);
+    csMoveBox("Hard Limit", optX, 114, 48, 15);
+    csMoveBox("Show Meters", optX, 144, 48, 15);
     csMoveBox("obj-panel-opts", optsX, 4, 56, 161);
 
     csMoveBox("obj-meters", metX + 4, 6, 176, 157);

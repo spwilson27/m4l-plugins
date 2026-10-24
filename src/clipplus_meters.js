@@ -9,7 +9,7 @@ mgraphics.autofill = 0;
 var M_W = 176;
 var M_H = 157;
 var M_RECT = { x: 0, y: 0, w: M_W, h: M_H };
-var M_RESET_RECT = { x: 54, y: 5, w: 48, h: 16 };
+var M_RESET_RECT = { x: 64, y: 6, w: 36, h: 13 };
 
 var cpMeter = new CpMeter(48000);
 var cpMeterSeen = -1;
@@ -108,20 +108,21 @@ function paint() {
     var i, y;
     sptLcd(0, 0, M_W, M_H);
 
-    // Top bar inside the black box: "Meters" label on left, "Reset" pill in the open middle slot, "In" / "Out" on right
-    sptTextIn("Meters", 8, 17, title, 10.0, 0, M_RECT);
+    // Top bar inside the black box: "Meters" label on left, "Reset" button aligned with the meter bars column, "In" / "Out" on right
+    var hdrY = 16.0;
+    sptTextIn("Meters", 8, hdrY, title, 9.5, 0, M_RECT);
 
     sptRgba(sptColor("live_control_bg"));
-    mgraphics.rectangle_rounded(M_RESET_RECT.x, M_RESET_RECT.y, M_RESET_RECT.w, M_RESET_RECT.h, 7, 7);
+    mgraphics.rectangle_rounded(M_RESET_RECT.x, M_RESET_RECT.y, M_RESET_RECT.w, M_RESET_RECT.h, 1.5, 1.5);
     mgraphics.fill();
-    sptRgba(accCol);
+    sptRgba(sptColor("live_lcd_frame"));
     mgraphics.set_line_width(1);
-    mgraphics.rectangle_rounded(M_RESET_RECT.x + 0.5, M_RESET_RECT.y + 0.5, M_RESET_RECT.w - 1, M_RESET_RECT.h - 1, 7, 7);
+    mgraphics.rectangle_rounded(M_RESET_RECT.x + 0.5, M_RESET_RECT.y + 0.5, M_RESET_RECT.w - 1, M_RESET_RECT.h - 1, 1.5, 1.5);
     mgraphics.stroke();
-    sptTextIn("Reset", M_RESET_RECT.x + M_RESET_RECT.w * 0.5, M_RESET_RECT.y + 11.5, accCol, 9.0, 1, M_RECT);
+    sptTextIn("Reset", M_RESET_RECT.x + M_RESET_RECT.w * 0.5, M_RESET_RECT.y + M_RESET_RECT.h - 3.2, sptColor("live_control_fg"), 8.0, 1, M_RECT);
 
-    sptTextIn("In", 112, 17, title, 9.5, 0, M_RECT);
-    sptTextIn("Out", 144, 17, title, 9.5, 0, M_RECT);
+    sptTextIn("In", 112, hdrY, title, 9.5, 0, M_RECT);
+    sptTextIn("Out", 144, hdrY, title, 9.5, 0, M_RECT);
 
     for (i = 0; i < rows.length; i++) {
         y = 43 + i * 24;
