@@ -14,6 +14,7 @@ Environment:
                           Repitch Freeze (rpf_) and grain telemetry (tel_) cases and checks; or one group with SAMPLER_CRUNCH_ONLY /
                           SAMPLER_SPF_ONLY / SAMPLER_RPF_ONLY / SAMPLER_TEL_ONLY
   SAMPLER_SG_ONLY=1       with SAMPLER_CASE='^sg_': the Sample Gain (samp_gain) cases and checks
+  SAMPLER_PAN_ONLY=1      with SAMPLER_CASE='^(pan_|uni_)': oscillator pan, unison width and detune checks
   SAMPLER_ES_ONLY=1       with SAMPLER_CASE='^es_': envelope slope (atk_slope ... mrel_slope) cases and checks; es_null prints
                           "ES_NULL chk=.. rms=.. peak=.." (run it with SAMPLER_GEN=<old core> to compare: bit-identical at slope 0)
   SAMPLER_TV_ONLY=1       with SAMPLER_CASE='^tv_': per-voice envelope / filter telemetry cases (scope 128..207)
@@ -983,6 +984,21 @@ add("es_null", P(TV_BASE + ", atk_ms 40, dec_ms 120, sus_lvl 0.4, rel_ms 200, fi
     1000, release_ms=450, opts=S48)
 ES_CASES.append("es_null")
 
+# Oscillator pan (gen units, -1..1) and unison. notes=57 forces one centered voice (pan seed 0).
+# Center must match an omitted pan. Hard pan is one-sided. Sub pan is independent of osc 1.
+# One voice ignores width. Several voices at the default detune (0.15) and full width spread.
+# A wide detune against a flat stack must beat (the ratio is in the output, not only stored).
+PAN_OPTS = T48
+add("pan_off", P("mode 0"), 500, opts=PAN_OPTS)
+add("pan_center", P("mode 0, osc1_pan 0"), 500, opts=PAN_OPTS)
+add("pan_left", P("mode 0, osc1_pan -1"), 500, opts=PAN_OPTS)
+add("pan_right", P("mode 0, osc1_pan 1"), 500, opts=PAN_OPTS)
+add("pan_split", P("mode 0, osc1_pan -1, sub_on 1, sub_gain 0, sub_pan 1"), 500, opts=PAN_OPTS)
+add("uni_one", P("mode 0, unison_voices 1, unison_detune 0.15, unison_width 0.65"), 500, opts=PAN_OPTS)
+add("uni_wide", P("mode 0, unison_voices 4, unison_detune 0.15, unison_width 1"), 500, opts=PAN_OPTS)
+add("uni_flat", P("mode 0, unison_voices 4, unison_detune 0, unison_width 0"), 500, opts=S48)
+add("uni_det", P("mode 0, unison_voices 4, unison_detune 0.85, unison_width 0"), 500, opts=S48)
+
 
 def run_with_retry(gen_code, case):
     """One render per case. The harness serialises Max machine-wide, and a missing or invalid result is a
@@ -1161,6 +1177,14 @@ def main():
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
             raise SystemExit(1)
         print("Note-sequence and Loop Off checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_PAN_ONLY"):
+        # SAMPLER_CASE='^(pan_|uni_)' SAMPLER_PAN_ONLY=1: pan, unison width and detune
+        run_pan_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Pan and unison checks passed.")
         return
     if only:
         print("Partial sampler audio run; cross-case checks skipped.")
@@ -2140,6 +2164,37 @@ def run_new_checks(results):
     check(R["fr_surv1"]["afterRms"] > 0.03 and R["fr_surv1"]["afterRms"] > 10.0 * R["fr_surv0"]["afterRms"],
           f"Grains must survive the voice end only when asked (after {R['fr_surv1']['afterRms']:.4f} vs {R['fr_surv0']['afterRms']:.4f})")
     check(R["fr_uni"]["stereoDiff"] > 0.1, "Fragments unison must spread the grains")
+    run_pan_checks(results)
+
+
+def run_pan_checks(results):
+    off, mid = results["pan_off"], results["pan_center"]
+    left, right, split = results["pan_left"], results["pan_right"], results["pan_split"]
+    check(off["peak"] > 0.04 and mid["peak"] > 0.04, "centered pan must stay audible")
+    check(off["stereoDiff"] < 0.008 and mid["stereoDiff"] < 0.008,
+          f"center pan stays mono (off {off['stereoDiff']:.4f}, center {mid['stereoDiff']:.4f})")
+    rel = abs(off["peak"] - mid["peak"]) / max(off["peak"], 1e-9)
+    rel_r = abs(off["rms"] - mid["rms"]) / max(off["rms"], 1e-9)
+    check(rel < 0.02 and rel_r < 0.02,
+          f"osc1_pan 0 must match an omitted pan (peak {mid['peak']:.4f} vs {off['peak']:.4f}, rms {mid['rms']:.4f} vs {off['rms']:.4f})")
+    check(left["peakL"] > 0.04 and left["peakL"] > left["peakR"] * 8.0,
+          f"hard left must keep the right quiet (L {left['peakL']:.4f} R {left['peakR']:.4f})")
+    check(right["peakR"] > 0.04 and right["peakR"] > right["peakL"] * 8.0,
+          f"hard right must keep the left quiet (L {right['peakL']:.4f} R {right['peakR']:.4f})")
+    check(left["peakL"] > mid["peakL"] * 1.15,
+          f"hard left should be louder on the left than center (L {left['peakL']:.4f} vs {mid['peakL']:.4f})")
+    check(split["peakL"] > 0.03 and split["peakR"] > 0.03 and split["peakR"] > left["peakR"] * 4.0,
+          f"sub pan right must fill the side osc 1 left emptied (split L {split['peakL']:.4f} R {split['peakR']:.4f}, "
+          f"left-only R {left['peakR']:.4f})")
+    one, wide = results["uni_one"], results["uni_wide"]
+    check(one["peak"] > 0.04 and one["stereoDiff"] < 0.01,
+          f"1 voice must ignore detune width (stereoDiff {one['stereoDiff']:.4f})")
+    check(wide["stereoDiff"] > one["stereoDiff"] + 0.015,
+          f"4 voices at detune 0.15 and full width must spread (wide {wide['stereoDiff']:.4f} vs one {one['stereoDiff']:.4f})")
+    flat, det = results["uni_flat"], results["uni_det"]
+    check(det["peak"] > 0.04 and flat["peak"] > 0.04, "unison detune cases must be audible")
+    check(det["modDepth"] > flat["modDepth"] + 0.015,
+          f"detune 0.85 on 4 voices must beat against a flat stack (modDepth {det['modDepth']:.4f} vs {flat['modDepth']:.4f})")
 
 
 if __name__ == "__main__":

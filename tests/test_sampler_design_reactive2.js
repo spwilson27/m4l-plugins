@@ -39,6 +39,28 @@ const sb = {
 vm.createContext(sb);
 vm.runInContext(box.textfile.text, sb);
 const FP = sb.FACE_PARAMS;
+{
+    const route = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-route-param").text.split(/\s+/).slice(1);
+    const at = route.indexOf("osc1_pan");
+    assert.strictEqual(route[at - 1], "osc2_tune", "pan parameters are appended after osc2_tune");
+    assert.deepStrictEqual(route.slice(at, at + 3), ["osc1_pan", "osc2_pan", "sub_pan"], "osc 1, osc 2, then sub pan");
+    for (const key of ["osc1_pan", "osc2_pan", "sub_pan"]) {
+        assert.strictEqual(patcher.boxes.map((b) => b.box).find((b) => b.id === `obj-scale-${key}`).text, "* 0.01", `${key} scales into -1..1`);
+        assert.strictEqual(FP[key].lo, -100);
+        assert.strictEqual(FP[key].hi, 100);
+        assert.strictEqual(FP[key].init, 0);
+        assert.strictEqual(typeof sb["set_" + key], "function", `${key} setter`);
+    }
+    const node = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-drag-node");
+    assert.ok(node && node.maxclass === "node.codebox" && node.ignoreclick === 1, "reactive2 embeds the file-drag node");
+    assert.ok(String(node.code).includes("xo_drag_helper_v6_bin") && String(node.code).includes("selected_raw"), "drag node reuses XO's helper");
+    const vizRoute = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-route-viz").text.split(/\s+/).slice(1);
+    assert.deepStrictEqual(vizRoute.slice(-2), ["arm_drag", "disarm_drag"], "drag messages are appended to the viz route");
+    const linked = (a, ao, b, bo) => patcher.lines.some((l) => l.patchline.source[0] === a && l.patchline.source[1] === ao && l.patchline.destination[0] === b && l.patchline.destination[1] === bo);
+    assert.ok(linked("obj-route-viz", 9, "obj-prep-arm-drag", 0) && linked("obj-prep-arm-drag", 0, "obj-drag-node", 0), "arm_drag reaches the node");
+    assert.ok(linked("obj-route-viz", 10, "obj-msg-disarm-drag", 0) && linked("obj-msg-disarm-drag", 0, "obj-drag-node", 0), "disarm_drag reaches the node");
+    assert.ok(linked("obj-drag-node", 0, "obj-viz", 0), "name_click returns to the face");
+}
 sb.setbuffers("#0-bsamp", "#0-bsvoices", "#0-bsscope", "#0-bspitch");
 sb.sample_loaded("/Users/test/Pad.wav");
 sb.sample_loaded("bang");
@@ -344,16 +366,154 @@ sb.setFoldMask(0b1011);
         const gain = sb.hitZones.find((z) => z.kind === "value" && z.key === "samp_gain" && z.y >= S.y);
         assert.ok(speed && pos && frz, `mode ${mode}: Speed, Pos and Freeze are drawn`);
         assert.ok(speed.x < S.x + 286 && pos.x < S.x + 286 && frz.x < S.x + 286, "playhead stays in the sampler column");
-        assert.ok(speed.y < pos.y && speed.x >= pos.x - 1, "Speed sits above Pos");
+        assert.ok(pos.y < speed.y && Math.abs(speed.x - pos.x) <= 1, "Speed sits under Pos");
+        sb.setParamFromFace("grain_motion", 100);
+        sb.paint();
+        const bar = sb.hitZones.find((z) => z.kind === "value" && z.key === "grain_motion");
+        const bx = bar.x + bar.w / 2, by = bar.y + bar.h / 2;
+        sb.onclick(bx, by, 1, 0, 0);
+        sb.ondrag(bx + 30, by, 1, 0, 0);
+        assert.ok(sb.paramValue("grain_motion") > 100, "dragging a bar right raises it");
+        sb.ondrag(bx - 30, by, 1, 0, 0);
+        assert.ok(sb.paramValue("grain_motion") < 100, "dragging a bar left lowers it");
+        sb.ondrag(bx, by + 30, 1, 0, 0);
+        assert.ok(sb.paramValue("grain_motion") < 100, "dragging a bar down lowers it");
+        sb.ondrag(bx, by - 30, 1, 0, 0);
+        assert.ok(sb.paramValue("grain_motion") > 100, "dragging a bar up raises it");
+        sb.ondrag(bx, by, 0, 0, 0);
+        sb.setParamFromFace("grain_motion", 100);
         assert.ok(Math.abs(frz.x - (pos.x + pos.w)) <= 6 && Math.abs(frz.y - pos.y) <= 1, "Freeze sits beside Pos");
         assert.ok(gain && gain.w === 50 && gain.h === 16 && gain.x === S.x + 410, "Gain stays 50 px");
+        const pan = sb.hitZones.find((z) => z.kind === "value" && z.key === "osc1_pan" && z.y >= S.y);
+        assert.ok(pan && pan.w === gain.w && pan.h === gain.h && pan.y === gain.y && pan.hbar === 1, "Pan matches Gain and drags as a horizontal bar");
+        const panGap = gain.x - (pan.x + pan.w);
+        assert.strictEqual(panGap, 4, "Pan sits one gap to the left of Gain");
+        const slot = { x: pan.x - panGap - pan.w, y: pan.y, w: pan.w, h: pan.h };
+        assert.ok(slot.x >= S.x + 292, "the free slot stays in the tuning column");
+        assert.ok(!sb.hitZones.some((z) => !(z.x + z.w <= slot.x || slot.x + slot.w <= z.x || z.y + z.h <= slot.y || slot.y + slot.h <= z.y)), "a slot the width of Pan stays empty further left");
+        sb.setParamFromFace("osc1_pan", 0);
+        sb.paint();
+        const pz = sb.hitZones.find((z) => z.kind === "value" && z.key === "osc1_pan");
+        const px = pz.x + pz.w / 2, py = pz.y + pz.h / 2;
+        sb.onclick(px, py, 1, 0, 0);
+        sb.ondrag(px + 30, py, 1, 0, 0);
+        assert.ok(sb.paramValue("osc1_pan") > 0, "dragging Pan right raises it");
+        sb.ondrag(px - 30, py, 1, 0, 0);
+        assert.ok(sb.paramValue("osc1_pan") < 0, "dragging Pan left lowers it");
+        sb.ondrag(px, py + 30, 1, 0, 0);
+        assert.ok(sb.paramValue("osc1_pan") < 0, "dragging Pan down lowers it");
+        sb.ondrag(px, py - 30, 1, 0, 0);
+        assert.ok(sb.paramValue("osc1_pan") > 0, "dragging Pan up raises it");
+        sb.ondrag(px, py, 0, 0, 0);
+        sb.setParamFromFace("osc1_pan", 0);
+        assert.strictEqual(sb.toNorm("osc1_pan", 0), 0.5, "Pan is bipolar around center");
     }
     sb.oscTab = 2;
     sb.paint();
     const subGain = sb.hitZones.find((z) => z.kind === "value" && z.key === "sub_gain");
     assert.ok(subGain && subGain.w === 50 && subGain.h === 16 && subGain.x === S.x + 410, "sub Level matches Gain");
+    const subPan = sb.hitZones.find((z) => z.kind === "value" && z.key === "sub_pan");
+    assert.ok(subPan && subPan.w === subGain.w && subPan.h === subGain.h && subPan.y === subGain.y && subGain.x - (subPan.x + subPan.w) === 4, "sub Pan sits one gap left of Level");
     sb.oscTab = 0;
     sb.setParamFromFace("mode", 0);
+}
+
+// Unison: compact voice count, and Detune / Width with their words on the bar.
+{
+    const S = sb.STRIP;
+    const foldWas = sb.foldMask;
+    sb.setFoldMask(0);
+    sb.oscTab = 0;
+    sb.setParamFromFace("osc1_type", 0);
+    sb.setParamFromFace("unison_voices", 1);
+    const drawn = [];
+    sb.mgraphics.show_text = (s) => { drawn.push(String(s)); };
+    sb.paint();
+    const voices = sb.hitZones.find((z) => z.kind === "value" && z.key === "unison_voices" && z.y < S.y + 20);
+    const det = sb.hitZones.find((z) => z.kind === "value" && z.key === "unison_detune" && z.y < S.y + 20);
+    const wid = sb.hitZones.find((z) => z.kind === "value" && z.key === "unison_width" && z.y < S.y + 20);
+    assert.ok(voices && voices.w <= 24 && !voices.hbar, "voice count stays a compact vertical pill");
+    assert.ok(det && wid && det.hbar === 1 && wid.hbar === 1, "Detune and Width are horizontal bars");
+    assert.ok(drawn.includes("Detune") && drawn.includes("Width"), "Detune and Width are drawn as words");
+    assert.ok(det.x >= voices.x + voices.w && wid.x >= det.x + det.w, "voice count, Detune, then Width");
+    const vx = voices.x + voices.w / 2, vy = voices.y + voices.h / 2;
+    sb.onclick(vx, vy, 1, 0, 0);
+    sb.ondrag(vx, vy - 40, 1, 0, 0);
+    assert.ok(sb.paramValue("unison_voices") > 1, "dragging the voice pill up raises it");
+    sb.ondrag(vx, vy, 0, 0, 0);
+    sb.setParamFromFace("unison_voices", 1);
+    sb.setFoldMask(foldWas);
+}
+
+// Sample name: middle ellipsis, file drag of the showing oscillator, double-click reveals in Live's browser.
+{
+    sb.setFoldMask(0);
+    sb.oscTab = 0;
+    sb.setParamFromFace("osc1_type", 0);
+    sb.hasLoadedSample = 1;
+    sb.sampleFileName = "Granular Pad Texture Example.wav";
+    sb.sampleFilePath = "/Users/test/Drums/Granular Pad Texture Example.wav";
+    const drawn = [];
+    const show = sb.mgraphics.show_text;
+    sb.mgraphics.show_text = (s) => { drawn.push(String(s)); };
+    sb.paint();
+    sb.mgraphics.show_text = show;
+    const clipped = drawn.filter((s) => s.includes("…") && s.endsWith(".wav"));
+    assert.ok(clipped.length >= 1, "loaded sample name ellipsizes in the middle and keeps .wav");
+    assert.ok(clipped.every((s) => !s.endsWith("…")), "the ellipsis is not at the end of the file name");
+    assert.strictEqual(sb.fitFileName("Kick.wav", 200, 9), "Kick.wav", "a short file name is unchanged");
+    const name = sb.hitZones.find((z) => z.action === "browse");
+    assert.ok(name, "sample name stays clickable");
+    const mark = emitted.length;
+    sb.onidle(name.x + 4, name.y + 4);
+    const arm = emitted.slice(mark).find((a) => a[1] === "arm_drag");
+    assert.ok(arm && arm[2] === sb.sampleFilePath, "hovering the name arms a drag of osc 1's file");
+    sb.onidleout();
+    assert.ok(emitted.slice(mark).some((a) => a[1] === "disarm_drag"), "leaving the name disarms the drag");
+    sb.oscTab = 1;
+    sb.osc2Loaded = 1;
+    sb.osc2FileName = "Osc2 Hat.wav";
+    sb.osc2FilePath = "/Users/test/Drums/Osc2 Hat.wav";
+    sb.setParamFromFace("osc2_type", 0);
+    sb.paint();
+    const name2 = sb.hitZones.find((z) => z.action === "browse");
+    const mark2 = emitted.length;
+    sb.onidle(name2.x + 4, name2.y + 4);
+    const arm2 = emitted.slice(mark2).find((a) => a[1] === "arm_drag");
+    assert.ok(arm2 && arm2[2] === "/Users/test/Drums/Osc2 Hat.wav", "osc 2's name drags osc 2's file");
+    sb.onidleout();
+    sb.oscTab = 0;
+    sb.paint();
+    const calls = [];
+    sb.LiveAPI = function (path) {
+        this.path = path;
+        this.get = (prop) => {
+            if (path === "live_app browser") return prop === "current_project" ? ["id", 10] : ["id", 0];
+            if (path === "id 10") return prop === "children" ? ["id", 11] : [""];
+            if (path === "id 11") {
+                if (prop === "uri") return ["file:///Users/test/Drums/Granular Pad Texture Example.wav"];
+                if (prop === "name") return ["Granular Pad Texture Example.wav"];
+                return [];
+            }
+            return [];
+        };
+        this.call = (...args) => { calls.push([path, args]); };
+        this.set = (k, v) => { calls.push([path, ["set", k, v]]); };
+    };
+    const Task0 = sb.Task;
+    sb.Task = function (fn) { this.schedule = () => {}; this.cancel = () => {}; this._fn = fn; };
+    const browsed = emitted.length;
+    sb.nameClick();
+    sb.nameClick();
+    assert.ok(calls.some((c) => c[0] === "live_app view" && c[1][0] === "show_view" && c[1][1] === "Browser"), "double-click opens Live's browser");
+    assert.ok(calls.some((c) => c[1][0] === "set" && c[1][1] === "filter_type" && c[1][2] === 6), "browser is filtered to samples");
+    assert.ok(calls.some((c) => c[1][0] === "preview_item" && c[1][1] === "id" && c[1][2] === 11), "the file's browser item is previewed");
+    assert.ok(!emitted.slice(browsed).some((a) => a[1] === "browse"), "double-click does not open the file dialog");
+    sb.Task = Task0;
+    sb.sampleFileName = "Pad.wav";
+    sb.sampleFilePath = "/Users/test/Pad.wav";
+    sb.osc2Loaded = 0;
+    sb.oscTab = 0;
 }
 
 // --- Mod Matrix target label static fill and live modulation sum bar ---
@@ -805,9 +965,10 @@ for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 
     sb.matTab = 0;
     sb.envPage = page;
     for (const tb of [0, 1, 2]) { sb.envTab = tb; sb.paint(); collect(); }
+    if (page === 4) { sb.slotTypes[4] = 0; sb.paint(); collect(); sb.slotTypes[4] = 2; }
     sb.envTab = 0;
 }
-for (const mTab of [0, 1, 2, 3]) { sb.matTab = mTab; sb.paint(); collect(); }
+for (const mTab of [0, 1, 2, 3, 4]) { sb.matTab = mTab; sb.paint(); collect(); }
 sb.matTab = 0; sb.envPage = 0;
 for (const at of [2, 3, 4]) { sb.setParamFromFace("slice_at", at); sb.setParamFromFace("sliced", 1); sb.paint(); collect(); }
 for (const ot of [1, 2, 0]) {
@@ -844,6 +1005,8 @@ assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.jo
     assert.ok(sb.hitZones.some((z) => z.key === "osc2_pitch" && z.y >= sb.STRIP.y), "Pitch stays in the tuning strip");
     const stripGain = sb.hitZones.find((z) => z.kind === "value" && z.key === "osc2_gain" && z.y >= sb.STRIP.y);
     assert.ok(stripGain && stripGain.w === 50 && stripGain.h === 16 && stripGain.x === sb.STRIP.x + 410, "wavetable Gain keeps its size and place");
+    const stripPan = sb.hitZones.find((z) => z.kind === "value" && z.key === "osc2_pan" && z.y >= sb.STRIP.y);
+    assert.ok(stripPan && stripPan.w === 50 && stripPan.h === 16 && stripPan.y === stripGain.y && stripGain.x - (stripPan.x + stripPan.w) === 4, "wavetable Pan sits one gap left of Gain");
     assert.ok(!sb.hitZones.some((z) => z.y >= sb.STRIP.y && z.key === "grain_motion"), "wavetable strip has no Speed");
     assert.ok(!sb.hitZones.some((z) => z.y >= sb.STRIP.y && z.kind === "value" && z.key === "osc2_pos"), "wavetable strip has no Pos");
     assert.ok(!sb.hitZones.some((z) => z.y >= sb.STRIP.y && z.action === "freeze"), "wavetable strip has no Freeze");
@@ -886,8 +1049,18 @@ assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.jo
     sb.oscTab = 1;
     sb.setParamFromFace("osc2_type", 1);
     sb.dropfile("/tmp/shared-user-wave.wav");
-    assert.strictEqual(sb.wtSel[1].cat, sb.WT_USER, "a drop on wavetable mode imports it as the user table");
-    assert.strictEqual(sb.sampleFilePath, "/tmp/shared-user-wave.wav", "the drop stays the sample for sample mode");
+    assert.strictEqual(sb.wtSel[1].cat, sb.WT_USER, "a drop on osc 2 wavetable imports it as that oscillator's user table");
+    assert.strictEqual(sb.osc2FilePath, "/tmp/shared-user-wave.wav", "osc 2 keeps its own sample");
+    assert.strictEqual(sb.sampleFilePath, keptPath, "osc 1's sample is left alone");
+    sb.sample2_loaded("/tmp/shared-user-wave.wav");
+    sb.setParamFromFace("osc2_type", 0);
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.key === "osc2_root"), "osc 2 header tunes its own root");
+    assert.ok(sb.hitZones.some((z) => z.key === "osc2_tune"), "osc 2 header tunes its own sample fine");
+    assert.ok(!sb.hitZones.some((z) => z.key === "fine_cents"), "osc 2 sample fine is not osc 1's");
+    sb.osc2FilePath = "";
+    sb.osc2FileName = "";
+    sb.osc2Loaded = 0;
     sb.sampleFilePath = keptPath;
     sb.sampleFileName = keptName;
     sb.hasLoadedSample = keptLoaded;
@@ -1148,11 +1321,42 @@ sb.setParamFromFace("fine_range", 96.0);
 assert.strictEqual(sb.fmtParam("fine_cents", 100), "+96.0", "Fine at +100% with 96.0 range displays +96.0");
 assert.strictEqual(sb.fmtParam("fine_cents", -100), "-96.0", "Fine at -100% with 96.0 range displays -96.0");
 sb.setParamFromFace("fine_range", 1.0);
-for (const [ot, rKey, fKey] of [[0, "osc1_ratio", "fine_cents"], [1, "osc2_ratio", "osc2_detune"], [2, "sub_ratio", "sub_fine"]]) {
+for (const [ot, rKey, fKey] of [[0, "osc1_ratio", "osc1_detune"], [1, "osc2_ratio", "osc2_detune"], [2, "sub_ratio", "sub_fine"]]) {
     sb.oscTab = ot;
     sb.paint();
     assert.ok(sb.hitZones.some((z) => z.kind === "value" && z.key === rKey), `oscTab ${ot} has Ratio slider (${rKey})`);
-    assert.ok(sb.hitZones.some((z) => z.kind === "value" && z.key === fKey), `oscTab ${ot} has Fine slider (${fKey})`);
+    assert.ok(sb.hitZones.some((z) => z.kind === "value" && z.key === fKey && z.y >= sb.STRIP.y), `oscTab ${ot} has Fine slider (${fKey})`);
+}
+sb.oscTab = 0;
+sb.setParamFromFace("osc1_type", 0);
+sb.setParamFromFace("fine_cents", 25);
+sb.setParamFromFace("osc1_detune", 40);
+sb.paint();
+assert.ok(sb.hitZones.some((z) => z.key === "fine_cents" && z.y < sb.VIEW.y + 20), "sample pane keeps its own fine tune");
+assert.ok(sb.hitZones.some((z) => z.key === "osc1_detune" && z.y >= sb.STRIP.y), "tuning strip Fine is the oscillator detune");
+assert.strictEqual(sb.paramValue("fine_cents"), 25, "sample tune stays put when the strip detune is set");
+assert.strictEqual(sb.paramValue("osc1_detune"), 40, "strip detune stays put when the sample tune is set");
+sb.setParamFromFace("fine_cents", 0);
+sb.setParamFromFace("osc1_detune", 0);
+for (const [ot, rKey] of [[0, "osc1_ratio"], [1, "osc2_ratio"], [2, "sub_ratio"]]) {
+    sb.oscTab = ot;
+    sb.setParamFromFace(rKey, 1);
+    sb.paint();
+    const rz = sb.hitZones.find((z) => z.kind === "value" && z.key === rKey);
+    const rx = rz.x + rz.w / 2, ry = rz.y + rz.h / 2;
+    sb.onclick(rx, ry, 1, 0, 0);
+    sb.ondrag(rx + 3, ry, 1, 0, 0);
+    assert.strictEqual(sb.paramValue(rKey), 1, `${rKey} stays on 1x for a short drag`);
+    sb.ondrag(rx + 11, ry, 1, 0, 0);
+    assert.strictEqual(sb.paramValue(rKey), 2, `${rKey} steps to the next whole number`);
+    sb.ondrag(rx, ry, 0, 0, 0);
+    sb.setParamFromFace(rKey, 1);
+    sb.onclick(rx, ry, 1, 0, 1);
+    sb.ondrag(rx + 11, ry, 1, 0, 1);
+    const fine = sb.paramValue(rKey);
+    assert.ok(fine > 1 && fine < 2, `${rKey} shift-drag lands between whole numbers (${fine})`);
+    sb.ondrag(rx, ry, 0, 0, 0);
+    sb.setParamFromFace(rKey, 1);
 }
 sb.oscTab = 2;
 sb.paint();
@@ -1338,4 +1542,356 @@ assert.ok(Math.abs(sb.subWaveSample(0.22, 0) - undetuned) > 1e-3, "detune moves 
 sb.oscTab = 0;
 sb.openMenu = null;
 sb.setFoldMask(sb.DEFAULT_FOLD);
+
+// Modulation matrix: every continuous parameter is a target, denied ones are not, and the grid drives the packer.
+{
+    const audit = sb.modAudit(FP);
+    assert.deepStrictEqual(plain(audit.missing), [], `matrix missing ${audit.missing.join(", ")}`);
+    assert.deepStrictEqual(plain(audit.deniedHit), [], `matrix should not target ${audit.deniedHit.join(", ")}`);
+    sb.matRows = sb.modDefaultRows();
+    sb.matDepth = {};
+    sb.matPolar = {};
+    sb.matTouch = { 1: -1, 2: -1, 3: -1, 4: -1 };
+    sb.slotTypes = [0, 0, 0, 0, 2];
+    sb.matPackedSig = "";
+    assert.deepStrictEqual(plain(sb.modPack(sb.matRows, sb.matDepth, 100)), [0], "an empty matrix packs no routes");
+    const legacy = sb.modPack({ 1: ["pitch_st"], 2: ["samp_gain"], 3: ["pitch_st"] }, { "1:0:1": 80, "2:0:5": 40 }, 100);
+    assert.deepStrictEqual(plain(legacy), [0], "Env 2 to pitch and Vel to amp stay on their Live parameters");
+    sb.setFoldMask(ALL);
+    sb.matTab = 0;
+    sb.paint();
+    const cell = sb.hitZones.find((z) => z.kind === "modcell" && z.row === 0 && z.src === 4);
+    assert.ok(cell, "slot 4 to Amp is a draggable cell");
+    const cx = cell.x + 2, cy0 = cell.y + 2;
+    sb.onclick(cx, cy0, 1, 0, 0);
+    sb.ondrag(cx, cy0 - 120, 1, 0, 0);
+    sb.ondrag(cx, cy0 - 120, 0, 0, 0);
+    near(sb.matDepth["1:0:4"], 100, 0.01, "a full drag sets the slot 4 depth to 100");
+    const packed = sb.modPack(sb.matRows, sb.matDepth, 100);
+    assert.strictEqual(packed[0], 1, "one audio route");
+    assert.strictEqual(packed[1], sb.modCode(sb.modTarget("samp_gain")), "the route targets sample gain");
+    assert.strictEqual(packed[2], 4, "source is slot 4");
+    near(packed[3], 1, 1e-9, "depth 100% at global amount 100%");
+    sb.matDepth = {};
+    sb.onclick(cx, cy0, 1, 0, 1);
+    sb.ondrag(cx, cy0 - 120, 1, 0, 1);
+    sb.ondrag(cx, cy0 - 120, 0, 0, 1);
+    near(sb.matDepth["1:0:4"], 12.5, 0.05, "shift drag is eight times finer");
+    sb.ondblclick(cx, cy0);
+    assert.strictEqual(sb.matDepth["1:0:4"], 0, "double-click clears the cell");
+    const before = sb.matRows[1][0];
+    assert.ok(!sb.hitZones.some((z) => z.kind === "modrow"), "the target name is not a control");
+    assert.strictEqual(sb.matRows[1][0], before, "the target name stays put");
+    assert.ok(!sb.hitZones.some((z) => z.kind === "act" && Math.abs(z.y - cell.y) < 4 && z.x < cell.x), "default rows have no delete control");
+    sb.onclick(cell.x + 2, cell.y + 2, 1, 0, 0, 0, 1);
+    assert.strictEqual(sb.matPolar["1:0:4"], 1, "alt-click flips the cell to unipolar");
+    sb.matDepth["1:0:4"] = 40;
+    const uni = sb.modPack(sb.matRows, sb.matDepth, 100, sb.matPolar);
+    assert.strictEqual(uni[2], 36, "a flipped cell packs source id + 32");
+    delete sb.matPolar["1:0:4"];
+    sb.matDepth = {};
+    sb.matTab = 4;
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.kind === "modcell" && z.src === 15), "audio tab maps Osc 1");
+    assert.ok(sb.hitZones.some((z) => z.kind === "modcell" && z.src === 17), "audio tab maps Sub");
+    sb.slotTypes = [0, 0, 0, 0, 2];
+    sb.msegPane = [0, 0, 0, 0, 0];
+    sb.envPage = 4;
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.kind === "msegpt"), "slot 4 paints the MSEG");
+    assert.strictEqual(sb.envTabTitle(4), "MSEG", "slot 4 is titled MSEG");
+    sb.setSlotKind(1, 1);
+    assert.strictEqual(sb.slotTypes[1], 1, "Env 2 can become an LFO");
+    sb.setSlotKind(3, 2);
+    assert.strictEqual(sb.slotTypes[3], 2, "LFO 1 can become an MSEG");
+    function editorChrome() {
+        sb.openMenu = null;
+        sb.paint();
+        return sb.hitZones.filter((z) => z.kind === "value" || z.kind === "msegplot" || (z.kind === "button" && (z.action === "menu_pick" || z.action === "toggle" || z.action === "menu")))
+            .map((z) => [z.kind, z.action || "", Math.round(z.x), Math.round(z.y), Math.round(z.w)].join(":")).sort();
+    }
+    sb.msegPts = [null, null, null, null, null];
+    sb.slotTypes = [0, 0, 0, 0, 2];
+    sb.envPage = 3;
+    const lfoNative = editorChrome();
+    sb.envPage = 1;
+    sb.setSlotKind(1, 1);
+    const lfoSwitched = editorChrome();
+    assert.deepStrictEqual(lfoSwitched, lfoNative, "an envelope slot set to LFO uses the LFO editor");
+    assert.ok(sb.hitZones.some((z) => z.key === "sLfo:1:rate"), "the switched LFO edits that slot, not LFO 1");
+    const rateZ = sb.hitZones.find((z) => z.key === "sLfo:1:rate");
+    const lfoRateBefore = sb.paramValue("lfo_rate");
+    sb.onclick(rateZ.x + 2, rateZ.y + 2, 1, 0, 0);
+    sb.ondrag(rateZ.x + 30, rateZ.y - 40, 1, 0, 0);
+    sb.ondrag(rateZ.x + 30, rateZ.y - 40, 0, 0, 0);
+    assert.notStrictEqual(sb.slotLfo[1].rate, 1, "dragging the switched LFO rate changes that slot");
+    assert.strictEqual(sb.paramValue("lfo_rate"), lfoRateBefore, "the switched LFO does not move LFO 1");
+    sb.setSlotKind(1, 0);
+    sb.envPage = 1;
+    const envNative = editorChrome();
+    sb.envPage = 3;
+    sb.setSlotKind(3, 0);
+    const envSwitched = editorChrome();
+    assert.deepStrictEqual(envSwitched, envNative, "an LFO slot set to Env uses the envelope editor");
+    const envHandles = () => sb.hitZones.filter((z) => z.kind === "hdl" && String(z.id).indexOf("env:") === 0).length;
+    const switchedHandles = envHandles();
+    sb.envPage = 1;
+    sb.setSlotKind(1, 0);
+    sb.paint();
+    assert.strictEqual(switchedHandles, envHandles(), "the switched envelope has the same handles");
+    sb.msegPts = [null, null, null, null, null];
+    sb.msegPane = [0, 0, 0, 0, 0];
+    sb.envPage = 4;
+    sb.setSlotKind(4, 2);
+    sb.paint();
+    const msegA = sb.hitZones.filter((z) => z.kind === "msegpt" || z.kind === "msegplot").map((z) => [z.kind, Math.round(z.x), Math.round(z.y), Math.round(z.w)].join(":")).sort();
+    sb.envPage = 2;
+    sb.setSlotKind(2, 2);
+    sb.paint();
+    const msegB = sb.hitZones.filter((z) => z.kind === "msegpt" || z.kind === "msegplot").map((z) => [z.kind, Math.round(z.x), Math.round(z.y), Math.round(z.w)].join(":")).sort();
+    assert.deepStrictEqual(msegB, msegA, "MSEG is the same editor on every slot");
+    assert.ok(sb.hitZones.some((z) => z.tip === "sine"), "the MSEG toolbar has the sine tool");
+    assert.ok(!sb.hitZones.some((z) => z.tip === "undo" || z.tip === "redo"), "the MSEG toolbar has no undo arrows");
+    assert.ok(sb.hitZones.some((z) => z.tip === "Loop") && sb.hitZones.some((z) => z.tip === "1-Shot"), "Loop and 1-Shot stay on the panel");
+    assert.ok(!sb.hitZones.some((z) => z.tip === "Manual"), "Manual mode is gone");
+    assert.ok(sb.hitZones.some((z) => z.kind === "msegrate"), "Rate sits on the MSEG panel");
+    assert.ok(!sb.hitZones.some((z) => z.kind === "msegknob" && z.field === "depth"), "Depth is gone from the MSEG panel");
+    assert.ok(!sb.hitZones.some((z) => z.kind === "msegknob" && (z.field === "offset" || z.field === "jitter")), "Offset and Jitter are gone");
+    assert.ok(sb.hitZones.some((z) => z.kind === "msegloop" && z.edge === "start"), "loop start is a handle");
+    assert.ok(sb.hitZones.some((z) => z.kind === "msegloop" && z.edge === "end"), "loop end is a handle");
+    assert.ok(sb.hitZones.some((z) => z.kind === "msegclock" && z.sync === 1), "rate can switch to sync");
+    assert.ok(sb.hitZones.some((z) => z.tip === "retrigger"), "retrigger sits on the panel");
+    const rateY = sb.hitZones.find((z) => z.kind === "msegrate").y;
+    const plotY = sb.hitZones.find((z) => z.kind === "msegplot").y;
+    assert.ok(rateY > plotY, "the value row sits under the curve");
+    const gridZ = sb.hitZones.find((z) => z.kind === "mseggrid");
+    sb.onclick(gridZ.x + 2, gridZ.y + 2, 1, 0, 0);
+    sb.ondrag(gridZ.x + 2, gridZ.y - 36, 1, 0, 0);
+    sb.ondrag(gridZ.x + 2, gridZ.y - 36, 0, 0, 0);
+    assert.ok(sb.msegGridN[2] > 8, "dragging the grid value raises it");
+    sb.msegGridN[2] = 8;
+    const syncZ = sb.hitZones.find((z) => z.kind === "msegclock" && z.sync === 1);
+    sb.onclick(syncZ.x + 2, syncZ.y + 2, 1, 0, 0);
+    assert.strictEqual(sb.msegSync[2], 1, "the metronome switches rate to sync");
+    assert.strictEqual(sb.msegRateText(2), "1/4", "sync starts on a quarter note");
+    sb.msegSync[2] = 0;
+    const loopZ = sb.hitZones.find((z) => z.kind === "msegloop" && z.edge === "end");
+    sb.onclick(loopZ.x + 2, loopZ.y + 2, 1, 0, 0);
+    sb.ondrag(loopZ.x - 40, loopZ.y, 1, 0, 0);
+    sb.ondrag(loopZ.x - 40, loopZ.y, 0, 0, 0);
+    assert.ok(sb.msegLoop1[2] < 1, "dragging the loop end moves it");
+    sb.msegLoop0[2] = 0;
+    sb.msegLoop1[2] = 1;
+    const trigZ = sb.hitZones.find((z) => z.tip === "retrigger");
+    sb.onclick(trigZ.x + 2, trigZ.y + 2, 1, 0, 0);
+    assert.strictEqual(sb.msegRetrig[2], 0, "retrigger toggles off");
+    sb.msegRetrig[2] = 1;
+    sb.msegGridN[2] = 4;
+    sb.msegSnapOn[2] = 0;
+    sb.msegPts[2] = null;
+    sb.msegGeom = { x: 0, y: 0, w: 100, h: 100, slot: 2 };
+    sb.msegPaintRamp(2, 10, 20);
+    const painted = sb.msegPoints(2);
+    assert.strictEqual(painted[0].y, 0, "a painted ramp starts at the bottom of the cell");
+    assert.ok(painted.some((p) => Math.abs(p.y - 0.8) < 0.02 && p.x > 0.15 && p.x < 0.3), "a painted ramp rises across the grid cell");
+    sb.msegGridN[2] = 8;
+    sb.msegSnapOn[2] = 1;
+    sb.msegApply(2, "ramps");
+    const ramps = sb.msegPoints(2);
+    assert.strictEqual(ramps[0].x, 0, "random ramps start at the left");
+    assert.strictEqual(ramps[ramps.length - 1].x, 1, "random ramps end at the right");
+    assert.ok(ramps.length >= 4 && ramps.length % 2 === 0, "random ramps are peak and floor pairs");
+    for (let ri = 0; ri < ramps.length; ri += 2) {
+        assert.ok(ramps[ri].y + 1e-6 >= ramps[ri + 1].y, "each ramp falls");
+        assert.ok(ramps[ri].curve > 0.2, "each ramp decays");
+    }
+    sb.msegApply(2, "sine");
+    assert.strictEqual(sb.msegPoints(2).length, 5, "the sine tool builds the shaper sine");
+    sb.msegDraw[2] = 0;
+    sb.msegSnapOn[2] = 0;
+    sb.msegSel[2] = [];
+    sb.msegPts[2] = [
+        { x: 0, y: 0.2, curve: 0, sCurve: 0 },
+        { x: 0.25, y: 0.75, curve: 0, sCurve: 0 },
+        { x: 0.55, y: 0.35, curve: 0, sCurve: 0 },
+        { x: 0.8, y: 0.6, curve: 0, sCurve: 0 },
+        { x: 1, y: 0.2, curve: 0, sCurve: 0 }
+    ];
+    sb.paint();
+    const mg = sb.msegGeom;
+    const scr = (p) => [mg.x + p.x * mg.w, mg.y + (1 - p.y) * mg.h];
+    const boxPts = sb.msegPoints(2);
+    const s1 = scr(boxPts[1]);
+    const s2 = scr(boxPts[2]);
+    sb.onclick(s1[0] - 10, s1[1], 1, 0, 0);
+    sb.ondrag(s2[0] + 10, s2[1], 1, 0, 0);
+    sb.ondrag(s2[0] + 10, s2[1], 0, 0, 0);
+    assert.ok(sb.msegSel[2].indexOf(boxPts[1].id) >= 0 && sb.msegSel[2].indexOf(boxPts[2].id) >= 0, "a selection box selects the points inside it");
+    const xBefore = boxPts.map((p) => p.x);
+    sb.onclick(s1[0], s1[1], 1, 0, 0);
+    sb.ondrag(s1[0] + mg.w * 0.1, s1[1], 1, 0, 0);
+    sb.ondrag(s1[0] + mg.w * 0.1, s1[1], 0, 0, 0);
+    const grouped = sb.msegPoints(2);
+    assert.ok(Math.abs(grouped[1].x - (xBefore[1] + 0.1)) < 0.02, "dragging a selection moves the grabbed point");
+    assert.ok(Math.abs((grouped[2].x - xBefore[2]) - (grouped[1].x - xBefore[1])) < 0.02, "dragging a selection moves every selected point together");
+    sb.msegPts[2] = [
+        { x: 0, y: 0, curve: 0, sCurve: 0 },
+        { x: 0.2, y: 0.5, curve: 0, sCurve: 0 },
+        { x: 0.5, y: 0.5, curve: 0, sCurve: 0 },
+        { x: 0.8, y: 0.5, curve: 0, sCurve: 0 },
+        { x: 1, y: 0, curve: 0, sCurve: 0 }
+    ];
+    sb.msegSel[2] = [];
+    sb.paint();
+    const eatG = sb.msegGeom;
+    const eatY = eatG.y + (1 - 0.5) * eatG.h;
+    sb.onclick(eatG.x + 0.2 * eatG.w, eatY, 1, 0, 0);
+    sb.ondrag(eatG.x + 0.5 * eatG.w, eatY, 1, 0, 0);
+    sb.ondrag(eatG.x + 0.5 * eatG.w, eatY, 0, 0, 0);
+    assert.strictEqual(sb.msegPoints(2).length, 4, "dragging a point onto another deletes the one underneath");
+    sb.msegPts[2] = [
+        { x: 0, y: 0, curve: 0, sCurve: 0 },
+        { x: 0.2, y: 0.4, curve: 0, sCurve: 0 },
+        { x: 0.5, y: 0.8, curve: 0, sCurve: 0 },
+        { x: 0.8, y: 0.3, curve: 0, sCurve: 0 },
+        { x: 1, y: 0, curve: 0, sCurve: 0 }
+    ];
+    sb.msegSel[2] = [];
+    sb.paint();
+    const delPts = sb.msegPoints(2);
+    sb.msegSel[2] = [delPts[1].id, delPts[2].id];
+    sb.msegKeyOn = 1;
+    assert.strictEqual(sb.onkeydown(8, 8, 0), 0, "a key release does not delete");
+    sb.msegKeyOn = 0;
+    sb.onkeydown(8, 8, 1);
+    assert.strictEqual(sb.msegPoints(2).length, 5, "delete does nothing while the MSEG is not focused");
+    sb.msegKeyOn = 1;
+    assert.strictEqual(sb.onkeydown(8, 8, 1), 1, "delete is handled while the MSEG is focused");
+    assert.strictEqual(sb.msegPoints(2).length, 3, "delete removes the selected points");
+    assert.ok(sb.msegPoints(2).every((p) => p.id !== delPts[1].id && p.id !== delPts[2].id), "the selected points are the ones removed");
+    assert.strictEqual(sb.msegPoints(2)[0].x, 0, "delete keeps the left end");
+    assert.strictEqual(sb.msegPoints(2)[sb.msegPoints(2).length - 1].x, 1, "delete keeps the right end");
+    for (let pv = 0; pv < 16; pv++) { sb.msegVoicePh[pv] = -1; sb.voiceAmpLvl[pv] = 0; }
+    sb.msegVoicePh[0] = 0.25;
+    sb.msegVoicePh[3] = 0.7;
+    sb.voiceAmpLvl[0] = 0.8;
+    sb.voiceAmpLvl[3] = 0.5;
+    sb.voiceBorn[0] = 1;
+    sb.voiceBorn[3] = 2;
+    sb.paint();
+    assert.strictEqual(sb.msegDots.length, 2, "each sounding voice draws a dot on the curve");
+    const dotG = sb.msegGeom;
+    const dot0 = sb.msegDots.find((d) => d.v === 0);
+    const dot3 = sb.msegDots.find((d) => d.v === 3);
+    near(dot0.x, dotG.x + 0.25 * dotG.w, 1.2, "a voice dot sits at that voice's position");
+    near(dot3.x, dotG.x + 0.7 * dotG.w, 1.2, "a second voice dot sits at its own position");
+    near(dot0.y, dotG.y + (1 - sb.msegAt(sb.msegPoints(2), 0.25)) * dotG.h, 1.2, "the dot rides the curve");
+    for (let pv2 = 0; pv2 < 16; pv2++) { sb.msegVoicePh[pv2] = -1; sb.voiceAmpLvl[pv2] = 0; }
+    const revZ = sb.hitZones.find((z) => z.tip === "reverse");
+    assert.ok(revZ, "reverse is a button");
+    sb.onclick(revZ.x + 2, revZ.y + 2, 1, 0, 0);
+    assert.strictEqual(sb.msegRev[2], 1, "the reverse button toggles on");
+    sb.msegRev[2] = 0;
+    sb.msegSync[2] = 0;
+    sb.paint();
+    const smoothHz = sb.hitZones.find((z) => z.kind === "msegknob" && z.field === "smooth");
+    const phaseHz = sb.hitZones.find((z) => z.kind === "msegknob" && z.field === "phase");
+    const rateHz = sb.hitZones.find((z) => z.kind === "msegrate");
+    assert.ok(!sb.hitZones.some((z) => z.kind === "msegmult"), "Hz mode leaves the multiplier slot empty");
+    sb.msegSync[2] = 1;
+    sb.msegSyncMul[2] = 1;
+    sb.paint();
+    const mulZ = sb.hitZones.find((z) => z.kind === "msegmult");
+    const smoothSync = sb.hitZones.find((z) => z.kind === "msegknob" && z.field === "smooth");
+    const phaseSync = sb.hitZones.find((z) => z.kind === "msegknob" && z.field === "phase");
+    assert.ok(mulZ, "sync mode shows a time multiplier");
+    assert.strictEqual(smoothSync.x, smoothHz.x, "Smooth stays put when sync turns on");
+    assert.strictEqual(phaseSync.x, phaseHz.x, "Phase stays put when sync turns on");
+    assert.ok(mulZ.x > rateHz.x + 20 && mulZ.x < smoothSync.x, "the multiplier fills the slot between Rate and Smooth");
+    assert.strictEqual(sb.msegMulText(2), "\u00d71.00", "the multiplier starts at \u00d71");
+    sb.onclick(mulZ.x + 2, mulZ.y + 2, 1, 0, 0);
+    sb.ondrag(mulZ.x + 2, mulZ.y - 80, 1, 0, 0);
+    sb.ondrag(mulZ.x + 2, mulZ.y - 80, 0, 0, 0);
+    assert.ok(sb.msegSyncMul[2] > 1.8 && sb.msegSyncMul[2] < 2.2, "dragging the multiplier doubles it over an octave of travel");
+    sb.msegSync[2] = 0;
+    sb.msegSyncMul[2] = 1;
+    sb.msegKeyOn = 0;
+    sb.msegPts = [null, null, null, null, null];
+    sb.msegSel = [[], [], [], [], []];
+    sb.msegSnapOn[2] = 1;
+    sb.drag = null;
+    sb.msegUndo = [[], [], [], [], []];
+    sb.msegRedo = [[], [], [], [], []];
+    sb.slotTypes = [0, 0, 0, 0, 2];
+    sb.slotLfo = [null, sb.blankSlotLfo(), sb.blankSlotLfo(), sb.blankSlotLfo(), sb.blankSlotLfo()];
+    sb.slotTypes = [0, 0, 0, 0, 2];
+    sb.envPage = 0;
+    sb.matTab = 0;
+    sb.matSuppressTouch = 0;
+    sb.setFoldMask(sb.DEFAULT_FOLD);
+    const touched = sb.noteMatTouch("filt_res");
+    assert.strictEqual(touched, false, "a folded matrix does not grow a row");
+    sb.setFoldMask(ALL);
+    sb.noteMatTouch("filt_res");
+    assert.ok(sb.matRows[1].indexOf("filt_res") >= 0, "touching a parameter adds a matrix row");
+    const added = sb.matRows[1].indexOf("filt_res");
+    sb.noteMatTouch("atk_ms");
+    assert.strictEqual(sb.matRows[1][added], "atk_ms", "an unmapped touch row is replaced");
+    sb.matDepth["1:" + added + ":0"] = 30;
+    sb.noteMatTouch("dec_ms");
+    assert.ok(sb.matRows[1].indexOf("atk_ms") >= 0 && sb.matRows[1].indexOf("dec_ms") >= 0, "a mapped touch row stays");
+    sb.matRows = sb.modDefaultRows();
+    sb.matDepth = {};
+    sb.matPolar = {};
+    sb.matTouch = { 1: -1, 2: -1, 3: -1, 4: -1 };
+    sb.matTab = 2;
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.kind === "value" && z.key === "vel_sens"), "MIDI Vel to Amp edits Velocity");
+    assert.ok(sb.hitZones.some((z) => z.kind === "modcell"), "MIDI tab has matrix cells");
+    sb.matTab = 3;
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.kind === "modcell" && z.src === 13), "MPE Slide is a source");
+    sb.matTab = 1;
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.key === "xs_depth"), "X-Synth tab still edits its depth");
+    sb.matTab = 0;
+    sb.matRows = sb.modDefaultRows();
+    sb.matDepth = {};
+    sb.matPolar = {};
+    sb.slotTypes = [0, 0, 0, 0, 2];
+    sb.slotRate = [1, 1, 1, 1, 1];
+    sb.slotShape = [0, 0, 0, 0, 0];
+    sb.slotAdsr = [[10, 200, 0.7, 300], [10, 200, 0.7, 300], [10, 200, 0.7, 300], [10, 200, 0.7, 300], [10, 200, 0.7, 300]];
+    sb.msegPts = [null, null, null, null, null];
+    sb.msegPlayMode = [0, 0, 0, 0, 0];
+    sb.msegLoop0 = [0, 0, 0, 0, 0];
+    sb.msegLoop1 = [1, 1, 1, 1, 1];
+    sb.msegSync = [0, 0, 0, 0, 0];
+    sb.msegSyncIdx = [9, 9, 9, 9, 9];
+    sb.msegRetrig = [1, 1, 1, 1, 1];
+    sb.msegRev = [0, 0, 0, 0, 0];
+    sb.msegSyncMul = [1, 1, 1, 1, 1];
+    sb.msegGridN = [8, 8, 8, 8, 8];
+    sb.msegSnapOn = [1, 1, 1, 1, 1];
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.key === "mod_global_amt"), "Global Amount stays a direct control");
+    let blob = sb.getvalueof();
+    assert.strictEqual(blob[blob.length - 2], "R2", "a default matrix is omitted from the blob");
+    sb.matDepth["1:0:4"] = 25;
+    sb.matPackedSig = "";
+    blob = sb.getvalueof();
+    assert.strictEqual(blob[blob.length - 2], "MX", "a changed cell is saved after the fold mask");
+    sb.matDepth = {};
+    sb.matRows = sb.modDefaultRows();
+    sb.setvalueof(...blob);
+    near(sb.matDepth["1:0:4"], 25, 1e-9, "the blob restores the cell");
+    sb.matRows = { 1: ["osc1_pan", "cell:1:0:4"], 2: [], 3: [] };
+    sb.matDepth = { "1:1:0": 40 };
+    const depthPacked = plain(sb.modPack(sb.matRows, sb.matDepth, 100));
+    assert.strictEqual(depthPacked[0], 2, "a zero cell stays packed when another row targets its depth");
+    assert.strictEqual(depthPacked[7], 1000, "the second route modulates the first route");
+    sb.matDepth = {};
+    sb.matRows = sb.modDefaultRows();
+    sb.matPackedSig = "";
+}
 console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles, sub oscillator and parameter reach ok");

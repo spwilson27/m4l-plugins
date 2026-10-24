@@ -23,6 +23,7 @@ from minify_embed import minify_patcher
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS_PATH = os.path.join(ROOT_DIR, "src", "mseg_editor.js")
+MSEG_EDIT_PATH = os.path.join(ROOT_DIR, "src", "mseg_edit.js")
 OUT_AMXD_PATH = os.path.join(ROOT_DIR, "devices", "Better Shaper.amxd")
 
 CLIPPING_PATH = (
@@ -315,8 +316,10 @@ def make_slot_vis_subpatcher():
 
 
 def build():
+    with open(MSEG_EDIT_PATH, "r", encoding="utf-8") as f:
+        v8ui_code = f.read() + "\n"
     with open(JS_PATH, "r", encoding="utf-8") as f:
-        v8ui_code = f.read()
+        v8ui_code += f.read()
 
     with open(CLIPPING_PATH, "r", encoding="utf-8") as f:
         clipping_data = json.load(f)

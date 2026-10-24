@@ -39,7 +39,8 @@ case "${1:-}" in
   sync)
     sync_repo ;;
   audio)
-    sync_repo && "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/run_sampler_audio_tests.py' ;;
+    # SAMPLER_CASE / SAMPLER_PAN_ONLY on the host are forwarded. Unset runs the full suite.
+    sync_repo && "${SSH[@]}" "cd ~/ableton && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
   live)
     sync_repo || exit 1
     "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_sampler.py >/dev/null &&

@@ -658,24 +658,10 @@ function applyPaintBrushAt(nx, ny, shiftHeld, isDragContinuation) {
 
 // Delete currently selected interior points (returns true if any deleted)
 function deleteSelectedPoints() {
-    if (selectedIds.length === 0 || points.length <= 2) return false;
-    let firstId = points[0].id;
-    let lastId = points[points.length - 1].id;
-    let hasInterior = false;
-    for (let i = 0; i < points.length; i++) {
-        let pt = points[i];
-        if (pt.id !== firstId && pt.id !== lastId && selectedIds.indexOf(pt.id) !== -1) {
-            hasInterior = true;
-            break;
-        }
-    }
-    if (!hasInterior) return false;
-
+    let kept = msegDeleteSelection(points, selectedIds);
+    if (!kept) return false;
     pushUndoState();
-    points = points.filter(function(pt) {
-        if (pt.id === firstId || pt.id === lastId) return true;
-        return (selectedIds.indexOf(pt.id) === -1);
-    });
+    points = kept;
     selectedIds = [];
     updateBufferAndNotify(true);
     return true;
@@ -1766,81 +1752,7 @@ function ondrag(x, y, but, cmd, shift, caps, opt, ctrl) {
         }
         targetY = snapYMagnetic(targetY, shift);
 
-        let dx = targetX - primaryStart.x;
-        let dy = targetY - primaryStart.y;
-
-        let minInteriorX = 1.0, maxInteriorX = 0.0, hasInterior = false;
-        for (let i = 0; i < selectedIds.length; i++) {
-            let st = dragState.startPointsMap[selectedIds[i]];
-            if (st && !st.isFirst && !st.isLast) {
-                hasInterior = true;
-                if (st.x < minInteriorX) minInteriorX = st.x;
-                if (st.x > maxInteriorX) maxInteriorX = st.x;
-            }
-        }
-        if (hasInterior) {
-            if (minInteriorX + dx < 0.0005) dx = 0.0005 - minInteriorX;
-            if (maxInteriorX + dx > 0.9995) dx = 0.9995 - maxInteriorX;
-        }
-
-        let sweepIntervals = [];
-        for (let i = 0; i < points.length; i++) {
-            let pt = points[i];
-            if (selectedIds.indexOf(pt.id) !== -1) {
-                let st = dragState.startPointsMap[pt.id];
-                if (!st) continue;
-                let prevX = pt.x;
-                let newY = Math.max(0.0, Math.min(1.0, st.y + dy));
-                pt.y = newY;
-
-                if (st.isFirst) {
-                    pt.x = 0.0;
-                    if (loopLink && points.length >= 2) {
-                        points[points.length - 1].y = newY;
-                    }
-                } else if (st.isLast) {
-                    pt.x = 1.0;
-                    if (loopLink && points.length >= 2) {
-                        points[0].y = newY;
-                    }
-                } else {
-                    let newX = Math.max(0.0005, Math.min(0.9995, st.x + dx));
-                    pt.x = newX;
-                    sweepIntervals.push([
-                        Math.min(prevX, newX) - 0.002,
-                        Math.max(prevX, newX) + 0.002
-                    ]);
-                    sweepIntervals.push([
-                        Math.min(st.x, newX) - 0.002,
-                        Math.max(st.x, newX) + 0.002
-                    ]);
-                }
-            }
-        }
-
-        if (sweepIntervals.length >= 2) {
-            let minSpan = 1.0, maxSpan = 0.0;
-            for (let i = 0; i < sweepIntervals.length; i++) {
-                if (sweepIntervals[i][0] < minSpan) minSpan = sweepIntervals[i][0];
-                if (sweepIntervals[i][1] > maxSpan) maxSpan = sweepIntervals[i][1];
-            }
-            sweepIntervals.push([minSpan, maxSpan]);
-        }
-
-        if (sweepIntervals.length > 0) {
-            points = points.filter(function(pt) {
-                let ptSt = dragState.startPointsMap[pt.id];
-                if (ptSt && (ptSt.isFirst || ptSt.isLast)) return true;
-                if (selectedIds.indexOf(pt.id) !== -1) return true;
-                for (let k = 0; k < sweepIntervals.length; k++) {
-                    if (pt.x >= sweepIntervals[k][0] && pt.x <= sweepIntervals[k][1]) {
-                        return false;
-                    }
-                }
-                return true;
-            });
-        }
-
+        points = msegMoveSelection(points, selectedIds, dragState.startPointsMap, dragState.primaryId, targetX, targetY, loopLink);
         updateBufferAndNotify(false);
         return;
     }
@@ -1852,22 +1764,10 @@ function ondrag(x, y, but, cmd, shift, caps, opt, ctrl) {
             dragState.mode = "marquee";
         }
         if (dragState.mode === "marquee") {
-            let rx = Math.min(dragState.startMouseX, x);
-            let ry = Math.min(dragState.startMouseY, y);
-            let rw = Math.abs(x - dragState.startMouseX);
-            let rh = Math.abs(y - dragState.startMouseY);
-            dragState.marqueeRect = [rx, ry, rw, rh];
-
-            let newSel = dragState.baseSelection.slice();
-            for (let i = 0; i < points.length; i++) {
-                let sc = normToScreen(points[i].x, points[i].y, lay);
-                if (sc[0] >= rx && sc[0] <= rx + rw && sc[1] >= ry && sc[1] <= ry + rh) {
-                    if (newSel.indexOf(points[i].id) === -1) {
-                        newSel.push(points[i].id);
-                    }
-                }
-            }
-            selectedIds = newSel;
+            dragState.marqueeRect = msegMarqueeRect(dragState.startMouseX, dragState.startMouseY, x, y);
+            selectedIds = msegSelectInRect(points, dragState.marqueeRect, function (nx, ny) {
+                return normToScreen(nx, ny, lay);
+            }, dragState.baseSelection);
             mgraphics.redraw();
         }
     }

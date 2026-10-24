@@ -28,6 +28,14 @@ var SECTIONS = [
 var SB_X = 2, SB_W = 22;
 var VIEW = { x: 26, y: 0, w: 466, h: 107 };
 var STRIP = { x: 26, y: 108, w: 466, h: 61 };
+// Gain / Level stays 50×16 at x+410, y+38. Pan is the same size, one gap to its left.
+// A second slot of that width stays empty further left.
+var STRIP_GAIN_X = 410, STRIP_GAIN_W = 50, STRIP_GAIN_H = 16, STRIP_PAN_GAP = 4;
+var STRIP_PAN_X = STRIP_GAIN_X - STRIP_PAN_GAP - STRIP_GAIN_W;
+var STRIP_PAN_SLOT_X = STRIP_PAN_X - STRIP_PAN_GAP - STRIP_GAIN_W;
+BIPOLAR_KEYS.osc1_pan = 1;
+BIPOLAR_KEYS.osc2_pan = 1;
+BIPOLAR_KEYS.sub_pan = 1;
 var SEC_X0 = 493, SEC_GAP = 1, WIN_PAD = 1, SEC_Y = 0, SEC_H = 169;
 var DEFAULT_FOLD = 2;                       // Mod Sources open
 var foldMask = DEFAULT_FOLD;
@@ -548,20 +556,106 @@ function isPanGesture(option, ev, cmd) {
     return !!(ev && typeof ev === "object" && (Number(ev.buttons) & 4));
 }
 
+// Osc 2 keeps its own sample. Osc 1 stays on #0-bsamp. The user wavetable of each oscillator reads that oscillator's file.
+var OSC2_BUF = "#0-bsamp2";
+var osc2FilePath = "";
+var osc2FileName = "";
+var osc2Loaded = 0;
+var osc2Frames = 0;
+var osc2PeaksL = new Array(WAVE_BINS);
+var osc2PeaksR = new Array(WAVE_BINS);
+var browseSlot = 0;
+for (var o2i = 0; o2i < WAVE_BINS; o2i++) { osc2PeaksL[o2i] = 0; osc2PeaksR[o2i] = 0; }
+
+function osc2SampleView() {
+    return oscTab === 1 && Math.round(paramValue("osc2_type")) < 1;
+}
+
+function replaceOsc2Buffer(p) {
+    if (!p || typeof hostPatcher === "undefined" || !hostPatcher) return;
+    var box = hostPatcher.getnamed("obj-buf-samp2");
+    if (box && box.message) box.message("replace", p);
+}
+
+function loadOsc2Path(p) {
+    if (!p || p === "none") return;
+    if (p === osc2FilePath && osc2Loaded) return;
+    osc2FilePath = p;
+    var o2parts = String(p).replace(/\\/g, "/").split("/");
+    osc2FileName = o2parts[o2parts.length - 1] || p;
+    replaceOsc2Buffer(p);
+    if (typeof notifyclients === "function") notifyclients();
+    if (typeof mgraphics !== "undefined") mgraphics.redraw();
+}
+
+function refreshOsc2Waveform() {
+    if (typeof Buffer === "undefined") return;
+    try {
+        var b2 = new Buffer(OSC2_BUF);
+        var frames2 = (typeof b2.framecount === "function") ? b2.framecount() : 0;
+        if (!frames2 || frames2 <= 4) return;
+        var chans2 = (typeof b2.channelcount === "function") ? Math.max(1, b2.channelcount()) : 2;
+        osc2Frames = frames2;
+        var fileRate2 = (typeof bufferSampleRate === "function") ? bufferSampleRate(b2, frames2) : 0;
+        if (typeof outlet === "function") outlet(0, "wt_msg", "samp2_rate", fileRate2 > 0 ? fileRate2 : 0);
+        var step2 = Math.max(1, Math.floor(frames2 / WAVE_BINS));
+        var readLen2 = Math.min(step2, 4096);
+        var maxEnergy2 = 0;
+        for (var pi = 0; pi < WAVE_BINS; pi++) {
+            var startIdx2 = Math.min(frames2 - 1, pi * step2);
+            var len2 = Math.max(1, Math.min(readLen2, frames2 - startIdx2));
+            var pkL2 = peakOf(b2.peek(1, startIdx2, len2));
+            var pkR2 = chans2 > 1 ? peakOf(b2.peek(2, startIdx2, len2)) : pkL2;
+            osc2PeaksL[pi] = Math.min(1, pkL2);
+            osc2PeaksR[pi] = Math.min(1, pkR2);
+            maxEnergy2 = Math.max(maxEnergy2, pkL2, pkR2);
+        }
+        osc2Loaded = maxEnergy2 > 0.0005 ? 1 : 0;
+    } catch (eOsc2) {}
+}
+
+function sample2_loaded(fPath) {
+    if (fPath !== undefined && String(fPath).length > 0 && String(fPath) !== "bang") {
+        osc2FilePath = String(fPath);
+        var o2n = osc2FilePath.replace(/\\/g, "/").split("/");
+        osc2FileName = o2n[o2n.length - 1] || osc2FilePath;
+    }
+    refreshOsc2Waveform();
+    if (typeof notifyclients === "function") notifyclients();
+    if (typeof mgraphics !== "undefined") mgraphics.redraw();
+}
+
+var sharedWaveAmp = waveAmp;
+waveAmp = function (t) {
+    if (!osc2SampleView() || !osc2Loaded) return sharedWaveAmp(t);
+    var fi2 = t * (WAVE_BINS - 1);
+    var i0a = Math.floor(fi2);
+    var i1a = Math.min(WAVE_BINS - 1, i0a + 1);
+    var f2 = fi2 - i0a;
+    var a0a = Math.max(osc2PeaksL[i0a] || 0, osc2PeaksR[i0a] || 0);
+    var a1a = Math.max(osc2PeaksL[i1a] || 0, osc2PeaksR[i1a] || 0);
+    return a0a + (a1a - a0a) * f2;
+};
+
 // Waveform detail for a zoomed view: peak per pixel column of the visible range, read from the buffer in chunks on a Task
 var DETAIL_CHUNK = 262144;
 var detail = null;      // { key, cols, amp: Float32Array, got: Uint8Array, pos, end, startF, perCol, chans, task, done }
-function detailKey() { return [Math.round(viewX0 * 1e6), Math.round(viewZoom * 1e4), Math.round(viewWave[2]), sampleFrames].join("|"); }
+function detailKey() {
+    var frames = osc2SampleView() ? osc2Frames : sampleFrames;
+    return [(osc2SampleView() ? 1 : 0), Math.round(viewX0 * 1e6), Math.round(viewZoom * 1e4), Math.round(viewWave[2]), frames].join("|");
+}
 function requestDetail() {
-    if (viewZoom <= 1.0005 || !sampBufName || typeof Buffer === "undefined" || sampleFrames <= 0) { detail = null; return; }
+    var frames = osc2SampleView() ? osc2Frames : sampleFrames;
+    var bufName = osc2SampleView() ? OSC2_BUF : sampBufName;
+    if (viewZoom <= 1.0005 || !bufName || typeof Buffer === "undefined" || frames <= 0) { detail = null; return; }
     var key = detailKey();
     if (detail && detail.key === key) return;
     if (detail && detail.task && typeof detail.task.cancel === "function") detail.task.cancel();
     var cols = Math.max(1, Math.round(viewWave[2]));
-    var startF = Math.floor(viewX0 * sampleFrames), endF = Math.min(sampleFrames, Math.ceil((viewX0 + 1.0 / viewZoom) * sampleFrames));
+    var startF = Math.floor(viewX0 * frames), endF = Math.min(frames, Math.ceil((viewX0 + 1.0 / viewZoom) * frames));
     var chans = 1;
-    try { var bb = new Buffer(sampBufName); chans = (typeof bb.channelcount === "function") ? Math.max(1, bb.channelcount()) : 2; } catch (_) {}
-    detail = { key: key, cols: cols, amp: new Float32Array(cols), got: new Uint8Array(cols), pos: startF, end: Math.max(startF + 1, endF), startF: startF, perCol: Math.max(1e-6, (endF - startF) / cols), chans: chans, task: null, done: false };
+    try { var bb = new Buffer(bufName); chans = (typeof bb.channelcount === "function") ? Math.max(1, bb.channelcount()) : 2; } catch (_) {}
+    detail = { key: key, bufName: bufName, cols: cols, amp: new Float32Array(cols), got: new Uint8Array(cols), pos: startF, end: Math.max(startF + 1, endF), startF: startF, perCol: Math.max(1e-6, (endF - startF) / cols), chans: chans, task: null, done: false };
     var job = detail;
     if (typeof Task === "undefined") { while (!detailStep(job)) {} return; }
     job.task = new Task(function () {
@@ -574,7 +668,7 @@ function requestDetail() {
 function detailStep(job) {
     if (!job || job.done) return true;
     try {
-        var b = new Buffer(sampBufName);
+        var b = new Buffer(job.bufName || sampBufName);
         var len = Math.min(DETAIL_CHUNK, job.end - job.pos);
         for (var c = 1; c <= job.chans; c++) {
             var d = b.peek(c, job.pos, len);
@@ -644,10 +738,11 @@ function activeOsc() {
         typeKey: is2 ? "osc2_type" : "osc1_type",
         modeKey: is2 ? "osc2_mode" : "mode",
         pitchKey: is2 ? "osc2_pitch" : "pitch_st",
-        detKey: is2 ? "osc2_detune" : "fine_cents",
+        detKey: is2 ? "osc2_detune" : "osc1_detune",
         ratioKey: is2 ? "osc2_ratio" : "osc1_ratio",
         posKey: is2 ? "osc2_pos" : "play_pos",
         gainKey: is2 ? "osc2_gain" : "samp_gain",
+        panKey: is2 ? "osc2_pan" : "osc1_pan",
         fxKey: is2 ? "wt2_fx" : "wt1_fx",
         fx1Key: is2 ? "wt2_fx1" : "wt1_fx1",
         fx2Key: is2 ? "wt2_fx2" : "wt1_fx2"
@@ -656,7 +751,7 @@ function activeOsc() {
 
 var sharedFmtParam = fmtParam;
 fmtParam = function (key, v) {
-    if (key === "fine_cents" || key === "osc2_detune" || key === "sub_fine") {
+    if (key === "fine_cents" || key === "osc1_detune" || key === "osc2_detune" || key === "sub_fine") {
         var rng = Math.max(1.0, Math.min(96.0, Number(paramValue("fine_range")) || 1.0));
         var scaled = (Number(v) * 0.01) * rng;
         var sign = scaled > 0.005 ? "+" : "";
@@ -748,12 +843,14 @@ function wtFilePath(cat, idx) {
     return dir + "/Vector_Sprite_" + WT_CATS[cat] + " " + name + ".wav";
 }
 
-function wtUserFrames() {
+function wtUserFrames(i) {
+    if (i === undefined) i = (oscTab === 1) ? 1 : 0;
+    var name = i ? OSC2_BUF : sampBufName;
     var n = 0;
-    if (sampBufName && typeof Buffer !== "undefined") {
-        try { n = new Buffer(sampBufName).framecount() || 0; } catch (eUf) { n = 0; }
+    if (name && typeof Buffer !== "undefined") {
+        try { n = new Buffer(name).framecount() || 0; } catch (eUf) { n = 0; }
     }
-    if (!n && sampleFrames) n = sampleFrames;
+    if (!n) n = i ? osc2Frames : sampleFrames;
     return Math.max(0, Math.floor(n / WT_FRAME));
 }
 
@@ -802,7 +899,7 @@ function wtDisplaySample(ph, pos01) {
     var i = oscTab === 1 ? 1 : 0;
     var user = wtSel[i].cat === WT_USER;
     var frames = user ? wtUserFrames() : wtFrames[i];
-    var bufName = user ? sampBufName : (i ? "#0-bswt2" : "#0-bswt1");
+    var bufName = user ? (i ? OSC2_BUF : sampBufName) : (i ? "#0-bswt2" : "#0-bswt1");
     if (frames >= 1 && bufName) {
         var s = wtPeekCycle(bufName, ph, pos01, frames);
         if (s !== null && isFinite(s)) return s;
@@ -1438,7 +1535,8 @@ function paintWtViewer(wx, wy, ww, wh, pos01, on, fxMode, fx1, fx2) {
     var waveW = Math.max(8, L.panelW - 48);
     zone("wt_pos", L.panelX, wy + 3, waveW, wh - 6, { key: osc.posKey, top: wy + 3, h: wh - 6 });
     var oi = osc.is2 ? 1 : 0;
-    if (wtSel[oi].cat === WT_USER && !hasLoadedSample) {
+    var userLoaded = oi ? osc2Loaded : hasLoadedSample;
+    if (wtSel[oi].cat === WT_USER && !userLoaded) {
         text("Drop Sample Here", L.panelX + waveW * 0.5, wy + wh * 0.48, 8.0, RC.sub, false, 1);
     }
 }
@@ -1506,7 +1604,9 @@ function paintWtListMenu() {
         var ry = my + 1 + i * rowH;
         var sel = m.cur === idx;
         if (sel) fillRect(mx + 1, ry, mw - 2, rowH, RC.sel, 1);
-        text(fitText(names[idx], mw - 10, 8.0), mx + 5, ry + rowH * 0.5 + 3, 8.0, sel ? RC.wave : RC.sel, false, 0);
+        var rowLabel = String(names[idx]);
+        var rowShown = rowLabel.indexOf(".") > 0 ? fitFileName(rowLabel, mw - 10, 8.0) : fitText(rowLabel, mw - 10, 8.0);
+        text(rowShown, mx + 5, ry + rowH * 0.5 + 3, 8.0, sel ? RC.wave : RC.sel, false, 0);
         zone("button", mx, ry, mw, rowH, { action: "wt_pick", which: m.which, osc: m.osc, value: idx });
     }
 }
@@ -1719,7 +1819,8 @@ function paintSubStrip(x, y, w, h) {
     hValueBar("sub_semi", rx, y + 20, 54, 15, "Semi", acc, dim);
     hValueBar("sub_fine", rx + 58, y + 20, 53, 15, "Fine", acc, dim);
     hValueBar("sub_ratio", rx + 115, y + 20, 53, 15, "Ratio", acc, dim);
-    hValueBar("sub_gain", x + 410, y + 38, 50, 16, "Level", acc, dim);
+    hValueBar("sub_pan", x + STRIP_PAN_X, y + 38, STRIP_GAIN_W, STRIP_GAIN_H, "Pan", acc, dim);
+    hValueBar("sub_gain", x + STRIP_GAIN_X, y + 38, STRIP_GAIN_W, STRIP_GAIN_H, "Level", acc, dim);
 }
 
 function paintViewer() {
@@ -1731,9 +1832,13 @@ function paintViewer() {
     // The tabs stay put in every engine. Sub and Wavetable keep the gain pill and drop the sample folder, root, and sample/slice switch.
     var headOsc = activeOsc();
     var slimHead = oscTab === 2 || ((oscTab === 0 || oscTab === 1) && Math.round(paramValue(headOsc.typeKey)) > 0);
+    var slot2 = oscTab === 1;
+    var slotLoaded = slot2 ? osc2Loaded : hasLoadedSample;
+    var slotName = slotLoaded ? (slot2 ? osc2FileName : sampleFileName) : "Drop a sample or click to browse";
     if (!slimHead) {
         iconFolder(sx + 7, sy + 5, acc, 0.9);
-        var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 88, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? acc : RC.sub, false, 0);
+        var nameShown = slotLoaded ? fitFileName(slotName, 88, 9.0) : fitText(slotName, 88, 9.0);
+        var nameW = text(nameShown, sx + 21, sy + 13, 9.0, slotLoaded ? acc : RC.sub, false, 0);
         zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
     }
     // One position in every engine: the viewer centre, held short of the gain pill.
@@ -1753,19 +1858,29 @@ function paintViewer() {
     paintGainPill(sx + 276, sy + 2);
     if (!slimHead) {
         var rx = sx + 330;
-        var rc = rootDyn ? acc : RC.sub;
-        strokeArc(rx + 4, sy + 9, 3.6, 0, Math.PI * 2, rc, 1.0, 1.2);
-        line(rx + 1, sy + 9, rx + 7, sy + 9, rc, 1.0, 1.0);
-        text("ROOT", rx + 11, sy + 13, 8.5, RC.sub, true, 0);
-        zone("button", rx - 2, sy + 1, 44, 15, { action: "toggle", key: "root_dyn" });
-        if (rootDyn) {
-            text(pitchCurve ? "Dynamic" : "Dynamic…", rx + 46, sy + 13, 9.0, RC.sub, false, 0);
+        if (slot2) {
+            text("ROOT", rx + 11, sy + 13, 8.5, RC.sub, true, 0);
+            var note2 = Math.round(paramValue("osc2_root"));
+            var noteW2 = text(midiToNoteName(note2), rx + 46, sy + 13, 9.0, acc, false, 0);
+            zone("value", rx + 44, sy + 2, noteW2 + 4, 14, { key: "osc2_root", pxPerUnit: 4 });
+            var fine2 = Math.round(paramValue("osc2_tune"));
+            var fineW2 = text(fine2 + " ct", rx + 62, sy + 13, 9.0, acc, false, 0);
+            zone("value", rx + 60, sy + 2, fineW2 + 4, 14, { key: "osc2_tune", pxPerUnit: 1 });
         } else {
-            var noteW = text(midiToNoteName(curRootNote), rx + 46, sy + 13, 9.0, acc, false, 0);
-            zone("value", rx + 44, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
-            var fine = Math.round(paramValue("fine_cents"));
-            var fineW = text(fine + " ct", rx + 62, sy + 13, 9.0, acc, false, 0);
-            zone("value", rx + 60, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
+            var rc = rootDyn ? acc : RC.sub;
+            strokeArc(rx + 4, sy + 9, 3.6, 0, Math.PI * 2, rc, 1.0, 1.2);
+            line(rx + 1, sy + 9, rx + 7, sy + 9, rc, 1.0, 1.0);
+            text("ROOT", rx + 11, sy + 13, 8.5, RC.sub, true, 0);
+            zone("button", rx - 2, sy + 1, 44, 15, { action: "toggle", key: "root_dyn" });
+            if (rootDyn) {
+                text(pitchCurve ? "Dynamic" : "Dynamic…", rx + 46, sy + 13, 9.0, RC.sub, false, 0);
+            } else {
+                var noteW = text(midiToNoteName(curRootNote), rx + 46, sy + 13, 9.0, acc, false, 0);
+                zone("value", rx + 44, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
+                var fine = Math.round(paramValue("fine_cents"));
+                var fineW = text(fine + " ct", rx + 62, sy + 13, 9.0, acc, false, 0);
+                zone("value", rx + 60, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
+            }
         }
         for (var i = 0; i < 2; i++) {
             var bx = sx + sw - 46 + i * 22;
@@ -1796,8 +1911,9 @@ function paintViewer() {
     var loopOn = curLoopMode > 0;
     var loopZones = null;
     var inW = function (x) { return x >= wx - 0.5 && x <= wx + ww + 0.5; };
+    var waveLoaded = osc2SampleView() ? osc2Loaded : hasLoadedSample;
     line(wx + 4, wy + wh * 0.5, wx + ww - 4, wy + wh * 0.5, RC.line, 0.5, 0.8);
-    if (hasLoadedSample) {
+    if (waveLoaded) {
         requestDetail();
         zoomWavePolygon(wx, wy, ww, wh, 0, 1, mixc(RC.wave, acc, 0.28), 1.0);
         zoomWavePolygon(wx, wy, ww, wh, curStart, curEnd, mixc(acc, [1, 1, 1], 0.25), 1.0);
@@ -1839,7 +1955,7 @@ function paintViewer() {
     }
 
     // Playheads and grains, clipped to the waveform
-    for (var v = 0; v < 16 && hasLoadedSample; v++) {
+    for (var v = 0; v < 16 && waveLoaded && !osc2SampleView(); v++) {
         if ((voiceAmps[v] || 0) <= 0.02) continue;
         var phx = vwx(clamp01(voicePlayheads[v]));
         if (curMode === 2 || curMode === 4) {
@@ -1851,7 +1967,7 @@ function paintViewer() {
         }
         if (inW(phx)) line(phx, wy, phx, wy + wh, [1, 1, 1], Math.min(1, 0.4 + voiceAmps[v]), 1.2);
     }
-    if (hasLoadedSample && (curMode === 2 || curMode === 4)) {
+    if (waveLoaded && !osc2SampleView() && (curMode === 2 || curMode === 4)) {
         for (var g = 0; g < GRAIN_SLOTS; g++) {
             var gp = grainPos[g], ga = grainAmp[g];
             if (!(gp >= 0) || !(ga > 0.02)) continue;
@@ -1859,8 +1975,8 @@ function paintViewer() {
             if (inW(gx)) line(gx, wy + 4, gx, wy + wh - 4, [0.85, 0.95, 1.0], Math.min(0.9, 0.2 + 0.7 * ga), 1.0);
         }
     }
-    if (rootDyn && pitchCurve && hasLoadedSample) paintPitchCurveZ(wx, wy, ww, wh);
-    if (!hasLoadedSample) text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 7, 9.5, RC.sub, false, 1);
+    if (!osc2SampleView() && rootDyn && pitchCurve && waveLoaded) paintPitchCurveZ(wx, wy, ww, wh);
+    if (!waveLoaded) text("Drop a sample here", wx + ww * 0.5, wy + wh * 0.5 - 7, 9.5, RC.sub, false, 1);
 
     var stX = vwx(curStart), enX = vwx(curEnd);
     if (curSliced) {
@@ -2036,7 +2152,382 @@ var MAT_W = 252;
 var envDots = [];            // last painted: { v, x, y, stage, alpha, rank } for the page shown (newest first)
 var envPanelRect = [0, 0, 0, 0];
 var envTab = 0;              // 0 Time, 1 Slope, 2 Value (the envelope value row)
-var matTab = 0;              // 0 Matrix, 1 MIDI, 2 MPE (the Mod Matrix section tab)
+var matTab = 0;              // 0 Matrix, 1 X-Synth, 2 MIDI, 3 MPE
+var matRows = null;
+var matDepth = {};
+var matScroll = { 1: 0, 2: 0, 3: 0, 4: 0 };
+var matGrid = null;
+var matPackedSig = "";
+// One provisional row per matrix view (Matrix / MIDI / MPE). A touched parameter lands there and
+// stays only once a cell on that row is non-zero; the next touch replaces it until then.
+var matTouch = { 1: -1, 2: -1, 3: -1, 4: -1 };
+var matSuppressTouch = 0;
+var matPolar = {};
+// Page index matches the env tabs. 0 is native, 1 is the other of Env/LFO, 2 is MSEG.
+// Slot 4 (page 4) starts as MSEG. An unbound slot buffer peeks 0, so the harness stays native.
+var slotTypes = [0, 0, 0, 0, 2];
+var slotRate = [1, 1, 1, 1, 1];
+var slotShape = [0, 0, 0, 0, 0];
+var slotAdsr = [[10, 200, 0.7, 300], [10, 200, 0.7, 300], [10, 200, 0.7, 300], [10, 200, 0.7, 300], [10, 200, 0.7, 300]];
+function blankSlotLfo() { return { rate: 1, shape: 0, atk: 0, amount: 100, shaping: 0, offset: 0, sync: 0, retrig: 1 }; }
+function blankSlotEnv() { return { atk: 10, dec: 200, sus: 70, rel: 300, atkSlope: 0, decSlope: 0, relSlope: 0, init: 0, peak: 100, final: 0, loop: 0 }; }
+var slotLfo = [null, blankSlotLfo(), blankSlotLfo(), blankSlotLfo(), blankSlotLfo()];
+var slotEnv = [null, blankSlotEnv(), blankSlotEnv(), blankSlotEnv(), blankSlotEnv()];
+var SLOT_LFO_SPEC = {
+    rate: { lo: 0.05, hi: 30, init: 1, exp: 2, unit: 3 },
+    shape: { lo: 0, hi: 4, init: 0, exp: 1, unit: 0 },
+    atk: { lo: 0, hi: 5000, init: 0, exp: 2.6, unit: 2 },
+    amount: { lo: 0, hi: 100, init: 100, exp: 1, unit: 5 },
+    shaping: { lo: -100, hi: 100, init: 0, exp: 1, unit: 5 },
+    offset: { lo: 0, hi: 360, init: 0, exp: 1, unit: 1 },
+    sync: { lo: 0, hi: 1, init: 0, exp: 1, unit: 0, enums: ["Hz", "Sync"] },
+    retrig: { lo: 0, hi: 1, init: 1, exp: 1, unit: 0, enums: ["Off", "On"] }
+};
+var SLOT_ENV_SPEC = {
+    atk: { lo: 0, hi: 20000, init: 10, exp: 2.6, unit: 2 },
+    dec: { lo: 0, hi: 20000, init: 200, exp: 2.6, unit: 2 },
+    sus: { lo: 0, hi: 100, init: 70, exp: 1, unit: 5 },
+    rel: { lo: 0, hi: 20000, init: 300, exp: 2.6, unit: 2 },
+    atkSlope: { lo: -100, hi: 100, init: 0, exp: 1, unit: 5 },
+    decSlope: { lo: -100, hi: 100, init: 0, exp: 1, unit: 5 },
+    relSlope: { lo: -100, hi: 100, init: 0, exp: 1, unit: 5 },
+    init: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    peak: { lo: 0, hi: 100, init: 100, exp: 1, unit: 5 },
+    final: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    loop: { lo: 0, hi: 2, init: 0, exp: 1, unit: 0, enums: ["None", "Trigger", "Loop"] }
+};
+
+function sLfoKey(page, field) { return "sLfo:" + page + ":" + field; }
+function sEnvKey(page, field) { return "sEnv:" + page + ":" + field; }
+
+function parseSlotKey(key) {
+    var s = String(key);
+    if (s.indexOf("sLfo:") !== 0 && s.indexOf("sEnv:") !== 0) return null;
+    var f = s.split(":");
+    if (f.length < 3) return null;
+    return { kind: f[0], page: Number(f[1]), field: f[2] };
+}
+
+function slotKeyBag(parsed) {
+    if (!parsed || parsed.page < 1 || parsed.page > 4) return null;
+    return parsed.kind === "sLfo" ? slotLfo[parsed.page] : slotEnv[parsed.page];
+}
+
+function lfoUsesSlot() { return envPage >= 1 && envPage <= 2 && slotKind(envPage) === 1; }
+function envUsesSlot() { return envPage >= 3 && slotKind(envPage) === 0; }
+var msegPts = [null, null, null, null, null];
+var msegDirty = [1, 1, 1, 1, 1];
+var slotPoked = "";
+var msegGeom = null;
+var msegPane = [0, 0, 0, 0, 0];
+var msegGridN = [8, 8, 8, 8, 8];
+var msegSnapOn = [1, 1, 1, 1, 1];
+var msegPlayMode = [0, 0, 0, 0, 0];
+var msegLoop0 = [0, 0, 0, 0, 0];
+var msegLoop1 = [1, 1, 1, 1, 1];
+var msegSync = [0, 0, 0, 0, 0];
+var msegSyncIdx = [9, 9, 9, 9, 9];
+var msegRetrig = [1, 1, 1, 1, 1];
+var msegRev = [0, 0, 0, 0, 0];
+var msegSyncMul = [1, 1, 1, 1, 1];
+var msegDepth = [100, 100, 100, 100, 100];
+var msegKeyOn = 0;
+var msegDots = [];
+var msegSmooth = [0, 0, 0, 0, 0];
+var msegPhase = [0, 0, 0, 0, 0];
+var MSEG_SYNC = [
+    { beats: 0.0625, name: "1/64" },
+    { beats: 0.125, name: "1/32" },
+    { beats: 0.16666667, name: "1/16T" },
+    { beats: 0.25, name: "1/16" },
+    { beats: 0.375, name: "1/16." },
+    { beats: 0.33333333, name: "1/8T" },
+    { beats: 0.5, name: "1/8" },
+    { beats: 0.75, name: "1/8." },
+    { beats: 0.66666667, name: "1/4T" },
+    { beats: 1, name: "1/4" },
+    { beats: 1.5, name: "1/4." },
+    { beats: 2, name: "1/2" },
+    { beats: 4, name: "1 bar" },
+    { beats: 8, name: "2 bars" },
+    { beats: 16, name: "4 bars" },
+    { beats: 32, name: "8 bars" }
+];
+var msegDraw = [0, 0, 0, 0, 0];
+var msegUndo = [[], [], [], [], []];
+var msegRedo = [[], [], [], [], []];
+var msegSel = [[], [], [], [], []];
+var msegNextId = 1;
+
+function defaultMsegPoints() {
+    return [{ x: 0, y: 0, curve: 0, sCurve: 0 }, { x: 0.5, y: 1, curve: 0, sCurve: 0 }, { x: 1, y: 0, curve: 0, sCurve: 0 }];
+}
+
+function msegPoints(slot) {
+    if (!msegPts[slot]) msegPts[slot] = defaultMsegPoints();
+    var pts = msegPts[slot];
+    for (var i = 0; i < pts.length; i++) {
+        if (pts[i].id == null) pts[i].id = msegNextId++;
+    }
+    return pts;
+}
+
+function msegStartMap(pts) {
+    var map = {};
+    for (var i = 0; i < pts.length; i++) {
+        map[pts[i].id] = {
+            x: pts[i].x, y: pts[i].y, curve: pts[i].curve || 0, sCurve: pts[i].sCurve ? 1 : 0,
+            isFirst: i === 0, isLast: i === pts.length - 1
+        };
+    }
+    return map;
+}
+
+function evalSegmentT(t, curve, sCurve) {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    var c = curve || 0;
+    if (Math.abs(c) < 0.001) return t;
+    var p = Math.pow(2, Math.abs(c) * 3.6);
+    if (sCurve) {
+        if (t < 0.5) {
+            var u0 = t * 2;
+            var sh0 = c > 0 ? (1 - Math.pow(1 - u0, p)) : Math.pow(u0, p);
+            return 0.5 * sh0;
+        }
+        var u1 = (t - 0.5) * 2;
+        var sh1 = c > 0 ? Math.pow(u1, p) : (1 - Math.pow(1 - u1, p));
+        return 0.5 + 0.5 * sh1;
+    }
+    return c > 0 ? (1 - Math.pow(1 - t, p)) : Math.pow(t, p);
+}
+
+function msegAt(pts, x) {
+    if (!pts.length) return 0;
+    if (x <= pts[0].x) return pts[0].y;
+    for (var i = 0; i < pts.length - 1; i++) {
+        var a = pts[i], b = pts[i + 1];
+        if (x <= b.x || i === pts.length - 2) {
+            var dx = b.x - a.x;
+            var t = dx > 1e-6 ? (x - a.x) / dx : 1;
+            if (t < 0) t = 0;
+            if (t > 1) t = 1;
+            return a.y + (b.y - a.y) * evalSegmentT(t, a.curve, a.sCurve);
+        }
+    }
+    return pts[pts.length - 1].y;
+}
+
+function renderMseg(slot) {
+    var pts = msegPoints(slot);
+    var samples = [];
+    var shift = (msegPhase[slot] || 0) / 100;
+    var i;
+    for (i = 0; i < 1024; i++) {
+        var u = (i / 1023 + shift) % 1;
+        if (u < 0) u += 1;
+        samples.push(Math.max(0, Math.min(1, msegAt(pts, u))));
+    }
+    var sm = (msegSmooth[slot] || 0) / 100;
+    if (sm > 0.001) {
+        var acc = samples[0];
+        var coef = Math.exp(-1 / Math.max(0.05, sm * 40));
+        for (i = 0; i < 1024; i++) {
+            acc = acc * coef + samples[i] * (1 - coef);
+            samples[i] = acc;
+        }
+    }
+    msegDirty[slot] = 0;
+    if (typeof Buffer === "undefined") return;
+    try { new Buffer("#0-bsmseg").poke(1, (slot - 1) * 1024, samples); } catch (_) {}
+}
+
+function pokeSlots() {
+    var floats = [];
+    var i, lf, ev, altLfo, altEnv, rate;
+    for (i = 1; i <= 4; i++) floats.push(slotTypes[i]);
+    for (i = 1; i <= 4; i++) {
+        altLfo = i <= 2 && slotTypes[i] === 1;
+        rate = altLfo ? slotLfo[i].rate : (slotRate[i] || 1);
+        floats.push(rate);
+    }
+    for (i = 1; i <= 4; i++) floats.push(slotLfo[i].shape || 0);
+    for (i = 1; i <= 4; i++) {
+        altEnv = i >= 3 && slotTypes[i] === 1;
+        ev = altEnv ? slotEnv[i] : null;
+        floats.push(ev ? ev.atk : slotAdsr[i][0]);
+    }
+    for (i = 1; i <= 4; i++) floats.push((i >= 3 && slotTypes[i] === 1) ? slotEnv[i].dec : slotAdsr[i][1]);
+    for (i = 1; i <= 4; i++) floats.push((i >= 3 && slotTypes[i] === 1) ? slotEnv[i].sus / 100 : slotAdsr[i][2]);
+    for (i = 1; i <= 4; i++) floats.push((i >= 3 && slotTypes[i] === 1) ? slotEnv[i].rel : slotAdsr[i][3]);
+    for (i = 1; i <= 4; i++) floats.push(slotLfo[i].amount / 100);
+    for (i = 1; i <= 4; i++) floats.push(slotLfo[i].shaping / 100);
+    for (i = 1; i <= 4; i++) floats.push(slotLfo[i].offset / 360);
+    for (i = 1; i <= 4; i++) floats.push(slotLfo[i].atk);
+    for (i = 1; i <= 4; i++) floats.push(slotEnv[i].init / 100);
+    for (i = 1; i <= 4; i++) floats.push(slotEnv[i].peak / 100);
+    for (i = 1; i <= 4; i++) floats.push(slotEnv[i].final / 100);
+    for (i = 1; i <= 4; i++) floats.push(slotEnv[i].atkSlope / 100);
+    for (i = 1; i <= 4; i++) floats.push(slotEnv[i].decSlope / 100);
+    for (i = 1; i <= 4; i++) floats.push(slotEnv[i].relSlope / 100);
+    for (i = 1; i <= 4; i++) floats.push(msegPlayMode[i] > 0.5 ? 1 : 0);
+    for (i = 1; i <= 4; i++) floats.push(msegLoop0[i] || 0);
+    for (i = 1; i <= 4; i++) floats.push(msegLoop1[i] == null ? 1 : msegLoop1[i]);
+    for (i = 1; i <= 4; i++) floats.push(msegSync[i] ? 1 : 0);
+    for (i = 1; i <= 4; i++) floats.push(msegRetrig[i] ? 1 : 0);
+    for (i = 1; i <= 4; i++) floats.push(MSEG_SYNC[msegSyncIdx[i] || 0].beats * (msegSyncMul[i] || 1));
+    for (i = 1; i <= 4; i++) floats.push(msegRev[i] ? 1 : 0);
+    var viewSi = (envPage >= 1 && envPage <= 4) ? envPage - 1 : 0;
+    floats.push(viewSi, 0, 0, 0);
+    var sig = floats.join(",");
+    var dirty = false;
+    for (i = 1; i <= 4; i++) if (msegDirty[i]) dirty = true;
+    if (sig === slotPoked && !dirty) return;
+    slotPoked = sig;
+    if (typeof Buffer !== "undefined") {
+        try { new Buffer("#0-bsslot").poke(1, 0, floats); } catch (_) {}
+    }
+    for (i = 1; i <= 4; i++) if (msegDirty[i]) renderMseg(i);
+}
+
+function slotEncode() {
+    var types = [slotTypes[1], slotTypes[2], slotTypes[3], slotTypes[4]].join(",");
+    var rates = [slotRate[1], slotRate[2], slotRate[3], slotRate[4]].join(",");
+    var shapes = [slotShape[1], slotShape[2], slotShape[3], slotShape[4]].join(",");
+    var ads = [];
+    for (var i = 1; i <= 4; i++) ads.push(slotAdsr[i].join(","));
+    var text = types + "|" + rates + "|" + shapes + "|" + ads.join(";");
+    if (text === "0,0,0,2|1,1,1,1|0,0,0,0|10,200,0.7,300;10,200,0.7,300;10,200,0.7,300;10,200,0.7,300") return "";
+    return text;
+}
+
+function slotDecode(text) {
+    var f = String(text).split("|");
+    if (f.length < 4) return;
+    var types = f[0].split(","), rates = f[1].split(","), shapes = f[2].split(","), ads = f[3].split(";");
+    for (var i = 0; i < 4; i++) {
+        slotTypes[i + 1] = Math.max(0, Math.min(2, Math.round(Number(types[i]) || 0)));
+        slotRate[i + 1] = Math.max(0.02, Number(rates[i]) || 1);
+        slotShape[i + 1] = Math.max(0, Math.min(2, Math.round(Number(shapes[i]) || 0)));
+        var a = (ads[i] || "").split(",");
+        if (a.length >= 4) slotAdsr[i + 1] = [Number(a[0]) || 10, Number(a[1]) || 200, Number(a[2]) || 0, Number(a[3]) || 300];
+    }
+    slotPoked = "";
+}
+
+function msegEncode() {
+    var parts = [];
+    var any = false;
+    for (var s = 1; s <= 4; s++) {
+        var pts = msegPoints(s);
+        var bits = [];
+        for (var i = 0; i < pts.length; i++) {
+            bits.push(pts[i].x.toFixed(4) + "," + pts[i].y.toFixed(4) + "," + (pts[i].curve || 0).toFixed(3) + "," + (pts[i].sCurve ? 1 : 0));
+        }
+        var one = bits.join(";");
+        if (one !== "0.0000,0.0000,0.000,0;0.5000,1.0000,0.000,0;1.0000,0.0000,0.000,0") any = true;
+        parts.push(one);
+    }
+    return any ? parts.join("/") : "";
+}
+
+function msegPlayBit(slot) {
+    var ix = Math.max(0, Math.min(MSEG_SYNC.length - 1, msegSyncIdx[slot] || 0));
+    return [
+        msegPlayMode[slot] > 0.5 ? 1 : 0,
+        (msegLoop0[slot] || 0).toFixed(4),
+        (msegLoop1[slot] == null ? 1 : msegLoop1[slot]).toFixed(4),
+        msegSync[slot] ? 1 : 0,
+        ix,
+        msegRetrig[slot] ? 1 : 0,
+        msegGridN[slot] || 8,
+        msegSnapOn[slot] ? 1 : 0,
+        msegRev[slot] ? 1 : 0,
+        (msegSyncMul[slot] || 1).toFixed(3)
+    ].join(",");
+}
+
+function msegPlayEncode() {
+    var parts = [], any = false, s;
+    for (s = 1; s <= 4; s++) {
+        var bit = msegPlayBit(s);
+        if (bit !== "0,0.0000,1.0000,0,9,1,8,1,0,1.000") any = true;
+        parts.push(bit);
+    }
+    return any ? parts.join("|") : "";
+}
+
+function msegPlayDecode(text) {
+    var slots = String(text).split("|");
+    for (var s = 0; s < slots.length && s < 4; s++) {
+        var f = slots[s].split(",");
+        if (f.length < 8) continue;
+        var i = s + 1;
+        msegPlayMode[i] = Number(f[0]) > 0.5 ? 1 : 0;
+        msegLoop0[i] = Math.max(0, Math.min(0.95, Number(f[1]) || 0));
+        msegLoop1[i] = Math.max(msegLoop0[i] + 0.05, Math.min(1, Number(f[2]) || 1));
+        msegSync[i] = Number(f[3]) ? 1 : 0;
+        msegSyncIdx[i] = Math.max(0, Math.min(MSEG_SYNC.length - 1, Math.round(Number(f[4]) || 0)));
+        msegRetrig[i] = Number(f[5]) ? 1 : 0;
+        msegGridN[i] = Math.max(1, Math.min(16, Math.round(Number(f[6]) || 8)));
+        msegSnapOn[i] = Number(f[7]) ? 1 : 0;
+        if (f.length >= 10) {
+            msegRev[i] = Number(f[8]) ? 1 : 0;
+            msegSyncMul[i] = Math.max(0.02, Math.min(50, Number(f[9]) || 1));
+        }
+    }
+    slotPoked = "";
+}
+
+function msegDecode(text) {
+    var slots = String(text).split("/");
+    for (var s = 0; s < slots.length && s < 4; s++) {
+        var bits = slots[s].split(";");
+        var pts = [];
+        for (var i = 0; i < bits.length; i++) {
+            var f = bits[i].split(",");
+            if (f.length < 2) continue;
+            pts.push({ x: Number(f[0]) || 0, y: Number(f[1]) || 0, curve: Number(f[2]) || 0, sCurve: Number(f[3]) ? 1 : 0 });
+        }
+        if (pts.length >= 2) {
+            pts[0].x = 0;
+            pts[pts.length - 1].x = 1;
+            msegPts[s + 1] = pts;
+            msegDirty[s + 1] = 1;
+        }
+    }
+}
+
+function envTabTitle(page) {
+    var native = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
+    if (page < 1) return native[0];
+    var ty = slotTypes[page];
+    if (ty === 2) return "MSEG";
+    if (page <= 2) return ty === 1 ? "LFO" : native[page];
+    return ty === 1 ? "Env" : native[page];
+}
+
+function slotKind(page) {
+    var ty = slotTypes[page];
+    if (ty === 2) return 2;
+    var nativeLfo = page >= 3;
+    if (ty === 0) return nativeLfo ? 1 : 0;
+    return nativeLfo ? 0 : 1;
+}
+
+function setSlotKind(page, kind) {
+    var nativeLfo = page >= 3;
+    var ty = kind === 2 ? 2 : (kind === 1 ? (nativeLfo ? 0 : 1) : (nativeLfo ? 1 : 0));
+    setSlotType(page, ty);
+}
+
+function setSlotType(page, ty) {
+    if (page < 1 || page > 4) return;
+    slotTypes[page] = ty;
+    slotPoked = "";
+    pokeSlots();
+    notifyclients();
+}
 var ENV_MIN_SEG = 20;        // minimum width of a segment in px: handle zones are +-5, diamond zones +-4, so they never overlap
 
 // Auxiliary matrix cell values for cells not backed by direct gen parameters (seeded with Wavetable's defaults from screenshots)
@@ -2046,19 +2537,23 @@ var wtModCells = {
 };
 
 function envKeys() {
+    if (envUsesSlot()) { var p = envPage; return [sEnvKey(p, "atk"), sEnvKey(p, "dec"), sEnvKey(p, "sus"), sEnvKey(p, "rel")]; }
     if (envPage === 2) return ["env3_atk_ms", "env3_dec_ms", "env3_sus_lvl", "env3_rel_ms"];
     return envPage === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"];
 }
 function envSlopeKeys() {
+    if (envUsesSlot()) { var p = envPage; return [sEnvKey(p, "atkSlope"), sEnvKey(p, "decSlope"), sEnvKey(p, "relSlope")]; }
     if (envPage === 2) return ["env3_atk_slope", "env3_dec_slope", "env3_rel_slope"];
     return envPage === 1 ? ["matk_slope", "mdec_slope", "mrel_slope"] : ["atk_slope", "dec_slope", "rel_slope"];
 }
 function envValKeys() {
+    if (envUsesSlot()) { var p = envPage; return [sEnvKey(p, "init"), sEnvKey(p, "peak"), sEnvKey(p, "sus"), sEnvKey(p, "final")]; }
     if (envPage === 2) return ["env3_init", "env3_peak", "env3_sus_lvl", "env3_final"];
     if (envPage === 1) return ["env2_init", "env2_peak", "msus_lvl", "env2_final"];
     return ["amp_init", "amp_peak", "sus_lvl", null];
 }
 function envLoopKey() {
+    if (envUsesSlot()) return sEnvKey(envPage, "loop");
     if (envPage === 2) return "env3_loop_mode";
     return envPage === 1 ? "env2_loop_mode" : "amp_loop_mode";
 }
@@ -2180,6 +2675,10 @@ function hollowSquare(x, y, r, c, w) {
 
 // Wavetable value formatting: Amp S in dB (or % for Env 2/3), times as ms / s, slopes as %, Initial/Peak/Final as %
 function fmtEnvVal(key, v) {
+    if (String(key).indexOf("sEnv:") === 0) {
+        var field = String(key).split(":")[2];
+        if (field === "sus" || field === "init" || field === "peak" || field === "final" || field.indexOf("Slope") >= 0) return (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + " %";
+    }
     if (key === "sus_lvl" && envTab === 0 && envPage === 0) return v <= 0.05 ? "-inf dB" : (20 * Math.log(v / 100) / Math.LN10).toFixed(1) + " dB";
     if (key === "sus_lvl" || key === "msus_lvl" || key === "env3_sus_lvl") return Math.round(v) + " %";
     if (/init$|peak$|final$/.test(key)) return (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + " %";
@@ -2383,15 +2882,16 @@ function paintEnvSubPage(sx, bx, by, bw, bh) {
 
 function paintLfoSubPage(sx, bx, by, bw, bh) {
     var orange = liveCol("live_display_handle_one");
-    var isLfo2 = envPage === 4;
-    var rateKey = isLfo2 ? "lfo2_rate" : "lfo_rate";
-    var shpKey = isLfo2 ? "lfo2_shape" : "lfo_shape";
-    var atkKey = isLfo2 ? "lfo2_atk_ms" : "lfo1_atk_ms";
-    var amtKey = isLfo2 ? "lfo2_amount" : "lfo1_amount";
-    var shgKey = isLfo2 ? "lfo2_shaping" : "lfo1_shaping";
-    var offKey = isLfo2 ? "lfo2_offset" : "lfo1_offset";
-    var synKey = isLfo2 ? "lfo2_sync" : "lfo1_sync";
-    var retKey = isLfo2 ? "lfo2_retrig" : "lfo1_retrig";
+    var isLfo2 = envPage === 4 && !lfoUsesSlot();
+    var p = envPage;
+    var rateKey = lfoUsesSlot() ? sLfoKey(p, "rate") : (isLfo2 ? "lfo2_rate" : "lfo_rate");
+    var shpKey = lfoUsesSlot() ? sLfoKey(p, "shape") : (isLfo2 ? "lfo2_shape" : "lfo_shape");
+    var atkKey = lfoUsesSlot() ? sLfoKey(p, "atk") : (isLfo2 ? "lfo2_atk_ms" : "lfo1_atk_ms");
+    var amtKey = lfoUsesSlot() ? sLfoKey(p, "amount") : (isLfo2 ? "lfo2_amount" : "lfo1_amount");
+    var shgKey = lfoUsesSlot() ? sLfoKey(p, "shaping") : (isLfo2 ? "lfo2_shaping" : "lfo1_shaping");
+    var offKey = lfoUsesSlot() ? sLfoKey(p, "offset") : (isLfo2 ? "lfo2_offset" : "lfo1_offset");
+    var synKey = lfoUsesSlot() ? sLfoKey(p, "sync") : (isLfo2 ? "lfo2_sync" : "lfo1_sync");
+    var retKey = lfoUsesSlot() ? sLfoKey(p, "retrig") : (isLfo2 ? "lfo2_retrig" : "lfo1_retrig");
 
     // Top-right row inside LFO view: A 0.00 ms | Hz | metronome | [R]
     var atkV = paramValue(atkKey);
@@ -2600,6 +3100,203 @@ function modSourceSignal(mode, col) {
     return 0;
 }
 
+function ensureMatRows() {
+    if (!matRows) matRows = (typeof modDefaultRows === "function") ? modDefaultRows() : { 1: ["samp_gain", "pitch_st"], 2: ["samp_gain"], 3: ["pitch_st"], 4: ["pitch_st"] };
+    if (!matRows[4]) matRows[4] = (typeof MOD_DEFAULT_ROWS !== "undefined" && MOD_DEFAULT_ROWS[4]) ? MOD_DEFAULT_ROWS[4].slice() : ["pitch_st", "filt_cutoff", "samp_gain"];
+}
+
+function rowLocked(mode, row) {
+    var def = (typeof MOD_DEFAULT_ROWS !== "undefined") ? MOD_DEFAULT_ROWS[mode] : null;
+    var list = matRows && matRows[mode];
+    return !!(def && list && row < def.length && list[row] === def[row]);
+}
+
+function matCell(mode, row, src) {
+    return Number(matDepth[modCellKey(mode, row, src)]) || 0;
+}
+
+function modPickerKeys(mode) {
+    if (typeof modTargetKeys !== "function") return ["pitch_st", "samp_gain"];
+    var all = modTargetKeys();
+    var out = [];
+    for (var i = 0; i < all.length; i++) {
+        var spec = (typeof FACE_PARAMS !== "undefined") ? FACE_PARAMS[all[i]] : null;
+        if (!spec) continue;
+        if (typeof modDenied === "function" && modDenied(all[i], spec)) continue;
+        out.push(all[i]);
+    }
+    if (!out.length) out.push("pitch_st");
+    if (mode && matRows && matRows[mode] && typeof modSources === "function") {
+        var srcs = modSources(mode);
+        var list = matRows[mode];
+        for (var r = 0; r < list.length; r++) {
+            if (String(list[r]).indexOf("cell:") === 0) continue;
+            for (var s = 0; s < srcs.length; s++) {
+                if (typeof modLegacyParam === "function" && modLegacyParam(srcs[s].id, list[r])) continue;
+                out.push("cell:" + modCellKey(mode, r, srcs[s].id));
+            }
+        }
+    }
+    return out;
+}
+
+function cycleMatTarget(mode, row, dir) {
+    ensureMatRows();
+    var list = matRows[mode];
+    if (!list || row < 0 || row >= list.length) return;
+    var keys = modPickerKeys(mode);
+    var cur = list[row];
+    var ix = keys.indexOf(cur);
+    if (ix < 0) ix = 0;
+    else ix = (ix + (dir < 0 ? keys.length - 1 : 1)) % keys.length;
+    list[row] = keys[ix];
+    flushModMap();
+    notifyclients();
+}
+
+function addMatRow(mode) {
+    ensureMatRows();
+    var list = matRows[mode];
+    if (!list || list.length >= 12) return;
+    var keys = modPickerKeys();
+    var pick = keys[list.length % keys.length];
+    list.push(pick);
+    matScroll[mode] = Math.max(0, list.length - 5);
+    flushModMap();
+    notifyclients();
+}
+
+function matrixSectionOpen() {
+    for (var i = 0; i < SECTIONS.length; i++) if (SECTIONS[i].id === "matrix") return ((foldMask >> i) & 1) === 1;
+    return false;
+}
+
+function openMatMode() {
+    if (!matrixSectionOpen() || matTab === 1) return 0;
+    return matTab === 0 ? 1 : matTab;
+}
+
+function zoneInOpenMatrix(z) {
+    return !!(z && matrixSectionOpen() && z.x >= matX && z.x < matX + MAT_W && z.y >= 0 && z.y < 169);
+}
+
+function matTouchIndex(mode) {
+    var list = matRows && matRows[mode];
+    var row = matTouch[mode];
+    if (!list || row < 0 || row >= list.length) return -1;
+    return row;
+}
+
+function rowHasMod(mode, row, key) {
+    var srcs = (typeof modSources === "function") ? modSources(mode) : [];
+    for (var s = 0; s < srcs.length; s++) {
+        var src = srcs[s].id;
+        var leg = (typeof modLegacyParam === "function") ? modLegacyParam(src, key) : "";
+        var val = leg ? paramValue(leg) : matCell(mode, row, src);
+        if (Math.abs(val) > 0.05) return true;
+    }
+    return false;
+}
+
+function revealMatRow(mode, row) {
+    var top = matScroll[mode] || 0;
+    if (row < top) matScroll[mode] = row;
+    else if (row >= top + 5) matScroll[mode] = row - 4;
+}
+
+function forgetMatTouchRow(mode, row) {
+    if (matTouch[mode] === row) matTouch[mode] = -1;
+    else if (matTouch[mode] > row) matTouch[mode]--;
+}
+
+// Last unmapped non-default row comes back as the provisional one, so the next touch still replaces it.
+function claimTouchRows() {
+    matTouch = { 1: -1, 2: -1, 3: -1, 4: -1 };
+    ensureMatRows();
+    var modes = [1, 2, 3, 4];
+    for (var i = 0; i < modes.length; i++) {
+        var mode = modes[i];
+        var list = matRows[mode];
+        if (!list || !list.length) continue;
+        var row = list.length - 1;
+        var def = (typeof MOD_DEFAULT_ROWS !== "undefined") ? MOD_DEFAULT_ROWS[mode] : null;
+        if (def && def.length === list.length && def[row] === list[row]) continue;
+        if (!rowHasMod(mode, row, list[row])) matTouch[mode] = row;
+    }
+}
+
+function noteMatTouch(key) {
+    if (matSuppressTouch) return false;
+    if (typeof modTarget !== "function" || !modTarget(key)) return false;
+    var spec = (typeof FACE_PARAMS !== "undefined" && FACE_PARAMS[key]) ? FACE_PARAMS[key] : paramSpec(key);
+    if (typeof modDenied === "function" && modDenied(key, spec)) return false;
+    var mode = openMatMode();
+    if (!mode) return false;
+    ensureMatRows();
+    var list = matRows[mode];
+    var existing = list.indexOf(key);
+    var prov = matTouchIndex(mode);
+    if (existing >= 0) {
+        if (prov >= 0 && prov !== existing && !rowHasMod(mode, prov, list[prov])) {
+            list.splice(prov, 1);
+            forgetMatTouchRow(mode, prov);
+            if (matScroll[mode] > list.length - 5) matScroll[mode] = Math.max(0, list.length - 5);
+            flushModMap();
+            return true;
+        }
+        if (existing >= 0) revealMatRow(mode, existing);
+        return false;
+    }
+    if (prov >= 0 && !rowHasMod(mode, prov, list[prov])) {
+        list[prov] = key;
+        revealMatRow(mode, prov);
+        flushModMap();
+        return true;
+    }
+    if (list.length >= 12) return false;
+    list.push(key);
+    matTouch[mode] = list.length - 1;
+    revealMatRow(mode, matTouch[mode]);
+    flushModMap();
+    return true;
+}
+
+function removeMatRow(mode, row) {
+    ensureMatRows();
+    if (rowLocked(mode, row)) return;
+    var list = matRows[mode];
+    if (!list || list.length <= 1) return;
+    list.splice(row, 1);
+    forgetMatTouchRow(mode, row);
+    if (matScroll[mode] > list.length - 5) matScroll[mode] = Math.max(0, list.length - 5);
+    flushModMap();
+    notifyclients();
+}
+
+function flushModMap() {
+    ensureMatRows();
+    if (typeof modPack !== "function") return;
+    var floats = modPack(matRows, matDepth, paramValue("mod_global_amt"), matPolar);
+    pokeSlots();
+    var sig = floats.join(",");
+    if (sig === matPackedSig) return;
+    matPackedSig = sig;
+    if (typeof Buffer === "undefined") return;
+    try { new Buffer("#0-bsmod").poke(1, 0, floats); } catch (_) {}
+}
+
+function matRowLabel(key) {
+    var name = key;
+    if (String(key).indexOf("cell:") === 0 && typeof modSources === "function") {
+        var bits = String(key).substring(5).split(":");
+        var srcs = modSources(Number(bits[0]));
+        name = "Amt";
+        for (var i = 0; i < srcs.length; i++) if (srcs[i].id === Number(bits[2])) name = "Amt " + srcs[i].name;
+    } else if (typeof modLabel === "function") name = modLabel(key);
+    if (name.length > 11) name = name.substring(0, 10) + "…";
+    return name;
+}
+
 function paintModTable(sx, bx, by, bw, bh, mode) {
     var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
     var green = [0.46, 0.96, 0.30], greenDim = [0.22, 0.50, 0.16];
@@ -2612,29 +3309,34 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
 
     var colNames, colCols, nCols;
     if (mode === 1) {
-        colNames = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
+        colNames = ["Amp", envTabTitle(1), envTabTitle(2), envTabTitle(3), envTabTitle(4)];
         colCols = [cy1, cy1, cy1, orange, orange];
         nCols = 5;
     } else if (mode === 2) {
         colNames = ["Vel", "Key", "PB", "Press", "Mod", "Rand"];
         colCols = [green, green, green, green, green, green];
         nCols = 6;
+    } else if (mode === 4) {
+        colNames = ["Osc 1", "Osc 2", "Sub"];
+        colCols = [orange, orange, orange];
+        nCols = 3;
     } else {
         colNames = ["Vel", "Note PB", "Slide", "Press"];
         colCols = [green, green, green, green];
         nCols = 4;
     }
 
-    var gx0 = bx + 65, gxEnd = bx + bw - 6;
+    var gx0 = bx + 56, gxEnd = bx + bw - 6;
     var cw = (gxEnd - gx0) / nCols;
     for (var c = 0; c < nCols; c++) {
         var cx = gx0 + c * cw;
-        text(colNames[c], cx + cw * 0.5, ty + 13.0, 9.5, colCols[c], false, 1);
+        text(colNames[c], cx + cw * 0.5, ty + 13.0, nCols > 5 ? 8.0 : 9.0, colCols[c], false, 1);
         // Header bar under source name: dim track + bright bar showing current live output of that source
         var srcSig = modSourceSignal(mode, c);
         line(cx + 0.5, ty + 16.0, cx + cw - 0.5, ty + 16.0, colCols[c], 0.35, 1.2);
+        var headBi = (mode === 1 && c >= 3 && slotKind(c) === 1) || mode === 4 || (mode === 2 && (c === 2 || c === 5)) || (mode === 3 && c === 1);
         if (Math.abs(srcSig) > 0.01) {
-            if (mode === 1 && c >= 3) {
+            if (headBi) {
                 var smid = cx + cw * 0.5;
                 var sx0 = srcSig >= 0 ? smid : smid + srcSig * (cw * 0.48);
                 var sw0 = Math.max(1.5, Math.abs(srcSig) * (cw * 0.48));
@@ -2646,102 +3348,56 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
         }
     }
 
-    // Target rows: each row's background fill represents the static parameter value (toNorm: 0 = empty/black, 1 = full 59px),
-    // and the horizontal bar along the bottom of the target label represents the current sum of modulation applied.
-    var isWt1 = Math.round(paramValue("osc1_type")) > 0;
-    var warpKey1 = isWt1 ? "wt1_fx1" : (curMode === 0 ? "rp_dist" : (curMode === 1 || curMode === 3 ? "formant" : "grain_size"));
-    var rows = [
-        { name: "Amp",        paramKey: "samp_gain" },
-        { name: "Pitch",      paramKey: "pitch_st" },
-        { name: "Osc 1 Pos",  paramKey: "play_pos" },
-        { name: "Osc 1 Warp", paramKey: warpKey1 },
-        { name: "X-Synth",    paramKey: "xs_depth", isXSynth: true }
-    ];
-    var glbAmt = paramValue("mod_global_amt") * 0.01;
+    ensureMatRows();
+    var srcs = (typeof modSources === "function") ? modSources(mode) : [];
+    var allRows = matRows[mode] || [];
+    if (matScroll[mode] > Math.max(0, allRows.length - 5)) matScroll[mode] = Math.max(0, allRows.length - 5);
+    var scroll = matScroll[mode] || 0;
+    var vis = Math.min(5, allRows.length);
+    matGrid = { x: bx + 4, y: ty + 17, w: bw - 8, h: vis * 16.6 + 2, mode: mode };
 
-    for (var r = 0; r < 5; r++) {
-        var ry = ty + 18.0 + r * 18.2, rh = 16.8, lblW = 59.0;
-        var tKey = rows[r].paramKey;
-        var staticNorm = clamp01(toNorm(tKey, paramValue(tKey)));
+    for (var vr = 0; vr < vis; vr++) {
+        var r = scroll + vr;
+        var ry = ty + 18.0 + vr * 16.6, rh = 15.4, lblW = 48.0;
+        var tKey = allRows[r];
+        var provisional = matTouchIndex(mode) === r;
+        var locked = rowLocked(mode, r);
         fillRect(bx + 5, ry, lblW, rh, [0.07, 0.09, 0.11], 1.0);
-        // Static value fill: 0 (e.g. -inf / min) = 0 px black/empty, 1 (max) = 100% full width (59 px)
-        var fillW = Math.round(staticNorm * lblW * 10) / 10;
-        if (fillW > 0.5) fillRect(bx + 5, ry, fillW, rh, pillBg, 1.0);
-
-        // Compute current sum of modulation applied to this target across all sources
-        var modSumNorm = 0;
-        for (var sc = 0; sc < 5; sc++) {
-            var mpKey = null;
-            if (sc === 1 && r === 1) mpKey = "menv_pitch";
-            else if (sc === 1 && r === 2) mpKey = "menv_pos";
-            else if (sc === 1 && r === 3) mpKey = "filt_env_amt";
-            else if (sc === 3 && r === 1) mpKey = "lfo_pitch";
-            else if (sc === 3 && r === 2) mpKey = "lfo_pos";
-            else if (sc === 3 && r === 3) mpKey = "lfo_filt";
-            var mCid = "mat:" + r + ":" + sc;
-            var mDepth = wtModCells[mCid] !== undefined ? wtModCells[mCid] : (mpKey ? paramValue(mpKey) : 0);
-            if (Math.abs(mDepth) > 0.05) {
-                modSumNorm += (mDepth * 0.01) * modSourceSignal(1, sc) * glbAmt;
-            }
-        }
-        modSumNorm = Math.max(-1, Math.min(1, modSumNorm));
-
-        // Horizontal bar under the target name showing the current sum of modulation applied around the static position
-        if (Math.abs(modSumNorm) > 0.005) {
-            var anchorX = bx + 5 + staticNorm * lblW;
-            var endX = bx + 5 + clamp01(staticNorm + modSumNorm * 0.5) * lblW;
-            var barX0 = Math.min(anchorX, endX);
-            var barW0 = Math.max(2.0, Math.abs(endX - anchorX));
-            if (barX0 + barW0 > bx + 5 + lblW) barX0 = bx + 5 + lblW - barW0;
-            fillRect(barX0, ry + rh - 2.2, barW0, 1.8, [0.62, 0.66, 0.72], 0.95);
-        }
-
-        text(rows[r].name, bx + 8, ry + 11.6, 8.8, rows[r].isXSynth ? orange : RC.sub, false, 0);
-        if (rows[r].isXSynth) {
-            polygon([[bx + 55.0, ry + 5.8], [bx + 59.5, ry + 8.4], [bx + 55.0, ry + 11.0]], orange, 0.9);
-            actZone(bx + 5, ry, lblW, rh, function () { matTab = 1; });
+        text(matRowLabel(tKey), bx + 7, ry + 10.6, 8.2, provisional ? cy1 : RC.sub, false, 0);
+        if (!locked) {
+            text("×", bx + 5 + lblW - 8, ry + 10.4, 8, RC.sub, false, 1);
+            (function (mm, rr) { actZone(bx + 5 + lblW - 11, ry, 11, rh, function () { removeMatRow(mm, rr); }); })(mode, r);
         }
 
         for (var col = 0; col < nCols; col++) {
+            var src = srcs[col] ? srcs[col].id : col;
             var clx = gx0 + col * cw + 0.5, clw = cw - 1.0;
-            // Map to real Better Sampler parameter where applicable, else auxiliary cell state
-            var pKey = null;
-            if (mode === 1) {
-                if (col === 1 && r === 1) pKey = "menv_pitch";
-                else if (col === 1 && r === 2) pKey = "menv_pos";
-                else if (col === 1 && r === 3) pKey = "filt_env_amt";
-                else if (col === 3 && r === 1) pKey = "lfo_pitch";
-                else if (col === 3 && r === 2) pKey = "lfo_pos";
-                else if (col === 3 && r === 3) pKey = "lfo_filt";
-            } else if (mode === 2 && col === 0 && r === 0) {
-                pKey = "vel_sens";
-            }
-            var cellId = (mode === 1 ? "mat:" : (mode === 2 ? "midi:" : "mpe:")) + r + ":" + col;
-            var val = wtModCells[cellId] !== undefined ? wtModCells[cellId] : (pKey ? paramValue(pKey) : 0);
+            var pKey = (typeof modLegacyParam === "function") ? modLegacyParam(src, tKey) : "";
+            var val = pKey ? paramValue(pKey) : matCell(mode, r, src);
             var hasVal = Math.abs(val) > 0.05;
             fillRect(clx, ry, clw, rh, hasVal ? activeBg : cellBg, 1.0);
             if (hasVal) {
                 var barCol = colCols[col];
                 var barTrack = mode === 1 ? mixc(activeBg, barCol, 0.25) : greenDim;
-                fillRect(clx + 0.5, ry + rh - 2.2, clw - 1.0, 1.8, barTrack, 1.0);
+                fillRect(clx + 0.5, ry + rh - 2.2, clw - 1.0, 1.6, barTrack, 1.0);
+                var spec = pKey ? paramSpec(pKey) : null;
+                var flipped = !pKey && !!matPolar[modCellKey(mode, r, src)];
+                var naturalBi = !spec || spec.lo < 0;
+                var bipolar = flipped ? !naturalBi : naturalBi;
                 var mid = clx + clw * 0.5;
-                var bx0 = val >= 0 ? mid : mid + (val / 100) * (clw * 0.48);
-                var bw0 = Math.max(1.5, Math.abs(val / 100) * (clw * 0.48));
-                fillRect(bx0, ry + rh - 2.2, bw0, 1.8, barCol, 1.0);
-                var vTxt = (Math.abs(val) < 10 && Math.abs(val - Math.round(val)) > 0.05) ? val.toFixed(1) : (val === 7 && r === 3 ? "7.0" : String(Math.round(val)));
-                text(vTxt, clx + clw * 0.5, ry + 11.2, 9.0, barCol, false, 1);
+                var frac = bipolar ? (val / (spec ? Math.max(Math.abs(spec.lo), Math.abs(spec.hi)) : 100)) : (spec ? toNorm(pKey, val) : val / 100);
+                var bx0 = bipolar ? (frac >= 0 ? mid : mid + frac * (clw * 0.48)) : clx + 0.5;
+                var bw0 = Math.max(1.5, Math.abs(frac) * (bipolar ? clw * 0.48 : clw - 1));
+                fillRect(bx0, ry + rh - 2.2, bw0, 1.6, barCol, 1.0);
+                var shown = bipolar && !pKey ? Math.round(val) : Math.round(val);
+                text(String(shown), clx + clw * 0.5, ry + 10.2, 8.2, barCol, false, 1);
+                if (flipped) text("U", clx + 2, ry + 8.2, 6.5, barCol, false, 0);
             }
-            if (pKey) {
-                zone("value", clx, ry, clw, rh, { key: pKey, norm: true });
-            } else {
-                (function (cid) {
-                    actZone(clx, ry, clw, rh, function () {
-                        wtModCells[cid] = wtModCells[cid] ? 0 : 50;
-                    });
-                })(cellId);
-            }
+            if (pKey) zone("value", clx, ry, clw, rh, { key: pKey, norm: true, hbar: 1 });
+            else zone("modcell", clx, ry, clw, rh, { mode: mode, row: r, src: src });
         }
     }
+    flushModMap();
 
     if (mode === 1) {
         // Global row at bottom of Matrix view: Global | Time 0.0 % | Amount 100 %
@@ -2765,8 +3421,7 @@ function paintEnvSection(sx) {
     var bx = sx, by = 0, bw = ENV_W, bh = 169;
     fillRect(bx, by, bw, bh, RC.wave, 1.0);
 
-    // Tab bar: Amp | Env 2 | Env 3 | LFO 1 | LFO 2
-    var subNames = ["Amp", "Env 2", "Env 3", "LFO 1", "LFO 2"];
+    var subNames = ["Amp", envTabTitle(1), envTabTitle(2), envTabTitle(3), envTabTitle(4)];
     var sw = bw / 5;
     for (var s = 0; s < 5; s++) {
         var sx0 = bx + s * sw;
@@ -2778,8 +3433,394 @@ function paintEnvSection(sx) {
     }
     line(bx, by + 16.5, bx + bw, by + 16.5, RC.line, 1.0, 1.0);
 
-    if (envPage <= 2) paintEnvSubPage(sx, bx, by, bw, bh);
-    else paintLfoSubPage(sx, bx, by, bw, bh);
+    if (envPage >= 1) paintSlotTypePills(bx, by);
+    var kind = envPage === 0 ? 0 : slotKind(envPage);
+    if (envPage >= 1 && kind === 2) paintMsegPage(sx, bx, by, bw, bh);
+    else if (envPage >= 1 && kind === 1) paintLfoSubPage(sx, bx, by, bw, bh);
+    else paintEnvSubPage(sx, bx, by, bw, bh);
+}
+
+function paintSlotTypePills(bx, by) {
+    var names = ["Env", "LFO", "MSEG"];
+    var cy1 = RC.cyan;
+    for (var i = 0; i < 3; i++) {
+        var px = bx + 6 + i * 36;
+        var on = slotKind(envPage) === i;
+        text(names[i], px + 16, by + 29, 8.2, on ? cy1 : RC.sub, false, 1);
+        if (on) line(px + 2, by + 32.5, px + 30, by + 32.5, cy1, 1.0, 1.2);
+        (function (kind) { actZone(px, by + 18, 34, 16, function () { setSlotKind(envPage, kind); }); })(i);
+    }
+}
+
+function msegCopyPts(slot) {
+    return msegPoints(slot).map(function (p) { return { id: p.id, x: p.x, y: p.y, curve: p.curve || 0, sCurve: p.sCurve ? 1 : 0 }; });
+}
+
+function msegPushUndo(slot) {
+    msegUndo[slot].push(msegCopyPts(slot));
+    if (msegUndo[slot].length > 32) msegUndo[slot].shift();
+    msegRedo[slot] = [];
+}
+
+function msegSnapPt(slot, x, y) {
+    if (!msegSnapOn[slot]) return { x: x, y: y };
+    var g = msegGridN[slot] || 8;
+    return { x: Math.round(x * g) / g, y: Math.round(y * 8) / 8 };
+}
+
+function msegKnobGet(slot, field) {
+    if (field === "depth") return msegDepth[slot];
+    if (field === "smooth") return msegSmooth[slot];
+    return msegPhase[slot];
+}
+
+function msegKnobSet(slot, field, v) {
+    v = Math.max(0, Math.min(100, v));
+    if (field === "depth") msegDepth[slot] = v;
+    else if (field === "smooth") msegSmooth[slot] = v;
+    else msegPhase[slot] = v;
+    msegDirty[slot] = 1;
+    pokeSlots();
+}
+
+function msegRateText(slot) {
+    if (msegSync[slot]) {
+        var ix = Math.max(0, Math.min(MSEG_SYNC.length - 1, msegSyncIdx[slot] || 0));
+        return MSEG_SYNC[ix].name;
+    }
+    var rateV = slotRate[slot] || 1;
+    return (rateV >= 10 ? rateV.toFixed(1) : rateV.toFixed(2)) + " Hz";
+}
+
+function msegMulText(slot) {
+    var m = msegSyncMul[slot] || 1;
+    return "\u00d7" + (m >= 10 ? m.toFixed(1) : m.toFixed(2));
+}
+
+function msegHit(z) {
+    if (!z) return false;
+    if (z.kind && String(z.kind).indexOf("mseg") === 0) return true;
+    var t = z.tip;
+    return t === "Loop" || t === "1-Shot" || t === "retrigger" || t === "reverse" || t === "draw" || t === "sine" || t === "ramps" || t === "steps" || t === "smooth" || t === "flip";
+}
+
+function drawBackArrow(x, y, col) {
+    setc(col, 1);
+    mgraphics.set_line_width(1.25);
+    mgraphics.move_to(x + 10, y + 1.5);
+    mgraphics.line_to(x + 4, y + 5);
+    mgraphics.line_to(x + 10, y + 8.5);
+    mgraphics.stroke();
+    mgraphics.move_to(x + 4, y + 5);
+    mgraphics.line_to(x + 12, y + 5);
+    mgraphics.stroke();
+}
+
+function msegPaintRamp(slot, x, y) {
+    if (!msegGeom) return;
+    var nx = (x - msegGeom.x) / msegGeom.w;
+    var ny = 1 - (y - msegGeom.y) / msegGeom.h;
+    nx = Math.max(0, Math.min(0.9999, nx));
+    ny = Math.max(0, Math.min(1, ny));
+    if (msegSnapOn[slot]) ny = Math.round(ny * 8) / 8;
+    var n = Math.max(1, msegGridN[slot] || 8);
+    var cell = Math.min(n - 1, Math.max(0, Math.floor(nx * n)));
+    var x0 = cell / n, x1 = (cell + 1) / n;
+    var pts = msegPoints(slot);
+    var kept = [];
+    var i;
+    for (i = 0; i < pts.length; i++) {
+        var pt = pts[i];
+        if (i === 0 || i === pts.length - 1) kept.push(pt);
+        else if (pt.x < x0 - 0.0002 || pt.x > x1 + 0.0002) kept.push(pt);
+    }
+    if (cell === 0) kept[0].y = 0;
+    if (cell === n - 1) kept[kept.length - 1].y = ny;
+    kept.push({ x: x0 + 0.001, y: 0, curve: 0, sCurve: 0 });
+    kept.push({ x: x1 - 0.001, y: ny, curve: 0, sCurve: 0 });
+    kept.sort(function (a, b) { return a.x - b.x; });
+    kept[0].x = 0;
+    kept[kept.length - 1].x = 1;
+    msegPts[slot] = kept;
+    msegSel[slot] = [];
+    msegDirty[slot] = 1;
+    pokeSlots();
+}
+
+function msegApply(slot, id) {
+    if (id === "undo") {
+        var prev = msegUndo[slot].pop();
+        if (!prev) return;
+        msegRedo[slot].push(msegCopyPts(slot));
+        msegPts[slot] = prev;
+        msegSel[slot] = [];
+        msegDirty[slot] = 1;
+        pokeSlots();
+        return;
+    }
+    if (id === "redo") {
+        var next = msegRedo[slot].pop();
+        if (!next) return;
+        msegUndo[slot].push(msegCopyPts(slot));
+        msegPts[slot] = next;
+        msegSel[slot] = [];
+        msegDirty[slot] = 1;
+        pokeSlots();
+        return;
+    }
+    if (id === "draw") { msegDraw[slot] = msegDraw[slot] ? 0 : 1; return; }
+    if (id === "snap") { msegSnapOn[slot] = msegSnapOn[slot] ? 0 : 1; return; }
+    if (id === "grid") { msegGridN[slot] = msegGridN[slot] >= 16 ? 4 : msegGridN[slot] * 2; return; }
+    msegPushUndo(slot);
+    var pts;
+    if (id === "sine") {
+        pts = [
+            { x: 0, y: 0.5, curve: 0.38, sCurve: 0 },
+            { x: 0.25, y: 1, curve: -0.38, sCurve: 0 },
+            { x: 0.5, y: 0.5, curve: 0.38, sCurve: 0 },
+            { x: 0.75, y: 0, curve: -0.38, sCurve: 0 },
+            { x: 1, y: 0.5, curve: 0, sCurve: 0 }
+        ];
+    } else if (id === "ramps") {
+        pts = [];
+        var n = Math.max(2, Math.min(16, msegGridN[slot] || 8));
+        var step = 0;
+        while (step < n) {
+            var remaining = n - step;
+            var rSpan = Math.random();
+            var spanSteps = rSpan < 0.60 ? 1 : (rSpan < 0.85 ? 2 : 3);
+            if (spanSteps > remaining) spanSteps = remaining;
+            if (step === 0 && spanSteps === n && n >= 2) spanSteps = Math.max(1, n - 1);
+            var x0 = step / n, x1 = (step + spanSteps) / n;
+            var yPeak = 0.35 + Math.random() * 0.65;
+            if (msegSnapOn[slot]) yPeak = Math.max(0.25, Math.round(yPeak * 8) / 8);
+            var yFloor = Math.random() < 0.80 ? 0 : (Math.round(Math.random() * 2) / 8);
+            if (yFloor >= yPeak) yFloor = 0;
+            pts.push({ x: step === 0 ? 0 : x0 + 0.001, y: yPeak, curve: 0.38 + Math.random() * 0.42, sCurve: 0 });
+            pts.push({ x: step + spanSteps === n ? 1 : x1 - 0.001, y: yFloor, curve: 0, sCurve: 0 });
+            step += spanSteps;
+        }
+    } else if (id === "steps") {
+        pts = [];
+        var ns = msegGridN[slot] || 8;
+        for (var s = 0; s < ns; s++) {
+            var yy = Math.round(Math.random() * 4) / 4;
+            pts.push({ x: s / ns, y: yy, curve: 0, sCurve: 0 });
+            if (s < ns - 1) pts.push({ x: (s + 1) / ns - 0.0001, y: yy, curve: 0, sCurve: 0 });
+        }
+        pts.push({ x: 1, y: pts[pts.length - 1].y, curve: 0, sCurve: 0 });
+    } else if (id === "smooth") {
+        pts = [{ x: 0, y: 0.5, curve: 0.2, sCurve: 1 }];
+        for (var k = 1; k < 4; k++) pts.push({ x: k / 4, y: Math.random(), curve: (Math.random() - 0.5), sCurve: 1 });
+        pts.push({ x: 1, y: 0.5, curve: 0, sCurve: 0 });
+    } else if (id === "flip") {
+        pts = msegCopyPts(slot).map(function (p) { return { x: 1 - p.x, y: p.y, curve: -(p.curve || 0), sCurve: p.sCurve }; });
+        pts.reverse();
+        pts[0].x = 0;
+        pts[pts.length - 1].x = 1;
+    } else return;
+    msegPts[slot] = pts;
+    msegSel[slot] = [];
+    msegDirty[slot] = 1;
+    pokeSlots();
+}
+
+function drawMsegIcon(id, x, y, col) {
+    setc(col, 1);
+    mgraphics.set_line_width(1.15);
+    if (id === "draw") {
+        mgraphics.move_to(x + 3, y + 9);
+        mgraphics.line_to(x + 10, y + 2);
+        mgraphics.stroke();
+    } else if (id === "sine") {
+        mgraphics.move_to(x + 2, y + 5);
+        mgraphics.curve_to(x + 4, y + 1, x + 6, y + 1, x + 8, y + 5);
+        mgraphics.curve_to(x + 10, y + 9, x + 12, y + 9, x + 14, y + 5);
+        mgraphics.stroke();
+    } else if (id === "ramps") {
+        mgraphics.move_to(x + 2, y + 2);
+        mgraphics.line_to(x + 8, y + 9);
+        mgraphics.line_to(x + 8, y + 2);
+        mgraphics.line_to(x + 14, y + 9);
+        mgraphics.stroke();
+    } else if (id === "steps") {
+        mgraphics.move_to(x + 2, y + 8);
+        mgraphics.line_to(x + 6, y + 8);
+        mgraphics.line_to(x + 6, y + 4);
+        mgraphics.line_to(x + 10, y + 4);
+        mgraphics.line_to(x + 10, y + 2);
+        mgraphics.line_to(x + 14, y + 2);
+        mgraphics.stroke();
+    } else if (id === "smooth") {
+        mgraphics.move_to(x + 2, y + 8);
+        mgraphics.curve_to(x + 6, y + 1, x + 10, y + 9, x + 14, y + 3);
+        mgraphics.stroke();
+    } else if (id === "flip") {
+        mgraphics.move_to(x + 3, y + 3);
+        mgraphics.line_to(x + 8, y + 3);
+        mgraphics.move_to(x + 8, y + 8);
+        mgraphics.line_to(x + 13, y + 8);
+        mgraphics.stroke();
+    }
+}
+
+function paintMsegPage(sx, bx, by, bw, bh) {
+    pokeSlots();
+    var orange = liveCol("live_display_handle_one");
+    var cy1 = RC.cyan;
+    var slot = envPage;
+    var modes = ["Loop", "1-Shot"];
+    var modeX = [bx + 118, bx + 152];
+    var modeW = [32, 44];
+    for (var m = 0; m < 2; m++) {
+        var mon = (msegPlayMode[slot] > 0.5 ? 1 : 0) === m;
+        text(modes[m], modeX[m] + modeW[m] * 0.5, by + 29, 8.2, mon ? orange : RC.sub, false, 1);
+        if (mon) line(modeX[m] + 2, by + 32.5, modeX[m] + modeW[m] - 2, by + 32.5, orange, 1, 1.2);
+        (function (mode, name, mx, mw) {
+            actZone(mx, by + 18, mw, 16, function () {
+                msegPlayMode[slot] = mode;
+                slotPoked = "";
+                pokeSlots();
+            }, { tip: name });
+        })(m, modes[m], modeX[m], modeW[m]);
+    }
+    var syncOn = msegSync[slot] ? 1 : 0;
+    text("Hz", bx + 200, by + 29, 9.5, syncOn ? RC.sub : orange, false, 0);
+    zone("msegclock", bx + 196, by + 18, 16, 14, { slot: slot, sync: 0 });
+    drawMetronomeIcon(bx + 216, by + 20.5, syncOn ? orange : RC.sub);
+    zone("msegclock", bx + 212, by + 18, 14, 14, { slot: slot, sync: 1 });
+    var revOn = msegRev[slot] ? 1 : 0;
+    drawBackArrow(bx + 230, by + 20, revOn ? orange : RC.sub);
+    zone("msegrev", bx + 228, by + 18, 14, 14, { slot: slot, tip: "reverse" });
+    var retrigOn = msegRetrig[slot] ? 1 : 0;
+    if (retrigOn) {
+        fillRect(bx + 246, by + 20, 9.5, 9.5, orange, 1.0);
+        text("R", bx + 250.8, by + 27.5, 8.5, RC.wave, true, 1);
+    } else {
+        hollowSquare(bx + 250.75, by + 24.75, 4.75, RC.sub, 1.0);
+        text("R", bx + 250.8, by + 27.5, 8.5, RC.sub, true, 1);
+    }
+    zone("msegtrig", bx + 244, by + 18, 14, 14, { slot: slot, tip: "retrigger" });
+
+    var divY = by + 135;
+    var px0 = bx + 8, barY = by + 36, barH = 8, py0 = barY + barH + 2, pw = bw - 16;
+    var ph = divY - 18 - py0;
+    msegGeom = { x: px0, y: py0, w: pw, h: ph, slot: slot };
+    var l0 = msegLoop0[slot] || 0, l1 = msegLoop1[slot] == null ? 1 : msegLoop1[slot];
+    var lx0 = px0 + l0 * pw, lx1 = px0 + l1 * pw;
+    fillRect(px0, barY, pw, barH, [0.05, 0.06, 0.08], 1);
+    fillRect(lx0, barY, Math.max(4, lx1 - lx0), barH, cy1, msegPlayMode[slot] > 0.5 ? 0.22 : 0.45);
+    line(lx0, barY, lx0, barY + barH, cy1, 1, 1.4);
+    line(lx0 + 3, barY, lx0, barY, cy1, 1, 1.2);
+    line(lx0 + 3, barY + barH, lx0, barY + barH, cy1, 1, 1.2);
+    line(lx1, barY, lx1, barY + barH, cy1, 1, 1.4);
+    line(lx1 - 3, barY, lx1, barY, cy1, 1, 1.2);
+    line(lx1 - 3, barY + barH, lx1, barY + barH, cy1, 1, 1.2);
+    zone("msegloop", lx0 - 5, barY - 1, 10, barH + 2, { slot: slot, edge: "start" });
+    zone("msegloop", lx1 - 5, barY - 1, 10, barH + 2, { slot: slot, edge: "end" });
+    if (lx1 - lx0 > 16) zone("msegloop", lx0 + 6, barY, lx1 - lx0 - 12, barH, { slot: slot, edge: "move" });
+    var gN = msegGridN[slot] || 8;
+    var gx, gy, xx, yy;
+    for (gx = 0; gx <= gN; gx++) {
+        xx = px0 + (gx / gN) * pw;
+        line(xx, py0, xx, py0 + ph, RC.line, gx === 0 || gx === gN ? 0.45 : 0.22, 1);
+    }
+    for (gy = 0; gy <= 4; gy++) {
+        yy = py0 + (gy / 4) * ph;
+        line(px0, yy, px0 + pw, yy, RC.line, gy === 2 ? 0.4 : 0.18, 1);
+    }
+    var pts = msegPoints(slot);
+    var samples = [];
+    for (var i = 0; i <= 96; i++) {
+        var nx = i / 96;
+        samples.push([px0 + nx * pw, py0 + (1 - msegAt(pts, nx)) * ph]);
+    }
+    strokeSeg(samples, orange, 1, 1.5);
+    if (l0 > 0.001) fillRect(px0, py0, lx0 - px0, ph, [0, 0, 0], 0.35);
+    if (l1 < 0.999) fillRect(lx1, py0, px0 + pw - lx1, ph, [0, 0, 0], 0.35);
+    line(lx0, py0, lx0, py0 + ph, cy1, 0.45, 1);
+    line(lx1, py0, lx1, py0 + ph, cy1, 0.45, 1);
+    msegDots = [];
+    var voiceOrder = [];
+    var vv;
+    for (vv = 0; vv < 16; vv++) {
+        if (voiceAmpLvl[vv] > 0.002 && msegVoicePh[vv] >= 0) voiceOrder.push(vv);
+    }
+    voiceOrder.sort(function (a, b) { return voiceBorn[b] - voiceBorn[a] || a - b; });
+    for (vv = 0; vv < voiceOrder.length; vv++) {
+        var vid = voiceOrder[vv];
+        var phv = Math.max(0, Math.min(1, msegVoicePh[vid]));
+        var dotX = px0 + phv * pw;
+        var dotY = py0 + (1 - msegAt(pts, phv)) * ph;
+        var rank = vv;
+        var al = rank === 0 ? 1 : Math.max(0.28, 0.72 - 0.11 * rank);
+        circle(dotX, dotY, (rank === 0 ? 2.8 : 2.2) + 1.2, RC.dark, 0.7 * al);
+        circle(dotX, dotY, rank === 0 ? 2.8 : 2.2, [1, 1, 1], al);
+        msegDots.push({ v: vid, x: dotX, y: dotY, ph: phv });
+    }
+    zone("msegplot", px0, py0, pw, ph, { slot: slot });
+    var seg, p;
+    for (seg = 0; seg < pts.length - 1; seg++) {
+        var midX = (pts[seg].x + pts[seg + 1].x) * 0.5;
+        var midY = pts[seg].y + (pts[seg + 1].y - pts[seg].y) * evalSegmentT(0.5, pts[seg].curve || 0, pts[seg].sCurve);
+        var mx2 = px0 + midX * pw, my2 = py0 + (1 - midY) * ph;
+        diamond(mx2, my2, 2.2, RC.cyan, 1);
+        zone("msegbend", mx2 - 6, my2 - 6, 12, 12, { slot: slot, i: seg });
+    }
+    for (p = 0; p < pts.length; p++) {
+        var hx = px0 + pts[p].x * pw, hy = py0 + (1 - pts[p].y) * ph;
+        if (msegSel[slot].indexOf(pts[p].id) >= 0) {
+            setc(orange, 0.35);
+            mgraphics.arc(hx, hy, 6.4, 0, Math.PI * 2);
+            mgraphics.fill();
+        }
+        circle(hx, hy, 4.2, RC.wave, 1);
+        setc(orange, 1);
+        mgraphics.set_line_width(1.4);
+        mgraphics.arc(hx, hy, 3.6, 0, Math.PI * 2);
+        mgraphics.stroke();
+        zone("msegpt", hx - 6, hy - 6, 12, 12, { slot: slot, i: p });
+    }
+    if (drag && drag.msegbox && drag.rect && drag.slot === slot) {
+        var mr = drag.rect;
+        setc(orange, 0.16);
+        mgraphics.rectangle(mr[0], mr[1], mr[2], mr[3]);
+        mgraphics.fill();
+        setc(orange, 0.9);
+        mgraphics.set_line_width(1);
+        mgraphics.rectangle(mr[0], mr[1], mr[2], mr[3]);
+        mgraphics.stroke();
+    }
+
+    var tools = ["draw", "sine", "ramps", "steps", "smooth", "flip"];
+    var iy = divY - 14;
+    for (var ti = 0; ti < tools.length; ti++) {
+        var ix = bx + 8 + ti * 20;
+        var hot = tools[ti] === "draw" && msegDraw[slot];
+        drawMsegIcon(tools[ti], ix, iy, hot ? orange : RC.sub);
+        (function (tool) { actZone(ix - 1, iy - 2, 18, 14, function () { msegApply(slot, tool); }, { tip: tool }); })(tools[ti]);
+    }
+    text(String(gN), bx + bw - 58, iy + 9, 9, orange, false, 1);
+    zone("mseggrid", bx + bw - 72, iy - 2, 24, 14, { slot: slot });
+    text("Snap", bx + bw - 28, iy + 9, 8, msegSnapOn[slot] ? orange : RC.sub, false, 1);
+    actZone(bx + bw - 46, iy - 2, 40, 14, function () { msegApply(slot, "snap"); });
+    line(bx + 1, divY, bx + bw - 1, divY, RC.line, 1.0, 1.0);
+
+    var cols = [
+        { lab: "Rate", field: "rate", x: bx + 16, shown: msegRateText(slot) },
+        { lab: "Smooth", field: "smooth", x: bx + 156, shown: Math.round(msegSmooth[slot]) + " %" },
+        { lab: "Phase", field: "phase", x: bx + 214, shown: Math.round(msegPhase[slot]) + " %" }
+    ];
+    if (syncOn) cols.splice(1, 0, { lab: "Mult", field: "mult", x: bx + 86, shown: msegMulText(slot) });
+    for (var c = 0; c < cols.length; c++) {
+        var cl = cols[c];
+        var dragging = (cl.field === "rate" && drag && drag.msegrate) || (cl.field === "mult" && drag && drag.msegmult) || (drag && drag.msegknob && drag.field === cl.field);
+        text(cl.lab, cl.x, divY + 11.5, 8.2, RC.sub, false, 0);
+        text(cl.shown, cl.x, divY + 23.0, 9, dragging ? RC.white : orange, dragging, 0);
+        if (cl.field === "rate") zone("msegrate", cl.x - 2, divY + 2, 42, 24, { slot: slot });
+        else if (cl.field === "mult") zone("msegmult", cl.x - 2, divY + 2, 48, 24, { slot: slot });
+        else zone("msegknob", cl.x - 2, divY + 2, 42, 24, { slot: slot, field: cl.field });
+    }
 }
 
 function paintMatrixSection(sx) {
@@ -2788,14 +3829,13 @@ function paintMatrixSection(sx) {
     var bx = sx, by = 0, bw = MAT_W, bh = 169;
     fillRect(bx, by, bw, bh, RC.wave, 1.0);
 
-    // Top tab bar: Matrix | X-Synth | MIDI | MPE
-    var matNames = ["Matrix", "X-Synth", "MIDI", "MPE"];
-    var sw = bw / 4;
-    for (var t = 0; t < 4; t++) {
+    var matNames = ["Matrix", "X-Synth", "MIDI", "MPE", "Audio"];
+    var sw = bw / 5;
+    for (var t = 0; t < 5; t++) {
         var tx0 = bx + t * sw;
         var tOn = matTab === t;
         var tCol = t === 1 ? orange : cy1;
-        text(matNames[t], tx0 + sw * 0.5, by + 11.2, 9.5, tOn ? tCol : RC.sub, false, 1);
+        text(matNames[t], tx0 + sw * 0.5, by + 11.2, 8.2, tOn ? tCol : RC.sub, false, 1);
         if (tOn) line(tx0 + 1, by + 16.0, tx0 + sw - 1, by + 16.0, tCol, 1.0, 1.5);
         (function (idx) { actZone(tx0, by + 1, sw, 15.5, function () { matTab = idx; }); })(t);
     }
@@ -3334,7 +4374,7 @@ function hValueBar(key, x, y, w, h, label, acc, dimmed) {
     var pad = w < 58 ? 2.0 : (w < 72 ? 3.5 : 4.0);
     text(label, x + pad, y + h - 3.3, fs, RC.sub, false, 0, al);
     text(fmtParam(key, v), x + w - pad, y + h - 3.3, fs, dimmed ? RC.sub : acc, false, 2, al);
-    zone("value", x, y, w, h, { key: key, norm: true });
+    zone("value", x, y, w, h, { key: key, norm: true, hbar: 1 });
 }
 
 // Helper: render a single mode-setting bar or Quant dropdown pill
@@ -3368,7 +4408,6 @@ function paintEngineStrip() {
     var isWt = Math.round(paramValue(osc.typeKey)) > 0;
     var actMode = Math.round(paramValue(osc.modeKey));
     var acc = isWt ? RC.sel : RC.cyan;
-    var scanOn = !isWt && actMode !== 0;
     var L = engineLayout(actMode, isWt);
     var nk = L.knobs.length;
 
@@ -3393,21 +4432,25 @@ function paintEngineStrip() {
     if (!isWt) {
         var colX = leftX + modeW + 6;
         line(colX - 4, y + 18, colX - 4, y + h - 6, RC.divider, 0.7, 1);
-        hValueBar("grain_motion", colX, y + 20, 92, 15, "Speed", acc, !scanOn);
-        hValueBar(osc.posKey, colX, y + 38, 73, 16, "Pos", acc, !curFreeze);
-        paintFreezeBtn(colX + 76, y + 38, 16);
+        hValueBar(osc.posKey, colX, y + 20, 74, 15, "Pos", acc, !curFreeze);
+        paintFreezeBtn(colX + 77, y + 20, 15);
+        hValueBar("grain_motion", colX, y + 38, 92, 16, "Speed", acc, false);
     }
 
     line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1.0, 1.0);
 
-    // Right column stays the shared tuning row. Gain keeps its 50 px box.
-    text("TUNING", x + 292, y + 12, 7.5, RC.sub, true, 0);
-    valuePill(x + 412, y + 3, 22, Math.round(paramValue("unison_voices")) + "v", { key: "unison_voices", pxPerUnit: 6 }, RC.sel, false);
-    valuePill(x + 436, y + 3, 24, Math.round(paramValue("unison_detune")) + "%", { key: "unison_detune" }, RC.sel, Math.round(paramValue("unison_voices")) <= 1);
+    // Right column: compact voice count, then labeled Detune and Width. Width and detune
+    // are a no-op at one voice, so those bars dim. Gain stays 50 px; Pan is the slot beside it.
+    var uniN = Math.round(paramValue("unison_voices"));
+    var uniDim = uniN <= 1;
+    valuePill(x + 292, y + 4, 22, uniN + "v", { key: "unison_voices", pxPerUnit: 6 }, RC.sel, false);
+    hValueBar("unison_detune", x + 318, y + 3, 56, 14, "Detune", acc, uniDim);
+    hValueBar("unison_width", x + 378, y + 3, 56, 14, "Width", acc, uniDim);
     hValueBar(osc.pitchKey, x + 292, y + 20, 54, 15, "Pitch", acc, false);
     hValueBar(osc.detKey, x + 350, y + 20, 53, 15, "Fine", acc, false);
     hValueBar(osc.ratioKey, x + 407, y + 20, 53, 15, "Ratio", acc, false);
-    hValueBar(osc.gainKey, x + 410, y + 38, 50, 16, "Gain", acc, false);
+    hValueBar(osc.panKey, x + STRIP_PAN_X, y + 38, STRIP_GAIN_W, STRIP_GAIN_H, "Pan", acc, false);
+    hValueBar(osc.gainKey, x + STRIP_GAIN_X, y + 38, STRIP_GAIN_W, STRIP_GAIN_H, "Gain", acc, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -3537,17 +4580,50 @@ var sharedSetvalueof = setvalueof;
 getvalueof = function () {
     var out = sharedGetvalueof();
     out.push("WT", wtSel[0].cat, wtSel[0].idx, wtSel[1].cat, wtSel[1].idx);
+    out.push("S2", osc2FilePath || "-");
     if (!isDefaultSectionOrder()) {
         out.push("R2O");
         out.push(encodeSectionOrder());
     }
     out.push("R2");
     out.push(foldMask);
+    ensureMatRows();
+    if (typeof modEncode === "function") {
+        var mx = modEncode(matRows, matDepth, matPolar);
+        if (mx) { out.push("MX"); out.push(mx); }
+    }
+    var st = slotEncode();
+    if (st) { out.push("ST"); out.push(st); }
+    var mg = msegEncode();
+    if (mg) { out.push("MG"); out.push(mg); }
+    var mp = msegPlayEncode();
+    if (mp) { out.push("MP"); out.push(mp); }
     return out;
 };
 
 setvalueof = function () {
     var a = arrayfromargs(arguments);
+    if (a && a.length >= 2 && String(a[a.length - 2]) === "MP") {
+        msegPlayDecode(String(a[a.length - 1]));
+        a = a.slice(0, a.length - 2);
+    }
+    if (a && a.length >= 2 && String(a[a.length - 2]) === "MG") {
+        msegDecode(String(a[a.length - 1]));
+        a = a.slice(0, a.length - 2);
+    }
+    if (a && a.length >= 2 && String(a[a.length - 2]) === "ST") {
+        slotDecode(String(a[a.length - 1]));
+        a = a.slice(0, a.length - 2);
+    }
+    if (a && a.length >= 2 && String(a[a.length - 2]) === "MX") {
+        ensureMatRows();
+        matPolar = {};
+        if (typeof modDecode === "function") modDecode(String(a[a.length - 1]), matRows, matDepth, matPolar);
+        a = a.slice(0, a.length - 2);
+        claimTouchRows();
+        matPackedSig = "";
+        flushModMap();
+    }
     var hasR2 = false;
     if (a && a.length >= 3 && String(a[a.length - 2]) === "R2") {
         var m = Math.round(Number(a[a.length - 1]));
@@ -3563,6 +4639,16 @@ setvalueof = function () {
         if (hasR2 && isFinite(ord)) decodeSectionOrder(ord);
     } else if (hasR2) {
         sectionOrder = [0, 1, 2, 3, 4];
+    }
+    if (a && a.length >= 2 && String(a[a.length - 2]) === "S2") {
+        var sp2 = String(a[a.length - 1]);
+        a = a.slice(0, a.length - 2);
+        if (sp2 && sp2 !== "-") {
+            osc2FilePath = sp2;
+            var spParts = sp2.replace(/\\/g, "/").split("/");
+            osc2FileName = spParts[spParts.length - 1] || sp2;
+            replaceOsc2Buffer(sp2);
+        }
     }
     if (a && a.length >= 5 && String(a[a.length - 5]) === "WT") {
         wtSel[0].cat = Math.max(0, Math.min(WT_USER, Math.round(Number(a[a.length - 4]) || 0)));
@@ -3582,11 +4668,32 @@ setvalueof = function () {
 var sharedDropfile = dropfile;
 dropfile = function () {
     var dropped = pathFromArgs(arguments);
-    sharedDropfile.apply(null, arguments);
     if (!dropped || dropped === "none") return;
-    if ((oscTab === 0 || oscTab === 1) && Math.round(paramValue(activeOsc().typeKey)) > 0) {
-        wtSelectUser(oscTab === 1 ? 1 : 0);
+    if (oscTab === 1) {
+        loadOsc2Path(dropped);
+        if (Math.round(paramValue("osc2_type")) > 0) wtSelectUser(1);
+        return;
     }
+    sharedDropfile.apply(null, arguments);
+    if (oscTab === 0 && Math.round(paramValue("osc1_type")) > 0) wtSelectUser(0);
+};
+
+var sharedBrowsed = browsed;
+browsed = function () {
+    if (browseSlot === 1) {
+        browseSlot = 0;
+        var bp = pathFromArgs(arguments);
+        if (!bp) return;
+        loadOsc2Path(bp);
+        return;
+    }
+    sharedBrowsed.apply(null, arguments);
+};
+
+var sharedSetbuffersR2 = setbuffers;
+setbuffers = function (sName, vName, scName, pName) {
+    sharedSetbuffersR2(sName, vName, scName, pName);
+    if (osc2FilePath) replaceOsc2Buffer(osc2FilePath);
 };
 
 // Debug messages via #0-bsdebug for automated Live UI verification of Reactive 2's Mod Sources & Mod Matrix views:
@@ -3727,8 +4834,151 @@ paintMenu = function () {
     sharedPaintMenu();
 };
 
+// The sample name showing in the header (osc 1 or osc 2). Empty in sub / wavetable, and until a file is loaded.
+function showingSamplePath() {
+    if (oscTab === 2) return "";
+    var osc = activeOsc();
+    if (!osc || Math.round(paramValue(osc.typeKey)) > 0) return "";
+    if (oscTab === 1) return osc2Loaded ? String(osc2FilePath || "") : "";
+    return hasLoadedSample ? String(sampleFilePath || "") : "";
+}
+
+// Click vs double-click on the name. A second click inside 350 ms reveals the file in Live's browser.
+// One click still opens the file dialog (the existing browse). The drag helper's REPLAY_CLICK arrives
+// as name_click and uses the same timer, because that window eats the mouse while it is armed.
+var nameClickAt = 0;
+var nameBrowseGen = 0;
+function nameClick() {
+    var now = Date.now();
+    if (nameClickAt && (now - nameClickAt) < 350) {
+        nameClickAt = 0;
+        nameBrowseGen++;
+        revealLoadedSample();
+        return;
+    }
+    nameClickAt = now;
+    var gen = ++nameBrowseGen;
+    browseSlot = (oscTab === 1) ? 1 : 0;
+    var wait = new Task(function () {
+        if (gen !== nameBrowseGen) return;
+        nameClickAt = 0;
+        outlet(0, "browse", "bang");
+    }, this);
+    wait.schedule(320);
+}
+function name_click() { nameClick(); }
+
+// Live's browser has no "select this file" call (BrowserItem.is_selected is read-only; load_item would
+// load the item onto a track). show_view opens the browser, filter_type 6 is the samples filter, and
+// preview_item is the only call that takes a BrowserItem without loading it. stop_preview runs just
+// after, so a double-click does not keep the preview playing. Whether the browser stays scrolled to
+// that item after stop_preview was not verified in Live. A file that is not under Places, the User
+// Library, the current project, or Samples cannot be pointed at; the browser still opens.
+var revealWalk = null;
+function lomIds(v) {
+    var ids = [];
+    if (!v || !v.length) return ids;
+    for (var i = 0; i < v.length; i++) {
+        if (String(v[i]) === "id" && i + 1 < v.length) {
+            var n = Number(v[i + 1]);
+            if (n) ids.push(n);
+            i++;
+        }
+    }
+    return ids;
+}
+function lomStr(v) {
+    if (v == null) return "";
+    if (typeof v === "string" || typeof v === "number") return String(v);
+    var parts = [];
+    for (var i = 0; i < v.length; i++) parts.push(String(v[i]));
+    return parts.join(" ");
+}
+function browserUriMatches(uri, name, filePath) {
+    var p = String(filePath || "").replace(/\\/g, "/");
+    if (!p) return false;
+    var bits = p.split("/");
+    var base = bits[bits.length - 1];
+    var parent = bits.length >= 2 ? bits[bits.length - 2] : "";
+    var u = String(uri || "");
+    var decoded = u;
+    try { decoded = decodeURIComponent(u.replace(/^file:\/\//, "")); } catch (e) { decoded = u.replace(/^file:\/\//, ""); }
+    if (decoded === p || u === p) return true;
+    if (!base || !parent) return false;
+    var tail = decoded.slice(-base.length) === base || u.slice(-base.length) === base || name === base;
+    return tail && (decoded.indexOf(parent) >= 0 || u.indexOf(parent) >= 0);
+}
+function revealLoadedSample() {
+    var filePath = showingSamplePath();
+    if (!filePath || typeof LiveAPI !== "function") return;
+    var view = null, browser = null;
+    try { view = new LiveAPI("live_app view"); view.call("show_view", "Browser"); } catch (e1) { return; }
+    try { browser = new LiveAPI("live_app browser"); } catch (e2) { return; }
+    try { browser.set("filter_type", 6); } catch (e3) {}
+    var queue = [];
+    var props = ["current_project", "user_library", "samples", "user_folders"];
+    for (var r = 0; r < props.length; r++) {
+        try {
+            var roots = lomIds(browser.get(props[r]));
+            for (var k = 0; k < roots.length; k++) queue.push(roots[k]);
+        } catch (e4) {}
+    }
+    var steps = 0;
+    var found = 0;
+    if (revealWalk) { try { revealWalk.cancel(); } catch (e5) {} revealWalk = null; }
+    function step() {
+        var n = 0;
+        while (queue.length && n < 40 && steps < 2000 && !found) {
+            var id = queue.shift();
+            steps++;
+            n++;
+            var item = null;
+            try { item = new LiveAPI("id " + id); } catch (e6) { continue; }
+            var uri = "", nm = "";
+            try { uri = lomStr(item.get("uri")); } catch (e7) {}
+            try { nm = lomStr(item.get("name")); } catch (e8) {}
+            if (browserUriMatches(uri, nm, filePath)) { found = id; break; }
+            try {
+                var kids = lomIds(item.get("children"));
+                for (var c = 0; c < kids.length; c++) queue.push(kids[c]);
+            } catch (e9) {}
+        }
+        if (found) {
+            try { browser.call("preview_item", "id", found); } catch (e10) {}
+            var stop = new Task(function () { try { browser.call("stop_preview"); } catch (e11) {} }, this);
+            stop.schedule(180);
+            revealWalk = null;
+            return;
+        }
+        if (queue.length && steps < 2000) {
+            revealWalk = new Task(step, this);
+            revealWalk.schedule(1);
+        }
+    }
+    step();
+}
+
+var dragArmOn = 0;
+var dragArmAt = 0;
+function armSampleDragAt(x, y) {
+    var z = zoneAt(x, y);
+    var filePath = (z && z.action === "browse") ? showingSamplePath() : "";
+    if (!filePath) { disarmSampleDrag(); return; }
+    var now = Date.now();
+    if (dragArmOn && (now - dragArmAt) < 40) return;
+    dragArmOn = 1;
+    dragArmAt = now;
+    outlet(0, "arm_drag", filePath);
+}
+function disarmSampleDrag() {
+    if (!dragArmOn) return;
+    dragArmOn = 0;
+    outlet(0, "disarm_drag");
+}
+
 var sharedDoAction = doAction;
 doAction = function (z) {
+    if (z && z.action === "browse") { nameClick(); return; }
     if (z.action === "menu" && z.wtList) {
         if (openMenu && openMenu.key === z.key) { openMenu = null; mgraphics.redraw(); return; }
         var names = z.which === "cat" ? WT_CATS.slice() : wtTableNames(wtSel[z.osc].cat);
@@ -3842,8 +5092,53 @@ function isRightClick(ctrl, ev) {
     return !!(ev && (((ev.buttons | 0) & 2) || ev.button === 2));
 }
 
+var sharedParamValue = paramValue;
+paramValue = function (key) {
+    var parsed = parseSlotKey(key);
+    var bag = slotKeyBag(parsed);
+    if (bag && bag[parsed.field] !== undefined) return bag[parsed.field];
+    return sharedParamValue(key);
+};
+
+var sharedParamSpec = paramSpec;
+paramSpec = function (key) {
+    var parsed = parseSlotKey(key);
+    if (parsed) {
+        var spec = (parsed.kind === "sLfo" ? SLOT_LFO_SPEC : SLOT_ENV_SPEC)[parsed.field];
+        if (spec) return spec;
+    }
+    return sharedParamSpec(key);
+};
+
+function writeSlotKey(key, v) {
+    var parsed = parseSlotKey(key);
+    var bag = slotKeyBag(parsed);
+    if (!bag) return false;
+    var spec = paramSpec(key);
+    var n = Number(v);
+    if (!isFinite(n)) n = spec.init;
+    n = Math.max(spec.lo, Math.min(spec.hi, n));
+    if (spec.enums || spec.unit === 0) n = Math.round(n);
+    bag[parsed.field] = n;
+    if (parsed.kind === "sLfo" && parsed.field === "rate") slotRate[parsed.page] = n;
+    if (parsed.kind === "sLfo" && parsed.field === "shape") slotShape[parsed.page] = n;
+    slotPoked = "";
+    pokeSlots();
+    return true;
+}
+
+var sharedSetParamFromFace = setParamFromFace;
+setParamFromFace = function (key, v) {
+    if (writeSlotKey(key, v)) { mgraphics.redraw(); return; }
+    var touched = noteMatTouch(key);
+    sharedSetParamFromFace(key, v);
+    if (touched) mgraphics.redraw();
+};
+
 onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
     var z = zoneAt(x, y);
+    msegKeyOn = msegHit(z) ? 1 : 0;
+    matSuppressTouch = zoneInOpenMatrix(z) ? 1 : 0;
     panState = null;                                          // a stale pan (release not delivered) must not hijack this gesture
     if (inWaveRect(x, y) && z && (z.kind === "wave" || z.kind === "flag" || z.kind === "xfade" || z.kind === "loop_move") && isPanGesture(option, ev, cmd)) {
         if (openMenu) { openMenu = null; mgraphics.redraw(); return; }
@@ -3855,6 +5150,116 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
         if (openMenu) openMenu = null;
         drag = null;
         normalizeSample();
+        return;
+    }
+    if (z && z.kind === "modcell") {
+        if (openMenu) openMenu = null;
+        if (option) {
+            var pk = modCellKey(z.mode, z.row, z.src);
+            if (matPolar[pk]) delete matPolar[pk];
+            else {
+                matPolar[pk] = 1;
+                if (matCell(z.mode, z.row, z.src) < 0) matDepth[pk] = 0;
+            }
+            flushModMap();
+            notifyclients();
+            mgraphics.redraw();
+            return;
+        }
+        drag = { modcell: true, mode: z.mode, row: z.row, src: z.src, x0: x, y0: y, v0: matCell(z.mode, z.row, z.src) };
+        return;
+    }
+    if (z && z.kind === "msegrate") {
+        if (openMenu) openMenu = null;
+        drag = msegSync[z.slot]
+            ? { msegrate: true, slot: z.slot, sync: 1, x0: x, y0: y, v0: msegSyncIdx[z.slot] || 0 }
+            : { msegrate: true, slot: z.slot, sync: 0, x0: x, y0: y, v0: slotRate[z.slot] || 1 };
+        return;
+    }
+    if (z && z.kind === "msegclock") {
+        if (openMenu) openMenu = null;
+        msegSync[z.slot] = z.sync ? 1 : 0;
+        slotPoked = "";
+        pokeSlots();
+        mgraphics.redraw();
+        return;
+    }
+    if (z && z.kind === "msegtrig") {
+        if (openMenu) openMenu = null;
+        msegRetrig[z.slot] = msegRetrig[z.slot] ? 0 : 1;
+        slotPoked = "";
+        pokeSlots();
+        mgraphics.redraw();
+        return;
+    }
+    if (z && z.kind === "msegrev") {
+        if (openMenu) openMenu = null;
+        msegRev[z.slot] = msegRev[z.slot] ? 0 : 1;
+        slotPoked = "";
+        pokeSlots();
+        mgraphics.redraw();
+        return;
+    }
+    if (z && z.kind === "msegmult") {
+        if (openMenu) openMenu = null;
+        drag = { msegmult: true, slot: z.slot, x0: x, y0: y, v0: msegSyncMul[z.slot] || 1 };
+        return;
+    }
+    if (z && z.kind === "mseggrid") {
+        if (openMenu) openMenu = null;
+        drag = { mseggrid: true, slot: z.slot, y0: y, v0: msegGridN[z.slot] || 8, moved: false };
+        return;
+    }
+    if (z && z.kind === "msegloop") {
+        if (openMenu) openMenu = null;
+        drag = { msegloop: true, slot: z.slot, edge: z.edge, x0: x, a0: msegLoop0[z.slot] || 0, b0: msegLoop1[z.slot] == null ? 1 : msegLoop1[z.slot] };
+        return;
+    }
+    if (z && z.kind === "slotadsr") {
+        if (openMenu) openMenu = null;
+        drag = { slotadsr: true, slot: z.slot, which: z.which, x0: x, y0: y, v0: slotAdsr[z.slot][z.which] };
+        return;
+    }
+    if (z && (z.kind === "msegpt" || z.kind === "msegbend")) {
+        if (openMenu) openMenu = null;
+        var pts0 = msegPoints(z.slot);
+        if (z.kind === "msegbend" || option) {
+            msegPushUndo(z.slot);
+            drag = { mseg: true, slot: z.slot, i: z.i, bend: 1, x0: x, y0: y, curve0: pts0[z.i].curve || 0 };
+            return;
+        }
+        var pid = pts0[z.i].id;
+        if (shift) {
+            var sel = msegSel[z.slot];
+            var at = sel.indexOf(pid);
+            if (at < 0) sel.push(pid);
+            else sel.splice(at, 1);
+        } else if (msegSel[z.slot].indexOf(pid) < 0) {
+            msegSel[z.slot] = [pid];
+        }
+        msegPushUndo(z.slot);
+        drag = { mseg: true, slot: z.slot, i: z.i, bend: 0, move: 1, primaryId: pid, ids: msegSel[z.slot].slice(), startMap: msegStartMap(pts0) };
+        return;
+    }
+    if (z && z.kind === "msegknob") {
+        if (openMenu) openMenu = null;
+        drag = { msegknob: true, slot: z.slot, field: z.field, x0: x, y0: y, v0: msegKnobGet(z.slot, z.field) };
+        return;
+    }
+    if (z && z.kind === "msegplot" && msegDraw[z.slot]) {
+        if (openMenu) openMenu = null;
+        msegPushUndo(z.slot);
+        msegPaintRamp(z.slot, x, y);
+        drag = { msegdraw: true, slot: z.slot };
+        mgraphics.redraw();
+        return;
+    }
+    if (z && z.kind === "msegplot") {
+        if (openMenu) openMenu = null;
+        var base = shift ? msegSel[z.slot].slice() : [];
+        if (!shift) msegSel[z.slot] = [];
+        drag = { msegbox: true, slot: z.slot, x0: x, y0: y, base: base, rect: null };
+        mgraphics.redraw();
         return;
     }
     if (z && z.kind === "wt_pos") {
@@ -3922,6 +5327,14 @@ function onwheel(x, y) {
             return;
         }
     }
+    if (d[1] !== 0 && matGrid && x >= matGrid.x && x <= matGrid.x + matGrid.w && y >= matGrid.y && y <= matGrid.y + matGrid.h) {
+        ensureMatRows();
+        var list = matRows[matGrid.mode] || [];
+        var maxScroll = Math.max(0, list.length - 5);
+        matScroll[matGrid.mode] = Math.max(0, Math.min(maxScroll, (matScroll[matGrid.mode] || 0) + (d[1] > 0 ? -1 : 1)));
+        mgraphics.redraw();
+        return;
+    }
     if (d[1] !== 0 && inWaveRect(x, y)) zoomViewAt(x, wheelZoomFactor(d[1]));
 }
 
@@ -3969,6 +5382,148 @@ ondrag = function (x, y, but, cmd, shift) {
         mgraphics.redraw();
         return;
     }
+    if (drag && drag.msegbox) {
+        if (but === 0) { drag = null; mgraphics.redraw(); return; }
+        if (!msegGeom) return;
+        if (Math.hypot(x - drag.x0, y - drag.y0) < 4 && !drag.rect) return;
+        drag.rect = msegMarqueeRect(drag.x0, drag.y0, x, y);
+        var boxGeom = msegGeom;
+        msegSel[drag.slot] = msegSelectInRect(msegPoints(drag.slot), drag.rect, function (nx, ny) {
+            return [boxGeom.x + nx * boxGeom.w, boxGeom.y + (1 - ny) * boxGeom.h];
+        }, drag.base);
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.mseg) {
+        if (but === 0) { drag = null; msegDirty[0] = 0; notifyclients(); mgraphics.redraw(); return; }
+        var pts = msegPoints(drag.slot);
+        if (!msegGeom) return;
+        if (drag.bend) {
+            var pt = pts[drag.i];
+            if (pt) pt.curve = Math.max(-1, Math.min(1, drag.curve0 + (drag.y0 - y) / 80));
+        } else {
+            var nx = (x - msegGeom.x) / msegGeom.w;
+            var ny = 1 - (y - msegGeom.y) / msegGeom.h;
+            var sn = msegSnapPt(drag.slot, nx, ny);
+            var primary = drag.startMap[drag.primaryId];
+            var targetX = (primary && !primary.isFirst && !primary.isLast) ? sn.x : nx;
+            var movedPts = msegMoveSelection(pts, drag.ids, drag.startMap, drag.primaryId, targetX, sn.y, false);
+            movedPts.sort(function (a, b) { return a.x - b.x || (a.id || 0) - (b.id || 0); });
+            if (movedPts.length) {
+                movedPts[0].x = 0;
+                movedPts[movedPts.length - 1].x = 1;
+            }
+            msegPts[drag.slot] = movedPts;
+        }
+        msegDirty[drag.slot] = 1;
+        pokeSlots();
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.slotadsr) {
+        if (but === 0) { drag = null; notifyclients(); mgraphics.redraw(); return; }
+        var ads = slotAdsr[drag.slot];
+        var dlt = ((drag.y0 - y) + (x - drag.x0)) / 80;
+        if (drag.which === 2) ads[2] = Math.max(0, Math.min(1, drag.v0 + dlt));
+        else ads[drag.which] = Math.max(1, Math.min(8000, drag.v0 + dlt * (drag.which === 0 ? 400 : 2000)));
+        slotPoked = "";
+        pokeSlots();
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.msegdraw) {
+        if (but === 0) { drag = null; notifyclients(); mgraphics.redraw(); return; }
+        msegPaintRamp(drag.slot, x, y);
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.msegknob) {
+        if (but === 0) { drag = null; notifyclients(); mgraphics.redraw(); return; }
+        var delta = ((drag.y0 - y) + (x - drag.x0)) * (100 / 80);
+        msegKnobSet(drag.slot, drag.field, drag.v0 + delta);
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.mseggrid) {
+        if (but === 0) {
+            if (!drag.moved) {
+                var stepG = shift ? -1 : 1;
+                var ng0 = drag.v0 + stepG;
+                if (ng0 > 16) ng0 = 1;
+                if (ng0 < 1) ng0 = 16;
+                msegGridN[drag.slot] = ng0;
+            }
+            drag = null;
+            notifyclients();
+            mgraphics.redraw();
+            return;
+        }
+        var dyG = drag.y0 - y;
+        if (Math.abs(dyG) >= 4) {
+            drag.moved = true;
+            msegGridN[drag.slot] = Math.max(1, Math.min(16, drag.v0 + Math.round(dyG / 6)));
+        }
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.msegloop) {
+        if (but === 0) { drag = null; slotPoked = ""; pokeSlots(); notifyclients(); mgraphics.redraw(); return; }
+        if (msegGeom) {
+            var nxL = (x - msegGeom.x) / msegGeom.w;
+            if (msegSnapOn[drag.slot]) {
+                var gL = msegGridN[drag.slot] || 8;
+                nxL = Math.round(nxL * gL) / gL;
+            }
+            nxL = Math.max(0, Math.min(1, nxL));
+            if (drag.edge === "start") msegLoop0[drag.slot] = Math.max(0, Math.min(drag.b0 - 0.05, nxL));
+            else if (drag.edge === "end") msegLoop1[drag.slot] = Math.max(drag.a0 + 0.05, Math.min(1, nxL));
+            else {
+                var spanL = drag.b0 - drag.a0;
+                var origin = (drag.x0 - msegGeom.x) / msegGeom.w;
+                var nsL = Math.max(0, Math.min(1 - spanL, drag.a0 + (nxL - origin)));
+                msegLoop0[drag.slot] = nsL;
+                msegLoop1[drag.slot] = nsL + spanL;
+            }
+            slotPoked = "";
+            pokeSlots();
+        }
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.msegrate) {
+        if (but === 0) { drag = null; notifyclients(); mgraphics.redraw(); return; }
+        if (drag.sync) {
+            var idxR = drag.v0 + Math.round((drag.y0 - y + (x - drag.x0)) / 8);
+            msegSyncIdx[drag.slot] = Math.max(0, Math.min(MSEG_SYNC.length - 1, idxR));
+        } else {
+            var hz = drag.v0 * Math.pow(2, (drag.y0 - y + (x - drag.x0)) / 80);
+            slotRate[drag.slot] = Math.max(0.02, Math.min(40, hz));
+        }
+        slotPoked = "";
+        pokeSlots();
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.msegmult) {
+        if (but === 0) { drag = null; notifyclients(); mgraphics.redraw(); return; }
+        var mul = drag.v0 * Math.pow(2, (drag.y0 - y + (x - drag.x0)) / 80);
+        msegSyncMul[drag.slot] = Math.max(0.02, Math.min(50, mul));
+        slotPoked = "";
+        pokeSlots();
+        mgraphics.redraw();
+        return;
+    }
+    if (drag && drag.modcell) {
+        if (but === 0) { drag = null; flushModMap(); notifyclients(); mgraphics.redraw(); return; }
+        var scale = (typeof KNOB_DRAG_PX !== "undefined" ? KNOB_DRAG_PX : 120) * (shift ? 8 : 1);
+        var dv = ((drag.y0 - y) + (x - drag.x0)) * (100 / scale);
+        var lo = matPolar[modCellKey(drag.mode, drag.row, drag.src)] ? 0 : -100;
+        var nv = Math.max(lo, Math.min(100, drag.v0 + dv));
+        matDepth[modCellKey(drag.mode, drag.row, drag.src)] = nv;
+        flushModMap();
+        mgraphics.redraw();
+        return;
+    }
     if (drag && drag.hdl) {
         if (but === 0) { drag = null; mgraphics.redraw(); return; }
         hdlMove(drag.hdl, x, y);
@@ -3976,10 +5531,57 @@ ondrag = function (x, y, but, cmd, shift) {
         return;
     }
     sharedOndrag(x, y, but, cmd, shift);
+    if (!but) matSuppressTouch = 0;
 };
 
 ondblclick = function (x, y) {
     var z = zoneAt(x, y);
+    matSuppressTouch = zoneInOpenMatrix(z) ? 1 : 0;
+    if (z && z.action === "browse" && showingSamplePath()) {
+        nameClickAt = 0;
+        nameBrowseGen++;
+        revealLoadedSample();
+        return;
+    }
+    if (z && z.kind === "msegplot") {
+        var g = msegGeom;
+        if (g) {
+            var nx = (x - g.x) / g.w, ny = 1 - (y - g.y) / g.h;
+            var pts = msegPoints(g.slot);
+            var pt = { x: Math.max(0.02, Math.min(0.98, nx)), y: Math.max(0, Math.min(1, ny)), curve: 0, sCurve: 0 };
+            var at = pts.length - 1;
+            for (var i = 0; i < pts.length; i++) if (pts[i].x > pt.x) { at = i; break; }
+            pts.splice(at, 0, pt);
+            msegDirty[g.slot] = 1;
+            pokeSlots();
+            notifyclients();
+            mgraphics.redraw();
+        }
+        matSuppressTouch = 0;
+        return;
+    }
+    if (z && z.kind === "msegpt" && z.i > 0) {
+        var pts2 = msegPoints(z.slot);
+        if (z.i < pts2.length - 1) {
+            var gone = pts2[z.i].id;
+            pts2.splice(z.i, 1);
+            var selAt = msegSel[z.slot].indexOf(gone);
+            if (selAt >= 0) msegSel[z.slot].splice(selAt, 1);
+            msegDirty[z.slot] = 1;
+            pokeSlots();
+            notifyclients();
+            mgraphics.redraw();
+        }
+        matSuppressTouch = 0;
+        return;
+    }
+    if (z && z.kind === "modcell") {
+        matDepth[modCellKey(z.mode, z.row, z.src)] = 0;
+        flushModMap();
+        notifyclients();
+        mgraphics.redraw();
+        return;
+    }
     if (z && z.kind === "wt_pos") { setParamFromFace(z.key, 0); mgraphics.redraw(); return; }
     if (z && z.kind === "wave" && viewZoom > 1.0005) { resetView(); return; }     // empty waveform space resets the view
     if (z && z.kind === "hdl") {
@@ -4018,13 +5620,38 @@ onidle = function (x, y) {
     hoverTip = tip;
     if (h !== hoverHdl || tipChanged) { hoverHdl = h; mgraphics.redraw(); }
     sharedOnidle(x, y);
+    armSampleDragAt(x, y);
 };
 
 onidleout = function () {
     if (gainHover) { gainHover = false; mgraphics.redraw(); }
     if ((hoverHdl && !(drag && drag.hdl)) || hoverTip) { hoverHdl = ""; hoverTip = null; mgraphics.redraw(); }
     sharedOnidleout();
+    disarmSampleDrag();
 };
+
+function onkeydown(keycode, textcharacter, down) {
+    if (!down || !msegKeyOn) return 0;
+    if (envPage < 1 || slotKind(envPage) !== 2) return 0;
+    var k = Number(keycode) || 0;
+    var ch = Number(textcharacter) || 0;
+    if (ch === 27) return 0;
+    var del = k === 8 || k === 127 || k === 51 || k === 117 || k === -4 || ch === 8 || ch === 127 || ch === -4;
+    if ((k === -3 || ch === -3) && ch !== 27) del = true;
+    if (!del) return 0;
+    var slot = envPage;
+    var kept = msegDeleteSelection(msegPoints(slot), msegSel[slot]);
+    if (kept) {
+        msegPushUndo(slot);
+        msegPts[slot] = kept;
+        msegSel[slot] = [];
+        msegDirty[slot] = 1;
+        pokeSlots();
+        notifyclients();
+        mgraphics.redraw();
+    }
+    return 1;
+}
 
 // ---------------------------------------------------------------------------
 // Preview hook (scripts/render_preview.py calls preview() before paint): demo state from the environment
@@ -4099,6 +5726,7 @@ function preview() {
         liveActiveVoices = demo.length;
         for (var d = 0; d < demo.length; d++) {
             voiceAmpStg[d] = demo[d].amp; voiceAmpLvl[d] = demo[d].al;
+            msegVoicePh[d] = demo[d].ph;
             voiceModStg[d] = demo[d].mod; voiceModLvl[d] = demo[d].ml;
             voiceCutHz[d] = demo[d].cut; voiceBorn[d] = demo[d].born;
             voicePlayheads[d] = demo[d].ph; voiceAmps[d] = demo[d].al;
@@ -4114,6 +5742,7 @@ function preview() {
     }
     for (var g = 0; g < 9; g++) { grainPos[g] = 0.28 + g * 0.018; grainAmp[g] = 0.3 + 0.07 * g; }
     envPage = o.env === undefined ? 1 : o.env;
+    if (o.msegSync && envPage >= 1 && envPage <= 4) msegSync[envPage] = 1;
     envTab = o.tab || 0;
     if (o.matTab !== undefined) matTab = o.matTab;
     modTopTab = o.topTab || 0;

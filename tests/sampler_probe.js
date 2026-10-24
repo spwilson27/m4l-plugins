@@ -562,6 +562,8 @@ function analyze(durMs) {
         "rendered " + rendered + "\n" +
         "nan " + stats.nan + "\n" +
         "peak " + stats.peak + "\n" +
+        "peakL " + stats.peakL + "\n" +
+        "peakR " + stats.peakR + "\n" +
         "rms " + stats.rms + "\n" +
         "stereoDiff " + stats.stereoDiff + "\n" +
         "earlyRms " + earlyRms + "\n" +
@@ -919,6 +921,8 @@ function bandRms(left, right, i0, i1) {
 function scan(left, right, sr) {
     var nan = 0;
     var peak = 0;
+    var peakL = 0;
+    var peakR = 0;
     var sq = 0;
     var diffSq = 0;
     var len = left.length;
@@ -927,16 +931,18 @@ function scan(left, right, sr) {
         var lv = left[k];
         var rv = right[k];
         if (lv !== lv || lv === Infinity || lv === -Infinity) nan++;
-        else if (Math.abs(lv) > peak) peak = Math.abs(lv);
+        else if (Math.abs(lv) > peakL) peakL = Math.abs(lv);
         if (rv !== rv || rv === Infinity || rv === -Infinity) nan++;
-        else if (Math.abs(rv) > peak) peak = Math.abs(rv);
+        else if (Math.abs(rv) > peakR) peakR = Math.abs(rv);
+        if (peakL > peak) peak = peakL;
+        if (peakR > peak) peak = peakR;
         sq += 0.5 * (lv * lv + rv * rv);
         diffSq += (lv - rv) * (lv - rv);
     }
 
     var rms = len > 0 ? Math.sqrt(sq / len) : 0;
     var stereoDiff = len > 0 ? Math.sqrt(diffSq / len) : 0;
-    return { nan: nan, peak: peak, rms: rms, stereoDiff: stereoDiff };
+    return { nan: nan, peak: peak, peakL: peakL, peakR: peakR, rms: rms, stereoDiff: stereoDiff };
 }
 
 

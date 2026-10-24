@@ -96,6 +96,9 @@ var voiceCutHz = new Array(16);
 for (var vj = 0; vj < 16; vj++) {
     voiceAmpStg[vj] = 0; voiceAmpLvl[vj] = 0; voiceModStg[vj] = 0; voiceModLvl[vj] = 0; voiceCutHz[vj] = 0;
 }
+// MSEG playhead per voice (0..1 along the curve, -1 silent). Written by the gen at scope 208..223.
+var msegVoicePh = [];
+for (var vk = 0; vk < 16; vk++) msegVoicePh.push(-1);
 
 // Voice allocator instance
 var voiceAlloc = createVoiceAllocator(16);
@@ -520,6 +523,12 @@ function pollTelemetryScope() {
             voiceCutHz[tv] = hasTv ? tvd[64 + tv] : 0;
         }
     } catch (_) {}
+    try {
+        var mph = new Buffer(scopeBufName).peek(1, 208, 16);
+        if (mph && mph.length >= 16) {
+            for (var mp = 0; mp < 16; mp++) msegVoicePh[mp] = mph[mp];
+        }
+    } catch (_) {}
     teleSettled = teleStateIdle() ? 1 : 0;
     return true;
 }
@@ -914,6 +923,13 @@ function midi_note(note, vel) {
             return;
         }
         var allocated = voiceAlloc.noteOn(n, v, curMonoLegato, starts, curEnd);
+        if (allocated) {
+            allocated.channel = midiChan;
+            allocated.mpePb = 0;
+            allocated.mpeSlide = 0;
+            allocated.mpePress = 0;
+            pokeMpeVoice(allocated);
+        }
         writeVoiceToBuffer(allocated);
         if (curSliced) selectedSliceIdx = n - curSliceFrom;
     } else {
@@ -923,6 +939,71 @@ function midi_note(note, vel) {
         }
     }
     mgraphics.redraw();
+}
+
+var midiChan = 0;
+
+function pokeMpeVoice(v) {
+    if (typeof Buffer === "undefined" || !v) return;
+    try {
+        var b = new Buffer("#0-bsmpe");
+        b.poke(1, v.index * 4, [v.mpePb || 0, v.mpeSlide || 0, v.mpePress || 0, 0]);
+    } catch (_) {}
+}
+
+function midi_chan(ch) { midiChan = Math.round(Number(ch) || 0); }
+
+function voicesOnChan() {
+    var out = [];
+    if (typeof voiceAlloc === "undefined" || !voiceAlloc.voices) return out;
+    for (var i = 0; i < voiceAlloc.voices.length; i++) {
+        var v = voiceAlloc.voices[i];
+        if (v && v.gate > 0 && (v.channel == null || v.channel === midiChan)) out.push(v);
+    }
+    return out;
+}
+
+function midi_bend(v) {
+    var n = Number(v);
+    if (!(n <= 1 && n >= -1) || Math.abs(n) > 1.0001) n = ((Number(v) || 8192) - 8192) / 8192;
+    n = Math.max(-1, Math.min(1, n));
+    outlet(0, "wt_msg", "midi_pb", n);
+    var held = voicesOnChan();
+    for (var i = 0; i < held.length; i++) { held[i].mpePb = n; pokeMpeVoice(held[i]); }
+}
+
+function midi_touch(pressure) {
+    var n = Math.max(0, Math.min(1, (Number(pressure) || 0) / 127));
+    outlet(0, "wt_msg", "midi_at", n);
+    var held = voicesOnChan();
+    for (var i = 0; i < held.length; i++) { held[i].mpePress = n; pokeMpeVoice(held[i]); }
+}
+
+function midi_poly(note, pressure) {
+    var n = Math.round(Number(note) || 0);
+    var p = Math.max(0, Math.min(1, (Number(pressure) || 0) / 127));
+    if (typeof voiceAlloc === "undefined" || !voiceAlloc.voices) return;
+    for (var i = 0; i < voiceAlloc.voices.length; i++) {
+        var v = voiceAlloc.voices[i];
+        if (v && v.gate > 0 && v.note === n) { v.mpePress = p; v.channel = midiChan; pokeMpeVoice(v); }
+    }
+}
+
+function midi_cc(a, b) {
+    var c = Math.round(Number(a) || 0);
+    var val = Math.round(Number(b) || 0);
+    if (c !== 1 && c !== 74 && c !== 123 && (Math.round(Number(b)) === 1 || Math.round(Number(b)) === 74 || Math.round(Number(b)) === 123)) {
+        c = Math.round(Number(b) || 0);
+        val = Math.round(Number(a) || 0);
+    }
+    if (c === 123 && val === 0) { all_notes_off(); return; }
+    var n = Math.max(0, Math.min(1, val / 127));
+    if (c === 1) outlet(0, "wt_msg", "midi_mod", n);
+    if (c === 74) {
+        outlet(0, "wt_msg", "midi_slide", n);
+        var held = voicesOnChan();
+        for (var i = 0; i < held.length; i++) { held[i].mpeSlide = n; pokeMpeVoice(held[i]); }
+    }
 }
 
 function all_notes_off() {
@@ -1176,6 +1257,12 @@ function set_wt2_fx1(v) { storeParam("wt2_fx1", v); }
 function set_wt2_fx2(v) { storeParam("wt2_fx2", v); }
 function set_osc2_pitch(v) { storeParam("osc2_pitch", v); }
 function set_osc2_detune(v) { storeParam("osc2_detune", v); }
+function set_osc1_detune(v) { storeParam("osc1_detune", v); }
+function set_osc2_root(v) { storeParam("osc2_root", v); }
+function set_osc2_tune(v) { storeParam("osc2_tune", v); }
+function set_osc1_pan(v) { storeParam("osc1_pan", v); }
+function set_osc2_pan(v) { storeParam("osc2_pan", v); }
+function set_sub_pan(v) { storeParam("sub_pan", v); }
 function set_osc2_pos(v) { storeParam("osc2_pos", v); }
 function set_osc2_gain(v) { storeParam("osc2_gain", v); }
 function set_sub_on(v) { storeParam("sub_on", v); }

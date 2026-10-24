@@ -15,6 +15,7 @@ Features:
 import hashlib
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -29,6 +30,8 @@ FACE_PATH = os.path.join(ROOT_DIR, "src", "sampler_face.js")
 THEME_PATH = os.path.join(ROOT_DIR, "src", "sampler_theme_ableton.js")
 LAYOUT_PATH = os.path.join(ROOT_DIR, "src", "sampler_layout_ableton.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "sampler_core.genexpr")
+DRAG_NODE_PATH = os.path.join(ROOT_DIR, "src", "sampler_drag_node.js")
+XO_NODE_PATH = os.path.join(ROOT_DIR, "src", "xo_node_engine.js")
 
 DEVICE_H = 169.0
 DEVICE_W = 600.0
@@ -96,7 +99,7 @@ PARAM_SPECS = {
     ),
     "grain_motion": (
         "Motion Speed", "Motion", 0.0, 200.0, 100.0, 5, 1.0, "grain_motion", 0.01, "set_grain_motion",
-        "Playhead scan speed through the sample in Cycles and Textures modes (0% frozen to 200%).",
+        "Playback speed. Repitch multiplies the tape rate (100% is the note). Other engines scan the playhead (0% frozen to 200%).",
     ),
     "grain_spray": (
         "Grain Spray", "Spray", 0.0, 100.0, 15.0, 5, 1.0, "grain_spray", 0.01, "set_grain_spray",
@@ -282,27 +285,27 @@ for _k, _spec in (
         ("env2_init", ("Env 2 Initial", "E2Init", 0.0, 100.0, 0.0, 5, 1.0, "env2_init", 0.01, "set_env2_init", "Envelope 2 initial value (0 to 100%).")),
         ("env2_peak", ("Env 2 Peak", "E2Peak", 0.0, 100.0, 100.0, 5, 1.0, "env2_peak", 0.01, "set_env2_peak", "Envelope 2 peak value (0 to 100%).")),
         ("env2_final", ("Env 2 Final", "E2Fin", 0.0, 100.0, 0.0, 5, 1.0, "env2_final", 0.01, "set_env2_final", "Envelope 2 final release value (0 to 100%).")),
-        ("env3_atk_ms", ("Env 3 Attack", "E3Atk", 0.0, 20000.0, 44.7, 2, 2.6, None, 1.0, "set_env3_atk_ms", "Envelope 3 attack time (0 ms to 20 s).")),
-        ("env3_dec_ms", ("Env 3 Decay", "E3Dec", 1.0, 60000.0, 1610.0, 2, 2.6, None, 1.0, "set_env3_dec_ms", "Envelope 3 decay time (1 ms to 60 s).")),
-        ("env3_sus_lvl", ("Env 3 Sustain", "E3Sus", 0.0, 100.0, 51.0, 5, 1.0, None, 1.0, "set_env3_sus_lvl", "Envelope 3 sustain level (0 to 100%).")),
-        ("env3_rel_ms", ("Env 3 Release", "E3Rel", 1.0, 60000.0, 600.0, 2, 2.6, None, 1.0, "set_env3_rel_ms", "Envelope 3 release time (1 ms to 60 s).")),
-        ("env3_atk_slope", ("Env 3 Attack Slope", "E3ASlp", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_env3_atk_slope", "Envelope 3 attack slope (-100% to +100%).")),
-        ("env3_dec_slope", ("Env 3 Decay Slope", "E3DSlp", -100.0, 100.0, 50.0, 5, 1.0, None, 1.0, "set_env3_dec_slope", "Envelope 3 decay slope (-100% to +100%).")),
-        ("env3_rel_slope", ("Env 3 Release Slope", "E3RSlp", -100.0, 100.0, 50.0, 5, 1.0, None, 1.0, "set_env3_rel_slope", "Envelope 3 release slope (-100% to +100%).")),
-        ("env3_init", ("Env 3 Initial", "E3Init", 0.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_env3_init", "Envelope 3 initial value (0 to 100%).")),
-        ("env3_peak", ("Env 3 Peak", "E3Peak", 0.0, 100.0, 100.0, 5, 1.0, None, 1.0, "set_env3_peak", "Envelope 3 peak value (0 to 100%).")),
-        ("env3_final", ("Env 3 Final", "E3Fin", 0.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_env3_final", "Envelope 3 final value (0 to 100%).")),
-        ("lfo1_atk_ms", ("LFO 1 Attack", "L1Atk", 0.0, 5000.0, 0.0, 2, 2.6, None, 1.0, "set_lfo1_atk_ms", "LFO 1 fade-in attack time (0 to 5000 ms).")),
-        ("lfo1_amount", ("LFO 1 Amount", "L1Amt", 0.0, 100.0, 100.0, 5, 1.0, None, 1.0, "set_lfo1_amount", "LFO 1 amplitude amount (0 to 100%).")),
-        ("lfo1_shaping", ("LFO 1 Shaping", "L1Shp", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_lfo1_shaping", "LFO 1 waveform shaping (-100% to +100%).")),
-        ("lfo1_offset", ("LFO 1 Phase Offset", "L1Off", 0.0, 360.0, 0.0, 1, 1.0, None, 1.0, "set_lfo1_offset", "LFO 1 phase offset in degrees (0 to 360 deg).")),
-        ("lfo2_rate", ("LFO 2 Rate", "L2Rate", 0.05, 30.0, 1.0, 3, 2.0, None, 1.0, "set_lfo2_rate", "LFO 2 frequency in Hz (0.05 to 30 Hz).")),
-        ("lfo2_atk_ms", ("LFO 2 Attack", "L2Atk", 0.0, 5000.0, 0.0, 2, 2.6, None, 1.0, "set_lfo2_atk_ms", "LFO 2 fade-in attack time (0 to 5000 ms).")),
-        ("lfo2_amount", ("LFO 2 Amount", "L2Amt", 0.0, 100.0, 100.0, 5, 1.0, None, 1.0, "set_lfo2_amount", "LFO 2 amplitude amount (0 to 100%).")),
-        ("lfo2_shaping", ("LFO 2 Shaping", "L2Shp", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_lfo2_shaping", "LFO 2 waveform shaping (-100% to +100%).")),
-        ("lfo2_offset", ("LFO 2 Phase Offset", "L2Off", 0.0, 360.0, 0.0, 1, 1.0, None, 1.0, "set_lfo2_offset", "LFO 2 phase offset in degrees (0 to 360 deg).")),
-        ("mod_global_time", ("Global Mod Time", "GlbTime", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_mod_global_time", "Global envelope and LFO time scaling (-100% to +100%).")),
-        ("mod_global_amt", ("Global Mod Amount", "GlbAmt", 0.0, 200.0, 100.0, 5, 1.0, None, 1.0, "set_mod_global_amt", "Global modulation matrix amount scaling (0 to 200%)."))):
+        ("env3_atk_ms", ("Env 3 Attack", "E3Atk", 0.0, 20000.0, 44.7, 2, 2.6, "env3_atk_ms", 1.0, "set_env3_atk_ms", "Envelope 3 attack time (0 ms to 20 s).")),
+        ("env3_dec_ms", ("Env 3 Decay", "E3Dec", 1.0, 60000.0, 1610.0, 2, 2.6, "env3_dec_ms", 1.0, "set_env3_dec_ms", "Envelope 3 decay time (1 ms to 60 s).")),
+        ("env3_sus_lvl", ("Env 3 Sustain", "E3Sus", 0.0, 100.0, 51.0, 5, 1.0, "env3_sus_lvl", 0.01, "set_env3_sus_lvl", "Envelope 3 sustain level (0 to 100%).")),
+        ("env3_rel_ms", ("Env 3 Release", "E3Rel", 1.0, 60000.0, 600.0, 2, 2.6, "env3_rel_ms", 1.0, "set_env3_rel_ms", "Envelope 3 release time (1 ms to 60 s).")),
+        ("env3_atk_slope", ("Env 3 Attack Slope", "E3ASlp", -100.0, 100.0, 0.0, 5, 1.0, "env3_atk_slope", 0.01, "set_env3_atk_slope", "Envelope 3 attack slope (-100% to +100%).")),
+        ("env3_dec_slope", ("Env 3 Decay Slope", "E3DSlp", -100.0, 100.0, 50.0, 5, 1.0, "env3_dec_slope", 0.01, "set_env3_dec_slope", "Envelope 3 decay slope (-100% to +100%).")),
+        ("env3_rel_slope", ("Env 3 Release Slope", "E3RSlp", -100.0, 100.0, 50.0, 5, 1.0, "env3_rel_slope", 0.01, "set_env3_rel_slope", "Envelope 3 release slope (-100% to +100%).")),
+        ("env3_init", ("Env 3 Initial", "E3Init", 0.0, 100.0, 0.0, 5, 1.0, "env3_init", 0.01, "set_env3_init", "Envelope 3 initial value (0 to 100%).")),
+        ("env3_peak", ("Env 3 Peak", "E3Peak", 0.0, 100.0, 100.0, 5, 1.0, "env3_peak", 0.01, "set_env3_peak", "Envelope 3 peak value (0 to 100%).")),
+        ("env3_final", ("Env 3 Final", "E3Fin", 0.0, 100.0, 0.0, 5, 1.0, "env3_final", 0.01, "set_env3_final", "Envelope 3 final value (0 to 100%).")),
+        ("lfo1_atk_ms", ("LFO 1 Attack", "L1Atk", 0.0, 5000.0, 0.0, 2, 2.6, "lfo1_atk_ms", 1.0, "set_lfo1_atk_ms", "LFO 1 fade-in attack time (0 to 5000 ms).")),
+        ("lfo1_amount", ("LFO 1 Amount", "L1Amt", 0.0, 100.0, 100.0, 5, 1.0, "lfo1_amount", 0.01, "set_lfo1_amount", "LFO 1 amplitude amount (0 to 100%).")),
+        ("lfo1_shaping", ("LFO 1 Shaping", "L1Shp", -100.0, 100.0, 0.0, 5, 1.0, "lfo1_shaping", 0.01, "set_lfo1_shaping", "LFO 1 waveform shaping (-100% to +100%).")),
+        ("lfo1_offset", ("LFO 1 Phase Offset", "L1Off", 0.0, 360.0, 0.0, 1, 1.0, "lfo1_offset", 1.0, "set_lfo1_offset", "LFO 1 phase offset in degrees (0 to 360 deg).")),
+        ("lfo2_rate", ("LFO 2 Rate", "L2Rate", 0.05, 30.0, 1.0, 3, 2.0, "lfo2_rate", 1.0, "set_lfo2_rate", "LFO 2 frequency in Hz (0.05 to 30 Hz).")),
+        ("lfo2_atk_ms", ("LFO 2 Attack", "L2Atk", 0.0, 5000.0, 0.0, 2, 2.6, "lfo2_atk_ms", 1.0, "set_lfo2_atk_ms", "LFO 2 fade-in attack time (0 to 5000 ms).")),
+        ("lfo2_amount", ("LFO 2 Amount", "L2Amt", 0.0, 100.0, 100.0, 5, 1.0, "lfo2_amount", 0.01, "set_lfo2_amount", "LFO 2 amplitude amount (0 to 100%).")),
+        ("lfo2_shaping", ("LFO 2 Shaping", "L2Shp", -100.0, 100.0, 0.0, 5, 1.0, "lfo2_shaping", 0.01, "set_lfo2_shaping", "LFO 2 waveform shaping (-100% to +100%).")),
+        ("lfo2_offset", ("LFO 2 Phase Offset", "L2Off", 0.0, 360.0, 0.0, 1, 1.0, "lfo2_offset", 1.0, "set_lfo2_offset", "LFO 2 phase offset in degrees (0 to 360 deg).")),
+        ("mod_global_time", ("Global Mod Time", "GlbTime", -100.0, 100.0, 0.0, 5, 1.0, "mod_global_time", 0.01, "set_mod_global_time", "Global envelope and LFO time scaling (-100% to +100%).")),
+        ("mod_global_amt", ("Global Mod Amount", "GlbAmt", 0.0, 200.0, 100.0, 5, 1.0, "mod_global_amt", 0.01, "set_mod_global_amt", "Global modulation matrix amount scaling (0 to 200%)."))):
     OPTIONAL_SPECS[_k] = _spec
     OPTIONAL_GROUPS["wavetable_env_mod"] += (_k,)
 for _k, _spec in (
@@ -365,7 +368,13 @@ for _k, _spec in (
         ("osc1_ratio", ("Osc 1 Tuning Ratio", "Osc1Rat", 0.125, 16.0, 1.0, 1, 1.0, "osc1_ratio", 1.0, "set_osc1_ratio", "Oscillator 1 frequency ratio multiplier (0.125x to 16x).")),
         ("osc2_ratio", ("Osc 2 Tuning Ratio", "Osc2Rat", 0.125, 16.0, 1.0, 1, 1.0, "osc2_ratio", 1.0, "set_osc2_ratio", "Oscillator 2 frequency ratio multiplier (0.125x to 16x).")),
         ("sub_ratio", ("Sub Tuning Ratio", "SubRat", 0.125, 16.0, 1.0, 1, 1.0, "sub_ratio", 1.0, "set_sub_ratio", "Sub oscillator frequency ratio multiplier (0.125x to 16x).")),
-        ("fine_range", ("Fine Tuning Range", "FineRng", 1.0, 96.0, 1.0, 1, 1.0, "fine_range", 1.0, "set_fine_range", "Maximum range of the Fine tuning control (+/-1.0 to +/-96.0)."))) :
+        ("fine_range", ("Fine Tuning Range", "FineRng", 1.0, 96.0, 1.0, 1, 1.0, "fine_range", 1.0, "set_fine_range", "Maximum range of the Fine tuning control (+/-1.0 to +/-96.0).")),
+        ("osc1_detune", ("Osc 1 Detune", "Osc1Det", -100.0, 100.0, 0.0, 0, 1.0, "osc1_detune", 1.0, "set_osc1_detune", "Oscillator 1 intentional detune in cents, separate from the sample fine tune (-100 to +100 ct).")),
+        ("osc2_root", ("Osc 2 Root", "Osc2Root", 0.0, 127.0, 60.0, 0, 1.0, "osc2_root", 1.0, "set_osc2_root", "Root MIDI key of Oscillator 2's own sample (60 = C3).")),
+        ("osc2_tune", ("Osc 2 Sample Tune", "Osc2Tune", -100.0, 100.0, 0.0, 0, 1.0, "osc2_tune", 1.0, "set_osc2_tune", "Fine tune of Oscillator 2's sample in cents. Separate from Osc 2 detune and from Oscillator 1's sample tune.")),
+        ("osc1_pan", ("Osc 1 Pan", "Osc1Pan", -100.0, 100.0, 0.0, 5, 1.0, "osc1_pan", 0.01, "set_osc1_pan", "Oscillator 1 stereo pan. -100% is left, +100% is right, 0 is center.")),
+        ("osc2_pan", ("Osc 2 Pan", "Osc2Pan", -100.0, 100.0, 0.0, 5, 1.0, "osc2_pan", 0.01, "set_osc2_pan", "Oscillator 2 stereo pan. -100% is left, +100% is right, 0 is center.")),
+        ("sub_pan", ("Sub Pan", "SubPan", -100.0, 100.0, 0.0, 5, 1.0, "sub_pan", 0.01, "set_sub_pan", "Sub oscillator stereo pan. -100% is left, +100% is right, 0 is center."))) :
     OPTIONAL_SPECS[_k] = _spec
     OPTIONAL_GROUPS["wavetable_filter"] += (_k,)
 _ENV_MOD_ENUMS = {
@@ -374,7 +383,7 @@ _ENV_MOD_ENUMS = {
     "env3_loop_mode": ("Env 3 Loop Mode", "E3Loop", ["None", "Trigger", "Loop"], 0, None, "set_env3_loop_mode", "Envelope 3 loop mode."),
     "lfo1_sync": ("LFO 1 Rate Mode", "L1Sync", ["Hz", "Sync"], 0, None, "set_lfo1_sync", "LFO 1 free Hz or tempo-synced rate."),
     "lfo1_retrig": ("LFO 1 Retrigger", "L1Retrig", ["Off", "On"], 1, None, "set_lfo1_retrig", "LFO 1 note-on phase retrigger."),
-    "lfo2_shape": ("LFO 2 Shape", "L2Shape", ["Sin", "Tri", "Saw", "S&H", "Sq"], 0, None, "set_lfo2_shape", "LFO 2 waveform shape."),
+    "lfo2_shape": ("LFO 2 Shape", "L2Shape", ["Sin", "Tri", "Saw", "S&H", "Sq"], 0, "lfo2_shape", "set_lfo2_shape", "LFO 2 waveform shape."),
     "lfo2_sync": ("LFO 2 Rate Mode", "L2Sync", ["Hz", "Sync"], 0, None, "set_lfo2_sync", "LFO 2 free Hz or tempo-synced rate."),
     "lfo2_retrig": ("LFO 2 Retrigger", "L2Retrig", ["Off", "On"], 1, None, "set_lfo2_retrig", "LFO 2 note-on phase retrigger."),
 }
@@ -1069,6 +1078,18 @@ def load_designs():
     return designs
 
 
+def drag_node_source():
+    """XO's helper source, compiled to the same binary the XO device already uses."""
+    with open(XO_NODE_PATH, "r", encoding="utf-8") as f:
+        xo = f.read()
+    m = re.search(r"const OBJC_DRAG_HELPER_SOURCE = `([\s\S]*?)`;\n", xo)
+    if not m:
+        raise RuntimeError("OBJC_DRAG_HELPER_SOURCE not found in src/xo_node_engine.js")
+    with open(DRAG_NODE_PATH, "r", encoding="utf-8") as f:
+        body = f.read()
+    return "const DRAG_HELPER_SOURCE = " + json.dumps(m.group(1)) + ";\n" + body
+
+
 def build_patcher(design=None):
     global FACE_KEYS
     for k in OPTIONAL_SPECS:
@@ -1139,9 +1160,16 @@ def build_patcher(design=None):
     ui_boxes, panels = build_face_layout(themed=not design)
     dev_w = DEVICE_W
     design_js = ""
+    mod_js = ""
+    if design:
+        with open(os.path.join(ROOT_DIR, "src", "sampler_modmatrix.js"), "r", encoding="utf-8") as f:
+            mod_js = f.read()
     if design:
         with open(os.path.join(ROOT_DIR, design["face"]), "r", encoding="utf-8") as f:
             design_js = f.read()
+        if os.path.basename(design["face"]) == "sampler_design_reactive2.js":
+            with open(os.path.join(ROOT_DIR, "src", "mseg_edit.js"), "r", encoding="utf-8") as f:
+                design_js = f.read() + "\n" + design_js
         dev_w = float(design["width"])
         max_w = float(design.get("max_width", design["width"]))
         for pan in panels:
@@ -1177,6 +1205,7 @@ def build_patcher(design=None):
             + "\n"
             + theme_js
             + design_vars
+            + ("\n" + mod_js if design else "")
             + ("\n" + design_js if design else "")
         )
 
@@ -1482,7 +1511,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [420.0, 450.0, 520.0, 20.0],
-                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2",
+                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2" + (", samp2 #0-bsamp2, modmap #0-bsmod, mpebuf #0-bsmpe, msegw #0-bsmseg, slbuf #0-bsslot" if design else ""),
             }
         },
         {
@@ -1501,11 +1530,11 @@ def build_patcher(design=None):
             "box": {
                 "id": "obj-route-viz",
                 "maxclass": "newobj",
-                "numinlets": 10,
-                "numoutlets": 10,
-                "outlettype": ["", "", "", "", "", "", "", "", "", ""],
-                "patching_rect": [160.0, 555.0, 360.0, 20.0],
-                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate wt_msg",
+                "numinlets": 1,
+                "numoutlets": 12,
+                "outlettype": [""] * 12,
+                "patching_rect": [160.0, 555.0, 480.0, 20.0],
+                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate wt_msg arm_drag disarm_drag",
             }
         },
         {
@@ -1690,6 +1719,143 @@ def build_patcher(design=None):
         px += 85.0
 
     # Decorative background panels MUST appear at the end of `boxes` with `"background": 1` (rule #8)
+    if design:
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-buf-samp2",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["float", "bang"],
+                "patching_rect": [660.0, 330.0, 230.0, 20.0],
+                "text": "buffer~ #0-bsamp2 1000 2",
+                "varname": "obj-buf-samp2",
+            }
+        })
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-prep-loaded2",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [660.0, 360.0, 150.0, 20.0],
+                "text": "prepend sample2_loaded",
+            }
+        })
+        lines.append({"patchline": {"source": ["obj-buf-samp2", 1], "destination": ["obj-prep-loaded2", 0]}})
+        lines.append({"patchline": {"source": ["obj-prep-loaded2", 0], "destination": ["obj-viz", 0]}})
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-buf-mod",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": ["float"],
+                "patching_rect": [660.0, 400.0, 160.0, 20.0],
+                "text": "buffer~ #0-bsmod 289 1",
+            }
+        })
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-buf-mpe",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": ["float"],
+                "patching_rect": [660.0, 428.0, 160.0, 20.0],
+                "text": "buffer~ #0-bsmpe 64 1",
+            }
+        })
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-buf-mseg",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": ["float"],
+                "patching_rect": [660.0, 456.0, 180.0, 20.0],
+                "text": "buffer~ #0-bsmseg 4096 1",
+            }
+        })
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-buf-slot",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": ["float"],
+                "patching_rect": [660.0, 484.0, 160.0, 20.0],
+                "text": "buffer~ #0-bsslot 104 1",
+            }
+        })
+        for outlet, prep, msg in (
+            (1, "obj-prep-poly", "prepend midi_poly"),
+            (2, "obj-prep-cc", "prepend midi_cc"),
+            (4, "obj-prep-touch", "prepend midi_touch"),
+            (5, "obj-prep-bend", "prepend midi_bend"),
+            (6, "obj-prep-chan", "prepend midi_chan"),
+        ):
+            dsp_boxes.append({
+                "box": {
+                    "id": prep,
+                    "maxclass": "newobj",
+                    "numinlets": 1,
+                    "numoutlets": 1,
+                    "outlettype": [""],
+                    "patching_rect": [30.0, 640.0 + outlet * 22.0, 130.0, 20.0],
+                    "text": msg,
+                }
+            })
+            lines.append({"patchline": {"source": ["obj-midiparse", outlet], "destination": [prep, 0]}})
+            lines.append({"patchline": {"source": [prep, 0], "destination": ["obj-viz", 0]}})
+    if design and design.get("slug") == "reactive2":
+        # Patching-only helper plus a 1×1 ignoreclick node so it boots in presentation. Panels stay
+        # last in the box list. The node talks to XO's existing drag helper; it is not a control.
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-prep-arm-drag",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [20.0, 790.0, 110.0, 20.0],
+                "text": "prepend arm",
+            }
+        })
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-msg-disarm-drag",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [150.0, 790.0, 70.0, 20.0],
+                "text": "disarm",
+            }
+        })
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-drag-node",
+                "maxclass": "node.codebox",
+                "numinlets": 1,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [20.0, 820.0, 280.0, 140.0],
+                "presentation": 1,
+                "presentation_rect": [4.0, 164.0, 1.0, 1.0],
+                "ignoreclick": 1,
+                "background": 1,
+                "code": drag_node_source(),
+                "saved_object_attributes": {"autostart": 1, "defer": 1, "watch": 0},
+            }
+        })
+        # selectors: param 0 … wt_msg 8, arm_drag 9, disarm_drag 10
+        lines.append({"patchline": {"source": ["obj-route-viz", 9], "destination": ["obj-prep-arm-drag", 0]}})
+        lines.append({"patchline": {"source": ["obj-prep-arm-drag", 0], "destination": ["obj-drag-node", 0]}})
+        lines.append({"patchline": {"source": ["obj-route-viz", 10], "destination": ["obj-msg-disarm-drag", 0]}})
+        lines.append({"patchline": {"source": ["obj-msg-disarm-drag", 0], "destination": ["obj-drag-node", 0]}})
+        lines.append({"patchline": {"source": ["obj-drag-node", 0], "destination": ["obj-viz", 0]}})
     all_boxes = dsp_boxes + ui_boxes + panels
 
     return {

@@ -57,6 +57,21 @@ BUILTINS = KEYWORDS | {
 BUILTINS |= {f"in{i}" for i in range(1, 65)}
 BUILTINS |= {f"out{i}" for i in range(1, 65)}
 
+# Fresh names are emitted as C++ identifiers. ``asm`` is a keyword, and a parameter
+# renamed to it fails the gen compile ("invalid parameter name"). These are never
+# chosen as a new name; a local the source already spelled this way is still renamed
+# away from it, because it is not in BUILTINS.
+CPP_KEYWORDS = {
+    "alignas", "alignof", "and_eq", "asm", "auto", "bitand", "bitor", "char", "class", "compl",
+    "concept", "const", "consteval", "constexpr", "constinit", "const_cast", "co_await", "co_return",
+    "co_yield", "decltype", "delete", "double", "dynamic_cast", "enum", "explicit", "export", "extern",
+    "friend", "goto", "inline", "long", "mutable", "namespace", "new", "noexcept", "not_eq", "nullptr",
+    "operator", "or_eq", "private", "protected", "public", "register", "reinterpret_cast", "requires",
+    "short", "signed", "sizeof", "static", "static_assert", "static_cast", "struct", "template", "this",
+    "thread_local", "throw", "try", "typedef", "typeid", "typename", "union", "unsigned", "using",
+    "virtual", "void", "volatile", "wchar_t", "xor_eq",
+}
+
 DECLS = ("History", "Data", "Delay", "Buffer", "Param")
 ASSIGN_OPS = ("=", "+=", "-=", "*=", "/=")
 _GLUE = {
@@ -229,7 +244,7 @@ def _assign(names, keep, occupied):
                 if k < 0:
                     break
             fresh = "".join(reversed(letters))
-            if fresh in used or re.fullmatch(r"e\d+", fresh):
+            if fresh in used or fresh in CPP_KEYWORDS or re.fullmatch(r"e\d+", fresh):
                 continue
             used.add(fresh)
             mapping[name] = fresh
@@ -336,6 +351,9 @@ def check_source(src, label):
     for kind, text in _significant(mangled):
         if kind == "ident" and re.fullmatch(r"e\d+", text):
             raise AssertionError(f"{label}: mangled name {text} collides with Euler's constant")
+    bad = sorted(set(mapping.values()) & CPP_KEYWORDS)
+    if bad:
+        raise AssertionError(f"{label}: mangled name {bad[0]} is a C++ keyword")
     for old in mapping:
         if old in BUILTINS:
             raise AssertionError(f"{label}: builtin {old} was renamed")

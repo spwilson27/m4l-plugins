@@ -91,6 +91,16 @@ function fromNorm(key, n) {
     return v;
 }
 
+// Ratio bars step by whole numbers. Shift keeps the fine drag, so 1.5x and 0.5x stay reachable.
+function dragValue(key, v, shift) {
+    if (shift || (key !== "osc1_ratio" && key !== "osc2_ratio" && key !== "sub_ratio")) return v;
+    var p = paramSpec(key);
+    var stepped = Math.round(v);
+    if (stepped < 1) stepped = v < 0.5 ? p.lo : 1;
+    if (stepped > p.hi) stepped = p.hi;
+    return stepped;
+}
+
 function fmtTime(ms) {
     if (ms < 10) return ms.toFixed(2) + " ms";
     if (ms < 100) return ms.toFixed(1) + " ms";
@@ -174,6 +184,28 @@ function fitText(s, maxW, size) {
     if (textW(s, size) <= maxW) return s;
     while (s.length > 3 && textW(s + "…", size) > maxW) s = s.substring(0, s.length - 1);
     return s + "…";
+}
+
+// Sample file names ellipsize like the Finder: the ellipsis sits in the stem and the extension stays.
+function fitFileName(s, maxW, size) {
+    s = String(s);
+    font(size, false);
+    if (textW(s, size) <= maxW) return s;
+    var dot = s.lastIndexOf(".");
+    var ext = "";
+    if (dot > 0 && s.length - dot <= 8 && textW(s.substring(dot), size) < maxW) ext = s.substring(dot);
+    var base = ext ? s.substring(0, s.length - ext.length) : s;
+    var ell = "…";
+    if (textW(ell + ext, size) > maxW) return fitText(s, maxW, size);
+    var keep = base.length;
+    while (keep > 0) {
+        var left = Math.ceil(keep / 2);
+        var right = keep - left;
+        var out = base.substring(0, left) + ell + (right > 0 ? base.substring(base.length - right) : "") + ext;
+        if (textW(out, size) <= maxW) return out;
+        keep--;
+    }
+    return ell + ext;
 }
 
 function circle(cx, cy, r, c, a) {
@@ -492,7 +524,8 @@ function paintSamplePanel() {
 
     // Header
     iconFolder(sx + 7, sy + 5, COL.blue, 0.9);
-    var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 170, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? COL.blue : COL.label, false, 0);
+    var nameShown = hasLoadedSample ? fitFileName(sampleFileName, 170, 9.0) : fitText("Drop a sample or click to browse", 170, 9.0);
+    var nameW = text(nameShown, sx + 21, sy + 13, 9.0, hasLoadedSample ? COL.blue : COL.label, false, 0);
     zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
 
     var vx = sx + 228;
@@ -1166,7 +1199,7 @@ function onclick(x, y, but, cmd, shift) {
             pushUndoState();
             drag = { region: z.region, y0: y, n0: REGION_GET[z.region]() };
         } else {
-            drag = { key: z.key, y0: y, v0: paramValue(z.key), n0: toNorm(z.key, paramValue(z.key)), pxPerUnit: z.pxPerUnit, useNorm: !!z.norm };
+            drag = { key: z.key, x0: x, y0: y, v0: paramValue(z.key), n0: toNorm(z.key, paramValue(z.key)), pxPerUnit: z.pxPerUnit, useNorm: !!z.norm, hbar: z.hbar ? 1 : 0 };
         }
         return;
     }
@@ -1244,6 +1277,7 @@ function ondrag(x, y, but, cmd, shift) {
         return;
     }
     var dy = drag.y0 - y;
+    if (drag.hbar) dy += x - drag.x0;
     if (drag.flag !== undefined) {
         var i = drag.flag;
         var lo = (i > 0 ? sliceMarkers[i - 1] : 0) + 0.002;
@@ -1274,6 +1308,7 @@ function ondrag(x, y, but, cmd, shift) {
         } else {
             v = fromNorm(drag.key, drag.n0 + dy / (KNOB_DRAG_PX * (shift ? 8.0 : 1.0)));
         }
+        v = dragValue(drag.key, v, shift);
         if (v !== paramValue(drag.key)) setParamFromFace(drag.key, v);
     }
     mgraphics.redraw();

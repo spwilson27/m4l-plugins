@@ -188,6 +188,18 @@ assert.ok(/isSlice\s*=/.test(gen), "gen derives isSlice");
 assert.ok(gen.includes("uCount = int(clip(round(unisonCount), 1, 8));"), "Unison count clamps to 1..8");
 assert.ok(gen.includes("for (u = 0; u < uCount; u += 1)"), "Unison loops stop at the active sub-voice count");
 assert.strictEqual((gen.match(/= unison_spread\(/g) || []).length, 1, "unison_spread is inlined once");
+assert.ok(gen.includes("Data prm(137);"), "prm grew so oscillator pan can use index 136");
+assert.ok(gen.includes("Param osc1_pan(0, min=-1, max=1);"), "osc1 pan param");
+assert.ok(gen.includes("Param osc2_pan(0, min=-1, max=1);"), "osc2 pan param");
+assert.ok(gen.includes("Param sub_pan(0, min=-1, max=1);"), "sub pan param");
+assert.ok(gen.includes("poke(prm, clip(osc1_pan, -1, 1), 134);"), "osc1 pan is prm 134");
+assert.ok(gen.includes("poke(prm, clip(osc2_pan, -1, 1), 135);"), "osc2 pan is prm 135");
+assert.ok(gen.includes("poke(prm, clip(sub_pan, -1, 1), 136);"), "sub pan is prm 136");
+assert.ok(gen.indexOf("pan_lr(") < gen.indexOf("\nBuffer "), "pan_lr is a helper before Buffer");
+assert.ok(gen.includes("o1WetL = sigL * o1GL;"), "osc 1 wet output is panned");
+assert.ok(gen.includes("o2WetL = osc2SigL * o2GL;"), "osc 2 wet output is panned");
+assert.ok(gen.includes("sbWetL = subSigL * sbGL;"), "sub wet output is panned");
+assert.ok(gen.includes("return panCs - panSn, panCs + panSn;"), "center pan is unity (cos 0 - sin 0)");
 assert.ok(gen.includes("glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (glide_ms * srVal));"), "Glide coefficient");
 assert.ok((gen.match(/freezeOn > 0\.5/g) || []).length >= 3, "Freeze is handled in every engine");
 assert.ok(gen.includes("dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;"), "Reverse flips playback direction");
@@ -395,7 +407,7 @@ assertLink(lines, "obj-midiparse", 0, "obj-prep-midi", 0, "midi");
 assertLink(lines, "obj-prep-midi", 0, "obj-viz", 0, "midi -> main face");
 
 // --- face -> route -> hidden control wiring ---
-assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate wt_msg");
+assert.strictEqual(byId.get("obj-route-viz").text, "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate wt_msg arm_drag disarm_drag");
 assertLink(lines, "obj-route-viz", 2, "obj-opendialog", 0, "browse -> file dialog");
 assertLink(lines, "obj-viz", 0, "obj-route-viz", 0, "main face outlet");
 assertLink(lines, "obj-viz-side", 0, "obj-route-viz", 0, "side face outlet");
@@ -408,7 +420,7 @@ assertLink(lines, "obj-route-viz", 4, "obj-prep-setwidth", 0, "setwidth_cmd -> p
 assertLink(lines, "obj-prep-setwidth", 0, "obj-thisdevice", 0, "prepend setwidth -> live.thisdevice");
 assertLink(lines, "obj-thisdevice", 0, "obj-msg-ready", 0, "thisdevice ready -> device_ready");
 assertLink(lines, "obj-msg-ready", 0, "obj-viz", 0, "device_ready -> main face");
-assert.strictEqual(byId.get("obj-route-viz").numoutlets, 10, "route-viz: 9 selectors + reject");
+assert.strictEqual(byId.get("obj-route-viz").numoutlets, 12, "route-viz: 11 selectors + reject");
 assert.strictEqual(byId.get("obj-prep-samprate").text, "prepend samp_rate");
 assertLink(lines, "obj-route-viz", 7, "obj-prep-samprate", 0, "samp_rate -> prepend");
 assertLink(lines, "obj-prep-samprate", 0, "obj-gen-in", 1, "samp_rate -> gen hub");
