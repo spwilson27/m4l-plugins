@@ -19,6 +19,9 @@ import struct
 import subprocess
 import sys
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "sampler_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "sampler_ui.js")
@@ -279,10 +282,10 @@ for _k, _spec in (
         ("env2_init", ("Env 2 Initial", "E2Init", 0.0, 100.0, 0.0, 5, 1.0, "env2_init", 0.01, "set_env2_init", "Envelope 2 initial value (0 to 100%).")),
         ("env2_peak", ("Env 2 Peak", "E2Peak", 0.0, 100.0, 100.0, 5, 1.0, "env2_peak", 0.01, "set_env2_peak", "Envelope 2 peak value (0 to 100%).")),
         ("env2_final", ("Env 2 Final", "E2Fin", 0.0, 100.0, 0.0, 5, 1.0, "env2_final", 0.01, "set_env2_final", "Envelope 2 final release value (0 to 100%).")),
-        ("env3_atk_ms", ("Env 3 Attack", "E3Atk", 0.2, 5000.0, 44.7, 2, 2.6, None, 1.0, "set_env3_atk_ms", "Envelope 3 attack time (0.2 ms to 5 s).")),
-        ("env3_dec_ms", ("Env 3 Decay", "E3Dec", 1.0, 10000.0, 1610.0, 2, 2.6, None, 1.0, "set_env3_dec_ms", "Envelope 3 decay time (1 ms to 10 s).")),
+        ("env3_atk_ms", ("Env 3 Attack", "E3Atk", 0.0, 20000.0, 44.7, 2, 2.6, None, 1.0, "set_env3_atk_ms", "Envelope 3 attack time (0 ms to 20 s).")),
+        ("env3_dec_ms", ("Env 3 Decay", "E3Dec", 1.0, 60000.0, 1610.0, 2, 2.6, None, 1.0, "set_env3_dec_ms", "Envelope 3 decay time (1 ms to 60 s).")),
         ("env3_sus_lvl", ("Env 3 Sustain", "E3Sus", 0.0, 100.0, 51.0, 5, 1.0, None, 1.0, "set_env3_sus_lvl", "Envelope 3 sustain level (0 to 100%).")),
-        ("env3_rel_ms", ("Env 3 Release", "E3Rel", 1.0, 10000.0, 600.0, 2, 2.6, None, 1.0, "set_env3_rel_ms", "Envelope 3 release time (1 ms to 10 s).")),
+        ("env3_rel_ms", ("Env 3 Release", "E3Rel", 1.0, 60000.0, 600.0, 2, 2.6, None, 1.0, "set_env3_rel_ms", "Envelope 3 release time (1 ms to 60 s).")),
         ("env3_atk_slope", ("Env 3 Attack Slope", "E3ASlp", -100.0, 100.0, 0.0, 5, 1.0, None, 1.0, "set_env3_atk_slope", "Envelope 3 attack slope (-100% to +100%).")),
         ("env3_dec_slope", ("Env 3 Decay Slope", "E3DSlp", -100.0, 100.0, 50.0, 5, 1.0, None, 1.0, "set_env3_dec_slope", "Envelope 3 decay slope (-100% to +100%).")),
         ("env3_rel_slope", ("Env 3 Release Slope", "E3RSlp", -100.0, 100.0, 50.0, 5, 1.0, None, 1.0, "set_env3_rel_slope", "Envelope 3 release slope (-100% to +100%).")),
@@ -317,7 +320,25 @@ for _k, _spec in (
         ("wt2_fx1", ("Osc 2 Effect 1", "Wt2Fx1", -100.0, 100.0, 0.0, 5, 1.0, "wt2_fx1", 0.01, "set_wt2_fx1", "Oscillator 2 Wavetable Effect 1 (Fm Tune, Classic PW, or Modern Warp, -100% to +100%).")),
         ("wt2_fx2", ("Osc 2 Effect 2", "Wt2Fx2", 0.0, 100.0, 0.0, 5, 1.0, "wt2_fx2", 0.01, "set_wt2_fx2", "Oscillator 2 Wavetable Effect 2 (Fm Amt, Classic Sync, or Modern Fold, 0% to 100%).")),
         ("sub_tone", ("Sub Tone", "SubTone", 0.0, 100.0, 0.0, 5, 1.0, "sub_tone", 0.01, "set_sub_tone", "Sub oscillator harmonic saturation tone (0 to 100%).")),
-        ("sub_gain", ("Sub Gain", "SubGain", -48.0, 24.0, -6.0, 4, 1.0, "sub_gain", 1.0, "set_sub_gain", "Sub oscillator output level in dB (-48 to +24 dB)."))):
+        ("sub_gain", ("Sub Gain", "SubGain", -48.0, 24.0, -6.0, 4, 1.0, "sub_gain", 1.0, "set_sub_gain", "Sub oscillator output level in dB (-48 to +24 dB).")),
+        ("xs_fm_21", ("Cross FM 2->1", "XFM21", -100.0, 100.0, 0.0, 5, 1.0, "xs_fm_21", 0.01, "set_xs_fm_21", "Audio-rate FM from Oscillator 2 to Oscillator 1 (-100% to +100%).")),
+        ("xs_fm_12", ("Cross FM 1->2", "XFM12", -100.0, 100.0, 0.0, 5, 1.0, "xs_fm_12", 0.01, "set_xs_fm_12", "Audio-rate FM from Oscillator 1 to Oscillator 2 (-100% to +100%).")),
+        ("xs_rm_21", ("Cross RM/AM 2->1", "XRM21", -100.0, 100.0, 0.0, 5, 1.0, "xs_rm_21", 0.01, "set_xs_rm_21", "Ring Modulation (positive) or Amplitude Modulation (negative) from Oscillator 2 to Oscillator 1.")),
+        ("xs_rm_12", ("Cross RM/AM 1->2", "XRM12", -100.0, 100.0, 0.0, 5, 1.0, "xs_rm_12", 0.01, "set_xs_rm_12", "Ring Modulation (positive) or Amplitude Modulation (negative) from Oscillator 1 to Oscillator 2.")),
+        ("xs_cep_21", ("Cross Cepstral 2->1", "XCp21", -100.0, 100.0, 0.0, 5, 1.0, "xs_cep_21", 0.01, "set_xs_cep_21", "Cepstral spectral envelope cross-synthesis from Oscillator 2 onto Oscillator 1 (-100% to +100%).")),
+        ("xs_cep_12", ("Cross Cepstral 1->2", "XCp12", -100.0, 100.0, 0.0, 5, 1.0, "xs_cep_12", 0.01, "set_xs_cep_12", "Cepstral spectral envelope cross-synthesis from Oscillator 1 onto Oscillator 2 (-100% to +100%).")),
+        ("xs_sync_21", ("Cross Sync 2->1", "XSy21", 0.0, 100.0, 0.0, 5, 1.0, "xs_sync_21", 0.01, "set_xs_sync_21", "Hard phase/cycle sync from Oscillator 2 to Oscillator 1 (0 to 100%).")),
+        ("xs_sync_12", ("Cross Sync 1->2", "XSy12", 0.0, 100.0, 0.0, 5, 1.0, "xs_sync_12", 0.01, "set_xs_sync_12", "Hard phase/cycle sync from Oscillator 1 to Oscillator 2 (0 to 100%).")),
+        ("xs_fold_21", ("Cross Fold 2->1", "XFd21", -100.0, 100.0, 0.0, 5, 1.0, "xs_fold_21", 0.01, "set_xs_fold_21", "West-Coast cross-wavefolding from Oscillator 2 into Oscillator 1 (-100% to +100%).")),
+        ("xs_fold_12", ("Cross Fold 1->2", "XFd12", -100.0, 100.0, 0.0, 5, 1.0, "xs_fold_12", 0.01, "set_xs_fold_12", "West-Coast cross-wavefolding from Oscillator 1 into Oscillator 2 (-100% to +100%).")),
+        ("xs_sub_fm", ("Cross Sub FM", "XSbFM", -100.0, 100.0, 0.0, 5, 1.0, "xs_sub_fm", 0.01, "set_xs_sub_fm", "Audio-rate FM from Sub Oscillator to Oscillator 1 (-100% to +100%).")),
+        ("xs_sub_rm", ("Cross Sub RM/AM", "XSbRM", -100.0, 100.0, 0.0, 5, 1.0, "xs_sub_rm", 0.01, "set_xs_sub_rm", "Ring/Amplitude Modulation from Sub Oscillator to Oscillator 1 (-100% to +100%).")),
+        ("xs_sub_cep", ("Cross Sub Cepstral", "XSbCp", -100.0, 100.0, 0.0, 5, 1.0, "xs_sub_cep", 0.01, "set_xs_sub_cep", "Cepstral cross-synthesis from Sub Oscillator to Oscillator 1 (-100% to +100%).")),
+        ("xs_sub_sync", ("Cross Sub Sync", "XSbSy", 0.0, 100.0, 0.0, 5, 1.0, "xs_sub_sync", 0.01, "set_xs_sub_sync", "Hard sync from Sub Oscillator to Oscillator 1 (0 to 100%).")),
+        ("xs_sub_fold", ("Cross Sub Fold", "XSbFd", -100.0, 100.0, 0.0, 5, 1.0, "xs_sub_fold", 0.01, "set_xs_sub_fold", "Cross-wavefolding from Sub Oscillator to Oscillator 1 (-100% to +100%).")),
+        ("xs_quef", ("Cepstral Quefrency", "XQuef", 0.0, 100.0, 50.0, 5, 1.0, "xs_quef", 0.01, "set_xs_quef", "Cepstral liftering quefrency cutoff (0% smooth hull to 100% sharp formant peaks).")),
+        ("xs_tilt", ("Cepstral Tilt", "XTilt", -100.0, 100.0, 0.0, 5, 1.0, "xs_tilt", 0.01, "set_xs_tilt", "Cepstral cross-synthesis spectral tilt (-100% dark to +100% bright).")),
+        ("xs_depth", ("Cross Synth Depth", "XDepth", 0.0, 100.0, 100.0, 5, 1.0, "xs_depth", 0.01, "set_xs_depth", "Global oscillator cross-synthesis depth (0 to 100%)."))):
     OPTIONAL_SPECS[_k] = _spec
     OPTIONAL_GROUPS["wavetable_filter"] += (_k,)
 _ENV_MOD_ENUMS = {
@@ -947,6 +968,7 @@ def face_params_json(design=False):
 
 def gendsp_json(gen_code):
     """The gen patcher (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text."""
+    gen_code = minify_gen(gen_code)
     def b(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
                "patching_rect": [float(x), float(y), 200.0, 22.0]}
@@ -1032,6 +1054,31 @@ def build_patcher(design=None):
         ["Sin", "Tri", "Saw", "S&H", "Sq"] if (design and design.get("wavetable_env_mod")) else ["Sin", "Tri", "Saw", "S&H"],
         0, "lfo_shape", "set_lfo_shape",
         "Selects Sine, Triangle, Sawtooth, Sample-and-Hold, or Square LFO waveform.",
+    )
+    wt_env = bool(design and design.get("wavetable_env_mod"))
+    PARAM_SPECS["atk_ms"] = (
+        "Amp Attack", "Atk", 0.0 if wt_env else 0.2, 20000.0 if wt_env else 5000.0, 2.5, 2, 2.6, "atk_ms", 1.0, "set_atk_ms",
+        "Amplitude envelope attack time.",
+    )
+    PARAM_SPECS["dec_ms"] = (
+        "Amp Decay", "Dec", 1.0, 60000.0 if wt_env else 10000.0, 250.0, 2, 2.6, "dec_ms", 1.0, "set_dec_ms",
+        "Amplitude envelope decay time.",
+    )
+    PARAM_SPECS["rel_ms"] = (
+        "Amp Release", "Rel", 1.0, 60000.0 if wt_env else 10000.0, 140.0, 2, 2.6, "rel_ms", 1.0, "set_rel_ms",
+        "Amplitude envelope release time.",
+    )
+    PARAM_SPECS["matk_ms"] = (
+        "Mod Attack", "MAtk", 0.0 if wt_env else 0.2, 20000.0 if wt_env else 5000.0, 5.0, 2, 2.6, "matk_ms", 1.0, "set_matk_ms",
+        "Modulation & filter envelope attack time.",
+    )
+    PARAM_SPECS["mdec_ms"] = (
+        "Mod Decay", "MDec", 1.0, 60000.0 if wt_env else 10000.0, 320.0, 2, 2.6, "mdec_ms", 1.0, "set_mdec_ms",
+        "Modulation & filter envelope decay time.",
+    )
+    PARAM_SPECS["mrel_ms"] = (
+        "Mod Release", "MRel", 1.0, 60000.0 if wt_env else 10000.0, 220.0, 2, 2.6, "mrel_ms", 1.0, "set_mrel_ms",
+        "Modulation & filter envelope release time.",
     )
     for flag, keys in OPTIONAL_GROUPS.items():
         if design and design.get(flag):
@@ -1614,6 +1661,7 @@ def build_patcher(design=None):
 
 
 def write_amxd(patcher_dict, out_path):
+    minify_patcher(patcher_dict)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     payload = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")
     # Max Instrument header ("iiii") so Ableton loads Better Sampler on MIDI Instrument tracks

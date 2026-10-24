@@ -105,51 +105,51 @@ op_coef(fc, sr) {
 
 // Wavetable 4-frame morph (Sine -> Triangle -> Saw -> Square)
 wt_base(ph, pos01) {
-	p = fract(ph);
-	wSin = sin(6.28318530718 * p);
-	wTri = 1.0 - 4.0 * abs(fract(p + 0.25) - 0.5);
-	wSaw = 2.0 * p - 1.0;
-	wSqr = (p < 0.5) ? 1.0 : -1.0;
-	m = clip(pos01, 0, 1) * 3.0;
-	outV = wSin;
-	if (m <= 1.0) {
-		outV = wSin + (wTri - wSin) * m;
-	} else if (m <= 2.0) {
-		outV = wTri + (wSaw - wTri) * (m - 1.0);
+	wbP = fract(ph);
+	wSin = sin(6.28318530718 * wbP);
+	wTri = 1.0 - 4.0 * abs(fract(wbP + 0.25) - 0.5);
+	wSaw = 2.0 * wbP - 1.0;
+	wSqr = (wbP < 0.5) ? 1.0 : -1.0;
+	wbM = clip(pos01, 0, 1) * 3.0;
+	wbOut = wSin;
+	if (wbM <= 1.0) {
+		wbOut = wSin + (wTri - wSin) * wbM;
+	} else if (wbM <= 2.0) {
+		wbOut = wTri + (wSaw - wTri) * (wbM - 1.0);
 	} else {
-		outV = wSaw + (wSqr - wSaw) * (m - 2.0);
+		wbOut = wSaw + (wSqr - wSaw) * (wbM - 2.0);
 	}
-	return outV;
+	return wbOut;
 }
 
 // Wavetable oscillator with native Wavetable wave effects:
 //   fxMode: 0 = None, 1 = Fm (Tune / Amt), 2 = Classic (PW / Sync), 3 = Modern (Warp / Fold)
 wt_osc_eval(ph, pos01, fxMode, fx1, fx2) {
-	p = fract(ph);
-	effP = p;
-	m = round(clip(fxMode, 0, 3));
-	if (m == 1) {
+	woP = fract(ph);
+	effP = woP;
+	woM = round(clip(fxMode, 0, 3));
+	if (woM == 1) {
 		modRatio = pow(2.0, clip(fx1, -1, 1) * 2.0);
-		effP = fract(p + clip(fx2, 0, 1) * 0.65 * sin(6.28318530718 * fract(p * modRatio)));
-	} else if (m == 2) {
+		effP = fract(woP + clip(fx2, 0, 1) * 0.65 * sin(6.28318530718 * fract(woP * modRatio)));
+	} else if (woM == 2) {
 		duty = clip(0.5 + 0.45 * clip(fx1, -1, 1), 0.05, 0.95);
-		pPw = (p < duty) ? (0.5 * p / duty) : (0.5 + 0.5 * (p - duty) / (1.0 - duty));
+		pPw = (woP < duty) ? (0.5 * woP / duty) : (0.5 + 0.5 * (woP - duty) / (1.0 - duty));
 		syncR = 1.0 + clip(fx2, 0, 1) * 7.0;
 		effP = fract(pPw * syncR);
-	} else if (m == 3) {
+	} else if (woM == 3) {
 		warpAmt = clip(fx1, -1, 1);
 		if (abs(warpAmt) > 0.0005) {
-			effP = pow(clip(p, 0.0, 1.0), pow(3.0, 0.0 - warpAmt));
+			effP = pow(clip(woP, 0.0, 1.0), pow(3.0, 0.0 - warpAmt));
 		}
 	}
-	val = wt_base(effP, pos01);
-	if (m == 3) {
+	woVal = wt_base(effP, pos01);
+	if (woM == 3) {
 		foldAmt = clip(fx2, 0, 1);
 		if (foldAmt > 0.0005) {
-			val = sin(1.57079632679 * val * (1.0 + foldAmt * 5.0));
+			woVal = sin(1.57079632679 * woVal * (1.0 + foldAmt * 5.0));
 		}
 	}
-	return val;
+	return woVal;
 }
 
 // Analyzed Root Key: the MIDI root at normalised sample position `pos`. With the curve on (dynOn 1: root_dyn on and
@@ -2237,7 +2237,30 @@ voice_proc(
 	lastSigL = sigL;
 	lastSigR = sigR;
 
+	// Cross-synthesis parameters (scaled by master Cross-Synth Depth prm 101 and gated by modulator oscillator enable)
+	xsDepth = clip(peek(prm, 101), 0, 1);
+	o1EnGate = (peek(prm, 84) > 0.5) ? 1.0 : 0.0;
+	o2EnGate = (peek(prm, 70) > 0.5) ? 1.0 : 0.0;
+	subEnGate = (peek(prm, 76) > 0.5) ? 1.0 : 0.0;
+	xsFm21 = clip(peek(prm, 86), -1, 1) * xsDepth * o2EnGate;
+	xsFm12 = clip(peek(prm, 87), -1, 1) * xsDepth * o1EnGate;
+	xsRm21 = clip(peek(prm, 88), -1, 1) * xsDepth * o2EnGate;
+	xsRm12 = clip(peek(prm, 89), -1, 1) * xsDepth * o1EnGate;
+	xsSync21 = clip(peek(prm, 92), 0, 1) * xsDepth * o2EnGate;
+	xsSync12 = clip(peek(prm, 93), 0, 1) * xsDepth * o1EnGate;
+	xsFold21 = clip(peek(prm, 94), -1, 1) * xsDepth * o2EnGate;
+	xsFold12 = clip(peek(prm, 95), -1, 1) * xsDepth * o1EnGate;
+	xsSubFm = clip(peek(prm, 96), -1, 1) * xsDepth * subEnGate;
+	xsSubRm = clip(peek(prm, 97), -1, 1) * xsDepth * subEnGate;
+	xsSubSync = clip(peek(prm, 99), 0, 1) * xsDepth * subEnGate;
+	xsSubFold = clip(peek(prm, 100), -1, 1) * xsDepth * subEnGate;
+	prevO2Mod = peek(vhist, stB + 56) * o2EnGate;
+	prevSubMod = peek(vhist, stB + 57) * subEnGate;
+	prevO2Wrap = peek(vhist, stB + 58) * o2EnGate;
+	prevSubWrap = peek(vhist, stB + 59) * subEnGate;
+
 	// Osc 1 Wavetable mode override (when osc1_type > 0.5) and Osc 1 enable (osc1_on)
+	o1Wrap = 0;
 	if (peek(prm, 80) > 0.5) {
 		wt1Pos = clip(playPosNorm + posMod, 0, 1);
 		wt1Fx = peek(prm, 67);
@@ -2247,16 +2270,41 @@ voice_proc(
 		if (needInit) {
 			wt1Phs = 0.0;
 		}
-		wt1Phs = fract(wt1Phs + clip(baseHz / max(srVal, 1), 0.00001, 0.48));
+		if ((xsSync21 > 0.001) && (prevO2Wrap > 0.5)) {
+			wt1Phs = wt1Phs * (1.0 - xsSync21);
+		}
+		if ((xsSubSync > 0.001) && (prevSubWrap > 0.5)) {
+			wt1Phs = wt1Phs * (1.0 - xsSubSync);
+		}
+		wt1Next = wt1Phs + clip(baseHz / max(srVal, 1), 0.00001, 0.48);
+		o1Wrap = (wt1Next >= 1.0) ? 1 : 0;
+		wt1Phs = fract(wt1Next);
 		poke(vhist, wt1Phs, stB + 55);
-		wt1Val = wt_osc_eval(wt1Phs, wt1Pos, wt1Fx, wt1A, wt1B) * 0.55 * sampG;
+		wt1EvalPhs = fract(wt1Phs + (prevO2Mod * xsFm21 + prevSubMod * xsSubFm) * 0.85 + 4.0);
+		wt1Val = wt_osc_eval(wt1EvalPhs, wt1Pos, wt1Fx, wt1A, wt1B) * 0.55 * sampG;
 		sigL = wt1Val;
 		sigR = wt1Val;
-	}
+		} else {
+			fm1TapL = 0;
+			fm1TapR = 0;
+			o1Wrap = ((lastSigL <= 0.0) && (sigL > 0.0)) ? 1 : 0;
+			if (abs(xsFm21) + abs(xsSubFm) > 0.001) {
+				// Audio-rate phase/delay FM modulation on sample playback (only when modulator signal is non-zero)
+				fm1Smp = clip((prevO2Mod * xsFm21 + prevSubMod * xsSubFm) * 28.0, -32.0, 32.0);
+				if (abs(fm1Smp) > 0.0001) {
+					fm1TapL, fm1TapR = peek_lr(sampBuf, clip(playheadNorm * numFrames + fm1Smp, startF, endF), max(numFrames - 1, 1));
+					fm1Mix = clip(abs(xsFm21) + abs(xsSubFm), 0, 1);
+					sigL = mix(sigL, fm1TapL * sampG, fm1Mix * 0.75);
+					sigR = mix(sigR, fm1TapR * sampG, fm1Mix * 0.75);
+				}
+			}
+		}
 	if (peek(prm, 84) < 0.5) {
 		sigL = 0;
 		sigR = 0;
+		o1Wrap = 0;
 	}
+	o1RawMono = 0.5 * (sigL + sigR);
 
 	// Sliced one-shots end: fade out once the playhead has reached the end (Fragments let their grains finish).
 	doneG = doneG + (((headDone > 0.5) ? 0.0 : 1.0) - doneG) * 0.01;
@@ -2279,7 +2327,12 @@ voice_proc(
 	// Additional Oscillator 2 (Sampler slot or Wavetable) + Sub Oscillator
 	osc2SigL = 0;
 	osc2SigR = 0;
+	o2RawL = 0;
+	o2RawR = 0;
+	o2Wrap = 0;
 	subSig = 0;
+	subRaw = 0;
+	subWrap = 0;
 	o2On = peek(prm, 70);
 	if (o2On > 0.5) {
 		o2Type = round(clip(peek(prm, 71), 0, 1));
@@ -2292,27 +2345,50 @@ voice_proc(
 		}
 		if (o2Type < 0.5) {
 			// Osc 2 Type 0: Sampler slot (varispeed playback from loaded sample with forward loop)
+			if ((xsSync12 > 0.001) && (o1Wrap > 0.5)) {
+				o2Phs = mix(o2Phs, o2Pos * numFrames, xsSync12);
+			}
 			o2Ratio = pow(2.0, clip(((isSlice ? rootMidi : curNote) - rootNow) + o2Semi, -48, 48) / 12.0) * srRat;
-			o2Phs = o2Phs + dirSign * o2Ratio;
+			o2Phs = o2Phs + dirSign * o2Ratio + o1RawMono * xsFm12 * 18.0;
 			if (effLoopMode > 0.5) {
 				if ((dirSign > 0.0) && (o2Phs >= effLEnd)) {
 					o2Phs = effLStart + wrap(o2Phs - effLEnd, 0, max(effLEnd - effLStart, 4));
+					o2Wrap = 1;
 				} else if ((dirSign < 0.0) && (o2Phs < effLStart)) {
 					o2Phs = effLStart + wrap(o2Phs - effLStart, 0, max(effLEnd - effLStart, 4));
+					o2Wrap = 1;
 				}
 			} else {
 				o2Phs = clip(o2Phs, startF, endF);
 			}
+			s2L = 0;
+			s2R = 0;
 			s2L, s2R = peek_lr(sampBuf, o2Phs, max(numFrames - 1, 1));
 			osc2SigL = s2L * o2Gain;
 			osc2SigR = s2R * o2Gain;
+			o2RawL = osc2SigL;
+			o2RawR = osc2SigR;
+			if (abs(osc2SigL) + abs(osc2SigR) < 0.00001) {
+				o2Wrap = 0;
+			}
 		} else {
 			// Osc 2 Type 1: Wavetable oscillator with Fm / Classic / Modern wave effects
+			if ((xsSync12 > 0.001) && (o1Wrap > 0.5)) {
+				o2Phs = o2Phs * (1.0 - xsSync12);
+			}
 			o2Hz = 440.0 * pow(2.0, ((isSlice ? rootMidi : curNote) - 69.0 + o2Semi) / 12.0);
-			o2Phs = fract(o2Phs + clip(o2Hz / max(srVal, 1), 0.00001, 0.48));
-			wtVal = wt_osc_eval(o2Phs, o2Pos, peek(prm, 81), peek(prm, 82), peek(prm, 83));
+			o2Next = o2Phs + clip(o2Hz / max(srVal, 1), 0.00001, 0.48);
+			o2Wrap = (o2Next >= 1.0) ? 1 : 0;
+			o2Phs = fract(o2Next);
+			o2EvalPhs = fract(o2Phs + o1RawMono * xsFm12 * 0.85 + 4.0);
+			wt2Fx = peek(prm, 81);
+			wt2A = peek(prm, 82);
+			wt2B = peek(prm, 83);
+			wtVal = wt_osc_eval(o2EvalPhs, o2Pos, wt2Fx, wt2A, wt2B);
 			osc2SigL = wtVal * 0.55 * o2Gain;
 			osc2SigR = osc2SigL;
+			o2RawL = osc2SigL;
+			o2RawR = osc2SigR;
 		}
 		poke(vhist, o2Phs, stB + 50);
 	}
@@ -2327,12 +2403,52 @@ voice_proc(
 		}
 		subDiv = (subOctVal < 0.5) ? 1.0 : ((subOctVal < 1.5) ? 0.5 : 0.25);
 		subHz = baseHz * subDiv;
-		subPhs = fract(subPhs + clip(subHz / max(srVal, 1), 0.00001, 0.48));
+		subNext = subPhs + clip(subHz / max(srVal, 1), 0.00001, 0.48);
+		subWrap = (subNext >= 1.0) ? 1 : 0;
+		subPhs = fract(subNext);
 		poke(vhist, subPhs, stB + 51);
 		subS = sin(6.28318530718 * subPhs);
 		subRich = tanh(subS * (1.0 + subToneVal * 4.5));
 		subSig = (subS + (subRich - subS) * subToneVal) * 0.55 * subGainVal;
+		subRaw = subSig;
 	}
+	// Apply per-voice RM/AM and Cross-Wavefold only when the modulator oscillator is enabled and producing audio
+	if ((abs(xsRm21) > 0.001) && (abs(o2RawL) + abs(o2RawR) > 0.00001)) {
+		rmModL = (xsRm21 > 0.0) ? (sigL * o2RawL * 1.6) : (sigL * clip(0.5 + 0.5 * o2RawL * 1.5, 0, 1.5));
+		rmModR = (xsRm21 > 0.0) ? (sigR * o2RawR * 1.6) : (sigR * clip(0.5 + 0.5 * o2RawR * 1.5, 0, 1.5));
+		sigL = mix(sigL, rmModL, abs(xsRm21));
+		sigR = mix(sigR, rmModR, abs(xsRm21));
+	}
+	if ((abs(xsSubRm) > 0.001) && (abs(subRaw) > 0.00001)) {
+		rmSubL = (xsSubRm > 0.0) ? (sigL * subRaw * 1.6) : (sigL * clip(0.5 + 0.5 * subRaw * 1.5, 0, 1.5));
+		rmSubR = (xsSubRm > 0.0) ? (sigR * subRaw * 1.6) : (sigR * clip(0.5 + 0.5 * subRaw * 1.5, 0, 1.5));
+		sigL = mix(sigL, rmSubL, abs(xsSubRm));
+		sigR = mix(sigR, rmSubR, abs(xsSubRm));
+	}
+	if ((abs(xsRm12) > 0.001) && (abs(o1RawMono) > 0.00001)) {
+		rm12L = (xsRm12 > 0.0) ? (osc2SigL * o1RawMono * 1.6) : (osc2SigL * clip(0.5 + 0.5 * o1RawMono * 1.5, 0, 1.5));
+		rm12R = (xsRm12 > 0.0) ? (osc2SigR * o1RawMono * 1.6) : (osc2SigR * clip(0.5 + 0.5 * o1RawMono * 1.5, 0, 1.5));
+		osc2SigL = mix(osc2SigL, rm12L, abs(xsRm12));
+		osc2SigR = mix(osc2SigR, rm12R, abs(xsRm12));
+	}
+	if (abs(xsFold21) + abs(xsSubFold) > 0.001) {
+		fdModL = o2RawL * xsFold21 + subRaw * xsSubFold;
+		fdModR = o2RawR * xsFold21 + subRaw * xsSubFold;
+		fdMixL = clip(abs(fdModL) * 2.5, 0, 1);
+		fdMixR = clip(abs(fdModR) * 2.5, 0, 1);
+		sigL = mix(sigL, sin(clip(sigL * (1.0 + abs(fdModL) * 2.5) + fdModL * 2.0, -3.14159, 3.14159) * 1.5707963), fdMixL);
+		sigR = mix(sigR, sin(clip(sigR * (1.0 + abs(fdModR) * 2.5) + fdModR * 2.0, -3.14159, 3.14159) * 1.5707963), fdMixR);
+	}
+	if (abs(xsFold12) > 0.001) {
+		fd12Mod = o1RawMono * xsFold12;
+		fd12Mix = clip(abs(fd12Mod) * 2.5, 0, 1);
+		osc2SigL = mix(osc2SigL, sin(clip(osc2SigL * (1.0 + abs(fd12Mod) * 2.5) + fd12Mod * 2.0, -3.14159, 3.14159) * 1.5707963), fd12Mix);
+		osc2SigR = mix(osc2SigR, sin(clip(osc2SigR * (1.0 + abs(fd12Mod) * 2.5) + fd12Mod * 2.0, -3.14159, 3.14159) * 1.5707963), fd12Mix);
+	}
+	poke(vhist, fixnan(0.5 * (o2RawL + o2RawR)), stB + 56);
+	poke(vhist, fixnan(subRaw), stB + 57);
+	poke(vhist, o2Wrap, stB + 58);
+	poke(vhist, subWrap, stB + 59);
 	poke(vhist, fixnan(osc2SigL * finalGain), stB + 52);
 	poke(vhist, fixnan(osc2SigR * finalGain), stB + 53);
 	poke(vhist, fixnan(subSig * finalGain), stB + 54);
@@ -2399,7 +2515,7 @@ Buffer pitch("bspitch");
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
-Data prm(88);
+Data prm(112);
 Data vst(6400);
 Data gtel(1024);
 Data gtout(72);
@@ -2410,7 +2526,7 @@ Data tbuf(131072);
 Data sdat(237960);
 Data senv(16448);
 Data tvrel(32);
-Data fstate(16);
+Data fstate(64);
 
 // Parameters
 Param mode(0, min=0, max=4);
@@ -2491,16 +2607,16 @@ Param glide_ms(0, min=0, max=1000);
 Param vel_sens(0.7, min=0, max=1);
 
 // Amp ADSR (ms & 0..1)
-Param atk_ms(2.5, min=0.2, max=5000);
-Param dec_ms(250, min=1, max=10000);
+Param atk_ms(2.5, min=0, max=60000);
+Param dec_ms(250, min=1, max=60000);
 Param sus_lvl(0.85, min=0, max=1);
-Param rel_ms(140, min=1, max=10000);
+Param rel_ms(140, min=1, max=60000);
 
 // Mod / Filter ADSR (ms & 0..1)
-Param matk_ms(5.0, min=0.2, max=5000);
-Param mdec_ms(320, min=1, max=10000);
+Param matk_ms(5.0, min=0, max=60000);
+Param mdec_ms(320, min=1, max=60000);
 Param msus_lvl(0.25, min=0, max=1);
-Param mrel_ms(220, min=1, max=10000);
+Param mrel_ms(220, min=1, max=60000);
 
 // Multimode SVF Filter + Drive
 Param filt_on(1, min=0, max=1);
@@ -2540,6 +2656,26 @@ Param sub_on(0, min=0, max=1);
 Param sub_oct(0, min=0, max=2);
 Param sub_tone(0, min=0, max=1);
 Param sub_gain(-6, min=-48, max=24);
+
+// Oscillator Cross-Synthesis Matrix parameters
+Param xs_fm_21(0, min=-1, max=1);
+Param xs_fm_12(0, min=-1, max=1);
+Param xs_rm_21(0, min=-1, max=1);
+Param xs_rm_12(0, min=-1, max=1);
+Param xs_cep_21(0, min=-1, max=1);
+Param xs_cep_12(0, min=-1, max=1);
+Param xs_sync_21(0, min=0, max=1);
+Param xs_sync_12(0, min=0, max=1);
+Param xs_fold_21(0, min=-1, max=1);
+Param xs_fold_12(0, min=-1, max=1);
+Param xs_sub_fm(0, min=-1, max=1);
+Param xs_sub_rm(0, min=-1, max=1);
+Param xs_sub_cep(0, min=-1, max=1);
+Param xs_sub_sync(0, min=0, max=1);
+Param xs_sub_fold(0, min=-1, max=1);
+Param xs_quef(0.5, min=0, max=1);
+Param xs_tilt(0, min=-1, max=1);
+Param xs_depth(1.0, min=0, max=1);
 
 // Internal LFO & Mod Matrix
 Param lfo_rate(2.0, min=0.05, max=30);
@@ -2763,6 +2899,24 @@ poke(prm, clip(wt2_fx1, -1, 1), 82);
 poke(prm, clip(wt2_fx2, 0, 1), 83);
 poke(prm, osc1_on, 84);
 poke(prm, osc2_mode, 85);
+poke(prm, clip(xs_fm_21, -1, 1), 86);
+poke(prm, clip(xs_fm_12, -1, 1), 87);
+poke(prm, clip(xs_rm_21, -1, 1), 88);
+poke(prm, clip(xs_rm_12, -1, 1), 89);
+poke(prm, clip(xs_cep_21, -1, 1), 90);
+poke(prm, clip(xs_cep_12, -1, 1), 91);
+poke(prm, clip(xs_sync_21, 0, 1), 92);
+poke(prm, clip(xs_sync_12, 0, 1), 93);
+poke(prm, clip(xs_fold_21, -1, 1), 94);
+poke(prm, clip(xs_fold_12, -1, 1), 95);
+poke(prm, clip(xs_sub_fm, -1, 1), 96);
+poke(prm, clip(xs_sub_rm, -1, 1), 97);
+poke(prm, clip(xs_sub_cep, -1, 1), 98);
+poke(prm, clip(xs_sub_sync, 0, 1), 99);
+poke(prm, clip(xs_sub_fold, -1, 1), 100);
+poke(prm, clip(xs_depth, 0, 1), 101);
+poke(prm, clip(xs_quef, 0, 1), 102);
+poke(prm, clip(xs_tilt, -1, 1), 103);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H (or 3=Sq, 4=S&H when 5-shape enum is used)
 prevLfoPhs = lfoPhs;
@@ -2778,11 +2932,11 @@ lfoSq = (lfoPhs < 0.5) ? 1.0 : -1.0;
 shIdx = round(clip(lfo_shape, 0, 4));
 lfoSig = (shIdx == 0) ? lfoSin : ((shIdx == 1) ? lfoTri : ((shIdx == 2) ? lfoSaw : ((shIdx == 4) ? lfoSq : lfoSH)));
 
-// Envelope & Glide coefficients
-atkCoef = exp(-1000.0 / (max(atk_ms, 0.2) * srVal));
+// Envelope & Glide coefficients (when attack is 0 ms, coefficient is 0 so envelope reaches peak on the first sample)
+atkCoef = (atk_ms <= 0.05) ? 0.0 : exp(-1000.0 / (atk_ms * srVal));
 decCoef = exp(-1000.0 / (max(dec_ms, 1.0) * srVal));
 relCoef = exp(-1000.0 / (max(rel_ms, 1.0) * srVal));
-matkCoef = exp(-1000.0 / (max(matk_ms, 0.2) * srVal));
+matkCoef = (matk_ms <= 0.05) ? 0.0 : exp(-1000.0 / (matk_ms * srVal));
 mdecCoef = exp(-1000.0 / (max(mdec_ms, 1.0) * srVal));
 mrelCoef = exp(-1000.0 / (max(mrel_ms, 1.0) * srVal));
 glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (glide_ms * srVal));
@@ -2804,6 +2958,8 @@ sumR = 0;
 osc2SumL = 0;
 osc2SumR = 0;
 subSum = 0;
+modO2Sum = 0;
+modSubSum = 0;
 spawnSum = 0;
 maxModEnv = 0;
 telTick = (scopeCount >= 63) ? 1 : 0;
@@ -2838,6 +2994,8 @@ for (vox = 0; vox < 16; vox += 1) {
 		osc2SumL = osc2SumL + peek(vhist, vhOff + 52);
 		osc2SumR = osc2SumR + peek(vhist, vhOff + 53);
 		subSum = subSum + peek(vhist, vhOff + 54);
+		modO2Sum = modO2Sum + peek(vhist, vhOff + 56) * voA;
+		modSubSum = modSubSum + peek(vhist, vhOff + 57) * voA;
 	}
 	sumL = sumL + voL;
 	sumR = sumR + voR;
@@ -2846,6 +3004,97 @@ for (vox = 0; vox < 16; vox += 1) {
 	poke(vres, voP, vox * 3);
 	poke(vres, voA, vox * 3 + 1);
 	poke(vres, voM, vox * 3 + 2);
+}
+
+// 4-Band Log-Cepstral Spectral Envelope Cross-Synthesis (2->1, 1->2, Sub->1) with Quefrency Liftering & Spectral Tilt
+cepD = clip(xs_depth, 0, 1);
+cep21 = ((osc2_on > 0.5) ? clip(xs_cep_21, -1, 1) : 0.0) * cepD;
+cep12 = ((osc1_on > 0.5) ? clip(xs_cep_12, -1, 1) : 0.0) * cepD;
+cepS1 = ((sub_on > 0.5) ? clip(xs_sub_cep, -1, 1) : 0.0) * cepD;
+if (abs(cep21) + abs(cep12) + abs(cepS1) > 0.001) {
+	// 3-split crossover frequencies (~250 Hz, ~900 Hz, ~3200 Hz)
+	ca0 = clip(1570.0 / srVal, 0.01, 0.45);
+	ca1 = clip(5650.0 / srVal, 0.02, 0.65);
+	ca2 = clip(20100.0 / srVal, 0.05, 0.85);
+	cEnvA = clip(400.0 / srVal, 0.002, 0.15);
+
+	// Carrier 1 (Osc 1) 4-band split (L & R)
+	lp10L = peek(fstate, 16) + ca0 * (sumL - peek(fstate, 16)); poke(fstate, fixnan(lp10L), 16);
+	lp11L = peek(fstate, 17) + ca1 * (sumL - peek(fstate, 17)); poke(fstate, fixnan(lp11L), 17);
+	lp12L = peek(fstate, 18) + ca2 * (sumL - peek(fstate, 18)); poke(fstate, fixnan(lp12L), 18);
+	lp10R = peek(fstate, 19) + ca0 * (sumR - peek(fstate, 19)); poke(fstate, fixnan(lp10R), 19);
+	lp11R = peek(fstate, 20) + ca1 * (sumR - peek(fstate, 20)); poke(fstate, fixnan(lp11R), 20);
+	lp12R = peek(fstate, 21) + ca2 * (sumR - peek(fstate, 21)); poke(fstate, fixnan(lp12R), 21);
+	b10L = lp10L; b11L = lp11L - lp10L; b12L = lp12L - lp11L; b13L = sumL - lp12L;
+	b10R = lp10R; b11R = lp11R - lp10R; b12R = lp12R - lp11R; b13R = sumR - lp12R;
+
+	// Osc 2 / Sub modulator 4-band split
+	o2ModIn = 0.5 * (osc2SumL + osc2SumR);
+	subModIn = subSum;
+	lp20 = peek(fstate, 22) + ca0 * (o2ModIn - peek(fstate, 22)); poke(fstate, fixnan(lp20), 22);
+	lp21 = peek(fstate, 23) + ca1 * (o2ModIn - peek(fstate, 23)); poke(fstate, fixnan(lp21), 23);
+	lp22 = peek(fstate, 24) + ca2 * (o2ModIn - peek(fstate, 24)); poke(fstate, fixnan(lp22), 24);
+	b20 = lp20; b21 = lp21 - lp20; b22 = lp22 - lp21; b23 = o2ModIn - lp22;
+
+	lps0 = peek(fstate, 25) + ca0 * (subModIn - peek(fstate, 25)); poke(fstate, fixnan(lps0), 25);
+	lps1 = peek(fstate, 26) + ca1 * (subModIn - peek(fstate, 26)); poke(fstate, fixnan(lps1), 26);
+	lps2 = peek(fstate, 27) + ca2 * (subModIn - peek(fstate, 27)); poke(fstate, fixnan(lps2), 27);
+	bs0 = lps0; bs1 = lps1 - lps0; bs2 = lps2 - lps1; bs3 = subModIn - lps2;
+
+	// Band envelope followers (slots 28..39)
+	ev10 = peek(fstate, 28) + cEnvA * (0.5 * (abs(b10L) + abs(b10R)) - peek(fstate, 28)); poke(fstate, fixnan(ev10), 28);
+	ev11 = peek(fstate, 29) + cEnvA * (0.5 * (abs(b11L) + abs(b11R)) - peek(fstate, 29)); poke(fstate, fixnan(ev11), 29);
+	ev12 = peek(fstate, 30) + cEnvA * (0.5 * (abs(b12L) + abs(b12R)) - peek(fstate, 30)); poke(fstate, fixnan(ev12), 30);
+	ev13 = peek(fstate, 31) + cEnvA * (0.5 * (abs(b13L) + abs(b13R)) - peek(fstate, 31)); poke(fstate, fixnan(ev13), 31);
+
+	ev20 = peek(fstate, 32) + cEnvA * (abs(b20) - peek(fstate, 32)); poke(fstate, fixnan(ev20), 32);
+	ev21 = peek(fstate, 33) + cEnvA * (abs(b21) - peek(fstate, 33)); poke(fstate, fixnan(ev21), 33);
+	ev22 = peek(fstate, 34) + cEnvA * (abs(b22) - peek(fstate, 34)); poke(fstate, fixnan(ev22), 34);
+	ev23 = peek(fstate, 35) + cEnvA * (abs(b23) - peek(fstate, 35)); poke(fstate, fixnan(ev23), 35);
+
+	evs0 = peek(fstate, 36) + cEnvA * (abs(bs0) - peek(fstate, 36)); poke(fstate, fixnan(evs0), 36);
+	evs1 = peek(fstate, 37) + cEnvA * (abs(bs1) - peek(fstate, 37)); poke(fstate, fixnan(evs1), 37);
+	evs2 = peek(fstate, 38) + cEnvA * (abs(bs2) - peek(fstate, 38)); poke(fstate, fixnan(evs2), 38);
+	evs3 = peek(fstate, 39) + cEnvA * (abs(bs3) - peek(fstate, 39)); poke(fstate, fixnan(evs3), 39);
+
+	// Gate Cepstral transfer by whether the modulator actually has signal energy
+	cAct2 = clip((ev20 + ev21 + ev22 + ev23) * 25.0, 0, 1);
+	cActS = clip((evs0 + evs1 + evs2 + evs3) * 25.0, 0, 1);
+	cAct1 = clip((ev10 + ev11 + ev12 + ev13) * 25.0, 0, 1);
+	effCep21 = cep21 * cAct2;
+	effCepS1 = cepS1 * cActS;
+	effCep12 = cep12 * cAct1;
+
+	// Log-magnitude cepstral liftering: xs_quef blends from broad hull (0) to sharp formant peaks (1)
+	qf = clip(xs_quef, 0, 1);
+	tl = clip(xs_tilt, -1, 1) * 0.85;
+	lg10 = log(max(ev10, 0.002)); lg11 = log(max(ev11, 0.002)); lg12 = log(max(ev12, 0.002)); lg13 = log(max(ev13, 0.002));
+	lg20 = log(max(ev20, 0.002)); lg21 = log(max(ev21, 0.002)); lg22 = log(max(ev22, 0.002)); lg23 = log(max(ev23, 0.002));
+	lgs0 = log(max(evs0, 0.002)); lgs1 = log(max(evs1, 0.002)); lgs2 = log(max(evs2, 0.002)); lgs3 = log(max(evs3, 0.002));
+	lg1Avg = 0.25 * (lg10 + lg11 + lg12 + lg13);
+	lg2Avg = 0.25 * (lg20 + lg21 + lg22 + lg23);
+	lgsAvg = 0.25 * (lgs0 + lgs1 + lgs2 + lgs3);
+
+	if (abs(effCep21) + abs(effCepS1) > 0.001) {
+		cd0 = mix(lg2Avg - lg1Avg, lg20 - lg10, qf) * effCep21 + mix(lgsAvg - lg1Avg, lgs0 - lg10, qf) * effCepS1 - tl * 1.5;
+		cd1 = mix(lg2Avg - lg1Avg, lg21 - lg11, qf) * effCep21 + mix(lgsAvg - lg1Avg, lgs1 - lg11, qf) * effCepS1 - tl * 0.5;
+		cd2 = mix(lg2Avg - lg1Avg, lg22 - lg12, qf) * effCep21 + mix(lgsAvg - lg1Avg, lgs2 - lg12, qf) * effCepS1 + tl * 0.5;
+		cd3 = mix(lg2Avg - lg1Avg, lg23 - lg13, qf) * effCep21 + mix(lgsAvg - lg1Avg, lgs3 - lg13, qf) * effCepS1 + tl * 1.5;
+		cg0 = exp(clip(cd0, -2.5, 2.5)); cg1 = exp(clip(cd1, -2.5, 2.5)); cg2 = exp(clip(cd2, -2.5, 2.5)); cg3 = exp(clip(cd3, -2.5, 2.5));
+		w1Mix = clip(abs(effCep21) + abs(effCepS1), 0, 1);
+		sumL = mix(sumL, b10L * cg0 + b11L * cg1 + b12L * cg2 + b13L * cg3, w1Mix);
+		sumR = mix(sumR, b10R * cg0 + b11R * cg1 + b12R * cg2 + b13R * cg3, w1Mix);
+	}
+	if (abs(effCep12) > 0.001) {
+		cd20 = mix(lg1Avg - lg2Avg, lg10 - lg20, qf) * effCep12 - tl * 1.5;
+		cd21 = mix(lg1Avg - lg2Avg, lg11 - lg21, qf) * effCep12 - tl * 0.5;
+		cd22 = mix(lg1Avg - lg2Avg, lg12 - lg22, qf) * effCep12 + tl * 0.5;
+		cd23 = mix(lg1Avg - lg2Avg, lg13 - lg23, qf) * effCep12 + tl * 1.5;
+		ch0 = exp(clip(cd20, -2.5, 2.5)); ch1 = exp(clip(cd21, -2.5, 2.5)); ch2 = exp(clip(cd22, -2.5, 2.5)); ch3 = exp(clip(cd23, -2.5, 2.5));
+		cep2Out = b20 * ch0 + b21 * ch1 + b22 * ch2 + b23 * ch3;
+		osc2SumL = mix(osc2SumL, cep2Out, abs(effCep12));
+		osc2SumR = mix(osc2SumR, cep2Out, abs(effCep12));
+	}
 }
 
 // Wavetable Filter Routing:

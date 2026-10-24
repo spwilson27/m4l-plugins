@@ -31,16 +31,57 @@ var STRIP = { x: 26, y: 108, w: 466, h: 61 };
 var SEC_X0 = 493, SEC_GAP = 1, WIN_PAD = 1, SEC_Y = 0, SEC_H = 169;
 var DEFAULT_FOLD = 2;                       // Mod Sources open
 var foldMask = DEFAULT_FOLD;
+var sectionOrder = [0, 1, 2, 3, 4];         // Sidebar top-to-bottom & panel left-to-right order of SECTIONS[0..4]
+var sbDrag = null;                          // Active drag-to-reorder state on the sidebar buttons
 var hoverHdl = "";
 var hoverTip = null;
 var RC = null;
 var envX = SEC_X0, filtX = SEC_X0, matX = SEC_X0; // x of the Mod Sources / Filter / Matrix section in the current layout
 
+function isDefaultSectionOrder() {
+    for (var i = 0; i < SECTIONS.length; i++) if (sectionOrder[i] !== i) return false;
+    return true;
+}
+function encodeSectionOrder() {
+    var code = 0;
+    for (var i = 0; i < SECTIONS.length; i++) code = code * 10 + (sectionOrder[i] | 0);
+    return code;
+}
+function decodeSectionOrder(code) {
+    var s = String(Math.max(0, Math.round(Number(code) || 0)));
+    while (s.length < SECTIONS.length) s = "0" + s;
+    if (s.length !== SECTIONS.length) return false;
+    var seen = {}, next = [];
+    for (var i = 0; i < SECTIONS.length; i++) {
+        var d = s.charCodeAt(i) - 48;
+        if (d < 0 || d >= SECTIONS.length || seen[d]) return false;
+        seen[d] = true;
+        next.push(d);
+    }
+    sectionOrder = next;
+    return true;
+}
+function setSectionOrder(arr) {
+    if (!arr || arr.length !== SECTIONS.length) return false;
+    var seen = {}, next = [];
+    for (var i = 0; i < SECTIONS.length; i++) {
+        var d = Math.round(Number(arr[i]));
+        if (d < 0 || d >= SECTIONS.length || seen[d]) return false;
+        seen[d] = true;
+        next.push(d);
+    }
+    sectionOrder = next;
+    notifyclients();
+    mgraphics.redraw();
+    return true;
+}
+
 function sectionRects(mask) {
     var out = [], x = SEC_X0;
-    for (var i = 0; i < SECTIONS.length; i++) {
+    for (var pos = 0; pos < sectionOrder.length; pos++) {
+        var i = sectionOrder[pos];
         if (!((mask >> i) & 1)) continue;
-        out.push({ id: SECTIONS[i].id, index: i, x: x, w: SECTIONS[i].w });
+        out.push({ id: SECTIONS[i].id, index: i, slot: pos, x: x, w: SECTIONS[i].w });
         x += SECTIONS[i].w + SEC_GAP;
     }
     return out;
@@ -386,25 +427,52 @@ function sbGlyph(i, cx, cy, c, a) {
     }
 }
 
+function strokeRR(x, y, w, h, r, c, a, lw) {
+    setc(c, a);
+    mgraphics.set_line_width(lw || 1.0);
+    mgraphics.rectangle_rounded(x, y, w, h, r, r);
+    mgraphics.stroke();
+}
+
 function paintSidebar() {
     panelBox(SB_X, SEC_Y, SB_W, SEC_H);
-    for (var i = 0; i < SECTIONS.length; i++) {
-        var y = SB_BTN.y0 + i * SB_BTN.pitch;
-        var on = ((foldMask >> i) & 1) === 1;
-        var acc = RC[SECTIONS[i].acc];
-        var hot = hoverTip && hoverTip.index === i;
-        fillRR(SB_X + 2, y, SB_W - 4, SB_BTN.h, 4, on ? RC.sel : (hot ? mixc(RC.raised, RC.cyan, 0.25) : RC.raised), on ? 0.95 : 1);
-        sbGlyph(i, SB_X + SB_W * 0.5, y + SB_BTN.h * 0.5, on ? RC.dark : (hot ? RC.cyan : RC.sub), 1.0);
-        (function (idx) {
-            actZone(SB_X + 1, y - 1, SB_W - 2, SB_BTN.h + 2, function () { toggleSection(idx); }, { tip: SECTIONS[idx].name, index: idx });
-        })(i);
+    var draggingSec = (sbDrag && sbDrag.moved) ? sbDrag.secIdx : -1;
+    for (var slot = 0; slot < SECTIONS.length; slot++) {
+        var secIdx = sectionOrder[slot];
+        var y = SB_BTN.y0 + slot * SB_BTN.pitch;
+        var on = ((foldMask >> secIdx) & 1) === 1;
+        var hot = hoverTip && hoverTip.index === secIdx;
+        if (secIdx === draggingSec) {
+            // Draw insertion slot placeholder where the dragged button will land
+            fillRR(SB_X + 2, y, SB_W - 4, SB_BTN.h, 4, RC.wave, 0.75);
+            strokeRR(SB_X + 2.5, y + 0.5, SB_W - 5, SB_BTN.h - 1, 3.5, RC.sel, 0.85, 1.1);
+        } else {
+            fillRR(SB_X + 2, y, SB_W - 4, SB_BTN.h, 4, on ? RC.sel : (hot ? mixc(RC.raised, RC.cyan, 0.25) : RC.raised), on ? 0.95 : 1);
+            sbGlyph(secIdx, SB_X + SB_W * 0.5, y + SB_BTN.h * 0.5, on ? RC.dark : (hot ? RC.cyan : RC.sub), 1.0);
+        }
+        (function (sIdx, slotIdx) {
+            actZone(SB_X + 1, y - 1, SB_W - 2, SB_BTN.h + 2, function () { toggleSection(sIdx); }, {
+                tip: SECTIONS[sIdx].name,
+                index: sIdx,
+                slot: slotIdx,
+                secIdx: sIdx
+            });
+        })(secIdx, slot);
+    }
+    if (draggingSec >= 0) {
+        var fy = Math.max(2, Math.min(SEC_H - SB_BTN.h - 2, sbDrag.curY - SB_BTN.h * 0.5));
+        var dOn = ((foldMask >> draggingSec) & 1) === 1;
+        fillRR(SB_X + 1.5, fy, SB_W - 3, SB_BTN.h, 4, dOn ? RC.sel : mixc(RC.raised, RC.sel, 0.28), 0.98);
+        strokeRR(SB_X + 1.5, fy, SB_W - 3, SB_BTN.h, 4, dOn ? RC.dark : RC.sel, 0.95, 1.2);
+        sbGlyph(draggingSec, SB_X + SB_W * 0.5, fy + SB_BTN.h * 0.5, dOn ? RC.dark : RC.text, 1.0);
     }
 }
 
 function paintTip() {
-    if (!hoverTip) return;
+    if (!hoverTip || (sbDrag && sbDrag.moved)) return;
     var w = textW(hoverTip.tip, 8.0) + 14;
-    var y = SB_BTN.y0 + hoverTip.index * SB_BTN.pitch + 3;
+    var slotIdx = hoverTip.slot !== undefined ? hoverTip.slot : hoverTip.index;
+    var y = SB_BTN.y0 + slotIdx * SB_BTN.pitch + 3;
     var x = SB_X + SB_W + 3;
     fillRR(x, y, w, 16, 4, RC.dark, 0.96);
     text(hoverTip.tip, x + 7, y + 11.5, 8.0, RC.text, false, 0);
@@ -1097,18 +1165,24 @@ function bendW(p, s) {
 
 function envGeom() {
     var k = envKeys(), sk = envSlopeKeys(), vk = envValKeys();
-    var gx = envX + 18.5, gw = ENV_W - 44, gy = 38.5, gb = 109.5;
-    var hold = Math.round(gw * 0.42);
+    var gx = envX + 18.5, gw = ENV_W - 35.0, gy = 38.5, gb = 109.5;
+    var hold = Math.round(gw * 0.36);
     var segMax = (gw - hold) / 3;
-    var sm = segMax - ENV_MIN_SEG;               // every segment is at least ENV_MIN_SEG wide, so its slope diamond stays visible
+    var smA = segMax;                            // Attack starts at 0 px (on the left wall gx when A = 0 ms) up to segMax
+    var sm = segMax - ENV_MIN_SEG;               // Decay and Release stay at least ENV_MIN_SEG wide
     var an = toNorm(k[0], paramValue(k[0])), dn = toNorm(k[1], paramValue(k[1])), rn = toNorm(k[3], paramValue(k[3]));
     var sus = clamp01(paramValue(k[2]) * 0.01);
     var initL = vk[0] ? clamp01(paramValue(vk[0]) * 0.01) : 0.0;
     var peakL = vk[1] ? clamp01(paramValue(vk[1]) * 0.01) : 1.0;
     var finalL = vk[3] ? clamp01(paramValue(vk[3]) * 0.01) : 0.0;
-    var xA = gx + ENV_MIN_SEG + an * sm, xD = xA + ENV_MIN_SEG + dn * sm, xS = xD + hold, xR = xS + ENV_MIN_SEG + rn * sm;
+    var xA = gx + an * smA;
+    var xD = xA + ENV_MIN_SEG + dn * sm;
+    var xRSpan = ENV_MIN_SEG + rn * sm;
+    // Sustain hold stretches from xD so that at maximum Release (rn = 1), xR lands on the right wall (gx + gw)
+    var xS = Math.max(xD + hold, gx + gw - segMax);
+    var xR = Math.min(gx + gw, xS + xRSpan);
     var spanY = gb - gy;
-    return { keys: k, slopeKeys: sk, valKeys: vk, gx: gx, gw: gw, gy: gy, gb: gb, hold: hold, segMax: segMax, minSeg: ENV_MIN_SEG, sm: sm,
+    return { keys: k, slopeKeys: sk, valKeys: vk, gx: gx, gw: gw, gy: gy, gb: gb, hold: hold, segMax: segMax, minSeg: ENV_MIN_SEG, sm: sm, smA: smA,
         xA: xA, xD: xD, xS: xS, xR: xR,
         y0: gb - initL * spanY, yPeak: gb - peakL * spanY, ys: gb - sus * spanY, yFinal: gb - finalL * spanY,
         initL: initL, peakL: peakL, sus: sus, finalL: finalL, an: an, dn: dn, rn: rn,
@@ -1192,13 +1266,16 @@ function hollowSquare(x, y, r, c, w) {
     mgraphics.stroke();
 }
 
-// Wavetable value formatting: Amp S in dB (or % for Env 2/3), times as ms / s, slopes as %,Initial/Peak/Final as %
+// Wavetable value formatting: Amp S in dB (or % for Env 2/3), times as ms / s, slopes as %, Initial/Peak/Final as %
 function fmtEnvVal(key, v) {
     if (key === "sus_lvl" && envTab === 0 && envPage === 0) return v <= 0.05 ? "-inf dB" : (20 * Math.log(v / 100) / Math.LN10).toFixed(1) + " dB";
     if (key === "sus_lvl" || key === "msus_lvl" || key === "env3_sus_lvl") return Math.round(v) + " %";
     if (/init$|peak$|final$/.test(key)) return (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + " %";
     if (/slope$/.test(key)) return (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + " %";
-    return fmtTime(v);
+    if (v >= 10000) return (v / 1000).toFixed(1) + " s";
+    if (v >= 1000) return (v / 1000).toFixed(2) + " s";
+    if (v >= 100) return Math.round(v) + " ms";
+    return v.toFixed(2) + " ms";
 }
 
 // Shape LFO waveform (-1..+1) with shaping (-1..+1) and phase offset
@@ -1473,12 +1550,150 @@ function paintLfoSubPage(sx, bx, by, bw, bh) {
     }
 }
 
+var XS_MATRIX_KEYS = [
+    ["xs_fm_21",   "xs_fm_12",   "xs_sub_fm",   null],
+    ["xs_rm_21",   "xs_rm_12",   "xs_sub_rm",   null],
+    ["xs_cep_21",  "xs_cep_12",  "xs_sub_cep",  null],
+    ["xs_sync_21", "xs_sync_12", "xs_sub_sync", null],
+    ["xs_fold_21", "xs_fold_12", "xs_sub_fold", null]
+];
+
+function activeVoiceLevel() {
+    var maxA = 0;
+    for (var v = 0; v < 16; v++) if (voiceAmpLvl[v] > maxA) maxA = voiceAmpLvl[v];
+    return clamp01(maxA);
+}
+
+function paintCrossSynthTable(sx, bx, by, bw, bh) {
+    var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
+    var cellBg = mixc(RC.wave, RC.line, 0.62);
+    var activeBg = [0.05, 0.08, 0.09];
+    var ty = by + 17;
+
+    text("Mode", bx + 6, ty + 13.0, 9.0, RC.sub, false, 0);
+
+    var vLvl = activeVoiceLevel();
+    var colPairs = [["2", "1"], ["1", "2"], ["Sub", "1"], ["Sub", "2"]];
+    var colCols = [cy1, orange, cy1, orange];
+    var nCols = 4;
+    var gx0 = bx + 65, gxEnd = bx + bw - 6;
+    var cw = (gxEnd - gx0) / nCols;
+    for (var c = 0; c < nCols; c++) {
+        var cx = gx0 + c * cw;
+        var midX = cx + cw * 0.5 + (c >= 2 ? 4.0 : 0.0);
+        text(colPairs[c][0], midX - 5.5, ty + 13.0, 8.8, colCols[c], false, 2);
+        // Clean vector right-arrow between Modulator and Carrier
+        line(midX - 3.5, ty + 9.8, midX + 3.0, ty + 9.8, colCols[c], 0.9, 1.1);
+        polygon([[midX + 1.2, ty + 7.6], [midX + 4.2, ty + 9.8], [midX + 1.2, ty + 12.0]], colCols[c], 0.9);
+        text(colPairs[c][1], midX + 6.0, ty + 13.0, 8.8, colCols[c], false, 0);
+        // Header underline: dim track + live indicator when a voice is actively sounding
+        line(cx + 0.5, ty + 16.0, cx + cw - 0.5, ty + 16.0, colCols[c], 0.35, 1.2);
+        if (vLvl > 0.005) {
+            var uw = Math.max(1.5, vLvl * (cw - 1.0));
+            line(cx + 0.5, ty + 16.0, cx + 0.5 + uw, ty + 16.0, colCols[c], 1.0, 1.4);
+        }
+    }
+
+    var xsRowNames = ["FM", "RM / AM", "Cepstral", "Hard Sync", "Wavefold"];
+    var xsScale = paramValue("xs_depth") * 0.01;
+    for (var r = 0; r < 5; r++) {
+        var ry = ty + 18.0 + r * 18.2, rh = 16.8, lblW = 59.0;
+        var rowSigned = 0;
+        for (var cc = 0; cc < nCols; cc++) {
+            var pk = XS_MATRIX_KEYS[r][cc];
+            var cid0 = "xs:" + r + ":" + cc;
+            var cv = pk ? paramValue(pk) : (wtModCells[cid0] !== undefined ? wtModCells[cid0] : 0);
+            rowSigned += (cv * 0.01) * xsScale;
+        }
+        // Matrix values never change the label's background fill (X-Synth modes have no separate base knob, so base = 0)
+        fillRect(bx + 5, ry, lblW, rh, [0.07, 0.09, 0.11], 1.0);
+        // Horizontal bar under the mode name: only shows actively applied cross-synthesis when a voice is playing (vLvl > 0)
+        var liveRowMod = rowSigned * vLvl;
+        if (Math.abs(liveRowMod) > 0.005) {
+            var midX0 = (r === 3) ? (bx + 5) : (bx + 5 + lblW * 0.5);
+            var endX0 = (r === 3) ? (bx + 5 + clamp01(liveRowMod) * lblW) : (bx + 5 + clamp01(0.5 + liveRowMod * 0.48) * lblW);
+            var bxS = Math.min(midX0, endX0);
+            var bwS = Math.max(2.0, Math.abs(endX0 - midX0));
+            fillRect(bxS, ry + rh - 2.2, bwS, 1.8, [0.62, 0.66, 0.72], 0.95);
+        }
+        text(xsRowNames[r], bx + 8, ry + 11.6, 8.8, RC.sub, false, 0);
+
+        for (var col = 0; col < nCols; col++) {
+            var clx = gx0 + col * cw + 0.5, clw = cw - 1.0;
+            var pKey = XS_MATRIX_KEYS[r][col];
+            var cellId = "xs:" + r + ":" + col;
+            var val = pKey ? paramValue(pKey) : (wtModCells[cellId] !== undefined ? wtModCells[cellId] : 0);
+            var hasVal = Math.abs(val) > 0.05;
+            fillRect(clx, ry, clw, rh, hasVal ? activeBg : cellBg, 1.0);
+            if (hasVal) {
+                var barCol = colCols[col];
+                var barTrack = mixc(activeBg, barCol, 0.25);
+                fillRect(clx + 0.5, ry + rh - 2.2, clw - 1.0, 1.8, barTrack, 1.0);
+                var isUnipolar = (r === 3); // Hard Sync is 0..100%
+                if (isUnipolar) {
+                    var uw0 = Math.max(1.5, (val / 100) * (clw - 2.0));
+                    fillRect(clx + 1.0, ry + rh - 2.2, uw0, 1.8, barCol, 1.0);
+                } else {
+                    var mid = clx + clw * 0.5;
+                    var bx0 = val >= 0 ? mid : mid + (val / 100) * (clw * 0.48);
+                    var bw0 = Math.max(1.5, Math.abs(val / 100) * (clw * 0.48));
+                    fillRect(bx0, ry + rh - 2.2, bw0, 1.8, barCol, 1.0);
+                }
+                var vTxt = (Math.abs(val) < 10 && Math.abs(val - Math.round(val)) > 0.05) ? val.toFixed(1) : String(Math.round(val));
+                text(vTxt, clx + clw * 0.5, ry + 11.2, 9.0, barCol, false, 1);
+            }
+            if (pKey) {
+                zone("value", clx, ry, clw, rh, { key: pKey, norm: true });
+            } else {
+                (function (cid) {
+                    actZone(clx, ry, clw, rh, function () {
+                        wtModCells[cid] = wtModCells[cid] ? 0 : 35;
+                    });
+                })(cellId);
+            }
+        }
+    }
+
+    // Bottom row at y = 158.5: Cepstral Quefrency | Tilt | Master Cross-Synth Depth
+    var gyFoot = by + bh - 10.5;
+    text("Quef", bx + 6, gyFoot, 8.8, RC.sub, false, 0);
+    text(Math.round(paramValue("xs_quef")) + " %", bx + 31, gyFoot, 8.8, cy1, true, 0);
+    zone("value", bx + 4, gyFoot - 10, 62, 14, { key: "xs_quef", norm: true });
+
+    text("Tilt", bx + 84, gyFoot, 8.8, RC.sub, false, 0);
+    var tlV = Math.round(paramValue("xs_tilt"));
+    text((tlV > 0 ? "+" : "") + tlV + " %", bx + 104, gyFoot, 8.8, cy1, true, 0);
+    zone("value", bx + 82, gyFoot - 10, 66, 14, { key: "xs_tilt", norm: true });
+
+    text("Depth", bx + 164, gyFoot, 8.8, RC.sub, false, 0);
+    text(Math.round(paramValue("xs_depth")) + " %", bx + 196, gyFoot, 8.8, orange, true, 0);
+    zone("value", bx + 162, gyFoot - 10, 82, 14, { key: "xs_depth", norm: true });
+}
+
+function modSourceSignal(mode, col) {
+    // Returns the strictly live modulation source output in [-1..+1] (or [0..1] for unipolar envelopes).
+    // Returns 0 when no voice is playing so the horizontal modulation-sum bar under target names is empty at rest.
+    var vLvl = activeVoiceLevel();
+    if (vLvl <= 0.002) return 0;
+    if (mode === 1) {
+        if (col === 0) return vLvl;
+        if (col === 1) return clamp01(liveModEnvVal);
+        if (col === 2) return clamp01(liveModEnvVal);
+        if (col === 3) return Math.max(-1, Math.min(1, liveLfoVal * (paramValue("lfo1_amount") * 0.01)));
+        if (col === 4) {
+            var ph2 = (lfoPhaseEst * 1.37 + paramValue("lfo2_offset") / 360.0) % 1.0;
+            return Math.max(-1, Math.min(1, Math.sin(6.2831853 * ph2) * (paramValue("lfo2_amount") * 0.01)));
+        }
+    }
+    return 0;
+}
+
 function paintModTable(sx, bx, by, bw, bh, mode) {
     var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
     var green = [0.46, 0.96, 0.30], greenDim = [0.22, 0.50, 0.16];
     var cellBg = mixc(RC.wave, RC.line, 0.62);
     var activeBg = [0.05, 0.08, 0.09];
-    var pillBg = mixc(RC.wave, RC.line, 0.45);
+    var pillBg = [0.22, 0.25, 0.28];
     var ty = by + 17;
 
     text("Target", bx + 6, ty + 13.0, 9.5, RC.sub, false, 0);
@@ -1503,20 +1718,77 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
     for (var c = 0; c < nCols; c++) {
         var cx = gx0 + c * cw;
         text(colNames[c], cx + cw * 0.5, ty + 13.0, 9.5, colCols[c], false, 1);
-        line(cx + 0.5, ty + 16.0, cx + cw - 0.5, ty + 16.0, colCols[c], 0.85, 1.2);
+        // Header bar under source name: dim track + bright bar showing current live output of that source
+        var srcSig = modSourceSignal(mode, c);
+        line(cx + 0.5, ty + 16.0, cx + cw - 0.5, ty + 16.0, colCols[c], 0.35, 1.2);
+        if (Math.abs(srcSig) > 0.01) {
+            if (mode === 1 && c >= 3) {
+                var smid = cx + cw * 0.5;
+                var sx0 = srcSig >= 0 ? smid : smid + srcSig * (cw * 0.48);
+                var sw0 = Math.max(1.5, Math.abs(srcSig) * (cw * 0.48));
+                line(sx0, ty + 16.0, sx0 + sw0, ty + 16.0, colCols[c], 1.0, 1.4);
+            } else {
+                var uw = Math.max(1.5, clamp01(srcSig) * (cw - 1.0));
+                line(cx + 0.5, ty + 16.0, cx + 0.5 + uw, ty + 16.0, colCols[c], 1.0, 1.4);
+            }
+        }
     }
 
+    // Target rows: each row's background fill represents the static parameter value (toNorm: 0 = empty/black, 1 = full 59px),
+    // and the horizontal bar along the bottom of the target label represents the current sum of modulation applied.
+    var isWt1 = Math.round(paramValue("osc1_type")) > 0;
+    var warpKey1 = isWt1 ? "wt1_fx1" : (curMode === 0 ? "rp_dist" : (curMode === 1 || curMode === 3 ? "formant" : "grain_size"));
     var rows = [
-        { name: "Amp", pillW: 44 },
-        { name: "Pitch", pillW: 31 },
-        { name: "Osc 1 Pos", pillW: 0 },
-        { name: "Osc 1 Warp", pillW: 47 }
+        { name: "Amp",        paramKey: "samp_gain" },
+        { name: "Pitch",      paramKey: "pitch_st" },
+        { name: "Osc 1 Pos",  paramKey: "play_pos" },
+        { name: "Osc 1 Warp", paramKey: warpKey1 },
+        { name: "X-Synth",    paramKey: "xs_depth", isXSynth: true }
     ];
-    for (var r = 0; r < 4; r++) {
-        var ry = ty + 18.5 + r * 19.5, rh = 18.0;
-        fillRect(bx + 5, ry, 59, rh, [0.07, 0.09, 0.11], 1.0);
-        if (rows[r].pillW > 0) fillRect(bx + 5, ry, rows[r].pillW, rh, pillBg, 1.0);
-        text(rows[r].name, bx + 8, ry + 12.2, 9.5, RC.sub, false, 0);
+    var glbAmt = paramValue("mod_global_amt") * 0.01;
+
+    for (var r = 0; r < 5; r++) {
+        var ry = ty + 18.0 + r * 18.2, rh = 16.8, lblW = 59.0;
+        var tKey = rows[r].paramKey;
+        var staticNorm = clamp01(toNorm(tKey, paramValue(tKey)));
+        fillRect(bx + 5, ry, lblW, rh, [0.07, 0.09, 0.11], 1.0);
+        // Static value fill: 0 (e.g. -inf / min) = 0 px black/empty, 1 (max) = 100% full width (59 px)
+        var fillW = Math.round(staticNorm * lblW * 10) / 10;
+        if (fillW > 0.5) fillRect(bx + 5, ry, fillW, rh, pillBg, 1.0);
+
+        // Compute current sum of modulation applied to this target across all sources
+        var modSumNorm = 0;
+        for (var sc = 0; sc < 5; sc++) {
+            var mpKey = null;
+            if (sc === 1 && r === 1) mpKey = "menv_pitch";
+            else if (sc === 1 && r === 2) mpKey = "menv_pos";
+            else if (sc === 1 && r === 3) mpKey = "filt_env_amt";
+            else if (sc === 3 && r === 1) mpKey = "lfo_pitch";
+            else if (sc === 3 && r === 2) mpKey = "lfo_pos";
+            else if (sc === 3 && r === 3) mpKey = "lfo_filt";
+            var mCid = "mat:" + r + ":" + sc;
+            var mDepth = wtModCells[mCid] !== undefined ? wtModCells[mCid] : (mpKey ? paramValue(mpKey) : 0);
+            if (Math.abs(mDepth) > 0.05) {
+                modSumNorm += (mDepth * 0.01) * modSourceSignal(1, sc) * glbAmt;
+            }
+        }
+        modSumNorm = Math.max(-1, Math.min(1, modSumNorm));
+
+        // Horizontal bar under the target name showing the current sum of modulation applied around the static position
+        if (Math.abs(modSumNorm) > 0.005) {
+            var anchorX = bx + 5 + staticNorm * lblW;
+            var endX = bx + 5 + clamp01(staticNorm + modSumNorm * 0.5) * lblW;
+            var barX0 = Math.min(anchorX, endX);
+            var barW0 = Math.max(2.0, Math.abs(endX - anchorX));
+            if (barX0 + barW0 > bx + 5 + lblW) barX0 = bx + 5 + lblW - barW0;
+            fillRect(barX0, ry + rh - 2.2, barW0, 1.8, [0.62, 0.66, 0.72], 0.95);
+        }
+
+        text(rows[r].name, bx + 8, ry + 11.6, 8.8, rows[r].isXSynth ? orange : RC.sub, false, 0);
+        if (rows[r].isXSynth) {
+            polygon([[bx + 55.0, ry + 5.8], [bx + 59.5, ry + 8.4], [bx + 55.0, ry + 11.0]], orange, 0.9);
+            actZone(bx + 5, ry, lblW, rh, function () { matTab = 1; });
+        }
 
         for (var col = 0; col < nCols; col++) {
             var clx = gx0 + col * cw + 0.5, clw = cw - 1.0;
@@ -1534,7 +1806,6 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
             }
             var cellId = (mode === 1 ? "mat:" : (mode === 2 ? "midi:" : "mpe:")) + r + ":" + col;
             var val = wtModCells[cellId] !== undefined ? wtModCells[cellId] : (pKey ? paramValue(pKey) : 0);
-            if (mode === 1 && pKey && wtModCells[cellId] === undefined) val = 0;
             var hasVal = Math.abs(val) > 0.05;
             fillRect(clx, ry, clw, rh, hasVal ? activeBg : cellBg, 1.0);
             if (hasVal) {
@@ -1546,7 +1817,7 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
                 var bw0 = Math.max(1.5, Math.abs(val / 100) * (clw * 0.48));
                 fillRect(bx0, ry + rh - 2.2, bw0, 1.8, barCol, 1.0);
                 var vTxt = (Math.abs(val) < 10 && Math.abs(val - Math.round(val)) > 0.05) ? val.toFixed(1) : (val === 7 && r === 3 ? "7.0" : String(Math.round(val)));
-                text(vTxt, clx + clw * 0.5, ry + 11.8, 9.5, barCol, false, 1);
+                text(vTxt, clx + clw * 0.5, ry + 11.2, 9.0, barCol, false, 1);
             }
             if (pKey) {
                 zone("value", clx, ry, clw, rh, { key: pKey, norm: true });
@@ -1601,23 +1872,25 @@ function paintEnvSection(sx) {
 
 function paintMatrixSection(sx) {
     matX = sx;
-    var cy1 = RC.cyan;
+    var cy1 = RC.cyan, orange = liveCol("live_display_handle_one");
     var bx = sx, by = 0, bw = MAT_W, bh = 169;
     fillRect(bx, by, bw, bh, RC.wave, 1.0);
 
-    // Same top tab bar style as Mod Sources: Matrix | MIDI | MPE
-    var matNames = ["Matrix", "MIDI", "MPE"];
-    var sw = bw / 3;
-    for (var t = 0; t < 3; t++) {
+    // Top tab bar: Matrix | X-Synth | MIDI | MPE
+    var matNames = ["Matrix", "X-Synth", "MIDI", "MPE"];
+    var sw = bw / 4;
+    for (var t = 0; t < 4; t++) {
         var tx0 = bx + t * sw;
         var tOn = matTab === t;
-        text(matNames[t], tx0 + sw * 0.5, by + 11.2, 9.5, tOn ? cy1 : RC.sub, false, 1);
-        if (tOn) line(tx0 + 1, by + 16.0, tx0 + sw - 1, by + 16.0, cy1, 1.0, 1.5);
+        var tCol = t === 1 ? orange : cy1;
+        text(matNames[t], tx0 + sw * 0.5, by + 11.2, 9.5, tOn ? tCol : RC.sub, false, 1);
+        if (tOn) line(tx0 + 1, by + 16.0, tx0 + sw - 1, by + 16.0, tCol, 1.0, 1.5);
         (function (idx) { actZone(tx0, by + 1, sw, 15.5, function () { matTab = idx; }); })(t);
     }
     line(bx, by + 16.5, bx + bw, by + 16.5, RC.line, 1.0, 1.0);
 
-    paintModTable(sx, bx, by, bw, bh, matTab + 1);
+    if (matTab === 1) paintCrossSynthTable(sx, bx, by, bw, bh);
+    else paintModTable(sx, bx, by, bw, bh, matTab === 0 ? 1 : matTab);
 }
 
 // ---------------------------------------------------------------------------
@@ -2111,72 +2384,119 @@ function engineLayout(modeOverride, isWtOverride) {
 
 var PILL_W = { 0: 33, 3: 35, 1: 30, 2: 35, 4: 39 };
 
+// Helper: draw the 6 engine pills ([Repitch][Spectral][Cycles][Textures][Fragments] | [Wavetable]) at (px0, py)
+var PILL_W_WIDE = { 0: 38, 3: 41, 1: 35, 2: 41, 4: 46 };
+function paintModePillsRow(px0, py, isWt, actMode) {
+    var px = px0;
+    for (var e = 0; e < ENGINE_ORDER.length; e++) {
+        var m = ENGINE_ORDER[e], pw = PILL_W_WIDE[m], on = !isWt && actMode === m;
+        fillRR(px, py, pw, 12, 3, on ? RC.sel : RC.raised, 1);
+        text(MODE_NAMES[m], px + pw * 0.5, py + 9, 7.2, on ? RC.dark : RC.sub, on, 1);
+        zone("button", px, py, pw, 12, { action: "engine", engine: m });
+        px += pw + 3.0;
+    }
+    line(px + 4.0, py, px + 4.0, py + 12.0, RC.sub, 0.75, 1.2);
+    px += 11.0;
+    var wtW = 49;
+    fillRR(px, py, wtW, 12, 3, isWt ? RC.sel : RC.raised, 1);
+    text("Wavetable", px + wtW * 0.5, py + 9, 7.2, isWt ? RC.dark : RC.sub, isWt, 1);
+    zone("button", px, py, wtW, 12, { action: "engine_wt" });
+    return px + wtW;
+}
+
+// Helper: draw horizontal value bar (Ableton value-slider style, always showing both label and value)
+function hValueBar(key, x, y, w, h, label, acc, dimmed) {
+    var v = paramValue(key);
+    var n = toNorm(key, v);
+    var al = dimmed ? 0.45 : 1.0;
+    fillRect(x, y, w, h, RC.textBg, al);
+    setc(RC.contrastFrame, al);
+    mgraphics.set_line_width(1.0);
+    mgraphics.rectangle(x + 0.5, y + 0.5, w - 1, h - 1);
+    mgraphics.stroke();
+    var bip = !!BIPOLAR_KEYS[key];
+    var bx0 = bip ? (x + w * 0.5 + Math.min(0, n - 0.5) * (w - 2)) : (x + 1);
+    var bw0 = bip ? (Math.abs(n - 0.5) * (w - 2)) : (n * (w - 2));
+    if (bw0 > 0.5) fillRect(bx0, y + 1, bw0, h - 2, mixc(RC.textBg, acc, 0.38), al);
+    var fs = w < 72 ? 7.4 : 7.8;
+    var pad = w < 72 ? 3.5 : 4.0;
+    text(label, x + pad, y + h - 3.3, fs, RC.sub, false, 0, al);
+    text(fmtParam(key, v), x + w - pad, y + h - 3.3, fs, dimmed ? RC.sub : acc, false, 2, al);
+    zone("value", x, y, w, h, { key: key, norm: true });
+}
+
+// Helper: render a single mode-setting bar or Quant dropdown pill
+function paintSettingBarItem(kItem, bx, by, bw, bh, acc) {
+    if (kItem.menu) {
+        var qv = Math.round(paramValue("sp_quant"));
+        fillRR(bx, by, bw, bh, 2.5, RC.raised);
+        text("Quant", bx + 3.5, by + bh - 3.4, 7.4, RC.sub, false, 0);
+        text(["Off", "Oct", "Key"][qv], bx + bw - 11, by + bh - 3.4, 7.4, RC.text, false, 2);
+        caret(bx + bw - 6, by + bh * 0.5 - 2, RC.sub);
+        zone("button", bx, by, bw, bh, { action: "menu", key: "sp_quant", mw: 80 });
+    } else {
+        hValueBar(kItem.key, bx, by, bw, bh, kItem.label, acc, !!(kItem.opts && kItem.opts.dim));
+    }
+}
+
+// Helper: Pos value bar paired with its adjacent Freeze snowflake button
+function paintPosAndFreeze(osc, bx, by, bw, bh, acc, isWt) {
+    var fw = bh + 2;
+    var pw = bw - fw - 3;
+    hValueBar(osc.posKey, bx, by, pw, bh, "Pos", acc, !isWt && !curFreeze);
+    var fx = bx + pw + 3;
+    fillRR(fx, by, fw, bh, 2.5, curFreeze ? RC.sel : RC.raised, 1);
+    iconSnow(fx + fw * 0.5, by + bh * 0.5, curFreeze ? RC.dark : RC.sub, 0.9);
+    zone("button", fx, by, fw, bh, { action: "freeze" });
+}
+
 function paintEngineStrip() {
-    var x = STRIP.x, y = STRIP.y, w = STRIP.w, acc = RC.cyan;
-    panelBox(x, y, w, STRIP.h);
+    var x = STRIP.x, y = STRIP.y, w = STRIP.w, h = STRIP.h;
+    panelBox(x, y, w, h);
     if (oscTab === 2) {
-        paintSubStrip(x, y, w, STRIP.h);
+        paintSubStrip(x, y, w, h);
         return;
     }
     var osc = activeOsc();
     var isWt = Math.round(paramValue(osc.typeKey)) > 0;
     var actMode = Math.round(paramValue(osc.modeKey));
-
-    // left: the 5 sampler engine pills + distinct vertical separator + Wavetable pill, above Pitch / Speed / Pos (+ Freeze)
-    var px = x + 4;
-    for (var e = 0; e < ENGINE_ORDER.length; e++) {
-        var m = ENGINE_ORDER[e], pw = PILL_W[m], on = !isWt && actMode === m;
-        fillRR(px, y + 2, pw, 12, 3, on ? RC.sel : RC.raised, 1);
-        text(MODE_NAMES[m], px + pw * 0.5, y + 11, 7.2, on ? RC.dark : RC.sub, on, 1);
-        zone("button", px, y + 2, pw, 12, { action: "engine", engine: m });
-        px += pw + 2;
-    }
-    // Distinct vertical separator with 5 px padding on each side between Fragments and Wavetable
-    line(px + 3.5, y + 2.0, px + 3.5, y + 14.0, RC.sub, 0.75, 1.2);
-    px += 9.0;
-    var wtW = 44;
-    fillRR(px, y + 2, wtW, 12, 3, isWt ? RC.sel : RC.raised, 1);
-    text("Wavetable", px + wtW * 0.5, y + 11, 7.2, isWt ? RC.dark : RC.sub, isWt, 1);
-    zone("button", px, y + 2, wtW, 12, { action: "engine_wt" });
-
-    var ky = y + 39;
+    var acc = isWt ? RC.sel : RC.cyan;
     var scanOn = !isWt && actMode !== 0;
-    var ks = [
-        [osc.pitchKey, "Pitch", {}],
-        [isWt ? osc.detKey : "grain_motion", isWt ? "Detune" : "Speed", { dim: !isWt && !scanOn }],
-        [osc.posKey, "Pos", { dim: !isWt && !curFreeze }]
-    ];
-    for (var p = 0; p < 3; p++) rKnob(ks[p][0], x + 6 + 36 + p * 72, ky, 7, ks[p][1], isWt ? RC.sel : acc, ks[p][2]);
-    // Freeze (Pos follows the frozen playhead)
-    fillRR(x + 224, y + 22, 22, 18, 3, curFreeze ? RC.sel : RC.raised, 1);
-    iconSnow(x + 235, y + 31, curFreeze ? RC.dark : RC.sub, 1.0);
-    zone("button", x + 224, y + 22, 22, 18, { action: "freeze" });
-    line(x + 250, y + 6, x + 250, y + STRIP.h - 5, RC.line, 1.0, 1.0);
-
-    // right: the character / wave-effect switch directly above the knobs it controls
-    var rx0 = x + 256;
     var L = engineLayout(actMode, isWt);
     var nk = L.knobs.length;
+
+    // Left Column (x+4 .. x+280, w = 276):
+    // Row 1 (y+3): Mode Select ([Repitch][Spectral][Cycles][Textures][Fragments] | [Wavetable])
+    var leftW = 276;
+    paintModePillsRow(x + 4, y + 3, isWt, actMode);
+    // Row 2 (y+20): Mode Settings directly below Mode Select (e.g. Clean | Analog | Digital)
     if (L.head) {
-        var hw = isWt ? 168 : Math.min(nk * 68 - 14, L.head.labels.length * 48);
-        segCtl(L.head.key, rx0 + 12, y + 2, hw, 12, L.head.labels, isWt ? RC.sel : acc);
+        segCtl(L.head.key, x + 4, y + 20, leftW, 13, L.head.labels, acc);
+    } else if (actMode === 4) {
+        segCtl("fr_use_density", x + 4, y + 20, leftW, 13, ["Step Grid", "Density"], acc);
     } else {
-        text(L.title, rx0 + 2, y + 14, 8.5, RC.text, false, 0);
+        fillRR(x + 4, y + 20, leftW, 13, 2.5, RC.raised, 0.7);
+        text(L.title, x + 4 + leftW * 0.5, y + 29.5, 7.8, RC.sub, true, 1);
     }
-    for (var i = 0; i < nk; i++) {
-        var cx = rx0 + 26 + i * 68;
-        var k = L.knobs[i];
-        if (k.menu) {
-            var q = Math.round(paramValue("sp_quant"));
-            text("Quant", cx, ky - 11, 7.5, RC.text, false, 1);
-            fillRR(cx - 15, ky - 7, 30, 14, 3, RC.raised);
-            text(["Off", "Oct", "Key"][q], cx - 3, ky + 3.5, 7.5, RC.text, false, 1);
-            caret(cx + 9, ky - 2, RC.sub);
-            zone("button", cx - 15, ky - 7, 30, 14, { action: "menu", key: "sp_quant", mw: 80 });
-        } else {
-            rKnob(k.key, cx, ky, 7, k.label, isWt ? RC.sel : acc, k.opts || {});
-        }
+    // Row 3 (y+38): Mode Settings Bars consistently sized to fit 4 params across the 276 px row (66 px each, 4 px gap)
+    var maxSlots = 4;
+    var gap5a = 4;
+    var bw5a = Math.floor((leftW - (maxSlots - 1) * gap5a) / maxSlots); // 66 px
+    for (var i5a = 0; i5a < nk; i5a++) {
+        var bx5a = x + 4 + i5a * (bw5a + gap5a);
+        paintSettingBarItem(L.knobs[i5a], bx5a, y + 38, bw5a, 16, acc);
     }
+
+    line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1.0, 1.0);
+
+    // Right Column (x+292 .. x+460, w = 168): 2x2 Transport & Gain Bars with Freeze right beside Pos
+    text("TUNING & PLAYHEAD", x + 292, y + 12, 7.5, RC.sub, true, 0);
+    valuePill(x + 412, y + 3, 22, Math.round(paramValue("unison_voices")) + "v", { key: "unison_voices", pxPerUnit: 6 }, RC.sel, false);
+    valuePill(x + 436, y + 3, 24, Math.round(paramValue("unison_detune")) + "%", { key: "unison_detune" }, RC.sel, Math.round(paramValue("unison_voices")) <= 1);
+    hValueBar(osc.pitchKey, x + 292, y + 20, 82, 15, "Pitch", acc, false);
+    hValueBar(isWt ? osc.detKey : "grain_motion", x + 378, y + 20, 82, 15, isWt ? "Detune" : "Speed", acc, !isWt && !scanOn);
+    paintPosAndFreeze(osc, x + 292, y + 38, 82, 16, acc, isWt);
+    hValueBar(osc.gainKey, x + 378, y + 38, 82, 16, "Gain", acc, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -2304,6 +2624,10 @@ var sharedSetvalueof = setvalueof;
 
 getvalueof = function () {
     var out = sharedGetvalueof();
+    if (!isDefaultSectionOrder()) {
+        out.push("R2O");
+        out.push(encodeSectionOrder());
+    }
     out.push("R2");
     out.push(foldMask);
     return out;
@@ -2311,22 +2635,35 @@ getvalueof = function () {
 
 setvalueof = function () {
     var a = arrayfromargs(arguments);
+    var hasR2 = false;
     if (a && a.length >= 3 && String(a[a.length - 2]) === "R2") {
         var m = Math.round(Number(a[a.length - 1]));
         a = a.slice(0, a.length - 2);
+        hasR2 = true;
         if (isFinite(m)) {
             foldMask = Math.max(0, Math.min((1 << SECTIONS.length) - 1, m));
-            applyDeviceWidth();
         }
     }
+    if (a && a.length >= 3 && String(a[a.length - 2]) === "R2O") {
+        var ord = Number(a[a.length - 1]);
+        a = a.slice(0, a.length - 2);
+        if (hasR2 && isFinite(ord)) decodeSectionOrder(ord);
+    } else if (hasR2) {
+        sectionOrder = [0, 1, 2, 3, 4];
+    }
+    if (hasR2) applyDeviceWidth();
     sharedSetvalueof.apply(null, a);
 };
 
 // Debug messages via #0-bsdebug for automated Live UI verification of Reactive 2's Mod Sources & Mod Matrix views:
 //   messnamed("#0-bsdebug", "dbg_r2_view", matTab, envPage, envTab, openLoopMenu, foldMask)
+function dbg_section_order(s0, s1, s2, s3, s4) {
+    setSectionOrder([s0, s1, s2, s3, s4]);
+}
+
 function dbg_r2_view(mTab, pg, tb, loopMenu, fold) {
     if (fold !== undefined && fold >= 0) setFoldMask(Number(fold));
-    if (mTab !== undefined && mTab >= 0) matTab = Math.max(0, Math.min(2, Math.round(Number(mTab))));
+    if (mTab !== undefined && mTab >= 0) matTab = Math.max(0, Math.min(3, Math.round(Number(mTab))));
     if (pg !== undefined && pg >= 0) envPage = Math.round(Number(pg));
     if (tb !== undefined && tb >= 0) envTab = Math.round(Number(tb));
     if (loopMenu !== undefined) {
@@ -2509,7 +2846,7 @@ function hdlMove(id, x, y) {
     if (which === "I") {
         if (vk[0]) setIfChanged(vk[0], lvl * 100);
     } else if (which === "A") {
-        setIfChanged(k[0], fromNorm(k[0], (gx - e.gx - e.minSeg) / e.sm));
+        setIfChanged(k[0], fromNorm(k[0], (gx - e.gx) / e.smA));
         if (vk[1] && Math.abs(y - drag.y0) > 0.5) setIfChanged(vk[1], lvl * 100);
     } else if (which === "D") {
         setIfChanged(k[1], fromNorm(k[1], (gx - e.xA - e.minSeg) / e.sm));
@@ -2558,13 +2895,31 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
         if (openMenu) { openMenu = null; mgraphics.redraw(); return; }
         if (drag && drag.captured) setCursorHidden(false);
         drag = null;
-        if (z.kind === "act") { z.fn(); mgraphics.redraw(); return; }
+        sbDrag = null;
+        if (z.kind === "act") {
+            var preMask = foldMask;
+            z.fn();
+            if (z.secIdx !== undefined) {
+                sbDrag = {
+                    secIdx: z.secIdx,
+                    startSlot: z.slot,
+                    curSlot: z.slot,
+                    startY: y,
+                    curY: y,
+                    moved: false,
+                    preMask: preMask
+                };
+            }
+            mgraphics.redraw();
+            return;
+        }
         if (z.num) filtFocus = z.num;
         drag = { hdl: z.id, ox: z.cx - x, oy: z.cy - y, x0: x, y0: y };
         hoverHdl = z.id;
         mgraphics.redraw();
         return;
     }
+    sbDrag = null;
     if (z && z.kind === "wave" && viewZoom > 1.0005) {
         // the shared handler measures its grab distance in zone pixels: give it the zoomed width for this one call
         var w0 = z.w; z.w = w0 * viewZoom;
@@ -2580,6 +2935,31 @@ function onwheel(x, y) {
 }
 
 ondrag = function (x, y, but, cmd, shift) {
+    if (sbDrag) {
+        if (!but) {
+            sbDrag = null;
+            mgraphics.redraw();
+            return;
+        }
+        sbDrag.curY = y;
+        if (!sbDrag.moved && Math.abs(y - sbDrag.startY) > 5) {
+            sbDrag.moved = true;
+            hoverTip = null;
+            if (foldMask !== sbDrag.preMask) setFoldMask(sbDrag.preMask);
+        }
+        if (sbDrag.moved) {
+            var targetSlot = Math.max(0, Math.min(SECTIONS.length - 1, Math.floor((y - SB_BTN.y0 + SB_BTN.pitch * 0.5) / SB_BTN.pitch)));
+            var curIdx = sectionOrder.indexOf(sbDrag.secIdx);
+            if (curIdx >= 0 && targetSlot !== curIdx) {
+                sectionOrder.splice(curIdx, 1);
+                sectionOrder.splice(targetSlot, 0, sbDrag.secIdx);
+                sbDrag.curSlot = targetSlot;
+                notifyclients();
+            }
+            mgraphics.redraw();
+        }
+        return;
+    }
     if (panState) {
         if (!but) { panState = null; return; }
         viewX0 = panState.x0;
@@ -2624,13 +3004,13 @@ ondblclick = function (x, y) {
 };
 
 onidle = function (x, y) {
-    if (drag && (drag.captured || drag.hdl)) return;
+    if ((drag && (drag.captured || drag.hdl)) || (sbDrag && sbDrag.moved)) return;
     var z = zoneAt(x, y);
     var h = (z && z.kind === "hdl") ? z.id : "";
-    var tip = (z && z.kind === "act" && z.tip) ? { tip: z.tip, index: z.index } : null;
+    var tip = (z && z.kind === "act" && z.tip) ? { tip: z.tip, index: z.index, slot: z.slot } : null;
     var gh = !!(z && z.key === "samp_gain");
     if (gh !== gainHover) { gainHover = gh; mgraphics.redraw(); }
-    var tipChanged = (tip ? tip.index : -1) !== (hoverTip ? hoverTip.index : -1);
+    var tipChanged = (tip ? tip.index : -1) !== (hoverTip ? hoverTip.index : -1) || (tip ? tip.slot : -1) !== (hoverTip ? hoverTip.slot : -1);
     hoverTip = tip;
     if (h !== hoverHdl || tipChanged) { hoverHdl = h; mgraphics.redraw(); }
     sharedOnidle(x, y);
@@ -2720,6 +3100,9 @@ function preview() {
             voicePlayheads[d] = demo[d].ph; voiceAmps[d] = demo[d].al;
         }
         bornSeq = demo.length;
+    } else if (o.playing === 0) {
+        liveActiveVoices = 0;
+        for (var z0 = 0; z0 < 16; z0++) { voiceAmpLvl[z0] = 0; voiceModLvl[z0] = 0; voiceAmps[z0] = 0; }
     } else {
         liveActiveVoices = 3;
         voicePlayheads[0] = 0.32; voiceAmps[0] = 0.8;
@@ -2728,10 +3111,12 @@ function preview() {
     for (var g = 0; g < 9; g++) { grainPos[g] = 0.28 + g * 0.018; grainAmp[g] = 0.3 + 0.07 * g; }
     envPage = o.env === undefined ? 1 : o.env;
     envTab = o.tab || 0;
+    if (o.matTab !== undefined) matTab = o.matTab;
     modTopTab = o.topTab || 0;
     if (o.zoom) { viewZoom = o.zoom; viewX0 = o.x0 || 0; clampView(); }
     foldMask = o.fold === undefined ? DEFAULT_FOLD : o.fold;
     showInspector = foldMask ? 1 : 0;
+    if (o.order) setSectionOrder(o.order);
     if (o.hover) hoverKey = o.hover;
     if (o.menu) openMenu = o.menu;
 }

@@ -98,13 +98,15 @@ assert.strictEqual(sb.foldWidth(ALL), spec.max_width, "everything open = max_wid
 assert.strictEqual(sb.foldWidth(sb.DEFAULT_FOLD), spec.width, "default fold = spec width");
 sb.storeParam("mode", 0, true); sb.storeParam("sliced", 0, true);
 
-// --- the engine strip is fixed: selector, character and knobs are there with every fold, none of them in the sidebar ---
+// --- the engine strip is fixed: selector, character and value bars are there with every fold, none of them in the sidebar ---
 for (const m of [0, ALL]) {
     sb.setFoldMask(m); sb.storeParam("mode", 3, true); sb.paint();
     const inStrip = sb.hitZones.filter((z) => z.y >= sb.STRIP.y && z.x < sb.STRIP.x + sb.STRIP.w);
     assert.strictEqual(inStrip.filter((z) => z.action === "engine").length, 5, "5 engine selectors in the strip");
     assert.ok(inStrip.some((z) => z.key === "sp_char"), "character switch in the strip");
-    assert.ok(inStrip.filter((z) => z.kind === "knob").length >= 5, "engine knobs + Pitch / Speed / Pos in the strip");
+    assert.ok(inStrip.filter((z) => z.kind === "value" || z.kind === "knob").length >= 5, "engine value bars + Pitch / Speed / Pos / Gain in the strip");
+    const modeBars = inStrip.filter((z) => z.kind === "value" && z.x < sb.STRIP.x + 286);
+    assert.ok(modeBars.length >= 2 && modeBars.every((z) => z.w === 66), "mode setting sliders below the modes are consistently 66 px wide (fits 4 params)");
     for (const z of inStrip) assert.ok(z.y + z.h <= 166.5 && z.y >= sb.STRIP.y - 0.5, `strip zone ${z.kind} ${z.key || z.action} inside the strip`);
     for (const z of sb.hitZones) if (z.kind === "wave") assert.ok(z.y + z.h <= sb.STRIP.y, "waveform ends above the strip");
 }
@@ -146,6 +148,30 @@ sb.setFoldMask(0b1011);
     sb.setFoldMask(0b10);
     sb.setvalueof.apply(null, old);
     assert.strictEqual(sb.foldMask, 0b10, "a blob without R2 keeps the folds");
+}
+
+// --- dragging sidebar items reorders both the toolbar icons and the open panels, and persists in the blob ---
+{
+    sb.setSectionOrder([0, 1, 2, 3, 4]);
+    sb.setFoldMask(2 | 4 | 8); // Mod Sources (1), Filter (2), Mod Matrix (3) open
+    sb.paint();
+    assert.deepStrictEqual(plain(sb.sectionRects(sb.foldMask).map((r) => r.id)), ["env", "filter", "matrix"], "default panel order");
+    // Drag Filter (slot 2) up to slot 0 (above Mod Sources)
+    const zFilt = zones("act").filter((q) => q.tip).find((q) => q.secIdx === 2);
+    const cx = zFilt.x + zFilt.w * 0.5, cy = zFilt.y + zFilt.h * 0.5;
+    sb.onclick(cx, cy, 1, 0, 0);
+    sb.ondrag(cx, cy - 50, 1, 0, 0);
+    assert.strictEqual(sb.foldMask, 2 | 4 | 8, "dragging a sidebar item preserves its open/closed foldMask");
+    assert.deepStrictEqual(plain(sb.sectionOrder), [2, 0, 1, 3, 4], "Filter moved to slot 0 in sectionOrder");
+    assert.deepStrictEqual(plain(sb.sectionRects(sb.foldMask).map((r) => r.id)), ["filter", "env", "matrix"], "Filter panel now appears before Mod Sources");
+    sb.ondrag(cx, cy - 50, 0, 0, 0);
+    // Persisted in getvalueof / setvalueof
+    const blobReord = sb.getvalueof();
+    assert.strictEqual(blobReord[blobReord.length - 4], "R2O", "custom section order tag saved in blob");
+    sb.setSectionOrder([0, 1, 2, 3, 4]);
+    sb.setvalueof.apply(null, blobReord);
+    assert.deepStrictEqual(plain(sb.sectionOrder), [2, 0, 1, 3, 4], "reordered sectionOrder restored from blob");
+    sb.setSectionOrder([0, 1, 2, 3, 4]);
 }
 
 
@@ -273,27 +299,58 @@ sb.setFoldMask(0b1011);
     assert.strictEqual(sb.detail, null, "1x drops the detail");
 }
 
-// --- character switch directly above the knobs it controls ---
+// --- character switch directly below the mode pills and above its value bars (consistent 4-slot 66px width) ---
 {
     sb.setFoldMask(0);
     for (const [mode, key, ch] of [[0, "rp_char", 1], [3, "sp_char", 0], [3, "sp_char", 1], [1, "cy_char", 0], [1, "cy_char", 2]]) {
         sb.storeParam("mode", mode, true); sb.storeParam(key, ch, true); sb.paint();
         const S = sb.STRIP;
+        const pills = sb.hitZones.filter((z) => z.action === "engine");
+        assert.ok(pills.length === 5 && pills.every((z) => z.x < S.x + 286), "engine selector on the left");
         const seg = sb.hitZones.filter((z) => z.action === "menu_pick" && z.key === key);
         assert.ok(seg.length >= 2, `${key}: switch present`);
-        const left = Math.min(...seg.map((z) => z.x)), bottom = Math.max(...seg.map((z) => z.y + z.h));
-        const knobs = sb.hitZones.filter((z) => z.kind === "knob" && z.y >= S.y && z.x >= S.x + 250).sort((a, b) => a.x - b.x);
-        assert.ok(knobs.length >= 2, `${key}: engine knobs`);
-        assert.ok(bottom <= Math.min(...knobs.map((z) => z.y)) + 0.01, `${key}: switch sits above its knobs`);
-        assert.ok(Math.abs(left - knobs[0].x) <= 6, `${key}: switch aligned with the first knob (${left} vs ${knobs[0].x})`);
-        for (const z of seg) assert.ok(z.x + z.w <= knobs[knobs.length - 1].x + knobs[knobs.length - 1].w + 70, `${key}: switch spans its knobs`);
-        assert.ok(seg.every((z) => z.x >= S.x + 250), `${key}: on the right`);
-        const pills = sb.hitZones.filter((z) => z.action === "engine");
-        assert.ok(pills.length === 5 && pills.every((z) => z.x < S.x + 250), "engine selector on the left");
-        const pitch = sb.hitZones.find((z) => z.kind === "knob" && z.key === "pitch_st");
-        assert.ok(pitch.x < S.x + 250 && pitch.y > pills[0].y, "Pitch under the engine selector");
+        const left = Math.min(...seg.map((z) => z.x)), top = Math.min(...seg.map((z) => z.y)), bottom = Math.max(...seg.map((z) => z.y + z.h));
+        assert.ok(top >= pills[0].y + pills[0].h, `${key}: switch sits below the mode pills`);
+        assert.ok(seg.every((z) => z.x < S.x + 286), `${key}: switch sits in the left column under the mode pills`);
+        const bars = sb.hitZones.filter((z) => (z.kind === "value" || (z.action === "menu" && z.key === "sp_quant")) && z.y >= S.y && z.x < S.x + 286).sort((a, b) => a.x - b.x);
+        assert.ok(bars.length >= 2, `${key}: engine setting bars`);
+        assert.ok(bottom <= Math.min(...bars.map((z) => z.y)) + 0.01, `${key}: switch sits above its setting bars`);
+        assert.ok(Math.abs(left - bars[0].x) <= 6, `${key}: switch aligned with the first setting bar (${left} vs ${bars[0].x})`);
+        assert.ok(bars.every((z) => z.w === 66), `${key}: every setting bar is 66 px wide (fits 4 params)`);
+        const pitch = sb.hitZones.find((z) => z.kind === "value" && z.key === "pitch_st");
+        const pos = sb.hitZones.find((z) => z.kind === "value" && z.key === "play_pos");
+        const frz = sb.hitZones.find((z) => z.action === "freeze");
+        assert.ok(pitch && pitch.x >= S.x + 286, "Pitch bar on the right");
+        assert.ok(pos && frz && Math.abs(frz.x - (pos.x + pos.w)) <= 6 && Math.abs(frz.y - pos.y) <= 2, "Freeze button sits immediately beside the Pos control");
     }
     sb.storeParam("mode", 0, true); sb.storeParam("rp_char", 0, true);
+}
+
+// --- Mod Matrix target label static fill and live modulation sum bar ---
+{
+    sb.setFoldMask(8); sb.matTab = 0;
+    // Static fill: min (-48 dB) -> 0 (empty/black), max (+24 dB) -> 1 (full 59 px)
+    sb.setParamFromFace("samp_gain", -48); sb.paint();
+    assert.strictEqual(sb.toNorm("samp_gain", sb.paramValue("samp_gain")), 0, "samp_gain at -48 dB gives 0 static fill");
+    sb.setParamFromFace("samp_gain", 24); sb.paint();
+    assert.strictEqual(sb.toNorm("samp_gain", sb.paramValue("samp_gain")), 1, "samp_gain at +24 dB gives full static fill");
+    sb.setParamFromFace("samp_gain", 0);
+    near(sb.toNorm("samp_gain", sb.paramValue("samp_gain")), 48 / 72, 1e-6, "samp_gain at 0 dB gives 66.7% static fill");
+    // When no voice is playing, activeVoiceLevel() === 0 and modSourceSignal() === 0 for every column
+    for (let v = 0; v < 16; v++) sb.voiceAmpLvl[v] = 0;
+    assert.strictEqual(sb.activeVoiceLevel(), 0, "no voice playing -> activeVoiceLevel is 0");
+    for (let c = 0; c < 5; c++) {
+        assert.strictEqual(sb.modSourceSignal(1, c), 0, `no voice playing -> source ${c} signal is 0`);
+    }
+    // When a voice is playing, modSourceSignal returns bounded live values in [-1..+1]
+    sb.voiceAmpLvl[0] = 0.8; sb.liveModEnvVal = 0.5; sb.liveLfoVal = 0.6; sb.lfoPhaseEst = 0.2;
+    assert.strictEqual(sb.activeVoiceLevel(), 0.8, "voice playing -> activeVoiceLevel is 0.8");
+    for (let c = 0; c < 5; c++) {
+        const sig = sb.modSourceSignal(1, c);
+        assert.ok(sig >= -1 && sig <= 1 && Math.abs(sig) > 0, `voice playing -> source ${c} signal ${sig} active`);
+    }
+    sb.voiceAmpLvl[0] = 0;
+    sb.setFoldMask(sb.DEFAULT_FOLD);
 }
 
 // --- sample gain: drag, reset, normalize (right-click and ctrl-click) ---
@@ -638,11 +695,22 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
 }
 
 
-// --- all three slope diamonds stay visible and grabbable at the shortest times, without touching the A / D / R handles ---
+// --- Attack = 0 ms lands on the left wall (gx), Release = 60 s lands on the right wall (gx + gw), and slope diamonds stay grabbable ---
 {
     sb.setFoldMask(sb.DEFAULT_FOLD); sb.envTab = 0;
     const ov = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-    for (const page of [0, 1]) for (const sus of [0, 35, 100]) for (const t of [[0.2, 1, 1], [0.2, 1, 1000], [4000, 4000, 4000], [5, 40, 900]]) {
+    for (const page of [0, 1]) {
+        sb.envPage = page;
+        const k = page === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"];
+        assert.strictEqual(FP[k[0]].lo, 0, `${k[0]} minimum is 0 ms`);
+        assert.strictEqual(FP[k[3]].hi, 60000, `${k[3]} maximum is 60000 ms (60 s)`);
+        sb.setParamFromFace(k[0], 0); sb.setParamFromFace(k[1], 20000); sb.setParamFromFace(k[2], 100); sb.setParamFromFace(k[3], 60000);
+        sb.paint();
+        const gWall = sb.envGeom();
+        near(gWall.xA, gWall.gx, 1e-6, `${k[0]}=0 ms lands on the left wall (gx)`);
+        near(gWall.xR, gWall.gx + gWall.gw, 1e-6, `${k[3]}=60 s lands on the right wall (gx + gw)`);
+    }
+    for (const page of [0, 1]) for (const sus of [0, 35, 100]) for (const t of [[0, 1, 1], [0.2, 1, 1000], [4000, 4000, 4000], [5, 40, 900]]) {
         sb.envPage = page;
         const k = page === 1 ? ["matk_ms", "mdec_ms", "msus_lvl", "mrel_ms"] : ["atk_ms", "dec_ms", "sus_lvl", "rel_ms"];
         sb.setParamFromFace(k[0], t[0]); sb.setParamFromFace(k[1], t[1]); sb.setParamFromFace(k[2], sus); sb.setParamFromFace(k[3], t[2]);
@@ -654,11 +722,11 @@ sb.setFoldMask(sb.DEFAULT_FOLD | 4);
         for (const dz of d) for (const hz of h) assert.ok(!ov(dz, hz), `${label}: diamond ${dz.id} does not overlap handle ${hz.id}`);
         for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) assert.ok(!ov(d[i], d[j]), `${label}: diamonds do not overlap each other`);
         const g = sb.envGeom();
-        assert.ok(g.xA - g.gx >= 18 - 1e-9 && g.xD - g.xA >= 18 - 1e-9 && g.xR - g.xS >= 18 - 1e-9, `${label}: every segment is at least 18 px wide`);
+        assert.ok(g.xA >= g.gx - 1e-9 && g.xD - g.xA >= 18 - 1e-9 && g.xR - g.xS >= 18 - 1e-9, `${label}: D and R segments are at least 18 px wide and A >= gx`);
         for (const z of [...h, ...d]) assert.ok(z.x >= g.gx - 6 && z.x + z.w <= g.gx + g.gw + 8, `${label}: ${z.id} inside the display`);
-        // handles still map back to the same value at the minimum width (drag to the far left sets the minimum time)
+        // handles still map back to the same value at the minimum width (drag to the far left sets 0 ms)
         const hz = h[0]; emitted.length = 0; sb.onclick(hz.cx, hz.cy, 1, 0, 0); sb.ondrag(hz.cx - 500, hz.cy, 1, 0, 0); sb.ondrag(hz.cx - 500, hz.cy, 0, 0, 0);
-        assert.ok(sb.paramValue(k[0]) <= FP[k[0]].lo + 1e-6 + 0.01 * FP[k[0]].hi, `${label}: dragging A left reaches the shortest time`);
+        assert.strictEqual(sb.paramValue(k[0]), 0, `${label}: dragging A left reaches 0 ms`);
     }
     sb.envPage = 0;
     for (const [k, v] of [["atk_ms", 18], ["dec_ms", 900], ["sus_lvl", 35], ["rel_ms", 1200]]) sb.setParamFromFace(k, v);
@@ -708,7 +776,7 @@ for (let mode = 0; mode < 5; mode++) for (const sliced of [0, 1]) for (let ch = 
     for (const tb of [0, 1, 2]) { sb.envTab = tb; sb.paint(); collect(); }
     sb.envTab = 0;
 }
-for (const mTab of [0, 1, 2]) { sb.matTab = mTab; sb.paint(); collect(); }
+for (const mTab of [0, 1, 2, 3]) { sb.matTab = mTab; sb.paint(); collect(); }
 sb.matTab = 0; sb.envPage = 0;
 for (const at of [2, 3, 4]) { sb.setParamFromFace("slice_at", at); sb.setParamFromFace("sliced", 1); sb.paint(); collect(); }
 for (const ot of [1, 2, 0]) {
