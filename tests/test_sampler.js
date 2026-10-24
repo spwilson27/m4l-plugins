@@ -192,6 +192,11 @@ assert.ok(gen.includes("glideCoef = (glide_ms <= 0.5) ? 0.0 : exp(-1000.0 / (gli
 assert.ok((gen.match(/freezeOn > 0\.5/g) || []).length >= 3, "Freeze is handled in every engine");
 assert.ok(gen.includes("dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;"), "Reverse flips playback direction");
 assert.ok(gen.includes("REPITCH") && gen.includes("CYCLES") && gen.includes("TEXTURES"));
+assert.ok(gen.includes("sbHarmG = clip(sub_harm_level, 0, 1);"), "upper harmonics follow Harm level only");
+assert.ok(!gen.includes("clip(sub_tone, 0, 1)"), "sub tone no longer scales the harmonic level");
+assert.ok(gen.includes("subTn = clip(peek(prm, 78), 0, 1);"), "sub tone is read into the drive block");
+assert.ok(gen.includes("1.0 / sqrt(1.0 + pow(sbNum / sbCut, 4.0))"), "sub low pass is a 12 dB/octave rolloff");
+assert.ok(!gen.includes("1.6 * (sbNum - sbCut)"), "sub low pass is not the steep logistic");
 
 
 // ============================================================================

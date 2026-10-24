@@ -645,6 +645,7 @@ function activeOsc() {
         modeKey: is2 ? "osc2_mode" : "mode",
         pitchKey: is2 ? "osc2_pitch" : "pitch_st",
         detKey: is2 ? "osc2_detune" : "fine_cents",
+        ratioKey: is2 ? "osc2_ratio" : "osc1_ratio",
         posKey: is2 ? "osc2_pos" : "play_pos",
         gainKey: is2 ? "osc2_gain" : "samp_gain",
         fxKey: is2 ? "wt2_fx" : "wt1_fx",
@@ -652,6 +653,25 @@ function activeOsc() {
         fx2Key: is2 ? "wt2_fx2" : "wt1_fx2"
     };
 }
+
+var sharedFmtParam = fmtParam;
+fmtParam = function (key, v) {
+    if (key === "fine_cents" || key === "osc2_detune" || key === "sub_fine") {
+        var rng = Math.max(1.0, Math.min(96.0, Number(paramValue("fine_range")) || 1.0));
+        var scaled = (Number(v) * 0.01) * rng;
+        var sign = scaled > 0.005 ? "+" : "";
+        return sign + (Math.abs(scaled) < 10 ? scaled.toFixed(2) : scaled.toFixed(1));
+    }
+    if (key === "osc1_ratio" || key === "osc2_ratio" || key === "sub_ratio") {
+        var rv = Number(v) || 1.0;
+        return (Math.abs(rv - Math.round(rv)) < 0.005 ? rv.toFixed(1) : rv.toFixed(2)) + "x";
+    }
+    if (key === "fine_range") {
+        var fr = Math.max(1.0, Math.min(96.0, Number(v) || 1.0));
+        return "\u00b1" + fr.toFixed(1);
+    }
+    return sharedFmtParam(key, v);
+};
 
 // Evaluate Wavetable sample with Fm / Classic / Modern wave effects (matches wt_osc_eval in sampler_core.genexpr)
 function evalWtWave(ph, pos01, fxMode, fx1, fx2) {
@@ -692,7 +712,7 @@ function evalWtWave(ph, pos01, fxMode, fx1, fx2) {
 // Helper: draw 3D-stacked wavetable curves (Sine -> Tri -> Saw -> Square) with active position & wave effects in orange
 function paintWavetableStack(wx, wy, ww, wh, pos01, on, fxMode, fx1, fx2) {
     var rows = 4, cols = 80;
-    var xL = wx + 28, xW = ww - 56;
+    var xL = wx + 8, xW = ww - 16;
     for (var r = 0; r < rows; r++) {
         var rFrac = r / (rows - 1);
         var yBase = wy + wh - 12 - rFrac * (wh - 26);
@@ -757,7 +777,6 @@ var SUB_DRV_NAMES = ["Soft", "Hard", "Tube", "Fold", "Sine", "Pinch", "Noise"];
 var SUB_ENUMS = {
     sub_wave: SUB_WAVE_NAMES,
     sub_lock_note: SUB_NOTE_NAMES,
-    sub_tuning: ["Key", "Fixed", "Ratio"],
     sub_drv_type: SUB_DRV_NAMES
 };
 
@@ -819,7 +838,7 @@ function subPartials() {
     return n > 16 ? 16 : n;
 }
 
-// Series spectra gain relative to the drawn level: 1. Odd -> 2. Even -> 3. Tilt -> 4. Low Pass.
+// Series spectra gain relative to the drawn level: 1. Odd -> 2. Even -> 3. Tilt -> 4. Low Pass (Low Pass applies only to harmonics idx >= 1, never the sub fundamental idx === 0).
 // Neutral settings (Odd 0%, Even 0%, Tilt 0%, Low Pass 100%) evaluate to 1.0 on every partial.
 function subSpectraGain(idx) {
     var oddV = paramValue("sub_odd") / 100;
@@ -839,8 +858,9 @@ function subSpectraGain(idx) {
     var mulOdd = (idx > 0 && isOdd) ? Math.max(0, 1 + oddV) : 1;
     var mulEven = (!isOdd) ? Math.max(0, 1 + evenV) : 1;
     var mulTilt = Math.pow(num, tiltV * 1.2);
-    var cut = 1 + lpV * 16;
-    var mulLp = lpV >= 0.995 ? 1 : (1 / (1 + Math.exp(Math.max(-12, Math.min(12, 1.6 * (num - cut))))));
+    var cut = 1.5 + lpV * 15.5;
+    // 2-pole Butterworth on harmonic number: -3 dB at the cutoff partial, then about 12 dB per octave.
+    var mulLp = idx === 0 ? 1 : (lpV <= 0.005 ? 0 : (lpV >= 0.995 ? 1 : (1 / Math.sqrt(1 + Math.pow(num / cut, 4)))));
     var g = mulOdd * mulEven * mulTilt * mulLp;
     if (g < 0) g = 0;
     return g > 2 ? 2 : g;
@@ -855,44 +875,83 @@ function effSubHarmonic(idx) {
     return clamp01(getSubHarmonic(idx) * subSpectraGain(idx) * lvl);
 }
 
-function subShapeDrive(x, amt, kind, phase01) {
+// Waveshaper for the scope. tone is 0..1. At 0 every mode matches the plain curve.
+// Keep this in step with the sub drive block in sampler_core.genexpr.
+function subShapeDrive(x, amt, kind, phase01, tone) {
+    var tn = (typeof tone === "number" && isFinite(tone)) ? tone : 0;
+    if (tn < 0) tn = 0;
+    if (tn > 1) tn = 1;
     if (!(amt > 0.0005)) return Math.max(-1, Math.min(1, x));
-    if (kind === 1) {                            // Hard
+    var ax, sgn, an, y0, y1, t, kn, x0, p, w, env;
+    if (kind === 1) {                            // Hard: cubic fillet on the clip shoulder
         var yH = x * (1 + amt * 8);
-        return x + (Math.max(-1, Math.min(1, yH)) - x) * amt;
+        an = Math.abs(yH);
+        sgn = yH >= 0 ? 1 : -1;
+        y0 = Math.min(an, 1);
+        kn = tn * 0.7;
+        x0 = 1 - kn;
+        if (kn > 0.0001 && an > x0 && an < 1) {
+            t = (an - x0) / kn;
+            y0 = x0 + kn * (t + t * t - t * t * t);
+        }
+        return x + (sgn * y0 - x) * amt;
     }
-    if (kind === 2) {                            // Tube
+    if (kind === 2) {                            // Tube: even-harmonic coefficient 0.35 .. 1.15
         var yT = x * (1 + amt * 5);
-        var tb = Math.tanh(yT + 0.35 * yT * yT);
+        var asym = 0.35 + tn * 0.80;
+        var tb = Math.tanh(yT + asym * yT * yT);
         return x + (tb - x) * amt;
     }
-    if (kind === 3) {                            // Fold
-        var yF = x * (1 + amt * 4);
-        var fd = Math.sin(Math.max(-8, Math.min(8, yF)));
+    if (kind === 3) {                            // Fold: bias into the folder, DC of a zero input removed
+        var bias = tn * 0.6;
+        var yF = x * (1 + amt * 4) + bias;
+        var fd = Math.sin(Math.max(-8, Math.min(8, yF))) - Math.sin(bias);
         return x + (fd - x) * amt;
     }
-    if (kind === 4) {                            // Sine
-        var yS = x * (1 + amt * 3);
+    if (kind === 4) {                            // Sine: input warp |x|^p, p from 1 down to 0.35
+        p = 1 - tn * 0.65;
+        ax = Math.abs(x);
+        sgn = x >= 0 ? 1 : -1;
+        w = ax > 1e-7 ? sgn * Math.pow(ax, p) : 0;
+        var yS = w * (1 + amt * 3);
         var sn = Math.sin(Math.max(-4, Math.min(4, yS)) * 1.57079632679);
         return x + (sn - x) * amt;
     }
-    if (kind === 5) {                            // Pinch (pinches the crest/trough inward with sharp ears near zero-crossings)
-        var pk = amt * 2.15;
-        var pn = x * (1 - pk * Math.abs(x) + (pk * 0.72) * x * x);
-        return Math.max(-1, Math.min(1, pn));
+    if (kind === 5) {                            // Pinch: taller narrower ear, deeper valley, crest held
+        ax = Math.abs(x);
+        sgn = x >= 0 ? 1 : -1;
+        var earK = 11.0 + tn * 17.0;
+        var earD = 8.5 + tn * 7.5;
+        var bodyS = 0.14 + tn * 0.14;
+        var bodyE = 1.45 + tn * 0.95;
+        var bodyDen = 0.86 - tn * 0.14;
+        var ear = earK * ax * Math.exp(-earD * ax);
+        var body = 0.78 * Math.pow(Math.max(0, ax - bodyS) / bodyDen, bodyE);
+        var pn = sgn * (ear + body);
+        return Math.max(-1, Math.min(1, x + (pn - x) * amt));
     }
-    if (kind === 6) {                            // Noise
+    if (kind === 6) {                            // Noise: grit walks from the peaks onto the zero crossings
         var nh = Math.sin((phase01 || 0) * 129.898 + 78.233) * 43758.5453;
         var nv = (nh - Math.floor(nh)) * 2 - 1;
-        var yN = Math.tanh(x * (1 + amt * 3.5) + nv * amt * (0.15 + 0.85 * Math.abs(x)));
+        an = Math.abs(x);
+        env = (0.15 + 0.85 * an) + ((0.15 + 0.85 * (1 - Math.min(an, 1))) - (0.15 + 0.85 * an)) * tn;
+        var yN = Math.tanh(x * (1 + amt * 3.5) + nv * amt * env);
         return x + (yN - x) * amt;
     }
-    var y0 = Math.tanh(x * (1 + amt * 6));       // Soft
-    return x + (y0 - x) * amt;
+    // Soft: tanh blended toward an order-8 knee
+    ax = x * (1 + amt * 6);
+    an = Math.min(Math.abs(ax), 4);
+    sgn = ax >= 0 ? 1 : -1;
+    var an2 = an * an;
+    var an8 = an2 * an2;
+    an8 = an8 * an8;
+    y1 = sgn * an / Math.pow(1 + an8, 0.125);
+    y0 = Math.tanh(ax);
+    return x + ((y0 + (y1 - y0) * tn) - x) * amt;
 }
 
 // One cycle of the additive sub, channel 0 = left, 1 = right.
-// Upper harmonics take Detune, Mod and Width; Drive shapes the sum.
+// Upper harmonics take Detune, Mod and Width; Drive shapes the sum and Tone retunes that shaper.
 function subWaveSample(phase01, channel) {
     var det = paramValue("sub_detune") / 100;
     var mod = paramValue("sub_mod") / 100;
@@ -903,6 +962,8 @@ function subWaveSample(phase01, channel) {
     if (!isFinite(wid)) wid = 0;
     if (!isFinite(ph0)) ph0 = 0;
     var sum = 0, energy = 0, i;
+    var dispStages = clamp01(paramValue("sub_disp_amt") / 100) * 32.0;
+    var dispCut = Math.max(20, Math.min(2000, Number(paramValue("sub_disp_freq")) || 160));
     for (i = 0; i < 16; i++) {
         var amp = effSubHarmonic(i);
         if (amp < 1e-6) continue;
@@ -911,13 +972,32 @@ function subWaveSample(phase01, channel) {
         var wob = i === 0 ? 0 : mod * 0.035 * n * Math.sin(6.28318530718 * phase01);
         var stereo = i === 0 ? 0 : wid * 0.08 * n * (channel ? 1 : -1);
         var ph = (phase01 + ph0) * n * (1 + spread + wob) + stereo;
-        var drvG = 1 + clamp01(paramValue("sub_drive") / 100) * Math.max(0.2, 1.6 - i * 0.08);
+        var drvG = 1 + (Math.round(paramValue("sub_drv_type")) === 5 ? 0 : clamp01(paramValue("sub_drive") / 100) * Math.max(0.2, 1.6 - i * 0.08));
         sum += Math.sin(6.28318530718 * ph) * amp * drvG;
         energy += amp;
     }
     if (energy < 1e-6) return 0;
     sum /= Math.sqrt(energy);
-    return subShapeDrive(sum, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")), phase01);
+    var subTone01 = clamp01(paramValue("sub_tone") / 100);
+    var driven = subShapeDrive(sum, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")), phase01, subTone01);
+    if (dispStages > 0.05) {
+        // Apply post-drive biquad all-pass phase dispersion in the scope preview
+        var fRatio = 55.0 / dispCut;
+        var rot = dispStages * 0.35 * Math.atan(fRatio);
+        var pShift = (phase01 + rot * 0.1591549) - Math.floor(phase01 + rot * 0.1591549);
+        var sum2 = 0;
+        for (i = 0; i < 16; i++) {
+            var amp2 = effSubHarmonic(i);
+            if (amp2 < 1e-6) continue;
+            var n2 = i + 1;
+            var stagePh = dispStages * 2.0 * Math.atan2(n2 * 55.0 / dispCut, 1.0 - (n2 * 55.0 / dispCut) * (n2 * 55.0 / dispCut));
+            var ph2 = (phase01 + ph0) * n2 * 6.28318530718 - stagePh;
+            sum2 += Math.sin(ph2) * amp2;
+        }
+        sum2 /= Math.sqrt(energy);
+        return 0.55 * driven + 0.45 * subShapeDrive(sum2, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")), pShift, subTone01);
+    }
+    return driven;
 }
 
 // Plot geometry for oscTab === 2. The waveform rect is 458 x 73: 300 px of harmonic
@@ -1065,23 +1145,21 @@ function paintSubFooter(sx, fy) {
     var y = fy - 10;
     var x = sx + 4;
     var wave = Math.round(paramValue("sub_wave"));
-    subMenuBtn("sub_wave", x, y, 62, SUB_WAVE_NAMES[wave] || "Custom", !subOn);
-    x += 65;
-    subValueReadout("sub_partials", x, y, 68, "Partials", String(Math.round(paramValue("sub_partials"))), !subOn);
-    x += 71;
-    subToggle("sub_lock", x, y, 32, "Lock", !subOn);
-    x += 35;
+    subMenuBtn("sub_wave", x, y, 68, SUB_WAVE_NAMES[wave] || "Custom", !subOn);
+    x += 74;
+    subValueReadout("sub_partials", x, y, 76, "Partials", String(Math.round(paramValue("sub_partials"))), !subOn);
+    x += 82;
+    subToggle("sub_lock", x, y, 38, "Lock", !subOn);
+    x += 42;
     var note = Math.round(paramValue("sub_lock_note"));
     var lockOn = Math.round(paramValue("sub_lock")) > 0;
-    subMenuBtn("sub_lock_note", x, y, 34, SUB_NOTE_NAMES[note] || "C", !subOn || !lockOn);
-    x += 37;
-    segCtl("sub_tuning", x, y, 96, 13, ["Key", "Fixed", "Ratio"], RC.cyan, !subOn, 7.2);
-    x += 99;
-    subValueReadout("sub_phase", x, y, 50, "Ph", Math.round(paramValue("sub_phase")) + "\u00b0", !subOn);
-    x += 53;
-    subToggle("sub_mono", x, y, 34, "Mono", !subOn);
-    x += 37;
-    subToggle("sub_direct", x, y, 42, "Direct", !subOn);
+    subMenuBtn("sub_lock_note", x, y, 38, SUB_NOTE_NAMES[note] || "C", !subOn || !lockOn);
+    x += 44;
+    subValueReadout("sub_phase", x, y, 64, "Phase", Math.round(paramValue("sub_phase")) + "\u00b0", !subOn);
+    x += 70;
+    subToggle("sub_mono", x, y, 42, "Mono", !subOn);
+    x += 46;
+    subToggle("sub_direct", x, y, 48, "Direct", !subOn);
 }
 
 function paintSubEnumMenu() {
@@ -1109,8 +1187,74 @@ function paintSubEnumMenu() {
     }
 }
 
+// 2-row Pitch-Envelope Knock widget (to the right of Tone, occupying the 4th column across Rows 2 & 3):
+//   - Top text readout: draggable decay time ("120 ms", 1..250 ms)
+//   - Left triangle/curve area: draggable up/down for pitch-envelope slope (sub_knock_slope, -100..+100%)
+//   - Right vertical bar with orange top cap: draggable up/down for knock amount (sub_knock, 0..+96 st)
+function paintSubKnockWidget(x, y, w, h, dim) {
+    var al = dim ? 0.45 : 1.0;
+    var orange = RC.sel;
+    fillRR(x, y, w, h, 3, RC.textBg, al);
+    strokeRR(x + 0.5, y + 0.5, w - 1, h - 1, 2.5, RC.contrastFrame, al, 1.0);
+
+    var decMs = paramValue("sub_decay");
+    var slopePct = paramValue("sub_knock_slope");
+    var amtSt = paramValue("sub_knock");
+    var decNorm = toNorm("sub_decay", decMs);
+    var amtNorm = clamp01(amtSt / 96.0);
+    var sNorm = Math.max(-1, Math.min(1, slopePct / 100.0));
+    var expP = Math.pow(3.5, -sNorm);
+
+    // Top time readout ("120 ms", draggable for sub_decay 1..250 ms)
+    var msTxt = decMs < 10 ? decMs.toFixed(1) + " ms" : Math.round(decMs) + " ms";
+    text(msTxt, x + 4.5, y + 9.8, 7.6, orange, false, 0, al);
+    if (amtSt > 0.05) {
+        text("+" + Math.round(amtSt), x + w - 3.5, y + 9.4, 6.8, RC.sub, false, 2, al * 0.9);
+    }
+    zone("value", x + 1, y + 1, w - 16, 11, { key: "sub_decay", norm: true });
+
+    // Plot geometry inside the widget
+    var gx0 = x + 4.0, gyTop = y + 12.5, gyBot = y + h - 3.0;
+    var gh = gyBot - gyTop;
+    var curveMaxW = w - 22.0;
+    var curveW = Math.max(12.0, (0.38 + 0.62 * decNorm) * curveMaxW);
+
+    // Baseline
+    line(gx0, gyBot, x + w - 3.5, gyBot, RC.line, al * 0.75, 1.0);
+
+    // Filled decay curve polygon & bright orange top stroke
+    var nPts = 16;
+    var polyPts = [[gx0, gyBot]];
+    var strokePts = [];
+    for (var i = 0; i <= nPts; i++) {
+        var t = i / nPts;
+        var envY = Math.pow(1.0 - t, expP);
+        var px = gx0 + t * curveW;
+        var py = gyBot - envY * gh;
+        polyPts.push([px, py]);
+        strokePts.push([px, py]);
+    }
+    polygon(polyPts, mixc(RC.textBg, orange, 0.42), al);
+    strokePath(strokePts, orange, al, 1.35);
+
+    // Draggable slope zone over the curve area
+    zone("value", x + 1, y + 12, w - 17, h - 13, { key: "sub_knock_slope", norm: true });
+
+    // Right vertical amount bar (0..96 st) with bright orange top cap
+    var barW = 9.5;
+    var barX = x + w - barW - 4.0;
+    fillRect(barX, gyTop, barW, gh, RC.raised, al * 0.55);
+    var barH = Math.max(1.5, amtNorm * gh);
+    var barTopY = gyBot - barH;
+    if (amtNorm > 0.005) {
+        fillRect(barX, barTopY, barW, barH, mixc(RC.textBg, orange, 0.45), al);
+    }
+    line(barX, barTopY, barX + barW, barTopY, orange, al, 1.6);
+    zone("value", barX - 3, y + 1, barW + 6, h - 2, { key: "sub_knock", norm: true });
+}
+
 // Bottom strip when oscTab === 2. Same 5A columns as the engine strip:
-// left 276 px (series spectra bars: Odd, Even, Tilt, Low Pass + Drive dropdown, Octave & Drive/Knock/Decay bars),
+// left 276 px (Row 1: Odd, Even, Tilt, Low Pass; Row 2: Disp Freq, Disp Amt; Row 3: Drive Mode, Drive, Tone; Col 4 Rows 2-3: 2-row Knock widget),
 // right 168 px (upper harmonics + tuning).
 function paintSubStrip(x, y, w, h) {
     var subOn = Math.round(paramValue("sub_on")) > 0;
@@ -1131,24 +1275,28 @@ function paintSubStrip(x, y, w, h) {
         hValueBar(specRow[s][0], x + 4 + s * (bw + gap), y + 3, bw, 14, specRow[s][1], acc, dim);
     }
 
-    // Row 2 (y+20): Octave [0 | -1 | -2] on left + Knock / Decay on right
-    segCtl("sub_oct", x + 4, y + 20, 136, 14, ["0", "-1", "-2"], acc, dim, 7.2);
-    hValueBar("sub_knock", x + 4 + 2 * (bw + gap), y + 20, bw, 14, "Knock", acc, dim);
-    hValueBar("sub_decay", x + 4 + 3 * (bw + gap), y + 20, bw, 14, "Decay", acc, dim);
-
-    // Row 3 (y+38): Distortion Mode dropdown + Drive amount bar + Tone bar
+    // Row 2 (y+20, cols 1..3): Distortion Mode dropdown + Drive amount bar + Tone bar
     var drvIdx = Math.round(paramValue("sub_drv_type"));
-    subMenuBtn("sub_drv_type", x + 4, y + 38, bw, SUB_DRV_NAMES[drvIdx] || "Soft", dim);
-    hValueBar("sub_drive", x + 4 + (bw + gap), y + 38, bw * 2 + gap, 16, "Drive", acc, dim);
-    hValueBar("sub_tone", x + 4 + 3 * (bw + gap), y + 38, bw, 16, "Tone", acc, dim);
+    subMenuBtn("sub_drv_type", x + 4, y + 20, bw, SUB_DRV_NAMES[drvIdx] || "Soft", dim);
+    hValueBar("sub_drive", x + 4 + (bw + gap), y + 20, bw, 15, "Drive", acc, dim);
+    hValueBar("sub_tone", x + 4 + 2 * (bw + gap), y + 20, bw, 15, "Tone", acc, dim);
+
+    // Row 3 (y+38, cols 1..3): Disperser Cutoff & Disperser Amount
+    var dispFreqW = bw * 2 + gap;                           // 136 px
+    hValueBar("sub_disp_freq", x + 4, y + 38, dispFreqW, 16, "Disp Freq", acc, dim);
+    hValueBar("sub_disp_amt", x + 4 + dispFreqW + gap, y + 38, bw, 16, "Disp Amt", acc, dim);
+
+    // Col 4 across Rows 2 & 3 (to the right of Tone / Disp Amt): 2-row Pitch-Envelope Knock widget
+    paintSubKnockWidget(x + 4 + 3 * (bw + gap), y + 20, bw, 34, dim);
 
     line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1, 1);
     var rx = x + 292;
     hValueBar("sub_detune", rx, y + 3, 54, 14, "Detune", acc, dim);
     hValueBar("sub_mod", rx + 58, y + 3, 53, 14, "Mod", acc, dim);
     hValueBar("sub_width", rx + 115, y + 3, 53, 14, "Width", acc, dim);
-    hValueBar("sub_semi", rx, y + 20, 82, 15, "Semi", acc, dim);
-    hValueBar("sub_fine", rx + 86, y + 20, 82, 15, "Fine", acc, dim);
+    hValueBar("sub_semi", rx, y + 20, 54, 15, "Semi", acc, dim);
+    hValueBar("sub_fine", rx + 58, y + 20, 53, 15, "Fine", acc, dim);
+    hValueBar("sub_ratio", rx + 115, y + 20, 53, 15, "Ratio", acc, dim);
     hValueBar("sub_gain", rx, y + 38, 168, 16, "Level", acc, dim);
 }
 
@@ -1157,12 +1305,17 @@ function paintViewer() {
     fillRect(sx, sy, sw, sh, RC.wave, 1.0);
     var acc = RC.a_wave;
 
-    //Header: folder / file name, voices, sample gain, ROOT note + ct; plus Oscillator Tabs
-    iconFolder(sx + 7, sy + 5, acc, 0.9);
-    var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 88, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? acc : RC.sub, false, 0);
-    zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
-    paintOscHeaderTabs(sx + 112, sy + 2);
-    var vx = sx + 228;
+    // Header: folder / file name, voices, sample gain, ROOT note + ct, sample/slice; plus oscillator tabs.
+    // Sub and Wavetable keep the gain pill and drop the sample folder, root, and sample/slice switch.
+    var headOsc = activeOsc();
+    var slimHead = oscTab === 2 || ((oscTab === 0 || oscTab === 1) && Math.round(paramValue(headOsc.typeKey)) > 0);
+    if (!slimHead) {
+        iconFolder(sx + 7, sy + 5, acc, 0.9);
+        var nameW = text(fitText(hasLoadedSample ? sampleFileName : "Drop a sample or click to browse", 88, 9.0), sx + 21, sy + 13, 9.0, hasLoadedSample ? acc : RC.sub, false, 0);
+        zone("button", sx + 4, sy + 1, nameW + 20, 15, { action: "browse" });
+    }
+    paintOscHeaderTabs(slimHead ? sx + 6 : sx + 112, sy + 2);
+    var vx = slimHead ? sx + 124 : sx + 228;
     if (!dspReady) {
         var failed = dspError.length > 0;
         var pl = failed ? "DSP failed: " + dspError : "DSP loading…";
@@ -1174,28 +1327,30 @@ function paintViewer() {
         text(liveActiveVoices + " / " + curPolyVoices, vx + 14, sy + 13, 9.0, acc, false, 0);
     }
     paintGainPill(sx + 276, sy + 2);
-    var rx = sx + 330;
-    var rc = rootDyn ? acc : RC.sub;
-    strokeArc(rx + 4, sy + 9, 3.6, 0, Math.PI * 2, rc, 1.0, 1.2);
-    line(rx + 1, sy + 9, rx + 7, sy + 9, rc, 1.0, 1.0);
-    text("ROOT", rx + 11, sy + 13, 8.5, RC.sub, true, 0);
-    zone("button", rx - 2, sy + 1, 44, 15, { action: "toggle", key: "root_dyn" });
-    if (rootDyn) {
-        text(pitchCurve ? "Dynamic" : "Dynamic…", rx + 46, sy + 13, 9.0, RC.sub, false, 0);
-    } else {
-        var noteW = text(midiToNoteName(curRootNote), rx + 46, sy + 13, 9.0, acc, false, 0);
-        zone("value", rx + 44, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
-        var fine = Math.round(paramValue("fine_cents"));
-        var fineW = text(fine + " ct", rx + 62, sy + 13, 9.0, acc, false, 0);
-        zone("value", rx + 60, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
-    }
-    for (var i = 0; i < 2; i++) {
-        var bx = sx + sw - 46 + i * 22;
-        var on = (curSliced ? 1 : 0) === i;
-        fillRR(bx, sy + 2, 21, 13, 3, on ? acc : RC.raised, on ? 0.9 : 1);
-        var cc = on ? RC.dark : RC.sub;
-        if (i === 0) iconWave(bx + 4.5, sy + 5, cc, 1.0); else iconKnife(bx + 5, sy + 5, cc, 1.0);
-        zone("button", bx, sy + 2, 21, 13, { action: "sliced_set", value: i });
+    if (!slimHead) {
+        var rx = sx + 330;
+        var rc = rootDyn ? acc : RC.sub;
+        strokeArc(rx + 4, sy + 9, 3.6, 0, Math.PI * 2, rc, 1.0, 1.2);
+        line(rx + 1, sy + 9, rx + 7, sy + 9, rc, 1.0, 1.0);
+        text("ROOT", rx + 11, sy + 13, 8.5, RC.sub, true, 0);
+        zone("button", rx - 2, sy + 1, 44, 15, { action: "toggle", key: "root_dyn" });
+        if (rootDyn) {
+            text(pitchCurve ? "Dynamic" : "Dynamic…", rx + 46, sy + 13, 9.0, RC.sub, false, 0);
+        } else {
+            var noteW = text(midiToNoteName(curRootNote), rx + 46, sy + 13, 9.0, acc, false, 0);
+            zone("value", rx + 44, sy + 2, noteW + 4, 14, { key: "root_note", pxPerUnit: 4 });
+            var fine = Math.round(paramValue("fine_cents"));
+            var fineW = text(fine + " ct", rx + 62, sy + 13, 9.0, acc, false, 0);
+            zone("value", rx + 60, sy + 2, fineW + 4, 14, { key: "fine_cents", pxPerUnit: 1 });
+        }
+        for (var i = 0; i < 2; i++) {
+            var bx = sx + sw - 46 + i * 22;
+            var on = (curSliced ? 1 : 0) === i;
+            fillRR(bx, sy + 2, 21, 13, 3, on ? acc : RC.raised, on ? 0.9 : 1);
+            var cc = on ? RC.dark : RC.sub;
+            if (i === 0) iconWave(bx + 4.5, sy + 5, cc, 1.0); else iconKnife(bx + 5, sy + 5, cc, 1.0);
+            zone("button", bx, sy + 2, 21, 13, { action: "sliced_set", value: i });
+        }
     }
 
     if (oscTab === 2) {
@@ -1286,23 +1441,6 @@ function paintViewer() {
     if (isWt) {
         fillRect(wx, wy, ww, wh, RC.wave, 1.0);
         paintWavetableStack(wx, wy, ww, wh, wtPos, oscOn, wtFx, wtFx1, wtFx2);
-        // Left vertical Gain slider (like native Wavetable)
-        var gxS = wx + 10, gyTop = wy + 12, gyBot = wy + wh - 14;
-        text("C", gxS, gyTop - 3, 7.5, RC.sel, false, 1);
-        line(gxS, gyTop, gxS, gyBot, RC.sel, oscOn ? 0.85 : 0.35, 1.4);
-        var gVal = paramValue(osc.gainKey);
-        text(gVal.toFixed(1) + " dB", gxS + 4, wy + wh - 3, 8.0, oscOn ? RC.sel : RC.sub, false, 1);
-        zone("value", wx + 2, wy + 4, 24, wh - 6, { key: osc.gainKey, norm: true });
-        // Right vertical Wave Position slider + readout
-        var pxS = wx + ww - 12;
-        line(pxS, gyTop - 4, pxS, gyBot, RC.line, 0.9, 1.0);
-        var pyThumb = gyBot - clamp01(wtPos) * (gyBot - (gyTop - 4));
-        setc(oscOn ? RC.sel : RC.sub, 1.0);
-        mgraphics.set_line_width(1.1);
-        mgraphics.rectangle(pxS - 2.5, pyThumb - 2.5, 5.0, 5.0);
-        mgraphics.stroke();
-        text((wtPos * 100).toFixed(1) + " %", pxS - 2, wy + wh - 3, 8.0, oscOn ? RC.sel : RC.sub, false, 1);
-        zone("value", wx + ww - 26, wy + 4, 24, wh - 6, { key: osc.posKey, norm: true });
     }
 
     var stX = vwx(curStart), enX = vwx(curEnd);
@@ -1355,17 +1493,6 @@ function paintViewer() {
         text(fxLabs[1], sx + 128, fy, 9.0, RC.sub, false, 0);
         text(f2v.toFixed(1) + " %", sx + 154, fy, 9.0, fxDim ? RC.sub : RC.sel, false, 0);
         zone("value", sx + 126, fy - 11, 66, 14, { key: osc.fx2Key, norm: true });
-
-        line(sx + 198, fy - 9, sx + 198, fy + 1, RC.line, 1.0, 1.0);
-        var semiV = Math.round(paramValue(osc.pitchKey));
-        text("Semi", sx + 205, fy, 9.0, RC.sub, false, 0);
-        text(semiV + " st", sx + 231, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
-        zone("value", sx + 203, fy - 11, 54, 14, { key: osc.pitchKey, norm: true });
-
-        var detV = Math.round(paramValue(osc.detKey));
-        text("Det", sx + 264, fy, 9.0, RC.sub, false, 0);
-        text(detV + " ct", sx + 283, fy, 9.0, oscOn ? RC.sel : RC.sub, false, 0);
-        zone("value", sx + 262, fy - 11, 52, 14, { key: osc.detKey, norm: true });
         return;
     }
     if (curSliced) {
@@ -2831,12 +2958,12 @@ function paintSettingBarItem(kItem, bx, by, bw, bh, acc) {
 
 // Helper: Pos value bar paired with its adjacent Freeze snowflake button
 function paintPosAndFreeze(osc, bx, by, bw, bh, acc, isWt) {
-    var fw = bh + 2;
-    var pw = bw - fw - 3;
+    var fw = bh;
+    var pw = bw - fw - 2;
     hValueBar(osc.posKey, bx, by, pw, bh, "Pos", acc, !isWt && !curFreeze);
-    var fx = bx + pw + 3;
+    var fx = bx + pw + 2;
     fillRR(fx, by, fw, bh, 2.5, curFreeze ? RC.sel : RC.raised, 1);
-    iconSnow(fx + fw * 0.5, by + bh * 0.5, curFreeze ? RC.dark : RC.sub, 0.9);
+    iconSnow(fx + fw * 0.5, by + bh * 0.5, curFreeze ? RC.dark : RC.sub, 0.85);
     zone("button", fx, by, fw, bh, { action: "freeze" });
 }
 
@@ -2879,14 +3006,16 @@ function paintEngineStrip() {
 
     line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1.0, 1.0);
 
-    // Right Column (x+292 .. x+460, w = 168): 2x2 Transport & Gain Bars with Freeze right beside Pos
+    // Right Column (x+292 .. x+460, w = 168): Tuning (Pitch / Fine / Ratio) & Playhead (Speed / Pos+Freeze / Gain)
     text("TUNING & PLAYHEAD", x + 292, y + 12, 7.5, RC.sub, true, 0);
     valuePill(x + 412, y + 3, 22, Math.round(paramValue("unison_voices")) + "v", { key: "unison_voices", pxPerUnit: 6 }, RC.sel, false);
     valuePill(x + 436, y + 3, 24, Math.round(paramValue("unison_detune")) + "%", { key: "unison_detune" }, RC.sel, Math.round(paramValue("unison_voices")) <= 1);
-    hValueBar(osc.pitchKey, x + 292, y + 20, 82, 15, "Pitch", acc, false);
-    hValueBar(isWt ? osc.detKey : "grain_motion", x + 378, y + 20, 82, 15, isWt ? "Detune" : "Speed", acc, !isWt && !scanOn);
-    paintPosAndFreeze(osc, x + 292, y + 38, 82, 16, acc, isWt);
-    hValueBar(osc.gainKey, x + 378, y + 38, 82, 16, "Gain", acc, false);
+    hValueBar(osc.pitchKey, x + 292, y + 20, 54, 15, "Pitch", acc, false);
+    hValueBar(osc.detKey, x + 350, y + 20, 53, 15, "Fine", acc, false);
+    hValueBar(osc.ratioKey, x + 407, y + 20, 53, 15, "Ratio", acc, false);
+    hValueBar("grain_motion", x + 292, y + 38, 49, 16, "Speed", acc, !isWt && !scanOn);
+    paintPosAndFreeze(osc, x + 344, y + 38, 63, 16, acc, isWt);
+    hValueBar(osc.gainKey, x + 410, y + 38, 50, 16, "Gain", acc, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -2961,22 +3090,23 @@ function paintDetailsSection(sx) {
 function paintVoiceSection(sx) {
     var w = SECTIONS[4].w, acc = RC.cyan;
     panelBox(sx, SEC_Y, w, SEC_H);
-    secTitle("VOICING", sx + 7, 15, RC.text);
-    segCtl("mono_legato", sx + 7, 20, w - 14, 13, ["Poly", "Mono"], acc);
+    secTitle("VOICING", sx + 7, 14, RC.text);
+    segCtl("mono_legato", sx + 7, 18, w - 14, 12, ["Poly", "Mono"], acc);
     var ks1 = [["poly_voices", "Poly"], ["unison_voices", "Unison"], ["unison_detune", "Detune"]];
     var ks2 = [["unison_width", "Width"], ["glide_ms", "Glide"], ["vel_sens", "Vel"]];
-    for (var i = 0; i < 3; i++) rKnob(ks1[i][0], sx + 6 + (w - 12) * (i + 0.5) / 3, 58, 7, ks1[i][1], acc, {});
-    for (var j = 0; j < 3; j++) rKnob(ks2[j][0], sx + 6 + (w - 12) * (j + 0.5) / 3, 100, 7, ks2[j][1], acc, {});
-    line(sx + 7, 120, sx + w - 7, 120, RC.line, 1.0, 1.0);
-    secTitle("OUT", sx + 7, 130, RC.text);
-    rKnob("out_gain", sx + 34, 146, 7, "", acc, {});
-    var my = 126;
+    for (var i = 0; i < 3; i++) rKnob(ks1[i][0], sx + 6 + (w - 12) * (i + 0.5) / 3, 52, 6.8, ks1[i][1], acc, {});
+    for (var j = 0; j < 3; j++) rKnob(ks2[j][0], sx + 6 + (w - 12) * (j + 0.5) / 3, 89, 6.8, ks2[j][1], acc, {});
+    hValueBar("fine_range", sx + 7, 108, w - 14, 14, "Fine Range", acc, false);
+    line(sx + 7, 125, sx + w - 7, 125, RC.line, 1.0, 1.0);
+    secTitle("OUT", sx + 7, 134, RC.text);
+    rKnob("out_gain", sx + 34, 148, 7, "", acc, {});
+    var my = 129;
     var L = [livePeakL, livePeakR];
     for (var m = 0; m < 2; m++) {
         var mx = sx + w - 38 + m * 9;
-        fillRR(mx, my, 6, 36, 1.5, RC.track);
-        var hh = clamp01(L[m]) * 36;
-        if (hh > 0.5) fillRR(mx, my + 36 - hh, 6, hh, 1.5, L[m] > 0.9 ? RC.orange : acc, 0.95);
+        fillRR(mx, my, 6, 34, 1.5, RC.track);
+        var hh = clamp01(L[m]) * 34;
+        if (hh > 0.5) fillRR(mx, my + 34 - hh, 6, hh, 1.5, L[m] > 0.9 ? RC.orange : acc, 0.95);
     }
 }
 
