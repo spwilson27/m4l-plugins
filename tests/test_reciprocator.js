@@ -22,6 +22,7 @@ const assert = require("assert");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const GEN_PATH = path.join(ROOT, "src", "reciprocator_core.genexpr");
@@ -220,7 +221,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
     const viz = byId["obj-viz"];
     assert.strictEqual(viz.maxclass, "v8ui");
     const vr = viz.presentation_rect;
-    const embedded = viz.textfile.text.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+    const embedded = viz.textfile.text.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
     assert.ok(embedded, "The face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
     const gendspText = JSON.parse(embedded[1]);
     assert.strictEqual(embedded[2], crypto.createHash("sha1").update(gendspText).digest("hex").slice(0, 12), "GEN_DSP_HASH must match the .gendsp text");
@@ -230,10 +231,10 @@ function verifyAmxd(amxdFile, expectedWidth) {
     assert.strictEqual(gBoxes["obj-in2"].text, "in 2");
     assert.strictEqual(gBoxes["obj-out1"].text, "out 1");
     assert.strictEqual(gBoxes["obj-out2"].text, "out 2");
-    assert.strictEqual(gBoxes["obj-code"].code, gen, "GEN_DSP_TEXT codebox must carry reciprocator_core.genexpr");
+    assert.strictEqual(gBoxes["obj-code"].code, minifyGen(gen), "GEN_DSP_TEXT codebox is the mangled reciprocator core");
     assert.ok(viz.textfile.text.includes('Global("reciprocator_dspq")'), "DSP create queue");
     assert.ok(viz.textfile.text.includes("/tmp/reciprocator_core_"), "Deferred gen file path");
-    assert.ok(viz.textfile.text.includes('g.varname = "rcp_gen"'), "Created gen~ scripting name");
+    assert.ok(/\.varname\s*=\s*"rcp_gen"/.test(viz.textfile.text), "Created gen~ scripting name");
     assert.ok(viz.textfile.text.includes("DSP loading..."), "Loading pill copy");
     assert.ok(viz.textfile.text.includes("DSP failed:"), "Failure pill copy");
     assert.ok(viz.textfile.text.includes("function init_dsp"), "init_dsp handler");

@@ -34,6 +34,9 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT_DIR, "src")
 DEVICES = os.path.join(ROOT_DIR, "devices")
@@ -496,6 +499,7 @@ def load_layout():
 
 def gendsp_json(gen_code, nin, nout):
     """A gen patcher (in 1..nin -> codebox -> out 1..nout) as .gendsp JSON text (the deferred DSP writes it to /tmp and loads it into a shell gen~)."""
+    gen_code = minify_gen(gen_code)
     def b(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
                "patching_rect": [float(x), float(y), 200.0, 22.0]}
@@ -727,6 +731,7 @@ def build_patcher():
 
 
 def write_amxd(patcher, out_path):
+    minify_patcher(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0)

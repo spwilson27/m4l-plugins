@@ -24,6 +24,9 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "envtrig_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "envtrig_ui.js")
@@ -322,6 +325,7 @@ def gendsp_json(gen_code):
     into edge~, and the held velocity into snapshot~. The face writes this text to
     /tmp/envtrig_core_<hash>.gendsp and creates `gen~ @gen <file>` (src/envtrig_dsp.js).
     """
+    gen_code = minify_gen(gen_code)
     def bx(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {
             "id": i,
@@ -610,6 +614,7 @@ def build():
         }
     }
 
+    minify_patcher(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

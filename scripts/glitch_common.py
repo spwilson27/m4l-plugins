@@ -8,6 +8,8 @@ import os
 import re
 import subprocess
 
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB_PATH = os.path.join(ROOT_DIR, "src", "cepstrum_lib.genexpr")
 CORE_PATH = os.path.join(ROOT_DIR, "src", "glitch_core.genexpr")
@@ -309,6 +311,7 @@ def stage_sources(layout=None):
 def gendsp_json(gen_code, nin=2, nout=2):
     """A gen patcher (in 1..nin -> codebox -> out 1..nout) as .gendsp JSON text (AGENTS.md 1d: the device ships without its gen~ and the
     v8ui creates it from this file after load)."""
+    gen_code = minify_gen(gen_code)
     def b(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
                "patching_rect": [float(x), float(y), 200.0, 22.0]}

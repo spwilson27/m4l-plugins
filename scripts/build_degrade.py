@@ -23,6 +23,9 @@ import os
 import struct
 import sys
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "degrade_config.js")
 DSP_JS_PATH = os.path.join(ROOT_DIR, "src", "degrade_dsp.js")
@@ -563,6 +566,7 @@ def layout_hero():
 
 def gendsp_json(gen_code):
     """2-in, 2-out .gendsp wrapper around codebox. The face writes it and creates `gen~ @gen <file>`."""
+    gen_code = minify_gen(gen_code)
     def b(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {
             "id": i,
@@ -959,6 +963,7 @@ def build_patcher():
 
 
 def write_amxd(patcher_dict, out_path):
+    minify_patcher(patcher_dict)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     payload = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")
     header = (

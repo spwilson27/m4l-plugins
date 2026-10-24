@@ -293,14 +293,14 @@ function pill(x, y, w, h, label, on, acc, size) {
 }
 
 // Segmented control over an enum (or any 0..n-1 value): each segment sets `key`
-function segCtl(key, x, y, w, h, labels, acc, dimmed) {
+function segCtl(key, x, y, w, h, labels, acc, dimmed, fontSize) {
     var cur = Math.round(paramValue(key));
     var n = labels.length, sw = w / n;
     fillRR(x, y, w, h, 3, RC.raised, dimmed ? 0.5 : 1);
     for (var i = 0; i < n; i++) {
         var on = i === cur;
         if (on) fillRR(x + i * sw + 1, y + 1, sw - 2, h - 2, 2.5, RC.sel, dimmed ? 0.4 : 0.95);
-        text(labels[i], x + i * sw + sw * 0.5, y + h * 0.5 + 3, 7.5, on ? RC.dark : RC.sub, on, 1);
+        text(labels[i], x + i * sw + sw * 0.5, y + h * 0.5 + 3, fontSize || 7.5, on ? RC.dark : RC.sub, on, 1);
         zone("button", x + i * sw, y, sw, h, { action: "menu_pick", key: key, value: i });
     }
 }
@@ -743,14 +743,376 @@ function paintOscHeaderTabs(tx, ty) {
     }
 }
 
-// Helper: paint Sub Oscillator controls in the bottom strip when oscTab === 2
+// ---------------------------------------------------------------------------
+// Additive sub oscillator (Operator-style harmonic bars + Current-style spectra)
+// Packed levels: sub_h1_4 / sub_h5_8 / sub_h9_12 / sub_h13_16 are 16-bit words of
+// four 4-bit nibbles. The lowest nibble of each word is the first partial in that
+// group (partial 1 = bits 0..3 of sub_h1_4). A nibble 0..15 is a level 0..1.
+// ---------------------------------------------------------------------------
+
+var SUB_H_KEYS = ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"];
+var SUB_WAVE_NAMES = ["Custom", "Sine", "Saw", "Square", "Triangle", "Odd", "Warm"];
+var SUB_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+var SUB_ENUMS = {
+    sub_wave: SUB_WAVE_NAMES,
+    sub_lock_note: SUB_NOTE_NAMES,
+    sub_tuning: ["Key", "Fixed", "Ratio"]
+};
+
+function quantHarmNibble(val01) {
+    var n = clamp01(Number(val01));
+    if (!isFinite(n)) n = 0;
+    return Math.max(0, Math.min(15, Math.round(n * 15)));
+}
+
+function getSubHarmonic(idx) {
+    idx = Math.max(0, Math.min(15, idx | 0));
+    var packed = Math.round(paramValue(SUB_H_KEYS[(idx / 4) | 0])) & 65535;
+    return ((packed >> ((idx % 4) * 4)) & 15) / 15;
+}
+
+function setSubHarmonic(idx, val01) {
+    idx = Math.max(0, Math.min(15, idx | 0));
+    var group = (idx / 4) | 0;
+    var shift = (idx % 4) * 4;
+    var packed = Math.round(paramValue(SUB_H_KEYS[group])) & 65535;
+    packed = (packed & ~(15 << shift)) | (quantHarmNibble(val01) << shift);
+    setParamFromFace(SUB_H_KEYS[group], packed);
+}
+
+function subPresetAmps(waveIdx) {
+    var a = [], i, n;
+    if (waveIdx === 1) {                         // Sine: fundamental only
+        for (i = 0; i < 16; i++) a.push(i === 0 ? 1 : 0);
+    } else if (waveIdx === 2) {                  // Saw: 1/n
+        for (i = 0; i < 16; i++) a.push(1 / (i + 1));
+    } else if (waveIdx === 3) {                  // Square: odd 1/n
+        for (i = 0; i < 16; i++) a.push((i % 2) === 0 ? 1 / (i + 1) : 0);
+    } else if (waveIdx === 4) {                  // Triangle: odd 1/n^2
+        for (i = 0; i < 16; i++) { n = i + 1; a.push((i % 2) === 0 ? 1 / (n * n) : 0); }
+    } else if (waveIdx === 5) {                  // Odd: odd partials, slower rolloff than square
+        for (i = 0; i < 16; i++) a.push((i % 2) === 0 ? 1 / Math.sqrt(i + 1) : 0);
+    } else if (waveIdx === 6) {                  // Warm: every partial, soft exponential decay
+        for (i = 0; i < 16; i++) a.push(Math.pow(0.72, i));
+    } else return null;
+    return a;
+}
+
+function applySubWavePreset(waveIdx) {
+    waveIdx = Math.max(0, Math.min(SUB_WAVE_NAMES.length - 1, Math.round(Number(waveIdx) || 0)));
+    var amps = subPresetAmps(waveIdx);
+    if (amps) {
+        for (var g = 0; g < 4; g++) {
+            var word = 0;
+            for (var k = 0; k < 4; k++) word |= quantHarmNibble(amps[g * 4 + k]) << (k * 4);
+            setParamFromFace(SUB_H_KEYS[g], word);
+        }
+    }
+    setParamFromFace("sub_wave", waveIdx);
+}
+
+function subPartials() {
+    var n = Math.round(paramValue("sub_partials"));
+    if (!isFinite(n) || n < 1) n = 1;
+    return n > 16 ? 16 : n;
+}
+
+// Spectra gain relative to the drawn level. 0 on sub_spectra is unity in every mode.
+// Gain may rise above 1 (a tilt / stretch can lift a partial) and is capped at 2.
+function subSpectraGain(idx) {
+    var s = paramValue("sub_spectra") / 100;
+    if (!isFinite(s)) s = 0;
+    s = Math.max(-1, Math.min(1, s));
+    var mode = Math.round(paramValue("sub_spec_mode"));
+    if (!isFinite(mode) || mode < 0) mode = 0;
+    var t = idx / 15;
+    var g = 1;
+    if (mode === 1) {                            // Low Pass: negative closes the filter, positive stays open
+        g = s >= 0 ? 1 : (1 + s * t);
+    } else if (mode === 2) {                     // Comb: bipolar flips which teeth are notched
+        var tooth = 0.5 + 0.5 * Math.cos(Math.PI * idx);
+        g = 1 - Math.abs(s) * (s >= 0 ? (1 - tooth) : tooth);
+    } else if (mode === 3) {                     // Odd/Even: positive keeps odd harmonics (idx 0, 2, 4...)
+        var oddH = (idx % 2) === 0;
+        g = s >= 0 ? (oddH ? 1 : (1 - s)) : (oddH ? (1 + s) : 1);
+    } else if (mode === 4) {                     // Stretch: positive lifts highs, negative ducks them
+        g = 1 + s * t;
+    } else {                                     // Tilt
+        g = 1 + s * (2 * t - 1);
+    }
+    if (g < 0) g = 0;
+    return g > 2 ? 2 : g;
+}
+
+function effSubHarmonic(idx) {
+    idx = Math.max(0, Math.min(15, idx | 0));
+    if (idx >= subPartials()) return 0;
+    var lvl = (idx === 0 ? paramValue("sub_level") : paramValue("sub_harm_level")) / 100;
+    if (!isFinite(lvl)) lvl = 0;
+    lvl = clamp01(lvl);
+    return clamp01(getSubHarmonic(idx) * subSpectraGain(idx) * lvl);
+}
+
+function subShapeDrive(x, amt, kind) {
+    if (!(amt > 0.0005)) return Math.max(-1, Math.min(1, x));
+    var y = x * (1 + amt * 6);
+    if (kind === 1) return Math.max(-1, Math.min(1, y));
+    if (kind === 2) {
+        var tube = Math.tanh(y);
+        return Math.max(-1, Math.min(1, tube + amt * 0.2 * tube * tube));
+    }
+    if (kind === 3) return Math.sin(y * (1 + amt * 2) * 1.57079632679);
+    return Math.tanh(y);
+}
+
+// One cycle of the additive sub, channel 0 = left, 1 = right.
+// Upper harmonics take Detune, Mod and Width; Drive shapes the sum.
+function subWaveSample(phase01, channel) {
+    var det = paramValue("sub_detune") / 100;
+    var mod = paramValue("sub_mod") / 100;
+    var wid = paramValue("sub_width") / 100;
+    var ph0 = paramValue("sub_phase") / 360;
+    if (!isFinite(det)) det = 0;
+    if (!isFinite(mod)) mod = 0;
+    if (!isFinite(wid)) wid = 0;
+    if (!isFinite(ph0)) ph0 = 0;
+    var sum = 0, energy = 0, i;
+    for (i = 0; i < 16; i++) {
+        var amp = effSubHarmonic(i);
+        if (amp < 1e-6) continue;
+        var n = i + 1;
+        var spread = i === 0 ? 0 : det * 0.02 * n * ((i % 2) ? 1 : -1);
+        var wob = i === 0 ? 0 : mod * 0.035 * n * Math.sin(6.28318530718 * phase01);
+        var stereo = i === 0 ? 0 : wid * 0.08 * n * (channel ? 1 : -1);
+        var ph = (phase01 + ph0) * n * (1 + spread + wob) + stereo;
+        var drvG = 1 + clamp01(paramValue("sub_drive") / 100) * Math.max(0.2, 1.6 - i * 0.08);
+        sum += Math.sin(6.28318530718 * ph) * amp * drvG;
+        energy += amp;
+    }
+    if (energy < 1e-6) return 0;
+    sum /= Math.sqrt(energy);
+    return subShapeDrive(sum, clamp01(paramValue("sub_drive") / 100), Math.round(paramValue("sub_drv_type")));
+}
+
+// Plot geometry for oscTab === 2. The waveform rect is 458 x 73: 300 px of harmonic
+// bars on the left, 150 px of waveform / stereo scope on the right.
+function subHarmLayout() {
+    var wx = viewWave[0], wy = viewWave[1], ww = viewWave[2], wh = viewWave[3];
+    var editorW = 300, scopeW = 150, split = 8, handleW = 34, barGap = 2;
+    var barsX = wx + handleW + 4;
+    var barsW = editorW - handleW - 8;
+    return {
+        wx: wx, wy: wy, ww: ww, wh: wh,
+        editorX: wx, editorW: editorW,
+        scopeX: wx + editorW + split, scopeW: scopeW,
+        handleW: handleW,
+        barsX: barsX, barsW: barsW, bw: (barsW - barGap * 15) / 16, barGap: barGap,
+        top: wy + 14, bot: wy + wh - 5
+    };
+}
+
+function subHarmIndexAt(L, x) {
+    var cell = L.bw + L.barGap;
+    var i = Math.floor((x - L.barsX) / cell);
+    if (i < 0) i = 0;
+    return i > 15 ? 15 : i;
+}
+
+function subHarmLevelAt(L, y) {
+    return clamp01((L.bot - y) / Math.max(1, L.bot - L.top));
+}
+
+function drawSubHarmonicsAt(x, y) {
+    var L = subHarmLayout();
+    var idx = subHarmIndexAt(L, x);
+    var lvl = subHarmLevelAt(L, y);
+    if (drag.subLast === undefined || drag.subLast === null) {
+        setSubHarmonic(idx, lvl);
+    } else if (drag.subLast === idx) {
+        setSubHarmonic(idx, lvl);
+    } else {
+        var a = drag.subLast, b = idx;
+        var lo = Math.min(a, b), hi = Math.max(a, b);
+        for (var i = lo; i <= hi; i++) {
+            var u = (i - a) / (b - a);
+            setSubHarmonic(i, drag.subLastLvl + (lvl - drag.subLastLvl) * u);
+        }
+    }
+    drag.subLast = idx;
+    drag.subLastLvl = lvl;
+    if (Math.round(paramValue("sub_wave")) !== 0) setParamFromFace("sub_wave", 0);
+}
+
+function paintSubFader(key, x, y, w, h, label, acc, dim) {
+    var n = toNorm(key, paramValue(key));
+    var al = dim ? 0.45 : 1;
+    text(label, x + 1, y + 9, 7.0, acc, true, 0, al);
+    text(String(Math.round(paramValue(key))), x + 1, y + h - 2, 6.5, dim ? RC.sub : RC.text, false, 0, al);
+    var tx = x + w - 7, ty = y + 2, th = h - 4;
+    fillRR(tx, ty, 5, th, 1.5, RC.raised, al);
+    var fh = Math.max(n > 0.01 ? 2 : 0, n * (th - 2));
+    if (fh > 0) fillRect(tx + 1, ty + th - 1 - fh, 3, fh, acc, al);
+    zone("value", x, y, w, h, { key: key, norm: true });
+}
+
+function paintSubScope(x, y, w, h, subOn) {
+    fillRR(x, y, w, h, 3, RC.dark, 0.85);
+    var waveW = w - 48;
+    var mid = y + h * 0.58, amp = h * 0.32;
+    var cols = 56, c;
+    var left = [], right = [];
+    for (c = 0; c <= cols; c++) {
+        var p = c / cols;
+        var px = x + 4 + p * (waveW - 8);
+        left.push([px, mid - subWaveSample(p, 0) * amp]);
+        right.push([px, mid - subWaveSample(p, 1) * amp]);
+    }
+    line(x + 4, mid, x + waveW - 4, mid, RC.line, 0.7, 1);
+    strokePath(right, RC.cyan, subOn ? 0.55 : 0.25, 1.1);
+    strokePath(left, subOn ? RC.sel : RC.lcdDim, subOn ? 1 : 0.4, 1.45);
+    text("WAVE", x + 5, y + 9, 6.5, RC.sub, true, 0);
+    // Stereo phase scope: upper-harmonic width opens the Lissajous
+    var lx = x + waveW + 2, ly = y + 8, ls = h - 16;
+    line(lx + ls * 0.5, ly, lx + ls * 0.5, ly + ls, RC.line, 0.45, 1);
+    line(lx, ly + ls * 0.5, lx + ls, ly + ls * 0.5, RC.line, 0.45, 1);
+    var xy = [];
+    for (c = 0; c <= 48; c++) {
+        var ph = c / 48;
+        xy.push([lx + ls * 0.5 + subWaveSample(ph, 0) * ls * 0.42, ly + ls * 0.5 - subWaveSample(ph, 1) * ls * 0.42]);
+    }
+    strokePath(xy, subOn ? RC.cyan : RC.lcdDim, subOn ? 0.9 : 0.35, 1.1);
+}
+
+function paintSubOscViewer(wx, wy, ww, wh) {
+    var subOn = Math.round(paramValue("sub_on")) > 0;
+    var L = subHarmLayout();
+    var partials = subPartials();
+    fillRect(wx, wy, ww, wh, RC.wave, 1);
+    paintSubFader("sub_level", L.editorX + 1, wy + 2, L.handleW, 32, "Sub", subOn ? RC.sel : RC.lcdDim, !subOn);
+    paintSubFader("sub_harm_level", L.editorX + 1, wy + 36, L.handleW, 32, "Harm", subOn ? RC.cyan : RC.lcdDim, !subOn);
+    var bh = L.bot - L.top;
+    for (var i = 0; i < 16; i++) {
+        var bx = L.barsX + i * (L.bw + L.barGap);
+        var drawn = getSubHarmonic(i);
+        var eff = effSubHarmonic(i);
+        var active = i < partials;
+        var col = i === 0 ? RC.sel : RC.cyan;
+        if (!subOn) col = RC.lcdDim;
+        fillRect(bx, L.top, L.bw, bh, RC.raised, active ? 0.55 : 0.22);
+        var drawnH = drawn * bh;
+        var effH = eff * bh;
+        if (drawnH > 0.4) fillRect(bx + 0.5, L.bot - drawnH, L.bw - 1, drawnH, col, active ? 0.28 : 0.1);
+        if (effH > 0.4) fillRect(bx + 1.6, L.bot - effH, Math.max(1, L.bw - 3.2), effH, col, active ? 0.95 : 0.22);
+        var capY = L.bot - drawnH;
+        line(bx, capY, bx + L.bw, capY, i === 0 ? RC.sel : RC.white, active ? 0.85 : 0.28, 1);
+        if (i === 0) text("SUB", bx + L.bw * 0.5, L.top - 2, 6.5, subOn ? RC.sel : RC.sub, true, 1);
+    }
+    zone("sub_harm", L.barsX - 1, L.top - 2, L.barsW + 2, bh + 4, {
+        keys: ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"]
+    });
+    paintSubScope(L.scopeX, wy + 3, L.scopeW, wh - 6, subOn);
+}
+
+function subMenuBtn(key, x, y, w, label, dim) {
+    fillRR(x, y, w, 13, 3, RC.raised, dim ? 0.5 : 1);
+    text(fitText(label, w - 12, 8.0), x + 4, y + 9.5, 8.0, dim ? RC.sub : RC.sel, false, 0, dim ? 0.5 : 1);
+    wtCaret(x + w - 9, y + 5, RC.sub);
+    zone("button", x, y, w, 13, { action: "menu", key: key, subMenu: true, w2: Math.max(w, 72), anchorX: x, anchorY: y });
+}
+
+function subValueReadout(key, x, y, w, label, display, dim) {
+    var al = dim ? 0.45 : 1;
+    text(label, x, y + 9.5, 7.2, RC.sub, false, 0, al);
+    text(display, x + w, y + 9.5, 8.0, dim ? RC.sub : RC.sel, false, 2, al);
+    zone("value", x, y, w, 13, { key: key, norm: true });
+}
+
+function subToggle(key, x, y, w, label, dim) {
+    var on = Math.round(paramValue(key)) > 0;
+    fillRR(x, y, w, 13, 3, on ? RC.sel : RC.raised, dim ? 0.45 : (on ? 0.95 : 1));
+    text(label, x + w * 0.5, y + 9.5, 7.2, on ? RC.dark : RC.sub, on, 1, dim ? 0.5 : 1);
+    zone("button", x, y, w, 13, { action: "toggle", key: key });
+}
+
+function paintSubFooter(sx, fy) {
+    var subOn = Math.round(paramValue("sub_on")) > 0;
+    var y = fy - 10;
+    var x = sx + 4;
+    var wave = Math.round(paramValue("sub_wave"));
+    subMenuBtn("sub_wave", x, y, 62, SUB_WAVE_NAMES[wave] || "Custom", !subOn);
+    x += 65;
+    subValueReadout("sub_partials", x, y, 68, "Partials", String(Math.round(paramValue("sub_partials"))), !subOn);
+    x += 71;
+    subToggle("sub_lock", x, y, 32, "Lock", !subOn);
+    x += 35;
+    var note = Math.round(paramValue("sub_lock_note"));
+    var lockOn = Math.round(paramValue("sub_lock")) > 0;
+    subMenuBtn("sub_lock_note", x, y, 34, SUB_NOTE_NAMES[note] || "C", !subOn || !lockOn);
+    x += 37;
+    segCtl("sub_tuning", x, y, 96, 13, ["Key", "Fixed", "Ratio"], RC.cyan, !subOn, 7.2);
+    x += 99;
+    subValueReadout("sub_phase", x, y, 50, "Ph", Math.round(paramValue("sub_phase")) + "\u00b0", !subOn);
+    x += 53;
+    subToggle("sub_mono", x, y, 34, "Mono", !subOn);
+    x += 37;
+    subToggle("sub_direct", x, y, 42, "Direct", !subOn);
+}
+
+function paintSubEnumMenu() {
+    var m = openMenu;
+    var names = SUB_ENUMS[m.key];
+    if (!names) return;
+    var cur = Math.round(paramValue(m.key));
+    var rowH = names.length > 8 ? 11.5 : 13;
+    var mh = names.length * rowH + 2;
+    var mx = m.anchorX !== undefined ? m.anchorX : m.x;
+    var my = (m.anchorY !== undefined ? m.anchorY : m.y) - mh;
+    if (my < 2) my = 2;
+    var mw = Math.max(m.w || 72, 72);
+    fillRect(mx, my, mw, mh, RC.wave, 1);
+    setc(RC.sel, 1);
+    mgraphics.set_line_width(1.1);
+    mgraphics.rectangle(mx + 0.5, my + 0.5, mw - 1, mh - 1);
+    mgraphics.stroke();
+    for (var i = 0; i < names.length; i++) {
+        var ry = my + 1 + i * rowH;
+        var sel = cur === i;
+        if (sel) fillRect(mx + 1, ry, mw - 2, rowH, RC.sel, 1);
+        text(names[i], mx + 5, ry + rowH * 0.5 + 3, 8.5, sel ? RC.wave : RC.sel, false, 0);
+        zone("button", mx, ry, mw, rowH, { action: "menu_pick", key: m.key, value: i });
+    }
+}
+
+// Bottom strip when oscTab === 2. Same 5A columns as the engine strip:
+// left 276 px (spectra / drive / knock), right 168 px (upper harmonics + tuning).
 function paintSubStrip(x, y, w, h) {
     var subOn = Math.round(paramValue("sub_on")) > 0;
-    text("Sub Octave", x + 10, y + 13, 8.5, RC.text, false, 0);
-    segCtl("sub_oct", x + 68, y + 3, 90, 13, ["0", "-1", "-2"], RC.cyan, !subOn);
-    var ky2 = y + 39;
-    rKnob("sub_tone", x + 64, ky2, 7, "Tone", RC.cyan, { dim: !subOn });
-    rKnob("sub_gain", x + 144, ky2, 7, "Gain", RC.cyan, { dim: !subOn });
+    var acc = RC.cyan;
+    var dim = !subOn;
+    var leftW = 276;
+    segCtl("sub_spec_mode", x + 4, y + 3, leftW, 14, ["Tilt", "Low Pass", "Comb", "Odd/Even", "Stretch"], acc, dim, 7.0);
+    segCtl("sub_drv_type", x + 4, y + 20, 200, 14, ["Soft", "Hard", "Tube", "Fold"], acc, dim, 7.2);
+    segCtl("sub_oct", x + 208, y + 20, 72, 14, ["0", "-1", "-2"], acc, dim, 7.2);
+    var gap = 4;
+    var bw = Math.floor((leftW - 3 * gap) / 4);             // 66 px, same slot as Design 5A
+    var row3 = [
+        ["sub_spectra", "Spectra"],
+        ["sub_drive", "Drive"],
+        ["sub_knock", "Knock"],
+        ["sub_decay", "Decay"]
+    ];
+    for (var i = 0; i < row3.length; i++) {
+        hValueBar(row3[i][0], x + 4 + i * (bw + gap), y + 38, bw, 16, row3[i][1], acc, dim);
+    }
+    line(x + 286, y + 4, x + 286, y + h - 4, RC.divider, 1, 1);
+    var rx = x + 292;
+    hValueBar("sub_detune", rx, y + 3, 54, 14, "Detune", acc, dim);
+    hValueBar("sub_mod", rx + 58, y + 3, 53, 14, "Mod", acc, dim);
+    hValueBar("sub_width", rx + 115, y + 3, 53, 14, "Width", acc, dim);
+    hValueBar("sub_semi", rx, y + 20, 82, 15, "Semi", acc, dim);
+    hValueBar("sub_fine", rx + 86, y + 20, 82, 15, "Fine", acc, dim);
+    hValueBar("sub_tone", rx, y + 38, 82, 16, "Tone", acc, dim);
+    hValueBar("sub_gain", rx + 86, y + 38, 82, 16, "Level", acc, dim);
 }
 
 function paintViewer() {
@@ -797,6 +1159,12 @@ function paintViewer() {
         var cc = on ? RC.dark : RC.sub;
         if (i === 0) iconWave(bx + 4.5, sy + 5, cc, 1.0); else iconKnife(bx + 5, sy + 5, cc, 1.0);
         zone("button", bx, sy + 2, 21, 13, { action: "sliced_set", value: i });
+    }
+
+    if (oscTab === 2) {
+        paintSubOscViewer(viewWave[0], viewWave[1], viewWave[2], viewWave[3]);
+        paintSubFooter(sx, sy + sh - 4);
+        return;
     }
 
     // Waveform (one view transform: vwx / vnorm; overlays are clipped to the waveform; zoom / pan are not persisted)
@@ -878,7 +1246,6 @@ function paintViewer() {
     var wtFx = Math.round(paramValue(osc.fxKey));
     var wtFx1 = paramValue(osc.fx1Key) * 0.01;
     var wtFx2 = paramValue(osc.fx2Key) * 0.01;
-    var subOn = Math.round(paramValue("sub_on")) > 0;
     if (isWt) {
         fillRect(wx, wy, ww, wh, RC.wave, 1.0);
         paintWavetableStack(wx, wy, ww, wh, wtPos, oscOn, wtFx, wtFx1, wtFx2);
@@ -899,20 +1266,6 @@ function paintViewer() {
         mgraphics.stroke();
         text((wtPos * 100).toFixed(1) + " %", pxS - 2, wy + wh - 3, 8.0, oscOn ? RC.sel : RC.sub, false, 1);
         zone("value", wx + ww - 26, wy + 4, 24, wh - 6, { key: osc.posKey, norm: true });
-    } else if (oscTab === 2) {
-        fillRect(wx, wy, ww, wh, RC.wave, 0.92);
-        var subOct = Math.round(paramValue("sub_oct"));
-        var subTone = paramValue("sub_tone") * 0.01;
-        var subPts = [];
-        for (var sc = 0; sc <= 80; sc++) {
-            var sp = sc / 80;
-            var sv = Math.sin(6.2831853 * sp * (subOct === 0 ? 4 : (subOct === 1 ? 2 : 1)));
-            var sr = Math.tanh(sv * (1.0 + subTone * 4.5));
-            var syv = sv + (sr - sv) * subTone;
-            subPts.push([wx + 8 + sp * (ww - 16), wy + wh * 0.5 - syv * (wh * 0.34)]);
-        }
-        strokePath(subPts, subOn ? RC.cyan : RC.lcdDim, subOn ? 1.0 : 0.45, 1.6);
-        text("SUB  OCT " + ["0", "-1", "-2"][subOct] + "   TONE " + Math.round(paramValue("sub_tone")) + "%", wx + 8, wy + 12, 8.0, subOn ? RC.cyan : RC.sub, true, 0);
     }
 
     var stX = vwx(curStart), enX = vwx(curEnd);
@@ -2418,8 +2771,8 @@ function hValueBar(key, x, y, w, h, label, acc, dimmed) {
     var bx0 = bip ? (x + w * 0.5 + Math.min(0, n - 0.5) * (w - 2)) : (x + 1);
     var bw0 = bip ? (Math.abs(n - 0.5) * (w - 2)) : (n * (w - 2));
     if (bw0 > 0.5) fillRect(bx0, y + 1, bw0, h - 2, mixc(RC.textBg, acc, 0.38), al);
-    var fs = w < 72 ? 7.4 : 7.8;
-    var pad = w < 72 ? 3.5 : 4.0;
+    var fs = w < 58 ? 6.5 : (w < 72 ? 7.4 : 7.8);
+    var pad = w < 58 ? 2.0 : (w < 72 ? 3.5 : 4.0);
     text(label, x + pad, y + h - 3.3, fs, RC.sub, false, 0, al);
     text(fmtParam(key, v), x + w - pad, y + h - 3.3, fs, dimmed ? RC.sub : acc, false, 2, al);
     zone("value", x, y, w, h, { key: key, norm: true });
@@ -2708,6 +3061,7 @@ function slopeFromMid(level, base) {
 var sharedPaintMenu = paintMenu;
 paintMenu = function () {
     if (!openMenu) return;
+    if (openMenu.subMenu) { paintSubEnumMenu(); return; }
     if (openMenu.wtEnvLoop) {
         var m = openMenu;
         var items = ["None", "Trigger", "Loop"];
@@ -2793,6 +3147,18 @@ paintMenu = function () {
 
 var sharedDoAction = doAction;
 doAction = function (z) {
+    if (z.action === "menu" && z.subMenu) {
+        if (openMenu && openMenu.key === z.key) { openMenu = null; mgraphics.redraw(); return; }
+        openMenu = { key: z.key, x: z.anchorX, y: z.anchorY, w: z.w2, rowH: 13, subMenu: true, anchorX: z.anchorX, anchorY: z.anchorY };
+        mgraphics.redraw();
+        return;
+    }
+    if (z.action === "menu_pick" && z.key === "sub_wave") {
+        applySubWavePreset(z.value);
+        openMenu = null;
+        mgraphics.redraw();
+        return;
+    }
     if (z.action === "osc_tab") {
         oscTab = z.tab || 0;
         mgraphics.redraw();
@@ -2891,6 +3257,14 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
         normalizeSample();
         return;
     }
+    if (z && z.kind === "sub_harm") {
+        if (openMenu) openMenu = null;
+        if (drag && drag.captured) setCursorHidden(false);
+        drag = { subHarm: true, subLast: null, subLastLvl: 0 };
+        drawSubHarmonicsAt(x, y);
+        mgraphics.redraw();
+        return;
+    }
     if (z && (z.kind === "hdl" || z.kind === "act")) {
         if (openMenu) { openMenu = null; mgraphics.redraw(); return; }
         if (drag && drag.captured) setCursorHidden(false);
@@ -2964,6 +3338,12 @@ ondrag = function (x, y, but, cmd, shift) {
         if (!but) { panState = null; return; }
         viewX0 = panState.x0;
         panViewBy(x - panState.x);
+        return;
+    }
+    if (drag && drag.subHarm) {
+        if (but === 0) { drag = null; mgraphics.redraw(); return; }
+        drawSubHarmonicsAt(x, y);
+        mgraphics.redraw();
         return;
     }
     if (drag && drag.hdl) {
@@ -3118,5 +3498,6 @@ function preview() {
     showInspector = foldMask ? 1 : 0;
     if (o.order) setSectionOrder(o.order);
     if (o.hover) hoverKey = o.hover;
+    if (o.oscTab !== undefined) oscTab = Math.max(0, Math.min(2, Math.round(Number(o.oscTab) || 0)));
     if (o.menu) openMenu = o.menu;
 }

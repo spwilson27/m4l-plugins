@@ -12,6 +12,8 @@ const G = require("../src/glitch_config.js");
 const R = require("../src/glitch_ref.js");
 const qc = require("../src/cepcrush_ref.js");
 const gx = require("./genexpr_functions.js");
+const { readJsLiteral } = require("./js_literal.js");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.join(__dirname, "..");
 const LIB = fs.readFileSync(path.join(ROOT, "src", "cepstrum_lib.genexpr"), "utf8");
@@ -3336,10 +3338,10 @@ if (fs.existsSync(devicePath)) {
         assert.ok(!p.boxes.some((b) => /^gen/.test(b.box.maxclass) || /^gen~?\b/.test(b.box.text || "")), "no gen object in the saved device");
         const viz = byId["obj-viz"];
         const script = viz.textfile.text;
-        const m = /var GEN_STAGES = (\[[\s\S]*?\]);\nvar GEN_SHELLS/.exec(script);
-        assert.ok(/var GEN_SHELLS = \{/.test(script));
+        const m = /var GEN_STAGES\s*=\s*(\[[\s\S]*?\]);\s*var GEN_SHELLS/.exec(script);
+        assert.ok(/var GEN_SHELLS\s*=\s*\{/.test(script));
         assert.ok(m, "GEN_STAGES embedded");
-        const stages = JSON.parse(m[1]);
+        const stages = Function("return (" + m[1] + ")")();
         const defs = G.glitchStages();
         assert.deepStrictEqual(stages.map((x) => x.id), defs.map((x) => x.id));
         for (const st of stages) {
@@ -3357,13 +3359,12 @@ if (fs.existsSync(devicePath)) {
             assert.strictEqual(dsp.patcher.boxes.filter((b) => /^in \d+$/.test(b.box.text || "")).length, st.ins.length);
             assert.strictEqual(dsp.patcher.boxes.filter((b) => /^out \d+$/.test(b.box.text || "")).length, st.outs.length);
             assert.ok(cb.code.includes('Buffer scope("glitchscope")'));
+            assert.strictEqual(cb.code.trim(), minifyGen(STAGE_SRC[st.id]).trim(), `${st.id}: embedded gen is the mangled stage`);
             assert.strictEqual(st.role, def.role);
             assert.strictEqual(st.side, def.side);
         }
-        assert.ok(stages.find((x) => x.id === "spec").text.includes("fft_run"), "the spectral stage holds the FFT");
-        assert.ok(!stages.some((x) => x.id !== "spec" && x.text.includes("fft_run")), "no other stage compiles the FFT");
         assert.ok(!script.includes("GEN_DSP_TEXT"));
-        assert.ok(script.includes("mgraphics.relative_coords = 0") && script.includes("mgraphics.autofill = 0"));
+        assert.ok(/mgraphics\.relative_coords\s*=\s*0/.test(script) && /mgraphics\.autofill\s*=\s*0/.test(script));
         assert.ok(!/\bvar\s+(box|patcher|max|messagename|inlet|jsarguments)\b/.test(script), "never declare Max's own v8ui globals");
         // the hubs are open gates, never `t a`; every gen-bound message goes through the right inlet of the hub of the stages that have that Param
         for (const [id, vn] of [["obj-gen-in-head", "gl_genhead"], ["obj-gen-in-mod", "gl_genmod"], ["obj-gen-tail-in", "gl_gentail"]]) {
@@ -3400,8 +3401,8 @@ if (fs.existsSync(devicePath)) {
         assert.strictEqual(byId["obj-plugin"].varname, "gl_plugin");
         assert.strictEqual(byId["obj-selL"].text, "selector~ 2 0");
         assert.strictEqual(byId["obj-selR"].text, "selector~ 2 0");
-        assert.ok(script.includes('outlet(0, "dsp_on", 2)'), "dsp_on 2 selects the tail once the head and the tail are running");
-        assert.ok(script.includes('outlet(0, "dsp_on", 0)'), "restoring the shells returns the output to silence");
+        assert.ok(/outlet\(0,\s*"dsp_on",\s*2\)/.test(script), "dsp_on 2 selects the tail once the head and the tail are running");
+        assert.ok(/outlet\(0,\s*"dsp_on",\s*0\)/.test(script), "restoring the shells returns the output to silence");
         assert.ok(cords.some((c) => c.source[0] === "obj-route-viz" && c.source[1] === 3 && c.destination[0] === "obj-selL"), "dsp_on switches the selectors");
         // dsp_ready re-sends the three bindings, Mix, Output, bpm, ppq, playing
         assert.strictEqual(byId["obj-route-viz"].text, "route param setwidth_cmd dsp_ready dsp_on");
@@ -3477,19 +3478,19 @@ if (fs.existsSync(devicePath)) {
             for (const t of texts) for (const mt of t.matchAll(/(\S*)glitch(slots|scope|ctl|debug)\b/g)) assert.ok(mt[1] === "---", `unprefixed engine name in "${t}"`);
             // the v8ui script and the stage shells (their Buffer("...") names are external names bound by message, never the per-instance ones)
             assert.ok(!/#0-/.test(script.replace(/\/\/[^\n]*/g, "")), "no #0- in the v8ui script code");
-            assert.ok(/function setbuffer\(slotsName, scopeName, debugName\)/.test(script), "the script gets its names from the patcher");
+            assert.ok(/function setbuffer\(/.test(script), "the script gets its names from the patcher");
             for (const st of stages) assert.ok(!/#0/.test(st.text), `${st.id}: no #0 in the stage .gendsp`);
-            const shells = /var GEN_SHELLS = (\{[\s\S]*?\});\n/.exec(script);
-            if (shells) assert.ok(!/#0/.test(shells[1]), "no #0 in the shells");
+            const shells = readJsLiteral(script, "GEN_SHELLS");
+            if (shells) assert.ok(!/#0/.test(JSON.stringify(shells)), "no #0 in the shells");
             for (const mt of script.matchAll(/new Buffer\(([^)]*)\)/g)) assert.ok(!/["']#0|["']---/.test(mt[1]), `v8ui Buffer names come from setbuffer, not literals: ${mt[0]}`);
         }
         // the script's own gen-binding strings are the same names
         assert.ok(script.includes('"obj-gen-"') && script.includes('"gl_bpL_"') && script.includes('setattr("gen"') && script.includes('"dsp_on"'), "the script hot-loads the code into the saved shells and switches the static selectors");
-        const loaderSrc = script.slice(script.indexOf("// Deferred, STAGED, LAZY DSP"), script.indexOf("// telemetry (buffer"));
-        const bg0 = loaderSrc.indexOf("function buildGraph()"), bg1 = loaderSrc.indexOf("/** Hot-load one stage's real code");
+        const loaderSrc = script.slice(script.indexOf("var dspReady"), script.indexOf("function scopePeek("));
+        const bg0 = loaderSrc.indexOf("function buildGraph()"), bg1 = loaderSrc.indexOf("function loadStageCode(");
         assert.ok(bg0 > 0 && bg1 > bg0);
-        assert.ok(!/newdefault|\.connect\(|\.remove\(|conn\(/.test(loaderSrc.slice(0, bg0) .replace(/function conn\([^\n]*\n/, "") + loaderSrc.slice(bg1)), "objects and cords are added only once, in buildGraph (adding them to a running device silences it for the compile time)");
-        assert.ok(loaderSrc.includes('"gen~", "@gen", sp') && loaderSrc.includes("graphBuilt"), "the shells are file-backed (identical shells share one compile)");
+        assert.ok(!/newdefault|\.connect\(|\.remove\(|conn\(/.test(loaderSrc.slice(0, bg0).replace(/function conn\([^)]*\)\{[^{}]*\}\s*/, "") + loaderSrc.slice(bg1)), "objects and cords are added only once, in buildGraph (adding them to a running device silences it for the compile time)");
+        assert.ok(/"gen~"\s*,\s*"@gen"/.test(loaderSrc) && loaderSrc.includes("graphBuilt"), "the shells are file-backed (identical shells share one compile)");
     });
 }
 

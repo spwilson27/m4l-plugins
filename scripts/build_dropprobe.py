@@ -20,6 +20,8 @@ import struct
 import subprocess
 import sys
 
+from minify_embed import minify_patcher
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "tests", "out", "dropprobe")
 W, H = 220.0, 169.0
@@ -107,6 +109,7 @@ def patcher(boxes, lines, width, device=True):
 
 
 def write_amxd(path, doc):
+    minify_patcher(doc)
     payload = (json.dumps(doc, indent="\t") + "\n").encode("utf-8")
     hdr = b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload))
     with open(path, "wb") as f:

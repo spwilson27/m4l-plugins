@@ -16,6 +16,7 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 const { execFileSync } = require("child_process");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const C = require(path.join(ROOT, "src", "megamod_config.js"));
@@ -79,7 +80,7 @@ for (const v of variants) {
     eq(viz.saved_attribute_attributes.valueof.parameter_type, 3, `${v}: blob parameter`);
     eq(viz.saved_attribute_attributes.valueof.parameter_longname, "MegaModState", `${v}: blob name`);
     const code = viz.textfile.text;
-    ok(code.startsWith("mgraphics.init();\nmgraphics.relative_coords = 0;\nmgraphics.autofill = 0;"), `${v}: pixel coords header first`);
+    ok(/^\s*mgraphics\.init\(\);\s*mgraphics\.relative_coords\s*=\s*0;\s*mgraphics\.autofill\s*=\s*0;/.test(code), `${v}: pixel coords header first`);
     ok(code.includes("function getvalueof") && code.includes("function setvalueof") && code.includes("function paint"), `${v}: script entry points`);
     ok(!code.includes("require("), `${v}: no Node-only requires`);
     // bindings
@@ -173,8 +174,8 @@ function checkPool(v, p, boxes, byId, lines) {
         // the gendsp files the deferred DSP loads
         const gen = JSON.parse(execFileSync("python3", ["-c", "import sys, json; sys.path.insert(0, 'scripts'); import megamod_common as m; sys.stdout.write(json.dumps(m.gen_files()))"], { cwd: ROOT }).toString("utf8"));
         const gp = (k) => JSON.parse(gen[k].text).patcher;
-        eq(gp("engine").boxes.find((b) => b.box.id === "obj-code").box.code, GEN, `${v}: gendsp engine holds the current engine code`);
-        eq(gp("router").boxes.find((b) => b.box.id === "obj-code").box.code, code, `${v}: gendsp router holds the router code`);
+        eq(gp("engine").boxes.find((b) => b.box.id === "obj-code").box.code, minifyGen(GEN), `${v}: gendsp engine is the mangled engine`);
+        eq(gp("router").boxes.find((b) => b.box.id === "obj-code").box.code, minifyGen(code), `${v}: gendsp router is the mangled router`);
         eq(gp("engine").boxes.filter((b) => /^in /.test(b.box.text || "")).length, 2, `${v}: engine gendsp 2 inlets`);
         eq(gp("engine").boxes.filter((b) => /^out /.test(b.box.text || "")).length, 32, `${v}: engine gendsp 32 outlets`);
         eq(gp("router").boxes.filter((b) => /^in /.test(b.box.text || "")).length, 32, `${v}: router gendsp 32 inlets`);
@@ -3326,7 +3327,7 @@ function p0Width() { return 588; }
         eq(d.sets.length, 9, "then each router");
         ok(d.sets.slice(1).every((s) => /megamod_router_[0-9a-f]{12}\.gendsp$/.test(s[2]) && s[2] === d.sets[1][2]), "all routers share ONE file (one compile)");
         const eFile = d.sets[0][2];
-        ok(files[eFile] && JSON.parse(files[eFile]).patcher.boxes.find((b) => b.box.id === "obj-code").box.code.length > 20000, "the engine gendsp was written to /tmp");
+        ok(files[eFile] && JSON.parse(files[eFile]).patcher.boxes.find((b) => b.box.id === "obj-code").box.code.length > 5000, "the engine gendsp was written to /tmp");
         ok(!d.run("MM.dspInfo().ready"), "loaded is not ready: a gen drops messages while it compiles");
         // confirm loop: the bind / Params / transport are re-sent until the gens answer
         ok(d.gen().some((m) => m[0] === "cfg" && m[1] === NAMES[0]) && d.gen().some((m) => m[0] === "scope") && d.gen().some((m) => m[0] === "route"), "the buffer binding goes to the engine as `gen cfg / scope / route ...`");

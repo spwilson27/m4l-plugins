@@ -18,6 +18,9 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "cepstra_config.js")
 DISPLAY_PATH = os.path.join(ROOT_DIR, "src", "cepstra_display.js")
@@ -318,6 +321,7 @@ def v8ui_box(obj_id, rect, code, varname, ignoreclick, numoutlets=1):
 def gendsp_json(gen_code):
     """2-in / 2-out gen patch (in -> codebox -> out) as .gendsp JSON. The face writes it to
     /tmp/cepstra_core_<hash>.gendsp and creates `gen~ @gen <file>` after the GUI is up."""
+    gen_code = minify_gen(gen_code)
     def bx(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
                "patching_rect": [float(x), float(y), 200.0, 22.0]}
@@ -585,6 +589,7 @@ def build():
         }
     }
 
+    minify_patcher(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

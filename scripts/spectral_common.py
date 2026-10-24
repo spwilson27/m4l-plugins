@@ -51,6 +51,9 @@ import os
 import re
 import struct
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEVICES_DIR = os.path.join(ROOT_DIR, "devices")
 DEVICE_H = 169.0
@@ -317,6 +320,7 @@ def gen_code_rack(core_path, subs, libs=()):
 def gendsp_json(gen_code):
     """The gen patcher (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text (the deferred DSP writes it to a file and creates
     `gen~ @gen <file>`; same as scripts/build_reverbplus.py and AGENTS.md 1d)."""
+    gen_code = minify_gen(gen_code)
     def b(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
                "patching_rect": [float(x), float(y), 200.0, 22.0]}
@@ -607,6 +611,7 @@ def v8ui(obj_id, code, rect, patch_xy, numoutlets, varname=None):
 
 
 def gen_box(obj_id, code, varname, x=120.0, y=300.0, numinlets=2, numoutlets=2):
+    code = minify_gen(code)
     return {
         "box": {
             "code": code,
@@ -693,6 +698,7 @@ def patcher(boxes, lines, width, description, digest, tags, latency, dev_type="a
 
 
 def write_amxd(patcher_doc, out_path, dev_type=b"aaaa"):
+    minify_patcher(patcher_doc)
     payload = (json.dumps(patcher_doc, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf" + struct.pack("<I", 4) + dev_type + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0)

@@ -21,6 +21,9 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI_PATH = os.path.join(ROOT_DIR, "src", "sand_ui.js")
 GEN_PATH = os.path.join(ROOT_DIR, "src", "sand_core.genexpr")
@@ -341,6 +344,7 @@ def gendsp_json(gen_code):
     The face writes it to /tmp/sand_core_<hash>.gendsp and creates `gen~ @gen <file>`
     after the GUI has painted (src/sand_ui.js, AGENTS.md 1d).
     """
+    gen_code = minify_gen(gen_code)
     def bx(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {
             "id": i,
@@ -823,6 +827,7 @@ def build():
         }
     }
 
+    minify_patcher(patcher_doc)
     json_bytes = json.dumps(patcher_doc, indent="\t").encode("utf-8") + b"\n"
     header = (
         b"ampf" + struct.pack("<I", 4) +

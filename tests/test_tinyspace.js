@@ -6,6 +6,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 const assert = require("assert");
 const cfg = require("../src/tinyspace_config.js");
 
@@ -424,12 +425,12 @@ assert.ok(jsCode.includes("function buildConfig"));
 assert.ok(jsCode.includes("function paint"));
 assert.ok(jsCode.includes("function init_dsp"));
 assert.ok(jsCode.includes('Global("tinyspace_dspq")'));
-const genDsp = jsCode.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+const genDsp = jsCode.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
 assert.ok(genDsp, "face script must embed GEN_DSP_TEXT and GEN_DSP_HASH");
 const genPatch = JSON.parse(JSON.parse(genDsp[1]));
 const codebox = genPatch.patcher.boxes.find((b) => b.box.id === "obj-code");
 assert.ok(codebox, "gendsp wrapper must contain the codebox");
-assert.strictEqual(codebox.box.code, gen, "embedded genexpr must match src/tinyspace_core.genexpr");
+assert.strictEqual(codebox.box.code, minifyGen(gen), "embedded genexpr is the mangled src/tinyspace_core.genexpr");
 assert.strictEqual(codebox.box.numinlets, 2);
 assert.strictEqual(codebox.box.numoutlets, 2);
 const genIns = genPatch.patcher.boxes.filter((b) => String(b.box.text || "").startsWith("in "));

@@ -22,6 +22,9 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "percipitator_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "percipitator_ui.js")
@@ -230,6 +233,7 @@ def make_panel(obj_id, x, y, w, h, bg=(0.10, 0.11, 0.13), border=(0.22, 0.26, 0.
 def gendsp_json(gen_code):
     """2-in / 2-out .gendsp wrapper around codebox. The face writes it to /tmp/percipitator_core_<hash>.gendsp
     and creates `gen~ @gen <file>` after the GUI has loaded (src/percipitator_dsp.js, AGENTS.md 1d)."""
+    gen_code = minify_gen(gen_code)
     def bx(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {
             "id": i,
@@ -982,6 +986,7 @@ def build():
         }
     }
 
+    minify_patcher(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

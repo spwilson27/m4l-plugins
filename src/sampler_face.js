@@ -56,7 +56,8 @@ var BIPOLAR_KEYS = {
     osc2_pitch: 1, osc2_detune: 1, wt1_fx1: 1, wt2_fx1: 1,
     xs_fm_21: 1, xs_fm_12: 1, xs_rm_21: 1, xs_rm_12: 1,
     xs_cep_21: 1, xs_cep_12: 1, xs_fold_21: 1, xs_fold_12: 1,
-    xs_sub_fm: 1, xs_sub_rm: 1, xs_sub_cep: 1, xs_sub_fold: 1, xs_tilt: 1
+    xs_sub_fm: 1, xs_sub_rm: 1, xs_sub_cep: 1, xs_sub_fold: 1, xs_tilt: 1,
+    sub_semi: 1, sub_fine: 1, sub_spectra: 1
 };
 var KNOB_DRAG_PX = 120.0;
 

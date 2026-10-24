@@ -19,6 +19,9 @@ import os
 import struct
 import sys
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import spectral_common as sc
 
@@ -255,6 +258,7 @@ def line(src, src_out, dst, dst_in=0):
 def gendsp_json(gen_code):
     """The gen patch (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text. The deferred DSP (src/mbsplit_dsp.js)
     writes it to /tmp/mbsplit_core_<hash>.gendsp and creates `gen~ @gen <file>` (AGENTS.md 1d; same as build_reverbplus.py)."""
+    gen_code = minify_gen(gen_code)
     def bx(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
                "patching_rect": [float(x), float(y), 200.0, 22.0]}
@@ -533,6 +537,7 @@ def build_patcher():
 
 
 def write_amxd(patcher_dict, out_path):
+    minify_patcher(patcher_dict)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     dev_w = patcher_dict["patcher"]["devicewidth"]
     payload = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")

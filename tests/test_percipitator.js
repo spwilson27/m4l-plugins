@@ -23,6 +23,7 @@ const assert = require("assert");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const AMXD_PATH = path.join(ROOT, "devices", "Percipitator.amxd");
@@ -148,7 +149,7 @@ assert.ok(hasLine("obj-route-viz", 4, "obj-gen-in", 1), "Unmatched viz messages 
 assert.ok(hasLine("obj-thisdevice", 0, "obj-msg-ui-dsp", 0), "live.thisdevice -> init_dsp");
 assert.ok(hasLine("obj-msg-ui-dsp", 0, "obj-viz", 0), "init_dsp -> v8ui");
 
-const genDspMatch = byId["obj-viz"].textfile.text.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+const genDspMatch = byId["obj-viz"].textfile.text.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
 assert.ok(genDspMatch, "Face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
 const genDspText = JSON.parse(genDspMatch[1]);
 const genDspHash = crypto.createHash("sha1").update(genDspText).digest("hex").slice(0, 12);
@@ -156,7 +157,7 @@ assert.strictEqual(genDspMatch[2], genDspHash, "GEN_DSP_HASH must be the .gendsp
 const genPatch = JSON.parse(genDspText);
 const codebox = genPatch.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
 assert.ok(codebox, "Deferred .gendsp must contain a codebox");
-assert.strictEqual(codebox.code, gen, "Deferred codebox must embed percipitator_core.genexpr");
+assert.strictEqual(codebox.code, minifyGen(gen), "Deferred codebox is the mangled percipitator core");
 assert.ok(byId["obj-viz"].textfile.text.includes("function init_dsp"), "v8ui must define init_dsp");
 assert.ok(byId["obj-viz"].textfile.text.includes('Global("percipitator_dspq")'), "DSP create must be serialized on percipitator_dspq");
 assert.ok(byId["obj-viz"].textfile.text.includes("/tmp/percipitator_core_"), "Deferred gen file path");

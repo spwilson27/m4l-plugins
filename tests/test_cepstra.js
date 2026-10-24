@@ -17,6 +17,7 @@
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const AMXD_PATH = path.join(ROOT, "devices", "Cepstra.amxd");
@@ -374,14 +375,14 @@ eq(byId["obj-gen-in"].varname, "cep_genin", "Hub scripting name");
 ok(!byId["obj-gen"] && !boxes.some((b) => b.maxclass === "gen.codebox~" || b.maxclass === "gen~"), "Device ships without a static gen~ / gen.codebox~");
 {
     const face = byId["obj-viz-disp"].textfile.text;
-    const m = face.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+    const m = face.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
     ok(m, "Face script embeds GEN_DSP_TEXT / GEN_DSP_HASH");
     const gendsp = JSON.parse(JSON.parse(m[1]));
     const codebox = gendsp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
-    eq(codebox.code, gen, "GEN_DSP_TEXT codebox is src/cepstra_core.genexpr");
+    eq(codebox.code, minifyGen(gen), "GEN_DSP_TEXT codebox is the mangled src/cepstra_core.genexpr");
     eq(gendsp.patcher.boxes.length, 5, "gendsp is 2-in, codebox, 2-out");
     ok(face.includes('Global("cepstra_dspq")') && face.includes("function init_dsp"), "Deferred load uses the cepstra_dspq queue");
-    ok(face.includes("DSP loading...") && face.includes("cepDsp.createdAt > 0 || cepDsp.error"), "DSP pill is gated so a static preview stays clean");
+    ok(face.includes("DSP loading...") && /cepDsp\.createdAt\s*>\s*0\s*\|\|\s*cepDsp\.error/.test(face), "DSP pill is gated so a static preview stays clean");
 }
 eq(byId["obj-midiin"].text, "midiin", "Missing midiin");
 eq(byId["obj-midiparse"].text, "midiparse", "Missing midiparse");

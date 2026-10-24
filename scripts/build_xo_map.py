@@ -15,6 +15,8 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NODE_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_node_engine.js")
 STRIP_JS_PATH = os.path.join(ROOT_DIR, "src", "xo_strip_ui.js")
@@ -2768,6 +2770,7 @@ def build(variant="default"):
         }
     }
 
+    minify_patcher(patcher_doc)
     json_bytes = (json.dumps(patcher_doc, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

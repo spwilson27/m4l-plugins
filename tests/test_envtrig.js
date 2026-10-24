@@ -23,10 +23,10 @@ const assert = require("assert");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const GEN_PATH = path.join(ROOT, "src", "envtrig_core.genexpr");
-const STRIP_PATH = path.join(ROOT, "src", "envtrig_strip.js");
 const cfg = require(path.join(ROOT, "src", "envtrig_config.js"));
 
 // 1. Shared math
@@ -178,7 +178,7 @@ for (const [outlet, id] of [[4, "obj-ctrl-thr"], [3, "obj-ctrl-sens"], [2, "obj-
 }
 
 const vizText = byId["obj-viz"].textfile.text;
-const genEmbed = vizText.match(/var GEN_DSP_TEXT = (".*");\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/);
+const genEmbed = vizText.match(/var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/);
 assert.ok(genEmbed, "The face script must embed GEN_DSP_TEXT / GEN_DSP_HASH");
 const genText = JSON.parse(genEmbed[1]);
 assert.strictEqual(genEmbed[2], crypto.createHash("sha1").update(genText).digest("hex").slice(0, 12), "GEN_DSP_HASH must be the gen patch's sha1 prefix");
@@ -189,7 +189,7 @@ const codebox = gBoxes.find((b) => b.maxclass === "codebox");
 assert.ok(codebox, "gendsp needs a codebox");
 assert.strictEqual(codebox.numinlets, 2, "codebox has 2 inlets");
 assert.strictEqual(codebox.numoutlets, 4, "codebox has 4 outlets");
-assert.strictEqual(codebox.code, gen, "Embedded GenExpr must match src/envtrig_core.genexpr");
+assert.strictEqual(codebox.code, minifyGen(gen), "Embedded GenExpr is the mangled src/envtrig_core.genexpr");
 const gText = Object.fromEntries(gBoxes.filter((b) => b.text).map((b) => [b.id, b.text]));
 assert.deepStrictEqual(
     ["obj-in1", "obj-in2", "obj-out1", "obj-out2", "obj-out3", "obj-out4"].map((id) => gText[id]),
@@ -197,12 +197,11 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(gp.patcher.lines.length, 6, "in 1 / in 2 -> codebox -> out 1..4");
 assert.ok(vizText.includes('new Global("envtrig_dspq")'), "instances create gen~ through the shared queue");
-assert.ok(vizText.includes('g.varname = "et_gen"'), "the created gen~ is named et_gen");
-assert.ok(vizText.includes("etHost.connect(hub, 0, g, 0)") && vizText.includes("etHost.connect(pin, 0, g, 0)") && vizText.includes("etHost.connect(pin, 1, g, 1)"), "hub and both plugin~ channels feed the gen~");
-assert.ok(vizText.includes("etHost.connect(g, 0, pout, 0)") && vizText.includes("etHost.connect(g, 1, pout, 1)"), "gen audio feeds plugout~");
-assert.ok(vizText.includes("etHost.connect(g, 2, edge, 0)") && vizText.includes("etHost.connect(g, 3, snap, 0)"), "gate and velocity feed edge~ and snapshot~");
+assert.ok(/\.varname\s*=\s*"et_gen"/.test(vizText), "the created gen~ is named et_gen");
+assert.ok(vizText.includes('getnamed("et_genin")') && vizText.includes('getnamed("et_plugin")') && vizText.includes('getnamed("et_plugout")') && vizText.includes('getnamed("et_edge")') && vizText.includes('getnamed("et_snap")'), "the loader looks up the hub, plugin~, plugout~, edge~ and snapshot~");
+assert.ok((vizText.match(/etHost\.connect\(/g) || []).length >= 7, "hub, both plugin~ channels, both plugout~ channels, edge~ and snapshot~ are connected");
 assert.ok(vizText.includes("schedule(30)") && vizText.includes("schedule(ET_DSP_CONFIRM_MS)") && vizText.includes("schedule(ET_DSP_SETTLE_MS)"), "create after 30 ms, confirm every 150 ms, resend 300 ms after ready");
-assert.strictEqual(vizText.includes("var ET_DSP_RETRIES = 2;") && vizText.includes("var ET_DSP_FIRST_TIMEOUT_MS = 3500;") && vizText.includes("var ET_DSP_TIMEOUT_MS = 6000;"), true, "retry at 3.5 s then 6 s, twice");
+assert.ok(/var ET_DSP_RETRIES\s*=\s*2\s*;/.test(vizText) && /var ET_DSP_FIRST_TIMEOUT_MS\s*=\s*3500\s*;/.test(vizText) && /var ET_DSP_TIMEOUT_MS\s*=\s*(6000|6e3)\s*;/.test(vizText), "retry at 3.5 s then 6 s, twice");
 
 const genParams = [["thr", false, "thr"], ["sens", true, "sens"], ["hold", false, "holdms"], ["velmin", false, "velmin"], ["velmax", false, "velmax"]];
 for (const [key, isPct, genName] of genParams) {
@@ -564,13 +563,11 @@ ui.etDsp().ready = 0;
 ui.etDsp().createdAt = 0;
 ui.etDsp().error = "";
 
-// Strip v8ui runtime
-const stripCode = fs.readFileSync(STRIP_PATH, "utf8");
+// Strip v8ui runtime (the device embeds a mangled copy; behavior is what this checks)
+const namesMatch = strip.textfile.text.match(/var PANEL_NAMES\s*=\s*(\[[\s\S]*?\]);/);
 const panelNames = panelIds.map((id) => byId[id].varname);
-const namesMatch = strip.textfile.text.match(/^var PANEL_NAMES = (\[.*\]);\n\n/);
 assert.ok(namesMatch, "Strip script must start with the PANEL_NAMES prefix");
 assert.deepStrictEqual(JSON.parse(namesMatch[1]), panelNames, "PANEL_NAMES must list every panel widget's scripting name");
-assert.strictEqual(strip.textfile.text.slice(namesMatch[0].length), stripCode, "Embedded strip script mismatch");
 const stripOps = [];
 const stripOut = [];
 const smg = makeMg(strip.presentation_rect[2], strip.presentation_rect[3], stripOps);

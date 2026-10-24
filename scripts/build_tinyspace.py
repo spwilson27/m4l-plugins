@@ -14,6 +14,9 @@ import json
 import os
 import struct
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(ROOT_DIR, "src", "tinyspace_config.js")
 UI_PATH = os.path.join(ROOT_DIR, "src", "tinyspace_ui.js")
@@ -228,6 +231,7 @@ def make_character_selector(x, y, w=50.0, h=15.0):
 def gendsp_json(gen_code):
     """2-in / 2-out .gendsp wrapper around the codebox. The face writes it to
     /tmp/tinyspace_core_<hash>.gendsp and creates `gen~ @gen <file>` after the GUI loads."""
+    gen_code = minify_gen(gen_code)
     def bx(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {
             "id": i,
@@ -744,6 +748,7 @@ def build_patcher():
 
 
 def write_amxd(patcher_doc, out_path):
+    minify_patcher(patcher_doc)
     json_bytes = json.dumps(patcher_doc, indent="\t").encode("utf-8") + b"\n"
     header = (
         b"ampf" + struct.pack("<I", 4) +

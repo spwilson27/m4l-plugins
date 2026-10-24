@@ -338,7 +338,24 @@ for _k, _spec in (
         ("xs_sub_fold", ("Cross Sub Fold", "XSbFd", -100.0, 100.0, 0.0, 5, 1.0, "xs_sub_fold", 0.01, "set_xs_sub_fold", "Cross-wavefolding from Sub Oscillator to Oscillator 1 (-100% to +100%).")),
         ("xs_quef", ("Cepstral Quefrency", "XQuef", 0.0, 100.0, 50.0, 5, 1.0, "xs_quef", 0.01, "set_xs_quef", "Cepstral liftering quefrency cutoff (0% smooth hull to 100% sharp formant peaks).")),
         ("xs_tilt", ("Cepstral Tilt", "XTilt", -100.0, 100.0, 0.0, 5, 1.0, "xs_tilt", 0.01, "set_xs_tilt", "Cepstral cross-synthesis spectral tilt (-100% dark to +100% bright).")),
-        ("xs_depth", ("Cross Synth Depth", "XDepth", 0.0, 100.0, 100.0, 5, 1.0, "xs_depth", 0.01, "set_xs_depth", "Global oscillator cross-synthesis depth (0 to 100%)."))):
+        ("xs_depth", ("Cross Synth Depth", "XDepth", 0.0, 100.0, 100.0, 5, 1.0, "xs_depth", 0.01, "set_xs_depth", "Global oscillator cross-synthesis depth (0 to 100%).")),
+        ("sub_semi", ("Sub Semitone", "SubSemi", -24.0, 24.0, 0.0, 7, 1.0, "sub_semi", 1.0, "set_sub_semi", "Sub oscillator semitone transpose (-24 to +24 st).")),
+        ("sub_fine", ("Sub Fine", "SubFine", -100.0, 100.0, 0.0, 0, 1.0, "sub_fine", 1.0, "set_sub_fine", "Sub oscillator fine tuning in cents (-100 to +100 ct).")),
+        ("sub_partials", ("Sub Partials", "SubPart", 1.0, 16.0, 8.0, 0, 1.0, "sub_partials", 1.0, "set_sub_partials", "Number of active harmonics in the additive sub oscillator (1 to 16).")),
+        ("sub_phase", ("Sub Phase", "SubPhs", 0.0, 360.0, 0.0, 1, 1.0, "sub_phase", 1.0, "set_sub_phase", "Sub oscillator start phase in degrees (0 to 360 deg).")),
+        ("sub_level", ("Sub Fundamental Level", "SubFund", 0.0, 100.0, 100.0, 5, 1.0, "sub_level", 0.01, "set_sub_level", "Sub oscillator fundamental (1st partial) level (0 to 100%).")),
+        ("sub_harm_level", ("Sub Harmonics Level", "SubHarm", 0.0, 100.0, 75.0, 5, 1.0, "sub_harm_level", 0.01, "set_sub_harm_level", "Sub oscillator upper harmonics (partials 2..16) master level (0 to 100%).")),
+        ("sub_detune", ("Sub Harmonic Detune", "SubDet", 0.0, 100.0, 0.0, 5, 1.0, "sub_detune", 0.01, "set_sub_detune", "Upper harmonic detuning amount (0 to 100%).")),
+        ("sub_mod", ("Sub Harmonic Mod", "SubMod", 0.0, 100.0, 0.0, 5, 1.0, "sub_mod", 0.01, "set_sub_mod", "Frequency-tracked LFO modulation of upper harmonic detuning (0 to 100%).")),
+        ("sub_width", ("Sub Harmonic Width", "SubWid", 0.0, 100.0, 0.0, 5, 1.0, "sub_width", 0.01, "set_sub_width", "Stereo width of the upper harmonics (0% mono to 100% stereo).")),
+        ("sub_spectra", ("Sub Spectra", "SubSpec", -100.0, 100.0, 0.0, 5, 1.0, "sub_spectra", 0.01, "set_sub_spectra", "Additive spectrum effect amount (-100% to +100%).")),
+        ("sub_knock", ("Sub Knock Amount", "SubKnk", 0.0, 100.0, 0.0, 5, 1.0, "sub_knock", 0.01, "set_sub_knock", "Pitch envelope punch/knock amount for kicks and 808s (0 to 100%).")),
+        ("sub_decay", ("Sub Knock Decay", "SubKDec", 5.0, 1000.0, 120.0, 2, 2.2, "sub_decay", 1.0, "set_sub_decay", "Pitch envelope knock decay time in ms (5 to 1000 ms).")),
+        ("sub_drive", ("Sub Drive Amount", "SubDrv", 0.0, 100.0, 0.0, 5, 1.0, "sub_drive", 0.01, "set_sub_drive", "Sub-tuned distortion drive amount (0 to 100%).")),
+        ("sub_h1_4", ("Sub Harmonics 1-4", "SubH14", 0.0, 65535.0, 51000.0, 0, 1.0, "sub_h1_4", 1.0, "set_sub_h1_4", "Packed 4x4-bit drawn harmonic levels for partials 1..4.")),
+        ("sub_h5_8", ("Sub Harmonics 5-8", "SubH58", 0.0, 65535.0, 13107.0, 0, 1.0, "sub_h5_8", 1.0, "set_sub_h5_8", "Packed 4x4-bit drawn harmonic levels for partials 5..8.")),
+        ("sub_h9_12", ("Sub Harmonics 9-12", "SubH912", 0.0, 65535.0, 0.0, 0, 1.0, "sub_h9_12", 1.0, "set_sub_h9_12", "Packed 4x4-bit drawn harmonic levels for partials 9..12.")),
+        ("sub_h13_16", ("Sub Harmonics 13-16", "SubH1316", 0.0, 65535.0, 0.0, 0, 1.0, "sub_h13_16", 1.0, "set_sub_h13_16", "Packed 4x4-bit drawn harmonic levels for partials 13..16."))):
     OPTIONAL_SPECS[_k] = _spec
     OPTIONAL_GROUPS["wavetable_filter"] += (_k,)
 _ENV_MOD_ENUMS = {
@@ -368,6 +385,14 @@ _FILT_ENUMS = {
     "wt2_fx": ("Osc 2 Wave Effect", "Wt2Fx", ["None", "Fm", "Classic", "Modern"], 3, "wt2_fx", "set_wt2_fx", "Oscillator 2 Wavetable effect mode: None, Fm, Classic, or Modern."),
     "sub_on": ("Sub Enable", "SubOn", ["Off", "On"], 0, "sub_on", "set_sub_on", "Enables the Sub oscillator."),
     "sub_oct": ("Sub Octave", "SubOct", ["0", "-1", "-2"], 1, "sub_oct", "set_sub_oct", "Sub oscillator octave offset (0, -1, or -2 octaves)."),
+    "sub_wave": ("Sub Waveform", "SubWave", ["Custom", "Sine", "Saw", "Square", "Triangle", "Odd", "Warm"], 6, "sub_wave", "set_sub_wave", "Additive sub oscillator waveform preset or Custom drawn bars."),
+    "sub_lock": ("Sub Lock", "SubLock", ["Off", "On"], 0, "sub_lock", "set_sub_lock", "Forces the sub oscillator to play within a single 1-octave bass range."),
+    "sub_lock_note": ("Sub Lock Note", "SubLkNt", ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"], 0, "sub_lock_note", "set_sub_lock_note", "Lowest note of the 1-octave Sub Lock range."),
+    "sub_tuning": ("Sub Tuning Mode", "SubTune", ["Key", "Fixed", "Ratio"], 0, "sub_tuning", "set_sub_tuning", "Sub oscillator tuning mode: Key tracking, Fixed note, or Ratio."),
+    "sub_mono": ("Sub Monophonic", "SubMono", ["Off", "On"], 0, "sub_mono", "set_sub_mono", "Forces the sub oscillator into monophonic mode even when playing chords."),
+    "sub_direct": ("Sub Direct Out", "SubDir", ["Off", "On"], 0, "sub_direct", "set_sub_direct", "Routes the sub oscillator directly to the output, bypassing the filters."),
+    "sub_spec_mode": ("Sub Spectra Mode", "SubSpMd", ["Tilt", "Low Pass", "Comb", "Odd/Even", "Stretch"], 0, "sub_spec_mode", "set_sub_spec_mode", "Additive spectrum effect mode."),
+    "sub_drv_type": ("Sub Drive Type", "SubDrTp", ["Soft", "Hard", "Tube", "Fold"], 0, "sub_drv_type", "set_sub_drv_type", "Sub-bass distortion type."),
 }
 OPTIONAL_ENUM_SPECS = {**_ENV_MOD_ENUMS, **_FILT_ENUMS}
 OPTIONAL_ENUM_GROUPS = {"wavetable_env_mod": tuple(_ENV_MOD_ENUMS), "wavetable_filter": tuple(_FILT_ENUMS)}

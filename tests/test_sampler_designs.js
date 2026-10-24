@@ -80,7 +80,7 @@ for (const f of specs) {
     const d = drop.presentation_rect;
     assert.ok(d[0] >= 0 && d[1] >= 0 && d[0] + d[2] <= maxW && d[1] + d[3] <= 169, `${slug}: drop zone inside the canvas`);
     assert.ok(main.textfile.text.includes("var GEN_DSP_TEXT"), `${slug}: deferred DSP patch embedded`);
-    assert.ok(main.textfile.text.includes(`var FACE_DESIGN = ${JSON.stringify(slug)}`), `${slug}: FACE_DESIGN`);
+    assert.ok(new RegExp("var FACE_DESIGN\\s*=\\s*" + JSON.stringify(slug).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).test(main.textfile.text), `${slug}: FACE_DESIGN`);
     const live = boxes.filter((b) => /^live\./.test(b.maxclass) && b.presentation === 1 && b.id !== "obj-drop-wave");
     assert.deepStrictEqual(live.map((b) => b.id), [], `${slug}: no live.* widgets on the face`);
 

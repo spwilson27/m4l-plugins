@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const assert = require("assert");
+const { readJsLiteral } = require("./js_literal.js");
 
 const ROOT_DIR = path.dirname(__dirname);
 const AMXD_PATH = path.join(ROOT_DIR, "devices", "XO Sample Map.amxd");
@@ -882,9 +883,9 @@ for (const id of MIRRORED) {
 }
 
 // Style tables injected into the v8ui: applied with setattr per theme; the saved state equals the LCD table.
-const themeStyleM = /var XO_THEME_STYLE = (\{[^\n]*\});/.exec(boxMap.get("obj-minimap").textfile.text);
+const themeStyleM = readJsLiteral(boxMap.get("obj-minimap").textfile.text, "XO_THEME_STYLE");
 assert(themeStyleM, "mini-map script must carry XO_THEME_STYLE");
-const THEME_STYLE = JSON.parse(themeStyleM[1]);
+const THEME_STYLE = themeStyleM;
 assert.deepStrictEqual(Object.keys(THEME_STYLE), THEMES);
 for (const theme of THEMES) for (const id of Object.keys(THEME_STYLE[theme])) assert(boxMap.has(id) && layAll.boxes[id], `${theme} style box ${id} must exist and be laid out`);
 // the Options toggle (covers obj-node) is opaque in every theme (background and on colours alpha 1, after resolving the Live tokens)
@@ -952,13 +953,12 @@ assert.strictEqual(layLCD.boxes["obj-lcd-f-prompt"].rect[3], 17, "LCD prompt is 
 assert.strictEqual(boxMap.get("obj-lcd-f-prompt").fontface, 0, "LCD prompt is regular weight like the search text");
 
 // Scripting names: getnamed() needs a unique varname on every laid-out box, matching XO_LAYOUT_NAMES.
-const namesMatch = /var XO_LAYOUT_NAMES = (\{[^\n]*\});/.exec(boxMap.get("obj-minimap").textfile.text);
-assert(namesMatch, "Mini-map script must start with the injected XO_LAYOUT_NAMES");
-const builtLayoutNames = JSON.parse(namesMatch[1]);
+const builtLayoutNames = readJsLiteral(boxMap.get("obj-minimap").textfile.text, "XO_LAYOUT_NAMES");
+assert(builtLayoutNames, "Mini-map script must start with the injected XO_LAYOUT_NAMES");
 const allVarnames = p.boxes.map((b) => b.box.varname).filter(Boolean);
 { // a new instance: the toggles' initial values, the v8ui's starting flags and the pak all agree on "Saved only"
   const txt = boxMap.get("obj-minimap").textfile.text;
-  assert(/let showSavedList = 1;/.test(txt) && /let showFiltersSection = 0;/.test(txt) && /let showPlaybackSection = 0;/.test(txt) && /let showOptionsSection = 0;/.test(txt), "v8ui starts with Saved only");
+  assert(/let showSavedList\s*=\s*1\s*;/.test(txt) && /let showFiltersSection\s*=\s*0\s*;/.test(txt) && /let showPlaybackSection\s*=\s*0\s*;/.test(txt) && /let showOptionsSection\s*=\s*0\s*;/.test(txt), "v8ui starts with Saved only");
   const init = (id) => boxMap.get(id).saved_attribute_attributes.valueof.parameter_initial[0];
   assert.deepStrictEqual(["obj-toggle-saved-btn", "obj-toggle-filters-btn", "obj-toggle-playback-btn", "obj-toggle-options-btn"].map(init), [1, 0, 0, 0], "toolbar toggles start Saved on, Filters / Playback / Options off");
 }

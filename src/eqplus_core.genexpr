@@ -1,0 +1,170 @@
+// EQ+ — 8-band cascaded biquad equalizer.
+//
+// The face owns RBJ coefficient design (src/eqplus_config.js eqpBiquadCoeffs)
+// and pokes one normalized biquad per band. This core only runs those
+// sections, so the DSP magnitude is the same biquad the curve evaluates,
+// repeated `sections` times (1, 2 or 4).
+//
+// Bind on loadbang with the GenExpr names (no `set` prefix):
+//   eqcfg #0-eqpluscfg, spec #0-eqplusspec
+//
+// eqcfg ("eqpluscfg"), 64 floats, band b at base = b * 8:
+//   +0 sections (0 = bypass, else 1 / 2 / 4 identical biquads)
+//   +1 b0  +2 b1  +3 b2  +4 a1  +5 a2     a0 is already 1
+//
+// spec ("eqplusspec"), 8200 frames x 2 channels:
+//   frame 0 ch 0  write index 0..8191 (next sample to be written)
+//   frame 0 ch 1  heartbeat, +1 every 64 samples
+//   frame 1 ch 0  sample rate
+//   frames 8 .. 8+8191
+//     ch 0  pre mono  (L+R)*0.5, before the bands
+//     ch 1  post mono (L+R)*0.5, after the bands, out gain and bypass
+//
+// zstate: 32 sections (8 bands x 4) of Direct Form II Transposed
+//   (s1L, s2L, s1R, s2R), index (b * 4 + s) * 4.
+// cstate: smoothed coefficients per band, base = b * 8
+//   +0 b0 +1 b1 +2 b2 +3 a1 +4 a2 +5 active (1 once the band has snapped in)
+//
+// Coefficients slew at 0.995 / 0.005 so a sweep does not zipper. The first
+// sample a band turns on snaps to the target and the section state is zero,
+// so enable does not fade in from a silent biquad.
+//
+// GenExpr rules: helpers (none) would sit above Buffer / Data / Param /
+// History; no identifier is e followed by digits; no return inside a block.
+
+Buffer eqcfg("eqpluscfg");
+Buffer spec("eqplusspec");
+
+Data zstate(128);
+Data cstate(64);
+
+Param outgain(0, min=-24, max=24);
+Param bypass(0, min=0, max=1);
+
+History initDone(0);
+History writeIdx(0);
+History frameTick(0);
+History linGain(1);
+
+xL = in1;
+xR = in2;
+preMono = 0.5 * (xL + xR);
+
+if (initDone < 0.5) {
+	for (i = 0; i < 128; i += 1) {
+		poke(zstate, 0, i);
+	}
+	for (i = 0; i < 64; i += 1) {
+		poke(cstate, 0, i);
+	}
+	linGain = dbtoa(clip(outgain, -24, 24));
+	writeIdx = 0;
+	frameTick = 0;
+	initDone = 1;
+}
+
+gTarget = dbtoa(clip(outgain, -24, 24));
+linGain = linGain * 0.995 + gTarget * 0.005;
+
+yL = xL;
+yR = xR;
+
+for (b = 0; b < 8; b += 1) {
+	base = b * 8;
+	nSec = fixnan(peek(eqcfg, base));
+	tb0 = fixnan(peek(eqcfg, base + 1));
+	tb1 = fixnan(peek(eqcfg, base + 2));
+	tb2 = fixnan(peek(eqcfg, base + 3));
+	ta1 = fixnan(peek(eqcfg, base + 4));
+	ta2 = fixnan(peek(eqcfg, base + 5));
+	if (nSec > 0.5) {
+		wasOn = peek(cstate, base + 5);
+		cb0 = peek(cstate, base);
+		cb1 = peek(cstate, base + 1);
+		cb2 = peek(cstate, base + 2);
+		ca1 = peek(cstate, base + 3);
+		ca2 = peek(cstate, base + 4);
+		if (wasOn < 0.5) {
+			cb0 = tb0;
+			cb1 = tb1;
+			cb2 = tb2;
+			ca1 = ta1;
+			ca2 = ta2;
+			zClear = b * 16;
+			for (k = 0; k < 16; k += 1) {
+				poke(zstate, 0, zClear + k);
+			}
+		} else {
+			cb0 = cb0 * 0.995 + tb0 * 0.005;
+			cb1 = cb1 * 0.995 + tb1 * 0.005;
+			cb2 = cb2 * 0.995 + tb2 * 0.005;
+			ca1 = ca1 * 0.995 + ta1 * 0.005;
+			ca2 = ca2 * 0.995 + ta2 * 0.005;
+		}
+		poke(cstate, cb0, base);
+		poke(cstate, cb1, base + 1);
+		poke(cstate, cb2, base + 2);
+		poke(cstate, ca1, base + 3);
+		poke(cstate, ca2, base + 4);
+		poke(cstate, 1, base + 5);
+		nRun = clip(floor(nSec + 0.5), 1, 4);
+		for (s = 0; s < nRun; s += 1) {
+			zBase = (b * 4 + s) * 4;
+			s1L = peek(zstate, zBase);
+			s2L = peek(zstate, zBase + 1);
+			s1R = peek(zstate, zBase + 2);
+			s2R = peek(zstate, zBase + 3);
+			xInL = yL;
+			xInR = yR;
+			yL = cb0 * xInL + s1L;
+			yR = cb0 * xInR + s1R;
+			s1Ln = cb1 * xInL - ca1 * yL + s2L;
+			s2Ln = cb2 * xInL - ca2 * yL;
+			s1Rn = cb1 * xInR - ca1 * yR + s2R;
+			s2Rn = cb2 * xInR - ca2 * yR;
+			poke(zstate, fixdenorm(s1Ln), zBase);
+			poke(zstate, fixdenorm(s2Ln), zBase + 1);
+			poke(zstate, fixdenorm(s1Rn), zBase + 2);
+			poke(zstate, fixdenorm(s2Rn), zBase + 3);
+		}
+		for (s = nRun; s < 4; s += 1) {
+			zBase = (b * 4 + s) * 4;
+			poke(zstate, 0, zBase);
+			poke(zstate, 0, zBase + 1);
+			poke(zstate, 0, zBase + 2);
+			poke(zstate, 0, zBase + 3);
+		}
+	} else {
+		if (peek(cstate, base + 5) > 0.5) {
+			poke(cstate, 0, base + 5);
+			zClear = b * 16;
+			for (k = 0; k < 16; k += 1) {
+				poke(zstate, 0, zClear + k);
+			}
+		}
+	}
+}
+
+if (bypass > 0.5) {
+	yL = xL;
+	yR = xR;
+} else {
+	yL = yL * linGain;
+	yR = yR * linGain;
+}
+yL = fixnan(fixdenorm(yL));
+yR = fixnan(fixdenorm(yR));
+
+postMono = 0.5 * (yL + yR);
+poke(spec, preMono, 8 + writeIdx, 0);
+poke(spec, postMono, 8 + writeIdx, 1);
+writeIdx = mod(writeIdx + 1, 8192);
+if (mod(writeIdx, 64) == 0) {
+	frameTick = mod(frameTick + 1, 16777216);
+	poke(spec, writeIdx, 0, 0);
+	poke(spec, frameTick, 0, 1);
+	poke(spec, samplerate, 1, 0);
+}
+
+out1 = yL;
+out2 = yR;

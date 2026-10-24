@@ -17,6 +17,7 @@ const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const { minifyGen, builderGen } = require("./minify_gen.js");
 
 const ROOT = path.resolve(__dirname, "..");
 const cfg = require(path.join(ROOT, "src", "loudsplit_config.js"));
@@ -34,12 +35,12 @@ function builtGenCode() {
     const raw = fs.readFileSync(path.join(ROOT, "devices", "Loud Split.amxd"));
     const p = JSON.parse(raw.slice(32).toString("utf8")).patcher;
     const face = p.boxes.map((b) => b.box).find((b) => b.id === "obj-viz").textfile.text;
-    const m = /^var GEN_DSP_TEXT = (".*");$/m.exec(face);
+    const m = /var GEN_DSP_TEXT\s*=\s*("(?:\\.|[^"\\])*")\s*;/.exec(face);
     assert.ok(m, "face carries GEN_DSP_TEXT");
     const gendsp = JSON.parse(JSON.parse(m[1]));
     return gendsp.patcher.boxes.find((b) => b.box.maxclass === "codebox").box.code;
 }
-const GEN_CODE = builtGenCode();
+const GEN_CODE = builderGen("build_loudsplit");
 
 function rng(seed) {
     let s = seed >>> 0;
@@ -535,11 +536,12 @@ function prep(src) {
     assert.ok(allLines.every((l) => l.destination[0] !== "obj-gen"), "no cord into a gen~ that is not there");
     assert.ok(allLines.some((l) => l.source[0] === "obj-viz" && l.source[1] === 2 && l.destination[0] === "obj-genin" && l.destination[1] === 1), "face outlet 2 -> hub data inlet");
     // the embedded gen = lib + ss lib + rack functions + the expanded core
+    assert.strictEqual(builtGenCode(), minifyGen(GEN_CODE), "embedded gen is the mangled core");
     assert.ok(GEN_CODE.indexOf("fft_run(") < GEN_CODE.indexOf("ss_in(") && GEN_CODE.indexOf("ss_in(") < GEN_CODE.indexOf("ss2_align(") && GEN_CODE.indexOf("ss2_align(") < GEN_CODE.indexOf("ls_masks("), "library functions come first");
     assert.ok(GEN_CODE.startsWith(LIB_SRC.replace(/\s+$/, "") + "\n"), "gen code starts with cepstrum_lib");
     assert.ok(GEN_CODE.includes(SS_SRC.replace(/\s+$/, "") + "\n") && GEN_CODE.includes(RACK_SRC.replace(/\s+$/, "") + "\n"), "gen code contains spectral_split_lib and spectral_split_rack verbatim");
     const faceTxt = byId["obj-viz"].textfile.text;
-    assert.ok(/var GEN_DSP_HASH = "[0-9a-f]{12}";/.test(faceTxt) && /var SS_PREFIX = "loudsplit";/.test(faceTxt), "face carries the gen patch hash and prefix");
+    assert.ok(/var GEN_DSP_HASH\s*=\s*"[0-9a-f]{12}"\s*;/.test(faceTxt) && /var SS_PREFIX\s*=\s*"loudsplit"\s*;/.test(faceTxt), "face carries the gen patch hash and prefix");
     assert.ok(faceTxt.includes("function ssDspLoad") && faceTxt.includes("function ssDspRestart"), "face carries the deferred-DSP module");
     assert.ok(byId["obj-scope-buf"].text.startsWith("buffer~ ---loudsplitscope"), "per-instance buffer name");
     assert.ok(Number(byId["obj-scope-buf"].text.match(/@samps (\d+)/)[1]) >= cfg.LS_SCOPE_SAMPS, "scope buffer length");
@@ -632,7 +634,7 @@ function prep(src) {
     assert.ok(face.includes("function splCreateLink") && face.includes("function lsMasks") && face.includes("function paint"), "face = config + link + ui");
     assert.ok(/mgraphics\.relative_coords\s*=\s*0/.test(face) && /mgraphics\.autofill\s*=\s*0/.test(face), "v8ui pixel coordinates");
     assert.ok(!/\bvar\s+(box|patcher|max|messagename|inlet|jsarguments)\b/.test(face), "no declared v8ui globals");
-    assert.ok(/outlets = 4/.test(face) && byId["obj-viz"].numoutlets === 4, "four face outlets");
+    assert.ok(/outlets\s*=\s*4/.test(face) && byId["obj-viz"].numoutlets === 4, "four face outlets");
     // .adg
     const adg = zlib.gunzipSync(fs.readFileSync(path.join(ROOT, "devices", "Loud Split.adg"))).toString("utf8");
     const branches = adg.match(/<AudioEffectBranchPreset Id="\d+">/g);

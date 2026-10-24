@@ -27,6 +27,9 @@ import subprocess
 import sys
 import time
 
+from minify_embed import minify_patcher
+from minify_gen import minify_gen
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
@@ -315,6 +318,7 @@ def v8ui(oid, code, rect, patch_xy, outs, presentation=1):
 def gendsp_json(gen_code):
     """The gen patcher (in 1 / in 2 -> codebox -> out 1 / out 2) as .gendsp JSON text (the deferred
     DSP writes it to a file and creates `gen~ @gen <file>`; same as scripts/build_delayplus.py)."""
+    gen_code = minify_gen(gen_code)
     def b(i, text, x, y, ni, no, cls="newobj", **kw):
         box = {"id": i, "maxclass": cls, "numinlets": ni, "numoutlets": no, "outlettype": [""] * no,
                "patching_rect": [float(x), float(y), 200.0, 22.0]}
@@ -388,6 +392,7 @@ def patcher(boxes, lines, width, description):
 
 
 def write_amxd(path, doc):
+    minify_patcher(doc)
     payload = (json.dumps(doc, indent="\t") + "\n").encode("utf-8")
     header = (b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4)
               + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload)))

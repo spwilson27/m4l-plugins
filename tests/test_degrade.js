@@ -24,6 +24,7 @@ const assert = require("assert");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { minifyGen } = require("./minify_gen.js");
 const vm = require("vm");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -285,9 +286,9 @@ function verifyAmxd(amxdFile, expectedWidth) {
 const uiCode = verifyAmxd("Degrade.amxd", 480.0);
 
 function extractJsString(script, key) {
-    const at = script.indexOf(key);
+    const at = key instanceof RegExp ? script.search(key) : script.indexOf(key);
     assert.ok(at >= 0, `missing ${key}`);
-    const start = at + key.length;
+    const start = key instanceof RegExp ? at + script.slice(at).match(key)[0].length : at + key.length;
     assert.strictEqual(script[start], '"');
     let j = start + 1;
     while (j < script.length) {
@@ -297,15 +298,15 @@ function extractJsString(script, key) {
     }
     return { value: JSON.parse(script.slice(start, j + 1)), end: j + 1 };
 }
-const embedded = extractJsString(uiCode, "var GEN_DSP_TEXT = ");
+const embedded = extractJsString(uiCode, /var GEN_DSP_TEXT\s*=\s*/);
 const hashPart = uiCode.slice(embedded.end);
-const hashMatch = /^;\nvar GEN_DSP_HASH = "([0-9a-f]{12})";/.exec(hashPart);
+const hashMatch = /^\s*;\s*var GEN_DSP_HASH\s*=\s*"([0-9a-f]{12})"\s*;/.exec(hashPart);
 assert.ok(hashMatch, "face must declare GEN_DSP_HASH");
 assert.strictEqual(crypto.createHash("sha1").update(embedded.value).digest("hex").slice(0, 12), hashMatch[1], "GEN_DSP_HASH must match the embedded patch");
 const gendsp = JSON.parse(embedded.value);
 const codebox = gendsp.patcher.boxes.map((b) => b.box).find((b) => b.maxclass === "codebox");
 assert.ok(codebox, "gendsp must wrap a codebox");
-assert.strictEqual(codebox.code, gen, "GEN_DSP_TEXT codebox must be src/degrade_core.genexpr");
+assert.strictEqual(codebox.code, minifyGen(gen), "GEN_DSP_TEXT codebox is the mangled src/degrade_core.genexpr");
 assert.ok(uiCode.includes('function init_dsp') && uiCode.includes('Global("degrade_dspq")'), "face must load DSP through the degrade_dspq queue");
 assert.ok(uiCode.includes("DSP loading...") && uiCode.includes("DSP failed:"), "face must be able to draw the DSP pill");
 

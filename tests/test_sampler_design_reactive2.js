@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Better Sampler "reactive2" design: sidebar folds, tall viewer, traced envelope dots, per-voice filter display,
- * ADSR handle drags and that every parameter is reachable.
+ * ADSR handle drags, the additive sub oscillator, and that every parameter is reachable.
  * Run after `python3 scripts/build_sampler.py reactive2`.
  */
 "use strict";
@@ -754,6 +754,7 @@ function collect() {
         if (z.key) reach.add(z.key);
         if (z.region) regionKeys[z.region].forEach((k) => reach.add(k));
         if (actionKeys[z.action]) actionKeys[z.action].forEach((k) => reach.add(k));
+        if (z.kind === "sub_harm") ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"].forEach((k) => reach.add(k));
         if (z.kind === "wave") ["samp_start", "samp_end", "loop_start", "loop_end", "play_pos"].forEach((k) => reach.add(k));
         if (z.kind === "xfade") reach.add("loop_xfade");
         if (z.kind === "flag") reach.add("slice_at");
@@ -792,6 +793,37 @@ sb.setParamFromFace("osc1_type", 0); sb.setParamFromFace("osc2_type", 0); sb.osc
 const missing = Object.keys(FP).filter((k) => !reach.has(k));
 assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.join(", ")}`);
 
+// Ranges for the additive sub. The build supplies these on FACE_PARAMS; fill any gap so a drag
+// during the zone sweep stays inside the real parameter (the sweep paints the Sub tab).
+const SUB_SPECS = {
+    sub_semi: { lo: -24, hi: 24, init: 0, exp: 1, unit: 7 },
+    sub_fine: { lo: -100, hi: 100, init: 0, exp: 1, unit: 0 },
+    sub_partials: { lo: 1, hi: 16, init: 8, exp: 1, unit: 0 },
+    sub_phase: { lo: 0, hi: 360, init: 0, exp: 1, unit: 1 },
+    sub_level: { lo: 0, hi: 100, init: 100, exp: 1, unit: 5 },
+    sub_harm_level: { lo: 0, hi: 100, init: 75, exp: 1, unit: 5 },
+    sub_detune: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_mod: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_width: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_spectra: { lo: -100, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_knock: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_decay: { lo: 5, hi: 1000, init: 120, exp: 1, unit: 2 },
+    sub_drive: { lo: 0, hi: 100, init: 0, exp: 1, unit: 5 },
+    sub_h1_4: { lo: 0, hi: 65535, init: 51000, exp: 1, unit: 0 },
+    sub_h5_8: { lo: 0, hi: 65535, init: 13107, exp: 1, unit: 0 },
+    sub_h9_12: { lo: 0, hi: 65535, init: 0, exp: 1, unit: 0 },
+    sub_h13_16: { lo: 0, hi: 65535, init: 0, exp: 1, unit: 0 },
+    sub_wave: { lo: 0, hi: 6, init: 6, exp: 1, unit: 0, enums: ["Custom", "Sine", "Saw", "Square", "Triangle", "Odd", "Warm"] },
+    sub_lock: { lo: 0, hi: 1, init: 0, exp: 1, unit: 0, enums: ["Off", "On"] },
+    sub_lock_note: { lo: 0, hi: 11, init: 0, exp: 1, unit: 0, enums: ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"] },
+    sub_tuning: { lo: 0, hi: 2, init: 0, exp: 1, unit: 0, enums: ["Key", "Fixed", "Ratio"] },
+    sub_mono: { lo: 0, hi: 1, init: 0, exp: 1, unit: 0, enums: ["Off", "On"] },
+    sub_direct: { lo: 0, hi: 1, init: 0, exp: 1, unit: 0, enums: ["Off", "On"] },
+    sub_spec_mode: { lo: 0, hi: 4, init: 0, exp: 1, unit: 0, enums: ["Tilt", "Low Pass", "Comb", "Odd/Even", "Stretch"] },
+    sub_drv_type: { lo: 0, hi: 3, init: 0, exp: 1, unit: 0, enums: ["Soft", "Hard", "Tube", "Fold"] }
+};
+for (const [k, spec] of Object.entries(SUB_SPECS)) if (!FP[k]) FP[k] = spec;
+
 // --- every zone of every section is clickable / draggable without a bad value ---
 for (const mode of [0, 1, 3, 4]) {
     sb.setParamFromFace("mode", mode); sb.setParamFromFace("sliced", 0); sb.setFoldMask(ALL); sb.paint();
@@ -805,4 +837,217 @@ for (const mode of [0, 1, 3, 4]) {
         if (sb.openMenu) sb.onclick(1, 1, 1, 0, 0);
     }
 }
-console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles and parameter reach ok");
+
+// --- additive sub oscillator (Operator harmonic bars + Current spectra strip) ---
+for (const k of ["sub_semi", "sub_fine", "sub_spectra"]) assert.ok(sb.BIPOLAR_KEYS[k], `${k} is bipolar`);
+assert.strictEqual(typeof sb.getSubHarmonic, "function");
+assert.strictEqual(typeof sb.applySubWavePreset, "function");
+assert.strictEqual(typeof sb.effSubHarmonic, "function");
+
+sb.setFoldMask(0);
+sb.oscTab = 2;
+sb.setParamFromFace("sub_on", 1);
+sb.paint();
+{
+    const L = sb.subHarmLayout();
+    near(L.ww, 458, 0.1, "sub plot width");
+    near(L.wh, 73, 0.1, "sub plot height");
+    assert.strictEqual(L.editorW, 300, "harmonic editor is 300 px");
+    assert.strictEqual(L.scopeW, 150, "waveform scope is 150 px");
+    const harm = sb.hitZones.find((z) => z.kind === "sub_harm");
+    const par = sb.hitZones.find((z) => z.key === "sub_partials");
+    assert.ok(harm && par, "harmonic field and Partials control");
+    assert.ok(harm.y + harm.h <= par.y + 0.5, "harmonic field sits above the footer");
+    const slotW = 66;
+    for (const k of ["sub_spectra", "sub_drive", "sub_knock", "sub_decay"]) {
+        const z = sb.hitZones.find((q) => q.kind === "value" && q.key === k);
+        assert.ok(z && z.w === slotW, `${k} is a 66 px Design 5A bar`);
+    }
+    const det = sb.hitZones.find((q) => q.key === "sub_detune");
+    const specBar = sb.hitZones.find((q) => q.key === "sub_spectra");
+    assert.ok(det.x >= specBar.x + specBar.w, "upper-harmonic column sits to the right of Spectra");
+    const reached = new Set();
+    for (const z of sb.hitZones) {
+        if (z.key) reached.add(z.key);
+        if (z.kind === "sub_harm") ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"].forEach((k) => reached.add(k));
+    }
+    const need = ["sub_on", "sub_oct", "sub_tone", "sub_gain", ...Object.keys(SUB_SPECS)];
+    const absent = need.filter((k) => !reached.has(k));
+    assert.deepStrictEqual(absent, [], `sub tab leaves unreachable: ${absent.join(", ")}`);
+    const swept = Object.keys(SUB_SPECS).filter((k) => !reach.has(k));
+    assert.deepStrictEqual(swept, [], `parameter sweep missed ${swept.join(", ")}`);
+    const dw = sb.foldWidth(0);
+    for (const z of sb.hitZones) {
+        assert.ok(z.x >= -1 && z.y >= -1 && z.x + z.w <= dw + 1 && z.y + z.h <= 170, `sub zone ${z.kind} ${z.key || ""} inside the device`);
+    }
+}
+
+// Drawing across the harmonic bars writes the packed nibbles and switches the preset to Custom.
+sb.applySubWavePreset(1);
+assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 1, "Sine preset");
+assert.strictEqual(Math.round(sb.paramValue("sub_h1_4")), 15, "sine fundamental nibble");
+assert.strictEqual(Math.round(sb.paramValue("sub_h5_8")), 0);
+assert.strictEqual(Math.round(sb.paramValue("sub_h9_12")), 0);
+assert.strictEqual(Math.round(sb.paramValue("sub_h13_16")), 0);
+assert.strictEqual(sb.getSubHarmonic(0), 1);
+assert.strictEqual(sb.getSubHarmonic(1), 0);
+sb.setSubHarmonic(3, 0.5);
+near(sb.getSubHarmonic(3), 8 / 15, 1e-9, "nibble quantizes 0.5 to 8/15");
+sb.applySubWavePreset(0);
+assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 0, "Custom does not wipe drawn partials");
+assert.strictEqual(sb.getSubHarmonic(0), 1);
+for (const waveIdx of [2, 3, 4, 5, 6]) {
+    sb.applySubWavePreset(waveIdx);
+    assert.strictEqual(Math.round(sb.paramValue("sub_wave")), waveIdx);
+    const amps = sb.subPresetAmps(waveIdx);
+    for (let i = 0; i < 16; i++) near(sb.getSubHarmonic(i), Math.round(amps[i] * 15) / 15, 1e-9, `preset ${waveIdx} partial ${i}`);
+    for (const k of ["sub_h1_4", "sub_h5_8", "sub_h9_12", "sub_h13_16"]) {
+        const v = sb.paramValue(k);
+        assert.ok(v >= 0 && v <= 65535 && v === Math.round(v), `${k} packed in range`);
+    }
+}
+sb.applySubWavePreset(3);
+assert.strictEqual(sb.getSubHarmonic(1), 0, "square has no 2nd harmonic");
+sb.applySubWavePreset(5);
+assert.ok(sb.getSubHarmonic(2) > sb.subPresetAmps(3)[2], "Odd keeps more of the 3rd than Square");
+
+sb.applySubWavePreset(1);
+sb.paint();
+{
+    const L = sb.subHarmLayout();
+    const barX = (i) => L.barsX + i * (L.bw + L.barGap) + L.bw * 0.5;
+    emitted.length = 0;
+    sb.onclick(barX(0), L.top + 0.5, 1, 0, 0);
+    assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 0, "drawing switches to Custom");
+    assert.ok(sb.getSubHarmonic(0) > 0.9, "click at the top of bar 1 sets the fundamental");
+    sb.ondrag(barX(5), L.bot - 0.5, 1, 0, 0);
+    sb.ondrag(barX(5), L.bot - 0.5, 0, 0, 0);
+    assert.ok(sb.getSubHarmonic(5) < 0.08, "drag to the bottom of bar 6 clears it");
+    assert.ok(sb.getSubHarmonic(0) > sb.getSubHarmonic(2) && sb.getSubHarmonic(2) > sb.getSubHarmonic(4), "bars between the gesture are interpolated");
+    assert.notStrictEqual(Math.round(sb.paramValue("sub_h5_8")), 0, "the drag wrote partials 5..8");
+    sb.onclick(barX(2), L.bot - 0.5, 1, 0, 0);
+    assert.ok(sb.getSubHarmonic(2) < 0.08, "a later click can lower a single bar");
+    sb.ondrag(barX(2), L.top + 0.5, 1, 0, 0);
+    sb.ondrag(barX(2), L.top + 0.5, 0, 0, 0);
+    assert.ok(sb.getSubHarmonic(2) > 0.9, "dragging the same bar upward raises it");
+    assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 0, "editing one bar stays on Custom");
+    params().forEach(inRange);
+}
+
+// Wave / lock / note menus, tuning, mono, direct, spectra mode and drive type.
+function clickZone(pred) {
+    sb.paint();
+    const z = sb.hitZones.find(pred);
+    assert.ok(z, "expected zone");
+    sb.onclick(z.x + Math.min(3, z.w / 2), z.y + z.h / 2, 1, 0, 0);
+    return z;
+}
+clickZone((z) => z.key === "sub_wave" && z.action === "menu");
+assert.strictEqual(sb.openMenu && sb.openMenu.key, "sub_wave");
+sb.paint();
+clickZone((z) => z.key === "sub_wave" && z.action === "menu_pick" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_wave")), 2, "Saw from the wave menu");
+assert.ok(sb.getSubHarmonic(1) > 0.4, "Saw preset filled the 2nd harmonic");
+assert.strictEqual(sb.openMenu, null);
+
+sb.setParamFromFace("sub_lock", 0);
+clickZone((z) => z.key === "sub_lock" && z.action === "toggle");
+assert.strictEqual(Math.round(sb.paramValue("sub_lock")), 1);
+clickZone((z) => z.key === "sub_lock_note" && z.action === "menu");
+sb.paint();
+clickZone((z) => z.key === "sub_lock_note" && z.action === "menu_pick" && z.value === 9);
+assert.strictEqual(Math.round(sb.paramValue("sub_lock_note")), 9, "lock note A");
+clickZone((z) => z.key === "sub_tuning" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_tuning")), 2, "Ratio tuning");
+sb.setParamFromFace("sub_mono", 0);
+clickZone((z) => z.key === "sub_mono" && z.action === "toggle");
+assert.strictEqual(Math.round(sb.paramValue("sub_mono")), 1);
+sb.setParamFromFace("sub_direct", 0);
+clickZone((z) => z.key === "sub_direct" && z.action === "toggle");
+assert.strictEqual(Math.round(sb.paramValue("sub_direct")), 1);
+clickZone((z) => z.key === "sub_spec_mode" && z.value === 3);
+assert.strictEqual(Math.round(sb.paramValue("sub_spec_mode")), 3, "Odd/Even spectra");
+clickZone((z) => z.key === "sub_drv_type" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_drv_type")), 2, "Tube drive");
+clickZone((z) => z.key === "sub_oct" && z.value === 2);
+assert.strictEqual(Math.round(sb.paramValue("sub_oct")), 2);
+
+function dragUp(key, from) {
+    sb.setParamFromFace(key, from);
+    sb.paint();
+    const z = sb.hitZones.find((q) => q.kind === "value" && q.key === key);
+    assert.ok(z, `value zone ${key}`);
+    const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
+    emitted.length = 0;
+    sb.onclick(cx, cy, 1, 0, 0);
+    sb.ondrag(cx, cy - 90, 1, 0, 0);
+    sb.ondrag(cx, cy - 90, 0, 0, 0);
+    params().forEach(inRange);
+    assert.ok(sb.paramValue(key) > from, `${key} rises when dragged up (${sb.paramValue(key)} from ${from})`);
+    sb.ondblclick(cx, cy);
+    assert.strictEqual(sb.paramValue(key), FP[key].init, `${key} double-click resets`);
+}
+for (const [k, from] of [["sub_detune", 0], ["sub_mod", 0], ["sub_width", 0], ["sub_spectra", 0], ["sub_knock", 0], ["sub_decay", 5], ["sub_drive", 0], ["sub_semi", 0], ["sub_fine", 0], ["sub_tone", 0], ["sub_level", 10], ["sub_harm_level", 10], ["sub_partials", 1], ["sub_phase", 0]]) {
+    dragUp(k, from);
+}
+sb.setParamFromFace("sub_gain", -20);
+dragUp("sub_gain", -20);
+
+// Effective level: partial count, fundamental vs upper level, and the spectra curve.
+sb.applySubWavePreset(2);
+sb.setParamFromFace("sub_partials", 4);
+sb.setParamFromFace("sub_level", 50);
+sb.setParamFromFace("sub_harm_level", 100);
+sb.setParamFromFace("sub_spectra", 0);
+sb.setParamFromFace("sub_spec_mode", 0);
+near(sb.effSubHarmonic(0), sb.getSubHarmonic(0) * 0.5, 1e-9, "bar 1 follows Sub level");
+near(sb.effSubHarmonic(1), sb.getSubHarmonic(1), 1e-9, "upper bars follow Harm level");
+assert.strictEqual(sb.effSubHarmonic(4), 0, "partials beyond sub_partials are silent");
+for (let mode = 0; mode < 5; mode++) {
+    sb.setParamFromFace("sub_spec_mode", mode);
+    sb.setParamFromFace("sub_spectra", 0);
+    for (let i = 0; i < 16; i++) assert.strictEqual(sb.subSpectraGain(i), 1, `spectra 0 is unity (mode ${mode})`);
+}
+sb.setParamFromFace("sub_spec_mode", 3);
+sb.setParamFromFace("sub_spectra", 100);
+assert.ok(sb.effSubHarmonic(1) < 1e-6, "+100 Odd/Even mutes the 2nd harmonic");
+assert.ok(sb.effSubHarmonic(2) > 0.2, "the 3rd harmonic stays");
+sb.setParamFromFace("sub_spec_mode", 0);
+sb.setParamFromFace("sub_spectra", -100);
+assert.ok(sb.subSpectraGain(0) > sb.subSpectraGain(15), "negative tilt favors the fundamental");
+
+// The scope hears Drive, Detune and Width.
+sb.applySubWavePreset(1);
+sb.setParamFromFace("sub_partials", 1);
+sb.setParamFromFace("sub_level", 100);
+sb.setParamFromFace("sub_harm_level", 0);
+sb.setParamFromFace("sub_phase", 0);
+sb.setParamFromFace("sub_detune", 0);
+sb.setParamFromFace("sub_mod", 0);
+sb.setParamFromFace("sub_width", 0);
+sb.setParamFromFace("sub_drive", 0);
+sb.setParamFromFace("sub_spectra", 0);
+const dry = sb.subWaveSample(0.03, 0);
+near(sb.subWaveSample(0.03, 1), dry, 1e-9, "no width and one partial is mono");
+sb.setParamFromFace("sub_drive", 100);
+sb.setParamFromFace("sub_drv_type", 1);
+assert.ok(Math.abs(sb.subWaveSample(0.03, 0)) > Math.abs(dry) + 0.05, "hard drive raises a quiet sample");
+sb.applySubWavePreset(2);
+sb.setParamFromFace("sub_partials", 8);
+sb.setParamFromFace("sub_harm_level", 100);
+sb.setParamFromFace("sub_level", 100);
+sb.setParamFromFace("sub_drive", 0);
+sb.setParamFromFace("sub_width", 0);
+sb.setParamFromFace("sub_detune", 0);
+const undetuned = sb.subWaveSample(0.22, 0);
+near(sb.subWaveSample(0.22, 1), undetuned, 1e-9, "width 0 keeps L and R together");
+sb.setParamFromFace("sub_width", 100);
+assert.ok(Math.abs(sb.subWaveSample(0.22, 0) - sb.subWaveSample(0.22, 1)) > 0.01, "width spreads the upper harmonics");
+sb.setParamFromFace("sub_width", 0);
+sb.setParamFromFace("sub_detune", 100);
+assert.ok(Math.abs(sb.subWaveSample(0.22, 0) - undetuned) > 1e-3, "detune moves the waveform");
+
+sb.oscTab = 0;
+sb.openMenu = null;
+sb.setFoldMask(sb.DEFAULT_FOLD);
+console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles, sub oscillator and parameter reach ok");

@@ -46,6 +46,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import glitch_common as gc
+from minify_embed import minify_patcher
 
 ROOT_DIR = gc.ROOT_DIR
 UI_PATH = os.path.join(ROOT_DIR, "src", "glitch_ui.js")
@@ -391,6 +392,7 @@ def build_patcher(preview=""):
 
 
 def write_amxd(patcher, out_path):
+    minify_patcher(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
