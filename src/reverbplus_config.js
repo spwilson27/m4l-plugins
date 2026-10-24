@@ -62,6 +62,9 @@ const RP_PREDELAY_MAX_MS = 500;
 
 // Live theme colours (Max for Live dynamic colours), with a fallback outside Live.
 function rpTheme(name, fallback) {
+    if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+        return m4lColor(name, fallback);
+    }
     try {
         if (typeof max !== "undefined" && max.getcolor) {
             const c = max.getcolor(name);

@@ -46,6 +46,9 @@ const DP_REG_STALE_MS = 3000;
 // Live theme colours (Max for Live dynamic colours): follow Live's theme and hue settings. Outside Live
 // (node tests, the preview renderer) the fallback is used.
 function dpTheme(name, fallback) {
+    if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+        return m4lColor(name, fallback);
+    }
     try {
         if (typeof max !== "undefined" && max.getcolor) {
             const c = max.getcolor(name);

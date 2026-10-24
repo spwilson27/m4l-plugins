@@ -533,6 +533,8 @@ def build_patcher():
 
 
 def write_amxd(patcher_dict, out_path):
+    import theme_common as tc
+    tc.inject_theme_support(patcher_dict, "multiband_split")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     dev_w = patcher_dict["patcher"]["devicewidth"]
     payload = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")

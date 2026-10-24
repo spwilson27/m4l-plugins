@@ -727,6 +727,10 @@ def build_patcher():
 
 
 def write_amxd(patcher, out_path):
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import theme_common as tc
+    tc.inject_theme_support(patcher, os.path.splitext(os.path.basename(out_path))[0], assign_varnames=False)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0)

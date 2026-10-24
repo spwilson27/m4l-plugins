@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/types/glitch.d.ts",
     "src/glitch_config.js",
     "src/glitch_ui.js"

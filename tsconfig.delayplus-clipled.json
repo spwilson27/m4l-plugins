@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/delayplus_config.js",
     "src/delayplus_clipled.js"
   ]

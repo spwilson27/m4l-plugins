@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/xo_palette.js",
     "src/xo_folder_ui.js"
   ]

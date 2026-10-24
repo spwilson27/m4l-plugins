@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/types/harmsplit.d.ts",
     "src/harmsplit_config.js",
     "src/spectral_link.js",

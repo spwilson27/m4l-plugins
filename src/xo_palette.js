@@ -72,6 +72,9 @@ var XO_LIVE_FALLBACK = {
  * @returns {number[]}
  */
 function xoLiveColor(name) {
+  if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+    return m4lColor(name, XO_LIVE_FALLBACK[name] || [0.5, 0.5, 0.5, 1]);
+  }
   try {
     if (typeof max !== "undefined" && max && typeof max.getcolor === "function") {
       const c = max.getcolor(name);

@@ -1,0 +1,1692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M4L Theme Studio — Ableton Live Plugin Suite</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #121721;
+    --card: #171e2b;
+    --border: #253042;
+    --text: #e4ebf5;
+    --muted: #8492a6;
+    --accent: #ffad56;
+    --cyan: #03c3d5;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  header {
+    min-height: 46px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 14px;
+    flex-shrink: 0;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    font-size: 13px;
+  }
+  .led {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #3be082;
+    box-shadow: 0 0 8px #3be082aa;
+  }
+  .led.offline { background: #e85848; box-shadow: none; }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  select, button, input[type="text"] {
+    background: var(--card);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 5px 10px;
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--cyan); }
+  button.primary {
+    background: var(--accent);
+    color: #111;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  button.toggle-on {
+    background: var(--accent);
+    color: #111;
+    border-color: var(--accent);
+    font-weight: 700;
+  }
+  .workspace {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+  aside {
+    width: clamp(270px, 26vw, 356px);
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 10px;
+  }
+  .section.ableton-prefs {
+    border-color: rgba(3, 195, 213, 0.45);
+    background: linear-gradient(180deg, rgba(16, 26, 38, 0.96), rgba(19, 25, 35, 0.96));
+  }
+  .section-title {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .preset-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .preset-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    text-align: left;
+    font-size: 11px;
+  }
+  .preset-btn.active {
+    border-color: var(--accent);
+    background: rgba(255, 173, 86, 0.14);
+    color: #fff;
+    font-weight: 600;
+  }
+  .swatches-mini {
+    display: flex;
+    gap: 3px;
+  }
+  .swatches-mini span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.2);
+  }
+  .pref-row {
+    display: grid;
+    grid-template-columns: 114px 1fr;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+  .pref-row select {
+    width: 100%;
+    padding: 4px 8px;
+    background: #10151e;
+  }
+  .macro-row {
+    display: grid;
+    grid-template-columns: 96px 1fr 48px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+  .macro-row input[type="range"] { width: 100%; accent-color: var(--cyan); }
+  .macro-val { text-align: right; font-variant-numeric: tabular-nums; color: var(--cyan); font-size: 11px; }
+  .token-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .token-row {
+    display: grid;
+    grid-template-columns: 26px 1fr 64px 20px;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    border-radius: 4px;
+  }
+  .token-row:hover { background: rgba(255,255,255,0.03); }
+  .token-row input[type="color"] {
+    width: 24px;
+    height: 20px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: none;
+    padding: 0;
+    cursor: pointer;
+  }
+  .token-name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .token-hex {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10.5px;
+    color: var(--muted);
+    text-align: right;
+  }
+  .token-reset {
+    padding: 1px 4px;
+    font-size: 10px;
+    visibility: hidden;
+  }
+  .token-row.overridden .token-reset { visibility: visible; }
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    transition: background-color 0.12s ease;
+  }
+  .gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .gallery.single .device-card {
+    width: 100%;
+  }
+  .device-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+  .device-card.focused {
+    order: -1;
+    border: 1.5px solid var(--accent);
+    box-shadow: 0 0 0 2px rgba(255, 173, 86, 0.22), 0 8px 28px rgba(0, 0, 0, 0.55);
+    background: linear-gradient(180deg, rgba(255, 173, 86, 0.08), var(--panel) 48px);
+  }
+  .focused-badge {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #111;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .device-card.focused .focused-badge {
+    display: inline-flex;
+  }
+  .device-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .device-hdr strong { color: var(--text); }
+  .canvas-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border-radius: 5px;
+    border: 1px solid #000;
+    background: #181c20;
+  }
+  canvas {
+    display: block;
+    max-width: 100%;
+    height: auto !important;
+  }
+  .target-stepper {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 4px;
+  }
+  .target-stepper:hover {
+    border-color: var(--cyan);
+  }
+  .target-stepper select {
+    border: none;
+    background: transparent;
+    padding: 3px 6px;
+    min-width: 210px;
+    font-weight: 600;
+  }
+  .target-stepper select:focus {
+    outline: none;
+  }
+  .target-step-btn {
+    padding: 3px 7px;
+    font-size: 11px;
+    line-height: 1;
+    border-radius: 4px;
+    background: var(--panel);
+  }
+  .target-list-box {
+    max-height: 196px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-right: 2px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .target-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text);
+    font-size: 11px;
+    text-align: left;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .target-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: var(--border);
+  }
+  .target-item.active {
+    background: rgba(3, 195, 213, 0.16);
+    border-color: var(--cyan);
+    color: #fff;
+    font-weight: 600;
+  }
+  .target-item .badge-ov {
+    font-size: 9.5px;
+    padding: 1px 5px;
+    border-radius: 10px;
+    background: rgba(255, 173, 86, 0.2);
+    color: var(--accent);
+    border: 1px solid rgba(255, 173, 86, 0.45);
+  }
+  .target-search {
+    width: 100%;
+    margin-bottom: 6px;
+    background: #10151e !important;
+    padding: 5px 8px !important;
+    font-size: 11px !important;
+  }
+  .target-strip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 4px 2px 8px;
+    flex-shrink: 0;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .target-pill {
+    white-space: nowrap;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .target-pill.active {
+    background: var(--cyan);
+    color: #081018;
+    border-color: var(--cyan);
+    font-weight: 700;
+  }
+  .target-pill.has-ov {
+    border-color: var(--accent);
+    color: var(--text);
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div id="statusLed" class="led"></div>
+    <span>M4L THEME STUDIO</span>
+    <span id="statusText" style="color:var(--muted);font-weight:400;font-size:11px;">Syncing with Ableton Live...</span>
+  </div>
+  <div class="toolbar">
+    <label for="targetSelect" style="color:var(--muted)">Target:</label>
+    <div id="targetPickerWrap" class="target-stepper" title="Scroll wheel or click ◀ / ▶ to cycle through targets">
+      <button id="targetPrevBtn" class="target-step-btn" title="Previous target (Up/Left)">◀</button>
+      <select id="targetSelect">
+        <option value="global">Global (All Plugins)</option>
+      </select>
+      <button id="targetNextBtn" class="target-step-btn" title="Next target (Down/Right)">▶</button>
+    </div>
+    <label for="chromeSelect" style="color:var(--muted)">Preview Context:</label>
+    <select id="chromeSelect">
+      <option value="ableton">Against Ableton Live UI (Full DAW + Device Tray)</option>
+      <option value="tray">Ableton Device Tray Strip</option>
+      <option value="bare">Device Canvas Only</option>
+    </select>
+    <label for="viewSelect" style="color:var(--muted)">View:</label>
+    <select id="viewSelect">
+      <option value="gallery">All Plugins Gallery (1x)</option>
+      <option value="single">2x Retina Inspector</option>
+    </select>
+    <button id="savePresetBtn">+ Save Preset</button>
+    <button id="exportBtn">Export JSON</button>
+    <button id="importBtn">Import JSON</button>
+    <button id="resetBtn">Reset Target</button>
+  </div>
+</header>
+<div class="workspace">
+  <aside>
+    <div class="section">
+      <div class="section-title">
+        <span>Target Device</span>
+        <span id="targetCountBadge" style="color:var(--cyan)">All Plugins</span>
+      </div>
+      <input id="targetSearchInput" class="target-search" type="text" placeholder="Filter devices (scroll wheel to cycle)..." />
+      <div id="targetListBox" class="target-list-box"></div>
+    </div>
+
+    <div class="section ableton-prefs">
+      <div class="section-title">
+        <span style="color:var(--cyan)">Ableton Live UI Settings</span>
+        <div style="display:flex;gap:4px;">
+          <button id="detectLiveBtn" title="Estimate settings from running Ableton Live" style="padding:2px 6px;font-size:10px;">Detect Live</button>
+          <button id="resetLiveUiBtn" title="Reset Ableton UI settings to default" style="padding:2px 6px;font-size:10px;">Default</button>
+        </div>
+      </div>
+      <div class="pref-row">
+        <span>Theme</span>
+        <select id="abTheme">
+          <option value="Default">Default</option>
+          <option value="Twenty-Four Carat">Twenty-Four Carat</option>
+          <option value="Riparian">Riparian</option>
+          <option value="Immaterial">Immaterial</option>
+          <option value="Angst Robot">Angst Robot</option>
+          <option value="Classic Medium Dark">Classic Medium Dark</option>
+          <option value="Classic Medium Light">Classic Medium Light</option>
+        </select>
+      </div>
+      <div class="pref-row" id="rowAppearance">
+        <span>Appearance</span>
+        <select id="abAppearance">
+          <option value="Dark">Dark</option>
+          <option value="Light">Light</option>
+        </select>
+      </div>
+      <div class="pref-row" id="rowTone">
+        <span>Tone</span>
+        <select id="abTone">
+          <option value="Neutral">Neutral</option>
+          <option value="Warm">Warm</option>
+          <option value="Cool">Cool</option>
+        </select>
+      </div>
+      <div class="pref-row" id="rowHighContrast">
+        <span>High Contrast</span>
+        <div>
+          <button id="abHighContrast" style="width:74px;padding:3px 8px;">Off</button>
+        </div>
+      </div>
+      <div style="border-top:1px solid var(--border);margin:8px 0 6px;padding-top:6px;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;">
+        Customization
+      </div>
+      <div class="macro-row">
+        <span>Grid Line Int.</span>
+        <input id="abGrid" type="range" min="0" max="200" step="1" value="100" />
+        <span id="valAbGrid" class="macro-val">100 %</span>
+      </div>
+      <div class="macro-row">
+        <span>Brightness</span>
+        <input id="abBrt" type="range" min="0" max="200" step="1" value="100" />
+        <span id="valAbBrt" class="macro-val">100 %</span>
+      </div>
+      <div class="macro-row">
+        <span>Color Intensity</span>
+        <input id="abInt" type="range" min="0" max="100" step="1" value="0" />
+        <span id="valAbInt" class="macro-val">0 %</span>
+      </div>
+      <div class="macro-row">
+        <span>Color Hue</span>
+        <input id="abHue" type="range" min="0" max="359" step="1" value="0" />
+        <span id="valAbHue" class="macro-val">0°</span>
+      </div>
+      <div id="liveEstBanner" style="font-size:10.5px;color:var(--muted);margin-top:4px;"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">
+        <span>Plugin Theme Presets</span>
+        <span id="activePresetBadge" style="color:var(--accent)">Default</span>
+      </div>
+      <div id="presetGrid" class="preset-grid"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">
+        <span>Plugin Color Macros</span>
+        <button id="resetMacrosBtn" style="padding:2px 6px;font-size:10px;">Zero</button>
+      </div>
+      <div class="macro-row">
+        <span>Hue Shift</span>
+        <input id="macHue" type="range" min="-180" max="180" step="1" value="0" />
+        <span id="valHue" class="macro-val">0°</span>
+      </div>
+      <div class="macro-row">
+        <span>Saturation</span>
+        <input id="macSat" type="range" min="0" max="2.0" step="0.02" value="1" />
+        <span id="valSat" class="macro-val">100%</span>
+      </div>
+      <div class="macro-row">
+        <span>Contrast</span>
+        <input id="macCont" type="range" min="0.5" max="1.6" step="0.02" value="1" />
+        <span id="valCont" class="macro-val">100%</span>
+      </div>
+      <div class="macro-row">
+        <span>Brightness</span>
+        <input id="macBrt" type="range" min="-0.3" max="0.3" step="0.01" value="0" />
+        <span id="valBrt" class="macro-val">0%</span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>Surfaces &amp; Chrome</span></div>
+      <div id="tokensSurface" class="token-list"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>LCD &amp; Display Grid</span></div>
+      <div id="tokensLcd" class="token-list"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>Primary Accents &amp; Curves</span></div>
+      <div id="tokensAccent" class="token-list"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>Extended Palette</span></div>
+      <div id="tokensExt" class="token-list"></div>
+    </div>
+  </aside>
+
+  <main id="mainViewport">
+    <div id="targetQuickStrip" class="target-strip" title="Scroll wheel to pan or cycle targets"></div>
+    <div id="gallery" class="gallery"></div>
+  </main>
+</div>
+
+<script id="m4lThemeEngineInline"></script>
+<script>
+(function() {
+  const GROUPS = {
+    tokensSurface: ["live_surface_bg", "live_desktop", "live_surface_frame", "live_control_bg", "live_control_fg", "live_control_zombie"],
+    tokensLcd: ["live_lcd_bg", "live_lcd_frame", "live_lcd_title", "live_display_scale_text"],
+    tokensAccent: ["live_control_selection", "live_lcd_control_fg", "live_lcd_control_fg_alt", "live_display_line_one", "live_display_line_two", "live_display_handle_one", "live_display_handle_two", "live_alert"],
+    tokensExt: ["accent_green", "accent_violet", "accent_yellow", "accent_magenta"]
+  };
+
+  let state = typeof m4lDefaultState === "function" ? m4lDefaultState() : {
+    version: 1, preset: "Default",
+    macros: { hueShift: 0, satScale: 1, contrast: 1, brightness: 0 },
+    tokens: {}, deviceOverrides: {}, customPresets: {},
+    abletonUi: {
+      enabled: false, theme: "Default", appearance: "Dark", tone: "Neutral",
+      highContrast: false, gridLineIntensity: 100, brightness: 100, colorIntensity: 0, colorHue: 0
+    }
+  };
+  let hostLiveColors = null;
+  let devices = [];
+  let currentTarget = "global";
+  let viewMode = "gallery";
+  let chromeMode = "ableton";
+  let pushTimer = null;
+
+  function ensureAbletonUi() {
+    if (!state.abletonUi || typeof state.abletonUi !== "object") {
+      state.abletonUi = typeof m4lDefaultAbletonUi === "function" ? m4lDefaultAbletonUi() : {
+        enabled: false, theme: "Default", appearance: "Dark", tone: "Neutral",
+        highContrast: false, gridLineIntensity: 100, brightness: 100, colorIntensity: 0, colorHue: 0
+      };
+    }
+    return state.abletonUi;
+  }
+
+  function rgbToHex(c) {
+    const r = Math.max(0, Math.min(255, Math.round((c[0] || 0) * 255)));
+    const g = Math.max(0, Math.min(255, Math.round((c[1] || 0) * 255)));
+    const b = Math.max(0, Math.min(255, Math.round((c[2] || 0) * 255)));
+    return "#" + [r, g, b].map(x => x.toString(16).padStart(2, "0")).join("");
+  }
+
+  function hexToRgba(hex) {
+    const clean = String(hex).replace("#", "");
+    const r = parseInt(clean.slice(0, 2), 16) / 255;
+    const g = parseInt(clean.slice(2, 4), 16) / 255;
+    const b = parseInt(clean.slice(4, 6), 16) / 255;
+    return [Number(r.toFixed(4)), Number(g.toFixed(4)), Number(b.toFixed(4)), 1.0];
+  }
+
+  function rgbaCss(c, alphaMul) {
+    const r = Math.max(0, Math.min(255, Math.round((c[0] || 0) * 255)));
+    const g = Math.max(0, Math.min(255, Math.round((c[1] || 0) * 255)));
+    const b = Math.max(0, Math.min(255, Math.round((c[2] || 0) * 255)));
+    const a = (c.length > 3 ? c[3] : 1.0) * (alphaMul === undefined ? 1.0 : alphaMul);
+    return `rgba(${r},${g},${b},${a.toFixed(3)})`;
+  }
+
+  function getTargetObj(create) {
+    if (currentTarget === "global") return state;
+    if (!state.deviceOverrides) state.deviceOverrides = {};
+    if (!state.deviceOverrides[currentTarget] && create) {
+      state.deviceOverrides[currentTarget] = { preset: "", macros: {}, tokens: {} };
+    }
+    return state.deviceOverrides[currentTarget] || { preset: "", macros: {}, tokens: {} };
+  }
+
+  function syncGlobalEngine() {
+    ensureAbletonUi();
+    window.__M4L_THEME_STATE__ = state;
+    if (typeof m4lSetThemeState === "function") {
+      m4lSetThemeState(state);
+    }
+  }
+
+  function schedulePush() {
+    syncGlobalEngine();
+    updateSidebarUI();
+    renderAllCanvases();
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => {
+      fetch("/api/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state)
+      }).catch(() => {});
+    }, 35);
+  }
+
+  function buildPresetButtons() {
+    const grid = document.getElementById("presetGrid");
+    grid.innerHTML = "";
+    const allPresets = Object.assign({}, M4L_PRESET_THEMES, state.customPresets || {});
+    const eff = m4lEffectiveConfig(currentTarget === "global" ? undefined : currentTarget);
+    document.getElementById("activePresetBadge").textContent = eff.preset || "Default";
+
+    for (const [name, p] of Object.entries(allPresets)) {
+      const btn = document.createElement("button");
+      btn.className = "preset-btn" + (eff.preset === name ? " active" : "");
+      const t = name === "Ableton Live" ? m4lComputeAbletonUiTokens(ensureAbletonUi()) : (p.tokens || M4L_DEFAULT_TOKENS);
+      const c1 = rgbToHex(t.live_surface_bg || [0.2, 0.2, 0.2]);
+      const c2 = rgbToHex(t.live_lcd_control_fg || [1, 0.68, 0.34]);
+      const c3 = rgbToHex(t.live_lcd_control_fg_alt || [0.01, 0.76, 0.84]);
+      btn.innerHTML = `<span>${name}</span><span class="swatches-mini"><span style="background:${c1}"></span><span style="background:${c2}"></span><span style="background:${c3}"></span></span>`;
+      btn.onclick = () => {
+        const tgt = getTargetObj(true);
+        tgt.preset = name;
+        tgt.tokens = {};
+        schedulePush();
+      };
+      grid.appendChild(btn);
+    }
+  }
+
+  function buildTokenRows() {
+    for (const [containerId, keys] of Object.entries(GROUPS)) {
+      const el = document.getElementById(containerId);
+      el.innerHTML = "";
+      for (const k of keys) {
+        const row = document.createElement("div");
+        row.className = "token-row";
+        row.dataset.token = k;
+        row.innerHTML = `
+          <input type="color" data-key="${k}" />
+          <span class="token-name" title="${k}">${k.replace(/^live_/, "")}</span>
+          <span class="token-hex" data-hex="${k}">#000000</span>
+          <button class="token-reset" title="Reset token" data-reset="${k}">×</button>
+        `;
+        const inp = row.querySelector("input");
+        inp.addEventListener("input", (e) => {
+          const tgt = getTargetObj(true);
+          if (!tgt.tokens) tgt.tokens = {};
+          tgt.tokens[k] = hexToRgba(e.target.value);
+          schedulePush();
+        });
+        row.querySelector(".token-reset").addEventListener("click", () => {
+          const tgt = getTargetObj(false);
+          if (tgt && tgt.tokens) delete tgt.tokens[k];
+          schedulePush();
+        });
+        el.appendChild(row);
+      }
+    }
+  }
+
+  function updateSidebarUI() {
+    buildPresetButtons();
+    buildTargetListUI();
+    const u = ensureAbletonUi();
+    document.getElementById("abTheme").value = u.theme || "Default";
+    document.getElementById("abAppearance").value = u.appearance || "Dark";
+    document.getElementById("abTone").value = u.tone || "Neutral";
+    const isDefaultFamily = (u.theme || "Default") === "Default";
+    document.getElementById("rowAppearance").style.opacity = isDefaultFamily ? "1" : "0.45";
+    document.getElementById("rowTone").style.opacity = isDefaultFamily ? "1" : "0.45";
+    document.getElementById("rowHighContrast").style.opacity = isDefaultFamily ? "1" : "0.45";
+
+    const hcBtn = document.getElementById("abHighContrast");
+    hcBtn.textContent = u.highContrast ? "On" : "Off";
+    hcBtn.className = u.highContrast ? "toggle-on" : "";
+
+    document.getElementById("abGrid").value = u.gridLineIntensity === undefined ? 100 : u.gridLineIntensity;
+    document.getElementById("valAbGrid").textContent = Math.round(u.gridLineIntensity === undefined ? 100 : u.gridLineIntensity) + " %";
+    document.getElementById("abBrt").value = u.brightness === undefined ? 100 : u.brightness;
+    document.getElementById("valAbBrt").textContent = Math.round(u.brightness === undefined ? 100 : u.brightness) + " %";
+    document.getElementById("abInt").value = u.colorIntensity || 0;
+    document.getElementById("valAbInt").textContent = Math.round(u.colorIntensity || 0) + " %";
+    document.getElementById("abHue").value = u.colorHue || 0;
+    document.getElementById("valAbHue").textContent = Math.round(u.colorHue || 0) + "°";
+
+    const askName = typeof m4lResolveAbletonAskName === "function" ? m4lResolveAbletonAskName(u) : "Default Dark Neutral Medium";
+    document.getElementById("liveEstBanner").textContent = `Resolved Skin: ${askName}.ask`;
+
+    const slug = currentTarget === "global" ? undefined : currentTarget;
+    const eff = m4lEffectiveConfig(slug);
+    const resolved = m4lResolvedTokens(slug);
+    const tgt = getTargetObj(false);
+
+    document.getElementById("macHue").value = eff.macros.hueShift || 0;
+    document.getElementById("valHue").textContent = Math.round(eff.macros.hueShift || 0) + "°";
+    document.getElementById("macSat").value = eff.macros.satScale === undefined ? 1 : eff.macros.satScale;
+    document.getElementById("valSat").textContent = Math.round((eff.macros.satScale === undefined ? 1 : eff.macros.satScale) * 100) + "%";
+    document.getElementById("macCont").value = eff.macros.contrast === undefined ? 1 : eff.macros.contrast;
+    document.getElementById("valCont").textContent = Math.round((eff.macros.contrast === undefined ? 1 : eff.macros.contrast) * 100) + "%";
+    document.getElementById("macBrt").value = eff.macros.brightness || 0;
+    document.getElementById("valBrt").textContent = Math.round((eff.macros.brightness || 0) * 100) + "%";
+
+    document.querySelectorAll(".token-row").forEach((row) => {
+      const k = row.dataset.token;
+      const col = resolved[k] || M4L_DEFAULT_TOKENS[k] || [0.5, 0.5, 0.5, 1];
+      const hex = rgbToHex(col);
+      const inp = row.querySelector("input");
+      if (document.activeElement !== inp) inp.value = hex;
+      row.querySelector(".token-hex").textContent = hex.toUpperCase();
+      const hasOv = Boolean(tgt && tgt.tokens && tgt.tokens[k]);
+      row.classList.toggle("overridden", hasOv);
+    });
+  }
+
+  function mapDevColor(devSlug, col, tokenName, liveTokens) {
+    window.M4L_DEVICE_SLUG = devSlug;
+    if (tokenName) {
+      if (m4lIsActive(devSlug)) {
+        return m4lColor(tokenName, col);
+      }
+      if (liveTokens && liveTokens[tokenName]) {
+        return liveTokens[tokenName];
+      }
+    }
+    if (!col || !Array.isArray(col)) return [0.5, 0.5, 0.5, 1];
+    return m4lMapRgba(col[0], col[1], col[2], col.length > 3 ? col[3] : 1.0);
+  }
+
+  function renderV8Commands(ctx, cmds, devSlug, scale, liveTokens) {
+    ctx.save();
+    let curColor = "rgba(255,255,255,1)";
+    let fontSize = 9.5;
+    let fontFace = "sans-serif";
+    let pendingShape = null;
+    for (let i = 0; i < cmds.length; i++) {
+      const cmd = cmds[i];
+      const op = cmd.op;
+      if (op === "save") ctx.save();
+      else if (op === "restore") ctx.restore();
+      else if (op === "translate") ctx.translate(cmd.x * scale, cmd.y * scale);
+      else if (op === "rotate") ctx.rotate(cmd.a);
+      else if (op === "rgba") {
+        const mapped = mapDevColor(devSlug, [cmd.r, cmd.g, cmd.b, cmd.a], undefined, liveTokens);
+        curColor = rgbaCss(mapped);
+        ctx.fillStyle = curColor;
+        ctx.strokeStyle = curColor;
+      } else if (op === "line_width") {
+        ctx.lineWidth = Math.max(1, cmd.w * scale);
+      } else if (op === "font_face") {
+        fontFace = String(cmd.face || "sans-serif");
+        ctx.font = `${Math.round(fontSize * scale)}px "${fontFace}", sans-serif`;
+      } else if (op === "font_size") {
+        fontSize = cmd.size || 9.5;
+        ctx.font = `${Math.round(fontSize * scale)}px "${fontFace}", sans-serif`;
+      } else if (op === "rect") {
+        ctx.beginPath();
+        ctx.rect(cmd.x * scale, cmd.y * scale, cmd.w * scale, cmd.h * scale);
+      } else if (op === "rrect") {
+        ctx.beginPath();
+        const r = Math.min(cmd.rx || 3, cmd.w * 0.5, cmd.h * 0.5) * scale;
+        ctx.roundRect(cmd.x * scale, cmd.y * scale, cmd.w * scale, cmd.h * scale, r);
+      } else if (op === "arc") {
+        ctx.beginPath();
+        ctx.arc(cmd.x * scale, cmd.y * scale, Math.max(0.5, cmd.r * scale), cmd.a1, cmd.a2);
+      } else if (op === "move_to") {
+        if (!pendingShape) { ctx.beginPath(); pendingShape = true; }
+        ctx.moveTo(cmd.x * scale, cmd.y * scale);
+        ctx._cx = cmd.x * scale;
+        ctx._cy = cmd.y * scale;
+      } else if (op === "line_to") {
+        ctx.lineTo(cmd.x * scale, cmd.y * scale);
+        ctx._cx = cmd.x * scale;
+        ctx._cy = cmd.y * scale;
+      } else if (op === "curve_to") {
+        ctx.bezierCurveTo(cmd.x1 * scale, cmd.y1 * scale, cmd.x2 * scale, cmd.y2 * scale, cmd.x3 * scale, cmd.y3 * scale);
+        ctx._cx = cmd.x3 * scale;
+        ctx._cy = cmd.y3 * scale;
+      } else if (op === "close_path") {
+        ctx.closePath();
+      } else if (op === "fill") {
+        ctx.fillStyle = curColor;
+        ctx.fill();
+        if (!cmd.preserve) pendingShape = null;
+      } else if (op === "stroke") {
+        ctx.strokeStyle = curColor;
+        ctx.stroke();
+        if (!cmd.preserve) pendingShape = null;
+      } else if (op === "show_text") {
+        ctx.fillStyle = curColor;
+        ctx.font = `600 ${Math.round(fontSize * scale)}px -apple-system, sans-serif`;
+        ctx.fillText(String(cmd.text || ""), ctx._cx || 0, ctx._cy || 0);
+      }
+    }
+    ctx.restore();
+  }
+
+  function renderDeviceBody(ctx, dev, ox, oy, scale, liveTokens) {
+    const w = dev.width || 400;
+    const h = 169;
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.beginPath();
+    ctx.rect(0, 0, w * scale, h * scale);
+    ctx.clip();
+
+    const surf = m4lIsActive(dev.slug) ? m4lColor("live_surface_bg") : (liveTokens.live_surface_bg || [0.212, 0.212, 0.212, 1]);
+    ctx.fillStyle = rgbaCss(surf);
+    ctx.fillRect(0, 0, w * scale, h * scale);
+
+    for (const pan of (dev.panels || [])) {
+      const [rx, ry, rw, rh] = pan.rect.map(v => v * scale);
+      const bg = mapDevColor(dev.slug, pan.bgcolor || [0.125, 0.145, 0.17, 1], pan.bgToken, liveTokens);
+      const bd = mapDevColor(dev.slug, pan.bordercolor || [0.06, 0.07, 0.08, 1], pan.bdToken, liveTokens);
+      ctx.beginPath();
+      ctx.roundRect(rx, ry, rw, rh, (pan.rounded || 4) * scale);
+      ctx.fillStyle = rgbaCss(bg);
+      ctx.fill();
+      ctx.strokeStyle = rgbaCss(bd);
+      ctx.lineWidth = scale;
+      ctx.stroke();
+    }
+
+    for (const wid of (dev.widgets || [])) {
+      const [rx, ry, rw, rh] = wid.rect.map(v => v * scale);
+      if (wid.mc === "v8ui" && wid.cmds) {
+        ctx.save();
+        ctx.translate(rx, ry);
+        ctx.beginPath();
+        ctx.rect(0, 0, rw, rh);
+        ctx.clip();
+        renderV8Commands(ctx, wid.cmds, dev.slug, scale, liveTokens);
+        ctx.restore();
+      } else if (wid.mc === "live.comment") {
+        const tc = mapDevColor(dev.slug, wid.textcolor || [0.82, 0.85, 0.9, 1], wid.tcToken, liveTokens);
+        ctx.fillStyle = rgbaCss(tc);
+        ctx.font = `600 ${Math.round((wid.fontsize || 9.0) * scale)}px -apple-system, sans-serif`;
+        ctx.fillText(wid.text || "", rx + 2 * scale, ry + 10 * scale);
+      } else if (wid.mc === "live.line") {
+        const lc = mapDevColor(dev.slug, wid.linecolor || [0.22, 0.24, 0.28, 1], wid.lcToken, liveTokens);
+        ctx.strokeStyle = rgbaCss(lc);
+        ctx.lineWidth = Math.max(1, 1.2 * scale);
+        ctx.beginPath();
+        ctx.moveTo(rx, ry + rh * 0.5);
+        ctx.lineTo(rx + rw, ry + rh * 0.5);
+        ctx.stroke();
+      } else if (wid.mc === "live.dial") {
+        const ac = mapDevColor(dev.slug, wid.activedialcolor || [0.3, 0.82, 0.95, 1], wid.acToken || "live_value_arc", liveTokens);
+        const tc = mapDevColor(dev.slug, wid.textcolor || [0.85, 0.88, 0.92, 1], wid.tcToken || "live_control_fg", liveTokens);
+        const dialBg = liveTokens.live_dial_fg || [0.07, 0.07, 0.07, 1];
+        const cx = rx + rw * 0.5;
+        const cy = ry + rh * 0.48;
+        const rad = Math.min(rw, rh) * 0.28;
+        ctx.strokeStyle = rgbaCss(dialBg);
+        ctx.lineWidth = 2.4 * scale;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0.75 * Math.PI, 2.25 * Math.PI);
+        ctx.stroke();
+        ctx.strokeStyle = rgbaCss(ac);
+        ctx.beginPath();
+        ctx.arc(cx, cy, rad, 0.75 * Math.PI, (0.75 + 1.5 * (wid.norm || 0.5)) * Math.PI);
+        ctx.stroke();
+        ctx.fillStyle = rgbaCss(tc);
+        ctx.font = `600 ${Math.round(8.0 * scale)}px -apple-system, sans-serif`;
+        ctx.textAlign = "center";
+        if (wid.showname !== 0) ctx.fillText(wid.label || "", cx, ry + 9 * scale);
+        if (wid.shownumber !== 0) ctx.fillText(wid.valStr || "", cx, ry + rh - 2 * scale);
+        ctx.textAlign = "left";
+      } else if (wid.mc === "live.numbox" || wid.mc === "live.menu" || wid.mc === "live.tab" || wid.mc === "live.text") {
+        const bg = mapDevColor(dev.slug, wid.bgcolor || [0.09, 0.11, 0.13, 1], wid.bgToken || "live_control_bg", liveTokens);
+        const tc = mapDevColor(dev.slug, wid.textcolor || [0.92, 0.7, 0.28, 1], wid.tcToken || "live_control_fg", liveTokens);
+        if (wid.appearance !== 4) {
+          ctx.beginPath();
+          ctx.roundRect(rx, ry, rw, rh, 2 * scale);
+          ctx.fillStyle = rgbaCss(bg);
+          ctx.fill();
+        }
+        ctx.fillStyle = rgbaCss(tc);
+        ctx.font = `600 ${Math.round(8.5 * scale)}px -apple-system, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.fillText(wid.valStr || wid.label || "", rx + rw * 0.5, ry + rh * 0.72);
+        ctx.textAlign = "left";
+      }
+    }
+    ctx.restore();
+  }
+
+  function renderDeviceCanvas(dev, canvas, liveTokens) {
+    const scale = 2;
+    const devW = dev.width || 400;
+    const devH = 169;
+    window.M4L_DEVICE_SLUG = dev.slug;
+
+    if (chromeMode === "bare") {
+      if (canvas.width !== devW * scale) canvas.width = devW * scale;
+      if (canvas.height !== devH * scale) canvas.height = devH * scale;
+      canvas.style.height = (viewMode === "single" ? 338 : 169) + "px";
+      const ctx = canvas.getContext("2d");
+      renderDeviceBody(ctx, dev, 0, 0, scale, liveTokens);
+      return;
+    }
+
+    const desk = liveTokens.live_desktop || [0.165, 0.165, 0.165, 1];
+    const surfFrame = liveTokens.live_surface_frame || [0.141, 0.141, 0.141, 1];
+    const surfBg = liveTokens.live_surface_bg || [0.212, 0.212, 0.212, 1];
+    const macroTitle = liveTokens.live_macro_title || [0.275, 0.275, 0.275, 1];
+    const ctlBg = liveTokens.live_control_bg || [0.118, 0.118, 0.118, 1];
+    const ctlFg = liveTokens.live_control_fg || [0.71, 0.71, 0.71, 1];
+    const ctlOn = liveTokens.live_control_selection || [1.0, 0.678, 0.337, 1];
+    const ctlFgOn = liveTokens.live_control_fg_on || [0.027, 0.027, 0.027, 1];
+    const lcdBg = liveTokens.live_lcd_bg || [0.094, 0.094, 0.094, 1];
+    const lcdFrame = liveTokens.live_lcd_frame || [0.243, 0.243, 0.243, 1];
+    const zombie = liveTokens.live_control_zombie || [0.459, 0.459, 0.459, 1];
+    const scaleTxt = liveTokens.live_display_scale_text || [0.525, 0.525, 0.525, 1];
+    const altCol = liveTokens.live_lcd_control_fg_alt || [0.012, 0.765, 0.835, 1];
+    const selBg = [
+      Math.min(1, surfBg[0] * 0.55 + scaleTxt[0] * 0.45 + 0.05),
+      Math.min(1, surfBg[1] * 0.55 + scaleTxt[1] * 0.45 + 0.07),
+      Math.min(1, surfBg[2] * 0.55 + scaleTxt[2] * 0.45 + 0.09),
+      1
+    ];
+
+    const dropZoneW = Math.max(92, 920 - devW);
+    const winW = Math.max(960, devW + dropZoneW + 26);
+    const hdrH = 20;
+    const trayH = hdrH + devH + 8;
+    const botH = 24;
+    const showUpperDaw = chromeMode === "ableton";
+    const topH = showUpperDaw ? 32 : 0;
+    const midH = showUpperDaw ? 250 : 0;
+    const winH = topH + midH + trayH + botH + (showUpperDaw ? 12 : 6);
+
+    if (canvas.width !== winW * scale) canvas.width = winW * scale;
+    if (canvas.height !== winH * scale) canvas.height = winH * scale;
+    canvas.style.height = (viewMode === "single" ? Math.round(winH * 1.35) : winH) + "px";
+
+    const ctx = canvas.getContext("2d");
+    const rrect = (x, y, w, h, r, fill, stroke, lw = 1) => {
+      ctx.beginPath();
+      ctx.roundRect(x * scale, y * scale, w * scale, h * scale, (r || 2) * scale);
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw * scale; ctx.stroke(); }
+    };
+    const txt = (x, y, s, size = 9, bold = false, col = rgbaCss(ctlFg)) => {
+      ctx.fillStyle = col;
+      ctx.font = `${bold ? 700 : 500} ${Math.round(size * scale)}px -apple-system, BlinkMacSystemFont, sans-serif`;
+      ctx.fillText(String(s), x * scale, y * scale);
+    };
+
+    // Outer Ableton Desktop background
+    ctx.fillStyle = rgbaCss(desk);
+    ctx.fillRect(0, 0, winW * scale, winH * scale);
+
+    if (showUpperDaw) {
+      // 1. TOP TRANSPORT & CONTROL BAR (y = 6..24)
+      const ty = 6;
+      rrect(6, ty, 20, 18, 2, rgbaCss(ctlOn));
+      txt(10, ty + 12.5, "II", 8.5, true, rgbaCss(ctlFgOn));
+      for (const [bx, bw, blbl] of [[34, 40, "Link"], [78, 30, "Tap"], [110, 44, "130.00"], [156, 22, "IIII"], [180, 32, "4 / 4"], [214, 28, "○●"], [244, 42, "1 Bar"]]) {
+        rrect(bx, ty, bw, 18, 2, rgbaCss(surfBg), rgbaCss(desk));
+        txt(bx + 5, ty + 12.5, blbl, 8.2, false, rgbaCss(ctlFg));
+      }
+      rrect(294, ty, 20, 18, 2, "rgba(168,136,248,1)");
+      txt(297, ty + 12.5, "♭♯", 8.0, true, rgbaCss(ctlFgOn));
+      rrect(316, ty, 32, 18, 2, rgbaCss(surfBg), rgbaCss(desk));
+      txt(321, ty + 12.5, "C", 8.5, false, rgbaCss(ctlFg));
+      rrect(350, ty, 52, 18, 2, rgbaCss(surfBg), rgbaCss(desk));
+      txt(355, ty + 12.5, "Major", 8.5, false, rgbaCss(ctlFg));
+
+      rrect(424, ty, 66, 18, 2, rgbaCss(surfBg));
+      txt(430, ty + 12.5, "205 . 1 . 1", 8.5, true, rgbaCss(ctlFg));
+      // Play, Stop, Record
+      ctx.fillStyle = rgbaCss(ctlFg);
+      ctx.beginPath();
+      ctx.moveTo(502 * scale, (ty + 4) * scale);
+      ctx.lineTo(502 * scale, (ty + 14) * scale);
+      ctx.lineTo(511 * scale, (ty + 9) * scale);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillRect(520 * scale, (ty + 4) * scale, 9 * scale, 9 * scale);
+      ctx.beginPath();
+      ctx.arc(542.5 * scale, (ty + 8.5) * scale, 4.5 * scale, 0, Math.PI * 2);
+      ctx.fill();
+
+      rrect(558, ty, 18, 18, 2, rgbaCss(surfBg));
+      txt(563, ty + 12.5, "+", 9.5, true, rgbaCss(ctlFg));
+      rrect(578, ty, 20, 18, 2, rgbaCss(ctlOn));
+      txt(582, ty + 12.5, "o-", 8.2, true, rgbaCss(ctlFgOn));
+      for (const [bx, bw, blbl] of [[602, 20, "←"], [624, 20, "[]"], [646, 20, "↻"], [674, 20, "|\\"], [696, 20, "⟳"], [718, 20, "/|"]]) {
+        const isLoop = blbl === "⟳";
+        rrect(bx, ty, bw, 18, 2, rgbaCss(isLoop ? ctlOn : surfBg));
+        txt(bx + 4, ty + 12.5, blbl, 8.2, isLoop, rgbaCss(isLoop ? ctlFgOn : ctlFg));
+      }
+
+      const rx0 = winW - 190;
+      rrect(rx0, ty, 20, 18, 2, rgbaCss(surfBg));
+      txt(rx0 + 6, ty + 12.5, "✎", 8.5, false, rgbaCss(ctlFg));
+      rrect(rx0 + 22, ty, 22, 18, 2, rgbaCss(ctlOn));
+      txt(rx0 + 26, ty + 12.5, "🎹", 8.0, false, rgbaCss(ctlFgOn));
+      for (const [bx, bw, blbl] of [[rx0 + 46, 28, "Key"], [rx0 + 76, 30, "MIDI"], [rx0 + 108, 32, "44.1"], [rx0 + 142, 34, "4 %"]]) {
+        rrect(bx, ty, bw, 18, 2, rgbaCss(surfBg));
+        txt(bx + 4, ty + 12.5, blbl, 8.2, false, rgbaCss(ctlFg));
+      }
+
+      // 2. MIDDLE SPLIT: LEFT BROWSER & GROOVE POOL + RIGHT ARRANGEMENT VIEW
+      const my0 = topH + 2;
+      const leftW = 468;
+      rrect(4, my0, leftW, 186, 4, rgbaCss(surfBg), rgbaCss(zombie), 1);
+      rrect(8, my0 + 4, leftW - 38, 18, 3, rgbaCss(ctlBg), rgbaCss(lcdFrame), 1);
+      txt(14, my0 + 16, "‹  ›   sampler", 8.5, false, rgbaCss(ctlFg));
+      rrect(leftW - 26, my0 + 4, 18, 18, 2, rgbaCss(ctlOn));
+      txt(leftW - 21, my0 + 16, "≡", 9.0, true, rgbaCss(ctlFgOn));
+
+      ctx.fillStyle = rgbaCss(desk);
+      ctx.fillRect(196 * scale, (my0 + 25) * scale, 1 * scale, 159 * scale);
+      txt(10, my0 + 37, "Collections", 8.5, true, rgbaCss(scaleTxt));
+      const colls = [["#e4342e", "Favorites"], ["#f59e34", "Orange"], ["#f2d432", "NEW"], ["#80868e", "Preferred Plugin"]];
+      colls.forEach(([cc, cn], ci) => {
+        const cy = my0 + 44 + ci * 14;
+        rrect(12, cy, 7, 7, 1.5, cc);
+        txt(24, cy + 6.5, cn, 8.2, false, rgbaCss(ctlFg));
+      });
+
+      txt(10, my0 + 112, "Library", 8.5, true, rgbaCss(scaleTxt));
+      ctx.fillStyle = rgbaCss(selBg);
+      ctx.fillRect(5 * scale, (my0 + 117) * scale, 190 * scale, 14 * scale);
+      txt(22, my0 + 127, "All", 8.5, true, rgbaCss(ctlFg));
+      ["Drums", "Instruments", "Audio Effects", "Clips"].forEach((ln, li) => {
+        txt(22, my0 + 141 + li * 13, ln, 8.2, false, rgbaCss(ctlFg));
+      });
+
+      const bx1 = 202;
+      txt(bx1, my0 + 37, "Content  ▸", 8.5, true, rgbaCss(ctlFg));
+      txt(bx1, my0 + 51, "Type  ▾", 8.5, true, rgbaCss(ctlFg));
+      for (const [px, pw, plbl] of [[bx1, 48, "One Shot"], [bx1 + 52, 68, "MPE Enabled"], [bx1 + 124, 68, "Multisampled"]]) {
+        rrect(px, my0 + 55, pw, 14, 2, rgbaCss(macroTitle));
+        txt(px + 4, my0 + 65, plbl, 8.0, false, rgbaCss(ctlFg));
+      }
+      txt(bx1, my0 + 82, "Sounds  ▾", 8.5, true, rgbaCss(ctlFg));
+      for (const [px, pw, plbl] of [[bx1, 34, "Bass ›"], [bx1 + 38, 40, "Brass ›"], [bx1 + 82, 84, "Guitar & Plucked ›"], [bx1 + 170, 38, "Lead"]]) {
+        rrect(px, my0 + 87, pw, 14, 2, rgbaCss(macroTitle));
+        txt(px + 4, my0 + 97, plbl, 8.0, false, rgbaCss(ctlFg));
+      }
+
+      rrect(bx1 - 2, my0 + 104, leftW - bx1 + 2, 16, 2, "rgba(230,178,108,1)");
+      txt(bx1 + 2, my0 + 115, "Results", 8.5, true, rgbaCss(ctlFgOn));
+      rrect(leftW - 62, my0 + 106, 36, 12, 5, rgbaCss(ctlFgOn));
+      txt(leftW - 56, my0 + 115, "Clear", 7.8, true, "rgba(230,178,108,1)");
+
+      txt(bx1 + 2, my0 + 131, "Name", 8.0, false, rgbaCss(scaleTxt));
+      txt(bx1 + 148, my0 + 131, "Rank  ▼ | Date Mo...", 8.0, false, rgbaCss(scaleTxt));
+      ctx.fillStyle = rgbaCss(selBg);
+      ctx.fillRect((bx1 - 2) * scale, (my0 + 136) * scale, (leftW - bx1) * scale, 16 * scale);
+      txt(bx1 + 12, my0 + 147, dev.name, 8.5, true, rgbaCss(ctlFg));
+      txt(bx1 + 2, my0 + 165, "Tags:  Sampling   Add...", 8.0, false, rgbaCss(scaleTxt));
+      txt(bx1 + 85, my0 + 180, "1 item selected", 8.0, false, rgbaCss(ctlFg));
+
+      // Groove Pool
+      const gy0 = my0 + 190;
+      rrect(4, gy0, leftW, 58, 4, rgbaCss(surfBg), rgbaCss(desk), 1);
+      txt(10, gy0 + 12, "Groove Name", 8.0, false, rgbaCss(scaleTxt));
+      txt(240, gy0 + 12, "Base     Quantize   Timing    Random   Velocity", 8.0, false, rgbaCss(scaleTxt));
+      ctx.fillStyle = rgbaCss(desk);
+      ctx.fillRect(6 * scale, (gy0 + 17) * scale, (leftW - 8) * scale, 1 * scale);
+      txt(10, gy0 + 30, "Swing 16ths 66", 8.2, false, rgbaCss(ctlFg));
+      rrect(198, gy0 + 20, 12, 12, 2, rgbaCss(ctlOn));
+      txt(238, gy0 + 30, "1/16  ▾     0 %       100 %       0 %        0 %", 8.2, false, rgbaCss(ctlFg));
+      ctx.fillStyle = rgbaCss(surfFrame);
+      ctx.fillRect(5 * scale, (gy0 + 40) * scale, (leftW - 6) * scale, 17 * scale);
+      txt(10, gy0 + 52, "Groove Pool", 8.2, true, rgbaCss(scaleTxt));
+      txt(leftW - 105, gy0 + 52, "Global Amount", 8.0, false, rgbaCss(scaleTxt));
+      rrect(leftW - 32, gy0 + 42, 28, 13, 2, rgbaCss(ctlBg), rgbaCss(lcdFrame), 1);
+      txt(leftW - 26, gy0 + 51.5, "0%", 8.0, false, rgbaCss(ctlFg));
+
+      // Right Arrangement View
+      const ax0 = leftW + 8;
+      const aw = winW - ax0 - 4;
+      rrect(ax0, my0, aw, 248, 4, rgbaCss(surfBg), rgbaCss(zombie), 1);
+      const hdrW = 248;
+      const tlW = Math.max(180, aw - hdrW);
+      ctx.fillStyle = rgbaCss(lcdBg);
+      ctx.fillRect((ax0 + 2) * scale, (my0 + 22) * scale, tlW * scale, 206 * scale);
+
+      ["1", "65", "129", "193"].forEach((bnum, bi) => {
+        txt(ax0 + 8 + bi * Math.floor(tlW / 4), my0 + 18, bnum, 8.0, false, rgbaCss(ctlFg));
+      });
+
+      const gridPct = state.abletonUi && state.abletonUi.gridLineIntensity !== undefined ? state.abletonUi.gridLineIntensity : 100;
+      const gridAlpha = Math.max(0, Math.min(1, (gridPct / 200) * 0.55));
+      if (gridAlpha > 0.01) {
+        for (let gx = ax0 + 8; gx < ax0 + tlW; gx += 16) {
+          const isBar = ((gx - (ax0 + 8)) % 64) === 0;
+          ctx.strokeStyle = rgbaCss(lcdFrame, Math.min(1, gridAlpha * (isBar ? 1.35 : 0.75)));
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(gx * scale + 0.5, (my0 + 22) * scale);
+          ctx.lineTo(gx * scale + 0.5, (my0 + 228) * scale);
+          ctx.stroke();
+        }
+      }
+      // White Playhead Line
+      ctx.strokeStyle = "rgba(235,242,248,0.88)";
+      ctx.lineWidth = scale;
+      ctx.beginPath();
+      ctx.moveTo((ax0 + 16) * scale, (my0 + 22) * scale);
+      ctx.lineTo((ax0 + 16) * scale, (my0 + 228) * scale);
+      ctx.stroke();
+
+      txt(ax0 + tlW - 42, my0 + 220, "16/1", 13.5, false, rgbaCss(scaleTxt));
+      txt(ax0 + 8, my0 + 224, "0:00", 8.0, false, rgbaCss(scaleTxt));
+      txt(ax0 + tlW - 58, my0 + 224, "5:00", 8.0, false, rgbaCss(scaleTxt));
+      rrect(ax0 + tlW + 4, my0 + 231, 14, 13, 2, rgbaCss(ctlOn));
+      rrect(ax0 + tlW + 20, my0 + 231, 32, 13, 2, rgbaCss(ctlBg), rgbaCss(altCol), 1);
+      txt(ax0 + tlW + 23, my0 + 240.5, "1.00x", 8.0, false, rgbaCss(ctlFg));
+      txt(ax0 + tlW + 56, my0 + 240.5, "H   W", 8.2, true, rgbaCss(ctlFg));
+
+      const tx0 = ax0 + tlW + 2;
+      const tracks = [
+        ["1 Drum Rack", "#b83a34", "#f0f4f8", 54, "1", "0"],
+        ["2 SC", "#f2f4f8", "#12161c", 34, "2", "0"],
+        ["3 MIDI", "#1ce2fc", "#12161c", 68, "3", "0"],
+        ["4 Wavetable", "#f4d436", "#12161c", 18, "4", "0"],
+        ["Main", "#24c89b", "#12161c", 18, "M", "-6.0"]
+      ];
+      let curTy = my0 + 30;
+      for (const [tname, tcol, tfg, thRaw, tnum, tvol] of tracks) {
+        const th = Math.min(thRaw, (my0 + 228) - curTy);
+        if (th < 14) break;
+        ctx.fillStyle = tcol;
+        ctx.fillRect(tx0 * scale, curTy * scale, 82 * scale, (th - 1) * scale);
+        txt(tx0 + 5, curTy + 11.5, "▾ " + tname, 8.2, true, tfg);
+
+        const iox = tx0 + 84;
+        ctx.fillStyle = rgbaCss(surfFrame);
+        ctx.fillRect(iox * scale, curTy * scale, 62 * scale, (th - 1) * scale);
+        rrect(iox + 2, curTy + 2, 58, 13, 2, rgbaCss(ctlBg), rgbaCss(lcdFrame), 1);
+        txt(iox + 4, curTy + 11, tnum === "2" || tnum === "M" ? "Main       ▾" : "All Ins    ▾", 7.8, false, rgbaCss(ctlFg));
+        if (th >= 48) {
+          rrect(iox + 2, curTy + 17, 58, 13, 2, rgbaCss(ctlBg), rgbaCss(lcdFrame), 1);
+          txt(iox + 4, curTy + 26, "All Channe▾", 7.8, false, rgbaCss(ctlFg));
+          rrect(iox + 2, curTy + 32, 16, 13, 2, rgbaCss(ctlBg));
+          txt(iox + 4, curTy + 41, "In", 7.8, false, rgbaCss(ctlFg));
+          rrect(iox + 19, curTy + 32, 23, 13, 2, rgbaCss(ctlOn));
+          txt(iox + 21, curTy + 41, "Auto", 7.8, true, rgbaCss(ctlFgOn));
+          rrect(iox + 43, curTy + 32, 17, 13, 2, rgbaCss(ctlBg));
+          txt(iox + 45, curTy + 41, "Off", 7.8, false, rgbaCss(ctlFg));
+        }
+
+        const mxCol = iox + 64;
+        ctx.fillStyle = rgbaCss(surfBg);
+        ctx.fillRect(mxCol * scale, curTy * scale, (ax0 + aw - 2 - mxCol) * scale, (th - 1) * scale);
+        if (tnum !== "M") {
+          rrect(mxCol + 2, curTy + 2, 34, 13, 2, rgbaCss(ctlOn));
+          txt(mxCol + 15, curTy + 11.5, tnum, 8.2, true, rgbaCss(ctlFgOn));
+          rrect(mxCol + 38, curTy + 2, 18, 13, 2, rgbaCss(ctlBg));
+          txt(mxCol + 44, curTy + 11, "S", 7.8, false, rgbaCss(ctlFg));
+          rrect(mxCol + 58, curTy + 2, 18, 13, 2, rgbaCss(ctlBg));
+          txt(mxCol + 63, curTy + 11, "●", 7.8, false, rgbaCss(ctlFg));
+        }
+        if (th >= 30 || tnum === "M") {
+          const vy = curTy + (tnum === "M" ? 2 : 17);
+          rrect(mxCol + 2, vy, 34, 13, 2, "rgba(18,92,104,1)", rgbaCss(altCol), 1);
+          txt(mxCol + 15, vy + 9.5, "0", 7.8, false, rgbaCss(ctlFg));
+          if (tnum === "M") {
+            rrect(mxCol + 38, vy, 38, 13, 2, "rgba(68,96,172,1)");
+            txt(mxCol + 46, vy + 9.5, tvol, 7.8, false, rgbaCss(ctlFg));
+          } else {
+            rrect(mxCol + 38, vy, 38, 13, 2, rgbaCss(ctlBg));
+            txt(mxCol + 54, vy + 9.5, "C", 7.8, false, rgbaCss(ctlFg));
+          }
+        }
+        curTy += th + 1;
+      }
+    }
+
+    // 3. BOTTOM FULL-WIDTH ABLETON DEVICE TRAY
+    const dy0 = showUpperDaw ? (topH + midH + 6) : 3;
+    rrect(4, dy0, winW - 8, trayH, 5, rgbaCss(surfFrame), rgbaCss(zombie), 1.4);
+
+    const dxPt = 8;
+    const dyPt = dy0 + 3;
+    const dwPt = devW;
+    const dhPt = hdrH + devH;
+
+    // Device Header Bar (`live_macro_title`)
+    rrect(dxPt, dyPt, dwPt, hdrH + 4, 4, rgbaCss(macroTitle));
+    // Orange Device Activator circle
+    ctx.beginPath();
+    ctx.arc((dxPt + 10) * scale, (dyPt + 10) * scale, 5 * scale, 0, Math.PI * 2);
+    ctx.fillStyle = rgbaCss(ctlOn);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc((dxPt + 10) * scale, (dyPt + 10) * scale, 2 * scale, 0, Math.PI * 2);
+    ctx.strokeStyle = rgbaCss(ctlFgOn);
+    ctx.lineWidth = 1.2 * scale;
+    ctx.stroke();
+
+    txt(dxPt + 20, dyPt + 13.5, dev.name, 9.8, true, rgbaCss(ctlFg));
+    txt(dxPt + dwPt - 58, dyPt + 13.0, "↻   ⧉   💾   •••", 8.0, false, rgbaCss(ctlFg, 0.85));
+
+    // Render 169px Device Canvas inside the Ableton Device Shell
+    renderDeviceBody(ctx, dev, dxPt * scale, (dyPt + hdrH) * scale, scale, liveTokens);
+
+    // 1px header separator & outer device border
+    ctx.fillStyle = rgbaCss(desk);
+    ctx.fillRect(dxPt * scale, (dyPt + hdrH - 0.5) * scale, dwPt * scale, 1 * scale);
+    rrect(dxPt, dyPt, dwPt, dhPt, 4, null, rgbaCss(desk), 1);
+
+    // Inter-Device Stereo Level Meter immediately to the right of the device
+    const mxPt = dxPt + dwPt + 4;
+    rrect(mxPt, dyPt, 8, dhPt, 2, rgbaCss(lcdBg), rgbaCss(desk), 1);
+    const barH = Math.round(dhPt * 0.62);
+    ctx.fillStyle = "#00d38d";
+    ctx.fillRect((mxPt + 1.5) * scale, (dyPt + dhPt - barH) * scale, 2 * scale, (barH - 2) * scale);
+    ctx.fillRect((mxPt + 4.5) * scale, (dyPt + dhPt - barH + 6) * scale, 2 * scale, (barH - 8) * scale);
+
+    // "Drop Audio Effects Here" zone filling the rest of the Device Tray width
+    const dropX = mxPt + 16;
+    const dropW = (winW - 8) - dropX;
+    if (dropW >= 48) {
+      rrect(dropX, dyPt, dropW, dhPt, 3, rgbaCss(surfBg), rgbaCss(desk), 1);
+      ctx.fillStyle = rgbaCss(scaleTxt);
+      ctx.font = `600 ${Math.round(9.0 * scale)}px -apple-system, BlinkMacSystemFont, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.fillText("Drop Audio", (dropX + dropW * 0.5) * scale, (dyPt + dhPt * 0.5 - 3) * scale);
+      ctx.fillText("Effects Here", (dropX + dropW * 0.5) * scale, (dyPt + dhPt * 0.5 + 10) * scale);
+      ctx.textAlign = "left";
+    }
+
+    // 4. BOTTOM STATUS & VIEW TAB BAR
+    const by0 = dy0 + trayH + 4;
+    rrect(4, by0, 468, 20, 3, rgbaCss(surfBg));
+    txt(10, by0 + 13.5, "ⓘ   Live 12 Theme Studio Preview — Ableton UI & Device Tray Active", 8.2, false, rgbaCss(ctlFg));
+    const midBarW = winW - 476 - 246;
+    if (midBarW > 40) {
+      rrect(476, by0, midBarW, 20, 3, rgbaCss(surfBg));
+      txt(484, by0 + 13.5, "▶", 8.0, false, rgbaCss(ctlFg));
+    }
+    const rxTab = winW - 242;
+    rrect(rxTab, by0, 20, 20, 3, rgbaCss(ctlOn));
+    txt(rxTab + 6, by0 + 13.5, "▲", 8.0, true, rgbaCss(ctlFgOn));
+    txt(rxTab + 26, by0 + 13.5, `1-${dev.name.slice(0, 18)}`, 8.5, true, rgbaCss(ctlFg));
+    rrect(rxTab + 128, by0, 88, 20, 4, rgbaCss(macroTitle), rgbaCss(zombie), 1.4);
+    txt(rxTab + 133, by0 + 13.5, dev.name.slice(0, 14), 8.2, true, rgbaCss(ctlFg));
+    rrect(winW - 22, by0, 18, 20, 3, rgbaCss(surfBg));
+    txt(winW - 18, by0 + 13.5, "III", 8.0, true, rgbaCss(altCol));
+  }
+
+  function renderAllCanvases() {
+    const u = ensureAbletonUi();
+    const liveTokens = typeof m4lComputeAbletonUiTokens === "function" ? m4lComputeAbletonUiTokens(u) : M4L_DEFAULT_TOKENS;
+    const vp = document.getElementById("mainViewport");
+    if (chromeMode === "ableton" && liveTokens.live_desktop) {
+      vp.style.backgroundColor = rgbaCss(liveTokens.live_desktop);
+    } else {
+      vp.style.backgroundColor = "var(--bg)";
+    }
+
+    const gal = document.getElementById("gallery");
+    gal.className = "gallery" + ((viewMode === "single" || currentTarget !== "global") ? " single" : "");
+    document.querySelectorAll(".device-card").forEach((card) => {
+      const slug = card.dataset.slug;
+      const isFocused = currentTarget !== "global" && currentTarget === slug;
+      // When a specific device is selected (from the filter list, pills, or dropdown), only show that device!
+      const show = currentTarget === "global" || isFocused;
+      card.style.display = show ? "flex" : "none";
+      card.classList.toggle("focused", isFocused);
+      const focusBtn = card.querySelector("[data-focus]");
+      if (focusBtn) {
+        focusBtn.textContent = isFocused ? "Show All Plugins" : "Focus Target";
+        focusBtn.className = isFocused ? "primary" : "";
+      }
+      const dev = devices.find(d => d.slug === slug);
+      const canvas = card.querySelector("canvas");
+      if (dev && canvas && show) renderDeviceCanvas(dev, canvas, liveTokens);
+    });
+  }
+
+  let targetFilterText = "";
+
+  function hasDeviceOverride(slug) {
+    if (!slug || slug === "global" || !state.deviceOverrides) return false;
+    const ov = state.deviceOverrides[slug];
+    if (!ov) return false;
+    if (ov.preset && ov.preset !== "") return true;
+    if (ov.tokens && Object.keys(ov.tokens).length > 0) return true;
+    if (ov.macros) {
+      const m = ov.macros;
+      if (Math.abs(m.hueShift || 0) > 1e-4) return true;
+      if (Math.abs((m.satScale === undefined ? 1 : m.satScale) - 1) > 1e-4) return true;
+      if (Math.abs((m.contrast === undefined ? 1 : m.contrast) - 1) > 1e-4) return true;
+      if (Math.abs(m.brightness || 0) > 1e-4) return true;
+    }
+    return false;
+  }
+
+  function getOrderedTargetSlugs() {
+    const q = targetFilterText.trim().toLowerCase();
+    const list = ["global"];
+    for (const dev of devices) {
+      if (!q || dev.name.toLowerCase().includes(q) || dev.slug.toLowerCase().includes(q)) {
+        list.push(dev.slug);
+      }
+    }
+    return list;
+  }
+
+  function setTarget(slug, scrollCard) {
+    currentTarget = slug || "global";
+    const sel = document.getElementById("targetSelect");
+    if (sel && sel.value !== currentTarget) sel.value = currentTarget;
+    updateSidebarUI();
+    renderAllCanvases();
+    const vp = document.getElementById("mainViewport");
+    if (vp) vp.scrollTop = 0;
+    if (scrollCard && currentTarget !== "global") {
+      const card = document.querySelector(`.device-card[data-slug="${currentTarget}"]`);
+      if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  function cycleTarget(delta) {
+    const list = getOrderedTargetSlugs();
+    if (list.length === 0) return;
+    let idx = list.indexOf(currentTarget);
+    if (idx < 0) idx = 0;
+    const nextIdx = (idx + delta + list.length) % list.length;
+    setTarget(list[nextIdx], true);
+  }
+
+  function buildTargetListUI() {
+    const box = document.getElementById("targetListBox");
+    const strip = document.getElementById("targetQuickStrip");
+    const badge = document.getElementById("targetCountBadge");
+    if (!box || !strip) return;
+
+    const q = targetFilterText.trim().toLowerCase();
+    const filteredDevs = devices.filter(d => !q || d.name.toLowerCase().includes(q) || d.slug.toLowerCase().includes(q));
+    if (badge) {
+      badge.textContent = currentTarget === "global"
+        ? `Global (${devices.length})`
+        : (devices.find(d => d.slug === currentTarget)?.name || currentTarget);
+    }
+
+    box.innerHTML = "";
+    strip.innerHTML = "";
+
+    const items = [{ slug: "global", name: `Global (All ${devices.length} Plugins)`, width: null }].concat(filteredDevs);
+    for (const item of items) {
+      const isAct = currentTarget === item.slug;
+      const hasOv = hasDeviceOverride(item.slug);
+
+      // Sidebar scrollable list item
+      const btn = document.createElement("button");
+      btn.className = "target-item" + (isAct ? " active" : "");
+      btn.dataset.targetSlug = item.slug;
+      const rightHtml = hasOv
+        ? `<span class="badge-ov">Override</span>`
+        : (item.width ? `<span style="color:var(--muted);font-size:10px;">${item.width}px</span>` : "");
+      btn.innerHTML = `<span>${item.name}</span>${rightHtml}`;
+      btn.onclick = () => setTarget(item.slug, true);
+      box.appendChild(btn);
+
+      // Top quick pill
+      const pill = document.createElement("button");
+      pill.className = "target-pill" + (isAct ? " active" : "") + (hasOv ? " has-ov" : "");
+      pill.dataset.targetSlug = item.slug;
+      pill.textContent = item.slug === "global" ? "Global (All)" : item.name;
+      pill.onclick = () => setTarget(item.slug, true);
+      strip.appendChild(pill);
+    }
+
+    // Keep active item visible inside both scrollable containers
+    const activeRow = box.querySelector(".target-item.active");
+    if (activeRow) activeRow.scrollIntoView({ block: "nearest" });
+    const activePill = strip.querySelector(".target-pill.active");
+    if (activePill) activePill.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }
+
+  function buildGalleryCards() {
+    const gal = document.getElementById("gallery");
+    const sel = document.getElementById("targetSelect");
+    gal.innerHTML = "";
+    sel.innerHTML = `<option value="global">Global (All ${devices.length} Plugins)</option>`;
+    for (const dev of devices) {
+      const opt = document.createElement("option");
+      opt.value = dev.slug;
+      opt.textContent = `${dev.name} (${dev.width}×169)`;
+      sel.appendChild(opt);
+
+      const card = document.createElement("div");
+      card.className = "device-card";
+      card.dataset.slug = dev.slug;
+      card.innerHTML = `
+        <div class="device-hdr">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span><strong>${dev.name}</strong> · ${dev.width}×169 px</span>
+            <span class="focused-badge">● Focused Target</span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button data-focus="${dev.slug}" style="padding:2px 8px;font-size:10.5px;">Focus Target</button>
+          </div>
+        </div>
+        <div class="canvas-wrap"><canvas></canvas></div>
+      `;
+      card.querySelector("[data-focus]").onclick = () => {
+        if (currentTarget === dev.slug) {
+          setTarget("global", false);
+        } else {
+          setTarget(dev.slug, true);
+        }
+      };
+      gal.appendChild(card);
+    }
+    buildTargetListUI();
+    renderAllCanvases();
+  }
+
+  // Wire toolbar & Ableton UI Settings controls
+  document.getElementById("targetSelect").onchange = (e) => {
+    setTarget(e.target.value, true);
+  };
+  document.getElementById("targetPrevBtn").onclick = () => cycleTarget(-1);
+  document.getElementById("targetNextBtn").onclick = () => cycleTarget(1);
+
+  let lastWheelTime = 0;
+  function handleTargetWheel(e) {
+    e.preventDefault();
+    const now = performance.now();
+    if (now - lastWheelTime < 45) return;
+    lastWheelTime = now;
+    const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (Math.abs(d) > 0.5) cycleTarget(d > 0 ? 1 : -1);
+  }
+  document.getElementById("targetPickerWrap").addEventListener("wheel", handleTargetWheel, { passive: false });
+  document.getElementById("targetQuickStrip").addEventListener("wheel", (e) => {
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      document.getElementById("targetQuickStrip").scrollLeft += e.deltaY;
+    }
+  }, { passive: false });
+
+  const searchInp = document.getElementById("targetSearchInput");
+  searchInp.addEventListener("input", (e) => {
+    targetFilterText = e.target.value || "";
+    buildTargetListUI();
+  });
+  searchInp.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); cycleTarget(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); cycleTarget(-1); }
+    else if (e.key === "Escape") { targetFilterText = ""; searchInp.value = ""; buildTargetListUI(); }
+  });
+  document.getElementById("chromeSelect").onchange = (e) => {
+    chromeMode = e.target.value;
+    renderAllCanvases();
+  };
+  document.getElementById("viewSelect").onchange = (e) => {
+    viewMode = e.target.value;
+    renderAllCanvases();
+  };
+
+  function onAbletonUiEdit() {
+    const u = ensureAbletonUi();
+    u.enabled = true;
+    u.theme = document.getElementById("abTheme").value;
+    u.appearance = document.getElementById("abAppearance").value;
+    u.tone = document.getElementById("abTone").value;
+    u.gridLineIntensity = Number(document.getElementById("abGrid").value);
+    u.brightness = Number(document.getElementById("abBrt").value);
+    u.colorIntensity = Number(document.getElementById("abInt").value);
+    u.colorHue = Number(document.getElementById("abHue").value);
+    schedulePush();
+  }
+
+  ["abTheme", "abAppearance", "abTone"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", onAbletonUiEdit);
+  });
+  ["abGrid", "abBrt", "abInt", "abHue"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", onAbletonUiEdit);
+  });
+  document.getElementById("abHighContrast").onclick = () => {
+    const u = ensureAbletonUi();
+    u.enabled = true;
+    u.highContrast = !u.highContrast;
+    schedulePush();
+  };
+  document.getElementById("resetLiveUiBtn").onclick = () => {
+    state.abletonUi = typeof m4lDefaultAbletonUi === "function" ? m4lDefaultAbletonUi() : {
+      enabled: false, theme: "Default", appearance: "Dark", tone: "Neutral",
+      highContrast: false, gridLineIntensity: 100, brightness: 100, colorIntensity: 0, colorHue: 0
+    };
+    schedulePush();
+  };
+  document.getElementById("detectLiveBtn").onclick = () => {
+    fetch("/api/host-live-colors").then(r => r.json()).then(data => {
+      const cols = (data && data.hostLiveColors) || hostLiveColors;
+      if (cols && typeof m4lEstimateAbletonUiSettings === "function") {
+        const est = m4lEstimateAbletonUiSettings(cols);
+        state.abletonUi = {
+          enabled: true,
+          theme: est.theme,
+          appearance: est.appearance,
+          tone: est.tone,
+          highContrast: est.highContrast,
+          gridLineIntensity: (state.abletonUi && state.abletonUi.gridLineIntensity) || 100,
+          brightness: est.brightness,
+          colorIntensity: est.colorIntensity,
+          colorHue: est.colorHue
+        };
+        schedulePush();
+        document.getElementById("liveEstBanner").textContent =
+          `Detected from Live: ${est.askName} (Brt ${est.brightness}%, Int ${est.colorIntensity}%, Hue ${est.colorHue}°, RMSE ${est.rmse.toFixed(1)})`;
+      } else {
+        document.getElementById("liveEstBanner").textContent = "No live Ableton host colors received yet (load Theme Editor.amxd in Live).";
+      }
+    }).catch(() => {});
+  };
+
+  ["macHue", "macSat", "macCont", "macBrt"].forEach((id) => {
+    document.getElementById(id).addEventListener("input", () => {
+      const tgt = getTargetObj(true);
+      tgt.macros = {
+        hueShift: Number(document.getElementById("macHue").value) || 0,
+        satScale: Number(document.getElementById("macSat").value),
+        contrast: Number(document.getElementById("macCont").value),
+        brightness: Number(document.getElementById("macBrt").value) || 0
+      };
+      schedulePush();
+    });
+  });
+  document.getElementById("resetMacrosBtn").onclick = () => {
+    const tgt = getTargetObj(true);
+    tgt.macros = { hueShift: 0, satScale: 1.0, contrast: 1.0, brightness: 0.0 };
+    schedulePush();
+  };
+  document.getElementById("resetBtn").onclick = () => {
+    if (currentTarget === "global") {
+      state = m4lDefaultState();
+    } else if (state.deviceOverrides) {
+      delete state.deviceOverrides[currentTarget];
+    }
+    schedulePush();
+  };
+  document.getElementById("savePresetBtn").onclick = () => {
+    const name = prompt("Custom preset name:");
+    if (!name || !name.trim()) return;
+    const clean = name.trim();
+    if (!state.customPresets) state.customPresets = {};
+    const slug = currentTarget === "global" ? undefined : currentTarget;
+    state.customPresets[clean] = {
+      mode: "custom",
+      label: clean,
+      desc: "User custom preset",
+      tokens: Object.assign({}, m4lResolvedTokens(slug))
+    };
+    const tgt = getTargetObj(true);
+    tgt.preset = clean;
+    tgt.tokens = {};
+    tgt.macros = { hueShift: 0, satScale: 1.0, contrast: 1.0, brightness: 0.0 };
+    schedulePush();
+  };
+  document.getElementById("exportBtn").onclick = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `m4l_theme_${(state.preset || "custom").toLowerCase().replace(/\s+/g, "_")}.json`;
+    a.click();
+  };
+  document.getElementById("importBtn").onclick = () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".json";
+    inp.onchange = (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => {
+        try {
+          state = JSON.parse(rd.result);
+          schedulePush();
+        } catch (_) {}
+      };
+      rd.readAsText(f);
+    };
+    inp.click();
+  };
+
+  buildTokenRows();
+  syncGlobalEngine();
+  updateSidebarUI();
+
+  // Fetch initial state & device preview models
+  fetch("/api/state").then(r => r.json()).then(data => {
+    if (data && data.hostLiveColors) hostLiveColors = data.hostLiveColors;
+    if (data && data.state) {
+      state = data.state;
+      syncGlobalEngine();
+      updateSidebarUI();
+      renderAllCanvases();
+    }
+  }).catch(() => {});
+
+  fetch("/api/devices").then(r => r.json()).then(data => {
+    if (data && Array.isArray(data.devices)) {
+      devices = data.devices;
+      buildGalleryCards();
+    }
+  }).catch(() => {});
+
+  // Live SSE sync
+  try {
+    const es = new EventSource("/api/events");
+    es.onopen = () => {
+      document.getElementById("statusLed").classList.remove("offline");
+      document.getElementById("statusText").textContent = "Live Sync Active · Global('m4l_theme_bus')";
+    };
+    es.onerror = () => {
+      document.getElementById("statusLed").classList.add("offline");
+      document.getElementById("statusText").textContent = "Reconnecting to Theme Editor node...";
+    };
+    es.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg && msg.hostLiveColors) hostLiveColors = msg.hostLiveColors;
+        if (msg && msg.state && (!state || msg.state.version > state.version)) {
+          state = msg.state;
+          syncGlobalEngine();
+          updateSidebarUI();
+          renderAllCanvases();
+        }
+      } catch (_) {}
+    };
+  } catch (_) {}
+})();
+</script>
+</body>
+</html>

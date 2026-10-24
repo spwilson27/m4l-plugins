@@ -43,6 +43,10 @@ var AB_FALLBACK = {
 };
 
 function abColor(name) {
+    if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+        var mc = m4lColor(name, AB_FALLBACK[name] || [0.5, 0.5, 0.5, 1]);
+        return [mc[0], mc[1], mc[2]];
+    }
     try {
         if (typeof max !== "undefined" && max && typeof max.getcolor === "function") {
             var c = max.getcolor(name);

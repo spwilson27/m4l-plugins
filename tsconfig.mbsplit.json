@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/types/mbsplit.d.ts",
     "src/mbsplit_config.js",
     "src/spectral_theme.js",

@@ -1614,6 +1614,10 @@ def build_patcher(design=None):
 
 
 def write_amxd(patcher_dict, out_path):
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import theme_common as tc
+    tc.inject_theme_support(patcher_dict, os.path.splitext(os.path.basename(out_path))[0], assign_varnames=False)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     payload = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")
     # Max Instrument header ("iiii") so Ableton loads Better Sampler on MIDI Instrument tracks

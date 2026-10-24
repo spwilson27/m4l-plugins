@@ -391,6 +391,8 @@ def build_patcher(preview=""):
 
 
 def write_amxd(patcher, out_path):
+    import theme_common as tc
+    tc.inject_theme_support(patcher, "glitch", assign_varnames=False)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

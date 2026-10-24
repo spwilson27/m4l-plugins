@@ -70,6 +70,9 @@ var SPT_FALLBACK = {
 };
 
 function sptColor(name, fallback) {
+    if (typeof m4lColor === "function" && typeof m4lIsActive === "function" && m4lIsActive()) {
+        return m4lColor(name, SPT_FALLBACK[name] || fallback || [0.5, 0.5, 0.5, 1]);
+    }
     try {
         if (typeof max !== "undefined" && max.getcolor) {
             var c = max.getcolor(name);

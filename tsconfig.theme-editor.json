@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/types/theme.d.ts",
+    "src/theme_engine.js",
+    "src/theme_editor_ui.js"
+  ]
+}

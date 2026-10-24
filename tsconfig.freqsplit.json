@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/types/freqsplit.d.ts",
     "src/freqsplit_config.js",
     "src/spectral_link.js",

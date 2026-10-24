@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.node.base.json",
+  "files": [
+    "src/types/theme.d.ts",
+    "src/theme_editor_node.js"
+  ]
+}

@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/types/envtrig.d.ts",
     "src/envtrig_config.js",
     "src/envtrig_dsp.js",

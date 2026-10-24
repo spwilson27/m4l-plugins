@@ -460,6 +460,10 @@ def patcher(boxes, lines, width, description):
 
 
 def write_amxd(path, doc):
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import theme_common as tc
+    tc.inject_theme_support(doc, os.path.splitext(os.path.basename(path))[0], assign_varnames=False)
     payload = (json.dumps(doc, indent="\t") + "\n").encode("utf-8")
     header = (b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4)
               + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload)))

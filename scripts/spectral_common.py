@@ -693,6 +693,8 @@ def patcher(boxes, lines, width, description, digest, tags, latency, dev_type="a
 
 
 def write_amxd(patcher_doc, out_path, dev_type=b"aaaa"):
+    import theme_common as tc
+    tc.inject_theme_support(patcher_doc, os.path.splitext(os.path.basename(out_path))[0])
     payload = (json.dumps(patcher_doc, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf" + struct.pack("<I", 4) + dev_type + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0)

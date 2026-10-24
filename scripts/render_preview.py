@@ -94,9 +94,480 @@ def get_font(size_px, bold=False):
     return ImageFont.load_default()
 
 
-def capture_v8ui_commands(js_code, width, height):
+def parse_theme_spec(theme_spec=None, ableton_ui_spec=None):
+    raw = theme_spec if theme_spec is not None else os.environ.get("M4L_THEME", "")
+    raw = str(raw or "").strip()
+    ui_raw = ableton_ui_spec if ableton_ui_spec is not None else os.environ.get("M4L_ABLETON_UI", "")
+    ui_raw = str(ui_raw or "").strip()
+
+    state = None
+    if raw and raw != "Default":
+        if raw.startswith("{"):
+            try:
+                state = json.loads(raw)
+            except Exception:
+                state = None
+        if not state:
+            state = {
+                "version": 1,
+                "preset": raw,
+                "macros": {"hueShift": 0, "satScale": 1.0, "contrast": 1.0, "brightness": 0.0},
+                "tokens": {},
+                "deviceOverrides": {},
+                "customPresets": {},
+            }
+
+    if ui_raw:
+        try:
+            ui_obj = json.loads(ui_raw)
+        except Exception:
+            ui_obj = {"enabled": True, "theme": ui_raw}
+        ui_obj["enabled"] = True
+        if not state:
+            state = {
+                "version": 1,
+                "preset": "Default",
+                "macros": {"hueShift": 0, "satScale": 1.0, "contrast": 1.0, "brightness": 0.0},
+                "tokens": {},
+                "deviceOverrides": {},
+                "customPresets": {},
+            }
+        state["abletonUi"] = ui_obj
+
+    return state
+
+
+def compute_ableton_ui_tokens(theme_state):
+    engine_path = os.path.join(ROOT_DIR, "src", "theme_engine.js")
+    ui_obj = (theme_state or {}).get("abletonUi") or {"enabled": True}
+    script = f"""
+const te = require({json.dumps(engine_path)});
+console.log(JSON.stringify(te.m4lComputeAbletonUiTokens({json.dumps(ui_obj)})));
+"""
+    try:
+        res = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+        return json.loads(res.stdout)
+    except Exception:
+        return {}
+
+
+def wrap_in_ableton_chrome(dev_img, device_title, theme_state):
+    """Wraps a rendered 2x Retina device image inside an authentic full Ableton Live 12 window
+    (Top Transport Bar, Left Browser + Groove Pool, Right Arrangement View with Grid Lines & Track Headers,
+    Bottom Device Tray with Device Header Bar + Device + Stereo Meter + 'Drop Audio Effects Here' zone,
+    and Bottom Status / Tab Bar)."""
+    toks = compute_ableton_ui_tokens(theme_state)
+    desk = rgba_tuple(toks.get("live_desktop", [0.165, 0.165, 0.165, 1.0]))
+    surf_bg = rgba_tuple(toks.get("live_surface_bg", [0.212, 0.212, 0.212, 1.0]))
+    surf_frame = rgba_tuple(toks.get("live_surface_frame", [0.141, 0.141, 0.141, 1.0]))
+    lcd_bg = rgba_tuple(toks.get("live_lcd_bg", [0.094, 0.094, 0.094, 1.0]))
+    lcd_frame = rgba_tuple(toks.get("live_lcd_frame", [0.243, 0.243, 0.243, 1.0]))
+    macro_title = rgba_tuple(toks.get("live_macro_title", [0.275, 0.275, 0.275, 1.0]))
+    ctl_bg = rgba_tuple(toks.get("live_control_bg", [0.118, 0.118, 0.118, 1.0]))
+    ctl_fg = rgba_tuple(toks.get("live_control_fg", [0.71, 0.71, 0.71, 1.0]))
+    ctl_on = rgba_tuple(toks.get("live_control_selection", [1.0, 0.678, 0.337, 1.0]))
+    ctl_fg_on = rgba_tuple(toks.get("live_control_fg_on", [0.027, 0.027, 0.027, 1.0]))
+    zombie = rgba_tuple(toks.get("live_control_zombie", [0.459, 0.459, 0.459, 1.0]))
+    scale_txt = rgba_tuple(toks.get("live_display_scale_text", [0.525, 0.525, 0.525, 1.0]))
+    alt_c = rgba_tuple(toks.get("live_lcd_control_fg_alt", [0.012, 0.765, 0.835, 1.0]))
+
+    # Selection highlight derived from surface_bg + scale_txt
+    sel_bg = (
+        int(min(255, surf_bg[0] * 0.55 + scale_txt[0] * 0.45 + 12)),
+        int(min(255, surf_bg[1] * 0.55 + scale_txt[1] * 0.45 + 18)),
+        int(min(255, surf_bg[2] * 0.55 + scale_txt[2] * 0.45 + 22)),
+        255,
+    )
+
+    S = SCALE
+    dev_w_pt = dev_img.width // S
+    dev_h_pt = dev_img.height // S  # 169
+    drop_zone_w_pt = max(92, 920 - dev_w_pt)
+    win_w_pt = max(960, dev_w_pt + drop_zone_w_pt + 26)
+
+    top_h_pt = 32
+    mid_h_pt = 250
+    hdr_h_pt = 20
+    tray_h_pt = hdr_h_pt + dev_h_pt + 8
+    bot_h_pt = 24
+    win_h_pt = top_h_pt + mid_h_pt + tray_h_pt + bot_h_pt + 12
+
+    out = Image.new("RGBA", (win_w_pt * S, win_h_pt * S), desk)
+    d = ImageDraw.Draw(out)
+
+    fnt_sm = get_font(8.0 * S, bold=False)
+    fnt_md = get_font(9.0 * S, bold=False)
+    fnt_bd = get_font(9.0 * S, bold=True)
+    fnt_hdr = get_font(10.0 * S, bold=True)
+    fnt_lg = get_font(14.0 * S, bold=False)
+
+    def rrect(x, y, w, h, r=3, fill=None, outline=None, width=1):
+        d.rounded_rectangle([x * S, y * S, (x + w) * S, (y + h) * S], radius=r * S, fill=fill, outline=outline, width=width)
+
+    def txt(x, y, s, font=fnt_md, fill=ctl_fg):
+        d.text((x * S, y * S), str(s), font=font, fill=fill)
+
+    # -------------------------------------------------------------------------
+    # 1. TOP TRANSPORT & CONTROL BAR (y = 4..32)
+    # -------------------------------------------------------------------------
+    ty = 6
+    # Left group: orange Metronome/Layout pill, Link, Tap, Tempo 130.00, 4/4, Metronome, 1 Bar, Scale b# C Major
+    rrect(6, ty, 20, 18, 2, fill=ctl_on)
+    txt(11, ty + 3, "II", fnt_bd, ctl_fg_on)
+    for bx, bw, blbl in [(34, 40, "Link"), (78, 30, "Tap"), (110, 44, "130.00"), (156, 22, "IIII"), (180, 32, "4 / 4"), (214, 28, "○●"), (244, 42, "1 Bar")]:
+        rrect(bx, ty, bw, 18, 2, fill=surf_bg, outline=desk)
+        txt(bx + 5, ty + 3, blbl, fnt_sm, ctl_fg)
+    # Purple Scale button (`b#`) + `C` + `Major`
+    rrect(294, ty, 20, 18, 2, fill=(168, 136, 248, 255))
+    txt(297, ty + 3, "b#", fnt_bd, ctl_fg_on)
+    rrect(316, ty, 32, 18, 2, fill=surf_bg, outline=desk)
+    txt(321, ty + 3, "C", fnt_sm, ctl_fg)
+    rrect(350, ty, 52, 18, 2, fill=surf_bg, outline=desk)
+    txt(355, ty + 3, "Major", fnt_sm, ctl_fg)
+
+    # Center transport: Position `205 . 1 . 1`, Play, Stop, Record, +, Automation Arm (orange), Loop, Punch
+    rrect(424, ty, 66, 18, 2, fill=surf_bg)
+    txt(430, ty + 3, "205 . 1 . 1", fnt_bd, ctl_fg)
+    # Play triangle, Stop square, Record circle
+    d.polygon([(502 * S, (ty + 4) * S), (502 * S, (ty + 14) * S), (511 * S, (ty + 9) * S)], fill=ctl_fg)
+    d.rectangle([520 * S, (ty + 4) * S, 529 * S, (ty + 13) * S], fill=ctl_fg)
+    d.ellipse([538 * S, (ty + 4) * S, 547 * S, (ty + 13) * S], fill=ctl_fg)
+
+    rrect(558, ty, 18, 18, 2, fill=surf_bg)
+    txt(563, ty + 2, "+", fnt_bd, ctl_fg)
+    rrect(578, ty, 20, 18, 2, fill=ctl_on)
+    txt(583, ty + 3, "o-", fnt_bd, ctl_fg_on)
+    for bx, bw, blbl in [(602, 20, "<-"), (624, 20, "[]"), (646, 20, "O"), (674, 20, "|\\"), (696, 20, "()"), (718, 20, "/|")]:
+        rrect(bx, ty, bw, 18, 2, fill=ctl_on if blbl == "()" else surf_bg)
+        txt(bx + 3, ty + 3, blbl, fnt_sm, ctl_fg_on if blbl == "()" else ctl_fg)
+
+    # Right group: Draw, Computer MIDI Keyboard (orange), Key, MIDI, 44.1, 4%
+    rx0 = win_w_pt - 210
+    rrect(rx0, ty, 20, 18, 2, fill=surf_bg)
+    txt(rx0 + 4, ty + 3, "/", fnt_bd, ctl_fg)
+    rrect(rx0 + 22, ty, 22, 18, 2, fill=ctl_on)
+    txt(rx0 + 25, ty + 3, "M", fnt_bd, ctl_fg_on)
+    for bx, bw, blbl in [(rx0 + 46, 28, "Key"), (rx0 + 76, 30, "MIDI"), (rx0 + 108, 32, "44.1"), (rx0 + 142, 34, "4 %")]:
+        rrect(bx, ty, bw, 18, 2, fill=surf_bg)
+        txt(bx + 4, ty + 3, blbl, fnt_sm, ctl_fg)
+
+    # -------------------------------------------------------------------------
+    # 2. MIDDLE SPLIT: LEFT BROWSER & GROOVE POOL + RIGHT ARRANGEMENT VIEW
+    # -------------------------------------------------------------------------
+    my0 = top_h_pt + 2
+    left_w = 468
+    # Left Browser Pane (y = my0 .. my0 + 186)
+    rrect(4, my0, left_w, 186, 4, fill=surf_bg, outline=zombie, width=1)
+    # Search bar
+    rrect(8, my0 + 4, left_w - 38, 18, 3, fill=ctl_bg, outline=lcd_frame)
+    txt(14, my0 + 7, "<  >   sampler", fnt_sm, ctl_fg)
+    rrect(left_w - 26, my0 + 4, 18, 18, 2, fill=ctl_on)
+    txt(left_w - 22, my0 + 7, "=", fnt_bd, ctl_fg_on)
+
+    # Browser Left Sidebar (Collections & Library)
+    d.line([(196 * S, (my0 + 25) * S), (196 * S, (my0 + 184) * S)], fill=desk, width=S)
+    txt(10, my0 + 28, "Collections", fnt_bd, scale_txt)
+    collections = [((228, 52, 46, 255), "Favorites"), ((245, 158, 52, 255), "Orange"), ((242, 212, 50, 255), "NEW"), ((128, 134, 142, 255), "Preferred Plugin")]
+    for ci, (ccol, cname) in enumerate(collections):
+        cy = my0 + 42 + ci * 14
+        d.rounded_rectangle([12 * S, (cy + 2) * S, 18 * S, (cy + 8) * S], radius=1 * S, fill=ccol)
+        txt(24, cy, cname, fnt_sm, ctl_fg)
+
+    txt(10, my0 + 104, "Library", fnt_bd, scale_txt)
+    d.rectangle([5 * S, (my0 + 117) * S, 195 * S, (my0 + 131) * S], fill=sel_bg)
+    txt(22, my0 + 119, "All", fnt_bd, ctl_fg)
+    for li, lname in enumerate(["Drums", "Instruments", "Audio Effects", "Clips"]):
+        txt(22, my0 + 133 + li * 13, lname, fnt_sm, ctl_fg)
+
+    # Browser Right Results Pane
+    bx1 = 202
+    txt(bx1, my0 + 28, "Content  ▸", fnt_bd, ctl_fg)
+    txt(bx1, my0 + 42, "Type  ▾", fnt_bd, ctl_fg)
+    for px, pw, plbl in [(bx1, 48, "One Shot"), (bx1 + 52, 68, "MPE Enabled"), (bx1 + 124, 68, "Multisampled")]:
+        rrect(px, my0 + 55, pw, 14, 2, fill=macro_title)
+        txt(px + 4, my0 + 57, plbl, fnt_sm, ctl_fg)
+    txt(bx1, my0 + 74, "Sounds  ▾", fnt_bd, ctl_fg)
+    for px, pw, plbl in [(bx1, 34, "Bass ›"), (bx1 + 38, 40, "Brass ›"), (bx1 + 82, 84, "Guitar & Plucked ›"), (bx1 + 170, 38, "Lead")]:
+        rrect(px, my0 + 87, pw, 14, 2, fill=macro_title)
+        txt(px + 4, my0 + 89, plbl, fnt_sm, ctl_fg)
+
+    # Results header bar (highlighted in warm amber/gold)
+    rrect(bx1 - 2, my0 + 104, left_w - bx1 + 2, 16, 2, fill=(230, 178, 108, 255))
+    txt(bx1 + 2, my0 + 107, "Results", fnt_bd, ctl_fg_on)
+    rrect(left_w - 62, my0 + 106, 36, 12, 5, fill=ctl_fg_on)
+    txt(left_w - 56, my0 + 107, "Clear", fnt_sm, (230, 178, 108, 255))
+
+    txt(bx1 + 2, my0 + 123, "Name", fnt_sm, scale_txt)
+    txt(bx1 + 148, my0 + 123, "Rank  ▼ | Date Mo...", fnt_sm, scale_txt)
+    d.rectangle([(bx1 - 2) * S, (my0 + 136) * S, (left_w - 2) * S, (my0 + 152) * S], fill=sel_bg)
+    txt(bx1 + 14, my0 + 139, device_title, fnt_bd, ctl_fg)
+    txt(bx1 + 2, my0 + 157, "Tags:  Sampling   Add...", fnt_sm, scale_txt)
+    txt(bx1 + 85, my0 + 172, "1 item selected", fnt_sm, ctl_fg)
+
+    # Groove Pool (y = my0 + 190 .. my0 + 248)
+    gy0 = my0 + 190
+    rrect(4, gy0, left_w, 58, 4, fill=surf_bg, outline=desk, width=1)
+    txt(10, gy0 + 4, "Groove Name", fnt_sm, scale_txt)
+    txt(240, gy0 + 4, "Base     Quantize   Timing    Random   Velocity", fnt_sm, scale_txt)
+    d.line([(6 * S, (gy0 + 17) * S), ((left_w - 2) * S, (gy0 + 17) * S)], fill=desk, width=1)
+    txt(10, gy0 + 21, "Swing 16ths 66", fnt_sm, ctl_fg)
+    rrect(198, gy0 + 20, 12, 12, 2, fill=ctl_on)
+    txt(238, gy0 + 21, "1/16  ▾     0 %       100 %       0 %        0 %", fnt_sm, ctl_fg)
+    d.rectangle([5 * S, (gy0 + 40) * S, (left_w - 1) * S, (gy0 + 57) * S], fill=surf_frame)
+    txt(10, gy0 + 43, "Groove Pool", fnt_bd, scale_txt)
+    txt(left_w - 105, gy0 + 43, "Global Amount", fnt_sm, scale_txt)
+    rrect(left_w - 32, gy0 + 42, 28, 13, 2, fill=ctl_bg, outline=lcd_frame)
+    txt(left_w - 26, gy0 + 43, "0%", fnt_sm, ctl_fg)
+
+    # Right Arrangement View (x = left_w + 8 .. win_w_pt - 4, y = my0 .. my0 + 248)
+    ax0 = left_w + 8
+    aw = win_w_pt - ax0 - 4
+    rrect(ax0, my0, aw, 248, 4, fill=surf_bg, outline=zombie, width=1)
+
+    # Timeline area vs Right Track Headers
+    hdr_w = 248
+    tl_w = max(180, aw - hdr_w)
+    d.rectangle([(ax0 + 2) * S, (my0 + 22) * S, (ax0 + tl_w) * S, (my0 + 228) * S], fill=lcd_bg)
+
+    # Ruler markings
+    for bi, bnum in enumerate(["1", "65", "129", "193"]):
+        bx = ax0 + 8 + bi * (tl_w // 4)
+        txt(bx, my0 + 11, bnum, fnt_sm, ctl_fg)
+
+    # Arrangement vertical grid lines scaled by Grid Line Intensity
+    grid_pct = float(((theme_state or {}).get("abletonUi") or {}).get("gridLineIntensity", 100))
+    grid_alpha = int(max(0, min(255, round((grid_pct / 200.0) * 115))))
+    if grid_alpha > 2:
+        for gx in range(ax0 + 8, ax0 + tl_w, 16):
+            is_bar = ((gx - (ax0 + 8)) % 64) == 0
+            a_use = min(255, int(grid_alpha * (1.35 if is_bar else 0.75)))
+            gc = (lcd_frame[0], lcd_frame[1], lcd_frame[2], a_use)
+            d.line([((gx) * S), (my0 + 22) * S, ((gx) * S), (my0 + 228) * S], fill=gc, width=1)
+
+    # White Playhead Line in Arrangement
+    d.line([((ax0 + 16) * S), (my0 + 22) * S, ((ax0 + 16) * S), (my0 + 228) * S], fill=(235, 242, 248, 220), width=max(1, S))
+
+    # Big watermark `16/1` and time `0:00` / `5:00` at bottom of timeline
+    txt(ax0 + tl_w - 42, my0 + 206, "16/1", fnt_lg, scale_txt)
+    txt(ax0 + 8, my0 + 216, "0:00", fnt_sm, scale_txt)
+    txt(ax0 + tl_w - 58, my0 + 216, "5:00", fnt_sm, scale_txt)
+    rrect(ax0 + tl_w + 4, my0 + 231, 14, 13, 2, fill=ctl_on)
+    rrect(ax0 + tl_w + 20, my0 + 231, 32, 13, 2, fill=ctl_bg, outline=alt_c)
+    txt(ax0 + tl_w + 23, my0 + 232, "1.00x", fnt_sm, ctl_fg)
+    txt(ax0 + tl_w + 56, my0 + 232, "H   W", fnt_bd, ctl_fg)
+
+    # Track Headers on Right of Arrangement View
+    tx0 = ax0 + tl_w + 2
+    tracks = [
+        ("1 Drum Rack", (184, 58, 52, 255), (240, 244, 248, 255), 54, "1", "0"),
+        ("2 SC", (242, 244, 248, 255), (18, 22, 28, 255), 34, "2", "0"),
+        ("3 MIDI", (28, 226, 252, 255), (18, 22, 28, 255), 68, "3", "0"),
+        ("4 Wavetable", (244, 212, 54, 255), (18, 22, 28, 255), 18, "4", "0"),
+        ("Main", (36, 200, 155, 255), (18, 22, 28, 255), 18, "M", "-6.0"),
+    ]
+    cur_ty = my0 + 30
+    for tname, tcol, tfg, th, tnum, tvol in tracks:
+        if cur_ty + th > my0 + 228:
+            th = max(16, (my0 + 228) - cur_ty)
+        # Colored track name block (82px wide)
+        d.rectangle([tx0 * S, cur_ty * S, (tx0 + 82) * S, (cur_ty + th - 1) * S], fill=tcol)
+        txt(tx0 + 6, cur_ty + 3, "▾ " + tname, fnt_bd, tfg)
+        # Middle I/O column (62px wide)
+        iox = tx0 + 84
+        d.rectangle([iox * S, cur_ty * S, (iox + 62) * S, (cur_ty + th - 1) * S], fill=surf_frame)
+        rrect(iox + 2, cur_ty + 2, 58, 13, 2, fill=ctl_bg, outline=lcd_frame)
+        txt(iox + 5, cur_ty + 3, "Main       ▾" if tnum in ("2", "M") else "All Ins    ▾", fnt_sm, ctl_fg)
+        if th >= 48:
+            rrect(iox + 2, cur_ty + 17, 58, 13, 2, fill=ctl_bg, outline=lcd_frame)
+            txt(iox + 5, cur_ty + 18, "All Channe▾", fnt_sm, ctl_fg)
+            rrect(iox + 2, cur_ty + 32, 16, 13, 2, fill=ctl_bg)
+            txt(iox + 4, cur_ty + 33, "In", fnt_sm, ctl_fg)
+            rrect(iox + 19, cur_ty + 32, 23, 13, 2, fill=ctl_on)
+            txt(iox + 21, cur_ty + 33, "Auto", fnt_sm, ctl_fg_on)
+            rrect(iox + 43, cur_ty + 32, 17, 13, 2, fill=ctl_bg)
+            txt(iox + 45, cur_ty + 33, "Off", fnt_sm, ctl_fg)
+        # Right mixer controls column
+        mx_col = iox + 64
+        d.rectangle([mx_col * S, cur_ty * S, (ax0 + aw - 2) * S, (cur_ty + th - 1) * S], fill=surf_bg)
+        if tnum != "M":
+            rrect(mx_col + 2, cur_ty + 2, 34, 13, 2, fill=ctl_on)
+            txt(mx_col + 15, cur_ty + 3, tnum, fnt_bd, ctl_fg_on)
+            rrect(mx_col + 38, cur_ty + 2, 18, 13, 2, fill=ctl_bg)
+            txt(mx_col + 44, cur_ty + 3, "S", fnt_sm, ctl_fg)
+            rrect(mx_col + 58, cur_ty + 2, 18, 13, 2, fill=ctl_bg)
+            txt(mx_col + 63, cur_ty + 3, "●", fnt_sm, ctl_fg)
+        if th >= 30 or tnum == "M":
+            vy = cur_ty + (2 if tnum == "M" else 17)
+            rrect(mx_col + 2, vy, 34, 13, 2, fill=(18, 92, 104, 255), outline=alt_c)
+            txt(mx_col + 14, vy + 1, "0", fnt_sm, ctl_fg)
+            if tnum == "M":
+                rrect(mx_col + 38, vy, 38, 13, 2, fill=(68, 96, 172, 255))
+                txt(mx_col + 46, vy + 1, tvol, fnt_sm, ctl_fg)
+            else:
+                rrect(mx_col + 38, vy, 38, 13, 2, fill=ctl_bg)
+                txt(mx_col + 54, vy + 1, "C", fnt_sm, ctl_fg)
+        cur_ty += th + 1
+
+    # -------------------------------------------------------------------------
+    # 3. BOTTOM FULL-WIDTH ABLETON DEVICE TRAY (y = dy0 .. dy0 + tray_h_pt)
+    # -------------------------------------------------------------------------
+    dy0 = my0 + mid_h_pt + 4
+    # Outer Device Tray focus frame (SelectionFrame highlight like the user's screenshot)
+    rrect(4, dy0, win_w_pt - 8, tray_h_pt, 5, fill=surf_frame, outline=zombie, width=max(1, int(1.5 * S)))
+
+    # Device Shell inside the tray on the left
+    dx_pt = 8
+    dy_pt = dy0 + 3
+    dw_pt = dev_w_pt
+    dh_pt = hdr_h_pt + dev_h_pt
+
+    # Device Header Bar (`live_macro_title`)
+    rrect(dx_pt, dy_pt, dw_pt, hdr_h_pt + 4, 4, fill=macro_title)
+    # Activator circle (orange `ChosenDefault`)
+    ax = (dx_pt + 10) * S
+    ay = (dy_pt + 10) * S
+    ar = 5 * S
+    d.ellipse([ax - ar, ay - ar, ax + ar, ay + ar], fill=ctl_on, outline=desk, width=1)
+    d.ellipse([ax - 2 * S, ay - 2 * S, ax + 2 * S, ay + 2 * S], outline=ctl_fg_on, width=max(1, S))
+
+    # Device Title
+    txt(dx_pt + 20, dy_pt + 4, device_title, fnt_hdr, ctl_fg)
+
+    # Right-hand M4L Header Icons (Hot-Swap, Edit, Save Preset, Menu `•••`)
+    ih_x = dx_pt + dw_pt - 56
+    txt(ih_x, dy_pt + 4, "↻   ⧉   💾   •••", fnt_sm, ctl_fg)
+
+    # Paste 169px Device Canvas directly below the 20px Header Bar
+    out.alpha_composite(dev_img, (dx_pt * S, (dy_pt + hdr_h_pt) * S))
+
+    # 1px separator & outer device border
+    d.line([(dx_pt * S, (dy_pt + hdr_h_pt) * S), ((dx_pt + dw_pt) * S, (dy_pt + hdr_h_pt) * S)], fill=desk, width=S)
+    rrect(dx_pt, dy_pt, dw_pt, dh_pt, 4, fill=None, outline=desk, width=S)
+
+    # Inter-Device Stereo Level Meter immediately to the right of the device
+    mx_pt = dx_pt + dw_pt + 4
+    rrect(mx_pt, dy_pt, 8, dh_pt, 2, fill=lcd_bg, outline=desk, width=1)
+    for tick_y in range(dy_pt + 12, dy_pt + dh_pt - 8, 16):
+        d.line([((mx_pt + 2) * S, tick_y * S), ((mx_pt + 6) * S, tick_y * S)], fill=scale_txt, width=1)
+    bar_h = int(dh_pt * 0.62)
+    d.rectangle([(mx_pt + 1.5) * S, (dy_pt + dh_pt - bar_h) * S, (mx_pt + 3.5) * S, (dy_pt + dh_pt - 2) * S], fill=(0, 211, 141, 255))
+    d.rectangle([(mx_pt + 4.5) * S, (dy_pt + dh_pt - bar_h + 6) * S, (mx_pt + 6.5) * S, (dy_pt + dh_pt - 2) * S], fill=(0, 211, 141, 255))
+
+    # "Drop Audio Effects Here" zone filling the rest of the Device Tray width
+    drop_x = mx_pt + 16
+    drop_w = (win_w_pt - 8) - drop_x
+    if drop_w >= 48:
+        rrect(drop_x, dy_pt, drop_w, dh_pt, 3, fill=surf_bg, outline=desk, width=1)
+        lbl1 = "Drop Audio"
+        lbl2 = "Effects Here"
+        b1 = d.textbbox((0, 0), lbl1, font=fnt_bd)
+        b2 = d.textbbox((0, 0), lbl2, font=fnt_bd)
+        cx_drop = (drop_x + drop_w * 0.5) * S
+        cy_drop = (dy_pt + dh_pt * 0.5) * S
+        d.text((cx_drop - (b1[2] - b1[0]) * 0.5, cy_drop - 10 * S), lbl1, font=fnt_bd, fill=scale_txt)
+        d.text((cx_drop - (b2[2] - b2[0]) * 0.5, cy_drop + 3 * S), lbl2, font=fnt_bd, fill=scale_txt)
+
+    # -------------------------------------------------------------------------
+    # 4. BOTTOM STATUS & VIEW TAB BAR (y = by0 .. by0 + 20)
+    # -------------------------------------------------------------------------
+    by0 = dy0 + tray_h_pt + 4
+    # Left Info Bar
+    rrect(4, by0, 468, 20, 3, fill=surf_bg)
+    txt(10, by0 + 4, "ⓘ   Live 12 Theme Studio Preview — Ableton UI & Device Tray Active", fnt_sm, ctl_fg)
+    # Middle Status Bar
+    mid_w = win_w_pt - 476 - 246
+    if mid_w > 40:
+        rrect(476, by0, mid_w, 20, 3, fill=surf_bg)
+        txt(484, by0 + 4, "▶", fnt_sm, ctl_fg)
+    # Right Tab Bar (orange ▲ button, track name, highlighted active device tab)
+    rx_tab = win_w_pt - 242
+    rrect(rx_tab, by0, 20, 20, 3, fill=ctl_on)
+    txt(rx_tab + 6, by0 + 4, "▲", fnt_sm, ctl_fg_on)
+    txt(rx_tab + 26, by0 + 4, f"1-{device_title[:18]}", fnt_bd, ctl_fg)
+    rrect(rx_tab + 128, by0, 88, 20, 4, fill=macro_title, outline=zombie, width=max(1, int(1.5 * S)))
+    txt(rx_tab + 133, by0 + 4, device_title[:14], fnt_bd, ctl_fg)
+    rrect(win_w_pt - 22, by0, 18, 20, 3, fill=surf_bg)
+    txt(win_w_pt - 18, by0 + 4, "III", fnt_sm, alt_c)
+
+    return out
+
+
+def apply_theme_to_patcher_boxes(boxes, slug, theme_state):
+    """Maps native panel and live.* widget colors through src/theme_engine.js when a theme is active."""
+    if not theme_state:
+        return
+    engine_path = os.path.join(ROOT_DIR, "src", "theme_engine.js")
+    if not os.path.exists(engine_path):
+        return
+    color_keys = [
+        "bgcolor", "bordercolor", "activedialcolor", "dialcolor", "textcolor",
+        "activetextcolor", "textoncolor", "activebgcolor", "activeslidercolor",
+        "slidercolor", "lcdcolor", "bgoncolor", "activebgoncolor", "linecolor",
+        "tribordercolor", "activetricolor2", "tricolor"
+    ]
+    payload = []
+    for idx, b in enumerate(boxes):
+        b_cols = {}
+        for k in color_keys:
+            v = b.get(k)
+            if isinstance(v, list) and len(v) in (3, 4) and not (len(v) == 4 and v[3] == 0):
+                b_cols[k] = v
+        saa = b.get("saved_attribute_attributes", {})
+        saa_tokens = {}
+        for k, v in saa.items():
+            if isinstance(v, dict) and str(v.get("expression", "")).startswith("themecolor."):
+                saa_tokens[k] = str(v["expression"]).split(".", 1)[1]
+        if b_cols or saa_tokens:
+            payload.append({"idx": idx, "cols": b_cols, "tokens": saa_tokens})
+    if not payload:
+        return
+    script = f"""
+global.M4L_DEVICE_SLUG = {json.dumps(slug)};
+global.__M4L_THEME_STATE__ = {json.dumps(theme_state)};
+const te = require({json.dumps(engine_path)});
+const items = {json.dumps(payload)};
+const out = items.map(item => {{
+    const mapped = {{}};
+    for (const [k, col] of Object.entries(item.cols)) {{
+        if (item.tokens[k]) {{
+            mapped[k] = te.m4lColor(item.tokens[k], col);
+        }} else {{
+            mapped[k] = te.m4lMapRgba(col[0], col[1], col[2], col.length > 3 ? col[3] : 1.0);
+        }}
+    }}
+    for (const [k, tok] of Object.entries(item.tokens)) {{
+        if (!mapped[k]) mapped[k] = te.m4lColor(tok);
+    }}
+    if (mapped.activeslidercolor && mapped.activebgcolor) {{
+        const a = mapped.activeslidercolor, bg = mapped.activebgcolor;
+        mapped.activeslidercolor = [a[0]*0.38 + bg[0]*0.62, a[1]*0.38 + bg[1]*0.62, a[2]*0.38 + bg[2]*0.62, 1.0];
+    }}
+    if (mapped.bgfillcolor && !mapped.bgcolor) mapped.bgcolor = mapped.bgfillcolor;
+    return {{ idx: item.idx, mapped }};
+}});
+const surf = te.m4lColor("live_surface_bg");
+console.log(JSON.stringify({{ items: out, surface: surf }}));
+"""
+    try:
+        res = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
+        parsed = json.loads(res.stdout)
+        for entry in parsed.get("items", []):
+            box = boxes[entry["idx"]]
+            for k, col in entry["mapped"].items():
+                box[k] = col
+        return parsed.get("surface")
+    except Exception:
+        return None
+
+
+def capture_v8ui_commands(js_code, width, height, theme_state=None):
+    theme_prelude = (
+        f"global.__M4L_THEME_STATE__ = {json.dumps(theme_state)};\n"
+        if theme_state
+        else ""
+    )
     runner = f"""
-const cmds = [];
+{theme_prelude}const cmds = [];
 global.mgraphics = {{
     size: [{width}, {height}],
     init() {{}},
@@ -321,10 +792,12 @@ def is_fully_transparent(box):
     return bool(colours) and all(c[3] == 0 for c in colours)
 
 
-def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix=""):
+def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="", theme_spec=None, ableton_ui_spec=None):
     os.makedirs(PREVIEWS_DIR, exist_ok=True)
-    slug = slugify_device_name(amxd_path) + out_suffix
+    base_slug = slugify_device_name(amxd_path)
+    slug = base_slug + out_suffix
     out_png_path = os.path.join(PREVIEWS_DIR, f"{slug}.png")
+    theme_state = parse_theme_spec(theme_spec, ableton_ui_spec=ableton_ui_spec)
 
     with open(amxd_path, "rb") as f:
         raw = f.read()
@@ -346,10 +819,12 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
 
     dev_w = int(p.get("devicewidth", 648) or 385)
     dev_h = 169
-    img = Image.new("RGBA", (dev_w * SCALE, dev_h * SCALE), (36, 45, 53, 255))
+    boxes = [b["box"] for b in p["boxes"] if b["box"].get("presentation") == 1 and not b["box"].get("hidden")]
+    surf_col = apply_theme_to_patcher_boxes(boxes, base_slug, theme_state) if theme_state else None
+    bg_rgba = rgba_tuple(surf_col) if surf_col else (36, 45, 53, 255)
+    img = Image.new("RGBA", (dev_w * SCALE, dev_h * SCALE), bg_rgba)
     draw = ImageDraw.Draw(img)
 
-    boxes = [b["box"] for b in p["boxes"] if b["box"].get("presentation") == 1 and not b["box"].get("hidden")]
     panels = [b for b in boxes if b.get("maxclass") == "panel"]
     widgets = [b for b in boxes if b.get("maxclass") != "panel" and not is_fully_transparent(b)]
 
@@ -368,7 +843,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
         W_BOLD = not is_themed(w)   # theme-bound widgets (spectral_common.theme) use Live's regular-weight font
 
         if mc == "v8ui":
-            cmds = capture_v8ui_commands(w["textfile"]["text"], w["presentation_rect"][2], w["presentation_rect"][3])
+            cmds = capture_v8ui_commands(w["textfile"]["text"], w["presentation_rect"][2], w["presentation_rect"][3], theme_state=theme_state)
             v8_img = render_v8ui(cmds, w["presentation_rect"][2], w["presentation_rect"][3])
             img.alpha_composite(v8_img, (int(rx), int(ry)))
 
@@ -808,14 +1283,36 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
             else:
                 draw.text((rx + 4 * SCALE, ry + 2.5 * SCALE), txt, font=fnt, fill=fill_c)
 
+    if ableton_ui_spec or (theme_state and (theme_state.get("abletonUi") or {}).get("enabled")):
+        dev_title = os.path.splitext(os.path.basename(amxd_path))[0]
+        img = wrap_in_ableton_chrome(img, dev_title, theme_state)
+
     img.save(out_png_path)
     print(f"Saved preview to {out_png_path} ({img.width}x{img.height})")
     return out_png_path
 
 
 if __name__ == "__main__":
-    target_amxd = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_AMXD_PATH
-    suffix = sys.argv[2] if len(sys.argv) > 2 else ""
-    render_device(target_amxd, multimap_open=False, out_suffix=suffix)
+    args = list(sys.argv[1:])
+    cli_theme = None
+    cli_ableton_ui = None
+    if "--theme" in args:
+        t_idx = args.index("--theme")
+        if t_idx + 1 < len(args):
+            cli_theme = args[t_idx + 1]
+            del args[t_idx:t_idx + 2]
+        else:
+            del args[t_idx]
+    if "--ableton-ui" in args:
+        u_idx = args.index("--ableton-ui")
+        if u_idx + 1 < len(args) and not args[u_idx + 1].startswith("-"):
+            cli_ableton_ui = args[u_idx + 1]
+            del args[u_idx:u_idx + 2]
+        else:
+            cli_ableton_ui = '{"enabled":true}'
+            del args[u_idx]
+    target_amxd = args[0] if len(args) > 0 else DEFAULT_AMXD_PATH
+    suffix = args[1] if len(args) > 1 else ""
+    render_device(target_amxd, multimap_open=False, out_suffix=suffix, theme_spec=cli_theme, ableton_ui_spec=cli_ableton_ui)
     if slugify_device_name(target_amxd) == "better_shaper" and not suffix:
-        render_device(target_amxd, multimap_open=True, out_suffix="_multimap")
+        render_device(target_amxd, multimap_open=True, out_suffix="_multimap", theme_spec=cli_theme, ableton_ui_spec=cli_ableton_ui)

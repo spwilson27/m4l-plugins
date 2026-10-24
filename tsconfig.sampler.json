@@ -2,6 +2,7 @@
   "extends": "./tsconfig.base.json",
   "files": [
     "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
     "src/types/sampler.d.ts",
     "src/sampler_config.js",
     "src/sampler_ui.js",

@@ -982,6 +982,11 @@ def build():
         }
     }
 
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import theme_common as tc
+    tc.inject_theme_support(patcher, "percipitator")
+
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"
