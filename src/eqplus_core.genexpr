@@ -12,13 +12,14 @@
 //   +0 sections (0 = bypass, else 1 / 2 / 4 identical biquads)
 //   +1 b0  +2 b1  +3 b2  +4 a1  +5 a2     a0 is already 1
 //
-// spec ("eqplusspec"), 8200 frames x 2 channels:
-//   frame 0 ch 0  write index 0..8191 (next sample to be written)
-//   frame 0 ch 1  heartbeat, +1 every 64 samples
-//   frame 1 ch 0  sample rate
-//   frames 8 .. 8+8191
-//     ch 0  pre mono  (L+R)*0.5, before the bands
-//     ch 1  post mono (L+R)*0.5, after the bands, out gain and bypass
+// Inputs: in1/in2 main L/R (the only samples that reach out1/out2),
+// in3/in4 sidechain L/R (reference spectrum only).
+//
+// spec ("eqplusspec"), 8200 frames:
+//   ch 0  pre mono at 8+writeIdx. Frame 0 holds the write index, frame 1 the sample rate.
+//   ch 1  post mono at 8+writeIdx. Frame 0 holds the heartbeat.
+//   ch 2  metadata: index 0 frameTick, index 1 writeIdx, index 2 samplerate.
+//   ch 3  sidechain mono, at writeIdx and at 8+writeIdx.
 //
 // zstate: 32 sections (8 bands x 4) of Direct Form II Transposed
 //   (s1L, s2L, s1R, s2R), index (b * 4 + s) * 4.
@@ -29,6 +30,19 @@
 // sample a band turns on snaps to the target and the section state is zero,
 // so enable does not fade in from a silent biquad.
 //
+// Band audition (the speaker icon): Param soloBand is -1 off, or 0..7.
+// The face sends the matching eqpSoloBandCoeffs() biquad as soloB0, soloB1,
+// soloB2, soloA1, soloA2 (set those before raising soloBand). While solo is
+// on, the dry input replaces the EQ output through that one bandpass.
+// soloZ holds its DF2T state (s1L, s2L, s1R, s2R). Leaving solo clears it.
+//
+// Flat tilt (Param tiltOn): nine first-order low shelves, one per octave,
+// then a makeup gain so 1 kHz stays at 0 dB. The face designs them
+// (eqpTiltCoeffs) and sends tGain plus t0b0, t0b1, t0a1 ... t8b0, t8b1, t8a1.
+// tiltC holds 27 coefficients and the gain at index 27. tiltZ holds one
+// state per channel per section (18). Coeffs slew at 0.995 / 0.005. Engaging
+// the tilt snaps and clears the state. It runs before the solo replacement.
+//
 // GenExpr rules: helpers (none) would sit above Buffer / Data / Param /
 // History; no identifier is e followed by digits; no return inside a block.
 
@@ -37,18 +51,64 @@ Buffer spec("eqplusspec");
 
 Data zstate(128);
 Data cstate(64);
+Data soloZ(4);
+Data tiltZ(18);
+Data tiltC(28);
 
 Param outgain(0, min=-24, max=24);
+Param tiltOn(0, min=0, max=1);
+Param tGain(1, min=0.02, max=80);
+Param t0b0(1, min=-8, max=8);
+Param t0b1(0, min=-8, max=8);
+Param t0a1(0, min=-8, max=8);
+Param t1b0(1, min=-8, max=8);
+Param t1b1(0, min=-8, max=8);
+Param t1a1(0, min=-8, max=8);
+Param t2b0(1, min=-8, max=8);
+Param t2b1(0, min=-8, max=8);
+Param t2a1(0, min=-8, max=8);
+Param t3b0(1, min=-8, max=8);
+Param t3b1(0, min=-8, max=8);
+Param t3a1(0, min=-8, max=8);
+Param t4b0(1, min=-8, max=8);
+Param t4b1(0, min=-8, max=8);
+Param t4a1(0, min=-8, max=8);
+Param t5b0(1, min=-8, max=8);
+Param t5b1(0, min=-8, max=8);
+Param t5a1(0, min=-8, max=8);
+Param t6b0(1, min=-8, max=8);
+Param t6b1(0, min=-8, max=8);
+Param t6a1(0, min=-8, max=8);
+Param t7b0(1, min=-8, max=8);
+Param t7b1(0, min=-8, max=8);
+Param t7a1(0, min=-8, max=8);
+Param t8b0(1, min=-8, max=8);
+Param t8b1(0, min=-8, max=8);
+Param t8a1(0, min=-8, max=8);
 Param bypass(0, min=0, max=1);
+Param soloBand(-1, min=-1, max=7);
+Param soloB0(0, min=-4, max=4);
+Param soloB1(0, min=-4, max=4);
+Param soloB2(0, min=-4, max=4);
+Param soloA1(0, min=-4, max=4);
+Param soloA2(0, min=-4, max=4);
 
 History initDone(0);
 History writeIdx(0);
 History frameTick(0);
 History linGain(1);
+History soloWas(0);
+History soloSb0(0);
+History soloSb1(0);
+History soloSb2(0);
+History soloSa1(0);
+History soloSa2(0);
+History tiltWas(0);
 
 xL = in1;
 xR = in2;
 preMono = 0.5 * (xL + xR);
+scMono = 0.5 * (in3 + in4);
 
 if (initDone < 0.5) {
 	for (i = 0; i < 128; i += 1) {
@@ -57,6 +117,17 @@ if (initDone < 0.5) {
 	for (i = 0; i < 64; i += 1) {
 		poke(cstate, 0, i);
 	}
+	for (i = 0; i < 4; i += 1) {
+		poke(soloZ, 0, i);
+	}
+	for (i = 0; i < 18; i += 1) {
+		poke(tiltZ, 0, i);
+	}
+	for (i = 0; i < 28; i += 1) {
+		poke(tiltC, 0, i);
+	}
+	soloWas = 0;
+	tiltWas = 0;
 	linGain = dbtoa(clip(outgain, -24, 24));
 	writeIdx = 0;
 	frameTick = 0;
@@ -145,6 +216,147 @@ for (b = 0; b < 8; b += 1) {
 	}
 }
 
+if (tiltOn > 0.5) {
+	if (tiltWas < 0.5) {
+		poke(tiltC, t0b0, 0);
+		poke(tiltC, t0b1, 1);
+		poke(tiltC, t0a1, 2);
+		poke(tiltC, t1b0, 3);
+		poke(tiltC, t1b1, 4);
+		poke(tiltC, t1a1, 5);
+		poke(tiltC, t2b0, 6);
+		poke(tiltC, t2b1, 7);
+		poke(tiltC, t2a1, 8);
+		poke(tiltC, t3b0, 9);
+		poke(tiltC, t3b1, 10);
+		poke(tiltC, t3a1, 11);
+		poke(tiltC, t4b0, 12);
+		poke(tiltC, t4b1, 13);
+		poke(tiltC, t4a1, 14);
+		poke(tiltC, t5b0, 15);
+		poke(tiltC, t5b1, 16);
+		poke(tiltC, t5a1, 17);
+		poke(tiltC, t6b0, 18);
+		poke(tiltC, t6b1, 19);
+		poke(tiltC, t6a1, 20);
+		poke(tiltC, t7b0, 21);
+		poke(tiltC, t7b1, 22);
+		poke(tiltC, t7a1, 23);
+		poke(tiltC, t8b0, 24);
+		poke(tiltC, t8b1, 25);
+		poke(tiltC, t8a1, 26);
+		poke(tiltC, tGain, 27);
+		for (k = 0; k < 18; k += 1) {
+			poke(tiltZ, 0, k);
+		}
+	} else {
+		poke(tiltC, peek(tiltC, 0) * 0.995 + t0b0 * 0.005, 0);
+		poke(tiltC, peek(tiltC, 1) * 0.995 + t0b1 * 0.005, 1);
+		poke(tiltC, peek(tiltC, 2) * 0.995 + t0a1 * 0.005, 2);
+		poke(tiltC, peek(tiltC, 3) * 0.995 + t1b0 * 0.005, 3);
+		poke(tiltC, peek(tiltC, 4) * 0.995 + t1b1 * 0.005, 4);
+		poke(tiltC, peek(tiltC, 5) * 0.995 + t1a1 * 0.005, 5);
+		poke(tiltC, peek(tiltC, 6) * 0.995 + t2b0 * 0.005, 6);
+		poke(tiltC, peek(tiltC, 7) * 0.995 + t2b1 * 0.005, 7);
+		poke(tiltC, peek(tiltC, 8) * 0.995 + t2a1 * 0.005, 8);
+		poke(tiltC, peek(tiltC, 9) * 0.995 + t3b0 * 0.005, 9);
+		poke(tiltC, peek(tiltC, 10) * 0.995 + t3b1 * 0.005, 10);
+		poke(tiltC, peek(tiltC, 11) * 0.995 + t3a1 * 0.005, 11);
+		poke(tiltC, peek(tiltC, 12) * 0.995 + t4b0 * 0.005, 12);
+		poke(tiltC, peek(tiltC, 13) * 0.995 + t4b1 * 0.005, 13);
+		poke(tiltC, peek(tiltC, 14) * 0.995 + t4a1 * 0.005, 14);
+		poke(tiltC, peek(tiltC, 15) * 0.995 + t5b0 * 0.005, 15);
+		poke(tiltC, peek(tiltC, 16) * 0.995 + t5b1 * 0.005, 16);
+		poke(tiltC, peek(tiltC, 17) * 0.995 + t5a1 * 0.005, 17);
+		poke(tiltC, peek(tiltC, 18) * 0.995 + t6b0 * 0.005, 18);
+		poke(tiltC, peek(tiltC, 19) * 0.995 + t6b1 * 0.005, 19);
+		poke(tiltC, peek(tiltC, 20) * 0.995 + t6a1 * 0.005, 20);
+		poke(tiltC, peek(tiltC, 21) * 0.995 + t7b0 * 0.005, 21);
+		poke(tiltC, peek(tiltC, 22) * 0.995 + t7b1 * 0.005, 22);
+		poke(tiltC, peek(tiltC, 23) * 0.995 + t7a1 * 0.005, 23);
+		poke(tiltC, peek(tiltC, 24) * 0.995 + t8b0 * 0.005, 24);
+		poke(tiltC, peek(tiltC, 25) * 0.995 + t8b1 * 0.005, 25);
+		poke(tiltC, peek(tiltC, 26) * 0.995 + t8a1 * 0.005, 26);
+		poke(tiltC, peek(tiltC, 27) * 0.995 + tGain * 0.005, 27);
+	}
+	tiltWas = 1;
+	tg = peek(tiltC, 27);
+	for (s = 0; s < 9; s += 1) {
+		cBase = s * 3;
+		cb0 = peek(tiltC, cBase);
+		cb1 = peek(tiltC, cBase + 1);
+		ca1 = peek(tiltC, cBase + 2);
+		zBase = s * 2;
+		s1L = peek(tiltZ, zBase);
+		s1R = peek(tiltZ, zBase + 1);
+		xInL = yL;
+		xInR = yR;
+		yL = cb0 * xInL + s1L;
+		yR = cb0 * xInR + s1R;
+		s1Ln = cb1 * xInL - ca1 * yL;
+		s1Rn = cb1 * xInR - ca1 * yR;
+		poke(tiltZ, fixdenorm(s1Ln), zBase);
+		poke(tiltZ, fixdenorm(s1Rn), zBase + 1);
+	}
+	yL = yL * tg;
+	yR = yR * tg;
+} else {
+	if (tiltWas > 0.5) {
+		tiltWas = 0;
+		for (k = 0; k < 18; k += 1) {
+			poke(tiltZ, 0, k);
+		}
+	}
+}
+
+if (soloBand > -0.5) {
+	ub0 = fixnan(soloB0);
+	ub1 = fixnan(soloB1);
+	ub2 = fixnan(soloB2);
+	ua1 = fixnan(soloA1);
+	ua2 = fixnan(soloA2);
+	if (soloWas < 0.5) {
+		soloSb0 = ub0;
+		soloSb1 = ub1;
+		soloSb2 = ub2;
+		soloSa1 = ua1;
+		soloSa2 = ua2;
+		for (k = 0; k < 4; k += 1) {
+			poke(soloZ, 0, k);
+		}
+	} else {
+		soloSb0 = soloSb0 * 0.995 + ub0 * 0.005;
+		soloSb1 = soloSb1 * 0.995 + ub1 * 0.005;
+		soloSb2 = soloSb2 * 0.995 + ub2 * 0.005;
+		soloSa1 = soloSa1 * 0.995 + ua1 * 0.005;
+		soloSa2 = soloSa2 * 0.995 + ua2 * 0.005;
+	}
+	soloWas = 1;
+	s1L = peek(soloZ, 0);
+	s2L = peek(soloZ, 1);
+	s1R = peek(soloZ, 2);
+	s2R = peek(soloZ, 3);
+	xInL = xL;
+	xInR = xR;
+	yL = soloSb0 * xInL + s1L;
+	yR = soloSb0 * xInR + s1R;
+	s1Ln = soloSb1 * xInL - soloSa1 * yL + s2L;
+	s2Ln = soloSb2 * xInL - soloSa2 * yL;
+	s1Rn = soloSb1 * xInR - soloSa1 * yR + s2R;
+	s2Rn = soloSb2 * xInR - soloSa2 * yR;
+	poke(soloZ, fixdenorm(s1Ln), 0);
+	poke(soloZ, fixdenorm(s2Ln), 1);
+	poke(soloZ, fixdenorm(s1Rn), 2);
+	poke(soloZ, fixdenorm(s2Rn), 3);
+} else {
+	if (soloWas > 0.5) {
+		soloWas = 0;
+		for (k = 0; k < 4; k += 1) {
+			poke(soloZ, 0, k);
+		}
+	}
+}
+
 if (bypass > 0.5) {
 	yL = xL;
 	yR = xR;
@@ -158,12 +370,16 @@ yR = fixnan(fixdenorm(yR));
 postMono = 0.5 * (yL + yR);
 poke(spec, preMono, 8 + writeIdx, 0);
 poke(spec, postMono, 8 + writeIdx, 1);
+poke(spec, scMono, 8 + writeIdx, 3, 0);
 writeIdx = mod(writeIdx + 1, 8192);
 if (mod(writeIdx, 64) == 0) {
 	frameTick = mod(frameTick + 1, 16777216);
 	poke(spec, writeIdx, 0, 0);
 	poke(spec, frameTick, 0, 1);
 	poke(spec, samplerate, 1, 0);
+	poke(spec, frameTick, 0, 2, 0);
+	poke(spec, writeIdx, 1, 2, 0);
+	poke(spec, samplerate, 2, 2, 0);
 }
 
 out1 = yL;

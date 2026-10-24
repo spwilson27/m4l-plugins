@@ -42,7 +42,8 @@
 // pass or one O(N) slice of work per sample (the Cepstra pattern, time-sliced across each hop).
 // sp_live = On bursts the first 4 frames at note-on (no latency, one CPU spike); Off ramps in.
 //
-// Buffers (bound on loadbang via `samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope`):
+// Buffers (bound on loadbang via `samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2`).
+// voice_proc is defined above these declarations, so the factory tables are arguments (wt1Buf / wt2Buf), not the names wt1 / wt2.
 //   samp   ("bsamp")    : Audio sample buffer (1 or 2 channels; mono plays on both outputs)
 //   vdata  ("bsvoices") : 128-sample control table (16 voices x 8 slots):
 //     slot + 0 : gate (0 = released, 1 = held)
@@ -123,9 +124,34 @@ wt_base(ph, pos01) {
 	return wbOut;
 }
 
+// One 1024-sample wavetable frame, phase wrapping inside the frame.
+wt_cycle(buf, base, ph) {
+	wcIdx = fract(ph) * 1024.0;
+	wcI0 = floor(wcIdx);
+	wcFr = wcIdx - wcI0;
+	wcI1 = (wcI0 >= 1023.0) ? 0.0 : (wcI0 + 1.0);
+	wcA = peek(buf, base + wcI0, 0, interp="none", boundmode="clamp");
+	wcB = peek(buf, base + wcI1, 0, interp="none", boundmode="clamp");
+	return wcA + (wcB - wcA) * wcFr;
+}
+
+// Linear morph across frames. nFrames is the count of 1024-sample cycles in buf.
+wt_span(buf, ph, pos, nFrames) {
+	wsNF = max(1.0, floor(nFrames));
+	wsPos = clip(pos, 0.0, 1.0) * max(wsNF - 1.0, 0.0);
+	wsF0 = floor(wsPos);
+	wsFr = wsPos - wsF0;
+	wsF1 = (wsF0 + 1.0 >= wsNF) ? wsF0 : (wsF0 + 1.0);
+	ws0 = wt_cycle(buf, wsF0 * 1024.0, ph);
+	ws1 = wt_cycle(buf, wsF1 * 1024.0, ph);
+	return ws0 + (ws1 - ws0) * wsFr;
+}
+
 // Wavetable oscillator with native Wavetable wave effects:
 //   fxMode: 0 = None, 1 = Fm (Tune / Amt), 2 = Classic (PW / Sync), 3 = Modern (Warp / Fold)
-wt_osc_eval(ph, pos01, fxMode, fx1, fx2) {
+//   user > 0 reads bufUser (the loaded sample) as 1024-sample frames. Otherwise bufFact is a factory table
+//   when nFrames >= 1, and the 4-frame sine/tri/saw/square morph when nothing is loaded.
+wt_osc_eval(ph, pos01, fxMode, fx1, fx2, bufFact, bufUser, nFrames, user) {
 	woP = fract(ph);
 	effP = woP;
 	woM = round(clip(fxMode, 0, 3));
@@ -143,7 +169,18 @@ wt_osc_eval(ph, pos01, fxMode, fx1, fx2) {
 			effP = pow(clip(woP, 0.0, 1.0), pow(3.0, 0.0 - warpAmt));
 		}
 	}
+	nUse = nFrames;
+	if (user > 0.5) {
+		nUse = floor(dim(bufUser) / 1024.0);
+	}
 	woVal = wt_base(effP, pos01);
+	if (nUse >= 1.0) {
+		if (user > 0.5) {
+			woVal = wt_span(bufUser, effP, pos01, nUse);
+		} else {
+			woVal = wt_span(bufFact, effP, pos01, nUse);
+		}
+	}
 	if (woM == 3) {
 		foldAmt = clip(fx2, 0, 1);
 		if (foldAmt > 0.0005) {
@@ -1389,7 +1426,9 @@ voice_proc(
 	pitchBuf,
 	gtel,
 	telTick,
-	subh
+	subh,
+	wt1Buf,
+	wt2Buf
 ) {
 	stB = vIdx * 256;
 	// Grain telemetry: on a telemetry tick every voice rewrites its 32 grain slots (position -1 = unused, level 0).
@@ -2289,7 +2328,10 @@ voice_proc(
 		wt1Phs = fract(wt1Next);
 		poke(vhist, wt1Phs, stB + 55);
 		wt1EvalPhs = fract(wt1Phs + (prevO2Mod * xsFm21 + prevSubMod * xsSubFm) * 0.85 + 4.0);
-		wt1Val = wt_osc_eval(wt1EvalPhs, wt1Pos, wt1Fx, wt1A, wt1B) * 0.55 * sampG;
+		// peek() as an argument next to a buffer does not compile (gen reports "variable peek_N is not defined").
+		wt1NFr = peek(prm, 128);
+		wt1NUs = peek(prm, 129);
+		wt1Val = wt_osc_eval(wt1EvalPhs, wt1Pos, wt1Fx, wt1A, wt1B, wt1Buf, sampBuf, wt1NFr, wt1NUs) * 0.55 * sampG;
 		sigL = wt1Val;
 		sigR = wt1Val;
 		} else {
@@ -2394,7 +2436,9 @@ voice_proc(
 			wt2Fx = peek(prm, 81);
 			wt2A = peek(prm, 82);
 			wt2B = peek(prm, 83);
-			wtVal = wt_osc_eval(o2EvalPhs, o2Pos, wt2Fx, wt2A, wt2B);
+			wt2NFr = peek(prm, 130);
+			wt2NUs = peek(prm, 131);
+			wtVal = wt_osc_eval(o2EvalPhs, o2Pos, wt2Fx, wt2A, wt2B, wt2Buf, sampBuf, wt2NFr, wt2NUs);
 			osc2SigL = wtVal * 0.55 * o2Gain;
 			osc2SigR = osc2SigL;
 			o2RawL = osc2SigL;
@@ -2742,12 +2786,14 @@ Buffer samp("bsamp");
 Buffer vdata("bsvoices");
 Buffer scope("bsscope");
 Buffer pitch("bspitch");
+Buffer wt1("bswt1");
+Buffer wt2("bswt2");
 
 // Shared tables and the new-parameter table (layout below)
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
-Data prm(128);
+Data prm(132);
 Data subh(16);
 Data vst(6400);
 Data gtel(1024);
@@ -2881,6 +2927,10 @@ Param osc2_mode(0, min=0, max=4);
 Param wt2_fx(3, min=0, max=3);
 Param wt2_fx1(0, min=-1, max=1);
 Param wt2_fx2(0, min=0, max=1);
+Param wt1_frames(0, min=0, max=8192);
+Param wt1_user(0, min=0, max=1);
+Param wt2_frames(0, min=0, max=8192);
+Param wt2_user(0, min=0, max=1);
 Param osc2_pitch(0, min=-36, max=36);
 Param osc2_detune(0, min=-100, max=100);
 Param osc2_pos(0, min=0, max=1);
@@ -3205,6 +3255,11 @@ poke(prm, clip(osc1_ratio, 0.125, 16.0), 122);
 poke(prm, clip(osc2_ratio, 0.125, 16.0), 123);
 poke(prm, clip(sub_ratio, 0.125, 16.0), 124);
 poke(prm, clip(fine_range, 1.0, 96.0), 125);
+// 128/130 factory frame counts (0 = the procedural morph). 129/131 = 1 reads the sample as 1024-sample frames.
+poke(prm, clip(wt1_frames, 0, 8192), 128);
+poke(prm, clip(wt1_user, 0, 1), 129);
+poke(prm, clip(wt2_frames, 0, 8192), 130);
+poke(prm, clip(wt2_user, 0, 1), 131);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H (or 3=Sq, 4=S&H when 5-shape enum is used)
 prevLfoPhs = lfoPhs;
@@ -3360,7 +3415,7 @@ for (vox = 0; vox < 16; vox += 1) {
 		}
 	}
 	if (voIdle < 0.5) {
-		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick, subh);
+		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitch_st, fine_cents, play_pos, samp_start, samp_end, loop_mode, loop_start, loop_end, loop_xfade, reverse, grain_size, grain_motion, grain_spray, formant, unison_voices, unison_detune, unison_width, glideCoef, atkCoef, decCoef, sus_lvl, relCoef, matkCoef, mdecCoef, msus_lvl, mrelCoef, vel_sens, lfoSig, lfo_pitch, lfo_pos, menv_pitch, menv_pos, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick, subh, wt1, wt2);
 		osc2SumL = osc2SumL + peek(vhist, vhOff + 52);
 		osc2SumR = osc2SumR + peek(vhist, vhOff + 53);
 		subSumL = subSumL + peek(vhist, vhOff + 54);

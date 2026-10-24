@@ -1379,6 +1379,31 @@ def build_patcher(design=None):
                 "text": "buffer~ #0-bspitch @samps 4096",
             }
         },
+        # Factory wavetables (1024 samples per frame). The user table is the sample buffer itself.
+        {
+            "box": {
+                "id": "obj-buf-wt1",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["float", "bang"],
+                "patching_rect": [420.0, 442.0, 200.0, 20.0],
+                "text": "buffer~ #0-bswt1",
+                "varname": "obj-buf-wt1",
+            }
+        },
+        {
+            "box": {
+                "id": "obj-buf-wt2",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["float", "bang"],
+                "patching_rect": [640.0, 442.0, 200.0, 20.0],
+                "text": "buffer~ #0-bswt2",
+                "varname": "obj-buf-wt2",
+            }
+        },
         # Sample file loader wiring (live.drop -> prepend replace -> buffer~ #0-bsamp -> bang -> v8ui)
         {
             "box": {
@@ -1456,8 +1481,8 @@ def build_patcher(design=None):
                 "numinlets": 2,
                 "numoutlets": 1,
                 "outlettype": [""],
-                "patching_rect": [420.0, 450.0, 310.0, 20.0],
-                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch",
+                "patching_rect": [420.0, 450.0, 520.0, 20.0],
+                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2",
             }
         },
         {
@@ -1476,11 +1501,11 @@ def build_patcher(design=None):
             "box": {
                 "id": "obj-route-viz",
                 "maxclass": "newobj",
-                "numinlets": 9,
-                "numoutlets": 9,
-                "outlettype": ["", "", "", "", "", "", "", "", ""],
-                "patching_rect": [160.0, 555.0, 310.0, 20.0],
-                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate",
+                "numinlets": 10,
+                "numoutlets": 10,
+                "outlettype": ["", "", "", "", "", "", "", "", "", ""],
+                "patching_rect": [160.0, 555.0, 360.0, 20.0],
+                "text": "route param load_sample browse drop_set setwidth_cmd tempo dsp_ready samp_rate wt_msg",
             }
         },
         {
@@ -1526,6 +1551,7 @@ def build_patcher(design=None):
         {"patchline": {"source": ["obj-prep-tempo", 0], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-route-viz", 7], "destination": ["obj-prep-samprate", 0]}},
         {"patchline": {"source": ["obj-prep-samprate", 0], "destination": ["obj-gen-in", 1]}},
+        {"patchline": {"source": ["obj-route-viz", 8], "destination": ["obj-gen-in", 1]}},
         {"patchline": {"source": ["obj-prep-setwidth", 0], "destination": ["obj-thisdevice", 0]}},
         {"patchline": {"source": ["obj-thisdevice", 0], "destination": ["obj-msg-ready", 0]}},
         {"patchline": {"source": ["obj-msg-ready", 0], "destination": ["obj-viz", 0]}},

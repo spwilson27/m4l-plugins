@@ -13,8 +13,9 @@ var EQP_NUM_BANDS = 8;
 var EQP_FREQ_MIN = 20.0;
 var EQP_FREQ_MAX = 20000.0;
 
-var EQP_GAIN_MIN = -30.0;
-var EQP_GAIN_MAX = 30.0;
+// Shelves and bells. Cuts and notches ignore gain.
+var EQP_GAIN_MIN = -36.0;
+var EQP_GAIN_MAX = 36.0;
 
 var EQP_Q_MIN = 0.1;
 var EQP_Q_MAX = 40.0;
@@ -27,7 +28,24 @@ var EQP_OUTGAIN_MIN = -24.0;
 var EQP_OUTGAIN_MAX = 24.0;
 
 // Display range ±dB (the vertical scale of the curve).
-var EQP_RANGES = [10, 20, 30];
+var EQP_RANGES = [12, 24, 36];
+
+// Flat tilt: a straight slope of `tiltDb` dB per decade on a log-frequency
+// plot, 0 dB at 1 kHz. +12 is about +12 dB at 10 kHz and -12 dB at 100 Hz.
+// The drawn curve includes it. Output gain does not.
+var EQP_TILT_PIVOT = 1000;
+var EQP_TILT_DB_MAX = 24;
+// First-order low shelves, one per octave. Each shelf's gain is
+// -tiltDb * EQP_TILT_SCALE, and a makeup gain puts the pivot at 0 dB.
+// Scale 0.316 keeps the cascade within about 0.8 dB of a straight line
+// from 40 Hz to 16 kHz at ±12 dB/decade.
+var EQP_TILT_FC = [50, 100, 200, 400, 800, 1600, 3200, 6400, 12800];
+var EQP_TILT_SCALE = 0.316;
+
+// Shelf vs cut. Within 9.5 px of the 0 dB line (the plot is 115 px tall)
+// the cursor places a shelf. Further from the line is a cut.
+var EQP_SHELF_PX = 9.5;
+var EQP_SHELF_BAND = EQP_SHELF_PX / 115;
 
 // Spectrum analyzer resolution (UI FFT of the time-domain ring) and ballistics.
 var EQP_RESOLUTIONS = ["Small", "Medium", "Large", "Huge"];
@@ -62,6 +80,19 @@ var EQP_MODES = [
 
 var EQP_DEFAULT_BAND_FREQS = [60, 125, 250, 500, 1000, 2000, 4000, 8000];
 
+// Device width. The main panel is 4 px + 352 px plot + 4 px. Each pop-out
+// shelf adds its width on the right: the 8-band filter cards, then the
+// spectrum-analyzer inspector.
+var EQP_MAIN_W = 360;
+var EQP_FILTERS_SHELF_W = 248;
+var EQP_ANALYZER_SHELF_W = 148;
+// The sidechain tab is always on the left (Ableton Compressor). Opening the
+// fold grows that column to EQP_SIDECHAIN_FOLD_W, which includes the tab.
+var EQP_SC_TAB_W = 18;
+var EQP_SIDECHAIN_FOLD_W = 128;
+// soloBand param: -1 is off, 0..7 auditions that band through a bandpass.
+var EQP_SOLO_OFF = -1;
+
 // buffer~ #0-eqpluscfg : 64 floats, 8 bands x 8.
 //   base = band * EQP_CFG_STRIDE
 //   +0 sections (0 bypass, 1, 2, 4)
@@ -76,11 +107,11 @@ var EQP_CFG_OFF_B2 = 3;
 var EQP_CFG_OFF_A1 = 4;
 var EQP_CFG_OFF_A2 = 5;
 
-// buffer~ #0-eqplusspec : 8200 frames, 2 channels.
-//   frame 0 ch 0 : write index 0..8191 (next frame the gen will write)
-//   frame 0 ch 1 : DSP heartbeat (advances every 64 samples)
-//   frame 1 ch 0 : sample rate
-//   frames 8 .. 8+8191 : ch 0 pre mono (L+R)*0.5, ch 1 post mono (L+R)*0.5
+// buffer~ #0-eqplusspec : 8200 frames.
+//   ch 0 pre mono, ch 1 post mono (frames 8 .. 8+8191). Header on those
+//   channels: frame 0 ch 0 write index, frame 0 ch 1 heartbeat, frame 1 ch 0 sample rate.
+//   ch 2 metadata: index 0 frameTick, index 1 writeIdx, index 2 samplerate.
+//   ch 3 sidechain reference mono (in3/in4 only). It never reaches out1/out2.
 var EQP_SPEC_RING = 8192;
 var EQP_SPEC_BUF_FRAMES = 8200;
 var EQP_SPEC_WRITE_FRAME = 0;
@@ -334,18 +365,113 @@ function eqpBandResponseDb(band, f, sr, shiftSt, adaptiveQ) {
 }
 
 /**
- * Sum of every band's dB response, plus outGainDb.
+ * First-order low shelf. DC gain is `db`, high frequencies are 0 dB.
+ * b2 and a2 are 0 so it runs as one pole in the tilt cascade.
+ * @param {number} fc
+ * @param {number} db
+ * @param {number} sr
+ * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number}}
+ */
+function eqpTiltShelf1(fc, db, sr) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var A = Math.pow(10, Number(db) / 40);
+    if (!isFinite(A) || A < 1e-6) A = 1e-6;
+    var f = Number(fc);
+    if (!isFinite(f) || f < 1) f = 1;
+    if (f > srN * 0.45) f = srN * 0.45;
+    var K = Math.tan(Math.PI * f / srN);
+    var a0 = 1 + K / A;
+    if (!(Math.abs(a0) > 1e-12)) a0 = 1;
+    return {
+        b0: (1 + K * A) / a0,
+        b1: (-1 + K * A) / a0,
+        b2: 0,
+        a1: (-1 + K / A) / a0,
+        a2: 0
+    };
+}
+
+/**
+ * Flat tilt as octave-spaced first-order low shelves plus a makeup gain
+ * that holds 1 kHz at 0 dB. tilt 0 is unity. The gen runs these same sections.
+ * @param {number} tiltDb
+ * @param {number} sr
+ * @returns {{on: number, gain: number, sections: Array<{b0: number, b1: number, b2: number, a1: number, a2: number}>}}
+ */
+function eqpTiltCoeffs(tiltDb, sr) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var t = Number(tiltDb);
+    var on = 1;
+    if (!isFinite(t) || Math.abs(t) < 0.05) {
+        on = 0;
+        t = 0;
+    } else {
+        t = eqpClamp(t, -EQP_TILT_DB_MAX, EQP_TILT_DB_MAX);
+    }
+    var g = -t * EQP_TILT_SCALE;
+    var sections = [];
+    var i;
+    for (i = 0; i < EQP_TILT_FC.length; i++) sections.push(eqpTiltShelf1(EQP_TILT_FC[i], g, srN));
+    var pivot = 0;
+    if (on) {
+        var w0 = 2 * Math.PI * EQP_TILT_PIVOT / srN;
+        for (i = 0; i < sections.length; i++) {
+            var s = sections[i];
+            var m = eqpBiquadMagSq(s.b0, s.b1, s.b2, s.a1, s.a2, w0);
+            if (!(m > 1e-30)) m = 1e-30;
+            pivot += 10 * Math.log10(m);
+        }
+    }
+    var gain = Math.pow(10, -pivot / 20);
+    if (!isFinite(gain) || gain <= 0) gain = 1;
+    return { on: on, gain: gain, sections: sections };
+}
+
+/**
+ * dB of the flat tilt at f Hz. 0 when the tilt is off.
+ * A positive tilt rises by about `tiltDb` dB per decade through 1 kHz.
+ * @param {number} tiltDb
+ * @param {number} f
+ * @param {number} sr
+ * @returns {number}
+ */
+function eqpTiltResponseDb(tiltDb, f, sr) {
+    var c = eqpTiltCoeffs(tiltDb, sr);
+    if (!c.on) return 0;
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var ff = Number(f);
+    if (!isFinite(ff) || ff < 0) ff = 0;
+    var w = 2 * Math.PI * ff / srN;
+    var db = 20 * Math.log10(c.gain);
+    for (var i = 0; i < c.sections.length; i++) {
+        var s = c.sections[i];
+        var m = eqpBiquadMagSq(s.b0, s.b1, s.b2, s.a1, s.a2, w);
+        if (!(m > 1e-30)) m = 1e-30;
+        db += 10 * Math.log10(m);
+    }
+    return db;
+}
+
+/**
+ * Sum of every band's dB response, plus an optional output-gain offset and the tilt filter.
+ * The face draws the curve with outGainDb 0: output gain is applied after the EQ and
+ * does not move the line.
  * @param {Array<{enabled: number|boolean, mode: number, freq: number, gain: number, q: number}>} bands
  * @param {number} f
  * @param {number} sr
  * @param {number} shiftSt
  * @param {number|boolean} adaptiveQ
  * @param {number} [outGainDb]
+ * @param {number} [tiltDb]
  * @returns {number}
  */
-function eqpTotalResponseDb(bands, f, sr, shiftSt, adaptiveQ, outGainDb) {
+function eqpTotalResponseDb(bands, f, sr, shiftSt, adaptiveQ, outGainDb, tiltDb) {
     var extra = Number(outGainDb);
     var sum = isFinite(extra) ? extra : 0;
+    sum += eqpTiltResponseDb(tiltDb, f, sr);
     var list = bands || [];
     var n = list.length < EQP_NUM_BANDS ? list.length : EQP_NUM_BANDS;
     for (var i = 0; i < n; i++) {
@@ -446,30 +572,74 @@ function eqpRainbowColor(normX) {
 
 /**
  * Drawable gesture zones. normX is left-to-right, normY is bottom-to-top
- * (0 = -Range, 1 = +Range). curveNormY is the composite curve at normX.
- * Bottom edge wins, then a hit on the curve, then the far-left / far-right
- * empty areas, then a bell.
+ * (0 = -Range, 1 = +Range). The bands are fixed to the 0 dB center
+ * (normY 0.5), not the drawn curve, so a low shelf still appears at 0 dB
+ * after a shelf has moved the line. Bottom edge wins (normY < 0.14), then
+ * the center band (|y - 0.5| <= EQP_SHELF_BAND, 9.5 px on the 115 px plot),
+ * then the far-left / far-right empty areas (normX < 0.14 / > 0.86),
+ * then a bell. The third argument is ignored. The fourth is the reach around
+ * 0 dB as a fraction of the plot; omitted, it is EQP_SHELF_BAND.
  * @param {number} normX
  * @param {number} normY
- * @param {number} curveNormY
+ * @param {number} [_curveNormY]
+ * @param {number} [band]
  * @returns {{mode: number, name: string}}
  */
-function eqpClassifyGestureZone(normX, normY, curveNormY) {
+function eqpClassifyGestureZone(normX, normY, _curveNormY, band) {
     var x = Number(normX);
     var y = Number(normY);
-    var curve = Number(curveNormY);
+    var reach = Number(band);
     if (!isFinite(x)) x = 0;
     if (!isFinite(y)) y = 0;
-    if (!isFinite(curve)) curve = 0.5;
-    if (y < 0.12) return { mode: 7, name: "Notch" };
-    if (Math.abs(y - curve) <= 0.14) {
-        if (x < 0.12) return { mode: 5, name: "Low-Shelf" };
-        if (x > 0.88) return { mode: 8, name: "High-Shelf" };
+    if (!isFinite(reach)) reach = EQP_SHELF_BAND;
+    if (y < 0.14) return { mode: 7, name: "Notch" };
+    if (Math.abs(y - 0.5) <= reach + 1e-9) {
+        if (x < 0.14) return { mode: 5, name: "Low-Shelf" };
+        if (x > 0.86) return { mode: 8, name: "High-Shelf" };
         return { mode: 6, name: "Bell" };
     }
-    if (x < 0.12) return { mode: 2, name: "Low-Cut 2" };
-    if (x > 0.88) return { mode: 10, name: "High-Cut 2" };
+    if (x < 0.14) return { mode: 2, name: "Low-Cut 2" };
+    if (x > 0.86) return { mode: 10, name: "High-Cut 2" };
     return { mode: 6, name: "Bell" };
+}
+
+/**
+ * Presentation width: main panel, the always-visible sidechain tab, right-hand
+ * shelves, and the opened sidechain fold. The third argument is optional.
+ * Closed, the tab adds EQP_SC_TAB_W. Open, the fold width replaces the tab
+ * (the tab is the left edge of that column).
+ * @param {number|boolean} showFiltersShelf
+ * @param {number|boolean} showAnalyzerShelf
+ * @param {number|boolean} [showSidechainFold]
+ * @returns {number}
+ */
+function eqpComputeDeviceWidth(showFiltersShelf, showAnalyzerShelf, showSidechainFold) {
+    return EQP_MAIN_W
+        + (showFiltersShelf ? EQP_FILTERS_SHELF_W : 0)
+        + (showAnalyzerShelf ? EQP_ANALYZER_SHELF_W : 0)
+        + (showSidechainFold ? EQP_SIDECHAIN_FOLD_W : EQP_SC_TAB_W);
+}
+
+/**
+ * 2-pole RBJ bandpass (constant 0 dB peak) for the speaker-icon audition.
+ * Pass the band's shifted frequency and effective Q. The gen isolates the
+ * dry input through this biquad while Param soloBand is 0..7; -1 is the
+ * full EQ. Messages: soloB0, soloB1, soloB2, soloA1, soloA2.
+ * b0 = alpha, b1 = 0, b2 = -alpha, a0 = 1 + alpha, a1 = -2*cos(w0), a2 = 1 - alpha.
+ * @param {number} freqHz
+ * @param {number} q
+ * @param {number} sr
+ * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number, sections: number}}
+ */
+function eqpSoloBandCoeffs(freqHz, q, sr) {
+    var srN = Number(sr);
+    if (!isFinite(srN) || srN < 1000) srN = 48000;
+    var fHi = Math.min(EQP_FREQ_MAX, srN * 0.49);
+    var f = eqpClamp(Number(freqHz) || 1000, EQP_FREQ_MIN, fHi);
+    var qq = eqpClamp(Number(q) || EQP_Q_DEFAULT, EQP_Q_MIN, EQP_Q_MAX);
+    var w0 = 2 * Math.PI * f / srN;
+    var alpha = Math.sin(w0) / (2 * qq);
+    return eqpNormalizeBiquad(alpha, 0, -alpha, 1 + alpha, -2 * Math.cos(w0), 1 - alpha, 1);
 }
 
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
@@ -488,6 +658,8 @@ if (nodeModule && nodeModule.exports) {
         EQP_OUTGAIN_MIN: EQP_OUTGAIN_MIN,
         EQP_OUTGAIN_MAX: EQP_OUTGAIN_MAX,
         EQP_RANGES: EQP_RANGES,
+        EQP_SHELF_PX: EQP_SHELF_PX,
+        EQP_SHELF_BAND: EQP_SHELF_BAND,
         EQP_RESOLUTIONS: EQP_RESOLUTIONS,
         EQP_FFT_SIZES: EQP_FFT_SIZES,
         EQP_SPEEDS: EQP_SPEEDS,
@@ -496,6 +668,12 @@ if (nodeModule && nodeModule.exports) {
         EQP_TILT_DEFAULT: EQP_TILT_DEFAULT,
         EQP_MODES: EQP_MODES,
         EQP_DEFAULT_BAND_FREQS: EQP_DEFAULT_BAND_FREQS,
+        EQP_MAIN_W: EQP_MAIN_W,
+        EQP_FILTERS_SHELF_W: EQP_FILTERS_SHELF_W,
+        EQP_ANALYZER_SHELF_W: EQP_ANALYZER_SHELF_W,
+        EQP_SC_TAB_W: EQP_SC_TAB_W,
+        EQP_SIDECHAIN_FOLD_W: EQP_SIDECHAIN_FOLD_W,
+        EQP_SOLO_OFF: EQP_SOLO_OFF,
         EQP_CFG_STRIDE: EQP_CFG_STRIDE,
         EQP_CFG_SIZE: EQP_CFG_SIZE,
         EQP_CFG_OFF_SECTIONS: EQP_CFG_OFF_SECTIONS,
@@ -518,6 +696,8 @@ if (nodeModule && nodeModule.exports) {
         eqpBiquadMagSq: eqpBiquadMagSq,
         eqpBandResponseDb: eqpBandResponseDb,
         eqpTotalResponseDb: eqpTotalResponseDb,
+        eqpTiltCoeffs: eqpTiltCoeffs,
+        eqpTiltResponseDb: eqpTiltResponseDb,
         eqpFreqToNorm: eqpFreqToNorm,
         eqpNormToFreq: eqpNormToFreq,
         eqpDbToNorm: eqpDbToNorm,
@@ -525,6 +705,8 @@ if (nodeModule && nodeModule.exports) {
         eqpQToNorm: eqpQToNorm,
         eqpNormToQ: eqpNormToQ,
         eqpRainbowColor: eqpRainbowColor,
-        eqpClassifyGestureZone: eqpClassifyGestureZone
+        eqpClassifyGestureZone: eqpClassifyGestureZone,
+        eqpComputeDeviceWidth: eqpComputeDeviceWidth,
+        eqpSoloBandCoeffs: eqpSoloBandCoeffs
     };
 }
