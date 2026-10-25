@@ -25,7 +25,7 @@ Red evidence:
 
 Location: src/theme_engine.js, m4lApplyMacros.
 
-When a colour array has a fourth element, alpha is m4lClamp(Number(col[3]), 0, 1). Number(null) is 0, so any token whose alpha passed through the JSON NaN-to-null chain of Bug 1 — or a state file containing an explicit null alpha — comes out fully transparent. Everywhere else in the file a missing alpha defaults to opaque 1.0 (m4lColor, m4lMixColor, m4lMapRgba fallbacks); this one site defaults to invisible instead.
+When a colour array has a fourth element, alpha is m4lClamp(Number(col[3]), 0, 1). Number(null) is 0, so a token with an explicit null alpha (or a NaN alpha that JSON.stringify turned into null) comes out fully transparent. m4lColor and m4lMixColor treat a missing fourth element as opaque 1.0 and pass a present fourth element through without Number(); m4lMapRgba shares the same Number(a) coercion for a present null (`a === undefined ? 1.0 : Number(a)`), so the original "this one site" wording was slightly overstated. The functional defect still stands: a null alpha becoming fully invisible is a bad failure mode for JSON-revived or hand-edited colour tokens, and it contradicts the missing→opaque convention used by m4lColor / m4lMixColor. (Bug 1's NaN→null→0 chain is about satScale/contrast macros, not colour alphas; the two bugs share the JSON null decay pattern but are otherwise independent.)
 
 Red evidence:
 - a null alpha (what JSON produces from NaN) must fall back to opaque 1.0 (0 !== 1)
@@ -53,3 +53,13 @@ Red evidence:
 
 - node tests/test_theme_editor_bugs.js → exit 1, 0 passed / 6 failed (red, this pass)
 - node tests/test_theme_editor.js → exit 0, all 9 checks PASS (baseline untouched)
+
+## Pass 2 review (kept all three)
+
+Reviewed against source on tip 3cb1c01. All three claims are real functional/state bugs; none dropped. No production/src fixes in this pass.
+
+- Bug 1 KEEP — satScale/contrast store `Number(x)` with no NaN fallback while hueShift/brightness use `Number(x) || 0` (m4lSetThemeState ~3482–3483). JSON round-trip NaN→null→0 permanently desaturates themed devices.
+- Bug 2 KEEP — m4lApplyMacros null alpha → 0 is a real failure mode. Softened the "one site" consistency claim above (m4lMapRgba also Number()-coerces a present null); the missing→opaque convention of m4lColor/m4lMixColor still makes this a bug. Bug 1 linkage is about macros, not colour alphas.
+- Bug 3 KEEP — POST /api/state and sync_state assign `currentState` wholesale; partial bodies drop abletonUi/customPresets/sibling macros. Confirmed in theme_editor_node.js.
+
+Red suite re-run on unfixed code: `node tests/test_theme_editor_bugs.js` → 0 passed, 6 failed, exit 1 (expected).
