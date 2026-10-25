@@ -2,7 +2,20 @@
 
 Branch: bugsweep/reciprocator-pass1
 Worktree: /private/tmp/bugsweep/reciprocator
-Scope: pass 3 production fixes for the four kept reds. Host gate green.
+Scope: pass 4 final review — APPROVED. No follow-up code changes. Host gate green.
+
+## Pass 4 review (APPROVED)
+
+Reviewed production diffs vs the four kept reds. All four fixes are minimal and correct; tests were strengthened (not weakened). No adjustments.
+
+Host gate (worktree, tip da2e876 before this note): `npm run -s typecheck && python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js` → green (`test_reciprocator: ok`, `devices/Reciprocator.amxd` rebuilt).
+
+| Bug | Verdict | Why |
+| --- | --- | --- |
+| 1 Gate drag below -66 | APPROVED | `ampToVisual01` / `visual01ToDb` now span -72..0; keep-value asserts for set_gate(-72)/(-70) pass. Ceiling still drawn through the same inverse; -12 keep-value intact. |
+| 2 Lookahead at 192 kHz | APPROVED | `Delay lookL/R(2048)` and `lookSampsH` clip 1920 hold 10 ms at 192 kHz; section 9 parses both ≥ 1920. |
+| 3 Detect 0% dual-mono | APPROVED | `linkAmt = 0.0 + 1.0 * detNow` — base 0, base+slope 1; matches Detect help. |
+| 4 gateMix fades Gate with Amount | APPROVED | `gateMix` removed; `effGateL/R = gateL/R` always. Mirror Amount-0 contract pinned; gen has no Amount fade. |
 
 ## Pass 2 review (kept 4 / dropped 0)
 
@@ -18,7 +31,7 @@ All four pass-1 claims are real functional / docs / mirror mismatches. No drops.
 ## Pass 3 fixes
 
 Host gate (worktree): `npm install && npm run -s typecheck && python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js` → green (`test_reciprocator: ok`, `devices/Reciprocator.amxd` rebuilt).
-Commit SHA: (pending — filled after git commit on this branch).
+Commit SHA: da2e87683e583844be0680fb2f85ad37d1f86b47.
 
 ### Bug 1: Gate scope drag below -66 dB
 
