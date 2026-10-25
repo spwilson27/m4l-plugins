@@ -1,53 +1,49 @@
-# Bug sweep — Transient Split (transplit), Pass 2 (review reds — kept)
+# Bug sweep — Transient Split (transplit), Pass 3 (fix)
 
 Worktree: `/tmp/bugsweep/transplit` · Branch: `bugsweep/transplit-pass1` · Base: `66fea67`
-Pass 2: kept 1 / dropped 0. Bug 1 confirmed real (GenExpr cache omits SR; bin-1 probe never fires; JS recomputes every frame). Red test left as-is; still fails on unfixed code.
+Pass 3: fixed 1 / remaining 0. Bug 1 fixed — GenExpr tilt-gain cache now keys on sample rate (`cgSr`), mirroring `twSr`. Host gate green.
 Scope: `devices/Transient Split.amxd` + `.adg`, `src/transplit_*`, `src/spectral_*`,
 `scripts/spectral_common.py`, `scripts/build_transplit.py`, and the transplit/spectral tests.
-Method: read AGENTS.md sections 22-23 and the sources; ran the four Node suites for a green
-baseline; compared the JS reference (`src/transplit_config.js`) against its GenExpr mirror
-(`src/transplit_core.genexpr`) line for line; audited the rack template
-(`src/spectral_split_rack_main.genexpr`), the ring helpers (`src/spectral_split_rack.genexpr`),
-the link/election module (`src/spectral_link.js`), the deferred-DSP loader
-(`src/spectral_dsp.js`), the face (`src/transplit_ui.js`) and the build constants.
+Method: applied the pass-2 fix direction in `ts_masks`; re-ran the host gate until green.
 
-## Bug 1 — Tilt gains go stale on a sample-rate change (GenExpr only)
+## Bug 1 — Tilt gains go stale on a sample-rate change (GenExpr only) — FIXED
 
 **Where:** `src/transplit_core.genexpr`, `ts_masks()` — the per-bin tilt-gain cache in
-`tw` channel 2, keyed on the function-local History `cgTl / cgMd / cgN / cgW`.
+`tw` channel 2, keyed on the function-local History `cgTl / cgMd / cgN / cgW` (and now `cgSr`).
 
-**Mechanism:** The gains are rebuilt only when tilt, tilt mode, FFT size `n`, or `cgW`
-changes, where `cgW` is compared against `tw.peek(1, md)` — the tilt weight at **bin 1**,
+**Mechanism:** The gains were rebuilt only when tilt, tilt mode, FFT size `n`, or `cgW`
+changed, where `cgW` is compared against `tw.peek(1, md)` — the tilt weight at **bin 1**,
 used as a cheap probe for "the tilt table changed". But bin 1 is in the clipped region of
 the table for every common configuration: its frequency `max(sr/n, 20)` is below 100 Hz
 for sample rates 44.1-96 kHz at `n >= 1024`, so
 `u = clip(log(f/100)/log(100), 0, 1) = 0` and the weight is pinned at -1 (Standard) /
-+1 (Contour) regardless of sample rate. A sample-rate change rebuilds the tilt *table*
++1 (Contour) regardless of sample rate. A sample-rate change rebuilt the tilt *table*
 (the ctl hook in the same file tracks `twSr` and re-runs `ts_tilttab` for exactly this
-case) but does **not** invalidate the cached *gains*, which were computed from the old
-table. The wrong gains persist until tilt, mode or size happens to change.
+case) but did **not** invalidate the cached *gains*, which were computed from the old
+table. The wrong gains persisted until tilt, mode or size happened to change.
 
 **Effect:** With Tilt non-zero, switching Live's sample rate (e.g. 44.1 <-> 48 <-> 96 kHz)
-leaves the Transients/Tones tilt gains computed for the previous rate indefinitely.
+left the Transients/Tones tilt gains computed for the previous rate indefinitely.
 Worked example (n = 1024, bin 64, Tilt = +1, Standard): weight 0.440 at 44.1 kHz vs
 0.778 at 96 kHz, i.e. gain 1.837 vs the correct 2.930. The JS reference
 (`cfg.tsMasks`) recomputes `exp(tl * 12 * w[k])` from the fresh table every frame, so
-this is also a JS-vs-GenExpr mirror divergence. The same cache-key pattern should be
-checked in the sibling split cores during their passes (not verified here).
+this was also a JS-vs-GenExpr mirror divergence.
 
-**Red test:** `tests/test_transplit.js`, section 2, "tilt gains follow the sample rate"
+**Red test (now green):** `tests/test_transplit.js`, section 2, "tilt gains follow the sample rate"
 (drives `ts_tilttab` at 44100, one `ts_masks` frame, `ts_tilttab` at 96000 — exactly what
 the ctl hook does on a rate change — then asserts `tw` channel 2 at bin 64).
 
-```
-$ node tests/test_transplit.js
-AssertionError [ERR_ASSERTION]: tilt gains follow the sample rate (bin 64 gain 1.8373469132695566, want 2.9301560515835208 for the 96 kHz table)
-    at Object.<anonymous> (/private/tmp/bugsweep/transplit/tests/test_transplit.js:415:16)
-```
+**Fix applied (pass 3):** Added `History cgSr(0)` alongside the other `ts_masks` cache-
+history vars, and included `cgSr != sr` in the rebuild condition with `cgSr = sr` inside
+the rebuild block — mirroring the existing `twSr` pattern in the ctl hook. Keying on `sr`
+invalidates the gains when the sample rate changes even though bin 1 stays clipped.
 
-**Fix direction (pass 3, not applied):** include the sample rate (or a mid-band probe bin
-whose weight actually moves with `sr`) in the cache key — e.g. a `cgSr` History compared
-against `sr`, mirroring the `twSr` tracking the ctl hook already does for the table.
+Touchpoints:
+- `src/transplit_core.genexpr` — `History cgSr(0)` next to `cgW` in `ts_masks`
+- `src/transplit_core.genexpr` — rebuild condition `... || cgSr != sr`; assign `cgSr = sr` in the rebuild block
+- `tests/test_transplit.js:415` — assertion now passes (test left unchanged)
+
+Commit SHA: *(pending — recorded in the pass-3 commit that follows)*
 
 ## Examined, no credible bug found
 
@@ -86,11 +82,12 @@ against `sr`, mirroring the `twSr` tracking the ctl hook already does for the ta
 ## Commands / results
 
 ```
-node tests/test_transplit.js          # RED: AssertionError above (new test, line 415)
+npm run -s typecheck && python3 scripts/build_transplit.py && node tests/test_transplit.js
+# GREEN: All Transient Split tests passed (incl. "tilt gains follow the sample rate")
 node tests/spectral_link_tests.js      # passed
 node tests/test_spectral_rack.js       # passed
 node tests/test_spectral_dsp.js        # passed
 ```
 
-Baseline before the new test: all four suites passed. Only `tests/test_transplit.js`
-(one added block) and this file are committed; no source fixes in pass 1.
+Pass 1 committed the red test + this file; pass 2 confirmed the bug; pass 3 applied the
+`cgSr` cache-key fix in `src/transplit_core.genexpr` and turned the host gate green.
