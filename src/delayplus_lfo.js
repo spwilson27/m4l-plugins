@@ -156,13 +156,13 @@ function paint() {
         mg.set_source_rgba(col[0], col[1], col[2], dim);
         var prevStep = -1, started = false;
         for (k = 0; k <= N; k++) {
-            var px = k / N * w, ph = k / N * cyc - off;
+            var px = k / N * w, ph = k / N * cyc + off;
             var v = lfoWave(shape, ph);
             var py = lfoY(v, 1, wh, a2);
             if (shape === 4 || shape === 5 || shape === 2 || shape === 3) {
                 // draw vertical edges for discontinuities
                 if (started) {
-                    var pv = lfoWave(shape, (k - 1) / N * cyc - off);
+                    var pv = lfoWave(shape, (k - 1) / N * cyc + off);
                     if (Math.abs(v - pv) > 0.6) mg.line_to(px, lfoY(pv, 1, wh, a2));
                 }
             }
