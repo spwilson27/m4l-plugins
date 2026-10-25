@@ -1,8 +1,16 @@
-# XO Sample Map — Pass 1 + Pass 2 + Pass 3 bug sweep
+# XO Sample Map — Pass 1–4 bug sweep
 
 Branch: `bugsweep/xo-map-pass1` · Worktree: `/private/tmp/bugsweep/xo-map`
 Scope: `src/xo_node_engine.js`, `src/xo_strip_ui.js`, `src/xo_search.js`, `src/xo_stretch.js`,
-`scripts/build_xo_map.py`, `tests/test_xo_*.js`. One credible bug found (Pass 1); Pass 2 kept it; Pass 3 fixed it.
+`scripts/build_xo_map.py`, `tests/test_xo_*.js`. One credible bug found (Pass 1); Pass 2 kept it; Pass 3 fixed it; Pass 4 approved.
+
+## Pass 4 — review (APPROVED)
+
+- **Bug 1:** APPROVED. Fix is minimal and correct: `captureSnapshot` / `applySnapshot` now cover all seven
+  playback fields that `recallSavedEntry` assigns (`pitchSt`, `decayMs`, `gainDb`, `reversePlayback`,
+  `speedPct`, `grainMs`, `stretchMode`) with `!== undefined` defaults `0` / `100` / `45` / `1` matching recall.
+  Red test left unchanged and still isolates the four previously-missing fields. No drive-by refactors;
+  no test weakening. Host gate re-run green on tip `5ddf91c` (`npm run -s typecheck && python3 scripts/build_xo_map.py && node tests/test_xo_map.js`, including `OK: undo after recall restores all playback settings`). No production code changes in Pass 4.
 
 ## Pass 3 — fixed
 
@@ -14,7 +22,7 @@ Scope: `src/xo_node_engine.js`, `src/xo_strip_ui.js`, `src/xo_search.js`, `src/x
 - Red test left unchanged: `tests/test_xo_map.js` block "Undo after recalling a saved sample restores ALL playback settings".
 - **Host gate green:** `npm run -s typecheck && python3 scripts/build_xo_map.py && node tests/test_xo_map.js`
   (includes `OK: undo after recall restores all playback settings`). Rebuilt `devices/XO Sample Map.amxd`.
-- Commit SHA: pending (this commit).
+- Commit SHA: `5ddf91c`.
 
 ## Bug 1 — Undo after recalling a saved sample only restores 3 of the 7 playback settings it changed (was KEEP; fixed in Pass 3)
 
