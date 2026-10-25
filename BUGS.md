@@ -1,4 +1,4 @@
-# Delay+ / Delay+ End — Bug Sweep Pass 1 (bugs + red tests only, no fixes)
+# Delay+ / Delay+ End — Bug Sweep (Pass 1 findings, Pass 2 review)
 
 Worktree: `/tmp/bugsweep/delayplus` · Branch: `bugsweep/delayplus-pass1` · Base: `66fea67`
 Scope: `devices/Delay+.amxd` + `devices/Delay+ End.amxd` — `src/delayplus_config.js`,
@@ -10,6 +10,19 @@ Scope: `devices/Delay+.amxd` + `devices/Delay+ End.amxd` — `src/delayplus_conf
 `scripts/run_delayplus_audio_tests.py` (case list), `tests/test_delayplus.js`.
 Max / Live were NOT run in this pass (the Node gate below is the only run; the two bugs
 are in code paths the Max harness cases cannot see, see Bug 1).
+
+## Pass 2 review — kept 2 / dropped 0
+
+Re-read `delayplus_end.genexpr` (K calib), `delayplus_start.genexpr` (`pR`), and
+`delayplus_lfo.js` `paint()`. Host gate: `node tests/test_delayplus.js` → 37 passed,
+2 failed (only the two reds below). No production/src edits in this pass.
+
+- **Kept Bug 1** — real DSP: comment requires the same K twice in a row; `kCand` is
+  cleared only on `!alive`, so a failed window leaves a banked candidate and a later
+  single accept adopts a wrong K (dry offset + feedback B).
+- **Kept Bug 2** — real UI: gen advances R by Phase (`pR = wrap(lfo + phase/360)`);
+  paint subtracts (`ph = … - off`). At Phase 90 the red test gets the exact sign-flipped
+  y (73.4 vs 8.6); live dots plot real `LFO_R`, so they leave the drawn curve.
 
 ## Bug 1 — End K calibration: a candidate does not have to be seen twice IN A ROW
 
