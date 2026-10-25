@@ -116,3 +116,11 @@ Date: 2026-10-25. Both kept reds fixed in production; host gate green. Tests unc
 - **Fixed Bug 2** (End K calib): In `src/reverbplus_end.genexpr`, the acceptance `if` inside `if (cN >= 8192)` gained `else { kCand = 1e9; }` so a failed window clears the pending candidate (same shape as Delay+ End).
 - Host gate: `python3 scripts/build_reverbplus.py` OK; `node tests/test_reverbplus.js` → 31 passed, 0 failed; `node tests/test_reverbplus_face.js` → 20 passed.
 
+## Pass 4 review
+
+Date: 2026-10-25. Final review of Pass-3 fixes against production diffs, red-test bodies, Delay+ End pattern, and a fresh host gate. No production adjustments.
+
+- **Approved Bug 1** (`clear_ir` resurrection): `outlet(4, "")` after `rpLastDropped = ""` in `clear_ir()` is minimal and correct; red test still asserts Live-replay must not reload (behavioral, not weakened).
+- **Approved Bug 2** (End K calib): `else { kCand = 1e9; }` matches Delay+ End acceptance-window shape exactly; structural red still requires the clear inside the window.
+- Host gate: `npm run -s typecheck` OK (reverbplus-* configs included); `python3 scripts/build_reverbplus.py` OK; `node tests/test_reverbplus.js` → 31 passed, 0 failed; `node tests/test_reverbplus_face.js` → 20 passed. Tests unchanged. No merge / no worktree delete.
+
