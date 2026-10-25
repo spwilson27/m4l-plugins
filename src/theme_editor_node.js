@@ -327,11 +327,32 @@ function buildWebHtmlPayload() {
     }
 }
 
+function mergeThemeState(prev, patch) {
+    if (!patch || typeof patch !== "object" || Array.isArray(patch)) return prev;
+    const next = Object.assign({}, prev, patch);
+    if (patch.macros && typeof patch.macros === "object") {
+        next.macros = Object.assign({}, prev.macros || {}, patch.macros);
+    }
+    if (patch.tokens && typeof patch.tokens === "object") {
+        next.tokens = Object.assign({}, prev.tokens || {}, patch.tokens);
+    }
+    if (patch.deviceOverrides && typeof patch.deviceOverrides === "object") {
+        next.deviceOverrides = Object.assign({}, prev.deviceOverrides || {}, patch.deviceOverrides);
+    }
+    if (patch.customPresets && typeof patch.customPresets === "object") {
+        next.customPresets = Object.assign({}, prev.customPresets || {}, patch.customPresets);
+    }
+    if (patch.abletonUi && typeof patch.abletonUi === "object") {
+        next.abletonUi = Object.assign({}, prev.abletonUi || {}, patch.abletonUi);
+    }
+    return next;
+}
+
 Max.addHandler("sync_state", (jsonStr) => {
     try {
         const parsed = JSON.parse(String(jsonStr || "{}"));
         if (parsed && typeof parsed === "object") {
-            currentState = parsed;
+            currentState = mergeThemeState(currentState, parsed);
             saveStateToDisk(currentState);
             broadcastSse(currentState);
         }
@@ -408,7 +429,8 @@ function createThemeServer() {
             req.on("data", (chunk) => { body += chunk; });
             req.on("end", () => {
                 try {
-                    const next = JSON.parse(body || "{}");
+                    const patch = JSON.parse(body || "{}");
+                    const next = mergeThemeState(currentState, patch);
                     next.version = (Number(currentState.version) || 0) + 1;
                     currentState = next;
                     saveStateToDisk(currentState);
