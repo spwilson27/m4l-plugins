@@ -18,6 +18,15 @@ Host gate (Pass 2): `npm run -s typecheck && python3 scripts/build_harmsplit.py 
 - Red `tests/test_harmsplit_maxh.js` kept as-is; now green (`All Harmonic Split Max Harm rounding tests passed`, maxMaskDiff < 1e-9 for 9 / 9.4 / 9.5 / 9.6 / 10 / 2.5 / 3.5).
 - Host gate (Pass 3): `npm run -s typecheck && python3 scripts/build_harmsplit.py && node tests/test_harmsplit.js && node tests/test_harmsplit_maxh.js` green. Rebuild wrote `devices/Harmonic Split.amxd` / `.adg`.
 
+## Pass 4 review — APPROVED
+
+Independent re-review of `git log main..HEAD` / `git diff main...HEAD` (production/src/build focus) and re-ran the host gate on tip `a431e7f`. No production adjustments needed.
+
+- **BUG-1 APPROVED** — one-line `hsFrame` fix in `src/harmsplit_config.js:261` is minimal and correct: `hmx = p.hmaxp < 0.5 ? HS_MAXH : hsClip(Math.round(p.hmaxp), 1, HS_MAXH)` matches ctl (`harmsplit_core.genexpr:644` `clip(round(hmaxp), 1, 404)`) and UI (`hsMaxHarm` / `harmsplit_ui.js:341`). Device ctl/UI left alone (device rounding is source of truth). Red `tests/test_harmsplit_maxh.js` kept as-is (not weakened). Diff touches only BUGS.md, device binaries, that one config line, and the new red test — no drive-by refactors; `spectral_split_lib.genexpr` / rack template untouched.
+- Adjustments: none.
+
+Host gate (Pass 4, re-run on tip `a431e7f`): `npm run -s typecheck && python3 scripts/build_harmsplit.py && node tests/test_harmsplit.js && node tests/test_harmsplit_maxh.js` green.
+
 ## BUG-1 — Fractional Max Harm: JS reference mirror does not round, device and UI do (RED TEST)
 
 Severity: real mirror/device divergence; affects any fractional Max Harm value with fraction >= .5 (e.g. 9.5, 9.6, 2.5, 3.5), reachable because Max Harm is a float control (0..404, integer unit style) and fractional values arrive via automation / typed entry.
