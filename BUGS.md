@@ -2,6 +2,8 @@
 
 Host gate green after PASS 3: `npm run -s typecheck && python3 scripts/build_cepstra.py && node tests/test_cepstra.js` → 1627 checks; `node tests/test_cepstra_bugsweep.js` → 15 checks.
 
+**Fix commit:** `750abf8` — `fix(cepstra): PASS-3 — clear stale f0 + ---cepscope isolation`.
+
 ## PASS-3 outcome
 
 **Fixed 2 / kept from PASS-2.**
