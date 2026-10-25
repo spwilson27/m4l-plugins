@@ -205,6 +205,8 @@ if (cN >= 8192) {
 			calOk = 1;
 		}
 		kCand = cand;
+	} else {
+		kCand = 1e9;
 	}
 	cN = 0;
 	cEx = 0;

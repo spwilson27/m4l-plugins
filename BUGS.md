@@ -107,3 +107,12 @@ Date: 2026-10-25. Reviewed both Pass-1 reds against current `src/`; host gate re
 - **Kept Bug 2** (End K calib): confirmed. `kCand` is cleared only in the `!alive` block, not when an acceptance window fails. Structural red stays; FAIL as expected.
 - **Dropped:** none.
 - Host gate: `python3 scripts/build_reverbplus.py` OK; `node tests/test_reverbplus.js` → 29 passed, 2 failed (exactly the two reds); `node tests/test_reverbplus_face.js` → 20 passed.
+
+## Pass 3 fix
+
+Date: 2026-10-25. Both kept reds fixed in production; host gate green. Tests unchanged.
+
+- **Fixed Bug 1** (`clear_ir` resurrection): In `src/reverbplus_engine.js` `clear_ir()`, after `rpLastDropped = ""`, added `outlet(4, "")` so the IR File `live.drop` param is cleared and Live cannot replay the path on reload.
+- **Fixed Bug 2** (End K calib): In `src/reverbplus_end.genexpr`, the acceptance `if` inside `if (cN >= 8192)` gained `else { kCand = 1e9; }` so a failed window clears the pending candidate (same shape as Delay+ End).
+- Host gate: `python3 scripts/build_reverbplus.py` OK; `node tests/test_reverbplus.js` → 31 passed, 0 failed; `node tests/test_reverbplus_face.js` → 20 passed.
+
