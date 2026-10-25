@@ -60,7 +60,7 @@ assert.strictEqual(cfg.computeSieveGain(0, 1), 1.0, "Odd sieve keeps band 0");
 assert.ok(cfg.computeSieveGain(1, 1) < 0.1, "Odd sieve attenuates band 1");
 assert.ok(cfg.computeSieveGain(0, 2) < 0.1, "Even sieve attenuates band 0");
 assert.strictEqual(cfg.computeSieveGain(1, 2), 1.0, "Even sieve keeps band 1");
-assert.strictEqual(cfg.computeSieveGain(0, 3), 1.15, "Sparse sieve boosts every 3rd band (0) to 1.15");
+assert.strictEqual(cfg.computeSieveGain(0, 3), 1.18, "Sparse sieve boosts every 3rd band (0) to 1.18");
 assert.ok(cfg.computeSieveGain(1, 3) < 0.1, "Sparse sieve attenuates non-3rd band (1)");
 assert.ok(cfg.computeSieveGain(15, 4) > cfg.computeSieveGain(0, 4) * 3.0, "Rising sieve emphasizes upper bands over lower bands");
 // Verify max tilt is doubled again (2^6 = 64x at +100% vs 2^-6 = 1/64x at -100%)

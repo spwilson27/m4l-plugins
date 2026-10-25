@@ -259,7 +259,7 @@ voice_osc(wtBuf, oscSt, wgt, scBits, bandIdx, rawAmp, rawMidi, pitchSt, stretchV
 			hasWt = (abs(s00) + abs(s01) + abs(s10) > 0.000001) ? 1 : 0;
 			if (hasWt == 0) {
 				pSin = sin(wPh * 6.28318530718);
-				pTri = 1.0 - 4.0 * abs(wrap(wPh - 0.25, 0, 1) - 0.5);
+				pTri = 1.0 - 4.0 * abs(wrap(wPh + 0.25, 0, 1) - 0.5);
 				pSaw = 1.0 - 2.0 * wPh;
 				pSqr = (wPh < 0.5) ? 0.9 : -0.9;
 				sig = (fScaled <= 1.0) ? mix(pSin, pTri, fScaled) : ((fScaled <= 2.0) ? mix(pTri, pSaw, fScaled - 1.0) : mix(pSaw, pSqr, fScaled - 2.0));

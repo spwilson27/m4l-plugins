@@ -94,7 +94,7 @@ function quantizeMidiToScale(rawMidi, scaleMask, snap01) {
     return rawMidi + (bestNote - rawMidi) * s;
 }
 
-// Per-band Partial Sieve gain multiplier matching sieve_gain() in src/percipitator_core.genexpr:
+// Per-band Partial Sieve gain multiplier matching sieve_one() in src/percipitator_core.genexpr:
 //   0 (All):  all 16 bands active
 //   1 (Odd):  odd-indexed bands attenuated, even-indexed bands full (hollow clarinet/formant)
 //   2 (Even): even-indexed bands attenuated, odd-indexed bands full
@@ -104,10 +104,10 @@ function computeSieveGain(bandIndex, sieveMode) {
     const m = Math.round(clamp(sieveMode, 0, 4));
     const idx = bandIndex | 0;
     if (m === 0) return 1.0;
-    if (m === 1) return (idx % 2 === 0) ? 1.0 : 0.08;
-    if (m === 2) return (idx % 2 === 1) ? 1.0 : 0.08;
-    if (m === 3) return (idx % 3 === 0) ? 1.15 : 0.04;
-    return 0.25 + 0.95 * (idx / Math.max(1, NUM_BANDS - 1));
+    if (m === 1) return (idx % 2 === 0) ? 1.0 : 0.06;
+    if (m === 2) return (idx % 2 === 1) ? 1.0 : 0.06;
+    if (m === 3) return (idx % 3 === 0) ? 1.18 : 0.03;
+    return 0.22 + 0.98 * (idx / Math.max(1, NUM_BANDS - 1));
 }
 
 // Per-band Spectral Tilt gain multiplier (tiltBipolar in [-1..+1]):
