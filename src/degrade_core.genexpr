@@ -55,7 +55,7 @@ ulaw_compand(x, qSteps) {
 	ax = clip(abs(x), 0.0, 1.0);
 	mu = 255.0;
 	comp = sgn * (log(1.0 + mu * ax) / 5.54517744448);
-	qComp = quant_steps(comp, qSteps);
+	qComp = round(comp * qSteps) / qSteps;
 	sgnQ = (qComp >= 0) ? 1.0 : -1.0;
 	expVal = sgnQ * ((pow(256.0, abs(qComp)) - 1.0) / mu);
 	return clip(expVal, -1.0, 1.0);
@@ -70,7 +70,7 @@ alaw_compand(x, qSteps) {
 	axScaled = max(aVal * ax, 0.0001);
 	compHi = sgn * (1.0 + log(axScaled)) / lnA;
 	comp = (ax < 0.01141552511) ? compLo : compHi;
-	qComp = quant_steps(comp, qSteps);
+	qComp = round(comp * qSteps) / qSteps;
 	sgnQ = (qComp >= 0) ? 1.0 : -1.0;
 	aq = abs(qComp);
 	expLo = (aq * lnA) / aVal;
@@ -434,8 +434,8 @@ if (outGainDbS != cGainLat) {
 outGainSlew = cOutLin;
 if (wetSlew != cWetLat) {
 	cWetLat = wetSlew;
-	cWetG = clip(wetSlew, 0.0, 1.0);
-	cDryG = 1.0 - cWetG;
+	cWetG = sin(clip(wetSlew, 0.0, 1.0) * 1.57079632679);
+	cDryG = cos(asin(cWetG));
 }
 
 // Decode order_code into the 5 slot ids only when it changes. History orderLatch starts at 1234,
@@ -1207,23 +1207,24 @@ for (slot = 0; slot < 5; slot += 1) {
 } // end if (runDsp > 0)
 
 // Unity-Preserving Dry/Wet Mix & Output Trim:
-//   - When `runDsp > 0`, soft-clip the degraded wet signal through `tanh(sig * outGainSlew)`.
-//   - When `runDsp == 0` (all stages off/neutral), pass linear `in * outGainSlew` so default settings
-//     at Mix = 50% cause zero harmonic distortion and exact 0.0 dB unity gain!
+//   - When `runDsp > 0`, soft-clip the degraded wet through `tanh(sig)` (no master gain here).
+//   - When `runDsp == 0` (all stages off/neutral), pass linear `in` so default settings at Mix = 50%
+//     cause zero harmonic distortion and exact 0.0 dB unity gain (with out_gain at 0 dB).
+//   - Apply `outGainSlew` on the summed dry+wet outs so Output trims the full mix, including Mix = 0%.
 wetOutL = 0.0;
 wetOutR = 0.0;
 if (isAudioActive > 0) {
 	if (runDsp > 0) {
-		wetOutL = tanh(sigL * outGainSlew);
-		wetOutR = tanh(sigR * outGainSlew);
+		wetOutL = tanh(sigL);
+		wetOutR = tanh(sigR);
 	} else {
-		wetOutL = in1 * outGainSlew;
-		wetOutR = in2 * outGainSlew;
+		wetOutL = in1;
+		wetOutR = in2;
 	}
 }
 
-outL = in1 * cDryG + wetOutL * cWetG;
-outR = in2 * cDryG + wetOutR * cWetG;
+outL = (in1 * cDryG + wetOutL * cWetG) * outGainSlew;
+outR = (in2 * cDryG + wetOutR * cWetG) * outGainSlew;
 
 // Update `#0-degscope` every 64 samples. Slot 7 advances even when runDsp is 0 (silence), so
 // dspConfirm can tell that the deferred gen~ is in the DSP chain.

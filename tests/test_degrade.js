@@ -425,4 +425,103 @@ redraws = 0;
 sandbox.set_bits(3);
 assert.strictEqual(redraws, 0, "repeating the same parameter must not redraw");
 
+
+// ============================================================================
+// 5. BUGSWEEP PASS 1 — red tests for confirmed bugs (see BUGS.md at repo root)
+// Each test below FAILS on the current code. No production code was changed.
+// ============================================================================
+
+// --- Bug D1: gen telecom companders quantize 2x coarser than the JS mirror ---
+// src/degrade_config.js processTelecomSample quantizes the companded value
+// with round(comp * qSteps) / qSteps, and the gen cache computes the identical
+// qSteps (cTelQ = max(floor(64 - teleLine*56 + 0.5), 4)). But the gen helpers
+// ulaw_compand / alaw_compand route through quant_steps(), which quantizes
+// with round(x * steps/2) / (steps/2) — half the multiplier — so the shipped
+// DSP staircase is twice as coarse as the mirror at every Line value. (The
+// GSM branch at the quant_steps(tanh(...), gsmGrid) call site has the same
+// halving, plus its own grid drift: gen max(3, 22 - line*18) vs JS
+// max(3, 24 - amt*20).) The BIT caller is the only correct quant_steps user:
+// there steps = pow(2, bits) is a total level count across [-1, 1], matching
+// the JS bit quantizer. Execute the actual gen helper functions (trivially
+// transpiled: GenExpr math names -> Math.*) and compare against the mirror.
+function extractGenFn(signature) {
+    const at = gen.indexOf(signature);
+    assert.ok(at >= 0, `missing gen function ${signature}`);
+    const end = gen.indexOf("\n}", at);
+    assert.ok(end > at, `unterminated gen function ${signature}`);
+    return "function " + gen.slice(at, end + 2);
+}
+const genPrelude = "const max=Math.max, min=Math.min, round=Math.round, floor=Math.floor, abs=Math.abs, log=Math.log, exp=Math.exp, pow=Math.pow; const clip=(v,a,b)=>Math.max(a,Math.min(b,v));\n";
+const genFns = new Function(
+    genPrelude +
+    extractGenFn("quant_steps(x, steps) {") +
+    extractGenFn("ulaw_compand(x, qSteps) {") +
+    extractGenFn("alaw_compand(x, qSteps) {") +
+    "; return { quant_steps, ulaw_compand, alaw_compand };"
+)();
+function jsUlawExpand(x, qSteps) {
+    const mu = 255.0;
+    const sgn = x >= 0 ? 1.0 : -1.0;
+    const ax = Math.min(Math.abs(x), 1.0);
+    const comp = sgn * (Math.log(1.0 + mu * ax) / Math.log(1.0 + mu));
+    const qComp = Math.round(comp * qSteps) / qSteps;
+    return (qComp >= 0 ? 1.0 : -1.0) * ((Math.pow(1.0 + mu, Math.abs(qComp)) - 1.0) / mu);
+}
+function jsAlawExpand(x, qSteps) {
+    const A = 87.6;
+    const lnA = 1.0 + Math.log(A);
+    const sgn = x >= 0 ? 1.0 : -1.0;
+    const ax = Math.min(Math.abs(x), 1.0);
+    const comp = ax < (1.0 / A) ? sgn * (A * ax) / lnA : sgn * (1.0 + Math.log(A * ax)) / lnA;
+    const qComp = Math.round(comp * qSteps) / qSteps;
+    const aq = Math.abs(qComp);
+    return (qComp >= 0 ? 1.0 : -1.0) * (aq < (1.0 / lnA) ? (aq * lnA) / A : Math.exp(aq * lnA - 1.0) / A);
+}
+for (const qSteps of [64, 32, 8]) {
+    for (const x of [0.42, -0.42, 0.1, 0.83]) {
+        assert.ok(
+            Math.abs(genFns.ulaw_compand(x, qSteps) - jsUlawExpand(x, qSteps)) < 1e-6,
+            `BUG D1: gen u-Law compand must match the JS mirror quantization step (qSteps=${qSteps}, x=${x}): gen=${genFns.ulaw_compand(x, qSteps)} mirror=${jsUlawExpand(x, qSteps)}`
+        );
+        assert.ok(
+            Math.abs(genFns.alaw_compand(x, qSteps) - jsAlawExpand(x, qSteps)) < 1e-6,
+            `BUG D1: gen A-Law compand must match the JS mirror quantization step (qSteps=${qSteps}, x=${x}): gen=${genFns.alaw_compand(x, qSteps)} mirror=${jsAlawExpand(x, qSteps)}`
+        );
+    }
+}
+
+// --- Bug D2: Master Output gain never reaches the dry path ---
+// build_degrade.py documents out_gain as "Master output drive/trim in dB
+// before final soft ceiling", but the gen output section computes
+// outL = in1 * cDryG + wetOutL * cWetG with outGainSlew applied only inside
+// wetOutL. At Mix = 50% a +6 dB Output setting therefore delivers only
+// 0.5 + 0.5*2 = 1.5x (+3.5 dB), and at Mix = 0% the Output knob does nothing
+// at all. The summed output line itself must carry the master gain.
+const outLineL = gen.split("\n").find((l) => l.startsWith("outL ="));
+const outLineR = gen.split("\n").find((l) => l.startsWith("outR ="));
+assert.ok(outLineL && outLineL.includes("outGainSlew"), `BUG D2: master out_gain must scale the summed dry+wet output (L), got: ${outLineL}`);
+assert.ok(outLineR && outLineR.includes("outGainSlew"), `BUG D2: master out_gain must scale the summed dry+wet output (R), got: ${outLineR}`);
+
+// --- Bug D3: Mix law is linear, not the documented equal-power law ---
+// build_degrade.py PARAM_SPECS documents mix as "Equal-power dry/wet mix"
+// (and section 2 above is titled "Wet/dry cos/sin gains"), but the gen cache
+// computes cWetG = clip(wetSlew, 0, 1) and cDryG = 1.0 - cWetG: a linear
+// crossfade that dips -3 dB for decorrelated wet content at Mix = 50%.
+// Equal-power gains must come from sin/cos of the wet position.
+const wetAssign = gen.split("\n").find((l) => l.includes("cWetG =") && l.includes("wetSlew"));
+const dryAssign = gen.split("\n").find((l) => l.includes("cDryG =") && l.includes("cWetG"));
+assert.ok(wetAssign && /sin\s*\(/.test(wetAssign), `BUG D3: cWetG must be an equal-power (sin) gain, got: ${wetAssign}`);
+assert.ok(dryAssign && /cos\s*\(/.test(dryAssign), `BUG D3: cDryG must be an equal-power (cos) gain, got: ${dryAssign}`);
+
+// --- Bug D4: set_mix(0) mirrors Mix as 100% wet in the v8ui ---
+// Every other percent setter uses (Number(v) || 0) / 100, but set_mix uses
+// (Number(v) || 100) / 100, so the legitimate in-range value Mix = 0%
+// (fully dry) sets curWet = 1.0. It also breaks change detection: after
+// set_mix(100), a following set_mix(0) reports no change and skips redraw.
+sandbox.set_mix(100);
+assert.strictEqual(sandbox.curWet, 1.0, "set_mix(100) should mirror curWet = 1.0");
+sandbox.set_mix(0);
+assert.strictEqual(sandbox.curWet, 0.0, "BUG D4: set_mix(0) must mirror curWet = 0.0 (fully dry), not 1.0");
+sandbox.set_mix(50);
+
 console.log("All Degrade unit, GenExpr, layout, patchline, and v8ui tests passed!");
