@@ -1,6 +1,12 @@
-# Tiny Space PASS-1 bugs (bugsweep/tinyspace-pass1)
+# Tiny Space bugsweep (bugsweep/tinyspace-pass1)
 
-No production code was changed in this pass. RED coverage is in `tests/test_tinyspace_bugsweep.js`. Existing host gate (`npm run -s typecheck && python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js`) is expected to stay green; the bugsweep suite is separate and expected RED until PASS 2.
+PASS-1 filed Bug A with a RED suite. PASS-2 reviewed that RED and **kept** it. No production code has been changed. RED coverage remains in `tests/test_tinyspace_bugsweep.js`. Host gate (`npm run -s typecheck && python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js`) stays green; the bugsweep suite is separate and stays RED until PASS 3 fixes production.
+
+## PASS-2 review
+
+- **Kept 1 / dropped 0.**
+- **KEEP Bug A** — real functional instance cross-talk: Live does not expand `#0` in a top-level device patcher, so every Tiny Space shares one config and one meter buffer. Precedent (Multiband / Delay+ / Glitch / Reverb+ `---` names) confirms the expected fix shape. RED asserts the right surfaces (build `buffer~` / bind / `setbuffer`, built `.amxd`, UI `new Buffer("#0-tsmeters")` hardcode in `tsDspFrames`) and fails on current code. No rewrite or strengthening needed.
+- Pass-1 "reviewed and not filed" items re-checked; none elevated to a new RED. No additional tinyspace-specific top-level `#0-` buffers found beyond `tsconfig` / `tsmeters`.
 
 ## Bug A — `#0-tsconfig` / `#0-tsmeters` are shared across every Tiny Space instance in Live
 
@@ -29,7 +35,7 @@ Rename to unique `---` buffers (e.g. `---tsconfig`, `---tsmeters`) in build (`bu
 
 ## Reviewed and not filed
 
-These were checked against AGENTS / source / tests and are **not** PASS-1 bugs (doc drift or intentional design):
+These were checked against AGENTS / source / tests and are **not** bugs (doc drift or intentional design):
 - JS `fdnMix` / `house()` vs gen `house()` for models 0–7, n=1–10: 0 coefficient mismatches.
 - Nested returns: every gen helper has a single function-level return; `dampCoef` if-block then return is OK.
 - Presentation rects (title / seed / char / viz / dials): no mutual live.* overlap; all inside 292×169.
@@ -37,5 +43,6 @@ These were checked against AGENTS / source / tests and are **not** PASS-1 bugs (
 - AGENTS "70-float" vs `CFG_FLOATS=72`, and "whole samples" vs `interp="linear"` + `round()`: doc drift / intentional, not RED material.
 - `Global("tinyspace_dspq")`: shared create-queue like `mbsplit_dspq` — intentional.
 
-## Out of scope for PASS 1
-Production fixes for Bug A. PASS 2+ should migrate the buffer names to `---…`, route `tsDspFrames` through `meterBuf` / `setbuffer`, and update the existing `#0-` assertions in `test_tinyspace.js` (and AGENTS / comments).
+## Out of scope until PASS 3
+
+Production fixes for Bug A. PASS 3 should migrate the buffer names to `---…`, route `tsDspFrames` through `meterBuf` / `setbuffer`, and update the existing `#0-` assertions in `test_tinyspace.js` (and AGENTS / comments).
