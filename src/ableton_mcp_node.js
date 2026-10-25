@@ -179,8 +179,13 @@ function createBridgeServer(port) {
                     sendJson(res, 400, { ok: false, error: "Invalid JSON body" });
                     return;
                 }
-                const action = String(body.action || "ping");
-                const params = body.params || {};
+                if (body === null || typeof body !== "object" || Array.isArray(body)) {
+                    sendJson(res, 400, { ok: false, error: "Request body must be a JSON object" });
+                    return;
+                }
+                const reqBody = /** @type {{ action?: unknown, params?: Record<string, unknown> }} */ (body);
+                const action = String(reqBody.action || "ping");
+                const params = reqBody.params || {};
                 const reply = await callLomRpc(action, params);
                 if (reply && typeof reply === "object") {
                     reply.port = port;
