@@ -45,8 +45,10 @@ single-channel Mix bug and should be checked in its own pass.
 
 **Red test.** `tests/test_loudsplit.js`, §5 (after the existing Mix sum identity):
 a model anchor (`lsMixOut(..., 1)` keeps full dry — passes; the JS reference is
-correct) plus the failing assertion that the expanded gen must not contain the
-selection-only share line `kShare = selH > 0.5 ? 0.3333333333333333 : 1`.
+correct) plus the failing assertion that the expanded gen must not contain a
+selection-only share of the form `kShare = selH > 0.5 ? …`. Pass 2 strengthened
+the match from the exact float literal to `/kShare\s*=\s*selH\s*>\s*0\.5\s*\?/`
+so a repr change cannot green the test without a real fix (still fails at :699).
 
 ```
 $ node tests/test_loudsplit.js
@@ -54,11 +56,22 @@ $ node tests/test_loudsplit.js
 [genexpr] transpiled lib + ls_* tests passed
 [lint] genexpr lint and link module tests passed
 [device] built device and rack preset checks passed
-AssertionError [ERR_ASSERTION]: gen dry share keys on selH alone (kShare = 1/3
+AssertionError [ERR_ASSERTION]: gen dry share keys on selH alone (kShare = 1/K
 for any single-channel Output): a standalone device with Output Loud / Mid /
 Quiet must keep K = 1
-    at Object.<anonymous> (tests/test_loudsplit.js:697:12)
+    at Object.<anonymous> (tests/test_loudsplit.js:699:12)
 ```
+
+## Pass 2 review (kept 1 / dropped 0)
+
+- **KEEP Bug 1** — real audible DSP bug: standalone single-channel Output wrongly
+  gets dry / 3. Confirmed against AGENTS.md §24 Mix (`K = 1` outside a rack),
+  `lsMixOut(..., k=1)`, and live `gen_code()` still emitting
+  `kShare = selH > 0.5 ? 0.3333333333333333 : 1;` (`roleH` / `serveH` unused at
+  Mix). Strengthened the red regex as above. Host gate
+  `npm run -s typecheck && python3 scripts/build_loudsplit.py && node tests/test_loudsplit.js`
+  still fails on this assert only (typecheck + build pass). No production/src
+  edits this pass; dirty `devices/Loud Split.{amxd,adg}` left uncommitted.
 
 ## Checked and found correct (do not re-hunt)
 
