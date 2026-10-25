@@ -175,6 +175,7 @@ function clear_ir() {
     rpIr.name = "";
     rpIr.status = "idle";
     rpLastDropped = "";
+    outlet(4, ""); // clear the saved IR File (live.drop) param so a Live reload cannot replay the cleared path and resurrect the IR
     rpHdrPoke(37, 0);
     rpHdrPoke(32, ++rpIr.ver);
     rpBroadcastIr();
