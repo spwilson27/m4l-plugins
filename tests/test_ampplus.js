@@ -152,6 +152,26 @@ for (const model of AMP_MODELS) {
         assert.deepStrictEqual(box.presentation_rect.map(Number), spec.rect, id);
         assert.strictEqual(box.hidden ? 1 : 0, spec.hidden, id);
     }
+    assert.deepStrictEqual(ampAllLooks().map((row) => row.name), ["Wave", "Pulse", "Tiles", "Strip", "Mono"]);
+    for (const [i, name] of ["Wave", "Pulse", "Tiles", "Strip", "Mono"].entries()) {
+        const v = readAmxd(path.join(ROOT, "devices", `Amp+ ${name}.amxd`));
+        const vp = v.doc.patcher;
+        assert.strictEqual(vp.devicewidth, 496);
+        assert.strictEqual(vp.openrect[3], 169);
+        const vboxes = vp.boxes.map((b) => b.box);
+        const vby = new Map(vboxes.map((b) => [b.id, b]));
+        assert.deepStrictEqual(vby.get("obj-ctrl-look").saved_attribute_attributes.valueof.parameter_enum, [name], `${name} look is locked to one face`);
+        const vlook = ampLayout(i);
+        for (const [id, spec] of Object.entries(vlook.boxes)) {
+            const box = vby.get(id);
+            assert.ok(box, `${name} ${id}`);
+            assert.deepStrictEqual(box.presentation_rect.map(Number), spec.rect, `${name} ${id}`);
+            assert.strictEqual(box.hidden ? 1 : 0, spec.hidden, `${name} ${id}`);
+        }
+        const vui = String(vby.get("obj-viz").textfile.text);
+        assert.ok(vui.includes(`var lookIndex=${i};`), `${name} bakes its own look`);
+        assert.ok(vui.includes(`var ampLookLock=${i};`), `${name} locks its look`);
+    }
     for (const row of ampAllLooks()) {
         const problems = ampLookProblems(row);
         assert.deepStrictEqual(problems, [], problems.join("; "));

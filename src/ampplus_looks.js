@@ -1,4 +1,5 @@
-// Five faces for Amp+. Rects are device pixels. Hidden boxes are out of the hit test.
+// Five faces for Amp+, redesigned from scratch: Wave, Pulse, Tiles, Strip, Mono.
+// Rects are device pixels. Hidden boxes are out of the hit test.
 // obj-viz is the only clickable canvas. obj-viz-bg is ignoreclick and may cover the device.
 
 var AMP_W = 496;
@@ -55,98 +56,115 @@ function ampAssign(target, src) {
     return target;
 }
 
-function ampLookHead() {
+// Wave: the output waveform is the face. One wide scope on top, one even dial
+// row, and every remaining control on a single compact strip at the bottom.
+function ampLookWave() {
     var boxes = {
         "obj-viz-bg": ampBox(0, 0, AMP_W, AMP_H, 0),
-        "obj-viz": ampBox(8, 22, 120, 86, 0),
-        "obj-ctrl-amp": ampBox(8, 114, 120, 16, 0),
-        "obj-ctrl-cabon": ampBox(8, 146, 42, 16, 0),
-        "obj-ctrl-look": ampBox(54, 146, 70, 16, 0),
-        "obj-ctrl-cabtype": ampBox(128, 146, 72, 16, 0),
-        "obj-ctrl-mic": ampBox(204, 146, 150, 16, 0),
-        "obj-lbl-position": ampBox(358, 148, 28, 12, 0),
-        "obj-ctrl-position": ampBox(388, 146, 100, 16, 0)
+        "obj-viz": ampBox(8, 8, 480, 76, 0),
+        "obj-ctrl-amp": ampBox(8, 148, 110, 16, 0),
+        "obj-ctrl-look": ampBox(122, 148, 74, 16, 0),
+        "obj-ctrl-cabon": ampBox(200, 148, 40, 16, 0),
+        "obj-ctrl-cabtype": ampBox(244, 148, 70, 16, 0),
+        "obj-ctrl-mic": ampBox(318, 148, 96, 16, 0),
+        "obj-lbl-position": ampBox(418, 150, 26, 12, 0),
+        "obj-ctrl-position": ampBox(446, 148, 42, 16, 0)
     };
-    ampAssign(boxes, ampDials([140, 198, 256, 314, 372, 430], 28, 54, 76));
-    ampAssign(boxes, ampChrome(1));
-    return { name: "Head", dialName: 1, boxes: boxes };
+    ampAssign(boxes, ampDials([8, 86, 164, 242, 320, 398], 92, 70, 48));
+    ampAssign(boxes, ampChrome(0));
+    return { name: "Wave", dialName: 1, boxes: boxes };
 }
 
-function ampLookStack() {
+// Pulse: a radial visualizer on the left. The dials sit in a plain 3x2 grid on
+// the right, grouped amp / cabinet / mic-position top to bottom.
+function ampLookPulse() {
     var boxes = {
         "obj-viz-bg": ampBox(0, 0, AMP_W, AMP_H, 0),
-        "obj-viz": ampBox(6, 6, 142, 100, 0),
-        "obj-ctrl-amp": ampBox(158, 6, 160, 16, 0),
-        "obj-ctrl-look": ampBox(326, 6, 162, 16, 0),
-        "obj-ctrl-cabon": ampBox(6, 112, 46, 16, 0),
-        "obj-ctrl-cabtype": ampBox(56, 112, 92, 16, 0),
-        "obj-ctrl-mic": ampBox(6, 132, 142, 16, 0),
-        "obj-lbl-position": ampBox(6, 152, 32, 12, 0),
-        "obj-ctrl-position": ampBox(42, 150, 106, 16, 0)
+        "obj-viz": ampBox(8, 8, 232, 152, 0),
+        "obj-ctrl-amp": ampBox(252, 106, 112, 16, 0),
+        "obj-ctrl-look": ampBox(368, 106, 116, 16, 0),
+        "obj-ctrl-cabon": ampBox(252, 128, 38, 16, 0),
+        "obj-ctrl-cabtype": ampBox(294, 128, 66, 16, 0),
+        "obj-ctrl-mic": ampBox(364, 128, 120, 16, 0),
+        "obj-lbl-position": ampBox(252, 152, 28, 12, 0),
+        "obj-ctrl-position": ampBox(284, 150, 96, 16, 0)
     };
-    ampAssign(boxes, ampDialsGrid([158, 270, 382], [28, 100], 104, 66));
+    ampAssign(boxes, ampDialsGrid([252, 332, 412], [4, 54], 72, 46));
     ampAssign(boxes, ampChrome(0));
-    return { name: "Stack", dialName: 1, boxes: boxes };
+    return { name: "Pulse", dialName: 1, boxes: boxes };
 }
 
-function ampLookPlate() {
+// Tiles: every dial gets its own level-reactive tile in a 3x2 grid. The cabinet
+// controls are a tile column on the right under a mini scope tile.
+function ampLookTiles() {
     var boxes = {
         "obj-viz-bg": ampBox(0, 0, AMP_W, AMP_H, 0),
-        "obj-viz": ampBox(8, 76, 480, 58, 0),
-        "obj-ctrl-amp": ampBox(8, 140, 96, 18, 0),
-        "obj-ctrl-look": ampBox(108, 140, 70, 18, 0),
-        "obj-ctrl-cabon": ampBox(182, 140, 40, 18, 0),
-        "obj-ctrl-cabtype": ampBox(226, 140, 68, 18, 0),
-        "obj-ctrl-mic": ampBox(298, 140, 112, 18, 0),
-        "obj-lbl-position": ampBox(414, 143, 26, 12, 0),
-        "obj-ctrl-position": ampBox(442, 140, 46, 18, 0)
+        "obj-viz": ampBox(338, 8, 150, 62, 0),
+        "obj-ctrl-amp": ampBox(338, 76, 72, 16, 0),
+        "obj-ctrl-look": ampBox(414, 76, 74, 16, 0),
+        "obj-ctrl-cabon": ampBox(338, 96, 44, 16, 0),
+        "obj-ctrl-cabtype": ampBox(386, 96, 102, 16, 0),
+        "obj-ctrl-mic": ampBox(338, 116, 150, 16, 0),
+        "obj-lbl-position": ampBox(338, 142, 28, 12, 0),
+        "obj-ctrl-position": ampBox(370, 140, 118, 16, 0)
     };
-    ampAssign(boxes, ampDials([8, 89, 170, 251, 332, 413], 4, 76, 68));
+    ampAssign(boxes, ampDialsGrid([8, 118, 228], [8, 76], 102, 62));
     ampAssign(boxes, ampChrome(0));
-    return { name: "Plate", dialName: 1, boxes: boxes };
+    return { name: "Tiles", dialName: 1, boxes: boxes };
 }
 
-function ampLookCombo() {
+// Strip: a channel strip. A filled oscillogram strip on top, the tone stack as
+// the four big dials in the middle with Gain and Volume as smaller bookends,
+// the cabinet row under them, and a full-width output meter along the bottom.
+function ampLookStrip() {
     var boxes = {
         "obj-viz-bg": ampBox(0, 0, AMP_W, AMP_H, 0),
-        "obj-viz": ampBox(128, 6, 240, 128, 0),
-        "obj-ctrl-amp": ampBox(8, 148, 96, 16, 0),
-        "obj-ctrl-look": ampBox(108, 148, 70, 16, 0),
-        "obj-ctrl-cabon": ampBox(182, 148, 40, 16, 0),
-        "obj-ctrl-cabtype": ampBox(226, 148, 68, 16, 0),
-        "obj-ctrl-mic": ampBox(298, 148, 112, 16, 0),
-        "obj-lbl-position": ampBox(414, 150, 26, 12, 0),
-        "obj-ctrl-position": ampBox(442, 148, 46, 16, 0),
-        "obj-ctrl-gain": ampBox(10, 8, 52, 38, 0),
-        "obj-ctrl-bass": ampBox(10, 50, 52, 38, 0),
-        "obj-ctrl-mid": ampBox(10, 92, 52, 38, 0),
-        "obj-ctrl-treble": ampBox(400, 8, 52, 38, 0),
-        "obj-ctrl-presence": ampBox(400, 50, 52, 38, 0),
-        "obj-ctrl-volume": ampBox(400, 92, 52, 38, 0)
+        "obj-viz": ampBox(8, 6, 480, 40, 0),
+        "obj-ctrl-amp": ampBox(8, 124, 110, 16, 0),
+        "obj-ctrl-look": ampBox(122, 124, 74, 16, 0),
+        "obj-ctrl-cabon": ampBox(200, 124, 40, 16, 0),
+        "obj-ctrl-cabtype": ampBox(244, 124, 70, 16, 0),
+        "obj-ctrl-mic": ampBox(318, 124, 96, 16, 0),
+        "obj-lbl-position": ampBox(418, 126, 26, 12, 0),
+        "obj-ctrl-position": ampBox(446, 124, 42, 16, 0),
+        "obj-ctrl-gain": ampBox(8, 54, 64, 62, 0),
+        "obj-ctrl-bass": ampBox(80, 54, 80, 62, 0),
+        "obj-ctrl-mid": ampBox(168, 54, 80, 62, 0),
+        "obj-ctrl-treble": ampBox(256, 54, 80, 62, 0),
+        "obj-ctrl-presence": ampBox(344, 54, 80, 62, 0),
+        "obj-ctrl-volume": ampBox(432, 54, 56, 62, 0)
     };
     ampAssign(boxes, ampChrome(0));
-    return { name: "Combo", dialName: 0, boxes: boxes };
+    return { name: "Strip", dialName: 1, boxes: boxes };
 }
 
-function ampLookRack() {
+// Mono: a minimal performance face. Gain and Volume are the two hero dials,
+// the tone stack is one small row along the bottom, everything else is a
+// compact column on the right, and a single level disc is the whole picture.
+function ampLookMono() {
     var boxes = {
         "obj-viz-bg": ampBox(0, 0, AMP_W, AMP_H, 0),
-        "obj-viz": ampBox(8, 6, 480, 24, 0),
-        "obj-ctrl-amp": ampBox(8, 132, 96, 18, 0),
-        "obj-ctrl-look": ampBox(108, 132, 70, 18, 0),
-        "obj-ctrl-cabon": ampBox(182, 132, 40, 18, 0),
-        "obj-ctrl-cabtype": ampBox(226, 132, 68, 18, 0),
-        "obj-ctrl-mic": ampBox(298, 132, 112, 18, 0),
-        "obj-lbl-position": ampBox(414, 135, 26, 12, 0),
-        "obj-ctrl-position": ampBox(442, 132, 46, 18, 0)
+        "obj-viz": ampBox(176, 8, 150, 108, 0),
+        "obj-ctrl-amp": ampBox(334, 8, 154, 16, 0),
+        "obj-ctrl-look": ampBox(334, 28, 154, 16, 0),
+        "obj-ctrl-cabon": ampBox(334, 48, 48, 16, 0),
+        "obj-ctrl-cabtype": ampBox(386, 48, 102, 16, 0),
+        "obj-ctrl-mic": ampBox(334, 68, 154, 16, 0),
+        "obj-lbl-position": ampBox(334, 90, 30, 12, 0),
+        "obj-ctrl-position": ampBox(368, 88, 120, 16, 0),
+        "obj-ctrl-gain": ampBox(8, 8, 78, 80, 0),
+        "obj-ctrl-volume": ampBox(90, 8, 78, 80, 0),
+        "obj-ctrl-bass": ampBox(8, 124, 56, 40, 0),
+        "obj-ctrl-mid": ampBox(68, 124, 56, 40, 0),
+        "obj-ctrl-treble": ampBox(128, 124, 56, 40, 0),
+        "obj-ctrl-presence": ampBox(188, 124, 56, 40, 0)
     };
-    ampAssign(boxes, ampDials([10, 91, 172, 253, 334, 415], 38, 74, 82));
     ampAssign(boxes, ampChrome(0));
-    return { name: "Rack", dialName: 1, boxes: boxes };
+    return { name: "Mono", dialName: 0, boxes: boxes };
 }
 
 function ampAllLooks() {
-    return [ampLookHead(), ampLookStack(), ampLookPlate(), ampLookCombo(), ampLookRack()];
+    return [ampLookWave(), ampLookPulse(), ampLookTiles(), ampLookStrip(), ampLookMono()];
 }
 
 function ampLayout(index) {

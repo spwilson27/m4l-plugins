@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Amp+: NAM captures with five faces on Ableton's Amp controls."""
+"""Amp+: NAM captures with five redesigned faces (Wave, Pulse, Tiles, Strip, Mono)."""
 
 import json
 import os
@@ -37,14 +37,14 @@ ENUM = {
     "cabon": ("Cabinet On", "Cab", ["Off", "On"], 1),
     "cabtype": ("Cabinet", "CabType", ["1x12", "2x12", "4x10", "4x12", "1x15", "8x10"], 1),
     "mic": ("Mic", "Mic", ["Dynamic", "Condenser"], 0),
-    "look": ("Look", "Look", ["Head", "Stack", "Plate", "Combo", "Rack"], 0),
+    "look": ("Look", "Look", ["Wave", "Pulse", "Tiles", "Strip", "Mono"], 0),
 }
 ENUM_HELP = {
     "amp": "Amp type. Each one loads a Neural Amp Modeler capture: Clean Twin Verb, Boost AC15 Top Boost, Blues King Kong 60s, Rock JCM2000 Crunch, Lead Mark IV, Heavy 5150, Bass dUg preamp.",
     "cabon": "Speaker cabinet. Off leaves the capture and the tone stack only.",
     "cabtype": "Cabinet size. Every cabinet is available on every amp.",
     "mic": "Dynamic is darker with a presence bump. Condenser is more open.",
-    "look": "Face. Head follows Live's Amp. Stack, Plate, Combo and Rack lay the same controls out differently.",
+    "look": "Face. Wave is a waveform scope, Pulse a radial visualizer, Tiles a dial grid, Strip a channel strip, Mono a two-dial performance face. All five are audio-reactive.",
 }
 # Control key -> gen Param name. Gain stays in front of neural~, not in the gen.
 GEN = {
@@ -108,12 +108,13 @@ def sig(obj_id, text, x, y, w, nin=1, nout=1):
     return sc.newobj(obj_id, text, x, y, w, numinlets=nin, numoutlets=nout, outlettype=["signal"] * nout)
 
 
-def face_code(role, look=0):
+def face_code(role, look=0, lock=-1):
     body = (sc.read(os.path.join(SRC, "ampplus_models.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "ampplus_looks.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "spectral_theme.js")).rstrip() + "\n\n"
             + sc.read(os.path.join(SRC, "ampplus_ui.js")))
     body = body.replace("var lookIndex = 0;", f"var lookIndex = {int(look)};", 1)
+    body = body.replace("var ampLookLock = -1;", f"var ampLookLock = {int(lock)};", 1)
     return f'var AMP_ROLE = "{role}";\n' + body
 
 
@@ -133,16 +134,17 @@ def place(box, layout, key):
     return box
 
 
-def build_patcher(look=0):
+def build_patcher(look=0, variant=None):
     layout = look_layout(look)
     gen = sc.read(os.path.join(SRC, "ampplus_core.genexpr"))
     boxes = []
     lines = []
 
-    bg = sc.v8ui("obj-viz-bg", face_code("bg", look), layout["boxes"]["obj-viz-bg"]["rect"], (20, 20), 0, varname="amp_bg")
+    lock = int(look) if variant else -1
+    bg = sc.v8ui("obj-viz-bg", face_code("bg", look, lock), layout["boxes"]["obj-viz-bg"]["rect"], (20, 20), 0, varname="amp_bg")
     bg["box"]["ignoreclick"] = 1
     boxes.append(bg)
-    viz = sc.v8ui("obj-viz", face_code("hit", look), layout["boxes"]["obj-viz"]["rect"], (20, 80), 2, varname="amp_viz")
+    viz = sc.v8ui("obj-viz", face_code("hit", look, lock), layout["boxes"]["obj-viz"]["rect"], (20, 80), 2, varname="amp_viz")
     boxes.append(viz)
 
     p_amp, amp_chrome = sc.make_section("amp", 4, 4, 488, 136, "Amp", title_w=28)
@@ -152,7 +154,8 @@ def build_patcher(look=0):
     boxes += amp_chrome + cab_chrome
 
     boxes.append(place(sc.make_theme_menu("amp", ENUM["amp"], ENUM_HELP["amp"], 0, 0, 40, 16), layout, "obj-ctrl-amp"))
-    boxes.append(place(sc.make_theme_menu("look", ENUM["look"], ENUM_HELP["look"], 0, 0, 40, 16), layout, "obj-ctrl-look"))
+    look_enum = ENUM["look"] if not variant else ("Look", "Look", [variant], 0)
+    boxes.append(place(sc.make_theme_menu("look", look_enum, ENUM_HELP["look"], 0, 0, 40, 16), layout, "obj-ctrl-look"))
     for key in DIALS:
         dial = make_dial(key, 0, 0, 40, 40)
         dial["box"]["showname"] = layout["dialName"]
@@ -249,10 +252,16 @@ def build_patcher(look=0):
         y += 24
 
     boxes += [place(p_amp, layout, "obj-panel-amp"), place(p_cab, layout, "obj-panel-cab"), sc.make_body_panel(WIDTH)]
+    if variant:
+        desc = f"Guitar amp made of Neural Amp Modeler captures, with a tone stack and a mic'd cabinet. This is the {variant} version: one fixed audio-reactive face."
+        title = f"Amp+ {variant}: NAM amp captures, {variant} face"
+    else:
+        desc = "Guitar amp made of Neural Amp Modeler captures, with a tone stack and a mic'd cabinet, laid out like Live's Amp."
+        title = "Amp+: NAM amp captures with Ableton Amp controls"
     return sc.patcher(
         boxes, lines, WIDTH,
-        "Guitar amp made of Neural Amp Modeler captures, with a tone stack and a mic'd cabinet, laid out like Live's Amp.",
-        "Amp+: NAM amp captures with Ableton Amp controls",
+        desc,
+        title,
         "amp guitar nam neural cabinet",
         0,
     )
@@ -260,6 +269,8 @@ def build_patcher(look=0):
 
 def main():
     sc.write_amxd(build_patcher(), OUT)
+    for i, name in enumerate(ENUM["look"][2]):
+        sc.write_amxd(build_patcher(i, variant=name), os.path.join(sc.DEVICES_DIR, f"Amp+ {name}.amxd"))
 
 
 if __name__ == "__main__":
