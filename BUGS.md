@@ -51,3 +51,17 @@
 - node tests/test_ableton_mcp.js -> exit 1. Pre-existing blocks 1-2 pass; new block 3 reports exactly 3 failures: BUG-MCP-1, BUG-MCP-2, BUG-MCP-3 (each: expected ok:false, got ok:true).
 - node tests/test_ableton_mcp_stdio_http.js -> exit 1. Exactly 2 failures: BUG-MCP-4 (no HTTP response, TypeError crash at ableton_mcp_node.js:182) and BUG-MCP-5 (no -32700 response).
 - No other failures. Nothing in src/ or scripts/ was modified.
+
+## Pass 2 review (2026-10-25)
+
+- Re-read production handlers: `handleDeleteDevice` / `handleSetDeviceParameter` / `handleTransport` in `src/ableton_mcp_lom.js`, POST `/rpc` in `src/ableton_mcp_node.js`, stdin loop in `scripts/ableton_mcp_server.js`.
+- Re-ran host tests on unfixed code in this worktree:
+  - `node tests/test_ableton_mcp.js` -> exit 1 (BUG-MCP-1, BUG-MCP-2, BUG-MCP-3; each expected ok:false, got ok:true).
+  - `node tests/test_ableton_mcp_stdio_http.js` -> exit 1 (BUG-MCP-4 TypeError crash on null `/rpc` body; BUG-MCP-5 no -32700 after invalid JSON).
+- Decision: **kept 5 / dropped 0**.
+  - BUG-MCP-1: real — empty target becomes `delete_device(-1)` on `live_set` via `makeApi` fallback; unvalidated destructive op.
+  - BUG-MCP-2: real — missing `value` → `Number(undefined)=NaN` through clamp into `paramApi.set`.
+  - BUG-MCP-3: real — unknown transport action falls through and returns session info as success.
+  - BUG-MCP-4: real — `JSON.parse('null')` then `body.action` TypeError downs the bridge.
+  - BUG-MCP-5: real — `catch (_) {}` swallows parse errors; clients hang waiting for -32700.
+- No test rewrites: reds already fail on the claimed symptoms. No production/src fixes (pass 3).
