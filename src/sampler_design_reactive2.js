@@ -1544,21 +1544,27 @@ function paintWtPosSlider(L, pos, on, osc) {
     mgraphics.rectangle(Math.round(x - s) + 0.5, Math.round(hy - s) + 0.5, s * 2, s * 2);
     mgraphics.stroke();
     text((t * 100).toFixed(1) + "%", x, L.bot - 1, 8.0, on ? RC.sel : RC.sub, true, 1);
-    zone("wt_pos", L.slideX, y0, L.slideW, y1 - y0, { key: osc.posKey, top: y0, h: Math.max(1, y1 - y0) });
+    zone("wt_pos", L.slideX, y0, L.slideW, y1 - y0, { key: osc.posKey, top: y0, mapH: Math.max(1, y1 - y0) });
 }
 
-// Every frame of the table, frame 0 at the bottom. The current position is the orange trace.
-function paintWtFrameStack(x, y, w, h, on, pos01, fxMode, fx1, fx2) {
+// Vertical placement of the frame stack. Position 0 sits on yBot, position 1 a `stack` px above it.
+// The wave's position drag uses the same numbers, so a click on the orange trace keeps that position.
+function wtStackGeom(y, h) {
     var n = Math.max(1, wtViewFrameCount());
     var few = n <= 8;
-    // Few frames stay apart, the way Basic Shapes reads. A long table packs until the
-    // traces overlap and the current frame stays the thick orange line.
     var amp = few ? Math.min(5.5, h * 0.11) : Math.min(h * 0.16, 10);
     var room = Math.max(1, h - 8 - amp * 2);
     var apart = amp * 2 + 3.5;
     var gap = n <= 1 ? 0 : (few ? Math.min(room / (n - 1), apart) : room / (n - 1));
-    var stack = gap * Math.max(0, n - 1);
-    var yBot = y + h - 4 - amp;
+    return { n: n, few: few, amp: amp, yBot: y + h - 4 - amp, stack: gap * Math.max(0, n - 1) };
+}
+
+// Every frame of the table, frame 0 at the bottom. The current position is the orange trace.
+function paintWtFrameStack(x, y, w, h, on, pos01, fxMode, fx1, fx2) {
+    var g = wtStackGeom(y, h);
+    var n = g.n, few = g.few, amp = g.amp, yBot = g.yBot, stack = g.stack;
+    // Few frames stay apart, the way Basic Shapes reads. A long table packs until the
+    // traces overlap and the current frame stays the thick orange line.
     var yAt = function (t) { return yBot - clamp01(t) * stack; };
     var cols = 72;
     var cap = few ? n : 48;
@@ -1612,7 +1618,9 @@ function paintWtViewer(wx, wy, ww, wh, pos01, on, fxMode, fx1, fx2) {
     paintWtPosSlider(L, pos01, on, osc);
     paintWtScopePanel(L.panelX, wy + 3, L.panelW, wh - 6, on, pos01, fxMode, fx1, fx2);
     var waveW = Math.max(8, L.panelW - 48);
-    zone("wt_pos", L.panelX, wy + 3, waveW, wh - 6, { key: osc.posKey, top: wy + 3, h: wh - 6 });
+    var sg = wtStackGeom(wy + 5, wh - 10);
+    var span = Math.max(sg.stack, 1);
+    zone("wt_pos", L.panelX, wy + 3, waveW, wh - 6, { key: osc.posKey, top: sg.yBot - span, mapH: span });
     var oi = osc.is2 ? 1 : 0;
     var userLoaded = oi ? osc2Loaded : hasLoadedSample;
     if (wtSel[oi].cat === WT_USER && !userLoaded) {
@@ -4967,6 +4975,19 @@ function name_click() { nameClick(); }
 
 var dragArmOn = 0;
 var dragArmAt = 0;
+// Max splits a message on spaces, so the path is also written here. The node reads it back whole.
+// A character count comes first: opening the file to write has left the tail of a longer path behind.
+function publishDragPath(filePath) {
+    if (typeof File !== "function") return;
+    try {
+        var body = String(filePath);
+        var f = new File("/tmp/bs_drag_path.txt", "write", "TEXT");
+        if (f && f.isopen) { f.writestring(String(body.length) + "\n" + body); f.close(); }
+    } catch (e) {}
+}
+function armDragMessage(kind, z, x, y) {
+    outlet(0, "arm_drag", kind, Math.round(z.w), Math.round(z.h), Math.round(x - z.x), Math.round(y - z.y));
+}
 function armSampleDragAt(x, y) {
     var z = zoneAt(x, y);
     var filePath = (z && z.action === "browse") ? showingSamplePath() : "";
@@ -4975,7 +4996,16 @@ function armSampleDragAt(x, y) {
     if (dragArmOn && (now - dragArmAt) < 40) return;
     dragArmOn = 1;
     dragArmAt = now;
-    outlet(0, "arm_drag", Math.round(z.w), Math.round(z.h), filePath);
+    publishDragPath(filePath);
+    // The path stays out of the message. Spaces in it used to split the list, and the node never armed.
+    // The four numbers are the name's size and where the cursor sits in it, so the drag box covers the name.
+    armDragMessage("hover", z, x, y);
+}
+function drag_probe() {
+    var g = new Global("bs_drag_probe");
+    g.path = String(showingSamplePath() || "");
+    g.name = String(sampleFileName || "");
+    g.armed = dragArmOn ? 1 : 0;
 }
 function disarmSampleDrag() {
     if (!dragArmOn) return;
@@ -5277,8 +5307,8 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
     }
     if (z && z.kind === "wt_pos") {
         if (openMenu) openMenu = null;
-        drag = { wtPos: true, key: z.key, top: z.top, h: z.h };
-        setIfChanged(z.key, wtPosFromY(y, z.top, z.h));
+        drag = { wtPos: true, key: z.key, top: z.top, h: z.mapH != null ? z.mapH : z.h };
+        setIfChanged(z.key, wtPosFromY(y, drag.top, drag.h));
         mgraphics.redraw();
         return;
     }
@@ -5363,7 +5393,11 @@ ondrag = function (x, y, but, cmd, shift) {
         if (!namePress.moved && (Math.abs(x - namePress.x) >= 1 || Math.abs(y - namePress.y) >= 1)) {
             namePress.moved = true;
             var dragPath = showingSamplePath();
-            if (dragPath) outlet(0, "arm_drag", 16, 16, "handoff", dragPath);
+            var dragZone = zoneAt(x, y);
+            if (dragPath && dragZone && dragZone.action === "browse") {
+                publishDragPath(dragPath);
+                armDragMessage("handoff", dragZone, x, y);
+            }
         }
         return;
     }

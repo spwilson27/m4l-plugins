@@ -1,5 +1,5 @@
-// File drag for Better Sampler Reactive 2. The gesture is XO's (xo_node_engine.js): a 16x16
-// non-activating panel at NSStatusWindowLevel sits under the cursor. A sample-name click
+// File drag for Better Sampler Reactive 2. The gesture is XO's (xo_node_engine.js): a
+// non-activating panel at NSStatusWindowLevel covers the sample name. A sample-name click
 // (mode selected_raw) tracks until the mouse moves, then beginDraggingSession with that
 // original mouseDown. A click that never moves prints REPLAY_CLICK.
 //
@@ -30,6 +30,8 @@
 - (void)draggingSession:(NSDraggingSession *)session endedAtPoint:(NSPoint)screenPoint operation:(NSDragOperation)operation {
     fprintf(stdout, "END %lu\n", (unsigned long)operation);
     fflush(stdout);
+    [[NSString stringWithFormat:@"END %lu\n", (unsigned long)operation]
+        writeToFile:@"/tmp/bs_drag_end.txt" atomically:YES encoding:NSUTF8StringEncoding error:nil];
     [[self window] orderOut:nil];
 }
 
@@ -179,10 +181,15 @@
     NSPoint mouse = [NSEvent mouseLocation];
     CGFloat w = [cmd[@"w"] doubleValue] ?: 24.0;
     CGFloat h = [cmd[@"h"] doubleValue] ?: 18.0;
+    if (w < 8.0) w = 8.0;
+    if (h < 8.0) h = 8.0;
+    // ox/oy: where the cursor sits in the name, y measured down from the top, as the face does.
+    CGFloat ox = cmd[@"ox"] != nil ? [cmd[@"ox"] doubleValue] : w * 0.5;
+    CGFloat oy = cmd[@"oy"] != nil ? [cmd[@"oy"] doubleValue] : h * 0.5;
     self.dragView.filePaths = paths;
     self.dragView.dragMode = cmd[@"mode"] ?: @"raw";
 
-    NSRect winRect = NSMakeRect(mouse.x - w * 0.5, mouse.y - h * 0.5, w, h);
+    NSRect winRect = NSMakeRect(mouse.x - ox, mouse.y - (h - oy), w, h);
     [self.dragWindow setFrame:winRect display:YES];
     [self.dragView setFrame:NSMakeRect(0, 0, w, h)];
     [self.dragView setNeedsDisplay:YES];
@@ -193,7 +200,11 @@
         NSDictionary *st = @{
             @"visible": @([self.dragWindow isVisible]),
             @"count": @(urls.count),
-            @"paths": paths
+            @"paths": paths,
+            @"mouseX": @(mouse.x),
+            @"mouseY": @(mouse.y),
+            @"w": @(w),
+            @"h": @(h)
         };
         NSData *stData = [NSJSONSerialization dataWithJSONObject:st options:0 error:nil];
         [stData writeToFile:stateFile atomically:YES];

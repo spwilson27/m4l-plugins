@@ -3,12 +3,41 @@
  * injected at build time. The helper is XO's: a 16×16 panel under the cursor, and the drag
  * session starts from the original mouseDown.
  *
- * Inlet: `arm <w> <h> <path…>` while the pointer is over the sample name, `disarm` when it
- * moves onto another control. `arm <w> <h> handoff <path…>` is the face handing over a drag
- * it already owns. Mode is selected_raw: a drag starts an OS file drag of that path, a click
- * without a drag prints REPLAY_CLICK, forwarded as `name_click`.
+ * Inlet: `arm hover <w> <h> <ox> <oy>` while the pointer is over the sample name (the box
+ * covers that whole name), `arm handoff` when a drag has already started on the face,
+ * `disarm` when it moves onto another control. The path is read from /tmp/bs_drag_path.txt
+ * so a name with spaces is not split by Max. Live reports it as "Macintosh HD:/Users/...",
+ * which is resolved to the POSIX path before the file is checked. Mode is selected_raw:
+ * a drag starts an OS file drag, a click without a drag prints REPLAY_CLICK, forwarded
+ * as `name_click`.
  */
 "use strict";
+
+// The face writes "<charCount>\\n<path>". A later shorter path must not keep the tail of
+// the previous one: Max's File write has been observed to leave those bytes in place.
+function takeDragPathText(raw) {
+  raw = String(raw || "").replace(/\0/g, "");
+  const nl = raw.search(/\r?\n/);
+  if (nl > 0 && /^\d+$/.test(raw.slice(0, nl))) {
+    const n = parseInt(raw.slice(0, nl), 10);
+    const start = nl + (raw.charAt(nl) === "\r" && raw.charAt(nl + 1) === "\n" ? 2 : 1);
+    return raw.slice(start, start + n);
+  }
+  return raw.trim();
+}
+
+// buffer~ reports the boot volume as "Macintosh HD:/Users/...". That string is not a file.
+function resolveSampleDragPath(raw, exists) {
+  const p = String(raw || "").replace(/\0/g, "").trim();
+  if (!p) return "";
+  if (exists(p)) return p;
+  const colon = p.indexOf(":");
+  if (colon > 0) {
+    const rest = p.slice(colon + 1);
+    if (rest.charAt(0) === "/" && exists(rest)) return rest;
+  }
+  return "";
+}
 
 const fs = require("fs");
 const os = require("os");
@@ -23,6 +52,38 @@ const HELPER_SRC = path.join(EXPORT_DIR, "bs_drag_helper_v1.m");
 const HELPER_STAMP = HELPER_BIN + ".stamp";
 
 let helper = null;
+const LOG = "/tmp/bs_drag_node.log";
+const PATH_FILE = "/tmp/bs_drag_path.txt";
+
+function log(line) {
+  try { fs.appendFileSync(LOG, line + "\n"); } catch (_) {}
+}
+
+function sidePath() {
+  try { return resolveSampleDragPath(takeDragPathText(fs.readFileSync(PATH_FILE, "utf8")), (p) => fs.existsSync(p)); }
+  catch (_) { return ""; }
+}
+
+function armBox(args) {
+  let handoff = false;
+  const nums = [];
+  for (let i = 0; i < args.length; i++) {
+    if (String(args[i]) === "handoff") handoff = true;
+    else if (String(args[i]) !== "hover") {
+      const n = Number(args[i]);
+      if (isFinite(n)) nums.push(n);
+    }
+  }
+  const w = nums.length >= 1 && nums[0] > 0 ? nums[0] : 16;
+  const h = nums.length >= 2 && nums[1] > 0 ? nums[1] : 16;
+  return {
+    handoff: handoff,
+    w: w,
+    h: h,
+    ox: nums.length >= 4 ? nums[2] : w * 0.5,
+    oy: nums.length >= 4 ? nums[3] : h * 0.5
+  };
+}
 
 function ensureHelper() {
   if (process.platform !== "darwin") return null;
@@ -48,6 +109,8 @@ function ensureHelper() {
         const lines = buf.split("\n");
         buf = lines.pop() || "";
         for (let i = 0; i < lines.length; i++) {
+          if (!lines[i]) continue;
+          log("helper " + lines[i]);
           if (lines[i].indexOf("REPLAY_CLICK") >= 0) {
             try { Max.outlet("name_click"); } catch (_) {}
           }
@@ -57,6 +120,7 @@ function ensureHelper() {
     helper.on("exit", () => { helper = null; });
   } catch (err) {
     helper = null;
+    log("spawn failed: " + err);
     try { Max.post("sampler drag helper: " + err); } catch (_) {}
   }
   return helper;
@@ -69,22 +133,12 @@ function send(payload) {
   }
 }
 
-Max.addHandler("arm", (w, h, ...rest) => {
-  const ww = Number(w);
-  const hh = Number(h);
-  let parts = rest;
-  let handoff = false;
-  let filePath = "";
-  if (Number.isFinite(ww) && Number.isFinite(hh) && rest.length) {
-    parts = rest.slice();
-  } else {
-    parts = [w, h, ...rest].filter((p) => p !== undefined);
-  }
-  if (String(parts[0]) === "handoff") {
-    handoff = true;
-    parts = parts.slice(1);
-  }
-  filePath = parts.map((p) => String(p)).join(" ").trim();
+Max.addHandler("arm", (...args) => {
+  // The path is not in this message: a sample name with spaces never arrived intact, so the
+  // panel never armed. The face writes it to PATH_FILE first, then sends `arm hover` or `arm handoff`.
+  const box = armBox(args);
+  const filePath = sidePath();
+  log("arm args=" + JSON.stringify(args) + " path=" + JSON.stringify(filePath));
   if (!filePath) {
     send({ cmd: "disarm" });
     return;
@@ -93,11 +147,13 @@ Max.addHandler("arm", (w, h, ...rest) => {
     cmd: "arm",
     mode: "selected_raw",
     paths: [filePath],
-    // XO's panel is 16×16, centered on the cursor, so the click lands on it.
-    w: 16,
-    h: 16,
-    handoff: handoff,
-    stateFile: path.join(EXPORT_DIR, "last_drag_helper_state.json")
+    // The box is the whole sample name, placed so the cursor keeps its offset inside it.
+    w: box.w,
+    h: box.h,
+    ox: box.ox,
+    oy: box.oy,
+    handoff: box.handoff,
+    stateFile: "/tmp/bs_drag_state.json"
   });
 });
 

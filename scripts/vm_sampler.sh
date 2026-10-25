@@ -13,6 +13,7 @@
 #                                  on the host through an ssh tunnel (local 19877 -> VM 9877)
 #   scripts/vm_sampler.sh audio    sync, then run scripts/run_sampler_audio_tests.py in the VM
 #   scripts/vm_sampler.sh drag     sync, then drag a sample onto a drop target and onto Live
+#   scripts/vm_sampler.sh titledrag  sync, load Reactive 2, drag its sample title onto a drop target
 # Workflow: python3 scripts/build_sampler.py && node tests/test_sampler.js, then `live`, then `test`.
 set -u
 VM=macos-1
@@ -32,7 +33,7 @@ sync_repo() {
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
 # calls see M4L_LIVE_LOCK_HELD=1 and run directly). `run` = lock -> live -> test -> release.
-case "${1:-}" in live|test|run|drag) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=sampler_test.als exec "$ROOT/scripts/vm_live_lock.sh" sampler -- "$0" "$@" ;; esac
+case "${1:-}" in live|test|run|drag|titledrag) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=sampler_test.als exec "$ROOT/scripts/vm_live_lock.sh" sampler -- "$0" "$@" ;; esac
 
 case "${1:-}" in
   run)
@@ -46,6 +47,17 @@ case "${1:-}" in
     # The helper is an AppKit window. ssh is a background session and NSPanel init never returns there,
     # so the test runs as the console user (Aqua), same password as the VM login.
     sync_repo && "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_DRAG_VM=1 /usr/bin/python3 \$HOME/ableton/scripts/run_sampler_drag_test.py" ;;
+  titledrag)
+    # Drag the filename drawn on Reactive 2. The device is the one just built on the host (the VM has no
+    # node, so this does not rebuild). Opens sampler_test.als for the bridge, then loads Reactive 2.
+    sync_repo || exit 1
+    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
+    "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/sampler_test.als' || exit 1
+    "${SSH[@]}" 'mkdir -p ~/.m4l_loader "$HOME/Music/Ableton/User Library/Remote Scripts"'
+    tar -C "$ROOT/scripts/live_remote" -cf - M4LTestLoader | "${SSH[@]}" 'cd "$HOME/Music/Ableton/User Library/Remote Scripts" && tar -xf -'
+    sshpass -e scp -q "$ROOT/scripts/live_loader_client.py" "$ROOT/scripts/mm_os_input.py" "admin@${IP}:.m4l_loader/"
+    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/ableton/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
+    "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_DRAG_VM=1 /usr/bin/python3 \$HOME/ableton/scripts/run_sampler_title_drag_test.py" ;;
   live)
     sync_repo || exit 1
     "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/build_sampler.py >/dev/null &&

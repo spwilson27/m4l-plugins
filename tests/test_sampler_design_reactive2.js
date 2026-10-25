@@ -57,6 +57,49 @@ const FP = sb.FACE_PARAMS;
     assert.ok(String(node.code).includes("trackEventsMatchingMask") && String(node.code).includes("[self initiateOSFileDrag:event]"), "a file drag starts from the original mouseDown, like XO");
     assert.ok(String(node.code).includes("NSStatusWindowLevel") && !String(node.code).includes("NSPopUpMenuWindowLevel"), "the drag panel uses XO's status window level");
     assert.ok(String(node.code).includes("handoff"), "a drag the face already owns is handed to the helper");
+    assert.ok(String(node.code).includes("resolveSampleDragPath") && String(node.code).includes("mouse.y - (h - oy)"), "the drag resolves Live's volume path and covers the whole name");
+    {
+        const dragSrc = fs.readFileSync(path.join(ROOT, "src", "sampler_drag_node.js"), "utf8");
+        const picked = dragSrc.slice(dragSrc.indexOf("function takeDragPathText"), dragSrc.indexOf("const fs = require"));
+        const dragPath = new Function(picked + "\nreturn { takeDragPathText, resolveSampleDragPath };")();
+        const dir = fs.mkdtempSync("/tmp/bs-drag-");
+        const shortWav = path.join(dir, "Renders", "Bass", "1-10-23 -2 2 80-Operator-002.wav");
+        const longWav = path.join(dir, "Processed", "Reverse", "1-10-23 -2 2 80-Operator-002 R.wav");
+        fs.mkdirSync(path.dirname(shortWav), { recursive: true });
+        fs.mkdirSync(path.dirname(longWav), { recursive: true });
+        fs.writeFileSync(shortWav, "");
+        fs.writeFileSync(longWav, "");
+        const exists = (p) => fs.existsSync(p);
+        // Max's File write left the tail of a longer path in place. The recorded failure was
+        // "...002.wav" followed by the leftover "2 R.wav", and Live's "Macintosh HD:" prefix.
+        let disk = "";
+        function File() { this.isopen = 1; }
+        File.prototype.writestring = function (s) {
+            s = String(s);
+            disk = s + disk.slice(s.length);
+        };
+        File.prototype.close = function () {};
+        sb.File = File;
+        try {
+            const longReported = "Macintosh HD:" + longWav;
+            const shortReported = "Macintosh HD:" + shortWav;
+            assert.ok(shortReported.length < longReported.length, "the replacement path is the shorter one");
+            sb.publishDragPath(longReported);
+            sb.publishDragPath(shortReported);
+            assert.ok(disk.length > shortReported.length && disk.slice(shortReported.length).includes("R.wav"), "the path file still carries the previous name");
+            assert.strictEqual(dragPath.resolveSampleDragPath(disk.trim(), exists), "", "the tail plus the volume prefix is not a file");
+            assert.strictEqual(
+                dragPath.resolveSampleDragPath(dragPath.takeDragPathText(disk), exists),
+                shortWav,
+                "the drag uses the file Live loaded, not the leftover name"
+            );
+            assert.strictEqual(dragPath.resolveSampleDragPath(shortWav, exists), shortWav, "a POSIX path is unchanged");
+            assert.strictEqual(dragPath.resolveSampleDragPath("Macintosh HD:/no/such/file.wav", exists), "", "a missing file does not arm");
+        } finally {
+            delete sb.File;
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    }
     const vizRoute = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-route-viz").text.split(/\s+/).slice(1);
     assert.deepStrictEqual(vizRoute.slice(-2), ["arm_drag", "disarm_drag"], "drag messages are appended to the viz route");
     const linked = (a, ao, b, bo) => patcher.lines.some((l) => l.patchline.source[0] === a && l.patchline.source[1] === ao && l.patchline.destination[0] === b && l.patchline.destination[1] === bo);
@@ -470,7 +513,11 @@ sb.setFoldMask(0b1011);
     const mark = emitted.length;
     sb.onidle(name.x + 4, name.y + 4);
     const arm = emitted.slice(mark).find((a) => a[1] === "arm_drag");
-    assert.ok(arm && arm[4] === sb.sampleFilePath && arm[2] === Math.round(name.w) && arm[3] === Math.round(name.h), "hovering the name arms a drag of osc 1's file over the label");
+    assert.deepStrictEqual(
+        arm && arm.slice(1),
+        ["arm_drag", "hover", Math.round(name.w), Math.round(name.h), 4, 4],
+        "hovering the name arms a drag of the whole name, without the path in the message"
+    );
     sb.onidleout();
     assert.ok(!emitted.slice(mark).some((a) => a[1] === "disarm_drag"), "the overlay taking the pointer does not disarm the drag");
     sb.onidle(name.x + name.w + 40, name.y + 40);
@@ -485,7 +532,7 @@ sb.setFoldMask(0b1011);
     const mark2 = emitted.length;
     sb.onidle(name2.x + 4, name2.y + 4);
     const arm2 = emitted.slice(mark2).find((a) => a[1] === "arm_drag");
-    assert.ok(arm2 && arm2[4] === "/Users/test/Drums/Osc2 Hat.wav", "osc 2's name drags osc 2's file");
+    assert.ok(arm2 && arm2[2] === "hover", "osc 2's name arms the same drag");
     sb.onidleout();
     sb.oscTab = 0;
     sb.paint();
@@ -493,8 +540,8 @@ sb.setFoldMask(0b1011);
     sb.onclick(name.x + 4, name.y + 4, 1, 0, 0);
     assert.ok(!emitted.slice(browsed).some((a) => a[1] === "browse"), "pressing the name does not open the file dialog");
     sb.ondrag(name.x + 24, name.y + 8, 1, 0, 0);
-    const handed = emitted.slice(browsed).find((a) => a[1] === "arm_drag" && a[4] === "handoff");
-    assert.ok(handed && handed[5] === sb.sampleFilePath, "the first pixel of a drag hands the file to the helper");
+    const handed = emitted.slice(browsed).find((a) => a[1] === "arm_drag" && a[2] === "handoff");
+    assert.ok(handed && handed.length === 7, "the first pixel of a drag hands the gesture to the helper");
     sb.ondrag(name.x + 24, name.y + 8, 0, 0, 0);
     assert.ok(!emitted.slice(browsed).some((a) => a[1] === "browse"), "dragging the name does not open the file dialog");
     sb.onclick(name.x + 4, name.y + 4, 1, 0, 0);
@@ -1071,6 +1118,18 @@ assert.deepStrictEqual(plain(missing), [], `unreachable parameters: ${missing.jo
     const slider = sb.hitZones.find((z) => z.kind === "wt_pos" && z.w < 30);
     sb.onclick(slider.x + 1, slider.top + slider.h * 0.25, 1, 0, 0, 0, 0, 0);
     assert.ok(Math.abs(sb.paramValue("osc2_pos") - 75) < 1.5, "dragging the slider traverses the wavetable");
+    const wave = sb.hitZones.find((z) => z.kind === "wt_pos" && z.w >= 30);
+    const stack = sb.wtStackGeom(sb.viewWave[1] + 5, sb.viewWave[3] - 10);
+    const yAt = (t) => stack.yBot - t * stack.stack;
+    near(wave.top, yAt(1), 1e-6, "the wave maps position 100% to the top frame");
+    near(wave.mapH, Math.max(stack.stack, 1), 1e-6, "the wave maps position 0% to the bottom frame");
+    sb.setParamFromFace("osc2_pos", 0);
+    sb.onclick(wave.x + wave.w * 0.5, yAt(0), 1, 0, 0, 0, 0, 0);
+    near(sb.paramValue("osc2_pos"), 0, 0.05, "clicking the bottom orange trace keeps 0%");
+    sb.onclick(wave.x + wave.w * 0.5, yAt(1), 1, 0, 0, 0, 0, 0);
+    near(sb.paramValue("osc2_pos"), 100, 0.05, "clicking the top orange trace sets 100%");
+    sb.onclick(wave.x + wave.w * 0.5, yAt(0.375), 1, 0, 0, 0, 0, 0);
+    near(sb.paramValue("osc2_pos"), 37.5, 0.05, "clicking a mid trace stores that position");
     sb.setParamFromFace("osc2_pos", 0);
     const catBtn = sb.hitZones.find((z) => z.key === "wt2_cat");
     sb.doAction(catBtn);
