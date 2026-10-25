@@ -258,7 +258,7 @@ function hsFrame(st, mag, p, sr) {
         st.hwA.fill(0);
     }
     var flo = p.flo, fhi = p.fhi, thr = p.thr, sens = p.sens;
-    var hmx = p.hmaxp < 0.5 ? HS_MAXH : p.hmaxp;
+    var hmx = p.hmaxp < 0.5 ? HS_MAXH : hsClip(Math.round(p.hmaxp), 1, HS_MAXH);
     var dec = 3 * n / sr;
 
     // ---- hs_prep ----
