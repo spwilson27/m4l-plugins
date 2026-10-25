@@ -1,7 +1,8 @@
-# Bug sweep — Transient Split (transplit), Pass 3 (fix)
+# Bug sweep — Transient Split (transplit), Pass 4 (review)
 
 Worktree: `/tmp/bugsweep/transplit` · Branch: `bugsweep/transplit-pass1` · Base: `66fea67`
 Pass 3: fixed 1 / remaining 0. Bug 1 fixed — GenExpr tilt-gain cache now keys on sample rate (`cgSr`), mirroring `twSr`. Host gate green.
+Pass 4: **APPROVED** — no code changes. Fix is minimal, correct, and matches the existing History cache-key pattern; red test unchanged and green; no drive-by refactors.
 Scope: `devices/Transient Split.amxd` + `.adg`, `src/transplit_*`, `src/spectral_*`,
 `scripts/spectral_common.py`, `scripts/build_transplit.py`, and the transplit/spectral tests.
 Method: applied the pass-2 fix direction in `ts_masks`; re-ran the host gate until green.
@@ -43,7 +44,7 @@ Touchpoints:
 - `src/transplit_core.genexpr` — rebuild condition `... || cgSr != sr`; assign `cgSr = sr` in the rebuild block
 - `tests/test_transplit.js:415` — assertion now passes (test left unchanged)
 
-Commit SHA: *(pending — recorded in the pass-3 commit that follows)*
+Commit SHA: `17d4b1b1347fd049e909e0a41e83c3d16b022416`
 
 ## Examined, no credible bug found
 
@@ -79,15 +80,30 @@ Commit SHA: *(pending — recorded in the pass-3 commit that follows)*
 - `src/transplit_config.js` line 133 comment describes Contour as "+1 at the mids"; the
   code (and every other comment) is -1 at the centre, +1 at the edges.
 
+## Pass 4 review
+
+**Verdict: APPROVED** (no production follow-up).
+
+- **Bug 1 (`cgSr`):** Minimal three-line GenExpr change (`History cgSr(0)`, `|| cgSr != sr`,
+  `cgSr = sr` in the rebuild block). Correctly mirrors ctl-hook `twSr` / `ts_tilttab`.
+  Bin-1 `cgW` probe stays clipped across SR at common n, so the SR key is necessary and
+  sufficient. JS `tsMasks` recomputes `exp(tl * … * w[k])` every frame (no cache) — no
+  remaining mirror gap. Red test left unchanged from pass 1 and is green.
+- Diff vs main is only: BUGS.md, the red test (+17), `src/transplit_core.genexpr` (+3/-1),
+  and rebuilt device artifacts. No drive-by refactors; tests not weakened.
+- Non-functional prose notes (latency 4096 vs 5120 help text; Contour comment sign) left
+  as notes — out of scope for this bugsweep.
+
 ## Commands / results
 
 ```
 npm run -s typecheck && python3 scripts/build_transplit.py && node tests/test_transplit.js
-# GREEN: All Transient Split tests passed (incl. "tilt gains follow the sample rate")
-node tests/spectral_link_tests.js      # passed
+# GREEN (pass 4 re-run): All Transient Split tests passed (incl. "tilt gains follow the sample rate")
+node tests/spectral_link_tests.js      # passed (via test_transplit suite)
 node tests/test_spectral_rack.js       # passed
 node tests/test_spectral_dsp.js        # passed
 ```
 
 Pass 1 committed the red test + this file; pass 2 confirmed the bug; pass 3 applied the
-`cgSr` cache-key fix in `src/transplit_core.genexpr` and turned the host gate green.
+`cgSr` cache-key fix in `src/transplit_core.genexpr` and turned the host gate green;
+pass 4 reviewed and approved with no further code changes.
