@@ -2094,3 +2094,42 @@ setvalueof(blob) → oscTrigLevel === 0         // FAIL_trig_roundtrip = true
 ## Out of scope (owned elsewhere)
 
 - Shared `buffer~ #0-analyzerscope` / `setbuffer #0-analyzerscope` name in a top-level device (`src/oscilloscope_ui.js:13`, `scripts/build_oscilloscope.py:62,66,67`) — already covered by analyzer-scope pass 2; fix in pass 3 of that device.
+
+# BUGS.md — Better Shaper PASS 1
+
+Branch: `bugsweep/shaper-pass1`
+Worktree: `/private/tmp/bugsweep/shaper`
+Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code here.
+
+## Confirmed bugs
+
+### 1. Multi-select vertical drag deletes unselected points between the selection
+
+- **Where**: `src/mseg_edit.js:83-89` (`msegMoveSelection`)
+- **What**: After pushing per-point travel intervals, when `sweepIntervals.length >= 2` the code also pushes the bounding union `[minSpan, maxSpan]` of *all* intervals. Selecting two or more interior points always hits that branch (each interior still pushes two near-degenerate intervals even when `dx === 0`), so a pure vertical group move deletes every unselected point whose `x` lies between the leftmost and rightmost selected `x`.
+- **Why it is wrong**: Contradicts the comment at `src/mseg_edit.js:41` (“An unselected point whose x lies on a selected point's travel is removed”). A pure vertical move has no horizontal travel, so intervening points must survive.
+- **Repro (Node)**: five points at x=`0,0.25,0.5,0.75,1`; select ids `[2,4]`; call `msegMoveSelection(..., primaryId=2, targetX=0.25, targetY=0.55, ...)`. Point id `3` at x=`0.5` is removed; result ids `1,2,4,5`.
+- **RED test**: `tests/test_shaper_bugsweep.js` (run: `node tests/test_shaper_bugsweep.js`; expected FAIL on current code). Verified RED on this branch (AssertionError: middle point 3 deleted).
+
+## Notes
+
+- No other credible bugs locked in this pass yet; further review may add entries and RED cases.
+- Host gate (`npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js`) does not run `tests/test_shaper_bugsweep.js`; run that file separately to see the RED failure.
+
+## PASS 2 review
+
+- **Kept 1 / Dropped 0.** Bug 1 confirmed real UI bug, not intentional sweep: L41 comment limits deletes to an unselected point on a selected point's travel; on `dx === 0` interiors still push near-degenerate intervals and L83-89 unions the whole selection span, so intervening points die. RED re-verified FAIL on unfixed code (`node tests/test_shaper_bugsweep.js` → AssertionError, ids `1,2,4,5`).
+- Host gate green on unfixed code: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js` (GATE_EXIT:0). Bugsweep remains RED (BUGSWEEP_EXIT:1).
+- No strengthen needed; no additional bugs found in `src/mseg_edit.js` (104 lines; file ends at `msegMoveSelection`). Production/src untouched (pass 3).
+
+## PASS 3 fix
+
+- **Fixed 1 / Deferred 0.** Bug 1 fixed in `src/mseg_edit.js` `msegMoveSelection`: guarded the bounding-union sweepIntervals push with `dx !== 0`, so a pure vertical multi-select drag (dx === 0) no longer unions the whole selection span and no longer deletes intervening unselected points. Per-point travel intervals still apply, preserving intentional horizontal-sweep deletes for dx !== 0.
+- **Red now green**: `node tests/test_shaper_bugsweep.js` passes (middle point id 3 survives; ids 1,2,3,4,5; selected points 2 and 4 keep x=0.25/0.75). Full host gate green end-to-end: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
+- Commit: pending on `bugsweep/shaper-pass1`; not merged to main.
+
+## PASS 4 review
+
+- **APPROVED.** Bug 1 fix confirmed minimal and correct: `src/mseg_edit.js:85` gates the bounding-union push with `dx !== 0 && sweepIntervals.length >= 2`; per-point travel pushes (L79-80) and the filter (L93-103) are unchanged, so dx !== 0 horizontal-sweep deletes remain. RED test still asserts middle point id 3 survives a pure vertical multi-select of ids 2+4 (primary at x=0.25, y to 0.55), length stays 5, and selected points keep x=0.25/0.75. No drive-by refactors; no test weakening.
+- Host gate re-verified green on tip 3c91f90: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
+- No follow-up code changes in this pass; note-only commit next. Not merged to main.
