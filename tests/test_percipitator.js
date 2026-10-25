@@ -432,4 +432,59 @@ assert.strictEqual(ui.pullScope(), true, "pullScope() must wake up immediately w
     assert.strictEqual(nested.length, 0, `No return inside a block in GenExpr functions (${nested.join("; ")})`);
 }
 
+// 7. Gen-vs-JS mirror: computeSieveGain claims to match sieve_one() in the gen core, and the
+// face shades muted lanes / weights the demo state from the JS values, so a divergence means
+// the display and the audio apply different sieve gains. Extract the gen constants and compare
+// every band x mode.
+{
+    const sieveFn = gen.match(/sieve_one\(bandIdx, sieveMode\) \{([\s\S]*?)\n\}/);
+    assert.ok(sieveFn, "sieve_one must be extractable from the gen core");
+    const sBody = sieveFn[1];
+    const sNum = (re, label) => {
+        const mm = sBody.match(re);
+        assert.ok(mm, "sieve_one missing " + label);
+        return parseFloat(mm[1]);
+    };
+    const oddAtt = sNum(/sOdd = isEven \? 1\.0 : ([\d.]+);/, "Odd attenuation");
+    const evenAtt = sNum(/sEven = isEven \? ([\d.]+) : 1\.0;/, "Even attenuation");
+    const sprsBoost = sNum(/sSprs = isThird \? ([\d.]+) : [\d.]+;/, "Sprs boost");
+    const sprsAtt = sNum(/sSprs = isThird \? [\d.]+ : ([\d.]+);/, "Sprs attenuation");
+    const riseBase = sNum(/sRise = ([\d.]+) \+ [\d.]+ \* \(bandIdx \/ 15\.0\);/, "Rise base");
+    const riseSlope = sNum(/sRise = [\d.]+ \+ ([\d.]+) \* \(bandIdx \/ 15\.0\);/, "Rise slope");
+    const genSieve = (b, m) =>
+        m === 0 ? 1.0
+        : m === 1 ? (b % 2 === 0 ? 1.0 : oddAtt)
+        : m === 2 ? (b % 2 === 0 ? evenAtt : 1.0)
+        : m === 3 ? (b % 3 === 0 ? sprsBoost : sprsAtt)
+        : riseBase + riseSlope * (b / 15.0);
+    for (let m = 0; m <= 4; m++) {
+        for (let b = 0; b < 16; b++) {
+            assert.ok(
+                Math.abs(cfg.computeSieveGain(b, m) - genSieve(b, m)) < 1e-9,
+                `Sieve mirror mismatch band ${b} mode ${m}: JS ${cfg.computeSieveGain(b, m)} vs gen ${genSieve(b, m)}`
+            );
+        }
+    }
+}
+
+// 8. Gen procedural fallback (voice_osc, used while #0-percipwt reads empty) must be
+// phase-aligned with the canonical wavetable frames it substitutes for: the Triangle frame
+// peaks at phase 0.25 and troughs at phase 0.75 (generateStandardWavetable frame 1).
+{
+    assert.ok(stdWt[cfg.WT_FRAME_SIZE + 512] > 0.9, "Canonical Triangle frame must peak near +1 at phase 0.25");
+    assert.ok(stdWt[cfg.WT_FRAME_SIZE + 1536] < -0.9, "Canonical Triangle frame must trough near -1 at phase 0.75");
+    const triMatch = gen.match(/pTri = ([^;]+);/);
+    assert.ok(triMatch, "voice_osc fallback must define pTri");
+    const wrapJs = (x, lo, hi) => {
+        const r = hi - lo;
+        return (((x - lo) % r) + r) % r + lo;
+    };
+    const pTriAt = (wPh) =>
+        new Function("wPh", "wrap", "abs", `"use strict"; return (${triMatch[1]});`)(wPh, wrapJs, Math.abs);
+    assert.ok(Math.abs(pTriAt(0) - 0) < 1e-6, `Fallback triangle must be 0 at phase 0, got ${pTriAt(0)}`);
+    assert.ok(Math.abs(pTriAt(0.25) - 1) < 1e-6, `Fallback triangle must peak (+1) at phase 0.25, got ${pTriAt(0.25)}`);
+    assert.ok(Math.abs(pTriAt(0.5) - 0) < 1e-6, `Fallback triangle must be 0 at phase 0.5, got ${pTriAt(0.5)}`);
+    assert.ok(Math.abs(pTriAt(0.75) + 1) < 1e-6, `Fallback triangle must trough (-1) at phase 0.75, got ${pTriAt(0.75)}`);
+}
+
 console.log("test_percipitator: ok (408x169 Concept 3 verified)");
