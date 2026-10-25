@@ -22,7 +22,7 @@
 
 **Out of scope (unchanged):** `scripts/run_envtrig_audio_tests.py` harness `#0-trigscope` (lives in an abstraction); AGENTS.md historical Envelope Trigger docs.
 
-**Commit SHA:** pending tip of `bugsweep/envelope-trigger-pass1` (filled after PASS 3 commit).
+**Commit SHA:** aafec96 on `bugsweep/envelope-trigger-pass1`.
 
 ---
 
