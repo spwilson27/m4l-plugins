@@ -690,6 +690,13 @@ function prep(src) {
         const ref = mix * (wet[0] + wet[1] + wet[2]) + (1 - mix) * dry;
         assert.ok(Math.abs(sum - ref) < 1e-12, `Mix ${mix}: rack sum = mix * wet + (1 - mix) * dry`);
     }
+    // Mix standalone: K = 1 outside a rack even for a single-channel Output (AGENTS.md section 24, Mix):
+    // K = 3 applies only when this instance is one chain of a rack (outsel 1..3). The JS model with k = 1
+    // keeps the full dry; the gen must not key the 1 / K dry share on the channel selection alone.
+    assert.ok(Math.abs(cfg.lsMixOut(0.3, 0.8, 0.5, 1) - (0.5 * 0.3 + 0.5 * 0.8)) < 1e-12, "lsMixOut k=1: a lone device keeps full dry");
+    // Fail while kShare is keyed only on selH (standalone single-channel Output wrongly gets 1/K).
+    // Match the selH-gated form, not the exact float, so a repr change cannot green this without a fix.
+    assert.ok(!/kShare\s*=\s*selH\s*>\s*0\.5\s*\?/.test(GEN_CODE), "gen dry share keys on selH alone (kShare = 1/K for any single-channel Output): a standalone device with Output Loud / Mid / Quiet must keep K = 1");
     // built device: Mix wiring, Bitwig on-face / off-face split
     const dev = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "devices", "Loud Split.amxd")).slice(32).toString("utf8"));
     const bx = {};
