@@ -2876,8 +2876,10 @@ slot_out(ty, native, alt, msegV) {
 	return slotO;
 }
 
-// src >= 32 flips the cell off its natural polarity (bipolar sources fold to 0..1, unipolar ones center).
-mod_pol(src, sig) {
+// src >= 32 forces bipolar. A source that already swings through -1..1 is left alone.
+// A 0..1 source is centered, so 0 lands at -1 and 1 lands at +1. Slot 4 is bipolar
+// only while it is still the native LFO; an envelope or MSEG in that slot is 0..1.
+mod_pol(src, sig, s4Bi) {
 	polFlip = 0;
 	polBi = 0;
 	polOut = sig;
@@ -2886,21 +2888,21 @@ mod_pol(src, sig) {
 		polFlip = 1;
 		polId = src - 32;
 	}
-	if ((polId > 2.5) && (polId < 4.5)) polBi = 1;
+	if ((polId > 2.5) && (polId < 3.5)) polBi = 1;
+	if ((polId > 3.5) && (polId < 4.5)) {
+		if (s4Bi > 0.5) polBi = 1;
+	}
 	if ((polId > 6.5) && (polId < 7.5)) polBi = 1;
 	if ((polId > 9.5) && (polId < 10.5)) polBi = 1;
 	if ((polId > 11.5) && (polId < 12.5)) polBi = 1;
 	if (polId > 14.5) polBi = 1;
-	if (polFlip > 0.5) {
-		if (polBi > 0.5) polOut = clip(sig * 0.5 + 0.5, 0, 1);
-		else polOut = clip(sig * 2.0 - 1.0, -1, 1);
-	}
+	if ((polFlip > 0.5) && (polBi < 0.5)) polOut = clip(sig * 2.0 - 1.0, -1, 1);
 	return polOut;
 }
 
 // Matrix source in the same order as the face: 0 Amp, 1 Env 2, 2 Env 3, 3 LFO 1, 4 slot 4,
 // 5 Vel, 6 Key, 7 PB, 8 Press, 9 Mod, 10 Rand, 11 MPE Vel, 12 Note PB, 13 Slide, 14 Press,
-// 15 Osc 1, 16 Osc 2, 17 Sub. Ids at 32 and above are the same source with the polarity flipped.
+// 15 Osc 1, 16 Osc 2, 17 Sub. Ids at 32 and above are the same source forced bipolar.
 mod_src(id, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3) {
 	s = ampS;
 	if (id >= 0.5) {
@@ -2927,7 +2929,7 @@ mod_src(id, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS,
 
 // One voice of the matrix. nR == 0 is not called. Routes add an offset and the caller restores prm.
 // argBuf holds argument offsets. gBuf holds this voice's global offsets when doGlobal > 0.5 and it is the loudest so far.
-mod_apply(nR, doGlobal, ampS, menvS, env3S, velS, noteS, rndS, npbS, slideS, pressS, lfo1S, lfo2S, pbS, atS, modS, markC, srNow, stB, mapBuf, prmBuf, histBuf, argBuf, depBuf, baseBuf, slotBuf, gBuf, metaBuf, fmP, shP, bdP, gnP, nUni, gsP, syP, tpP, knP, au1, au2, au3) {
+mod_apply(nR, doGlobal, ampS, menvS, env3S, velS, noteS, rndS, npbS, slideS, pressS, lfo1S, lfo2S, pbS, atS, modS, markC, srNow, stB, mapBuf, prmBuf, histBuf, argBuf, depBuf, baseBuf, slotBuf, gBuf, metaBuf, fmP, shP, bdP, gnP, nUni, gsP, syP, tpP, knP, au1, au2, au3, s4Bi) {
 	zi = 0;
 	ri = 0;
 	touch = 0;
@@ -2969,7 +2971,7 @@ mod_apply(nR, doGlobal, ampS, menvS, env3S, velS, noteS, rndS, npbS, slideS, pre
 			idn = srcV;
 			if (srcV >= 31.5) idn = srcV - 32;
 			srcSig = mod_src(idn, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3);
-			srcSig = mod_pol(srcV, srcSig);
+			srcSig = mod_pol(srcV, srcSig, s4Bi);
 			if ((slotV >= 0) && (slotV < nR)) {
 				poke(depBuf, clip(peek(depBuf, slotV) + depV * srcSig, -1, 1), slotV);
 			}
@@ -2993,7 +2995,7 @@ mod_apply(nR, doGlobal, ampS, menvS, env3S, velS, noteS, rndS, npbS, slideS, pre
 		idn = srcV;
 		if (srcV >= 31.5) idn = srcV - 32;
 		srcSig = mod_src(idn, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3);
-		srcSig = mod_pol(srcV, srcSig);
+		srcSig = mod_pol(srcV, srcSig, s4Bi);
 		offV = depV * srcSig * (hiV - loV);
 		if (smV > 0.5) {
 			prevV = peek(histBuf, stB + 208 + ri);
@@ -3133,7 +3135,7 @@ mod_restore(prmBuf, baseBuf, slotBuf, metaBuf) {
 
 // Matrix offsets for the two wavetable frames. A variable-index poke inside mod_apply does not land, so these
 // are summed here and applied by the caller. 202 is play_pos (argument 2); 74 is osc2_pos. One return each.
-frame_pos(nR, mapBuf, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3) {
+frame_pos(nR, mapBuf, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3, s4Bi) {
 	fo1 = 0;
 	fo2 = 0;
 	foRi = 0;
@@ -3154,7 +3156,7 @@ frame_pos(nR, mapBuf, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, m
 		foId = foSrc;
 		if (foSrc >= 31.5) foId = foSrc - 32;
 		foSig = mod_src(foId, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3);
-		foSig = mod_pol(foSrc, foSig);
+		foSig = mod_pol(foSrc, foSig, s4Bi);
 		foOff = foDep * foSig * (foHi - foLo);
 		if (abs(foC - 202) < 0.5) fo1 = fo1 + foOff;
 		else if (abs(foC - 74) < 0.5) fo2 = fo2 + foOff;
@@ -3992,10 +3994,11 @@ for (svx = 0; svx < 4; svx += 1) {
 		aud1 = peek(vhist, svx * 256 + 63);
 		aud2 = peek(vhist, svx * 256 + 56);
 		aud3 = peek(vhist, svx * 256 + 57);
-		mod_apply(nRoutes, 0, mxAmp, slotS2, slotS3, mxVel, mxNote, mxRnd, mxNpb, mxSlide, mxPress, slotSL, slotS4, midi_pb, midi_at, midi_mod, markC, srVal, svx * 256, modmap, prm, vhist, mxArg, mxDep, mxBase, mxSlot, mxG, mxMeta, formant, sp_shift, sp_bend, samp_gain, unison_voices, grain_size, fr_sync, tempo, sub_knock_slope, aud1, aud2, aud3);
+		s4Nat = (peek(slbuf, 3) < 0.5) ? 1 : 0;
+		mod_apply(nRoutes, 0, mxAmp, slotS2, slotS3, mxVel, mxNote, mxRnd, mxNpb, mxSlide, mxPress, slotSL, slotS4, midi_pb, midi_at, midi_mod, markC, srVal, svx * 256, modmap, prm, vhist, mxArg, mxDep, mxBase, mxSlot, mxG, mxMeta, formant, sp_shift, sp_bend, samp_gain, unison_voices, grain_size, fr_sync, tempo, sub_knock_slope, aud1, aud2, aud3, s4Nat);
 		pitchUse = mod_take(nRoutes, 0, pitch_st, -36, 36, mxArg);
 		fineUse = mod_take(nRoutes, 1, fine_cents, -100, 100, mxArg);
-		spWt1, spWt2 = frame_pos(nRoutes, modmap, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3);
+		spWt1, spWt2 = frame_pos(nRoutes, modmap, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3, s4Nat);
 		posUse = clip(play_pos + spWt1, 0, 1);
 		stUse = mod_take(nRoutes, 3, samp_start, 0, 0.99, mxArg);
 		enUse = mod_take(nRoutes, 4, samp_end, 0.01, 1, mxArg);
@@ -4230,7 +4233,8 @@ for (vox = 0; vox < 16; vox += 1) {
 			aud1 = peek(vhist, vhOff + 63);
 			aud2 = peek(vhist, vhOff + 56);
 			aud3 = peek(vhist, vhOff + 57);
-			mod_apply(nRoutes, 1, mxAmp, slotS2, slotS3, mxVel, mxNote, mxRnd, mxNpb, mxSlide, mxPress, slotSL, slotS4, midi_pb, midi_at, midi_mod, markC, srVal, vhOff, modmap, prm, vhist, mxArg, mxDep, mxBase, mxSlot, mxG, mxMeta, formant, sp_shift, sp_bend, samp_gain, unison_voices, grain_size, fr_sync, tempo, sub_knock_slope, aud1, aud2, aud3);
+			s4Nat = (peek(slbuf, 3) < 0.5) ? 1 : 0;
+			mod_apply(nRoutes, 1, mxAmp, slotS2, slotS3, mxVel, mxNote, mxRnd, mxNpb, mxSlide, mxPress, slotSL, slotS4, midi_pb, midi_at, midi_mod, markC, srVal, vhOff, modmap, prm, vhist, mxArg, mxDep, mxBase, mxSlot, mxG, mxMeta, formant, sp_shift, sp_bend, samp_gain, unison_voices, grain_size, fr_sync, tempo, sub_knock_slope, aud1, aud2, aud3, s4Nat);
 			if (mxAmp >= peek(mxMeta, 1)) {
 				// A variable index does not update Data mxG (measured: offset 0.95 computed, index 1 stayed 0;
 				// a literal poke index did land). Sum into plain values and store them with literal indices.
@@ -4256,7 +4260,7 @@ for (vox = 0; vox < 16; vox += 1) {
 						gId = gSrc;
 						if (gSrc >= 31.5) gId = gSrc - 32;
 						gSig = mod_src(gId, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3);
-						gSig = mod_pol(gSrc, gSig);
+						gSig = mod_pol(gSrc, gSig, s4Nat);
 						gOff = gDep * gSig * (gHi - gLo);
 						if (gSm > 0.5) gOff = peek(vhist, vhOff + 208 + gri);
 						gIx = gCode - 300;
@@ -4283,7 +4287,7 @@ for (vox = 0; vox < 16; vox += 1) {
 			}
 			pitchUse = mod_take(nRoutes, 0, pitch_st, -36, 36, mxArg);
 			fineUse = mod_take(nRoutes, 1, fine_cents, -100, 100, mxArg);
-			wt1Off, wt2Off = frame_pos(nRoutes, modmap, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3);
+			wt1Off, wt2Off = frame_pos(nRoutes, modmap, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3, s4Nat);
 			posUse = clip(play_pos + wt1Off, 0, 1);
 			stUse = mod_take(nRoutes, 3, samp_start, 0, 0.99, mxArg);
 			enUse = mod_take(nRoutes, 4, samp_end, 0.01, 1, mxArg);

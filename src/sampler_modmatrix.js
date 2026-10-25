@@ -209,10 +209,46 @@ var MOD_TARGETS = {
 };
 
 var MOD_LABELS = {
-    samp_gain: "Amp", pitch_st: "Pitch", play_pos: "Osc 1 Pos", wt1_fx1: "Osc 1 Warp",
-    xs_depth: "X-Synth", filt_cutoff: "Cutoff", osc1_pan: "Pan", grain_motion: "Speed",
-    fine_cents: "Sample Fine", osc1_detune: "Detune", osc2_gain: "Osc 2 Amp", sub_gain: "Sub Amp"
+    samp_gain: "Amp", pitch_st: "Pitch", play_pos: "Osc 1 Pos", osc2_pos: "Osc 2 Pos",
+    wt1_fx1: "Osc 1 Warp", wt1_fx2: "Osc 1 Fold", wt2_fx1: "Osc 2 Warp", wt2_fx2: "Osc 2 Fold",
+    xs_depth: "X-Synth", filt_cutoff: "Cutoff", filt_res: "Resonance", filt_drive: "Drive",
+    filt2_cutoff: "Cutoff 2", filt2_res: "Res 2", filt2_drive: "Drive 2",
+    osc1_pan: "Pan", osc2_pan: "Osc 2 Pan", sub_pan: "Sub Pan",
+    grain_motion: "Speed", fine_cents: "Fine", osc1_detune: "Detune",
+    osc2_gain: "Osc 2 Amp", osc2_pitch: "Osc 2 Pitch", osc2_detune: "Osc 2 Det",
+    sub_gain: "Sub Amp", out_gain: "Output", atk_ms: "Attack", dec_ms: "Decay",
+    rel_ms: "Release", sus_lvl: "Sustain"
 };
+
+// Tokens of a parameter key, longest first so filt2 wins over a later split.
+var MOD_LABEL_WORDS = {
+    filt2: "Filter 2", filt: "Filter", osc1: "Osc 1", osc2: "Osc 2", wt1: "Osc 1", wt2: "Osc 2",
+    lfo1: "LFO 1", lfo2: "LFO 2", lfo: "LFO", env3: "Env 3", env2: "Env 2", menv: "Mod Env",
+    samp: "Sample", sub: "Sub", xs: "X-Synth",
+    atk: "Attack", dec: "Decay", rel: "Release", sus: "Sustain",
+    cutoff: "Cutoff", res: "Res", drive: "Drive", morph: "Morph", gain: "Gain", pitch: "Pitch",
+    pan: "Pan", pos: "Position", detune: "Detune", width: "Width", rate: "Rate", amount: "Amount",
+    shaping: "Shape", offset: "Phase", slope: "Slope", init: "Start", peak: "Peak", final: "End",
+    formant: "Formant", glide: "Glide", density: "Density", motion: "Motion", spray: "Spray",
+    grain: "Grain", bend: "Bend", shift: "Shift", color: "Color", dist: "Dist", harm: "Harm",
+    fund: "Fund", split: "Split", env: "Env", fx1: "Warp", fx2: "Fold", semi: "Semi", fine: "Fine",
+    phase: "Phase", level: "Level", knock: "Knock", decay: "Decay", ratio: "Ratio", tune: "Tune",
+    depth: "Depth", tilt: "Tilt", odd: "Odd", even: "Even", lp: "Lowpass", quef: "Quef",
+    sync: "Sync", fold: "Fold", tone: "Tone", mod: "Mod", disp: "Disp", freq: "Freq",
+    start: "Start", end: "End", xfade: "Crossfade", unison: "Unison", vel: "Velocity",
+    sens: "Sens", ms: "", lvl: "", st: ""
+};
+
+function modHuman(key) {
+    var parts = String(key).split("_");
+    var out = [], i, word;
+    for (i = 0; i < parts.length; i++) {
+        word = Object.prototype.hasOwnProperty.call(MOD_LABEL_WORDS, parts[i]) ? MOD_LABEL_WORDS[parts[i]] : "";
+        if (!word && parts[i]) word = parts[i].charAt(0).toUpperCase() + parts[i].slice(1);
+        if (word) out.push(word);
+    }
+    return out.join(" ");
+}
 
 function modSources(mode) { return MOD_SOURCES[mode] || MOD_SOURCES[1]; }
 
@@ -235,8 +271,8 @@ function modTarget(key) { return MOD_TARGETS[key] || null; }
 
 function modLabel(key) {
     if (MOD_LABELS[key]) return MOD_LABELS[key];
-    if (key.indexOf("cell:") === 0) return "Amount";
-    return key;
+    if (String(key).indexOf("cell:") === 0) return "Amount";
+    return modHuman(key) || key;
 }
 
 function modTargetKeys() {
@@ -265,7 +301,7 @@ function modSlotSignal(ty, native, alt, msegV) {
 }
 
 // Rows are {1:[keys], 2:[], 3:[], 4:[]}. depth maps "mode:row:src" -> -100..100.
-// polar maps the same key to 1 when the cell is flipped off its natural polarity (src id + 32).
+// polar maps the same key to 1 when alt-click forces that cell bipolar (src id + 32).
 // globalAmt is the Global Amount percent (100 = unity). Legacy cells are skipped.
 function modPack(rows, depth, globalAmt, polar) {
     var pct = Number(globalAmt);
@@ -365,8 +401,8 @@ function modAudit(faceParams) {
 }
 
 var MOD_DEFAULT_ROWS = {
-    1: ["samp_gain", "pitch_st", "play_pos", "wt1_fx1", "filt_cutoff"],
-    2: ["samp_gain", "pitch_st", "filt_cutoff", "play_pos", "osc1_pan"],
+    1: ["samp_gain", "pitch_st", "filt_cutoff"],
+    2: ["samp_gain", "pitch_st", "filt_cutoff", "osc1_pan"],
     3: ["pitch_st", "samp_gain", "filt_cutoff", "osc1_pan"],
     4: ["pitch_st", "filt_cutoff", "samp_gain"]
 };
@@ -441,6 +477,6 @@ if (nodeModule && nodeModule.exports) {
         modSources: modSources, modLegacyParam: modLegacyParam, modDenied: modDenied, modTarget: modTarget,
         modPack: modPack, modOffset: modOffset, modSmooth: modSmooth, modAudit: modAudit,
         modDefaultRows: modDefaultRows, modEncode: modEncode, modDecode: modDecode, modTargetKeys: modTargetKeys,
-        modLabel: modLabel, modCode: modCode, modCellKey: modCellKey, modSlotSignal: modSlotSignal
+        modLabel: modLabel, modHuman: modHuman, modCode: modCode, modCellKey: modCellKey, modSlotSignal: modSlotSignal
     };
 }

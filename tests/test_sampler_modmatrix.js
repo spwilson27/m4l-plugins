@@ -5,6 +5,12 @@ const path = require("path");
 const mx = require("../src/sampler_modmatrix.js");
 
 const rows = mx.modDefaultRows();
+assert.ok(rows[1].indexOf("play_pos") < 0 && rows[1].indexOf("wt1_fx1") < 0, "Osc 1 Pos and Osc 1 Warp are not default rows");
+assert.strictEqual(mx.modLabel("samp_gain"), "Amp", "hardcoded names stay short");
+assert.strictEqual(mx.modLabel("filt_res"), "Resonance", "resonance is a word, not the parameter key");
+assert.strictEqual(mx.modLabel("filt2_cutoff"), "Cutoff 2");
+assert.ok(!mx.modLabel("grain_size").includes("_"), "an unnamed target is words, got " + mx.modLabel("grain_size"));
+assert.ok(rows[2].indexOf("play_pos") < 0, "Osc 1 Pos is not a MIDI default row");
 assert.deepStrictEqual(mx.modPack(rows, {}, 100), [0], "no cells, no routes");
 assert.strictEqual(mx.modOffset(3, -36, 36, 0, 1), 3, "zero depth is the base");
 assert.strictEqual(mx.modOffset(-2, -36, 36, 0, -1), -2, "zero depth keeps a negative base");
@@ -41,7 +47,7 @@ assert.strictEqual(depth[7], 1000, "the second route modulates the first route's
 assert.strictEqual(mx.modEncode(mx.modDefaultRows(), {}), "", "defaults encode to nothing");
 const polar = { "1:0:4": 1 };
 const flipped = mx.modPack({ 1: ["osc1_pan"], 2: [], 3: [], 4: [] }, { "1:0:4": 50 }, 100, polar);
-assert.strictEqual(flipped[2], 36, "unipolar cells pack source + 32");
+assert.strictEqual(flipped[2], 36, "bipolar cells pack source id + 32");
 const audio = mx.modPack({ 1: [], 2: [], 3: [], 4: ["pitch_st"] }, { "4:0:15": 25 }, 100);
 assert.strictEqual(audio[2], 15, "audio-rate Osc 1 is source 15");
 const round = {};
@@ -93,7 +99,7 @@ assert.ok(gen.includes("lfOff = peek(mxArg, 19)"), "a matrix route to lfo_filt i
 assert.ok(gen.includes("env3_final + peek(mxArg, 41)"), "a matrix route to env 3 final is applied");
 assert.ok(gen.includes("peek(slbuf, 48 + si)"), "slot envelopes attack toward the drawn peak");
 assert.ok(gen.includes("peek(msegw, si * 1024"), "each slot reads its own MSEG waveform");
-assert.ok(gen.includes("poke(scope, slotSig, 224 + si)"), "slot envelope levels are on the scope");
+assert.ok(gen.includes("poke(scope, out0, 224)") && gen.includes("poke(scope, out3, 227)"), "slot levels are on the scope");
 assert.ok(gen.includes("poke(scope, resUse, 230)"), "resonance used by the filter is on the scope");
 assert.ok(gen.includes("frame_pos("), "wavetable frames sum their matrix offset outside mod_apply");
 assert.strictEqual((gen.match(/frame_pos\(/g) || []).length, 3, "frame_pos is defined once and called from both voice loops");

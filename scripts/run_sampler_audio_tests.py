@@ -16,6 +16,7 @@ Environment:
   SAMPLER_SG_ONLY=1       with SAMPLER_CASE='^sg_': the Sample Gain (samp_gain) cases and checks
   SAMPLER_PAN_ONLY=1      with SAMPLER_CASE='^(pan_|uni_)': oscillator pan, unison width and detune checks
   SAMPLER_MX_ONLY=1       with SAMPLER_CASE='^mx_': slot-4 MSEG / Env routed to filter resonance
+  SAMPLER_BI_ONLY=1       with SAMPLER_CASE='^bi_': alt-click bipolar centers a unipolar source
   SAMPLER_WT_ONLY=1       with SAMPLER_CASE='^wt': wavetable frame position, knob and matrix
   SAMPLER_ES_ONLY=1       with SAMPLER_CASE='^es_': envelope slope (atk_slope ... mrel_slope) cases and checks; es_null prints
                           "ES_NULL chk=.. rms=.. peak=.." (run it with SAMPLER_GEN=<old core> to compare: bit-identical at slope 0)
@@ -1037,6 +1038,14 @@ add("mx_mseg", MX, 400, mod=True, opts="src=rich48 notes=57 mod=mseg")
 add("mx_env", MX, 400, mod=True, opts="src=rich48 notes=57 mod=env")
 # A held note should walk a 1 Hz retriggered MSEG. Scope 208 is that voice's phase ~0.4 after 400 ms.
 add("mx_phase", MX, 400, mod=True, opts="src=rich48 notes=57 mod=phase")
+# A flat-0 MSEG on cutoff. Source 4 stays at the 8 kHz knob. Source 36 (bipolar) centers that 0
+# at -1 and closes the lowpass.
+BI = ("mode 0, loop_mode 1, root_note 57, unison_voices 1, unison_width 0, unison_detune 0, "
+      "sus_lvl 1, atk_ms 1, dec_ms 10000, rel_ms 50, out_gain 0, vel_sens 0, "
+      "filt_on 1, filt_type 0, filt_cutoff 8000, filt_res 0, filt_drive 0, "
+      "lfo_filt 0, filt_env_amt 0, lfo2_amount 1, lfo2_rate 1")
+add("bi_uni", BI, 400, mod=True, opts="src=rich48 notes=57 mod=uni")
+add("bi_on", BI, 400, mod=True, opts="src=rich48 notes=57 mod=bi")
 
 # Wavetable frame. Frame 0 of #0-bswt1 / #0-bswt2 is a full-scale sine and frame 1 is silence.
 # play_pos / osc2_pos are gen units 0..1. A slot-4 MSEG of all 1s at depth 1 moves the frame to 1.
@@ -1074,6 +1083,17 @@ def run_mx_checks(results):
           f"MSEG resonance did not change the bandpass (off={off['rms']:.4f} mseg={mseg['rms']:.4f} res={mseg.get('mxRes')})")
     check(off["rms"] > env["rms"] * 1.8,
           f"Env resonance did not change the bandpass (off={off['rms']:.4f} env={env['rms']:.4f} res={env.get('mxRes')})")
+
+
+def run_bi_checks(results):
+    uni, bi = results["bi_uni"], results["bi_on"]
+    check(uni.get("jsCode", -1) == 300 and uni.get("jsTy", -1) > 1.5,
+          f"bi_uni probe (code={uni.get('jsCode')} ty={uni.get('jsTy')} wave={uni.get('jsWave')})")
+    check(bi.get("jsMap", -1) == 1 and abs(float(bi.get("jsCode", -1)) - 300) < 0.5,
+          f"bi_on probe route (map={bi.get('jsMap')} code={bi.get('jsCode')})")
+    check(uni["rms"] > 0.02, f"unipolar flat MSEG closed the lowpass (rms={uni['rms']:.4f})")
+    check(uni["rms"] > bi["rms"] * 4.0,
+          f"bipolar MSEG did not close the filter (uni={uni['rms']:.4f} bi={bi['rms']:.4f})")
 
 
 def run_phase_checks(results):
@@ -1293,6 +1313,13 @@ def main():
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
             raise SystemExit(1)
         print("MSEG phase checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_BI_ONLY"):
+        run_bi_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Bipolar modulation checks passed.")
         return
     if only and os.environ.get("SAMPLER_MX_ONLY"):
         run_mx_checks(results)

@@ -227,6 +227,7 @@ function lfoPhaseFromValue(shape, v, dir) {
 // ---------------------------------------------------------------------------
 
 var liveWt1Pos = -1;
+var wtVisHold = -1;
 var liveWt2Pos = -1;
 var sharedPoll = pollTelemetryScope;
 var voiceBorn = [];
@@ -258,6 +259,10 @@ pollTelemetryScope = function () {
             }
         }
     } catch (wtE) {}
+    if (wtVisHold >= 0) {
+        liveActiveVoices = 1;
+        liveWt1Pos = wtVisHold;
+    }
     for (var v = 0; v < 16; v++) {
         var st = stageOf(voiceAmpStg[v]);
         var pv = prevAmpStage[v];
@@ -1550,7 +1555,12 @@ function wtShownPos(key) {
     return clamp01(live);
 }
 
+// Last frame-box paint. The live.slider thumb is an opaque triangle on the right of the track,
+// so the box has to sit entirely to the left of the hairline or the thumb cuts its corner off.
+var wtScanBox = { x: 0, y: 0, w: 0, h: 0, line: 0 };
+
 // Native Wavetable position: a hairline, a hollow square, and the percent under the line.
+// The automation face covers the track only. The square is outside that face.
 function paintWtPosSlider(L, pos, on, osc) {
     var x = L.slideX + L.slideW * 0.5;
     var y0 = L.top + 1;
@@ -1560,12 +1570,17 @@ function paintWtPosSlider(L, pos, on, osc) {
     var t = clamp01(pos);
     var hy = y1 - t * (y1 - y0);
     var s = 3.5;
+    var sq = Math.round(x - s * 2 - 3);
+    var sy = Math.round(hy - s);
     setc(on ? RC.sel : RC.lcdDim, 1);
     mgraphics.set_line_width(1);
-    mgraphics.rectangle(Math.round(x - s) + 0.5, Math.round(hy - s) + 0.5, s * 2, s * 2);
+    mgraphics.rectangle(sq + 0.5, sy + 0.5, s * 2, s * 2);
     mgraphics.stroke();
+    wtScanBox = { x: sq, y: sy, w: s * 2, h: s * 2, line: x };
     text((t * 100).toFixed(1) + "%", x, L.bot - 1, 8.0, on ? RC.sel : RC.sub, true, 1);
-    zone("wt_pos", L.slideX, y0, L.slideW, y1 - y0, { key: osc.posKey, top: y0, mapH: Math.max(1, y1 - y0) });
+    var mapH = Math.max(1, y1 - y0);
+    zone("wt_pos", L.slideX, y0, Math.max(4, sq + s * 2 - L.slideX), mapH, { key: osc.posKey, top: y0, mapH: mapH });
+    zone("wt_pos", x - 1, y0, L.slideX + L.slideW - (x - 1), mapH, { key: osc.posKey, top: y0, mapH: mapH });
 }
 
 // Vertical placement of the frame stack. Position 0 sits on yBot, position 1 a `stack` px above it.
@@ -1580,8 +1595,12 @@ function wtStackGeom(y, h) {
     return { n: n, few: few, amp: amp, yBot: y + h - 4 - amp, stack: gap * Math.max(0, n - 1) };
 }
 
-// Every frame of the table, frame 0 at the bottom. The current position is the orange trace.
-function paintWtFrameStack(x, y, w, h, on, pos01, fxMode, fx1, fx2) {
+// Last stack paint: the knob (grey pivot) and the sounding frame (bright). split is 1 when they differ.
+var wtFrameMarks = { pivot: 0, live: 0, split: 0, yPivot: 0, yLive: 0 };
+
+// Every frame of the table, frame 0 at the bottom. The sounding frame is the bright trace.
+// When modulation has moved it, the knob position stays as a grey trace underneath.
+function paintWtFrameStack(x, y, w, h, on, pos01, fxMode, fx1, fx2, pivot01) {
     var g = wtStackGeom(y, h);
     var n = g.n, few = g.few, amp = g.amp, yBot = g.yBot, stack = g.stack;
     // Few frames stay apart, the way Basic Shapes reads. A long table packs until the
@@ -1604,20 +1623,37 @@ function paintWtFrameStack(x, y, w, h, on, pos01, fxMode, fx1, fx2) {
         }
         strokePath(pts, ghost, on ? 1 : 0.35, 1);
     }
-    pts = [];
     var cur = clamp01(pos01);
+    var pivot = clamp01(pivot01 == null ? cur : pivot01);
+    var split = Math.abs(pivot - cur) > 0.012;
+    var pivotGrey = [0.62, 0.64, 0.68];
+    if (split) {
+        pts = [];
+        for (c = 0; c <= cols; c++) {
+            p = c / cols;
+            px = x + 3 + p * (w - 6);
+            pts.push([px, yAt(pivot) - sampleAt(p, pivot) * amp]);
+        }
+        strokePath(pts, pivotGrey, on ? 0.95 : 0.4, 1.35);
+    }
+    pts = [];
     for (c = 0; c <= cols; c++) {
         p = c / cols;
         px = x + 3 + p * (w - 6);
         pts.push([px, yAt(cur) - sampleAt(p, cur) * amp]);
     }
     strokePath(pts, on ? RC.sel : RC.lcdDim, on ? 1 : 0.45, 1.75);
+    wtFrameMarks = { pivot: pivot, live: cur, split: split ? 1 : 0, yPivot: yAt(pivot), yLive: yAt(cur) };
+    if (wtVisHold >= 0 && typeof Global !== "undefined") {
+        var gVis = new Global("bs_r2_wtvis");
+        gVis.text = wtFrameMarks.pivot.toFixed(3) + "," + wtFrameMarks.live.toFixed(3) + "," + wtFrameMarks.split + "," + Math.round(wtFrameMarks.yPivot) + "," + Math.round(wtFrameMarks.yLive);
+    }
 }
 
-function paintWtScopePanel(x, y, w, h, on, pos01, fxMode, fx1, fx2) {
+function paintWtScopePanel(x, y, w, h, on, pos01, fxMode, fx1, fx2, pivot01) {
     fillRR(x, y, w, h, 3, RC.dark, 0.85);
     var waveW = Math.max(8, w - 48);
-    paintWtFrameStack(x, y + 2, waveW, h - 4, on, pos01, fxMode, fx1, fx2);
+    paintWtFrameStack(x, y + 2, waveW, h - 4, on, pos01, fxMode, fx1, fx2, pivot01);
     var sampleAt = function (p) { return evalWtWave(p, pos01, fxMode, fx1, fx2); };
     var lx = x + waveW + 2, ly = y + 8, ls = h - 16;
     line(lx + ls * 0.5, ly, lx + ls * 0.5, ly + ls, RC.line, 0.45, 1);
@@ -1635,9 +1671,10 @@ function paintWtViewer(wx, wy, ww, wh, pos01, on, fxMode, fx1, fx2) {
     var L = wtViewLayout();
     var osc = activeOsc();
     fillRect(wx, wy, ww, wh, RC.wave, 1);
+    var knobPos = clamp01(paramValue(osc.posKey) * 0.01);
     paintWtHarmonics(L, on, wtHarmAmps(pos01, fxMode, fx1, fx2));
     paintWtPosSlider(L, pos01, on, osc);
-    paintWtScopePanel(L.panelX, wy + 3, L.panelW, wh - 6, on, pos01, fxMode, fx1, fx2);
+    paintWtScopePanel(L.panelX, wy + 3, L.panelW, wh - 6, on, pos01, fxMode, fx1, fx2, knobPos);
     var waveW = Math.max(8, L.panelW - 48);
     var sg = wtStackGeom(wy + 5, wh - 10);
     var span = Math.max(sg.stack, 1);
@@ -2254,7 +2291,7 @@ sample_loaded = function () {
 //     LFO sub-tabs: A attack ms, Hz / Sync note, R retrigger, 4-cycle orange wave, 5 shape icons, Rate / Amount / Shape / Offset
 //   Mod Matrix section ("matrix"):
 //     Top tab bar (same style as Mod Sources): [Matrix] [MIDI] [MPE]
-//     4 target rows (Amp, Pitch, Osc 1 Pos, Osc 1 Warp) with bipolar mod cells & green/cyan/orange bars + Global Time/Amount
+//     default target rows (Amp, Pitch, Cutoff) with mod cells and the Global Time/Amount row
 // ---------------------------------------------------------------------------
 
 var ENV_W = 264;
@@ -3524,7 +3561,7 @@ function matRowLabel(key) {
         name = "Amt";
         for (var i = 0; i < srcs.length; i++) if (srcs[i].id === Number(bits[2])) name = "Amt " + srcs[i].name;
     } else if (typeof modLabel === "function") name = modLabel(key);
-    if (name.length > 11) name = name.substring(0, 10) + "…";
+    if (name.length > 14) name = name.substring(0, 13) + "…";
     return name;
 }
 
@@ -3557,7 +3594,7 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
         nCols = 4;
     }
 
-    var gx0 = bx + 56, gxEnd = bx + bw - 6;
+    var gx0 = bx + 84, gxEnd = bx + bw - 6;
     var cw = (gxEnd - gx0) / nCols;
     for (var c = 0; c < nCols; c++) {
         var cx = gx0 + c * cw;
@@ -3589,7 +3626,7 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
 
     for (var vr = 0; vr < vis; vr++) {
         var r = scroll + vr;
-        var ry = ty + 18.0 + vr * 16.6, rh = 15.4, lblW = 48.0;
+        var ry = ty + 18.0 + vr * 16.6, rh = 15.4, lblW = 74.0;
         var tKey = allRows[r];
         var provisional = matTouchIndex(mode) === r;
         var locked = rowLocked(mode, r);
@@ -3622,7 +3659,7 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
                 fillRect(bx0, ry + rh - 2.2, bw0, 1.6, barCol, 1.0);
                 var shown = bipolar && !pKey ? Math.round(val) : Math.round(val);
                 text(String(shown), clx + clw * 0.5, ry + 10.2, 8.2, barCol, false, 1);
-                if (flipped) text("U", clx + 2, ry + 8.2, 6.5, barCol, false, 0);
+                if (flipped) text("B", clx + 2, ry + 8.2, 6.5, barCol, false, 0);
             }
             if (pKey) zone("value", clx, ry, clw, rh, { key: pKey, norm: true, hbar: 1 });
             else zone("modcell", clx, ry, clw, rh, { mode: mode, row: r, src: src });
@@ -4795,7 +4832,7 @@ var autoFaceCache = {};
 var autoFaceOrigin = null;
 var autoFaceClear = {};
 var AUTO_FACE_SKIP = { msegpt: 1, msegbend: 1, msegplot: 1, msegloop: 1, msegclock: 1, msegrev: 1, msegtrig: 1, mseggrid: 1, msegrate: 1, msegmult: 1, msegknob: 1, modcell: 1, wave: 1, flag: 1, xfade: 1, loop_move: 1, hdl: 1, act: 1 };
-var AUTO_FACE_COLORS = ["activebgcolor", "activeslidercolor", "activetricolor", "activetricolor2", "bordercolor", "focusbordercolor", "inactivelcdcolor", "lcdbgcolor", "lcdcolor", "textcolor", "tricolor", "activebgoncolor", "bgcolor", "bgoncolor", "inactivetextoffcolor", "inactivetextoncolor", "textoncolor", "activetextcolor", "activetextoncolor"];
+var AUTO_FACE_COLORS = ["activebgcolor", "activeslidercolor", "activetricolor", "activetricolor2", "bordercolor", "focusbordercolor", "inactivelcdcolor", "lcdbgcolor", "lcdcolor", "textcolor", "tricolor", "activebgoncolor", "bgcolor", "bgoncolor", "inactivetextoffcolor", "inactivetextoncolor", "textoncolor", "activetextcolor", "activetextoncolor", "knobcolor", "elementcolor", "panelcolor", "slidercolor"];
 
 function autoFacesWanted() {
     var want = {};
@@ -4831,6 +4868,17 @@ function autoFaceOriginXY() {
     return o;
 }
 
+// Live paints a light triangle on a live.slider when its colour is transparent. The scan's
+// triangle sits beside the drawn square, so the handle colours match the wave panel instead.
+function hideScanHandle(face) {
+    var bg = (typeof liveCol === "function") ? liveCol("live_lcd_bg") : [0.094, 0.094, 0.094];
+    var names = ["tricolor", "trioncolor", "tribordercolor"];
+    var i;
+    for (i = 0; i < names.length; i++) {
+        try { face.setattr(names[i], bg[0], bg[1], bg[2], 1); } catch (eH) {}
+    }
+}
+
 function autoFaceApply(want) {
     var p = (typeof hostPatcher !== "undefined") ? hostPatcher : null;
     if (!p || !p.getnamed) return 0;
@@ -4858,15 +4906,18 @@ function autoFaceApply(want) {
         w = Math.round(r[2] * 100) / 100;
         h = Math.round(r[3] * 100) / 100;
         sig = x + "," + y + "," + w + "," + h;
-        if (autoFaceCache[key] === sig) continue;
         face = p.getnamed("obj-ctrl-" + key);
         if (!face) continue;
+        if (autoFaceCache[key] === sig) continue;
         was = autoFaceCache[key] === undefined;
         try {
             // Presentation has to be on before the rect is written. The first write, while the
             // saved box is still out of presentation, is ignored and the box stays at its patching rect.
             face.setattr("presentation", 1);
             face.setattr("hidden", 0);
+            if (key === "play_pos" || key === "osc2_pos") {
+                try { face.setattr("orientation", 0); } catch (eO) {}
+            }
             face.setattr("presentation_rect", x, y, w, h);
             face.setattr("presentation_rect", x, y, w, h);
             if (was && !autoFaceClear[key]) {
@@ -4877,6 +4928,7 @@ function autoFaceApply(want) {
                 try { face.setattr("shownumber", 0); } catch (eU) {}
                 autoFaceClear[key] = 1;
             }
+            if (key === "play_pos" || key === "osc2_pos") hideScanHandle(face);
             front = p.bringtofront;
             if (typeof front === "function") front.call(p, face);
         } catch (e2) { continue; }
@@ -5058,6 +5110,37 @@ function dbg_r2_view(mTab, pg, tb, loopMenu, fold) {
     }
     publishViewSlot();
     mgraphics.redraw();
+}
+
+// Force a sounding wavetable frame so a screenshot can show the grey knob trace and the bright one.
+function dbg_r2_wtvis(live) {
+    oscTab = 0;
+    wtVisHold = Math.max(0, Math.min(1, Number(live)));
+    liveActiveVoices = 1;
+    liveWt1Pos = wtVisHold;
+    if (typeof setParamFromFace === "function") setParamFromFace("osc1_type", 1);
+    if (typeof Global !== "undefined") {
+        var g = new Global("bs_r2_wtvis");
+        g.text = "";
+    }
+    mgraphics.redraw();
+    return String(wtVisHold);
+}
+
+function dbg_r2_labels() {
+    setFoldMask(8);
+    matTab = 0;
+    noteMatTouch("filt_res");
+    mgraphics.redraw();
+    var list = matRows[1] || [];
+    var names = [], i;
+    for (i = 0; i < list.length; i++) names.push(matRowLabel(list[i]));
+    var line = names.join("|");
+    if (typeof Global !== "undefined") {
+        var g = new Global("bs_r2_labels");
+        g.text = line;
+    }
+    return line;
 }
 
 // The open MSEG's playheads and the level the matrix column is showing.
@@ -5454,8 +5537,12 @@ function writeSlotKey(key, v) {
 var sharedStoreParam = storeParam;
 storeParam = function (key, v, fromFace) {
     var prevPage = envPage;
+    var before = paramVals[key];
     sharedStoreParam(key, v, fromFace);
     if (key === "env_page" && envPage !== prevPage) publishViewSlot();
+    // The scan's live.slider sits in front of the drawing, so its drag never reaches the
+    // canvas. The first assignment is the load echo; a later change is a touch.
+    if ((key === "play_pos" || key === "osc2_pos") && before !== undefined && paramVals[key] !== before) noteMatTouch(key);
 };
 
 var sharedSetParamFromFace = setParamFromFace;
@@ -5602,6 +5689,7 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
     if (z && z.kind === "wt_pos") {
         if (openMenu) openMenu = null;
         drag = { wtPos: true, key: z.key, top: z.top, h: z.mapH != null ? z.mapH : z.h };
+        noteMatTouch(z.key);
         setIfChanged(z.key, wtPosFromY(y, drag.top, drag.h));
         mgraphics.redraw();
         return;

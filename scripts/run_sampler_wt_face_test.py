@@ -200,11 +200,13 @@ def calibrate(win):
     return None
 
 
-def click_face(origin, rect, name):
-    # Live may snap a numbox shorter than the rect we asked for, so try a few points inside it.
+def click_face(origin, rect, name, low=False):
+    # The scan face has to answer a click on the hairline, including near the handle,
+    # not only the top 14 px a numbox would keep.
     x0, y0, w, h = rect
-    # Live keeps a numbox about 14px tall at the top of the rect we asked for.
-    for fy in (0.16, 0.5, 0.78):
+    # The handle lives on the lower half of the hairline. A face snapped to the top 18 px misses it.
+    spots = (0.88, 0.72, 0.58) if low else (0.16, 0.5, 0.78)
+    for fy in spots:
         for fx in (0.5, 0.3, 0.7):
             sx = origin[0] + x0 + w * fx
             sy = origin[1] + y0 + h * fy
@@ -280,7 +282,7 @@ def main():
     origin = calibrate(win)
     if not origin:
         fail("the pointer never crossed the device drawing")
-    hit = click_face(origin, rect, "Pos")
+    hit = click_face(origin, rect, "Pos", low=True)
     if not hit:
         fail("a click on the wavetable slider did not select Pos")
     x, y, sel = hit
@@ -302,7 +304,7 @@ def main():
     rect2 = faces2.get("osc2_pos")
     if not rect2 or not (8 < rect2[2] <= 40 and rect2[3] > 20):
         fail("osc 2's wavetable slider has no thin Osc 2 Position face (%s)" % rect2)
-    hit2 = click_face(origin, rect2, "Osc2Pos")
+    hit2 = click_face(origin, rect2, "Osc2Pos", low=True)
     if not hit2:
         fail("a click on osc 2's slider did not select Osc2Pos")
     x, y = hit2[0], hit2[1]

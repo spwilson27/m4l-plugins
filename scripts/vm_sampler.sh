@@ -15,6 +15,7 @@
 #   scripts/vm_sampler.sh drag     sync, then drag a sample onto a drop target and onto Live
 #   scripts/vm_sampler.sh titledrag  sync, load Reactive 2, drag its sample title onto a drop target
 #   scripts/vm_sampler.sh wtface     sync, load Reactive 2, prove wavetable-frame automation faces in Live
+#   scripts/vm_sampler.sh wtvis      photograph the scan and the modulated frame, and check the picture
 # Workflow: python3 scripts/build_sampler.py && node tests/test_sampler.js, then `live`, then `test`.
 set -u
 VM=macos-1
@@ -34,7 +35,7 @@ sync_repo() {
 
 # Live is shared by every session: live / test / run hold the VM-wide Live lock (vm_live_lock.sh; nested
 # calls see M4L_LIVE_LOCK_HELD=1 and run directly). `run` = lock -> live -> test -> release.
-case "${1:-}" in live|test|run|drag|titledrag|wtface|mseglive) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=sampler_test.als exec "$ROOT/scripts/vm_live_lock.sh" sampler -- "$0" "$@" ;; esac
+case "${1:-}" in live|test|run|drag|titledrag|wtface|wtvis|mseglive) [ -n "${M4L_LIVE_LOCK_HELD:-}" ] || M4L_LIVE_SET=sampler_test.als exec "$ROOT/scripts/vm_live_lock.sh" sampler -- "$0" "$@" ;; esac
 
 case "${1:-}" in
   run)
@@ -43,7 +44,7 @@ case "${1:-}" in
     sync_repo ;;
   audio)
     # SAMPLER_CASE / SAMPLER_PAN_ONLY on the host are forwarded. Unset runs the full suite.
-    sync_repo && "${SSH[@]}" "cd ~/ableton && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") SAMPLER_MX_ONLY=$(printf '%q' "${SAMPLER_MX_ONLY:-}") SAMPLER_WT_ONLY=$(printf '%q' "${SAMPLER_WT_ONLY:-}") SAMPLER_PHASE_ONLY=$(printf '%q' "${SAMPLER_PHASE_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
+    sync_repo && "${SSH[@]}" "cd ~/ableton && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") SAMPLER_MX_ONLY=$(printf '%q' "${SAMPLER_MX_ONLY:-}") SAMPLER_WT_ONLY=$(printf '%q' "${SAMPLER_WT_ONLY:-}") SAMPLER_PHASE_ONLY=$(printf '%q' "${SAMPLER_PHASE_ONLY:-}") SAMPLER_BI_ONLY=$(printf '%q' "${SAMPLER_BI_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
   drag)
     # The helper is an AppKit window. ssh is a background session and NSPanel init never returns there,
     # so the test runs as the console user (Aqua), same password as the VM login.
@@ -71,6 +72,31 @@ case "${1:-}" in
     sshpass -e scp -q "$ROOT/scripts/live_loader_client.py" "$ROOT/scripts/mm_os_input.py" "admin@${IP}:.m4l_loader/"
     "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/ableton/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
     "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/env BS_FACE_VM=1 PYTHONUNBUFFERED=1 /usr/bin/python3 \$HOME/ableton/scripts/run_sampler_wt_face_test.py" ;;
+  wtvis)
+    # Arrange a modulated frame and a Resonance row, photograph the VM, and check the picture:
+    # no light triangle beside the scan square, and a grey knob trace under the bright frame.
+    sync_repo || exit 1
+    "${SSH[@]}" 'cd ~/ableton && /usr/bin/python3 scripts/make_sampler_set.py' || exit 1
+    "$ROOT/scripts/vm_live_open.sh" ensure '~/ableton/sampler_test.als' || exit 1
+    "${SSH[@]}" 'mkdir -p ~/.m4l_loader "$HOME/Music/Ableton/User Library/Remote Scripts"'
+    tar -C "$ROOT/scripts/live_remote" -cf - M4LTestLoader | "${SSH[@]}" 'cd "$HOME/Music/Ableton/User Library/Remote Scripts" && tar -xf -'
+    sshpass -e scp -q "$ROOT/scripts/live_loader_client.py" "$ROOT/scripts/mm_os_input.py" "admin@${IP}:.m4l_loader/"
+    "${SSH[@]}" "/usr/bin/python3 \$HOME/.m4l_loader/live_loader_client.py load \"\$HOME/ableton/devices/Better Sampler Reactive 2.amxd\" new_midi" || exit 1
+    "${SSH[@]}" 'rm -f /tmp/bs_wtvis_ready /tmp/bs_wtvis_done'
+    "${SSH[@]}" "cd ~/ableton && PYTHONUNBUFFERED=1 BS_WTVIS_VM=1 /usr/bin/python3 scripts/run_sampler_wt_vis_test.py" &
+    LIVEPY=$!
+    for _i in $(seq 1 80); do
+      "${SSH[@]}" 'test -f /tmp/bs_wtvis_ready' && break
+      sleep 0.25
+    done
+    "${SSH[@]}" 'test -f /tmp/bs_wtvis_ready' || { echo "the device view was not ready" >&2; "${SSH[@]}" 'touch /tmp/bs_wtvis_done'; wait $LIVEPY; exit 1; }
+    # The pointer leaves a white arrow on the scan. Park it in the corner before the picture.
+    "${SSH[@]}" "cd ~/ableton && echo $(printf '%q' "$SSHPASS") | sudo -S -p '' launchctl asuser \$(id -u) /usr/bin/python3 -c 'import sys; sys.path.insert(0, \"scripts\"); import mm_os_input as mo; mo._mouse(5, 40, 60)'" || true
+    sleep 0.3
+    "$ROOT/scripts/vm_shot.sh" /tmp/bs_wtvis.png || { "${SSH[@]}" 'touch /tmp/bs_wtvis_done'; wait $LIVEPY; exit 1; }
+    python3 "$ROOT/scripts/run_sampler_wt_vis_test.py" --check /tmp/bs_wtvis.png || { "${SSH[@]}" 'touch /tmp/bs_wtvis_done'; wait $LIVEPY; exit 1; }
+    "${SSH[@]}" 'touch /tmp/bs_wtvis_done'
+    wait $LIVEPY || exit 1 ;;
   mseglive)
     # Open the MSEG, hold a note, and require the playhead and the published level to move.
     # The host photographs the device while the note is sounding.

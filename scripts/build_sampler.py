@@ -944,6 +944,48 @@ def make_theme_panel(key):
     }}
 
 
+def make_vslider(key, x, y, w=26.0, h=90.0):
+    """Vertical live.slider for a tall drawn control. A live.numbox snaps to about 14 px, so a
+    right-click on the rest of the wavetable scan never reached the parameter."""
+    long_name, _short, _lo, _hi, _init, _unit, _exp, _gen, _sc, _ui, help_text = PARAM_SPECS[key]
+    clear = [0.0, 0.0, 0.0, 0.0]
+    # Live ignores a transparent triangle and paints a light arrow beside the drawn square.
+    handle = [0.094, 0.094, 0.094, 1.0]
+    return {
+        "box": {
+            "activebgcolor": clear,
+            "annotation": help_text,
+            "annotation_name": long_name,
+            "bgcolor": clear,
+            "bordercolor": clear,
+            "candycane": 0,
+            "elementcolor": clear,
+            "id": f"obj-ctrl-{key}",
+            "knobcolor": clear,
+            "maxclass": "live.slider",
+            "numinlets": 1,
+            "numoutlets": 2,
+            "orientation": 0,
+            "outlettype": ["", "float"],
+            "panelcolor": clear,
+            "parameter_enable": 1,
+            "patching_rect": [float(x), 295.0, float(w), float(h)],
+            "presentation": 1,
+            "presentation_rect": [float(x), float(y), float(w), float(h)],
+            "relative": 0,
+            "saved_attribute_attributes": {"valueof": valueof_dict(key)},
+            "showname": 0,
+            "shownumber": 0,
+            "slidercolor": clear,
+            "textcolor": clear,
+            "tribordercolor": handle,
+            "tricolor": handle,
+            "trioncolor": handle,
+            "varname": long_name,
+        }
+    }
+
+
 def hide_from_face(b, px, py):
     """Keep a live.* parameter off the presentation face (the v8ui face draws and drives it)."""
     box = b["box"]
@@ -967,6 +1009,8 @@ def build_face_layout(themed=True):
             continue
         if themed and key in AB_PARAM_KEYS:
             ui_boxes.append(make_native(key))
+        elif (not themed) and key in ("play_pos", "osc2_pos"):
+            ui_boxes.append(hide_from_face(make_vslider(key, 0, 0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         else:
             ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         col += 1
@@ -974,7 +1018,9 @@ def build_face_layout(themed=True):
                 + [k for k in TAIL_PARAMS if k in PARAM_SPECS]
                 + [k for k in TAIL_ENUMS if k in ENUM_SPECS]
                 + ["face_theme"]):
-        if key in TAIL_PARAMS:
+        if key in TAIL_PARAMS and (not themed) and key in ("play_pos", "osc2_pos"):
+            ui_boxes.append(hide_from_face(make_vslider(key, 0, 0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
+        elif key in TAIL_PARAMS:
             ui_boxes.append(hide_from_face(make_numbox(key, 0, 0, 52.0, 15.0, appearance=0), 1100 + (col % 6) * 70, 40 + (col // 6) * 24))
         elif themed and key in AB_PARAM_KEYS:
             ui_boxes.append(make_native(key))

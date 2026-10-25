@@ -143,6 +143,14 @@ function seedMod(modName, msegName, slotName) {
         slot[87] = 1;
         slot[96] = 3;
         for (i = 0; i < 1024; i++) wave[i] = i / 1023;
+    } else if (kind === "uni" || kind === "bi") {
+        // A flat 0 MSEG. Unipolar leaves the cutoff where the knob is. Bipolar centers 0 at -1,
+        // so depth 1 pulls the cutoff to the bottom of its range.
+        slot[3] = 2;
+        slot[7] = 1;
+        slot[79] = 1;
+        slot[87] = 1;
+        for (i = 0; i < 1024; i++) wave[i] = 0;
     } else {
         slot[3] = 2;
         slot[7] = 1;
@@ -153,6 +161,8 @@ function seedMod(modName, msegName, slotName) {
     if (kind === "off") route = [0];
     else if (kind === "wt") route = [1, 202, 4, 1, 0, 1, 0];
     else if (kind === "wt2") route = [1, 74, 4, 1, 0, 1, 0];
+    else if (kind === "uni") route = [1, 300, 4, 1, 20, 20000, 0];
+    else if (kind === "bi") route = [1, 300, 36, 1, 20, 20000, 0];
     pokeChunk(new Buffer(msegName), 3 * 1024, wave);
     pokeChunk(new Buffer(slotName), 0, slot);
     pokeChunk(new Buffer(modName), 0, route);
