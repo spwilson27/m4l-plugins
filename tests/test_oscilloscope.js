@@ -257,20 +257,24 @@ const gAutoPlus6 = osc.oscComputeEffectiveGain(0.25, 6.0, 1);
 near(gAutoPlus6.totalGain, 4.0 * Math.pow(10, 6 / 20), 1e-6, "Auto ON normalizes first (4x) and then applies +6 dB Gain Scale");
 
 // ---------------------------------------------------------------------------------------------
-// 5. Blob v4 Serialization & Backward Compatibility (v3, v2, v1)
+// 5. Blob v5 Serialization & Backward Compatibility (v4, v3, v2, v1)
 // ---------------------------------------------------------------------------------------------
-const blob4 = osc.oscBlob({
+const blob5 = osc.oscBlob({
     routingMode: 1,
     editSub: 1,
     viewMode: 1,
     cycleMode: 0,
     rateHz: 1,
     gainDb: -4.5,
-    autoGain: 1
+    autoGain: 1,
+    trigLevel: 0.42
 });
-ok(blob4[0] === 4 && blob4.length === 8, "v4 blob has 8 elements");
-const from4 = osc.oscFromBlob(blob4);
-ok(from4.routingMode === 1 && from4.editSub === 1 && from4.chMode === 4 && from4.viewMode === 1 && from4.cycleMode === 0 && from4.rateHz === 1 && Math.abs(from4.gainDb - (-4.5)) < 1e-6 && from4.autoGain === 1, "v4 blob round-trip");
+ok(blob5[0] === 5 && blob5.length === 9, "v5 blob has 9 elements");
+const from5 = osc.oscFromBlob(blob5);
+ok(from5.routingMode === 1 && from5.editSub === 1 && from5.chMode === 4 && from5.viewMode === 1 && from5.cycleMode === 0 && from5.rateHz === 1 && Math.abs(from5.gainDb - (-4.5)) < 1e-6 && from5.autoGain === 1 && Math.abs(from5.trigLevel - 0.42) < 1e-6, "v5 blob round-trip");
+
+const from4 = osc.oscFromBlob([4, 1, 1, 1, 0, 1, -4.5, 1]);
+ok(from4.routingMode === 1 && from4.editSub === 1 && from4.chMode === 4 && from4.viewMode === 1 && from4.cycleMode === 0 && from4.rateHz === 1 && Math.abs(from4.gainDb - (-4.5)) < 1e-6 && from4.autoGain === 1 && from4.trigLevel === 0, "v4 blob backward compatibility (trigLevel defaults to 0)");
 
 const from3 = osc.oscFromBlob([3, 1, 1, 1, 0, 1, 48, -4.5, 1]);
 ok(from3.routingMode === 0 && from3.editSub === 2 && from3.chMode === 3 && from3.viewMode === 1 && from3.rateHz === 48, "v3 blob backward compatibility (L/R sub 1 -> Stereo sub 2 R)");
