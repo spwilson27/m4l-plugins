@@ -384,7 +384,10 @@ function verifyAmxd(amxdFile, expectedWidth) {
     assert.strictEqual(nested.length, 0, `No return inside a block in GenExpr functions (${nested.join("; ")})`);
 }
 
-// 9. Bug-sweep pass 1 regressions (red on current code — see BUGS.md)
+// verifyAmxd first so Bug 1 (gate-line click below -66 dB) is reachable before section 9 asserts.
+verifyAmxd("Reciprocator.amxd", 448.0);
+
+// 9. Bug-sweep pass 1 regressions (red on current code — see BUGS.md). Reviewed keep-all in pass 2.
 {
     // Bug 2: Lookahead is documented as 0..10 ms, and Live runs up to 192 kHz, where 10 ms is
     // 1920 samples. Both the Delay size and the ms-to-samples clip must be able to hold that,
@@ -409,7 +412,5 @@ function verifyAmxd(amxdFile, expectedWidth) {
     assert.ok(!gen.includes("gateMix"), "gen fades the gate with Amount (gateMix); the shared mirror and the Gate help apply the gate at every Amount");
     assert.strictEqual(cfg.computeRecipGain(0.002, 0.0, -42, -1, 0), 0, "mirror contract: below-Gate signal is muted even at Amount 0");
 }
-
-verifyAmxd("Reciprocator.amxd", 448.0);
 
 console.log("test_reciprocator: ok");
