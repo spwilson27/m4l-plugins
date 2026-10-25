@@ -71,3 +71,11 @@ Fixed all three kept bugs on `bugsweep/theme-editor-pass1`. Red suite and host g
 - Bug 1 FIXED — `src/theme_engine.js` `m4lSetThemeState` (~3482–3483): satScale/contrast now fall back to 1.0 when the value is `undefined`, `null`, or non-finite after `Number(...)`, matching the hueShift/brightness defaulting style and blocking the NaN→null→0 desaturate path.
 - Bug 2 FIXED — `src/theme_engine.js` `m4lApplyMacros` (~3604): alpha only Number/clamps when the fourth element is present, non-null, and finite; otherwise opaque 1.0 (same missing→opaque convention as `m4lColor` / `m4lMixColor`).
 - Bug 3 FIXED — `src/theme_editor_node.js`: added `mergeThemeState(prev, patch)` (~330) that shallow-merges top-level fields and deep-merges `macros` / `tokens` / `deviceOverrides` / `customPresets` / `abletonUi`. Wired into `sync_state` (~355) and POST `/api/state` (~433) so partial updates no longer wipe sibling state or the on-disk file.
+
+## Pass 4 review — APPROVED
+
+Reviewed production diffs on tip `4839b74` (Pass 3 fix `d7aa9c2` + BUGS SHA note). Host gate re-run green: `npm run -s typecheck` + `node tests/test_theme_editor.js` (9/9) + `node tests/test_theme_editor_bugs.js` (6/6). No production adjustments.
+
+- Bug 1 APPROVED — `m4lSetThemeState` satScale/contrast fall back to 1.0 on undefined/null/non-finite; blocks NaN→null→0 desaturate; keeps intentional 0.
+- Bug 2 APPROVED — `m4lApplyMacros` treats null/non-finite alpha as opaque 1.0; matches m4lColor/m4lMixColor missing→opaque.
+- Bug 3 APPROVED — `mergeThemeState` deep-merges nested theme fields on sync_state and POST /api/state; partial bodies no longer wipe siblings or disk state.
