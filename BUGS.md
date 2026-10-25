@@ -1,8 +1,8 @@
-# XO Sample Map — Pass 1 bug sweep (tests only, no fixes)
+# XO Sample Map — Pass 1 + Pass 2 bug sweep (tests only, no production fixes)
 
 Branch: `bugsweep/xo-map-pass1` · Worktree: `/private/tmp/bugsweep/xo-map`
 Scope: `src/xo_node_engine.js`, `src/xo_strip_ui.js`, `src/xo_search.js`, `src/xo_stretch.js`,
-`scripts/build_xo_map.py`, `tests/test_xo_*.js`. One credible bug found.
+`scripts/build_xo_map.py`, `tests/test_xo_*.js`. One credible bug found (Pass 1); Pass 2 kept it.
 
 ## Bug 1 — Undo after recalling a saved sample only restores 3 of the 7 playback settings it changed
 
@@ -39,11 +39,21 @@ AssertionError [ERR_ASSERTION]: undo after recall restores reverse
 The pitch, decay and gain undo assertions immediately before it pass, isolating the
 failure to the four fields missing from the snapshot.
 
-**Suggested fix (Pass 2, not applied):** add `reversePlayback, speedPct, grainMs, stretchMode`
+**Suggested fix (Pass 3, not applied):** add `reversePlayback, speedPct, grainMs, stretchMode`
 to `captureSnapshot()` and restore them in `applySnapshot()` (with the same
 `!== undefined` defaulting as the other fields).
 
-## Checked and cleared (do not re-litigate in Pass 2)
+## Pass 2 review — kept 1 / dropped 0
+
+- **Kept Bug 1:** Real functional/UI/state bug. Verified `captureSnapshot`/`applySnapshot` omit
+  the four fields while `recallSavedEntry` assigns all seven and the saved-row `onclick`
+  calls `pushUndoState()` before recall. Host gate (typecheck + `build_xo_map.py` +
+  `node tests/test_xo_map.js`) exits 1 only on
+  `AssertionError: undo after recall restores reverse (1 !== 0)`; pitch/decay/gain undo
+  asserts pass. Red test left as-is (already isolates the missing snapshot fields).
+- **Dropped:** none. Cleared items below still stand; no additional bugs found.
+
+## Checked and cleared (do not re-litigate in Pass 2/3)
 
 - **`getvalueof` / Live dials:** top-level blob serializes pitch/decay/gain (plus filters/selection/saved list
   pitch-decay-gain); Reverse / Speed / Grain / Stretch Mode are live.* parameters Live persists separately.
