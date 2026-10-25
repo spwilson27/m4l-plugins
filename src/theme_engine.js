@@ -3479,8 +3479,8 @@ function m4lSetThemeState(nextState) {
         if (nextState.macros && typeof nextState.macros === "object") {
             base.macros = {
                 hueShift: Number(nextState.macros.hueShift) || 0,
-                satScale: nextState.macros.satScale === undefined ? 1.0 : Number(nextState.macros.satScale),
-                contrast: nextState.macros.contrast === undefined ? 1.0 : Number(nextState.macros.contrast),
+                satScale: (nextState.macros.satScale === undefined || nextState.macros.satScale === null || !isFinite(Number(nextState.macros.satScale))) ? 1.0 : Number(nextState.macros.satScale),
+                contrast: (nextState.macros.contrast === undefined || nextState.macros.contrast === null || !isFinite(Number(nextState.macros.contrast))) ? 1.0 : Number(nextState.macros.contrast),
                 brightness: Number(nextState.macros.brightness) || 0
             };
         }
@@ -3601,7 +3601,7 @@ function m4lApplyMacros(col, macros) {
     var r = m4lClamp(Number(col[0]) || 0, 0, 1);
     var g = m4lClamp(Number(col[1]) || 0, 0, 1);
     var b = m4lClamp(Number(col[2]) || 0, 0, 1);
-    var a = col.length > 3 ? m4lClamp(Number(col[3]), 0, 1) : 1.0;
+    var a = (col.length > 3 && col[3] !== undefined && col[3] !== null && isFinite(Number(col[3]))) ? m4lClamp(Number(col[3]), 0, 1) : 1.0;
     if (!macros) return [r, g, b, a];
     var hs = Number(macros.hueShift) || 0;
     var ss = macros.satScale === undefined ? 1.0 : Number(macros.satScale);

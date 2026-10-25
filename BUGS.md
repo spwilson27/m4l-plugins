@@ -51,8 +51,8 @@ Red evidence:
 
 ## Commands and results
 
-- node tests/test_theme_editor_bugs.js → exit 1, 0 passed / 6 failed (red, this pass)
-- node tests/test_theme_editor.js → exit 0, all 9 checks PASS (baseline untouched)
+- node tests/test_theme_editor_bugs.js → exit 0, 6 passed / 0 failed (green after Pass 3 fixes)
+- npm run -s typecheck && node tests/test_theme_editor.js → exit 0, all 9 checks PASS (host gate)
 
 ## Pass 2 review (kept all three)
 
@@ -63,3 +63,11 @@ Reviewed against source on tip 3cb1c01. All three claims are real functional/sta
 - Bug 3 KEEP — POST /api/state and sync_state assign `currentState` wholesale; partial bodies drop abletonUi/customPresets/sibling macros. Confirmed in theme_editor_node.js.
 
 Red suite re-run on unfixed code: `node tests/test_theme_editor_bugs.js` → 0 passed, 6 failed, exit 1 (expected).
+
+## Pass 3 fixes
+
+Fixed all three kept bugs on `bugsweep/theme-editor-pass1`. Red suite and host gate green. Commit SHA filled in after the Pass 3 commit lands on this branch.
+
+- Bug 1 FIXED — `src/theme_engine.js` `m4lSetThemeState` (~3482–3483): satScale/contrast now fall back to 1.0 when the value is `undefined`, `null`, or non-finite after `Number(...)`, matching the hueShift/brightness defaulting style and blocking the NaN→null→0 desaturate path.
+- Bug 2 FIXED — `src/theme_engine.js` `m4lApplyMacros` (~3604): alpha only Number/clamps when the fourth element is present, non-null, and finite; otherwise opaque 1.0 (same missing→opaque convention as `m4lColor` / `m4lMixColor`).
+- Bug 3 FIXED — `src/theme_editor_node.js`: added `mergeThemeState(prev, patch)` (~330) that shallow-merges top-level fields and deep-merges `macros` / `tokens` / `deviceOverrides` / `customPresets` / `abletonUi`. Wired into `sync_state` (~355) and POST `/api/state` (~433) so partial updates no longer wipe sibling state or the on-disk file.
