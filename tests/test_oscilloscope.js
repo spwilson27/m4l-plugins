@@ -257,20 +257,24 @@ const gAutoPlus6 = osc.oscComputeEffectiveGain(0.25, 6.0, 1);
 near(gAutoPlus6.totalGain, 4.0 * Math.pow(10, 6 / 20), 1e-6, "Auto ON normalizes first (4x) and then applies +6 dB Gain Scale");
 
 // ---------------------------------------------------------------------------------------------
-// 5. Blob v4 Serialization & Backward Compatibility (v3, v2, v1)
+// 5. Blob v5 Serialization & Backward Compatibility (v4, v3, v2, v1)
 // ---------------------------------------------------------------------------------------------
-const blob4 = osc.oscBlob({
+const blob5 = osc.oscBlob({
     routingMode: 1,
     editSub: 1,
     viewMode: 1,
     cycleMode: 0,
     rateHz: 1,
     gainDb: -4.5,
-    autoGain: 1
+    autoGain: 1,
+    trigLevel: 0.42
 });
-ok(blob4[0] === 4 && blob4.length === 8, "v4 blob has 8 elements");
-const from4 = osc.oscFromBlob(blob4);
-ok(from4.routingMode === 1 && from4.editSub === 1 && from4.chMode === 4 && from4.viewMode === 1 && from4.cycleMode === 0 && from4.rateHz === 1 && Math.abs(from4.gainDb - (-4.5)) < 1e-6 && from4.autoGain === 1, "v4 blob round-trip");
+ok(blob5[0] === 5 && blob5.length === 9, "v5 blob has 9 elements");
+const from5 = osc.oscFromBlob(blob5);
+ok(from5.routingMode === 1 && from5.editSub === 1 && from5.chMode === 4 && from5.viewMode === 1 && from5.cycleMode === 0 && from5.rateHz === 1 && Math.abs(from5.gainDb - (-4.5)) < 1e-6 && from5.autoGain === 1 && Math.abs(from5.trigLevel - 0.42) < 1e-6, "v5 blob round-trip");
+
+const from4 = osc.oscFromBlob([4, 1, 1, 1, 0, 1, -4.5, 1]);
+ok(from4.routingMode === 1 && from4.editSub === 1 && from4.chMode === 4 && from4.viewMode === 1 && from4.cycleMode === 0 && from4.rateHz === 1 && Math.abs(from4.gainDb - (-4.5)) < 1e-6 && from4.autoGain === 1 && from4.trigLevel === 0, "v4 blob backward compatibility (trigLevel defaults to 0)");
 
 const from3 = osc.oscFromBlob([3, 1, 1, 1, 0, 1, 48, -4.5, 1]);
 ok(from3.routingMode === 0 && from3.editSub === 2 && from3.chMode === 3 && from3.viewMode === 1 && from3.rateHz === 48, "v3 blob backward compatibility (L/R sub 1 -> Stereo sub 2 R)");
@@ -552,5 +556,20 @@ near(ctx.oscTrigLevel, 0.5, 0.01, "click on the padded trigger guide keeps the l
 ctx.ondrag(guideX, guideY + 8, 1);
 ok(Math.abs(ctx.oscTrigLevel - 0.5) < 0.2, "a short drag from the padded guide stays near the level");
 ctx.ondrag(guideX, guideY + 8, 0);
+
+// ---------------------------------------------------------------------------------------------
+// 7. Trigger level persistence across save / reload (bugsweep pass 1 RED)
+//    The trigger level is a sticky user control (drag the LCD to arm it, double-click to clear it)
+//    that drives the trigger lock and paints a guide line. Every other face control round-trips
+//    through getvalueof/setvalueof, but oscTrigLevel is never serialized, so an armed trigger
+//    silently resets to 0 whenever the Live set is saved and reopened. The parent Analyzer face
+//    persists its trigger, so the Oscilloscope dropping it is a regression, not a design choice.
+// ---------------------------------------------------------------------------------------------
+ctx.setvalueof(4, 0, 0, 0, 1, 30, 0.0, 0);
+ctx.oscTrigLevel = 0.42;
+const trigBlob = ctx.getvalueof();
+ctx.oscTrigLevel = 0;
+ctx.setvalueof.apply(null, Array.isArray(trigBlob) ? trigBlob : [trigBlob]);
+near(ctx.oscTrigLevel, 0.42, 1e-6, "trigger level survives a getvalueof/setvalueof round-trip");
 
 console.log("oscilloscope: " + checks + " checks passed");

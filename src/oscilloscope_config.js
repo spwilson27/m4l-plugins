@@ -11,7 +11,7 @@
 //   1568..5663 scope L ring (4096 samples)
 //   5664..9759 scope R ring (4096 samples)
 
-var OSC_VERSION = 4;
+var OSC_VERSION = 5;
 var OSC_W = 460;
 var OSC_H = 169;
 
@@ -1129,7 +1129,7 @@ function oscHitAt(x, y, openMenu) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// State Blob Serialization (v4, backward-compatible with v1, v2, and v3 blobs)
+// State Blob Serialization (v5, backward-compatible with v1, v2, v3, and v4 blobs)
 // ---------------------------------------------------------------------------------------------
 function oscDefaultState() {
     return {
@@ -1140,7 +1140,8 @@ function oscDefaultState() {
         cycleMode: 1,   // 0 = 1 Cyc, 1 = 2 Cyc, 2 = 4 Cyc, 3 = 8 Cyc, 4 = 5 ms, 5 = 20 ms, 6 = 50 ms
         rateHz: OSC_RATE_DEFAULT,     // 1..60 Hz
         gainDb: OSC_GAIN_DEFAULT_DB,  // -18..+24 dB
-        autoGain: 0     // 0 = Off, 1 = Auto Normalize On
+        autoGain: 0,    // 0 = Off, 1 = Auto Normalize On
+        trigLevel: 0    // armed trigger amp (-1..1); 0 = cleared
     };
 }
 
@@ -1156,7 +1157,8 @@ function oscBlob(st) {
         oscClamp(s.cycleMode, 0, 6) | 0,
         Math.round(oscClamp(s.rateHz !== undefined ? s.rateHz : OSC_RATE_DEFAULT, OSC_RATE_MIN, OSC_RATE_MAX)),
         Math.round(oscClamp(s.gainDb !== undefined ? s.gainDb : OSC_GAIN_DEFAULT_DB, OSC_GAIN_MIN_DB, OSC_GAIN_MAX_DB) * 10) / 10,
-        s.autoGain ? 1 : 0
+        s.autoGain ? 1 : 0,
+        Math.round(oscClamp(s.trigLevel !== undefined ? s.trigLevel : 0, -1, 1) * 1000) / 1000
     ];
 }
 
@@ -1164,7 +1166,19 @@ function oscFromBlob(arr) {
     var d = oscDefaultState();
     if (!arr || !arr.length) return d;
     var ver = Number(arr[0]);
-    if (ver === OSC_VERSION && arr.length >= 8) {
+    if (ver === OSC_VERSION && arr.length >= 9) {
+        d.routingMode = oscClamp(arr[1], 0, 1) | 0;
+        d.editSub = oscClamp(arr[2], 0, 2) | 0;
+        d.chMode = oscResolveRouting(d.routingMode, d.editSub).chMode;
+        d.viewMode = oscClamp(arr[3], 0, 1) | 0;
+        d.cycleMode = oscClamp(arr[4], 0, 6) | 0;
+        d.rateHz = oscClamp(arr[5], OSC_RATE_MIN, OSC_RATE_MAX);
+        d.gainDb = oscClamp(arr[6], OSC_GAIN_MIN_DB, OSC_GAIN_MAX_DB);
+        d.autoGain = arr[7] ? 1 : 0;
+        d.trigLevel = oscClamp(arr[8], -1, 1);
+        return d;
+    }
+    if (ver === 4 && arr.length >= 8) {
         d.routingMode = oscClamp(arr[1], 0, 1) | 0;
         d.editSub = oscClamp(arr[2], 0, 2) | 0;
         d.chMode = oscResolveRouting(d.routingMode, d.editSub).chMode;

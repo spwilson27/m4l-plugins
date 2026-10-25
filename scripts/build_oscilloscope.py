@@ -74,7 +74,7 @@ def build_oscilloscope(out_path, routing_mode=0, edit_sub=0, view_mode=0, cycle_
     viz["box"]["parameter_enable"] = 1
     viz["box"]["saved_attribute_attributes"] = {
         "valueof": {
-            "parameter_initial": [4, int(routing_mode), int(edit_sub), int(view_mode), int(cycle_mode), 30, float(gain_db), int(auto_gain)],
+            "parameter_initial": [5, int(routing_mode), int(edit_sub), int(view_mode), int(cycle_mode), 30, float(gain_db), int(auto_gain), 0.0],
             "parameter_initial_enable": 1,
             "parameter_invisible": 1,
             "parameter_longname": "AnalyzerState",

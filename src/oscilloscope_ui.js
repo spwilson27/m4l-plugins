@@ -1084,7 +1084,8 @@ function getvalueof() {
         cycleMode: oscCycleMode,
         rateHz: oscRateHz,
         gainDb: oscGainDb,
-        autoGain: oscAutoGain
+        autoGain: oscAutoGain,
+        trigLevel: oscTrigLevel
     });
 }
 
@@ -1098,6 +1099,7 @@ function setvalueof() {
     oscRateHz = saved.rateHz;
     oscGainDb = saved.gainDb;
     oscAutoGain = saved.autoGain;
+    oscTrigLevel = saved.trigLevel;
     if (oscPollTask) oscPollTask.interval = oscRateToMs(oscRateHz);
     oscApplyWidth();
     oscRefreshFrame();
