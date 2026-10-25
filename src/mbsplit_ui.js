@@ -156,17 +156,20 @@ function gainDbToSliderNorm(db) {
     if (g >= 0.0) {
         return clamp(0.72 + 0.28 * (g / 18.0), 0.0, 1.0);
     }
-    // Smooth perceptual curve for -70..0 dB -> 0.0..0.72
-    return clamp(0.72 * Math.pow((g + 70.0) / 70.0, 1.75), 0.0, 0.72);
+    // Smooth perceptual curve for -70..0 dB -> 0.0..0.72.
+    // Exponent is matched to sliderNormToGainDb below so the pair is an exact inverse.
+    return clamp(0.72 * Math.pow((g + 70.0) / 70.0, 1.5), 0.0, 0.72);
 }
 
 function sliderNormToGainDb(norm) {
     var n = clamp(Number(norm) || 0.0, 0.0, 1.0);
-    if (n <= 0.015) return -70.0; // -inf dB
+    // Only true zero is silence (-inf dB). No dead zone, so gains in (-70, -62.4) dB
+    // stay reachable and the pair round-trips with gainDbToSliderNorm.
+    if (n <= 0.0) return -70.0;
     if (n >= 0.72) {
         return clamp(((n - 0.72) / 0.28) * 18.0, 0.0, 18.0);
     }
-    var db = -70.0 + 70.0 * Math.pow(n / 0.72, 1.0 / 1.75);
+    var db = -70.0 + 70.0 * Math.pow(n / 0.72, 1.0 / 1.5);
     return clamp(db, -70.0, 0.0);
 }
 

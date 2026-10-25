@@ -266,22 +266,25 @@ function evalFirHalfKernel(kh, f, sr) {
 }
 
 /**
- * Cheap display approximation of the FIR lowpass: a raised-cosine transition of half-width sr / D
- * centred on fc (the Kaiser beta 6 kernel falls from -0.7 dB to -60 dB over about that span).
- * Clamped to unity at DC because the kernel is DC-normalized.
+ * Display magnitude of the FIR lowpass. This used to be a raised-cosine guess of
+ * half-width sr / D centred on fc, but that drifts past AGENTS.md's 0.1 tolerance at
+ * low crossovers (worst 0.18 at fc=40, 0.11 at DEFAULT_F1=120). Instead we evaluate the
+ * real DC-normalized half-kernel so the drawn curve tracks the actual FIR to within
+ * rounding. The half-kernel is designed once per (fc, sampleRate) and kept in a
+ * module-level cache, so a full display sweep only pays the cheap cosine sum in
+ * evalFirHalfKernel per point.
  */
+var firLowpassMagCache = {};
 function computeFirLowpassMag(f, fc, sr) {
     var rate = Number(sr) || 48000.0;
-    var hw = rate / firLatencyForSampleRate(rate);
-    var lo = fc - hw;
-    if (f <= Math.max(lo, 0.0) && lo > 0.0) return 1.0;
-    if (f >= fc + hw) return 0.0;
-    var m = 0.5 + 0.5 * Math.cos(Math.PI * (f - lo) / (2.0 * hw));
-    if (lo <= 0.0) {
-        var m0 = 0.5 + 0.5 * Math.cos(Math.PI * (0.0 - lo) / (2.0 * hw));
-        m = m / Math.max(m0, 1e-6);
+    var D = firLatencyForSampleRate(rate);
+    var key = fc + "@" + rate;
+    var kh = firLowpassMagCache[key];
+    if (!kh) {
+        kh = designFirHalfKernel(fc, rate, D);
+        firLowpassMagCache[key] = kh;
     }
-    return clamp(m, 0.0, 1.0);
+    return clamp(evalFirHalfKernel(kh, f, rate), 0.0, 1.0);
 }
 
 /**
