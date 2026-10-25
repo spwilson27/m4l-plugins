@@ -17,7 +17,7 @@ No test rewrites. Production/src + rebuilt `devices/Degrade.amxd` only.
 | **D3** | Equal-power mix: `cWetG = sin(clip(wet)·π/2)`, `cDryG = cos(asin(cWetG))` | `src/degrade_core.genexpr` L437–438 |
 | **D4** | `set_mix` falsy default `100` → `0`, matching other percent setters | `src/degrade_ui.js` L312 |
 
-Fix commit SHA: see tip of `bugsweep/degrade-pass1` after pass-3 commit.
+Fix commit SHA: `1a0dc4c`.
 
 ## Pass 2 review (keep all 4 — no drops)
 
