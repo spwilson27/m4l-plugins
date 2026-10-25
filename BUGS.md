@@ -3,7 +3,32 @@
 Worktree: `/private/tmp/bugsweep/analyzer-scope` · Branch: `bugsweep/analyzer-scope-pass1` · Base: `d72ee17`
 Scope: `devices/Analyzer.amxd` — `scripts/build_analyzer.py`, `src/analyzer_ui.js`, `src/analyzer_config.js`, `src/analyzer_core.genexpr`, `src/analyzer_dsp.js`, `tests/test_analyzer.js`.
 Shared in-tree concern (same tap name): `scripts/build_oscilloscope.py`, `src/oscilloscope_ui.js`, `tests/test_oscilloscope.js`.
-Max / Live were NOT run in these passes (Node host gate only). Tests only — no production/src/build fixes.
+Max / Live were NOT run in these passes (Node host gate only).
+
+## Pass 3 fix — Bug 1 closed (host gate green)
+
+Applied the Pass 1/2 fix direction: rename the shipped scope tap from literal `#0-analyzerscope` to M4L per-instance `---analyzerscope` in Analyzer and Oscilloscope production/build/UI (and AGENTS.md §28). Harness probes and `run_*_audio_tests.py` left on `#0-analyzerscope` (mbsplit precedent).
+
+### Touchpoints
+
+- `scripts/build_analyzer.py` — `obj-buf` / `obj-msg-scope` / `obj-msg-setbuf` → `---analyzerscope`
+- `scripts/build_oscilloscope.py` — same three boxes
+- `src/analyzer_ui.js` — `anBufName = "---analyzerscope"`
+- `src/oscilloscope_ui.js` — `anBufName = "---analyzerscope"`
+- `src/analyzer_config.js` / `src/oscilloscope_config.js` — header comments
+- `AGENTS.md` §28 / Oscilloscope architecture — document `---` name
+- Rebuilt `devices/Analyzer.amxd`, `devices/Oscilloscope.amxd`
+
+### Host gate (Pass 3)
+
+```
+npm run -s typecheck
+python3 scripts/build_analyzer.py && node tests/test_analyzer.js
+python3 scripts/build_oscilloscope.py && node tests/test_oscilloscope.js
+→ green (analyzer: 185580 checks; oscilloscope: 163559 checks passed)
+```
+
+Commit SHA for this Pass 3 fix will be recorded in the commit message on `bugsweep/analyzer-scope-pass1` (not merged to main; Pass 4 reviews next).
 
 ## Pass 2 review — kept 1 / dropped 0
 
@@ -11,7 +36,7 @@ Reviewed Pass 1 reds against source, AGENTS.md precedents (Multiband Split `---m
 
 **Pass 1 miss closed here:** Oscilloscope ships the same literal `#0-analyzerscope` tap but had no device-structure red. Pass 2 adds matching `---analyzerscope` / no-`#0` asserts in `tests/test_oscilloscope.js` (still under Bug 1 — same defect class, not a new root cause).
 
-Host gate (Analyzer):
+Host gate (Analyzer) before Pass 3 fix:
 ```
 npm run -s typecheck && python3 scripts/build_analyzer.py && node tests/test_analyzer.js
 → FAIL Analyzer.amxd: scope buffer is ---analyzerscope @samps 17952
@@ -32,12 +57,12 @@ node tests/test_oscilloscope.js
 
 ### Mechanism
 
-- `scripts/build_analyzer.py` lines 65 / 69 / 70 ship:
+- `scripts/build_analyzer.py` lines 65 / 69 / 70 shipped (pre-fix):
   - `buffer~ #0-analyzerscope @samps 17952`
   - `scope #0-analyzerscope`
   - `setbuffer #0-analyzerscope`
-- `src/analyzer_ui.js` line 20 defaults `var anBufName = "#0-analyzerscope";` (embedded into the face).
-- Oscilloscope mirrors the same literals: `scripts/build_oscilloscope.py` 62 / 66 / 67 and `src/oscilloscope_ui.js` line 13.
+- `src/analyzer_ui.js` line 20 defaulted `var anBufName = "#0-analyzerscope";` (embedded into the face).
+- Oscilloscope mirrored the same literals: `scripts/build_oscilloscope.py` 62 / 66 / 67 and `src/oscilloscope_ui.js` line 13.
 - AGENTS.md (Multiband Split §11 buffer isolation fix; Delay+ §15; Glitch / Reverb+): in Live, `#0` is **not** expanded in a device's top-level patcher (only in abstractions). Per-instance isolation requires the M4L `---` prefix (e.g. `---mbsplitscope`, `---dpxfer`).
 - Harness probes (`tests/analyzer_probe.js`, `tests/oscilloscope_probe.js`, wavload) intentionally keep `#0-analyzerscope` — same pattern as `mbsplit_probe.js` using `#0-splitscope` while the device uses `---`. Those are not the bug.
 
@@ -53,7 +78,7 @@ node tests/test_oscilloscope.js
 
 - Same `---analyzerscope` / no-literal-`#0` / no-`#0-` in v8ui and `oscilloscope_ui.js` source asserts.
 
-### Fix direction (NOT applied in Pass 1 or Pass 2)
+### Fix direction (applied in Pass 3)
 
 Rename the shipped tap to `---analyzerscope` in `build_analyzer.py` (buffer / scope / setbuffer) and `analyzer_ui.js` (`anBufName`). Mirror the same rename in Oscilloscope's build + UI. Leave harness probes on `#0-analyzerscope`. Update AGENTS.md §28 which still documents the old `#0-` name.
 
