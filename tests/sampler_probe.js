@@ -74,6 +74,8 @@ var modJsMap = -1;
 var modJsCode = -1;
 var modJsWave = -1;
 var modJsTy = -1;
+var modJsView = -1;
+var slotBufName = "";
 var trigSeq = 0;
 var resultPath = "/tmp/sampler_audio.txt";
 
@@ -132,13 +134,25 @@ function seedMod(modName, msegName, slotName) {
         slot[23] = 1;
         slot[27] = 200;
         slot[51] = 1;
+    } else if (kind === "phase") {
+        // Slot 4 is a 1 Hz looping MSEG. The waveform is a ramp, so the sample equals the phase.
+        // Retrigger on the note. Index 96 tells the gen to publish this slot's playheads.
+        slot[3] = 2;
+        slot[7] = 1;
+        slot[79] = 1;
+        slot[87] = 1;
+        slot[96] = 3;
+        for (i = 0; i < 1024; i++) wave[i] = i / 1023;
     } else {
         slot[3] = 2;
         slot[7] = 1;
         slot[79] = 1;
         slot[87] = 1;
     }
-    var route = (kind === "off") ? [0] : [1, 301, 4, 1, 0, 0.95, 0];
+    var route = [1, 301, 4, 1, 0, 0.95, 0];
+    if (kind === "off") route = [0];
+    else if (kind === "wt") route = [1, 202, 4, 1, 0, 1, 0];
+    else if (kind === "wt2") route = [1, 74, 4, 1, 0, 1, 0];
     pokeChunk(new Buffer(msegName), 3 * 1024, wave);
     pokeChunk(new Buffer(slotName), 0, slot);
     pokeChunk(new Buffer(modName), 0, route);
@@ -146,16 +160,28 @@ function seedMod(modName, msegName, slotName) {
     modJsCode = peek1(new Buffer(modName), 1);
     modJsWave = peek1(new Buffer(msegName), 3 * 1024 + 512);
     modJsTy = peek1(new Buffer(slotName), 3);
+    modJsView = peek1(new Buffer(slotName), 96);
 }
 
-function setbuffers(sName, vName, scName, pName, modName, msegName, slotName) {
+function seedWt(name) {
+    var frames = new Array(2048);
+    var i;
+    for (i = 0; i < 2048; i++) frames[i] = 0;
+    for (i = 0; i < 1024; i++) frames[i] = Math.sin(2 * Math.PI * i / 1024);
+    pokeChunk(new Buffer(name), 0, frames);
+}
+
+function setbuffers(sName, vName, scName, pName, modName, msegName, slotName, wt1Name, wt2Name) {
     sampName = String(sName || "");
     voicesName = String(vName || "");
     scopeName = String(scName || "");
     pitchName = String(pName || "");
     seedSample();
     seedPitch();
+    slotBufName = slotName ? String(slotName) : "";
     if (modName) seedMod(String(modName), String(msegName), String(slotName));
+    if (wt1Name) seedWt(String(wt1Name));
+    if (wt2Name) seedWt(String(wt2Name));
     if (opt.start === "live") { trigSeq += 1; seedVoices(); }
 }
 
@@ -167,6 +193,35 @@ function modReport() {
         if (typeof c === "number") c = [c];
         var keys = ["mxRoutes", "mxSig", "mxRes", "mxMap", "mxTy", "mxWave"];
         for (var i = 0; i < keys.length; i++) txt += keys[i] + " " + (c[i] === undefined ? -1 : c[i]) + "\n";
+        var wp = [];
+        try { wp = new Buffer(scopeName).peek(1, 234, 2) || []; } catch (e2) { wp = []; }
+        if (typeof wp === "number") wp = [wp];
+        txt += "wt1Pos " + (wp[0] === undefined ? -1 : wp[0]) + "\n";
+        txt += "wt2Pos " + (wp[1] === undefined ? -1 : wp[1]) + "\n";
+        var mph = [];
+        try { mph = new Buffer(scopeName).peek(1, 208, 20) || []; } catch (e3) { mph = []; }
+        if (typeof mph === "number") mph = [mph];
+        var bestPh = -1, pi;
+        for (pi = 0; pi < 16; pi++) if (mph[pi] > bestPh) bestPh = Number(mph[pi]);
+        txt += "msegPh0 " + bestPh + "\n";
+        txt += "slotOut3 " + (mph[19] === undefined ? -1 : mph[19]) + "\n";
+        var vs = new Buffer(scopeName).peek(1, 230, 8);
+        if (typeof vs === "number") vs = [vs];
+        if (!vs) vs = [];
+        txt += "viewSi " + (vs[6] === undefined ? -2 : vs[6]) + "\n";
+        txt += "raw96 " + (vs[1] === undefined ? -2 : vs[1]) + "\n";
+        txt += "rawVar " + (vs[2] === undefined ? -2 : vs[2]) + "\n";
+        txt += "jsView " + modJsView + "\n";
+        if (slotBufName) {
+            try {
+                var slb = new Buffer(slotBufName);
+                txt += "slotN " + slb.framecount() + "\n";
+                txt += "slot96 " + peek1(slb, 96) + "\n";
+                txt += "slot87 " + peek1(slb, 87) + "\n";
+            } catch (e5) {
+                txt += "slotN -1\nslot96 -1\nslot87 -1\n";
+            }
+        }
     }
     if (opt.mod) txt += "jsMap " + modJsMap + "\njsCode " + modJsCode + "\njsWave " + modJsWave + "\njsTy " + modJsTy + "\n";
     return txt;

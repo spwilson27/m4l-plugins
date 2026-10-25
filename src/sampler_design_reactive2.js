@@ -226,6 +226,8 @@ function lfoPhaseFromValue(shape, v, dir) {
 // 128..207); this adds the signature, the LFO phase estimate and the "newest voice" ordering.
 // ---------------------------------------------------------------------------
 
+var liveWt1Pos = -1;
+var liveWt2Pos = -1;
 var sharedPoll = pollTelemetryScope;
 var voiceBorn = [];
 var prevAmpStage = [];
@@ -247,6 +249,15 @@ function soundingVoices(modPage) {
 
 pollTelemetryScope = function () {
     sharedPoll();
+    try {
+        if (typeof scopeBufName !== "undefined" && scopeBufName && typeof Buffer !== "undefined") {
+            var wtPk = new Buffer(scopeBufName).peek(1, 234, 2);
+            if (wtPk && wtPk.length >= 2) {
+                liveWt1Pos = Number(wtPk[0]);
+                liveWt2Pos = Number(wtPk[1]);
+            }
+        }
+    } catch (wtE) {}
     for (var v = 0; v < 16; v++) {
         var st = stageOf(voiceAmpStg[v]);
         var pv = prevAmpStage[v];
@@ -256,7 +267,8 @@ pollTelemetryScope = function () {
     var sig = liveActiveVoices * 1009 + Math.round(liveLfoVal * 800) * 7 + Math.round(liveLfoPh * 240) * 11
         + Math.round(liveLfo2Val * 800) * 3 + Math.round(liveLfo2Ph * 240) * 5
         + Math.round(liveModEnvVal * 400) * 13
-        + Math.round(livePeakL * 120) * 17 + Math.round(livePeakR * 120) * 19 + Math.round(Math.log(Math.max(20, liveEffCutHz)) * 120) * 23;
+        + Math.round(livePeakL * 120) * 17 + Math.round(livePeakR * 120) * 19 + Math.round(Math.log(Math.max(20, liveEffCutHz)) * 120) * 23
+        + Math.round((liveWt1Pos + 1) * 400) * 67 + Math.round((liveWt2Pos + 1) * 400) * 71;
     for (var u = 0; u < 16; u++) {
         if (voiceAmps[u] > 0.02) sig += Math.round(voicePlayheads[u] * 400) * (29 + u) + Math.round(voiceAmps[u] * 60);
         sig += Math.round(voiceAmpStg[u] * 240) * (37 + u) + Math.round(voiceAmpLvl[u] * 400) * (41 + u)
@@ -1529,6 +1541,15 @@ function paintSubScope(x, y, w, h, subOn) {
     paintCycleScope(x, y, w, h, subOn, subWaveSample);
 }
 
+// Knob position, or the sounding frame while a voice is up (scope 234 / 235).
+function wtShownPos(key) {
+    var knob = clamp01(paramValue(key) * 0.01);
+    if (typeof liveActiveVoices === "undefined" || liveActiveVoices < 1) return knob;
+    var live = (key === "osc2_pos") ? liveWt2Pos : liveWt1Pos;
+    if (!(live >= 0)) return knob;
+    return clamp01(live);
+}
+
 // Native Wavetable position: a hairline, a hollow square, and the percent under the line.
 function paintWtPosSlider(L, pos, on, osc) {
     var x = L.slideX + L.slideW * 0.5;
@@ -1988,7 +2009,7 @@ function paintViewer() {
     var oscOn = Math.round(paramValue(osc.onKey)) > 0;
     var isWt = (oscTab === 0 || oscTab === 1) && Math.round(paramValue(osc.typeKey)) > 0;
     if (isWt) {
-        paintWtViewer(viewWave[0], viewWave[1], viewWave[2], viewWave[3], clamp01(paramValue(osc.posKey) * 0.01), oscOn, Math.round(paramValue(osc.fxKey)), paramValue(osc.fx1Key) * 0.01, paramValue(osc.fx2Key) * 0.01);
+        paintWtViewer(viewWave[0], viewWave[1], viewWave[2], viewWave[3], wtShownPos(osc.posKey), oscOn, Math.round(paramValue(osc.fxKey)), paramValue(osc.fx1Key) * 0.01, paramValue(osc.fx2Key) * 0.01);
         paintWtFooter(sx, sy + sh - 4, osc, oscOn, Math.round(paramValue(osc.fxKey)));
         return;
     }
@@ -2307,6 +2328,7 @@ function envUsesSlot() { return envPage >= 3 && slotKind(envPage) === 0; }
 var msegPts = [null, null, null, null, null];
 var msegDirty = [1, 1, 1, 1, 1];
 var slotPoked = "";
+var slotViewSi = -1;
 var msegGeom = null;
 var msegPane = [0, 0, 0, 0, 0];
 var msegGridN = [8, 8, 8, 8, 8];
@@ -2530,7 +2552,20 @@ function pokeSlots() {
     if (sig === slotPoked && !dirty) return;
     if (!pokeFloats(slotBufName, 0, floats)) return;
     slotPoked = sig;
+    slotViewSi = viewSi;
     for (i = 1; i <= 4; i++) if (msegDirty[i]) renderMseg(i);
+}
+
+// The gen copies one slot's per-voice phase into the scope. That slot is index 96,
+// so it has to follow the tab or every playhead reads a slot that never moves.
+function publishViewSlot() {
+    if (!modWritesDsp()) return;
+    var viewSi = (envPage >= 1 && envPage <= 4) ? envPage - 1 : 0;
+    var dirty = false, i;
+    for (i = 1; i <= 4; i++) if (msegDirty[i]) dirty = true;
+    if (viewSi === slotViewSi && slotPoked && !dirty) return;
+    slotPoked = "";
+    pokeSlots();
 }
 
 function slotEncode() {
@@ -3256,17 +3291,9 @@ function paintCrossSynthTable(sx, bx, by, bw, bh) {
 
 function slotColumnSignal(page) {
     var kind = (typeof slotKind === "function") ? slotKind(page) : 1;
-    if (kind === 2) {
-        var ph = -1, best = 0.002, vi;
-        if (typeof voiceAmpLvl !== "undefined" && typeof msegVoicePh !== "undefined") {
-            for (vi = 0; vi < 16; vi++) {
-                if (voiceAmpLvl[vi] > best && msegVoicePh[vi] >= 0) { best = voiceAmpLvl[vi]; ph = msegVoicePh[vi]; }
-            }
-        }
-        if (ph < 0) return 0;
-        return msegAt(msegPoints(page), ph);
-    }
-    if (kind === 0) {
+    // MSEG and Env both show the level the gen publishes for that slot. The playhead phase
+    // belongs to whichever slot is on screen, so a column must not reconstruct itself from it.
+    if (kind === 2 || kind === 0) {
         var lvl = (typeof slotScopeLvl !== "undefined" && slotScopeLvl) ? slotScopeLvl[page - 1] : 0;
         return clamp01(lvl || 0);
     }
@@ -3869,7 +3896,7 @@ function drawMsegIcon(id, x, y, col) {
 }
 
 function paintMsegPage(sx, bx, by, bw, bh) {
-    pokeSlots();
+    publishViewSlot();
     var orange = liveCol("live_display_handle_one");
     var cy1 = RC.cyan;
     var slot = envPage;
@@ -3910,6 +3937,8 @@ function paintMsegPage(sx, bx, by, bw, bh) {
     var px0 = bx + 8, barY = by + 36, barH = 8, py0 = barY + barH + 2, pw = bw - 16;
     var ph = divY - 18 - py0;
     msegGeom = { x: px0, y: py0, w: pw, h: ph, slot: slot };
+    msegLiveVal = (typeof slotScopeLvl !== "undefined" && slotScopeLvl) ? (slotScopeLvl[slot - 1] || 0) : 0;
+    text(Math.round(msegLiveVal * 100) + "%", px0 + pw - 36, py0 + 11, 9, orange, true, 0);
     var l0 = msegLoop0[slot] || 0, l1 = msegLoop1[slot] == null ? 1 : msegLoop1[slot];
     var lx0 = px0 + l0 * pw, lx1 = px0 + l1 * pw;
     fillRect(px0, barY, pw, barH, [0.05, 0.06, 0.08], 1);
@@ -3944,24 +3973,6 @@ function paintMsegPage(sx, bx, by, bw, bh) {
     if (l1 < 0.999) fillRect(lx1, py0, px0 + pw - lx1, ph, [0, 0, 0], 0.35);
     line(lx0, py0, lx0, py0 + ph, cy1, 0.45, 1);
     line(lx1, py0, lx1, py0 + ph, cy1, 0.45, 1);
-    msegDots = [];
-    var voiceOrder = [];
-    var vv;
-    for (vv = 0; vv < 16; vv++) {
-        if (voiceAmpLvl[vv] > 0.002 && msegVoicePh[vv] >= 0) voiceOrder.push(vv);
-    }
-    voiceOrder.sort(function (a, b) { return voiceBorn[b] - voiceBorn[a] || a - b; });
-    for (vv = 0; vv < voiceOrder.length; vv++) {
-        var vid = voiceOrder[vv];
-        var phv = Math.max(0, Math.min(1, msegVoicePh[vid]));
-        var dotX = px0 + phv * pw;
-        var dotY = py0 + (1 - msegAt(pts, phv)) * ph;
-        var rank = vv;
-        var al = rank === 0 ? 1 : Math.max(0.28, 0.72 - 0.11 * rank);
-        circle(dotX, dotY, (rank === 0 ? 2.8 : 2.2) + 1.2, RC.dark, 0.7 * al);
-        circle(dotX, dotY, rank === 0 ? 2.8 : 2.2, [1, 1, 1], al);
-        msegDots.push({ v: vid, x: dotX, y: dotY, ph: phv });
-    }
     zone("msegplot", px0, py0, pw, ph, { slot: slot });
     var seg, p;
     for (seg = 0; seg < pts.length - 1; seg++) {
@@ -3984,6 +3995,27 @@ function paintMsegPage(sx, bx, by, bw, bh) {
         mgraphics.arc(hx, hy, 3.6, 0, Math.PI * 2);
         mgraphics.stroke();
         zone("msegpt", hx - 6, hy - 6, 12, 12, { slot: slot, i: p });
+    }
+    // After the point handles: a playhead that lands on a point (the triangle's peak, the ends) was covered by them.
+    msegDots = [];
+    var voiceOrder = [];
+    var vv;
+    for (vv = 0; vv < 16; vv++) {
+        // Phase -1 is an idle voice. A held note with sustain at 0 still has a stage, and its level is ~0, so level alone hid the playhead.
+        if (msegVoicePh[vv] >= 0 && (voiceAmpLvl[vv] > 0.002 || stageOf(voiceAmpStg[vv]) >= 1)) voiceOrder.push(vv);
+    }
+    voiceOrder.sort(function (a, b) { return voiceBorn[b] - voiceBorn[a] || a - b; });
+    for (vv = 0; vv < voiceOrder.length; vv++) {
+        var vid = voiceOrder[vv];
+        var phv = Math.max(0, Math.min(1, msegVoicePh[vid]));
+        var dotX = px0 + phv * pw;
+        var dotY = py0 + (1 - msegAt(pts, phv)) * ph;
+        var rank = vv;
+        var al = rank === 0 ? 1 : Math.max(0.28, 0.72 - 0.11 * rank);
+        var rad = rank === 0 ? 3.4 : 2.6;
+        circle(dotX, dotY, rad + 1.3, RC.dark, 0.9 * al);
+        circle(dotX, dotY, rad, [1, 1, 1], al);
+        msegDots.push({ v: vid, x: dotX, y: dotY, ph: phv });
     }
     if (drag && drag.msegbox && drag.rect && drag.slot === slot) {
         var mr = drag.rect;
@@ -4056,6 +4088,7 @@ function paintMatrixSection(sx) {
 var FILT_W = 235;
 var F_DB_LO = -26, F_DB_HI = 14;
 var filtDots = [];           // last painted: { v, x, y, hz, alpha, rank } (newest first)
+var filtCurveA = [];         // modulated response alpha, newest voice first; half the static curve
 var filtFocus = 2;           // 1 = Filter 1 selected, 2 = Filter 2 selected
 
 function filterGeom() {
@@ -4389,17 +4422,18 @@ function paintFilterSection(sx) {
         strokePathClipped(top1, 78.6, c1Col, on1 ? 1.0 : 0.38, 1.65);
     }
 
-    // Per-voice cutoff telemetry (kept for reactive voice tracking while notes play)
+    // Only the newest voice. Older voices used to stack a curve each and the graph read as a blur.
     filtDots = [];
+    filtCurveA = [];
     if (on1) {
         var vs = filterVoices();
-        var k;
-        for (k = vs.length - 1; k >= 1; k--) strokePathClipped(responsePath(g, ft1, voiceCutHz[vs[k]], q1), 78.6, acc, Math.max(0.08, 0.18 - 0.02 * k), 0.9);
-        for (k = 0; k < vs.length; k++) {
-            var hzv = voiceCutHz[vs[k]];
+        if (vs.length) {
+            var latest = vs[0];
+            strokePathClipped(responsePath(g, ft1, voiceCutHz[latest], q1), 78.6, acc, 0.5, 1.65);
+            filtCurveA = [0.5];
+            var hzv = voiceCutHz[latest];
             var px = Math.min(g.gx + g.gw, fFx(g, hzv)), py = fFy(g, filterDb(ft1, 1, q1, m1, sl1));
-            var a2 = k === 0 ? 1.0 : Math.max(0.3, 0.72 - 0.11 * k);
-            filtDots.push({ v: vs[k], x: px, y: py, hz: hzv, alpha: a2, rank: k });
+            filtDots.push({ v: latest, x: px, y: py, hz: hzv, alpha: 1, rank: 0 });
         }
     }
 
@@ -4753,6 +4787,105 @@ function paintVoiceSection(sx) {
 // paint
 // ---------------------------------------------------------------------------
 
+// Transparent live.* faces sit on single-parameter controls so Live's right-click
+// (Show Automation, Map to Macro, MIDI map) lands on the real parameter. The saved
+// device keeps them out of presentation. The wide wavetable stack stays on the v8ui
+// so a click still selects a frame; the thin position slider is the face for that parameter.
+var autoFaceCache = {};
+var autoFaceOrigin = null;
+var autoFaceClear = {};
+var AUTO_FACE_SKIP = { msegpt: 1, msegbend: 1, msegplot: 1, msegloop: 1, msegclock: 1, msegrev: 1, msegtrig: 1, mseggrid: 1, msegrate: 1, msegmult: 1, msegknob: 1, modcell: 1, wave: 1, flag: 1, xfade: 1, loop_move: 1, hdl: 1, act: 1 };
+var AUTO_FACE_COLORS = ["activebgcolor", "activeslidercolor", "activetricolor", "activetricolor2", "bordercolor", "focusbordercolor", "inactivelcdcolor", "lcdbgcolor", "lcdcolor", "textcolor", "tricolor", "activebgoncolor", "bgcolor", "bgoncolor", "inactivetextoffcolor", "inactivetextoncolor", "textoncolor", "activetextcolor", "activetextoncolor"];
+
+function autoFacesWanted() {
+    var want = {};
+    var score = {};
+    if (openMenu) return want;
+    if (typeof faceRegion !== "undefined" && faceRegion && faceRegion !== "main") return want;
+    if (typeof FACE_PARAMS === "undefined") return want;
+    var i, z, key, pref;
+    for (i = 0; i < hitZones.length; i++) {
+        z = hitZones[i];
+        key = z.key;
+        if (!key || !FACE_PARAMS[key] || AUTO_FACE_SKIP[z.kind]) continue;
+        if (key === "env_page" || key === "face_theme") continue;
+        if (z.kind === "wt_pos" && z.w > 40) continue;
+        if (!(z.w > 2) || !(z.h > 2)) continue;
+        pref = (z.kind === "wt_pos") ? 1e9 + z.w * z.h : z.w * z.h;
+        if (score[key] !== undefined && score[key] >= pref) continue;
+        score[key] = pref;
+        want[key] = [z.x, z.y, z.w, z.h];
+    }
+    return want;
+}
+
+function autoFaceOriginXY() {
+    if (autoFaceOrigin) return autoFaceOrigin;
+    var o = [0, 0];
+    try {
+        var ui = hostPatcher && hostPatcher.getnamed ? hostPatcher.getnamed("obj-viz") : null;
+        var r = ui ? ui.getattr("presentation_rect") : null;
+        if (r && r.length >= 2) o = [Number(r[0]) || 0, Number(r[1]) || 0];
+    } catch (e) {}
+    autoFaceOrigin = o;
+    return o;
+}
+
+function autoFaceApply(want) {
+    var p = (typeof hostPatcher !== "undefined") ? hostPatcher : null;
+    if (!p || !p.getnamed) return 0;
+    var origin = autoFaceOriginXY();
+    var key, hide, face, r, x, y, w, h, sig, was, ci, front, n = 0;
+    for (key in autoFaceCache) {
+        if (!Object.prototype.hasOwnProperty.call(autoFaceCache, key) || want[key]) continue;
+        hide = p.getnamed("obj-ctrl-" + key);
+        if (hide) {
+            try {
+                // Drop presentation before parking. A rect written while presentation is off is ignored,
+                // and a hidden box left in presentation still sits on the drawing.
+                hide.setattr("presentation", 0);
+                hide.setattr("hidden", 1);
+                hide.setattr("presentation_rect", 0, 0, 1, 1);
+            } catch (e1) {}
+        }
+        delete autoFaceCache[key];
+    }
+    for (key in want) {
+        if (!Object.prototype.hasOwnProperty.call(want, key)) continue;
+        r = want[key];
+        x = Math.round((origin[0] + r[0]) * 100) / 100;
+        y = Math.round((origin[1] + r[1]) * 100) / 100;
+        w = Math.round(r[2] * 100) / 100;
+        h = Math.round(r[3] * 100) / 100;
+        sig = x + "," + y + "," + w + "," + h;
+        if (autoFaceCache[key] === sig) continue;
+        face = p.getnamed("obj-ctrl-" + key);
+        if (!face) continue;
+        was = autoFaceCache[key] === undefined;
+        try {
+            // Presentation has to be on before the rect is written. The first write, while the
+            // saved box is still out of presentation, is ignored and the box stays at its patching rect.
+            face.setattr("presentation", 1);
+            face.setattr("hidden", 0);
+            face.setattr("presentation_rect", x, y, w, h);
+            face.setattr("presentation_rect", x, y, w, h);
+            if (was && !autoFaceClear[key]) {
+                for (ci = 0; ci < AUTO_FACE_COLORS.length; ci++) {
+                    try { face.setattr(AUTO_FACE_COLORS[ci], 0, 0, 0, 0); } catch (eC) {}
+                }
+                try { face.setattr("showname", 0); } catch (eN) {}
+                try { face.setattr("shownumber", 0); } catch (eU) {}
+                autoFaceClear[key] = 1;
+            }
+            front = p.bringtofront;
+            if (typeof front === "function") front.call(p, face);
+        } catch (e2) { continue; }
+        autoFaceCache[key] = sig;
+        n++;
+    }
+    return n;
+}
+
 function paint() {
     fontKey = ""; // mgraphics resets the font at the start of every paint
     initTheme();
@@ -4773,6 +4906,7 @@ function paint() {
     }
     paintTip();
     paintMenu();
+    autoFaceApply(autoFacesWanted());
 }
 
 // ---------------------------------------------------------------------------
@@ -4922,7 +5056,72 @@ function dbg_r2_view(mTab, pg, tb, loopMenu, fold) {
             openMenu = null;
         }
     }
+    publishViewSlot();
     mgraphics.redraw();
+}
+
+// The open MSEG's playheads and the level the matrix column is showing.
+function dbg_r2_mseg() {
+    publishViewSlot();
+    var page = envPage;
+    var lvl = (page >= 1 && page <= 4 && typeof slotScopeLvl !== "undefined") ? (slotScopeLvl[page - 1] || 0) : 0;
+    var parts = [], i, on;
+    for (i = 0; i < 16; i++) {
+        on = msegVoicePh[i] >= 0 && (voiceAmpLvl[i] > 0.002 || Math.floor(voiceAmpStg[i] || 0) >= 1);
+        if (on) parts.push(i + ":" + Number(msegVoicePh[i]).toFixed(3));
+    }
+    var line = "page=" + page + " lvl=" + Number(lvl).toFixed(3) + " dots=" + parts.join(",");
+    if (typeof Global !== "undefined") {
+        var g = new Global("bs_r2_mseg");
+        g.text = line;
+    }
+    return line;
+}
+
+// Show an oscillator and its wavetable so the position face is the thin slider.
+function dbg_r2_osc(tab, type) {
+    oscTab = Math.max(0, Math.min(2, Math.round(Number(tab) || 0)));
+    var osc = activeOsc();
+    if (osc && osc.onKey) setParamFromFace(osc.onKey, 1);
+    if (type !== undefined && osc && osc.typeKey) setParamFromFace(osc.typeKey, Number(type));
+    mgraphics.redraw();
+}
+
+// The faces currently over the drawing, "key=x,y,w,h" joined by semicolons, on Global bs_r2_faces.
+function dbgFaceBox(key) {
+    var p = (typeof hostPatcher !== "undefined" && hostPatcher && hostPatcher.getnamed) ? hostPatcher.getnamed("obj-ctrl-" + key) : null;
+    if (!p) return key + "=missing";
+    var r = "", h = "", pr = "";
+    try { r = p.getattr("presentation_rect"); } catch (eR) { r = "err"; }
+    try { h = p.getattr("hidden"); } catch (eH) {}
+    try { pr = p.getattr("presentation"); } catch (eP) {}
+    return key + "=" + h + "," + pr + "," + r;
+}
+
+function dbg_r2_faces() {
+    mgraphics.redraw();
+    var want = autoFacesWanted();
+    autoFaceApply(want);
+    var keys = [];
+    var k;
+    for (k in want) if (Object.prototype.hasOwnProperty.call(want, k)) keys.push(k + "=" + want[k].join(","));
+    if (typeof Global !== "undefined") {
+        var g = new Global("bs_r2_faces");
+        g.text = keys.join(";");
+        g.n = keys.length;
+        var b = new Global("bs_r2_facebox");
+        b.text = dbgFaceBox("play_pos") + ";" + dbgFaceBox("osc2_pos");
+    }
+    return keys.join(";");
+}
+
+// Last pointer position over the drawing, "n,x,y", so a Live test can find the canvas on screen.
+function dbg_r2_ptr() {
+    if (typeof Global !== "undefined") {
+        var g = new Global("bs_r2_ptr");
+        g.text = dbgPtrN + "," + dbgPtrX + "," + dbgPtrY;
+    }
+    return dbgPtrN + "," + dbgPtrX + "," + dbgPtrY;
 }
 
 // ---------------------------------------------------------------------------
@@ -5251,6 +5450,13 @@ function writeSlotKey(key, v) {
     pokeSlots();
     return true;
 }
+
+var sharedStoreParam = storeParam;
+storeParam = function (key, v, fromFace) {
+    var prevPage = envPage;
+    sharedStoreParam(key, v, fromFace);
+    if (key === "env_page" && envPage !== prevPage) publishViewSlot();
+};
 
 var sharedSetParamFromFace = setParamFromFace;
 setParamFromFace = function (key, v) {
@@ -5753,7 +5959,14 @@ ondblclick = function (x, y) {
     sharedOndblclick(x, y);
 };
 
+var dbgPtrN = 0;
+var dbgPtrX = -1;
+var dbgPtrY = -1;
+
 onidle = function (x, y) {
+    dbgPtrN += 1;
+    dbgPtrX = x;
+    dbgPtrY = y;
     if ((drag && (drag.captured || drag.hdl)) || (sbDrag && sbDrag.moved)) return;
     var z = zoneAt(x, y);
     var h = (z && z.kind === "hdl") ? z.id : "";

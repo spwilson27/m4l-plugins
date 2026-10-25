@@ -95,6 +95,13 @@ assert.ok(gen.includes("peek(slbuf, 48 + si)"), "slot envelopes attack toward th
 assert.ok(gen.includes("peek(msegw, si * 1024"), "each slot reads its own MSEG waveform");
 assert.ok(gen.includes("poke(scope, slotSig, 224 + si)"), "slot envelope levels are on the scope");
 assert.ok(gen.includes("poke(scope, resUse, 230)"), "resonance used by the filter is on the scope");
+assert.ok(gen.includes("frame_pos("), "wavetable frames sum their matrix offset outside mod_apply");
+assert.strictEqual((gen.match(/frame_pos\(/g) || []).length, 3, "frame_pos is defined once and called from both voice loops");
+assert.ok(gen.includes("n2Frames, wt2Off"), "osc 2's frame offset is an argument of the one voice_proc call");
+assert.ok(gen.includes("peek(prm, 74) + o2PosAdd"), "osc 2's frame is the knob plus that offset");
+assert.ok(gen.includes("poke(scope, showWtAmp < 0 ? -1 : showWt1, 234)"), "the sounding osc 1 frame is on the scope");
+assert.ok(gen.includes("poke(scope, showWtAmp < 0 ? -1 : showWt2, 235)"), "the sounding osc 2 frame is on the scope");
+assert.strictEqual((gen.match(/voice_proc\(/g) || []).length, 2, "voice_proc still has one call site");
 assert.ok(gen.includes("slot4Own = slotS4"), "the owning voice records slot 4's signal");
 assert.strictEqual((gen.match(/mod_apply\(/g) || []).length, 3, "mod_apply is defined once and called twice");
 const srcFn = gen.slice(gen.indexOf("mod_src("), gen.indexOf("mod_apply("));

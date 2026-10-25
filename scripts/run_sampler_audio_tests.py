@@ -16,6 +16,7 @@ Environment:
   SAMPLER_SG_ONLY=1       with SAMPLER_CASE='^sg_': the Sample Gain (samp_gain) cases and checks
   SAMPLER_PAN_ONLY=1      with SAMPLER_CASE='^(pan_|uni_)': oscillator pan, unison width and detune checks
   SAMPLER_MX_ONLY=1       with SAMPLER_CASE='^mx_': slot-4 MSEG / Env routed to filter resonance
+  SAMPLER_WT_ONLY=1       with SAMPLER_CASE='^wt': wavetable frame position, knob and matrix
   SAMPLER_ES_ONLY=1       with SAMPLER_CASE='^es_': envelope slope (atk_slope ... mrel_slope) cases and checks; es_null prints
                           "ES_NULL chk=.. rms=.. peak=.." (run it with SAMPLER_GEN=<old core> to compare: bit-identical at slope 0)
   SAMPLER_TV_ONLY=1       with SAMPLER_CASE='^tv_': per-voice envelope / filter telemetry cases (scope 128..207)
@@ -79,7 +80,7 @@ def device_patch(case, gen_code):
     """Device-specific boxes for the shared scaffold (scripts/max_harness.py)."""
     name = case["name"]
     chans = 1 if name == "mono_sample" else 2
-    bind = ("samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope"
+    bind = ("samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, mstate #0-bsmstate"
             + ("" if case.get("nopitchbind") else ", pitch #0-bspitch"))
     setbuf = "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch"
     extra = []
@@ -94,6 +95,15 @@ def device_patch(case, gen_code):
             mh.box("obj-slot", "buffer~ #0-bsslot @samps 128", 540, 340, 220,
                    numoutlets=2, outlettype=["float", "bang"]),
         ]
+    if case.get("wt"):
+        bind += ", wt1 #0-bswt1, wt2 #0-bswt2"
+        setbuf += " #0-bswt1 #0-bswt2"
+        extra = extra + [
+            mh.box("obj-wt1", "buffer~ #0-bswt1 @samps 4096", 540, 370, 210,
+                   numoutlets=2, outlettype=["float", "bang"]),
+            mh.box("obj-wt2", "buffer~ #0-bswt2 @samps 4096", 540, 400, 210,
+                   numoutlets=2, outlettype=["float", "bang"]),
+        ]
     boxes = [
         mh.msg("obj-params", case["params"], 200, 40, 760),
         mh.msg("obj-setbuf", setbuf, 200, 70, 420),
@@ -104,6 +114,8 @@ def device_patch(case, gen_code):
         mh.box("obj-voices", "buffer~ #0-bsvoices @samps 128", 540, 100, 220,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-scope", "buffer~ #0-bsscope @samps 256", 540, 130, 210,
+               numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("obj-mstate", "buffer~ #0-bsmstate @samps 256", 540, 190, 220,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-pitchbuf", "buffer~ #0-bspitch @samps 4096", 540, 160, 220,
                numoutlets=2, outlettype=["float", "bang"]),
@@ -1023,6 +1035,21 @@ MX = ("mode 0, loop_mode 1, root_note 57, unison_voices 1, unison_width 0, uniso
 add("mx_off", MX, 400, mod=True, opts="src=rich48 notes=57 mod=off")
 add("mx_mseg", MX, 400, mod=True, opts="src=rich48 notes=57 mod=mseg")
 add("mx_env", MX, 400, mod=True, opts="src=rich48 notes=57 mod=env")
+# A held note should walk a 1 Hz retriggered MSEG. Scope 208 is that voice's phase ~0.4 after 400 ms.
+add("mx_phase", MX, 400, mod=True, opts="src=rich48 notes=57 mod=phase")
+
+# Wavetable frame. Frame 0 of #0-bswt1 / #0-bswt2 is a full-scale sine and frame 1 is silence.
+# play_pos / osc2_pos are gen units 0..1. A slot-4 MSEG of all 1s at depth 1 moves the frame to 1.
+WT = P("mode 0, osc1_type 1, osc1_on 1, osc2_on 0, play_pos 0, wt1_frames 2, wt1_user 0, wt1_fx 0, "
+       "wt2_frames 2, wt2_user 0, wt2_fx 0, lfo2_amount 1, lfo2_rate 1")
+WT2 = P("mode 0, osc1_on 0, osc2_on 1, osc2_type 1, osc2_pos 0, osc2_gain 0, "
+        "wt1_frames 2, wt1_user 0, wt2_frames 2, wt2_user 0, wt2_fx 0, lfo2_amount 1, lfo2_rate 1")
+add("wt_lo", WT, 400, mod=True, wt=True, opts="notes=57 mod=off")
+add("wt_hi", P("mode 0, osc1_type 1, osc1_on 1, osc2_on 0, play_pos 1, wt1_frames 2, wt1_user 0, wt1_fx 0"),
+    400, mod=True, wt=True, opts="notes=57 mod=off")
+add("wt_mod", WT, 400, mod=True, wt=True, opts="notes=57 mod=wt")
+add("wt2_lo", WT2, 400, mod=True, wt=True, opts="notes=57 mod=off")
+add("wt2_mod", WT2, 400, mod=True, wt=True, opts="notes=57 mod=wt2")
 
 
 def run_mx_checks(results):
@@ -1047,6 +1074,31 @@ def run_mx_checks(results):
           f"MSEG resonance did not change the bandpass (off={off['rms']:.4f} mseg={mseg['rms']:.4f} res={mseg.get('mxRes')})")
     check(off["rms"] > env["rms"] * 1.8,
           f"Env resonance did not change the bandpass (off={off['rms']:.4f} env={env['rms']:.4f} res={env.get('mxRes')})")
+
+
+def run_phase_checks(results):
+    ph = results["mx_phase"]
+    phase = float(ph.get("msegPh0", -1))
+    out = float(ph.get("slotOut3", -1))
+    check(0.25 < phase < 0.6, f"MSEG playhead did not advance (phase={phase} out={out} view={ph.get('viewSi')} raw96={ph.get('raw96')} rawVar={ph.get('rawVar')})")
+    check(abs(out - phase) < 0.08, f"MSEG column value {out} is not the playhead {phase}")
+
+
+def run_wt_checks(results):
+    lo, hi, mod = results["wt_lo"], results["wt_hi"], results["wt_mod"]
+    o2, o2m = results["wt2_lo"], results["wt2_mod"]
+    check(lo["rms"] > 0.02, f"wt_lo sine frame was quiet (rms={lo['rms']:.4f} pos={lo.get('wt1Pos')})")
+    check(hi["rms"] < lo["rms"] * 0.2, f"wt_hi silence frame was not quiet (hi={hi['rms']:.4f} lo={lo['rms']:.4f})")
+    check(mod["rms"] < lo["rms"] * 0.25,
+          f"MSEG did not move osc 1 to the silent frame (mod={mod['rms']:.4f} lo={lo['rms']:.4f} pos={mod.get('wt1Pos')} code={mod.get('jsCode')})")
+    check(mod.get("wt1Pos", -1) > 0.8, f"osc 1 scope frame stayed at the knob (wt1Pos={mod.get('wt1Pos')})")
+    check(lo.get("wt1Pos", 1) < 0.15, f"osc 1 scope frame was not the knob at 0 (wt1Pos={lo.get('wt1Pos')})")
+    check(o2["rms"] > 0.02, f"wt2_lo sine frame was quiet (rms={o2['rms']:.4f} pos={o2.get('wt2Pos')})")
+    check(o2m["rms"] < o2["rms"] * 0.25,
+          f"MSEG did not move osc 2 to the silent frame (mod={o2m['rms']:.4f} lo={o2['rms']:.4f} pos={o2m.get('wt2Pos')} code={o2m.get('jsCode')})")
+    check(o2m.get("wt2Pos", -1) > 0.8, f"osc 2 scope frame stayed at the knob (wt2Pos={o2m.get('wt2Pos')})")
+    check(mod.get("jsCode", -1) > 200 and mod.get("jsCode", -1) < 210, f"wt route code {mod.get('jsCode')}")
+    check(o2m.get("jsCode", -1) > 70 and o2m.get("jsCode", -1) < 80, f"wt2 route code {o2m.get('jsCode')}")
 
 
 def run_with_retry(gen_code, case):
@@ -1235,12 +1287,26 @@ def main():
             raise SystemExit(1)
         print("Pan and unison checks passed.")
         return
+    if only and os.environ.get("SAMPLER_PHASE_ONLY"):
+        run_phase_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("MSEG phase checks passed.")
+        return
     if only and os.environ.get("SAMPLER_MX_ONLY"):
         run_mx_checks(results)
         if FAILS:
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
             raise SystemExit(1)
         print("Slot modulation checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_WT_ONLY"):
+        run_wt_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Wavetable frame checks passed.")
         return
     if only:
         print("Partial sampler audio run; cross-case checks skipped.")

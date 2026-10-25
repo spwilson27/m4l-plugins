@@ -950,6 +950,9 @@ def hide_from_face(b, px, py):
     box["presentation"] = 0
     box.pop("presentation_rect", None)
     box["patching_rect"] = [float(px), float(py), box["patching_rect"][2], box["patching_rect"][3]]
+    # Scripting name is the box id so the face can find it with getnamed. The saved device stays
+    # out of presentation; the main face moves it over a drawn control at runtime.
+    box["varname"] = box["id"]
     return b
 
 
@@ -1392,6 +1395,17 @@ def build_patcher(design=None):
                 "text": "buffer~ #0-bsscope @samps 256",
             }
         },
+        {
+            "box": {
+                "id": "obj-buf-mstate",
+                "maxclass": "newobj",
+                "numinlets": 1,
+                "numoutlets": 2,
+                "outlettype": ["float", "bang"],
+                "patching_rect": [420.0, 414.0, 220.0, 20.0],
+                "text": "buffer~ #0-bsmstate @samps 256",
+            }
+        },
         # Analyzed root key: the sample's pitch (MIDI) at 4096 evenly spaced positions, written by the face
         {
             "box": {
@@ -1507,7 +1521,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [420.0, 450.0, 520.0, 20.0],
-                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2" + (", samp2 #0-bsamp2, modmap #0-bsmod, mpebuf #0-bsmpe, msegw #0-bsmseg, slbuf #0-bsslot" if design else ""),
+                "text": "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope, pitch #0-bspitch, wt1 #0-bswt1, wt2 #0-bswt2, mstate #0-bsmstate" + (", samp2 #0-bsamp2, modmap #0-bsmod, mpebuf #0-bsmpe, msegw #0-bsmseg, slbuf #0-bsslot" if design else ""),
             }
         },
         {

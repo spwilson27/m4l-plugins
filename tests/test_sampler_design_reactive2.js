@@ -589,6 +589,50 @@ sb.setFoldMask(0b1011);
     sb.setParamFromFace("osc1_type", 0);
 }
 
+// Automation faces: one transparent live.* per drawn parameter. The wavetable stack stays clickable;
+// the thin position slider is the face. An open menu takes the clicks back.
+{
+    const ctrl = (id) => patcher.boxes.map((b) => b.box).find((b) => b.id === id);
+    const pos = ctrl("obj-ctrl-play_pos");
+    const o2 = ctrl("obj-ctrl-osc2_pos");
+    assert.strictEqual(pos.presentation, 0, "the position parameter is not baked into the presentation");
+    assert.strictEqual(pos.varname, "obj-ctrl-play_pos", "the face finds the position parameter by its scripting name");
+    assert.strictEqual(o2.varname, "obj-ctrl-osc2_pos");
+    assert.strictEqual(o2.presentation, 0);
+    sb.setFoldMask(0);
+    sb.oscTab = 0;
+    sb.openMenu = null;
+    sb.setParamFromFace("osc1_type", 1);
+    sb.liveActiveVoices = 0;
+    sb.liveWt1Pos = -1;
+    sb.paint();
+    const faces = sb.autoFacesWanted();
+    assert.ok(faces.play_pos, "play position has an automation face");
+    assert.ok(faces.play_pos[2] > 8 && faces.play_pos[2] <= 40, "the face is the thin slider, not the frame stack");
+    assert.ok(faces.play_pos[3] > 20, "the slider face covers the track");
+    assert.strictEqual(typeof sb.dbg_r2_ptr, "function", "the canvas reports the pointer for the Live face test");
+    assert.strictEqual(typeof sb.dbg_r2_mseg, "function", "the MSEG playhead can be read back in Live");
+    sb.liveActiveVoices = 1;
+    sb.liveWt1Pos = 0.25;
+    sb.setParamFromFace("play_pos", 80);
+    near(sb.wtShownPos("play_pos"), 0.25, 1e-6, "a sounding voice draws the modulated frame");
+    sb.liveActiveVoices = 0;
+    near(sb.wtShownPos("play_pos"), 0.8, 1e-6, "an idle voice draws the knob");
+    sb.setParamFromFace("play_pos", 0);
+    sb.openMenu = { key: "wt1_fx", x: 0, y: 0, w: 10, rowH: 12 };
+    assert.strictEqual(Object.keys(sb.autoFacesWanted()).length, 0, "an open menu is not covered by a face");
+    sb.openMenu = null;
+    sb.setFoldMask(4);
+    sb.paint();
+    const filt = sb.autoFacesWanted();
+    assert.ok(filt.filt_cutoff && filt.filt_res, "the filter knobs are automation faces");
+    assert.ok(!Object.keys(filt).some((k) => k === "env_page"), "the page tabs stay on the drawing");
+    sb.setFoldMask(0);
+    sb.setParamFromFace("osc1_type", 0);
+    sb.oscTab = 0;
+    sb.liveWt1Pos = -1;
+}
+
 // --- Mod Matrix target label static fill and live modulation sum bar ---
 {
     sb.setFoldMask(8); sb.matTab = 0;
@@ -613,7 +657,7 @@ sb.setFoldMask(0b1011);
         const sig = sb.modSourceSignal(1, c);
         assert.ok(sig >= -1 && sig <= 1 && Math.abs(sig) > 0, `voice playing -> source ${c} signal ${sig} active`);
     }
-    assert.ok(sb.modSourceSignal(1, 4) > 0.9, "the MSEG column follows the curve, not LFO 2");
+    near(sb.modSourceSignal(1, 4), 0.7, 1e-6, "the MSEG column shows the published slot output, not LFO 2");
     sb.setSlotKind(4, 0);
     near(sb.modSourceSignal(1, 4), 0.7, 1e-6, "Env in slot 4 follows the slot envelope, not LFO 2");
     sb.setSlotKind(4, 2);
@@ -778,11 +822,12 @@ assert.deepStrictEqual(plain(sb.envDots), [], "no dots without voices");
     setVoices([{ amp: 3, al: 0.5, cut: 1000, born: 1 }, { amp: 2.4, al: 0.5, cut: 2400, born: 2 }, { amp: 1.3, al: 0.3, cut: 450, born: 3 }, { amp: 0, al: 0, cut: 0, born: 4 }]);
     sb.paint();
     const g = sb.filterGeom();
-    assert.strictEqual(sb.filtDots.length, 3, "one dot per sounding voice (idle voices report no cutoff)");
-    assert.deepStrictEqual(plain(sb.filtDots.map((q) => q.v)), [2, 1, 0], "newest first");
-    for (const q of sb.filtDots) { near(q.x, sb.fFx(g, q.hz), 0.01, "dot x at the voice's cutoff"); near(q.hz, sb.voiceCutHz[q.v], 1e-6, "cutoff from telemetry"); }
-    assert.ok(sb.filtDots[0].x < sb.filtDots[2].x === (450 < 1000), "dots spread by their cutoffs");
+    assert.strictEqual(sb.filtDots.length, 1, "only the latest voice is drawn");
+    assert.strictEqual(sb.filtDots[0].v, 2, "the newest voice wins");
+    near(sb.filtDots[0].x, sb.fFx(g, 450), 0.01, "the dot sits at the newest voice's cutoff");
     assert.strictEqual(sb.filtDots[0].alpha, 1.0);
+    assert.strictEqual(sb.filtCurveA.length, 1, "one modulated curve");
+    assert.strictEqual(sb.filtCurveA[0], 0.5, "the modulated curve is half as bright as the static curve");
     // a dot rides the voice's own peak: y is the response peak of the current type / resonance
     for (const q of sb.filtDots) near(q.y, sb.fFy(g, sb.filterDb(0, 1, sb.resToQ(40))), 0.01, "dot y on the peak");
     // filter off: nothing drawn for voices
@@ -1895,6 +1940,19 @@ sb.setFoldMask(sb.DEFAULT_FOLD);
     near(dot0.x, dotG.x + 0.25 * dotG.w, 1.2, "a voice dot sits at that voice's position");
     near(dot3.x, dotG.x + 0.7 * dotG.w, 1.2, "a second voice dot sits at its own position");
     near(dot0.y, dotG.y + (1 - sb.msegAt(sb.msegPoints(2), 0.25)) * dotG.h, 1.2, "the dot rides the curve");
+    sb.slotScopeLvl[1] = 0.62;
+    sb.paint();
+    near(sb.msegLiveVal, 0.62, 1e-6, "the editor shows the published MSEG output");
+    sb.msegVoicePh[5] = 0.4;
+    sb.voiceAmpLvl[5] = 0;
+    sb.voiceAmpStg[5] = 3;
+    sb.voiceBorn[5] = 3;
+    sb.paint();
+    assert.ok(sb.msegDots.some((d) => d.v === 5), "a held note with no level still shows its playhead");
+    sb.msegVoicePh[5] = -1;
+    sb.voiceAmpStg[5] = 0;
+    sb.paint();
+    assert.ok(!sb.msegDots.some((d) => d.v === 5), "an idle voice does not keep a playhead");
     for (let pv2 = 0; pv2 < 16; pv2++) { sb.msegVoicePh[pv2] = -1; sb.voiceAmpLvl[pv2] = 0; }
     const revZ = sb.hitZones.find((z) => z.tip === "reverse");
     assert.ok(revZ, "reverse is a button");
@@ -2078,6 +2136,17 @@ sb.setFoldMask(sb.DEFAULT_FOLD);
     assert.strictEqual(mod[2], 4, "the MSEG column is source 4");
     assert.ok(Math.abs(mod[3] - 1) < 1e-6, "depth 100 is full scale");
     assert.strictEqual(slot[3], 2, "slot 4 type MSEG is written");
+    const pageWas = sb.envPage;
+    sb.envPage = 4;
+    sb.slotViewSi = -1;
+    sb.slotPoked = "";
+    sb.publishViewSlot();
+    assert.strictEqual(slot[96], 3, "the MSEG tab publishes its slot so playheads read that phase");
+    sb.envPage = 1;
+    sb.publishViewSlot();
+    assert.strictEqual(slot[96], 0, "another tab publishes its own slot");
+    sb.envPage = pageWas;
+    sb.slotPoked = "";
     assert.ok(wave[3 * 1024 + 512] > 0.9, "slot 4's waveform peak is past the first chunk");
     sb.setSlotKind(4, 0);
     assert.strictEqual(sb.slotTypes[4], 1, "Env on slot 4 is type 1");

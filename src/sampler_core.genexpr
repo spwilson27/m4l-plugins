@@ -1443,9 +1443,13 @@ voice_proc(
 	wt1Buf,
 	wt2Buf,
 	samp2Buf,
-	samp2Frames
+	samp2Frames,
+	o2PosAdd
 ) {
 	stB = vIdx * 256;
+	// Shown frame positions (knob plus matrix, then the oscillator overwrites them with the sounding value).
+	wt1Shown = clip(playPosNorm, 0, 1);
+	o2Shown = clip(peek(prm, 74) + o2PosAdd, 0, 1);
 	// Grain telemetry: on a telemetry tick every voice rewrites its 32 grain slots (position -1 = unused, level 0).
 	gtB = vIdx * 64;
 	if (telTick > 0.5) {
@@ -2328,6 +2332,7 @@ voice_proc(
 	o1Wrap = 0;
 	if (peek(prm, 80) > 0.5) {
 		wt1Pos = clip(playPosNorm + posMod, 0, 1);
+		wt1Shown = wt1Pos;
 		wt1Fx = peek(prm, 67);
 		wt1A = peek(prm, 68);
 		wt1B = peek(prm, 69);
@@ -2410,7 +2415,8 @@ voice_proc(
 		o2Type = round(clip(peek(prm, 71), 0, 1));
 		o2Rat = clip(peek(prm, 123), 0.125, 16.0);
 		o2Semi = peek(prm, 72) + (peek(prm, 73) * fnScale) * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mOut * menvPitchAmt * 24.0;
-		o2Pos = clip(peek(prm, 74) + posMod, 0, 1);
+		o2Pos = clip(peek(prm, 74) + o2PosAdd + posMod, 0, 1);
+		o2Shown = o2Pos;
 		o2Gain = pow(10.0, clip(peek(prm, 75), -48, 24) / 20.0);
 		o2Phs = peek(vhist, stB + 50);
 		if (needInit) {
@@ -2824,7 +2830,7 @@ voice_proc(
 	poke(vhist, survTimer, stB + 37);
 	poke(vhist, (freezeOn > 0.5) ? 1 : 0, stB + 40);
 	poke(vhist, frzWinS, stB + 41);
-	return fixnan(o1WetL * finalGain), fixnan(o1WetR * finalGain), outPosNorm, aOut, mOut, spawnCnt;
+	return fixnan(o1WetL * finalGain), fixnan(o1WetR * finalGain), outPosNorm, aOut, mOut, spawnCnt, wt1Shown, o2Shown;
 }
 
 // Same five shapes as the LFO editor: 0 sine, 1 tri, 2 saw, 3 sample-and-hold, 4 square. shaping is -1..1.
@@ -3005,6 +3011,9 @@ mod_apply(nR, doGlobal, ampS, menvS, env3S, velS, noteS, rndS, npbS, slideS, pre
 			poke(prmBuf, pow(4.0, 0.0 - clip(knP + offV, -1, 1)), 113);
 		} else if (codeV >= 1000) {
 			offV = 0;
+		} else if ((codeV > 73.5) && (codeV < 74.5)) {
+			// osc2_pos is applied by frame_pos. Leaving the knob in prm avoids adding the offset twice.
+			offV = offV;
 		} else if (codeV < 160) {
 			baseV = peek(prmBuf, codeV);
 			poke(baseBuf, baseV, touch);
@@ -3122,12 +3131,44 @@ mod_restore(prmBuf, baseBuf, slotBuf, metaBuf) {
 	return 0;
 }
 
+// Matrix offsets for the two wavetable frames. A variable-index poke inside mod_apply does not land, so these
+// are summed here and applied by the caller. 202 is play_pos (argument 2); 74 is osc2_pos. One return each.
+frame_pos(nR, mapBuf, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3) {
+	fo1 = 0;
+	fo2 = 0;
+	foRi = 0;
+	foC = 0;
+	foSrc = 0;
+	foDep = 0;
+	foLo = 0;
+	foHi = 0;
+	foId = 0;
+	foSig = 0;
+	foOff = 0;
+	for (foRi = 0; foRi < nR; foRi += 1) {
+		foC = peek(mapBuf, 1 + foRi * 6);
+		foSrc = peek(mapBuf, 1 + foRi * 6 + 1);
+		foDep = peek(mapBuf, 1 + foRi * 6 + 2);
+		foLo = peek(mapBuf, 1 + foRi * 6 + 3);
+		foHi = peek(mapBuf, 1 + foRi * 6 + 4);
+		foId = foSrc;
+		if (foSrc >= 31.5) foId = foSrc - 32;
+		foSig = mod_src(foId, ampS, menvS, env3S, lfo1S, lfo2S, velS, noteS, pbS, atS, modS, rndS, npbS, slideS, pressS, au1, au2, au3);
+		foSig = mod_pol(foSrc, foSig);
+		foOff = foDep * foSig * (foHi - foLo);
+		if (abs(foC - 202) < 0.5) fo1 = fo1 + foOff;
+		else if (abs(foC - 74) < 0.5) fo2 = fo2 + foOff;
+	}
+	return fo1, fo2;
+}
+
 // Buffers
 Buffer samp("bsamp");
 Buffer modmap("bsmod");
 Buffer mpebuf("bsmpe");
 Buffer msegw("bsmseg");
 Buffer slbuf("bsslot");
+Buffer mstate("bsmstate");
 Buffer samp2("bsamp2");
 Buffer vdata("bsvoices");
 Buffer scope("bsscope");
@@ -3149,11 +3190,9 @@ Data mxPrev(32);
 Data mxMeta(4);
 Data mphase(20);
 Data mwave(12);
-Data mvph(64);
-Data mvtr(16);
-Data mvrose(16);
-Data mvsamp(64);
-Data mvpos(64);
+// Per-voice MSEG state lives in mstate. A variable index into Data never stuck
+// (the playhead stayed at 0), and a buffer poke does.
+// 0..15 last trigger, 16..31 rising edge, 32..95 phase, 96..159 position, 160..223 sample.
 Data subh(16);
 Data vst(6400);
 Data gtel(1024);
@@ -3428,6 +3467,10 @@ History lfo2SH(0);
 History lfo1GainH(0);
 History lfo2GainH(0);
 History gPrev(0);
+History mph0(0);
+History mph1(0);
+History mph2(0);
+History mph3(0);
 History svfLpL(0);
 History svfBpL(0);
 History svfLpR(0);
@@ -3753,10 +3796,14 @@ for (mgVi = 0; mgVi < 16; mgVi += 1) {
 	mgGate = peek(vdata, mgVi * 8);
 	mgTr = peek(vdata, mgVi * 8 + 3);
 	mgRose = 0;
-	if ((abs(mgTr - peek(mvtr, mgVi)) > 0.5) && (mgGate > 0.5)) mgRose = 1;
-	poke(mvtr, mgTr, mgVi);
-	poke(mvrose, mgRose, mgVi);
+	if ((abs(mgTr - peek(mstate, mgVi)) > 0.5) && (mgGate > 0.5)) mgRose = 1;
+	poke(mstate, mgTr, mgVi);
+	poke(mstate, mgRose, 16 + mgVi);
 }
+out0 = 0;
+out1 = 0;
+out2 = 0;
+out3 = 0;
 for (si = 0; si < 4; si += 1) {
 	slRt = peek(slbuf, 4 + si);
 	if (slRt < 0.02) slRt = 1;
@@ -3776,30 +3823,38 @@ for (si = 0; si < 4; si += 1) {
 	if (winSpan < 0.999) slRt = slRt / winSpan;
 	playMd = peek(slbuf, 68 + si);
 	doRet = peek(slbuf, 84 + si);
-	phNow = peek(mphase, si);
+	phNow = mph0;
+	if (si > 0.5) phNow = mph1;
+	if (si > 1.5) phNow = mph2;
+	if (si > 2.5) phNow = mph3;
 	if ((slTrig > 0.5) && (doRet > 0.5)) phNow = 0;
 	else phNow = phNow + slRt / srVal;
 	if (playMd > 0.5) {
 		if (phNow > 1) phNow = 1;
 		if (phNow < 0) phNow = 0;
 	} else phNow = fract(phNow);
-	poke(mphase, phNow, si);
+	if (si < 0.5) mph0 = phNow;
+	else if (si < 1.5) mph1 = phNow;
+	else if (si < 2.5) mph2 = phNow;
+	else mph3 = phNow;
 	revOn = peek(slbuf, 92 + si);
 	lookU = winLo + phNow * winSpan;
 	if (revOn > 0.5) lookU = winHi - phNow * winSpan;
 	mgSamp = peek(msegw, si * 1024 + floor(lookU * 1023));
 	poke(mwave, mgSamp, si);
+	slotSamp = mgSamp;
 	slotTy = peek(slbuf, si);
 	if (slotTy > 1.5) {
+		slotBest = -1;
 		for (mgVi = 0; mgVi < 16; mgVi += 1) {
 			mgGate = peek(vdata, mgVi * 8);
 			mgAmp = peek(vres, mgVi * 3 + 1);
 			if ((mgGate < 0.5) && (mgAmp <= 0.002)) {
-				poke(mvsamp, mgSamp, mgVi * 4 + si);
-				poke(mvpos, -1, mgVi * 4 + si);
+				poke(mstate, mgSamp, 160 + mgVi * 4 + si);
+				poke(mstate, -1, 96 + mgVi * 4 + si);
 			} else {
-				mgRose = peek(mvrose, mgVi);
-				mgPh = peek(mvph, mgVi * 4 + si);
+				mgRose = peek(mstate, 16 + mgVi);
+				mgPh = peek(mstate, 32 + mgVi * 4 + si);
 				if ((mgRose > 0.5) && (doRet > 0.5)) mgPh = 0;
 				else if (mgRose > 0.5) mgPh = phNow;
 				else mgPh = mgPh + slRt / srVal;
@@ -3807,12 +3862,16 @@ for (si = 0; si < 4; si += 1) {
 					if (mgPh > 1) mgPh = 1;
 					if (mgPh < 0) mgPh = 0;
 				} else mgPh = fract(mgPh);
-				poke(mvph, mgPh, mgVi * 4 + si);
+				poke(mstate, mgPh, 32 + mgVi * 4 + si);
 				mgLook = winLo + mgPh * winSpan;
 				if (revOn > 0.5) mgLook = winHi - mgPh * winSpan;
 				phSamp = peek(msegw, si * 1024 + floor(mgLook * 1023));
-				poke(mvsamp, phSamp, mgVi * 4 + si);
-				poke(mvpos, mgLook, mgVi * 4 + si);
+				poke(mstate, phSamp, 160 + mgVi * 4 + si);
+				poke(mstate, mgLook, 96 + mgVi * 4 + si);
+				if (mgAmp > slotBest) {
+					slotBest = mgAmp;
+					slotSamp = phSamp;
+				}
 			}
 		}
 	}
@@ -3864,6 +3923,17 @@ for (si = 0; si < 4; si += 1) {
 	poke(mphase, slSt, 8 + si);
 	poke(mphase, slLv, 12 + si);
 	poke(mwave, slLv, 8 + si);
+	shown = slLv;
+	if (si > 1.5) shown = slWave * slAmt * slFade;
+	if ((slotTy > 0.5) && (slotTy < 1.5)) {
+		shown = slWave * slAmt * slFade;
+		if (si > 1.5) shown = slLv;
+	}
+	if (slotTy > 1.5) shown = slotSamp;
+	if (si < 0.5) out0 = shown;
+	else if (si < 1.5) out1 = shown;
+	else if (si < 2.5) out2 = shown;
+	else out3 = shown;
 }
 nRoutes = clip(peek(modmap, 0), 0, 48);
 markC = exp(-1.0 / (0.004 * srVal));
@@ -3911,10 +3981,10 @@ for (svx = 0; svx < 4; svx += 1) {
 		alt1 = peek(mwave, 5);
 		alt2 = peek(mwave, 10);
 		alt3 = peek(mwave, 11);
-		mg0 = peek(mvsamp, svx * 4);
-		mg1 = peek(mvsamp, svx * 4 + 1);
-		mg2 = peek(mvsamp, svx * 4 + 2);
-		mg3 = peek(mvsamp, svx * 4 + 3);
+		mg0 = peek(mstate, 160 +  svx * 4);
+		mg1 = peek(mstate, 160 +  svx * 4 + 1);
+		mg2 = peek(mstate, 160 +  svx * 4 + 2);
+		mg3 = peek(mstate, 160 +  svx * 4 + 3);
 		slotS2 = slot_out(ty0, mxMod, alt0, mg0);
 		slotS3 = slot_out(ty1, mxE3, alt1, mg1);
 		slotSL = slot_out(ty2, lfo1S, alt2, mg2);
@@ -3925,7 +3995,8 @@ for (svx = 0; svx < 4; svx += 1) {
 		mod_apply(nRoutes, 0, mxAmp, slotS2, slotS3, mxVel, mxNote, mxRnd, mxNpb, mxSlide, mxPress, slotSL, slotS4, midi_pb, midi_at, midi_mod, markC, srVal, svx * 256, modmap, prm, vhist, mxArg, mxDep, mxBase, mxSlot, mxG, mxMeta, formant, sp_shift, sp_bend, samp_gain, unison_voices, grain_size, fr_sync, tempo, sub_knock_slope, aud1, aud2, aud3);
 		pitchUse = mod_take(nRoutes, 0, pitch_st, -36, 36, mxArg);
 		fineUse = mod_take(nRoutes, 1, fine_cents, -100, 100, mxArg);
-		posUse = mod_take(nRoutes, 2, play_pos, 0, 1, mxArg);
+		spWt1, spWt2 = frame_pos(nRoutes, modmap, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3);
+		posUse = clip(play_pos + spWt1, 0, 1);
 		stUse = mod_take(nRoutes, 3, samp_start, 0, 0.99, mxArg);
 		enUse = mod_take(nRoutes, 4, samp_end, 0.01, 1, mxArg);
 		l0Use = mod_take(nRoutes, 5, loop_start, 0, 0.98, mxArg);
@@ -4061,6 +4132,9 @@ gr7 = 0;
 gr8 = 0;
 gr24 = 0;
 gr25 = 0;
+showWtAmp = -1;
+showWt1 = play_pos;
+showWt2 = osc2_pos;
 if (nRoutes > 0.5) {
 	for (gi = 0; gi < 32; gi += 1) poke(mxG, 0, gi);
 }
@@ -4094,6 +4168,8 @@ for (vox = 0; vox < 16; vox += 1) {
 		pitchUse = pitch_st;
 		fineUse = fine_cents;
 		posUse = play_pos;
+		wt1Off = 0;
+		wt2Off = 0;
 		stUse = samp_start;
 		enUse = samp_end;
 		l0Use = loop_start;
@@ -4143,10 +4219,10 @@ for (vox = 0; vox < 16; vox += 1) {
 			alt1 = peek(mwave, 5);
 			alt2 = peek(mwave, 10);
 			alt3 = peek(mwave, 11);
-			mg0 = peek(mvsamp, vox * 4);
-			mg1 = peek(mvsamp, vox * 4 + 1);
-			mg2 = peek(mvsamp, vox * 4 + 2);
-			mg3 = peek(mvsamp, vox * 4 + 3);
+			mg0 = peek(mstate, 160 +  vox * 4);
+			mg1 = peek(mstate, 160 +  vox * 4 + 1);
+			mg2 = peek(mstate, 160 +  vox * 4 + 2);
+			mg3 = peek(mstate, 160 +  vox * 4 + 3);
 			slotS2 = slot_out(ty0, mxMod, alt0, mg0);
 			slotS3 = slot_out(ty1, mxE3, alt1, mg1);
 			slotSL = slot_out(ty2, lfo1S, alt2, mg2);
@@ -4207,7 +4283,8 @@ for (vox = 0; vox < 16; vox += 1) {
 			}
 			pitchUse = mod_take(nRoutes, 0, pitch_st, -36, 36, mxArg);
 			fineUse = mod_take(nRoutes, 1, fine_cents, -100, 100, mxArg);
-			posUse = mod_take(nRoutes, 2, play_pos, 0, 1, mxArg);
+			wt1Off, wt2Off = frame_pos(nRoutes, modmap, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3);
+			posUse = clip(play_pos + wt1Off, 0, 1);
 			stUse = mod_take(nRoutes, 3, samp_start, 0, 0.99, mxArg);
 			enUse = mod_take(nRoutes, 4, samp_end, 0.01, 1, mxArg);
 			l0Use = mod_take(nRoutes, 5, loop_start, 0, 0.98, mxArg);
@@ -4290,7 +4367,12 @@ for (vox = 0; vox < 16; vox += 1) {
 			poke(vhist, envSt, vhOff + 200);
 			poke(vhist, envLv, vhOff + 201);
 		}
-		voL, voR, voP, voA, voM, voS = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitchUse, fineUse, posUse, stUse, enUse, loop_mode, l0Use, l1Use, xfUse, reverse, gsUse, gmUse, gspUse, fmUse, unison_voices, udUse, uwUse, glUse, atkUse, decUse, susUse, relUse, matkUse, mdecUse, msusUse, mrelUse, velUse, lfoSig, lpUse, lposUse, mpUse, mpsUse, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick, subh, wt1, wt2, samp2, n2Frames);
+		voL, voR, voP, voA, voM, voS, voWt1, voWt2 = voice_proc(samp, vdata, vox, mode, freeze, root_note, pitchUse, fineUse, posUse, stUse, enUse, loop_mode, l0Use, l1Use, xfUse, reverse, gsUse, gmUse, gspUse, fmUse, unison_voices, udUse, uwUse, glUse, atkUse, decUse, susUse, relUse, matkUse, mdecUse, msusUse, mrelUse, velUse, lfoSig, lpUse, lposUse, mpUse, mpsUse, numFrames, srVal, slice_play, prm, vst, tbuf, vhist, exL, exR, exP, pitch, gtel, telTick, subh, wt1, wt2, samp2, n2Frames, wt2Off);
+		if (voA > showWtAmp) {
+			showWtAmp = voA;
+			showWt1 = voWt1;
+			showWt2 = voWt2;
+		}
 		if (nRoutes > 0.5) mod_restore(prm, mxBase, mxSlot, mxMeta);
 		osc2SumL = osc2SumL + peek(vhist, vhOff + 52);
 		osc2SumR = osc2SumR + peek(vhist, vhOff + 53);
@@ -4860,17 +4942,32 @@ if (scopeCount >= 64) {
 		poke(scope, tvOutM, 176 + tvi);
 		poke(scope, tvOn > 0.5 ? tvCut : 0, 192 + tvi);
 	}
-	viewSi = round(peek(slbuf, 96));
+	poke(scope, out0, 224);
+	poke(scope, out1, 225);
+	poke(scope, out2, 226);
+	poke(scope, out3, 227);
+	// Literal indices. A variable destination (208 + voice) stayed at 0 even while the phase itself advanced.
+	viewSi = peek(slbuf, 96);
 	if (viewSi < 0) viewSi = 0;
 	if (viewSi > 3) viewSi = 3;
-	for (tvi = 0; tvi < 16; tvi += 1) {
-		mgPos = peek(mvpos, tvi * 4 + viewSi);
-		poke(scope, mgPos, 208 + tvi);
-	}
-	for (si = 0; si < 4; si += 1) {
-		slotSig = peek(mwave, 8 + si);
-		poke(scope, slotSig, 224 + si);
-	}
+	poke(scope, peek(mstate, 96 + viewSi), 208);
+	poke(scope, peek(mstate, 100 + viewSi), 209);
+	poke(scope, peek(mstate, 104 + viewSi), 210);
+	poke(scope, peek(mstate, 108 + viewSi), 211);
+	poke(scope, peek(mstate, 112 + viewSi), 212);
+	poke(scope, peek(mstate, 116 + viewSi), 213);
+	poke(scope, peek(mstate, 120 + viewSi), 214);
+	poke(scope, peek(mstate, 124 + viewSi), 215);
+	poke(scope, peek(mstate, 128 + viewSi), 216);
+	poke(scope, peek(mstate, 132 + viewSi), 217);
+	poke(scope, peek(mstate, 136 + viewSi), 218);
+	poke(scope, peek(mstate, 140 + viewSi), 219);
+	poke(scope, peek(mstate, 144 + viewSi), 220);
+	poke(scope, peek(mstate, 148 + viewSi), 221);
+	poke(scope, peek(mstate, 152 + viewSi), 222);
+	poke(scope, peek(mstate, 156 + viewSi), 223);
+	poke(scope, showWtAmp < 0 ? -1 : showWt1, 234);
+	poke(scope, showWtAmp < 0 ? -1 : showWt2, 235);
 	poke(scope, spawnSum, 48);
 	poke(scope, rootDynOn, 49);
 	poke(scope, lfoPhs, 50);
