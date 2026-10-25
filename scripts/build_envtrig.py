@@ -418,10 +418,10 @@ def build():
         # to it. Data goes in the right inlet (inlet 1); inlet 0 stays open (`gate 1 1`).
         # plugin~ is not wired to plugout~ here: the device stays silent until that gen~ runs.
         newobj("obj-gen-in", "gate 1 1", 120, 300, 60, numinlets=2, numoutlets=1, outlettype=[""]),
-        newobj("obj-scope", f"buffer~ #0-trigscope @samps {SCOPE_BUFFER_SAMPS}", 560, 240, 210, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-scope", f"buffer~ ---trigscope @samps {SCOPE_BUFFER_SAMPS}", 560, 240, 210, numinlets=1, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 560, 300, 60, outlettype=["bang"]),
-        message("obj-msg-ui-buf", "setbuffer #0-trigscope", 560, 330, 180),
-        message("obj-msg-gen-buf", "scope #0-trigscope", 560, 360, 180),
+        message("obj-msg-ui-buf", "setbuffer ---trigscope", 560, 330, 180),
+        message("obj-msg-gen-buf", "scope ---trigscope", 560, 360, 180),
         # live.thisdevice: init routing, restore the panel state, and receive setwidth
         newobj("obj-thisdevice", "live.thisdevice", 700, 10, 85, numinlets=1, numoutlets=2, outlettype=["bang", "int"]),
         message("obj-msg-init-routing", "init_routing", 800, 40, 80),
