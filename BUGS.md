@@ -83,3 +83,32 @@ beyond the normal Live parameter set. Cleared for pass 1.
 - Z-order probe script over all six `.amxd` (see above).
 - `node tests/test_ampplus_bugsweep.js` — expected RED on current HEAD
   (run after this file lands).
+
+## Pass 2 review — KEEP
+
+**Kept 1 / dropped 0.**
+
+Bug 1 is a real multi-instance functional bug (shared scope ring corrupts
+meters/waveforms across Amp+ instances in one Set), not a nit or harness-only
+issue. Pass-2 checks:
+
+1. **Top-level patcher name** — `scripts/build_ampplus.py` emits
+   `buffer~ #0-ampscope @samps 32` and loadbang message `#0-ampscope`, wired to
+   gen (`prepend scope`) and face (`prepend set_scope`). Same class as devices
+   that already migrated: Live does not expand `#0` in a top-level device
+   patcher (AGENTS Multiband Split / Glitch / Delay+).
+2. **Face + gen bind that name** — `src/ampplus_ui.js` `set_scope`,
+   `src/ampplus_core.genexpr` `Buffer scope("ampscope")` rebound on loadbang;
+   collision is the patcher-side name, not the GenExpr default.
+3. **Red fails on HEAD** — `node tests/test_ampplus_bugsweep.js` →
+   AssertionError: got `buffer~ #0-ampscope @samps 32`, expected
+   `buffer~ ---ampscope @samps 32`.
+
+Red test left as-is (already asserts all six `.amxd` + build source). Production
+/ `src` / build untouched (pass 3 applies `---ampscope`). No new bugs found;
+pass-1 cleared items stand.
+
+### Commands run (pass 2)
+- Re-read build scope wiring; grep Amp+/AGENTS for ampscope / `#0` / `---`.
+- `node tests/test_ampplus_bugsweep.js` — RED (confirmed).
+- Host gate: `npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js` (in flight / next).
