@@ -2605,6 +2605,24 @@ function drawToolbarIcon(id, x, y, w, h, col, isActive) {
   }
 }
 
+// Sample file names: ellipsis in the stem, extension kept. maxLen is a character budget (the banner
+// and saved rows clip by count, not by measuring). Labels that are not file names stay as they are
+// when they already fit.
+function xoFitFileName(s, maxLen) {
+  s = String(s == null ? "" : s);
+  maxLen = Math.max(1, maxLen | 0);
+  if (s.length <= maxLen) return s;
+  var dot = s.lastIndexOf(".");
+  var ext = (dot > 0 && s.length - dot <= 8) ? s.slice(dot) : "";
+  var base = ext ? s.slice(0, s.length - ext.length) : s;
+  var ell = "…";
+  var budget = maxLen - ell.length - ext.length;
+  if (budget < 2) return s.slice(0, Math.max(1, maxLen - 1)) + ell;
+  var left = Math.ceil(budget / 2);
+  var right = budget - left;
+  return base.slice(0, left) + ell + base.slice(base.length - right) + ext;
+}
+
 // ============================================================================
 // MGraphics Vector Renderer
 // ============================================================================
@@ -2632,7 +2650,7 @@ function paint() {
   mgraphics.set_font_size(9.0);
   xoSrc(0.94, 0.96, 0.98, 1.0);
   mgraphics.move_to(16, 13.5);
-  const shortName = String(selectedMeta.name || "Select Sample").slice(0, 14);
+  const shortName = xoFitFileName(selectedMeta.name || "Select Sample", 14);
   mgraphics.show_text(shortName);
 
   // Waveform Viewer with Scanning Playhead Line (x = 122..mapW-5)
@@ -2956,7 +2974,7 @@ function paint() {
       mgraphics.set_font_size(8.0);
       xoSrc(0.92, 0.95, 0.98, 1.0);
       mgraphics.move_to(savedX + 13, ry + 9.5);
-      mgraphics.show_text(String(item.name).slice(0, 12));
+      mgraphics.show_text(xoFitFileName(item.name, 12));
 
       mgraphics.select_font_face("Arial", "normal", "normal");
       mgraphics.set_font_size(7.5);

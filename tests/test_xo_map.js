@@ -1244,8 +1244,17 @@ xoX = {
   get GROUP_DIST_FACTOR() { return GROUP_DIST_FACTOR; },
   get zoomSpeed() { return zoomSpeed; },
   get mapSamples() { return mapSamples; },
-  get reseedTitle() { return reseedTitle(); }
+  get reseedTitle() { return reseedTitle(); },
+  fitFileName: (s, n) => xoFitFileName(s, n)
 };`);
+{
+  assert.strictEqual(xoX.fitFileName("Kick.wav", 14), "Kick.wav", "a short sample name is not clipped");
+  assert.strictEqual(xoX.fitFileName("Select Sample", 14), "Select Sample", "the empty-state label fits");
+  const banner = xoX.fitFileName("ClosedHat808.wav", 14);
+  const row = xoX.fitFileName("Snare Rim Click 808.wav", 12);
+  assert.ok(banner.endsWith(".wav") && banner.includes("…") && !banner.endsWith("…") && banner.length <= 14, `banner middle ellipsis: ${banner}`);
+  assert.ok(row.endsWith(".wav") && row.includes("…") && !row.endsWith("…") && row.length <= 12, `saved-row middle ellipsis: ${row}`);
+}
 
 loadbang();
 test_selected(1); // the hotkey tests below call the patcher-path hotkeys directly: act as the device selected in Live
