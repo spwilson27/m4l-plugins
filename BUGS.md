@@ -1,6 +1,7 @@
-# Bug sweep — Transient Split (transplit), Pass 1 (red tests only, no fixes)
+# Bug sweep — Transient Split (transplit), Pass 2 (review reds — kept)
 
 Worktree: `/tmp/bugsweep/transplit` · Branch: `bugsweep/transplit-pass1` · Base: `66fea67`
+Pass 2: kept 1 / dropped 0. Bug 1 confirmed real (GenExpr cache omits SR; bin-1 probe never fires; JS recomputes every frame). Red test left as-is; still fails on unfixed code.
 Scope: `devices/Transient Split.amxd` + `.adg`, `src/transplit_*`, `src/spectral_*`,
 `scripts/spectral_common.py`, `scripts/build_transplit.py`, and the transplit/spectral tests.
 Method: read AGENTS.md sections 22-23 and the sources; ran the four Node suites for a green
@@ -44,7 +45,7 @@ AssertionError [ERR_ASSERTION]: tilt gains follow the sample rate (bin 64 gain 1
     at Object.<anonymous> (/private/tmp/bugsweep/transplit/tests/test_transplit.js:415:16)
 ```
 
-**Fix direction (pass 2, not applied):** include the sample rate (or a mid-band probe bin
+**Fix direction (pass 3, not applied):** include the sample rate (or a mid-band probe bin
 whose weight actually moves with `sr`) in the cache key — e.g. a `cgSr` History compared
 against `sr`, mirroring the `twSr` tracking the ctl hook already does for the table.
 
