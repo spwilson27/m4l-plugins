@@ -162,7 +162,7 @@ function paint() {
             if (shape === 4 || shape === 5 || shape === 2 || shape === 3) {
                 // draw vertical edges for discontinuities
                 if (started) {
-                    var pv = lfoWave(shape, (k - 1) / N * cyc - off);
+                    var pv = lfoWave(shape, (k - 1) / N * cyc + off);
                     if (Math.abs(v - pv) > 0.6) mg.line_to(px, lfoY(pv, 1, wh, a2));
                 }
             }
