@@ -62,3 +62,15 @@ These were checked against AGENTS / source / tests and are **not** bugs (doc dri
 ## PASS-3 complete
 
 Bug A production fix is in; harness `#0-` names and the bugsweep RED suite stay as documented above. Pass 4 reviews next — do not merge to main from this pass.
+
+## PASS-4 review
+
+**APPROVED — 1 bug, no adjustments.**
+
+- Reviewed `git log main..HEAD` and `git diff main...HEAD` across production/src/build, not only tests.
+- Bug A fix is minimal and correct: build creates `buffer~ ---tsconfig @samps 128` / `buffer~ ---tsmeters @samps 32`, binds `cfg ---tsconfig, meters ---tsmeters`, and sends the face `setbuffer ---tsconfig ---tsmeters`; `tsDspFrames()` now peeks `meterBuf` (from `setbuffer`) instead of a hardcoded `#0-tsmeters` Buffer. Matches the Multiband / Delay+ / Glitch / Reverb+ `---` top-level isolation precedent.
+- GenExpr `Buffer cfg(tsconfig)` / `Buffer meters(tsmeters)` external names left unchanged (correct — bound on loadbang). Audio-harness private `#0-` probe buffers left alone (Multiband precedent).
+- Comments/docs in tinyspace_config.js, tinyspace_core.genexpr and AGENTS.md aligned to the new names. tests/test_tinyspace.js updated to assert `---`; no test weakened — the bugsweep RED suite (8 checks) stays as a regression guard. No drive-by refactors.
+- Host gate green: typecheck OK, Tiny Space.amxd built 292×169 / 120098 bytes, test_tinyspace: ok, tinyspace bugsweep RED 8 checks.
+
+Not merged to main; worktree left in place for the coordinator. Next: commit this note on bugsweep/tinyspace-pass1.
