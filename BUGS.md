@@ -1,9 +1,28 @@
-# Analyzer (+ Oscilloscope shared tap) — Pass 1 bug sweep
+# Analyzer (+ Oscilloscope shared tap) — Bug sweep
 
 Worktree: `/private/tmp/bugsweep/analyzer-scope` · Branch: `bugsweep/analyzer-scope-pass1` · Base: `d72ee17`
 Scope: `devices/Analyzer.amxd` — `scripts/build_analyzer.py`, `src/analyzer_ui.js`, `src/analyzer_config.js`, `src/analyzer_core.genexpr`, `src/analyzer_dsp.js`, `tests/test_analyzer.js`.
-Shared in-tree concern (same tap name, not fixed here): `scripts/build_oscilloscope.py`, `src/oscilloscope_ui.js`.
-Max / Live were NOT run in this pass (Node host gate only). Tests only — no production/src/build fixes.
+Shared in-tree concern (same tap name): `scripts/build_oscilloscope.py`, `src/oscilloscope_ui.js`, `tests/test_oscilloscope.js`.
+Max / Live were NOT run in these passes (Node host gate only). Tests only — no production/src/build fixes.
+
+## Pass 2 review — kept 1 / dropped 0
+
+Reviewed Pass 1 reds against source, AGENTS.md precedents (Multiband Split `---mbsplitscope`, Delay+ `---dpxfer`, Glitch `---` names), and a fresh host gate run. Bug 1 is a real multi-instance isolation failure; the Analyzer red still FAILS on unfixed code. No Pass 1 claims were dropped.
+
+**Pass 1 miss closed here:** Oscilloscope ships the same literal `#0-analyzerscope` tap but had no device-structure red. Pass 2 adds matching `---analyzerscope` / no-`#0` asserts in `tests/test_oscilloscope.js` (still under Bug 1 — same defect class, not a new root cause).
+
+Host gate (Analyzer):
+```
+npm run -s typecheck && python3 scripts/build_analyzer.py && node tests/test_analyzer.js
+→ FAIL Analyzer.amxd: scope buffer is ---analyzerscope @samps 17952
+```
+
+Oscilloscope red (after `python3 scripts/build_oscilloscope.py`):
+```
+node tests/test_oscilloscope.js
+→ FAIL Oscilloscope.amxd: scope buffer is ---analyzerscope @samps 17952
+```
+(or matching scope / setbuffer / no-literal-#0 / no-#0-in-v8ui / no-#0-in-source asserts)
 
 ## Pass 1 findings — kept 1
 
@@ -18,11 +37,11 @@ Max / Live were NOT run in this pass (Node host gate only). Tests only — no pr
   - `scope #0-analyzerscope`
   - `setbuffer #0-analyzerscope`
 - `src/analyzer_ui.js` line 20 defaults `var anBufName = "#0-analyzerscope";` (embedded into the face).
+- Oscilloscope mirrors the same literals: `scripts/build_oscilloscope.py` 62 / 66 / 67 and `src/oscilloscope_ui.js` line 13.
 - AGENTS.md (Multiband Split §11 buffer isolation fix; Delay+ §15; Glitch / Reverb+): in Live, `#0` is **not** expanded in a device's top-level patcher (only in abstractions). Per-instance isolation requires the M4L `---` prefix (e.g. `---mbsplitscope`, `---dpxfer`).
-- Oscilloscope shares the same literal name (`build_oscilloscope.py` 62 / 66 / 67, `oscilloscope_ui.js:13`), so Analyzer ↔ Oscilloscope also collide. Primary red test is Analyzer; Oscilloscope is the same defect class, noted for Pass 2 / a follow-up flip in `tests/test_oscilloscope.js` if desired.
 - Harness probes (`tests/analyzer_probe.js`, `tests/oscilloscope_probe.js`, wavload) intentionally keep `#0-analyzerscope` — same pattern as `mbsplit_probe.js` using `#0-splitscope` while the device uses `---`. Those are not the bug.
 
-### Red test
+### Red tests
 
 `tests/test_analyzer.js`, device-structure block for `Analyzer.amxd`:
 
@@ -30,16 +49,13 @@ Max / Live were NOT run in this pass (Node host gate only). Tests only — no pr
 - Reject any literal `#0` in those box texts.
 - Reject `#0-` in the embedded v8ui script (stripping `//` comments), so the face default cannot stay `#0-analyzerscope`.
 
-```
-FAIL Analyzer.amxd: scope buffer is ---analyzerscope @samps 17952
-```
-(or the matching scope / setbuffer / no-literal-#0 / no-#0-in-v8ui asserts)
+`tests/test_oscilloscope.js` (added in Pass 2), built-device block for `Oscilloscope.amxd`:
 
-Command: `cd /private/tmp/bugsweep/analyzer-scope && node tests/test_analyzer.js`
+- Same `---analyzerscope` / no-literal-`#0` / no-`#0-` in v8ui and `oscilloscope_ui.js` source asserts.
 
-### Fix direction (NOT applied in Pass 1)
+### Fix direction (NOT applied in Pass 1 or Pass 2)
 
-Rename the shipped tap to `---analyzerscope` in `build_analyzer.py` (buffer / scope / setbuffer) and `analyzer_ui.js` (`anBufName`). Mirror the same rename in Oscilloscope's build + UI. Leave harness probes on `#0-analyzerscope`. Update AGENTS.md §28 which still documents the old `#0-` name. Flip any remaining green `#0` device asserts the same way.
+Rename the shipped tap to `---analyzerscope` in `build_analyzer.py` (buffer / scope / setbuffer) and `analyzer_ui.js` (`anBufName`). Mirror the same rename in Oscilloscope's build + UI. Leave harness probes on `#0-analyzerscope`. Update AGENTS.md §28 which still documents the old `#0-` name.
 
 ## Audited, no credible bug found
 
