@@ -328,16 +328,16 @@ assert.deepStrictEqual(p.openrect, [0.0, 0.0, 292.0, 169.0]);
 assert.strictEqual(p.openinpresentation, 1);
 
 const boxMap = validatePatcherBoxesAndLines(p, "Tiny Space.amxd");
-assert.ok(boxMap.get("obj-cfg").text.includes("#0-tsconfig"));
-assert.ok(boxMap.get("obj-meters").text.includes("#0-tsmeters"));
+assert.ok(boxMap.get("obj-cfg").text.includes("---tsconfig"));
+assert.ok(boxMap.get("obj-meters").text.includes("---tsmeters"));
 assert.ok(
     /@samps (2[4-9]|[3-9]\d|\d{3,})/.test(boxMap.get("obj-meters").text),
     "meter buffer must hold envelopes 0..19 and the frame counter at slot 20"
 );
 assert.strictEqual(
     boxMap.get("obj-msg-genbufs").text,
-    "cfg #0-tsconfig, meters #0-tsmeters",
-    "gen binds Buffer variables cfg and meters to the #0 buffers"
+    "cfg ---tsconfig, meters ---tsmeters",
+    "gen binds Buffer variables cfg and meters to the --- instance buffers"
 );
 assert.strictEqual(boxMap.get("obj-msg-genbufs").varname, "ts_genbufs");
 assert.ok(!boxMap.has("obj-gen"), "device ships without a static gen~ / gen.codebox~");

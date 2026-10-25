@@ -431,7 +431,7 @@ def build_patcher():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [560.0, 240.0, 190.0, 20.0],
-                "text": "buffer~ #0-tsconfig @samps 128",
+                "text": "buffer~ ---tsconfig @samps 128",
             }
         },
         {
@@ -444,7 +444,7 @@ def build_patcher():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [560.0, 270.0, 190.0, 20.0],
-                "text": "buffer~ #0-tsmeters @samps 32",
+                "text": "buffer~ ---tsmeters @samps 32",
             }
         },
         {
@@ -510,7 +510,7 @@ def build_patcher():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [640.0, 180.0, 280.0, 20.0],
-                "text": "cfg #0-tsconfig, meters #0-tsmeters",
+                "text": "cfg ---tsconfig, meters ---tsmeters",
                 "varname": "ts_genbufs",
             }
         },
@@ -524,7 +524,7 @@ def build_patcher():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [640.0, 210.0, 230.0, 20.0],
-                "text": "setbuffer #0-tsconfig #0-tsmeters",
+                "text": "setbuffer ---tsconfig ---tsmeters",
             }
         },
         {
