@@ -3898,7 +3898,7 @@ function set_tilt_eq(v) {
     var n = clamp(roundTo(finite(v, tiltEqDb), 0.1), -24, 24);
     if (n === tiltEqDb) return;
     tiltEqDb = n;
-    emitTilt();
+    updateCoeffBuffer();
     mgraphics.redraw();
 }
 function set_outgain(v) { set_gain(v); }
