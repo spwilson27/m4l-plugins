@@ -127,4 +127,4 @@ pass-1 cleared items stand.
 `npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && node tests/test_ampplus_bugsweep.js` → typecheck ok, six devices built, `ampplus ok`, `ampplus bugsweep ok`.
 
 ### Commit
-SHA pending (pass-3 commit on `bugsweep/ampplus-variants-pass1`; no merge to main).
+`ccb8f79` fix(ampplus): isolate scope buffer with ---ampscope (bugsweep pass3) on `bugsweep/ampplus-variants-pass1`; no merge to main.
