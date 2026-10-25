@@ -228,8 +228,8 @@ gate_h(h, p, bias, invK, depth) {
 // Gate * (frame peak |c| in the harmonic region, smoothed across frames). The gated harmonic cepstrum
 // c_h = c * (1 - lifter) is written bit-reversed into hre/him for the FFT that rebuilds the harmonic log-spectrum.
 // Ceps gate = voicing-keyed gate. Pitchedness v = (largest Mid cepstral peak in max(L, 1 ms)..1/60 s) / (RMS of the
-// same region): about 3-4.5 for noise at any level, 5-11 for noisy voicing, about 25 for a clean vowel. Frames with
-// v below Tv = 3.5 * 7^Gate (3.5 .. 24.5, soft knee +/-1) are attenuated by up to 60 dB on both channels
+// same region): about 3-4.5 for noise at any level, about 9 for noisy voicing, about 16 for a clean vowel. Frames with
+// v below Tv = 3.5 + 11*Gate (3.5 .. 14.5, soft knee +/-1) are attenuated by up to 60 dB on both channels
 // (stereo-linked), smoothed across frames (open 0.7, close 0.25), so unpitched content (breaths, hiss, noise) is gated
 // while pitched content passes.
 // stat[5] = 0 (the harmonic-FFT slots stay idle), stat[6] = openness 0..1, stat[8] = Tv * RMS (display threshold
@@ -261,7 +261,7 @@ job_cgate(wre, stat, n, gate01, srVal) {
 		pk = pk * invN;
 		rms = sqrt(ss * invN * invN * invCnt + 0.00000000000000000001);
 		vv = pk / rms;
-		tv = 3.5 * pow(7, gate01);
+		tv = 3.5 + 11 * gate01;
 		t = clip((vv - tv + 1) / 2, 0, 1);
 		tgt = t * t * (3 - 2 * t);
 		op = peek(stat, 6);

@@ -319,7 +319,7 @@ function shiftedLogMag(split, k, ratio, gate01) {
 // ---------------------------------------------------------------------------------------------
 const GATE_MODE_NAMES = ["Spec", "Ceps"];
 const VOICING_T0 = 3.5;  // pitchedness threshold at Gate 0+ (noise scores ~3-4.5 at any level)
-const VOICING_T_RATIO = 7; // threshold at Gate 100% = 3.5 * 7 = 24.5 (only clean pitched content passes)
+const VOICING_T1 = 14.5; // Gate 100%. A clean vowel scores about 16, so it still passes; noise and a noisy vowel (~9) do not.
 
 // Pitchedness of a frame: largest cepstral peak in max(L, 1 ms)..1/60 s over the RMS of that region.
 function cepstralVoicing(c, lag, sr, n) {
@@ -331,7 +331,7 @@ function cepstralVoicing(c, lag, sr, n) {
 }
 
 function voicingThreshold(gate01) {
-    return VOICING_T0 * Math.pow(VOICING_T_RATIO, clamp(gate01, 0, 1));
+    return VOICING_T0 + (VOICING_T1 - VOICING_T0) * clamp(gate01, 0, 1);
 }
 
 // One frame of the gate: smoothed openness (open 0.7, close 0.25) and the log gain (up to -60 dB) for both channels.
@@ -346,7 +346,7 @@ function voicingGateStep(open, v, gate01) {
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
-        GATE_MODE_NAMES, VOICING_T0, VOICING_T_RATIO, cepstralVoicing, voicingThreshold, voicingGateStep,
+        GATE_MODE_NAMES, VOICING_T0, VOICING_T1, cepstralVoicing, voicingThreshold, voicingGateStep,
         SCOPE_SAMPS, NUM_QUEF, QUEF_MIN_MS, QUEF_MAX_MS, QUEF_SENTINEL, quefMsAt, msToAxis01, axis01ToMs, resToAxis01, axis01ToRes, DISPLAY_K, cepstrumDisplayHeight, percentileAbs, adaptRef, columnRange, poolSigned, NUM_BINS, BIN_FMIN, BIN_FMAX, FFT_SIZES, MODE_NAMES, QUALITY_NAMES, SHIFT_RANGE_ST,
         LIFTER_MIN_MS, LIFTER_MAX_MS, DEFAULT_RES_PCT, GATE_RANGE_MIN_DB, GATE_RANGE_SPAN_DB, EPS_MAG,
         clamp, fftSizeForQuality, latencySamples, shiftRatio, manualLagSamples, periodScale, midiToHz,

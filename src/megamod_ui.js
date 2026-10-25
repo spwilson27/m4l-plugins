@@ -994,7 +994,7 @@ function onclick(x, y, but, cmd, shift, caps, opt, ctrl) {
             else ubChipClick(h.slot, h.chip);
             break;
         case "outsel": ubSelect(h.slot); ubSetLearnOut(h.slot, h.out); break;
-        case "pad": ubSelect(h.slot); ubXyStart(h, x, y); break;
+        case "pad": ubSelect(h.slot); ubPadStart(h, x, y); break;
         case "btn": ubSelect(h.slot); ubBtnClick(h.slot, h.b); break;
         case "count":
             ubSelect(h.slot);
@@ -1038,7 +1038,7 @@ function ondrag(x, y, but, cmd, shift) {
         MM.setParam(d.slot, d.spec.key, ubKnobValue(d.spec, d.n));
         d.dirty = true;
     } else if (d.kind === "xy") {
-        ubXyDrag(d, x, y);
+        ubPadDrag(d, x, y);
     } else if (d.kind === "adsr") {
         ubAdsrDrag(d, x, y);
     } else if (d.kind === "osmooth") {
@@ -1194,12 +1194,29 @@ function ubLfoDrag(d, x, y) {
     MM.setParam(d.slot, "depth", clamp(d.dep - (y - d.y) / r[3], 0, 1));
     d.dirty = true;
 }
+// The XY crosshair is painted 2 px inside the pad (ubPaintXy). The drag uses that inset, so the puck stays under the cursor.
+function ubPadValue(r, x, y) {
+    const ix = r[0] + 2, iy = r[1] + 2, iw = r[2] - 4, ih = r[3] - 4;
+    return [clamp((x - ix) / iw, 0, 1), clamp(1 - (y - iy) / ih, 0, 1)];
+}
+function ubPadStart(h, x, y) {
+    ubDrag = { kind: "xy", slot: h.slot, rect: h.rect, dirty: true };
+    ubPadDrag(ubDrag, x, y);
+}
+function ubPadDrag(d, x, y) {
+    const p = ubPadValue(d.rect, x, y);
+    MM.setParam(d.slot, "x", p[0]);
+    MM.setParam(d.slot, "y", p[1]);
+    d.dirty = true;
+}
 function ubStepsDrag(d, x, y) {
     const mod = MM.state.mods[d.slot];
     const n = clamp(Math.round(mod.p.steps), 1, STEPS_MAX);
     const r = d.rect;
-    const idx = clamp(Math.floor(((x - r[0]) / r[2]) * n), 0, n - 1);
-    const v = clamp(1 - (y - r[1]) / r[3], 0, 1);
+    // same inset ubDrawViz paints the bars with (ix +2, iy +3, iw -4, ih -6)
+    const ix = r[0] + 2, iy = r[1] + 3, iw = r[2] - 4, ih = r[3] - 6;
+    const idx = clamp(Math.floor(((x - ix) / iw) * n), 0, n - 1);
+    const v = clamp(1 - (y - iy) / ih, 0, 1);
     if (d.last >= 0 && d.last !== idx) {
         const a = Math.min(d.last, idx);
         const b = Math.max(d.last, idx);

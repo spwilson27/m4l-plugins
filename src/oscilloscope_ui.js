@@ -69,7 +69,7 @@ var oscRawL = null;
 var oscRawR = null;
 /** @type {Task | null} */
 var oscPollTask = null;
-/** @type {{ kind: string } | null} */
+/** @type {{ kind: string, y0?: number, level0?: number } | null} */
 var oscDrag = null;
 
 function oscLive() {
@@ -998,8 +998,11 @@ function onclick(x, y) {
     }
     var g = oscGeom();
     if (!oscInside(g.lcd, x, y)) return;
-    oscDrag = { kind: "trig" };
-    oscTrigLevel = oscLevelFromY(y);
+    var rect = oscLevelRect(y);
+    var onGuide = Math.abs(oscTrigLevel) > 0.0005 && Math.abs(y - oscGuideY(rect)) <= 3.5;
+    var level0 = onGuide ? oscTrigLevel : oscLevelFromY(y);
+    oscDrag = { kind: "trig", y0: y, level0: level0 };
+    oscTrigLevel = level0;
     oscRefreshFrame();
     mgraphics.redraw();
 }
@@ -1013,7 +1016,11 @@ function ondrag(x, y, but) {
         return;
     }
     if (oscDrag.kind === "trig") {
-        oscTrigLevel = oscLevelFromY(y);
+        var base = oscDrag.level0;
+        var y0 = oscDrag.y0;
+        oscTrigLevel = (base == null || y0 == null)
+            ? oscLevelFromY(y)
+            : oscClamp(base + oscLevelFromY(y) - oscLevelFromY(y0), -0.9, 0.9);
         oscRefreshFrame();
         mgraphics.redraw();
     } else if (oscDrag.kind === "rate_slider") {

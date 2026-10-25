@@ -521,23 +521,25 @@ function specGate(re, im, n, mode, amt, kk, step) {
         mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
         mx = Math.max(mx, mag[k]);
     }
-    let lo = Math.log(mx * 1e-6), hi = Math.log(mx);
-    const its = mode < 0.5 ? 14 : 0;
-    for (let it = 0; it < its; it++) {
-        const md = (lo + hi) * 0.5;
-        const th = Math.exp(md);
-        let cnt = 0;
-        for (let k = 0; k <= half; k++) cnt += mag[k] >= th ? 1 : 0;
-        lo = cnt > kk ? md : lo;
-        hi = cnt > kk ? hi : md;
-    }
-    const thr = Math.exp(hi);
+    const rankKey = (m, k) => m * (1 - 1e-6 * k / Math.max(half, 1));
+    const topk = (want) => {
+        let lo = Math.log(Math.max(mx, 1e-12) * 1e-6), hi = Math.log(Math.max(mx, 1e-12));
+        for (let it = 0; it < 40; it++) {
+            const md = (lo + hi) * 0.5, th = Math.exp(md);
+            let cnt = 0;
+            for (let k = 0; k <= half; k++) cnt += rankKey(mag[k], k) >= th ? 1 : 0;
+            lo = cnt > want ? md : lo;
+            hi = cnt > want ? hi : md;
+        }
+        return Math.exp(hi);
+    };
+    const thr = mode < 0.5 ? topk(kk) : mx;
     const sn = step / 8.685889638065035;
     for (let k = 0; k <= half; k++) {
         const m = mag[k];
         const ml = Math.max(m, 1e-12);
         const gq = Math.exp(Math.round(Math.log(ml) / sn) * sn) / ml;
-        let gk = mode < 0.5 ? (m >= thr ? 1 : 0) : gq;
+        let gk = mode < 0.5 ? (rankKey(m, k) >= thr ? 1 : 0) : gq;
         gk = 1 + (gk - 1) * amt;
         re[k] *= gk;
         im[k] *= gk;
@@ -835,22 +837,24 @@ function magFx(re, im, n, op, amt, p1, p2, p3, p4, seed, beat, sr) {
         }
     } else if (op < 3.5) {
         const kk = clip(Math.floor(p1 + 0.5), 1, 32);
-        const th2 = [0, 0];
-        for (let pass = 0; pass < 2; pass++) {
-            const tk = (pass + 1) * kk;
-            let lo = Math.log(mx * 1e-6), hi = Math.log(mx);
-            for (let it = 0; it < 14; it++) {
-                const md = (lo + hi) * 0.5;
-                const th = Math.exp(md);
+        const rankKey = (m, k) => m * (1 - 1e-6 * k / Math.max(half, 1));
+        const topk = (want) => {
+            let lo = Math.log(Math.max(mx, 1e-12) * 1e-6), hi = Math.log(Math.max(mx, 1e-12));
+            for (let it = 0; it < 40; it++) {
+                const md = (lo + hi) * 0.5, th = Math.exp(md);
                 let cnt = 0;
-                for (let k = 0; k <= half; k++) cnt = cnt + (mag[k] >= th ? 1 : 0);
-                lo = cnt > tk ? md : lo;
-                hi = cnt > tk ? hi : md;
+                for (let k = 0; k <= half; k++) cnt += rankKey(mag[k], k) >= th ? 1 : 0;
+                lo = cnt > want ? md : lo;
+                hi = cnt > want ? hi : md;
             }
-            th2[pass] = Math.exp(hi);
-        }
+            return Math.exp(hi);
+        };
+        const t1 = topk(kk), t2 = topk(kk * 2);
         const bg = Math.pow(10, p2 / 20);
-        for (let k = 0; k <= half; k++) g[k] = mag[k] >= th2[0] ? 0 : (mag[k] >= th2[1] ? bg : 1);
+        for (let k = 0; k <= half; k++) {
+            const key = rankKey(mag[k], k);
+            g[k] = key >= t1 ? 0 : (key >= t2 ? bg : 1);
+        }
     } else if (op < 4.5) {
         const grn = clip(Math.floor(p2 + 0.5), 1, 16);
         const sd = seed * 78.233;

@@ -289,4 +289,41 @@ assert.ok(emitted[0][1][1] >= 0 && emitted[0][1][1] <= 140);
 assert.strictEqual(emitted[1][1][0], "freq");
 assert.ok(emitted[1][1][1] >= 20 && emitted[1][1][1] <= 18000);
 
+// The amount and frequency reticles are the values. A click on their crossing has to
+// leave both numbers where they were (within the 0.1 dB / 1 Hz rounding).
+const reticleStrokes = [];
+let reticleRgba = [0, 0, 0, 1];
+let reticlePen = null;
+mg.set_source_rgba = (r, g, b, a) => { reticleRgba = [r, g, b, a]; };
+mg.move_to = (x, y) => { reticlePen = [x, y]; };
+mg.line_to = (x, y) => {
+    if (reticlePen) reticleStrokes.push({ x0: reticlePen[0], y0: reticlePen[1], x1: x, y1: y, rgba: reticleRgba.slice() });
+    reticlePen = [x, y];
+};
+mg.stroke = () => { reticlePen = null; };
+function sandReticleClick(db, hz) {
+    ui.set_amount(db);
+    ui.set_freq(hz);
+    reticleStrokes.length = 0;
+    ui.paint();
+    const horiz = reticleStrokes.filter((s) => Math.abs(s.y0 - s.y1) < 0.01 && s.rgba[0] > 0.9 && s.rgba[1] > 0.6 && s.rgba[1] < 0.75);
+    const vert = reticleStrokes.filter((s) => Math.abs(s.x0 - s.x1) < 0.01 && s.rgba[2] > 0.9 && s.rgba[0] < 0.4);
+    assert.ok(horiz.length && vert.length, "amount and freq reticles were painted");
+    const amt = horiz[0];
+    const fr = vert.slice().sort((a, b) => Math.abs(b.y1 - b.y0) - Math.abs(a.y1 - a.y0))[0];
+    emitted.length = 0;
+    ui.onclick(fr.x0, amt.y0);
+    const gotA = emitted.find((e) => e[1][0] === "amount");
+    const gotF = emitted.find((e) => e[1][0] === "freq");
+    return { amount: gotA[1][1], freq: gotF[1][1] };
+}
+const reticleJumps = [];
+for (const [db, hz] of [[18, 14000], [0, 20], [140, 18000], [70, 600]]) {
+    const got = sandReticleClick(db, hz);
+    if (Math.abs(got.amount - db) > 0.1 || Math.abs(got.freq - hz) > 1) {
+        reticleJumps.push(`${db} dB/${hz} Hz -> ${got.amount} dB/${got.freq} Hz`);
+    }
+}
+assert.strictEqual(reticleJumps.length, 0, "Sand reticle click moved " + reticleJumps.join("; "));
+
 console.log("test_sand: ok");

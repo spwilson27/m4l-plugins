@@ -159,6 +159,42 @@ var GL_SEQ_RATES = [0.125, 1 / 6, 0.25, 1 / 3, 0.5, 2 / 3, 1, 4 / 3, 2, 4];
 var GL_SEQ_RATE_NAMES = ["1/32", "1/16T", "1/16", "1/8T", "1/8", "1/4T", "1/4", "1/2T", "1/2", "1 bar"];
 var GL_SLICE_COUNTS = [2, 4, 8, 16]; // Slice Shuffle: slices per span
 var GL_SHUF_SPANS = [1, 2, 4]; // Slice Shuffle: span in beats
+
+// Tile drawings. These match the audio (gl_rect mode 2, the already-swapped spectrum, gl_perm, gl_hash).
+function glRectShape(mode, x) {
+    var m = Math.round(mode);
+    if (m <= 0) return Math.max(x, 0);
+    if (m === 1) return Math.abs(x);
+    return x > 0 ? x : -0.4 * x;
+}
+
+function glMirrorSrc(i, nb, mp) {
+    return (i + 0.5) / nb;
+}
+
+function glShufOrder(n, slot, seed) {
+    var sd = slot * 7.31 + Math.round(seed) * 13.7;
+    var pm = [];
+    var i;
+    for (i = 1; i <= n; i++) pm[i] = i;
+    for (var t = 0; t < n - 1; t++) {
+        i = n - t;
+        var v = Math.sin(i * 12.9898 + sd * 78.233) * 43758.5453;
+        var j = 1 + Math.floor((v - Math.floor(v)) * i);
+        if (j > i) j = i;
+        var a = pm[i];
+        pm[i] = pm[j];
+        pm[j] = a;
+    }
+    var out = [];
+    for (var k = 0; k < n; k++) out.push(pm[k + 1] - 1);
+    return out;
+}
+
+function glRvsReversed(slot, chance) {
+    var v = Math.sin(slot * 12.9898 + 5.5) * 43758.5453;
+    return (v - Math.floor(v)) < chance;
+}
 var GL_VOWELS = [[800, 1150, 2900], [400, 1600, 2700], [350, 1700, 2700], [450, 800, 2830], [325, 700, 2700]]; // a e i o u (F1..F3 Hz)
 
 var GL_CHOP_PATTERNS = [0xaaaa, 0x8888, 0xf0f0, 0xcccc, 0xb6b6, 0x9249, 0xff00, 0xa5a5, 0xe7e7, 0x8e8e];
@@ -2294,6 +2330,7 @@ if (nodeModule && nodeModule.exports) {
         defaultParams: defaultParams, glRng: glRng,
         GL_NINST: GL_NINST, GL_SEQ_MAX: GL_SEQ_MAX, GL_SEQ_HDR: GL_SEQ_HDR, GL_SEQ_RATES: GL_SEQ_RATES, GL_SEQ_RATE_NAMES: GL_SEQ_RATE_NAMES,
         GL_LFO_BEATS: GL_LFO_BEATS, GL_LFO_NAMES: GL_LFO_NAMES, GL_SLICE_COUNTS: GL_SLICE_COUNTS, GL_SHUF_SPANS: GL_SHUF_SPANS, GL_VOWELS: GL_VOWELS,
+        glRectShape: glRectShape, glMirrorSrc: glMirrorSrc, glShufOrder: glShufOrder, glRvsReversed: glRvsReversed,
         GL_MODE_NAMES: GL_MODE_NAMES,
         defaultSeq: defaultSeq, normalizeSeq: normalizeSeq, seqSlotAt: seqSlotAt, seqWeights: seqWeights, seqHeader: seqHeader, filledSlots: filledSlots,
         randomizeSequence: randomizeSequence, setSeqStep: setSeqStep, setSeqLength: setSeqLength, setSeqRate: setSeqRate, setSeqGlide: setSeqGlide,

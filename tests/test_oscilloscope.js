@@ -526,4 +526,16 @@ for (const s of strokeRecords) {
     }
 }
 
+ctx.setvalueof(4, 0, 0, 0, 1, 30, 12, 0);
+ctx.oscTrigLevel = 0.5;
+ctx.paint();
+const guideWave = ctx.oscOverlayWave(ctx.oscGeom().plot);
+const guideY = ctx.oscGuideY(guideWave);
+const guideX = guideWave[0] + guideWave[2] * 0.5;
+ctx.onclick(guideX, guideY);
+near(ctx.oscTrigLevel, 0.5, 0.01, "click on the padded trigger guide keeps the level");
+ctx.ondrag(guideX, guideY + 8, 1);
+ok(Math.abs(ctx.oscTrigLevel - 0.5) < 0.2, "a short drag from the padded guide stays near the level");
+ctx.ondrag(guideX, guideY + 8, 0);
+
 console.log("oscilloscope: " + checks + " checks passed");

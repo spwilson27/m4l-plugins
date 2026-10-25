@@ -454,31 +454,8 @@ function cpProximity() {
 }
 
 function csBipolarCurve(x, driveDb, shapePct, symPct, ceilLin) {
-    var drv = sptClamp(driveDb, 0, 24);
-    var curveDb = drv < 12 ? drv : 12;
-    var overDb = drv > 12 ? drv - 12 : 0;
-    var uGain = Math.pow(10, (curveDb + overDb) / 20);
-    var c = ceilLin > 1e-6 ? ceilLin : 1e-6;
-    var shp = sptClamp(shapePct / 100, 0, 1);
-    var sy = sptClamp(symPct / 100, -1, 1);
-    var sp = sptClamp(shp + 0.65 * sy, 0, 1);
-    var sn = sptClamp(shp - 0.65 * sy, 0, 1);
-    var u = uGain * x / c;
-    var au = Math.abs(u);
-    var sgn = u >= 0 ? 1 : -1;
-    var sUse = u >= 0 ? sp : sn;
-    var hardMag = Math.min(c, c * au);
-    if (sUse >= 0.999) {
-        return sgn * hardMag;
-    }
-    var lnA0 = Math.log(1.2);
-    var lnA1 = Math.log(32);
-    var aUse = Math.exp(lnA0 + sUse * (lnA1 - lnA0));
-    var pw = au > 1e-20 ? Math.exp(aUse * Math.log(au)) : 0;
-    var den = Math.exp(Math.log(1 + pw) / aUse);
-    var softMag = Math.min(c, c * (au / den));
-    var hardBlend = sptClamp((sUse - 0.85) / 0.15, 0, 1);
-    return sgn * (softMag + hardBlend * (hardMag - softMag));
+    // The LCD draws the same waveshaper the audio runs (knee, full-strength symmetry).
+    return cpCurve(x, driveDb, shapePct, symPct, ceilLin);
 }
 
 function cpVMeter(x, y, w, h, t, col, topDown) {
@@ -508,7 +485,7 @@ function paintInMeter() {
     var H = 139;
     var rect = { x: 0, y: 0, w: W, h: H };
     sptLcd(0, 0, W, H);
-    // Show driven input peak & RMS (inPk * driveGain) so the Input meter directly reflects how close the signal is to the Ceiling!
+    // Peak and RMS are the post-shelf signal. inMs is pre-drive; drive is applied here.
     var g = cpDriveGain(cpDrive);
     var drvPkShow = cpScope.drvPk > 0 ? cpScope.drvPk : (cpScope.inPk * g);
     var pkTxt = cpFmtDbShort(drvPkShow);
@@ -667,7 +644,9 @@ function csFiltShelfDb(f, gain) {
     var gAmt = sptClamp(gain, 0, 24);
     var aLo = cpFiltType > 0.5 ? 1.0 : Math.pow(10, -gAmt / 40);
     var aHi = cpFiltType > 0.5 ? 1.0 : Math.pow(10, gAmt / 80);
-    var w = (f / fc) / Math.sqrt(Math.max(aLo, 1e-4));
+    // Same normalized frequency as the gen shelf: w = (f/fc) * sqrt(aLo/aHi).
+    // Dividing by that sqrt drew the corner several dB away from the filter.
+    var w = (f / fc) * Math.sqrt(Math.max(aLo / Math.max(aHi, 1e-4), 1e-4));
     var w2 = w * w;
     var denRe = 1 - w2;
     var denIm = kDamp * w;
@@ -699,16 +678,13 @@ function csFiltYToDb(y) {
 }
 
 function csShelfEmphasisForCorner(db) {
-    if (!(db > 0)) return 0;
-    var lo = 0;
-    var hi = 24;
-    var i;
-    for (i = 0; i < 20; i++) {
-        var mid = (lo + hi) * 0.5;
-        if (csFiltShelfDb(cpFiltFreq, mid) < db) lo = mid;
-        else hi = mid;
-    }
-    return (lo + hi) * 0.5;
+    // At the cutoff this shelf is exactly -G/4 dB, for every Q (0 at Emphasis 0, -6 at 24).
+    // A target above 0 cannot be a corner, so the cut goes away.
+    if (!(db < 0)) return 0;
+    var g = -4 * db;
+    if (g < 0) g = 0;
+    if (g > 24) g = 24;
+    return g;
 }
 
 function csFiltQToY(q) {

@@ -766,6 +766,20 @@ function prep(src) {
     assert.ok(face.includes("function splCreateLink") && face.includes("function fsPattern") && face.includes("function paint") && face.includes("function ssDspLoad"), "face = config + link + theme + deferred DSP + ui");
     const topFace = byId["obj-viz-top"].textfile.text;
     assert.ok(topFace.includes("function paint") && /mgraphics\.relative_coords\s*=\s*0/.test(topFace) && !/\bvar\s+(box|patcher|max|messagename|inlet|jsarguments)\b/.test(topFace), "header strip script");
+    // The three arrows are drawn as 27 px cells at x 0 / 28 / 56. A click inside a painted cell selects that cell.
+    {
+        const { makeRecorder, loadFace } = require("./paint_bounds_lib");
+        const outs = [];
+        const ui = loadFace(topFace, makeRecorder(84, 15), { outlet() { outs.push(Array.from(arguments)); } });
+        ui.set_dir(1);
+        outs.length = 0;
+        ui.onclick(28.5, 7);
+        assert.strictEqual(ui.ftDir, 1, `click inside the painted middle arrow set Insert to ${ui.ftDir}`);
+        ui.onclick(1, 7);
+        assert.strictEqual(ui.ftDir, 0, "click inside the painted left arrow selects High");
+        ui.onclick(70, 7);
+        assert.strictEqual(ui.ftDir, 2, "click inside the painted right arrow selects Low");
+    }
     assert.ok(/mgraphics\.relative_coords\s*=\s*0/.test(face) && /mgraphics\.autofill\s*=\s*0/.test(face), "v8ui pixel coordinates");
     assert.ok(!/\bvar\s+(box|patcher|max|messagename|inlet|jsarguments)\b/.test(face), "no declared v8ui globals");
     // .adg

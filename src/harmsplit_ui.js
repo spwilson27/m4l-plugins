@@ -626,7 +626,8 @@ function hsHandleDown(x, y, dbl) {
         hsEmitEdit(kind, HS_DEFAULTS[kind]);
         return;
     }
-    hsDrag = { kind: kind, field: false };
+    // x0 / v0: the pointer is on the painted handle, which hsFlagX may have pulled in from the cutoff line
+    hsDrag = { kind: kind, field: false, x0: x, v0: hsVals[kind] };
     hsDragTo(x, y);
 }
 
@@ -651,7 +652,13 @@ function hsDragTo(x, y) {
     } else if (key === "thr") {
         v = hsDbOfY(y);
     } else {
-        v = hsXFreq(x);
+        // Move the cutoff's own line by the pointer delta. A click on the inset handle (and any
+        // pointer still on that same line pixel) keeps the stored frequency: below the axis every
+        // cutoff shares the left pixel, so hsXFreq of that pixel is not the stored value.
+        var origin = hsFreqX(hsDrag.v0);
+        var nx = origin + (x - hsDrag.x0);
+        v = hsXFreq(nx);
+        if (Math.abs(hsFreqX(v) - origin) < 0.5) v = hsDrag.v0;
     }
     v = hsRound(key, hsClampKey(key, v));
     if (v !== hsVals[key]) hsEmitEdit(key, v);

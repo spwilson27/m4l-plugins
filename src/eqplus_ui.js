@@ -1947,12 +1947,22 @@ function beginDragBand(i, x, y, opt) {
         if (!sb || !bandLive(sb)) continue;
         gesture.multiSnap.push({
             idx: idx,
+            freq: sb.freq,
             freqNorm: eqpFreqToNorm(toScreenFreq(sb.freq)),
             gain: sb.gain,
             qNorm: eqpQToNorm(sb.q),
             q: sb.q
         });
     }
+}
+function freqFromPaintedDrag(freq0, screenNow) {
+    var painted = toScreenFreq(freq0);
+    if (!(painted > 0) || !(screenNow > 0)) return freq0;
+    return clamp(freq0 * (screenNow / painted), EQP_FREQ_MIN, EQP_FREQ_MAX);
+}
+function gainFromPaintedDrag(gain0, dbNow) {
+    var painted = clamp(gain0, -rangeDb(), rangeDb());
+    return clamp(gain0 + (dbNow - painted), EQP_GAIN_MIN, EQP_GAIN_MAX);
 }
 function dragBand(g, x, y) {
     if (gesture.multiSnap && gesture.multiSnap.length > 1) {
@@ -1968,8 +1978,8 @@ function dragBand(g, x, y) {
             if (gesture.qOnly) {
                 mb.q = clamp(snap.q * Math.exp(dNormY * 3.0), EQP_Q_MIN, EQP_Q_MAX);
             } else {
-                mb.freq = fromScreenFreq(eqpNormToFreq(clamp01(snap.freqNorm + dNormX)));
-                if (usesGain(mb.mode)) mb.gain = clamp(snap.gain + dGain, -rangeDb(), rangeDb());
+                mb.freq = freqFromPaintedDrag(snap.freq, eqpNormToFreq(clamp01(snap.freqNorm + dNormX)));
+                if (usesGain(mb.mode)) mb.gain = clamp(snap.gain + dGain, EQP_GAIN_MIN, EQP_GAIN_MAX);
                 else mb.q = eqpNormToQ(clamp01(snap.qNorm + dNormY));
             }
             if (mb.freq !== pf || mb.gain !== pg || mb.q !== pq) {
@@ -1995,11 +2005,11 @@ function dragBand(g, x, y) {
     } else if (gesture.qOnly) {
         b.q = clamp(eqpNormToQ(yToNorm(g, y)), EQP_Q_MIN, EQP_Q_MAX);
     } else if (!usesGain(b.mode)) {
-        b.freq = toStoredFreq(xToFreq(g, x));
+        b.freq = freqFromPaintedDrag(gesture.freq0, xToFreq(g, x));
         b.q = clamp(eqpNormToQ(yToNorm(g, y)), EQP_Q_MIN, EQP_Q_MAX);
     } else {
-        b.freq = toStoredFreq(xToFreq(g, x));
-        b.gain = clamp(eqpNormToDb(yToNorm(g, y), rangeDb()), EQP_GAIN_MIN, EQP_GAIN_MAX);
+        b.freq = freqFromPaintedDrag(gesture.freq0, xToFreq(g, x));
+        b.gain = gainFromPaintedDrag(gesture.bandGain0, eqpNormToDb(yToNorm(g, y), rangeDb()));
     }
     if (b.freq !== pf || b.gain !== pg || b.q !== pq) {
         markDirty();
@@ -2706,6 +2716,22 @@ function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
             undoArmed = false;
             return;
         }
+    }
+    var qHit = hitQHandle(g, x, y);
+    if (qHit >= 0) {
+        var qBand = bands[qHit];
+        if (qBand && Math.abs(qBand.q - EQP_Q_DEFAULT) > 0.0001) {
+            discreteEdit(function () {
+                qBand.q = EQP_Q_DEFAULT;
+                emitBand(qHit);
+                updateCoeffBuffer();
+                noteSolo(qHit);
+            });
+        }
+        undoArmed = false;
+        gesture.dirty = false;
+        mgraphics.redraw();
+        return;
     }
     if (!insidePlot(g, x, y)) {
         undoArmed = false;

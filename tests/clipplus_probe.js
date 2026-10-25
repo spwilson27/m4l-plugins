@@ -58,8 +58,9 @@ function analyze(durMs) {
     var scope = scopeBuffer();
     var grDb = peek1(scope, 5);
     var drvPk = peek1(scope, 11);
+    var inMs = peek1(scope, 2);
     var frameN = peek1(scope, 8);
-    report.writestring("peak " + peak + "\nrpeak " + rpeak + "\nmean " + mean + "\nnan " + nans + "\ntp " + truePeak(left, 400) + "\nsr " + sr + "\nframes " + n + "\ngr " + grDb + "\ndrvpk " + drvPk + "\nscframe " + frameN + "\nmidrms " + midRms + "\nsiderms " + sideRms + "\n");
+    report.writestring("peak " + peak + "\nrpeak " + rpeak + "\nmean " + mean + "\nnan " + nans + "\ntp " + truePeak(left, 400) + "\nsr " + sr + "\nframes " + n + "\ngr " + grDb + "\ndrvpk " + drvPk + "\ninms " + inMs + "\nscframe " + frameN + "\nmidrms " + midRms + "\nsiderms " + sideRms + "\n");
     for (i = 1; i < jsarguments.length; i++) {
         var f = parseFloat(jsarguments[i]);
         if (!(f > 0)) continue;

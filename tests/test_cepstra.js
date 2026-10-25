@@ -281,7 +281,7 @@ ok(maxIdent < 1e-9, `shift 0, gate 0 must be a magnitude identity (rel err ${max
     ok(vc > 15 && vn > 6 && vl < 5 && vh < 5, `Voicing separates pitched from unpitched (clean ${vc.toFixed(1)}, noisy vowel ${vn.toFixed(1)}, noise ${vl.toFixed(1)} / ${vh.toFixed(1)})`);
     ok(Math.abs(vl - vh) < 1.5, "Voicing of noise does not depend on its level");
     near(cfg.voicingThreshold(0), 3.5, 1e-12, "Voicing threshold starts at 3.5");
-    near(cfg.voicingThreshold(1), 24.5, 1e-12, "Voicing threshold reaches 24.5 at 100%");
+    near(cfg.voicingThreshold(1), 14.5, 1e-12, "Voicing threshold reaches 14.5 at 100%");
     ok(cfg.voicingThreshold(0.3) > cfg.voicingThreshold(0.2), "Voicing threshold rises with Gate");
     const settle = (v, g) => { let st = { open: 1 }; for (let i = 0; i < 30; i++) st = cfg.voicingGateStep(st.open, v, g); return st; };
     eq(cfg.voicingGateStep(0.2, vl, 0).logGain, 0, "Gate 0 is a bypass");
@@ -289,6 +289,8 @@ ok(maxIdent < 1e-9, `shift 0, gate 0 must be a magnitude identity (rel err ${max
     near(settle(vn, 0.2).logGain, 0, 1e-6, "Gate 20%: a noisy vowel stays open");
     near(settle(vc, 0.7).logGain, 0, 1e-6, "Gate 70%: a clean vowel stays open");
     ok(settle(vn, 0.7).logGain < -6.8, "Gate 70%: a noisy vowel is gated (only clean pitched content passes)");
+    near(settle(vc, 1).logGain, 0, 1e-6, "Gate 100%: a clean vowel stays open, gain " + settle(vc, 1).logGain);
+    ok(settle(vl, 1).logGain < -6.8, "Gate 100%: noise stays gated");
     const opening = cfg.voicingGateStep(0, vc, 0.5), closing = cfg.voicingGateStep(1, vl, 0.5);
     ok(opening.open > 0.6 && closing.open > 0.7, "Gate opens fast (0.7 per frame) and closes slower (0.25 per frame)");
     assert.deepStrictEqual(cfg.GATE_MODE_NAMES, ["Spec", "Ceps"]); checks++;
@@ -324,7 +326,7 @@ ok(dataSizes.length >= 18, "Data arrays for the frames must be declared");
 for (const [nm, sz] of dataSizes) {
     if (["xre", "xim", "lre", "lim", "wre", "wim", "ere", "eim", "ore", "oim", "brv"].includes(nm)) eq(sz, 4096, `Data ${nm} must be sized for 4096`);
 }
-ok(gen.includes("Param gatemode(0);") && gen.includes("job_cgate(wre, stat, nCur, (gatemode > 0.5) ? clip(gate, 0, 1) : 0, sr);") && !gen.includes("cgate_gain(") && gen.includes("tv = 3.5 * pow(7, gate01);") && gen.includes("omv = clip(epm + hm + vg, -21, 12);") && gen.includes("jobCount = 5 * llog + 11;"), "Gate Mode: Ceps = voicing-keyed gate (job_cgate, stereo-linked log gain vg in job_spec); Spec gate bypassed in Ceps mode");
+ok(gen.includes("Param gatemode(0);") && gen.includes("job_cgate(wre, stat, nCur, (gatemode > 0.5) ? clip(gate, 0, 1) : 0, sr);") && !gen.includes("cgate_gain(") && gen.includes("tv = 3.5 + 11 * gate01;") && gen.includes("omv = clip(epm + hm + vg, -21, 12);") && gen.includes("jobCount = 5 * llog + 11;"), "Gate Mode: Ceps = voicing-keyed gate (job_cgate, stereo-linked log gain vg in job_spec); Spec gate bypassed in Ceps mode");
 ok(gen.includes("quietCount < nCur"), "Silence sleep gate: skip FFT frames after one silent frame");
 ok(gen.includes("poke(scope, alive, 264, 0)"), "Alive counter (scope 264) advances on silent hops; slots 0..263 stay the frame contract");
 ok(gen.includes("wetLast") && gen.includes("dryG = cos(ang)") && gen.includes("invRatM"), "Mix gains and shift ratios are cached instead of recomputed per sample / per bin");
@@ -837,5 +839,26 @@ ok(!dsb.emitted.some((m) => m[0] === "auto" || m[0] === "midi" || m[0] === "bang
 dsb.tasks.length = 0;
 dui.init_dsp();
 ok(dsb.tasks.length === 1, "init_dsp waits one Task tick before creating the gen");
+
+// Quality 1k clamps the lifter at N/2. Res 100 and the clamp share one bar. Clicking that
+// painted bar has to leave Res at 100, within the 0.1 display rounding.
+{
+    const quiet = new Array(272).fill(0);
+    quiet[259] = 1;
+    quiet[260] = 1024;
+    const qsb = makeSandbox(disp.presentation_rect, quiet);
+    const qui = fnDisp(qsb.mgraphics, qsb.Buffer, qsb.Task, qsb.outlet, () => {});
+    qui.setbuffer("cep-quiet");
+    qui.pullScope();
+    qui.set_mode(0);
+    qui.set_quality(0);
+    qui.set_res(100);
+    qui.paint();
+    const reg = qui.layoutRegions();
+    const barX = reg.disp.x + qui.barAxis01() * reg.disp.w;
+    qsb.emitted.length = 0;
+    qui.onclick(barX, reg.disp.plotY + 12);
+    near(qui.res(), 100, 0.1, "1k Res bar click keeps 100");
+}
 
 console.log(`test_cepstra: ok (${checks} checks, 256x169, visible live.* controls + display v8ui)`);

@@ -275,7 +275,7 @@ const sandbox = {
 
 const fn = new Function(
     "mgraphics", "Buffer", "Task", "outlet", "notifyclients",
-    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, set_pitch, set_fshift, set_stretch, set_snap, set_blur, set_decay, set_attack, set_sieve, set_vol, set_wtpos, set_wtmode, set_warp, getvalueof, setvalueof, onclick, ondrag, pullScope, paint, layoutRegions, bandAmps, droplets: () => droplets, curWtPosPct, curWarpPct, displacedBandCenterX, volVisualScale, pcpDsp, pcpDspPillText, wavePillSamples };"
+    viz.textfile.text + "\nreturn { loadbang, setbuffer, midi_in, midi_clear, set_pitch, set_fshift, set_stretch, set_snap, set_blur, set_decay, set_attack, set_sieve, set_vol, set_wtpos, set_wtmode, set_warp, getvalueof, setvalueof, onclick, ondrag, pullScope, paint, layoutRegions, bandAmps, droplets: () => droplets, scopeBuf: function () { return scopeBuf; }, curWtPosPct, curWarpPct, displacedBandCenterX, volVisualScale, pcpDsp, pcpDspPillText, wavePillSamples, gateDb: function () { return curGateDb; }, wtPos: function () { return curWtPosPct; }, warpPct: function () { return curWarpPct; }, gateLineY: function () { var r = layoutRegions(); return r.specY + r.specH - ampToVis01(dbToLin(curGateDb)) * (r.specH - 4); } };"
 );
 const ui = fn(sandbox.mgraphics, sandbox.Buffer, sandbox.Task, sandbox.outlet, sandbox.notifyclients);
 assert.strictEqual(sandbox.mgraphics.relative_coords, 0, "v8ui must disable relative_coords");
@@ -361,6 +361,24 @@ ui.ondrag(185, 6);
 assert.ok(emitted.some((m) => m[0] === "wtpos"), "Dragging Wave Pill must emit wtpos");
 assert.ok(emitted.some((m) => m[0] === "warp"), "Dragging Wave Pill must emit warp");
 
+// The dashed gate line is drawn with ampToVis01. A click on that line has to leave the gate there.
+ui.setvalueof([2, ui.getvalueof()[1], -42]);
+const gateY = ui.gateLineY();
+ui.onclick(40, gateY);
+assert.ok(
+    Math.abs(ui.gateDb() - (-42)) < 0.6,
+    "clicking the drawn gate line jumped -42 to " + ui.gateDb() + " at y " + gateY.toFixed(1)
+);
+
+// The pill's rectangle is the control: bottom edge is Wave 0, horizontal centre is Warp 50, top-left is Wave 100 / Warp 0.
+const pill = ui.layoutRegions();
+ui.onclick(pill.pillX + pill.pillW * 0.5, pill.pillY + pill.pillH);
+assert.ok(ui.wtPos() <= 2, "bottom of the wave pill set Wave to " + ui.wtPos() + ", expected 0");
+assert.ok(Math.abs(ui.warpPct() - 50) <= 1, "centre of the wave pill set Warp to " + ui.warpPct() + ", expected 50");
+ui.onclick(pill.pillX, pill.pillY);
+assert.ok(ui.wtPos() >= 98, "top of the wave pill set Wave to " + ui.wtPos() + ", expected 100");
+assert.ok(ui.warpPct() <= 1, "left edge of the wave pill set Warp to " + ui.warpPct() + ", expected 0");
+
 // Clicking the bottom 12-note scale strip toggles a scale bit and emits ["scalemask", mask]
 emitted.length = 0;
 ui.onclick(20, 120);
@@ -386,6 +404,18 @@ const savedAmp3 = scopeMock[3];
 scopeMock[3] = 0;
 for (let step = 0; step < 80; step++) ui.pullScope();
 assert.strictEqual(ui.pullScope(), false, "pullScope() must return false when silent so v8ui skips redraws while idle");
+assert.strictEqual(ui.droplets().length, 0, "settled silence has no droplets");
+assert.ok(ui.bandAmps.every((a) => a === 0), "settled silence has zero band amplitudes");
+const idleBands = ui.bandAmps.slice();
+let idleSamples = 0;
+const peek0 = ui.scopeBuf().peek;
+ui.scopeBuf().peek = (ch, start, len) => {
+    idleSamples += len || 0;
+    return peek0(ch, start, len);
+};
+assert.strictEqual(ui.pullScope(), false, "another silent poll stays idle");
+assert.deepStrictEqual(Array.from(ui.bandAmps), idleBands, "an idle poll does not move the bands");
+assert.ok(idleSamples <= 16, "a settled silent poll reads only the 16 band amps, read " + idleSamples);
 scopeMock[3] = savedAmp3;
 assert.strictEqual(ui.pullScope(), true, "pullScope() must wake up immediately when audio returns");
 

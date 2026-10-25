@@ -160,6 +160,8 @@ function hsSelName(sel) {
 
 // Does harmonic h (1-based) go to A for pattern P? Pattern 1: only the fundamental.
 function hsIsA(h, pat) {
+    // h' < 1 is below the root. Pattern 1's `h < 1.5` and Pattern 2's remainder both count that as A.
+    if (!(h >= 1)) return 0;
     var p = Math.max(pat, 1);
     if (p < 1.5) return h < 1.5 ? 1 : 0;
     return ((h - 1) - p * Math.floor((h - 1) / p)) < 0.5 ? 1 : 0;
@@ -528,9 +530,14 @@ function hsFrame(st, mag, p, sr) {
                 }
             }
         }
+        var oldc = st.cen[h];
         st.cen[h] = cen;
         st.prom[h] = prom;
         st.pres[h] = prs;
+        if (oldc > 30 && cen > 30 && Math.abs(Math.log(cen / oldc)) * 1.4426950408889634 > 0.5) {
+            st.hw[h] = 0;
+            st.hwA[h] = 0;
+        }
     }
     hst[12] = gest;
     hst[15] = nfd;

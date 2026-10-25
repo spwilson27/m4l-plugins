@@ -189,6 +189,17 @@ const cfg = require(CONFIG_PATH);
             `8192-FFT harmonic #${h} (${harmHz} Hz) must stand > 25 dB above midpoint trough (${troughHz} Hz): peak=${peakDb.toFixed(1)} dB, trough=${troughDb.toFixed(1)} dB`
         );
     }
+    // The pink tilt is a continuous slope. Adjacent bins around 60 Hz must not jump by several dB.
+    function toneAtBin(k) {
+        const freq = k * sr / cfg.MBSPLIT_FFT_SIZE;
+        const x = new Array(cfg.MBSPLIT_FFT_SIZE);
+        for (let i = 0; i < x.length; i++) x[i] = Math.sin(2 * Math.PI * freq * i / sr);
+        return cfg.computeFft8192DbBins(x)[k];
+    }
+    const lowStep = toneAtBin(11) - toneAtBin(10);
+    assert.ok(Math.abs(lowStep) < 1.0, "equal tones at 58.6 Hz and 64.5 Hz differ by " + lowStep.toFixed(2) + " dB");
+    const oct = toneAtBin(64) - toneAtBin(32);
+    assert.ok(Math.abs(oct - 2.2) < 0.6, "one octave of tilt is about 2.2 dB, got " + oct.toFixed(2));
     cfg.ensureSpecColumnBins(sr, cfg.MBSPLIT_SPEC_COLS);
     for (let c = 0; c < cfg.MBSPLIT_SPEC_COLS; c += 17) {
         const fLo = cfg.normToFreq(c / cfg.MBSPLIT_SPEC_COLS);
@@ -495,6 +506,13 @@ function rectsOverlap(a, b) {
     assert.strictEqual(inst1.curNumBands, 1, "1 detected instance must create 1 band (FULL)");
     assert.strictEqual(inst1.getEffectiveMask(), 1, "Chain 0 with 1 band must pass Band 1");
 
+    // Slope 0 is 12 dB/oct (power 2). One octave above the crossover the low band is 1/5,
+    // not the 24 dB/oct value 1/17. `Number(0) || 1` drew 12 dB as 24 dB.
+    const lr12 = inst1.computeCrossoverMagResponse(2000, 1000, 0);
+    const lr24 = inst1.computeCrossoverMagResponse(2000, 1000, 1);
+    assert.ok(Math.abs(lr12.lp - 0.2) < 1e-9, "12 dB/oct one octave down is 1/5, got " + lr12.lp);
+    assert.ok(lr12.lp > lr24.lp + 0.05, "12 dB/oct rolls off slower than 24 dB/oct");
+
     // 2. Add Instance 2 on Chain 1 -> both instances must auto-detect 2 bands (1:LOW, 2:HIGH)
     const inst2 = createUiInstance("live_set tracks 0 devices 0 chains 1 devices 0");
     assert.strictEqual(inst1.curNumBands, 2, "Adding 2nd instance must update Instance 1 to 2 bands");
@@ -784,6 +802,25 @@ function rectsOverlap(a, b) {
     const before = inst1.emitted0.length;
     inst1.set_numbands(4);
     assert.ok(!inst1.emitted0.slice(before).some((m) => String(m[0]).startsWith("ui_st_f")), "Unchanged band count must not resend slider states");
+
+    // Shift / right-edge toggle can turn the last passing band off (mask 0 = silence).
+    // The v3 blob must reload that 0. `Number(mask) || 1` used to turn it into band 1.
+    inst1.set_bandmode(0);
+    assert.strictEqual(inst1.getEffectiveMask(), 1, "chain 0 in Auto passes band 1 before the toggle");
+    const pill0 = inst1.getBandPillRect(0);
+    inst1.onclick(pill0[0] + pill0[2] - 2, pill0[1] + 2, 1, 0, 0);
+    assert.strictEqual(inst1.curBandMode, 5, "right-edge pill click enters the custom mask");
+    assert.strictEqual(inst1.curCustomMask, 0, "toggling off the only passing band stores mask 0");
+    assert.strictEqual(inst1.getEffectiveMask(), 0, "mask 0 passes no band");
+    const muteBlob = inst1.getvalueof();
+    assert.strictEqual(muteBlob[6], 5, "blob stores custom band mode");
+    assert.strictEqual(muteBlob[7], 0, "blob stores custom mask 0");
+    inst1.set_bandmode(1);
+    assert.strictEqual(inst1.curCustomMask, 1, "solo band 1 replaces the empty mask");
+    inst1.setvalueof(muteBlob);
+    assert.strictEqual(inst1.curBandMode, 5, "reloaded blob keeps custom band mode");
+    assert.strictEqual(inst1.curCustomMask, 0, "reloaded custom mask of 0 stays 0");
+    assert.strictEqual(inst1.getEffectiveMask(), 0, "reloaded mask 0 still passes no band");
     inst1.set_numbands(0);
 }
 

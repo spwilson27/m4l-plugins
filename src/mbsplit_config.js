@@ -207,7 +207,9 @@ function resolveEffectiveBandMask(bandMode, chainIndex, numBands, customMask) {
  */
 function computeCrossoverMagResponse(f, fc, slopeMode) {
     var ratio = Math.max(f, 1e-3) / Math.max(fc, 1e-3);
-    var sm = clamp(Math.round(Number(slopeMode) || 1), 0, 2);
+    // 0 is 12 dB/oct. `|| 1` turned that into the 24 dB curve.
+    var smRaw = Math.round(Number(slopeMode));
+    var sm = isNaN(smRaw) ? 1 : clamp(smRaw, 0, 2);
     var p = sm === 0 ? 2 : (sm === 1 ? 4 : 8);
     var rp = Math.pow(ratio, p);
     var denom = 1.0 + rp;
@@ -577,7 +579,9 @@ function _ensureFft8192Tables() {
     }
     for (var k = 0; k < bins; k++) {
         var freqApprox = (k * 48000.0) / N;
-        _fftTilt[k] = freqApprox > 60.0 ? (2.2 * Math.log(freqApprox / 250.0) / Math.LN2) : 0.0;
+        // Hold the tilt at the 60 Hz value so the slope does not step several dB between adjacent bins.
+        var fTilt = (k > 0 && freqApprox < 60.0) ? 60.0 : freqApprox;
+        _fftTilt[k] = k > 0 ? (2.2 * Math.log(fTilt / 250.0) / Math.LN2) : 0.0;
         _fftDbOut[k] = -72.0;
     }
     _fftTablesReady = true;

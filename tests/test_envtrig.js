@@ -482,7 +482,12 @@ assert.ok(scopeTicks.length >= 1, "Scope view must draw onset ticks at full heig
 ui.onclick(60, gb.y + gb.ph / 2 - 20);
 ui.ondrag(60, gb.y + gb.ph / 2 - 20, 1);
 const scopeThr = emitted[0].filter((m) => m[0] === "thr").pop()[1];
-assert.ok(Math.abs(scopeThr - cfg.linToDb(20 / (gb.ph / 2))) < 0.15, "Scope view threshold drag maps linear amplitude to dB");
+assert.ok(Math.abs(scopeThr - cfg.linToDb(20 / (gb.ph / 2 - 1))) < 0.15, "Scope view threshold drag uses the painted half-scale");
+ui.set_thr(-24);
+const scopeLine = gb.y + gb.ph / 2 + cfg.dbToLin(-24) * (gb.ph / 2 - 1);
+ui.onclick(40, scopeLine);
+const scopeKept = emitted[0].filter((m) => m[0] === "thr").pop()[1];
+assert.ok(Math.abs(scopeKept + 24) < 0.05, `clicking the painted scope line must keep -24 dB, got ${scopeKept}`);
 ui.onclick(10, 6);
 assert.strictEqual(ui.view(), 0, "Left toggle segment selects the envelope view");
 ui.set_view(1);

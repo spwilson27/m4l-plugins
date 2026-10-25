@@ -48,7 +48,13 @@ def signal(mode):
     """Return (boxes, lines, left_id, right_id). Both outlets are `dev-sig` unless the case is stereo."""
     boxes = []
     lines = []
-    if mode == "sine" or mode == "quiet":
+    if mode == "low":
+        boxes += [
+            mh.box("dev-osc", "cycle~ 80", 700, 200, 90, numinlets=2, outlettype=["signal"]),
+            mh.box("dev-sig", "*~ 1", 700, 240, 70, numinlets=2, outlettype=["signal"]),
+        ]
+        lines.append(mh.line("dev-osc", 0, "dev-sig", 0))
+    elif mode == "sine" or mode == "quiet":
         boxes += [
             mh.box("dev-osc", "cycle~ 220", 700, 200, 90, numinlets=2, outlettype=["signal"]),
             mh.box("dev-sig", "*~ 0.5" if mode == "sine" else "*~ 0.04", 700, 240, 70, numinlets=2, outlettype=["signal"]),
@@ -191,6 +197,9 @@ def cases():
         {"name": "gr_drive08", "mode": "sine", "freqs": "220", "params": params("drive 0.8, detail 100, shape 0, ceiling 0, autog 0")},
         {"name": "gr_drive08_wave", "mode": "sine", "freqs": "220", "params": params("drive 0.8, detail 0, shape 0, ceiling 0, autog 0")},
         {"name": "gr_over", "mode": "sine", "freqs": "220", "params": params("drive 12, detail 100, shape 0, ceiling 0, autog 0")},
+        # 80 Hz under a low shelf. The input meter's RMS and peak are the same post-shelf signal,
+        # so a sine's RMS sits about 3 dB under its peak.
+        {"name": "shelf_rms", "mode": "low", "freqs": "80", "params": params("drive 0, detail 0, shape 0, hlim 0, autog 0, filton 1, filttype 0, filtfreq 250, filtgain 6, filtq 0.707")},
     ]
 
 
@@ -315,6 +324,14 @@ def check(name, meta, got, errors):
         gr = meta.get("gr", 0)
         if abs(gr - 5.97) > 0.35:
             errors.append(f"{name}: GR {gr} want about 6.0 dB over the ceiling")
+    elif name == "shelf_rms":
+        pk = meta.get("drvpk", 0)
+        ms = meta.get("inms", 0)
+        rms = (ms * 0.5) ** 0.5 if ms > 0 else 0
+        if meta.get("scframe", 0) < 100 or pk < 0.05:
+            errors.append(f"{name}: meter was not read (peak {pk}, frame {meta.get('scframe')})")
+        elif not (0.6 < rms / pk < 0.85):
+            errors.append(f"{name}: RMS {rms:.4f} is not ~3 dB under the post-shelf peak {pk:.4f}")
 
 
 def main():

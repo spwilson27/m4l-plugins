@@ -166,6 +166,29 @@ function maxDiff(fn) {
     worst = 0;
     for (let i = 0; i < C.CLIP_FIR_N; i++) worst = Math.max(worst, Math.abs(C.cpFirCoef(i) - G.cp_fir_coef(i)));
     assert.ok(worst < 1e-9, "cp_fir_coef matches");
+    // The shelf is a pre/post pair. With no clipping, post must undo pre (the comment's "exact reciprocal").
+    {
+        const sr = 48000;
+        const cases = [
+            [0, 400, 12, 0.707, 1000],
+            [0, 1000, 6, 0.707, 1000],
+            [0, 200, 24, 1, 50],
+            [0, 80, 18, 2, 440],
+            [1, 200, 12, 2, 1000],
+        ];
+        let shelfErr = 0;
+        for (const [fmode, freq, gain, q, tone] of cases) {
+            const st = new gx.DataSim(8, 2);
+            for (let i = 0; i < 24000; i++) {
+                const x = Math.sin(2 * Math.PI * i * tone / sr) * 0.4;
+                const y = G.cp_pre_emp(x, st, 0, sr, freq, gain, q, fmode, 1);
+                const comp = fmode > 0.5 ? st.peek(4, 0) : 0;
+                const z = G.cp_post_emp(y, comp, st, 0, sr, freq, gain, q, fmode, 1);
+                if (i > 12000) shelfErr = Math.max(shelfErr, Math.abs(z - x));
+            }
+        }
+        assert.ok(shelfErr < 1e-6, "unclipped emphasis pre/post must cancel, worst " + shelfErr);
+    }
     const kw = new gx.DataSim(10);
     G.cp_kw_init(kw, 48000);
     const shelf = C.cpBiquadCoefShelf(48000);
@@ -484,6 +507,11 @@ function maxDiff(fn) {
     const ceilLin = C.cpDbToLin(-3);
     assert.ok(Math.abs(viz.face.csBipolarCurve(ceilLin, 0, 100, 0, ceilLin) - ceilLin) < 1e-9, "At Shape 100%, curve is a hard clip at ceiling");
     assert.ok(Math.abs(viz.face.csBipolarCurve(ceilLin * 0.5, 0, 100, 0, ceilLin) - ceilLin * 0.5) < 1e-9, "At Shape 100%, curve is linear below ceiling");
+    // The drawn curve is the waveshaper. Drive 0 is a hard ceiling clamp, and Symmetry is full strength.
+    assert.ok(Math.abs(viz.face.csBipolarCurve(0.99, 0, 0, 0, 1) - C.cpCurve(0.99, 0, 0, 0, 1)) < 1e-6,
+        "Drive 0 Shape 0 draws the hard clamp, got " + viz.face.csBipolarCurve(0.99, 0, 0, 0, 1));
+    assert.ok(Math.abs(viz.face.csBipolarCurve(0.3, 12, 100, -100, 1) - C.cpCurve(0.3, 12, 100, -100, 1)) < 1e-6,
+        "Drive 12 Shape 100 Sym -100 matches the waveshaper, got " + viz.face.csBipolarCurve(0.3, 12, 100, -100, 1));
 
     run('var FACE_ROLE = "viz";\n' + faceCode, 180, 157, "viz-wave", (f) => { f.preview(); f.set_view(1); });
     run('var FACE_ROLE = "viz";\n' + faceCode, 180, 157, "viz-extremes", (face) => {
@@ -551,17 +579,34 @@ function maxDiff(fn) {
         face.set_filttype(0);
         face.set_filtfreq(250);
         face.set_filtq(0.71);
-        face.set_filtgain(6);
+        face.set_filtgain(12);
         const before = face.csFiltGainAt(250);
-        face.onclick(50, 40);
-        face.ondrag(50, 30, 1);
-        const mouseDb = face.csFiltYToDb(30) - face.csFiltYToDb(40);
+        const y0 = face.csFiltDbToY(before);
+        face.onclick(50, y0);
+        face.ondrag(50, y0 + 3, 1);
+        const mouseDb = face.csFiltYToDb(y0 + 3) - face.csFiltYToDb(y0);
         const after = face.csFiltGainAt(250);
-        assert.ok(face.cpFiltGain > 6, "Dragging the shelf dot up raises Emphasis, got " + face.cpFiltGain);
+        assert.ok(face.cpFiltGain > 12, "Dragging the shelf dot down deepens the cut, Emphasis " + face.cpFiltGain);
         assert.ok(Math.abs((after - before) - mouseDb) < 0.35, "Shelf corner follows the pointer by " + mouseDb.toFixed(2) + " dB, moved " + (after - before).toFixed(2));
         assert.ok(writes.some((w) => w[0] === "obj-ctrl-filtgain" && Math.abs(w[1] - face.cpFiltGain) < 1e-6), "Shelf drag writes Emphasis on obj-ctrl-filtgain");
         face.set_filtgain(0);
         assert.ok(Math.abs(face.csFiltGainAt(250)) < 1e-6, "Emphasis 0 flattens the shelf");
+        // The drawn shelf is the pre-emphasis the clipper hears. A 100 Hz tone through the gen
+        // must sit on that curve (the analog sketch used to miss it by several dB).
+        face.set_filtfreq(400);
+        face.set_filtq(0.707);
+        face.set_filtgain(12);
+        const drawn = face.csFiltGainAt(100);
+        const st = new gx.DataSim(8, 2);
+        let sxx = 0, syy = 0, n = 0;
+        const sr = 48000;
+        for (let i = 0; i < sr; i++) {
+            const x = Math.sin(2 * Math.PI * i * 100 / sr);
+            const y = G.cp_pre_emp(x, st, 0, sr, 400, 12, 0.707, 0, 1);
+            if (i > sr / 2) { n++; sxx += x * x; syy += y * y; }
+        }
+        const heard = 20 * Math.log10(Math.sqrt(syy / sxx));
+        assert.ok(Math.abs(drawn - heard) < 0.15, "shelf curve at 100 Hz must match the gen, drawn " + drawn.toFixed(2) + " heard " + heard.toFixed(2));
     }
     // Low Cut does not use Emphasis, so the value and its label go grey and the box ignores drags.
     {

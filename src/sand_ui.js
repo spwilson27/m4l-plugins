@@ -344,8 +344,10 @@ function ondrag(x, y) {
     var plotY = 4;
     var plotW = w - 32;
     var plotH = h - 8;
-    var ny = clamp(1.0 - (y - plotY) / Math.max(1, plotH), 0, 1);
-    var nx = clamp((x - plotX) / Math.max(1, plotW), 0, 1);
+    // The reticles are inset from the plot edge (paint: freq by 4 px, amount by 3 px
+    // over a travel 6 px shorter). Map the click through that same inset.
+    var ny = clamp((plotY + plotH - 3 - y) / Math.max(1, plotH - 6), 0, 1);
+    var nx = clamp((x - (plotX + 4)) / Math.max(1, plotW - 8), 0, 1);
     curAmountDb = Math.round(ny * 140.0 * 10) / 10;
     curFreqHz = Math.round(normToFreq(nx));
     if (typeof outlet === "function") {

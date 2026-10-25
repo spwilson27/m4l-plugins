@@ -336,6 +336,17 @@ function numAt(chunk, idx) {
 
 function pullScope() {
     if (!scopeBuf) return false;
+    // Settled silence: bands and droplets are already at rest. Read only the band
+    // amplitudes (16) and skip the decay work until one of them wakes.
+    if (uiIdleFrames > 2 && droplets.length === 0) {
+        var wake = scopeBuf.peek(1, 0, NUM_BANDS);
+        var hot = false;
+        for (var w = 0; w < NUM_BANDS; w++) {
+            if (numAt(wake, w) > 0.001) { hot = true; break; }
+        }
+        if (!hot) return false;
+        uiIdleFrames = 0;
+    }
     dropTick = (dropTick + 1) & 0x7FFF;
     var chunk = scopeBuf.peek(1, 0, SCOPE_SAMPS);
     var blur01 = clamp(curBlurPct / 100.0, 0, 1);
@@ -435,8 +446,19 @@ function ampToVis01(lin) {
     return 0.65 * db01 + 0.35 * clamp(Math.sqrt(lin), 0, 1);
 }
 
+// Inverse of ampToVis01, the curve the gate line is drawn with. A straight
+// -60..-6 map put a click on the -42 dB line at -48 dB.
 function vis01ToDb(v01) {
-    return -60.0 + clamp(v01, 0, 1) * 54.0;
+    var target = clamp(v01, 0, 1);
+    var lo = -60.0;
+    var hi = -6.0;
+    var i;
+    for (i = 0; i < 24; i++) {
+        var mid = (lo + hi) * 0.5;
+        if (ampToVis01(dbToLin(mid)) < target) lo = mid;
+        else hi = mid;
+    }
+    return (lo + hi) * 0.5;
 }
 
 // Compute the displaced horizontal X center of band b inside [specX .. specX + specW]
@@ -516,13 +538,13 @@ function onclick(x, y) {
 function ondrag(x, y) {
     var r = layoutRegions();
     if (dragState === "gate") {
-        var v01 = clamp((r.specY + r.specH - y) / Math.max(1, r.specH), 0, 1);
+        var v01 = clamp((r.specY + r.specH - y) / Math.max(1, r.specH - 4), 0, 1);
         curGateDb = Math.round(clamp(vis01ToDb(v01), -60.0, -6.0) * 10) / 10;
         outlet(0, ["gate", curGateDb]);
         notifyclients();
         mgraphics.redraw();
     } else if (dragState === "wave") {
-        var pos01 = clamp(1.0 - (y - r.pillY) / Math.max(1, r.pillH + 8), 0, 1);
+        var pos01 = clamp(1.0 - (y - r.pillY) / Math.max(1, r.pillH), 0, 1);
         var warp01 = clamp((x - r.pillX) / Math.max(1, r.pillW), 0, 1);
         curWtPosPct = Math.round(pos01 * 100);
         curWarpPct = Math.round(warp01 * 100);

@@ -1160,6 +1160,19 @@ function seqCornerWeights(sw) {
     }
     return cw;
 }
+// The crosshair / puck, in the same pixels paintPadRaw draws. Seq mode shows the blend, not gState.xy.
+function padMarkerXY(r) {
+    var pxy = gState.xy;
+    if (gState.audition === "seq") {
+        var sw = soundingWeights(gState, gHaveTele ? gTele : null, gDemo && !gHaveTele ? gDemoBeat : 0);
+        var swSum = 0;
+        for (var q = 0; q < 8; q++) swSum += sw[q] || 0;
+        var cw = seqCornerWeights(swSum > 0 ? sw.map(function (v) { return v / swSum; }) : sw);
+        var csum = cw[0] + cw[1] + cw[2] + cw[3];
+        pxy = csum > 1e-6 ? [(cw[1] + cw[3]) / csum, (cw[2] + cw[3]) / csum] : [0.5, 0.5];
+    }
+    return [r.x + 8 + pxy[0] * (r.w - 16), r.y + 8 + pxy[1] * (r.h - 16)];
+}
 function paintPad(r, L) {
     var prevClip = clipSet(r.x, r.y, r.w, r.h); // the corner glows, the puck and the lines stay inside the pad
     try { paintPadRaw(r, L); } finally { clipBack(prevClip); }
@@ -1195,13 +1208,8 @@ function paintPadRaw(r, L) {
         var wgt = cw[c];
         glow(cx[c] + (c % 2 ? -8 : 8), cy[c] + (c < 2 ? 8 : -8), 12 + 34 * clamp(wgt, 0, 1), sc, (filled ? 0.07 : 0.03) + (morph ? 0.26 : 0.1) * clamp(wgt, 0, 1));
     }
-    var pxy = gState.xy;
-    if (seq) {
-        var csum = cw[0] + cw[1] + cw[2] + cw[3];
-        pxy = csum > 1e-6 ? [(cw[1] + cw[3]) / csum, (cw[2] + cw[3]) / csum] : [0.5, 0.5];
-    }
-    var px = r.x + 8 + pxy[0] * (r.w - 16);
-    var py = r.y + 8 + pxy[1] * (r.h - 16);
+    var mk = padMarkerXY(r);
+    var px = mk[0], py = mk[1];
     hline(r.x + 2, r.x + r.w - 2, py, col, morph ? 0.4 : 0.18, 1);
     vline(px, r.y + 2, r.y + r.h - 2, col, morph ? 0.4 : 0.18, 1);
     // corner badges: the assigned slot's number and colour (click cycles, or drop a slot pad on one)
@@ -1449,7 +1457,7 @@ function paintTileBodyRaw(tile, x, y, w, h, c, act) {
             var p0 = [], p1 = [];
             for (i = 0; i <= 40; i++) {
                 var sv = Math.sin(i / 40 * 6.2832);
-                var rv = rmode === 0 ? Math.max(sv, 0) : (rmode === 1 ? Math.abs(sv) : (sv > 0 ? sv : 0.35 * sv));
+                var rv = glRectShape(rmode, sv);
                 p0.push([x + i / 40 * w, rmid - sv * rh]);
                 p1.push([x + i / 40 * w, rmid - (sv + (rv - sv) * rbl) * rh]);
             }
@@ -1508,7 +1516,7 @@ function paintTileBodyRaw(tile, x, y, w, h, c, act) {
             var rcur = Math.floor(beat / rdv) % 8, rgrp = Math.floor(beat / (8 * rdv));
             for (i = 0; i < 8; i++) {
                 var rx = x + i * (w / 8), rw = w / 8 - 1.5;
-                var rev = hash2(i + 5 * rgrp, 7) < gv("rvs", "chance");
+                var rev = glRvsReversed(rgrp * 8 + i, gv("rvs", "chance"));
                 frect(rx, y, rw, h, c, i === rcur ? 0.5 : 0.18);
                 var rm = y + h / 2;
                 poly(rev ? [[rx + rw - 2, rm - 3], [rx + 2, rm], [rx + rw - 2, rm + 3]] : [[rx + 2, rm - 3], [rx + rw - 2, rm], [rx + 2, rm + 3]], c, rev ? 1 : 0.5, 1.2);
@@ -1517,10 +1525,8 @@ function paintTileBodyRaw(tile, x, y, w, h, c, act) {
         }
         case "shuf": { // the slices in their shuffled order: bar height = the slice that plays there
             var sn = GL_SLICE_COUNTS[Math.round(clamp(gv("shuf", "slices"), 0, 3))], sseed = gv("shuf", "seed");
-            var sidx = [];
-            for (i = 0; i < sn; i++) sidx.push(i);
-            sidx.sort(function (a, b) { return hash2(a, sseed + 1) - hash2(b, sseed + 1); });
             var sspan = GL_SHUF_SPANS[Math.round(clamp(gv("shuf", "span"), 0, 2))];
+            var sidx = glShufOrder(sn, Math.floor(beat / sspan), sseed);
             var scur = Math.floor(beat / (sspan / sn)) % sn;
             for (i = 0; i < sn; i++) frect(x + i * (w / sn), y + h - (sidx[i] + 1) / sn * h, w / sn - 1, (sidx[i] + 1) / sn * h, c, i === scur ? 1 : 0.4);
             break;
@@ -1549,7 +1555,7 @@ function paintTileBodyRaw(tile, x, y, w, h, c, act) {
             vals = specCols(t, S.BANDS_OUT, nb);
             var mp = clamp((Math.log(gv("spec", "mir_pivot")) - Math.log(100)) / (Math.log(8000) - Math.log(100)), 0.12, 0.88);
             for (i = 0; i < nb; i++) {
-                var xnn = (i + 0.5) / nb, src = xnn <= mp ? xnn : 2 * mp - xnn, mv = src >= 0 ? vals[Math.min(nb - 1, Math.floor(src * nb))] : 0;
+                var xnn = (i + 0.5) / nb, src = glMirrorSrc(i, nb, mp), mv = vals[Math.min(nb - 1, Math.floor(Math.max(0, src) * nb))];
                 frect(x + i * (w / nb), y + h - mv * h, w / nb - 1, mv * h, c, xnn <= mp ? 0.85 : 0.5);
             }
             for (j = 0; j < h; j += 4) vline(x + mp * w, y + j, y + Math.min(h, j + 2), COL_TEXT, 0.8, 1);
@@ -2405,6 +2411,12 @@ function hitAt(x, y) {
     for (var i = 0; i < map.length; i++) {
         if (!glHit(map[i].r, x, y)) continue;
         if (!best || map[i].layer >= best.layer) best = map[i];
+    }
+    // the puck is painted on top of the corner badges; a click on it drags the pad
+    if (best && /^corner/.test(best.id) && gLayout.pad) {
+        var mk = padMarkerXY(gLayout.pad);
+        var dx = x - mk[0], dy = y - mk[1];
+        if (dx * dx + dy * dy <= 64) return { id: "pad", r: gLayout.pad, layer: 0 };
     }
     return best;
 }

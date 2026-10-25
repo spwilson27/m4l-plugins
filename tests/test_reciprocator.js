@@ -309,7 +309,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
 
     const fn = new Function(
         "mgraphics", "Buffer", "Task", "outlet",
-        viz.textfile.text + "\nreturn { loadbang, setbuffer, set_gate, set_ceiling, set_amount, set_outmode, set_revgate, onclick, ondrag, pullScope, paint, histOut };"
+        viz.textfile.text + "\nreturn { loadbang, setbuffer, set_gate, set_ceiling, set_amount, set_outmode, set_revgate, onclick, ondrag, pullScope, paint, histOut, ceilingDb: function () { return curCeilingDb; }, gateDb: function () { return curGateDb; }, gateLineY: function () { var b = plotBounds(); return b.baseY - ampToVisual01(dbToLin(curGateDb)) * b.plotH; }, ceilLineY: function () { var b = plotBounds(); return b.baseY - ampToVisual01(dbToLin(curCeilingDb)) * b.plotH; } };"
     );
     const ui = fn(sandbox.mgraphics, sandbox.Buffer, sandbox.Task, sandbox.outlet);
     assert.strictEqual(sandbox.mgraphics.relative_coords, 0, `${amxdFile}: v8ui must disable relative_coords`);
@@ -335,6 +335,18 @@ function verifyAmxd(amxdFile, expectedWidth) {
     ui.onclick(40, 22);
     ui.ondrag(40, 28);
     assert.ok(emitted.some((m) => m[0] === "ceiling" && m[1] <= 0 && m[1] >= -18), "Dragging upper scope must emit ceiling dB");
+
+    // The gate and ceiling lines are drawn with ampToVisual01. Clicking a line has to leave that value in place.
+    ui.set_gate(-42);
+    ui.set_ceiling(-12);
+    ui.onclick(40, ui.gateLineY());
+    assert.ok(Math.abs(ui.gateDb() + 42) < 0.6, "clicking the drawn gate line jumped -42 to " + ui.gateDb());
+    ui.onclick(40, ui.ceilLineY());
+    assert.ok(Math.abs(ui.ceilingDb() + 12) < 0.6, "clicking the drawn ceiling line jumped -12 to " + ui.ceilingDb());
+
+    // Ceiling 0 dB is the top of the range. `Number(0) || -1` stored it as -1 dB.
+    ui.set_ceiling(0);
+    assert.strictEqual(ui.ceilingDb(), 0, "Ceiling 0 dB stays 0, got " + ui.ceilingDb());
 
     // Verify idle-redraw suppression when audio is silent. A frozen frame head
     // skips the 8-sample read; a moving head of real silence still settles.

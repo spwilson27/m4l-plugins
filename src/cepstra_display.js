@@ -419,6 +419,14 @@ function setResFromDisplayX(x) {
     var t = clamp((x - r.disp.x) / r.disp.w, 0, 1);
     var res01 = axis01ToRes(curMode, t, srNow, nFft, periodSamplesNow());
     var v = Math.round(res01 * 1000) / 10;
+    // The lifter lag clamps at N/2, so Res values past that clamp share one bar.
+    // A click on the bar already drawn for the current Res keeps it. A live lag
+    // (the bar is not the Res lag) still adopts the position under the pointer.
+    if (v !== curRes) {
+        var shown = barAxis01();
+        var fromRes = msToAxis01(lagToMs(lifterLagSamples(curMode, curRes / 100, srNow, nFft, periodSamplesNow()), srNow));
+        if (Math.abs(fromRes - shown) <= 1e-6 && Math.abs(t - shown) <= 0.5 / Math.max(1, r.disp.w)) return;
+    }
     if (v === curRes) return;
     curRes = v;
     showReadout();

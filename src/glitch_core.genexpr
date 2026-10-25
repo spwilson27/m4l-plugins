@@ -1791,8 +1791,31 @@ gl_binmap(fx, ft, n, mode, amt, p1, nb, pm) {
 	return half;
 }
 
+// Rank key for a top-K cut. A tiny index bias (lower bin wins a tie) so equal magnitudes still split,
+// small enough that a 0.002 dB difference stays in magnitude order.
+gl_rank_key(m, k, half) {
+	return m * (1 - 0.000001 * k / max(half, 1));
+}
+
+// Log-domain threshold on gl_rank_key such that about `want` bins pass. 40 steps resolve the tie bias.
+gl_topk_thr(fc, half, mx, want) {
+	lo = log(max(mx, 0.000000000001) * 0.000001);
+	hi = log(max(mx, 0.000000000001));
+	for (it = 0; it < 40; it += 1) {
+		md2 = (lo + hi) * 0.5;
+		th = exp(md2);
+		cnt = 0;
+		for (k = 0; k <= half; k += 1) {
+			cnt = cnt + (gl_rank_key(fc.peek(k, 1), k, half) >= th ? 1 : 0);
+		}
+		lo = cnt > want ? md2 : lo;
+		hi = cnt > want ? hi : md2;
+	}
+	return exp(hi);
+}
+
 // Spectral Gate / Lofi on the magnitudes of fx (Hermitian kept), crossfaded by amt. mode 0 keeps the kk loudest bins
-// (threshold found by 14 bisection steps in the log domain), mode 1 quantizes the magnitudes to steps of sdb dB.
+// (ties broken toward lower bins), mode 1 quantizes the magnitudes to steps of sdb dB.
 // fc channel 1 is scratch for the magnitudes.
 gl_sgate(fx, fc, n, mode, amt, kk, sdb) {
 	half = n * 0.5;
@@ -1804,26 +1827,16 @@ gl_sgate(fx, fc, n, mode, amt, kk, sdb) {
 		fc.poke(m, k, 1);
 		mx = max(mx, m);
 	}
-	lo = log(mx * 0.000001);
-	hi = log(mx);
-	its = mode < 0.5 ? 14 : 0;
-	for (it = 0; it < its; it += 1) {
-		md2 = (lo + hi) * 0.5;
-		th = exp(md2);
-		cnt = 0;
-		for (k = 0; k <= half; k += 1) {
-			cnt = cnt + (fc.peek(k, 1) >= th ? 1 : 0);
-		}
-		lo = cnt > kk ? md2 : lo;
-		hi = cnt > kk ? hi : md2;
+	thr = mx;
+	if (mode < 0.5) {
+		thr = gl_topk_thr(fc, half, mx, kk);
 	}
-	thr = exp(hi);
 	sn = sdb / 8.685889638065035;
 	for (k = 0; k <= half; k += 1) {
 		m = fc.peek(k, 1);
 		gk = 1;
 		if (mode < 0.5) {
-			gk = m >= thr ? 1 : 0;
+			gk = gl_rank_key(m, k, half) >= thr ? 1 : 0;
 		} else {
 			ml = max(m, 0.000000000001);
 			gk = exp(round(log(ml) / sn) * sn) / ml;
@@ -2073,29 +2086,11 @@ gl_magfx(fx, fc, ft, n, op, amt, p1, p2, p3, p4, seed, beat, sr) {
 		}
 	} else if (op < 3.5) {
 		kk = clip(floor(p1 + 0.5), 1, 32);
-		lo0 = log(mx * 0.000001);
-		hi0 = log(mx);
-		for (pass = 0; pass < 2; pass += 1) {
-			tk = (pass + 1) * kk;
-			lo = lo0;
-			hi = hi0;
-			for (it = 0; it < 14; it += 1) {
-				md = (lo + hi) * 0.5;
-				th = exp(md);
-				cnt = 0;
-				for (k = 0; k <= half; k += 1) {
-					cnt = cnt + (fc.peek(k, 1) >= th ? 1 : 0);
-				}
-				lo = cnt > tk ? md : lo;
-				hi = cnt > tk ? hi : md;
-			}
-			ft.poke(exp(hi), pass, 1);
-		}
-		t1 = ft.peek(0, 1);
-		t2 = ft.peek(1, 1);
+		t1 = gl_topk_thr(fc, half, mx, kk);
+		t2 = gl_topk_thr(fc, half, mx, kk * 2);
 		bg = pow(10, p2 / 20);
 		for (k = 0; k <= half; k += 1) {
-			m = fc.peek(k, 1);
+			m = gl_rank_key(fc.peek(k, 1), k, half);
 			ft.poke(m >= t1 ? 0 : (m >= t2 ? bg : 1), k, 0);
 		}
 	} else if (op < 4.5) {

@@ -148,10 +148,13 @@ cp_pre_emp(x, st, ch, rate, freq, gainDb, qval, fmode, fon) {
 	fCl = clip(freq, 20, 12000);
 	qCl = clip(qval, 0.1, 10.0);
 	gAmt = clip(gainDb, 0, 24);
-	// For Low Shelf: g = tan(pi*fc/sr) / sqrt(A_lo), where A_lo = 10^(-gAmt/40) < 1 (cut), A_hi = 10^(gAmt/80)
+	// Low Shelf is aHi^2 * a low shelf of relative gain A = aLo/aHi.
+	// g = tan(pi*fc/sr) / sqrt(A) makes the post shelf (gains swapped) the exact inverse,
+	// so an unclipped signal comes back out unchanged. Dividing by sqrt(aLo) alone does not.
 	aLo = fmode > 0.5 ? 1.0 : pow(10, -gAmt / 40);
 	aHi = fmode > 0.5 ? 1.0 : pow(10, gAmt / 80);
-	gTan = tan(3.141592653589793 * fCl / max(rate, 8000)) / sqrt(max(aLo, 1e-4));
+	gRatio = aLo / max(aHi, 1e-4);
+	gTan = tan(3.141592653589793 * fCl / max(rate, 8000)) / sqrt(max(gRatio, 1e-4));
 	kDamp = 1 / qCl;
 	a1 = 1 / (1 + gTan * (gTan + kDamp));
 	a2 = gTan * a1;
@@ -183,7 +186,8 @@ cp_post_emp(yClip, lpDel, st, ch, rate, freq, gainDb, qval, fmode, fon) {
 	gAmt = clip(gainDb, 0, 24);
 	aLo = pow(10, gAmt / 40);
 	aHi = pow(10, -gAmt / 80);
-	gTan = tan(3.141592653589793 * fCl / max(rate, 8000)) / sqrt(max(aLo, 1e-4));
+	gRatio = aLo / max(aHi, 1e-4);
+	gTan = tan(3.141592653589793 * fCl / max(rate, 8000)) / sqrt(max(gRatio, 1e-4));
 	kDamp = 1 / qCl;
 	a1 = 1 / (1 + gTan * (gTan + kDamp));
 	a2 = gTan * a1;
@@ -810,7 +814,8 @@ drvPk = chmode > 1.5 ? drvPkR : ((chmode > 0.5 && chmode < 1.5) ? drvPkL : max(d
 wetPkL = max(wetPkL, abs(pre0));
 wetPkR = max(wetPkR, abs(pre1));
 wetPk = chmode > 1.5 ? wetPkR : ((chmode > 0.5 && chmode < 1.5) ? wetPkL : max(wetPkL, wetPkR));
-inSq = inSq + trimL * trimL + trimR * trimR;
+// Post-shelf, pre-drive. The face multiplies by drive, and the peak is this same signal.
+inSq = inSq + xsL * xsL + xsR * xsR;
 outSq = outSq + outL * outL + outR * outR;
 clipN = clipN + hit;
 // The trace follows the channel fed to the clipper. Both spans both channels.

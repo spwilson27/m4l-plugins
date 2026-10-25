@@ -20,7 +20,7 @@ var manualBandsOverride = null; // null = auto-detect from linked instances (1..
 var curSlope = 1;               // 0 = 12 dB/oct (LR2), 1 = 24 dB/oct (LR4), 2 = 48 dB/oct (LR8)
 var curPhaseMode = 0;           // 0 = Min Phase (zero-latency LR tree), 1 = Dynamic Phase (LR F1 + linear-phase FIR F2/F3)
 var curBandMode = 0;            // 0 = Auto Chain, 1..4 = Band 1..4 Solo, 5 = Custom Multi-Band
-var curCustomMask = 1;          // 4-bit mask (1..15) used when curBandMode === 5
+var curCustomMask = 1;          // 4-bit mask (0..15, 0 = every band off) used when curBandMode === 5
 var curLinkGroup = 0;           // 0 = Auto (Parent Rack), 1..4 = Grp A..D, 5 = Off
 var curGainDb = 0.0;            // -70.0 (-inf) .. +18.0 dB
 var showLinkStatus = true;      // Clickable show/hide link info string in bottom-right of spectrogram
@@ -982,7 +982,11 @@ function setvalueof() {
         }
         curSlope = clamp(Math.round(Number(args[5] !== undefined ? args[5] : 1)), 0, 2);
         if (args.length >= 7) curBandMode = clamp(Math.round(Number(args[6]) || 0), 0, 5);
-        if (args.length >= 8) curCustomMask = clamp(Math.round(Number(args[7]) || 1), 0, 15);
+        if (args.length >= 8) {
+            var cmRaw = Math.round(Number(args[7]));
+            // 0 is a real mask (every band off). `|| 1` would reload that silence as band 1.
+            curCustomMask = isNaN(cmRaw) ? 1 : clamp(cmRaw, 0, 15);
+        }
         if (args.length >= 9) curLinkGroup = clamp(Math.round(Number(args[8]) || 0), 0, 5);
         if (ver >= 2 && args.length >= 10) curGainDb = clamp(Number(args[9]) || 0.0, -70.0, 18.0);
         if (ver >= 2 && args.length >= 11) showLinkStatus = (Number(args[10]) > 0.5);

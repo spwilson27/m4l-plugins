@@ -3420,4 +3420,20 @@ function p0Width() { return 588; }
     }
 }
 
+{
+    const e = makeEnv(mockLom());
+    loadScript("", e);
+    const run = (code) => vm.runInContext(code, e.ctx);
+    e.ctx.setnames(...NAMES);
+    run("MM.addModulator(MOD_STEPS); MM.setUI({ exp: [0], sel: 0 });");
+    const top = run("(function () { var r = ubStripRects(ubStrips().list[0]).viz; var ix = r[0] + 2, iy = r[1] + 3, iw = r[2] - 4; return [ix + iw / 16, iy]; })()");
+    run(`onclick(${top[0]}, ${top[1]}, 1, 0, 0, 0, 0, 0)`);
+    near(run("MM.state.mods[0].stepVals[0]"), 1, 0.01, "steps: the painted top of a bar is value 1");
+    run("MM.addModulator(MOD_XY); MM.setUI({ exp: [1], sel: 1 });");
+    const corner = run("(function () { var r = ubStripRects(ubStrips().list.filter(function (g) { return g.slot === 1; })[0]).viz; var pad = ubNewGeom(MOD_XY, r, true).pad; return [pad[0] + 2, pad[1] + 2]; })()");
+    run(`onclick(${corner[0]}, ${corner[1]}, 1, 0, 0, 0, 0, 0)`);
+    near(run("MM.state.mods[1].p.x"), 0, 0.01, "XY: the painted left edge is X 0");
+    near(run("MM.state.mods[1].p.y"), 1, 0.01, "XY: the painted top edge is Y 1");
+}
+
 console.log(`megamod tests passed (${passed} checks)`);

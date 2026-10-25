@@ -2379,6 +2379,40 @@ render(data["shaped"], data["freqs"], "after: smoothed harmonic lines", sys.argv
                 && afterAll[o + 4] === others[o + 4], `Q handle leaves band ${i + 1}`);
         }
 
+        ui.set_range(0);
+        ui.set_shift(0);
+        ui.set_band_enable(0, 1);
+        ui.set_band_mode(0, 6);
+        ui.set_band_freq(0, 1000);
+        ui.set_band_q(0, 1);
+        ui.set_band_gain(0, 24);
+        ui.selectedBand = 0;
+        ui.selectedBands = [0];
+        ui.hoverBand = -1;
+        let painted = ui.bandXY(ui.geo(), ui.bands[0]);
+        ui.onclick(painted.x, painted.y, 1, 0, 0, 0, 0, 0);
+        ui.ondrag(painted.x, painted.y, 1, 0, 0, 0, 0, 0);
+        ui.ondrag(painted.x, painted.y, 0, 0, 0, 0, 0, 0);
+        near(ui.bands[0].gain, 24, 0.05, "click on a clamped gain dot keeps +24 dB");
+        near(ui.bands[0].freq, 1000, 0.05, "clamped gain click leaves frequency");
+        ui.set_band_gain(0, 0);
+        ui.set_shift(-12);
+        ui.set_band_freq(0, 40);
+        painted = ui.bandXY(ui.geo(), ui.bands[0]);
+        ui.onclick(painted.x, painted.y, 1, 0, 0, 0, 0, 0);
+        ui.ondrag(painted.x, painted.y, 1, 0, 0, 0, 0, 0);
+        ui.ondrag(painted.x, painted.y, 0, 0, 0, 0, 0, 0);
+        near(ui.bands[0].freq, 40, 0.05, "click on a shift-clamped frequency dot keeps 40 Hz");
+        ui.set_shift(0);
+        ui.set_band_freq(0, 1000);
+        ui.set_band_gain(0, 4);
+        ui.set_band_q(0, 2.5);
+        const liveBefore = ui.bands.filter(function (b) { return b.enabled; }).length;
+        const qh = ui.qHandlePos(ui.geo(), 0);
+        ui.ondblclick(qh.x, qh.y, 1, 0, 0, 0, 0, 0);
+        near(ui.bands[0].q, cfg.EQP_Q_DEFAULT, 1e-4, "double-click on the Q handle resets Q");
+        eq(ui.bands.filter(function (b) { return b.enabled; }).length, liveBefore, "Q-handle double-click does not create a band");
+
         eq(cfg.eqpComputeDeviceWidth(1, 0), 626, "filters shelf device width is 626");
         eq(cfg.eqpComputeDeviceWidth(1, 1), 774, "both shelves device width is 774");
         ui.preview();

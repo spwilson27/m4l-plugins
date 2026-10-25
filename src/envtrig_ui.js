@@ -336,8 +336,8 @@ function ondrag(x, y, but) {
     }
     var b = bounds();
     if (view === 1) {
-        // Scope: linear amplitude, threshold mirrored around the centre line.
-        var amp = clamp(Math.abs(y - (b.y + b.ph / 2)) / Math.max(1, b.ph / 2), 0.001, 1);
+        // Scope: linear amplitude on the same half-scale the waveform and the threshold line use.
+        var amp = clamp(Math.abs(y - (b.y + b.ph / 2)) / Math.max(1, b.ph / 2 - 1), 0.001, 1);
         thrDb = Math.round(clamp(linToDb(amp), THR_MIN_DB, THR_MAX_DB) * 10) / 10;
     } else {
         var v01 = clamp((b.y + b.ph - y) / Math.max(1, b.ph), 0, 1);

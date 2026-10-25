@@ -90,7 +90,9 @@ function set_gate(db) {
 }
 
 function set_ceiling(db) {
-    curCeilingDb = clamp(Number(db) || -1.0, -18.0, 0.0);
+    var n = Number(db);
+    // 0 dB is the top of the range. `|| -1` stored that as -1 dB.
+    curCeilingDb = clamp(isNaN(n) ? -1.0 : n, -18.0, 0.0);
     if (!scopeBuf) initHistory(true);
     mgraphics.redraw();
 }
@@ -404,9 +406,19 @@ function ampToVisual01(lin) {
     return 0.62 * db01 + 0.38 * lin01;
 }
 
+// Inverse of ampToVisual01, the curve the gate and ceiling lines are drawn with.
+// A straight -66..0 map put a click on the -42 dB gate at -49 dB and the -12 dB ceiling at -18 dB.
 function visual01ToDb(v01) {
-    var c = clamp(v01, 0, 1);
-    return -66.0 + c * 66.0;
+    var target = clamp(v01, 0, 1);
+    var lo = -66.0;
+    var hi = 0.0;
+    var i;
+    for (i = 0; i < 24; i++) {
+        var mid = (lo + hi) * 0.5;
+        if (ampToVisual01(dbToLin(mid)) < target) lo = mid;
+        else hi = mid;
+    }
+    return (lo + hi) * 0.5;
 }
 
 function plotBounds() {

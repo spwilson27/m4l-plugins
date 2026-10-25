@@ -60,7 +60,7 @@ function paint() {
 function onclick(x, y) {
     for (var i = 0; i < 3; i++) {
         var c = FT_CELLS[i];
-        if (x >= c.x - 2 && x <= c.x + c.w + 2) {
+        if (x >= c.x && x < c.x + c.w) {
             if (i !== ftDir) {
                 ftDir = i;
                 outlet(0, i);

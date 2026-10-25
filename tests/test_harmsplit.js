@@ -209,6 +209,46 @@ const share = (o, f, which, sr) => {
     assert.strictEqual(cfg.hsIsA(2, 1), 0);
     assert.strictEqual(cfg.hsIsA(5, 4), 1);
     assert.strictEqual(cfg.hsIsA(6, 4), 0);
+    assert.strictEqual(cfg.hsIsA(0, 1), 0, "a releasing partial below the root (h' = 0) is not Harmonics A");
+    assert.strictEqual(cfg.hsIsA(-1, 2), 0, "a negative pattern index is not Harmonics A");
+
+    // A weight left on harmonic 2 while the root moves up must not be painted into A.
+    const prepGx = (src) => src.replace(/(?<![.\w])poke\((\w+),\s*/g, "$1.poke(").replace(/\blog10\(/g, "Math.log10(").replace(/\batan2\(/g, "Math.atan2(");
+    const gxM = load(prepGx(LIB_SRC), prepGx(SS_SRC), prepGx(CORE_SRC.split("\nBuffer scope(")[0]));
+    function maskCase(cen, rootH, hrk, pat) {
+        const n = 2048;
+        const hp = new DataSim(406, 5);
+        const hst = new DataSim(32);
+        const hsd = new DataSim(2049, 10);
+        hst.poke(220, 13); hst.poke(220, 12); hst.poke(1, 4); hst.poke(10, 24); hst.poke(hrk, 21);
+        hp.poke(cen, 2, 0); hp.poke(1, 2, 2);
+        if (rootH > 0) { hp.poke(rootH * 220, rootH, 0); hp.poke(20, rootH, 1); hp.poke(1, rootH, 4); }
+        gxM.hs_masks(hsd, hp, hst, n, 48000, 0.5, pat, 24, 30, 12000);
+        const bin = Math.round(hp.peek(2, 0) * n / 48000);
+        return { a: hp.peek(2, 3), w: hp.peek(2, 2), binA: hsd.peek(bin, 1), binB: hsd.peek(bin, 2) };
+    }
+    const below = maskCase(440, 3, 3, 1);
+    assert.ok(below.a < 0.05 && below.binA < 0.05, "h' = 0 releases outside A, A portion " + below.a.toFixed(3) + " lobe " + below.binA.toFixed(3));
+    assert.ok(below.w > 0.4, "the old weight is still releasing (" + below.w.toFixed(3) + ")");
+    const neg = maskCase(440, 4, 4, 2);
+    assert.ok(neg.a < 0.05, "pattern 2 does not send h' = -1 to A (" + neg.a.toFixed(3) + ")");
+    // A series jump moves harmonic 2 from 220 Hz to 880 Hz. The weight belonged to 220 Hz.
+    function harmMove(oldHz, seriesHz) {
+        const hp = new DataSim(406, 5);
+        const hst = new DataSim(32);
+        const hsd = new DataSim(2049, 10);
+        hst.poke(seriesHz, 13);
+        hp.poke(oldHz, 2, 0);
+        hp.poke(1, 2, 2);
+        hp.poke(1, 2, 3);
+        gxM.hs_harm(hsd, hp, hst, 2048, 48000);
+        return { cen: hp.peek(2, 0), w: hp.peek(2, 2) };
+    }
+    const jumped = harmMove(220, 440);
+    assert.ok(Math.abs(jumped.cen - 880) < 2, "harmonic 2 follows the new series to 880 Hz, at " + jumped.cen.toFixed(1));
+    assert.ok(jumped.w < 0.05, "the 220 Hz weight does not follow the centre to 880 Hz (" + jumped.w.toFixed(3) + ")");
+    const held = harmMove(880, 440);
+    assert.ok(held.w > 0.95, "a centre that stays put keeps its weight (" + held.w.toFixed(3) + ")");
 
     // --- Maximum Harmonics, Low-cut, High-cut ---
     const om = splitRef(saw, saw, 2048, Object.assign({}, P0, { hmaxp: 8 }));
@@ -1061,6 +1101,33 @@ function prep(src) {
     assert.ok(face.includes("function splCreateLink") && face.includes("function hsFrame") && face.includes("function paint"), "face = config + link + ui");
     assert.ok(/mgraphics\.relative_coords\s*=\s*0/.test(face) && /mgraphics\.autofill\s*=\s*0/.test(face), "v8ui pixel coordinates");
     assert.ok(!/\bvar\s+(box|patcher|max|messagename|inlet|jsarguments)\b/.test(face), "no declared v8ui globals");
+    // A click on the painted Low / High handle (inset at the plot edge) must leave that cutoff within one 0.1 Hz step.
+    {
+        const { makeRecorder, loadFace } = require("./paint_bounds_lib");
+        const outs = [];
+        const rec = makeRecorder(280, 141);
+        const ui = loadFace(face, rec, { outlet() { outs.push(Array.from(arguments)); } });
+        function clickHandle(key, freq) {
+            ui.hsVals.lowcut = key === "lowcut" ? freq : 80;
+            ui.hsVals.highcut = key === "highcut" ? freq : 1500;
+            ui.HS_EDGE_CACHE.lo = NaN;
+            ui.hsDrag = null;
+            const x = ui.hsFlagX(ui.hsFreqX(freq));
+            const y = ui.HS_PLOT.y + 6.5;
+            outs.length = 0;
+            ui.onclick(x, y);
+            const sent = outs.filter((m) => m[0] === 0 && m[1] === key);
+            const got = sent.length ? Number(sent[sent.length - 1][2]) : freq;
+            assert.ok(Math.abs(got - freq) <= 0.1, `click on the painted ${key} handle moved ${freq} Hz to ${got} (x ${x.toFixed(2)})`);
+            outs.length = 0;
+            ui.ondrag(x + (key === "highcut" ? -40 : 40), y, 1);
+            const dragged = outs.filter((m) => m[0] === 0 && m[1] === key);
+            assert.ok(dragged.length > 0 && Math.abs(Number(dragged[dragged.length - 1][2]) - freq) > 1,
+                `dragging the painted ${key} handle must move ${freq} Hz`);
+        }
+        clickHandle("lowcut", 19.4);
+        clickHandle("highcut", 19900);
+    }
     // .adg
     const adg = zlib.gunzipSync(fs.readFileSync(path.join(ROOT, "devices", "Harmonic Split.adg"))).toString("utf8");
     const branches = adg.match(/<AudioEffectBranchPreset Id="\d+">/g);

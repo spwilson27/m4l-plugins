@@ -487,9 +487,15 @@ hs_harm(hsd, hp, hst, n, sr) {
 				}
 			}
 		}
+		oldc = hp.peek(h, 0);
+		moved = (oldc > 30 && cen > 30 && abs(log(cen / oldc)) * 1.4426950408889634 > 0.5) ? 1 : 0;
 		hp.poke(cen, h, 0);
 		hp.poke(prom, h, 1);
 		hp.poke(prs, h, 4);
+		if (moved > 0.5) {
+			hp.poke(0, h, 2);
+			hp.poke(0, h, 3);
+		}
 	}
 	hst.poke(gest, 12);
 	hst.poke(nfd, 15);
@@ -566,7 +572,7 @@ hs_masks(hsd, hp, hst, n, sr, sens, hpat, hmx, flo, fhi) {
 		tw = (gs > 0 && hr > 0 && h >= hr && hpn <= hmx && cen > 0) ? hs_sm((prom - pme) * invWd) * v : 0;
 		prev = hp.peek(h, 2);
 		cur = prev + (tw - prev) * (tw > prev ? 0.7 : 0.4);
-		isA = pat < 1.5 ? (hpn < 1.5 ? 1 : 0) : (((hpn - 1) - pat * floor((hpn - 1) / pat)) < 0.5 ? 1 : 0);
+		isA = hpn < 1 ? 0 : (pat < 1.5 ? (hpn < 1.5 ? 1 : 0) : (((hpn - 1) - pat * floor((hpn - 1) / pat)) < 0.5 ? 1 : 0));
 		hp.poke(cur, h, 2);
 		hp.poke(isA > 0.5 ? cur : 0, h, 3);
 		nact += cur > 0.5 ? 1 : 0;

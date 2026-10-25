@@ -376,6 +376,18 @@ ok("engine buffer packing", () => {
 // ----------------------------------------------------------------------------- gen functions vs the mirrors
 const GEN = gx.load(LIB, CORE_FN);
 const DataSim = gx.DataSim;
+ok("tile drawings match the audio: asym rectify, mirror, shuffle, reverse", () => {
+    assert.ok(Math.abs(G.glRectShape(2, -1) - 0.4) < 1e-9, "asym rectify flips the negative half by 0.4, got " + G.glRectShape(2, -1));
+    const heard = [5, 4, 3, 2, 1];
+    const drawn = heard.map((_, i) => heard[Math.min(heard.length - 1, Math.floor(G.glMirrorSrc(i, heard.length, 0.5) * heard.length))]);
+    assert.deepStrictEqual(drawn, heard, "mirror draws the swapped spectrum, got " + drawn);
+    const pm = new DataSim(32);
+    GEN.gl_perm(pm, 8, 3 * 7.31 + 1 * 13.7);
+    const audio = [];
+    for (let k = 0; k < 8; k++) audio.push(pm.peek(k + 1) - 1);
+    assert.deepStrictEqual(G.glShufOrder(8, 3, 1), audio, "shuffle bars follow gl_perm, audio " + audio);
+    assert.strictEqual(G.glRvsReversed(0, 0.5), GEN.gl_hash(0, 5.5) < 0.5, "reverse arrow 0 follows gl_hash");
+});
 function mkRng(seed) {
     let s = seed >>> 0;
     return () => {
@@ -1278,6 +1290,24 @@ ok("gen spectral bin ops (scatter, mirror, shift) and spectral gate / lofi equal
             for (let k = 1; k < half; k += 37) { const m = Math.hypot(d.a[k], d.a[4096 + k]); if (m > 1e-9) assert.ok(Math.abs(Math.log(m) / sn - Math.round(Math.log(m) / sn)) < 1e-6); }
         }
     }
+    // Ties: Keep N must keep N bins, not every bin that shares the peak and not only the one hair above it.
+    {
+        const gate = (fill, kk) => {
+            const re = new Float64Array(n), im = new Float64Array(n);
+            for (let k = 0; k <= half; k++) {
+                re[k] = fill(k);
+                if (k > 0 && k < half) re[n - k] = re[k];
+            }
+            const d = toData({ re, im });
+            GEN.gl_sgate(d, new DataSim(4096, 2), n, 0, 1, kk, 6);
+            let kept = 0;
+            for (let k = 0; k <= half; k++) if (Math.hypot(d.a[k], d.a[4096 + k]) > 1e-8) kept++;
+            return kept;
+        };
+        assert.strictEqual(gate(() => 1, 8), 8, "a flat spectrum keeps 8 bins");
+        assert.strictEqual(gate((k) => (k < 20 ? 1 : 0.1), 8), 8, "20 equal peaks keep 8");
+        assert.strictEqual(gate((k) => (k === 0 ? 1 + 1e-9 : (k <= 32 ? 1 : 0.1)), 8), 8, "one bin a hair above a cluster still keeps 8");
+    }
     // amount 0 is the identity
     const s = mkSpec(), d = toData(s), ft = new DataSim(1024, 2);
     GEN.gl_binmap(d, ft, n, 2, 0, 9, nb, new DataSim(512));
@@ -1587,6 +1617,24 @@ ok("gen gl_magfx (MP3ify, Duststorm, Thinner, Decapitate, Noisify, Clipper) equa
         for (let i = 0; i < 5; i++) assert.strictEqual(m1[order[i]], 0, `loudest bin #${i} removed`);
         for (let i = 5; i < 10; i++) assert.ok(Math.abs(m1[order[i]] / m0[order[i]] - Math.pow(10, 6 / 20)) < 1e-9, `bin #${i} boosted by 6 dB`);
         for (let i = 10; i < 40; i++) assert.ok(Math.abs(m1[order[i]] / m0[order[i]] - 1) < 1e-12, "the rest is untouched");
+    }
+    // A tied spectrum still removes K and boosts the next K, instead of silencing the tie.
+    {
+        const re = new Float64Array(n), im = new Float64Array(n);
+        for (let k = 0; k <= half; k++) { re[k] = 1; if (k > 0 && k < half) re[n - k] = 1; }
+        const d = T.toData({ re, im });
+        GEN.gl_magfx(d, new DataSim(4096, 2), new DataSim(1024, 2), n, 3, 1, 8, 6, 0, 0, 1, 1, sr);
+        const m1 = magsOf(d);
+        let gone = 0, boosted = 0, unity = 0;
+        const bg = Math.pow(10, 6 / 20);
+        for (let k = 0; k <= half; k++) {
+            if (m1[k] < 1e-8) gone++;
+            else if (Math.abs(m1[k] - bg) < 1e-6) boosted++;
+            else if (Math.abs(m1[k] - 1) < 1e-6) unity++;
+        }
+        assert.strictEqual(gone, 8, "decapitate removes 8 of a flat spectrum, removed " + gone);
+        assert.strictEqual(boosted, 8, "decapitate boosts the next 8, boosted " + boosted);
+        assert.strictEqual(unity, half + 1 - 16, "the rest of a flat spectrum stays at unity");
     }
     // Noisify: gains within +-depth, grouped by the grain width, new seed new gains, same seed same gains; Clipper: no bin above the ceiling
     {
@@ -2876,9 +2924,18 @@ ok("v8ui: slots save / recall / clear / drag to a corner, Options toggles", () =
     // drop elsewhere: nothing changes
     u.run(`onclick(${p5[0]}, ${p5[1]}, 1, 0, 0, 0, 0); ondrag(${p5[0] - 40}, ${p5[1]}, 1, 0, 0); ondrag(${p5[0] - 40}, ${p5[1]}, 0, 0, 0)`);
     assert.deepStrictEqual(u.run("gState.corners"), [0, 1, 2, 5]);
-    // corner badge click cycles the slot
+    // corner badge click cycles the slot (the puck is at the pad centre, not on this badge)
     const c0 = center(L.corners[0]);
     u.run(`onclick(${c0[0]}, ${c0[1]}, 1, 0, 0, 0, 0); ondrag(0, 0, 0)`);
+    assert.strictEqual(u.run("gState.corners[0]"), 1);
+    // the painted puck at xy 0,0 sits on the corner badge; clicking it keeps the slot and the value
+    u.run("gState.xy = [0, 0]; gState.corners = [0, 1, 2, 3]; gState.audition = 'morph';");
+    const puck = u.run("(function () { var p = gLayout.pad; return [p.x + 8, p.y + 8]; })()");
+    u.run(`onclick(${puck[0]}, ${puck[1]}, 1, 0, 0, 0, 0)`);
+    assert.deepStrictEqual(u.run("gState.corners.slice()"), [0, 1, 2, 3]);
+    assert.deepStrictEqual(u.run("gState.xy.slice()"), [0, 0]);
+    // the rest of that badge, clear of the puck, still cycles
+    u.run(`onclick(${L.corners[0].x + L.corners[0].w - 1}, ${L.corners[0].y + 6}, 1, 0, 0, 0, 0)`);
     assert.strictEqual(u.run("gState.corners[0]"), 1);
     // Options view: toggles
     click(L.railOpt);
