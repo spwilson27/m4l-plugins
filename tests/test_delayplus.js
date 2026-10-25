@@ -226,6 +226,38 @@ test("Filter Display: box-select both filters, drag one, both move together", ()
     assert.deepStrictEqual(Array.from(d.get("sel")), [1, 1]);
 });
 
+test("LFO display: the right waveform is drawn at the phase the gen applies (R = LFO + phase)", () => {
+    // The Start gen computes the right LFO as wrap(lfo + phase / 360) (delayplus_start.genexpr:
+    // pR), and the live dot on the Modulation page plots that actual value from scope LFO_R.
+    // delayplus_lfo.js paint() instead draws the right channel with ph = k / N * cyc - off, i.e.
+    // MINUS the phase, so at Phase 90 the drawn curve sits 180 degrees away from the LFO the
+    // device is actually applying (the 180 degree default makes the two agree, hiding it).
+    const vm = require("vm");
+    const segs = [];
+    let cur = null;
+    const mg = {
+        size: [200, 100],
+        move_to: (x, y) => { cur = [[x, y]]; segs.push(cur); },
+        line_to: (x, y) => { if (cur) cur.push([x, y]); },
+        text_measure: () => [10, 8],
+    };
+    const mgProxy = new Proxy(mg, {
+        get: (t, k) => (k in t ? t[k] : () => {}), set: (t, k, v) => { t[k] = v; return true; },
+    });
+    const ctx = { mgraphics: mgProxy, outlet: () => {}, post: () => {}, Math, Number, String, Array, JSON, isNaN };
+    vm.createContext(ctx);
+    const src = ["delayplus_config.js", "delayplus_lfo.js"]
+        .map((f) => fs.readFileSync(path.join(ROOT, "src", f), "utf8")).join("\n");
+    vm.runInContext(src, ctx);
+    vm.runInContext("phase = 90; shape = 0; moddelay = 0; modfilt = 0; envmix = 0; paint();", ctx);
+    // recorded segments: 0 = zero line, 1 = left waveform, 2 = right waveform (201 points at w 200)
+    assert(segs.length >= 3 && segs[2].length > 100, "paint drew both LFO waveforms");
+    // wh = 100 - 16 - 4 = 80 and amp = 0.9 with no mod depth, so y = 41 - v * 32.4 with
+    // v = sin(2 pi (ph + 0.25)): ph 0 -> v 1 -> y 8.6; ph 0.5 (point 50) -> v -1 -> y 73.4
+    near(segs[2][0][1], 41 - 32.4, 1e-6, "right LFO at ph 0 sits at its +90 degree value");
+    near(segs[2][50][1], 41 + 32.4, 1e-6, "right LFO a quarter cycle later");
+});
+
 test("side labels", () => {
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: C.DP_DIV_NAMES.indexOf("1/8") }), "1/8");
     assert.strictEqual(C.dpSideLabel({ tmode: C.DP_TM.SYNC, div: C.DP_DIV_NAMES.indexOf("1/8 D") }), "1/8 D");
@@ -365,6 +397,20 @@ for (const cfg of [
         });
     }
 }
+
+test("K calibration: a candidate must be seen twice in a row (a failed window clears it)", () => {
+    // End gen (delayplus_end.genexpr): a correlation peak is adopted as K only when the same K
+    // is seen twice in a row passing the acceptance criteria (strength, unambiguity, inside the
+    // window). The pending candidate (kCand) is currently cleared only when the Start counter
+    // stops, so a window that FAILS the criteria leaves it in place: one spurious peak (a
+    // transient, a chain device toggled) can be adopted much later when the same lag happens to
+    // pass once more, and End then reads the dry at the wrong offset while Start re-inserts the
+    // return at the wrong B.
+    const end = fs.readFileSync(path.join(ROOT, "src", "delayplus_end.genexpr"), "utf8");
+    const win = end.slice(end.indexOf("if (cN >= 8192)"), end.indexOf("kk = calOk"));
+    assert(/kCand\s*=\s*1e9/.test(win),
+        "a calibration window that does not adopt must clear the pending candidate (kCand)");
+});
 
 test("echo tap model", () => {
     const taps = C.dpEchoTaps(4800, 0.5, 1, 3, 48000);
