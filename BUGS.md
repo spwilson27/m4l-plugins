@@ -1,8 +1,21 @@
-# Degrade — Bug Sweep Pass 1 (red tests only, no fixes)
+# Degrade — Bug Sweep (Pass 1 reds + Pass 2 review)
 
 Device: `devices/Degrade.amxd` · Worktree: `/tmp/bugsweep/degrade` · Branch: `bugsweep/degrade-pass1`
 Tests: `tests/test_degrade.js`, new section 5 ("BUGSWEEP PASS 1").
 Command: `node tests/test_degrade.js`
+
+## Pass 2 review (keep all 4 — no drops)
+
+Re-checked each claim against production sources and re-ran the host suite.
+Kept: **D1, D2, D3, D4**. Dropped: none. No test rewrites; reds already fail
+on unfixed code. No production/src edits (pass 3).
+
+Verified red (full suite, Pass 2):
+`BUG D1: gen A-Law compand must match the JS mirror quantization step (qSteps=64, x=0.1): gen=0.10824942325064496 mirror=0.09937750651761865`
+
+---
+
+## Pass 1 notes
 
 Verification method: the committed suite fails first at D1 (asserts run in order).
 D2–D4 were each additionally captured red on their own in a throwaway scratch
