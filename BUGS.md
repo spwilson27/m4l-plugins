@@ -100,6 +100,15 @@ unchanged.
 devices; their own passes should adopt / verify the same Mix gate (e.g.
 `tests/test_freqsplit.js` still expects the old `selH`-only form).
 
+## Pass 4 review (approved 1 / adjusted 0)
+
+- **APPROVE Bug 1** — fix is minimal and correct. `roleH = clip(floor(role + 0.5), -1, 2)` with
+  SELF=0 / LEAD=1 / FOLLOW=2 / pending=−1; `roleH > 0.5` therefore means LEAD or FOLLOW (in a
+  rack). Combined with `selH > 0.5`, `kShare` is `1/K` only for a single-channel Output on a rack
+  chain; Output All (`selH = 0`) and SELF/pending (outside a rack) keep full dry — matches
+  AGENTS.md §22/§24 Mix and `lsMixOut(..., k=1)`. Red regex still forbids the old selH-only form;
+  no drive-by refactors. Host gate green after rebuild.
+
 ## Checked and found correct (do not re-hunt)
 
 - `lsMasks` (JS) vs `ls_masks` (genexpr) mirror: tilt table, lmax excluding bins
