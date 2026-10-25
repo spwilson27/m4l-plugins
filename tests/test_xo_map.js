@@ -3316,6 +3316,30 @@ setTimeout(() => {
   assert(full < 50 && zoomed < 50, `painting 5000 points must stay well under a frame (${full.toFixed(1)} / ${zoomed.toFixed(1)} ms)`);
   global.outlet = prevOut;
 }
+// --- Test: Undo after recalling a saved sample restores ALL playback settings ---
+// captureSnapshot/applySnapshot must cover every field recallSavedEntry changes:
+// pitch, decay, gain, reverse, speed, grain and stretch mode.
+{
+  set_pitch(7); set_decay(900); set_gain(-6); set_reverse(1); set_speed(150); set_grain(90); set_stretchmode(2);
+  save_selected();
+  const bankedIdx = getSavedList().length - 1;
+  set_pitch(-3); set_decay(2400); set_gain(3); set_reverse(0); set_speed(80); set_grain(30); set_stretchmode(0);
+  pushUndoState();
+  recallSavedEntry(bankedIdx);
+  const recalled = captureSnapshot();
+  assert.strictEqual(recalled.pitchSt, 7, "recall applies the saved pitch");
+  assert.strictEqual(getReverse(), 1, "recall applies the saved reverse");
+  undo();
+  const probe = save_selected();
+  assert.strictEqual(probe.pitchSt, -3, "undo after recall restores pitch");
+  assert.strictEqual(probe.decayMs, 2400, "undo after recall restores decay");
+  assert.strictEqual(probe.gainDb, 3, "undo after recall restores gain");
+  assert.strictEqual(probe.reverse, 0, "undo after recall restores reverse");
+  assert.strictEqual(probe.speedPct, 80, "undo after recall restores speed");
+  assert.strictEqual(probe.grainMs, 30, "undo after recall restores grain");
+  assert.strictEqual(probe.stretchMode, 0, "undo after recall restores stretch mode");
+  console.log("OK: undo after recall restores all playback settings");
+}
 console.log("SUCCESS: All mono/stereo audio routing, M4L runtime 's' hotkey, native Cocoa OS file drag-out, scrollable/reorderable/deletable saved list, and Infinite MaxLen filter tests passed!");
 
 // Structural / layout checks of the built device (tests/test_xo_layout.js).
