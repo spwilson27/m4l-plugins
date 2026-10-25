@@ -30,3 +30,9 @@ Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code h
 - **Fixed 1 / Deferred 0.** Bug 1 fixed in `src/mseg_edit.js` `msegMoveSelection`: guarded the bounding-union sweepIntervals push with `dx !== 0`, so a pure vertical multi-select drag (dx === 0) no longer unions the whole selection span and no longer deletes intervening unselected points. Per-point travel intervals still apply, preserving intentional horizontal-sweep deletes for dx !== 0.
 - **Red now green**: `node tests/test_shaper_bugsweep.js` passes (middle point id 3 survives; ids 1,2,3,4,5; selected points 2 and 4 keep x=0.25/0.75). Full host gate green end-to-end: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
 - Commit: pending on `bugsweep/shaper-pass1`; not merged to main.
+
+## PASS 4 review
+
+- **APPROVED.** Bug 1 fix confirmed minimal and correct: `src/mseg_edit.js:85` gates the bounding-union push with `dx !== 0 && sweepIntervals.length >= 2`; per-point travel pushes (L79-80) and the filter (L93-103) are unchanged, so dx !== 0 horizontal-sweep deletes remain. RED test still asserts middle point id 3 survives a pure vertical multi-select of ids 2+4 (primary at x=0.25, y to 0.55), length stays 5, and selected points keep x=0.25/0.75. No drive-by refactors; no test weakening.
+- Host gate re-verified green on tip 3c91f90: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
+- No follow-up code changes in this pass; note-only commit next. Not merged to main.
