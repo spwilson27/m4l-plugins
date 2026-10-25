@@ -1,6 +1,19 @@
-# Multiband Split — Pass 1–3 bugsweep
+# Multiband Split — Pass 1–4 bugsweep
 
 Branch: `bugsweep/mbsplit-pass1` · Worktree: `/private/tmp/bugsweep/mbsplit` · base HEAD `d72ee17`
+
+## Pass 4 review (ADJUSTED — docs only)
+
+Production fixes at tip `e5ade72` reviewed and kept. Host gate re-run green:
+`npm run -s typecheck && python3 scripts/build_mbsplit.py && MBSPLIT_SKIP_LIVE_MCP=1 node tests/test_mbsplit.js && node tests/test_mbsplit_pass1.js`
+→ typecheck OK, amxd rebuilt, host suite passed, **All Pass 1 tests passed** (4/4).
+
+| Bug | Verdict | Note |
+|---|---|---|
+| 1 Volume slider dead zone | **APPROVED** | Exact inverse at exp 1.5; only `n <= 0.0` → −70 dB; (−70, −62.4) reachable; round-trip ≤0.5 dB. Minimal touch in `src/mbsplit_ui.js`. Reds not weakened. |
+| 2 FIR display approx > 0.1 | **APPROVED** | `computeFirLowpassMag` uses cached real DC-normalized half-kernel; max error ≤0.1 (rounding). Minimal touch in `src/mbsplit_config.js`. Reds not weakened. |
+
+**Doc adjust:** AGENTS.md Dynamic Phase JS-mirror line still said "raised-cosine display approximation"; synced to describe the real-kernel evaluation. No production/code change beyond that docs line. Pass 4 tip = HEAD after this review commit. Do not merge; do not delete worktree.
 
 ## Pass 3 fix (both kept reds now green)
 
