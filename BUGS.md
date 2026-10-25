@@ -24,6 +24,14 @@ Re-read `delayplus_end.genexpr` (K calib), `delayplus_start.genexpr` (`pR`), and
   paint subtracts (`ph = … - off`). At Phase 90 the red test gets the exact sign-flipped
   y (73.4 vs 8.6); live dots plot real `LFO_R`, so they leave the drawn curve.
 
+## Pass 3 — fixes applied (host gate now 39 passed, 0 failed)
+
+Both Pass-2 kept reds fixed with minimal source changes; no tests weakened or deleted.
+Host gate: `npm install && npm run -s typecheck && python3 scripts/build_delayplus.py && node tests/test_delayplus.js` -> 39 passed, 0 failed.
+
+- **Bug 1 fixed** — `src/delayplus_end.genexpr`, K calibration window (the `if (cN >= 8192)` block): added an `else { kCand = 1e9; }` on the acceptance `if`, so any calibration window that does not adopt clears the pending candidate; adoption again requires two consecutive accepted windows with the same lag. Red "K calibration: a candidate must be seen twice in a row (a failed window clears it)" is now green.
+- **Bug 2 fixed** — `src/delayplus_lfo.js` `paint()` per-point loop: changed the right-channel phase from `ph = k / N * cyc - off` to `ph = k / N * cyc + off`, matching the gen which advances R by Phase (`pR = wrap(lfo + phase/360)`); the drawn right waveform and the live `LFO_R` dot now agree at every Phase. Red "LFO display: the right waveform is drawn at the phase the gen applies (R = LFO + phase)" is now green.
+
 ## Bug 1 — End K calibration: a candidate does not have to be seen twice IN A ROW
 
 **Severity:** wrong K, adopted silently and persistently: the dry signal is read at the
