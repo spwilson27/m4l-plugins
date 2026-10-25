@@ -309,7 +309,7 @@ function set_tele_line(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); va
 function set_fft_mode(v) { var next = clamp(Math.round(Number(v) || 0), 0, 3); var changed = next !== curFftMode; curFftMode = next; commitParam(changed, true); }
 function set_fft_glitch(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curFftGlitch; curFftGlitch = next; commitParam(changed, true); }
 function set_fft_frame(v) { var next = clamp(Number(v) || 45, 5, 150); var changed = next !== curFftFrame; curFftFrame = next; commitParam(changed, true); }
-function set_mix(v) { var next = clamp((Number(v) || 100) / 100.0, 0, 1); var changed = next !== curWet; curWet = next; commitParam(changed, false); }
+function set_mix(v) { var next = clamp((Number(v) || 0) / 100.0, 0, 1); var changed = next !== curWet; curWet = next; commitParam(changed, false); }
 
 function set_viz_mode(v) {
     vizMode = Number(v) ? 1 : 0;

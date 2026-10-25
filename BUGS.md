@@ -4,6 +4,21 @@ Device: `devices/Degrade.amxd` · Worktree: `/tmp/bugsweep/degrade` · Branch: `
 Tests: `tests/test_degrade.js`, new section 5 ("BUGSWEEP PASS 1").
 Command: `node tests/test_degrade.js`
 
+## Pass 3 fixes (all 4 green)
+
+Host gate green: `npm run -s typecheck && python3 scripts/build_degrade.py && node tests/test_degrade.js`
+→ `All Degrade unit, GenExpr, layout, patchline, and v8ui tests passed!`
+No test rewrites. Production/src + rebuilt `devices/Degrade.amxd` only.
+
+| Bug | Fix | Touchpoints |
+|-----|-----|-------------|
+| **D1** | u-Law/A-Law now quantize with `round(comp * qSteps) / qSteps` (match JS mirror); leave `quant_steps` alone for BIT | `src/degrade_core.genexpr` `ulaw_compand` L58, `alaw_compand` L73 |
+| **D2** | Soft-clip wet without master gain; apply `outGainSlew` on the summed dry+wet outs | `src/degrade_core.genexpr` L1217–1226 |
+| **D3** | Equal-power mix: `cWetG = sin(clip(wet)·π/2)`, `cDryG = cos(asin(cWetG))` | `src/degrade_core.genexpr` L437–438 |
+| **D4** | `set_mix` falsy default `100` → `0`, matching other percent setters | `src/degrade_ui.js` L312 |
+
+Fix commit SHA: see tip of `bugsweep/degrade-pass1` after pass-3 commit.
+
 ## Pass 2 review (keep all 4 — no drops)
 
 Re-checked each claim against production sources and re-ran the host suite.
