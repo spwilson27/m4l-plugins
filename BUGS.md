@@ -4,6 +4,21 @@ Device: `devices/Degrade.amxd` · Worktree: `/tmp/bugsweep/degrade` · Branch: `
 Tests: `tests/test_degrade.js`, new section 5 ("BUGSWEEP PASS 1").
 Command: `node tests/test_degrade.js`
 
+## Pass 4 review (ADJUSTED)
+
+Re-checked each Pass 3 fix against production sources, JS mirror, and section-5
+reds. Host gate green after follow-up:
+`npm run -s typecheck && python3 scripts/build_degrade.py && node tests/test_degrade.js`
+→ `All Degrade unit, GenExpr, layout, patchline, and v8ui tests passed!`
+No test rewrites. No merge to main.
+
+| Bug | Verdict |
+|-----|---------|
+| **D1** | APPROVED — `ulaw_compand` / `alaw_compand` use `round(comp * qSteps) / qSteps`; `quant_steps` left for BIT |
+| **D2** | ADJUSTED — logic already correct (soft-clip wet sans gain; `outGainSlew` on summed outs); synced stale L1209– comment that still described `tanh(sig * outGainSlew)` |
+| **D3** | APPROVED — equal-power `sin`/`cos(asin)` mix matches PARAM_SPECS |
+| **D4** | APPROVED — `set_mix` falsy default `0`, consistent with other percent setters |
+
 ## Pass 3 fixes (all 4 green)
 
 Host gate green: `npm run -s typecheck && python3 scripts/build_degrade.py && node tests/test_degrade.js`

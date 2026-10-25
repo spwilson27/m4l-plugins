@@ -1207,9 +1207,10 @@ for (slot = 0; slot < 5; slot += 1) {
 } // end if (runDsp > 0)
 
 // Unity-Preserving Dry/Wet Mix & Output Trim:
-//   - When `runDsp > 0`, soft-clip the degraded wet signal through `tanh(sig * outGainSlew)`.
-//   - When `runDsp == 0` (all stages off/neutral), pass linear `in * outGainSlew` so default settings
-//     at Mix = 50% cause zero harmonic distortion and exact 0.0 dB unity gain!
+//   - When `runDsp > 0`, soft-clip the degraded wet through `tanh(sig)` (no master gain here).
+//   - When `runDsp == 0` (all stages off/neutral), pass linear `in` so default settings at Mix = 50%
+//     cause zero harmonic distortion and exact 0.0 dB unity gain (with out_gain at 0 dB).
+//   - Apply `outGainSlew` on the summed dry+wet outs so Output trims the full mix, including Mix = 0%.
 wetOutL = 0.0;
 wetOutR = 0.0;
 if (isAudioActive > 0) {
