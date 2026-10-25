@@ -1,7 +1,7 @@
 // Audio probe for scripts/run_cepstra_audio_tests.py.
 // Synthesizes the vowel-like test stimulus (impulse train -> three formant resonators, optional noise) into
 // buffer~ src on `setbuffer`, then analyzes the recorded buffer~ rec (ch1 = Cepstra out L, ch2 = raw input L)
-// and the telemetry in #0-cepscope. Run through scripts/max_harness.py: `resultpath <file>` is sent at load,
+// and the telemetry in ---cepscope. Run through scripts/max_harness.py: `resultpath <file>` is sent at load,
 // `analyze <dur_ms>` once `rec` holds exactly the measured window (NonRealTime, 48 kHz). Writes the result ONLY
 // inside analyze(). `cpu <percent>` messages (audio_device mode only) feed the CPU statistics.
 

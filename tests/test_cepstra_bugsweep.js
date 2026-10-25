@@ -14,9 +14,10 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const GEN_PATH = path.join(ROOT, "src", "cepstra_core.genexpr");
 const DISP_PATH = path.join(ROOT, "src", "cepstra_display.js");
+const CFG_PATH = path.join(ROOT, "src", "cepstra_config.js");
 const BUILD_PATH = path.join(ROOT, "scripts", "build_cepstra.py");
 const AMXD_PATH = path.join(ROOT, "devices", "Cepstra.amxd");
-const cfg = require(path.join(ROOT, "src", "cepstra_config.js"));
+const cfg = require(CFG_PATH);
 
 let checks = 0;
 function ok(cond, msg) {
@@ -29,8 +30,11 @@ function eq(a, b, msg) {
 }
 
 const gen = fs.readFileSync(GEN_PATH, "utf8");
+const cfgSrc = fs.readFileSync(CFG_PATH, "utf8");
 const dispSrc = fs.readFileSync(DISP_PATH, "utf8");
 const buildSrc = fs.readFileSync(BUILD_PATH, "utf8");
+// Face script in the device is config + display (build prepends); sandbox must match.
+const faceSrc = cfgSrc + "\n" + dispSrc;
 
 // ---------------------------------------------------------------------------------------------
 // Bug A — job_lift must clear f0v when Auto is unvoiced / MIDI has no note
@@ -108,7 +112,7 @@ const buildSrc = fs.readFileSync(BUILD_PATH, "utf8");
 
     const fnDisp = new Function(
         "mgraphics", "Buffer", "Task", "outlet", "notifyclients",
-        dispSrc + "\nreturn { set_auto, set_midi, set_mode, set_res, setbuffer, pullScope, paint, preview, onclick, layoutRegions, barAxis01, res: () => curRes, loadbang, init_dsp };"
+        faceSrc + "\nreturn { set_auto, set_midi, set_mode, set_res, setbuffer, pullScope, paint, preview, onclick, layoutRegions, barAxis01, res: () => curRes, loadbang, init_dsp };"
     );
     const dui = fnDisp(sb.mgraphics, sb.Buffer, sb.Task, sb.outlet, () => {});
     dui.setbuffer("1001-cepscope");

@@ -9,7 +9,7 @@
  *     quefrency, shift 0 / gate 0 is a magnitude identity (and a full STFT overlap-add null), a +12 st shift
  *     moves the envelope peak up an octave, Gate removes valleys first
  *  3. GenExpr ordering and lexer rules (functions -> Buffer -> Data -> Param -> History -> expressions, no e<digit>)
- *  4. .amxd header, 424 x 169 presentation layout, parameter ranges/defaults, z-order, `#0-` names, wiring
+ *  4. .amxd header, 424 x 169 presentation layout, parameter ranges/defaults, z-order, `---` scope buffer, wiring
  *  5. v8ui evaluation: pixel coordinates, spectrum/envelope/ghost drawing, cutoff drag, Lock without feedback,
  *     idle sleep
  */
@@ -388,11 +388,11 @@ ok(!byId["obj-gen"] && !boxes.some((b) => b.maxclass === "gen.codebox~" || b.max
 }
 eq(byId["obj-midiin"].text, "midiin", "Missing midiin");
 eq(byId["obj-midiparse"].text, "midiparse", "Missing midiparse");
-eq(byId["obj-msg-gen-buf"].text, "scope #0-cepscope", "Gen buffer bind message mismatch");
-eq(byId["obj-msg-ui-buf"].text, "setbuffer #0-cepscope", "v8ui buffer message mismatch");
-eq(byId["obj-scope-buf"].text, "buffer~ #0-cepscope @samps 272", "Scope buffer must be 272 samples");
+eq(byId["obj-msg-gen-buf"].text, "scope ---cepscope", "Gen buffer bind message mismatch");
+eq(byId["obj-msg-ui-buf"].text, "setbuffer ---cepscope", "v8ui buffer message mismatch");
+eq(byId["obj-scope-buf"].text, "buffer~ ---cepscope @samps 272", "Scope buffer must be 272 samples");
 for (const b of boxes) {
-    if (b.text && b.text.startsWith("buffer~")) ok(b.text.includes("#0-"), `buffer~ must use #0- prefix: ${b.text}`);
+    if (b.text && b.text.startsWith("buffer~")) ok(b.text.includes("---"), `buffer~ must use --- prefix for instance isolation: ${b.text}`);
     if (b.text && /^(send|receive|s|r) /.test(b.text)) ok(b.text.includes("#0-"), `send/receive must use #0-: ${b.text}`);
 }
 
@@ -827,12 +827,12 @@ dui.set_gate(0);
 dui.set_gmode(0);
 dui.set_mix(40);
 dui.midi_note(-1);
-dui.setbuffer("#0-cepscope");
+dui.setbuffer("---cepscope");
 dsb.emitted.length = 0;
 dui.cepDspResend();
 assert.deepStrictEqual(dsb.emitted.map((m) => m[0]), ["scope", "res", "midshift", "sideshift", "gate", "wet", "quality", "resmode", "gatemode", "midinote"]);
 checks++;
-eq(dsb.emitted[0][1], "#0-cepscope", "Resend binds scope #0-cepscope");
+eq(dsb.emitted[0][1], "---cepscope", "Resend binds scope ---cepscope");
 near(dsb.emitted[1][1], 0.57, 1e-9, "Resend sends the stored Res, scaled");
 near(dsb.emitted[5][1], 0.4, 1e-9, "Resend sends Mix as wet from stored UI state");
 ok(!dsb.emitted.some((m) => m[0] === "auto" || m[0] === "midi" || m[0] === "bang"), "Resend never bangs the Auto / MIDI toggles");
