@@ -73,6 +73,33 @@ Quiet must keep K = 1
   still fails on this assert only (typecheck + build pass). No production/src
   edits this pass; dirty `devices/Loud Split.{amxd,adg}` left uncommitted.
 
+## Pass 3 fix (Bug 1)
+
+**Fix.** `src/spectral_split_rack_main.genexpr` Mix line: gate `@@KSHARE@@` on rack
+role as well as channel selection:
+
+```
+kShare = (selH > 0.5 && roleH > 0.5) ? @@KSHARE@@ : 1;
+```
+
+`roleH > 0.5` is LEAD (1) or FOLLOW (2) — this instance is one chain of a rack.
+`roleH` SELF (0) / pending (−1) keeps full dry even when Output is Loud / Mid /
+Quiet, matching AGENTS.md §24 (`K = 1` outside a rack). Rack single-channel
+Output still uses `1/K` so the three chains sum to full dry.
+
+**Touchpoints.** `src/spectral_split_rack_main.genexpr` (Mix comment + `kShare`
+expression). Rebuild refreshed `devices/Loud Split.{amxd,adg}`.
+
+**Host gate.** `npm run -s typecheck && python3 scripts/build_loudsplit.py &&
+node tests/test_loudsplit.js` — green (Mix red assert at
+`tests/test_loudsplit.js:699` no longer matches the expanded gen; all Loud Split /
+spectral rack / deferred-DSP / paint-bounds checks passed). Red test left
+unchanged.
+
+**Shared-framework note.** Same template is used by the other spectral-split
+devices; their own passes should adopt / verify the same Mix gate (e.g.
+`tests/test_freqsplit.js` still expects the old `selH`-only form).
+
 ## Checked and found correct (do not re-hunt)
 
 - `lsMasks` (JS) vs `ls_masks` (genexpr) mirror: tilt table, lmax excluding bins

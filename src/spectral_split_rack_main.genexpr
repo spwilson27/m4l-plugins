@@ -469,7 +469,8 @@ if (awake > 0.5) {
 	sleepNote = 0;
 }
 
-// ---- Mix: out = mix * wet + (1 - mix) * dry / K (K chains sum in a rack), dry delayed like the wet ----
+// ---- Mix: out = mix * wet + (1 - mix) * dry / K when this instance is one chain of a rack (role LEAD/FOLLOW),
+// KSHARE (= 1/K) only if selH selects a single channel; Output All and role SELF/pending (outside a rack) keep full dry ----
 dryL.write(in1);
 dryR.write(in2);
 if (mixInit < 0.5) {
@@ -477,7 +478,7 @@ if (mixInit < 0.5) {
 	mixS = mixH;
 }
 mixS = mixS + (mixH - mixS) * 0.002;
-kShare = selH > 0.5 ? @@KSHARE@@ : 1;
+kShare = (selH > 0.5 && roleH > 0.5) ? @@KSHARE@@ : 1;
 ov1 = fixnan(fixdenorm(mixS * wetL + (1 - mixS) * kShare * dryL.read(@@LAT@@)));
 ov2 = fixnan(fixdenorm(mixS * wetR + (1 - mixS) * kShare * dryR.read(@@LAT@@)));
 // fixdenorm leaves 1e-38..1e-30 (decaying tails); flush that range too.
