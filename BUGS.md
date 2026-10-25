@@ -1,10 +1,22 @@
-# XO Sample Map — Pass 1 + Pass 2 bug sweep (tests only, no production fixes)
+# XO Sample Map — Pass 1 + Pass 2 + Pass 3 bug sweep
 
 Branch: `bugsweep/xo-map-pass1` · Worktree: `/private/tmp/bugsweep/xo-map`
 Scope: `src/xo_node_engine.js`, `src/xo_strip_ui.js`, `src/xo_search.js`, `src/xo_stretch.js`,
-`scripts/build_xo_map.py`, `tests/test_xo_*.js`. One credible bug found (Pass 1); Pass 2 kept it.
+`scripts/build_xo_map.py`, `tests/test_xo_*.js`. One credible bug found (Pass 1); Pass 2 kept it; Pass 3 fixed it.
 
-## Bug 1 — Undo after recalling a saved sample only restores 3 of the 7 playback settings it changed
+## Pass 3 — fixed
+
+### Bug 1 — FIXED (undo after saved-sample recall restores all 7 playback settings)
+
+- **Touchpoints:** `src/xo_strip_ui.js` — `captureSnapshot()` (~649) and `applySnapshot()` (~666).
+  Added `reversePlayback`, `speedPct`, `grainMs`, `stretchMode` to the snapshot object and restore
+  them with `!== undefined` defaults `0` / `100` / `45` / `1` (matching `recallSavedEntry`).
+- Red test left unchanged: `tests/test_xo_map.js` block "Undo after recalling a saved sample restores ALL playback settings".
+- **Host gate green:** `npm run -s typecheck && python3 scripts/build_xo_map.py && node tests/test_xo_map.js`
+  (includes `OK: undo after recall restores all playback settings`). Rebuilt `devices/XO Sample Map.amxd`.
+- Commit SHA: pending (this commit).
+
+## Bug 1 — Undo after recalling a saved sample only restores 3 of the 7 playback settings it changed (was KEEP; fixed in Pass 3)
 
 **Where:** `src/xo_strip_ui.js`
 - `captureSnapshot()` (~line 649) / `applySnapshot()` (~line 666) save and restore:
