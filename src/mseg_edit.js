@@ -80,7 +80,9 @@ function msegMoveSelection(points, selectedIds, startMap, primaryId, targetX, ta
             sweepIntervals.push([Math.min(stj.x, newX) - 0.002, Math.max(stj.x, newX) + 0.002]);
         }
     }
-    if (sweepIntervals.length >= 2) {
+    // Pure vertical moves have no horizontal travel; do not union the selection span
+    // or intervening unselected points get deleted (see tests/test_shaper_bugsweep.js).
+    if (dx !== 0 && sweepIntervals.length >= 2) {
         var minSpan = 1.0, maxSpan = 0.0;
         for (i = 0; i < sweepIntervals.length; i++) {
             if (sweepIntervals[i][0] < minSpan) minSpan = sweepIntervals[i][0];
