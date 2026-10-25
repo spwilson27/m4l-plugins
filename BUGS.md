@@ -18,3 +18,9 @@ Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code h
 
 - No other credible bugs locked in this pass yet; further review may add entries and RED cases.
 - Host gate (`npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js`) does not run `tests/test_shaper_bugsweep.js`; run that file separately to see the RED failure.
+
+## PASS 2 review
+
+- **Kept 1 / Dropped 0.** Bug 1 confirmed real UI bug, not intentional sweep: L41 comment limits deletes to an unselected point on a selected point's travel; on `dx === 0` interiors still push near-degenerate intervals and L83-89 unions the whole selection span, so intervening points die. RED re-verified FAIL on unfixed code (`node tests/test_shaper_bugsweep.js` → AssertionError, ids `1,2,4,5`).
+- Host gate green on unfixed code: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js` (GATE_EXIT:0). Bugsweep remains RED (BUGSWEEP_EXIT:1).
+- No strengthen needed; no additional bugs found in `src/mseg_edit.js` (104 lines; file ends at `msegMoveSelection`). Production/src untouched (pass 3).
