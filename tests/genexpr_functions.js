@@ -49,7 +49,7 @@ function splitFunctions(src) {
 }
 
 const BUILTINS = {
-    sin: Math.sin, cos: Math.cos, exp: Math.exp, log: Math.log, sqrt: Math.sqrt, pow: Math.pow, floor: Math.floor,
+    sin: Math.sin, cos: Math.cos, exp: Math.exp, log: Math.log, log10: Math.log10, sqrt: Math.sqrt, pow: Math.pow, floor: Math.floor,
     round: Math.round, abs: Math.abs, min: Math.min, max: Math.max, tanh: Math.tanh, tan: Math.tan,
     clip: (x, lo, hi) => Math.max(lo, Math.min(hi, x)),
     // Buffer-style access on a DataSim (a buffer~ is simulated as a one-channel Data)

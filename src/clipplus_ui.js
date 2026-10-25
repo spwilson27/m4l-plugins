@@ -68,6 +68,7 @@ var cpDragCeil = 0;
 var cpDragFreq = 250;
 var cpDragGain = 6;
 var cpDragQ = 0.707;
+var cpDragCorner = 0;
 
 var cpScope = {
     inPk: 0, outPk: 0, inMs: 0, outMs: 0, clip: 0, gr: 0, frame: -1, drvPk: 0, wetPk: 0,
@@ -184,17 +185,38 @@ function csApplyLayout() {
     csMoveBox("obj-title-opts", optX, 4, 44, 12);
     csMoveBox("obj-rule-opts", optX + 44, 9, 4, 2);
     csMoveBox("Stereo Mode", optX, 20, 48, 15);
-    csMoveBox("Channel Mode", optX, 38, 48, 15);
+    csMoveBox("obj-btn-chmode", optX, 38, 48, 15);
     csMoveBox("Delta", optX, 60, 48, 15);
     csMoveBox("DC", optX, 78, 48, 15);
     csMoveBox("Oversample", optX, 96, 48, 15);
     csMoveBox("Hard Limit", optX, 114, 48, 15);
     csMoveBox("Show Meters", optX, 144, 48, 15);
     csMoveBox("obj-panel-opts", optsX, 4, 56, 161);
+    cpUpdateChannelEnum();
 
     csMoveBox("obj-meters", metX + 4, 6, 176, 157);
     csMoveBox("obj-panel-meters", metX, 4, 184, 161);
     csMoveBox("obj-panel-body", 0, 0, openW, 169);
+    cpApplyEmphasisActive();
+}
+
+// Low Cut does not use Emphasis. Grey the value and its label, and ignore drags.
+function cpApplyEmphasisActive() {
+    if (CS_ROLE !== "viz" || !cpHost || !cpHost.getnamed) return;
+    var shelf = cpFiltType > 0.5 ? 0 : 1;
+    try {
+        var box = cpHost.getnamed("obj-ctrl-filtgain");
+        if (box && box.setattr) {
+            box.setattr("active", shelf);
+            var vc = sptColor(shelf ? "live_lcd_control_fg_alt" : "live_display_scale_text");
+            if (vc) box.setattr("textcolor", vc[0], vc[1], vc[2], vc.length > 3 ? vc[3] : 1);
+        }
+        var lbl = cpHost.getnamed("obj-lbl-filtgain");
+        if (lbl && lbl.setattr) {
+            var lc = sptColor(shelf ? "live_control_fg" : "live_display_scale_text");
+            if (lc) lbl.setattr("textcolor", lc[0], lc[1], lc[2], lc.length > 3 ? lc[3] : 1);
+        }
+    } catch (_) {}
 }
 
 function setbuffer(name) {
@@ -218,6 +240,7 @@ function set_view(v) { cpView = Number(v) ? 1 : 0; mgraphics.redraw(); }
 function cpUpdateChannelEnum() {
     if (CS_ROLE !== "viz" || !cpHost || !cpHost.getnamed) return;
     try {
+        var chBtn = cpHost.getnamed("obj-btn-chmode");
         var chMenu = cpHost.getnamed("Channel Mode");
         if (chMenu && chMenu.setattr) {
             if (cpMsMode) {
@@ -225,6 +248,12 @@ function cpUpdateChannelEnum() {
             } else {
                 chMenu.setattr("_parameter_range", "Both", "L", "R");
             }
+        }
+        if (chBtn && chBtn.setattr) {
+            var labels = cpMsMode ? ["Both", "M", "S"] : ["Both", "L", "R"];
+            var lbl = labels[sptClamp(cpChMode, 0, 2)] || "Both";
+            chBtn.setattr("text", lbl);
+            chBtn.setattr("texton", lbl);
         }
     } catch (_) {}
 }
@@ -234,9 +263,25 @@ function set_msmode(v) {
     cpUpdateChannelEnum();
     mgraphics.redraw();
 }
-function set_chmode(v) { cpChMode = Math.round(sptClamp(Number(v) || 0, 0, 2)); mgraphics.redraw(); }
+function set_chmode(v) {
+    cpChMode = Math.round(sptClamp(Number(v) || 0, 0, 2));
+    cpUpdateChannelEnum();
+    mgraphics.redraw();
+}
+function cycle_chmode() {
+    if (CS_ROLE !== "viz") return;
+    var nextCh = (cpChMode + 1) % 3;
+    cpChMode = nextCh;
+    cpWriteCtrl("Channel Mode", nextCh);
+    cpUpdateChannelEnum();
+    mgraphics.redraw();
+}
 function set_filton(v) { cpFiltOn = Number(v) ? 1 : 0; mgraphics.redraw(); }
-function set_filttype(v) { cpFiltType = Number(v) ? 1 : 0; mgraphics.redraw(); }
+function set_filttype(v) {
+    cpFiltType = Number(v) ? 1 : 0;
+    cpApplyEmphasisActive();
+    mgraphics.redraw();
+}
 function set_filtfreq(v) { cpFiltFreq = sptClamp(Number(v) || 250, 20, 12000); mgraphics.redraw(); }
 function set_filtgain(v) { cpFiltGain = sptClamp(Number(v) || 0, 0, 24); mgraphics.redraw(); }
 function set_filtq(v) { cpFiltQ = sptClamp(Number(v) || 0.707, 0.1, 10.0); mgraphics.redraw(); }
@@ -615,12 +660,11 @@ function csFiltXToFreq(x) {
     return 20 * Math.pow(12000 / 20, t);
 }
 
-function csFiltGainAt(f) {
-    if (!cpFiltOn) return 0;
+function csFiltShelfDb(f, gain) {
     var fc = sptClamp(cpFiltFreq, 20, 12000);
     var q = sptClamp(cpFiltQ, 0.1, 10.0);
     var kDamp = 1 / q;
-    var gAmt = sptClamp(cpFiltGain, 0, 24);
+    var gAmt = sptClamp(gain, 0, 24);
     var aLo = cpFiltType > 0.5 ? 1.0 : Math.pow(10, -gAmt / 40);
     var aHi = cpFiltType > 0.5 ? 1.0 : Math.pow(10, gAmt / 80);
     var w = (f / fc) / Math.sqrt(Math.max(aLo, 1e-4));
@@ -638,9 +682,33 @@ function csFiltGainAt(f) {
     return 10 * Math.log10(Math.max(num2 / Math.max(den2, 1e-12), 1e-6));
 }
 
+function csFiltGainAt(f) {
+    if (!cpFiltOn) return 0;
+    return csFiltShelfDb(f, cpFiltGain);
+}
+
+// Plot is -24..+12 dB. Shelf emphasis is the gain that puts the corner of the curve on that dB.
 function csFiltDbToY(db) {
     var t = sptClamp((db + 24) / 36, 0, 1);
     return CS_FPLOT.y + (1 - t) * CS_FPLOT.h;
+}
+
+function csFiltYToDb(y) {
+    var t = sptClamp(1 - (y - CS_FPLOT.y) / Math.max(1, CS_FPLOT.h), 0, 1);
+    return -24 + 36 * t;
+}
+
+function csShelfEmphasisForCorner(db) {
+    if (!(db > 0)) return 0;
+    var lo = 0;
+    var hi = 24;
+    var i;
+    for (i = 0; i < 20; i++) {
+        var mid = (lo + hi) * 0.5;
+        if (csFiltShelfDb(cpFiltFreq, mid) < db) lo = mid;
+        else hi = mid;
+    }
+    return (lo + hi) * 0.5;
 }
 
 function csFiltQToY(q) {
@@ -1005,6 +1073,7 @@ function onclick(x, y) {
         cpDragFreq = cpFiltFreq;
         cpDragGain = cpFiltGain;
         cpDragQ = cpFiltQ;
+        cpDragCorner = csFiltShelfDb(cpFiltFreq, cpFiltGain);
         return;
     }
     if (CS_ROLE === "out_meter") {
@@ -1053,17 +1122,19 @@ function ondrag(x, y, but) {
     if (CS_ROLE === "filt_viz") {
         var nextFreq = cpQuant(csFiltXToFreq(csFiltFreqToX(cpDragFreq) + (x - cpDragX)), 20, 12000, 1);
         cpFiltFreq = nextFreq;
-        cpWriteCtrl("Filter Freq", nextFreq);
+        cpWriteCtrl("obj-ctrl-filtfreq", nextFreq);
         if (cpFiltType > 0.5) {
             // Low-cut filter: dragging up/down increases/decreases Q
             var nextQ = cpQuant(csFiltYToQ(csFiltQToY(cpDragQ) + (y - cpDragY)), 0.1, 10.0, 0.01);
             cpFiltQ = nextQ;
-            cpWriteCtrl("Filter Q", nextQ);
+            cpWriteCtrl("obj-ctrl-filtq", nextQ);
         } else {
-            // Low-shelf filter: dragging up/down adjusts shelf Emphasis gain
-            var nextGain = cpQuant(cpDragGain + (cpDragY - y) / CS_FPLOT.h * 24, 0, 24, 0.1);
+            // Low shelf: the dot sits on the curve at the corner. Move emphasis so that
+            // corner stays under the pointer, on the same -24..+12 dB scale as the graph.
+            var corner = cpDragCorner + (csFiltYToDb(y) - csFiltYToDb(cpDragY));
+            var nextGain = cpQuant(csShelfEmphasisForCorner(corner), 0, 24, 0.1);
             cpFiltGain = nextGain;
-            cpWriteCtrl("Filter Gain", nextGain);
+            cpWriteCtrl("obj-ctrl-filtgain", nextGain);
         }
         mgraphics.redraw();
         return;
@@ -1092,9 +1163,9 @@ function ondblclick(x, y) {
         cpFiltFreq = 250;
         cpFiltGain = 6;
         cpFiltQ = 0.707;
-        cpWriteCtrl("Filter Freq", 250);
-        cpWriteCtrl("Filter Gain", 6);
-        cpWriteCtrl("Filter Q", 0.707);
+        cpWriteCtrl("obj-ctrl-filtfreq", 250);
+        cpWriteCtrl("obj-ctrl-filtgain", 6);
+        cpWriteCtrl("obj-ctrl-filtq", 0.707);
         cpDragOn = 0;
         mgraphics.redraw();
         return;

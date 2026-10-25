@@ -78,6 +78,25 @@ function cpDriveGain(driveDb) {
     return Math.pow(10, drv / 20);
 }
 
+// Gain reduction is how far the driven peak sits above the ceiling, in dB.
+// Soft-knee sag below the ceiling and STFT windowing are not clipping.
+function cpClipGrDb(drivenPeak, ceilLin) {
+    var c = ceilLin > 1e-6 ? ceilLin : 1e-6;
+    if (!(drivenPeak > c)) return 0;
+    var gr = 20 * Math.log10(drivenPeak / c);
+    if (gr < 0.08) return 0;
+    if (gr > 60) return 60;
+    return gr;
+}
+
+// chmode 0 = both, 1 = channel 0, 2 = channel 1. Peaks are linear, post drive gain.
+function cpBlockGrDb(peakL, peakR, chmode, ceilLin) {
+    var peak = peakL > peakR ? peakL : peakR;
+    if (chmode > 1.5) peak = peakR;
+    else if (chmode > 0.5 && chmode < 1.5) peak = peakL;
+    return cpClipGrDb(peak, ceilLin);
+}
+
 function cpBody(amp, thresh) {
     var lo = thresh * 0.25;
     var hi = thresh > lo + 1e-12 ? thresh : lo + 1e-12;
@@ -601,7 +620,7 @@ if (nodeModule && nodeModule.exports) {
         CLIP_SCOPE: CLIP_SCOPE, CLIP_WAVE_BASE: CLIP_WAVE_BASE, CLIP_WAVE_FRAMES: CLIP_WAVE_FRAMES,
         CLIP_SCATTER: CLIP_SCATTER, CLIP_METER_BASE: CLIP_METER_BASE, CLIP_METER_FRAMES: CLIP_METER_FRAMES,
         CLIP_BLOCK: CLIP_BLOCK,
-        cpDbToLin: cpDbToLin, cpLinToDb: cpLinToDb, cpCurve: cpCurve, cpDriveGain: cpDriveGain, cpBody: cpBody,
+        cpDbToLin: cpDbToLin, cpLinToDb: cpLinToDb, cpCurve: cpCurve, cpDriveGain: cpDriveGain, cpClipGrDb: cpClipGrDb, cpBlockGrDb: cpBlockGrDb, cpBody: cpBody,
         cpFirRaw: cpFirRaw, cpFirCoef: cpFirCoef, cpFirTable: cpFirTable, cpOsProcess: cpOsProcess, cpTpPeak: cpTpPeak,
         cpBiquadCoefShelf: cpBiquadCoefShelf, cpBiquadCoefHp: cpBiquadCoefHp, cpKWeightSample: cpKWeightSample,
         cpLufs: cpLufs, CpMeter: CpMeter, cpHann: cpHann, cpFft: cpFft, CpStft: CpStft, cpSpectralHop: cpSpectralHop,

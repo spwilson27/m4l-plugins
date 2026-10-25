@@ -19,6 +19,122 @@ function maxDiff(fn) {
     return m;
 }
 
+// ---- gain reduction: only the dB the driven peak sits above the ceiling ----
+{
+    const SR = 48000;
+    function db(lin) { return 20 * Math.log10(Math.max(lin, 1e-12)); }
+    function lin(d) { return Math.pow(10, d / 20); }
+    function peakOf(xs) {
+        let p = 0;
+        for (let i = 0; i < xs.length; i++) p = Math.max(p, Math.abs(xs[i]));
+        return p;
+    }
+    function sine(n, freq, amp, phase) {
+        const out = new Array(n);
+        const w = 2 * Math.PI * freq / SR;
+        for (let i = 0; i < n; i++) out[i] = amp * Math.sin(w * i + (phase || 0));
+        return out;
+    }
+    function noise(n, amp, seed) {
+        let s = seed >>> 0;
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) {
+            s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+            out[i] = ((s / 4294967296) * 2 - 1) * amp;
+        }
+        return out;
+    }
+    function impulse(n, at, amp) {
+        const out = new Array(n).fill(0);
+        out[at] = amp;
+        return out;
+    }
+    function square(n, freq, amp) {
+        const out = new Array(n);
+        const period = SR / freq;
+        for (let i = 0; i < n; i++) out[i] = ((i % period) < period * 0.5 ? amp : -amp);
+        return out;
+    }
+    function twoTone(n, f1, a1, f2, a2) {
+        const a = sine(n, f1, a1, 0);
+        const b = sine(n, f2, a2, 0.4);
+        for (let i = 0; i < n; i++) a[i] += b[i];
+        return a;
+    }
+    // Driven peak of one buffer, then the meter. Channel mode picks which peak counts.
+    function grOf(buffers, driveDb, ceilDb, chmode) {
+        const g = C.cpDriveGain(driveDb);
+        const peaks = buffers.map((b) => peakOf(b) * g);
+        while (peaks.length < 2) peaks.push(0);
+        return C.cpBlockGrDb(peaks[0], peaks[1], chmode || 0, C.cpDbToLin(ceilDb));
+    }
+    function shaperGr(x, driveDb, shape, ceilDb) {
+        const c = C.cpDbToLin(ceilDb);
+        const driven = Math.abs(x) * C.cpDriveGain(driveDb);
+        const y = Math.abs(C.cpCurve(x, driveDb, shape, 0, c));
+        return db(driven) - db(y);
+    }
+
+    const N = 4800;
+    // The reported case: program around -28 dB, drive raised 0.8 dB, ceiling 0.
+    // The soft curve does sag, and that sag is not gain reduction.
+    const program = sine(N, 220, lin(-28.1));
+    program[100] = lin(-28.1);
+    assert.ok(grOf([program], 0.8, 0, 0) === 0, "−28 dB program at +0.8 dB drive is under the ceiling");
+    assert.ok(shaperGr(lin(-28.1), 0.8, 0, 0) > 0.05, "the soft curve does sag on that program");
+    assert.ok(shaperGr(lin(-28.1), 0.8, 0, 0) < 0.4, "but only by a fraction of a dB");
+
+    // A full-scale tone plus 0.8 dB of drive is 0.8 dB over, not the ~5 dB the soft curve pulls it down.
+    const full = sine(N, 440, 1);
+    full[100] = 1;
+    const over = grOf([full], 0.8, 0, 0);
+    assert.ok(Math.abs(over - 0.8) < 0.02, "full-scale + 0.8 dB drive reports 0.8 dB GR, got " + over);
+    assert.ok(shaperGr(1, 0.8, 0, 0) > 4.5, "soft curve pulls a full-scale sample down by several dB");
+
+    const cases = [
+        ["silence", new Array(N).fill(0), 0, 0, 0],
+        ["silence driven", new Array(N).fill(0), 18, 0, 0],
+        ["dc under", new Array(N).fill(0.2), 0, 0, 0],
+        ["dc over", new Array(N).fill(0.2), 18, 0, db(0.2 * C.cpDriveGain(18))],
+        ["quiet sine", sine(N, 80, lin(-40)), 0.8, 0, 0],
+        ["mid sine, drive 0", sine(N, 220, lin(-6)), 0, 0, 0],
+        ["mid sine, drive 0.8", sine(N, 220, lin(-6)), 0.8, 0, 0],
+        ["mid sine, drive 6", sine(N, 220, lin(-6)), 6, 0, 6 + (-6)],
+        ["hot sine, drive 0", sine(N, 1000, 1), 0, 0, 0],
+        ["hot sine, drive 12", sine(N, 1000, 0.5), 12, 0, db(0.5 * C.cpDriveGain(12))],
+        ["noise under", noise(N, 0.2, 3), 0.8, 0, 0],
+        ["noise over", noise(N, 0.9, 9).map((v, i) => i === 10 ? 0.9 : v), 6, 0, db(0.9 * C.cpDriveGain(6))],
+        ["impulse", impulse(N, 1000, 2.5), 0, 0, db(2.5)],
+        ["impulse quiet", impulse(N, 20, 0.05), 12, 0, 0],
+        ["square under", square(N, 110, 0.4), 0, 0, 0],
+        ["square over", square(N, 110, 0.8), 6, -6, db(0.8 * C.cpDriveGain(6)) - (-6)],
+        ["two-tone under", twoTone(N, 50, 0.15, 1370, 0.02), 0.8, 0, 0],
+        ["two-tone over", (function () { const t = twoTone(N, 50, 0.25, 1370, 0.15); t[10] = 1.2; return t; })(), 6, 0, db(1.2 * C.cpDriveGain(6))],
+        ["just under ceiling", sine(N, 330, 0.99), 0, 0, 0],
+        ["just over, gated", sine(N, 330, lin(0.05)), 0, 0, 0],
+        ["1 dB over", sine(N, 330, lin(1)), 0, 0, 1],
+        ["ceiling -12, tone -6", sine(N, 200, lin(-6)), 0, -12, 6],
+        ["ceiling -6, drive 0.8 still under", sine(N, 200, lin(-12)), 0.8, -6, 0],
+    ];
+    for (const row of cases) {
+        const got = grOf([row[1]], row[2], row[3], 0);
+        assert.ok(Math.abs(got - row[4]) < 0.05, row[0] + " GR " + got.toFixed(3) + " want " + row[4].toFixed(3));
+    }
+
+    // Stereo: only the channel fed to the clipper counts.
+    const left = sine(N, 220, 1, 0);
+    const right = sine(N, 880, 0.2, 1);
+    assert.ok(Math.abs(grOf([left, right], 6, 0, 0) - 6) < 0.02, "Both follows the hotter channel");
+    assert.ok(Math.abs(grOf([left, right], 6, 0, 1) - 6) < 0.02, "Left mode follows the left peak");
+    assert.strictEqual(grOf([left, right], 6, 0, 2), 0, "Right mode ignores the left peak when the right is under the ceiling");
+    assert.ok(Math.abs(grOf([sine(N, 100, 0.1), sine(N, 300, 1)], 0, -3, 2) - (db(1) - (-3))) < 0.05, "Right mode reports the right channel over a -3 dB ceiling");
+
+    // A block that only clips on one sample still reports that sample.
+    const click = impulse(N, 2500, lin(3));
+    assert.ok(Math.abs(grOf([click], 0, 0, 0) - 3) < 0.02, "a single sample 3 dB over is 3 dB GR");
+    console.log("[gr] signals");
+}
+
 // ---- curve, body, FIR match the gen functions ----
 {
     let worst = 0;
@@ -37,6 +153,16 @@ function maxDiff(fn) {
         for (const a of [0, 0.01, 0.05, 0.25, 2]) worst = Math.max(worst, Math.abs(C.cpBody(a, t) - G.cp_body(a, t)));
     }
     assert.ok(worst < 1e-9, "cp_body matches");
+    worst = 0;
+    for (const peak of [0, 0.01, 0.5, 1, 1.096, 2, 8]) {
+        for (const ceil of [0.25, 0.5, 1]) {
+            worst = Math.max(worst, Math.abs(C.cpClipGrDb(peak, ceil) - G.cp_clip_gr(peak, ceil)));
+            for (const mode of [0, 1, 2]) {
+                worst = Math.max(worst, Math.abs(C.cpBlockGrDb(peak, peak * 0.4, mode, ceil) - G.cp_block_gr(peak, peak * 0.4, mode, ceil)));
+            }
+        }
+    }
+    assert.ok(worst < 1e-6, "cp_clip_gr matches the reference, worst " + worst);
     worst = 0;
     for (let i = 0; i < C.CLIP_FIR_N; i++) worst = Math.max(worst, Math.abs(C.cpFirCoef(i) - G.cp_fir_coef(i)));
     assert.ok(worst < 1e-9, "cp_fir_coef matches");
@@ -215,6 +341,9 @@ function maxDiff(fn) {
     assert.ok(lastFn > 0 && lastFn < firstDecl, "functions precede declarations");
     assert.ok(/Buffer scope\("clipscope"\)/.test(CORE), "scope buffer, no set prefix");
     assert.ok(/read\(1047/.test(CORE) && /read\(999/.test(CORE) && /read\(24/.test(CORE), "delay taps");
+    assert.ok(/hop = hop \+ cp_hop\(ch,/.test(code), "both STFT rings are filled from one call site");
+    assert.ok(/preL = chmode > 1\.5 \? ch0By : deEmp0;/.test(code), "R/S bypasses the left, Both and L/M clip it");
+    assert.ok(/preR = \(chmode > 0\.5 && chmode < 1\.5\) \? ch1By : deEmp1;/.test(code), "L/M bypasses the right, Both and R/S clip it");
     assert.strictEqual(C.CLIP_LATENCY, 1047);
     console.log("[genexpr] lint");
 }
@@ -271,29 +400,29 @@ function maxDiff(fn) {
         assert.strictEqual(tb.saved_attribute_attributes.bgcolor.expression, "themecolor.live_control_bg");
         assert.ok(tb.presentation_rect[0] >= 298, id + " is in the right-hand Options panel");
     }
-    const menus = boxes.filter((b) => b.maxclass === "live.menu");
-    assert.ok(menus.length >= 4, "Clip+ uses live.menu popup selection boxes");
-    for (const m of menus) assert.deepStrictEqual(m.tricolor, [0, 0, 0, 0], `${m.id} hides its dropdown triangle via tricolor alpha 0`);
-    const autoMenu = boxes.find((b) => b.id === "obj-ctrl-auto");
-    assert.strictEqual(autoMenu.maxclass, "live.menu", "Auto is a live.menu popup selector");
-    assert.deepStrictEqual(autoMenu.tricolor, [0, 0, 0, 0], "Auto live.menu hides the dropdown triangle via tricolor alpha 0");
-    assert.deepStrictEqual(autoMenu.saved_attribute_attributes.valueof.parameter_enum, ["Man", "Auto"]);
-    const viewMenu = boxes.find((b) => b.id === "obj-ctrl-view");
-    assert.strictEqual(viewMenu.maxclass, "live.menu", "Meter View is a live.menu selection box");
-    assert.strictEqual(viewMenu.presentation, 0, "Curve button is drawn next to Sym slider inside obj-viz rather than in Options");
+    const autoBtn = boxes.find((b) => b.id === "obj-ctrl-auto");
+    assert.strictEqual(autoBtn.maxclass, "live.text", "Auto is a live.text toggle button like Wave/Curve");
+    assert.strictEqual(autoBtn.text, "Man");
+    assert.strictEqual(autoBtn.texton, "Auto");
+    assert.deepStrictEqual(autoBtn.saved_attribute_attributes.valueof.parameter_enum, ["Man", "Auto"]);
+    const viewBtn = boxes.find((b) => b.id === "obj-ctrl-view");
+    assert.strictEqual(viewBtn.maxclass, "live.text", "View is a live.text toggle button");
+    assert.strictEqual(viewBtn.presentation, 0, "Curve button is drawn next to Sym slider inside obj-viz rather than in Options");
     assert.ok(!boxes.some((b) => b.id === "obj-ctrl-midw"), "Mid Size control is removed");
     const vizBox = boxes.find((b) => b.id === "obj-viz");
     assert.strictEqual(vizBox.presentation_rect[2], 180, "Central display width is fixed to 180 px");
-    const msMenu = boxes.find((b) => b.id === "obj-ctrl-msmode");
-    assert.strictEqual(msMenu.maxclass, "live.menu", "Stereo Mode (L/R vs M/S) is a live.menu");
-    assert.deepStrictEqual(msMenu.tricolor, [0, 0, 0, 0], "Stereo Mode hides the dropdown triangle");
-    assert.deepStrictEqual(msMenu.saved_attribute_attributes.valueof.parameter_enum, ["L/R", "M/S"]);
-    const chMenu = boxes.find((b) => b.id === "obj-ctrl-chmode");
-    assert.strictEqual(chMenu.maxclass, "live.menu", "Channel Mode (Both / L / R) is a live.menu");
-    assert.deepStrictEqual(chMenu.tricolor, [0, 0, 0, 0], "Channel Mode hides the dropdown triangle");
-    assert.deepStrictEqual(chMenu.saved_attribute_attributes.valueof.parameter_enum, ["Both", "L", "R"]);
-    assert.strictEqual(msMenu.presentation_rect[0], chMenu.presentation_rect[0], "Stereo Mode and Channel Mode sit on separate rows at the same x");
-    assert.ok(chMenu.presentation_rect[1] >= msMenu.presentation_rect[1] + msMenu.presentation_rect[3], "Channel Mode row is below Stereo Mode row");
+    const msBtn = boxes.find((b) => b.id === "obj-ctrl-msmode");
+    assert.strictEqual(msBtn.maxclass, "live.text", "Stereo Mode (L/R vs M/S) is a toggle button");
+    assert.strictEqual(msBtn.text, "L/R");
+    assert.strictEqual(msBtn.texton, "M/S");
+    assert.deepStrictEqual(msBtn.saved_attribute_attributes.valueof.parameter_enum, ["L/R", "M/S"]);
+    const chParam = boxes.find((b) => b.id === "obj-ctrl-chmode");
+    assert.deepStrictEqual(chParam.saved_attribute_attributes.valueof.parameter_enum, ["Both", "L", "R"]);
+    const chBtn = boxes.find((b) => b.id === "obj-btn-chmode");
+    assert.strictEqual(chBtn.maxclass, "live.text", "Channel Mode button is a tristate cycle live.text button");
+    assert.strictEqual(chBtn.text, "Both");
+    assert.strictEqual(msBtn.presentation_rect[0], chBtn.presentation_rect[0], "Stereo Mode and Channel Mode sit on separate rows at the same x");
+    assert.ok(chBtn.presentation_rect[1] >= msBtn.presentation_rect[1] + msBtn.presentation_rect[3], "Channel Mode row is below Stereo Mode row");
     const filtTab = boxes.find((b) => b.id === "obj-filt-tab");
     assert.ok(filtTab && filtTab.presentation === 1 && !filtTab.hidden, "Left Bass Filter fold tab is always visible on the left side");
     assert.deepStrictEqual(filtTab.presentation_rect, [4, 4, 18, 161]);
@@ -412,6 +541,85 @@ function maxDiff(fn) {
         face.ondrag(56, 50, 1); // drag downward -> decreases Q
         assert.ok(face.cpFiltQ < 1.0, "Dragging downward in Low-Cut XY panel decreases Q, got " + face.cpFiltQ);
     }
+    // Shelf dot Y drives the Emphasis parameter, and the corner of the curve stays with the pointer
+    {
+        const rec = makeRecorder(112, 66);
+        const face = loadFace('var FACE_ROLE = "filt_viz";\n' + faceCode, rec);
+        const writes = [];
+        face.patcher.getnamed = (name) => ({ message(v) { writes.push([name, v]); } });
+        face.set_filton(1);
+        face.set_filttype(0);
+        face.set_filtfreq(250);
+        face.set_filtq(0.71);
+        face.set_filtgain(6);
+        const before = face.csFiltGainAt(250);
+        face.onclick(50, 40);
+        face.ondrag(50, 30, 1);
+        const mouseDb = face.csFiltYToDb(30) - face.csFiltYToDb(40);
+        const after = face.csFiltGainAt(250);
+        assert.ok(face.cpFiltGain > 6, "Dragging the shelf dot up raises Emphasis, got " + face.cpFiltGain);
+        assert.ok(Math.abs((after - before) - mouseDb) < 0.35, "Shelf corner follows the pointer by " + mouseDb.toFixed(2) + " dB, moved " + (after - before).toFixed(2));
+        assert.ok(writes.some((w) => w[0] === "obj-ctrl-filtgain" && Math.abs(w[1] - face.cpFiltGain) < 1e-6), "Shelf drag writes Emphasis on obj-ctrl-filtgain");
+        face.set_filtgain(0);
+        assert.ok(Math.abs(face.csFiltGainAt(250)) < 1e-6, "Emphasis 0 flattens the shelf");
+    }
+    // Low Cut does not use Emphasis, so the value and its label go grey and the box ignores drags.
+    {
+        const rec = makeRecorder(180, 157);
+        const face = loadFace('var FACE_ROLE = "viz";\n' + faceCode, rec);
+        const attrs = [];
+        face.patcher.getnamed = (name) => ({
+            setattr() { attrs.push([name].concat(Array.from(arguments))); },
+        });
+        face.set_filttype(1);
+        const gainOff = attrs.filter((a) => a[0] === "obj-ctrl-filtgain");
+        const lblOff = attrs.filter((a) => a[0] === "obj-lbl-filtgain");
+        assert.ok(gainOff.some((a) => a[1] === "active" && a[2] === 0), "Low Cut deactivates Emphasis");
+        assert.ok(gainOff.some((a) => a[1] === "textcolor"), "Low Cut greys the Emphasis value");
+        assert.ok(lblOff.some((a) => a[1] === "textcolor"), "Low Cut greys the Emphasis label");
+        attrs.length = 0;
+        face.set_filttype(0);
+        const gainOn = attrs.filter((a) => a[0] === "obj-ctrl-filtgain");
+        assert.ok(gainOn.some((a) => a[1] === "active" && a[2] === 1), "Shelf reactivates Emphasis");
+    }
+    // Channel button: Both -> L -> R, and Both -> M -> S once stereo mode is M/S.
+    {
+        const rec = makeRecorder(180, 157);
+        const face = loadFace('var FACE_ROLE = "viz";\n' + faceCode, rec);
+        const writes = [];
+        const btn = { text: "", texton: "" };
+        face.patcher.getnamed = (name) => {
+            if (name === "Channel Mode") return { message(v) { writes.push(v); } };
+            if (name === "obj-btn-chmode") return { setattr(k, v) { btn[k] = v; } };
+            return null;
+        };
+        face.cycle_chmode();
+        face.cycle_chmode();
+        face.cycle_chmode();
+        assert.deepStrictEqual(writes, [1, 2, 0], "the cycle writes Both, L, R as 0, 1, 2");
+        assert.strictEqual(btn.text, "Both");
+        assert.strictEqual(btn.texton, "Both");
+        writes.length = 0;
+        face.set_msmode(1);
+        face.cycle_chmode();
+        face.cycle_chmode();
+        assert.strictEqual(btn.text, "S", "M/S mode cycles Both, M, S");
+        assert.deepStrictEqual(writes, [1, 2]);
+        face.set_msmode(0);
+        assert.strictEqual(btn.text, "R", "leaving M/S restores the L/R label for the same index");
+    }
+    const inMs = run('var FACE_ROLE = "in_meter";\n' + faceCode, 46, 139, "in-meter-ms", (f) => {
+        f.preview();
+        f.set_msmode(1);
+    });
+    const inMsTxt = inMs.rec.shapes.filter((s) => s.kind === "text").map((s) => String(s.text));
+    assert.ok(inMsTxt.some((t) => t.includes("M") && t.includes("S") && !t.includes("L")), "input meters relabel to M/S");
+    const outMs = run('var FACE_ROLE = "out_meter";\n' + faceCode, 82, 139, "out-meter-ms", (f) => {
+        f.preview();
+        f.set_msmode(1);
+    });
+    const outMsTxt = outMs.rec.shapes.filter((s) => s.kind === "text").map((s) => String(s.text));
+    assert.ok(outMsTxt.some((t) => t.includes("M") && t.includes("S")), "output meters relabel to M/S");
     run(meterCode, 176, 157, "meters");
     const mPrev = run(meterCode, 176, 157, "meters-preview", (face) => {
         face.preview();

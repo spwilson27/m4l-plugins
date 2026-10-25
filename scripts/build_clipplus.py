@@ -78,14 +78,15 @@ def meter_source():
     return "\n".join(p.rstrip() + "\n" for p in parts)
 
 
-def make_toggle(key, long_name, short, text, x, y, w, h, initial, help_text, stored_only):
+def make_toggle(key, long_name, short, text, x, y, w, h, initial, help_text, stored_only, texton=None, enum_vals=None):
+    enums = list(enum_vals) if enum_vals else ["Off", "On"]
     valueof = {
-        "parameter_enum": ["Off", "On"],
+        "parameter_enum": enums,
         "parameter_initial": [initial],
         "parameter_initial_enable": 1,
         "parameter_linknames": 1,
         "parameter_longname": long_name,
-        "parameter_mmax": 1,
+        "parameter_mmax": len(enums) - 1,
         "parameter_shortname": short,
         "parameter_type": 2,
     }
@@ -110,7 +111,7 @@ def make_toggle(key, long_name, short, text, x, y, w, h, initial, help_text, sto
             "presentation_rect": [float(x), float(y), float(w), float(h)],
             "saved_attribute_attributes": {"valueof": valueof},
             "text": text,
-            "texton": text,
+            "texton": text if texton is None else texton,
             "varname": long_name,
         }
     }
@@ -124,6 +125,23 @@ def make_toggle(key, long_name, short, text, x, y, w, h, initial, help_text, sto
         activetextcolor="live_control_fg",
         textoncolor="live_lcd_bg",
         activetextoncolor="live_lcd_bg",
+        bordercolor="live_lcd_frame",
+    )
+
+
+def make_cycle_toggle(key, long_name, short, text_off, text_on, x, y, w, h, initial, help_text, stored_only=False):
+    """Toggle button that switches label (`text` vs `texton`) without turning orange, like the Curve / Wave button."""
+    b = make_toggle(key, long_name, short, text_off, x, y, w, h, initial, help_text, stored_only, texton=text_on, enum_vals=[text_off, text_on])
+    return sc.theme(
+        b,
+        bgcolor="live_control_bg",
+        activebgcolor="live_control_bg",
+        bgoncolor="live_control_bg",
+        activebgoncolor="live_control_bg",
+        textcolor="live_control_fg",
+        activetextcolor="live_control_fg",
+        textoncolor="live_control_fg",
+        activetextoncolor="live_control_fg",
         bordercolor="live_lcd_frame",
     )
 
@@ -230,26 +248,51 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
     boxes.append(sc.newobj("obj-ui-filtgain", "prepend set_filtgain", 360, y_wire, 130))
     y_wire += 18
 
-    ms_menu = make_text_menu(
+    ms_btn = make_cycle_toggle(
         "msmode",
-        ("Stereo Mode", "Stereo", ["L/R", "M/S"], 0),
-        "Clip in Left/Right stereo or Mid/Side.",
-        ms_x, ms_y, 48, 15, fontsize=8.0,
+        "Stereo Mode", "Stereo", "L/R", "M/S",
+        ms_x, ms_y, 48, 15, 0,
+        "Click to toggle between Left/Right stereo (L/R) and Mid/Side (M/S) clipping.",
     )
-    boxes.append(ms_menu)
+    boxes.append(ms_btn)
     boxes.append(sc.newobj("obj-prep-msmode", "prepend msmode", 200, y_wire, 110))
     boxes.append(sc.newobj("obj-ui-msmode", "prepend set_msmode", 360, y_wire, 130))
     y_wire += 18
 
-    ch_menu = make_text_menu(
+    # Tristate Channel Mode parameter (`Both`, `L`, `R` / `Both`, `M`, `S`) kept off presentation + visible cycle button (`obj-btn-chmode`)
+    ch_param = make_text_menu(
         "chmode",
         ("Channel Mode", "Chan", ["Both", "L", "R"], 0),
-        "Select which channel is fed into the clipper: Both, L (or M in M/S mode), or R (or S in M/S mode). Both channels are always output.",
-        ch_x, ch_y, 48, 15, fontsize=8.0,
+        "Tristate selector for which channel is fed into the clipper: Both, L, R in L/R mode (or Both, M, S in M/S mode). Both channels are always output.",
+        20, 420, 48, 15, fontsize=8.0,
     )
-    boxes.append(ch_menu)
+    ch_param["box"]["presentation"] = 0
+    ch_param["box"].pop("presentation_rect", None)
+    boxes.append(ch_param)
     boxes.append(sc.newobj("obj-prep-chmode", "prepend chmode", 200, y_wire, 110))
     boxes.append(sc.newobj("obj-ui-chmode", "prepend set_chmode", 360, y_wire, 130))
+    y_wire += 18
+
+    ch_btn = sc.make_theme_text("obj-btn-chmode", "Both", ch_x, ch_y, 48, 15, toggle=False)
+    ch_btn["box"]["annotation"] = "Click to cycle which channel is fed into the clipper: Both -> L -> R (or Both -> M -> S in M/S mode). Both channels are always output."
+    ch_btn["box"]["annotation_name"] = "Channel Mode"
+    ch_btn["box"]["fontsize"] = 8.5
+    sc.theme(
+        ch_btn,
+        bgcolor="live_control_bg",
+        activebgcolor="live_control_bg",
+        bgoncolor="live_control_bg",
+        activebgoncolor="live_control_bg",
+        textcolor="live_control_fg",
+        activetextcolor="live_control_fg",
+        textoncolor="live_control_fg",
+        activetextoncolor="live_control_fg",
+        bordercolor="live_lcd_frame",
+    )
+    boxes.append(ch_btn)
+    boxes.append(sc.message("obj-msg-cycle-ch", "cycle_chmode", 520, y_wire, 90))
+    lines.append(sc.line("obj-btn-chmode", 0, "obj-msg-cycle-ch"))
+    lines.append(sc.line("obj-msg-cycle-ch", 0, "obj-viz"))
     y_wire += 18
 
     for key in ("filton", "filttype", "filtfreq", "filtq", "filtgain", "msmode", "chmode"):
@@ -319,26 +362,24 @@ def build():
         boxes.append(sc.newobj(f"obj-ui-{key}", f"prepend {ui_msg}", 360, y_wire, 130))
         y_wire += 18
 
-    # Text-only popup Output Mode selector (`live.menu` with hidden triangle) next to Output above the right OUT VU column
-    auto_menu = make_text_menu(
+    # Toggle button (`live.text` like Wave/Curve) for Auto / Man Output Mode above the right OUT VU column
+    auto_btn = make_cycle_toggle(
         "auto",
-        ("Auto", "Out Mode", ["Man", "Auto"], 1),
-        "Man sets Output dB directly. Auto trims by -Input gain so Drive is an independent increase.",
-        out_x + 44, 6, 38, 15,
-        fontsize=8.0,
+        "Auto", "Out Mode", "Man", "Auto",
+        out_x + 44, 6, 38, 15, 1,
+        "Click to toggle between Auto (trims by -Input gain so Drive is an independent increase) and Man (sets Output dB directly).",
     )
-    boxes.append(auto_menu)
+    boxes.append(auto_btn)
     boxes.append(sc.newobj("obj-prep-auto", "prepend autog", 200, y_wire, 110))
     boxes.append(sc.newobj("obj-ui-auto", "prepend set_autog", 360, y_wire, 130))
     y_wire += 18
 
     # View parameter (`Curve` / `Wave`, drawn next to Sym slider inside `obj-viz`, kept off presentation)
-    view = make_text_menu(
+    view = make_cycle_toggle(
         "view",
-        ("View", "View", ["Curve", "Wave"], 0),
+        "View", "View", "Curve", "Wave",
+        20, 390, 48, 15, 0,
         "Curve shows the bipolar transfer curve and where the signal hits it. Wave shows the waveform and shaved overs.",
-        20, 390, 48, 15,
-        fontsize=8.0,
         stored_only=True,
     )
     view["box"]["presentation"] = 0

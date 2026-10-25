@@ -13,7 +13,7 @@
 //   2 inMs     post-trim mean square, L+R
 //   3 outMs    final output mean square, L+R
 //   4 clipFrac fraction of block samples sitting on the ceiling
-//   5 grDb     20*log10(drivenPeak / preMakeupPeak)
+//   5 grDb     dB the driven peak sits above the ceiling; 0 when the peak is under it
 //   6 kMsIn    K-weighted mean square, post-trim, L+R
 //   7 kMsOut   K-weighted mean square, final output, L+R
 //   8 frame    block counter, moves even in silence
@@ -29,7 +29,7 @@
 //   18 drvPkR  driven peak, channel 1
 //   19 wetPkL  pre-makeup peak, channel 0
 //   20 wetPkR  pre-makeup peak, channel 1
-//   32 + (frame % 64) * 4   driven min/max, pre-makeup min/max (left)
+//   32 + (frame % 64) * 4   driven min/max, pre-makeup min/max of the channel being clipped (both, when Both)
 //   288 + k * 2             16 pairs (post-trim left, post-makeup left)
 //   320 + b                 64 log-spaced spectrum bins (0..1 over -90..0 dB) for the XY filter spectrogram
 //   400 + (frame % 128) * 6 kMsIn, kMsOut, inMs, outMs, inPeak, outPeak
@@ -64,6 +64,36 @@ cp_curve(x, driveDb, shapePct, symPct, ceilLin) {
 	den = exp(log(1 + pw) / aUse);
 	soft = c * (u / den);
 	return (1 - knee) * hard + knee * soft;
+}
+
+// Gain reduction is how far the driven peak sits above the ceiling.
+// A soft knee that sags below the ceiling, and an STFT hop that comes out quieter, are not clipping.
+cp_clip_gr(peak, ceilLin) {
+	c = ceilLin > 1e-6 ? ceilLin : 1e-6;
+	grOut = 0;
+	if (peak > c) {
+		grOut = 20 * log10(peak / c);
+		if (grOut < 0.08) {
+			grOut = 0;
+		}
+		if (grOut > 60) {
+			grOut = 60;
+		}
+	}
+	return grOut;
+}
+
+// chmode 0 = both, 1 = left / mid, 2 = right / side.
+cp_block_gr(peakL, peakR, chmode, ceilLin) {
+	peak = peakL > peakR ? peakL : peakR;
+	if (chmode > 1.5) {
+		peak = peakR;
+	} else {
+		if (chmode > 0.5 && chmode < 1.5) {
+			peak = peakL;
+		}
+	}
+	return cp_clip_gr(peak, ceilLin);
 }
 
 // Smoothstep of bin amplitude from T/4 to T. 0 keeps the bin, 1 clips it.
@@ -386,15 +416,16 @@ cp_spec_bins(spec, sbuf, nn, rate) {
 }
 
 cp_ola_stage(stage, accL, accR, stL, stR, fx, win, nn) {
-	if (stage > 1.5) {
-		if (stage < 2.5) {
-			stft_ola(accL, stL, fx, win, nn);
-		}
+	kept = 0;
+	if (stage > 1.5 && stage < 2.5) {
+		stft_ola(accL, stL, fx, win, nn);
+		kept = accL.peek(0);
 	}
 	if (stage > 2.5) {
 		stft_ola(accR, stR, fx, win, nn);
+		kept = accR.peek(0);
 	}
-	return 0;
+	return kept;
 }
 
 cp_silence(fx, accL, accR, stL, stR, win, nn) {
@@ -404,7 +435,29 @@ cp_silence(fx, accL, accR, stL, stR, win, nn) {
 	}
 	stft_ola(accL, stL, fx, win, nn);
 	stft_ola(accR, stR, fx, win, nn);
-	return 0;
+	return accL.peek(0) + accR.peek(0);
+}
+
+// One call site for both channels. Two plain calls get treated as the same call,
+// and the right ring stays empty, so Both and R (and M/S) come out mono.
+cp_hop(ch, x0, x1, ringA, ringB, stA, stB, n) {
+	got = 0;
+	if (ch < 0.5) {
+		got = stft_in(ringA, stA, x0, n);
+	} else {
+		got = stft_in(ringB, stB, x1, n);
+	}
+	return got;
+}
+
+cp_grab(ch, fx, frm, ringA, ringB, stA, stB, win, n) {
+	if (ch < 0.5) {
+		stft_frame(fx, ringA, stA, win, n);
+	} else {
+		stft_frame(fx, ringB, stB, win, n);
+	}
+	cp_save(frm, fx, ch, n);
+	return frm.peek(0, ch);
 }
 
 Buffer scope("clipscope");
@@ -624,19 +677,20 @@ waveAlR = alDR.read(999, interp="linear");
 
 pkHop = max(pkHop, abs(xsL));
 pkHop = max(pkHop, abs(xsR));
-rdyL = stft_in(ringL, stL, xsL, 1024);
-rdyR = stft_in(ringR, stR, xsR, 1024);
-if (rdyL > 0.5) {
+hop = 0;
+for (ch = 0; ch < 2; ch += 1) {
+	hop = hop + cp_hop(ch, xsL, xsR, ringL, ringR, stL, stR, 1024);
+}
+if (hop > 0.5) {
 	if (pkHop < 1e-5) {
-		cp_silence(fx, accL, accR, stL, stR, win, 1024);
+		hop = hop + cp_silence(fx, accL, accR, stL, stR, win, 1024);
 		for (sb = 0; sb < 64; sb += 1) {
 			sbuf.poke(sbuf.peek(sb) * 0.75, sb);
 		}
 	} else {
-		stft_frame(fx, ringL, stL, win, 1024);
-		cp_save(frm, fx, 0, 1024);
-		stft_frame(fx, ringR, stR, win, 1024);
-		cp_save(frm, fx, 1, 1024);
+		for (ch = 0; ch < 2; ch += 1) {
+			hop = hop + cp_grab(ch, fx, frm, ringL, ringR, stL, stR, win, 1024);
+		}
 		thresh = cLin / gg;
 		for (stage = 0; stage < 4; stage += 1) {
 			cp_fft_prep(stage, fx, frm, spec, wgt, 1024);
@@ -645,11 +699,12 @@ if (rdyL > 0.5) {
 			if (stage > 0.5 && stage < 1.5) {
 				cp_spec_bins(spec, sbuf, 1024, srate);
 			}
-			cp_ola_stage(stage, accL, accR, stL, stR, fx, win, 1024);
+			hop = hop + cp_ola_stage(stage, accL, accR, stL, stR, fx, win, 1024);
 		}
 	}
 	pkHop = 0;
 }
+poke(scope, hop, 31, 0);
 specL = stft_out(accL, stL, 1024);
 specR = stft_out(accR, stR, 1024);
 
@@ -733,10 +788,10 @@ if (blk < 0.5) {
 	kInSq = 0;
 	kOutSq = 0;
 	clipN = 0;
-	drvMin = drvL;
-	drvMax = drvL;
-	wetMin = pre0;
-	wetMax = pre0;
+	drvMin = 0;
+	drvMax = 0;
+	wetMin = 0;
+	wetMax = 0;
 }
 // Input VU meters always show both channels (L & R in L/R mode, M & S in M/S mode)
 inPkL = max(inPkL, abs(ch0In));
@@ -758,15 +813,35 @@ wetPk = chmode > 1.5 ? wetPkR : ((chmode > 0.5 && chmode < 1.5) ? wetPkL : max(w
 inSq = inSq + trimL * trimL + trimR * trimR;
 outSq = outSq + outL * outL + outR * outR;
 clipN = clipN + hit;
-drvMin = min(drvMin, drvL);
-drvMax = max(drvMax, drvL);
-wetMin = min(wetMin, pre0);
-wetMax = max(wetMax, pre0);
+// The trace follows the channel fed to the clipper. Both spans both channels.
+// R/S draws the right, so the picture matches the button.
+waveLo = chmode > 1.5 ? drvDel1 : drvDel0;
+waveHi = waveLo;
+wetLo = chmode > 1.5 ? deEmp1 : deEmp0;
+wetHi = wetLo;
+if (chmode < 0.5) {
+	waveLo = min(drvDel0, drvDel1);
+	waveHi = max(drvDel0, drvDel1);
+	wetLo = min(deEmp0, deEmp1);
+	wetHi = max(deEmp0, deEmp1);
+}
+if (blk < 0.5) {
+	drvMin = waveLo;
+	drvMax = waveHi;
+	wetMin = wetLo;
+	wetMax = wetHi;
+}
+drvMin = min(drvMin, waveLo);
+drvMax = max(drvMax, waveHi);
+wetMin = min(wetMin, wetLo);
+wetMax = max(wetMax, wetHi);
 scat = blk - floor(blk / 16) * 16;
 if (scat < 0.5) {
 	sk = floor(blk / 16);
-	poke(scope, drvDel0 / max(gg, 1e-6), 288 + sk * 2, 0);
-	poke(scope, wetL, 289 + sk * 2, 0);
+	dotIn = chmode > 1.5 ? drvDel1 : drvDel0;
+	dotOut = chmode > 1.5 ? deEmp1 : deEmp0;
+	poke(scope, dotIn / max(gg, 1e-6), 288 + sk * 2, 0);
+	poke(scope, dotOut, 289 + sk * 2, 0);
 }
 
 tmpIn.poke(trimL, 0);
@@ -789,18 +864,7 @@ if (blk >= 256) {
 	outMs = outSq / 256;
 	kMsIn = kInSq / 256;
 	kMsOut = kOutSq / 256;
-	gr = 0;
-	// Only compute gain reduction once the latency-aligned driven signal exceeds -60 dBFS (1e-3)
-	// and is actually attenuated below the driven peak (ignore tiny STFT windowing ripple < 0.08 dB).
-	if (drvPk > 1e-3 && wetPk > 1e-5 && drvPk > wetPk * 1.009) {
-		gr = 20 * log10(drvPk / wetPk);
-		if (gr < 0.08) {
-			gr = 0;
-		}
-		if (gr > 60) {
-			gr = 60;
-		}
-	}
+	gr = cp_block_gr(drvPkL, drvPkR, chmode, cLin);
 	wslot = frame - floor(frame / 64) * 64;
 	mslot = frame - floor(frame / 128) * 128;
 	poke(scope, inPk, 0, 0);

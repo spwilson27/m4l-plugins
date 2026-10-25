@@ -18,7 +18,9 @@ function analyze(durMs) {
     var sr = lengthMs > 0 ? frames / (lengthMs / 1000) : 48000;
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var left = readCh(rec, 1, n);
+    var right = readCh(rec, 2, n);
     var peak = 0;
+    var rpeak = 0;
     var mean = 0;
     var nans = 0;
     var i;
@@ -31,18 +33,64 @@ function analyze(durMs) {
             mean += v;
         }
     }
+    for (i = 0; i < right.length; i++) {
+        var rv = right[i];
+        if (rv !== rv || rv === Infinity || rv === -Infinity) nans++;
+        else {
+            var ra = rv < 0 ? -rv : rv;
+            if (ra > rpeak) rpeak = ra;
+        }
+    }
     if (left.length) mean /= left.length;
+    var midSq = 0;
+    var sideSq = 0;
+    var nch = Math.min(left.length, right.length);
+    for (i = 0; i < nch; i++) {
+        var sm = left[i] + right[i];
+        var ss = left[i] - right[i];
+        midSq += sm * sm;
+        sideSq += ss * ss;
+    }
+    var midRms = nch ? Math.sqrt(midSq / nch) : 0;
+    var sideRms = nch ? Math.sqrt(sideSq / nch) : 0;
     var report = new File(resultPath, "write", "TEXT");
     report.eof = 0;
-    report.writestring("peak " + peak + "\nmean " + mean + "\nnan " + nans + "\ntp " + truePeak(left, 400) + "\nsr " + sr + "\nframes " + n + "\n");
+    var scope = scopeBuffer();
+    var grDb = peek1(scope, 5);
+    var drvPk = peek1(scope, 11);
+    var frameN = peek1(scope, 8);
+    report.writestring("peak " + peak + "\nrpeak " + rpeak + "\nmean " + mean + "\nnan " + nans + "\ntp " + truePeak(left, 400) + "\nsr " + sr + "\nframes " + n + "\ngr " + grDb + "\ndrvpk " + drvPk + "\nscframe " + frameN + "\nmidrms " + midRms + "\nsiderms " + sideRms + "\n");
     for (i = 1; i < jsarguments.length; i++) {
         var f = parseFloat(jsarguments[i]);
         if (!(f > 0)) continue;
         report.writestring("m" + (i - 1) + " " + goertzel(left, f, sr) + "\n");
+        report.writestring("rm" + (i - 1) + " " + goertzel(right, f, sr) + "\n");
     }
     report.close();
     post("PROBE_SHUTDOWN peak " + peak + "\n");
     outlet(0, "bang");
+}
+
+// peek(ch, index, 1) returns a number; a count above 1 returns an array.
+function peek1(buf, index) {
+    var v = buf.peek(1, index, 1);
+    if (typeof v === "number") return v;
+    if (v && v.length) return v[0];
+    return 0;
+}
+
+// #0 in a js string is literal. The patcher's buffer~ has the expanded name.
+function scopeBuffer() {
+    var found = "";
+    if (this.patcher) {
+        this.patcher.apply(function (b) {
+            if (found) return;
+            var name = "";
+            try { name = String(b.getattr("name")); } catch (e) { name = ""; }
+            if (name.indexOf("clipscope") >= 0) found = name;
+        });
+    }
+    return new Buffer(found || "#0-clipscope");
 }
 
 function readCh(buf, ch, n) {
