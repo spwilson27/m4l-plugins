@@ -1,3 +1,18 @@
+# Cepstra bugsweep — PASS-4 review (bugsweep/cepstra-pass1)
+
+## PASS-4 outcome
+
+**APPROVED** — no code adjustments. Tip before this note: `947a8b1` (fix `750abf8`).
+
+| Bug | Verdict | One-line |
+| --- | --- | --- |
+| A — stale f0 / display ignores `voiced` | **APPROVE** | `job_lift` resets `voiced=0` each frame; Auto/MIDI else clear `f0v`; display `periodSamplesNow` Auto requires `voiced`; paint/Res use helper. |
+| B — shared `#0-cepscope` | **APPROVE** | `---` rename in build/display/amxd + AGENTS/audio/probe; tests require `---` (not weakened). |
+
+Host gate re-run green: `npm run -s typecheck && python3 scripts/build_cepstra.py && node tests/test_cepstra.js` → 1627; `node tests/test_cepstra_bugsweep.js` → 15. No merge to main.
+
+---
+
 # Cepstra bugsweep — PASS-3 fixes (bugsweep/cepstra-pass1)
 
 Host gate green after PASS 3: `npm run -s typecheck && python3 scripts/build_cepstra.py && node tests/test_cepstra.js` → 1627 checks; `node tests/test_cepstra_bugsweep.js` → 15 checks.
