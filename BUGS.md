@@ -80,3 +80,35 @@ Verified by pass 1 (reading plus numeric probe); pass 2 did not reopen these; pa
   sample), so a stale hold could briefly dip the gain if True Peak is toggled
   off and back on. Pass 3 made the toggle reachable; still not promoted to a bug
   (no red written) — worth a Live listen / optional follow-up if audible.
+
+---
+
+# Clip+ bug sweep — pass 4 (final review)
+
+Worktree: `/private/tmp/bugsweep/clipplus-2` on branch `bugsweep/clipplus-pass1-2`
+Pass-3 tip: `89725e0` — restore True Peak Options control
+Pass-4 tip: (this commit) — APPROVED; no production code changes
+
+## Pass 4 outcome
+
+| Claim | Verdict | Notes |
+|-------|---------|-------|
+| Bug 1 — True Peak unreachable | **APPROVED** | Minimal Options toggle under key `truepeak` (not banned `tpeak` ids); generic loop wires `prepend tpeak` / `set_tpeak`; meters y 144→150 only layout side-effect; red assertions intact. |
+| Checked-and-cleared items | Confirm | Untouched; host suite still green. |
+| Noted (`inPk` vs post-shelf; `tpHold` decay while off) | Leave noted | Still not promoted; `tpHold` note remains valid now that the toggle exists. |
+
+**Approved 1 / adjusted 0.**
+
+## Review notes
+
+- Production change is only `scripts/build_clipplus.py` (+3/−1): one `truepeak` Options row (`gen_msg=tpeak`, `ui_msg=set_tpeak`, y=132) and meters y 144→150. `devices/Clip+.amxd` is the rebuild artifact. No hand-edit of the binary (AGENTS.md).
+- Deliberately avoids reviving banned `obj-ctrl-tpeak` / `obj-ui-tpeak`; red test still forbids those ids and green asserts a fed `prepend tpeak` exists — test not weakened.
+- Reuses the existing generic toggle loop for prep/ui boxes and wiring; no bespoke patcher code; no drive-by refactors.
+- Host gate re-run green in this pass (no Max/Live — host-side only per job rules):
+  ```
+  npm run -s typecheck && python3 scripts/build_clipplus.py && node tests/test_clipplus.js && node tests/test_clipplus_bugsweep.js
+  → Built devices/Clip+.amxd [406x169 px] (648309 bytes)
+  → test_clipplus: ok
+  → [bugsweep] true peak is reachable from a device control
+  → test_clipplus_bugsweep: ok
+  ```
