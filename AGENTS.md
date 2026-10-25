@@ -79,6 +79,10 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
 
      # Clip+ (section 29). Max audio in the VM: scripts/vm_clipplus.sh audio
      npm run -s typecheck && python3 scripts/build_clipplus.py && node tests/test_clipplus.js && python3 scripts/render_preview.py "devices/Clip+.amxd"
+
+     # Amp+ (section 30). Max audio in the VM: scripts/vm_ampplus.sh audio
+     # The neural~ external is built once with scripts/build_neural_external.sh (MIT, apresta/neural_tilde).
+     npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && python3 scripts/render_preview.py "devices/Amp+.amxd"
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -1899,4 +1903,15 @@ Face, 418×169 (at default 240 px Mid Size), widening +120 px when the left `Fil
 ```bash
 npm run -s typecheck && python3 scripts/build_clipplus.py && node tests/test_clipplus.js && python3 scripts/render_preview.py "devices/Clip+.amxd"
 scripts/vm_clipplus.sh audio
+```
+
+## 30. Architecture of `devices/Amp+.amxd`
+
+Guitar amp in the shape of Ableton's Amp: seven types (Clean, Boost, Blues, Rock, Lead, Heavy, Bass), Gain, Bass, Mid, Treble, Presence, Volume, and a cabinet with size, Dynamic/Condenser mic and cone position. Each type loads one Neural Amp Modeler `.nam` capture through the MIT `neural~` external (`devices/neural~.mxo`, built by `scripts/build_neural_external.sh` from [apresta/neural_tilde](https://github.com/apresta/neural_tilde)). The captures sit beside the device in `devices/ampplus_models/` and are unmodified GPL-3.0 files from [pelennor2170/NAM_models](https://github.com/pelennor2170/NAM_models) (`COPYING`, `NOTICE.json`). The face resolves `ampplus_models/<type>.nam` against the `.amxd`'s folder, so the models folder has to stay next to the device.
+
+Signal: stereo in is summed, Gain (±18 dB around the capture's own level, 50% = 0 dB, smoothed) hits `neural~`, then `src/ampplus_core.genexpr` does a DC block, the tone stack (50% is flat: bass shelf 110 Hz ±12 dB, mid peak 750 Hz ±12 dB, treble shelf 2.2 kHz ±12 dB, presence shelf 4.5 kHz ±8 dB), the cabinet (highpass, lowpass, one presence peak; off is a crossfade to dry) and Volume (100% unity, a 2.5-power curve, 0% silence). Output is dual mono. `neural~` passes audio through until a model is loaded, reports `loaded` / `error` to the amp-head jewel, and is asked to `prewarm` after a successful load. Clicking the left or right half of the amp head steps the type. Quality is fixed at 1 (full) for slimmable A2 models; the bundled captures are WaveNet and ignore it.
+
+```bash
+npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && python3 scripts/render_preview.py "devices/Amp+.amxd"
+scripts/vm_ampplus.sh audio
 ```

@@ -1,0 +1,14 @@
+{
+  "license": "GPL-3.0-only",
+  "source": "https://github.com/pelennor2170/NAM_models",
+  "note": "The .nam files in this folder are unmodified community Neural Amp Modeler captures. They are GPL-3.0, separate from the Amp+ device source. COPYING is the license text. Each capture is used as one Ableton-Amp-style type.",
+  "models": [
+    {"file": "clean.nam", "type": "Clean", "capture": "Twin Verb", "credit": "Tim R", "source": "Tim R Fender TwinVerb Norm Bright.nam"},
+    {"file": "boost.nam", "type": "Boost", "capture": "AC15 Top Boost", "credit": "Phillipe P", "source": "Phillipe P VOXAC15-TopBoost.nam"},
+    {"file": "blues.nam", "type": "Blues", "capture": "King Kong 60s", "credit": "George B", "source": "George B Ceriatone King Kong Channel 1 60s mode.nam"},
+    {"file": "rock.nam", "type": "Rock", "capture": "JCM2000 Crunch", "credit": "Tim R", "source": "Tim R JCM2000 Crunch.nam"},
+    {"file": "lead.nam", "type": "Lead", "capture": "Mark IV", "credit": "Roman A", "source": "Roman A LT_MESA_MARKIV_1.nam"},
+    {"file": "heavy.nam", "type": "Heavy", "capture": "5150", "credit": "Helga B", "source": "Helga B 5150 BlockLetter - NoBoost.nam"},
+    {"file": "bass.nam", "type": "Bass", "capture": "dUg Bass Pre", "credit": "Jason Z", "source": "Jason Z Tech21 dUg DP3X bass preamp pedal all dimed no shift.nam"}
+  ]
+}
