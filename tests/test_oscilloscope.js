@@ -538,4 +538,19 @@ ctx.ondrag(guideX, guideY + 8, 1);
 ok(Math.abs(ctx.oscTrigLevel - 0.5) < 0.2, "a short drag from the padded guide stays near the level");
 ctx.ondrag(guideX, guideY + 8, 0);
 
+// ---------------------------------------------------------------------------------------------
+// 7. Trigger level persistence across save / reload (bugsweep pass 1 RED)
+//    The trigger level is a sticky user control (drag the LCD to arm it, double-click to clear it)
+//    that drives the trigger lock and paints a guide line. Every other face control round-trips
+//    through getvalueof/setvalueof, but oscTrigLevel is never serialized, so an armed trigger
+//    silently resets to 0 whenever the Live set is saved and reopened. The parent Analyzer face
+//    persists its trigger, so the Oscilloscope dropping it is a regression, not a design choice.
+// ---------------------------------------------------------------------------------------------
+ctx.setvalueof(4, 0, 0, 0, 1, 30, 0.0, 0);
+ctx.oscTrigLevel = 0.42;
+const trigBlob = ctx.getvalueof();
+ctx.oscTrigLevel = 0;
+ctx.setvalueof.apply(null, Array.isArray(trigBlob) ? trigBlob : [trigBlob]);
+near(ctx.oscTrigLevel, 0.42, 1e-6, "trigger level survives a getvalueof/setvalueof round-trip");
+
 console.log("oscilloscope: " + checks + " checks passed");
