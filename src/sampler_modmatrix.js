@@ -260,7 +260,10 @@ function modCellKey(mode, row, src) { return mode + ":" + row + ":" + src; }
 // polar maps the same key to 1 when the cell is flipped off its natural polarity (src id + 32).
 // globalAmt is the Global Amount percent (100 = unity). Legacy cells are skipped.
 function modPack(rows, depth, globalAmt, polar) {
-    var g = Math.max(0, Math.min(2, (Number(globalAmt) || 100) / 100));
+    var pct = Number(globalAmt);
+    // 0% is no modulation. `|| 100` kept a full-scale matrix.
+    if (isNaN(pct)) pct = 100;
+    var g = Math.max(0, Math.min(2, pct / 100));
     var audio = [];
     var modes = MOD_MODES;
     var targeted = {};

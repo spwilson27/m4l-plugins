@@ -274,6 +274,8 @@ assert(stFree[5] >= 12, `Freehand brush only created ${stFree[5]} points across 
 drawMode = 0;
 
 // Test 5 (Regression Bug #3): Sync mode aligns phase with timeline (1-PPQ ticks) instead of resetting to 0 on play
+ratesync(0); // 1/64. `Number(0) || 9` used to jump this to 1/4 (2 Hz at 120 bpm).
+assert.ok(Math.abs(outletsOut[1][0] - 32) < 0.01, "sync rate 0 (1/64 at 120 bpm) is 32 Hz, got " + outletsOut[1][0]);
 ratesync(12); // 1 Bar = 4.0 beats
 ratemode(1);  // Sync mode
 outletHistory0 = [];

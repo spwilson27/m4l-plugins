@@ -1,11 +1,12 @@
-// File drag for Better Sampler Reactive 2. Same JSON protocol as XO's helper, but a drag starts in
-// mouseDragged with that event. The old tracking loop called beginDraggingSession with the original
-// mouseDown after the mouse had already moved, and Ableton never accepted the drop.
+// File drag for Better Sampler Reactive 2. The gesture is XO's (xo_node_engine.js): a 16x16
+// non-activating panel at NSStatusWindowLevel sits under the cursor. A sample-name click
+// (mode selected_raw) tracks until the mouse moves, then beginDraggingSession with that
+// original mouseDown. A click that never moves prints REPLAY_CLICK.
 //
 //   clang -O2 -framework Cocoa -framework ApplicationServices scripts/bs_drag_helper.m -o /tmp/bs_drag_helper_v1_bin
 //
-// stdin: one JSON object per line. {"cmd":"arm","mode":"selected_raw","paths":["/file.wav"],"w":80,"h":15,"stateFile":"..."}
-// {"cmd":"disarm"}. stdout: REPLAY_CLICK on a click that did not drag, END <operation> when a drag finishes.
+// stdin: one JSON object per line. {"cmd":"arm","mode":"selected_raw","paths":["/file.wav"],"w":16,"h":16,"stateFile":"..."}
+// {"cmd":"disarm"}. stdout: READY at launch, REPLAY_CLICK on a click that did not drag, END <operation> when a drag finishes.
 #import <Cocoa/Cocoa.h>
 #import <ApplicationServices/ApplicationServices.h>
 
@@ -35,30 +36,36 @@
 - (void)mouseDown:(NSEvent *)event {
     self.mouseDownEvent = event;
     self.didDrag = NO;
-    // Dedicated drag buttons start immediately. The sample name waits so a click can still open the file dialog.
+    // Dedicated drag buttons start immediately on mouseDown. Same as XO.
     if (![self.dragMode isEqualToString:@"selected_raw"]) {
         self.didDrag = YES;
         [self initiateOSFileDrag:event];
+        return;
     }
-}
-
-- (void)mouseDragged:(NSEvent *)event {
-    if (self.didDrag) return;
-    if (![self.dragMode isEqualToString:@"selected_raw"]) return;
-    NSPoint a = [self.mouseDownEvent locationInWindow];
-    NSPoint b = [event locationInWindow];
-    CGFloat dx = b.x - a.x, dy = b.y - a.y;
-    if (dx * dx + dy * dy < 9.0) return;
-    self.didDrag = YES;
-    [self initiateOSFileDrag:event];
-}
-
-- (void)mouseUp:(NSEvent *)event {
-    if (self.didDrag) return;
-    if (![self.dragMode isEqualToString:@"selected_raw"]) return;
-    [[self window] orderOut:nil];
-    fprintf(stdout, "REPLAY_CLICK\n");
-    fflush(stdout);
+    // Sample name: track mouseDragged vs mouseUp so a drag starts an OS file drag and a
+    // click that never moves can still open the file dialog. The session uses the original
+    // mouseDown, which is the event XO passes and the one Live accepts from this panel.
+    [[self window] trackEventsMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)
+                                   timeout:4.0
+                                      mode:NSEventTrackingRunLoopMode
+                                   handler:^(NSEvent * _Nullable ev, BOOL * _Nonnull stop) {
+        if (!ev) {
+            *stop = YES;
+            return;
+        }
+        if (ev.type == NSEventTypeLeftMouseDragged) {
+            self.didDrag = YES;
+            *stop = YES;
+            [self initiateOSFileDrag:event];
+        } else if (ev.type == NSEventTypeLeftMouseUp) {
+            *stop = YES;
+            [[self window] orderOut:nil];
+            if (!self.didDrag) {
+                fprintf(stdout, "REPLAY_CLICK\n");
+                fflush(stdout);
+            }
+        }
+    }];
 }
 
 - (void)initiateOSFileDrag:(NSEvent *)event {

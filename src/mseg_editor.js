@@ -754,7 +754,10 @@ function ratehz(f) {
 }
 
 function ratesync(s) {
-    let newSync = Math.max(0, Math.min(SYNC_BEATS.length - 1, Math.round(Number(s) || 9)));
+    let n = Math.round(Number(s));
+    // Index 0 is 1/64. `|| 9` turned that into 1/4.
+    if (isNaN(n)) n = 9;
+    let newSync = Math.max(0, Math.min(SYNC_BEATS.length - 1, n));
     let changed = (newSync !== rateSync);
     rateSync = newSync;
     updateRateOutput();

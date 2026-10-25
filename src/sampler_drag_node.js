@@ -1,10 +1,12 @@
 /**
  * File drag for Better Sampler Reactive 2. DRAG_HELPER_SOURCE is scripts/bs_drag_helper.m,
- * injected at build time. A drag starts in mouseDragged so Ableton accepts the file.
+ * injected at build time. The helper is XO's: a 16×16 panel under the cursor, and the drag
+ * session starts from the original mouseDown.
  *
  * Inlet: `arm <w> <h> <path…>` while the pointer is over the sample name, `disarm` when it
- * moves onto another control. `arm` uses mode selected_raw: a drag starts an OS file drag of
- * that path, a click without a drag prints REPLAY_CLICK, forwarded as `name_click`.
+ * moves onto another control. `arm <w> <h> handoff <path…>` is the face handing over a drag
+ * it already owns. Mode is selected_raw: a drag starts an OS file drag of that path, a click
+ * without a drag prints REPLAY_CLICK, forwarded as `name_click`.
  */
 "use strict";
 
@@ -70,16 +72,19 @@ function send(payload) {
 Max.addHandler("arm", (w, h, ...rest) => {
   const ww = Number(w);
   const hh = Number(h);
-  let width = 16;
-  let height = 16;
+  let parts = rest;
+  let handoff = false;
   let filePath = "";
   if (Number.isFinite(ww) && Number.isFinite(hh) && rest.length) {
-    width = Math.max(16, Math.min(240, ww));
-    height = Math.max(14, Math.min(40, hh));
-    filePath = rest.map((p) => String(p)).join(" ").trim();
+    parts = rest.slice();
   } else {
-    filePath = [w, h, ...rest].filter((p) => p !== undefined).map((p) => String(p)).join(" ").trim();
+    parts = [w, h, ...rest].filter((p) => p !== undefined);
   }
+  if (String(parts[0]) === "handoff") {
+    handoff = true;
+    parts = parts.slice(1);
+  }
+  filePath = parts.map((p) => String(p)).join(" ").trim();
   if (!filePath) {
     send({ cmd: "disarm" });
     return;
@@ -88,8 +93,10 @@ Max.addHandler("arm", (w, h, ...rest) => {
     cmd: "arm",
     mode: "selected_raw",
     paths: [filePath],
-    w: width,
-    h: height,
+    // XO's panel is 16×16, centered on the cursor, so the click lands on it.
+    w: 16,
+    h: 16,
+    handoff: handoff,
     stateFile: path.join(EXPORT_DIR, "last_drag_helper_state.json")
   });
 });

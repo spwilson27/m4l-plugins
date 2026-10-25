@@ -54,7 +54,9 @@ const FP = sb.FACE_PARAMS;
     const node = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-drag-node");
     assert.ok(node && node.maxclass === "node.codebox" && node.ignoreclick === 1, "reactive2 embeds the file-drag node");
     assert.ok(String(node.code).includes("bs_drag_helper_v1_bin") && String(node.code).includes("selected_raw"), "drag node embeds the sampler file-drag helper");
-    assert.ok(String(node.code).includes("mouseDragged") && !String(node.code).includes("trackEventsMatchingMask"), "a file drag starts from mouseDragged");
+    assert.ok(String(node.code).includes("trackEventsMatchingMask") && String(node.code).includes("[self initiateOSFileDrag:event]"), "a file drag starts from the original mouseDown, like XO");
+    assert.ok(String(node.code).includes("NSStatusWindowLevel") && !String(node.code).includes("NSPopUpMenuWindowLevel"), "the drag panel uses XO's status window level");
+    assert.ok(String(node.code).includes("handoff"), "a drag the face already owns is handed to the helper");
     const vizRoute = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-route-viz").text.split(/\s+/).slice(1);
     assert.deepStrictEqual(vizRoute.slice(-2), ["arm_drag", "disarm_drag"], "drag messages are appended to the viz route");
     const linked = (a, ao, b, bo) => patcher.lines.some((l) => l.patchline.source[0] === a && l.patchline.source[1] === ao && l.patchline.destination[0] === b && l.patchline.destination[1] === bo);
@@ -488,14 +490,47 @@ sb.setFoldMask(0b1011);
     sb.oscTab = 0;
     sb.paint();
     const browsed = emitted.length;
-    sb.nameClick();
+    sb.onclick(name.x + 4, name.y + 4, 1, 0, 0);
+    assert.ok(!emitted.slice(browsed).some((a) => a[1] === "browse"), "pressing the name does not open the file dialog");
+    sb.ondrag(name.x + 24, name.y + 8, 1, 0, 0);
+    const handed = emitted.slice(browsed).find((a) => a[1] === "arm_drag" && a[4] === "handoff");
+    assert.ok(handed && handed[5] === sb.sampleFilePath, "the first pixel of a drag hands the file to the helper");
+    sb.ondrag(name.x + 24, name.y + 8, 0, 0, 0);
+    assert.ok(!emitted.slice(browsed).some((a) => a[1] === "browse"), "dragging the name does not open the file dialog");
+    sb.onclick(name.x + 4, name.y + 4, 1, 0, 0);
+    sb.ondrag(name.x + 5, name.y + 5, 0, 0, 0);
     assert.ok(emitted.slice(browsed).some((a) => a[1] === "browse"), "a click on the name opens the file dialog");
+    sb.nameClick();
+    assert.ok(emitted.slice(browsed).filter((a) => a[1] === "browse").length >= 2, "the drag helper's click still opens the file dialog");
     sb.ondblclick(name.x + 4, name.y + 4);
     assert.ok(!emitted.slice(browsed).some((a) => a[1] === "show_view"), "a double-click does not try to reveal the file in the browser");
     sb.sampleFileName = "Pad.wav";
     sb.sampleFilePath = "/Users/test/Pad.wav";
     sb.osc2Loaded = 0;
     sb.oscTab = 0;
+}
+
+// A sample used as a wavetable is scaled so its loudest frame is full scale. One gain for the whole table.
+{
+    const quiet = [0.2, -0.5, 0.1, 0.25];
+    const norm = sb.wtNormalizeFrames(quiet);
+    near(norm.gain, 2, 1e-9, "gain is 1 / peak");
+    near(norm.samples[1], -1, 1e-9, "the loudest sample reaches full scale");
+    near(norm.samples[0], 0.4, 1e-9, "quieter samples keep the same ratio");
+    const full = sb.wtNormalizeFrames([0.3, 1, -0.2]);
+    near(full.gain, 1, 1e-9, "a table already at full scale is unchanged");
+    const hot = sb.wtNormalizeFrames([2, -0.5]);
+    near(hot.samples[0], 1, 1e-9, "a hot sample is brought down to full scale");
+    assert.strictEqual(sb.wtNormFromPeak(0), 1, "silence is left alone");
+    sb.oscTab = 0;
+    sb.setParamFromFace("osc1_type", 1);
+    sb.wtSelect(0, sb.WT_USER, 0);
+    near(sb.wtNorm[0], 20, 1e-6, "the loaded sample peaking at 0.05 normalizes to full scale");
+    near(sb.wtDisplaySample(0.2, 0), 1, 1e-4, "the wavetable view shows the normalized frame");
+    const sent = emitted.filter((a) => a[1] === "wt_msg" && a[2] === "wt1_norm").pop();
+    assert.ok(sent && Math.abs(sent[3] - 20) < 1e-6, "the normalized gain is sent to the oscillator");
+    sb.wtSelect(0, 0, 0);
+    sb.setParamFromFace("osc1_type", 0);
 }
 
 // --- Mod Matrix target label static fill and live modulation sum bar ---

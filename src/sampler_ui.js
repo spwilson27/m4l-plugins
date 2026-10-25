@@ -135,7 +135,8 @@ function applyStateSnapshot(snap) {
     curLoopEnd = snap.curLoopEnd;
     curXfade = snap.curXfade;
     curPlayPos = snap.curPlayPos;
-    if (snap.sliceMarkers && snap.sliceMarkers.length) {
+    // An empty list is a real undo target: the last marker was removed.
+    if (Array.isArray(snap.sliceMarkers)) {
         sliceMarkers = snap.sliceMarkers.slice();
     }
     paramVals.mode = curMode;
@@ -1385,13 +1386,16 @@ function setvalueof() {
         curPlayPos = Math.max(0, Math.min(1.0, a[8] / 10000.0));
         envPage = Math.max(0, Math.min(3, Math.round(a[9])));
         if (typeof abOnParam === "function") abOnParam("env_page");
-        var sCount = Math.max(1, Math.min(32, Math.round(a[10])));
+        // 0 is a real count (every marker removed). max(1, ...) read the sample path as a marker.
+        var sCount = Math.round(Number(a[10]));
+        if (!(sCount >= 0)) sCount = 0;
+        if (sCount > 32) sCount = 32;
         if (a.length >= 11 + sCount) {
             var restored = [];
             for (var i = 0; i < sCount; i++) {
                 restored.push(Math.max(0, Math.min(0.999, a[11 + i] / 10000.0)));
             }
-            if (restored.length > 0) sliceMarkers = restored;
+            sliceMarkers = restored;
             // v2 appends the dropped sample path after the slice markers
             var pathAt = 11 + sCount;
             if (ver >= 2 && a.length > pathAt && String(a[pathAt]).length > 0) {
@@ -1400,7 +1404,8 @@ function setvalueof() {
                 sampleFilePath = p;
                 sampleFileName = parts[parts.length - 1] || p;
                 restorePath = p;
-                restoredSlices = restored.length > 0 ? restored.slice() : null;
+                // Keep [] so the reload refresh does not invent markers.
+                restoredSlices = restored.slice();
                 outlet(0, "load_sample", p);
             }
         }

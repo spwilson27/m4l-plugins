@@ -635,6 +635,7 @@ function sample2_loaded(fPath) {
         osc2FileName = o2n[o2n.length - 1] || osc2FilePath;
     }
     refreshOsc2Waveform();
+    if (wtSel[1].cat === WT_USER) wtNormalizeUser(1);
     if (typeof notifyclients === "function") notifyclients();
     if (typeof mgraphics !== "undefined") mgraphics.redraw();
 }
@@ -918,20 +919,80 @@ function wtDisplaySample(ph, pos01) {
     var bufName = user ? (i ? OSC2_BUF : sampBufName) : (i ? "#0-bswt2" : "#0-bswt1");
     if (frames >= 1 && bufName) {
         var s = wtPeekCycle(bufName, ph, pos01, frames);
-        if (s !== null && isFinite(s)) return s;
+        if (s !== null && isFinite(s)) return s * (user ? wtNorm[i] : 1);
     }
     return wtProcedural(ph, pos01);
 }
 
 function wtSendAll() {
-    var key = wtFrames[0] + ":" + wtUserFlag[0] + ":" + wtFrames[1] + ":" + wtUserFlag[1];
+    var key = wtFrames[0] + ":" + wtUserFlag[0] + ":" + wtNorm[0] + ":" + wtFrames[1] + ":" + wtUserFlag[1] + ":" + wtNorm[1];
     if (key === wtSendKey) return;
     wtSendKey = key;
     if (typeof outlet !== "function") return;
     outlet(0, "wt_msg", "wt1_frames", wtFrames[0]);
     outlet(0, "wt_msg", "wt1_user", wtUserFlag[0]);
+    outlet(0, "wt_msg", "wt1_norm", wtNorm[0]);
     outlet(0, "wt_msg", "wt2_frames", wtFrames[1]);
     outlet(0, "wt_msg", "wt2_user", wtUserFlag[1]);
+    outlet(0, "wt_msg", "wt2_norm", wtNorm[1]);
+}
+
+// Scale a user wavetable so its loudest sample is full scale. One gain for the whole table:
+// quiet frames stay quiet relative to the peak, and at least one frame reaches peak amplitude.
+var wtNorm = [1, 1];
+var wtNormJob = [null, null];
+function wtNormFromPeak(peak) {
+    if (!(peak > 1e-8)) return 1;
+    var g = 1 / peak;
+    if (g > 1000) return 1000;
+    return g;
+}
+function wtNormalizeFrames(samples) {
+    var peak = 0, i, a, g, out;
+    for (i = 0; i < samples.length; i++) {
+        a = samples[i] < 0 ? -samples[i] : samples[i];
+        if (a > peak) peak = a;
+    }
+    g = wtNormFromPeak(peak);
+    out = new Array(samples.length);
+    for (i = 0; i < samples.length; i++) out[i] = samples[i] * g;
+    return { peak: peak, gain: g, samples: out };
+}
+function wtNormalizeUser(i) {
+    if (wtNormJob[i] && wtNormJob[i].task && typeof wtNormJob[i].task.cancel === "function") wtNormJob[i].task.cancel();
+    wtNormJob[i] = null;
+    if (!wtSel[i] || wtSel[i].cat !== WT_USER) { wtNorm[i] = 1; return; }
+    var frames = wtUserFrames(i);
+    var n = frames * WT_FRAME;
+    var name = i ? OSC2_BUF : sampBufName;
+    if (!name || n < WT_FRAME || typeof Buffer === "undefined") { wtNorm[i] = 1; return; }
+    var job = { i: i, name: name, n: n, pos: 0, peak: 0, task: null };
+    wtNormJob[i] = job;
+    var step = function () {
+        if (wtNormJob[i] !== job) return true;
+        try {
+            var b = new Buffer(job.name);
+            var len = Math.min(65536, job.n - job.pos);
+            var d = b.peek(1, job.pos, len);
+            var k, v;
+            for (k = 0; k < len; k++) { v = d[k]; if (v < 0) v = -v; if (v > job.peak) job.peak = v; }
+            job.pos += len;
+        } catch (eN) {
+            wtNormJob[i] = null;
+            wtNorm[i] = 1;
+            return true;
+        }
+        if (job.pos < job.n) return false;
+        wtNorm[i] = wtNormFromPeak(job.peak);
+        wtNormJob[i] = null;
+        wtSendKey = "";
+        wtSendAll();
+        if (typeof mgraphics !== "undefined") mgraphics.redraw();
+        return true;
+    };
+    if (n <= 262144 || typeof Task !== "function") { while (!step()) {} return; }
+    job.task = new Task(function () { if (!step()) job.task.schedule(1); });
+    job.task.schedule(1);
 }
 
 function wtMaybeSend() {
@@ -969,8 +1030,10 @@ function wtApplyOsc(i) {
         wtUserFlag[i] = 1;
         wtFrames[i] = 0;
         wtLoadedPath[i] = "";
+        wtNormalizeUser(i);
     } else {
         wtUserFlag[i] = 0;
+        wtNorm[i] = 1;
         var path = wtFilePath(sel.cat, sel.idx);
         if (path && path !== wtLoadedPath[i] && typeof hostPatcher !== "undefined" && hostPatcher) {
             var box = hostPatcher.getnamed(i ? "obj-buf-wt2" : "obj-buf-wt1");
@@ -2147,7 +2210,9 @@ sample_loaded = function () {
     viewZoom = 1.0; viewX0 = 0.0; panState = null; detail = null;
     if (peakJob && peakJob.task && typeof peakJob.task.cancel === "function") peakJob.task.cancel();
     peakJob = null;
-    return sharedSampleLoaded.apply(null, arrayfromargs(arguments));
+    var loaded = sharedSampleLoaded.apply(null, arrayfromargs(arguments));
+    if (wtSel[0].cat === WT_USER) wtNormalizeUser(0);
+    return loaded;
 };
 
 
@@ -4887,9 +4952,13 @@ function showingSamplePath() {
     return hasLoadedSample ? String(sampleFilePath || "") : "";
 }
 
-// A click on the name opens the file dialog. Live's browser has no call that selects a file
-// (BrowserItem.is_selected is read-only, and load_item would put it on a track), so a double-click
-// does not try to reveal it. The drag helper's REPLAY_CLICK arrives as name_click.
+// Same gesture as XO's sample preview. Hover arms a 16×16 panel under the cursor; that panel
+// starts the file drag from the original mouse-down. If the face still receives the click, a
+// press only records the point, the first pixel of movement hands the file to the panel
+// (`handoff`), and a release that never moved opens the file dialog. Live's browser has no
+// call that selects a file, so a double-click does not try to reveal it. The helper's
+// REPLAY_CLICK arrives as name_click.
+var namePress = null;
 function nameClick() {
     browseSlot = (oscTab === 1) ? 1 : 0;
     outlet(0, "browse", "bang");
@@ -4916,7 +4985,7 @@ function disarmSampleDrag() {
 
 var sharedDoAction = doAction;
 doAction = function (z) {
-    if (z && z.action === "browse") { nameClick(); return; }
+    if (z && z.action === "browse") return;
     if (z.action === "menu" && z.wtList) {
         if (openMenu && openMenu.key === z.key) { openMenu = null; mgraphics.redraw(); return; }
         var names = z.which === "cat" ? WT_CATS.slice() : wtTableNames(wtSel[z.osc].cat);
@@ -5075,6 +5144,12 @@ setParamFromFace = function (key, v) {
 
 onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
     var z = zoneAt(x, y);
+    if (z && z.action === "browse" && !openMenu) {
+        namePress = { x: x, y: y, moved: false };
+        drag = null;
+        return;
+    }
+    namePress = null;
     msegKeyOn = msegHit(z) ? 1 : 0;
     matSuppressTouch = zoneInOpenMatrix(z) ? 1 : 0;
     panState = null;                                          // a stale pan (release not delivered) must not hijack this gesture
@@ -5277,6 +5352,21 @@ function onwheel(x, y) {
 }
 
 ondrag = function (x, y, but, cmd, shift) {
+    if (namePress) {
+        if (!but) {
+            var openDialog = !namePress.moved;
+            namePress = null;
+            if (openDialog) nameClick();
+            return;
+        }
+        // XO's preview: the first pixel of movement starts the file drag, and the release does not.
+        if (!namePress.moved && (Math.abs(x - namePress.x) >= 1 || Math.abs(y - namePress.y) >= 1)) {
+            namePress.moved = true;
+            var dragPath = showingSamplePath();
+            if (dragPath) outlet(0, "arm_drag", 16, 16, "handoff", dragPath);
+        }
+        return;
+    }
     if (sbDrag) {
         if (!but) {
             sbDrag = null;

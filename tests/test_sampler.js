@@ -1345,6 +1345,31 @@ function knobKeys(ctx) { return ctx.sb.hitZones.filter((z) => z.kind === "knob")
     assert.deepStrictEqual(Array.from(sb.getvalueof().slice(0, 11)), Array.from(saved.slice(0, 11)), "round-trip is stable");
     sb.paint();
 
+    // A saved slice count of 0 is real: the path sits in the next slot. Treating 0 as 1
+    // reads the path as a marker and drops the sample.
+    sb.sliceMarkers = [];
+    sb.dropfile("/Users/test/Drums/Kick.wav");
+    const noSlices = sb.getvalueof();
+    assert.strictEqual(noSlices[10], 0, "empty marker list is stored as count 0");
+    assert.strictEqual(noSlices[noSlices.length - 1], "/Users/test/Drums/Kick.wav");
+    sb.sliceMarkers = [0, 0.5];
+    sb.sampleFilePath = "";
+    sb.sampleFileName = "";
+    emitted.length = 0;
+    sb.setvalueof.apply(sb, noSlices);
+    assert.strictEqual(sb.sliceMarkers.length, 0, "reloaded slice count of 0 stays empty, got " + sb.sliceMarkers.length);
+    assert.strictEqual(sb.sampleFilePath, "/Users/test/Drums/Kick.wav", "path after a zero count is still the path");
+    assert.ok(emitted.some((a) => a[1] === "load_sample" && a[2] === "/Users/test/Drums/Kick.wav"), "zero slices still reloads the sample");
+    sb.sample_loaded("/Users/test/Drums/Kick.wav");
+    assert.strictEqual(sb.sliceMarkers.length, 0, "reload refresh keeps the saved empty marker list");
+
+    // Undo of the last marker must be able to land on an empty list.
+    sb.sliceMarkers = [];
+    sb.pushUndoState();
+    sb.sliceMarkers = [0.4];
+    sb.performUndo();
+    assert.strictEqual(sb.sliceMarkers.length, 0, "undo clears the last marker");
+
     // v1 blobs (no path) still parse and never load
     emitted.length = 0;
     sb.setvalueof(1, 2, 1000, 9000, 0, 0, 10000, 0, 0, 3, 2, 0, 5000);

@@ -28,6 +28,9 @@ const marker = mx.modPack({ 1: ["play_pos"], 2: [], 3: [] }, { "1:0:4": -25 }, 2
 assert.strictEqual(marker[6], 1, "playhead modulation is smoothed");
 assert.ok(Math.abs(marker[3] - (-0.5)) < 1e-9, "global amount 200% doubles the depth");
 
+const silent = mx.modPack({ 1: ["osc1_pan"], 2: [], 3: [] }, { "1:0:4": 50 }, 0);
+assert.strictEqual(silent[0], 0, "Global Amount 0% packs no routes, got " + silent[0]);
+
 const depthRows = { 1: ["osc1_pan", "cell:1:0:4"], 2: [], 3: [] };
 const depth = mx.modPack(depthRows, { "1:1:3": 40 }, 100);
 assert.strictEqual(depth[0], 2, "a zero cell stays packed when another row targets it");

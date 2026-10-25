@@ -98,7 +98,7 @@ class Helper:
         else:
             fail("drag helper did not start: %s" % read(HELPER_OUT))
 
-    def arm(self, x, y):
+    def arm(self, x, y, handoff=False):
         mo._mouse(5, x, y)
         time.sleep(0.2)
         try:
@@ -107,7 +107,7 @@ class Helper:
             pass
         line = json.dumps({
             "cmd": "arm", "mode": "selected_raw", "paths": [WAV],
-            "w": 80, "h": 18, "stateFile": STATE,
+            "w": 16, "h": 16, "handoff": handoff, "stateFile": STATE,
         }) + "\n"
         self.proc.stdin.write(line.encode())
         self.proc.stdin.flush()
@@ -190,6 +190,8 @@ def main():
         sy = SINK_AT[1] + SINK_AT[3] // 2
         slow_drag(START[0], START[1], sx, sy)
         out = helper.wait_out("END", mark)
+        if "REPLAY_CLICK" in out:
+            fail("a drag was treated as a click: %r" % out)
         sink_out = read(SINK_OUT)
         if ("DROP " + WAV) not in sink_out:
             fail("sink did not receive the wav: %r helper %r" % (sink_out, out))
@@ -206,6 +208,8 @@ def main():
         slow_drag(START[0], START[1], tx, ty)
         out = helper.wait_out("END", mark, 6)
         op = re.search(r"END (\d+)", out)
+        if "REPLAY_CLICK" in out:
+            fail("the Live drag was treated as a click: %r" % out)
         if not op:
             fail("Live drag produced no result at %s,%s: %r" % (tx, ty, out))
         if int(op.group(1)) == 0:
