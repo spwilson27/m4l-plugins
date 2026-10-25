@@ -67,8 +67,8 @@ eq(cfg.EQP_GAIN_MAX, 36, "gain max");
 eq(cfg.EQP_Q_MIN, 0.1, "Q min");
 eq(cfg.EQP_Q_MAX, 40, "Q max");
 near(cfg.EQP_Q_DEFAULT, 0.7071, 1e-9, "default Q");
-eq(cfg.EQP_SHIFT_MIN, -36, "shift min");
-eq(cfg.EQP_SHIFT_MAX, 36, "shift max");
+eq(cfg.EQP_SHIFT_MIN, -64, "shift min");
+eq(cfg.EQP_SHIFT_MAX, 64, "shift max");
 eq(cfg.EQP_OUTGAIN_MIN, -24, "output gain min");
 eq(cfg.EQP_OUTGAIN_MAX, 24, "output gain max");
 deep(cfg.EQP_RANGES, [12, 24, 36], "display ranges");
@@ -79,7 +79,7 @@ deep(cfg.EQP_TILTS, [0, 3, 4.5, 6], "tilt amounts");
 deep(cfg.EQP_MODES, MODES, "13 filter modes");
 deep(cfg.EQP_DEFAULT_BAND_FREQS, [60, 125, 250, 500, 1000, 2000, 4000, 8000], "default band frequencies");
 eq(cfg.EQP_CFG_STRIDE, 8, "config stride");
-eq(cfg.EQP_CFG_SIZE, 64, "config buffer size");
+eq(cfg.EQP_CFG_SIZE, 128, "config buffer holds both curves");
 eq(cfg.EQP_SPEC_RING, 8192, "spectrum ring");
 eq(cfg.EQP_SPEC_BUF_FRAMES, 8200, "spectrum buffer frames");
 deep([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(cfg.eqpModePoles), [0, 1, 1, 2, 4, 1, 1, 1, 1, 1, 1, 2, 4], "cascaded section counts");
@@ -103,6 +103,8 @@ near(cfg.eqpEffectiveFreq(500, 12), 1000, 1e-6, "+12 st doubles frequency");
 near(cfg.eqpEffectiveFreq(1000, -12), 500, 1e-6, "-12 st halves frequency");
 near(cfg.eqpEffectiveFreq(18000, 12), 20000, 1e-4, "shift clamps at 20 kHz");
 near(cfg.eqpEffectiveFreq(30, -36), 20, 1e-6, "shift clamps at 20 Hz");
+near(cfg.eqpEffectiveFreq(1000, 64), 20000, 1e-4, "shift +64 clamps at 20 kHz");
+near(cfg.eqpEffectiveFreq(50, -64), 20, 1e-4, "shift -64 clamps at 20 Hz");
 
 near(cfg.eqpEffectiveQ(1.5, 12, 1, 6), 3, 1e-9, "Adaptive-Q doubles Q at +12 dB");
 near(cfg.eqpEffectiveQ(1.5, -12, 1, 6), 3, 1e-9, "Adaptive-Q uses |gain|");
@@ -133,6 +135,44 @@ function repeatedDb(mode, freq, gain, q, f) {
     const c = cfg.eqpBiquadCoeffs(mode, freq, gain, q, SR);
     const n = c.sections > 0 ? c.sections : 1;
     return { db: magDb(c, f) * n, sections: c.sections };
+}
+function df2tDb(c, sections, freq) {
+    const nSec = sections > 0 ? sections : 1;
+    const state = [];
+    for (let s = 0; s < nSec; s++) state.push({ s1: 0, s2: 0 });
+    const n = Math.round(SR * 0.2);
+    const skip = Math.round(SR * 0.05);
+    const w = 2 * Math.PI * freq / SR;
+    let sumIn = 0;
+    let sumOut = 0;
+    for (let i = 0; i < n; i++) {
+        let x = Math.sin(w * i);
+        for (let s = 0; s < nSec; s++) {
+            const st = state[s];
+            const y = c.b0 * x + st.s1;
+            const s1n = c.b1 * x - c.a1 * y + st.s2;
+            const s2n = c.b2 * x - c.a2 * y;
+            st.s1 = s1n;
+            st.s2 = s2n;
+            x = y;
+        }
+        if (i >= skip) {
+            const inn = Math.sin(w * i);
+            sumIn += inn * inn;
+            sumOut += x * x;
+        }
+    }
+    return 10 * Math.log10(sumOut / Math.max(sumIn, 1e-24));
+}
+{
+    const bellC = cfg.eqpBiquadCoeffs(6, 1000, 12, 0.7071, SR);
+    near(df2tDb(bellC, bellC.sections, 1000), magDb(bellC, 1000) * bellC.sections, 0.15, "DF2T bell matches the magnitude formula");
+    const notchC = cfg.eqpBiquadCoeffs(7, 1000, 0, 0.7071, SR);
+    const notchDb = df2tDb(notchC, notchC.sections, 1000);
+    ok(notchDb < -40, "DF2T notch at its centre is below -40 dB (" + notchDb.toFixed(1) + ")");
+    const cutC = cfg.eqpBiquadCoeffs(3, 1000, 0, 0.7071, SR);
+    near(df2tDb(cutC, cutC.sections, 200), magDb(cutC, 200) * cutC.sections, 0.25, "DF2T low-cut matches the magnitude formula");
+    near(df2tDb(cutC, cutC.sections, 5000), magDb(cutC, 5000) * cutC.sections, 0.25, "DF2T low-cut passband matches the magnitude formula");
 }
 function nearResponse(actual, expected, tol, msg) {
     if (expected < -40 && actual < -40) {
@@ -346,11 +386,20 @@ ok(gen.includes("for (s = 0; s < 9; s += 1)"), "flat tilt runs nine sections");
 ok(!gen.includes("tLb0"), "the two-shelf tilt coefficients are gone");
 ok(gen.includes('Buffer irspec("eqplusir")'), "phase IR buffer");
 ok(gen.includes("Param phaseMode"), "processing mode reaches the gen");
-ok(gen.includes("fft_run(fx, tab, 4096, 0)"), "linear phase uses the shared FFT");
+ok(gen.includes("Data yRun(2);"), "biquad cascade keeps its sample in Data");
+ok(gen.includes("poke(yRun,"), "biquad cascade writes through Data, not an inlet alias");
+ok(!/\byL = xL;/.test(gen), "yL is not a plain alias of the inlet");
+eq((gen.match(/fft_run\(/g) || []).length, 1, "one fft_run call site, so Zero Latency does not compile the FFT six times");
+ok(gen.includes("fft_run(fx, tab, 4096, inv)"), "linear phase uses the shared FFT");
+ok(gen.includes("phaseMode >= 1.5"), "the 4096-point FFT runs only in Linear Phase");
 ok(gen.includes("floor(322 * samplerate / 44100 + 0.5)"), "natural phase delay is 7.3 ms");
 ok(gen.includes("dryDL.read(3072"), "linear phase delay is 3072 samples");
 ok(fs.readFileSync(path.join(ROOT, "scripts", "build_eqplus.py"), "utf8").includes("cepstrum_lib.genexpr"), "build prepends the FFT");
-ok(gen.includes("Data cstate(64);"), "Data cstate(64)");
+ok(gen.includes("Data cstate(128);"), "Data cstate(128)");
+ok(gen.includes("Param chroute(0"), "stereo route reaches the gen");
+ok(gen.includes("useB = slot > 0.5"), "split routes read the second curve");
+ok(gen.includes("peek(hreB, p)"), "linear phase filters the right channel with curve B");
+ok(gen.includes("peek(irspec, 128 + i, 1)"), "natural phase reads curve B's FIR");
 ok(/Param outgain\(0/.test(gen), "Param outgain");
 ok(/Param bypass\(0/.test(gen), "Param bypass");
 ok(gen.includes("History initDone(0);") && gen.includes("History writeIdx(0);") && gen.includes("History frameTick(0);") && gen.includes("History linGain(1);"), "History state");
@@ -414,7 +463,7 @@ eq(byId["obj-gen-in"].text, "gate 1 1", "gen hub is gate 1 1");
 eq(byId["obj-gen-in"].varname, "eq_genin", "hub scripting name");
 ok(!boxes.some((b) => b.maxclass === "gen~" || b.maxclass === "gen.codebox~"), "no static gen~");
 ok(!connected("obj-plugin", "obj-plugout"), "plugin~ is not wired to plugout~");
-eq(byId["obj-buf-cfg"].text, "buffer~ #0-eqpluscfg @samps 64", "config buffer");
+eq(byId["obj-buf-cfg"].text, "buffer~ #0-eqpluscfg @samps 128", "config buffer");
 eq(byId["obj-buf-spec"].text, "buffer~ #0-eqplusspec 200 4 @samps 8200", "spectrum buffer includes the sidechain ring");
 for (const b of boxes) {
     const text = b.text || "";
@@ -523,11 +572,40 @@ near(boxes[boxes.length - 1].bgcolor[2], 0.212, 0.002, "panel blue");
 eq(boxes[boxes.length - 1].saved_attribute_attributes.bgfillcolor.expression, "themecolor.live_surface_bg", "panel follows Live's surface colour");
 
 function vof(id) { return byId[id].saved_attribute_attributes.valueof; }
+function isFace(id) {
+    return id === "obj-ctrl-shift" || id === "obj-ctrl-gain" || id === "obj-ctrl-tilt-eq"
+        || id === "obj-ctrl-route"
+        || /^obj-ctrl-b\d+-(enable|freq|gain|q)$/.test(id);
+}
+function expectFace(id) {
+    const b = byId[id];
+    eq(b.presentation, 1, `${id} face is in presentation`);
+    eq(b.hidden, 1, `${id} face starts hidden`);
+    deep(b.presentation_rect, [0, 0, 1, 1], `${id} face is parked outside the canvas`);
+    const ink = b.maxclass === "live.text" ? b.bgcolor : b.activebgcolor;
+    eq(ink[3], 0, `${id} face is transparent`);
+    if (b.maxclass === "live.text") {
+        eq(b.text, "", `${id} face draws no caption`);
+        eq(b.texton, "", `${id} face draws no on caption`);
+    } else if (b.maxclass === "live.menu") {
+        eq(b.textcolor[3], 0, `${id} face is transparent`);
+    } else {
+        eq(b.appearance, 0, `${id} face is a plain numbox`);
+    }
+}
+function expectInfo(id) {
+    const b = byId[id];
+    const info = vof(id).parameter_info;
+    ok(typeof info === "string" && info.length > 24, `${id} has Info View text`);
+    eq(b.annotation, info, `${id} annotation matches the Info View`);
+}
 function expectFloat(id, longName, shortName, lo, hi, initial, unit, exponent) {
     const b = byId[id];
     const v = vof(id);
     eq(b.maxclass, "live.numbox", `${id} numbox`);
-    eq(b.presentation, 0, `${id} is off the presentation`);
+    if (isFace(id)) expectFace(id);
+    else eq(b.presentation, 0, `${id} is off the presentation`);
+    expectInfo(id);
     eq(b.parameter_enable, 1, `${id} is automatable`);
     eq(v.parameter_longname, longName, `${id} long name`);
     eq(v.parameter_shortname, shortName, `${id} short name`);
@@ -544,7 +622,9 @@ function expectEnum(id, maxclass, longName, shortName, enums, initial) {
     const b = byId[id];
     const v = vof(id);
     eq(b.maxclass, maxclass, `${id} class`);
-    eq(b.presentation, 0, `${id} is off the presentation`);
+    if (isFace(id)) expectFace(id);
+    else eq(b.presentation, 0, `${id} is off the presentation`);
+    expectInfo(id);
     eq(b.parameter_enable, 1, `${id} is automatable`);
     eq(v.parameter_longname, longName, `${id} long name`);
     eq(v.parameter_shortname, shortName, `${id} short name`);
@@ -556,7 +636,8 @@ function expectEnum(id, maxclass, longName, shortName, enums, initial) {
     if (maxclass === "live.text") eq(b.mode, 1, `${id} is a toggle`);
 }
 
-expectFloat("obj-ctrl-shift", "Global Shift", "Shift", -36, 36, 0, 7, null);
+expectFloat("obj-ctrl-shift", "Global Shift", "Shift", -64, 64, 0, 7, null);
+ok(/-64 to \+64/.test(vof("obj-ctrl-shift").parameter_info), "shift Info View states \u00b164");
 expectFloat("obj-ctrl-gain", "Output Gain", "Gain", -24, 24, 0, 4, null);
 expectEnum("obj-ctrl-adaptiveq", "live.text", "Adaptive-Q", "AdaptQ", ["Off", "On"], 1);
 expectEnum("obj-ctrl-range", "live.tab", "Display Range", "Range", ["\u00b112", "\u00b124", "\u00b136"], 0);
@@ -576,6 +657,7 @@ expectEnum("obj-ctrl-ref-enable", "live.text", "Reference Enable", "RefOn", ["Of
 expectFloat("obj-ctrl-ref-gain", "Reference Gain", "RefGain", -24, 24, 0, 4, null);
 expectFloat("obj-ctrl-tilt-eq", "Tilt Filter", "TiltEQ", -24, 24, 0, 4, null);
 expectEnum("obj-ctrl-phase-mode", "live.menu", "Processing Mode", "Phase", ["Zero Latency", "Natural Phase", "Linear Phase"], 0);
+expectEnum("obj-ctrl-route", "live.menu", "Stereo Route", "Route", ["Stereo", "Left", "Right", "Mid", "Side"], 0);
 eq(vof("obj-ctrl-sidechain-fold").parameter_invisible, 1, "sidechain fold is stored only");
 eq(byId["obj-ctrl-sidechain-fold"].hidden, 1, "sidechain fold is hidden");
 ok(vof("obj-ctrl-ref-enable").parameter_invisible == null, "reference enable stays automatable");
@@ -588,6 +670,7 @@ for (let i = 1; i <= 8; i++) {
     expectFloat(`obj-ctrl-b${i}-gain`, `Band ${i} Gain`, `B${i} Gain`, -36, 36, 0, 4, null);
     expectFloat(`obj-ctrl-b${i}-q`, `Band ${i} Q`, `B${i} Q`, 0.1, 40, 0.7071, 1, 2.5);
 }
+eq(boxes.filter((b) => isFace(b.id)).length, 36, "shift, gain, tilt, route and every band's on/off, frequency, gain and Q are faces");
 
 const routeKeys = ["shift", "gain", "adaptiveq", "range", "pre", "post", "resolution", "speed", "tilt"];
 const routeIds = ["obj-ctrl-shift", "obj-ctrl-gain", "obj-ctrl-adaptiveq", "obj-ctrl-range", "obj-ctrl-pre", "obj-ctrl-post", "obj-ctrl-resolution", "obj-ctrl-speed", "obj-ctrl-tilt"];
@@ -599,9 +682,9 @@ for (let i = 1; i <= 8; i++) {
         routeUi.push(`prepend set_band_${part} ${i - 1}`);
     }
 }
-routeKeys.push("filters_shelf", "analyzer_shelf", "sidechain_fold", "ref_enable", "ref_gain", "tilt_eq", "phase_mode");
-routeIds.push("obj-ctrl-filters-shelf", "obj-ctrl-analyzer-shelf", "obj-ctrl-sidechain-fold", "obj-ctrl-ref-enable", "obj-ctrl-ref-gain", "obj-ctrl-tilt-eq", "obj-ctrl-phase-mode");
-routeUi.push("prepend set_filters_shelf", "prepend set_analyzer_shelf", "prepend set_sidechain_fold", "prepend set_ref_enable", "prepend set_ref_gain", "prepend set_tilt_eq", "prepend set_phase_mode");
+routeKeys.push("filters_shelf", "analyzer_shelf", "sidechain_fold", "ref_enable", "ref_gain", "tilt_eq", "phase_mode", "route");
+routeIds.push("obj-ctrl-filters-shelf", "obj-ctrl-analyzer-shelf", "obj-ctrl-sidechain-fold", "obj-ctrl-ref-enable", "obj-ctrl-ref-gain", "obj-ctrl-tilt-eq", "obj-ctrl-phase-mode", "obj-ctrl-route");
+routeUi.push("prepend set_filters_shelf", "prepend set_analyzer_shelf", "prepend set_sidechain_fold", "prepend set_ref_enable", "prepend set_ref_gain", "prepend set_tilt_eq", "prepend set_phase_mode", "prepend set_route");
 eq(byId["obj-route-viz"].text, "route param setwidth_cmd", "viz router");
 eq(byId["obj-route-viz"].numoutlets, 3, "viz router has param, setwidth_cmd, and unmatched");
 eq(byId["obj-route-param"].text, "route " + routeKeys.join(" "), "name router");
@@ -667,8 +750,12 @@ function loadFace() {
             rect: rect.slice(),
             setattr(name, a, b, c, d) {
                 if (name === "presentation_rect") this.rect = [a, b, c, d];
+                else if (name === "hidden") this.hidden = a;
             },
-            getattr() { return 0; },
+            getattr(name) {
+                if (name === "presentation_rect") return this.rect.slice();
+                return 0;
+            },
             message() {},
         };
     }
@@ -837,7 +924,7 @@ function runFace() {
     }
     const base = take();
     eq(base[0], 1, "state version");
-    eq(base.length, 59, "state length (version, globals, bands, shelves, sidechain, tilt, phase)");
+    eq(base.length, 100, "state length (version, globals, both curves, shelves, sidechain, tilt, phase, route)");
     near(base[1], 0, 1e-6, "preview shift");
     near(base[2], 0, 1e-6, "preview gain");
     eq(base[3], 0, "preview range \u00b112");
@@ -1093,7 +1180,10 @@ function runFace() {
     const qBefore = dragged.q;
     ui.onwheel(to[0], to[1], 0, 1, 0, 0, 0, 0, 0);
     const qAfter = bandAt(take(), 0).q;
-    near(Math.log(qAfter / qBefore), 0.12, 0.04, "wheel scales Q by exp(dy * 0.12)");
+    near(Math.log(qAfter / qBefore), 0.48, 0.04, "wheel scales Q by exp(dy * 0.48)");
+    ui.onwheel(to[0], to[1], 0, 1, 0, 1, 0, 0, 0);
+    const qShift = bandAt(take(), 0).q;
+    near(Math.log(qShift / qAfter), 0.12, 0.04, "shift-wheel keeps the previous Q step");
     // A double-click that created the band must not immediately delete it; a later double-click does.
     const hold = Date.now() + 520;
     while (Date.now() < hold) {}
@@ -1118,6 +1208,26 @@ function runFace() {
 
     // Top-bar Range cells and the Adaptive-Q icon (canvas 352 x 161).
     put(base);
+    ui.mgOps = [];
+    ui.paint();
+    {
+        function headerSize(label) {
+            for (let i = 0; i < ui.mgOps.length; i++) {
+                const op = ui.mgOps[i];
+                if (op.op !== "show_text" || String(op.args[0]) !== label) continue;
+                for (let j = i; j >= 0; j--) {
+                    if (ui.mgOps[j].op === "set_font_size") return Number(ui.mgOps[j].args[0]);
+                }
+            }
+            return -1;
+        }
+        const shiftSize = headerSize("Shift");
+        eq(shiftSize, 10, "header labels are 10 px");
+        for (const label of ["Gain", "Tilt", "Range", "\u00b112"]) {
+            eq(headerSize(label), shiftSize, `${label} matches the other header labels`);
+        }
+    }
+    ui.mgOps = null;
     rightClick(308, 12);
     eq(take()[3], 1, "range box steps to \u00b124");
     rightClick(308, 12);
@@ -1222,6 +1332,11 @@ function runFace() {
     ui.set_tilt(0);
     let mutated = take();
     near(mutated[1], -12.5, 1e-4, "set_shift");
+    ui.set_shift(80);
+    eq(ui.shiftSt, 64, "shift stops at +64");
+    ui.set_shift(-80);
+    eq(ui.shiftSt, -64, "shift stops at -64");
+    ui.set_shift(-12.5);
     near(mutated[2], 6.2, 0.051, "set_gain");
     eq(mutated[3], 2, "set_range");
     eq(mutated[4], 0, "set_adaptiveq");
@@ -1653,6 +1768,202 @@ function runFace() {
         ok(silentOut <= ui.rangeMinDb && deepOut <= ui.rangeMinDb, "silent bins stay at or below the floor");
         ok(audibleOut > -30 + 2, "a bin above the gate still receives the 4.5 dB/oct tilt");
 
+        {
+            const savedTilt = ui.tiltIdx;
+            ui.tiltIdx = 2;
+            const sr = 48000;
+            const n = 8192;
+            const f0 = 80;
+            const frame = new Array(n);
+            for (let i = 0; i < n; i++) {
+                const ph = (f0 * i / sr) % 1;
+                frame[i] = ph < 0.5 ? 0.6 : -0.6;
+            }
+            const bins = ui.fftDbBins(frame, n, sr);
+            function legacyColumnDb(dbBins, nn, sampleRate, col) {
+                const nBins = nn >> 1;
+                const scale = nn / Math.max(8000, sampleRate);
+                let bLo = ui.colEdge[col] * scale;
+                let bHi = ui.colEdge[col + 1] * scale;
+                if (bLo < 1) bLo = 1;
+                if (bHi < bLo) bHi = bLo;
+                const last = nBins - 1;
+                if (bLo > last) bLo = last;
+                if (bHi > last) bHi = last;
+                let db;
+                if (bHi - bLo <= 1.25) {
+                    const mid = 0.5 * (bLo + bHi);
+                    let idx = Math.floor(mid);
+                    if (idx < 1) idx = 1;
+                    if (idx > nBins - 2) idx = nBins - 2;
+                    const t = mid - idx;
+                    db = dbBins[idx] + (dbBins[idx + 1] - dbBins[idx]) * t;
+                } else {
+                    const i0 = Math.max(1, Math.floor(bLo));
+                    const i1 = Math.min(last, Math.ceil(bHi));
+                    db = -240;
+                    for (let b = i0; b <= i1; b++) if (dbBins[b] > db) db = dbBins[b];
+                }
+                const tilt = ui.EQP_TILTS[ui.tiltIdx] || 0;
+                if (tilt && !(tilt > 0 && db <= -108)) db += tilt * (Math.log(ui.colFreq(col) / 1000) / Math.LN2);
+                return db;
+            }
+            const legacy = [];
+            for (let i = 0; i < ui.COLS; i++) legacy.push(legacyColumnDb(bins, n, sr, i));
+            const detailed = [];
+            for (let i = 0; i < ui.SPEC_COLS; i++) detailed.push(ui.specColumnDb(bins, n, sr, i));
+            function maxDrop(cols) {
+                let m = 0;
+                for (let i = 1; i < cols.length; i++) m = Math.max(m, Math.abs(cols[i] - cols[i - 1]));
+                return m;
+            }
+            const legacyDrop = maxDrop(legacy);
+            ok(legacyDrop > 40, `square-wave spectrum cliffs before the fix (${legacyDrop.toFixed(1)} dB)`);
+            function peakNear(cols, freq) {
+                const lo = freq / 1.08;
+                const hi = freq * 1.08;
+                let m = -240;
+                for (let i = 0; i < cols.length; i++) {
+                    const f = ui.specFreq(i);
+                    if (f >= lo && f <= hi && cols[i] > m) m = cols[i];
+                }
+                return m;
+            }
+            function minBetween(cols, fLo, fHi) {
+                let m = 240;
+                let seen = false;
+                for (let i = 0; i < cols.length; i++) {
+                    const f = ui.specFreq(i);
+                    if (f < fLo || f > fHi) continue;
+                    seen = true;
+                    if (cols[i] < m) m = cols[i];
+                }
+                return seen ? m : -240;
+            }
+            const fund = peakNear(detailed, f0);
+            ok(fund > -30, `square fundamental is visible (${fund.toFixed(1)} dB)`);
+            let teeth = 0;
+            for (const harm of [3, 5, 7, 9, 11, 13, 15]) {
+                const got = peakNear(detailed, f0 * harm);
+                const tilt = 4.5 * Math.log2(harm);
+                const expect = fund - 20 * Math.log(harm) / Math.LN10 + tilt;
+                near(got, expect, 8, `harmonic ${harm} stays on the 1/n slope`);
+                const valley = minBetween(detailed, f0 * harm * 1.2, f0 * (harm + 2) * 0.8);
+                if (got - valley > 18) teeth++;
+            }
+            ok(teeth >= 5, `square-wave harmonics stay separate (${teeth})`);
+            ui.tiltIdx = 0;
+            const flat = [];
+            for (let i = 0; i < ui.SPEC_COLS; i++) flat.push(ui.specColumnDb(bins, n, sr, i));
+            const hi = peakNear(flat, 8000);
+            ok(hi > ui.rangeMinDb + 25, `8 kHz harmonic stays above the old cutoff (${hi.toFixed(1)} dB)`);
+            const hiFund = peakNear(flat, f0);
+            const hiValley = minBetween(flat, f0 * 1.4, f0 * 2.4);
+            ok(hiFund - hiValley > 25, `null under the fundamental stays deep (${(hiFund - hiValley).toFixed(1)} dB)`);
+            const drawn = ui.smoothSpectrumLine(flat);
+            const drawnValley = minBetween(drawn, f0 * 1.4, f0 * 2.4);
+            ok(peakNear(drawn, f0) - drawnValley > 18, "smoothed spectrum keeps the harmonic null");
+            let plateau = 1;
+            let run = 1;
+            for (let i = 1; i < drawn.length; i++) {
+                const f = ui.specFreq(i);
+                if (f < f0 * 0.75 || f > f0 * 1.35) { run = 1; continue; }
+                if (Math.abs(drawn[i] - drawn[i - 1]) < 0.35) run++;
+                else run = 1;
+                if (run > plateau) plateau = run;
+            }
+            ok(plateau < 8, `fundamental is a curve, not a flat bin (${plateau} columns)`);
+            let steep = 0;
+            for (let i = 1; i < drawn.length; i++) {
+                const f = ui.specFreq(i);
+                if (f < 200 || f > 2500) continue;
+                if (Math.max(drawn[i], drawn[i - 1]) < -48) continue;
+                steep = Math.max(steep, Math.abs(drawn[i] - drawn[i - 1]));
+            }
+            ok(steep < 10, `smoothed spectrum has no bin-sized step (${steep.toFixed(1)} dB)`);
+            let drawnTeeth = 0;
+            for (const harm of [3, 5, 7, 9]) {
+                const got = peakNear(drawn, f0 * harm);
+                const valley = minBetween(drawn, f0 * harm * 1.25, f0 * (harm + 2) * 0.75);
+                if (got - valley > 12) drawnTeeth++;
+            }
+            ok(drawnTeeth >= 3, `smoothed harmonics stay separate (${drawnTeeth})`);
+            ui.tiltIdx = 2;
+            const { execFileSync } = require("child_process");
+            const outDir = path.join(ROOT, "tests", "out");
+            fs.mkdirSync(outDir, { recursive: true });
+            const jsonPath = path.join(outDir, "eq_square_spectrum.json");
+            fs.writeFileSync(jsonPath, JSON.stringify({
+                legacyFreqs: Array.from({ length: ui.COLS }, (_, i) => ui.colFreq(i)),
+                freqs: Array.from({ length: ui.SPEC_COLS }, (_, i) => ui.specFreq(i)),
+                legacy,
+                shaped: drawn,
+                floor: -100,
+                ceil: 0,
+            }));
+            const glitchPng = path.join(outDir, "eq_square_glitch.png");
+            const fixedPng = path.join(outDir, "eq_square_fixed.png");
+            execFileSync("python3", ["-c", `
+import json, sys
+from PIL import Image, ImageDraw
+data = json.load(open(sys.argv[1]))
+floor, ceil = data["floor"], data["ceil"]
+W, H, plotH = 740, 250, 170
+left, top = 36, 28
+def render(series, freqs, title, path):
+    im = Image.new("RGB", (W, H), (18, 22, 28))
+    d = ImageDraw.Draw(im)
+    d.text((left, 8), title, fill=(180, 186, 194))
+    def x_of(f):
+        import math
+        t = math.log(max(f, 20) / 20) / math.log(1000)
+        return left + t * (W - left - 16)
+    def y_of(db):
+        t = (db - floor) / (ceil - floor)
+        t = 0 if t < 0 else 1 if t > 1 else t
+        return top + (1 - t) * plotH
+    d.rectangle([left, top, W - 16, top + plotH], fill=(12, 14, 18))
+    for f, label in ((100, "100"), (1000, "1k"), (10000, "10k")):
+        x = x_of(f)
+        d.line([(x, top), (x, top + plotH)], fill=(40, 46, 54))
+        d.text((x + 3, top + 2), label, fill=(120, 126, 134))
+    zy = y_of(0)
+    d.line([(left, zy), (W - 16, zy)], fill=(210, 140, 60))
+    pts = [(x_of(freqs[i]), y_of(series[i])) for i in range(len(series))]
+    if len(pts) >= 2:
+        d.line(pts, fill=(40, 190, 200), width=1)
+    im.save(path)
+render(data["legacy"], data["legacyFreqs"], "before: coarse columns", sys.argv[2])
+render(data["shaped"], data["freqs"], "after: smoothed harmonic lines", sys.argv[3])
+`, jsonPath, glitchPng, fixedPng]);
+            ok(fs.existsSync(glitchPng) && fs.statSync(glitchPng).size > 1000, "glitch reproduction image was written");
+            ok(fs.existsSync(fixedPng) && fs.statSync(fixedPng).size > 1000, "fixed spectrum image was written");
+            ui.analyzerPre = 0;
+            ui.analyzerPost = 1;
+            ui.specHasSignal = 1;
+            ui.tiltIdx = 0;
+            for (let bi = 0; bi < ui.bands.length; bi++) {
+                ui.bands[bi].enabled = 0;
+                ui.bands[bi].mode = 0;
+            }
+            for (let i = 0; i < ui.SPEC_COLS; i++) ui.specPost[i] = flat[i];
+            ui.mgOps = [];
+            const painted = ui.geo();
+            ui.paintSpectrum(painted);
+            const x10k = ui.freqToX(painted, 10000);
+            const floorY = painted.plotY + painted.plotH;
+            let reached = 0;
+            for (let i = 0; i < ui.mgOps.length; i++) {
+                const op = ui.mgOps[i];
+                if (op.op !== "line_to" && op.op !== "move_to") continue;
+                const x = Number(op.args[0]);
+                const y = Number(op.args[1]);
+                if (x >= x10k - 2 && y < floorY - 8) reached++;
+            }
+            ok(reached > 0, "painted spectrum is still above the floor at 10 kHz");
+            ui.tiltIdx = savedTilt;
+        }
+
         ui.preview();
         const plot = ui.geo();
         const node0 = ui.bandXY(plot, ui.bands[0]);
@@ -1890,6 +2201,60 @@ function runFace() {
         eq(Number(lastParam(mark, "b2_enable")), 1, "power emits b2_enable 1");
         eq(bandAt(take(), 1).mode, 6, "power leaves the bell mode alone");
 
+        ui.mgOps = [];
+        ui.paint();
+        const soloCups = ui.mgOps.filter((op) => op.op === "ellipse" && op.args[0] >= 46 && op.args[0] <= 66 && op.args[1] >= 140);
+        eq(soloCups.length, 2, "solo control draws Ableton headphone cups");
+        const powerSq = ui.mgOps.filter((op) => op.op === "rectangle_rounded" && op.args[0] >= 66 && op.args[0] <= 84 && op.args[1] >= 140);
+        ok(powerSq.length >= 1, "on/off control is an Ableton square");
+        eq(powerSq[0].args[2], 7, "on/off square is about 4 px smaller");
+        ok(soloCups.every((op) => Number(op.args[3]) <= 6), "headphone cups are drawn in the smaller box");
+        const bar = ui.uiLayout(ui.geo());
+        const iconMid = bar.bandSel.y + bar.bandSel.h * 0.5;
+        const cupMid = soloCups.reduce((s, op) => s + Number(op.args[1]) + Number(op.args[3]) * 0.5, 0) / soloCups.length;
+        const sqMid = Number(powerSq[0].args[1]) + Number(powerSq[0].args[3]) * 0.5;
+        near(cupMid, iconMid, 3, "headphones sit on the bottom-row center");
+        near(sqMid, iconMid, 1.5, "on/off square sits on the bottom-row center");
+        function rectsOverlap(a, b) {
+            return a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
+        }
+        ok(bar.freq.x <= bar.mode.x + bar.mode.w + 6, "frequency readout sits against the filter control");
+        ok(bar.bandGain.x <= bar.freq.x + bar.freq.w + 6, "gain readout follows frequency");
+        ok(bar.q.x + bar.q.w <= bar.filtersToggle.x - 4, "readouts stop before the shelf toggles");
+        ok(bar.filtersToggle.x > bar.q.x && bar.analyzerToggle.x > bar.filtersToggle.x, "shelf toggles stay on the right");
+        const azRects = [bar.bandSel, bar.azLabel, bar.pre, bar.post, bar.resLabel, bar.res, bar.speedLabel, bar.speed, bar.filtersToggle, bar.analyzerToggle];
+        for (let a = 0; a < azRects.length; a++) {
+            for (let b = a + 1; b < azRects.length; b++) {
+                ok(!rectsOverlap(azRects[a], azRects[b]), `analyzer controls ${a} and ${b} do not overlap`);
+            }
+        }
+        ok(bar.speed.x + bar.speed.w <= bar.filtersToggle.x - 2, "analyzer controls stop before the shelf toggles");
+        ui.bottomAnalyzer = 1;
+        ui.mgOps = [];
+        ui.paint();
+        const analyzerText = ui.mgOps.find((op, i) => op.op === "show_text" && String(op.args[0]) === "Analyzer" && ui.mgOps[i - 1] && ui.mgOps[i - 1].op === "move_to");
+        ok(!!analyzerText, "analyzer mode paints Analyzer");
+        const analyzerX = Number(ui.mgOps[ui.mgOps.indexOf(analyzerText) - 1].args[0]);
+        ok(analyzerX >= bar.azLabel.x - 1 && analyzerX + 8 * 5.6 < bar.pre.x, "Analyzer label ends before Pre");
+        ui.bottomAnalyzer = 0;
+        ui.closePopup();
+        mouseClick(bar.bandSel.x + 8, bar.bandSel.y + 8);
+        const labels = (ui.popup && ui.popup.items || []).map((item) => item.label);
+        ok(labels.indexOf("Analyzer") >= 0, "band menu offers Analyzer");
+        ok(labels.every((label) => String(label).indexOf("|") < 0), "band menu does not append extra analyzer text");
+        ui.closePopup();
+        const bellSides = ui.mgOps.filter((op) => (op.op === "move_to" || op.op === "line_to") && op.args[0] >= 88 && op.args[0] <= 108 && op.args[1] >= 143 && op.args[1] <= 156);
+        ok(bellSides.length >= 6, "bell icon is the Ableton hexagon");
+        ui.set_band_mode(1, 4);
+        ui.mgOps = [];
+        ui.paint();
+        ok(ui.mgOps.some((op) => op.op === "show_text" && String(op.args[0]) === "\u00d74"), "48 dB low cut shows \u00d74");
+        ui.set_band_mode(1, 12);
+        ui.mgOps = [];
+        ui.paint();
+        ok(ui.mgOps.some((op) => op.op === "show_text" && String(op.args[0]) === "\u00d74"), "48 dB high cut shows \u00d74");
+        ui.set_band_mode(1, 6);
+
         function armKeys() {
             ui.lastKeyAt.disable = 0;
             ui.lastKeyAt.gain = 0;
@@ -2031,6 +2396,20 @@ function runFace() {
         ok(since(mark).some((m) => m.inlet === 0 && m.rest[0] === "setwidth_cmd" && Number(m.rest[1]) === 774), "analyzer shelf emits setwidth_cmd 774");
         eq(Number(lastParam(mark, "analyzer_shelf")), 1, "analyzer shelf emits analyzer_shelf 1");
         expectSize(1, 1, "both shelves");
+        ui.mgOps = [];
+        ui.paint();
+        ok(!ui.mgOps.some((op) => op.op === "show_text" && /Reference|\u00d7 None/.test(String(op.args[0]))), "analyzer shelf has no Reference row");
+        ui.showSidechainFold = 1;
+        ui.mgOps = [];
+        ui.paint();
+        ok(ui.mgOps.some((op) => op.op === "show_text" && String(op.args[0]) === "Audio From"), "sidechain panel keeps Audio From");
+        ok(ui.mgOps.some((op) => op.op === "show_text" && String(op.args[0]) === "Gain"), "sidechain panel keeps Gain");
+        ui.showSidechainFold = 0;
+        ui.applyDeviceWidth();
+        ui.mgOps = null;
+        eq(ui.refEnabled, 0, "the analyzer shelf does not own the reference");
+        mouseClick(692, 144);
+        eq(ui.refEnabled, 0, "the old analyzer Reference row no longer toggles");
 
         for (let i = 0; i < 8; i++) {
             const card = cardOf(i);
@@ -2118,6 +2497,121 @@ function runFace() {
 
         ui.preview();
         ui.outlet = savedOutlet;
+    }
+
+    {
+        function nearRect(got, r, name) {
+            near(got[0], r.x, 0.02, `${name} x`);
+            near(got[1], r.y, 0.02, `${name} y`);
+            near(got[2], r.w, 0.02, `${name} w`);
+            near(got[3], r.h, 0.02, `${name} h`);
+        }
+        ui.preview();
+        ui.bottomAnalyzer = 0;
+        ui.showFiltersShelf = 0;
+        ui.popup = null;
+        const closed = ui.eqpFacesWanted(ui.geo());
+        const bar = ui.uiLayout(ui.geo());
+        eq(Object.keys(closed).length, 8, "closed shelf faces the header, the route and the selected band");
+        nearRect(closed["Stereo Route"], bar.route, "stereo route");
+        nearRect(closed["Global Shift"], bar.shift, "shift");
+        nearRect(closed["Output Gain"], bar.gain, "output gain");
+        nearRect(closed["Tilt Filter"], bar.tilt, "tilt filter");
+        nearRect(closed["Band 2 Enable"], bar.power, "selected enable");
+        nearRect(closed["Band 2 Freq"], bar.freq, "selected frequency");
+        nearRect(closed["Band 2 Gain"], bar.bandGain, "selected gain");
+        nearRect(closed["Band 2 Q"], bar.q, "selected Q");
+        ok(!closed["Band 1 Freq"], "an unselected band has no face while the shelf is closed");
+
+        ui.showFiltersShelf = 1;
+        const open = ui.eqpFacesWanted(ui.geo());
+        const card = ui.filterCards()[0];
+        nearRect(open["Band 1 Enable"], card.power, "card enable");
+        nearRect(open["Band 1 Freq"], card.freq, "card frequency");
+        nearRect(open["Band 1 Gain"], card.gain, "card gain");
+        nearRect(open["Band 1 Q"], card.q, "card Q");
+        nearRect(open["Band 2 Freq"], ui.uiLayout(ui.geo()).freq, "the selected band stays on the bottom bar");
+        eq(Object.keys(open).length, 8 + 7 * 4, "the other seven bands get card faces");
+
+        ui.showFiltersShelf = 0;
+        ui.bottomAnalyzer = 1;
+        const analyzer = ui.eqpFacesWanted(ui.geo());
+        ok(!analyzer["Band 2 Freq"], "the analyzer bar is not covered");
+        ok(!!analyzer["Global Shift"], "the header stays while the analyzer bar is showing");
+        eq(Object.keys(analyzer).length, 4, "the header and the route stay while the analyzer bar is showing");
+
+        ui.popup = { kind: "range", x: 0, y: 0, w: 40, h: 40, rects: [], selected: 0 };
+        eq(Object.keys(ui.eqpFacesWanted(ui.geo())).length, 0, "a popup keeps the menu clickable");
+
+        function faceBox() {
+            return {
+                hidden: 1,
+                rect: [0, 0, 1, 1],
+                front: 0,
+                setattr(name, a, b, c, d) {
+                    if (name === "presentation_rect") this.rect = [a, b, c, d];
+                    else if (name === "hidden") this.hidden = a;
+                },
+                getattr() { return 0; },
+            };
+        }
+        ui.popup = null;
+        ui.bottomAnalyzer = 0;
+        ui.showFiltersShelf = 0;
+        ui.named["Global Shift"] = faceBox();
+        ui.patcher.bringtofront = function (box) { box.front += 1; };
+        ui.paint();
+        const shift = ui.named["Global Shift"];
+        const placed = ui.uiLayout(ui.geo()).shift;
+        eq(shift.hidden, 0, "the shift face is shown");
+        eq(shift.front, 1, "the shift face is brought in front of the canvas");
+        near(shift.rect[0], 4 + placed.x, 0.02, "shift face device x");
+        near(shift.rect[1], 4 + placed.y, 0.02, "shift face device y");
+        near(shift.rect[2], placed.w, 0.02, "shift face width");
+        near(shift.rect[3], placed.h, 0.02, "shift face height");
+        ui.popup = { kind: "range", x: 0, y: 0, w: 40, h: 40, rects: [], selected: 0 };
+        ui.paint();
+        eq(shift.hidden, 1, "opening a popup hides the face");
+        deep(shift.rect, [0, 0, 1, 1], "opening a popup parks the face");
+        ui.popup = null;
+        delete ui.named["Global Shift"];
+
+        ui.preview();
+        ui.popup = null;
+        const pill = ui.uiLayout(ui.geo()).route;
+        const liveBefore = ui.bands.filter((b) => b.enabled).length;
+        ui.onclick(pill.x + 4, pill.y + 4, 1, 0, 0, 0, 0, 0);
+        eq(ui.popup && ui.popup.kind, "route", "the plot pill opens the route menu");
+        eq(ui.bands.filter((b) => b.enabled).length, liveBefore, "the route pill does not create a band");
+        ui.popup = null;
+        ui.onclick(pill.x + 4, pill.y + 4, 2, 0, 0, 0, 0, 1);
+        eq(ui.routeMode, 1, "right-click steps from Stereo to Left");
+        eq(ui.bands, ui.bandsA, "Left still edits the left curve");
+        ui.set_route(2);
+        eq(ui.bands, ui.bandsB, "Right edits the other curve");
+        ui.bands[0].freq = 440;
+        ui.set_route(0);
+        eq(ui.routeMode, 0, "Stereo is linked");
+        eq(ui.bands, ui.bandsA, "Stereo shows one curve");
+        near(ui.bandsA[0].freq, 440, 0.01, "linking keeps the curve that was on screen");
+        near(ui.bandsB[0].freq, 440, 0.01, "linking copies that curve onto the other channel");
+        ui.set_route(4);
+        eq(ui.bands, ui.bandsB, "Side edits the side curve");
+        ui.bands[1].freq = 880;
+        ui.set_route(3);
+        eq(ui.bands, ui.bandsA, "Mid edits the mid curve");
+        ok(Math.abs(ui.bandsB[1].freq - 880) < 0.01, "the side curve keeps its own frequency");
+        ok(Math.abs(ui.bandsA[1].freq - 880) > 1, "the mid curve did not pick up the side edit");
+        const saved = ui.getvalueof();
+        eq(saved[59], 3, "the blob stores the route after the phase mode");
+        ui.set_route(0);
+        ui.setvalueof(saved);
+        eq(ui.routeMode, 3, "setvalueof restores Mid");
+        near(ui.bandsB[1].freq, 880, 0.01, "setvalueof restores the side curve");
+        const legacy = saved.slice(0, 59);
+        ui.setvalueof(legacy);
+        eq(ui.routeMode, 0, "a blob from before the route stays on Stereo");
+        near(ui.bandsB[0].freq, ui.bandsA[0].freq, 0.01, "an old blob copies its curve onto both channels");
     }
 }
 

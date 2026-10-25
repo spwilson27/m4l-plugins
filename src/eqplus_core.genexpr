@@ -16,10 +16,19 @@
 // sample 1025) with a 4096-point FFT and a hop of 2048. The peak
 // reaches the output at sample 3072, Pro-Q 3's Linear Phase Low figure
 // at 44.1 kHz. Bypass and solo use that same delay so PDC matches.
-// irGen bumps when the face pokes a new IR. fft_init / fft_run come
-// from cepstrum_lib, prepended by the build.
+// The FFT runs only while Linear Phase is selected (or still fading
+// out). Running it in Zero Latency stalled the audio thread: four
+// 4096-point transforms land on one sample every hop, and Live drops
+// the channel. irGen bumps when the face pokes a new IR. There is one
+// fft_run call site. fft_init / fft_run come from cepstrum_lib.
 //
-// eqcfg ("eqpluscfg"), 64 floats, band b at base = b * 8:
+// eqcfg ("eqpluscfg"), 128 floats. Curve A is band b at base = b * 8
+// (the left channel, or the mid). Curve B is the same layout at base + 64
+// (the right channel, or the side). Param chroute: 0 Stereo, 1 Left,
+// 2 Right, 3 Mid, 4 Side. Stereo processes both channels with curve A and
+// does not read past sample 63, so a 64-sample buffer still works. Split
+// routes slew curve B from sample 64. Mid and Side encode before the
+// filters and decode the wet output.
 //   +0 sections (0 = bypass, else 1 / 2 / 4 identical biquads)
 //   +1 b0  +2 b1  +3 b2  +4 a1  +5 a2     a0 is already 1
 //
@@ -34,8 +43,11 @@
 //
 // zstate: 32 sections (8 bands x 4) of Direct Form II Transposed
 //   (s1L, s2L, s1R, s2R), index (b * 4 + s) * 4.
-// cstate: smoothed coefficients per band, base = b * 8
+// cstate: smoothed coefficients, curve A at base = b * 8 and curve B at base + 64.
 //   +0 b0 +1 b1 +2 b2 +3 a1 +4 a2 +5 active (1 once the band has snapped in)
+// Linear phase keeps curve B's spectrum in hreB (irspec channel 0 at sample
+// 2048). Natural phase reads curve B's 128 taps from irspec channel 1 at
+// sample 128. A linked route pokes the same IR at both offsets.
 //
 // Coefficients slew at 0.995 / 0.005 so a sweep does not zipper. The first
 // sample a band turns on snaps to the target and the section state is zero,
@@ -62,7 +74,8 @@ Buffer spec("eqplusspec");
 Buffer irspec("eqplusir");
 
 Data zstate(128);
-Data cstate(64);
+Data cstate(128);
+Data yRun(2);
 Data soloZ(4);
 Data tiltZ(18);
 Data tiltC(28);
@@ -76,6 +89,10 @@ Data hre(4096);
 Data him(4096);
 Data htRe(4096);
 Data htIm(4096);
+Data hreB(4096);
+Data himB(4096);
+Data htReB(4096);
+Data htImB(4096);
 Data nfirL(128);
 Data nfirR(128);
 
@@ -117,6 +134,7 @@ Param soloB2(0, min=-4, max=4);
 Param soloA1(0, min=-4, max=4);
 Param soloA2(0, min=-4, max=4);
 Param phaseMode(0, min=0, max=2);
+Param chroute(0, min=0, max=4);
 Param irGen(0, min=0, max=1000000);
 
 History initDone(0);
@@ -137,6 +155,10 @@ History irHave(0);
 History g0(1);
 History g1(0);
 History g2(0);
+History mixSnap(0);
+History bootMode(-1);
+History olaWarm(0);
+History fftWas(0);
 
 Delay natDL(4096);
 Delay natDR(4096);
@@ -154,7 +176,7 @@ if (initDone < 0.5) {
 	for (i = 0; i < 128; i += 1) {
 		poke(zstate, 0, i);
 	}
-	for (i = 0; i < 64; i += 1) {
+	for (i = 0; i < 128; i += 1) {
 		poke(cstate, 0, i);
 	}
 	for (i = 0; i < 4; i += 1) {
@@ -174,15 +196,6 @@ if (initDone < 0.5) {
 		poke(fx, 0, i, 0);
 		poke(fx, 0, i, 1);
 	}
-	poke(fx, 1, 1025, 0);
-	fft_init(tab);
-	fft_run(fx, tab, 4096, 0);
-	for (i = 0; i < 4096; i += 1) {
-		poke(hre, peek(fx, i, 0), i);
-		poke(him, peek(fx, i, 1), i);
-		poke(htRe, peek(fx, i, 0), i);
-		poke(htIm, peek(fx, i, 1), i);
-	}
 	soloWas = 0;
 	tiltWas = 0;
 	linGain = dbtoa(clip(outgain, -24, 24));
@@ -194,33 +207,82 @@ if (initDone < 0.5) {
 gTarget = dbtoa(clip(outgain, -24, 24));
 linGain = linGain * 0.995 + gTarget * 0.005;
 
-yL = xL;
-yR = xR;
+// A plain `yL = xL` aliases the const inlet, so later writes to yL are
+// dropped and the EQ passes the dry signal (or, once a NaN aliases in,
+// fixnan turns the whole channel into silence). The running sample lives
+// in yRun. Copies go through `* 1` for the same reason.
+// Stereo (0) shares curve A. Left/Right/Mid/Side give the right slot curve B.
+// The same filter on mid and side is the same filter on L and R, which is
+// why Stereo does not encode. dom0/dom1 are copied through `* 1` so they
+// are not aliases of the inlets.
+msOn = chroute > 2.5;
+msG = 0.7071067811865475;
+// Assign before the branch. A name first written inside an if is local
+// to that block, and the later biquad / convolver reads would not compile.
+dom0 = xL * 1;
+dom1 = xR * 1;
+if (msOn > 0.5) {
+	dom0 = (xL + xR) * msG;
+	dom1 = (xL - xR) * msG;
+}
+slot = chroute * 1;
+if (msOn > 0.5) {
+	slot = chroute - 2;
+}
+useB = slot > 0.5;
+poke(yRun, dom0, 0);
+poke(yRun, dom1, 1);
 
-for (b = 0; b < 8; b += 1) {
-	base = b * 8;
-	nSec = fixnan(peek(eqcfg, base));
-	tb0 = fixnan(peek(eqcfg, base + 1));
-	tb1 = fixnan(peek(eqcfg, base + 2));
-	tb2 = fixnan(peek(eqcfg, base + 3));
-	ta1 = fixnan(peek(eqcfg, base + 4));
-	ta2 = fixnan(peek(eqcfg, base + 5));
+for (band = 0; band < 8; band += 1) {
+	base = band * 8;
+	baseB = base + 64;
+	nSec = fixnan(peek(eqcfg, base, 0));
+	tb0 = fixnan(peek(eqcfg, base + 1, 0));
+	tb1 = fixnan(peek(eqcfg, base + 2, 0));
+	tb2 = fixnan(peek(eqcfg, base + 3, 0));
+	ta1 = fixnan(peek(eqcfg, base + 4, 0));
+	ta2 = fixnan(peek(eqcfg, base + 5, 0));
+	nSecB = nSec * 1;
+	tb0B = tb0 * 1;
+	tb1B = tb1 * 1;
+	tb2B = tb2 * 1;
+	ta1B = ta1 * 1;
+	ta2B = ta2 * 1;
+	if (useB > 0.5) {
+		nSecB = fixnan(peek(eqcfg, baseB, 0));
+		tb0B = fixnan(peek(eqcfg, baseB + 1, 0));
+		tb1B = fixnan(peek(eqcfg, baseB + 2, 0));
+		tb2B = fixnan(peek(eqcfg, baseB + 3, 0));
+		ta1B = fixnan(peek(eqcfg, baseB + 4, 0));
+		ta2B = fixnan(peek(eqcfg, baseB + 5, 0));
+	}
+	cb0 = 1;
+	cb1 = 0;
+	cb2 = 0;
+	ca1 = 0;
+	ca2 = 0;
+	cb0B = 1;
+	cb1B = 0;
+	cb2B = 0;
+	ca1B = 0;
+	ca2B = 0;
 	if (nSec > 0.5) {
 		wasOn = peek(cstate, base + 5);
-		cb0 = peek(cstate, base);
-		cb1 = peek(cstate, base + 1);
-		cb2 = peek(cstate, base + 2);
-		ca1 = peek(cstate, base + 3);
-		ca2 = peek(cstate, base + 4);
+		cb0 = peek(cstate, base) * 1;
+		cb1 = peek(cstate, base + 1) * 1;
+		cb2 = peek(cstate, base + 2) * 1;
+		ca1 = peek(cstate, base + 3) * 1;
+		ca2 = peek(cstate, base + 4) * 1;
 		if (wasOn < 0.5) {
-			cb0 = tb0;
-			cb1 = tb1;
-			cb2 = tb2;
-			ca1 = ta1;
-			ca2 = ta2;
-			zClear = b * 16;
-			for (k = 0; k < 16; k += 1) {
-				poke(zstate, 0, zClear + k);
+			cb0 = tb0 * 1;
+			cb1 = tb1 * 1;
+			cb2 = tb2 * 1;
+			ca1 = ta1 * 1;
+			ca2 = ta2 * 1;
+			zClear = band * 16;
+			for (kk = 0; kk < 4; kk += 1) {
+				poke(zstate, 0, zClear + kk * 4);
+				poke(zstate, 0, zClear + kk * 4 + 1);
 			}
 		} else {
 			cb0 = cb0 * 0.995 + tb0 * 0.005;
@@ -235,43 +297,93 @@ for (b = 0; b < 8; b += 1) {
 		poke(cstate, ca1, base + 3);
 		poke(cstate, ca2, base + 4);
 		poke(cstate, 1, base + 5);
-		nRun = clip(floor(nSec + 0.5), 1, 4);
-		for (s = 0; s < nRun; s += 1) {
-			zBase = (b * 4 + s) * 4;
-			s1L = peek(zstate, zBase);
-			s2L = peek(zstate, zBase + 1);
-			s1R = peek(zstate, zBase + 2);
-			s2R = peek(zstate, zBase + 3);
-			xInL = yL;
-			xInR = yR;
-			yL = cb0 * xInL + s1L;
-			yR = cb0 * xInR + s1R;
-			s1Ln = cb1 * xInL - ca1 * yL + s2L;
-			s2Ln = cb2 * xInL - ca2 * yL;
-			s1Rn = cb1 * xInR - ca1 * yR + s2R;
-			s2Rn = cb2 * xInR - ca2 * yR;
-			poke(zstate, fixdenorm(s1Ln), zBase);
-			poke(zstate, fixdenorm(s2Ln), zBase + 1);
-			poke(zstate, fixdenorm(s1Rn), zBase + 2);
-			poke(zstate, fixdenorm(s2Rn), zBase + 3);
-		}
-		for (s = nRun; s < 4; s += 1) {
-			zBase = (b * 4 + s) * 4;
-			poke(zstate, 0, zBase);
-			poke(zstate, 0, zBase + 1);
-			poke(zstate, 0, zBase + 2);
-			poke(zstate, 0, zBase + 3);
-		}
 	} else {
 		if (peek(cstate, base + 5) > 0.5) {
 			poke(cstate, 0, base + 5);
-			zClear = b * 16;
-			for (k = 0; k < 16; k += 1) {
-				poke(zstate, 0, zClear + k);
+			zClear = band * 16;
+			for (kk = 0; kk < 4; kk += 1) {
+				poke(zstate, 0, zClear + kk * 4);
+				poke(zstate, 0, zClear + kk * 4 + 1);
 			}
 		}
 	}
+	if (nSecB > 0.5) {
+		wasOnB = peek(cstate, baseB + 5);
+		cb0B = peek(cstate, baseB) * 1;
+		cb1B = peek(cstate, baseB + 1) * 1;
+		cb2B = peek(cstate, baseB + 2) * 1;
+		ca1B = peek(cstate, baseB + 3) * 1;
+		ca2B = peek(cstate, baseB + 4) * 1;
+		if (wasOnB < 0.5) {
+			cb0B = tb0B * 1;
+			cb1B = tb1B * 1;
+			cb2B = tb2B * 1;
+			ca1B = ta1B * 1;
+			ca2B = ta2B * 1;
+			zClear = band * 16;
+			for (kk = 0; kk < 4; kk += 1) {
+				poke(zstate, 0, zClear + kk * 4 + 2);
+				poke(zstate, 0, zClear + kk * 4 + 3);
+			}
+		} else {
+			cb0B = cb0B * 0.995 + tb0B * 0.005;
+			cb1B = cb1B * 0.995 + tb1B * 0.005;
+			cb2B = cb2B * 0.995 + tb2B * 0.005;
+			ca1B = ca1B * 0.995 + ta1B * 0.005;
+			ca2B = ca2B * 0.995 + ta2B * 0.005;
+		}
+		poke(cstate, cb0B, baseB);
+		poke(cstate, cb1B, baseB + 1);
+		poke(cstate, cb2B, baseB + 2);
+		poke(cstate, ca1B, baseB + 3);
+		poke(cstate, ca2B, baseB + 4);
+		poke(cstate, 1, baseB + 5);
+	} else {
+		if (peek(cstate, baseB + 5) > 0.5) {
+			poke(cstate, 0, baseB + 5);
+			zClear = band * 16;
+			for (kk = 0; kk < 4; kk += 1) {
+				poke(zstate, 0, zClear + kk * 4 + 2);
+				poke(zstate, 0, zClear + kk * 4 + 3);
+			}
+		}
+	}
+	nRun = 0;
+	nRunB = 0;
+	if (nSec > 0.5) {
+		nRun = clip(floor(nSec + 0.5), 1, 4);
+	}
+	if (nSecB > 0.5) {
+		nRunB = clip(floor(nSecB + 0.5), 1, 4);
+	}
+	if (nRun + nRunB > 0.5) {
+		for (sec = 0; sec < 4; sec += 1) {
+			runL = sec < nRun;
+			runR = sec < nRunB;
+			zBase = (band * 4 + sec) * 4;
+			s1L = peek(zstate, zBase) * 1;
+			s2L = peek(zstate, zBase + 1) * 1;
+			s1R = peek(zstate, zBase + 2) * 1;
+			s2R = peek(zstate, zBase + 3) * 1;
+			xInL = peek(yRun, 0);
+			xInR = peek(yRun, 1);
+			yOutL = cb0 * xInL + s1L;
+			yOutR = cb0B * xInR + s1R;
+			s1Ln = cb1 * xInL - ca1 * yOutL + s2L;
+			s2Ln = cb2 * xInL - ca2 * yOutL;
+			s1Rn = cb1B * xInR - ca1B * yOutR + s2R;
+			s2Rn = cb2B * xInR - ca2B * yOutR;
+			poke(zstate, runL * fixdenorm(s1Ln), zBase);
+			poke(zstate, runL * fixdenorm(s2Ln), zBase + 1);
+			poke(zstate, runR * fixdenorm(s1Rn), zBase + 2);
+			poke(zstate, runR * fixdenorm(s2Rn), zBase + 3);
+			poke(yRun, fixnan(runL * yOutL + (1 - runL) * xInL), 0);
+			poke(yRun, fixnan(runR * yOutR + (1 - runR) * xInR), 1);
+		}
+	}
 }
+yL = peek(yRun, 0) * 1;
+yR = peek(yRun, 1) * 1;
 
 if (tiltOn > 0.5) {
 	if (tiltWas < 0.5) {
@@ -346,8 +458,8 @@ if (tiltOn > 0.5) {
 		zBase = s * 2;
 		s1L = peek(tiltZ, zBase);
 		s1R = peek(tiltZ, zBase + 1);
-		xInL = yL;
-		xInR = yR;
+		xInL = yL * 1;
+		xInR = yR * 1;
 		yL = cb0 * xInL + s1L;
 		yR = cb0 * xInR + s1R;
 		s1Ln = cb1 * xInL - ca1 * yL;
@@ -366,8 +478,8 @@ if (tiltOn > 0.5) {
 	}
 }
 
-eqL = yL;
-eqR = yR;
+eqL = yL * 1;
+eqR = yR * 1;
 
 if (soloBand > -0.5) {
 	ub0 = fixnan(soloB0);
@@ -396,8 +508,8 @@ if (soloBand > -0.5) {
 	s2L = peek(soloZ, 1);
 	s1R = peek(soloZ, 2);
 	s2R = peek(soloZ, 3);
-	xInL = xL;
-	xInR = xR;
+	xInL = dom0 * 1;
+	xInR = dom1 * 1;
 	yL = soloSb0 * xInL + s1L;
 	yR = soloSb0 * xInR + s1R;
 	s1Ln = soloSb1 * xInL - soloSa1 * yL + s2L;
@@ -417,39 +529,15 @@ if (soloBand > -0.5) {
 	}
 }
 
-audL = yL;
-audR = yR;
+audL = yL * 1;
+audR = yR * 1;
 soloOn = soloBand > -0.5;
-
-fft_init(tab);
-if (abs(irGen - irSeen) > 0.5 && irGen > 0.5) {
-	for (i = 0; i < 4096; i += 1) {
-		poke(fx, 0, i, 0);
-		poke(fx, 0, i, 1);
-	}
-	for (i = 0; i < 2048; i += 1) {
-		poke(fx, peek(irspec, i, 0), i, 0);
-	}
-	fft_run(fx, tab, 4096, 0);
-	for (i = 0; i < 4096; i += 1) {
-		poke(htRe, peek(fx, i, 0), i);
-		poke(htIm, peek(fx, i, 1), i);
-	}
-	if (irHave < 0.5) {
-		for (i = 0; i < 4096; i += 1) {
-			poke(hre, peek(htRe, i), i);
-			poke(him, peek(htIm, i), i);
-		}
-		irHave = 1;
-	}
-	irSeen = irGen;
-}
 
 nfirPos = mod(nfirPos + 1, 128);
 poke(nfirL, eqL, nfirPos);
 poke(nfirR, eqR, nfirPos);
-firL = eqL;
-firR = eqR;
+firL = eqL * 1;
+firR = eqR * 1;
 runFir = 0;
 if (phaseMode > 0.5 && phaseMode < 1.5) {
 	runFir = 1;
@@ -457,84 +545,219 @@ if (phaseMode > 0.5 && phaseMode < 1.5) {
 if (g1 > 0.001) {
 	runFir = 1;
 }
-if (runFir > 0.5 && irHave > 0.5) {
+if (runFir > 0.5 && irGen > 0.5) {
 	firL = 0;
 	firR = 0;
 	for (i = 0; i < 128; i += 1) {
 		tap = peek(irspec, i, 1);
+		tapR = peek(irspec, 128 + i, 1);
 		idx = nfirPos - i;
 		if (idx < 0) {
 			idx = idx + 128;
 		}
 		firL = firL + tap * peek(nfirL, idx);
-		firR = firR + tap * peek(nfirR, idx);
+		firR = firR + tapR * peek(nfirR, idx);
 	}
 }
 
-ringAt = mod(hopT, 8192);
-poke(latRingL, xL, ringAt);
-poke(latRingR, xR, ringAt);
-if (hopT >= 2047 && mod(hopT, 2048) == 2047) {
-	if (irHave > 0.5) {
-		for (k = 0; k < 4096; k += 1) {
-			poke(hre, peek(hre, k) * 0.5 + peek(htRe, k) * 0.5, k);
-			poke(him, peek(him, k) * 0.5 + peek(htIm, k) * 0.5, k);
-		}
-	}
-	frm = hopT - 2047;
-	for (i = 0; i < 4096; i += 1) {
-		poke(fx, 0, i, 0);
-		poke(fx, 0, i, 1);
-	}
-	for (i = 0; i < 2048; i += 1) {
-		poke(fx, peek(latRingL, mod(frm + i, 8192)), i, 0);
-	}
-	fft_run(fx, tab, 4096, 0);
-	for (k = 0; k < 4096; k += 1) {
-		reBin = peek(fx, k, 0);
-		imBin = peek(fx, k, 1);
-		reIr = peek(hre, k);
-		imIr = peek(him, k);
-		poke(fx, reBin * reIr - imBin * imIr, k, 0);
-		poke(fx, reBin * imIr + imBin * reIr, k, 1);
-	}
-	fft_run(fx, tab, 4096, 1);
-	for (i = 0; i < 4096; i += 1) {
-		accAt = mod(frm + i, 8192);
-		poke(accL, peek(accL, accAt) + peek(fx, i, 0), accAt);
-	}
-	for (i = 0; i < 4096; i += 1) {
-		poke(fx, 0, i, 0);
-		poke(fx, 0, i, 1);
-	}
-	for (i = 0; i < 2048; i += 1) {
-		poke(fx, peek(latRingR, mod(frm + i, 8192)), i, 0);
-	}
-	fft_run(fx, tab, 4096, 0);
-	for (k = 0; k < 4096; k += 1) {
-		reBin = peek(fx, k, 0);
-		imBin = peek(fx, k, 1);
-		reIr = peek(hre, k);
-		imIr = peek(him, k);
-		poke(fx, reBin * reIr - imBin * imIr, k, 0);
-		poke(fx, reBin * imIr + imBin * reIr, k, 1);
-	}
-	fft_run(fx, tab, 4096, 1);
-	for (i = 0; i < 4096; i += 1) {
-		accAt = mod(frm + i, 8192);
-		poke(accR, peek(accR, accAt) + peek(fx, i, 0), accAt);
-	}
-}
 olaL = 0;
 olaR = 0;
-if (hopT >= 2047) {
-	outAt = mod(hopT - 2047, 8192);
-	olaL = peek(accL, outAt);
-	olaR = peek(accR, outAt);
-	poke(accL, 0, outAt);
-	poke(accR, 0, outAt);
+doFft = 0;
+if (phaseMode >= 1.5) {
+	doFft = 1;
 }
-hopT = hopT + 1;
+if (g2 > 0.001) {
+	doFft = 1;
+}
+if (doFft > 0.5) {
+	if (fftWas < 0.5) {
+		hopT = 0;
+		olaWarm = 0;
+		irHave = 0;
+		for (p = 0; p < 8192; p += 1) {
+			poke(accL, 0, p);
+			poke(accR, 0, p);
+		}
+	}
+	fftWas = 1;
+	fft_init(tab);
+	ringAt = mod(hopT, 8192);
+	poke(latRingL, dom0 * 1, ringAt);
+	poke(latRingR, dom1 * 1, ringAt);
+	irChanged = (abs(irGen - irSeen) > 0.5) * (irGen > 0.5);
+	needUnity = (irHave < 0.5) * (irChanged < 0.5);
+	hopNow = (hopT >= 2047) * (mod(hopT, 2048) == 2047);
+	if (hopNow > 0.5 && irHave > 0.5) {
+		for (p = 0; p < 4096; p += 1) {
+			poke(hre, peek(hre, p) * 0.5 + peek(htRe, p) * 0.5, p);
+			poke(him, peek(him, p) * 0.5 + peek(htIm, p) * 0.5, p);
+			poke(hreB, peek(hreB, p) * 0.5 + peek(htReB, p) * 0.5, p);
+			poke(himB, peek(himB, p) * 0.5 + peek(htImB, p) * 0.5, p);
+		}
+	}
+	// One fft_run call site. job 0 plants a unity impulse, job 1 loads
+	// curve A's IR, job 2 loads curve B's IR (irspec channel 0 at sample
+	// 2048), jobs 3..6 are the L/R forward and inverse of this hop.
+	// The loop counter is not a name fft_run writes.
+	firstIr = irHave < 0.5;
+	for (job = 0; job < 7; job += 1) {
+		go = 0;
+		inv = 0;
+		kind = 0;
+		if (job < 0.5 && needUnity > 0.5) {
+			kind = 1;
+			go = 1;
+			for (p = 0; p < 4096; p += 1) {
+				poke(fx, 0, p, 0);
+				poke(fx, 0, p, 1);
+			}
+			poke(fx, 1, 1025, 0);
+		}
+		if (job > 0.5 && job < 1.5 && irChanged > 0.5) {
+			kind = 2;
+			go = 1;
+			for (p = 0; p < 4096; p += 1) {
+				poke(fx, 0, p, 0);
+				poke(fx, 0, p, 1);
+			}
+			for (p = 0; p < 2048; p += 1) {
+				poke(fx, peek(irspec, p, 0), p, 0);
+			}
+		}
+		if (job > 1.5 && job < 2.5 && irChanged > 0.5) {
+			kind = 7;
+			go = 1;
+			for (p = 0; p < 4096; p += 1) {
+				poke(fx, 0, p, 0);
+				poke(fx, 0, p, 1);
+			}
+			for (p = 0; p < 2048; p += 1) {
+				poke(fx, peek(irspec, 2048 + p, 0), p, 0);
+			}
+		}
+		if (job > 2.5 && job < 3.5 && hopNow > 0.5) {
+			kind = 3;
+			go = 1;
+			frm = hopT - 2047;
+			for (p = 0; p < 4096; p += 1) {
+				poke(fx, 0, p, 0);
+				poke(fx, 0, p, 1);
+			}
+			for (p = 0; p < 2048; p += 1) {
+				poke(fx, peek(latRingL, mod(frm + p, 8192)), p, 0);
+			}
+		}
+		if (job > 3.5 && job < 4.5 && hopNow > 0.5) {
+			kind = 4;
+			go = 1;
+			inv = 1;
+			for (p = 0; p < 4096; p += 1) {
+				reBin = peek(fx, p, 0);
+				imBin = peek(fx, p, 1);
+				reIr = peek(hre, p);
+				imIr = peek(him, p);
+				poke(fx, reBin * reIr - imBin * imIr, p, 0);
+				poke(fx, reBin * imIr + imBin * reIr, p, 1);
+			}
+		}
+		if (job > 4.5 && job < 5.5 && hopNow > 0.5) {
+			kind = 5;
+			go = 1;
+			frm = hopT - 2047;
+			for (p = 0; p < 4096; p += 1) {
+				poke(fx, 0, p, 0);
+				poke(fx, 0, p, 1);
+			}
+			for (p = 0; p < 2048; p += 1) {
+				poke(fx, peek(latRingR, mod(frm + p, 8192)), p, 0);
+			}
+		}
+		if (job > 5.5 && job < 6.5 && hopNow > 0.5) {
+			kind = 6;
+			go = 1;
+			inv = 1;
+			for (p = 0; p < 4096; p += 1) {
+				reBin = peek(fx, p, 0);
+				imBin = peek(fx, p, 1);
+				reIr = peek(hreB, p);
+				imIr = peek(himB, p);
+				poke(fx, reBin * reIr - imBin * imIr, p, 0);
+				poke(fx, reBin * imIr + imBin * reIr, p, 1);
+			}
+		}
+		if (go > 0.5) {
+			fft_run(fx, tab, 4096, inv);
+		}
+		if (go > 0.5 && kind > 0.5 && kind < 1.5) {
+			for (p = 0; p < 4096; p += 1) {
+				poke(hre, peek(fx, p, 0), p);
+				poke(him, peek(fx, p, 1), p);
+				poke(htRe, peek(fx, p, 0), p);
+				poke(htIm, peek(fx, p, 1), p);
+				poke(hreB, peek(fx, p, 0), p);
+				poke(himB, peek(fx, p, 1), p);
+				poke(htReB, peek(fx, p, 0), p);
+				poke(htImB, peek(fx, p, 1), p);
+			}
+			irHave = 1;
+		}
+		if (go > 0.5 && kind > 1.5 && kind < 2.5) {
+			for (p = 0; p < 4096; p += 1) {
+				poke(htRe, peek(fx, p, 0), p);
+				poke(htIm, peek(fx, p, 1), p);
+			}
+			if (irHave < 0.5) {
+				for (p = 0; p < 4096; p += 1) {
+					poke(hre, peek(htRe, p), p);
+					poke(him, peek(htIm, p), p);
+				}
+				irHave = 1;
+			}
+			irSeen = irGen;
+		}
+		if (go > 0.5 && kind > 6.5 && kind < 7.5) {
+			for (p = 0; p < 4096; p += 1) {
+				poke(htReB, peek(fx, p, 0), p);
+				poke(htImB, peek(fx, p, 1), p);
+			}
+			if (firstIr > 0.5) {
+				for (p = 0; p < 4096; p += 1) {
+					poke(hreB, peek(htReB, p), p);
+					poke(himB, peek(htImB, p), p);
+				}
+			}
+		}
+		if (go > 0.5 && kind > 3.5 && kind < 4.5) {
+			frm = hopT - 2047;
+			for (p = 0; p < 4096; p += 1) {
+				accAt = mod(frm + p, 8192);
+				poke(accL, peek(accL, accAt) + peek(fx, p, 0), accAt);
+			}
+		}
+		if (go > 0.5 && kind > 5.5 && kind < 6.5) {
+			frm = hopT - 2047;
+			for (p = 0; p < 4096; p += 1) {
+				accAt = mod(frm + p, 8192);
+				poke(accR, peek(accR, accAt) + peek(fx, p, 0), accAt);
+			}
+		}
+	}
+	if (hopT >= 2047) {
+		outAt = mod(hopT - 2047, 8192);
+		olaL = peek(accL, outAt) * 1;
+		olaR = peek(accR, outAt) * 1;
+		poke(accL, 0, outAt);
+		poke(accR, 0, outAt);
+	}
+	if (hopT >= 3072) {
+		olaWarm = 1;
+	}
+	hopT = hopT + 1;
+} else {
+	fftWas = 0;
+	hopT = 0;
+	olaWarm = 0;
+}
 
 natSamps = floor(322 * samplerate / 44100 + 0.5);
 if (natSamps < 1) {
@@ -543,15 +766,15 @@ if (natSamps < 1) {
 if (natSamps > 4000) {
 	natSamps = 4000;
 }
-nFeedL = firL;
-nFeedR = firR;
+nFeedL = firL * 1;
+nFeedR = firR * 1;
 if (soloOn > 0.5) {
-	nFeedL = audL;
-	nFeedR = audR;
+	nFeedL = audL * 1;
+	nFeedR = audR * 1;
 }
 if (bypass > 0.5) {
-	nFeedL = xL;
-	nFeedR = xR;
+	nFeedL = xL * 1;
+	nFeedR = xR * 1;
 }
 natDL.write(nFeedL);
 natDR.write(nFeedR);
@@ -566,26 +789,50 @@ audDR.write(audR);
 audLatL = audDL.read(3072, interp="linear");
 audLatR = audDR.read(3072, interp="linear");
 
+if (bootMode < -0.5) {
+	bootMode = phaseMode * 1;
+}
 want0 = phaseMode < 0.5;
 want1 = (phaseMode >= 0.5) * (phaseMode < 1.5);
 want2 = phaseMode >= 1.5;
-g0 = g0 + (want0 - g0) * 0.08;
-g1 = g1 + (want1 - g1) * 0.08;
-g2 = g2 + (want2 - g2) * 0.08;
+// Switching into Linear waits until the convolver's first delayed sample
+// exists, so the crossfade does not drop into a cold accumulator.
+// A device that loaded already in Linear snaps straight onto that path.
+if (want2 > 0.5 && bootMode < 1.5 && olaWarm < 0.5) {
+	want2 = 0;
+	want0 = 1;
+}
+if (mixSnap < 0.5) {
+	g0 = want0 * 1;
+	g1 = want1 * 1;
+	g2 = want2 * 1;
+	mixSnap = 1;
+} else {
+	g0 = g0 + (want0 - g0) * 0.08;
+	g1 = g1 + (want1 - g1) * 0.08;
+	g2 = g2 + (want2 - g2) * 0.08;
+}
 // Branch-free mix. An if/else that multiplies the three paths does not compile
-// in Max 9 (clang: assignment to const inlets in1/in2).
+// in Max 9 (clang: assignment to const inlets in1/in2). Each path is fixnan'd
+// first: 0 * NaN is NaN, and that used to silence the whole channel.
 wet = bypass < 0.5;
 solo = wet * (soloOn > 0.5);
-zL = (1 - wet) * xL + wet * audL * linGain;
-zR = (1 - wet) * xR + wet * audR * linGain;
-nL = (1 - wet) * nDelL + wet * nDelL * linGain;
-nR = (1 - wet) * nDelR + wet * nDelR * linGain;
-lL = (1 - wet) * dryLatL + wet * linGain * (solo * audLatL + (1 - solo) * olaL);
-lR = (1 - wet) * dryLatR + wet * linGain * (solo * audLatR + (1 - solo) * olaR);
-yL = g0 * zL + g1 * nL + g2 * lL;
-yR = g0 * zR + g1 * nR + g2 * lR;
-yL = fixnan(fixdenorm(yL));
-yR = fixnan(fixdenorm(yR));
+zL = fixnan((1 - wet) * xL + wet * audL * linGain);
+zR = fixnan((1 - wet) * xR + wet * audR * linGain);
+nL = fixnan((1 - wet) * nDelL + wet * nDelL * linGain);
+nR = fixnan((1 - wet) * nDelR + wet * nDelR * linGain);
+lL = fixnan((1 - wet) * dryLatL + wet * linGain * (solo * audLatL + (1 - solo) * olaL));
+lR = fixnan((1 - wet) * dryLatR + wet * linGain * (solo * audLatR + (1 - solo) * olaR));
+yL = fixnan(fixdenorm(g0 * zL + g1 * nL + g2 * lL));
+yR = fixnan(fixdenorm(g0 * zR + g1 * nR + g2 * lR));
+// Decode only the wet mix. Bypass already holds the dry L/R pair, and
+// decoding that would turn a stereo bypass into mid/side.
+if (msOn > 0.5 && wet > 0.5) {
+	midSig = yL * 1;
+	sideSig = yR * 1;
+	yL = (midSig + sideSig) * msG;
+	yR = (midSig - sideSig) * msG;
+}
 
 postMono = 0.5 * (yL + yR);
 poke(spec, preMono, 8 + writeIdx, 0);

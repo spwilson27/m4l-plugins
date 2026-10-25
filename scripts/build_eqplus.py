@@ -3,9 +3,13 @@
 Build devices/EQ+.amxd (378 x 169 px) — a drawable eight-band EQ (Bitwig EQ+).
 The extra 18 px is the always-visible sidechain tab on the left.
 
-The face is one interactive v8ui (`obj-viz`). Every automatable control is a hidden
-`live.*` parameter (presentation off) so Live can automate, map, and show it in the
-Inspector without covering the canvas. Outlet 0 sends `param <name> <value>` and
+The face is one interactive v8ui (`obj-viz`). Every control is a `live.*` parameter,
+and each one's Info View text is `parameter_info` (the same sentence as the Max
+annotation). Shift, output gain, the tilt filter, and each band's on/off, frequency,
+gain and Q are transparent faces: saved hidden and parked at 1×1, outside the canvas,
+then moved over the drawn control so a right-click offers Show Automation. The other
+parameters stay off the presentation. The curve nodes stay on the v8ui, because one
+node is both frequency and gain. Outlet 0 sends `param <name> <value>` and
 `setwidth_cmd <px>`. `route param setwidth_cmd` turns `param` into a silent `set` of
 the live object (no feedback) and `setwidth_cmd` into `setwidth` on `live.thisdevice`.
 The filters and analyzer shelves are stored-only toggles, as is the sidechain fold.
@@ -93,7 +97,36 @@ def enum_valueof(long_name, short_name, enums, initial, unitstyle=True):
     return valueof
 
 
+# Faces follow Mega Modulator: presentation on, hidden, parked outside the v8ui, every colour alpha 0.
+# Live snaps a shown live.numbox toward 15 px; the UI still asks for the drawn control's rectangle.
+FACE_PARK = [0.0, 0.0, 1.0, 1.0]
+FACE_CLEAR = [0.0, 0.0, 0.0, 0.0]
+FACE_COLORS = {
+    "live.numbox": ["activebgcolor", "activeslidercolor", "activetricolor", "bordercolor", "focusbordercolor",
+                    "inactivelcdcolor", "lcdbgcolor", "lcdcolor", "textcolor", "tricolor"],
+    "live.text": ["activebgcolor", "activebgoncolor", "activetextcolor", "activetextoncolor", "bgcolor", "bgoncolor",
+                  "bordercolor", "textcolor", "textoncolor", "focusbordercolor"],
+    "live.menu": ["activebgcolor", "activetextcolor", "bgcolor", "bordercolor", "textcolor", "focusbordercolor"],
+}
+
+
+def apply_face(box):
+    box["presentation"] = 1
+    box["presentation_rect"] = list(FACE_PARK)
+    box["hidden"] = 1
+    for key in FACE_COLORS[box["maxclass"]]:
+        box[key] = list(FACE_CLEAR)
+    if box["maxclass"] == "live.numbox":
+        box["appearance"] = 0
+    else:
+        box["text"] = ""
+        box["texton"] = ""
+        box["rounded"] = 0
+        box["border"] = 0
+
+
 def hidden(obj_id, maxclass, x, y, w, h, valueof, varname, help_text):
+    valueof["parameter_info"] = help_text
     return {
         "annotation": help_text,
         "annotation_name": varname,
@@ -242,12 +275,13 @@ def control_specs():
             "kind": "num",
             "long": "Global Shift",
             "short": "Shift",
-            "lo": -36.0,
-            "hi": 36.0,
+            "lo": -64.0,
+            "hi": 64.0,
             "init": 0.0,
             "unit": 7,
             "w": 70,
-            "help": "Offsets the frequency of every band, in semitones (-36 to +36).",
+            "face": True,
+            "help": "Shifts every band's frequency by the same amount, in semitones, from -64 to +64. Frequencies stay inside 20 Hz to 20 kHz.",
         },
         {
             "id": "obj-ctrl-gain",
@@ -262,7 +296,8 @@ def control_specs():
             "init": 0.0,
             "unit": 4,
             "w": 70,
-            "help": "Gain applied to the device output, in dB (-24 to +24).",
+            "face": True,
+            "help": "Output gain of the whole device, in dB, from -24 to +24.",
         },
         {
             "id": "obj-ctrl-adaptiveq",
@@ -273,7 +308,7 @@ def control_specs():
             "short": "AdaptQ",
             "init": 1,
             "w": 70,
-            "help": "When on, each bell's Q rises with the absolute value of its gain.",
+            "help": "When on, a bell's Q rises as its gain moves away from 0 dB. Shelves, cuts and the notch stay as set.",
         },
         {
             "id": "obj-ctrl-range",
@@ -285,7 +320,7 @@ def control_specs():
             "enums": RANGE_ENUM,
             "init": 0,
             "w": 90,
-            "help": "Vertical display range of the curve: \u00b112, \u00b124, or \u00b136 dB.",
+            "help": "Vertical scale of the EQ curve: \u00b112, \u00b124 or \u00b136 dB.",
         },
         {
             "id": "obj-ctrl-pre",
@@ -296,7 +331,7 @@ def control_specs():
             "short": "Pre",
             "init": 1,
             "w": 54,
-            "help": "Draw the incoming audio as a shaded spectrum.",
+            "help": "Shows the spectrum of the audio entering the EQ.",
         },
         {
             "id": "obj-ctrl-post",
@@ -307,7 +342,7 @@ def control_specs():
             "short": "Post",
             "init": 1,
             "w": 54,
-            "help": "Draw the outgoing audio as a bright spectrum curve.",
+            "help": "Shows the spectrum of the audio leaving the EQ.",
         },
         {
             "id": "obj-ctrl-resolution",
@@ -319,7 +354,7 @@ def control_specs():
             "enums": ["Small", "Medium", "Large", "Huge"],
             "init": 3,
             "w": 80,
-            "help": "FFT size of the spectrum display: Small, Medium, Large, or Huge.",
+            "help": "FFT size of the spectrum: Small, Medium, Large or Huge.",
         },
         {
             "id": "obj-ctrl-speed",
@@ -331,7 +366,7 @@ def control_specs():
             "enums": ["Fast", "Medium", "Slow", "Freeze"],
             "init": 0,
             "w": 80,
-            "help": "Rise and fall time of the spectrum display.",
+            "help": "How quickly the spectrum rises and falls: Fast, Medium, Slow or Freeze.",
         },
         {
             "id": "obj-ctrl-tilt",
@@ -343,7 +378,7 @@ def control_specs():
             "enums": TILT_ENUM,
             "init": 2,
             "w": 100,
-            "help": "Spectrum tilt in dB per octave, pivoted around 1 kHz.",
+            "help": "Tilts the spectrum display, in dB per octave around 1 kHz: 0, 3, 4.5 or 6. This does not change the audio.",
         },
     ]
     for i, freq in enumerate(DEFAULT_FREQS):
@@ -359,7 +394,8 @@ def control_specs():
                 "short": f"B{n} On",
                 "init": 0,
                 "w": 60,
-                "help": f"Enable band {n}.",
+                "face": True,
+                "help": f"Turns band {n} on or off. Off removes that band from the EQ.",
             },
             {
                 "id": f"{base}-mode",
@@ -371,7 +407,7 @@ def control_specs():
                 "enums": MODES,
                 "init": 0,
                 "w": 110,
-                "help": f"Filter mode for band {n}.",
+                "help": f"Filter type for band {n}: Off, low cut (12, 24, 48 or 96 dB/oct), low shelf, bell, notch, high shelf, or high cut (12, 24, 48 or 96 dB/oct).",
             },
             {
                 "id": f"{base}-freq",
@@ -386,7 +422,8 @@ def control_specs():
                 "unit": 3,
                 "exponent": 3.0,
                 "w": 70,
-                "help": f"Center or corner frequency of band {n}, in Hz.",
+                "face": True,
+                "help": f"Frequency of band {n}, from 20 Hz to 20 kHz. Corner of a cut or shelf, center of a bell or notch.",
             },
             {
                 "id": f"{base}-gain",
@@ -400,7 +437,8 @@ def control_specs():
                 "init": 0.0,
                 "unit": 4,
                 "w": 64,
-                "help": f"Gain of band {n} for shelves and bells, in dB (-36 to +36). Cuts and notches ignore it.",
+                "face": True,
+                "help": f"Gain of band {n}, from -36 to +36 dB. Shelves and bells use it. Cuts and the notch ignore it.",
             },
             {
                 "id": f"{base}-q",
@@ -415,7 +453,8 @@ def control_specs():
                 "unit": 1,
                 "exponent": 2.5,
                 "w": 56,
-                "help": f"Q of band {n} (0.1 to 40).",
+                "face": True,
+                "help": f"Width of band {n}, from 0.1 (wide) to 40 (narrow).",
             },
         ])
     # Appended so existing parameter order is unchanged. Shelves and the sidechain
@@ -431,7 +470,7 @@ def control_specs():
             "init": 0,
             "w": 90,
             "invisible": 1,
-            "help": "Show the filters shelf. Stored with the Live Set.",
+            "help": "Opens the per-band filter shelf. Saved with the Live Set.",
         },
         {
             "id": "obj-ctrl-analyzer-shelf",
@@ -443,7 +482,7 @@ def control_specs():
             "init": 0,
             "w": 90,
             "invisible": 1,
-            "help": "Show the analyzer shelf. Stored with the Live Set.",
+            "help": "Opens the analyzer shelf. Saved with the Live Set.",
         },
         {
             "id": "obj-ctrl-sidechain-fold",
@@ -455,7 +494,7 @@ def control_specs():
             "init": 0,
             "w": 80,
             "invisible": 1,
-            "help": "Show the sidechain fold. Stored with the Live Set.",
+            "help": "Opens the sidechain panel. Saved with the Live Set.",
         },
         {
             "id": "obj-ctrl-ref-enable",
@@ -466,7 +505,7 @@ def control_specs():
             "short": "RefOn",
             "init": 0,
             "w": 70,
-            "help": "Draw the sidechain reference on the analyzer.",
+            "help": "Draws the sidechain input on the analyzer.",
         },
         {
             "id": "obj-ctrl-ref-gain",
@@ -480,7 +519,7 @@ def control_specs():
             "init": 0.0,
             "unit": 4,
             "w": 70,
-            "help": "Gain applied to the sidechain reference, in dB (-24 to +24).",
+            "help": "Gain of the sidechain reference trace, in dB, from -24 to +24. This does not change the EQ.",
         },
         {
             "id": "obj-ctrl-tilt-eq",
@@ -494,7 +533,8 @@ def control_specs():
             "init": 0.0,
             "unit": 4,
             "w": 70,
-            "help": "Flat tilt in dB per decade around 1 kHz. +12 is about +12 dB at 10 kHz and -12 dB at 100 Hz.",
+            "face": True,
+            "help": "Tilts the EQ itself, in dB per decade around 1 kHz, from -24 to +24. Positive values boost the highs and cut the lows. +12 is about +12 dB at 10 kHz and -12 dB at 100 Hz.",
         },
         {
             "id": "obj-ctrl-phase-mode",
@@ -506,7 +546,20 @@ def control_specs():
             "enums": ["Zero Latency", "Natural Phase", "Linear Phase"],
             "init": 0,
             "w": 120,
-            "help": "Zero Latency is the biquad EQ. Natural Phase matches analog magnitude and phase with about 7.3 ms of latency. Linear Phase keeps that magnitude with a flat phase (Pro-Q Low, 3072 samples).",
+            "help": "Zero Latency is a standard biquad EQ. Natural Phase matches an analog EQ's phase, with about 7.3 ms of latency. Linear Phase keeps the same magnitude with a flat phase.",
+        },
+        {
+            "id": "obj-ctrl-route",
+            "key": "route",
+            "ui": "set_route",
+            "kind": "menu",
+            "long": "Stereo Route",
+            "short": "Route",
+            "enums": ["Stereo", "Left", "Right", "Mid", "Side"],
+            "init": 0,
+            "w": 70,
+            "face": True,
+            "help": "Chooses which stereo field the EQ edits. Stereo puts one curve on both channels. Left, Right, Mid and Side keep a separate curve on the other channel. Mid and Side encode to mid and side, equalize, then decode.",
         },
     ])
     return specs
@@ -530,6 +583,8 @@ def make_control(spec, x, y):
     if spec.get("invisible"):
         # 1 = stored with the Set, not automatable and not listed in the parameter chooser.
         made["box"]["saved_attribute_attributes"]["valueof"]["parameter_invisible"] = 1
+    if spec.get("face"):
+        apply_face(made["box"])
     return made
 
 
@@ -637,7 +692,7 @@ def build():
         newobj("obj-plugout", "plugout~", 20, 620, 70, numinlets=2, numoutlets=2, outlettype=["signal", "signal"], varname="eq_plugout"),
         # Open gate: messages enter the right inlet. The face connects its outlet to gen~ after load.
         newobj("obj-gen-in", "gate 1 1", 120, 480, 70, numinlets=2, numoutlets=1, outlettype=[""], varname="eq_genin"),
-        newobj("obj-buf-cfg", "buffer~ #0-eqpluscfg @samps 64", 420, 420, 230, numoutlets=2, outlettype=["float", "bang"]),
+        newobj("obj-buf-cfg", "buffer~ #0-eqpluscfg @samps 128", 420, 420, 230, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-buf-spec", "buffer~ #0-eqplusspec 200 4 @samps 8200", 420, 450, 280, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-buf-ir", "buffer~ #0-eqplusir 4096 3", 420, 480, 220, numoutlets=2, outlettype=["float", "bang"]),
         newobj("obj-thisdevice", "live.thisdevice", 420, 490, 100, numoutlets=2, outlettype=["bang", "int"]),

@@ -21,8 +21,8 @@ var EQP_Q_MIN = 0.1;
 var EQP_Q_MAX = 40.0;
 var EQP_Q_DEFAULT = 0.7071;
 
-var EQP_SHIFT_MIN = -36.0;
-var EQP_SHIFT_MAX = 36.0;
+var EQP_SHIFT_MIN = -64.0;
+var EQP_SHIFT_MAX = 64.0;
 
 var EQP_OUTGAIN_MIN = -24.0;
 var EQP_OUTGAIN_MAX = 24.0;
@@ -93,13 +93,17 @@ var EQP_SIDECHAIN_FOLD_W = 128;
 // soloBand param: -1 is off, 0..7 auditions that band through a bandpass.
 var EQP_SOLO_OFF = -1;
 
-// buffer~ #0-eqpluscfg : 64 floats, 8 bands x 8.
+// buffer~ #0-eqpluscfg : 128 floats, two curves of 8 bands x 8.
+// Curve A (the left channel, or the mid) starts at 0. Curve B (the right
+// channel, or the side) starts at 64. Stereo writes the same
+// curve into both halves; the gen reads the second half only when the
+// channels are split.
 //   base = band * EQP_CFG_STRIDE
 //   +0 sections (0 bypass, 1, 2, 4)
 //   +1 b0  +2 b1  +3 b2  +4 a1  +5 a2     (a0 is normalized to 1)
 //   +6 +7 reserved
 var EQP_CFG_STRIDE = 8;
-var EQP_CFG_SIZE = 64;
+var EQP_CFG_SIZE = 128;
 var EQP_CFG_OFF_SECTIONS = 0;
 var EQP_CFG_OFF_B0 = 1;
 var EQP_CFG_OFF_B1 = 2;

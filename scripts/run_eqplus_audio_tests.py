@@ -14,6 +14,17 @@ Cases:
   notch      — a notch at 1 kHz drops a 1 kHz sine by more than 25 dB
   lowcut_low — Low-Cut 4 at 1 kHz attenuates 200 Hz
   lowcut_high— Low-Cut 4 at 1 kHz passes 5 kHz
+  gain6      — output gain +6 dB on a flat EQ
+  cascade    — two +6 dB bells at 1 kHz add to about +12 dB
+  tilt_low   — flat tilt +12 dB at 200 Hz
+  tilt_high  — flat tilt +12 dB at 10 kHz
+  lat0       — Zero Latency noise is undelayed
+  latnat     — Natural Phase noise is delayed by about 350 samples
+  latlin     — Linear Phase noise is delayed by 3072 samples
+  lr_right   — route Right, curve A flat and curve B a +12 dB bell: left stays
+               unity and the right channel rises about 12 dB
+  ms_side    — route Side, a notch on the side, a pure side input: both
+               outputs drop by more than 25 dB
   The bypass and bell cases also require #0-eqplusspec to carry non-zero pre and
   post samples and a write index that has left 0.
 """
@@ -44,25 +55,47 @@ var cfgName = "";
 var specName = "";
 var resultPath = "";
 var armed = false;
+var stereoRec = 0;
 
 function resultpath(p) { resultPath = String(p); }
+
+function stereo(v) { stereoRec = (+v) > 0.5 ? 1 : 0; }
 
 function setbufs(cfg, spec) {
     cfgName = cfg ? String(cfg) : "";
     specName = spec ? String(spec) : "";
 }
 
-function setup(sections, b0, b1, b2, a1, a2) {
+function pokeBand(band, sections, b0, b1, b2, a1, a2) {
+    if (!cfgName) return;
+    var buf = new Buffer(cfgName);
+    var base = band * 8;
+    buf.poke(1, base, +sections);
+    buf.poke(1, base + 1, +b0);
+    buf.poke(1, base + 2, +b1);
+    buf.poke(1, base + 3, +b2);
+    buf.poke(1, base + 4, +a1);
+    buf.poke(1, base + 5, +a2);
+}
+
+function setup(sections, b0, b1, b2, a1, a2, sections2, c0, c1, c2, d1, d2) {
     if (!cfgName) return;
     var buf = new Buffer(cfgName);
     var i;
     for (i = 0; i < 64; i++) buf.poke(1, i, 0);
-    buf.poke(1, 0, +sections);
-    buf.poke(1, 1, +b0);
-    buf.poke(1, 2, +b1);
-    buf.poke(1, 3, +b2);
-    buf.poke(1, 4, +a1);
-    buf.poke(1, 5, +a2);
+    pokeBand(0, sections, b0, b1, b2, a1, a2);
+    if (arguments.length >= 12) pokeBand(1, sections2, c0, c1, c2, d1, d2);
+}
+
+function setup2(sections, b0, b1, b2, a1, a2) {
+    pokeBand(1, sections, b0, b1, b2, a1, a2);
+}
+
+function setupB(sections, b0, b1, b2, a1, a2) {
+    var buf = new Buffer(cfgName);
+    var i;
+    for (i = 64; i < 128; i++) buf.poke(1, i, 0);
+    pokeBand(8, sections, b0, b1, b2, a1, a2);
 }
 
 function loadbang() {
@@ -124,6 +157,46 @@ function ringStats(buf, ch) {
     return { peak: peak, rms: n ? Math.sqrt(sum / n) : 0 };
 }
 
+function bestLag(inn, out) {
+    var n = Math.min(inn.length, out.length);
+    var maxLag = 3600;
+    var start = 2000;
+    var len = 2048;
+    if (n < start + len + maxLag) {
+        start = 0;
+        len = Math.max(0, n - maxLag);
+    }
+    if (len < 64) return -1;
+    var bestL = 0;
+    var bestC = -1e99;
+    var lag, i, c, a, b, lo, hi;
+    for (lag = 0; lag <= maxLag; lag += 4) {
+        c = 0;
+        for (i = 0; i < len; i += 2) {
+            a = inn[start + i];
+            b = out[start + i + lag];
+            if (a !== a || b !== b) continue;
+            c += a * b;
+        }
+        if (c > bestC) { bestC = c; bestL = lag; }
+    }
+    lo = bestL - 4;
+    if (lo < 0) lo = 0;
+    hi = bestL + 4;
+    if (hi > maxLag) hi = maxLag;
+    for (lag = lo; lag <= hi; lag++) {
+        c = 0;
+        for (i = 0; i < len; i += 2) {
+            a = inn[start + i];
+            b = out[start + i + lag];
+            if (a !== a || b !== b) continue;
+            c += a * b;
+        }
+        if (c > bestC) { bestC = c; bestL = lag; }
+    }
+    return bestL;
+}
+
 function analyze(durMs) {
     if (armed) return;
     armed = true;
@@ -133,9 +206,31 @@ function analyze(durMs) {
     var sr = lengthMs > 0 ? frames / (lengthMs / 1000) : 48000;
     var n = Math.max(0, Math.min(frames, Math.floor(sr * durMs / 1000)));
     var left = readChannel(rec, 1, n);
-    var inn = readChannel(rec, 2, n);
+    var right = stereoRec ? readChannel(rec, 2, n) : left;
+    var inn = readChannel(rec, stereoRec ? 3 : 2, n);
     var outS = stats(left);
+    var rightS = stats(right);
     var inS = stats(inn);
+    var lag = bestLag(inn, left);
+    function corrAt(lagN) {
+        var n = Math.min(inn.length, left.length);
+        var start = 2000;
+        var len = 2048;
+        var i, c = 0, a, b;
+        if (start + len + lagN >= n) return 0;
+        for (i = 0; i < len; i += 2) {
+            a = inn[start + i];
+            b = left[start + i + lagN];
+            if (a !== a || b !== b) continue;
+            c += a * b;
+        }
+        return c;
+    }
+    var c0 = corrAt(0);
+    var c350 = corrAt(350);
+    var c3072 = corrAt(3072);
+    var b8 = -1;
+    try { b8 = one(new Buffer(cfgName), 1, 64); } catch (eB) {}
     var prePeak = -1, postPeak = -1, preRms = -1, postRms = -1;
     var writeIdx = -1, frameTick = -1, specSr = -1;
     try {
@@ -155,9 +250,10 @@ function analyze(durMs) {
     report.writestring(
         "inRms " + inS.rms + "\n" +
         "outRms " + outS.rms + "\n" +
+        "rRms " + rightS.rms + "\n" +
         "inPeak " + inS.peak + "\n" +
         "outPeak " + outS.peak + "\n" +
-        "nan " + (outS.nan + inS.nan) + "\n" +
+        "nan " + (outS.nan + inS.nan + (stereoRec ? rightS.nan : 0)) + "\n" +
         "sr " + sr + "\n" +
         "prePeak " + prePeak + "\n" +
         "postPeak " + postPeak + "\n" +
@@ -165,7 +261,13 @@ function analyze(durMs) {
         "postRms " + postRms + "\n" +
         "writeIdx " + writeIdx + "\n" +
         "frameTick " + frameTick + "\n" +
-        "specSr " + specSr + "\n"
+        "specSr " + specSr + "\n" +
+        "lag " + lag + "\n" +
+        "c0 " + c0 + "\n" +
+        "c350 " + c350 + "\n" +
+        "c3072 " + c3072 + "\n" +
+        "stereo " + stereoRec + "\n" +
+        "b8 " + b8 + "\n"
     );
     report.close();
     outlet(0, "bang");
@@ -199,33 +301,86 @@ process.stdout.write(vals.map(function (v) { return Number(v).toFixed(9); }).joi
     return "setup " + proc.stdout.strip()
 
 
+def tilt_message(tilt_db, freq, sr=SR):
+    """Comma-separated gen messages for a flat tilt, plus the expected dB at freq."""
+    node = r"""
+const cfg = require(process.argv[1]);
+const tilt = +process.argv[2];
+const freq = +process.argv[3];
+const sr = +process.argv[4];
+const c = cfg.eqpTiltCoeffs(tilt, sr);
+const parts = ["tiltOn " + c.on, "tGain " + c.gain.toFixed(9)];
+c.sections.forEach(function (s, i) {
+    ["b0", "b1", "a1"].forEach(function (k) {
+        parts.push("t" + i + k + " " + Number(s[k]).toFixed(9));
+    });
+});
+const db = cfg.eqpTiltResponseDb(tilt, freq, sr);
+process.stdout.write(parts.join(", ") + "\n" + db.toFixed(6));
+"""
+    proc = subprocess.run(
+        ["node", "-e", node, CONFIG_PATH, str(tilt_db), str(freq), str(sr)],
+        check=True, capture_output=True, text=True,
+    )
+    msg, db = proc.stdout.strip().split("\n")
+    return msg, float(db)
+
+
 def cases():
     flat = "setup 0 0 0 0 0 0"
     bell = biquad_setup(6, 1000, 12, 0.7071)
+    bell6 = biquad_setup(6, 1000, 6, 0.7071)
     notch = biquad_setup(7, 1000, 0, 0.7071)
     lowcut = biquad_setup(3, 1000, 0, 0.7071)
+    tilt_low_msg, tilt_low_db = tilt_message(12, 200)
+    tilt_high_msg, tilt_high_db = tilt_message(12, 10000)
     return (
         {"name": "bypass", "freq": 1000, "setup": flat, "spec": True},
         {"name": "bell", "freq": 1000, "setup": bell, "spec": True},
         {"name": "notch", "freq": 1000, "setup": notch, "spec": False},
         {"name": "lowcut_low", "freq": 200, "setup": lowcut, "spec": False},
         {"name": "lowcut_high", "freq": 5000, "setup": lowcut, "spec": False},
+        {"name": "gain6", "freq": 1000, "setup": flat, "outgain": "outgain 6", "want_db": 6.0, "tol": 0.4},
+        {"name": "cascade", "freq": 1000, "setup": "setup " + bell6.split(" ", 1)[1] + " " + bell6.split(" ", 1)[1], "want_db": 12.0, "tol": 0.8},
+        {"name": "tilt_low", "freq": 200, "setup": flat, "extra": tilt_low_msg, "want_db": tilt_low_db, "tol": 0.6},
+        {"name": "tilt_high", "freq": 10000, "setup": flat, "extra": tilt_high_msg, "want_db": tilt_high_db, "tol": 0.6},
+        {"name": "lat0", "noise": True, "setup": flat, "phase": "phaseMode 0", "lag": 0, "lag_tol": 4},
+        {"name": "latnat", "noise": True, "setup": flat, "phase": "phaseMode 1", "lag": 350, "lag_tol": 6},
+        {"name": "latlin", "noise": True, "setup": flat, "phase": "phaseMode 2", "lag": 3072, "lag_tol": 8},
+        {"name": "lr_right", "freq": 1000, "setup": flat, "setupB": "setupB " + bell.split(" ", 1)[1],
+         "route": "chroute 2", "stereo": True, "want_db": 0.0, "want_rdb": 12.0, "tol": 0.8},
+        {"name": "ms_side", "freq": 1000, "setup": flat, "setupB": "setupB " + notch.split(" ", 1)[1],
+         "route": "chroute 4", "stereo": True, "invert_r": True, "quiet": True},
     )
 
 
 def device(gen_code, case):
+    tone = "noise~" if case.get("noise") else "cycle~ %s" % case["freq"]
     boxes = [
-        mh.gen_box("dev-gen", gen_code, 200, 240, numinlets=2, numoutlets=2),
+        mh.gen_box("dev-gen", gen_code, 200, 240, numinlets=4, numoutlets=2),
         mh.box("dev-seq", "t b b", 40, 80, 50, numoutlets=2, outlettype=["bang", "bang"]),
         mh.msg("dev-setbufs", "setbufs #0-eqpluscfg #0-eqplusspec", 40, 120, 240),
-        mh.msg("dev-bind", "eqcfg #0-eqpluscfg, spec #0-eqplusspec", 300, 120, 260),
+        mh.msg("dev-bind", "eqcfg #0-eqpluscfg, spec #0-eqplusspec, irspec #0-eqplusir", 300, 120, 360),
         mh.msg("dev-setup", case["setup"], 40, 160, 520),
-        mh.msg("dev-outgain", "outgain 0", 40, 190, 80),
-        mh.box("dev-cfg", "buffer~ #0-eqpluscfg @samps 64", 700, 80, 220, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-spec", "buffer~ #0-eqplusspec 200 2 @samps 8200", 700, 110, 280, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-tone", "cycle~ %s" % case["freq"], 200, 200, 90, numinlets=2, outlettype=["signal"]),
+        mh.msg("dev-outgain", case.get("outgain", "outgain 0"), 40, 190, 80),
+        mh.msg("dev-phase", case.get("phase", "phaseMode 0"), 40, 220, 100),
+        mh.msg("dev-route", case.get("route", "chroute 0"), 140, 220, 80),
+        mh.box("dev-cfg", "buffer~ #0-eqpluscfg @samps 128", 700, 80, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-spec", "buffer~ #0-eqplusspec 200 4 @samps 8200", 700, 110, 280, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-ir", "buffer~ #0-eqplusir 4096 3", 700, 140, 220, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-tone", tone, 200, 200, 90, numinlets=2, outlettype=["signal"]),
         mh.box("dev-amp", "*~ %s" % AMP, 200, 320, 60, numinlets=2, outlettype=["signal"]),
     ]
+    if case.get("setup2"):
+        boxes.append(mh.msg("dev-setup2", case["setup2"], 40, 250, 520))
+    if case.get("setupB"):
+        boxes.append(mh.msg("dev-setupb", case["setupB"], 40, 250, 520))
+    if case.get("stereo"):
+        boxes.append(mh.msg("dev-stereo", "stereo 1", 160, 250, 70))
+    if case.get("invert_r"):
+        boxes.append(mh.box("dev-inv", "*~ -1", 280, 320, 50, numinlets=2, outlettype=["signal"]))
+    if case.get("extra"):
+        boxes.append(mh.msg("dev-extra", case["extra"], 40, 280, 900))
     lines = [
         mh.line("obj-load", 0, "dev-seq", 0),
         # Right outlet fires first (buffer names + gen bind), then the coefficient poke.
@@ -233,34 +388,61 @@ def device(gen_code, case):
         mh.line("dev-seq", 1, "dev-bind", 0),
         mh.line("dev-seq", 0, "dev-setup", 0),
         mh.line("dev-seq", 0, "dev-outgain", 0),
+        mh.line("dev-seq", 0, "dev-phase", 0),
+        mh.line("dev-seq", 0, "dev-route", 0),
         mh.line("dev-setbufs", 0, "obj-js", 0),
         mh.line("dev-setup", 0, "obj-js", 0),
         mh.line("dev-bind", 0, "dev-gen", 0),
         mh.line("dev-outgain", 0, "dev-gen", 0),
+        mh.line("dev-phase", 0, "dev-gen", 0),
+        mh.line("dev-route", 0, "dev-gen", 0),
         mh.line("dev-tone", 0, "dev-amp", 0),
         mh.line("dev-amp", 0, "dev-gen", 0),
-        mh.line("dev-amp", 0, "dev-gen", 1),
         mh.line("dev-gen", 0, "obj-record", 0),
-        mh.line("dev-amp", 0, "obj-record", 1),
         mh.line("dev-gen", 0, "obj-mute-l", 0),
         mh.line("dev-gen", 1, "obj-mute-r", 0),
         mh.line("obj-mute-l", 0, "obj-dac", 0),
         mh.line("obj-mute-r", 0, "obj-dac", 1),
     ]
+    if case.get("invert_r"):
+        lines.append(mh.line("dev-amp", 0, "dev-inv", 0))
+        lines.append(mh.line("dev-inv", 0, "dev-gen", 1))
+    else:
+        lines.append(mh.line("dev-amp", 0, "dev-gen", 1))
+    if case.get("stereo"):
+        lines.append(mh.line("dev-gen", 1, "obj-record", 1))
+        lines.append(mh.line("dev-amp", 0, "obj-record", 2))
+    else:
+        lines.append(mh.line("dev-amp", 0, "obj-record", 1))
+    if case.get("setup2"):
+        lines.append(mh.line("dev-seq", 0, "dev-setup2", 0))
+        lines.append(mh.line("dev-setup2", 0, "obj-js", 0))
+    if case.get("setupB"):
+        lines.append(mh.line("dev-seq", 0, "dev-setupb", 0))
+        lines.append(mh.line("dev-setupb", 0, "obj-js", 0))
+    if case.get("stereo"):
+        lines.append(mh.line("dev-seq", 0, "dev-stereo", 0))
+        lines.append(mh.line("dev-stereo", 0, "obj-js", 0))
+    if case.get("extra"):
+        lines.append(mh.line("dev-seq", 0, "dev-extra", 0))
+        lines.append(mh.line("dev-extra", 0, "dev-gen", 0))
     return boxes, lines
 
 
-def gain_db(meta):
+def gain_db(meta, key="outRms"):
     inn = meta.get("inRms") or 0
-    out = meta.get("outRms") or 0
+    out = meta.get(key) or 0
     if inn <= 1e-8:
         return -999.0
     return 20.0 * math.log10(max(out, 1e-12) / inn)
 
 
-def require_input(name, meta, errors):
+def require_input(name, meta, errors, noise):
     inn = meta.get("inRms", 0)
-    if not (0.12 <= inn <= 0.17):
+    if noise:
+        if not (0.05 <= inn <= 0.25):
+            errors.append("%s: noise input RMS %s" % (name, inn))
+    elif not (0.12 <= inn <= 0.17):
         errors.append("%s: input RMS %s (expected ~%.3f)" % (name, inn, AMP / math.sqrt(2)))
     if meta.get("nan", 1) != 0:
         errors.append("%s: %s non-finite samples" % (name, meta.get("nan")))
@@ -286,12 +468,34 @@ def require_spec(name, meta, errors, post_loud):
         errors.append("%s: spec sample rate %s" % (name, sr))
 
 
-def check(name, meta, errors):
+def check(case, meta, errors):
+    name = case["name"]
     if meta is None:
         errors.append("%s: no measurement" % name)
         return
-    require_input(name, meta, errors)
+    require_input(name, meta, errors, case.get("noise"))
     db = gain_db(meta)
+    if "want_db" in case:
+        if abs(db - case["want_db"]) > case.get("tol", 0.5):
+            errors.append("%s: measured %+.2f dB, want %+.2f" % (name, db, case["want_db"]))
+    if "want_rdb" in case:
+        rdb = gain_db(meta, "rRms")
+        if abs(rdb - case["want_rdb"]) > case.get("tol", 0.5):
+            errors.append("%s: right channel %+.2f dB, want %+.2f" % (name, rdb, case["want_rdb"]))
+    if case.get("quiet"):
+        rdb = gain_db(meta, "rRms")
+        if db > -25 or rdb > -25:
+            errors.append("%s: side notch left %+.2f / %+.2f dB" % (name, db, rdb))
+    if "lag" in case:
+        # A full-range argmax on noise can lock onto a side peak. The correlation
+        # at the true delay equals the window energy; the other candidates do not.
+        score = {0: meta.get("c0", 0), 350: meta.get("c350", 0), 3072: meta.get("c3072", 0)}
+        got = score.get(case["lag"], 0)
+        others = [v for k, v in score.items() if k != case["lag"]]
+        if not (got > 5 and got > 5 * max(abs(v) for v in others)):
+            errors.append("%s: delay correlation at %s is %s (others %s)" % (name, case["lag"], got, others))
+        if abs(db) > 0.8:
+            errors.append("%s: delayed path is not unity (%+.2f dB)" % (name, db))
     if name == "bypass":
         if abs(db) > 0.35:
             errors.append("%s: flat path is not unity (%+.2f dB)" % (name, db))
@@ -337,19 +541,19 @@ def main():
         boxes, lines = device(gen_code, case)
         meta = mh.run_case(
             "eqplus_" + case["name"], boxes, lines, probe_js=probe_js,
-            settle_ms=400, dur_ms=400, channels=2, sr=SR, mode="nrt",
+            settle_ms=400, dur_ms=400, channels=3 if case.get("stereo") else 2, sr=SR, mode="nrt",
         )
         db = gain_db(meta) if meta else None
         db_txt = "%.2f" % db if db is not None and db > -900 else "?"
         print("--- %s ---" % case["name"])
         print(
-            "inRms %s outRms %s dB %s pre %s post %s writeIdx %s frameTick %s specSr %s nan %s"
+            "inRms %s outRms %s rRms %s dB %s lag %s stereo %s b8 %s nan %s"
             % (
-                meta.get("inRms"), meta.get("outRms"), db_txt, meta.get("prePeak"), meta.get("postPeak"),
-                meta.get("writeIdx"), meta.get("frameTick"), meta.get("specSr"), meta.get("nan"),
+                meta.get("inRms"), meta.get("outRms"), meta.get("rRms"), db_txt, meta.get("lag"),
+                meta.get("stereo"), meta.get("b8"), meta.get("nan"),
             )
         )
-        check(case["name"], meta, errors)
+        check(case, meta, errors)
     if errors:
         print("FAILED")
         for err in errors:

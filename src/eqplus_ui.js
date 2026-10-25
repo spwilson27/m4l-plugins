@@ -73,6 +73,10 @@ var MODE_FACE = [
 ];
 
 var COLS = 140;
+// One display column per plot pixel is not enough once a column covers
+// several harmonics. 640 keeps the nulls between them out past a few kHz
+// and leaves a real 1/n envelope, instead of a blob, on the rest of the band.
+var SPEC_COLS = 640;
 var EQP_STATE_VERSION = 1;
 var HIT_R = 8.25;
 var NODE_R = 5.25;
@@ -114,7 +118,14 @@ var scChannelName = "1/2";
 var inspectorMode = 0;
 var selectedBands = [0];
 
-var bands = [];
+// 0 Stereo (one curve on both channels), 1 Left, 2 Right, 3 Mid, 4 Side.
+// Stereo keeps one curve. The other four edit one channel and leave the
+// other curve where it was. bands always points at the curve on screen.
+var EQP_ROUTES = ["Stereo", "Left", "Right", "Mid", "Side"];
+var routeMode = 0;
+var bandsA = [];
+var bandsB = [];
+var bands = bandsA;
 var normUp = true;
 var freqRight = true;
 
@@ -163,6 +174,7 @@ var EQP_DSP_SETTLE_MS = 300;
 var eqpDspToken = Math.random();
 
 var colEdge = new Array(COLS + 1);
+var specEdge = new Array(SPEC_COLS + 1);
 var fftN = 0;
 var fftRev = null;
 var fftWin = null;
@@ -193,6 +205,7 @@ function buildEdges() {
     var a = Math.log(EQP_FREQ_MIN);
     var b = Math.log(EQP_FREQ_MAX);
     for (var i = 0; i <= COLS; i++) colEdge[i] = Math.exp(a + (b - a) * (i / COLS));
+    for (var s = 0; s <= SPEC_COLS; s++) specEdge[s] = Math.exp(a + (b - a) * (s / SPEC_COLS));
 }
 
 function makeBand(i) {
@@ -204,19 +217,58 @@ function makeBand(i) {
         q: EQP_Q_DEFAULT
     };
 }
+function copyBand(src, dst) {
+    dst.enabled = src.enabled ? 1 : 0;
+    dst.mode = src.mode;
+    dst.freq = src.freq;
+    dst.gain = src.gain;
+    dst.q = src.q;
+}
+function copyBands(src, dst) {
+    for (var i = 0; i < EQP_NUM_BANDS; i++) copyBand(src[i], dst[i]);
+}
+function routeEditsB(mode) { return mode === 2 || mode === 4; }
+function routeLinked(mode) { return mode === 0; }
+function routeSplit(mode) { return !routeLinked(mode); }
 function resetBands() {
-    bands = [];
-    for (var i = 0; i < EQP_NUM_BANDS; i++) bands.push(makeBand(i));
+    bandsA = [];
+    bandsB = [];
+    for (var i = 0; i < EQP_NUM_BANDS; i++) {
+        bandsA.push(makeBand(i));
+        bandsB.push(makeBand(i));
+    }
+    bands = bandsA;
+    routeMode = 0;
+}
+function focusRoute(n) {
+    var was = routeMode;
+    if (routeLinked(n)) {
+        if (routeEditsB(was)) copyBands(bandsB, bandsA);
+        bands = bandsA;
+        routeMode = n;
+        copyBands(bandsA, bandsB);
+    } else {
+        routeMode = n;
+        bands = routeEditsB(n) ? bandsB : bandsA;
+    }
+}
+function decodeRoute(v) {
+    if (typeof v === "string") {
+        for (var i = 0; i < EQP_ROUTES.length; i++) {
+            if (EQP_ROUTES[i].toLowerCase() === String(v).toLowerCase()) return i;
+        }
+    }
+    return clamp(Math.round(finite(v, routeMode)), 0, EQP_ROUTES.length - 1);
 }
 function allocSpec() {
-    specPre = new Array(COLS);
-    specPost = new Array(COLS);
-    for (var i = 0; i < COLS; i++) {
+    specPre = new Array(SPEC_COLS);
+    specPost = new Array(SPEC_COLS);
+    for (var i = 0; i < SPEC_COLS; i++) {
         specPre[i] = rangeMinDb;
         specPost[i] = rangeMinDb;
     }
-    specRef = new Array(COLS);
-    for (var r = 0; r < COLS; r++) specRef[r] = -120;
+    specRef = new Array(SPEC_COLS);
+    for (var r = 0; r < SPEC_COLS; r++) specRef[r] = -120;
 }
 
 resetBands();
@@ -324,25 +376,31 @@ function fs(g, px) { return px * Math.min(g.sx, g.sy); }
 
 function uiLayout(g) {
     var ox = g.mainX || 0;
+    var yb = 141;
+    var hb = 16;
     var L = {
         shift: sc(g, ox + 8, 2, 84, 19),
         gain: sc(g, ox + 96, 2, 76, 19),
         tilt: sc(g, ox + 174, 2, 54, 19),
         range: sc(g, ox + 268, 3, 44, 16),
         aq: sc(g, ox + 316, 3, 30, 17),
-        bandSel: sc(g, ox + 6, 141, 22, 16),
-        solo: sc(g, ox + 30, 141, 16, 16),
-        power: sc(g, ox + 49, 141, 16, 16),
-        mode: sc(g, ox + 68, 141, 78, 16),
-        freq: sc(g, ox + 186, 141, 54, 16),
-        bandGain: sc(g, ox + 244, 141, 46, 16),
-        q: sc(g, ox + 292, 141, 30, 16),
-        filtersToggle: sc(g, ox + 324, 141, 12, 16),
-        analyzerToggle: sc(g, ox + 338, 141, 12, 16),
-        pre: sc(g, ox + 36, 141, 28, 16),
-        post: sc(g, ox + 68, 141, 32, 16),
-        res: sc(g, ox + 158, 141, 52, 16),
-        speed: sc(g, ox + 248, 141, 48, 16)
+        route: { x: g.plotX + 20 * g.sx, y: g.plotY + 1 * g.sy, w: 58 * g.sx, h: 13 * g.sy },
+        bandSel: sc(g, ox + 6, yb, 22, hb),
+        solo: sc(g, ox + 30, yb, 16, hb),
+        power: sc(g, ox + 49, yb, 16, hb),
+        mode: sc(g, ox + 68, yb, 96, hb),
+        freq: sc(g, ox + 168, yb, 52, hb),
+        bandGain: sc(g, ox + 222, yb, 50, hb),
+        q: sc(g, ox + 274, yb, 40, hb),
+        filtersToggle: sc(g, ox + 324, yb, 12, hb),
+        analyzerToggle: sc(g, ox + 338, yb, 12, hb),
+        azLabel: sc(g, ox + 32, yb, 60, hb),
+        pre: sc(g, ox + 96, yb, 30, hb),
+        post: sc(g, ox + 130, yb, 34, hb),
+        resLabel: sc(g, ox + 170, yb, 22, hb),
+        res: sc(g, ox + 192, yb, 54, hb),
+        speedLabel: sc(g, ox + 250, yb, 22, hb),
+        speed: sc(g, ox + 272, yb, 46, hb)
     };
     L.icon = L.bandSel;
     L.cards = filterCards();
@@ -382,7 +440,6 @@ function analyzerShelf() {
         tilt: { x: x + 68, y: 106, w: 70, h: 16 },
         rmin: { x: x + 72, y: 130, w: 32, h: 16 },
         rmax: { x: x + 108, y: 130, w: 28, h: 16 },
-        ref: { x: x + 58, y: 136, w: 78, h: 16 },
         phase: { x: x + 50, y: 6, w: 86, h: 15 }
     };
 }
@@ -477,11 +534,14 @@ function specY(g, db) {
     return g.plotY + (1 - t) * g.plotH;
 }
 
-function responseDb(f) {
+function responseDbOf(list, f) {
     var db = 0;
-    try { db = eqpTotalResponseDb(bands, f, currentSr, shiftSt, adaptiveQ, 0, tiltEqDb); }
+    try { db = eqpTotalResponseDb(list, f, currentSr, shiftSt, adaptiveQ, 0, tiltEqDb); }
     catch (e) { db = 0; }
     return finite(db, 0);
+}
+function responseDb(f) {
+    return responseDbOf(bands, f);
 }
 function bandDb(b, f) {
     var db = 0;
@@ -491,6 +551,9 @@ function bandDb(b, f) {
 }
 function colFreq(i) {
     return Math.sqrt(colEdge[i] * colEdge[i + 1]);
+}
+function specFreq(i) {
+    return Math.sqrt(specEdge[i] * specEdge[i + 1]);
 }
 
 function bandXY(g, b) {
@@ -755,13 +818,17 @@ function updateDeviceLatency() {
 }
 function updatePhaseKernel() {
     outlet(1, ["phaseMode", phaseMode]);
+    outlet(1, ["chroute", routeMode]);
     updateDeviceLatency();
     if (phaseMode === 0 || typeof Buffer === "undefined") return;
     try {
-        var designed = eqpDesignPhase(bands, currentSr, shiftSt, adaptiveQ, tiltEqDb);
+        var designedA = eqpDesignPhase(bandsA, currentSr, shiftSt, adaptiveQ, tiltEqDb);
+        var designedB = routeSplit(routeMode) ? eqpDesignPhase(bandsB, currentSr, shiftSt, adaptiveQ, tiltEqDb) : designedA;
         var buf = new Buffer(irBufName);
-        buf.poke(1, 0, designed.linear);
-        buf.poke(2, 0, designed.fir);
+        buf.poke(1, 0, designedA.linear);
+        buf.poke(1, 2048, designedB.linear);
+        buf.poke(2, 0, designedA.fir);
+        buf.poke(2, 128, designedB.fir);
         irSerial = (irSerial + 1) % 100000;
         if (irSerial === 0) irSerial = 1;
         outlet(1, ["irGen", irSerial]);
@@ -781,25 +848,30 @@ function emitTilt() {
     }
     outlet(1, ["tiltOn", c.on]);
 }
+function appendCoeffRows(all, list) {
+    var stride = EQP_CFG_STRIDE;
+    for (var i = 0; i < EQP_NUM_BANDS; i++) {
+        var b = list[i];
+        var row;
+        if (bandLive(b)) {
+            var effF = eqpEffectiveFreq(b.freq, shiftSt);
+            var effQ = eqpEffectiveQ(b.q, b.gain, adaptiveQ, b.mode);
+            row = coeffRow(eqpBiquadCoeffs(b.mode, effF, b.gain, effQ, currentSr));
+        } else {
+            row = coeffRow(null);
+        }
+        for (var k = 0; k < stride; k++) all.push(row[k]);
+    }
+}
 function updateCoeffBuffer() {
     emitTilt();
+    if (routeLinked(routeMode)) copyBands(bandsA, bandsB);
     if (typeof Buffer === "undefined") return;
     try {
         var buf = new Buffer(cfgBufName);
-        var stride = EQP_CFG_STRIDE;
         var all = [];
-        for (var i = 0; i < EQP_NUM_BANDS; i++) {
-            var b = bands[i];
-            var row;
-            if (bandLive(b)) {
-                var effF = eqpEffectiveFreq(b.freq, shiftSt);
-                var effQ = eqpEffectiveQ(b.q, b.gain, adaptiveQ, b.mode);
-                row = coeffRow(eqpBiquadCoeffs(b.mode, effF, b.gain, effQ, currentSr));
-            } else {
-                row = coeffRow(null);
-            }
-            for (var k = 0; k < stride; k++) all.push(row[k]);
-        }
+        appendCoeffRows(all, bandsA);
+        appendCoeffRows(all, bandsB);
         buf.poke(1, 0, all);
     } catch (e) {}
     updatePhaseKernel();
@@ -835,6 +907,7 @@ function emitAll() {
     emitParam("filters_shelf", showFiltersShelf ? 1 : 0);
     emitParam("analyzer_shelf", showAnalyzerShelf ? 1 : 0);
     emitParam("ref_enable", refEnabled ? 1 : 0);
+    emitParam("route", routeMode);
     for (var i = 0; i < EQP_NUM_BANDS; i++) emitBand(i);
 }
 
@@ -845,12 +918,16 @@ function getvalueof() {
         adaptiveQ ? 1 : 0, analyzerPre ? 1 : 0, analyzerPost ? 1 : 0,
         resIdx, speedIdx, tiltIdx, rangeMinDb, rangeMaxDb
     ];
-    for (var i = 0; i < EQP_NUM_BANDS; i++) {
-        var b = bands[i];
-        out.push(b.enabled ? 1 : 0, b.mode, b.freq, b.gain, b.q);
+    function pushCurve(list) {
+        for (var i = 0; i < EQP_NUM_BANDS; i++) {
+            var b = list[i];
+            out.push(b.enabled ? 1 : 0, b.mode, b.freq, b.gain, b.q);
+        }
     }
+    pushCurve(bandsA);
     out.push(showFiltersShelf ? 1 : 0, showAnalyzerShelf ? 1 : 0);
-    out.push(showSidechainFold ? 1 : 0, refEnabled ? 1 : 0, refGainDb, tiltEqDb, phaseMode);
+    out.push(showSidechainFold ? 1 : 0, refEnabled ? 1 : 0, refGainDb, tiltEqDb, phaseMode, routeMode);
+    pushCurve(bandsB);
     return out;
 }
 
@@ -858,7 +935,7 @@ function applyStateArray(args) {
     if (!args || !args.length) return;
     var ver = Math.round(finite(args[0], 0));
     if (ver !== 1) return;
-    if (args.length > 1) shiftSt = clamp(finite(args[1], 0), -36, 36);
+    if (args.length > 1) shiftSt = clamp(finite(args[1], 0), EQP_SHIFT_MIN, EQP_SHIFT_MAX);
     if (args.length > 2) outGainDb = clamp(finite(args[2], 0), -24, 24);
     if (args.length > 3) rangeIdx = clamp(Math.round(finite(args[3], 0)), 0, EQP_RANGES.length - 1);
     if (args.length > 4) adaptiveQ = finite(args[4], 1) > 0.5 ? 1 : 0;
@@ -869,18 +946,20 @@ function applyStateArray(args) {
     if (args.length > 9) tiltIdx = clamp(Math.round(finite(args[9], 2)), 0, EQP_TILTS.length - 1);
     if (args.length > 10) rangeMinDb = clamp(finite(args[10], -100), -144, -21);
     if (args.length > 11) rangeMaxDb = clamp(finite(args[11], 0), -120, 30);
-    var base = 12;
-    for (var i = 0; i < EQP_NUM_BANDS; i++) {
-        var o = base + i * 5;
-        if (args.length <= o) break;
-        var b = bands[i];
-        b.enabled = finite(args[o], 0) > 0.5 ? 1 : 0;
-        if (args.length > o + 1) b.mode = clamp(Math.round(finite(args[o + 1], 0)), 0, 12);
-        if (args.length > o + 2) b.freq = clamp(finite(args[o + 2], b.freq), EQP_FREQ_MIN, EQP_FREQ_MAX);
-        if (args.length > o + 3) b.gain = clamp(finite(args[o + 3], 0), EQP_GAIN_MIN, EQP_GAIN_MAX);
-        if (args.length > o + 4) b.q = clamp(finite(args[o + 4], EQP_Q_DEFAULT), EQP_Q_MIN, EQP_Q_MAX);
-        if (b.mode === 0) b.enabled = 0;
+    function readCurve(list, at) {
+        for (var i = 0; i < EQP_NUM_BANDS; i++) {
+            var o = at + i * 5;
+            if (args.length <= o) return;
+            var b = list[i];
+            b.enabled = finite(args[o], 0) > 0.5 ? 1 : 0;
+            if (args.length > o + 1) b.mode = clamp(Math.round(finite(args[o + 1], 0)), 0, 12);
+            if (args.length > o + 2) b.freq = clamp(finite(args[o + 2], b.freq), EQP_FREQ_MIN, EQP_FREQ_MAX);
+            if (args.length > o + 3) b.gain = clamp(finite(args[o + 3], 0), EQP_GAIN_MIN, EQP_GAIN_MAX);
+            if (args.length > o + 4) b.q = clamp(finite(args[o + 4], EQP_Q_DEFAULT), EQP_Q_MIN, EQP_Q_MAX);
+            if (b.mode === 0) b.enabled = 0;
+        }
     }
+    readCurve(bandsA, 12);
     var shelfAt = 12 + EQP_NUM_BANDS * 5;
     if (args.length > shelfAt) showFiltersShelf = finite(args[shelfAt], 0) > 0.5 ? 1 : 0;
     if (args.length > shelfAt + 1) showAnalyzerShelf = finite(args[shelfAt + 1], 0) > 0.5 ? 1 : 0;
@@ -894,6 +973,13 @@ function applyStateArray(args) {
         if ((pm === 0 || pm === 1 || pm === 2) && Math.abs(rawPhase - pm) < 1e-4) phaseMode = pm;
         else phaseMode = 0;
     }
+    var routeAt = shelfAt + 7;
+    if (args.length > routeAt) routeMode = clamp(Math.round(finite(args[routeAt], 0)), 0, EQP_ROUTES.length - 1);
+    else routeMode = 0;
+    if (args.length > routeAt + 5) readCurve(bandsB, routeAt + 1);
+    else copyBands(bandsA, bandsB);
+    if (routeLinked(routeMode)) copyBands(bandsA, bandsB);
+    bands = routeEditsB(routeMode) ? bandsB : bandsA;
     updateCoeffBuffer();
     resizeDeviceBoxes();
     emitAll();
@@ -1148,36 +1234,90 @@ function fftDbBins(frame, n, sr) {
     return out;
 }
 
-function columnDb(dbBins, n, sr, i) {
+function binMag(dbBins, idx, bins) {
+    var i0 = idx | 0;
+    if (i0 < 1) i0 = 1;
+    if (i0 > bins - 2) i0 = bins - 2;
+    var t = idx - i0;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    var m0 = Math.pow(10, dbBins[i0] / 20);
+    var m1 = Math.pow(10, dbBins[i0 + 1] / 20);
+    if (!(m0 > 0)) m0 = 0;
+    if (!(m1 > 0)) m1 = 0;
+    return m0 + (m1 - m0) * t;
+}
+function columnDbAt(dbBins, n, sr, fLo, fHi, fc) {
     var bins = n >> 1;
     var scale = n / Math.max(8000, sr);
-    var bLo = colEdge[i] * scale;
-    var bHi = colEdge[i + 1] * scale;
+    var bLo = fLo * scale;
+    var bHi = fHi * scale;
     if (bLo < 1) bLo = 1;
     if (bHi < bLo) bHi = bLo;
     var last = bins - 1;
     if (bLo > last) bLo = last;
     if (bHi > last) bHi = last;
-    var db;
-    if (bHi - bLo <= 1.25) {
-        var mid = 0.5 * (bLo + bHi);
-        var idx = Math.floor(mid);
-        if (idx < 1) idx = 1;
-        if (idx > bins - 2) idx = bins - 2;
-        var t = mid - idx;
-        db = dbBins[idx] + (dbBins[idx + 1] - dbBins[idx]) * t;
+    // A column narrower than one bin follows the lobe in linear magnitude.
+    // Taking the peak of every overlapped bin painted a flat step. A wider
+    // column still keeps the peak so a harmonic between samples is not lost.
+    // Interpolating in dB landed on the null and notched the lobe.
+    var span = bHi - bLo;
+    var mag;
+    if (span <= 1.25) {
+        mag = binMag(dbBins, 0.5 * (bLo + bHi), bins);
     } else {
+        mag = binMag(dbBins, bLo, bins);
         var i0 = Math.max(1, Math.floor(bLo));
         var i1 = Math.min(last, Math.ceil(bHi));
-        db = -240;
-        for (var b = i0; b <= i1; b++) if (dbBins[b] > db) db = dbBins[b];
+        for (var b = i0; b <= i1; b++) {
+            var m = Math.pow(10, dbBins[b] / 20);
+            if (m > mag) mag = m;
+        }
+        var edge = binMag(dbBins, bHi, bins);
+        if (edge > mag) mag = edge;
     }
+    var db = 20 * Math.log(Math.max(mag, 1e-12)) / Math.LN10;
     var tilt = EQP_TILTS[tiltIdx] || 0;
     if (tilt && !(tilt > 0 && db <= -108)) {
-        var fc = colFreq(i);
         db += tilt * (Math.log(fc / 1000) / Math.LN2);
     }
     return finite(db, rangeMinDb);
+}
+function columnDb(dbBins, n, sr, i) {
+    return columnDbAt(dbBins, n, sr, colEdge[i], colEdge[i + 1], colFreq(i));
+}
+function specColumnDb(dbBins, n, sr, i) {
+    return columnDbAt(dbBins, n, sr, specEdge[i], specEdge[i + 1], specFreq(i));
+}
+// Display-only. A short gaussian in linear magnitude turns a one-bin
+// spike into a rounded arch. The radius stays inside the gap between
+// resolved harmonics, so they do not melt into one slope.
+function smoothSpectrumLine(cols) {
+    var n = cols.length;
+    var mag = new Array(n);
+    var out = new Array(n);
+    var radius = 6;
+    var sigma = 2.2;
+    var denom = 2 * sigma * sigma;
+    var w = new Array(radius * 2 + 1);
+    var k, i;
+    for (k = -radius; k <= radius; k++) w[k + radius] = Math.exp(-(k * k) / denom);
+    for (i = 0; i < n; i++) {
+        var db = cols[i];
+        mag[i] = Math.pow(10, ((db === db) ? db : -240) / 20);
+    }
+    for (i = 0; i < n; i++) {
+        var acc = 0;
+        var ws = 0;
+        for (k = -radius; k <= radius; k++) {
+            var j = i + k;
+            if (j < 0 || j >= n) continue;
+            acc += mag[j] * w[k + radius];
+            ws += w[k + radius];
+        }
+        out[i] = 20 * Math.log(Math.max(ws ? acc / ws : mag[i], 1e-12)) / Math.LN10;
+    }
+    return out;
 }
 
 function smoothInto(dst, raw) {
@@ -1185,7 +1325,7 @@ function smoothInto(dst, raw) {
     var atk = [0.80, 0.45, 0.18, 0][speedIdx];
     var rel = [0.42, 0.20, 0.08, 0][speedIdx];
     var moved = false;
-    for (var i = 0; i < COLS; i++) {
+    for (var i = 0; i < dst.length; i++) {
         var prev = dst[i];
         var target = raw[i];
         var c = target > prev ? atk : rel;
@@ -1280,7 +1420,7 @@ function pullSpectrum() {
                 updateCoeffBuffer();
             }
         }
-        var raw = new Array(COLS);
+        var raw = new Array(SPEC_COLS);
         function eat(channel, dst, extraDb) {
             var ring = peekMany(buf, channel, 8, EQP_SPEC_RING);
             if (!ring || ring.length < 256) ring = peekMany(buf, channel, 0, EQP_SPEC_RING);
@@ -1292,7 +1432,7 @@ function pullSpectrum() {
             if (specHoldPreview) specHoldPreview = false;
             specHasSignal = 1;
             var bins = fftDbBins(frame, frame.length, currentSr);
-            for (var c = 0; c < COLS; c++) raw[c] = columnDb(bins, frame.length, currentSr, c) + (extraDb || 0);
+            for (var c = 0; c < SPEC_COLS; c++) raw[c] = specColumnDb(bins, frame.length, currentSr, c) + (extraDb || 0);
             if (smoothInto(dst, raw)) moved = true;
             return true;
         }
@@ -1303,7 +1443,7 @@ function pullSpectrum() {
         if (!got) {
             if (specHoldPreview) return;
             var floor = rangeMinDb;
-            for (var i = 0; i < COLS; i++) {
+            for (var i = 0; i < SPEC_COLS; i++) {
                 if (analyzerPre && specPre[i] > floor + 0.4) {
                     specPre[i] += (floor - specPre[i]) * 0.18;
                     moved = true;
@@ -1323,8 +1463,8 @@ function pullSpectrum() {
 }
 
 function seedPreviewSpectrum() {
-    for (var i = 0; i < COLS; i++) {
-        var nrm = i / (COLS - 1);
+    for (var i = 0; i < SPEC_COLS; i++) {
+        var nrm = i / (SPEC_COLS - 1);
         var db = -82
             + 16 * Math.exp(-Math.pow((nrm - 0.38) / 0.22, 2))
             + 8 * Math.exp(-Math.pow((nrm - 0.70) / 0.10, 2))
@@ -1372,6 +1512,7 @@ function eqpDspResend() {
     outlet(1, ["spec", specBufName]);
     outlet(1, ["irspec", irBufName]);
     outlet(1, ["outgain", outGainDb]);
+    outlet(1, ["chroute", routeMode]);
     updateCoeffBuffer();
 }
 function eqpDspClaim() {
@@ -1418,6 +1559,10 @@ function loadDsp() {
             host.connect(pin, 1, g, 1);
             host.connect(g, 0, pout, 0);
             host.connect(g, 1, pout, 1);
+            try {
+                host.connect(pin, 2, g, 2);
+                host.connect(pin, 3, g, 3);
+            } catch (side) {}
         }
         eqpDsp.createdAt = Date.now();
         eqpDsp.counter0 = readFrameTick();
@@ -1616,7 +1761,7 @@ function openPopup(kind, anchor, items, selected, band) {
     var cols = items.length > 8 ? 2 : 1;
     var rowsN = Math.ceil(items.length / cols);
     var colPick = 78;
-    if (kind === "bandmode") colPick = 92;
+    if (kind === "bandmode") colPick = 118;
     if (kind === "phase") colPick = 124;
     var colW = Math.max(anchor.w, colPick * g.sx);
     var w = colW * cols + 4 * g.sx;
@@ -1866,7 +2011,7 @@ function dragBand(g, x, y) {
 function dragShift(g, y) {
     var dy = (gesture.y0 - y) / Math.max(0.001, g.sy);
     var sens = gesture.fine ? 0.02 : 0.08;
-    var v = clamp(roundTo(gesture.shift0 + dy * sens, 0.01), -36, 36);
+    var v = clamp(roundTo(gesture.shift0 + dy * sens, 0.01), EQP_SHIFT_MIN, EQP_SHIFT_MAX);
     if (v === shiftSt) return;
     markDirty();
     shiftSt = v;
@@ -1915,7 +2060,7 @@ function dragReadout(g, y) {
     }
 }
 
-function adjustQ(i, dy) {
+function adjustQ(i, dy, fine) {
     var b = bands[i];
     if (!bandLive(b) || !dy) return;
     var now = Date.now();
@@ -1924,13 +2069,21 @@ function adjustQ(i, dy) {
         wheelUndoT = now;
     }
     var d = clamp(dy, -3, 3);
-    b.q = clamp(b.q * Math.exp(d * 0.12), EQP_Q_MIN, EQP_Q_MAX);
+    // A plain scroll is four times the old step. Shift keeps that old step.
+    var rate = fine ? 0.12 : 0.48;
+    b.q = clamp(b.q * Math.exp(d * rate), EQP_Q_MIN, EQP_Q_MAX);
     b.q = roundTo(b.q, 0.001);
     emitBand(i);
     updateCoeffBuffer();
     noteSolo(i);
     if (typeof notifyclients === "function") notifyclients();
     mgraphics.redraw();
+}
+function wheelShift(args) {
+    var last = args.length ? args[args.length - 1] : null;
+    if (last && typeof last === "object") return last.shiftKey ? 1 : 0;
+    if (args.length >= 6) return Number(args[5]) ? 1 : 0;
+    return 0;
 }
 function wheelDy(args) {
     var last = args.length ? args[args.length - 1] : null;
@@ -1993,6 +2146,7 @@ function hoverTarget(g, x, y) {
     if (hit(L.tilt, x, y)) return "tilteq";
     if (hit(L.range, x, y)) return "range";
     if (hit(L.aq, x, y)) return "aq";
+    if (hit(L.route, x, y)) return "route";
     if (hit(L.bandSel, x, y)) return "bandsel";
     if (hit(L.filtersToggle, x, y)) return "toggle_filters_shelf";
     if (hit(L.analyzerToggle, x, y)) return "toggle_analyzer_shelf";
@@ -2018,7 +2172,6 @@ function hoverTarget(g, x, y) {
         if (hit(L.az.tilt, x, y)) return "tilt";
         if (hit(L.az.rmin, x, y)) return "rmin";
         if (hit(L.az.rmax, x, y)) return "rmax";
-        if (hit(L.az.ref, x, y)) return "ref";
     }
     if (L.sc && L.sc.tab) {
         if (hit(L.sc.tab.arrow, x, y) || hit(L.sc.tab.label, x, y)) return "scfold";
@@ -2066,6 +2219,8 @@ function applyPopupItem(item) {
                 bottomAnalyzer = 0;
                 setSingleSelection(item.value);
             }
+        } else if (kind === "route") {
+            set_route(item.value);
         } else if (kind === "scroute") {
             scRoutingName = item.label;
         } else if (kind === "scchan") {
@@ -2140,7 +2295,8 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         var same = (was === "res" && key0 === "res") || (was === "speed" && key0 === "speed")
             || (was === "tilt" && key0 === "tilt") || (was === "range" && key0 === "range")
             || (was === "bandmode" && (key0 === "mode" || key0.indexOf("card") === 0))
-            || (was === "bandsel" && key0 === "bandsel");
+            || (was === "bandsel" && key0 === "bandsel")
+            || (was === "route" && key0 === "route");
         if (same || popupContains(x, y)) return;
     }
     var L = uiLayout(g);
@@ -2183,11 +2339,21 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         });
         return;
     }
+    if (hit(L.route, x, y)) {
+        if (right) {
+            discreteEdit(function () { set_route((routeMode + 1) % EQP_ROUTES.length); });
+        } else {
+            var routeItems = [];
+            for (var rti = 0; rti < EQP_ROUTES.length; rti++) routeItems.push({ label: EQP_ROUTES[rti], value: rti });
+            openPopup("route", L.route, routeItems, routeMode, -1);
+        }
+        return;
+    }
     if (handleSidechainPointer(g, L, x, y, right)) return;
     if (hit(L.bandSel, x, y)) {
         var menu = [];
         for (var bi = 0; bi < EQP_NUM_BANDS; bi++) menu.push({ label: String(bi + 1), value: bi });
-        menu.push({ label: "Analyzer (|.|.)", value: -1 });
+        menu.push({ label: "Analyzer", value: -1 });
         var selVal = bottomAnalyzer ? -1 : selectedBand;
         openPopup("bandsel", L.bandSel, menu, selVal, -1);
         return;
@@ -2310,16 +2476,6 @@ function onclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         }
         if (hit(L.az.rmin, x, y)) { gesture.kind = "rmin"; gesture.y0 = y; gesture.gain0 = rangeMinDb; return; }
         if (hit(L.az.rmax, x, y)) { gesture.kind = "rmax"; gesture.y0 = y; gesture.gain0 = rangeMaxDb; return; }
-        if (hit(L.az.ref, x, y)) {
-            var nextRef = refEnabled ? 0 : 1;
-            set_ref(nextRef);
-            if (nextRef && !showSidechainFold) {
-                showSidechainFold = 1;
-                emitParam("sidechain_fold", 1);
-            }
-            applyDeviceWidth();
-            return;
-        }
     }
     for (var ci = 0; ci < L.cards.length; ci++) {
         var card = L.cards[ci];
@@ -2607,11 +2763,12 @@ function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
 function onwheel(x, y, inc_x, inc_y) {
     var dy = wheelDy(arguments);
     if (!dy) return;
+    var fine = wheelShift(arguments);
     if (popup) closePopup();
     var g = geo();
     var L = uiLayout(g);
     if (inspectorMode && selectedBand >= 0 && hit(L.q, x, y)) {
-        adjustQ(selectedBand, dy);
+        adjustQ(selectedBand, dy, fine);
         return;
     }
     if (!insidePlot(g, x, y)) return;
@@ -2627,7 +2784,7 @@ function onwheel(x, y, inc_x, inc_y) {
         }
         hb = best;
     }
-    if (hb >= 0) adjustQ(hb, dy);
+    if (hb >= 0) adjustQ(hb, dy, fine);
 }
 
 function onidle(x, y) {
@@ -2723,55 +2880,51 @@ function paintGrid(g) {
 function paintSpectrum(g) {
     if (!specHasSignal) return;
     if (!analyzerPre && !analyzerPost && !refEnabled) return;
-    var floorGate = rangeMinDb + 1.0;
     var bottom = g.plotY + g.plotH;
+    var floorGate = rangeMinDb + 0.5;
+    function hasEnergy(series) {
+        for (var i = 0; i < series.length; i++) if (series[i] > floorGate) return true;
+        return false;
+    }
     function traceTop(series) {
-        var started = false;
-        for (var i = 0; i < COLS; i++) {
-            if (!(series[i] > floorGate)) {
-                started = false;
-                continue;
-            }
-            var x = freqToX(g, colFreq(i));
-            var y = specY(g, series[i]);
-            if (!started) { mgraphics.move_to(x, y); started = true; }
-            else mgraphics.line_to(x, y);
-        }
+        var n = series.length;
+        if (!n || !hasEnergy(series)) return;
+        mgraphics.move_to(freqToX(g, specFreq(0)), specY(g, series[0]));
+        for (var i = 1; i < n; i++) mgraphics.line_to(freqToX(g, specFreq(i)), specY(g, series[i]));
     }
     function fillSpans(series) {
-        var i = 0;
-        while (i < COLS) {
-            while (i < COLS && !(series[i] > floorGate)) i++;
-            if (i >= COLS) break;
-            var i0 = i;
-            while (i < COLS && series[i] > floorGate) i++;
-            var i1 = i - 1;
-            mgraphics.move_to(freqToX(g, colFreq(i0)), bottom);
-            for (var k = i0; k <= i1; k++) mgraphics.line_to(freqToX(g, colFreq(k)), specY(g, series[k]));
-            mgraphics.line_to(freqToX(g, colFreq(i1)), bottom);
-            mgraphics.close_path();
-        }
+        var n = series.length;
+        if (!n || !hasEnergy(series)) return;
+        mgraphics.move_to(freqToX(g, specFreq(0)), bottom);
+        for (var i = 0; i < n; i++) mgraphics.line_to(freqToX(g, specFreq(i)), specY(g, series[i]));
+        mgraphics.line_to(freqToX(g, specFreq(n - 1)), bottom);
+        mgraphics.close_path();
     }
-    if (analyzerPre) {
-        fillSpans(specPre);
+    if (mgraphics.set_line_cap) mgraphics.set_line_cap("round");
+    if (mgraphics.set_line_join) mgraphics.set_line_join("round");
+    var preDraw = analyzerPre ? smoothSpectrumLine(specPre) : null;
+    var postDraw = analyzerPost ? smoothSpectrumLine(specPost) : null;
+    var refDraw = refEnabled ? smoothSpectrumLine(specRef) : null;
+    if (preDraw) {
+        fillSpans(preDraw);
         setRgb(COL_LABEL, 0.16);
         mgraphics.fill();
-        traceTop(specPre);
+        traceTop(preDraw);
         setRgb(COL_LABEL, 0.4);
         mgraphics.set_line_width(1);
         mgraphics.stroke();
     }
-    if (analyzerPost) {
-        traceTop(specPost);
+    if (postDraw) {
+        traceTop(postDraw);
         setRgb(COL_SPEC, 0.85);
         mgraphics.set_line_width(1.25);
         mgraphics.stroke();
     }
-    if (refEnabled) {
-        fillSpans(specRef);
+    if (refDraw) {
+        fillSpans(refDraw);
         setRgb(COL_REF, 0.14);
         mgraphics.fill();
-        traceTop(specRef);
+        traceTop(refDraw);
         setRgb(COL_REF, 0.9);
         mgraphics.set_line_width(1.35);
         mgraphics.stroke();
@@ -2797,6 +2950,14 @@ function focusIndex() {
 }
 function paintCurve(g) {
     var c = sampleCurve();
+    if (routeSplit(routeMode)) {
+        var other = bands === bandsB ? bandsA : bandsB;
+        setRgb(COL_LABEL, 0.45);
+        mgraphics.set_line_width(1);
+        for (var gi = 0; gi < COLS - 1; gi++) {
+            strokeClipped(c.xs[gi], eqYFree(g, responseDbOf(other, colFreq(gi))), c.xs[gi + 1], eqYFree(g, responseDbOf(other, colFreq(gi + 1))), g);
+        }
+    }
     var focus = focusIndex();
     if (focus >= 0 && focus < bands.length && bandLive(bands[focus])) {
         for (var si = 0; si < bands.length; si++) {
@@ -3085,92 +3246,152 @@ function drawSpecIcon(r) {
     caret(r.x + r.w - 9 * (r.w / 28), r.y + r.h * 0.58, Math.max(4, 5 * (r.w / 28)), COL_CARET);
 }
 function drawPower(r, on, col) {
-    var c = col || (on ? COL_ORANGE : COL_AQ_OFF);
-    if (!on) c = COL_AQ_OFF;
-    var cx = r.x + r.w * 0.5;
-    var cy = r.y + r.h * 0.52;
-    var rad = Math.min(r.w, r.h) * 0.32;
-    setRgb(c, 1);
-    mgraphics.set_line_width(Math.max(1, rad * 0.38));
-    mgraphics.arc(cx, cy + rad * 0.15, rad, Math.PI * 0.72, Math.PI * 2.28);
+    var s = Math.min(r.w, r.h);
+    var side = Math.round(s * 0.68);
+    if (s >= 15) side = Math.max(6, side - 4);
+    var x = Math.round(r.x + (r.w - side) * 0.5);
+    var y = Math.round(r.y + (r.h - side) * 0.5);
+    if (on) {
+        fillRound(x, y, side, side, 1.5, col || COL_ORANGE, 1);
+        return;
+    }
+    fillRound(x, y, side, side, 1.5, COL_BTN, 1);
+    rrect(x, y, side, side, 1.5);
+    setRgb(COL_DIM, 1);
+    mgraphics.set_line_width(1);
     mgraphics.stroke();
-    mgraphics.move_to(cx, cy - rad * 0.95);
-    mgraphics.line_to(cx, cy + rad * 0.15);
+}
+function cutPoles(mode) {
+    var n = mode >= 9 ? mode - 8 : mode;
+    if (n === 2) return 2;
+    if (n === 3) return 4;
+    if (n === 4) return 8;
+    return 1;
+}
+function cutTimes(poles) {
+    if (poles >= 8) return "\u00d74";
+    if (poles >= 4) return "\u00d72";
+    if (poles >= 2) return "\u00d71";
+    return "";
+}
+function drawCutIcon(cx, cy, col, poles, high) {
+    var mark = cutTimes(poles);
+    var steep = poles >= 8 ? 1.7 : poles >= 4 ? 2.7 : poles >= 2 ? 3.8 : 5.2;
+    var top = cy - 3.4;
+    var bot = cy + 3.3;
+    var left = cx - (mark ? (high ? 7.4 : 2.2) : 6.2);
+    var right = cx + (mark ? (high ? 2.2 : 7.4) : 6.2);
+    setRgb(col, 1);
+    mgraphics.set_line_width(1.2);
+    if (!high) {
+        mgraphics.move_to(left, bot);
+        mgraphics.curve_to(left + steep * 0.2, bot, left + steep, top, left + steep + 0.7, top);
+        mgraphics.line_to(right, top);
+    } else {
+        mgraphics.move_to(left, top);
+        mgraphics.line_to(right - steep - 0.7, top);
+        mgraphics.curve_to(right - steep, top, right - steep * 0.2, bot, right, bot);
+    }
     mgraphics.stroke();
+    if (mark) drawText(mark, high ? cx + 7.6 : cx - 7.6, cy + 3.5, 6, col, high ? "right" : "left", false);
 }
 function drawModeGlyph(mode, x, y, col) {
     setRgb(col, 1);
-    mgraphics.set_line_width(1.1);
-    if (mode === 6) {
-        mgraphics.move_to(x, y - 4);
-        mgraphics.curve_to(x + 3.2, y - 3.2, x + 4.2, y - 1, x + 4.2, y);
-        mgraphics.curve_to(x + 4.2, y + 1, x + 3.2, y + 3.2, x, y + 4);
-        mgraphics.curve_to(x - 3.2, y + 3.2, x - 4.2, y + 1, x - 4.2, y);
-        mgraphics.curve_to(x - 4.2, y - 1, x - 3.2, y - 3.2, x, y - 4);
+    mgraphics.set_line_width(1.2);
+    if (mode === 0) {
+        mgraphics.move_to(x - 3.2, y);
+        mgraphics.line_to(x + 3.2, y);
+        mgraphics.stroke();
+    } else if (mode === 6) {
+        mgraphics.move_to(x - 6.4, y);
+        mgraphics.line_to(x - 3.2, y - 3.5);
+        mgraphics.line_to(x + 3.2, y - 3.5);
+        mgraphics.line_to(x + 6.4, y);
+        mgraphics.line_to(x + 3.2, y + 3.5);
+        mgraphics.line_to(x - 3.2, y + 3.5);
+        mgraphics.close_path();
         mgraphics.stroke();
     } else if (mode === 7) {
-        mgraphics.move_to(x - 4, y - 3);
-        mgraphics.line_to(x, y + 4);
-        mgraphics.line_to(x + 4, y - 3);
+        mgraphics.move_to(x - 6.4, y - 1.6);
+        mgraphics.line_to(x - 2.1, y - 1.6);
+        mgraphics.line_to(x, y + 3.6);
+        mgraphics.line_to(x + 2.1, y - 1.6);
+        mgraphics.line_to(x + 6.4, y - 1.6);
         mgraphics.stroke();
     } else if (mode >= 1 && mode <= 4) {
-        mgraphics.move_to(x - 5, y + 3);
-        mgraphics.line_to(x - 1, y - 3);
-        mgraphics.line_to(x + 5, y - 3);
-        mgraphics.stroke();
+        drawCutIcon(x, y, col, cutPoles(mode), false);
     } else if (mode >= 9) {
-        mgraphics.move_to(x - 5, y - 3);
-        mgraphics.line_to(x + 1, y - 3);
-        mgraphics.line_to(x + 5, y + 3);
+        drawCutIcon(x, y, col, cutPoles(mode), true);
+    } else if (mode === 5) {
+        mgraphics.move_to(x - 6.2, y - 3.3);
+        mgraphics.line_to(x - 1.2, y - 3.3);
+        mgraphics.line_to(x - 1.2, y + 3.3);
+        mgraphics.line_to(x + 6.2, y + 3.3);
         mgraphics.stroke();
-    } else if (mode === 5 || mode === 8) {
-        var flip = mode === 8 ? -1 : 1;
-        mgraphics.move_to(x - 5, y + 3 * flip);
-        mgraphics.line_to(x - 1, y + 3 * flip);
-        mgraphics.line_to(x + 1, y - 3 * flip);
-        mgraphics.line_to(x + 5, y - 3 * flip);
+    } else if (mode === 8) {
+        mgraphics.move_to(x - 6.2, y + 3.3);
+        mgraphics.line_to(x + 1.2, y + 3.3);
+        mgraphics.line_to(x + 1.2, y - 3.3);
+        mgraphics.line_to(x + 6.2, y - 3.3);
         mgraphics.stroke();
     }
 }
-function drawSpeaker(r, on) {
+function drawHeadphones(r, on) {
     var col = on ? COL_ORANGE : COL_LABEL;
-    var x = r.x + 2.5;
-    var y = r.y + 4.5;
+    var pad = 2;
+    r = {
+        x: r.x + pad,
+        y: r.y + pad,
+        w: Math.max(4, r.w - pad * 2),
+        h: Math.max(4, r.h - pad * 2)
+    };
+    var w = r.w;
+    var h = r.h;
+    var cupW = w * 0.26;
+    var cupH = h * 0.40;
+    var leftX = r.x + w * 0.12;
+    var rightX = r.x + w * 0.62;
+    var cupY = r.y + h * 0.42;
+    var bandY = r.y + h * 0.18;
     setRgb(col, 1);
-    mgraphics.move_to(x, y + 2);
-    mgraphics.line_to(x + 2.6, y + 2);
-    mgraphics.line_to(x + 6.2, y - 1);
-    mgraphics.line_to(x + 6.2, y + 7);
-    mgraphics.line_to(x + 2.6, y + 4);
-    mgraphics.line_to(x, y + 4);
-    mgraphics.close_path();
-    mgraphics.fill();
-    if (on) {
-        mgraphics.set_line_width(1);
-        mgraphics.arc(x + 7.2, y + 3, 2.6, -0.8, 0.8);
-        mgraphics.stroke();
-        mgraphics.arc(x + 7.2, y + 3, 4.4, -0.7, 0.7);
-        mgraphics.stroke();
-    }
+    mgraphics.set_line_width(Math.max(1, Math.min(w, h) * 0.08));
+    mgraphics.move_to(leftX + cupW * 0.42, cupY + cupH * 0.12);
+    mgraphics.curve_to(leftX + cupW * 0.1, bandY, rightX + cupW * 0.9, bandY, rightX + cupW * 0.58, cupY + cupH * 0.12);
+    mgraphics.stroke();
+    mgraphics.ellipse(leftX, cupY, cupW, cupH);
+    mgraphics.stroke();
+    mgraphics.ellipse(rightX, cupY, cupW, cupH);
+    mgraphics.stroke();
 }
 function drawListIcon(r, on) {
     var col = on ? COL_ORANGE : COL_DIM;
+    var rowH = 3.1;
+    var blockH = rowH * 3;
+    var blockW = 8.6;
+    var x0 = r.x + (r.w - blockW) * 0.5;
+    var y0 = r.y + (r.h - blockH) * 0.5;
     setRgb(col, 1);
     for (var i = 0; i < 3; i++) {
-        var y = r.y + 3.5 + i * 3.4;
-        mgraphics.rectangle(r.x + 1, y, 6.5, 1.15);
+        var y = y0 + i * rowH;
+        mgraphics.rectangle(x0, y + 0.45, 5.6, 1.1);
         mgraphics.fill();
-        mgraphics.ellipse(r.x + 8.4, y - 0.4, 2.1, 2.1);
+        mgraphics.ellipse(x0 + 6.3, y, 2, 2);
         mgraphics.fill();
     }
 }
 function drawBarsIcon(r, on) {
     var col = on ? COL_ORANGE : COL_DIM;
     var bars = [0.45, 0.85, 0.55, 1];
+    var bw = 1.5;
+    var gap = 1.15;
+    var maxH = 9;
+    var blockW = bars.length * bw + (bars.length - 1) * gap;
+    var x0 = r.x + (r.w - blockW) * 0.5;
+    var base = r.y + (r.h + maxH) * 0.5;
     setRgb(col, 1);
     for (var i = 0; i < bars.length; i++) {
-        var h = 2 + bars[i] * 8;
-        mgraphics.rectangle(r.x + 1 + i * 2.7, r.y + r.h - 3 - h, 1.5, h);
+        var bh = Math.max(2, maxH * bars[i]);
+        mgraphics.rectangle(x0 + i * (bw + gap), base - bh, bw, bh);
         mgraphics.fill();
     }
 }
@@ -3178,18 +3399,24 @@ function bandInk(b) {
     if (!bandLive(b)) return COL_AQ_OFF;
     return COL_ORANGE;
 }
+function bottomTextY(r, size) {
+    return r.y + r.h - 4;
+}
+function rowMid(r) {
+    return r.y + r.h * 0.5;
+}
 function paintBottom(g) {
     var L = uiLayout(g);
-    var ox = g.mainX || 0;
-    var base = 153;
+    var base = bottomTextY(L.bandSel, 9);
+    var mid = rowMid(L.bandSel);
     if (bottomAnalyzer) {
         drawSpecIcon(L.bandSel);
-        drawText("Analyzer", ox + 32, base, fs(g, 8), COL_LABEL, "left", false);
+        drawText("Analyzer", L.azLabel.x, bottomTextY(L.azLabel, 9), fs(g, 9), COL_LABEL, "left", false);
         drawPillButton(L.pre, "Pre", analyzerPre === 1, g);
         drawPillButton(L.post, "Post", analyzerPost === 1, g);
-        drawText("Res", ox + 118, base, fs(g, 8), COL_LABEL, "left", false);
+        drawText("Res", L.resLabel.x, bottomTextY(L.resLabel, 8), fs(g, 8), COL_LABEL, "left", false);
         drawDropdown(L.res, EQP_RESOLUTIONS[resIdx] || "Huge", g);
-        drawText("Spd", ox + 218, base, fs(g, 8), COL_LABEL, "left", false);
+        drawText("Spd", L.speedLabel.x, bottomTextY(L.speedLabel, 8), fs(g, 8), COL_LABEL, "left", false);
         drawDropdown(L.speed, EQP_SPEEDS[speedIdx] || "Fast", g);
     } else {
         var sb = selectedBand;
@@ -3198,41 +3425,45 @@ function paintBottom(g) {
         var live = bandLive(b);
         var col = bandInk(b);
         var grey = COL_BTN_TEXT;
-        drawText(String(sb + 1), L.bandSel.x + 6, base, fs(g, 10), COL_WHITE, "center", true);
-        caret(L.bandSel.x + L.bandSel.w - 6, L.bandSel.y + 9, 4, COL_DIM);
-        drawSpeaker(L.solo, soloBand === sb);
+        drawText(String(sb + 1), L.bandSel.x + 7, bottomTextY(L.bandSel, 10), fs(g, 10), COL_WHITE, "center", true);
+        caret(L.bandSel.x + L.bandSel.w - 6, mid, 4, COL_DIM);
+        drawHeadphones(L.solo, soloBand === sb);
         drawPower(L.power, live, col);
         if (live) {
-            drawModeGlyph(b.mode, L.mode.x + 7, L.mode.y + 8, col);
-            drawText(MODE_FACE[b.mode] || "Bell", L.mode.x + 14, base, fs(g, 9), col, "left", false);
-            caret(L.mode.x + L.mode.w - 6, L.mode.y + 9, 4, col);
-            drawText(fmtFreq(b.freq), L.freq.x + L.freq.w - 2, base, fs(g, 9), col, "right", false);
+            drawModeGlyph(b.mode, L.mode.x + 11, mid, col);
+            var face = MODE_FACE[b.mode] || "Bell";
+            var faceSize = fs(g, 9);
+            var faceMax = L.mode.w - 30;
+            while (faceSize > fs(g, 7) && textW(face, faceSize, false) > faceMax) faceSize -= 0.5;
+            drawText(face, L.mode.x + 22, base, faceSize, col, "left", false);
+            caret(L.mode.x + L.mode.w - 6, mid, 4, col);
+            drawText(fmtFreq(b.freq), L.freq.x + 2, base, fs(g, 9), col, "left", false);
             var gtxt = fmtSignedDb(b.gain);
             var gcol = usesGain(b.mode) ? col : [col[0], col[1], col[2], 0.35];
-            drawText(gtxt, L.bandGain.x + L.bandGain.w - 2, base, fs(g, 9), gcol, "right", false);
-            drawText(b.q.toFixed(2), L.q.x + L.q.w - 1, base, fs(g, 9), col, "right", false);
+            drawText(gtxt, L.bandGain.x + 2, base, fs(g, 9), gcol, "left", false);
+            drawText(b.q.toFixed(2), L.q.x + 2, base, fs(g, 9), col, "left", false);
         } else {
             drawText("\u2014 Off", L.mode.x + 2, base, fs(g, 9), grey, "left", false);
-            caret(L.mode.x + L.mode.w - 6, L.mode.y + 9, 4, grey);
-            drawText(fmtFreq(b.freq), L.freq.x + L.freq.w - 2, base, fs(g, 9), COL_DIM, "right", false);
-            drawText(fmtSignedDb(b.gain), L.bandGain.x + L.bandGain.w - 2, base, fs(g, 9), COL_DIM, "right", false);
-            drawText(b.q.toFixed(2), L.q.x + L.q.w - 1, base, fs(g, 9), COL_DIM, "right", false);
+            caret(L.mode.x + L.mode.w - 6, mid, 4, grey);
+            drawText(fmtFreq(b.freq), L.freq.x + 2, base, fs(g, 9), COL_DIM, "left", false);
+            drawText(fmtSignedDb(b.gain), L.bandGain.x + 2, base, fs(g, 9), COL_DIM, "left", false);
+            drawText(b.q.toFixed(2), L.q.x + 2, base, fs(g, 9), COL_DIM, "left", false);
         }
     }
     drawListIcon(L.filtersToggle, showFiltersShelf === 1);
     drawBarsIcon(L.analyzerToggle, showAnalyzerShelf === 1);
 }
-function drawDropdown(r, label, g) {
+function drawDropdown(r, label, g, textSize, textY) {
     var rad = 2.5 * Math.min(g.sx, g.sy);
     fillRound(r.x, r.y, r.w, r.h, rad, COL_DROP, 1);
     rrect(r.x, r.y, r.w, r.h, rad);
     setRgb(COL_DROP_EDGE, 1);
     mgraphics.set_line_width(1);
     mgraphics.stroke();
-    var size = fs(g, 9);
+    var size = textSize || fs(g, 9);
     var maxW = r.w - 14 * g.sx;
     while (size > fs(g, 7) + 0.1 && textW(label, size, false) > maxW) size -= 0.5;
-    drawText(label, r.x + 4 * g.sx, r.y + r.h - 4 * g.sy, size, COL_WHITE, "left", false);
+    drawText(label, r.x + 4 * g.sx, textY == null ? r.y + r.h - 4 * g.sy : textY, size, COL_WHITE, "left", false);
     caret(r.x + r.w - 9 * g.sx, r.y + r.h * 0.58, 5 * g.sx, COL_CARET);
 }
 function drawPillButton(r, label, on, g) {
@@ -3345,9 +3576,10 @@ function paintTop(g) {
     var tv = COL_VALUE;
     drawText("Tilt", L.tilt.x, base, size, COL_LABEL, "left", false);
     drawText(fmtSignedDb(tiltEqDb).replace(" dB", ""), L.tilt.x + L.tilt.w, base, size, tv, "right", true);
-    drawText("Range", L.range.x - 36 * g.sx, base, fs(g, 8), COL_LABEL, "left", false);
-    drawDropdown(L.range, "\u00b1" + EQP_RANGES[rangeIdx], g);
+    drawText("Range", L.range.x - 36 * g.sx, base, size, COL_LABEL, "left", false);
+    drawDropdown(L.range, "\u00b1" + EQP_RANGES[rangeIdx], g, size, base);
     drawBellIcon(L.aq, adaptiveQ === 1);
+    drawDropdown(L.route, EQP_ROUTES[routeMode] || "Stereo", g);
 }
 
 function paintShelves(g) {
@@ -3376,8 +3608,8 @@ function paintFilterCard(g, card) {
     }
     var col = sel ? bandInk(b) : COL_LABEL;
     drawPower(card.power, true, col);
-    drawModeGlyph(b.mode, card.mode.x + 7, card.mode.y + 8, col);
-    drawText(MODE_FACE[b.mode] || "Bell", card.mode.x + 14, y1, fs(g, 8), col, "left", false);
+    drawModeGlyph(b.mode, card.mode.x + 9, card.mode.y + 8, col);
+    drawText(MODE_FACE[b.mode] || "Bell", card.mode.x + 20, y1, fs(g, 8), col, "left", false);
     caret(card.x + card.w - 10, card.y + 10, 4, col);
     drawText(fmtFreq(b.freq), card.freq.x, y2, fs(g, 8), col, "left", false);
     var gcol = usesGain(b.mode) ? col : [col[0], col[1], col[2], 0.35];
@@ -3403,9 +3635,6 @@ function paintAnalyzerShelf(g, az) {
     drawText("Range (dB)", az.x + 8, az.rmin.y + 12, fs(g, 8), label, "left", false);
     drawValueBox(az.rmin, String(Math.round(rangeMinDb)), g);
     drawValueBox(az.rmax, String(Math.round(rangeMaxDb)), g);
-    var ref = refEnabled ? "Sidechain" : "\u00d7 None";
-    drawText("Reference", az.x + 8, az.y + az.h - 6, fs(g, 8), COL_LABEL, "left", false);
-    drawText(ref, az.ref.x, az.y + az.h - 6, fs(g, 8), refEnabled ? COL_REF : COL_DIM, "left", false);
 }
 function drawShelfDrop(r, label, g) {
     fillRound(r.x, r.y, r.w, r.h, 3, COL_DROP, 1);
@@ -3437,10 +3666,111 @@ function paintPopup(g) {
             fillRound(r.x, r.y, r.w, r.h, 2, COL_LABEL, 0.12);
         }
         var col = sel ? COL_ORANGE : COL_LABEL;
-        drawText(r.item.label, r.x + 4 * g.sx, r.y + r.h - 3 * g.sy, fs(g, 8.5), col, "left", sel);
+        var labelX = r.x + 4 * g.sx;
+        if (popup.kind === "bandmode") {
+            drawModeGlyph(r.item.value, r.x + 12 * g.sx, r.y + r.h * 0.5, col);
+            labelX = r.x + 24 * g.sx;
+        }
+        drawText(r.item.label, labelX, r.y + r.h - 3 * g.sy, fs(g, 8.5), col, "left", sel);
     }
 }
 
+// Transparent live.* faces sit on the drawn controls so Live's right-click menu
+// (Show Automation, Map to Macro, MIDI/Key map) lands on the real parameter.
+// The curve nodes stay on the v8ui: one node is both frequency and gain.
+var eqpFaceCache = {};
+var eqpFaceOrigin = null;
+function eqpFacePatcher() {
+    var host = hostPatcher();
+    return host || null;
+}
+function eqpFaceOriginXY() {
+    if (eqpFaceOrigin) return eqpFaceOrigin;
+    var o = [4, 4];
+    var p = eqpFacePatcher();
+    try {
+        var ui = p && p.getnamed ? p.getnamed("obj-viz") : null;
+        var r = ui ? ui.getattr("presentation_rect") : null;
+        if (r && r.length >= 2) o = [Number(r[0]) || 0, Number(r[1]) || 0];
+    } catch (e) {}
+    eqpFaceOrigin = o;
+    return o;
+}
+function eqpFacesWanted(g) {
+    var want = {};
+    if (popup) return want;
+    var L = uiLayout(g);
+    function put(name, r) {
+        if (!r || !(r.w > 1) || !(r.h > 1)) return;
+        want[name] = [r.x, r.y, r.w, r.h];
+    }
+    put("Global Shift", L.shift);
+    put("Output Gain", L.gain);
+    put("Tilt Filter", L.tilt);
+    put("Stereo Route", L.route);
+    var onBar = {};
+    if (!bottomAnalyzer) {
+        var sb = selectedBand;
+        if (sb < 0 || sb >= bands.length) sb = 0;
+        var n = sb + 1;
+        put("Band " + n + " Enable", L.power);
+        put("Band " + n + " Freq", L.freq);
+        put("Band " + n + " Gain", L.bandGain);
+        put("Band " + n + " Q", L.q);
+        onBar[sb] = 1;
+    }
+    if (showFiltersShelf) {
+        for (var c = 0; c < L.cards.length; c++) {
+            var card = L.cards[c];
+            if (onBar[card.i]) continue;
+            var cn = card.i + 1;
+            put("Band " + cn + " Enable", card.power);
+            put("Band " + cn + " Freq", card.freq);
+            put("Band " + cn + " Gain", card.gain);
+            put("Band " + cn + " Q", card.q);
+        }
+    }
+    return want;
+}
+function eqpFaceApply(want) {
+    var p = eqpFacePatcher();
+    if (!p || !p.getnamed) return;
+    var origin = eqpFaceOriginXY();
+    var name;
+    for (name in eqpFaceCache) {
+        if (!eqpFaceCache.hasOwnProperty(name) || want[name]) continue;
+        var hide = p.getnamed(name);
+        if (hide) {
+            try {
+                hide.setattr("hidden", 1);
+                hide.setattr("presentation_rect", 0, 0, 1, 1);
+            } catch (e1) {}
+        }
+        delete eqpFaceCache[name];
+    }
+    for (name in want) {
+        if (!want.hasOwnProperty(name)) continue;
+        var r = want[name];
+        var x = Math.round((origin[0] + r[0]) * 100) / 100;
+        var y = Math.round((origin[1] + r[1]) * 100) / 100;
+        var w = Math.round(r[2] * 100) / 100;
+        var h = Math.round(r[3] * 100) / 100;
+        var sig = x + "," + y + "," + w + "," + h;
+        if (eqpFaceCache[name] === sig) continue;
+        var face = p.getnamed(name);
+        if (!face) continue;
+        var wasHidden = eqpFaceCache[name] === undefined;
+        try {
+            face.setattr("presentation_rect", x, y, w, h);
+            if (wasHidden) {
+                face.setattr("hidden", 0);
+                var front = p["bringtofront"];
+                if (typeof front === "function") front.call(p, face);
+            }
+        } catch (e2) { continue; }
+        eqpFaceCache[name] = sig;
+    }
+}
 function paintDsp(g) {
     if (!eqpDsp.started || eqpDsp.ready) return;
     var msg = eqpDsp.error ? ("DSP failed: " + eqpDsp.error) : "DSP loading…";
@@ -3491,6 +3821,7 @@ function paint() {
         mgraphics.set_line_width(1);
         mgraphics.stroke();
         paintPopup(g);
+        eqpFaceApply(eqpFacesWanted(g));
     } catch (err) {
         post("EQ+: paint " + err + "\n");
     }
@@ -3502,7 +3833,7 @@ function paint() {
 
 function set_shift(v) {
     if (gesture.kind === "shift") return;
-    var n = clamp(roundTo(finite(v, shiftSt), 0.01), -36, 36);
+    var n = clamp(roundTo(finite(v, shiftSt), 0.01), EQP_SHIFT_MIN, EQP_SHIFT_MAX);
     if (n === shiftSt) return;
     shiftSt = n;
     updateCoeffBuffer();
@@ -3515,6 +3846,17 @@ function set_gain(v) {
     if (n === outGainDb) return;
     outGainDb = n;
     emitOutGain();
+    mgraphics.redraw();
+}
+function set_route(v) {
+    var n = decodeRoute(v);
+    if (n === routeMode) return;
+    if (gesture.kind) finishGesture();
+    focusRoute(n);
+    for (var i = 0; i < EQP_NUM_BANDS; i++) emitBand(i);
+    emitParam("route", routeMode);
+    updateCoeffBuffer();
+    updateSoloState();
     mgraphics.redraw();
 }
 function set_phase_mode(v) {
