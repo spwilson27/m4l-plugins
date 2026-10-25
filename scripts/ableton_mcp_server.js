@@ -553,8 +553,15 @@ function startStdioMcpServer() {
                 }
                 const bodyStr = buffer.slice(headerByteLen, headerByteLen + bodyByteLen).toString("utf8");
                 buffer = buffer.slice(headerByteLen + bodyByteLen);
+                let bodyMsg;
                 try {
-                    handleJsonRpcMessage(JSON.parse(bodyStr));
+                    bodyMsg = JSON.parse(bodyStr);
+                } catch (_) {
+                    sendRpcMessage({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+                    continue;
+                }
+                try {
+                    handleJsonRpcMessage(bodyMsg);
                 } catch (_) {}
                 continue;
             }
@@ -564,8 +571,15 @@ function startStdioMcpServer() {
             const lineStr = buffer.slice(0, nlIdx).toString("utf8").trim();
             buffer = buffer.slice(nlIdx + 1);
             if (!lineStr) continue;
+            let lineMsg;
             try {
-                handleJsonRpcMessage(JSON.parse(lineStr));
+                lineMsg = JSON.parse(lineStr);
+            } catch (_) {
+                sendRpcMessage({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+                continue;
+            }
+            try {
+                handleJsonRpcMessage(lineMsg);
             } catch (_) {}
         }
     });

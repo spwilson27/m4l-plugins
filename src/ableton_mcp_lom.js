@@ -404,6 +404,9 @@ function handleSetDeviceParameter(params) {
     if (!targetParam) {
         throw new Error("Parameter not found on " + p.path);
     }
+    if (typeof p.value !== "number" || !isFinite(p.value)) {
+        throw new Error("set_device_parameter requires a numeric value");
+    }
     var paramApi = makeApi(targetParam.path);
     var clamped = Math.max(targetParam.min, Math.min(targetParam.max, Number(p.value)));
     paramApi.set("value", clamped);
@@ -434,6 +437,10 @@ function handleDeleteDevice(params) {
         deviceIndex = parseInt(match[2], 10);
     }
 
+    if (!parentPath || deviceIndex < 0) {
+        throw new Error("delete_device requires a device path, or a parentPath and a non-negative deviceIndex");
+    }
+
     var parentApi = makeApi(parentPath);
     var result = parentApi.call("delete_device", deviceIndex);
     return {
@@ -461,6 +468,8 @@ function handleTransport(params) {
         setApi.call("undo");
     } else if (act === "redo") {
         setApi.call("redo");
+    } else if (act) {
+        throw new Error("Unknown transport action: " + act);
     }
     return handleGetSessionInfo();
 }
