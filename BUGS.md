@@ -1,6 +1,6 @@
 # Tiny Space bugsweep (bugsweep/tinyspace-pass1)
 
-PASS-1 filed Bug A with a RED suite. PASS-2 reviewed that RED and **kept** it. No production code has been changed. RED coverage remains in `tests/test_tinyspace_bugsweep.js`. Host gate (`npm run -s typecheck && python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js`) stays green; the bugsweep suite is separate and stays RED until PASS 3 fixes production.
+PASS-1 filed Bug A with a RED suite. PASS-2 reviewed that RED and **kept** it. PASS-3 fixed production: top-level buffers are now instance-unique `---tsconfig` / `---tsmeters`, `tsDspFrames` peeks `meterBuf` from `setbuffer`, and `tests/test_tinyspace.js` expects the `---` names. Host gate (`npm run -s typecheck && python3 scripts/build_tinyspace.py && node tests/test_tinyspace.js && node tests/test_tinyspace_bugsweep.js`) is green. RED coverage remains in `tests/test_tinyspace_bugsweep.js` as a regression guard.
 
 ## PASS-2 review
 
@@ -10,7 +10,7 @@ PASS-1 filed Bug A with a RED suite. PASS-2 reviewed that RED and **kept** it. N
 
 ## Bug A — `#0-tsconfig` / `#0-tsmeters` are shared across every Tiny Space instance in Live
 
-**Where**
+**Where (pre-fix)**
 - `scripts/build_tinyspace.py` — `buffer~ #0-tsconfig @samps 128` (~L434), `buffer~ #0-tsmeters @samps 32` (~L447), bind `cfg #0-tsconfig, meters #0-tsmeters` (~L513), face `setbuffer #0-tsconfig #0-tsmeters` (~L527)
 - `src/tinyspace_ui.js` — `tsDspFrames()` hardcodes `new Buffer("#0-tsmeters")` (~L193) instead of using the `meterBuf` from `setbuffer` (~L44–47)
 - `tests/test_tinyspace.js` (~L331–339) currently *requires* the `#0-` prefix on those boxes
@@ -33,6 +33,22 @@ Rename to unique `---` buffers (e.g. `---tsconfig`, `---tsmeters`) in build (`bu
 **RED**
 `tests/test_tinyspace_bugsweep.js` — build script / built `devices/Tiny Space.amxd` / UI must use instance-unique `---` names (not `#0-tsconfig` / `#0-tsmeters`); UI must not hardcode `new Buffer("#0-tsmeters")`.
 
+## PASS-3 fix
+
+**Status:** FIXED (host gate + bugsweep suite green). Commit SHA filled after commit on `bugsweep/tinyspace-pass1`.
+
+**Production touchpoints**
+- `scripts/build_tinyspace.py` — `buffer~ ---tsconfig @samps 128` (~L434), `buffer~ ---tsmeters @samps 32` (~L447), bind `cfg ---tsconfig, meters ---tsmeters` (~L513), face `setbuffer ---tsconfig ---tsmeters` (~L527)
+- `src/tinyspace_ui.js` — `tsDspFrames()` peeks `meterBuf` (from `setbuffer`); comments at ~L141 / ~L189 updated to `---tsmeters (meterBuf)`
+- `tests/test_tinyspace.js` (~L331–339) — asserts `---tsconfig` / `---tsmeters` (required so the main suite stays green; not a weaken of the bugsweep RED)
+- Comments / docs aligned with production: `src/tinyspace_config.js` L2, `src/tinyspace_core.genexpr` L2/L6, `AGENTS.md` Tiny Space section (~L367 / L372)
+- `devices/Tiny Space.amxd` — rebuilt after the rename (intentional; include in the PASS-3 commit)
+
+**Left unchanged (intentional)**
+- GenExpr `Buffer cfg("tsconfig")` / `Buffer meters("tsmeters")` — external names, bound via loadbang
+- Audio harness private `#0-` probe buffers: `scripts/run_tinyspace_audio_tests.py`, `tests/tinyspace_harness.maxpat`, `tests/tinyspace_probe.js` (self-consistent inside the harness patcher; Multiband precedent)
+- `tests/test_tinyspace_bugsweep.js` — kept as regression guard (still asserts `#0-` absence / `---` presence)
+
 ## Reviewed and not filed
 
 These were checked against AGENTS / source / tests and are **not** bugs (doc drift or intentional design):
@@ -43,6 +59,6 @@ These were checked against AGENTS / source / tests and are **not** bugs (doc dri
 - AGENTS "70-float" vs `CFG_FLOATS=72`, and "whole samples" vs `interp="linear"` + `round()`: doc drift / intentional, not RED material.
 - `Global("tinyspace_dspq")`: shared create-queue like `mbsplit_dspq` — intentional.
 
-## Out of scope until PASS 3
+## PASS-3 complete
 
-Production fixes for Bug A. PASS 3 should migrate the buffer names to `---…`, route `tsDspFrames` through `meterBuf` / `setbuffer`, and update the existing `#0-` assertions in `test_tinyspace.js` (and AGENTS / comments).
+Bug A production fix is in; harness `#0-` names and the bugsweep RED suite stay as documented above. Pass 4 reviews next — do not merge to main from this pass.

@@ -1,9 +1,9 @@
 // Tiny Space — 20-line feedback delay network.
-// Config buffer (buffer~ #0-tsconfig), indices match src/tinyspace_config.js:
+// Config buffer (buffer~ ---tsconfig), indices match src/tinyspace_config.js:
 //   0 activeCount, 1 character,
 //   2..5 allpass lengths (ms), 6..9 allpass gains,
 //   10..29 nominal delay (ms), 30..49 damp offset, 50..69 mod Hz, 70 model.
-// Meter buffer (buffer~ #0-tsmeters): slots 0..19 are line envelopes, slot 20 is a
+// Meter buffer (buffer~ ---tsmeters): slots 0..19 are line envelopes, slot 20 is a
 // frame counter that increments every 32 samples even when the input is silent.
 // Filter, crossfeed, wet/dry, RT60, loop-gain and damping coefficients are cached
 // and recomputed only when size, fbk, damp, hp, lp, xfeed, wet, samplerate or the

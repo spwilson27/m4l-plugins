@@ -1,5 +1,5 @@
 // Seeded delay-line configuration for Tiny Space.
-// The float layout written into buffer~ #0-tsconfig is the contract with
+// The float layout written into buffer~ ---tsconfig is the contract with
 // src/tinyspace_core.genexpr — keep the indices in sync.
 
 const LINE_COUNT = 20;

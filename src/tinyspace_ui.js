@@ -138,7 +138,7 @@ function loadbang() {
 // and wires ts_genin -> gen, ts_plugin -> gen -> ts_plugout. Until then the outputs
 // stay unconnected, so the device is silent. The gen drops messages while it compiles,
 // so buffer bindings, the seed config and every gen parameter are re-sent until the
-// frame counter in #0-tsmeters slot 20 moves, then once more after 300 ms.
+// frame counter in ---tsmeters (meterBuf) slot 20 moves, then once more after 300 ms.
 var tsHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 var tsDsp = {
     ready: 0,
@@ -186,11 +186,11 @@ function tsDspWriteFile(path) {
     return true;
 }
 
-// Slot 20 of #0-tsmeters, written every 32 samples even while the tank is asleep.
+// Slot 20 of ---tsmeters (meterBuf), written every 32 samples even while the tank is asleep.
 function tsDspFrames() {
-    if (typeof Buffer === "undefined") return -1;
+    if (!meterBuf) return -1;
     try {
-        var v = new Buffer("#0-tsmeters").peek(1, 20, 1);
+        var v = meterBuf.peek(1, 20, 1);
         return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
     } catch (_) {
         return -1;
