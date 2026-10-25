@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const { load, functionsOf } = require("./genexpr_functions");
 const { AMP_MODELS, ampStep } = require("../src/ampplus_models");
+const { ampAllLooks, ampLayout, ampLookProblems, ampLevelFromEnv } = require("../src/ampplus_looks");
 
 const ROOT = path.join(__dirname, "..");
 const AMXD = path.join(ROOT, "devices", "Amp+.amxd");
@@ -138,12 +139,36 @@ for (const model of AMP_MODELS) {
     assert.deepStrictEqual(enumNames, AMP_MODELS.map((m) => m.type));
 
     const viz = byId.get("obj-viz");
+    const bg = byId.get("obj-viz-bg");
+    assert.strictEqual(bg.ignoreclick, 1);
+    assert.ok(/AMP_ROLE\s*=\s*"bg"/.test(String(bg.textfile.text)));
+    assert.ok(/AMP_ROLE\s*=\s*"hit"/.test(String(viz.textfile.text)));
+    const look = byId.get("obj-ctrl-look");
+    assert.deepStrictEqual(look.saved_attribute_attributes.valueof.parameter_enum, ampAllLooks().map((row) => row.name));
+    const baked = ampLayout(0);
+    for (const [id, spec] of Object.entries(baked.boxes)) {
+        const box = byId.get(id);
+        assert.ok(box, id);
+        assert.deepStrictEqual(box.presentation_rect.map(Number), spec.rect, id);
+        assert.strictEqual(box.hidden ? 1 : 0, spec.hidden, id);
+    }
+    for (const row of ampAllLooks()) {
+        const problems = ampLookProblems(row);
+        assert.deepStrictEqual(problems, [], problems.join("; "));
+    }
+    assert.strictEqual(ampLevelFromEnv(0), 0);
+    assert.ok(ampLevelFromEnv(0.2) > 0.3 && ampLevelFromEnv(0.2) < 0.6);
+    assert.strictEqual(ampLevelFromEnv(1.5), 1);
+    assert.ok(coreSrc.includes("Param scopeon"));
+    assert.ok(coreSrc.includes("if (scopeon > 0.5)"));
+    assert.ok(gen.code.includes("scopeon"));
+
     const vr = viz.presentation_rect;
     for (const box of boxes) {
         if (!box.presentation || !box.presentation_rect) continue;
         const r = box.presentation_rect;
         assert.ok(r[0] >= -0.1 && r[1] >= -0.1 && r[0] + r[2] <= 496.1 && r[1] + r[3] <= 169.1, `${box.id} is outside the device`);
-        if (box.id === "obj-viz" || box.maxclass === "panel") continue;
+        if (box.id === "obj-viz" || box.ignoreclick || box.maxclass === "panel") continue;
         const overlapsX = r[0] < vr[0] + vr[2] && r[0] + r[2] > vr[0];
         const overlapsY = r[1] < vr[1] + vr[3] && r[1] + r[3] > vr[1];
         assert.ok(!(overlapsX && overlapsY), `${box.id} overlaps the amp head`);

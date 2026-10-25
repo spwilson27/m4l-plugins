@@ -163,6 +163,8 @@ cabPeakQ(kind) {
 	return qq;
 }
 
+Buffer scope("ampscope");
+
 Param bass(50);
 Param mid(50);
 Param treble(50);
@@ -172,6 +174,11 @@ Param cab(1);
 Param cabtype(1);
 Param mic(0);
 Param position(0);
+Param scopeon(0);
+History ampEnv(0);
+History ampTick(0);
+History waveN(0);
+History waveI(0);
 
 bassSm = slew(bass, 20, samplerate);
 midSm = slew(mid, 20, samplerate);
@@ -207,5 +214,23 @@ wet = biq(wet, filt(2, pkHz, pkQv, pkDb, samplerate, 0), filt(2, pkHz, pkQv, pkD
 
 y = dry + (wet - dry) * cabSm;
 y = y * volCurve(volSm);
+ampAbs = abs(y);
+ampEnv = (ampAbs > ampEnv) ? ampAbs : ampEnv * 0.9995;
+ampTick = ampTick + 1;
+waveN = waveN + 1;
+// scopeon stays 0 in the audio tests, so the meter writes nothing there.
+if (scopeon > 0.5) {
+	if (waveN >= 8) {
+		waveI = waveI + 1;
+		waveI = (waveI >= 24) ? 0 : waveI;
+		poke(scope, y, 2 + waveI, 0);
+		waveN = 0;
+	}
+	if (ampTick >= 32) {
+		poke(scope, ampEnv, 0, 0);
+		poke(scope, ampAbs, 1, 0);
+		ampTick = 0;
+	}
+}
 out1 = y;
 out2 = y;
