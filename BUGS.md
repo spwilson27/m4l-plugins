@@ -98,3 +98,12 @@ pTri(0)=0 pTri(0.25)=-1 pTri(0.5)=0 pTri(0.75)=1
 node tests/test_percipitator.js   # baseline: ok (exit 0); with the new tests: exit 1, Bug 1 assertion above
 git -C /tmp/bugsweep/percipitator status   # only tests/test_percipitator.js modified + BUGS.md added
 ```
+
+## Pass 2 review
+
+Reviewed both claimed reds against live source (`computeSieveGain` / `sieve_one`, `pTri` / `generateStandardWavetable` + UI call sites). Both are real functional bugs; neither dropped.
+
+1. **Kept** — Partial Sieve gains diverge between gen audio path and JS mirror used for UI shading / demo weighting. Host test fails at block 7: `Sieve mirror mismatch band 1 mode 1: JS 0.08 vs gen 0.06` (exit 1).
+2. **Kept** — Gen procedural fallback triangle (`pTri`) is phase-inverted vs the canonical Triangle wavetable frame (+1 at 0.25 / -1 at 0.75). Block 8 pins the frame and asserts the fallback; standalone evaluation gives `pTri(0.25)=-1`.
+
+Dropped: 0. No production/src edits (pass 3). Strengthening not needed — both reds already fail on unfixed code.
