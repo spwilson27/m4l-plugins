@@ -10,7 +10,7 @@ var AN_PREVIEW = 0;
 // Dedicated oscilloscope face (460 x 169). Same scope buffer and deferred gen~ as the analyzer tap.
 // Channel 1 is live_display_line_one, channel 2 is live_display_line_two. Every colour comes from sptColor.
 
-var anBufName = "#0-analyzerscope";
+var anBufName = "---analyzerscope";
 
 var oscInit = oscDefaultState();
 var oscRoutingMode = oscInit.routingMode;

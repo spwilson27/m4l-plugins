@@ -1,7 +1,7 @@
 // Analyzer — layout, buffer map, K-weighting, loudness, 1/3-octave bands, stereo meters.
 // Pure (no Max objects). The build prepends this into the v8ui; Node tests require it.
 //
-// buffer~ #0-analyzerscope (AN_BUF_SAMPS), written by src/analyzer_core.genexpr:
+// buffer~ ---analyzerscope (AN_BUF_SAMPS), written by src/analyzer_core.genexpr:
 //   0 frame (heartbeat, +1 every packet)   1 sample rate
 //   2 scope head (next write)              3 fft head (next write)
 //   4 packet head (next write)             5 samples per packet (480)

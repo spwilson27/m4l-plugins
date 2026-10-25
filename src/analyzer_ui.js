@@ -17,7 +17,7 @@ var anScopeMode = 0;
 var anScopeTime = 1;
 var anTrigger = 0;
 var anF = [AN_XOVER_DEFAULT[0], AN_XOVER_DEFAULT[1], AN_XOVER_DEFAULT[2]];
-var anBufName = "#0-analyzerscope";
+var anBufName = "---analyzerscope";
 var anFrozen = 0;
 /** @type {{ mom: number, short: number, rms: number, tp: number, lra: number | null, spark: number[] } | null} */
 var anHold = null;

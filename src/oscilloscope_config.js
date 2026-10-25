@@ -3,7 +3,7 @@
 // Overlay/Split toggle, and backward-compatible v3 blob serialization.
 // Pure (no Max objects at load time). Prepended into the v8ui and required by Node tests.
 //
-// buffer~ #0-analyzerscope (OSC_BUF_SAMPS = 17952):
+// buffer~ ---analyzerscope (OSC_BUF_SAMPS = 17952):
 //   0 frame (heartbeat, +1 every 480-sample packet)
 //   1 sample rate (e.g. 48000)
 //   2 scope write head (0..OSC_RING_N-1)

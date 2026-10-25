@@ -1866,7 +1866,7 @@ Fixed height 169. Ableton-native colours from `src/spectral_theme.js`. No device
 
 Default is spectrogram only (392 px). All four open is 1134 px. All closed leaves the rail (28 px). **Freeze** (rail, under the four toggles) holds the drawings and the momentary numbers. Integrated LUFS keeps running. Freeze starts off and is not saved.
 
-`buffer~ #0-analyzerscope` (`AN_BUF_SAMPS` 17952), layout in `src/analyzer_config.js`: header, 64 packets of 24 floats (480 samples each), stereo scope ring (4096) and a mono 8192-sample FFT ring. `AnalyzerState` blob version 1 on the face (`parameter_type` 3, stored only): fold mask, section order, spectrogram type, scope mode and time base, trigger, crossover frequencies. Integrated loudness is session state.
+`buffer~ ---analyzerscope` (`AN_BUF_SAMPS` 17952), layout in `src/analyzer_config.js`: header, 64 packets of 24 floats (480 samples each), stereo scope ring (4096) and a mono 8192-sample FFT ring. `AnalyzerState` blob version 1 on the face (`parameter_type` 3, stored only): fold mask, section order, spectrogram type, scope mode and time base, trigger, crossover frequencies. Integrated loudness is session state.
 
 No automatable analysis parameters. Tuner, key / chromagram and a 3D mesh are not in this version.
 
@@ -1878,7 +1878,7 @@ npm run -s typecheck && python3 scripts/build_oscilloscope.py && node tests/test
 Max audio (`python3 scripts/run_analyzer_audio_tests.py`: 1 kHz −20 dBFS, inverted channel, an intersample peak, a 40 Hz low band) runs in the `macos-01` VM only. A 40 Hz tone is the low-band check: the complementary one-poles at 150 Hz still put an 80 Hz tone mostly in the next band. A Live load check (width follows the open panels, meters move on a tone) waits until just before a commit, under the Live lock. `var AN_PREVIEW` in `src/analyzer_ui.js` stays `0`; a non-zero value is only for an all-panels still, and the tests reject anything else.
 
 ### `devices/Oscilloscope.amxd` (`460 x 169` px — Dedicated Stereo & Mid/Side Single/Multi-Cycle Oscilloscope)
-Built by `scripts/build_oscilloscope.py` from `src/oscilloscope_config.js`, `src/spectral_theme.js`, `src/analyzer_dsp.js`, and `src/oscilloscope_ui.js` (`tsconfig.oscilloscope.json`, `tests/test_oscilloscope.js`), sharing the same pass-through `plugin~ -> plugout~` wiring and deferred `analyzer_core.genexpr` tap (`#0-analyzerscope`):
+Built by `scripts/build_oscilloscope.py` from `src/oscilloscope_config.js`, `src/spectral_theme.js`, `src/analyzer_dsp.js`, and `src/oscilloscope_ui.js` (`tsconfig.oscilloscope.json`, `tests/test_oscilloscope.js`), sharing the same pass-through `plugin~ -> plugout~` wiring and deferred `analyzer_core.genexpr` tap (`---analyzerscope`):
 - **Top Control Bar (`y = 6..21`)**:
   - **EQ-Eight Style `Mode` Selection Box (`Stereo`, `M / S`) + Tristate `Ch` Toggle Button**:
     - `Stereo`: Tristate `Ch` button cycles between `L / R` (both `L` orange `live_display_line_one` and `R` cyan `live_display_line_two`), `L` (Slot 1: Left only, orange, top lane in Split), and `R` (Slot 2: Right only, cyan, bottom lane in Split and cyan in Overlay).

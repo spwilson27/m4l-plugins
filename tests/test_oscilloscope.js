@@ -290,7 +290,22 @@ const amxdPath = path.join(ROOT, "devices", "Oscilloscope.amxd");
 ok(fs.existsSync(amxdPath), "devices/Oscilloscope.amxd exists");
 const raw = fs.readFileSync(amxdPath);
 const doc = JSON.parse(raw.slice(32, 32 + raw.readUInt32LE(28)).toString("utf8"));
-const viz = doc.patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-viz");
+const boxes = doc.patcher.boxes.map((b) => b.box);
+const byId = {};
+for (const box of boxes) byId[box.id] = box;
+ok(byId["obj-buf"].text.includes("---analyzerscope") && byId["obj-buf"].text.includes("17952"), "Oscilloscope.amxd: scope buffer is ---analyzerscope @samps 17952");
+ok(byId["obj-msg-scope"].text === "scope ---analyzerscope", "Oscilloscope.amxd: scope bind is ---analyzerscope");
+ok(byId["obj-msg-setbuf"].text === "setbuffer ---analyzerscope", "Oscilloscope.amxd: setbuffer is ---analyzerscope");
+for (const b of boxes) {
+    const t = b.text || "";
+    if (/^buffer~ /.test(t) || /^scope /.test(t) || /^setbuffer /.test(t)) {
+        ok(!/#0(?![0-9])/.test(t), "Oscilloscope.amxd: no literal #0 in " + t);
+    }
+}
+const viz = byId["obj-viz"];
+ok(viz && viz.maxclass === "v8ui", "Oscilloscope.amxd: face is v8ui");
+ok(!/#0-/.test(viz.textfile.text.replace(/\/\/[^\n]*/g, "")), "Oscilloscope.amxd: no #0- in the v8ui script code");
+ok(!/#0-/.test(uiSrc.replace(/\/\/[^\n]*/g, "")), "oscilloscope_ui.js: no #0- in source (face default)");
 
 const cmds = [];
 const ctx = {
