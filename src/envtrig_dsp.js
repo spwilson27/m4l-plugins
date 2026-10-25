@@ -8,7 +8,7 @@
 //   gen outlet 2 -> et_edge (gate into edge~)
 //   gen outlet 3 -> et_snap (held velocity into snapshot~)
 // Until that gen~ is running the device outputs silence: plugin~ is not tied to plugout~.
-// The gen drops messages while it compiles, so the face re-sends `scope #0-trigscope` and
+// The gen drops messages while it compiles, so the face re-sends `scope ---trigscope` and
 // thr / sens / holdms / velmin / velmax every 150 ms until scope slot 3 (the roll counter)
 // moves, then once more after 300 ms. The first gen~ a Live process creates is sometimes
 // never added to the DSP chain (retry at 3.5 s, then 6 s, up to 2 retries). Instances take

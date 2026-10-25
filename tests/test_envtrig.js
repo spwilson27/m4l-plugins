@@ -8,7 +8,7 @@
  *  2. GenExpr ordering & lexer safety (Buffer -> Param -> History before expressions, no e<digit>)
  *  3. .amxd binary header ("aaaa" Audio Effect), presentation geometry, no overlaps, panel z-order
  *  4. Deferred DSP: no static gen~, gate hub, 4-outlet GEN_DSP_TEXT, silence until gen~ is wired,
- *     and `scope #0-trigscope` loadbang binding into the hub
+ *     and `scope ---trigscope` loadbang binding into the hub
  *  5. MIDI out graph: gate -> edge~ -> t b b -> snapshot~ velocity / note -> makenote -> pack
  *     -> midiformat -> midiout, plus channel & length inlets
  *  6. Native-style routing: hidden live.menus, live.thisdevice -> init_routing, settype / setchannel
@@ -160,10 +160,10 @@ for (const l of lines) {
     if (l.destination[0] === "obj-gen-in") assert.strictEqual(l.destination[1], 1, "Every gen-bound cord must enter the hub's data inlet");
 }
 for (const b of boxes) {
-    if (b.text && b.text.startsWith("buffer~")) assert.ok(b.text.includes("#0-"), `buffer~ must use #0- prefix: ${b.text}`);
+    if (b.text && b.text.startsWith("buffer~")) assert.ok(b.text.includes("#0-") || b.text.includes("---trigscope"), `buffer~ must use #0- prefix (--- is allowed only for the shared scope telemetry buffer): ${b.text}`);
 }
-assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-trigscope");
-assert.strictEqual(byId["obj-scope"].text, `buffer~ #0-trigscope @samps ${cfg.SCOPE_BUFFER_SAMPS}`, "Scope buffer holds the header plus the 256-block oscilloscope ring");
+assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope ---trigscope");
+assert.strictEqual(byId["obj-scope"].text, `buffer~ ---trigscope @samps ${cfg.SCOPE_BUFFER_SAMPS}`, "Scope buffer holds the header plus the 256-block oscilloscope ring");
 assert.ok(gen.includes(`base = ${cfg.SCOPE_RING_OFFSET} + head * 3;`) && gen.includes(`head = wrap(head + 1, 0, ${cfg.SCOPE_BLOCKS});`), "GenExpr ring layout must match envtrig_config.js");
 assert.ok(/if \(thr != cacheThr\)/.test(gen) && /if \(sens != cacheSens\)/.test(gen) && /if \(sr != cacheSr\)/.test(gen), "pow/exp coefficients must be cached, not recomputed every sample");
 assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in", 0, 1), "Missing scope bind wiring into the hub");
@@ -316,7 +316,7 @@ assert.ok(hasLine("obj-r-test", "obj-strip"), "Test hook drives the strip");
 assert.ok(hasLine("obj-expr-width", "obj-ui-width") && hasLine("obj-ui-width", "obj-strip"), "Strip mirrors the setwidth value");
 
 // 8. Graph v8ui runtime
-// Mock of buffer~ #0-trigscope (800 samples): header 0..6, oscilloscope ring from 32.
+// Mock of buffer~ ---trigscope (800 samples): header 0..6, oscilloscope ring from 32.
 const scopeBufData = new Array(800).fill(0);
 function setHeader(vals) { vals.forEach((v, i) => { scopeBufData[i] = v; }); }
 const drawOps = [];

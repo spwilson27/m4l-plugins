@@ -11,7 +11,7 @@
 //
 // Outlets: out1/out2 audio thru, out3 gate (0/1), out4 velocity (1..127, held).
 //
-// Scope telemetry buffer (buffer~ #0-trigscope @samps 800, bound via `scope #0-trigscope`):
+// Scope telemetry buffer (buffer~ ---trigscope @samps 800, bound via `scope ---trigscope`):
 //   every 64 samples:
 //     0: fast env peak   1: slow env   2: fire counter   3: rolling frame counter
 //     4: input peak      5: last fired velocity (1..127)

@@ -2,7 +2,7 @@
 // Prepended into src/envtrig_ui.js at build time and exported for Node tests.
 
 const SCOPE_COLS = 110;
-// buffer~ #0-trigscope layout (written by src/envtrig_core.genexpr): header 0..6, then the
+// buffer~ ---trigscope layout (written by src/envtrig_core.genexpr): header 0..6, then the
 // oscilloscope ring of SCOPE_BLOCKS x (min, max, onset flag) from SCOPE_RING_OFFSET.
 const SCOPE_BLOCKS = 256;
 const SCOPE_RING_OFFSET = 32;
