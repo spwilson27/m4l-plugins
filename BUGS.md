@@ -77,3 +77,8 @@ Route `set_tilt_eq` through `updateCoeffBuffer()` like the other design inputs
 - **State blob**: `getvalueof`/`applyStateArray` indices (curve A at 12, shelves at 52,
   phase at 58, route at 59, curve B at 60; length 100) round-trip, incl. legacy lengths.
 - **Latency reporting**: `updateDeviceLatency` matches the gen (Natural formula, Linear 3072).
+
+## Pass 2 review (reds only — no fixes)
+
+- **Kept 1 — Bug 1 (stale phase kernel on `tilt_eq` automation).** Mechanism re-checked: `set_tilt_eq` only `emitTilt()` + redraw; `set_shift` / `set_adaptiveq` call `updateCoeffBuffer()`; `updatePhaseKernel` passes `tiltEqDb` into `eqpDesignPhase`. Host node red still fails on unfixed code at the Linear Phase IR-poke assertion (`node tests/test_eqplus.js`). No rewrite needed.
+- **Dropped 0.**
