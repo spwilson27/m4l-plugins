@@ -403,3 +403,151 @@ Route `set_tilt_eq` through `updateCoeffBuffer()` like the other design inputs
 ## Pass 4 review (approve)
 
 - **Bug 1 — APPROVED.** Production fix is the one-line `set_tilt_eq` change (`emitTilt()` → `updateCoeffBuffer()`); no drive-bys. `updateCoeffBuffer` still `emitTilt()`s then `updatePhaseKernel()` → `eqpDesignPhase(..., tiltEqDb)` for curves A/B, matching `set_shift` / `set_adaptiveq`. Red test kept and still asserts Linear + Natural IR redesign on automation. Host gate re-run green: `npm run -s typecheck && python3 scripts/build_eqplus.py && node tests/test_eqplus.js` — EQ+ tests passed (2763 checks). Tip after this note: see `git log -1`.
+
+# Amp+ variants — Pass 1 bug hunt (bugsweep/ampplus-variants-pass1)
+
+## Verdict
+
+**1 credible bug found.** Red test added in `tests/test_ampplus_bugsweep.js`
+(expect FAIL on current HEAD). Production code is intentionally untouched in
+pass 1.
+
+- Worktree: `/private/tmp/bugsweep/ampplus-variants`, branch
+  `bugsweep/ampplus-variants-pass1`.
+- Devices in scope: `devices/Amp+.amxd` plus the five locked-face variants
+  (`Amp+ Wave/Pulse/Tiles/Strip/Mono.amxd`), all built by
+  `scripts/build_ampplus.py`.
+
+## Bug 1: Scope buffer uses `#0-ampscope` (not instance-isolated in Live)
+
+### Symptom
+Every Amp+ instance in a Live Set shares one scope ring / header. With
+`scopeon 1` the gen pokes envelope, peak and the 24-sample waveform into
+`buffer~ #0-ampscope`; the face polls it every 33 ms for meters, traces,
+spokes, tiles and the level disc. Two (or more) Amp+ devices therefore
+corrupt each other's meters and waveform displays.
+
+### Evidence
+- `scripts/build_ampplus.py:190` — `sc.message("obj-msg-buf", "#0-ampscope", ...)`
+  (loadbang name fed to `prepend scope` / `prepend set_scope`).
+- `scripts/build_ampplus.py:194` —
+  `sc.newobj("obj-scope", "buffer~ #0-ampscope @samps 32", ...)`.
+- `src/ampplus_core.genexpr` — `Buffer scope("ampscope")` rebound on loadbang
+  via `scope <name>`; the collision is the patcher-side name, not the GenExpr
+  external default.
+- `AGENTS.md` §30 still documents `buffer~ #0-ampscope` as the contract.
+- Same class already fixed elsewhere: Multiband Split migrated
+  `#0-splitscope` → `---mbsplitscope` because "Live does not expand `#0` in a
+  device's top-level patcher (AGENTS 15)"; Glitch / Delay+ / Spectral Split
+  use `---` names and assert no literal `#0` in box text / v8ui script
+  (`tests/test_glitch.js`, `tests/test_mbsplit.js`).
+- `tests/test_ampplus.js` never asserts `---` isolation or rejects
+  `#0-ampscope`.
+
+### Red test
+`tests/test_ampplus_bugsweep.js` — for each of the six `.amxd` files:
+`obj-scope.text === "buffer~ ---ampscope @samps 32"`,
+`obj-msg-buf.text === "---ampscope"`, and no box text matches `#0-ampscope`;
+plus the same constraints on `scripts/build_ampplus.py`.
+
+### Fix direction (do **not** apply in pass 1)
+In `scripts/build_ampplus.py` replace `#0-ampscope` with `---ampscope` in the
+`buffer~`, the loadbang message, and any bind strings; rebuild all six
+devices; update `AGENTS.md` §30. GenExpr `Buffer scope("ampscope")` can stay
+(rebound by `scope ---ampscope`, same pattern as Glitch).
+
+## Audited and cleared
+
+### Z-order / ignoreclick vs live.* controls
+Hypothesis that `obj-viz-bg` (full-bleed `ignoreclick` drawing canvas) sat
+after the `live.*` dials and covered them. Probe of all six `.amxd` files:
+`obj-viz-bg` at `boxes[0]`, `obj-viz` at `[1]`, `bg.ignoreclick = 1`,
+`bg.background` undefined, **zero** `live.*` boxes before `obj-viz-bg`. Per
+AGENTS.md rule 4 (ignoreclick exception: later in `boxes` = in front), the
+ordering is correct. Not a bug.
+
+### GenExpr / tone-stack / cabinet core
+`src/ampplus_core.genexpr` read in full. Existing `tests/test_ampplus.js`
+covers single-return lint, no `e<digit>` identifiers, toneDb / volCurve,
+flat/shelf biquad magnitudes, cab LP/HP/peak helpers, slew, and a short
+biquad run. No new DSP defect found in pass 1.
+
+### Presentation / look lock / overlap
+Five looks (Wave/Pulse/Tiles/Strip/Mono) validated by `test_ampplus.js`
+(`ampLookProblems`, baked `ampLookLock`, no `live.*` overlap with
+`obj-viz`'s click target). Variant devices lock Look to one face. Cleared.
+
+### Integer > 255 automatable params / theme / state
+No `parameter_type` integer knobs above 255 spotted in the Amp+ build path;
+theme menus come from `spectral_common`; no `getvalueof`/`setvalueof` blob
+beyond the normal Live parameter set. Cleared for pass 1.
+
+## Commands run (pass 1)
+- `git merge --ff-only main` on `bugsweep/ampplus-variants-pass1` (clean).
+- Host reads of `src/ampplus_{ui,looks,core,models}.*`,
+  `scripts/build_ampplus.py`, `tests/test_ampplus.js`, `AGENTS.md` §30.
+- Z-order probe script over all six `.amxd` (see above).
+- `node tests/test_ampplus_bugsweep.js` — expected RED on current HEAD
+  (run after this file lands).
+
+## Pass 2 review — KEEP
+
+**Kept 1 / dropped 0.**
+
+Bug 1 is a real multi-instance functional bug (shared scope ring corrupts
+meters/waveforms across Amp+ instances in one Set), not a nit or harness-only
+issue. Pass-2 checks:
+
+1. **Top-level patcher name** — `scripts/build_ampplus.py` emits
+   `buffer~ #0-ampscope @samps 32` and loadbang message `#0-ampscope`, wired to
+   gen (`prepend scope`) and face (`prepend set_scope`). Same class as devices
+   that already migrated: Live does not expand `#0` in a top-level device
+   patcher (AGENTS Multiband Split / Glitch / Delay+).
+2. **Face + gen bind that name** — `src/ampplus_ui.js` `set_scope`,
+   `src/ampplus_core.genexpr` `Buffer scope("ampscope")` rebound on loadbang;
+   collision is the patcher-side name, not the GenExpr default.
+3. **Red fails on HEAD** — `node tests/test_ampplus_bugsweep.js` →
+   AssertionError: got `buffer~ #0-ampscope @samps 32`, expected
+   `buffer~ ---ampscope @samps 32`.
+
+Red test left as-is (already asserts all six `.amxd` + build source). Production
+/ `src` / build untouched (pass 3 applies `---ampscope`). No new bugs found;
+pass-1 cleared items stand.
+
+### Commands run (pass 2)
+- Re-read build scope wiring; grep Amp+/AGENTS for ampscope / `#0` / `---`.
+- `node tests/test_ampplus_bugsweep.js` — RED (confirmed).
+- Host gate: `npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js` (in flight / next).
+
+## Pass 3 fix
+
+**Bug 1 fixed.** Renamed scope buffer `#0-ampscope` → `---ampscope` so each Amp+ instance gets its own ring (Live does not expand `#0` in a top-level M4L patcher).
+
+### Touchpoints
+- `scripts/build_ampplus.py` — `obj-msg-buf` loadbang message and `obj-scope` `buffer~` text (`#0-ampscope` → `---ampscope`).
+- Rebuilt all six devices: `devices/Amp+.amxd` plus Wave/Pulse/Tiles/Strip/Mono.
+- `AGENTS.md` §30 — contract updated to `buffer~ ---ampscope`.
+- GenExpr `Buffer scope("ampscope")` left as-is (rebound on loadbang via `scope ---ampscope`, same pattern as Glitch).
+
+### Host gate (green)
+`npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && node tests/test_ampplus_bugsweep.js` → typecheck ok, six devices built, `ampplus ok`, `ampplus bugsweep ok`.
+
+### Commit
+`ccb8f79` fix(ampplus): isolate scope buffer with ---ampscope (bugsweep pass3) on `bugsweep/ampplus-variants-pass1`; no merge to main.
+
+## Pass 4 review — APPROVED
+
+**Approved 1 / adjusted 0.**
+
+Bug 1 fix (`#0-ampscope` → `---ampscope`) is minimal, correct, and matches the AGENTS.md --- isolation precedent (Delay+/Glitch/Multiband Split). Review checks:
+
+1. **Production diff** — `scripts/build_ampplus.py` is a pure two-site rename (`obj-msg-buf` + `obj-scope`); no drive-by refactors.
+2. **AGENTS.md §30** — contract updated to `buffer~ ---ampscope`.
+3. **GenExpr intentional** — `Buffer scope("ampscope")` left as-is; rebound on loadbang via `scope ---ampscope` (same pattern as Glitch).
+4. **Tests not weakened** — `tests/test_ampplus_bugsweep.js` still requires `---ampscope` on all six `.amxd` + build source and still rejects `#0-ampscope`.
+
+### Host gate (green)
+`npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && node tests/test_ampplus_bugsweep.js` → typecheck ok, six devices built, `ampplus ok`, `ampplus bugsweep ok`.
+
+### Tip
+`d934a76` on `bugsweep/ampplus-variants-pass1` before this Pass-4 docs commit; no merge to main; worktree kept.

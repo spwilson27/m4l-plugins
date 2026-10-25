@@ -187,11 +187,11 @@ def build_patcher(look=0, variant=None):
         sc.newobj("obj-ui-amp", "prepend set_amp", 160, 120, 110),
         sc.newobj("obj-ui-look", "prepend set_look", 160, 150, 110),
         sc.newobj("obj-load", "loadbang", 20, 200, 60),
-        sc.message("obj-msg-buf", "#0-ampscope", 20, 230, 110),
+        sc.message("obj-msg-buf", "---ampscope", 20, 230, 110),
         sc.newobj("obj-prep-scope", "prepend scope", 20, 260, 110),
         sc.newobj("obj-prep-uiscope", "prepend set_scope", 20, 290, 120),
         sc.message("obj-msg-scopeon", "scopeon 1", 20, 320, 80),
-        sc.newobj("obj-scope", "buffer~ #0-ampscope @samps 32", 160, 200, 180, numoutlets=1, outlettype=["float"]),
+        sc.newobj("obj-scope", "buffer~ ---ampscope @samps 32", 160, 200, 180, numoutlets=1, outlettype=["float"]),
     ]
     for box in boxes:
         if box["box"]["id"] == "obj-neural":
