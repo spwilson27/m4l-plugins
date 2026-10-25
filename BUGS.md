@@ -5,6 +5,20 @@ Scope: `devices/Analyzer.amxd` — `scripts/build_analyzer.py`, `src/analyzer_ui
 Shared in-tree concern (same tap name): `scripts/build_oscilloscope.py`, `src/oscilloscope_ui.js`, `tests/test_oscilloscope.js`.
 Max / Live were NOT run in these passes (Node host gate only).
 
+## Pass 4 review — APPROVED
+
+Reviewed Pass 3 production/build/UI/docs + red tests against AGENTS.md precedents (Multiband Split `---mbsplitscope` / harness `#0-splitscope`; Delay+ `---dpxfer`; Glitch `---` names). Fix is minimal and correct; tests were strengthened (require `---analyzerscope`, reject literal `#0` in buffer/scope/setbuffer and `#0-` in v8ui/source), not weakened. Harness probes (`analyzer_probe.js`, `oscilloscope_probe.js`) and `run_*_audio_tests.py` remaining on `#0-analyzerscope` is intentional (mbsplit precedent). No follow-up code change.
+
+Host gate (Pass 4 re-run, tip `0c75da7`):
+```
+npm run -s typecheck
+python3 scripts/build_analyzer.py && node tests/test_analyzer.js
+python3 scripts/build_oscilloscope.py && node tests/test_oscilloscope.js
+→ green (analyzer: 185580 checks; oscilloscope: 163559 checks passed)
+```
+
+Not merged to main; worktree kept for coordinator.
+
 ## Pass 3 fix — Bug 1 closed (host gate green)
 
 Applied the Pass 1/2 fix direction: rename the shipped scope tap from literal `#0-analyzerscope` to M4L per-instance `---analyzerscope` in Analyzer and Oscilloscope production/build/UI (and AGENTS.md §28). Harness probes and `run_*_audio_tests.py` left on `#0-analyzerscope` (mbsplit precedent).
@@ -28,7 +42,7 @@ python3 scripts/build_oscilloscope.py && node tests/test_oscilloscope.js
 → green (analyzer: 185580 checks; oscilloscope: 163559 checks passed)
 ```
 
-Commit SHA for this Pass 3 fix will be recorded in the commit message on `bugsweep/analyzer-scope-pass1` (not merged to main; Pass 4 reviews next).
+Pass 3 fix commit: `0c75da7` on `bugsweep/analyzer-scope-pass1` (not merged to main).
 
 ## Pass 2 review — kept 1 / dropped 0
 
