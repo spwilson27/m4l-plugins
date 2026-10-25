@@ -98,3 +98,12 @@ npm run -s typecheck && python3 scripts/build_reverbplus.py && node tests/test_r
 ```
 
 Expect the two new tests above to FAIL on unmodified HEAD; all prior tests should still PASS.
+
+## Pass 2 review
+
+Date: 2026-10-25. Reviewed both Pass-1 reds against current `src/`; host gate re-run on this worktree. Production / `src/` not modified.
+
+- **Kept Bug 1** (`clear_ir` resurrection): confirmed. `clear_ir` never `outlet(4, "")`; Live replay via `dropfile` reloads the IR. Behavioral red stays; FAIL as expected.
+- **Kept Bug 2** (End K calib): confirmed. `kCand` is cleared only in the `!alive` block, not when an acceptance window fails. Structural red stays; FAIL as expected.
+- **Dropped:** none.
+- Host gate: `python3 scripts/build_reverbplus.py` OK; `node tests/test_reverbplus.js` → 29 passed, 2 failed (exactly the two reds); `node tests/test_reverbplus_face.js` → 20 passed.
