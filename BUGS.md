@@ -1,7 +1,8 @@
 # Amp+ core - pass 1 bug sweep (red tests only, no fixes)
 
-Worktree: /tmp/bugsweep/ampplus-core, branch bugsweep/ampplus-core-pass1, HEAD 66fea67.
+Worktree: /tmp/bugsweep/ampplus-core, branch bugsweep/ampplus-core-pass1.
 Unit: Amp+ core (src/ampplus_core.genexpr, src/ampplus_models.js, scripts/build_ampplus.py, face code as built at HEAD).
+Post-merge HEAD includes main's face redesign (d72ee17) via merge commit on this branch.
 
 ## Finding 1 - the Node genexpr mirror shares History across call sites, so the suite is blind to per-instance state bugs
 
@@ -10,6 +11,7 @@ Unit: Amp+ core (src/ampplus_core.genexpr, src/ampplus_models.js, scripts/build_
 - Consequence: the Node suite, the only fast check of the DSP functions, cannot detect any bug whose symptom is state leaking or priming across instances, and a test written naively against the mirror can assert behaviour the device does not have, and vice versa. Existing tests only ever exercise one instance at a time (the slew block and the biq block in test_ampplus.js), so nothing flags the gap.
 - Red tests: tests/test_ampplus_pass1.js. One: a second slew call site must prime to its own target (mirror returns about 40.04 instead of 80). Two: a fresh biq instance fed 0 must output 0 after another instance was driven with DC (mirror leaks the previous state). Both fail against the current mirror. The fix belongs to the mirror (per-call-site state), not to the genexpr, whose per-site semantics the VM audio suite already exercises.
 - Severity: test-harness defect, not a device DSP defect. Filed here because pass 1 covers the core and its tests, and this gap decides how much the green suite can be trusted for stateful DSP.
+- Re-confirmed after merging main (face redesign + standalone Amp+ Wave/Pulse/Tiles/Strip/Mono devices): red tests still fail the same way; baseline node tests/test_ampplus.js still prints ampplus ok.
 
 ## Investigated and cleared (no bug)
 
@@ -22,4 +24,4 @@ Unit: Amp+ core (src/ampplus_core.genexpr, src/ampplus_models.js, scripts/build_
 
 ## Environment note
 
-The main checkout (/Users/mrwilson/software/ableton) is at the same HEAD (66fea67) and carries an UNCOMMITTED face redesign (modified ampplus_looks.js, ampplus_ui.js, build_ampplus.py, test_ampplus.js, AGENTS.md, plus untracked standalone Amp+ Wave, Pulse, Tiles, Strip and Mono devices and scripts/vm_ampplus_livecheck.sh). Verified by direct diff: src/ampplus_core.genexpr and src/ampplus_models.js are byte-identical between the main checkout and this worktree, so the core findings above apply to the shipping core. Face and layout behaviour at HEAD is superseded by that redesign and was not filed against. Baseline before adding the red tests: node tests/test_ampplus.js prints ampplus ok.
+Merged main into this branch (ort) so the worktree now includes the committed Amp+ face redesign and the five standalone face devices. src/ampplus_core.genexpr and src/ampplus_models.js were unchanged by that merge; Finding 1 still applies to the shipping core. Host gate needs local npm install (typescript + terser); without node_modules, tsc and the amxd minify step fail. Baseline: node tests/test_ampplus.js prints ampplus ok. Pass 1 red: node tests/test_ampplus_pass1.js fails as documented.
