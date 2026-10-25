@@ -2649,6 +2649,31 @@ render(data["shaped"], data["freqs"], "after: smoothed harmonic lines", sys.argv
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// 9. Bug sweep Pass 1 — red tests (see BUGS.md; no fixes in this pass)
+// ---------------------------------------------------------------------------------------------
+function runBugSweepPass1() {
+    const ui = loadFace();
+    if (typeof ui.setbuffers === "function") ui.setbuffers("#0-eqpluscfg", "#0-eqplusspec", "#0-eqplusir");
+    const irPokes = () => ui.pokes.filter((p) => /eqplusir/.test(p.name)).length;
+    ui.set_phase_mode(2);
+    eq(ui.phaseMode, 2, "bug sweep: Linear Phase engages");
+    const linearBefore = irPokes();
+    ok(linearBefore > 0, "bug sweep: entering Linear Phase pokes a designed IR");
+    ui.set_tilt_eq(6);
+    near(ui.tiltEqDb, 6, 1e-9, "bug sweep: tilt_eq automation lands on the face");
+    ok(irPokes() > linearBefore, "bug sweep: set_tilt_eq redesigns the phase kernel in Linear Phase (stale IR: the gen convolves dry audio with the IR, so an automated Tilt EQ change is inaudible until an unrelated coeff update)");
+    ui.set_phase_mode(1);
+    eq(ui.phaseMode, 1, "bug sweep: Natural Phase engages");
+    const naturalBefore = irPokes();
+    ok(naturalBefore > linearBefore, "bug sweep: entering Natural Phase pokes a designed kernel");
+    ui.set_tilt_eq(-6);
+    near(ui.tiltEqDb, -6, 1e-9, "bug sweep: tilt_eq automation lands again");
+    ok(irPokes() > naturalBefore, "bug sweep: set_tilt_eq redesigns the correction kernel in Natural Phase");
+}
+
+runBugSweepPass1();
+
 runFace();
 
 console.log(`EQ+ tests passed (${checks} checks)`);
