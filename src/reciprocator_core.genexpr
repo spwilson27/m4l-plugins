@@ -171,8 +171,8 @@ History dryGH(0);
 History wetGH(1);
 History scaleH(1);
 
-Delay lookL(1024);
-Delay lookR(1024);
+Delay lookL(2048);
+Delay lookR(2048);
 
 sr = max(samplerate, 1);
 srChg = (sr != srHold) ? 1 : 0;
@@ -220,7 +220,7 @@ if (ceilChanged > 0.5) {
 	ceilDbHold = ceilDb;
 }
 if ((lookMs != lookMsHold) || (srChg > 0.5)) {
-	lookSampsH = clip(lookMs * 0.001 * sr, 0, 960);
+	lookSampsH = clip(lookMs * 0.001 * sr, 0, 1920);
 	lookMsHold = lookMs;
 }
 if (wetNow != wetHold) {
@@ -263,7 +263,7 @@ detL = env_detect(scL, atkCoef, relCoef, detNow);
 detR = env_detect(scR, atkCoef, relCoef, detNow);
 
 linkedEnv = max(detL, detR);
-linkAmt = 0.35 + 0.65 * detNow;
+linkAmt = 0.0 + 1.0 * detNow;
 envL = mix(detL, linkedEnv, linkAmt);
 envR = mix(detR, linkedEnv, linkAmt);
 envMax = max(envL, envR);
@@ -272,9 +272,9 @@ envMax = max(envL, envR);
 gateL = gate_smooth(envL, gateLin, relCoef, revMode);
 gateR = gate_smooth(envR, gateLin, relCoef, revMode);
 
-gateMix = (revMode > 0.5) ? 1.0 : clip(amtNow * 4.0, 0, 1);
-effGateL = mix(1.0, gateL, gateMix);
-effGateR = mix(1.0, gateR, gateMix);
+// Gate applies at every Amount (mirror + Gate help); no Amount fade.
+effGateL = gateL;
+effGateR = gateR;
 
 inAbs = max(abs(delInL), abs(delInR));
 isSilent = (inAbs < 1e-8 && envMax < 1e-8) || (effGateL < 1e-7 && effGateR < 1e-7);

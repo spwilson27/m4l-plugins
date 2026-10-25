@@ -344,6 +344,15 @@ function verifyAmxd(amxdFile, expectedWidth) {
     ui.onclick(40, ui.ceilLineY());
     assert.ok(Math.abs(ui.ceilingDb() + 12) < 0.6, "clicking the drawn ceiling line jumped -12 to " + ui.ceilingDb());
 
+    // The same keep-the-value invariant must hold over the whole Gate range (-72..-6 dB),
+    // including below -66 dB where the dB component of ampToVisual01 bottoms out (see BUGS.md bug 1).
+    ui.set_gate(-72);
+    ui.onclick(40, ui.gateLineY());
+    assert.ok(Math.abs(ui.gateDb() + 72) < 0.6, "clicking the drawn gate line jumped -72 to " + ui.gateDb());
+    ui.set_gate(-70);
+    ui.onclick(40, ui.gateLineY());
+    assert.ok(Math.abs(ui.gateDb() + 70) < 0.6, "clicking the drawn gate line jumped -70 to " + ui.gateDb());
+
     // Ceiling 0 dB is the top of the range. `Number(0) || -1` stored it as -1 dB.
     ui.set_ceiling(0);
     assert.strictEqual(ui.ceilingDb(), 0, "Ceiling 0 dB stays 0, got " + ui.ceilingDb());
@@ -375,6 +384,33 @@ function verifyAmxd(amxdFile, expectedWidth) {
     assert.strictEqual(nested.length, 0, `No return inside a block in GenExpr functions (${nested.join("; ")})`);
 }
 
+// verifyAmxd first so Bug 1 (gate-line click below -66 dB) is reachable before section 9 asserts.
 verifyAmxd("Reciprocator.amxd", 448.0);
+
+// 9. Bug-sweep pass 1 regressions (red on current code — see BUGS.md). Reviewed keep-all in pass 2.
+{
+    // Bug 2: Lookahead is documented as 0..10 ms, and Live runs up to 192 kHz, where 10 ms is
+    // 1920 samples. Both the Delay size and the ms-to-samples clip must be able to hold that,
+    // otherwise high sample rates silently get a shorter lookahead than the control promises.
+    const delayMatch = gen.match(/Delay lookL\((\d+)\)/);
+    assert.ok(delayMatch, "lookahead Delay declaration not found");
+    assert.ok(Number(delayMatch[1]) >= 1920, "lookahead Delay holds " + delayMatch[1] + " samples, less than 10 ms at 192 kHz (1920)");
+    const lookClipMatch = gen.match(/lookSampsH = clip\(lookMs \* 0\.001 \* sr, 0, (\d+)\)/);
+    assert.ok(lookClipMatch, "lookSamps clip not found");
+    assert.ok(Number(lookClipMatch[1]) >= 1920, "lookahead is clipped to " + lookClipMatch[1] + " samples, less than 10 ms at 192 kHz (1920)");
+
+    // Bug 3: the Detect control help describes 0% as dual-mono Peak and 100% as stereo-linked RMS,
+    // so the stereo link amount must run from 0 at Detect 0 to 1 at Detect 1 with no floor.
+    const linkMatch = gen.match(/linkAmt = ([0-9.]+) \+ ([0-9.]+) \* detNow/);
+    assert.ok(linkMatch, "linkAmt formula not found");
+    assert.strictEqual(parseFloat(linkMatch[1]), 0, "Detect 0% must be dual-mono (no stereo link), got a link floor of " + linkMatch[1]);
+    assert.strictEqual(parseFloat(linkMatch[1]) + parseFloat(linkMatch[2]), 1, "Detect 100% must be fully stereo-linked");
+
+    // Bug 4: the shared DSP mirror (computeRecipGain in reciprocator_config.js) applies the gate at
+    // every Amount, and the Gate parameter help says signals below Gate mute. The gen must not fade
+    // the gate out as Amount drops (at Amount 0 the mirror still mutes a below-Gate signal).
+    assert.ok(!gen.includes("gateMix"), "gen fades the gate with Amount (gateMix); the shared mirror and the Gate help apply the gate at every Amount");
+    assert.strictEqual(cfg.computeRecipGain(0.002, 0.0, -42, -1, 0), 0, "mirror contract: below-Gate signal is muted even at Amount 0");
+}
 
 console.log("test_reciprocator: ok");
