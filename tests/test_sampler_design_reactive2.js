@@ -19,17 +19,26 @@ const box = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-viz");
 const emitted = [];
 const sampleSpike = { at: 70000, v: 0.25, ch: 2 };   // the loaded sample's peak (channel 2, so all channels are read)
 const scopeData = new Float32Array(256);   // what the mocked #0-bsscope buffer returns
+const bufMem = {};
 const noop = () => {};
 const sb = {
     mgraphics: new Proxy({ size: [spec.max_width, 169] }, { get: (t, k) => (k in t ? t[k] : noop) }),
     outlet: (...a) => emitted.push(a),
     notifyclients: noop, arrayfromargs: (a) => Array.from(a), post: noop,
     Buffer: function (name) {
-        this.framecount = () => 96000; this.channelcount = () => 2; this.poke = noop;
+        if (!bufMem[name]) bufMem[name] = [];
+        const mem = bufMem[name];
+        this.framecount = () => 96000; this.channelcount = () => 2;
+        this.poke = (ch, start, arr) => {
+            const a = Array.isArray(arr) ? arr : [arr];
+            for (let i = 0; i < a.length; i++) mem[start + i] = a[i];
+        };
         this.peek = (c, s, l) => {
             if (name === "#0-bsscope") return scopeData.slice(s, s + l);
-            const a = new Float32Array(Math.max(1, l || 1));
-            if (name === "#0-bsamp") { for (let i = 0; i < a.length; i++) a[i] = 0.05; const k = sampleSpike.at - s; if (k >= 0 && k < a.length && c === sampleSpike.ch) a[k] = sampleSpike.v; }
+            const n = Math.max(1, l || 1);
+            const a = new Float32Array(n);
+            if (name === "#0-bsamp") { for (let i = 0; i < a.length; i++) a[i] = 0.05; const k = sampleSpike.at - s; if (k >= 0 && k < a.length && c === sampleSpike.ch) a[k] = sampleSpike.v; return a; }
+            for (let i = 0; i < n; i++) if (mem[s + i] != null) a[i] = mem[s + i];
             return a;
         };
     },
@@ -598,11 +607,17 @@ sb.setFoldMask(0b1011);
     }
     // When a voice is playing, modSourceSignal returns bounded live values in [-1..+1]
     sb.voiceAmpLvl[0] = 0.8; sb.liveModEnvVal = 0.5; sb.liveLfoVal = 0.6; sb.liveLfo2Val = 0.45; sb.lfoPhaseEst = 0.2;
+    sb.msegVoicePh[0] = 0.5; sb.slotScopeLvl[3] = 0.7;
     assert.strictEqual(sb.activeVoiceLevel(), 0.8, "voice playing -> activeVoiceLevel is 0.8");
     for (let c = 0; c < 5; c++) {
         const sig = sb.modSourceSignal(1, c);
         assert.ok(sig >= -1 && sig <= 1 && Math.abs(sig) > 0, `voice playing -> source ${c} signal ${sig} active`);
     }
+    assert.ok(sb.modSourceSignal(1, 4) > 0.9, "the MSEG column follows the curve, not LFO 2");
+    sb.setSlotKind(4, 0);
+    near(sb.modSourceSignal(1, 4), 0.7, 1e-6, "Env in slot 4 follows the slot envelope, not LFO 2");
+    sb.setSlotKind(4, 2);
+    sb.msegVoicePh[0] = -1;
     sb.voiceAmpLvl[0] = 0;
     sb.setFoldMask(sb.DEFAULT_FOLD);
 }
@@ -2041,5 +2056,81 @@ sb.setFoldMask(sb.DEFAULT_FOLD);
     assert.ok(sb.lfoDot.x < xAtHalf, "phase 0 sits left of mid-cycle");
     sb.envPage = 1;
     sb.liveLfoPh = 0;
+}
+
+// Slot 4's MSEG and an Env swapped into that slot both reach the modulator buffers,
+// and a poke that fails once is tried again instead of being cached as done.
+{
+    if (typeof sb.set_mod_global_amt === "function") sb.set_mod_global_amt(100);
+    sb.matRows = { 1: ["filt_res"], 2: [], 3: [], 4: [] };
+    sb.matDepth = { "1:0:4": 100 };
+    sb.matPolar = {};
+    sb.matPackedSig = "";
+    sb.slotPoked = "";
+    sb.msegDirty[4] = 1;
+    sb.slotTypes = [0, 0, 0, 0, 2];
+    sb.flushModMap();
+    const mod = bufMem["#0-bsmod"];
+    const slot = bufMem["#0-bsslot"];
+    const wave = bufMem["#0-bsmseg"];
+    assert.strictEqual(mod[0], 1, "the matrix route count is in the mod buffer");
+    assert.strictEqual(mod[1], 301, "filt_res is packed as global 1");
+    assert.strictEqual(mod[2], 4, "the MSEG column is source 4");
+    assert.ok(Math.abs(mod[3] - 1) < 1e-6, "depth 100 is full scale");
+    assert.strictEqual(slot[3], 2, "slot 4 type MSEG is written");
+    assert.ok(wave[3 * 1024 + 512] > 0.9, "slot 4's waveform peak is past the first chunk");
+    sb.setSlotKind(4, 0);
+    assert.strictEqual(sb.slotTypes[4], 1, "Env on slot 4 is type 1");
+    assert.strictEqual(slot[3], 1, "the slot buffer follows the Env pill");
+    assert.ok(slot[51] > 0.9, "the envelope peak is in the slot buffer");
+
+    const Real = sb.Buffer;
+    let fails = 1;
+    sb.Buffer = function (name) {
+        const b = new Real(name);
+        const poke = b.poke;
+        b.poke = function () {
+            if (name === "#0-bsmod" && fails > 0) { fails -= 1; throw new Error("buffer not ready"); }
+            return poke.apply(this, arguments);
+        };
+        return b;
+    };
+    bufMem["#0-bsmod"] = [];
+    sb.matPackedSig = "";
+    sb.flushModMap();
+    assert.strictEqual(bufMem["#0-bsmod"][0], 1, "one failed chunk poke falls back to single samples");
+    assert.strictEqual(bufMem["#0-bsmod"][2], 4, "the fallback route is still source 4");
+    fails = 1000;
+    bufMem["#0-bsmod"] = [];
+    sb.matPackedSig = "";
+    sb.flushModMap();
+    assert.strictEqual(bufMem["#0-bsmod"].length, 0, "a poke that keeps failing is not treated as saved");
+    assert.strictEqual(sb.matPackedSig, "", "the route stays dirty after a failed poke");
+    fails = 0;
+    sb.flushModMap();
+    assert.strictEqual(bufMem["#0-bsmod"][0], 1, "the next flush writes the route");
+    assert.strictEqual(bufMem["#0-bsmod"][2], 4, "the retried route is still source 4");
+    sb.Buffer = Real;
+
+    const region = sb.faceRegion;
+    sb.faceRegion = "side";
+    bufMem["#0-bsmod"] = [];
+    sb.matPackedSig = "";
+    sb.flushModMap();
+    assert.strictEqual(bufMem["#0-bsmod"].length, 0, "the side face does not wipe the mod buffer");
+    sb.faceRegion = region;
+    sb.slotTypes[4] = 2;
+    sb.msegDirty[4] = 1;
+    sb.setmodbufs("#0-bsmod-real", "#0-bsmseg-real", "#0-bsslot-real");
+    assert.strictEqual(bufMem["#0-bsmod-real"][0], 1, "setmodbufs writes the route into the named buffer");
+    assert.ok(bufMem["#0-bsmseg-real"][3 * 1024 + 512] > 0.9, "setmodbufs writes the waveform into the named buffer");
+    assert.strictEqual(bufMem["#0-bsslot-real"][3], 2, "setmodbufs writes slot 4's type into the named buffer");
+    const modMsg = patcher.boxes.map((b) => b.box).find((b) => b.id === "obj-msg-modbuf");
+    assert.ok(modMsg && String(modMsg.text).indexOf("setmodbufs #0-bsmod") === 0, "the device tells the face the real buffer names");
+    sb.setSlotKind(4, 2);
+    sb.matRows = sb.modDefaultRows();
+    sb.matDepth = {};
+    sb.matPackedSig = "";
+    sb.slotPoked = "";
 }
 console.log("reactive2 design: folds, viewer, envelope dots, filter voices, handles, sub oscillator and parameter reach ok");

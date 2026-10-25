@@ -102,6 +102,7 @@ for (var vj = 0; vj < 16; vj++) {
 // MSEG playhead per voice (0..1 along the curve, -1 silent). Written by the gen at scope 208..223.
 var msegVoicePh = [];
 for (var vk = 0; vk < 16; vk++) msegVoicePh.push(-1);
+var slotScopeLvl = [0, 0, 0, 0];
 
 // Voice allocator instance
 var voiceAlloc = createVoiceAllocator(16);
@@ -533,9 +534,12 @@ function pollTelemetryScope() {
         }
     } catch (_) {}
     try {
-        var mph = new Buffer(scopeBufName).peek(1, 208, 16);
+        var mph = new Buffer(scopeBufName).peek(1, 208, 20);
         if (mph && mph.length >= 16) {
             for (var mp = 0; mp < 16; mp++) msegVoicePh[mp] = mph[mp];
+        }
+        if (mph && mph.length >= 20) {
+            for (var sl = 0; sl < 4; sl++) slotScopeLvl[sl] = mph[16 + sl];
         }
     } catch (_) {}
     teleSettled = teleStateIdle() ? 1 : 0;

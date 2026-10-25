@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render one preview per Amp+ face. The shipped device stays on Head."""
+"""Render one preview per Amp+ face, using each standalone variant build so the Look menu and baked lock match what users actually load."""
 
 import os
 import shutil
@@ -17,8 +17,9 @@ def main():
     for index in range(5):
         folder = tempfile.mkdtemp()
         path = os.path.join(folder, "Amp+.amxd")
-        sc.write_amxd(build_ampplus.build_patcher(index), path)
-        name = build_ampplus.look_layout(index)["name"].lower()
+        name_cap = build_ampplus.look_layout(index)["name"]
+        sc.write_amxd(build_ampplus.build_patcher(index, variant=name_cap), path)
+        name = name_cap.lower()
         paths.append(render_preview.render_device(path, out_suffix="_" + name))
         shutil.rmtree(folder)
     for path in paths:

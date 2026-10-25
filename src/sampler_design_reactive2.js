@@ -2408,7 +2408,63 @@ function msegAt(pts, x) {
     return pts[pts.length - 1].y;
 }
 
+// Only the main face writes the shared modulator buffers. The side and inspector
+// canvases run this same script with their own empty matrix and would wipe the route.
+function modWritesDsp() {
+    return typeof faceRegion === "undefined" || faceRegion === "main";
+}
+
+// The patcher sends these. A literal "#0-…" can name a different buffer than the
+// buffer~ object once Max substitutes #0, which is how the voice buffer is addressed.
+var modBufName = "#0-bsmod";
+var msegBufName = "#0-bsmseg";
+var slotBufName = "#0-bsslot";
+
+function setmodbufs(modN, msegN, slotN) {
+    if (modN) modBufName = String(modN);
+    if (msegN) msegBufName = String(msegN);
+    if (slotN) slotBufName = String(slotN);
+    if (typeof modRepoke === "function") modRepoke();
+}
+
+function pokeMatches(buf, start, samples) {
+    var probe = 0;
+    var p;
+    for (p = 1; p < samples.length; p++) {
+        if (Math.abs(samples[p]) > Math.abs(samples[probe])) probe = p;
+    }
+    var got = buf.peek(1, start + probe, 1);
+    var gv = (typeof got === "number") ? got : (got && got.length ? got[0] : NaN);
+    return Math.abs((Number(gv) || 0) - samples[probe]) < 0.02;
+}
+
+// Chunked poke, then one sample at a time if the chunk did not read back.
+// Success is a peek of the largest sample, so a failed write is not cached.
+function pokeFloats(name, start, samples) {
+    if (!samples || !samples.length || typeof Buffer === "undefined" || !name) return false;
+    var buf;
+    try { buf = new Buffer(name); } catch (err) { return false; }
+    var i = 0;
+    var chunked = false;
+    try {
+        while (i < samples.length) {
+            var n = Math.min(128, samples.length - i);
+            buf.poke(1, start + i, samples.slice(i, i + n));
+            i += n;
+        }
+        chunked = pokeMatches(buf, start, samples);
+    } catch (err2) { chunked = false; }
+    if (chunked) return true;
+    try {
+        for (i = 0; i < samples.length; i++) buf.poke(1, start + i, samples[i]);
+        return pokeMatches(buf, start, samples);
+    } catch (err3) {
+        return false;
+    }
+}
+
 function renderMseg(slot) {
+    if (!modWritesDsp()) return;
     var pts = msegPoints(slot);
     var samples = [];
     var shift = (msegPhase[slot] || 0) / 100;
@@ -2427,9 +2483,7 @@ function renderMseg(slot) {
             samples[i] = acc;
         }
     }
-    msegDirty[slot] = 0;
-    if (typeof Buffer === "undefined") return;
-    try { new Buffer("#0-bsmseg").poke(1, (slot - 1) * 1024, samples); } catch (_) {}
+    if (pokeFloats(msegBufName, (slot - 1) * 1024, samples)) msegDirty[slot] = 0;
 }
 
 function pokeSlots() {
@@ -2469,14 +2523,13 @@ function pokeSlots() {
     for (i = 1; i <= 4; i++) floats.push(msegRev[i] ? 1 : 0);
     var viewSi = (envPage >= 1 && envPage <= 4) ? envPage - 1 : 0;
     floats.push(viewSi, 0, 0, 0);
+    if (!modWritesDsp()) return;
     var sig = floats.join(",");
     var dirty = false;
     for (i = 1; i <= 4; i++) if (msegDirty[i]) dirty = true;
     if (sig === slotPoked && !dirty) return;
+    if (!pokeFloats(slotBufName, 0, floats)) return;
     slotPoked = sig;
-    if (typeof Buffer !== "undefined") {
-        try { new Buffer("#0-bsslot").poke(1, 0, floats); } catch (_) {}
-    }
     for (i = 1; i <= 4; i++) if (msegDirty[i]) renderMseg(i);
 }
 
@@ -3201,6 +3254,26 @@ function paintCrossSynthTable(sx, bx, by, bw, bh) {
     zone("value", bx + 162, gyFoot - 10, 82, 14, { key: "xs_depth", norm: true });
 }
 
+function slotColumnSignal(page) {
+    var kind = (typeof slotKind === "function") ? slotKind(page) : 1;
+    if (kind === 2) {
+        var ph = -1, best = 0.002, vi;
+        if (typeof voiceAmpLvl !== "undefined" && typeof msegVoicePh !== "undefined") {
+            for (vi = 0; vi < 16; vi++) {
+                if (voiceAmpLvl[vi] > best && msegVoicePh[vi] >= 0) { best = voiceAmpLvl[vi]; ph = msegVoicePh[vi]; }
+            }
+        }
+        if (ph < 0) return 0;
+        return msegAt(msegPoints(page), ph);
+    }
+    if (kind === 0) {
+        var lvl = (typeof slotScopeLvl !== "undefined" && slotScopeLvl) ? slotScopeLvl[page - 1] : 0;
+        return clamp01(lvl || 0);
+    }
+    if (page === 3) return Math.max(-1, Math.min(1, liveLfoVal * (paramValue("lfo1_amount") * 0.01)));
+    return Math.max(-1, Math.min(1, liveLfo2Val * (paramValue("lfo2_amount") * 0.01)));
+}
+
 function modSourceSignal(mode, col) {
     // Returns the strictly live modulation source output in [-1..+1] (or [0..1] for unipolar envelopes).
     // Returns 0 when no voice is playing so the horizontal modulation-sum bar under target names is empty at rest.
@@ -3210,8 +3283,7 @@ function modSourceSignal(mode, col) {
         if (col === 0) return vLvl;
         if (col === 1) return clamp01(liveModEnvVal);
         if (col === 2) return clamp01(liveModEnvVal);
-        if (col === 3) return Math.max(-1, Math.min(1, liveLfoVal * (paramValue("lfo1_amount") * 0.01)));
-        if (col === 4) return Math.max(-1, Math.min(1, liveLfo2Val * (paramValue("lfo2_amount") * 0.01)));
+        if (col >= 3) return slotColumnSignal(col);
     }
     return 0;
 }
@@ -3391,14 +3463,30 @@ function removeMatRow(mode, row) {
 
 function flushModMap() {
     ensureMatRows();
-    if (typeof modPack !== "function") return;
+    if (typeof modPack !== "function" || !modWritesDsp()) return;
     var floats = modPack(matRows, matDepth, paramValue("mod_global_amt"), matPolar);
     pokeSlots();
     var sig = floats.join(",");
     if (sig === matPackedSig) return;
-    matPackedSig = sig;
-    if (typeof Buffer === "undefined") return;
-    try { new Buffer("#0-bsmod").poke(1, 0, floats); } catch (_) {}
+    if (pokeFloats(modBufName, 0, floats)) matPackedSig = sig;
+}
+
+// The gen is created after the first paints, and it only reads these buffers once it is bound.
+function modRepoke() {
+    if (!modWritesDsp()) return;
+    slotPoked = "";
+    matPackedSig = "";
+    for (var i = 1; i <= 4; i++) msegDirty[i] = 1;
+    flushModMap();
+}
+
+var sharedDspConfirmMod = (typeof dspConfirm === "function") ? dspConfirm : null;
+if (sharedDspConfirmMod) {
+    dspConfirm = function () {
+        var wasReady = dspReady;
+        sharedDspConfirmMod();
+        if (!wasReady && dspReady) modRepoke();
+    };
 }
 
 function matRowLabel(key) {

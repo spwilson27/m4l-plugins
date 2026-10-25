@@ -70,6 +70,10 @@ var sampName = "";
 var voicesName = "";
 var scopeName = "";
 var pitchName = "";
+var modJsMap = -1;
+var modJsCode = -1;
+var modJsWave = -1;
+var modJsTy = -1;
 var trigSeq = 0;
 var resultPath = "/tmp/sampler_audio.txt";
 
@@ -96,14 +100,76 @@ function seedPitch() {
     new Buffer(pitchName).poke(1, 0, vals);
 }
 
-function setbuffers(sName, vName, scName, pName) {
+function pokeChunk(buf, start, samples) {
+    var i = 0;
+    while (i < samples.length) {
+        var n = Math.min(128, samples.length - i);
+        buf.poke(1, start + i, samples.slice(i, i + n));
+        i += n;
+    }
+}
+
+function peek1(buf, index) {
+    var v = buf.peek(1, index, 1);
+    if (typeof v === "number") return v;
+    if (v && v.length) return Number(v[0]);
+    return -1;
+}
+
+// mod=off leaves the route count at 0. mod=mseg fills slot 4's waveform with 1.
+// mod=env makes slot 4 an envelope held at 1. Both route source 4 onto filt_res.
+function seedMod(modName, msegName, slotName) {
+    var kind = String(opt.mod || "off");
+    var wave = new Array(1024);
+    var slot = new Array(100);
+    var i;
+    for (i = 0; i < 1024; i++) wave[i] = 1;
+    for (i = 0; i < 100; i++) slot[i] = 0;
+    if (kind === "env") {
+        slot[3] = 1;
+        slot[15] = 1;
+        slot[19] = 5000;
+        slot[23] = 1;
+        slot[27] = 200;
+        slot[51] = 1;
+    } else {
+        slot[3] = 2;
+        slot[7] = 1;
+        slot[79] = 1;
+        slot[87] = 1;
+    }
+    var route = (kind === "off") ? [0] : [1, 301, 4, 1, 0, 0.95, 0];
+    pokeChunk(new Buffer(msegName), 3 * 1024, wave);
+    pokeChunk(new Buffer(slotName), 0, slot);
+    pokeChunk(new Buffer(modName), 0, route);
+    modJsMap = peek1(new Buffer(modName), 0);
+    modJsCode = peek1(new Buffer(modName), 1);
+    modJsWave = peek1(new Buffer(msegName), 3 * 1024 + 512);
+    modJsTy = peek1(new Buffer(slotName), 3);
+}
+
+function setbuffers(sName, vName, scName, pName, modName, msegName, slotName) {
     sampName = String(sName || "");
     voicesName = String(vName || "");
     scopeName = String(scName || "");
     pitchName = String(pName || "");
     seedSample();
     seedPitch();
+    if (modName) seedMod(String(modName), String(msegName), String(slotName));
     if (opt.start === "live") { trigSeq += 1; seedVoices(); }
+}
+
+function modReport() {
+    var txt = "";
+    if (scopeName) {
+        var c = [];
+        try { c = new Buffer(scopeName).peek(1, 228, 6) || []; } catch (e) { c = []; }
+        if (typeof c === "number") c = [c];
+        var keys = ["mxRoutes", "mxSig", "mxRes", "mxMap", "mxTy", "mxWave"];
+        for (var i = 0; i < keys.length; i++) txt += keys[i] + " " + (c[i] === undefined ? -1 : c[i]) + "\n";
+    }
+    if (opt.mod) txt += "jsMap " + modJsMap + "\njsCode " + modJsCode + "\njsWave " + modJsWave + "\njsTy " + modJsTy + "\n";
+    return txt;
 }
 
 // Sent by the harness `events` list at the start of the measured window.
@@ -593,7 +659,8 @@ function analyze(durMs) {
         dbgScopeReport() +
         seqReport(left, right, sr) +
         snapReport() +
-        markerReport(left, right, sr)
+        markerReport(left, right, sr) +
+        modReport()
     );
     report.close();
     if (opt.raw) {

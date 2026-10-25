@@ -42,7 +42,7 @@ case "${1:-}" in
     sync_repo ;;
   audio)
     # SAMPLER_CASE / SAMPLER_PAN_ONLY on the host are forwarded. Unset runs the full suite.
-    sync_repo && "${SSH[@]}" "cd ~/ableton && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
+    sync_repo && "${SSH[@]}" "cd ~/ableton && SAMPLER_CASE=$(printf '%q' "${SAMPLER_CASE:-}") SAMPLER_PAN_ONLY=$(printf '%q' "${SAMPLER_PAN_ONLY:-}") SAMPLER_MX_ONLY=$(printf '%q' "${SAMPLER_MX_ONLY:-}") /usr/bin/python3 scripts/run_sampler_audio_tests.py" ;;
   drag)
     # The helper is an AppKit window. ssh is a background session and NSPanel init never returns there,
     # so the test runs as the console user (Aqua), same password as the VM login.

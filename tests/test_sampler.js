@@ -188,7 +188,15 @@ assert.ok(/isSlice\s*=/.test(gen), "gen derives isSlice");
 assert.ok(gen.includes("uCount = int(clip(round(unisonCount), 1, 8));"), "Unison count clamps to 1..8");
 assert.ok(gen.includes("for (u = 0; u < uCount; u += 1)"), "Unison loops stop at the active sub-voice count");
 assert.strictEqual((gen.match(/= unison_spread\(/g) || []).length, 1, "unison_spread is inlined once");
-assert.ok(gen.includes("Data prm(137);"), "prm grew so oscillator pan can use index 136");
+assert.ok(gen.includes("Data prm(139);"), "prm grew so wavetable norm can use index 138");
+assert.ok(gen.includes("poke(prm, wt1_norm, 137);"), "wt1 norm is prm 137");
+assert.ok(gen.includes("poke(prm, wt2_norm, 138);"), "wt2 norm is prm 138");
+assert.ok(gen.includes("wt1NGn = peek(prm, 137);"), "voice reads wt1 norm from prm");
+assert.ok(gen.includes("wt2NGn = peek(prm, 138);"), "voice reads wt2 norm from prm");
+{
+    const beforeParams = gen.slice(0, gen.indexOf("\nParam ")).replace(/\/\/[^\n]*/g, "");
+    assert.ok(!/\bwt1_norm\b/.test(beforeParams) && !/\bwt2_norm\b/.test(beforeParams), "wavetable norm is not named inside helpers declared before Param");
+}
 assert.ok(gen.includes("Param osc1_pan(0, min=-1, max=1);"), "osc1 pan param");
 assert.ok(gen.includes("Param osc2_pan(0, min=-1, max=1);"), "osc2 pan param");
 assert.ok(gen.includes("Param sub_pan(0, min=-1, max=1);"), "sub pan param");

@@ -15,6 +15,7 @@ Environment:
                           SAMPLER_SPF_ONLY / SAMPLER_RPF_ONLY / SAMPLER_TEL_ONLY
   SAMPLER_SG_ONLY=1       with SAMPLER_CASE='^sg_': the Sample Gain (samp_gain) cases and checks
   SAMPLER_PAN_ONLY=1      with SAMPLER_CASE='^(pan_|uni_)': oscillator pan, unison width and detune checks
+  SAMPLER_MX_ONLY=1       with SAMPLER_CASE='^mx_': slot-4 MSEG / Env routed to filter resonance
   SAMPLER_ES_ONLY=1       with SAMPLER_CASE='^es_': envelope slope (atk_slope ... mrel_slope) cases and checks; es_null prints
                           "ES_NULL chk=.. rms=.. peak=.." (run it with SAMPLER_GEN=<old core> to compare: bit-identical at slope 0)
   SAMPLER_TV_ONLY=1       with SAMPLER_CASE='^tv_': per-voice envelope / filter telemetry cases (scope 128..207)
@@ -78,12 +79,26 @@ def device_patch(case, gen_code):
     """Device-specific boxes for the shared scaffold (scripts/max_harness.py)."""
     name = case["name"]
     chans = 1 if name == "mono_sample" else 2
+    bind = ("samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope"
+            + ("" if case.get("nopitchbind") else ", pitch #0-bspitch"))
+    setbuf = "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch"
+    extra = []
+    if case.get("mod"):
+        bind += ", modmap #0-bsmod, msegw #0-bsmseg, slbuf #0-bsslot"
+        setbuf += " #0-bsmod #0-bsmseg #0-bsslot"
+        extra = [
+            mh.box("obj-mod", "buffer~ #0-bsmod @samps 289", 540, 280, 220,
+                   numoutlets=2, outlettype=["float", "bang"]),
+            mh.box("obj-msegw", "buffer~ #0-bsmseg @samps 4096", 540, 310, 230,
+                   numoutlets=2, outlettype=["float", "bang"]),
+            mh.box("obj-slot", "buffer~ #0-bsslot @samps 128", 540, 340, 220,
+                   numoutlets=2, outlettype=["float", "bang"]),
+        ]
     boxes = [
         mh.msg("obj-params", case["params"], 200, 40, 760),
-        mh.msg("obj-setbuf", "setbuffers #0-bsamp #0-bsvoices #0-bsscope #0-bspitch", 200, 70, 290),
+        mh.msg("obj-setbuf", setbuf, 200, 70, 420),
         # The pitch curve (Analyzed Root Key) is bound like the device does; a "nopitchbind" case leaves it out.
-        mh.msg("obj-bind", "samp #0-bsamp, vdata #0-bsvoices, scope #0-bsscope"
-               + ("" if case.get("nopitchbind") else ", pitch #0-bspitch"), 200, 100, 320),
+        mh.msg("obj-bind", bind, 200, 100, 640),
         mh.box("obj-samp", f"buffer~ #0-bsamp @samps 12000 {chans}", 540, 70, 225,
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-voices", "buffer~ #0-bsvoices @samps 128", 540, 100, 220,
@@ -94,7 +109,7 @@ def device_patch(case, gen_code):
                numoutlets=2, outlettype=["float", "bang"]),
         mh.box("obj-order", "t b b b", 200, 10, 60, numoutlets=3, outlettype=["bang", "bang", "bang"]),
         mh.gen_box("obj-gen", gen_code, 200, 215),
-    ]
+    ] + extra
     lines = [
         # Fixed order (right to left): bind buffers, then params, then seed the sample.
         mh.line("obj-load", 0, "obj-order", 0),
@@ -999,6 +1014,40 @@ add("uni_wide", P("mode 0, unison_voices 4, unison_detune 0.15, unison_width 1")
 add("uni_flat", P("mode 0, unison_voices 4, unison_detune 0, unison_width 0"), 500, opts=S48)
 add("uni_det", P("mode 0, unison_voices 4, unison_detune 0.85, unison_width 0"), 500, opts=S48)
 
+# Slot 4 -> filt_res. Bandpass at the 8th harmonic: full resonance (k near 0.16) is much quieter
+# than the knob's 0.05. The probe pokes the same buffers the face writes.
+MX = ("mode 0, loop_mode 1, root_note 57, unison_voices 1, unison_width 0, unison_detune 0, "
+      "sus_lvl 1, atk_ms 1, dec_ms 10000, rel_ms 50, out_gain 0, vel_sens 0, "
+      "filt_on 1, filt_type 1, filt_cutoff 1760, filt_res 0.05, filt_drive 0, "
+      "lfo_filt 0, filt_env_amt 0, lfo2_amount 1, lfo2_rate 1")
+add("mx_off", MX, 400, mod=True, opts="src=rich48 notes=57 mod=off")
+add("mx_mseg", MX, 400, mod=True, opts="src=rich48 notes=57 mod=mseg")
+add("mx_env", MX, 400, mod=True, opts="src=rich48 notes=57 mod=env")
+
+
+def run_mx_checks(results):
+    off, mseg, env = results["mx_off"], results["mx_mseg"], results["mx_env"]
+    check(off.get("jsMap", -1) == 0, f"mx_off probe route count {off.get('jsMap')}")
+    check(mseg.get("jsMap", -1) == 1 and mseg.get("jsCode", -1) > 300,
+          f"mx_mseg probe route did not land (map={mseg.get('jsMap')} code={mseg.get('jsCode')})")
+    check(mseg.get("jsWave", -1) > 0.9 and mseg.get("jsTy", -1) > 1.5,
+          f"mx_mseg probe waveform/type (wave={mseg.get('jsWave')} ty={mseg.get('jsTy')})")
+    check(env.get("jsTy", -1) > 0.5 and env.get("jsTy", -1) < 1.5,
+          f"mx_env probe type {env.get('jsTy')}")
+    check(off.get("mxMap", -1) < 0.5 and off.get("mxRes", 1) < 0.2,
+          f"mx_off gen still modulated (map={off.get('mxMap')} res={off.get('mxRes')} sig={off.get('mxSig')})")
+    check(mseg.get("mxMap", 0) > 0.5 and mseg.get("mxTy", 0) > 1.5 and mseg.get("mxWave", 0) > 0.9,
+          f"mx_mseg gen did not see the buffers (map={mseg.get('mxMap')} ty={mseg.get('mxTy')} wave={mseg.get('mxWave')})")
+    check(mseg.get("mxSig", 0) > 0.5 and mseg.get("mxRes", 0) > 0.7,
+          f"mx_mseg did not reach resonance (sig={mseg.get('mxSig')} res={mseg.get('mxRes')} routes={mseg.get('mxRoutes')} g1={mseg.get('mxG1')} code={mseg.get('mxCode')} off={mseg.get('mxOff')} sig2={mseg.get('mxSig2')})")
+    check(0.5 < env.get("mxTy", 0) < 1.5 and env.get("mxSig", 0) > 0.5 and env.get("mxRes", 0) > 0.7,
+          f"mx_env did not reach resonance (ty={env.get('mxTy')} sig={env.get('mxSig')} res={env.get('mxRes')})")
+    check(off["rms"] > 0.01, f"mx_off bandpass was silent (rms={off['rms']})")
+    check(off["rms"] > mseg["rms"] * 1.8,
+          f"MSEG resonance did not change the bandpass (off={off['rms']:.4f} mseg={mseg['rms']:.4f} res={mseg.get('mxRes')})")
+    check(off["rms"] > env["rms"] * 1.8,
+          f"Env resonance did not change the bandpass (off={off['rms']:.4f} env={env['rms']:.4f} res={env.get('mxRes')})")
+
 
 def run_with_retry(gen_code, case):
     """One render per case. The harness serialises Max machine-wide, and a missing or invalid result is a
@@ -1185,6 +1234,13 @@ def main():
             print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
             raise SystemExit(1)
         print("Pan and unison checks passed.")
+        return
+    if only and os.environ.get("SAMPLER_MX_ONLY"):
+        run_mx_checks(results)
+        if FAILS:
+            print(f"{len(FAILS)} sampler audio assertion(s) FAILED")
+            raise SystemExit(1)
+        print("Slot modulation checks passed.")
         return
     if only:
         print("Partial sampler audio run; cross-case checks skipped.")

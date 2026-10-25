@@ -1,5 +1,8 @@
-// Amp+ faces. AMP_ROLE is "hit" (the click target) or "bg" (the drawing).
-// The tolex, cloth, cones and lamps are the picture of the amp. Chrome comes from the Live theme.
+// Amp+ faces, redesigned: Wave, Pulse, Tiles, Strip, Mono. AMP_ROLE is "hit"
+// (the click target) or "bg" (the drawing). No amp pictures: every face is a
+// level instrument built from the scope buffer the gen fills — slot 0 is the
+// output envelope, slot 1 the instantaneous peak, slots 2..25 a 24-sample
+// waveform ring (see src/ampplus_core.genexpr).
 mgraphics.init();
 mgraphics.relative_coords = 0;
 mgraphics.autofill = 0;
@@ -9,6 +12,7 @@ var AMP_ROLE = (typeof AMP_ROLE === "undefined") ? "bg" : AMP_ROLE;
 
 var ampIndex = 0;
 var lookIndex = 0;
+var ampLookLock = -1;
 var modelState = 1;
 var modelError = "";
 var cabOn = 1;
@@ -17,35 +21,14 @@ var micKind = 0;
 var micPos = 0;
 var scopeName = "";
 var dispLevel = (typeof Task === "undefined") ? 0.62 : 0;
+var ampPeak = 0;
+var ampWave = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 var ampMeterTask = null;
 var ampThemeTask = null;
 
 var AMP_PANELS = [["obj-panel-amp", "live_desktop"], ["obj-panel-cab", "live_desktop"], ["obj-panel-body", "live_surface_bg"]];
 var TAU = 6.283185307179586;
-
-var TOLEX = [
-    [0.62, 0.48, 0.28],
-    [0.42, 0.14, 0.12],
-    [0.14, 0.15, 0.18],
-    [0.11, 0.11, 0.12],
-    [0.52, 0.40, 0.26],
-    [0.09, 0.09, 0.10],
-    [0.12, 0.17, 0.28]
-];
-var GRILLE = [
-    [0.30, 0.22, 0.13],
-    [0.22, 0.08, 0.07],
-    [0.32, 0.26, 0.16],
-    [0.22, 0.16, 0.12],
-    [0.24, 0.17, 0.12],
-    [0.26, 0.07, 0.06],
-    [0.08, 0.12, 0.20]
-];
-
-function inkFor(rgb) {
-    var lum = 0.3 * rgb[0] + 0.59 * rgb[1] + 0.11 * rgb[2];
-    return lum > 0.45 ? [0.14, 0.10, 0.06, 1] : [0.94, 0.91, 0.84, 1];
-}
+var AMP_CABS = ["1x12", "2x12", "4x10", "4x12", "1x15", "8x10"];
 
 function ampHost() {
     return (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
@@ -84,6 +67,7 @@ function set_amp(v) {
 
 function set_look(v) {
     lookIndex = clampIndex(v, ampAllLooks().length);
+    if (ampLookLock >= 0) lookIndex = ampLookLock;
     if (AMP_ROLE === "bg") applyLook(lookIndex);
     mgraphics.redraw();
 }
@@ -121,8 +105,16 @@ function pullMeter() {
     var env = 0;
     try {
         var buf = new Buffer(scopeName);
-        var raw = buf.peek(1, 0, 1);
-        env = (typeof raw === "number") ? raw : ((raw && raw.length) ? raw[0] : 0);
+        var raw = buf.peek(1, 0, 26);
+        if (raw && raw.length >= 26) {
+            env = Number(raw[0]) || 0;
+            var peak = ampLevelFromEnv(Number(raw[1]) || 0);
+            ampPeak = Math.max(peak, ampPeak * 0.92);
+            var i;
+            for (i = 0; i < 24; i++) ampWave[i] = Number(raw[2 + i]) || 0;
+        } else {
+            env = (typeof raw === "number") ? raw : ((raw && raw.length) ? raw[0] : 0);
+        }
     } catch (err) { return; }
     var target = ampLevelFromEnv(env);
     var next = dispLevel + (target - dispLevel) * 0.45;
@@ -201,41 +193,6 @@ function drawJewel(x, y, r) {
     mgraphics.fill();
 }
 
-function drawHead(x, y, w, h) {
-    var body = TOLEX[ampIndex] || TOLEX[0];
-    var cloth = GRILLE[ampIndex] || GRILLE[0];
-    var fg = inkFor(body);
-    var model = AMP_MODELS[ampIndex] || AMP_MODELS[0];
-    fillBox(x, y, w, h, body, 4);
-    var gw = w - 40;
-    var gh = h - 22;
-    var clothCol = sptMix(cloth, [1, 0.92, 0.7, 1], dispLevel * 0.28);
-    fillBox(x + 7, y + 6, gw, gh, clothCol, 2);
-    mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.18 + dispLevel * 0.45);
-    mgraphics.set_line_width(1);
-    var row;
-    for (row = 1; row <= 5; row++) {
-        var ly = y + 6 + (gh * row) / 6 + Math.sin(row + dispLevel * 6) * dispLevel * 1.4;
-        mgraphics.move_to(x + 11, ly);
-        mgraphics.line_to(x + 7 + gw - 4, ly);
-        mgraphics.stroke();
-    }
-    var px = x + w - 22;
-    drawJewel(px, y + 14, 3.2);
-    if (h >= 56) {
-        mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.9);
-        var knob;
-        for (knob = 0; knob < 3; knob++) {
-            mgraphics.arc(px, y + 26 + knob * 10, 2.3, 0, TAU);
-            mgraphics.stroke();
-        }
-    }
-    var caption = modelState === 2 ? "not found" : model.capture;
-    sptText(caption, x + w * 0.42, y + h - 5, modelState === 2 ? sptColor("live_alert") : fg, 8, 1);
-    chevron(x + 6, y + h - 8, -1, fg);
-    chevron(x + w - 16, y + h - 8, 1, fg);
-}
-
 function chevron(x, y, dir, col) {
     sptRgba(col);
     mgraphics.set_line_width(1.25);
@@ -245,208 +202,272 @@ function chevron(x, y, dir, col) {
     mgraphics.stroke();
 }
 
-function speakerCount() {
-    var n = [1, 2, 4, 4, 1, 8];
-    return n[cabKind] || 1;
+function captureCaption() {
+    var model = AMP_MODELS[ampIndex] || AMP_MODELS[0];
+    return modelState === 2 ? "not found" : model.capture;
 }
 
-function drawCone(cx, cy, r, cloth) {
-    var push = 1 + dispLevel * 0.22;
-    mgraphics.set_source_rgba(0.04, 0.04, 0.05, 1);
-    mgraphics.arc(cx, cy, r, 0, TAU);
-    mgraphics.fill();
-    var rim = sptMix(cloth, [0.05, 0.04, 0.03, 1], 0.35);
-    sptRgba(rim);
-    mgraphics.arc(cx, cy, r * 0.86, 0, TAU);
-    mgraphics.fill();
-    var cone = sptMix(cloth, [1, 0.85, 0.55, 1], 0.15 + dispLevel * 0.4);
-    sptRgba(cone);
-    mgraphics.arc(cx, cy, r * 0.62 * push, 0, TAU);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(0.08, 0.07, 0.06, 1);
-    mgraphics.arc(cx, cy, Math.max(1.5, r * 0.16), 0, TAU);
-    mgraphics.fill();
+function captionColor() {
+    return modelState === 2 ? sptColor("live_alert") : sptColor("live_control_fg");
 }
 
-function drawSpeakers(x, y, w, h, cloth) {
-    var n = cabOn ? speakerCount() : 0;
-    if (!n) {
-        sptText("direct", x + w * 0.5, y + h * 0.55, sptColor("live_control_fg"), 9, 1);
-        return;
-    }
-    var cols = n >= 8 ? 4 : (n > 2 ? 2 : n);
-    var rows = Math.ceil(n / cols);
+// Green under half level, the selection colour to 80%, alert red above.
+function levelColor(t) {
+    if (t > 0.8) return sptColor("live_alert");
+    if (t > 0.5) return sptColor("live_control_selection");
+    return sptColor("live_display_line_two");
+}
+
+function waveY(v, cy, half) {
+    var x = Number(v) || 0;
+    if (x > 1.5) x = 1.5;
+    if (x < -1.5) x = -1.5;
+    return cy - (x / 1.5) * half;
+}
+
+function drawWaveTrace(r, dark) {
+    fillBox(r[0], r[1], r[2], r[3], dark, 3);
+    var fg = sptColor("live_control_fg");
+    var cy = r[1] + r[3] * 0.5;
     var i;
-    for (i = 0; i < n; i++) {
-        var c = i % cols;
-        var r = Math.floor(i / cols);
-        var cx = x + (c + 0.5) * w / cols;
-        var cy = y + (r + 0.5) * h / rows;
-        var rad = Math.min(w / cols, h / rows) * 0.38;
-        drawCone(cx, cy, rad, cloth);
-    }
-}
-
-function drawMic(cx, cy, reach) {
-    var t = micPos / 100;
-    var mx = cx + (t - 0.5) * reach;
-    var my = cy - reach * 0.55;
-    var col = sptColor("live_control_fg");
-    sptRgba(col);
-    mgraphics.set_line_width(1.25);
-    mgraphics.move_to(mx, my + 8);
-    mgraphics.line_to(cx + (mx - cx) * 0.3, cy - 4);
-    mgraphics.stroke();
-    if (micKind) {
-        fillBox(mx - 3, my - 10, 6, 14, col, 1);
-    } else {
-        mgraphics.arc(mx, my - 2, 5, 0, TAU);
-        mgraphics.fill();
-    }
-}
-
-function screw(x, y) {
-    var col = sptColor("live_control_fg");
-    mgraphics.set_source_rgba(col[0], col[1], col[2], 0.55);
-    mgraphics.arc(x, y, 2.2, 0, TAU);
-    mgraphics.fill();
-    mgraphics.set_source_rgba(0, 0, 0, 0.45);
     mgraphics.set_line_width(1);
-    mgraphics.move_to(x - 1.4, y);
-    mgraphics.line_to(x + 1.4, y);
-    mgraphics.stroke();
-}
-
-function paintHeadLook() {
-    var r = ampLayout(lookIndex).boxes["obj-viz"].rect;
-    drawHead(r[0], r[1], r[2], r[3]);
-}
-
-function paintStack() {
-    var r = ampLayout(lookIndex).boxes["obj-viz"].rect;
-    var body = TOLEX[ampIndex] || TOLEX[0];
-    var cloth = GRILLE[ampIndex] || GRILLE[0];
-    var x = r[0];
-    var y = r[1];
-    var w = r[2];
-    var headH = 36;
-    drawHead(x, y, w, headH);
-    fillBox(x, y + headH - 2, w, r[3] - headH + 2, sptMix(body, [0, 0, 0, 1], 0.25), 3);
-    drawSpeakers(x + 8, y + headH + 6, w - 16, r[3] - headH - 12, cloth);
-}
-
-function paintPlate() {
-    var w = mgraphics.size[0];
-    var h = mgraphics.size[1];
-    var body = TOLEX[ampIndex] || TOLEX[0];
-    var fg = inkFor(body);
-    fillBox(0, 0, w, h, sptColor("live_surface_bg"), 0);
-    fillBox(4, 4, w - 8, h - 8, body, 5);
-    screw(12, 12);
-    screw(w - 12, 12);
-    screw(12, h - 12);
-    screw(w - 12, h - 12);
-    var meter = ampLayout(lookIndex).boxes["obj-viz"].rect;
-    fillBox(meter[0], meter[1], meter[2], meter[3], [0.05, 0.04, 0.03, 1], 3);
-    var cx = meter[0] + meter[2] * 0.5;
-    var cy = meter[1] + meter[3] - 16;
-    var reach = meter[3] - 26;
-    var tick;
-    mgraphics.set_line_width(1);
-    for (tick = 0; tick <= 8; tick++) {
-        var ta = -0.95 + tick * (1.9 / 8);
-        var inner = reach - 6;
-        mgraphics.set_source_rgba(fg[0], fg[1], fg[2], tick === 0 || tick === 8 ? 0.7 : 0.35);
-        mgraphics.move_to(cx + Math.sin(ta) * inner, cy - Math.cos(ta) * inner);
-        mgraphics.line_to(cx + Math.sin(ta) * reach, cy - Math.cos(ta) * reach);
+    for (i = 1; i <= 3; i++) {
+        var gy = r[1] + (r[3] * i) / 4;
+        mgraphics.set_source_rgba(fg[0], fg[1], fg[2], i === 2 ? 0.38 : 0.20);
+        mgraphics.move_to(r[0] + 4, gy);
+        mgraphics.line_to(r[0] + r[2] - 4, gy);
         mgraphics.stroke();
     }
-    var ang = -0.9 + dispLevel * 1.8;
-    var nx = cx + Math.sin(ang) * (reach - 2);
-    var ny = cy - Math.cos(ang) * (reach - 2);
-    var lamp = jewelColor();
-    mgraphics.set_source_rgba(lamp[0], lamp[1], lamp[2], 0.95);
-    mgraphics.set_line_width(1.6);
-    mgraphics.move_to(cx, cy);
-    mgraphics.line_to(nx, ny);
-    mgraphics.stroke();
-    mgraphics.arc(cx, cy, 2.2, 0, TAU);
+    var band = dispLevel * (r[3] * 0.5 - 4);
+    var bc = levelColor(dispLevel);
+    mgraphics.set_source_rgba(bc[0], bc[1], bc[2], 0.10);
+    mgraphics.rectangle(r[0] + 4, cy - band, r[2] - 8, band * 2);
     mgraphics.fill();
-    drawJewel(meter[0] + 16, meter[1] + meter[3] * 0.5, 3.2);
-    var model = AMP_MODELS[ampIndex] || AMP_MODELS[0];
-    var caption = modelState === 2 ? "not found" : model.capture;
-    sptText(caption, meter[0] + meter[2] - 10, meter[1] + 12, [0.93, 0.9, 0.84, 0.92], 8, 2);
+    sptRgba(bc);
+    mgraphics.set_line_width(1.6);
+    for (i = 0; i < 24; i++) {
+        var x = r[0] + 6 + (i * (r[2] - 12)) / 23;
+        var y = waveY(ampWave[i], cy, r[3] * 0.5 - 5);
+        if (i === 0) mgraphics.move_to(x, y);
+        else mgraphics.line_to(x, y);
+    }
+    mgraphics.stroke();
 }
 
-function paintCombo() {
+function paintWave() {
     var w = mgraphics.size[0];
     var h = mgraphics.size[1];
-    var body = TOLEX[ampIndex] || TOLEX[0];
-    var cloth = GRILLE[ampIndex] || GRILLE[0];
-    var fg = inkFor(body);
     fillBox(0, 0, w, h, sptColor("live_surface_bg"), 0);
     var r = ampLayout(lookIndex).boxes["obj-viz"].rect;
-    fillBox(r[0] - 8, r[1] - 2, r[2] + 16, r[3] + 8, body, 6);
-    var n = cabOn ? Math.min(speakerCount(), 4) : 0;
-    if (!n) {
-        sptText("direct", r[0] + r[2] * 0.5, r[1] + r[3] * 0.5, fg, 10, 1);
-    } else if (n === 1) {
-        drawCone(r[0] + r[2] * 0.5, r[1] + r[3] * 0.48, Math.min(r[2], r[3]) * 0.36, cloth);
-        drawMic(r[0] + r[2] * 0.5, r[1] + r[3] * 0.48, Math.min(r[2], r[3]) * 0.42);
-    } else {
-        drawSpeakers(r[0] + 10, r[1] + 8, r[2] - 20, r[3] - 16, cloth);
-    }
-    var names = ["Gain", "Bass", "Mid", "Treb", "Pres", "Vol"];
-    var keys = ["gain", "bass", "mid", "treble", "presence", "volume"];
-    var i;
-    for (i = 0; i < keys.length; i++) {
-        var d = ampLayout(lookIndex).boxes["obj-ctrl-" + keys[i]].rect;
-        var lx = i < 3 ? d[0] + d[2] + 6 : d[0] - 4;
-        var align = i < 3 ? 0 : 2;
-        sptText(names[i], lx, d[1] + 16, sptColor("live_control_fg"), 8, align);
-    }
-    drawJewel(r[0] + r[2] - 16, r[1] + 12, 3);
+    drawWaveTrace(r, [0.03, 0.03, 0.04, 1]);
+    sptText(captureCaption(), r[0] + 8, r[1] + 13, captionColor(), 8, 0);
+    drawJewel(r[0] + r[2] - 12, r[1] + 10, 3.2);
+    var fg = sptColor("live_control_fg");
+    var midY = r[1] + r[3] * 0.5;
+    chevron(r[0] + 6, midY, -1, fg);
+    chevron(r[0] + r[2] - 16, midY, 1, fg);
+    mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.35);
+    mgraphics.set_line_width(1);
+    mgraphics.rectangle_rounded(r[0] + 0.5, r[1] + 0.5, r[2] - 1, r[3] - 1, 3, 3);
+    mgraphics.stroke();
 }
 
-function paintRack() {
+function paintPulse() {
     var w = mgraphics.size[0];
     var h = mgraphics.size[1];
-    var metal = sptMix(sptColor("live_lcd_bg"), sptColor("live_control_bg"), 0.35);
-    fillBox(0, 0, w, h, metal, 0);
-    screw(10, 34);
-    screw(w - 10, 34);
-    screw(10, h - 10);
-    screw(w - 10, h - 10);
-    var meter = ampLayout(lookIndex).boxes["obj-viz"].rect;
-    fillBox(meter[0], meter[1], meter[2], meter[3], [0.02, 0.02, 0.025, 1], 2);
-    var model = AMP_MODELS[ampIndex] || AMP_MODELS[0];
-    var caption = modelState === 2 ? "not found" : model.capture;
-    sptText("AMP+", meter[0] + 8, meter[1] + 16, sptColor("live_lcd_title"), 9, 0);
-    sptText(caption, meter[0] + meter[2] - 8, meter[1] + 16, modelState === 2 ? sptColor("live_alert") : sptColor("live_control_fg"), 8, 2);
-    var n = 16;
-    var i;
-    var lit = dispLevel * n;
-    var ledLeft = meter[0] + 56;
-    var ledRight = meter[0] + meter[2] - 96;
-    for (i = 0; i < n; i++) {
-        var x = ledLeft + i * ((ledRight - ledLeft) / n);
-        var on = i < lit;
-        var hot = i / n;
-        var col = hot > 0.8 ? sptColor("live_alert") : (hot > 0.55 ? sptColor("live_control_selection") : sptColor("live_display_line_two"));
-        mgraphics.set_source_rgba(col[0], col[1], col[2], on ? 0.95 : 0.16);
-        mgraphics.rectangle_rounded(x, meter[1] + 5, 12, meter[3] - 10, 1, 1);
-        mgraphics.fill();
+    fillBox(0, 0, w, h, sptColor("live_surface_bg"), 0);
+    fillBox(246, 0, w - 246, h, sptMix(sptColor("live_lcd_bg"), sptColor("live_surface_bg"), 0.45), 0);
+    var r = ampLayout(lookIndex).boxes["obj-viz"].rect;
+    var cx = r[0] + r[2] * 0.5;
+    var cy = r[1] + r[3] * 0.5 - 8;
+    var fg = sptColor("live_control_fg");
+    var k;
+    for (k = 0; k < 3; k++) {
+        var ring = 30 + k * 20 + dispLevel * (3 + k * 2);
+        mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.22 - k * 0.05);
+        mgraphics.set_line_width(1);
+        mgraphics.arc(cx, cy, ring, 0, TAU);
+        mgraphics.stroke();
     }
+    var i;
+    for (i = 0; i < 24; i++) {
+        var a = (i / 24) * TAU;
+        mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.35);
+        mgraphics.set_line_width(1.5);
+        mgraphics.move_to(cx + Math.cos(a) * 20, cy + Math.sin(a) * 20);
+        mgraphics.line_to(cx + Math.cos(a) * 24, cy + Math.sin(a) * 24);
+        mgraphics.stroke();
+        var len = 14 + Math.abs(ampWave[i]) * 38 + dispLevel * 16;
+        var col = levelColor(Math.abs(ampWave[i]) / 1.5);
+        mgraphics.set_source_rgba(col[0], col[1], col[2], 0.35 + Math.abs(ampWave[i]) * 0.5);
+        mgraphics.set_line_width(2.4);
+        mgraphics.move_to(cx + Math.cos(a) * 26, cy + Math.sin(a) * 26);
+        mgraphics.line_to(cx + Math.cos(a) * (26 + len), cy + Math.sin(a) * (26 + len));
+        mgraphics.stroke();
+    }
+    if (dispLevel > 0.01) {
+        var lc = levelColor(dispLevel);
+        mgraphics.set_source_rgba(lc[0], lc[1], lc[2], 0.85);
+        mgraphics.set_line_width(3);
+        mgraphics.arc(cx, cy, 68, -TAU * 0.25, -TAU * 0.25 + dispLevel * TAU * 0.75);
+        mgraphics.stroke();
+    }
+    drawJewel(cx, cy, 4);
+    sptText(captureCaption(), cx, r[1] + r[3] - 4, captionColor(), 8, 1);
+}
+
+function paintTiles() {
+    var w = mgraphics.size[0];
+    var h = mgraphics.size[1];
+    fillBox(0, 0, w, h, sptColor("live_surface_bg"), 0);
+    var look = ampLayout(lookIndex);
+    var keys = ["gain", "bass", "mid", "treble", "presence", "volume"];
+    var glow = sptMix(sptColor("live_surface_bg"), sptColor("live_control_selection"), 0.05 + dispLevel * 0.10);
+    var i;
+    for (i = 0; i < keys.length; i++) {
+        var d = look.boxes["obj-ctrl-" + keys[i]].rect;
+        fillBox(d[0] - 3, d[1] - 3, d[2] + 6, d[3] + 6, glow, 5);
+    }
+    var cab = look.boxes["obj-ctrl-amp"].rect;
+    fillBox(cab[0] - 4, cab[1] - 4, 158, 92, glow, 5);
+    var r = look.boxes["obj-viz"].rect;
+    drawWaveTrace(r, [0.03, 0.03, 0.04, 1]);
+    drawJewel(r[0] + r[2] - 11, r[1] + 10, 3);
+    var barW = (r[2] - 16) * dispLevel;
+    var bc = levelColor(dispLevel);
+    mgraphics.set_source_rgba(bc[0], bc[1], bc[2], 0.22);
+    mgraphics.rectangle(r[0] + 8, r[1] + r[3] - 9, r[2] - 16, 3);
+    mgraphics.fill();
+    mgraphics.set_source_rgba(bc[0], bc[1], bc[2], 0.85);
+    mgraphics.rectangle(r[0] + 8, r[1] + r[3] - 9, Math.max(0, barW), 3);
+    mgraphics.fill();
+    sptText(captureCaption(), r[0] + 8, r[1] + 13, captionColor(), 8, 0);
+    var cabText = cabOn ? (AMP_CABS[cabKind] + "  ·  " + (micKind ? "Condenser" : "Dynamic") + "  ·  Pos " + Math.round(micPos) + "%") : "Cabinet off — direct";
+    sptText(cabText, 8, 160, sptColor("live_control_fg"), 8, 0);
+}
+
+function paintStrip() {
+    var w = mgraphics.size[0];
+    var h = mgraphics.size[1];
+    fillBox(0, 0, w, h, sptColor("live_surface_bg"), 0);
+    var r = ampLayout(lookIndex).boxes["obj-viz"].rect;
+    fillBox(r[0], r[1], r[2], r[3], [0.03, 0.03, 0.04, 1], 3);
+    var cy = r[1] + r[3] * 0.5;
+    var fg0 = sptColor("live_control_fg");
+    mgraphics.set_line_width(1);
+    mgraphics.set_source_rgba(fg0[0], fg0[1], fg0[2], 0.30);
+    mgraphics.move_to(r[0] + 4, cy);
+    mgraphics.line_to(r[0] + r[2] - 4, cy);
+    mgraphics.stroke();
+    mgraphics.set_source_rgba(fg0[0], fg0[1], fg0[2], 0.12);
+    mgraphics.move_to(r[0] + 4, cy - r[3] * 0.25);
+    mgraphics.line_to(r[0] + r[2] - 4, cy - r[3] * 0.25);
+    mgraphics.stroke();
+    mgraphics.move_to(r[0] + 4, cy + r[3] * 0.25);
+    mgraphics.line_to(r[0] + r[2] - 4, cy + r[3] * 0.25);
+    mgraphics.stroke();
+    var i;
+    for (i = 0; i < 60; i++) {
+        var v = ampWave[i % 24];
+        var x = r[0] + 5 + i * ((r[2] - 10) / 60);
+        var col = levelColor(Math.abs(v) / 1.5);
+        mgraphics.set_source_rgba(col[0], col[1], col[2], 0.75);
+        var y = waveY(v, cy, r[3] * 0.5 - 4);
+        if (Math.abs(y - cy) < 1) y = cy + (i % 2 ? 1 : -1);
+        mgraphics.move_to(x, cy);
+        mgraphics.line_to(x, y);
+        mgraphics.set_line_width(2.4);
+        mgraphics.stroke();
+    }
+    var fg = sptColor("live_control_fg");
+    sptText("IN", r[0] + 6, r[1] + r[3] - 6, fg, 7, 0);
+    sptText("TONE STACK", 84, r[1] + r[3] - 6, fg, 7, 0);
+    sptText("OUT", r[0] + r[2] - 6, r[1] + r[3] - 6, fg, 7, 2);
+    mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.22);
+    mgraphics.set_line_width(1);
+    mgraphics.move_to(76, 54);
+    mgraphics.line_to(76, 116);
+    mgraphics.stroke();
+    mgraphics.move_to(428, 54);
+    mgraphics.line_to(428, 116);
+    mgraphics.stroke();
+    fillBox(8, 146, 480, 17, [0.03, 0.03, 0.04, 1], 3);
+    var bc2 = levelColor(dispLevel);
+    mgraphics.set_source_rgba(bc2[0], bc2[1], bc2[2], 0.9);
+    mgraphics.rectangle(11, 149, Math.max(0, 474 * dispLevel), 11);
+    mgraphics.fill();
+    mgraphics.set_source_rgba(1, 1, 1, 0.35);
+    mgraphics.set_line_width(1);
+    for (i = 1; i < 4; i++) {
+        var tx = 11 + (474 * i) / 4;
+        mgraphics.move_to(tx, 149);
+        mgraphics.line_to(tx, 160);
+        mgraphics.stroke();
+    }
+    mgraphics.set_source_rgba(1, 1, 1, 0.85);
+    mgraphics.rectangle(11 + 474 * ampPeak, 148, 1.6, 13);
+    mgraphics.fill();
+}
+
+function paintMono() {
+    var w = mgraphics.size[0];
+    var h = mgraphics.size[1];
+    fillBox(0, 0, w, h, sptColor("live_surface_bg"), 0);
+    var look = ampLayout(lookIndex);
+    var fg = sptColor("live_control_fg");
+    var r = look.boxes["obj-viz"].rect;
+    var cx = r[0] + r[2] * 0.5;
+    var cy = r[1] + 44;
+    mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.3);
+    mgraphics.set_line_width(1);
+    mgraphics.arc(cx, cy, 40, 0, TAU);
+    mgraphics.stroke();
+    var col = levelColor(dispLevel);
+    var ti;
+    mgraphics.set_line_width(2);
+    for (ti = 0; ti < 12; ti++) {
+        var ta = (ti / 12) * TAU;
+        mgraphics.set_source_rgba(fg[0], fg[1], fg[2], 0.45);
+        mgraphics.move_to(cx + Math.cos(ta) * 35, cy + Math.sin(ta) * 35);
+        mgraphics.line_to(cx + Math.cos(ta) * 38, cy + Math.sin(ta) * 38);
+        mgraphics.stroke();
+    }
+    mgraphics.set_source_rgba(col[0], col[1], col[2], 0.20);
+    mgraphics.set_line_width(7);
+    mgraphics.arc(cx, cy, 29, 0, TAU);
+    mgraphics.stroke();
+    if (dispLevel > 0.01) {
+        mgraphics.set_source_rgba(col[0], col[1], col[2], 0.9);
+        mgraphics.set_line_width(7);
+        mgraphics.arc(cx, cy, 29, -TAU * 0.25, -TAU * 0.25 + dispLevel * TAU * 0.75);
+        mgraphics.stroke();
+    }
+    mgraphics.set_source_rgba(col[0], col[1], col[2], 0.9);
+    mgraphics.arc(cx, cy, 5, 0, TAU);
+    mgraphics.fill();
+    drawJewel(cx, cy, 2.6);
+    sptText(captureCaption(), cx, r[1] + r[3] - 4, captionColor(), 9, 1);
+    sptText("GAIN", look.boxes["obj-ctrl-gain"].rect[0] + 39, 100, fg, 8, 1);
+    sptText("VOLUME", look.boxes["obj-ctrl-volume"].rect[0] + 39, 100, fg, 8, 1);
+    var names = ["BASS", "MID", "TREBLE", "PRESENCE"];
+    var keys = ["bass", "mid", "treble", "presence"];
+    var i;
+    for (i = 0; i < keys.length; i++) {
+        var d = look.boxes["obj-ctrl-" + keys[i]].rect;
+        sptText(names[i], d[0] + d[2] * 0.5, d[1] - 4, fg, 7, 1);
+    }
+    sptText(Math.round(dispLevel * 100) + "%", 488, 148, col, 20, 2);
+    sptText("LEVEL", 488, 160, fg, 7, 2);
 }
 
 function paint() {
     if (AMP_ROLE !== "bg") return;
     var look = ampLayout(lookIndex);
-    if (look.name === "Head") paintHeadLook();
-    else if (look.name === "Stack") paintStack();
-    else if (look.name === "Plate") paintPlate();
-    else if (look.name === "Combo") paintCombo();
-    else paintRack();
+    if (look.name === "Wave") paintWave();
+    else if (look.name === "Pulse") paintPulse();
+    else if (look.name === "Tiles") paintTiles();
+    else if (look.name === "Strip") paintStrip();
+    else paintMono();
 }
 
 if (AMP_ROLE === "bg") {
