@@ -521,6 +521,58 @@ test("anydrop (a file dropped anywhere on the face): every algorithm, audio file
     for (const bad of ["/x/notes.txt", "/x/folder", "/x/song.als", "/x/ir.wav.zip", "none", ""]) for (const a of [1, 5]) assert.strictEqual(drop(a, bad).length, 0, `ignored (no switch either): ${bad} in algorithm ${a}`);
 });
 
+test("clear_ir: a cleared IR stays cleared when Live replays the saved IR File path on load", () => {
+    // browsed()/anydrop store the path on outlet 4 (IR File live.drop param) so Live saves it.
+    // clear_ir unloads in-memory state and clears rpLastDropped, but today does not clear outlet 4.
+    // On the next load Live replays the saved path into dropfile(); because rpLastDropped is ""
+    // the replay is treated as a new drop and the cleared IR comes back.
+    const src = fs.readFileSync(path.join(ROOT, "src", "reverbplus_engine.js"), "utf8");
+    const grab = (from, to) => { const a = src.indexOf(from), b = src.indexOf(to, a); assert(a >= 0 && b > a, from); return src.slice(a, b); };
+    const code = grab("function rpFileName", "var rpLastDropped") + grab("var rpLastDropped", "function rpIrLoad") + grab("function rpIrLoad", "// buffer~ ---rpir has the file");
+    const outlets = [];
+    const ctx = {
+        rpIr: { src: null, loaded: false, len: 0, name: "", status: "idle", ver: 0, loadTask: null },
+        rpHdrPoke: () => {},
+        rpBroadcastIr: () => {},
+        outlet: (...a) => outlets.push(a),
+        Task: function () { this.schedule = () => {}; },
+        Array, String, RegExp, Date,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(code, ctx);
+    vm.runInContext("browsed", ctx)("/x/ir.wav");
+    let saved = outlets.filter((a) => a[0] === 4).map((a) => a[1]).pop();
+    assert.strictEqual(saved, "/x/ir.wav", "setup: browsed() stored the IR path for Live to save");
+    vm.runInContext("rpIr.loaded = true; rpIr.status = 'loaded';", ctx); // buffer~ finished (ir_loaded outside slice)
+    outlets.length = 0;
+    vm.runInContext("clear_ir", ctx)();
+    assert.strictEqual(vm.runInContext("rpIr.loaded", ctx), false, "clear_ir unloads the IR");
+    const clearStores = outlets.filter((a) => a[0] === 4);
+    if (clearStores.length) saved = clearStores[clearStores.length - 1][1];
+    // Behavioural invariant: after clear, replaying whatever Live has saved must not resurrect the IR.
+    // Clearing outlet 4 OR suppressing the replay inside dropfile both satisfy this; the bug is that neither happens.
+    outlets.length = 0;
+    vm.runInContext("dropfile", ctx)(saved);
+    assert.strictEqual(vm.runInContext("rpIr.loaded", ctx), false, "replaying the saved IR File value after clear_ir must not reload the IR");
+    assert.strictEqual(vm.runInContext("rpIr.status", ctx), "idle", "replaying the saved IR File value after clear_ir must not restart a load");
+    assert.deepStrictEqual(outlets.filter((a) => a[0] === 2), [], "replaying the saved IR File value after clear_ir must not reach buffer~ (no outlet 2 replace)");
+});
+
+test("K calibration: a candidate must be seen twice in a row (a failed window clears it)", () => {
+    // End gen (reverbplus_end.genexpr): a correlation peak is adopted as K only when the same K
+    // is seen twice in a row passing the acceptance criteria (strength, unambiguity, inside the
+    // window). The pending candidate (kCand) is currently cleared only when the Start counter
+    // stops, so a window that FAILS the criteria leaves it in place: one spurious peak (a
+    // transient, a chain device toggled) can be adopted much later when the same lag happens to
+    // pass once more, and End then reads the dry at the wrong offset while Start re-inserts the
+    // return at the wrong B. Same defect as Delay+ End.
+    const end = fs.readFileSync(path.join(ROOT, "src", "reverbplus_end.genexpr"), "utf8");
+    const win = end.slice(end.indexOf("if (cN >= 8192)"), end.indexOf("kk = calOk"));
+    assert(win.length > 0, "calibration window block present");
+    assert(/kCand\s*=\s*1e9/.test(win),
+        "a calibration window that does not adopt must clear the pending candidate (kCand)");
+});
+
 test("no face / engine script declares Max's reserved v8ui globals", () => {
     const reserved = ["box", "patcher", "max", "messagename", "inlet", "jsarguments"];
     for (const f of fs.readdirSync(path.join(ROOT, "src")).filter((n) => /^reverbplus_.*\.js$/.test(n))) {
