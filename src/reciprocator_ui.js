@@ -401,16 +401,17 @@ function canvasSize() {
 function ampToVisual01(lin) {
     if (lin <= 0.0001) return 0;
     var db = 20 * Math.log10(Math.min(lin, 1.0));
-    var db01 = clamp((db + 66.0) / 66.0, 0, 1);
+    // Span the full Gate floor (-72 dB) so drawn lines and drag agree (BUGS.md bug 1).
+    var db01 = clamp((db + 72.0) / 72.0, 0, 1);
     var lin01 = clamp(Math.sqrt(lin), 0, 1);
     return 0.62 * db01 + 0.38 * lin01;
 }
 
 // Inverse of ampToVisual01, the curve the gate and ceiling lines are drawn with.
-// A straight -66..0 map put a click on the -42 dB gate at -49 dB and the -12 dB ceiling at -18 dB.
+// Bisect over -72..0 so a click on the drawn Gate line keeps that dB (incl. below -66).
 function visual01ToDb(v01) {
     var target = clamp(v01, 0, 1);
-    var lo = -66.0;
+    var lo = -72.0;
     var hi = 0.0;
     var i;
     for (i = 0; i < 24; i++) {
