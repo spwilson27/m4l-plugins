@@ -1,7 +1,13 @@
-# Oscilloscope — Bugsweep (Pass 1 findings, Pass 2 review, Pass 3 fix)
+# Oscilloscope — Bugsweep (Pass 1 findings, Pass 2 review, Pass 3 fix, Pass 4 review)
 
 Branch: `bugsweep/oscilloscope-pass1`
 Scope: Oscilloscope-specific UI/DSP/state bugs only. The shared `#0-analyzerscope` buffer-name collision is owned by analyzer-scope pass 2/3 and is **not** re-filed here.
+
+## Pass 4 review — APPROVED
+
+Re-read production blob path (`OSC_VERSION` 5; `oscBlob` / `oscFromBlob` / `oscDefaultState` / `getvalueof` / `setvalueof`), build `parameter_initial` seed, and section-5 / section-7 tests. Host gate re-run green: typecheck OK, `devices/Oscilloscope.amxd` rebuilt (460×169, 115643 bytes), `oscilloscope: 163552 checks passed`. No follow-up code changes.
+
+- **Bug 1 — APPROVED** — blob v5 persists armed `trigLevel` as the 9th element; old v4 8-element blobs load with `trigLevel = 0`; v3/v2/v1 loaders unchanged; `oscFrozen` intentionally left unpersisted; `#0-analyzerscope` not re-touched.
 
 ## Pass 3 fix — Bug 1 green
 
