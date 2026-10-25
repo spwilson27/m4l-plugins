@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * PASS-1 RED suite for Cepstra bugsweep (bugsweep/cepstra-pass1).
- * These checks are expected to FAIL on current production code.
- * See BUGS.md. Do not "fix" by editing src/ or scripts/ in this pass.
+ * RED suite for Cepstra bugsweep (bugsweep/cepstra-pass1).
+ * PASS-2 review: kept Bug A (stale f0 / voiced-gate) and Bug B (#0-cepscope).
+ * These checks are expected to FAIL on current production code until PASS 3.
+ * See BUGS.md. Do not "fix" by editing src/ or scripts/ in PASS 1/2.
  */
 "use strict";
 
@@ -164,4 +165,4 @@ const buildSrc = fs.readFileSync(BUILD_PATH, "utf8");
     }
 }
 
-console.log(`cepstra bugsweep RED: ${checks} checks (expected FAIL on current code until PASS 2 fixes)`);
+console.log(`cepstra bugsweep RED: ${checks} checks (expected FAIL on current code until PASS 3 fixes)`);

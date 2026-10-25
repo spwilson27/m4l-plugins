@@ -1,6 +1,24 @@
-# Cepstra PASS-1 bugs (bugsweep/cepstra-pass1)
+# Cepstra bugsweep — PASS-2 review (bugsweep/cepstra-pass1)
 
-Host gate baseline was green (`npm run -s typecheck && python3 scripts/build_cepstra.py && node tests/test_cepstra.js` → 1627 checks). No production code was changed in this pass. RED coverage is in `tests/test_cepstra_bugsweep.js`.
+Host gate baseline was green on PASS 1 (`npm run -s typecheck && python3 scripts/build_cepstra.py && node tests/test_cepstra.js` → 1627 checks). No production code was changed in PASS 1 or PASS 2. RED coverage is in `tests/test_cepstra_bugsweep.js`.
+
+## PASS-2 review outcome
+
+**Kept 2 / dropped 0.**
+
+| Bug | Verdict | One-line |
+| --- | --- | --- |
+| A — stale f0 / display ignores `voiced` | **KEEP** | Verified in `job_lift` Auto/MIDI arms + `periodSamplesNow` + green diamond paint; RED fails first assert on unfixed code. |
+| B — shared `#0-cepscope` | **KEEP** | Build still ships `buffer~`/`scope #0-cepscope`; Multiband/Glitch/Reverb+/Amp+ `---` migration is the correct precedent. |
+
+Evidence re-checked against live sources (not just PASS-1 notes):
+- Auto arm (`modeNow < 1.5`): `f0v = peek(stat,1)` then only assigned inside `if (best > 0.06)`; unvoiced fallthrough leaves stale `f0v`; `poke(stat, f0v, 1)` writes it.
+- MIDI arm: `f0v` assigned only inside `if (midiNote >= 0)`; no-note path never clears.
+- Display: `periodSamplesNow` Auto arm is `curMode === 1 && f0Hz > 20` with **no** `voiced` gate; paint L618–627 draws green diamond / Hz from that period. Display *does* load `voiced` from scope 261 (`voiced = numAt(chunk, 261) > 0.5`), so the gate fix is local.
+- Gen header contract: `257 : f0 estimate in Hz (0 = unvoiced / unknown)`; `261 : voiced flag`. AGENTS: Auto holds **L** when unvoiced, not f0.
+- Bug B: `scripts/build_cepstra.py` still has `buffer~ #0-cepscope` / `scope #0-cepscope` / `setbuffer #0-cepscope`; AGENTS Multiband Split isolation note (`---mbsplitscope`) and Glitch/Reverb+/Amp+ `---` names are the fix pattern.
+
+RED suite left in place (still expected FAIL on unfixed code). Existing `tests/test_cepstra.js` `#0-` assertions stay until PASS 3 migrates the buffer name.
 
 ## Bug A — Auto / MIDI leave a stale f0 in scope 257; display pitch marker ignores `voiced`
 
@@ -20,7 +38,7 @@ Host gate baseline was green (`npm run -s typecheck && python3 scripts/build_cep
 **User-visible effect**
 After a voiced note drops to noise/breath (or MIDI note-off with Res Mode still MIDI), the green pitch marker and Hz label stick on the last pitch, and Res drag mapping keeps using that ghost period.
 
-**Expected**
+**Expected (PASS 3)**
 - Gen: when Auto peak fails the 0.06 threshold, or MIDI has no note, write `f0v = 0` (keep holding L / `held` as today).
 - Display: Auto pitch marker / Hz label / `periodSamplesNow` must require `voiced` (mirror MIDI's `curMidiNote >= 0` gate). Unvoiced → period 0 → manual Res map fallback.
 
@@ -31,7 +49,7 @@ After a voiced note drops to noise/breath (or MIDI note-off with Res Mode still 
 
 **Where**
 - `scripts/build_cepstra.py` — `buffer~ #0-cepscope`, `scope #0-cepscope`
-- `src/cepstra_display.js` — default `setbuffer("1001-cepscope")` / `#0-cepscope` binding path
+- `src/cepstra_display.js` — default `#0-cepscope` binding path
 - Existing `tests/test_cepstra.js` currently *requires* the `#0-` prefix
 
 **Contract / precedent**
@@ -40,11 +58,12 @@ AGENTS.md (Multiband Split buffer isolation fix; also Glitch `---glitchscope`, R
 **User-visible effect**
 Two Cepstra instances on a track (or Cmd+D) would write into one shared 272-sample scope: faces show each other's cepstrum / L / f0 / voiced.
 
-**Expected**
-Rename to a unique `---` buffer (e.g. `---cepscope`) in build, gen bind, display `setbuffer`, and tests (harness may keep a private `#0-` name if needed, as Multiband does).
+**Expected (PASS 3)**
+Rename to a unique `---` buffer (e.g. `---cepscope`) in build, gen bind, display `setbuffer`, and tests (harness may keep a private `#0-` name if needed, as Multiband does). Update the existing `#0-` assertions in `test_cepstra.js` at that time.
 
 **RED**
 `tests/test_cepstra_bugsweep.js` — built device / build script / display must bind `---cepscope` (or another non-`#0-` unique name), not `#0-cepscope`.
 
-## Out of scope for PASS 1
-Production fixes for A/B. PASS 2+ should clear f0 on unvoiced / no-note, gate the display on `voiced`, and migrate the scope buffer name (updating the existing `#0-` assertions in `test_cepstra.js`).
+## Out of scope
+
+Production fixes for A/B belong in **PASS 3** (clear f0 on unvoiced / no-note, gate the display on `voiced`, migrate the scope buffer name). PASS 2 is review-only: keep/drop reds, update this file, host-gate, commit.
