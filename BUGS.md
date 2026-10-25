@@ -112,3 +112,19 @@ pass-1 cleared items stand.
 - Re-read build scope wiring; grep Amp+/AGENTS for ampscope / `#0` / `---`.
 - `node tests/test_ampplus_bugsweep.js` — RED (confirmed).
 - Host gate: `npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js` (in flight / next).
+
+## Pass 3 fix
+
+**Bug 1 fixed.** Renamed scope buffer `#0-ampscope` → `---ampscope` so each Amp+ instance gets its own ring (Live does not expand `#0` in a top-level M4L patcher).
+
+### Touchpoints
+- `scripts/build_ampplus.py` — `obj-msg-buf` loadbang message and `obj-scope` `buffer~` text (`#0-ampscope` → `---ampscope`).
+- Rebuilt all six devices: `devices/Amp+.amxd` plus Wave/Pulse/Tiles/Strip/Mono.
+- `AGENTS.md` §30 — contract updated to `buffer~ ---ampscope`.
+- GenExpr `Buffer scope("ampscope")` left as-is (rebound on loadbang via `scope ---ampscope`, same pattern as Glitch).
+
+### Host gate (green)
+`npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && node tests/test_ampplus_bugsweep.js` → typecheck ok, six devices built, `ampplus ok`, `ampplus bugsweep ok`.
+
+### Commit
+SHA pending (pass-3 commit on `bugsweep/ampplus-variants-pass1`; no merge to main).
