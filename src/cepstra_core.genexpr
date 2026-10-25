@@ -1,6 +1,6 @@
 // Cepstra — true cepstral formant shifter (STFT overlap-add, M/S, Hann/Hann, 75% overlap).
 //
-// Buffer (bound on loadbang via `scope #0-cepscope`), 272 samples:
+// Buffer (bound on loadbang via `scope ---cepscope`), 272 samples:
 //   0..191   : signed Mid cepstrum c[n] on 192 LINEAR quefrency columns, n = 0 .. 20 ms (largest |c| per column, 9999 = beyond N/2)
 //   256      : current lifter cutoff L in samples
 //   257      : f0 estimate in Hz (0 = unvoiced / unknown)
@@ -166,6 +166,8 @@ job_lift(wre, wim, ere, eim, brv, stat, n, stride, srVal, modeNow, res01, midiNo
 			held = kscale * period;
 			f0v = srVal / period;
 			voiced = 1;
+		} else {
+			f0v = 0;
 		}
 	} else {
 		if (midiNote >= 0) {
@@ -173,6 +175,8 @@ job_lift(wre, wim, ere, eim, brv, stat, n, stride, srVal, modeNow, res01, midiNo
 			held = kscale * period;
 			f0v = srVal / period;
 			voiced = 1;
+		} else {
+			f0v = 0;
 		}
 	}
 	poke(stat, held, 4);

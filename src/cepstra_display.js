@@ -23,7 +23,7 @@ var WHITE = [0.94, 0.94, 0.94];
 var MONO = "Courier New";
 
 var scopeBuf = null;
-var scopeBufName = "#0-cepscope";
+var scopeBufName = "---cepscope";
 var uiTask = null;
 var uiIdleFrames = 0;
 var dragging = false;
@@ -269,7 +269,7 @@ function cepDspAlive() {
 // Buffer binding and every gen parameter, from the values this face holds. Outlet 1 goes straight to the
 // gate hub. Do not bang live.text toggles (a bang flips them).
 function cepDspResend() {
-    outlet(1, ["scope", scopeBufName || "#0-cepscope"]);
+    outlet(1, ["scope", scopeBufName || "---cepscope"]);
     outlet(1, ["res", curRes * 0.01]);
     outlet(1, ["midshift", curMid]);
     outlet(1, ["sideshift", curSide]);
@@ -398,7 +398,7 @@ function layoutRegions() {
 }
 
 function periodSamplesNow() {
-    if (curMode === 1 && f0Hz > 20) return srNow / f0Hz;
+    if (curMode === 1 && voiced && f0Hz > 20) return srNow / f0Hz;
     if (curMode === 2 && curMidiNote >= 0) return midiPeriodSamples(curMidiNote, srNow);
     return 0;
 }

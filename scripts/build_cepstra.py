@@ -404,10 +404,10 @@ def build():
             # Message hub for the deferred gen~ (data into inlet 1; outlet 0 is wired to gen~ after load).
             # plugin~ is left unconnected so the device stays silent until that gen~ is created.
             newobj("obj-gen-in", "gate 1 1", 120, 300, 70, numinlets=2, numoutlets=1, outlettype=[""]),
-            newobj("obj-scope-buf", "buffer~ #0-cepscope @samps 272", 560, 250, 220, numoutlets=2, outlettype=["float", "bang"]),
+            newobj("obj-scope-buf", "buffer~ ---cepscope @samps 272", 560, 250, 220, numoutlets=2, outlettype=["float", "bang"]),
             newobj("obj-loadbang", "loadbang", 560, 315, 60, outlettype=["bang"]),
-            message("obj-msg-ui-buf", "setbuffer #0-cepscope", 560, 345, 160),
-            message("obj-msg-gen-buf", "scope #0-cepscope", 560, 375, 140),
+            message("obj-msg-ui-buf", "setbuffer ---cepscope", 560, 345, 160),
+            message("obj-msg-gen-buf", "scope ---cepscope", 560, 375, 140),
             newobj("obj-midiin", "midiin", 20, 500, 48, outlettype=["int"]),
             newobj("obj-midiparse", "midiparse", 20, 528, 82, numoutlets=7, outlettype=["", "", "", "int", "int", "", "int"]),
             newobj("obj-midi-unpack", "unpack 0 0", 20, 556, 70, numoutlets=2, outlettype=["int", "int"]),

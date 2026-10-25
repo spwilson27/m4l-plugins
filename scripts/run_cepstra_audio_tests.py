@@ -33,7 +33,7 @@ import max_harness as mh
 ROOT = mh.ROOT
 GEN_PATH = os.path.join(ROOT, "src", "cepstra_core.genexpr")
 PROBE_JS = os.path.join(ROOT, "tests", "cepstra_probe.js")
-SCOPE = "#0-cepscope"
+SCOPE = "---cepscope"
 SR = 48000
 
 DEFAULTS = "res 0.57, midshift 0, sideshift 0, gate 0, resmode 0, quality 1, wet 1, midinote -1, gatemode 0"
