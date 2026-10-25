@@ -350,7 +350,8 @@ def build():
         ("dc", "DC", "DC", "DC", opt_btn_x, 78, 48, 0, "dcon", "set_dcon", False, "15 Hz highpass in front of the drive."),
         ("os", "Oversample", "4x", "4x", opt_btn_x, 96, 48, 0, "oson", "set_oson", False, "4x oversampling on the waveshaper."),
         ("hlim", "Hard Limit", "Peak", "Peak", opt_btn_x, 114, 48, 1, "hlim", "set_hlim", False, "Brickwall sample clip at the ceiling, after the detail crossfade."),
-        ("meters", "Show Meters", "Meters", "Meters", opt_btn_x, 144, 48, 0, None, "set_meters", True, "Open the LUFS, RMS and peak meters."),
+        ("truepeak", "True Peak", "TP", "TP", opt_btn_x, 132, 48, 0, "tpeak", "set_tpeak", False, "True-peak limiter: turns the 4x-reconstructed inter-sample peak down to the ceiling."),
+        ("meters", "Show Meters", "Meters", "Meters", opt_btn_x, 150, 48, 0, None, "set_meters", True, "Open the LUFS, RMS and peak meters."),
     ]
 
     y_wire = 40.0
