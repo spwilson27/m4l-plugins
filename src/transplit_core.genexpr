@@ -60,6 +60,7 @@ ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) 
 	History cgMd(-9);
 	History cgN(-1);
 	History cgW(9);
+	History cgSr(0);
 	half = n * 0.5;
 	hop = n * 0.25;
 	for (k = 0; k <= half; k += 1) {
@@ -119,12 +120,13 @@ ts_masks(ms, tsd, tw, n, sr, ttype, anb, tdecay, tsmooth, tlt, tmode, bld, age) 
 	gbQ = min(1, 2 * (1 - bl));
 	md = tmode > 0.5 ? 1 : 0;
 	wChk = tw.peek(1, md);
-	rebuild = (cgTl != tl || cgMd != md || cgN != n || cgW != wChk) ? 1 : 0;
+	rebuild = (cgTl != tl || cgMd != md || cgN != n || cgW != wChk || cgSr != sr) ? 1 : 0;
 	if (rebuild > 0.5) {
 		cgTl = tl;
 		cgMd = md;
 		cgN = n;
 		cgW = wChk;
+		cgSr = sr;
 		for (k = 0; k <= half; k += 1) {
 			w = md > 0.5 ? tw.peek(k, 1) : tw.peek(k, 0);
 			gv = tl == 0 ? 1 : exp(tl * 12 * w * 0.11512925464970229);

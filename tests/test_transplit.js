@@ -397,6 +397,23 @@ function prep(src) {
         }
         assert.ok(nonzero > 100, "telemetry columns are filled");
     }
+    // BUG (pass 1, red): the GenExpr tilt-gain cache in ts_masks is keyed on the tilt weight at bin 1
+    // (cgW vs tw.peek(1, md)), but bin 1 is in the clipped region (f < 100 Hz => weight -1 Standard /
+    // +1 Contour) for every common sample rate at n >= 1024, so a sample-rate change — which the ctl
+    // hook handles by rebuilding the tilt table (twSr) — never invalidates the cached gains in tw
+    // channel 2. The JS reference recomputes the gains from the fresh table every frame.
+    {
+        const gx = loadGx();
+        const ms = new DataSim(2049, 2), tsd = new DataSim(2049, 11), tw = new DataSim(2049, 3);
+        for (let k = 0; k <= n / 2; k++) { ms.poke(0.5, k, 0); ms.poke(0, k, 1); }
+        gx.ts_tilttab(tw, n, 44100);
+        gx.ts_masks(ms, tsd, tw, n, 44100, 0, 0, 8, 1.5, 1, 0, 0.5, 0);
+        gx.ts_tilttab(tw, n, 96000);            // what the ctl hook does when the sample rate changes
+        gx.ts_masks(ms, tsd, tw, n, 96000, 0, 0, 8, 1.5, 1, 0, 0.5, 1);
+        const w96 = cfg.tsTiltTables(n, 96000)[0][64];
+        const want = Math.exp(12 * w96 * 0.11512925464970229);
+        assert.ok(Math.abs(tw.peek(64, 2) - want) < 1e-9, `tilt gains follow the sample rate (bin 64 gain ${tw.peek(64, 2)}, want ${want} for the 96 kHz table)`);
+    }
     console.log("[genexpr] transpiled lib + ts_* tests passed");
 }
 
