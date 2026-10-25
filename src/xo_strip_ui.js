@@ -655,6 +655,10 @@ function captureSnapshot() {
     pitchSt,
     decayMs,
     gainDb,
+    reversePlayback,
+    speedPct,
+    grainMs,
+    stretchMode,
     selectedIndex,
     anchorIndex,
     selectedSavedIndex,
@@ -672,6 +676,10 @@ function applySnapshot(snap) {
   pitchSt = snap.pitchSt !== undefined ? snap.pitchSt : 0;
   decayMs = snap.decayMs !== undefined ? snap.decayMs : 2500;
   gainDb = snap.gainDb !== undefined ? snap.gainDb : 0;
+  reversePlayback = snap.reversePlayback !== undefined ? snap.reversePlayback : 0;
+  speedPct = snap.speedPct !== undefined ? snap.speedPct : 100;
+  grainMs = snap.grainMs !== undefined ? snap.grainMs : 45;
+  stretchMode = snap.stretchMode !== undefined ? snap.stretchMode : 1;
   selectedIndex = snap.selectedIndex || 0;
   anchorIndex = snap.anchorIndex || 0;
   selectedSavedIndex = snap.selectedSavedIndex !== undefined ? snap.selectedSavedIndex : -1;
