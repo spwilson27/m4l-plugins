@@ -1546,6 +1546,19 @@ def build_patcher(design=None):
         },
     ]
 
+    if design:
+        dsp_boxes.append({
+            "box": {
+                "id": "obj-msg-modbuf",
+                "maxclass": "message",
+                "numinlets": 2,
+                "numoutlets": 1,
+                "outlettype": [""],
+                "patching_rect": [420.0, 510.0, 280.0, 20.0],
+                "text": "setmodbufs #0-bsmod #0-bsmseg #0-bsslot",
+            }
+        })
+
     lines = [
         # Audio & GenExpr I/O
 
@@ -1585,6 +1598,13 @@ def build_patcher(design=None):
         {"patchline": {"source": ["obj-route-viz", 1], "destination": ["obj-prep-replace", 0]}},
         {"patchline": {"source": ["obj-route-viz", 2], "destination": ["obj-opendialog", 0]}},
     ]
+
+    if design:
+        lines += [
+            {"patchline": {"source": ["obj-loadbang", 0], "destination": ["obj-msg-modbuf", 0], "order": 2}},
+            {"patchline": {"source": ["obj-msg-modbuf", 0], "destination": ["obj-viz", 0]}},
+            {"patchline": {"source": ["obj-dsp-resend", 1], "destination": ["obj-msg-modbuf", 0]}},
+        ]
 
     # Drops and dialog picks go to the face, which emits load_sample (and drop_set after a browse)
     lines += [
@@ -1749,7 +1769,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": ["float"],
                 "patching_rect": [660.0, 400.0, 160.0, 20.0],
-                "text": "buffer~ #0-bsmod 289 1",
+                "text": "buffer~ #0-bsmod @samps 289",
             }
         })
         dsp_boxes.append({
@@ -1771,7 +1791,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": ["float"],
                 "patching_rect": [660.0, 456.0, 180.0, 20.0],
-                "text": "buffer~ #0-bsmseg 4096 1",
+                "text": "buffer~ #0-bsmseg @samps 4096",
             }
         })
         dsp_boxes.append({
@@ -1782,7 +1802,7 @@ def build_patcher(design=None):
                 "numoutlets": 1,
                 "outlettype": ["float"],
                 "patching_rect": [660.0, 484.0, 160.0, 20.0],
-                "text": "buffer~ #0-bsslot 104 1",
+                "text": "buffer~ #0-bsslot @samps 128",
             }
         })
         for outlet, prep, msg in (

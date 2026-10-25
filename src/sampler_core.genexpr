@@ -2349,7 +2349,10 @@ voice_proc(
 		// peek() as an argument next to a buffer does not compile (gen reports "variable peek_N is not defined").
 		wt1NFr = peek(prm, 128);
 		wt1NUs = peek(prm, 129);
-		wt1Val = wt_osc_eval(wt1EvalPhs, wt1Pos, wt1Fx, wt1A, wt1B, wt1Buf, sampBuf, wt1NFr, wt1NUs, wt1_norm) * 0.55 * sampG;
+		// Param names are invisible inside a function declared before them
+		// (gen: "variable wt1_norm is not defined", and the whole gen fails to compile).
+		wt1NGn = peek(prm, 137);
+		wt1Val = wt_osc_eval(wt1EvalPhs, wt1Pos, wt1Fx, wt1A, wt1B, wt1Buf, sampBuf, wt1NFr, wt1NUs, wt1NGn) * 0.55 * sampG;
 		sigL = wt1Val;
 		sigR = wt1Val;
 		} else {
@@ -2464,7 +2467,8 @@ voice_proc(
 			wt2B = peek(prm, 83);
 			wt2NFr = peek(prm, 130);
 			wt2NUs = peek(prm, 131);
-			wtVal = wt_osc_eval(o2EvalPhs, o2Pos, wt2Fx, wt2A, wt2B, wt2Buf, samp2Buf, wt2NFr, wt2NUs, wt2_norm);
+			wt2NGn = peek(prm, 138);
+			wtVal = wt_osc_eval(o2EvalPhs, o2Pos, wt2Fx, wt2A, wt2B, wt2Buf, samp2Buf, wt2NFr, wt2NUs, wt2NGn);
 			osc2SigL = wtVal * 0.55 * o2Gain;
 			osc2SigR = osc2SigL;
 			o2RawL = osc2SigL;
@@ -3135,7 +3139,7 @@ Buffer wt2("bswt2");
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
-Data prm(137);
+Data prm(139);
 Data mxArg(48);
 Data mxDep(48);
 Data mxBase(96);
@@ -3668,6 +3672,9 @@ poke(prm, clip(wt1_frames, 0, 8192), 128);
 poke(prm, clip(wt1_user, 0, 1), 129);
 poke(prm, clip(wt2_frames, 0, 8192), 130);
 poke(prm, clip(wt2_user, 0, 1), 131);
+// 137/138 user-wavetable peak gain. voice_proc is declared before these Params, so it peeks them.
+poke(prm, wt1_norm, 137);
+poke(prm, wt2_norm, 138);
 
 // Compute global LFO (-1..+1): 0=Sine, 1=Triangle, 2=Saw, 3=S&H (or 3=Sq, 4=S&H when 5-shape enum is used)
 prevLfoPhs = lfoPhs;
@@ -3826,9 +3833,11 @@ for (si = 0; si < 4; si += 1) {
 	poke(mwave, slWave * slAmt * slFade, 4 + si);
 	slSt = peek(mphase, 8 + si);
 	slLv = peek(mphase, 12 + si);
+	slPk = clip(peek(slbuf, 48 + si), 0, 1);
+	slFn = clip(peek(slbuf, 52 + si), 0, 1);
 	if (slTrig > 0.5) {
 		slSt = 1;
-		slLv = 0;
+		slLv = clip(peek(slbuf, 44 + si), 0, 1);
 	}
 	slA = peek(slbuf, 12 + si);
 	slD = peek(slbuf, 16 + si);
@@ -3839,17 +3848,17 @@ for (si = 0; si < 4; si += 1) {
 	slRc = exp(-1000.0 / (max(slR, 1.0) * srVal));
 	if (slSt < 0.5) slLv = slLv;
 	else if (slSt < 1.5) {
-		slLv = (slAc <= 0.0) ? 1.0 : (slLv + (1.05 - slLv) * (1.0 - slAc));
-		if (slLv >= 1.0) {
-			slLv = 1.0;
+		slLv = (slAc <= 0.0) ? slPk : (slLv + (slPk + 0.05 - slLv) * (1.0 - slAc));
+		if (slLv >= slPk) {
+			slLv = slPk;
 			slSt = 2;
 		}
 	} else if ((slSt < 2.5) && (gNow > 0.5)) {
 		slLv = slS + (slLv - slS) * slDc;
 	} else {
 		slSt = 3;
-		slLv = slLv * slRc;
-		if (slLv <= 0.00002) slSt = 0;
+		slLv = slFn + (slLv - slFn) * slRc;
+		if (abs(slLv - slFn) <= 0.00002) slSt = 0;
 	}
 	slLv = clip(slLv, 0, 1);
 	poke(mphase, slSt, 8 + si);
@@ -4039,6 +4048,19 @@ maxModEnv = 0;
 telTick = (scopeCount >= 63) ? 1 : 0;
 poke(mxMeta, -1, 1);
 feOff = 0;
+lfOff = 0;
+slot4Own = 0;
+gr0 = 0;
+gr1 = 0;
+gr2 = 0;
+gr3 = 0;
+gr4 = 0;
+gr5 = 0;
+gr6 = 0;
+gr7 = 0;
+gr8 = 0;
+gr24 = 0;
+gr25 = 0;
 if (nRoutes > 0.5) {
 	for (gi = 0; gi < 32; gi += 1) poke(mxG, 0, gi);
 }
@@ -4134,12 +4156,54 @@ for (vox = 0; vox < 16; vox += 1) {
 			aud3 = peek(vhist, vhOff + 57);
 			mod_apply(nRoutes, 1, mxAmp, slotS2, slotS3, mxVel, mxNote, mxRnd, mxNpb, mxSlide, mxPress, slotSL, slotS4, midi_pb, midi_at, midi_mod, markC, srVal, vhOff, modmap, prm, vhist, mxArg, mxDep, mxBase, mxSlot, mxG, mxMeta, formant, sp_shift, sp_bend, samp_gain, unison_voices, grain_size, fr_sync, tempo, sub_knock_slope, aud1, aud2, aud3);
 			if (mxAmp >= peek(mxMeta, 1)) {
+				// A variable index does not update Data mxG (measured: offset 0.95 computed, index 1 stayed 0;
+				// a literal poke index did land). Sum into plain values and store them with literal indices.
+				gr0 = 0;
+				gr1 = 0;
+				gr2 = 0;
+				gr3 = 0;
+				gr4 = 0;
+				gr5 = 0;
+				gr6 = 0;
+				gr7 = 0;
+				gr8 = 0;
+				gr24 = 0;
+				gr25 = 0;
+				for (gri = 0; gri < nRoutes; gri += 1) {
+					gCode = peek(modmap, 1 + gri * 6);
+					if ((gCode >= 300) && (gCode < 1000)) {
+						gSrc = peek(modmap, 1 + gri * 6 + 1);
+						gDep = peek(modmap, 1 + gri * 6 + 2);
+						gLo = peek(modmap, 1 + gri * 6 + 3);
+						gHi = peek(modmap, 1 + gri * 6 + 4);
+						gSm = peek(modmap, 1 + gri * 6 + 5);
+						gId = gSrc;
+						if (gSrc >= 31.5) gId = gSrc - 32;
+						gSig = mod_src(gId, mxAmp, slotS2, slotS3, slotSL, slotS4, mxVel, mxNote, midi_pb, midi_at, midi_mod, mxRnd, mxNpb, mxSlide, mxPress, aud1, aud2, aud3);
+						gSig = mod_pol(gSrc, gSig);
+						gOff = gDep * gSig * (gHi - gLo);
+						if (gSm > 0.5) gOff = peek(vhist, vhOff + 208 + gri);
+						gIx = gCode - 300;
+						if (gIx < 0.5) gr0 = gr0 + gOff;
+						else if (gIx < 1.5) gr1 = gr1 + gOff;
+						else if (gIx < 2.5) gr2 = gr2 + gOff;
+						else if (gIx < 3.5) gr3 = gr3 + gOff;
+						else if (gIx < 4.5) gr4 = gr4 + gOff;
+						else if (gIx < 5.5) gr5 = gr5 + gOff;
+						else if (gIx < 6.5) gr6 = gr6 + gOff;
+						else if (gIx < 7.5) gr7 = gr7 + gOff;
+						else if (gIx < 8.5) gr8 = gr8 + gOff;
+						else if ((gIx > 23.5) && (gIx < 24.5)) gr24 = gr24 + gOff;
+						else if ((gIx > 24.5) && (gIx < 25.5)) gr25 = gr25 + gOff;
+					}
+				}
 				poke(mxG, peek(mxArg, 42), 18);
 				poke(mxG, peek(mxArg, 45), 19);
 				poke(mxG, peek(mxArg, 43), 20);
 				poke(mxG, peek(mxArg, 46), 21);
 				poke(mxG, peek(mxArg, 44), 22);
 				poke(mxG, peek(mxArg, 47), 23);
+				slot4Own = slotS4;
 			}
 			pitchUse = mod_take(nRoutes, 0, pitch_st, -36, 36, mxArg);
 			fineUse = mod_take(nRoutes, 1, fine_cents, -100, 100, mxArg);
@@ -4183,7 +4247,10 @@ for (vox = 0; vox < 16; vox += 1) {
 			mrelMs = mod_ms(nRoutes, 29, mrel_ms, 1, 10000, mxArg, mod_global_time);
 			mrelUse = mrelCoef;
 			if (mrelMs != mrel_ms) mrelUse = exp(-1000.0 / (max(mrelMs, 1.0) * srVal));
-			if (mxAmp >= peek(mxMeta, 1)) feOff = peek(mxArg, 22);
+			if (mxAmp >= peek(mxMeta, 1)) {
+				feOff = peek(mxArg, 22);
+				lfOff = peek(mxArg, 19);
+			}
 			envSt = peek(vhist, vhOff + 200);
 			envLv = peek(vhist, vhOff + 201);
 			envPr = peek(vhist, vhOff + 202);
@@ -4195,6 +4262,7 @@ for (vox = 0; vox < 16; vox += 1) {
 			envRel = mod_ms(nRoutes, 35, env3_rel_ms, 1, 60000, mxArg, mod_global_time);
 			envInit = clip(env3_init + peek(mxArg, 39), 0, 1);
 			envPeak = clip(env3_peak + peek(mxArg, 40), 0, 1);
+			envFin = clip(env3_final + peek(mxArg, 41), 0, 1);
 			if ((envTrig != envPr) && (envGate > 0.5)) {
 				envSt = 1;
 				envLv = envInit;
@@ -4215,10 +4283,10 @@ for (vox = 0; vox < 16; vox += 1) {
 				envLv = envSus + (envLv - envSus) * envDC;
 			} else {
 				envSt = 4;
-				envLv = envLv * envRC;
+				envLv = envFin + (envLv - envFin) * envRC;
+				if (abs(envLv - envFin) <= 0.00002) envSt = 0;
 			}
 			envLv = clip(envLv, 0, 1);
-			if (envLv <= 0.00002) envSt = 0;
 			poke(vhist, envSt, vhOff + 200);
 			poke(vhist, envLv, vhOff + 201);
 		}
@@ -4246,6 +4314,17 @@ for (vox = 0; vox < 16; vox += 1) {
 	poke(vres, voA, vox * 3 + 1);
 	poke(vres, voM, vox * 3 + 2);
 }
+poke(mxG, gr0, 0);
+poke(mxG, gr1, 1);
+poke(mxG, gr2, 2);
+poke(mxG, gr3, 3);
+poke(mxG, gr4, 4);
+poke(mxG, gr5, 5);
+poke(mxG, gr6, 6);
+poke(mxG, gr7, 7);
+poke(mxG, gr8, 8);
+poke(mxG, gr24, 24);
+poke(mxG, gr25, 25);
 if (nRoutes > 0.5) {
 	for (gi = 0; gi < 32; gi += 1) poke(mxPrev, peek(mxG, gi), gi);
 } else {
@@ -4413,6 +4492,7 @@ if (abs(gAmt - 1.0) > 1e-6) {
 	lfUse = lfo_filt * gAmt;
 }
 if (abs(feOff) > 1e-12) feUse = (filt_env_amt + feOff) * gAmt;
+if (abs(lfOff) > 1e-12) lfUse = (lfo_filt + lfOff) * gAmt;
 cutBase = filt_cutoff;
 if ((nRoutes > 0.5) && (abs(peek(mxG, 0)) > 1e-8)) cutBase = clip(filt_cutoff + peek(mxG, 0), 20, 20000);
 targetCut = cutBase * pow(2.0, clip(feUse * maxModEnv * 5.0 + lfoSig * lfUse * 3.5, -6, 6));
@@ -4434,6 +4514,15 @@ drivenR = sumR + (satR - sumR) * driveAmt;
 g = tan(3.141592653589793 * effCutHz / srVal);
 resUse = filt_res;
 if ((nRoutes > 0.5) && (abs(peek(mxG, 1)) > 1e-12)) resUse = clip(filt_res + peek(mxG, 1), 0, 0.95);
+mxMap0 = peek(modmap, 0);
+mxTy4 = peek(slbuf, 3);
+mxWv4 = peek(msegw, 3 * 1024 + 512);
+poke(scope, nRoutes, 228);
+poke(scope, slot4Own, 229);
+poke(scope, resUse, 230);
+poke(scope, mxMap0, 231);
+poke(scope, mxTy4, 232);
+poke(scope, mxWv4, 233);
 k = 2.0 - 1.92 * pow(clip(resUse, 0, 0.96), 0.7);
 k = max(k, 0.05);
 g = clip(g, 0.0001, 80.0);
@@ -4777,6 +4866,10 @@ if (scopeCount >= 64) {
 	for (tvi = 0; tvi < 16; tvi += 1) {
 		mgPos = peek(mvpos, tvi * 4 + viewSi);
 		poke(scope, mgPos, 208 + tvi);
+	}
+	for (si = 0; si < 4; si += 1) {
+		slotSig = peek(mwave, 8 + si);
+		poke(scope, slotSig, 224 + si);
 	}
 	poke(scope, spawnSum, 48);
 	poke(scope, rootDynOn, 49);

@@ -256,6 +256,14 @@ function modCode(t) {
 
 function modCellKey(mode, row, src) { return mode + ":" + row + ":" + src; }
 
+// Same choice as the gen's slot_out: 0 keeps the native signal, 1 the alternate, 2 the MSEG sample.
+function modSlotSignal(ty, native, alt, msegV) {
+    var t = Number(ty) || 0;
+    if (t > 1.5) return msegV;
+    if (t > 0.5) return alt;
+    return native;
+}
+
 // Rows are {1:[keys], 2:[], 3:[], 4:[]}. depth maps "mode:row:src" -> -100..100.
 // polar maps the same key to 1 when the cell is flipped off its natural polarity (src id + 32).
 // globalAmt is the Global Amount percent (100 = unity). Legacy cells are skipped.
@@ -433,6 +441,6 @@ if (nodeModule && nodeModule.exports) {
         modSources: modSources, modLegacyParam: modLegacyParam, modDenied: modDenied, modTarget: modTarget,
         modPack: modPack, modOffset: modOffset, modSmooth: modSmooth, modAudit: modAudit,
         modDefaultRows: modDefaultRows, modEncode: modEncode, modDecode: modDecode, modTargetKeys: modTargetKeys,
-        modLabel: modLabel, modCode: modCode, modCellKey: modCellKey
+        modLabel: modLabel, modCode: modCode, modCellKey: modCellKey, modSlotSignal: modSlotSignal
     };
 }

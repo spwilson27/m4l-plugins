@@ -67,6 +67,35 @@ assert.ok(gen.includes("if (nRoutes > 0.5)"), "routes are skipped when the map i
 assert.ok(gen.includes("mod_restore("), "prm writes are restored");
 assert.ok(gen.includes("stB + 63"), "osc 1 audio is stored for the next sample");
 assert.ok(gen.includes("slot_out("), "slot type selects the modulator");
+assert.strictEqual(mx.modSlotSignal(0, 0.2, 0.4, 0.8), 0.2, "type 0 keeps the native signal");
+assert.strictEqual(mx.modSlotSignal(1, 0.2, 0.4, 0.8), 0.4, "type 1 selects the envelope");
+assert.strictEqual(mx.modSlotSignal(2, 0.2, 0.4, 0.8), 0.8, "type 2 selects the MSEG sample");
+
+const resRoute = mx.modPack({ 1: ["filt_res"], 2: [], 3: [], 4: [] }, { "1:0:4": 100 }, 100);
+assert.strictEqual(resRoute[0], 1, "MSEG to filt_res packs one route");
+assert.strictEqual(resRoute[1], 301, "filt_res is global index 1");
+assert.strictEqual(resRoute[2], 4, "column MSEG is source 4");
+assert.ok(Math.abs(resRoute[3] - 1) < 1e-9, "depth 100 at global 100% is full scale");
+assert.strictEqual(resRoute[4], 0);
+assert.strictEqual(resRoute[5], 0.95);
+const resAtPeak = mx.modOffset(0.209, 0, 0.95, 1, 1);
+assert.ok(Math.abs(resAtPeak - 0.95) < 1e-9, "a full MSEG adds the resonance span and clips");
+const resAtZero = mx.modOffset(0.209, 0, 0.95, 1, 0);
+assert.strictEqual(resAtZero, 0.209, "an MSEG sample of 0 leaves resonance alone");
+const resEnv = mx.modOffset(0.209, 0, 0.95, 1, 0.7);
+assert.ok(resEnv > 0.8, "a held envelope at sustain moves resonance");
+
+for (const [key, t] of Object.entries(mx.MOD_TARGETS)) {
+    if (t.op === "g") assert.ok(gen.includes("peek(mxG, " + t.ix + ")"), key + " is read from the global buffer");
+    if (t.op === "b") assert.ok(gen.includes("peek(mxPrev, " + t.ix + ")"), key + " is read from the previous-sample buffer");
+}
+assert.ok(gen.includes("lfOff = peek(mxArg, 19)"), "a matrix route to lfo_filt is applied");
+assert.ok(gen.includes("env3_final + peek(mxArg, 41)"), "a matrix route to env 3 final is applied");
+assert.ok(gen.includes("peek(slbuf, 48 + si)"), "slot envelopes attack toward the drawn peak");
+assert.ok(gen.includes("peek(msegw, si * 1024"), "each slot reads its own MSEG waveform");
+assert.ok(gen.includes("poke(scope, slotSig, 224 + si)"), "slot envelope levels are on the scope");
+assert.ok(gen.includes("poke(scope, resUse, 230)"), "resonance used by the filter is on the scope");
+assert.ok(gen.includes("slot4Own = slotS4"), "the owning voice records slot 4's signal");
 assert.strictEqual((gen.match(/mod_apply\(/g) || []).length, 3, "mod_apply is defined once and called twice");
 const srcFn = gen.slice(gen.indexOf("mod_src("), gen.indexOf("mod_apply("));
 assert.strictEqual((srcFn.match(/return /g) || []).length, 1, "mod_src has one return");
