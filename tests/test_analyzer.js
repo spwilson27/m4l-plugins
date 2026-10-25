@@ -254,10 +254,19 @@ for (const devName of deviceNames) {
     ok(byId["obj-plugin"].text === "plugin~" && byId["obj-plugin"].varname === "an_plugin", devName + ": plugin~");
     ok(byId["obj-plugout"].text === "plugout~" && byId["obj-plugout"].varname === "an_plugout", devName + ": plugout~");
     ok(byId["obj-gen-in"].text === "gate 1 1" && byId["obj-gen-in"].varname === "an_genin", devName + ": message hub is gate 1 1");
-    ok(byId["obj-buf"].text.includes("#0-analyzerscope") && byId["obj-buf"].text.includes("17952"), devName + ": scope buffer");
+    ok(byId["obj-buf"].text.includes("---analyzerscope") && byId["obj-buf"].text.includes("17952"), devName + ": scope buffer is ---analyzerscope @samps 17952");
+    ok(byId["obj-msg-scope"].text === "scope ---analyzerscope", devName + ": scope bind is ---analyzerscope");
+    ok(byId["obj-msg-setbuf"].text === "setbuffer ---analyzerscope", devName + ": setbuffer is ---analyzerscope");
+    for (const b of boxes) {
+        const t = b.text || "";
+        if (/^buffer~ /.test(t) || /^scope /.test(t) || /^setbuffer /.test(t)) {
+            ok(!/#0(?![0-9])/.test(t), devName + ": no literal #0 in " + t);
+        }
+    }
     ok(!boxes.some((b) => b.maxclass === "gen~" || /^gen~/.test(b.text || "") || b.maxclass === "gen.codebox~"), devName + ": no static gen~");
     const viz = byId["obj-viz"];
     ok(viz.varname === "AnalyzerViz" && viz.maxclass === "v8ui", devName + ": face is AnalyzerViz");
+    ok(!/#0-/.test(viz.textfile.text.replace(/\/\/[^\n]*/g, "")), devName + ": no #0- in the v8ui script code");
     ok(viz.saved_attribute_attributes.valueof.parameter_type === 3, devName + ": AnalyzerState is a blob");
     ok(viz.saved_attribute_attributes.valueof.parameter_longname === "AnalyzerState", devName + ": blob name");
     ok(viz.textfile.text.includes("GEN_DSP_TEXT") && viz.textfile.text.includes("GEN_DSP_HASH"), devName + ": the gen patch is embedded");
