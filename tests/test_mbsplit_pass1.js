@@ -11,7 +11,8 @@
  *   src/mbsplit_ui.js is not invertible at low gains.
  * Defect 2 (DSP display mirror / AGENTS.md architecture): the FIR
  *   lowpass display approximation in src/mbsplit_config.js exceeds
- *   its stated 0.1 tolerance against the real kernel.
+ *   its stated 0.1 tolerance against the real kernel — including at
+ *   MBSPLIT_DEFAULT_F1 (120 Hz), a legal Live F2 value.
  */
 "use strict";
 
@@ -91,26 +92,52 @@ check("volume slider mapping has no dead gap (defect: sliderNormToGainDb jumps f
     );
 });
 
+function firApproxWorst(fc, sr) {
+    const D = cfg.firLatencyForSampleRate(sr);
+    const kh = cfg.designFirHalfKernel(fc, sr, D);
+    let worst = { d: 0 };
+    for (let i = 0; i <= 400; i++) {
+        const f = 20 * Math.pow(1000, i / 400);
+        if (f > sr / 2) continue;
+        const real = cfg.evalFirHalfKernel(kh, f, sr);
+        const approx = cfg.computeFirLowpassMag(f, fc, sr);
+        const d = Math.abs(real - approx);
+        if (d > worst.d) worst = { d: d, f: +f.toFixed(1), fc: fc, sr: sr, real: +real.toFixed(3), approx: +approx.toFixed(3) };
+    }
+    return worst;
+}
+
 check("FIR display approximation stays within 0.1 of the real kernel (defect: computeFirLowpassMag exceeds its stated tolerance at low crossovers)", function () {
     let worst = { d: 0 };
+    const offenders = [];
     for (const sr of [48000, 96000]) {
-        const D = cfg.firLatencyForSampleRate(sr);
         for (const fc of [40, 120, 300, 800, 2000, 4500, 9000]) {
-            const kh = cfg.designFirHalfKernel(fc, sr, D);
-            for (let i = 0; i <= 400; i++) {
-                const f = 20 * Math.pow(1000, i / 400);
-                if (f > sr / 2) continue;
-                const real = cfg.evalFirHalfKernel(kh, f, sr);
-                const approx = cfg.computeFirLowpassMag(f, fc, sr);
-                const d = Math.abs(real - approx);
-                if (d > worst.d) worst = { d: d, f: +f.toFixed(1), fc: fc, sr: sr, real: +real.toFixed(3), approx: +approx.toFixed(3) };
-            }
+            const w = firApproxWorst(fc, sr);
+            if (w.d > worst.d) worst = w;
+            if (w.d > 0.1) offenders.push("fc=" + fc + "/sr=" + sr + " d=" + w.d.toFixed(3));
         }
     }
     assert.ok(
         worst.d <= 0.1,
         "computeFirLowpassMag deviates from the real FIR kernel by " + worst.d.toFixed(3) +
             " (limit 0.1) at f=" + worst.f + " Hz, fc=" + worst.fc + ", sr=" + worst.sr +
+            " (real " + worst.real + " vs approx " + worst.approx + ")" +
+            (offenders.length ? "; offenders: " + offenders.join(", ") : "")
+    );
+});
+
+check("FIR display approximation stays within 0.1 at DEFAULT_F1=120 Hz (defect: even the default crossover exceeds the AGENTS.md contract)", function () {
+    const fc = cfg.MBSPLIT_DEFAULT_F1;
+    assert.strictEqual(fc, 120, "expected MBSPLIT_DEFAULT_F1 === 120");
+    let worst = { d: 0 };
+    for (const sr of [48000, 96000]) {
+        const w = firApproxWorst(fc, sr);
+        if (w.d > worst.d) worst = w;
+    }
+    assert.ok(
+        worst.d <= 0.1,
+        "computeFirLowpassMag at DEFAULT_F1=" + fc + " Hz exceeds 0.1: worst " + worst.d.toFixed(3) +
+            " at f=" + worst.f + " Hz, sr=" + worst.sr +
             " (real " + worst.real + " vs approx " + worst.approx + ")"
     );
 });

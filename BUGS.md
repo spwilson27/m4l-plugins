@@ -2,6 +2,18 @@
 
 Branch: `bugsweep/mbsplit-pass1` · Worktree: `/private/tmp/bugsweep/mbsplit` · base HEAD `d72ee17`
 
+## Pass 2 review (kept 2 / dropped 0)
+
+Reviewed Pass 1 claims against source, PARAM_SPECS, AGENTS.md, and host measurements.
+**Both bugs kept.** No drops. Production code untouched.
+
+| Bug | Decision | Why |
+|---|---|---|
+| 1 Volume slider dead zone | **KEEP** | `sliderNormToGainDb` snaps `norm <= 0.015` to −70 while `gainDbToSliderNorm` maps (−70, −62.4) into that zone. Wired as inverse pair on click→drag. Live param / gen allow −70…+18; gen silence floor is `gain <= -69.5`; `formatGainDb(-65)` prints `"-65.0 dB"`. Real functional UI bug. |
+| 2 FIR display approx > 0.1 | **KEEP** | AGENTS.md states unqualified "within 0.1 of the real kernel". Face draws Dynamic Phase bands via `computeBandMagnitudesAtFreq` → `computeFirLowpassMag`. F2/F3 PARAM_SPECS allow 20…20000 Hz. Measured worst error **0.113 at fc=120** (default F1 / legal F2) and **0.180 at fc=40** (48k/96k). Host suite only checks fc∈{800,4500} where error≈0.05. Real display/architecture-contract bug. |
+
+Reds remain in `tests/test_mbsplit_pass1.js` (must stay RED on unfixed HEAD). Host gate must stay green.
+
 ## Verdict
 
 **Two credible bugs found.** Both have RED tests in `tests/test_mbsplit_pass1.js`
@@ -53,19 +65,21 @@ linear magnitude at low crossovers, contradicting AGENTS.md.
 Kaiser FIR kernel, "**within 0.1 of the real kernel**". Against
 `evalFirHalfKernel(designFirHalfKernel(fc, sr, D))` with
 `D = firLatencyForSampleRate(sr)`, the worst error on this tree is
-**0.180** (f ≈ 108.7 Hz, fc = 40, sr = 96000; real ≈ 0.81 vs approx ≈ 0.63).
-Error already exceeds 0.1 at the default-ish F1 = 120 Hz. The error grows when
-the crossover approaches / falls below the transition half-width `sr / D`,
-where the `lo <= 0` normalization branch in `computeFirLowpassMag` runs
-(`src/mbsplit_config.js:273`).
+**0.180** (f ≈ 108.7 Hz, fc = 40, sr = 48000/96000; real ≈ 0.79 vs approx ≈ 0.61).
+Error already exceeds 0.1 at the default F1 / legal F2 = 120 Hz (**0.113**).
+The error grows when the crossover approaches / falls below the transition
+half-width `sr / D` (375 Hz at 48/96 kHz), where the `lo <= 0` normalization
+branch in `computeFirLowpassMag` runs (`src/mbsplit_config.js:273`).
 
 **Why the host suite is green.** `tests/test_mbsplit.js` §1b only checks
 fc ∈ {800, 4500} at 48 kHz — well above `sr/D = 375` Hz — so the lo≤0 branch
-never runs and the 0.1 assert stays satisfied.
+never runs and the 0.1 assert stays satisfied (measured worst ≈ 0.05 there).
 
 **Red test.** `tests/test_mbsplit_pass1.js` — sweeps fc ∈
 {40, 120, 300, 800, 2000, 4500, 9000} at 48 kHz and 96 kHz over a log-frequency
-grid and asserts max |real − approx| ≤ 0.1.
+grid and asserts max |real − approx| ≤ 0.1; also asserts explicitly at
+`MBSPLIT_DEFAULT_F1` (120 Hz) so a default-only miss cannot hide behind the
+low-fc worst case.
 
 ## Audited and cleared (do not re-hunt)
 
