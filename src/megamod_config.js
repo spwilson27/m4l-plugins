@@ -946,7 +946,7 @@ function sanitizeMod(m, slot) {
     base.name = typeof m.name === "string" && m.name ? m.name.slice(0, 32) : base.name;
     if (type === MOD_ENV && /^Envelope( \d+)?$/.test(base.name)) base.name = base.name.replace("Envelope", "Follower"); // the envelope follower was renamed (names are not editable, so these are defaults)
     base.color = clamp(Math.round(num(m.color, base.color)), 0, MOD_COLORS.length - 1);
-    base.enabled = m.enabled === 0 ? 0 : 1;
+    base.enabled = m.enabled === 0 || m.enabled === false ? 0 : 1;
     const src = m.p || {};
     for (const k of Object.keys(base.p)) base.p[k] = clampParam(k, num(src[k], base.p[k]));
     if (base.p.loopEnd < base.p.loopStart + 0.05) base.p.loopEnd = Math.min(1, base.p.loopStart + 0.05);
