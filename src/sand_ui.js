@@ -182,7 +182,7 @@ function set_fpos(v) {
 }
 
 function set_outmode(v) {
-    curOutMode = clamp(Math.round(Number(v) || 0), 0, 3);
+    curOutMode = clamp(Math.round(Number(v) || 0), 0, 2);
     requestRedraw();
 }
 
@@ -333,6 +333,12 @@ function normToFreq(n01) {
 function onclick(x, y) {
     dragActive = true;
     ondrag(x, y);
+}
+
+function onidleout() {
+    // End the Amount/Freq XY drag; without this dragActive sticks true and
+    // later cursor moves keep writing amount/freq with no button held.
+    dragActive = false;
 }
 
 function ondrag(x, y) {
