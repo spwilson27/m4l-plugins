@@ -295,7 +295,7 @@ function anTakeScope() {
     var head = hdr[AN_HDR_SCOPE] | 0;
     var ms = AN_SCOPE_MS[anScopeTime] || 20;
     var count = Math.max(32, Math.round(anSr * ms / 1000));
-    if (count > AN_SCOPE_N / 2) count = (AN_SCOPE_N / 2) | 0;
+    if (count > AN_SCOPE_N) count = AN_SCOPE_N | 0;
     var want = Math.min(AN_SCOPE_N, count * 2);
     var l = anReadWrapped(AN_SCOPE_L, AN_SCOPE_N, head, want);
     var r = anReadWrapped(AN_SCOPE_R, AN_SCOPE_N, head, want);

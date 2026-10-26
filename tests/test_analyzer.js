@@ -154,8 +154,8 @@ ok(cfg.anThirdBand(20) === 0 && cfg.anThirdBand(20000) === 30, "the band edges c
 const power = new Array(4096).fill(0);
 power[171] = 4;
 const bands = cfg.anBandEnergies(power, 8192, 48000);
-ok(bands[cfg.anThirdBand(171 * 48000 / 8192)] === 4, "a bin lands in its third-octave band");
-ok(bands.reduce((s, v) => s + v, 0) === 4, "other bands stay empty");
+ok(bands[cfg.anThirdBand(171 * 48000 / 8192)] === 4 / 1.5, "a bin lands in its third-octave band");
+ok(bands.reduce((s, v) => s + v, 0) === 4 / 1.5, "other bands stay empty");
 
 ok(cfg.anEncodeOrder([0, 1, 2, 3]) === 123, "default order encodes as 123");
 assert.deepStrictEqual(cfg.anDecodeOrder(123), [0, 1, 2, 3]);

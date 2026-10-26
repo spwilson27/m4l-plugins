@@ -166,15 +166,15 @@ function anScopeGeom(panel) {
 }
 
 function anLogX(freq, x, w) {
-    var lo = Math.log(40);
-    var hi = Math.log(18000);
-    var f = anClamp(freq, 40, 18000);
+    var lo = Math.log(20);
+    var hi = Math.log(20000);
+    var f = anClamp(freq, 20, 20000);
     return x + (Math.log(f) - lo) / (hi - lo) * w;
 }
 
 function anXToFreq(px, x, w) {
-    var lo = Math.log(40);
-    var hi = Math.log(18000);
+    var lo = Math.log(20);
+    var hi = Math.log(20000);
     var t = w > 0 ? anClamp((px - x) / w, 0, 1) : 0;
     return Math.exp(lo + t * (hi - lo));
 }
@@ -544,6 +544,10 @@ function anBandEnergies(power, nfft, sr) {
         var idx = anThirdBand(bin * sr / nfft);
         if (idx >= 0) bands[idx] += power[bin] || 0;
     }
+    // Divide out the Hann window power/peak ratio (1.5): a bin-centred tone
+    // spreads its power over neighbouring bins, so the raw band sum over-reads
+    // by 10*log10(1.5) = +1.76 dB versus the (exact) peak-bin Heat scale.
+    for (i = 0; i < 31; i++) bands[i] /= 1.5;
     return bands;
 }
 
