@@ -2133,3 +2133,75 @@ Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code h
 - **APPROVED.** Bug 1 fix confirmed minimal and correct: `src/mseg_edit.js:85` gates the bounding-union push with `dx !== 0 && sweepIntervals.length >= 2`; per-point travel pushes (L79-80) and the filter (L93-103) are unchanged, so dx !== 0 horizontal-sweep deletes remain. RED test still asserts middle point id 3 survives a pure vertical multi-select of ids 2+4 (primary at x=0.25, y to 0.55), length stays 5, and selected points keep x=0.25/0.75. No drive-by refactors; no test weakening.
 - Host gate re-verified green on tip 3c91f90: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
 - No follow-up code changes in this pass; note-only commit next. Not merged to main.
+# Better Sampler — Bug Sweep Pass 1 (bugs + red tests only, no fixes)
+
+Red tests: `tests/test_sampler_bugsweep.js` (created this pass). No `src/` files were modified — fixes are Pass 3.
+
+## Bug 1: State save/load drops slice markers past 32 and loads a number as the sample path
+
+- **Where:** `src/sampler_ui.js` — `getvalueof()` lines 1361–1366 writes
+  `sliceMarkers.length` uncapped, every marker, then the sample path;
+  `setvalueof()` lines 1395–1406 clamps the restored count with
+  `if (sCount > 32) sCount = 32;` and then reads the sample path at
+  `pathAt = 11 + sCount` — the slot computed from the *clamped* count, not
+  the count actually stored in the blob.
+- **What's wrong:** With more than 32 markers in the blob, restore keeps
+  only the first 32 markers and reads the 33rd marker value (a number,
+  e.g. `5000`) as the sample path string: `sampleFilePath = "5000"`,
+  `sampleFileName = "5000"`, and `outlet(0, "load_sample", "5000")`.
+- **Reachable in normal use:** Slice Divisions `slice_div` is 1..64
+  (`scripts/build_sampler.py:252`) and `sliceDivisions`
+  (`src/sampler_config.js:371`) returns one marker per division, so 64
+  divisions = 64 markers. Beats mode caps at 256 markers
+  (`sliceBeats`, `src/sampler_config.js:384`). Manual markers via
+  `addSliceMarker` (`src/sampler_config.js:705`) have no count cap.
+- **User-visible effect:** Slice a sample into more than 32 slices, save
+  the Live Set or a preset, reload — every slice after the 32nd is gone
+  and the device tries to load a sample literally named e.g. "5000"
+  instead of the real file, so the restored device plays the wrong (or
+  no) sample with a truncated slice map.
+- **Test:** `tests/test_sampler_bugsweep.js`, Bug 1 block —
+  "round-trip keeps all 64 slice markers" and the three assertions after
+  it (marker 40, sample path, `load_sample` emission). The test seeds the
+  sandbox face with `sliceDivisions(0, 1, 64)` markers and the path
+  `/Users/test/Drums/Loop 64.wav`, round-trips
+  `getvalueof()` → `setvalueof()`, and asserts all 64 markers and the
+  exact path survive.
+- **Observed failure** (`node tests/test_sampler_bugsweep.js`, baseline):
+
+  ```
+  FAIL: round-trip keeps all 64 slice markers, got 32
+  FAIL: marker 40 survives the round-trip (want 0.625, got undefined)
+  FAIL: sample path survives the round-trip, got "5000"
+  FAIL: restore emits load_sample with the real path, got [[0,"load_sample","5000"]]
+  4 passed, 4 failed
+  ```
+
+  (The 4 passes are the setup checks: 64 markers generated, count and
+  blob length stored in full, path stored last — proving the loss happens
+  in `setvalueof`, not in what was saved.)
+
+## Checked, no bug filed
+
+- **Loop crossfade scaling chain** — genexpr `Param loop_xfade(0.05,
+  min=0, max=0.45)`, UI `storeParam` converts percent via `n * 0.0045`
+  clamped 0..0.45, `emitRegionParams` sends `(curXfade / 0.45)` as
+  percent, face norm is `curXfade / 0.45` with setter `n * 0.45`, state
+  blob clamps to 0.45 on restore. Consistent end to end.
+- **`src/mseg_editor.js` `getvalueof`/`setvalueof`** — v2 point stride 4
+  and v1 stride 3 bounds checks (`idx + 3 < arr.length` / `idx + 2 <
+  arr.length`) are correct for the last point; header minimum lengths
+  (14 for v2, 9 for v1) match the 2-point minimums.
+- **`src/sampler_modmatrix.js`** — `modPack` code ranges, legacy-cell
+  skipping, global-amount scaling (0% = no modulation) and
+  `modEncode`/`modDecode` row persistence read consistently; the file is
+  headed "for Better Sampler Reactive 2", so it was only checked for
+  issues that would also affect the original device. None filed.
+- **`src/sampler_config.js` slicers** — `sliceDivisions`, `sliceBeats`,
+  `sliceOnsets`, `slicePitches`, `addSliceMarker`/`removeSliceMarker`,
+  `activeSliceStarts`, `sliceIndexAt` are covered by
+  `tests/test_sampler_slicing.js`; their counts/caps are the *input* to
+  Bug 1, not a bug in themselves.
+- **Face marker drag clamp** (`src/sampler_face.js:1288–1290`) — markers
+  are created with ≥ 0.002 spacing (`addSliceMarker` dedupe), so the
+  `lo`/`hi` drag window cannot invert through normal creation paths.
