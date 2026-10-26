@@ -2133,3 +2133,36 @@ Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code h
 - **APPROVED.** Bug 1 fix confirmed minimal and correct: `src/mseg_edit.js:85` gates the bounding-union push with `dx !== 0 && sweepIntervals.length >= 2`; per-point travel pushes (L79-80) and the filter (L93-103) are unchanged, so dx !== 0 horizontal-sweep deletes remain. RED test still asserts middle point id 3 survives a pure vertical multi-select of ids 2+4 (primary at x=0.25, y to 0.55), length stays 5, and selected points keep x=0.25/0.75. No drive-by refactors; no test weakening.
 - Host gate re-verified green on tip 3c91f90: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
 - No follow-up code changes in this pass; note-only commit next. Not merged to main.
+
+---
+
+# Reciprocator — Bug Sweep (pass 1 reds)
+
+Branch: `bugsweep/reciprocator`
+Worktree: `/tmp/bugsweep/reciprocator`
+Baseline: `69699f7` (pre-bugsweep; prior Delay/linkAmt/gateMix/gate-curve fixes already present and green)
+
+## Pass 1 outcome
+
+| Claim | Verdict | Notes |
+|-------|---------|-------|
+| Bug A — `#0-recipscope` shared across instances | **CLAIMED (RED)** | Top-level Live device; `#0` not expanded. Same class as Amp+/EnvTrig/Cepstra/Tiny Space/mbsplit. |
+| Prior bugs 1–4 (gate curve / lookahead / Detect link / gateMix) | Cleared | Already fixed at baseline; `node tests/test_reciprocator.js` → ok; section 9 green. |
+| Gate/Ceiling viz drag undo | Noted, not claimed | Outlets `set` into live.dials with no `pushUndoState`; live.param undo path differs from blob MSEG rule — not promoted. |
+| Gen vs JS gate/ceiling mirror | Cleared | `computeGateFactor` / `computeRecipGain` match `gate_smooth` / recip path; Amount-0 mute contract holds. |
+
+**Claimed 1 / noted 1 / cleared prior 4.**
+
+## Bug A (claimed): Scope buffer `#0-recipscope` is shared by every instance
+
+- **Where:** `scripts/build_reciprocator.py` (`buffer~ #0-recipscope @samps 32`, `scope #0-recipscope`, `setbuffer #0-recipscope`); comments in `src/reciprocator_core.genexpr` / `src/reciprocator_config.js`; existing `tests/test_reciprocator.js` still requires `#0-`.
+- **Evidence:** AGENTS.md documents that Live does not expand `#0` in a top-level device patcher (Multiband Split / Glitch / Delay+). Peer devices migrated to `---…`. Reciprocator is a top-level `.amxd`, so every instance writes the same 32-sample scope ring and faces paint each other's telemetry.
+- **Impact:** Multi-instance sets show wrong ENV/OUT/gate meters; deferred DSP frame counter is also shared.
+- **Red:** `tests/test_reciprocator_bugsweep.js` — asserts build + amxd use `---recipscope` and contain no `#0-recipscope`.
+- **Host proof (pass 1):**
+  ```
+  node tests/test_reciprocator.js → test_reciprocator: ok
+  node tests/test_reciprocator_bugsweep.js → AssertionError Bug A RED (exit 1)
+  ```
+- **Status:** RED. Pass 3 will flip build/bind messages to `---recipscope`, rebuild the amxd, update `test_reciprocator.js` `#0-` asserts, and clear gen/config comments.
+
