@@ -440,6 +440,10 @@ function ensureValidSelection() {
       return;
     }
   }
+  // The filter hid every point: clear to the strip no-selection value instead of
+  // leaving the selection (and its similarity-tour anchor) on a hidden point.
+  selectedIndex = -1;
+  anchorIndex = -1;
 }
 
 function clampSavedScroll() {
@@ -755,10 +759,16 @@ function minimap_batch(offset, ...flat) {
     let mask = Math.floor(catField / 16);
     if (catIdx >= CAT_ID_LIST.length) catIdx = -1;
     if (mask === 0 && catIdx >= 0 && catField < 16) mask = 1 << catIdx;
-    const durationMs = Number(flat[i + 3]) || 200;
-    const brightness = Number(flat[i + 4]) || 50;
-    const druminess = stride === 8 ? (Number(flat[i + 5]) || 65) : 65;
-    const tonalPct = stride === 8 ? (Number(flat[i + 6]) || 50) : 50;
+    // The engine sends rounded numbers and 0 is a real value (dark / tonal / noise-like / empty file),
+    // so default only when the field is missing or non-numeric — never with ||, which swallows 0.
+    const durationRaw = Number(flat[i + 3]);
+    const durationMs = Number.isFinite(durationRaw) ? durationRaw : 200;
+    const brightnessRaw = Number(flat[i + 4]);
+    const brightness = Number.isFinite(brightnessRaw) ? brightnessRaw : 50;
+    const drumRaw = Number(flat[i + 5]);
+    const druminess = stride === 8 && Number.isFinite(drumRaw) ? drumRaw : 65;
+    const tonalRaw = Number(flat[i + 6]);
+    const tonalPct = stride === 8 && Number.isFinite(tonalRaw) ? tonalRaw : 50;
     const name = stride === 8
       ? String(flat[i + 7] || `Sample_${offset + i / stride}`)
       : (stride === 6 ? String(flat[i + 5] || `Sample_${offset + i / stride}`) : `Sample_${offset + i / stride}`);
