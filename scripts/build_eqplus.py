@@ -407,7 +407,7 @@ def control_specs():
                 "enums": MODES,
                 "init": 0,
                 "w": 110,
-                "help": f"Filter type for band {n}: Off, low cut (12, 24, 48 or 96 dB/oct), low shelf, bell, notch, high shelf, or high cut (12, 24, 48 or 96 dB/oct).",
+                "help": f"Filter type for band {n}: Off, low cut (6, 12, 24 or 48 dB/oct), low shelf, bell, notch, high shelf, or high cut (6, 12, 24 or 48 dB/oct).",
             },
             {
                 "id": f"{base}-freq",
