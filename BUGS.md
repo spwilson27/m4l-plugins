@@ -2950,3 +2950,69 @@ test_percipitator_bugsweep: 3 of 3 checks failing (RED pass 1)
   shared global (`percipitator_dspq`) is the intentional create-serialisation
   queue, and the shared `/tmp` gen file is content-hashed and identical across
   instances.
+---
+
+# Reciprocator — Bug Sweep (pass 1 reds)
+
+Branch: `bugsweep/reciprocator`
+Worktree: `/tmp/bugsweep/reciprocator`
+Baseline: `69699f7` (pre-bugsweep; prior Delay/linkAmt/gateMix/gate-curve fixes already present and green)
+
+## Pass 1 outcome
+
+| Claim | Verdict | Notes |
+|-------|---------|-------|
+| Bug A — `#0-recipscope` shared across instances | **CLAIMED (RED)** | Top-level Live device; `#0` not expanded. Same class as Amp+/EnvTrig/Cepstra/Tiny Space/mbsplit. |
+| Prior bugs 1–4 (gate curve / lookahead / Detect link / gateMix) | Cleared | Already fixed at baseline; `node tests/test_reciprocator.js` → ok; section 9 green. |
+| Gate/Ceiling viz drag undo | Noted, not claimed | Outlets `set` into live.dials with no `pushUndoState`; live.param undo path differs from blob MSEG rule — not promoted. |
+| Gen vs JS gate/ceiling mirror | Cleared | `computeGateFactor` / `computeRecipGain` match `gate_smooth` / recip path; Amount-0 mute contract holds. |
+
+**Claimed 1 / noted 1 / cleared prior 4.**
+
+## Bug A (claimed): Scope buffer `#0-recipscope` is shared by every instance
+
+- **Where:** `scripts/build_reciprocator.py` (`buffer~ #0-recipscope @samps 32`, `scope #0-recipscope`, `setbuffer #0-recipscope`); comments in `src/reciprocator_core.genexpr` / `src/reciprocator_config.js`; existing `tests/test_reciprocator.js` still requires `#0-`.
+- **Evidence:** AGENTS.md documents that Live does not expand `#0` in a top-level device patcher (Multiband Split / Glitch / Delay+). Peer devices migrated to `---…`. Reciprocator is a top-level `.amxd`, so every instance writes the same 32-sample scope ring and faces paint each other's telemetry.
+- **Impact:** Multi-instance sets show wrong ENV/OUT/gate meters; deferred DSP frame counter is also shared.
+- **Red:** `tests/test_reciprocator_bugsweep.js` — asserts build + amxd use `---recipscope` and contain no `#0-recipscope`.
+- **Host proof (pass 1):**
+  ```
+  node tests/test_reciprocator.js → test_reciprocator: ok
+  node tests/test_reciprocator_bugsweep.js → AssertionError Bug A RED (exit 1)
+  ```
+- **Status:** RED. Pass 3 will flip build/bind messages to `---recipscope`, rebuild the amxd, update `test_reciprocator.js` `#0-` asserts, and clear gen/config comments.
+
+## Pass 2 review (this sweep — kept 1 / dropped 0)
+
+| Bug | Verdict | Why |
+| --- | --- | --- |
+| A `#0-recipscope` shared | KEEP | Top-level Reciprocator.amxd; Live does not expand `#0`. Same class as Amp+/EnvTrig/Cepstra. Face uses setbuffer(name) dynamically; only build/bind/amxd + comments + host suite asserts need flipping. Red reaches build + amxd; not weakened. |
+
+## Pass 3 fixes (this sweep)
+
+Host gate (worktree): `npm install && npm run -s typecheck && python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && node tests/test_reciprocator_bugsweep.js` → green.
+
+### Bug A: `#0-recipscope` → `---recipscope`
+
+- Fix: `scripts/build_reciprocator.py` — `buffer~ ---recipscope @samps 32`, `scope ---recipscope`, `setbuffer ---recipscope`.
+- Comments: `src/reciprocator_core.genexpr`, `src/reciprocator_config.js`.
+- Host suite: `tests/test_reciprocator.js` isolation asserts now require `---` (was `#0-`).
+- Rebuild: `devices/Reciprocator.amxd`.
+- Red left intact in `tests/test_reciprocator_bugsweep.js`.
+- Harness keeps its own `#0-recipscope` (same pattern as mbsplit harness).
+
+## Pass 4 review (this sweep — APPROVED)
+
+Worktree: `/tmp/bugsweep/reciprocator` on `bugsweep/reciprocator`
+Pass-3 tip: `a07e217` — isolate scope with `---recipscope`
+Pass-4 tip: (this commit) — APPROVED; no production code changes
+
+| Claim | Verdict | Why |
+|-------|---------|-----|
+| Bug A — `#0-recipscope` shared | **APPROVED** | Minimal rename `#0-recipscope` → `---recipscope` in build bind messages + comments; host suite flipped to require `---`; bugsweep red intact; harness keeps `#0-`. |
+| Prior bugs 1–4 | Confirm | Untouched this sweep; still green at baseline. |
+| Viz drag undo (noted) | Leave noted | Not promoted. |
+
+**Approved 1 / adjusted 0.**
+
+Host gate (pass 4): `npm run -s typecheck && python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && node tests/test_reciprocator_bugsweep.js` → green.

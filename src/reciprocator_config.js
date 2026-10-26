@@ -2,7 +2,7 @@
 // Prepended into src/reciprocator_ui.js at build time and exported for Node tests.
 
 const SCOPE_COLS = 120;
-const SCOPE_FLOATS = 32; // #0-recipscope buffer size (indices 0..7 hold live telemetry)
+const SCOPE_FLOATS = 32; // ---recipscope buffer size (indices 0..7 hold live telemetry)
 const MAX_GAIN_DB = 60.0;
 const MAX_GAIN_LIN = 1000.0; // +60 dB cap
 const MIN_ENV_FLOOR = 1e-5; // -100 dB safety floor
