@@ -36,6 +36,7 @@ function makeLomSandbox() {
                 if (p === "live_set" && child === "tracks") return 1;
                 if (p === "live_set" && child === "return_tracks") return 0;
                 if (p === "live_set" && child === "scenes") return 8;
+                if (p === "live_set tracks 0" && child === "devices") return 1;
                 if (child === "parameters") return 2;
                 return 0;
             };
