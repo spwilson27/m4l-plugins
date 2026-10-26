@@ -2510,3 +2510,33 @@ Red tests: `tests/test_sampler_bugsweep.js` (created this pass). No `src/` files
 - **Face marker drag clamp** (`src/sampler_face.js:1288–1290`) — markers
   are created with ≥ 0.002 spacing (`addSliceMarker` dedupe), so the
   `lo`/`hi` drag window cannot invert through normal creation paths.
+# Clip+ bug sweep — box global shadow (this worktree)
+
+Worktree: `/tmp/bugsweep/clipplus` · Branch: `bugsweep/clipplus` · Base: `69699f7`
+Pass-1 tip: `fc083ef` — test(clipplus): red bugsweep case for box global shadow in clipplus_ui.js
+Pass-3 tip: `b82f1dc` — fix(clipplus): rename box local that shadowed Max global
+Pass-4 tip: (this note) — APPROVED; no further production code changes
+
+## Pass 4 outcome
+
+| Claim | Verdict | Notes |
+|-------|---------|-------|
+| Bug 2 — `var box` shadows Max global | **APPROVED** | Minimal rename in `cpApplyEmphasisActive`: `box` → `filtGainBox`; red scans src/clipplus_{ui,dsp,meters,curve}.js for `var|let|const` of reserved Max globals; no drive-by refactors. |
+| Bug 1 — True Peak unreachable (pre-existing) | Confirm | Untouched this session; host suite still green (`true peak is reachable from a device control`). |
+
+**Approved 1 / adjusted 0.**
+
+## Review notes
+
+- Production change is only `src/clipplus_ui.js` (+4/−4): one local in `cpApplyEmphasisActive` renamed so Max's `box` accessor is not shadowed (Delay+ SIGTRAP precedent). `devices/Clip+.amxd` rebuild is gitignored; not hand-edited.
+- Red left as-is after a one-line regex tighten (`\\b(?:var|let|const)\\s+name\\b`) so it actually fails on the unfixed source; not weakened.
+- Host gate re-run green in this pass (no Max/Live):
+  ```
+  npm install && npm run -s typecheck && python3 scripts/build_clipplus.py && node tests/test_clipplus.js && node tests/test_clipplus_bugsweep.js
+  → Built devices/Clip+.amxd [406x169 px] (651914 bytes)
+  → test_clipplus: ok
+  → [bugsweep] true peak is reachable from a device control
+  → [bugsweep] clipplus scripts do not shadow Max globals
+  → test_clipplus_bugsweep: ok
+  ```
+- Residual risk: Live pointer-event crash was never re-proven in the VM this pass (pure-Node red + Delay+ precedent only). Face paint / True Peak notes from prior clipplus-2 pass left as noted.

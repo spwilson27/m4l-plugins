@@ -56,4 +56,31 @@ const UI = fs.readFileSync(path.join(ROOT, "src/clipplus_ui.js"), "utf8");
     console.log("[bugsweep] true peak is reachable from a device control");
 }
 
+// ---- Bug 2: clipplus_ui.js shadows Max's `box` global ----
+// AGENTS.md: never declare Max globals (box, patcher, max, messagename, inlet, jsarguments)
+// as script vars. Delay+ crashed Live (SIGTRAP) on first mouse drag from `var box = ...`
+// in delayplus_filter.js — Max reads its own `box` accessor in pointer events.
+// clipplus_ui.js cpApplyEmphasisActive does the same:
+//   var box = cpHost.getnamed("obj-ctrl-filtgain");
+// Rename to e.g. filtGainBox / ctrl. Red today; green after the rename.
+{
+    const reserved = ["box", "patcher", "max", "messagename", "inlet", "jsarguments"];
+    const files = [
+        "src/clipplus_ui.js",
+        "src/clipplus_dsp.js",
+        "src/clipplus_meters.js",
+        "src/clipplus_curve.js",
+    ];
+    for (const f of files) {
+        const src = fs.readFileSync(path.join(ROOT, f), "utf8");
+        for (const name of reserved) {
+            assert.ok(
+                !new RegExp("\\b(?:var|let|const)\\s+" + name + "\\b").test(src),
+                `BUG: ${f} declares Max global '${name}' (shadows Max built-in; Delay+ SIGTRAP precedent)`
+            );
+        }
+    }
+    console.log("[bugsweep] clipplus scripts do not shadow Max globals");
+}
+
 console.log("test_clipplus_bugsweep: ok");
