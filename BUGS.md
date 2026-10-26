@@ -2205,3 +2205,26 @@ Observed failure: the HTML still contains the `wid.norm || 0.5` expression at li
 - colorHue NaN in m4lComputeAbletonUiTokens was probed as a candidate and cleared: it collapses through m4lClamp to the same output as the tested defaults, so no red test is claimed for it.
 - The brightness >100% softScale curve for very light tokens and the theme fingerprint (which leans on the monotonically bumped state version) were examined; no wrong result could be confirmed, so neither is claimed.
 - Already covered by tests/test_theme_editor_bugs.js (do not duplicate): m4lSetThemeState NaN satScale/contrast storage, the JSON round-trip decay of the global macros, m4lApplyMacros null alpha, and node partial-POST loss of abletonUi/customPresets/sibling macros. Bugs 3 and 4 above are the remaining un-fixed siblings of that family (ApplyMacros macro values and the MapRgba path), not repeats of the covered checks.
+
+## Pass 2 review
+
+Re-read all 11 reds against source and user-visible impact. Kept all 11 (real defects: cache cross-device leak, null→0 macro/alpha/brightness decay, sentinel RMSE, full-state POST resurrection, dial `||` falsy). No culls. Undo/pushUndoState gap noted earlier remains out of scope (cleared in Checked).
+
+## Pass 3 fix
+
+Commit `7ac4d5f` on bugsweep/theme_editor (baseline `69699f7`, reds `dcbcf8e`):
+
+- `m4lResolvedTokens`: cache keyed by `activeSlug` (`slug || m4lDeviceSlug()`); clear `_m4lResolvedCacheSlug` with the cache.
+- `mergeThemeState`: when `tokens` / `deviceOverrides` / `customPresets` are present, replace (allow shrink); macros and `abletonUi` stay deep-merge so partial POSTs keep working.
+- `m4lApplyMacros`: null/non-finite satScale/contrast → 1.0.
+- `m4lMapRgba`: null/non-finite alpha → 1.0.
+- `m4lEstimateAbletonUiSettings`: rmse 0 when `best.err >= 1e9` (no compared samples).
+- `m4lComputeAbletonUiTokens`: null/non-finite brightness → 100.
+- WebUI dial arc: `wid.norm == null ? 0.5 : wid.norm`.
+
+Host gate after fix: `npm run -s typecheck` OK; `python3 scripts/build_theme_editor.py` OK; `node tests/test_theme_editor_bugsweep.js` 11/11; `node tests/test_theme_editor_bugs.js` 6/6; `node tests/test_theme_editor.js` 9/9.
+
+## Pass 4 review
+
+Diffs are minimal and match the Pass 1 fix directions. No API renames, no Max/Live-only paths touched, no debug left. Residual risks: (1) v8ui still does not call `pushUndoState` on macro drag (cleared, not claimed); (2) deviceOverrides.macros still not sanitised at `m4lSetThemeState` ingress — ApplyMacros now tolerates null, but storing null in state remains possible until a later hygiene pass; (3) explicit-slug `m4lResolvedTokens(slug)` now also updates the global cache (previously skipped) — same activeSlug keying, low risk.
+
