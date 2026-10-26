@@ -2181,6 +2181,15 @@ Red tests: `tests/test_sampler_bugsweep.js` (created this pass). No `src/` files
   blob length stored in full, path stored last — proving the loss happens
   in `setvalueof`, not in what was saved.)
 
+## Pass 2 review verdict — Bug 1: KEEP
+
+- **Verdict: KEEP — the bug and all 4 red assertions are correct as filed; no test changes, no `src/` changes.**
+- One-line evidence: `getvalueof` stores count uncapped at blob index 10 with markers at 11.. and the path last, while `setvalueof` clamps that count to 32 and reads the path at `11 + 32`, so a 64-marker round-trip returns 32 markers and `load_sample "5000"` (marker 33 = 0.5 x 10000).
+- Blob trace (independent, `src/sampler_ui.js`): header indices 0-9, index 10 = `sliceMarkers.length` uncapped, indices 11..10+N = markers x 10000, index 11+N = `sampleFilePath`; restore clamps `sCount` (`if (sCount > 32) sCount = 32;`) before both the marker loop and `pathAt = 11 + sCount`.
+- Reachability re-verified: `slice_div` is 1..64 (`scripts/build_sampler.py:252`); `sliceDivisions` clamps n to 1..64 and returns exactly n markers; `sliceBeats` loops to `SLICE_MAX_BEAT_MARKERS = 256` (`src/sampler_config.js:354`); `addSliceMarker` has no count cap (only [0,1) range + 0.002 dedupe). `recomputeSlices()` assigns the divisions/beats arrays directly to `sliceMarkers` with no truncation, and manual adds go through `src/sampler_face.js:1344`.
+- No preventer found: the only other slice-related 32 caps are inside `detectTransientSlices` (transient/onset path, not claimed here) — nothing clamps divisions, beats, or manual markers before `getvalueof`.
+- Re-run (Pass 2, clean tree at f03ed76): `tests/test_sampler_bugsweep.js` = 4 passed, 4 failed, with exactly the filed messages (`got 32`; marker 40 `want 0.625, got undefined`; path `got "5000"`; `load_sample "5000"`). Green: `test_sampler.js`, `test_sampler_slicing.js` (81 passed), `test_sampler_modmatrix.js`, `test_sampler_pitch.js` (51 passed), `test_sampler_designs.js`, `test_sampler_design_reactive2.js`. `test_sampler_theme.js` fails pre-existing at this baseline (TypeError at line 101: `var FACE_PARAMS = {...}` regex finds no match in the built device text) — unrelated to Bug 1 and not introduced by Pass 1, whose commit touched only BUGS.md and the new test file.
+
 ## Checked, no bug filed
 
 - **Loop crossfade scaling chain** — genexpr `Param loop_xfade(0.05,
