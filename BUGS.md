@@ -2133,3 +2133,52 @@ Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code h
 - **APPROVED.** Bug 1 fix confirmed minimal and correct: `src/mseg_edit.js:85` gates the bounding-union push with `dx !== 0 && sweepIntervals.length >= 2`; per-point travel pushes (L79-80) and the filter (L93-103) are unchanged, so dx !== 0 horizontal-sweep deletes remain. RED test still asserts middle point id 3 survives a pure vertical multi-select of ids 2+4 (primary at x=0.25, y to 0.55), length stays 5, and selected points keep x=0.25/0.75. No drive-by refactors; no test weakening.
 - Host gate re-verified green on tip 3c91f90: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
 - No follow-up code changes in this pass; note-only commit next. Not merged to main.
+
+---
+
+# Bug sweep — Transient Split (transplit), Pass 1 (2026-10-25)
+
+Worktree: `/tmp/bugsweep/transplit` · Branch: `bugsweep/transplit` · Base: `69699f7` (pre-bugsweep baseline)
+Scope: `src/transplit_config.js`, `src/transplit_core.genexpr`, `src/transplit_ui.js`, shared `src/spectral_split_lib.genexpr` / `src/spectral_link.js` / `src/spectral_dsp.js` / `src/spectral_split_rack_main.genexpr`, `scripts/build_transplit.py`, `scripts/spectral_common.py`.
+Method: full read of the device sources against AGENTS.md sections 22/23, the existing suite (`node tests/test_transplit.js`, incl. spectral rack / deferred-DSP / paint-bounds — all green), a rebuild check (`python3 scripts/build_transplit.py` reproduces the committed `.amxd` / `.adg` with no drift), and a diff against the previous transplit sweep's base `66fea67` (see the Pass 4 section above; its one bug — stale tilt gains on a sample-rate change — is fixed in this baseline via `cgSr` and its regression test is green, so it is not re-claimed).
+
+**Found: 1 bug.**
+
+## Bug 1 — Size parameter's Live help (and the build docstring) claim the latency stays 4096; the device reports and delays 5120
+
+**Where:** `scripts/build_transplit.py:69` (`ENUM_HELP["size"]`) and `scripts/build_transplit.py:8` (module docstring). The help text is baked into the shipped device: `make_theme_tab` -> `make_tab` stores it as `parameter_info` on `obj-ctrl-size` in `devices/Transient Split.amxd`, so it is what Live's Info View shows for the Size parameter.
+
+**What is wrong:** The help says "The latency stays 4096 samples at every size." and the docstring says the chains sum back "delayed by 4096 samples (`"latency": 4096`)". Every functional value in the device is 5120 (`RACK_LATENCY` = 4096 + the 1024 host-block margin of the rack machinery): the patcher's `latency` attribute is 5120, the gen dry delay is `Delay dryL(5121)` / `dryL.read(5120)`, `TS_LATENCY` = 5120 in `src/transplit_config.js`, the face footnote reads "Latency 5120 smp", and AGENTS.md section 23 specifies a constant latency of 5120. The three sibling suite builds all say it correctly (`build_loudsplit.py` / `build_harmsplit.py` / `build_freqsplit.py`: "The latency stays 5120 samples at every size."); Transient Split is the only one still carrying the pre-rack-machinery number.
+
+**User-visible effect:** A user trusting the Size parameter's Info View text under-compensates by 1024 samples (or mis-sets a manual latency correction / utility delay) when aligning the split chains with parallel processing, and the help contradicts the device's own latency footnote on the same face.
+
+**Test:** `tests/test_transplit_bugsweep.js` — two blocks: (1) source checks on `ENUM_HELP["size"]` and the build docstring; (2) built-device checks that `obj-ctrl-size`'s `parameter_info` mentions 5120 and does not claim 4096, against the patcher's own `latency` attribute.
+
+**Observed failure** (`node tests/test_transplit_bugsweep.js`, exit 1; the run stops at the first assertion, the remaining assertions target the same root cause in the docstring and the built device):
+
+```
+AssertionError [ERR_ASSERTION]: BUG (pass 1, red): Size ENUM_HELP must mention TS_LATENCY=5120 (got "Analysis block size: 512 and 1k favour time resolution, 2k and 4k frequency resolution. The latency stays 4096 samples at every size.")
+    at Object.<anonymous> (/private/tmp/bugsweep/transplit/tests/test_transplit_bugsweep.js:23:12)
+```
+
+## Examined, no other credible bug found
+
+- Mask maths: JS reference `tsMasks` vs GenExpr `ts_masks` — constants, clips (Bias +-1, Decay 1..125, Smoothing 1..64), smoothstep edges (incl. the `max(t1, t0 + 0.02)` Noise guard at Bias +1), history rise/fall, phase-deviation wrap, Decay/Smoothing exponentials, leak term, Tilt tables and gains (incl. the `cgSr` sample-rate cache key fixed after the previous sweep), Blend gains, sum-to-1 at neutral — identical; the suite's frame-for-frame GenExpr-vs-reference comparisons pass.
+- Parameters and wiring: `TS_PARAMS` / `TS_ENUMS` / `TS_GEN_PARAMS` vs `build_transplit.py` NUM / ENUM / GEN_MSG vs the built device's parameter table, scales (`* 0.01`, `expr 512 * pow(2, $f1)`), defaults, linked keys, canvas route and peer `prepend set` path (`wire_param` in `scripts/spectral_common.py`) — all consistent; `tsResolveSel` maps Auto / Transients / Tones / All as documented (chains >= 3 -> Tones is the documented rough edge in AGENTS.md).
+- Shared lib (`spectral_split_lib.genexpr`): `ss_mid` conjugation algebra, `ss_apply` Hermitian symmetry, `ss_ola` 2/3 Hann factor, `ss_cols` bin edges, `ss_in` / `ss_out` ring handling — verified against the suite's direct-transform and identity checks.
+- Rack template (`spectral_split_rack_main.genexpr`): reader/writer and gap fades (already covered by the previous sweep), derived-channel accumulation, `sAge` resets on restart and on silent hops, telemetry gating, and the Mix dry share: `kShare = (selH > 0.5 && roleH > 0.5) ? 1/K : 1` — the role condition is the template comment's documented rule (full dry for Output All and for role SELF/pending, i.e. a lone device; wet is `gRun`-gated to silence while role is -1), so it is intended behaviour, not a bug.
+- Link and DSP (`spectral_link.js`, `spectral_dsp.js`): version/seen apply suppression, leader election (fb=1 exclusion, dead-report handling, epoch growth), `serve` mask vs the gen's `eserveH` own-bit forcing, DSP claim queue, file-hash path, resend-until-alive and the 3.5 s / 6 s retry ladder — consistent with AGENTS.md section 22 and the shared test files, which pass.
+- Face (`transplit_ui.js`): slider/drag mappings and double-click resets vs the parameter ranges/defaults, `ssDevResend` scaling and `fftn`, `tsPoll` header-first reads and the waveform-ring delta across the 102400 frame wrap, sonogram pooling — no mismatch found. Display Post/Style toggles are real saved parameters (`make_state_toggle`), so they persist with the Set.
+- Note (not claimed, comment only): `src/transplit_config.js:133` still describes Contour as "+1 at the mids" in one comment phrase; the code and every other comment are -1 at the centre / +1 at the edges. Already recorded as a non-functional note in the previous sweep's section above.
+
+## Commands / results
+
+```
+node tests/test_transplit.js          # GREEN — All Transient Split tests passed (incl. spectral rack, deferred DSP, paint bounds)
+node tests/test_transplit_bugsweep.js # RED — 1 failing assertion block, Bug 1 above (exit 1)
+python3 scripts/build_transplit.py    # rebuild reproduces the committed .amxd/.adg (git status clean)
+npx tsc -p tsconfig.transplit.json    # not runnable in this worktree (no node_modules); not a device finding
+```
+
+Pass 1 only: no `src/` or build changes; the fix (update the two 4096 strings to 5120 and rebuild) is for Pass 3.
+
