@@ -346,8 +346,8 @@ History cTelQ(64);
 History cGainLat(0);
 History cOutLin(1);
 History cWetLat(0.5);
-History cDryG(0.5);
-History cWetG(0.5);
+History cDryG(0.70710678118);
+History cWetG(0.70710678118);
 History cOrd0(0);
 History cOrd1(1);
 History cOrd2(2);
@@ -355,8 +355,8 @@ History cOrd3(3);
 History cOrd4(4);
 
 // Delay lines for Stage 2 (Codec Lookahead Pre-Echo) and Stage 4 (FFT Spectral Frame Buffer)
-Delay codecDL(8192);
-Delay codecDR(8192);
+Delay codecDL(20480);
+Delay codecDR(20480);
 Delay fftDL(8192);
 Delay fftDR(8192);
 

@@ -62,6 +62,7 @@ function cloneState() {
         order: stageOrder.slice(),
         vizMode: vizMode,
         selectedStage: selectedStage,
+        enabled: stageEnabled.slice(),
     };
 }
 
@@ -78,6 +79,15 @@ function applySnapshot(snap) {
     stageOrder = normalizeOrder(snap.order);
     vizMode = snap.vizMode ? 1 : 0;
     selectedStage = clamp(Math.round(snap.selectedStage || 0), 0, STAGE_COUNT - 1);
+    if (snap.enabled && snap.enabled.length) {
+        for (var i = 0; i < STAGE_COUNT; i++) {
+            var nextOn = snap.enabled[i] ? 1 : 0;
+            if (nextOn !== stageEnabled[i]) {
+                stageEnabled[i] = nextOn;
+                outlet(0, "toggle", STAGE_META[i].key, nextOn);
+            }
+        }
+    }
     emitOrderAndFocus();
     notifyclients();
     mgraphics.redraw();
@@ -851,10 +861,12 @@ function ondblclick(x, y) {
     var slot = slotAtPoint(x, y, w);
     if (slot >= 0) {
         var stId = stageOrder[slot];
+        pushUndoState();
         var nextOn = stageEnabled[stId] ? 0 : 1;
         stageEnabled[stId] = nextOn;
         outlet(0, "toggle", STAGE_META[stId].key, nextOn);
         initWaveHistory(true);
+        notifyclients();
         mgraphics.redraw();
         return;
     }
