@@ -2670,6 +2670,17 @@ function runBugSweepPass1() {
     ui.set_tilt_eq(-6);
     near(ui.tiltEqDb, -6, 1e-9, "bug sweep: tilt_eq automation lands again");
     ok(irPokes() > naturalBefore, "bug sweep: set_tilt_eq redesigns the correction kernel in Natural Phase");
+
+    // Sibling of Bug 1: face double-click reset on the Tilt EQ control only emitTilt()s
+    // (shift dblclick correctly calls updateCoeffBuffer). In Linear Phase the IR stays stale.
+    ui.set_phase_mode(2);
+    ui.set_tilt_eq(9);
+    const dblBefore = irPokes();
+    const L = ui.uiLayout(ui.geo());
+    ok(L.tilt && L.tilt.w > 0, "bug sweep: tilt EQ hitbox exists for dblclick");
+    ui.ondblclick(L.tilt.x + L.tilt.w * 0.5, L.tilt.y + L.tilt.h * 0.5, 1, 0, 0, 0, 0, 0);
+    near(ui.tiltEqDb, 0, 1e-9, "bug sweep: double-click on tilt EQ resets to 0 dB");
+    ok(irPokes() > dblBefore, "bug sweep: tilt EQ double-click reset redesigns the Linear Phase IR (stale IR: ondblclick only emitTilt(), unlike shift dblclick which calls updateCoeffBuffer)");
 }
 
 runBugSweepPass1();
