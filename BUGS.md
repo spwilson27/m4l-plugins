@@ -2133,3 +2133,75 @@ Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code h
 - **APPROVED.** Bug 1 fix confirmed minimal and correct: `src/mseg_edit.js:85` gates the bounding-union push with `dx !== 0 && sweepIntervals.length >= 2`; per-point travel pushes (L79-80) and the filter (L93-103) are unchanged, so dx !== 0 horizontal-sweep deletes remain. RED test still asserts middle point id 3 survives a pure vertical multi-select of ids 2+4 (primary at x=0.25, y to 0.55), length stays 5, and selected points keep x=0.25/0.75. No drive-by refactors; no test weakening.
 - Host gate re-verified green on tip 3c91f90: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
 - No follow-up code changes in this pass; note-only commit next. Not merged to main.
+
+# Theme Editor — Bugsweep Pass 1 (branch bugsweep/theme_editor)
+
+Branch: bugsweep/theme_editor. Worktree: /tmp/bugsweep/theme_editor (pre-bugsweep baseline, clean before this pass).
+Scope: src/theme_engine.js, src/theme_editor_node.js, src/theme_editor_ui.js, src/theme_editor_web.html, scripts/build_theme_editor.py; tests/test_theme_editor.js, tests/test_theme_editor_bugs.js.
+
+Baselines on this tree: `node tests/test_theme_editor.js` — all 9 checks PASS, exit 0. `node tests/test_theme_editor_bugs.js` — 6 passed, 0 failed, exit 0: the three bugs from the earlier Theme Editor pass (m4lSetThemeState NaN satScale/contrast, m4lApplyMacros null alpha, node partial-POST state loss) are already fixed in this baseline and are NOT re-reported below; the bugs here are new.
+Red suite: `node tests/test_theme_editor_bugsweep.js` — 0 passed, 11 failed, exit 1 (all 11 checks red, each for the stated reason).
+
+## Bug 1 — Resolved-token cache ignores the device slug, so one devices override theme is served to every device in the same JS context
+
+Location: src/theme_engine.js, `m4lResolvedTokens` (line 3672: `if (_m4lResolvedCache && !slug) return _m4lResolvedCache;`) and `m4lColor` (lines 3717-3721, which always resolves with no slug). The cache (and `_m4lIssuedRgbKeys`) is only invalidated by `m4lSetThemeState` / `m4lRefreshTheme`, never by a slug change.
+What is wrong: the WebUI is exactly such a shared context — `renderDeviceCanvas` sets `window.M4L_DEVICE_SLUG = dev.slug` per device (src/theme_editor_web.html line 947) and `mapDevColor` sets it per widget, then calls `m4lColor(...)` with no refresh in between. The first device rendered populates the cache with its own device-override tokens; every later device is drawn with the first devices colours.
+User-visible effect: in the Theme Studio gallery, per-device theme overrides do not preview per device — all device cards show the first-rendered devices override palette (or the global palette cached by the sidebar) instead of their own.
+Test: "Resolved-token cache follows M4L_DEVICE_SLUG: a second device must not inherit the first devices override tokens".
+Observed failure: dev_a (override live_lcd_bg [1,0,0,1]) resolves correctly, then after switching M4L_DEVICE_SLUG to dev_b (override [0,0,1,1]) `m4lColor("live_lcd_bg")` still returns [1, 0, 0, 1] instead of [0, 0, 1, 1]. (Control: `m4lEffectiveConfig()` for dev_b returns the correct blue token — only the cached resolution path is stale.)
+
+## Bug 2 — Node mergeThemeState resurrects every deletion, so WebUI reset / token-delete / import can never remove anything
+
+Location: src/theme_editor_node.js, `mergeThemeState` (lines 330-349) used by POST /api/state (lines 427-449) and the `sync_state` handler (lines 351-360), persisted by `saveStateToDisk`.
+What is wrong: merge always unions the previous `tokens` / `deviceOverrides` / `customPresets` maps into the incoming state. That is right for field-absent partial posts (the earlier bug), but the WebUI only ever posts the FULL state (`schedulePush` sends `JSON.stringify(state)`), so a key the user deleted is indistinguishable from a key a partial post never mentioned — and is silently restored. The WebUI token reset button (`delete tgt.tokens[k]`, theme_editor_web.html), Reset Target (`delete state.deviceOverrides[currentTarget]`, and the global reset which posts a fresh default state), and Import JSON all rely on full-state replacement. Worse, the POST bumps `version`, so the SSE echo of the resurrected state is accepted by the WebUI (`msg.state.version > state.version`) and the deletion visibly reverts in the UI.
+User-visible effect: token overrides, per-device overrides and custom presets can never be deleted or reset through the WebUI or the v8ui preset switch (which also posts `tokens: {}` via sync_state); they persist in the served state and in ~/.m4l_theme_state.json forever.
+Tests: "A full-state POST (the WebUI schedulePush shape) that removes a token, a device override and a custom preset actually deletes them" and "Deletions from a full-state POST persist to the on-disk state file".
+Observed failure: after seeding tokens {live_lcd_bg: [0.1,0.2,0.3,1]}, deviceOverrides {dev_x}, customPresets {Mine} and POSTing the same full state with those keys removed, GET /api/state still returns all three and the on-disk file still contains them ("deleted token override must stay deleted").
+Note for the fix: the earlier partial-POST tests must keep passing — a field that is ABSENT from the body must still be preserved, while a field that is PRESENT must be allowed to shrink (macros keep their deep-merge, per the existing partial-macros test).
+
+## Bug 3 — m4lApplyMacros treats null satScale/contrast as 0, and device-override macros are never sanitised
+
+Location: src/theme_engine.js, `m4lApplyMacros` (lines 3607-3608: `ss = macros.satScale === undefined ? 1.0 : Number(macros.satScale)`, same for contrast); ingress via `m4lEffectiveConfig` (lines 3526-3530) and `m4lSetThemeState` (lines 3490-3492, which copies deviceOverrides verbatim while sanitising only the top-level macros).
+What is wrong: `undefined` correctly falls back to the 1.0 identity, but `null` — precisely what JSON serialisation turns a NaN into, the decay path of the earlier Bug 1 — becomes `Number(null) === 0`: satScale 0 renders the colour fully desaturated and contrast 0 collapses it to flat mid-grey. A device override whose macros contain a null satScale (e.g. after a JSON save/load round trip of the state file) therefore greys every colour that device resolves, even though the global macros were repaired by the earlier fix.
+User-visible effect: a single bad/null saturation or contrast value in a per-device override silently turns that device monochrome / flat grey instead of leaving the macro at its neutral value.
+Tests: "m4lApplyMacros treats a null satScale as 1.0 (identity), not 0 (full desaturation)", "m4lApplyMacros treats a null contrast as 1.0 (identity), not 0 (flat mid-grey)", "Device-override macros with a null satScale survive: override colours must not render desaturated".
+Observed failures: `m4lApplyMacros([0.2,0.4,0.6,1], {satScale: null, contrast: 1, ...})` returns [0.4, 0.4, 0.4, 1]; with `{contrast: null}` it returns [0.5, 0.5, 0.5, 1]; the integrated override case (override token [0.2,0.4,0.6,1], override macros {satScale: null}) resolves via `m4lColor` to [0.4, 0.4, 0.4, 1].
+
+## Bug 4 — m4lMapRgba lets a null/NaN alpha through as transparent 0 / NaN (the un-fixed sibling of the earlier m4lApplyMacros alpha bug)
+
+Location: src/theme_engine.js, `m4lMapRgba` (line 3759: `var alpha = a === undefined ? 1.0 : Number(a);`).
+What is wrong: the earlier pass fixed this exact convention in `m4lApplyMacros` (missing/null/non-finite alpha → opaque 1.0, matching `m4lColor` / `m4lMixColor`), but `m4lMapRgba` — the function the mgraphics hook routes every `set_source_rgba` / `set_source_rgb` call in every themed device through — only special-cases `undefined`. A null alpha becomes 0 (fully transparent) and a NaN alpha propagates as NaN into `mgraphics.set_source_rgba`.
+User-visible effect: any colour reaching the hook with a JSON-decayed (null) alpha renders invisible instead of opaque; a NaN alpha produces undefined drawing behaviour in Max.
+Tests: "m4lMapRgba treats a null alpha as opaque 1.0, not transparent 0" and "m4lMapRgba treats a NaN alpha as opaque 1.0, not NaN".
+Observed failures: with an active Cyber Cyan theme, `m4lMapRgba(0.2, 0.4, 0.6, null)[3]` is 0 (expected 1; control: undefined alpha correctly returns 1) and `m4lMapRgba(0.2, 0.4, 0.6, NaN)[3]` is NaN.
+
+## Bug 5 — m4lEstimateAbletonUiSettings returns an RMSE of 8,063,808 when there is nothing to compare
+
+Location: src/theme_engine.js, `m4lEstimateAbletonUiSettings` (best candidate initialised with `err: 1e9` at lines 3315-3321; the score loop counts compared components `n` at lines 3347-3357 and falls back to the sentinel when n === 0; `rmse: Math.sqrt(Math.max(0, best.err)) * 255` at line 3376).
+What is wrong: with an empty/null observed-colour map (or one containing none of the comparison keys), no candidate ever beats the 1e9 sentinel, so the function returns the default settings together with `rmse = sqrt(1e9) * 255 ≈ 8,063,808` — in a field documented and displayed as an error in 0..255 sample units.
+User-visible effect: the WebUI Detect Live flow prints `RMSE 8063808.0` in its banner (theme_editor_web.html, detectLiveBtn handler) whenever the host-colour map is empty, instead of a meaningful figure.
+Test: "m4lEstimateAbletonUiSettings with no observations returns a sane RMSE (not the 1e9 sentinel scaled by 255)".
+Observed failure: `m4lEstimateAbletonUiSettings({})` and `(null)` both return askName "Default Dark Neutral Medium" (correct) with rmse 8063808.0334293675.
+
+## Bug 6 — m4lComputeAbletonUiTokens treats a null/NaN Ableton brightness as 0% instead of the 100% default
+
+Location: src/theme_engine.js, `m4lComputeAbletonUiTokens` (lines 3175-3180: `Object.assign(m4lDefaultAbletonUi(), ui)` lets an explicit null overwrite the 100 default, then `brtPct = m4lClamp(Number(u.brightness === undefined ? 100 : u.brightness), 0, 200)` maps null to 0 and NaN (via m4lClamp) to the 0 floor).
+What is wrong: a missing brightness correctly defaults to 100, but a present-but-null/NaN brightness — the same JSON NaN→null decay in a saved `abletonUi` block — computes the whole simulated Live palette at 0% brightness.
+User-visible effect: with Ableton UI simulation enabled, one decayed brightness value makes every simulated Live colour render at minimum brightness (e.g. live_lcd_bg 0.039 instead of 0.094) across the WebUI preview and any device reading `m4lHostLiveColor` simulation.
+Test: "m4lComputeAbletonUiTokens treats a null/NaN brightness as the 100% default, not 0%".
+Observed failure: tokens for {brightness: null} differ from {brightness: 100} across the skin-tinted tokens (live_lcd_bg [0.0392, 0.0392, 0.0392, 1] vs [0.0941, 0.0941, 0.0941, 1], live_control_fg 0.3922 vs 0.7098, etc.); {brightness: NaN} fails the same way.
+
+## Bug 7 — WebUI device preview draws a minimum-value dial at 50%
+
+Location: src/theme_editor_web.html, renderDeviceBody dial branch (line 916: arc end angle `(0.75 + 1.5 * (wid.norm || 0.5)) * Math.PI`); the model side is src/theme_editor_node.js line 261, where `extractDevicePreviewModel` computes `norm` clamped to 0..1 from the saved parameter initial value.
+What is wrong: `norm` 0 is a legitimate, common value (any live.dial whose saved initial value equals its parameter minimum). `0 || 0.5` evaluates to 0.5, so the preview arc is drawn half-full for a dial that is actually at minimum. (The `|| 0.5` default is only needed for a missing norm.)
+User-visible effect: in the Theme Studio device gallery, every dial saved at its minimum value previews as if set to half.
+Test: "WebUI device preview draws a minimum-value dial (norm 0) with an empty arc, not a half arc" (source check on the HTML, the node-testable surface for the in-page renderer, in line with the existing suites .amxd source checks).
+Observed failure: the HTML still contains the `wid.norm || 0.5` expression at line 916.
+
+## Checked and cleared (no bug claimed)
+
+- HSL conversions (m4lRgbToHsl/m4lHslToRgb), macro drag math and ranges in theme_editor_ui.js (MACRO_DEFS vs the WebUI sliders agree: Hue -180..180, Sat 0..2, Contrast 0.5..1.6, Brightness -0.3..0.3), v8ui getvalueof/setvalueof blob round trip, preset-grid geometry, theme_common engine injection in the build script, and the estimator against the VM ground-truth cases in the main suite.
+- colorHue NaN in m4lComputeAbletonUiTokens was probed as a candidate and cleared: it collapses through m4lClamp to the same output as the tested defaults, so no red test is claimed for it.
+- The brightness >100% softScale curve for very light tokens and the theme fingerprint (which leans on the monotonically bumped state version) were examined; no wrong result could be confirmed, so neither is claimed.
+- Already covered by tests/test_theme_editor_bugs.js (do not duplicate): m4lSetThemeState NaN satScale/contrast storage, the JSON round-trip decay of the global macros, m4lApplyMacros null alpha, and node partial-POST loss of abletonUi/customPresets/sibling macros. Bugs 3 and 4 above are the remaining un-fixed siblings of that family (ApplyMacros macro values and the MapRgba path), not repeats of the covered checks.
