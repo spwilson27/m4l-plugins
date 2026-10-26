@@ -930,7 +930,7 @@ function prep(src) {
     for (const key of Object.keys(scal).map((o) => scal[o])) assert.ok(!slots.has(cfg[key]), `${key} is not one of the device slots`);
     assert.ok(cfg.HS_SC_ODD < cfg.HS_SCOPE_SAMPS, "telemetry slots inside the buffer");
     assert.ok(GEN_CODE.includes(`ss2_zeroscope(scope, ${cfg.HS_SC_FRAME})`), "sleep zeroes the columns and the device slots (everything below the scalars)");
-    assert.ok(GEN_CODE.includes("ov1 = fixnan(fixdenorm(mixS * wetL + (1 - mixS) * kShare * dryL.read(5120)))") && GEN_CODE.includes("kShare = selH > 0.5 ? 0.3333333333333333 : 1;"), "Mix: wet / dry-share crossfade with the dry delayed by the latency");
+    assert.ok(GEN_CODE.includes("ov1 = fixnan(fixdenorm(mixS * wetL + (1 - mixS) * kShare * dryL.read(5120)))") && GEN_CODE.includes("kShare = (selH > 0.5 && roleH > 0.5) ? 0.3333333333333333 : 1;"), "Mix: wet / dry-share crossfade with the dry delayed by the latency");
     assert.ok(GEN_CODE.includes(`Delay dryL(${cfg.HS_LATENCY + 1})`) && GEN_CODE.includes(`dryL.read(${cfg.HS_LATENCY})`) && cfg.HS_LATENCY === 5120, "dry delay = the reported latency");
     assert.ok(!/@@/.test(GEN_CODE) && !/\/\/@(hook|endhook|SS_)/.test(GEN_CODE), "the template is fully expanded");
     assert.ok(cfg.HS_SCOPE_SAMPS <= 560 && cfg.HS_SC_ALIVE < cfg.HS_SCOPE_SAMPS, "scope buffer big enough");

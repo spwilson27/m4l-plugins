@@ -613,9 +613,10 @@ function hsHandleDown(x, y, dbl) {
     var dT = Math.abs(y - ty);
     var dL = Math.abs(x - xl);
     var dH = Math.abs(x - xh);
-    // the flags at the top belong to the vertical lines
+    // In the top flag strip, honour the painted L/H flag x (hsFlagX may inset them).
+    // Do not zero the threshold distance: the thr line / T handle sit in this same strip
+    // when Threshold is high, and must stay grabbable away from the flags.
     if (y < HS_PLOT.y + 12) {
-        dT = 99;
         dL = Math.abs(x - hsFlagX(xl)) <= 6 ? 0 : dL;
         dH = Math.abs(x - hsFlagX(xh)) <= 6 ? 0 : dH;
     }
