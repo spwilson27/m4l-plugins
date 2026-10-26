@@ -1897,7 +1897,7 @@ function buildLocalSimilarityTour(startIdx) {
     if (isPointVisible(points[i])) vis.push(i);
   }
   if (vis.length === 0) return [];
-  const key = `${startIdx}|${vis.length}|${activeCategory}|${maxLenMs}|${toneFilter}|${searchQuery}|${localSeed}`;
+  const key = `${startIdx}|${vis.length}|${activeCategory}|${maxLenMs}|${toneFilter}|${tonalFilter}|${drumFilter}|${searchQuery}|${localSeed}`;
   if (simTourKey === key && simTourCache.length === vis.length) {
     return simTourCache;
   }

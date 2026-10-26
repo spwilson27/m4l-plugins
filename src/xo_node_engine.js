@@ -2084,7 +2084,7 @@ function buildAcousticSimilarityTour(startIdx) {
   }
   if (vis.length === 0) return [];
   const enabledFolderKey = engineState.knownFolders.map((f) => `${f.path}:${f.enabled ? 1 : 0}`).join(",");
-  const key = `${vis.length}|${engineState.activeCategory}|${engineState.maxLenMs}|${engineState.toneFilter}|${engineState.pitchFilter}|${engineState.tonalFilter}|${engineState.searchQuery}|${engineState.sampleSeed}|${engineState.searchVer}|${enabledFolderKey}`;
+  const key = `${vis.length}|${engineState.activeCategory}|${engineState.maxLenMs}|${engineState.toneFilter}|${engineState.pitchFilter}|${engineState.tonalFilter}|${engineState.drumFilter}|${engineState.searchQuery}|${engineState.sampleSeed}|${engineState.searchVer}|${enabledFolderKey}`;
   if (acousticSimTourKey === key && acousticSimTourCache.length === vis.length && acousticSimTourCache.includes(startIdx)) {
     return acousticSimTourCache;
   }

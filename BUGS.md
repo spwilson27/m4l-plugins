@@ -3383,3 +3383,118 @@ no bug found. Existing suite stays 39 passed, 0 failed.
   the build's gen-hub routing (`to_gen_hub`) is correct.
 
 **Result: 1 bug found.**
+
+# XO Sample Map bug sweep — pass 1 (hunt + red tests)
+
+Worktree: /tmp/bugsweep/xo_map on branch bugsweep/xo_map, baseline f9e6404.
+Scope read: src/xo_node_engine.js, src/xo_strip_ui.js, src/xo_stretch.js, src/xo_search.js, src/xo_folder_ui.js, src/xo_layouts/default.js, src/xo_palette.js, scripts/build_xo_map.py, and the existing suites tests/test_xo_map.js, tests/test_xo_layout.js, tests/test_xo_search.js, tests/test_xo_stretch.js.
+No src/ file was modified; no existing test file was modified.
+
+**Found: 3 bugs.** Red tests: tests/test_xo_bugsweep.js (4 checks, all failing, exit 1).
+
+## Bug 1 — Engine acoustic similarity tour serves a stale tour after the drum filter changes
+
+- **File:** src/xo_node_engine.js, buildAcousticSimilarityTour and the set_filter_drum handler.
+- **What is wrong:** the tour cache key includes vis.length, activeCategory, maxLenMs, toneFilter, pitchFilter, tonalFilter, searchQuery, sampleSeed, searchVer and folders, but not drumFilter, even though isSamplePassingFilters applies drumFilter, and the set_filter_drum handler never clears the key. A drum change that preserves the visible count reuses the old tour.
+- **User-visible effect:** step_similar can step to samples the current drum filter hides, and skips samples the filter now shows.
+- **Test:** engine acoustic tour rebuilds when the drum filter changes — at drumFilter +90 the step lands on B; after flipping to -90 with the visible count still 2, the step must land on a passing sample.
+- **Observed failure:** stepped to sample 0 (druminess 100) which drumFilter -90 hides — stale acoustic tour.
+
+## Bug 2 — Strip local similarity tour serves a stale tour after the tonal or drum filter changes
+
+- **File:** src/xo_strip_ui.js, buildLocalSimilarityTour (line 1894); the cache key (line 1900) is startIdx, vis.length, activeCategory, maxLenMs, toneFilter, searchQuery, localSeed.
+- **What is wrong:** the key omits tonalFilter and drumFilter even though isPointVisible applies both, and strip_filter_tonal / strip_filter_drum (lines 899 and 905) never clear simTourKey. ensureValidSelection moves a hidden selection to the first visible point, but the following stepLocalNeighbor still walks the stale tour and lands on a hidden point. The neighbouring paint-layer group cache does include both filters in its key.
+- **User-visible effect:** local neighbour stepping after a tonal or drum filter change can select a sample the filter hides.
+- **Test:** strip local tour rebuilds when the drum filter changes, and the tonal variant — visible count held at 3 in both filter states. The scenario uses a low value of 10, not 0, because minimap_batch coerces a 0 druminess or tonalPct to the 65 / 50 defaults, which changes the visible count and masks the bug through the cache length guard.
+- **Observed failure:** stepped to point 1 after the filter flipped to -40; P1 is hidden there — stale local tour (want P2); 1 !== 2, for both filters.
+
+## Bug 3 — stretchAudioEx does not clamp pitchSt, so an out-of-range stored pitch becomes a huge allocation
+
+- **File:** src/xo_stretch.js, stretchAudioEx; caller renderEditedAudioSamples in src/xo_node_engine.js.
+- **What is wrong:** every other numeric option in stretchAudioEx is clamped (speed 0.1..4, grainMs 5..250, amount 0..1), and the caller clamps decayMs, speedPct and grainMs, but pitchSt is clamped nowhere — not in stretchAudioEx, not in the caller, and not in the strip or engine state parsers. The Pitch parameter range is -24..+24. In complex mode the intermediate buffer is sized lenIn * 2^(pitchSt/12) / speed, so a stored pitchSt of 96 sizes a 256x intermediate.
+- **User-visible effect:** a corrupt or hand-edited state carrying an extreme pitch value can hang or exhaust memory on render instead of rendering as the ±24 clamp.
+- **Test:** stretchAudioEx clamps pitchSt to the +/-24 range — pitchSt ±96 must render exactly as ±24 in both granular and complex modes.
+- **Observed failure:** granular: pitchSt 96 should render exactly as the 24 clamp (max diff 1.8377479314804077).
+
+## Checked and cleared (no bug claimed)
+
+- Lead 1, pitchFilter wiring: the engine outlets strip_filter_pitch and engineState.pitchFilter exists, but there is no strip handler for pitch, and pitchFilter never reaches isSamplePassingFilters or any other actual filtering. Dead state — a nit, not a behaviour bug.
+- Lead 2, tonal/drum undo exclusion: strip_filter_tonal and strip_filter_drum are engine/patcher-owned and only mirrored by the strip, so their exclusion from strip undo snapshots and the state blob is consistent design.
+- grainMs=0 in stretchAudioEx: falls back to the 45 ms default rather than clamping to the 5 ms floor; checked and recorded as no-bug for pass 1 — a default substitution, consistent with the other falsy option defaults in the same function.
+- The already-fixed undo-after-recall bug (5ddf91c) and saved-list onwheel bug (613d525) were not re-filed.
+
+## Commands / results
+
+- node tests/test_xo_bugsweep.js → 4 failing, exit 1 (all red, as intended for pass 1).
+
+---
+
+# XO Sample Map bug sweep — pass 2 (review, verdicts only, no fixes)
+
+Worktree: /tmp/bugsweep/xo_map on branch bugsweep/xo_map, tip 0134f6b. No src/ or test files changed in this pass; this section is appended only.
+Re-run: node tests/test_xo_bugsweep.js → 4 failing, exit 1, exactly as filed (engine acoustic tour stale on drum change; strip local tour stale on drum change; strip local tour stale on tonal change; stretchAudioEx pitchSt clamp).
+
+**Kept 3 / dropped 0.**
+
+## Bug 1 — KEPT (engine acoustic tour serves a stale tour after the drum filter changes)
+
+- Cache key (src/xo_node_engine.js:2087, buildAcousticSimilarityTour) is vis.length|activeCategory|maxLenMs|toneFilter|pitchFilter|tonalFilter|searchQuery|sampleSeed|searchVer|folders — tonalFilter is keyed, drumFilter is not, and the cache-hit guard (:2088) checks only key equality, cache length and start-index membership, so a count-preserving drum flip reuses the old tour.
+- isSamplePassingFilters does apply drumFilter (:1840-1848, drumPct against the df*0.85 bounds), so the tour contents genuinely depend on it.
+- The set_filter_drum handler (:2984-2987) only sets engineState.drumFilter and outlets strip_filter_drum; it never clears acousticSimTourKey (contrast the clears on other state changes, e.g. :1809/:1930/:2251/:2856).
+- Red check re-run fails as filed: after flipping drumFilter +90 → -90 with the visible count still 2, stepSimilarSample lands on sample 0 (druminess 100), which the -90 filter hides.
+
+## Bug 2 — KEPT (strip local tour serves a stale tour after the tonal or drum filter changes)
+
+- Cache key (src/xo_strip_ui.js:1900, buildLocalSimilarityTour) is startIdx|vis.length|activeCategory|maxLenMs|toneFilter|searchQuery|localSeed — neither tonalFilter nor drumFilter — and the hit guard (:1901) is key + length only.
+- isPointVisible applies both filters: tonal at :398-405, drum at :406-413.
+- strip_filter_tonal (:899-903) and strip_filter_drum (:905-909) only set the value, call ensureValidSelection() and redraw; neither clears simTourKey — and ensureValidSelection fixing the selection does not rebuild the tour that stepLocalNeighbor then walks.
+- The neighbouring paint-layer group cache gets it right: groupsKey (:489) includes both tonalFilter and drumFilter, so the omission from the tour key is inconsistent with the file's own pattern.
+- Both red checks re-run fail as filed: after the flip to -40 at a constant visible count of 3, stepping lands on hidden point 1 (want P2), for both the drum and tonal variants.
+
+## Bug 3 — KEPT (stretchAudioEx does not clamp pitchSt)
+
+- In stretchAudioEx (src/xo_stretch.js:813-819) speed is xsClamp(..., 0.1, 4), grainMs is xsClamp(..., 5, 250) and amount is xsClamp(..., 0, 1), but pitchSt (:817) is Number(opts.pitchSt) || 0 unclamped; pitchRatio = 2^(pitchSt/12) (:824) and complex mode sizes its intermediate as lenIn * pitchRatio / speed (:842), so pitchSt 96 allocates a 256x intermediate; granular mode passes the raw pitchSt to xsGranular (:835).
+- The caller renderEditedAudioSamples (src/xo_node_engine.js:732) repeats the pattern: pitchSt raw at :733 and passed through at :812, while speedPct is clamped 10..400 (:737), grainMs 5..250 (:738) and decayMs floored (:734).
+- No upstream clamp exists: the engine set_pitch handler (:2928-2930) and strip set_pitch (src/xo_strip_ui.js:923-925) store the raw number (their set_decay neighbours do clamp), and the strip state-blob parsers (:2436/:2445/:2462) likewise take Number(...) || 0 — so an out-of-range pitch is reachable from saved or hand-edited state and from plain set_pitch messages, not only from corruption.
+- The ±24 target is the device's own spec: the Pitch live.dial in scripts/build_xo_map.py has parameter_mmin -24.0 / parameter_mmax 24.0 (:1581-1582; annotation "-24 st to +24 st").
+- Red check re-run fails as filed (granular: pitchSt 96 should render exactly as the 24 clamp, max diff 1.8377). The check is not over-broad: it only requires out-of-range values to render exactly as the ±24 clamp in both modes, which a clamp at the stretchAudioEx entry (or in the caller) satisfies.
+
+The pass 1 checked-and-cleared leads (pitchFilter dead state, tonal/drum undo exclusion, grainMs=0 default substitution) were not reopened.
+
+---
+
+# XO Sample Map bug sweep — pass 4 (review, verdict only, no fixes)
+
+Worktree: /tmp/bugsweep/xo_map on branch bugsweep/xo_map, commit under review 60196e6 (fix(xo_map): bugsweep pass 3 fixes). No src/ or test files changed in this pass; this section is appended only. Note: BUGS.md contains no Pass 3 section for XO — the Pass 3 record is commit 60196e6 itself (3 files, 3 insertions, 3 deletions, one line per bug), reviewed here against the Pass 1 filings and Pass 2 KEPT verdicts above.
+
+**Overall verdict: APPROVED.** All 3 fixes are correct, complete, and minimal, with no unintended behaviour change.
+
+## Bug 1 — APPROVED (engine acoustic tour stale on drum filter)
+
+- Diff (src/xo_node_engine.js, buildAcousticSimilarityTour): the cache key gains engineState.drumFilter, inserted between tonalFilter and searchQuery; nothing else changes.
+- Completeness: Pass 2 established the key already contained every other filter the tour depends on (tonalFilter was keyed, drumFilter was the sole omission), isSamplePassingFilters applies drumFilter, and the set_filter_drum handler never clears the key — so keying drumFilter is the complete fix; a drum change now forces a rebuild even at constant visible count.
+- No side effects: in an unchanged filter state the key is unchanged in effect (one extra stable component), so cache hits behave exactly as before.
+- Evidence: ok - engine acoustic tour rebuilds when the drum filter changes (tests/test_xo_bugsweep.js).
+
+## Bug 2 — APPROVED (strip local tour stale on tonal or drum filter)
+
+- Diff (src/xo_strip_ui.js, buildLocalSimilarityTour): the cache key gains tonalFilter and drumFilter, inserted between toneFilter and searchQuery; nothing else changes.
+- Completeness: Pass 2 established isPointVisible applies both filters, neither strip_filter_tonal nor strip_filter_drum clears simTourKey, and the neighbouring paint-layer groupsKey already keys both — the fix adds exactly the two missing components and matches the file pattern.
+- No side effects: with filters unchanged, tour construction and cache reuse are identical.
+- Evidence: ok - strip local tour rebuilds when the drum filter changes; ok - strip local tour rebuilds when the tonal filter changes (tests/test_xo_bugsweep.js).
+
+## Bug 3 — APPROVED (stretchAudioEx pitchSt unclamped)
+
+- Diff (src/xo_stretch.js, stretchAudioEx entry): pitchSt changes from Number(opts.pitchSt) || 0 to xsClamp(Number(opts.pitchSt) || 0, -24, 24), alongside the existing clamped speed, grainMs and amount.
+- Completeness: the clamp sits on the single local variable at function entry, before pitchRatio and before both the granular and complex paths, so every downstream use sees the clamped value and no call site can bypass it through this function; the bounds are the device Pitch spec (-24..+24). xsClamp (src/xo_stretch.js:38) is a plain lo/hi clamp, NaN input is already coerced to 0 by the || 0, and in-range values pass through unchanged, so legitimate renders are bit-identical.
+- Evidence: ok - stretchAudioEx clamps pitchSt to the +/-24 range (tests/test_xo_bugsweep.js), requiring +/-96 to render exactly as +/-24 in both modes.
+
+## Commands / results (re-run in this pass)
+
+- node tests/test_xo_bugsweep.js → 4 checks ok, all passed, exit 0 (was 4 failing, exit 1 in Passes 1-2).
+- node tests/test_xo_map.js → SUCCESS, all tests passed, exit 0.
+- node tests/test_xo_layout.js → OK device (414 x 169, 48 layout combinations), exit 0.
+- node tests/test_xo_search.js → OK xo_search matcher, exit 0.
+- node tests/test_xo_stretch.js → all xo_stretch tests passed, exit 0.
+- git show 60196e6 → exactly the 3 one-line changes described above; no test files, no unrelated files.
+
