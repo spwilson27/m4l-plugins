@@ -472,7 +472,12 @@ function fvHit(x, y) {
     if (x < FV_PLOT.x - 3 || x > FV_PLOT.x + FV_PLOT.w + 3 || y < FV_PLOT.y - 3 || y > FV_PLOT.y + FV_PLOT.h + 3) return "";
     var d = fvDot();
     if (Math.abs(x - d.x) < 8 && Math.abs(y - d.y) < 8) return "dot";
-    if (Math.abs(y - fvLimY()) < 4) return "limiter";
+    // limiter handle is only interactive while on (or mid-drag); hit the painted (clamped) handle and the threshold line
+    if (fvVals.limon === 1 || (fvDrag && fvDrag.kind === "limiter")) {
+        var lb = fvLimLabel();
+        var hy = lb ? lb.py : fvLimY();
+        if (Math.abs(y - hy) < 4 || Math.abs(y - fvLimY()) < 4) return "limiter";
+    }
     return "plot";
 }
 
@@ -496,7 +501,7 @@ function fvHandleDown(x, y, dbl) {
             return;
         }
         fvDrag = { kind: "limiter" };
-        fvDragTo(x, y);
+        // no fvDragTo on press: an out-of-plot threshold (e.g. +12 / -120) would jump to the plot edge
     } else if (hit === "plot") {
         if (dbl) {
             fvEmitEdit("spin", 0);
