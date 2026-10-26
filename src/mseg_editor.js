@@ -1165,8 +1165,8 @@ function applyToolbarAction(id) {
         let n = points.length;
         let rev = [];
         for (let i = n - 1; i >= 0; i--) {
-            let prevCurve = (i > 0) ? -(points[i - 1].curve || 0.0) : 0.0;
             let prevS = (i > 0) ? (points[i - 1].sCurve ? 1 : 0) : 0;
+            let prevCurve = (i > 0) ? (prevS ? (points[i - 1].curve || 0.0) : -(points[i - 1].curve || 0.0)) : 0.0;
             rev.push({
                 id: points[i].id,
                 x: 1.0 - points[i].x,
@@ -1262,7 +1262,7 @@ function hitTest(sx, sy, lay) {
     }
     if (bestPt) {
         let segIdx = 0;
-        for (let i = 0; i < points.length - 1; i++) {
+        for (let i = 0; i < points.length; i++) {
             if (points[i].id === bestPt.id) { segIdx = i; break; }
         }
         return { type: "point", pointId: bestPt.id, segIndex: segIdx, toolbarIndex: -1 };
