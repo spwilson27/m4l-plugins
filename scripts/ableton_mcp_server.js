@@ -328,6 +328,12 @@ function checkPortHealth(port, timeoutMs = 450) {
 
 function callBridgeHttp(action, params, targetPort) {
     const port = Number(targetPort || (params && params.port) || DEFAULT_BRIDGE_PORT) || 9877;
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        return Promise.resolve({
+            ok: false,
+            error: `Invalid bridge port ${port} (must be an integer 0..65535).`
+        });
+    }
     return new Promise((resolve) => {
         const cleanParams = Object.assign({}, params || {});
         delete cleanParams.port;
@@ -564,6 +570,12 @@ function startStdioMcpServer() {
                     handleJsonRpcMessage(bodyMsg);
                 } catch (_) {}
                 continue;
+            }
+
+            // Incomplete Content-Length header (chunk ended before the blank-line terminator):
+            // wait for more bytes; do not treat the header line as NDJSON.
+            if (/^Content-Length:/i.test(buffer.toString("utf8", 0, Math.min(buffer.length, 64)))) {
+                break;
             }
 
             const nlIdx = buffer.indexOf(0x0a); // '\n'

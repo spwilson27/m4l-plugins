@@ -3241,3 +3241,73 @@ Bug 1 closed: fixed 1 / remaining 0.
 ## Pass 4 review: APPROVED
 
 Pass 4 review: APPROVED - independently re-reviewed 761e63e (exactly the two 4096-to-5120 strings in scripts/build_transplit.py plus the rebuilt .amxd/.adg; baked device gained exactly the two 5120-samples strings, remaining 4096s are FFT/buffer/size values) and f2a1af6 (BUGS.md Pass 3 record only, matching reality, incl. the 761e63e/f2a1af6 split); no test files changed in either commit. Re-ran both suites green (test_transplit_bugsweep.js rc 0 both blocks; test_transplit.js rc 0) and verified the built device directly: obj-ctrl-size parameter_info and annotation say 5120, patcher latency = 5120, .amxd MD5 b698283128a3d1f59e8f53b176981866.
+
+
+
+# Ableton MCP Bridge — Pass 1 Bugsweep
+
+Device: Ableton MCP Bridge (`src/ableton_mcp_lom.js`, `src/ableton_mcp_node.js`, `scripts/ableton_mcp_server.js`; build `scripts/build_ableton_mcp.py`)
+Pass: 1 only — hunt + red tests, NO fixes. All tests are in `tests/test_ableton_mcp_bugsweep.js` (new file). BUG-MCP-1..5 from the earlier round already live in `tests/test_ableton_mcp.js` / `tests/test_ableton_mcp_stdio_http.js` and are not duplicated here; both of those suites pass on this baseline.
+
+Run: `node tests/test_ableton_mcp_bugsweep.js` → exit 1, `Bugsweep red tests FAILED (6)` — every test below fails for the stated reason (observed output quoted per bug).
+
+---
+
+## BUG-MCP-6 — `get_tracks_tree` with an out-of-range `trackIndex` silently returns the full tree
+
+- **Where:** `src/ableton_mcp_lom.js:273-279` (`handleGetTracksTree`)
+- **What is wrong:** The single-track branch only runs when `trackIndex >= 0 && trackIndex < nTracks`; any other numeric value (too large, or negative) falls into the `else` branch that returns *every* track, instead of no tracks or an error.
+- **User-visible effect:** Asking to inspect track 5 of a 1-track set (or track -1) returns the whole set tree labelled as if it were the answer for that track — a client acting on `tracks[0]` then reads/edits the wrong track.
+- **Test:** `testTrackIndexOutOfRange` in `tests/test_ableton_mcp_bugsweep.js`
+- **Observed failure:** `trackIndex 5 on a 1-track set must error or return zero tracks, got ok=true tracks=1 (the full tree was returned for a track that does not exist)` (same for `trackIndex: -1`)
+
+## BUG-MCP-7 — `maxParameters: 0` is ignored (falsy `||` defaults) and parameters are returned anyway
+
+- **Where:** `src/ableton_mcp_lom.js:376` (`p.maxParameters || 128` in `handleGetDeviceParameters`), `src/ableton_mcp_lom.js:144` (`opts.maxParameters || 32` in `readDeviceTree`), backed by `src/ableton_mcp_lom.js:96` (`maxParams || 64` in `readParameterList`)
+- **What is wrong:** An explicit `maxParameters` of 0 is falsy, so each layer substitutes its default (128 / 32 / 64) instead of honouring the requested cap of zero.
+- **User-visible effect:** A caller asking for a cheap tree with `maxParameters: 0` (structure only, no parameter payloads) still gets full parameter lists for every device — the size/latency saving the option exists for is silently not delivered.
+- **Test:** `testMaxParametersZero` in `tests/test_ableton_mcp_bugsweep.js`
+- **Observed failure:** `maxParameters: 0 must return 0 parameters, got 2` (via `get_device_parameters`; the `get_tracks_tree` path with `includeParameters: true, maxParameters: 0` fails the same way)
+
+## BUG-MCP-8 — `get_session_info` reports `loop_length: 4` when Live reports 0
+
+- **Where:** `src/ableton_mcp_lom.js:221` (`var loopLength = Number(getScalar(setApi, "loop_length")) || 4.0;` in `handleGetSessionInfo`)
+- **What is wrong:** A real `loop_length` of 0 beats is falsy, so the `|| 4.0` fallback fabricates a 4-beat loop length. (Neighbouring zero-valued fields such as `loop_start` and `current_song_time` use a `|| 0` fallback and are unaffected.)
+- **User-visible effect:** Session info claims a 4-beat loop for a set whose loop length is actually 0, so any client reasoning about the loop bracket works from invented data.
+- **Test:** `testLoopLengthZero` in `tests/test_ableton_mcp_bugsweep.js`
+- **Observed failure:** `Live reports loop_length 0 but get_session_info returned 4`
+
+## BUG-MCP-9 — Bridge crashes at startup on an out-of-range `ABLETON_MCP_PORT` instead of falling back
+
+- **Where:** `src/ableton_mcp_node.js:34` (`const BASE_PORT = Number(process.env.ABLETON_MCP_PORT) || 9877;` — no range check), crashing at `src/ableton_mcp_node.js:280` (`srv.listen(...)` in `startListening`)
+- **What is wrong:** The env port is never validated. The `set_port` handler in the same file validates `1024..65535` before rebinding (`src/ableton_mcp_node.js:61-62`), but the startup path passes e.g. 70000 straight to `Server.listen`, which throws `RangeError [ERR_SOCKET_BAD_PORT]` synchronously and kills the node process before it can scan/fall back or report `bridge_status`.
+- **User-visible effect:** One bad env value (typo, stale config) takes the whole bridge down with a stack trace and no session is ever registered; the device just appears dead in Live.
+- **Test:** `testInvalidEnvPort` in `tests/test_ableton_mcp_bugsweep.js` (spawns the real bridge with `ABLETON_MCP_PORT=70000`; expects it to stay alive and register on a fallback port)
+- **Observed failure:** `bridge process exited (code 1) on ABLETON_MCP_PORT=70000 instead of falling back to a valid port; stderr: RangeError [ERR_SOCKET_BAD_PORT]: options.port should be >= 0 and < 65536. Received type number (70000). at Server.listen ... at startListening (src/ableton_mcp_node.js:280:9)`
+
+## BUG-MCP-10 — Stdio server loses a `Content-Length` framed message whose header is split across chunks, and answers a spurious parse error
+
+- **Where:** `scripts/ableton_mcp_server.js:546-572` (`startStdioMcpServer` stdin parser)
+- **What is wrong:** The framing check requires the complete header terminator within the buffered bytes (`/^Content-Length:\s*(\d+)\r?\n\r?\n/`). If a chunk ends right after the header line (`Content-Length: N\r\n` sent, blank line still in flight), the regex does not match, so the parser falls through to newline-delimited mode and consumes the header line itself as a JSON line: it emits a `-32700` parse error, and the following body is left buffered without its header (no trailing newline), so the actual request is never dispatched.
+- **User-visible effect:** An LSP-style MCP client whose writes are chunked at that boundary (normal TCP/stream behaviour) gets a bogus parse error and its request hangs forever with no response.
+- **Test:** `testSplitContentLengthHeader` in `tests/test_ableton_mcp_bugsweep.js` (writes the header line, waits 400 ms, then writes the blank line + body of a `ping`)
+- **Observed failure:** `no response to a Content-Length framed ping whose header was split across chunks; raw stdout: {"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}` (that parse error was the *only* output — the ping, id 42, was never answered)
+
+## BUG-MCP-11 — One `tools/call` with an out-of-range `port` argument kills the whole MCP server, with no response
+
+- **Where:** `scripts/ableton_mcp_server.js:330` + `:335` (`callBridgeHttp` passes the unvalidated port to `http.request`, which throws synchronously), reached via `executeMcpTool` (`:433-434`); the rejection is fatal because the stdio loop calls the async `handleJsonRpcMessage` without awaiting it (`:564`, `:582`), so the throw becomes an unhandled rejection.
+- **What is wrong:** Neither the tool argument, the `--port` CLI value, nor the env default is range-checked before `http.request`, and there is no rejection guard around message handling. A single `port: 99999` raises `RangeError [ERR_SOCKET_BAD_PORT]` and terminates the server process (exit code 1).
+- **User-visible effect:** One malformed tool call from any MCP client disconnects the entire Ableton MCP server session — no JSON-RPC error, no tool error result, every other in-flight call dropped.
+- **Test:** `testInvalidToolPort` in `tests/test_ableton_mcp_bugsweep.js` (expects an `isError` tool result for id 7 and a live server that still answers a subsequent `ping`)
+- **Observed failure:** `no JSON-RPC response to tools/call with port 99999 (server exit code: 1); stderr: RangeError [ERR_SOCKET_BAD_PORT]: Port should be >= 0 and < 65536. Received type number (99999). at lookupAndConnect ...`
+
+---
+
+### Checked and found clean (no credible bug)
+
+- `delete_device` / `set_device_parameter` / `transport` argument validation and the `/rpc` null-body and stdio parse-error paths — already covered by BUG-MCP-1..5 and passing.
+- `set_device_parameter` clamping (`Math.max(min, Math.min(max, value))`), exact-then-substring name matching, and not-found handling for negative/fractional indices.
+- `delete_device` path parsing for nested rack paths (`... chains 1 devices 0` resolves parent/index correctly, as the existing suite asserts).
+- Node bridge multi-session port scan: same-parent (`max_ppid`) shutdown/rebind vs different-parent increment, registry unregister guarded by `node_pid`, RPC pending-map timeout cleanup.
+- `scripts/build_ableton_mcp.py` patchline helper and `route lom_rpc bridge_status` wiring (3 outlets: rpc, status, unmatched) match the LOM/node message contract.
+- Transport tempo clamp (20..999) and the node `set_port` range check (1024..65535) are correct — which is what makes the unvalidated startup/CLI/tool port paths in BUG-MCP-9/11 stand out.

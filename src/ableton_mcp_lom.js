@@ -93,7 +93,7 @@ function readParameterList(devicePath, maxParams) {
         var pIds = extractIds(devApi.get("parameters"));
         nParams = pIds.length;
     }
-    var limit = Math.min(nParams, maxParams || 64);
+    var limit = Math.min(nParams, typeof maxParams === "number" ? maxParams : 64);
     var params = [];
     for (var i = 0; i < limit; i++) {
         var pPath = cleanPath(devicePath) + " parameters " + i;
@@ -141,7 +141,7 @@ function readDeviceTree(devicePath, opts, depth) {
     };
 
     if (opts && opts.includeParameters) {
-        info.parameters = readParameterList(devicePath, opts.maxParameters || 32);
+        info.parameters = readParameterList(devicePath, typeof opts.maxParameters === "number" ? opts.maxParameters : 32);
     }
 
     if (canHaveChains && curDepth < 4) {
@@ -218,7 +218,8 @@ function handleGetSessionInfo() {
     var songTime = Number(getScalar(setApi, "current_song_time")) || 0.0;
     var loop = Number(getScalar(setApi, "loop")) || 0;
     var loopStart = Number(getScalar(setApi, "loop_start")) || 0.0;
-    var loopLength = Number(getScalar(setApi, "loop_length")) || 4.0;
+    var loopLengthNum = Number(getScalar(setApi, "loop_length"));
+    var loopLength = isNaN(loopLengthNum) ? 4.0 : loopLengthNum;
     var metronome = Number(getScalar(setApi, "metronome")) || 0;
 
     var nTracks = 0;
@@ -270,8 +271,10 @@ function handleGetTracksTree(params) {
     try { nTracks = Number(setApi.getcount("tracks")) || 0; } catch (e) { nTracks = extractIds(setApi.get("tracks")).length; }
 
     var tracks = [];
-    if (typeof opts.trackIndex === "number" && opts.trackIndex >= 0 && opts.trackIndex < nTracks) {
-        tracks.push(readTrackInfo("live_set tracks " + opts.trackIndex, opts.trackIndex, "track", opts));
+    if (typeof opts.trackIndex === "number") {
+        if (opts.trackIndex >= 0 && opts.trackIndex < nTracks) {
+            tracks.push(readTrackInfo("live_set tracks " + opts.trackIndex, opts.trackIndex, "track", opts));
+        }
     } else {
         for (var t = 0; t < nTracks; t++) {
             tracks.push(readTrackInfo("live_set tracks " + t, t, "track", opts));
@@ -373,7 +376,7 @@ function handleGetDeviceParameters(params) {
         device_id: Number(devApi.id) || 0,
         device_name: String(getScalar(devApi, "name") || ""),
         path: cleanPath(devApi.unquotedpath || devApi.path || p.path),
-        parameters: readParameterList(p.path, p.maxParameters || 128)
+        parameters: readParameterList(p.path, typeof p.maxParameters === "number" ? p.maxParameters : 128)
     };
 }
 

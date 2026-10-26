@@ -31,7 +31,8 @@ try {
     };
 }
 
-const BASE_PORT = Number(process.env.ABLETON_MCP_PORT) || 9877;
+const _envPort = Number(process.env.ABLETON_MCP_PORT);
+const BASE_PORT = (_envPort >= 1024 && _envPort <= 65535) ? _envPort : 9877;
 const MAX_PORT_SCAN = 16;
 const HOST = "127.0.0.1";
 const RPC_TIMEOUT_MS = 8000;
