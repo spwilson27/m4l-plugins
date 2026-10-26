@@ -3515,3 +3515,20 @@ This record was added directly on main: the bugsweep/megamod worktree and branch
   - src/megamod_ui.js (strip-knob onwheel): `(dy > 0 ? 1 : -1) * 0.03` -> `(dy > 0 ? -1 : 1) * 0.03`.
 - Verification on main (2026-10-26, at merge bd2bc7f): `node tests/test_megamod_bugsweep.js` = 9 passed, 0 failed (Pass 1 pre-fix run was 5 passed, 4 failed). The known pre-existing tests/test_megamod_ui.js failure ("click sets X: 0.2272 vs 0.25") is unrelated to these bugs and not blocking.
 - No separate Pass 4 review was recorded for this device, so none is claimed here; this record is the Pass 2 verdicts, the Pass 3 fix, and the main-tree verification above.
+
+# Freq Split bug sweep — record (added on main)
+
+This record was added directly on main: the bugsweep/freqsplit branch was merged (fd40d31) and deleted before any section for this device landed in BUGS.md; greps for the device name and for the fix vocabulary (fsDryShare, limon, fvDragTo, role-gated) found no Freq Split record in this file.
+
+## Cycle on main
+
+- Pass 1: 7802dda, "test(freqsplit): bugsweep pass 1 red tests" — filed reds in tests/test_freqsplit_bugsweep.js covering the mix dry-share accounting against the role-gated gen and the limiter hit handling.
+- Review: 2e0efe9, "test(freqsplit): review bugsweep reds (role-gated mix, limiter, limon hit)" — revised the suite against the shipped behaviour (that commit also restored this cumulative log, +2161 lines, without adding a section for this device).
+- Fix: 3a95cdf, "fix(freqsplit): role-gated dry share docs and limiter hit targeting" — "Align fsDryShare and the suite with the shipped role-gated kShare. Gate limiter hits on limon (and mid-drag), hit-test the painted handle, and skip mousedown fvDragTo so out-of-plot thresholds do not jump." Devices rebuilt (298f459, 8379496).
+- Merge: fd40d31, "merge(bugsweep/freqsplit): role-gated dry share docs and limiter hit targeting".
+- Verification on main (2026-10-26): `node tests/test_freqsplit_bugsweep.js` = exit 0, all checks ok (mix dry share agrees with role-gated gen; limiter handle at -120 dB grabbable at its painted position; grabbing the limiter line at +12 dB does not jump the threshold; limon=0 invisible limiter does not steal plot hits).
+- No separate Pass 4 review was recorded for this line, so none is claimed here.
+
+## Parallel line (for the record)
+
+- bugsweep/freqsplit-pass1 (7ecba2d pass 1, ff93799 pass 2) independently hunted this device and found no credible bugs (kept 0 / dropped 0, two nits rejected). That review covered its own hunt, not the filed reds above; the branch remains unmerged and is superseded by the merged cycle recorded here.
