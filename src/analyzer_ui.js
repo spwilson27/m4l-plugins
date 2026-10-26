@@ -25,6 +25,11 @@ var anHold = null;
 var anDrag = null;
 var anHoverKind = "";
 var anHoverSlot = -1;
+var AN_MAX_UNDO = 32;
+/** @type {Array<{ mask: number, order: number[], specType: number, scopeMode: number, scopeTime: number, trigger: number, f1: number, f2: number, f3: number }>} */
+var anUndoStack = [];
+/** @type {Array<{ mask: number, order: number[], specType: number, scopeMode: number, scopeTime: number, trigger: number, f1: number, f2: number, f3: number }>} */
+var anRedoStack = [];
 var anLoud = anLoudCreate();
 /** @type {number[][]} */
 var anHeat = [];
@@ -1412,6 +1417,53 @@ function anSlotAtY(y) {
     return s;
 }
 
+function anSnapshot() {
+    return {
+        mask: anMask,
+        order: anOrder.slice(),
+        specType: anSpecType,
+        scopeMode: anScopeMode,
+        scopeTime: anScopeTime,
+        trigger: anTrigger,
+        f1: anF[0],
+        f2: anF[1],
+        f3: anF[2]
+    };
+}
+
+function pushUndoState() {
+    anUndoStack.push(anSnapshot());
+    if (anUndoStack.length > AN_MAX_UNDO) anUndoStack.shift();
+    anRedoStack = [];
+}
+
+function anApplySnapshot(snap) {
+    if (!snap) return;
+    anMask = snap.mask;
+    anOrder = snap.order.slice();
+    anSpecType = snap.specType;
+    anScopeMode = snap.scopeMode;
+    anScopeTime = snap.scopeTime;
+    anTrigger = snap.trigger;
+    anF = [snap.f1, snap.f2, snap.f3];
+    anApplyWidth();
+    anSendXover();
+    notifyclients();
+    mgraphics.redraw();
+}
+
+function undo() {
+    if (anUndoStack.length === 0) return;
+    anRedoStack.push(anSnapshot());
+    anApplySnapshot(anUndoStack.pop());
+}
+
+function redo() {
+    if (anRedoStack.length === 0) return;
+    anUndoStack.push(anSnapshot());
+    anApplySnapshot(anRedoStack.pop());
+}
+
 function anClick(hit) {
     if (hit.kind === "freeze") {
         anFrozen = anFrozen ? 0 : 1;
@@ -1432,9 +1484,12 @@ function onclick(x, y) {
     anDrag = null;
     if (!hit) return;
     if (hit.kind === "rail" || hit.kind === "xover") {
+        pushUndoState();
         anDrag = { kind: hit.kind, index: hit.index, x0: x, y0: y, moved: 0 };
         return;
     }
+    // freeze / loudness reset are session-only; blob fields need undo.
+    if (hit.kind !== "freeze" && hit.kind !== "reset") pushUndoState();
     anClick(hit);
 }
 
@@ -1488,6 +1543,7 @@ function anEndDrag() {
 function ondblclick(x, y) {
     var hit = anHitAt(x, y, anMask, anOrder, anF);
     if (!hit || hit.kind !== "xover") return;
+    pushUndoState();
     var f = [anF[0], anF[1], anF[2]];
     f[hit.index] = AN_XOVER_DEFAULT[hit.index];
     anF = anClampXover(f[0], f[1], f[2]);
