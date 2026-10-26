@@ -3498,3 +3498,20 @@ Worktree: /tmp/bugsweep/xo_map on branch bugsweep/xo_map, commit under review 60
 - node tests/test_xo_stretch.js → all xo_stretch tests passed, exit 0.
 - git show 60196e6 → exactly the 3 one-line changes described above; no test files, no unrelated files.
 
+
+# Mega Modulator bug sweep — Pass 2 / Pass 3 record (added on main)
+
+This record was added directly on main: the bugsweep/megamod worktree and branch were removed externally after the fix merged, before these verdicts could land in BUGS.md. The Pass 1 filing is the "# Mega Modulator bug sweep — pass 1" section earlier in this file. Better Sampler, originally batched with this record, needed none: its Pass 2 / Pass 3 / Pass 4 records are already present in its own section on main.
+
+## Pass 2 review verdicts — Bug 1: KEEP, Bug 2: KEEP
+
+- Bug 1 (sanitizeMod boolean false): KEEP — real, reachable via saved states carrying JSON false, and inconsistent with sanitizeMapping in the same file.
+- Bug 2 (strip-knob onwheel sign): KEEP — real, the opposite wheel convention to every other control in the same file.
+
+## Pass 3 fix — both bugs: FIXED
+
+- Fix commit 5c338e749203b503057dd901e047cc512ceddd50, "fix(megamod): sanitizeMod false enabled + strip-knob wheel sign" — two one-line src changes plus the rebuilt devices/Mega Modulator.amxd:
+  - src/megamod_config.js (sanitizeMod): `m.enabled === 0 ? 0 : 1` -> `m.enabled === 0 || m.enabled === false ? 0 : 1`.
+  - src/megamod_ui.js (strip-knob onwheel): `(dy > 0 ? 1 : -1) * 0.03` -> `(dy > 0 ? -1 : 1) * 0.03`.
+- Verification on main (2026-10-26, at merge bd2bc7f): `node tests/test_megamod_bugsweep.js` = 9 passed, 0 failed (Pass 1 pre-fix run was 5 passed, 4 failed). The known pre-existing tests/test_megamod_ui.js failure ("click sets X: 0.2272 vs 0.25") is unrelated to these bugs and not blocking.
+- No separate Pass 4 review was recorded for this device, so none is claimed here; this record is the Pass 2 verdicts, the Pass 3 fix, and the main-tree verification above.
