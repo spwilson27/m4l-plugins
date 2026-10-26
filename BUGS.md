@@ -2186,3 +2186,21 @@ Pass 1 only: no `src/` or build changes; the fix (update the two 4096 strings to
 
 Independent re-verification confirms 5120 is unambiguously the real latency and 4096 is purely stale text: `TS_LATENCY` = 5120 (`src/transplit_config.js:14`), `RACK_LATENCY` = 5120 (`scripts/spectral_common.py:242`, 4096 STFT + 1024 host-block margin), the built device's patcher `latency` attribute is 5120 while its baked `obj-ctrl-size` `parameter_info` and annotation both still read "The latency stays 4096 samples at every size.", the face footnote renders `TS_LATENCY`, the gen core comments state the dry path is delayed by 5120, and all three sibling Split builds advertise 5120. Re-runs: `node tests/test_transplit_bugsweep.js` still RED (exit 1, first assertion exactly as filed) and `node tests/test_transplit.js` GREEN. The test's assertions map one-to-one onto the two stale strings and the baked device help — not a nit (Live's Info View under-reports latency by 1024 samples) and not over-broad — so the test is kept as-is for the Pass 3 fix.
 
+## Pass 3 fix - Bug 1 FIXED
+
+**Adopted diff (Step A):** The uncommitted scripts/build_transplit.py modification disclosed by Pass 2 was inspected first with git diff: exactly the two intended string changes and nothing else - module docstring (line 8: delayed by 5120 samples, latency 5120) and ENUM_HELP size entry (line 69: The latency stays 5120 samples at every size.). Adopted as-is; not reverted, not redone.
+
+**External commit:** While this pass was in flight, the worktree owner committed that adopted fix and the rebuilt devices directly as 761e63e (fix(transplit): Size Live help and docstring latency 4096 to 5120, 2026-10-25 23:02 PDT) - the same 2-line script diff. This pass does not re-commit the fix. Its own verification rebuild produced a byte-identical .amxd (MD5 b698283128a3d1f59e8f53b176981866 before and after the rebuild), and its .adg regeneration differed from the committed .adg only in the two FileRef LastModDate timestamps (6 bytes), so the working tree was left at the committed .adg. This commit therefore records only this Pass 3 entry in BUGS.md.
+
+**Verification (Pass 3, this worktree):**
+
+- npm run -s typecheck - rc 0 (all configs, incl. tsconfig.transplit.json)
+- python3 scripts/build_transplit.py - rc 0 (wrote devices/Transient Split.amxd, 171376 bytes, and the .adg)
+- node tests/test_transplit_bugsweep.js - GREEN: source Size-help checks and built-device Size-help checks both passed; all cases passed
+- node tests/test_transplit.js - GREEN: All Transient Split tests passed (plus spectral rack, deferred-DSP, and paint-bounds suites)
+- python3 scripts/render_preview.py devices/Transient Split.amxd - previews/transient_split.png (880x338) read back in-session; face unchanged, as expected for a help-text-only fix
+- Built-device check after rebuild: obj-ctrl-size parameter_info and annotation both say the latency stays 5120 samples at every size; patcher latency = 5120
+- git status after the fix commit and the .adg disposition above: only BUGS.md (this entry) modified
+
+Bug 1 closed: fixed 1 / remaining 0.
+
