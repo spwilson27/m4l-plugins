@@ -913,7 +913,7 @@
         ctx.stroke();
         ctx.strokeStyle = rgbaCss(ac);
         ctx.beginPath();
-        ctx.arc(cx, cy, rad, 0.75 * Math.PI, (0.75 + 1.5 * (wid.norm || 0.5)) * Math.PI);
+        ctx.arc(cx, cy, rad, 0.75 * Math.PI, (0.75 + 1.5 * (wid.norm == null ? 0.5 : wid.norm)) * Math.PI);
         ctx.stroke();
         ctx.fillStyle = rgbaCss(tc);
         ctx.font = `600 ${Math.round(8.0 * scale)}px -apple-system, sans-serif`;
