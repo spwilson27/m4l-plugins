@@ -76,8 +76,13 @@ function msegMoveSelection(points, selectedIds, startMap, primaryId, targetX, ta
         } else {
             var newX = Math.max(0.0005, Math.min(0.9995, stj.x + dx));
             pt.x = newX;
-            sweepIntervals.push([Math.min(prevX, newX) - 0.002, Math.max(prevX, newX) + 0.002]);
-            sweepIntervals.push([Math.min(stj.x, newX) - 0.002, Math.max(stj.x, newX) + 0.002]);
+            // Only sweep-delete when there is real horizontal travel. A pure
+            // vertical move (newX == start/prev) must not apply the ±0.002
+            // epsilon or nearby unselected neighbors are erased.
+            if (Math.abs(newX - prevX) > 1e-9 || Math.abs(newX - stj.x) > 1e-9) {
+                sweepIntervals.push([Math.min(prevX, newX) - 0.002, Math.max(prevX, newX) + 0.002]);
+                sweepIntervals.push([Math.min(stj.x, newX) - 0.002, Math.max(stj.x, newX) + 0.002]);
+            }
         }
     }
     // Pure vertical moves have no horizontal travel; do not union the selection span
