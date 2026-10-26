@@ -1983,6 +1983,21 @@ hotkey_save();
 assert.strictEqual(getSavedList().length, 6, "Regression: Pressing 's' must add item to savedList ONCE (not twice)");
 assert.strictEqual(getSavedScrollOffset(), 2, "Expected auto-scroll to offset 2 when 6 items are saved");
 
+// Bugsweep RED: saved-pane onwheel has no dy!==0 guard (unlike the zoom branch).
+// Horizontal-only wheel/trackpad (dx!=0, dy=0) currently calls scrollSavedList(-1).
+{
+  const layW = getLayout();
+  assert(getSavedList().length > layW.savedMaxRows, "need overflow so the saved-pane wheel branch is active");
+  const beforeOff = getSavedScrollOffset();
+  assert.ok(beforeOff > 0, "offset must be >0 so a bogus -1 scroll is observable after clamp");
+  onwheel(layW.savedX + 10, layW.savedRowY0 + 8, 1, 0); // dx=1, dy=0
+  assert.strictEqual(
+    getSavedScrollOffset(),
+    beforeOff,
+    "horizontal-only onwheel (dy=0) over saved list must not scroll"
+  );
+}
+
 // Scroll back to top (offset 0)
 scrollSavedList(-2);
 assert.strictEqual(getSavedScrollOffset(), 0, "Expected scroll offset 0 after scrolling up");
