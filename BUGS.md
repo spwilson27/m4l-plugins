@@ -2204,3 +2204,7 @@ Independent re-verification confirms 5120 is unambiguously the real latency and 
 
 Bug 1 closed: fixed 1 / remaining 0.
 
+
+## Pass 4 review: APPROVED
+
+Pass 4 review: APPROVED - independently re-reviewed 761e63e (exactly the two 4096-to-5120 strings in scripts/build_transplit.py plus the rebuilt .amxd/.adg; baked device gained exactly the two 5120-samples strings, remaining 4096s are FFT/buffer/size values) and f2a1af6 (BUGS.md Pass 3 record only, matching reality, incl. the 761e63e/f2a1af6 split); no test files changed in either commit. Re-ran both suites green (test_transplit_bugsweep.js rc 0 both blocks; test_transplit.js rc 0) and verified the built device directly: obj-ctrl-size parameter_info and annotation say 5120, patcher latency = 5120, .amxd MD5 b698283128a3d1f59e8f53b176981866.
