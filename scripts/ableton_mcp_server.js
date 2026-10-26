@@ -469,6 +469,9 @@ async function handleJsonRpcMessage(msg) {
     if (!msg || typeof msg !== "object") return;
     const { id, method, params } = msg;
 
+    // A message with no id is a JSON-RPC notification and must never be answered.
+    if (id === undefined) return;
+
     if (method === "initialize") {
         const clientProtocol = (params && params.protocolVersion) || "2024-11-05";
         sendRpcMessage({
@@ -549,7 +552,13 @@ function startStdioMcpServer() {
         buffer = Buffer.concat([buffer, chunk]);
 
         while (buffer.length > 0) {
-            const headerMatch = buffer.toString("utf8", 0, Math.min(buffer.length, 64)).match(/^Content-Length:\s*(\d+)\r?\n\r?\n/i);
+            const headStr = buffer.toString("utf8", 0, Math.min(buffer.length, 1024));
+            const headerBlockMatch = headStr.match(/^((?:[A-Za-z][A-Za-z0-9-]*:[^\r\n]*\r?\n)+)\r?\n/);
+            let headerMatch = null;
+            if (headerBlockMatch) {
+                const lenMatch = headerBlockMatch[1].match(/Content-Length:\s*(\d+)/i);
+                if (lenMatch) headerMatch = [headerBlockMatch[0], lenMatch[1]];
+            }
             if (headerMatch) {
                 useContentLengthFraming = true;
                 const headerByteLen = Buffer.byteLength(headerMatch[0], "utf8");
@@ -572,9 +581,10 @@ function startStdioMcpServer() {
                 continue;
             }
 
-            // Incomplete Content-Length header (chunk ended before the blank-line terminator):
-            // wait for more bytes; do not treat the header line as NDJSON.
-            if (/^Content-Length:/i.test(buffer.toString("utf8", 0, Math.min(buffer.length, 64)))) {
+            // Incomplete header block (chunk ended before the blank-line terminator,
+            // e.g. a Content-Type or Content-Length line split across chunks): wait for
+            // more bytes; do not treat header lines as NDJSON.
+            if (/^[A-Za-z][A-Za-z0-9-]*:/.test(headStr) && !/\r?\n\r?\n/.test(headStr)) {
                 break;
             }
 
