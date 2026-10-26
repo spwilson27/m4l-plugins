@@ -294,7 +294,7 @@ function oscEstimatePeriod(sig, sr, trackerState) {
     if (rms < 0.00025) return fallbackOrHold();
 
     var minLag = Math.max(8, Math.floor(rate / 4000));
-    var maxLag = Math.min(Math.floor(winLen * 0.64), Math.ceil(rate / 20));
+    var maxLag = Math.min(Math.floor(winLen * 0.85), Math.ceil(rate / 20));
     if (maxLag <= minLag) return fallbackOrHold();
 
     var corrLen = Math.min(winLen - maxLag - 2, 1200);
