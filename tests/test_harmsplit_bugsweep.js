@@ -80,4 +80,58 @@ for (const thr of [-5, -2, 0]) {
         `thr -5 dB: double-click on the threshold line emits a reset to Automatic (-120), got ${JSON.stringify(sent)}`);
 }
 
+// ============================================================================
+// Pass 1, iteration 1 (new sweep): the painted T handle cannot be grabbed when
+// the Threshold is at / near Automatic (thr < about -118 dB).
+//
+// hsPaintAnalysis paints the T handle at hy = min(hsYOfDb(thr), hsBase() - 6.5)
+// so the handle stays inside the LCD, but for thr in the -120..-100 strip
+// hsYOfDb runs from 90 (at -120) down to 85 (at -100), so the painted handle
+// sits at y = 84.5 while the Threshold line itself sits up to 5.5 px below it.
+// hsHandleDown measures only the distance to the LINE (dT = |y - hsYOfDb(thr)|)
+// and rejects clicks with best > 5, so a click on the centre of the painted
+// handle -- the affordance a user aims for, and the only handle visible in the
+// device default state (Threshold = Automatic, -120 dB) -- starts no drag when
+// thr < -118, and a double-click there does not reset to Automatic either.
+// The line itself (y = 90 at -120) remains clickable; only the handle is dead.
+// (Distinct from the top-strip bug above: there the line and handle coincide
+// and the flag strip forced dT to 99; here paint and hit-test disagree about
+// the handle y at the BOTTOM of the plot.)
+//
+// Control: at thr -110 the painted handle (also clamped to 84.5) is 3 px from
+// the line and can be grabbed.
+// ---- control: the painted T handle can be grabbed at thr -110 dB ----
+function paintedTHandle(thr) {
+    sb.hsVals.thr = thr;
+    const tg = sb.hsToggleRect();
+    const hy = Math.min(sb.hsYOfDb(thr), sb.hsBase() - 6.5);
+    const hx = hy - 4.5 < tg.y + tg.h + 1 ? tg.x - 22 : sb.HS_PLOT.x + sb.HS_PLOT.w - 1 - 9;
+    return { hx, hy };
+}
+{
+    const { hx, hy } = paintedTHandle(-110);
+    const drag = clickPlot(hx, hy);
+    assert.ok(drag && drag.kind === "thr",
+        `control: thr -110 dB painted T handle (${hx}, ${hy}) starts a thr drag, got ${drag && drag.kind}`);
+}
+
+// ---- bug: the painted T handle can be grabbed at Automatic / near it ----
+for (const thr of [-120, -119]) {
+    const { hx, hy } = paintedTHandle(thr);
+    const drag = clickPlot(hx, hy);
+    assert.ok(drag && drag.kind === "thr",
+        `thr ${thr} dB: clicking the painted T handle (${hx}, ${hy}, line at y ${sb.hsYOfDb(thr).toFixed(1)}) starts a thr drag, got ${drag && drag.kind}`);
+}
+
+// ---- bug: double-clicking the painted T handle near Automatic resets it ----
+{
+    const { hx, hy } = paintedTHandle(-119);
+    sent.length = 0;
+    sb.hsDrag = null;
+    sb.ondblclick(hx, hy);
+    const resets = sent.filter((m) => m[0] === 0 && m[1] === "thr");
+    assert.ok(resets.length === 1 && Number(resets[0][2]) === -120,
+        `thr -119 dB: double-click on the painted T handle (${hx}, ${hy}) emits a reset to Automatic (-120), got ${JSON.stringify(sent)}`);
+}
+
 console.log("All Harmonic Split bugsweep tests passed");

@@ -620,6 +620,11 @@ function hsHandleDown(x, y, dbl) {
         dL = Math.abs(x - hsFlagX(xl)) <= 6 ? 0 : dL;
         dH = Math.abs(x - hsFlagX(xh)) <= 6 ? 0 : dH;
     }
+    // Honour the painted T handle: hsPaintAnalysis clamps it to hsBase() - 6.5, which near
+    // Automatic sits up to 5.5 px above the threshold line, outside the 5 px line tolerance.
+    var thy = Math.min(ty, hsBase() - 6.5);
+    var thx = thy - 4.5 < t.y + t.h + 1 ? t.x - 22 : HS_PLOT.x + HS_PLOT.w - 9;
+    if (Math.abs(x - thx) <= 6 && Math.abs(y - thy) <= 6) dT = 0;
     var best = Math.min(dT, Math.min(dL, dH));
     if (best > 5) return;
     var kind = best === dL ? "lowcut" : (best === dH ? "highcut" : "thr");
