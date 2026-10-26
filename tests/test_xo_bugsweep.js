@@ -167,5 +167,57 @@ check("stretchAudioEx clamps pitchSt to the +/-24 range", () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Bug (i1 pass 1): minimap_batch parses druminess / tonalPct / brightness
+// with || defaults (src/xo_strip_ui.js), so a value of exactly 0 sent by the
+// engine becomes the mid default: druminess 0 -> 65, tonalPct 0 -> 50,
+// brightness 0 -> 50. The engine sends real zeros (syncMiniMapToMax in
+// src/xo_node_engine.js): drumPct = round(computeSampleDruminessPct) is 0
+// for tonal samples and tonalPct = round((1 - flatness) * 100) is 0 for
+// noise-like samples. The strip then disagrees with the engine about
+// visibility, because isPointVisible filters on the invented values.
+// ---------------------------------------------------------------------------
+check("minimap batch preserves zero druminess tonal and brightness", () => {
+  const ctx = loadStrip();
+  ctx.minimap_clear();
+  ctx.minimap_batch(0, 0.5, 0.5, 16, 300, 0, 0, 0, "Zero");
+  const p = ctx.getPoints()[0];
+  assert.strictEqual(p.druminess, 0, "druminess 0 became " + p.druminess);
+  assert.strictEqual(p.tonalPct, 0, "tonalPct 0 became " + p.tonalPct);
+  assert.strictEqual(p.brightness, 0, "brightness 0 became " + p.brightness);
+});
+
+// Bug (i1 pass 1): same || default pattern for durationMs in minimap_batch:
+// a 0 ms duration (an empty file; the engine sends round(durationMs))
+// becomes 200 in the strip, so the maxLen filter verdict differs per side.
+check("minimap batch preserves zero durationMs", () => {
+  const ctx = loadStrip();
+  ctx.minimap_clear();
+  ctx.minimap_batch(0, 0.5, 0.5, 16, 0, 40, 40, 40, "ZeroDur");
+  const p = ctx.getPoints()[0];
+  assert.strictEqual(p.durationMs, 0, "durationMs 0 became " + p.durationMs);
+});
+
+// ---------------------------------------------------------------------------
+// Bug (i1 pass 1): ensureValidSelection (src/xo_strip_ui.js) moves the
+// selection to the first visible point when a filter hides it, but when the
+// filter hides EVERY point it falls through with selectedIndex (and
+// anchorIndex) still pointing at a hidden point and nothing announced. The
+// rest of the strip treats -1 as no selection (ensureSelectedInView and
+// the map draw guards), so the all-hidden case should clear it to -1.
+// ---------------------------------------------------------------------------
+check("selection clears when a filter hides every point", () => {
+  const ctx = loadStrip();
+  ctx.minimap_clear();
+  const flat = [];
+  const names = ["P0", "P1", "P2"];
+  for (let i = 0; i < 3; i++) flat.push(0.10 + i * 0.01, 0.10, 16, 300, 50, 50, 50, names[i]);
+  ctx.minimap_batch(0, ...flat);
+  assert.strictEqual(ctx.getSelectedIndex(), 0, "setup: first point selected");
+  ctx.strip_filter_drum(90);
+  assert.strictEqual(ctx.getSelectedIndex(), -1,
+    "selection stayed on hidden point " + ctx.getSelectedIndex() + " after drum filter +90 hid all points (druminess 50)");
+});
+
 console.log(failures ? failures + " failing" : "all passed");
 process.exit(failures ? 1 : 0);
