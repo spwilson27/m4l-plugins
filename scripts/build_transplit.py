@@ -5,7 +5,7 @@ Build devices/Transient Split.amxd and devices/Transient Split.adg (Bitwig Spect
 Two channels: 1 Transients (yellow), 2 Tones (blue). Use the device as the FIRST device of EVERY chain of an Audio
 Effect Rack, one chain per channel (the .adg preset does exactly that). Every instance runs the same mask-STFT analysis
 on the same input with linked parameters and outputs only its own channel (Output = Auto: the chain index); the per-bin
-masks sum to exactly 1, so the chains sum back to the input delayed by 4096 samples ("latency": 4096).
+masks sum to exactly 1, so the chains sum back to the input delayed by 5120 samples ("latency": 5120).
 
 Signal path: plugin~ -> gen~ -> plugout~, where the gen~ is NOT in the saved device: the face creates it after load from the embedded
 gen patch (src/spectral_dsp.js, AGENTS.md 1d; gen code = cepstrum_lib + spectral_split_lib + spectral_split_rack + the expanded
@@ -66,7 +66,7 @@ ENUM = {
 ENUM_HELP = {
     "ttype": "Transient Type: Percussive detects per-bin impacts (sudden rises), Noise sends noisy, phase-unstable content (smears, reverb tails) to the Transients channel.",
     "tmode": "Tilt Mode: Standard tilts highs against lows, Contour tilts the mids against the highs and lows.",
-    "size": "Analysis block size: 512 and 1k favour time resolution, 2k and 4k frequency resolution. The latency stays 4096 samples at every size.",
+    "size": "Analysis block size: 512 and 1k favour time resolution, 2k and 4k frequency resolution. The latency stays 5120 samples at every size.",
     "output": "Output: Auto uses this chain's index in the parent Rack (1 Transients, 2 Tones; outside a Rack the sum of all), or pick a channel, or All.",
 }
 # key: (gen message, scale)
