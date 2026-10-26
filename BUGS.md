@@ -2182,3 +2182,7 @@ npx tsc -p tsconfig.transplit.json    # not runnable in this worktree (no node_m
 
 Pass 1 only: no `src/` or build changes; the fix (update the two 4096 strings to 5120 and rebuild) is for Pass 3.
 
+## Pass 2 review verdict: KEPT (test unchanged)
+
+Independent re-verification confirms 5120 is unambiguously the real latency and 4096 is purely stale text: `TS_LATENCY` = 5120 (`src/transplit_config.js:14`), `RACK_LATENCY` = 5120 (`scripts/spectral_common.py:242`, 4096 STFT + 1024 host-block margin), the built device's patcher `latency` attribute is 5120 while its baked `obj-ctrl-size` `parameter_info` and annotation both still read "The latency stays 4096 samples at every size.", the face footnote renders `TS_LATENCY`, the gen core comments state the dry path is delayed by 5120, and all three sibling Split builds advertise 5120. Re-runs: `node tests/test_transplit_bugsweep.js` still RED (exit 1, first assertion exactly as filed) and `node tests/test_transplit.js` GREEN. The test's assertions map one-to-one onto the two stale strings and the baked device help — not a nit (Live's Info View under-reports latency by 1024 samples) and not over-broad — so the test is kept as-is for the Pass 3 fix.
+
