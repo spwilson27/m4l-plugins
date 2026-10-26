@@ -1837,7 +1837,7 @@ function onwheel(x, y, ...rest) {
   xoRawLog("onwheel", arguments);
   const lay = getLayout();
   const [, dy] = parseWheelDelta([x, y, ...rest]);
-  if (x >= lay.savedX && savedList.length > lay.savedMaxRows) {
+  if (x >= lay.savedX && savedList.length > lay.savedMaxRows && dy !== 0) {
     scrollSavedList(dy < 0 ? 1 : -1);
     return;
   }
