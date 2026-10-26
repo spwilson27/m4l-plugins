@@ -868,6 +868,39 @@ assert.deepStrictEqual(plain(sb.envDots), [], "no dots without voices");
     // cutoff beyond the display range stays inside the plot
     setVoices([{ amp: 3, al: 0.5, cut: 21000, born: 1 }]); sb.paint();
     assert.ok(sb.filtDots[0].x <= g.gx + g.gw + 1e-6);
+
+    // Negative cutoff depth moves the rendered curve down the log axis, not up and not to the floor.
+    sb.setParamFromFace("filt_cutoff", 1000);
+    setVoices([{ amp: 3, al: 1, cut: 1000, born: 1 }]);
+    sb.ensureMatRows();
+    const cutKey = sb.modCellKey(1, sb.matRows[1].indexOf("filt_cutoff"), 2);
+    sb.matDepth[cutKey] = -40;
+    sb.liveEnv3 = 1;
+    sb.paint();
+    const negHz = sb.modCutoffHz(1000, -0.4);
+    near(sb.filtDots[0].x, sb.fFx(g, negHz), 0.6, "negative cutoff modulation draws the curve lower");
+    assert.ok(sb.filtDots[0].x < sb.fFx(g, 1000) - 8, "the lowered curve is left of the knob");
+    assert.ok(negHz > 40, "−40% does not pin the curve to 20 Hz");
+    sb.matDepth[cutKey] = 40;
+    sb.paint();
+    const posHz = sb.modCutoffHz(1000, 0.4);
+    near(sb.filtDots[0].x, sb.fFx(g, posHz), 0.6, "positive cutoff modulation draws the curve higher");
+    near(sb.fFx(g, 1000) - sb.fFx(g, negHz), sb.fFx(g, posHz) - sb.fFx(g, 1000), 0.6, "the two directions travel the same distance");
+    sb.matDepth[cutKey] = 0;
+    sb.liveEnv3 = 0;
+    // A sounding voice owns the curve. An unpublished Env 3 must not pin it to the bipolar rest.
+    setVoices([{ amp: 3, al: 1, cut: 450, born: 1 }]);
+    sb.matPolar[cutKey] = 1;
+    sb.matDepth[cutKey] = 20;
+    sb.paint();
+    near(sb.filtDots[0].x, sb.fFx(g, 450), 0.6, "bipolar Env 3 follows the voice, including through release");
+    assert.ok(Math.abs(sb.filtDots[0].x - sb.fFx(g, sb.modCutoffHz(1000, -0.2))) > 8, "the curve is not stuck at the negative rest");
+    setVoices([]);
+    sb.liveEnv3 = 0;
+    sb.paint();
+    near(sb.filtDots[0].x, sb.fFx(g, sb.modCutoffHz(1000, -0.2)), 0.6, "with no voice, bipolar Env 3 rests at the negative end");
+    delete sb.matPolar[cutKey];
+    sb.matDepth[cutKey] = 0;
 }
 
 // --- ADSR handles: drag writes the right parameter, stays in range ---
@@ -1777,6 +1810,21 @@ sb.setFoldMask(sb.DEFAULT_FOLD);
     assert.ok(!sb.hitZones.some((z) => z.kind === "act" && Math.abs(z.y - cell.y) < 4 && z.x < cell.x), "default rows have no delete control");
     sb.onclick(cell.x + 2, cell.y + 2, 1, 0, 0, 0, 1);
     assert.strictEqual(sb.matPolar["1:0:4"], 1, "alt-click switches the cell to bipolar");
+    const covered = sb.autoFacesWanted();
+    for (const k of ["filt_env_amt", "menv_pitch", "menv_pos", "lfo_pitch", "lfo_filt", "lfo_pos"]) {
+        assert.ok(!covered[k], `${k} stays on the drawing so alt-click can reach it`);
+    }
+    const env2Cut = sb.hitZones.find((z) => z.kind === "value" && z.key === "filt_env_amt" && z.modsrc === 1);
+    const lfoCut = sb.hitZones.find((z) => z.kind === "value" && z.key === "lfo_filt" && z.modsrc === 3);
+    assert.ok(env2Cut && lfoCut, "Env 2 and LFO 1 cutoff cells are the legacy depths");
+    sb.onclick(env2Cut.x + 2, env2Cut.y + 2, 1, 0, 0, 0, 1);
+    sb.onclick(lfoCut.x + 2, lfoCut.y + 2, 1, 0, 0, 0, 1);
+    assert.strictEqual(sb.matPolar[sb.modCellKey(1, env2Cut.row, 1)], 1, "alt-click switches Env 2 to bipolar");
+    assert.strictEqual(sb.matPolar[sb.modCellKey(1, lfoCut.row, 3)], 1, "alt-click switches LFO 1 to bipolar");
+    sb.paint();
+    assert.ok(sb.hitZones.some((z) => z.kind === "value" && z.key === "filt_env_amt" && z.modsrc === 1), "the Env 2 cell stays a depth control");
+    delete sb.matPolar[sb.modCellKey(1, env2Cut.row, 1)];
+    delete sb.matPolar[sb.modCellKey(1, lfoCut.row, 3)];
     sb.matDepth["1:0:4"] = 40;
     const uni = sb.modPack(sb.matRows, sb.matDepth, 100, sb.matPolar);
     assert.strictEqual(uni[2], 36, "a flipped cell packs source id + 32");

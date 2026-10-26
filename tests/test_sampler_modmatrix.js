@@ -21,6 +21,13 @@ const legacy = mx.modPack({ 1: ["pitch_st", "play_pos", "filt_cutoff"], 2: ["sam
     "1:0:1": 40, "1:1:1": 20, "1:2:1": 10, "1:0:3": 15, "1:1:3": 8, "1:2:3": 4, "2:0:5": 70
 }, 100);
 assert.deepStrictEqual(legacy, [0], "legacy depths are not packed a second time");
+const legacyBi = mx.modPack({ 1: ["filt_cutoff", "pitch_st"], 2: [], 3: [], 4: [] }, {}, 100, { "1:0:1": 1, "1:1:3": 1 });
+assert.strictEqual(legacyBi[0], 2, "a flipped legacy cell packs a marker");
+assert.strictEqual(legacyBi[1], 300);
+assert.strictEqual(legacyBi[2], 33, "Env 2 cutoff bipolar is source 33");
+assert.strictEqual(legacyBi[3], 0, "the marker does not add a second amount");
+assert.strictEqual(legacyBi[7], 200);
+assert.strictEqual(legacyBi[8], 35, "LFO 1 pitch bipolar is source 35");
 
 const pan = mx.modPack({ 1: ["osc1_pan"], 2: [], 3: [] }, { "1:0:4": 50 }, 100);
 assert.strictEqual(pan[0], 1);
@@ -91,6 +98,18 @@ assert.strictEqual(resAtZero, 0.209, "an MSEG sample of 0 leaves resonance alone
 const resEnv = mx.modOffset(0.209, 0, 0.95, 1, 0.7);
 assert.ok(resEnv > 0.8, "a held envelope at sustain moves resonance");
 
+const cutRoute = mx.modPack({ 1: ["filt_cutoff"], 2: [], 3: [], 4: [] }, { "1:0:2": -8 }, 100);
+assert.strictEqual(cutRoute[1], 300, "cutoff is the log-position global");
+assert.ok(Math.abs(cutRoute[3] - (-0.08)) < 1e-9, "a negative cutoff depth stays negative");
+assert.strictEqual(cutRoute[4], 0);
+assert.strictEqual(cutRoute[5], 1, "cutoff depth is a fraction of the log range, not a span of hertz");
+const down = mx.modCutoffHz(623, -0.08);
+const up = mx.modCutoffHz(623, 0.08);
+assert.ok(down < 623 && down > 100, "−8% lowers 623 Hz without closing the filter (" + down.toFixed(1) + ")");
+assert.ok(up > 623 && up < 4000, "+8% raises 623 Hz by the same kind of step (" + up.toFixed(1) + ")");
+assert.ok(Math.abs(Math.log(623 / down) - Math.log(up / 623)) < 1e-6, "negative and positive amounts are symmetric on the log axis");
+assert.ok(mx.modCutoffHz(8000, -1) <= 20.01, "a full negative amount reaches the bottom of the range");
+
 for (const [key, t] of Object.entries(mx.MOD_TARGETS)) {
     if (t.op === "g") assert.ok(gen.includes("peek(mxG, " + t.ix + ")"), key + " is read from the global buffer");
     if (t.op === "b") assert.ok(gen.includes("peek(mxPrev, " + t.ix + ")"), key + " is read from the previous-sample buffer");
@@ -101,6 +120,12 @@ assert.ok(gen.includes("peek(slbuf, 48 + si)"), "slot envelopes attack toward th
 assert.ok(gen.includes("peek(msegw, si * 1024"), "each slot reads its own MSEG waveform");
 assert.ok(gen.includes("poke(scope, out0, 224)") && gen.includes("poke(scope, out3, 227)"), "slot levels are on the scope");
 assert.ok(gen.includes("poke(scope, resUse, 230)"), "resonance used by the filter is on the scope");
+assert.ok(gen.includes("pow(1000.0, clip(log(max(filt_cutoff, 20.0) / 20.0) / log(1000.0) + peek(mxG, 0), 0.0, 1.0))"),
+    "filter 1 applies cutoff depth on the log axis");
+assert.ok(!gen.includes("filt_cutoff + peek(mxG, 0)"), "cutoff depth is not added in hertz");
+assert.ok(gen.includes("peek(vhist, vhOff + 200) < 0.5"), "a voice stays awake while Env 3 is releasing");
+assert.ok(gen.includes("feEnv = clip(maxModEnv * 2.0 - 1.0, -1.0, 1.0)"), "Env 2 bipolar centers the filter envelope");
+assert.ok(gen.includes("poke(prm, env2PitchBi, 139)"), "Env 2 bipolar pitch reaches the voice");
 assert.ok(gen.includes("frame_pos("), "wavetable frames sum their matrix offset outside mod_apply");
 assert.strictEqual((gen.match(/frame_pos\(/g) || []).length, 3, "frame_pos is defined once and called from both voice loops");
 assert.ok(gen.includes("n2Frames, wt2Off"), "osc 2's frame offset is an argument of the one voice_proc call");

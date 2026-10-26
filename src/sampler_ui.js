@@ -88,6 +88,7 @@ var liveLfoPh = 0.0;
 var liveLfo2Ph = 0.0;
 var liveLfo2Val = 0.0;
 var liveModEnvVal = 0.0;
+var liveEnv3 = 0.0;
 var liveEffCutHz = 18000.0;
 // Per-voice envelope / filter telemetry (#0-bsscope 128..207, see AGENTS.md section 14): stage + fraction encoded as
 // stage + frac (0 off, 1 attack, 2 decay, 3 sustain, 4 release), level 0..1, effective cutoff in Hz (0 = voice idle)

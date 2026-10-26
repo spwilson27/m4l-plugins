@@ -3346,7 +3346,7 @@ function modSourceSignal(mode, col) {
     if (mode === 1) {
         if (col === 0) return vLvl;
         if (col === 1) return clamp01(liveModEnvVal);
-        if (col === 2) return clamp01(liveModEnvVal);
+        if (col === 2) return clamp01(liveEnv3 > 0.0005 ? liveEnv3 : liveModEnvVal);
         if (col >= 3) return slotColumnSignal(col);
     }
     return 0;
@@ -3365,6 +3365,34 @@ function rowLocked(mode, row) {
 
 function matCell(mode, row, src) {
     return Number(matDepth[modCellKey(mode, row, src)]) || 0;
+}
+
+// Sum of cutoff depths (−1..1) times each source. The filter graph adds this to the log position.
+function cutoffMatrixAdd(key) {
+    if (typeof modSources !== "function") return 0;
+    ensureMatRows();
+    var add = 0;
+    var modes = [1, 2, 3, 4];
+    var mi, mode, list, srcs, r, s, dep, sig, id;
+    for (mi = 0; mi < modes.length; mi++) {
+        mode = modes[mi];
+        list = matRows[mode] || [];
+        srcs = modSources(mode);
+        for (r = 0; r < list.length; r++) {
+            if (list[r] !== key) continue;
+            for (s = 0; s < srcs.length; s++) {
+                if (typeof modLegacyParam === "function" && modLegacyParam(srcs[s].id, key)) continue;
+                dep = matCell(mode, r, srcs[s].id) / 100;
+                if (Math.abs(dep) < 0.0005) continue;
+                // Env 3 has its own level. The header bar may fall back to the mod envelope; the curve must not.
+                sig = srcs[s].id === 2 ? clamp01(liveEnv3) : modSourceSignal(mode, s);
+                id = modCellKey(mode, r, srcs[s].id);
+                if (matPolar[id] && sig >= 0) sig = Math.max(-1, Math.min(1, sig * 2 - 1));
+                add += dep * sig;
+            }
+        }
+    }
+    return add;
 }
 
 function modPickerKeys(mode) {
@@ -3649,9 +3677,11 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
                 var barTrack = mode === 1 ? mixc(activeBg, barCol, 0.25) : greenDim;
                 fillRect(clx + 0.5, ry + rh - 2.2, clw - 1.0, 1.6, barTrack, 1.0);
                 var spec = pKey ? paramSpec(pKey) : null;
-                var flipped = !pKey && !!matPolar[modCellKey(mode, r, src)];
+                var cellKey = modCellKey(mode, r, src);
+                var flipped = !!matPolar[cellKey];
                 var naturalBi = !spec || spec.lo < 0;
-                var bipolar = flipped ? !naturalBi : naturalBi;
+                // Legacy cells keep the parameter's own bar. The B marks the source, not the amount.
+                var bipolar = pKey ? naturalBi : (flipped ? !naturalBi : naturalBi);
                 var mid = clx + clw * 0.5;
                 var frac = bipolar ? (val / (spec ? Math.max(Math.abs(spec.lo), Math.abs(spec.hi)) : 100)) : (spec ? toNorm(pKey, val) : val / 100);
                 var bx0 = bipolar ? (frac >= 0 ? mid : mid + frac * (clw * 0.48)) : clx + 0.5;
@@ -3661,7 +3691,8 @@ function paintModTable(sx, bx, by, bw, bh, mode) {
                 text(String(shown), clx + clw * 0.5, ry + 10.2, 8.2, barCol, false, 1);
                 if (flipped) text("B", clx + 2, ry + 8.2, 6.5, barCol, false, 0);
             }
-            if (pKey) zone("value", clx, ry, clw, rh, { key: pKey, norm: true, hbar: 1 });
+            // noauto: a Live face on this cell eats alt-click, so Env 2 / LFO 1 never reach the bipolar toggle.
+            if (pKey) zone("value", clx, ry, clw, rh, { key: pKey, norm: true, hbar: 1, mode: mode, row: r, modsrc: src, noauto: 1 });
             else zone("modcell", clx, ry, clw, rh, { mode: mode, row: r, src: src });
         }
     }
@@ -4464,11 +4495,16 @@ function paintFilterSection(sx) {
     filtCurveA = [];
     if (on1) {
         var vs = filterVoices();
-        if (vs.length) {
-            var latest = vs[0];
-            strokePathClipped(responsePath(g, ft1, voiceCutHz[latest], q1), 78.6, acc, 0.5, 1.65);
+        var cutAdd = cutoffMatrixAdd("filt_cutoff");
+        if (vs.length || Math.abs(cutAdd) > 1e-5) {
+            var latest = vs.length ? vs[0] : 0;
+            // A sounding voice already carries Env 3, including its release, in voiceCutHz.
+            // liveEnv3 stays 0 until it is published, and centering that 0 would pin the
+            // curve at the negative end for the whole note.
+            var preview = Math.abs(cutAdd) > 1e-5 && !(vs.length && liveEnv3 <= 0.0005);
+            var hzv = preview ? modCutoffHz(fc1, cutAdd) : voiceCutHz[latest];
+            strokePathClipped(responsePath(g, ft1, hzv, q1), 78.6, acc, 0.5, 1.65);
             filtCurveA = [0.5];
-            var hzv = voiceCutHz[latest];
             var px = Math.min(g.gx + g.gw, fFx(g, hzv)), py = fFy(g, filterDb(ft1, 1, q1, m1, sl1));
             filtDots.push({ v: latest, x: px, y: py, hz: hzv, alpha: 1, rank: 0 });
         }
@@ -4844,7 +4880,7 @@ function autoFacesWanted() {
     for (i = 0; i < hitZones.length; i++) {
         z = hitZones[i];
         key = z.key;
-        if (!key || !FACE_PARAMS[key] || AUTO_FACE_SKIP[z.kind]) continue;
+        if (!key || !FACE_PARAMS[key] || AUTO_FACE_SKIP[z.kind] || z.noauto) continue;
         if (key === "env_page" || key === "face_theme") continue;
         if (z.kind === "wt_pos" && z.w > 40) continue;
         if (!(z.w > 2) || !(z.h > 2)) continue;
@@ -5574,6 +5610,16 @@ onclick = function (x, y, but, cmd, shift, capslock, option, ctrl, ev) {
         if (openMenu) openMenu = null;
         drag = null;
         normalizeSample();
+        return;
+    }
+    if (z && z.kind === "value" && z.hbar && z.modsrc != null && option) {
+        if (openMenu) openMenu = null;
+        var lk = modCellKey(z.mode, z.row, z.modsrc);
+        if (matPolar[lk]) delete matPolar[lk];
+        else matPolar[lk] = 1;
+        flushModMap();
+        notifyclients();
+        mgraphics.redraw();
         return;
     }
     if (z && z.kind === "modcell") {

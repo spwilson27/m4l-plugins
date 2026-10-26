@@ -1167,7 +1167,9 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 	qIdx = round(clip(peek(prm, 50), 0, 2));
 	nWant = peek(prm, 35);
 	dirSign = (reverseOn > 0.5) ? -1.0 : 1.0;
-	posMod = lfoSig * lfoPosAmt * 0.45 + modEnvPrev * menvPosAmt * 0.45;
+	modPosS = modEnvPrev;
+	if (peek(prm, 140) > 0.5) modPosS = clip(modEnvPrev * 2.0 - 1.0, -1.0, 1.0);
+	posMod = lfoSig * lfoPosAmt * 0.45 + modPosS * menvPosAmt * 0.45;
 	speedUse = clip(speedIn, 0, 2);
 	srRat = peek(prm, 54);
 
@@ -1175,7 +1177,9 @@ spec_voice(sampBuf, vdataBuf, twr, twi, brv, prm, sdat, vIdx, modeVal, freezeOn,
 	curNote = mix(vNote, curNote, glideCoef);
 	fnScaleS = clip(peek(prm, 125), 1.0, 96.0);
 	o1RatS = clip(peek(prm, 122), 0.125, 16.0);
-	pSemis = pitchSt + (fineCents + peek(prm, 126)) * 0.01 * fnScaleS + lfoSig * lfoPitchAmt * 24.0 + modEnvPrev * menvPitchAmt * 24.0;
+	modPitS = modEnvPrev;
+	if (peek(prm, 139) > 0.5) modPitS = clip(modEnvPrev * 2.0 - 1.0, -1.0, 1.0);
+	pSemis = pitchSt + (fineCents + peek(prm, 126)) * 0.01 * fnScaleS + lfoSig * lfoPitchAmt * 24.0 + modPitS * menvPitchAmt * 24.0;
 	// Analyzed Root Key: the root at the analysis position (rootMidi when root_dyn is off).
 	// While frozen the analysis sits at Pos, not at the (parked) playhead.
 	rootPos = (freezeOn > 0.5) ? clip(effS + playPosNorm * (effE - effS) + posMod, effS, effE) : headN;
@@ -1651,6 +1655,10 @@ voice_proc(
 		}
 		mOut = mFin + (relOutM - mFin) * emB;
 	}
+	mPitch = mOut;
+	mPosSig = mOut;
+	if (peek(prm, 139) > 0.5) mPitch = clip(mOut * 2.0 - 1.0, -1.0, 1.0);
+	if (peek(prm, 140) > 0.5) mPosSig = clip(mOut * 2.0 - 1.0, -1.0, 1.0);
 
 	curNote = mix(vNote, curNote, glideCoef);
 	// Sliced: the MIDI note picks the slice, so the pitch tracks the root key.
@@ -1659,9 +1667,9 @@ voice_proc(
 	o1Rat = clip(peek(prm, 122), 0.125, 16.0);
 	o1RatSt = 12.0 * log2(o1Rat);
 	effFineCents = (fineCents + peek(prm, 126)) * fnScale;
-	baseHz = 440.0 * pow(2.0, (hzNote - 69.0 + pitchSt + effFineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mOut * menvPitchAmt * 24.0) / 12.0) * o1Rat;
+	baseHz = 440.0 * pow(2.0, (hzNote - 69.0 + pitchSt + effFineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mPitch * menvPitchAmt * 24.0) / 12.0) * o1Rat;
 
-	posMod = lfoSig * lfoPosAmt * 0.45 + mOut * menvPosAmt * 0.45;
+	posMod = lfoSig * lfoPosAmt * 0.45 + mPosSig * menvPosAmt * 0.45;
 	startF = effStartNorm * numFrames;
 	endF = effEndNorm * numFrames;
 	spanNorm = max(effEndNorm - effStartNorm, 0.002);
@@ -1763,7 +1771,7 @@ voice_proc(
 		+ pitchSt
 		+ effFineCents * 0.01
 		+ lfoSig * lfoPitchAmt * 24.0
-		+ mOut * menvPitchAmt * 24.0;
+		+ mPitch * menvPitchAmt * 24.0;
 	baseRatio = pow(2.0, clip(pitchSemiOffset, -48, 48) / 12.0) * o1Rat;
 	// Source frames per output sample: a file at another rate than the DSP advances by its rate ratio too.
 	srRat = peek(prm, 54);
@@ -2414,7 +2422,7 @@ voice_proc(
 	if (o2On > 0.5) {
 		o2Type = round(clip(peek(prm, 71), 0, 1));
 		o2Rat = clip(peek(prm, 123), 0.125, 16.0);
-		o2Semi = peek(prm, 72) + (peek(prm, 73) * fnScale) * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mOut * menvPitchAmt * 24.0;
+		o2Semi = peek(prm, 72) + (peek(prm, 73) * fnScale) * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mPitch * menvPitchAmt * 24.0;
 		o2Pos = clip(peek(prm, 74) + o2PosAdd + posMod, 0, 1);
 		o2Shown = o2Pos;
 		o2Gain = pow(10.0, clip(peek(prm, 75), -48, 24) / 20.0);
@@ -2509,7 +2517,7 @@ voice_proc(
 		if (subLockOn > 0.5) {
 			subNote = 36.0 + subLockNt + ((hzNote - subLockNt) - 12.0 * floor((hzNote - subLockNt) / 12.0));
 		}
-		pitchAdd = pitchSt + effFineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mOut * menvPitchAmt * 24.0;
+		pitchAdd = pitchSt + effFineCents * 0.01 + lfoSig * lfoPitchAmt * 24.0 + mPitch * menvPitchAmt * 24.0;
 		subKey = subNote + pitchAdd + subSemi + subFineCt;
 		subHz = 440.0 * pow(2.0, (subKey - 69.0) / 12.0) * subRat;
 		if (needInit) {
@@ -3182,7 +3190,7 @@ Buffer wt2("bswt2");
 Data twr(2049);
 Data twi(2049);
 Data brv(4096);
-Data prm(139);
+Data prm(141);
 Data mxArg(48);
 Data mxDep(48);
 Data mxBase(96);
@@ -3938,6 +3946,23 @@ for (si = 0; si < 4; si += 1) {
 	else out3 = shown;
 }
 nRoutes = clip(peek(modmap, 0), 0, 48);
+// Alt-click on a legacy Env 2 cell packs source 33 with depth 0. prm 139 / 140 tell the
+// engines to center that envelope. LFO 1 (source 35) is already bipolar, so it is not centered.
+env2PitchBi = 0;
+env2PosBi = 0;
+polRi = 0;
+polC = 0;
+polS = 0;
+if (nRoutes > 0.5) {
+	for (polRi = 0; polRi < nRoutes; polRi += 1) {
+		polC = peek(modmap, 1 + polRi * 6);
+		polS = peek(modmap, 1 + polRi * 6 + 1);
+		if ((abs(polS - 33.0) < 0.5) && (abs(polC - 200.0) < 0.5)) env2PitchBi = 1;
+		if ((abs(polS - 33.0) < 0.5) && (abs(polC - 202.0) < 0.5)) env2PosBi = 1;
+	}
+}
+poke(prm, env2PitchBi, 139);
+poke(prm, env2PosBi, 140);
 markC = exp(-1.0 / (0.004 * srVal));
 gAmt = 1;
 if (abs(mod_global_amt - 1.0) > 1e-6) gAmt = clip(mod_global_amt, 0, 2);
@@ -4152,9 +4177,11 @@ for (vox = 0; vox < 16; vox += 1) {
 	}
 	// A voice that is released, silent and has no Fragments tail left produces exact zeros, so skip its engine
 	// (state is frozen until the next note-on, which re-initialises it). vhist slots: 1 envStage, 2 ampEnv,
-	// 4 modEnv, 6 playheadNorm, 32 spawnCnt, 35 survG, 37 survTimer.
+	// 4 modEnv, 6 playheadNorm, 32 spawnCnt, 35 survG, 37 survTimer, 200 Env 3 stage.
+	// Env 3 must keep running after the amp envelope has finished, or its release (and a bipolar
+	// swing through zero) freezes at the sustain level.
 	vhOff = vox * 256;
-	voIdle = (peek(vdata, vox * 8) < 0.5) && (peek(vhist, vhOff + 1) == 0) && (peek(vhist, vhOff + 2) == 0) && (peek(vhist, vhOff + 4) == 0) && (peek(vhist, vhOff + 35) <= 0) && (peek(vhist, vhOff + 37) <= 0);
+	voIdle = (peek(vdata, vox * 8) < 0.5) && (peek(vhist, vhOff + 1) == 0) && (peek(vhist, vhOff + 2) == 0) && (peek(vhist, vhOff + 4) == 0) && (peek(vhist, vhOff + 35) <= 0) && (peek(vhist, vhOff + 37) <= 0) && (peek(vhist, vhOff + 200) < 0.5);
 	voL = 0;
 	voR = 0;
 	voP = peek(vhist, vhOff + 6);
@@ -4579,9 +4606,17 @@ if (abs(gAmt - 1.0) > 1e-6) {
 }
 if (abs(feOff) > 1e-12) feUse = (filt_env_amt + feOff) * gAmt;
 if (abs(lfOff) > 1e-12) lfUse = (lfo_filt + lfOff) * gAmt;
+feBi = 0;
+if (nRoutes > 0.5) {
+	for (polRi = 0; polRi < nRoutes; polRi += 1) {
+		if ((abs(peek(modmap, 1 + polRi * 6) - 300.0) < 0.5) && (abs(peek(modmap, 1 + polRi * 6 + 1) - 33.0) < 0.5)) feBi = 1;
+	}
+}
+feEnv = maxModEnv;
+if (feBi > 0.5) feEnv = clip(maxModEnv * 2.0 - 1.0, -1.0, 1.0);
 cutBase = filt_cutoff;
-if ((nRoutes > 0.5) && (abs(peek(mxG, 0)) > 1e-8)) cutBase = clip(filt_cutoff + peek(mxG, 0), 20, 20000);
-targetCut = cutBase * pow(2.0, clip(feUse * maxModEnv * 5.0 + lfoSig * lfUse * 3.5, -6, 6));
+if ((nRoutes > 0.5) && (abs(peek(mxG, 0)) > 1e-8)) cutBase = 20.0 * pow(1000.0, clip(log(max(filt_cutoff, 20.0) / 20.0) / log(1000.0) + peek(mxG, 0), 0.0, 1.0));
+targetCut = cutBase * pow(2.0, clip(feUse * feEnv * 5.0 + lfoSig * lfUse * 3.5, -6, 6));
 targetCut = clip(targetCut, 20.0, srVal * 0.45);
 cutCoef = cutNow;
 effCutHz = clip(slew_val(targetCut, cutCoef), 20.0, srVal * 0.44);
@@ -4713,8 +4748,8 @@ if ((filt2_on > 0.5) || (fRouteMode > 1.5)) {
 		in2R = in2R + (tanh(in2R * dg2) - in2R) * drv2;
 	}
 	cut2Base = filt2_cutoff;
-	if ((nRoutes > 0.5) && (abs(peek(mxG, 5)) > 1e-8)) cut2Base = clip(filt2_cutoff + peek(mxG, 5), 20, 20000);
-	tc2 = clip(cut2Base * pow(2.0, clip(feUse * maxModEnv * 5.0 + lfoSig * lfUse * 3.5, -6, 6)), 20.0, srVal * 0.44);
+	if ((nRoutes > 0.5) && (abs(peek(mxG, 5)) > 1e-8)) cut2Base = 20.0 * pow(1000.0, clip(log(max(filt2_cutoff, 20.0) / 20.0) / log(1000.0) + peek(mxG, 5), 0.0, 1.0));
+	tc2 = clip(cut2Base * pow(2.0, clip(feUse * feEnv * 5.0 + lfoSig * lfUse * 3.5, -6, 6)), 20.0, srVal * 0.44);
 	g2 = clip(tan(3.141592653589793 * tc2 / srVal), 0.0001, 80.0);
 	res2Use = filt2_res;
 	if ((nRoutes > 0.5) && (abs(peek(mxG, 6)) > 1e-12)) res2Use = clip(filt2_res + peek(mxG, 6), 0, 0.95);
@@ -4938,7 +4973,9 @@ if (scopeCount >= 64) {
 			tvCm = tvSusM > 0.5 ? 3 : (2 + min(tvFm, 0.999));
 		}
 		tvOn = (tvCa > 0.5) || (tvAL > 0.00002);
-		tvCut = cutBase * pow(2.0, clip(feUse * tvOutM * 5.0 + lfoSig * lfUse * 3.5, -6, 6));
+		tvEnv = tvOutM;
+		if (feBi > 0.5) tvEnv = clip(tvOutM * 2.0 - 1.0, -1.0, 1.0);
+		tvCut = cutBase * pow(2.0, clip(feUse * tvEnv * 5.0 + lfoSig * lfUse * 3.5, -6, 6));
 		tvCut = clip(tvCut, 20.0, srVal * 0.44);
 		poke(scope, tvCa, 128 + tvi);
 		poke(scope, tvOutA, 144 + tvi);

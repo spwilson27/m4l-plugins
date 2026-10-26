@@ -161,8 +161,8 @@ function seedMod(modName, msegName, slotName) {
     if (kind === "off") route = [0];
     else if (kind === "wt") route = [1, 202, 4, 1, 0, 1, 0];
     else if (kind === "wt2") route = [1, 74, 4, 1, 0, 1, 0];
-    else if (kind === "uni") route = [1, 300, 4, 1, 20, 20000, 0];
-    else if (kind === "bi") route = [1, 300, 36, 1, 20, 20000, 0];
+    else if (kind === "uni") route = [1, 300, 4, 1, 0, 1, 0];
+    else if (kind === "bi") route = [1, 300, 36, 1, 0, 1, 0];
     pokeChunk(new Buffer(msegName), 3 * 1024, wave);
     pokeChunk(new Buffer(slotName), 0, slot);
     pokeChunk(new Buffer(modName), 0, route);

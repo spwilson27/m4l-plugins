@@ -189,12 +189,14 @@ var MOD_TARGETS = {
     osc1_pan: { op: "p", ix: 134, lo: -1, hi: 1 },
     osc2_pan: { op: "p", ix: 135, lo: -1, hi: 1 },
     sub_pan: { op: "p", ix: 136, lo: -1, hi: 1 },
-    filt_cutoff: { op: "g", ix: 0, lo: 20, hi: 20000 },
+    // Cutoff depth is a fraction of the log range (20 Hz at 0, 20 kHz at 1), not a span of hertz.
+    // A linear add made −8% at 623 Hz clip to 20 Hz while +8% only opened the filter a little.
+    filt_cutoff: { op: "g", ix: 0, lo: 0, hi: 1 },
     filt_res: { op: "g", ix: 1, lo: 0, hi: 0.95 },
     filt_drive: { op: "g", ix: 2, lo: 0, hi: 1 },
     out_gain: { op: "g", ix: 3, lo: -36, hi: 18 },
     filt_morph: { op: "g", ix: 4, lo: 0, hi: 1 },
-    filt2_cutoff: { op: "g", ix: 5, lo: 20, hi: 20000 },
+    filt2_cutoff: { op: "g", ix: 5, lo: 0, hi: 1 },
     filt2_res: { op: "g", ix: 6, lo: 0, hi: 0.95 },
     filt2_drive: { op: "g", ix: 7, lo: 0, hi: 1 },
     filt2_morph: { op: "g", ix: 8, lo: 0, hi: 1 },
@@ -327,7 +329,15 @@ function modPack(rows, depth, globalAmt, polar) {
             var t = modTarget(key);
             if (!t) continue;
             for (var s = 0; s < srcs.length; s++) {
-                if (modLegacyParam(srcs[s].id, key)) continue;
+                // The Live depth stays the amount. Alt-click still has to reach the gen, so a
+                // flipped legacy cell packs a zero-depth marker (source id + 32) and nothing else.
+                if (modLegacyParam(srcs[s].id, key)) {
+                    var lid = modCellKey(mode, r, srcs[s].id);
+                    if (polar && polar[lid]) {
+                        audio.push({ code: modCode(t), src: srcs[s].id + 32, dep: 0, lo: t.lo, hi: t.hi, smooth: 0, id: lid });
+                    }
+                    continue;
+                }
                 var raw = Number(depth[modCellKey(mode, r, srcs[s].id)]) || 0;
                 var dep = (raw / 100) * g;
                 var id = modCellKey(mode, r, srcs[s].id);
@@ -366,6 +376,18 @@ function modPack(rows, depth, globalAmt, polar) {
         out.push(rt.code, rt.src, rt.dep, rt.lo, rt.hi, rt.smooth);
     }
     return out;
+}
+
+// Cutoff on the same axis the filter graph uses: 0 is 20 Hz, 1 is 20 kHz. `amount` is depth
+// (−1..1) times the source. Negative amount moves the curve left, positive moves it right,
+// by the same fraction of the graph.
+function modCutoffHz(baseHz, amount) {
+    var hz = Math.max(20, Math.min(20000, Number(baseHz) || 20));
+    var pos = Math.log(hz / 20) / Math.log(1000);
+    var next = pos + (Number(amount) || 0);
+    if (next < 0) next = 0;
+    if (next > 1) next = 1;
+    return 20 * Math.pow(1000, next);
 }
 
 // Reference adder used by the tests. Depth 0 leaves base untouched, including -0.
@@ -475,7 +497,7 @@ if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
         MOD_TARGETS: MOD_TARGETS, MOD_DENY: MOD_DENY, MOD_LEGACY: MOD_LEGACY, MOD_SOURCES: MOD_SOURCES,
         modSources: modSources, modLegacyParam: modLegacyParam, modDenied: modDenied, modTarget: modTarget,
-        modPack: modPack, modOffset: modOffset, modSmooth: modSmooth, modAudit: modAudit,
+        modPack: modPack, modOffset: modOffset, modCutoffHz: modCutoffHz, modSmooth: modSmooth, modAudit: modAudit,
         modDefaultRows: modDefaultRows, modEncode: modEncode, modDecode: modDecode, modTargetKeys: modTargetKeys,
         modLabel: modLabel, modHuman: modHuman, modCode: modCode, modCellKey: modCellKey, modSlotSignal: modSlotSignal
     };
