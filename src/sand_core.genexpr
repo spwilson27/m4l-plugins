@@ -301,6 +301,6 @@ if (hop == 0) {
 	poke(wave, pkIn, 256, 0);
 	poke(wave, pkWet, 257, 0);
 	poke(wave, pkOut, 258, 0);
-	poke(wave, wpos, 259, 0);
 	wpos = wrap(wpos + 1, 0, 128);
+	poke(wave, wpos, 259, 0);
 }

@@ -90,7 +90,7 @@ def make_value_bar(obj_id, varname, short, x, y, w, h, lo, hi, initial, unit, an
     return {
         "box": {
             "activebgcolor": [0.052, 0.064, 0.082, 1.0],
-            "activeslidercolor": [color[0], color[1], color[2], 1.0],
+            "activeslidercolor": [0.38 * color[0] + 0.62 * 0.052, 0.38 * color[1] + 0.62 * 0.064, 0.38 * color[2] + 0.62 * 0.082, 1.0],
             "annotation": annotation,
             "annotation_name": varname,
             "appearance": 2,
