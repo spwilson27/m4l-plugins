@@ -2185,3 +2185,19 @@ Host gate (worktree): `npm install && npm run -s typecheck && python3 scripts/bu
 - Red left intact in `tests/test_reciprocator_bugsweep.js`.
 - Harness keeps its own `#0-recipscope` (same pattern as mbsplit harness).
 
+## Pass 4 review (this sweep — APPROVED)
+
+Worktree: `/tmp/bugsweep/reciprocator` on `bugsweep/reciprocator`
+Pass-3 tip: `a07e217` — isolate scope with `---recipscope`
+Pass-4 tip: (this commit) — APPROVED; no production code changes
+
+| Claim | Verdict | Why |
+|-------|---------|-----|
+| Bug A — `#0-recipscope` shared | **APPROVED** | Minimal rename `#0-recipscope` → `---recipscope` in build bind messages + comments; host suite flipped to require `---`; bugsweep red intact; harness keeps `#0-`. |
+| Prior bugs 1–4 | Confirm | Untouched this sweep; still green at baseline. |
+| Viz drag undo (noted) | Leave noted | Not promoted. |
+
+**Approved 1 / adjusted 0.**
+
+Host gate (pass 4): `npm run -s typecheck && python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && node tests/test_reciprocator_bugsweep.js` → green.
+
