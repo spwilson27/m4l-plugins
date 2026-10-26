@@ -206,8 +206,8 @@ function tsDspResend() {
         pokeConfig();
         if (!tsHost) return;
         for (var i = 0; i < TS_PARAM_NAMES.length; i++) {
-            var box = tsHost.getnamed(TS_PARAM_NAMES[i]);
-            if (box) box.message("bang");
+            var paramBox = tsHost.getnamed(TS_PARAM_NAMES[i]);
+            if (paramBox) paramBox.message("bang");
         }
         var duck = tsHost.getnamed("ts_duck1");
         if (duck) duck.message("bang");
