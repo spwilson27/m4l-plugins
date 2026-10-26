@@ -35,6 +35,16 @@ Baseline at sweep start: commit `69699f7` on `bugsweep/delayplus`, existing suit
   0 passed, 2 failed
   ```
 
+## Bug 1 — Pass 2 review verdict: KEPT
+
+- **Verdict:** keep — no test changes, no `src/` changes in this pass; the bug stands as filed for the Pass 3 fix.
+- **One-line evidence:** independently re-derived and re-run — `dpFftDbBins` steps 4.30 dB at bin 11 (64.5 Hz, 48 kHz) on a flat spectrum, nothing downstream compensates, and the Multiband Split original this was copied from explicitly holds the tilt at its 60 Hz value to avoid exactly this step.
+- **Formula / bins re-derived:** `src/delayplus_spectrum.js` has `tilt = f > 60 ? 2.2 * Math.log(f / 250) / Math.LN2 : 0`; at 48 kHz the 8192-point FFT gives 5.859 Hz/bin, so bin 10 (58.6 Hz) gets tilt 0 while bin 11 (64.5 Hz) gets `2.2 * log2(64.5 / 250)` = −4.30 dB, and the tilt stays negative until the 250 Hz pivot (bin 42, 246 Hz: −0.05 dB).
+- **Tests re-run (Pass 2):** `node tests/test_delayplus_bugsweep.js` → 0 passed, 2 failed, both failures exactly as filed (`worst neighbouring-bin step 4.30 dB at bin 11 (64.5 Hz)`, `band dips -4.30 dB below the low band at bin 11`); `node tests/test_delayplus.js` → 39 passed, 0 failed.
+- **No downstream compensation:** the only caller is `src/delayplus_filter.js` (`fdLayerFrame`, plus the `preview()` path). `dpFftPixelDb` only interpolates (Catmull-Rom) or takes the loudest bin; the per-column smoothing in `fdLayerFrame` is temporal (attack/release against the previous frame) and converges to the stepped raw value; `preview()` adds the filter curve `fdMag` on top of the already-tilted dry spectrum — no per-frequency calibration, no matching step in the filter/reference curve.
+- **Not intentional:** the function doc calls it a gentle pink tilt so upper harmonics stay readable (a tilt, not a notch), and the source it was copied from, `src/mbsplit_config.js` (`computeFft8192DbBins` tilt table), clamps `fTilt = freq < 60 ? 60 : freq` with the comment: Hold the tilt at the 60 Hz value so the slope does not step several dB between adjacent bins. The Delay+ copy dropped that hold and substituted 0 below 60 Hz, creating the step and the 60–250 Hz dip relative to the un-tilted low band.
+- **Assertions checked for over-breadth:** none found. The 1 dB neighbouring-bin allowance is >3× the true per-bin tilt slope near 64 Hz (≈0.29 dB/bin), and the −0.5 dB dip allowance is loose; every reasonable fix (restore the 60 Hz hold, re-pivot the tilt at 60 Hz, or clamp the tilt at 0 dB) passes both tests.
+
 ## Checked and cleared
 
 Everything below was read and verified against the code (and, where numeric, re-derived);
