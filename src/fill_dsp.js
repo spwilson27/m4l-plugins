@@ -166,7 +166,8 @@ function fillPublishIr() {
         return;
     }
     var sr = fillSr();
-    var seed = fillP.seed || 1;
+    var seed = Number(fillP.seed);
+    if (!isFinite(seed)) seed = 1;
     var loB = fillBodyEdge(-1);
     var hiB = fillBodyEdge(1);
     var loA = fillAirEdge(-1);
@@ -217,7 +218,9 @@ function fillPublishBank() {
     var hit = Math.round(Number(fillTele.hit));
     if (hit !== hit || hit < 0) hit = 0;
     var metas = fillBankMetas();
-    var sig = hit + "|" + (fillP.seed || 1) + "|" + JSON.stringify(metas);
+    var pageSeed = Number(fillP.seed);
+    if (!isFinite(pageSeed)) pageSeed = 1;
+    var sig = hit + "|" + pageSeed + "|" + JSON.stringify(metas);
     if (sig === fillBankSig && fillBankGen > 0) {
         outlet(0, ["bankgen", fillBankGen]);
         return;
@@ -226,8 +229,8 @@ function fillPublishBank() {
     var cur = null;
     var nxt = null;
     try {
-        cur = fillExperimentalPage(metas, fillP.seed || 1, hit, sr);
-        nxt = fillExperimentalPage(metas, fillP.seed || 1, hit + 1, sr);
+        cur = fillExperimentalPage(metas, pageSeed, hit, sr);
+        nxt = fillExperimentalPage(metas, pageSeed, hit + 1, sr);
     } catch (err) {
         return;
     }
