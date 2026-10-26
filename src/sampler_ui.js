@@ -1394,7 +1394,11 @@ function setvalueof() {
         // 0 is a real count (every marker removed). max(1, ...) read the sample path as a marker.
         var sCount = Math.round(Number(a[10]));
         if (!(sCount >= 0)) sCount = 0;
-        if (sCount > 32) sCount = 32;
+        // getvalueof writes the count uncapped (Slice Divisions up to 64, Beats
+        // up to 256, manual markers uncapped), so do not clamp to 32: that dropped
+        // every marker past 32 and read marker 33 as the sample path. Bound only
+        // by the entries actually present in the blob.
+        if (sCount > a.length - 11) sCount = Math.max(0, a.length - 11);
         if (a.length >= 11 + sCount) {
             var restored = [];
             for (var i = 0; i < sCount; i++) {
