@@ -252,6 +252,9 @@ job_cgate(wre, stat, n, gate01, srVal) {
 		lc = peek(stat, 3);
 		qlo = max(ceil(lc), floor(srVal / 1000));
 		qhi = min(nh - 2, floor(srVal / 60));
+		if (qhi <= qlo) {
+			qhi = max(qhi, min(nh - 2, qlo + floor(srVal / 60) - floor(srVal / 1000)));
+		}
 		pk = 0;
 		ss = 0;
 		cnt = 0;
