@@ -168,7 +168,18 @@ function browse_ir() {
     outlet(3, "bang");
 }
 
+// Cancel in-flight IR partition work / deferred reprocess so a late Task tick cannot
+// publish after the user cleared or replaced the IR (bugsweep Bug 1 / Bug 2).
+// Guard .cancel: some Node test Task stubs only implement schedule.
+function rpIrInvalidateWork() {
+    if (rpIr.workTask && rpIr.workTask.cancel) rpIr.workTask.cancel();
+    if (rpIr.reproTask && rpIr.reproTask.cancel) rpIr.reproTask.cancel();
+    rpIr.work = null;
+}
+
 function clear_ir() {
+    if (rpIr.loadTask && rpIr.loadTask.cancel) rpIr.loadTask.cancel();
+    rpIrInvalidateWork();
     rpIr.src = null;
     rpIr.loaded = false;
     rpIr.len = 0;
@@ -182,6 +193,8 @@ function clear_ir() {
 }
 
 function rpIrLoad(path) {
+    if (rpIr.loadTask && rpIr.loadTask.cancel) rpIr.loadTask.cancel();
+    rpIrInvalidateWork();
     rpLastDropped = path;
     rpIr.path = path;
     rpIr.name = rpFileName(path);

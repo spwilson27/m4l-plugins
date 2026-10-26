@@ -41,7 +41,7 @@ function makeEngine() {
         grab(ENGINE, "function rpFileName", "function rpIrPathFromArgs"),
         grab(ENGINE, "function rpIrPathFromArgs", "var rpLastDropped"),
         grab(ENGINE, "var rpLastDropped", "var RP_DROP_DEFER_MS"),
-        grab(ENGINE, "function clear_ir", "function rpIrLoad"),
+        grab(ENGINE, "function rpIrInvalidateWork", "function rpIrLoad"),
         grab(ENGINE, "function rpIrLoad", "// buffer~ ---rpir has the file"),
         grab(ENGINE, "function ir_loaded", "function rpIrReprocessSoon"),
         grab(ENGINE, "function rpIrReprocess()", "function rpIrWork"),
