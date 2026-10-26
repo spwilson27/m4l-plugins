@@ -366,7 +366,7 @@ function xy(x, y) { setXY(Number(x), Number(y), true); }
 function save(i) { var s = clamp(Math.floor(Number(i)) - 1, 0, 7); undoPush(); saveToSlot(gState, s); gLastSlot = s; modelChanged(); done(); }
 function recall(i) { var s = clamp(Math.floor(Number(i)) - 1, 0, 7); recallAction(s); }
 function clearslot(i) { var s = clamp(Math.floor(Number(i)) - 1, 0, 7); undoPush(); clearSlot(gState, s); modelChanged(); done(); }
-function chaos(v) { gState.chaos = clamp(Number(v) / 100, 0, 1); sendParam("chaos", gState.chaos * 100); mgraphics.redraw(); }
+function chaos(v) { gState.chaos = clamp(Number(v) / 100, 0, 1); sendParam("chaos", gState.chaos * 100); mgraphics.redraw(); done(); }
 
 function recallAction(s) {
     if (!gState.slots[s]) return;
