@@ -169,4 +169,37 @@ const faceSrc = cfgSrc + "\n" + dispSrc;
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Bug C — Ceps voicing gate: the search region max(L, 1 ms)..1/60 s is empty when the lifter lag L
+// exceeds sr/60, and degenerates to one sample at L == sr/60. MIDI low notes reach it at default
+// settings (note 24 period ~1348 samples, lag ~943 at Res 57% vs cap 735 at 44.1 kHz): the region
+// loop runs zero times, v = 0 / rms = 1e-10, and voicingGateStep / job_cgate close the gate to
+// -60 dB on pitched frames. Unknown (no region to judge) must not be scored as unvoiced.
+// ---------------------------------------------------------------------------------------------
+{
+    const srC = 44100, nC = 4096;
+    const periodC = cfg.midiPeriodSamples(24, srC);
+    const lagC = cfg.lifterLagSamples(2, 0.57, srC, nC, periodC);
+    ok(lagC > Math.floor(srC / 60), "Bug C setup: MIDI note 24 at Res 57% gives a lifter lag past the 60 Hz quefrency cap");
+    const cC = new Float64Array(nC);
+    for (let i = 0; i < nC; i++) cC[i] = 0.01 * Math.sin(i * 1.7);
+    cC[Math.round(periodC)] = 2.0;
+    const voC = cfg.cepstralVoicing(cC, lagC, srC, nC);
+    ok(voC.v > cfg.voicingThreshold(0.5), "Bug C RED: pitched low-MIDI frame must score as voiced (got v=" + voC.v + ", rms=" + voC.rms + ")");
+    let stC = { open: 1 };
+    for (let i = 0; i < 30; i++) stC = cfg.voicingGateStep(stC.open, voC.v, 0.5);
+    ok(Math.abs(stC.logGain) < 0.01, "Bug C RED: Ceps gate must stay open for a pitched low-MIDI frame (settled logGain " + stC.logGain + ")");
+    const lagB = Math.floor(srC / 60);
+    const cB = new Float64Array(nC);
+    for (let i = 0; i < nC; i++) cB[i] = 0.01 * Math.sin(i * 1.7);
+    cB[lagB] = 2.0;
+    const voB = cfg.cepstralVoicing(cB, lagB, srC, nC);
+    ok(voB.v > cfg.voicingThreshold(0), "Bug C RED: pitched frame at the 60 Hz boundary lag must be able to score voiced (got v=" + voB.v + ")");
+    const cgStart = gen.indexOf("job_cgate(");
+    ok(cgStart >= 0, "job_cgate present");
+    const cgBody = gen.slice(cgStart, gen.indexOf("\n}", cgStart));
+    ok(/qhi\s*=\s*max\(|if\s*\(cnt/.test(cgBody), "Bug C RED: job_cgate must guard the empty/degenerate voicing region (extend qhi or bypass when cnt is too small)");
+}
+
 console.log(`cepstra bugsweep RED: ${checks} checks (expected FAIL on current code until PASS 3 fixes)`);

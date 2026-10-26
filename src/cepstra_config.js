@@ -323,7 +323,11 @@ const VOICING_T1 = 14.5; // Gate 100%. A clean vowel scores about 16, so it stil
 
 // Pitchedness of a frame: largest cepstral peak in max(L, 1 ms)..1/60 s over the RMS of that region.
 function cepstralVoicing(c, lag, sr, n) {
-    const nh = n / 2, qlo = Math.max(Math.ceil(lag), Math.floor(sr / 1000)), qhi = Math.min(nh - 2, Math.floor(sr / 60));
+    const nh = n / 2, qlo = Math.max(Math.ceil(lag), Math.floor(sr / 1000));
+    let qhi = Math.min(nh - 2, Math.floor(sr / 60));
+    // Degenerate region (lifter lag at/past the 60 Hz cap): keep the nominal region width above qlo instead
+    // of scoring an empty / one-sample region as unvoiced — the pitch peak sits near the period, above the lag.
+    if (qhi <= qlo) qhi = Math.max(qhi, Math.min(nh - 2, qlo + Math.floor(sr / 60) - Math.floor(sr / 1000)));
     let pk = 0, ss = 0, cnt = 0;
     for (let i = qlo; i <= qhi; i++) { pk = Math.max(pk, c[i]); ss += c[i] * c[i]; cnt++; }
     const rms = Math.sqrt(ss / Math.max(cnt, 1) + 1e-20);
