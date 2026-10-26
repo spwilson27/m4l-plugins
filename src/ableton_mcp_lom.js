@@ -272,7 +272,7 @@ function handleGetTracksTree(params) {
 
     var tracks = [];
     if (typeof opts.trackIndex === "number") {
-        if (opts.trackIndex >= 0 && opts.trackIndex < nTracks) {
+        if (opts.trackIndex >= 0 && opts.trackIndex < nTracks && Math.floor(opts.trackIndex) === opts.trackIndex) {
             tracks.push(readTrackInfo("live_set tracks " + opts.trackIndex, opts.trackIndex, "track", opts));
         }
     } else {
@@ -444,7 +444,16 @@ function handleDeleteDevice(params) {
         throw new Error("delete_device requires a device path, or a parentPath and a non-negative deviceIndex");
     }
 
+    if (Math.floor(deviceIndex) !== deviceIndex) {
+        throw new Error("delete_device requires an integer deviceIndex, got: " + deviceIndex);
+    }
+
     var parentApi = makeApi(parentPath);
+    var deviceCount = null;
+    try { deviceCount = Number(parentApi.getcount("devices")); } catch (e) { deviceCount = null; }
+    if (deviceCount !== null && isFinite(deviceCount) && deviceIndex >= deviceCount) {
+        throw new Error("delete_device deviceIndex " + deviceIndex + " is out of range: parent has " + deviceCount + " device(s)");
+    }
     var result = parentApi.call("delete_device", deviceIndex);
     return {
         deleted: true,
