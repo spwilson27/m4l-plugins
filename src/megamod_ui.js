@@ -1145,7 +1145,7 @@ function onwheel(x, y, dx, dy) {
     if (h.kind === "knob") {
         const mod = MM.state.mods[h.slot];
         const spec = h.spec || ubKnobs(mod)[h.k];
-        const n = ubKnobNorm(spec, mod.p[spec.key]) + (dy > 0 ? 1 : -1) * 0.03;
+        const n = ubKnobNorm(spec, mod.p[spec.key]) + (dy > 0 ? -1 : 1) * 0.03;
         MM.setParam(h.slot, spec.key, ubKnobValue(spec, n));
     }
 }
