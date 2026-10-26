@@ -1,3 +1,55 @@
+# Loud Split — Pass 1 bugsweep
+
+One credible bug found. Red tests: `tests/test_loudsplit_bugsweep.js` (run: `node tests/test_loudsplit_bugsweep.js`).
+No `src/` files were changed.
+
+## 1. Knee help text promises "0 = hard switch", but Knee 0 can never be set
+
+- **Where:** `scripts/build_loudsplit.py:59` (`hiknee` help) and `scripts/build_loudsplit.py:60` (`loknee` help):
+  - `"Higher Knee: width in dB of the crossfade between Mid and Loud around the Higher Threshold (0 = hard switch). ..."`
+  - `"Lower Knee: width in dB of the crossfade between Quiet and Mid around the Lower Threshold (0 = hard switch)."`
+- **What is wrong:** the Knee range is 1..24 dB in every place that defines it, so the value the help
+  text describes does not exist on the device:
+  - `src/loudsplit_config.js` — `LS_PARAMS.hiknee / loknee`: `[..., LS_MIN_KNEE (1.0), LS_MAX_KNEE (24.0), 6.0, ...]`, and `lsMasks` clips knees to `LS_MIN_KNEE..LS_MAX_KNEE`.
+  - `scripts/build_loudsplit.py` — the `NUM` table itself gives `"hiknee": (..., 1.0, 24.0, 6.0, ...)` and `"loknee": (..., 1.0, 24.0, 6.0, ...)`.
+  - `src/loudsplit_core.genexpr` — the ctl hook clips the gen parameters: `khH = clip(kneehi, 1, 24); klH = clip(kneelo, 1, 24);`
+  - The hard-step branch does exist in the maths — `lsBandMasks` in `src/loudsplit_config.js` (and `ls_masks` in the core) use a hard step when `knee <= 0.01` — but no parameter value can reach it. At the minimum settable knee (1 dB) the band edge is still a smoothstep crossfade (50 / 50 at the threshold centre, verified in the test anchor).
+- **User-visible effect:** in Live, the parameter help for Higher / Lower Knee tells the user to set
+  Knee to 0 for a hard band edge; the control clamps at 1 dB, so a hard
+  switch is impossible to dial in and the help sends the user after a value that does not exist.
+  (The range 1..24 is the documented design in AGENTS.md section 24, so the stale part is most
+  likely the help text left over from the pre-redesign knee range of 0..30 — Pass 3 can either fix
+  the help or widen the range; the test accepts either.)
+- **Test:** `tests/test_loudsplit_bugsweep.js` — "knee help text agrees with the knee range"
+  (consistency assertion per knee key: the help must not claim `0 = hard switch` while the
+  `LS_PARAMS` range excludes 0), plus a crossfade anchor documenting the shipped behaviour at the
+  minimum knee.
+- **Observed failure** (`node tests/test_loudsplit_bugsweep.js`, exit 1):
+
+  ```
+  AssertionError [ERR_ASSERTION]: hiknee: help text says "0 = hard switch" but the Knee range is 1..24 dB, so 0 can never be set
+      at Object.<anonymous> (/private/tmp/bugsweep/loudsplit/tests/test_loudsplit_bugsweep.js:35:12)
+  ```
+
+## Checked and found clean (no bug filed)
+
+- DSP mirror: `ls_masks` (core) vs `lsMasks` / `lsBandMasks` (config) — thresholds, crossed-threshold
+  clamp (`lo = min(tlo, thi)`), knee smoothstep, Rise/Fall coefficients (`1 - exp(-1/blocks)`, clamped
+  0.13..125), Tilt table (rebuilt on n / sample-rate change), Relative mode (loudest bin over
+  1..N/2-1), telemetry slots 517 / 530 / 531 / 532 and effective thresholds.
+- Shared DSP: `ss_mid` / `ss_mida` algebra (incl. DC / Nyquist bins), `ss_cols` bin edges,
+  `ss_apply` symmetry, rack template `kShare` (dry share keyed on selection AND role, 1/3 in a rack),
+  `sAge` resets on wake / restart, hook order (ctl, frame, tele).
+- Face: threshold / knee / value drags, solo-dot press and release, double-click resets, Relative
+  toggle, Post / Sono buttons — all probed in Node through `tests/paint_bounds_lib.js` `loadFace`
+  with a recording outlet; drag maths, clamps and emitted edits are correct. `lsDotYs` / `lsLabelYs`
+  separation at extremes is covered by the existing paint-bounds suite (10,823 paints, green).
+- Link / DSP loading: `spectral_link.js` election, versioning, group reset and `displayScope`;
+  `spectral_dsp.js` claim / confirm / retry flow; `spectral_theme.js` clipping helpers.
+- Build / preset: `build_loudsplit.py` NUM / ENUM / GEN_MSG / LINKED tables match the config;
+  scope buffer 544 floats; `.adg` chains Loud / Mid / Quiet with colours 21 / 1 / 55 as specified.
+- Baseline: `node tests/test_loudsplit.js` passes in full at the pre-bugsweep baseline
+  (ref / genexpr / lint / device / bitwig / rack / dsp / paint bounds).
 # Clip+ bug sweep — pass 3 (fix)
 
 Worktree: `/private/tmp/bugsweep/clipplus-2` on branch `bugsweep/clipplus-pass1-2`
