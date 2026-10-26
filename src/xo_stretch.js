@@ -814,7 +814,7 @@ function stretchAudioEx(channels, sampleRate, opts) {
   opts = opts || {};
   var mode = opts.mode || "complex";
   var speed = xsClamp(Number(opts.speed) || 1, 0.1, 4);
-  var pitchSt = Number(opts.pitchSt) || 0;
+  var pitchSt = xsClamp(Number(opts.pitchSt) || 0, -24, 24);
   var grainMs = xsClamp(opts.grainMs === undefined ? 45 : Number(opts.grainMs) || 45, 5, 250);
   var amount = xsClamp(Number(opts.amount) || 0, 0, 1);
   var sr = sampleRate || 44100;
