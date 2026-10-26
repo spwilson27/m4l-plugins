@@ -2723,3 +2723,68 @@ RED  D9 codec-preecho-taps-fit-delay-line: codecDL holds 8192 samples but the lo
   R: E2/E1/Post/E3) - read as intentional stereo decorrelation, not claimed.
 - `computeCodecBandGain` neutrality at damage 0, `processBitSample` quantizer math, and
   `computeEffectiveSrRatio` clamping all behave as documented.
+---
+
+# Fill — Bug Sweep Pass 1 (bugs + red tests only, no fixes)
+
+- Worktree: /tmp/bugsweep/fill — Branch: bugsweep/fill — Base: 69699f7 (pre-bugsweep baseline)
+- Scope read in full: AGENTS.md section 31 (Fill spec), src/fill_config.js, src/fill_dsp.js, src/fill_ui.js, src/fill_core.genexpr, src/fill_conv.genexpr, scripts/build_fill.py; conventions from tests/test_fill.js and tests/test_fill_face.js.
+- Baseline on unmodified HEAD: node tests/test_fill.js -> "fill math ok" (exit 0); node tests/test_fill_face.js -> "fill face ok" (exit 0). No production code was changed in this pass.
+- Red suite: tests/test_fill_bugsweep.js (new). It collects all failures in one run: 6 of 9 checks FAILED, exit 1; the 3 control/setup checks pass, isolating each bug.
+
+## Bug 1 — Seed 0 sounds exactly like Seed 1 in every JS draw, while the Normal page treats them as different seeds
+
+- Where: src/fill_config.js:135 (fillHash: `Math.imul(Math.round(seed) || 1, 374761393)`), src/fill_config.js:375 (fillRenderAir: `fillBipolar(seed || 1, i, 4)`); contributing call sites src/fill_dsp.js:169, :220, :229-230 (`fillP.seed || 1` in fillPublishIr / fillPublishBank). Contrast: the gen draw fillUnit at src/fill_core.genexpr:26 uses `seedV` as passed, with no 0-to-1 collapse.
+- What is wrong: Seed is a real parameter spanning 0..1000 (scripts/build_fill.py, parked Seed slider 0..1000, initial 1). Every JS-side seeded draw replaces seed 0 with seed 1 before hashing, so seed 0 is unreachable as its own seed in fillExperimentalPage, fillRenderAir, fillBodyRoll and fillAirRoll. The DSP call sites collapse it even earlier (`fillP.seed || 1`).
+- User-visible effect: setting Seed to 0 on the Experimental page, and in the generated air IR, produces exactly the Seed 1 draw — two different Seed values, one sound — while the same Seed 0 on the Normal page produces the gen seed-0 held draws, so the two pages also disagree about what Seed 0 means.
+- Evidence (probe + red run): fillBodyRoll(0, 1) == fillBodyRoll(1, 1) == 0.4753218947444111; fillAirRoll(0, 3) == fillAirRoll(1, 3) == 0.8932553546037525; fillRenderAir(..., seed 0) is byte-identical to seed 1; fillExperimentalPage seed 0 vs seed 1 differ in 0 of 408 slots.
+- Red tests (tests/test_fill_bugsweep.js): "Bug A: fillBodyRoll seed 0 differs from seed 1", "Bug A: fillAirRoll seed 0 differs from seed 1", "Bug A: fillRenderAir seed 0 differs from seed 1", "Bug A: fillExperimentalPage seed 0 differs from seed 1" — all 4 FAIL on current code.
+- Observed failure: `FAIL - Bug A: fillBodyRoll seed 0 differs from seed 1: Expected "actual" to be strictly unequal to: 0.4753218947444111` (and the equivalent failures for the other three checks).
+
+## Bug 2 — Master Rand 0 does not hold the Experimental page: the allpass g values re-roll every hit when Air > 0
+
+- Where: src/fill_config.js:569-574 (allpass stage g at :571: `g = fillBipolar(seed, hit, 110 + p) * 0.45 * airAmt`). Every meta draw in the same function goes through fillHitDraw with `rand` as master (src/fill_config.js:462-471), so Rand 0 holds every meta at its center; the allpass draw bypasses that master entirely.
+- What is wrong: with Master Rand at 0 the page is supposed to be the held center draw — the contract the rest of the function implements and the existing suite pins for the metas ("rand 0 ignores meta ranges", tests/test_fill.js). But the 10 allpass g slots are drawn per hit regardless of rand, so the page still changes on every hit whenever the drawn Air amount is above 0. The gen even clears the resonator state on a new hit (header index 4) so this unintended new draw speaks immediately.
+- User-visible effect: with Rand 0 and Air up, successive hits get audibly different allpass diffusion/reverb character even though the user asked for no per-hit variation at all.
+- Evidence: fillExperimentalPage(metas{rand:0, air:50, airR:0}, seed 3, hit 1) vs hit 2 differ in exactly the 10 g slots (385, 387, 389, 391, 393, 395, 397, 399, 401, 403) and nowhere else; e.g. slot 385: -0.04176063995109871 (hit 1) vs -0.18523616921156646 (hit 2). Control with air:0 differs in 0 slots.
+- Red test: "Bug B: rand 0 page is identical across hits when Air > 0" — FAILS on current code; the companion control "Bug B control: rand 0 page is identical across hits when Air is 0" passes, isolating the allpass draw.
+- Observed failure: `FAIL - Bug B: rand 0 page is identical across hits when Air > 0: Expected values to be strictly deep-equal` (diff shows only the g slots, e.g. + -0.04176063995109871 / - -0.18523616921156646 at slot 385).
+
+## Bug 3 — Experimental allpass delays outrun the gen delay lines at 192 kHz: the longest stages collapse to 4094 samples
+
+- Where: JS side src/fill_config.js:560-568 (delays are `Math.pow(capI, p / 9)` with the cap from `0.040 * rate`, so up to 7680 samples at 192 kHz, matching the documented "delay in 1 .. min(40 ms, 0.04*sr)"); gen side src/fill_core.genexpr:295 (`d = clip(delay, 1, 4094);` in fillApPair) with 4096-sample allpass lines (src/fill_core.genexpr:418, Data apMem(81920) = 20 lines x 4096).
+- What is wrong: the page generator and the gen disagree about the maximum allpass delay once the sample rate passes ~102.4 kHz. At 96 kHz the largest page delay is 3840 and fits; at 192 kHz the page emits delays up to 7680, which the gen silently clips to 4094, so the top allpass stages (about 5920 and 7680 samples) collapse onto the same 4094-sample delay and the documented 40 ms maximum becomes about 21.3 ms.
+- User-visible effect: at 192 kHz (a Live-supported rate) the Experimental air diffusion loses its two longest, most widely spaced stages — a narrower, denser diffusion than the same settings produce at 48/96 kHz.
+- Red tests: "Bug C: page delays fit the gen bound at 192 kHz" FAILS; "Bug C setup: gen allpass delay clip found in fill_core.genexpr" and "Bug C control: page delays fit the gen bound at 96 kHz" pass (the bound is parsed out of the gen source, not hard-coded in the test).
+- Observed failure: `FAIL - Bug C: page delays fit the gen bound at 192 kHz: 7680 > 4094`.
+
+## Caveat — uncommitted main-checkout changes not in this worktree
+
+- The main checkout has uncommitted user changes to src/fill_core.genexpr and scripts/run_fill_audio_tests.py that are NOT in this worktree; everything above was hunted in the committed code as-is.
+- Findings that touch fill_core.genexpr: Bug 3 (its gen side is the clip at fill_core.genexpr:295 and the apMem line length at :418 — those lines may differ in the user uncommitted version; the JS side of the mismatch is in fill_config.js) and Bug 1 only by contrast (fillUnit at fill_core.genexpr:26 uses the seed as passed). Bug 2 and the JS/DSP side of Bug 1 are entirely in src/fill_config.js and src/fill_dsp.js, which are not part of the uncommitted changes. scripts/run_fill_audio_tests.py was not touched or relied on.
+
+## Checked and cleared (no bug claimed)
+
+- Parameter ranges/defaults agree across scripts/build_fill.py (NORMAL / EXP / IR tables), fillP defaults in src/fill_ui.js, gen Param defaults in src/fill_core.genexpr, and the FILL_OUT scaling in src/fill_ui.js (percent knobs /100; tune/tuner/space/spacer native; beater/metal /100 so 200 -> 2). The gen held-tune clip of -48..48 vs the -24..24 knob is a harmless superset.
+- Buffer geometry agrees everywhere: body/air IR buffers 65688 x 4 floats (bank stride 65688, head 16512 + tail 49176, tail spectra at offset 16512 in both JS fillWriteBank and gen fillIrBin/fillConv), scope buffer 64 with JS peeking 40, bank buffer 832 = header 16 + 408 + spare 408.
+- Per AGENTS.md section 31, these are by design and were not claimed: the gen always reads the bank page at index 16 (header index 0 stays 0; the copy at 16+408 is a spare), pole input floor max(1 - r, 0.08), couple as the orthogonal mix, btos/btoe-style IR header messages, hit clearing while the transport is stopped (play comes from plugsync~).
+- Experimental mode frequencies: probed over a 27-point grid of sample rates (44100 / 48000 / 192000) x mass x scatter — always strictly increasing with a minimum gap of 2 Hz, pole radii inside (0, 1) and at/under the RT60 cap, allpass g inside +-0.45, weights summing to 1. The 0.45 * Nyquist top-frequency cap in fillExperimentalPage looks deliberate and was not claimed.
+- Onset: the JS fillOnset ratio (fillDbToLin((1 - sens) * 12)) matches the gen detector formula; 40 ms holdoff on both sides. Latency 1536 (256 + 1024 + 256) agrees across fill_config.js, the patcher, and the face report. Legacy helpers in fill_config.js that the current face never calls (fillWindow, fillStepU, link/morph-snap state, the 768-wide FILL_LAYOUT) were read but not claimed — no user-visible effect.
+
+## Red run summary (this worktree)
+
+```
+node tests/test_fill.js          -> fill math ok (exit 0)
+node tests/test_fill_face.js     -> fill face ok (exit 0)
+node tests/test_fill_bugsweep.js -> exit 1
+  FAIL - Bug A: fillBodyRoll seed 0 differs from seed 1 (0.4753218947444111 == seed 1)
+  FAIL - Bug A: fillAirRoll seed 0 differs from seed 1 (0.8932553546037525 == seed 1)
+  FAIL - Bug A: fillRenderAir seed 0 differs from seed 1 (air IR byte-identical to seed 1)
+  FAIL - Bug A: fillExperimentalPage seed 0 differs from seed 1 (0 of 408 slots differ)
+  FAIL - Bug B: rand 0 page is identical across hits when Air > 0 (only slots 385-403 odd differ)
+  FAIL - Bug C: page delays fit the gen bound at 192 kHz (7680 > 4094)
+  ok   - Bug B control (Air 0), Bug C setup (clip found), Bug C control (96 kHz fits)
+  test_fill_bugsweep: 6 of 9 checks FAILED
+```
+
+3 bugs found. Fixes are a later pass, after a Pass 2 review culls false positives.

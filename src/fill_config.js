@@ -132,7 +132,10 @@ function fillOnset(fast, slow, sens01, samplesSince, sr) {
 }
 
 function fillHash(seed, hit, lane) {
-    var x = (Math.imul(Math.round(seed) || 1, 374761393) + Math.imul(Math.round(hit) + 1, 668265263) + Math.imul(lane + 1, 144067397)) >>> 0;
+    // Seed 0 is a real parked value (0..1000); do not collapse it to 1.
+    var s = Math.round(Number(seed));
+    if (!isFinite(s)) s = 1;
+    var x = (Math.imul(s, 374761393) + Math.imul(Math.round(hit) + 1, 668265263) + Math.imul(lane + 1, 144067397)) >>> 0;
     x = Math.imul(x ^ (x >>> 13), 1274126177) >>> 0;
     return ((x ^ (x >>> 16)) >>> 0) / 4294967296;
 }
@@ -372,7 +375,7 @@ function fillRenderAir(modelIndex, decayPct, sizePct, colorPct, seed, sr) {
     var i, prev = 0, hp = 0, peak = 0;
     var tau = Math.max(0.004, spec.ms / 1000 * size * (0.25 + 0.75 * fillClamp(decayPct, 0, 100) / 100));
     for (i = 0; i < n; i++) {
-        var white = fillBipolar(seed || 1, i, 4);
+        var white = fillBipolar(seed, i, 4);
         hp = hp * (1 - spec.hp) + white * spec.hp;
         var env = Math.exp(-(i / rate) / tau);
         var y = fillTiltSample(prev, hp * env, colorPct + spec.color * 100);
@@ -449,11 +452,11 @@ function fillSnapIR(snap, band, sr) {
 //               6 tilt -1..1
 //               7 group id 0..7
 //   [384, 404)  10 allpass pairs (delaySamples, g)
-//               delay in 1 .. min(40 ms, 0.04*sr), g in [-0.45, 0.45]
-//               air amount 0 forces every g to 0
+//               delay in 1 .. min(40 ms, 0.04*sr, 4094), g in [-0.45, 0.45]
+//               air amount 0 or rand 0 forces every g to 0
 //   [404, 408)  couple 0..1, bite drive 1..3, air amount 0..1, rt60 seconds
 // metas mass/scatter/decay/couple/bite/air are 0..100 with matching *R ranges.
-// rand (0..1) is the master for fillHitDraw on lanes 21..26, in that order.
+// rand (0..1) is the master for fillHitDraw on lanes 21..26 and for allpass g.
 // Stability (band, spacing, RT60, pole radius, allpass bounds) runs after the draw.
 function fillExperimentalPage(metas, seed, hit, sr) {
     var rate = Number(sr);
@@ -557,7 +560,8 @@ function fillExperimentalPage(metas, seed, hit, sr) {
         page[base + 7] = group;
     }
 
-    var cap = Math.min(0.040 * rate, 0.04 * rate);
+    // Cap matches fillApPair clip(delay, 1, 4094) and 4096-sample apMem lines.
+    var cap = Math.min(0.040 * rate, 4094);
     if (!(cap >= 1)) cap = 1;
     var capI = Math.floor(cap);
     if (capI < 1) capI = 1;
@@ -567,8 +571,8 @@ function fillExperimentalPage(metas, seed, hit, sr) {
         if (delay < 1) delay = 1;
         if (delay > cap) delay = cap;
         var g = 0;
-        if (airAmt > 0) {
-            g = fillBipolar(seed, hit, 110 + p) * 0.45 * airAmt;
+        if (airAmt > 0 && rand > 0) {
+            g = fillBipolar(seed, hit, 110 + p) * 0.45 * airAmt * rand;
             if (g > 0.45) g = 0.45;
             if (g < -0.45) g = -0.45;
         }
