@@ -126,9 +126,13 @@ function fsDbToLin(db) {
     return Math.pow(10, db / 20);
 }
 
-// Share of the dry signal one instance adds: 1 when it outputs everything, 1 / 4 when it outputs one channel (the rack sums four).
-function fsDryShare(sel) {
-    return sel >= 1 ? 0.25 : 1.0;
+// Share of the dry signal one instance adds: 1 for Output All, 1 / 4 when it outputs one channel AND holds a rack role
+// (leader/follower; role > 0.5). Standalone / pending (role <= 0.5) keep full dry — matches kShare in spectral_split_rack_main.genexpr.
+// role defaults to 1 so existing rack-sum callers (sel only) still get the 1 / 4 chain share.
+function fsDryShare(sel, role) {
+    if (role === undefined) role = 1;
+    if (sel < 1) return 1.0;
+    return role > 0.5 ? 0.25 : 1.0;
 }
 
 // Continuous bin of position x (0..1) / position x of bin k. n = FFT size.

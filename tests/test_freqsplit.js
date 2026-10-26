@@ -616,7 +616,7 @@ function prep(src) {
     assert.ok(/Buffer scope\("freqsplitscope"\)/.test(CORE_SRC), "Buffer bound by the GenExpr variable name `scope` (no set prefix)");
     assert.ok(!/@@/.test(GEN_CODE) && !/\/\/@(hook|endhook|SS_)/.test(GEN_CODE), "the template is fully expanded");
     // Mix: the dry share is 1 / 4 per chain (1 for Output All), the dry is delayed by the reported latency (template)
-    assert.ok(GEN_CODE.includes("kShare = selH > 0.5 ? 0.25 : 1;"), "Mix: the dry share is 1 / 4 per chain (1 for Output All)");
+    assert.ok(GEN_CODE.includes("kShare = (selH > 0.5 && roleH > 0.5) ? 0.25 : 1;"), "Mix: dry share is 1/4 per rack chain (role-gated; standalone single-channel keeps full dry)");
     assert.ok(GEN_CODE.includes(`Delay dryL(${cfg.FS_LATENCY + 1})`) && GEN_CODE.includes(`dryL.read(${cfg.FS_LATENCY})`), "the dry signal is delayed by the reported latency");
     assert.ok(GEN_CODE.includes("if (chg > 0.000000001) {") && GEN_CODE.includes("abs(loH - loU)"), "masks are only refilled when a control, N, the sample rate or the limiter switch changed");
     // the template writes the common scalars at SCB + offset (SCB = FS_SC_FRAME): every offset is the config's
