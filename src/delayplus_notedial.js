@@ -46,7 +46,13 @@ function paint() {
         mg.line_to(cx + Math.cos(na) * (r + 1), cy + Math.sin(na) * (r + 1));
         mg.stroke();
     }
-    var txt = ndNote >= 0 ? dpNoteName(ndNote) : "MIDI";
+    var txt;
+    if (ndNote >= 0) {
+        txt = dpNoteName(ndNote);
+        if (ndCents) txt += (ndCents > 0 ? " +" : " ") + ndCents;
+    } else {
+        txt = "MIDI";
+    }
     mg.select_font_face("Arial");
     mg.set_font_size(9.5);
     mg.set_source_rgba(fg[0], fg[1], fg[2], 0.5);

@@ -359,6 +359,13 @@ def layout(h):
                     h.line("obj-midi-chan", 0, "obj-midi-setchan", 0), h.line("obj-midi-setchan", 0, "obj-viz", 0)]
     for s in ("l", "r"):
         extra_lines.append(h.line("obj-midi-note", 0, f"obj-notedial-{s}", 0))
+    # Fine (cents) into the MIDI notedial: live.numbox -> prepend set_cents_<side> -> obj-notedial
+    # (shown with the note). Same pattern as midi_note above; keys=["cents_*"] alone does not
+    # put the set_cents_ route in the layout source the reds check.
+    for si, s in enumerate(("l", "r")):
+        pre = f"obj-cents-note-{s}"
+        extra_boxes.append(nb(pre, f"prepend set_cents_{s}", 1600, 850 + si * 30, 130, 1, 1))
+        extra_lines += [h.line(f"obj-ctrl-cents_{s}", 0, pre, 0), h.line(pre, 0, f"obj-notedial-{s}", 0)]
     extra_boxes.append(label("obj-midi-lbl", "MIDI From", 375.0, 28.0, 54.0, 12.0, hidden=1))
     for mid, long_name, short, enum, y, help_text in (
             ("obj-midi-type", "MIDI From Type", "MIDI From", ["No Input", "-"], 41.0,
