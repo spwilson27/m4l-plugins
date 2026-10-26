@@ -2264,3 +2264,22 @@ called from `clear_ir` and `rpIrLoad` that cancels `workTask` / `reproTask` / `l
 appropriate and nulls `rpIr.work` (and, on clear, `rpIr.src`), so a late `rpIrPublish`
 cannot run; optionally also guard `rpIrPublish` / `rpIrWork` so a generation token or a
 null `work` short-circuits.
+
+## Pass 3 — fixes applied (bugsweep 2/0, host 31/0)
+
+Shared helper `rpIrInvalidateWork` in `src/reverbplus_engine.js` cancels `rpIr.workTask` /
+`rpIr.reproTask` (`.cancel` guarded for Node Task stubs that only implement `schedule`)
+and nulls `rpIr.work`. Both `clear_ir` and `rpIrLoad` call it after cancelling a pending
+`loadTask`, so a late `rpIrWork` tick cannot reach `rpIrPublish` against cleared or
+replaced state. Clear still nulls `src` / `loaded` / status as before; load still enters
+`"loading"` for the new path. Bugsweep slice updated to grab the helper. Commit
+`22a04c4` on `bugsweep/reverbplus`.
+
+## Pass 4 — final review (APPROVED)
+
+| Bug | Verdict | Why |
+| --- | --- | --- |
+| 1 — clear during processing resurrects a phantom loaded/error IR | **APPROVED** | Invalidate + loadTask cancel before the clear path mutates state; RED still asserts unloaded + idle + no `IR_LOADED=1` after forcing the stale publish. Minimal; no test weakening. |
+| 2 — drop while processing silently loses the new file | **APPROVED** | Same helper at the top of `rpIrLoad` so stale A cannot flip status to `"ready"` before B's `ir_loaded`. RED still expects `"processing"` after B loads. No generation-token guard added — cancel + null `work` is enough for the reds. |
+
+**Adjusted:** none. No follow-up code changes in this pass. Host gate re-verified green on tip `22a04c4` (`node tests/test_reverbplus_bugsweep.js` + `node tests/test_reverbplus.js`). Not merged to main.
