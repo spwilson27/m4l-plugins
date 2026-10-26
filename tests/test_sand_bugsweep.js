@@ -3,7 +3,7 @@
 
 /**
  * RED suite for Sand bugsweep (bugsweep/sand).
- * Expected to FAIL on baseline 69699f7 until pass-3 fixes land.
+ * Red on baseline 69699f7; green after fix 056efe3 (set_outmode clamp, onidleout ends drag).
  */
 
 const assert = require("assert");
