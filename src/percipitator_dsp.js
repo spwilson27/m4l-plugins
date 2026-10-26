@@ -118,6 +118,15 @@ function pcpDspConfirm() {
     }
     if (Date.now() - pcpDsp.createdAt > pcpDspTimeout()) {
         pcpDsp.error = "not running";
+        // Clear load-in-progress markers and the dead gen so a later init_dsp can retry.
+        // Leaving createdAt set made pcpDspSchedule / pcpDspLoad permanent no-ops.
+        try {
+            var dead = pcpHost.getnamed("pcp_gen");
+            if (dead) pcpHost.remove(dead);
+        } catch (_) {}
+        pcpDsp.createdAt = 0;
+        pcpDsp.counter0 = -1;
+        pcpDsp.retries = 0;
         pcpDspRelease();
         pcpDspChanged();
         return;

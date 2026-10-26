@@ -78,9 +78,12 @@ function effectiveScaleMask() {
 }
 
 function volVisualScale() {
-    // Maps Vol (-36..+18 dB) into a smooth visual height multiplier (0 at -36 dB, 1.0 at 0 dB, 1.45 at +18 dB)
-    if (curVolDb <= -35.5) return 0.0;
-    return clamp(Math.pow(10, curVolDb / 40), 0.08, 1.45);
+    // Maps Vol (-36..+18 dB) into a smooth visual height multiplier (0 at -36 dB, 1.0 at 0 dB, 1.45 at +18 dB).
+    // Remap pow(10, db/40) so mute (-36) is exactly 0; a hard cutoff at -35.5 used to jump ~0→0.13.
+    if (curVolDb <= -36.0) return 0.0;
+    var raw = Math.pow(10, curVolDb / 40);
+    var atMute = Math.pow(10, -36.0 / 40);
+    return clamp((raw - atMute) / (1.0 - atMute), 0.0, 1.45);
 }
 
 function initDemoState() {
@@ -319,7 +322,8 @@ function setvalueof(v) {
         curScaleMask = (v[1] | 0) & 0xFFF;
         if (curScaleMask === 0) curScaleMask = 0xFFF;
         if (v.length >= 3 && Number.isFinite(Number(v[2]))) {
-            curGateDb = clamp(Number(v[2]), -60.0, -6.0);
+            // Match set_gate / gen clip(-66..-6); -60 was lossy for saved gates below -60.
+            curGateDb = clamp(Number(v[2]), -66.0, -6.0);
             outlet(0, ["gate", curGateDb]);
         }
         syncMaskToGen();
