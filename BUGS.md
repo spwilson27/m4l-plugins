@@ -2240,3 +2240,27 @@ for the reason stated). No `src/` files were modified in this pass.
   real window (90 poll ticks at the face's 20 fps = 4.5 s), but 4.5 s is what the
   28-row × 150 ms waterfall needs to scroll out, so the behaviour looks intended and
   only the comment is stale — not filed as a bug.
+
+## Pass 2 review — kept 2 / dropped 0
+
+Re-read `src/reverbplus_engine.js` IR lifecycle (`clear_ir`, `rpIrLoad`, `ir_loaded`,
+`rpIrReprocess`, `rpIrWork`, `rpIrPublish`) against `tests/test_reverbplus_bugsweep.js`
+and re-ran the suite on tip `c97d473` (after this worktree's `npm install` restored the
+host gate: `node tests/test_reverbplus.js` green). Both reds still fail with the exact
+messages claimed in Pass 1. Pass-1 commit only touched `BUGS.md` and the bugsweep test
+file — no `src/` changes to re-review.
+
+| Bug | Verdict | Why |
+| --- | --- | --- |
+| 1 — clear during processing resurrects a phantom loaded/error IR | **KEEP** | `clear_ir` (171–182) already clears the `live.drop` path (`outlet(4,"")`) but never cancels `rpIr.workTask` / `rpIr.reproTask` or nulls `rpIr.work`. Stale `rpIrWork` still calls `rpIrPublish`, which unconditionally sets `loaded = true` (328) then throws on `rpIr.src.sr` (330) → `status = "error"`. RED asserts unloaded + idle + no `IR_LOADED=1` header poke; fails on `true !== false` for `loaded`. Real user-visible race; test targets the right surfaces. No rewrite. |
+| 2 — drop while processing silently loses the new file | **KEEP** | `rpIrLoad` (184–200) never invalidates in-flight work. Stale `rpIrPublish` flips `status` to `"ready"`; subsequent `ir_loaded` for B hits `if (rpIr.status !== "loading") return;` and is discarded. RED drops B during A's processing, lets A publish, then fires `ir_loaded`; fails with actual `'ready'` vs expected `'processing'`. Same root cause as Bug 1; distinct user path (replace, not clear). No rewrite. |
+
+**Dropped:** none.
+
+**Adjusted:** none — desired post-fix states match what a correct invalidate must produce
+(null `work`, cancel the Task, and either stay idle after clear or re-enter processing for
+the new file). Fix direction for Pass 3 (not applied here): one shared invalidate helper
+called from `clear_ir` and `rpIrLoad` that cancels `workTask` / `reproTask` / `loadTask` as
+appropriate and nulls `rpIr.work` (and, on clear, `rpIr.src`), so a late `rpIrPublish`
+cannot run; optionally also guard `rpIrPublish` / `rpIrWork` so a generation token or a
+null `work` short-circuits.
