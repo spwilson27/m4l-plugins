@@ -333,14 +333,15 @@ function mergeThemeState(prev, patch) {
     if (patch.macros && typeof patch.macros === "object") {
         next.macros = Object.assign({}, prev.macros || {}, patch.macros);
     }
+    // Present map fields replace (so WebUI full-state deletes stick); absent fields keep prev.
     if (patch.tokens && typeof patch.tokens === "object") {
-        next.tokens = Object.assign({}, prev.tokens || {}, patch.tokens);
+        next.tokens = Object.assign({}, patch.tokens);
     }
     if (patch.deviceOverrides && typeof patch.deviceOverrides === "object") {
-        next.deviceOverrides = Object.assign({}, prev.deviceOverrides || {}, patch.deviceOverrides);
+        next.deviceOverrides = Object.assign({}, patch.deviceOverrides);
     }
     if (patch.customPresets && typeof patch.customPresets === "object") {
-        next.customPresets = Object.assign({}, prev.customPresets || {}, patch.customPresets);
+        next.customPresets = Object.assign({}, patch.customPresets);
     }
     if (patch.abletonUi && typeof patch.abletonUi === "object") {
         next.abletonUi = Object.assign({}, prev.abletonUi || {}, patch.abletonUi);

@@ -3175,7 +3175,7 @@ function m4lComputeAbletonUiTokens(ui) {
     var u = Object.assign(m4lDefaultAbletonUi(), ui || {});
     var askName = m4lResolveAbletonAskName(u);
     var baseMap = M4L_ABLETON_ASK_THEMES[askName] || M4L_ABLETON_ASK_THEMES["Default Dark Neutral Medium"];
-    var brtPct = m4lClamp(Number(u.brightness === undefined ? 100 : u.brightness), 0, 200);
+    var brtPct = m4lClamp((u.brightness === undefined || u.brightness === null || !isFinite(Number(u.brightness))) ? 100 : Number(u.brightness), 0, 200);
     var intPct = m4lClamp(Number(u.colorIntensity || 0), 0, 100);
     var hueDeg = ((Number(u.colorHue || 0) % 360) + 360) % 360;
 
@@ -3373,7 +3373,8 @@ function m4lEstimateAbletonUiSettings(observedColors) {
         colorIntensity: best.colorIntensity,
         colorHue: best.colorHue,
         askName: best.askName,
-        rmse: Math.sqrt(Math.max(0, best.err)) * 255
+        // No compared samples → leave rmse at 0 (not the 1e9 search sentinel scaled by 255).
+        rmse: best.err >= 1e9 ? 0 : Math.sqrt(Math.max(0, best.err)) * 255
     };
 }
 
@@ -3408,6 +3409,7 @@ var _m4lLocalState = null;
 var _m4lSeenBusVer = -1;
 /** @type {Object<string, number[]> | null} */
 var _m4lResolvedCache = null;
+var _m4lResolvedCacheSlug = null;
 /** @type {Object<string, number>} */
 var _m4lIssuedRgbKeys = {};
 var _m4lPatcherWasThemed = false;
@@ -3454,6 +3456,7 @@ function m4lGetThemeState() {
                     _m4lLocalState = parsed;
                     _m4lSeenBusVer = bver;
                     _m4lResolvedCache = null;
+                    _m4lResolvedCacheSlug = null;
                     _m4lIssuedRgbKeys = {};
                 }
                 return _m4lLocalState;
@@ -3501,6 +3504,7 @@ function m4lSetThemeState(nextState) {
     _m4lLocalState = base;
     _m4lSeenBusVer = base.version;
     _m4lResolvedCache = null;
+    _m4lResolvedCacheSlug = null;
     _m4lIssuedRgbKeys = {};
     try {
         if (typeof Global === "function") {
@@ -3604,8 +3608,8 @@ function m4lApplyMacros(col, macros) {
     var a = (col.length > 3 && col[3] !== undefined && col[3] !== null && isFinite(Number(col[3]))) ? m4lClamp(Number(col[3]), 0, 1) : 1.0;
     if (!macros) return [r, g, b, a];
     var hs = Number(macros.hueShift) || 0;
-    var ss = macros.satScale === undefined ? 1.0 : Number(macros.satScale);
-    var ct = macros.contrast === undefined ? 1.0 : Number(macros.contrast);
+    var ss = (macros.satScale === undefined || macros.satScale === null || !isFinite(Number(macros.satScale))) ? 1.0 : Number(macros.satScale);
+    var ct = (macros.contrast === undefined || macros.contrast === null || !isFinite(Number(macros.contrast))) ? 1.0 : Number(macros.contrast);
     var br = Number(macros.brightness) || 0;
     if (Math.abs(hs) > 1e-4 || Math.abs(ss - 1.0) > 1e-4) {
         var hsl = m4lRgbToHsl(r, g, b);
@@ -3669,7 +3673,8 @@ function m4lRgbKey(r, g, b) {
  * @returns {Object<string, number[]>}
  */
 function m4lResolvedTokens(slug) {
-    if (_m4lResolvedCache && !slug) return _m4lResolvedCache;
+    var activeSlug = slug || m4lDeviceSlug();
+    if (_m4lResolvedCache && _m4lResolvedCacheSlug === activeSlug) return _m4lResolvedCache;
     var st = m4lGetThemeState();
     var cfg = m4lEffectiveConfig(slug);
     var presetObj = M4L_PRESET_THEMES[cfg.preset] || (st.customPresets && st.customPresets[cfg.preset]) || M4L_PRESET_THEMES["Default"];
@@ -3693,10 +3698,9 @@ function m4lResolvedTokens(slug) {
         out[k] = c;
         issued[m4lRgbKey(c[0], c[1], c[2])] = 1;
     }
-    if (!slug) {
-        _m4lResolvedCache = out;
-        _m4lIssuedRgbKeys = issued;
-    }
+    _m4lResolvedCache = out;
+    _m4lResolvedCacheSlug = activeSlug;
+    _m4lIssuedRgbKeys = issued;
     return out;
 }
 
@@ -3756,7 +3760,7 @@ function m4lMixColor(a, b, t, alpha) {
  * @returns {number[]}
  */
 function m4lMapRgba(r, g, b, a) {
-    var alpha = a === undefined ? 1.0 : Number(a);
+    var alpha = (a === undefined || a === null || !isFinite(Number(a))) ? 1.0 : Number(a);
     var rr = m4lClamp(Number(r) || 0, 0, 1);
     var gg = m4lClamp(Number(g) || 0, 0, 1);
     var bb = m4lClamp(Number(b) || 0, 0, 1);
@@ -3971,6 +3975,7 @@ function m4lRefreshTheme(onChange, targetPatcher) {
         _m4lLocalState = null;
     }
     _m4lResolvedCache = null;
+    _m4lResolvedCacheSlug = null;
     _m4lIssuedRgbKeys = {};
     m4lSyncMgraphicsHook();
     m4lApplyPatcherTheme(targetPatcher);
