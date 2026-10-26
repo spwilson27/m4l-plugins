@@ -3016,3 +3016,152 @@ Pass-4 tip: (this commit) — APPROVED; no production code changes
 **Approved 1 / adjusted 0.**
 
 Host gate (pass 4): `npm run -s typecheck && python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && node tests/test_reciprocator_bugsweep.js` → green.
+# Reverb+ — Bug sweep, Pass 1
+
+Scope read for this pass: `src/reverbplus_config.js`, `src/reverbplus_dsp.js`,
+`src/reverbplus_engine.js`, `src/reverbplus_link.js`, `src/reverbplus_face.js`,
+`src/reverbplus_face_common.js`, `src/reverbplus_face_ir.js`, `src/reverbplus_face_math.js`,
+`src/reverbplus_panels.js`, `src/reverbplus_end_ui.js`,
+`src/reverbplus_start.genexpr`, `src/reverbplus_end.genexpr`, `src/reverbplus_conv.genexpr`,
+the parameter table / `RP_GEN_PARAMS` generation in `scripts/build_reverbplus.py`, and
+`AGENTS.md`. The existing suites were used as the coverage map: config math, the derived
+outer loop, the IR pipeline functions, the convolution engine, pairing, face mappings and
+the build's parameter table are all already pinned by `tests/test_reverbplus.js` /
+`tests/test_reverbplus_face.js`, and every cross-check there (gen ↔ JS mirror formulas,
+header/scope slots, gen-message divisors, defaults) agreed.
+
+Baseline suite state in this worktree: `node tests/test_reverbplus.js` = 29 passed,
+2 failed — both failures are the *build* step inside the layout tests failing with
+`Cannot find module 'terser'` (node_modules not installed in this fresh worktree), not a
+device-code failure; the same cause cascades into `tests/test_reverbplus_face.js`. All
+pure source-level tests pass. The two bugs below are in the engine's IR lifecycle, which
+the existing tests exercise only for the no-work-in-flight cases (anydrop, clear_ir
+replay). Both share one root cause: **sliced IR work (`rpIr.work`, driven by the repeating
+`rpIr.workTask`) is never invalidated when the IR it belongs to is cleared or replaced,
+and `rpIrPublish` unconditionally writes its results into the live state.**
+
+Tests: `tests/test_reverbplus_bugsweep.js` — run with
+`node tests/test_reverbplus_bugsweep.js`. Result: **0 passed, 2 failed** (both red, each
+for the reason stated). No `src/` files were modified in this pass.
+
+---
+
+## Bug 1 — Clearing an IR while it is still processing resurrects it as a phantom "loaded" IR in an error state
+
+- **Where:** `src/reverbplus_engine.js` — `clear_ir` (lines 171–182) never touches
+  `rpIr.work` / `rpIr.workTask`; `rpIrWork` / `rpIrPublish` (lines 280–348) then publish
+  the stale work anyway.
+- **What's wrong:** Processing a large IR is sliced over many Task ticks
+  (`rpIrWork` runs ~6 ms of partition FFTs per 8 ms tick), so there is a window of up to
+  seconds where the user can press the IR box's clear (×) button while
+  `rpIr.status === "processing"`. `clear_ir` nulls `rpIr.src`, sets `loaded = false`,
+  `status = "idle"` and pokes header `IR_LOADED = 0` — but the in-flight work keeps
+  running. When it finishes, `rpIrPublish` executes against the cleared state: it flips
+  the bank, sets `rpIr.loaded = true` (line 328) and `rpIr.len`, and then dereferences
+  the nulled source at line 330 (`rpIr.sr = rpIr.src.sr`), which throws. Its own
+  try/catch converts that into `rpIr.status = "error"`. The header writes at the end of
+  `rpIrPublish` (bank / counts / `IR_LOADED`) are never reached, so JS state and gen
+  state also disagree afterwards.
+- **User-visible effect:** Clear an IR while it is still processing and, a moment later,
+  the device reports **IR ERROR** and believes an IR is loaded (`state ir` broadcasts
+  `loaded = 1` with an empty name) instead of the clean "no IR" state the user asked
+  for. The face shows the IR-error pill, and the display's IR spectrogram path
+  (`rcIrEnsure`) arms itself for an IR that does not exist.
+- **Test:** `clear_ir during IR processing: the in-flight publish must not resurrect the cleared IR`
+  in `tests/test_reverbplus_bugsweep.js`.
+- **Observed failure:**
+  ```
+  FAIL clear_ir during IR processing: the in-flight publish must not resurrect the cleared IR: AssertionError [ERR_ASSERTION]: completing the in-flight work after clear_ir must not mark an IR loaded again
+
+  true !== false
+  ```
+
+## Bug 2 — Dropping a new IR while the previous one is still processing silently loses the new file
+
+- **Where:** `src/reverbplus_engine.js` — `rpIrLoad` (lines 184–200) does not invalidate
+  in-flight work from the previous load; `rpIrPublish` sets `rpIr.status = "ready"`
+  (line 333); `ir_loaded` ignores its notification unless `rpIr.status === "loading"`
+  (lines 203–204); the `dropfile` de-dupe is at line 120.
+- **What's wrong:** Drop IR **B** while IR **A** is still being processed (same sliced
+  window as Bug 1). `rpIrLoad(B)` sets `status = "loading"` and hands B to `buffer~`,
+  but A's sliced work is still running. It finishes first and `rpIrPublish` flips
+  `status` to `"ready"` and `loaded` to `true`. When `buffer~` then finishes loading B
+  and fires `ir_loaded`, the guard `if (rpIr.status !== "loading") return;` discards it:
+  B is never read, never processed, and `rpIr.src` still holds A. The 8-second load
+  watchdog does not fire either, because it only errors while the status is still
+  `"loading"`. The state is now stuck: the UI shows B's file name with A's length and
+  A's sound. Recovery by re-dropping B is blocked by the de-dupe in `dropfile`
+  (`p === rpLastDropped && rpIr.loaded` — both now true for B), so the user must drop a
+  different file, clear the IR, or reload the device.
+- **User-visible effect:** Dropping a second IR in quick succession (e.g. correcting a
+  wrong file drop while the first is still processing) leaves the device playing the
+  *old* IR while displaying the *new* file's name, with no error shown, and the obvious
+  retry — dropping the same file again — does nothing.
+- **Test:** `dropping a new IR while the previous one is still processing: the new file must still load`
+  in `tests/test_reverbplus_bugsweep.js`.
+- **Observed failure:**
+  ```
+  FAIL dropping a new IR while the previous one is still processing: the new file must still load: AssertionError [ERR_ASSERTION]: ir_loaded for the new file must start its processing even though stale work published in between
+  + actual - expected
+
+  + 'ready'
+
+  0 passed, 2 failed
+  ```
+
+---
+
+### Notes for Pass 2 (things checked and deliberately NOT filed)
+
+- The derived-loop / tank formulas in `reverbplus_start.genexpr` match the JS mirrors in
+  `reverbplus_config.js` exactly (K table, `rpLoopApDelay` 0.75 × summed diffuser
+  lengths, gain cap 0.97, bass shelf exponent, Convolution period/gain references), and
+  the parameter table in `scripts/build_reverbplus.py` matches the gen on every range,
+  default and divisor — consistent with the existing tests that pin them.
+- `face_common`'s "keep animating for about 2 s after silence" comment understates the
+  real window (90 poll ticks at the face's 20 fps = 4.5 s), but 4.5 s is what the
+  28-row × 150 ms waterfall needs to scroll out, so the behaviour looks intended and
+  only the comment is stale — not filed as a bug.
+
+## Pass 2 review — kept 2 / dropped 0
+
+Re-read `src/reverbplus_engine.js` IR lifecycle (`clear_ir`, `rpIrLoad`, `ir_loaded`,
+`rpIrReprocess`, `rpIrWork`, `rpIrPublish`) against `tests/test_reverbplus_bugsweep.js`
+and re-ran the suite on tip `c97d473` (after this worktree's `npm install` restored the
+host gate: `node tests/test_reverbplus.js` green). Both reds still fail with the exact
+messages claimed in Pass 1. Pass-1 commit only touched `BUGS.md` and the bugsweep test
+file — no `src/` changes to re-review.
+
+| Bug | Verdict | Why |
+| --- | --- | --- |
+| 1 — clear during processing resurrects a phantom loaded/error IR | **KEEP** | `clear_ir` (171–182) already clears the `live.drop` path (`outlet(4,"")`) but never cancels `rpIr.workTask` / `rpIr.reproTask` or nulls `rpIr.work`. Stale `rpIrWork` still calls `rpIrPublish`, which unconditionally sets `loaded = true` (328) then throws on `rpIr.src.sr` (330) → `status = "error"`. RED asserts unloaded + idle + no `IR_LOADED=1` header poke; fails on `true !== false` for `loaded`. Real user-visible race; test targets the right surfaces. No rewrite. |
+| 2 — drop while processing silently loses the new file | **KEEP** | `rpIrLoad` (184–200) never invalidates in-flight work. Stale `rpIrPublish` flips `status` to `"ready"`; subsequent `ir_loaded` for B hits `if (rpIr.status !== "loading") return;` and is discarded. RED drops B during A's processing, lets A publish, then fires `ir_loaded`; fails with actual `'ready'` vs expected `'processing'`. Same root cause as Bug 1; distinct user path (replace, not clear). No rewrite. |
+
+**Dropped:** none.
+
+**Adjusted:** none — desired post-fix states match what a correct invalidate must produce
+(null `work`, cancel the Task, and either stay idle after clear or re-enter processing for
+the new file). Fix direction for Pass 3 (not applied here): one shared invalidate helper
+called from `clear_ir` and `rpIrLoad` that cancels `workTask` / `reproTask` / `loadTask` as
+appropriate and nulls `rpIr.work` (and, on clear, `rpIr.src`), so a late `rpIrPublish`
+cannot run; optionally also guard `rpIrPublish` / `rpIrWork` so a generation token or a
+null `work` short-circuits.
+
+## Pass 3 — fixes applied (bugsweep 2/0, host 31/0)
+
+Shared helper `rpIrInvalidateWork` in `src/reverbplus_engine.js` cancels `rpIr.workTask` /
+`rpIr.reproTask` (`.cancel` guarded for Node Task stubs that only implement `schedule`)
+and nulls `rpIr.work`. Both `clear_ir` and `rpIrLoad` call it after cancelling a pending
+`loadTask`, so a late `rpIrWork` tick cannot reach `rpIrPublish` against cleared or
+replaced state. Clear still nulls `src` / `loaded` / status as before; load still enters
+`"loading"` for the new path. Bugsweep slice updated to grab the helper. Commit
+`22a04c4` on `bugsweep/reverbplus`.
+
+## Pass 4 — final review (APPROVED)
+
+| Bug | Verdict | Why |
+| --- | --- | --- |
+| 1 — clear during processing resurrects a phantom loaded/error IR | **APPROVED** | Invalidate + loadTask cancel before the clear path mutates state; RED still asserts unloaded + idle + no `IR_LOADED=1` after forcing the stale publish. Minimal; no test weakening. |
+| 2 — drop while processing silently loses the new file | **APPROVED** | Same helper at the top of `rpIrLoad` so stale A cannot flip status to `"ready"` before B's `ir_loaded`. RED still expects `"processing"` after B loads. No generation-token guard added — cancel + null `work` is enough for the reds. |
+
+**Adjusted:** none. No follow-up code changes in this pass. Host gate re-verified green on tip `22a04c4` (`node tests/test_reverbplus_bugsweep.js` + `node tests/test_reverbplus.js`). Not merged to main.
