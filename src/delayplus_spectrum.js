@@ -67,7 +67,9 @@ function dpFftDbBins(frame, sr) {
     for (var k = 0; k < DP_FFT_BINS; k++) {
         var mag = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
         var f = (k * rate) / N;
-        var tilt = f > 60 ? 2.2 * Math.log(f / 250) / Math.LN2 : 0;
+        // Hold the tilt at the 60 Hz value so the slope does not step several dB between adjacent bins.
+        var fTilt = f < 60 ? 60 : f;
+        var tilt = k > 0 ? 2.2 * Math.log(fTilt / 250) / Math.LN2 : 0;
         dpFftDb[k] = dpClamp(20 * Math.log10(Math.max(mag, 1e-6)) + tilt, DP_SPEC_DB_MIN, DP_SPEC_DB_MAX);
     }
     return dpFftDb;
