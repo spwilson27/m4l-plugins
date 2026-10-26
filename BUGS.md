@@ -3426,3 +3426,38 @@ No src/ file was modified; no existing test file was modified.
 ## Commands / results
 
 - node tests/test_xo_bugsweep.js → 4 failing, exit 1 (all red, as intended for pass 1).
+
+---
+
+# XO Sample Map bug sweep — pass 2 (review, verdicts only, no fixes)
+
+Worktree: /tmp/bugsweep/xo_map on branch bugsweep/xo_map, tip 0134f6b. No src/ or test files changed in this pass; this section is appended only.
+Re-run: node tests/test_xo_bugsweep.js → 4 failing, exit 1, exactly as filed (engine acoustic tour stale on drum change; strip local tour stale on drum change; strip local tour stale on tonal change; stretchAudioEx pitchSt clamp).
+
+**Kept 3 / dropped 0.**
+
+## Bug 1 — KEPT (engine acoustic tour serves a stale tour after the drum filter changes)
+
+- Cache key (src/xo_node_engine.js:2087, buildAcousticSimilarityTour) is vis.length|activeCategory|maxLenMs|toneFilter|pitchFilter|tonalFilter|searchQuery|sampleSeed|searchVer|folders — tonalFilter is keyed, drumFilter is not, and the cache-hit guard (:2088) checks only key equality, cache length and start-index membership, so a count-preserving drum flip reuses the old tour.
+- isSamplePassingFilters does apply drumFilter (:1840-1848, drumPct against the df*0.85 bounds), so the tour contents genuinely depend on it.
+- The set_filter_drum handler (:2984-2987) only sets engineState.drumFilter and outlets strip_filter_drum; it never clears acousticSimTourKey (contrast the clears on other state changes, e.g. :1809/:1930/:2251/:2856).
+- Red check re-run fails as filed: after flipping drumFilter +90 → -90 with the visible count still 2, stepSimilarSample lands on sample 0 (druminess 100), which the -90 filter hides.
+
+## Bug 2 — KEPT (strip local tour serves a stale tour after the tonal or drum filter changes)
+
+- Cache key (src/xo_strip_ui.js:1900, buildLocalSimilarityTour) is startIdx|vis.length|activeCategory|maxLenMs|toneFilter|searchQuery|localSeed — neither tonalFilter nor drumFilter — and the hit guard (:1901) is key + length only.
+- isPointVisible applies both filters: tonal at :398-405, drum at :406-413.
+- strip_filter_tonal (:899-903) and strip_filter_drum (:905-909) only set the value, call ensureValidSelection() and redraw; neither clears simTourKey — and ensureValidSelection fixing the selection does not rebuild the tour that stepLocalNeighbor then walks.
+- The neighbouring paint-layer group cache gets it right: groupsKey (:489) includes both tonalFilter and drumFilter, so the omission from the tour key is inconsistent with the file's own pattern.
+- Both red checks re-run fail as filed: after the flip to -40 at a constant visible count of 3, stepping lands on hidden point 1 (want P2), for both the drum and tonal variants.
+
+## Bug 3 — KEPT (stretchAudioEx does not clamp pitchSt)
+
+- In stretchAudioEx (src/xo_stretch.js:813-819) speed is xsClamp(..., 0.1, 4), grainMs is xsClamp(..., 5, 250) and amount is xsClamp(..., 0, 1), but pitchSt (:817) is Number(opts.pitchSt) || 0 unclamped; pitchRatio = 2^(pitchSt/12) (:824) and complex mode sizes its intermediate as lenIn * pitchRatio / speed (:842), so pitchSt 96 allocates a 256x intermediate; granular mode passes the raw pitchSt to xsGranular (:835).
+- The caller renderEditedAudioSamples (src/xo_node_engine.js:732) repeats the pattern: pitchSt raw at :733 and passed through at :812, while speedPct is clamped 10..400 (:737), grainMs 5..250 (:738) and decayMs floored (:734).
+- No upstream clamp exists: the engine set_pitch handler (:2928-2930) and strip set_pitch (src/xo_strip_ui.js:923-925) store the raw number (their set_decay neighbours do clamp), and the strip state-blob parsers (:2436/:2445/:2462) likewise take Number(...) || 0 — so an out-of-range pitch is reachable from saved or hand-edited state and from plain set_pitch messages, not only from corruption.
+- The ±24 target is the device's own spec: the Pitch live.dial in scripts/build_xo_map.py has parameter_mmin -24.0 / parameter_mmax 24.0 (:1581-1582; annotation "-24 st to +24 st").
+- Red check re-run fails as filed (granular: pitchSt 96 should render exactly as the 24 clamp, max diff 1.8377). The check is not over-broad: it only requires out-of-range values to render exactly as the ±24 clamp in both modes, which a clamp at the stretchAudioEx entry (or in the caller) satisfies.
+
+The pass 1 checked-and-cleared leads (pitchFilter dead state, tonal/drum undo exclusion, grainMs=0 default substitution) were not reopened.
+
