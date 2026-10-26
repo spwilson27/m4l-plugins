@@ -908,6 +908,9 @@ function emitAll() {
     emitParam("analyzer_shelf", showAnalyzerShelf ? 1 : 0);
     emitParam("ref_enable", refEnabled ? 1 : 0);
     emitParam("route", routeMode);
+    emitParam("sidechain_fold", showSidechainFold ? 1 : 0);
+    emitParam("ref_gain", refGainDb);
+    emitParam("phase_mode", phaseMode);
     for (var i = 0; i < EQP_NUM_BANDS; i++) emitBand(i);
 }
 
@@ -2612,6 +2615,7 @@ function ondrag(x, y, but, cmd, shift, capslock, option, ctrl) {
             if (gv !== refGainDb) {
                 markDirty();
                 refGainDb = gv;
+                emitParam("ref_gain", refGainDb);
             }
         } else dragOutGain(g, y);
     }
@@ -2677,6 +2681,7 @@ function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
         if (Math.abs(refGainDb) > 0.05) {
             if (!undoArmed) pushUndoState();
             refGainDb = 0;
+            emitParam("ref_gain", refGainDb);
             if (typeof notifyclients === "function") notifyclients();
         }
         undoArmed = false;
@@ -4017,6 +4022,7 @@ function set_band_mode(idx, v) {
     var mode = clamp(Math.round(finite(v, b.mode)), 0, 12);
     if (mode === b.mode) return;
     b.mode = mode;
+    if (mode === 0) b.enabled = 0;
     if (b.enabled && !(b.q > 0)) b.q = EQP_Q_DEFAULT;
     updateCoeffBuffer();
     noteSolo(i);
