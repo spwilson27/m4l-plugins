@@ -2227,4 +2227,59 @@ Host gate after fix: `npm run -s typecheck` OK; `python3 scripts/build_theme_edi
 ## Pass 4 review
 
 Diffs are minimal and match the Pass 1 fix directions. No API renames, no Max/Live-only paths touched, no debug left. Residual risks: (1) v8ui still does not call `pushUndoState` on macro drag (cleared, not claimed); (2) deviceOverrides.macros still not sanitised at `m4lSetThemeState` ingress — ApplyMacros now tolerates null, but storing null in state remains possible until a later hygiene pass; (3) explicit-slug `m4lResolvedTokens(slug)` now also updates the global cache (previously skipped) — same activeSlug keying, low risk.
+# Oscilloscope — Bugsweep Pass 1 (bugsweep/oscilloscope)
 
+Fresh Pass 1 hunt on the pre-bugsweep baseline, distinct from the earlier `bugsweep/oscilloscope-pass1` sweep recorded above (its single bug — the armed trigger level not persisting across save/reload — was fixed in blob v5 and remains fixed and green). Two NEW credible bugs found. Both are caught by red tests in `tests/test_oscilloscope_bugsweep.js` (run: `node tests/test_oscilloscope_bugsweep.js`, exits 1). No `src/` files were changed in this pass.
+
+---
+
+## Bug 1: Armed trigger level is silently ignored in the pitch-locked cycle windows (1/2/4/8 Cyc)
+
+- **File:line:** `src/oscilloscope_config.js`, `oscComputeFrame` — the cycle branch (phase lock at line 928) never reads `o.trigLevel`; only the fixed-ms branch (line 940) passes it to `oscFindTrigger`.
+- **What is wrong:** The face (`src/oscilloscope_ui.js`, `oscRefreshFrame` line 182) passes the user-armed `trigLevel` into every frame, and the plot lets the user drag the trigger threshold and paints the guide in every Window mode. But for the four pitch-tracked cycle windows, `oscComputeFrame` phase-locks to the rising zero crossing via `oscPhaseLock` and discards the level entirely. The fixed 5/20/50 ms windows honor the same value correctly.
+- **User-visible effect:** In 1 Cyc, 2 Cyc, 4 Cyc and 8 Cyc (4 of the 7 Window modes), dragging the trigger threshold moves the orange guide line but the waveform never re-triggers at that level — the trace always locks to the zero crossing. The persisted, animated control is a silent no-op. Probe: a 220 Hz sine in 1 Cyc with `trigLevel` 0 vs 0.5 produces byte-identical waves (max sample difference 0.0000, both start at 0.0074); the same signal in the 20 ms window starts at exactly 0.5000 with the level armed.
+- **Tests that catch it:**
+  - `cycle windows honor the armed trigger level (1 Cyc)`
+  - `cycle windows honor the armed trigger level (2 Cyc)`
+  - (Passing control, pins the intended semantics: `control: fixed-ms windows honor the armed trigger level (20 ms)`)
+- **Observed failure output:**
+
+  ```
+  FAIL cycle windows honor the armed trigger level (1 Cyc): 1 Cyc wave must change when the trigger level is armed at 0.5
+  FAIL cycle windows honor the armed trigger level (2 Cyc): 2 Cyc wave must change when the trigger level is armed at 0.5
+  ```
+
+## Bug 2: Pitch estimator reports one octave down above 3200 Hz, despite the documented 4000 Hz ceiling
+
+- **File:line:** `src/oscilloscope_config.js:296` — `var minLag = Math.max(8, Math.floor(rate / 3200));` inside `oscEstimatePeriod`, whose own doc (line 245) states "Supports 24 Hz .. 4000 Hz".
+- **What is wrong:** At 48 kHz the shortest period the NSDF search can return is `floor(48000 / 3200) = 15` samples, capping detection at 3200 Hz. A tone between 3200 and 4000 Hz (period 12-14 samples) has no searchable lag; the NSDF peak at twice the true period is just as strong, so peak picking confidently selects the sub-octave lag.
+- **User-visible effect:** The tracked-frequency readout (and the note name, and the cycle-window length derived from the period) is exactly one octave low for any fundamental in the 3200-4000 Hz band, reported with full confidence: a 3500 Hz sine reads 1750.1 Hz (confidence 0.981) and a 4000 Hz sine reads 2000.0 Hz (confidence 1.000). The 24 Hz low end is exact, so only the top of the documented range is affected.
+- **Tests that catch it:**
+  - `pitch estimator detects 3500 Hz (documented ceiling is 4000 Hz)`
+  - `pitch estimator detects 4000 Hz (documented ceiling is 4000 Hz)`
+- **Observed failure output:**
+
+  ```
+  FAIL pitch estimator detects 3500 Hz (documented ceiling is 4000 Hz): Detected frequency at 3500 Hz (got 1750.129314815331, want 3500)
+  FAIL pitch estimator detects 4000 Hz (documented ceiling is 4000 Hz): Detected frequency at 4000 Hz (got 1999.9999999999998, want 4000)
+  ```
+
+## Full run summary
+
+```
+FAIL cycle windows honor the armed trigger level (1 Cyc): 1 Cyc wave must change when the trigger level is armed at 0.5
+FAIL cycle windows honor the armed trigger level (2 Cyc): 2 Cyc wave must change when the trigger level is armed at 0.5
+PASS control: fixed-ms windows honor the armed trigger level (20 ms)
+FAIL pitch estimator detects 3500 Hz (documented ceiling is 4000 Hz): Detected frequency at 3500 Hz (got 1750.129314815331, want 3500)
+FAIL pitch estimator detects 4000 Hz (documented ceiling is 4000 Hz): Detected frequency at 4000 Hz (got 1999.9999999999998, want 4000)
+oscilloscope bugsweep: 2 checks passed, 4 failing test(s)
+exit=1
+```
+
+## Checked and cleared (no bug)
+
+- **Auto-normalize headroom:** `oscComputeEffectiveGain` normalizes the peak to 1.0 (not 0.78) on purpose — `OSC_AMP_HEADROOM = 0.78` is the display Y mapping in `oscilloscope_ui.js` (`oscAmpY`), the existing suite asserts normalize-to-unity (`normGain` 4.0 for a 0.25 peak), and the split-lane painter reuses the same 1/peak clamp. The stale "0.80" wording in the config doc comment is a comment inaccuracy, not a behavior bug.
+- **Blob quantization:** `oscBlob` rounds `rateHz` to an integer and `gainDb` to 0.1 dB; that matches the precision the face itself displays (slider texts show integer Hz / 0.1 dB), so no user-visible state is lost on save/load. v5 round-trip and the v4/v3/v2/v1 migrations were re-verified against the existing suite (all green: 163561 checks).
+- **`oscStats` / `oscCorrelation` window:** both scan the newest 1024 of the 4096 ring samples — a consistent recent-window choice for the Pk/RMS readouts, not an off-by-one.
+- **Routing/geometry/hit-testing:** `oscResolveRouting` and `oscRoutingFromChMode` are exact inverses for all 6 channel modes; geometry, menu hit order, slider X mappings (linear over 1..60 Hz and -18..+24 dB), double-click resets, and the guide-click level preservation all match the spec in AGENTS.md section 28 and are covered by the existing suite.
+- **Build wiring:** `scripts/build_oscilloscope.py` concatenates config -> theme -> gen vars -> `analyzer_dsp.js` -> UI (matching the runtime), and its `parameter_initial` is a well-formed v5 blob. (Its help text still describes routing in stale v3 terms — cosmetic, build previews only.)

@@ -293,7 +293,7 @@ function oscEstimatePeriod(sig, sr, trackerState) {
     // Sensitive gate (-72 dBFS = 0.00025) so decaying tails keep tracking
     if (rms < 0.00025) return fallbackOrHold();
 
-    var minLag = Math.max(8, Math.floor(rate / 3200));
+    var minLag = Math.max(8, Math.floor(rate / 4000));
     var maxLag = Math.min(Math.floor(winLen * 0.64), Math.ceil(rate / 20));
     if (maxLag <= minLag) return fallbackOrHold();
 
@@ -317,8 +317,12 @@ function oscEstimatePeriod(sig, sr, trackerState) {
     var nsdf = new Float64Array(maxLag + 2);
     var lag;
     var step = maxLag > 400 ? 2 : 1;
+    // Fill from lag 2 so the McLeod negative-lobe gate can fire below minLag. Peaks with
+    // lag < minLag are discarded later; without this, pitches near the 4000 Hz ceiling
+    // (first valley at ~period/2 < minLag) skip the fundamental and lock an octave down.
+    var gateStart = 2;
     var eaFixed = prefixSq[corrLen] - prefixSq[0];
-    for (lag = minLag; lag <= maxLag; lag += step) {
+    for (lag = gateStart; lag <= maxLag; lag += step) {
         var ac = 0;
         for (i = 0; i < corrLen; i += 4) {
             ac += clean[i] * clean[i + lag] + clean[i + 1] * clean[i + 1 + lag];
@@ -329,7 +333,7 @@ function oscEstimatePeriod(sig, sr, trackerState) {
         nsdf[lag] = denom > 1e-12 ? (2 * ac) / denom : 0;
     }
     if (step === 2) {
-        for (lag = minLag + 1; lag <= maxLag; lag += 2) {
+        for (lag = gateStart + 1; lag <= maxLag; lag += 2) {
             nsdf[lag] = 0.5 * (nsdf[lag - 1] + (lag + 1 <= maxLag ? nsdf[lag + 1] : nsdf[lag - 1]));
         }
     }
@@ -343,28 +347,29 @@ function oscEstimatePeriod(sig, sr, trackerState) {
     var peaks = [];
     var globalMax = 0;
 
-    for (lag = minLag; lag <= maxLag; lag++) {
+    for (lag = gateStart; lag <= maxLag; lag++) {
         var v = nsdf[lag];
         if (!seenNeg) {
             if (v < -0.10) seenNeg = true;
             continue;
         }
         if (v < 0) {
-            if (inPosLobe && lobeLag > 0) {
+            if (inPosLobe && lobeLag >= minLag) {
                 peaks.push({ lag: lobeLag, val: lobeMax });
                 if (lobeMax > globalMax) globalMax = lobeMax;
             }
             inPosLobe = false;
             lobeMax = -1;
+            lobeLag = 0;
         } else if (v > 0) {
             inPosLobe = true;
-            if (v > lobeMax) {
+            if (lag >= minLag && v > lobeMax) {
                 lobeMax = v;
                 lobeLag = lag;
             }
         }
     }
-    if (inPosLobe && lobeLag > 0) {
+    if (inPosLobe && lobeLag >= minLag) {
         peaks.push({ lag: lobeLag, val: lobeMax });
         if (lobeMax > globalMax) globalMax = lobeMax;
     }
@@ -396,14 +401,19 @@ function oscEstimatePeriod(sig, sr, trackerState) {
         }
     }
 
-    // Fine 1-sample search in [chosen.lag - 2 .. chosen.lag + 2] + parabolic refinement
-    var centerLag = oscClamp(chosen.lag, minLag + 2, maxLag - 2);
+    // Fine 1-sample search in [chosen.lag - 2 .. chosen.lag + 2] + parabolic refinement.
+    // Clamp to minLag (not minLag+2) so a period sitting on the 4000 Hz floor is not biased sharp.
+    var centerLag = oscClamp(chosen.lag, minLag, maxLag - 2);
     var fineVals = new Float64Array(5);
     var bestSubIdx = 2;
     var bestSubVal = -2;
     var d;
     for (d = -2; d <= 2; d++) {
         var L = centerLag + d;
+        if (L < gateStart || L > maxLag) {
+            fineVals[d + 2] = -2;
+            continue;
+        }
         var ac2 = 0;
         for (i = 0; i < corrLen; i++) {
             ac2 += clean[i] * clean[i + L];
@@ -914,6 +924,9 @@ function oscComputeFrame(rawL, rawR, sr, opts) {
     var basePeriod = pitch.period > 0 ? pitch.period : 0;
 
     var trig;
+    var armedLevel = Number(o.trigLevel);
+    if (!isFinite(armedLevel)) armedLevel = 0;
+    var trigArmed = Math.abs(armedLevel) > 1e-6;
     if (isSingleCycleMode) {
         basePeriod = oscChooseCyclePeriod(refSig, pitch);
         // A bright hat can be only a few samples long. Stretching that out to 10 ms
@@ -922,10 +935,15 @@ function oscComputeFrame(rawL, rawR, sr, opts) {
         // The first estimate is checked at one trigger. Phase lock can land on a
         // busier part of the same buffer, so measure the window that will be drawn
         // and shorten it until that window is a single rise.
+        // When the user has armed a non-zero trigger level (LCD drag), honor it the
+        // same way fixed-ms windows do — oscPhaseLock always snaps to zero and would
+        // ignore the guide.
         var shrinkPass = 0;
         while (shrinkPass < 3) {
             spanSamples = oscClamp(basePeriod * numCycles, 3, Math.floor(ch.ch1.length * 0.90));
-            trig = oscPhaseLock(refSig, spanSamples, basePeriod, o.pitchState);
+            trig = trigArmed
+                ? oscFindTrigger(refSig, spanSamples, 0, armedLevel)
+                : oscPhaseLock(refSig, spanSamples, basePeriod, o.pitchState);
             var oneSpan = Math.min(basePeriod, spanSamples);
             if (oscRisingCountSpan(refSig, trig.index + trig.frac, oneSpan) <= 2) break;
             var cut = oscMedianInterval(oscRisingEdges(
@@ -937,7 +955,7 @@ function oscComputeFrame(rawL, rawR, sr, opts) {
     } else {
         var ms = OSC_FIXED_MS[cycIdx] || 20;
         spanSamples = oscClamp((rate * ms) / 1000, 32, Math.floor(ch.ch1.length * 0.90));
-        trig = oscFindTrigger(refSig, spanSamples, 0, o.trigLevel || 0);
+        trig = oscFindTrigger(refSig, spanSamples, 0, armedLevel);
     }
     var startPos = trig.index + trig.frac;
 
