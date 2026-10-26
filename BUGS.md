@@ -2593,3 +2593,133 @@ Pass-4 tip: (this note) — APPROVED; no further production code changes
   → test_clipplus_bugsweep: ok
   ```
 - Residual risk: Live pointer-event crash was never re-proven in the VM this pass (pure-Node red + Delay+ precedent only). Face paint / True Peak notes from prior clipplus-2 pass left as noted.
+# Degrade - Bug Sweep Pass 1 (bugsweep/degrade, 2026-10-25) - red tests only, no fixes
+
+Device: `devices/Degrade.amxd` - Worktree: `/tmp/bugsweep/degrade` - Branch: `bugsweep/degrade`
+Tests: `tests/test_degrade_bugsweep.js` (new file; the first Degrade sweep's D1-D4 reds live in
+`tests/test_degrade.js` section 5 and are already fixed in this baseline - see the earlier
+"Degrade - Bug Sweep (Pass 1 reds + Pass 2 review)" section above. This is a second sweep on
+that post-fix baseline, hunting beyond D1-D4.)
+Command: `node tests/test_degrade_bugsweep.js`
+Baseline check: `node tests/test_degrade.js` passes clean on this worktree before the new tests.
+
+## Bug D5: FFT glitch helper is not neutral at Glitch = 0% (Denoise and Comb modes)
+
+- **Where:** `src/degrade_config.js` `computeFftGlitchBands()` lines 204-233 (mode 0 boost at
+  line 214, mode 3 boost at line 227).
+- **What's wrong:** Scramble (mode 1) and Splat (mode 2) return the input bands unchanged at
+  `glitchAmt = 0`, matching the real gen~ stage, which is bypassed at `fft_glitch = 0`
+  (`fftActive` requires `fftGlitchVal > 0.001`, genexpr line 492, and the stage output is mixed
+  in by `fftGlitchVal`, line 1197). But Denoise (mode 0) multiplies every band above 0.35 by
+  1.35 regardless of the amount, and Comb (mode 3) multiplies every even band by 1.45
+  regardless of the amount, so the shared UI/test simulation helper reports a degraded
+  spectrum at the FFT stage's neutral setting.
+- **User-visible effect:** Any simulation or preview driven by the helper shows boosted
+  spectral bands with the FFT Glitch amount at 0%, i.e. the device appears to alter the
+  spectrum when the stage should be transparent.
+- **Test:** `D5 fft-glitch-neutral-at-zero` in `tests/test_degrade_bugsweep.js`.
+- **Observed failure:** `mode 0 at glitchAmt=0 must return the bands unchanged, got [0.1,1.08,0.2,1.2,0.15,0.945,0.05,0.81]`
+
+## Bug D6: Telecom ADPCM and GSM modes are not neutral at Line = 0%
+
+- **Where:** `src/degrade_config.js` `processTelecomSample()` - ADPCM branch lines 188-196,
+  GSM branch lines 198-201 (contrast the u-Law/A-Law blend at lines 170 and 186).
+- **What's wrong:** u-Law and A-Law blend toward the companded signal by `amt * 0.85`, so at
+  `lineAmt = 0` they return the input exactly. ADPCM and GSM have no amount blend at all:
+  ADPCM returns `prev * 0.94 + qDiff` (a flat 6% level loss plus slew limiting even at
+  amt = 0), and GSM always returns its tanh-plus-grid-quantized signal. The gen~ agrees with
+  the neutral expectation: the TELE stage is gated off at `tele_line <= 0.001` (`telActive`,
+  genexpr line 491) and mixed by `teleWet = clip(teleLine * 2.5)` (line 1012).
+- **User-visible effect:** In the UI/test simulation, selecting ADPCM or GSM changes the
+  signal (level drop, slew limiting, coarse quantization) with the Line amount at 0%, while
+  u-Law/A-Law correctly do nothing.
+- **Test:** `D6 telecom-neutral-at-zero` in `tests/test_degrade_bugsweep.js`.
+- **Observed failure:** `mode 2 at lineAmt=0 must return the input 0.42 unchanged, got 0.3948`
+
+## Bug D7: Wet/dry History defaults contradict the equal-power cache law (Mix 50% changes meaning after Mix is first touched)
+
+- **Where:** `src/degrade_core.genexpr` - History defaults lines 348-350
+  (`cWetLat(0.5)`, `cDryG(0.5)`, `cWetG(0.5)`), cache recompute lines 435-439, transparent
+  output path lines 1216-1227, and the defaults comment lines 323-326.
+- **What's wrong:** The cache computes the documented equal-power gains
+  `cWetG = sin(clip(wetSlew, 0, 1) * pi/2)` and `cDryG = cos(asin(cWetG))`
+  (`scripts/build_degrade.py` PARAM_SPECS documents Mix as "Equal-power dry/wet mix").
+  But `cWetLat` defaults to 0.5 - exactly the slewed Mix default - so at load the cache block
+  is skipped and the device runs with the linear History defaults 0.5/0.5. The first time Mix
+  is moved and returned to 50%, the gains become 0.7071/0.7071. On the transparent path
+  (`runDsp = 0`, `wetOut = in`) the summed output therefore jumps from exact unity
+  (0.5 + 0.5 = 1.0) to +3.01 dB (0.7071 + 0.7071 = 1.414), contradicting the output-section
+  comment (lines 1209-1213) promising exact 0.0 dB unity at default settings with Mix = 50%.
+  Every other cache default in the file matches its formula at the default parameter value
+  (`cBitSteps = 2^16`, `cOutLin = dbtoa(0) = 1`, `cOrd0..4 = 1234`); only the wet/dry gains
+  disagree.
+- **User-visible effect:** A fully neutral Degrade (all stages off/default) is unity gain at
+  Mix 50% when first loaded, but +3 dB louder at the same settings after the Mix knob has
+  been touched and put back.
+- **Test:** `D7 wet-dry-defaults-match-equal-power-law` in `tests/test_degrade_bugsweep.js`.
+- **Observed failure:** `cWetG History default 0.5 must equal the equal-power gain at Mix=50% (0.7071067811865475)`
+
+## Bug D8: Undo does not restore stage-enable toggles made from the face
+
+- **Where:** `src/degrade_ui.js` - `cloneState()` lines 60-66, `applySnapshot()` lines 76-84,
+  `onclick()` lines 780-793 (undo push + LED toggle), `ondblclick()` lines 848-860.
+- **What's wrong:** `onclick()` calls `pushUndoState()` for every pill click, including a
+  power-LED click that toggles `stageEnabled[stId]`, so the click appears to be undoable.
+  But the snapshot captures only `{ order, vizMode, selectedStage }` - not `stageEnabled` -
+  so `undo()` restores an identical snapshot and the toggle silently survives, while still
+  pushing a redo entry. (Asymmetry: `ondblclick()` toggles the same state with no undo push
+  at all.)
+- **User-visible effect:** Toggling a stage on/off from the face's pill LED and pressing undo
+  does nothing - the stage stays toggled - even though a snapshot was taken for that click.
+- **Test:** `D8 undo-restores-stage-enable-toggle` in `tests/test_degrade_bugsweep.js`
+  (loads `src/degrade_config.js` + `src/degrade_dsp.js` + `src/degrade_ui.js` in a vm
+  sandbox, clicks the pill-0 LED at (9, 12), then calls `undo()`).
+- **Observed failure:** `undo() after an LED toggle must restore stageEnabled[0] to 0 ... 1 !== 0`
+
+## Bug D9: Codec pre-echo taps overrun the 8192-sample delay lines at high sample rates
+
+- **Where:** `src/degrade_core.genexpr` - `Delay codecDL(8192)` / `codecDR(8192)` lines
+  358-359, `preDelaySamps = preechoVal * sr * 0.072` line 618, tap block lines 623-628
+  (`tapPost = preDelaySamps * 1.35` line 626).
+- **What's wrong:** The longest pre-echo smear tap requests `0.072 * 1.35 = 0.0972` seconds
+  of history. That exceeds the 8192-sample delay line whenever the sample rate is above
+  8192 / 0.0972 ~= 84.3 kHz, so at 88.2 / 96 / 176.4 / 192 kHz (100% Pre-Echo) the tap
+  cannot read the sample it asks for and the smear cloud is built from aliased/wrong
+  history instead of the documented 72 ms lookahead window. At 192 kHz the request is
+  18,663 samples against an 8,192-sample line.
+- **User-visible effect:** At high session sample rates the Codec stage's pre-echo smear
+  taps read the wrong audio, so the pre-transient bloom is mistimed/corrupted exactly
+  where long lookahead is dialled in.
+- **Test:** `D9 codec-preecho-taps-fit-delay-line` in `tests/test_degrade_bugsweep.js`.
+- **Observed failure:** `codecDL holds 8192 samples but the longest pre-echo tap at 192 kHz / 100% Pre-Echo requests 18663 samples`
+
+## Red run (2026-10-25, this worktree)
+
+```
+$ node tests/test_degrade_bugsweep.js
+RED  D5 fft-glitch-neutral-at-zero: mode 0 at glitchAmt=0 must return the bands unchanged, got [0.1,1.08,0.2,1.2,0.15,0.945,0.05,0.81]
+RED  D6 telecom-neutral-at-zero: mode 2 at lineAmt=0 must return the input 0.42 unchanged, got 0.3948
+RED  D7 wet-dry-defaults-match-equal-power-law: cWetG History default 0.5 must equal the equal-power gain at Mix=50% (0.7071067811865475)
+RED  D8 undo-restores-stage-enable-toggle: undo() after an LED toggle must restore stageEnabled[0] to 0 (the state its own pushUndoState snapshot was taken from) - 1 !== 0
+RED  D9 codec-preecho-taps-fit-delay-line: codecDL holds 8192 samples but the longest pre-echo tap at 192 kHz / 100% Pre-Echo requests 18663 samples
+5 red check(s) - exit code 1
+```
+
+## Checked and cleared (no bug claimed)
+
+- Order encode/decode/move (`encodeOrderCode` leading-zero code 1234, `decodeOrderCode`
+  healing, genexpr sum-10 / product-120 permutation validation) - round-trips correctly.
+- Gen u-Law/A-Law quantization vs the JS mirror (fixed as D1 in the first sweep) and the
+  output-gain / equal-power / set_mix fixes (D2-D4) - verified still fixed in this baseline.
+- Telemetry layout: genexpr poke slots 0/1/2-6/7/8-15/16-27/28-31 match the header comment
+  and the UI `pullScope()` offsets, including the slot-7 frame counter.
+- UI wiring: the patch routes the v8ui `order_code` / `toggle` / `macro` / `focus` /
+  `dsp_resend` outlets (`route order_code toggle macro focus dsp_resend` in
+  `scripts/build_degrade.py`); `bits` is a 1.0-16.0 parameter, so the `set_bits` falsy
+  fallback never sees a legitimate 0.
+- Other control-rate cache defaults (`cBitSteps`/`cBitRcp`, `cOutLin`, `cOrd*`,
+  `orderLatch`) all match their formulas at the default parameter values.
+- Codec stereo smear uses different tap ordering per channel (L: E1/E2/E3/Post,
+  R: E2/E1/Post/E3) - read as intentional stereo decorrelation, not claimed.
+- `computeCodecBandGain` neutrality at damage 0, `processBitSample` quantizer math, and
+  `computeEffectiveSrRatio` clamping all behave as documented.

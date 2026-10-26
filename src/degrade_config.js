@@ -192,12 +192,14 @@ function processTelecomSample(x, mode, lineAmt, prevPred) {
         const diff = clamp(x - prev, -maxSlew, maxSlew);
         const step = maxSlew / 3.5;
         const qDiff = Math.round(diff / Math.max(step, 0.002)) * step;
-        return clamp(prev * 0.94 + qDiff, -1.0, 1.0);
+        const adpcm = clamp(prev * 0.94 + qDiff, -1.0, 1.0);
+        // Blend by amt so Line = 0% is identity (matches u-Law/A-Law and gen~ telActive gate)
+        return clamp(x * (1.0 - amt * 0.85) + adpcm * (amt * 0.85), -1.0, 1.0);
     }
     // Mode 3: GSM 06.10 RPE-LTP coarse block pulse quantization + nasal harmonic clip
     const gsmGrid = Math.max(3.0, 24.0 - amt * 20.0);
     const pulsed = Math.round(Math.tanh(x * (1.4 + amt * 2.2)) * gsmGrid) / gsmGrid;
-    return clamp(pulsed, -1.0, 1.0);
+    return clamp(x * (1.0 - amt * 0.85) + pulsed * (amt * 0.85), -1.0, 1.0);
 }
 
 // Section 5: FFT Spectral Glitch helper for UI & test simulation (4 modes: 0=Den, 1=Scr, 2=Spl, 3=Cmb)
@@ -210,8 +212,8 @@ function computeFftGlitchBands(bands, mode, glitchAmt, phaseVal) {
         const raw = bands[i] || 0;
         let mod = raw;
         if (m === 0) {
-            // Denoise: musical-noise spectral gate
-            const bubble = raw > 0.35 ? raw * 1.35 : raw * (1.0 - g * 0.95);
+            // Denoise: musical-noise spectral gate (identity at g=0)
+            const bubble = raw > 0.35 ? raw * (1.0 + 0.35 * g) : raw * (1.0 - g * 0.95);
             mod = clamp(bubble, 0.0, 1.2);
         } else if (m === 1) {
             // Bin Scramble: permute spectral bins
@@ -223,8 +225,8 @@ function computeFftGlitchBands(bands, mode, glitchAmt, phaseVal) {
             const next = bands[(i + 1) % n] || 0;
             mod = raw * (1.0 - g * 0.65) + (prev + next) * 0.5 * (g * 0.85);
         } else {
-            // Spectral Contrast / Comb: winner-take-all bin gating
-            const comb = (i % 2 === 0) ? raw * 1.45 : raw * (1.0 - g * 0.95);
+            // Spectral Contrast / Comb: winner-take-all bin gating (identity at g=0)
+            const comb = (i % 2 === 0) ? raw * (1.0 + 0.45 * g) : raw * (1.0 - g * 0.95);
             mod = clamp(comb, 0.0, 1.2);
         }
         out[i] = clamp(mod, 0.0, 1.2);
