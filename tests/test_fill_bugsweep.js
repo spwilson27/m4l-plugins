@@ -102,6 +102,58 @@ check("Bug C: page delays fit the gen bound at 192 kHz", () => {
     assert.ok(maxPageDelay(192000) <= genDelayMax, maxPageDelay(192000) + " > " + genDelayMax);
 });
 
+// ---------------------------------------------------------------------------------------------
+// Bug D — A sample-rate change alone republishes neither the experimental bank page nor the
+// convolution IRs: fillPublishBank builds its cache signature from hit, seed and metas only
+// (src/fill_dsp.js fillBankSig), and fillPublishIr from the fillP IR fields only (fillIrSig).
+// Neither includes fillSr(). Live can change the device sample rate (48k -> 96k) with no
+// parameter change; the gen then keeps playing a page whose phase increments, pole radii and
+// allpass delays were computed for the old rate, and IRs whose lengths were computed for it.
+// ---------------------------------------------------------------------------------------------
+const libD = require(path.join(ROOT, "tests", "paint_bounds_lib.js"));
+const docD = JSON.parse(fs.readFileSync(path.join(ROOT, "devices", "Fill.amxd")).slice(32).toString("utf8"));
+const vizD = docD.patcher.boxes.map(function (b) { return b.box; }).filter(function (b) { return b.id === "obj-viz"; })[0];
+const patcherD = {
+    getnamed: function () { return { valid: 1, message: function () {} }; },
+    setattr: function () {}, newdefault: function () { return null; },
+    connect: function () {}, remove: function () {},
+};
+const faceD = libD.loadFace(vizD.textfile.text, libD.makeRecorder(232, 147), { outlet: function () {}, patcher: patcherD });
+let phaseD = null;
+faceD.fillBufBank = {
+    poke: function (ch, index, arr) { if (index === 16 && arr.length > 8) phaseD = arr[0]; },
+    peek: function () { return [0]; },
+};
+faceD.fillP.page = 1; faceD.fillP.seed = 1; faceD.fillP.mass = 0; faceD.fillP.massr = 0; faceD.fillP.rand = 0;
+faceD.fillBankGen = 0; faceD.fillBankSig = ""; faceD.fillTele.hit = 0; faceD.samplerate = 48000;
+faceD.fillPublishBank();
+const phase48D = phaseD;
+const gen48D = faceD.fillBankGen;
+faceD.samplerate = 96000;
+faceD.fillPublishBank();
+check("Bug D: bank republishes when only the sample rate changes", () => {
+    assert.ok(gen48D >= 1, "setup: bank published at 48 kHz");
+    assert.ok(faceD.fillBankGen > gen48D, "bank generation stuck at " + faceD.fillBankGen + " after sr 48000 -> 96000");
+    assert.ok(phaseD < phase48D * 0.75, "fundamental phase " + phaseD + " not rescaled from " + phase48D);
+});
+check("Bug D control: bank stays cached when nothing changes", () => {
+    const g = faceD.fillBankGen;
+    faceD.fillPublishBank();
+    assert.strictEqual(faceD.fillBankGen, g);
+});
+let pokesD = 0;
+const mockD = { poke: function () { pokesD++; }, peek: function () { return [0]; } };
+faceD.fillBufBody = mockD; faceD.fillBufAir = mockD;
+faceD.samplerate = 48000; faceD.fillIrSig = ""; faceD.fillIrSlot.n = 0;
+faceD.fillPublishIr();
+const pokes48D = pokesD;
+faceD.samplerate = 96000;
+faceD.fillPublishIr();
+check("Bug D: IR republishes when only the sample rate changes", () => {
+    assert.ok(pokes48D > 0, "setup: IR published at 48 kHz");
+    assert.ok(pokesD > pokes48D, "no IR buffer writes after sr 48000 -> 96000 (still " + pokesD + " pokes)");
+});
+
 if (failures.length) {
     console.log("test_fill_bugsweep: " + failures.length + " of " + checks + " checks FAILED");
     process.exit(1);

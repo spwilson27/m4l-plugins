@@ -159,7 +159,7 @@ function fillPublishIr() {
     var sig = JSON.stringify([
         fillP.bmodel, fillP.bdecay, fillP.bdecayr, fillP.bsize, fillP.bsizer, fillP.bcolor, fillP.bcolorr,
         fillP.tune, fillP.tuner, fillP.amodel, fillP.adecay, fillP.adecayr, fillP.asize, fillP.asizer,
-        fillP.acolor, fillP.acolorr, fillP.seed
+        fillP.acolor, fillP.acolorr, fillP.seed, fillSr()
     ]);
     if (sig === fillIrSig && fillIrSlot.n > 0) {
         fillSendIrHeader();
@@ -220,7 +220,7 @@ function fillPublishBank() {
     var metas = fillBankMetas();
     var pageSeed = Number(fillP.seed);
     if (!isFinite(pageSeed)) pageSeed = 1;
-    var sig = hit + "|" + pageSeed + "|" + JSON.stringify(metas);
+    var sig = hit + "|" + pageSeed + "|" + fillSr() + "|" + JSON.stringify(metas);
     if (sig === fillBankSig && fillBankGen > 0) {
         outlet(0, ["bankgen", fillBankGen]);
         return;
