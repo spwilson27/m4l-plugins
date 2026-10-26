@@ -2197,6 +2197,11 @@ Red tests: `tests/test_sampler_bugsweep.js` (created this pass). No `src/` files
 - **Verification (all green):** `npm run -s typecheck` (all configs) and `python3 scripts/build_sampler.py` (rebuilt `devices/Better Sampler.amxd` and `devices/Better Sampler Reactive 2.amxd`, so the committed devices carry the fixed source); `node tests/test_sampler_bugsweep.js` = **8 passed, 0 failed**; `node tests/test_sampler.js` = all passed; `node tests/test_sampler_slicing.js` = 81 passed, 0 failed; `node tests/test_sampler_modmatrix.js` = ok; `node tests/test_sampler_pitch.js` = 51 passed, 0 failed; `node tests/test_sampler_designs.js` and `node tests/test_sampler_design_reactive2.js` = passed. Gate preview: `python3 scripts/render_preview.py "devices/Better Sampler.amxd"` rendered `previews/better_sampler.png`, which was read and visually inspected — byte-identical to the committed preview, as expected for a serialization-only fix with no layout or drawing change.
 - **Pre-existing, not fixed:** `tests/test_sampler_theme.js` fails at this baseline (TypeError at line 101, confirmed unrelated in Pass 2) — left untouched and not blocking.
 
+## Pass 4 review — Better Sampler Bug 1: APPROVED
+
+- Independent review of 74a0e6a: fix minimal and correct — truncated/corrupt counts clamp to the entries present (pathAt then equals a.length, so no marker is read as the path and no bogus load_sample fires), <=32-marker and legacy states load identically, getvalueof/blob layout unchanged, no test files changed, BUGS.md Pass 3 record matches the diff.
+- Evidence re-run by this pass: test_sampler_bugsweep.js 8/8, test_sampler.js ok, test_sampler_slicing.js 81, test_sampler_modmatrix.js ok, test_sampler_pitch.js 51 — all green. A fresh python3 scripts/build_sampler.py rebuild left the tree clean, proving both committed devices are byte-identical builds of the fixed source. test_sampler_theme.js failure remains pre-existing and unrelated.
+
 ## Checked, no bug filed
 
 - **Loop crossfade scaling chain** — genexpr `Param loop_xfade(0.05,
