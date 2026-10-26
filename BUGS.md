@@ -2133,3 +2133,54 @@ Rule: PASS 1 finds bugs and adds RED tests only — do not fix production code h
 - **APPROVED.** Bug 1 fix confirmed minimal and correct: `src/mseg_edit.js:85` gates the bounding-union push with `dx !== 0 && sweepIntervals.length >= 2`; per-point travel pushes (L79-80) and the filter (L93-103) are unchanged, so dx !== 0 horizontal-sweep deletes remain. RED test still asserts middle point id 3 survives a pure vertical multi-select of ids 2+4 (primary at x=0.25, y to 0.55), length stays 5, and selected points keep x=0.25/0.75. No drive-by refactors; no test weakening.
 - Host gate re-verified green on tip 3c91f90: `npm run -s typecheck && python3 scripts/build_shaper.py && node tests/test_shaper.js && node tests/test_shaper_bugsweep.js` (GATE_BUGSWEEP_EXIT:0). Rebuilt `devices/Better Shaper.amxd` (1383889 bytes).
 - No follow-up code changes in this pass; note-only commit next. Not merged to main.
+
+---
+
+# Multiband Split — bugsweep pass 1 (new run)
+
+Branch: `bugsweep/mbsplit` · Worktree: `/tmp/bugsweep/mbsplit` · Base: `69699f7` (pre-bugsweep baseline; the earlier Pass 1–4 section above was a previous sweep whose two fixes — volume-slider dead zone, FIR display approximation — are already in this baseline and pass: `node tests/test_mbsplit_pass1.js` is green).
+
+**Four credible bugs found.** All have RED tests in `tests/test_mbsplit_bugsweep.js` (new file; the existing `tests/test_mbsplit.js` and `tests/test_mbsplit_pass1.js` are untouched, and none of these cases duplicate them). No `src/` files were modified — fixes are Pass 3.
+
+Test run on the unfixed tree: `node tests/test_mbsplit_bugsweep.js` → **4 of 4 checks FAIL**, each for the reason stated below; exit code 1.
+
+## Bug 1 — Auto Chain band mask clamps to the last band instead of wrapping
+
+- **Where:** `src/mbsplit_config.js:184` `resolveEffectiveBandMask` (spec comment at `:176-183`, clamp at `:189-190`)
+- **What's wrong:** The function's own header documents mode 0 (Auto Chain) as "solos Band (chainIndex % numBands) + 1", but the code computes `clamp(chainIndex, 0, nb - 1)`. For any chain index at or past the band count the mask sticks on the last band instead of wrapping around to Band 1.
+- **User-visible effect:** In a rack with more chains than the current band layout wraps (or any caller passing a raw chain index ≥ numBands), the 4th/5th/… splitter keeps outputting the top band: the rack sum double-weights the high band and no chain wraps to the low band, contradicting the documented Auto Chain assignment.
+- **Test:** "Auto Chain band mask wraps with chainIndex % numBands (defect: resolveEffectiveBandMask clamps to the last band instead of wrapping)"
+- **Observed failure:** `Auto Chain mask does not wrap: chainIndex 3 / numBands 3 -> mask 4 (documented wrap gives 1); chainIndex 4 / numBands 3 -> mask 4 (documented wrap gives 2); chainIndex 5 / numBands 4 -> mask 8 (documented wrap gives 2); chainIndex 6 / numBands 2 -> mask 2 (documented wrap gives 1)` (in-range indices 0..numBands-1 are correct and asserted as sanity checks in the same test)
+
+## Bug 2 — Volume (and handle) double-click is handled twice; the first undo after it is a no-op
+
+- **Where:** `src/mbsplit_ui.js:1666-1679` (`onclick` volume double-click branch) together with `src/mbsplit_ui.js:1775-1787` (`ondblclick`); same pattern for crossover handles at `:1739-1749` and `:1788-1797`; `pushUndoState` at `:916`
+- **What's wrong:** A double-click gesture is delivered as `onclick`, `onclick`, `ondblclick` — the sequence `onclick`'s own 320 ms `lastClickTarget`/`lastClickTime` detection is built for. Both the second `onclick` and `ondblclick` run the reset AND push an undo snapshot. The `ondblclick` snapshot is taken *after* the reset, so it lands on top of the undo stack; the user's first undo reapplies the post-reset state and appears to do nothing (a second undo is needed to get the pre-gesture value back).
+- **User-visible effect:** Double-click the volume slider (or a crossover handle) to reset it, then press undo once: nothing happens. Undo history is also polluted with duplicate/phantom entries for a single gesture.
+- **Test:** "one undo after a volume double-click reset restores the pre-gesture gain (defect: double-click handled twice, post-reset snapshot tops the undo stack)"
+- **Observed failure:** `first undo after the double-click reset must restore 12.0 dB, got 0 dB (the top undo snapshot was taken after the reset, so undo is a no-op)` — `0 !== 12`
+
+## Bug 3 — Undo cannot restore a manual band count (snapshot drops `manualBandsOverride`)
+
+- **Where:** `src/mbsplit_ui.js:900-913` `snapshotState`, `:922-939` `applySnapshot`; `manualBandsOverride` declared at `:19`, set by `set_numbands` at `:1109-1121`, consumed by `computeDetectedBandCount` at `:530-538`
+- **What's wrong:** The undo snapshot stores `numBands` but not `manualBandsOverride` — the flag/value that makes a manual count stick against auto-detection. `applySnapshot` writes `curNumBands` from the snapshot while the override stays `null`, so auto-detection recomputes the detected count over the restored one (this already happens inside `applySnapshot`'s own `broadcastLinkedState`, and again at the next 250 ms topology poll).
+- **User-visible effect:** Set a manual band count, change it back to Auto, then undo: the face may briefly show the manual count but it silently reverts to the auto-detected count within a poll tick — the undo is lost. (Distinct from `setvalueof`, where ignoring the saved count in Auto mode is pinned as intended by the main suite's Cmd+D case.)
+- **Test:** "undo restores a manual band count durably (defect: undo snapshot drops manualBandsOverride, auto-detection reverts the undo)"
+- **Observed failure:** `undo must restore manualBandsOverride = 4, got null (snapshotState/applySnapshot never save or restore it)` — `null !== 4` (and after one `pullScope()` the count is back to the detected 1)
+
+## Bug 4 — Band-pill hover highlight is tracked but never painted
+
+- **Where:** `src/mbsplit_ui.js:1863-1870` (`onidle` maintains `hoverBandIdx`), `:1874-1877` (redraw on hover change), but `paint` at `:2204-2210` calls `mbControl(..., false, ...)` for every band pill — the `hot` argument (`src/mbsplit_ui.js:2133`) is hard-coded off
+- **What's wrong:** Every other hoverable control renders its hover state (Auto button passes `hoverAutoBtn`, the volume slider and link badge and crossover handles all use theirs), and `onidle` goes to the trouble of tracking pill hover and forcing redraws when it changes — but the paint path never reads `hoverBandIdx`, so those redraws repaint a byte-identical frame.
+- **User-visible effect:** Hovering a band pill gives no visual feedback, unlike every neighbouring control; the hover state and its redraws are dead work.
+- **Test:** "paint renders the band-pill hover highlight (defect: hoverBandIdx is tracked but paint always passes hot=false for the pills)"
+- **Observed failure:** `hovering band pill 3 produced a byte-identical paint to no hover: the pill hover highlight is never rendered` (draw-command streams compared with `hoverBandIdx = -1` vs `2` are deep-equal)
+
+## Checked and cleared (no bug claimed)
+
+- `sanitizeCrossovers` (all four activeIdx branches, incl. extremes at 20 Hz / 20 kHz): the gap invariant F1·r ≤ F2·r ≤ F3 survives every branch, including the un-clamped-looking assignments in branches 0 and 2 (their inputs are pre-clamped so the products stay in range).
+- GenExpr vs JS reference twins: dynamic-phase band assembly (`mbsplit_core.genexpr:890-897` vs `createReferenceSplitterDsp.processSampleDynamic`), LR2/LR4/LR8 stage maths, mask-bit extraction, gain −69.5 dB mute threshold in gen / `formatGainDb` / slider pair — all consistent. Scope slot layout (16–21 peaks, 23 beat, 24 ringPos = next-write = oldest sample, 25 sr, 26 firD, 28 need bits, 29 asleep) matches the face's reads.
+- `setvalueof` ignoring the saved `numBands` in Auto mode, solo selections seeding `curCustomMask`, and the right-edge pill multi-toggle: all pinned as intended by `tests/test_mbsplit.js` (§6b, §10/§11) — not re-claimed.
+- The gen `phase` Param (phaseSign) has no sender in the face or the built patcher; it defaults to 0 (+1) and no control promises phase inversion — dead parameter, noted only.
+- `firLowpassMagCache` (config) grows by one small kernel per distinct crossover value with no eviction; noted as a smell, not claimed — no node-observable failure could be pinned to it at the pass bar.
+
