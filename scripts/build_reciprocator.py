@@ -419,7 +419,7 @@ def build():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [560.0, 240.0, 210.0, 20.0],
-                "text": "buffer~ #0-recipscope @samps 32",
+                "text": "buffer~ ---recipscope @samps 32",
             }
         },
         {
@@ -445,7 +445,7 @@ def build():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [560.0, 330.0, 180.0, 20.0],
-                "text": "setbuffer #0-recipscope",
+                "text": "setbuffer ---recipscope",
             }
         },
         {
@@ -458,7 +458,7 @@ def build():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [560.0, 360.0, 180.0, 20.0],
-                "text": "scope #0-recipscope",
+                "text": "scope ---recipscope",
                 "varname": "rcp_scopebind",
             }
         },

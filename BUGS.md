@@ -2166,3 +2166,22 @@ Baseline: `69699f7` (pre-bugsweep; prior Delay/linkAmt/gateMix/gate-curve fixes 
   ```
 - **Status:** RED. Pass 3 will flip build/bind messages to `---recipscope`, rebuild the amxd, update `test_reciprocator.js` `#0-` asserts, and clear gen/config comments.
 
+## Pass 2 review (this sweep — kept 1 / dropped 0)
+
+| Bug | Verdict | Why |
+| --- | --- | --- |
+| A `#0-recipscope` shared | KEEP | Top-level Reciprocator.amxd; Live does not expand `#0`. Same class as Amp+/EnvTrig/Cepstra. Face uses setbuffer(name) dynamically; only build/bind/amxd + comments + host suite asserts need flipping. Red reaches build + amxd; not weakened. |
+
+## Pass 3 fixes (this sweep)
+
+Host gate (worktree): `npm install && npm run -s typecheck && python3 scripts/build_reciprocator.py && node tests/test_reciprocator.js && node tests/test_reciprocator_bugsweep.js` → green.
+
+### Bug A: `#0-recipscope` → `---recipscope`
+
+- Fix: `scripts/build_reciprocator.py` — `buffer~ ---recipscope @samps 32`, `scope ---recipscope`, `setbuffer ---recipscope`.
+- Comments: `src/reciprocator_core.genexpr`, `src/reciprocator_config.js`.
+- Host suite: `tests/test_reciprocator.js` isolation asserts now require `---` (was `#0-`).
+- Rebuild: `devices/Reciprocator.amxd`.
+- Red left intact in `tests/test_reciprocator_bugsweep.js`.
+- Harness keeps its own `#0-recipscope` (same pattern as mbsplit harness).
+

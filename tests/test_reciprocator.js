@@ -7,7 +7,7 @@
  *     and 3-mode output ceiling stage (`Soft`, `Hard`, `Lim`)
  *  2. GenExpr ordering & lexer safety (functions first, Buffer -> Param -> History -> Delay, no e<digit>)
  *  3. .amxd binary header ("aaaa" Audio Effect) & 448 x 169 presentation geometry
- *  4. #0- instance isolation, `scope #0-recipscope` loadbang binding, and 4-panel z-order
+ *  4. --- instance isolation, `scope ---recipscope` loadbang binding, and 4-panel z-order
  *  5. 3-stage signal-flow headers (`1. DETECT`, `2. 1 / ENV`, `3. OUTPUT`), `Output Mode` selection box
  *     placed directly above `Ceiling`, `Rev Gate` button under `Gate`, and zero widget overlap
  *  6. Complete patchline graph verification (controls -> `/ 100.` -> `prepend <param>` -> `obj-gen-in`,
@@ -145,10 +145,10 @@ function verifyAmxd(amxdFile, expectedWidth) {
             assert.strictEqual(l.destination[1], 1, "Every gen-bound cord must use the hub's data inlet");
         }
     }
-    assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-recipscope", `${amxdFile}: Buffer bind message mismatch`);
+    assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope ---recipscope", `${amxdFile}: Buffer bind message mismatch`);
     assert.strictEqual(byId["obj-msg-gen-buf"].varname, "rcp_scopebind", "Scope bind message needs a scripting name");
-    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in"), "Missing loadbang -> scope #0-recipscope -> gen hub");
-    assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"), "Missing loadbang -> setbuffer #0-recipscope -> viz wiring");
+    assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in"), "Missing loadbang -> scope ---recipscope -> gen hub");
+    assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"), "Missing loadbang -> setbuffer ---recipscope -> viz wiring");
     assert.strictEqual(byId["obj-thisdevice"].text, "live.thisdevice", "Missing live.thisdevice");
     assert.strictEqual(byId["obj-msg-ui-dsp"].text, "init_dsp", "Missing init_dsp message");
     assert.ok(hasLine("obj-thisdevice", "obj-msg-ui-dsp") && hasLine("obj-msg-ui-dsp", "obj-viz"), "live.thisdevice must bang init_dsp into the face");
@@ -160,7 +160,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
 
     for (const b of boxes) {
         if (b.text && b.text.startsWith("buffer~")) {
-            assert.ok(b.text.includes("#0-"), `${amxdFile}: buffer~ must use #0- prefix: ${b.text}`);
+            assert.ok(b.text.includes("---"), `${amxdFile}: buffer~ must use --- prefix: ${b.text}`);
         }
     }
 

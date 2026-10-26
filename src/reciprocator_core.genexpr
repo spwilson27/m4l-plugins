@@ -19,7 +19,7 @@
 //   - `log10` for the gain telemetry runs once per 64-sample scope write, not
 //     once per sample.
 //
-// Scope telemetry buffer (buffer~ #0-recipscope, bound via `scope #0-recipscope`):
+// Scope telemetry buffer (buffer~ ---recipscope, bound via `scope ---recipscope`):
 //   0: input peak (0..1)
 //   1: post-detector envelope (0..1)
 //   2: gate open state (0..1)
