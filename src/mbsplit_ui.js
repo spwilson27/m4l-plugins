@@ -1727,6 +1727,7 @@ function onclick(x, y, but, cmd, shift) {
     // 4. Check Bottom-Right Spectrogram Link Info Toggle Badge
     var lr = getLinkBadgeRect();
     if (x >= lr[0] && x <= lr[0] + lr[2] && y >= lr[1] && y <= lr[1] + lr[3]) {
+        pushUndoState();
         showLinkStatus = !showLinkStatus;
         notifyclients();
         mgraphics.redraw();
