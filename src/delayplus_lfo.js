@@ -21,7 +21,7 @@ function lfoWave(sh, p) {
     if (sh === 2) return f * 2 - 1;
     if (sh === 3) return 1 - f * 2;
     if (sh === 4) return f < 0.5 ? 1 : -1;
-    return lfoHash(Math.floor(p * 4));
+    return lfoHash(Math.floor(p));
 }
 function lfoAmp() {
     var a = Math.max(moddelay, modfilt) / 100;

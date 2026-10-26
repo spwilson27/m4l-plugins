@@ -611,7 +611,7 @@ def build_end():
         named(newobj("obj-plugout", "plugout~", 20, 300, 60, 2, 2, ["signal", "signal"]), "dp_plugout"),
         named(newobj("obj-gen-in", "gate 1 1", 20, 100, 60, 2, 1), "dp_genin"),
         # Own buffers: used until the link layer binds gen to the Start's xfer / hdr.
-        newobj("obj-buf-xfer", "buffer~ ---dpxferE @samps 64 @chans 5", 480, 300, 240, 1, 2, ["float", "bang"]),
+        newobj("obj-buf-xfer", f"buffer~ ---dpxferE @samps {RING} @chans 5", 480, 300, 240, 1, 2, ["float", "bang"]),
         newobj("obj-buf-hdr", "buffer~ ---dphdrE @samps 64", 480, 330, 200, 1, 2, ["float", "bang"]),
         newobj("obj-buf-scope", f"buffer~ ---dpscopeE @samps {ESCOPE_SAMPS}", 480, 360, 220, 1, 2, ["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 480, 400, 60, 1, 1, ["bang"]),
