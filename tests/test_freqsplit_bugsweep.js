@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * Freq Split bug sweep, pass 1 (red tests only, no fixes).
+ * Freq Split bug sweep — reviewed reds (pass 2).
  *
- * Bug 1: the Mix dry share. fsDryShare() in src/freqsplit_config.js is the device reference for the dry
- * share one instance adds: 1 when it outputs everything, 1 / 4 whenever it outputs one channel. The gen
- * the build actually ships (src/spectral_split_rack_main.genexpr, as expanded by scripts/build_freqsplit.py)
- * instead keys the share on the rack ROLE as well as the selection, so a standalone instance (role 0) with
- * Output = Ch 1..4 gets the FULL dry share where the reference says 1 / 4. The two disagree for exactly the
- * standalone single-channel case, and the main suite is already red over it (tests/test_freqsplit.js:619).
+ * Kept / rewritten after review:
  *
- * Bug 2: the limiter handle. The orange T handle is PAINTED at the clamped position fvLimLabel().py (the
- * handle stays inside the plot), but fvHit() hit-tests the limiter against the UNclamped fvLimY(). Near the
- * ends of the threshold range the two are up to 8 px apart, so clicking the painted handle starts a Spin
- * drag instead of grabbing the limiter; and because fvDragTo() clamps to the plot range (-80..+6 dB) rather
- * than the parameter range (-120..+12 dB), merely grabbing the line at an out-of-plot threshold rewrites it
- * (+12 dB becomes +6 dB on mousedown, -120 dB becomes -80 dB).
+ * 1) Mix dry share consistency (rewritten direction).
+ *    Shipped gen (spectral_split_rack_main.genexpr) and Loud Split correctly use
+ *    role-gated kShare: standalone (role SELF/0) single-channel keeps full dry.
+ *    Stale are fsDryShare(sel-only -> 1/4) and tests/test_freqsplit.js asserting
+ *    `kShare = selH > 0.5 ? 0.25 : 1;`. Fix updates the reference + suite, not the gen.
  *
- * Each check is run and reported independently; the file exits red while any check fails.
+ * 2) Limiter paint vs hit / grab jump (kept).
+ *    fvLimLabel clamps handle py into the plot; fvHit tests unclamped fvLimY();
+ *    fvDragTo clamps to plot dB range on mousedown, so out-of-plot thresholds jump.
+ *
+ * 3) Invisible limiter steals hits while limon=0 (added).
+ *    fvPaintLimiter returns early when off, but fvHit still returns "limiter"
+ *    within 4px of fvLimY(), stealing Spin / plot gestures (default limthr=0).
  */
 const assert = require("assert");
 const fs = require("fs");
@@ -42,22 +42,31 @@ function check(name, fn) {
 }
 
 // ----------------------------------------------------------------------
-// Bug 1: gen dry share vs the config reference (standalone single channel)
+// Bug 1 (rewritten): reference + suite must match role-gated gen
 // ----------------------------------------------------------------------
-check("mix dry share: gen matches fsDryShare for standalone single-channel output", () => {
-    assert.strictEqual(cfg.fsDryShare(1), 0.25, "reference: one channel -> dry share 1/4");
-    assert.strictEqual(cfg.fsDryShare(0), 1, "reference: Output All -> dry share 1");
+check("mix dry share: fsDryShare and suite agree with role-gated gen", () => {
     const GEN_CODE = builderGen("build_freqsplit");
+    const kLine = (GEN_CODE.match(/kShare = [^;]+;/) || ["<none>"])[0];
     assert.ok(
-        GEN_CODE.includes("kShare = selH > 0.5 ? 0.25 : 1;"),
-        "gen dry share follows the config reference (1/4 whenever one channel is selected); actual gen line: " + (GEN_CODE.match(/kShare = [^;]+;/) || ["<none>"])[0]
+        /kShare = \(selH > 0\.5 && roleH > 0\.5\) \?/.test(kLine),
+        "shipped gen keeps role-gated kShare (loudsplit contract); got " + kLine
+    );
+    const refFn = (read("src/freqsplit_config.js").match(/function fsDryShare[\s\S]*?\n\}/) || [""])[0];
+    assert.ok(
+        /role/i.test(refFn),
+        "fsDryShare must account for rack role (standalone single-channel keeps full dry; got sel-only helper)"
+    );
+    const suite = read("tests/test_freqsplit.js");
+    assert.ok(
+        !suite.includes("kShare = selH > 0.5 ? 0.25 : 1;"),
+        "test_freqsplit.js must not demand the obsolete selH-only kShare form"
     );
 });
 
 // ----------------------------------------------------------------------
-// Bug 2: limiter handle paint position vs hit position / grab jump
+// Bug 2: limiter paint vs hit / grab jump
 // ----------------------------------------------------------------------
-const header = `var GEN_DSP_TEXT = ""; var GEN_DSP_HASH = "test"; var SS_PREFIX = "freqsplit";`;
+const header = 'var GEN_DSP_TEXT = ""; var GEN_DSP_HASH = "test"; var SS_PREFIX = "freqsplit";';
 const faceCode = [header, read("src/freqsplit_config.js").trimEnd(), read("src/spectral_link.js").trimEnd(),
     read("src/spectral_theme.js").trimEnd(), read("src/spectral_dsp.js").trimEnd(), read("src/freqsplit_ui.js")].join("\n\n");
 const vmGet = (sb, name) => require("vm").runInContext(name, sb);
@@ -88,6 +97,25 @@ check("grabbing the limiter line at +12 dB does not jump the threshold", () => {
     const edits = outs.filter((a) => a[1] === "limthr");
     assert.strictEqual(edits.length, 0,
         `grabbing the limiter line at +12 dB emits no limthr edit (got ${JSON.stringify(edits)})`);
+});
+
+// ----------------------------------------------------------------------
+// Bug 3: invisible limiter hit-steal while limon=0
+// ----------------------------------------------------------------------
+check("limon=0: invisible limiter does not steal plot hits", () => {
+    const { sb, PL } = loadMainFace();
+    sb.set_limon(0);
+    sb.set_limthr(0);
+    sb.set_bend(0);
+    sb.set_pinch(0);
+    const midX = PL.x + PL.w * 0.5;
+    const y = sb.fvLimY();
+    assert.ok(y > PL.y && y < PL.y + PL.h, "fvLimY for limthr=0 sits inside the plot");
+    assert.strictEqual(
+        sb.fvHit(midX, y),
+        "plot",
+        "limon=0: hit at threshold Y must be plot (Spin), not invisible limiter"
+    );
 });
 
 assert.strictEqual(failures, 0, failures + " bugsweep check(s) red");
