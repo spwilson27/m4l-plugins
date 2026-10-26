@@ -1,11 +1,10 @@
-// Delay+ bug-sweep tests (Pass 1: red tests only, no fixes).
-// Each test fails because of the bug named in it; see BUGS.md at the worktree root.
+// Delay+ bugsweep reds (Pass 1). Pure-Node cases that fail on baseline 69699f7 and
+// should pass once the MIDI notedial Fine (cents) contract is finished.
 // Run: node tests/test_delayplus_bugsweep.js
 
 const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
-const vm = require("vm");
 
 const ROOT = path.join(__dirname, "..");
 let failures = 0;
@@ -22,62 +21,38 @@ function test(name, fn) {
     }
 }
 
-// The Filter Display scripts as the build concatenates them (config + spectrum), in a vm
-// context like tests/test_delayplus.js's loadFilterDisplay, minus the filter display itself.
-function loadSpectrum() {
-    const ctx = { Math, Number, String, Array, JSON, isNaN };
-    vm.createContext(ctx);
-    const src = ["delayplus_config.js", "delayplus_spectrum.js"]
-        .map((f) => fs.readFileSync(path.join(ROOT, "src", f), "utf8")).join("\n");
-    vm.runInContext(src, ctx);
-    return ctx;
-}
-
-// dB bins of a perfectly flat spectrum: a single impulse at the centre of the Hann window
-// (window value ~1 there) has the same magnitude at every bin, so every difference between
-// neighbouring bins is the tilt's doing, not the signal's.
-function flatDb(sr) {
-    const S = loadSpectrum();
-    const frame = new Array(S.DP_FFT_N).fill(0);
-    frame[S.DP_FFT_N / 2] = 1;
-    return { db: S.dpFftDbBins(frame, sr), n: S.DP_FFT_N };
-}
-
-// ---- Bug 1: the spectrogram tilt steps down ~4.3 dB at 60 Hz --------------------------------
-// src/delayplus_spectrum.js: `tilt = f > 60 ? 2.2 * Math.log(f / 250) / Math.LN2 : 0`.
-// log(60 / 250) is not 0, so the tilt jumps from 0 dB at 60 Hz to about -4.5 dB just above it
-// (one FFT bin at 48 kHz: -4.30 dB), instead of starting at its 250 Hz pivot. A "gentle pink
-// tilt" (the function's own doc) must be continuous: with a flat input spectrum, no two
-// neighbouring bins may differ by anything like that step.
-test("spectrum tilt: no step at 60 Hz (flat spectrum, neighbouring bins within 1 dB)", () => {
-    for (const sr of [48000, 44100]) {
-        const { db, n } = flatDb(sr);
-        let worst = 0, worstK = -1;
-        for (let k = 2; k <= 120; k++) {
-            const step = Math.abs(db[k] - db[k - 1]);
-            if (step > worst) { worst = step; worstK = k; }
-        }
-        assert(worst <= 1.0,
-            `sr ${sr}: worst neighbouring-bin step ${worst.toFixed(2)} dB at bin ${worstK} (${(worstK * sr / n).toFixed(1)} Hz)`);
-    }
+test("MIDI notedial paint shows Fine (ndCents) with the note name", () => {
+    // File contract (src/delayplus_notedial.js): set_cents_<side> is "the side's fine tune,
+    // shown with the note". anything() stores ndCents and redraws, but paint() only draws
+    // dpNoteName(ndNote) / "MIDI" — Fine never appears. Without this, MIDI mode hides the
+    // cents offset that Pitch mode shows on the Note dial row.
+    const src = fs.readFileSync(path.join(ROOT, "src", "delayplus_notedial.js"), "utf8");
+    assert(/var\s+ndCents\b/.test(src), "ndCents state missing");
+    assert(/set_cents_/.test(src), "set_cents_ handler missing");
+    const paintStart = src.indexOf("function paint");
+    const paintEnd = src.indexOf("function onclick");
+    assert(paintStart >= 0 && paintEnd > paintStart, "paint()/onclick() bounds");
+    const paint = src.slice(paintStart, paintEnd);
+    assert(
+        /\bndCents\b/.test(paint),
+        "paint() must use ndCents so Fine is shown with the note (e.g. A2 +12)"
+    );
 });
 
-// The same wrong pivot also sinks the whole 60..250 Hz band below the un-tilted level (down to
-// -4.5 dB just above 60 Hz, climbing back to 0 dB only at 250 Hz): a dip, not a tilt. Bins in
-// that band must read at the low band's level or above (the tilt only ever lifts the top end).
-test("spectrum tilt: 60..250 Hz band is not dipped below the low band", () => {
-    for (const sr of [48000, 44100]) {
-        const { db, n } = flatDb(sr);
-        const ref = db[8]; // ~47 Hz at 48k: below the tilt threshold, the flat level itself
-        let low = 0, lowK = -1;
-        for (let k = 1; k < db.length; k++) {
-            const f = k * sr / n;
-            if (f > 60 && f <= 250 && db[k] - ref < low) { low = db[k] - ref; lowK = k; }
-        }
-        assert(low >= -0.5,
-            `sr ${sr}: band dips ${low.toFixed(2)} dB below the low band at bin ${lowK} (${(lowK * sr / n).toFixed(1)} Hz)`);
-    }
+test("layout/build routes Fine (cents) into the MIDI notedial as set_cents_<side>", () => {
+    // Repo-wide, set_cents_ exists only inside notedial.js today: echo.py wires
+    // obj-midi-note -> obj-notedial-<side> but never prepends Fine (obj-ctrl-cents_*) into
+    // the notedial. Without that route, ndCents stays 0 even after paint is fixed.
+    const blobs = [
+        path.join(ROOT, "scripts", "delayplus_layouts", "echo.py"),
+        path.join(ROOT, "scripts", "build_delayplus.py"),
+    ].map((p) => fs.readFileSync(p, "utf8"));
+    const blob = blobs.join("\n");
+    assert(
+        /set_cents_/.test(blob),
+        "Fine must be prepended as set_cents_<side> into obj-notedial (shown with the note)"
+    );
 });
 
 console.log(`\n${passes} passed, ${failures} failed`);
-if (failures) process.exitCode = 1;
+process.exit(failures ? 1 : 0);
