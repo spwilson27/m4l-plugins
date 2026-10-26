@@ -205,11 +205,11 @@ function cpApplyEmphasisActive() {
     if (CS_ROLE !== "viz" || !cpHost || !cpHost.getnamed) return;
     var shelf = cpFiltType > 0.5 ? 0 : 1;
     try {
-        var box = cpHost.getnamed("obj-ctrl-filtgain");
-        if (box && box.setattr) {
-            box.setattr("active", shelf);
+        var filtGainBox = cpHost.getnamed("obj-ctrl-filtgain");
+        if (filtGainBox && filtGainBox.setattr) {
+            filtGainBox.setattr("active", shelf);
             var vc = sptColor(shelf ? "live_lcd_control_fg_alt" : "live_display_scale_text");
-            if (vc) box.setattr("textcolor", vc[0], vc[1], vc[2], vc.length > 3 ? vc[3] : 1);
+            if (vc) filtGainBox.setattr("textcolor", vc[0], vc[1], vc[2], vc.length > 3 ? vc[3] : 1);
         }
         var lbl = cpHost.getnamed("obj-lbl-filtgain");
         if (lbl && lbl.setattr) {
