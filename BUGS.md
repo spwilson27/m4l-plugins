@@ -404,6 +404,49 @@ Route `set_tilt_eq` through `updateCoeffBuffer()` like the other design inputs
 
 - **Bug 1 — APPROVED.** Production fix is the one-line `set_tilt_eq` change (`emitTilt()` → `updateCoeffBuffer()`); no drive-bys. `updateCoeffBuffer` still `emitTilt()`s then `updatePhaseKernel()` → `eqpDesignPhase(..., tiltEqDb)` for curves A/B, matching `set_shift` / `set_adaptiveq`. Red test kept and still asserts Linear + Natural IR redesign on automation. Host gate re-run green: `npm run -s typecheck && python3 scripts/build_eqplus.py && node tests/test_eqplus.js` — EQ+ tests passed (2763 checks). Tip after this note: see `git log -1`.
 
+
+# EQ+ — Bug Sweep (continuation) Pass 1 (bugs + red tests only)
+
+Worktree: `/tmp/bugsweep/eqplus` · Branch: `bugsweep/eqplus` · Base: `69699f7`
+Scope: face `ondblclick` tilt-EQ reset vs Linear/Natural phase kernel (sibling of prior Bug 1).
+
+## Bug 2 — Double-click reset of Tilt EQ leaves the phase kernel stale
+
+**Severity:** audible wrong behaviour in Linear Phase after a face double-click reset; stale Natural correction FIR.
+
+### Mechanism
+
+- Prior Bug 1 fixed `set_tilt_eq` → `updateCoeffBuffer()`. Face *drags* also redesign via `finishGesture()` → `updateCoeffBuffer()`.
+- Face **double-click** on the Tilt EQ hitbox (`ondblclick`, `hit(L.tilt, …)`) only `emitTilt()` + redraw — same gap Bug 1 had on the automation inlet. Shift double-click correctly calls `updateCoeffBuffer()`.
+- In Linear Phase the gen convolves dry audio with the designed IR; tilt lives only in that IR for the Linear path. Resetting the painted value without redesigning leaves the old tilt audible until some other coeff update.
+
+### Red test
+
+`tests/test_eqplus.js` `runBugSweepPass1`: after the automation checks, re-enter Linear Phase, `set_tilt_eq(9)`, double-click the tilt hitbox, assert value → 0 and a further IR poke.
+
+```
+AssertionError [ERR_ASSERTION]: bug sweep: tilt EQ double-click reset redesigns the Linear Phase IR (stale IR: ondblclick only emitTilt(), unlike shift dblclick which calls updateCoeffBuffer)
+```
+
+### Fix direction (NOT applied in Pass 1)
+
+In the `ondblclick` tilt branch, call `updateCoeffBuffer()` instead of `emitTilt()` (mirrors shift dblclick / fixed `set_tilt_eq`).
+
+## Pass 2 review (reds only — no fixes)
+
+- **Kept 1 — Bug 2 (stale phase kernel on tilt EQ double-click reset).** Mechanism re-checked against `ondblclick` vs `finishGesture` / `set_tilt_eq`. Host node red fails on the new IR-poke assertion. No rewrite needed.
+- **Dropped 0.**
+
+## Pass 3 fix
+
+- **Bug 2 fixed** — `ondblclick` tilt branch in `src/eqplus_ui.js` now calls `updateCoeffBuffer()` instead of only `emitTilt()`.
+- Touchpoint: `src/eqplus_ui.js` `ondblclick` / `hit(L.tilt)` (was `emitTilt()`; now `updateCoeffBuffer()`).
+- Host gate green: `python3 scripts/build_eqplus.py && node tests/test_eqplus.js`.
+
+## Pass 4 review (approve)
+
+- **Bug 2 — APPROVED.** One-line production change mirroring the shift dblclick / Bug 1 fix; red assertions kept; no drive-bys.
+
 # Amp+ variants — Pass 1 bug hunt (bugsweep/ampplus-variants-pass1)
 
 ## Verdict

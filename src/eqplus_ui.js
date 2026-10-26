@@ -2665,7 +2665,7 @@ function ondblclick(x, y, but, cmd, shift, capslock, option, ctrl) {
             if (!undoArmed) pushUndoState();
             tiltEqDb = 0;
             emitParam("tilt_eq", tiltEqDb);
-            emitTilt();
+            updateCoeffBuffer();
             if (typeof notifyclients === "function") notifyclients();
         }
         undoArmed = false;
