@@ -3,7 +3,7 @@
  * Pass 1 bugsweep red tests for the Ableton MCP Bridge
  * (tests/test_ableton_mcp_bugsweep.js). See BUGS.md at the worktree root.
  *
- * Covers BUG-MCP-6..11 plus BUG-MCP-12..16 (i1 sweep, appended at the end); BUG-MCP-1..5 live in tests/test_ableton_mcp.js
+ * Covers BUG-MCP-6..11 plus BUG-MCP-12..14,16 (i1 sweep, appended at the end; BUG-MCP-15 was rejected and removed in Pass 2 i1 — no spec/code evidence for a 413 limit); BUG-MCP-1..5 live in tests/test_ableton_mcp.js
  * and tests/test_ableton_mcp_stdio_http.js and are not duplicated here.
  * LOM tests run the real src/ableton_mcp_lom.js in a vm sandbox with a mock
  * LiveAPI (same style as tests/test_ableton_mcp.js); bridge/MCP tests spawn
@@ -199,7 +199,6 @@ async function testInvalidToolPort() {
     try { testDeleteDeviceOutOfRange(); } catch (e) { failures.push("BUG-MCP-12 delete_device with an out-of-range or fractional deviceIndex reports success and calls LiveAPI delete_device anyway: " + e.message); }
     try { testFractionalTrackIndex(); } catch (e) { failures.push("BUG-MCP-13 get_tracks_tree with a fractional trackIndex returns a phantom track instead of an error or no tracks: " + e.message); }
     try { await testNotificationGetsNoResponse(); } catch (e) { failures.push("BUG-MCP-14 stdio server answers a JSON-RPC notification (no id) with an id-less response: " + e.message); }
-    try { await testOversizedRpcBody(); } catch (e) { failures.push("BUG-MCP-15 bridge /rpc has no request body size limit (oversized body is not rejected with 413): " + e.message); }
     try { await testContentTypeHeaderFraming(); } catch (e) { failures.push("BUG-MCP-16 a Content-Type header before a Content-Length frame produces a spurious -32700 parse error: " + e.message); }
     if (failures.length) {
         console.error("Bugsweep red tests FAILED (" + failures.length + "):\n - " + failures.join("\n - "));
@@ -285,41 +284,6 @@ async function testNotificationGetsNoResponse() {
     }
 }
 
-function httpRequestRaw(opts, body) {
-    const httpLib = require("http");
-    return new Promise((resolve) => {
-        const req = httpLib.request({ hostname: "127.0.0.1", port: opts.port, path: opts.path, method: opts.method, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body || "") }, timeout: 25000 }, (res) => {
-            const chunks = [];
-            res.on("data", (c) => chunks.push(c));
-            res.on("end", () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString("utf8") }));
-        });
-        req.on("timeout", () => { req.destroy(); resolve(null); });
-        req.on("error", () => resolve(null));
-        if (body) req.write(body);
-        req.end();
-    });
-}
-
-async function testOversizedRpcBody() {
-    const port = 19941;
-    const child = spawn(process.execPath, ["-e", "global.__MAX_API_MOCK__={post:function(){},outlet:function(){},addHandler:function(){}}; require(process.argv[1]);", path.join(ROOT, "src", "ableton_mcp_node.js")], { env: Object.assign({}, process.env, { ABLETON_MCP_PORT: String(port) }), stdio: ["ignore", "pipe", "pipe"] });
-    let childErr = "";
-    child.stderr.on("data", (d) => { childErr += d; });
-    try {
-        let health = null;
-        for (let i = 0; i < 25 && !health; i++) {
-            const h = await httpRequestRaw({ port: port, method: "GET", path: "/health" }, "");
-            if (h && h.status === 200) health = h; else await sleep(200);
-        }
-        assert.ok(health, "bridge did not come up on test port " + port + ": " + childErr.slice(0, 300));
-        const bigBody = JSON.stringify({ action: "ping", params: { pad: "x".repeat(4 * 1024 * 1024) } });
-        const res = await httpRequestRaw({ port: port, method: "POST", path: "/rpc" }, bigBody);
-        assert.ok(res, "no HTTP response at all to a 4 MiB /rpc body; stderr: " + childErr.slice(0, 300));
-        assert.strictEqual(res.status, 413, "a 4 MiB /rpc body must be rejected as too large (413), got HTTP " + res.status + ": " + res.text.slice(0, 200));
-    } finally {
-        try { child.kill("SIGKILL"); } catch (_) {}
-    }
-}
 
 async function testContentTypeHeaderFraming() {
     const { child, state } = spawnMcpServer();
