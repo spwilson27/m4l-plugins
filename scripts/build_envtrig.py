@@ -237,11 +237,12 @@ def make_routing_menu(obj_id, long_name, short, enum, help_text, x, y, w=102.0, 
     }
 
 
-def make_state_toggle(obj_id, long_name, short, enum, patch_y):
+def make_state_toggle(obj_id, long_name, short, enum, patch_y, help_text):
     # Stored (not automatable) UI state, not in presentation — a v8ui is its face.
     # Toggle mode: Button mode (0) never latches the state.
     return {
         "box": {
+            "annotation": help_text,
             "id": obj_id,
             "maxclass": "live.text",
             "mode": 1,
@@ -253,6 +254,7 @@ def make_state_toggle(obj_id, long_name, short, enum, patch_y):
             "saved_attribute_attributes": {
                 "valueof": {
                     "parameter_enum": enum,
+                    "parameter_info": help_text,
                     "parameter_initial": [0],
                     "parameter_initial_enable": 1,
                     "parameter_invisible": 1,
@@ -391,8 +393,10 @@ def build():
         make_dial("sens", 82, 116),
         make_dial("hold", 146, 116),
         make_v8ui("obj-strip", strip_js, [208.0, 4.0, 16.0, 161.0], (860.0, 40.0), 1),  # code patched below
-        make_state_toggle("obj-panel-toggle", "MIDI To Panel", "MIDI To", ["Closed", "Open"], 10.0),
-        make_state_toggle("obj-view-toggle", "Graph View", "View", ["Envelope", "Scope"], 160.0),
+        make_state_toggle("obj-panel-toggle", "MIDI To Panel", "MIDI To", ["Closed", "Open"], 10.0,
+                          "Opens the note settings beside the graph. Closed keeps the device on the graph alone."),
+        make_state_toggle("obj-view-toggle", "Graph View", "View", ["Envelope", "Scope"], 160.0,
+                          "Graph view. Envelope draws the follower. Scope draws the input."),
         # MIDI To panel (x=228..338), hidden while collapsed
         make_routing_menu(
             "obj-route-type", "MIDI Output Type", "MIDI To", ["No Output", "-"],
@@ -620,6 +624,8 @@ def build():
     tc.inject_theme_support(patcher, "envelope_trigger")
 
     minify_patcher(patcher)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

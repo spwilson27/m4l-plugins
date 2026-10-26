@@ -376,27 +376,27 @@ for _k, _spec in (
     OPTIONAL_SPECS[_k] = _spec
     OPTIONAL_GROUPS["wavetable_filter"] += (_k,)
 _ENV_MOD_ENUMS = {
-    "amp_loop_mode": ("Amp Loop Mode", "AmpLoop", ["None", "Trigger", "Loop"], 0, None, "set_amp_loop_mode", "Amp envelope loop mode."),
-    "env2_loop_mode": ("Env 2 Loop Mode", "E2Loop", ["None", "Trigger", "Loop"], 0, None, "set_env2_loop_mode", "Envelope 2 loop mode."),
-    "env3_loop_mode": ("Env 3 Loop Mode", "E3Loop", ["None", "Trigger", "Loop"], 0, None, "set_env3_loop_mode", "Envelope 3 loop mode."),
+    "amp_loop_mode": ("Amp Loop Mode", "AmpLoop", ["None", "Trigger", "Loop"], 0, None, "set_amp_loop_mode", "Amp envelope loop: none, retrigger from the start, or a repeating loop."),
+    "env2_loop_mode": ("Env 2 Loop Mode", "E2Loop", ["None", "Trigger", "Loop"], 0, None, "set_env2_loop_mode", "Envelope 2 loop: none, retrigger from the start, or a repeating loop."),
+    "env3_loop_mode": ("Env 3 Loop Mode", "E3Loop", ["None", "Trigger", "Loop"], 0, None, "set_env3_loop_mode", "Envelope 3 loop: none, retrigger from the start, or a repeating loop."),
     "lfo1_sync": ("LFO 1 Rate Mode", "L1Sync", ["Hz", "Sync"], 0, None, "set_lfo1_sync", "LFO 1 free Hz or tempo-synced rate."),
     "lfo1_retrig": ("LFO 1 Retrigger", "L1Retrig", ["Off", "On"], 1, None, "set_lfo1_retrig", "LFO 1 note-on phase retrigger."),
-    "lfo2_shape": ("LFO 2 Shape", "L2Shape", ["Sin", "Tri", "Saw", "S&H", "Sq"], 0, "lfo2_shape", "set_lfo2_shape", "LFO 2 waveform shape."),
+    "lfo2_shape": ("LFO 2 Shape", "L2Shape", ["Sin", "Tri", "Saw", "S&H", "Sq"], 0, "lfo2_shape", "set_lfo2_shape", "LFO 2 waveform: sine, triangle, saw, sample-and-hold, or square."),
     "lfo2_sync": ("LFO 2 Rate Mode", "L2Sync", ["Hz", "Sync"], 0, None, "set_lfo2_sync", "LFO 2 free Hz or tempo-synced rate."),
     "lfo2_retrig": ("LFO 2 Retrigger", "L2Retrig", ["Off", "On"], 1, None, "set_lfo2_retrig", "LFO 2 note-on phase retrigger."),
 }
 _FILT_ENUMS = {
     "filt_slope": ("Filter 1 Slope", "Slope1", ["12", "24"], 0, "filt_slope", "set_filt_slope", "Filter 1 slope (12 or 24 dB/oct)."),
-    "filt_circuit": ("Filter 1 Circuit", "Circ1", ["Clean", "OSR", "MS2", "SMP", "PRD"], 0, "filt_circuit", "set_filt_circuit", "Filter 1 circuit model."),
-    "filt2_on": ("Filter 2 Enable", "Filt2On", ["Off", "On"], 0, "filt2_on", "set_filt2_on", "Enables Filter 2."),
-    "filt2_type": ("Filter 2 Type", "FType2", ["LP", "HP", "BP", "Notch", "Morph"], 0, "filt2_type", "set_filt2_type", "Filter 2 response type."),
+    "filt_circuit": ("Filter 1 Circuit", "Circ1", ["Clean", "OSR", "MS2", "SMP", "PRD"], 0, "filt_circuit", "set_filt_circuit", "Filter 1 circuit model: Clean, OSR, MS2, SMP or PRD."),
+    "filt2_on": ("Filter 2 Enable", "Filt2On", ["Off", "On"], 0, "filt2_on", "set_filt2_on", "Turns Filter 2 on. Off removes it from the signal path."),
+    "filt2_type": ("Filter 2 Type", "FType2", ["LP", "HP", "BP", "Notch", "Morph"], 0, "filt2_type", "set_filt2_type", "Filter 2 response: low-pass, high-pass, band-pass, notch, or morph."),
     "filt2_slope": ("Filter 2 Slope", "Slope2", ["12", "24"], 0, "filt2_slope", "set_filt2_slope", "Filter 2 slope (12 or 24 dB/oct)."),
-    "filt2_circuit": ("Filter 2 Circuit", "Circ2", ["Clean", "OSR", "MS2", "SMP", "PRD"], 0, "filt2_circuit", "set_filt2_circuit", "Filter 2 circuit model."),
+    "filt2_circuit": ("Filter 2 Circuit", "Circ2", ["Clean", "OSR", "MS2", "SMP", "PRD"], 0, "filt2_circuit", "set_filt2_circuit", "Filter 2 circuit model: Clean, OSR, MS2, SMP or PRD."),
     "filt_route": ("Filter Routing", "FRoute", ["Serial", "Parallel", "Split"], 0, "filt_route", "set_filt_route", "Filter routing: Serial, Parallel, or Split."),
-    "osc1_on": ("Osc 1 Enable", "Osc1On", ["Off", "On"], 1, "osc1_on", "set_osc1_on", "Enables Oscillator 1."),
+    "osc1_on": ("Osc 1 Enable", "Osc1On", ["Off", "On"], 1, "osc1_on", "set_osc1_on", "Turns Oscillator 1 on. Off leaves the sampler or wavetable silent."),
     "osc1_type": ("Osc 1 Type", "Osc1Type", ["Sampler", "Wavetable"], 0, "osc1_type", "set_osc1_type", "Oscillator 1 engine type: Sampler or Wavetable."),
     "wt1_fx": ("Osc 1 Wave Effect", "Wt1Fx", ["None", "Fm", "Classic", "Modern"], 3, "wt1_fx", "set_wt1_fx", "Oscillator 1 Wavetable effect mode: None, Fm, Classic, or Modern."),
-    "osc2_on": ("Osc 2 Enable", "Osc2On", ["Off", "On"], 0, "osc2_on", "set_osc2_on", "Enables Oscillator 2."),
+    "osc2_on": ("Osc 2 Enable", "Osc2On", ["Off", "On"], 0, "osc2_on", "set_osc2_on", "Turns Oscillator 2 on. Off leaves its sampler or wavetable silent."),
     "osc2_type": ("Osc 2 Type", "Osc2Type", ["Sampler", "Wavetable"], 0, "osc2_type", "set_osc2_type", "Oscillator 2 engine type: Sampler slot or Wavetable."),
     "osc2_mode": ("Osc 2 Playback Mode", "Osc2Mode", ["Repitch", "Cycles", "Textures", "Spectral", "Fragments"], 0, "osc2_mode", "set_osc2_mode", "Oscillator 2 sampler playback mode."),
     "wt2_fx": ("Osc 2 Wave Effect", "Wt2Fx", ["None", "Fm", "Classic", "Modern"], 3, "wt2_fx", "set_wt2_fx", "Oscillator 2 Wavetable effect mode: None, Fm, Classic, or Modern."),
@@ -1966,6 +1966,8 @@ def write_amxd(patcher_dict, out_path):
     import theme_common as tc
     tc.inject_theme_support(patcher_dict, os.path.splitext(os.path.basename(out_path))[0], assign_varnames=False)
     minify_patcher(patcher_dict)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_dict)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     payload = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")
     # Max Instrument header ("iiii") so Ableton loads Better Sampler on MIDI Instrument tracks

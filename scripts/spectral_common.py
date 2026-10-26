@@ -404,6 +404,8 @@ def make_numbox(key, spec, help_text, x, y, w, h, color, appearance=2, fontsize=
     bg = [0.06, 0.075, 0.095, 1.0]
     bar = [round(bg[i] * 0.62 + color[i] * 0.38, 4) for i in range(3)] + [1.0]
     valueof = num_valueof(spec)
+    if help_text:
+        valueof["parameter_info"] = help_text
     if unit_text:
         valueof["parameter_units"] = unit_text
         valueof["parameter_unitstyle"] = 9
@@ -434,6 +436,9 @@ def make_numbox(key, spec, help_text, x, y, w, h, color, appearance=2, fontsize=
 
 
 def make_tab(key, spec, help_text, x, y, w, h, color, rows=1, fontsize=8.0):
+    valueof = enum_valueof(spec)
+    if help_text:
+        valueof["parameter_info"] = help_text
     return {
         "box": {
             "activebgoncolor": [color[0], color[1], color[2], 1.0],
@@ -455,7 +460,7 @@ def make_tab(key, spec, help_text, x, y, w, h, color, rows=1, fontsize=8.0):
             "patching_rect": [float(x), 160.0, float(w), float(h)],
             "presentation": 1,
             "presentation_rect": [float(x), float(y), float(w), float(h)],
-            "saved_attribute_attributes": {"valueof": enum_valueof(spec)},
+            "saved_attribute_attributes": {"valueof": valueof},
             "textcolor": [0.68, 0.76, 0.84, 1.0],
             "textoncolor": [0.98, 1.0, 1.0, 1.0],
             "varname": spec[0],
@@ -464,6 +469,9 @@ def make_tab(key, spec, help_text, x, y, w, h, color, rows=1, fontsize=8.0):
 
 
 def make_menu(key, spec, help_text, x, y, w, h, color, fontsize=8.5):
+    valueof = enum_valueof(spec)
+    if help_text:
+        valueof["parameter_info"] = help_text
     return {
         "box": {
             "activebgcolor": [0.06, 0.075, 0.095, 1.0],
@@ -481,17 +489,18 @@ def make_menu(key, spec, help_text, x, y, w, h, color, fontsize=8.5):
             "patching_rect": [float(x), 190.0, float(w), float(h)],
             "presentation": 1,
             "presentation_rect": [float(x), float(y), float(w), float(h)],
-            "saved_attribute_attributes": {"valueof": enum_valueof(spec)},
+            "saved_attribute_attributes": {"valueof": valueof},
             "textcolor": [color[0], color[1], color[2], 1.0],
             "varname": spec[0],
         }
     }
 
 
-def make_state_toggle(key, long_name, short, enum, patch_y):
+def make_state_toggle(key, long_name, short, enum, patch_y, help_text):
     """Stored UI state (not automatable, not in presentation): Toggle mode, a v8ui is its face."""
     return {
         "box": {
+            "annotation": help_text,
             "id": f"obj-ctrl-{key}",
             "maxclass": "live.text",
             "mode": 1,
@@ -503,6 +512,7 @@ def make_state_toggle(key, long_name, short, enum, patch_y):
             "saved_attribute_attributes": {
                 "valueof": {
                     "parameter_enum": list(enum),
+                    "parameter_info": help_text,
                     "parameter_initial": [0],
                     "parameter_initial_enable": 1,
                     "parameter_invisible": 1,
@@ -701,6 +711,8 @@ def write_amxd(patcher_doc, out_path, dev_type=b"aaaa"):
     import theme_common as tc
     tc.inject_theme_support(patcher_doc, os.path.splitext(os.path.basename(out_path))[0])
     minify_patcher(patcher_doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_doc)
     payload = (json.dumps(patcher_doc, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf" + struct.pack("<I", 4) + dev_type + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0)

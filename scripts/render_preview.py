@@ -560,7 +560,7 @@ console.log(JSON.stringify({{ items: out, surface: surf }}));
         return None
 
 
-def capture_v8ui_commands(js_code, width, height, theme_state=None):
+def capture_v8ui_commands(js_code, width, height, theme_state=None, prelude=""):
     theme_prelude = (
         f"global.__M4L_THEME_STATE__ = {json.dumps(theme_state)};\n"
         if theme_state
@@ -602,8 +602,9 @@ global.Buffer = function() {{ this.poke = () => {{}}; }};
 
 {js_code}
 
-if (typeof preview === "function") {{ preview(); }}
-else if (typeof setphase === "function") {{ setphase(0.32); }}
+{prelude}
+if (typeof preview === "function" && !global.__M4L_SKIP_PREVIEW__) {{ preview(); }}
+else if (!global.__M4L_SKIP_PREVIEW__ && typeof setphase === "function") {{ setphase(0.32); }}
 if (typeof paint === "function") {{ paint(); }}
 console.log(JSON.stringify(cmds));
 """
@@ -792,7 +793,7 @@ def is_fully_transparent(box):
     return bool(colours) and all(c[3] == 0 for c in colours)
 
 
-def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="", theme_spec=None, ableton_ui_spec=None):
+def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="", theme_spec=None, ableton_ui_spec=None, v8_prelude=""):
     os.makedirs(PREVIEWS_DIR, exist_ok=True)
     base_slug = slugify_device_name(amxd_path)
     slug = base_slug + out_suffix
@@ -843,7 +844,7 @@ def render_device(amxd_path=DEFAULT_AMXD_PATH, multimap_open=False, out_suffix="
         W_BOLD = not is_themed(w)   # theme-bound widgets (spectral_common.theme) use Live's regular-weight font
 
         if mc == "v8ui":
-            cmds = capture_v8ui_commands(w["textfile"]["text"], w["presentation_rect"][2], w["presentation_rect"][3], theme_state=theme_state)
+            cmds = capture_v8ui_commands(w["textfile"]["text"], w["presentation_rect"][2], w["presentation_rect"][3], theme_state=theme_state, prelude=v8_prelude)
             v8_img = render_v8ui(cmds, w["presentation_rect"][2], w["presentation_rect"][3])
             img.alpha_composite(v8_img, (int(rx), int(ry)))
 

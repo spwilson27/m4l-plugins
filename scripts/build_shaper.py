@@ -2053,7 +2053,7 @@ def build():
             },
             {
                 "box": {
-                    "annotation": f"Unmaps Slot {slot_num}.",
+                    "annotation": f"Unmaps slot {slot_num} and clears its modulation target.",
                     "annotation_name": f"Unmap {slot_num}",
                     "appearance": 2,
                     "fontsize": 6.0,
@@ -2541,6 +2541,8 @@ def build():
     tc.inject_theme_support(patcher_doc, "better_shaper")
 
     minify_patcher(patcher_doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_doc)
     json_bytes = json.dumps(patcher_doc, indent="\t").encode("utf-8") + b"\n"
 
     header = (

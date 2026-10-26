@@ -66,11 +66,11 @@ PARAM_SPECS = {
     ),
     "hp": (
         "HP", "HP", 20.0, 4000.0, 40.0, 3, 2.0, "hp", False,
-        "Highpass into the tank.",
+        "High-pass into the tank. Signal below this frequency does not enter the room.",
     ),
     "lp": (
         "LP", "LP", 400.0, 18000.0, 14000.0, 3, 2.0, "lp", False,
-        "Lowpass into the tank.",
+        "Low-pass into the tank. Signal above this frequency does not enter the room.",
     ),
 }
 
@@ -753,6 +753,8 @@ def write_amxd(patcher_doc, out_path):
     import theme_common as tc
     tc.inject_theme_support(patcher_doc, "tiny_space")
     minify_patcher(patcher_doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_doc)
     json_bytes = json.dumps(patcher_doc, indent="\t").encode("utf-8") + b"\n"
     header = (
         b"ampf" + struct.pack("<I", 4) +

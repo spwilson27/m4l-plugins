@@ -242,6 +242,8 @@ def write_amxd(patcher_dict, out_path: Path):
     import theme_common as tc
     tc.inject_theme_support(patcher_dict, "ableton_mcp_bridge")
     minify_patcher(patcher_dict)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_dict)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     json_bytes = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")
     header = (

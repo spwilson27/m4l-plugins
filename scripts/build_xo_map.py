@@ -2776,6 +2776,8 @@ def build(variant="default"):
     tc.inject_theme_support(patcher_doc, "xo_sample_map", assign_varnames=False)
 
     minify_patcher(patcher_doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_doc)
     json_bytes = (json.dumps(patcher_doc, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

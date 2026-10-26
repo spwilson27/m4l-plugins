@@ -595,6 +595,8 @@ def build():
     tc.inject_theme_support(patcher, "cepstra")
 
     minify_patcher(patcher)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

@@ -828,6 +828,8 @@ def write_amxd(doc, out_path):
     import theme_common as tc
     tc.inject_theme_support(doc, "eq_plus")
     minify_patcher(doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(doc)
     payload = (json.dumps(doc, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf"

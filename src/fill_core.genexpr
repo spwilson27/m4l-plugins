@@ -1,0 +1,787 @@
+// Fill. One stereo color for a tom, snare, or hat. Always in the chain:
+// wet is the dry/wet. There is no phrase window.
+//
+// Latency is 1536 samples on the normal page. Dry, beater, body, and air
+// meet at that tap. The pitch shifter reads a 1024-sample grain of the 256
+// tap and splices only the last 64 (pitL / pitR are 4096; tune 0 snaps the
+// phase to 0 and reads delay 1024). Both convolvers read the 1280 tap and
+// add their own 256. Onset listens at the 1280 tap.
+//
+// Identity (page 0, ranges 0, tune 0, strike 0, beater 1, metal 1, space 0,
+// mixes 0, wet 1): the 1536 split sums to the dry tap, so an impulse leaves
+// at sample 1536. splitAcc cancels fillFftInit's 1.
+//
+// Page >= 0.5 skips the resonator, the space comb, and both fillConv calls.
+// The 1536-delayed dry input goes through fillExpTick. Generation 0 in the
+// bank header bypasses that and passes the delayed dry through.
+//
+// Scope channel 0, every 64 samples:
+//   0 in peak, 1 out peak, 2 envelope, 3 hit, 4 page, 5 onset latch,
+//   6 wet, 7 frame (moves in silence), 8..39 display energies.
+//   Normal writes the output envelope across those 32 slots so Matter,
+//   Ring, Scar, and Dust move on this page. Experimental keeps the mode
+//   peaks when they are louder than that envelope.
+
+fillUnit(seedV, hitV, lane) {
+	n = seedV * 12.9898 + (hitV + 1) * 78.233 + (lane + 1) * 37.719;
+	s = sin(n) * 43758.5453;
+	return s - floor(s);
+}
+
+// held = clip(center + (unit * 2 - 1) * range * rand, lo, hi).
+// Range 0 or rand 0 is the center.
+fillHold(center, range, lo, hi, seedV, hitV, lane, randV) {
+	u = fillUnit(seedV, hitV, lane);
+	off = (u * 2 - 1) * range * randV;
+	return clip(center + off, lo, hi);
+}
+
+// Bipolar unit mapped onto 0..1. rand 0 sits at 0.5.
+fillMorph(seedV, hitV, lane, randV) {
+	u = fillUnit(seedV, hitV, lane);
+	return clip(0.5 + (u * 2 - 1) * 0.5 * randV, 0, 1);
+}
+
+// One-pole, about 10 ms. The first sample snaps to the target so a center
+// that has not moved yet stays exact (identity).
+fillGlide(target) {
+	History s(0);
+	History primed(0);
+	sr = max(samplerate, 1);
+	k = 1 - exp(-1 / (0.01 * sr));
+	nxt = s + k * (target - s);
+	s = (primed < 0.5) ? target : nxt;
+	primed = 1;
+	return s;
+}
+
+// Four drum modes. Strike 0 returns the input exactly. Higher modes lose
+// their pole radius first as damp rises. Histories are per call site (L, R).
+fillReso(x, f0, strikeV, dampV) {
+	History a0(0);
+	History b0(0);
+	History a1(0);
+	History b1(0);
+	History a2(0);
+	History b2(0);
+	History a3(0);
+	History b3(0);
+	st = clip(strikeV, 0, 1);
+	dp = clip(dampV, 0, 1);
+	sr = max(samplerate, 1);
+	f = clip(f0, 28, 5000);
+	w0 = 6.283185307179586 * f / sr;
+	r0 = clip(0.994 - dp * 0.04, 0.2, 0.999);
+	c0 = 2 * r0 * cos(w0);
+	y0 = (1 - r0) * x + c0 * a0 - r0 * r0 * b0;
+	b0 = a0;
+	a0 = y0;
+	w1 = 6.283185307179586 * f * 1.59 / sr;
+	r1 = clip(0.986 - dp * 0.1, 0.2, 0.999);
+	c1 = 2 * r1 * cos(w1);
+	y1 = (1 - r1) * x + c1 * a1 - r1 * r1 * b1;
+	b1 = a1;
+	a1 = y1;
+	w2 = 6.283185307179586 * f * 2.14 / sr;
+	r2 = clip(0.975 - dp * 0.16, 0.2, 0.999);
+	c2 = 2 * r2 * cos(w2);
+	y2 = (1 - r2) * x + c2 * a2 - r2 * r2 * b2;
+	b2 = a2;
+	a2 = y2;
+	w3 = 6.283185307179586 * f * 2.92 / sr;
+	r3 = clip(0.96 - dp * 0.24, 0.2, 0.999);
+	c3 = 2 * r3 * cos(w3);
+	y3 = (1 - r3) * x + c3 * a3 - r3 * r3 * b3;
+	b3 = a3;
+	a3 = y3;
+	sum = y0 * (1 - st) + (y1 + y2 + y3) * st * 0.34;
+	return x * (1 - st) + sum * st;
+}
+
+// 0 Hz is the input. Otherwise a one-pole allpass stands in for the quadrature.
+fillFreq(x, hz) {
+	History q(0);
+	History px(0);
+	History ph(0);
+	sr = max(samplerate, 1);
+	allp = 0.6923878 * (x - q) + px;
+	px = x;
+	q = allp;
+	ph = ph + hz / sr;
+	ph = ph - floor(ph);
+	ang = ph * 6.283185307179586;
+	shifted = x * cos(ang) + allp * sin(ang);
+	return (abs(hz) < 0.05) ? x : shifted;
+}
+
+// dst: 0 beater, 1 body, 2 air. The three sum to x.
+fillSplit(x, dst) {
+	History fast(0);
+	History slow(0);
+	History lp(0);
+	sr = max(samplerate, 1);
+	af = abs(x);
+	kf = 1 - exp(-1 / (0.0015 * sr));
+	ks = 1 - exp(-1 / (0.03 * sr));
+	fast = fast + kf * (af - fast);
+	slow = slow + ks * (af - slow);
+	click = clip((fast - slow) / max(fast, 0.00000001), 0, 1);
+	beat = x * click;
+	res = x - beat;
+	kl = 1 - exp(-6.283185307179586 * 400 / sr);
+	lp = lp + kl * (res - lp);
+	dst.poke(beat, 0);
+	dst.poke(lp, 1);
+	dst.poke(res - lp, 2);
+	return 0;
+}
+
+// Tom 0 is 0 so the identity split is unchanged. Snare / Kick / Hat color the body.
+fillModelBody(model) {
+	t = 0;
+	if (model >= 2.5) {
+		t = 0.75;
+	} else {
+		if (model >= 1.5) {
+			t = -0.7;
+		} else {
+			if (model >= 0.5) {
+				t = 0.4;
+			}
+		}
+	}
+	return t;
+}
+
+// Wires 0 is 0. Room darkens, Hat and Sizzle open the air band.
+fillModelAir(model) {
+	t = 0;
+	if (model >= 2.5) {
+		t = 0.9;
+	} else {
+		if (model >= 1.5) {
+			t = 0.65;
+		} else {
+			if (model >= 0.5) {
+				t = -0.55;
+			}
+		}
+	}
+	return t;
+}
+
+// Resonator fundamental. Tom stays at 140 so Tune 0 / Strike 0 is untouched.
+fillModelF0(model) {
+	f = 140;
+	if (model >= 2.5) {
+		f = 400;
+	} else {
+		if (model >= 1.5) {
+			f = 58;
+		} else {
+			if (model >= 0.5) {
+				f = 196;
+			}
+		}
+	}
+	return f;
+}
+
+// amt 0 is the input. Positive opens the top, negative darkens.
+fillTilt(x, amt) {
+	History z(0);
+	sr = max(samplerate, 1);
+	kl = 1 - exp(-6.283185307179586 * 1200 / sr);
+	z = z + kl * (x - z);
+	return x + amt * (x - z);
+}
+
+// Mode excitation. group < 0 parks the mode (no strike). One return.
+fillExcite(bank, base, m, x) {
+	grp = peek(bank, base + m * 8 + 7, 0);
+	ex = peek(bank, base + m * 8 + 4, 0) * x;
+	if (grp < -0.5) {
+		ex = 0;
+	}
+	return ex;
+}
+
+// Two-pole. Input scale is (1 - r) so a sustained sine does not climb.
+// expState layout per mode: 0 a (y[n-1]), 1 b (y[n-2]), 2 peak |y*gain|,
+// 3 excitation scratch. Pan is -1..1, 0 = center, equal power.
+fillPole(st, bank, base, m, coupled, rtCap, rtOn) {
+	o = base + m * 8;
+	w = clip(peek(bank, o, 0), 0, 3.141592653589793);
+	r = clip(peek(bank, o + 1, 0), 0, 0.9995);
+	gain = peek(bank, o + 2, 0);
+	pan = clip(peek(bank, o + 3, 0), -1, 1);
+	extra = clip(peek(bank, o + 5, 0), 0, 1);
+	tilt = clip(peek(bank, o + 6, 0), -1, 1);
+	rUse = 1 - (1 - r) * (1 + 4 * extra);
+	if (rtOn > 0.5) {
+		rUse = min(rUse, rtCap);
+	}
+	rUse = clip(rUse, 0, 0.9995);
+	i4 = m * 4;
+	a = st.peek(i4);
+	b = st.peek(i4 + 1);
+	coef = 2 * rUse * cos(w);
+	// (1 - r) keeps a sustained tone from climbing, but on a 0.5 s tail that
+	// scale is ~0.0003 and a drum hit disappears. Floor the strike at 0.2 so
+	// the hit is audible; tanh below holds the sustained tone.
+	inScale = 1 - rUse;
+	if (inScale < 0.08) {
+		inScale = 0.08;
+	}
+	y = inScale * coupled + coef * a - rUse * rUse * b;
+	st.poke(a, i4 + 1);
+	st.poke(y, i4);
+	norm = w * 0.3183098861837907;
+	amp = gain * clip(1 + tilt * (2 * norm - 1), 0, 4);
+	ang = (pan + 1) * 0.7853981633974483;
+	yL = y * amp * cos(ang);
+	yR = y * amp * sin(ang);
+	pk = max(st.peek(i4 + 2), abs(y * amp));
+	st.poke(pk, i4 + 2);
+	return yL, yR;
+}
+
+// Fractional read of one allpass line. n is the line length.
+fillTap(mem, base, pos, delay, n) {
+	rp = pos - delay;
+	rp = rp - n * floor(rp / n);
+	if (rp < 0) {
+		rp = rp + n;
+	}
+	if (rp >= n) {
+		rp = rp - n;
+	}
+	i0 = floor(rp);
+	fr = rp - i0;
+	i1 = i0 + 1;
+	if (i1 >= n) {
+		i1 = i1 - n;
+	}
+	s0 = mem.peek(base + i0);
+	s1 = mem.peek(base + i1);
+	return s0 + (s1 - s0) * fr;
+}
+
+// One Schroeder allpass stage, stereo, shared delay and g. g == 0 passes
+// the sample through (the line still tracks the input). Lines 0..9 are L,
+// 10..19 are R, each 4096 samples in apMem.
+fillApPair(xl, xr, stage, delay, gCoef, mem, idx) {
+	n = 4096;
+	gl = clip(gCoef, -0.98, 0.98);
+	baseL = stage * n;
+	baseR = (stage + 10) * n;
+	pL = idx.peek(stage);
+	pR = idx.peek(stage + 10);
+	if (pL < 0) {
+		pL = 0;
+	}
+	if (pL >= n) {
+		pL = 0;
+	}
+	if (pR < 0) {
+		pR = 0;
+	}
+	if (pR >= n) {
+		pR = 0;
+	}
+	yL = xl;
+	yR = xr;
+	if (abs(gl) >= 0.0000001) {
+		d = clip(delay, 1, 4094);
+		rL = fillTap(mem, baseL, pL, d, n);
+		rR = fillTap(mem, baseR, pR, d, n);
+		yL = -gl * xl + rL;
+		yR = -gl * xr + rR;
+		mem.poke(xl + gl * yL, baseL + pL);
+		mem.poke(xr + gl * yR, baseR + pR);
+	} else {
+		mem.poke(xl, baseL + pL);
+		mem.poke(xr, baseR + pR);
+	}
+	pL = pL + 1;
+	if (pL >= n) {
+		pL = 0;
+	}
+	pR = pR + 1;
+	if (pR >= n) {
+		pR = 0;
+	}
+	idx.poke(pL, stage);
+	idx.poke(pR, stage + 10);
+	return yL, yR;
+}
+
+// Experimental bank, one mono input, one call site. Eight groups of six.
+// bank / st / mem / idx / shelf are fillbank, expState, apMem, apIdx, airLp
+// (passed in: a function cannot name a Data declared later in the file).
+// Couple is a memoryless Householder on the six excitations, then the pole.
+// Qx = x - (2/6) * sum(x); y = (1 - c) * x + c * Qx = x - c * sum / 3.
+// Allpasses, air shelf, tanh(drive * y) / drive, clip +-0.9.
+fillExpTick(x, pageBase, bank, st, mem, idx, shelf) {
+	sr = max(samplerate, 1);
+	couple = clip(peek(bank, pageBase + 404, 0), 0, 1);
+	drive = peek(bank, pageBase + 405, 0);
+	airAmt = clip(peek(bank, pageBase + 406, 0), 0, 1);
+	rt60 = peek(bank, pageBase + 407, 0);
+	if (drive < 1) {
+		drive = 1;
+	} else {
+		if (drive > 3) {
+			drive = 3;
+		}
+	}
+	rtOn = 0;
+	rtCap = 0.9995;
+	if (rt60 > 0.02) {
+		rtOn = 1;
+		rtCap = exp(-6.90775527898 / (rt60 * sr));
+	}
+	sumL = 0;
+	sumR = 0;
+	for (grp = 0; grp < 8; grp += 1) {
+		v = 0;
+		for (k = 0; k < 6; k += 1) {
+			mi = grp * 6 + k;
+			ex = fillExcite(bank, pageBase, mi, x);
+			st.poke(ex, mi * 4 + 3);
+			v = v + ex;
+		}
+		cut = couple * v / 3;
+		for (j = 0; j < 6; j += 1) {
+			mi = grp * 6 + j;
+			coupled = st.peek(mi * 4 + 3) - cut;
+			yL, yR = fillPole(st, bank, pageBase, mi, coupled, rtCap, rtOn);
+			sumL = sumL + yL;
+			sumR = sumR + yR;
+		}
+	}
+	sumL = sumL * 2;
+	sumR = sumR * 2;
+	for (stage = 0; stage < 10; stage += 1) {
+		o = pageBase + 384 + stage * 2;
+		dly = peek(bank, o, 0);
+		gCoef = peek(bank, o + 1, 0);
+		sumL, sumR = fillApPair(sumL, sumR, stage, dly, gCoef, mem, idx);
+	}
+	kAir = 1 - exp(-6.283185307179586 * 2400 / sr);
+	lpL = shelf.peek(0);
+	lpR = shelf.peek(1);
+	lpL = lpL + kAir * (sumL - lpL);
+	lpR = lpR + kAir * (sumR - lpR);
+	shelf.poke(lpL, 0);
+	shelf.poke(lpR, 1);
+	sumL = sumL + airAmt * (sumL - lpL);
+	sumR = sumR + airAmt * (sumR - lpR);
+	sumL = clip(tanh(drive * sumL) / drive, -0.9, 0.9);
+	sumR = clip(tanh(drive * sumR) / drive, -0.9, 0.9);
+	return sumL, sumR;
+}
+
+Buffer fillbody("fillbody");
+Buffer fillair("fillair");
+Buffer scope("fillscope");
+Buffer fillbank("fillbank");
+
+Data tab(4096, 3);
+Data bCvr(8192, 2);
+Data bCxh(256, 2);
+Data bCxt(4096, 2);
+Data bFdh(16512);
+Data bFdt(65568);
+Data bOhr(512, 2);
+Data bOtr(8192, 2);
+Data bCp(16);
+Data bOut(2);
+Data aCvr(8192, 2);
+Data aCxh(256, 2);
+Data aCxt(4096, 2);
+Data aFdh(16512);
+Data aFdt(65568);
+Data aOhr(512, 2);
+Data aOtr(8192, 2);
+Data aCp(16);
+Data aOut(2);
+Data sp256L(3);
+Data sp256R(3);
+Data sp1280L(3);
+Data sp1280R(3);
+Data sp1536L(3);
+Data sp1536R(3);
+// 48 modes * 4: a, b, peak energy, excitation scratch.
+Data expState(192);
+// 20 allpass lines * 4096 (10 stages, L then R).
+Data apMem(81920);
+Data apIdx(20);
+Data airLp(2);
+
+Param page(0);
+Param randamt(0);
+Param wet(1);
+Param sens(0.45);
+Param seed(1);
+Param tune(0);
+Param tuner(0);
+Param strike(0);
+Param striker(0);
+Param damp(0);
+Param dampr(0);
+Param beater(1);
+Param beaterr(0);
+Param metal(1);
+Param metalr(0);
+Param space(0);
+Param spacer(0);
+Param bmix(0);
+Param bmixr(0);
+Param amix(0);
+Param amixr(0);
+Param mode(0);
+Param play(0);
+Param bmodel(0);
+Param amodel(0);
+Param bankgen(0);
+// Convolution size. Not knobs: the face pokes these when an IR is ready.
+Param bnh(32);
+Param bnt(6);
+Param bload(0);
+Param anh(32);
+Param ant(6);
+Param aload(0);
+
+History sampleN(0);
+History hit(0);
+History rolled(0);
+History sinceHit(100000);
+History envF(0);
+History envS(0);
+History hTune(0);
+History hStrike(0);
+History hDamp(0);
+History hBeater(1);
+History hMetal(1);
+History hSpace(0);
+History hBmix(0);
+History hAmix(0);
+History hBody(0.5);
+History hAir(0.5);
+History pitPhL(0);
+History pitPhR(0);
+History peakIn(0);
+History peakOut(0);
+History scopeTick(0);
+History scopeFrame(0);
+History onsetHold(0);
+History tuneBlend(0);
+History envOut(0);
+History dispEnv(0);
+History bankHeard(-1);
+
+Delay dlyL(2048);
+Delay dlyR(2048);
+Delay pitL(4096);
+Delay pitR(4096);
+Delay spcL(2048);
+Delay spcR(2048);
+Delay tunL(512);
+Delay tunR(512);
+
+// Bare calls are deleted by gen's declaration pass and take their arguments with
+// them. Keep every fillSplit / fillConv / fillFftInit return in splitAcc.
+// fillFftInit returns 1, so subtract it back out.
+splitAcc = fillFftInit(tab) - 1;
+sr = max(samplerate, 1);
+
+dlyL.write(in1);
+dlyR.write(in2);
+x256L = dlyL.read(256, interp="linear");
+x256R = dlyR.read(256, interp="linear");
+x1280L = dlyL.read(1280, interp="linear");
+x1280R = dlyR.read(1280, interp="linear");
+dryL = dlyL.read(1536, interp="linear");
+dryR = dlyR.read(1536, interp="linear");
+
+kFast = 1 - exp(-1 / (0.002 * sr));
+kSlow = 1 - exp(-1 / (0.04 * sr));
+det = max(abs(x1280L), abs(x1280R));
+envF = envF + kFast * (det - envF);
+envS = envS + kSlow * (det - envS);
+sinceHit = sinceHit + 1;
+sensAmt = clip(sens, 0, 1);
+ratio = pow(10, (1 - sensAmt) * 12 / 20);
+holdN = 0.04 * sr;
+fired = 0;
+if ((sinceHit > holdN) && (envF > 0.00001) && (envF > envS * ratio)) {
+	fired = 1;
+	sinceHit = 0;
+}
+onsetHold = (fired > 0.5) ? 1 : onsetHold;
+
+// Sample-and-hold lives here, after the detector and before either page.
+// Until the first onset the centers track the knobs. An onset increments hit
+// and rolls. Range 0 or randamt 0 rewrites that lane to the center.
+// Hit clears while transport is stopped, and after 0.5 s with no onset.
+randNow = clip(randamt, 0, 1);
+if (fired > 0.5) {
+	hit = hit + 1;
+	rolled = 1;
+	if (randNow >= 0.0000001) {
+		hTune = fillHold(tune, tuner, -48, 48, seed, hit, 1, randNow);
+		hStrike = fillHold(strike, striker, 0, 1, seed, hit, 2, randNow);
+		hDamp = fillHold(damp, dampr, 0, 1, seed, hit, 3, randNow);
+		hBeater = fillHold(beater, beaterr, 0, 2, seed, hit, 4, randNow);
+		hMetal = fillHold(metal, metalr, 0, 2, seed, hit, 5, randNow);
+		hSpace = fillHold(space, spacer, 0, 40, seed, hit, 6, randNow);
+		hBmix = fillHold(bmix, bmixr, 0, 1, seed, hit, 7, randNow);
+		hAmix = fillHold(amix, amixr, 0, 1, seed, hit, 8, randNow);
+		hBody = fillMorph(seed, hit, 100, randNow);
+		hAir = fillMorph(seed, hit, 101, randNow);
+	}
+}
+if (rolled < 0.5) {
+	hTune = clip(tune, -48, 48);
+	hStrike = clip(strike, 0, 1);
+	hDamp = clip(damp, 0, 1);
+	hBeater = clip(beater, 0, 2);
+	hMetal = clip(metal, 0, 2);
+	hSpace = clip(space, 0, 40);
+	hBmix = clip(bmix, 0, 1);
+	hAmix = clip(amix, 0, 1);
+	hBody = 0.5;
+	hAir = 0.5;
+}
+if (abs(tuner * randNow) < 0.0000001) {
+	hTune = clip(tune, -48, 48);
+}
+if (abs(striker * randNow) < 0.0000001) {
+	hStrike = clip(strike, 0, 1);
+}
+if (abs(dampr * randNow) < 0.0000001) {
+	hDamp = clip(damp, 0, 1);
+}
+if (abs(beaterr * randNow) < 0.0000001) {
+	hBeater = clip(beater, 0, 2);
+}
+if (abs(metalr * randNow) < 0.0000001) {
+	hMetal = clip(metal, 0, 2);
+}
+if (abs(spacer * randNow) < 0.0000001) {
+	hSpace = clip(space, 0, 40);
+}
+if (abs(bmixr * randNow) < 0.0000001) {
+	hBmix = clip(bmix, 0, 1);
+}
+if (abs(amixr * randNow) < 0.0000001) {
+	hAmix = clip(amix, 0, 1);
+}
+if (randNow < 0.0000001) {
+	hBody = 0.5;
+	hAir = 0.5;
+}
+if (fired < 0.5) {
+	if ((play < 0.5) || (sinceHit > 0.5 * sr)) {
+		hit = 0;
+	}
+}
+
+tuneNow = fillGlide(hTune);
+strikeNow = fillGlide(hStrike);
+dampNow = fillGlide(hDamp);
+beaterNow = fillGlide(hBeater);
+metalNow = fillGlide(hMetal);
+spaceNow = fillGlide(hSpace);
+bmixNow = fillGlide(hBmix);
+amixNow = fillGlide(hAmix);
+bodyMorph = fillGlide(hBody);
+airMorph = fillGlide(hAir);
+
+procL = dryL;
+procR = dryR;
+if (page < 0.5) {
+	splitAcc = splitAcc + fillSplit(x256L, sp256L);
+	splitAcc = splitAcc + fillSplit(x256R, sp256R);
+	splitAcc = splitAcc + fillSplit(x1280L, sp1280L);
+	splitAcc = splitAcc + fillSplit(x1280R, sp1280R);
+	splitAcc = splitAcc + fillSplit(dryL, sp1536L);
+	splitAcc = splitAcc + fillSplit(dryR, sp1536R);
+
+	body256L = sp256L.peek(1);
+	body256R = sp256R.peek(1);
+	body1280L = sp1280L.peek(1);
+	body1280R = sp1280R.peek(1);
+	air1280L = sp1280L.peek(2);
+	air1280R = sp1280R.peek(2);
+
+	ratioP = pow(2, tuneNow / 12);
+	dph = ratioP - 1;
+	pitL.write(body256L);
+	pitR.write(body256R);
+	// One head for the 1024-sample grain. Splice only the last 64.
+	// Tune 0 snaps the phase to 0 and reads delay 1024.
+	pitPhL = (abs(dph) < 0.000001) ? 0 : (pitPhL + dph);
+	pitPhR = (abs(dph) < 0.000001) ? 0 : (pitPhR + dph);
+	if (pitPhL >= 1024) {
+		pitPhL = pitPhL - 1024;
+	} else {
+		if (pitPhL < 0) {
+			pitPhL = pitPhL + 1024;
+		}
+	}
+	if (pitPhR >= 1024) {
+		pitPhR = pitPhR - 1024;
+	} else {
+		if (pitPhR < 0) {
+			pitPhR = pitPhR + 1024;
+		}
+	}
+	fadeL = (pitPhL > 960) ? ((pitPhL - 960) / 64) : 0;
+	fadeR = (pitPhR > 960) ? ((pitPhR - 960) / 64) : 0;
+	pitYL = pitL.read(1024 - pitPhL, interp="linear") * (1 - fadeL) + pitL.read(2048 - pitPhL, interp="linear") * fadeL;
+	pitYR = pitR.read(1024 - pitPhR, interp="linear") * (1 - fadeR) + pitR.read(2048 - pitPhR, interp="linear") * fadeR;
+
+	f0 = max(20, fillModelF0(bmodel) * ratioP);
+	tunePush = clip(abs(tuneNow) / 6, 0, 1);
+	strikeUse = strikeNow;
+	if (tunePush > strikeUse) {
+		strikeUse = tunePush;
+	}
+	resoL = fillReso(body1280L, f0, strikeUse, dampNow);
+	resoR = fillReso(body1280R, f0, strikeUse, dampNow);
+	hz = fillModelF0(bmodel) * (ratioP - 1);
+	frqL = fillFreq(body1280L, hz);
+	frqR = fillFreq(body1280R, hz);
+	tunedL = (mode < 0.5) ? resoL : ((mode < 1.5) ? pitYL : frqL);
+	tunedR = (mode < 0.5) ? resoR : ((mode < 1.5) ? pitYR : frqR);
+	wantTune = (mode < 0.5) ? clip(strikeUse, 0, 1) : clip(abs(tuneNow) * 0.25, 0, 1);
+	kPole = exp(-1 / (0.01 * sr));
+	tuneBlend = ((wantTune < 0.0000001) && (tuneBlend < 0.0000001)) ? 0 : (tuneBlend * kPole + wantTune * (1 - kPole));
+	tunL.write(tunedL);
+	tunR.write(tunedR);
+	alignedL = tunL.read(256, interp="linear");
+	alignedR = tunR.read(256, interp="linear");
+	convSrcL = body1280L * (1 - tuneBlend) + tunedL * tuneBlend;
+	convSrcR = body1280R * (1 - tuneBlend) + tunedR * tuneBlend;
+
+	// Low bank 0, high bank 1. Morph is the held roll, not a timeline.
+	bCp.poke(0, 0);
+	bCp.poke(1, 1);
+	bCp.poke(bodyMorph, 2);
+	bCp.poke(bnh, 3);
+	bCp.poke(bnt, 4);
+	bCp.poke(bload, 5);
+	bCp.poke(0, 6);
+	bCp.poke(0, 7);
+	bCp.poke(1, 8);
+	aCp.poke(0, 0);
+	aCp.poke(1, 1);
+	aCp.poke(airMorph, 2);
+	aCp.poke(anh, 3);
+	aCp.poke(ant, 4);
+	aCp.poke(aload, 5);
+	aCp.poke(0, 6);
+	aCp.poke(0, 7);
+	aCp.poke(1, 8);
+
+	splitAcc = splitAcc + fillConv(sampleN, convSrcL, convSrcR, tab, bCvr, bCxh, bCxt, bFdh, bFdt, bOhr, bOtr, fillbody, bCp, bOut, 0);
+	splitAcc = splitAcc + fillConv(sampleN, air1280L, air1280R, tab, aCvr, aCxh, aCxt, aFdh, aFdt, aOhr, aOtr, fillair, aCp, aOut, 2);
+	sampleN = sampleN + 1;
+
+	beatG = beaterNow;
+	airG = metalNow;
+	bodyKeepL = sp1536L.peek(1) * (1 - tuneBlend) + alignedL * tuneBlend;
+	bodyKeepR = sp1536R.peek(1) * (1 - tuneBlend) + alignedR * tuneBlend;
+	bodyPathL = bodyKeepL * (1 - bmixNow) + bOut.peek(0) * bmixNow;
+	bodyPathR = bodyKeepR * (1 - bmixNow) + bOut.peek(1) * bmixNow;
+	airPathL = (sp1536L.peek(2) * (1 - amixNow) + aOut.peek(0) * amixNow) * airG;
+	airPathR = (sp1536R.peek(2) * (1 - amixNow) + aOut.peek(1) * amixNow) * airG;
+	sumL = sp1536L.peek(0) * beatG + bodyPathL + airPathL;
+	sumR = sp1536R.peek(0) * beatG + bodyPathR + airPathR;
+	// Color the whole hit. The body split of a click is almost silent, so a
+	// tilt on that split alone leaves Kick, Air, Metal, and Damp inaudible.
+	// Tom + Wires + Metal 1 + Damp 0 is exactly 0, and fillTilt then returns
+	// the input, which keeps the identity impulse.
+	colorAmt = fillModelBody(bmodel) + fillModelAir(amodel) + clip(metalNow - 1, -1, 1) - dampNow;
+	sumL = fillTilt(sumL, colorAmt);
+	sumR = fillTilt(sumR, colorAmt);
+
+	spcL.write(sumL);
+	spcR.write(sumR);
+	spSamp = clip(spaceNow * 0.001 * sr, 1, 1900);
+	combL = sumL + spcL.read(spSamp, interp="linear") * 0.32;
+	combR = sumR + spcR.read(spSamp, interp="linear") * 0.32;
+	spacedL = (spaceNow < 0.5) ? sumL : combL;
+	spacedR = (spaceNow < 0.5) ? sumR : combR;
+
+	tiltAmt = clip((metalNow - 1) * dampNow, -1, 1);
+	drv = max(0, beaterNow - 1) + max(0, metalNow - 1);
+	tiltL = fillTilt(spacedL, tiltAmt);
+	tiltR = fillTilt(spacedR, tiltAmt);
+	procL = tiltL + drv * (tanh(tiltL) - tiltL);
+	procR = tiltR + drv * (tanh(tiltR) - tiltR);
+} else {
+	bankGen = peek(fillbank, 2, 0);
+	if (bankgen > bankGen) {
+		bankGen = bankgen;
+	}
+	if (bankGen >= 0.5) {
+		activePage = (peek(fillbank, 0, 0) >= 0.5) ? 1 : 0;
+		pageBase = 16 + activePage * 408;
+		bankHit = peek(fillbank, 4, 0);
+		if (abs(bankHit - bankHeard) > 0.5) {
+			for (m = 0; m < 192; m += 1) {
+				expState.poke(0, m);
+			}
+			bankHeard = bankHit;
+		}
+		monoIn = (dryL + dryR) * 0.5;
+		procL, procR = fillExpTick(monoIn, pageBase, fillbank, expState, apMem, apIdx, airLp);
+	}
+}
+
+wetAmt = clip(wet, 0, 1);
+outL = dryL * (1 - wetAmt) + procL * wetAmt + splitAcc;
+outR = dryR * (1 - wetAmt) + procR * wetAmt + splitAcc;
+
+peakIn = max(peakIn, max(abs(in1), abs(in2)));
+peakOut = max(peakOut, max(abs(outL), abs(outR)));
+envAbs = max(abs(outL), abs(outR));
+kAtk = 1 - exp(-1 / (0.004 * sr));
+kRel = 1 - exp(-1 / (0.06 * sr));
+kEnv = (envAbs > envOut) ? kAtk : kRel;
+	envOut = envOut + kEnv * (envAbs - envOut);
+	dispEnv = max(envAbs, dispEnv * 0.9992);
+	scopeTick = scopeTick + 1;
+if (scopeTick >= 64) {
+	scopeFrame = scopeFrame + 1;
+	poke(scope, clip(peakIn, 0, 4), 0, 0);
+	poke(scope, clip(peakOut, 0, 4), 1, 0);
+	poke(scope, clip(envOut, 0, 4), 2, 0);
+	poke(scope, hit, 3, 0);
+	poke(scope, clip(page, 0, 1), 4, 0);
+	poke(scope, onsetHold, 5, 0);
+	poke(scope, wetAmt, 6, 0);
+	poke(scope, scopeFrame, 7, 0);
+	for (m = 0; m < 48; m += 1) {
+		if (m < 32) {
+			modeE = expState.peek(m * 4 + 2);
+			show = dispEnv * exp(-m * 0.22);
+			if (modeE > show) {
+				show = modeE;
+			}
+			poke(scope, clip(show, 0, 8), 8 + m, 0);
+		}
+		expState.poke(0, m * 4 + 2);
+	}
+	dispEnv = dispEnv * 0.55;
+	peakIn = 0;
+	peakOut = 0;
+	scopeTick = 0;
+	onsetHold = 0;
+}
+
+out1 = fixnan(outL);
+out2 = fixnan(outR);

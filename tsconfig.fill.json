@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [
+    "src/types/max-extras.d.ts",
+    "src/theme_engine.js",
+    "src/types/fill.d.ts",
+    "src/spectral_theme.js",
+    "src/fill_config.js",
+    "src/fill_dsp.js",
+    "src/fill_ui.js"
+  ]
+}

@@ -833,6 +833,8 @@ def build():
     tc.inject_theme_support(patcher_doc, "sand")
 
     minify_patcher(patcher_doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_doc)
     json_bytes = json.dumps(patcher_doc, indent="\t").encode("utf-8") + b"\n"
     header = (
         b"ampf" + struct.pack("<I", 4) +

@@ -190,7 +190,8 @@ def build_patcher():
     ]
 
     # ---- hidden UI-state toggle (saved with the Set) ----
-    boxes.append(sc.make_state_toggle("dispost", "Display Post", "Post", ["Pre", "Post"], 20.0))
+    boxes.append(sc.make_state_toggle("dispost", "Display Post", "Post", ["Pre", "Post"], 20.0,
+                                      "Spectrum source. Pre shows the analysis. Post shows this channel after the harmonic mask."))
     uip = "obj-ui-dispost"
     boxes.append(newobj(uip, "prepend set_dispost", 900, 20.0, 120))
     lines.append(line("obj-ctrl-dispost", 0, uip))

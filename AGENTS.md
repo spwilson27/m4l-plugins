@@ -83,6 +83,9 @@ This repository contains Max for Live (`.amxd`) devices for **Ableton Live 12 Su
      # Amp+ (section 30). Max audio in the VM: scripts/vm_ampplus.sh audio
      # The neural~ external is built once with scripts/build_neural_external.sh (MIT, apresta/neural_tilde).
      npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && python3 scripts/render_preview.py "devices/Amp+.amxd"
+
+     # Fill (section 31). Max audio only in the VM: scripts/vm_fill.sh audio
+     npm run -s typecheck && python3 scripts/build_fill.py && node tests/test_fill.js && node tests/test_fill_face.js && python3 scripts/render_fill_faces.py
      ```
    - **Visual Screenshot Inspection**: After generating `previews/<plugin_slug>.png`, agents **must** view the image in `previews/` using the `read` tool and visually verify that:
      - No text labels or toolbar buttons are truncated, squished, or overlapping.
@@ -1918,4 +1921,32 @@ Signal: stereo in is summed, Gain (±18 dB around the capture's own level, 50% =
 ```bash
 npm run -s typecheck && python3 scripts/build_ampplus.py && node tests/test_ampplus.js && python3 scripts/render_preview.py "devices/Amp+.amxd"
 scripts/vm_ampplus.sh audio
+```
+
+---
+
+## 31. Architecture of `devices/Fill.amxd`
+
+Insert on a tom, snare, or hat. Each detected hit samples once and holds that draw until the next hit. There is no bar clock and no Start/End morph. Mix is the wet/dry. The device is `400 x 169`.
+
+**Face.** Header (`y = 4`, `h = 16`): automatable `Page` (`Normal` / `Experimental`), then `Sens`, `Rand` (Master Rand), and `Mix`. The left column (`x = 4`, `w = 156`) is six wings for the active page. A wing is the center `live.numbox` plus a narrow range `live.numbox` on the same row (20 px pitch from `y = 26`). The range's name is the parameter (`Tune Range`), not a second caption. Normal shows Tune, Strike, Damp, Beater, Metal, Space. Experimental shows Mass, Scatter, Decay, Couple, Bite, Air. Both sets are real parameters; the face hides the inactive page. Tune is bipolar. Under the column (`y = 150`): Body (`Tom` / `Snare` / `Kick` / `Hat`) and Air Model (`Wires` / `Room` / `Hat` / `Sizzle`) on Normal only. Experimental draws `408 coeffs` and the `0.50 s` tail cap inside the picture. Body and air impulse-response centers and ranges (`bdecay` … `amixr`) are automatable and presentation-hidden. Tune Mode (`Resonator` / `Pitch` / `Freq`) is a real parameter, presentation-hidden. `Seed` (`0..1000`, float + `parameter_unitstyle 0`) and `Picture` are `parameter_invisible 1` (Stored Only). Picture is `Matter` / `Ring` / `Scar` / `Dust`, default Matter. `obj-viz` (`[164, 22, 232, 147]`, interactive) paints the four labels in its bottom 16 px. A click on that strip sets `fillP.picture` immediately and sends the index to the stored Picture parameter. `receive #0-fill-test` and `receive fill-face-test` accept `test_picture` / `test_report`.
+
+**One draw per hit.** Range 0 or Master Rand 0 holds the center. Onset is still the fast-minus-slow detector with Sens and a 40 ms holdoff. The gen samples on the onset and glides about 10 ms. Body decay, size, color, and tune share one roll: the low IR is center minus range, the high IR is center plus range, and the hit crossfades those two banks. Air decay, size, and color share another roll. Mixes stay on the gen, not in the IR. Defaults are dry on Normal (Tune 0, Strike 0, Damp 0, Beater 100, Metal 100, Space 0, mixes 0, ranges 0, Sens 45, Rand 0, Mix 100, Seed 1, Page 0). Experimental metas default to Mass 35, Scatter 25, Decay 40, Couple 20, Bite 55, Air 15.
+
+**Pictures** read `#0-fillscope` (`@samps 64`). Slots 0..7 are in peak, out peak, envelope, hit, page, onset, wet, and the frame counter. Slots 8..39 are 32 display energies. On Normal those follow the output envelope (higher slots shorter) so the picture moves when the mode peaks are empty; Experimental mode peaks replace an envelope slot when they are louder. The face also lifts each slot by the slot-2 envelope. Matter draws spikes from a core (resting length plus energy, higher modes shorter). Ring draws dots on a circle, radius offset by energy. Scar draws vertical bars from the energies; Experimental is that one stroke, Normal adds a dimmer stroke from slot 2. Dust draws one grain per energy and drops it as the energy falls. The hit number is painted on the picture. The poll skips the redraw when the envelope and the energies are ~0 and the picture, page, and hit are unchanged.
+
+**Experimental bank.** The six metas are not gen audio parameters. `fillExperimentalPage(metas, seed, hit, sr)` in `src/fill_config.js` returns 408 floats. While Page is Experimental the face writes `#0-fillbank` (`@samps 832`, varname `fill_bank`). The gen always reads the page at index 16 (header index 0 stays 0). Every knob change and every hit rewrites that page; a spare copy sits at 16+408 and is not what plays. Header index 4 is the hit id, and a new hit clears the resonator state so the new draw speaks. Index 2 is the generation. Decay is an RT60 from 0.02 s to 0.50 s, applied after the draw so a range cannot escape it. Couple is an orthogonal mix, `y = (1 - c) * x + c * Q * x`, then the pole, so the mix does not add energy. The face also sends gen `bankgen` (the same generation counter) so a page still plays if the header peek is late. Body (`bmodel`) and Air (`amodel`) are gen params: Tom and Wires are unity, the other models tilt the split, and Tune away from 0 engages the resonator even at Strike 0. Damp darkens the body on its own. Experimental replaces the normal resonator, space comb, and convolution while it is on. The pole input is `max(1 - r, 0.08)` and the mode sum is scaled by 2 so a hit is audible without every setting slamming the same clip; `tanh` and the ±0.9 clip hold a sustained tone.
+
+**Latency** stays 1536 samples (lookahead 256 + pitch window 1024 + conv 256), on the patcher and again from the face. Dry, beater, body, and air meet at the 1536 tap. The pitch shifter keeps one 1024-sample head and splices only the last 64 samples.
+
+**DSP** (`src/fill_conv.genexpr`, `src/fill_core.genexpr`), deferred (section 1d): the face writes `/tmp/fill_core_<hash>.gendsp` after load and creates `gen~` on the existing hub. Outlet 0 sends already-scaled messages: `page`, `randamt`, `wet`, `sens`, `seed`, `mode`, `tune`, `tuner`, `strike`, `striker`, `damp`, `dampr`, `beater`, `beaterr`, `metal`, `metalr`, `space`, `spacer`, `bmix`, `bmixr`, `amix`, `amixr`, `bmodel`, `amodel`, `bankgen`, plus `play` so a stopped transport can reset the hit. Percent knobs are `/100`. Tune, tuner, space, and spacer stay in native units. Beater, metal, and their ranges are `/100`, so 100 becomes 1 and 200 becomes 2. IR partition headers (`bnh`, `bnt`, `btos`, `btoe`, and the air pair) still go out the same outlet.
+
+**Known rough edges**
+- A bare helper call (`fillSplit(...);`, `fillConv(...);`, `fillFftInit(tab);`) is deleted by gen's declaration pass and takes its argument variables with it. Every call's return is accumulated into `splitAcc` and added to both outputs. `fillFftInit` returns 1, so that line is `splitAcc = fillFftInit(tab) - 1`. Do not turn these back into bare statements.
+- Pitch keeps one head for a 1024-sample grain and splices only the last 64 samples (`pitL` / `pitR` are 4096; the second head reads `2048 - phase`). Tune 0 snaps the phase to 0 and reads delay 1024 exactly. A full-grain crossfade of two heads 512 apart reconstructs 1x, but a wrap-free ramp lands the attack a whole ramp late, so the short splice stays.
+- Experimental RT60 is capped at 0.50 s after the random draw. Pole radius stays at or under `r = exp(-6.91 / (rt60 * sr))`. Higher modes use a shorter tail, down to about a quarter of the fundamental.
+
+```bash
+npm run -s typecheck && python3 scripts/build_fill.py && node tests/test_fill.js && node tests/test_fill_face.js && python3 scripts/render_fill_faces.py
+scripts/vm_fill.sh audio
 ```

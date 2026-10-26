@@ -303,7 +303,7 @@ def pool_boxes_and_lines():
     return boxes, lines
 
 
-def auto_valueof(longname, enum=None, initial=0):
+def auto_valueof(longname, enum=None, initial=0, info=""):
     """Saved-parameter attributes of one pool object: generic 0..100 percent float (`enum` None) or an Off / On toggle.
     parameter_linknames is 0 so renaming the long name at runtime never changes the scripting name (varname)."""
     v = {
@@ -313,6 +313,8 @@ def auto_valueof(longname, enum=None, initial=0):
         "parameter_initial": [initial],
         "parameter_initial_enable": 0,
     }
+    if info:
+        v["parameter_info"] = info
     if enum:
         v.update({"parameter_enum": enum, "parameter_mmax": len(enum) - 1, "parameter_type": 2, "parameter_unitstyle": 9})
     else:
@@ -356,9 +358,10 @@ def face_attrs(maxclass):
     return a
 
 
-def auto_face_param(obj_id, maxclass, varname, longname, x, y, initial=0):
+def auto_face_param(obj_id, maxclass, varname, longname, x, y, initial=0, info=""):
     """A generic 0..100 percent float parameter whose face is `maxclass` (live.dial for the modulator controls, live.numbox for Depth)."""
     b = {
+        "annotation": info,
         "id": obj_id,
         "maxclass": maxclass,
         "numinlets": 1,
@@ -366,16 +369,17 @@ def auto_face_param(obj_id, maxclass, varname, longname, x, y, initial=0):
         "outlettype": ["", "float"],
         "parameter_enable": 1,
         "patching_rect": [float(x), float(y), 44.0, 15.0],
-        "saved_attribute_attributes": {"valueof": auto_valueof(longname, initial=initial)},
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname, initial=initial, info=info)},
         "varname": varname,
     }
     b.update(face_attrs(maxclass))
     return {"box": b}
 
 
-def auto_numbox(obj_id, varname, longname, x, y, invisible=0, ptype=None, mmax=None):
+def auto_numbox(obj_id, varname, longname, x, y, invisible=0, ptype=None, mmax=None, info=""):
     """The hidden marker (a plain numbox, never a face)."""
     b = {
+        "annotation": info,
         "id": obj_id,
         "maxclass": "live.numbox",
         "numinlets": 1,
@@ -383,7 +387,7 @@ def auto_numbox(obj_id, varname, longname, x, y, invisible=0, ptype=None, mmax=N
         "outlettype": ["", "float"],
         "parameter_enable": 1,
         "patching_rect": [float(x), float(y), 44.0, 15.0],
-        "saved_attribute_attributes": {"valueof": auto_valueof(longname)},
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname, info=info)},
         "varname": varname,
     }
     if invisible:
@@ -396,9 +400,10 @@ def auto_numbox(obj_id, varname, longname, x, y, invisible=0, ptype=None, mmax=N
     return {"box": b}
 
 
-def auto_shape_tab(obj_id, varname, longname, x, y):
+def auto_shape_tab(obj_id, varname, longname, x, y, info=""):
     """The LFO shape: a 5-way live.tab face (enum parameter)."""
     b = {
+        "annotation": info,
         "id": obj_id,
         "maxclass": "live.tab",
         "numinlets": 1,
@@ -406,15 +411,16 @@ def auto_shape_tab(obj_id, varname, longname, x, y):
         "outlettype": ["", "", "float"],
         "parameter_enable": 1,
         "patching_rect": [float(x), float(y), 92.0, 12.0],
-        "saved_attribute_attributes": {"valueof": auto_valueof(longname, LFO_SHAPE_NAMES)},
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname, LFO_SHAPE_NAMES, info=info)},
         "varname": varname,
     }
     b.update(face_attrs("live.tab"))
     return {"box": b}
 
 
-def auto_toggle(obj_id, varname, longname, x, y):
+def auto_toggle(obj_id, varname, longname, x, y, info=""):
     b = {
+        "annotation": info,
         "id": obj_id,
         "maxclass": "live.text",
         "mode": 1,
@@ -423,11 +429,33 @@ def auto_toggle(obj_id, varname, longname, x, y):
         "outlettype": ["", ""],
         "parameter_enable": 1,
         "patching_rect": [float(x), float(y), 44.0, 15.0],
-        "saved_attribute_attributes": {"valueof": auto_valueof(longname, ["Off", "On"])},
+        "saved_attribute_attributes": {"valueof": auto_valueof(longname, ["Off", "On"], info=info)},
         "varname": varname,
     }
     b.update(face_attrs("live.text"))
     return {"box": b}
+
+
+# Live does not rename these parameters when the modulator type changes, so the Info View has to say what a letter can mean.
+_LETTER_INFO = {
+    "A": "Rate on an LFO, Random, Steps or MSEG; Attack on a Follower or ADSR; X on an XY pad; Slew on Buttons.",
+    "B": "Division on an LFO, Random, Steps or MSEG; Release on a Follower; Decay on an ADSR; Y on an XY pad.",
+    "C": "Depth of this modulator. The same control on every type.",
+    "D": "Phase on an LFO; Gain on a Follower; Smooth on Random; Steps on Steps; loop start on an MSEG; Sustain on an ADSR; Slew on an XY pad.",
+    "E": "Seed on Random; Glide on Steps; loop end on an MSEG; Release on an ADSR. Unused on the other types.",
+}
+_SWITCH_INFO = {
+    "Shape": "LFO waveform for this modulator: Sine, Triangle, Saw Up, Saw Down or Square. Other types leave it unused.",
+    "Sync": "Tempo sync for a rate-based modulator. On an ADSR it chooses MIDI or threshold triggering. On Buttons it is button 1.",
+    "Bipolar": "Lets this modulator swing through zero. On Buttons it is button 2.",
+    "Retrig": "Restarts this modulator when a note begins. On an ADSR it restarts the envelope from zero.",
+    "1Shot": "Plays this modulator once per trigger. On an ADSR, velocity scales the peak.",
+    "Loop": "Loops the MSEG on this modulator. Other types leave it unused.",
+}
+
+
+def _slot_info(slot, kind, extra):
+    return "Modulator %d, %s. The label on the device names it for the current type. %s" % (slot + 1, kind, extra)
 
 
 def auto_boxes_and_lines():
@@ -446,9 +474,12 @@ def auto_boxes_and_lines():
             y = y0 + slot * 70.0
             oid = f"obj-ap-{idx}"
             if j == AUTO_PARAMS:
-                boxes.append(auto_toggle(oid, f"ap_{idx}", name, x, y))
+                info = "Turns modulator %d on. An off modulator stays silent and its mappings hold." % (slot + 1)
+                boxes.append(auto_toggle(oid, f"ap_{idx}", name, x, y, info=info))
             else:
-                boxes.append(auto_face_param(oid, "live.dial", f"ap_{idx}", name, x, y, initial=100 if j == 2 else 0))
+                letter = AUTO_LETTERS[j]
+                info = _slot_info(slot, "control " + letter, _LETTER_INFO[letter])
+                boxes.append(auto_face_param(oid, "live.dial", f"ap_{idx}", name, x, y, initial=100 if j == 2 else 0, info=info))
             pid = f"obj-apx-{idx}"
             boxes.append(newobj(pid, f"prepend autop {idx}", x, y + 22, 66, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
             lines.append(line(oid, 0, pid, 0))
@@ -456,14 +487,16 @@ def auto_boxes_and_lines():
     for slot in range(MAX_MODS):
         for t in range(AUTO_SW_PER_SLOT):
             idx = slot * AUTO_SW_PER_SLOT + t
-            name = f"M{slot + 1} {AUTO_SW_NAMES[t]}"
+            sw = AUTO_SW_NAMES[t]
+            name = f"M{slot + 1} {sw}"
             x = x0 + 1750.0 + t * 70.0
             y = y0 + slot * 70.0
             oid = f"obj-at-{idx}"
+            info = _slot_info(slot, sw, _SWITCH_INFO[sw])
             if t == 0:
-                boxes.append(auto_shape_tab(oid, f"at_{idx}", name, x, y))
+                boxes.append(auto_shape_tab(oid, f"at_{idx}", name, x, y, info=info))
             else:
-                boxes.append(auto_toggle(oid, f"at_{idx}", name, x, y))
+                boxes.append(auto_toggle(oid, f"at_{idx}", name, x, y, info=info))
             pid = f"obj-atx-{idx}"
             boxes.append(newobj(pid, f"prepend autot {idx}", x, y + 22, 66, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
             lines.append(line(oid, 0, pid, 0))
@@ -473,12 +506,14 @@ def auto_boxes_and_lines():
         x = x0 + 600.0 + (k % 16) * 70.0
         y = y0 + (k // 16) * 70.0
         oid = f"obj-ad-{k}"
-        boxes.append(auto_face_param(oid, "live.numbox", f"ad_{k}", name, x, y, initial=100))
+        info = "Amount of mapping %d. The device shows where it goes. 0%% is none and 100%% is the full saved amount." % (k + 1)
+        boxes.append(auto_face_param(oid, "live.numbox", f"ad_{k}", name, x, y, initial=100, info=info))
         pid = f"obj-adx-{k}"
         boxes.append(newobj(pid, f"prepend autod {k}", x, y + 22, 66, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
         lines.append(line(oid, 0, pid, 0))
         lines.append(line(pid, 0, "obj-viz", 0))
-    marker = auto_numbox("obj-ap-marker", "ap_marker", "MM Auto Stored", x0 + 600.0, y0 + 300.0, invisible=1, ptype=1, mmax=2.0)
+    marker = auto_numbox("obj-ap-marker", "ap_marker", "MM Auto Stored", x0 + 600.0, y0 + 300.0, invisible=1, ptype=1, mmax=2.0,
+                         info="Remembers whether modulator values and switches have been stored. Not a sound control.")
     boxes.append(marker)
     boxes.append(newobj("obj-apx-marker", "prepend autom", x0 + 600.0, y0 + 322.0, 80, 18.0, numinlets=1, numoutlets=1, outlettype=[""]))
     lines.append(line("obj-ap-marker", 0, "obj-apx-marker", 0))
@@ -736,6 +771,8 @@ def write_amxd(patcher, out_path):
     import theme_common as tc
     tc.inject_theme_support(patcher, os.path.splitext(os.path.basename(out_path))[0], assign_varnames=False)
     minify_patcher(patcher)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = (
         b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0)

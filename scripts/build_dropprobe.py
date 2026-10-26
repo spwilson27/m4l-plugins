@@ -110,6 +110,8 @@ def patcher(boxes, lines, width, device=True):
 
 def write_amxd(path, doc):
     minify_patcher(doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(doc)
     payload = (json.dumps(doc, indent="\t") + "\n").encode("utf-8")
     hdr = b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload))
     with open(path, "wb") as f:

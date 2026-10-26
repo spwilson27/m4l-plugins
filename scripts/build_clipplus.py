@@ -43,7 +43,7 @@ NUMS = [
     ("detail", "Detail", "Detail", 0, 100, 100, 0, 5, "detail", "set_detail", "0% is the waveshaper. 100% keeps quiet partials while loud ones clip."),
     ("shape", "Shape", "Shape", 0, 100, 0, 0, 5, "shape", "set_shape", "Soft knee to hard clip. At Drive 0 every shape is the same ceiling clamp."),
     ("sym", "Symmetry", "Sym", -100, 100, 0, 0, 5, "sym", "set_sym", "Hardens one polarity and softens the other."),
-    ("ceiling", "Ceiling", "Ceil", -12, 0, 0, 0, 4, "ceiling", "set_ceiling", "Clip ceiling."),
+    ("ceiling", "Ceiling", "Ceil", -12, 0, 0, 0, 4, "ceiling", "set_ceiling", "Level the clipper will not pass, in decibels. 0 dB is full scale."),
     ("out", "Output", "Output", -24, 12, 0, 0, 4, "outgain", "set_outgain", "Output trim when Output Mode is Manual."),
 ]
 

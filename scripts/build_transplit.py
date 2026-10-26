@@ -171,8 +171,10 @@ def build_patcher():
     ]
 
     # ---- hidden UI-state toggles (saved with the Set) ----
-    boxes.append(sc.make_state_toggle("dispost", "Display Post", "Post", ["Pre", "Post"], 20.0))
-    boxes.append(sc.make_state_toggle("disstyle", "Display Style", "Style", ["Waveform", "Sonogram"], 50.0))
+    boxes.append(sc.make_state_toggle("dispost", "Display Post", "Post", ["Pre", "Post"], 20.0,
+                                      "Display source. Pre shows the analysis. Post shows this channel after the split."))
+    boxes.append(sc.make_state_toggle("disstyle", "Display Style", "Style", ["Waveform", "Sonogram"], 50.0,
+                                       "Display style. Waveform shows the split. Sonogram scrolls level over time."))
     for key in ("dispost", "disstyle"):
         uip = f"obj-ui-{key}"
         boxes.append(newobj(uip, f"prepend set_{key}", 900, 20.0 if key == "dispost" else 50.0, 120))

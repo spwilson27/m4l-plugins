@@ -339,6 +339,8 @@ def build_patcher():
 
 
 def write_amxd(patcher_dict, out_path: Path):
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher_dict)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     json_bytes = (json.dumps(patcher_dict, indent=2) + "\n").encode("utf-8")
     header = (

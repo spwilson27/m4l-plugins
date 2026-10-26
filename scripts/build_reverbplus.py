@@ -98,7 +98,7 @@ P = {
                 "How fast the reverb comes back after ducking.", None),
     "drywet": ("Dry/Wet", "Dry/Wet", 0.0, 100.0, 35.0, 0, 5, 1.0, "wetmix", 100,
                "Dry/wet balance (equal power: the wet rises all the way to 100%).", None),
-    "output": ("Output", "Output", -36.0, 12.0, 0.0, 0, 4, 1.0, "outdb", 1, "Gain of the reverb.", None),
+    "output": ("Output", "Output", -36.0, 12.0, 0.0, 0, 4, 1.0, "outdb", 1, "Output gain of the reverb, in decibels. 0 dB is unity.", None),
     "irstretch": ("IR Stretch", "IR Stretch", 50.0, 200.0, 100.0, 0, 5, 1.0, None, 1,
                   "Convolution: plays the impulse response slower or faster (resamples it).", None),
     "irstart": ("IR Start", "IR Start", 0.0, 50.0, 0.0, 0, 5, 1.0, None, 1,
@@ -395,6 +395,8 @@ def write_amxd(path, doc):
     import theme_common as tc
     tc.inject_theme_support(doc, os.path.splitext(os.path.basename(path))[0], assign_varnames=False)
     minify_patcher(doc)
+    import m4l_info
+    m4l_info.stamp_parameter_info(doc)
     payload = (json.dumps(doc, indent="\t") + "\n").encode("utf-8")
     header = (b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4)
               + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload)))

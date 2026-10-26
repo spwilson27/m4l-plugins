@@ -87,13 +87,30 @@ def line(src, outlet, dst, inlet=0):
     return {"patchline": {"source": [src, outlet], "destination": [dst, inlet]}}
 
 
+GL_HELP = {
+    "morphx": "Horizontal position in the morph map. 50% sits on the current glitch.",
+    "morphy": "Vertical position in the morph map. 50% sits on the current glitch.",
+    "chaos": "How far Morph wanders from the chosen glitch. 0% stays on it.",
+    "mix": "Wet amount of the glitch against the dry input. 100% is fully wet.",
+    "out": "Output gain after the glitch, in decibels. 0 dB is unity.",
+    "randomize": "Builds a new glitch. The button returns to off after it fires.",
+    "mutate": "Nudges the current glitch. The button returns to off after it fires.",
+    "mode": "Working edits one glitch, Morph blends its neighbours, and Seq steps through a pattern.",
+    "seqrate": "How fast the sequencer advances, as a musical division.",
+    "glide": "How quickly the sequencer moves from one step to the next. 0% jumps.",
+    "seqlen": "How many steps the sequencer uses, from 1 to 16.",
+}
+
+
 def param_box(key, spec, x, y):
     """A real live.* parameter object kept OFF the face (no presentation): the v8ui draws the control and drives it."""
     long_name = spec["long"]
+    help_text = GL_HELP[key]
     if spec["kind"] in ("dial", "int"):
         is_int = spec["kind"] == "int"
         valueof = {
             "parameter_annotation_name": long_name,
+            "parameter_info": help_text,
             "parameter_initial": [spec["init"]],
             "parameter_initial_enable": 1,
             "parameter_linknames": 1,
@@ -110,6 +127,7 @@ def param_box(key, spec, x, y):
         valueof = {
             "parameter_annotation_name": long_name,
             "parameter_enum": spec["enums"],
+            "parameter_info": help_text,
             "parameter_initial": [spec["init"]],
             "parameter_initial_enable": 1,
             "parameter_linknames": 1,
@@ -123,6 +141,7 @@ def param_box(key, spec, x, y):
         valueof = {
             "parameter_annotation_name": long_name,
             "parameter_enum": spec["enums"],
+            "parameter_info": help_text,
             "parameter_initial": [spec["init"]],
             "parameter_initial_enable": 1,
             "parameter_linknames": 1,
@@ -134,6 +153,7 @@ def param_box(key, spec, x, y):
         box = {"maxclass": "live.text", "mode": 1, "text": spec["enums"][0], "texton": spec["enums"][1], "numoutlets": 2, "outlettype": ["", ""],
                "patching_rect": [float(x), float(y), 50.0, 16.0]}
     box.update({
+        "annotation": help_text,
         "id": f"obj-ctrl-{key}",
         "numinlets": 1,
         "parameter_enable": 1,
@@ -395,6 +415,8 @@ def write_amxd(patcher, out_path):
     import theme_common as tc
     tc.inject_theme_support(patcher, "glitch", assign_varnames=False)
     minify_patcher(patcher)
+    import m4l_info
+    m4l_info.stamp_parameter_info(patcher)
     payload = (json.dumps(patcher, indent="\t") + "\n").encode("utf-8")
     header = b"ampf" + struct.pack("<I", 4) + b"aaaa" + b"meta" + struct.pack("<I", 4) + struct.pack("<I", 0) + b"ptch" + struct.pack("<I", len(payload))
     os.makedirs(os.path.dirname(out_path), exist_ok=True)

@@ -1,0 +1,278 @@
+// Fill convolution. One stereo engine per call: head 128/256 (32 partitions = 4096 samples)
+// plus a tail of 2048/4096 (up to 6 partitions, cap 16384). Output is the input delayed
+// by 256 samples. IR spectra are mono, stored as identical L and R bins
+// [re, im, re, im]. Two banks are crossfaded by morph (the fill position).
+//
+// cp: 0 start bank, 1 end bank, 2 morph, 3 head partitions, 4 tail partitions, 5 loaded.
+// Bank stride 65688 floats = 16512 head + 49176 tail. Tail spectra begin at 16512.
+// No identifier is named e followed by a digit. One return, at function level.
+
+fillMod(x, m) {
+	return x - m * floor(x / m);
+}
+
+fillFftInit(tab) {
+	History ready(0);
+	if (ready == 0) {
+		for (k = 0; k < 2048; k += 1) {
+			ph = 6.283185307179586 * k / 4096;
+			tab.poke(cos(ph), k, 0);
+			tab.poke(-sin(ph), k, 1);
+		}
+		for (i = 0; i < 4096; i += 1) {
+			rev = 0;
+			v = i;
+			for (b = 0; b < 12; b += 1) {
+				hv = floor(v * 0.5);
+				rev = rev * 2 + (v - hv * 2);
+				v = hv;
+			}
+			tab.poke(rev, i, 2);
+		}
+		ready = 1;
+	}
+	return ready;
+}
+
+fillFftPass(x, tab, n, pass, inv) {
+	if (pass < 0.5) {
+		invDiv = n * 0.000244140625;
+		for (i = 0; i < n; i += 1) {
+			j = tab.peek(i, 2) * invDiv;
+			if (j > i) {
+				tr = x.peek(i, 0);
+				ti = x.peek(i, 1);
+				x.poke(x.peek(j, 0), i, 0);
+				x.poke(x.peek(j, 1), i, 1);
+				x.poke(tr, j, 0);
+				x.poke(ti, j, 1);
+			}
+		}
+	} else {
+		sgn = inv > 0.5 ? -1 : 1;
+		len = floor(pow(2, pass) + 0.5);
+		half = len * 0.5;
+		stp = 4096 / len;
+		for (s = 0; s < n; s += len) {
+			for (k = 0; k < half; k += 1) {
+				wr = tab.peek(k * stp, 0);
+				wi = sgn * tab.peek(k * stp, 1);
+				a = s + k;
+				b = a + half;
+				xr = x.peek(b, 0);
+				xi = x.peek(b, 1);
+				tr = xr * wr - xi * wi;
+				ti = xr * wi + xi * wr;
+				ur = x.peek(a, 0);
+				ui = x.peek(a, 1);
+				x.poke(ur + tr, a, 0);
+				x.poke(ui + ti, a, 1);
+				x.poke(ur - tr, b, 0);
+				x.poke(ui - ti, b, 1);
+			}
+		}
+	}
+	return 0;
+}
+
+// cp: 0/1 from banks, 2 morph, 6 fade (0 = from, 1 = to), 7/8 to banks.
+// One return. Fade 0 peeks only the from pair.
+fillIrBin(irs, cp, index) {
+	morph = cp.peek(2);
+	fade = cp.peek(6);
+	a0 = irs.peek(cp.peek(0) * 65688 + index);
+	a1 = irs.peek(cp.peek(1) * 65688 + index);
+	a = a0 * (1 - morph) + a1 * morph;
+	outv = a;
+	if (fade >= 0.001) {
+		b0 = irs.peek(cp.peek(7) * 65688 + index);
+		b1 = irs.peek(cp.peek(8) * 65688 + index);
+		b = b0 * (1 - morph) + b1 * morph;
+		outv = (fade > 0.999) ? b : (a * (1 - fade) + b * fade);
+	}
+	return outv;
+}
+
+// One sample of one stereo engine. xl/xr are the band to convolve.
+// `phase` shifts this engine's job clock (body 0, air 2) so the two engines
+// never run an FFT on the same sample. The value passed as cn must still
+// increase by 1 every call: latency versus the samples passed in stays 256.
+fillConv(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, cout, phase) {
+	c = cn - phase;
+	w = fillMod(c, 8192);
+	cvr.poke(xl, w, 0);
+	cvr.poke(xr, w, 1);
+	nh = cp.peek(3);
+	nt = cp.peek(4);
+	loaded = cp.peek(5);
+
+	rh = fillMod(c, 128);
+	if (rh - 4 * floor(rh / 4) < 0.5) {
+		kh = floor(rh / 4);
+		mp = floor(c / 128) - 1;
+		if (kh == 0) {
+			for (i = 0; i < 256; i += 1) {
+				ix = fillMod(c - 256 + i, 8192);
+				cxh.poke(cvr.peek(ix, 0), i, 0);
+				cxh.poke(cvr.peek(ix, 1), i, 1);
+			}
+		}
+		if (kh == 1) {
+			fillFftPass(cxh, tab, 256, 0, 0);
+		}
+		if (kh >= 2 && kh <= 9) {
+			fillFftPass(cxh, tab, 256, kh - 1, 0);
+		}
+		if (kh == 10) {
+			slot = fillMod(mp, 32);
+			for (kk = 0; kk < 129; kk += 1) {
+				nk = kk == 0 ? 0 : 256 - kk;
+				xr0 = cxh.peek(kk, 0);
+				xi0 = cxh.peek(kk, 1);
+				xr1 = cxh.peek(nk, 0);
+				xi1 = cxh.peek(nk, 1);
+				o = (slot * 129 + kk) * 4;
+				fdh.poke((xr0 + xr1) * 0.5, o);
+				fdh.poke((xi0 - xi1) * 0.5, o + 1);
+				fdh.poke((xi0 + xi1) * 0.5, o + 2);
+				fdh.poke(-(xr0 - xr1) * 0.5, o + 3);
+			}
+		}
+		if (kh == 11) {
+			for (kk = 0; kk < 129; kk += 1) {
+				ylr = 0;
+				yli = 0;
+				yrr = 0;
+				yri = 0;
+				if (loaded > 0.5) {
+					for (p = 0; p < nh; p += 1) {
+						sl = fillMod(mp - p, 32);
+						xo = (sl * 129 + kk) * 4;
+						ho = (p * 129 + kk) * 4;
+						xlr = fdh.peek(xo);
+						xli = fdh.peek(xo + 1);
+						xrr = fdh.peek(xo + 2);
+						xri = fdh.peek(xo + 3);
+						hlr = fillIrBin(irs, cp, ho);
+						hli = fillIrBin(irs, cp, ho + 1);
+						hrr = fillIrBin(irs, cp, ho + 2);
+						hri = fillIrBin(irs, cp, ho + 3);
+						ylr += xlr * hlr - xli * hli;
+						yli += xlr * hli + xli * hlr;
+						yrr += xrr * hrr - xri * hri;
+						yri += xrr * hri + xri * hrr;
+					}
+				}
+				cxh.poke(ylr - yri, kk, 0);
+				cxh.poke(yli + yrr, kk, 1);
+				if (kk > 0 && kk < 128) {
+					cxh.poke(ylr + yri, 256 - kk, 0);
+					cxh.poke(yrr - yli, 256 - kk, 1);
+				}
+			}
+		}
+		if (kh == 12) {
+			fillFftPass(cxh, tab, 256, 0, 1);
+		}
+		if (kh >= 13 && kh <= 20) {
+			fillFftPass(cxh, tab, 256, kh - 12, 1);
+		}
+		if (kh == 21) {
+			for (i = 0; i < 128; i += 1) {
+				oi = fillMod(mp * 128 + i, 512);
+				ohr.poke(cxh.peek(128 + i, 0) * 0.00390625, oi, 0);
+				ohr.poke(cxh.peek(128 + i, 1) * 0.00390625, oi, 1);
+			}
+		}
+	}
+
+	rt = fillMod(c, 2048);
+	if (rt - 8 * floor(rt / 8) < 0.5) {
+		kt = floor(rt / 8);
+		mt = floor(c / 2048) - 1;
+		if (kt == 0) {
+			for (i = 0; i < 4096; i += 1) {
+				ix = fillMod(c - 4096 + i, 8192);
+				cxt.poke(cvr.peek(ix, 0), i, 0);
+				cxt.poke(cvr.peek(ix, 1), i, 1);
+			}
+		}
+		if (kt == 1) {
+			fillFftPass(cxt, tab, 4096, 0, 0);
+		}
+		if (kt >= 2 && kt <= 13) {
+			fillFftPass(cxt, tab, 4096, kt - 1, 0);
+		}
+		if (kt == 14) {
+			slot = fillMod(mt, 8);
+			for (kk = 0; kk < 2049; kk += 1) {
+				nk = kk == 0 ? 0 : 4096 - kk;
+				xr0 = cxt.peek(kk, 0);
+				xi0 = cxt.peek(kk, 1);
+				xr1 = cxt.peek(nk, 0);
+				xi1 = cxt.peek(nk, 1);
+				o = (slot * 2049 + kk) * 4;
+				fdt.poke((xr0 + xr1) * 0.5, o);
+				fdt.poke((xi0 - xi1) * 0.5, o + 1);
+				fdt.poke((xi0 + xi1) * 0.5, o + 2);
+				fdt.poke(-(xr0 - xr1) * 0.5, o + 3);
+			}
+		}
+		if (kt >= 15 && kt <= 47) {
+			k0 = (kt - 15) * 64;
+			cntb = min(64, 2049 - k0);
+			for (kk = 0; kk < cntb; kk += 1) {
+				ylr = 0;
+				yli = 0;
+				yrr = 0;
+				yri = 0;
+				j4 = kk * 4;
+				if (loaded > 0.5) {
+					for (q = 0; q < nt; q += 1) {
+						sl = fillMod(mt - q, 8);
+						xo = (sl * 2049 + k0) * 4 + j4;
+						ho = 16512 + (q * 2049 + k0) * 4 + j4;
+						xlr = fdt.peek(xo);
+						xli = fdt.peek(xo + 1);
+						xrr = fdt.peek(xo + 2);
+						xri = fdt.peek(xo + 3);
+						hlr = fillIrBin(irs, cp, ho);
+						hli = fillIrBin(irs, cp, ho + 1);
+						hrr = fillIrBin(irs, cp, ho + 2);
+						hri = fillIrBin(irs, cp, ho + 3);
+						ylr += xlr * hlr - xli * hli;
+						yli += xlr * hli + xli * hlr;
+						yrr += xrr * hrr - xri * hri;
+						yri += xrr * hri + xri * hrr;
+					}
+				}
+				bk = k0 + kk;
+				cxt.poke(ylr - yri, bk, 0);
+				cxt.poke(yli + yrr, bk, 1);
+				if (bk > 0 && bk < 2048) {
+					cxt.poke(ylr + yri, 4096 - bk, 0);
+					cxt.poke(yrr - yli, 4096 - bk, 1);
+				}
+			}
+		}
+		if (kt == 48) {
+			fillFftPass(cxt, tab, 4096, 0, 1);
+		}
+		if (kt >= 49 && kt <= 60) {
+			fillFftPass(cxt, tab, 4096, kt - 48, 1);
+		}
+		if (kt == 61) {
+			for (i = 0; i < 2048; i += 1) {
+				oi = fillMod((mt + 2) * 2048 + i, 8192);
+				otr.poke(cxt.peek(2048 + i, 0) * 0.000244140625, oi, 0);
+				otr.poke(cxt.peek(2048 + i, 1) * 0.000244140625, oi, 1);
+			}
+		}
+	}
+
+	ih = fillMod(c - 256, 512);
+	it = fillMod(c - 256, 8192);
+	cout.poke(ohr.peek(ih, 0) + otr.peek(it, 0), 0);
+	cout.poke(ohr.peek(ih, 1) + otr.peek(it, 1), 1);
+	return 0;
+}
