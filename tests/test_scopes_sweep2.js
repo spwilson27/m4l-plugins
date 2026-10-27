@@ -51,7 +51,7 @@ for (const sr of [96000, 192000]) {
 // --- SC-02: Oscilloscope multi-cycle windows silently truncated -----------------------
 function sine(f, r, n) { const a = []; for (let i = 0; i < n; i++) a.push(0.8 * Math.sin(2 * Math.PI * f * i / r)); return a; }
 function frame(f, r, mode) {
-    const s = sine(f, r, 4096);
+    const s = sine(f, r, osc.OSC_RING_N);
     return osc.oscComputeFrame(s, s, r, { chMode: 0, cycleMode: mode, trigLevel: 0, points: 336, pitchState: osc.oscCreatePitchState() });
 }
 for (const [f, r, mode, n] of [[100, 48000, 3, 8], [50, 48000, 2, 4], [100, 96000, 3, 8]]) {

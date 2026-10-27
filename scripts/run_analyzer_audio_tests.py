@@ -49,7 +49,7 @@ def chain(kind):
         mh.gen_box("dev-gen", GEN, 200, 200),
         mh.msg("dev-params", "f1 150, f2 1000, f3 6000", 200, 40, 220),
         mh.msg("dev-bind", "scope #0-analyzerscope", 200, 70, 200),
-        mh.box("dev-buf", "buffer~ #0-analyzerscope @samps 17952", 200, 110, 260, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-buf", "buffer~ #0-analyzerscope @samps 42528", 200, 110, 260, numoutlets=2, outlettype=["float", "bang"]),
     ]
     lines += [
         mh.line("obj-load", 0, "dev-params", 0),

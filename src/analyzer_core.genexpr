@@ -3,7 +3,7 @@
 // ("analyzerscope"), layout in src/analyzer_config.js:
 //   header 0 frame, 1 sr, 2 scope head, 3 fft head, 4 packet head, 5 480, 6 f1, 7 f2, 8 f3
 //   packets at 32, stride 24, 64 slots
-//   scope L 1568, scope R 5664, 4096 each; mono FFT ring 9760, 8192 samples (buffer is 17952)
+//   scope L 1568, scope R 17952, 16384 each; mono FFT ring 34336, 8192 samples (buffer is 42528)
 // K-weight is the BS.1770 shelf + RLB high-pass (a0-normalized). True peak is a 4x 8-tap
 // Hann-sinc. Four bands are cascaded one-pole pairs (12 dB/oct) with complementary subtract.
 
@@ -250,9 +250,9 @@ tpIxL = wrap(tpIxL + 1, 0, 8);
 tpIxR = wrap(tpIxR + 1, 0, 8);
 
 poke(scope, inL, 1568.0 + scopeIx, 0, 0);
-poke(scope, inR, 5664.0 + scopeIx, 0, 0);
-poke(scope, (inL + inR) * 0.5, 9760.0 + fftIx, 0, 0);
-scopeIx = wrap(scopeIx + 1, 0, 4096);
+poke(scope, inR, 17952.0 + scopeIx, 0, 0);
+poke(scope, (inL + inR) * 0.5, 34336.0 + fftIx, 0, 0);
+scopeIx = wrap(scopeIx + 1, 0, 16384);
 fftIx = wrap(fftIx + 1, 0, 8192);
 
 pktN = pktN + 1.0;

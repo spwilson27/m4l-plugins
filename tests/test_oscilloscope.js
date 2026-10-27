@@ -297,7 +297,7 @@ const doc = JSON.parse(raw.slice(32, 32 + raw.readUInt32LE(28)).toString("utf8")
 const boxes = doc.patcher.boxes.map((b) => b.box);
 const byId = {};
 for (const box of boxes) byId[box.id] = box;
-ok(byId["obj-buf"].text.includes("---analyzerscope") && byId["obj-buf"].text.includes("17952"), "Oscilloscope.amxd: scope buffer is ---analyzerscope @samps 17952");
+ok(byId["obj-buf"].text.includes("---analyzerscope") && byId["obj-buf"].text.includes("42528"), "Oscilloscope.amxd: scope buffer is ---analyzerscope @samps 42528");
 ok(byId["obj-msg-scope"].text === "scope ---analyzerscope", "Oscilloscope.amxd: scope bind is ---analyzerscope");
 ok(byId["obj-msg-setbuf"].text === "setbuffer ---analyzerscope", "Oscilloscope.amxd: setbuffer is ---analyzerscope");
 for (const b of boxes) {

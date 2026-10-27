@@ -182,14 +182,14 @@ test("1 Cyc frame at 96 kHz locks to a 30 Hz tone at 30 Hz", () => {
 // labelled one: a selected 50 ms window spans 50 ms.
 // ---------------------------------------------------------------------------------------------
 test("50 ms window spans 50 ms at 96 kHz", () => {
-    const f = frameAt(sineAt(220, 96000), 96000, 6);
+    const f = frameAt(sineAt(220, 96000, osc.OSC_RING_N), 96000, 6);
     near(f.windowMs, 50, 0.6, "50 ms window reports 50 ms at 96 kHz");
     near(f.spanSamples, 4800, 50, "50 ms window spans 4800 samples at 96 kHz");
 });
 
 test("20 ms and 50 ms windows are different windows at 192 kHz", () => {
-    const f20 = frameAt(sineAt(220, 192000), 192000, 5);
-    const f50 = frameAt(sineAt(220, 192000), 192000, 6);
+    const f20 = frameAt(sineAt(220, 192000, osc.OSC_RING_N), 192000, 5);
+    const f50 = frameAt(sineAt(220, 192000, osc.OSC_RING_N), 192000, 6);
     ok(Math.abs(f50.windowMs - f20.windowMs) > 5, "50 ms and 20 ms windows must differ at 192 kHz (both were " + f20.windowMs + " ms)");
     near(f50.windowMs, 50, 1, "50 ms window reports 50 ms at 192 kHz");
 });
