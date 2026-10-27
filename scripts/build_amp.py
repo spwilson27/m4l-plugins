@@ -41,7 +41,7 @@ import spectral_common as sc
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 DESIGNS = os.path.join(ROOT, "scripts", "amp_designs")
-BUILTIN = ["clean", "jazz", "twang", "blues", "crunch", "drive", "lead", "metal"]   # Model enum order
+BUILTIN = ["clean", "chime", "bass", "drive", "crunch", "lead", "metal", "fuzz"]   # Model enum order
 
 
 def amp_params():

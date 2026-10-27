@@ -134,14 +134,14 @@ let r0 = report(face);
 const arch0 = r0.genArch;
 // Model through the LOM: same architecture -> bank switch, no hot-load.
 const tr0 = trace().length;
-setParam(dev, "Model", 6);
+setParam(dev, "Model", 5);
 sleep(1500);
 let r = report(face);
 check(r.model.name === "Lead" && r.genArch === arch0, `Model -> Lead through the LOM: ${r.model.name}, arch unchanged`);
 check(!/hot-load/.test(trace().slice(tr0)), "same architecture: no gen hot-load");
 check(maxOut(face, 1500).rms > 0.005, "Lead plays");
 // Every built-in capture loads and plays (all Feather: bank switches, no hot-load).
-const NAMES = ["Clean", "Jazz", "Twang", "Blues", "Crunch", "Drive", "Lead", "Metal"];
+const NAMES = ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz"];
 for (let i = 0; i < NAMES.length; i++) {
     setParam(dev, "Model", i);
     sleep(900);
@@ -173,10 +173,10 @@ check(maxOut(face, 1500).rms > 0.0005, "previous model keeps playing");
 // Back to a built-in, tone controls, cab, dry/wet.
 setParam(dev, "Model", 0);
 sleep(4000);
-for (const [n, v] of [["Bass", 9], ["Treble", 1], ["Cabinet", 0], ["Gate", -60], ["Dry/Wet", 50], ["Volume", -6], ["Gain", 6], ["Normalize", 0]]) setParam(dev, n, v);
+for (const [n, v] of [["Bass", 9], ["Treble", 1], ["Cabinet", 0], ["Gate", -60], ["Dry/Wet", 50], ["Volume", -6], ["Gain", 6], ["Normalize", 0], ["EQ Pos", 1]]) setParam(dev, n, v);
 sleep(800);
 r = report(face);
-check(r.model.name === "Clean" && r.p.bass === 9 && r.p.cab === 0 && r.p.mix === 50 && r.p.volume === -6 && r.p.gain === 6 && r.p.normalize === 0, `Clean + tone/cab/dry-wet/volume/gain through the LOM (bass ${r.p.bass}, cab ${r.p.cab}, mix ${r.p.mix}, volume ${r.p.volume}, gain ${r.p.gain})`);
+check(r.model.name === "Clean" && r.p.bass === 9 && r.p.cab === 0 && r.p.mix === 50 && r.p.volume === -6 && r.p.gain === 6 && r.p.normalize === 0 && r.p.eqpos === 1, `Clean + tone/cab/dry-wet/volume/gain/normalize/Pre-EQ through the LOM (bass ${r.p.bass}, cab ${r.p.cab}, mix ${r.p.mix}, volume ${r.p.volume}, gain ${r.p.gain})`);
 o = maxOut(face, 2000);
 check(o.rms > 0.002 && isFinite(o.rms), `still playing after the changes (out rms ${o.rms.toFixed(4)})`);
 // Output mode: Stereo runs a model per channel. The test tone feeds both channels, so L and R both play.
@@ -197,7 +197,7 @@ sleep(1500);
 setParam(dev, "Output", 0);
 sleep(1500);
 check(maxOut(face, 1500).rms > 0.002 && report(face).p.stereo === 0, "back to Mono, still playing");
-for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100], ["Dry/Wet", 100], ["Volume", 0], ["Gain", 0], ["Normalize", 1], ["Model", 4]]) setParam(dev, n, v);
+for (const [n, v] of [["Bass", 5], ["Treble", 5], ["Cabinet", 2], ["Gate", -100], ["Dry/Wet", 100], ["Volume", 0], ["Gain", 0], ["Normalize", 1], ["EQ Pos", 0], ["Model", 4]]) setParam(dev, n, v);
 // --shots <dir>: a host screenshot of the VM (scripts/vm_shot.sh) with each device's track selected, tone playing.
 const SHOTS = arg("--shots", "");
 if (SHOTS) {

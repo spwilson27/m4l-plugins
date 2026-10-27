@@ -42,12 +42,41 @@ function stimulus(n) {
     return x;
 }
 
+// Pre-EQ fixture: a tone stack (Bass 10, Middle 2, Treble 8, Presence 5, Cab Off) as the 56-sample ---ampcf
+// buffer (float32 coefficients, valid flag at 50) and the tone stack itself, run like the gen runs it
+// (transposed direct form II in doubles on the float32 coefficients).
+const PRE_TONE = { bass: 10, mid: 2, treble: 8, presence: 5, cab: 0 };
+function preEqFixture() {
+    const bq = A.ampToneBiquads(PRE_TONE, SR).map((b) => b.map(Math.fround));
+    const cf = new Float64Array(A.AMP_CF_SAMPS);
+    bq.forEach((b, q) => b.forEach((v, k) => { cf[q * 5 + k] = v; }));
+    cf[50] = 1;
+    wav32(path.join(OUT, "cf_pre.wav"), cf);
+    return function (x) {
+        let y = Float64Array.from(x);
+        for (let q = 0; q < 4; q++) {
+            const [b0, b1, b2, a1, a2] = bq[q];
+            let z1 = 0, z2 = 0;
+            const o = new Float64Array(y.length);
+            for (let i = 0; i < y.length; i++) {
+                const v = y[i], yq = b0 * v + z1;
+                z1 = b1 * v - a1 * yq + z2;
+                z2 = b2 * v - a2 * yq;
+                o[i] = yq;
+            }
+            y = o;
+        }
+        return y;
+    };
+}
+
 function main() {
     fs.mkdirSync(OUT, { recursive: true });
     const template = stripComments(fs.readFileSync(path.join(ROOT, "src", "amp_core.genexpr"), "utf8"));
     const n = Math.round(SR * 1.5);
     const x = stimulus(n);
     wav32(path.join(OUT, "stim.wav"), x);
+    const preEq = preEqFixture();
     const names = process.argv.slice(2).length ? process.argv.slice(2) : ["nano", "feather", "standard", "lstm", "lstm2"];
     for (const name of names) {
         const m = A.ampParseNam(fs.readFileSync(path.join(ROOT, "tests", "amp_ref", name + ".nam"), "utf8"));
@@ -56,6 +85,7 @@ function main() {
         fs.writeFileSync(path.join(OUT, name + ".genexpr"), A.ampGenCode(template, m));
         wav32(path.join(OUT, name + "_w.wav"), m.weights);
         wav32(path.join(OUT, name + "_ref.wav"), A.ampForward(m, x));
+        wav32(path.join(OUT, name + "_pre_ref.wav"), A.ampForward(m, preEq(x)));
         console.log(name, A.ampArchLabel(m), "rf", m.receptiveField);
     }
 }

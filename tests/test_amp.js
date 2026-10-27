@@ -150,7 +150,7 @@ for (const name of ["nano", "feather", "lite", "standard", "lstm", "lstm2"]) {
 }
 
 // 4. built-in captures
-const BUILTINS = ["clean", "jazz", "twang", "blues", "crunch", "drive", "lead", "metal"];
+const BUILTINS = ["clean", "chime", "bass", "drive", "crunch", "lead", "metal", "fuzz"];
 check(A.AMP_PARAMS.model[8].length === BUILTINS.length + 1 && A.AMP_PARAMS.model[8][A.AMP_FILE_INDEX] === "File", "Model enum = 8 captures + File");
 for (const name of BUILTINS) {
     const d = JSON.parse(read(`src/amp_models/${name}.nam`));
@@ -161,6 +161,58 @@ for (const name of BUILTINS) {
     const y = A.ampForward(m, x).slice(4500);
     const pk = Math.max(...y.map(Math.abs));
     check(pk > 0.02 && pk < 2, `${name}: a 110 Hz sine comes out at peak ${pk.toFixed(3)}`);
+}
+
+// 4b. the built-ins sound different: tone fingerprint per capture (small-signal response in octave bands
+// rel. 1 kHz from -40 dBFS noise, THD of a 200 Hz sine at -24 / -3 dBFS); every pair must differ clearly in
+// EQ shape or in drive (the circuits are fitted to distinct measured targets, scripts/amp_fit_circuits.py)
+{
+    const SR = 48000, BANDS = [63, 125, 250, 500, 1000, 2000, 4000, 8000];
+    function eqBands(m) {
+        let s = 12345;
+        const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296 - 0.5; };
+        const skip = 6000, N = 4096, x = new Float64Array(skip + 2 * N);
+        for (let i = 0; i < x.length; i++) x[i] = rnd() * 2 * 0.01 * Math.sqrt(3);
+        const y = A.ampForward(m, x), ein = new Float64Array(8), eout = new Float64Array(8);
+        for (let st = skip; st + N <= x.length; st += N) {
+            for (let k = 2; k < N / 2; k += 2) {
+                const f = k * SR / N, bi = BANDS.findIndex((c) => f >= c / Math.SQRT2 && f < c * Math.SQRT2);
+                if (bi < 0) continue;
+                let xr = 0, xi = 0, yr = 0, yi = 0;
+                for (let n = 0; n < N; n++) {
+                    const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * n / N), a = 2 * Math.PI * k * n / N, c = Math.cos(a), sn = Math.sin(a);
+                    xr += w * x[st + n] * c; xi += w * x[st + n] * sn; yr += w * y[st + n] * c; yi += w * y[st + n] * sn;
+                }
+                ein[bi] += xr * xr + xi * xi; eout[bi] += yr * yr + yi * yi;
+            }
+        }
+        const g = BANDS.map((_, i) => 10 * Math.log10(eout[i] / ein[i]));
+        return g.map((v) => v - g[4]);
+    }
+    function thd(m, lv) {
+        const skip = 4800, n = 4800, x = new Float64Array(skip + n), a = Math.pow(10, lv / 20);
+        for (let i = 0; i < x.length; i++) x[i] = a * Math.sin(2 * Math.PI * 200 * i / SR);
+        const y = A.ampForward(m, x), h = [];
+        for (let k = 1; k <= 9; k++) {
+            let r = 0, im = 0;
+            for (let i = 0; i < n; i++) { const p = 2 * Math.PI * 200 * k * i / SR; r += y[skip + i] * Math.cos(p); im += y[skip + i] * Math.sin(p); }
+            h.push(Math.hypot(r, im));
+        }
+        return 100 * Math.sqrt(h.slice(1).reduce((e, v) => e + v * v, 0)) / Math.max(h[0], 1e-12);
+    }
+    const fp = BUILTINS.map((name) => {
+        const m = A.ampParseNam(JSON.parse(read(`src/amp_models/${name}.nam`)));
+        return { name, eq: eqBands(m), d: [thd(m, -24), thd(m, -3)].map((v) => Math.log(v + 0.5)) };
+    });
+    let minPair = Infinity, pair = "";
+    for (let i = 0; i < fp.length; i++) for (let j = i + 1; j < fp.length; j++) {
+        const eqd = Math.sqrt(fp[i].eq.reduce((e, v, k) => e + (v - fp[j].eq[k]) ** 2, 0) / 8);   // rms dB
+        const dd = Math.hypot(fp[i].d[0] - fp[j].d[0], fp[i].d[1] - fp[j].d[1]);                 // drive
+        const score = eqd / 3 + dd / 0.7;    // 3 dB rms of EQ shape ~ 0.7 of log-THD ~ one unit
+        if (score < minPair) { minPair = score; pair = `${fp[i].name}/${fp[j].name} (EQ ${eqd.toFixed(1)} dB rms, drive ${dd.toFixed(2)})`; }
+    }
+    check(minPair >= 1, `built-ins sound different: closest pair ${pair}, score ${minPair.toFixed(2)} (>= 1)`);
+    console.log("closest built-in pair: " + pair + ", score " + minPair.toFixed(2));
 }
 
 // 5. tone stack / cab

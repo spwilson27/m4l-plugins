@@ -44,7 +44,7 @@ var AMP_ACTS = ["Tanh", "Fasttanh", "ReLU", "LeakyReLU", "Sigmoid", "Hardtanh", 
 // unitstyle, gen message (null = engine only), enum, help]
 /** @type {Object<string, [string, string, number, number, number, number, number, (string|null), (string[]|null), string]>} */
 var AMP_PARAMS = {
-    model: ["Model", "Model", 0, 8, 4, 2, 0, null, ["Clean", "Jazz", "Twang", "Blues", "Crunch", "Drive", "Lead", "Metal", "File"], "Built-in capture or the .nam file you loaded."],
+    model: ["Model", "Model", 0, 8, 4, 2, 0, null, ["Clean", "Chime", "Bass", "Drive", "Crunch", "Lead", "Metal", "Fuzz", "File"], "Built-in capture or the .nam file you loaded."],
     gain: ["Gain", "Gain", -24, 24, 0, 0, 4, "indb", null, "Level into the model, in decibels. Captures react to level like the real amp: more gain, more drive."],
     gate: ["Gate", "Gate", -100, -20, -100, 0, 4, "gatedb", null, "Noise gate threshold. -100 dB is off."],
     bass: ["Bass", "Bass", 0, 10, 5, 0, 1, null, null, "Low shelf at 150 Hz (NAM tone stack)."],
@@ -54,10 +54,11 @@ var AMP_PARAMS = {
     cab: ["Cabinet", "Cabinet", 0, 3, 2, 2, 0, null, ["Off", "1x12", "4x12", "2x12"], "Speaker voicing after the amp. Off for a capture that already includes a cab."],
     stereo: ["Output Mode", "Output", 0, 1, 0, 2, 0, "stmode", ["Mono", "Stereo"], "Mono runs one model on the summed input. Stereo runs a model per channel (twice the CPU)."],
     normalize: ["Normalize", "Normalize", 0, 1, 1, 2, 0, null, ["Off", "On"], "Level-match captures to -18 dB using the file's loudness metadata."],
+    eqpos: ["EQ Position", "EQ Pos", 0, 1, 0, 2, 0, "eqpre", ["Post", "Pre"], "Post: the tone stack shapes the amp's output. Pre: it shapes the signal going into the model, so a boosted band also drives the amp harder."],
     volume: ["Volume", "Volume", -40, 12, 0, 0, 4, "outdb", null, "Output level after the amp and cab."],
     mix: ["Dry/Wet", "Dry/Wet", 0, 100, 100, 0, 5, "mixamt", null, "Dry / amp blend."]
 };
-var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "volume", "mix"];
+var AMP_PARAM_KEYS = ["model", "gain", "gate", "bass", "mid", "treble", "presence", "cab", "stereo", "normalize", "eqpos", "volume", "mix"];
 
 /** @param {string} key @param {number} v */
 function ampGenValue(key, v) {

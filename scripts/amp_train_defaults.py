@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Dev-time trainer for Amp's built-in captures (needs torch + neural-amp-modeler + scipy; NOT the
 repo's plain python). Each built-in is a NAM Feather WaveNet trained, with the NAM model code, on a
-synthetic amp circuit defined below (pre filter, asymmetric triode-like stages with interstage
-filters, a passive-ish tone stack, power-stage soft clip). No cabinet: the device's Cab section
-adds one. Writes src/amp_models/<name>.nam (classic .nam format, as Tone 3000 files).
+synthetic amp circuit fitted to a measured real-gear tone (scripts/amp_fit_circuits.py ->
+scripts/amp_circuits.json: input high-pass, asymmetric tanh stages, power soft clip, 8-band EQ). No
+cabinet: the device's Cab section adds one. Writes src/amp_models/<name>.nam (classic .nam format, as Tone 3000 files).
 
   <venv>/bin/python scripts/amp_train_defaults.py [name ...] [--steps N]
 """
@@ -14,7 +14,6 @@ import sys
 
 import numpy as np
 import torch
-from scipy.signal import butter, lfilter, sosfilt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from amp_nam_ref import legacy_to_current, n_weights, preset  # noqa: E402
@@ -25,47 +24,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "src", "amp_models")
 
 
-def peaking(f, q, gdb):
-    A = 10 ** (gdb / 40)
-    w0 = 2 * math.pi * f / SR
-    al = math.sin(w0) / (2 * q)
-    b = [1 + al * A, -2 * math.cos(w0), 1 - al * A]
-    a = [1 + al / A, -2 * math.cos(w0), 1 - al / A]
-    return np.array(b) / a[0], np.array(a) / a[0]
+# The circuits are fitted to measured tone targets by scripts/amp_fit_circuits.py (scripts/amp_circuits.json).
+from amp_fit_circuits import circuit as fitted_circuit  # noqa: E402
 
-
-def stage(x, gain, bias, hp, lp):
-    x = sosfilt(butter(1, hp, "highpass", fs=SR, output="sos"), x)
-    y = np.tanh(gain * x + bias) - math.tanh(bias)
-    return sosfilt(butter(1, lp, "lowpass", fs=SR, output="sos"), y)
-
-
-AMPS = {
-    # name: (pre gain, [(stage gain, bias, hp, lp)], tone peaks [(f, q, dB)], power drive, out level)
-    "clean": (1.0, [(1.6, 0.08, 40, 12000)], [(120, 0.7, 2.5), (600, 0.6, -3.0), (3000, 0.8, 3.0)], 1.2, 0.55),
-    "crunch": (1.0, [(5.0, 0.18, 90, 9000), (3.0, -0.12, 120, 7000)], [(110, 0.7, 2.0), (500, 0.7, -2.0), (1600, 0.8, 4.0)], 1.8, 0.45),
-    "lead": (1.0, [(14.0, 0.22, 180, 8000), (6.0, -0.2, 160, 6500), (4.0, 0.15, 140, 6000)],
-             [(140, 0.8, 3.0), (700, 0.6, -4.0), (2200, 1.0, 5.0)], 2.4, 0.4),
-    "jazz": (1.0, [(1.2, 0.05, 30, 6000)], [(150, 0.7, 3.5), (900, 0.7, 1.0), (3500, 0.8, -5.0)], 1.1, 0.6),
-    "twang": (1.0, [(2.2, 0.06, 70, 14000)], [(100, 0.7, 1.5), (500, 0.6, -5.0), (2800, 0.9, 5.0)], 1.5, 0.5),
-    "blues": (1.0, [(3.2, 0.15, 70, 9000), (1.8, -0.1, 100, 8000)], [(130, 0.7, 2.0), (800, 0.8, 3.0), (2500, 0.8, 1.0)], 1.6, 0.48),
-    "drive": (1.0, [(8.0, 0.2, 120, 8500), (4.0, -0.15, 140, 7000)], [(120, 0.7, 2.0), (900, 0.8, 3.0), (2000, 0.9, 3.0)], 2.1, 0.42),
-    "metal": (1.0, [(20.0, 0.25, 300, 7500), (8.0, -0.22, 220, 6500), (5.0, 0.18, 200, 6000)],
-              [(110, 0.9, 4.0), (650, 0.6, -7.0), (3000, 1.0, 5.0)], 2.8, 0.38),
-}
+with open(os.path.join(ROOT, "scripts", "amp_circuits.json")) as _f:
+    CIRCUITS = json.load(_f)
+AMPS = list(CIRCUITS)
+# Harder (high-gain) circuits get more steps than the --steps default.
+STEPS_MIN = {"lead": 5000, "metal": 8000, "fuzz": 6000}
 
 
 def amp(name, x):
-    pre, stages, peaks, drive, level = AMPS[name]
-    y = x * pre
-    for g, b, hp, lp in stages:
-        y = stage(y, g, b, hp, lp)
-    for f, q, gdb in peaks:
-        bb, aa = peaking(f, q, gdb)
-        y = lfilter(bb, aa, y)
-    y = np.tanh(drive * y) / math.tanh(drive)
-    y = sosfilt(butter(2, 30, "highpass", fs=SR, output="sos"), y)
-    return (level * y).astype(np.float32)
+    return fitted_circuit(CIRCUITS[name], x.astype(np.float64)).astype(np.float32)
 
 
 def training_signal(seconds, seed):
@@ -137,7 +107,7 @@ def train(name, steps):
     # loudness like NAM: rms of the output for a reference signal, in dB
     loud = 20 * math.log10(float(np.sqrt(np.mean(pv ** 2))) + 1e-9)
     out = {"version": "0.5.4", "architecture": "WaveNet", "config": cfg, "weights": [round(v, 7) for v in weights],
-           "sample_rate": SR, "metadata": {"name": "Amp " + name.title(), "modeled_by": "Amp (synthetic circuit)",
+           "sample_rate": SR, "metadata": {"name": "Amp " + name.title(), "modeled_by": "Amp (synthetic circuit after " + CIRCUITS[name]["source"] + ")",
            "gear_type": "amp", "tone_type": name, "loudness": round(loud, 2), "validation_esr": round(esr, 5)}}
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, name + ".nam"), "w") as f:
@@ -154,7 +124,7 @@ def main():
         del args[i:i + 2]
     torch.set_num_threads(int(os.environ.get("AMP_THREADS", "4")))
     for name in args or list(AMPS):
-        train(name, steps)
+        train(name, max(steps, STEPS_MIN.get(name, 0)))
 
 
 if __name__ == "__main__":

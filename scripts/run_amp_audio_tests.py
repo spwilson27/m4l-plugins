@@ -12,6 +12,8 @@ code per reference model, its weights, a stimulus and the reference output of am
                  equal the reference (feather, lstm)
   stereo_iso     Stereo with a silent right input: the left channel still equals the reference and the
                  right one stays at the model's constant (no state shared between the channels)
+  pre_<model>    EQ Position Pre: the raw model output equals ampForward of the tone-stack-filtered input
+  post_<model>   EQ Position Post with the same tone stack: the raw model output is the plain reference
   chain          the full chain (gate, normalize, DC block, biquads, volume, dry/wet) stays finite and
                  audible with a model running, mono and stereo
   sleep          silent input puts the model to sleep (telemetry) and outputs exact zeros
@@ -45,12 +47,12 @@ out2 = o * rgain;
 """
 
 
-def device(model, params, ref=True, code_name=None):
+def device(model, params, ref=True, code_name=None, cf=None, ref_name=None):
     code = "" if code_name and code_name.startswith("gendsp:") else open(os.path.join(FIX, (code_name or model) + ".genexpr")).read()
     boxes = [
         mh.box("dev-wbuf", f"buffer~ amp_w_t {os.path.join(FIX, model + '_w.wav')}", 40, 120, 300, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-sbuf", f"buffer~ amp_stim_t {os.path.join(FIX, 'stim.wav')}", 40, 150, 300, numoutlets=2, outlettype=["float", "bang"]),
-        mh.box("dev-cbuf", "buffer~ amp_cf_t 56 1", 40, 210, 200, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-cbuf", f"buffer~ amp_cf_t {os.path.join(FIX, cf)}" if cf else "buffer~ amp_cf_t 56 1", 40, 210, 300, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-scbuf", "buffer~ amp_scope_t 3136 1", 40, 240, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.gen_box("dev-src", SOURCE, 400, 200, numinlets=1, numoutlets=2),
         (mh.box("dev-gen", "gen~ @gen " + os.path.join(FIX, code_name[7:]), 400, 300, 200, numinlets=2, numoutlets=2, outlettype=["signal", "signal"])
@@ -58,7 +60,7 @@ def device(model, params, ref=True, code_name=None):
         mh.msg("dev-params", "w amp_w_t, cf amp_cf_t, scope amp_scope_t, wbase 0, mok 1, " + params, 40, 40, 900),
     ]
     if ref is True:
-        boxes.append(mh.box("dev-rbuf", f"buffer~ amp_ref_t {os.path.join(FIX, model + '_ref.wav')}", 40, 180, 300, numoutlets=2, outlettype=["float", "bang"]))
+        boxes.append(mh.box("dev-rbuf", f"buffer~ amp_ref_t {os.path.join(FIX, (ref_name or model + '_ref') + '.wav')}", 40, 180, 300, numoutlets=2, outlettype=["float", "bang"]))
     lines = [
         mh.line("obj-load", 0, "dev-params", 0),
         mh.line("dev-params", 0, "dev-gen", 0),
@@ -74,8 +76,8 @@ def device(model, params, ref=True, code_name=None):
     return boxes, lines
 
 
-def run(name, model, params, dur_ms, ref=True, src_params=None, code_name=None, mode="nrt"):
-    boxes, lines = device(model, params, ref, code_name)
+def run(name, model, params, dur_ms, ref=True, src_params=None, code_name=None, mode="nrt", cf=None, ref_name=None):
+    boxes, lines = device(model, params, ref, code_name, cf, ref_name)
     if mode == "audio_device":
         # Real-time CPU load cannot be measured offline (the harness's NonRealTime driver ran at
         # about real time in the VM, so wall time says nothing about the gen's cost).
@@ -105,7 +107,7 @@ def check(ok, msg):
 
 
 def main():
-    want = sys.argv[1:] or MODELS + ["stereo_feather", "stereo_lstm", "stereo_iso", "chain", "chain_stereo", "sleep"] + ["cpu_" + m for m in ["none", "nano", "feather", "standard", "lstm"]]
+    want = sys.argv[1:] or MODELS + ["stereo_feather", "stereo_lstm", "stereo_iso", "pre_feather", "pre_lstm", "post_feather", "chain", "chain_stereo", "sleep"] + ["cpu_" + m for m in ["none", "nano", "feather", "standard", "lstm"]]
     bad = 0
     for case in want:
         if case in MODELS:
@@ -120,6 +122,18 @@ def main():
             rel1 = r["maxerr1"] / max(1e-9, r["peakref"])
             bad += not check(r["nans"] == 0 and rel < 2e-3 and rel1 < 2e-3 and r["peakraw"] > 0,
                              f"{case}: L maxerr {r['maxerr1']:.3g}, R maxerr {r['maxerr']:.3g} (peak ref {r['peakref']:.3g})")
+        elif case.startswith("pre_") and case[4:] in MODELS:
+            # Pre-EQ: the raw model output equals the model run on the tone-stack-filtered input
+            m = case[4:]
+            r = run(case, m, "tapraw 1, eqpre 1, mixamt 1", 1300, cf="cf_pre.wav", ref_name=m + "_pre_ref")
+            rel = r["maxerr"] / max(1e-9, r["peakref"])
+            bad += not check(r["nans"] == 0 and rel < 2e-3 and r["peakraw"] > 0, f"{case}: maxerr {r['maxerr']:.3g} (peak ref {r['peakref']:.3g}, rel {rel:.2g})")
+        elif case.startswith("post_") and case[5:] in MODELS:
+            # Post-EQ with the same tone stack: the raw model output is untouched (equals the plain reference)
+            m = case[5:]
+            r = run(case, m, "tapraw 1, eqpre 0, mixamt 1", 1300, cf="cf_pre.wav")
+            rel = r["maxerr"] / max(1e-9, r["peakref"])
+            bad += not check(r["nans"] == 0 and rel < 2e-3, f"{case}: maxerr {r['maxerr']:.3g} (rel {rel:.2g})")
         elif case == "stereo_iso":
             r = run(case, "feather", "tapraw 2, stmode 1, mixamt 1", 1300, src_params="rgain 0")
             rel1 = r["maxerr1"] / max(1e-9, r["peakref"])
