@@ -71,8 +71,9 @@ def layout(h):
     controls.append(h.dial("mix", gx + 40.0, 23.0, 33.0, 42.0))
     controls.append(h.dial("drift", gx, 70.0, 33.0, 42.0))
     controls.append(h.button("reroll", gx + 40.0, 70.0, 33.0, 22.0, text="Reroll"))
-    controls.append(h.menu("split", gx, 118.0, 73.0, 15.0))
-    controls.append(h.menu("midi_in", gx, 137.0, 73.0, 15.0))
+    controls.append(h.menu("split", gx, 114.0, 73.0, 15.0))
+    controls.append(h.menu("midi_in", gx, 131.0, 73.0, 15.0))
+    controls.append(h.numbox("arch", gx, 148.0, 73.0, 15.0))
     controls.append(h.park(h.dial("thresh", 0, 0)))
     controls.append(h.park(h.dial("seed", 0, 0)))
 

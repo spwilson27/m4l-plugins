@@ -206,5 +206,26 @@ const noIr = (t) => !/dvIr/.test(String(t.fn.name));
     ok(e.ctx.dvSplitEff === 0 && /patcher latency 256/.test(L), "and the device falls back to Envelope (latency 256) until the new stage runs");
 }
 
+// ---- 6. the hidden map (Architecture): written at `names` (before any gen exists) and on every Arch change, idle bank first, version last ----
+{
+    const e = makeEngine();
+    const M = cfg.DV_MAP;
+    e.setParam("arch", 417);                       // Live may restore the parameter before loadbang: nothing to write to yet
+    ok(!e.bufs["---map"], "no map write before the buffer name is known");
+    e.ctx.names("---sc", "---ctl", "---ir", "---spec", "---test", "---state", "---map");
+    const b = e.bufs["---map"];
+    const rows = (bank) => Array.from(b.slice(M.BASE + bank * M.BANK_STRIDE, M.BASE + bank * M.BANK_STRIDE + cfg.DV_HIDDEN_COUNT * M.STRIDE));
+    const same = (a, c) => a.length === c.length && a.every((v, i) => Math.abs(v - c[i]) < 1e-12);
+    ok(b && b[M.VER] === 1 && b[M.BANK] === 0 && b[M.ARCH] === 417 && same(rows(0), cfg.dvMapFloats(cfg.dvArchMap(417))), "names writes the Arch 417 map into bank 0, version 1");
+    e.setParam("arch", 3);
+    ok(b[M.VER] === 2 && b[M.BANK] === 1 && same(rows(1), cfg.dvMapFloats(cfg.dvArchMap(3))) && same(rows(0), cfg.dvMapFloats(cfg.dvArchMap(417))),
+        "an Arch change writes the idle bank, flips the bank, bumps the version (the old bank is untouched)");
+    e.setParam("arch", 0);
+    ok(b[M.VER] === 3 && b[M.BANK] === 0 && same(rows(0), cfg.dvMapFloats(cfg.dvArchMap(0))), "Arch 0 = the factory map");
+    e.ctx.init_dsp();
+    e.advance(100, noIr);
+    ok(e.out.some((m) => m[0] === 0 && m[1] === "dmap" && m[2] === "---map"), "the gen resend list binds dmap");
+}
+
 console.log(`${checks} checks, ${fails} failed`);
 process.exit(fails ? 1 : 0);

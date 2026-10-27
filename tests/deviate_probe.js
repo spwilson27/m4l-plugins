@@ -22,6 +22,21 @@ var dumpWins = [];   // [start sample, count] windows of the signed residue (out
 var resultPath = "/tmp/deviate_audio.txt";
 var armed = false;
 
+// `archmap <buffer> <arch>`: write the hidden map of an Architecture into the device's ---deviatemap stand-in, as the engine does
+// (idle bank, bank index, then the version last). The hidden-value check below uses the last Arch written.
+var probeArch = 0;
+var probeMapVer = 0;
+function archmap(name, arch) {
+    probeArch = Math.round(Number(arch) || 0);
+    var b = new Buffer(String(name));
+    var nb = probeMapVer % 2;
+    b.poke(1, DV_MAP.BASE + nb * DV_MAP.BANK_STRIDE, dvMapFloats(dvArchMap(probeArch)));
+    b.poke(1, DV_MAP.ARCH, [probeArch, DV_HIDDEN_COUNT]);
+    b.poke(1, DV_MAP.BANK, [nb]);
+    probeMapVer++;
+    b.poke(1, DV_MAP.VER, [probeMapVer]);
+}
+
 function setbuffers(scope, tap) {
     names.scope = String(scope);
     names.tap = String(tap);
@@ -244,14 +259,16 @@ function analyze(durMs) {
         // hidden values against dvHiddenFromMetas of the telemetry metas / draws
         var metas = [], draws = [];
         for (var k = 0; k < 8; k++) { metas.push(sc[DV_SCOPE.METAS + k]); draws.push(sc[DV_SCOPE.DRAWS + k]); }
-        var hv = dvHiddenFromMetas(metas, draws);
+        var amap = dvArchMap(probeArch);
+        var hv = dvHiddenFromMetas(metas, draws, amap);
         var maxerr = 0, stepbad = 0;
         for (var j = 0; j < DV_HIDDEN_COUNT; j++) {
-            var row = DV_HIDDEN[j];
+            var row = amap[j];
             var got = sc[DV_SCOPE.HIDDEN + j];
-            if (row.curve === "step") { if (got !== hv[j]) stepbad++; }
+            if (row.curve === DV_CURVE_CODE.step) { if (got !== hv[j]) stepbad++; }
             else maxerr = Math.max(maxerr, Math.abs(got - hv[j]) / (Math.abs(row.hi - row.lo) || 1));
         }
+        kv("arch", probeArch);
         kv("hidden_maxerr", maxerr);
         kv("hidden_stepbad", stepbad);
         kv("irtag_expected", hv[DV_HIDDEN_INDEX.conv_ir]);

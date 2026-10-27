@@ -38,6 +38,10 @@ Cases (what each proves; numbers are printed by the run):
   mode_switch      Split Mode toggled mid-ring (default metas, Spectral stage loaded): no NaN, bounded, latency telemetry 256 -> 1279 -> 256
   sleep_silent     silence: exact zeros, ALIVE and FRAMES keep moving, ASLEEP = 1
   fuzz_a / fuzz_b  25 seeds each, extreme draws (Values 100, Ranges 100, Chance, Drift), a hit every 400 ms: no NaN, peak < 4
+  arch_*           Architecture (the hidden map the engine writes to ---deviatemap; here the probe writes it, `archmap`), Arch 37 / 417 / 913:
+                   arch_neutral (neutral metas = the input delayed exactly), arch_telemetry (telemetry_layout under that map),
+                   ring_cap_arch<N> (every meta 100: residue 0 from 2.125 s), fuzz_arch (14 hits, a new Seed and Arch before each:
+                   no NaN, peak < 4, the last page follows the last map)
   conv_onset       a burst that starts a new life with IR 6: (output with the IR bank) - (output without it) = 0.7 * wet * (IR 6 * burst) from the
                    first sample (time-domain IR from build_cache/deviate_ir_48000_td.json), i.e. the convolver gets the whole hit
   wipe_rehit       four identical hits 250 ms apart at Ring 10 (the next apply lands a few ms after the end of a life, inside the old wipe window), delay /
@@ -281,9 +285,9 @@ def device(code, case):
     boxes = [
         mh.msg("dev-params", case["params"], 40, 40, 900),
         mh.msg("dev-src-params", case["source"], 40, 70, 600),
-        mh.msg("dev-bind", "scope #0-dvscope, ctl #0-dvctl, ir #0-dvir, spec #0-dvspec", 40, 100, 560),
+        mh.msg("dev-bind", "scope #0-dvscope, ctl #0-dvctl, ir #0-dvir, spec #0-dvspec, dmap #0-dvmap", 40, 100, 560),
         mh.msg("dev-tap-bind", "sc #0-dvscope, tp #0-dvtap", 640, 100, 260),
-        mh.msg("dev-probemsg", "setbuffers #0-dvscope #0-dvtap, tapnames " + " ".join(n for n, _ in TAP_SLOTS)
+        mh.msg("dev-probemsg", f"archmap #0-dvmap {case.get('arch', 0)}, setbuffers #0-dvscope #0-dvtap, tapnames " + " ".join(n for n, _ in TAP_SLOTS)
                + (", dparams " + case["dparams"] if case.get("dparams") else "")
                + (", rwindows " + " ".join(case["rwin"]) if case.get("rwin") else "")
                + (", clicks " + " ".join(str(x) for x in case["clicks"]) if case.get("clicks") else "")
@@ -291,6 +295,7 @@ def device(code, case):
                + (", dumps " + " ".join(case["dumps"]) if case.get("dumps") else ""), 40, 130, 900),
         mh.box("dev-buf-scope", "buffer~ #0-dvscope @samps 1536", 980, 20, 220, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-ctl", "buffer~ #0-dvctl @samps 64", 980, 45, 200, numoutlets=2, outlettype=["float", "bang"]),
+        mh.box("dev-buf-map", "buffer~ #0-dvmap @samps 1040", 1220, 45, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-ir", "buffer~ #0-dvir @samps %d" % (2500000 if case.get("ir") else 4096), 980, 70, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-spec", "buffer~ #0-dvspec @samps 2048 @chans 5", 980, 95, 260, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-buf-tap", f"buffer~ #0-dvtap @samps {tap_samps(case['dur'])}", 980, 120, 260, numoutlets=2,
@@ -402,6 +407,18 @@ def ring_case(name, hot, ir=False, tf=150):
     return case(name, 3300, f"kind 4, amp 0.8, s1 100, tf {tf}", vals_extra(v, [0] * 8), ir=ir, rwin=RWIN)
 
 
+ARCHS = [37, 417, 913]
+
+
+def arch_fuzz_case(tag, seeds, archs):
+    """fuzz_case with a new Architecture as well as a new Seed before each hit (the map written by the probe, as the engine does)."""
+    ev = []
+    for k, (s, a) in enumerate(zip(seeds, archs)):
+        ev += [(300 + 400 * k - 60, "dev-gen", 0, f"dvseed {s}"), (300 + 400 * k - 50, "obj-js", 0, f"archmap #0-dvmap {a}")]
+    return case(f"fuzz_{tag}", 300 + 400 * len(seeds) + 2400, "kind 6, amp 0.9, s1 300, per 400",
+                vals_extra([100] * 8, [100] * 8, dvchance=100, dvdrift=30), events=ev, arch=archs[0])
+
+
 def fuzz_case(tag, seeds):
     """25 hits (one every 400 ms) with a new Seed before each one; every Value 100, every Range 100 (draws cover the whole range), Drift 30."""
     ev = [(300 + 400 * k - 60, "dev-gen", 0, f"dvseed {s}") for k, s in enumerate(seeds)]
@@ -442,6 +459,12 @@ def review_cases():
     return out
 
 
+def cases_tel():
+    return case("telemetry_layout", 700, "kind 2, amp 0.8, s1 100, blen 100",
+                "dvv0 12, dvv1 64, dvv2 33, dvv3 41, dvv4 77, dvv5 5, dvv6 91, dvv7 48, dvr0 10, dvr1 20, dvr2 30, dvr3 40, dvr4 50, "
+                "dvr5 60, dvr6 70, dvr7 80, dvl1 1, dvl4 1, dvsens 0.7, dvthr -30, dvchance 80, dvwet 0.75, dvseed 7, dvdrift 20")
+
+
 def cases():
     out = {
         "mix0_null": [
@@ -477,10 +500,7 @@ def cases():
         "spec_t": [case("spec_t", 1000, "kind 5, amp 0.8, s1 150, s2 350, s3 550, s4 750", "dvsplit 1, " + NEUTRAL, lat=LAT_SPEC, spec=True, channels=4, clicks=[150, 350, 550, 750])],
         "mode_switch": [case("mode_switch", 1800, "kind 4, amp 0.8, s1 100, s2 500, s3 900, s4 1300", "dvsplit 0", lat=LAT_ENV, spec=True,
                              events=[(300, "dev-gen", 0, "dvsplit 1"), (900, "dev-gen", 0, "dvsplit 0"), (1200, "dev-gen", 0, "dvsplit 1")])],
-        "telemetry_layout": [case(
-            "telemetry_layout", 700, "kind 2, amp 0.8, s1 100, blen 100",
-            "dvv0 12, dvv1 64, dvv2 33, dvv3 41, dvv4 77, dvv5 5, dvv6 91, dvv7 48, dvr0 10, dvr1 20, dvr2 30, dvr3 40, dvr4 50, "
-            "dvr5 60, dvr6 70, dvr7 80, dvl1 1, dvl4 1, dvsens 0.7, dvthr -30, dvchance 80, dvwet 0.75, dvseed 7, dvdrift 20")],
+        "telemetry_layout": [cases_tel()],
     }
     for i, m in enumerate(METAS):
         if m != "ring":
@@ -498,6 +518,12 @@ def cases():
     out["perf_busy"] = [case("perf_busy", 5000, "kind 6, amp 0.8, s1 100, per 250", "", mode="audio_device")]
     out["perf_heavy"] = [case("perf_heavy", 5000, "kind 6, amp 0.8, s1 100, per 400", heavy, mode="audio_device", ir=True)]
     out["perf_spec"] = [case("perf_spec", 5000, "kind 6, amp 0.8, s1 100, per 250", "dvsplit 1", lat=LAT_SPEC, mode="audio_device", spec=True)]
+    # Architecture: a few non-zero maps (the probe writes them into the map buffer, as the engine does)
+    out["arch_neutral"] = [case(f"arch_neutral_{a}", 900, "kind 0, amp 0.8, s1 100, s2 300", "dvwet 1, " + NEUTRAL, arch=a) for a in ARCHS]
+    out["arch_telemetry"] = [dict(cases_tel(), name=f"arch_telemetry_{a}", arch=a) for a in ARCHS]
+    for a in ARCHS:
+        out[f"ring_cap_arch{a}"] = [dict(ring_case(f"ring_cap_arch{a}", [0, 1, 2, 3, 4, 5, 6], ir=True), arch=a)]
+    out["fuzz_arch"] = [arch_fuzz_case("arch", [7 + 13 * k for k in range(14)], [1 + (k * 397) % 1000 for k in range(14)])]  # 28 events (harness cap ~30)
     out["fuzz_a"] = [fuzz_case("a", list(range(1, 26)))]
     out["fuzz_b"] = [fuzz_case("b", [101 + 37 * k for k in range(25)])]
     return out
@@ -836,13 +862,13 @@ def check_mode_switch(m, errors):
     print(f"  mode_switch: peak {m.get('maxL'):.3f}, max step {m.get('maxstep', 0):.4f}")
 
 
-def check_fuzz(name, m, errors):
+def check_fuzz(name, m, errors, min_hits=20):
     print(f"  {name}: peak {m.get('maxL'):.3f} / {m.get('maxR'):.3f}, hits {m.get('t_hits')}, draws {m.get('t_serial')}")
     if m.get("nan", 1) != 0:
         errors.append(f"{name}: {m.get('nan')} non-finite samples")
     if not (m.get("maxL", 9) < 4 and m.get("maxR", 9) < 4):
         errors.append(f"{name}: peak {m.get('maxL')} / {m.get('maxR')} must stay below 4")
-    if not (m.get("t_hits", 0) >= 20):
+    if not (m.get("t_hits", 0) >= min_hits):
         errors.append(f"{name}: only {m.get('t_hits')} hits")
 
 
@@ -1085,7 +1111,22 @@ def run_group(code, name, only_dry=False):
         elif m.get("cpuMax", 0) > 80:
             errors.append(f"{name}: audio CPU peaked at {m['cpuMax']:.1f}%")
     elif name.startswith("fuzz_"):
-        check_fuzz(name, g(name), errors)
+        check_fuzz(name, g(name), errors, 12 if name == "fuzz_arch" else 20)
+        if name == "fuzz_arch":
+            m = g(name)
+            if m.get("arch") != 1 + (13 * 397) % 1000 or m.get("hidden_maxerr", 1) > 1e-4 or m.get("hidden_stepbad", 1) != 0:
+                errors.append(f"fuzz_arch: the last page does not follow the last map (arch {m.get('arch')}, max err {m.get('hidden_maxerr')}, step {m.get('hidden_stepbad')})")
+    elif name == "arch_neutral":
+        for a in ARCHS:
+            m = g(f"arch_neutral_{a}")
+            if m.get("nan", 1) != 0 or m.get("diffL", 1) != 0 or m.get("diffR", 1) != 0 or not (m.get("t_applied", 0) >= 2) or m.get("arch") != a:
+                errors.append(f"arch_neutral {a}: neutral metas must give the input delayed {LAT_ENV} exactly (diff {m.get('diffL')}/{m.get('diffR')}, "
+                              f"pages {m.get('t_applied')}, arch {m.get('arch')})")
+    elif name == "arch_telemetry":
+        for a in ARCHS:
+            sub = []
+            check_telemetry(g(f"arch_telemetry_{a}"), sub)
+            errors += [f"arch {a}: {e}" for e in sub]
     elif name == "telemetry_layout":
         check_telemetry(g("telemetry_layout"), errors)
     elif name == "conv_onset":

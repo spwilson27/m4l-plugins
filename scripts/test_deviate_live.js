@@ -288,6 +288,42 @@ step("hit", () => {
     restore(target); setParam(target, "L Snap", 0); setParam(target, "L Pitch", 0);
 });
 
+// ---- 6b Architecture: the hidden map follows the Arch parameter, per instance --------------------------------------------------------
+step("arch", () => {
+    const cfg = require(path.join(ROOT, "src", "deviate_config.js"));
+    const hiddenErr = (r, arch) => {
+        const s = r.scope, metas = [], draws = [];
+        for (let i = 0; i < 8; i++) { metas.push(s[S.METAS + i]); draws.push(s[S.DRAWS + i]); }
+        const want = cfg.dvHiddenFromMetas(metas, draws, cfg.dvArchMap(arch)), mp = cfg.dvArchMap(arch);
+        let e = 0;
+        for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) e = Math.max(e, Math.abs(r.hidden[i] - want[i]) / (Math.abs(mp[i].hi - mp[i].lo) || 1));
+        return e;
+    };
+    const d = run[0], o = run.length > 1 ? run[1] : null;
+    setParam(d, "Chance", 100);
+    const v0 = report(d).map.ver;
+    setParam(d, "Arch", 417); sleep(300);
+    if (o) { setParam(o, "Arch", 913); sleep(300); }
+    const r1 = report(d);
+    check(r1.map.arch === 417 && r1.map.ver === v0 + 1 && !r1.map.err, `${d.face}: Arch 417 through the LOM -> map written (arch ${r1.map.arch}, version ${v0} -> ${r1.map.ver})`);
+    hook(d, "test_hit"); sleep(700);
+    const r2 = report(d);
+    const e2 = hiddenErr(r2, 417);
+    check(e2 < 1e-4, `${d.face}: the hit's hidden page follows the Arch 417 map (max err ${e2})`);
+    check(hiddenErr(r2, 0) > 1e-3, `${d.face}: and differs from the Arch 0 page (it would be vacuous otherwise)`);
+    if (o) {
+        hook(o, "test_hit"); sleep(700);
+        const ro = report(o);
+        check(ro.map.arch === 913 && hiddenErr(ro, 913) < 1e-4, `${o.face}: the other instance keeps its own map (arch ${ro.map.arch}, err ${hiddenErr(ro, 913)})`);
+        setParam(o, "Arch", 0);
+    }
+    setParam(d, "Arch", 0); sleep(300);
+    hook(d, "test_hit"); sleep(700);
+    const r3 = report(d);
+    check(r3.map.arch === 0 && hiddenErr(r3, 0) < 1e-4, `${d.face}: back to Arch 0 (err ${hiddenErr(r3, 0)})`);
+    restore(d);
+});
+
 // ---- 7 reroll ---------------------------------------------------------------------------------------------------------------------
 step("reroll", () => {
     const d = run[0];

@@ -57,7 +57,7 @@ const firstDeclIdx = code.search(decl);
 ok(coreRaw.indexOf("//@hidden") < coreRaw.search(/^(Buffer|Data|Param|History|Delay)\b/m), "//@hidden comes before the first declaration");
 ok(firstDeclIdx > code.indexOf("dv_hidden(mE, mT, hv) {"), "dv_hidden is defined before the declarations");
 ok(!/\bfract\s*\(/.test(code), "no fract()");
-ok((code.match(/\bdv_hidden\(/g) || []).length === 2, "dv_hidden: one definition + exactly one call site");
+ok((code.match(/\bdv_hidden\(/g) || []).length === 3, "dv_hidden: one definition + two call sites (hit branch, page apply)");
 ok((code.match(/\bdv_draw\(/g) || []).length === 2, "dv_draw: one definition + exactly one call site");
 ok(!/\bdelay\s*\(/.test(code), "no delay() call");
 
@@ -77,7 +77,7 @@ cfg.DV_PARAMS.forEach((p) => {
 ok(pdef("dvreroll") === -1 && pdef("dvmtrig") === -1, "dvreroll and dvmtrig start at -1 (no value yet)");
 
 const bufs = [...code.matchAll(/^Buffer (\w+)\("(\w+)"\);/gm)].map((m) => m[1]).sort().join(",");
-ok(bufs === "ctl,ir,scope,spec", `Buffer variable names ${bufs}`);
+ok(bufs === "ctl,dmap,ir,scope,spec", `Buffer variable names ${bufs}`);
 
 // scope pokes: literal slots, `base + i` loops and the waveform ring
 const pokes = [...code.matchAll(/poke\(scope,\s*([^;]*?),\s*([^,]+?),\s*0\);/g)].map((m) => m[2].trim());
@@ -124,7 +124,10 @@ ok(code.includes(`lkaN = floor(${cfg.DV_LOCK_AUDIO_MS} * sr / 1000);`), "audio l
 ok(code.includes(`hldN = ${cfg.DV_RING_HOLD_S} * sr;`) && code.includes(`fdN = ${cfg.DV_RING_FADE_S} * sr;`), "Ring hold / fade");
 ok(code.includes(`pow(10, -3.3 / (max(trN, 0.001) * sr))`), "Ring decay factor -66 dB at Tr");
 ok(code.includes(String(Math.pow(10, -3.3))), "Ring fade start level 10^-3.3");
-ok(code.includes("dv_hidden(dvAE, dvAT, dvHV);"), "hidden values from the applied page");
+ok(code.includes("dv_hidden(dvAE, dvAT, dvHV, dvMp);"), "hidden values from the applied page");
+ok(code.includes("dv_hidden(dvE, dvT, dvHV, dvMp);") && code.includes("cwE = peek(dvHV, 21);") && code.includes("tgE = clip(floor(peek(dvHV, 22) + 0.5), 0, 9);"),
+    "the hit branch takes the convolver's wet / IR from the same map");
+ok(code.includes("applyNow = (mapOk > 0.5) ? applyNow : 0;") && code.includes("mapOk > 0.5) ? 1 : 0;"), "no page and no convolver start before a map exists");
 
 // ---- 3. function parity ----
 globalThis.atan2 = Math.atan2;
@@ -138,15 +141,17 @@ const mkData = (arr, size) => { const d = new gx.DataSim(size || arr.length); ar
         const E = [], T = [];
         for (let i = 0; i < 8; i++) { E.push(rng() * 100); T.push(rng() * 100); }
         if (t < 4) for (let i = 0; i < 8; i++) { E[i] = [0, 100, 50, 33.3][t]; T[i] = [0, 100, 50, 66.6][t]; }
-        const mE = mkData(E), mT = mkData(T), hv = new gx.DataSim(64);
-        fns.dv_hidden(mE, mT, hv);
-        const ref = cfg.dvHiddenFromMetas(E, T);
+        const arch = t % 4 === 0 ? 0 : 1 + Math.floor(rng() * 1000);
+        const map = cfg.dvArchMap(arch);
+        const mE = mkData(E), mT = mkData(T), hv = new gx.DataSim(64), mp = mkData(cfg.dvMapFloats(map), 512);
+        fns.dv_hidden(mE, mT, hv, mp);
+        const ref = cfg.dvHiddenFromMetas(E, T, map);
         for (let i = 0; i < cfg.DV_HIDDEN_COUNT; i++) {
             const d = Math.abs(hv.peek(i) - ref[i]) / Math.max(1, Math.abs(ref[i]));
             worst = Math.max(worst, d);
         }
     }
-    ok(worst < 1e-12, `dv_hidden equals dvHiddenFromMetas (worst relative diff ${worst})`);
+    ok(worst < 1e-12, `dv_hidden equals dvHiddenFromMetas for Arch 0 and random Archs (worst relative diff ${worst})`);
 }
 // dv_soft
 {
@@ -273,7 +278,13 @@ function makeSim(overrides, fresh) {
     Object.assign(P, overrides || {});
     const data = {};
     decls.Data.forEach((d) => { const q = d.arg.split(",").map(Number); data[d.name] = new gx.DataSim(q[0], q[1] || 1); });
-    decls.Buffer.forEach((d) => { data[d.name] = new gx.DataSim(d.name === "scope" ? cfg.DV_SCOPE_SAMPS : d.name === "spec" ? cfg.DV_SPEC_N : 64, d.name === "spec" ? 5 : 1); });
+    decls.Buffer.forEach((d) => { data[d.name] = new gx.DataSim(d.name === "scope" ? cfg.DV_SCOPE_SAMPS : d.name === "spec" ? cfg.DV_SPEC_N : d.name === "dmap" ? cfg.DV_MAP.SAMPS : 64, d.name === "spec" ? 5 : 1); });
+    // the engine writes the Arch 0 map before the gen exists (overrides.__arch picks another one)
+    {
+        const mf = cfg.dvMapFloats(cfg.dvArchMap((overrides && overrides.__arch) || 0));
+        mf.forEach((v, i) => data.dmap.poke(v, cfg.DV_MAP.BASE + i));
+        data.dmap.poke(1, cfg.DV_MAP.VER);
+    }
     class Dly {
         constructor(n) { this.n = n; this.a = new Float64Array(n); this.w = 0; }
         write(x) { this.a[this.w] = x; this.w = (this.w + 1) % this.n; this.last = x; }
@@ -514,21 +525,6 @@ function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp
 
 
 // ---- 6. review fixes (Node twins of the audio cases conv_onset, wipe_rehit, stale_wake, reroll_shorten, mix0_exact) ----
-{
-    // the early conv page values equal the hidden values the page applies (cwE / tgE in the hit branch)
-    const rng = cfg.dvRng(4242);
-    let worst = 0;
-    for (let t = 0; t < 200; t++) {
-        const E = [], T = [];
-        for (let i = 0; i < 8; i++) { E.push(rng() * 100); T.push(rng() * 100); }
-        const hv = cfg.dvHiddenFromMetas(E, T);
-        const cw = 0.9 * Math.min(1, Math.max(0, E[4] * 0.01 * 1.0274682411155285));
-        const tg = Math.min(9, Math.floor(Math.min(1, Math.max(0, T[4] * 0.01)) * 10));
-        worst = Math.max(worst, Math.abs(cw - hv[cfg.DV_HIDDEN_INDEX.conv_wet]), Math.abs(tg - hv[cfg.DV_HIDDEN_INDEX.conv_ir]));
-    }
-    ok(worst < 1e-12, `the early conv wet / IR formulas of the hit branch equal dv_hidden (${worst})`);
-    ok(code.includes("1.0274682411155285") && cfg.dvJitter(cfg.DV_HIDDEN_INDEX.conv_wet) === 1.0274682411155285 && cfg.dvJitter(cfg.DV_HIDDEN_INDEX.conv_ir) === 1, "jitter literal of conv_wet");
-}
 const ZERO_R = { dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, dvr7: 0 };
 {
     // conv_onset: the convolver output of a hit that starts a new life equals the convolution of the hit from its first sample (IR 6, Envelope and Spectral)

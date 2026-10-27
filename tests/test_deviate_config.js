@@ -15,7 +15,7 @@ const near = (a, b, e) => Math.abs(a - b) <= e;
 
 // ---- parameter table -------------------------------------------------------------------------------------------
 const dump = JSON.parse(execFileSync("python3", ["scripts/build_deviate.py", "--dump-params"], { cwd: ROOT, encoding: "utf8" }));
-check("param count 33", dump.length === 33 && C.DV_PARAMS.length === 33, `${dump.length}/${C.DV_PARAMS.length}`);
+check("param count 34", dump.length === 34 && C.DV_PARAMS.length === 34, `${dump.length}/${C.DV_PARAMS.length}`);
 dump.forEach((p, i) => {
     const m = C.DV_PARAMS[i];
     const same = m && m[0] === p.key && m[1] === p.long && m[2] === p.short && m[3] === p.min && m[4] === p.max && m[5] === p.init &&
@@ -178,7 +178,66 @@ H.forEach((r, i) => {
 check("discrete rows read the undrifted draw T", (() => { const E = [0, 0, 0, 0, 0, 0, 0, 0], T = [0, 0, 100, 0, 100, 0, 100, 0]; const v = C.dvHiddenFromMetas(E, T); return v[C.DV_HIDDEN_INDEX.conv_ir] > 0 && v[C.DV_HIDDEN_INDEX.form_vowel] > 0 && v[C.DV_HIDDEN_INDEX.crush_bits] > 0 && v[C.DV_HIDDEN_INDEX.conv_wet] === 0; })());
 check("Ring 100 hidden Tr = 1.83 s", near(C.dvHiddenFromMetas([0, 0, 0, 0, 0, 0, 0, 100], [0, 0, 0, 0, 0, 0, 0, 100])[C.DV_HIDDEN_INDEX.tr_s], 1.83, 1e-9));
 check("Pitch 0 / 100 = -12 / +12 st", (() => { const lo = C.dvHiddenFromMetas([0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0])[C.DV_HIDDEN_INDEX.pitch_st]; const hi = C.dvHiddenFromMetas([0, 100, 0, 0, 0, 0, 0, 0], [0, 100, 0, 0, 0, 0, 0, 0])[C.DV_HIDDEN_INDEX.pitch_st]; return lo === -12 && hi === 12; })());
-check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenGen() && C.dvHiddenGen().includes("dv_hidden(mE, mT, hv)"));
+check("hidden gen text is generated and stable", C.dvHiddenGen() === C.dvHiddenGen() && C.dvHiddenGen().includes("dv_hidden(mE, mT, hv, mp)"));
+
+// ---- Architecture (arch): the hidden map ---------------------------------------------------------------------------------------
+{
+    // Arch 0 is DV_HIDDEN exactly (the old inline formula: dvCurve of the jittered meta)
+    const rng = C.dvRng(5);
+    let w = 0;
+    for (let t = 0; t < 300; t++) {
+        const E = [], T = [];
+        for (let i = 0; i < 8; i++) { E.push(rng() * 100); T.push(rng() * 100); }
+        const hv = C.dvHiddenFromMetas(E, T);
+        H.forEach((r, i) => { const u = Math.min(1, Math.max(0, (r.kind === "D" ? T : E)[r.meta] * 0.01 * C.dvJitter(i))); w = Math.max(w, Math.abs(hv[i] - C.dvCurve(r, u))); });
+    }
+    check("Arch 0 equals the original mapping", w === 0, String(w));
+    check("dvArchMap is deterministic and cached", C.dvArchMap(417) === C.dvArchMap(417) && JSON.stringify(C.dvArchMap(417)) === JSON.stringify(C.dvArchMap(417.2)));
+    const distinct = new Set();
+    let bad = [];
+    const idx = C.DV_HIDDEN_INDEX;
+    for (let a = 0; a <= 1000; a++) {
+        const mp = C.dvArchMap(a);
+        distinct.add(JSON.stringify(C.dvArchSummary(mp)));
+        // neutral at meta 0 (Pitch 50) for every Arch: every amount row sits at its Arch 0 neutral value
+        const neu = C.dvHiddenNeutral(mp), neu0 = C.dvHiddenNeutral();
+        H.forEach((r, i) => { if (r.kind === "A" && Math.abs(neu[i] - neu0[i]) > 1e-12) bad.push(`a${a} neutral ${r.id} ${neu[i]} vs ${neu0[i]}`); });
+        // every meta Snap..Grit drives at least one effect family
+        const sum = C.dvArchSummary(mp);
+        for (let m = 0; m < 7; m++) if (!sum[m].length) bad.push(`a${a} meta ${m} drives nothing`);
+        // tr_s never changes (Ring law, 2 s cap)
+        const ts = mp[idx.tr_s], ts0 = C.dvArchMap(0)[idx.tr_s];
+        if (ts.meta !== 7 || ts.lo !== ts0.lo || ts.hi !== ts0.hi || ts.curve !== ts0.curve || ts.jit !== 1) bad.push(`a${a} tr_s changed`);
+        // values stay inside the safe envelopes for the extreme and random metas
+        const probes = [[0, 0], [100, 100], [50, 50]];
+        for (let k = 0; k < 6; k++) probes.push([rng() * 100, rng() * 100]);
+        probes.forEach(([e, t]) => {
+            const E = [0, 1, 2, 3, 4, 5, 6, 7].map(() => e), T = E.map(() => t);
+            const hv = C.dvHiddenFromMetas(E, T, mp);
+            H.forEach((r, i) => {
+                const env = C.DV_ARCH_ENV[r.id], v = hv[i];
+                if (!Number.isFinite(v)) { bad.push(`a${a} ${r.id} not finite`); return; }
+                let lo, hi;
+                if (r.id === "tr_s") { lo = 0.05; hi = 1.83; }
+                else if (r.id === "pitch_st") { lo = -12; hi = 12; }
+                else if (env && env.b) { lo = env.b[0]; hi = env.b[1]; }
+                else if (env && env.abs) { lo = r.lo; hi = env.abs[1]; }
+                else if (env && env.amax) { lo = r.lo; hi = env.cap !== undefined ? env.cap : r.lo + (r.hi - r.lo) * env.amax[1]; }
+                else { lo = Math.min(r.lo, r.hi); hi = Math.max(r.lo, r.hi); }
+                if (v < lo - 1e-9 || v > hi + 1e-9) bad.push(`a${a} ${r.id} ${v} outside ${lo}..${hi}`);
+                if (r.kind === "D" && v !== Math.floor(v)) bad.push(`a${a} ${r.id} not integer ${v}`);
+            });
+        });
+        if (bad.length > 5) break;
+    }
+    check("every Arch: neutral at meta 0, Snap..Grit drive something, tr_s fixed, values inside the safe envelopes", bad.length === 0, bad.slice(0, 5).join("; "));
+    check("Arch values give many different layouts", distinct.size > 950, String(distinct.size));
+    let counts = [];
+    for (let a = 1; a <= 200; a++) counts.push(C.dvArchSummary(C.dvArchMap(a)).reduce((n, l) => n + l.length, 0));
+    check("10..17 effect families in play", Math.min(...counts) >= 10 && Math.max(...counts) <= 17, `${Math.min(...counts)}..${Math.max(...counts)}`);
+    const f = C.dvMapFloats(C.dvArchMap(3));
+    check("dvMapFloats: STRIDE floats per row, fits a bank", f.length === H.length * C.DV_MAP.STRIDE && f.length <= C.DV_MAP.BANK_STRIDE && C.DV_MAP.BASE + 2 * C.DV_MAP.BANK_STRIDE <= C.DV_MAP.SAMPS);
+}
 
 // ---- blob ---------------------------------------------------------------------------------------------------------------------
 {

@@ -36,6 +36,7 @@ SCOPE_SAMPS = 1536
 CTL_SAMPS = 64
 IR_SAMPS = 2500000
 SPEC_SAMPS = 2048  # x 5 channels
+MAP_SAMPS = 1040  # DV_MAP.SAMPS: the hidden map (Architecture), written by the engine
 # Spike S1 (DEVIATE_PLAN.md): may a transparent live.* sit over an ignoreclick canvas (z-order in Live)? Off until proven in Live.
 UNDER_CONTROLS = True  # spike S1 passed (README "Spike S1"): the engine brings every live.* to the front, so widgets over an ignoreclick canvas work
 
@@ -44,13 +45,13 @@ SPLITS = ["Envelope", "Spectral"]
 METAS = ["Snap", "Pitch", "Body", "Motion", "Space", "Echo", "Grit", "Ring"]
 VALUE_DEFAULTS = [30, 50, 30, 20, 30, 20, 20, 10]
 VALUE_HELP = {
-    "Snap": "Transient punch: shaper, a click burst and a high-pass on the hit. Higher is snappier. Each hit draws its own value around this one.",
-    "Pitch": "Pitch of the body, from -12 to +12 semitones. 50 % is no shift. Each hit draws its own value around this one.",
-    "Body": "Body resonance: a tuned resonator bank, comb and vowel formants on the body of the hit. Each hit draws its own value around this one.",
-    "Motion": "Movement: phaser and chorus on the hit and its tail. Each hit draws its own value around this one.",
-    "Space": "Room around the hit: a convolution from a built-in bank of impulse responses and a reverb. Each hit draws its own value around this one.",
-    "Echo": "Echoes: a feedback delay and a slapback on the tail. Each hit draws its own value around this one.",
-    "Grit": "Dirt: drive, bit crush, ring modulation and saturation. Each hit draws its own value around this one.",
+    "Snap": "Transient punch: shaper, a click burst and a high-pass on the hit. Higher is snappier. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
+    "Pitch": "Pitch of the body, from -12 to +12 semitones. 50 % is no shift. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
+    "Body": "Body resonance: a tuned resonator bank, comb and vowel formants on the body of the hit. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
+    "Motion": "Movement: phaser and chorus on the hit and its tail. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
+    "Space": "Room around the hit: a convolution from a built-in bank of impulse responses and a reverb. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
+    "Echo": "Echoes: a feedback delay and a slapback on the tail. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
+    "Grit": "Dirt: drive, bit crush, ring modulation and saturation. Each hit draws its own value around this one. (Architecture 0; other Architectures give it other effects.)",
     "Ring": "How long the effects ring after the hit, up to 2.0 seconds. Each hit draws its own value around this one.",
 }
 RANGE_HELP = "How far each hit may stray from the %s value, up and down. 0 %% always uses the value; 100 %% can reach the whole range."
@@ -88,10 +89,13 @@ for _i, _n in enumerate(METAS):
     P["l_" + _n.lower()] = _p(_n + " Lock", "L " + _n, 0, 1, 0, 2, 9, "dvl%d" % _i, 1, LOCK_HELP % _n, ONOFF)
 P["midi_in"] = _p("MIDI From", "MIDI In", 0, 1, 0, 2, 9, None, 1,
                   "Where MIDI notes that count as hits come from: a MIDI track or a port. Velocity and pitch are ignored.", ["No Input", "-"])
+P["arch"] = _p("Architecture", "Arch", 0.0, 1000.0, 0.0, 0, 9, None, 1,
+               "Rebuilds which effects each meta drives, which effects are in play and their ranges. 0 is the original layout; each other number is a different one.")
+UNITS = {"arch": "Arch %.0f"}  # parameter_units of unitstyle-9 parameters other than the Range rows
 INVISIBLE = {"split": 1, "midi_in": 2}  # parameter_invisible (1 = stored only, 2 = not stored)
 ENGINE_GEN = {"split", "reroll"}  # the engine sends these (split: it sets the latency attribute; reroll: it turns every 1 into a pulse the gen can see)
 PARAM_ORDER = list(P)
-ASSERT_N = 33
+ASSERT_N = 34
 assert len(P) == ASSERT_N, len(P)
 assert len({v[1] for v in P.values()}) == len(P) and all(len(v[1]) <= 8 for v in P.values())
 assert all(len(v[10]) >= 12 for v in P.values())
@@ -136,7 +140,7 @@ def valueof(key):
         v["parameter_mmax"] = hi
         v["parameter_unitstyle"] = unit
         if unit == 9:   # custom format: whole percent, so "50 %" fits a 33 px Range box (unitstyle 5 drops the "%" there)
-            v["parameter_units"] = "%.0f %"
+            v["parameter_units"] = UNITS.get(key, "%.0f %")
         if expo != 1.0:
             v["parameter_exponent"] = expo
     if key in INVISIBLE:
@@ -582,9 +586,10 @@ def build_device(face, out_dir=None):
         newobj("obj-buf-ctl", f"buffer~ ---deviatectl @samps {CTL_SAMPS}", 480, 330, 240, 1, 2, ["float", "bang"]),
         newobj("obj-buf-ir", f"buffer~ ---deviateir @samps {IR_SAMPS}", 480, 360, 260, 1, 2, ["float", "bang"]),
         newobj("obj-buf-spec", f"buffer~ ---deviatespec @samps {SPEC_SAMPS} @chans 5", 480, 390, 280, 1, 2, ["float", "bang"]),
+        newobj("obj-buf-map", f"buffer~ ---deviatemap @samps {MAP_SAMPS}", 760, 390, 240, 1, 2, ["float", "bang"]),
         newobj("obj-loadbang", "loadbang", 480, 420, 60, 1, 1, ["bang"]),
         # per-instance names: v8ui script strings are NOT expanded, so the patcher passes the `---` names in (Glitch pattern)
-        msgbox("obj-msg-names", "names ---deviatescope ---deviatectl ---deviateir ---deviatespec ---deviatetest ---dvstate", 480, 450, 480),
+        msgbox("obj-msg-names", "names ---deviatescope ---deviatectl ---deviateir ---deviatespec ---deviatetest ---dvstate ---deviatemap", 480, 450, 480),
         newobj("obj-thisdevice", "live.thisdevice", 780, 400, 90, 1, 2, ["bang", "int"]),
         msgbox("obj-msg-init", "init_dsp", 780, 430, 70),
         newobj("obj-state-send", "s ---dvstate", 560, 120, 90, 1, 0, []),

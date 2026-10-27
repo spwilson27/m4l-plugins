@@ -1,6 +1,7 @@
 // Deviate gen core: detector, seeded draw, windows, the three effect chains, the Ring envelope, Mix, telemetry.
 // Built as  fft_init + deviate_conv.genexpr + deviate_fx.genexpr + deviate_core.genexpr  (scripts/build_deviate.py gen_code) with the line `//@hidden`
-// below replaced by the generated function dv_hidden(mE, mT, hv) (dvHiddenGen() in src/deviate_config.js). Contract: src/deviate_config.js
+// below replaced by the generated function dv_hidden(mE, mT, hv, mp) (dvHiddenGen() in src/deviate_config.js): the hidden map is a table
+// (Architecture) the engine writes into ---deviatemap, copied into dvMp. Contract: src/deviate_config.js
 // (DV_SCOPE, DV_ECHO, DV_CTL, DV_PARAMS gen messages, dvStep, dvRingEnv, dvWindows, dvHiddenFromMetas). Inputs: in1 / in2 the audio, in3 / in4 the
 // Spectral stage's transient signal (src/deviate_spec.genexpr, a separate gen~ shell; zero until it is loaded).
 // One call site per helper: the Glitch helpers keep a coefficient cache in a History that every call site would share.
@@ -267,6 +268,7 @@ Buffer scope("deviatescope");
 Buffer ctl("deviatectl");
 Buffer ir("deviateir");
 Buffer spec("deviatespec");
+Buffer dmap("deviatemap");
 
 // Values 0..100, Ranges 0..100, Locks 0 / 1 (one Param each: a Param cannot be indexed).
 Param dvv0(30);
@@ -313,6 +315,7 @@ Data dvE(8);
 Data dvAT(8);
 Data dvAE(8);
 Data dvHV(64);
+Data dvMp(512);
 Data dvQ(72);
 Data dvQT(72);
 Data dvIoT(2);
@@ -436,6 +439,7 @@ History cvArm(0);
 History cvWant(0);
 History hsP(0);
 History envLast(0);
+History mapVer(0);
 
 // History discipline: a History read after a write in the same sample returns the OLD value (AGENTS 16 / 21), so every History
 // is read into a local, computed on, and written back exactly once per sample (never read again after its write).
@@ -563,6 +567,21 @@ if (dvplay > 0.5 && playLast < 0.5) {
 	poke(dvST, 0, 1);
 }
 playLast = (dvplay > 0.5) ? 1 : 0;
+
+// ---- the hidden map (Architecture): the engine writes a bank of ---deviatemap, then its index (1), then a new version (0, last).
+// A new version is copied into dvMp in one sample; until a map exists (version 0) no page is applied and the convolver does not start.
+mvN = mapVer;
+mvB = peek(dmap, 0, 0);
+if (mvB > 0.5 && mvB != mvN) {
+	mvO = 16 + 512 * clip(floor(peek(dmap, 1, 0) + 0.5), 0, 1);
+	for (i = 0; i < 288; i += 1) {
+		mvq = peek(dmap, mvO + i, 0);
+		poke(dvMp, mvq, i);
+	}
+	mvN = mvB;
+}
+mapVer = mvN;
+mapOk = (mvN > 0.5) ? 1 : 0;
 
 // ---- page timing (locals; written back after the event block) ----
 applyNow = 0;
@@ -702,8 +721,9 @@ if (evNow > -0.5) {
 		lockN = max(lkaN, latN + 96);
 		bfl = 1;
 		// the convolver's page values, known now: it has to start before the page applies (its stream begins 256 samples before the apply)
-		cwE = 0.9 * clip(peek(dvE, 4) * 0.01 * 1.0274682411155285, 0, 1);
-		tgE = min(9, floor(clip(peek(dvT, 4) * 0.01, 0, 1) * 10));
+		dv_hidden(dvE, dvT, dvHV, dvMp);
+		cwE = peek(dvHV, 21);
+		tgE = clip(floor(peek(dvHV, 22) + 0.5), 0, 9);
 		eCnt = peek(ir, 1, 0);
 		eRdy = peek(ir, 3, 0);
 		eSr = peek(ir, 2, 0);
@@ -711,7 +731,7 @@ if (evNow > -0.5) {
 		eNh = peek(ir, 18 + 4 * tgE, 0);
 		eNt = peek(ir, 19 + 4 * tgE, 0);
 		eLd = (eRdy > 0.5 && tgE < eCnt && abs(eSr - sr) < 1) ? 1 : 0;
-		cvWN = (cwE >= 0.02 && eLd > 0.5) ? 1 : 0;
+		cvWN = (cwE >= 0.02 && eLd > 0.5 && mapOk > 0.5) ? 1 : 0;
 		if (cvWN > 0.5) {
 			poke(dvCp, 1, 0);
 			poke(dvCp, eOff, 1);
@@ -751,6 +771,7 @@ hardNow = 0;
 ckAmpN = clkAmp;
 ckTN = clkT;
 pvTN = pvT;
+applyNow = (mapOk > 0.5) ? applyNow : 0;
 if (applyNow > 0.5) {
 	for (i = 0; i < 8; i += 1) {
 		te = peek(dvE, i);
@@ -758,7 +779,7 @@ if (applyNow > 0.5) {
 		poke(dvAE, te, i);
 		poke(dvAT, tt, i);
 	}
-	dv_hidden(dvAE, dvAT, dvHV);
+	dv_hidden(dvAE, dvAT, dvHV, dvMp);
 	wtN = peek(dvHV, 4);
 	wrN = peek(dvHV, 15);
 	trN = peek(dvHV, 35);

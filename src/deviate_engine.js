@@ -8,7 +8,7 @@
 //
 // Inlet 0 messages:
 //   set_<key> <value>   every parameter (prepend set_<key> from each live.* object)
-//   names <scope> <ctl> <ir> <spec> <hook> <state>   the `---` buffer / receive / send names of this instance (from loadbang)
+//   names <scope> <ctl> <ir> <spec> <hook> <state> <map>   the `---` buffer / receive / send names of this instance (from loadbang)
 //   init_dsp            from live.thisdevice (the LOM is ready): DSP start, MIDI routing, hook registration
 //   midi_note <pitch> [vel]   a note-on from stripnote: one MIDI-source hit (velocity and pitch are ignored)
 //   settype <i>         the MIDI From menu
@@ -31,7 +31,7 @@ outlets = 4;
 
 /** raw parameter values as they arrived (the deferred DSP re-sends the gen-bound ones) @type {{ [key: string]: number }} */
 var dvRaw = {};
-var dvNames = { scope: "", ctl: "", ir: "", spec: "", test: "", state: "" };
+var dvNames = { scope: "", ctl: "", ir: "", spec: "", test: "", state: "", map: "" };
 var dvPatcher = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null;
 var dvSelfId = "";
 var dvInitDone = false;
@@ -64,6 +64,30 @@ function anything() {
     if (!isFinite(v)) return;
     dvRaw[key] = v;
     if (key === "split") dvOnSplit(v);
+    if (key === "arch") dvMapWrite();
+}
+
+// ---- the hidden map (Architecture) -----------------------------------------------------------------------------------
+// The gen reads its hidden mapping from ---deviatemap (DV_MAP). Write the idle bank, then its index, then a new version (last):
+// the gen copies a bank only when the version moves, so it never sees half a table. Written at `names` (before the deferred gen
+// exists) and on every Arch change; the next page applied uses it.
+var dvMap = { arch: -1, ver: 0, writes: 0, err: "" };
+function dvMapWrite() {
+    var arch = Math.round(dvClamp(Number(dvRaw.arch) || 0, 0, DV_ARCH_MAX));
+    if (!dvNames.map) return;
+    try {
+        var b = new Buffer(dvNames.map);
+        var hdr = b.peek(1, 0, 2);
+        var ver = Number(hdr[0]) || 0, bank = Number(hdr[1]) || 0;
+        var nb = ver > 0.5 ? 1 - Math.round(bank) : 0;
+        b.poke(1, DV_MAP.BASE + nb * DV_MAP.BANK_STRIDE, dvMapFloats(dvArchMap(arch)));
+        b.poke(1, DV_MAP.ARCH, [arch, DV_HIDDEN_COUNT]);
+        b.poke(1, DV_MAP.BANK, [nb]);
+        dvMap.ver = (Math.round(ver) % 100000) + 1;
+        b.poke(1, DV_MAP.VER, [dvMap.ver]);
+        dvMap.arch = arch;
+        dvMap.writes++;
+    } catch (e) { dvMap.err = String(e); }
 }
 
 // Reroll: the Button-mode live.text sends a bare `bang` per press (a gen Param can neither hold nor see that: Spike S1 (e) counted
@@ -91,13 +115,15 @@ function dvOnReroll(v) {
     });
 }
 
-function names(scopeName, ctlName, irName, specName, testName, stateName) {
+function names(scopeName, ctlName, irName, specName, testName, stateName, mapName) {
     dvNames.scope = dvTrimName(scopeName);
     dvNames.ctl = dvTrimName(ctlName);
     dvNames.ir = dvTrimName(irName);
     dvNames.spec = dvTrimName(specName);
     dvNames.test = dvTrimName(testName);
     dvNames.state = dvTrimName(stateName);
+    dvNames.map = dvTrimName(mapName);
+    dvMapWrite();
     dvRegisterHook();
     if (dvPendingCtl) dvWriteCtl(dvPendingCtl);
 }
@@ -109,6 +135,7 @@ function dvDevResend() {
     outlet(0, "ctl", dvNames.ctl);
     outlet(0, "ir", dvNames.ir);
     outlet(0, "spec", dvNames.spec);
+    if (dvNames.map) outlet(0, "dmap", dvNames.map);
     for (var key in DV_GEN_PARAMS) {
         if (!(key in dvRaw)) continue;
         var g = DV_GEN_PARAMS[key];
@@ -595,6 +622,7 @@ function test_report() {
         geom: geom, raw: dvRaw, hook: dvNames.test, mtrig: dvMtrig, hitsSent: dvHitsSent, midi: dvMidi,
         ir: { ready: dvIr.ready, ver: dvIr.ver, sr: dvIr.sr }, alive: dvGenAlive(),
         scope: scope ? Array.prototype.slice.call(scope) : null, hidden: hidden ? Array.prototype.slice.call(hidden) : null,
+        map: { arch: dvMap.arch, ver: dvMap.ver, writes: dvMap.writes, err: dvMap.err, summary: dvArchSummary(dvArchMap(dvMap.arch < 0 ? 0 : dvMap.arch)) },
         ctlGen: dvCtlGen, frontN: dvFrontN, rr: { calls: dvRrCalls, sent: dvRrSent.slice(-8), busy: dvRrBusy }, restored: dvRestored, sections: dvSections.length,
     });
 }

@@ -6,7 +6,8 @@
 // Mirrors that must stay equal (tests/test_deviate_dsp.js checks each):
 //   DV_PARAMS        <-> P in scripts/build_deviate.py (`--dump-params`)
 //   dvHash / dvStep  <-> dv_draw in src/deviate_core.genexpr (audio case seed_repro, parity 1e-9)
-//   dvHiddenGen()    <-> dvHiddenFromMetas() (the generated GenExpr function is transpiled and compared, 1e-12)
+//   dvHiddenGen()    <-> dvHiddenFromMetas() / dvMapValue (the generated GenExpr function is transpiled and compared, 1e-12)
+//   DV_MAP           <-> the ---deviatemap copy in the core and dvMapWrite in the engine
 //   DV_SCOPE / DV_CTL / DV_ECHO <-> the pokes / peeks of the core
 
 // ---- metas, faces, sizes ----------------------------------------------------------------------------------------
@@ -104,6 +105,7 @@ var DV_PARAMS = [
     ["l_grit", "Grit Lock", "L Grit", 0, 1, 0, 2, 9, 1, "dvl6", 1],
     ["l_ring", "Ring Lock", "L Ring", 0, 1, 0, 2, 9, 1, "dvl7", 1],
     ["midi_in", "MIDI From", "MIDI In", 0, 1, 0, 2, 9, 1, null, 1],
+    ["arch", "Architecture", "Arch", 0, 1000, 0, 0, 9, 1, null, 1],
 ];
 /** key -> index into DV_PARAMS */
 var DV_PARAM_INDEX = {};
@@ -325,26 +327,177 @@ function dvCurve(row, u) {
     }
 }
 
-/**
- * The hidden values for the 8 drifted metas `E` and the 8 undrifted draws `T` (both 0..100). Discrete rows (kind D) read T.
- * @returns {Float64Array}
- */
-function dvHiddenFromMetas(E, T) {
-    var out = new Float64Array(DV_HIDDEN.length);
+// ---- Architecture (parameter `arch`): which meta drives which effect, the effects in play, their ranges ----------------
+// The gen does not bake the hidden mapping in: it reads a table from buffer ---deviatemap (layout DV_MAP) that the engine
+// writes with dvMapFloats(dvArchMap(arch)). Arch 0 is the original, hand-made mapping (DV_HIDDEN exactly); every other value
+// is a seeded random "architecture":
+//   - a random subset of the 17 effect families is in play (10..17); every family left out stays at its neutral value;
+//   - each family in play is moved, with all its rows, to one meta; Snap..Grit get at least one family each, Ring may get some;
+//   - amount rows keep their neutral value at meta 0 (Pitch: at 50), only their maximum moves (DV_ARCH_ENV `amax`);
+//   - character rows get a random sub-range of a safe envelope (`b`, `log`), in either direction; discrete rows a sub-range;
+//   - the two split windows move to a random meta inside safe bounds; `tr_s` (Ring -> Tr, the 2 s cap) never changes;
+//   - per-row jitter is re-drawn (same amplitude as DV_HIDDEN; none on the Pitch meta, so 50 stays exactly neutral).
+// Anything the gen limits (buffer lengths at 96 kHz, filter frequencies) is inside these envelopes, so every Arch is as safe as Arch 0.
+var DV_ARCH_MAX = 1000;
+var DV_MAP = Object.freeze({ VER: 0, BANK: 1, ARCH: 2, ROWS: 3, BASE: 16, BANK_STRIDE: 512, STRIDE: 8, SAMPS: 1040 });
+var DV_CURVE_CODE = Object.freeze({ lin: 0, log: 1, abs50: 2, step: 3 });
+// amount rows: amax = [min, max] of the new maximum (fraction of the factory span, or absolute for pitch_st / tfilt_hz);
+// character rows: b = [lo, hi] envelope, log = log axis, span = minimum share of the envelope; discrete rows: b and nmin bins.
+var DV_ARCH_ENV = {
+    snap_amt: { amax: [0.5, 1.0] }, click_lvl: { amax: [0.4, 1.0] }, tfilt_hz: { abs: [300, 4000], log: 1 },
+    pitch_st: { semis: [3, 12] }, pitch_wet: { amax: [0.6, 1.0], cap: 1 }, res_wet: { amax: [0.45, 1.1], cap: 0.95 },
+    comb_wet: { amax: [0.45, 1.15], cap: 0.85 }, form_wet: { amax: [0.45, 1.0] }, phas_wet: { amax: [0.45, 1.15], cap: 0.9 },
+    chor_wet: { amax: [0.45, 1.15], cap: 0.85 }, conv_wet: { amax: [0.45, 1.0] }, rev_wet: { amax: [0.45, 1.1], cap: 0.9 },
+    dly_wet: { amax: [0.45, 1.15], cap: 0.8 }, slap_wet: { amax: [0.45, 1.2], cap: 0.75 }, drive_amt: { amax: [0.45, 1.05], cap: 0.95 },
+    crush_wet: { amax: [0.45, 1.1], cap: 0.9 }, ring_wet: { amax: [0.45, 1.15], cap: 0.85 }, sat_amt: { amax: [0.45, 1.05], cap: 0.95 },
+    click_hz: { b: [900, 11000], log: 1, span: 0.3 }, grain_ms: { b: [30, 140], span: 0.3 }, res_f0: { b: [45, 900], log: 1, span: 0.3 },
+    res_stretch: { b: [0.7, 3.0], span: 0.25 }, comb_hz: { b: [60, 3000], log: 1, span: 0.3 }, phas_hz: { b: [0.08, 10], log: 1, span: 0.3 },
+    chor_hz: { b: [0.1, 8], log: 1, span: 0.3 }, chor_ms: { b: [2, 22], span: 0.3 }, rev_size: { b: [0.15, 1], span: 0.3 },
+    dly_ms: { b: [25, 600], log: 1, span: 0.3 }, dly_fb: { b: [0.05, 0.8], span: 0.3 }, ring_hz: { b: [25, 3000], log: 1, span: 0.3 },
+    win_t_ms: { b: [8, 30], span: 0.3 }, win_r_ms: { b: [90, 240], span: 0.3 },
+    form_vowel: { b: [0, 4], nmin: 2 }, crush_bits: { b: [0, 8], nmin: 3 }, conv_ir: { b: [0, 9], nmin: 3 },
+};
+var DV_ARCH_FAMILIES = ["snap", "click", "filt", "pitch", "res", "comb", "form", "phas", "chor", "conv", "rev", "dly", "slap", "drive", "crush", "ring", "sat"];
+
+/** The factory map (Arch 0): DV_HIDDEN as table rows {meta, src (0 drifted E, 1 undrifted T), curve, lo, hi, jit}. */
+function dvFactoryMap() {
+    var out = [];
     for (var i = 0; i < DV_HIDDEN.length; i++) {
         var r = DV_HIDDEN[i];
-        var m = (r.kind === "D" ? T : E)[r.meta];
-        var u = dvClamp(m * 0.01 * dvJitter(i), 0, 1);
-        out[i] = dvCurve(r, u);
+        out.push({ meta: r.meta, src: r.kind === "D" ? 1 : 0, curve: DV_CURVE_CODE[r.curve], lo: r.lo, hi: r.hi, jit: dvJitter(i) });
     }
     return out;
 }
 
-/** The values the hidden rows have at meta 0 (Pitch: at 50) = the neutral, effect-off state. */
-function dvHiddenNeutral() {
+var dvArchCache = {};
+/**
+ * The hidden map of an architecture (0..1000, rounded): one row per DV_HIDDEN row. Deterministic (mulberry32 of the Arch value).
+ * @param {number} arch
+ */
+function dvArchMap(arch) {
+    var a = Math.round(dvClamp(Number(arch) || 0, 0, DV_ARCH_MAX));
+    if (dvArchCache[a]) return dvArchCache[a];
+    var map = dvFactoryMap();
+    if (a === 0) return (dvArchCache[a] = map);
+    var neutral0 = dvHiddenNeutral(dvArchMap(0));
+    var rnd = dvRng(a * 2654435761 + 977);
+    var pick = function (n) { return Math.min(n - 1, Math.floor(rnd() * n)); };
+    // families in play (shuffled), the first 7 go to Snap..Grit one each, the rest to any meta (Ring included)
+    var fam = DV_ARCH_FAMILIES.slice();
+    for (var i = fam.length - 1; i > 0; i--) { var j = pick(i + 1); var t = fam[i]; fam[i] = fam[j]; fam[j] = t; }
+    var nOn = 10 + pick(DV_ARCH_FAMILIES.length - 10 + 1);
+    var famMeta = {};
+    for (i = 0; i < fam.length; i++) famMeta[fam[i]] = i < 7 ? i : (i < nOn ? pick(8) : -1);
+    // the order of the first 7 is random too (the shuffle), so Snap is not always the first family's meta: permute the metas 0..6
+    var perm = [0, 1, 2, 3, 4, 5, 6];
+    for (i = 6; i > 0; i--) { j = pick(i + 1); var tp = perm[i]; perm[i] = perm[j]; perm[j] = tp; }
+    for (i = 0; i < 7; i++) famMeta[fam[i]] = perm[i];
+    for (i = 0; i < DV_HIDDEN.length; i++) {
+        var r = DV_HIDDEN[i], row = map[i], env = DV_ARCH_ENV[r.id];
+        row.jit = r.jit ? 1 + r.jit * (2 * rnd() - 1) : 1;
+        if (r.id === "tr_s") continue; // Ring -> Tr stays: the 2.0 s cap and the Ring law rest on it
+        if (r.fx === "win") { row.meta = pick(7); row.src = 0; }
+        else {
+            var fm = famMeta[r.fx];
+            // a family out of play is pinned to its Arch 0 neutral value (Pitch: 0 st at 50, not the -12 at meta 0)
+            if (fm === undefined || fm < 0) { row.meta = 0; row.src = 0; row.curve = DV_CURVE_CODE.lin; row.lo = row.hi = neutral0[i]; continue; }
+            row.meta = fm;
+        }
+        var onPitch = row.meta === DV_PITCH_META;
+        if (onPitch) row.jit = 1; // the bipolar meta: no jitter, so Pitch 50 stays exactly neutral (as pitch_wet in Arch 0)
+        if (r.id === "pitch_st") {
+            var st = env.semis[0] + (env.semis[1] - env.semis[0]) * rnd();
+            st = Math.round(st * 10) / 10;
+            var sgn = rnd() < 0.5 ? -1 : 1;
+            row.curve = DV_CURVE_CODE.lin;
+            if (onPitch) { row.lo = -st * sgn; row.hi = st * sgn; } else { row.lo = 0; row.hi = st * sgn; }
+            row.src = 0;
+        } else if (r.kind === "A") {
+            var hi;
+            if (env.abs) hi = env.log ? env.abs[0] * Math.pow(env.abs[1] / env.abs[0], rnd()) : env.abs[0] + (env.abs[1] - env.abs[0]) * rnd();
+            else hi = r.lo + (r.hi - r.lo) * (env.amax[0] + (env.amax[1] - env.amax[0]) * rnd());
+            if (env.cap !== undefined) hi = Math.min(hi, env.cap);
+            row.lo = r.lo;
+            row.hi = hi;
+            row.src = 0;
+            // on the bipolar Pitch meta an amount is neutral at 50 (the Pitch default), like pitch_wet in Arch 0
+            row.curve = onPitch ? DV_CURVE_CODE.abs50 : (env.abs && env.log ? DV_CURVE_CODE.log : DV_CURVE_CODE.lin);
+        } else if (r.kind === "D") {
+            var nb = env.b[1] - env.b[0] + 1;
+            var n = env.nmin + pick(nb - env.nmin + 1);
+            var a0 = env.b[0] + pick(nb - n + 1);
+            if (rnd() < 0.5) { row.lo = a0; row.hi = a0 + n - 1; } else { row.lo = a0 + n - 1; row.hi = a0; }
+            row.curve = DV_CURVE_CODE.step;
+            row.src = 1;
+        } else {
+            var span = env.span + (1 - env.span) * rnd();
+            var p0 = (1 - span) * rnd(), p1 = p0 + span;
+            var at = function (q) { return env.log ? env.b[0] * Math.pow(env.b[1] / env.b[0], q) : env.b[0] + (env.b[1] - env.b[0]) * q; };
+            var x0 = at(p0), x1 = at(p1);
+            if (rnd() < 0.5) { var sw = x0; x0 = x1; x1 = sw; }
+            row.lo = x0;
+            row.hi = x1;
+            row.curve = env.log ? DV_CURVE_CODE.log : DV_CURVE_CODE.lin;
+            row.src = 0;
+        }
+    }
+    return (dvArchCache[a] = map);
+}
+
+/** One hidden value of a map row (the formula of dv_hidden in the gen). */
+function dvMapValue(row, E, T) {
+    var m = (row.src > 0.5 ? T : E)[row.meta];
+    var u = dvClamp(m * 0.01 * row.jit, 0, 1);
+    var lo = row.lo, hi = row.hi;
+    switch (row.curve) {
+        case 1: return lo * Math.pow(Math.max(hi / (Math.abs(lo) > 1e-9 ? lo : 1), 1e-9), u);
+        case 2: return lo + (hi - lo) * Math.min(1, 4 * Math.abs(2 * u - 1));
+        case 3: {
+            var n = Math.abs(hi - lo) + 1;
+            return lo + (hi >= lo ? 1 : -1) * Math.min(n - 1, Math.floor(u * n));
+        }
+        default: return lo + (hi - lo) * u;
+    }
+}
+
+/**
+ * The hidden values for the 8 drifted metas `E` and the 8 undrifted draws `T` (both 0..100) under a map (default: Arch 0).
+ * Discrete rows (kind D) read T.
+ * @returns {Float64Array}
+ */
+function dvHiddenFromMetas(E, T, map) {
+    var mp = map || dvArchMap(0);
+    var out = new Float64Array(DV_HIDDEN.length);
+    for (var i = 0; i < DV_HIDDEN.length; i++) out[i] = dvMapValue(mp[i], E, T);
+    return out;
+}
+
+/** The values the hidden rows have at meta 0 (Pitch: at 50) = the neutral, effect-off state (the same for every Arch). */
+function dvHiddenNeutral(map) {
     var E = [0, 0, 0, 0, 0, 0, 0, 0];
     E[DV_PITCH_META] = 50;
-    return dvHiddenFromMetas(E, E);
+    return dvHiddenFromMetas(E, E, map);
+}
+
+/** The rows of a map as the floats of one bank of ---deviatemap (DV_MAP.STRIDE per row: meta, src, curve, lo, hi, jit, 0, 0). */
+function dvMapFloats(map) {
+    var f = new Array(DV_HIDDEN.length * DV_MAP.STRIDE);
+    for (var i = 0; i < map.length; i++) {
+        var r = map[i], b = i * DV_MAP.STRIDE;
+        f[b] = r.meta; f[b + 1] = r.src; f[b + 2] = r.curve; f[b + 3] = r.lo; f[b + 4] = r.hi; f[b + 5] = r.jit; f[b + 6] = 0; f[b + 7] = 0;
+    }
+    return f;
+}
+
+/** Which effect families each meta drives under a map: [[fx, ...] x 8] (in play = amount above neutral somewhere). */
+function dvArchSummary(map) {
+    var mp = map || dvArchMap(0), out = [[], [], [], [], [], [], [], []];
+    for (var i = 0; i < DV_HIDDEN.length; i++) {
+        var r = DV_HIDDEN[i], row = mp[i];
+        if (r.kind !== "A" || r.fx === "win" || row.hi === row.lo) continue;
+        if (out[row.meta].indexOf(r.fx) < 0) out[row.meta].push(r.fx);
+    }
+    return out;
 }
 
 function dvNum(x) {
@@ -353,33 +506,39 @@ function dvNum(x) {
 }
 
 /**
- * The GenExpr function `dv_hidden(mE, mT, hv)` generated from DV_HIDDEN: mE / mT are Data(8) (drifted metas, undrifted draws),
- * hv a Data(64) that receives the hidden values. One variable set, no `if`, literals only, a single `return 0` (a gen function without a return value fails to compile) (so tests/genexpr_functions.js can run it).
+ * The GenExpr function `dv_hidden(mE, mT, hv, mp)`: mE / mT are Data(8) (drifted metas, undrifted draws), hv a Data(64) that
+ * receives the hidden values, mp a Data holding the map rows (DV_MAP.STRIDE floats each: meta, src, curve, lo, hi, jit) copied from
+ * buffer ---deviatemap. One loop, a single `return 0` (so tests/genexpr_functions.js can run it); the formula is dvMapValue's.
+ * Local names start with `hr` (a function local named like a global Data breaks the compile).
  */
 function dvHiddenGen() {
-    // One statement per row (Max 9 stops compiling a function with ~66 chained assignments: measured, see AGENTS 30): the 16 metas are
-    // read into locals first, every row is a single poke of one expression.
-    var L = ["dv_hidden(mE, mT, hv) {"];
-    var i;
-    for (i = 0; i < 8; i++) L.push("\tme" + i + " = peek(mE, " + i + ");");
-    for (i = 0; i < 8; i++) L.push("\tmt" + i + " = peek(mT, " + i + ");");
-    for (i = 0; i < DV_HIDDEN.length; i++) {
-        var r = DV_HIDDEN[i];
-        var m = (r.kind === "D" ? "mt" : "me") + r.meta;
-        var u = "clip(" + m + " * 0.01 * " + dvNum(dvJitter(i)) + ", 0, 1)";
-        var expr;
-        if (r.curve === "lin") expr = dvNum(r.lo) + " + " + dvNum(r.hi - r.lo) + " * " + u;
-        else if (r.curve === "log") expr = dvNum(r.lo) + " * pow(" + dvNum(r.hi / r.lo) + ", " + u + ")";
-        else if (r.curve === "abs50") expr = dvNum(r.lo) + " + " + dvNum(r.hi - r.lo) + " * min(1, 4 * abs(2 * " + u + " - 1))";
-        else {
-            var n = r.hi - r.lo + 1;
-            expr = dvNum(r.lo) + " + min(" + dvNum(n - 1) + ", floor(" + u + " * " + dvNum(n) + "))";
-        }
-        L.push("\t// " + i + " " + r.id + " (" + r.chain + " " + r.fx + ", meta " + r.meta + ", " + r.curve + ")");
-        L.push("\tpoke(hv, " + expr + ", " + i + ");");
-    }
-    L.push("\treturn 0;");
-    L.push("}");
+    var L = [
+        "dv_hidden(mE, mT, hv, mp) {",
+        "\tfor (hri = 0; hri < " + DV_HIDDEN.length + "; hri += 1) {",
+        "\t\thrb = " + DV_MAP.STRIDE + " * hri;",
+        "\t\thrm = peek(mp, hrb);",
+        "\t\thrs = peek(mp, hrb + 1);",
+        "\t\thrc = peek(mp, hrb + 2);",
+        "\t\thrlo = peek(mp, hrb + 3);",
+        "\t\thrhi = peek(mp, hrb + 4);",
+        "\t\thrj = peek(mp, hrb + 5);",
+        "\t\thre = peek(mE, hrm);",
+        "\t\thrt = peek(mT, hrm);",
+        "\t\thrx = hrs > 0.5 ? hrt : hre;",
+        "\t\thru = clip(hrx * 0.01 * hrj, 0, 1);",
+        "\t\thrr = hrhi / (abs(hrlo) > 0.000000001 ? hrlo : 1);",
+        "\t\thrvl = hrlo + (hrhi - hrlo) * hru;",
+        "\t\thrvg = hrlo * pow(max(hrr, 0.000000001), hru);",
+        "\t\thrva = hrlo + (hrhi - hrlo) * min(1, 4 * abs(2 * hru - 1));",
+        "\t\thrn = abs(hrhi - hrlo) + 1;",
+        "\t\thrsg = hrhi >= hrlo ? 1 : -1;",
+        "\t\thrvs = hrlo + hrsg * min(hrn - 1, floor(hru * hrn));",
+        "\t\thrv = hrc < 0.5 ? hrvl : (hrc < 1.5 ? hrvg : (hrc < 2.5 ? hrva : hrvs));",
+        "\t\tpoke(hv, hrv, hri);",
+        "\t}",
+        "\treturn 0;",
+        "}",
+    ];
     return L.join("\n");
 }
 
@@ -510,6 +669,7 @@ if (nodeModule && nodeModule.exports) {
         DV_WAVE_BLOCKS, DV_WAVE_BLOCK_SAMPS, DV_WAVE_STRIDE, DV_SCOPE, DV_SCOPE_SAMPS, DV_ECHO, DV_CTL, DV_IR, DV_CONV,
         DV_PARAMS, DV_PARAM_INDEX, DV_ENGINE_GEN, DV_HIDDEN, DV_HIDDEN_COUNT, DV_HIDDEN_INDEX, DV_EFFECTS, DV_BLOB_VERSION,
         dvClamp, dvRng, dvLatency, DV_HASH_M, dvHash, dvDriftK, dvNewState, dvStep, dvDrawn, dvDefaultDrawParams, dvRingTr, dvRingEnv, dvSmooth,
-        dvWindows, dvJitter, dvCurve, dvHiddenFromMetas, dvHiddenNeutral, dvHiddenGen, dvBlobEncode, dvBlobDecode, dvPreviewTel,
+        dvWindows, dvJitter, dvCurve, dvHiddenFromMetas, dvHiddenNeutral, dvHiddenGen, DV_ARCH_MAX, DV_MAP, DV_CURVE_CODE, DV_ARCH_ENV,
+        DV_ARCH_FAMILIES, dvFactoryMap, dvArchMap, dvMapValue, dvMapFloats, dvArchSummary, dvBlobEncode, dvBlobDecode, dvPreviewTel,
     };
 }
