@@ -377,6 +377,11 @@ def main():
 
     with open(GEN_PATH, "r", encoding="utf-8") as f:
         gen_code = f.read()
+    # The device embeds the MINIFIED text (build_mbsplit.gendsp_json -> minify_gen): test that, not the readable source
+    # (MBSPLIT_MINIFY=0 for debugging). Sweep 2: the readable source alone never proved the shipped gen compiles.
+    if os.environ.get("MBSPLIT_MINIFY", "1") != "0":
+        from minify_gen import minify_gen
+        gen_code = minify_gen(gen_code)
 
     # Case 1: 4-way parallel chain flat unity sum
     r1 = run_case(gen_code, "flat_sum_4way")
