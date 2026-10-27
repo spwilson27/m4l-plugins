@@ -185,7 +185,7 @@ function paint() {
     // legend column: draw per meta
     var lx = 154, head = !hadHit ? "READY" : (g ? "DRAW" : "ZERO");
     dvText(head, lx, 19, 8, !hadHit ? pal.dim : (g ? pal.ivory : pal.red), true);
-    if (dvTel.src) dvText("MIDI", W - 3 - dvTextW("MIDI", 7, true), 19, 7, pal.dim, true);
+    if (dvTel.src) dvText("MIDI", lx + dvTextW(head, 8, true) + 4, 19, 6.5, pal.dim, true);
     for (i = 0; i < 8; i++) {
         var ly = 28 + i * 14, m = metas[i] / 100;
         dvText(RL_NAMES[i], lx, ly + 7, 7.5, pal.dim, true);

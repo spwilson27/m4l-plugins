@@ -67,7 +67,7 @@ P = {}
 for _i, _n in enumerate(METAS):
     P["v_" + _n.lower()] = _p(_n, _n, 0.0, 100.0, float(VALUE_DEFAULTS[_i]), 0, 5, "dvv%d" % _i, 1, VALUE_HELP[_n])
 for _i, _n in enumerate(METAS):
-    P["r_" + _n.lower()] = _p(_n + " Range", "R " + _n, 0.0, 100.0, 50.0, 0, 5, "dvr%d" % _i, 1, RANGE_HELP % _n)
+    P["r_" + _n.lower()] = _p(_n + " Range", "R " + _n, 0.0, 100.0, 50.0, 0, 9, "dvr%d" % _i, 1, RANGE_HELP % _n)
 P["sens"] = _p("Sensitivity", "Sens", 0.0, 100.0, 50.0, 0, 5, "dvsens", 100,
                "How easily a hit is detected: higher reacts to softer onsets and to less sharp attacks.")
 P["thresh"] = _p("Threshold", "Thresh", -60.0, 0.0, -36.0, 0, 4, "dvthr", 1,
@@ -135,6 +135,8 @@ def valueof(key):
         v["parameter_mmin"] = lo
         v["parameter_mmax"] = hi
         v["parameter_unitstyle"] = unit
+        if unit == 9:   # custom format: whole percent, so "50 %" fits a 33 px Range box (unitstyle 5 drops the "%" there)
+            v["parameter_units"] = "%.0f %"
         if expo != 1.0:
             v["parameter_exponent"] = expo
     if key in INVISIBLE:
