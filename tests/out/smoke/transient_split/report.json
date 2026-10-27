@@ -14,42 +14,29 @@
   "needsSignal": true,
   "notes": "standalone, deferred gen (spectral_split_trace)"
  },
- "started": "2026-10-27T16:44:12.485Z",
+ "started": "2026-10-27T17:28:53.462Z",
  "steps": {
   "ready": {
-   "ok": false,
-   "ms": 45556,
-   "trace": null,
-   "meterPeakA": 0,
-   "meterPeakB": 0,
-   "traceTail": [
-    "+3628 transplit dsp-created alive 0 [#i1_fnd245 @374524]",
-    "+9699 transplit dsp-retry gen~ alive counter stayed 0 [#i1_fnd245 @380595]",
-    "+9700 transplit dsp-start creating gen~ (retry 2) [#i1_fnd245 @380596]",
-    "+9711 transplit dsp-created alive 0 [#i1_fnd245 @380607]",
-    "+15790 transplit dsp-error not running (alive 0 / 0) [#i1_fnd245 @386686]",
-    "+63 transplit dsp-start creating gen~ [#i1_3xq5y5 @411764]",
-    "+64 transplit dsp-created alive 0 [#i1_3xq5y5 @411765]",
-    "+3582 transplit dsp-retry gen~ alive counter stayed 0 [#i1_3xq5y5 @415283]",
-    "+3582 transplit dsp-start creating gen~ (retry 1) [#i1_3xq5y5 @415283]",
-    "+3583 transplit dsp-created alive 0 [#i1_3xq5y5 @415284]",
-    "+9662 transplit dsp-retry gen~ alive counter stayed 0 [#i1_3xq5y5 @421363]",
-    "+9662 transplit dsp-start creating gen~ (retry 2) [#i1_3xq5y5 @421363]",
-    "+9663 transplit dsp-created alive 0 [#i1_3xq5y5 @421364]",
-    "+15754 transplit dsp-error not running (alive 0 / 0) [#i1_3xq5y5 @427455]"
-   ]
+   "ok": true,
+   "ms": 424,
+   "trace": [
+    "+1552 transplit dsp ready after 954 ms [#i1_54lurf @131525]",
+    "+229 transplit dsp ready after 158 ms [#i1_5d5nuo @132121]"
+   ],
+   "meterPeakA": 0.8393611311912537,
+   "meterPeakB": 0.8393611311912537
   },
   "baseline": [
-   0,
-   0
+   0.8583738207817078,
+   0.8583738207817078
   ],
   "sweep": {
    "total": 10,
    "tested": 10,
    "exhausted": false,
-   "ms": 3144,
+   "ms": 3221,
    "isolationParamChanges": 0,
-   "bMeterMax": 0
+   "bMeterMax": 0.8513180613517761
   }
  },
  "devicesA": [
@@ -74,35 +61,35 @@
      "v": -100,
      "rb": -100,
      "str": "-100 %",
-     "meterA": 0,
+     "meterA": 0.8506823182106018,
      "ok": true
     },
     {
      "v": 0,
      "rb": 0,
      "str": "0.00 %",
-     "meterA": 0,
+     "meterA": 0.8407282829284668,
      "ok": true
     },
     {
      "v": 100,
      "rb": 100,
      "str": "100 %",
-     "meterA": 0,
+     "meterA": 0.7879601716995239,
      "ok": true
     },
     {
      "v": -53,
      "rb": -53,
      "str": "-53.0 %",
-     "meterA": 0,
+     "meterA": 0.7069656252861023,
      "ok": true
     },
     {
      "v": -26,
      "rb": -26,
      "str": "-26.0 %",
-     "meterA": 0,
+     "meterA": 0.724841833114624,
      "ok": true
     }
    ]
@@ -119,28 +106,28 @@
      "v": 0,
      "rb": 0,
      "str": "0.00 %",
-     "meterA": 0,
+     "meterA": 0.8257509469985962,
      "ok": true
     },
     {
      "v": 100,
      "rb": 100,
      "str": "100 %",
-     "meterA": 0,
+     "meterA": 0.8513180613517761,
      "ok": true
     },
     {
      "v": 50,
      "rb": 50,
      "str": "50.0 %",
-     "meterA": 0,
+     "meterA": 0.8386562466621399,
      "ok": true
     },
     {
      "v": 70,
      "rb": 70,
      "str": "70.0 %",
-     "meterA": 0,
+     "meterA": 0.7987635135650635,
      "ok": true
     }
    ]
@@ -162,21 +149,21 @@
      "v": 0,
      "rb": 0,
      "str": "Auto",
-     "meterA": 0,
+     "meterA": 0.7306714057922363,
      "ok": true
     },
     {
      "v": 1,
      "rb": 1,
      "str": "Transients",
-     "meterA": 0,
+     "meterA": 0.6357672214508057,
      "ok": true
     },
     {
      "v": 3,
      "rb": 3,
      "str": "All",
-     "meterA": 0,
+     "meterA": 0.7286568880081177,
      "ok": true
     }
    ]
@@ -198,28 +185,28 @@
      "v": 0,
      "rb": 0,
      "str": "512",
-     "meterA": 0,
+     "meterA": 0.850939929485321,
      "ok": true
     },
     {
      "v": 1,
      "rb": 1,
      "str": "1k",
-     "meterA": 0,
+     "meterA": 0.8368204832077026,
      "ok": true
     },
     {
      "v": 3,
      "rb": 3,
      "str": "4k",
-     "meterA": 0,
+     "meterA": 0.7945818901062012,
      "ok": true
     },
     {
      "v": 2,
      "rb": 2,
      "str": "2k",
-     "meterA": 0,
+     "meterA": 0.713087797164917,
      "ok": true
     }
    ]
@@ -236,35 +223,35 @@
      "v": -100,
      "rb": -100,
      "str": "-100 %",
-     "meterA": 0,
+     "meterA": 0.7130646705627441,
      "ok": true
     },
     {
      "v": 0,
      "rb": 0,
      "str": "0.00 %",
-     "meterA": 0,
+     "meterA": 0.8285953998565674,
      "ok": true
     },
     {
      "v": 100,
      "rb": 100,
      "str": "100 %",
-     "meterA": 0,
+     "meterA": 0.8350437879562378,
      "ok": true
     },
     {
      "v": -97,
      "rb": -97,
      "str": "-97.0 %",
-     "meterA": 0,
+     "meterA": 0.8234888315200806,
      "ok": true
     },
     {
      "v": 28,
      "rb": 28,
      "str": "28.0 %",
-     "meterA": 0,
+     "meterA": 0.8542773723602295,
      "ok": true
     }
    ]
@@ -284,14 +271,14 @@
      "v": 0,
      "rb": 0,
      "str": "Standard",
-     "meterA": 0,
+     "meterA": 0.8542154431343079,
      "ok": true
     },
     {
      "v": 1,
      "rb": 1,
      "str": "Contour",
-     "meterA": 0,
+     "meterA": 0.8341026902198792,
      "ok": true
     }
    ]
@@ -308,35 +295,35 @@
      "v": 1,
      "rb": 1,
      "str": "1",
-     "meterA": 0,
+     "meterA": 0.7694702744483948,
      "ok": true
     },
     {
      "v": 1.5,
      "rb": 1.5,
      "str": "1.5",
-     "meterA": 0,
+     "meterA": 0.709194004535675,
      "ok": true
     },
     {
      "v": 64,
      "rb": 64,
      "str": "64",
-     "meterA": 0,
+     "meterA": 0.730819582939148,
      "ok": true
     },
     {
      "v": 38,
      "rb": 38,
      "str": "38",
-     "meterA": 0,
+     "meterA": 0.8097179532051086,
      "ok": true
     },
     {
      "v": 54,
      "rb": 54,
      "str": "54",
-     "meterA": 0,
+     "meterA": 0.8394709229469299,
      "ok": true
     }
    ]
@@ -356,14 +343,14 @@
      "v": 0,
      "rb": 0,
      "str": "Percussive",
-     "meterA": 0,
+     "meterA": 0.8400818109512329,
      "ok": true
     },
     {
      "v": 1,
      "rb": 1,
      "str": "Noise",
-     "meterA": 0,
+     "meterA": 0.7810752391815186,
      "ok": true
     }
    ]
@@ -380,35 +367,35 @@
      "v": 1,
      "rb": 1,
      "str": "1",
-     "meterA": 0,
+     "meterA": 0.723669171333313,
      "ok": true
     },
     {
      "v": 8,
      "rb": 8,
      "str": "8",
-     "meterA": 0,
+     "meterA": 0.7161102890968323,
      "ok": true
     },
     {
      "v": 125,
      "rb": 125,
      "str": "125",
-     "meterA": 0,
+     "meterA": 0.7809726595878601,
      "ok": true
     },
     {
      "v": 108,
      "rb": 108,
      "str": "108",
-     "meterA": 0,
+     "meterA": 0.8447819948196411,
      "ok": true
     },
     {
      "v": 42,
      "rb": 42,
      "str": "42",
-     "meterA": 0,
+     "meterA": 0.84445720911026,
      "ok": true
     }
    ]
@@ -425,46 +412,42 @@
      "v": 0,
      "rb": 0,
      "str": "0.00 %",
-     "meterA": 0,
+     "meterA": 0.8153597116470337,
      "ok": true
     },
     {
      "v": 50,
      "rb": 50,
      "str": "50.0 %",
-     "meterA": 0,
+     "meterA": 0.7418160438537598,
      "ok": true
     },
     {
      "v": 100,
      "rb": 100,
      "str": "100 %",
-     "meterA": 0,
+     "meterA": 0.7113061547279358,
      "ok": true
     },
     {
      "v": 68,
      "rb": 68,
      "str": "68.0 %",
-     "meterA": 0,
+     "meterA": 0.6989147067070007,
      "ok": true
     },
     {
      "v": 53,
      "rb": 53,
      "str": "53.0 %",
-     "meterA": 0,
+     "meterA": 0.7975428700447083,
      "ok": true
     }
    ]
   }
  ],
  "shotAfter": "/tmp/sweep2/spectral/tests/out/smoke/transient_split/after_sweep.png",
- "fails": [
-  "not ready in 45000 ms (probe {\"global\":\"spectral_split_trace\",\"regex\":\"transplit dsp ready\"}: trace null, meter A 0.0000)"
- ],
- "warns": [
-  "output silent after restoring defaults"
- ],
- "durationMs": 59163
+ "fails": [],
+ "warns": [],
+ "durationMs": 14253
 }

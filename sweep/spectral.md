@@ -32,3 +32,15 @@ Stage A+B (audit + red tests). Red tests: `tests/test_spectral_sweep2.js` (node)
 - F3 REJECT (test deleted): the source-text check forbids roleH in kShare, but AGENTS 24 says K=1 outside a rack, and 7508337 (iteration-1 fix) deliberately gated on role for that. The in-rack role-0 case (pre-election, fb 1) outputting full dry may be real, but the right fix (e.g. an explicit in-rack flag message) is a design decision, and the audio mix_* cases (role 0 + outsel 1..3 expecting dry/K) contradict AGENTS. Needs a design call, not this test. Fixer: decide semantics and update either the runners or the template.
 - F1/F1b REJECT (test deleted): lane brief says note only (shared .adg path item); build output is path-dependent so the committed-file test can never be stable. Kept as a note.
 - T1 KEEP (infra change: runners now test the minified gen; SS_MINIFY=0 reaches the VM only if exported there).
+
+## Fix
+| finding | status | notes |
+|---|---|---|
+| F2 | fixed | source expressions now `exp(-1 / clip(..))` (transplit_core, loudsplit_core); embedded minified gen passes `test_spectral_sweep2.js`; VM audio (minified) passes; Live smoke PASS for Transient and Loud (dsp ready 0.9 s / 0.16 s) |
+| F3 | fixed (design call) | new gen Param `inrack` (default 1) sent by spectral_link `rackMessages()`; `kShare` gated on it instead of role. In-rack role-0 instances (pre-election, fb 1, fallback) take dry/K; outside a rack explicit Ch n keeps full dry. mix_0/mix_50/rack_mix_* pass for all four (VM) |
+| F9a | fixed | Loud Split six numboxes 44 px, unit text dropped (title note "Values in dB") |
+| F9b | fixed | Transient Size tab 92 px wide (344..436), label narrowed; screenshot shows "512" |
+| T1 | kept | runners test minified gen |
+| D1/D2/F1 | not fixed | doc nit / shared test-hook / path note (DEFERRED(shared) for .adg abs paths) |
+
+Gate: typecheck, builds, node tests for all four (+spectral_link tests, face fuzz 0 failures, device_static unchanged 36/13), previews rendered, VM audio (minified) latency/mix/rack/sum cases for all four pass, Live smoke PASS x4 (screenshots read). Tests updated for the extra `inrack` message and kShare text. Commit: sweep2(spectral) F2/F3/F9.
