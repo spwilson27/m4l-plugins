@@ -26,3 +26,8 @@ Tests use M4L_THEME_STATE_FILE tmp paths; none writes the real ~/.m4l_theme_stat
 - TE-2: rejected at verify; DEFERRED(shared) UX note only: macro sliders inert on Default preset (src/theme_engine.js frozen).
 - TE-4..6: S4 notes, untouched.
 Gate: typecheck, build, test_theme_editor{,_bugs,_bugsweep,_sweep2} all pass; test_face_fuzz 0 failures; test_device_static: Theme Editor ok (3 violations are other devices); preview ok; vm_smoke PASS.
+
+## Review
+Branch diff reviewed: only Theme Editor files (src/theme_editor_node.js, src/theme_editor_ui.js, device, new test, lane report, smoke outputs). No frozen/shared files, no AGENTS.md edits. Fresh rebuild of devices/Theme Editor.amxd is byte-identical (git status clean). Tests: typecheck, test_theme_editor{,_bugs,_bugsweep,_sweep2} pass. Red tests are real (hint extent bound, server_status 0 on exhausted ports, tmp state file). Nit: the hint test hardcodes 204 (Popout x) and has a dead `const z` line; harmless.
+Deferred shared: TE-2 (macro sliders inert on Default preset, src/theme_engine.js frozen).
+Verdict: READY.
