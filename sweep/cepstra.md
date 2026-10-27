@@ -31,3 +31,10 @@ Stage C (independent). Re-ran `node tests/test_cepstra_sweep2.js`: 4/4 red, each
 - KEEP CEP-S2-03 (MIDI routing): `midiin` present, no `midi_inputs` handling anywhere in Cepstra; Delay+/Envelope Trigger/Mega Modulator mirror the DeviceIO. Real S2 (MIDI mode unreachable in Live). Test is a string check, weak but deterministic; Live script covers the real behaviour.
 - Not duplicates of iteration-1 items; no flaky tests (pure node, deterministic). No rejects.
 - S4 log entries left as log-only (no tests).
+
+## Fix
+- CEP-S2-01 FIXED: patcher latency 4608; dry delayed 4608, wet padded to it (src/cepstra_core.genexpr, scripts/build_cepstra.py); audio runner LTOT all 4608. Max audio all cases pass (nulls -190..-324 dB). Live: latency_in_samples 4608 at all qualities.
+- CEP-S2-02 FIXED: gen pokes samplerate to scope 265, display reads it (266-float chunk).
+- CEP-S2-03 FIXED (minimal): face sets midi_inputs 0 routing No Input -> All Ins at init/MIDI mode. No MIDI From chooser (DEFERRED as enhancement; user cannot pick a specific track).
+- S4 items untouched.
+Gate: typecheck, build, test_cepstra, sweep2 (4/4 pass), bugsweep, test_cepstrum_lib, test_glitch, test_device_static (Cepstra 0 violations; others pre-existing), face_fuzz 0 failures, preview + smoke screenshots read OK, vm_cepstra.sh Live all PASS, vm_smoke PASS.

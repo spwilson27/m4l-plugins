@@ -16,7 +16,7 @@
 // Frame work (about 71 jobs per frame at 4k) is time-sliced across the first half of each hop, so no single
 // sample runs more than one FFT pass. Packed-FFT trick: Mid + j*Side share one complex FFT, and because
 // both log-spectra / cepstra are real and symmetric, the same packing carries them through every stage.
-// Latency = N + N/8 samples (dry path is delayed by the same amount).
+// Latency = constant 4608 samples (N + N/8 of the largest size); dry and wet are padded to it so PDC is static.
 //
 // GenExpr rules strictly enforced:
 //   - All functions appear before Buffer, Data, Param, History, and expression statements.
@@ -424,6 +424,8 @@ Data inM(8192);
 Data inS(8192);
 Data dryL(8192);
 Data dryR(8192);
+Data wetPadL(8192);
+Data wetPadR(8192);
 Data oM(8192);
 Data oS(8192);
 Data xre(4096);
@@ -557,8 +559,8 @@ yM = peek(oM, wp);
 yS = peek(oS, wp);
 poke(oM, 0, wp);
 poke(oS, 0, wp);
-dL = peek(dryL, wrap(wp - ltot, 0, 8192));
-dR = peek(dryR, wrap(wp - ltot, 0, 8192));
+dL = peek(dryL, wrap(wp - 4608, 0, 8192));
+dR = peek(dryR, wrap(wp - 4608, 0, 8192));
 poke(inM, (in1 + in2) * 0.5, wp);
 poke(inS, (in1 - in2) * 0.5, wp);
 poke(dryL, in1, wp);
@@ -576,6 +578,7 @@ if (hopCtr >= hopN) {
 	hopCtr = 0;
 	alive = wrap(alive + 1, 0, 16777216);
 	poke(scope, alive, 264, 0);
+	poke(scope, sr, 265, 0);
 	if (quietCount < nCur) {
 		if (jobId >= jobCount) {
 			jobId = 0;
@@ -632,8 +635,12 @@ if (jobId < jobCount) {
 	}
 }
 
-wetL = yM + yS;
-wetR = yM - yS;
+// Constant total latency 4608 (largest size): the wet path is padded by 4608 - ltot so Live's PDC value never changes.
+poke(wetPadL, yM + yS, wp);
+poke(wetPadR, yM - yS, wp);
+padN = 4608 - ltot;
+wetL = peek(wetPadL, wrap(wp - padN, 0, 8192));
+wetR = peek(wetPadR, wrap(wp - padN, 0, 8192));
 outL = dL * dryG + wetL * wetG;
 outR = dR * dryG + wetR * wetG;
 
