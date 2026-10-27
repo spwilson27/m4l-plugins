@@ -14,3 +14,8 @@ Audio suite not re-run (no DSP change; no findings in gen code reading: neutral 
 - PCP-S4-02 Gate drag clamps -60..-6 but gen/blob accept -66..-6; Gate is only in the blob (not automatable).
 - PCP-S4-03 `midi_clear` is never wired: held-note state can stick (no CC123/transport handling); latched chord overwrites the user's scale mask and is not saved until next click (no notifyclients in midi_in).
 - PCP-S4-04 A NaN input latches band SVF state (clip(NaN) stays NaN) until reload; output is fixnan'd so just silent wet.
+
+## Verify
+- PCP-S2-01 KEEP: real S2 (#0 not expanded in top-level device, AGENTS 15/Glitch/Mega notes); test run fails because build still has #0-percip names.
+- PCP-S2-02 KEEP: real S2 (audio-effect midi_inputs defaults to "No Input", measured for Mega Modulator/Cepstra); test run fails because no midi_inputs routing in src. Test is a static grep, acceptable as a red marker.
+- S4 items: log only, no tests.
