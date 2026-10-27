@@ -33,3 +33,6 @@ Counts: S1 0, S2 2, S3 1, S4 3.
 | E-05/E-06 | not fixed | S4, log only |
 
 Gate: typecheck, build, test_envtrig, test_envtrig_sweep2, preview (read), test_device_static (Envelope Trigger ok; other devices' violations are not this lane), test_face_fuzz 0 failures; VM: `vm_envtrig.sh ui` pass, `vm_envtrig.sh run` pass, `vm_smoke.sh` PASS. DSP unchanged so no audio re-run. Commit: "fix(envtrig): unique MIDI Panel short name, ...".
+
+## Review
+Diff main...HEAD reviewed: build_envtrig.py (short name, dial textcolor), run_envtrig_ui_tests.py prefix, one exact AGENTS s12 line, red test file. No frozen/shared files touched. Fresh rebuild leaves devices/ unchanged (committed .amxd matches). Gates re-run: typecheck, test_envtrig, test_envtrig_sweep2, test_device_static (Envelope Trigger ok). Red tests assert the real defects (duplicate short name, missing textcolor, runner prefix vs built script). Verdict: READY. Deferred shared items: none.
