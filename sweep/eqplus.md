@@ -23,3 +23,9 @@ Counts: S1 0, S2 2, S3 0, S4 3.
 - EQP-S2-02 KEEP: runner invokes subprocess "node" (lines 298, 322); VM has no node (AGENTS 1a); deterministic static check, fails for the stated reason.
 - EQP-S4-01..03 not tested (log only), no verdict needed.
 - Note: git diff main also shows unrelated Neural Amp changes (branch base behind main); not part of this lane.
+
+## Fix
+- EQP-S2-01 fixed: `#0-eqplus*` -> `---eqplus*` in build_eqplus.py, src/eqplus_ui.js / config / core comments, runner harness patch, tests/test_eqplus.js (updated expectations to `---`). Commit a9a546f.
+- EQP-S2-02 fixed: runner replays `scripts/eqplus_audio_fixtures.json` when node is absent (records when present; `--fixtures`); added `scripts/vm_eqplus.sh audio`. Commit a9a546f.
+- EQP-S4-01 fixed (AGENTS section 32 appended, vm_eqplus.sh). S4-02/03 log only.
+- Gate: typecheck, build, test_eqplus (2766), bugsweep, sweep2 tests all green, test_device_static EQ+ 0 violations, test_face_fuzz 0 failures, preview Read clean; vm_smoke PASS (54/54 params, screenshot clean). VM audio suite run via vm_eqplus.sh (see summary).
