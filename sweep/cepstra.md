@@ -23,3 +23,11 @@ Red run: `node tests/test_cepstra_sweep2.js` -> 4/4 checks fail for the stated r
 - CEP-S4-06 Quality switch / load mute also mutes the dry path (85 ms at load even at Mix 0); inputs > ~+44 dBFS hit the exp(12) magnitude clip.
 - CEP-S4-07 Lock follower correctness depends on parameter restore order (Lock restored after Mid/Side in box order; not guaranteed).
 - Shared: `scripts/run_cepstrum_lib_audio_tests.py` needed node; fixed here (host-generated JSON). cepstrum_lib itself: no defects found.
+
+## Verify
+Stage C (independent). Re-ran `node tests/test_cepstra_sweep2.js`: 4/4 red, each for the stated reason.
+- KEEP CEP-S2-01 (latency): patcher has no `latency`, gen path is N+N/8 late (AGENTS s12), Live PDC would misalign. Real S2. Note: the test accepts only a static 2k/4k value; a runtime `setattr latency` fix (Multiband Split style) would not satisfy it, adjust the test then.
+- KEEP CEP-S2-02 / 02b (srNow): `srNow` is assigned once (44100) and never updated; gen has no sample rate in the scope; slot 265 is free (264 = alive). Expected 7.2 ms at 48k is correct arithmetic. Real S2.
+- KEEP CEP-S2-03 (MIDI routing): `midiin` present, no `midi_inputs` handling anywhere in Cepstra; Delay+/Envelope Trigger/Mega Modulator mirror the DeviceIO. Real S2 (MIDI mode unreachable in Live). Test is a string check, weak but deterministic; Live script covers the real behaviour.
+- Not duplicates of iteration-1 items; no flaky tests (pure node, deterministic). No rejects.
+- S4 log entries left as log-only (no tests).
