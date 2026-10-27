@@ -24,6 +24,11 @@ const DP_PITCH_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A
 const DP_LFO_BEATS = [1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32];
 const DP_TIME_MAX_MS = 8000; // the gen core clips tms here (and to its 524288-sample tank)
 const DP_TANK = 524288;
+/** Longest delay time (ms) the tank holds at ctx.sr (the gen clips at DP_TANK - 8 samples). @param {{sr?: number}} [ctx] */
+function dpTmaxMs(ctx) {
+    const sr = ctx && ctx.sr > 0 ? ctx.sr : 0;
+    return sr > 0 ? Math.min(DP_TIME_MAX_MS, (DP_TANK - 8) / sr * 1000) : DP_TIME_MAX_MS;
+}
 
 // buffer~ #0-dpscope (Start telemetry, see src/delayplus_start.genexpr)
 const DP_SCOPE = {
@@ -130,7 +135,7 @@ function dpMaxNote(tminMs) {
 /**
  * True when a Pitch / MIDI side's note is above dpMaxNote, so its period is folded.
  * @param {{tmode?: number, note?: number, cents?: number, offs?: number}} side
- * @param {{midiNote?: number, tminMs?: number}} [ctx]
+ * @param {{midiNote?: number, tminMs?: number, sr?: number}} [ctx]
  */
 function dpPitchFolded(side, ctx) {
     const tm = dpIndex(side.tmode, DP_TMODES.length);
@@ -149,13 +154,13 @@ function dpPitchFolded(side, ctx) {
  * @param {{tmode?: number, time?: number, div?: number, mult?: number, note?: number, cents?: number,
  *          offs?: number}} side
  * @param {number} bpm
- * @param {{midiNote?: number, tminMs?: number}} [ctx]
+ * @param {{midiNote?: number, tminMs?: number, sr?: number}} [ctx]
  * @returns {string | null}
  */
 function dpSideWarn(side, bpm, ctx) {
     const tm = dpIndex(side.tmode, DP_TMODES.length);
     const tmin = ctx && ctx.tminMs > 0 ? ctx.tminMs : 0;
-    const tmax = DP_TIME_MAX_MS;
+    const tmax = dpTmaxMs(ctx);
     const beat = 60000 / dpClamp(Number(bpm) || 120, 20, 999);
     const offs = 1 + dpClamp(Number(side.offs) || 0, -33, 33) / 100;
     if (tm === DP_TM.PITCH || tm === DP_TM.MIDI) {
@@ -230,7 +235,7 @@ function dpDivSnap(v, prev, trip, dot) {
  * @param {{tmode?: number, time?: number, div?: number, mult?: number, note?: number, cents?: number,
  *          offs?: number}} side  the side's parameter values
  * @param {number} bpm
- * @param {{midiNote?: number, tminMs?: number}} [ctx]  last MIDI note (-1 = none yet) and the
+ * @param {{midiNote?: number, tminMs?: number, sr?: number}} [ctx]  last MIDI note (-1 = none yet) and the
  *        shortest loop the tank can honour (chain latency + slice), in ms
  * Time: ms. Sync: a straight, triplet or dotted note value (div, an index into DP_DIV) x a free
  * multiplier (0.02..50).
@@ -250,9 +255,9 @@ function dpSideMs(side, bpm, ctx) {
         ms = dpNotePeriodMs(dpClamp(Number(note), 0, 127), dpClamp(Number(side.cents) || 0, -100, 100)) * offs;
         const tmin = ctx && ctx.tminMs > 0 ? ctx.tminMs : 0;
         if (ms < tmin) ms *= Math.ceil(tmin / ms - 1e-9);
-        return dpClamp(ms, 0.05, DP_TIME_MAX_MS);
+        return dpClamp(ms, 0.05, dpTmaxMs(ctx));
     } else ms = Number(side.time) || 0;
-    return dpClamp(ms * offs, 1, DP_TIME_MAX_MS);
+    return dpClamp(ms * offs, 1, dpTmaxMs(ctx));
 }
 
 // LFO rate in Hz: free in Hz, or one cycle per note value when synced.
@@ -399,7 +404,7 @@ function dpFormatMs(ms) {
 var nodeModule = (typeof module !== "undefined") ? module : undefined;
 if (nodeModule && nodeModule.exports) {
     nodeModule.exports = {
-        DP_NOTE_BEATS, DP_NOTE_NAMES, DP_DIV_BEATS, DP_DIV_NAMES, DP_DIV_KIND, DP_TMODES, DP_TM, DP_NOTE_DEFAULT, DP_MULT_MIN, DP_MULT_MAX, dpDivAllowed, dpDivSnap, dpNoteName, dpNotePeriodMs, dpMaxNote, dpPitchFolded, dpSideWarn, dpClipStep, DP_CLIP_HOLD, DP_CLIP_FADE, DP_LFO_BEATS, DP_DIV_DEFAULT, DP_TIME_MAX_MS, DP_TANK, DP_SCOPE, DP_HIST_OFFSET, DP_HIST_BLOCKS,
+        DP_NOTE_BEATS, DP_NOTE_NAMES, DP_DIV_BEATS, DP_DIV_NAMES, DP_DIV_KIND, DP_TMODES, DP_TM, DP_NOTE_DEFAULT, DP_MULT_MIN, DP_MULT_MAX, dpDivAllowed, dpDivSnap, dpNoteName, dpNotePeriodMs, dpMaxNote, dpPitchFolded, dpSideWarn, dpClipStep, DP_CLIP_HOLD, DP_CLIP_FADE, DP_LFO_BEATS, DP_DIV_DEFAULT, DP_TIME_MAX_MS, DP_TANK, dpTmaxMs, DP_SCOPE, DP_HIST_OFFSET, DP_HIST_BLOCKS,
         DP_HIST_BLOCK_SAMPS, DP_SCOPE_SAMPS, DP_ESCOPE, DP_ESCOPE_SAMPS, DP_BUS_NAME, DP_REG_STALE_MS,
         dpTheme, dpThemeWatch, dpClamp, dpIndex, dpSideMs, dpLfoHz, dpSideLabel, dpMinTimeSamples, dpEffectiveTimes,
         dpReturnWriteIndex, dpDeviceLatency, dpEchoTaps, dpParseDevicePath, dpFindPartner, dpChainLatency, dpExtractIds,

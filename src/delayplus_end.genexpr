@@ -43,6 +43,7 @@ History cEt(0);
 History kCand(1e9);
 History kCal(0);
 History calOk(0);
+History rPrev(1e9);
 History kCur(1e9);
 History km1(1e9);
 History km2(1e9);
@@ -118,6 +119,24 @@ poke(hdr, alive, 15);
 // Start may run up to two vectors ahead), so window minima are held for 8 windows (~3 s); a lower
 // value is adopted at once, and the hold resets when Start's counter stops (re-link / device off).
 rE = wd(cs - cn, M);
+// A jump of the relation by more than 4096 samples is not vector jitter (Start's counter was
+// stale or restarted): drop the held windows, or the stale minimum is held for ~3 s (DP-S2-02).
+jmp = abs(rE - rPrev) > 4096 && rPrev < 1e8;
+rPrev = rE;
+if (jmp) {
+	kCur = 1e9;
+	km1 = 1e9;
+	km2 = 1e9;
+	km3 = 1e9;
+	km4 = 1e9;
+	km5 = 1e9;
+	km6 = 1e9;
+	km7 = 1e9;
+	km8 = 1e9;
+	eLo = 1e9;
+	eHi = -1e9;
+	kWin = 0;
+}
 kCur = min(kCur, rE);
 eLo = min(eLo, rE);
 eHi = max(eHi, rE);

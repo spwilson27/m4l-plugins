@@ -74,7 +74,7 @@ function dpSide(s) {
 // period (dpSideMs), using the minimum the gen core reports (scope TMIN, samples).
 function dpPokeTimes() {
     var bpm = dpLink.bpm;
-    var ctx = { midiNote: st.midiNote, tminMs: st.tmin > 0 ? st.tmin * 1000 / (st.sr || 44100) : 0 };
+    var ctx = { midiNote: st.midiNote, tminMs: st.tmin > 0 ? st.tmin * 1000 / (st.sr || 44100) : 0, sr: st.sr || 0 };
     st.msL = dpSideMs(dpSide("l"), bpm, ctx);
     st.msR = dpSideMs(dpSide("r"), bpm, ctx);
     st.lfoHzOut = dpLfoHz(st.lfosync > 0.5, st.lfohz, st.lfodiv, bpm);
@@ -248,7 +248,7 @@ function dpDrawHeader(w) {
 
     // Left: each side's range warning in that side's own terms (dpSideWarn: MIN 16.1 ms, MIN 1/32,
     // MAX x32.00, MAX B0). Both sides alike -> one pill; otherwise each is prefixed with its side.
-    var ctx = { midiNote: st.midiNote, tminMs: st.tmin * 1000 / sr };
+    var ctx = { midiNote: st.midiNote, tminMs: st.tmin * 1000 / sr, sr: sr };
     var wl = dpSideWarn(dpSide("l"), dpLink.bpm, ctx);
     var wr = dpSideWarn(dpSide("r"), dpLink.bpm, ctx);
     var ms = Math.round(st.chmode) === 2;

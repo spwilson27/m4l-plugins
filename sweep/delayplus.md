@@ -32,3 +32,15 @@ Stage C (independent). Ran `node tests/test_delayplus_sweep2.js`: both tests fai
 - DP-S4-01..04: KEEP as notes only (no tests). DP-S4-04 duplicates shared item F1; noted only.
 - F9: accept "not reproduced" (Console empty, 26/26 audio on minified gen, smoke PASS).
 - Rejected: none. Note: `git diff main` also shows unrelated Neural Amp changes because main advanced after branching; not part of this lane.
+
+## Fix
+| finding | result | notes |
+|---|---|---|
+| DP-S2-01 | fixed | `dpTmaxMs(ctx)` in `src/delayplus_config.js` (min of 8000 ms and the tank at `ctx.sr`), used by `dpSideWarn` / `dpSideMs`; the face passes `sr` in both ctx objects. `tests/test_delayplus_sweep2.js` green. |
+| DP-S2-02 | fixed | `src/delayplus_end.genexpr`: a jump of `cs - cn` by more than 4096 samples resets the held K windows (`rPrev`, `jmp`). `vm_delayplus.sh run` passed twice (track 0 K = 22528 / B = 512, previously K = -21632 / B = 8192 in 2/2 runs). Hypothesis of the stale window confirmed by outcome. |
+| DP-S4-01 | not changed | no retry for a gen~ that never starts; not seen failing. |
+| DP-S4-02 | fixed | AGENTS section 15 width 478. |
+| DP-S4-03 | not changed | test-only helpers. |
+| DP-S4-04 | DEFERRED(shared) | build rewrites .amxd/.adg bytes with absolute paths (F1). |
+
+Gates: typecheck, build, test_delayplus 39/39, bugsweep 4/4, sweep2 green, previews, test_device_static (Delay+ ok; remaining violations are XO, not this lane), test_face_fuzz 0 failures, VM audio all PASS (End DSP changed), Live run all PASS x2, vm_smoke both PASS.
