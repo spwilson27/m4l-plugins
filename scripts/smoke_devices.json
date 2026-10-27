@@ -1,0 +1,40 @@
+{
+  "_doc": "Per device config for scripts/vm_smoke.sh. Keys are repo paths. kind: audio | instrument | rack. ready: {global, regex} polls Global(<name>).text for the regex (DSP-ready trace), else the track meter must move. skipParams: names or /regex/ to skip. readyTimeoutMs, budgetS optional. readyInstances: distinct trace ids required (default 2 = both instances; a rack of 2 chains on 2 tracks = 4).",
+  "devices/Tiny Space.amxd": {
+    "kind": "audio",
+    "ready": null,
+    "skipParams": [],
+    "notes": "gen core created at load; meter > 0 is the ready probe"
+  },
+  "devices/Better Sampler.amxd": {
+    "kind": "instrument",
+    "ready": {
+      "global": "better_sampler_trace",
+      "regex": "dsp ready"
+    },
+    "skipParams": [
+      "Sample File"
+    ],
+    "notes": "deferred gen; plays the MIDI clip, no sample loaded so output may be silent (WARN only: needsSignal false)",
+    "needsSignal": false
+  },
+  "devices/Transient Split.adg": {
+    "kind": "rack",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "transplit dsp ready"
+    },
+    "skipParams": [],
+    "notes": "rack of two chains; params of both chains are swept; linking inside one rack is expected",
+    "readyInstances": 4
+  },
+  "devices/Transient Split.amxd": {
+    "kind": "audio",
+    "ready": {
+      "global": "spectral_split_trace",
+      "regex": "transplit dsp ready"
+    },
+    "skipParams": [],
+    "notes": "standalone (no rack): control for the .adg run"
+  }
+}
