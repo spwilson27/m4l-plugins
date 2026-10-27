@@ -179,6 +179,11 @@ def cases():
           events=[(1000, "dev-start", 0, "tmsL 300")]),
         c("repitch_slow", "repitch 1, repsmooth 500", dur=600, mode="stepped",
           events=[(1000, "dev-start", 0, "tmsL 300")]),
+        # sweep2: every modulation / filter / noise / diffusion control at its extreme at once, loop above unity
+        c("extremes", "tmsL 80, tmsR 130, fb 1.1, filton 1, hp 20000, lp 20, hpres 1, lpres 1, moddelay 1, x4 1, modfilt 1, "
+          "lfoshape 5, lforate 40, envmix 1, wobon 1, wobamt 1, wobmorph 1, noiseon 1, noiseamt 1, noisemorph 1, "
+          "diffuse 1, dsize 1, width 2, chmode 2, repitch 1, inputdb 12, wet 1", source="kind 2, amp 1.0, pos 100",
+          dur=4000, dump=False),
         c("blowup", "tmsL 50, tmsR 50, fb 1.1, clipdry 1, inputdb 12, wet 1", source="kind 2, amp 1.0, pos 100", dur=5000, dump=False),
     )
 
@@ -289,6 +294,12 @@ def check(case, meta, data, errors):
             errors.append(f"compile: B = {hdr[3]}, expected the signal vector size {SIGVS} (Start sorts before End)")
         if hdr[2] != 0:
             errors.append(f"compile: K = {hdr[2]}, expected 0 (same-vector lockstep)")
+        return
+
+    if name == "extremes":
+        pk = max(meta["maxabs1"], meta["maxabs2"])
+        if not (pk == pk) or pk >= 4.0:
+            errors.append(f"extremes: output peak {pk} (NaN or >= 4.0)")
         return
 
     if name == "blowup":
@@ -478,6 +489,12 @@ def main():
         start_code = f.read()
     with open(END_PATH, encoding="utf-8") as f:
         end_code = f.read()
+    # the device embeds the MINIFIED text (build_delayplus.gendsp_json -> minify_gen): test that, not the readable
+    # source (DP_MINIFY=0 for debugging). sweep2 F9: Live printed "gen~ failed to compile patcher" for Delay+.
+    if os.environ.get("DP_MINIFY", "1") != "0":
+        from minify_gen import minify_gen
+        start_code = minify_gen(start_code)
+        end_code = minify_gen(end_code)
     only = set(sys.argv[1:])
     todo = [c for c in cases() if not only or c["name"] in only]
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, max(len(todo), 1))) as ex:
