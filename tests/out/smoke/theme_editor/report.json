@@ -1,0 +1,50 @@
+{
+ "device": "devices/Theme Editor.amxd",
+ "slug": "theme_editor",
+ "kind": "audio",
+ "port": 19911,
+ "config": {
+  "kind": "audio",
+  "ready": null,
+  "skipParams": [],
+  "readyTimeoutMs": 45000,
+  "needsSignal": true,
+  "notes": "meter-based ready (no global trace)"
+ },
+ "started": "2026-10-27T19:10:24.093Z",
+ "steps": {
+  "ready": {
+   "ok": true,
+   "ms": 419,
+   "trace": null,
+   "meterPeakA": 0.8403823971748352,
+   "meterPeakB": 0.8403823971748352
+  },
+  "baseline": [
+   0.8583738207817078,
+   0.8583738207817078
+  ],
+  "sweep": {
+   "total": 0,
+   "tested": 0,
+   "exhausted": false,
+   "ms": 0,
+   "isolationParamChanges": 0,
+   "bMeterMax": 0
+  }
+ },
+ "devicesA": [
+  {
+   "name": "Theme Editor",
+   "cls": "MxDeviceAudioEffect",
+   "path": "T devices 0",
+   "params": 1
+  }
+ ],
+ "shotDefault": "/tmp/sweep2/theme_editor/tests/out/smoke/theme_editor/default.png",
+ "params": [],
+ "shotAfter": "/tmp/sweep2/theme_editor/tests/out/smoke/theme_editor/after_sweep.png",
+ "fails": [],
+ "warns": [],
+ "durationMs": 10772
+}

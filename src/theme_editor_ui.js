@@ -194,6 +194,13 @@ function paint() {
     mgraphics.set_font_size(8.5);
     teRawRgba(titleCol[0], titleCol[1], titleCol[2], 0.9);
     var badgeTxt = hoverHint ? hoverHint : (":" + serverPort + " · " + activePreset);
+    var badgeMax = 100;
+    if (mgraphics.text_measure(badgeTxt)[0] > badgeMax) {
+        while (badgeTxt.length > 1 && mgraphics.text_measure(badgeTxt + "...")[0] > badgeMax) {
+            badgeTxt = badgeTxt.slice(0, -1);
+        }
+        badgeTxt += "...";
+    }
     mgraphics.move_to(98, 16.2);
     mgraphics.show_text(badgeTxt);
 
