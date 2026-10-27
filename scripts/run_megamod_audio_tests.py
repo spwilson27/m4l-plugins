@@ -308,6 +308,27 @@ def cases():
             R("A", [lfo(0, 2, 4.0), lfo(1, 3, 4.0)], (1, 2), dur=1200),
             R("B", [lfo(0, 4, 4.0), lfo(1, 1, 4.0)], (1, 2), dur=1200),
         ],
+        # sweep2 (megamod): every generator at the extremes of its parameter ranges (rate 40 Hz / 0.01 Hz, loopStart > loopEnd, 32 steps with glide,
+        # attack 0.05 ms, gain +36 dB, threshold 0 / -60 dB, slew 1, synced divisions 0 / 15 at 300 bpm): outputs must stay finite and inside -1..1.
+        "extremes": [
+            R("lfo", [lfo(0, 4, 40.0), lfo(1, 2, 0.01)], (1, 2), dur=800),
+            R("mseg_inv_loop", [
+                {"slot": 0, "type": MOD_MSEG, "points": MSEG_POINTS, "p": {"sync": 0, "rate": 40.0, "bipolar": 1, "depth": 1, "loopOn": 1, "loopStart": 0.95, "loopEnd": 0.05}},
+                {"slot": 1, "type": MOD_MSEG, "points": MSEG_POINTS, "p": {"sync": 0, "rate": 40.0, "bipolar": 0, "depth": 1, "loopOn": 1, "loopStart": 0.5, "loopEnd": 0.5}},
+            ], (1, 2), dur=800),
+            R("rand_steps", [
+                {"slot": 0, "type": MOD_RANDOM, "p": {"sync": 0, "rate": 40.0, "smooth": 1, "seed": 1000, "bipolar": 1, "depth": 1}},
+                {"slot": 1, "type": MOD_STEPS, "stepVals": steps_pad([1.0] * 32), "p": {"sync": 0, "rate": 40.0, "steps": 32, "glide": 1, "bipolar": 1, "depth": 1}},
+            ], (1, 2), dur=800),
+            R("synced", [lfo(0, 0, 2.0, sync=1, syncDiv=0), lfo(1, 4, 2.0, sync=1, syncDiv=15)], (1, 2), dur=800, params="hbpm 300, hppq 0, hplay 1"),
+            R("follower", [
+                {"slot": 0, "type": MOD_ENV, "p": {"attack": 0.05, "release": 0.5, "gain": 36, "bipolar": 1, "depth": 1}},
+                {"slot": 1, "type": MOD_ENV, "p": {"attack": 2000, "release": 5000, "gain": -24, "bipolar": 0, "depth": 1}},
+            ], (1, 2), dur=800, source="amp 1.0, freq 1000, t0ms 100, lenms 300, periodms 400"),
+            R("adsr", [adsr(0, attack=0.05, decay=1, sustain=1.0, release=0.5, thresh=-60), adsr(1, attack=2000, decay=5000, sustain=0.0, release=5000, thresh=0)],
+              (1, 2), dur=800, source="amp 1.0, freq 1000, t0ms 100, lenms 300, periodms 400"),
+            R("xy", [xy(0, 1.0, 0.0, 1.0, 1.0), xy(1, 0.0, 1.0, 1.0, 0.0)], (1, 2), dur=800),
+        ],
         "random": [R("random", [
             {"slot": 0, "type": MOD_RANDOM, "p": {"sync": 0, "rate": 10.0, "smooth": 0, "seed": 7, "bipolar": 1, "depth": 1}},
             {"slot": 1, "type": MOD_RANDOM, "p": {"sync": 0, "rate": 10.0, "smooth": 1, "seed": 7, "bipolar": 1, "depth": 1}},
@@ -569,6 +590,11 @@ def check(case, runs, metas, errors, notes):
             err("square period")
         if b["c2_min"] > -0.995 or b["c2_max"] < 0.995 or not near(b["c2_period"], 0.25, 0.005):
             err("triangle must peak at +-1 with period 0.25")
+    elif case == "extremes":
+        for r, m in zip(runs, ms):
+            for ch in ("c1_", "c2_"):
+                if m[ch + "min"] < -1.0001 or m[ch + "max"] > 1.0001:
+                    err(f"run {r['name']} {ch}: output {m[ch + 'min']:.4f}..{m[ch + 'max']:.4f} leaves -1..1")
     elif case == "random":
         m = ms[0]
         notes.append(f"smooth0 runs {m['rnd0_runs']:.0f} (exp ~15) levels {m['c1_nlevels']} range "
