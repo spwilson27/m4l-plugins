@@ -38,3 +38,12 @@ Counts: S1 0, S2 2, S3 0, S4 6.
 - G-02..G-07 (S4): not fixed (log-only nits).
 - Gate: typecheck, build_glitch, test_glitch, test_glitch_sweep2, test_face_fuzz, preview and test_device_static all pass for Glitch (the static violations are other devices'). `vm_glitch.sh run` (full Live suite): all checks passed. DSP unchanged, so no Max audio re-run.
 - DEFERRED(shared): none.
+
+## Review
+- Diff main...HEAD: devices/Glitch.amxd, src/glitch_ui.js, scripts/vm_glitch.sh, new tests/test_glitch_sweep2.js, tests/glitch_ui_harness.js, scripts/test_glitch_persist_live.js, sweep/glitch.md. No frozen/shared files, no AGENTS.md edits.
+- Fresh rebuild (typecheck + build_glitch.py): `git status devices/` clean, committed .amxd equals the rebuild.
+- Gates: test_glitch 99 groups, test_glitch_sweep2 all pass. The red tests fail on the pre-fix code for the stated reason (no notifyclients / ROOT used before assignment), so they prove the bugs.
+- Fix review: `done()` is only `notifyclients()` (no echo loop). Side effect: automation playback of Chaos/Morph/Mode/Seq now dirties the Set, which is required for the blob to stay current.
+- Live (re-run, under the lock, set rebuilt): scripts/test_glitch_persist_live.js all PASS incl. latency 1023 and clone Chaos 80 -> 80 (was 50 before the fix). This closes the "not re-run" gap in the Fix section.
+- Deferred shared: vm_megamod_keys.sh has the same ROOT-before-assignment bug (megamod lane).
+- Verdict: READY.
