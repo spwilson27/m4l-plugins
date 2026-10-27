@@ -17,3 +17,9 @@ VM: vm_smoke PASS (12/12 params, 59 sets, no crash; Live screenshots read); audi
 - TS-S4-05 parameterbanks list long names ("Feedback") while Live names params by short name ("Fbk"); Push bank resolution unverified.
 
 Red run: `node tests/test_tinyspace_sweep2.js` -> 3 checks fail for the stated reasons.
+
+## Verify
+- TS-S3-01 KEEP: real S3; Live smoke screenshot shows HP/LP/Size/Fbk/XFeed/Mix dial text faint on the dark panels, all 7 dials lack textcolor (test fails for that reason).
+- TS-S2-01a REJECT: poke and duck bang run back-to-back in one JS call on the main thread, so call order is not audibly observable; asserting source order is implementation-pinning, not a user-visible bug. Test removed.
+- TS-S2-01b KEEP (weak, S2/S3): duck is an unsmoothed step to 0 in the gen (duckG = clip(duck)), hard-cutting the tail; slewing it is a sound fix. Test is implementation-specific (expects slew()), fails for the stated reason.
+- S4 log items: not tests, no action.

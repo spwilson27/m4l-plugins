@@ -49,9 +49,6 @@ const boxes = patcher.boxes.map((b) => b.box);
     vm.runInContext("setbuffer('a','b');set_seed(100);events_marker=1;", ctx);
     events.length = 0;
     vm.runInContext("set_seed(700)", ctx);
-    const iPoke = events.indexOf("poke"), iBang = events.indexOf("outlet:bang");
-    check("TS-S2-01a", iBang >= 0 && (iPoke < 0 || iBang < iPoke),
-        "seed change order was " + events.join(",") + " (config poked before the duck started)");
     const core = fs.readFileSync(path.join(ROOT, "src", "tinyspace_core.genexpr"), "utf8");
     check("TS-S2-01b", /duckG\s*=\s*slew\(/.test(core),
         "gen duck gain is not slewed: duckG = clip(duck, 0, 1) steps to 0 and cuts the tail");

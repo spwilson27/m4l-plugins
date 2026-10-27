@@ -1,0 +1,593 @@
+{
+ "device": "devices/Tiny Space.amxd",
+ "slug": "tiny_space",
+ "kind": "audio",
+ "port": 19911,
+ "config": {
+  "kind": "audio",
+  "ready": null,
+  "skipParams": [],
+  "readyTimeoutMs": 45000,
+  "needsSignal": true,
+  "notes": "gen core created at load; meter > 0 is the ready probe"
+ },
+ "started": "2026-10-27T18:39:24.800Z",
+ "steps": {
+  "ready": {
+   "ok": true,
+   "ms": 445,
+   "trace": null,
+   "meterPeakA": 0.8447436094284058,
+   "meterPeakB": 0.8503952026367188
+  },
+  "baseline": [
+   0.8625588417053223,
+   0.8620715737342834
+  ],
+  "sweep": {
+   "total": 12,
+   "tested": 12,
+   "exhausted": false,
+   "ms": 5647,
+   "isolationParamChanges": 0,
+   "bMeterMax": 0.8630232810974121
+  }
+ },
+ "devicesA": [
+  {
+   "name": "Tiny Space",
+   "cls": "MxDeviceAudioEffect",
+   "path": "T devices 0",
+   "params": 13
+  }
+ ],
+ "shotDefault": "/tmp/sweep2/tinyspace/tests/out/smoke/tiny_space/default.png",
+ "params": [
+  {
+   "label": "Tiny Space[devices 0] / Char",
+   "name": "Char",
+   "min": 0,
+   "max": 7,
+   "q": true,
+   "items": [
+    "COMB",
+    "HYBRID",
+    "ROOM",
+    "PLATE",
+    "TANK",
+    "BOX",
+    "SPRING",
+    "BOUNCE"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "COMB",
+     "meterA": 0.7400720715522766,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "HYBRID",
+     "meterA": 0.6883741617202759,
+     "ok": true
+    },
+    {
+     "v": 7,
+     "rb": 7,
+     "str": "BOUNCE",
+     "meterA": 0.7759089469909668,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "ROOM",
+     "meterA": 0.82968670129776,
+     "ok": true
+    },
+    {
+     "v": 3,
+     "rb": 3,
+     "str": "PLATE",
+     "meterA": 0.8009583950042725,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / Damp",
+   "name": "Damp",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.7139744162559509,
+     "ok": true
+    },
+    {
+     "v": 20,
+     "rb": 20,
+     "str": "20.0 %",
+     "meterA": 0.6885873675346375,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.7738763689994812,
+     "ok": true
+    },
+    {
+     "v": 50,
+     "rb": 50,
+     "str": "50.0 %",
+     "meterA": 0.8479116559028625,
+     "ok": true
+    },
+    {
+     "v": 70,
+     "rb": 70,
+     "str": "70.0 %",
+     "meterA": 0.8371796607971191,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / Fbk",
+   "name": "Fbk",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.7631297707557678,
+     "ok": true
+    },
+    {
+     "v": 40,
+     "rb": 40,
+     "str": "40.0 %",
+     "meterA": 0.6940508484840393,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.7261946797370911,
+     "ok": true
+    },
+    {
+     "v": 5,
+     "rb": 5,
+     "str": "5.00 %",
+     "meterA": 0.8280447125434875,
+     "ok": true
+    },
+    {
+     "v": 37,
+     "rb": 37,
+     "str": "37.0 %",
+     "meterA": 0.7521657347679138,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / HP",
+   "name": "HP",
+   "min": 20,
+   "max": 4000,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 20,
+     "rb": 20,
+     "str": "20.0 Hz",
+     "meterA": 0.8013728260993958,
+     "ok": true
+    },
+    {
+     "v": 302.13470459,
+     "rb": 302.13470458984375,
+     "str": "40.0 Hz",
+     "meterA": 0.8558403849601746,
+     "ok": true
+    },
+    {
+     "v": 4000,
+     "rb": 4000,
+     "str": "4.00 kHz",
+     "meterA": 0.8255494832992554,
+     "ok": true
+    },
+    {
+     "v": 3104,
+     "rb": 3104,
+     "str": "2.41 kHz",
+     "meterA": 0.7211063504219055,
+     "ok": true
+    },
+    {
+     "v": 2234,
+     "rb": 2234,
+     "str": "1.25 kHz",
+     "meterA": 0.696326732635498,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / LP",
+   "name": "LP",
+   "min": 400,
+   "max": 18000,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 400,
+     "rb": 400,
+     "str": "400 Hz",
+     "meterA": 0.7824292182922363,
+     "ok": true
+    },
+    {
+     "v": 15871.263671875,
+     "rb": 15871.263671875,
+     "str": "14.0 kHz",
+     "meterA": 0.8382099270820618,
+     "ok": true
+    },
+    {
+     "v": 18000,
+     "rb": 18000,
+     "str": "18.0 kHz",
+     "meterA": 0.8528866171836853,
+     "ok": true
+    },
+    {
+     "v": 690,
+     "rb": 690,
+     "str": "405 Hz",
+     "meterA": 0.7747775316238403,
+     "ok": true
+    },
+    {
+     "v": 11651,
+     "rb": 11651,
+     "str": "7.59 kHz",
+     "meterA": 0.71934974193573,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / Mix",
+   "name": "Mix",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.7427130341529846,
+     "ok": true
+    },
+    {
+     "v": 35,
+     "rb": 35,
+     "str": "35.0 %",
+     "meterA": 0.8234547972679138,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.8110254406929016,
+     "ok": true
+    },
+    {
+     "v": 25,
+     "rb": 25,
+     "str": "25.0 %",
+     "meterA": 0.7989080548286438,
+     "ok": true
+    },
+    {
+     "v": 42,
+     "rb": 42,
+     "str": "42.0 %",
+     "meterA": 0.7433404326438904,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / Mod",
+   "name": "Mod",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.7082251310348511,
+     "ok": true
+    },
+    {
+     "v": 15,
+     "rb": 15,
+     "str": "15.0 %",
+     "meterA": 0.7789304256439209,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.8361304402351379,
+     "ok": true
+    },
+    {
+     "v": 59,
+     "rb": 59,
+     "str": "59.0 %",
+     "meterA": 0.8147255778312683,
+     "ok": true
+    },
+    {
+     "v": 84,
+     "rb": 84,
+     "str": "84.0 %",
+     "meterA": 0.7449671030044556,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / PreDly",
+   "name": "PreDly",
+   "min": 0,
+   "max": 250,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 ms",
+     "meterA": 0.6990676522254944,
+     "ok": true
+    },
+    {
+     "v": 250,
+     "rb": 250,
+     "str": "250 ms",
+     "meterA": 0.7532169222831726,
+     "ok": true
+    },
+    {
+     "v": 59,
+     "rb": 59,
+     "str": "59.0 ms",
+     "meterA": 0.8317615389823914,
+     "ok": true
+    },
+    {
+     "v": 245,
+     "rb": 245,
+     "str": "245 ms",
+     "meterA": 0.855392336845398,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / Seed",
+   "name": "Seed",
+   "min": 0,
+   "max": 1000,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0",
+     "meterA": 0.7682657837867737,
+     "ok": true
+    },
+    {
+     "v": 350,
+     "rb": 350,
+     "str": "350",
+     "meterA": 0.6953903436660767,
+     "ok": true
+    },
+    {
+     "v": 1000,
+     "rb": 1000,
+     "str": "1000",
+     "meterA": 0.7737671732902527,
+     "ok": true
+    },
+    {
+     "v": 861,
+     "rb": 861,
+     "str": "861",
+     "meterA": 0.8328043818473816,
+     "ok": true
+    },
+    {
+     "v": 327,
+     "rb": 327,
+     "str": "327",
+     "meterA": 0.806729257106781,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / Size",
+   "name": "Size",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.7463788390159607,
+     "ok": true
+    },
+    {
+     "v": 45,
+     "rb": 45,
+     "str": "45.0 %",
+     "meterA": 0.684110164642334,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.748837947845459,
+     "ok": true
+    },
+    {
+     "v": 68,
+     "rb": 68,
+     "str": "68.0 %",
+     "meterA": 0.8252255916595459,
+     "ok": true
+    },
+    {
+     "v": 53,
+     "rb": 53,
+     "str": "53.0 %",
+     "meterA": 0.8277473449707031,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / Width",
+   "name": "Width",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.8111416101455688,
+     "ok": true
+    },
+    {
+     "v": 70,
+     "rb": 70,
+     "str": "70.0 %",
+     "meterA": 0.7420626878738403,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.7063556909561157,
+     "ok": true
+    },
+    {
+     "v": 22,
+     "rb": 22,
+     "str": "22.0 %",
+     "meterA": 0.8336326479911804,
+     "ok": true
+    },
+    {
+     "v": 10,
+     "rb": 10,
+     "str": "10.0 %",
+     "meterA": 0.7829647064208984,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Tiny Space[devices 0] / XFeed",
+   "name": "XFeed",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.8283949494361877,
+     "ok": true
+    },
+    {
+     "v": 25,
+     "rb": 25,
+     "str": "25.0 %",
+     "meterA": 0.8634141683578491,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.8190048933029175,
+     "ok": true
+    },
+    {
+     "v": 7,
+     "rb": 7,
+     "str": "7.00 %",
+     "meterA": 0.7402757406234741,
+     "ok": true
+    },
+    {
+     "v": 32,
+     "rb": 32,
+     "str": "32.0 %",
+     "meterA": 0.6999332904815674,
+     "ok": true
+    }
+   ]
+  }
+ ],
+ "shotAfter": "/tmp/sweep2/tinyspace/tests/out/smoke/tiny_space/after_sweep.png",
+ "fails": [],
+ "warns": [],
+ "durationMs": 16826
+}
