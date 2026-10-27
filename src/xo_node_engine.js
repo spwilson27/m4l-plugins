@@ -877,7 +877,7 @@ function renderEditedSampleWavEx(rawFilePath, settings = {}, customOutDir = null
   fs.mkdirSync(outDir, { recursive: true });
 
   const rawBuf = fs.readFileSync(rawFilePath);
-  const decoded = parseAudioBuffer(rawBuf, rawBuf.length, 25.0);
+  const decoded = parseAudioBuffer(rawBuf, rawBuf.length, 25.0, true);
   if (!decoded) return null;
 
   const rendered = renderEditedAudioSamples(decoded, settings);
@@ -895,7 +895,8 @@ function renderEditedSampleWavEx(rawFilePath, settings = {}, customOutDir = null
   const spTag = spPct !== 100 ? `_sp${spPct}` : "";
   const mdTag = engaged ? `_${["gr", "cx", "tx"][mode]}` : "";
   const grTag = (engaged && (mode === 0 || mode === STRETCH_MODE_TEXTURE)) ? `_gr${Math.round(Number(settings.grainMs) || 45)}` : "";
-  const outName = `${base}_p${pTag}st_d${dTag}ms_g${gTag}dB${rTag}${spTag}${mdTag}${grTag}.wav`;
+  const pathTag = require("crypto").createHash("md5").update(path.resolve(rawFilePath)).digest("hex").slice(0, 6);
+  const outName = `${base}_${pathTag}_p${pTag}st_d${dTag}ms_g${gTag}dB${rTag}${spTag}${mdTag}${grTag}.wav`;
   const outPath = path.join(outDir, outName);
 
   fs.writeFileSync(outPath, wavBuf);
@@ -1057,7 +1058,7 @@ function extractAudioFeatures(decoded) {
     peaks.push(Math.round(Math.pow(m, 0.75) * 100) / 100);
   }
 
-  const specWin = Math.min(1024, activeLen);
+  const specWin = Math.max(2, Math.min(1024, activeLen, samples.length - onsetIdx));
   const freqs = [
     40, 55, 75, 100,
     135, 180, 240, 320,
@@ -1077,7 +1078,7 @@ function extractAudioFeatures(decoded) {
     let q2 = 0;
     for (let n = 0; n < specWin; n++) {
       const w = 0.5 - 0.5 * Math.cos((2.0 * Math.PI * n) / (specWin - 1));
-      const x = samples[onsetIdx + n] * normScale * w;
+      const x = (samples[onsetIdx + n] || 0) * normScale * w;
       const q0 = coeff * q1 - q2 + x;
       q2 = q1;
       q1 = q0;
@@ -1126,8 +1127,8 @@ function extractAudioFeatures(decoded) {
     let e1 = 1e-9;
     const limit = pitchWin - lag;
     for (let i = 0; i < limit; i += 2) {
-      const a = samples[onsetIdx + i] * normScale;
-      const b = samples[onsetIdx + i + lag] * normScale;
+      const a = (samples[onsetIdx + i] || 0) * normScale;
+      const b = (samples[onsetIdx + i + lag] || 0) * normScale;
       corr += a * b;
       e0 += a * a;
       e1 += b * b;
@@ -1636,6 +1637,9 @@ function scanDirectories(dirs, maxFiles = MAX_FILES_PER_FOLDER, seed = 1, maxDis
     const subdirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith("."));
     const dirFiles = [];
     if (subdirs.length >= 4) {
+      for (const e of entries.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+        if (e.isFile() && !e.name.startsWith(".") && SUPPORTED_EXTS.has(path.extname(e.name).toLowerCase())) dirFiles.push(path.join(d, e.name));
+      }
       const perSub = Math.max(25, Math.floor(maxFiles / subdirs.length));
       for (const sd of subdirs) {
         collectAudioFilesRecursive(path.join(d, sd.name), dirFiles.length + perSub, dirFiles);
@@ -2437,7 +2441,14 @@ function recallSavedSample(savedIdx, audition = true) {
       engineState.stretchMode
     );
   }
-  emitSelectedToMax(item.sampleIndex, audition);
+  // The row keeps a map index, but Re-Seed / Map Samples / folder changes replace engineState.samples: resolve by path.
+  let recallIdx = item.sampleIndex;
+  const cur = engineState.samples[recallIdx];
+  if (!cur || (item.sourcePath && cur.path !== item.sourcePath)) {
+    recallIdx = item.sourcePath ? engineState.samples.findIndex((x) => x.path === item.sourcePath) : -1;
+    if (recallIdx >= 0) item.sampleIndex = recallIdx;
+  }
+  if (recallIdx >= 0) emitSelectedToMax(recallIdx, audition);
   return item;
 }
 
@@ -2714,6 +2725,9 @@ function startBackgroundScan(dirs, onComplete = null, maxFilesPerFolder = MAX_FI
     const subdirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith("."));
     const dirFiles = [];
     if (subdirs.length >= 4) {
+      for (const e of entries.slice().sort((a, b) => a.name.localeCompare(b.name))) {
+        if (e.isFile() && !e.name.startsWith(".") && SUPPORTED_EXTS.has(path.extname(e.name).toLowerCase())) dirFiles.push(path.join(d, e.name));
+      }
       const perSub = Math.max(40, Math.floor(maxFilesPerFolder / subdirs.length));
       for (const sd of subdirs) {
         collectAudioFilesRecursive(path.join(d, sd.name), dirFiles.length + perSub, dirFiles);

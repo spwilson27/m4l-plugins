@@ -2367,9 +2367,22 @@ Max.addHandler("drag_out", (mode, savedIdx = -1) => {
         patching_rect: [720.0, 640.0, 160.0, 20.0],
         text: "m4l_test_click_drag_zones"
       }
+    },
+    {
+      box: {
+        id: "obj-test-selected",
+        maxclass: "message",
+        numinlets: 2,
+        numoutlets: 1,
+        outlettype: [""],
+        patching_rect: [640.0, 700.0, 80.0, 20.0],
+        text: "test_selected 1"
+      }
     }
   );
   hp.lines.push(
+    { patchline: { source: ["obj-test-lb", 0], destination: ["obj-test-selected", 0] } },
+    { patchline: { source: ["obj-test-selected", 0], destination: ["obj-minimap", 0] } },
     { patchline: { source: ["obj-test-lb", 0], destination: ["obj-test-del1", 0] } },
     { patchline: { source: ["obj-test-del1", 0], destination: ["obj-test-key-115", 0] } },
     { patchline: { source: ["obj-test-key-115", 0], destination: ["obj-sel-key", 0] } },
@@ -2681,7 +2694,7 @@ setTimeout(() => {
     xoX.searchTerms[7] = [];
     xoX.matchFolders = 0;
     const blob = getvalueof();
-    assert.strictEqual(blob[0], 3, "state version 3");
+    assert.strictEqual(blob[0], 4, "state version 4");
     assert(blob.every((v) => typeof v === "number" || (typeof v === "string" && !/\s/.test(v) && !v.includes(","))), "blob elements are numbers or single safe tokens");
     xoX.searchTerms = S.xoDefaultSearchTerms();
     xoX.matchFolders = 1;
