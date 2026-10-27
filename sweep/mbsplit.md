@@ -33,3 +33,9 @@ Not run in this stage: vm_mbsplit.sh livetest (rack sum, linking, work sharing) 
 - MB-02: already in runner (minified gen tested). MB-03, MB-04: log-only S4, unchanged (MB-04 by design). F9: not reproduced.
 - Gates: typecheck, build, test_mbsplit (live MCP skipped on host), paint bounds, sweep2 test, preview read (no defects), test_device_static (Multiband Split ok; remaining violations belong to other devices), test_face_fuzz 0 failures.
 - Live: vm_mbsplit.sh livetest (batch) all checks passed (rack sum flat, one FFT leader, linking, mute). VM audio not rerun: no DSP change. vm_smoke not rerun: only a numbox echo change, livetest covers Live load.
+
+## Review
+- Diff main...HEAD: ui change (3 clamp echoes), runner minify, 2 test files, rebuilt device, report. No frozen/shared files, no AGENTS.md edits.
+- Fresh rebuild equals committed Multiband Split.amxd (git diff --stat devices/ empty). Typecheck, test_mbsplit (host), sweep2 test, preview: pass.
+- Tests prove the bug (red before fix per Verify stage). Minor: test_mbsplit_sweep2.js is not chained into test_mbsplit.js (run separately).
+- Verdict: READY. Deferred shared items: none (MB-03/MB-04 S4 log-only; F9 not reproduced).
