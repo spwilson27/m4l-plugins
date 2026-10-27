@@ -44,3 +44,11 @@ Stage C (independent). Ran `node tests/test_delayplus_sweep2.js`: both tests fai
 | DP-S4-04 | DEFERRED(shared) | build rewrites .amxd/.adg bytes with absolute paths (F1). |
 
 Gates: typecheck, build, test_delayplus 39/39, bugsweep 4/4, sweep2 green, previews, test_device_static (Delay+ ok; remaining violations are XO, not this lane), test_face_fuzz 0 failures, VM audio all PASS (End DSP changed), Live run all PASS x2, vm_smoke both PASS.
+
+## Review
+Stage E independent review of `git diff main...HEAD`.
+- Correctness: `dpTmaxMs` is applied consistently (warn, `dpSideMs`) and the face passes `sr` in both ctx objects; End `rPrev`/`jmp` reset only fires on a >4096-sample jump of the Start-End relation, `rPrev` init 1e9 guards the first sample. Audio suite (End DSP changed) and `vm_delayplus.sh run` passed twice per the Fix stage.
+- Rebuild check: typecheck clean, `build_delayplus.py` rebuilds same-size devices; bytes differ only by the known stamp/absolute-path churn (F1 / DP-S4-04), so no content drift. Devices restored to HEAD.
+- Tests: `test_delayplus.js` 39/39, `test_delayplus_sweep2.js` green; the red tests assert the real behaviour (warning at 96 kHz, clamp value) and are not tautologies. DP-S2-02 is covered only by the existing Live check (no Node test), acceptable.
+- No frozen/shared files touched (only harness-using runner script `run_delayplus_audio_tests.py`, which is lane-owned). AGENTS.md edits are exact, only in section 15.
+- Verdict: READY.
