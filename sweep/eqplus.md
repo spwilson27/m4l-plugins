@@ -17,3 +17,9 @@ Counts: S1 0, S2 2, S3 0, S4 3.
 - Parameters: 54 params, ranges/defaults/units sane, every live.* has set_<key> handler or band handler, route to face and back wired; set_route re-emits bands (no loop); hotkeys gated by hotkeyAllowed().
 - VM audio suite (14 cases) all pass: bypass 0.00 dB, bell +12.00, notch -108, lowcut, gain6, cascade, tilt_low/high, lat0 / latnat(350) / latlin(3072), lr_right, ms_side, no NaN.
 - vm_smoke: PASS (54/54 params, 219 sets, ready 425 ms); screenshots show the face rendering correctly in Live.
+
+## Verify
+- EQP-S2-01 KEEP: ran test, fails for the stated reason (5 boxes with #0- names); AGENTS rule 15 / 1d say #0 is not expanded in top-level devices, expected --- is right; matches baseline F8, not an iteration-1 item.
+- EQP-S2-02 KEEP: runner invokes subprocess "node" (lines 298, 322); VM has no node (AGENTS 1a); deterministic static check, fails for the stated reason.
+- EQP-S4-01..03 not tested (log only), no verdict needed.
+- Note: git diff main also shows unrelated Neural Amp changes (branch base behind main); not part of this lane.
