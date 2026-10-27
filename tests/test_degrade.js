@@ -12,7 +12,7 @@
  *  2. GenExpr ordering & lexer safety (functions first, Buffer -> Param -> History -> Delay,
  *     no e0..e9 identifiers, per-stage `if (<stage>_on > 0.5)` zero-CPU bypass gates, fixnan() guards)
  *  3. .amxd binary header ("aaaa" Audio Effect) & 169.0 px presentation height across all variants
- *  4. #0- instance isolation, `scope #0-degscope` loadbang binding, and background panel z-order
+ *  4. #0- instance isolation, `scope ---degscope` loadbang binding, and background panel z-order
  *  5. Zero widget overlap across all presentation controls and v8ui canvas
  *  6. Complete patchline graph verification for all 13 continuous and 8 enum/toggle parameters
  *  7. v8ui runtime execution: relative_coords === 0, OrderData versioned serialization
@@ -188,8 +188,8 @@ function verifyAmxd(amxdFile, expectedWidth) {
     }
 
     // Instance isolation (#0- prefix) and loadbang buffer binding
-    assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope #0-degscope", `${amxdFile}: Buffer bind message mismatch`);
-    assert.strictEqual(byId["obj-msg-ui-buf"].text, "setbuffer #0-degscope", `${amxdFile}: UI buffer message mismatch`);
+    assert.strictEqual(byId["obj-msg-gen-buf"].text, "scope ---degscope", `${amxdFile}: Buffer bind message mismatch`);
+    assert.strictEqual(byId["obj-msg-ui-buf"].text, "setbuffer ---degscope", `${amxdFile}: UI buffer message mismatch`);
     assert.ok(hasLine("obj-loadbang", "obj-msg-gen-buf") && hasLine("obj-msg-gen-buf", "obj-gen-in"));
     assert.ok(hasLine("obj-loadbang", "obj-msg-ui-buf") && hasLine("obj-msg-ui-buf", "obj-viz"));
     assert.ok(hasLine("obj-thisdevice", "obj-msg-init-dsp") && hasLine("obj-msg-init-dsp", "obj-viz"));
@@ -198,7 +198,7 @@ function verifyAmxd(amxdFile, expectedWidth) {
 
     for (const b of boxes) {
         if (b.text && b.text.startsWith("buffer~")) {
-            assert.ok(b.text.includes("#0-"), `${amxdFile}: buffer~ must use #0- prefix: ${b.text}`);
+            assert.ok(b.text.includes("---"), `${amxdFile}: buffer~ must use --- prefix: ${b.text}`);
         }
     }
 
@@ -408,7 +408,7 @@ assert.ok(drawCmds.some((c) => c.op === "text" && c.txt === "PHASE GLITCH FIELD"
 assert.ok(!drawCmds.some((c) => c.op === "text" && String(c.txt).indexOf("DSP loading") >= 0), "Static paint must not show the DSP pill");
 
 // Silent, settled scope polls must not redraw. A real parameter change still does.
-sandbox.setbuffer("#0-degscope");
+sandbox.setbuffer("---degscope");
 sandbox.scopeBuf.peek = () => new Array(32).fill(0);
 sandbox.liveInPeak = 0;
 sandbox.liveOutPeak = 0;

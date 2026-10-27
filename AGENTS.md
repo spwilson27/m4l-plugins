@@ -499,6 +499,8 @@ Audio checks (real Max render): `python3 scripts/run_percipitator_audio_tests.py
   - **Stage 3 (`TEL`)**: Telephone bandpass constriction + voice sample clock + `uLaw`, `ALaw`, `ADPC` (IMA ADPCM slope overload), and `GSM` (RPE-LTP formant buzz + frame dropouts).
   - **Stage 4 (`FFT`)**: 6-band resonant SVF spectral glitch engine with 4 modes: `Den` (musical-noise spectral denoiser), `Scr` (click-free 6-band SSB quadrature matrix scramble, smooth even at `5 ms`), `Spl` (dual Hann-windowed dispersive phase splat), and `Cmb` (power-law spectral contrast sieve + pitch comb).
 
+- **Sweep 2**: the telemetry buffer is `---degscope` (Live does not expand `#0` in a top-level device); the face passes its name to `degDspFrames` via `setbuffer`. The wet path is linear below 0.9 with a tanh knee to 1.0 (was `tanh` of everything, a 1.1 dB step whenever a stage toggled on). The hero dials set a light `textcolor`. Max audio in the VM: `scripts/vm_degrade.sh audio` (`RUNNER=run_degrade_sweep2_audio_tests.py` for the sweep cases).
+
 ### Build / Test / Preview
 ```bash
 npm run -s typecheck && python3 scripts/build_degrade.py && node tests/test_degrade.js && python3 scripts/render_preview.py "devices/Degrade.amxd"
