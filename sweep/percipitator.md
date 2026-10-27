@@ -25,3 +25,6 @@ Audio suite not re-run (no DSP change; no findings in gen code reading: neutral 
 - PCP-S2-02 fixed: `pcpMidiRoute()` in `src/percipitator_dsp.js` (from `init_dsp`) sets `this_device midi_inputs 0` from "No Input" to "All Ins" (Cepstra pattern).
 - S4 items left as logged.
 - Gate: typecheck, build, test_percipitator, bugsweep, sweep2 tests, preview (Read OK), test_device_static (0 violations), test_face_fuzz (0 failures), vm_smoke PASS (14/14 params). Audio suite not re-run (no DSP change). Real MIDI chord delivery in Live not exercised.
+
+## Review
+Stage E: diff reviewed. Rebuild identical to committed .amxd; typecheck, test_percipitator, sweep2 tests pass; no frozen/shared files touched; AGENTS.md edits exact, own section only. Note: sweep2 tests are static greps (acceptable red markers); real MIDI delivery in Live not exercised. Verdict READY. Deferred shared: none.
