@@ -46,3 +46,5 @@ Stage C: all four tests run on this branch and fail for the stated reason.
 | SH-S4-2..5 | not fixed | other lanes / frozen files / doc nit. |
 
 Gates: typecheck ok; test_delayplus, test_reverbplus(+face), test_transplit/loudsplit/harmsplit/freqsplit, test_clipplus, test_glitch, all `*paint_bounds*`, test_face_fuzz (0 failures) green; test_device_static: only the known Better Shaper and Neural Amp violations remain. No DSP change, so no Max audio; no face/LOM change beyond the version stamp, so no full Live run.
+
+Smoke: `scripts/vm_smoke.sh "devices/Delay+.adg"` PASS (90/90 parameters, 0 fails, 0 warns, rack Delay+ / Delay+ FX / Delay+ End loaded). The smoke loader repoints the empty Path to the VM devices dir (`smoke_fix_adg.py`), so it shows the empty-Path preset parses and loads, not Live's own relative-only resolution. The other five `.adg` were not smoked (identical generator).
