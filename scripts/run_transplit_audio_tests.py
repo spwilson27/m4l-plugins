@@ -46,7 +46,12 @@ FIRST_ONSET = 4800      # 100 ms
 def gen_source():
     """Exactly the gen code the device embeds (build_transplit.py)."""
     import build_transplit
-    return build_transplit.gen_code()
+    code = build_transplit.gen_code()
+    # the device embeds the MINIFIED text (spectral_common.gendsp_json -> minify_gen): test that, not the readable source (SS_MINIFY=0 for debugging)
+    if os.environ.get("SS_MINIFY", "1") != "0":
+        from minify_gen import minify_gen
+        code = minify_gen(code)
+    return code
 
 
 def stim_code(kind, delay_dry):
