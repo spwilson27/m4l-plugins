@@ -190,7 +190,8 @@ function csApplyLayout() {
     csMoveBox("DC", optX, 78, 48, 15);
     csMoveBox("Oversample", optX, 96, 48, 15);
     csMoveBox("Hard Limit", optX, 114, 48, 15);
-    csMoveBox("Show Meters", optX, 144, 48, 15);
+    csMoveBox("True Peak", optX, 132, 48, 15);
+    csMoveBox("Show Meters", optX, 150, 48, 15);
     csMoveBox("obj-panel-opts", optsX, 4, 56, 161);
     cpUpdateChannelEnum();
 
@@ -361,7 +362,7 @@ function cpNum(v) {
 function cpReadScope() {
     if (typeof Buffer !== "function") return;
     try {
-        var b = new Buffer(cpBufName || "#0-clipscope");
+        var b = new Buffer(cpBufName || "---clipscope");
         var head = b.peek(1, 0, 21);
         if (!head || head.length < 13) return;
         cpScope.inPk = cpNum(head[0]);

@@ -7,7 +7,7 @@
 // Oversampling, true-peak, M/S routing, single-channel bypass, and the pre/post
 // gain-compensated emphasis filter (with Q resonance) all stay in the 1047-sample delay budget.
 //
-// Scope buffer "clipscope" (bind message: scope #0-clipscope), 1280 samples:
+// Scope buffer "clipscope" (bind message: scope ---clipscope), 1280 samples:
 //   0 inPeak   post-trim linear peak, both channels
 //   1 outPeak  final output peak
 //   2 inMs     post-trim mean square, L+R
@@ -531,6 +531,9 @@ History smFiltQ(0.707);
 History firDone(0);
 History rateSeen(0);
 History pkHop(0);
+History pkH1(0);
+History pkH2(0);
+History pkH3(0);
 History blk(0);
 History frame(0);
 History inPk(0);
@@ -686,7 +689,8 @@ for (ch = 0; ch < 2; ch += 1) {
 	hop = hop + cp_hop(ch, xsL, xsR, ringL, ringR, stL, stR, 1024);
 }
 if (hop > 0.5) {
-	if (pkHop < 1e-5) {
+	pkFrame = max(max(pkHop, pkH1), max(pkH2, pkH3));
+	if (pkFrame < 1e-5) {
 		hop = hop + cp_silence(fx, accL, accR, stL, stR, win, 1024);
 		for (sb = 0; sb < 64; sb += 1) {
 			sbuf.poke(sbuf.peek(sb) * 0.75, sb);
@@ -706,6 +710,9 @@ if (hop > 0.5) {
 			hop = hop + cp_ola_stage(stage, accL, accR, stL, stR, fx, win, 1024);
 		}
 	}
+	pkH3 = pkH2;
+	pkH2 = pkH1;
+	pkH1 = pkHop;
 	pkHop = 0;
 }
 poke(scope, hop, 31, 0);
@@ -742,6 +749,9 @@ pre1 = tpDelR * (1 + smTp * (gTp - 1));
 // 4. Gain-inverted post-emphasis filter
 deEmp0 = cp_post_emp(pre0, lpDel0, empst, 0, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
 deEmp1 = cp_post_emp(pre1, lpDel1, empst, 1, srate, smFiltFreq, smFiltGain, smFiltQ, filttype, smFiltOn);
+// Hard Limit also acts after the emphasis stage, so a shelf / low-cut boost cannot push the output over Ceiling.
+deEmp0 = deEmp0 + smHlim * (clip(deEmp0, -cLin, cLin) - deEmp0);
+deEmp1 = deEmp1 + smHlim * (clip(deEmp1, -cLin, cLin) - deEmp1);
 
 // 5. Single-channel clip selection (0 = Both, 1 = Ch 0 only, 2 = Ch 1 only)
 preL = chmode > 1.5 ? ch0By : deEmp0;

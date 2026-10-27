@@ -64,7 +64,7 @@ def face_source(header, role):
     if role == "viz":
         parts.append(sc.read(os.path.join(SRC, "clipplus_dsp.js")))
     else:
-        parts.append('var cpHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null; var cpDsp = { ready: 1, error: "", createdAt: 0 }; var cpBufName = "#0-clipscope";\n')
+        parts.append('var cpHost = (typeof this !== "undefined" && this && this.patcher) ? this.patcher : null; var cpDsp = { ready: 1, error: "", createdAt: 0 }; var cpBufName = "---clipscope";\n')
     parts.append(sc.read(os.path.join(SRC, "clipplus_ui.js")))
     return "\n".join(p.rstrip() + "\n" for p in parts)
 
@@ -277,6 +277,7 @@ def add_filter_popout_and_routing(boxes, lines, filt_viz_code, ms_x, ms_y, ch_x,
     ch_btn["box"]["annotation"] = "Click to cycle which channel is fed into the clipper: Both -> L -> R (or Both -> M -> S in M/S mode). Both channels are always output."
     ch_btn["box"]["annotation_name"] = "Channel Mode"
     ch_btn["box"]["fontsize"] = 8.5
+    ch_btn["box"]["parameter_enable"] = 0  # plain button, not a Live parameter (Live listed it and a sweep cycled Channel Mode)
     sc.theme(
         ch_btn,
         bgcolor="live_control_bg",
@@ -427,10 +428,10 @@ def build():
         with_name(sc.newobj("obj-gen-in", "gate 1 1", 120, 280, 70, numinlets=2, numoutlets=1, outlettype=[""]), "cp_genin"),
         sc.newobj("obj-thisdevice", "live.thisdevice", 560, 140, 110, numoutlets=2, outlettype=["bang", "int"]),
         sc.message("obj-msg-init", "init_dsp", 700, 140, 70),
-        sc.newobj("obj-scope", "buffer~ #0-clipscope 1280 1", 560, 240, 200, numoutlets=2, outlettype=["float", "bang"]),
+        sc.newobj("obj-scope", "buffer~ ---clipscope 1280 1", 560, 240, 200, numoutlets=2, outlettype=["float", "bang"]),
         sc.newobj("obj-loadbang", "loadbang", 560, 180, 70, numoutlets=1, outlettype=["bang"]),
-        with_name(sc.message("obj-msg-bind", "scope #0-clipscope", 700, 180, 160), "cp_bind"),
-        with_name(sc.message("obj-msg-setbuf", "setbuffer #0-clipscope", 700, 210, 170), "cp_setbuf"),
+        with_name(sc.message("obj-msg-bind", "scope ---clipscope", 700, 180, 160), "cp_bind"),
+        with_name(sc.message("obj-msg-setbuf", "setbuffer ---clipscope", 700, 210, 170), "cp_setbuf"),
         sc.newobj("obj-prep-width", "prepend setwidth", 700, 250, 110),
     ])
 

@@ -31,3 +31,12 @@ Independent stage C. Ran tests/test_clipplus_sweep2.js (3 FAIL as stated) and VM
 - CP-06..CP-10 (log only, no tests): CP-06, CP-07, CP-09 accepted as S4 nits; CP-08 (F9) not reproduced, accepted as no-bug; CP-10 covered by CP-05.
 - scripts/test_clipplus_sweep2_live.js: KEEP, Live-only, not re-run here (checks F8 with two instances).
 Rejected: none.
+
+## Fix
+- CP-01 fixed: csApplyLayout moves True Peak; Show Meters y aligned to the saved 150 (also CP-07).
+- CP-02 fixed: obj-btn-chmode `parameter_enable 0` (smoke F10 gone: 20/20 params, restore ok in Live).
+- CP-03 fixed: `---clipscope` everywhere (build, face defaults, core comment); Live two-instance check: literal `#0-clipscope` absent.
+- CP-04 fixed: silence gate uses max of the last 4 hop peaks (core pkH1..3); audio lat_d100 passes.
+- CP-05 fixed (smallest change): Hard Limit clip also after the emphasis stage; True Peak still before emphasis (documented). ceil_filt_shelf/cut peak 0.501 = ceiling.
+- CP-06/08/09/10: log only (CP-06 AGENTS 29 doc: scope length corrected; width text left). CP-10 covered by CP-05 (ext_filt peak 1.0).
+Gate: typecheck, build, test_clipplus, sweep2 test (3/3 ok), preview, test_device_static ok, test_face_fuzz 0 failures; VM audio 42/42 ok; vm_smoke PASS 20/20; Live two-instance check all ok; screenshot read, Options column intact.

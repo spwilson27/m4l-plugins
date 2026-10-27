@@ -394,7 +394,7 @@ function maxDiff(fn) {
     assert.ok(hub && hub.text === "gate 1 1", "gate hub");
     assert.ok(boxes.some((b) => b.varname === "cp_plugin" && b.text === "plugin~"));
     assert.ok(boxes.some((b) => b.varname === "cp_plugout" && b.text === "plugout~"));
-    assert.ok(boxes.some((b) => String(b.text || "").indexOf("buffer~ #0-clipscope") === 0));
+    assert.ok(boxes.some((b) => String(b.text || "").indexOf("buffer~ ---clipscope") === 0));
     // Verify top header labels INPUT, Spectral Clipper, OUTPUT are removed
     assert.ok(!boxes.some((b) => b.id === "obj-lbl-in" || b.id === "obj-lbl-out" || b.id === "obj-title-clip"), "INPUT / Spectral Clipper / OUTPUT top labels are removed");
     const live = boxes.filter((b) => String(b.maxclass || "").indexOf("live.") === 0 && b.presentation_rect && !b.hidden);

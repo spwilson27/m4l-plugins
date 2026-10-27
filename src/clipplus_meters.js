@@ -1,6 +1,6 @@
 // Clip+ meter column. Momentary and integrated LUFS, RMS, peak, and crest
 // for the input and the output, each with a horizontal bar. The block ring in
-// #0-clipscope is drained here.
+// ---clipscope is drained here.
 
 mgraphics.init();
 mgraphics.relative_coords = 0;
@@ -13,7 +13,7 @@ var M_RESET_RECT = { x: 64, y: 6, w: 36, h: 13 };
 
 var cpMeter = new CpMeter(48000);
 var cpMeterSeen = -1;
-var cpMeterBuf = "#0-clipscope";
+var cpMeterBuf = "---clipscope";
 
 function setbuffer(name) {
     if (name) cpMeterBuf = String(name);
