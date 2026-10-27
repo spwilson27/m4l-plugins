@@ -20,3 +20,13 @@ Stage A+B. Red tests: `tests/test_shaper_sweep2.js` (node).
 - Undo discipline: toolbar edits, point add/move, curve drag, loop drag push exactly one entry per gesture.
 - Live smoke PASS: ready 419 ms, 51/51 params swept (176 sets), meters finite.
 - No audio suite exists for this device (patcher DSP only); not run.
+
+## Verify
+Stage C, independent. Ran `node tests/test_shaper_sweep2.js`: all red tests fail for the stated reason; SH-4c (Delete still deletes) passes as a guard.
+- SH-1 KEEP: `#0-mseg` in buffer~/loadmess/index~ confirmed in the built patcher; AGENTS 15 says Live does not expand `#0` in a top-level device (instances share the table). Not an iteration-1 item. (AGENTS section 3 and rule 5 still say `#0-`; the fix must update them.)
+- SH-2 KEEP: `Rate` short name on obj-rate-hz and obj-rate-sync; Live names parameters by short name, so the duplicate is real.
+- SH-3 KEEP: Max v8ui delivers Esc as keycode -3 / char 27 (measured for Mega Modulator, AGENTS 21); `handleKeyCommand` treats -3 as Delete first. Expected value is right.
+- SH-4a/4b KEEP: 51 and 117 are the ASCII codes of '3' and 'u' (the "macOS keycode" comment is unfounded given -3 for Esc shows Max reports its own codes), so typing them with focus deletes points. The patcher `key` path passes ASCII too. Fix must keep 8/127/-4. 4c is a regression guard.
+- SH-5 KEEP (S3, cosmetic): the Live smoke screenshot (tests/out/smoke/better_shaper/default.png) shows Jitter/Smooth/Offset as "0.00" and Phase as "0.00 %". The width assertion is a heuristic proxy, but it matches the observed cause (32-34 px vs 38 px).
+- S4-a..d: no tests, left as notes. S4-d is likely the MCP Bridge, not Shaper.
+No tests rejected or deleted.
