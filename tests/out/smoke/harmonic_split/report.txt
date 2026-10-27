@@ -1,0 +1,12 @@
+devices/Harmonic Split.amxd (audio) PASS  14 s
+fails 0, warns 0
+
+bridge ok, tempo 130
+instance A: 1 device(s): Harmonic Split(11)
+ready after 417 ms (meter A 0.839, B 0.839, trace +1986 harmsplit dsp ready after 962 ms [#i1_7f6yey @899987] | +224 harmsplit dsp ready after 158 ms [#i1_9284lf @900595])
+baseline meters A 0.857 B 0.857
+shot /tmp/sweep2/spectral/tests/out/smoke/harmonic_split/default.png (device area), /tmp/sweep2/spectral/tests/out/smoke/harmonic_split/default_full.png
+sweep: 10/10 parameters, 43 sets in 3 s
+after sweep meters A 0.858 B 0.858
+shot /tmp/sweep2/spectral/tests/out/smoke/harmonic_split/after_sweep.png (device area), /tmp/sweep2/spectral/tests/out/smoke/harmonic_split/after_sweep_full.png
+TIMING harmonic_split 27 s (rc 0)

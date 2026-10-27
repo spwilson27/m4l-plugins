@@ -1,0 +1,493 @@
+{
+ "device": "devices/Harmonic Split.amxd",
+ "slug": "harmonic_split",
+ "kind": "audio",
+ "port": 19911,
+ "config": {
+  "kind": "audio",
+  "ready": {
+   "global": "spectral_split_trace",
+   "regex": "harmsplit dsp ready"
+  },
+  "skipParams": [],
+  "readyTimeoutMs": 45000,
+  "needsSignal": true,
+  "notes": "standalone, deferred gen (spectral_split_trace)"
+ },
+ "started": "2026-10-27T17:08:21.850Z",
+ "steps": {
+  "ready": {
+   "ok": true,
+   "ms": 417,
+   "trace": [
+    "+1986 harmsplit dsp ready after 962 ms [#i1_7f6yey @899987]",
+    "+224 harmsplit dsp ready after 158 ms [#i1_9284lf @900595]"
+   ],
+   "meterPeakA": 0.8393611311912537,
+   "meterPeakB": 0.8393611311912537
+  },
+  "baseline": [
+   0.8574010133743286,
+   0.8574010133743286
+  ],
+  "sweep": {
+   "total": 10,
+   "tested": 10,
+   "exhausted": false,
+   "ms": 3356,
+   "isolationParamChanges": 0,
+   "bMeterMax": 0.8539037108421326
+  }
+ },
+ "devicesA": [
+  {
+   "name": "Harmonic Split",
+   "cls": "MxDeviceAudioEffect",
+   "path": "T devices 0",
+   "params": 11
+  }
+ ],
+ "shotDefault": "/tmp/sweep2/spectral/tests/out/smoke/harmonic_split/default.png",
+ "params": [
+  {
+   "label": "Harmonic Split[devices 0] / High Cut",
+   "name": "High Cut",
+   "min": 19.399999618530273,
+   "max": 19900,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 19.399999619,
+     "rb": 19.399999618530273,
+     "str": "19.4 Hz",
+     "meterA": 0.7547717690467834,
+     "ok": true
+    },
+    {
+     "v": 8383.750976563,
+     "rb": 8383.7509765625,
+     "str": "1.50 kHz",
+     "meterA": 0.8089345693588257,
+     "ok": true
+    },
+    {
+     "v": 19900,
+     "rb": 19900,
+     "str": "19.9 kHz",
+     "meterA": 0.8430469632148743,
+     "ok": true
+    },
+    {
+     "v": 4720.277715423,
+     "rb": 4720.27783203125,
+     "str": "282 Hz",
+     "meterA": 0.8407282829284668,
+     "ok": true
+    },
+    {
+     "v": 7360.722555721,
+     "rb": 7360.72265625,
+     "str": "1.02 kHz",
+     "meterA": 0.7879601716995239,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Low Cut",
+   "name": "Low Cut",
+   "min": 19.399999618530273,
+   "max": 19900,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 19.399999619,
+     "rb": 19.399999618530273,
+     "str": "19.4 Hz",
+     "meterA": 0.726591169834137,
+     "ok": true
+    },
+    {
+     "v": 2901.952392578,
+     "rb": 2901.952392578125,
+     "str": "80.0 Hz",
+     "meterA": 0.7183950543403625,
+     "ok": true
+    },
+    {
+     "v": 19900,
+     "rb": 19900,
+     "str": "19.9 kHz",
+     "meterA": 0.7815873622894287,
+     "ok": true
+    },
+    {
+     "v": 10044.034147168,
+     "rb": 10044.0341796875,
+     "str": "2.57 kHz",
+     "meterA": 0.829255223274231,
+     "ok": true
+    },
+    {
+     "v": 14032.902211789,
+     "rb": 14032.90234375,
+     "str": "6.98 kHz",
+     "meterA": 0.8417842388153076,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Threshold",
+   "name": "Threshold",
+   "min": -120,
+   "max": 0,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -120,
+     "rb": -120,
+     "str": "-120.0 dB",
+     "meterA": 0.8194872140884399,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB",
+     "meterA": 0.7504082918167114,
+     "ok": true
+    },
+    {
+     "v": -114,
+     "rb": -114,
+     "str": "-114.0 dB",
+     "meterA": 0.7001118659973145,
+     "ok": true
+    },
+    {
+     "v": -76,
+     "rb": -76,
+     "str": "-76.0 dB",
+     "meterA": 0.753315269947052,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Pattern",
+   "name": "Pattern",
+   "min": 0,
+   "max": 23,
+   "q": true,
+   "items": [
+    "1st only",
+    "Every 2nd",
+    "Every 3rd",
+    "Every 4th",
+    "Every 5th",
+    "Every 6th",
+    "Every 7th",
+    "Every 8th",
+    "Every 9th",
+    "Every 10th",
+    "Every 11th",
+    "Every 12th",
+    "Every 13th",
+    "Every 14th",
+    "Every 15th",
+    "Every 16th",
+    "Every 17th",
+    "Every 18th",
+    "Every 19th",
+    "Every 20th",
+    "Every 21st",
+    "Every 22nd",
+    "Every 23rd",
+    "Every 24th"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "1st only",
+     "meterA": 0.820669949054718,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Every 2nd",
+     "meterA": 0.8539037108421326,
+     "ok": true
+    },
+    {
+     "v": 23,
+     "rb": 23,
+     "str": "Every 24th",
+     "meterA": 0.8332695960998535,
+     "ok": true
+    },
+    {
+     "v": 18,
+     "rb": 18,
+     "str": "Every 19th",
+     "meterA": 0.7821667194366455,
+     "ok": true
+    },
+    {
+     "v": 13,
+     "rb": 13,
+     "str": "Every 14th",
+     "meterA": 0.7121009230613708,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Max Harm",
+   "name": "Max Harm",
+   "min": 0,
+   "max": 404,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0",
+     "meterA": 0.7292673587799072,
+     "ok": true
+    },
+    {
+     "v": 404,
+     "rb": 404,
+     "str": "404",
+     "meterA": 0.813800036907196,
+     "ok": true
+    },
+    {
+     "v": 7,
+     "rb": 7,
+     "str": "7",
+     "meterA": 0.8074122667312622,
+     "ok": true
+    },
+    {
+     "v": 258,
+     "rb": 258,
+     "str": "258",
+     "meterA": 0.7761594653129578,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Mix",
+   "name": "Mix",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0.835542619228363,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.8428335785865784,
+     "ok": true
+    },
+    {
+     "v": 25,
+     "rb": 25,
+     "str": "25.0 %",
+     "meterA": 0.8183353543281555,
+     "ok": true
+    },
+    {
+     "v": 42,
+     "rb": 42,
+     "str": "42.0 %",
+     "meterA": 0.7725422978401184,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / NH Sens",
+   "name": "NH Sens",
+   "min": 1,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1.00 %",
+     "meterA": 0.709194004535675,
+     "ok": true
+    },
+    {
+     "v": 50,
+     "rb": 50,
+     "str": "50.0 %",
+     "meterA": 0.730819582939148,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0.8097179532051086,
+     "ok": true
+    },
+    {
+     "v": 59,
+     "rb": 59,
+     "str": "59.0 %",
+     "meterA": 0.8431684374809265,
+     "ok": true
+    },
+    {
+     "v": 84,
+     "rb": 84,
+     "str": "84.0 %",
+     "meterA": 0.849384605884552,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Output",
+   "name": "Output",
+   "min": 0,
+   "max": 4,
+   "q": true,
+   "items": [
+    "Auto",
+    "Nonharm",
+    "Harm A",
+    "Harm B",
+    "All"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Auto",
+     "meterA": 0.7800883650779724,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Nonharm",
+     "meterA": 0.7268126606941223,
+     "ok": true
+    },
+    {
+     "v": 4,
+     "rb": 4,
+     "str": "All",
+     "meterA": 0.6577337384223938,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Size",
+   "name": "Size",
+   "min": 0,
+   "max": 2,
+   "q": true,
+   "items": [
+    "1k",
+    "2k",
+    "4k"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "1k",
+     "meterA": 0.7809726595878601,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "2k",
+     "meterA": 0.8341288566589355,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "4k",
+     "meterA": 0.8535637259483337,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Harmonic Split[devices 0] / Tilt",
+   "name": "Tilt",
+   "min": -12,
+   "max": 12,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -12,
+     "rb": -12,
+     "str": "-12 dB",
+     "meterA": 0.7844847440719604,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB",
+     "meterA": 0.7420958876609802,
+     "ok": true
+    },
+    {
+     "v": 12,
+     "rb": 12,
+     "str": "12 dB",
+     "meterA": 0.705585777759552,
+     "ok": true
+    },
+    {
+     "v": 4,
+     "rb": 4,
+     "str": "4.0 dB",
+     "meterA": 0.7664391398429871,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1.0 dB",
+     "meterA": 0.8335315585136414,
+     "ok": true
+    }
+   ]
+  }
+ ],
+ "shotAfter": "/tmp/sweep2/spectral/tests/out/smoke/harmonic_split/after_sweep.png",
+ "fails": [],
+ "warns": [],
+ "durationMs": 14015
+}

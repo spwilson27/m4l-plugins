@@ -1,0 +1,470 @@
+{
+ "device": "devices/Transient Split.amxd",
+ "slug": "transient_split",
+ "kind": "audio",
+ "port": 19911,
+ "config": {
+  "kind": "audio",
+  "ready": {
+   "global": "spectral_split_trace",
+   "regex": "transplit dsp ready"
+  },
+  "skipParams": [],
+  "readyTimeoutMs": 45000,
+  "needsSignal": true,
+  "notes": "standalone, deferred gen (spectral_split_trace)"
+ },
+ "started": "2026-10-27T16:44:12.485Z",
+ "steps": {
+  "ready": {
+   "ok": false,
+   "ms": 45556,
+   "trace": null,
+   "meterPeakA": 0,
+   "meterPeakB": 0,
+   "traceTail": [
+    "+3628 transplit dsp-created alive 0 [#i1_fnd245 @374524]",
+    "+9699 transplit dsp-retry gen~ alive counter stayed 0 [#i1_fnd245 @380595]",
+    "+9700 transplit dsp-start creating gen~ (retry 2) [#i1_fnd245 @380596]",
+    "+9711 transplit dsp-created alive 0 [#i1_fnd245 @380607]",
+    "+15790 transplit dsp-error not running (alive 0 / 0) [#i1_fnd245 @386686]",
+    "+63 transplit dsp-start creating gen~ [#i1_3xq5y5 @411764]",
+    "+64 transplit dsp-created alive 0 [#i1_3xq5y5 @411765]",
+    "+3582 transplit dsp-retry gen~ alive counter stayed 0 [#i1_3xq5y5 @415283]",
+    "+3582 transplit dsp-start creating gen~ (retry 1) [#i1_3xq5y5 @415283]",
+    "+3583 transplit dsp-created alive 0 [#i1_3xq5y5 @415284]",
+    "+9662 transplit dsp-retry gen~ alive counter stayed 0 [#i1_3xq5y5 @421363]",
+    "+9662 transplit dsp-start creating gen~ (retry 2) [#i1_3xq5y5 @421363]",
+    "+9663 transplit dsp-created alive 0 [#i1_3xq5y5 @421364]",
+    "+15754 transplit dsp-error not running (alive 0 / 0) [#i1_3xq5y5 @427455]"
+   ]
+  },
+  "baseline": [
+   0,
+   0
+  ],
+  "sweep": {
+   "total": 10,
+   "tested": 10,
+   "exhausted": false,
+   "ms": 3144,
+   "isolationParamChanges": 0,
+   "bMeterMax": 0
+  }
+ },
+ "devicesA": [
+  {
+   "name": "Transient Split",
+   "cls": "MxDeviceAudioEffect",
+   "path": "T devices 0",
+   "params": 11
+  }
+ ],
+ "shotDefault": "/tmp/sweep2/spectral/tests/out/smoke/transient_split/default.png",
+ "params": [
+  {
+   "label": "Transient Split[devices 0] / Bias",
+   "name": "Bias",
+   "min": -100,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -100,
+     "rb": -100,
+     "str": "-100 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -53,
+     "rb": -53,
+     "str": "-53.0 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -26,
+     "rb": -26,
+     "str": "-26.0 %",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Mix",
+   "name": "Mix",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 50,
+     "rb": 50,
+     "str": "50.0 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 70,
+     "rb": 70,
+     "str": "70.0 %",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Output",
+   "name": "Output",
+   "min": 0,
+   "max": 3,
+   "q": true,
+   "items": [
+    "Auto",
+    "Transients",
+    "Tones",
+    "All"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Auto",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Transients",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 3,
+     "rb": 3,
+     "str": "All",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Size",
+   "name": "Size",
+   "min": 0,
+   "max": 3,
+   "q": true,
+   "items": [
+    "512",
+    "1k",
+    "2k",
+    "4k"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "512",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1k",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 3,
+     "rb": 3,
+     "str": "4k",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "2k",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Tilt",
+   "name": "Tilt",
+   "min": -100,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -100,
+     "rb": -100,
+     "str": "-100 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -97,
+     "rb": -97,
+     "str": "-97.0 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 28,
+     "rb": 28,
+     "str": "28.0 %",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Tilt Mode",
+   "name": "Tilt Mode",
+   "min": 0,
+   "max": 1,
+   "q": true,
+   "items": [
+    "Standard",
+    "Contour"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Standard",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Contour",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Smoothing",
+   "name": "Smoothing",
+   "min": 1,
+   "max": 64,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1.5,
+     "rb": 1.5,
+     "str": "1.5",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 64,
+     "rb": 64,
+     "str": "64",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 38,
+     "rb": 38,
+     "str": "38",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 54,
+     "rb": 54,
+     "str": "54",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Type",
+   "name": "Type",
+   "min": 0,
+   "max": 1,
+   "q": true,
+   "items": [
+    "Percussive",
+    "Noise"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Percussive",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Noise",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Decay",
+   "name": "Decay",
+   "min": 1,
+   "max": 125,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 8,
+     "rb": 8,
+     "str": "8",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 125,
+     "rb": 125,
+     "str": "125",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 108,
+     "rb": 108,
+     "str": "108",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 42,
+     "rb": 42,
+     "str": "42",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Transient Split[devices 0] / Blend",
+   "name": "Blend",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.00 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 50,
+     "rb": 50,
+     "str": "50.0 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 68,
+     "rb": 68,
+     "str": "68.0 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 53,
+     "rb": 53,
+     "str": "53.0 %",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  }
+ ],
+ "shotAfter": "/tmp/sweep2/spectral/tests/out/smoke/transient_split/after_sweep.png",
+ "fails": [
+  "not ready in 45000 ms (probe {\"global\":\"spectral_split_trace\",\"regex\":\"transplit dsp ready\"}: trace null, meter A 0.0000)"
+ ],
+ "warns": [
+  "output silent after restoring defaults"
+ ],
+ "durationMs": 59163
+}

@@ -1,0 +1,30 @@
+devices/Loud Split.amxd (audio) FAIL  60 s
+fails 1, warns 1
+FAIL not ready in 45000 ms (probe {"global":"spectral_split_trace","regex":"loudsplit dsp ready"}: trace null, meter A 0.0000)
+WARN output silent after restoring defaults
+
+bridge ok, tempo 130
+instance A: 1 device(s): Loud Split(14)
+trace tail:
+  +3635 loudsplit dsp-created alive 0 [#i1_b0ohfd @350183]
+  +9714 loudsplit dsp-retry gen~ alive counter stayed 0 [#i1_b0ohfd @356262]
+  +9714 loudsplit dsp-start creating gen~ (retry 2) [#i1_b0ohfd @356262]
+  +9725 loudsplit dsp-created alive 0 [#i1_b0ohfd @356273]
+  +15804 loudsplit dsp-error not running (alive 0 / 0) [#i1_b0ohfd @362352]
+  +62 loudsplit dsp-start creating gen~ [#i1_880d25 @387323]
+  +64 loudsplit dsp-created alive 0 [#i1_880d25 @387325]
+  +3582 loudsplit dsp-retry gen~ alive counter stayed 0 [#i1_880d25 @390843]
+  +3582 loudsplit dsp-start creating gen~ (retry 1) [#i1_880d25 @390843]
+  +3583 loudsplit dsp-created alive 0 [#i1_880d25 @390844]
+  +9663 loudsplit dsp-retry gen~ alive counter stayed 0 [#i1_880d25 @396924]
+  +9663 loudsplit dsp-start creating gen~ (retry 2) [#i1_880d25 @396924]
+  +9665 loudsplit dsp-created alive 0 [#i1_880d25 @396926]
+  +15743 loudsplit dsp-error not running (alive 0 / 0) [#i1_880d25 @403004]
+FAIL not ready in 45000 ms (probe {"global":"spectral_split_trace","regex":"loudsplit dsp ready"}: trace null, meter A 0.0000)
+baseline meters A 0.000 B 0.000
+shot /tmp/sweep2/spectral/tests/out/smoke/loud_split/default.png (device area), /tmp/sweep2/spectral/tests/out/smoke/loud_split/default_full.png
+sweep: 13/13 parameters, 59 sets in 5 s
+after sweep meters A 0.000 B 0.000
+WARN output silent after restoring defaults
+shot /tmp/sweep2/spectral/tests/out/smoke/loud_split/after_sweep.png (device area), /tmp/sweep2/spectral/tests/out/smoke/loud_split/after_sweep_full.png
+TIMING loud_split 151 s (rc 1)

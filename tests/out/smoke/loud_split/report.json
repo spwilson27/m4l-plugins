@@ -1,0 +1,630 @@
+{
+ "device": "devices/Loud Split.amxd",
+ "slug": "loud_split",
+ "kind": "audio",
+ "port": 19911,
+ "config": {
+  "kind": "audio",
+  "ready": {
+   "global": "spectral_split_trace",
+   "regex": "loudsplit dsp ready"
+  },
+  "skipParams": [],
+  "readyTimeoutMs": 45000,
+  "needsSignal": true,
+  "notes": "standalone, deferred gen (spectral_split_trace)"
+ },
+ "started": "2026-10-27T17:00:28.063Z",
+ "steps": {
+  "ready": {
+   "ok": false,
+   "ms": 45362,
+   "trace": null,
+   "meterPeakA": 0,
+   "meterPeakB": 0,
+   "traceTail": [
+    "+3635 loudsplit dsp-created alive 0 [#i1_b0ohfd @350183]",
+    "+9714 loudsplit dsp-retry gen~ alive counter stayed 0 [#i1_b0ohfd @356262]",
+    "+9714 loudsplit dsp-start creating gen~ (retry 2) [#i1_b0ohfd @356262]",
+    "+9725 loudsplit dsp-created alive 0 [#i1_b0ohfd @356273]",
+    "+15804 loudsplit dsp-error not running (alive 0 / 0) [#i1_b0ohfd @362352]",
+    "+62 loudsplit dsp-start creating gen~ [#i1_880d25 @387323]",
+    "+64 loudsplit dsp-created alive 0 [#i1_880d25 @387325]",
+    "+3582 loudsplit dsp-retry gen~ alive counter stayed 0 [#i1_880d25 @390843]",
+    "+3582 loudsplit dsp-start creating gen~ (retry 1) [#i1_880d25 @390843]",
+    "+3583 loudsplit dsp-created alive 0 [#i1_880d25 @390844]",
+    "+9663 loudsplit dsp-retry gen~ alive counter stayed 0 [#i1_880d25 @396924]",
+    "+9663 loudsplit dsp-start creating gen~ (retry 2) [#i1_880d25 @396924]",
+    "+9665 loudsplit dsp-created alive 0 [#i1_880d25 @396926]",
+    "+15743 loudsplit dsp-error not running (alive 0 / 0) [#i1_880d25 @403004]"
+   ]
+  },
+  "baseline": [
+   0,
+   0
+  ],
+  "sweep": {
+   "total": 13,
+   "tested": 13,
+   "exhausted": false,
+   "ms": 4589,
+   "isolationParamChanges": 0,
+   "bMeterMax": 0
+  }
+ },
+ "devicesA": [
+  {
+   "name": "Loud Split",
+   "cls": "MxDeviceAudioEffect",
+   "path": "T devices 0",
+   "params": 14
+  }
+ ],
+ "shotDefault": "/tmp/sweep2/spectral/tests/out/smoke/loud_split/default.png",
+ "params": [
+  {
+   "label": "Loud Split[devices 0] / Fall",
+   "name": "Fall",
+   "min": 0.12999999523162842,
+   "max": 125,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0.129999995,
+     "rb": 0.12999999523162842,
+     "str": "0.13",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 8,
+     "rb": 8,
+     "str": "8",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 125,
+     "rb": 125,
+     "str": "125",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 29.656201437,
+     "rb": 29.656200408935547,
+     "str": "29.66",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 46.240829024,
+     "rb": 46.24082946777344,
+     "str": "46.24",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Hi Knee",
+   "name": "Hi Knee",
+   "min": 1,
+   "max": 24,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 6,
+     "rb": 6,
+     "str": "6.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 24,
+     "rb": 24,
+     "str": "24.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 13,
+     "rb": 13,
+     "str": "13.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 17,
+     "rb": 17,
+     "str": "17.0 dB",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Higher",
+   "name": "Higher",
+   "min": -110,
+   "max": 0,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -110,
+     "rb": -110,
+     "str": "-110.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -30,
+     "rb": -30,
+     "str": "-30.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -104,
+     "rb": -104,
+     "str": "-104.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -69,
+     "rb": -69,
+     "str": "-69.0 dB",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Lo Knee",
+   "name": "Lo Knee",
+   "min": 1,
+   "max": 24,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "1.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 6,
+     "rb": 6,
+     "str": "6.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 24,
+     "rb": 24,
+     "str": "24.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 19,
+     "rb": 19,
+     "str": "19.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 14,
+     "rb": 14,
+     "str": "14.0 dB",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Lower",
+   "name": "Lower",
+   "min": -110,
+   "max": 0,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -110,
+     "rb": -110,
+     "str": "-110.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -85,
+     "rb": -85,
+     "str": "-85.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -108,
+     "rb": -108,
+     "str": "-108.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -40,
+     "rb": -40,
+     "str": "-40.0 dB",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Mix",
+   "name": "Mix",
+   "min": 0,
+   "max": 100,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 100,
+     "rb": 100,
+     "str": "100 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 25,
+     "rb": 25,
+     "str": "25 %",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 42,
+     "rb": 42,
+     "str": "42 %",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Output",
+   "name": "Output",
+   "min": 0,
+   "max": 4,
+   "q": true,
+   "items": [
+    "Auto",
+    "Loud",
+    "Mid",
+    "Quiet",
+    "All"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Auto",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Loud",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 4,
+     "rb": 4,
+     "str": "All",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "Mid",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 3,
+     "rb": 3,
+     "str": "Quiet",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Rel Higher",
+   "name": "Rel Higher",
+   "min": -110,
+   "max": 0,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -110,
+     "rb": -110,
+     "str": "-110.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -12,
+     "rb": -12,
+     "str": "-12.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -84,
+     "rb": -84,
+     "str": "-84.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -2,
+     "rb": -2,
+     "str": "-2.0 dB",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Relative",
+   "name": "Relative",
+   "min": 0,
+   "max": 1,
+   "q": true,
+   "items": [
+    "Absolute",
+    "Relative"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "Absolute",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "Relative",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Rel Lower",
+   "name": "Rel Lower",
+   "min": -110,
+   "max": 0,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -110,
+     "rb": -110,
+     "str": "-110.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -36,
+     "rb": -36,
+     "str": "-36.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -35,
+     "rb": -35,
+     "str": "-35.0 dB",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -52,
+     "rb": -52,
+     "str": "-52.0 dB",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Rise",
+   "name": "Rise",
+   "min": 0.12999999523162842,
+   "max": 125,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": 0.129999995,
+     "rb": 0.12999999523162842,
+     "str": "0.13",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "2",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 125,
+     "rb": 125,
+     "str": "125",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 27.094678355,
+     "rb": 27.09467887878418,
+     "str": "27.09",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 13.183188942,
+     "rb": 13.183189392089844,
+     "str": "13.18",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Size",
+   "name": "Size",
+   "min": 0,
+   "max": 2,
+   "q": true,
+   "items": [
+    "1k",
+    "2k",
+    "4k"
+   ],
+   "tests": [
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "1k",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 1,
+     "rb": 1,
+     "str": "2k",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "4k",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  },
+  {
+   "label": "Loud Split[devices 0] / Tilt",
+   "name": "Tilt",
+   "min": -6,
+   "max": 6,
+   "q": false,
+   "items": null,
+   "tests": [
+    {
+     "v": -6,
+     "rb": -6,
+     "str": "-6.0 dB/oct",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 0,
+     "rb": 0,
+     "str": "0.0 dB/oct",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 6,
+     "rb": 6,
+     "str": "6.0 dB/oct",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": -4,
+     "rb": -4,
+     "str": "-4.0 dB/oct",
+     "meterA": 0,
+     "ok": true
+    },
+    {
+     "v": 2,
+     "rb": 2,
+     "str": "2.0 dB/oct",
+     "meterA": 0,
+     "ok": true
+    }
+   ]
+  }
+ ],
+ "shotAfter": "/tmp/sweep2/spectral/tests/out/smoke/loud_split/after_sweep.png",
+ "fails": [
+  "not ready in 45000 ms (probe {\"global\":\"spectral_split_trace\",\"regex\":\"loudsplit dsp ready\"}: trace null, meter A 0.0000)"
+ ],
+ "warns": [
+  "output silent after restoring defaults"
+ ],
+ "durationMs": 60251
+}

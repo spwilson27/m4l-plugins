@@ -92,5 +92,15 @@ for (const dev of ["Transient Split", "Loud Split", "Harmonic Split", "Freq Spli
     });
 }
 
+// ---- F1: the shipped rack presets must not carry the builder's checkout path (three of four point into pruned /private/tmp worktrees).
+const zlib = require("zlib");
+for (const dev of ["Transient Split", "Loud Split", "Harmonic Split", "Freq Split"]) {
+    check("F1", dev + ".adg has no absolute builder path", () => {
+        const x = zlib.gunzipSync(fs.readFileSync(path.join(ROOT, "devices", dev + ".adg"))).toString("utf8");
+        const m = [...x.matchAll(/<Path Value="(\/[^"]*)"/g)].map((r) => r[1]);
+        if (m.length) throw new Error(`${m.length} absolute <Path> entries, e.g. ${m[0]}`);
+    });
+}
+
 console.log(failed ? `${failed} FAILED` : "all passed");
 process.exit(failed ? 1 : 0);

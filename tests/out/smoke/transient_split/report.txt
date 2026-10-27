@@ -1,0 +1,30 @@
+devices/Transient Split.amxd (audio) FAIL  59 s
+fails 1, warns 1
+FAIL not ready in 45000 ms (probe {"global":"spectral_split_trace","regex":"transplit dsp ready"}: trace null, meter A 0.0000)
+WARN output silent after restoring defaults
+
+bridge ok, tempo 130
+instance A: 1 device(s): Transient Split(11)
+trace tail:
+  +3628 transplit dsp-created alive 0 [#i1_fnd245 @374524]
+  +9699 transplit dsp-retry gen~ alive counter stayed 0 [#i1_fnd245 @380595]
+  +9700 transplit dsp-start creating gen~ (retry 2) [#i1_fnd245 @380596]
+  +9711 transplit dsp-created alive 0 [#i1_fnd245 @380607]
+  +15790 transplit dsp-error not running (alive 0 / 0) [#i1_fnd245 @386686]
+  +63 transplit dsp-start creating gen~ [#i1_3xq5y5 @411764]
+  +64 transplit dsp-created alive 0 [#i1_3xq5y5 @411765]
+  +3582 transplit dsp-retry gen~ alive counter stayed 0 [#i1_3xq5y5 @415283]
+  +3582 transplit dsp-start creating gen~ (retry 1) [#i1_3xq5y5 @415283]
+  +3583 transplit dsp-created alive 0 [#i1_3xq5y5 @415284]
+  +9662 transplit dsp-retry gen~ alive counter stayed 0 [#i1_3xq5y5 @421363]
+  +9662 transplit dsp-start creating gen~ (retry 2) [#i1_3xq5y5 @421363]
+  +9663 transplit dsp-created alive 0 [#i1_3xq5y5 @421364]
+  +15754 transplit dsp-error not running (alive 0 / 0) [#i1_3xq5y5 @427455]
+FAIL not ready in 45000 ms (probe {"global":"spectral_split_trace","regex":"transplit dsp ready"}: trace null, meter A 0.0000)
+baseline meters A 0.000 B 0.000
+shot /tmp/sweep2/spectral/tests/out/smoke/transient_split/default.png (device area), /tmp/sweep2/spectral/tests/out/smoke/transient_split/default_full.png
+sweep: 10/10 parameters, 40 sets in 3 s
+after sweep meters A 0.000 B 0.000
+WARN output silent after restoring defaults
+shot /tmp/sweep2/spectral/tests/out/smoke/transient_split/after_sweep.png (device area), /tmp/sweep2/spectral/tests/out/smoke/transient_split/after_sweep_full.png
+TIMING transient_split 149 s (rc 1)
