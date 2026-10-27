@@ -22,3 +22,14 @@ Counts: S1 0, S2 2, S3 1, S4 3.
 - E-02 KEEP: smoke screenshot shows the Threshold/Sens/Hold labels and values dark grey on the dark teal panel, barely legible; the three live.dial boxes have no textcolor; test fails for that reason.
 - E-03 KEEP: runner slices the literal "var PANEL_NAMES = " but the built script has "var PANEL_NAMES=[...]"; the test reproduces the mismatch (tooling, but it blocks the UI test from ever running).
 - E-04/E-05/E-06 log-only S4, no tests; nothing to verify.
+
+## Fix
+| id | status | change |
+|---|---|---|
+| E-01 | fixed | `MIDI To Panel` toggle short name -> `MIDI Panel` (long name, order unchanged) in scripts/build_envtrig.py |
+| E-02 | fixed | live.dial boxes get `textcolor` [0.86,0.90,0.94,1]; Live smoke shot shows readable Thresh/Sens/Hold labels and values |
+| E-03 | fixed | run_envtrig_ui_tests.py prefix `var PANEL_NAMES=`; `vm_envtrig.sh ui` now passes |
+| E-04 | fixed (doc) | AGENTS s12 trigscope now `---trigscope`; static allowlist entry (`receive envtrig-test`) confirmed legitimate |
+| E-05/E-06 | not fixed | S4, log only |
+
+Gate: typecheck, build, test_envtrig, test_envtrig_sweep2, preview (read), test_device_static (Envelope Trigger ok; other devices' violations are not this lane), test_face_fuzz 0 failures; VM: `vm_envtrig.sh ui` pass, `vm_envtrig.sh run` pass, `vm_smoke.sh` PASS. DSP unchanged so no audio re-run. Commit: "fix(envtrig): unique MIDI Panel short name, ...".
