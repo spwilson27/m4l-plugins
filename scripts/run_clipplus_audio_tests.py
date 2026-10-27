@@ -74,6 +74,28 @@ def signal(mode):
             mh.line("dev-ag", 0, "dev-sig", 0),
             mh.line("dev-bg", 0, "dev-sig", 1),
         ]
+    elif mode == "imp":
+        # Sample-exact impulse (value 0.1 at sample 1000 from DSP start); the same impulse goes to record~ inlet 3 as the reference.
+        boxes += [
+            mh.gen_box("dev-sig", "History n(0);\ndummy = in1 * 0;\nn = n + 1;\nout1 = (n == 1000) ? 0.1 : 0;\n", 700, 200, numinlets=1, numoutlets=1),
+        ]
+    elif mode == "impn":
+        # the same impulse over a -80 dB noise floor (keeps every STFT hop above the 1e-5 silence gate)
+        boxes += [
+            mh.gen_box("dev-sig", "History n(0);\ndummy = in1 * 0;\nn = n + 1;\nout1 = ((n == 1000) ? 0.1 : 0) + noise() * 1e-4;\n", 700, 200, numinlets=1, numoutlets=1),
+        ]
+    elif mode == "hot":
+        boxes += [
+            mh.box("dev-a", "cycle~ 55", 700, 160, 90, numinlets=2, outlettype=["signal"]),
+            mh.box("dev-ag", "*~ 0.9", 820, 160, 70, numinlets=2, outlettype=["signal"]),
+            mh.box("dev-b", "cycle~ 3100", 700, 200, 90, numinlets=2, outlettype=["signal"]),
+            mh.box("dev-bg", "*~ 0.9", 820, 200, 70, numinlets=2, outlettype=["signal"]),
+            mh.box("dev-sig", "+~", 940, 180, 40, numinlets=2, numoutlets=1, outlettype=["signal"]),
+        ]
+        lines += [
+            mh.line("dev-a", 0, "dev-ag", 0), mh.line("dev-b", 0, "dev-bg", 0),
+            mh.line("dev-ag", 0, "dev-sig", 0), mh.line("dev-bg", 0, "dev-sig", 1),
+        ]
     elif mode == "hi":
         boxes += [
             mh.box("dev-osc", "cycle~ 7000", 700, 200, 100, numinlets=2, outlettype=["signal"]),
@@ -154,6 +176,8 @@ def device(code, case):
         mh.line("obj-mute-l", 0, "obj-dac", 0),
         mh.line("obj-mute-r", 0, "obj-dac", 1),
     ]
+    if case["mode"] in ("imp", "impn"):
+        lines.append(mh.line("dev-sig", 0, "obj-record", 2))
     return boxes, lines
 
 
@@ -200,6 +224,20 @@ def cases():
         # 80 Hz under a low shelf. The input meter's RMS and peak are the same post-shelf signal,
         # so a sine's RMS sits about 3 dB under its peak.
         {"name": "shelf_rms", "mode": "low", "freqs": "80", "params": params("drive 0, detail 0, shape 0, hlim 0, autog 0, filton 1, filttype 0, filtfreq 250, filtgain 6, filtq 0.707")},
+        # Latency: the reported 1047 samples (patcher "latency") must be what the audio path really delays, in every path.
+        {"name": "lat_d100", "mode": "imp", "freqs": "", "params": params("drive 0, detail 100, hlim 0, autog 0, oson 0, tpeak 0")},
+        {"name": "lat_d100_floor", "mode": "impn", "freqs": "", "params": params("drive 0, detail 100, hlim 0, autog 0, oson 0, tpeak 0")},
+        {"name": "lat_d0", "mode": "imp", "freqs": "", "params": params("drive 0, detail 0, hlim 0, autog 0, oson 0, tpeak 0")},
+        {"name": "lat_os", "mode": "imp", "freqs": "", "params": params("drive 0, detail 0, hlim 0, autog 0, oson 1, tpeak 0")},
+        {"name": "lat_tp", "mode": "imp", "freqs": "", "params": params("drive 0, detail 100, hlim 1, autog 0, oson 1, tpeak 1")},
+        {"name": "lat_hlim", "mode": "imp", "freqs": "", "params": params("drive 0, detail 0, hlim 1, autog 1, oson 0, tpeak 0")},
+        # Extremes: no NaN, bounded output.
+        {"name": "ext_pos", "mode": "hot", "freqs": "55 3100", "params": params("ingain 24, drive 24, detail 100, shape 100, sym 100, ceiling -12, outgain 12, hlim 1, autog 0, oson 1, tpeak 1")},
+        {"name": "ext_neg", "mode": "hot", "freqs": "55 3100", "params": params("ingain 24, drive 24, detail 100, shape 0, sym -100, ceiling 0, outgain 12, hlim 0, autog 1, oson 1, tpeak 0")},
+        {"name": "ext_filt", "mode": "hot", "freqs": "55 3100", "params": params("ingain 24, drive 24, detail 100, shape 50, sym 0, ceiling 0, outgain 0, hlim 1, autog 0, oson 0, tpeak 0, filton 1, filttype 1, filtfreq 12000, filtgain 24, filtq 10")},
+        # Hard Limit / Ceiling must hold with the emphasis filter on (AGENTS 29: Hard Limit is a sample clip at Ceiling after the crossfade).
+        {"name": "ceil_filt_shelf", "mode": "low", "freqs": "80", "params": params("drive 18, shape 100, detail 0, hlim 1, autog 0, ceiling -6, oson 0, tpeak 0, filton 1, filttype 0, filtfreq 250, filtgain 12, filtq 0.707")},
+        {"name": "ceil_filt_cut", "mode": "low", "freqs": "80", "params": params("drive 18, shape 100, detail 0, hlim 1, autog 0, ceiling -6, oson 0, tpeak 0, filton 1, filttype 1, filtfreq 250, filtgain 0, filtq 0.707")},
     ]
 
 
@@ -324,6 +362,17 @@ def check(name, meta, got, errors):
         gr = meta.get("gr", 0)
         if abs(gr - 5.97) > 0.35:
             errors.append(f"{name}: GR {gr} want about 6.0 dB over the ceiling")
+    elif name.startswith("lat_"):
+        lat = meta.get("idx1", -1) - meta.get("idx3", -1)
+        if lat != 1047:
+            errors.append(f"{name}: impulse out {meta.get('idx1')} in {meta.get('idx3')}: delay {lat} samples, device reports 1047")
+    elif name.startswith("ceil_filt"):
+        lim = 10 ** (-6 / 20)
+        if peak > lim * 1.02:
+            errors.append(f"{name}: Hard Limit on but peak {peak:.3f} exceeds the -6 dB ceiling ({lim:.3f}) with the emphasis filter on")
+    elif name.startswith("ext_"):
+        if peak > 1000 or meta.get("rpeak", 0) > 1000:
+            errors.append(f"{name}: output runaway (peak {peak}, rpeak {meta.get('rpeak')})")
     elif name == "shelf_rms":
         pk = meta.get("drvpk", 0)
         ms = meta.get("inms", 0)
@@ -352,7 +401,7 @@ def main():
         boxes, lines = device(code, case)
         meta = mh.run_case(
             "clipplus_" + case["name"], boxes, lines, probe_js=PROBE, probe_args=case["freqs"],
-            settle_ms=500, dur_ms=400, channels=2, sr=48000, mode="nrt",
+            settle_ms=0 if case["mode"] in ("imp", "impn") else 500, dur_ms=400, channels=3 if case["mode"] in ("imp", "impn") else 2, sr=48000, mode="nrt",
         )
         got[case["name"]] = meta
         print(f"--- {case['name']} peak {meta.get('peak')} rpeak {meta.get('rpeak')} mean {meta.get('mean')} tp {meta.get('tp')} m0 {meta.get('m0')} m1 {meta.get('m1')} rm0 {meta.get('rm0')} rm1 {meta.get('rm1')} wall {meta.get('harness_wall_s'):.1f}s")
