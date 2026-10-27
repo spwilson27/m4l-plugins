@@ -1,0 +1,34 @@
+{
+  "Better Sampler.amxd": {
+    "instance-name": {"reason": "AGENTS 14: debug receiver `receive #0-bsdebug` is addressed literally by the MCP bridge (`#0` is not substituted in a top-level device, so messnamed(\"#0-bsdebug\") reaches it). Only the receive hook is allowlisted; the buffer~ #0- names are a real cross-instance sharing finding.", "match": ["^obj-debug-recv:"]},
+    "presentation-bounds": {"reason": "AGENTS 14: the inspector canvas obj-viz-insp sits at x=600..760 and is revealed by `setwidth 760` (show_inspector); the saved width is 600.", "match": ["^obj-viz-insp "]}
+  },
+  "Better Sampler Reactive 2.amxd": {
+    "instance-name": {"reason": "AGENTS 14: debug receiver `receive #0-bsdebug` is addressed literally by the MCP bridge. Only the receive hook is allowlisted.", "match": ["^obj-debug-recv:"]},
+    "presentation-bounds": {"reason": "AGENTS 14 (design variants): the one main v8ui is sized to max_width (every fold open, 1545 px) while the device starts at the spec width and widens through setwidth_cmd.", "match": ["^obj-viz "]}
+  },
+  "Envelope Trigger.amxd": {
+    "instance-name": {"reason": "AGENTS 12 (Envelope Trigger): `receive envtrig-test` is a test hook addressed by name through the bridge (messnamed). Test-only; not per-instance on purpose.", "match": ["^obj-r-test:"]}
+  },
+  "Mega Modulator.amxd": {
+    "instance-name": {"reason": "AGENTS 21: `receive megamod-test` is the test hook driven with messnamed(\"megamod-test\", ...) from the bridge; addressed by literal name on purpose.", "match": ["^obj-r-test:"]}
+  },
+  "XO Sample Map.amxd": {
+    "instance-name": {"reason": "AGENTS 4 (XO): `receive #0-xo-test` / `#0-xo-testkey` are test hooks; `#0` is literal in a top-level device and messnamed(\"#0-xo-test\", ...) from the bridge reaches them.", "match": ["^obj-r-test:", "^obj-r-testkey:"]}
+  },
+  "Reverb+.amxd": {
+    "instance-name": {"reason": "AGENTS 27: `r #0-rptest` is the test hook (`receive #0-rptest` -> engine) addressed literally by the bridge.", "match": ["^obj-state-test:"]}
+  },
+  "Freq Split.amxd": {
+    "instance-name": {"reason": "AGENTS 22: `r #0-sstest` is the shared Live test hook (`dsp_restart <chain>`) addressed literally by the bridge.", "match": ["^obj-r-sstest:"]}
+  },
+  "Harmonic Split.amxd": {
+    "instance-name": {"reason": "AGENTS 22: `r #0-sstest` is the shared Live test hook addressed literally by the bridge.", "match": ["^obj-r-sstest:"]}
+  },
+  "Loud Split.amxd": {
+    "instance-name": {"reason": "AGENTS 22: `r #0-sstest` is the shared Live test hook addressed literally by the bridge.", "match": ["^obj-r-sstest:"]}
+  },
+  "Transient Split.amxd": {
+    "instance-name": {"reason": "AGENTS 22: `r #0-sstest` is the shared Live test hook addressed literally by the bridge.", "match": ["^obj-r-sstest:"]}
+  }
+}

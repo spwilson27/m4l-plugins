@@ -20,13 +20,18 @@
  */
 const vm = require("vm");
 
-function makeRecorder(W, H) {
-    const rec = { W, H, shapes: [], bad: [], label: "", fontSize: 10, cur: null, pts: [], lastOp: "", lw: 1 };
+function makeRecorder(W, H, opts) {
+    const rec = { W, H, shapes: [], bad: [], label: "", fontSize: 10, cur: null, pts: [], lastOp: "", lw: 1, ctm: [1, 0, 0, 1, 0, 0], stack: [] };
+    // opts.transform: honour translate / scale / rotate / save / restore (default off: the splitter faces never use them and the
+    // original recorder ignored them; the fuzz harness turns it on so faces that translate are measured in canvas coordinates).
+    const useCtm = !!(opts && opts.transform);
+    const tx = (x, y) => (useCtm ? [rec.ctm[0] * x + rec.ctm[2] * y + rec.ctm[4], rec.ctm[1] * x + rec.ctm[3] * y + rec.ctm[5]] : [x, y]);
+    const mul = (m, n) => [m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1], m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3], m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5]];
     const num = (v, what) => {
         if (typeof v !== "number" || !isFinite(v) || Math.abs(v) > 1e5) rec.bad.push(`${rec.label}: non-finite / absurd coordinate ${v} in ${what}`);
         return v;
     };
-    const addPt = (x, y, what) => { num(x, what); num(y, what); if (isFinite(x) && isFinite(y)) rec.pts.push([x, y]); };
+    const addPt = (x, y, what) => { num(x, what); num(y, what); if (isFinite(x) && isFinite(y)) rec.pts.push(tx(x, y)); };
     const flush = (kind) => {
         if (rec.pts.length) {
             let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -64,18 +69,28 @@ function makeRecorder(W, H) {
         },
         ellipse(x, y, w, h) { addPt(x, y, "ellipse"); addPt(x + w, y + h, "ellipse"); rec.cur = [x, y]; rec.lastOp = "arc"; },
         fill() { flush("fill"); }, fill_preserve() { flush("fill"); }, stroke() { flush("stroke"); },
-        save() {}, restore() {}, translate() {}, rotate() {},
+        save() { rec.stack.push(rec.ctm.slice()); }, restore() { if (rec.stack.length) rec.ctm = rec.stack.pop(); },
+        translate(x, y) { if (useCtm && isFinite(x) && isFinite(y)) rec.ctm = mul(rec.ctm, [1, 0, 0, 1, x, y]); },
+        scale(x, y) { if (useCtm && isFinite(x) && isFinite(y)) rec.ctm = mul(rec.ctm, [x, 0, 0, y, 0, 0]); },
+        rotate(a) { if (useCtm && isFinite(a)) rec.ctm = mul(rec.ctm, [Math.cos(a), Math.sin(a), -Math.sin(a), Math.cos(a), 0, 0]); },
+        identity_matrix() { rec.ctm = [1, 0, 0, 1, 0, 0]; },
+        // additive no-ops / helpers used by the other faces (the fuzz harness drives all of them)
+        clip() {}, reset_clip() {}, set_line_cap() {}, set_line_join() {}, stroke_preserve() { flush("stroke"); }, fill_with_alpha() { flush("fill"); },
+        arc_negative(x, y, r) { m.arc(x, y, r); }, get_current_point() { return rec.cur || [0, 0]; }, set_matrix() {}, path_roundcapped() {},
+        text_path() {}, set_dash() {}, set_source_surface() {}, image_surface_create() { return {}; }, set_operator() {},
         show_text(t) {
             if (!rec.cur) { rec.bad.push(`${rec.label}: show_text("${t}") with no current point`); return; }
             const w = String(t).length * rec.fontSize * 0.56;
             const [x, y] = rec.cur;
             num(x, "text x"); num(y, "text y");
-            rec.shapes.push({ kind: "text", text: String(t), x0: x, y0: y - rec.fontSize * 0.8, x1: x + w, y1: y + rec.fontSize * 0.2, label: rec.label });
+            // text box corners go through the CTM (rotated vertical labels), unrotated otherwise identical to the old box
+            const cs = [[x, y - rec.fontSize * 0.8], [x + w, y - rec.fontSize * 0.8], [x, y + rec.fontSize * 0.2], [x + w, y + rec.fontSize * 0.2]].map((c) => tx(c[0], c[1]));
+            rec.shapes.push({ kind: "text", text: String(t), x0: Math.min(...cs.map((c) => c[0])), y0: Math.min(...cs.map((c) => c[1])), x1: Math.max(...cs.map((c) => c[0])), y1: Math.max(...cs.map((c) => c[1])), label: rec.label });
             rec.pts = []; rec.cur = null; rec.lastOp = "text";
         }
     };
     rec.mgraphics = m;
-    rec.begin = (label) => { rec.label = label || ""; rec.shapes = []; rec.pts = []; rec.cur = null; rec.lastOp = ""; };
+    rec.begin = (label) => { rec.label = label || ""; rec.shapes = []; rec.pts = []; rec.cur = null; rec.lastOp = ""; rec.ctm = [1, 0, 0, 1, 0, 0]; rec.stack = []; };
     rec.end = () => { if (rec.pts.length) rec.bad.push(`${rec.label}: path left open at the end of paint() (never filled / stroked)`); rec.pts = []; };
     return rec;
 }
