@@ -31,3 +31,11 @@ Previews rendered (committed state + scratch builds of every UB_PREVIEW_* state)
 - MM-04: fixed in AGENTS.md section 21 (check totals 21,688 / 13,616, ROUTE_SAMPS 1048) by exact-string edits.
 - MM-05: rejected.
 Gate (host): typecheck, build_megamod, test_megamod (21688), test_megamod_ui (13616), test_megamod_perf, render_preview all pass; test_device_static: only allowlisted/other-device violations; test_face_fuzz 0 failures. No DSP/face/LOM change, so no VM audio/Live/smoke re-run needed.
+
+## Review
+- Diff vs main base is small: audio case `extremes` (+checker), a test inset fix in test_megamod_ui.js, red test MM-S2-02, report. No src/, devices/ or frozen shared files touched.
+- Finding: the "Fix" stage claimed the AGENTS.md section 21 edits (MM-04) but never committed them. Applied now (exact-string, section 21 only): check totals 21,688 / 13,616 and ROUTE_SAMPS 1048.
+- Fresh rebuild (build_megamod.py): `git diff devices/` empty, so the committed .amxd equals a rebuild.
+- Test quality: the ui test fix is correct (the live path `ubPadValue` applies the 2 px inset). `extremes` asserts only finite/-1..1 bounds; meaningful. tests/test_megamod_sweep2.js (MM-S2-02) is intentionally red until the frozen vm_megamod_keys.sh is fixed; it is a static source-order check, valid.
+- Gate: typecheck, test_megamod (21688), test_megamod_ui (13616), test_megamod_perf (31) pass. `extremes` audio case and the Live suite were not re-run in review (no DSP change).
+- Deferred shared: MM-02 (move `ROOT=` above the vm_common.sh source in scripts/vm_megamod_keys.sh, or export ROOT in vm_megamod_live_suite.sh). Live suite never executed in this sweep.
