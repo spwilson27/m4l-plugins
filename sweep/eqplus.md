@@ -30,3 +30,10 @@ Counts: S1 0, S2 2, S3 0, S4 3.
 - EQP-S4-01 fixed (AGENTS section 32 appended, vm_eqplus.sh). S4-02/03 log only.
 - Gate: typecheck, build, test_eqplus (2766), bugsweep, sweep2 tests all green, test_device_static EQ+ 0 violations, test_face_fuzz 0 failures, preview Read clean; vm_smoke PASS (54/54 params, screenshot clean). VM audio suite run via vm_eqplus.sh (see summary).
 - VM Max audio re-run: NOT completed. After the rename (DSP unchanged, only buffer names) `vm_eqplus.sh audio` and a 4-case subset hung 15+ min with no output (harness idle; VM Max/Live shared with other lanes, likely the known WindowServer/lock wedge). Stage A's full 14-case pass was on the old names; smoke in Live passes with the new names (gens ready, meters move). Re-run `M4L_VM_DIR=sweep2/eqplus scripts/vm_eqplus.sh audio` once the VM is free.
+
+## Review
+- Rebuilt EQ+.amxd: identical to committed (no diff in devices/). typecheck, test_eqplus (2766), test_eqplus_sweep2, test_device_static (EQ+ 0 violations) green. Fixtures regenerate with no diff.
+- Diff touches only EQ+ files, vm_eqplus.sh (new, not a frozen infra edit), AGENTS.md (single append, section 32) and the report. No frozen/shared files changed.
+- VM Max audio re-run completed after the earlier hang: all 14 cases pass on the `---` names (bypass 0.00 dB, bell +12.00, notch -108, tilt, latency 0/1488/3072, lr_right, ms_side, no NaN).
+- Test quality: S2-01 inspects the built device boxes (proves bug); S2-02 is a regex on the runner source (weak but deterministic, accompanied by the real VM run).
+- No fixes needed. Deferred shared: none (the unrelated Neural Amp diff vs main is branch-base drift).
