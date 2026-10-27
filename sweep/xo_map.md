@@ -58,3 +58,11 @@ S4 items: XO-S4-01 shared lib false positive (DEFERRED(shared): tests/paint_boun
 
 Commits: 7606c00 (fixes) plus follow-up commit (Live test v4 + AGENTS + report).
 Gate: typecheck, build, test_xo_map/layout/search/stretch/bugsweep/sweep2 (all pass), test_device_static (0 violations, 2 allowlisted), test_face_fuzz (0 failures), preview Read OK, `vm_xo.sh max` PASS, Live `vm_xo.sh live`+`test` PASS (all checks), `vm_smoke.sh` PASS (0 fails, 0 warns).
+
+## Review
+- Diff main...HEAD: only own files (src/xo_node_engine.js, src/xo_strip_ui.js, tests, scripts/test_xo_live.js, AGENTS.md section 4 note, devices/XO Sample Map.amxd, report). No frozen/shared files touched.
+- Fresh rebuild of `devices/XO Sample Map.amxd` equals the committed file (`git diff --stat devices/` empty).
+- Tests prove the bugs (red tests in test_xo_sweep2.js exercise the real functions and now pass); harness fix sends `test_selected 1`. Blob v4 backward compatible (v2/v3 rows 5 wide, tail parsed after rows).
+- Gates re-run: typecheck, build, test_xo_map/layout/search/stretch/bugsweep/sweep2, test_face_fuzz PASS; test_device_static: XO 0 violations (failures belong to other devices: Sand, etc.).
+- Minor doc nit: AGENTS line 355 still says "version 3" for XOStateData; the new Sweep 2 note states v4 (not edited, outside own exact-edit scope risk-free to leave).
+- Deferred shared: tests/paint_bounds_lib.js move_to-before-arc false positive (XO-S4-01); stereo image still folded to mono in Edited renders (S4).
