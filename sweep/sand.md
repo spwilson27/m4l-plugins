@@ -17,3 +17,13 @@ Stage A+B (audit + red tests). Red tests: `tests/test_sand_sweep2.js` (node). Au
 - Parameters (built device): Order -1..15 Int, Stages 1..4, Amount 0..140 dB unitstyle 4, Freq 20..18000 Hz exp 2, Out enum Off/Hard/Limit, Filt, Place, Soft, Debrick, Mix; ranges/defaults/rects match AGENTS 6; devicewidth 296, openrect 169; panels last with background 1; XY drag inset in ondrag matches paint (freq 4 px, amount 3 px).
 - Live smoke (VM, Live): PASS, ready after 440 ms, 10/10 parameters swept (41 sets), meters finite, screenshots default/after_sweep clean (values "18 dB", "14.0 kHz", "Off", "35.0 %", Mix "50.0 %" not truncated). Smoke does not exercise two-instance scope isolation for #0 (SD-1) directly.
 - Audio (VM Max, minified gen): all 15 existing cases pass; new `ext_off` (order 15, 140 dB, 4 stages: peak 1.198 finite), `ext_lim` (0.890 = ceiling), `ext_int` (1.2), `mix50` (0.3535 equal power) pass. No latency (0), no sleep path.
+
+## Verify
+Independent check (ran tests/test_sand_sweep2.js: 3 fail on SD-1/1b/2/4 as stated, SD-3 passes as a guard).
+- SD-1 KEEP: built patcher really has `#0-sandwave` in 3 boxes; AGENTS 15 says #0 is not expanded at top level, so instances share the scope. Real S2.
+- SD-1b KEEP: same cause (v8ui literal fallback); fixed together with SD-1.
+- SD-2 KEEP (downgrade to S4): Param `mix` shadows the mix() operator; works today only by declaration order, but the baseline asked for the rename and it is cheap.
+- SD-3 KEEP: guard only, passes; the runner must test the minified gen the device embeds.
+- SD-4 KEEP (downgrade to S3): channel() args match the core signature; one NaN poisons the Histories permanently and output fixnan hides it as silence. Rare in Live, but a cheap input sanitise fixes it.
+- S4-a/b/c: no tests, left as nits.
+No rejections; none duplicate iteration-1 items.
