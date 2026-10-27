@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Repoint the .amxd references of a rack preset (.adg) at <devicesdir>/<name>.amxd (absolute Path). The committed
-.adg files carry the absolute path of the machine that built them, and the M4LTestLoader stages the preset in Live's
+.adg files carry an empty Path (relative reference only), and the M4LTestLoader stages the preset in Live's
 User Library, so its relative path no longer resolves. stdlib only; run in the VM by scripts/vm_smoke.sh.
   python3 scripts/smoke_fix_adg.py IN.adg OUT.adg DEVICES_DIR"""
 import gzip, os, re, sys
@@ -11,11 +11,17 @@ n = [0]
 
 
 def sub(m):
+    blk = m.group(0)
+    rel = re.search(r'<RelativePath Value="([^"]*\.amxd)"', blk)
+    if not rel:
+        return blk
     n[0] += 1
-    return '%s%s"' % (m.group(1), os.path.join(ddir, os.path.basename(m.group(2))).replace("&", "&amp;"))
+    new = os.path.join(ddir, os.path.basename(rel.group(1).replace("&amp;", "&"))).replace("&", "&amp;")
+    return re.sub(r'<Path Value="[^"]*"', lambda _m: '<Path Value="%s"' % new, blk, count=1)
 
 
-x = re.sub(r'(<Path Value=")([^"]*\.amxd)"', sub, x)
+# presets carry an empty Path (portable); older ones an absolute one: either way point it at DEVICES_DIR
+x = re.sub(r'<MxPatchRef Id="\d+">.*?</MxPatchRef>', sub, x, flags=re.S)
 with gzip.open(dst, "wb") as f:
     f.write(x.encode("utf-8"))
 print("repointed %d reference(s) -> %s" % (n[0], ddir))

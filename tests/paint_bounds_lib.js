@@ -62,8 +62,10 @@ function makeRecorder(W, H, opts) {
         close_path() { rec.lastOp = "close"; },
         rectangle(x, y, w, h) { addPt(x, y, "rectangle"); addPt(x + w, y + h, "rectangle"); rec.cur = [x, y]; rec.lastOp = "rect"; },
         rectangle_rounded(x, y, w, h) { addPt(x, y, "rrect"); addPt(x + w, y + h, "rrect"); rec.cur = [x, y]; rec.lastOp = "rect"; },
-        arc(x, y, r) {
-            if (rec.lastOp === "move" || rec.lastOp === "line" || rec.lastOp === "curve") rec.bad.push(`${rec.label}: arc joined to a pending path`);
+        arc(x, y, r, a1) {
+            // a pending point exactly at the arc's own start draws no joining line (move_to(x + r, y); arc(..., 0, ..))
+            const atStart = rec.cur && typeof a1 === "number" && Math.hypot(rec.cur[0] - (x + r * Math.cos(a1)), rec.cur[1] - (y + r * Math.sin(a1))) < 1e-3;
+            if (!atStart && (rec.lastOp === "move" || rec.lastOp === "line" || rec.lastOp === "curve")) rec.bad.push(`${rec.label}: arc joined to a pending path`);
             num(r, "arc radius");
             addPt(x - r, y - r, "arc"); addPt(x + r, y + r, "arc"); rec.cur = [x, y]; rec.lastOp = "arc";
         },
@@ -76,7 +78,7 @@ function makeRecorder(W, H, opts) {
         identity_matrix() { rec.ctm = [1, 0, 0, 1, 0, 0]; },
         // additive no-ops / helpers used by the other faces (the fuzz harness drives all of them)
         clip() {}, reset_clip() {}, set_line_cap() {}, set_line_join() {}, stroke_preserve() { flush("stroke"); }, fill_with_alpha() { flush("fill"); },
-        arc_negative(x, y, r) { m.arc(x, y, r); }, get_current_point() { return rec.cur || [0, 0]; }, set_matrix() {}, path_roundcapped() {},
+        arc_negative(x, y, r, a1) { m.arc(x, y, r, a1); }, get_current_point() { return rec.cur || [0, 0]; }, set_matrix() {}, path_roundcapped() {},
         text_path() {}, set_dash() {}, set_source_surface() {}, image_surface_create() { return {}; }, set_operator() {},
         show_text(t) {
             if (!rec.cur) { rec.bad.push(`${rec.label}: show_text("${t}") with no current point`); return; }

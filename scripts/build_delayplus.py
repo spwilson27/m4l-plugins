@@ -439,7 +439,19 @@ def line(src, so, dst, di):
 
 
 # Stamped into every script (registry entry `build`) so tests can tell a reloaded device apart.
-BUILD_STAMP = time.strftime("%Y%m%d-%H%M%S")
+def _source_stamp():
+    """Deterministic build stamp: hash of this device's sources (no wall clock, so rebuilds are byte-identical)."""
+    import hashlib
+    h = hashlib.sha1()
+    import glob
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for p in sorted(glob.glob(os.path.join(root, "src", "delayplus_*"))):
+        if os.path.isfile(p):
+            h.update(os.path.basename(p).encode()); h.update(open(p, "rb").read())
+    return h.hexdigest()[:12]
+
+
+BUILD_STAMP = _source_stamp()
 
 
 def read(name):

@@ -790,7 +790,7 @@ function prep(src) {
     assert.deepStrictEqual(names2, ["Red", "Blue", "Yellow", "Magenta"], "chains are named after the channels, in order");
     assert.strictEqual((adg.match(/<MxDeviceAudioEffect /g) || []).length, 4, "one device per chain");
     assert.strictEqual((adg.match(/<UserName Value="Freq Split"/g) || []).length, 1, "rack name");
-    assert.ok((adg.match(/Freq Split\.amxd/g) || []).length >= 8, "each chain references the .amxd (relative and absolute)");
+    assert.ok((adg.match(/Freq Split\.amxd/g) || []).length >= 4, "each chain references the .amxd (relative path)");
     console.log("[device] built device and rack preset checks passed");
 }
 

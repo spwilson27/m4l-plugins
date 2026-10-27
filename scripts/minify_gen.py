@@ -269,6 +269,38 @@ def _needs_space(prev, nxt):
     return (a, b) in _GLUE
 
 
+def _is_zero(t):
+    return re.fullmatch(r"0+(\.0*)?", t) is not None
+
+
+def _next_sig(toks, i):
+    j = i + 1
+    while j < len(toks) and toks[j][0] in ("ws", "comment"):
+        j += 1
+    return toks[j] if j < len(toks) else ("", "")
+
+
+def _keep_idiom_space(sig, kind, text, toks, i):
+    """``exp(0 - 1 / x)`` must not become ``exp(0-1/x)``: gen~ compiles that to a silent gen.
+    The sequence ``0 +/- number /`` keeps its spaces (the text the author wrote)."""
+    if len(sig) >= 2 and kind == "number" and sig[-1][1] in ("-", "+") and sig[-2][0] == "number" and _is_zero(sig[-2][1]) \
+            and _next_sig(toks, i)[1] == "/":
+        return True   # space between the sign and the number
+    if kind == "op" and text in ("-", "+") and sig and sig[-1][0] == "number" and _is_zero(sig[-1][1]) \
+            and _next_sig(toks, i)[0] == "number":
+        j = i + 1
+        while toks[j][0] in ("ws", "comment"):
+            j += 1
+        k = j + 1
+        while k < len(toks) and toks[k][0] in ("ws", "comment"):
+            k += 1
+        return k < len(toks) and toks[k][1] == "/"
+    if kind == "op" and text == "/" and len(sig) >= 3 and sig[-1][0] == "number" and sig[-2][1] in ("-", "+") \
+            and sig[-3][0] == "number" and _is_zero(sig[-3][1]):
+        return True
+    return False
+
+
 def minify_gen(src):
     """Return ``src`` with comments removed and locals renamed."""
     if not src or not src.strip():
@@ -277,6 +309,7 @@ def minify_gen(src):
     mapping = rename_map(src)
     parts = []
     prev = ""
+    sig = []
     i = 0
     while i < len(toks):
         kind, text = toks[i]
@@ -291,11 +324,13 @@ def minify_gen(src):
             continue
         if kind == "ident" and text in mapping and _rename_here(toks, i):
             text = mapping[text]
-        if parts and _needs_space(prev, text):
+        if parts and (_needs_space(prev, text) or _keep_idiom_space(sig, kind, text, toks, i)):
             parts.append(" ")
             prev += " "
         parts.append(text)
         prev = text
+        if kind != "ws":
+            sig.append((kind, text))
         i += 1
     out = "".join(parts)
     if src.endswith("\n") and not out.endswith("\n"):

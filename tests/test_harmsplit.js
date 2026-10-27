@@ -1136,7 +1136,7 @@ function prep(src) {
     assert.deepStrictEqual(names2, ["Nonharmonics", "Harmonics A", "Harmonics B"], "chains are named after the channels, in order");
     assert.strictEqual((adg.match(/<MxDeviceAudioEffect /g) || []).length, 3, "one device per chain");
     assert.strictEqual((adg.match(/<UserName Value="Harmonic Split"/g) || []).length, 1, "rack name");
-    assert.strictEqual((adg.match(/Harmonic Split\.amxd/g) || []).length >= 6, true, "each chain references the .amxd (relative and absolute)");
+    assert.strictEqual((adg.match(/Harmonic Split\.amxd/g) || []).length >= 3, true, "each chain references the .amxd (relative path)");
     console.log("[device] built device and rack preset checks passed");
 }
 
