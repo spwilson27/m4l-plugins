@@ -40,14 +40,15 @@ out2 = o;
 
 
 def device(model, params, ref=True, code_name=None):
-    code = open(os.path.join(FIX, (code_name or model) + ".genexpr")).read()
+    code = "" if code_name and code_name.startswith("gendsp:") else open(os.path.join(FIX, (code_name or model) + ".genexpr")).read()
     boxes = [
         mh.box("dev-wbuf", f"buffer~ amp_w_t {os.path.join(FIX, model + '_w.wav')}", 40, 120, 300, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-sbuf", f"buffer~ amp_stim_t {os.path.join(FIX, 'stim.wav')}", 40, 150, 300, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-cbuf", "buffer~ amp_cf_t 56 1", 40, 210, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.box("dev-scbuf", "buffer~ amp_scope_t 3136 1", 40, 240, 200, numoutlets=2, outlettype=["float", "bang"]),
         mh.gen_box("dev-src", SOURCE, 400, 200, numinlets=1, numoutlets=2),
-        mh.gen_box("dev-gen", code, 400, 300, numinlets=2, numoutlets=2),
+        (mh.box("dev-gen", "gen~ @gen " + os.path.join(FIX, code_name[7:]), 400, 300, 200, numinlets=2, numoutlets=2, outlettype=["signal", "signal"])
+         if code_name and code_name.startswith("gendsp:") else mh.gen_box("dev-gen", code, 400, 300, numinlets=2, numoutlets=2)),
         mh.msg("dev-params", "w amp_w_t, cf amp_cf_t, scope amp_scope_t, wbase 0, mok 1, " + params, 40, 40, 900),
     ]
     if ref is True:
@@ -107,7 +108,7 @@ def main():
             bad += not check(r["nans"] == 0 and rel < 2e-3 and r["peakraw"] > 0,
                              f"{case}: maxerr {r['maxerr']:.3g} (peak ref {r['peakref']:.3g}, rel {rel:.2g}), rms err {r['rmserr']:.3g}")
         elif case.startswith("dbg:"):
-            r = run("dbg", "lstm", "tapraw 1", 300, ref=False, code_name=case[4:])
+            r = run("dbg", "feather", "tapraw 1", 300, ref=False, code_name=case[4:])
             print("DEBUG", {k: v for k, v in r.items() if k != "harness_dir"}, flush=True)
         elif case.startswith("cpu_"):
             m = case[4:]

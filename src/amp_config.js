@@ -546,7 +546,9 @@ function ampGenNamRaw(m) {
  */
 function ampGenCode(template, m) {
     var g = ampGenNam(m);
-    return template.replace("//@NAM_DECL", g.decl).replace("//@NAM_BODY", g.body)
+    // Placeholders only count on a line of their own (the template's comments mention them too).
+    return template.replace(/^[ \t]*\/\/@NAM_DECL[ \t]*$/m, function () { return g.decl; })
+        .replace(/^[ \t]*\/\/@NAM_BODY[ \t]*$/m, function () { return g.body; })
         .split("@@NLAYERS@@").join(String(g.layers)).split("@@RF@@").join(String(m.receptiveField || 1));
 }
 

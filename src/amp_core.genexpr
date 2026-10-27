@@ -15,6 +15,7 @@ Param normdb(0);
 Param wbase(-1);
 Param mok(0);
 Param tapraw(0);
+Param testamp(0);
 Buffer w("ampw");
 Buffer cf("ampcf");
 Buffer scope("ampscope");
@@ -44,6 +45,7 @@ History satA(0);
 History xyc(0);
 History xyh(0);
 History oh(0);
+History tph(0);
 Data bz(20);
 Data lsm(48);
 //@NAM_DECL
@@ -51,6 +53,10 @@ Data lsm(48);
 dry1 = in1;
 dry2 = in2;
 x = (in1 + in2) * 0.5;
+// Test hook (the Live check): a 110 Hz tone with two harmonics, plucked every 1.5 s, replaces the input.
+tph = tph + 1 >= samplerate * 1.5 ? 0 : tph + 1;
+tsig = (sin(tph * 6.283185307 * 110 / samplerate) + 0.4 * sin(tph * 6.283185307 * 220 / samplerate) + 0.2 * sin(tph * 6.283185307 * 330 / samplerate)) * exp(-tph / samplerate * 1.5);
+x = testamp > 0 ? testamp * tsig : x;
 inG = inG + (dbtoa(indb) - inG) * 0.002;
 xg = x * inG;
 

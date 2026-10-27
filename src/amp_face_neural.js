@@ -1,0 +1,273 @@
+// Amp face "Neural": Ableton-native look. The canvas draws the network the model runs: one column of nodes
+// per layer, dilated taps between columns (the spread grows with the dilation 1, 2, 4, ...), node size and
+// brightness from the per-layer activity, and signal pulses that sweep left to right faster and brighter
+// with the output level. The input waveform enters at the left, the output waveform leaves at the right.
+// Header: model selector (Model parameter) and Load .nam. All other parameters are native Live widgets
+// outside the canvas. Colours come from the Live theme (spectral_theme.js).
+
+var NRL = {
+    W: 330, H: 161,
+    lcd: { x: 0, y: 21, w: 330, h: 125 },
+    px0: 50, px1: 280, py0: 38, py1: 124, rows: 9,
+    phase: 0, hover: "", act: [], tick: 0
+};
+var NRL_NAMES = ["Clean", "Crunch", "Lead", "File"];
+
+sptThemeWatch();
+
+function nrlSegRects() {
+    var out = [], x = 0;
+    for (var i = 0; i < 4; i++) { out.push({ i: i, x: x, y: 1, w: 42, h: 16 }); x += 43; }
+    return out;
+}
+function nrlLoadRect() { return { x: 262, y: 1, w: 68, h: 16 }; }
+function nrlIn(x, y, r) { return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h; }
+
+/** @param {string} s @param {number} maxW @param {number} size */
+function nrlFit(s, maxW, size) {
+    var t = String(s);
+    if (sptTextW(t, size) <= maxW) return t;
+    while (t.length > 2 && sptTextW(t + "…", size) > maxW) t = t.slice(0, -1);
+    return t + "…";
+}
+
+function nrlLayerCount() {
+    var n = Math.round(Number(amp.model.layers) || 0);
+    return n > 0 ? Math.min(n, 40) : 12;
+}
+
+/** Dilation of layer i: 1, 2, 4, ... repeating (the cycle length is not exposed by the engine). */
+function nrlDilation(i, n) {
+    var cyc = (n >= 10 && n % 10 === 0) ? 10 : 8;
+    return Math.pow(2, i % cyc);
+}
+
+function nrlColX(i, n) { return NRL.px0 + (n > 1 ? i * (NRL.px1 - NRL.px0) / (n - 1) : 0.5 * (NRL.px1 - NRL.px0)); }
+function nrlRowY(r) { return NRL.py0 + r * (NRL.py1 - NRL.py0) / (NRL.rows - 1); }
+
+function nrlHeader() {
+    var rs = nrlSegRects(), sel = Math.round(ampP.model), names = ampModelNames();
+    for (var i = 0; i < rs.length; i++) {
+        var r = rs[i], on = r.i === sel, hov = NRL.hover === "m" + i;
+        sptRgba(on ? sptColor("live_control_selection") : sptColor("live_control_bg"), on ? 1 : (hov ? 1 : 0.9));
+        mgraphics.rectangle(r.x, r.y, r.w, r.h);
+        mgraphics.fill();
+        var label = i < 3 ? String(names[i] || NRL_NAMES[i]) : "File";
+        sptText(nrlFit(label, r.w - 6, SPT_SIZE_SMALL), r.x + r.w / 2, r.y + 11.5,
+            on ? sptColor("live_lcd_bg") : sptColor(hov ? "live_lcd_control_fg_alt" : "live_control_fg"), SPT_SIZE_SMALL, 1);
+    }
+    var l = nrlLoadRect(), hv = NRL.hover === "load";
+    sptRgba(sptColor(hv ? "live_control_selection" : "live_control_bg"));
+    mgraphics.rectangle(l.x, l.y, l.w, l.h);
+    mgraphics.fill();
+    var fg = sptColor(hv ? "live_lcd_bg" : "live_control_fg");
+    // folder glyph
+    sptRgba(fg);
+    mgraphics.set_line_width(1);
+    mgraphics.move_to(l.x + 6.5, l.y + 12);
+    mgraphics.line_to(l.x + 6.5, l.y + 4.5);
+    mgraphics.line_to(l.x + 10, l.y + 4.5);
+    mgraphics.line_to(l.x + 11.5, l.y + 6);
+    mgraphics.line_to(l.x + 16.5, l.y + 6);
+    mgraphics.line_to(l.x + 16.5, l.y + 12);
+    mgraphics.line_to(l.x + 6.5, l.y + 12);
+    mgraphics.stroke();
+    sptText("Load .nam", l.x + 20, l.y + 11.5, fg, SPT_SIZE_SMALL, 0);
+}
+
+/** Smoothed activity per column, resampled when the layer count differs from what the engine reports. */
+function nrlActivity(n) {
+    var src = ampLayers(), out = [], k = ampTel.out_rms || 0;
+    for (var i = 0; i < n; i++) {
+        var v = src.length ? Number(src[Math.min(src.length - 1, Math.floor(i * src.length / n))]) || 0 : 0;
+        var prev = NRL.act[i] === undefined ? v : NRL.act[i];
+        out.push(prev + (v - prev) * 0.4);
+    }
+    NRL.act = out;
+    return out;
+}
+
+function nrlWave(vals, x0, x1, yc, amp_, col, a) {
+    if (!vals.length) return;
+    var pts = [], n = vals.length;
+    for (var i = 0; i < n; i++) {
+        var v = Math.max(-1, Math.min(1, vals[i] * 1.6));
+        pts.push([x0 + (x1 - x0) * i / (n - 1), yc - v * amp_]);
+    }
+    sptCurve(pts, col, a);
+}
+
+function nrlWaveIn() {
+    var xy = ampXY(120), v = [];
+    for (var i = 0; i < xy.length; i++) v.push(xy[i][0]);
+    return v;
+}
+function nrlWaveOut() {
+    var o = ampOutRing(480), v = [];
+    for (var i = 0; i + 3 < o.length; i += 4) v.push(Math.max(o[i], o[i + 1], o[i + 2], o[i + 3]) > -Math.min(o[i], o[i + 1], o[i + 2], o[i + 3]) ? Math.max(o[i], o[i + 1], o[i + 2], o[i + 3]) : Math.min(o[i], o[i + 1], o[i + 2], o[i + 3]));
+    return v;
+}
+
+function nrlNetwork() {
+    var L = NRL.lcd;
+    var ys = [], g = [];
+    for (var yy = 1; yy < 5; yy++) ys.push(L.y + yy * L.h / 5);
+    for (var xx = 1; xx < 6; xx++) g.push(L.x + xx * L.w / 6);
+    sptLcd(L.x, L.y, L.w, L.h, { xs: [], ys: [L.y + L.h / 2] });
+    var cyan = sptColor("live_display_line_two"), orange = sptColor("live_display_line_one");
+    var kind = amp.model.kind, n = nrlLayerCount();
+    var lvl = Math.min(1, (ampTel.out_rms || 0) * 5 + (ampTel.sat || 0) * 0.3);
+    var act, i, r;
+    NRL.phase = (NRL.phase + 0.006 + 0.03 * Math.min(1, (ampTel.out_rms || 0) * 4)) % 1;
+    var pulses = [NRL.phase, (NRL.phase + 0.5) % 1];
+    function boost(x) {
+        var b = 0;
+        for (var p = 0; p < pulses.length; p++) {
+            var xp = NRL.px0 - 8 + pulses[p] * (NRL.px1 - NRL.px0 + 16);
+            var d = (x - xp) / 16;
+            b = Math.max(b, Math.exp(-d * d));
+        }
+        return b * (0.25 + 0.75 * lvl);
+    }
+    if (kind === "LSTM") {
+        n = Math.max(1, Math.min(4, n));
+        act = nrlActivity(n);
+        for (i = 0; i < n; i++) {
+            var cx = NRL.px0 + 20 + i * (NRL.px1 - NRL.px0 - 40) / Math.max(1, n - 1);
+            if (n === 1) cx = (NRL.px0 + NRL.px1) / 2;
+            var cw = 34, ch = 72, cy = (NRL.py0 + NRL.py1) / 2 - ch / 2;
+            var a = Math.min(1, act[i] * 1.4 + boost(cx) * 0.5);
+            if (i < n - 1) sptCurve([[cx + cw / 2, cy + ch / 2], [nrlLstmX(i + 1, n) - cw / 2, cy + ch / 2]], cyan, 0.5);
+            sptRgba(sptMuted(orange, 0.25 + 0.55 * a));
+            mgraphics.rectangle_rounded(cx - cw / 2, cy, cw, ch, 6, 6);
+            mgraphics.fill();
+            sptRgba(sptMuted(orange, 0.8), 0.4 + 0.6 * a);
+            mgraphics.set_line_width(1);
+            mgraphics.rectangle_rounded(cx - cw / 2 + 0.5, cy + 0.5, cw - 1, ch - 1, 6, 6);
+            mgraphics.stroke();
+            // recurrent loop (polyline) above the cell
+            var loop = [];
+            for (var s = 0; s <= 16; s++) {
+                var t = Math.PI * s / 16;
+                loop.push([cx + Math.cos(Math.PI - t) * 11, cy - 3 - Math.sin(t) * 9]);
+            }
+            sptCurve(loop, orange, 0.5 + 0.5 * a);
+            sptText("LSTM " + (i + 1), cx, cy + ch / 2 + 3, sptColor("live_lcd_bg"), SPT_SIZE_SMALL, 1);
+        }
+    } else {
+        act = nrlActivity(n);
+        // dilated taps between columns
+        for (i = 0; i < n - 1; i++) {
+            var x0 = nrlColX(i, n), x1 = nrlColX(i + 1, n);
+            var dil = nrlDilation(i, n);
+            var sp = Math.min(4, Math.round(Math.log(dil) / Math.LN2 * 0.5));
+            var a2 = Math.min(1, act[i] * 1.2 + boost(x0) * 0.7);
+            for (r = 0; r < NRL.rows; r++) {
+                var offs = sp > 0 ? [0, -sp, sp] : [0];
+                for (var o = 0; o < offs.length; o++) {
+                    var r2 = r + offs[o];
+                    if (r2 < 0 || r2 >= NRL.rows) continue;
+                    var ya = nrlRowY(r), yb = nrlRowY(r2);
+                    sptCurve([[x0, ya], [(x0 + x1) / 2, (ya + yb) / 2], [x1, yb]], offs[o] === 0 ? cyan : orange,
+                        (offs[o] === 0 ? 0.1 : 0.06) + (offs[o] === 0 ? 0.4 : 0.22) * a2);
+                }
+            }
+        }
+        // dilation arcs: a long skip over the columns, as a polyline, one every other layer
+        for (i = 0; i < n; i += 2) {
+            var dl = nrlDilation(i, n);
+            var span = Math.min(n - 1 - i, Math.max(1, Math.round(Math.log(dl) / Math.LN2 * 0.9)));
+            if (span < 1) continue;
+            var xa = nrlColX(i, n), xb = nrlColX(i + span, n), ar = [];
+            for (var q = 0; q <= 14; q++) {
+                var u = q / 14;
+                ar.push([xa + (xb - xa) * u, NRL.lcd.y + 12 - Math.sin(Math.PI * u) * (3 + 4 * Math.min(1, span / 6))]);
+            }
+            sptCurve(ar, orange, 0.2 + 0.5 * Math.min(1, act[i] * 1.3));
+        }
+        // nodes
+        for (i = 0; i < n; i++) {
+            var x = nrlColX(i, n);
+            var aa = Math.min(1, act[i] * 1.5 + boost(x) * 0.55);
+            var rad = 1.2 + 1.8 * aa;
+            for (r = 0; r < NRL.rows; r++) {
+                var wob = 0.6 + 0.4 * Math.sin(i * 1.9 + r * 2.3 + NRL.tick * 0.05 * (0.3 + lvl));
+                var na = Math.max(0, Math.min(1, aa * wob));
+                sptRgba(sptMix(sptMuted(cyan, 0.55), orange, na), 0.45 + 0.55 * na);
+                mgraphics.ellipse(x - rad, nrlRowY(r) - rad, 2 * rad, 2 * rad);
+                mgraphics.fill();
+            }
+        }
+    }
+    NRL.tick++;
+    // waveforms at both ends
+    var wc = L.y + L.h / 2;
+    nrlWave(nrlWaveIn(), 4, NRL.px0 - 8, wc, 36, orange, 0.9);
+    nrlWave(nrlWaveOut(), NRL.px1 + 8, L.w - 4, wc, 36, cyan, 0.95);
+    // entry / exit gates
+    sptCurve([[NRL.px0 - 5, L.y + 6], [NRL.px0 - 5, L.y + L.h - 6]], sptColor("live_lcd_frame"), 1);
+    sptCurve([[NRL.px1 + 5, L.y + 6], [NRL.px1 + 5, L.y + L.h - 6]], sptColor("live_lcd_frame"), 1);
+    sptText("in", 4, L.y + L.h - 5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+    sptText("out", L.w - 4, L.y + L.h - 5, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
+    sptText(kind === "LSTM" ? "recurrent cells" : n + " layers · dilations 1, 2, 4…", L.w / 2, L.y + L.h - 5,
+        sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 1);
+    // gate reduction pill
+    if ((ampTel.gate || 1) < 0.5) sptText("gated", L.w / 2, L.y + 12, sptColor("live_alert"), SPT_SIZE_SMALL, 1);
+}
+
+function nrlLstmX(i, n) { return n === 1 ? (NRL.px0 + NRL.px1) / 2 : NRL.px0 + 20 + i * (NRL.px1 - NRL.px0 - 40) / (n - 1); }
+
+function nrlInfo() {
+    var y = 157, m = amp.model, txt, col = sptColor("live_lcd_title");
+    if (amp.dsp.error) { txt = "DSP: " + amp.dsp.error; col = sptColor("live_alert"); }
+    else if (m.error) { txt = m.error; col = sptColor("live_alert"); }
+    else if (!amp.dsp.ready) { txt = "DSP loading…"; col = sptColor("live_control_selection"); }
+    else {
+        var rf = (Number(m.rf) || 0) / 48;
+        txt = (m.name || "no model") + "  " + (m.label || "") + "  ·  " + (m.kind || "") + "  ·  receptive field " + rf.toFixed(rf < 10 ? 1 : 0) + " ms";
+    }
+    sptText(nrlFit(txt, NRL.W - 4, SPT_SIZE_SMALL), 2, y, col, SPT_SIZE_SMALL, 0);
+}
+
+function paint() {
+    nrlHeader();
+    nrlNetwork();
+    nrlInfo();
+}
+
+function ampFaceFrame() { return true; }
+function ampFaceChanged(what) { }
+
+function nrlHit(x, y) {
+    var rs = nrlSegRects();
+    for (var i = 0; i < rs.length; i++) if (nrlIn(x, y, rs[i])) return "m" + i;
+    if (nrlIn(x, y, nrlLoadRect())) return "load";
+    return "";
+}
+
+function onclick(x, y) {
+    var h = nrlHit(x, y);
+    if (!h) return;
+    if (h === "load") ampBrowse();
+    else {
+        var c = Number(h.slice(1));
+        if (c === 3 && !amp.fileModel) ampBrowse(); else ampSet("model", c);
+    }
+    mgraphics.redraw();
+}
+
+function ondrag() { }
+function ondblclick() { }
+
+function onidle(x, y) {
+    var h = nrlHit(x, y);
+    if (h !== NRL.hover) { NRL.hover = h; mgraphics.redraw(); }
+}
+function onidleout() { NRL.hover = ""; mgraphics.redraw(); }
+
+function preview() {
+    ampPreviewSetup(0.75);
+    NRL.phase = 0.35;
+    for (var i = 0; i < 4; i++) nrlActivity(20);
+    ampP.input = 4; ampP.bass = 6; ampP.mid = 4.5; ampP.treble = 6.5; ampP.presence = 5.5; ampP.cab = 2;
+}

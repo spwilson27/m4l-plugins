@@ -71,7 +71,7 @@ function makeSandbox(w, h) {
     };
     const outs = [];
     const sb = {
-        mgraphics: mg, outlets: 2, inlets: 1, messagename: "",
+        mgraphics: mg, outlets: 1, inlets: 1, messagename: "",
         outlet: (...a) => outs.push(a), post() {}, notifyclients() {},
         Buffer: function () { this.peek = (c, i, n) => (n > 1 ? new Array(n).fill(0) : 0); this.poke = () => {}; this.framecount = () => 4096; },
         Global: function () {},
@@ -114,11 +114,20 @@ function runDesign(slug) {
     const { sb, rec, outs } = makeSandbox(vw, vh);
     vm.createContext(sb);
     try { vm.runInContext(code, sb, { filename: slug + ".js" }); } catch (err) { check(false, slug + ": script loads: " + err.stack); return; }
+    check(sb.outlets === 2, `${slug}: the script declares 2 outlets (outlet 1 feeds the gen hub)`);
     const call = (fn, ...a) => { if (typeof sb[fn] === "function") sb[fn](...a); };
     // cold paint
     try { call("paint"); check(true, ""); } catch (err) { check(false, slug + ": cold paint: " + err.stack); }
     check(rec.bad.length === 0, `${slug}: cold paint inside the canvas: ${rec.bad.slice(0, 5).join(", ")}`);
     rec.bad.length = 0;
+    // The gen code this device generates: the network is spliced in as code, not into a comment
+    // (a comment mentioning the placeholder once swallowed it and the gen~ never ran in Live).
+    try {
+        const code = vm.runInContext("ampGenCode(AMP_TEMPLATE, ampParseNam(AMP_BUILTIN[1]))", sb);
+        const lines = code.split("\n");
+        check(/^Param /.test(lines[0]) && lines.some((l) => /^Data wd\(\d+\);$/.test(l)) && lines.some((l) => /^for \(i = 0; i < 8; i \+= 1\)/.test(l))
+            && !/@NAM|@@/.test(code),`${slug}: generated gen code is clean (declarations and body outside comments)`);
+    } catch (err) { check(false, slug + ": ampGenCode: " + err.stack); }
     // setnames + a model through the engine (no Buffer data: exercises the load path)
     try { vm.runInContext("setnames('s','w','c'); ampLoadModel(AMP_BUILTIN[1], 'Crunch', '');", sb); } catch (err) { check(false, slug + ": model load path: " + err.stack); }
     for (const d of [0, 0.3, 1]) {

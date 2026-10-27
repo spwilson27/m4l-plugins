@@ -22,7 +22,8 @@
 //   ampP[key]                raw parameter values (AMP_PARAMS units)
 //   ampSet(key, v)           change a parameter (through its live.* object: automation, undo)
 //   ampBrowse()              open the file dialog for a .nam file
-//   amp.model                {name, label, arch, kind, layers, rf, error, file}
+//   amp.model                {name, label, arch, kind, layers, rf, error, file, weights,
+//                             arrays: [{ch, head, gated, dilations}], dilations (all layers in order)}
 //   amp.dsp                  {ready, error}
 //   ampTel                   telemetry header (AMP_SCOPE names, lowercase) of the latest frame
 //   ampLayers()              per-layer activity array (0..1-ish), length = model layer count
@@ -32,6 +33,8 @@
 //   ampModelNames()          Model enum labels with the loaded file's name for "File"
 // Face hooks (optional): ampFaceFrame() -> true to redraw on a new telemetry frame; ampFaceChanged(what).
 
+inlets = 1;
+outlets = 2;     // without this the v8ui has one outlet and every gen message (outlet 1) is dropped
 mgraphics.init();
 mgraphics.relative_coords = 0;
 mgraphics.autofill = 0;
@@ -41,10 +44,11 @@ var ampP = {};
 for (var ampK in AMP_PARAMS) ampP[ampK] = AMP_PARAMS[ampK][4];
 var amp = {
     dsp: { ready: 0, error: "", createdAt: 0, alive0: -1, retries: 0, fastUntil: 0 },
-    model: { name: "", label: "", arch: "", kind: "", layers: 0, rf: 1, error: "", file: "" },
+    model: { name: "", label: "", arch: "", kind: "", layers: 0, rf: 1, error: "", file: "", arrays: /** @type {any[]} */ ([]), dilations: /** @type {number[]} */ ([]), weights: 0 },
     names: { scope: "", w: "", cf: "" },
     bank: 1, genPath: "", genArch: "", sr: 48000, loudDb: 0, filePath: "", fileModel: null,
-    frame: -1, idle: 0, poll: null, resend: null, confirm: null, started: 0
+    frame: -1, idle: 0, poll: null, resend: null, confirm: null, started: 0,
+    initTask: /** @type {any} */ (null), waitTask: /** @type {any} */ (null), claimTask: /** @type {any} */ (null)
 };
 var ampTel = { frames: 0, sr: 48000, in_pk: 0, out_pk: 0, gate: 1, sat: 0, in_rms: 0, out_rms: 0, model_ok: 0, nlayers: 0, nam_pk: 0, asleep: 0, switching: 0, alive: 0 };
 var ampLayerVals = [];
@@ -63,6 +67,7 @@ function ampLog(msg) {
 // ---- patcher messages ---------------------------------------------------------------------------
 
 function setnames(scope, w, cf) {
+    ampLog("setnames " + scope + " " + w + " " + cf);
     amp.names.scope = String(scope);
     amp.names.w = String(w);
     amp.names.cf = String(cf);
@@ -94,10 +99,13 @@ function ampOnParam(key, v) {
 }
 
 function init_dsp() {
+    ampLog("init_dsp started=" + amp.started + " names=" + amp.names.w);
     if (amp.started) return;
     amp.started = 1;
-    var t = new Task(function () { ampSelectModel(Math.round(ampP.model)); }, this);
-    t.schedule(30);
+    // Tasks are kept on `amp`: a Task held only by a local can be garbage-collected before it fires
+    // (seen in Live: some instances never loaded a model).
+    amp.initTask = new Task(function () { ampSelectModel(Math.round(ampP.model)); }, this);
+    amp.initTask.schedule(30);
     if (!amp.poll) { amp.poll = new Task(ampPoll, this); amp.poll.interval = 33; amp.poll.repeat(); }
     if (!amp.resend) { amp.resend = new Task(ampResendTick, this); amp.resend.interval = 150; amp.resend.repeat(); }
 }
@@ -120,6 +128,37 @@ function browsed() {
     if (!p) return;
     outlet(0, "dropset", p);
     ampLoadFile(p, true);
+}
+
+// ---- test hooks (receive #0-amptest; the Live check drives them through the MCP bridge) ----------
+
+// Every hook takes the face slug (or "all") first: the hook name is shared by every Amp instance.
+/** @param {string} face */
+function ampTestMine(face) { return String(face) === "all" || String(face) === AMP_FACE; }
+
+/** @param {string} face @param {number} a */
+function test_tone(face, a) { if (ampTestMine(face)) ampGen("testamp", Number(a) || 0); }
+
+function test_load() {
+    var a = Array.prototype.slice.call(arguments);
+    if (ampTestMine(a.shift())) ampLoadFile(ampJoin(a), true);
+}
+
+/** @param {string} face */
+function test_report(face) {
+    if (typeof Global === "undefined" || !ampTestMine(face)) return;
+    var g = new Global("amp_test");
+    var bi = {};
+    try {
+        var gg = ampHost ? ampHost.getnamed("amp_gen") : null;
+        bi.gen = gg ? { cls: gg.maxclass, gen: String(gg.getattr("gen")) } : null;
+        bi.scopeFrames = new Buffer(amp.names.scope).framecount();
+        bi.wFrames = new Buffer(amp.names.w).framecount();
+        bi.w0 = new Buffer(amp.names.w).peek(1, amp.bank * AMP_WBANK, 4);
+        bi.cf50 = new Buffer(amp.names.cf).peek(1, 50, 1);
+    } catch (err) { bi.err = String(err); }
+    g["report_" + AMP_FACE] = JSON.stringify({ names: amp.names, started: amp.started, bi: bi, face: AMP_FACE, dsp: amp.dsp, model: amp.model, file: amp.filePath, genArch: amp.genArch,
+        bank: amp.bank, tel: ampTel, layers: ampLayerVals.slice(0, 48), p: ampP, frame: amp.frame });
 }
 
 // ---- face API -----------------------------------------------------------------------------------
@@ -200,6 +239,7 @@ function ampLoadFile(path, activate) {
 
 /** @param {any} doc @param {string} label @param {string} file */
 function ampLoadModel(doc, label, file) {
+    ampLog("load model " + label + " names=" + amp.names.w);
     var m;
     try {
         m = ampParseNam(doc);
@@ -208,7 +248,10 @@ function ampLoadModel(doc, label, file) {
         mgraphics.redraw();
         return;
     }
-    if (!amp.names.w || typeof Buffer === "undefined") return;
+    if (!amp.names.w || typeof Buffer === "undefined") {
+        if (typeof Task !== "undefined" && amp.started) { amp.waitTask = new Task(function () { ampLoadModel(doc, label, file); }, this); amp.waitTask.schedule(100); }
+        return;
+    }
     var code = ampGenCode(AMP_TEMPLATE, m);
     var arch = ampArchKey(m);
     var path = "/tmp/amp_" + ampHash(code) + ".gendsp";
@@ -227,7 +270,7 @@ function ampLoadModel(doc, label, file) {
     }
     amp.bank = bank;
     amp.loudDb = ampNormDb(m);
-    amp.model = { name: label || m.name, label: ampArchLabel(m), arch: arch, kind: m.kind, layers: ampLayerCount(m), rf: m.receptiveField, error: "", file: file };
+    amp.model = ampModelInfo(m, label || m.name, arch, file);
     ampLayerVals = [];
     var g = ampHost ? ampHost.getnamed("amp_gen") : null;
     if (!g) {
@@ -244,6 +287,22 @@ function ampLoadModel(doc, label, file) {
     ampSendGen();
     if (typeof ampFaceChanged === "function") ampFaceChanged("model");
     mgraphics.redraw();
+}
+
+/** Face-facing description of a parsed model. @param {any} m @param {string} name @param {string} arch @param {string} file */
+function ampModelInfo(m, name, arch, file) {
+    var arrays = [], dil = [];
+    if (m.kind === "WaveNet") {
+        for (var a = 0; a < m.layers.length; a++) {
+            var ds = m.layers[a].layers.map(function (/** @type {any} */ l) { return l.d; });
+            arrays.push({ ch: m.layers[a].ch, head: m.layers[a].head, gated: m.layers[a].gated, dilations: ds });
+            dil = dil.concat(ds);
+        }
+    } else {
+        for (var l = 0; l < m.lstm.layers; l++) arrays.push({ ch: m.lstm.hidden, head: 1, gated: false, dilations: [1] });
+    }
+    return { name: name, label: ampArchLabel(m), arch: arch, kind: m.kind, layers: ampLayerCount(m), rf: m.receptiveField,
+        error: "", file: file, arrays: arrays, dilations: dil, weights: m.nWeights };
 }
 
 /** @param {string} path @param {string} text */
@@ -280,8 +339,8 @@ function ampDspRelease() {
 function ampDspCreate() {
     if (!ampHost || !amp.genPath) return;
     if (!ampDspClaim()) {
-        var t = new Task(ampDspCreate, this);
-        t.schedule(100);
+        if (!amp.claimTask) amp.claimTask = new Task(ampDspCreate, this);
+        amp.claimTask.schedule(100);
         return;
     }
     try {
@@ -416,7 +475,7 @@ var ampPreviewData = null;
 function ampPreviewSetup(drive) {
     var d = drive == null ? 0.7 : drive;
     amp.dsp.ready = 1;
-    amp.model = { name: "Crunch", label: "Feather · 3.0k", arch: "W8h4", kind: "WaveNet", layers: 20, rf: 4093, error: "", file: "" };
+    amp.model = ampModelInfo(ampParseNam(AMP_BUILTIN[1]), "Crunch", "preview", "");
     ampP.model = 1;
     ampTel = { frames: 100, sr: 48000, in_pk: 0.35 * d + 0.05, out_pk: 0.5 * d + 0.1, gate: 1, sat: 0.25 + 0.55 * d,
         in_rms: 0.12 * d + 0.02, out_rms: 0.2 * d + 0.03, model_ok: 1, nlayers: 20, nam_pk: 0.6 * d + 0.1, asleep: 0, switching: 0, alive: 100 };

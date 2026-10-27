@@ -14,9 +14,12 @@ Design module contract (all names required unless marked optional):
   VIZ          [x, y, w, h] of the main v8ui (interactive; no live.* widget may overlap it)
   DROP         optional [x, y, w, h] of the visible "Model File" live.drop (None = hidden)
   WIDGETS      optional {param key: {"kind": dial|numbox|tab|menu|toggle|slider, "rect": [...], ...box attrs}}
+               ("theme": {attr: live colour name} binds colours to Live's theme; "saved_attribute_attributes" merges)
                on-face live.* widgets; every other parameter's live.* object is off the face
   LABELS       optional [(id, text, [x, y, w, h], size, rgba or None, align)] live.comment labels
-  PANELS       optional [(id, [x, y, w, h], rgba, rounded)] background panels (drawn behind everything)
+  PANELS       optional [(id, [x, y, w, h], rgba, rounded[, live theme colour name])] background panels (drawn
+               behind everything; with a theme name, e.g. "live_surface_bg", the fill follows Live's theme and
+               the panel's varname is its id, so sptApplyPanelTheme can recolour it)
   DESCRIPTION  one line
 
   python3 scripts/build_amp.py [slug ...]
@@ -48,7 +51,7 @@ def amp_params():
 def template_text():
     lines = []
     for ln in sc.read(os.path.join(SRC, "amp_core.genexpr")).split("\n"):
-        if "//@NAM_" in ln:
+        if ln.strip().startswith("//@NAM_"):   # the placeholders; a comment that only mentions them is dropped
             lines.append(ln.strip())
             continue
         ln = re.sub(r"//.*$", "", ln).rstrip()
@@ -130,7 +133,12 @@ def widget(key, spec, w=None, patch_y=0.0):
         box["presentation"] = 1
         box["presentation_rect"] = [float(v) for v in rect]
         for k, v in w.items():
-            if k not in ("kind", "rect", "rows"):
+            if k == "saved_attribute_attributes":
+                box["saved_attribute_attributes"].update(v)
+            elif k == "theme":
+                # {"attr": "live_theme_colour_name"}: bind colour attributes to Live's theme (static fallback too)
+                sc.theme(box, **v)
+            elif k not in ("kind", "rect", "rows"):
                 box[k] = v
     return {"box": box}
 
@@ -153,11 +161,16 @@ def drop_box(rect):
     return {"box": box}
 
 
-def panel(oid, rect, rgba, rounded=0):
+def panel(oid, rect, rgba, rounded=0, theme_name=None):
+    if theme_name:
+        b = sc.make_theme_panel(oid, rect[0], rect[1], rect[2], rect[3], theme_name, rounded=rounded)
+        b["box"]["background"] = 1
+        return b
     b = sc.make_panel(oid, rect[0], rect[1], rect[2], rect[3], bg=rgba[:3], border=rgba[:3], rounded=rounded)
     bx = b["box"]
     bx["bgfillcolor"] = {"type": "color", "color": list(rgba), "angle": 270.0, "proportion": 0.39}
     bx["background"] = 1
+    bx["varname"] = oid
     return b
 
 
@@ -191,6 +204,7 @@ def build(design, meta, header):
         sc.newobj("obj-genin", "gate 1 1", 160, 420, 60, numinlets=2, numoutlets=1, outlettype=[""]),
         sc.newobj("obj-thisdevice", "live.thisdevice", 300, 20, 100, numoutlets=2, outlettype=["bang", "int"]),
         sc.message("obj-msg-init", "init_dsp", 300, 50, 60),
+        sc.newobj("obj-t-init", "t b b", 300, 35, 40, numoutlets=2, outlettype=["bang", "bang"]),
         sc.newobj("obj-loadbang", "loadbang", 420, 20, 60, numoutlets=1, outlettype=["bang"]),
         sc.message("obj-msg-names", "setnames ---ampscope ---ampw ---ampcf", 420, 50, 230),
         sc.newobj("obj-buf-scope", f"buffer~ ---ampscope @samps {meta['s']['SAMPS']}", 700, 20, 220, numoutlets=2, outlettype=["float", "bang"]),
@@ -202,14 +216,19 @@ def build(design, meta, header):
         sc.newobj("obj-prep-browsed", "prepend browsed", 360, 330, 100),
         sc.newobj("obj-prep-dropset", "prepend set", 480, 300, 80),
         sc.newobj("obj-prep-dropfile", "prepend dropfile", 1300, 80, 100),
+        sc.newobj("obj-testhook", "r #0-amptest", 300, 90, 90, numinlets=0, numoutlets=1, outlettype=[""]),
     ]
     for oid, name in (("obj-plugin", "amp_plugin"), ("obj-plugout", "amp_plugout"), ("obj-genin", "amp_genin")):
         for b in boxes:
             if b["box"]["id"] == oid:
                 b["box"]["varname"] = name
     lines += [
-        sc.line("obj-thisdevice", 0, "obj-msg-init"), sc.line("obj-msg-init", 0, "obj-viz"),
+        # live.thisdevice re-sends the buffer names right before init_dsp: a big v8ui can miss the loadbang
+        # message while its script still loads (seen in Live: those faces never loaded a model).
+        sc.line("obj-thisdevice", 0, "obj-t-init"), sc.line("obj-t-init", 1, "obj-msg-names"),
+        sc.line("obj-t-init", 0, "obj-msg-init"), sc.line("obj-msg-init", 0, "obj-viz"),
         sc.line("obj-loadbang", 0, "obj-msg-names"), sc.line("obj-msg-names", 0, "obj-viz"),
+        sc.line("obj-testhook", 0, "obj-viz"),
         sc.line("obj-viz", 1, "obj-genin", 1),
         sc.line("obj-viz", 0, "obj-route-out"),
         sc.line("obj-route-out", 0, "obj-route-key"),
@@ -222,7 +241,7 @@ def build(design, meta, header):
     for i, key in enumerate(keys):
         lines.append(sc.line("obj-route-key", i, f"obj-ctrl-{key}"))
     for p in getattr(design, "PANELS", []) or []:
-        boxes.append(panel(p[0], p[1], p[2], p[3] if len(p) > 3 else 0))
+        boxes.append(panel(p[0], p[1], p[2], p[3] if len(p) > 3 else 0, p[4] if len(p) > 4 else None))
     doc = sc.patcher(boxes, lines, design.WIDTH, design.DESCRIPTION,
                      "Neural amp (NAM / Tone 3000 .nam captures) with tone stack, cab and gate.",
                      "audio, amp, neural, nam, guitar", 0)
