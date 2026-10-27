@@ -38,3 +38,11 @@ Doc check: anFoldWidth (28/392/1134), AN_SCOPE_MS [5,20,50], OSC_FIXED_MS, gain 
   test_oscilloscope_bugsweep 22/22 (was 18 + 2 red), test_device_static clean for both, test_face_fuzz 0 failures, previews rendered and read.
 - Max audio (VM): Analyzer run_analyzer_audio_tests all ok (tone1k, invert, intersample, lowband). Oscilloscope audio suite queued behind the VM harness; not completed at report time.
 - Not run: vm_smoke / Live (Live lock held by other lanes; no face/LOM change beyond ring size, so Live run deferred). AGENTS.md section 28 updated (buffer size, ring).
+
+## Review
+- Diff reviewed (main...HEAD): ring 4096 -> 16384 consistent across core, config, both builds, tests, AGENTS 28 (exact, own section). No frozen/shared files touched.
+- Found and fixed: scripts/run_oscilloscope_audio_tests.py still created the harness buffer with @samps 17952, which the enlarged gen (pokes up to 42528) would overrun. Now 42528.
+- Fresh rebuild of Analyzer.amxd and Oscilloscope.amxd equals the committed files (git status clean for devices/).
+- Tests: SC-01/SC-02 tests fail on old ring (derived from window lengths, not implementation constants); not tautological.
+- Gates: typecheck, test_analyzer, test_oscilloscope, test_scopes_sweep2 9/9, analyzer bugsweep 16/16, oscilloscope bugsweep 22/22 all pass.
+- Deferred: Oscilloscope audio suite and vm_smoke/Live run not executed (VM lock contention); SC-04/05/06 (S4) open; the pitch tracker still uses a 4096 window by design.
