@@ -43,11 +43,12 @@ function degDspWriteFile(path) {
     return true;
 }
 
+var degScopeName = "---degscope";
 // Slot 7 is the rolling frame counter. It advances every 64 samples, including silence.
 function degDspFrames() {
     if (typeof Buffer === "undefined") return -1;
     try {
-        var v = new Buffer("#0-degscope").peek(1, 7, 1);
+        var v = new Buffer(degScopeName).peek(1, 7, 1);
         return typeof v === "number" ? v : (v && v.length ? Number(v[0]) : -1);
     } catch (_) {
         return -1;

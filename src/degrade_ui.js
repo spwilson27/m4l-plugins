@@ -221,6 +221,7 @@ function preview() {
 
 function setbuffer(name) {
     if (!name) return;
+    degScopeName = "" + name;
     scopeBuf = new Buffer("" + name);
 }
 

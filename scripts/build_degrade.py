@@ -185,6 +185,7 @@ def make_dial(key, x, y, w=42.0, h=46.0, color_rgb=COL_SR):
             "activedialcolor": [color_rgb[0], color_rgb[1], color_rgb[2], 1.0],
             "annotation": help_text,
             "annotation_name": long_name,
+            "textcolor": [0.86, 0.9, 0.95, 1.0],
             "id": f"obj-ctrl-{key}",
             "maxclass": "live.dial",
             "numinlets": 1,
@@ -681,7 +682,7 @@ def build_patcher():
                 "text": "init_dsp",
             }
         },
-        # Instance-isolated telemetry buffer (#0-degscope)
+        # Instance-isolated telemetry buffer (---degscope)
         {
             "box": {
                 "id": "obj-buf-scope",
@@ -690,7 +691,7 @@ def build_patcher():
                 "numoutlets": 2,
                 "outlettype": ["float", "bang"],
                 "patching_rect": [400.0, 320.0, 210.0, 20.0],
-                "text": "buffer~ #0-degscope @samps 32",
+                "text": "buffer~ ---degscope @samps 32",
             }
         },
         {
@@ -712,7 +713,7 @@ def build_patcher():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [400.0, 385.0, 145.0, 20.0],
-                "text": "scope #0-degscope",
+                "text": "scope ---degscope",
             }
         },
         {
@@ -723,7 +724,7 @@ def build_patcher():
                 "numoutlets": 1,
                 "outlettype": [""],
                 "patching_rect": [400.0, 415.0, 175.0, 20.0],
-                "text": "setbuffer #0-degscope",
+                "text": "setbuffer ---degscope",
             }
         },
         # Interactive v8ui canvas with OrderData blob persistence
