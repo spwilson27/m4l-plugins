@@ -44,3 +44,13 @@ Stage A+B (audit + red tests). Red tests: `tests/test_spectral_sweep2.js` (node)
 | D1/D2/F1 | not fixed | doc nit / shared test-hook / path note (DEFERRED(shared) for .adg abs paths) |
 
 Gate: typecheck, builds, node tests for all four (+spectral_link tests, face fuzz 0 failures, device_static unchanged 36/13), previews rendered, VM audio (minified) latency/mix/rack/sum cases for all four pass, Live smoke PASS x4 (screenshots read). Tests updated for the extra `inrack` message and kShare text. Commit: sweep2(spectral) F2/F3/F9.
+
+## Review
+- Diff main...HEAD read in full: source changes are minimal and match the findings (minify-safe `exp(-1 / ..)`, `inrack` Param, widened numbox/tab, runners test the minified gen). AGENTS.md edits are in section 22 only (one new bullet, one extended Design paragraph).
+- Fresh rebuild of all four devices: `.amxd` byte-identical to committed; `.adg` differ only by the baked checkout path (F1, shared, not committed).
+- No frozen/shared files touched (`minify_gen.py`, harness, vm scripts untouched).
+- Gap fixed: `spectral_link_tests.js` only checked the message name `inrack`; now asserts the value 1 for in-rack instances.
+- Gates re-run: typecheck, node tests for all four + link/rack/dsp/sweep2/face tests green; VM audio Loud Split mix_0, rack_mix_50, latency_2048 pass on the minified gen.
+- Observation (no action): `rack_mix_50` prints "follower vs SELF err 12 dB" as info; the pass criterion is the sum null (-150 dB).
+- Deferred (shared): .adg absolute paths (F1), `r #0-sstest` shared receive (D2), AGENTS 26 telemetry paragraph stale (D1, cosmetic), minify_gen.py should keep a space after `0-` (grep other lanes for `exp(0 - N /`), `vm_spectral.sh` does not forward env to the VM.
+- Committed `tests/out/smoke/*` PNGs (about 25 MB) are evidence; consider dropping before merge if repo size matters.

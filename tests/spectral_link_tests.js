@@ -140,6 +140,8 @@ function runRackLinkTests() {
     rackTick(w, all, 500, 5);
     assert.ok(A.sent.length > nBefore, "messages are repeated");
     assert.deepStrictEqual(A.link.rack.messages().map((m) => m[0]), ["lead", "epoch", "serve", "role", "inrack"]);
+    assert.strictEqual(lastOf(A, "inrack"), 1, "an instance inside a rack tells its gen it is in a rack (dry share 1/K) whatever its role");
+    assert.strictEqual(lastOf(C, "inrack"), 1);
 
     // the leader's gen stops: after the 1.5 s ready timeout A (lowest chain among the ready ones) leads, C follows A with a new epoch
     B.gen.run = false;
