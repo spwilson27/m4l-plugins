@@ -80,4 +80,14 @@ Reused: `scripts/max_harness.py`, `scripts/vm_live_lock.sh` (`batch`), `scripts/
 
 ## Sweep 2 tally
 
-(none yet)
+### Wave 1 (merged 2026-10-27)
+| Lane | S1 | S2 | S3 | S4 (logged) | Fixed | Notes |
+|---|---|---|---|---|---|---|
+| sampler | 0 | 1 | 0 | 3 | S2 `#0-bs*` buffers -> `---bs*` (both devices), theme test regex | hooks lookup in Live not yet run |
+| megamod | 0 | 0 | 0 | 3 | XY test inset, `extremes` case, MM-02 vm script ROOT order (orchestrator) | Live suite still to run |
+| xo_map | 0 | 6 | 1 | 7 | all 7 (blob v4) | XO-S2-05 partial: Edited renders fold stereo to mono |
+| reverbplus | 0 | 1 | 0 | 4 | IR control edit during load swallowed the new IR | build is byte-nondeterministic |
+| glitch | 0 | 2 | 0 | 6 | vm_glitch.sh ROOT, Live param changes now update the state blob | |
+| spectral | 1 | 2 | 4 | 2 | F2 minifier `0-1/x` silent gen (Transient/Loud), F3 Mix dry/K via `inrack`, F9 widths | D2 shared `#0-sstest` hook; F1 .adg paths (shared) |
+
+Deferred to shared lanes: F1 `.adg` absolute paths; `scripts/minify_gen.py` should keep `0- N/` safe (no other core uses the idiom today); `tests/paint_bounds_lib.js` move_to-before-arc false positive; `#0-sstest` / `#0-amptest` test hooks.
