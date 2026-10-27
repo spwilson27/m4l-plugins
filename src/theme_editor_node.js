@@ -486,7 +486,10 @@ function createThemeServer() {
 }
 
 function startListening(port, attempt) {
-    if (attempt >= MAX_PORT_SCAN) return;
+    if (attempt >= MAX_PORT_SCAN) {
+        try { Max.outlet("server_status", 0, 0); } catch (_) {}
+        return;
+    }
     const srv = createThemeServer();
     srv.on("error", (/** @type {any} */ err) => {
         if (err && err.code === "EADDRINUSE") {
