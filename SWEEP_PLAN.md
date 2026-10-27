@@ -91,3 +91,13 @@ Reused: `scripts/max_harness.py`, `scripts/vm_live_lock.sh` (`batch`), `scripts/
 | spectral | 1 | 2 | 4 | 2 | F2 minifier `0-1/x` silent gen (Transient/Loud), F3 Mix dry/K via `inrack`, F9 widths | D2 shared `#0-sstest` hook; F1 .adg paths (shared) |
 
 Deferred to shared lanes: F1 `.adg` absolute paths; `scripts/minify_gen.py` should keep `0- N/` safe (no other core uses the idiom today); `tests/paint_bounds_lib.js` move_to-before-arc false positive; `#0-sstest` / `#0-amptest` test hooks.
+
+### Wave 2 (merged 2026-10-27)
+| Lane | S1 | S2 | S3 | S4 (logged) | Fixed | Notes |
+|---|---|---|---|---|---|---|
+| delayplus | 0 | 0 | 2 | 4 | max time capped by tank length per sample rate; End K held-min reset on counter jump (first pair after Set open) | no gen~ retry (S4); F9 not reproduced |
+| mbsplit | 0 | 0 | 1 | 3 | F1/F2/F3 numbox echo when the face clamps | F9 not reproduced |
+| cepstra | 0 | 2 | 1 | 7 | constant PDC latency 4608, display sample rate, MIDI input routing; cepstrum_lib runner host-generated | MIDI From chooser deferred |
+| scopes | 0 | 1 | 1 | ? | scope ring 4096 -> 16384 (50 ms / 8 Cyc windows at 96/192 kHz), F5 | Oscilloscope VM audio + Live smoke not completed |
+| eqplus | 0 | 2 | 0 | 3 | `#0-eqplus*` -> `---`, audio runner replays host fixtures | new AGENTS section 32 |
+| clipplus | 0 | 5 | 0 | 6 | layout (True Peak / Meters), channel mode, `---clipscope`, restore drift, duplicate cord | |
