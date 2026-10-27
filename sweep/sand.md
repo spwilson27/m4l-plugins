@@ -27,3 +27,15 @@ Independent check (ran tests/test_sand_sweep2.js: 3 fail on SD-1/1b/2/4 as state
 - SD-4 KEEP (downgrade to S3): channel() args match the core signature; one NaN poisons the Histories permanently and output fixnan hides it as silence. Rare in Live, but a cheap input sanitise fixes it.
 - S4-a/b/c: no tests, left as nits.
 No rejections; none duplicate iteration-1 items.
+
+## Fix
+| id | status | notes |
+|---|---|---|
+| SD-1 / SD-1b | fixed | `#0-sandwave` -> `---sandwave` in build, v8ui fallback, tests/test_sand.js |
+| SD-2 | fixed | gen Param `mix` -> `wetamt` (gen, build DIAL_SPECS, `sandDspResend`, audio runner params) |
+| SD-3 | fixed earlier (runner minifies) | guard passes |
+| SD-4 | fixed | `fixnan(x)` at the top of `channel()` (plus sanitised inputs for the dry mix) |
+| S4-a/b/c | left as nits | |
+
+Gate: typecheck, build, test_sand, test_sand_sweep2 (all ok), test_device_static (Sand 0 violations), test_face_fuzz 0 failures, preview Read (clean). test_sand_bugsweep is a pre-existing RED-expected placeholder (unchanged). VM Max audio (DSP changed): all cases pass with unchanged numbers (ext_off 1.198, ext_lim 0.89, mix50 0.3535). VM smoke (Live): PASS, ready 418 ms, 10/10 params, screenshot Read clean. No separate Live batch needed (no LOM/routing change beyond buffer rename, covered by smoke).
+Process note: one accidental host Max launch (a fallback `||` ran the audio runner locally when `vm_sand.sh` did not exist); killed within seconds, results discarded, real run was in the VM.

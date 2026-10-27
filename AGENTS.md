@@ -404,7 +404,7 @@ Audio checks (real Max render): `python3 scripts/run_tinyspace_audio_tests.py`
 - `src/sand_core.genexpr` — per channel: optional pre-filter, derivative order or a leaky integrator, optional mid filter, 1–4 compander stages, optional post filter, equal-power dry/wet mix, then the output stage.
 - Each differentiator peaks at unity at Nyquist and is clipped, so order 15 cannot amplify rounding error into a square wave. Amount 0 is unity gain on order 0. Amount 140 dB is about 10^7 of extra gain on quiet samples, then a soft or hard knee.
 - `Out` is bypass (`Off`), hard clip at ±1 (`Hard`), or a fast limiter with a ceiling near −1 dB (`Limit`). The limiter history always runs.
-- `Buffer wave("sandwave")` gets stereo output, dry input, wet grit, and peak envelopes every 32 samples. Loadbang binds it with `wave #0-sandwave`. Audio does not depend on the buffer.
+- `Buffer wave("sandwave")` gets stereo output, dry input, wet grit, and peak envelopes every 32 samples. Loadbang binds it with `wave ---sandwave` (`---` is expanded per instance in Live; `#0` is not in a top-level device). The Mix dial's gen Param is `wetamt` (a Param named `mix` shadows the `mix()` operator). Input is `fixnan`'d before the wet path so one NaN cannot poison the filter / compander state. Audio does not depend on the buffer.
 
 ### Build / Test / Preview
 ```bash
