@@ -37,7 +37,7 @@ SCOPE = "---cepscope"
 SR = 48000
 
 DEFAULTS = "res 0.57, midshift 0, sideshift 0, gate 0, resmode 0, quality 1, wet 1, midinote -1, gatemode 0"
-LTOT = {0: 1152, 1: 2304, 2: 4608}
+LTOT = {0: 4608, 1: 4608, 2: 4608}  # constant latency (wet padded to the 4k size)
 
 
 def build_device(gen_code, case):

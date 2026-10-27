@@ -55,6 +55,32 @@ var voiced = 0;
 var levelLin = 0;
 var nFft = 2048;
 var srNow = 44100;
+var midiRouteDone = false;
+
+// Live gives an audio effect a MIDI input (this_device midi_inputs 0) that defaults to "No Input" and shows no chooser,
+// so MIDI cutoff mode never received a note. At init (and when MIDI mode is entered) a "No Input" routing becomes "All Ins".
+function cepMidiRoute() {
+    if (midiRouteDone) return;
+    midiRouteDone = true;
+    try {
+        var api = new LiveAPI(function () {}, "this_device midi_inputs 0");
+        if (!api || !api.id || String(api.id) === "0") { midiRouteDone = false; return; }
+        function lv(raw, key) {
+            var v = raw;
+            if (Array.isArray(v)) v = v.length > 1 ? v[1] : v[0];
+            if (v && typeof v === "object" && typeof v.stringify === "function") v = v.stringify();
+            if (typeof v === "string") { try { v = JSON.parse(v); } catch (e) { return null; } }
+            return (v && typeof v === "object" && key in v) ? v[key] : null;
+        }
+        var cur = lv(api.get("routing_type"), "routing_type");
+        var types = lv(api.get("available_routing_types"), "available_routing_types");
+        if (!cur || !types) { midiRouteDone = false; return; }
+        if (String(cur.display_name) !== "No Input") return;
+        for (var i = 0; i < types.length; i++) {
+            if (String(types[i].display_name) === "All Ins") { api.set("routing_type", types[i]); return; }
+        }
+    } catch (e) { midiRouteDone = false; }
+}
 
 function emit(msg, v) { outlet(0, [msg, v]); }
 
@@ -81,6 +107,7 @@ function set_mode(v) {
         curMode = m;
         emit("auto", m === 1 ? 1 : 0);
         emit("midi", m === 2 ? 1 : 0);
+        if (m === 2) cepMidiRoute();
     }
     mgraphics.redraw();
 }
@@ -167,7 +194,7 @@ function pullScope() {
     var fresh = !scopeHave || frame !== lastScopeFrame || level !== levelLin;
     if (!fresh && uiIdleFrames > 2) return false;
     if (fresh) {
-        var chunk = peekSpan(scopeBuf, 0, 264);
+        var chunk = peekSpan(scopeBuf, 0, 266);
         if (!chunk) return false;
         levelLin = numAt(chunk, 258);
         lastScopeFrame = numAt(chunk, 259);
@@ -176,6 +203,8 @@ function pullScope() {
         f0Hz = numAt(chunk, 257);
         voiced = numAt(chunk, 261) > 0.5 ? 1 : 0;
         gateThr = numAt(chunk, 263);
+        var srv = numAt(chunk, 265);
+        if (srv >= 8000 && srv <= 384000) srNow = srv;
         var n = numAt(chunk, 260);
         if (n > 0) nFft = n;
         for (var b = 0; b < NUM_QUEF; b++) {
@@ -377,6 +406,7 @@ function cepDspSchedule() {
 }
 
 function init_dsp() {
+    cepMidiRoute();
     cepDspSchedule();
 }
 

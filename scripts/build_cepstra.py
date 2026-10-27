@@ -552,6 +552,7 @@ def build():
                 "modernui": 1,
             },
             "classnamespace": "box",
+            "latency": 4608,
             "rect": [100.0, 100.0, DEVICE_W, DEVICE_H],
             "openrect": [0.0, 0.0, DEVICE_W, DEVICE_H],
             "bglocked": 0,

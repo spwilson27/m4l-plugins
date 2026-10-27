@@ -5,9 +5,7 @@
 // usage: cepstrum_lib_expect.js <min|max> <n> <samplerate>
 const ref = require("../src/cepstrum_ref.js");
 
-const kind = process.argv[2];
-const n = parseInt(process.argv[3], 10);
-const sr = parseFloat(process.argv[4]);
+function level(kind, n, sr) {
 let s = 1;
 const rnd = () => {
     s = (s * 1664525 + 1013904223) >>> 0;
@@ -30,4 +28,14 @@ for (let i = len - n * 8; i < len; i++) {
     a += x[i] * x[i];
     b += y[i] * y[i];
 }
-console.log((10 * Math.log10(b / a)).toFixed(3));
+return (10 * Math.log10(b / a)).toFixed(3);
+}
+
+// `--all` writes tests/cepstrum_lib_expect.json (kind_n_sr -> level dB): the VM has no node, so the audio runner reads this file.
+if (process.argv[2] === "--all") {
+    const out = {};
+    for (const kind of ["min", "max"]) for (const n of [512, 1024, 2048, 4096]) for (const sr of [44100, 48000]) out[`${kind}_${n}_${sr}`] = level(kind, n, sr);
+    require("fs").writeFileSync(require("path").join(__dirname, "cepstrum_lib_expect.json"), JSON.stringify(out, null, 1) + "\n");
+} else {
+    console.log(level(process.argv[2], parseInt(process.argv[3], 10), parseFloat(process.argv[4])));
+}
