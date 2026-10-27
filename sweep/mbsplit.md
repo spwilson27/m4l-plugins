@@ -27,3 +27,9 @@ Not run in this stage: vm_mbsplit.sh livetest (rack sum, linking, work sharing) 
 - MB-03, MB-04 stay log-only S4 (no tests, nothing to delete); MB-04 is by design (-70 dB = off).
 - F9 not reproduced: accepted; no test.
 - No tests rejected or deleted.
+
+## Fix
+- MB-01 / MB-01b: FIXED. set_f1/f2/f3 in src/mbsplit_ui.js now also echo ui_f* when the written value itself was clamped (selfClamped). tests/test_mbsplit_sweep2.js passes.
+- MB-02: already in runner (minified gen tested). MB-03, MB-04: log-only S4, unchanged (MB-04 by design). F9: not reproduced.
+- Gates: typecheck, build, test_mbsplit (live MCP skipped on host), paint bounds, sweep2 test, preview read (no defects), test_device_static (Multiband Split ok; remaining violations belong to other devices), test_face_fuzz 0 failures.
+- Live: vm_mbsplit.sh livetest (batch) all checks passed (rack sum flat, one FFT leader, linking, mute). VM audio not rerun: no DSP change. vm_smoke not rerun: only a numbox echo change, livetest covers Live load.
