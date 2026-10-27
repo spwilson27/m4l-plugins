@@ -132,6 +132,7 @@ def make_dial(key, x, y, w=44.0, h=46.0, color_rgb=CYAN):
             "activedialcolor": [color_rgb[0], color_rgb[1], color_rgb[2], 1.0],
             "annotation": help_text,
             "annotation_name": long_name,
+            "textcolor": [0.86, 0.90, 0.94, 1.0],
             "id": f"obj-ctrl-{key}",
             "maxclass": "live.dial",
             "numinlets": 1,
@@ -393,7 +394,7 @@ def build():
         make_dial("sens", 82, 116),
         make_dial("hold", 146, 116),
         make_v8ui("obj-strip", strip_js, [208.0, 4.0, 16.0, 161.0], (860.0, 40.0), 1),  # code patched below
-        make_state_toggle("obj-panel-toggle", "MIDI To Panel", "MIDI To", ["Closed", "Open"], 10.0,
+        make_state_toggle("obj-panel-toggle", "MIDI To Panel", "MIDI Panel", ["Closed", "Open"], 10.0,
                           "Opens the note settings beside the graph. Closed keeps the device on the graph alone."),
         make_state_toggle("obj-view-toggle", "Graph View", "View", ["Envelope", "Scope"], 160.0,
                           "Graph view. Envelope draws the follower. Scope draws the input."),
