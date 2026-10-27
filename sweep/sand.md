@@ -39,3 +39,6 @@ No rejections; none duplicate iteration-1 items.
 
 Gate: typecheck, build, test_sand, test_sand_sweep2 (all ok), test_device_static (Sand 0 violations), test_face_fuzz 0 failures, preview Read (clean). test_sand_bugsweep is a pre-existing RED-expected placeholder (unchanged). VM Max audio (DSP changed): all cases pass with unchanged numbers (ext_off 1.198, ext_lim 0.89, mix50 0.3535). VM smoke (Live): PASS, ready 418 ms, 10/10 params, screenshot Read clean. No separate Live batch needed (no LOM/routing change beyond buffer rename, covered by smoke).
 Process note: one accidental host Max launch (a fallback `||` ran the audio runner locally when `vm_sand.sh` did not exist); killed within seconds, results discarded, real run was in the VM.
+
+## Review
+Stage E independent review. Diff main...HEAD reviewed: gen, build, UI, runner, tests, AGENTS.md (single exact-line edit in section 6). Fresh rebuild equals committed Sand.amxd (no diff). typecheck, test_sand, test_sand_sweep2 pass. No frozen/shared files touched (runner only imports minify_gen). Tests are non-tautological (static checks on built patcher; NaN test transpiles channel()). Remaining `mix50` audio case guards the renamed Param. Verdict: READY. Deferred shared items: none (minifier `0-1/x` idiom already reported by wave 1).
