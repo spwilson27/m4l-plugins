@@ -59,9 +59,9 @@ assert.deepStrictEqual(p.openrect, [0, 0, 296, 169]);
 assert.strictEqual(p.openinpresentation, 1);
 
 const boxMap = new Map(p.boxes.map((b) => [b.box.id, b.box]));
-assert.ok(boxMap.get("obj-wave").text.includes("#0-sandwave"));
-assert.strictEqual(boxMap.get("obj-msg-genbufs").text, "wave #0-sandwave");
-assert.strictEqual(boxMap.get("obj-msg-uibufs").text, "setbuffer #0-sandwave");
+assert.ok(boxMap.get("obj-wave").text.includes("---sandwave"));
+assert.strictEqual(boxMap.get("obj-msg-genbufs").text, "wave ---sandwave");
+assert.strictEqual(boxMap.get("obj-msg-uibufs").text, "setbuffer ---sandwave");
 assert.strictEqual(boxMap.get("obj-gen"), undefined, "Sand ships without a static gen~");
 assert.ok(![...boxMap.values()].some((b) => b.maxclass === "gen.codebox~" || b.maxclass === "gen~"), "no gen object in the patcher");
 const hub = boxMap.get("obj-gen-in");
@@ -233,7 +233,7 @@ assert.ok(uiPart.includes("DSP loading..."));
 assert.ok(uiPart.includes("DSP failed:"));
 assert.ok(uiPart.includes("ensureTransferCurve"));
 assert.ok(uiPart.includes("sandScopeActive"));
-assert.ok(uiPart.includes('["wave"') && uiPart.includes('"#0-sandwave"'), "resend binds the scope buffer from JS");
+assert.ok(uiPart.includes('["wave"') && uiPart.includes('"---sandwave"'), "resend binds the scope buffer from JS");
 assert.ok(uiPart.includes('["outmode"'), "resend sends gen params from JS state");
 assert.ok(!/message\(\s*"bang"\s*\)/.test(uiPart), "resend must not bang controls (a live.text toggle would flip)");
 

@@ -1,6 +1,6 @@
 // Sand — Audio-Reactive Differential Compander Visualizer & Interactive XY Scope.
 // Reads stereo output + input silhouette + isolated wet grit + peak telemetry
-// from buffer~ #0-sandwave, renders an audio-reactive waveform + sand particle
+// from buffer~ ---sandwave, renders an audio-reactive waveform + sand particle
 // field + live multi-stage compander transfer curve + dual GRIT/OUT meters.
 // Dragging vertically adjusts Amount (0..140 dB); dragging horizontally adjusts Freq.
 // Amount, Freq, and Out mode live in the automatable LCD strip directly above this canvas.
@@ -611,7 +611,7 @@ function sandDspWriteFile(path) {
 function sandDspFrames() {
     if (typeof Buffer !== "function") return -1;
     try {
-        var v = new Buffer(waveName || "#0-sandwave").peek(1, 259, 1);
+        var v = new Buffer(waveName || "---sandwave").peek(1, 259, 1);
         var n = typeof v === "number" ? v : (v && v.length ? Number(v[0]) : NaN);
         return n === n ? n : -1;
     } catch (_) {
@@ -631,7 +631,7 @@ function sandNamed(name) {
 // gate's data inlet. Do not bang live.text (a toggle would flip).
 function sandDspResend() {
     if (typeof outlet !== "function") return;
-    outlet(1, ["wave", waveName || "#0-sandwave"]);
+    outlet(1, ["wave", waveName || "---sandwave"]);
     outlet(1, ["dorder", curOrder]);
     outlet(1, ["stages", curStages]);
     outlet(1, ["amount", curAmountDb]);
@@ -640,7 +640,7 @@ function sandDspResend() {
     outlet(1, ["debrick", curDebrickPct]);
     outlet(1, ["ftype", curFType]);
     outlet(1, ["fpos", curFPos]);
-    outlet(1, ["mix", curMixPct]);
+    outlet(1, ["wetamt", curMixPct]);
     outlet(1, ["outmode", curOutMode]);
 }
 

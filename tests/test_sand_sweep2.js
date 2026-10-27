@@ -41,6 +41,7 @@ check("SD-4 wet path recovers after a single NaN input sample", () => {
     const gx = require("./genexpr_functions.js");
     globalThis.mix = (a, b, t) => a + (b - a) * t;
     globalThis.tanh = Math.tanh;
+    globalThis.fixnan = (v) => (Number.isFinite(v) ? v : 0);
     const src = gen.replace(/\);\s*History/g, ");\n\tHistory");
     const f = gx.load(src);
     const sr = 48000;
