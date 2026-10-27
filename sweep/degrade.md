@@ -19,3 +19,11 @@ Red run: `node tests/test_degrade_sweep2.js` -> 3/3 fail for the stated reasons;
 - DEG-S4-04 Double-click on a pill toggles the stage (undocumented; double-click on the LED toggles twice).
 - DEG-S4-05 Codec Echo delays only the wet path by up to 72 ms, dry not compensated, no latency reported (header comment says 32 ms / 16 bands; code 72 ms / 12 bands; AGENTS 16-band).
 - DEG-S4-06 Rate 44100 max is not neutral on 48/96 kHz hosts (stage then gates on srate < 44000).
+
+## Verify
+- DEG-S2-01 (test_degrade_sweep2.js): KEEP. AGENTS 15/Glitch rule: `#0` is not expanded in a top-level device; boxes use `#0-degscope`; run, fails for the stated reason.
+- DEG-S2-01b: KEEP. degDspFrames opens literal `#0-degscope` instead of the name passed via setbuffer; real consequence of S2-01, fails for the stated reason.
+- DEG-S3-01: KEEP. The dials have no textcolor; the Live smoke screenshot (default.png) shows dim, hard-to-read dial labels on the dark panel; the test fails for that reason.
+- DEG-S2-02 (run_degrade_sweep2_audio_tests.py near_neutral): KEEP. tanh(0.65)/0.65 = -1.12 dB, so any active stage soft-clips the wet and steps the level. This is user-visible and not flaky because the arithmetic is deterministic. The VM run was not repeated in Stage C.
+- Fix to the red commit: the edit to run_degrade_audio_tests.py (S4-01 all_on_zero) had a column-0 `assert` inside main(), an IndentationError. That broke the existing runner and made the sweep2 audio runner fail on import, not for DEG-S2-02. Indentation repaired; both files now compile.
+- REJECTED: none.

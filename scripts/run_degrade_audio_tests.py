@@ -169,7 +169,7 @@ def main():
     assert results["all_off"]["roughness"] < 0.035, "all_off must have clean sinusoidal roughness"
     assert results["all_on_zero"]["scopeMask"] == 31, "all_on_zero must report all 5 stages enabled (mask=31)"
     # all_off runs at Mix 50% (equal power: a transparent chain sums coherently to +3 dB), all_on_zero at Mix 100%: compare with the 0.65 input peak
-assert abs(results["all_on_zero"]["peak"] - 0.65) < 0.02, "all_on_zero at default knob values must be transparent (input peak 0.65)"
+    assert abs(results["all_on_zero"]["peak"] - 0.65) < 0.02, "all_on_zero at default knob values must be transparent (input peak 0.65)"
     assert results["all_on_zero"]["roughness"] < 0.035, "all_on_zero at default knob values must have clean sinusoidal roughness"
 
     # 2. Verify Sample-and-Hold at 2200 Hz produces staircase flat steps (>70% consecutive identical samples)
