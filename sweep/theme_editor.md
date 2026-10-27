@@ -19,3 +19,10 @@ Tests use M4L_THEME_STATE_FILE tmp paths; none writes the real ~/.m4l_theme_stat
 - TE-2 REJECT test (deleted): engine forces neutral macros on Default deliberately ("Default" = native look, header comment); shared frozen file. Residual S4 UX note: macro sliders are inert on Default; report to shared-theme lane.
 - TE-3 KEEP: ran, fails for stated reason (no server_status 0 when all ports busy); uses a random high port range and tmp state file, not flaky, no real prefs touched.
 - TE-4..6 no tests, unverified S4 notes, unchanged.
+
+## Fix
+- TE-1: fixed (header hint ellipsised to 100 px, src/theme_editor_ui.js). Commit 64a4253.
+- TE-3: fixed (startListening emits server_status 0 when all ports busy, src/theme_editor_node.js). Commit 64a4253.
+- TE-2: rejected at verify; DEFERRED(shared) UX note only: macro sliders inert on Default preset (src/theme_engine.js frozen).
+- TE-4..6: S4 notes, untouched.
+Gate: typecheck, build, test_theme_editor{,_bugs,_bugsweep,_sweep2} all pass; test_face_fuzz 0 failures; test_device_static: Theme Editor ok (3 violations are other devices); preview ok; vm_smoke PASS.
