@@ -1,5 +1,5 @@
 // Deviate effect helpers (GenExpr functions; Data and plain arguments only). Built as  fft_init + deviate_conv + deviate_fx + deviate_core.
-// Part 1 (gl_*) is copied from src/glitch_core.genexpr (Glitch's modules; History inside keeps their coefficient caches, so each is called from
+// Part 1 (gl_*) is copied from src/glitch_core.genexpr (drive, filter, crush, formant, comb, slap and their helpers) (Glitch's modules; History inside keeps their coefficient caches, so each is called from
 // exactly ONE call site of the core). Part 2 (dv_*) are forks with smaller rings / direct units and the new Deviate modules.
 // All modules work in place on a 2-slot Data `io` (left, right) and blend with a wet value w, so  io_out - io_in  is the residue the core sums.
 // Param vector layout (pv, `dvQ` in the core) is documented in dv_page* below.
@@ -164,52 +164,7 @@ gl_crush(io, pv, b, w, st, sr) {
 	return ph;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Ring modulator / frequency shifter (Niemitalo 8-pole allpass Hilbert pair). Frequency shifting is a one-sided shift:
-// positive Hz up, negative down. Ring mode multiplies by a sine of |f|.
-// ---------------------------------------------------------------------------------------------------------------
-// Second order allpass y = a2 * (x + y[n-2]) - x[n-2]; state x1, x2, y1, y2 at o.
-gl_ap(st, o, x, a2) {
-	x2 = st.peek(o + 1);
-	y2 = st.peek(o + 3);
-	y = a2 * (x + y2) - x2;
-	st.poke(st.peek(o), o + 1);
-	st.poke(x, o);
-	st.poke(st.peek(o + 2), o + 3);
-	st.poke(y, o + 2);
-	return y;
-}
 
-// params at b: wet, mode (0 ring, 1 shift), freq Hz (signed). st: 0 phase, 1 mode (smoothed), then 40 per channel.
-gl_ring(io, pv, b, w, st, sr) {
-	ph = st.peek(0) + pv.peek(b + 2) / sr;
-	ph = ph - floor(ph);
-	st.poke(ph, 0);
-	ms = st.peek(1);
-	ms = ms + (pv.peek(b + 1) - ms) * 0.002;
-	st.poke(ms, 1);
-	cs = cos(6.283185307179586 * ph);
-	sn = sin(6.283185307179586 * ph);
-	for (c = 0; c < 2; c += 1) {
-		o = 2 + c * 40;
-		x = io.peek(c);
-		p1 = gl_ap(st, o, x, 0.47940086100000004);
-		p1 = gl_ap(st, o + 4, p1, 0.87627);
-		p1 = gl_ap(st, o + 8, p1, 0.97659);
-		p1 = gl_ap(st, o + 12, p1, 0.99750);
-		q = gl_ap(st, o + 16, x, 0.16176);
-		q = gl_ap(st, o + 20, q, 0.73302);
-		q = gl_ap(st, o + 24, q, 0.94534);
-		q = gl_ap(st, o + 28, q, 0.99059);
-		i1 = st.peek(o + 32);
-		st.poke(p1, o + 32);
-		sh = i1 * cs + q * sn;
-		rm = x * sn;
-		y = rm + (sh - rm) * ms;
-		io.poke(x + (y - x) * w, c);
-	}
-	return ph;
-}
 
 // Vowel table (a e i o u), formant j (0..2) in Hz: keep in sync with GL_VOWELS.
 gl_vt(i, j) {
@@ -330,29 +285,17 @@ gl_comb(io, pv, b, w, st, rb, sr) {
 	return ds;
 }
 
-// ---------------------------------------------------------------------------------------------------------------
-// Phase 2 modules. Every one is ONE function with ONE call site in the chain. Node twins: src/glitch_ref.js.
-// ---------------------------------------------------------------------------------------------------------------
-// Phaser LFO cycle length in beats: keep in sync with GL_LFO_BEATS.
-gl_lfobeats(i) {
-	return i < 0.5 ? 0.5 : (i < 1.5 ? 1 : (i < 2.5 ? 2 : (i < 3.5 ? 4 : (i < 4.5 ? 8 : (i < 5.5 ? 16 : 32)))));
-}
 
 // ---------------------------------------------------------------------------------------------------------------
-// Phaser: 2 / 4 / 6 / 8 fst-order allpass stages swept by an LFO (free in Hz, or locked to the host beat), feedback.
-// params at b: wet, stages (0..3), sync (0 free, 1 locked), rate Hz, sync rate (index), depth, feedback.
-// st: 0 free phase, 2..3 feedback state, 4..11 L stage states, 12..19 R stage states.
+// Phaser (gl_phas without the beat sync): 4 first-order allpass stages swept by a free-running LFO, feedback.
+// params at b: wet, stages (0..3), -, rate Hz, -, depth, feedback. st: 0 free phase, 2..3 feedback state, 4..11 L stage states, 12..19 R stage states.
 // ---------------------------------------------------------------------------------------------------------------
-gl_phas(io, pv, b, w, st, beat, sr) {
+dv_phas(io, pv, b, w, st, sr) {
 	nst = 2 * (floor(pv.peek(b + 1) + 0.5) + 1);
-	sy = pv.peek(b + 2) > 0.5 ? 1 : 0;
-	lb = gl_lfobeats(pv.peek(b + 4));
 	ph = st.peek(0) + pv.peek(b + 3) / sr;
 	ph = ph - floor(ph);
 	st.poke(ph, 0);
-	pp = sy > 0.5 ? beat / lb : ph;
-	pp = pp - floor(pp);
-	lfo = 0.5 - 0.5 * cos(6.283185307179586 * pp);
+	lfo = 0.5 - 0.5 * cos(6.283185307179586 * ph);
 	pos = 0.5 + (lfo - 0.5) * pv.peek(b + 5);
 	fcen = min(200 * pow(25, pos), sr * 0.45);
 	tn = tan(3.141592653589793 * fcen / sr);
@@ -372,7 +315,20 @@ gl_phas(io, pv, b, w, st, beat, sr) {
 		st.poke(clip(v, -4, 4), 2 + c);
 		io.poke(x + (0.5 * (x + v) - x) * w, c);
 	}
-	return pp;
+	return ph;
+}
+
+// Ring modulator: x * sin(2 pi f t) blended by w. params at b: wet, -, Hz. st: 0 phase.
+dv_ring(io, pv, b, w, st, sr) {
+	ph = st.peek(0) + pv.peek(b + 2) / sr;
+	ph = ph - floor(ph);
+	st.poke(ph, 0);
+	sn = sin(6.283185307179586 * ph);
+	for (c = 0; c < 2; c += 1) {
+		x = io.peek(c);
+		io.poke(x + (x * sn - x) * w, c);
+	}
+	return ph;
 }
 
 // ---------------------------------------------------------------------------------------------------------------

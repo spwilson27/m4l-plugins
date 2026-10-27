@@ -202,6 +202,11 @@ function dvRemoveGens() {
     dvSpec.createdAt = 0;
     dvSpec.counter0 = -1;
     dvSpec.error = "";
+    // the new shell is a silent stub again: back to Envelope until the stage is loaded (dvDevChanged asks for Spectral again)
+    if (typeof dvSplitEff !== "undefined" && dvSplitEff === 1) {
+        dvSplitEff = 0;
+        dvApplyLatency(dvLatency(0));
+    }
 }
 
 // The Spectral shell: a stub gen~ (outputs zero) between dv_plugin and the main gen's inlets 3 / 4; the real stage is loaded into it later.

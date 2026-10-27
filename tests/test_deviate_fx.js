@@ -28,7 +28,7 @@ for (const [label, text] of [["main gen", T.full], ["spec gen", T.spec]]) {
 {
     // one call site of every History-holding helper (a second call site would share its coefficient cache)
     const code = L.stripComments(T.full);
-    for (const n of ["gl_drive", "gl_filter", "gl_crush", "gl_ring", "gl_form", "gl_comb", "gl_phas", "gl_slap", "dv_rev", "dv_dly", "dv_grain", "dv_snap", "dv_res",
+    for (const n of ["gl_drive", "gl_filter", "gl_crush", "dv_ring", "gl_form", "gl_comb", "dv_phas", "gl_slap", "dv_rev", "dv_dly", "dv_grain", "dv_snap", "dv_res",
         "dv_chor", "dvc_tick", "dv_click"]) {
         const calls = (code.match(new RegExp("(^|[^.\\w])" + n + "\\(", "g")) || []).length;
         ok(calls === 2, `${n}: one definition + exactly one call site (found ${calls})`);
@@ -332,7 +332,7 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65];
     const set = (b, vals) => vals.forEach((v, k) => pv.poke(v, b + k));
     set(8, [1, 1.7, 30, 4500]); set(12, [1, 4, 4, 0.1]); set(16, [1, 2, 900, 0.15]); set(24, [1, 220, 0.9, 6000]); set(28, [1, 2, 0, 0.55]);
     set(32, [1, 1, 0, 3, 0, 0.8, 0.4]); set(44, [1, 0, 300]);
-    const S = { drv: data(8), crs: data(8), flt: data(8), cmb: data(8), cmbR: data(8192), frm: data(16), pha: data(24), rng: data(96) };
+    const S = { drv: data(8), crs: data(8), flt: data(8), cmb: data(8), cmbR: data(8192), frm: data(16), pha: data(24), rng: data(4) };
     S.flt.poke(2, 0);
     let nan = 0, worst = 0;
     for (let i = 0; i < 30000; i++) {
@@ -343,8 +343,8 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65];
         fns.gl_filter(io, pv, 16, 1, S.flt, SR);
         fns.gl_comb(io, pv, 24, 1, S.cmb, S.cmbR, SR);
         fns.gl_form(io, pv, 28, 1, S.frm, SR);
-        fns.gl_phas(io, pv, 32, 1, S.pha, 0, SR);
-        fns.gl_ring(io, pv, 44, 1, S.rng, SR);
+        fns.dv_phas(io, pv, 32, 1, S.pha, SR);
+        fns.dv_ring(io, pv, 44, 1, S.rng, SR);
         const y = io.peek(0);
         if (!Number.isFinite(y)) nan++;
         worst = Math.max(worst, Math.abs(y));
@@ -356,8 +356,8 @@ const WETS = [0, 1, 8, 12, 16, 20, 24, 28, 32, 40, 44, 47, 48, 52, 56, 61, 65];
         const x = Math.sin(i * 0.1);
         io.poke(x, 0); io.poke(x, 1);
         fns.gl_drive(io, pv, 8, 0, S.drv, SR); fns.gl_crush(io, pv, 12, 0, S.crs, SR); fns.gl_filter(io, pv, 16, 0, S.flt, SR);
-        fns.gl_comb(io, pv, 24, 0, S.cmb, S.cmbR, SR); fns.gl_form(io, pv, 28, 0, S.frm, SR); fns.gl_phas(io, pv, 32, 0, S.pha, 0, SR);
-        fns.gl_ring(io, pv, 44, 0, S.rng, SR);
+        fns.gl_comb(io, pv, 24, 0, S.cmb, S.cmbR, SR); fns.gl_form(io, pv, 28, 0, S.frm, SR); fns.dv_phas(io, pv, 32, 0, S.pha, SR);
+        fns.dv_ring(io, pv, 44, 0, S.rng, SR);
         if (Math.abs(io.peek(0) - x) > 1e-12) same = false;
     }
     ok(same, "Glitch helpers at wet 0 leave the signal unchanged");

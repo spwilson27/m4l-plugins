@@ -31,6 +31,8 @@ Cases (what each proves; numbers are printed by the run):
   meta_<name>      each meta at 100 alone (Ranges 0): the output differs from the delayed dry (the effect is audible), no NaN, bounded
   ring_cap_*       Ring 100: space (reverb + convolver, IR bank loaded), reverb (no IR bank), echo, body, all: the residue is exactly 0 from
                    2.12 s on (2.0 s after the page was applied); levels in between are printed
+  gendsp_file      the deferred patches exactly as the device embeds them (minified .gendsp, 4-input main gen, 2-input stage) as file-backed
+                   gen~ objects: Spectral null + effects present
   split_sum        Spectral mode, neutral metas: the output nulls against the delayed input (T + B + R = delayed dry) at -inf dB
   spec_t           the Spectral stage alone: a click train over a steady tone, T carries the clicks and little of the tone
   mode_switch      Split Mode toggled mid-ring (default metas, Spectral stage loaded): no NaN, bounded, latency telemetry 256 -> 1279 -> 256
@@ -245,6 +247,25 @@ def spec_code():
     return _spec_cache[0]
 
 
+_gendsp_cache = []
+
+
+def gendsp_files():
+    """The deferred patches exactly as the device embeds them (minified .gendsp JSON: 4 inputs for the main gen, 2 for the stage), written to /tmp."""
+    if not _gendsp_cache:
+        import build_deviate  # noqa: PLC0415
+        main = build_deviate.gendsp_json(build_deviate.gen_code(), 4, 2)
+        spec = build_deviate.gendsp_json(build_deviate.spec_code(), 2, 2)
+        paths = []
+        for name, text in (("main", main), ("spec", spec)):
+            path = f"/tmp/dvtest_{name}_{os.getpid()}.gendsp"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            paths.append(path)
+        _gendsp_cache.extend(paths)
+    return _gendsp_cache
+
+
 def device(code, case):
     nrec = case.get("channels", 3)
     boxes = [
@@ -263,7 +284,8 @@ def device(code, case):
         mh.box("dev-buf-tap", f"buffer~ #0-dvtap @samps {tap_samps(case['dur'])}", 980, 120, 260, numoutlets=2,
                outlettype=["float", "bang"]),
         mh.gen_box("dev-src", SOURCE_GEN, 40, 200, numinlets=1, numoutlets=3),
-        mh.gen_box("dev-gen", code, 40, 300, numinlets=4, numoutlets=2),
+        (mh.box("dev-gen", "gen~ @gen " + gendsp_files()[0], 40, 300, numinlets=4, numoutlets=2, outlettype=["signal", "signal"])
+         if case.get("gendsp") else mh.gen_box("dev-gen", code, 40, 300, numinlets=4, numoutlets=2)),
         mh.gen_box("dev-tap", tap_gen(), 400, 300, numinlets=1, numoutlets=1),
     ]
     lines = [
@@ -286,12 +308,19 @@ def device(code, case):
         mh.line("dev-gen", 0, "dev-tap", 0),   # ordering: the tap runs after the device in every vector
         mh.line("dev-tap", 0, "obj-mute-r", 0),
     ]
+    if case.get("mode") == "audio_device":
+        # the real CoreAudio driver in real time, only for the CPU cases (a load figure means nothing offline)
+        boxes += [mh.box("dev-metro", "metro 100", 40, 480, 70, numinlets=2), mh.box("dev-adstatus", "adstatus cpu", 40, 510, 90, outlettype=["float"]),
+                  mh.box("dev-cpu-prep", "prepend cpu", 40, 540, 90)]
+        lines += [mh.line("obj-load", 0, "dev-metro", 0), mh.line("dev-metro", 0, "dev-adstatus", 0), mh.line("dev-adstatus", 0, "dev-cpu-prep", 0),
+                  mh.line("dev-cpu-prep", 0, "obj-js", 0)]
     if case.get("ir"):
         boxes.append(mh.msg("dev-ir-load", "replace " + IR_WAV, 640, 70, 560))
         lines.append(mh.line("obj-load", 0, "dev-ir-load", 0))
         lines.append(mh.line("dev-ir-load", 0, "dev-buf-ir", 0))
     if case.get("spec"):
-        boxes.append(mh.gen_box("dev-spec", spec_code(), 400, 200, numinlets=2, numoutlets=2))
+        boxes.append(mh.box("dev-spec", "gen~ @gen " + gendsp_files()[1], 400, 200, numinlets=2, numoutlets=2, outlettype=["signal", "signal"])
+                     if case.get("gendsp") else mh.gen_box("dev-spec", spec_code(), 400, 200, numinlets=2, numoutlets=2))
         boxes.append(mh.msg("dev-spec-bind", "scope #0-dvscope", 640, 40, 200))
         lines += [mh.line("obj-load", 0, "dev-spec-bind", 0), mh.line("dev-spec-bind", 0, "dev-spec", 0),
                   mh.line("dev-src", 0, "dev-spec", 0), mh.line("dev-src", 1, "dev-spec", 1),
@@ -380,6 +409,10 @@ def cases():
         ],
         "latency_env": [case("latency_env_0", 400, "kind 1, amp 0.8, impos 100", "dvsplit 0, " + NEUTRAL, lat=LAT_ENV)],
         "latency_spec": [case("latency_spec_1", 400, "kind 1, amp 0.8, impos 100", "dvsplit 1, " + NEUTRAL, lat=LAT_SPEC, spec=True)],
+        "gendsp_file": [
+            case("gendsp_file_0", 900, "kind 4, amp 0.8, s1 100, s2 450", "dvsplit 1, " + NEUTRAL, lat=LAT_SPEC, spec=True, gendsp=True),
+            case("gendsp_file_1", 1500, "kind 4, amp 0.8, s1 100, s2 450, s3 800", "dvsplit 0", spec=True, gendsp=True),
+        ],
         "hit_once": [case("hit_once", 400, "kind 2, amp 0.8, s1 100, s2 110, s3 160, blen 100")],
         "seed_repro": [seed_case("a", 5), seed_case("b", 5), seed_case("c", 6)],
         "range0_novar": [hits4("range0_novar", 800, vals_extra(SEED_V, [0] * 8, dvseed=3),
@@ -412,11 +445,19 @@ def cases():
     out["ring_cap_echo"] = [ring_case("ring_cap_echo", [5])]
     out["ring_cap_body"] = [ring_case("ring_cap_body", [2], tf=420)]  # the hit has energy at the first resonator mode (420 Hz)
     out["ring_cap_all"] = [ring_case("ring_cap_all", [0, 1, 2, 3, 4, 5, 6], ir=True)]
+    # CPU on the real-time driver (adstatus cpu; the harness floor in the VM is about 9 %): silent input, a hit every 250 ms with the default metas,
+    # every meta 100 with the convolver (a hit every 400 ms), and Spectral mode with the stage running
+    heavy = vals_extra([100] * 8, [0] * 8)
+    out["perf_idle"] = [case("perf_idle", 4000, "kind 3", mode="audio_device")]
+    out["perf_busy"] = [case("perf_busy", 5000, "kind 6, amp 0.8, s1 100, per 250", "", mode="audio_device")]
+    out["perf_heavy"] = [case("perf_heavy", 5000, "kind 6, amp 0.8, s1 100, per 400", heavy, mode="audio_device", ir=True)]
+    out["perf_spec"] = [case("perf_spec", 5000, "kind 6, amp 0.8, s1 100, per 250", "dvsplit 1", lat=LAT_SPEC, mode="audio_device", spec=True)]
     out["fuzz_a"] = [fuzz_case("a", list(range(1, 26)))]
     out["fuzz_b"] = [fuzz_case("b", [101 + 37 * k for k in range(25)])]
     return out
 
 
+RESULTS = {}
 CASE_NAMES = list(cases().keys())
 
 
@@ -435,7 +476,7 @@ def run_one(code, c, probe_path):
     boxes, lines = device(code, c)
     print(f"--- {c['name']} ---")
     res = mh.run_case(c["name"], boxes, lines, probe_js=probe_path, probe_args=f"{c['name']} {c['lat']}", settle_ms=0,
-                      dur_ms=c["dur"], channels=c.get("channels", 3), sr=SR, mode="nrt", probe_object="v8", timeout=600,
+                      dur_ms=c["dur"], channels=c.get("channels", 3), sr=SR, mode=c.get("mode", "nrt"), probe_object="v8", timeout=600,
                       events=c.get("events"))
     return res
 
@@ -855,6 +896,14 @@ def run_group(code, name, only_dry=False):
         check_latency({"latency_env": g("latency_env_0")}, errors, LAT_ENV)
     elif name == "latency_spec":
         check_latency({"latency_spec": g("latency_spec_1")}, errors, LAT_SPEC)
+    elif name == "gendsp_file":
+        m0, m1 = g("gendsp_file_0"), g("gendsp_file_1")
+        check_split_sum(m0, errors)
+        if m1.get("nan", 1) != 0 or not (m1.get("maxL", 9) < 4):
+            errors.append(f"gendsp_file effects: nan {m1.get('nan')}, peak {m1.get('maxL')}")
+        if not (m1.get("res_rms", 0) > 0.01 * m1.get("src_rms", 1)):
+            errors.append(f"gendsp_file effects: the effects are inaudible (residue {m1.get('res_rms')})")
+        print(f"  gendsp_file: spectral null diff {m0.get('diffL')}, effects residue {m1.get('res_rms')} (source {m1.get('src_rms')})")
     elif name == "hit_once":
         check_hit_once(g("hit_once"), errors)
     elif name == "seed_repro":
@@ -881,6 +930,14 @@ def run_group(code, name, only_dry=False):
         check_spec_t(g("spec_t"), errors)
     elif name == "mode_switch":
         check_mode_switch(g("mode_switch"), errors)
+    elif name.startswith("perf_"):
+        m = g(name)
+        print(f"  {name}: audio CPU avg {m.get('cpuAvg', float('nan')):.1f}% max {m.get('cpuMax', float('nan')):.1f}% over {m.get('cpuCount', 0):.0f} samples (real-time driver, harness floor about 9%)")
+        RESULTS[name] = (m.get("cpuAvg"), m.get("cpuMax"))
+        if not m.get("cpuCount"):
+            errors.append(f"{name}: no CPU samples from adstatus cpu")
+        elif m.get("cpuMax", 0) > 80:
+            errors.append(f"{name}: audio CPU peaked at {m['cpuMax']:.1f}%")
     elif name.startswith("fuzz_"):
         check_fuzz(name, g(name), errors)
     elif name == "telemetry_layout":

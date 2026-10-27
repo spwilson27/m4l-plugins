@@ -1,18 +1,29 @@
-// Deviate gen core (STUB: detector + draw + windows + Ring envelope + telemetry + delayed dry; no effects yet).
-// The DSP lane extends this file with the effect chains. Keep it clean: ONE call site per helper (dv_draw, dv_hidden).
+// Deviate gen core: detector, seeded draw, windows, the three effect chains, the Ring envelope, Mix, telemetry.
+// Built as  fft_init + deviate_conv.genexpr + deviate_fx.genexpr + deviate_core.genexpr  (scripts/build_deviate.py gen_code) with the line `//@hidden`
+// below replaced by the generated function dv_hidden(mE, mT, hv) (dvHiddenGen() in src/deviate_config.js). Contract: src/deviate_config.js
+// (DV_SCOPE, DV_ECHO, DV_CTL, DV_PARAMS gen messages, dvStep, dvRingEnv, dvWindows, dvHiddenFromMetas). Inputs: in1 / in2 the audio, in3 / in4 the
+// Spectral stage's transient signal (src/deviate_spec.genexpr, a separate gen~ shell; zero until it is loaded).
+// One call site per helper: the Glitch helpers keep a coefficient cache in a History that every call site would share.
 //
-// Built as  cepstrum_lib.genexpr + deviate_conv.genexpr + deviate_core.genexpr  with the line `//@hidden` below replaced by the
-// generated function dv_hidden(mE, mT, hv) (dvHiddenGen() in src/deviate_config.js). Contract: src/deviate_config.js
-// (DV_SCOPE, DV_ECHO, DV_CTL, DV_PARAMS gen messages, dvStep, dvRingEnv, dvWindows, dvHiddenFromMetas).
-//
-// Signal flow of this stub:
-//   in1/in2 -> mono -> DETECT (envelope trigger model: fast env 15 ms release, slow 60 ms baseline, onset when
-//                      armed && fast > thr && fast > slow * ratio; a MIDI counter change (dvmtrig) is the second source;
-//                      one shared lockout so an audio onset next to a MIDI hit is deduped)
-//           t0 -> DRAW (dv_draw, mirrors dvStep) -> page E/T; the page is APPLIED at t0 + LAT - 96 (dv_hidden -> hidden values,
-//                 Ring envelope and windows restart); a Reroll applies its page at once.
-//   out = soft_limit(delayed dry + Mix * effect residue)  -- the residues are exact zeros in this stub, so out == the dry
-//         delayed by LAT (256 Envelope / 1279 Spectral) for every Mix.
+// Signal flow:
+//   in1/in2 -> mono -> DETECT (envelope trigger model: fast env 15 ms release, slow 60 ms baseline, onset when armed && fast > thr && fast > slow * ratio;
+//                      a MIDI counter change (dvmtrig) is the second source; one shared lockout so an audio onset next to a MIDI hit is deduped)
+//           t0 -> DRAW (dv_draw, mirrors dvStep) -> page E/T; the page is APPLIED at t0 + LAT - 96 (dv_hidden -> dv_pg1..3 -> parameter targets;
+//                 Ring envelope, windows, click and sends restart); a Reroll applies its page at once.
+//   xd = input delayed by LAT (256 Envelope, 1279 Spectral). Windows after the hit (measured from the hit's arrival at the output): gT 1 -> 0 over 10..20 ms,
+//   gR 0 -> 1 over 120..180 ms, gB = 1 - gT - gR.
+//     T chain (input gT * T source): snap shaper > drive > click burst > crush > high-pass filter
+//     B chain (input gB * B source): comb > formant > phaser > grain pitch shift (+-12 st) > ring modulator > saturation; beside it the resonator bank
+//                                    (6 modes, excited by the whole hit (1 - gR) * xd) rings
+//     L chain: chorus / flanger on gR * B source; sends of xd (open 200 ms after the hit): reverb, delay, slapback, convolver (10 built-in IRs, each input
+//              block remembers the IR it was captured with)
+//     Envelope mode: T source = B source = xd. Spectral mode: T = the stage's percussive part, B = xd - T (T + B = xd exactly).
+//   out = soft_limit( xd + Mix * limit( T residue + env(age) * (B + resonator + L + sends residue) ) ); every chain returns residue fx(in) - in, so Mix 0
+//   (and every neutral setting) is a bit-exact delayed dry.
+// Ring law: env(age) = 1 for 150 ms, then -66 dB at Tr (= 0.05 .. 1.83 s from Ring), then a 20 ms fade to exactly 0, so nothing is audible 2.0 s after
+// a hit. Every in-loop decay (reverb, delay feedback, comb, resonator) is derived from Tr (at most 0.9 Tr) so the envelope's restart on the next hit cannot
+// pump old residue. Chains run only from the apply sample until the envelope has ended, and an effect only while its smoothed wet is above 0.02; when the
+// tails end the rings and the convolver's frequency-domain delay line are zeroed in slices (the "wipe") so the next hit meets no old residue.
 //
 // Timing of a hit: t0 is the sample of the (undelayed) input at which the detector fires. Draw at t0. Page applied at
 // t0 + LAT - 96 (age 0 of the Ring envelope). The hit reaches the output at t0 + LAT (ONSET_AGE counts from there).
@@ -320,7 +331,7 @@ Data stFrm(16);
 Data stPha(24);
 Data stGrn(16);
 Data rbGrn(16384, 2);
-Data stRng(96);
+Data stRng(4);
 Data stChr(4);
 Data rbChr(8192, 2);
 Data stRev(16);
@@ -945,7 +956,7 @@ if (asleep < 0.5 && lifeNow > 0.5) {
 	}
 	qPh = peek(dvQ, 32);
 	if (qPh > 0.02) {
-		gl_phas(dvIoB, dvQ, 32, qPh, stPha, 0, sr);
+		dv_phas(dvIoB, dvQ, 32, qPh, stPha, sr);
 	}
 	qGr = peek(dvQ, 40);
 	if (qGr > 0.02) {
@@ -953,7 +964,7 @@ if (asleep < 0.5 && lifeNow > 0.5) {
 	}
 	qRg = peek(dvQ, 44);
 	if (qRg > 0.02) {
-		gl_ring(dvIoB, dvQ, 44, qRg, stRng, sr);
+		dv_ring(dvIoB, dvQ, 44, qRg, stRng, sr);
 	}
 	qSt = peek(dvQ, 47);
 	if (qSt > 0.02) {
@@ -1060,7 +1071,7 @@ if (wj >= 0) {
 		dv_wipe(stFrm, 0, 16, 16, 0);
 		dv_wipe(stPha, 0, 24, 24, 0);
 		dv_wipe(stGrn, 0, 16, 16, 0);
-		dv_wipe(stRng, 0, 96, 96, 0);
+		dv_wipe(stRng, 0, 4, 4, 0);
 		dv_wipe(stChr, 0, 4, 4, 0);
 		dv_wipe(stRev, 0, 16, 16, 0);
 		dv_wipe(stDly, 0, 8, 8, 0);

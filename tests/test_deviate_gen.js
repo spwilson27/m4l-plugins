@@ -429,6 +429,28 @@ function burst(n, s, len, amp) { const t = n - s; return t >= 0 && t < len ? amp
         ok(worst < 1e-9 && ticks > 100, `sim: Ring envelope Ring ${ring} follows dvRingEnv (worst ${worst})`);
         ok(zeroAfter, `sim: Ring envelope is exactly 0 after hold + Tr + fade (Ring ${ring})`);
     }
+    // Ring cap in the whole core (Node twin of the audio cases ring_cap_*): every effect on, Ring 100: finite, bounded, and exactly the delayed dry from
+    // 2.0 s after the page was applied on (the convolver is off here: no IR bank in the simulated buffer)
+    {
+        const sim = makeSim({ dvv0: 100, dvv1: 100, dvv2: 100, dvv3: 100, dvv4: 100, dvv5: 100, dvv6: 100, dvv7: 100, dvr0: 0, dvr1: 0, dvr2: 0, dvr3: 0, dvr4: 0, dvr5: 0, dvr6: 0, dvr7: 0 });
+        const hist = [];
+        let nan = 0, peakV = 0, applyN = -1, lastA = 0, late = 0, resMid = 0;
+        for (let n = 0; n < 48000 * 2.4; n++) {
+            const x = burst(n, 1000, 300, 0.8) + (n > 1000 && n < 1500 ? 0.2 * Math.sin(n * 0.37) : 0);
+            hist.push(x);
+            const y = sim.step(x);
+            if (!Number.isFinite(y)) nan++;
+            peakV = Math.max(peakV, Math.abs(y));
+            const a = sim.sc(cfg.DV_SCOPE.PAGE_APPLIED);
+            if (a !== lastA) { applyN = n; lastA = a; }
+            const dry = n >= 256 ? hist[n - 256] : 0;
+            if (applyN >= 0 && n > applyN + 48000 * 0.2 && n < applyN + 48000 * 1.0) resMid = Math.max(resMid, Math.abs(y - dry));
+            if (applyN >= 0 && n > applyN + 48000 * 2.0 + 64) late = Math.max(late, Math.abs(y - dry));
+        }
+        ok(nan === 0 && peakV < 4, `sim: all effects, Ring 100: finite and bounded (peak ${peakV.toFixed(3)})`);
+        ok(resMid > 0.002, `sim: the tail is there between 0.2 and 1 s (${resMid.toExponential(2)})`);
+        ok(late === 0, `sim: the output is exactly the delayed dry from 2.0 s after the apply on (max ${late})`);
+    }
     // sleep: silence for 0.5 s -> exact zeros, ASLEEP 1, ALIVE/FRAMES moving; a hit wakes it
     {
         const sim = makeSim({});

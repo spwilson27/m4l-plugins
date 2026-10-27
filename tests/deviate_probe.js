@@ -45,6 +45,14 @@ function clicks() {
     clickMs = Array.prototype.slice.call(arguments).map(Number);
 }
 
+// CPU % from `adstatus cpu` (audio_device mode); NonRealTime has no meaningful real-time load.
+var cpuMax = 0, cpuSum = 0, cpuCount = 0;
+function cpu(v) {
+    cpuMax = Math.max(cpuMax, v);
+    cpuSum += v;
+    cpuCount++;
+}
+
 function resultpath(p) {
     resultPath = String(p);
 }
@@ -222,6 +230,7 @@ function analyze(durMs) {
         kv("wavehead", sc[DV_SCOPE.WAVE_HEAD]);
     }
 
+    kv("cpuAvg", cpuCount ? cpuSum / cpuCount : 0); kv("cpuMax", cpuMax); kv("cpuCount", cpuCount);
     var report = new File(resultPath, "write", "TEXT");
     report.eof = 0;
     report.writestring(out);

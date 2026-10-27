@@ -99,12 +99,6 @@ dvc_tick(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, tgh, tgt, 
 				cxh.poke(cvr.peek(ix, 1), i, 1);
 			}
 		}
-		if (kh == 1) {
-			dvc_pass(cxh, tab, 256, 0, 0);
-		}
-		if (kh >= 2 && kh <= 9) {
-			dvc_pass(cxh, tab, 256, kh - 1, 0);
-		}
 		if (kh == 10) {
 			slot = dvc_mod(mp, 32);
 			for (kk = 0; kk < 129; kk += 1) {
@@ -163,11 +157,25 @@ dvc_tick(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, tgh, tgt, 
 				}
 			}
 		}
+		// FFT passes: kh 1..9 forward (bit reversal, then stages 1..8), 12..20 inverse; ONE call site (an inlined pass costs compile time)
+		hp = -1;
+		hinv = 0;
+		if (kh == 1) {
+			hp = 0;
+		}
+		if (kh >= 2 && kh <= 9) {
+			hp = kh - 1;
+		}
 		if (kh == 12) {
-			dvc_pass(cxh, tab, 256, 0, 1);
+			hp = 0;
+			hinv = 1;
 		}
 		if (kh >= 13 && kh <= 20) {
-			dvc_pass(cxh, tab, 256, kh - 12, 1);
+			hp = kh - 12;
+			hinv = 1;
+		}
+		if (hp >= 0) {
+			dvc_pass(cxh, tab, 256, hp, hinv);
 		}
 		if (kh == 21) {
 			for (i = 0; i < 128; i += 1) {
@@ -193,12 +201,6 @@ dvc_tick(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, tgh, tgt, 
 				cxt.poke(cvr.peek(ix, 0), i, 0);
 				cxt.poke(cvr.peek(ix, 1), i, 1);
 			}
-		}
-		if (kt == 1) {
-			dvc_pass(cxt, tab, 4096, 0, 0);
-		}
-		if (kt >= 2 && kt <= 13) {
-			dvc_pass(cxt, tab, 4096, kt - 1, 0);
 		}
 		if (kt == 14) {
 			slot = dvc_mod(mt, 48);
@@ -264,11 +266,24 @@ dvc_tick(cn, xl, xr, tab, cvr, cxh, cxt, fdh, fdt, ohr, otr, irs, cp, tgh, tgt, 
 				}
 			}
 		}
+		tp = -1;
+		tinv = 0;
+		if (kt == 1) {
+			tp = 0;
+		}
+		if (kt >= 2 && kt <= 13) {
+			tp = kt - 1;
+		}
 		if (kt == 48) {
-			dvc_pass(cxt, tab, 4096, 0, 1);
+			tp = 0;
+			tinv = 1;
 		}
 		if (kt >= 49 && kt <= 60) {
-			dvc_pass(cxt, tab, 4096, kt - 48, 1);
+			tp = kt - 48;
+			tinv = 1;
+		}
+		if (tp >= 0) {
+			dvc_pass(cxt, tab, 4096, tp, tinv);
 		}
 		if (kt == 61) {
 			for (i = 0; i < 2048; i += 1) {

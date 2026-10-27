@@ -189,16 +189,21 @@ const noIr = (t) => !/dvIr/.test(String(t.fn.name));
     ok(e2.ctx.dvSplitEff === 0 && !e2.log.includes("patcher latency 1279"), "Envelope chosen while the stage loads: it does not switch when the stage starts");
 }
 
-// ---- 5. a DSP restart removes both gens ----
+// ---- 5. a DSP restart removes both gens; a device in Spectral mode falls back to Envelope until the new stage runs ----
 {
     const e = makeEngine();
     e.ctx.names("---sc", "---ctl", "---ir", "---spec", "---test", "---state");
     e.ctx.init_dsp();
     e.advance(100, noIr);
+    e.alive(cfg.DV_SCOPE.ALIVE, 1); e.advance(300, noIr); e.alive(cfg.DV_SCOPE.ALIVE, 2); e.advance(300, noIr);
+    e.setParam("split", 1);
+    e.alive(cfg.DV_SCOPE.SPEC_ALIVE, 1); e.advance(300, noIr);
+    ok(e.ctx.dvSplitEff === 1, "(setup) Spectral is running");
     const m = e.log.length;
     e.ctx.dvDspRestart();
     const L = e.since(m).join("\n");
     ok(/remove dv_gen/.test(L) && /remove dv_spec/.test(L), "a restart removes the main gen and the shell together");
+    ok(e.ctx.dvSplitEff === 0 && /patcher latency 256/.test(L), "and the device falls back to Envelope (latency 256) until the new stage runs");
 }
 
 console.log(`${checks} checks, ${fails} failed`);
