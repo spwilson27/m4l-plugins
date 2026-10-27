@@ -23,3 +23,11 @@ Previews rendered (committed state + scratch builds of every UB_PREVIEW_* state)
 - MM-02 (vm_megamod_keys.sh uses $ROOT before assigning it under set -u): KEEP. Reproduced with ROOT unset ("ROOT: parameter not set"); real, S2 infra, in a frozen shared file so it stays red as a report for the owner (tests/test_megamod_sweep2.js MM-S2-02).
 - MM-03 DSP pill overlap: KEEP as S4 note (no test). MM-04 doc drift: KEEP as S4 (doc owner). MM-05 console message: REJECT (not from this device; unreproducible attribution, no action).
 - Audio case `extremes`: KEEP (green regression test, not re-run here).
+
+## Fix
+- MM-01: rejected in verify (test expectation fixed there, commit 03f9bfd); nothing to fix in src.
+- MM-02: DEFERRED(shared). Needed change in frozen scripts/vm_megamod_keys.sh: move the `ROOT=` assignment (line 27) above the `. "$ROOT/scripts/vm_common.sh"` line (24), or export ROOT in vm_megamod_live_suite.sh. Red test tests/test_megamod_sweep2.js (MM-S2-02) stays red until then.
+- MM-03: not fixed (S4, cosmetic, would require layout change in the shared DSP pill; left as note).
+- MM-04: fixed in AGENTS.md section 21 (check totals 21,688 / 13,616, ROUTE_SAMPS 1048) by exact-string edits.
+- MM-05: rejected.
+Gate (host): typecheck, build_megamod, test_megamod (21688), test_megamod_ui (13616), test_megamod_perf, render_preview all pass; test_device_static: only allowlisted/other-device violations; test_face_fuzz 0 failures. No DSP/face/LOM change, so no VM audio/Live/smoke re-run needed.
