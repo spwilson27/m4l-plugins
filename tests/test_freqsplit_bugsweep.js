@@ -42,14 +42,15 @@ function check(name, fn) {
 }
 
 // ----------------------------------------------------------------------
-// Bug 1 (rewritten): reference + suite must match role-gated gen
+// Bug 1 (rewritten, sweep 2 F3): the dry share is gated on `inrack`, not on the role
+// (an in-rack instance before election / on fallback still takes dry / K)
 // ----------------------------------------------------------------------
-check("mix dry share: fsDryShare and suite agree with role-gated gen", () => {
+check("mix dry share: gen gates kShare on inrack (AGENTS 22)", () => {
     const GEN_CODE = builderGen("build_freqsplit");
     const kLine = (GEN_CODE.match(/kShare = [^;]+;/) || ["<none>"])[0];
     assert.ok(
-        /kShare = \(selH > 0\.5 && roleH > 0\.5\) \?/.test(kLine),
-        "shipped gen keeps role-gated kShare (loudsplit contract); got " + kLine
+        /kShare = \(selH > 0\.5 && inrackH > 0\.5\) \?/.test(kLine),
+        "shipped gen gates kShare on inrack (sweep 2 F3); got " + kLine
     );
     const refFn = (read("src/freqsplit_config.js").match(/function fsDryShare[\s\S]*?\n\}/) || [""])[0];
     assert.ok(
