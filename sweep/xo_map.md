@@ -32,3 +32,14 @@ Red tests: `node tests/test_xo_sweep2.js` (7 checks, all currently FAIL for the 
 - `vm_xo.sh max`: FAIL (XO-S2-04; passes with `test_selected 1` added).
 - `vm_smoke.sh`: PASS (11/11 sweepable parameters, 50 sets, meters stable, screenshot of default and after-sweep clean, device 414 px).
 - `vm_xo.sh run` (Live, scripts/test_xo_live.js): all checks passed (layout x themes, mirrors, arrows, zoom, render modes, playhead, Esc, Re-Seed, Map Samples, dot groups).
+
+## Verify
+Independent run of `node tests/test_xo_sweep2.js`: 7/7 fail deterministically, each for the stated reason (outputs checked above against code at src/xo_node_engine.js).
+- XO-S2-01 KEEP: recall selects `samples[sampleIndex]`; reseed replaces samples, so the wrong sample plays. Real, not in iter-1.
+- XO-S2-02 KEEP: blob stores only index/cat/pitch/decay/gain; Reverse/Speed/Grain/Mode reset on reopen, so recall differs from what was saved. Expected value is sound.
+- XO-S2-03 KEEP (low impact, S2/S3): `activeLen` is forced to >= 64 (`Math.max(64, ...)`) so `samples[onsetIdx+n]` runs past the array for tiny or late-onset files -> NaN features. Rare in practice, but a real defect.
+- XO-S2-04 KEEP: static check that the harness sends `test_selected`; VM run confirmed the harness fails without it and passes with it. Fix belongs in tests/test_xo_map.js.
+- XO-S2-05 KEEP: right-only stereo sample renders silent (channel 0 decoded only); user-visible in Edited export/audition.
+- XO-S2-06 KEEP: output name is basename + settings only; reproduced identical path for a/Kick.wav and b/Kick.wav.
+- XO-S2-07 KEEP: loose files in the added root are skipped when there are >= 4 sub-folders; reproduced.
+REJECT: none.
