@@ -222,8 +222,8 @@ function nrlNetwork() {
     // entry / exit gates
     sptCurve([[NRL.px0 - 5, L.y + 19], [NRL.px0 - 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
     sptCurve([[NRL.px1 + 5, L.y + 19], [NRL.px1 + 5, L.y + 70]], sptColor("live_lcd_frame"), 1);
-    sptText("in", 4, L.y + 25, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
-    sptText("out", L.w - 4, L.y + 25, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
+    sptText("in", 4, L.y + 72, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 0);
+    sptText("out", L.w - 4, L.y + 72, sptColor("live_display_scale_text"), SPT_SIZE_SMALL, 2);
     var dls = nrlDils(), dmin = Math.min.apply(null, dls), dmax = Math.max.apply(null, dls);
     var arrN = nrlArrays().length;
     var cap = kind === "LSTM" ? arrN + " LSTM layers · " + (arrN ? amp.model.arrays[0].ch : 0) + " hidden"
