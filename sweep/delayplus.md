@@ -24,3 +24,11 @@ Not reproduced: Max Console empty after a default + sweep smoke run, DSP ready i
 
 Counts: S1 0, S2 1, S3 1, S4 4.
 Red test files: `tests/test_delayplus_sweep2.js` (Node), Live check `scripts/test_delayplus_live.js` (existing, red). Audio runner changes: minified-gen testing, `extremes` case (green).
+
+## Verify
+Stage C (independent). Ran `node tests/test_delayplus_sweep2.js`: both tests fail for the stated reason (warning null at 96 kHz; dpSideMs returns 5600 ms vs 5.46 s tank). Branch commits reviewed: red tests, `extremes` audio case, audio runner testing the minified gen (infrastructure, green, kept).
+- DP-S2-01 / 01b: KEEP (S3). Real: the gen clips at TANK-8 samples while config/face cap at 8000 ms regardless of sr; expected value follows from DP_TANK in config itself (dpEffectiveTimes already uses it). Not an iteration-1 item, deterministic. Rare (96 kHz + >5.4 s sync) so S3 stands.
+- DP-S2-02: KEEP, downgrade to S3 (existing Live check, no new test). Logs /tmp/dp_live.log and dp_live2.log show the same FAIL on track 0 only (K=-20032/-21632, B=8192), other pairs K=10240 B=512; reproducible, self-recovers in ~3 s, so impact is a brief clamped minimum loop after Set open. Not re-run in this stage (would need the Live lock); the stated cause (stale held-min window) is a hypothesis, fix must be verified by `vm_delayplus.sh run`.
+- DP-S4-01..04: KEEP as notes only (no tests). DP-S4-04 duplicates shared item F1; noted only.
+- F9: accept "not reproduced" (Console empty, 26/26 audio on minified gen, smoke PASS).
+- Rejected: none. Note: `git diff main` also shows unrelated Neural Amp changes because main advanced after branching; not part of this lane.
