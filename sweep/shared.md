@@ -34,3 +34,15 @@ Stage C: all four tests run on this branch and fail for the stated reason.
 - KEEP tests/test_minify_idiom.js (SH-F2): 34/38, 4 synthetic `0 - N /` cases emit `0-N/`; expected form is per AGENTS/wave-1 silent-gen finding. Latent, no current device affected.
 - KEEP tests/test_paint_bounds_lib.js (SH-F3): 2/4, the two move_to-at-arc-start cases red (false positive); the two real-join controls pass.
 - No rejects. SH-S4 items stay logged without tests.
+
+## Fix
+| finding | result | notes |
+|---|---|---|
+| SH-F1 | fixed (565afc0) | `m4l_xml` writes `<Path Value="">` and `<LastModDate Value="0">` for `.adg` output (relative reference + size only); `.als` sets keep the absolute path. Six `.adg` rebuilt. `smoke_fix_adg.py` now rewrites the Path inside each `MxPatchRef` using the RelativePath basename (works for empty or absolute Path). Spectral tests that counted "relative and absolute" references now expect the relative one only. `tests/test_adg_portable.js` 86/86. Live resolving a relative-only reference outside the smoke staging is still not independently proven (the smoke loader repoints it); see smoke result below. |
+| SH-F1b | fixed | `BUILD_STAMP` in Delay+/Reverb+ is now a sha1 of the device's `src/<dev>_*` files; no wall clock. `tests/test_build_deterministic.js` 31/31. Delay+/Reverb+ `.amxd` change once (stamp string only). |
+| SH-F2 | fixed | `minify_gen.py` keeps the spaces of the sequence `0 +/- number /` (`exp(0 - 1 /x)`); other `N-M` forms unchanged. `--check` ok (39), `tests/test_minify_idiom.js` 38/38. Rebuilding every non-Amp/Deviate device changed no embedded gen (only the Delay+/Reverb+ stamp and the six `.adg` differ). |
+| SH-F3 | fixed | `paint_bounds_lib.js` arc: a pending point within 1e-3 of the arc's own start (`a1`) is not a join; `arc_negative` passes the start angle. `tests/test_paint_bounds_lib.js` 4/4; the real-join controls still flag. |
+| SH-S4-1 | kept | `#0-sstest` stays a documented test broadcast (chain + kind filtered). Not changed. |
+| SH-S4-2..5 | not fixed | other lanes / frozen files / doc nit. |
+
+Gates: typecheck ok; test_delayplus, test_reverbplus(+face), test_transplit/loudsplit/harmsplit/freqsplit, test_clipplus, test_glitch, all `*paint_bounds*`, test_face_fuzz (0 failures) green; test_device_static: only the known Better Shaper and Neural Amp violations remain. No DSP change, so no Max audio; no face/LOM change beyond the version stamp, so no full Live run.
