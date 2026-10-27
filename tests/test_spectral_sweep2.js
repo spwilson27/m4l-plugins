@@ -71,5 +71,26 @@ check("F3", "kShare is not gated on the follower/leader role", () => {
     if (/roleH/.test(m[1])) throw new Error("kShare depends on roleH: " + m[0]);
 });
 
+// ---- F2 (S1): the minified gen text the device embeds. Bisected in the VM (real Max, standalone gen.codebox~): the same code with comments
+// stripped and renames off still compiles to a gen that outputs only zeros (no telemetry) once `exp(0 - 1 / clip(..))` is minified to
+// `exp(0-1/clip(..))` (variant "E" keeps everything else readable and fails; comments-only / indentation-only variants pass). Transient Split and
+// Loud Split are the only devices with this expression, and they are exactly the ones whose deferred gen~ never runs in Live.
+function embeddedGen(dev) {
+    const j = readDevice(dev);
+    let t = null;
+    (function w(o) { if (o && typeof o === "object") for (const k in o) { if (typeof o[k] === "string" && o[k].startsWith("var GEN_DSP_TEXT") && !t) t = o[k]; w(o[k]); } })(j);
+    const st = t.indexOf('"'); let e = st + 1;
+    while (t[e] !== '"') { if (t[e] === "\\") e++; e++; }
+    const gd = JSON.parse(JSON.parse(t.slice(st, e + 1)));
+    return gd.patcher.boxes.map((x) => x.box).find((x) => x.code).code;
+}
+for (const dev of ["Transient Split", "Loud Split", "Harmonic Split", "Freq Split"]) {
+    check("F2", dev + ": embedded gen has no `0-<number>/` idiom (compiles to a silent gen in Max)", () => {
+        const code = embeddedGen(dev);
+        const m = code.match(/[(,=*+<>?:]0-\d+(?:\.\d+)?\/[^;\n]{0,30}/g);
+        if (m) throw new Error("minified gen contains " + m.slice(0, 3).join(" | ") + " (write the source so the minifier keeps a space, or fix scripts/minify_gen.py)");
+    });
+}
+
 console.log(failed ? `${failed} FAILED` : "all passed");
 process.exit(failed ? 1 : 0);
