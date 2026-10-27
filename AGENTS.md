@@ -636,6 +636,7 @@ Audio checks (real Max render, shared `scripts/max_harness.py`, **inside the tar
 ### Two-Tier Architecture (`node.codebox` + `v8ui` LOM Executor + Stdio MCP Server)
 1. **`src/ableton_mcp_node.js` (`node.codebox` `@autostart 1`)**:
    - Hosts a zero-dependency local HTTP JSON-RPC bridge on `127.0.0.1:<port>` (`GET /health`, `POST /rpc`, `POST /shutdown`).
+   - Rejects any request carrying an `Origin` header or a non-loopback `Host` with 403 (a web page cannot drive `eval_js` / `/shutdown`); node clients and ssh tunnels (Host `127.0.0.1:<port>`) are unaffected. LOM actions on a path that does not exist (LiveAPI id 0) return an error; `get_device_parameters` adds `total_parameters` / `truncated`, and `set_device_parameter` reaches parameters beyond 128 (Mega Modulator has 257).
    - Forwards incoming `/rpc` requests (`{"action": "...", "params": {...}}`) into Max via `maxApi.outlet("lom_req", JSON.stringify(payload))` and awaits `lom_res` from `v8ui`.
 2. **`src/ableton_mcp_lom.js` (`v8ui` on Max's Main/LOM Thread)**:
    - Executes `LiveAPI` (Live Object Model) operations safely on Max's main thread and inspects shared `Global(...)` buses inside the Max JS runtime.

@@ -30,3 +30,10 @@ Stage C (independent): ran tests/test_ableton_mcp_sweep2.js, 3 failures, each fo
 - MCP-03 KEEP: cross-origin/foreign-Host RPC is accepted (status 200); expectation 403 is right, plain clients without Origin and Host 127.0.0.1:port (incl. ssh-tunnel local ports) are unaffected and asserted. Not flaky (random port, health wait loop).
 - MCP-04..MCP-10 (S4, log only, no tests): accepted as log items, no test to delete.
 Rejected: none.
+
+## Fix
+- MCP-01: fixed. lom_get/lom_set/lom_call/get_device_parameters/set_device_parameter now error on a missing path (LiveAPI id 0).
+- MCP-02: fixed. set_device_parameter reads up to 4096 parameters; get_device_parameters adds `total_parameters` and `truncated` (additive, default cap unchanged).
+- MCP-03: fixed. 403 for any request with an Origin header or a non-loopback Host; Node clients and ssh tunnels unaffected.
+- MCP-04..10 (S4): not fixed, left as log items.
+Gate: typecheck, build, test_ableton_mcp, bugsweep, stdio_http, sweep2 red tests all pass; face_fuzz 0 failures; static for the MCP bridge 0 violations (Better Shaper has 2 violations unrelated to this lane); preview rendered; vm_smoke PASS with the bridge answering through the new origin check (screenshot checked). AGENTS.md s13 updated.

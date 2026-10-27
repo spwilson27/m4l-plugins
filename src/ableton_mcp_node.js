@@ -135,6 +135,13 @@ function sendJson(res, statusCode, payload) {
 
 function createBridgeServer(port) {
     return http.createServer((req, res) => {
+        // Only local, non-browser clients: reject cross-origin pages and DNS-rebinding hosts.
+        const hostHdr = String(req.headers.host || "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
+        const okHost = !hostHdr || hostHdr === "127.0.0.1" || hostHdr === "localhost" || hostHdr === "::1";
+        if (req.headers.origin !== undefined || !okHost) {
+            sendJson(res, 403, { ok: false, error: "Forbidden: cross-origin or non-loopback request" });
+            return;
+        }
         if (req.method === "OPTIONS") {
             res.writeHead(204, {
                 "Access-Control-Allow-Origin": "*",

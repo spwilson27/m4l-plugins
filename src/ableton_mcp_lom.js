@@ -84,6 +84,22 @@ function makeApi(pathOrId) {
     return api;
 }
 
+function requireExists(api, path) {
+    if (!api || !(Number(api.id) > 0)) {
+        throw new Error("LOM path does not exist: " + path);
+    }
+    return api;
+}
+
+function countParameters(devicePath) {
+    var devApi = makeApi(devicePath);
+    try {
+        return Number(devApi.getcount("parameters")) || 0;
+    } catch (e) {
+        return extractIds(devApi.get("parameters")).length;
+    }
+}
+
 function readParameterList(devicePath, maxParams) {
     var devApi = makeApi(devicePath);
     var nParams = 0;
@@ -308,7 +324,7 @@ function handleGetTracksTree(params) {
 
 function handleLomGet(params) {
     var p = params || {};
-    var api = makeApi(p.path || "live_set");
+    var api = requireExists(makeApi(p.path || "live_set"), p.path || "live_set");
     var res = {
         id: Number(api.id) || 0,
         path: cleanPath(api.unquotedpath || api.path || p.path),
@@ -339,7 +355,7 @@ function handleLomSet(params) {
     if (!p.path || !p.property) {
         throw new Error("lom_set requires 'path' and 'property'");
     }
-    var api = makeApi(p.path);
+    var api = requireExists(makeApi(p.path), p.path);
     api.set(p.property, p.value);
     return {
         path: cleanPath(api.unquotedpath || api.path || p.path),
@@ -353,7 +369,7 @@ function handleLomCall(params) {
     if (!p.path || !p.method) {
         throw new Error("lom_call requires 'path' and 'method'");
     }
-    var api = makeApi(p.path);
+    var api = requireExists(makeApi(p.path), p.path);
     var callArgs = [p.method];
     if (Array.isArray(p.args)) {
         for (var i = 0; i < p.args.length; i++) callArgs.push(p.args[i]);
@@ -371,19 +387,24 @@ function handleLomCall(params) {
 function handleGetDeviceParameters(params) {
     var p = params || {};
     if (!p.path) throw new Error("get_device_parameters requires 'path'");
-    var devApi = makeApi(p.path);
+    var devApi = requireExists(makeApi(p.path), p.path);
+    var maxP = typeof p.maxParameters === "number" ? p.maxParameters : 128;
+    var total = countParameters(p.path);
     return {
+        total_parameters: total,
+        truncated: total > maxP,
         device_id: Number(devApi.id) || 0,
         device_name: String(getScalar(devApi, "name") || ""),
         path: cleanPath(devApi.unquotedpath || devApi.path || p.path),
-        parameters: readParameterList(p.path, typeof p.maxParameters === "number" ? p.maxParameters : 128)
+        parameters: readParameterList(p.path, maxP)
     };
 }
 
 function handleSetDeviceParameter(params) {
     var p = params || {};
     if (!p.path) throw new Error("set_device_parameter requires 'path'");
-    var list = readParameterList(p.path, 128);
+    requireExists(makeApi(p.path), p.path);
+    var list = readParameterList(p.path, 4096);
     var targetParam = null;
     if (typeof p.paramIndex === "number") {
         targetParam = list[p.paramIndex] || null;
