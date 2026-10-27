@@ -26,3 +26,11 @@ Scope: `.adg` presets, build determinism, `scripts/minify_gen.py`, `tests/paint_
 
 ## Dependent devices after the fixes (for stage D)
 Minifier: rebuild everything; expect embedded gen text to change only where `0 - N /` occurs (today: none). `.adg`: rebuild Delay+, Reverb+, the four splitters. Determinism: Delay+, Reverb+ (+ their tests/previews). paint_bounds_lib: re-run every `test_*paint_bounds*.js`, `test_clipplus.js`, `test_glitch_paint_bounds.js`, `test_deviate_face*.js`, `test_face_fuzz.js`.
+
+## Verify
+Stage C: all four tests run on this branch and fail for the stated reason.
+- KEEP tests/test_adg_portable.js (SH-F1): 38/86, fails on abs checkout path and build-time mtime; relative path and size checks pass. Caveat for fix stage: Live resolving a relative-only reference is unverified, check in the VM.
+- KEEP tests/test_build_deterministic.js (SH-F1b): 27/31, static clock scan flags Delay+/Reverb+, two Reverb+ builds 2 s apart differ.
+- KEEP tests/test_minify_idiom.js (SH-F2): 34/38, 4 synthetic `0 - N /` cases emit `0-N/`; expected form is per AGENTS/wave-1 silent-gen finding. Latent, no current device affected.
+- KEEP tests/test_paint_bounds_lib.js (SH-F3): 2/4, the two move_to-at-arc-start cases red (false positive); the two real-join controls pass.
+- No rejects. SH-S4 items stay logged without tests.
