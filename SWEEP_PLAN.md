@@ -92,6 +92,14 @@ Reused: `scripts/max_harness.py`, `scripts/vm_live_lock.sh` (`batch`), `scripts/
 
 Deferred to shared lanes: F1 `.adg` absolute paths; `scripts/minify_gen.py` should keep `0- N/` safe (no other core uses the idiom today); `tests/paint_bounds_lib.js` move_to-before-arc false positive; `#0-sstest` / `#0-amptest` test hooks.
 
+### Wave 4 (merged 2026-10-27)
+| Lane | S1 | S2 | S3 | S4 (logged) | Fixed | Notes |
+|---|---|---|---|---|---|---|
+| shaper | 0 | 3 | 2 | 4 | `---mseg`, short name `Sync Rate`, Esc / keys `3` `u` no longer delete MSEG points, numbox widths show the unit | AGENTS rule 5 still uses `#0-mseg` as its example |
+| theme_editor | 0 | 0 | 2 | 3 | header hint clipped, LED red when no server port is free | macro sliders inert on the Default preset (by design of the theme engine) |
+| ableton_mcp | 0 | 3 | 0 | 7 | missing LOM paths return errors, >128 parameters, 403 for Origin / non-loopback Host | API unchanged |
+| shared | 0 | 3 | 1 | 1 | `.adg` relative-only references, deterministic Delay+ / Reverb+ builds, minifier keeps `0 - N /`, paint-bounds arc false positive | `#0-sstest` kept as a documented test hook; relative `.adg` load in Live: see Phase 3 |
+
 ### Wave 3 (merged 2026-10-27)
 | Lane | S1 | S2 | S3 | S4 (logged) | Fixed | Notes |
 |---|---|---|---|---|---|---|
