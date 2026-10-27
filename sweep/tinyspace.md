@@ -23,3 +23,11 @@ Red run: `node tests/test_tinyspace_sweep2.js` -> 3 checks fail for the stated r
 - TS-S2-01a REJECT: poke and duck bang run back-to-back in one JS call on the main thread, so call order is not audibly observable; asserting source order is implementation-pinning, not a user-visible bug. Test removed.
 - TS-S2-01b KEEP (weak, S2/S3): duck is an unsmoothed step to 0 in the gen (duckG = clip(duck)), hard-cutting the tail; slewing it is a sound fix. Test is implementation-specific (expects slew()), fails for the stated reason.
 - S4 log items: not tests, no action.
+
+## Fix
+- TS-S3-01: FIXED (build_tinyspace.py make_dial adds light textcolor). Commit 8d8de28. Live smoke screenshot: dial names/values legible.
+- TS-S2-01b: FIXED (core `duckG = slew(clip(duck,0,1), 0.9992)`, ~2.6 ms). Commit 8d8de28.
+- TS-S2-01a: rejected in verify. S4 items: logged only.
+Gate: typecheck, build, test_tinyspace, bugsweep, test_tinyspace_sweep2 (both ok), preview read, test_device_static (Tiny Space 0 violations), test_face_fuzz 0 failures, vm_smoke PASS (12/12 params, meters 0.86).
+Not run: VM Max audio suite (no vm_tinyspace.sh wrapper; the runner would have launched Max on the host, so it was aborted at once and nothing was left running). The DSP change is a 2.6 ms gain slew on the seed/character duck; covered by smoke only.
+No AGENTS.md edit (S4-01 70-vs-72 float note left for a docs pass).
